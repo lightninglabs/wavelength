@@ -17,7 +17,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/darepo-client/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -434,21 +434,21 @@ type fakeWallet struct {
 	mu sync.Mutex
 
 	listErr error
-	utxos   []*wallet.Utxo
+	utxos   []*walletcore.Utxo
 
 	leaseErr        error
 	leaseCalls      []wire.OutPoint
 	leaseExpiryLast time.Duration
-	leaseLockID     wallet.LockID
+	leaseLockID     walletcore.LockID
 
 	releaseErr    error
 	releaseCalls  []wire.OutPoint
-	releaseLockID wallet.LockID
+	releaseLockID walletcore.LockID
 }
 
 // ListUnspent returns the configured confirmed UTXOs.
-func (w *fakeWallet) ListUnspent(_ context.Context, _, _ int32) ([]*wallet.Utxo,
-	error) {
+func (w *fakeWallet) ListUnspent(_ context.Context, _, _ int32) (
+	[]*walletcore.Utxo, error) {
 
 	return w.utxos, w.listErr
 }
@@ -486,7 +486,7 @@ func (w *fakeWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
 // LeaseOutput records the lease call and returns a fixed expiry plus
 // the configured error (if any). Tests that care about lease behaviour
 // can inspect leaseCalls and leaseLockID.
-func (w *fakeWallet) LeaseOutput(_ context.Context, id wallet.LockID,
+func (w *fakeWallet) LeaseOutput(_ context.Context, id walletcore.LockID,
 	op wire.OutPoint, expiry time.Duration) (time.Time, error) {
 
 	w.mu.Lock()
@@ -504,7 +504,7 @@ func (w *fakeWallet) LeaseOutput(_ context.Context, id wallet.LockID,
 
 // ReleaseOutput records the release call and returns the configured
 // error (if any).
-func (w *fakeWallet) ReleaseOutput(_ context.Context, id wallet.LockID,
+func (w *fakeWallet) ReleaseOutput(_ context.Context, id walletcore.LockID,
 	op wire.OutPoint) error {
 
 	w.mu.Lock()
@@ -518,7 +518,7 @@ func (w *fakeWallet) ReleaseOutput(_ context.Context, id wallet.LockID,
 
 // leaseSnapshot returns the wallet lease calls recorded so far.
 func (w *fakeWallet) leaseSnapshot() ([]wire.OutPoint, time.Duration,
-	wallet.LockID) {
+	walletcore.LockID) {
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -528,7 +528,7 @@ func (w *fakeWallet) leaseSnapshot() ([]wire.OutPoint, time.Duration,
 }
 
 // releaseSnapshot returns the wallet release calls recorded so far.
-func (w *fakeWallet) releaseSnapshot() ([]wire.OutPoint, wallet.LockID) {
+func (w *fakeWallet) releaseSnapshot() ([]wire.OutPoint, walletcore.LockID) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -648,10 +648,10 @@ func makeTestTx(withAnchor bool) *wire.MsgTx {
 // fee-input selection. The PkScript is a real P2TR script so fee
 // estimation against this UTXO exercises the script-aware vsize path
 // rather than the non-standard fallback.
-func makeWalletUTXO(t *testing.T) *wallet.Utxo {
+func makeWalletUTXO(t *testing.T) *walletcore.Utxo {
 	t.Helper()
 
-	return &wallet.Utxo{
+	return &walletcore.Utxo{
 		Outpoint: wire.OutPoint{
 			Hash: chainhash.Hash{
 				2,
@@ -1026,7 +1026,7 @@ func TestEnsureConfirmedBroadcastFailureNotifiesFailure(t *testing.T) {
 func TestCancelInterestStopsTracking(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	walletRef := &fakeWallet{
-		utxos: []*wallet.Utxo{
+		utxos: []*walletcore.Utxo{
 			makeWalletUTXO(t),
 		},
 	}
@@ -1084,7 +1084,7 @@ func TestCancelInterestStopsTracking(t *testing.T) {
 func TestOnStopEvictsWalletLeases(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	walletRef := &fakeWallet{
-		utxos: []*wallet.Utxo{
+		utxos: []*walletcore.Utxo{
 			makeWalletUTXO(t),
 		},
 	}
@@ -1131,7 +1131,7 @@ func TestOnStopEvictsWalletLeases(t *testing.T) {
 func TestFeeBumpOnNewBlocks(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	walletRef := &fakeWallet{
-		utxos: []*wallet.Utxo{
+		utxos: []*walletcore.Utxo{
 			makeWalletUTXO(t),
 		},
 	}

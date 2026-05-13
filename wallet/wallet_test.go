@@ -1178,12 +1178,21 @@ func TestGetBoardingBalance(t *testing.T) {
 
 	backend := &MockBoardingBackend{}
 	store := &MockBoardingStore{}
-	store.On(
-		"FetchBoardingIntentsByStatus",
-		mock.Anything, BoardingStatusConfirmed,
-	).Return(
-		[]BoardingIntent{}, nil,
-	)
+	// handleGetBoardingBalance now queries three statuses (confirmed,
+	// sweep_pending, swept) so monitoring callers can break boarding
+	// balance down by lifecycle. Empty results are sufficient for the
+	// happy-path zero-balance assertion.
+	for _, status := range []BoardingStatus{
+		BoardingStatusConfirmed, BoardingStatusSweepPending,
+		BoardingStatusSwept,
+	} {
+		store.On(
+			"FetchBoardingIntentsByStatus",
+			mock.Anything, status,
+		).Return(
+			[]BoardingIntent{}, nil,
+		)
+	}
 
 	epochChan := make(chan chainsource.BlockEpoch, 1)
 	chainSource := newMockChainSourceActor(epochChan)
@@ -1204,9 +1213,11 @@ func TestGetBoardingBalance(t *testing.T) {
 	//nolint:forcetypeassert
 	resp := respVal.(*GetBoardingBalanceResponse)
 
-	// With no intents, balance should be zero.
+	// With no intents, all balance breakdowns should be zero.
 	require.Equal(t, btcutil.Amount(0), resp.TotalBalance)
 	require.Equal(t, 0, resp.UtxoCount)
+	require.Equal(t, btcutil.Amount(0), resp.PendingSweepBalance)
+	require.Equal(t, btcutil.Amount(0), resp.SweptBalance)
 
 	store.AssertExpectations(t)
 }

@@ -116,16 +116,32 @@ func (m *GetBoardingBalanceRequest) MessageType() string {
 // walletMsgSealed implements the sealed WalletMsg interface.
 func (m *GetBoardingBalanceRequest) walletMsgSealed() {}
 
-// GetBoardingBalanceResponse contains the total boarding balance and UTXO
-// count.
+// GetBoardingBalanceResponse contains the total boarding balance, UTXO
+// count, and the boarding-sweep accounting projections used by the daemon
+// monitoring surface.
 type GetBoardingBalanceResponse struct {
 	actor.BaseMessage
 
-	// TotalBalance is the sum of all matching boarding UTXOs.
+	// TotalBalance is the sum of all matching boarding UTXOs in
+	// confirmed status (i.e. eligible to be folded into a round).
 	TotalBalance btcutil.Amount
 
 	// UtxoCount is the number of UTXOs included in the balance.
 	UtxoCount int
+
+	// PendingSweepBalance is the total amount of boarding UTXOs that
+	// have been included in a published-but-unconfirmed boarding-sweep
+	// transaction (status "sweep_pending"). These funds are no longer
+	// reported under TotalBalance and have not yet returned to the
+	// on-chain wallet, so the field surfaces value currently in flight
+	// to L1.
+	PendingSweepBalance btcutil.Amount
+
+	// SweptBalance is the cumulative total of boarding UTXOs recovered
+	// via the timeout-path sweep flow (status "swept"). Historical
+	// accounting only; once swept the funds reappear under the
+	// on-chain wallet's confirmed balance.
+	SweptBalance btcutil.Amount
 }
 
 // MessageType returns the message type identifier for logging and debugging.

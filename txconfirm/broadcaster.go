@@ -19,7 +19,7 @@ import (
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/darepo-client/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 )
@@ -89,8 +89,8 @@ var (
 // constant: callers do not need to synchronise LockIDs across restarts
 // because the broadcaster already rebuilds its in-memory reservation
 // state from per-parent FSM progress on recovery.
-var txconfirmLockID = func() wallet.LockID {
-	var id wallet.LockID
+var txconfirmLockID = func() walletcore.LockID {
+	var id walletcore.LockID
 	copy(id[:], "darepo-client:txconfirm")
 
 	return id
@@ -108,7 +108,7 @@ var txconfirmLockID = func() wallet.LockID {
 type Wallet interface {
 	// ListUnspent returns confirmed wallet UTXOs usable as CPFP fee inputs.
 	ListUnspent(ctx context.Context, minConfs,
-		maxConfs int32) ([]*wallet.Utxo, error)
+		maxConfs int32) ([]*walletcore.Utxo, error)
 
 	// NewWalletPkScript returns a fresh wallet-managed pkScript
 	// suitable for
@@ -119,7 +119,7 @@ type Wallet interface {
 	// inputs it owns and returns the finalized wire tx.
 	FinalizePsbt(ctx context.Context, packet []byte) (*wire.MsgTx, error)
 
-	wallet.OutputLeaser
+	walletcore.OutputLeaser
 }
 
 // FeeInput is a confirmed wallet UTXO selected for CPFP fee payment.
@@ -960,7 +960,7 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 			return nil, fmt.Errorf("list unspent: %w", err)
 		}
 
-		var best *wallet.Utxo
+		var best *walletcore.Utxo
 		for _, utxo := range utxos {
 			if _, skip := excluded[utxo.Outpoint]; skip {
 				continue
@@ -1035,7 +1035,7 @@ func (b *CPFPBroadcaster) selectReservedFeeInput(parentTxid chainhash.Hash,
 }
 
 // feeInputFromWalletUTXO converts a wallet UTXO into a broadcaster fee input.
-func feeInputFromWalletUTXO(utxo *wallet.Utxo) *FeeInput {
+func feeInputFromWalletUTXO(utxo *walletcore.Utxo) *FeeInput {
 	return &FeeInput{
 		Outpoint: utxo.Outpoint,
 		Output: &wire.TxOut{

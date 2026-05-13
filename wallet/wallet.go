@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -128,6 +129,40 @@ type Ark struct {
 	// the off-chain double-entry ledger. When None, audit emission
 	// is silently skipped (tests, lightweight harnesses).
 	ledgerSink fn.Option[ledger.Sink]
+
+	// selfRef is the actor's own ref, captured at Start time so the
+	// boarding-sweep handlers can hand it to chainsource.MapSpendEvent
+	// and txconfirm.MapNotification when registering watches.
+	selfRef actor.TellOnlyRef[WalletMsg]
+
+	// sweepStore persists boarding-sweep records for restart recovery
+	// and inspection. nil disables the sweep subsystem.
+	sweepStore BoardingSweepStore
+
+	// sweepSigner builds witnesses for boarding-timeout aggregate sweep
+	// transactions and allocates wallet-managed destination scripts.
+	// nil disables the sweep subsystem.
+	sweepSigner SweepSigner
+
+	// sweepChainParams is the chain network parameters used to validate
+	// caller-supplied sweep destination addresses.
+	sweepChainParams *chaincfg.Params
+
+	// pendingSweeps tracks in-flight aggregate boarding sweeps the
+	// wallet actor is correlating spend / txconfirm notifications
+	// against. Keyed by sweep txid. The map is owned by the actor's
+	// single-threaded Receive loop — chainsource and txconfirm
+	// notifications both arrive via the actor's mailbox, so no
+	// additional mutex is required.
+	pendingSweeps map[chainhash.Hash]*pendingSweepState
+
+	// pendingSweepInputs is a per-outpoint reverse index that maps each
+	// boarding-sweep input outpoint back to the sweep txid that owns it.
+	// chainsource.handleRegisterSpend always Spawns a fresh SpendActor
+	// per call, so duplicate registrations would leak goroutines. The
+	// map is owned by the actor's single-threaded Receive loop and is
+	// kept in lockstep with each pendingSweepState.inputs entry.
+	pendingSweepInputs map[wire.OutPoint]chainhash.Hash
 }
 
 // NewArk creates a new Ark wallet actor. The logger is optional and falls back
@@ -145,7 +180,7 @@ func NewArk(backend BoardingBackend, store BoardingStore, vtxoReader VTXOReader,
 		chainsource.ChainSourceResp,
 	],
 	actorSystem actor.SystemContext, ledgerSink fn.Option[ledger.Sink],
-	actorLog btclog.Logger) *Ark {
+	actorLog btclog.Logger, opts ...ArkOption) *Ark {
 
 	// Wrap the provided logger in an Option. A nil logger becomes None,
 	// causing the actor to fall back to build.LoggerFromContext at call
@@ -155,16 +190,51 @@ func NewArk(backend BoardingBackend, store BoardingStore, vtxoReader VTXOReader,
 		optLog = fn.Some(actorLog)
 	}
 
-	return &Ark{
-		backend:     backend,
-		store:       store,
-		vtxoReader:  vtxoReader,
-		chainSource: chainSource,
-		actorSystem: actorSystem,
-		ledgerSink:  ledgerSink,
-		notifiers:   make(map[string]notifierInfo),
-		seenUtxos:   fn.NewSet[UtxoKey](),
-		actorLog:    optLog,
+	a := &Ark{
+		backend:       backend,
+		store:         store,
+		vtxoReader:    vtxoReader,
+		chainSource:   chainSource,
+		actorSystem:   actorSystem,
+		ledgerSink:    ledgerSink,
+		notifiers:     make(map[string]notifierInfo),
+		seenUtxos:     fn.NewSet[UtxoKey](),
+		actorLog:      optLog,
+		pendingSweeps: make(map[chainhash.Hash]*pendingSweepState),
+		pendingSweepInputs: make(
+			map[wire.OutPoint]chainhash.Hash,
+		),
+	}
+	for _, opt := range opts {
+		opt(a)
+	}
+
+	return a
+}
+
+// ArkOption tunes optional dependencies of the wallet actor. Subsystems that
+// are not strictly required to start the actor (such as the boarding-sweep
+// flow) are wired through ArkOption-style functional options so test
+// harnesses can construct a minimal *Ark without manufacturing every
+// downstream collaborator.
+type ArkOption func(*Ark)
+
+// WithBoardingSweep wires the boarding-sweep subsystem into the wallet
+// actor. When omitted, the corresponding RPC paths return a clear
+// "subsystem not initialised" error rather than silently no-oping.
+//
+// The shared txconfirm broadcaster is resolved lazily through the
+// receptionist via txconfirm.LookupRef so callers do not need to
+// guarantee actor-init ordering; a sweep request issued before the
+// broadcaster has been registered surfaces an explicit error rather
+// than silently dropping into the dead-letter queue.
+func WithBoardingSweep(store BoardingSweepStore, signer SweepSigner,
+	chainParams *chaincfg.Params) ArkOption {
+
+	return func(a *Ark) {
+		a.sweepStore = store
+		a.sweepSigner = signer
+		a.sweepChainParams = chainParams
 	}
 }
 
@@ -239,6 +309,11 @@ func allTargetErrors(targets []wire.OutPoint,
 // notifications from the chainsource actor.
 func (a *Ark) Start(ctx context.Context,
 	selfRef actor.TellOnlyRef[WalletMsg]) error {
+
+	// Capture the self ref so boarding-sweep handlers can register
+	// chainsource spend watches and txconfirm subscribers that route
+	// notifications back to this actor.
+	a.selfRef = selfRef
 
 	// Create an internal context for background goroutines that outlive
 	// request contexts but should respect wallet shutdown.
@@ -317,19 +392,35 @@ func (a *Ark) Start(ctx context.Context,
 		return fmt.Errorf("subscribe to block epochs: %w", result.Err())
 	}
 
+	// Boarding-sweep resume is intentionally NOT dispatched from
+	// Start. The wallet starts before txconfirm registers (step 9 vs
+	// step 12 of darepod.Server.startWalletDependentActors), so a
+	// self-Tell here would race the receptionist registration and a
+	// scheduling-unlucky resume would observe txconfirm.LookupRef as
+	// "not found", silently orphaning every persisted pending sweep.
+	// The daemon explicitly Asks the wallet to resume after step 12.
+
 	a.logger(ctx).InfoS(ctx, "Boarding wallet actor started")
 
 	return nil
 }
 
 // Stop gracefully shuts down the wallet actor by unsubscribing from block
-// notifications and waiting for any in-flight backlog deliveries to complete.
+// notifications, tearing down per-input chainsource spend watches owned by
+// pending boarding sweeps, and waiting for any in-flight backlog deliveries
+// to complete. The spend-watch cleanup is explicit (rather than implicit via
+// actor-system shutdown) so callers that stop the wallet without tearing
+// down the whole system leave no dangling chainsource sub-actors.
 func (a *Ark) Stop(ctx context.Context) {
 	a.logger(ctx).InfoS(ctx, "Stopping boarding wallet actor")
 
 	// Cancel the internal context to signal background goroutines to stop.
 	if a.cancel != nil {
 		a.cancel()
+	}
+
+	for _, pending := range a.pendingSweeps {
+		a.cancelSweepSpendWatches(ctx, pending)
 	}
 
 	err := a.chainSource.Tell(ctx, &chainsource.UnsubscribeBlocksRequest{
@@ -390,6 +481,18 @@ func (a *Ark) Receive(ctx context.Context,
 
 	case *SendVTXOsRequest:
 		return a.handleSendVTXOs(ctx, m)
+
+	case *SweepBoardingUTXOsRequest:
+		return a.handleSweepBoardingUTXOs(ctx, m)
+
+	case *ResumeBoardingSweepsRequest:
+		return a.handleResumeBoardingSweeps(ctx, m)
+
+	case BoardingSweepSpendNotification:
+		return a.handleSweepSpendNotification(ctx, m)
+
+	case BoardingSweepTxNotification:
+		return a.handleSweepTxNotification(ctx, m)
 
 	default:
 		return fn.Err[WalletResp](
@@ -475,26 +578,56 @@ func (a *Ark) handleGetActiveBoardingAddresses(ctx context.Context,
 	return fn.Ok[WalletResp](resp)
 }
 
-// handleGetBoardingBalance queries all boarding intents and sums their amounts.
+// handleGetBoardingBalance queries boarding intents in their three
+// monitoring-relevant statuses (confirmed / sweep_pending / swept) and
+// sums them. Sweep-pending and swept totals power the
+// boarding_pending_sweep_sat and boarding_swept_sat fields exposed
+// through GetBalance, so dashboards see boarding funds in flight even
+// while a sweep tx awaits confirmation.
 func (a *Ark) handleGetBoardingBalance(ctx context.Context,
 	_ *GetBoardingBalanceRequest) fn.Result[WalletResp] {
 
-	status := BoardingStatusConfirmed
-	intents, err := a.store.FetchBoardingIntentsByStatus(ctx, status)
+	confirmed, err := a.store.FetchBoardingIntentsByStatus(
+		ctx, BoardingStatusConfirmed,
+	)
 	if err != nil {
 		return fn.Err[WalletResp](
-			fmt.Errorf("fetch intents: %w", err),
+			fmt.Errorf("fetch confirmed intents: %w", err),
 		)
 	}
 
-	var totalBalance btcutil.Amount
-	for _, intent := range intents {
-		totalBalance += intent.ChainInfo.Amount
+	pendingSweep, err := a.store.FetchBoardingIntentsByStatus(
+		ctx, BoardingStatusSweepPending,
+	)
+	if err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("fetch sweep-pending intents: %w", err),
+		)
+	}
+
+	swept, err := a.store.FetchBoardingIntentsByStatus(
+		ctx, BoardingStatusSwept,
+	)
+	if err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("fetch swept intents: %w", err),
+		)
+	}
+
+	sumAmounts := func(intents []BoardingIntent) btcutil.Amount {
+		var total btcutil.Amount
+		for _, intent := range intents {
+			total += intent.ChainInfo.Amount
+		}
+
+		return total
 	}
 
 	resp := &GetBoardingBalanceResponse{
-		TotalBalance: totalBalance,
-		UtxoCount:    len(intents),
+		TotalBalance:        sumAmounts(confirmed),
+		UtxoCount:           len(confirmed),
+		PendingSweepBalance: sumAmounts(pendingSweep),
+		SweptBalance:        sumAmounts(swept),
 	}
 
 	return fn.Ok[WalletResp](resp)
@@ -656,6 +789,23 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 		slog.Int("height", int(epoch.Height)),
 		slog.Int("utxo_count", len(lastUtxos)),
 	)
+
+	// Kick a boarding-sweep resume retry on every block-epoch when the
+	// subsystem is enabled. The handler is idempotent: fully-recovered
+	// sweeps short-circuit on the in-memory pendingSweeps lookup (M-4),
+	// so the steady-state cost is one ListPendingBoardingSweeps query
+	// per block. Sweeps that failed to fully recover during the initial
+	// resume (transient chainsource Ask failure, GetIntent error,
+	// txconfirm submit error) get re-attempted here without operator
+	// intervention.
+	if a.boardingSweepEnabled() {
+		err := a.selfRef.Tell(ctx, &ResumeBoardingSweepsRequest{})
+		if err != nil {
+			a.logger(ctx).DebugS(ctx,
+				"Failed to schedule boarding sweep resume "+
+					"retry", err)
+		}
+	}
 
 	// Block epoch handling doesn't require a response.
 	return fn.Ok[WalletResp](nil)

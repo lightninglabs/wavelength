@@ -867,7 +867,7 @@ func (q *Queries) ListPendingBoardingSweeps(ctx context.Context) ([]BoardingSwee
 	return items, nil
 }
 
-const MarkBoardingSweepInputSpentByOutpoint = `-- name: MarkBoardingSweepInputSpentByOutpoint :exec
+const MarkBoardingSweepInputSpentByOutpoint = `-- name: MarkBoardingSweepInputSpentByOutpoint :execrows
 UPDATE boarding_sweep_inputs
 SET status = $3,
     spent_by_txid = $4,
@@ -887,8 +887,8 @@ type MarkBoardingSweepInputSpentByOutpointParams struct {
 	LastUpdateTime int64
 }
 
-func (q *Queries) MarkBoardingSweepInputSpentByOutpoint(ctx context.Context, arg MarkBoardingSweepInputSpentByOutpointParams) error {
-	_, err := q.db.ExecContext(ctx, MarkBoardingSweepInputSpentByOutpoint,
+func (q *Queries) MarkBoardingSweepInputSpentByOutpoint(ctx context.Context, arg MarkBoardingSweepInputSpentByOutpointParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, MarkBoardingSweepInputSpentByOutpoint,
 		arg.OutpointHash,
 		arg.OutpointIndex,
 		arg.Status,
@@ -896,7 +896,10 @@ func (q *Queries) MarkBoardingSweepInputSpentByOutpoint(ctx context.Context, arg
 		arg.SpentHeight,
 		arg.LastUpdateTime,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const MarkBoardingSweepInputStatus = `-- name: MarkBoardingSweepInputStatus :exec

@@ -124,10 +124,11 @@ type BoardingStore interface {
 		arg sqlc.MarkBoardingSweepInputsStatusParams,
 	) error
 
-	MarkBoardingSweepInputSpentByOutpoint(
-		ctx context.Context,
-		arg sqlc.MarkBoardingSweepInputSpentByOutpointParams,
-	) error
+	MarkBoardingSweepInputSpentByOutpoint(ctx context.Context,
+		arg sqlc.MarkBoardingSweepInputSpentByOutpointParams) (
+		int64,
+		error,
+	)
 
 	CountUnresolvedBoardingSweepInputs(ctx context.Context,
 		txid []byte) (int64, error)
@@ -381,9 +382,18 @@ func (b *BoardingWalletStore) FetchBoardingIntentsByStatus(ctx context.Context,
 
 // FetchBoardingIntentsBySweepableStatuses returns all boarding intents in the
 // lifecycle states that can still represent a timeout-path sweep candidate.
+//
+// The current sqlc query accepts exactly three status filters; the wallet
+// actor always supplies confirmed/failed/expired so this guards the input
+// length explicitly rather than padding with an inert value.
 func (b *BoardingWalletStore) FetchBoardingIntentsBySweepableStatuses(
-	ctx context.Context, statuses [3]wallet.BoardingStatus) (
+	ctx context.Context, statuses []wallet.BoardingStatus) (
 	[]wallet.BoardingIntent, error) {
+
+	if len(statuses) != 3 {
+		return nil, fmt.Errorf("expected 3 sweepable statuses, got %d",
+			len(statuses))
+	}
 
 	status0, err := statusToString(statuses[0])
 	if err != nil {

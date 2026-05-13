@@ -1,4 +1,4 @@
-package darepod
+package wallet
 
 import (
 	"bytes"
@@ -18,15 +18,12 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
-	"github.com/lightninglabs/darepo-client/unroll"
-	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
-// testBoardingSweepWallet is a deterministic signer plus wallet-destination
-// test double.
+// testBoardingSweepWallet is a deterministic SweepSigner test double.
 type testBoardingSweepWallet struct{}
 
 // NewWalletPkScript returns a deterministic destination script.
@@ -115,7 +112,7 @@ func (s testBoardingSweepSignature) Verify([]byte, *btcec.PublicKey) bool {
 // testBoardingSweepIntent builds a confirmed boarding intent whose timeout
 // policy matches the stored output script.
 func testBoardingSweepIntent(t *testing.T, amount btcutil.Amount,
-	confHeight int32, exitDelay uint32) wallet.BoardingIntent {
+	confHeight int32, exitDelay uint32) BoardingIntent {
 
 	t.Helper()
 
@@ -159,8 +156,8 @@ func testBoardingSweepIntent(t *testing.T, amount btcutil.Amount,
 		Index: 0,
 	}
 
-	return wallet.BoardingIntent{
-		Address: wallet.BoardingAddress{
+	return BoardingIntent{
+		Address: BoardingAddress{
 			Address:     address,
 			Tapscript:   tapscript,
 			OperatorKey: operatorPrivKey.PubKey(),
@@ -170,13 +167,13 @@ func testBoardingSweepIntent(t *testing.T, amount btcutil.Amount,
 			},
 		},
 		Outpoint: outpoint,
-		ChainInfo: wallet.BoardingChainInfo{
+		ChainInfo: BoardingChainInfo{
 			ConfHeight: confHeight,
 			ConfTx:     confTx,
 			OutPoint:   outpoint,
 			Amount:     amount,
 		},
-		Status: wallet.BoardingStatusConfirmed,
+		Status: BoardingStatusConfirmed,
 	}
 }
 
@@ -196,7 +193,7 @@ func TestBuildBoardingSweepTx(t *testing.T) {
 	intent2 := testBoardingSweepIntent(t, amountSat*2, 100, exitDelay)
 
 	sweep, err := buildBoardingSweepTx(
-		&testBoardingSweepWallet{}, []wallet.BoardingIntent{
+		&testBoardingSweepWallet{}, []BoardingIntent{
 			intent1, intent2,
 		}, []byte{txscript.OP_TRUE}, feeRateSatPerByte,
 	)
@@ -204,13 +201,13 @@ func TestBuildBoardingSweepTx(t *testing.T) {
 	require.NotNil(t, sweep)
 
 	require.Equal(
-		t, btcutil.Amount(feeRateSatPerByte*sweep.vbytes), sweep.fee,
+		t, btcutil.Amount(feeRateSatPerByte*sweep.VBytes), sweep.Fee,
 	)
 
-	tx := sweep.tx
+	tx := sweep.Tx
 	require.Equal(t, int32(arktx.TxVersion), tx.Version)
 	require.Len(t, tx.TxIn, 2)
-	require.Len(t, tx.TxOut, 1)
+	require.Len(t, tx.TxOut, 2)
 	require.Equal(t, intent1.Outpoint, tx.TxIn[0].PreviousOutPoint)
 	require.Equal(t, intent2.Outpoint, tx.TxIn[1].PreviousOutPoint)
 	require.Equal(
@@ -220,9 +217,22 @@ func TestBuildBoardingSweepTx(t *testing.T) {
 	require.NotEmpty(t, tx.TxIn[0].Witness)
 	require.NotEmpty(t, tx.TxIn[1].Witness)
 	require.Equal(
-		t, int64(amountSat*3-sweep.fee), tx.TxOut[0].Value,
+		t, int64(amountSat*3-sweep.Fee)-boardingSweepAnchorValue,
+		tx.TxOut[0].Value,
 	)
 	require.Equal(t, []byte{txscript.OP_TRUE}, tx.TxOut[0].PkScript)
+
+	// The P2A anchor must be the last output. The value is intentionally
+	// above the BIP-433 P2A dust threshold (240 sats) rather than zero —
+	// a zero-value (ephemeral) anchor combined with this parent's
+	// non-zero fee would be rejected by the ephemeral-dust rule. We
+	// compare the pkScript directly instead of using arktx.IsAnchorOutput
+	// because that helper gates on Value == 0 (it identifies the
+	// ephemeral-anchor pattern, not every P2A output).
+	require.Equal(t, boardingSweepAnchorValue, tx.TxOut[1].Value)
+	require.Equal(
+		t, arkscript.AnchorPkScript, tx.TxOut[1].PkScript,
+	)
 }
 
 // TestBoardingSweepTargetOutputRejectsMismatchedTx verifies that a persisted
@@ -255,9 +265,8 @@ func TestBoardingSweepTargetOutputRejectsMismatchedScript(t *testing.T) {
 func TestBuildBoardingSweepTxRejectsTooManyInputs(t *testing.T) {
 	t.Parallel()
 
-	intents := make(
-		[]wallet.BoardingIntent, 0, defaultBoardingSweepMaxInputs+1,
-	)
+	intents := make([]BoardingIntent, 0,
+		defaultBoardingSweepMaxInputs+1)
 	for i := 0; i <= defaultBoardingSweepMaxInputs; i++ {
 		intent := testBoardingSweepIntent(t, 50_000, 100, 10)
 		intent.ChainInfo.ConfTx.LockTime = uint32(i)
@@ -281,7 +290,7 @@ func TestBuildBoardingSweepTxRejectsExcessiveFee(t *testing.T) {
 	intent := testBoardingSweepIntent(t, 50_000, 100, 10)
 
 	_, err := buildBoardingSweepTx(
-		&testBoardingSweepWallet{}, []wallet.BoardingIntent{intent},
+		&testBoardingSweepWallet{}, []BoardingIntent{intent},
 		[]byte{txscript.OP_TRUE}, 10_000,
 	)
 	require.ErrorContains(t, err, "sweep fee")
@@ -314,16 +323,16 @@ func TestBoardingSweepPkScript(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	wallet := &testBoardingSweepWallet{}
+	signer := &testBoardingSweepWallet{}
 
 	walletScript, err := boardingSweepPkScript(
-		ctx, wallet, &chaincfg.RegressionNetParams, "", true,
+		ctx, signer, &chaincfg.RegressionNetParams, "", true,
 	)
 	require.NoError(t, err)
 	require.Equal(t, []byte{txscript.OP_TRUE}, walletScript)
 
 	previewScript, err := boardingSweepPkScript(
-		ctx, wallet, &chaincfg.RegressionNetParams, "", false,
+		ctx, signer, &chaincfg.RegressionNetParams, "", false,
 	)
 	require.NoError(t, err)
 	require.Len(t, previewScript, 34)
@@ -337,7 +346,7 @@ func TestBoardingSweepPkScript(t *testing.T) {
 	require.NoError(t, err)
 
 	addrScript, err := boardingSweepPkScript(
-		ctx, wallet, &chaincfg.RegressionNetParams, addr.String(),
+		ctx, signer, &chaincfg.RegressionNetParams, addr.String(),
 		false,
 	)
 	require.NoError(t, err)
@@ -356,11 +365,12 @@ func TestBoardingSweepPkScript(t *testing.T) {
 
 	mainnetAddrString := mainnetAddr.String()
 	_, err = boardingSweepPkScript(
-		ctx, wallet, &chaincfg.RegressionNetParams, mainnetAddrString,
+		ctx, signer, &chaincfg.RegressionNetParams, mainnetAddrString,
 		false,
 	)
 	require.ErrorContains(t, err, "wrong network")
 }
 
-var _ unroll.SweepWallet = (*testBoardingSweepWallet)(nil)
+// Compile-time assertions that the test wallet satisfies SweepSigner.
+var _ SweepSigner = (*testBoardingSweepWallet)(nil)
 var _ input.Signature = testBoardingSweepSignature{}

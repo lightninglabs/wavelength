@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/ledger"
+	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/stretchr/testify/require"
 )
 
@@ -89,7 +90,7 @@ func insertTransactionHistorySweepRow(t *testing.T, db *BaseDB, txid []byte,
 
 	_, err := db.ExecContext(
 		t.Context(), query, txid, []byte{0x01}, "bcrt1test", amount,
-		fee, int64(2), int64(120), BoardingSweepStatusPublished,
+		fee, int64(2), int64(120), wallet.BoardingSweepStatusPublished,
 		int32(700), createdAt,
 	)
 	require.NoError(t, err)

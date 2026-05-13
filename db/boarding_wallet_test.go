@@ -152,7 +152,7 @@ func createSweepStoreIntentWithSeed(t *testing.T, store *BoardingWalletStore,
 
 // dbSweepInputStatus returns the only input status in a one-input sweep test.
 func dbSweepInputStatus(t *testing.T,
-	inputs []BoardingSweepInputRecord) string {
+	inputs []wallet.BoardingSweepInputRecord) string {
 
 	t.Helper()
 
@@ -504,7 +504,7 @@ func TestBoardingSweepStoreTracksPendingAndResolved(t *testing.T) {
 	})
 	sweepTxid := sweepTx.TxHash()
 
-	err := store.CreatePendingBoardingSweep(ctx, NewBoardingSweep{
+	err := store.CreatePendingBoardingSweep(ctx, wallet.NewBoardingSweep{
 		Tx:                 sweepTx,
 		DestinationAddress: "bcrt1test",
 		TotalAmount:        intent.ChainInfo.Amount,
@@ -512,7 +512,7 @@ func TestBoardingSweepStoreTracksPendingAndResolved(t *testing.T) {
 		FeeRateSatPerVByte: 2,
 		VBytes:             250,
 		CreatedHeight:      200,
-		Inputs: []NewBoardingSweepInput{{
+		Inputs: []wallet.NewBoardingSweepInput{{
 			Outpoint:       intent.Outpoint,
 			Amount:         intent.ChainInfo.Amount,
 			PreviousStatus: intent.Status,
@@ -529,7 +529,7 @@ func TestBoardingSweepStoreTracksPendingAndResolved(t *testing.T) {
 	require.Len(t, pending, 1)
 	require.Equal(
 		t, dbSweepInputStatus(t, pending[0].Inputs),
-		BoardingSweepInputStatusPending,
+		wallet.BoardingSweepInputStatusPending,
 	)
 	require.Equal(t, btcutil.Amount(500), pending[0].FeeAmount)
 	require.Equal(t, int64(250), pending[0].VBytes)
@@ -542,7 +542,7 @@ func TestBoardingSweepStoreTracksPendingAndResolved(t *testing.T) {
 	require.Equal(t, int64(2), allSweeps[0].FeeRateSatPerVByte)
 
 	filteredSweeps, err := store.ListBoardingSweeps(
-		ctx, BoardingSweepStatusPublished, 10, 0,
+		ctx, wallet.BoardingSweepStatusPublished, 10, 0,
 	)
 	require.NoError(t, err)
 	require.Empty(t, filteredSweeps)
@@ -551,7 +551,7 @@ func TestBoardingSweepStoreTracksPendingAndResolved(t *testing.T) {
 	require.NoError(t, err)
 
 	filteredSweeps, err = store.ListBoardingSweeps(
-		ctx, BoardingSweepStatusPublished, 10, 0,
+		ctx, wallet.BoardingSweepStatusPublished, 10, 0,
 	)
 	require.NoError(t, err)
 	require.Len(t, filteredSweeps, 1)
@@ -561,7 +561,7 @@ func TestBoardingSweepStoreTracksPendingAndResolved(t *testing.T) {
 	require.Len(t, pending, 1)
 	require.Equal(
 		t, dbSweepInputStatus(t, pending[0].Inputs),
-		BoardingSweepInputStatusPublished,
+		wallet.BoardingSweepInputStatusPublished,
 	)
 
 	resolved, err := store.MarkBoardingSweepInputSpent(
@@ -575,14 +575,14 @@ func TestBoardingSweepStoreTracksPendingAndResolved(t *testing.T) {
 	require.Empty(t, pending)
 
 	filteredSweeps, err = store.ListBoardingSweeps(
-		ctx, BoardingSweepStatusConfirmed, 10, 0,
+		ctx, wallet.BoardingSweepStatusConfirmed, 10, 0,
 	)
 	require.NoError(t, err)
 	require.Len(t, filteredSweeps, 1)
 	require.True(t, filteredSweeps[0].ConfirmedHeight.Valid)
 	require.Equal(t, int32(222), filteredSweeps[0].ConfirmedHeight.Int32)
 	require.Equal(
-		t, BoardingSweepInputStatusSpent,
+		t, wallet.BoardingSweepInputStatusSpent,
 		dbSweepInputStatus(t, filteredSweeps[0].Inputs),
 	)
 
@@ -610,7 +610,7 @@ func TestBoardingSweepFailedRestoresIntent(t *testing.T) {
 	})
 	sweepTxid := sweepTx.TxHash()
 
-	err := store.CreatePendingBoardingSweep(ctx, NewBoardingSweep{
+	err := store.CreatePendingBoardingSweep(ctx, wallet.NewBoardingSweep{
 		Tx:                 sweepTx,
 		DestinationAddress: "",
 		TotalAmount:        intent.ChainInfo.Amount,
@@ -618,7 +618,7 @@ func TestBoardingSweepFailedRestoresIntent(t *testing.T) {
 		FeeRateSatPerVByte: 2,
 		VBytes:             250,
 		CreatedHeight:      200,
-		Inputs: []NewBoardingSweepInput{{
+		Inputs: []wallet.NewBoardingSweepInput{{
 			Outpoint:       intent.Outpoint,
 			Amount:         intent.ChainInfo.Amount,
 			PreviousStatus: intent.Status,
@@ -655,14 +655,14 @@ func TestBoardingSweepExternalSpendResolvesSeparately(t *testing.T) {
 	})
 	sweepTxid := sweepTx.TxHash()
 
-	err := store.CreatePendingBoardingSweep(ctx, NewBoardingSweep{
+	err := store.CreatePendingBoardingSweep(ctx, wallet.NewBoardingSweep{
 		Tx:                 sweepTx,
 		TotalAmount:        intent.ChainInfo.Amount,
 		FeeAmount:          500,
 		FeeRateSatPerVByte: 2,
 		VBytes:             250,
 		CreatedHeight:      200,
-		Inputs: []NewBoardingSweepInput{{
+		Inputs: []wallet.NewBoardingSweepInput{{
 			Outpoint:       intent.Outpoint,
 			Amount:         intent.ChainInfo.Amount,
 			PreviousStatus: intent.Status,
@@ -679,18 +679,18 @@ func TestBoardingSweepExternalSpendResolvesSeparately(t *testing.T) {
 	require.NotEqual(t, sweepTxid, externalTxid)
 
 	external, err := store.ListBoardingSweeps(
-		ctx, BoardingSweepStatusExternalResolved, 10, 0,
+		ctx, wallet.BoardingSweepStatusExternalResolved, 10, 0,
 	)
 	require.NoError(t, err)
 	require.Len(t, external, 1)
 	require.Equal(
-		t, BoardingSweepInputStatusExternalSpent,
+		t, wallet.BoardingSweepInputStatusExternalSpent,
 		dbSweepInputStatus(t, external[0].Inputs),
 	)
 	require.Equal(t, int32(333), external[0].ConfirmedHeight.Int32)
 
 	confirmed, err := store.ListBoardingSweeps(
-		ctx, BoardingSweepStatusConfirmed, 10, 0,
+		ctx, wallet.BoardingSweepStatusConfirmed, 10, 0,
 	)
 	require.NoError(t, err)
 	require.Empty(t, confirmed)
@@ -712,14 +712,14 @@ func TestActiveBoardingSweepInputUnique(t *testing.T) {
 		PkScript: []byte{txscript.OP_TRUE},
 	})
 
-	err := store.CreatePendingBoardingSweep(ctx, NewBoardingSweep{
+	err := store.CreatePendingBoardingSweep(ctx, wallet.NewBoardingSweep{
 		Tx:                 firstTx,
 		TotalAmount:        intent.ChainInfo.Amount,
 		FeeAmount:          1_000,
 		FeeRateSatPerVByte: 2,
 		VBytes:             250,
 		CreatedHeight:      200,
-		Inputs: []NewBoardingSweepInput{{
+		Inputs: []wallet.NewBoardingSweepInput{{
 			Outpoint:       intent.Outpoint,
 			Amount:         intent.ChainInfo.Amount,
 			PreviousStatus: intent.Status,
@@ -735,14 +735,14 @@ func TestActiveBoardingSweepInputUnique(t *testing.T) {
 	})
 	secondTx.LockTime = 1
 
-	err = store.CreatePendingBoardingSweep(ctx, NewBoardingSweep{
+	err = store.CreatePendingBoardingSweep(ctx, wallet.NewBoardingSweep{
 		Tx:                 secondTx,
 		TotalAmount:        intent.ChainInfo.Amount,
 		FeeAmount:          2_000,
 		FeeRateSatPerVByte: 2,
 		VBytes:             250,
 		CreatedHeight:      201,
-		Inputs: []NewBoardingSweepInput{{
+		Inputs: []wallet.NewBoardingSweepInput{{
 			Outpoint:       intent.Outpoint,
 			Amount:         intent.ChainInfo.Amount,
 			PreviousStatus: intent.Status,
@@ -771,19 +771,21 @@ func TestListBoardingSweepsPaginates(t *testing.T) {
 		})
 		sweepTx.LockTime = uint32(i)
 
-		err := store.CreatePendingBoardingSweep(ctx, NewBoardingSweep{
-			Tx:                 sweepTx,
-			TotalAmount:        intent.ChainInfo.Amount,
-			FeeAmount:          1_000,
-			FeeRateSatPerVByte: 2,
-			VBytes:             250,
-			CreatedHeight:      int32(200 + i),
-			Inputs: []NewBoardingSweepInput{{
-				Outpoint:       intent.Outpoint,
-				Amount:         intent.ChainInfo.Amount,
-				PreviousStatus: intent.Status,
-			}},
-		})
+		err := store.CreatePendingBoardingSweep(
+			ctx, wallet.NewBoardingSweep{
+				Tx:                 sweepTx,
+				TotalAmount:        intent.ChainInfo.Amount,
+				FeeAmount:          1_000,
+				FeeRateSatPerVByte: 2,
+				VBytes:             250,
+				CreatedHeight:      int32(200 + i),
+				Inputs: []wallet.NewBoardingSweepInput{{
+					Outpoint:       intent.Outpoint,
+					Amount:         intent.ChainInfo.Amount,
+					PreviousStatus: intent.Status,
+				}},
+			},
+		)
 		require.NoError(t, err)
 	}
 

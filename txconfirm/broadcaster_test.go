@@ -19,7 +19,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/darepo-client/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -66,12 +66,12 @@ type failingWallet struct {
 	changeErr    error
 	finalizeErr  error
 	changeScript []byte
-	utxos        []*wallet.Utxo
+	utxos        []*walletcore.Utxo
 }
 
 // ListUnspent returns the configured result.
 func (w *failingWallet) ListUnspent(_ context.Context, _, _ int32) (
-	[]*wallet.Utxo, error) {
+	[]*walletcore.Utxo, error) {
 
 	return w.utxos, w.listErr
 }
@@ -93,14 +93,14 @@ func (w *failingWallet) FinalizePsbt(_ context.Context, _ []byte) (*wire.MsgTx,
 }
 
 // LeaseOutput is a noop for the failing wallet test double.
-func (w *failingWallet) LeaseOutput(_ context.Context, _ wallet.LockID,
+func (w *failingWallet) LeaseOutput(_ context.Context, _ walletcore.LockID,
 	_ wire.OutPoint, expiry time.Duration) (time.Time, error) {
 
 	return time.Now().Add(expiry), nil
 }
 
 // ReleaseOutput is a noop for the failing wallet test double.
-func (w *failingWallet) ReleaseOutput(_ context.Context, _ wallet.LockID,
+func (w *failingWallet) ReleaseOutput(_ context.Context, _ walletcore.LockID,
 	_ wire.OutPoint) error {
 
 	return nil
@@ -113,7 +113,7 @@ func (w *failingWallet) ReleaseOutput(_ context.Context, _ wallet.LockID,
 // finalized transactions whose input composition does not round-trip the
 // requested PSBT (reordered inputs, added inputs, substituted outpoints).
 type rewritingWallet struct {
-	utxos        []*wallet.Utxo
+	utxos        []*walletcore.Utxo
 	changeScript []byte
 
 	// rewrite, when non-nil, receives the default finalized tx and
@@ -130,7 +130,7 @@ type rewritingWallet struct {
 
 // ListUnspent returns the configured UTXOs.
 func (w *rewritingWallet) ListUnspent(_ context.Context, _, _ int32) (
-	[]*wallet.Utxo, error) {
+	[]*walletcore.Utxo, error) {
 
 	return w.utxos, nil
 }
@@ -181,14 +181,14 @@ func (w *rewritingWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
 }
 
 // LeaseOutput is a noop for the rewriting wallet test double.
-func (w *rewritingWallet) LeaseOutput(_ context.Context, _ wallet.LockID,
+func (w *rewritingWallet) LeaseOutput(_ context.Context, _ walletcore.LockID,
 	_ wire.OutPoint, expiry time.Duration) (time.Time, error) {
 
 	return time.Now().Add(expiry), nil
 }
 
 // ReleaseOutput is a noop for the rewriting wallet test double.
-func (w *rewritingWallet) ReleaseOutput(_ context.Context, _ wallet.LockID,
+func (w *rewritingWallet) ReleaseOutput(_ context.Context, _ walletcore.LockID,
 	_ wire.OutPoint) error {
 
 	return nil
@@ -205,8 +205,8 @@ type blockingReleaseWallet struct {
 }
 
 // ReleaseOutput blocks until the test closes unblock.
-func (w *blockingReleaseWallet) ReleaseOutput(context.Context, wallet.LockID,
-	wire.OutPoint) error {
+func (w *blockingReleaseWallet) ReleaseOutput(context.Context,
+	walletcore.LockID, wire.OutPoint) error {
 
 	w.startOnce.Do(func() {
 		close(w.started)
@@ -671,7 +671,7 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 		broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
 			Wallet: &fakeWallet{
-				utxos: []*wallet.Utxo{makeWalletUTXO(t)},
+				utxos: []*walletcore.Utxo{makeWalletUTXO(t)},
 			},
 		})
 
@@ -760,7 +760,7 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 		broadcaster = NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
 			Wallet: &failingWallet{
-				utxos: []*wallet.Utxo{makeWalletUTXO(t)},
+				utxos: []*walletcore.Utxo{makeWalletUTXO(t)},
 			},
 		})
 		_, err = broadcaster.deriveChangePkScript(t.Context())
@@ -792,7 +792,9 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 		broadcaster = NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
 			Wallet: &failingWallet{
-				utxos:        []*wallet.Utxo{makeWalletUTXO(t)},
+				utxos: []*walletcore.Utxo{
+					makeWalletUTXO(t),
+				},
 				changeScript: p2trTestPkScript(t),
 				finalizeErr:  fmt.Errorf("finalize failed"),
 			},
@@ -823,7 +825,7 @@ func TestFeeOutpointReleasedOnCPFPFallback(t *testing.T) {
 	broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
 		ChainSource: chain,
 		Wallet: &failingWallet{
-			utxos:        []*wallet.Utxo{utxo},
+			utxos:        []*walletcore.Utxo{utxo},
 			changeScript: p2trTestPkScript(t),
 			finalizeErr:  fmt.Errorf("finalize failed"),
 		},
@@ -878,7 +880,7 @@ func TestFeeOutpointReleasedOnPreflightFailure(t *testing.T) {
 	broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
 		ChainSource: chain,
 		Wallet: &fakeWallet{
-			utxos: []*wallet.Utxo{makeWalletUTXO(t)},
+			utxos: []*walletcore.Utxo{makeWalletUTXO(t)},
 		},
 		PreSubmitTestMempoolAccept: true,
 	})
@@ -913,7 +915,7 @@ func TestWalletLeaseOutputLifecycle(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	chain.feeRate = 5
 	wlt := &fakeWallet{
-		utxos: []*wallet.Utxo{
+		utxos: []*walletcore.Utxo{
 			makeWalletUTXO(t),
 		},
 	}
@@ -1354,7 +1356,7 @@ func TestPreflightTestMempoolAccept(t *testing.T) {
 			}, nil
 		}
 		wallet := &fakeWallet{
-			utxos: []*wallet.Utxo{
+			utxos: []*walletcore.Utxo{
 				makeWalletUTXO(t),
 			},
 		}
@@ -1485,7 +1487,9 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 		utxo := makeWalletUTXO(t)
 		b := NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
-			Wallet:      &fakeWallet{utxos: []*wallet.Utxo{utxo}},
+			Wallet: &fakeWallet{
+				utxos: []*walletcore.Utxo{utxo},
+			},
 		})
 
 		parent := makeTestTx(true)
@@ -1522,7 +1526,7 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			b := NewCPFPBroadcaster(BroadcasterConfig{
 				ChainSource: chain,
 				Wallet: &fakeWallet{
-					utxos: []*wallet.Utxo{utxo},
+					utxos: []*walletcore.Utxo{utxo},
 				},
 			})
 
@@ -1561,7 +1565,7 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			b := NewCPFPBroadcaster(BroadcasterConfig{
 				ChainSource: chain,
 				Wallet: &fakeWallet{
-					utxos: []*wallet.Utxo{utxo},
+					utxos: []*walletcore.Utxo{utxo},
 				},
 			})
 
@@ -1597,7 +1601,7 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			b := NewCPFPBroadcaster(BroadcasterConfig{
 				ChainSource: chain,
 				Wallet: &fakeWallet{
-					utxos: []*wallet.Utxo{utxo},
+					utxos: []*walletcore.Utxo{utxo},
 				},
 			})
 
@@ -1638,9 +1642,8 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			secondUTXO.Outpoint.Hash = chainhash.Hash{3}
 
 			testWallet := &fakeWallet{
-				utxos: []*wallet.Utxo{
-					firstUTXO,
-					secondUTXO,
+				utxos: []*walletcore.Utxo{
+					firstUTXO, secondUTXO,
 				},
 			}
 			b := NewCPFPBroadcaster(BroadcasterConfig{
@@ -1663,7 +1666,7 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 			// mempool. The next bump must still rebuild a child
 			// spending that same reserved outpoint instead of
 			// consuming another confirmed wallet UTXO.
-			testWallet.utxos = []*wallet.Utxo{secondUTXO}
+			testWallet.utxos = []*walletcore.Utxo{secondUTXO}
 
 			result2, err := b.Submit(t.Context(), 101,
 				&BroadcastRequest{
@@ -1733,7 +1736,7 @@ func TestUsedFeeOutpointsKeyedByParent(t *testing.T) {
 //     starts from the estimator again.
 func TestCPFPBroadcasterFeeBumpReplacementFloor(t *testing.T) {
 	newBroadcaster := func(chain *fakeChainSourceRef) *CPFPBroadcaster {
-		largeUTXO := &wallet.Utxo{
+		largeUTXO := &walletcore.Utxo{
 			Outpoint: wire.OutPoint{
 				Hash: chainhash.Hash{
 					2,
@@ -1747,7 +1750,7 @@ func TestCPFPBroadcasterFeeBumpReplacementFloor(t *testing.T) {
 		return NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: chain,
 			Wallet: &fakeWallet{
-				utxos: []*wallet.Utxo{largeUTXO},
+				utxos: []*walletcore.Utxo{largeUTXO},
 			},
 			IncrementalRelayFeeSatPerVByte: 1,
 		})
@@ -1867,7 +1870,7 @@ func TestSignCPFPChildHandlesWalletInputRewrites(t *testing.T) {
 	t.Run("reordered inputs still succeed", func(t *testing.T) {
 		chain := newFakeChainSourceRef(100)
 		swap := &rewritingWallet{
-			utxos: []*wallet.Utxo{
+			utxos: []*walletcore.Utxo{
 				makeWalletUTXO(t),
 			},
 			changeScript: p2trTestPkScript(t),
@@ -1897,7 +1900,7 @@ func TestSignCPFPChildHandlesWalletInputRewrites(t *testing.T) {
 	t.Run("wallet adding extra input fails cleanly", func(t *testing.T) {
 		chain := newFakeChainSourceRef(100)
 		extra := &rewritingWallet{
-			utxos: []*wallet.Utxo{
+			utxos: []*walletcore.Utxo{
 				makeWalletUTXO(t),
 			},
 			changeScript: p2trTestPkScript(t),
@@ -1947,7 +1950,7 @@ func TestSignCPFPChildHandlesWalletInputRewrites(t *testing.T) {
 			Index: 7,
 		}
 		rename := &rewritingWallet{
-			utxos: []*wallet.Utxo{
+			utxos: []*walletcore.Utxo{
 				makeWalletUTXO(t),
 			},
 			changeScript: p2trTestPkScript(t),
@@ -2018,7 +2021,7 @@ func TestSignCPFPChildSetsFeeInputSighash(t *testing.T) {
 
 			var got txscript.SigHashType
 			wallet := &rewritingWallet{
-				utxos: []*wallet.Utxo{
+				utxos: []*walletcore.Utxo{
 					feeUTXO,
 				},
 				changeScript: p2trTestPkScript(t),

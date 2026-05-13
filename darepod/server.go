@@ -252,6 +252,12 @@ type Server struct {
 	// the ledger actor; this field is for queries only.
 	ledgerStore *db.LedgerStoreDB
 
+	// boardingSweepStore exposes the boarding-sweep DB adapter for
+	// read-only RPC handlers (ListBoardingSweeps). All mutating writes
+	// happen inside the wallet actor; this field is for pure CRUD reads
+	// so the RPC layer does not need to take an actor mailbox hop.
+	boardingSweepStore *db.BoardingWalletStore
+
 	// vtxoMgrRef is the VTXO manager actor ref used by the RPC
 	// layer to route manual unroll through the VTXO lifecycle.
 	vtxoMgrRef fn.Option[actor.ActorRef[
@@ -274,11 +280,6 @@ type Server struct {
 		unroll.RegistryMsg, unroll.RegistryResp,
 	]]
 	unrollRegistry *unroll.UnrollRegistryActor
-
-	// boardingSweepWatcher resumes and reconciles published boarding
-	// timeout sweeps until their tracked outpoints are confirmed spent.
-	boardingSweepWatcherMu sync.RWMutex
-	boardingSweepWatcher   *boardingSweepWatcher
 
 	// lazyChainResolver is the forwarding ref that connects the
 	// VTXO manager's critical-expiry path to the unroll manager.
@@ -746,10 +747,6 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 			s.unrollRegistry.Stop()
 		}
 
-		if watcher := s.getBoardingSweepWatcher(); watcher != nil {
-			watcher.Stop()
-		}
-
 		if s.oorSigningEffect != nil {
 			//nolint:contextcheck // bounded shutdown
 			err := s.oorSigningEffect.StopAndWait(shutdownCtx)
@@ -1018,10 +1015,6 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 	chainSourceRef actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	], timeoutRef actor.TellOnlyRef[timeout.Msg]) error {
-
-	if err := s.startBoardingSweepWatcher(ctx); err != nil {
-		return err
-	}
 
 	if err := s.connectAndBootstrapMailbox(ctx); err != nil {
 		return err
@@ -1791,13 +1784,51 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	}
 
 	// -------------------------------------------------------
-	// 13. Register the OOR client actor.
+	// 13. Resume persisted boarding sweeps now that txconfirm has
+	//     registered with the receptionist. Asking from here (not
+	//     from inside wallet.Ark.Start) closes the race where the
+	//     wallet would otherwise dispatch its own resume before
+	//     txconfirm.LookupRef can resolve, silently orphaning every
+	//     in-flight sweep across the restart boundary.
+	// -------------------------------------------------------
+	if err := s.resumeBoardingSweeps(ctx, walletRef); err != nil {
+		s.log.WarnS(ctx, "Failed to resume persisted boarding sweeps",
+			err,
+		)
+	}
+
+	// -------------------------------------------------------
+	// 14. Register the OOR client actor.
 	// -------------------------------------------------------
 	if err := s.initOORActor(ctx, vtxoManagerRef); err != nil {
 		return err
 	}
 
 	s.log.InfoS(ctx, "Wallet-dependent actors started")
+
+	return nil
+}
+
+// resumeBoardingSweeps Asks the wallet actor to re-arm chainsource spend
+// watches and re-submit each persisted pending boarding sweep to the
+// txconfirm broadcaster. Called once during startup, after both the wallet
+// actor and the txconfirm broadcaster are registered, so the wallet's
+// resume handler can resolve txconfirm via the receptionist without
+// racing.
+//
+// A failure here does not block daemon startup: the resume handler logs
+// per-sweep failures and the operator can issue a fresh sweep RPC if
+// recovery is needed. Returning the error lets the caller decide whether
+// to surface it.
+func (s *Server) resumeBoardingSweeps(ctx context.Context,
+	walletRef actor.ActorRef[wallet.WalletMsg, wallet.WalletResp]) error {
+
+	future := walletRef.Ask(ctx, &wallet.ResumeBoardingSweepsRequest{})
+	result := future.Await(ctx)
+	if result.IsErr() {
+		return fmt.Errorf("ask resume boarding sweeps: %w",
+			result.Err())
+	}
 
 	return nil
 }
@@ -2985,6 +3016,22 @@ func (s *Server) initWalletActor(ctx context.Context,
 		}, nil
 	})
 
+	// The boarding-sweep adapter doubles as both the SweepSigner used
+	// by the wallet actor and the unroll.SweepWallet used by the
+	// unilateral-exit registry. It is also reused as the txconfirm
+	// Wallet inside initUnrollSubsystem, so the lndUnrollWallet /
+	// lwUnrollWallet / btcwUnrollWallet selection is identical.
+	sweepSigner, err := s.newSweepWallet()
+	if err != nil {
+		var zero actor.ActorRef[
+			wallet.WalletMsg, wallet.WalletResp,
+		]
+
+		return zero, fmt.Errorf("unable to build boarding sweep "+
+			"signer: %w", err)
+	}
+
+	s.boardingSweepStore = s.newBoardingStore()
 	walletActor := wallet.NewArk(
 		boardingBackend, boardingStore, vtxoReader, chainSourceRef,
 		s.actorSystem,
@@ -2992,6 +3039,9 @@ func (s *Server) initWalletActor(ctx context.Context,
 			ledger.NewSink(s.actorSystem),
 		),
 		s.subLogger(wallet.Subsystem),
+		wallet.WithBoardingSweep(
+			s.boardingSweepStore, sweepSigner, s.chainParams,
+		),
 	)
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,
@@ -4115,13 +4165,10 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		MaxFeeRateSatPerVByte: s.unrollMaxFeeRate(),
 		FeeBumpIntervalBlocks: s.unrollBumpAfterBlocks(),
 	})
-	txConfirmKey := actor.NewServiceKey[
-		txconfirm.Msg, txconfirm.Resp,
-	](
-		"txconfirm",
-	)
+	txConfirmKey := txconfirm.NewServiceKey()
 	txConfirmRef := actor.RegisterWithSystem(
-		s.actorSystem, "txconfirm", txConfirmKey, txConfirm,
+		s.actorSystem, txconfirm.ServiceKeyName, txConfirmKey,
+		txConfirm,
 	)
 	txConfirm.SetSelfRef(txConfirmRef)
 
