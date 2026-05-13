@@ -14,6 +14,7 @@ import (
 	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/darepo-client/internal/indexerlimits"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -603,6 +604,12 @@ func (c *Client) BuildListVTXOsByScriptsTaprootRequest(ctx context.Context,
 		slog.Int("after_cursor_len", len(afterCursor)),
 		slog.Int("limit", int(limit)),
 		slog.Int("status_filter_count", len(statusFilter)))
+
+	if err := indexerlimits.ValidateVTXOsByScriptsCursor(
+		afterCursor,
+	); err != nil {
+		return nil, fmt.Errorf("after cursor: %w", err)
+	}
 
 	scriptScopes, err := c.buildTaprootScopes(
 		ctx, scopes, purposeListVTXOsByScripts,

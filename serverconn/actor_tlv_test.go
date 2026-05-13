@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/internal/indexerlimits"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -267,6 +268,33 @@ func TestSendListVTXOsByScriptsRequest_TLVRoundTrip(t *testing.T) {
 	require.NotEmpty(t, decoded.IdempotencyKey)
 }
 
+// TestSendListVTXOsByScriptsRequest_EncodeRejectsOversizedCursor verifies the
+// durable query encoder refuses attacker-sized opaque cursors.
+func TestSendListVTXOsByScriptsRequest_EncodeRejectsOversizedCursor(
+	t *testing.T) {
+
+	t.Parallel()
+
+	req := &SendListVTXOsByScriptsRequest{
+		PkScripts: [][]byte{
+			{
+				0x51,
+				0x20,
+				0x01,
+			},
+		},
+		AfterCursor: make(
+			[]byte, indexerlimits.MaxVTXOsByScriptsCursorBytes+1,
+		),
+		Limit:         128,
+		CorrelationID: "corr-vtxo-query",
+	}
+
+	var encoded bytes.Buffer
+	err := req.Encode(&encoded)
+	require.ErrorContains(t, err, "after cursor: vtxo cursor length")
+}
+
 // TestSendListVTXOsByScriptsRequest_DecodesLegacyZeroCursor verifies an old
 // durable uint64(0) cursor can still replay as the empty keyset cursor.
 func TestSendListVTXOsByScriptsRequest_DecodesLegacyZeroCursor(t *testing.T) {
@@ -330,6 +358,19 @@ func TestNormalizeVTXOAfterCursorRejectsLegacyNonZero(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, []byte("cursor-11"), cursor)
+}
+
+// TestNormalizeVTXOAfterCursorRejectsOversizedCursor verifies durable replay
+// rejects an oversized opaque cursor before copying it into actor state.
+func TestNormalizeVTXOAfterCursorRejectsOversizedCursor(t *testing.T) {
+	t.Parallel()
+
+	_, err := normalizeVTXOAfterCursor(
+		0, false,
+		make([]byte, indexerlimits.MaxVTXOsByScriptsCursorBytes+1),
+		true,
+	)
+	require.ErrorContains(t, err, "after cursor: vtxo cursor length")
 }
 
 // TestServerConnMessageMetadata verifies static message metadata methods.
