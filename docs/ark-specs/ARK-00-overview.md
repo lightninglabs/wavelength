@@ -356,22 +356,50 @@ Participants do NOT need to trust the operator to:
 
 ### Preconfirmed VTXO Trust
 
-Recipients of preconfirmed VTXOs (from OOR transactions) have additional trust considerations compared to confirmed VTXOs:
+Recipients of preconfirmed VTXOs (from OOR transactions) have
+additional considerations compared to confirmed VTXOs. The v1
+fraud-response protocol (ARK-04) protects the recipient cooperatively
+between the operator and the recipient themselves:
 
-1. **Sender Trust**: The sender could attempt to double-spend by unilaterally broadcasting the original VTXO. However, the operator holds checkpoint transactions that can be broadcast to reclaim the funds.
-2. **Monitoring Requirement**: If the recipient is not the owner of the confirmed-parent VTXOs in the chain, they should monitor the chain for parent VTXT confirmations and potentially manage checkpoint transaction broadcasts if the operator is offline.
+1. **Sender double-spend**: The sender could attempt to double-spend
+   by unilaterally broadcasting the originating VTXO. The operator
+   and the recipient run parallel fraud-response paths to defeat this
+   attempt; see ARK-04 [Fraud Response Protocol].
+2. **Recipient monitoring**: The recipient MUST run the passive
+   ancestry monitor described in ARK-04
+   [Recipient Fraud Response] over every locally-owned live
+   preconfirmed OOR VTXO. The monitor is detection-only; the
+   recipient's own fraud-triggered recovery hands off to the unroll
+   subsystem under a deadline-gated checkpoint policy so that, when
+   the operator is healthy, the recipient does not burn redundant
+   wallet fees on a checkpoint the operator is already broadcasting.
 
 **Confirmed vs Preconfirmed VTXOs**:
-- A preconfirmed VTXO can be converted to a confirmed one via a Batch Swap. Recipients SHOULD batch-swap promptly to reduce trust exposure.
-- A confirmed VTXO has significantly fewer trust assumptions: it is a direct leaf of an on-chain VTXT and doesn't depend on parent VTXOs or OOR transaction chains.
-- If a preconfirmed VTXO holder is not the owner of the confirmed-parent VTXOs, they must monitor the chain and potentially broadcast checkpoint transactions if the operator is unavailable.
 
-If the sender does attempt to double-spend:
-- The operator detects the on-chain broadcast of the original VTXO.
-- The operator broadcasts the checkpoint transaction that spends the same VTXO via the collaborative path, racing the sender's CSV delay.
-- If the checkpoint confirms, the operator claims the funds via the timeout path after `t_c` blocks. The operator is now economically whole and can include a replacement VTXO for the recipient in a future batch.
-- The recipient's funds are protected as long as the operator responds correctly.
-- The sender's malicious behavior becomes publicly provable (two valid signatures on conflicting transactions constitute cryptographic evidence of double-signing).
+- A preconfirmed VTXO can be converted to a confirmed one via a
+  Batch Swap. Recipients SHOULD batch-swap promptly to reduce trust
+  exposure.
+- A confirmed VTXO has significantly fewer trust assumptions: it is
+  a direct leaf of an on-chain VTXT and doesn't depend on parent
+  VTXOs or OOR transaction chains.
+
+If the sender does attempt to double-spend, the v1 outcome is:
+
+- The operator and the recipient detect the on-chain spend of a
+  monitored ancestor.
+- The operator runs the multihop checkpoint ratchet through the OOR
+  transfer chain; the recipient runs the deadline-gated recovery.
+- Whichever party broadcasts the next checkpoint first, the
+  dependent ark transactions follow promptly. The ratchet iterates
+  to arbitrary depth across multihop chains until each branch
+  terminates at either a still-live recipient VTXO (the recipient's
+  funds land on chain; walked Spent VTXOs transition to
+  `UnrolledByClient`) or the operator's own CSV timeout sweep on a
+  checkpoint output (operator recovers funds; walked Spent VTXOs
+  transition to `Unrolled`).
+- The sender's malicious behavior becomes publicly provable (two
+  valid signatures on conflicting transactions constitute
+  cryptographic evidence of double-signing).
 
 Note: The recipient must trust the operator to include their replacement VTXO in a future batch. The economic incentive aligns: the operator benefits from maintaining reputation and the recipient's continued participation.
 

@@ -1008,13 +1008,15 @@ The fee-bumping child transaction:
 
 All Ark protocol transactions:
 
-1. Off-chain transactions (VTXT, connector trees, Ark, checkpoint, forfeit)
-   MUST use transaction version 3 (P2A anchors or package relay
-   compatibility).
-2. On-chain transactions (batch transaction) MUST use transaction version 2.
-3. MUST use witness serialization (SegWit).
-4. MUST have valid signatures for all inputs.
-5. MUST NOT have negative fee (output sum <= input sum).
+1. All Ark protocol transactions — including the on-chain Batch
+   Transaction, Sweep Transaction, and the off-chain VTXT, connector
+   tree, Ark, checkpoint, and forfeit transactions — MUST use
+   transaction version 3 (`nVersion=3`, TRUC) for P2A anchor relay
+   and v3 package-relay compatibility. See
+   [TRUC + P2A Anchor Relay](#truc--p2a-anchor-relay).
+2. MUST use witness serialization (SegWit).
+3. MUST have valid signatures for all inputs.
+4. MUST NOT have negative fee (output sum <= input sum).
 
 ### VTXT Transaction Rules
 

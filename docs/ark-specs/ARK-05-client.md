@@ -577,13 +577,16 @@ The client MUST:
 1. Construct a `LeaveVTXOsRequest` carrying a `LeaveVTXODestination`
    per outpoint, with a fresh owner proof binding the request to the
    client.
-2. Generate a fresh idempotency key for the request and persist it
-   alongside the in-flight state, so a retransmit after a transport
-   failure does not double-admit.
+2. Persist the in-flight submission alongside an application-scoped
+   correlation identifier so that a retransmit after a transport
+   failure can be reconciled with the original response. The v1
+   `LeaveVTXOsRequest` does not carry an on-the-wire idempotency
+   key; retry safety relies on the operator's server-authoritative
+   lock holding the affected outpoints until the leave admission
+   terminates (see ARK-02 [Server-Authoritative Locking]).
 3. Reconcile the per-outpoint admission results in the response. If
    any outpoint is rejected (e.g. `VTXO_LOCKED`), the client SHOULD
-   retry that outpoint after the lock is released, using the same
-   idempotency key.
+   retry that outpoint after the lock is released.
 
 ### Receive-Script Allocation (`NewReceiveScript`)
 

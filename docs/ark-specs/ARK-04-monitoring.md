@@ -778,7 +778,7 @@ The sweep transaction claims all operator-recoverable funds:
 
 ```
 Sweep Transaction:
-  Version: 2
+  Version: 3 (TRUC; required for P2A anchor relay per ARK-01)
   Locktime: 0
 
   Inputs:
@@ -789,7 +789,9 @@ Sweep Transaction:
 
   Outputs:
     - Operator wallet output
-    - (Optional) Anchor for fee bumping
+    - P2A anchor (ephemeral, 0 sats, MUST be last; funded at
+      broadcast time via a CPFP child per
+      ARK-01 [TRUC + P2A Anchor Relay])
 ```
 
 **Maturity note:** Checkpoint outputs are only spendable after `t_c` blocks

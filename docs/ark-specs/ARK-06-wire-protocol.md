@@ -479,13 +479,25 @@ designated change output.
 
 ```protobuf
 message JoinRoundAccept {
-    bytes round_id = 1;
+    // UUID string identifying the round (matches the operator's
+    // round-id wire encoding everywhere else in this protocol).
+    string round_id = 1;
+
+    // Per-pass quote identifier returned by the matching
+    // JoinRoundQuote. The operator routes the accept on this field.
     bytes quote_id = 2;
+
+    // Seal pass this accept is responding to. Operators MUST reject
+    // an accept whose seal_pass does not match the current pass.
     uint32 seal_pass = 3;
 
-    // Signature over the canonical request-set + designated change
-    // output payload, using the participant identifier from the join
-    // request.
+    // OPTIONAL signature reserved for future enforcement. When
+    // implemented, this MUST cover the canonical encoding of
+    // {round_id, quote_id, seal_pass, request set, designated change
+    // output} so the same payload cannot be replayed across passes
+    // or quotes. v1 deployments MAY leave this field unset; clients
+    // MUST NOT depend on operator-side verification of accept_sig
+    // until a successor revision lifts this to a MUST.
     bytes accept_sig = 4;
 }
 ```
@@ -646,17 +658,11 @@ message SubmitArkTxRequest {
     // Checkpoint PSBTs (unsigned)
     repeated bytes checkpoint_psbts = 2;
 
-    // Optional client-chosen idempotency key. When present, retries
-    // with the same key MUST return the existing session response and
-    // MUST NOT forward a second submit package to the operator's
-    // round coordinator. See ARK-03 [OOR Idempotency Keys].
-    bytes idempotency_key = 3;
-
     // Owner proof binding the requesting client to every input VTXO,
     // required by the server-authoritative lock authority before the
     // operator mutates lock state. See ARK-02
     // [Owner Proof for Lock Mutation].
-    bytes owner_proof = 4;
+    bytes owner_proof = 3;
 }
 ```
 
@@ -776,9 +782,6 @@ message LeaveVTXOsRequest {
     // Owner proof binding the requesting client to every outpoint.
     // Required for lock acquisition.
     bytes owner_proof = 2;
-
-    // Optional idempotency key for safe retries.
-    bytes idempotency_key = 3;
 }
 
 message LeaveVTXODestination {
@@ -886,12 +889,23 @@ message SubscribeVTXOsRequest {
 }
 
 enum VTXOEventType {
-    VTXO_CREATED = 0;
-    VTXO_LIVE = 1;
-    VTXO_SPENT = 2;
-    VTXO_FORFEIT = 3;
-    VTXO_UNROLLED = 4;
-    VTXO_EXPIRED = 5;
+    VTXO_CREATED            = 0;
+    VTXO_LIVE               = 1;
+    VTXO_SPENT              = 2;
+    VTXO_FORFEIT            = 3;
+    VTXO_UNROLLED           = 4;
+    VTXO_EXPIRED            = 5;
+
+    // Terminal after the operator's multihop checkpoint ratchet
+    // resolved on a still-live recipient: walked Spent VTXOs are
+    // reported under this event instead of VTXO_UNROLLED. See ARK-04
+    // [Spent → UnrolledByClient (Multihop Ratchet Terminal)].
+    VTXO_UNROLLED_BY_CLIENT = 6;
+
+    // Terminal after a forfeit transaction confirms (operator
+    // reclaimed funds through the connector + forfeit chain). See
+    // ARK-04 [Response to Forfeit VTXO Unroll].
+    VTXO_RECLAIMED          = 7;
 }
 ```
 

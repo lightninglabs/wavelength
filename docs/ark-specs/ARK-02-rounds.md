@@ -296,8 +296,11 @@ quote in the same seal pass.
 A client MUST respond with one of:
 
 - `JoinRoundAccept` — the client agrees to the quote, attaches the
-  designated change output to its requested output set, and signs the
-  resulting balance.
+  designated change output to its requested output set, and proceeds
+  to the normal round-signing phases for the resulting balance. The
+  `accept_sig` field on `JoinRoundAccept` is reserved (see ARK-06):
+  the operator MUST route the accept on `quote_id` and `seal_pass`,
+  and MAY skip `accept_sig` verification in v1.
 - `JoinRoundReject` — the client refuses the quote.
 
 A non-response within the per-round seal deadline MUST be treated as

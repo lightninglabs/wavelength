@@ -529,27 +529,29 @@ Defined codes:
 Operators MAY add new codes in subsequent revisions; clients MUST
 treat unknown codes as `OOR_REJECT_UNSPECIFIED`.
 
-### OOR Idempotency Keys
+### OOR Retry Safety
 
-A client MAY tag a `SubmitOOR` request with a client-chosen
-idempotency key. When present:
+`SubmitOOR` does not carry an operator-side idempotency key on the
+wire in v1. Retry safety is instead carried by the operator's
+existing per-input lock and session state:
 
-1. The operator MUST persist the key alongside the resulting OOR
-   session record (or rejection) at submit time.
-2. On any retry that presents the same idempotency key, the operator
-   MUST return the existing session's response (the in-flight or
-   completed result, including any typed rejection) and MUST NOT
-   forward a second submit package to the round coordinator — even
-   if the retry presents a different candidate input set.
-3. Idempotency keys are scoped per client; collisions across clients
-   MUST be rejected as protocol errors.
-4. Operators MAY expire idempotency-key bindings after the OOR
-   session reaches a terminal state and a reasonable retention
-   window has elapsed.
+1. Once a `SubmitOOR` succeeds, the operator MUST hold the OOR
+   session's input VTXOs under server-authoritative locks (see
+   ARK-02 [Server-Authoritative Locking]) until the session reaches
+   a terminal state.
+2. A retransmit of the same `SubmitOOR` against locked inputs MUST
+   be rejected with `VTXO_LOCKED`, preventing a second checkpoint
+   set against the same inputs.
+3. Clients MUST persist their own client-scoped idempotency key
+   alongside the in-flight submission state, so that the
+   application layer can reconcile a retry response with the original
+   submission rather than treating it as a new request.
 
-This contract lets clients safely retry on transport failure without
-risking a double-submit or producing a second checkpoint set against
-the same inputs.
+A future revision MAY lift idempotency into a normative wire field
+on `SubmitOOR` so that the operator can return the original
+response on retransmit even after locks have been released. Until
+then, clients SHOULD wait for either a definite success response or
+a typed rejection before retrying on a different connection.
 
 ## Cross-Batch Transactions
 
