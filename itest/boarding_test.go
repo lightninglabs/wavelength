@@ -1124,3 +1124,227 @@ func TestBoardingIntegrationMultiTreeRound(t *testing.T) {
 		aliceJoined.RoundId, broadcastRound.TxId,
 	)
 }
+
+// TestBoardingIntegrationReplayBoardAfterRestart pins down the fix for
+// darepo-client#416: a client daemon restart between Board RPC admission
+// and round seal must NOT silently drop the user's boarding request. The
+// daemon persists the explicit Board request to disk in handleBoard, and on
+// restart the wallet re-issues TriggerBoardMsg through the round actor so
+// the client lands back in REGISTRATION_SENT without the user re-typing
+// `board`.
+//
+// The test drives:
+//  1. Fund a boarding address and call Board → registered.
+//  2. Wait for the client to reach REGISTRATION_SENT (round actor admitted
+//     the registration with the server).
+//  3. Restart the client daemon. Pre-fix this loses the round and the
+//     daemon comes back with zero rounds in any state.
+//  4. WITHOUT calling Board again, wait for REGISTRATION_SENT to re-appear
+//     on the restarted daemon — this is the replay path's observable.
+//  5. Manually seal via the admin TriggerBatch RPC.
+//  6. Mine to confirmation and assert a live VTXO of the expected amount.
+//
+// Step 4 is the key assertion: without the persistence + replay wiring the
+// restarted daemon never re-registers, so REGISTRATION_SENT never reappears
+// and the eventual seal/confirm assertions can never complete.
+func TestBoardingIntegrationReplayBoardAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+	h.FundOperatorLND(btcutil.SatoshiPerBitcoin)
+
+	alice := h.StartClientDaemon("alice")
+	operatorInfo := getOperatorInfo(t, h)
+
+	newAddrResp, err := alice.RPCClient.NewAddress(
+		t.Context(), &daemonrpc.NewAddressRequest{},
+	)
+	require.NoError(t, err, "NewAddress RPC failed")
+	require.NotEmpty(
+		t, newAddrResp.Address, "boarding address should be set",
+	)
+
+	boardingAmount := btcutil.Amount(100_000)
+	fundingTxID := h.Faucet(newAddrResp.Address, boardingAmount)
+	t.Logf("Funded boarding address via txid=%s", fundingTxID)
+
+	// Mine one extra block beyond the advertised minimum so both the
+	// client wallet view and the operator's direct bitcoind validation
+	// path observe the funding transaction before JoinRound runs.
+	h.Generate(int(operatorInfo.MinConfirmations) + 1)
+
+	waitForConfirmedBoardingBalance(
+		t, alice.RPCClient, int64(boardingAmount),
+	)
+
+	// First Board call admits the registration and persists the request to
+	// pending_board_requests via handleBoard's UpsertPendingBoardRequest.
+	boardResp := waitForBoardRegistered(t, alice.RPCClient)
+	require.Equal(t, "registered", boardResp.Status)
+	t.Logf(
+		"Board admitted: vtxo_count=%d boarding=%d",
+		boardResp.VtxoCount, boardingAmount,
+	)
+
+	// Wait for the registration to land server-side so we know the
+	// pending row reflects an in-flight request, not a request that
+	// silently failed.
+	waitForClientRegistration(t, h)
+	preRestartRound := waitForClientRoundState(
+		t, alice.RPCClient,
+		daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT,
+	)
+	preRestartRoundID := preRestartRound.RoundId
+	t.Logf(
+		"Pre-restart client round: round_id=%q is_temp=%v",
+		preRestartRoundID, preRestartRound.IsTemp,
+	)
+
+	// Restart the client daemon BEFORE the round seals. The in-memory
+	// round FSM is lost; only persisted state survives. Without the #416
+	// fix the client comes back with zero rounds and the rest of the
+	// flow stalls waiting for a registration that will never re-issue.
+	oldRPCAddr := alice.RPCAddr
+	alice = h.RestartClientDaemon("alice")
+	t.Logf(
+		"Restarted client daemon: old_rpc=%s new_rpc=%s", oldRPCAddr,
+		alice.RPCAddr,
+	)
+
+	// Observable for the replay path: a fresh REGISTRATION_SENT round
+	// appears on the daemon WITHOUT the test calling Board again. The
+	// round_id may or may not match preRestartRoundID — the operator
+	// may admit the replay into a fresh round or reuse an assembling
+	// one — so the test asserts the lifecycle state, not the id.
+	//
+	// We require a NON-TEMP round to ride out the brief temp→assigned
+	// re-key window the round actor uses when ack'ing JoinRound. Filtering
+	// IsTemp via ListRounds also matches the pattern in
+	// TestBoardingIntegrationTriggerBatchCreatesNewRound.
+	var replayedRoundID string
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			t.Context(), defaultSmallTimeout,
+		)
+		defer cancel()
+
+		resp, err := alice.RPCClient.ListRounds(
+			ctx, &daemonrpc.ListRoundsRequest{},
+		)
+		if err != nil {
+			return false
+		}
+
+		for _, round := range resp.Rounds {
+			if round.IsTemp || round.RoundId == "" {
+				continue
+			}
+
+			target := daemonrpc.
+				RoundState_ROUND_STATE_REGISTRATION_SENT
+			if !roundStateSatisfiesTarget(round.State, target) {
+				continue
+			}
+
+			replayedRoundID = round.RoundId
+
+			return true
+		}
+
+		return false
+	}, defaultTimeout, pollInterval,
+		"replayed registration never produced a non-temp round")
+
+	t.Logf(
+		"Replayed registration after restart: round_id=%q "+
+			"(pre_restart_round_id=%q)", replayedRoundID,
+		preRestartRoundID,
+	)
+
+	// Drive the round to seal via the admin TriggerBatch RPC. Using
+	// TriggerBatch (rather than letting the operator auto-seal on a
+	// timer) keeps the test deterministic across CI runners with
+	// variable scheduling.
+	triggerCtx, triggerCancel := context.WithTimeout(
+		t.Context(), defaultSmallTimeout,
+	)
+	defer triggerCancel()
+
+	triggerResp, err := h.ArkAdminClient.TriggerBatch(
+		triggerCtx, &adminrpc.TriggerBatchRequest{},
+	)
+	require.NoError(t, err, "TriggerBatch RPC failed")
+	require.NotEmpty(
+		t, triggerResp.RoundId,
+		"TriggerBatch must seal a concrete round",
+	)
+	t.Logf(
+		"TriggerBatch sealed replayed round_id=%q", triggerResp.RoundId,
+	)
+
+	// The sealed round progresses through signing. Track whichever round
+	// the operator actually sealed (may differ from replayedRound if the
+	// operator admitted the replay into a different assembling round).
+	sealedRoundID := triggerResp.RoundId
+
+	waitForNamedClientRoundState(
+		t, alice.RPCClient, sealedRoundID,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT,
+	)
+
+	broadcastRound := waitForOperatorRoundStatus(
+		t, h, sealedRoundID,
+		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
+	)
+	require.NotEmpty(t, broadcastRound.TxId)
+	t.Logf(
+		"Replayed round broadcast: round_id=%q txid=%s", sealedRoundID,
+		broadcastRound.TxId,
+	)
+
+	mineUntilOperatorRoundConfirmed(
+		t, h, sealedRoundID, broadcastRound.TxId,
+	)
+
+	confirmedRound := waitForNamedClientRoundState(
+		t, alice.RPCClient, sealedRoundID,
+		daemonrpc.RoundState_ROUND_STATE_CONFIRMED,
+	)
+	require.False(
+		t, confirmedRound.IsTemp,
+		"confirmed round after replay must be persisted",
+	)
+
+	waitForOperatorRoundStatus(
+		t, h, sealedRoundID,
+		adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED,
+	)
+
+	liveVTXO := waitForLiveVTXO(t, alice.RPCClient, sealedRoundID)
+	expectedNet := expectedNetAfterBoarding(
+		t, int64(boardingAmount), defaultItestBatchSize,
+	)
+	require.Equal(
+		t, expectedNet, liveVTXO.AmountSat, "replayed board must "+
+			"produce the same net VTXO value as the original "+
+			"board would have",
+	)
+
+	finalBalance := waitForVTXOBalance(
+		t, alice.RPCClient, liveVTXO.AmountSat,
+	)
+	require.Equal(t, liveVTXO.AmountSat, finalBalance.VtxoBalanceSat)
+	t.Logf(
+		"Replayed board completed: round_id=%q vtxo_amount=%d",
+		sealedRoundID, liveVTXO.AmountSat,
+	)
+}
