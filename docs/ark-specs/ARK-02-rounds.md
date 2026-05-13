@@ -30,33 +30,32 @@ The round lifecycle is the core protocol for creating new VTXOs. The operator co
 
 ### Round Frequency
 
-Operators MUST run a periodic round tick at a configurable cadence so
-that rounds advance regardless of client arrival pattern.
+Operators MUST advance rounds on a periodic tick at a configurable
+cadence so that progress does not depend on client arrival pattern.
 
-1. The operator MUST schedule a recurring `TickEvent` at
-   `RoundTickInterval` (default: 1 minute) starting at round creation
-   and continuing until the round reaches a terminal phase
+1. The operator MUST schedule a recurring round-tick at a configured
+   interval (RECOMMENDED default: 1 minute) starting at round
+   creation and continuing until the round reaches a terminal phase
    (Broadcast or Aborted).
 2. On each tick fired against a Created-state round with **no admitted
-   clients**, the operator MUST record a `skipped_empty` outcome and
-   MUST NOT advance the FSM. Empty rounds remain Created until either
-   a join admits the round or the round is closed by operator policy.
+   clients**, the operator MUST treat the tick as a no-op (a status
+   suitable for observability is RECOMMENDED, e.g. "skipped: empty"),
+   MUST NOT advance the round, and MUST leave the round in Created
+   until either a join admits the round or the round is closed by
+   operator policy.
 3. On each tick fired against a Created-state round with **one or
    more admitted clients**, the operator MUST evaluate whether the
    collection-period deadline has elapsed and, if so, advance to
    Construction.
-4. The administrative `TriggerBatch` request MUST fail fast (return
-   an error rather than a round identifier) when invoked against a
-   Created-state round with zero admitted clients, since such a round
-   cannot process the resulting `SealEvent` and the caller would
-   otherwise wait indefinitely.
+4. Any administrative "trigger batch" request issued against an
+   empty Created-state round MUST fail fast with a definite error
+   rather than blocking the caller until external state changes.
 
 The cadence affects:
 - User experience (latency to obtain new VTXOs)
 - On-chain footprint (fewer rounds = fewer batch transactions)
 - Operator liquidity requirements (longer rounds may accumulate more value)
-- Liveness of administrative operations (`TriggerBatch`, manual seal)
-  against an idle daemon
+- Liveness of administrative operations against an idle daemon
 
 ## Round Overview
 
@@ -309,8 +308,9 @@ A non-response within the per-round seal deadline MUST be treated as
 If any cohort member rejects (explicitly or by timeout), the operator
 MUST drop the rejecting members from the cohort and reseal over the
 survivors with a fresh quote computation. The operator MUST NOT
-attempt more than `MaxSealPasses` reseal iterations (operator-policy
-constant); after the limit, the round MUST abort.
+attempt more than a configured maximum number of reseal iterations
+(advertised in `OperatorTerms.max_seal_passes`, see ARK-06); after
+the limit, the round MUST abort.
 
 ##### Designated Change Output
 

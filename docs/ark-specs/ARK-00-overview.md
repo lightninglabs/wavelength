@@ -47,11 +47,12 @@ VTXOs have a limited lifetime determined by their batch's **Sweep Delay** (`T_e`
 
 #### Round Cadence
 
-Rounds advance on a fixed cadence rather than purely on-demand. The operator
-MUST run a periodic `TickEvent` so that rounds progress even with zero
-admitted clients, and MUST reject `TriggerBatch` against a Created-state
-round that has no admitted clients (see ARK-02). This guarantees forward
-progress and bounded round lifetime regardless of client arrival pattern.
+Rounds advance on a fixed cadence rather than purely on-demand. The
+operator MUST run a periodic round-tick so that rounds progress even
+with zero admitted clients, and MUST fail fast on any administrative
+"trigger batch" request against a Created-state round that has no
+admitted clients (see ARK-02). This guarantees forward progress and
+bounded round lifetime regardless of client arrival pattern.
 
 #### Relay Primitive: TRUC + P2A
 
