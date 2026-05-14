@@ -1184,6 +1184,90 @@ func buildMergeProof(t *testing.T) *recovery.Proof {
 	return proof
 }
 
+// buildMultihopOORProof creates a checkpoint_AB -> arktx_AB ->
+// checkpoint_BC -> arktx_BC (target) proof. The intermediate checkpoint_BC
+// is the only frontier item that gets promoted from blocked to ready by an
+// in-proof TxConfirmedEvent (the arktx_AB confirmation), which is the shape
+// the deferral-anchor race needs to reproduce.
+func buildMultihopOORProof(t *testing.T) *recovery.Proof {
+	t.Helper()
+
+	checkpointAB := wire.NewMsgTx(2)
+	checkpointAB.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{1},
+			Index: 0,
+		},
+	})
+	checkpointAB.AddTxOut(&wire.TxOut{
+		Value:    70_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+
+	arkAB := wire.NewMsgTx(2)
+	arkAB.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  checkpointAB.TxHash(),
+			Index: 0,
+		},
+	})
+	arkAB.AddTxOut(&wire.TxOut{
+		Value:    65_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+
+	checkpointBC := wire.NewMsgTx(2)
+	checkpointBC.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  arkAB.TxHash(),
+			Index: 0,
+		},
+	})
+	checkpointBC.AddTxOut(&wire.TxOut{
+		Value:    60_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+
+	arkBC := wire.NewMsgTx(2)
+	arkBC.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  checkpointBC.TxHash(),
+			Index: 0,
+		},
+	})
+	arkBC.AddTxOut(&wire.TxOut{
+		Value:    55_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+
+	proof, err := recovery.NewProof(
+		wire.OutPoint{
+			Hash:  arkBC.TxHash(),
+			Index: 0,
+		},
+		144,
+		&recovery.Node{
+			Kind: recovery.NodeKindCheckpoint,
+			Tx:   checkpointAB,
+		},
+		&recovery.Node{
+			Kind: recovery.NodeKindArk,
+			Tx:   arkAB,
+		},
+		&recovery.Node{
+			Kind: recovery.NodeKindCheckpoint,
+			Tx:   checkpointBC,
+		},
+		&recovery.Node{
+			Kind: recovery.NodeKindArk,
+			Tx:   arkBC,
+		},
+	)
+	require.NoError(t, err)
+
+	return proof
+}
+
 // mustDecodeCheckpoint loads and decodes one stored actor checkpoint.
 func mustDecodeCheckpoint(t *testing.T, store *memCheckpointStore,
 	actorID string) *actorCheckpoint {
@@ -1399,6 +1483,114 @@ func TestFraudTriggerSharedCheckpointsBroadcastOnceAtDeadline(t *testing.T) {
 	require.Contains(
 		t, checkpoint.State.InFlightTxids, proof.TargetOutpoint().Hash,
 	)
+}
+
+// TestFraudTriggerDeferralAnchoredToParentConfirm verifies a non-root
+// checkpoint that is promoted to the ready frontier by a TxConfirmedEvent
+// stamps its deferral deadline against the parent's confirm height rather
+// than the FSM's current height. This is the regression case where a
+// fast bulk-flush of HeightObservedMsg events arrives before a parent's
+// TxConfirmedMsg: without the parent-anchored deadline the recipient's
+// backstop slides arbitrarily far into the future and the test harness
+// (which polls for the broadcast without mining further blocks) deadlocks.
+//
+// Proof shape: checkpoint_AB -> arktx_AB -> checkpoint_BC -> arktx_BC.
+// checkpoint_AB is the only root; checkpoint_BC is the non-root checkpoint
+// whose deferral deadline this test pins.
+func TestFraudTriggerDeferralAnchoredToParentConfirm(t *testing.T) {
+	proof := buildMultihopOORProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, _, txconfirmRef, store := newActorHarness(t, proof, desc)
+
+	// Lay out the four proof nodes in topological order so we can refer
+	// to them by role. Topological layers: [checkpoint_AB], [arktx_AB],
+	// [checkpoint_BC], [arktx_BC=target].
+	layers := proof.Layers()
+	require.Len(t, layers, 4)
+	require.Len(t, layers[0], 1)
+	require.Len(t, layers[1], 1)
+	require.Len(t, layers[2], 1)
+	require.Len(t, layers[3], 1)
+	checkpointAB := layers[0][0]
+	arkABTxid := layers[1][0]
+	checkpointBCTxid := layers[2][0]
+
+	arkABNode, ok := proof.Node(arkABTxid)
+	require.True(t, ok)
+	require.Equal(t, recovery.NodeKindArk, arkABNode.Kind)
+	checkpointBCNode, ok := proof.Node(checkpointBCTxid)
+	require.True(t, ok)
+	require.Equal(t, recovery.NodeKindCheckpoint, checkpointBCNode.Kind)
+
+	// CSV delay 144, default safety margin 24 → deferral window = 120.
+	// Start at height 100 so checkpoint_AB's first deadline lands at
+	// 100 + 144 - 24 = 220, matching the conventions in the other fraud
+	// trigger tests in this file.
+	const startHeight int32 = 100
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  startHeight,
+		Trigger: TriggerFraudSpend,
+	})
+
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.Len(t, checkpoint.DeferredCheckpoints, 1)
+	require.Equal(
+		t, checkpointAB, checkpoint.DeferredCheckpoints[0].Txid,
+	)
+	require.Equal(
+		t, int32(220), checkpoint.DeferredCheckpoints[0].DeadlineHeight,
+	)
+
+	// Cross checkpoint_AB's deadline so the recipient broadcasts it
+	// (txconfirm submission) and then confirm it. arktx_AB then enters
+	// the ready frontier and (as an ark, not a checkpoint) is submitted
+	// immediately — but we deliberately do NOT confirm it yet.
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 220})
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(checkpointAB) == 1
+	}, testTimeout, 10*time.Millisecond)
+
+	txconfirmRef.emitConfirmedByTxid(t, checkpointAB, 221)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(arkABTxid) == 1
+	}, testTimeout, 10*time.Millisecond)
+
+	// Race setup. Advance the FSM's job.Height far ahead of where
+	// arktx_AB will actually confirm. mustAsk is synchronous so the
+	// HeightUpdatedEvent fully lands in the FSM before the next call
+	// returns; emitConfirmedByTxid then queues the TxConfirmedMsg
+	// behind it in actor-mailbox order.
+	const racedHeight int32 = 400
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: racedHeight})
+
+	// arktx_AB actually confirms at block 222 — well below racedHeight.
+	// This is the block where vtxo_B (checkpoint_BC's parent) becomes
+	// available. The fix anchors checkpoint_BC's deferral deadline to
+	// THIS height, not racedHeight, so:
+	//
+	//   parent-anchored deadline = 222 + 144 - 24 = 342
+	//   bug-era deadline         = racedHeight + 144 - 24 = 520
+	//
+	// 342 has already elapsed at racedHeight=400, so the FSM bypasses
+	// the deferred set entirely and hands checkpoint_BC straight to
+	// txconfirm. The bug-era deadline (520) is still in the future at
+	// height 400, so without the fix checkpoint_BC would be parked in
+	// DeferredCheckpoints with DeadlineHeight=520 and never broadcast.
+	const arkABConfirmHeight int32 = 222
+	txconfirmRef.emitConfirmedByTxid(t, arkABTxid, arkABConfirmHeight)
+
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(
+			checkpointBCTxid,
+		) == 1
+	}, testTimeout, 10*time.Millisecond)
+
+	// Persisted state should not have checkpoint_BC parked in the
+	// deferred set after the immediate submission.
+	c := mustDecodeCheckpoint(t, store, "unroll-test")
+	for _, d := range c.DeferredCheckpoints {
+		require.NotEqual(t, checkpointBCTxid, d.Txid)
+	}
 }
 
 // TestResumeReissuesDeferredCheckpointWatch verifies restart restores

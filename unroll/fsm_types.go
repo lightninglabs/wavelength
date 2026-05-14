@@ -9,6 +9,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/unrollplan"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // StateMachine is the protofsm instance for one VTXO unroll session.
@@ -299,7 +300,9 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 			Trigger: e.Trigger,
 		}
 
-		return deriveStateTransition(ctx, job, env, false)
+		return deriveStateTransition(
+			ctx, job, env, false, fn.None[int32](),
+		)
 
 	case *ResumeEvent:
 		job := &JobState{
@@ -308,7 +311,9 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 			FailReason: "",
 		}
 
-		return deriveStateTransition(ctx, job, env, true)
+		return deriveStateTransition(
+			ctx, job, env, true, fn.None[int32](),
+		)
 
 	default:
 		return nil, fmt.Errorf("unexpected event %T in %s", event, s)
