@@ -9,6 +9,8 @@ import (
 )
 
 type Querier interface {
+	ClearAllPendingBoardRequests(ctx context.Context) error
+	ClearPendingBoardRequestByOutpoint(ctx context.Context, arg ClearPendingBoardRequestByOutpointParams) error
 	CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error)
 	CountClientLedgerEntries(ctx context.Context) (int64, error)
 	CountUnresolvedBoardingSweepInputs(ctx context.Context, txid []byte) (int64, error)
@@ -147,6 +149,7 @@ type Querier interface {
 	ListOORRecipientCursors(ctx context.Context) ([]OorRecipientCursor, error)
 	ListOORVTXOBindingsBySession(ctx context.Context, sessionID []byte) ([]ListOORVTXOBindingsBySessionRow, error)
 	ListOwnedReceiveScripts(ctx context.Context) ([]OwnedReceiveScript, error)
+	ListPendingBoardRequests(ctx context.Context) ([]PendingBoardRequest, error)
 	ListPendingBoardingSweepInputs(ctx context.Context) ([]BoardingSweepInput, error)
 	ListPendingBoardingSweeps(ctx context.Context) ([]BoardingSweep, error)
 	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
@@ -209,6 +212,15 @@ type Querier interface {
 	UpsertOORRecipientCursor(ctx context.Context, arg UpsertOORRecipientCursorParams) error
 	UpsertOORVTXOBinding(ctx context.Context, arg UpsertOORVTXOBindingParams) (int64, error)
 	UpsertOwnedReceiveScript(ctx context.Context, arg UpsertOwnedReceiveScriptParams) error
+	// Pending board request queries.
+	//
+	// Each row binds the user's explicit Board RPC target_vtxo_count to one
+	// confirmed boarding outpoint that the call admitted. On daemon restart the
+	// wallet lists every row and replays a single Board through the same actor
+	// path the live RPC uses; rows whose outpoints are no longer Confirmed (the
+	// intent has already adopted, swept, or failed) are cleared so the next
+	// start is a no-op.
+	UpsertPendingBoardRequest(ctx context.Context, arg UpsertPendingBoardRequestParams) error
 	// Unilateral-exit job control-plane queries.
 	UpsertUnilateralExitJob(ctx context.Context, arg UpsertUnilateralExitJobParams) error
 }

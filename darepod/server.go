@@ -1809,6 +1809,22 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	}
 
 	// -------------------------------------------------------
+	// 13b. Replay any persisted Board RPC the user issued before the
+	//      last shutdown. Like resumeBoardingSweeps, this Ask MUST run
+	//      AFTER the round-client actor has registered with the
+	//      receptionist (step 11) — the replay's downstream
+	//      TriggerBoardMsg dispatch goes through the actor system,
+	//      and a Tell against an unresolved service key is a silent
+	//      drop. Driving the replay from wallet.Ark.Start would race
+	//      the registration and leave the recovered Board orphaned.
+	// -------------------------------------------------------
+	if err := s.replayPendingBoardRequest(ctx, walletRef); err != nil {
+		s.log.WarnS(ctx, "Failed to replay pending Board request",
+			err,
+		)
+	}
+
+	// -------------------------------------------------------
 	// 14. Register the OOR client actor.
 	// -------------------------------------------------------
 	if err := s.initOORActor(ctx, vtxoManagerRef); err != nil {
@@ -1816,6 +1832,28 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	}
 
 	s.log.InfoS(ctx, "Wallet-dependent actors started")
+
+	return nil
+}
+
+// replayPendingBoardRequest Asks the wallet actor to replay any
+// persisted Board RPC across daemon restart. Called once during
+// startup, after the round-client actor has registered with the
+// receptionist, so the wallet's handleBoard can resolve the round
+// actor via the service-key router without racing.
+//
+// A failure here does not block daemon startup: a fresh Board RPC by
+// the user overwrites the pending rows, and a future restart re-tries
+// the replay. Returning the error lets the caller decide whether to
+// surface it.
+func (s *Server) replayPendingBoardRequest(ctx context.Context,
+	walletRef actor.ActorRef[wallet.WalletMsg, wallet.WalletResp]) error {
+
+	future := walletRef.Ask(ctx, &wallet.ReplayPendingBoardRequest{})
+	result := future.Await(ctx)
+	if result.IsErr() {
+		return fmt.Errorf("ask replay pending board: %w", result.Err())
+	}
 
 	return nil
 }
@@ -3053,6 +3091,7 @@ func (s *Server) initWalletActor(ctx context.Context,
 		wallet.WithBoardingSweep(
 			s.boardingSweepStore, sweepSigner, s.chainParams,
 		),
+		wallet.WithClock(s.clk),
 	)
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,

@@ -3,6 +3,7 @@ package wallet
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -366,6 +367,14 @@ func TestSelectAndLockNoActorSystem(t *testing.T) {
 // mockRoundActorBehavior implements actor.ActorBehavior for the round actor
 // service key type. It responds to RegisterIntentMsg with a configurable
 // error, enabling wallet handler tests without a real round actor.
+//
+// The TriggerBoardMsg counter is updated from the actor's goroutine and
+// read from test goroutines via TriggerBoardCalls(), so it MUST be
+// accessed under a mutex; the wallet's Tell-based dispatch to the round
+// actor is asynchronous, so a poll-based test (require.Eventually) would
+// otherwise race the actor's Receive loop. The same mutex covers the
+// captured-message pointer because pointer assignment is not atomic on
+// 64-bit reads/writes.
 type mockRoundActorBehavior struct {
 	// registerErr when set causes RegisterIntentMsg to fail.
 	registerErr error
@@ -376,6 +385,34 @@ type mockRoundActorBehavior struct {
 	// capturedIntent holds the last RegisterIntentMsg received, so
 	// tests can inspect the intent package contents.
 	capturedIntent *actormsg.RegisterIntentMsg
+
+	// mu guards the TriggerBoardMsg fields below. The RegisterIntentMsg
+	// fields above are safe without locking because every existing
+	// caller drives them through an Ask/Await that synchronously
+	// publishes the actor-goroutine write before the test goroutine
+	// reads. The TriggerBoardMsg path is Tell-based, so it needs an
+	// explicit happens-before edge for the test to observe.
+	mu sync.Mutex
+
+	// triggerBoardCalls tracks how many times TriggerBoardMsg was
+	// received, so Board / replay tests can assert the round actor was
+	// (or was not) re-tickled. Read under mu.
+	triggerBoardCalls int
+
+	// capturedTriggerBoard holds the last TriggerBoardMsg received so
+	// tests can inspect the VTXO amounts and target count handed
+	// across. Read under mu.
+	capturedTriggerBoard *actormsg.TriggerBoardMsg
+}
+
+// TriggerBoardCalls returns a snapshot of triggerBoardCalls under the
+// mock's mutex so test goroutines can poll the counter without racing
+// the actor's Receive loop.
+func (m *mockRoundActorBehavior) TriggerBoardCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.triggerBoardCalls
 }
 
 // Receive processes round actor messages from the wallet.
@@ -392,6 +429,14 @@ func (m *mockRoundActorBehavior) Receive(_ context.Context,
 				m.registerErr,
 			)
 		}
+
+		return fn.Ok[actormsg.RoundActorResp](nil)
+
+	case *actormsg.TriggerBoardMsg:
+		m.mu.Lock()
+		m.triggerBoardCalls++
+		m.capturedTriggerBoard = typedMsg
+		m.mu.Unlock()
 
 		return fn.Ok[actormsg.RoundActorResp](nil)
 

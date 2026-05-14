@@ -27,6 +27,13 @@ func newBoardCmd() *cobra.Command {
 		"number of VTXOs to fan the boarded balance into",
 	)
 
+	cmd.Flags().Bool(
+		"no-persist", false,
+		"opt out of restart-safe Board replay: do not persist "+
+			"the Board intent, so a daemon restart between "+
+			"admission and round seal silently drops it",
+	)
+
 	return cmd
 }
 
@@ -42,6 +49,9 @@ func board(cmd *cobra.Command, _ []string) error {
 	if err := parseRequest(cmd, req, func() error {
 		count, _ := cmd.Flags().GetUint32("target-vtxo-count")
 		req.TargetVtxoCount = count
+
+		noPersist, _ := cmd.Flags().GetBool("no-persist")
+		req.NoPersist = noPersist
 
 		return nil
 	}); err != nil {

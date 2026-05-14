@@ -228,3 +228,35 @@ SELECT outpoint_hash, outpoint_index FROM boarding_intents;
 SELECT * FROM boarding_intents
 WHERE status = $1 AND conf_height >= $2
 ORDER BY conf_height ASC;
+
+-- Pending board request queries.
+--
+-- Each row binds the user's explicit Board RPC target_vtxo_count to one
+-- confirmed boarding outpoint that the call admitted. On daemon restart the
+-- wallet lists every row and replays a single Board through the same actor
+-- path the live RPC uses; rows whose outpoints are no longer Confirmed (the
+-- intent has already adopted, swept, or failed) are cleared so the next
+-- start is a no-op.
+
+-- name: UpsertPendingBoardRequest :exec
+INSERT INTO pending_board_requests (
+    outpoint_hash,
+    outpoint_index,
+    target_vtxo_count,
+    requested_at_unix
+) VALUES ($1, $2, $3, $4)
+ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE
+SET target_vtxo_count = excluded.target_vtxo_count,
+    requested_at_unix = excluded.requested_at_unix;
+
+-- name: ListPendingBoardRequests :many
+SELECT outpoint_hash, outpoint_index, target_vtxo_count, requested_at_unix
+FROM pending_board_requests
+ORDER BY requested_at_unix ASC, outpoint_hash ASC, outpoint_index ASC;
+
+-- name: ClearPendingBoardRequestByOutpoint :exec
+DELETE FROM pending_board_requests
+WHERE outpoint_hash = $1 AND outpoint_index = $2;
+
+-- name: ClearAllPendingBoardRequests :exec
+DELETE FROM pending_board_requests;

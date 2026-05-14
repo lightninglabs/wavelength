@@ -167,6 +167,13 @@ type OwnedReceiveScriptSource struct {
 	Name   string
 }
 
+type PendingBoardRequest struct {
+	OutpointHash    []byte
+	OutpointIndex   int32
+	TargetVtxoCount int32
+	RequestedAtUnix int64
+}
+
 type Round struct {
 	RoundID               string
 	StartHeight           int32
