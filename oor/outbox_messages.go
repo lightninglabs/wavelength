@@ -116,6 +116,31 @@ func (m *SendSubmitPackageRequest) ServiceMethod() mailboxrpc.ServiceMethod {
 	}
 }
 
+// sessionCorrelationKey is the canonical per-session FIFO key for
+// client-to-server OOR outbox events. The client maintains a single
+// durable serverconn mailbox per operator, so distinguishing sessions
+// is sufficient to keep submit / finalize / ack for the same session
+// from reordering under transient Edge.Send failure. The "oor/" prefix
+// distinguishes the namespace from round keys so a session id cannot
+// collide with a round id by accident.
+func sessionCorrelationKey(sessionID SessionID) string {
+	return "oor/" + sessionID.String()
+}
+
+// CorrelationKey returns the per-session FIFO key derived from the
+// Ark PSBT. Falls back to the unkeyed lane if session derivation
+// fails (e.g. a malformed PSBT) — the message would error out at the
+// ToProto step anyway, so dropping FIFO enforcement on that pathological
+// case is acceptable.
+func (m *SendSubmitPackageRequest) CorrelationKey() string {
+	sessionID, err := sessionIDFromArk(m.ArkPSBT)
+	if err != nil {
+		return ""
+	}
+
+	return sessionCorrelationKey(sessionID)
+}
+
 // ToProto converts SendSubmitPackageRequest to the concrete proto type
 // expected by the server-side OOR dispatcher.
 func (m *SendSubmitPackageRequest) ToProto() fn.Result[proto.Message] {
@@ -209,6 +234,17 @@ func (m *SendFinalizePackageRequest) ServiceMethod() mailboxrpc.ServiceMethod {
 		Service: oorpb.ServiceName,
 		Method:  oorpb.MethodFinalizePackage,
 	}
+}
+
+// CorrelationKey returns the per-session FIFO key so finalize lands
+// in emission order behind the matching submit.
+func (m *SendFinalizePackageRequest) CorrelationKey() string {
+	sessionID, err := sessionIDFromArk(m.ArkPSBT)
+	if err != nil {
+		return ""
+	}
+
+	return sessionCorrelationKey(sessionID)
 }
 
 // ToProto converts SendFinalizePackageRequest to the concrete proto type
@@ -411,6 +447,11 @@ func (m *SendIncomingAckRequest) ServiceMethod() mailboxrpc.ServiceMethod {
 		Service: oorpb.ServiceName,
 		Method:  oorpb.MethodIncomingAck,
 	}
+}
+
+// CorrelationKey returns the per-session FIFO key.
+func (m *SendIncomingAckRequest) CorrelationKey() string {
+	return sessionCorrelationKey(m.SessionID)
 }
 
 // ToProto converts SendIncomingAckRequest to a protobuf message.
