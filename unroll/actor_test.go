@@ -207,6 +207,26 @@ func (f *fakeTxConfirmRef) lastRequest(
 	return f.requests[len(f.requests)-1]
 }
 
+// requestByTxid returns the first txconfirm request matching txid.
+func (f *fakeTxConfirmRef) requestByTxid(t *testing.T,
+	txid chainhash.Hash) *txconfirm.EnsureConfirmedReq {
+
+	t.Helper()
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	for _, req := range f.requests {
+		if req.Tx.TxHash() == txid {
+			return req
+		}
+	}
+
+	require.Failf(t, "txconfirm request not found", "txid=%s", txid)
+
+	return nil
+}
+
 // requestCount returns the number of recorded ensure requests.
 func (f *fakeTxConfirmRef) requestCount() int {
 	f.mu.Lock()
@@ -346,6 +366,9 @@ func (f *fakeTxConfirmRef) emitFailed(t *testing.T, index int,
 // confRef aliases the chainsource confirmation notification target.
 type confRef = actor.TellOnlyRef[chainsource.ConfirmationEvent]
 
+// confReq aliases the chainsource confirmation request.
+type confReq = chainsource.RegisterConfRequest
+
 // fakeChainSourceRef is a minimal chainsource actor ref for sweep fee
 // estimation tests.
 type fakeChainSourceRef struct {
@@ -356,6 +379,7 @@ type fakeChainSourceRef struct {
 	blockRef   actor.TellOnlyRef[chainsource.BlockEpoch]
 	spendRef   actor.TellOnlyRef[chainsource.SpendEvent]
 	confRefs   map[chainhash.Hash]confRef
+	confReqs   map[chainhash.Hash]*confReq
 }
 
 // ID returns the fake actor ID.
@@ -462,7 +486,16 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 		if f.confRefs == nil {
 			f.confRefs = make(map[chainhash.Hash]confRef)
 		}
+		if f.confReqs == nil {
+			f.confReqs = map[chainhash.Hash]*confReq{}
+		}
+
+		reqCopy := *msg
+		txidCopy := *msg.Txid
+		reqCopy.Txid = &txidCopy
+		reqCopy.PkScript = append([]byte(nil), msg.PkScript...)
 		f.confRefs[*msg.Txid] = msg.NotifyActor.UnwrapOr(nil)
+		f.confReqs[*msg.Txid] = &reqCopy
 		f.mu.Unlock()
 		promise.Complete(
 			fn.Ok[chainsource.ChainSourceResp](
@@ -488,6 +521,21 @@ func (f *fakeChainSourceRef) confWatchCount() int {
 	defer f.mu.Unlock()
 
 	return len(f.confRefs)
+}
+
+// confRequest returns the registered confirmation request for txid.
+func (f *fakeChainSourceRef) confRequest(t *testing.T,
+	txid chainhash.Hash) *confReq {
+
+	t.Helper()
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	req := f.confReqs[txid]
+	require.NotNil(t, req)
+
+	return req
 }
 
 // emitConfirmed delivers one chainsource confirmation event to a watcher.
@@ -1180,6 +1228,7 @@ func TestStartUnrollSubmitsInitialFrontier(t *testing.T) {
 func TestFraudTriggerDefersReadyCheckpoint(t *testing.T) {
 	proof := buildOORProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 77
 	unrollActor, behavior, txconfirmRef, store := newActorHarness(
 		t, proof, desc,
 	)
@@ -1193,6 +1242,10 @@ func TestFraudTriggerDefersReadyCheckpoint(t *testing.T) {
 
 	require.Equal(t, 0, txconfirmRef.requestCount())
 	require.Equal(t, 1, chainRef.confWatchCount())
+	require.Equal(
+		t, uint32(1),
+		chainRef.confRequest(t, proof.RootTxids()[0]).HeightHint,
+	)
 
 	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
 	require.Len(t, checkpoint.DeferredCheckpoints, 1)
@@ -1214,6 +1267,11 @@ func TestFraudTriggerDefersReadyCheckpoint(t *testing.T) {
 		t, proof.RootTxids()[0],
 		txconfirmRef.lastRequest(t).Tx.TxHash(),
 	)
+	require.Equal(
+		t, uint32(1), txconfirmRef.requestByTxid(
+			t, proof.RootTxids()[0],
+		).HeightHint,
+	)
 
 	checkpoint = mustDecodeCheckpoint(t, store, "unroll-test")
 	require.Len(t, checkpoint.DeferredCheckpoints, 0)
@@ -1229,6 +1287,7 @@ func TestFraudTriggerDefersReadyCheckpoint(t *testing.T) {
 func TestFraudTriggerOperatorConfirmedCheckpointUnlocksArk(t *testing.T) {
 	proof := buildOORProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 77
 	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
 		t, proof, desc,
 	)
@@ -1248,6 +1307,11 @@ func TestFraudTriggerOperatorConfirmedCheckpointUnlocksArk(t *testing.T) {
 	require.Equal(
 		t, proof.TargetOutpoint().Hash,
 		txconfirmRef.lastRequest(t).Tx.TxHash(),
+	)
+	require.Equal(
+		t, uint32(1), txconfirmRef.requestByTxid(
+			t, proof.TargetOutpoint().Hash,
+		).HeightHint,
 	)
 }
 
@@ -1342,6 +1406,7 @@ func TestFraudTriggerSharedCheckpointsBroadcastOnceAtDeadline(t *testing.T) {
 func TestResumeReissuesDeferredCheckpointWatch(t *testing.T) {
 	proof := buildOORProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 77
 	store := newMemCheckpointStore()
 	txconfirmRef := &fakeTxConfirmRef{}
 	chainRef := &fakeChainSourceRef{}
@@ -1403,6 +1468,9 @@ func TestResumeReissuesDeferredCheckpointWatch(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return chainRef.confWatchCount() == 1
 	}, testTimeout, 10*time.Millisecond)
+	require.Equal(
+		t, uint32(1), chainRef.confRequest(t, rootTxid).HeightHint,
+	)
 	require.Equal(t, 0, txconfirmRef.requestCount())
 
 	mustAsk(t, resumedActor.Ref(), &HeightObservedMsg{Height: 219})
@@ -1413,6 +1481,10 @@ func TestResumeReissuesDeferredCheckpointWatch(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return txconfirmRef.requestCountForTxid(rootTxid) == 1
 	}, testTimeout, 10*time.Millisecond)
+	require.Equal(
+		t, uint32(1),
+		txconfirmRef.requestByTxid(t, rootTxid).HeightHint,
+	)
 }
 
 // TestResumeReissuesInFlightArk verifies a fraud-triggered restart reattaches
@@ -1420,6 +1492,7 @@ func TestResumeReissuesDeferredCheckpointWatch(t *testing.T) {
 func TestResumeReissuesInFlightArk(t *testing.T) {
 	proof := buildOORProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.CreatedHeight = 77
 	store := newMemCheckpointStore()
 	txconfirmRef := &fakeTxConfirmRef{}
 	rootTxid := proof.RootTxids()[0]
@@ -1480,6 +1553,9 @@ func TestResumeReissuesInFlightArk(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return txconfirmRef.requestCountForTxid(arkTxid) == 1
 	}, testTimeout, 10*time.Millisecond)
+	require.Equal(
+		t, uint32(1), txconfirmRef.requestByTxid(t, arkTxid).HeightHint,
+	)
 }
 
 // TestManualTriggerSubmitsReadyCheckpointImmediately verifies the deferral

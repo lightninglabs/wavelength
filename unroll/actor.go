@@ -396,6 +396,12 @@ func safeTxOutPkScript(tx *wire.MsgTx, index uint32) ([]byte, error) {
 	return append([]byte(nil), tx.TxOut[index].PkScript...), nil
 }
 
+// proofNodeHeightHint is the earliest safe confirmation height hint for
+// proof-graph transactions. Roots and intermediate OOR checkpoint ancestors
+// can confirm before the target descriptor's CreatedHeight, so proof watches
+// must not use the target creation height as a lower bound.
+const proofNodeHeightHint uint32 = 1
+
 // ensureNodeConfirmed hands one ready proof-graph node to txconfirm and
 // threads any immediate rejection back through the FSM.
 //
@@ -427,6 +433,7 @@ func (b *behavior) ensureNodeConfirmed(ctx context.Context, txid chainhash.Hash,
 		Tx:                   node.Tx,
 		ConfirmationPkScript: pkScript,
 		Label:                "unroll-node-" + txid.String(),
+		HeightHint:           proofNodeHeightHint,
 		Subscriber:           b.notificationRef(),
 	}).Await(ctx).Unpack()
 	if err != nil {
@@ -475,23 +482,13 @@ func (b *behavior) watchDeferredCheckpoint(ctx context.Context,
 		},
 	)
 
-	state, err := b.currentState()
-	if err != nil {
-		return err
-	}
-
-	height := stateHeight(state)
-	if height < 0 {
-		height = 0
-	}
-
 	txidCopy := txid
 	_, err = b.cfg.ChainSource.Ask(ctx, &chainsource.RegisterConfRequest{
 		CallerID:    b.deferredCheckpointCallerID(),
 		Txid:        &txidCopy,
 		PkScript:    append([]byte(nil), pkScript...),
 		TargetConfs: 1,
-		HeightHint:  uint32(height),
+		HeightHint:  proofNodeHeightHint,
 		NotifyActor: fn.Some(notifyRef),
 	}).Await(ctx).Unpack()
 	if err != nil {
@@ -1018,21 +1015,7 @@ func (b *behavior) routeOutbox(ctx context.Context,
 						"missing on reissue", txid)
 				}
 
-				pkScript, err := safeTxOutPkScript(node.Tx, 0)
-				if err != nil {
-					return fmt.Errorf("proof node %s: %w",
-						txid, err)
-				}
-
-				_, err = b.cfg.TxConfirmRef.Ask(
-					ctx, &txconfirm.EnsureConfirmedReq{
-						Tx:                   node.Tx,
-						ConfirmationPkScript: pkScript,
-						Label: "unroll-node-" +
-							txid.String(),
-						Subscriber: b.notificationRef(),
-					},
-				).Await(ctx).Unpack()
+				err := b.ensureNodeConfirmed(ctx, txid, node)
 				if err != nil {
 					return err
 				}
