@@ -93,6 +93,28 @@ const (
 	// starting a container when Docker fails to bind a randomly assigned
 	// host port due to a race with parallel test execution.
 	maxPortBindRetries = 15
+
+	// maxBitcoindStartRetries is the maximum number of times the harness
+	// rebuilds the bitcoind container when post-start RPC probing
+	// fails. The CI signature this guards against is a container whose
+	// port forward exists but whose bitcoind process either never bound
+	// the RPC socket or crashed during init: subsequent RPC calls hit
+	// "connection refused" against an apparently-running container.
+	// Three attempts is enough to recover from a transient docker
+	// scheduling glitch under heavy parallel load without masking a
+	// genuine bug in the bitcoind image.
+	maxBitcoindStartRetries = 3
+
+	// bitcoindStartProbeDuration is the wall-clock window the post-start
+	// RPC probe spends repeatedly polling bitcoind to confirm it stays
+	// reachable. The existing waitForBitcoind already gates on the
+	// first successful getblockchaininfo response; this extra probe is
+	// what catches the failure mode where bitcoind answers the first
+	// poll and then dies before the harness's first user-driven RPC
+	// call. 5 seconds is short enough to keep test setup snappy and
+	// long enough to observe the death window we have actually seen in
+	// CI.
+	bitcoindStartProbeDuration = 5 * time.Second
 )
 
 var (
@@ -1081,10 +1103,66 @@ func (h *Harness) writeContainerLogsToFile(res *dockertest.Resource,
 }
 
 // startBitcoind launches a bitcoind container and waits until its JSON-RPC is
-// responsive then ensures a wallet exists.
+// responsive then ensures a wallet exists. On post-start RPC probe failure
+// the container is torn down and rebuilt up to maxBitcoindStartRetries times;
+// see attemptStartBitcoind for the per-attempt body and probeBitcoindHealthy
+// for the failure modes the probe is designed to catch.
 func (h *Harness) startBitcoind() {
-	// Remove any existing bitcoind container with the same name.
 	containerName := h.containerName("bitcoin")
+
+	var lastErr error
+	for attempt := 1; attempt <= maxBitcoindStartRetries; attempt++ {
+		err := h.attemptStartBitcoind(containerName)
+		if err == nil {
+			return
+		}
+		lastErr = err
+
+		h.Logf(
+			"bitcoind start attempt %d/%d failed for %s: %v",
+			attempt, maxBitcoindStartRetries, containerName, err,
+		)
+
+		// Tear down the unhealthy container so the next attempt can
+		// reuse the same name. Also drop any port reservation we
+		// recorded so a stale BitcoindRPC value cannot leak back into
+		// later calls if every attempt fails.
+		h.removeContainerByName(containerName)
+		h.bitcoind = nil
+		h.bitcoindName = ""
+		h.BitcoindRPC = ""
+		h.BitcoindP2P = ""
+		h.BitcoindZMQBlock = ""
+		h.BitcoindZMQTx = ""
+
+		if attempt == maxBitcoindStartRetries {
+			break
+		}
+
+		// Brief jittered backoff so parallel harnesses retrying the
+		// same kind of failure do not synchronize on docker.
+		time.Sleep(
+			250*time.Millisecond +
+				randJitter(250*time.Millisecond),
+		)
+	}
+
+	require.NoErrorf(
+		h.T, lastErr, "failed to start a healthy bitcoind after %d "+
+			"attempts", maxBitcoindStartRetries,
+	)
+}
+
+// attemptStartBitcoind performs one attempt at launching the bitcoind
+// container, waiting for RPC, and probing for sustained health. Container
+// teardown on failure is the caller's responsibility (see startBitcoind).
+//
+// Failures are returned as errors rather than t.Fatal so startBitcoind can
+// decide whether to retry; require.NoError-style assertions are reserved
+// for failures the harness cannot recover from (filesystem, configuration).
+func (h *Harness) attemptStartBitcoind(containerName string) error {
+	// Remove any existing bitcoind container with the same name so this
+	// attempt can reuse the name even after a prior failed attempt.
 	h.removeContainerByName(containerName)
 
 	cmd := []string{
@@ -1118,7 +1196,8 @@ func (h *Harness) startBitcoind() {
 		"-printtoconsole",
 	}
 
-	// Ensure absolute host path for bind mount.
+	// Ensure absolute host path for bind mount. Filesystem failures are
+	// not retryable so this stays a hard require.
 	btcHostDir, err := filepath.Abs(h.bitcoinDataDir)
 	require.NoError(
 		h.T, err, "failed to get absolute path for bitcoind data dir",
@@ -1171,7 +1250,9 @@ func (h *Harness) startBitcoind() {
 				}
 		})
 	})
-	require.NoError(h.T, err, "failed to start bitcoind")
+	if err != nil {
+		return fmt.Errorf("docker run: %w", err)
+	}
 	h.bitcoind = res
 
 	// LND will reach bitcoind by this container name inside the network.
@@ -1205,13 +1286,34 @@ func (h *Harness) startBitcoind() {
 		h.BitcoindZMQTx,
 	)
 
-	// Ensure JSON-RPC is responsive before proceeding.
+	// Ensure JSON-RPC is responsive before proceeding. Initial readiness
+	// uses a short non-fatal poll instead of require.Eventually so the
+	// outer retry loop can rebuild the container on a stuck RPC port.
 	h.Log("Waiting for bitcoind JSON-RPC to be responsive...")
-	h.waitForBitcoind()
+	if err := h.waitForBitcoindReady(); err != nil {
+		return fmt.Errorf("initial RPC readiness: %w", err)
+	}
 
-	// Ensure a wallet exists.
+	// Ensure a wallet exists. Same rationale as above for the
+	// non-fatal variant.
 	h.Log("Ensuring bitcoind wallet exists...")
-	h.bitcoindEnsureWallet()
+	if err := h.bitcoindEnsureWalletErr(); err != nil {
+		return fmt.Errorf("ensure wallet: %w", err)
+	}
+
+	// Stronger probe: confirm RPC stays healthy across a short observation
+	// window. This catches the CI flake where the container is up and the
+	// first call succeeds, then the bitcoind process dies (or its RPC
+	// listener wedges) before any user-driven RPC arrives. Failing this
+	// probe drives the outer loop to rebuild the container instead of
+	// letting the test discover the death many seconds later as a
+	// "connection refused" deep inside Faucet.
+	h.Log("Probing bitcoind RPC for sustained health...")
+	if err := h.probeBitcoindHealthy(); err != nil {
+		return fmt.Errorf("sustained health probe: %w", err)
+	}
+
+	return nil
 }
 
 // startElectrs launches an electrs container that serves an Esplora-compatible
@@ -1830,34 +1932,102 @@ func (h *Harness) bitcoinRPCCall(method string, params ...interface{}) (
 	return rr.Result, nil
 }
 
-// waitForBitcoind polls bitcoind's RPC until it responds or times out.
-func (h *Harness) waitForBitcoind() {
+// waitForBitcoindReady polls bitcoind's RPC until it responds or times out,
+// returning the last RPC error on timeout. Recovery (typically a container
+// rebuild) is left to the caller — attemptStartBitcoind drives that loop.
+// We use this non-fatal form instead of a require.Eventually-style helper
+// so the outer retry can recover from a stuck RPC port; once the harness
+// has handed control to test code, callers can still wrap this in their own
+// require.NoError if they want fatal-on-failure semantics.
+func (h *Harness) waitForBitcoindReady() error {
 	h.T.Helper()
 
-	// Ensure node-level RPC is responsive.
-	require.Eventually(h.T, func() bool {
+	deadline := time.Now().Add(defaultTimeout)
+	var lastErr error
+	for {
 		_, err := h.bitcoinRPCCall("getblockchaininfo")
+		if err == nil {
+			return nil
+		}
+		lastErr = err
 
-		return err == nil
-	}, defaultTimeout, time.Second, "bitcoind JSON-RPC not responsive")
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("bitcoind JSON-RPC not responsive "+
+				"within %s: %w", defaultTimeout, lastErr)
+		}
+
+		time.Sleep(time.Second)
+	}
 }
 
-// bitcoindEnsureWallet makes sure a default wallet exists, creating one if
-// needed.
-func (h *Harness) bitcoindEnsureWallet() {
+// bitcoindEnsureWalletErr makes sure a default wallet exists, creating one
+// if needed. Returns the first failing RPC error. The startup retry path
+// uses this directly so a transient failure rebuilds the container instead
+// of failing the test; the fatal sibling bitcoindEnsureWallet wraps this
+// for the mid-test Faucet path where no recovery is possible.
+func (h *Harness) bitcoindEnsureWalletErr() error {
 	h.T.Helper()
 
-	// Make sure a default wallet exists, create one if needed.
 	res, err := h.bitcoinRPCCall("listwallets")
-	require.NoError(h.T, err)
+	if err != nil {
+		return fmt.Errorf("listwallets: %w", err)
+	}
 
 	var wallets []string
-	err = json.Unmarshal(res, &wallets)
-	require.NoError(h.T, err, "listwallets unmarshal failed")
+	if err := json.Unmarshal(res, &wallets); err != nil {
+		return fmt.Errorf("listwallets unmarshal: %w", err)
+	}
 
 	if len(wallets) == 0 {
-		_, err = h.bitcoinRPCCall("createwallet", "default")
-		require.NoError(h.T, err)
+		if _, err := h.bitcoinRPCCall(
+			"createwallet", "default",
+		); err != nil {
+			return fmt.Errorf("createwallet default: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// bitcoindEnsureWallet is the fail-fast wrapper around
+// bitcoindEnsureWalletErr for mid-test callers that have no recovery path.
+func (h *Harness) bitcoindEnsureWallet() {
+	h.T.Helper()
+	require.NoError(h.T, h.bitcoindEnsureWalletErr())
+}
+
+// probeBitcoindHealthy keeps polling bitcoind for bitcoindStartProbeDuration
+// to confirm RPC stays reachable across that window. Returns the first
+// failing RPC error if bitcoind goes silent partway through, otherwise nil.
+//
+// We pick getblockcount as the probe call because:
+//
+//   - It exercises a writeable chainstate read (not just node info), so a
+//     bitcoind that bound the port but failed to load chainstate fails the
+//     probe.
+//
+//   - It is cheap and side-effect free, so spamming it across the probe
+//     window has negligible cost.
+//
+// pollInterval is small enough that a sub-second death window is observable
+// but large enough that we don't drown the CI runner in pointless RPC
+// traffic.
+func (h *Harness) probeBitcoindHealthy() error {
+	h.T.Helper()
+
+	const probePollInterval = 250 * time.Millisecond
+
+	deadline := time.Now().Add(bitcoindStartProbeDuration)
+	for {
+		if _, err := h.bitcoinRPCCall("getblockcount"); err != nil {
+			return fmt.Errorf("getblockcount: %w", err)
+		}
+
+		if !time.Now().Before(deadline) {
+			return nil
+		}
+
+		time.Sleep(probePollInterval)
 	}
 }
 
