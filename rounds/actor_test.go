@@ -25,6 +25,7 @@ import (
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/time/rate"
 )
 
 // mockClientConnRef implements actor.TellOnlyRef[clientconn.ClientConnMsg]
@@ -732,6 +733,71 @@ func TestActorJoinRoundRequest(t *testing.T) {
 		require.Equal(t, "client1", string(clientMsg.Client))
 		require.Contains(t, clientMsg.ErrorMsg, "does not match")
 	})
+}
+
+// TestActorJoinRequestRateLimit verifies that the per-client
+// JoinRoundRequest limiter drops requests once a client exhausts its
+// token bucket, and reaps state when the client is no longer tracked
+// in any round.
+func TestActorJoinRequestRateLimit(t *testing.T) {
+	t.Parallel()
+
+	t.Run("burst exhaustion drops further requests",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+
+			// Tight limits: burst of 2, rate one token per hour
+			// (effectively no replenish during the test). Three
+			// requests in a row must yield two accepted, one
+			// dropped.
+			h.cfg.JoinRequestBurst = 2
+			h.cfg.JoinRequestRate = rate.Every(time.Hour)
+			h.actor = NewActor(h.cfg)
+			h.cfg.SelfRef = &actorRef{actor: h.actor}
+			h.setActiveRounds([]*Round{})
+			h.start(h.ctx)
+
+			require.True(t, h.actor.allowJoinRequest("client1"))
+			require.True(t, h.actor.allowJoinRequest("client1"))
+			require.False(t, h.actor.allowJoinRequest("client1"))
+
+			// A different ClientID has its own bucket and is not
+			// affected by client1's exhaustion.
+			require.True(t, h.actor.allowJoinRequest("client2"))
+		})
+
+	t.Run("limiter is evicted when client leaves all rounds",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+			h.setActiveRounds([]*Round{})
+			h.start(h.ctx)
+
+			// Seed the limiter for "client1" via the public path.
+			require.True(t, h.actor.allowJoinRequest("client1"))
+			require.Contains(
+				t, h.actor.joinLimiters,
+				clientconn.ClientID("client1"),
+			)
+
+			// Track client1 as a participant in some round, then
+			// untrack — that should drop the limiter as well so
+			// the map cannot grow unboundedly over an operator's
+			// lifetime.
+			roundID, err := NewRoundID()
+			require.NoError(t, err)
+			h.actor.trackClientJoin(
+				h.ctx, "client1", roundID,
+			)
+			h.actor.untrackRound(roundID)
+			require.NotContains(
+				t, h.actor.joinLimiters,
+				clientconn.ClientID("client1"),
+			)
+		})
 }
 
 // TestActorRegistrationTimeout tests the actor's handling of registration
