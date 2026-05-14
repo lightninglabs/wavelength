@@ -34,13 +34,14 @@ const (
 
 // TLV record type aliases for RecordT-style message field serialization.
 type (
-	protoPayloadRecordTLV = tlv.TlvType1
-	envelopeRecordTLV     = tlv.TlvType2
-	msgIDRecordTLV        = tlv.TlvType3
-	idempotencyRecordTLV  = tlv.TlvType4
-	clientIDRecordTLV     = tlv.TlvType5
-	rpcServiceRecordTLV   = tlv.TlvType6
-	rpcMethodRecordTLV    = tlv.TlvType7
+	protoPayloadRecordTLV   = tlv.TlvType1
+	envelopeRecordTLV       = tlv.TlvType2
+	msgIDRecordTLV          = tlv.TlvType3
+	idempotencyRecordTLV    = tlv.TlvType4
+	clientIDRecordTLV       = tlv.TlvType5
+	rpcServiceRecordTLV     = tlv.TlvType6
+	rpcMethodRecordTLV      = tlv.TlvType7
+	correlationKeyRecordTLV = tlv.TlvType8
 )
 
 // ClientID is a unique identifier for a client.
@@ -62,6 +63,14 @@ type ClientMessage interface {
 	// and method for this message. The client-side ingress loop
 	// uses these to dispatch the envelope to the correct handler.
 	ServiceMethod() mailboxrpc.ServiceMethod
+
+	// CorrelationKey returns the per-client-mailbox FIFO key for this
+	// message. Two outbox events with the same key (typically client +
+	// round id) are claim-ordered by emission order regardless of retry
+	// backoff. Returning the empty string opts out of per-key FIFO and
+	// uses the existing global available_at order. See the durable
+	// mailbox claim semantics for the full contract.
+	CorrelationKey() string
 }
 
 // ClientConnMsg is the sealed interface for messages that can be sent to the
@@ -169,6 +178,12 @@ type sendEventMsg struct {
 	// rpcMethod is the protobuf method name for client-side
 	// routing, serialized in TLV for replay fidelity.
 	rpcMethod string
+
+	// correlationKey is the per-mailbox FIFO key derived from
+	// Message.CorrelationKey() at construction. Serialized in TLV so
+	// crash-replay returns the same key without re-deriving from the
+	// proto payload. Empty means unkeyed.
+	correlationKey string
 }
 
 // MessageType returns a human-readable type name for logging.
@@ -179,6 +194,25 @@ func (m *sendEventMsg) MessageType() string {
 // TLVType returns the unique TLV type identifier for this message.
 func (m *sendEventMsg) TLVType() tlv.Type {
 	return sendEventMsgType
+}
+
+// CorrelationKey returns the per-mailbox FIFO key for this send envelope.
+// The framework calls this on fresh sends before Encode() runs (to stamp
+// the durable mailbox's correlation_key column at enqueue), so we fall
+// back to deriving the key from the wrapped ClientMessage when the
+// cache is empty and memoize the result so Encode() persists the same
+// value. On replay, Decode() populates the cache from TLV record 8
+// before any caller observes the message.
+func (m *sendEventMsg) CorrelationKey() string {
+	if m.correlationKey != "" {
+		return m.correlationKey
+	}
+	if m.Message == nil {
+		return ""
+	}
+	m.correlationKey = m.Message.CorrelationKey()
+
+	return m.correlationKey
 }
 
 // Encode serializes the message to the provided writer. The ClientMessage
@@ -216,6 +250,14 @@ func (m *sendEventMsg) Encode(w io.Writer) error {
 
 	clientIDBytes := []byte(string(m.clientID))
 
+	// Cache the correlation key from the inner ClientMessage so the
+	// durable mailbox sees the same key on replay without re-deriving
+	// from the proto payload.
+	if m.correlationKey == "" {
+		m.correlationKey = m.Message.CorrelationKey()
+	}
+	correlationKeyBytes := []byte(m.correlationKey)
+
 	payload := tlv.NewRecordT[protoPayloadRecordTLV](
 		mailboxconn.WrappedProto[*anypb.Any]{
 			Val: anyMsg,
@@ -242,10 +284,14 @@ func (m *sendEventMsg) Encode(w io.Writer) error {
 	methodRec := tlv.NewPrimitiveRecord[rpcMethodRecordTLV](
 		methodBytes,
 	)
+	correlationKeyRec := tlv.NewPrimitiveRecord[correlationKeyRecordTLV](
+		correlationKeyBytes,
+	)
 
 	stream, err := tlv.NewStream(
 		payload.Record(), msgIDRec.Record(), idemRec.Record(),
 		clientIDRec.Record(), svcRec.Record(), methodRec.Record(),
+		correlationKeyRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -269,10 +315,12 @@ func (m *sendEventMsg) Decode(r io.Reader) error {
 	clientIDRec := tlv.ZeroRecordT[clientIDRecordTLV, []byte]()
 	svcRec := tlv.ZeroRecordT[rpcServiceRecordTLV, []byte]()
 	methodRec := tlv.ZeroRecordT[rpcMethodRecordTLV, []byte]()
+	correlationKeyRec := tlv.ZeroRecordT[correlationKeyRecordTLV, []byte]()
 
 	stream, err := tlv.NewStream(
 		payload.Record(), msgIDRec.Record(), idemRec.Record(),
 		clientIDRec.Record(), svcRec.Record(), methodRec.Record(),
+		correlationKeyRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -283,17 +331,20 @@ func (m *sendEventMsg) Decode(r io.Reader) error {
 	}
 
 	cid := ClientID(clientIDRec.Val)
+	correlationKey := string(correlationKeyRec.Val)
 	m.Message = &rawClientMessage{
-		anyMsg:     payload.Val.Val,
-		clientID:   cid,
-		rpcService: string(svcRec.Val),
-		rpcMethod:  string(methodRec.Val),
+		anyMsg:         payload.Val.Val,
+		clientID:       cid,
+		rpcService:     string(svcRec.Val),
+		rpcMethod:      string(methodRec.Val),
+		correlationKey: correlationKey,
 	}
 	m.MsgID = string(msgIDRec.Val)
 	m.IdempotencyKey = string(idemRec.Val)
 	m.clientID = cid
 	m.rpcService = string(svcRec.Val)
 	m.rpcMethod = string(methodRec.Val)
+	m.correlationKey = correlationKey
 
 	return nil
 }
@@ -416,10 +467,11 @@ func (m *sendRPCResp) connectorRespSealed() {}
 // concrete type is recovered using the global protobuf type registry via
 // anypb.UnmarshalNew.
 type rawClientMessage struct {
-	anyMsg     *anypb.Any
-	clientID   ClientID
-	rpcService string
-	rpcMethod  string
+	anyMsg         *anypb.Any
+	clientID       ClientID
+	rpcService     string
+	rpcMethod      string
+	correlationKey string
 }
 
 // ClientID returns the target client identifier stored during TLV decode.
@@ -435,6 +487,13 @@ func (m *rawClientMessage) ServiceMethod() mailboxrpc.ServiceMethod {
 		Service: m.rpcService,
 		Method:  m.rpcMethod,
 	}
+}
+
+// CorrelationKey returns the persisted per-mailbox FIFO key from TLV
+// deserialization. Replays return the same key the original enqueue
+// stamped.
+func (m *rawClientMessage) CorrelationKey() string {
+	return m.correlationKey
 }
 
 // ToProto reconstructs the original proto message from the stored Any

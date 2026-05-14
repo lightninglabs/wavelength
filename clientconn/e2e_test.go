@@ -1826,6 +1826,80 @@ func TestSendEventMsgTLVRoundTrip(t *testing.T) {
 	)
 }
 
+// fixedKeyClientMessage is a minimal ClientMessage whose CorrelationKey
+// returns a configurable constant. Used to assert sendEventMsg surfaces
+// the wrapped key on the fresh send path, before Encode runs.
+type fixedKeyClientMessage struct {
+	actor.BaseMessage
+
+	cid ClientID
+	key string
+}
+
+// ClientID returns the configured target client identifier.
+func (m *fixedKeyClientMessage) ClientID() ClientID { return m.cid }
+
+// ToProto returns a stable RoundStartedEvent so the fixture is a valid
+// ClientMessage for the wrapper's Encode path.
+func (m *fixedKeyClientMessage) ToProto() proto.Message {
+	return &roundtestpb.RoundStartedEvent{RoundId: "fixed-key-round"}
+}
+
+// ServiceMethod returns a stable routing pair for the wrapper's TLV
+// fields; the value is irrelevant to the correlation-key assertions.
+func (m *fixedKeyClientMessage) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: "hellotest.v1.HelloService",
+		Method:  "RoundStarted",
+	}
+}
+
+// CorrelationKey returns the configured constant so the test can pin
+// the wrapper's pre-Encode fallback behavior.
+func (m *fixedKeyClientMessage) CorrelationKey() string { return m.key }
+
+// TestSendEventMsgCorrelationKeyBeforeEncode pins the framework call
+// order. DurableMailbox.Send reads CorrelationKey() to stamp the row's
+// correlation_key column before Encode runs to persist the payload, so
+// the wrapper must derive the key from its inner ClientMessage on the
+// fresh send path rather than rely on a cache populated by Encode.
+// Without this, per-key FIFO is bypassed for the first enqueue and only
+// kicks in on replay, which silently regresses the join-ack vs quote
+// reorder fix this PR is built on.
+func TestSendEventMsgCorrelationKeyBeforeEncode(t *testing.T) {
+	t.Parallel()
+
+	const wantKey = "client-1/round-99"
+
+	msg := &sendEventMsg{
+		Message: &fixedKeyClientMessage{
+			cid: "client-1",
+			key: wantKey,
+		},
+		clientID: "client-1",
+	}
+
+	// The framework reads CorrelationKey() before Encode on the fresh
+	// send path. The wrapper must already surface the wrapped key.
+	require.Equal(
+		t, wantKey, msg.CorrelationKey(),
+		"fresh sendEventMsg must surface the wrapped key before "+
+			"Encode runs",
+	)
+
+	// Encode + Decode must round-trip the same key so the replay path
+	// also surfaces it without re-deriving from the proto payload.
+	var buf bytes.Buffer
+	require.NoError(t, msg.Encode(&buf))
+
+	decoded := &sendEventMsg{}
+	require.NoError(t, decoded.Decode(&buf))
+	require.Equal(
+		t, wantKey, decoded.CorrelationKey(),
+		"replayed sendEventMsg must surface the persisted key",
+	)
+}
+
 // TestSendRPCMsgTLVRoundTrip verifies that a sendRPCMsg survives
 // Encode → Decode without data loss. The decoded message must carry the
 // same envelope fields.
