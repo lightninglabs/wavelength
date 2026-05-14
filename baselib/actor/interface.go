@@ -20,11 +20,23 @@ var ErrServiceKeyTypeMismatch = fmt.Errorf("service key type mismatch")
 // BaseMessage is a helper struct that can be embedded in message types defined
 // outside the actor package to satisfy the Message interface's unexported
 // messageMarker method.
+//
+// BaseMessage also provides a default CorrelationKey of "" (unkeyed). Messages
+// that need to participate in a per-key FIFO lane in a durable mailbox
+// override this by defining their own CorrelationKey method on the embedding
+// struct.
 type BaseMessage struct{}
 
 // messageMarker implements the unexported method for the Message interface,
 // allowing types that embed BaseMessage to satisfy the Message interface.
 func (BaseMessage) messageMarker() {}
+
+// CorrelationKey returns the empty string by default, which means the message
+// is unkeyed and participates in the durable mailbox's global available_at
+// claim order. Concrete message types that need per-key FIFO claim ordering
+// override this method to return a non-empty key. See the durable mailbox
+// claim semantics for the full contract.
+func (BaseMessage) CorrelationKey() string { return "" }
 
 // Message is a sealed interface for actor messages. Actors will receive
 // messages conforming to this interface. The interface is "sealed" by the
@@ -39,6 +51,16 @@ type Message interface {
 	// MessageType returns the type name of the message for
 	// routing/filtering.
 	MessageType() string
+
+	// CorrelationKey returns a non-empty string when this message
+	// participates in a per-key FIFO lane in a durable mailbox. The
+	// durable mailbox claim SQL never returns a keyed message if an
+	// earlier same-key message is still in the queue, even if the
+	// earlier message is in retry backoff. An empty string means the
+	// message is unkeyed and uses the existing global available_at
+	// claim order. The default implementation on BaseMessage returns
+	// the empty string.
+	CorrelationKey() string
 }
 
 // PriorityMessage is an extension of the Message interface for messages that
