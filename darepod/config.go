@@ -114,6 +114,11 @@ type Config struct {
 	// Valid levels: trace, debug, info, warn, error, critical, off.
 	DebugLevel string `mapstructure:"debuglevel"`
 
+	// LogDirPath overrides the network-scoped directory used by the CLI
+	// for persistent daemon log files. When empty, logs are written under
+	// DataDir/logs/<network>.
+	LogDirPath string `mapstructure:"logdir"`
+
 	// LogWriter is the sink for daemon log output. When nil, darepod
 	// writes logs to stdout.
 	LogWriter io.Writer
@@ -613,6 +618,10 @@ func (c *Config) NetworkDir() (string, error) {
 
 // LogDir returns the network-scoped log directory.
 func (c *Config) LogDir() (string, error) {
+	if c.LogDirPath != "" {
+		return expandTilde(c.LogDirPath)
+	}
+
 	dataDir, err := expandTilde(c.DataDir)
 	if err != nil {
 		return "", err
