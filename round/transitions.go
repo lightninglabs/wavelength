@@ -789,10 +789,7 @@ func evaluateQuote(env *ClientEnvironment, roundID RoundID, intents Intents,
 		return &QuoteRejected{
 			RoundID: roundID,
 			QuoteID: quote.QuoteID,
-			Reason: fmt.Sprintf(
-				"server rejected intent: %s",
-				quote.RejectReason,
-			),
+			Reason:  quoteRejectReason(quote.RejectReason),
 		}
 	}
 
@@ -862,6 +859,27 @@ func evaluateQuote(env *ClientEnvironment, roundID RoundID, intents Intents,
 	return &QuoteAccepted{
 		RoundID: roundID,
 		QuoteID: quote.QuoteID,
+	}
+}
+
+// quoteRejectReason formats server-side quote rejections for operator-facing
+// logs and operation status output.
+func quoteRejectReason(reason roundpb.QuoteReason) string {
+	switch reason {
+	case roundpb.QuoteReason_INSUFFICIENT_RESIDUAL:
+		return fmt.Sprintf("server rejected intent: %s (not enough "+
+			"value remains for the change output after seal-time "+
+			"operator fees; use a larger input or reduce fixed "+
+			"outputs)", reason)
+
+	case roundpb.QuoteReason_INVALID_CHANGE_DESIGNATION:
+		return fmt.Sprintf("server rejected intent: %s (the intent "+
+			"must have exactly one change output when it has "+
+			"multiple outputs; this is unexpected when using the "+
+			"standard client and should be reported)", reason)
+
+	default:
+		return fmt.Sprintf("server rejected intent: %s", reason)
 	}
 }
 
