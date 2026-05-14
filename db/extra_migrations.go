@@ -68,8 +68,8 @@ func (e ExtraMigration) validate() error {
 			e.Name)
 	}
 	if e.LatestVersion == 0 {
-		return fmt.Errorf("extra migration %q: LatestVersion must be "+
-			">= 1", e.Name)
+		return fmt.Errorf("extra migration %q: LatestVersion "+
+			"must be >= 1", e.Name)
 	}
 
 	return nil
@@ -181,7 +181,8 @@ func applyExtraMigrations(db *sql.DB, log btclog.Logger,
 		opts := defaultMigrateOptions()
 		opts.latestVersion = ex.LatestVersion
 
-		log.InfoS(context.Background(),
+		log.InfoS(
+			context.Background(),
 			"Applying downstream "+dialect+" migrations",
 			"name", ex.Name,
 			"latest_version", ex.LatestVersion,
@@ -193,8 +194,8 @@ func applyExtraMigrations(db *sql.DB, log btclog.Logger,
 			opts, log,
 		)
 		if err != nil {
-			return fmt.Errorf("apply %q migrations: %w",
-				ex.Name, err)
+			return fmt.Errorf("apply %q migrations: %w", ex.Name,
+				err)
 		}
 	}
 
@@ -205,12 +206,8 @@ func applyExtraMigrations(db *sql.DB, log btclog.Logger,
 // db using SQLite's golang-migrate driver and the SQLite schema replacements
 // (currently a no-op map). Each set uses its own MigrationsTable so its
 // version counter is independent of darepo's core schema_migrations table.
-func applyExtraMigrationsSQLite(s *SqliteStore,
-	extras []ExtraMigration) error {
-
-	newDriver := func(db *sql.DB,
-		table string) (database.Driver, error) {
-
+func applyExtraMigrationsSQLite(s *SqliteStore, extras []ExtraMigration) error {
+	newDriver := func(db *sql.DB, table string) (database.Driver, error) {
 		return sqlite_migrate.WithInstance(db, &sqlite_migrate.Config{
 			MigrationsTable: table,
 		})
@@ -229,9 +226,7 @@ func applyExtraMigrationsSQLite(s *SqliteStore,
 func applyExtraMigrationsPostgres(s *PostgresStore,
 	extras []ExtraMigration) error {
 
-	newDriver := func(db *sql.DB,
-		table string) (database.Driver, error) {
-
+	newDriver := func(db *sql.DB, table string) (database.Driver, error) {
 		return postgres_migrate.WithInstance(
 			db, &postgres_migrate.Config{
 				MigrationsTable: table,
