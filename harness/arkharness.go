@@ -362,7 +362,9 @@ func (h *ArkHarness) startArkd() {
 		h.arkDataDir, "darepo.db",
 	)
 	cfg.AdminRPC.ListenAddr = "127.0.0.1:0"
+	cfg.AdminRPC.Gateway.ListenAddr = "127.0.0.1:0"
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
+	cfg.RPC.Gateway.ListenAddr = "127.0.0.1:0"
 	cfg.Metrics = nil
 
 	// Install the canonical itest fee schedule. This is the
@@ -975,6 +977,7 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	cfg.Server.Host = h.ArkRPCAddr
 	cfg.Server.Insecure = true
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
+	cfg.RPC.Gateway.ListenAddr = "127.0.0.1:0"
 
 	// Wire a package submitter for unroll CPFP package relay.
 	// This talks directly to the harness bitcoind via JSON-RPC.

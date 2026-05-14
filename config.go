@@ -3,8 +3,10 @@ package darepo
 import (
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
@@ -33,6 +35,10 @@ const (
 	// DefaultRPCListen is the default listen address for the
 	// client-facing gRPC server.
 	DefaultRPCListen = "localhost:7070"
+
+	// DefaultRPCGatewayListen is the default listen address for the
+	// client-facing HTTP/JSON gateway.
+	DefaultRPCGatewayListen = "localhost:7071"
 
 	// DefaultLndHost is the default address for connecting to the
 	// local lnd instance.
@@ -74,6 +80,36 @@ type TLSConfig struct {
 	// self-signed CA. When true, CertPath and KeyPath are used as
 	// output paths for the generated material.
 	AutoCert bool `mapstructure:"autocert"`
+}
+
+// GatewayConfig contains configuration for an HTTP/JSON grpc-gateway
+// listener.
+type GatewayConfig struct {
+	// Enabled controls whether the HTTP gateway starts with its
+	// owning gRPC server.
+	Enabled bool `mapstructure:"enabled"`
+
+	// ListenAddr is the network address the gateway binds to.
+	ListenAddr string `mapstructure:"listen"`
+
+	// AllowedOrigins lists browser origins that may call the gateway.
+	// Empty means browser requests fail closed while non-browser
+	// requests without an Origin header continue to work.
+	AllowedOrigins []string `mapstructure:"allowedorigins"`
+
+	// Listener is an optional pre-created listener. When non-nil,
+	// the gateway serves on this listener instead of binding to
+	// ListenAddr. This is programmatic-only and is not loaded from
+	// config files.
+	Listener net.Listener
+}
+
+// DefaultGatewayConfig returns an enabled HTTP gateway config.
+func DefaultGatewayConfig(listenAddr string) *GatewayConfig {
+	return &GatewayConfig{
+		Enabled:    true,
+		ListenAddr: listenAddr,
+	}
 }
 
 // RoundsConfig holds operator policy for the round subsystem. These
@@ -548,6 +584,19 @@ func (c *Config) Validate() error {
 	if c.RPC.ListenAddr == "" {
 		return fmt.Errorf("rpc listen address is required")
 	}
+	if c.RPC.Gateway == nil {
+		return fmt.Errorf("rpc gateway config is required")
+	}
+	if c.RPC.Gateway.Enabled && c.RPC.Gateway.Listener == nil &&
+		c.RPC.Gateway.ListenAddr == "" {
+		return fmt.Errorf("rpc gateway listen address or injected " +
+			"listener is required")
+	}
+	if err := validateGatewayAllowedOrigins(
+		"rpc.gateway.allowedorigins", c.RPC.Gateway.AllowedOrigins,
+	); err != nil {
+		return err
+	}
 	if c.Rounds == nil {
 		return fmt.Errorf("rounds config is required")
 	}
@@ -640,6 +689,19 @@ func (c *Config) Validate() error {
 		if tls.KeyPath != "" && tls.CertPath == "" {
 			return fmt.Errorf("rpc.tls.certpath is required when " +
 				"rpc.tls.keypath is set")
+		}
+	}
+
+	return nil
+}
+
+// validateGatewayAllowedOrigins rejects wildcard CORS grants on wallet-control
+// gateways.
+func validateGatewayAllowedOrigins(name string, origins []string) error {
+	for _, origin := range origins {
+		if strings.TrimSpace(origin) == "" || origin == "*" {
+			return fmt.Errorf("%s must list explicit "+
+				"trusted origins", name)
 		}
 	}
 

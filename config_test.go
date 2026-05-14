@@ -47,6 +47,17 @@ func TestDefaultConfigIncludesMailboxConfig(t *testing.T) {
 	require.Zero(t, cfg.Mailbox.MaxEnvelopesPerMailbox)
 }
 
+// TestDefaultConfigEnablesClientGateway ensures the client HTTP gateway is
+// enabled on localhost by default.
+func TestDefaultConfigEnablesClientGateway(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	require.True(t, cfg.RPC.Gateway.Enabled)
+	require.Equal(t, DefaultRPCGatewayListen, cfg.RPC.Gateway.ListenAddr)
+	require.Empty(t, cfg.RPC.Gateway.AllowedOrigins)
+}
+
 // TestConfigValidate exercises the config validation logic across a
 // range of valid and invalid configurations.
 func TestConfigValidate(t *testing.T) {
@@ -109,6 +120,37 @@ func TestConfigValidate(t *testing.T) {
 				c.RPC = nil
 			},
 			wantErr: "rpc config is required",
+		},
+		{
+			name: "nil rpc gateway config",
+			modify: func(c *Config) {
+				c.RPC.Gateway = nil
+			},
+			wantErr: "rpc gateway config is required",
+		},
+		{
+			name: "empty enabled rpc gateway listen",
+			modify: func(c *Config) {
+				c.RPC.Gateway.ListenAddr = ""
+			},
+			wantErr: "rpc gateway listen address",
+		},
+		{
+			name: "disabled rpc gateway allows empty listen",
+			modify: func(c *Config) {
+				c.RPC.Gateway.Enabled = false
+				c.RPC.Gateway.ListenAddr = ""
+			},
+		},
+		{
+			name: "rpc gateway rejects empty origin",
+			modify: func(c *Config) {
+				c.RPC.Gateway.AllowedOrigins = []string{
+					" ",
+				}
+			},
+			wantErr: "rpc.gateway.allowedorigins must list " +
+				"explicit trusted origins",
 		},
 		{
 			name: "nil rounds config",

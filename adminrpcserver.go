@@ -26,7 +26,7 @@ import (
 
 // AdminRPCServer is a gRPC server that serves admin/operator commands.
 type AdminRPCServer struct {
-	// Required by the grpc-gateway/v2 library for forward compatibility.
+	// Required by the generated gRPC service for forward compatibility.
 	adminrpc.UnimplementedOperatorAdminServer
 
 	cfg        *AdminRPCConfig

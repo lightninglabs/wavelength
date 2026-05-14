@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	mbpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo/build"
 	"github.com/lightninglabs/darepo/fees"
 	"github.com/lightninglabs/darepo/metrics"
@@ -40,12 +42,17 @@ type RPCConfig struct {
 	// ListenAddr. This enables SDK-style embedding and in-memory
 	// transports such as bufconn for tests.
 	Listener net.Listener
+
+	// Gateway contains the HTTP/JSON gateway configuration for the
+	// client-facing RPC server.
+	Gateway *GatewayConfig `mapstructure:"gateway"`
 }
 
 // DefaultRPCConfig returns the default client RPC configuration.
 func DefaultRPCConfig() *RPCConfig {
 	return &RPCConfig{
 		ListenAddr: DefaultRPCListen,
+		Gateway:    DefaultGatewayConfig(DefaultRPCGatewayListen),
 	}
 }
 
@@ -77,6 +84,7 @@ type RPCServer struct {
 
 	cfg        *RPCConfig
 	grpcServer *grpc.Server
+	gateway    *gatewayServer
 	listener   net.Listener
 
 	server *Server
@@ -182,6 +190,33 @@ func (r *RPCServer) Start(ctx context.Context) error {
 
 	r.log.InfoS(ctx, "Starting Client RPC server")
 
+	dialOpts, err := gatewayDialOptions(r.cfg.TLS)
+	if err != nil {
+		return err
+	}
+
+	r.gateway = newGatewayServer(
+		r.cfg.Gateway, "Client RPC", r.listener.Addr().String(),
+		r.log, dialOpts,
+		func(ctx context.Context, mux *runtime.ServeMux,
+			endpoint string, opts []grpc.DialOption) error {
+
+			if err := arkrpc.RegisterArkServiceHandlerFromEndpoint(
+				ctx, mux, endpoint, opts,
+			); err != nil {
+				return err
+			}
+
+			registerMailbox :=
+				mbpb.RegisterMailboxServiceHandlerFromEndpoint
+
+			return registerMailbox(ctx, mux, endpoint, opts)
+		},
+	)
+	if err := r.gateway.Start(ctx); err != nil {
+		return err
+	}
+
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
@@ -210,6 +245,9 @@ func (r *RPCServer) Stop(ctx context.Context) error {
 	r.log.InfoS(ctx, "Stopping client RPC server")
 
 	close(r.quit)
+	if err := r.gateway.Stop(ctx); err != nil {
+		r.log.WarnS(ctx, "Client RPC gateway shutdown failed", err)
+	}
 
 	// Attempt a graceful shutdown so in-flight RPCs can
 	// complete. Fall back to a hard stop after 5 seconds to
