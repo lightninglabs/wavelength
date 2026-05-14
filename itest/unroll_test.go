@@ -32,10 +32,13 @@ const (
 	// mining one heartbeat block. btcwallet/lwwallet propagate through
 	// neutrino/P2P instead of direct package relay, so block edges are
 	// also what drive txconfirm rebroadcast and fee-bump decisions. The
-	// interval stays coarse enough to avoid flooding durable block
-	// subscribers, but short enough for multi-level materialization to
-	// finish inside the integration-test timeout.
-	unrollMempoolStallBlockInterval = 10 * time.Second
+	// interval needs to stay long enough that the durable block
+	// subscribers do not get flooded, and that fee-bump deciders see
+	// at least one full poll cycle of mempool quiescence before they
+	// decide a rebroadcast is needed. 2s comfortably clears both: the
+	// daemon's internal CPFP scheduler ticks faster than this, and
+	// the bridge between client and operator flushes well under it.
+	unrollMempoolStallBlockInterval = 2 * time.Second
 
 	// unrollNoProgressTimeout fails the helper if the public unroll
 	// status and bitcoind mempool both stop showing progress. The
