@@ -16,6 +16,12 @@ import (
 // shardPatterns must stay in lockstep with ITEST_SHARD_PATTERN
 // branches in the top-level Makefile. Every TestXxx in this
 // package must match exactly one shard regex.
+//
+// The exits-leave-sweep and fraud shards are a finer-grained
+// split of exits-fraud and are what the CI matrix actually runs;
+// the exits-fraud regex stays defined for local use (a single
+// invocation that covers both halves) but is intentionally not
+// counted in the coverage check.
 var shardPatterns = map[string]*regexp.Regexp{
 	"boarding-fees": regexp.MustCompile(
 		`^TestBoarding|^TestFees|^TestVHTLC`,
@@ -23,9 +29,11 @@ var shardPatterns = map[string]*regexp.Regexp{
 	"oor-sends": regexp.MustCompile(
 		`^TestOOR|^TestRefresh|^TestSend|^TestDirected|^TestSeal`,
 	),
-	"exits-fraud": regexp.MustCompile(
-		`^TestUnilateral|^TestFraud|^TestSweep|^TestLeave|` +
-			`^TestPartial`,
+	"exits-leave-sweep": regexp.MustCompile(
+		`^TestUnilateral|^TestPartial|^TestSweep|^TestLeave`,
+	),
+	"fraud": regexp.MustCompile(
+		`^TestFraud`,
 	),
 }
 

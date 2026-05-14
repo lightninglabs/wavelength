@@ -320,10 +320,15 @@ jobs:
         # Shards partition the ./itest package by test-name prefix.
         # The union of shards covers every TestXxx in the package; see
         # ITEST_SHARD in the Makefile for the regex per shard.
+        # exits and fraud are intentionally split: at parallel=2 the
+        # combined exits-fraud shard runs ~22 min because the slow
+        # TestUnilateralExit* and TestFraudResponse* tests serialize.
+        # Splitting them recovers ~5 min on the matrix wall-clock.
         shard:
           - boarding-fees
           - oor-sends
-          - exits-fraud
+          - exits-leave-sweep
+          - fraud
     steps:
       - name: Git checkout
         uses: actions/checkout@v5

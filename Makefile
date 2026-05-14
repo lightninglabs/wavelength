@@ -358,6 +358,12 @@ endif
 ifeq ($(ITEST_SHARD),exits-fraud)
 ITEST_SHARD_PATTERN := ^TestUnilateral|^TestFraud|^TestSweep|^TestLeave|^TestPartial
 endif
+ifeq ($(ITEST_SHARD),exits-leave-sweep)
+ITEST_SHARD_PATTERN := ^TestUnilateral|^TestPartial|^TestSweep|^TestLeave
+endif
+ifeq ($(ITEST_SHARD),fraud)
+ITEST_SHARD_PATTERN := ^TestFraud
+endif
 
 # A custom icase= always wins over the named shard pattern.
 ITEST_RUN_PATTERN := $(if $(ITEST_CASE),$(ITEST_CASE),$(ITEST_SHARD_PATTERN))
