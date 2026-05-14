@@ -377,10 +377,14 @@ type fakeChainSourceRef struct {
 	feeRate    int64
 	feeErr     error
 	blockRef   actor.TellOnlyRef[chainsource.BlockEpoch]
-	spendRef   actor.TellOnlyRef[chainsource.SpendEvent]
+	spendRefs  map[wire.OutPoint]spendEventRef
+	spendRegs  []wire.OutPoint
 	confRefs   map[chainhash.Hash]confRef
 	confReqs   map[chainhash.Hash]*confReq
 }
+
+// spendEventRef is the fake chain-source spend notification actor reference.
+type spendEventRef = actor.TellOnlyRef[chainsource.SpendEvent]
 
 // ID returns the fake actor ID.
 func (f *fakeChainSourceRef) ID() string {
@@ -462,7 +466,18 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 
 	case *chainsource.RegisterSpendRequest:
 		f.mu.Lock()
-		f.spendRef = msg.NotifyActor.UnwrapOr(nil)
+		if f.spendRefs == nil {
+			f.spendRefs = make(
+				map[wire.OutPoint]spendEventRef,
+			)
+		}
+
+		outpoint := wire.OutPoint{}
+		if msg.Outpoint != nil {
+			outpoint = *msg.Outpoint
+		}
+		f.spendRefs[outpoint] = msg.NotifyActor.UnwrapOr(nil)
+		f.spendRegs = append(f.spendRegs, outpoint)
 		f.mu.Unlock()
 		promise.Complete(
 			fn.Ok[chainsource.ChainSourceResp](
@@ -561,15 +576,15 @@ func (f *fakeChainSourceRef) emitConfirmed(t *testing.T, txid chainhash.Hash,
 	)
 }
 
-// emitSpend delivers one spend event for the target outpoint to the subscribed
-// actor.
-func (f *fakeChainSourceRef) emitSpend(t *testing.T,
-	spendingTxid chainhash.Hash, height int32) {
+// emitSpendForOutpoint delivers one spend event for a specific watched
+// outpoint.
+func (f *fakeChainSourceRef) emitSpendForOutpoint(t *testing.T,
+	outpoint wire.OutPoint, spendingTxid chainhash.Hash, height int32) {
 
 	t.Helper()
 
 	f.mu.Lock()
-	ref := f.spendRef
+	ref := f.spendRefs[outpoint]
 	f.mu.Unlock()
 
 	require.NotNil(t, ref)
@@ -577,11 +592,20 @@ func (f *fakeChainSourceRef) emitSpend(t *testing.T,
 		t,
 		ref.Tell(
 			t.Context(), chainsource.SpendEvent{
+				Outpoint:       outpoint,
 				SpendingTxid:   spendingTxid,
 				SpendingHeight: height,
 			},
 		),
 	)
+}
+
+// spendRegistrations returns a snapshot of registered spend outpoints.
+func (f *fakeChainSourceRef) spendRegistrations() []wire.OutPoint {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]wire.OutPoint(nil), f.spendRegs...)
 }
 
 // fakeSweepWallet is a minimal signer plus wallet-destination test double.
@@ -990,6 +1014,57 @@ func buildLinearProof(t *testing.T) *recovery.Proof {
 		wire.OutPoint{
 			Hash:  targetTx.TxHash(),
 			Index: 0,
+		},
+		2, &recovery.Node{
+			Kind: recovery.NodeKindTree,
+			Tx:   rootTx,
+		}, &recovery.Node{
+			Kind: recovery.NodeKindTree,
+			Tx:   targetTx,
+		},
+	)
+	require.NoError(t, err)
+
+	return proof
+}
+
+// buildSiblingOutputProof creates a root->target proof where the target tx has
+// a sibling output at index zero and the real target at index one.
+func buildSiblingOutputProof(t *testing.T) *recovery.Proof {
+	t.Helper()
+
+	rootTx := wire.NewMsgTx(2)
+	rootTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{1},
+			Index: 0,
+		},
+	})
+	rootTx.AddTxOut(&wire.TxOut{
+		Value:    70_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+
+	targetTx := wire.NewMsgTx(2)
+	targetTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  rootTx.TxHash(),
+			Index: 0,
+		},
+	})
+	targetTx.AddTxOut(&wire.TxOut{
+		Value:    20_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+	targetTx.AddTxOut(&wire.TxOut{
+		Value:    50_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+
+	proof, err := recovery.NewProof(
+		wire.OutPoint{
+			Hash:  targetTx.TxHash(),
+			Index: 1,
 		},
 		2, &recovery.Node{
 			Kind: recovery.NodeKindTree,
@@ -1774,6 +1849,198 @@ func TestManualTriggerSubmitsReadyCheckpointImmediately(t *testing.T) {
 	)
 }
 
+// TestProofSpendObservationAdvancesMaterialization verifies that a spend of a
+// watched proof-node output is enough to mark the spent proof node confirmed.
+// This is important for neutrino-backed clients because the spend watch can
+// fire even if the direct confirmation notification is delayed or missed.
+func TestProofSpendObservationAdvancesMaterialization(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, beh, txconfirmRef, store := newActorHarness(t, proof, desc)
+
+	chainSource, ok := beh.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+	require.Equal(t, 1, txconfirmRef.requestCount())
+
+	rootOutpoint := wire.OutPoint{
+		Hash:  proof.RootTxids()[0],
+		Index: 0,
+	}
+	require.Eventually(t, func() bool {
+		for _, outpoint := range chainSource.spendRegistrations() {
+			if outpoint == rootOutpoint {
+				return true
+			}
+		}
+
+		return false
+	}, testTimeout, 10*time.Millisecond)
+
+	chainSource.emitSpendForOutpoint(
+		t, rootOutpoint, proof.TargetOutpoint().Hash, 101,
+	)
+
+	require.Eventually(t, func() bool {
+		stateResp, ok := mustAsk(
+			t, unrollActor.Ref(), &GetStateRequest{},
+		).(*GetStateResp)
+		require.True(t, ok)
+
+		return stateResp.Phase == PhaseCSVPending
+	}, testTimeout, 10*time.Millisecond)
+
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.Contains(
+		t, checkpoint.State.ConfirmedTxids, proof.RootTxids()[0],
+	)
+	require.Contains(
+		t, checkpoint.State.ConfirmedTxids, proof.TargetOutpoint().Hash,
+	)
+}
+
+// TestLegacyProofSpendObservationAdvancesKnownSpender verifies the
+// backwards-compatible spend message path. Older durable mailboxes may replay
+// SpendObservedMsg without the spent outpoint, so the actor still treats a
+// known proof-node spender as confirmation evidence for that proof node.
+func TestLegacyProofSpendObservationAdvancesKnownSpender(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, _, txconfirmRef, store := newActorHarness(t, proof, desc)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+	txconfirmRef.emitConfirmed(t, 0, proof.RootTxids()[0], 101)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(
+			proof.TargetOutpoint().Hash,
+		) == 1
+	}, testTimeout, 10*time.Millisecond)
+
+	mustAsk(t, unrollActor.Ref(), &SpendObservedMsg{
+		SpendingTxid:   proof.TargetOutpoint().Hash,
+		SpendingHeight: 102,
+	})
+
+	require.Eventually(t, func() bool {
+		stateResp, ok := mustAsk(
+			t, unrollActor.Ref(), &GetStateRequest{},
+		).(*GetStateResp)
+		require.True(t, ok)
+
+		return stateResp.Phase == PhaseCSVPending
+	}, testTimeout, 10*time.Millisecond)
+
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.Contains(
+		t, checkpoint.State.ConfirmedTxids, proof.TargetOutpoint().Hash,
+	)
+}
+
+// TestProofSpendWatchesSkipTargetSiblings verifies the proof-spend fallback
+// only watches outputs that are consumed by in-proof child nodes. An OOR tx can
+// create a sibling output next to the target, and that sibling may be spent by
+// another local or remote owner without affecting this target's unroll.
+func TestProofSpendWatchesSkipTargetSiblings(t *testing.T) {
+	proof := buildSiblingOutputProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, beh, txconfirmRef, _ := newActorHarness(t, proof, desc)
+
+	chainSource, ok := beh.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+
+	rootTxid := proof.RootTxids()[0]
+	rootOutpoint := wire.OutPoint{
+		Hash:  rootTxid,
+		Index: 0,
+	}
+	require.Eventually(t, func() bool {
+		for _, outpoint := range chainSource.spendRegistrations() {
+			if outpoint == rootOutpoint {
+				return true
+			}
+		}
+
+		return false
+	}, testTimeout, 10*time.Millisecond)
+
+	txconfirmRef.emitConfirmed(t, 0, rootTxid, 101)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(
+			proof.TargetOutpoint().Hash,
+		) == 1
+	}, testTimeout, 10*time.Millisecond)
+
+	targetSibling := wire.OutPoint{
+		Hash:  proof.TargetOutpoint().Hash,
+		Index: 0,
+	}
+	for _, outpoint := range chainSource.spendRegistrations() {
+		require.NotEqual(t, targetSibling, outpoint)
+	}
+}
+
+// TestExternalProofSpendTerminatesActor verifies that an unknown spend of a
+// watched proof-node output fails the unroll job instead of being swallowed as
+// benign materialization progress.
+func TestExternalProofSpendTerminatesActor(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, beh, _, _ := newActorHarness(t, proof, desc)
+
+	chainSource, ok := beh.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+
+	rootOutpoint := wire.OutPoint{
+		Hash:  proof.RootTxids()[0],
+		Index: 0,
+	}
+	require.Eventually(t, func() bool {
+		for _, outpoint := range chainSource.spendRegistrations() {
+			if outpoint == rootOutpoint {
+				return true
+			}
+		}
+
+		return false
+	}, testTimeout, 10*time.Millisecond)
+
+	externalTxid := chainhash.Hash{0xee}
+	chainSource.emitSpendForOutpoint(t, rootOutpoint, externalTxid, 101)
+
+	require.Eventually(t, func() bool {
+		stateResp, ok := mustAsk(
+			t, unrollActor.Ref(), &GetStateRequest{},
+		).(*GetStateResp)
+		require.True(t, ok)
+
+		return stateResp.Phase == PhaseFailed
+	}, testTimeout, 10*time.Millisecond)
+
+	stateResp, ok := mustAsk(
+		t, unrollActor.Ref(), &GetStateRequest{},
+	).(*GetStateResp)
+	require.True(t, ok)
+	require.Contains(t, stateResp.FailReason, rootOutpoint.String())
+	require.Contains(t, stateResp.FailReason, "spent externally")
+}
+
 // TestConfirmedNodesAdvanceToSweep verifies that node confirmations move the
 // actor from proof materialization into final sweep submission.
 func TestConfirmedNodesAdvanceToSweep(t *testing.T) {
@@ -2529,15 +2796,20 @@ func TestExternalSpendTerminatesActor(t *testing.T) {
 
 	// Ensure spend watch is registered.
 	require.Eventually(t, func() bool {
-		chainSource.mu.Lock()
-		defer chainSource.mu.Unlock()
+		for _, outpoint := range chainSource.spendRegistrations() {
+			if outpoint == proof.TargetOutpoint() {
+				return true
+			}
+		}
 
-		return chainSource.spendRef != nil
+		return false
 	}, testTimeout, 10*time.Millisecond)
 
 	// Simulate an external party spending the target VTXO.
 	externalTxid := chainhash.Hash{0xee}
-	chainSource.emitSpend(t, externalTxid, 101)
+	chainSource.emitSpendForOutpoint(
+		t, proof.TargetOutpoint(), externalTxid, 101,
+	)
 
 	require.Eventually(t, func() bool {
 		stateResp, ok := mustAsk(
