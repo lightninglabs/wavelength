@@ -59,8 +59,11 @@ const (
 
 	// unrollOverallTimeout is a hard cap to prevent a broken test from
 	// mining indefinitely even if intermittent mempool activity keeps
-	// resetting the no-progress timeout.
-	unrollOverallTimeout = 10 * time.Minute
+	// resetting the no-progress timeout. Sized for the worst observed
+	// CI wall-clock on btcwallet, where a chain-depth-2 multi-input
+	// lineage spends 10+ minutes total in MATERIALIZING under parallel
+	// load even though every individual broadcast is making progress.
+	unrollOverallTimeout = 15 * time.Minute
 )
 
 // newUnrollHarness creates a test harness with a reduced VTXO exit delay
