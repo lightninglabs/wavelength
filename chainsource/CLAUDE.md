@@ -38,6 +38,13 @@ communication alongside the raw registration API.
 - `MapBlockEpoch`, `MapConfirmationEvent`, `MapSpendEvent` — Generic helpers
   that wrap a target `TellOnlyRef[Out]` and a mapping function, producing a
   `TellOnlyRef` of the source event type for actor-to-actor notification wiring.
+- `IsIgnorableBroadcastError(err error) bool` — Classifies re-broadcast errors
+  as non-fatal: already-known, already-confirmed, already-in-mempool,
+  insufficient-fee, output-already-spent. Uses both `errors.Is` sentinel
+  matching and substring checks.
+- `IsIgnorableMempoolRejectReason(reason string) bool` — Classifies
+  `testmempoolaccept` reject reasons as ignorable when the tx is already known
+  or confirmed.
 
 ## Relationships
 

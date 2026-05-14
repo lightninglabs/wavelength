@@ -51,6 +51,13 @@ accounts, see [docs/fee_ledger.md](../docs/fee_ledger.md).
 - `ExitCostMsg` — Records a unilateral exit as two ledger entries: a send leg (`transfers_out` debit, `vtxo_balance` credit) for the net-of-fee value and a fee leg (`onchain_fees` debit, `vtxo_balance` credit) for the miner fee. Together the credits reduce `vtxo_balance` by the gross exited amount. Wallet-side movement is covered separately by the `wallet_utxo_log` audit trail.
 - `UTXOCreatedMsg` — Records new wallet UTXO confirmations with classification. `handleUTXOCreated` writes TWO rows per event: a `wallet_utxo_log` audit row and a double-entry ledger row (`debit wallet_balance, credit opening_balance`, `event_type = wallet_utxo_created`) stamped with an outpoint-derived idempotency key via `walletUTXOIdempotencyKey`. The deposit leg is what gives `wallet_balance` a non-negative balance in the presence of `SourceRoundBoarding` outflows.
 - `UTXOSpentMsg` — Records wallet UTXO spends with classification. Currently only writes the `wallet_utxo_log` audit row (double-entry leg for non-boarding wallet spends is a planned follow-up).
+- `FeeTypeOnchainSweep` — Fee type for wallet-internal boarding-sweep L1 miner
+  fees. Books as `debit onchain_fees, credit wallet_balance` under event type
+  `EventBoardingSweepFeePaid`.
+- `ClassificationBoardingSweepInput` — UTXO audit classification for a boarding
+  input spent in a timeout-path aggregate sweep.
+- `ClassificationBoardingSweepReturn` — UTXO audit classification for a sweep
+  output that returns funds to a wallet-derived destination.
 
 ## Relationships
 
@@ -65,7 +72,11 @@ accounts, see [docs/fee_ledger.md](../docs/fee_ledger.md).
     one `FeePaidMsg{FeeType=FeeTypeRefresh}` per round when `VTXOCreatedNotification.OperatorFeeSat > 0` and any refresh-origin VTXO was present (boarding-fee emission deferred to a follow-up).
   - ← `oor`: `VTXOSentMsg` after FinalizeAcceptedEvent; `VTXOReceivedMsg` (`Source=SourceOOR`) per descriptor in `notifyMaterializedVTXOs`.
   - ← `vtxo`: `ExitCostMsg` after chain resolver determines miner fee (currently a no-op emission with a TODO — chain resolver wiring pending).
-  - ← `wallet`: `UTXOCreatedMsg` on confirmed wallet UTXO observation. `UTXOSpentMsg` emission is pending.
+  - ← `wallet`: `UTXOCreatedMsg` on confirmed wallet UTXO observation;
+    `UTXOSpentMsg` (boarding sweep inputs, `ClassificationBoardingSweepInput`);
+    `FeePaidMsg{FeeType=FeeTypeOnchainSweep}` on sweep confirmation;
+    optionally `UTXOCreatedMsg` for sweep output
+    (`ClassificationBoardingSweepReturn`) when destination is wallet-derived.
 
 ## Caller Contract
 
@@ -109,6 +120,13 @@ pairs of messages:
 - **Unilateral exit:** `ExitCostMsg` with `AmountSat` gross and
   `ExitCostSat` fee. The handler expands this into two ledger entries
   internally (send leg + fee leg).
+- **Boarding-sweep miner fee:** `FeePaidMsg` with `FeeType=FeeTypeOnchainSweep`.
+  Books `debit onchain_fees, credit wallet_balance`. Idempotency key carries
+  the sweep txid. Emitted by the wallet actor on sweep confirmation.
+  Sweep inputs also get `UTXOSpentMsg` with
+  `Classification=ClassificationBoardingSweepInput`; wallet-derived sweep
+  output gets `UTXOCreatedMsg` with
+  `Classification=ClassificationBoardingSweepReturn`.
 
 ## Invariants
 

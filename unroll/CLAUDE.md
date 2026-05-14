@@ -36,7 +36,12 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
   `PhaseSweepBroadcast` / `PhaseSweepConfirmation` / `PhaseCompleted` /
   `PhaseFailed`.
 - `JobState` — Durable FSM state (height, trigger, planner state,
-  `FailReason`, `SweepAttempts`).
+  `FailReason`, `SweepAttempts`, `DeferredCheckpoints` for fraud-triggered
+  checkpoint deferrals).
+- `DeferredCheckpoint` — A proof-graph checkpoint node ready to broadcast but
+  held until `DeadlineHeight` (computed as `height + csvDelay - safetyMargin`)
+  to give the operator priority publication under `TriggerFraudSpend`. Serialized
+  via `deferred_checkpoint_codec.go` (TLV record type 17 in the snapshot).
 
 ### Registry
 - `UnrollRegistryActor` — Thin coordinator over the set of
@@ -44,7 +49,9 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
   admission, receives `UnrollTerminatedMsg` from children, persists records,
   and `RestoreNonTerminal` on boot.
 - `RegistryConfig` — Store, `DeliveryStore`, `ProofAssembler`, `VTXOStore`,
-  `TxConfirmRef`, `ChainSource`, `Wallet`, `MaxSweepFeeRateSatPerVByte`.
+  `TxConfirmRef`, `ChainSource`, `Wallet`, `MaxSweepFeeRateSatPerVByte`,
+  `FraudCheckpointSafetyMargin` (blocks subtracted from csvDelay to compute
+  the backstop deadline; zero falls back to `defaultFraudCheckpointSafetyMargin = 24`).
 - `RegistryRecord` — Control-plane row: `TargetOutpoint`, `ActorID`,
   `Phase`, `Trigger`, `FailReason`, `SweepTxid`.
 - `RegistryStore` — Persistence surface: `UpsertRecord`, `GetRecord`,
@@ -87,6 +94,17 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
 - `safeTxOutPkScript(tx, index)` — Bounds-checking helper used at every
   `tx.TxOut[i].PkScript` site so malformed proof artifacts (operator-sourced
   OOR inputs) surface as retryable errors instead of goroutine panics.
+- `readyMaterializationTxids` — Splits planner-ready proof nodes into
+  immediate-submit transactions and deferred checkpoint watches. Under
+  `TriggerFraudSpend`, checkpoint nodes are deferred until `DeadlineHeight`
+  unless they confirm first.
+- `checkpointBackstopHeight` — Computes the first height at which the actor
+  should broadcast a fraud-triggered deferred checkpoint itself. Margin is
+  clamped to `csvDelay/2` when CSV is very short.
+- `validateDeferredCheckpoints` — Ensures every deferred checkpoint references
+  a valid checkpoint node in the proof graph and is not already confirmed.
+- `state_snapshot.go` — Helpers to convert between FSM states and durable
+  checkpoints; used by the actor's boot path to restore `DeferredCheckpoints`.
 
 ## Relationships
 
@@ -176,6 +194,14 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
 - **Checkpoint persists the sweep tx** via
   `wire.MsgTx.Serialize` under `checkpointSweepTxRecordType` so restore
   produces the exact same `b.sweepTx` that the pre-broadcast commit wrote.
+- **Fraud checkpoint deferral.** Under `TriggerFraudSpend`, ready checkpoint
+  nodes are held in `job.DeferredCheckpoints` until `DeadlineHeight` unless
+  they confirm first. `DeadlineHeight = height + csvDelay - safetyMargin`
+  (clamped to `csvDelay/2` for very short CSV). `readyMaterializationTxids`
+  routes nodes into deferred vs. immediate submission; `WatchDeferredCheckpoints`
+  outbox event registers per-node confirmation watches while waiting for the
+  backstop; `shouldSubmitReadyFrontier` upgrades a node to immediate submission
+  once the deadline passes or confirmation arrives.
 - **Phase ↔ DB status mapping is lossless.** `PhaseSweepBroadcast` maps to
   `UnilateralExitJobStatusSweepBroadcasting` (=6) and
   `PhaseSweepConfirmation` maps to `UnilateralExitJobStatusSweeping` (=3) —

@@ -38,8 +38,13 @@ each still receives its own terminal notification.
   without the full actor harness.
 - `EstimatePackageFee`, `EstimateWeight`, `SelectFeeInput` — Exported
   helpers for fee estimation and fee-input selection, usable standalone.
+- `ServiceKeyName` — Constant `"txconfirm"` used to register and look up the
+  broadcaster in the actor system.
+- `NewServiceKey()` — Returns the `actor.ServiceKey` for the broadcaster.
+- `LookupRef(system)` — Resolves the txconfirm service key and returns an
+  `ActorRef`. Defers resolution until after the broadcaster registers.
 - `Wallet` — Wallet interface the broadcaster requires: `ListUnspent`,
-  `NewWalletPkScript`, `FinalizePsbt`, plus `wallet.OutputLeaser`
+  `NewWalletPkScript`, `FinalizePsbt`, plus `walletcore.OutputLeaser`
   (`LeaseOutput` / `ReleaseOutput`) for cross-subsystem UTXO lock
   coordination.
 - `EnsureConfirmedReq` / `EnsureConfirmedResp` — Public Ask API: register
@@ -66,8 +71,9 @@ each still receives its own terminal notification.
   - `baselib/protofsm` — per-txid state machine engine.
   - `chainsource` — confirmation watches, block epochs, broadcast,
     package submission, fee estimation, preflight.
-  - `wallet` — `Utxo`, `OutputLeaser`, `LockID` types for fee-input
-    selection and wallet-level lease coordination.
+  - `walletcore` — `Utxo`, `OutputLeaser`, `LockID` types for fee-input
+    selection and wallet-level lease coordination (canonical declarations live
+    here to avoid import cycles with `wallet`).
   - `lib/tx/arktx` — canonical `TxVersion` (v3/TRUC) constant and
     `IsAnchorOutput` predicate for CPFP targeting.
 - **Depended on by**: `unroll` (plugs `TxBroadcasterActor` and

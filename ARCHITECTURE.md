@@ -16,7 +16,8 @@ package may import from a higher layer.
 | [`round`](round/) | Client-side Ark round participation FSM (boarding, refresh, leave) |
 | [`vtxo`](vtxo/) | VTXO lifecycle FSM (live, forfeiting, forfeited, spent, expiring) |
 | [`oor`](oor/) | Out-of-round transfer coordination FSM |
-| [`wallet`](wallet/) | On-chain boarding wallet actor (address derivation, UTXO monitoring) |
+| [`wallet`](wallet/) | On-chain boarding wallet actor (address derivation, UTXO monitoring, boarding-timeout sweep) |
+| [`fraud`](fraud/) | Recipient fraud watcher: detects ancestor spends on OOR VTXOs and triggers unilateral exit |
 | [`ledger`](ledger/) | Client-side durable ledger actor for double-entry fee accounting |
 | [`lib`](lib/) | Shared domain utilities: tree paths, BIP-322, arkscript policy, types |
 | [`lib/arkscript`](lib/arkscript/) | Tapscript AST compiler and policy system for Ark taproot outputs |
@@ -41,7 +42,7 @@ package may import from a higher layer.
 | [`lndbackend`](lndbackend/) | `BoardingBackend` implementation via LND's wallet kit |
 | [`lwwallet`](lwwallet/) | Lightweight in-process wallet (btcwallet + Esplora, no external LND) |
 | [`btcwbackend`](btcwbackend/) | Neutrino-backed wallet backend (btcwallet + compact block filters) |
-| [`walletcore`](walletcore/) | Shared wallet abstractions and boarding logic used by lwwallet and btcwbackend |
+| [`walletcore`](walletcore/) | Shared wallet abstractions (LockID, OutputLeaser, Utxo) and boarding logic used by lwwallet, btcwbackend, and txconfirm |
 | [`proofkeys`](proofkeys/) | Interface for wallet-managed key derivation and indexer proof signing |
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
@@ -72,6 +73,7 @@ package may import from a higher layer.
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal/actortest`](internal/actortest/) | Durable actor integration tests with real DB backends |
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
+| [`internal/indexerlimits`](internal/indexerlimits/) | Client-side cursor byte-length bounds for indexer pagination queries |
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |
 | [`tools`](tools/) | Development tool dependencies (protoc plugins, sqlc) |
 | [`cmd/protoc-gen-mailboxrpc`](cmd/protoc-gen-mailboxrpc/) | `protoc` plugin generating typed `mailbox/rpc` client/server stubs from `.proto` service definitions |

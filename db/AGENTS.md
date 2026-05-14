@@ -77,7 +77,10 @@ backends.
   bounds enforced during `DeserializeTree` to prevent stack overflow or OOM.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — Two-stage OOR
   ancestry resolver in `oor_unroll_resolver.go`.
-- `LatestMigrationVersion = 11` — Current schema version.
+- `LatestMigrationVersion = 12` — Current schema version. Migration
+  `000012_boarding_sweeps` adds the `boarding_sweeps` aggregate transaction
+  table and `boarding_sweep_inputs` per-input status table, plus the
+  `sweep_pending` boarding-intent status.
 
 ## Relationships
 

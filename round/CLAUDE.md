@@ -92,6 +92,12 @@ protocols with MuSig2 signing ceremonies.
 - `IntentPackage` — Single FSM event embedding `Intents` for atomic
   delivery. Covers all pooled intent types (boarding, VTXO, forfeit,
   leave). `isEmpty()` guards against sending empty packages.
+- `VTXORequestsReceived` — Actor message (not an FSM event) carrying
+  pre-built VTXO requests. The round actor translates this into an
+  `IntentPackage`. Implements `actormsg.RoundReceivable`.
+- `ClientEvent` and `ClientOutMsg` interfaces are sealed via unexported
+  `clientEventSealed()` / `clientOutMsgSealed()` methods, preventing
+  external implementations.
 
 ### Outbox Messages (`outbox_messages.go`)
 

@@ -10,14 +10,39 @@ refresh, leave, OOR spend, and directed send flows.
 
 ## Key Types
 
-- `Ark` — Main actor managing boarding addresses, UTXO enumeration, confirmation polling, admission forwarding, and VTXO selection/locking. Holds a `ledgerSink` field (`fn.Option[ledger.Sink]`) used by the `emitUTXOCreated` helper to Tell `UTXOCreatedMsg` to the ledger actor whenever a confirmed wallet UTXO is observed.
+- `Ark` — Main actor managing boarding addresses, UTXO enumeration, confirmation polling, admission forwarding, VTXO selection/locking, and aggregate boarding-timeout sweep lifecycle. Holds a `ledgerSink` field (`fn.Option[ledger.Sink]`) for wallet UTXO audit emission. When wired via `WithBoardingSweep`, also manages sweep building, persistence, broadcast, and spend/txconfirm notification correlation via `pendingSweeps` in-memory map.
 - `NewArk` — Constructor; takes the `ledgerSink` as a **required** argument (`fn.Option[ledger.Sink]`) rather than a setter, so every call site is forced to make an explicit emission choice. Production passes `fn.Some(ledger.NewSink(actorSystem))`; harnesses and unit tests that do not register a ledger actor pass `fn.None[ledger.Sink]()`.
+- `WithBoardingSweep(store, signer, chainParams)` — Option that wires the
+  boarding-sweep subsystem into the `Ark` actor. Without this option the sweep
+  handlers are no-ops.
 - `emitUTXOCreated(ctx, utxo, blockHeight, classification)` — Internal helper that null-safely builds a `ledger.UTXOCreatedMsg` from a wallet `Utxo` and Tells it to `ledgerSink`. Negative block heights clamp to `0` rather than wrapping under a direct `uint32` cast; nil `utxo` and `fn.None` sink are silent no-ops.
-- `LockID` — `[32]byte` caller-scoped output lease identifier used to associate leased UTXOs with a specific subsystem (`txconfirmLockID` in `txconfirm`, etc.).
-- `OutputLeaser` — Interface for UTXO output leasing: `LeaseOutput(ctx, outpoint, lockID, expiry)` and `ReleaseOutput(ctx, outpoint, lockID)`. Implemented by all three `BoardingBackend` implementations (`btcwbackend`, `lndbackend`, `lwwallet`) to coordinate cross-subsystem UTXO reservation.
+- `LockID` — Type alias for `walletcore.LockID`. Canonical declaration lives in
+  `walletcore` to break import cycles with packages like `txconfirm`.
+- `OutputLeaser` — Type alias for `walletcore.OutputLeaser`. Same rationale.
+  Implemented by all three `BoardingBackend` implementations (`btcwbackend`,
+  `lndbackend`, `lwwallet`) to coordinate cross-subsystem UTXO reservation.
 - `BoardingBackend` — Interface for wallet integration (key derivation, taproot import, ListUnspent). `GetTransaction` returns `*TxInfo` (containing tx, block hash, and block height).
 - `TxInfo` — Struct wrapping a confirmed transaction with its block hash and block height. Returned by `BoardingBackend.GetTransaction`.
-- `BoardingStore` — Interface for persisting boarding addresses and intents.
+- `BoardingStore` — Interface for persisting boarding addresses, intents, and
+  boarding sweep records.
+- `BoardingSweepStore` — Interface for persisting aggregate boarding-sweep
+  records. Methods: `CreatePendingBoardingSweep`, `MarkBoardingSweepPublished`,
+  `MarkBoardingSweepFailed`, `MarkBoardingSweepInputSpent`,
+  `ListBoardingSweeps`, `GetBoardingSweep`, `ListPendingBoardingSweeps`,
+  `FetchBoardingIntentsBySweepableStatuses`, `GetIntent`.
+- `SweepSigner` — Signing interface for boarding-timeout sweep txs: embeds
+  `input.Signer` and adds `NewWalletPkScript`. Satisfied by all three
+  `BoardingBackend` implementations.
+- `SweepBoardingUTXOsRequest` / `SweepBoardingUTXOsResponse` — Ask-request for
+  building and broadcasting an aggregate boarding-timeout sweep.
+- `ResumeBoardingSweepsRequest` / `ResumeBoardingSweepsResponse` — Resume
+  persisted sweeps from a prior run at startup.
+- `BoardingSweepSpendNotification` — Tell from chainsource when a sweep input
+  is confirmed spent on-chain.
+- `BoardingSweepTxNotification` — Tell from txconfirm when a sweep tx confirms
+  or fails.
+- `BoardingSweepOutput` — Describes one mature boarding output included in a
+  sweep response.
 - `VTXOReader` — Read-only interface for loading VTXO descriptors by outpoint. Wallet uses this to build intent packages without importing `vtxo` directly.
 - `VTXODescriptor` — Wallet-level VTXO descriptor (outpoint, amount, pkscript, tree, expiry). Avoids direct dependency on `vtxo.Descriptor`.
 - `SelectedVTXO` — Describes a VTXO selected and locked for use as a transfer input (outpoint, amount, pkscript). Breaks the vtxo → round → wallet import cycle.
@@ -37,7 +62,13 @@ refresh, leave, OOR spend, and directed send flows.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager admission types), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants).
+- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch
+  notifications + spend watches for boarding sweeps), `lib/actormsg` (VTXO
+  manager admission types), `ledger` (`Sink` alias + `UTXOCreatedMsg` /
+  `UTXOSpentMsg` / `FeePaidMsg` / `ClassificationDeposit` /
+  `ClassificationBoardingSweepInput` / `ClassificationBoardingSweepReturn` /
+  `FeeTypeOnchainSweep`), `txconfirm` (EnsureConfirmedReq for sweep broadcast
+  and confirmation), `walletcore` (LockID, OutputLeaser type declarations).
 - **Depended on by**: `round` (boarding intents, types: `BoardingAddress`, `SelectedVTXO`), `db` (persistence), `darepod` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
@@ -52,7 +83,15 @@ refresh, leave, OOR spend, and directed send flows.
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`
-  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`
+  - ← `chainsource` (via mapped spend watch): `BoardingSweepSpendNotification`
+    (per-input, when sweep is in-flight)
+  - ← `txconfirm` (via mapped TxConfirmed/TxFailed): `BoardingSweepTxNotification`
+    (when sweep tx confirms or fails)
+  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`,
+    `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`,
+    `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`,
+    `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`,
+    `SendVTXOsRequest`, `SweepBoardingUTXOsRequest`, `ResumeBoardingSweepsRequest`
 
 ## Invariants
 
@@ -67,6 +106,16 @@ refresh, leave, OOR spend, and directed send flows.
 - `handleSendVTXOs` rejects pre-flight any directed send with multiple recipients and exactly-zero change residual under the #270 seal-time fee handshake. The server is the amount authority and absorbs the operator fee out of the designated `IsChange=true` slot; if there is no residual to absorb the fee against, the server has no slack to deduct fees without silently shifting them onto a recipient leg. The wallet refuses the request rather than letting the server pick the loser.
 - `VTXOReader` / `VTXODescriptor` / `SelectedVTXO` break the vtxo → round → wallet import cycle by providing wallet-level types that don't reference `vtxo.Descriptor` directly.
 - Per-subsystem logging via `build.LoggerFromContext` (no global mutable loggers).
+- Boarding sweep txs are v3/TRUC with an above-dust P2A anchor (330 sats) so the
+  parent can pay its own fee without hitting the ephemeral-dust rule.
+- One aggregate sweep caps at `defaultBoardingSweepMaxInputs = 100` inputs.
+- Sweep fee validation rejects sweeps burning more than
+  `defaultBoardingSweepMaxFeePercent = 25%` of selected boarding value.
+- Sweep-input spend watches deduplicate against `pendingSweepInputs` to prevent
+  duplicate chainsource registrations when the same outpoint appears in multiple
+  aggregates or resume calls.
+- `ResumeBoardingSweepsRequest` uses the persisted sweep record (not in-memory
+  state) as the sole source of truth across restarts.
 
 ## Deep Docs
 

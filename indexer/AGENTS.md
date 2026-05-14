@@ -10,6 +10,8 @@ proofs for proof-of-control.
 
 - `Client` — Wraps the mailbox RPC client with automatic proof-of-control
   signing. `WithSigner` returns a shallow copy using a different signer.
+  Optional `Log fn.Option[btclog.Logger]` field; when None, falls back to
+  `build.LoggerFromContext(ctx)` or `btclog.Disabled`.
 - `SchnorrSigner` — Interface for signing proof-of-control messages.
   Implementations: `PrivKeySchnorrSigner` (raw key), `LNDSchnorrSigner`
   (LND wallet), `KeyRingSchnorrSigner` (btcwallet keyring).

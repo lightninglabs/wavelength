@@ -26,7 +26,9 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   timeout and goroutine-based forwarding to bridge lndclient's height-only
   block events to the full `chainntnfs` interface.
 - `LNDBackendFromLndClientConfig` — Config struct for building an `LNDBackend`
-  from lndclient services (notifier, wallet kit, chain kit).
+  from lndclient services (notifier, wallet kit, chain kit). Includes an
+  optional `Log fn.Option[btclog.Logger]` field; when None, falls back to
+  `build.LoggerFromContext(ctx)` at call time.
 - `NewLNDBackendFromLndClient(cfg)` — Factory constructing a full `LNDBackend`
   from an `LNDBackendFromLndClientConfig`.
 - `PackageTxError` — Per-tx result error from a `SubmitPackage` response.

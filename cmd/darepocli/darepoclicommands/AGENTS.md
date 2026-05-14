@@ -84,6 +84,15 @@ The daemon owns the background worker; CLI exit does not cancel an admitted swap
 | `swap resume` | `ResumeSwap` | Wake up a persisted swap worker (idempotent) |
 | `swap watch` | `SubscribeSwaps` | Stream coarse swap summary updates; `--existing` emits current rows first |
 
+### Wallet commands (`cmd_wallet.go`)
+
+| Command | RPC | Description |
+|---------|-----|-------------|
+| `wallet create` | `CreateWallet` | Create a new wallet from fresh aezeed seed. Password from stdin, env var (`WALLET_PASSWORD`), or `--wallet_password_file`. Optional `--seed_passphrase` |
+| `wallet unlock` | `UnlockWallet` | Unlock an existing wallet |
+| `wallet balance` | `GetBalance` | Show wallet balance |
+| `wallet newaddress` | `NewAddress` | Derive a new wallet address |
+
 ### Direct-client swap commands (`cmd_swap.go`, `swapdirect && !swapruntime` tag)
 
 Standalone swap execution without a running daemon. Connects directly to the
