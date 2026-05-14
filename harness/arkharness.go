@@ -473,24 +473,32 @@ func (h *ArkHarness) startArkd() {
 	// OperatorConfigMutator.
 	cfg.Rounds.MinOperatorFee = 0
 
-	// Compress the round-phase timeouts to the minimum that still
-	// keeps the FSM honest. The production defaults are tuned for
-	// distributed clients on heterogeneous networks; integration
-	// tests run every actor in-process against a local regtest
-	// bitcoind, so a 10s registration window is pure dead weight
-	// that every single-client round pays in full. Each round
-	// re-arms this timer on the first join even if subsequent joins
-	// are immediate, so the floor is effectively the registration
-	// window: lowering it cascades into every round, OOR cycle, and
-	// refresh in the suite. We keep the signature collection window
-	// slightly larger than the registration timeout so a brief
-	// network blip between client and server inside the same
-	// process (e.g. mailbox flush) does not race the timer. Tests
-	// that genuinely need to exercise the timeout semantics (e.g.
-	// the registration-timeout regression suite) can still raise
-	// these via an OperatorConfigMutator.
+	// Compress the registration window to the minimum that still
+	// keeps the FSM honest. The production default of 10s is tuned
+	// for distributed clients on heterogeneous networks;
+	// integration tests run every actor in-process against a local
+	// regtest bitcoind, so a 10s registration window is pure dead
+	// weight that every single-client round pays in full. Each
+	// round re-arms this timer on the first join even if
+	// subsequent joins are immediate, so the floor is effectively
+	// the registration window: lowering it cascades into every
+	// round, OOR cycle, and refresh in the suite. Tests that
+	// exercise the timeout semantics directly can still raise this
+	// via an OperatorConfigMutator.
 	cfg.Rounds.RegistrationTimeout = 500 * time.Millisecond
-	cfg.Rounds.SignatureCollectionTimeout = 2 * time.Second
+
+	// SignatureCollectionTimeout deliberately stays at the
+	// production default. It only matters on the slow path:
+	// happy-path single-client rounds advance on
+	// allClientsSubmitted long before this timer fires, so any
+	// savings from compressing it apply only to tests that
+	// genuinely stall a sig submission. The restart-mid-sig tests
+	// in this suite (e.g. TestBoardingIntegrationRestartAfterInputSigSent)
+	// crash the client between "checkpoint InputSigSent" and "send
+	// sigs to operator", and the resume path needs the operator to
+	// still be waiting when the daemon comes back up. Shaving this
+	// to 2s as an earlier experiment broke those tests on btcwallet
+	// where neutrino re-sync alone takes longer than 2s.
 
 	// Disable the periodic round tick entirely. The tick exists
 	// in production as a defensive seal trigger that complements
