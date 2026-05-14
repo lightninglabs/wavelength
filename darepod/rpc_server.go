@@ -1238,6 +1238,7 @@ func (r *RPCServer) Board(ctx context.Context, req *daemonrpc.BoardRequest) (
 
 	boardReq := &wallet.BoardRequest{
 		TargetVTXOCount: req.GetTargetVtxoCount(),
+		NoPersist:       req.GetNoPersist(),
 	}
 
 	future := wRef.Ask(ctx, boardReq)

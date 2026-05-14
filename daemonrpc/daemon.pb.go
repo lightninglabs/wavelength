@@ -3256,8 +3256,17 @@ type BoardRequest struct {
 	// balance out into this many VTXO outputs in the next round. Zero
 	// preserves the legacy behavior of creating one boarded VTXO.
 	TargetVtxoCount uint32 `protobuf:"varint,1,opt,name=target_vtxo_count,json=targetVtxoCount,proto3" json:"target_vtxo_count,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// no_persist opts out of restart-safe Board replay. When set, the
+	// daemon does NOT persist the user's intent to pending_board_requests,
+	// so a crash between Board admission and round seal silently drops
+	// the request rather than re-issuing it on the next start. Default
+	// (false) is the safe behavior: the daemon persists each admitted
+	// confirmed outpoint and replays the Board through the wallet's
+	// self-Tell on startup until the round adopts or the user fires a
+	// fresh Board.
+	NoPersist     bool `protobuf:"varint,2,opt,name=no_persist,json=noPersist,proto3" json:"no_persist,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *BoardRequest) Reset() {
@@ -3295,6 +3304,13 @@ func (x *BoardRequest) GetTargetVtxoCount() uint32 {
 		return x.TargetVtxoCount
 	}
 	return 0
+}
+
+func (x *BoardRequest) GetNoPersist() bool {
+	if x != nil {
+		return x.NoPersist
+	}
+	return false
 }
 
 type BoardResponse struct {
@@ -6048,9 +6064,11 @@ const file_daemon_proto_rawDesc = "" +
 	"\tselection\"W\n" +
 	"\x12LeaveVTXOsResponse\x12)\n" +
 	"\x10queued_outpoints\x18\x01 \x03(\tR\x0fqueuedOutpoints\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\":\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"Y\n" +
 	"\fBoardRequest\x12*\n" +
-	"\x11target_vtxo_count\x18\x01 \x01(\rR\x0ftargetVtxoCount\"F\n" +
+	"\x11target_vtxo_count\x18\x01 \x01(\rR\x0ftargetVtxoCount\x12\x1d\n" +
+	"\n" +
+	"no_persist\x18\x02 \x01(\bR\tnoPersist\"F\n" +
 	"\rBoardResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1d\n" +
 	"\n" +
