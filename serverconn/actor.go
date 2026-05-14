@@ -48,6 +48,7 @@ type (
 	rpcServiceRecordTLV     = tlv.TlvType5
 	rpcMethodRecordTLV      = tlv.TlvType6
 	rpcCorrelationRecordTLV = tlv.TlvType7
+	correlationKeyRecordTLV = tlv.TlvType8
 )
 
 // ServerMessage is an interface that client FSM outbox messages must implement
@@ -161,6 +162,23 @@ type SendClientEventRequest struct {
 	// "JoinRound"). Populated from ServerMessage.ServiceMethod() at
 	// send time, persisted in TLV for crash-safe replay.
 	Method string
+
+	// cachedCorrelationKey holds the per-key FIFO key that was stamped
+	// on the concrete inner message at the time the wrapper was last
+	// encoded. It exists because Decode replaces the typed inner
+	// Message with a rawServerMessage that no longer implements
+	// CorrelationKey, so a decoded wrapper has no way to recover the
+	// key from the inner field alone. The outbox-CDC delivery path
+	// hits this branch: the wrapper is encoded into the actor outbox,
+	// later decoded by OutboxPublisher, then enqueued into the
+	// serverconn mailbox for the first time, and that first enqueue
+	// is where the durable mailbox reads CorrelationKey to stamp the
+	// claim lane. Stored as []byte so Decode can hand the TLV record
+	// straight through without a copy; the read path converts to
+	// string at the CorrelationKey() boundary. Set by Decode; read
+	// by CorrelationKey as the fallback when the structural assertion
+	// on Message fails.
+	cachedCorrelationKey []byte
 }
 
 // MessageType returns a human-readable type name for logging.
@@ -238,9 +256,21 @@ func (m *SendClientEventRequest) Encode(w io.Writer) error {
 		[]byte(method),
 	)
 
+	// Persist the per-key FIFO key alongside the routing metadata so
+	// a wrapper round-tripped through the outbox CDC table still
+	// surfaces the right key on first enqueue into the serverconn
+	// mailbox. Computing via CorrelationKey() consults the cached
+	// value first (covering re-Encode of a previously decoded
+	// wrapper), then falls back to the structural assertion on the
+	// concrete inner Message (the normal pre-Encode path).
+	corrKeyBytes := []byte(m.CorrelationKey())
+	corrKeyRec := tlv.NewPrimitiveRecord[correlationKeyRecordTLV](
+		corrKeyBytes,
+	)
+
 	stream, err := tlv.NewStream(
 		payload.Record(), msgIDRec.Record(), idemRec.Record(),
-		svcRec.Record(), methodRec.Record(),
+		svcRec.Record(), methodRec.Record(), corrKeyRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -263,10 +293,11 @@ func (m *SendClientEventRequest) Decode(r io.Reader) error {
 	idemRec := tlv.ZeroRecordT[idempotencyRecordTLV, []byte]()
 	svcRec := tlv.ZeroRecordT[rpcServiceRecordTLV, []byte]()
 	methodRec := tlv.ZeroRecordT[rpcMethodRecordTLV, []byte]()
+	corrKeyRec := tlv.ZeroRecordT[correlationKeyRecordTLV, []byte]()
 
 	stream, err := tlv.NewStream(
 		payload.Record(), msgIDRec.Record(), idemRec.Record(),
-		svcRec.Record(), methodRec.Record(),
+		svcRec.Record(), methodRec.Record(), corrKeyRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -281,8 +312,50 @@ func (m *SendClientEventRequest) Decode(r io.Reader) error {
 	m.IdempotencyKey = string(idemRec.Val)
 	m.Service = string(svcRec.Val)
 	m.Method = string(methodRec.Val)
+	m.cachedCorrelationKey = corrKeyRec.Val
 
 	return nil
+}
+
+// CorrelationKey forwards the inner ServerMessage's per-key FIFO key so
+// the durable mailbox's per-correlation-key claim invariant fires on the
+// right lane (e.g. "oor/<session>", "round/<id>"). Without this hop the
+// wrapper's embedded BaseMessage default ("") would erase the inner key
+// at enqueue and every outbox row would land in the unkeyed lane, leaving
+// the original Nack-with-backoff reorder window open.
+//
+// The inner field is typed as ServerMessage (ToProto + ServiceMethod);
+// the per-key contract lives on actor.Message. We use a structural
+// assertion so the forward works for any concrete outbox message that
+// opts in to per-key FIFO without coupling ServerMessage to the actor
+// interface. That assertion covers the in-process pre-Encode path where
+// the inner Message is the concrete OOR/round outbox type.
+//
+// After TLV decode the inner becomes a *rawServerMessage that no longer
+// satisfies the assertion. That is the path the outbox-CDC delivery uses:
+// sendTransportEvent encodes the wrapper into the actor outbox, the
+// OutboxPublisher decodes it later, and then Tells the decoded wrapper
+// into the serverconn mailbox for the first time. The durable mailbox
+// reads CorrelationKey on that first enqueue, so we have to surface
+// the key from somewhere other than the now-erased inner type. Encode
+// persists the inner key in its own TLV record and Decode caches it on
+// cachedCorrelationKey; this method falls back to that cache when the
+// structural assertion misses.
+func (m *SendClientEventRequest) CorrelationKey() string {
+	if m == nil {
+		return ""
+	}
+
+	if m.Message != nil {
+		keyed, ok := m.Message.(interface{ CorrelationKey() string })
+		if ok {
+			if key := keyed.CorrelationKey(); key != "" {
+				return key
+			}
+		}
+	}
+
+	return string(m.cachedCorrelationKey)
 }
 
 // serverConnMsgSealed implements the ServerConnMsg interface seal.
