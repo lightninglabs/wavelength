@@ -21,6 +21,7 @@ This file is a **map**, not a manual. Follow links for details.
 | `make rpc` | Regenerate protobuf stubs |
 | `make sqlc` | Regenerate type-safe DB queries |
 | `make ast-lint` | Check ast-grep style rules |
+| `make commitmsg-lint range="origin/main..HEAD"` | Lint commit messages on the current branch |
 | `make systest` | Run system integration tests (sqlite) |
 | `make systest db=postgres` | Run system integration tests (postgres) |
 
@@ -61,10 +62,15 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
    This builds and runs the custom linter natively via `go tool` — much
    faster than Docker. Only lints changes on the current branch.
 5. **Run tests before every commit** — see [`docs/testing-guide.md`](docs/testing-guide.md).
-6. **No underscores in Go test names** — `TestFoo` not `Test_Foo`.
-7. Use early returns; do not nest error handling.
-8. Do not batch actor messages without backpressure.
-9. Comments explain WHY and HOW, not WHAT.
+6. **Run `make commitmsg-lint range="origin/main..HEAD"` before pushing.**
+   CI runs the same check via [`scripts/commit_message.py`](scripts/commit_message.py);
+   subjects must be `<package>: <summary>` ≤69 chars and body lines must wrap
+   to 72. Use `python3 scripts/commit_message.py reword --commit <sha>` to
+   rewrite an offending commit in place.
+7. **No underscores in Go test names** — `TestFoo` not `Test_Foo`.
+8. Use early returns; do not nest error handling.
+9. Do not batch actor messages without backpressure.
+10. Comments explain WHY and HOW, not WHAT.
 
 ## Review Skills
 
