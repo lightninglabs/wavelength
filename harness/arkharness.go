@@ -310,6 +310,48 @@ func (h *ArkHarness) ClientWalletBackend() string {
 	return h.clientDaemonWalletType
 }
 
+// SealRoundNow asks the operator's admin RPC to seal the current
+// registration round immediately, short-circuiting the round FSM's
+// registration timeout. The returned round ID is the round that was
+// sealed; the caller can use it to assert the subsequent broadcast /
+// confirmation transitions.
+//
+// SealRoundNow is only safe for single-client (or single-batch)
+// scenarios where the test knows every intended participant has
+// already joined the live round. Calling it from a multi-client test
+// before every client has issued JoinRound will fail the round
+// (operator sees zero or partial intents). Tests that need a
+// quiescence point before sealing must coordinate that explicitly
+// before calling this helper.
+//
+// A 5-second deadline is plenty: the admin Ask call is in-process
+// and the seal itself is a single FSM event; this is just a safety
+// rail against a misbehaving test holding the actor.
+func (h *ArkHarness) SealRoundNow() string {
+	h.T.Helper()
+
+	require.NotNil(
+		h.T, h.ArkAdminClient, "SealRoundNow requires the arkd "+
+			"admin client; harness must have been started "+
+			"without SkipArkd",
+	)
+
+	ctx, cancel := context.WithTimeout(
+		h.T.Context(), 5*time.Second,
+	)
+	defer cancel()
+
+	resp, err := h.ArkAdminClient.TriggerBatch(
+		ctx, &adminrpc.TriggerBatchRequest{},
+	)
+	require.NoError(h.T, err, "TriggerBatch RPC failed")
+	require.NotEmpty(
+		h.T, resp.RoundId, "TriggerBatch must return a sealed round id",
+	)
+
+	return resp.RoundId
+}
+
 // Start starts the harness infrastructure and optionally the in-process arkd
 // server (unless SkipArkd was set in options).
 func (h *ArkHarness) Start() {
