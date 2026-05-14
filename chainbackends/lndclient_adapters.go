@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/darepo-client/chainfees"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -42,55 +43,13 @@ func (b *LndClientTxBroadcaster) PublishTransaction(ctx context.Context,
 var _ TxBroadcaster = (*LndClientTxBroadcaster)(nil)
 
 // LndClientFeeEstimator implements chainfee.Estimator using lndclient.
-type LndClientFeeEstimator struct {
-	walletKit lndclient.WalletKitClient
-}
+type LndClientFeeEstimator = chainfees.WalletKitEstimator
 
 // NewLndClientFeeEstimator creates a new fee estimator backed by lndclient.
 func NewLndClientFeeEstimator(
 	walletKit lndclient.WalletKitClient) *LndClientFeeEstimator {
 
-	return &LndClientFeeEstimator{
-		walletKit: walletKit,
-	}
-}
-
-// Start is a no-op for lndclient-backed estimators since the connection is
-// already established.
-func (e *LndClientFeeEstimator) Start() error {
-	return nil
-}
-
-// Stop is a no-op for lndclient-backed estimators.
-func (e *LndClientFeeEstimator) Stop() error {
-	return nil
-}
-
-// EstimateFeePerKW returns the estimated fee rate in satoshis per kilo-weight
-// unit for the given confirmation target.
-func (e *LndClientFeeEstimator) EstimateFeePerKW(numBlocks uint32) (
-	chainfee.SatPerKWeight, error) {
-
-	ctx, cancel := context.WithTimeout(
-		context.Background(), 30*time.Second,
-	)
-	defer cancel()
-	satPerKw, err := e.walletKit.EstimateFeeRate(
-		ctx, int32(numBlocks),
-	)
-	if err != nil {
-		return 0, fmt.Errorf("estimate fee rate: %w", err)
-	}
-
-	return satPerKw, nil
-}
-
-// RelayFeePerKW returns the minimum fee rate required for transactions to be
-// relayed. For remote lnd, we return a reasonable default.
-func (e *LndClientFeeEstimator) RelayFeePerKW() chainfee.SatPerKWeight {
-
-	// Default relay fee of 1 sat/vbyte = 250 sat/kw.
-	return chainfee.SatPerKWeight(250)
+	return chainfees.NewWalletKitEstimator(walletKit, nil)
 }
 
 // Ensure LndClientFeeEstimator implements chainfee.Estimator.
