@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
@@ -18,6 +19,19 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+// longRegistrationTimeout returns an OperatorConfigMutator that pins the
+// operator's round registration window to 30s. Multi-client shared-round
+// tests need this because the harness default (500ms) is too tight for
+// several clients to all join the same round in series under CI load: the
+// first client triggers seal before the rest arrive, and the late clients
+// land in a fresh round. 30s matches the production default (10s) with a
+// 3x cushion for busy runners.
+func longRegistrationTimeout() func(cfg *darepo.Config) {
+	return func(cfg *darepo.Config) {
+		cfg.Rounds.RegistrationTimeout = 30 * time.Second
+	}
+}
 
 const (
 	defaultSmallTimeout = 5 * time.Second
@@ -221,6 +235,48 @@ func waitForClientRoundState(t *testing.T, client daemonrpc.DaemonServiceClient,
 		return false
 	}, defaultTimeout, pollInterval,
 		"client never reached round state %s", target.String())
+
+	return matched
+}
+
+// waitForNonTempClientRoundState waits until a server-assigned round reported
+// by the daemon satisfies the requested lifecycle state.
+func waitForNonTempClientRoundState(t *testing.T,
+	client daemonrpc.DaemonServiceClient,
+	target daemonrpc.RoundState) *daemonrpc.RoundInfo {
+
+	t.Helper()
+
+	var matched *daemonrpc.RoundInfo
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			t.Context(), defaultSmallTimeout,
+		)
+		defer cancel()
+
+		resp, err := client.ListRounds(
+			ctx, &daemonrpc.ListRoundsRequest{},
+		)
+		if err != nil {
+			return false
+		}
+
+		for _, round := range resp.Rounds {
+			if round.IsTemp || round.RoundId == "" {
+				continue
+			}
+
+			if roundStateSatisfiesTarget(round.State, target) {
+				matched = round
+
+				return true
+			}
+		}
+
+		return false
+	}, defaultTimeout, pollInterval,
+		"client never reached non-temp round state %s",
+		target.String())
 
 	return matched
 }

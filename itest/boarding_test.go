@@ -5,7 +5,6 @@ package itest
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo"
@@ -256,7 +255,8 @@ func TestBoardingIntegrationTwoClientsSharedRound(t *testing.T) {
 	clientOpts.StartTapd = false
 
 	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
-		ClientOptions: &clientOpts,
+		ClientOptions:         &clientOpts,
+		OperatorConfigMutator: longRegistrationTimeout(),
 	})
 	t.Cleanup(h.Stop)
 
@@ -402,7 +402,8 @@ func TestBoardingIntegrationThreeClientsSharedRound(t *testing.T) {
 	clientOpts.StartTapd = false
 
 	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
-		ClientOptions: &clientOpts,
+		ClientOptions:         &clientOpts,
+		OperatorConfigMutator: longRegistrationTimeout(),
 	})
 	t.Cleanup(h.Stop)
 
@@ -866,10 +867,10 @@ func TestBoardingIntegrationTriggerBatchCreatesNewRound(t *testing.T) {
 			// poll and the admin RPC to land. The
 			// itest harness default of 500ms is far
 			// too short to catch the transient state;
-			// pin to 60s to match the production
-			// default (10s) with a 6x cushion for
-			// busy CI runners.
-			cfg.Rounds.RegistrationTimeout = 60 * time.Second
+			// use the shared long-registration helper
+			// used by other tests that need to inspect
+			// intermediate round-registration state.
+			longRegistrationTimeout()(cfg)
 		},
 	})
 	t.Cleanup(h.Stop)
@@ -1066,6 +1067,11 @@ func TestBoardingIntegrationMultiTreeRound(t *testing.T) {
 			// exercising the cross-tree partial-signature path that
 			// AddPartialSignatures must accept.
 			cfg.Rounds.MaxVTXOsPerTree = 1
+
+			// This is a shared-round test (alice + bob in the same
+			// round), so it also needs the longer registration
+			// window for both clients to join.
+			longRegistrationTimeout()(cfg)
 		},
 	})
 	t.Cleanup(h.Stop)
@@ -1187,7 +1193,8 @@ func TestBoardingIntegrationReplayBoardAfterRestart(t *testing.T) {
 	clientOpts.StartTapd = false
 
 	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
-		ClientOptions: &clientOpts,
+		ClientOptions:         &clientOpts,
+		OperatorConfigMutator: longRegistrationTimeout(),
 	})
 	t.Cleanup(h.Stop)
 
@@ -1231,7 +1238,7 @@ func TestBoardingIntegrationReplayBoardAfterRestart(t *testing.T) {
 	// pending row reflects an in-flight request, not a request that
 	// silently failed.
 	waitForClientRegistration(t, h)
-	preRestartRound := waitForClientRoundState(
+	preRestartRound := waitForNonTempClientRoundState(
 		t, alice.RPCClient,
 		daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT,
 	)
@@ -1252,49 +1259,16 @@ func TestBoardingIntegrationReplayBoardAfterRestart(t *testing.T) {
 		alice.RPCAddr,
 	)
 
-	// Observable for the replay path: a fresh REGISTRATION_SENT round
-	// appears on the daemon WITHOUT the test calling Board again. The
-	// round_id may or may not match preRestartRoundID — the operator
-	// may admit the replay into a fresh round or reuse an assembling
-	// one — so the test asserts the lifecycle state, not the id.
-	//
-	// We require a NON-TEMP round to ride out the brief temp→assigned
-	// re-key window the round actor uses when ack'ing JoinRound. Filtering
-	// IsTemp via ListRounds also matches the pattern in
-	// TestBoardingIntegrationTriggerBatchCreatesNewRound.
-	var replayedRoundID string
-	require.Eventually(t, func() bool {
-		ctx, cancel := context.WithTimeout(
-			t.Context(), defaultSmallTimeout,
-		)
-		defer cancel()
-
-		resp, err := alice.RPCClient.ListRounds(
-			ctx, &daemonrpc.ListRoundsRequest{},
-		)
-		if err != nil {
-			return false
-		}
-
-		for _, round := range resp.Rounds {
-			if round.IsTemp || round.RoundId == "" {
-				continue
-			}
-
-			target := daemonrpc.
-				RoundState_ROUND_STATE_REGISTRATION_SENT
-			if !roundStateSatisfiesTarget(round.State, target) {
-				continue
-			}
-
-			replayedRoundID = round.RoundId
-
-			return true
-		}
-
-		return false
-	}, defaultTimeout, pollInterval,
-		"replayed registration never produced a non-temp round")
+	// Observable for the replay path: a REGISTRATION_SENT round appears
+	// on the daemon WITHOUT the test calling Board again. The round_id may
+	// or may not match preRestartRoundID — the operator may admit the
+	// replay into a fresh round or reuse an assembling one — so the test
+	// asserts the lifecycle state, not the id.
+	replayedRound := waitForNonTempClientRoundState(
+		t, alice.RPCClient,
+		daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT,
+	)
+	replayedRoundID := replayedRound.RoundId
 
 	t.Logf(
 		"Replayed registration after restart: round_id=%q "+
