@@ -1,0 +1,42 @@
+{
+  "trace_id": "mailbox_duplicate_enqueue_idempotent",
+  "description": "A duplicate enqueue with the same durable id is a no-op and cannot rewrite the original mailbox scope.",
+  "events": [
+    {
+      "op": "enqueue",
+      "id": "00000000-0000-7000-8000-000000000401",
+      "mailbox_id": "actor-A",
+      "correlation_key": "round/original",
+      "payload": "original-payload",
+      "now": 0,
+      "available_at": 0,
+      "max_attempts": 3
+    },
+    {
+      "op": "enqueue",
+      "id": "00000000-0000-7000-8000-000000000401",
+      "mailbox_id": "actor-B",
+      "correlation_key": "round/duplicate",
+      "payload": "duplicate-payload",
+      "now": 0,
+      "available_at": 0,
+      "max_attempts": 3,
+      "expect_duplicate": true
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-B",
+      "lease_token": "lease-B",
+      "now": 0,
+      "expect_id": ""
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-A",
+      "now": 0,
+      "expect_id": "00000000-0000-7000-8000-000000000401",
+      "expect_payload": "original-payload"
+    }
+  ]
+}

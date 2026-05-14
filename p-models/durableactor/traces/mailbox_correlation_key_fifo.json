@@ -1,0 +1,64 @@
+{
+  "trace_id": "mailbox_correlation_key_fifo",
+  "description": "Same-key successor waits behind a nacked predecessor, then claims after the predecessor is acked.",
+  "events": [
+    {
+      "op": "enqueue",
+      "id": "00000000-0000-7000-8000-000000000001",
+      "mailbox_id": "actor-A",
+      "correlation_key": "round/1",
+      "now": 0,
+      "available_at": 0,
+      "max_attempts": 3
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-1",
+      "now": 0,
+      "expect_id": "00000000-0000-7000-8000-000000000001"
+    },
+    {
+      "op": "nack",
+      "id": "00000000-0000-7000-8000-000000000001",
+      "lease_token": "lease-1",
+      "now": 0,
+      "retry_after": 5
+    },
+    {
+      "op": "enqueue",
+      "id": "00000000-0000-7000-8000-000000000002",
+      "mailbox_id": "actor-A",
+      "correlation_key": "round/1",
+      "now": 1,
+      "available_at": 1,
+      "max_attempts": 3
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-2",
+      "now": 1,
+      "expect_id": ""
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-3",
+      "now": 5,
+      "expect_id": "00000000-0000-7000-8000-000000000001"
+    },
+    {
+      "op": "ack",
+      "id": "00000000-0000-7000-8000-000000000001",
+      "lease_token": "lease-3"
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-4",
+      "now": 5,
+      "expect_id": "00000000-0000-7000-8000-000000000002"
+    }
+  ]
+}

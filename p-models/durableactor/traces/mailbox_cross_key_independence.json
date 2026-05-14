@@ -1,0 +1,45 @@
+{
+  "trace_id": "mailbox_cross_key_independence",
+  "description": "A nacked row on one key does not block another key in the same mailbox.",
+  "events": [
+    {
+      "op": "enqueue",
+      "id": "00000000-0000-7000-8000-000000000201",
+      "mailbox_id": "actor-A",
+      "correlation_key": "round/1",
+      "now": 0,
+      "available_at": 0,
+      "max_attempts": 3
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-1",
+      "now": 0,
+      "expect_id": "00000000-0000-7000-8000-000000000201"
+    },
+    {
+      "op": "nack",
+      "id": "00000000-0000-7000-8000-000000000201",
+      "lease_token": "lease-1",
+      "now": 0,
+      "retry_after": 10
+    },
+    {
+      "op": "enqueue",
+      "id": "00000000-0000-7000-8000-000000000202",
+      "mailbox_id": "actor-A",
+      "correlation_key": "round/2",
+      "now": 1,
+      "available_at": 1,
+      "max_attempts": 3
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-2",
+      "now": 1,
+      "expect_id": "00000000-0000-7000-8000-000000000202"
+    }
+  ]
+}

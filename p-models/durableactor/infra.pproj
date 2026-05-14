@@ -1,0 +1,8 @@
+<Project>
+<ProjectName>MailboxInfraModels</ProjectName>
+<InputFiles>
+<PFile>src/mailbox_fifo.p</PFile>
+<PFile>test/mailbox_fifo_test.p</PFile>
+</InputFiles>
+<OutputDir>PGenerated</OutputDir>
+</Project>

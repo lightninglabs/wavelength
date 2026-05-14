@@ -43,3 +43,7 @@ go.work.sum
 .claude/worktrees/
 .claude/.substrate-plan-context
 .sessions/
+
+# P model generated artifacts.
+/PGenerated/
+/PCheckerOutput/
