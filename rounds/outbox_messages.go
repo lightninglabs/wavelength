@@ -1,6 +1,7 @@
 package rounds
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -13,6 +14,17 @@ import (
 	"github.com/lightninglabs/darepo/clientconn"
 	"google.golang.org/protobuf/proto"
 )
+
+// roundClientCorrelationKey is the canonical per-mailbox FIFO key for all
+// round outbox messages addressed to a specific client for a specific
+// round. Two messages with the same key are claim-ordered by emission
+// order regardless of retry backoff. See clientconn.ClientMessage for the
+// full contract.
+func roundClientCorrelationKey(clientID clientconn.ClientID,
+	roundID RoundID) string {
+
+	return fmt.Sprintf("%s/%s", clientID, roundID)
+}
 
 // Round outbox messages use the roundpb.Method* constants from the
 // client submodule as the single source of truth for routing keys.
@@ -78,6 +90,11 @@ func (c *ClientErrorResp) ServiceMethod() mailboxrpc.ServiceMethod {
 // OutboxEvent interface.
 func (c *ClientErrorResp) outboxEventSealed() {}
 
+// CorrelationKey returns the empty string. Error responses are not bound
+// to a round handshake — they fire on admission rejects before any round
+// id is assigned, so they participate in the global available_at order.
+func (c *ClientErrorResp) CorrelationKey() string { return "" }
+
 // ClientSuccessResp is an outbox message emitted by the FSM to send
 // a successful join response back to a client via the ClientConnectionActor.
 type ClientSuccessResp struct {
@@ -136,6 +153,14 @@ func (c *ClientSuccessResp) ServiceMethod() mailboxrpc.ServiceMethod {
 // OutboxEvent interface.
 func (c *ClientSuccessResp) outboxEventSealed() {}
 
+// CorrelationKey returns the per-client/round FIFO key. Together with
+// every other round-bound message addressed to the same client and round,
+// this guarantees the join-ack is processed before any later same-key
+// message even when its Edge.Send transiently fails and gets nacked.
+func (c *ClientSuccessResp) CorrelationKey() string {
+	return roundClientCorrelationKey(c.Client, c.RoundID)
+}
+
 // ClientAwaitingInputSigsResp is an outbox message sent to clients with
 // boarding inputs when the server is ready to receive their boarding
 // signatures. This is sent separately from ClientBatchInfo because there may
@@ -174,6 +199,11 @@ func (c *ClientAwaitingInputSigsResp) ServiceMethod() mailboxrpc.ServiceMethod {
 // outboxEventSealed marks ClientAwaitingInputSigsResp as implementing the
 // sealed OutboxEvent interface.
 func (c *ClientAwaitingInputSigsResp) outboxEventSealed() {}
+
+// CorrelationKey returns the per-client/round FIFO key.
+func (c *ClientAwaitingInputSigsResp) CorrelationKey() string {
+	return roundClientCorrelationKey(c.Client, c.RoundID)
+}
 
 // ClientVTXOAggNonces is an outbox message sent to clients with VTXOs after all
 // nonces have been collected and aggregated. The client uses these aggregated
@@ -223,6 +253,11 @@ func (c *ClientVTXOAggNonces) ServiceMethod() mailboxrpc.ServiceMethod {
 // outboxEventSealed marks ClientVTXOAggNonces as implementing the sealed
 // OutboxEvent interface.
 func (c *ClientVTXOAggNonces) outboxEventSealed() {}
+
+// CorrelationKey returns the per-client/round FIFO key.
+func (c *ClientVTXOAggNonces) CorrelationKey() string {
+	return roundClientCorrelationKey(c.Client, c.RoundID)
+}
 
 // ClientVTXOAggSigs is an outbox message sent to clients with VTXOs after all
 // partial signatures have been collected and aggregated into final schnorr
@@ -274,6 +309,11 @@ func (c *ClientVTXOAggSigs) ServiceMethod() mailboxrpc.ServiceMethod {
 // outboxEventSealed marks ClientVTXOAggSigs as implementing the sealed
 // OutboxEvent interface.
 func (c *ClientVTXOAggSigs) outboxEventSealed() {}
+
+// CorrelationKey returns the per-client/round FIFO key.
+func (c *ClientVTXOAggSigs) CorrelationKey() string {
+	return roundClientCorrelationKey(c.Client, c.RoundID)
+}
 
 // RoundSealedReq is emitted when a round has been sealed (registration closed).
 // The actor should create a new round to accept new registrations.
@@ -487,6 +527,11 @@ func (c *ClientBatchInfo) ServiceMethod() mailboxrpc.ServiceMethod {
 // OutboxEvent interface.
 func (c *ClientBatchInfo) outboxEventSealed() {}
 
+// CorrelationKey returns the per-client/round FIFO key.
+func (c *ClientBatchInfo) CorrelationKey() string {
+	return roundClientCorrelationKey(c.Client, c.RoundID)
+}
+
 // ClientRoundFailedResp is an outbox message emitted to notify a client that
 // the round they joined has failed. The client should discard any state
 // associated with this round.
@@ -526,6 +571,11 @@ func (c *ClientRoundFailedResp) ServiceMethod() mailboxrpc.ServiceMethod {
 // outboxEventSealed marks ClientRoundFailedResp as implementing the sealed
 // OutboxEvent interface.
 func (c *ClientRoundFailedResp) outboxEventSealed() {}
+
+// CorrelationKey returns the per-client/round FIFO key.
+func (c *ClientRoundFailedResp) CorrelationKey() string {
+	return roundClientCorrelationKey(c.Client, c.RoundID)
+}
 
 // RoundFailedReq is emitted when a round has failed. The actor should clean up
 // any resources associated with the round and potentially create a new round.
@@ -654,6 +704,14 @@ func (q *JoinRoundQuoteOutbox) ServiceMethod() mailboxrpc.ServiceMethod {
 // outboxEventSealed marks JoinRoundQuoteOutbox as implementing the
 // sealed OutboxEvent interface.
 func (q *JoinRoundQuoteOutbox) outboxEventSealed() {}
+
+// CorrelationKey returns the per-client/round FIFO key. This is the
+// pair the durable-mailbox reorder fix targets: with this key, the
+// quote never overtakes a transiently-failed join-ack for the same
+// client and round.
+func (q *JoinRoundQuoteOutbox) CorrelationKey() string {
+	return roundClientCorrelationKey(q.Client, q.RoundID)
+}
 
 // quoteReasonToProto maps a server-side QuoteReason into its
 // roundpb.QuoteReason wire equivalent. Keeps the two enum
