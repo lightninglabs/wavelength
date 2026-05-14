@@ -1483,6 +1483,17 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 			walletBackend)
 	}
 
+	// Wallet readiness on the embedded backends (btcwallet,
+	// lwwallet) includes a neutrino / electrs chain header sync
+	// which is bounded by P2P / HTTP latency rather than local
+	// FSM work. Under CI parallel pressure these syncs can take
+	// well past 30s — that's the historical flake root cause for
+	// TestBoardingIntegrationSingleClientSubsequentRounds. The
+	// FSM-driven timeouts elsewhere in the harness stayed at
+	// 30s; this one specifically wraps a chain-sync, so we give
+	// it a longer ceiling.
+	const embeddedWalletReadyTimeout = 2 * time.Minute
+
 	require.Eventually(d.T, func() bool {
 		waitCtx, waitCancel := context.WithTimeout(
 			d.T.Context(), defaultSmallTimeout,
@@ -1497,7 +1508,7 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 		}
 
 		return daemonWalletReady(updatedInfo)
-	}, defaultTimeout, pollInterval,
+	}, embeddedWalletReadyTimeout, pollInterval,
 		"client daemon %q wallet never became ready", d.Name)
 }
 
