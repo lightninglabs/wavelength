@@ -7,12 +7,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo"
 	clientchain "github.com/lightninglabs/darepo-client/chain"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
@@ -253,6 +255,21 @@ func TestPartialUnrollIntegrationRatchetsWatcherForward(t *testing.T) {
 
 	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
 		ClientOptions: &clientOpts,
+		OperatorConfigMutator: func(cfg *darepo.Config) {
+			// Four clients join the same shared round
+			// serially in this test, and the assertion
+			// at the end is "all clients land on the
+			// same round_id". The harness default
+			// RegistrationTimeout of 500ms is fine for
+			// single-client tests but can race the
+			// fourth join under CI load: the round
+			// seals before everyone arrives and the
+			// late client lands in a fresh round. Pin
+			// a generous registration window so this
+			// test deterministically captures all four
+			// clients in the same round.
+			cfg.Rounds.RegistrationTimeout = 30 * time.Second
+		},
 	})
 	t.Cleanup(h.Stop)
 
