@@ -115,3 +115,68 @@ func TestRunWithPortBindRetry(t *testing.T) {
 		require.Equal(t, 1, attempts)
 	})
 }
+
+// TestContainerHasExactName asserts stale-container cleanup does not treat
+// Docker's substring name-filter matches as exact container-name matches.
+func TestContainerHasExactName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		container docker.APIContainers
+		wantName  string
+		want      bool
+	}{
+		{
+			name: "exact name",
+			container: docker.APIContainers{
+				Names: []string{
+					"/bitcoin-TestFoo",
+				},
+			},
+			wantName: "bitcoin-TestFoo",
+			want:     true,
+		},
+		{
+			name: "exact name with leading slash",
+			container: docker.APIContainers{
+				Names: []string{
+					"/bitcoin-TestFoo",
+				},
+			},
+			wantName: "/bitcoin-TestFoo",
+			want:     true,
+		},
+		{
+			name: "substring sibling",
+			container: docker.APIContainers{
+				Names: []string{
+					"/bitcoin-TestFooSubsequentRounds",
+				},
+			},
+			wantName: "bitcoin-TestFoo",
+			want:     false,
+		},
+		{
+			name: "multiple names include exact",
+			container: docker.APIContainers{
+				Names: []string{
+					"/alias",
+					"/bitcoin-TestFoo",
+				},
+			},
+			wantName: "bitcoin-TestFoo",
+			want:     true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(
+				t, tc.want, containerHasExactName(
+					tc.container, tc.wantName,
+				),
+			)
+		})
+	}
+}

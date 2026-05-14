@@ -849,6 +849,10 @@ func (h *Harness) removeContainerByName(name string) {
 	}
 
 	for _, container := range containers {
+		if !containerHasExactName(container, name) {
+			continue
+		}
+
 		// Kill container if it's still running.
 		err := h.pool.Client.KillContainer(docker.KillContainerOptions{
 			ID: container.ID,
@@ -874,6 +878,20 @@ func (h *Harness) removeContainerByName(name string) {
 			)
 		}
 	}
+}
+
+// containerHasExactName returns true if Docker reported the exact container
+// name. Docker name filters match substrings, so callers must apply this exact
+// check before removing a supposedly stale container.
+func containerHasExactName(container docker.APIContainers, name string) bool {
+	wantName := "/" + strings.TrimPrefix(name, "/")
+	for _, haveName := range container.Names {
+		if haveName == wantName {
+			return true
+		}
+	}
+
+	return false
 }
 
 // waitContainerRunning polls until the given container is running.
