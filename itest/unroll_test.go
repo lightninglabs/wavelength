@@ -501,6 +501,21 @@ func waitForUnrollJobCompletion(t *testing.T, h *harness.ArkHarness,
 			)
 			h.GenerateAndWait(1)
 			lastBlockDrive = time.Now()
+			// A heartbeat block is real driver of the
+			// embedded-wallet rebroadcast / fee-bump
+			// pipeline, so it counts as progress for the
+			// purpose of the no-progress watchdog. The
+			// overall test budget (unrollOverallTimeout)
+			// still bounds a genuinely stuck run. Without
+			// this reset, a deep btcwallet unroll lineage
+			// that walks through many empty-mempool ticks
+			// between visible-progress events trips the
+			// 6-minute no-progress timer while it is in
+			// fact making protocol-level progress block by
+			// block.
+			progressDeadline = time.Now().Add(
+				unrollNoProgressTimeout,
+			)
 
 			continue
 		}
