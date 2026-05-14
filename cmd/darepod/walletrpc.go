@@ -27,4 +27,7 @@ func configureWalletRPC(cfg *darepod.Config) {
 	cfg.RPCServiceRegistrars = append(
 		cfg.RPCServiceRegistrars, swapwallet.Register,
 	)
+	cfg.RPCGatewayRegistrars = append(
+		cfg.RPCGatewayRegistrars, swapwallet.RegisterGateway,
+	)
 }

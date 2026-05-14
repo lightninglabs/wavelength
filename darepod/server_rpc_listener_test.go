@@ -27,6 +27,7 @@ func testConfigWithInjectedRPCListener(listener net.Listener) *Config {
 	cfg.Wallet.EsploraURL = "http://127.0.0.1:3000"
 	cfg.RPC.ListenAddr = ""
 	cfg.RPC.Listener = listener
+	cfg.RPC.Gateway.Enabled = false
 
 	return cfg
 }
@@ -42,6 +43,30 @@ func TestConfigValidateAllowsInjectedRPCListener(t *testing.T) {
 	})
 
 	cfg := testConfigWithInjectedRPCListener(listener)
+
+	require.NoError(t, cfg.Validate())
+}
+
+// TestDefaultConfigEnablesGateway ensures the daemon HTTP gateway is enabled
+// on localhost by default.
+func TestDefaultConfigEnablesGateway(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	require.True(t, cfg.RPC.Gateway.Enabled)
+	require.Equal(t, DefaultRPCGatewayHost, cfg.RPC.Gateway.ListenAddr)
+}
+
+// TestConfigValidateAllowsDisabledGateway verifies embedders can disable the
+// HTTP gateway entirely.
+func TestConfigValidateAllowsDisabledGateway(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.Network = "regtest"
+	cfg.Wallet.EsploraURL = "http://127.0.0.1:3000"
+	cfg.RPC.Gateway.Enabled = false
+	cfg.RPC.Gateway.ListenAddr = ""
 
 	require.NoError(t, cfg.Validate())
 }

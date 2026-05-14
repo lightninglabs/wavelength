@@ -301,6 +301,7 @@ type Server struct {
 	rpcAddr   net.Addr
 
 	grpcServer *grpc.Server
+	gateway    *gatewayServer
 	rpcServer  *RPCServer
 	mailboxMux *mailboxrpc.ServeMux
 }
@@ -923,6 +924,29 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	if err != nil {
 		return err
 	}
+
+	s.gateway = newGatewayServer(
+		s.cfg.RPC.Gateway, lis.Addr().String(), s.rpcServer, s.cfg,
+		s.cfg.RPCGatewayRegistrars, s.log,
+	)
+	if err := s.gateway.Start(ctx); err != nil {
+		_ = lis.Close()
+
+		return err
+	}
+	//nolint:contextcheck // shutdown uses bounded process-root context
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(
+			context.Background(), DefaultShutdownTimeout,
+		)
+		defer shutdownCancel()
+
+		if err := s.gateway.Stop(shutdownCtx); err != nil {
+			s.log.WarnS(shutdownCtx, "HTTP gateway shutdown failed",
+				err,
+			)
+		}
+	}()
 
 	go func() {
 		s.log.InfoS(ctx, "gRPC server listening",

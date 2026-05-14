@@ -181,6 +181,18 @@ func newRootCmd() *cobra.Command {
 		"rpc.listenaddr", cfg.RPC.ListenAddr,
 		"daemon gRPC listen address",
 	)
+	f.Bool(
+		"rpc.gateway.enabled", cfg.RPC.Gateway.Enabled,
+		"enable daemon HTTP/JSON gateway",
+	)
+	f.String(
+		"rpc.gateway.listenaddr", cfg.RPC.Gateway.ListenAddr,
+		"daemon HTTP/JSON gateway listen address",
+	)
+	f.StringSlice(
+		"rpc.gateway.allowedorigins", cfg.RPC.Gateway.AllowedOrigins,
+		"trusted browser origins allowed to call the daemon gateway",
+	)
 
 	f.String(
 		"swap.serveraddress", cfg.Swap.ServerAddress,

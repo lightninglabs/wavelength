@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/oor"
@@ -29,6 +30,10 @@ const (
 	// DefaultRPCHost is the default listen address for the daemon's own
 	// gRPC server.
 	DefaultRPCHost = "localhost:10029"
+
+	// DefaultRPCGatewayHost is the default listen address for the
+	// daemon's HTTP/JSON gateway.
+	DefaultRPCGatewayHost = "localhost:10031"
 
 	// DefaultLndHost is the default address for connecting to the local
 	// lnd instance.
@@ -152,6 +157,11 @@ type Config struct {
 	// user-provided daemon settings.
 	RPCServiceRegistrars []RPCServiceRegistrar
 
+	// RPCGatewayRegistrars are programmatic hooks that may register
+	// optional subservers on the daemon HTTP/JSON gateway after
+	// DaemonService is registered.
+	RPCGatewayRegistrars []RPCGatewayRegistrar
+
 	// Wallet configures the wallet backend used for signing, key
 	// derivation, and chain access.
 	Wallet *WalletConfig `mapstructure:"wallet"`
@@ -210,6 +220,13 @@ type RPCServiceRegistrar func(
 	ctx context.Context, grpcServer *grpc.Server, rpcServer *RPCServer,
 	cfg *Config,
 ) (func(), error)
+
+// RPCGatewayRegistrar registers one optional daemon HTTP/JSON subserver on
+// the daemon gateway.
+type RPCGatewayRegistrar func(
+	ctx context.Context, mux *runtime.ServeMux, endpoint string,
+	opts []grpc.DialOption, rpcServer *RPCServer, cfg *Config,
+) error
 
 // UnrollConfig configures the unilateral-exit subsystem.
 type UnrollConfig struct {
@@ -432,6 +449,10 @@ type RPCConfig struct {
 	// from config files.
 	Listener net.Listener
 
+	// Gateway contains the HTTP/JSON gateway configuration for the
+	// daemon RPC server.
+	Gateway *GatewayConfig `mapstructure:"gateway"`
+
 	// TLSCertPath is the path to the daemon's TLS certificate. If empty,
 	// one is auto-generated in the data directory.
 	TLSCertPath string `mapstructure:"tlscertpath"`
@@ -439,6 +460,36 @@ type RPCConfig struct {
 	// TLSKeyPath is the path to the daemon's TLS private key. If empty,
 	// one is auto-generated in the data directory.
 	TLSKeyPath string `mapstructure:"tlskeypath"`
+}
+
+// GatewayConfig contains configuration for an HTTP/JSON grpc-gateway
+// listener.
+type GatewayConfig struct {
+	// Enabled controls whether the HTTP gateway starts with its
+	// owning gRPC server.
+	Enabled bool `mapstructure:"enabled"`
+
+	// ListenAddr is the network address the gateway binds to.
+	ListenAddr string `mapstructure:"listenaddr"`
+
+	// AllowedOrigins lists browser origins that may call the gateway.
+	// Empty means no cross-origin browser access; requests without an
+	// Origin header, such as CLI or local service calls, are still served.
+	AllowedOrigins []string `mapstructure:"allowedorigins"`
+
+	// Listener is an optional pre-created listener. When non-nil,
+	// the gateway serves on this listener instead of binding to
+	// ListenAddr. This is programmatic-only and is not loaded from
+	// config files.
+	Listener net.Listener
+}
+
+// DefaultGatewayConfig returns an enabled HTTP gateway config.
+func DefaultGatewayConfig() *GatewayConfig {
+	return &GatewayConfig{
+		Enabled:    true,
+		ListenAddr: DefaultRPCGatewayHost,
+	}
 }
 
 // WalletConfig selects and configures the wallet backend.
@@ -515,6 +566,7 @@ func DefaultConfig() *Config {
 		},
 		RPC: &RPCConfig{
 			ListenAddr: DefaultRPCHost,
+			Gateway:    DefaultGatewayConfig(),
 		},
 		Wallet: &WalletConfig{
 			Type:           DefaultWalletType,
@@ -615,6 +667,33 @@ func (c *Config) Validate() error {
 	if c.RPC.Listener == nil && c.RPC.ListenAddr == "" {
 		return fmt.Errorf("rpc listen address or injected listener " +
 			"is required")
+	}
+	if c.RPC.Gateway == nil {
+		return fmt.Errorf("rpc gateway config is required")
+	}
+	if c.RPC.Gateway.Enabled && c.RPC.Gateway.Listener == nil &&
+		c.RPC.Gateway.ListenAddr == "" {
+		return fmt.Errorf("rpc gateway listen address or injected " +
+			"listener is required")
+	}
+	if err := validateGatewayAllowedOrigins(
+		c.RPC.Gateway.AllowedOrigins,
+	); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateGatewayAllowedOrigins rejects wildcard CORS grants on wallet-control
+// APIs.
+func validateGatewayAllowedOrigins(origins []string) error {
+	for _, origin := range origins {
+		switch origin {
+		case "", "*":
+			return fmt.Errorf("rpc.gateway.allowedorigins must "+
+				"contain explicit origins, got %q", origin)
+		}
 	}
 
 	return nil
