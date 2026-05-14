@@ -95,6 +95,14 @@ type ClientSuccessResp struct {
 	// AcceptedVTXOOutpoints contains the VTXO outpoints involved in this
 	// round. Used for operations like forfeit, leave, and refresh.
 	AcceptedVTXOOutpoints []wire.OutPoint
+
+	// IsReregistration is true when this success response is the result
+	// of a re-registration replacement (same ClientID re-joining the
+	// round it was already in). The flag is server-internal only and
+	// does not cross the wire — clients treat replacement and first-time
+	// admission identically. It is consumed by the actor's outbox
+	// handler to suppress duplicate join-metric increments.
+	IsReregistration bool
 }
 
 // ClientID returns the identifier of the client to send the message to.

@@ -818,6 +818,7 @@ func (s *IntentCollectingState) ProcessEvent(ctx context.Context, event Event,
 			AcceptedVTXOOutpoints: extractVTXOOutpoints(
 				result.ForfeitInputs,
 			),
+			IsReregistration: isReregistration,
 		}
 
 		outbox := []OutboxEvent{successResp}

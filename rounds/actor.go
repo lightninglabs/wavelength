@@ -795,7 +795,15 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 		// client-bound messages implement the ClientMessage interface.
 		case clientconn.ClientMessage:
 			// Track client join when a ClientSuccessResp is sent.
-			if successResp, ok := m.(*ClientSuccessResp); ok {
+			// Skip re-registration responses: the FSM emits a
+			// fresh ClientSuccessResp on every replay, but the
+			// client is already counted from the original
+			// admission. Bumping the join metric again would
+			// drift per-round and aggregate counters by the
+			// number of replays.
+			if successResp, ok := m.(*ClientSuccessResp); ok &&
+				!successResp.IsReregistration {
+
 				a.trackClientJoin(
 					ctx, successResp.Client,
 					successResp.RoundID,
