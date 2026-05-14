@@ -272,26 +272,60 @@ func TestFromProtoRejectsUnknownRejectReason(t *testing.T) {
 	require.Contains(t, err.Error(), "reject_reason")
 }
 
-// TestEvaluateQuoteRendersNamedRejectReason verifies the error
-// rendering on a server-rejected quote uses the named enum value
-// rather than a raw integer.
-func TestEvaluateQuoteRendersNamedRejectReason(t *testing.T) {
+// TestEvaluateQuoteRendersActionableRejectReason verifies error rendering on
+// server-rejected quotes preserves the named enum while explaining the
+// operator action needed to recover.
+func TestEvaluateQuoteRendersActionableRejectReason(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
-	quote.RejectReason = roundpb.QuoteReason_INSUFFICIENT_RESIDUAL
+	tests := []struct {
+		name     string
+		reason   roundpb.QuoteReason
+		contains []string
+	}{{
+		name:   "insufficient residual",
+		reason: roundpb.QuoteReason_INSUFFICIENT_RESIDUAL,
+		contains: []string{
+			"INSUFFICIENT_RESIDUAL",
+			"not enough value remains",
+			"use a larger input",
+			"reduce fixed outputs",
+		},
+	}, {
+		name:   "invalid change designation",
+		reason: roundpb.QuoteReason_INVALID_CHANGE_DESIGNATION,
+		contains: []string{
+			"INVALID_CHANGE_DESIGNATION",
+			"exactly one change output",
+			"should be reported",
+		},
+	}}
 
-	env := quoteReceivedTestEnv(10_000)
-	decision := evaluateQuote(env, RoundID{}, intents, quote)
-	rej, ok := decision.(*QuoteRejected)
-	require.True(t, ok)
-	require.Contains(t, rej.Reason, "INSUFFICIENT_RESIDUAL")
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			intents, _ := buildEchoTestIntents(t)
+			quote := quoteFromIntents(t, intents, 5_000)
+			quote.RejectReason = test.reason
+
+			env := quoteReceivedTestEnv(10_000)
+			decision := evaluateQuote(
+				env, RoundID{}, intents, quote,
+			)
+			rej, ok := decision.(*QuoteRejected)
+			require.True(t, ok)
+			for _, fragment := range test.contains {
+				require.Contains(t, rej.Reason, fragment)
+			}
+		})
+	}
 
 	// Sanity: a proto marshal+unmarshal cycle preserves the
 	// enum name round-trip by keeping the value.
 	pb := &roundpb.JoinRoundQuote{
-		RejectReason: quote.RejectReason,
+		RejectReason: roundpb.QuoteReason_INSUFFICIENT_RESIDUAL,
 	}
 	raw, err := proto.Marshal(pb)
 	require.NoError(t, err)
