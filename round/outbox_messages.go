@@ -66,6 +66,29 @@ func (m *JoinRoundRequest) ServiceMethod() mailboxrpc.ServiceMethod {
 	}
 }
 
+// roundCorrelationKey is the canonical per-round FIFO key for
+// client-to-server outbox events. The client maintains a single
+// durable serverconn mailbox per operator, so distinguishing rounds
+// is sufficient to keep two same-round messages from reordering under
+// transient Edge.Send failure. An empty round id maps to the unkeyed
+// lane: fresh join requests do not yet have a server-assigned round
+// and have nothing earlier to sequence against.
+func roundCorrelationKey(roundID string) string {
+	if roundID == "" {
+		return ""
+	}
+
+	return "round/" + roundID
+}
+
+// CorrelationKey returns the per-round FIFO key. JoinRoundRequest
+// instances for an unassigned round (empty RoundID) participate in the
+// unkeyed lane; subsequent same-round outbox messages cluster under
+// the assigned id.
+func (m *JoinRoundRequest) CorrelationKey() string {
+	return roundCorrelationKey(m.RoundID)
+}
+
 // JoinRoundAcceptOutbox is emitted by QuoteReceivedState after the
 // FSM decides the server's quote is acceptable (operator fee within
 // MaxOperatorFee, quote RejectReason == OK). Routed via the durable
@@ -93,6 +116,12 @@ func (m *JoinRoundAcceptOutbox) ServiceMethod() mailboxrpc.ServiceMethod {
 		Service: roundpb.ServiceName,
 		Method:  roundpb.MethodAcceptQuote,
 	}
+}
+
+// CorrelationKey returns the per-round FIFO key so the accept lands
+// in emission order with the rest of the round's outbox events.
+func (m *JoinRoundAcceptOutbox) CorrelationKey() string {
+	return roundCorrelationKey(m.RoundID.String())
 }
 
 // ToProto converts JoinRoundAcceptOutbox to the roundpb wire
@@ -135,6 +164,11 @@ func (m *JoinRoundRejectOutbox) ServiceMethod() mailboxrpc.ServiceMethod {
 	}
 }
 
+// CorrelationKey returns the per-round FIFO key.
+func (m *JoinRoundRejectOutbox) CorrelationKey() string {
+	return roundCorrelationKey(m.RoundID.String())
+}
+
 // ToProto converts JoinRoundRejectOutbox to the roundpb wire
 // format. Returned as fn.Result[proto.Message] so processOutbox
 // can treat this outbox message as a ServerMessage and dispatch
@@ -173,6 +207,11 @@ func (m *SubmitNoncesRequest) ServiceMethod() mailboxrpc.ServiceMethod {
 	}
 }
 
+// CorrelationKey returns the per-round FIFO key.
+func (m *SubmitNoncesRequest) CorrelationKey() string {
+	return roundCorrelationKey(m.RoundID.String())
+}
+
 // SubmitPartialSigRequest is sent from client to server with partial
 // signatures. This implements ClientEvent and is emitted via Outbox.
 type SubmitPartialSigRequest struct {
@@ -198,6 +237,11 @@ func (m *SubmitPartialSigRequest) ServiceMethod() mailboxrpc.ServiceMethod {
 	}
 }
 
+// CorrelationKey returns the per-round FIFO key.
+func (m *SubmitPartialSigRequest) CorrelationKey() string {
+	return roundCorrelationKey(m.RoundID.String())
+}
+
 // SubmitForfeitSigRequest is sent from client to server with the boarding input
 // signature. This implements ClientEvent and is emitted via Outbox.
 type SubmitForfeitSigRequest struct {
@@ -220,6 +264,11 @@ func (m *SubmitForfeitSigRequest) ServiceMethod() mailboxrpc.ServiceMethod {
 		Service: roundpb.ServiceName,
 		Method:  roundpb.MethodSubmitForfeitSigs,
 	}
+}
+
+// CorrelationKey returns the per-round FIFO key.
+func (m *SubmitForfeitSigRequest) CorrelationKey() string {
+	return roundCorrelationKey(m.RoundID.String())
 }
 
 // ToProto converts JoinRoundRequest to a protobuf message for mailbox
@@ -521,6 +570,11 @@ func (m *SubmitVTXOForfeitSigsToServer) ServiceMethod() mailboxrpc.ServiceMethod
 		Service: roundpb.ServiceName,
 		Method:  roundpb.MethodSubmitVTXOForfeitSigs,
 	}
+}
+
+// CorrelationKey returns the per-round FIFO key.
+func (m *SubmitVTXOForfeitSigsToServer) CorrelationKey() string {
+	return roundCorrelationKey(m.RoundID.String())
 }
 
 // MessageType returns the message type for logging.
