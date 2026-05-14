@@ -27,20 +27,24 @@ const (
 	// keeping CSV-mining time short for unroll integration tests.
 	testVTXOExitDelay = 16
 
-	// unrollMempoolStallBlockInterval bounds how long the helper waits
-	// for a fallback CPFP package to enter bitcoind's mempool before
-	// mining one heartbeat block. btcwallet/lwwallet propagate through
-	// neutrino/P2P instead of direct package relay, so block edges are
-	// also what drive txconfirm rebroadcast and fee-bump decisions.
-	// The interval has two conflicting constraints: short enough that
-	// a deep unroll lineage finishes inside the test deadline, but long
-	// enough for neutrino P2P broadcast of a CPFP child to round-trip
-	// to the daemon and back. The historical 10s was conservative,
-	// 4s broke btcwallet/oor-sends under CI parallel load with the
-	// chain-depth-2 multi-input lineage stalling at MATERIALIZING.
-	// 8s keeps most of the wall-clock win versus 10s while leaving
-	// neutrino propagation a comfortable margin on busy runners.
-	unrollMempoolStallBlockInterval = 8 * time.Second
+	// unrollMempoolStallBlockIntervalFast is the heartbeat used by
+	// the LND-backed client wallet, where the daemon receives CPFP
+	// packages via the local LND chain backend's direct package
+	// relay path. A short heartbeat is safe because the round-trip
+	// latency between the daemon and bitcoind is dominated by
+	// in-process queueing, not P2P propagation.
+	unrollMempoolStallBlockIntervalFast = 2 * time.Second
+
+	// unrollMempoolStallBlockIntervalSlow is the heartbeat used by
+	// the embedded-wallet backends (btcwallet, lwwallet). These
+	// propagate through neutrino / electrs HTTP polling instead of
+	// direct package relay, so block edges also drive the daemon's
+	// txconfirm rebroadcast and fee-bump decisions. A short
+	// heartbeat at this layer races the daemon's processing of the
+	// prior tip and stalls the chain-depth-2 multi-input lineage
+	// at MATERIALIZING under CI load. 10s matches the historical
+	// default that was known to be stable on these backends.
+	unrollMempoolStallBlockIntervalSlow = 10 * time.Second
 
 	// unrollNoProgressTimeout fails the helper if the public unroll
 	// status and bitcoind mempool both stop showing progress. The
@@ -480,7 +484,10 @@ func waitForUnrollJobCompletion(t *testing.T, h *harness.ArkHarness,
 			continue
 		}
 
-		if shouldMineUnrollHeartbeat(resp.Status, lastBlockDrive) {
+		if shouldMineUnrollHeartbeat(
+			h, resp.Status, lastBlockDrive,
+		) {
+
 			h.Logf(
 				"Unroll job %s has no mempool tx; mining 1 "+
 					"heartbeat block", outpoint,
@@ -524,9 +531,14 @@ func pollUnrollJobStatus(t *testing.T, client daemonrpc.DaemonServiceClient,
 }
 
 // shouldMineUnrollHeartbeat returns true when the helper should mine one empty
-// block to advance block-driven broadcast or fee-bump logic.
-func shouldMineUnrollHeartbeat(status daemonrpc.UnrollJobStatus,
-	lastBlockDrive time.Time) bool {
+// block to advance block-driven broadcast or fee-bump logic. The cadence
+// depends on the client wallet backend: LND tolerates a tight 2s heartbeat
+// because the daemon receives CPFP packages via direct local relay, while
+// the embedded-wallet backends (btcwallet, lwwallet) need a longer 10s
+// interval because their neutrino / electrs propagation cannot keep up with
+// a fast tick under CI parallel load.
+func shouldMineUnrollHeartbeat(h *harness.ArkHarness,
+	status daemonrpc.UnrollJobStatus, lastBlockDrive time.Time) bool {
 
 	switch status {
 	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING,
@@ -536,7 +548,12 @@ func shouldMineUnrollHeartbeat(status daemonrpc.UnrollJobStatus,
 		return false
 	}
 
-	return time.Since(lastBlockDrive) >= unrollMempoolStallBlockInterval
+	interval := unrollMempoolStallBlockIntervalFast
+	if h.ClientWalletBackend() != harness.ClientWalletBackendLND {
+		interval = unrollMempoolStallBlockIntervalSlow
+	}
+
+	return time.Since(lastBlockDrive) >= interval
 }
 
 // mineMempoolBlock mines one block if bitcoind has transactions waiting. The
