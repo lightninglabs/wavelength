@@ -307,11 +307,8 @@ func TestFSMIntentCollectingState(t *testing.T) {
 		require.Equal(t, "client2", string(successResp.Client))
 	})
 
-	t.Run("duplicate client rejected", func(t *testing.T) {
+	t.Run("re-registration replaces prior entry", func(t *testing.T) {
 		t.Parallel()
-
-		const exitDelay = 144
-		const expiry = 144
 
 		outpoint1 := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("input1")),
@@ -322,7 +319,10 @@ func TestFSMIntentCollectingState(t *testing.T) {
 			Index: 0,
 		}
 
-		// Create an IntentCollectingState with client1 pre-registered.
+		// Create an IntentCollectingState with client1 pre-registered
+		// against outpoint1. This models the server-side state when a
+		// client has admitted a Board RPC and then restarts before
+		// the round seals (darepo-client#416).
 		client1Reg := buildTestClientRegistration(
 			"client1", &BoardingInput{
 				Outpoint: &outpoint1,
@@ -335,32 +335,262 @@ func TestFSMIntentCollectingState(t *testing.T) {
 		}
 
 		h := newTestHarness(t, regState)
+		h.setupPermissiveMocks()
 
-		client := newClientHarness(
-			t, "client1", 10, h.operatorPub, exitDelay, expiry,
-		)
+		// Use quickClient to set up a valid boarding-input mock for
+		// outpoint2 (chain UTXO lookup + lock). keyIndex must match
+		// the seed used by buildTestClientRegistration so the
+		// re-registered client's pubkey hashes back to the same
+		// boarding pkScript. Re-using key index 10 (the default for
+		// buildTestClientRegistration's "client1") gives us a
+		// consistent client identity across the two registrations.
+		_, joinEvt2 := quickClient(h, "client1", 10, &outpoint2)
 
-		// Same client attempts to join again with different inputs.
-		boardingReq2 := client.createBoardingRequest(&outpoint2)
-		joinReqEvent2 := client.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq2},
-		)
-		err := h.sendEvent(joinReqEvent2)
-		require.NoError(t, err)
+		// Same client attempts to join again. This simulates the
+		// post-restart replay: the wallet has re-issued
+		// TriggerBoardMsg and the round actor has shipped a fresh
+		// JoinRoundRequest to the operator. The operator must accept
+		// it as a replacement, not reject as duplicate, else the
+		// recovered client never re-enters the round.
+		feedJoinSuccess(h, joinEvt2)
 
-		// Remain in IntentCollectingState with only client1 and the
-		// original inputs.
+		// We remain in IntentCollectingState with only client1, but
+		// the registration now reflects the NEW inputs. The prior
+		// outpoint1 lock is released by the replacement path.
 		regState = assertStateType[*IntentCollectingState](h)
-		require.Len(t, regState.getAllBoardingInputs(), 1)
+		require.Len(
+			t, regState.getAllBoardingInputs(), 1,
+			"re-registration must not double-count inputs",
+		)
 		require.True(t, regState.isClientRegistered("client1"))
+		require.Equal(
+			t, outpoint2, *regState.ClientRegistrations["client1"].
+				BoardingInputs[0].Outpoint, "replacement "+
+				"must install the new outpoint, not the "+
+				"prior one",
+		)
 
-		// Assert we received an error response.
+		// The replacement path emits a fresh ClientSuccessResp — the
+		// client treats this exactly like a first-time admission, so
+		// the FSM resumes from PendingRoundAssembly with the new
+		// inputs.
 		h.assertOutboxLen(1)
 
-		errorResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
-		require.Equal(t, "client1", string(errorResp.Client))
-		require.Contains(t, errorResp.ErrorMsg, "already registered")
+		successResp := assertOutboxMessageType[*ClientSuccessResp](h, 0)
+		require.Equal(t, "client1", string(successResp.Client))
 	})
+
+	t.Run("re-registration validation failure preserves prior state",
+		func(t *testing.T) {
+			t.Parallel()
+
+			outpoint1 := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("rereg-fail-1")),
+				Index: 0,
+			}
+			outpoint2 := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("rereg-fail-2")),
+				Index: 0,
+			}
+
+			// Prior registration for client1 with outpoint1. This
+			// stands in for the pre-restart admission whose locks
+			// the round still owns.
+			client1Reg := buildTestClientRegistration(
+				"client1", &BoardingInput{
+					Outpoint: &outpoint1,
+				},
+			)
+			regs := map[ClientID]*ClientRegistration{
+				"client1": client1Reg,
+			}
+			regState := &IntentCollectingState{
+				ClientRegistrations: regs,
+			}
+
+			// Deliberately NO setupPermissiveMocks — we need exact
+			// control so we can assert no prior unlock is observed.
+			h := newTestHarness(t, regState)
+
+			// Make outpoint2 appear locked by a DIFFERENT round so
+			// ValidateBoardingRequest rejects with
+			// ErrBoardingInputLocked. The cross-round locker rule
+			// (validation.go) still treats foreign owners as
+			// failure; only same-round IsLocked is tolerated.
+			otherRoundID, err := NewRoundID()
+			require.NoError(t, err)
+			h.lockBoardingInput(&outpoint2, otherRoundID)
+
+			client2 := newClientHarness(
+				t, "client1", 10, h.operatorPub, 144, 144,
+			)
+			boardingReq := client2.createBoardingRequest(&outpoint2)
+			joinEvt := client2.createJoinRequest(
+				[]*types.BoardingRequest{boardingReq},
+			)
+
+			h.outboxMessages = nil
+			err = h.sendEvent(joinEvt)
+			require.NoError(t, err)
+
+			// FSM remains in IntentCollectingState and the prior
+			// registration is intact — validation ran before any
+			// locker mutation, so the re-register failure leaves
+			// state and locks coherent.
+			regState = assertStateType[*IntentCollectingState](h)
+			require.Len(t, regState.getAllBoardingInputs(), 1)
+			require.True(t, regState.isClientRegistered("client1"))
+			require.Equal(
+				t, outpoint1,
+				*regState.ClientRegistrations["client1"].
+					BoardingInputs[0].Outpoint, "prior "+
+					"outpoint must be retained on "+
+					"re-registration validation failure",
+			)
+
+			// Crucially: Unlock was NEVER called for outpoint1.
+			// Pre-C-1 we would have eagerly unlocked it before
+			// validation and would now have a stale registration
+			// pointing at a released lock.
+			h.boardingLocker.AssertNotCalled(
+				t, "Unlock", mock.Anything, &outpoint1,
+				mock.Anything,
+			)
+
+			// Client gets a ClientErrorResp; the round continues.
+			h.assertOutboxLen(1)
+			errorResp := assertOutboxMessageType[*ClientErrorResp](
+				h, 0,
+			)
+			require.Equal(t, "client1", string(errorResp.Client))
+			require.Contains(
+				t, errorResp.ErrorMsg,
+				ErrJoinRequestInvalid.Error(),
+			)
+		})
+
+	t.Run("re-registration with same outpoint is idempotent",
+		func(t *testing.T) {
+			t.Parallel()
+
+			// Same-outpoint replay is the actually-common shape in
+			// production: the client's persisted Board RPC carries
+			// the same boarding outpoint that was admitted before
+			// the daemon restart. The round still holds the lock
+			// for it under env.RoundID, so ValidateBoardingRequest
+			// must accept IsLocked=true for the same owner and the
+			// re-Lock must be a no-op.
+			outpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("rereg-same")),
+				Index: 0,
+			}
+
+			client1Reg := buildTestClientRegistration(
+				"client1", &BoardingInput{
+					Outpoint: &outpoint,
+				},
+			)
+			regs := map[ClientID]*ClientRegistration{
+				"client1": client1Reg,
+			}
+			regState := &IntentCollectingState{
+				ClientRegistrations: regs,
+			}
+
+			h := newTestHarness(t, regState)
+			h.setupPermissiveMocks()
+
+			// Simulate the prior registration's lock by stamping
+			// outpoint as held by this round. The permissive
+			// IsLocked(mock.Anything) below would otherwise
+			// shadow this with a (false, zero) response.
+			_, joinEvt := quickClient(h, "client1", 10, &outpoint)
+
+			feedJoinSuccess(h, joinEvt)
+
+			// Single client, single outpoint, same as before. The
+			// replacement is observable only via the fresh
+			// ClientSuccessResp.
+			regState = assertStateType[*IntentCollectingState](h)
+			require.Len(t, regState.getAllBoardingInputs(), 1)
+			require.True(t, regState.isClientRegistered("client1"))
+			require.Equal(
+				t, outpoint,
+				*regState.ClientRegistrations["client1"].
+					BoardingInputs[0].Outpoint, "same-ou"+
+					"tpoint replay must preserve the "+
+					"shared outpoint",
+			)
+
+			h.assertOutboxLen(1)
+
+			//nolint:ll
+			successResp := assertOutboxMessageType[*ClientSuccessResp](
+				h, 0,
+			)
+			require.Equal(t, "client1", string(successResp.Client))
+		})
+
+	t.Run("re-registration with prior forfeit inputs releases prior-only",
+		func(t *testing.T) {
+			t.Parallel()
+
+			// Cover the path where the prior registration carried
+			// a forfeit VTXO that the new registration drops.
+			// releasePriorOnlyLocks must unlock the forfeit VTXO
+			// because it is not in the new ForfeitInputs set.
+			boardingOP := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("rereg-fb-bd")),
+				Index: 0,
+			}
+			priorForfeitOP := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("rereg-fb-ff")),
+				Index: 0,
+			}
+
+			priorReg := &ClientRegistration{
+				ClientID: "client1",
+				BoardingInputs: []*BoardingInput{
+					{
+						Outpoint: &boardingOP,
+					},
+				},
+				ForfeitInputs: []*ForfeitInput{
+					{
+						Outpoint: &priorForfeitOP,
+					},
+				},
+			}
+			regs := map[ClientID]*ClientRegistration{
+				"client1": priorReg,
+			}
+			regState := &IntentCollectingState{
+				ClientRegistrations: regs,
+			}
+
+			h := newTestHarness(t, regState)
+			h.setupPermissiveMocks()
+
+			_, joinEvt := quickClient(h, "client1", 10, &boardingOP)
+
+			feedJoinSuccess(h, joinEvt)
+
+			regState = assertStateType[*IntentCollectingState](h)
+			require.True(t, regState.isClientRegistered("client1"))
+			require.Empty(
+				t, regState.ClientRegistrations["client1"].
+					ForfeitInputs,
+				"new registration carries no forfeit inputs",
+			)
+
+			h.assertOutboxLen(1)
+
+			//nolint:ll
+			successResp := assertOutboxMessageType[*ClientSuccessResp](
+				h, 0,
+			)
+			require.Equal(t, "client1", string(successResp.Client))
+		})
 
 	t.Run("lock failure rejects client but allows others",
 		func(t *testing.T) {

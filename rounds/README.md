@@ -203,9 +203,14 @@ ClientJoinIntentEvent:
 
 ```
 ClientJoinIntentEvent:
-    [already registered] --> IntentCollectingState + ClientErrorResp
-    [invalid]            --> IntentCollectingState + ClientErrorResp
-    [valid]              --> IntentCollectingState + ClientSuccessResp
+    [invalid]                       --> IntentCollectingState + ClientErrorResp
+    [valid (new client)]            --> IntentCollectingState + ClientSuccessResp
+    [valid (same ClientID, replay)] --> IntentCollectingState + ClientSuccessResp
+                                        (prior boarding-input + forfeit-VTXO
+                                         locks released and replaced;
+                                         authenticated by the JoinRound
+                                         BIP-322 signature; see ARK-02
+                                         §Restart Safety)
 
 RegistrationTimeoutEvent:
     --> BatchBuildingState + RoundSealedReq
@@ -215,6 +220,15 @@ RegistrationTimeoutEvent:
 SealEvent:
     --> BatchBuildingState + internal(BuildBatchTxEvent)
 ```
+
+Re-registration is the server-side recovery point for
+[darepo-client#416](https://github.com/lightninglabs/darepo-client/issues/416):
+a client daemon restart between Board admission and round seal causes
+the wallet's persisted intent to replay, surfacing as a second
+`JoinRoundRequest` from the same authenticated `ClientID`. The FSM
+treats this as a replacement of the prior registration (single slot
+preserved), validates the new request, re-locks under the same
+`round:<round-id>` owner, and emits a fresh `ClientSuccessResp`.
 
 ### BatchBuildingState
 

@@ -721,7 +721,11 @@ func ValidateLeaveRequest(terms *batch.Terms, req *types.LeaveRequest) error {
 
 // ValidateBoardingRequest validates a boarding request from a client. It
 // verifies:
-//   - The input is not already locked by another round.
+//   - The input is not already locked by another round. A lock held by
+//     this round (env.RoundID) is treated as non-failure so re-registration
+//     within IntentCollectingState can re-validate without first releasing
+//     the prior claim; see fsm_transitions.go IntentCollectingState
+//     ClientJoinIntentEvent branch.
 //   - The operator key matches this operator.
 //   - The exit delay meets the operator's minimum.
 //   - The UTXO exists and has sufficient confirmations.
@@ -737,12 +741,17 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 	req *types.BoardingRequest,
 	currentHeight uint32) (*BoardingInput, error) {
 
-	// Make sure this boarding request input isn't already locked.
-	locked, _, err := env.BoardingInputLocker.IsLocked(ctx, req.Outpoint)
+	// Make sure this boarding request input isn't already locked by a
+	// different round. A lock owned by env.RoundID is fine: the
+	// boarding locker is owner-idempotent on re-Lock, and the
+	// re-registration path validates before re-locking.
+	locked, lockedBy, err := env.BoardingInputLocker.IsLocked(
+		ctx, req.Outpoint,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCheckLockFailed, err)
 	}
-	if locked {
+	if locked && lockedBy != env.RoundID {
 		return nil, fmt.Errorf("%w: %v", ErrBoardingInputLocked,
 			req.Outpoint)
 	}

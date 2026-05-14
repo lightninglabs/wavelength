@@ -311,6 +311,93 @@ func unlockForfeitVTXOs(ctx context.Context, env *Environment,
 	}
 }
 
+// releasePriorOnlyLocks releases the boarding-input and forfeit-VTXO
+// locks held by a prior registration that are NOT carried over into
+// the replacement registration. Outpoints present in both prior and
+// new are retained (still locked under env.RoundID), since the new
+// registration legitimately owns them. Called only on the success
+// path of the re-registration replacement.
+func releasePriorOnlyLocks(ctx context.Context, env *Environment,
+	prior *ClientRegistration, result *JoinRequestResult) {
+
+	newBoarding := fn.NewSet[wire.OutPoint]()
+	for _, in := range result.BoardingInputs {
+		if in != nil && in.Outpoint != nil {
+			newBoarding.Add(*in.Outpoint)
+		}
+	}
+
+	priorOnlyBoarding := make(
+		[]*BoardingInput, 0, len(prior.BoardingInputs),
+	)
+	for _, in := range prior.BoardingInputs {
+		if in == nil || in.Outpoint == nil {
+			continue
+		}
+		if newBoarding.Contains(*in.Outpoint) {
+			continue
+		}
+		priorOnlyBoarding = append(priorOnlyBoarding, in)
+	}
+	unlockBoardingInputsList(ctx, env, priorOnlyBoarding)
+
+	newForfeit := fn.NewSet[wire.OutPoint]()
+	for _, in := range result.ForfeitInputs {
+		if in != nil && in.Outpoint != nil {
+			newForfeit.Add(*in.Outpoint)
+		}
+	}
+
+	priorOnlyForfeit := make([]*ForfeitInput, 0, len(prior.ForfeitInputs))
+	for _, in := range prior.ForfeitInputs {
+		if in == nil || in.Outpoint == nil {
+			continue
+		}
+		if newForfeit.Contains(*in.Outpoint) {
+			continue
+		}
+		priorOnlyForfeit = append(priorOnlyForfeit, in)
+	}
+	unlockForfeitVTXOsList(ctx, env, priorOnlyForfeit)
+}
+
+// rollbackNewBoardingInputs unwinds boarding-input locks that were
+// freshly acquired in this handler when a subsequent step (e.g.
+// forfeit-VTXO locking) fails. For a fresh admission this means every
+// outpoint in newBoarding. For a re-registration the overlapping
+// outpoints were already owned by this round from the prior
+// registration, so we must not release those: only outpoints absent
+// from prior.BoardingInputs are unwound.
+func rollbackNewBoardingInputs(ctx context.Context, env *Environment,
+	isReregistration bool, prior *ClientRegistration,
+	newBoarding []*BoardingInput) {
+
+	if !isReregistration || prior == nil {
+		unlockBoardingInputsList(ctx, env, newBoarding)
+
+		return
+	}
+
+	priorSet := fn.NewSet[wire.OutPoint]()
+	for _, in := range prior.BoardingInputs {
+		if in != nil && in.Outpoint != nil {
+			priorSet.Add(*in.Outpoint)
+		}
+	}
+
+	toRelease := make([]*BoardingInput, 0, len(newBoarding))
+	for _, in := range newBoarding {
+		if in == nil || in.Outpoint == nil {
+			continue
+		}
+		if priorSet.Contains(*in.Outpoint) {
+			continue
+		}
+		toRelease = append(toRelease, in)
+	}
+	unlockBoardingInputsList(ctx, env, toRelease)
+}
+
 // releaseWalletInputs releases UTXO leases acquired by a prior FundPsbt call.
 // Errors are logged but do not halt execution, since failing to release a
 // lease only means the UTXOs remain locked until the lease expires naturally.
@@ -576,11 +663,18 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 //
 // Event handling:
 //
-//   - ClientJoinIntentEvent: Validates the join request. If the client is
-//     already registered or validation fails, sends ClientErrorResp. On
-//     success, adds the client to registrations, sends ClientSuccessResp,
-//     and requests boarding input locks. If the seal predicate fires after
-//     adding the client, emits SealEvent to seal the round early.
+//   - ClientJoinIntentEvent: Validates the join request. On validation
+//     failure, sends ClientErrorResp without state change. On success,
+//     admits the client and sends ClientSuccessResp. If the client was
+//     ALREADY registered in this round, the prior boarding-input and
+//     forfeit-VTXO locks are released and the registration is overwritten;
+//     this is the recovery path for the Board replay-on-restart flow
+//     (darepo-client#416, ARK-02 §Restart Safety). The replay can only
+//     originate from the same authenticated ClientID (env.Sender is
+//     server-stamped) and the new submission carries its own BIP-322
+//     ownership proof for the newly-declared outpoints. If the seal
+//     predicate fires after admission, emits SealEvent to seal the round
+//     early.
 //
 //   - RegistrationTimeoutEvent: Registration phase timed out. Emits
 //     RoundSealedReq to notify actor, then internal SealEvent to seal.
@@ -607,25 +701,50 @@ func (s *IntentCollectingState) ProcessEvent(ctx context.Context, event Event,
 			LogLeaveCount(len(evt.Request.LeaveReqs)),
 		)
 
-		// Check if client is already registered in this round.
-		if s.isClientRegistered(evt.ClientID) {
-			env.Log.WarnS(ctx, "Client already registered",
-				nil,
-				LogClientID(evt.ClientID),
-			)
-
-			return clientErrorTransition(
-				s, evt.ClientID, "client already registered",
-			), nil
-		}
+		// If this client is already registered in this round, treat
+		// the re-join as a REPLACEMENT rather than a duplicate. This
+		// is the recovery path for darepo-client#416: a daemon restart
+		// between Board admission and round seal loses the in-memory
+		// FSM, so the wallet's startup replay re-issues
+		// TriggerBoardMsg, JoinRoundRequest. The server still holds
+		// the pre-restart registration; without replacement the
+		// re-join would bounce as "already registered" and the round
+		// would never seal with the recovered client. Replacement is
+		// safe because the client's identity is authenticated by the
+		// JoinRoundRequest's signature, so only the legitimate owner
+		// of the prior registration can overwrite it.
+		//
+		// Ordering matters: we validate the new request and acquire
+		// the new locks BEFORE releasing any prior locks. The
+		// boarding locker and the VTXO locker are owner-idempotent
+		// on same-owner re-Lock, and ValidateBoardingRequest accepts
+		// IsLocked=true when the owner is env.RoundID, so the
+		// same-outpoint replay path validates and re-locks without
+		// ever passing through an unlocked window. Only on success do
+		// we release the prior-only outpoints (the set difference
+		// between the prior registration and the new one). On any
+		// failure path the prior locks are still held and
+		// ClientRegistrations is unchanged, so state and locker stay
+		// coherent.
+		isReregistration := s.isClientRegistered(evt.ClientID)
 
 		// Validate the join request structurally (inputs, auth,
 		// policy shape). The seal-time fee builder computes
 		// per-client fees at the actual round occupancy once
 		// the round seals; no submit-time fee math runs here.
+		//
+		// On a re-registration we pass (existing count - 1) so the
+		// existingRegCount telemetry surfaced via admin RPC reflects
+		// true occupancy: the replacement reuses the same round slot,
+		// not a fresh one. Seal-time fee math is independent of this
+		// value under #270; the seal-time quote builder sizes against
+		// the survivor set, not the admission-time count.
+		regCount := len(s.ClientRegistrations)
+		if isReregistration {
+			regCount--
+		}
 		result, err := validateJoinRequestForAdmission(
-			ctx, env, evt.Request, evt.CurrentBlockHeight,
-			len(s.ClientRegistrations),
+			ctx, env, evt.Request, evt.CurrentBlockHeight, regCount,
 		)
 		if err != nil {
 			env.Log.WarnS(ctx, "Join request validation failed",
@@ -641,7 +760,10 @@ func (s *IntentCollectingState) ProcessEvent(ctx context.Context, event Event,
 			), nil
 		}
 
-		// Attempt to lock all boarding inputs for this client.
+		// Attempt to lock all boarding inputs for this client. For a
+		// re-registration the overlapping outpoints are owned by this
+		// round already; Lock is a no-op for same-owner re-Lock so
+		// the call is idempotent.
 		err = lockBoardingInputs(ctx, env, result.BoardingInputs)
 		if err != nil {
 			return clientErrorTransition(
@@ -649,17 +771,34 @@ func (s *IntentCollectingState) ProcessEvent(ctx context.Context, event Event,
 			), nil
 		}
 
-		// Attempt to lock all forfeit VTXOs for this client.
+		// Attempt to lock all forfeit VTXOs for this client. LockMany
+		// is owner-idempotent so the re-registration overlap case is
+		// safe here too.
 		err = lockForfeitVTXOs(ctx, env, result.ForfeitInputs)
 		if err != nil {
-			// Unlock the boarding inputs since we can't proceed.
-			unlockBoardingInputsList(
-				ctx, env, result.BoardingInputs,
+			// Unlock the boarding inputs we just acquired. For a
+			// re-registration this only releases outpoints that
+			// were NOT held by the prior registration, since
+			// same-owner unlock is the rollback and prior-owned
+			// overlaps were never freshly acquired.
+			rollbackNewBoardingInputs(
+				ctx, env, isReregistration,
+				s.ClientRegistrations[evt.ClientID],
+				result.BoardingInputs,
 			)
 
 			return clientErrorTransition(
 				s, evt.ClientID, err.Error(),
 			), nil
+		}
+
+		// Replacement is now committed. Release the prior-only
+		// outpoints (those held by the prior registration but absent
+		// from the new one). Overlapping outpoints stay locked under
+		// the same owner.
+		if isReregistration {
+			prior := s.ClientRegistrations[evt.ClientID]
+			releasePriorOnlyLocks(ctx, env, prior, result)
 		}
 
 		newState := s.withNewClient(evt.ClientID, result)
@@ -679,6 +818,7 @@ func (s *IntentCollectingState) ProcessEvent(ctx context.Context, event Event,
 			AcceptedVTXOOutpoints: extractVTXOOutpoints(
 				result.ForfeitInputs,
 			),
+			IsReregistration: isReregistration,
 		}
 
 		outbox := []OutboxEvent{successResp}

@@ -27,6 +27,7 @@ import (
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"golang.org/x/time/rate"
 )
 
 // ActorConfig contains the configuration parameters for the rounds actor.
@@ -166,7 +167,35 @@ type ActorConfig struct {
 	// accounting actor. When non-nil, round lifecycle events
 	// are forwarded via fire-and-forget Tell.
 	LedgerRef actor.TellOnlyRef[ledger.LedgerMsg]
+
+	// JoinRequestRate is the steady-state allowance for per-client
+	// JoinRoundRequest deliveries to the rounds actor. The actor
+	// installs a token-bucket limiter (golang.org/x/time/rate) keyed by
+	// ClientID and silently drops requests once the bucket is empty.
+	// The legitimate restart-replay flow needs one initial join plus
+	// one replay per round, so a generous burst with a slow refill
+	// covers honest clients while neutering re-register floods. Zero
+	// uses the package default (DefaultJoinRequestRate).
+	JoinRequestRate rate.Limit
+
+	// JoinRequestBurst is the bucket size for the per-client
+	// JoinRoundRequest limiter. Zero uses the package default
+	// (DefaultJoinRequestBurst).
+	JoinRequestBurst int
 }
+
+// DefaultJoinRequestRate is the steady-state replenish rate for the
+// per-client JoinRoundRequest limiter (one token every two seconds).
+// A healthy client sends one initial join and at most one replay
+// per round, so this is generous in absolute terms while still
+// dropping a tight flood from a misbehaving or compromised peer.
+var DefaultJoinRequestRate = rate.Every(2 * time.Second)
+
+// DefaultJoinRequestBurst is the default bucket size for the
+// per-client JoinRoundRequest limiter. Burst > 1 absorbs honest retry
+// under transient network failures without dropping the legitimate
+// restart-replay shape.
+const DefaultJoinRequestBurst = 3
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
 // lifecycle. It tracks multiple concurrent rounds in a unified map, with the
@@ -189,6 +218,24 @@ type Actor struct {
 	// in. Updated when clients join rounds and when rounds
 	// complete/fail.
 	clientRounds map[clientconn.ClientID]map[RoundID]struct{}
+
+	// joinLimiters are per-client token-bucket limiters guarding the
+	// JoinRoundRequest path against re-register floods. Entries are
+	// created on first request from a client and reaped when the
+	// client is no longer in any tracked round (see untrackRound).
+	// Access is serialized through the actor's Receive loop, so no
+	// additional locking is required.
+	joinLimiters map[clientconn.ClientID]*rate.Limiter
+
+	// joinLimit is the rate.Limit used to construct new entries in
+	// joinLimiters. Resolved once at actor construction from the
+	// ActorConfig.
+	joinLimit rate.Limit
+
+	// joinBurst is the burst size used to construct new entries in
+	// joinLimiters. Resolved once at actor construction from the
+	// ActorConfig.
+	joinBurst int
 
 	log btclog.Logger
 }
@@ -236,11 +283,23 @@ func parseTimeoutID(id timeout.ID) (RoundID, TimeoutPhase, error) {
 func NewActor(cfg *ActorConfig) *Actor {
 	clientRounds := make(map[clientconn.ClientID]map[RoundID]struct{})
 
+	joinLimit := cfg.JoinRequestRate
+	if joinLimit == 0 {
+		joinLimit = DefaultJoinRequestRate
+	}
+	joinBurst := cfg.JoinRequestBurst
+	if joinBurst == 0 {
+		joinBurst = DefaultJoinRequestBurst
+	}
+
 	return &Actor{
 		cfg:          cfg,
 		log:          cfg.Log.UnwrapOr(btclog.Disabled),
 		rounds:       make(map[RoundID]*RoundFSM),
 		clientRounds: clientRounds,
+		joinLimiters: make(map[clientconn.ClientID]*rate.Limiter),
+		joinLimit:    joinLimit,
+		joinBurst:    joinBurst,
 	}
 }
 
@@ -322,11 +381,34 @@ func (a *Actor) trackClientJoin(ctx context.Context,
 func (a *Actor) untrackRound(roundID RoundID) {
 	for clientID := range a.clientRounds {
 		delete(a.clientRounds[clientID], roundID)
-		// Clean up empty client entries.
+		// Clean up empty client entries. Also drop the client's
+		// join-request limiter — it serves no purpose once the
+		// client has no active rounds, and keeping it would let
+		// joinLimiters grow without bound on long-lived operators.
 		if len(a.clientRounds[clientID]) == 0 {
 			delete(a.clientRounds, clientID)
+			delete(a.joinLimiters, clientID)
 		}
 	}
+}
+
+// allowJoinRequest returns true if the per-client JoinRoundRequest
+// limiter has a token available for clientID, consuming the token as
+// a side effect. The limiter neutralizes re-register floods (the new
+// replacement semantic at IntentCollectingState ClientJoinIntentEvent
+// runs a full validateJoinRequestForAdmission per request, including
+// BIP-322 script-engine execution and chain RPC, so unbounded retries
+// would amplify into a per-client DoS). The legitimate
+// restart-replay shape needs exactly one initial join and at most
+// one replay per round, well under the default burst.
+func (a *Actor) allowJoinRequest(clientID clientconn.ClientID) bool {
+	limiter, ok := a.joinLimiters[clientID]
+	if !ok {
+		limiter = rate.NewLimiter(a.joinLimit, a.joinBurst)
+		a.joinLimiters[clientID] = limiter
+	}
+
+	return limiter.Allow()
 }
 
 // getClientRounds returns the list of round IDs that a client is currently
@@ -795,7 +877,15 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 		// client-bound messages implement the ClientMessage interface.
 		case clientconn.ClientMessage:
 			// Track client join when a ClientSuccessResp is sent.
-			if successResp, ok := m.(*ClientSuccessResp); ok {
+			// Skip re-registration responses: the FSM emits a
+			// fresh ClientSuccessResp on every replay, but the
+			// client is already counted from the original
+			// admission. Bumping the join metric again would
+			// drift per-round and aggregate counters by the
+			// number of replays.
+			if successResp, ok := m.(*ClientSuccessResp); ok &&
+				!successResp.IsReregistration {
+
 				a.trackClientJoin(
 					ctx, successResp.Client,
 					successResp.RoundID,
@@ -1091,6 +1181,22 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 // to the current round FSM.
 func (a *Actor) handleJoinRoundRequest(ctx context.Context,
 	msg *JoinRoundRequest) fn.Result[ActorResp] {
+
+	// Rate-limit per-client. The IntentCollectingState replacement
+	// path is observably more expensive than the previous
+	// duplicate-reject branch, so an unrestricted re-register flood
+	// would saturate the actor loop (and the chain source pool) with
+	// BIP-322 verifications and locker churn. Drop silently when the
+	// bucket is empty so a flooding client gets no signal and an
+	// honest client suffers nothing.
+	if !a.allowJoinRequest(msg.ClientID) {
+		a.log.WarnS(ctx, "Join request rate-limited, dropping",
+			nil,
+			slog.String("client_id", string(msg.ClientID)),
+		)
+
+		return fn.Ok[ActorResp](nil)
+	}
 
 	currentRound := a.getCurrentRound()
 	if currentRound == nil {
