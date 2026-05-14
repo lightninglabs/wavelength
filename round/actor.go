@@ -794,6 +794,23 @@ func (a *RoundClientActor) findAssemblingRound() *RoundFSM {
 func (a *RoundClientActor) findRoundByOutpoints(
 	boardingOutpoints, vtxoOutpoints []wire.OutPoint) *RoundFSM {
 
+	roundFSM, ambiguous := a.findRoundByOutpointsDetailed(
+		boardingOutpoints, vtxoOutpoints,
+	)
+	if ambiguous {
+		return nil
+	}
+
+	return roundFSM
+}
+
+// findRoundByOutpointsDetailed is findRoundByOutpoints with ambiguity
+// surfaced separately from "not found". This is used by self-correlating
+// quote delivery, where ambiguity should fail loudly instead of falling back
+// to buffering.
+func (a *RoundClientActor) findRoundByOutpointsDetailed(
+	boardingOutpoints, vtxoOutpoints []wire.OutPoint) (*RoundFSM, bool) {
+
 	boardingSet := fn.NewSet(boardingOutpoints...)
 	vtxoSet := fn.NewSet(vtxoOutpoints...)
 
@@ -825,12 +842,12 @@ func (a *RoundClientActor) findRoundByOutpoints(
 			// boarding-less refreshes that all start from an
 			// empty boarding set. Refusing to guess is strictly
 			// safer than routing into the wrong FSM.
-			return nil
+			return nil, true
 		}
 		match = roundFSM
 	}
 
-	return match
+	return match, false
 }
 
 // boardingMatches checks whether the boarding outpoints of an
@@ -1523,9 +1540,27 @@ func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
 func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 	event *RoundJoined) fn.Result[actormsg.RoundActorResp] {
 
-	// Find the pending round by matching outpoints. Currently we only match
-	// boarding outpoints, but this will be extended for VTXO operations
-	// (forfeit, leave, refresh) when implemented.
+	newKeyStr := RoundKeyStr(event.RoundID.KeyString())
+	if _, ok := a.rounds[newKeyStr]; ok {
+		a.log.DebugS(ctx, "Ignoring duplicate round admission",
+			slog.String("round_id", event.RoundID.String()),
+			slog.Int(
+				"num_boarding",
+				len(event.AcceptedBoardingOutpoints),
+			),
+			slog.Int("num_vtxo", len(event.AcceptedVTXOOutpoints)),
+		)
+
+		return fn.Ok[actormsg.RoundActorResp](
+			&ServerMessageResponse{
+				Success: true,
+			},
+		)
+	}
+
+	// Find the pending round by matching the accepted inputs that the
+	// server echoed back. This keeps concurrent boarding, refresh and leave
+	// rounds from being re-keyed into the wrong FSM.
 	roundFSM := a.findRoundByOutpoints(
 		event.AcceptedBoardingOutpoints, event.AcceptedVTXOOutpoints,
 	)
@@ -1542,7 +1577,6 @@ func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 	oldKeyStr := RoundKeyStr(roundFSM.Key.KeyString())
 	delete(a.rounds, oldKeyStr)
 
-	newKeyStr := RoundKeyStr(event.RoundID.KeyString())
 	roundFSM.Key = event.RoundID
 	roundFSM.RoundID = event.RoundID
 	a.rounds[newKeyStr] = roundFSM
@@ -1588,6 +1622,71 @@ func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 			Success: true,
 		},
 	)
+}
+
+// handleEarlyQuote handles a JoinRoundQuoteReceived whose RoundID is not yet
+// tracked locally. Newer servers echo the accepted input outpoints on the quote
+// so the actor can correlate it to the temp-keyed IntentSent FSM without
+// relying on the separate RoundJoined envelope arriving first.
+func (a *RoundClientActor) handleEarlyQuote(ctx context.Context,
+	quote *JoinRoundQuoteReceived) fn.Result[actormsg.RoundActorResp] {
+
+	roundFSM, ambiguous := a.findRoundByOutpointsDetailed(
+		quote.AcceptedBoardingOutpoints, quote.AcceptedVTXOOutpoints,
+	)
+	if ambiguous {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("ambiguous pending round for early quote: "+
+				"round_id=%s boarding=%v vtxo=%v",
+				quote.RoundID, quote.AcceptedBoardingOutpoints,
+				quote.AcceptedVTXOOutpoints),
+		)
+	}
+
+	if roundFSM == nil {
+		return a.bufferPendingQuote(ctx, quote)
+	}
+
+	oldKeyStr := RoundKeyStr(roundFSM.Key.KeyString())
+	delete(a.rounds, oldKeyStr)
+
+	newKeyStr := RoundKeyStr(quote.RoundID.KeyString())
+	roundFSM.Key = quote.RoundID
+	roundFSM.RoundID = quote.RoundID
+	a.rounds[newKeyStr] = roundFSM
+
+	a.log.InfoS(ctx, "Re-keyed round from early quote",
+		slog.String("old_key", string(oldKeyStr)),
+		slog.String("round_id", quote.RoundID.String()),
+		slog.Int(
+			"num_boarding", len(quote.AcceptedBoardingOutpoints),
+		),
+		slog.Int("num_vtxo", len(quote.AcceptedVTXOOutpoints)),
+	)
+
+	admission := &RoundJoined{
+		RoundID:                   quote.RoundID,
+		AcceptedBoardingOutpoints: quote.AcceptedBoardingOutpoints,
+		AcceptedVTXOOutpoints:     quote.AcceptedVTXOOutpoints,
+	}
+	if err := a.askEventAndProcessOutbox(
+		ctx, roundFSM, admission,
+	); err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing early-quote "+
+				"admission: %w", err),
+		)
+	}
+
+	if err := a.askEventAndProcessOutbox(ctx, roundFSM, quote); err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing early quote: %w", err),
+		)
+	}
+
+	return fn.Ok[actormsg.RoundActorResp](&ServerMessageResponse{
+		Success: true,
+	})
 }
 
 // maxPendingQuotes caps the number of out-of-order quotes the
@@ -1728,11 +1827,13 @@ func (a *RoundClientActor) routeServerMessageByRoundID(ctx context.Context,
 
 	// The mailbox contract allows envelopes to arrive out of order. If
 	// a JoinRoundQuoteReceived lands before its matching RoundJoined
-	// has re-keyed the FSM, buffer it so handleRoundJoined can drain
-	// it after re-keying. Every other event type without a live
+	// has re-keyed the FSM, first try to correlate it by the accepted
+	// input outpoints echoed on the quote. Legacy quotes without enough
+	// correlation data fall back to buffering so handleRoundJoined can
+	// drain them after re-keying. Every other event type without a live
 	// routing target is a real miss.
 	if quote, ok := msg.(*JoinRoundQuoteReceived); ok {
-		return nil, a.bufferPendingQuote(ctx, quote), true
+		return nil, a.handleEarlyQuote(ctx, quote), true
 	}
 
 	return nil, fn.Err[actormsg.RoundActorResp](

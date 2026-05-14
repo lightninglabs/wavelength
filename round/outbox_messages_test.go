@@ -192,6 +192,19 @@ func TestJoinRoundQuoteReceivedFromProto(t *testing.T) {
 		quoteID[i] = byte(i + 1)
 	}
 
+	boardingOutpoint := wire.OutPoint{
+		Hash: chainhash.Hash{
+			0xaa,
+		},
+		Index: 1,
+	}
+	vtxoOutpoint := wire.OutPoint{
+		Hash: chainhash.Hash{
+			0xbb,
+		},
+		Index: 2,
+	}
+
 	pb := &roundpb.JoinRoundQuote{
 		RoundId:        roundID.String(),
 		QuoteId:        quoteID[:],
@@ -235,6 +248,12 @@ func TestJoinRoundQuoteReceivedFromProto(t *testing.T) {
 				AmountSat: 20_000,
 			},
 		},
+		AcceptedBoardingOutpoints: []*roundpb.Outpoint{
+			roundpb.OutpointToProto(boardingOutpoint),
+		},
+		AcceptedVtxoOutpoints: []*roundpb.Outpoint{
+			roundpb.OutpointToProto(vtxoOutpoint),
+		},
 	}
 
 	var got JoinRoundQuoteReceived
@@ -273,6 +292,13 @@ func TestJoinRoundQuoteReceivedFromProto(t *testing.T) {
 			},
 		},
 		got.Quote.LeaveQuotes,
+	)
+	require.Equal(
+		t, []wire.OutPoint{boardingOutpoint},
+		got.AcceptedBoardingOutpoints,
+	)
+	require.Equal(
+		t, []wire.OutPoint{vtxoOutpoint}, got.AcceptedVTXOOutpoints,
 	)
 }
 

@@ -1638,9 +1638,17 @@ type JoinRoundQuote struct {
 	// reject_reason is populated when the server drops this
 	// client's intent at seal time (e.g. residual would be
 	// negative). QUOTE_OK indicates a valid quote.
-	RejectReason  QuoteReason `protobuf:"varint,9,opt,name=reject_reason,json=rejectReason,proto3,enum=round.v1.QuoteReason" json:"reject_reason,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	RejectReason QuoteReason `protobuf:"varint,9,opt,name=reject_reason,json=rejectReason,proto3,enum=round.v1.QuoteReason" json:"reject_reason,omitempty"`
+	// accepted_boarding_outpoints lists boarding outpoints accepted into the
+	// round. It mirrors ClientSuccessResp so clients can correlate an
+	// out-of-order quote to the correct pending round before the separate
+	// join-ack envelope arrives.
+	AcceptedBoardingOutpoints []*Outpoint `protobuf:"bytes,10,rep,name=accepted_boarding_outpoints,json=acceptedBoardingOutpoints,proto3" json:"accepted_boarding_outpoints,omitempty"`
+	// accepted_vtxo_outpoints lists VTXO outpoints involved in the round. It
+	// mirrors ClientSuccessResp and disambiguates concurrent VTXO-only joins.
+	AcceptedVtxoOutpoints []*Outpoint `protobuf:"bytes,11,rep,name=accepted_vtxo_outpoints,json=acceptedVtxoOutpoints,proto3" json:"accepted_vtxo_outpoints,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *JoinRoundQuote) Reset() {
@@ -1734,6 +1742,20 @@ func (x *JoinRoundQuote) GetRejectReason() QuoteReason {
 		return x.RejectReason
 	}
 	return QuoteReason_QUOTE_OK
+}
+
+func (x *JoinRoundQuote) GetAcceptedBoardingOutpoints() []*Outpoint {
+	if x != nil {
+		return x.AcceptedBoardingOutpoints
+	}
+	return nil
+}
+
+func (x *JoinRoundQuote) GetAcceptedVtxoOutpoints() []*Outpoint {
+	if x != nil {
+		return x.AcceptedVtxoOutpoints
+	}
+	return nil
 }
 
 // JoinRoundAccept is sent from client to server to explicitly
@@ -2452,7 +2474,7 @@ const file_round_proto_rawDesc = "" +
 	"LeaveQuote\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12\x1d\n" +
 	"\n" +
-	"amount_sat\x18\x02 \x01(\x03R\tamountSat\"\xa5\x03\n" +
+	"amount_sat\x18\x02 \x01(\x03R\tamountSat\"\xc5\x04\n" +
 	"\x0eJoinRoundQuote\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\tR\aroundId\x12\x19\n" +
 	"\bquote_id\x18\x02 \x01(\fR\aquoteId\x12(\n" +
@@ -2463,7 +2485,10 @@ const file_round_proto_rawDesc = "" +
 	"\x10operator_fee_sat\x18\x06 \x01(\x03R\x0eoperatorFeeSat\x124\n" +
 	"\tbreakdown\x18\a \x01(\v2\x16.round.v1.FeeBreakdownR\tbreakdown\x12(\n" +
 	"\x10quote_expires_at\x18\b \x01(\x03R\x0equoteExpiresAt\x12:\n" +
-	"\rreject_reason\x18\t \x01(\x0e2\x15.round.v1.QuoteReasonR\frejectReason\"G\n" +
+	"\rreject_reason\x18\t \x01(\x0e2\x15.round.v1.QuoteReasonR\frejectReason\x12R\n" +
+	"\x1baccepted_boarding_outpoints\x18\n" +
+	" \x03(\v2\x12.round.v1.OutpointR\x19acceptedBoardingOutpoints\x12J\n" +
+	"\x17accepted_vtxo_outpoints\x18\v \x03(\v2\x12.round.v1.OutpointR\x15acceptedVtxoOutpoints\"G\n" +
 	"\x0fJoinRoundAccept\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\tR\aroundId\x12\x19\n" +
 	"\bquote_id\x18\x02 \x01(\fR\aquoteId\"_\n" +
@@ -2615,37 +2640,39 @@ var file_round_proto_depIdxs = []int32{
 	22, // 23: round.v1.JoinRoundQuote.leave_quotes:type_name -> round.v1.LeaveQuote
 	20, // 24: round.v1.JoinRoundQuote.breakdown:type_name -> round.v1.FeeBreakdown
 	0,  // 25: round.v1.JoinRoundQuote.reject_reason:type_name -> round.v1.QuoteReason
-	39, // 26: round.v1.SubmitNoncesRequest.nonces:type_name -> round.v1.SubmitNoncesRequest.NoncesEntry
-	40, // 27: round.v1.SignerNonces.tx_nonces:type_name -> round.v1.SignerNonces.TxNoncesEntry
-	41, // 28: round.v1.SubmitPartialSigRequest.signatures:type_name -> round.v1.SubmitPartialSigRequest.SignaturesEntry
-	42, // 29: round.v1.SignerPartialSigs.tx_sigs:type_name -> round.v1.SignerPartialSigs.TxSigsEntry
-	1,  // 30: round.v1.BoardingInputSignature.outpoint:type_name -> round.v1.Outpoint
-	30, // 31: round.v1.SubmitForfeitSigRequest.signatures:type_name -> round.v1.BoardingInputSignature
-	1,  // 32: round.v1.ForfeitTxSig.vtxo_outpoint:type_name -> round.v1.Outpoint
-	32, // 33: round.v1.SubmitVTXOForfeitSigsRequest.forfeit_txs:type_name -> round.v1.ForfeitTxSig
-	4,  // 34: round.v1.ClientBatchInfo.VtxoTreePathsEntry.value:type_name -> round.v1.VTXOTree
-	5,  // 35: round.v1.ClientBatchInfo.ConnectorLeafMapEntry.value:type_name -> round.v1.ConnectorLeafInfo
-	27, // 36: round.v1.SubmitNoncesRequest.NoncesEntry.value:type_name -> round.v1.SignerNonces
-	29, // 37: round.v1.SubmitPartialSigRequest.SignaturesEntry.value:type_name -> round.v1.SignerPartialSigs
-	19, // 38: round.v1.RoundService.JoinRound:input_type -> round.v1.JoinRoundRequest
-	24, // 39: round.v1.RoundService.AcceptQuote:input_type -> round.v1.JoinRoundAccept
-	25, // 40: round.v1.RoundService.RejectQuote:input_type -> round.v1.JoinRoundReject
-	26, // 41: round.v1.RoundService.SubmitNonces:input_type -> round.v1.SubmitNoncesRequest
-	28, // 42: round.v1.RoundService.SubmitPartialSigs:input_type -> round.v1.SubmitPartialSigRequest
-	31, // 43: round.v1.RoundService.SubmitForfeitSigs:input_type -> round.v1.SubmitForfeitSigRequest
-	33, // 44: round.v1.RoundService.SubmitVTXOForfeitSigs:input_type -> round.v1.SubmitVTXOForfeitSigsRequest
-	7,  // 45: round.v1.RoundService.JoinRound:output_type -> round.v1.ClientSuccessResp
-	7,  // 46: round.v1.RoundService.AcceptQuote:output_type -> round.v1.ClientSuccessResp
-	7,  // 47: round.v1.RoundService.RejectQuote:output_type -> round.v1.ClientSuccessResp
-	10, // 48: round.v1.RoundService.SubmitNonces:output_type -> round.v1.ClientVTXOAggNonces
-	11, // 49: round.v1.RoundService.SubmitPartialSigs:output_type -> round.v1.ClientVTXOAggSigs
-	9,  // 50: round.v1.RoundService.SubmitForfeitSigs:output_type -> round.v1.ClientAwaitingInputSigsResp
-	7,  // 51: round.v1.RoundService.SubmitVTXOForfeitSigs:output_type -> round.v1.ClientSuccessResp
-	45, // [45:52] is the sub-list for method output_type
-	38, // [38:45] is the sub-list for method input_type
-	38, // [38:38] is the sub-list for extension type_name
-	38, // [38:38] is the sub-list for extension extendee
-	0,  // [0:38] is the sub-list for field type_name
+	1,  // 26: round.v1.JoinRoundQuote.accepted_boarding_outpoints:type_name -> round.v1.Outpoint
+	1,  // 27: round.v1.JoinRoundQuote.accepted_vtxo_outpoints:type_name -> round.v1.Outpoint
+	39, // 28: round.v1.SubmitNoncesRequest.nonces:type_name -> round.v1.SubmitNoncesRequest.NoncesEntry
+	40, // 29: round.v1.SignerNonces.tx_nonces:type_name -> round.v1.SignerNonces.TxNoncesEntry
+	41, // 30: round.v1.SubmitPartialSigRequest.signatures:type_name -> round.v1.SubmitPartialSigRequest.SignaturesEntry
+	42, // 31: round.v1.SignerPartialSigs.tx_sigs:type_name -> round.v1.SignerPartialSigs.TxSigsEntry
+	1,  // 32: round.v1.BoardingInputSignature.outpoint:type_name -> round.v1.Outpoint
+	30, // 33: round.v1.SubmitForfeitSigRequest.signatures:type_name -> round.v1.BoardingInputSignature
+	1,  // 34: round.v1.ForfeitTxSig.vtxo_outpoint:type_name -> round.v1.Outpoint
+	32, // 35: round.v1.SubmitVTXOForfeitSigsRequest.forfeit_txs:type_name -> round.v1.ForfeitTxSig
+	4,  // 36: round.v1.ClientBatchInfo.VtxoTreePathsEntry.value:type_name -> round.v1.VTXOTree
+	5,  // 37: round.v1.ClientBatchInfo.ConnectorLeafMapEntry.value:type_name -> round.v1.ConnectorLeafInfo
+	27, // 38: round.v1.SubmitNoncesRequest.NoncesEntry.value:type_name -> round.v1.SignerNonces
+	29, // 39: round.v1.SubmitPartialSigRequest.SignaturesEntry.value:type_name -> round.v1.SignerPartialSigs
+	19, // 40: round.v1.RoundService.JoinRound:input_type -> round.v1.JoinRoundRequest
+	24, // 41: round.v1.RoundService.AcceptQuote:input_type -> round.v1.JoinRoundAccept
+	25, // 42: round.v1.RoundService.RejectQuote:input_type -> round.v1.JoinRoundReject
+	26, // 43: round.v1.RoundService.SubmitNonces:input_type -> round.v1.SubmitNoncesRequest
+	28, // 44: round.v1.RoundService.SubmitPartialSigs:input_type -> round.v1.SubmitPartialSigRequest
+	31, // 45: round.v1.RoundService.SubmitForfeitSigs:input_type -> round.v1.SubmitForfeitSigRequest
+	33, // 46: round.v1.RoundService.SubmitVTXOForfeitSigs:input_type -> round.v1.SubmitVTXOForfeitSigsRequest
+	7,  // 47: round.v1.RoundService.JoinRound:output_type -> round.v1.ClientSuccessResp
+	7,  // 48: round.v1.RoundService.AcceptQuote:output_type -> round.v1.ClientSuccessResp
+	7,  // 49: round.v1.RoundService.RejectQuote:output_type -> round.v1.ClientSuccessResp
+	10, // 50: round.v1.RoundService.SubmitNonces:output_type -> round.v1.ClientVTXOAggNonces
+	11, // 51: round.v1.RoundService.SubmitPartialSigs:output_type -> round.v1.ClientVTXOAggSigs
+	9,  // 52: round.v1.RoundService.SubmitForfeitSigs:output_type -> round.v1.ClientAwaitingInputSigsResp
+	7,  // 53: round.v1.RoundService.SubmitVTXOForfeitSigs:output_type -> round.v1.ClientSuccessResp
+	47, // [47:54] is the sub-list for method output_type
+	40, // [40:47] is the sub-list for method input_type
+	40, // [40:40] is the sub-list for extension type_name
+	40, // [40:40] is the sub-list for extension extendee
+	0,  // [0:40] is the sub-list for field type_name
 }
 
 func init() { file_round_proto_init() }

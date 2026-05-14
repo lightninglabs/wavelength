@@ -1238,6 +1238,88 @@ func TestActorBuffersEarlyQuote(t *testing.T) {
 	)
 }
 
+// TestActorCorrelatesEarlyQuote verifies that a quote carrying accepted-input
+// correlation data can re-key the pending temp round before the separate
+// RoundJoined envelope arrives. This removes the protocol's dependency on
+// ordered mailbox delivery for JoinAck before JoinRoundQuote.
+func TestActorCorrelatesEarlyQuote(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+	require.NoError(t, h.start())
+
+	intent := h.newTestBoardingIntent()
+	h.sendWalletConfirmation(intent)
+	h.sendVTXORequests(50000)
+	h.sendServerMessage(&IntentRequested{})
+
+	states := h.queryState()
+	var vtxos []types.VTXORequest
+	for _, info := range states {
+		rs, ok := info.State.(*IntentSentState)
+		if !ok {
+			continue
+		}
+		vtxos = append(vtxos, rs.Intents.VTXOs...)
+	}
+	require.NotEmpty(t, vtxos)
+
+	vtxoQuotes := make([]VTXOQuoteEntry, len(vtxos))
+	for i, v := range vtxos {
+		script, err := v.EffectivePkScript()
+		require.NoError(t, err)
+
+		vtxoQuotes[i] = VTXOQuoteEntry{
+			PkScript:     script,
+			AmountSat:    int64(v.Amount),
+			RecipientKey: v.SigningKey.PubKey.SerializeCompressed(),
+		}
+	}
+
+	var quoteID [32]byte
+	for i := range quoteID {
+		quoteID[i] = byte(i + 1)
+	}
+
+	roundID := testRoundID("self-correlating-quote")
+	h.sendServerMessage(&JoinRoundQuoteReceived{
+		RoundID: roundID,
+		AcceptedBoardingOutpoints: []wire.OutPoint{
+			intent.Outpoint,
+		},
+		Quote: &ClientQuote{
+			QuoteID:        quoteID,
+			OperatorFeeSat: 1_000,
+			VTXOQuotes:     vtxoQuotes,
+		},
+	})
+
+	states = h.queryState()
+	require.Contains(t, states, roundID.KeyString())
+
+	found := false
+	for _, info := range states {
+		switch info.State.(type) {
+		case *QuoteReceivedState, *RoundJoinedState:
+			found = true
+		}
+	}
+	require.True(
+		t, found, "self-correlating quote must advance the FSM "+
+			"without waiting for RoundJoined",
+	)
+
+	// A late RoundJoined for the same round is now a duplicate
+	// admission watermark and must not fail the actor.
+	h.sendServerMessage(&RoundJoined{
+		RoundID: roundID,
+		AcceptedBoardingOutpoints: []wire.OutPoint{
+			intent.Outpoint,
+		},
+	})
+}
+
 func TestActorServerMessageRouting(t *testing.T) {
 	t.Parallel()
 

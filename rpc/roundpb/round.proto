@@ -452,6 +452,16 @@ message JoinRoundQuote {
     // client's intent at seal time (e.g. residual would be
     // negative). QUOTE_OK indicates a valid quote.
     QuoteReason reject_reason = 9;
+
+    // accepted_boarding_outpoints lists boarding outpoints accepted into the
+    // round. It mirrors ClientSuccessResp so clients can correlate an
+    // out-of-order quote to the correct pending round before the separate
+    // join-ack envelope arrives.
+    repeated Outpoint accepted_boarding_outpoints = 10;
+
+    // accepted_vtxo_outpoints lists VTXO outpoints involved in the round. It
+    // mirrors ClientSuccessResp and disambiguates concurrent VTXO-only joins.
+    repeated Outpoint accepted_vtxo_outpoints = 11;
 }
 
 // JoinRoundAccept is sent from client to server to explicitly

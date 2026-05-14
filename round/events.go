@@ -75,6 +75,17 @@ type JoinRoundQuoteReceived struct {
 	// RoundID is the round the quote belongs to.
 	RoundID RoundID
 
+	// AcceptedBoardingOutpoints contains the boarding outpoints accepted
+	// into this round. When the quote arrives before RoundJoined, the actor
+	// uses these outpoints to correlate the quote to the pending temp-keyed
+	// FSM.
+	AcceptedBoardingOutpoints []wire.OutPoint
+
+	// AcceptedVTXOOutpoints contains the VTXO outpoints accepted into this
+	// round. This disambiguates concurrent VTXO-only rounds when a quote
+	// arrives before RoundJoined.
+	AcceptedVTXOOutpoints []wire.OutPoint
+
 	// Quote is the server-issued quote payload.
 	Quote *ClientQuote
 }

@@ -48,6 +48,22 @@ func (e *JoinRoundQuoteReceived) FromProto(p proto.Message) error {
 	}
 	e.RoundID = roundID
 
+	boardingOps, err := roundpb.OutpointsFromProto(
+		pb.GetAcceptedBoardingOutpoints(),
+	)
+	if err != nil {
+		return fmt.Errorf("accepted_boarding_outpoints: %w", err)
+	}
+	e.AcceptedBoardingOutpoints = boardingOps
+
+	vtxoOps, err := roundpb.OutpointsFromProto(
+		pb.GetAcceptedVtxoOutpoints(),
+	)
+	if err != nil {
+		return fmt.Errorf("accepted_vtxo_outpoints: %w", err)
+	}
+	e.AcceptedVTXOOutpoints = vtxoOps
+
 	if len(pb.GetQuoteId()) != 32 {
 		return fmt.Errorf("invalid quote_id length: %d, want 32",
 			len(pb.GetQuoteId()))
