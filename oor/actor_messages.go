@@ -342,6 +342,17 @@ type SubmitOORRejection struct {
 	Reason string
 }
 
+// oorSessionCorrelationKey is the canonical per-mailbox FIFO key for
+// OOR response events. Two responses for the same client + session are
+// claim-ordered by emission order regardless of retry backoff. The
+// "oor/" prefix distinguishes the namespace from the rounds keys so a
+// session id cannot accidentally collide with a round id.
+func oorSessionCorrelationKey(clientID clientconn.ClientID,
+	sessionID SessionID) string {
+
+	return fmt.Sprintf("%s/oor/%s", clientID, sessionID)
+}
+
 // MessageType returns the type of this message.
 func (m *SubmitOORResponse) MessageType() string {
 	return "SubmitOORResponse"
@@ -404,6 +415,13 @@ func (m *SubmitOORResponse) ServiceMethod() mailboxrpc.ServiceMethod {
 		Service: oorpb.ServiceName,
 		Method:  oorpb.MethodSubmitPackage,
 	}
+}
+
+// CorrelationKey returns the per-client/session FIFO key so the submit
+// response is delivered ahead of any later same-session response
+// (e.g. the finalize ack) even when the first send transiently fails.
+func (m *SubmitOORResponse) CorrelationKey() string {
+	return oorSessionCorrelationKey(m.clientID, m.SessionID)
 }
 
 // FinalizeOORRequest requests finalizing an existing OOR transfer session.
@@ -568,6 +586,14 @@ func (m *FinalizeOORResponse) ServiceMethod() mailboxrpc.ServiceMethod {
 		Service: oorpb.ServiceName,
 		Method:  oorpb.MethodFinalizePackage,
 	}
+}
+
+// CorrelationKey returns the per-client/session FIFO key. Together
+// with SubmitOORResponse.CorrelationKey, this keeps the two responses
+// for one OOR session ordered against each other on the per-client
+// mailbox even when a Send transiently fails.
+func (m *FinalizeOORResponse) CorrelationKey() string {
+	return oorSessionCorrelationKey(m.clientID, m.SessionID)
 }
 
 // newOORActorCodec builds the durable mailbox codec for the coordinator.
