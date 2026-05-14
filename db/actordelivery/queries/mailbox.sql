@@ -12,6 +12,9 @@
 -- subsequent CompleteOutbox call fails, the retry will attempt to insert the
 -- same outbox-derived ID. The conflict clause makes this a silent no-op
 -- instead of an error, preserving exactly-once inbox semantics.
+-- correlation_key is optional (NULL = unkeyed, participates in the global
+-- available_at order). Non-NULL keys participate in per-key FIFO claim
+-- ordering: see LeaseNextMailboxMessage for the head-of-line rule.
 INSERT INTO mailbox_messages (
     id,
     mailbox_id,
@@ -23,17 +26,42 @@ INSERT INTO mailbox_messages (
     priority,
     available_at,
     max_attempts,
-    created_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    created_at,
+    correlation_key
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (id) DO NOTHING;
 
 -- name: LeaseNextMailboxMessage :one
 -- Atomically claim the next available message for processing.
 -- Sets lease_token and lease_until, increments attempts.
 -- Returns NULL if no messages are available.
--- Ordering: priority DESC ensures high-priority (e.g., restart) messages first,
--- then available_at ASC for delivery order, then created_at ASC as a tiebreaker
--- to ensure deterministic ordering when priority and available_at are equal.
+--
+-- Ordering: priority DESC ensures high-priority (e.g., restart) messages
+-- first, then available_at ASC for delivery order, then created_at ASC as
+-- a tiebreaker to ensure deterministic ordering when priority and
+-- available_at are equal.
+--
+-- Per-correlation-key FIFO: when a row carries a non-NULL correlation_key,
+-- it is eligible only if no earlier same-key row exists in this mailbox.
+-- "Earlier" is determined by the UUIDv7 id column, which embeds a
+-- millisecond timestamp plus a per-generator tiebreaker so two messages
+-- enqueued by the same producer are always strictly orderable, even
+-- when they fall in the same second-granularity created_at bucket. This
+-- prevents a later-enqueued same-key message from overtaking a same-key
+-- message that is currently in retry backoff (available_at pushed into
+-- the future by a Nack). Unkeyed rows (NULL key) skip the anti-join
+-- and participate in the global available_at order as before; they are
+-- not affected by, and do not affect, keyed lanes.
+--
+-- The anti-join also requires the predecessor to still have retry budget
+-- (m2.attempts < m2.max_attempts). Without this clause, a same-key row
+-- that exhausted its attempts but has not yet been physically deleted
+-- (e.g. a crash window between MoveMailboxToDeadLetter and
+-- DeleteMailboxMessage in handlePoisonMessage) would permanently block
+-- every later same-key message instead of being passed over. The
+-- exhausted row is already filtered out of the outer candidate set by
+-- m.attempts < m.max_attempts, so this just brings the anti-join
+-- predicate into agreement with the eligibility predicate.
 UPDATE mailbox_messages
 SET
     lease_token = $2,
@@ -45,6 +73,16 @@ WHERE mailbox_messages.id = (
       AND m.available_at <= $4
       AND (m.lease_until IS NULL OR m.lease_until < $4)
       AND m.attempts < m.max_attempts
+      AND (
+          m.correlation_key IS NULL
+          OR NOT EXISTS (
+              SELECT 1 FROM mailbox_messages m2
+              WHERE m2.mailbox_id = m.mailbox_id
+                AND m2.correlation_key = m.correlation_key
+                AND m2.id < m.id
+                AND m2.attempts < m2.max_attempts
+          )
+      )
     ORDER BY m.priority DESC, m.available_at ASC, m.created_at ASC
     LIMIT 1
 )

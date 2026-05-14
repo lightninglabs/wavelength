@@ -50,6 +50,7 @@ type MailboxMessage struct {
 	Attempts        int32
 	MaxAttempts     int32
 	CreatedAt       int64
+	CorrelationKey  sql.NullString
 }
 
 type OutboxMessage struct {

@@ -211,7 +211,10 @@ func (m *DurableMailbox[M, R]) Send(ctx context.Context,
 		priority = pm.Priority()
 	}
 
-	// Enqueue the message.
+	// Enqueue the message. CorrelationKey opts the message into the
+	// per-key FIFO claim lane in the durable mailbox; an empty key (the
+	// default on BaseMessage) means the message uses the existing global
+	// available_at order, unaffected by keyed lanes.
 	params := EnqueueParams{
 		ID:              id,
 		MailboxID:       m.cfg.MailboxID,
@@ -223,6 +226,7 @@ func (m *DurableMailbox[M, R]) Send(ctx context.Context,
 		Priority:        priority,
 		AvailableAt:     m.clock.Now(),
 		MaxAttempts:     m.cfg.MaxAttempts,
+		CorrelationKey:  env.message.CorrelationKey(),
 	}
 
 	// Allow the sender's transaction (if any) to flow through so

@@ -163,6 +163,14 @@ type EnqueueParams struct {
 
 	// MaxAttempts is the maximum delivery attempts before dead-lettering.
 	MaxAttempts int
+
+	// CorrelationKey is an optional per-message tag that participates in
+	// the durable mailbox's per-key FIFO claim ordering. Non-empty keys
+	// cause the claim path to refuse to return a message when an
+	// earlier-enqueued same-key message is still in the queue, even if
+	// the earlier message is in retry backoff. Empty means the message
+	// is unkeyed and uses the existing global available_at order.
+	CorrelationKey string
 }
 
 // LeasedMessage represents a message claimed from the mailbox.
