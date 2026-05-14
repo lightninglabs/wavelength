@@ -341,16 +341,28 @@ unit-race: #? Run unit tests with race detector
 ITEST_CLIENT_WALLET := $(if $(backend),$(backend),lnd)
 ITEST_CASE := $(or $(icase),$(case))
 
-itest: #? Run daemon-level integration tests in ./itest. Use backend=lwwallet or backend=btcwallet.
+# Per-package parallelism for go test. 81% of the daemon itests call
+# t.Parallel(), so the cap on how many tests can run concurrently is
+# the smaller of GOMAXPROCS (the go test default) and whatever
+# -parallel is set to. Most tests in the suite are I/O-bound on
+# bitcoind / LND RPCs rather than CPU-bound, so over-subscribing
+# the CPU count tends to win wall-clock time. The default of 16 is
+# tuned for an 8-vCPU CI runner; override via parallel=<n> on the
+# make invocation when running on smaller or larger machines.
+ITEST_PARALLEL := $(if $(parallel),$(parallel),16)
+
+itest: #? Run daemon-level integration tests in ./itest. Use backend=lwwallet or backend=btcwallet to select backend. Use parallel=N to override the test parallelism cap.
 	@$(call print, "Running daemon integration tests.")
 	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
 	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
+	-parallel $(ITEST_PARALLEL) \
 	$(if $(ITEST_CASE),-run $(ITEST_CASE),)
 
 itest-verbose: #? Run daemon-level integration tests with stdout logs. Use backend=lwwallet or backend=btcwallet.
 	@$(call print, "Running daemon integration tests with verbose logs.")
 	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
 	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
+	-parallel $(ITEST_PARALLEL) \
 	-harness.logstdout $(if $(ITEST_CASE),-run $(ITEST_CASE),)
 
 itest-rest-gateway: #? Run the dedicated grpc-gateway REST integration test.
