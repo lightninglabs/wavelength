@@ -15,4 +15,7 @@ func configureSwapRuntime(cfg *darepod.Config) {
 	cfg.RPCServiceRegistrars = append(
 		cfg.RPCServiceRegistrars, swapclientserver.Register,
 	)
+	cfg.RPCGatewayRegistrars = append(
+		cfg.RPCGatewayRegistrars, swapclientserver.RegisterGateway,
+	)
 }

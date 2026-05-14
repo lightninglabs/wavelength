@@ -19,6 +19,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightninglabs/darepo-client/darepod"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
@@ -231,6 +232,17 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 // wallet-level lifecycle policy.
 func (s *swapClientService) ResumePending(ctx context.Context) {
 	s.resumePending(ctx)
+}
+
+// RegisterGateway installs the optional SwapClientService handlers on the
+// daemon HTTP/JSON gateway.
+func RegisterGateway(ctx context.Context, mux *runtime.ServeMux,
+	endpoint string, opts []grpc.DialOption, _ *darepod.RPCServer,
+	_ *darepod.Config) error {
+
+	return swapclientrpc.RegisterSwapClientServiceHandlerFromEndpoint(
+		ctx, mux, endpoint, opts,
+	)
 }
 
 // newSwapClientService builds the daemon-owned swap executor from darepod
