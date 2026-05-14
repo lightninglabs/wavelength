@@ -1,0 +1,11 @@
+type: google.api.Service
+config_version: 3
+
+http:
+  rules:
+    - selector: arkrpc.ArkService.GetInfo
+      post: /v1/ark/get-info
+      body: "*"
+    - selector: arkrpc.ArkService.EstimateFee
+      post: /v1/ark/estimate-fee
+      body: "*"
