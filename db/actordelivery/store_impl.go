@@ -176,6 +176,9 @@ func (s *Store) EnqueueMessage(
 					AvailableAt: params.AvailableAt.Unix(),
 					MaxAttempts: int32(params.MaxAttempts),
 					CreatedAt:   createdAt,
+					CorrelationKey: toNullString(
+						params.CorrelationKey,
+					),
 				},
 			)
 		})
@@ -945,6 +948,7 @@ func (s *TxActorDeliveryStore) EnqueueMessage(
 		AvailableAt:     params.AvailableAt.Unix(),
 		MaxAttempts:     int32(params.MaxAttempts),
 		CreatedAt:       s.clock.Now().Unix(),
+		CorrelationKey:  toNullString(params.CorrelationKey),
 	})
 }
 

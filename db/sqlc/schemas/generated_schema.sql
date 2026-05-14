@@ -307,6 +307,10 @@ CREATE INDEX idx_dead_letters_source
 CREATE INDEX idx_mailbox_messages_available
     ON mailbox_messages(mailbox_id, priority DESC, available_at ASC, created_at ASC);
 
+CREATE INDEX idx_mailbox_messages_correlation
+    ON mailbox_messages(mailbox_id, correlation_key, id)
+    WHERE correlation_key IS NOT NULL;
+
 CREATE INDEX idx_mailbox_messages_lease
     ON mailbox_messages(lease_until)
     WHERE lease_until IS NOT NULL;
@@ -480,7 +484,7 @@ CREATE TABLE mailbox_messages (
 
     -- created_at is the unix timestamp when the message was enqueued.
     created_at BIGINT NOT NULL
-);
+, correlation_key TEXT);
 
 CREATE TABLE oor_package_checkpoints (
     -- session_id references the owning OOR package row.
