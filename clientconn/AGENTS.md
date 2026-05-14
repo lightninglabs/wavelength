@@ -28,6 +28,18 @@ to the appropriate service operator.
 - `ClientRegistrar` — Interface for registering/unregistering clients with the status tracker.
 - `PullActivityTracker` — `StatusTracker` implementation using mailbox pull timestamps. Transitions clients online/offline based on configurable activity and idle timeouts.
 - `HeartbeatService` / `HeartbeatDispatcher` — Well-known service name and no-op dispatcher for client heartbeat envelopes. Heartbeats are treated as liveness signals without application logic.
+- `ClientMessage.CorrelationKey() string` — Per-message FIFO key plumbed
+  through the wrapper `sendEventMsg` (TLV record type 8) into the
+  per-client durable mailbox's `correlation_key` column. Two outbox
+  events with the same key (e.g. `(clientID, roundID)`) are claim-ordered
+  by emission order regardless of retry backoff. Returning the empty
+  string opts out of per-key FIFO (used by `ClientErrorResp` and the
+  indexer event push paths). See `client/baselib/actor/CLAUDE.md` for the
+  underlying claim invariant.
+- `rounds.roundClientCorrelationKey(clientID, roundID)` — Canonical key
+  shape for round outbox events: `"<clientID>/<roundID>"`. Implemented on
+  every `ClientMessage` in `rounds/outbox_messages.go` that carries both
+  a client and a round id.
 
 ## Relationships
 
@@ -57,6 +69,14 @@ response envelope?**
 - `HandleInbound` uses `singleflight.Group` keyed by clientID to deduplicate concurrent registration attempts for the same client.
 - Envelope dispatch latency is instrumented via `DispatchCompletedMsg` sent to
   the metrics actor after each ingress dispatch.
+- **Per-correlation-key FIFO across server-to-client outbox events.**
+  `ClientMessage.CorrelationKey()` plumbs into the per-client durable
+  mailbox so two same-key events (e.g. the join-ack and the seal-time
+  quote for the same round) cannot reorder under transient `Edge.Send`
+  failure. The framework-layer invariant lives in
+  `client/baselib/actor` and is exercised end-to-end by
+  `TestRoundJoinAckSurvivesTransientSendFailure` in systest with the
+  `InstrumentedMailbox.FailNextSends` fault-injection hook.
 
 ## Deep Docs
 
