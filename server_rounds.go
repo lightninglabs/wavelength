@@ -321,24 +321,101 @@ func (s *Server) stopRoundsSubsystem(ctx context.Context) {
 	}
 }
 
-// maxConnectorDepth returns the worst-case connector tree depth in blocks
-// that a forfeit-response broadcast must walk before reaching the
-// connector leaf consumed by the stored forfeit transaction. With a
-// branching factor of radix and a maximum of maxConnectors leaves, the
-// tree height is ceil(log_radix(maxConnectors)).
-func maxConnectorDepth(maxConnectors, radix uint32) uint32 {
-	if radix < 2 || maxConnectors <= 1 {
+// minConnectorTreeRadix mirrors the lower bound enforced by the
+// connector tree builders in rounds/fsm_transitions.go (see
+// buildConnectorDescriptors and buildConnectorTreesAndAssignments) and
+// by tree.BuildConnectorTree. Any radix below this would crash the
+// builder at finalization, so the startup gate refuses the config
+// outright instead of admitting it and failing later.
+const minConnectorTreeRadix = uint32(2)
+
+// maxConnectorBroadcastTxs returns the worst-case number of connector
+// transactions the operator's fraud-response broadcast must get
+// confirmed before reaching the leaf tx that produces the connector
+// dust spent by the stored forfeit transaction. This equals
+// tree.Tree.Depth() for the connector tree shape the builder produces
+// (one tx per tree level from the root spending the commitment-tx
+// connector output down through the leaf).
+//
+// For a branching factor of radix and N leaves, the connector tree's
+// depth is ceil(log_radix(N)) + 1 when N >= 2 (one extra level for the
+// leaf), and 1 when N == 1 (the tree degenerates into a single leaf tx
+// that consumes the commitment connector output directly). The +1 vs.
+// pure ceil(log_radix(N)) is what the prior version missed: the leaf
+// tx is itself a broadcast that must confirm before the CSV expires,
+// not a free terminal symbol. See client/lib/tree/tree.go Tree.Depth
+// and TestBuildTreeBFS for the canonical accounting.
+func maxConnectorBroadcastTxs(maxConnectors, radix uint32) uint32 {
+	if maxConnectors == 0 {
 		return 0
 	}
 
-	depth := uint32(0)
+	// A single-leaf tree is one tx: the leaf itself spends the
+	// commitment-tx connector output. Skip the log loop so callers
+	// don't need to special-case the degenerate shape.
+	if maxConnectors == 1 {
+		return 1
+	}
+
+	if radix < minConnectorTreeRadix {
+		return 0
+	}
+
+	// Count branch levels (ceil(log_radix(maxConnectors))) then add the
+	// leaf level. capacity tracks the maximum number of leaves a tree
+	// of `levels` branch tiers can hold.
+	levels := uint32(0)
 	capacity := uint32(1)
 	for capacity < maxConnectors {
 		capacity *= radix
-		depth++
+		levels++
 	}
 
-	return depth
+	return levels + 1
+}
+
+// fraudResponseSafetyBlocks is the minimum number of blocks reserved
+// between the worst-case connector path depth and the unilateral exit
+// CSV maturity, so the txconfirm fee-bumper has room to escalate before
+// a malicious client's exit becomes spendable. Sourced from ARK-04 §6.1.
+const fraudResponseSafetyBlocks = uint32(6)
+
+// checkFraudResponseSafetyMargin rejects round terms whose VTXOExitDelay
+// is too short for the operator to walk the connector tree before a
+// malicious client's unilateral exit (CSV = VTXOExitDelay) matures.
+//
+// The connector tree's depth is bounded by ConnectorTreeRadix — not
+// TreeRadix, which only governs VTXO trees — because connector trees are
+// built and persisted with the connector radix (see rounds/
+// fsm_transitions.go). Using TreeRadix here would understate the
+// connector path whenever TreeRadix > ConnectorTreeRadix, letting an
+// operator boot with a VTXOExitDelay that loses the fraud-response race.
+func checkFraudResponseSafetyMargin(terms *batch.Terms) error {
+	// Reject ConnectorTreeRadix < 2 unconditionally because the
+	// connector tree builders in rounds/fsm_transitions.go and
+	// client/lib/tree/batch.go (BuildConnectorTree) fail at finalize
+	// time for any radix below this — gating only on
+	// MaxConnectorsPerTree > 1 would let a config that crashes the
+	// first non-trivial forfeit round boot anyway.
+	if terms.ConnectorTreeRadix < minConnectorTreeRadix {
+		return fmt.Errorf("connector_tree_radix %d must be at least %d",
+			terms.ConnectorTreeRadix, minConnectorTreeRadix)
+	}
+
+	maxTxs := maxConnectorBroadcastTxs(
+		terms.MaxConnectorsPerTree, terms.ConnectorTreeRadix,
+	)
+
+	minExitDelay := maxTxs + fraudResponseSafetyBlocks
+	if terms.VTXOExitDelay <= minExitDelay {
+		return fmt.Errorf("vtxo_exit_delay %d insufficient for fraud "+
+			"response: max connector broadcast txs %d + safety "+
+			"margin %d requires vtxo_exit_delay > %d (blocks)",
+			terms.VTXOExitDelay, maxTxs, fraudResponseSafetyBlocks,
+			minExitDelay)
+	}
+
+	return nil
 }
 
 // setupFraudPipeline builds the OOR session store, derives the operator
@@ -364,28 +441,8 @@ func (s *Server) setupFraudPipeline(oorLog btclog.Logger,
 			"bitcoind config section")
 	}
 
-	// The forfeit-response broadcast walks the connector tree from the
-	// commitment tx down to the leaf, one tx per confirmation. A
-	// malicious client's unilateral exit (CSV = VTXOExitDelay) is racing
-	// this serial broadcast — if VTXOExitDelay <= maxConnectorDepth +
-	// safety margin, the client's spend matures before the operator
-	// finishes broadcasting and the operator forfeits the penalty value.
-	// Refuse to start under an unsafe configuration so the failure is
-	// visible at boot, not on the first fraud event.
-	maxDepth := maxConnectorDepth(
-		terms.MaxConnectorsPerTree, terms.TreeRadix,
-	)
-
-	// ARK-04 §6.1 recommends a minimum 6-block safety margin before
-	// CSV expiry so the txconfirm fee-bumper has room to escalate.
-	const fraudResponseSafetyBlocks = uint32(6)
-	if terms.VTXOExitDelay <= maxDepth+fraudResponseSafetyBlocks {
-		return nil, nil, fmt.Errorf("vtxo_exit_delay %d insufficient "+
-			"for fraud response: max connector depth %d + safety "+
-			"margin %d requires vtxo_exit_delay > %d (blocks)",
-			terms.VTXOExitDelay, maxDepth,
-			fraudResponseSafetyBlocks,
-			maxDepth+fraudResponseSafetyBlocks)
+	if err := checkFraudResponseSafetyMargin(terms); err != nil {
+		return nil, nil, err
 	}
 
 	sessionStore := oor.NewDBSessionStore(
