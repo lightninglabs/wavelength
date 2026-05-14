@@ -431,6 +431,39 @@ func (h *ArkHarness) startArkd() {
 	// OperatorConfigMutator.
 	cfg.Rounds.MinOperatorFee = 0
 
+	// Compress the round-phase timeouts to the minimum that still
+	// keeps the FSM honest. The production defaults are tuned for
+	// distributed clients on heterogeneous networks; integration
+	// tests run every actor in-process against a local regtest
+	// bitcoind, so a 10s registration window is pure dead weight
+	// that every single-client round pays in full. Each round
+	// re-arms this timer on the first join even if subsequent joins
+	// are immediate, so the floor is effectively the registration
+	// window: lowering it cascades into every round, OOR cycle, and
+	// refresh in the suite. We keep the signature collection window
+	// slightly larger than the registration timeout so a brief
+	// network blip between client and server inside the same
+	// process (e.g. mailbox flush) does not race the timer. Tests
+	// that genuinely need to exercise the timeout semantics (e.g.
+	// the registration-timeout regression suite) can still raise
+	// these via an OperatorConfigMutator.
+	cfg.Rounds.RegistrationTimeout = 500 * time.Millisecond
+	cfg.Rounds.SignatureCollectionTimeout = 2 * time.Second
+
+	// Disable the periodic round tick entirely. The tick exists
+	// in production as a defensive seal trigger that complements
+	// the registration timeout (it lets the FSM close a round
+	// even if the timeout actor missed a fire, or seal an
+	// otherwise idle round once the seal predicate becomes
+	// satisfiable). With the registration timeout above already
+	// dropped to 500ms, the tick has no work to do on the happy
+	// path; arming it just adds a recurring goroutine and an
+	// extra event class for every round the suite creates.
+	// Tests that genuinely care about tick semantics (e.g. the
+	// `skipped_empty` metric or seal-predicate-on-tick paths)
+	// must re-enable this via an OperatorConfigMutator.
+	cfg.Rounds.RoundTickInterval = 0
+
 	// Point arkd at the LND started by the client harness.
 	// Derive credential paths from the harness artifacts directory
 	// since the client harness fields are unexported.
