@@ -57,6 +57,21 @@ func processEventWithJob(ctx context.Context, job *JobState, event Event,
 	nextJob := job.Copy()
 	reissue := false
 
+	// deferralAnchor pins the base height used when stamping a brand-new
+	// DeferredCheckpoint deadline this turn. A TxConfirmedEvent that
+	// promotes a child to the planner's ready frontier carries the parent's
+	// own confirmation height in e.Height; that is the height at which the
+	// child became unblocked, and it is the height we want the operator's
+	// deferral window measured from. Without this anchor the deadline
+	// collapses onto whatever job.Height has already drifted to (e.g. a
+	// bulk-flush of cached HeightUpdatedEvents that ran ahead of the
+	// TxConfirmedEvent in the actor mailbox), pushing the recipient's
+	// backstop arbitrarily far into the future. Non-confirmation events
+	// leave the anchor unset so deriveStateTransition falls back to
+	// job.Height for the StartEvent and ResumeEvent paths, preserving the
+	// previous behavior there.
+	deferralAnchor := fn.None[int32]()
+
 	switch e := event.(type) {
 	case *ResumeEvent:
 		if e.Height > nextJob.Height {
@@ -71,6 +86,7 @@ func processEventWithJob(ctx context.Context, job *JobState, event Event,
 
 	case *TxConfirmedEvent:
 		applyConfirmedEvent(nextJob, e, env)
+		deferralAnchor = fn.Some(e.Height)
 
 	case *TxFailedEvent:
 		applyFailedEvent(nextJob, e)
@@ -96,7 +112,7 @@ func processEventWithJob(ctx context.Context, job *JobState, event Event,
 		return nil, fmt.Errorf("unexpected event %T", event)
 	}
 
-	return deriveStateTransition(ctx, nextJob, env, reissue)
+	return deriveStateTransition(ctx, nextJob, env, reissue, deferralAnchor)
 }
 
 // deriveStateTransition is the core "what FSM state should we be in
@@ -134,7 +150,8 @@ func processEventWithJob(ctx context.Context, job *JobState, event Event,
 // deterministically in unit tests, which is why the FSM intentionally
 // lives separate from the behavior.
 func deriveStateTransition(_ context.Context, job *JobState, env *Environment,
-	reissue bool) (*StateTransition, error) {
+	reissue bool,
+	deferralAnchor fn.Option[int32]) (*StateTransition, error) {
 
 	if job == nil {
 		return nil, fmt.Errorf("job state must be provided")
@@ -279,7 +296,7 @@ func deriveStateTransition(_ context.Context, job *JobState, env *Environment,
 		// txconfirm layer either way, but a clean planner state
 		// is a nicer invariant to hold).
 		readyTxids, watchTxids := readyMaterializationTxids(
-			job, env, snapshot.Ready,
+			job, env, snapshot.Ready, deferralAnchor,
 		)
 		if len(watchTxids) > 0 {
 			outbox = append(outbox, &WatchDeferredCheckpoints{
@@ -468,12 +485,23 @@ func readyTxids(frontier []unrollplan.TxFrontier) []chainhash.Hash {
 
 // readyMaterializationTxids splits planner-ready proof nodes into transactions
 // to submit now and deferred checkpoint watches to register.
+//
+// deferralAnchor pins the height used as the base of any newly-stamped
+// DeferredCheckpoint deadline. When set (a TxConfirmedEvent just promoted
+// these frontier items), it is the parent's confirmation height, so the
+// deferral window measures the operator's response time from when the
+// child actually became unblocked. When unset (StartEvent / ResumeEvent),
+// we fall back to job.Height — the only signal available before any
+// confirmation event has arrived.
 func readyMaterializationTxids(job *JobState, env *Environment,
-	frontier []unrollplan.TxFrontier) ([]chainhash.Hash, []chainhash.Hash) {
+	frontier []unrollplan.TxFrontier,
+	deferralAnchor fn.Option[int32]) ([]chainhash.Hash, []chainhash.Hash) {
 
 	if job == nil || env == nil || env.Proof == nil {
 		return readyTxids(frontier), nil
 	}
+
+	deadlineBase := deferralAnchor.UnwrapOr(job.Height)
 
 	ready := make([]chainhash.Hash, 0, len(frontier))
 	watch := make([]chainhash.Hash, 0, len(frontier))
@@ -492,7 +520,7 @@ func readyMaterializationTxids(job *JobState, env *Environment,
 		}
 
 		deadline := checkpointBackstopHeight(
-			job.Height, env.Proof.CSVDelay(),
+			deadlineBase, env.Proof.CSVDelay(),
 			env.FraudCheckpointSafetyMargin,
 		)
 		if deadline <= job.Height {
