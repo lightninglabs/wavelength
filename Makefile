@@ -365,25 +365,28 @@ ITEST_RUN_PATTERN := $(if $(ITEST_CASE),$(ITEST_CASE),$(ITEST_SHARD_PATTERN))
 # Per-package parallelism for go test. 81% of the daemon itests call
 # t.Parallel(), so the cap on how many tests can run concurrently is
 # the smaller of GOMAXPROCS (the go test default) and whatever
-# -parallel is set to. Most tests in the suite are I/O-bound on
-# bitcoind / LND RPCs rather than CPU-bound, so over-subscribing
-# the CPU count tends to win wall-clock time. The default of 16 is
-# tuned for an 8-vCPU CI runner; override via parallel=<n> on the
-# make invocation when running on smaller or larger machines.
-ITEST_PARALLEL := $(if $(parallel),$(parallel),16)
+# -parallel is set to. Each test spins up a fresh bitcoind / LND /
+# electrs stack, so the binding constraint is not CPU but per-test
+# wallet+chain-backend startup latency: an empirical 16-wide cap on
+# an 8-vCPU runner saturates the wallet init RPC budget and causes
+# InitWallet deadline-exceeded failures under the lwwallet backend.
+# We default to the go test built-in (GOMAXPROCS) when unset, which
+# matches the runner's vCPU count, and let CI or local users
+# override via parallel=<n>.
+ITEST_PARALLEL := $(parallel)
 
 itest: #? Run daemon-level integration tests in ./itest. Use backend=lwwallet or backend=btcwallet to select backend. Use parallel=N to override the test parallelism cap. Use shard=boarding-fees|oor-sends|exits-fraud to run a subset.
 	@$(call print, "Running daemon integration tests.")
 	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
 	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
-	-parallel $(ITEST_PARALLEL) \
+	$(if $(ITEST_PARALLEL),-parallel $(ITEST_PARALLEL),) \
 	$(if $(ITEST_RUN_PATTERN),-run "$(ITEST_RUN_PATTERN)",)
 
 itest-verbose: #? Run daemon-level integration tests with stdout logs. Use backend=lwwallet or backend=btcwallet.
 	@$(call print, "Running daemon integration tests with verbose logs.")
 	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
 	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
-	-parallel $(ITEST_PARALLEL) \
+	$(if $(ITEST_PARALLEL),-parallel $(ITEST_PARALLEL),) \
 	-harness.logstdout $(if $(ITEST_RUN_PATTERN),-run "$(ITEST_RUN_PATTERN)",)
 
 itest-rest-gateway: #? Run the dedicated grpc-gateway REST integration test.

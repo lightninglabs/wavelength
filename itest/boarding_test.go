@@ -5,6 +5,7 @@ package itest
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo"
@@ -856,6 +857,20 @@ func TestBoardingIntegrationTriggerBatchCreatesNewRound(t *testing.T) {
 
 	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
 		ClientOptions: &clientOpts,
+		OperatorConfigMutator: func(cfg *darepo.Config) {
+			// This test deliberately observes the
+			// REGISTRATION_SENT round state on the
+			// client before issuing TriggerBatch, so it
+			// needs the operator's registration window
+			// to stay open long enough for both the
+			// poll and the admin RPC to land. The
+			// itest harness default of 500ms is far
+			// too short to catch the transient state;
+			// pin to 60s to match the production
+			// default (10s) with a 6x cushion for
+			// busy CI runners.
+			cfg.Rounds.RegistrationTimeout = 60 * time.Second
+		},
 	})
 	t.Cleanup(h.Stop)
 
