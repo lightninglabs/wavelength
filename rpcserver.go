@@ -95,6 +95,8 @@ type RPCServer struct {
 	quit chan struct{}
 	wg   sync.WaitGroup
 
+	gatewayAuthToken string
+
 	log btclog.Logger
 }
 
@@ -114,6 +116,11 @@ func NewRPCServer(cfg *RPCConfig, operator *Server,
 		}
 	}
 
+	gatewayAuthToken, err := newGatewayAuthToken()
+	if err != nil {
+		return nil, err
+	}
+
 	// Build gRPC server options with mailbox auth interceptors
 	// and metrics.
 	requireTLS := cfg.TLS != nil
@@ -122,7 +129,9 @@ func NewRPCServer(cfg *RPCConfig, operator *Server,
 	serverOpts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(
 			grpcMetrics.UnaryServerInterceptor(),
-			newMailboxAuthInterceptor(log, requireTLS),
+			newMailboxAuthInterceptor(
+				log, requireTLS, gatewayAuthToken,
+			),
 		),
 		grpc.ChainStreamInterceptor(
 			grpcMetrics.StreamServerInterceptor(),
@@ -153,12 +162,13 @@ func NewRPCServer(cfg *RPCConfig, operator *Server,
 	}
 
 	s := &RPCServer{
-		cfg:        cfg,
-		server:     operator,
-		log:        log,
-		grpcServer: grpc.NewServer(serverOpts...),
-		listener:   listener,
-		quit:       make(chan struct{}),
+		cfg:              cfg,
+		server:           operator,
+		log:              log,
+		grpcServer:       grpc.NewServer(serverOpts...),
+		listener:         listener,
+		quit:             make(chan struct{}),
+		gatewayAuthToken: gatewayAuthToken,
 	}
 
 	// Register the client RPC service.
@@ -190,7 +200,9 @@ func (r *RPCServer) Start(ctx context.Context) error {
 
 	r.log.InfoS(ctx, "Starting Client RPC server")
 
-	dialOpts, err := gatewayDialOptions(r.cfg.TLS)
+	dialOpts, err := gatewayDialOptions(
+		r.cfg.TLS, r.gatewayAuthToken,
+	)
 	if err != nil {
 		return err
 	}

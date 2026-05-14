@@ -5,14 +5,18 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btclog/v2"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
@@ -51,8 +55,9 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 	t.Parallel()
 
 	const (
-		alicePK = "02abc123"
-		bobPK   = "03def456"
+		alicePK      = "02abc123"
+		bobPK        = "03def456"
+		gatewayToken = "test-gateway-token"
 	)
 
 	tests := []struct {
@@ -213,7 +218,7 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 			t.Parallel()
 
 			interceptor := newMailboxAuthInterceptor(
-				btclog.Disabled, tc.requireTLS,
+				btclog.Disabled, tc.requireTLS, gatewayToken,
 			)
 
 			resp, err := interceptor(
@@ -237,6 +242,126 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMailboxAuthInterceptorAcceptsMetadata verifies browser clients can
+// authenticate mailbox RPCs through forwarded HTTP metadata.
+func TestMailboxAuthInterceptorAcceptsMetadata(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	pubKey := privKey.PubKey()
+	clientID := serverconn.PubKeyMailboxID(pubKey)
+	recipientID := "operator:" + clientID
+
+	authSig, err := serverconn.SignMailboxAuth(privKey, recipientID)
+	require.NoError(t, err)
+
+	ctx := metadata.NewIncomingContext(
+		t.Context(),
+		metadata.Pairs(
+			gatewayAuthMetadataKey, "test-gateway-token",
+			serverconn.AuthHeaderKey,
+			hex.EncodeToString(
+				authSig.Serialize(),
+			),
+		),
+	)
+
+	interceptor := newMailboxAuthInterceptor(
+		btclog.Disabled, true, "test-gateway-token",
+	)
+	resp, err := interceptor(
+		ctx, &mailboxpb.PullRequest{
+			MailboxId: recipientID,
+		}, &grpc.UnaryServerInfo{}, passHandler,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "ok", resp)
+}
+
+// TestMailboxAuthInterceptorRejectsBadMetadata verifies bad gateway metadata
+// cannot bypass mailbox identity checks.
+func TestMailboxAuthInterceptorRejectsBadMetadata(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	otherKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientID := serverconn.PubKeyMailboxID(privKey.PubKey())
+	recipientID := "operator:" + clientID
+
+	authSig, err := serverconn.SignMailboxAuth(otherKey, recipientID)
+	require.NoError(t, err)
+
+	ctx := metadata.NewIncomingContext(
+		t.Context(),
+		metadata.Pairs(
+			gatewayAuthMetadataKey, "test-gateway-token",
+			serverconn.AuthHeaderKey,
+			hex.EncodeToString(
+				authSig.Serialize(),
+			),
+		),
+	)
+
+	interceptor := newMailboxAuthInterceptor(
+		btclog.Disabled, true, "test-gateway-token",
+	)
+	_, err = interceptor(
+		ctx, &mailboxpb.PullRequest{
+			MailboxId: recipientID,
+		}, &grpc.UnaryServerInfo{}, passHandler,
+	)
+	require.Error(t, err)
+
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	require.Equal(t, codes.Unauthenticated, st.Code())
+}
+
+// TestMailboxAuthInterceptorRejectsMetadataWithoutGatewayAuth verifies direct
+// gRPC callers cannot use browser mailbox metadata to bypass mTLS.
+func TestMailboxAuthInterceptorRejectsMetadataWithoutGatewayAuth(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientID := serverconn.PubKeyMailboxID(privKey.PubKey())
+	recipientID := "operator:" + clientID
+
+	authSig, err := serverconn.SignMailboxAuth(privKey, recipientID)
+	require.NoError(t, err)
+
+	ctx := metadata.NewIncomingContext(
+		t.Context(),
+		metadata.Pairs(
+			serverconn.AuthHeaderKey,
+			hex.EncodeToString(
+				authSig.Serialize(),
+			),
+		),
+	)
+
+	interceptor := newMailboxAuthInterceptor(
+		btclog.Disabled, true, "test-gateway-token",
+	)
+	_, err = interceptor(
+		ctx, &mailboxpb.PullRequest{
+			MailboxId: recipientID,
+		}, &grpc.UnaryServerInfo{}, passHandler,
+	)
+	require.Error(t, err)
+
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	require.Equal(t, codes.Unauthenticated, st.Code())
 }
 
 // TestExtractTLSIdentity verifies that extractTLSIdentity correctly

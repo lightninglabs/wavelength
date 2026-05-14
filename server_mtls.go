@@ -2,19 +2,25 @@ package darepo
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"strings"
 
 	"github.com/btcsuite/btclog/v2"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"github.com/lightninglabs/darepo-client/serverconn"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
+
+const gatewayAuthMetadataKey = "x-darepo-internal-gateway-auth"
 
 // newMailboxAuthInterceptor returns a gRPC unary server interceptor
 // that enforces per-RPC identity matching for mailbox operations. When
@@ -36,8 +42,8 @@ import (
 // initial registration provides the real identity proof; the mTLS
 // layer is defense-in-depth for per-RPC access control after
 // registration.
-func newMailboxAuthInterceptor(log btclog.Logger,
-	requireTLS bool) grpc.UnaryServerInterceptor {
+func newMailboxAuthInterceptor(log btclog.Logger, requireTLS bool,
+	gatewayAuthToken string) grpc.UnaryServerInterceptor {
 
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler) (any, error) {
@@ -45,6 +51,18 @@ func newMailboxAuthInterceptor(log btclog.Logger,
 		// Extract TLS peer identity.
 		clientIdentity, ok := extractTLSIdentity(ctx)
 		if !ok {
+			if hasGatewayAuth(ctx, gatewayAuthToken) {
+				authed, err := verifyMailboxMetadataAuth(
+					ctx, req,
+				)
+				if err != nil {
+					return nil, err
+				}
+				if authed {
+					return handler(ctx, req)
+				}
+			}
+
 			// When TLS is required, reject mailbox RPCs
 			// without a client certificate.
 			if requireTLS && isMailboxRPC(req) {
@@ -59,10 +77,10 @@ func newMailboxAuthInterceptor(log btclog.Logger,
 						"mailbox operations")
 			}
 
-			// WARNING: non-TLS mode has no per-RPC
-			// enforcement. The Schnorr auth signature
-			// provides identity verification only during
-			// initial registration.
+			// Non-mailbox public RPCs do not have per-RPC
+			// identity checks here. Deployments that require
+			// access control for those methods must enforce it at
+			// the gRPC listener or at the HTTP gateway front door.
 			return handler(ctx, req)
 		}
 
@@ -102,6 +120,99 @@ func newMailboxAuthInterceptor(log btclog.Logger,
 
 		return handler(ctx, req)
 	}
+}
+
+// newGatewayAuthToken returns an unguessable per-process token used to mark
+// requests that arrived through the local HTTP gateway.
+func newGatewayAuthToken() (string, error) {
+	var token [32]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", fmt.Errorf("generate gateway auth token: %w", err)
+	}
+
+	return hex.EncodeToString(token[:]), nil
+}
+
+// hasGatewayAuth reports whether this inbound gRPC request was emitted by the
+// in-process grpc-gateway dialer.
+func hasGatewayAuth(ctx context.Context, token string) bool {
+	if token == "" {
+		return false
+	}
+
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return false
+	}
+
+	values := md.Get(gatewayAuthMetadataKey)
+
+	return len(values) == 1 && values[0] == token
+}
+
+// verifyMailboxMetadataAuth checks browser-compatible mailbox auth metadata.
+func verifyMailboxMetadataAuth(ctx context.Context, req any) (bool, error) {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return false, nil
+	}
+
+	values := md.Get(serverconn.AuthHeaderKey)
+	if len(values) == 0 || values[0] == "" {
+		return false, nil
+	}
+	authSig := values[0]
+
+	var (
+		senderID    string
+		recipientID string
+	)
+
+	switch typedReq := req.(type) {
+	case *mailboxpb.SendRequest:
+		if typedReq.Envelope == nil {
+			return false, status.Errorf(codes.InvalidArgument,
+				"send request missing envelope")
+		}
+
+		senderID = typedReq.Envelope.Sender
+		recipientID = typedReq.Envelope.Recipient
+
+	case *mailboxpb.PullRequest:
+		recipientID = typedReq.MailboxId
+		senderID = mailboxClientID(recipientID)
+
+	case *mailboxpb.AckUpToRequest:
+		recipientID = typedReq.MailboxId
+		senderID = mailboxClientID(recipientID)
+
+	default:
+		return false, nil
+	}
+
+	senderPubKey, err := serverconn.ParseMailboxPubKey(senderID)
+	if err != nil {
+		return false, status.Errorf(codes.Unauthenticated, "invalid "+
+			"mailbox auth identity: %v", err)
+	}
+
+	if err := serverconn.VerifyMailboxAuth(
+		senderPubKey, recipientID, authSig,
+	); err != nil {
+		return false, status.Errorf(codes.Unauthenticated, "invalid "+
+			"mailbox auth signature: %v", err)
+	}
+
+	return true, nil
+}
+
+// mailboxClientID extracts the client pubkey portion from a mailbox ID.
+func mailboxClientID(mailboxID string) string {
+	if idx := strings.LastIndex(mailboxID, ":"); idx >= 0 {
+		return mailboxID[idx+1:]
+	}
+
+	return mailboxID
 }
 
 // checkMailboxIdentity verifies that the claimed mailbox ID belongs

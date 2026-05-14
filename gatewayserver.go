@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
@@ -16,12 +17,18 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 const (
-	defaultGatewayReadTimeout  = 5 * time.Second
+	defaultGatewayReadHeaderTimeout = 5 * time.Second
+	defaultGatewayReadTimeout       = 30 * time.Second
+
+	// Server-streaming gateway responses intentionally keep writes open
+	// beyond a fixed deadline.
 	defaultGatewayWriteTimeout = 0
-	defaultGatewayIdleTimeout  = 60 * time.Second
+
+	defaultGatewayIdleTimeout = 60 * time.Second
 )
 
 // gatewayRegisterFunc registers grpc-gateway handlers on the provided mux.
@@ -42,6 +49,8 @@ type gatewayServer struct {
 
 	listener net.Listener
 	httpSrv  *http.Server
+	wg       sync.WaitGroup
+	cancel   context.CancelFunc
 }
 
 // newGatewayServer constructs a gateway server for one gRPC endpoint.
@@ -73,31 +82,39 @@ func (g *gatewayServer) Start(ctx context.Context) error {
 			return fmt.Errorf("%s gateway listen: %w", g.name, err)
 		}
 	}
-	g.listener = listener
-
 	mux := runtime.NewServeMux(
 		gateway.ServeMuxOptions(gatewayHeaderMatcher)...,
 	)
 
 	endpoint := gateway.NormalizeEndpoint(g.endpoint)
-	if err := g.register(ctx, mux, endpoint, g.dialOpts); err != nil {
+	registerCtx, cancelRegister := context.WithCancel(ctx)
+	if err := g.register(
+		registerCtx, mux, endpoint, g.dialOpts,
+	); err != nil {
+
+		cancelRegister()
 		_ = listener.Close()
 
 		return fmt.Errorf("%s gateway register handlers: %w", g.name,
 			err)
 	}
 
+	g.listener = listener
+	g.cancel = cancelRegister
 	g.httpSrv = &http.Server{
 		Handler: gateway.BrowserHeaders(
 			mux, g.cfg.AllowedOrigins, serverconn.AuthHeaderKey,
 		),
 		ReadTimeout:       defaultGatewayReadTimeout,
-		ReadHeaderTimeout: defaultGatewayReadTimeout,
+		ReadHeaderTimeout: defaultGatewayReadHeaderTimeout,
 		WriteTimeout:      defaultGatewayWriteTimeout,
 		IdleTimeout:       defaultGatewayIdleTimeout,
 	}
 
+	g.wg.Add(1)
 	go func() {
+		defer g.wg.Done()
+
 		g.log.InfoS(ctx, g.name+" HTTP gateway listening",
 			"addr", listener.Addr(),
 		)
@@ -113,15 +130,24 @@ func (g *gatewayServer) Start(ctx context.Context) error {
 }
 
 // Stop stops the HTTP/JSON gateway.
-func (g *gatewayServer) Stop(ctx context.Context) error {
+func (g *gatewayServer) Stop(_ context.Context) error {
 	if g == nil || g.httpSrv == nil {
 		return nil
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
 	defer cancel()
 
-	return g.httpSrv.Shutdown(shutdownCtx)
+	//nolint:contextcheck // shutdown intentionally detaches from caller ctx
+	err := g.httpSrv.Shutdown(shutdownCtx)
+	if g.cancel != nil {
+		g.cancel()
+	}
+	g.wg.Wait()
+
+	return err
 }
 
 // Addr returns the address the gateway is listening on.
@@ -143,21 +169,50 @@ func gatewayHeaderMatcher(key string) (string, bool) {
 }
 
 // gatewayDialOptions returns gRPC client options used by the local gateway.
-func gatewayDialOptions(tlsCfg *TLSConfig) ([]grpc.DialOption, error) {
+func gatewayDialOptions(tlsCfg *TLSConfig,
+	gatewayAuthToken string) ([]grpc.DialOption, error) {
+
+	var dialOpts []grpc.DialOption
 	if tlsCfg == nil {
 		creds := insecure.NewCredentials()
 
-		return []grpc.DialOption{
+		dialOpts = []grpc.DialOption{
 			grpc.WithTransportCredentials(creds),
-		}, nil
+		}
+	} else {
+		creds, err := credentials.NewClientTLSFromFile(
+			tlsCfg.CertPath, "",
+		)
+		if err != nil {
+			return nil, fmt.Errorf("load gateway TLS cert: %w", err)
+		}
+
+		dialOpts = []grpc.DialOption{
+			grpc.WithTransportCredentials(creds),
+		}
 	}
 
-	creds, err := credentials.NewClientTLSFromFile(tlsCfg.CertPath, "")
-	if err != nil {
-		return nil, fmt.Errorf("load gateway TLS cert: %w", err)
+	if gatewayAuthToken != "" {
+		dialOpts = append(
+			dialOpts,
+			grpc.WithUnaryInterceptor(
+				gatewayAuthUnaryInterceptor(gatewayAuthToken),
+			),
+		)
 	}
 
-	return []grpc.DialOption{
-		grpc.WithTransportCredentials(creds),
-	}, nil
+	return dialOpts, nil
+}
+
+func gatewayAuthUnaryInterceptor(token string) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any,
+		cc *grpc.ClientConn, invoker grpc.UnaryInvoker,
+		opts ...grpc.CallOption) error {
+
+		ctx = metadata.AppendToOutgoingContext(
+			ctx, gatewayAuthMetadataKey, token,
+		)
+
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
 }
