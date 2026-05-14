@@ -50,8 +50,12 @@ const (
 	// status and bitcoind mempool both stop showing progress. The
 	// external status can remain MATERIALIZING while internal recovery
 	// nodes confirm one by one, so this is separate from the overall
-	// wall-clock bound.
-	unrollNoProgressTimeout = 4 * time.Minute
+	// wall-clock bound. The btcwallet / neutrino backend under CI
+	// parallel load can sit in MATERIALIZING for several minutes
+	// between visible-progress events, so the timer needs comfortable
+	// headroom even though the lnd backend usually advances every
+	// few seconds.
+	unrollNoProgressTimeout = 6 * time.Minute
 
 	// unrollOverallTimeout is a hard cap to prevent a broken test from
 	// mining indefinitely even if intermittent mempool activity keeps
