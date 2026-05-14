@@ -341,6 +341,27 @@ unit-race: #? Run unit tests with race detector
 ITEST_CLIENT_WALLET := $(if $(backend),$(backend),lnd)
 ITEST_CASE := $(or $(icase),$(case))
 
+# Named shards for CI fan-out. Each shard runs a disjoint set of
+# test prefixes so the per-job wall-clock drops below the slowest
+# single test in the suite. The shards partition the full 59-test
+# package by feature area; the union covers every TestXxx in
+# ./itest. Use shard=<name> on the make invocation to pick one;
+# unset means "run everything". Keep the regex anchored on '^'
+# so a future TestFooBarFees still lands in the correct bucket.
+ITEST_SHARD := $(shard)
+ifeq ($(ITEST_SHARD),boarding-fees)
+ITEST_SHARD_PATTERN := ^TestBoarding|^TestFees|^TestVHTLC|^TestShard
+endif
+ifeq ($(ITEST_SHARD),oor-sends)
+ITEST_SHARD_PATTERN := ^TestOOR|^TestRefresh|^TestSend|^TestDirected|^TestSeal
+endif
+ifeq ($(ITEST_SHARD),exits-fraud)
+ITEST_SHARD_PATTERN := ^TestUnilateral|^TestFraud|^TestSweep|^TestLeave|^TestPartial
+endif
+
+# A custom icase= always wins over the named shard pattern.
+ITEST_RUN_PATTERN := $(if $(ITEST_CASE),$(ITEST_CASE),$(ITEST_SHARD_PATTERN))
+
 # Per-package parallelism for go test. 81% of the daemon itests call
 # t.Parallel(), so the cap on how many tests can run concurrently is
 # the smaller of GOMAXPROCS (the go test default) and whatever
@@ -351,19 +372,19 @@ ITEST_CASE := $(or $(icase),$(case))
 # make invocation when running on smaller or larger machines.
 ITEST_PARALLEL := $(if $(parallel),$(parallel),16)
 
-itest: #? Run daemon-level integration tests in ./itest. Use backend=lwwallet or backend=btcwallet to select backend. Use parallel=N to override the test parallelism cap.
+itest: #? Run daemon-level integration tests in ./itest. Use backend=lwwallet or backend=btcwallet to select backend. Use parallel=N to override the test parallelism cap. Use shard=boarding-fees|oor-sends|exits-fraud to run a subset.
 	@$(call print, "Running daemon integration tests.")
 	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
 	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
 	-parallel $(ITEST_PARALLEL) \
-	$(if $(ITEST_CASE),-run $(ITEST_CASE),)
+	$(if $(ITEST_RUN_PATTERN),-run "$(ITEST_RUN_PATTERN)",)
 
 itest-verbose: #? Run daemon-level integration tests with stdout logs. Use backend=lwwallet or backend=btcwallet.
 	@$(call print, "Running daemon integration tests with verbose logs.")
 	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
 	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
 	-parallel $(ITEST_PARALLEL) \
-	-harness.logstdout $(if $(ITEST_CASE),-run $(ITEST_CASE),)
+	-harness.logstdout $(if $(ITEST_RUN_PATTERN),-run "$(ITEST_RUN_PATTERN)",)
 
 itest-rest-gateway: #? Run the dedicated grpc-gateway REST integration test.
 	@$(call print, "Running grpc-gateway REST integration test.")
