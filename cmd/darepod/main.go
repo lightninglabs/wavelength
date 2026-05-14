@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/lightninglabs/darepo-client/build"
@@ -12,6 +14,20 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
+
+const daemonLogFileName = "darepod.log"
+
+type bestEffortWriter struct {
+	w io.Writer
+}
+
+func (b bestEffortWriter) Write(p []byte) (int, error) {
+	if b.w != nil {
+		_, _ = b.w.Write(p)
+	}
+
+	return len(p), nil
+}
 
 func main() {
 	root := newRootCmd()
@@ -78,6 +94,10 @@ func newRootCmd() *cobra.Command {
 	f.String(
 		"debuglevel", cfg.DebugLevel,
 		"logging verbosity (trace, debug, info, warn, error, critical)",
+	)
+	f.String(
+		"logdir", cfg.LogDirPath,
+		"directory for persistent daemon logs",
 	)
 
 	// LND connection flags.
@@ -249,6 +269,16 @@ func run(cfg *darepod.Config) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
+	logFile, err := configureDaemonLogWriter(cfg, os.Stdout)
+	if err != nil {
+		return fmt.Errorf("configure daemon log file: %w", err)
+	}
+	if logFile != nil {
+		defer func() {
+			_ = logFile.Close()
+		}()
+	}
+
 	// Intercept OS signals for graceful shutdown.
 	shutdownInterceptor, err := signal.Intercept()
 	if err != nil {
@@ -256,4 +286,37 @@ func run(cfg *darepod.Config) error {
 	}
 
 	return darepod.Main(cfg, shutdownInterceptor)
+}
+
+// configureDaemonLogWriter makes the standalone daemon write logs to both
+// stdout and a persistent log file. Embedders that provide LogWriter keep full
+// control of the sink.
+func configureDaemonLogWriter(cfg *darepod.Config,
+	stdout io.Writer) (*os.File, error) {
+
+	if cfg.LogWriter != nil {
+		return nil, nil
+	}
+
+	logDir, err := cfg.LogDir()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create log directory %q: %w", logDir,
+			err)
+	}
+
+	logFilePath := filepath.Join(logDir, daemonLogFileName)
+	logFile, err := os.OpenFile( //nolint:gosec // G304: operator log path.
+		logFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open log file %q: %w", logFilePath, err)
+	}
+
+	cfg.LogWriter = io.MultiWriter(bestEffortWriter{stdout}, logFile)
+
+	return logFile, nil
 }
