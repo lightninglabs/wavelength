@@ -35,11 +35,12 @@ const (
 	// The interval has two conflicting constraints: short enough that
 	// a deep unroll lineage finishes inside the test deadline, but long
 	// enough for neutrino P2P broadcast of a CPFP child to round-trip
-	// to the daemon and back. The historical 10s was conservative
-	// and bled minutes off every CSV-bound test; 4s keeps that win
-	// while still covering the worst-case neutrino propagation delay
-	// observed on CI under parallel load.
-	unrollMempoolStallBlockInterval = 4 * time.Second
+	// to the daemon and back. The historical 10s was conservative,
+	// 4s broke btcwallet/oor-sends under CI parallel load with the
+	// chain-depth-2 multi-input lineage stalling at MATERIALIZING.
+	// 8s keeps most of the wall-clock win versus 10s while leaving
+	// neutrino propagation a comfortable margin on busy runners.
+	unrollMempoolStallBlockInterval = 8 * time.Second
 
 	// unrollNoProgressTimeout fails the helper if the public unroll
 	// status and bitcoind mempool both stop showing progress. The
