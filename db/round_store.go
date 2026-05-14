@@ -34,6 +34,12 @@ type (
 	InsertRoundParams         = sqlc.InsertRoundParams
 	InsertVTXOParams          = sqlc.InsertVTXOParams
 	ListRoundsPaginatedParams = sqlc.ListRoundsPaginatedParams
+
+	// ClearPendingBoardParams aliases the sqlc-generated
+	// clear-by-outpoint params so call sites can spell the type
+	// concisely (the generated name exceeds the line-length cap
+	// when nested inside the CommitState transaction body).
+	ClearPendingBoardParams = sqlc.ClearPendingBoardRequestByOutpointParams
 )
 
 // ListRoundsQuery controls persisted round pagination and filtering.
@@ -173,6 +179,14 @@ type RoundStore interface {
 	UpdateBoardingIntentStatus(ctx context.Context,
 		arg sqlc.UpdateBoardingIntentStatusParams) error
 
+	// ClearPendingBoardRequestByOutpoint deletes the pending Board RPC
+	// row bound to one outpoint. Called from CommitState in the same
+	// transaction that marks the matching intent Adopted, so a stale
+	// pending row can never rebind to an unrelated future boarding
+	// deposit.
+	ClearPendingBoardRequestByOutpoint(ctx context.Context,
+		arg sqlc.ClearPendingBoardRequestByOutpointParams) error
+
 	ListRoundsPaginated(ctx context.Context,
 		arg ListRoundsPaginatedParams) ([]RoundRow, error)
 
@@ -301,6 +315,29 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 				if err != nil {
 					return fmt.Errorf("mark boarding "+
 						"intent adopted: %w", err)
+				}
+
+				// Clear the pending Board RPC row bound to
+				// this outpoint in the same transaction.
+				// Once the intent is Adopted, the user's
+				// Board call is durably checkpointed in the
+				// round itself; the pending row is no longer
+				// load-bearing and a stale row would
+				// otherwise rebind a future Board replay to
+				// an unrelated boarding deposit.
+				clearParams := ClearPendingBoardParams{
+					OutpointHash: intent.Outpoint.Hash[:],
+					OutpointIndex: int32(
+						intent.Outpoint.Index,
+					),
+				}
+				err = q.ClearPendingBoardRequestByOutpoint(
+					ctx, clearParams,
+				)
+				if err != nil {
+					return fmt.Errorf("clear pending "+
+						"board request for adopted "+
+						"intent: %w", err)
 				}
 			}
 		}
