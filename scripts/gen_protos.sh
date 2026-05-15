@@ -59,6 +59,9 @@ generate "rpc/roundpb"
 # Generate optional daemon-owned swap client RPC protos.
 generate "rpc/swapclientrpc"
 
+# Generate optional daemon-owned simplified wallet RPC protos.
+generate "rpc/walletrpc"
+
 # Generate daemonrpc protos for the client daemon's own gRPC API.
 generate "daemonrpc"
 
