@@ -568,6 +568,8 @@ func TestExtractTLSPeer(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, certFingerprint(cert), info.Fingerprint)
 		require.Equal(t, "02abc", info.SubjectCN)
+		require.NotEmpty(t, info.SPKI)
+		require.Equal(t, cert.RawSubjectPublicKeyInfo, info.SPKI)
 	})
 }
 

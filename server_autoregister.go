@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btclog/v2"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/serverconn"
@@ -110,16 +111,31 @@ func (s *Server) HandleUnknownClient(ctx context.Context,
 	}
 
 	// Schnorr ownership of the secp256k1 identity is now proven.
-	// Bind the TLS leaf certificate fingerprint observed on this
-	// connection to the verified identity so that subsequent
-	// Pull/AckUpTo calls — which never re-run Schnorr verification
-	// — are constrained to TLS sessions backed by the same client
-	// key. Without this binding, the mTLS layer would accept any
-	// self-signed cert that claims the identity in its CN
-	// (issue #362). Because we only Bind after Schnorr verification
-	// succeeds, a re-registration with a rotated TLS cert is treated
-	// as a legitimate update rather than an attacker overwrite.
+	// Before binding the TLS leaf fingerprint, also verify that
+	// the secp256k1 holder signed over the SPKI of the TLS leaf
+	// we actually observed on this connection. Without this
+	// extra check, a network attacker who captured a valid
+	// signed Send could replay the same envelope across a
+	// different TLS session and have their own TLS leaf
+	// fingerprint bound to the victim's mailbox ID — defeating
+	// the post-registration fingerprint defense at the entry
+	// gate (issue #448). The TLS-binding signature is a Schnorr
+	// signature by the mailbox key over a BIP-340 tagged
+	// digest of (senderPubKey || leafSPKI), carried in the
+	// x-mailbox-tls-bind-sig envelope header.
+	//
+	// Missing binding signatures are rejected by default. Operators
+	// with pre-#448 clients can temporarily set
+	// Mailbox.RequireTLSBindingSig to false to log-and-accept during
+	// an upgrade window.
 	if peerInfo, ok := extractTLSPeer(ctx); ok {
+		err := s.verifyTLSBindingSig(
+			ctx, env, senderPubKey, peerInfo,
+		)
+		if err != nil {
+			return err
+		}
+
 		s.bindMailboxTLS(ctx, env.Sender, peerInfo)
 	}
 
@@ -154,6 +170,70 @@ func (s *Server) HandleUnknownClient(ctx context.Context,
 		"local_mailbox", compoundMBID,
 		"remote_mailbox", env.Sender,
 	)
+
+	return nil
+}
+
+// verifyTLSBindingSig enforces that the envelope carries a Schnorr
+// signature, by the same secp256k1 mailbox key whose Schnorr auth
+// signature we just verified, binding that identity to the
+// SubjectPublicKeyInfo of the TLS leaf we actually observed on this
+// connection. Returns an error iff RequireTLSBindingSig is enabled and the
+// binding signature is missing or invalid; otherwise logs the issue and returns
+// nil so explicitly configured soft-rollout deployments can accept pre-#448
+// clients during an upgrade window.
+//
+// The verification deliberately uses peerInfo.SPKI (sourced from
+// the TLS PeerCertificates exposed by the gRPC transport, NOT from
+// any envelope field) so a malicious client cannot supply both the
+// SPKI it claims to have signed AND a matching signature; the
+// server hashes whatever leaf it actually saw, full stop.
+func (s *Server) verifyTLSBindingSig(ctx context.Context,
+	env *mailboxpb.Envelope, senderPubKey *btcec.PublicKey,
+	peerInfo tlsPeerInfo) error {
+
+	requireBinding := s.cfg != nil && s.cfg.Mailbox != nil &&
+		s.cfg.Mailbox.RequireTLSBindingSig
+
+	bindSigHex := env.Headers[serverconn.TLSBindHeaderKey]
+	if bindSigHex == "" {
+		if requireBinding {
+			return fmt.Errorf("missing %s header from client %q",
+				serverconn.TLSBindHeaderKey, env.Sender)
+		}
+
+		s.log.WarnS(ctx,
+			"TLS-binding signature missing during "+
+				"first-contact registration (soft "+
+				"rollout: accepted)",
+			nil,
+			"sender", env.Sender,
+			"cn", peerInfo.SubjectCN,
+		)
+
+		return nil
+	}
+
+	if len(peerInfo.SPKI) == 0 {
+
+		// Mailbox auth verification already happened, so we
+		// know the secp256k1 key is genuine; the only way SPKI
+		// can be empty here is a TLS-info extraction bug.
+		// Surface it loudly rather than silently skip the
+		// binding-sig check.
+		return fmt.Errorf("internal: TLS peer info missing SPKI for " +
+			"binding-sig verification")
+	}
+
+	if err := serverconn.VerifyMailboxTLSBind(
+		senderPubKey, peerInfo.SPKI, bindSigHex,
+	); err != nil {
+		// Bad sig is treated as an attack signal regardless of
+		// soft-rollout: a legacy client would omit the header
+		// entirely, not send a malformed one.
+		return fmt.Errorf("verify tls-binding sig for client %q: %w",
+			env.Sender, err)
+	}
 
 	return nil
 }

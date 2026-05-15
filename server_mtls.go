@@ -141,6 +141,14 @@ type tlsPeerInfo struct {
 	// used as an identity claim because it is unbound to any
 	// verified secret.
 	SubjectCN string
+
+	// SPKI is the DER-encoded SubjectPublicKeyInfo of the leaf
+	// certificate. It is the message a first-contact client
+	// must sign with their secp256k1 mailbox key to bind their
+	// identity to this TLS leaf (issue #448). SPKI is preferred
+	// over the raw key bytes because it commits to the curve
+	// and algorithm identifier in addition to the key material.
+	SPKI []byte
 }
 
 // extractTLSPeer returns the leaf TLS certificate fingerprint and CN
@@ -170,6 +178,7 @@ func extractTLSPeer(ctx context.Context) (tlsPeerInfo, bool) {
 	return tlsPeerInfo{
 		Fingerprint: fp,
 		SubjectCN:   leaf.Subject.CommonName,
+		SPKI:        leaf.RawSubjectPublicKeyInfo,
 	}, true
 }
 

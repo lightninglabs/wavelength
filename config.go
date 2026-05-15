@@ -262,12 +262,27 @@ type MailboxConfig struct {
 	// (unacked) envelopes retained per mailbox. Zero disables the
 	// limit.
 	MaxEnvelopesPerMailbox int `mapstructure:"maxenvelopespermailbox"`
+
+	// RequireTLSBindingSig, when true, makes the TLS-leaf-to-
+	// mailbox-key binding signature (header
+	// x-mailbox-tls-bind-sig) mandatory on first-contact Send:
+	// envelopes that lack it, or whose binding does not verify
+	// against the observed TLS leaf, are rejected and no
+	// fingerprint binding is recorded.
+	//
+	// Default true: clients must prove that their mailbox key
+	// controls the TLS leaf used on the first-contact Send.
+	// Operators that still need to accept pre-#448 clients can
+	// temporarily set this to false during their upgrade window.
+	RequireTLSBindingSig bool `mapstructure:"requiretlsbindingsig"`
 }
 
-// DefaultMailboxConfig returns a MailboxConfig with quota limits
-// disabled by default.
+// DefaultMailboxConfig returns a MailboxConfig with quota limits disabled and
+// TLS binding signatures required by default.
 func DefaultMailboxConfig() *MailboxConfig {
-	return &MailboxConfig{}
+	return &MailboxConfig{
+		RequireTLSBindingSig: true,
+	}
 }
 
 // FeesConfig holds operator fee schedule parameters that can be
