@@ -492,6 +492,8 @@ func (a *LedgerActor) handleUTXOCreated(ctx context.Context,
 	}
 
 	now := a.clk.Now().Unix()
+	chainVout := int32(msg.OutpointIndex)
+	confirmationHeight := int32(msg.BlockHeight)
 
 	err := a.cfg.UTXOAuditStore.InsertUTXOAuditEntry(
 		ctx, UTXOAuditEntry{
@@ -524,6 +526,9 @@ func (a *LedgerActor) handleUTXOCreated(ctx context.Context,
 			IdempotencyKey: walletUTXOIdempotencyKey(
 				msg.OutpointHash, msg.OutpointIndex,
 			),
+			ChainTxid:          msg.OutpointHash[:],
+			ChainVout:          &chainVout,
+			ConfirmationHeight: &confirmationHeight,
 		},
 	)
 }

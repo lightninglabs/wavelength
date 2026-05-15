@@ -263,6 +263,10 @@ CREATE INDEX idx_boarding_sweep_inputs_status
 CREATE INDEX idx_boarding_sweeps_status
     ON boarding_sweeps(status);
 
+CREATE INDEX idx_client_ledger_chain_txid
+    ON ledger_entries(chain_txid)
+    WHERE chain_txid IS NOT NULL;
+
 CREATE INDEX idx_client_ledger_created
     ON ledger_entries(created_at DESC);
 
@@ -421,7 +425,7 @@ CREATE TABLE ledger_entries (
     description TEXT NOT NULL,
 
     -- created_at is the Unix timestamp.
-    created_at BIGINT NOT NULL,
+    created_at BIGINT NOT NULL, chain_txid BLOB, chain_vout INTEGER, confirmation_height INTEGER,
 
     -- Debit and credit must target different accounts.
     CHECK (debit_account != credit_account)

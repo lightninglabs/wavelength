@@ -69,10 +69,11 @@ type Querier interface {
 	InsertBoardingSweep(ctx context.Context, arg InsertBoardingSweepParams) error
 	InsertBoardingSweepInput(ctx context.Context, arg InsertBoardingSweepInputParams) error
 	// Column order matches the ledger_entries CREATE TABLE layout
-	// in migration 000006 so the generated row type for SELECTs
-	// stays structurally identical to the LedgerEntry model, which
-	// is what the adapter returns. Changing the table column order
-	// requires changing these SELECTs in lockstep.
+	// from migration 000006 plus the chain metadata columns added in
+	// migration 000014, so the generated row type for SELECTs stays
+	// structurally identical to the LedgerEntry model returned by the
+	// adapter. Changing the table column order requires changing these
+	// SELECTs in lockstep.
 	//
 	// ON CONFLICT DO NOTHING makes the insert idempotent against
 	// every partial unique index on ledger_entries:

@@ -67,10 +67,30 @@ func (s *LedgerStoreDB) InsertLedgerEntry(ctx context.Context,
 					Description:    entry.Description,
 					CreatedAt:      entry.CreatedAt,
 					IdempotencyKey: entry.IdempotencyKey,
+					ChainTxid:      entry.ChainTxid,
+					ChainVout: sqlInt32Ptr(
+						entry.ChainVout,
+					),
+					ConfirmationHeight: sqlInt32Ptr(
+						entry.ConfirmationHeight,
+					),
 				},
 			)
 		},
 	)
+}
+
+// sqlInt32Ptr converts an optional int32 pointer to the nullable sqlc shape
+// used by ledger chain metadata columns.
+func sqlInt32Ptr(v *int32) sql.NullInt32 {
+	if v == nil {
+		return sql.NullInt32{}
+	}
+
+	return sql.NullInt32{
+		Int32: *v,
+		Valid: true,
+	}
 }
 
 // GetAccountBalance returns the net balance (debits minus credits) for

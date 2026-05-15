@@ -1,9 +1,10 @@
 -- name: InsertClientLedgerEntry :exec
 -- Column order matches the ledger_entries CREATE TABLE layout
--- in migration 000006 so the generated row type for SELECTs
--- stays structurally identical to the LedgerEntry model, which
--- is what the adapter returns. Changing the table column order
--- requires changing these SELECTs in lockstep.
+-- from migration 000006 plus the chain metadata columns added in
+-- migration 000014, so the generated row type for SELECTs stays
+-- structurally identical to the LedgerEntry model returned by the
+-- adapter. Changing the table column order requires changing these
+-- SELECTs in lockstep.
 --
 -- ON CONFLICT DO NOTHING makes the insert idempotent against
 -- every partial unique index on ledger_entries:
@@ -18,14 +19,16 @@
 INSERT INTO ledger_entries (
     debit_account, credit_account, amount_sat,
     round_id, session_id, idempotency_key,
-    event_type, description, created_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    event_type, description, created_at,
+    chain_txid, chain_vout, confirmation_height
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT DO NOTHING;
 
 -- name: ListClientLedgerEntries :many
 SELECT entry_id, debit_account, credit_account, amount_sat,
        round_id, session_id, idempotency_key,
-       event_type, description, created_at
+       event_type, description, created_at,
+       chain_txid, chain_vout, confirmation_height
 FROM ledger_entries
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2;
@@ -33,7 +36,8 @@ LIMIT $1 OFFSET $2;
 -- name: ListClientLedgerEntriesByType :many
 SELECT entry_id, debit_account, credit_account, amount_sat,
        round_id, session_id, idempotency_key,
-       event_type, description, created_at
+       event_type, description, created_at,
+       chain_txid, chain_vout, confirmation_height
 FROM ledger_entries
 WHERE event_type = $1
 ORDER BY created_at DESC
@@ -51,33 +55,33 @@ SELECT source, entry_id, txid, transaction_type, subtype,
 FROM (
     SELECT 0 AS source_order,
            'ledger' AS source,
-           entry_id,
-           NULL AS txid,
+           le.entry_id,
+           le.chain_txid AS txid,
            CASE
-               WHEN session_id IS NOT NULL THEN 'oor'
-               WHEN event_type IN (
+               WHEN le.session_id IS NOT NULL THEN 'oor'
+               WHEN le.event_type IN (
                    'boarding_fee_paid', 'wallet_utxo_created'
                ) THEN 'boarding'
-               WHEN event_type IN (
+               WHEN le.event_type IN (
                    'onchain_fee_paid', 'boarding_sweep_fee_paid'
                ) THEN 'sweep'
                ELSE 'round'
            END AS transaction_type,
-           event_type AS subtype,
-           amount_sat,
+           le.event_type AS subtype,
+           le.amount_sat,
            CAST(0 AS BIGINT) AS fee_sat,
-           created_at,
+           le.created_at,
            CASE
-               WHEN event_type = 'wallet_utxo_created' THEN 'confirmed'
+               WHEN le.event_type = 'wallet_utxo_created' THEN 'confirmed'
                ELSE 'recorded'
            END AS status,
-           description,
-           debit_account,
-           credit_account,
-           round_id,
-           session_id,
-           CAST(0 AS INTEGER) AS confirmation_height
-    FROM ledger_entries
+           le.description,
+           le.debit_account,
+           le.credit_account,
+           le.round_id,
+           le.session_id,
+           COALESCE(le.confirmation_height, 0) AS confirmation_height
+    FROM ledger_entries AS le
 
     UNION ALL
 

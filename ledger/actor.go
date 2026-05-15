@@ -172,6 +172,20 @@ type LedgerEntry struct {
 	// idx_client_ledger_idempotent_key covers rows where
 	// idempotency_key IS NOT NULL.
 	IdempotencyKey []byte
+
+	// ChainTxid optionally links this ledger entry to an on-chain
+	// transaction. It is a first-class history field rather than a
+	// value callers must recover from Description or IdempotencyKey.
+	ChainTxid []byte
+
+	// ChainVout optionally records the output index within ChainTxid.
+	// Nil means this ledger entry is not tied to a concrete output.
+	ChainVout *int32
+
+	// ConfirmationHeight optionally records the block height that
+	// confirmed the on-chain transaction. Nil means the height is
+	// unknown or the ledger entry has no chain transaction.
+	ConfirmationHeight *int32
 }
 
 // LedgerStore is the interface for persisting client-side ledger

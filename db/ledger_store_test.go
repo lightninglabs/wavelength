@@ -68,6 +68,21 @@ func testBytes(length int, seed byte) []byte {
 	return out
 }
 
+// testHash32 returns a deterministic 32-byte hash for tests.
+func testHash32(seed byte) [32]byte {
+	var out [32]byte
+	for i := range out {
+		out[i] = seed + byte(i)
+	}
+
+	return out
+}
+
+// testInt32Ptr returns a pointer to v for optional int32 test fields.
+func testInt32Ptr(v int32) *int32 {
+	return &v
+}
+
 // insertTransactionHistorySweepRow inserts a minimal boarding_sweeps row for
 // transaction-history tests. The history query does not need sweep inputs.
 func insertTransactionHistorySweepRow(t *testing.T, db *BaseDB, txid []byte,
@@ -208,6 +223,175 @@ func TestLedgerStoreTransactionHistoryFiltersBeforePagination(t *testing.T) {
 	require.Equal(t, "boarding_sweep", sweepRows[0].Source)
 	require.Equal(t, int64(4_000), sweepRows[0].AmountSat)
 	require.Equal(t, int64(40), sweepRows[0].FeeSat)
+}
+
+// TestLedgerStoreTransactionHistoryWalletUTXOCreatedChainFields verifies
+// wallet UTXO creation ledger rows expose the chain transaction id and
+// confirmation height in the unified transaction history.
+func TestLedgerStoreTransactionHistoryWalletUTXOCreatedChainFields(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newLedgerStoreForTest(t)
+
+	outpointHash := testHash32(0x42)
+	const (
+		outpointIndex      = uint32(7)
+		confirmationHeight = int32(304_081)
+	)
+
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, ledger.LedgerEntry{
+				DebitAccount:   ledger.AccountWalletBalance,
+				CreditAccount:  ledger.AccountOpeningBalance,
+				AmountSat:      100_001,
+				EventType:      ledger.EventWalletUTXOCreated,
+				Description:    "boarding deposit",
+				CreatedAt:      1_700_000_501,
+				IdempotencyKey: testBytes(36, 0x51),
+				ChainTxid:      outpointHash[:],
+				ChainVout: testInt32Ptr(
+					int32(outpointIndex),
+				),
+				ConfirmationHeight: testInt32Ptr(
+					confirmationHeight,
+				),
+			},
+		),
+	)
+
+	rows, err := store.ListTransactionHistory(ctx, "boarding", 0, 0, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+
+	row := rows[0]
+	require.Equal(t, "ledger", row.Source)
+	require.Equal(t, "boarding", row.TransactionType)
+	require.Equal(t, ledger.EventWalletUTXOCreated, row.Subtype)
+	require.Equal(t, "confirmed", row.Status)
+	require.Equal(t, outpointHash[:], row.Txid)
+	require.Equal(t, confirmationHeight, row.ConfirmationHeight)
+}
+
+// TestLedgerStoreTransactionHistoryWalletUTXOCreatedMissingHeight verifies a
+// wallet UTXO creation ledger row with a chain txid but no stored confirmation
+// height keeps the txid and falls back to an unknown height.
+func TestLedgerStoreTransactionHistoryWalletUTXOCreatedMissingHeight(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newLedgerStoreForTest(t)
+
+	outpointHash := testHash32(0x62)
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, ledger.LedgerEntry{
+				DebitAccount:   ledger.AccountWalletBalance,
+				CreditAccount:  ledger.AccountOpeningBalance,
+				AmountSat:      100_001,
+				EventType:      ledger.EventWalletUTXOCreated,
+				Description:    "boarding deposit no audit",
+				CreatedAt:      1_700_000_600,
+				IdempotencyKey: testBytes(36, 0x61),
+				ChainTxid:      outpointHash[:],
+			},
+		),
+	)
+
+	rows, err := store.ListTransactionHistory(ctx, "boarding", 0, 0, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+
+	row := rows[0]
+	require.Equal(t, "ledger", row.Source)
+	require.Equal(t, "boarding", row.TransactionType)
+	require.Equal(t, ledger.EventWalletUTXOCreated, row.Subtype)
+	require.Equal(t, "confirmed", row.Status)
+	require.Equal(t, outpointHash[:], row.Txid)
+	require.Zero(t, row.ConfirmationHeight)
+}
+
+// TestLedgerStoreTransactionHistoryBoardingFeePaidHasNoChainFields verifies
+// boarding fee ledger rows keep their recorded status and empty chain fields.
+func TestLedgerStoreTransactionHistoryBoardingFeePaidHasNoChainFields(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newLedgerStoreForTest(t)
+
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, ledger.LedgerEntry{
+				DebitAccount:  ledger.AccountFeesPaid,
+				CreditAccount: ledger.AccountWalletBalance,
+				AmountSat:     1_000,
+				EventType:     ledger.EventBoardingFeePaid,
+				Description:   "boarding fee paid",
+				CreatedAt:     1_700_000_700,
+			},
+		),
+	)
+
+	rows, err := store.ListTransactionHistory(ctx, "boarding", 0, 0, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+
+	row := rows[0]
+	require.Equal(t, "ledger", row.Source)
+	require.Equal(t, "boarding", row.TransactionType)
+	require.Equal(t, ledger.EventBoardingFeePaid, row.Subtype)
+	require.Equal(t, "recorded", row.Status)
+	require.Nil(t, row.Txid)
+	require.Zero(t, row.ConfirmationHeight)
+}
+
+// TestLedgerStoreTransactionHistoryWalletUTXOCreatedNoChainFields verifies
+// wallet UTXO creation rows do not infer chain fields from legacy
+// idempotency-key bytes during ordinary history reads.
+func TestLedgerStoreTransactionHistoryWalletUTXOCreatedNoChainFields(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newLedgerStoreForTest(t)
+
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, ledger.LedgerEntry{
+				DebitAccount:   ledger.AccountWalletBalance,
+				CreditAccount:  ledger.AccountOpeningBalance,
+				AmountSat:      100_001,
+				EventType:      ledger.EventWalletUTXOCreated,
+				Description:    "boarding deposit bad key",
+				CreatedAt:      1_700_000_800,
+				IdempotencyKey: testBytes(32, 0x72),
+			},
+		),
+	)
+
+	rows, err := store.ListTransactionHistory(ctx, "boarding", 0, 0, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+
+	row := rows[0]
+	require.Equal(t, "ledger", row.Source)
+	require.Equal(t, "boarding", row.TransactionType)
+	require.Equal(t, ledger.EventWalletUTXOCreated, row.Subtype)
+	require.Equal(t, "confirmed", row.Status)
+	require.Nil(t, row.Txid)
+	require.Zero(t, row.ConfirmationHeight)
 }
 
 // TestLedgerStoreEntryIDsDoNotReuseAfterDelete verifies ledger entry IDs
