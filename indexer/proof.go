@@ -43,6 +43,24 @@ const (
 
 	// schnorrSignatureLen is the length of a BIP-340 schnorr signature.
 	schnorrSignatureLen = 64
+
+	// maxProofMessageSize bounds the total wire size of an untrusted
+	// proof TLV message before decoding.
+	//
+	// A well-formed proof message is dominated by short identifier
+	// strings (type, server ID, principal, purpose: ~30-64 bytes each),
+	// a P2TR pkScript (34 bytes), two compressed pubkeys (33 bytes
+	// each), a nonce (typically 16-32 bytes), and two unix timestamps
+	// (16 bytes). With TLV framing overhead this fits comfortably under
+	// 1 KiB. 4 KiB gives ~4x headroom for future growth (e.g. longer
+	// principals, additional optional records) while still rejecting
+	// the unbounded-allocation DoS vector where a malicious peer
+	// declares a multi-gigabyte TLV record length in a tiny envelope.
+	//
+	// Pair with tlv.Stream.DecodeP2P (caps each record at
+	// tlv.MaxRecordSize = 65535) to bound both the total message and
+	// per-record allocations.
+	maxProofMessageSize = 4 * 1024
 )
 
 // ProofTagHash is the BIP-340 tagged hash domain separator for indexer
@@ -140,8 +158,19 @@ type taprootProofVerificationConfig struct {
 
 // parseReceiveScriptProofMessage decodes messageBytes from the canonical TLV
 // encoding into a typed proof message.
+//
+// The decoder rejects messages larger than maxProofMessageSize before any
+// TLV record length is honored, and uses tlv.Stream.DecodeP2P so that each
+// individual record is capped at tlv.MaxRecordSize. Together these prevent
+// a malicious peer from triggering unbounded allocations by declaring an
+// oversized TLV record length inside a small envelope (issue #368).
 func parseReceiveScriptProofMessage(messageBytes []byte) (
 	*receiveScriptProofMessage, error) {
+
+	if len(messageBytes) > maxProofMessageSize {
+		return nil, fmt.Errorf("proof message too large: %d > %d",
+			len(messageBytes), maxProofMessageSize)
+	}
 
 	var (
 		proofType    []byte
@@ -198,7 +227,12 @@ func parseReceiveScriptProofMessage(messageBytes []byte) (
 		return nil, fmt.Errorf("build TLV stream: %w", err)
 	}
 
-	if err := tlvStream.Decode(bytes.NewReader(messageBytes)); err != nil {
+	// DecodeP2P caps each TLV record at tlv.MaxRecordSize (65535
+	// bytes); combined with the maxProofMessageSize check above, this
+	// bounds memory consumption when decoding untrusted proof bytes.
+	if err := tlvStream.DecodeP2P(
+		bytes.NewReader(messageBytes),
+	); err != nil {
 		return nil, fmt.Errorf("decode TLV proof: %w", err)
 	}
 
