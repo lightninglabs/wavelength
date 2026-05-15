@@ -11,8 +11,6 @@ import (
 
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 func newSwapCmd() *cobra.Command {
@@ -285,30 +283,6 @@ func getSwapClient(cmd *cobra.Command) (swapclientrpc.SwapClientServiceClient,
 	}
 
 	return swapclientrpc.NewSwapClientServiceClient(conn), conn, nil
-}
-
-// mapSwapRuntimeRPCError turns the gRPC unknown-service response from a default
-// daemon into the same user-facing guidance as the default CLI stub. Other
-// service errors are returned unchanged so daemon-side validation and terminal
-// swap errors remain visible.
-func mapSwapRuntimeRPCError(err error) error {
-	if err == nil {
-		return nil
-	}
-
-	st, ok := status.FromError(err)
-	if !ok || st.Code() != codes.Unimplemented {
-		return err
-	}
-
-	msg := st.Message()
-	if !strings.Contains(msg, "SwapClientService") &&
-		!strings.Contains(msg, "swapclientrpc") {
-		return err
-	}
-
-	return fmt.Errorf("daemon was built without swapruntime support; " +
-		"rebuild darepod with tags=\"swapruntime\"")
 }
 
 // parseSwapRPCDirection maps the CLI's human-facing direction flag into the

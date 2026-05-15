@@ -68,6 +68,10 @@ generate "swaprpc"
 # Generate OOR mailbox wire payload stubs.
 generate "rpc/oorpb"
 
+# Generate the low-level darepocli dev RPC command registry from the daemon
+# and swap-client service descriptors.
+go run ./cmd/darepocli/internal/gen-devrpc
+
 # Generate adminrpc protos if present.
 if [ -d "adminrpc" ]; then
 	generate "adminrpc"
