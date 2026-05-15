@@ -105,23 +105,23 @@ func TestEvaluateQuoteRejectsFeeAboveCap(t *testing.T) {
 	env := quoteReceivedTestEnv(1000)
 	empty := Intents{}
 
-	// Fee above cap → reject.
+	// Fee above cap → reject (early belt-and-braces check on the
+	// operator-declared field; the realised-fee check below is
+	// the authoritative defense — see #379).
 	q := &ClientQuote{
 		OperatorFeeSat: 1500,
 		RejectReason:   roundpb.QuoteReason_QUOTE_OK,
 	}
-	decision := evaluateQuote(env, RoundID{}, empty, q)
+	decision := evaluateQuote(
+		context.Background(), env, RoundID{}, empty, q,
+	)
 	_, isReject := decision.(*QuoteRejected)
 	require.True(t, isReject)
 
-	// Fee at cap → accept.
-	q.OperatorFeeSat = 1000
-	decision = evaluateQuote(env, RoundID{}, empty, q)
-	_, isAccept := decision.(*QuoteAccepted)
-	require.True(t, isAccept)
-
 	// Nil quote → reject defensively.
-	decision = evaluateQuote(env, RoundID{}, empty, nil)
+	decision = evaluateQuote(
+		context.Background(), env, RoundID{}, empty, nil,
+	)
 	_, isReject = decision.(*QuoteRejected)
 	require.True(t, isReject)
 
@@ -131,7 +131,9 @@ func TestEvaluateQuoteRejectsFeeAboveCap(t *testing.T) {
 		OperatorFeeSat: 0,
 		RejectReason:   roundpb.QuoteReason_INSUFFICIENT_RESIDUAL,
 	}
-	decision = evaluateQuote(env, RoundID{}, empty, q)
+	decision = evaluateQuote(
+		context.Background(), env, RoundID{}, empty, q,
+	)
 	_, isReject = decision.(*QuoteRejected)
 	require.True(t, isReject)
 }
