@@ -5,6 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,6 +33,46 @@ func TestIncomingTransferEventFromResponseUsesConfiguredCheckpointLimit(
 		},
 	)
 	require.ErrorContains(t, err, "checkpoint count 2 exceeds limit 1")
+}
+
+// TestIncomingTransferEventFromResponseLimitsAncestorCheckpoints verifies the
+// RPC adapter bounds checkpoint lists on supplied ancestor packages before
+// they can enter the receive FSM.
+func TestIncomingTransferEventFromResponseLimitsAncestorCheckpoints(
+	t *testing.T) {
+
+	t.Parallel()
+
+	resp, sessionID, _, recipientEventID := buildIncomingResolveResponse(t)
+	ancestorArk, ancestorCheckpoints, _, _, _, _ :=
+		buildTestIncomingMaterialization(t)
+
+	ancestorArkRaw, err := psbtutil.Serialize(ancestorArk)
+	require.NoError(t, err)
+
+	ancestorCheckpointRaw, err := psbtutil.Serialize(
+		ancestorCheckpoints[0],
+	)
+	require.NoError(t, err)
+
+	ancestorID := SessionID(ancestorArk.UnsignedTx.TxHash())
+	resp.Events[0].AncestorPackages = []*arkrpc.OORSessionPackage{{
+		SessionId: ancestorID[:],
+		ArkPsbt:   ancestorArkRaw,
+		CheckpointPsbts: [][]byte{
+			ancestorCheckpointRaw,
+			ancestorCheckpointRaw,
+		},
+	}}
+
+	_, err = IncomingTransferEventFromResponseWithLimits(
+		sessionID, recipientEventID, resp, ReceiveLimits{
+			MaxCheckpoints: 1,
+		},
+	)
+	require.ErrorContains(
+		t, err, "ancestor package 0 checkpoint count 2 exceeds limit 1",
+	)
 }
 
 // TestIncomingMetadataMatchesFromResponseUsesConfiguredMatchLimit verifies

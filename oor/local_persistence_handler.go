@@ -304,6 +304,18 @@ func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
 		return fmt.Errorf("incoming recipients must be provided")
 	}
 
+	if h.PackageStore != nil {
+		root := packageArtifactForValidation(
+			msg.SessionID, msg.ArkPSBT, msg.FinalCheckpointPSBTs,
+		)
+		err := validateIncomingPackageGraph(
+			root, msg.AncestorPackages,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

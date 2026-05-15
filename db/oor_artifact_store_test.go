@@ -220,6 +220,50 @@ func TestOORArtifactStoreUpsertPackageDirectionConflict(t *testing.T) {
 	require.ErrorContains(t, err, "package direction conflict")
 }
 
+// TestOORArtifactStoreUpsertPackageRejectsPayloadRewrite verifies same-session
+// package persistence is retry-idempotent, not a rewrite surface.
+func TestOORArtifactStoreUpsertPackageRejectsPayloadRewrite(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newOORArtifactStoreForTest(t)
+
+	sessionID, arkPSBT, checkpoints, _, _, _, _ := buildTestOORPackage(
+		t, 0x35,
+	)
+
+	err := store.UpsertPackage(
+		ctx, OORPackageDirectionIncoming, sessionID, arkPSBT,
+		checkpoints,
+	)
+	require.NoError(t, err)
+
+	err = store.UpsertPackage(
+		ctx, OORPackageDirectionIncoming, sessionID, arkPSBT,
+		checkpoints,
+	)
+	require.NoError(t, err)
+
+	checkpoints[0].Inputs[0].FinalScriptWitness = []byte{
+		0x01,
+		0x51,
+	}
+
+	err = store.UpsertPackage(
+		ctx, OORPackageDirectionIncoming, sessionID, arkPSBT,
+		checkpoints,
+	)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "already exists with different payload")
+
+	pkg, err := store.GetPackage(ctx, sessionID)
+	require.NoError(t, err)
+	require.Empty(
+		t, pkg.FinalCheckpointPSBTs[0].Inputs[0].
+			FinalScriptWitness,
+	)
+}
+
 // TestOORArtifactStoreGetPackageForOutpointPrefersCreatedBinding verifies that
 // outpoint lookups return the created-output package when both created and
 // consumed bindings exist for the same outpoint.
