@@ -173,6 +173,7 @@ alice-cli vtxos list
 
 ```sh
 ./arktest board <client> [amount-sat]   # fund <client>'s boarding addr
+./arktest faucet <address> [amount-sat] # fund any regtest address
 ./arktest mine [n]                       # mine n regtest blocks (default 1)
 ./arktest info                           # endpoints + block height
 ./arktest aliases                        # the eval-able helper block
@@ -181,6 +182,10 @@ alice-cli vtxos list
 
 `board` is opt-in: you call it only for the clients you actually plan to
 board. The default amount is 100,000,000 sat (1 BTC).
+
+`faucet` is the generic version: it sends regtest coins to any valid address
+using the harness bitcoind wallet and mines 6 blocks. The default amount also
+is 100,000,000 sat (1 BTC).
 
 `logs` resolves component names from the state file and tails their artifact
 logs:
