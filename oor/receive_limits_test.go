@@ -4,7 +4,9 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	lib_tree "github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/stretchr/testify/require"
 )
@@ -157,8 +159,29 @@ func testIncomingMetadataVTXO(sessionID SessionID,
 		},
 		RoundId:        "round-configured-limit",
 		CommitmentTxid: commitmentTxID[:],
-		AncestryPaths: []*arkrpc.AncestryPath{{
-			CommitmentTxid: commitmentTxID[:],
-		}},
+		AncestryPaths: []*arkrpc.AncestryPath{
+			testValidAncestryPath(commitmentTxID),
+		},
 	}
+}
+
+// testValidAncestryPath returns an AncestryPath whose reconstructed
+// tree_depth matches the proto scalar. Receive-time validation
+// (arkrpc.ValidateAncestryPathDepth, the darepo-client#370 guard)
+// rejects zero or mismatched depths, so test fixtures must keep these
+// in sync.
+func testValidAncestryPath(commitmentTxID chainhash.Hash) *arkrpc.AncestryPath {
+	t := &lib_tree.Tree{
+		Root: &lib_tree.Node{},
+		BatchOutpoint: wire.OutPoint{
+			Hash: commitmentTxID,
+		},
+	}
+
+	p, err := arkrpc.AncestryPathFromTree(t, commitmentTxID, []uint32{0})
+	if err != nil {
+		panic("build test ancestry path: " + err.Error())
+	}
+
+	return p
 }

@@ -258,6 +258,28 @@ func TestBuildIncomingVTXODescriptorRejectsInvalidAncestry(t *testing.T) {
 			wantReason: "nil tree path",
 		},
 		{
+			// Regression for darepo-client#370: a zero TreeDepth
+			// would otherwise persist and either silently strand
+			// the VTXO at unroll time or under-report the expiry
+			// window.
+			name: "zero tree depth",
+			mutate: func(m *IncomingVTXOMetadata) {
+				m.Ancestry[0].TreeDepth = 0
+			},
+			wantReason: "must be non-zero",
+		},
+		{
+			// Regression for darepo-client#370: a non-zero claim
+			// that disagrees with the actual tree path is the
+			// more dangerous variant because it survives the
+			// obvious zero check downstream.
+			name: "tree depth disagrees with path",
+			mutate: func(m *IncomingVTXOMetadata) {
+				m.Ancestry[0].TreeDepth = 9
+			},
+			wantReason: "does not match reconstructed",
+		},
+		{
 			name: "empty input indices",
 			mutate: func(m *IncomingVTXOMetadata) {
 				m.Ancestry[0].InputIndices = nil

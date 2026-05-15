@@ -66,6 +66,61 @@ func AncestryPathToTree(p *AncestryPath) (*tree.Tree, error) {
 	return TreePathToTree(p.TreePath)
 }
 
+// ValidateAncestryPathDepth checks the indexer-supplied tree_depth scalar
+// against the reconstructed tree path. The receive path treats indexer
+// responses as untrusted, so this is the trust boundary where a
+// zero/oversized/inconsistent depth must fail closed.
+//
+// A claimed depth of zero is rejected outright: it can be persisted as a
+// valid-looking ancestry but later trips the unroll proof-unavailable
+// guard, silently stranding an OOR VTXO. Any value above
+// MaxAncestryTreeWalkDepth is rejected because the receive-path decoder
+// itself caps tree walks at that bound, so larger claims cannot be
+// honoured by the same client that persisted them.
+//
+// When a reconstructed tree is supplied, the claim must equal the tree's
+// actual depth. The descriptor's MaxTreeDepth drives expiry-monitoring
+// timing, so a low claim against a deeper real tree could under-report
+// the worst-case unilateral-exit window and delay the refresh/exit
+// decision past the safe deadline.
+//
+// reconstructed may be nil; in that case only the range check is
+// applied. Callers that require a non-nil tree (i.e. usable ancestry)
+// enforce that separately.
+func ValidateAncestryPathDepth(claimed uint32, reconstructed *tree.Tree) error {
+	if claimed == 0 {
+		return fmt.Errorf("ancestry tree_depth must be non-zero")
+	}
+
+	if claimed > MaxAncestryTreeWalkDepth {
+		return fmt.Errorf("ancestry tree_depth %d exceeds max %d",
+			claimed, MaxAncestryTreeWalkDepth)
+	}
+
+	if reconstructed == nil {
+		return nil
+	}
+
+	// Use the locally-bounded walker rather than tree.Tree.Depth(),
+	// which recurses without a depth cap. The tree was reconstructed
+	// from indexer-supplied bytes; a linear chain of N nodes is
+	// structurally valid for TreePathToTree (children must have a
+	// strictly higher index but no overall length cap), so an
+	// unbounded recursive Depth() would blow the goroutine stack on
+	// a hostile path even when the claimed scalar is within range.
+	actual, err := treeMaxDepth(reconstructed)
+	if err != nil {
+		return fmt.Errorf("walk reconstructed tree: %w", err)
+	}
+
+	if uint32(actual) != claimed {
+		return fmt.Errorf("ancestry tree_depth %d does not match "+
+			"reconstructed path depth %d", claimed, actual)
+	}
+
+	return nil
+}
+
 // AncestryCommitmentTxID extracts the commitment txid carried by the
 // AncestryPath into a typed chainhash.Hash. Returns an error when the
 // embedded txid byte slice is the wrong length.

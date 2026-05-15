@@ -22,9 +22,9 @@ func TestIncomingMetadataFromRPCOperatorKey(t *testing.T) {
 		RoundId:        "round-keyed",
 		CommitmentTxid: commitmentTxID[:],
 		OperatorPubkey: operatorKey.PubKey().SerializeCompressed(),
-		AncestryPaths: []*arkrpc.AncestryPath{{
-			CommitmentTxid: commitmentTxID[:],
-		}},
+		AncestryPaths: []*arkrpc.AncestryPath{
+			testValidAncestryPath(commitmentTxID),
+		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, meta.OperatorKey)
@@ -40,9 +40,9 @@ func TestIncomingMetadataFromRPCLegacyOperatorKey(t *testing.T) {
 	meta, err := incomingMetadataFromRPC(&arkrpc.VTXO{
 		RoundId:        "round-legacy",
 		CommitmentTxid: commitmentTxID[:],
-		AncestryPaths: []*arkrpc.AncestryPath{{
-			CommitmentTxid: commitmentTxID[:],
-		}},
+		AncestryPaths: []*arkrpc.AncestryPath{
+			testValidAncestryPath(commitmentTxID),
+		},
 	})
 	require.NoError(t, err)
 	require.Nil(t, meta.OperatorKey)
@@ -58,9 +58,28 @@ func TestIncomingMetadataFromRPCRejectsInvalidOperatorKey(t *testing.T) {
 		RoundId:        "round-invalid-key",
 		CommitmentTxid: commitmentTxID[:],
 		OperatorPubkey: []byte{0x02},
-		AncestryPaths: []*arkrpc.AncestryPath{{
-			CommitmentTxid: commitmentTxID[:],
-		}},
+		AncestryPaths: []*arkrpc.AncestryPath{
+			testValidAncestryPath(commitmentTxID),
+		},
 	})
 	require.ErrorContains(t, err, "parse indexer vtxo operator pubkey")
+}
+
+// TestIncomingMetadataFromRPCRejectsZeroTreeDepth is the unit-level
+// regression for darepo-client#370 on the OOR-package boundary: a
+// matching VTXO whose AncestryPath claims tree_depth = 0 must be
+// rejected before persistence.
+func TestIncomingMetadataFromRPCRejectsZeroTreeDepth(t *testing.T) {
+	t.Parallel()
+
+	commitmentTxID := chainhash.Hash{0xab}
+	path := testValidAncestryPath(commitmentTxID)
+	path.TreeDepth = 0
+
+	_, err := incomingMetadataFromRPC(&arkrpc.VTXO{
+		RoundId:        "round-zero-depth",
+		CommitmentTxid: commitmentTxID[:],
+		AncestryPaths:  []*arkrpc.AncestryPath{path},
+	})
+	require.ErrorContains(t, err, "tree_depth must be non-zero")
 }

@@ -8,10 +8,12 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/internal/indexerlimits"
+	lib_tree "github.com/lightninglabs/darepo-client/lib/tree"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -87,6 +89,104 @@ func TestResolveIncomingMetadataFromIndexerCapsScannedVTXOs(t *testing.T) {
 		t, err, "incoming metadata index scan exceeds limit 1",
 	)
 	require.Equal(t, 1, rpcClient.sendCount())
+}
+
+// TestResolveIncomingMetadataFromIndexerRejectsZeroTreeDepth verifies a
+// malicious indexer cannot strand an OOR-received VTXO by returning a
+// matching VTXO whose AncestryPath claims tree_depth = 0. Without
+// validation at this trust boundary the descriptor would persist as
+// "valid" and only fail later during unilateral exit or under-report
+// the worst-case CSV window for expiry monitoring — both fund-availability
+// issues. This is the regression test for darepo-client#370.
+func TestResolveIncomingMetadataFromIndexerRejectsZeroTreeDepth(t *testing.T) {
+	t.Parallel()
+
+	sessionID := oor.SessionID(testTxID(1))
+	candidate := testIncomingVTXO(sessionID, recipientIndex)
+
+	// Override the otherwise-valid ancestry with a zero tree_depth
+	// claim. The reconstructed tree still has depth 1, so this models
+	// an indexer that returns a usable tree path but under-reports the
+	// scalar that drives expiry/refresh decisions.
+	candidate.AncestryPaths[0].TreeDepth = 0
+
+	idx, _, recipient, _ := newTestIncomingMetadataIndexer(
+		t,
+		&arkrpc.ListVTXOsByScriptsResponse{
+			Vtxos: []*arkrpc.VTXO{candidate},
+		},
+	)
+
+	_, err := ResolveIncomingMetadataFromIndexerWithLimits(
+		t.Context(), idx, sessionID, recipient, oor.ReceiveLimits{
+			MaxVTXOMatches: 1,
+		},
+	)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "tree_depth")
+}
+
+// TestResolveIncomingMetadataFromIndexerRejectsDepthMismatch verifies the
+// receive boundary rejects an AncestryPath whose claimed tree_depth
+// disagrees with the depth of the supplied tree_path. A low-but-non-zero
+// claim is the more dangerous variant of darepo-client#370 because it
+// passes the obvious "zero" check downstream but still under-reports
+// MaxTreeDepth for expiry monitoring.
+func TestResolveIncomingMetadataFromIndexerRejectsDepthMismatch(t *testing.T) {
+	t.Parallel()
+
+	sessionID := oor.SessionID(testTxID(1))
+	candidate := testIncomingVTXO(sessionID, recipientIndex)
+
+	// Lie about the depth: reconstructed tree depth is 1; claim 7.
+	candidate.AncestryPaths[0].TreeDepth = 7
+
+	idx, _, recipient, _ := newTestIncomingMetadataIndexer(
+		t,
+		&arkrpc.ListVTXOsByScriptsResponse{
+			Vtxos: []*arkrpc.VTXO{candidate},
+		},
+	)
+
+	_, err := ResolveIncomingMetadataFromIndexerWithLimits(
+		t.Context(), idx, sessionID, recipient, oor.ReceiveLimits{
+			MaxVTXOMatches: 1,
+		},
+	)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "does not match reconstructed")
+}
+
+// TestResolveIncomingMetadataFromIndexerRejectsOverCapTreeDepth verifies
+// the receive boundary rejects an AncestryPath whose claimed tree_depth
+// exceeds the receive-path walk cap (arkrpc.MaxAncestryTreeWalkDepth).
+// Such a claim cannot be honoured by the same client that persisted it,
+// so accepting it would silently strand the VTXO.
+func TestResolveIncomingMetadataFromIndexerRejectsOverCapTreeDepth(
+	t *testing.T) {
+
+	t.Parallel()
+
+	sessionID := oor.SessionID(testTxID(1))
+	candidate := testIncomingVTXO(sessionID, recipientIndex)
+
+	candidate.AncestryPaths[0].TreeDepth = arkrpc.MaxAncestryTreeWalkDepth +
+		1
+
+	idx, _, recipient, _ := newTestIncomingMetadataIndexer(
+		t,
+		&arkrpc.ListVTXOsByScriptsResponse{
+			Vtxos: []*arkrpc.VTXO{candidate},
+		},
+	)
+
+	_, err := ResolveIncomingMetadataFromIndexerWithLimits(
+		t.Context(), idx, sessionID, recipient, oor.ReceiveLimits{
+			MaxVTXOMatches: 1,
+		},
+	)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "exceeds max")
 }
 
 // TestResolveIncomingMetadataFromIndexerAllowsMatchAtScanLimit verifies the
@@ -239,11 +339,30 @@ func testIncomingVTXO(sessionID oor.SessionID,
 		BatchExpiryHeight: 1000,
 		OperatorPubkey:    testPubKeyBytes(3),
 		ChainDepth:        1,
-		AncestryPaths: []*arkrpc.AncestryPath{{
-			CommitmentTxid: testTxIDBytes(13),
-			TreeDepth:      0,
-		}},
+		AncestryPaths: []*arkrpc.AncestryPath{
+			testAncestryPath(testTxID(13)),
+		},
 	}
+}
+
+// testAncestryPath returns a minimally valid AncestryPath whose
+// reconstructed tree depth matches the wire-format tree_depth. Receive-time
+// validation (arkrpc.ValidateAncestryPathDepth) rejects zero or
+// inconsistent depths, so test fixtures must keep these in sync.
+func testAncestryPath(commitmentTxID chainhash.Hash) *arkrpc.AncestryPath {
+	t := &lib_tree.Tree{
+		Root: &lib_tree.Node{},
+		BatchOutpoint: wire.OutPoint{
+			Hash: commitmentTxID,
+		},
+	}
+
+	p, err := arkrpc.AncestryPathFromTree(t, commitmentTxID, []uint32{0})
+	if err != nil {
+		panic(fmt.Sprintf("build test ancestry path: %v", err))
+	}
+
+	return p
 }
 
 // testPubKeyBytes returns a deterministic compressed public key.
