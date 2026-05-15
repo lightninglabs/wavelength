@@ -425,6 +425,11 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 	// the event list and per-session checkpoint fetches see a
 	// consistent snapshot.
 	err := s.store.ExecReadTx(ctx, func(q Store) error {
+		txOut := make(
+			[]*arkrpc.OORRecipientEvent, 0, int(limit),
+		)
+		var txNextCursor uint64
+
 		rows, err := q.ListOORRecipientEventsAfterWithSession(
 			ctx,
 			append(
@@ -486,9 +491,12 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 
 			ev.CheckpointPsbts = cpPSBTs
 
-			out = append(out, ev)
-			nextCursor = ev.EventId
+			txOut = append(txOut, ev)
+			txNextCursor = ev.EventId
 		}
+
+		out = txOut
+		nextCursor = txNextCursor
 
 		return nil
 	})
