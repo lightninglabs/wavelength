@@ -241,6 +241,81 @@ func TestFSMCreatedState(t *testing.T) {
 	})
 }
 
+// TestFSMRejectsForfeitAlreadyRegisteredByAnotherClient asserts that the
+// round admission path does not rely on round-owner VTXO locks to detect
+// duplicate forfeit inputs across distinct client registrations.
+func TestFSMRejectsForfeitAlreadyRegisteredByAnotherClient(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+
+	forfeitOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("duplicate-forfeit")),
+		Index: 0,
+	}
+
+	client1 := newClientHarness(
+		t, "client1", 10, h.operatorPub, 144, 144,
+	)
+	client2 := newClientHarness(
+		t, "client2", 20, h.operatorPub, 144, 144,
+	)
+
+	h.setupValidForfeitVTXO(
+		&forfeitOutpoint, client1.boardingKey, h.roundID,
+	)
+	h.setupValidForfeitVTXO(
+		&forfeitOutpoint, client1.boardingKey, h.roundID,
+	)
+
+	owner := vtxo.RoundLockOwner(h.roundID.String())
+	h.vtxoLocker.On(
+		"LockMany", mock.Anything, []wire.OutPoint{forfeitOutpoint},
+		owner,
+	).Return(nil).Maybe()
+
+	firstJoin := &ClientJoinIntentEvent{
+		ClientID: client1.clientID,
+		Request: &types.JoinRoundRequest{
+			ForfeitReqs: []*types.ForfeitRequest{{
+				VTXOOutpoint: &forfeitOutpoint,
+			}},
+			VTXOReqs: []*types.VTXORequest{
+				client1.createVTXORequest(40_000),
+			},
+		},
+	}
+	feedJoinSuccess(h, firstJoin)
+
+	h.outboxMessages = nil
+	secondJoin := &ClientJoinIntentEvent{
+		ClientID: client2.clientID,
+		Request: &types.JoinRoundRequest{
+			ForfeitReqs: []*types.ForfeitRequest{{
+				VTXOOutpoint: &forfeitOutpoint,
+			}},
+			VTXOReqs: []*types.VTXORequest{
+				client2.createVTXORequest(40_000),
+			},
+		},
+	}
+	err := h.sendEvent(secondJoin)
+	require.NoError(t, err)
+
+	state := assertStateType[*IntentCollectingState](h)
+	require.Len(t, state.ClientRegistrations, 1)
+	require.Contains(t, state.ClientRegistrations, client1.clientID)
+	require.NotContains(t, state.ClientRegistrations, client2.clientID)
+
+	h.assertOutboxLen(1)
+	errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+	require.Equal(t, client2.clientID, errResp.Client)
+	require.Contains(
+		t, errResp.ErrorMsg, ErrDuplicateForfeitInRound.Error(),
+	)
+	require.Contains(t, errResp.ErrorMsg, forfeitOutpoint.String())
+}
+
 // TestValidateJoinRequestForAdmissionRequiresHeight asserts join-auth
 // validation fails fast when no validation height is available.
 func TestValidateJoinRequestForAdmissionRequiresHeight(t *testing.T) {
@@ -590,6 +665,81 @@ func TestFSMIntentCollectingState(t *testing.T) {
 				h, 0,
 			)
 			require.Equal(t, "client1", string(successResp.Client))
+		})
+
+	t.Run("re-registration with same forfeit input is idempotent",
+		func(t *testing.T) {
+			t.Parallel()
+
+			forfeitOP := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("rereg-same-ff")),
+				Index: 0,
+			}
+
+			priorReg := &ClientRegistration{
+				ClientID: "client1",
+				ForfeitInputs: []*ForfeitInput{
+					{
+						Outpoint: &forfeitOP,
+					},
+				},
+			}
+			regs := map[ClientID]*ClientRegistration{
+				"client1": priorReg,
+			}
+			regState := &IntentCollectingState{
+				ClientRegistrations: regs,
+			}
+
+			h := newTestHarness(t, regState)
+			h.setupPermissiveMocks()
+
+			client := newClientHarness(
+				t, "client1", 10, h.operatorPub, 144, 144,
+			)
+			h.setupValidForfeitVTXO(
+				&forfeitOP, client.boardingKey, h.roundID,
+			)
+			h.expectVTXOLocked(h.roundID, forfeitOP)
+
+			vtxoReq := client.createVTXORequest(40_000)
+			joinEvt := &ClientJoinIntentEvent{
+				ClientID: client.clientID,
+				Request: &types.JoinRoundRequest{
+					ForfeitReqs: []*types.ForfeitRequest{{
+						VTXOOutpoint: &forfeitOP,
+					}},
+					VTXOReqs: []*types.VTXORequest{
+						vtxoReq,
+					},
+				},
+			}
+
+			feedJoinSuccess(h, joinEvt)
+
+			regState = assertStateType[*IntentCollectingState](h)
+			require.Len(t, regState.ClientRegistrations, 1)
+			require.True(t, regState.isClientRegistered("client1"))
+
+			reg := regState.ClientRegistrations["client1"]
+			require.Len(t, reg.ForfeitInputs, 1)
+			require.Equal(
+				t, forfeitOP, *reg.ForfeitInputs[0].Outpoint,
+			)
+
+			h.vtxoLocker.AssertNotCalled(
+				t, "UnlockMany", mock.Anything,
+				[]wire.OutPoint{forfeitOP}, mock.Anything,
+			)
+
+			h.assertOutboxLen(1)
+
+			//nolint:ll
+			successResp := assertOutboxMessageType[*ClientSuccessResp](
+				h, 0,
+			)
+			require.Equal(t, "client1", string(successResp.Client))
+			require.True(t, successResp.IsReregistration)
 		})
 
 	t.Run("lock failure rejects client but allows others",

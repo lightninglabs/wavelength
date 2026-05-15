@@ -469,6 +469,45 @@ func extractVTXOOutpoints(inputs []*ForfeitInput) []wire.OutPoint {
 	return outpoints
 }
 
+// rejectDuplicateForfeitInRound rejects a join whose forfeit inputs are
+// already registered by a different client in this round.
+func rejectDuplicateForfeitInRound(
+	regs map[clientconn.ClientID]*ClientRegistration,
+	joiningClient clientconn.ClientID, inputs []*ForfeitInput) error {
+
+	if len(inputs) == 0 || len(regs) == 0 {
+		return nil
+	}
+
+	for _, input := range inputs {
+		if input == nil || input.Outpoint == nil {
+			continue
+		}
+
+		for clientID, reg := range regs {
+			if clientID == joiningClient || reg == nil {
+				continue
+			}
+
+			for _, existing := range reg.ForfeitInputs {
+				if existing == nil || existing.Outpoint == nil {
+					continue
+				}
+
+				if *existing.Outpoint != *input.Outpoint {
+					continue
+				}
+
+				return fmt.Errorf("%w: %v already registered",
+					ErrDuplicateForfeitInRound,
+					input.Outpoint)
+			}
+		}
+	}
+
+	return nil
+}
+
 // validateJoinRequestForAdmission validates a join request using the best
 // available block height for auth freshness checks.
 //
@@ -745,6 +784,24 @@ func (s *IntentCollectingState) ProcessEvent(ctx context.Context, event Event,
 		}
 		result, err := validateJoinRequestForAdmission(
 			ctx, env, evt.Request, evt.CurrentBlockHeight, regCount,
+		)
+		if err != nil {
+			env.Log.WarnS(ctx, "Join request validation failed",
+				err,
+				LogClientID(evt.ClientID),
+			)
+
+			errMsg := fmt.Sprintf("%v: %v", ErrJoinRequestInvalid,
+				err)
+
+			return clientErrorTransition(
+				s, evt.ClientID, errMsg,
+			), nil
+		}
+
+		err = rejectDuplicateForfeitInRound(
+			s.ClientRegistrations, evt.ClientID,
+			result.ForfeitInputs,
 		)
 		if err != nil {
 			env.Log.WarnS(ctx, "Join request validation failed",
