@@ -945,3 +945,132 @@ func TestGetInfoConcurrentOperatorTermsAccess(t *testing.T) {
 	cancel()
 	<-writerDone
 }
+
+// TestUnrollFeeShortfall exercises the pure fee-budget math used by
+// checkUnrollFeeBalance. The function takes the number of recovery
+// transactions (tree + OOR checkpoint), the estimated fee rate, and the
+// wallet's confirmed balance, then returns the total required fees and
+// any shortfall. A zero shortfall means the wallet has enough funds.
+func TestUnrollFeeShortfall(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		numRecoveryTxs   int
+		feeRate          btcutil.Amount
+		confirmedBalance btcutil.Amount
+		wantRequired     btcutil.Amount
+		wantShortfall    btcutil.Amount
+	}{
+		{
+			// 3 recovery txs at 10 sat/vB:
+			//   CPFP: 3 * (10 * 155) = 4650
+			//   Sweep: 10 * 200 = 2000
+			//   Total: 6650
+			// Balance 10000 > 6650 → no shortfall.
+			name:             "sufficient balance",
+			numRecoveryTxs:   3,
+			feeRate:          10,
+			confirmedBalance: 10_000,
+			wantRequired:     6_650,
+			wantShortfall:    0,
+		},
+		{
+			// Same math, but balance is only 1000.
+			// Shortfall = 6650 - 1000 = 5650.
+			name:             "insufficient balance",
+			numRecoveryTxs:   3,
+			feeRate:          10,
+			confirmedBalance: 1_000,
+			wantRequired:     6_650,
+			wantShortfall:    5_650,
+		},
+		{
+			// Zero confirmed balance.
+			// Shortfall = totalRequired.
+			name:             "zero balance",
+			numRecoveryTxs:   3,
+			feeRate:          10,
+			confirmedBalance: 0,
+			wantRequired:     6_650,
+			wantShortfall:    6_650,
+		},
+		{
+			// Exactly enough.
+			name:             "exact balance",
+			numRecoveryTxs:   3,
+			feeRate:          10,
+			confirmedBalance: 6_650,
+			wantRequired:     6_650,
+			wantShortfall:    0,
+		},
+		{
+			// Single recovery tx (shallow tree, no OOR).
+			// CPFP: 1 * (2 * 155) = 310
+			// Sweep: 2 * 200 = 400
+			// Total: 710
+			name:             "single recovery tx low fee",
+			numRecoveryTxs:   1,
+			feeRate:          2,
+			confirmedBalance: 500,
+			wantRequired:     710,
+			wantShortfall:    210,
+		},
+		{
+			// Deep tree (10 txs) + 2 OOR checkpoints at high
+			// fee rate.
+			// CPFP: 12 * (50 * 155) = 93000
+			// Sweep: 50 * 200 = 10000
+			// Total: 103000
+			name:             "deep tree with OOR and high fee",
+			numRecoveryTxs:   12,
+			feeRate:          50,
+			confirmedBalance: 50_000,
+			wantRequired:     103_000,
+			wantShortfall:    53_000,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotRequired, gotShortfall := unrollFeeShortfall(
+				tc.numRecoveryTxs, tc.feeRate,
+				tc.confirmedBalance,
+			)
+			require.Equal(t, tc.wantRequired, gotRequired,
+				"totalRequired mismatch")
+			require.Equal(t, tc.wantShortfall, gotShortfall,
+				"shortfall mismatch")
+		})
+	}
+}
+
+// TestCheckUnrollFeeBalanceSkipsWhenStoreNil verifies that the fee
+// check gracefully returns nil when the server's vtxoStore or
+// chainBackend is not yet initialized. This prevents the check from
+// blocking unroll requests during early daemon startup.
+func TestCheckUnrollFeeBalanceSkipsWhenStoreNil(t *testing.T) {
+	t.Parallel()
+
+	var hash chainhash.Hash
+	hash[0] = 0xab
+	outpoint := wire.OutPoint{Hash: hash, Index: 0}
+
+	t.Run("nil vtxoStore", func(t *testing.T) {
+		t.Parallel()
+
+		r := &RPCServer{
+			server: &Server{
+				// vtxoStore is nil, chainBackend is nil.
+			},
+		}
+
+		err := r.checkUnrollFeeBalance(
+			context.Background(), outpoint,
+		)
+		require.NoError(t, err)
+	})
+}

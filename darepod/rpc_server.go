@@ -2551,6 +2551,16 @@ func (r *RPCServer) Unroll(ctx context.Context, req *daemonrpc.UnrollRequest) (
 		}
 	}
 
+	// Before transitioning the VTXO to the terminal UnilateralExit
+	// state (which is irreversible), verify the on-chain wallet has
+	// enough confirmed balance to cover the CPFP fees required to
+	// broadcast all recovery transactions plus the final sweep.
+	if err := r.checkUnrollFeeBalance(
+		admissionCtx, outpoint,
+	); err != nil {
+		return nil, err
+	}
+
 	// Route through the VTXO manager which tells the VTXO actor to
 	// transition to UnilateralExitState. The actor's outbox handler
 	// emits ExpiringNotification through the chain resolver seam,
@@ -2580,6 +2590,139 @@ func (r *RPCServer) Unroll(ctx context.Context, req *daemonrpc.UnrollRequest) (
 		Created: unrollResp.Accepted,
 		ActorId: actorID,
 	}, nil
+}
+
+// unrollFeeConfTarget is the confirmation-target used for estimating the
+// fee rate when checking whether the wallet can cover unroll CPFP costs.
+// Six blocks is a reasonable default that matches the sweep estimator.
+const unrollFeeConfTarget = 6
+
+// estimatedCPFPChildVBytes is a conservative virtual-size estimate for
+// the CPFP child transaction the txconfirm broadcaster builds for each
+// tree or checkpoint transaction during an unroll. The child spends the
+// ephemeral P2A anchor (tiny witness), one confirmed wallet fee input
+// (taproot key-spend), and creates one wallet change output (P2TR).
+// The actual size depends on the wallet's script type but taproot is the
+// dominant path and 155 vbytes gives comfortable headroom.
+const estimatedCPFPChildVBytes int64 = 155
+
+// estimatedSweepVBytes is a conservative virtual-size estimate for the
+// timeout-path sweep spend. Matches the constant used in the unroll
+// package so the pre-flight check is consistent with the actual sweep.
+const estimatedSweepVBytes int64 = 200
+
+// unrollFeeShortfall computes the total estimated fee budget for an
+// unroll and returns the shortfall (totalRequired - confirmedBalance).
+// A non-positive shortfall means the wallet has enough funds. This is
+// a pure function that can be tested independently of server wiring.
+func unrollFeeShortfall(numRecoveryTxs int, feeRate btcutil.Amount,
+	confirmedBalance btcutil.Amount) (totalRequired, shortfall btcutil.Amount) {
+
+	perChildFee := btcutil.Amount(
+		int64(feeRate) * estimatedCPFPChildVBytes,
+	)
+	cpfpTotal := perChildFee * btcutil.Amount(numRecoveryTxs)
+
+	sweepFee := btcutil.Amount(int64(feeRate) * estimatedSweepVBytes)
+
+	totalRequired = cpfpTotal + sweepFee
+
+	if confirmedBalance >= totalRequired {
+		return totalRequired, 0
+	}
+
+	return totalRequired, totalRequired - confirmedBalance
+}
+
+// checkUnrollFeeBalance estimates the total on-chain fees the wallet
+// will need to fund all CPFP children for the recovery tree
+// transactions, any OOR checkpoint ancestors, and the final timeout
+// sweep. If the wallet's confirmed balance is insufficient the method
+// returns a FailedPrecondition gRPC error with a message describing
+// the shortfall so the user can fund the wallet before retrying.
+//
+// This check runs BEFORE the VTXO transitions to the terminal
+// UnilateralExitState so that an under-funded wallet does not strand
+// the VTXO in a state where it can no longer be cooperatively
+// refreshed or forfeited.
+func (r *RPCServer) checkUnrollFeeBalance(
+	ctx context.Context, outpoint wire.OutPoint) error {
+
+	// Both the VTXO store and the chain backend are required to
+	// produce a meaningful estimate. If either is missing the daemon
+	// is still initializing, so skip the check and let the
+	// downstream admission path surface any issues.
+	if r.server.vtxoStore == nil || r.server.chainBackend == nil {
+		return nil
+	}
+
+	desc, err := r.server.vtxoStore.GetVTXO(ctx, outpoint)
+	if err != nil {
+		// If we can't load the descriptor we cannot estimate
+		// fees. Let the admission path handle the not-found
+		// case rather than blocking a potentially valid unroll.
+		return nil
+	}
+
+	// Count the number of recovery transactions that will need
+	// CPFP fee inputs. Each ancestry fragment contributes tree
+	// transactions; OOR VTXOs also add one checkpoint transaction
+	// per hop in the OOR chain (tracked by ChainDepth).
+	var numRecoveryTxs int
+	for _, a := range desc.Ancestry {
+		if a.TreePath != nil {
+			numRecoveryTxs += a.TreePath.NumTx()
+		} else if a.TreeDepth > 0 {
+			// If the tree was pruned but the depth was
+			// persisted, use that as a rough lower bound.
+			numRecoveryTxs += int(a.TreeDepth)
+		}
+	}
+
+	numRecoveryTxs += desc.ChainDepth
+
+	if numRecoveryTxs == 0 {
+		// No recovery transactions means the commitment is
+		// already confirmed (or metadata is missing). Nothing
+		// to check.
+		return nil
+	}
+
+	// Estimate the current fee rate. If estimation fails (cold
+	// backend, regtest) fall back to a modest 2 sat/vB so we do
+	// not block the unroll entirely.
+	feeRate, err := r.server.chainBackend.EstimateFee(
+		ctx, unrollFeeConfTarget,
+	)
+	if err != nil || feeRate <= 0 {
+		feeRate = 2
+	}
+
+	// Query the on-chain wallet balance.
+	confirmedBalance := sumOnchainWalletConfirmed(
+		ctx, r.walletBalanceFetchers(), func(fetchErr error) {
+			r.server.log.WarnS(ctx,
+				"Unable to fetch wallet balance for "+
+					"unroll fee check", fetchErr)
+		},
+	)
+
+	totalRequired, shortfall := unrollFeeShortfall(
+		numRecoveryTxs, feeRate, confirmedBalance,
+	)
+	if shortfall <= 0 {
+		return nil
+	}
+
+	return status.Errorf(codes.FailedPrecondition,
+		"on-chain wallet balance too low for unroll: need "+
+			"~%d sat to cover CPFP fees for %d recovery "+
+			"transaction(s) plus the sweep, but only %d sat "+
+			"confirmed; please deposit at least %d more sat "+
+			"and wait for confirmation before retrying",
+		int64(totalRequired), numRecoveryTxs,
+		int64(confirmedBalance), int64(shortfall),
+	)
 }
 
 // GetUnrollStatus returns the current status of an unroll job for the
