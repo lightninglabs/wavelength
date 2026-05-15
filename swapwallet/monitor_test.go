@@ -96,8 +96,8 @@ func TestMonitorLoopFansOutSwapUpdates(t *testing.T) {
 
 	entry := drainOne(t, sub)
 	require.Equal(t, "abc", entry.GetId())
-	require.Equal(t,
-		walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+	require.Equal(
+		t, walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		entry.GetStatus(),
 	)
 }
@@ -151,8 +151,7 @@ func TestMonitorLoopClearsPendingOnTerminal(t *testing.T) {
 	defer r.stop()
 
 	r.trackPending(
-		"to-complete", walletrpc.EntryKind_ENTRY_KIND_SEND,
-		time.Now(),
+		"to-complete", walletrpc.EntryKind_ENTRY_KIND_SEND, time.Now(),
 	)
 
 	sub := r.subscribe()
@@ -240,7 +239,10 @@ func TestMonitorLoopRecoversAfterTransientFailure(t *testing.T) {
 			return
 
 		case <-timer.C:
-			t.Fatal("monitor never recovered after transient failure")
+			t.Fatal(
+				"monitor never recovered after transient " +
+					"failure",
+			)
 
 		case <-time.After(100 * time.Millisecond):
 			// Loop and try again.

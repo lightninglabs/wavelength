@@ -25,8 +25,8 @@ type stubInvoiceCreator struct {
 // CreateInvoice records a no-key invocation. The daemonAuthOnlyInvoiceCreator
 // wrapper must reject this path before it ever reaches the stub.
 func (s *stubInvoiceCreator) CreateInvoice(_ context.Context, _ btcutil.Amount,
-	_ string, _ *swaps.RouteHint, _ time.Duration,
-	_ *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
+	_ string, _ *swaps.RouteHint, _ time.Duration, _ *lntypes.Preimage) (
+	*invoices.Invoice, lntypes.Hash, error) {
 
 	s.noKeyCalls++
 
@@ -37,8 +37,8 @@ func (s *stubInvoiceCreator) CreateInvoice(_ context.Context, _ btcutil.Amount,
 // that the wrapper forwards to the underlying generator.
 func (s *stubInvoiceCreator) CreateInvoiceWithKey(_ context.Context,
 	_ btcutil.Amount, _ string, _ *swaps.RouteHint, _ time.Duration,
-	_ keychain.SingleKeyMessageSigner,
-	_ *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
+	_ keychain.SingleKeyMessageSigner, _ *lntypes.Preimage) (
+	*invoices.Invoice, lntypes.Hash, error) {
 
 	s.withKeyCalls++
 
@@ -56,13 +56,15 @@ func TestDaemonAuthOnlyInvoiceCreatorRejectsNoKey(t *testing.T) {
 	wrapper := &daemonAuthOnlyInvoiceCreator{inner: stub}
 
 	_, _, err := wrapper.CreateInvoice(
-		t.Context(), btcutil.Amount(1000), "memo", nil, time.Minute,
-		nil,
+		t.Context(), btcutil.Amount(1000),
+		"memo", nil, time.Minute, nil,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "CreateInvoiceWithKey")
-	require.Equal(t, 0, stub.noKeyCalls,
-		"inner CreateInvoice must not be reached")
+	require.Equal(
+		t, 0, stub.noKeyCalls,
+		"inner CreateInvoice must not be reached",
+	)
 	require.Equal(t, 0, stub.withKeyCalls)
 }
 
@@ -84,8 +86,8 @@ func TestDaemonAuthOnlyInvoiceCreatorForwardsKeyedPath(t *testing.T) {
 	)
 
 	_, _, err = wrapper.CreateInvoiceWithKey(
-		t.Context(), btcutil.Amount(1000), "memo", nil, time.Minute,
-		authKey, nil,
+		t.Context(), btcutil.Amount(1000),
+		"memo", nil, time.Minute, authKey, nil,
 	)
 	require.NoError(t, err)
 	require.Equal(t, 1, stub.withKeyCalls)

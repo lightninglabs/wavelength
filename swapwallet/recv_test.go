@@ -50,8 +50,9 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 	require.Equal(t, 1, swap.startReceiveCalls)
 	require.Equal(t, "lnbc1invoice", resp.GetInvoice())
 	require.Equal(t, "abc123", resp.GetEntry().GetId())
-	require.Equal(t,
-		walletrpc.EntryKind_ENTRY_KIND_RECV, resp.GetEntry().GetKind(),
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_RECV,
+		resp.GetEntry().GetKind(),
 	)
 }
 

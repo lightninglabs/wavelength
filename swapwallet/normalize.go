@@ -96,13 +96,11 @@ func statusFromSwapState(state swapclientrpc.SwapState,
 	switch state {
 	case swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
 		swapclientrpc.SwapState_SWAP_STATE_REFUNDED:
-
 		return walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE
 
 	case swapclientrpc.SwapState_SWAP_STATE_FAILED,
 		swapclientrpc.SwapState_SWAP_STATE_EXPIRED,
 		swapclientrpc.SwapState_SWAP_STATE_NEEDS_INTERVENTION:
-
 		return walletrpc.EntryStatus_ENTRY_STATUS_FAILED
 
 	default:
@@ -154,8 +152,8 @@ func unixToTime(ts int64) time.Time {
 // caller targets an onchain destination. The id is populated with the first
 // queued outpoint so the row is correlatable; downstream history merges fill
 // in the broadcast txid once the leave registry produces one.
-func leaveEntryStub(queuedOutpoints []string, destination string,
-	amtSat int64, note string) *walletrpc.WalletEntry {
+func leaveEntryStub(queuedOutpoints []string, destination string, amtSat int64,
+	note string) *walletrpc.WalletEntry {
 
 	id := ""
 	if len(queuedOutpoints) > 0 {

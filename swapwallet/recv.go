@@ -33,8 +33,8 @@ func newReceiver(deps *Deps, runtime *Runtime) *receiver {
 // terminal transitions) is owned by the swap subsystem; the wallet layer
 // observes those transitions through the monitor loop and projects them
 // onto the WalletEntry shape.
-func (r *receiver) Recv(ctx context.Context,
-	req *walletrpc.RecvRequest) (*walletrpc.RecvResponse, error) {
+func (r *receiver) Recv(ctx context.Context, req *walletrpc.RecvRequest) (
+	*walletrpc.RecvResponse, error) {
 
 	if r == nil || r.deps == nil || r.deps.SwapService == nil {
 		return nil, ErrSwapBackendUnavailable
@@ -61,8 +61,7 @@ func (r *receiver) Recv(ctx context.Context,
 	}
 
 	entry := swapEntryFromSummary(
-		startResp.GetSwap(), req.GetMemo(),
-		startResp.GetPaymentHash(),
+		startResp.GetSwap(), req.GetMemo(), startResp.GetPaymentHash(),
 	)
 
 	// Override the kind to RECV regardless of how the SDK reports
@@ -75,7 +74,9 @@ func (r *receiver) Recv(ctx context.Context,
 	if entry.Status == walletrpc.EntryStatus_ENTRY_STATUS_PENDING {
 		r.runtime.trackPending(
 			entry.GetId(), entry.GetKind(),
-			unixToTime(entry.GetCreatedAtUnix()),
+			unixToTime(
+				entry.GetCreatedAtUnix(),
+			),
 		)
 	}
 

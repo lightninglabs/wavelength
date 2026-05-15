@@ -40,7 +40,8 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 	// (which we hold for in-process gRPC dispatch). The type assertion
 	// is safe because swapclientserver always publishes the same handle
 	// in both slots.
-	swapService, ok := cfg.Swap.Backend.(swapclientrpc.SwapClientServiceServer)
+	swapService, ok :=
+		cfg.Swap.Backend.(swapclientrpc.SwapClientServiceServer)
 	if !ok {
 		return nil, fmt.Errorf("swapwallet: swap backend does not " +
 			"implement swapclientrpc.SwapClientServiceServer")

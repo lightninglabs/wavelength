@@ -41,9 +41,11 @@ func TestDeadlineWatcherFlagsStuckEntries(t *testing.T) {
 	require.False(t, freshTimedOut, "fresh entry must not be timed out")
 
 	overlay, staleTimedOut := r.overlayFor(staleID)
-	require.True(t, staleTimedOut, "stale entry must be flagged as timed out")
-	require.Equal(t,
-		walletrpc.EntryStatus_ENTRY_STATUS_FAILED, overlay.status,
+	require.True(
+		t, staleTimedOut, "stale entry must be flagged as timed out",
+	)
+	require.Equal(
+		t, walletrpc.EntryStatus_ENTRY_STATUS_FAILED, overlay.status,
 	)
 	require.Equal(t, "timed_out", overlay.failureReason)
 }
@@ -76,8 +78,10 @@ func TestDeadlineWatcherIdempotent(t *testing.T) {
 	r.applyDeadlines(now)
 	second, ok := r.overlayFor(id)
 	require.True(t, ok)
-	require.Equal(t, first, second,
-		"second applyDeadlines must not mutate overlay state")
+	require.Equal(
+		t, first, second,
+		"second applyDeadlines must not mutate overlay state",
+	)
 }
 
 // TestClearPendingDropsOverlay asserts that clearPending removes both the
@@ -129,6 +133,7 @@ func TestSubscribeFanOutAndDropOnSlowConsumer(t *testing.T) {
 	select {
 	case got := <-fast:
 		require.Equal(t, entry, got)
+
 	case <-time.After(time.Second):
 		t.Fatal("fast subscriber did not receive update")
 	}

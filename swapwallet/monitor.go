@@ -42,7 +42,8 @@ func (r *Runtime) monitorLoop() {
 	log := r.deps.resolveLog()
 	if r.deps.SwapService == nil {
 		log.WarnS(r.rootCtx, "Monitor loop disabled",
-			ErrSwapBackendUnavailable)
+			ErrSwapBackendUnavailable,
+		)
 
 		return
 	}
@@ -67,8 +68,11 @@ func (r *Runtime) monitorLoop() {
 			// Shutdown path: don't log noise.
 
 		default:
-			log.WarnS(r.rootCtx,
-				"Swap subscribe failed; backing off", err)
+			log.WarnS(
+				r.rootCtx,
+				"Swap subscribe failed; backing off",
+				err,
+			)
 
 			select {
 			case <-r.rootCtx.Done():
@@ -151,7 +155,9 @@ func (r *Runtime) fanOutSwapUpdate(
 	case walletrpc.EntryStatus_ENTRY_STATUS_PENDING:
 		r.trackPending(
 			entry.GetId(), entry.GetKind(),
-			unixToTime(entry.GetCreatedAtUnix()),
+			unixToTime(
+				entry.GetCreatedAtUnix(),
+			),
 		)
 
 	case walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,

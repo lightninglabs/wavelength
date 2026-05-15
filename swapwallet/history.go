@@ -36,8 +36,8 @@ func newHistory(deps *Deps, runtime *Runtime) *history {
 // daemon-level maximum so a malformed request cannot fan out unbounded
 // work; sources are queried with the request's own limit so per-source
 // pagination remains the per-source contract.
-func (h *history) List(ctx context.Context,
-	req *walletrpc.ListRequest) (*walletrpc.ListResponse, error) {
+func (h *history) List(ctx context.Context, req *walletrpc.ListRequest) (
+	*walletrpc.ListResponse, error) {
 
 	if h == nil || h.deps == nil {
 		return nil, ErrSwapBackendUnavailable
@@ -70,7 +70,8 @@ func (h *history) List(ctx context.Context,
 
 		ledgerEntries, err := h.collectLedgerEntries(ctx, limit)
 		if err != nil {
-			return nil, fmt.Errorf("collect ledger entries: %w", err)
+			return nil, fmt.Errorf("collect ledger entries: %w",
+				err)
 		}
 
 		entries = append(entries, ledgerEntries...)
@@ -102,8 +103,8 @@ func (h *history) List(ctx context.Context,
 // subserver and normalizes them into WalletEntry rows. Pay rows become
 // SEND, receive rows become RECV; the underlying SwapDirection enum drives
 // the mapping.
-func (h *history) collectSwapEntries(ctx context.Context,
-	pendingOnly bool) ([]*walletrpc.WalletEntry, error) {
+func (h *history) collectSwapEntries(ctx context.Context, pendingOnly bool) (
+	[]*walletrpc.WalletEntry, error) {
 
 	if h.deps.SwapService == nil {
 		return nil, nil
@@ -144,8 +145,8 @@ func (h *history) collectSwapEntries(ctx context.Context,
 // sweep rows become EXIT, OOR rows become SEND or RECV based on the
 // debit/credit account convention. Rows the wallet layer cannot classify
 // are dropped so the user surface stays clean.
-func (h *history) collectLedgerEntries(ctx context.Context,
-	limit uint32) ([]*walletrpc.WalletEntry, error) {
+func (h *history) collectLedgerEntries(ctx context.Context, limit uint32) (
+	[]*walletrpc.WalletEntry, error) {
 
 	if h.deps.RPCServer == nil {
 		return nil, nil
@@ -296,9 +297,11 @@ func walletEntryFromLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 	amount := t.GetAmountSat() * direction
 
 	return &walletrpc.WalletEntry{
-		Id:            id,
-		Kind:          kind,
-		Status:        statusFromLedgerConfirmation(t.GetConfirmationStatus()),
+		Id:   id,
+		Kind: kind,
+		Status: statusFromLedgerConfirmation(
+			t.GetConfirmationStatus(),
+		),
 		AmountSat:     amount,
 		FeeSat:        t.GetFeeSat(),
 		Counterparty:  ledgerCounterparty(t, kind),

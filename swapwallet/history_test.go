@@ -88,24 +88,24 @@ func TestHistoryListMergesSwapAndLedgerSources(t *testing.T) {
 	require.Equal(t, "txid_deposit", resp.GetEntries()[3].GetId())
 
 	// Kinds and statuses normalize correctly.
-	require.Equal(t,
-		walletrpc.EntryKind_ENTRY_KIND_RECV,
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_RECV,
 		resp.GetEntries()[0].GetKind(),
 	)
-	require.Equal(t,
-		walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+	require.Equal(
+		t, walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		resp.GetEntries()[0].GetStatus(),
 	)
-	require.Equal(t,
-		walletrpc.EntryKind_ENTRY_KIND_EXIT,
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_EXIT,
 		resp.GetEntries()[1].GetKind(),
 	)
-	require.Equal(t,
-		walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+	require.Equal(
+		t, walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		resp.GetEntries()[1].GetStatus(),
 	)
-	require.Equal(t,
-		walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 		resp.GetEntries()[3].GetKind(),
 	)
 }
@@ -215,8 +215,8 @@ func TestHistoryOverlayProjectsTimedOutFailed(t *testing.T) {
 	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(t, resp.GetEntries(), 1)
-	require.Equal(t,
-		walletrpc.EntryStatus_ENTRY_STATUS_FAILED,
+	require.Equal(
+		t, walletrpc.EntryStatus_ENTRY_STATUS_FAILED,
 		resp.GetEntries()[0].GetStatus(),
 	)
 	require.Equal(t, "timed_out",
@@ -251,10 +251,11 @@ func TestHistoryCanonicalIDProjection(t *testing.T) {
 	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(t, resp.GetEntries(), 1)
-	require.Equal(t, "canonical-exit-id",
-		resp.GetEntries()[0].GetId(),
-		"ledger sweep with a registered txid must project onto "+
-			"the canonical exit intent id")
+	require.Equal(
+		t, "canonical-exit-id", resp.GetEntries()[0].GetId(),
+		"ledger sweep with a registered txid must project onto the "+
+			"canonical exit intent id",
+	)
 }
 
 // TestHistoryPagination confirms offset+limit produce the expected slice

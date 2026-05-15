@@ -58,18 +58,24 @@ func TestExportedResumePendingDrivesSameSweep(t *testing.T) {
 	fakeClient.awaitPayResume(t, payHash)
 	fakeClient.awaitReceiveResume(t, receiveHash)
 
-	require.Equal(t, 1, fakeClient.payResumeCount(payHash),
+	require.Equal(
+		t, 1, fakeClient.payResumeCount(payHash),
 		"pay worker should resume exactly once for hash %s",
-		hex.EncodeToString(payHash[:]))
-	require.Equal(t, 1, fakeClient.receiveResumeCount(receiveHash),
+		hex.EncodeToString(payHash[:]),
+	)
+	require.Equal(
+		t, 1, fakeClient.receiveResumeCount(receiveHash),
 		"receive worker should resume exactly once for hash %s",
-		hex.EncodeToString(receiveHash[:]))
+		hex.EncodeToString(receiveHash[:]),
+	)
 
 	// Calling again must be a no-op because the active set is gated by
 	// the per-payment-hash admission map.
 	backend.ResumePending(t.Context())
 
-	require.Equal(t, 1, fakeClient.payResumeCount(payHash),
-		"resume must be idempotent for the same payment hash")
+	require.Equal(
+		t, 1, fakeClient.payResumeCount(payHash),
+		"resume must be idempotent for the same payment hash",
+	)
 	require.Equal(t, 1, fakeClient.receiveResumeCount(receiveHash))
 }

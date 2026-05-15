@@ -32,8 +32,8 @@ func newRouter(deps *Deps, runtime *Runtime) *router {
 // Send dispatches a SendRequest to the right backend and returns the
 // initial WalletEntry that callers can poll or subscribe to for status
 // transitions.
-func (r *router) Send(ctx context.Context,
-	req *walletrpc.SendRequest) (*walletrpc.SendResponse, error) {
+func (r *router) Send(ctx context.Context, req *walletrpc.SendRequest) (
+	*walletrpc.SendResponse, error) {
 
 	if r == nil || r.deps == nil {
 		return nil, ErrSwapBackendUnavailable
@@ -86,7 +86,9 @@ func (r *router) sendInvoice(ctx context.Context, invoice string,
 	if entry.Status == walletrpc.EntryStatus_ENTRY_STATUS_PENDING {
 		r.runtime.trackPending(
 			entry.GetId(), entry.GetKind(),
-			unixToTime(entry.GetCreatedAtUnix()),
+			unixToTime(
+				entry.GetCreatedAtUnix(),
+			),
 		)
 	}
 
@@ -163,7 +165,9 @@ func (r *router) sendOnchain(ctx context.Context, addr string,
 	)
 	r.runtime.trackPending(
 		entry.GetId(), entry.GetKind(),
-		unixToTime(entry.GetCreatedAtUnix()),
+		unixToTime(
+			entry.GetCreatedAtUnix(),
+		),
 	)
 
 	return &walletrpc.SendResponse{Entry: entry}, nil
@@ -178,8 +182,8 @@ func (r *router) sendOnchain(ctx context.Context, addr string,
 //
 // Returns ErrAmountInvalid when target is non-positive, and
 // ErrAmountRequired when no combination of live VTXOs covers target.
-func (r *router) selectVTXOsForAmount(ctx context.Context,
-	target int64) ([]string, error) {
+func (r *router) selectVTXOsForAmount(ctx context.Context, target int64) (
+	[]string, error) {
 
 	if target <= 0 {
 		return nil, ErrAmountInvalid

@@ -506,10 +506,9 @@ func (d *daemonAuthOnlyInvoiceCreator) CreateInvoice(_ context.Context,
 // CreateInvoiceWithKey delegates to the underlying generator, which overrides
 // the NodeSigner with the supplied authKey so the daemon-managed key signs
 // the invoice rather than the generator's plumbing key.
-func (d *daemonAuthOnlyInvoiceCreator) CreateInvoiceWithKey(
-	ctx context.Context, amountSat btcutil.Amount, memo string,
-	routeHint *swaps.RouteHint, expiry time.Duration,
-	authKey keychain.SingleKeyMessageSigner,
+func (d *daemonAuthOnlyInvoiceCreator) CreateInvoiceWithKey(ctx context.Context,
+	amountSat btcutil.Amount, memo string, routeHint *swaps.RouteHint,
+	expiry time.Duration, authKey keychain.SingleKeyMessageSigner,
 	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
 
 	return d.inner.CreateInvoiceWithKey(
