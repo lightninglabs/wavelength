@@ -463,17 +463,9 @@ func transactionHistoryRowToProto(row *sqlc.ListTransactionHistoryRow) (
 	}, nil
 }
 
-// transactionHistoryTxID normalizes the nullable sqlc txid union column
-// into the human-readable chainhash string used elsewhere in the RPC API.
-func transactionHistoryTxID(raw any) (string, error) {
-	if raw == nil {
-		return "", nil
-	}
-
-	txidBytes, ok := raw.([]byte)
-	if !ok {
-		return "", fmt.Errorf("unexpected txid type %T", raw)
-	}
+// transactionHistoryTxID normalizes the nullable sqlc txid column into
+// the human-readable chainhash string used elsewhere in the RPC API.
+func transactionHistoryTxID(txidBytes []byte) (string, error) {
 	if len(txidBytes) == 0 {
 		return "", nil
 	}
