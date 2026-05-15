@@ -73,5 +73,12 @@ func (m *indexerEventMessage) ServiceMethod() mailboxrpc.ServiceMethod {
 	}
 }
 
+// CorrelationKey returns the empty string. Indexer event notifications
+// are independent fan-outs to a client (a new VTXO arrived, an OOR
+// recipient event published) with no cross-event ordering invariant, so
+// they participate in the global available_at order rather than a
+// per-key FIFO lane.
+func (m *indexerEventMessage) CorrelationKey() string { return "" }
+
 // Compile-time interface check.
 var _ clientconn.ClientMessage = (*indexerEventMessage)(nil)

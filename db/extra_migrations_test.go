@@ -25,14 +25,18 @@ func TestExtraMigrationsSqlite(t *testing.T) {
 
 	dbFile := filepath.Join(t.TempDir(), "extra.db")
 	store, err := NewSqliteStore(
-		&SqliteConfig{DatabaseFileName: dbFile},
+		&SqliteConfig{
+			DatabaseFileName: dbFile,
+		},
 		btclog.Disabled,
-		WithExtraMigrations(ExtraMigration{
-			Name:          "swap_test",
-			FS:            testExtraMigrationsFS,
-			Path:          "testdata/extra_migrations",
-			LatestVersion: 1,
-		}),
+		WithExtraMigrations(
+			ExtraMigration{
+				Name:          "swap_test",
+				FS:            testExtraMigrationsFS,
+				Path:          "testdata/extra_migrations",
+				LatestVersion: 1,
+			},
+		),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.DB.Close()) })
@@ -80,15 +84,19 @@ func TestExtraMigrationsSkipCoreSqlite(t *testing.T) {
 
 	dbFile := filepath.Join(t.TempDir(), "skip_core.db")
 	store, err := NewSqliteStore(
-		&SqliteConfig{DatabaseFileName: dbFile},
+		&SqliteConfig{
+			DatabaseFileName: dbFile,
+		},
 		btclog.Disabled,
 		WithSkipCoreMigrations(),
-		WithExtraMigrations(ExtraMigration{
-			Name:          "swap_test",
-			FS:            testExtraMigrationsFS,
-			Path:          "testdata/extra_migrations",
-			LatestVersion: 1,
-		}),
+		WithExtraMigrations(
+			ExtraMigration{
+				Name:          "swap_test",
+				FS:            testExtraMigrationsFS,
+				Path:          "testdata/extra_migrations",
+				LatestVersion: 1,
+			},
+		),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.DB.Close()) })
@@ -110,8 +118,7 @@ func TestExtraMigrationsSkipCoreSqlite(t *testing.T) {
 	`)
 	require.NoError(t, row.Scan(&coreCount))
 	require.Equal(
-		t, 0, coreCount,
-		"core schema_migrations should be absent",
+		t, 0, coreCount, "core schema_migrations should be absent",
 	)
 
 	// Likewise, a representative core table (chain_info) must not exist.
@@ -221,7 +228,9 @@ func TestExtraMigrationsPrevalidate(t *testing.T) {
 	// the SQL-safe identifier regex. The whole batch must be rejected
 	// before either is applied.
 	_, err := NewSqliteStore(
-		&SqliteConfig{DatabaseFileName: dbFile},
+		&SqliteConfig{
+			DatabaseFileName: dbFile,
+		},
 		btclog.Disabled,
 		WithExtraMigrations(
 			ExtraMigration{
@@ -229,8 +238,7 @@ func TestExtraMigrationsPrevalidate(t *testing.T) {
 				FS:            testExtraMigrationsFS,
 				Path:          "testdata/extra_migrations",
 				LatestVersion: 1,
-			},
-			ExtraMigration{
+			}, ExtraMigration{
 				Name:          "",
 				FS:            testExtraMigrationsFS,
 				Path:          "testdata/extra_migrations",
@@ -244,7 +252,9 @@ func TestExtraMigrationsPrevalidate(t *testing.T) {
 	// neither set's bookkeeping table was created — proof that the
 	// malformed entry short-circuited the run before any DDL.
 	store, err := NewSqliteStore(
-		&SqliteConfig{DatabaseFileName: dbFile},
+		&SqliteConfig{
+			DatabaseFileName: dbFile,
+		},
 		btclog.Disabled,
 	)
 	require.NoError(t, err)
@@ -257,8 +267,7 @@ func TestExtraMigrationsPrevalidate(t *testing.T) {
 	`)
 	require.NoError(t, row.Scan(&goodCount))
 	require.Equal(
-		t, 0, goodCount,
-		"valid entry must not have materialized DDL after a "+
-			"sibling failed preflight",
+		t, 0, goodCount, "valid entry must not have materialized "+
+			"DDL after a sibling failed preflight",
 	)
 }

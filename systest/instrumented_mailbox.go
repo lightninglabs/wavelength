@@ -69,6 +69,29 @@ type InstrumentedMailbox struct {
 	// that broadcast S2C events. Used by WaitForEvent and
 	// Subscribe.
 	eventServers map[clientconn.ClientID]*subscribe.Server
+
+	// sendFailures is the fault-injection table: when a Send()
+	// matches a configured entry, the call returns the configured
+	// error and decrements the remaining count. Used to reproduce
+	// transient send-side failures (e.g. to exercise the
+	// durable-mailbox retry path).
+	sendFailures map[sendFailureKey]*sendFailureSpec
+}
+
+// sendFailureKey identifies a fault-injection match by direction, client
+// and friendly type name. A zero-value type name matches any type for
+// the (direction, client) pair.
+type sendFailureKey struct {
+	dir      MessageDirection
+	clientID clientconn.ClientID
+	typeName string
+}
+
+// sendFailureSpec describes how many more Send() calls should fail and
+// what error to return on those failures.
+type sendFailureSpec struct {
+	remaining int
+	err       error
 }
 
 // NewInstrumentedMailbox creates a new instrumented mailbox wrapper
@@ -90,7 +113,84 @@ func NewInstrumentedMailbox(inner mailboxpb.MailboxServiceClient,
 		serverMailboxes: make(map[string]struct{}),
 		clientMailboxes: make(map[string]clientconn.ClientID),
 		eventServers:    make(map[clientconn.ClientID]*subscribe.Server),
+		sendFailures:    make(map[sendFailureKey]*sendFailureSpec),
 	}
+}
+
+// FailNextSends arms a fault-injection rule: the next `count` Send()
+// calls matching the given direction, client and friendly type name
+// return `err` instead of being delivered. After `count` matched calls
+// have been failed the rule self-disarms.
+//
+// Pass an empty `typeName` to match any envelope for the given
+// direction and client. Useful for reproducing transient transport
+// failures in the durable-mailbox retry path (e.g. forcing
+// ClientSuccessResp to fail-once so the server-side durable mailbox
+// nacks-with-backoff and the per-key FIFO claim invariant is
+// exercised).
+func (m *InstrumentedMailbox) FailNextSends(dir MessageDirection,
+	clientID clientconn.ClientID, typeName string, count int, err error) {
+
+	if count <= 0 || err == nil {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	key := sendFailureKey{
+		dir:      dir,
+		clientID: clientID,
+		typeName: typeName,
+	}
+	m.sendFailures[key] = &sendFailureSpec{
+		remaining: count,
+		err:       err,
+	}
+}
+
+// takeFailure consumes one fault-injection match if armed for the given
+// direction, client and friendly type, and returns the configured error
+// when matched. Returns nil when nothing is armed. The empty-typeName
+// fallback also matches.
+func (m *InstrumentedMailbox) takeFailure(dir MessageDirection,
+	clientID clientconn.ClientID, typeName string) error {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.sendFailures) == 0 {
+		return nil
+	}
+
+	candidates := []sendFailureKey{
+		{
+			dir:      dir,
+			clientID: clientID,
+			typeName: typeName,
+		},
+		{
+			dir:      dir,
+			clientID: clientID,
+			typeName: "",
+		},
+	}
+	for _, k := range candidates {
+		spec, ok := m.sendFailures[k]
+		if !ok {
+			continue
+		}
+
+		err := spec.err
+		spec.remaining--
+		if spec.remaining <= 0 {
+			delete(m.sendFailures, k)
+		}
+
+		return err
+	}
+
+	return nil
 }
 
 // RegisterMailboxPair registers a client's mailbox pair for direction
@@ -459,6 +559,17 @@ func (m *InstrumentedMailbox) Send(ctx context.Context,
 	// Detect direction and client ID.
 	dir, clientID := m.detectDirection(env)
 	typeName := extractFriendlyTypeName(env)
+
+	// Fault-injection runs before transcript recording so a failed
+	// Send does not appear as if it had been delivered. The caller
+	// (typically the durable-mailbox actor) will nack-with-backoff
+	// and retry on the next claim; the retry records to the
+	// transcript when (and if) it succeeds.
+	if injectedErr := m.takeFailure(
+		dir, clientID, typeName,
+	); injectedErr != nil {
+		return nil, injectedErr
+	}
 
 	// Skip startup receive-script registration chatter so transcript-based
 	// round/OOR assertions observe protocol traffic rather than client
