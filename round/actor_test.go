@@ -1174,14 +1174,26 @@ func TestActorBuffersEarlyQuote(t *testing.T) {
 	roundID := testRoundID("early-quote")
 
 	// Send the quote BEFORE RoundJoined.
+	//
+	// We have a single boarding input of 50_000 sat and a single
+	// matching VTXO output. The lone output is implicit change
+	// under the #270 protocol, so the server may quote a residual
+	// below the intent's target. Quote it down by 1_000 sat so
+	// the realised fee (Σinputs−Σoutputs) agrees with
+	// OperatorFeeSat — see #379.
 	vtxoQuotes := make([]VTXOQuoteEntry, len(vtxos))
 	for i, v := range vtxos {
 		script, err := v.EffectivePkScript()
 		require.NoError(t, err)
 
+		amount := int64(v.Amount)
+		if i == 0 {
+			amount -= 1_000
+		}
+
 		vtxoQuotes[i] = VTXOQuoteEntry{
 			PkScript:     script,
-			AmountSat:    int64(v.Amount),
+			AmountSat:    amount,
 			RecipientKey: v.SigningKey.PubKey.SerializeCompressed(),
 		}
 	}

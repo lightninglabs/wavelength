@@ -612,7 +612,7 @@ func (s *IntentSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		}
 
 		decision := evaluateQuote(
-			env, evt.RoundID, s.Intents, evt.Quote,
+			ctx, env, evt.RoundID, s.Intents, evt.Quote,
 		)
 
 		return &ClientStateTransition{
@@ -765,8 +765,8 @@ func designateChangeMarker(vtxoReqs []types.VTXORequest,
 	}
 }
 
-func evaluateQuote(env *ClientEnvironment, roundID RoundID, intents Intents,
-	quote *ClientQuote) ClientEvent {
+func evaluateQuote(ctx context.Context, env *ClientEnvironment, roundID RoundID,
+	intents Intents, quote *ClientQuote) ClientEvent {
 
 	if quote == nil {
 		return &QuoteRejected{
@@ -836,6 +836,13 @@ func evaluateQuote(env *ClientEnvironment, roundID RoundID, intents Intents,
 				"refusing to sign",
 		}
 	}
+
+	// Belt-and-braces cap check on the operator-declared fee.
+	// The realised-fee check below is the authoritative defense,
+	// but rejecting a self-incriminating declaration early keeps
+	// the diagnostic message close to the field the operator
+	// chose. A malicious operator can lie about this number, so
+	// we never rely on it alone (see realisedQuoteFee).
 	if quote.OperatorFeeSat > feeCap {
 		return &QuoteRejected{
 			RoundID: roundID,
@@ -855,10 +862,139 @@ func evaluateQuote(env *ClientEnvironment, roundID RoundID, intents Intents,
 		}
 	}
 
+	// Realised-fee cap enforcement (#379). The
+	// quote.OperatorFeeSat field is an operator-supplied claim;
+	// the actual economic fee the client will pay is
+	// Σ(inputs) − Σ(quoted outputs). A malicious operator can
+	// quote a small OperatorFeeSat while reducing the change
+	// output (or any quote-decided amount) by a much larger
+	// delta, so cap enforcement against the declared field alone
+	// is bypassable. Recompute the realised fee from the
+	// authoritative input amounts (boarding ChainInfo, VTXOStore
+	// forfeit values) and the quote's positional output amounts;
+	// reject if it exceeds the cap or if the quote's declared
+	// fee disagrees with the realised value (operator dishonesty).
+	// Quote evaluation may outlive the actor request that triggered local
+	// registration, so detach local store reads from caller cancellation in
+	// the same way IntentRequested does for registration-time accounting.
+	opCtx := context.WithoutCancel(ctx)
+	realised, err := realisedQuoteFee(opCtx, env, intents, quote)
+	if err != nil {
+		return &QuoteRejected{
+			RoundID: roundID,
+			QuoteID: quote.QuoteID,
+			Reason: fmt.Sprintf(
+				"realised fee computation failed: %v", err,
+			),
+		}
+	}
+	if realised < 0 {
+		return &QuoteRejected{
+			RoundID: roundID,
+			QuoteID: quote.QuoteID,
+			Reason: fmt.Sprintf(
+				"realised fee is negative: outputs exceed "+
+					"inputs by %d sat", -realised,
+			),
+		}
+	}
+	if realised > feeCap {
+		return &QuoteRejected{
+			RoundID: roundID,
+			QuoteID: quote.QuoteID,
+			Reason: fmt.Sprintf(
+				"realised operator fee %d exceeds cap %d "+
+					"(quoted operator_fee_sat=%d)",
+				realised, feeCap, quote.OperatorFeeSat,
+			),
+		}
+	}
+	if realised != quote.OperatorFeeSat {
+		return &QuoteRejected{
+			RoundID: roundID,
+			QuoteID: quote.QuoteID,
+			Reason: fmt.Sprintf(
+				"quoted operator_fee_sat=%d disagrees with "+
+					"realised fee=%d (Σinputs−Σoutputs)",
+				quote.OperatorFeeSat, realised,
+			),
+		}
+	}
+
 	return &QuoteAccepted{
 		RoundID: roundID,
 		QuoteID: quote.QuoteID,
 	}
+}
+
+// realisedQuoteFee returns the economic operator fee the client
+// will pay if it signs the supplied quote, computed as
+// Σ(authoritative inputs) − Σ(quoted outputs). Inputs are sourced
+// from the client's own intent composition (boarding ChainInfo
+// amounts and forfeit values looked up from the VTXOStore) so a
+// malicious operator cannot inflate them; outputs are sourced from
+// the quote's positional VTXOQuotes / LeaveQuotes amounts because
+// those are the values the server will actually stamp into the
+// commitment tx and VTXO tree. This is the authoritative cap-
+// enforcement signal: every other field on the quote (notably
+// OperatorFeeSat) is operator-attested and may be a lie.
+//
+// Returns an error only when the VTXOStore lookup for a forfeited
+// VTXO fails; an unset store falls back to the embedded forfeit
+// Amount hint so harness paths without persistence keep working.
+func realisedQuoteFee(ctx context.Context, env *ClientEnvironment,
+	intents Intents, quote *ClientQuote) (int64, error) {
+
+	// Sum inputs and outputs without filtering zero, so the
+	// realised fee equals Σinputs−Σoutputs exactly. Filtering
+	// zero is a no-op arithmetically but invites the reader to
+	// believe negative values are also benignly absorbed; they
+	// are not — a negative amount on either side would silently
+	// shift the realised fee in a direction that lets a hostile
+	// operator pass the cap. Reject any negative value explicitly
+	// instead so callers see a diagnostic rather than a quietly
+	// wrong realised fee.
+	var inputsSat int64
+	for i := range intents.Boarding {
+		amt := int64(intents.Boarding[i].ChainInfo.Amount)
+		if amt < 0 {
+			return 0, fmt.Errorf("negative boarding input "+
+				"amount: %d sat", amt)
+		}
+		inputsSat += amt
+	}
+
+	// Forfeit values must come from the VTXOStore (or, when the
+	// store is nil, the embedded Amount hint). Trusting any
+	// operator-supplied number here would re-open the same
+	// inflation hole the cap is meant to close.
+	forfeitAmt, err := computeTotalForfeitAmount(
+		ctx, env.VTXOStore, intents.Forfeits,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("forfeit amount lookup: %w", err)
+	}
+	inputsSat += int64(forfeitAmt)
+
+	var outputsSat int64
+	for i := range quote.VTXOQuotes {
+		amt := quote.VTXOQuotes[i].AmountSat
+		if amt < 0 {
+			return 0, fmt.Errorf("negative vtxo output amount at "+
+				"index %d: %d sat", i, amt)
+		}
+		outputsSat += amt
+	}
+	for i := range quote.LeaveQuotes {
+		amt := quote.LeaveQuotes[i].AmountSat
+		if amt < 0 {
+			return 0, fmt.Errorf("negative leave output amount at "+
+				"index %d: %d sat", i, amt)
+		}
+		outputsSat += amt
+	}
+
+	return inputsSat - outputsSat, nil
 }
 
 // quoteRejectReason formats server-side quote rejections for operator-facing
@@ -1003,7 +1139,7 @@ func (s *QuoteReceivedState) ProcessEvent(ctx context.Context,
 		}
 
 		decision := evaluateQuote(
-			env, evt.RoundID, s.Intents, evt.Quote,
+			ctx, env, evt.RoundID, s.Intents, evt.Quote,
 		)
 
 		return &ClientStateTransition{
@@ -1195,7 +1331,7 @@ func (s *RoundJoinedState) ProcessEvent(ctx context.Context, event ClientEvent,
 		}
 
 		decision := evaluateQuote(
-			env, evt.RoundID, s.Intents, evt.Quote,
+			ctx, env, evt.RoundID, s.Intents, evt.Quote,
 		)
 
 		return &ClientStateTransition{
