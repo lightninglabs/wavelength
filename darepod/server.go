@@ -297,8 +297,9 @@ type Server struct {
 
 	serverConn *grpc.ClientConn
 
-	rpcAddrMu sync.RWMutex
-	rpcAddr   net.Addr
+	rpcAddrMu   sync.RWMutex
+	rpcAddr     net.Addr
+	gatewayAddr net.Addr
 
 	grpcServer *grpc.Server
 	gateway    *gatewayServer
@@ -525,6 +526,15 @@ func (s *Server) RPCAddr() net.Addr {
 	defer s.rpcAddrMu.RUnlock()
 
 	return s.rpcAddr
+}
+
+// RPCGatewayAddr returns the bound daemon HTTP gateway listener address once
+// startup has progressed far enough to create the listener.
+func (s *Server) RPCGatewayAddr() net.Addr {
+	s.rpcAddrMu.RLock()
+	defer s.rpcAddrMu.RUnlock()
+
+	return s.gatewayAddr
 }
 
 // loadOperatorTerms returns the latest cached operator terms snapshot, if one
@@ -934,6 +944,10 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 
 		return err
 	}
+	s.rpcAddrMu.Lock()
+	s.gatewayAddr = s.gateway.Addr()
+	s.rpcAddrMu.Unlock()
+
 	//nolint:contextcheck // shutdown uses bounded process-root context
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(
