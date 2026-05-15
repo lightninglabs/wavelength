@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,10 +13,12 @@ import (
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
 
 const daemonLogFileName = "darepod.log"
+const daemonConfigFileName = "darepod.conf"
 
 type bestEffortWriter struct {
 	w io.Writer
@@ -52,6 +55,10 @@ func newRootCmd() *cobra.Command {
 			"for wallet operations.",
 		Version: build.Version(),
 		PreRunE: func(cmd *cobra.Command, args []string) error {
+			if err := readConfigFile(v, cmd); err != nil {
+				return err
+			}
+
 			// Merge flags, environment variables, and config
 			// file into the config struct. Viper handles the
 			// precedence: flags > env > config file > defaults.
@@ -98,6 +105,10 @@ func newRootCmd() *cobra.Command {
 	f.String(
 		"logdir", cfg.LogDirPath,
 		"directory for persistent daemon logs",
+	)
+	f.String(
+		"configfile", filepath.Join(cfg.DataDir, daemonConfigFileName),
+		"path to daemon config file",
 	)
 
 	// LND connection flags.
@@ -237,6 +248,15 @@ func newRootCmd() *cobra.Command {
 	v.SetEnvPrefix("DAREPOD")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+	bindOORLimitFlags(v, f)
+	_ = v.BindPFlags(f)
+
+	return cmd
+}
+
+// bindOORLimitFlags binds hyphenated OOR CLI flags to the config keys used by
+// mapstructure.
+func bindOORLimitFlags(v *viper.Viper, f *pflag.FlagSet) {
 	// The CLI uses hyphenated operator-facing flag names, while
 	// mapstructure tags use the project's concatenated lowercase style.
 	// Bind explicit viper keys before BindPFlags adds the literal flag-name
@@ -257,9 +277,136 @@ func newRootCmd() *cobra.Command {
 		"oor.limits.maxmailboxscriptbytes",
 		f.Lookup("oor.limits.max-mailbox-script-bytes"),
 	)
-	_ = v.BindPFlags(f)
+}
 
-	return cmd
+// readConfigFile loads the daemon configuration from the selected properties
+// file. Missing default config files are ignored so first startup works without
+// bootstrapping an empty file; explicit config paths must exist.
+func readConfigFile(v *viper.Viper, cmd *cobra.Command) error {
+	configFile := v.GetString("configfile")
+	if configFile == "" {
+		return nil
+	}
+
+	configFile, err := expandCLIPath(configFile)
+	if err != nil {
+		return err
+	}
+	v.Set("configfile", configFile)
+
+	_, err = os.Stat(configFile)
+	switch {
+	case err == nil:
+	case errors.Is(err, os.ErrNotExist):
+		if cmd.Flags().Changed("configfile") ||
+			os.Getenv("DAREPOD_CONFIGFILE") != "" {
+			return fmt.Errorf("config file %q does not exist",
+				configFile)
+		}
+
+		return nil
+
+	default:
+		return fmt.Errorf("stat config file %q: %w", configFile, err)
+	}
+
+	config, err := readPropertiesConfig(configFile)
+	if err != nil {
+		return fmt.Errorf("read config file %q: %w", configFile, err)
+	}
+
+	if err := v.MergeConfigMap(config); err != nil {
+		return fmt.Errorf("merge config file %q: %w", configFile, err)
+	}
+
+	return nil
+}
+
+// readPropertiesConfig parses a simple key=value config file into a nested map
+// suitable for Viper.
+func readPropertiesConfig(path string) (map[string]any, error) {
+	content, err := os.ReadFile(path) //nolint:gosec // G304: operator path.
+	if err != nil {
+		return nil, err
+	}
+
+	config := make(map[string]any)
+	lines := strings.Split(string(content), "\n")
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			return nil, fmt.Errorf("line %d: expected key=value",
+				i+1)
+		}
+
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, fmt.Errorf("line %d: empty key", i+1)
+		}
+
+		value = trimInlineComment(value)
+		insertConfigValue(config, strings.Split(key, "."), value)
+	}
+
+	return config, nil
+}
+
+// trimInlineComment removes whitespace-prefixed trailing comments from a config
+// value.
+func trimInlineComment(value string) string {
+	for i := 0; i < len(value); i++ {
+		if value[i] != '#' {
+			continue
+		}
+
+		if i == 0 || value[i-1] == ' ' || value[i-1] == '\t' {
+			return strings.TrimSpace(value[:i])
+		}
+	}
+
+	return strings.TrimSpace(value)
+}
+
+// insertConfigValue stores a parsed config value in a nested map under a dotted
+// key path.
+func insertConfigValue(config map[string]any, path []string, value string) {
+	key := path[0]
+	if len(path) == 1 {
+		config[key] = value
+
+		return
+	}
+
+	child, ok := config[key].(map[string]any)
+	if !ok {
+		child = make(map[string]any)
+		config[key] = child
+	}
+
+	insertConfigValue(child, path[1:], value)
+}
+
+// expandCLIPath expands a leading tilde in one CLI path.
+func expandCLIPath(path string) (string, error) {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home dir: %w", err)
+		}
+
+		if path == "~" {
+			return home, nil
+		}
+
+		return filepath.Join(home, path[2:]), nil
+	}
+
+	return filepath.Clean(path), nil
 }
 
 // run validates the config, starts signal interception, and launches the

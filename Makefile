@@ -1,5 +1,5 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
-.PHONY: lint lint-source lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-changed fmt-check fmt-changed-check tidy-module tidy-module-check schema-check doc-check
+.PHONY: lint lint-source lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-changed fmt-check fmt-changed-check tidy-module tidy-module-check schema-check doc-check sample-conf-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race unit-swapruntime check-go-version build install clean release
 .PHONY: build build-swapruntime build-swapclient rpc install install-swapruntime help clean-networks
@@ -318,6 +318,10 @@ check-migration-version: #? Check that LatestMigrationVersion matches migration 
 doc-check: #? Verify documentation cross-links are valid
 	@$(call print, "Checking documentation cross-links.")
 	@./scripts/doc-check.sh
+
+sample-conf-check: #? Verify sample-darepod.conf matches daemon config options
+	@$(call print, "Checking sample-darepod.conf.")
+	$(GOCC) run ./scripts/check-sample-darepod-conf
 
 schema-check: #? Verify schema registry, MCP tools, and cobra commands are in sync
 	@$(call print, "Verifying schema registry consistency.")

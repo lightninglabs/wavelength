@@ -108,6 +108,14 @@ jobs:
           GOWORK: off
 
       ########################
+      # Sample configuration check
+      ########################
+      - name: Check sample darepod config
+        run: make sample-conf-check
+        env:
+          GOWORK: off
+
+      ########################
       # SQLC code gen check
       ########################
       - name: Docker image cache
