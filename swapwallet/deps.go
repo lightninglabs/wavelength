@@ -1,0 +1,179 @@
+//go:build walletrpc && swapruntime
+
+package swapwallet
+
+import (
+	"context"
+	"time"
+
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
+)
+
+// RPCServer is the narrow contract swapwallet composes against from the
+// daemon. The concrete *darepod.RPCServer satisfies it; tests can supply a
+// fake that exercises router/recv/history/service without bringing up the
+// full daemon. The interface is intentionally minimal: every method is
+// already a stable public method on *darepod.RPCServer, and the surface
+// grows only as new wallet-layer capabilities are added.
+type RPCServer interface {
+	LeaveVTXOs(ctx context.Context,
+		req *daemonrpc.LeaveVTXOsRequest) (
+		*daemonrpc.LeaveVTXOsResponse, error)
+
+	ListVTXOs(ctx context.Context,
+		req *daemonrpc.ListVTXOsRequest) (
+		*daemonrpc.ListVTXOsResponse, error)
+
+	ListTransactions(ctx context.Context,
+		req *daemonrpc.ListTransactionsRequest) (
+		*daemonrpc.ListTransactionsResponse, error)
+
+	GetInfo(ctx context.Context,
+		req *daemonrpc.GetInfoRequest) (
+		*daemonrpc.GetInfoResponse, error)
+
+	GetBalance(ctx context.Context,
+		req *daemonrpc.GetBalanceRequest) (
+		*daemonrpc.GetBalanceResponse, error)
+
+	NewAddress(ctx context.Context,
+		req *daemonrpc.NewAddressRequest) (
+		*daemonrpc.NewAddressResponse, error)
+}
+
+// defaultWalletDeadline caps how long any single wallet entry can remain
+// PENDING before the runtime transitions it to FAILED with a timeout
+// reason. The wallet deadline lives ABOVE the swap FSM's own deadline so a
+// stuck or partially-progressed swap never leaves a user-facing row hanging.
+const defaultWalletDeadline = 30 * time.Minute
+
+// defaultListLimitConst is the package-default page size used when neither
+// the caller nor cfg.SwapWallet.DefaultListLimit specifies one. Exposed as
+// a constant so the Deps fallback path uses the same value as the runtime
+// snapshots.
+const defaultListLimitConst uint32 = 100
+
+// maxListLimitConst caps the page size a caller can request. Larger values
+// are clamped to this maximum so a malformed request cannot fan out
+// unbounded DB work. Exposed as a constant so override paths in Deps can
+// reuse it without recomputing.
+const maxListLimitConst uint32 = 1000
+
+// defaultSubscribeBufferConst is the per-subscriber channel buffer used
+// when neither the caller nor cfg.SwapWallet.SubscribeBuffer specifies one.
+const defaultSubscribeBufferConst uint32 = 32
+
+// Deps is the composition struct that wires the swapwallet subserver to
+// existing daemon-owned abstractions. The fields are intentionally typed
+// against pre-existing interfaces so this layer never grows a parallel
+// signer, key-derivation, or coin-selection implementation.
+type Deps struct {
+	// SwapBackend exposes the daemon-owned swap runtime as a typed in-Go
+	// handle. swapwallet drives ResumePending through it during the
+	// unified resume sweep; future methods (StartPay/StartReceive in-Go)
+	// will be added as the backend interface grows.
+	SwapBackend darepod.SwapBackend
+
+	// SwapService is the gRPC-shaped handle for the swap subserver. It
+	// implements every swap RPC method so swapwallet can dispatch Send,
+	// Recv, List, and Subscribe to the underlying swap runtime without
+	// going through a gRPC dial or bufconn. The handle is reachable
+	// through the same *swapClientService that publishes SwapBackend, so
+	// no separate registration is required.
+	SwapService swapclientrpc.SwapClientServiceServer
+
+	// RPCServer is the daemon's core gRPC handler typed against the
+	// narrow RPCServer interface above. swapwallet calls it directly
+	// (in-process) for capabilities the wallet layer composes over:
+	// LeaveVTXOs (cooperative-exit onchain sends), ListTransactions
+	// (unified history), GetInfo / GetBalance (status), NewAddress
+	// (deposit), ListVTXOs (coin selection for onchain sends).
+	RPCServer RPCServer
+
+	// Log is the swapwallet subsystem logger; falls back to btclog.Disabled
+	// when nil.
+	Log btclog.Logger
+
+	// WalletDeadline is the wallet-level deadline applied to every
+	// PENDING entry. Zero falls back to defaultWalletDeadline.
+	WalletDeadline time.Duration
+
+	// DefaultListLimit overrides the default page size used by List when
+	// a request omits the limit. Zero falls back to
+	// defaultListLimitConst.
+	DefaultListLimit uint32
+
+	// MaxListLimit caps the page size a caller can request. Zero falls
+	// back to maxListLimitConst.
+	MaxListLimit uint32
+
+	// SubscribeBuffer is the per-subscriber channel buffer used by
+	// SubscribeWallet. Zero falls back to defaultSubscribeBufferConst.
+	SubscribeBuffer uint32
+}
+
+// resolveDeadline returns the effective wallet deadline, applying the
+// package default when the caller did not configure one.
+func (d *Deps) resolveDeadline() time.Duration {
+	if d.WalletDeadline > 0 {
+		return d.WalletDeadline
+	}
+
+	return defaultWalletDeadline
+}
+
+// resolveListLimit returns the effective list limit for one call.
+// req=0 falls back to either the caller-supplied default or the package
+// constant. Values above the resolved maximum are clamped so a malformed
+// request cannot fan out unbounded DB work.
+func (d *Deps) resolveListLimit(req uint32) uint32 {
+	max := d.resolveMaxListLimit()
+	if req == 0 {
+		def := d.DefaultListLimit
+		if def == 0 {
+			def = defaultListLimitConst
+		}
+		if def > max {
+			return max
+		}
+
+		return def
+	}
+	if req > max {
+		return max
+	}
+
+	return req
+}
+
+// resolveMaxListLimit returns the effective hard cap on a List page.
+func (d *Deps) resolveMaxListLimit() uint32 {
+	if d.MaxListLimit > 0 {
+		return d.MaxListLimit
+	}
+
+	return maxListLimitConst
+}
+
+// resolveSubscribeBuffer returns the per-subscriber channel buffer size
+// honoring the caller override, with the package default as the fallback.
+func (d *Deps) resolveSubscribeBuffer() uint32 {
+	if d.SubscribeBuffer > 0 {
+		return d.SubscribeBuffer
+	}
+
+	return defaultSubscribeBufferConst
+}
+
+// resolveLog returns a non-nil logger, falling back to a disabled logger so
+// call sites can log unconditionally without a nil guard.
+func (d *Deps) resolveLog() btclog.Logger {
+	if d.Log != nil {
+		return d.Log
+	}
+
+	return btclog.Disabled
+}
