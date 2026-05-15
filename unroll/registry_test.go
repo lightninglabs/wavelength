@@ -1325,6 +1325,472 @@ func TestRegistryTerminalStatusRemainsQueryableWhilePersistBlocked(
 	}, testTimeout, 10*time.Millisecond)
 }
 
+// TestRegistryRestoreFailureLeavesRecordRetryable verifies that a
+// transient failure during RestoreNonTerminal does NOT mark the durable
+// record terminal: a subsequent RestoreNonTerminal call (e.g. on the
+// next daemon boot, after the transient ChainSource / DB issue is
+// resolved) must still find and resume the job. This is the regression
+// guard for issue #381 ("Restore failure permanently disables unroll
+// recovery"): an attacker or backend outage that fails the resume Ask
+// on one boot must not strand a recovery-critical job forever.
+func TestRegistryRestoreFailureLeavesRecordRetryable(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	store := newMemRegistryStore()
+	checkpoints := newMemCheckpointStore()
+	txconfirmRef := &fakeTxConfirmRef{}
+
+	actorID := actorIDForTarget(proof.TargetOutpoint())
+	err := store.UpsertRecord(t.Context(), RegistryRecord{
+		TargetOutpoint: proof.TargetOutpoint(),
+		ActorID:        actorID,
+		Trigger:        TriggerRestart,
+		Phase:          PhaseMaterializing,
+	})
+	require.NoError(t, err)
+
+	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
+		Store:          store,
+		DeliveryStore:  checkpoints,
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   txconfirmRef,
+		ChainSource:    &fakeRegistryChainSourceRef{height: 201},
+		Wallet:         &fakeSweepWallet{},
+	})
+	t.Cleanup(registry.Stop)
+
+	// First boot: install a spawnFunc that returns a child whose
+	// ResumeUnrollRequest fails (simulating a transient ChainSource
+	// outage on SubscribeBlocks / RegisterSpend during resume).
+	var attempts atomic.Int32
+	failingSpawn := func(_ context.Context, target wire.OutPoint) (
+		*VTXOUnrollActor, error) {
+
+		attempts.Add(1)
+		behavior := actor.NewFunctionBehavior(
+			func(_ context.Context, msg Msg) fn.Result[Resp] {
+				if _, ok := msg.(*ResumeUnrollRequest); ok {
+					err := errors.New("transient chain " +
+						"outage")
+
+					return fn.Err[Resp](err)
+				}
+
+				return fn.Err[Resp](
+					fmt.Errorf("unexpected msg %T", msg),
+				)
+			},
+		)
+
+		// Test children are owned by t.Cleanup after creation.
+		//nolint:contextcheck
+		return newTestUnrollChild(t, target, behavior), nil
+	}
+	registry.behavior.spawnFunc = failingSpawn
+
+	// RestoreNonTerminal must NOT return an error and must NOT mark
+	// the record terminal; the durable record stays non-terminal so a
+	// future retry path can pick it up.
+	err = registry.RestoreNonTerminal(t.Context())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, attempts.Load())
+
+	record, err := store.GetRecord(t.Context(), proof.TargetOutpoint())
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	require.False(
+		t, record.IsTerminal(),
+		"restore failure must leave record non-terminal",
+	)
+	require.Equal(t, PhaseMaterializing, record.Phase)
+
+	// Second boot path: swap in a healthy spawnFunc that completes
+	// the ResumeUnrollRequest and verify RestoreNonTerminal now
+	// succeeds. The durable record must still be visible to
+	// ListNonTerminalRecords.
+	healthySpawn := func(_ context.Context, target wire.OutPoint) (
+		*VTXOUnrollActor, error) {
+
+		attempts.Add(1)
+		behavior := actor.NewFunctionBehavior(
+			func(_ context.Context, msg Msg) fn.Result[Resp] {
+				switch msg.(type) {
+				case *ResumeUnrollRequest:
+					return fn.Ok[Resp](&AckResp{})
+
+				case *GetStateRequest:
+					return fn.Ok[Resp](&GetStateResp{
+						Started: true,
+						Trigger: TriggerRestart,
+						Phase:   PhaseMaterializing,
+					})
+
+				default:
+					return fn.Err[Resp](
+						fmt.Errorf("unexpected msg %T",
+							msg),
+					)
+				}
+			},
+		)
+
+		// Test children are owned by t.Cleanup after creation.
+		//nolint:contextcheck
+		return newTestUnrollChild(t, target, behavior), nil
+	}
+	registry.behavior.spawnFunc = healthySpawn
+
+	err = registry.RestoreNonTerminal(t.Context())
+	require.NoError(t, err)
+	require.EqualValues(
+		t, 2, attempts.Load(),
+		"second RestoreNonTerminal must respawn the child",
+	)
+
+	// The job is now active and visible via GetStatus.
+	resp, err := registry.Ref().Ask(t.Context(), &GetStatusRequest{
+		Outpoint: proof.TargetOutpoint(),
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	status, ok := resp.(*GetStatusResp)
+	require.True(t, ok)
+	require.True(t, status.Found)
+	require.True(t, status.Active)
+	require.Equal(t, PhaseMaterializing, status.Phase)
+}
+
+// TestRegistryEnsureRestoresFailedNonTerminalRecord verifies that when a
+// non-terminal record exists in the durable store but no child is
+// active (because a prior RestoreNonTerminal hit a transient error and
+// left the record retryable), a fresh EnsureUnrollRequest from the
+// chain resolver or RPC layer kicks off an inline restore instead of
+// silently returning Created=false with a dormant job. This is the
+// second half of the issue #381 fix: handleEnsure used to short-circuit
+// on any existing record without checking whether the in-memory child
+// was actually live.
+func TestRegistryEnsureRestoresFailedNonTerminalRecord(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	store := newMemRegistryStore()
+	checkpoints := newMemCheckpointStore()
+	txconfirmRef := &fakeTxConfirmRef{}
+
+	actorID := actorIDForTarget(proof.TargetOutpoint())
+	err := store.UpsertRecord(t.Context(), RegistryRecord{
+		TargetOutpoint: proof.TargetOutpoint(),
+		ActorID:        actorID,
+		Trigger:        TriggerRestart,
+		Phase:          PhaseMaterializing,
+	})
+	require.NoError(t, err)
+
+	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
+		Store:          store,
+		DeliveryStore:  checkpoints,
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   txconfirmRef,
+		ChainSource:    &fakeRegistryChainSourceRef{height: 201},
+		Wallet:         &fakeSweepWallet{},
+	})
+	t.Cleanup(registry.Stop)
+
+	// Force the prior RestoreNonTerminal to "fail" by simply skipping
+	// it: leave the store record in place but never wire up an active
+	// child. EnsureUnroll must detect the gap and restore inline.
+	var resumes atomic.Int32
+	registry.behavior.spawnFunc = func(_ context.Context,
+		target wire.OutPoint) (*VTXOUnrollActor, error) {
+
+		behavior := actor.NewFunctionBehavior(
+			func(_ context.Context, msg Msg) fn.Result[Resp] {
+				switch msg.(type) {
+				case *ResumeUnrollRequest:
+					resumes.Add(1)
+
+					return fn.Ok[Resp](&AckResp{})
+
+				case *GetStateRequest:
+					return fn.Ok[Resp](&GetStateResp{
+						Started: true,
+						Trigger: TriggerRestart,
+						Phase:   PhaseMaterializing,
+					})
+
+				default:
+					return fn.Err[Resp](
+						fmt.Errorf("unexpected msg %T",
+							msg),
+					)
+				}
+			},
+		)
+
+		// Test children are owned by t.Cleanup after creation.
+		//nolint:contextcheck
+		return newTestUnrollChild(t, target, behavior), nil
+	}
+
+	// Caller asks Ensure for the same outpoint. The pre-existing
+	// non-terminal record + no active child must trigger inline
+	// restore via ResumeUnrollRequest. Created=false because the
+	// job was admitted in a previous boot.
+	resp, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint: proof.TargetOutpoint(),
+		Trigger:  TriggerCriticalExpiry,
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	ensureResp, ok := resp.(*EnsureUnrollResp)
+	require.True(t, ok)
+	require.False(
+		t, ensureResp.Created,
+		"existing record must surface as Created=false",
+	)
+	require.Equal(t, actorID, ensureResp.ActorID)
+	require.EqualValues(
+		t, 1, resumes.Load(),
+		"EnsureUnroll on a non-terminal record with no active "+
+			"child must trigger inline resume",
+	)
+
+	// The job is now active.
+	statusResp, err := registry.Ref().Ask(t.Context(), &GetStatusRequest{
+		Outpoint: proof.TargetOutpoint(),
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	status, ok := statusResp.(*GetStatusResp)
+	require.True(t, ok)
+	require.True(t, status.Active)
+}
+
+// TestRegistryEnsureRetriesAfterInlineRestoreFailure verifies that an
+// inline restore failure inside handleEnsure does not strand the job:
+// a subsequent EnsureUnroll on the same outpoint must attempt restore
+// again rather than short-circuiting on the dormant non-terminal
+// record. Combined with the no-mark-terminal behavior in
+// restoreNonTerminal, this means a transient backend outage is fully
+// recoverable both on the next boot AND via a follow-up Ensure within
+// the same boot.
+func TestRegistryEnsureRetriesAfterInlineRestoreFailure(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	store := newMemRegistryStore()
+	checkpoints := newMemCheckpointStore()
+	txconfirmRef := &fakeTxConfirmRef{}
+
+	actorID := actorIDForTarget(proof.TargetOutpoint())
+	err := store.UpsertRecord(t.Context(), RegistryRecord{
+		TargetOutpoint: proof.TargetOutpoint(),
+		ActorID:        actorID,
+		Trigger:        TriggerRestart,
+		Phase:          PhaseMaterializing,
+	})
+	require.NoError(t, err)
+
+	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
+		Store:          store,
+		DeliveryStore:  checkpoints,
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   txconfirmRef,
+		ChainSource:    &fakeRegistryChainSourceRef{height: 201},
+		Wallet:         &fakeSweepWallet{},
+	})
+	t.Cleanup(registry.Stop)
+
+	// First Ensure: ResumeUnrollRequest fails (transient).
+	var attempts atomic.Int32
+	registry.behavior.spawnFunc = func(_ context.Context,
+		target wire.OutPoint) (*VTXOUnrollActor, error) {
+
+		attempts.Add(1)
+		behavior := actor.NewFunctionBehavior(
+			func(_ context.Context, msg Msg) fn.Result[Resp] {
+				if _, ok := msg.(*ResumeUnrollRequest); ok {
+					return fn.Err[Resp](
+						errors.New(
+							"transient resume " +
+								"failure"),
+					)
+				}
+
+				return fn.Err[Resp](
+					fmt.Errorf("unexpected msg %T", msg),
+				)
+			},
+		)
+
+		// Test children are owned by t.Cleanup after creation.
+		//nolint:contextcheck
+		return newTestUnrollChild(t, target, behavior), nil
+	}
+
+	_, err = registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint: proof.TargetOutpoint(),
+		Trigger:  TriggerCriticalExpiry,
+	}).Await(t.Context()).Unpack()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "restore existing record")
+
+	// The durable record must NOT have been marked terminal by the
+	// failed inline restore.
+	record, err := store.GetRecord(t.Context(), proof.TargetOutpoint())
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	require.False(t, record.IsTerminal())
+
+	// Second Ensure with a healthy spawn must succeed.
+	registry.behavior.spawnFunc = func(_ context.Context,
+		target wire.OutPoint) (*VTXOUnrollActor, error) {
+
+		attempts.Add(1)
+		behavior := actor.NewFunctionBehavior(
+			func(_ context.Context, msg Msg) fn.Result[Resp] {
+				switch msg.(type) {
+				case *ResumeUnrollRequest:
+					return fn.Ok[Resp](&AckResp{})
+
+				case *GetStateRequest:
+					return fn.Ok[Resp](&GetStateResp{
+						Started: true,
+						Trigger: TriggerRestart,
+						Phase:   PhaseMaterializing,
+					})
+
+				default:
+					return fn.Err[Resp](
+						fmt.Errorf("unexpected msg %T",
+							msg),
+					)
+				}
+			},
+		)
+
+		// Test children are owned by t.Cleanup after creation.
+		//nolint:contextcheck
+		return newTestUnrollChild(t, target, behavior), nil
+	}
+
+	resp, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint: proof.TargetOutpoint(),
+		Trigger:  TriggerCriticalExpiry,
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	ensureResp, ok := resp.(*EnsureUnrollResp)
+	require.True(t, ok)
+	require.False(t, ensureResp.Created)
+	require.EqualValues(t, 2, attempts.Load())
+}
+
+// TestRegistryRestoreNonTerminalDispatchedThroughActor verifies that
+// RestoreNonTerminal serializes its r.active / r.pending mutations with
+// concurrent Ensure / GetStatus traffic by going through the registry
+// actor's Receive loop. Running this test under -race is the actual
+// guard: any direct mutation outside the actor goroutine while another
+// Ensure is in flight would trip the detector.
+func TestRegistryRestoreNonTerminalDispatchedThroughActor(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	store := newMemRegistryStore()
+	checkpoints := newMemCheckpointStore()
+	txconfirmRef := &fakeTxConfirmRef{}
+
+	actorID := actorIDForTarget(proof.TargetOutpoint())
+	err := store.UpsertRecord(t.Context(), RegistryRecord{
+		TargetOutpoint: proof.TargetOutpoint(),
+		ActorID:        actorID,
+		Trigger:        TriggerRestart,
+		Phase:          PhaseMaterializing,
+	})
+	require.NoError(t, err)
+
+	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
+		Store:          store,
+		DeliveryStore:  checkpoints,
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   txconfirmRef,
+		ChainSource:    &fakeRegistryChainSourceRef{height: 201},
+		Wallet:         &fakeSweepWallet{},
+	})
+	t.Cleanup(registry.Stop)
+
+	registry.behavior.spawnFunc = func(_ context.Context,
+		target wire.OutPoint) (*VTXOUnrollActor, error) {
+
+		behavior := actor.NewFunctionBehavior(
+			func(_ context.Context, msg Msg) fn.Result[Resp] {
+				switch msg.(type) {
+				case *ResumeUnrollRequest:
+					return fn.Ok[Resp](&AckResp{})
+
+				case *StartUnrollRequest:
+					return fn.Ok[Resp](&AckResp{})
+
+				case *GetStateRequest:
+					return fn.Ok[Resp](&GetStateResp{
+						Started: true,
+						Trigger: TriggerRestart,
+						Phase:   PhaseMaterializing,
+					})
+
+				default:
+					return fn.Err[Resp](
+						fmt.Errorf("unexpected msg %T",
+							msg),
+					)
+				}
+			},
+		)
+
+		// Test children are owned by t.Cleanup after creation.
+		//nolint:contextcheck
+		return newTestUnrollChild(t, target, behavior), nil
+	}
+
+	// Drive RestoreNonTerminal and a concurrent GetStatus probe at the
+	// same time. Both end up in the actor mailbox; -race catches any
+	// behavior-side state still mutated outside the goroutine.
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+
+		require.NoError(t, registry.RestoreNonTerminal(t.Context()))
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		// A GetStatus probe is a read-only message that lands on the
+		// same mailbox, so the registry serializes it against the
+		// restore turn.
+		_, _ = registry.Ref().Ask(t.Context(), &GetStatusRequest{
+			Outpoint: proof.TargetOutpoint(),
+		}).Await(t.Context()).Unpack()
+	}()
+
+	wg.Wait()
+
+	// After restore, the record is active.
+	resp, err := registry.Ref().Ask(t.Context(), &GetStatusRequest{
+		Outpoint: proof.TargetOutpoint(),
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	status, ok := resp.(*GetStatusResp)
+	require.True(t, ok)
+	require.True(t, status.Found)
+	require.True(t, status.Active)
+	require.Equal(t, PhaseMaterializing, status.Phase)
+}
+
 var _ RegistryStore = (*memRegistryStore)(nil)
 var _ RegistryStore = (*flakyRegistryStore)(nil)
 var _ RegistryStore = (*terminalFlakyRegistryStore)(nil)

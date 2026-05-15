@@ -135,12 +135,34 @@ func (a *UnrollRegistryActor) Ref() actor.ActorRef[RegistryMsg, RegistryResp] {
 }
 
 // RestoreNonTerminal resumes all non-terminal records from the control store.
+//
+// The actual restore runs inside the registry actor's goroutine via a
+// restoreNonTerminalMsg, so all mutations of r.active and r.pending stay
+// serialized with concurrent Receive turns (handleEnsure / handleGetStatus
+// can already be running by the time the daemon boot path reaches this
+// call, because NewUnrollRegistryActor has already Start()ed the actor).
 func (a *UnrollRegistryActor) RestoreNonTerminal(ctx context.Context) error {
-	if a == nil || a.behavior == nil {
+	if a == nil || a.ref == nil {
 		return fmt.Errorf("registry actor not initialized")
 	}
 
-	return a.behavior.restoreNonTerminal(ctx)
+	resp, err := a.ref.Ask(
+		ctx, &restoreNonTerminalMsg{},
+	).Await(ctx).Unpack()
+	if err != nil {
+		return err
+	}
+
+	result, ok := resp.(*restoreNonTerminalResp)
+	if !ok {
+		return fmt.Errorf("unexpected restore response %T", resp)
+	}
+
+	if result.Err != "" {
+		return fmt.Errorf("%s", result.Err)
+	}
+
+	return nil
 }
 
 // Stop stops the underlying registry actor.
@@ -237,6 +259,40 @@ func (m *persistRecordResultMsg) MessageType() string {
 // registryMsgSealed seals persistRecordResultMsg into the registry surface.
 func (m *persistRecordResultMsg) registryMsgSealed() {}
 
+// restoreNonTerminalMsg drives the boot-time restore of every non-terminal
+// record through the registry actor's goroutine. Sending it via Ask keeps
+// all mutations of r.active and r.pending serialized with concurrent
+// Receive turns (handleEnsure / handleGetStatus can already be running by
+// the time the daemon boot path issues this call).
+type restoreNonTerminalMsg struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the stable message type identifier.
+func (m *restoreNonTerminalMsg) MessageType() string {
+	return "restoreNonTerminalMsg"
+}
+
+// registryMsgSealed seals restoreNonTerminalMsg into the registry surface.
+func (m *restoreNonTerminalMsg) registryMsgSealed() {}
+
+// restoreNonTerminalResp carries the outcome of a boot-time restore back
+// to the caller of UnrollRegistryActor.RestoreNonTerminal.
+type restoreNonTerminalResp struct {
+	actor.BaseMessage
+
+	// Err is populated when the restore returned an error.
+	Err string
+}
+
+// MessageType returns the stable message type identifier.
+func (m *restoreNonTerminalResp) MessageType() string {
+	return "restoreNonTerminalResp"
+}
+
+// registryRespSealed seals restoreNonTerminalResp into the registry surface.
+func (m *restoreNonTerminalResp) registryRespSealed() {}
+
 // Receive processes one registry message.
 func (r *registryBehavior) Receive(ctx context.Context,
 	msg RegistryMsg) fn.Result[RegistryResp] {
@@ -256,6 +312,9 @@ func (r *registryBehavior) Receive(ctx context.Context,
 
 	case *persistRecordResultMsg:
 		return r.handlePersistRecordResult(ctx, req)
+
+	case *restoreNonTerminalMsg:
+		return r.handleRestoreNonTerminal(ctx)
 
 	default:
 		return fn.Err[RegistryResp](
@@ -332,6 +391,54 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		)
 	}
 	if existing != nil {
+		// A durable record exists but no child is live for it. Two
+		// sub-cases:
+		//
+		//   1. Terminal record (Completed/Failed) — return the
+		//      historical ActorID so callers see a stable identity
+		//      and do not clobber the recorded sweep txid or
+		//      failure reason.
+		//
+		//   2. Non-terminal record — the actor was admitted in a
+		//      previous boot but never resumed (e.g. RestoreNonTerminal
+		//      hit a transient ChainSource error). Attempt an inline
+		//      restore so a fresh Ensure from the chain resolver or
+		//      RPC layer can recover from a transient failure on the
+		//      previous boot. If restore fails again, surface the
+		//      error so the caller can retry; the durable record
+		//      stays non-terminal and will be retried on the next
+		//      Ensure / next daemon restart.
+		if !existing.IsTerminal() {
+			height, err := r.queryBestHeight(ctx)
+			if err != nil {
+				return fn.Err[RegistryResp](
+					fmt.Errorf("best height for "+
+						"restore: %w", err),
+				)
+			}
+
+			child, err := r.tryRestoreOne(ctx, *existing, height)
+			if err != nil {
+				return fn.Err[RegistryResp](
+					fmt.Errorf("restore existing "+
+						"record: %w", err),
+				)
+			}
+
+			r.active[req.Outpoint] = child
+
+			// Mirror the historical record into r.pending so
+			// handleTerminated can carry over Trigger / ActorID
+			// without an extra store lookup, and so handleGetStatus
+			// answers from cache while the child runs.
+			r.pending[req.Outpoint] = cloneRegistryRecord(*existing)
+
+			return fn.Ok[RegistryResp](&EnsureUnrollResp{
+				ActorID: child.Ref().ID(),
+				Created: false,
+			})
+		}
+
 		return fn.Ok[RegistryResp](&EnsureUnrollResp{
 			ActorID: existing.ActorID,
 			Created: false,
@@ -717,10 +824,19 @@ func stopChildAfterDrain(child *VTXOUnrollActor) {
 	}()
 }
 
-// restoreNonTerminal is the daemon's boot entry point for the unroll
-// subsystem. It reads every record from the durable store that is not
-// already Completed or Failed, spawns a fresh VTXOUnrollActor per
-// target, and sends ResumeUnrollRequest to each.
+// handleRestoreNonTerminal is the daemon's boot entry point for the
+// unroll subsystem, dispatched through the registry actor's Receive loop
+// so it shares the same goroutine as handleEnsure / handleGetStatus.
+//
+// Running inside the actor turn is what makes the r.active / r.pending
+// mutations below race-free: NewUnrollRegistryActor calls Start() before
+// the boot path issues the first restore, so by the time we get here the
+// actor may already have processed concurrent Ensure / GetStatus
+// messages from the chain resolver or RPC layer.
+//
+// It reads every record from the durable store that is not already
+// Completed or Failed, spawns a fresh VTXOUnrollActor per target, and
+// sends ResumeUnrollRequest to each.
 //
 // The per-target behavior then loads its checkpoint (proof, planner
 // state, sweep tx, last height), reconstructs the FSM in the same state
@@ -731,23 +847,46 @@ func stopChildAfterDrain(child *VTXOUnrollActor) {
 // already-confirmed ones return immediately with their status.
 //
 // When restore fails for an individual target (spawn fails, or the
-// resume Ask fails), we mark that target terminal with PhaseFailed and
-// a descriptive reason rather than leaving the store entry non-terminal
-// forever. A fresh Ensure from the chain resolver can then try again
-// with a clean slate if the cause is transient.
-func (r *registryBehavior) restoreNonTerminal(ctx context.Context) error {
+// resume Ask fails), we leave the durable record non-terminal so that:
+//
+//   - the next daemon restart will retry the restore from a clean
+//     slate when the transient cause is gone (e.g. a chain backend
+//     outage that prevented SubscribeBlocks / RegisterSpend on the
+//     previous boot), and
+//
+//   - a fresh EnsureUnrollRequest for the same outpoint within the
+//     current boot will attempt an inline restore via handleEnsure
+//     (which detects "non-terminal record, no active child" and calls
+//     tryRestoreOne).
+//
+// Marking the record terminal on a transient restore failure would
+// strand a recovery-critical job: ListNonTerminalRecords would skip it
+// on every subsequent boot and handleEnsure would short-circuit on the
+// terminal record. For a VTXO that is in unilateral_exit and near
+// expiry, that translates into locked or lost funds — see issue #381.
+func (r *registryBehavior) handleRestoreNonTerminal(
+	ctx context.Context) fn.Result[RegistryResp] {
+
 	records, err := r.cfg.Store.ListNonTerminalRecords(ctx)
 	if err != nil {
-		return fmt.Errorf("list non-terminal records: %w", err)
+		return fn.Ok[RegistryResp](&restoreNonTerminalResp{
+			Err: fmt.
+				Errorf("list non-terminal records: %w", err).
+				Error(),
+		})
 	}
 
 	if len(records) == 0 {
-		return nil
+		return fn.Ok[RegistryResp](&restoreNonTerminalResp{})
 	}
 
 	height, err := r.queryBestHeight(ctx)
 	if err != nil {
-		return fmt.Errorf("best height for restore: %w", err)
+		return fn.Ok[RegistryResp](&restoreNonTerminalResp{
+			Err: fmt.
+				Errorf("best height for restore: %w", err).
+				Error(),
+		})
 	}
 
 	for i := range records {
@@ -756,33 +895,59 @@ func (r *registryBehavior) restoreNonTerminal(ctx context.Context) error {
 			continue
 		}
 
-		child, err := r.spawn(ctx, record.TargetOutpoint)
+		child, err := r.tryRestoreOne(ctx, record, height)
 		if err != nil {
-			_ = r.cfg.Store.MarkTerminal(
-				ctx, record.TargetOutpoint, PhaseFailed,
-				"spawn failed on restore: "+err.Error(), nil,
-			)
-
-			continue
-		}
-
-		_, err = child.Ref().Ask(ctx, &ResumeUnrollRequest{
-			Height: height,
-		}).Await(ctx).Unpack()
-		if err != nil {
-			child.Stop()
-			_ = r.cfg.Store.MarkTerminal(
-				ctx, record.TargetOutpoint, PhaseFailed,
-				"resume failed on restore: "+err.Error(), nil,
+			// Leave the record non-terminal so the next boot
+			// or the next EnsureUnrollRequest can retry. Log
+			// loudly: a persistent restore failure is a real
+			// problem even though it is recoverable.
+			r.log.WarnS(ctx, "Failed to restore unroll job; "+
+				"record left non-terminal for retry", err,
+				slog.String(
+					"outpoint",
+					record.TargetOutpoint.String(),
+				),
+				slog.String("actor_id", record.ActorID),
 			)
 
 			continue
 		}
 
 		r.active[record.TargetOutpoint] = child
+
+		// Mirror the historical record into r.pending so
+		// handleTerminated can carry over Trigger / ActorID
+		// without an extra store lookup, and so handleGetStatus
+		// answers from cache while the restored child runs.
+		r.pending[record.TargetOutpoint] = cloneRegistryRecord(record)
 	}
 
-	return nil
+	return fn.Ok[RegistryResp](&restoreNonTerminalResp{})
+}
+
+// tryRestoreOne spawns a fresh per-target actor for one non-terminal
+// record and sends it a ResumeUnrollRequest. On any error the spawned
+// child is stopped and the durable record is left untouched so the
+// caller can retry (either via a future EnsureUnrollRequest or on the
+// next daemon restart).
+func (r *registryBehavior) tryRestoreOne(ctx context.Context,
+	record RegistryRecord, height int32) (*VTXOUnrollActor, error) {
+
+	child, err := r.spawn(ctx, record.TargetOutpoint)
+	if err != nil {
+		return nil, fmt.Errorf("spawn failed on restore: %w", err)
+	}
+
+	_, err = child.Ref().Ask(ctx, &ResumeUnrollRequest{
+		Height: height,
+	}).Await(ctx).Unpack()
+	if err != nil {
+		child.Stop()
+
+		return nil, fmt.Errorf("resume failed on restore: %w", err)
+	}
+
+	return child, nil
 }
 
 // handlePersistActiveRecord is half of the two-message pair that drives
