@@ -31,6 +31,12 @@ func newWalletCmd() *cobra.Command {
 		newWalletBalanceCmd(), newWalletNewAddressCmd(),
 	)
 
+	// The walletrpc build adds the simplified high-level wallet
+	// subcommands (send/recv/list/deposit/status) under the same parent
+	// so users get one wallet vocabulary. The hook is a no-op in builds
+	// without the walletrpc tag.
+	addWalletRPCSubcommands(cmd)
+
 	return cmd
 }
 
