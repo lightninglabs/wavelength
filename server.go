@@ -654,6 +654,17 @@ func (s *Server) RPCAddr() net.Addr {
 	return srv.Addr()
 }
 
+// RPCGatewayAddr returns the address the client HTTP gateway is listening
+// on, or nil if the server hasn't been started yet. Safe for concurrent use.
+func (s *Server) RPCGatewayAddr() net.Addr {
+	srv := s.rpc.Load()
+	if srv == nil {
+		return nil
+	}
+
+	return srv.GatewayAddr()
+}
+
 // GetBatchTreeState queries the BatchWatcher for the current tree state of the
 // deterministic batch rooted at the given round output.
 func (s *Server) GetBatchTreeState(ctx context.Context, roundID string,

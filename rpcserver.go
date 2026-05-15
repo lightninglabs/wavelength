@@ -290,6 +290,15 @@ func (r *RPCServer) Addr() net.Addr {
 	return r.listener.Addr()
 }
 
+// GatewayAddr returns the address the client HTTP gateway is listening on.
+func (r *RPCServer) GatewayAddr() net.Addr {
+	if r.gateway == nil {
+		return nil
+	}
+
+	return r.gateway.Addr()
+}
+
 // GetInfo returns basic information about the ark server.
 func (r *RPCServer) GetInfo(ctx context.Context, req *arkrpc.GetInfoRequest) (
 	*arkrpc.GetInfoResponse, error) {
