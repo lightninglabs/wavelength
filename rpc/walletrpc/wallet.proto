@@ -1,0 +1,252 @@
+syntax = "proto3";
+
+package walletrpc;
+
+option go_package = "github.com/lightninglabs/darepo-client/rpc/walletrpc";
+
+// WalletService exposes a simplified, swap-vocabulary-free wallet API on top
+// of the running daemon. It composes the underlying swap subsystem, ark VTXO
+// operations, boarding deposits, and cooperative leave (VTXO-to-onchain)
+// behind one small surface: Send, Recv, List, Deposit, Balance, Status. The
+// service is registered only when the daemon is built with the walletrpc
+// build tag (which also requires swapruntime).
+service WalletService {
+    // Send dispatches an outbound payment. The destination oneof selects
+    // between paying a BOLT-11 Lightning invoice (routed via an out-swap; the
+    // swap server transparently picks same-Ark p2p or real Lightning) and
+    // sending to an onchain address (routed via LeaveVTXOs cooperative
+    // exit). The daemon owns all downstream lifecycle.
+    rpc Send (SendRequest) returns (SendResponse);
+
+    // Recv asks the daemon for a Lightning invoice the caller can hand out.
+    // Internally this opens a swap-in via the daemon-owned swap subsystem;
+    // the invoice is signed with a daemon-managed key, not an ephemeral
+    // process-local key.
+    rpc Recv (RecvRequest) returns (RecvResponse);
+
+    // List returns the unified wallet history merged from swap, OOR,
+    // boarding, and leave sources. All rows are normalized to the flat
+    // WalletEntry shape; internal correlators are intentionally hidden.
+    rpc List (ListRequest) returns (ListResponse);
+
+    // Deposit returns a boarding onchain address the caller can fund. The
+    // daemon rolls the boarding output into a VTXO during the next round.
+    rpc Deposit (DepositRequest) returns (DepositResponse);
+
+    // Balance returns the unified balance across confirmed VTXOs and
+    // in-flight inbound and outbound amounts.
+    rpc Balance (BalanceRequest) returns (BalanceResponse);
+
+    // Status returns a wallet-level readiness summary: daemon readiness,
+    // wallet-unlocked state, balance summary, pending-entry count.
+    rpc Status (StatusRequest) returns (StatusResponse);
+
+    // SubscribeWallet streams normalized WalletEntry updates as they happen.
+    // When include_existing is set, the daemon emits the current snapshot
+    // before live updates.
+    rpc SubscribeWallet (SubscribeWalletRequest) returns (stream WalletEntry);
+}
+
+// EntryKind tags each WalletEntry with the user-visible category of the
+// underlying operation. Internal subtypes (same-Ark p2p vs real Lightning,
+// OOR session correlators, round IDs) are deliberately not surfaced.
+enum EntryKind {
+    ENTRY_KIND_UNSPECIFIED = 0;
+    ENTRY_KIND_SEND = 1;
+    ENTRY_KIND_RECV = 2;
+    ENTRY_KIND_DEPOSIT = 3;
+    ENTRY_KIND_EXIT = 4;
+}
+
+// EntryStatus collapses every backing FSM into the three states user-facing
+// surfaces actually need.
+enum EntryStatus {
+    ENTRY_STATUS_UNSPECIFIED = 0;
+    ENTRY_STATUS_PENDING = 1;
+    ENTRY_STATUS_COMPLETE = 2;
+    ENTRY_STATUS_FAILED = 3;
+}
+
+message SendRequest {
+    // destination selects the outbound payment target. Exactly one variant
+    // must be set.
+    oneof destination {
+        // invoice is a BOLT-11 Lightning invoice. The daemon opens an
+        // out-swap; the swap server picks same-Ark p2p vs real Lightning
+        // transparently.
+        string invoice = 1;
+
+        // onchain_address is a bech32 onchain destination. The daemon
+        // submits a LeaveVTXOs request covering amt_sat plus fees.
+        string onchain_address = 2;
+    }
+
+    // amt_sat is required for onchain sends and for invoice sends whose
+    // BOLT-11 does not carry an amount.
+    uint64 amt_sat = 3;
+
+    // note is an optional caller-supplied label persisted alongside the
+    // entry. It is never interpreted by the daemon.
+    string note = 4;
+
+    // max_fee_sat is the optional caller cap on routing or sweep fees. Zero
+    // means use daemon defaults.
+    uint64 max_fee_sat = 5;
+}
+
+message SendResponse {
+    // entry is the initial WalletEntry persisted for this send. The caller
+    // can poll List or SubscribeWallet for subsequent status transitions.
+    WalletEntry entry = 1;
+}
+
+message RecvRequest {
+    // amt_sat is the amount the caller wants to receive in satoshis.
+    uint64 amt_sat = 1;
+
+    // memo is the optional human-readable memo to embed in the invoice.
+    string memo = 2;
+}
+
+message RecvResponse {
+    // invoice is the BOLT-11 payment request the caller hands out to the
+    // payer.
+    string invoice = 1;
+
+    // entry is the initial WalletEntry persisted for this receive.
+    WalletEntry entry = 2;
+}
+
+message ListRequest {
+    // pending_only filters the returned entries to those still in flight.
+    bool pending_only = 1;
+
+    // kinds optionally narrows the response to specific entry categories.
+    // When empty, all kinds are returned.
+    repeated EntryKind kinds = 2;
+
+    // limit caps the response size. Zero means use the daemon default.
+    uint32 limit = 3;
+
+    // offset is the pagination offset within the unified, time-sorted
+    // stream.
+    uint32 offset = 4;
+}
+
+message ListResponse {
+    // entries are the unified, time-sorted wallet operations.
+    repeated WalletEntry entries = 1;
+
+    // total is the total number of entries matching the filter before
+    // limit and offset are applied.
+    uint32 total = 2;
+}
+
+message DepositRequest {
+    // amt_sat_hint is an optional caller hint about the expected deposit
+    // amount. The daemon may use it to size internal accounting; the
+    // returned boarding address is not amount-bound.
+    uint64 amt_sat_hint = 1;
+}
+
+message DepositResponse {
+    // onchain_address is a fresh boarding address the caller should fund.
+    // The daemon monitors it and rolls the boarding output into the next
+    // round.
+    string onchain_address = 1;
+
+    // entry is the initial DEPOSIT-kind WalletEntry persisted to track the
+    // pending boarding operation.
+    WalletEntry entry = 2;
+}
+
+message BalanceRequest {
+}
+
+message BalanceResponse {
+    // confirmed_sat is the total spendable VTXO amount in satoshis.
+    int64 confirmed_sat = 1;
+
+    // pending_in_sat is the total in-flight inbound amount (boarding plus
+    // receive operations).
+    int64 pending_in_sat = 2;
+
+    // pending_out_sat is the total in-flight outbound amount (send plus
+    // exit operations).
+    int64 pending_out_sat = 3;
+}
+
+message StatusRequest {
+}
+
+message StatusResponse {
+    // ready is true when the daemon and its dependencies are up.
+    bool ready = 1;
+
+    // unlocked is true when the wallet seed is loaded and signing is
+    // available.
+    bool unlocked = 2;
+
+    // network is the bitcoin network the daemon is configured for, for
+    // example "mainnet", "testnet", "signet", or "regtest".
+    string network = 3;
+
+    // balance is the unified balance summary at the time of the call.
+    BalanceResponse balance = 4;
+
+    // pending_count is the number of WalletEntry rows in PENDING status.
+    uint32 pending_count = 5;
+}
+
+message SubscribeWalletRequest {
+    // include_existing instructs the daemon to emit the current snapshot
+    // before the live subscription is registered.
+    bool include_existing = 1;
+
+    // kinds optionally narrows the live stream to specific entry
+    // categories. When empty, all kinds are streamed.
+    repeated EntryKind kinds = 2;
+}
+
+// WalletEntry is the single flat row type returned by every wallet history
+// surface. The shape is deliberately minimal: internal correlators
+// (session_id, round_id, settlement_type, mailbox subtype) are dropped
+// before responding. Power-user detail belongs in daemon logs.
+message WalletEntry {
+    // id is the stable identifier for this entry. Concretely it is the
+    // Lightning payment_hash for swap rows, the leave_job_id (or sweep
+    // txid) for exits, the boarding outpoint or txid for deposits.
+    string id = 1;
+
+    // kind is the user-visible category.
+    EntryKind kind = 2;
+
+    // status collapses every backing FSM into PENDING, COMPLETE, or FAILED.
+    EntryStatus status = 3;
+
+    // amount_sat is signed: positive values are incoming to the wallet,
+    // negative values are outgoing.
+    int64 amount_sat = 4;
+
+    // fee_sat is the absolute fee paid (or pending) for this operation.
+    int64 fee_sat = 5;
+
+    // counterparty is a short, display-friendly identifier of the other
+    // side: a truncated invoice for Lightning, an ark peer address for
+    // OOR, a bech32 onchain address for exits, or "boarding" for deposits.
+    string counterparty = 6;
+
+    // created_at_unix is the local creation timestamp in unix seconds.
+    int64 created_at_unix = 7;
+
+    // updated_at_unix is the last persisted update timestamp in unix
+    // seconds. List and SubscribeWallet sort by this field, descending.
+    int64 updated_at_unix = 8;
+
+    // note is the caller-supplied label captured at submit time, if any.
+    string note = 9;
+
+    // failure_reason is populated only when status is FAILED. It is a
+    // single human-readable string, never a coded enum tree.
+    string failure_reason = 10;
+}
