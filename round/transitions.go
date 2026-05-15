@@ -1036,13 +1036,16 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 			len(intents.Leaves)), false
 	}
 
-	// When the intent carries exactly one output across the
-	// combined VTXORequests + LeaveRequests, the server treats that
-	// sole output as implicit change and stamps the residual on it
-	// without requiring IsChange=true on the wire (#270, see the
-	// server's resolveChangeDesignation). Mirror that contract here
-	// so single-output boarding / refresh / leave intents do not
-	// trip the non-change amount-equality check below.
+	// When the intent carries exactly one output across the combined
+	// VTXORequests + LeaveRequests, the server treats that sole output
+	// as implicit change and stamps the residual on it without requiring
+	// IsChange=true on the wire (#270, see the server's
+	// resolveChangeDesignation). Its intent Amount is only a target or
+	// lower-bound hint in boarding / leave flows; the honest quote can
+	// therefore be above or below that target depending on the realised
+	// seal-time fee and input value. Do not enforce amount equality here:
+	// realisedQuoteFee below is the authoritative security check, because
+	// it verifies the actual signed outputs imply the quoted, capped fee.
 	totalOutputs := len(intents.VTXOs) + len(intents.Leaves)
 	implicitChange := totalOutputs == 1
 
@@ -1070,11 +1073,17 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 				"echo mismatch", i), false
 		}
 
-		if !vtxoReq.IsChange && !implicitChange &&
-			entry.AmountSat != int64(vtxoReq.Amount) {
-			return fmt.Sprintf("vtxo[%d] non-change amount "+
-				"%d != intent target %d", i,
-				entry.AmountSat, int64(vtxoReq.Amount)), false
+		if !implicitChange && !vtxoReq.IsChange {
+			// Multi-output intent: only the explicit
+			// IsChange=true slot may deviate from its
+			// intent target.
+			if entry.AmountSat != int64(vtxoReq.Amount) {
+				return fmt.Sprintf("vtxo[%d] "+
+					"non-change amount %d != "+
+					"intent target %d", i,
+					entry.AmountSat,
+					int64(vtxoReq.Amount)), false
+			}
 		}
 	}
 
@@ -1091,11 +1100,17 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 				"mismatch", i), false
 		}
 
-		if !leaveReq.IsChange && !implicitChange &&
-			entry.AmountSat != leaveReq.Output.Value {
-			return fmt.Sprintf("leave[%d] non-change "+
-				"amount %d != intent target %d", i,
-				entry.AmountSat, leaveReq.Output.Value), false
+		if !implicitChange && !leaveReq.IsChange {
+			// Multi-output intent: only the explicit
+			// IsChange=true slot may deviate from its
+			// intent target.
+			if entry.AmountSat != leaveReq.Output.Value {
+				return fmt.Sprintf("leave[%d] "+
+					"non-change amount %d != "+
+					"intent target %d", i,
+					entry.AmountSat,
+					leaveReq.Output.Value), false
+			}
 		}
 	}
 
