@@ -416,6 +416,15 @@ type FraudConfig struct {
 	// (checkpoint or timeout sweep). A value of 0 falls back to
 	// DefaultFraudMaxResponseFeeRate.
 	MaxResponseFeeRateSatPerVByte int64 `mapstructure:"maxresponsefeerate"`
+
+	// Disabled skips the operator fraud-response actor entirely. The
+	// batchwatcher will not notify any fraud detector, so the operator
+	// will not react to on-chain fraud events. Setting this to true on
+	// a production deployment loses user funds when an OOR fraud event
+	// occurs: only meaningful in non-mainnet test environments that
+	// exercise client-side recipient fraud recovery without operator
+	// interference. Validate() refuses the flag on mainnet.
+	Disabled bool `mapstructure:"disabled"`
 }
 
 // DefaultFraudMaxResponseFeeRate is the default cap on the CPFP child fee
@@ -554,6 +563,17 @@ func (c *Config) Validate() error {
 	}
 	if c.Rounds.ConnectorDustAmount <= 0 {
 		return fmt.Errorf("rounds connector dust amount must be > 0")
+	}
+
+	// fraud.disabled silently leaves the operator with no on-chain
+	// fraud-response defense, which loses user funds the first time a
+	// client cheats. Permitted only on non-mainnet so itests can
+	// exercise client-side recovery paths without operator
+	// interference; refuse it on mainnet so a typo or lifted-from-
+	// regtest config cannot ship a defenseless production daemon.
+	if c.Fraud != nil && c.Fraud.Disabled && c.Network == "mainnet" {
+		return fmt.Errorf("fraud.disabled is not permitted on " +
+			"mainnet; see FraudConfig.Disabled docs")
 	}
 
 	// Validate the fees.staticfeeratesatkw override if the operator
