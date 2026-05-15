@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -29,6 +28,7 @@ import (
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/lightningnetwork/lnd/routing/route"
 )
 
 var (
@@ -4280,7 +4280,8 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 	// Persist VTXOs in unconfirmed state before broadcast.
 	if len(s.VTXOTrees) > 0 {
 		vtxos, err := collectVTXOs(
-			env.RoundID, s.VTXOTrees, s.ClientRegistrations,
+			env.RoundID, env.Terms.OperatorKey.PubKey, s.VTXOTrees,
+			s.ClientRegistrations,
 		)
 		if err != nil {
 			return buildFailureTransition(
@@ -4495,19 +4496,38 @@ func serializeWitness(witness wire.TxWitness) ([]byte, error) {
 
 // collectVTXOs builds a slice of VTXOs from the constructed VTXO trees for
 // persistence. Each leaf in the tree corresponds to a VTXO.
-func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
+//
+// Descriptors are looked up per leaf by the leaf's signing (cosigner) key
+// rather than by PkScript. Two VTXO requests with the same owner/operator/
+// expiry policy compile to the same PkScript but have distinct, batch-unique
+// signing keys (enforced by ValidateVTXORequest). Keying by PkScript caused
+// the later descriptor to overwrite the earlier one and corrupted persisted
+// VTXO metadata (Amount, PolicyTemplate, CoSignerKey) for one of the leaves;
+// keying by signing key disambiguates colliding scripts.
+func collectVTXOs(roundID RoundID, operatorKey *btcec.PublicKey,
+	vtxoTrees map[int]*tree.Tree,
 	clientRegs map[clientconn.ClientID]*ClientRegistration) ([]*VTXO,
 	error) {
 
 	const leafMissingMsg = "leaf missing outputs or cosigners"
 
-	// Build an index of descriptors keyed by PkScript for fast lookup when
-	// traversing leaves. Each VTXO descriptor has a unique script derived
-	// from its signing keys.
-	descriptorIndex := make(map[string]*tree.VTXODescriptor)
+	if operatorKey == nil {
+		return nil, fmt.Errorf("collectVTXOs: nil operator key")
+	}
+
+	// Build an index of descriptors keyed by SigningKeyHex (route.Vertex,
+	// a [33]byte array). ValidateVTXORequest enforces that signing keys
+	// are unique across the batch, so this keying is collision-free even
+	// when two leaves share a PkScript (same owner/operator/expiry
+	// policy). Reusing reg.VTXODescriptors' existing key type avoids
+	// re-serializing each pubkey into a hex string.
+	descriptorIndex := make(map[SigningKeyHex]*tree.VTXODescriptor)
 	for _, reg := range clientRegs {
-		for _, desc := range reg.VTXODescriptors {
-			key := hex.EncodeToString(desc.PkScript)
+		for key, desc := range reg.VTXODescriptors {
+			if desc.CoSignerKey == nil {
+				return nil, fmt.Errorf("descriptor missing " +
+					"co-signer key")
+			}
 			descriptorIndex[key] = desc
 		}
 	}
@@ -4522,12 +4542,26 @@ func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
 					return fmt.Errorf(leafMissingMsg)
 				}
 
-				pkScript := node.Outputs[0].PkScript
-				key := hex.EncodeToString(pkScript)
+				// Identify the owner signing key as the
+				// non-operator cosigner on the leaf. Leaves
+				// are built with cosigners = dedup(owner,
+				// operator); when the two coincide (a
+				// degenerate but legal configuration) the
+				// signing key is the operator key itself.
+				signingKey, err := leafSigningKey(
+					node.CoSigners, operatorKey,
+				)
+				if err != nil {
+					return err
+				}
+
+				key := route.NewVertex(signingKey)
 				desc, ok := descriptorIndex[key]
 				if !ok {
-					return fmt.Errorf("no descriptor "+
-						"for leaf %x", pkScript)
+					return fmt.Errorf("no descriptor for "+
+						"leaf signing key %x",
+						signingKey.
+							SerializeCompressed())
 				}
 
 				// Compute the outpoint for this VTXO leaf.
@@ -4554,6 +4588,42 @@ func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
 	}
 
 	return vtxos, nil
+}
+
+// leafSigningKey returns the owner-side signing key for a VTXO leaf given
+// its cosigner set and the operator's public key. Leaf nodes are constructed
+// with cosigners = dedup([ownerSigningKey, operator]), so the signing key is
+// the (typically unique) non-operator cosigner. When the cosigner set has
+// been collapsed to a single key (signing key equals operator key —
+// degenerate but representable) we return that key. Taking *btcec.PublicKey
+// (rather than serialized bytes) lets us compare via IsEqual and avoids
+// re-serializing the operator key on every cosigner iteration.
+func leafSigningKey(cosigners []*btcec.PublicKey,
+	operatorKey *btcec.PublicKey) (*btcec.PublicKey, error) {
+
+	if len(cosigners) == 0 {
+		return nil, fmt.Errorf("leaf has no cosigners")
+	}
+
+	for _, ck := range cosigners {
+		if ck == nil {
+			continue
+		}
+		if !ck.IsEqual(operatorKey) {
+			return ck, nil
+		}
+	}
+
+	// All cosigners equal the operator key (dedup collapsed to a single
+	// entry, or the slice consisted only of the operator). Fall back to
+	// the operator key itself; in this degenerate case the descriptor's
+	// CoSignerKey is also the operator key, so the index lookup will
+	// still succeed.
+	if cosigners[0] == nil {
+		return nil, fmt.Errorf("leaf has nil cosigner")
+	}
+
+	return cosigners[0], nil
 }
 
 // ProcessEvent handles events in the FinalizedState. This state holds the
