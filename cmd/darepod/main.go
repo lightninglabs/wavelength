@@ -55,6 +55,7 @@ func newRootCmd() *cobra.Command {
 			}
 
 			configureSwapRuntime(cfg)
+			configureWalletRPC(cfg)
 
 			return nil
 		},
