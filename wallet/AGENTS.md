@@ -34,6 +34,21 @@ refresh, leave, OOR spend, and directed send flows.
 - `SendVTXOsRequest` / `SendVTXOsResponse` — Ask-request for in-round directed sends. Validates each recipient amount is within `(0, MaxSatoshi]` and that the running total never overflows `int64`, atomically selects and reserves VTXOs via `SelectAndReserveForfeitRequest`, builds forfeit + recipient VTXO intents, and registers with the round actor. Supports dry-run mode for previewing coin selection without committing. Reserved VTXOs are released via a deferred cleanup that uses `context.WithoutCancel` so cleanup survives caller disconnect; on success, a `committed` flag is set to skip the release.
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
 - `VTXODescriptor.EffectivePolicyTemplate` — Decodes the serialized `PolicyTemplate` field on the wallet-level VTXO descriptor using `lib/arkscript`.
+- `SweepBoardingUTXOsRequest` / `SweepBoardingUTXOsResponse` — Ask-request
+  to the `BoardingSweepActor` to build (and optionally broadcast) an
+  aggregate boarding sweep transaction. `Request.Broadcast bool` controls
+  whether the result is persisted and submitted to the network.
+  `Response.Tx`, `Response.Fee`, and `Response.Txid` are always populated
+  for previewing; `Response.Persisted bool` indicates whether the row was
+  written to the boarding sweep store.
+- `BoardingSweepActor` — Durable actor that builds, signs, and optionally
+  broadcasts an aggregate transaction spending one or more CSV-mature
+  boarding outpoints to the backing wallet's change address. Fee tunables:
+  fallback rate 2 sat/vB, default conf target 6, max fee 25% of total
+  boarding value, max 100 inputs, P2A anchor value 330 sats.
+- `NewBoardingSweep` / `NewBoardingSweepInput` — Domain types for the
+  boarding sweep control plane (passed to `db.BoardingWalletStore` for
+  persistence).
 
 ## Relationships
 

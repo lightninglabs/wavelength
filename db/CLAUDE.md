@@ -77,7 +77,7 @@ backends.
   bounds enforced during `DeserializeTree` to prevent stack overflow or OOM.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — Two-stage OOR
   ancestry resolver in `oor_unroll_resolver.go`.
-- `LatestMigrationVersion = 11` — Current schema version.
+- `LatestMigrationVersion = 13` — Current schema version.
 
 ## Relationships
 
@@ -109,6 +109,20 @@ backends.
 - **Never write raw SQL in Go** — add queries to `db/queries/`, regenerate
   with `make sqlc`.
 - Per-subsystem logging: uses instance logger instead of global package logger.
+- Migration `000013_pending_board_request` adds `pending_board_requests`
+  table keyed by `(outpoint_hash, outpoint_index)`. Persists the user's
+  explicit `Board` RPC intent (target VTXO count, timestamp) so a daemon
+  restart between Board admission and round seal replays the request
+  rather than silently dropping it. Rows are cleared when the matching
+  boarding intent transitions out of Confirmed (atomically with the state
+  change). A subsequent Board call upserts `target_vtxo_count` for
+  still-Confirmed outpoints.
+- Migration `000012_boarding_sweep_ledger_events` inserts the
+  `boarding_sweep_fee_paid` ledger event type and the
+  `boarding_sweep_input` / `boarding_sweep_return` UTXO audit
+  classifications so boarding-sweep ledger entries satisfy the
+  `ledger_entries.event_type` and `wallet_utxo_log.classification` FK
+  constraints.
 - Migration `000011_boarding_sweeps` adds `boarding_sweeps` and
   `boarding_sweep_inputs` tables plus a new `sweep_pending` boarding status.
   Input FK `FOREIGN KEY (previous_status) REFERENCES boarding_statuses` ensures

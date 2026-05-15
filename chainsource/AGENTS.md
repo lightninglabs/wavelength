@@ -38,6 +38,13 @@ communication alongside the raw registration API.
 - `MapBlockEpoch`, `MapConfirmationEvent`, `MapSpendEvent` — Generic helpers
   that wrap a target `TellOnlyRef[Out]` and a mapping function, producing a
   `TellOnlyRef` of the source event type for actor-to-actor notification wiring.
+- `IsIgnorableBroadcastError(err) bool` — Returns true when `err` signals
+  that the transaction is already known to the node (e.g. already in
+  mempool, already have transaction, output already spent). Used by
+  `txconfirm` to suppress spurious rebroadcast failures on retry.
+- `IsIgnorableMempoolRejectReason(reason string) bool` — Returns true when
+  a mempool rejection string indicates the transaction is already known,
+  allowing callers to treat the submission as a silent success.
 
 ## Relationships
 
