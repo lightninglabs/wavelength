@@ -1840,14 +1840,16 @@ func TestDeliveryConcurrentExtendAndNack(t *testing.T) {
 	wg.Wait()
 }
 
-// TestDurableAskWithMailboxFull tests DurableAsk behavior when mailbox is full.
-func TestDurableAskWithMailboxFull(t *testing.T) {
+// TestDurableAskWithExpiredContext tests DurableAsk behavior when the caller
+// context has already expired.
+func TestDurableAskWithExpiredContext(t *testing.T) {
 	t.Parallel()
 
 	store := newMockDeliveryStore()
 	codec := newActorTestCodec()
 
-	// Create a behavior that blocks on receive.
+	// Create a behavior that would block on receive if the expired context
+	// did not prevent DurableAsk from enqueueing the message.
 	behavior := newMockBehavior(fn.Ok(42))
 	behavior.setDelay(5 * time.Second)
 
@@ -1867,25 +1869,14 @@ func TestDurableAskWithMailboxFull(t *testing.T) {
 
 	durableRef := actor.Ref().(DurableActorRef[*actorTestMsg, int])
 
-	// Send many messages to fill the mailbox.
-	for i := 0; i < 200; i++ {
-		_ = durableRef.DurableAsk(ctx, msg, DurableAskParams{
-			CallbackActorID: "callback-actor",
-			CorrelationID:   fmt.Sprintf("test-correlation-%d", i),
-		})
-	}
-
-	// Use a context with timeout that will be exceeded.
-	ctxTimeout, cancel := context.WithTimeout(ctx, 1*time.Millisecond)
+	ctxExpired, cancel := context.WithDeadline(
+		ctx, time.Now().Add(-time.Second),
+	)
 	defer cancel()
 
-	// Wait for context to expire.
-	time.Sleep(5 * time.Millisecond)
-
-	// This should fail when the context deadline is exceeded.
-	err := durableRef.DurableAsk(ctxTimeout, msg, DurableAskParams{
+	err := durableRef.DurableAsk(ctxExpired, msg, DurableAskParams{
 		CallbackActorID: "callback-actor",
-		CorrelationID:   "test-correlation-overflow",
+		CorrelationID:   "test-correlation-expired",
 	})
 
 	require.ErrorIs(t, err, context.DeadlineExceeded)

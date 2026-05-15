@@ -115,6 +115,11 @@ const (
 	// long enough to observe the death window we have actually seen in
 	// CI.
 	bitcoindStartProbeDuration = 5 * time.Second
+
+	// maxDockerDNSLabelLen keeps container names within the DNS label size
+	// Docker's embedded resolver can reliably resolve inside harness
+	// networks.
+	maxDockerDNSLabelLen = 63
 )
 
 var (
@@ -200,9 +205,13 @@ type Harness struct {
 	// artifactsDir is the base dir for all artifacts (logs, data dirs).
 	artifactsDir string
 
-	// group is the optional group name for all resources (containers,
-	// network, dirs).
+	// group is the optional group name for artifacts and labels.
 	group string
+
+	// dockerNameSuffix keeps docker resource names unique even when
+	// parallel CI jobs run the same test name with the same explicit
+	// GroupName.
+	dockerNameSuffix string
 
 	// bitcoinDataDir is the bitcoind data dir (for blocks, chainstate,
 	// wallet).
@@ -298,8 +307,8 @@ type Options struct {
 	// ArtifactsBaseDir is the base directory to create store artifacts in.
 	ArtifactsBaseDir string
 
-	// GroupName is an optional name to group all resources (containers,
-	// network, dirs) under. If empty, a random suffix is used.
+	// GroupName is an optional name to group artifacts and labels under.
+	// Docker container names always add a per-harness suffix.
 	GroupName string
 
 	// HarnessLogStdOut if true, also prints harness logs to stdout in
@@ -464,6 +473,7 @@ func (h *Harness) setupArtifactsAndLogging() {
 	} else {
 		h.group = randSuffix()
 	}
+	h.dockerNameSuffix = randSuffix()
 
 	require.NoError(h.T, os.MkdirAll(h.opts.ArtifactsBaseDir, 0o755))
 
@@ -2668,15 +2678,24 @@ func imageTag(image string) string {
 	return ""
 }
 
-// containerName returns a container name, optionally with random suffix. If the
-// harness has an explicit GroupName, use it without suffix for predictable
-// names.
+// containerName returns a container name scoped to this harness instance.
 func (h *Harness) containerName(prefix string) string {
-	if h.opts.GroupName != "" {
-		return prefix + "-" + h.group
+	name := prefix + "-" + h.group
+	if h.dockerNameSuffix == "" {
+		if len(name) > maxDockerDNSLabelLen {
+			return name[:maxDockerDNSLabelLen]
+		}
+
+		return name
 	}
 
-	return prefix + "-" + h.group + "-" + randSuffix()
+	suffix := "-" + h.dockerNameSuffix
+	maxNameLen := maxDockerDNSLabelLen - len(suffix)
+	if len(name) > maxNameLen {
+		name = name[:maxNameLen]
+	}
+
+	return name + "-" + h.dockerNameSuffix
 }
 
 // randSuffix returns a short, random suffix suitable for naming resources.
