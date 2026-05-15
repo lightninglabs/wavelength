@@ -7,10 +7,10 @@ carry the swap runtime yet.
 ## Problem
 
 The swap SDK already has durable pay and receive FSMs under `sdk/swaps`,
-and the CLI can start, list, and resume sessions from an isolated swap
-SQLite database. The missing production shape is ownership: today the CLI
-process is still the thing driving progress. If the CLI exits, swap
-progress stops until a user runs `swap resume`.
+but production swap execution needs a single owner. A short-lived CLI
+process should not be the thing driving progress. If the CLI exits, swap
+progress should continue in the daemon instead of waiting for another
+manual command.
 
 That is fine for manual regtest work, but it is not the model we want for
 WalletDK or application integrations. A user should submit a swap intent,
@@ -64,8 +64,7 @@ swapclientserver/*.go                             //go:build swapruntime
 cmd/darepod/swapruntime.go                        //go:build swapruntime
 cmd/darepod/swapruntime_stub.go                   //go:build !swapruntime
 cmd/darepocli/darepoclicommands/cmd_swap_rpc.go   //go:build swapruntime
-cmd/darepocli/darepoclicommands/cmd_swap_stub.go  //go:build !swapruntime && !swapdirect
-cmd/darepocli/darepoclicommands/cmd_swap.go       //go:build swapdirect && !swapruntime
+cmd/darepocli/darepoclicommands/cmd_swap_stub.go  //go:build !swapruntime
 ```
 
 The stub path should be boring:
@@ -73,13 +72,11 @@ The stub path should be boring:
 - `darepod` compiles with no swap executor and no swap server dialer.
 - `darepod` does not register the swap subserver in non-`swapruntime`
   builds.
-- `darepocli` either omits the `swap` command or exposes a tiny command
-  that returns `swap support requires building with tags="swapruntime"`.
+- `darepocli` exposes a tiny command that returns `swap support requires
+  building with tags="swapruntime"`.
 
-Omitting the command is cleaner for production binaries. A stub command is
-more discoverable for developer builds. Either is acceptable, but do not
-leave the current direct-driver CLI untagged if the goal is to keep swap
-runtime dependencies out of default CLI builds.
+A stub command keeps swap support discoverable in non-swapruntime builds
+without linking a second CLI-side swap runtime into ordinary binaries.
 
 The tagged CLI command should depend on the generated swap subserver client,
 not `sdk/swaps`. It should be structurally similar to `cmd_unroll.go`: parse
@@ -342,15 +339,9 @@ use the stream. If it is deferred, they should poll `GetSwap` with a small
 interval and stop once a terminal state appears. The polling fallback should
 live in the CLI, not in the daemon executor.
 
-Existing direct-driver flags such as `--swapdb` and `--swapserver` should move
-to daemon config in this mode. For early developer ergonomics, they can remain
-as explicit overrides on `darepod`, not on the CLI command that merely talks to
-the daemon.
-
-The old direct-driver implementation can remain temporarily as a developer-only
-path if it is useful, but it should have a different build tag or command name
-so the intended `swapruntime` CLI path exercises the daemon RPC contract.
-Otherwise tests can pass while the production control plane stays untested.
+Swap storage and swap-server settings belong in `darepod` config. That keeps
+daemon startup as the single place where background worker dependencies are
+configured, and keeps the CLI focused on the daemon RPC contract.
 
 ## Config
 
