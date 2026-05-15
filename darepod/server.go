@@ -219,6 +219,20 @@ type Server struct {
 	// so response envelopes can include it without re-computing.
 	authSigHex string
 
+	// tlsLeafSPKI is the DER-encoded SubjectPublicKeyInfo of the
+	// P-256 client TLS leaf certificate this daemon dialed with.
+	// It is captured during dialServer and used to compute the
+	// secp256k1 → TLS-leaf binding signature that the server
+	// verifies against the leaf it observes on the connection
+	// (issue #448). Empty when TLS is disabled (Server.Insecure).
+	tlsLeafSPKI []byte
+
+	// tlsBindSigHex caches the hex-encoded Schnorr signature
+	// binding the client's secp256k1 identity to its TLS leaf
+	// SPKI, so direct (non-connector) response envelope sends
+	// can attach the binding header without re-signing.
+	tlsBindSigHex string
+
 	runtime *serverconn.Runtime
 	ark     *arkrpc.ArkServiceMailboxClient
 	indexer *indexer.Client
@@ -2040,6 +2054,14 @@ func (s *Server) dialServer(ctx context.Context) (*grpc.ClientConn, error) {
 		}
 
 		clientCerts = []tls.Certificate{clientCert}
+
+		// Cache the leaf SubjectPublicKeyInfo bytes so the
+		// mailbox transport can sign over them and the server
+		// can verify the secp256k1 identity is bound to the
+		// TLS leaf it observes (issue #448).
+		if clientCert.Leaf != nil {
+			s.tlsLeafSPKI = clientCert.Leaf.RawSubjectPublicKeyInfo
+		}
 	}
 
 	switch {
@@ -2664,12 +2686,18 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 	}
 
 	// Include the auth signature in response headers so the
-	// server can verify identity on all envelopes.
+	// server can verify identity on all envelopes. Also include
+	// the TLS-binding signature so the server can complete
+	// first-contact registration even if this response is the
+	// first envelope it sees from us.
 	if headers == nil {
-		headers = make(map[string]string, 1)
+		headers = make(map[string]string, 2)
 	}
 	if s.authSigHex != "" {
 		headers[serverconn.AuthHeaderKey] = s.authSigHex
+	}
+	if s.tlsBindSigHex != "" {
+		headers[serverconn.TLSBindHeaderKey] = s.tlsBindSigHex
 	}
 
 	responseEnv := &mailboxpb.Envelope{
@@ -2962,6 +2990,24 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 
 	s.authSigHex = hex.EncodeToString(authSig.Serialize())
 
+	// When TLS is enabled (production / regtest with mTLS), bind
+	// the secp256k1 identity to the TLS leaf the server will
+	// observe. The server uses this on first-contact Send to
+	// reject envelopes whose claimed sender is not actually the
+	// owner of the connection's TLS leaf, closing the
+	// registration-time replay window described in issue #448.
+	var tlsBindSig *schnorr.Signature
+	if len(s.tlsLeafSPKI) > 0 {
+		tlsBindSig, err = s.signMailboxTLSBind(ctx, s.tlsLeafSPKI)
+		if err != nil {
+			return fmt.Errorf("sign mailbox tls bind: %w", err)
+		}
+
+		s.tlsBindSigHex = hex.EncodeToString(
+			tlsBindSig.Serialize(),
+		)
+	}
+
 	connCfg := serverconn.DefaultConnectorConfig()
 	connCfg.Edge = edge
 	connCfg.LocalMailboxID = s.localMailboxID
@@ -2970,6 +3016,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	connCfg.Store = s.deliveryStore
 	connCfg.Dispatchers = dispatchers
 	connCfg.AuthSignature = authSig
+	connCfg.TLSBindSignature = tlsBindSig
 	connCfg.InitAuthHeader()
 	connCfg.DurableUnaryBuilder = &serverDurableUnaryBuilder{
 		server: s,
@@ -3852,6 +3899,97 @@ func (s *Server) signMailboxAuthViaKeyRing(keyRing keychain.SecretKeyRing,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("keyring sign mailbox auth: %w", err)
+	}
+
+	return sig, nil
+}
+
+// signMailboxTLSBind signs the BIP-340 tagged digest binding the
+// client's secp256k1 mailbox identity to the SubjectPublicKeyInfo
+// of the active TLS leaf certificate. The signature is sent in the
+// x-mailbox-tls-bind-sig header on every outbound envelope so the
+// server can verify, on first contact, that the secp256k1 holder
+// chose this exact TLS leaf — preventing a captured Send from
+// being replayed across a different TLS connection (issue #448).
+func (s *Server) signMailboxTLSBind(ctx context.Context,
+	tlsLeafSPKI []byte) (*schnorr.Signature, error) {
+
+	var (
+		sig *schnorr.Signature
+		err error
+	)
+
+	// In LND mode, defer to lnd's tagged Schnorr signing RPC so
+	// no private key material leaves the wallet.
+	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
+		msg := serverconn.MailboxTLSBindMessage(
+			s.clientKeyDesc.PubKey, tlsLeafSPKI,
+		)
+
+		tag := []byte(serverconn.MailboxTLSBindTagStr)
+
+		var rawSig []byte
+		rawSig, err = lndSvc.Signer.SignMessage(
+			ctx, msg, s.clientKeyDesc.KeyLocator,
+			lndclient.SignSchnorr(nil), withSchnorrTag(tag),
+		)
+		if err != nil {
+			err = fmt.Errorf("lnd sign mailbox tls bind: %w", err)
+
+			return
+		}
+
+		sig, err = schnorr.ParseSignature(rawSig)
+	})
+
+	if sig != nil || err != nil {
+		return sig, err
+	}
+
+	// In lwwallet mode, use the keyring's Schnorr signing
+	// directly — same surface, no private key extraction.
+	s.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
+		sig, err = s.signMailboxTLSBindViaKeyRing(
+			w.KeyRing(), tlsLeafSPKI,
+		)
+	})
+
+	if sig != nil || err != nil {
+		return sig, err
+	}
+
+	// In btcwallet mode, same path via the neutrino-backed keyring.
+	s.btcwWallet.WhenSome(func(w *btcwbackend.Wallet) {
+		sig, err = s.signMailboxTLSBindViaKeyRing(
+			w.KeyRing(), tlsLeafSPKI,
+		)
+	})
+
+	if sig == nil && err == nil {
+		return nil, fmt.Errorf("no wallet backend available to sign " +
+			"mailbox tls bind")
+	}
+
+	return sig, err
+}
+
+// signMailboxTLSBindViaKeyRing signs the mailbox→TLS-leaf binding
+// digest using a keyring's SignMessageSchnorr method, with the
+// BIP-340 tag computed inside the keyring.
+func (s *Server) signMailboxTLSBindViaKeyRing(keyRing keychain.SecretKeyRing,
+	tlsLeafSPKI []byte) (*schnorr.Signature, error) {
+
+	msg := serverconn.MailboxTLSBindMessage(
+		s.clientKeyDesc.PubKey, tlsLeafSPKI,
+	)
+	tag := []byte(serverconn.MailboxTLSBindTagStr)
+
+	sig, err := keyRing.SignMessageSchnorr(
+		s.clientKeyDesc.KeyLocator, msg, false, nil, tag,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("keyring sign mailbox tls bind: %w",
+			err)
 	}
 
 	return sig, nil
