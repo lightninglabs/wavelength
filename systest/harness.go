@@ -48,6 +48,7 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -61,6 +62,14 @@ const (
 	// actorQueryTimeout bounds one actor query inside an Eventually poll so
 	// a stuck Ask/Await does not consume the full outer wait budget.
 	actorQueryTimeout = 5 * time.Second
+
+	// triggerTimeoutWait is how long manual timeout helpers wait for the
+	// system under test to schedule the requested timeout before failing.
+	triggerTimeoutWait = 5 * time.Second
+
+	// triggerTimeoutPoll is the polling interval used while waiting for a
+	// manual timeout target to appear in the mock timeout actor.
+	triggerTimeoutPoll = 10 * time.Millisecond
 
 	// defaultRegistrationTimeout is a short timeout for test rounds.
 	defaultRegistrationTimeout = 1 * time.Second
@@ -1268,26 +1277,28 @@ func (h *E2EHarness) TriggerRoundSeal() {
 // TriggerTimeout triggers a specific timeout phase. The timeout ID is
 // constructed from the current round ID and the phase.
 func (h *E2EHarness) TriggerTimeout(phase rounds.TimeoutPhase) {
-	// Find pending timeouts that match the phase.
-	pendingIDs := h.mockTimeout.PendingTimeoutIDs()
-
-	for _, id := range pendingIDs {
-		// Check if this timeout is for the requested phase.
-		if containsPhase(string(id), string(phase)) {
-			err := h.mockTimeout.TriggerTimeout(h.ctx, id)
-			if err != nil {
-				h.t.Logf(
-					"Warning: failed to trigger timeout "+
-						"%s: %v", id, err,
-				)
+	var targetID timeout.ID
+	var pendingIDs []timeout.ID
+	ok := assert.Eventually(
+		h.t, func() bool {
+			pendingIDs = h.mockTimeout.PendingTimeoutIDs()
+			id, ok := findPendingTimeoutID(phase, pendingIDs)
+			if !ok {
+				return false
 			}
 
-			return
-		}
-	}
+			targetID = id
 
-	h.log.Infof("WARNING: no pending timeout found for phase %s "+
-		"(pending: %v)", phase, pendingIDs)
+			return true
+		}, triggerTimeoutWait, triggerTimeoutPoll,
+	)
+	require.Truef(
+		h.t, ok, "pending timeout for phase %s not found; pending=%v",
+		phase, pendingIDs,
+	)
+
+	err := h.mockTimeout.TriggerTimeout(h.ctx, targetID)
+	require.NoError(h.t, err, "failed to trigger timeout %s", targetID)
 }
 
 // TriggerAllTimeouts fires all pending timeouts.
@@ -1432,10 +1443,23 @@ func (h *E2EHarness) ServerLND() *lndclient.LndServices {
 	return h.serverLNDServices
 }
 
-// containsPhase checks if a timeout ID string contains the given phase.
+// containsPhase checks if a timeout ID string ends with the given phase.
 func containsPhase(timeoutID, phase string) bool {
 	return len(timeoutID) > len(phase) &&
-		timeoutID[len(timeoutID)-len(phase):] == phase
+		strings.HasSuffix(timeoutID, phase)
+}
+
+// findPendingTimeoutID returns the first pending timeout matching the phase.
+func findPendingTimeoutID(phase rounds.TimeoutPhase,
+	pendingIDs []timeout.ID) (timeout.ID, bool) {
+
+	for _, id := range pendingIDs {
+		if containsPhase(string(id), string(phase)) {
+			return id, true
+		}
+	}
+
+	return "", false
 }
 
 // RestartClient simulates a client process restart. It stops the
