@@ -56,6 +56,10 @@ const (
 	EventWalletUTXOCreated    = "wallet_utxo_created"
 )
 
+// TransactionTypeRound is the transaction-history type label for rows tied to
+// Ark round activity.
+const TransactionTypeRound = "round"
+
 // Canonical VTXOReceivedMsg.Source values. Callers must use one
 // of these strings; any other value causes handleVTXOReceived to
 // return an error rather than silently misclassify the entry.

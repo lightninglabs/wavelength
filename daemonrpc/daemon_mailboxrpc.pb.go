@@ -40,6 +40,8 @@ type DaemonServiceMailboxServer interface {
 	NewAddress(ctx context.Context, req *NewAddressRequest) (*NewAddressResponse, error)
 	// NewReceiveScript handles NewReceiveScript.
 	NewReceiveScript(ctx context.Context, req *NewReceiveScriptRequest) (*NewReceiveScriptResponse, error)
+	// ListReceiveScripts handles ListReceiveScripts.
+	ListReceiveScripts(ctx context.Context, req *ListReceiveScriptsRequest) (*ListReceiveScriptsResponse, error)
 	// ReceiveAuthKey handles ReceiveAuthKey.
 	ReceiveAuthKey(ctx context.Context, req *ReceiveAuthKeyRequest) (*ReceiveAuthKeyResponse, error)
 	// SignReceiveAuthMessage handles SignReceiveAuthMessage.
@@ -82,6 +84,8 @@ type DaemonServiceMailboxServer interface {
 	GetFeeHistory(ctx context.Context, req *GetFeeHistoryRequest) (*GetFeeHistoryResponse, error)
 	// ListTransactions handles ListTransactions.
 	ListTransactions(ctx context.Context, req *ListTransactionsRequest) (*ListTransactionsResponse, error)
+	// ListTransfers handles ListTransfers.
+	ListTransfers(ctx context.Context, req *ListTransfersRequest) (*ListTransfersResponse, error)
 	// Unroll handles Unroll.
 	Unroll(ctx context.Context, req *UnrollRequest) (*UnrollResponse, error)
 	// GetUnrollStatus handles GetUnrollStatus.
@@ -169,6 +173,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.NewReceiveScript(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ListReceiveScripts", func() proto.Message {
+		return &ListReceiveScriptsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListReceiveScriptsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListReceiveScripts(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "ReceiveAuthKey", func() proto.Message {
 		return &ReceiveAuthKeyRequest{}
@@ -380,6 +394,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 
 		return impl.ListTransactions(ctx, req)
 	})
+	r.Handle("daemonrpc.DaemonService", "ListTransfers", func() proto.Message {
+		return &ListTransfersRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListTransfersRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListTransfers(ctx, req)
+	})
 	r.Handle("daemonrpc.DaemonService", "Unroll", func() proto.Message {
 		return &UnrollRequest{}
 	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
@@ -579,6 +603,29 @@ func (c *DaemonServiceMailboxClient) NewReceiveScript(ctx context.Context, req *
 	}
 
 	resp := new(NewReceiveScriptResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListReceiveScripts calls the ListReceiveScripts RPC.
+func (c *DaemonServiceMailboxClient) ListReceiveScripts(ctx context.Context, req *ListReceiveScriptsRequest, opts ...rpc.RPCOptions) (*ListReceiveScriptsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ListReceiveScripts",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListReceiveScriptsResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
@@ -1062,6 +1109,29 @@ func (c *DaemonServiceMailboxClient) ListTransactions(ctx context.Context, req *
 	}
 
 	resp := new(ListTransactionsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListTransfers calls the ListTransfers RPC.
+func (c *DaemonServiceMailboxClient) ListTransfers(ctx context.Context, req *ListTransfersRequest, opts ...rpc.RPCOptions) (*ListTransfersResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ListTransfers",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListTransfersResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

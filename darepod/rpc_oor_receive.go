@@ -80,7 +80,16 @@ func (r *RPCServer) NewReceiveScript(ctx context.Context,
 			"key descriptor")
 	}
 
+	address, err := addressFromTaprootPkScript(
+		pkScript, r.server.chainParams,
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "unable to format "+
+			"receive address: %v", err)
+	}
+
 	return &daemonrpc.NewReceiveScriptResponse{
+		Address:     address,
 		PkScriptHex: hex.EncodeToString(pkScript),
 		PubkeyXonlyHex: hex.EncodeToString(
 			schnorr.SerializePubKey(keyDesc.PubKey),

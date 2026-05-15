@@ -59,7 +59,8 @@ func NewRootCmd() *cobra.Command {
 		newGetInfoCmd(), newWalletCmd(), newOORCmd(), newVTXOsCmd(),
 		newSendCmd(), newBoardCmd(), newSweepCmd(),
 		newListTransactionsCmd(), newRoundsCmd(), newFeesCmd(),
-		newSchemaCmd(), newMCPCmd(), newUnrollCmd(), newSwapCmd(),
+		newReceiveCmd(), newTransfersCmd(), newSchemaCmd(), newMCPCmd(),
+		newUnrollCmd(), newSwapCmd(),
 	)
 
 	return cmd
