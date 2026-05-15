@@ -2,11 +2,16 @@ package darepo
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"math/big"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btclog/v2"
@@ -21,20 +26,57 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// tlsPeerCtx returns a context with TLS peer info containing a
-// client certificate with the given CN.
-func tlsPeerCtx(t *testing.T, cn string) context.Context {
+// makeTestCert generates a fresh self-signed P-256 TLS certificate
+// with the given Subject CommonName. The returned certificate is what
+// a real client would present on the wire; tests use this to exercise
+// the interceptor's fingerprint-binding logic without trusting the CN.
+func makeTestCert(t *testing.T, cn string) *x509.Certificate {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	serial, err := rand.Int(
+		rand.Reader,
+		new(
+			big.Int).Lsh(big.NewInt(1), 128),
+	)
+	require.NoError(t, err)
+
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			CommonName: cn,
+		},
+		NotBefore: time.Now().Add(-time.Hour),
+		NotAfter:  time.Now().Add(time.Hour),
+		KeyUsage:  x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageClientAuth,
+		},
+	}
+
+	der, err := x509.CreateCertificate(
+		rand.Reader, tmpl, tmpl, &key.PublicKey, key,
+	)
+	require.NoError(t, err)
+
+	leaf, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+
+	return leaf
+}
+
+// tlsPeerCtx returns a context with TLS peer info carrying the given
+// already-generated client certificate.
+func tlsPeerCtx(t *testing.T, cert *x509.Certificate) context.Context {
 	t.Helper()
 
 	p := &peer.Peer{
 		AuthInfo: credentials.TLSInfo{
 			State: tls.ConnectionState{
 				PeerCertificates: []*x509.Certificate{
-					{
-						Subject: pkix.Name{
-							CommonName: cn,
-						},
-					},
+					cert,
 				},
 			},
 		},
@@ -48,9 +90,9 @@ func passHandler(_ context.Context, _ any) (any, error) {
 	return "ok", nil
 }
 
-// TestMailboxAuthInterceptor exercises all code paths of the mailbox
-// auth interceptor: TLS present/absent, require/allow, and identity
-// match/mismatch for each RPC type.
+// TestMailboxAuthInterceptor exercises the interceptor's authorization
+// matrix: TLS present/absent, require/allow, Send vs. Pull/AckUpTo,
+// and the critical forged-CN rejection that closes issue #362.
 func TestMailboxAuthInterceptor(t *testing.T) {
 	t.Parallel()
 
@@ -60,8 +102,28 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 		gatewayToken = "test-gateway-token"
 	)
 
+	// aliceCert is the cert Alice was holding when her Schnorr
+	// auth was verified; its fingerprint is the value bound in the
+	// registry. forgedAlice carries Alice's mailbox ID in the CN
+	// but is a freshly-generated cert with a different key (and
+	// therefore a different fingerprint), modelling the attacker.
+	aliceCert := makeTestCert(t, alicePK)
+	forgedAlice := makeTestCert(t, alicePK)
+	bobCert := makeTestCert(t, bobPK)
+
+	aliceFP := certFingerprint(aliceCert)
+
+	// Helper to build a registry pre-bound to Alice.
+	withAliceBound := func() *mailboxTLSBindings {
+		b := newMailboxTLSBindings()
+		b.Bind(alicePK, aliceFP)
+
+		return b
+	}
+
 	tests := []struct {
 		name       string
+		bindings   func() *mailboxTLSBindings
 		requireTLS bool
 		makeCtx    func(t *testing.T) context.Context
 		req        any
@@ -70,6 +132,7 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 	}{
 		{
 			name:       "no TLS, no require — pass",
+			bindings:   newMailboxTLSBindings,
 			requireTLS: false,
 			makeCtx: func(t *testing.T) context.Context {
 				return t.Context()
@@ -81,6 +144,7 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 		},
 		{
 			name:       "no TLS, require — reject",
+			bindings:   newMailboxTLSBindings,
 			requireTLS: true,
 			makeCtx: func(t *testing.T) context.Context {
 				return t.Context()
@@ -92,6 +156,7 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 		},
 		{
 			name:       "no TLS, require — non-mailbox",
+			bindings:   newMailboxTLSBindings,
 			requireTLS: true,
 			makeCtx: func(t *testing.T) context.Context {
 				return t.Context()
@@ -100,54 +165,10 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 			wantPass: true,
 		},
 		{
-			name:       "TLS match Pull",
-			requireTLS: false,
+			name:     "Send first contact — pass and binding-free",
+			bindings: newMailboxTLSBindings,
 			makeCtx: func(t *testing.T) context.Context {
-				return tlsPeerCtx(t, alicePK)
-			},
-			req: &mailboxpb.PullRequest{
-				MailboxId: alicePK,
-			},
-			wantPass: true,
-		},
-		{
-			name:       "TLS mismatch Pull",
-			requireTLS: false,
-			makeCtx: func(t *testing.T) context.Context {
-				return tlsPeerCtx(t, alicePK)
-			},
-			req: &mailboxpb.PullRequest{
-				MailboxId: bobPK,
-			},
-			wantCode: codes.PermissionDenied,
-		},
-		{
-			name:       "TLS match AckUpTo",
-			requireTLS: false,
-			makeCtx: func(t *testing.T) context.Context {
-				return tlsPeerCtx(t, alicePK)
-			},
-			req: &mailboxpb.AckUpToRequest{
-				MailboxId: alicePK,
-			},
-			wantPass: true,
-		},
-		{
-			name:       "TLS mismatch AckUpTo",
-			requireTLS: false,
-			makeCtx: func(t *testing.T) context.Context {
-				return tlsPeerCtx(t, alicePK)
-			},
-			req: &mailboxpb.AckUpToRequest{
-				MailboxId: bobPK,
-			},
-			wantCode: codes.PermissionDenied,
-		},
-		{
-			name:       "TLS match Send",
-			requireTLS: false,
-			makeCtx: func(t *testing.T) context.Context {
-				return tlsPeerCtx(t, alicePK)
+				return tlsPeerCtx(t, aliceCert)
 			},
 			req: &mailboxpb.SendRequest{
 				Envelope: &mailboxpb.Envelope{
@@ -157,34 +178,100 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 			wantPass: true,
 		},
 		{
-			name:       "TLS mismatch Send",
-			requireTLS: false,
+			name:     "Pull without binding — reject",
+			bindings: newMailboxTLSBindings,
 			makeCtx: func(t *testing.T) context.Context {
-				return tlsPeerCtx(t, alicePK)
+				return tlsPeerCtx(t, aliceCert)
+			},
+			req: &mailboxpb.PullRequest{
+				MailboxId: alicePK,
+			},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name:     "AckUpTo without binding — reject",
+			bindings: newMailboxTLSBindings,
+			makeCtx: func(t *testing.T) context.Context {
+				return tlsPeerCtx(t, aliceCert)
+			},
+			req: &mailboxpb.AckUpToRequest{
+				MailboxId: alicePK,
+			},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name:     "Pull bound match — pass",
+			bindings: withAliceBound,
+			makeCtx: func(t *testing.T) context.Context {
+				return tlsPeerCtx(t, aliceCert)
+			},
+			req: &mailboxpb.PullRequest{
+				MailboxId: alicePK,
+			},
+			wantPass: true,
+		},
+		{
+			name:     "Pull forged cert with matching CN — reject",
+			bindings: withAliceBound,
+			makeCtx: func(t *testing.T) context.Context {
+				return tlsPeerCtx(t, forgedAlice)
+			},
+			req: &mailboxpb.PullRequest{
+				MailboxId: alicePK,
+			},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name:     "AckUpTo bound match — pass",
+			bindings: withAliceBound,
+			makeCtx: func(t *testing.T) context.Context {
+				return tlsPeerCtx(t, aliceCert)
+			},
+			req: &mailboxpb.AckUpToRequest{
+				MailboxId: alicePK,
+			},
+			wantPass: true,
+		},
+		{
+			name:     "AckUpTo forged cert — reject",
+			bindings: withAliceBound,
+			makeCtx: func(t *testing.T) context.Context {
+				return tlsPeerCtx(t, forgedAlice)
+			},
+			req: &mailboxpb.AckUpToRequest{
+				MailboxId: alicePK,
+			},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name:     "Pull cross-tenant — reject",
+			bindings: withAliceBound,
+			makeCtx: func(t *testing.T) context.Context {
+				return tlsPeerCtx(t, bobCert)
+			},
+			req: &mailboxpb.PullRequest{
+				MailboxId: alicePK,
+			},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name:     "Send fingerprint mismatch — reject",
+			bindings: withAliceBound,
+			makeCtx: func(t *testing.T) context.Context {
+				return tlsPeerCtx(t, forgedAlice)
 			},
 			req: &mailboxpb.SendRequest{
 				Envelope: &mailboxpb.Envelope{
-					Sender: bobPK,
+					Sender: alicePK,
 				},
 			},
 			wantCode: codes.PermissionDenied,
 		},
 		{
-			name:       "nil envelope — InvalidArgument",
-			requireTLS: false,
+			name:     "Pull compound match",
+			bindings: withAliceBound,
 			makeCtx: func(t *testing.T) context.Context {
-				return tlsPeerCtx(t, alicePK)
-			},
-			req: &mailboxpb.SendRequest{
-				Envelope: nil,
-			},
-			wantCode: codes.InvalidArgument,
-		},
-		{
-			name:       "TLS compound Pull match",
-			requireTLS: false,
-			makeCtx: func(t *testing.T) context.Context {
-				return tlsPeerCtx(t, alicePK)
+				return tlsPeerCtx(t, aliceCert)
 			},
 			req: &mailboxpb.PullRequest{
 				MailboxId: bobPK + ":" + alicePK,
@@ -192,21 +279,33 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 			wantPass: true,
 		},
 		{
-			name:       "TLS compound Pull mismatch",
-			requireTLS: false,
+			name:     "Pull compound forged",
+			bindings: withAliceBound,
 			makeCtx: func(t *testing.T) context.Context {
-				return tlsPeerCtx(t, alicePK)
+				return tlsPeerCtx(t, forgedAlice)
 			},
 			req: &mailboxpb.PullRequest{
-				MailboxId: bobPK + ":" + bobPK,
+				MailboxId: bobPK + ":" + alicePK,
 			},
 			wantCode: codes.PermissionDenied,
 		},
 		{
+			name:     "nil envelope — InvalidArgument",
+			bindings: newMailboxTLSBindings,
+			makeCtx: func(t *testing.T) context.Context {
+				return tlsPeerCtx(t, aliceCert)
+			},
+			req: &mailboxpb.SendRequest{
+				Envelope: nil,
+			},
+			wantCode: codes.InvalidArgument,
+		},
+		{
 			name:       "non-mailbox with TLS — pass",
+			bindings:   newMailboxTLSBindings,
 			requireTLS: true,
 			makeCtx: func(t *testing.T) context.Context {
-				return tlsPeerCtx(t, alicePK)
+				return tlsPeerCtx(t, aliceCert)
 			},
 			req:      "some-other-request",
 			wantPass: true,
@@ -218,7 +317,8 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 			t.Parallel()
 
 			interceptor := newMailboxAuthInterceptor(
-				btclog.Disabled, tc.requireTLS, gatewayToken,
+				btclog.Disabled, tc.bindings(), tc.requireTLS,
+				gatewayToken,
 			)
 
 			resp, err := interceptor(
@@ -271,7 +371,8 @@ func TestMailboxAuthInterceptorAcceptsMetadata(t *testing.T) {
 	)
 
 	interceptor := newMailboxAuthInterceptor(
-		btclog.Disabled, true, "test-gateway-token",
+		btclog.Disabled, newMailboxTLSBindings(), true,
+		"test-gateway-token",
 	)
 	resp, err := interceptor(
 		ctx, &mailboxpb.PullRequest{
@@ -311,7 +412,8 @@ func TestMailboxAuthInterceptorRejectsBadMetadata(t *testing.T) {
 	)
 
 	interceptor := newMailboxAuthInterceptor(
-		btclog.Disabled, true, "test-gateway-token",
+		btclog.Disabled, newMailboxTLSBindings(), true,
+		"test-gateway-token",
 	)
 	_, err = interceptor(
 		ctx, &mailboxpb.PullRequest{
@@ -350,7 +452,8 @@ func TestMailboxAuthInterceptorRejectsMetadataWithoutGatewayAuth(t *testing.T) {
 	)
 
 	interceptor := newMailboxAuthInterceptor(
-		btclog.Disabled, true, "test-gateway-token",
+		btclog.Disabled, newMailboxTLSBindings(), true,
+		"test-gateway-token",
 	)
 	_, err = interceptor(
 		ctx, &mailboxpb.PullRequest{
@@ -364,104 +467,108 @@ func TestMailboxAuthInterceptorRejectsMetadataWithoutGatewayAuth(t *testing.T) {
 	require.Equal(t, codes.Unauthenticated, st.Code())
 }
 
-// TestExtractTLSIdentity verifies that extractTLSIdentity correctly
-// extracts the Subject CN from TLS peer certificates and handles
-// all edge cases (no peer, nil auth, no certs, empty CN).
-func TestExtractTLSIdentity(t *testing.T) {
+// TestMailboxTLSBindingsRotationAfterVerification verifies that once a
+// binding is recorded for a mailbox ID, a later Bind with a different
+// fingerprint updates the binding. This is safe because Bind is only
+// called from the auto-register path after Schnorr verification has
+// proven possession of the identity's private key, so a fresh cert
+// represents a legitimate TLS-key rotation. Re-binding with the same
+// fingerprint is a no-op (returns false).
+func TestMailboxTLSBindingsRotationAfterVerification(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		makeCtx func(t *testing.T) context.Context
-		wantID  string
-		wantOK  bool
-	}{
-		{
-			name: "no peer info",
-			makeCtx: func(t *testing.T) context.Context {
-				return t.Context()
-			},
-			wantOK: false,
-		},
-		{
-			name: "peer with nil AuthInfo",
-			makeCtx: func(t *testing.T) context.Context {
-				return peer.NewContext(
-					t.Context(), &peer.Peer{
-						AuthInfo: nil,
-					},
-				)
-			},
-			wantOK: false,
-		},
-		{
-			name: "TLS with no certs",
-			makeCtx: func(
-				t *testing.T,
-			) context.Context {
+	const id = "02abc"
 
-				info := credentials.TLSInfo{
-					State: tls.ConnectionState{},
-				}
+	b := newMailboxTLSBindings()
 
-				return peer.NewContext(
-					t.Context(), &peer.Peer{
-						AuthInfo: info,
-					},
-				)
-			},
-			wantOK: false,
-		},
-		{
-			name: "TLS with empty CN",
-			makeCtx: func(
-				t *testing.T,
-			) context.Context {
+	// Initial registration creates the binding.
+	require.True(t, b.Bind(id, "fp-legit"))
 
-				cert := &x509.Certificate{
-					Subject: pkix.Name{},
-				}
-				certs := []*x509.Certificate{
-					cert,
-				}
-				info := credentials.TLSInfo{
-					State: tls.ConnectionState{
-						PeerCertificates: certs,
-					},
-				}
+	// Re-binding with the same fingerprint is a no-op.
+	require.False(t, b.Bind(id, "fp-legit"))
 
-				return peer.NewContext(
-					t.Context(), &peer.Peer{
-						AuthInfo: info,
-					},
-				)
-			},
-			wantOK: false,
-		},
-		{
-			name: "TLS with valid CN",
-			makeCtx: func(t *testing.T) context.Context {
-				return tlsPeerCtx(t, "02abc123")
-			},
-			wantID: "02abc123",
-			wantOK: true,
-		},
-	}
+	// A verified re-registration with a rotated cert updates the
+	// binding to the new fingerprint.
+	require.True(t, b.Bind(id, "fp-rotated"))
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	got, ok := b.Lookup(id)
+	require.True(t, ok)
+	require.Equal(t, "fp-rotated", got)
+}
 
-			id, ok := extractTLSIdentity(
-				tc.makeCtx(t),
-			)
-			require.Equal(t, tc.wantOK, ok)
+// TestMailboxTLSBindingsCaseInsensitive verifies that mailbox ID
+// lookup is case-insensitive, matching the normalization used by the
+// interceptor for hex-encoded pubkey comparison.
+func TestMailboxTLSBindingsCaseInsensitive(t *testing.T) {
+	t.Parallel()
 
-			if tc.wantOK {
-				require.Equal(t, tc.wantID, id)
-			}
+	b := newMailboxTLSBindings()
+	require.True(t, b.Bind("02ABCdef", "fp"))
+
+	got, ok := b.Lookup("02abcdef")
+	require.True(t, ok)
+	require.Equal(t, "fp", got)
+}
+
+// TestCertFingerprintStable verifies that two parses of the same DER
+// produce the same fingerprint, and that two independently generated
+// certs with the same CN produce different fingerprints. The latter
+// is what makes a CN-based forgery detectable.
+func TestCertFingerprintStable(t *testing.T) {
+	t.Parallel()
+
+	cert1 := makeTestCert(t, "02abc")
+	cert2 := makeTestCert(t, "02abc")
+
+	require.NotEmpty(t, certFingerprint(cert1))
+	require.Equal(t, certFingerprint(cert1), certFingerprint(cert1))
+	require.NotEqual(t, certFingerprint(cert1), certFingerprint(cert2))
+}
+
+// TestExtractTLSPeer verifies that extractTLSPeer returns the leaf
+// certificate fingerprint and CN, and handles all the edge cases
+// (no peer, nil auth, no certs).
+func TestExtractTLSPeer(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no peer info", func(t *testing.T) {
+		t.Parallel()
+
+		_, ok := extractTLSPeer(t.Context())
+		require.False(t, ok)
+	})
+
+	t.Run("peer with nil AuthInfo", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := peer.NewContext(t.Context(), &peer.Peer{
+			AuthInfo: nil,
 		})
-	}
+		_, ok := extractTLSPeer(ctx)
+		require.False(t, ok)
+	})
+
+	t.Run("TLS with no certs", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := peer.NewContext(t.Context(), &peer.Peer{
+			AuthInfo: credentials.TLSInfo{
+				State: tls.ConnectionState{},
+			},
+		})
+		_, ok := extractTLSPeer(ctx)
+		require.False(t, ok)
+	})
+
+	t.Run("TLS with valid cert", func(t *testing.T) {
+		t.Parallel()
+
+		cert := makeTestCert(t, "02abc")
+		info, ok := extractTLSPeer(tlsPeerCtx(t, cert))
+		require.True(t, ok)
+		require.Equal(t, certFingerprint(cert), info.Fingerprint)
+		require.Equal(t, "02abc", info.SubjectCN)
+	})
 }
 
 // TestIsMailboxRPC verifies classification of requests as mailbox

@@ -109,6 +109,20 @@ func (s *Server) HandleUnknownClient(ctx context.Context,
 			env.Sender, err)
 	}
 
+	// Schnorr ownership of the secp256k1 identity is now proven.
+	// Bind the TLS leaf certificate fingerprint observed on this
+	// connection to the verified identity so that subsequent
+	// Pull/AckUpTo calls — which never re-run Schnorr verification
+	// — are constrained to TLS sessions backed by the same client
+	// key. Without this binding, the mTLS layer would accept any
+	// self-signed cert that claims the identity in its CN
+	// (issue #362). Because we only Bind after Schnorr verification
+	// succeeds, a re-registration with a rotated TLS cert is treated
+	// as a legitimate update rather than an attacker overwrite.
+	if peerInfo, ok := extractTLSPeer(ctx); ok {
+		s.bindMailboxTLS(ctx, env.Sender, peerInfo)
+	}
+
 	// Build an in-process edge client for the new client's
 	// runtime. Each runtime gets its own edge instance backed
 	// by the shared mailbox store.
@@ -142,6 +156,35 @@ func (s *Server) HandleUnknownClient(ctx context.Context,
 	)
 
 	return nil
+}
+
+// bindMailboxTLS records the TLS certificate fingerprint observed on
+// the connection for the bare client mailbox ID (the form Send uses in
+// Envelope.Sender). The auth interceptor reduces any compound
+// "operator:client" mailbox ID down to the bare client identity via
+// claimedClientID before lookup, so binding only the bare form is
+// sufficient to authorize Send, Pull, and AckUpTo against the single
+// Schnorr-verified registration.
+//
+// Bind is called only after Schnorr verification has succeeded, so an
+// updated fingerprint here represents a legitimate TLS-key rotation by
+// the verified identity rather than an attacker overwrite.
+func (s *Server) bindMailboxTLS(ctx context.Context, senderID string,
+	peerInfo tlsPeerInfo) {
+
+	if s.mailboxTLSBindings == nil {
+		return
+	}
+
+	bound := s.mailboxTLSBindings.Bind(senderID, peerInfo.Fingerprint)
+
+	if bound {
+		s.log.InfoS(ctx, "Bound TLS cert to mailbox identity",
+			"sender", senderID,
+			"cn", peerInfo.SubjectCN,
+			"fingerprint", peerInfo.Fingerprint,
+		)
+	}
 }
 
 // Compile-time interface check.

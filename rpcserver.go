@@ -130,7 +130,8 @@ func NewRPCServer(cfg *RPCConfig, operator *Server,
 		grpc.ChainUnaryInterceptor(
 			grpcMetrics.UnaryServerInterceptor(),
 			newMailboxAuthInterceptor(
-				log, requireTLS, gatewayAuthToken,
+				log, operator.mailboxTLSBindings, requireTLS,
+				gatewayAuthToken,
 			),
 		),
 		grpc.ChainStreamInterceptor(
