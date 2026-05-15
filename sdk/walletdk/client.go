@@ -11,29 +11,61 @@ import (
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 const defaultCloseTimeout = 5 * time.Second
 
 // Client is the wallet-facing SDK handle. It is safe for concurrent use.
 type Client struct {
-	conn    grpc.ClientConnInterface
-	daemon  daemonrpc.DaemonServiceClient
-	swaps   swapclientrpc.SwapClientServiceClient
-	canSwap bool
+	conn   grpc.ClientConnInterface
+	daemon daemonrpc.DaemonServiceClient
+	swaps  swapclientrpc.SwapClientServiceClient
+	wallet walletrpc.WalletServiceClient
 
-	// runtime carries the embedded daemon's terminal signal (done channel
-	// + runErr). nil when the Client wraps an externally-owned daemon and
-	// has no runtime to wait on.
-	runtime *daemonRuntime
+	canWallet bool
+	waitCh    <-chan error
 
 	closeFn   func(context.Context) error
 	closeOnce sync.Once
 	closeErr  error
 }
 
-// Stop shuts down the embedded daemon and releases the private transport.
+// Connect returns a walletdk client connected to an external daemon.
+func Connect(ctx context.Context, cfg ConnectConfig) (*Client, error) {
+	if cfg.Address == "" {
+		return nil, fmt.Errorf("address is required")
+	}
+
+	dialOpts := append([]grpc.DialOption(nil), cfg.DialOptions...)
+	if len(dialOpts) == 0 {
+		creds := insecure.NewCredentials()
+		dialOpts = append(
+			dialOpts, grpc.WithTransportCredentials(creds),
+		)
+	}
+
+	conn, err := grpc.NewClient(cfg.Address, dialOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("dial wallet daemon: %w", err)
+	}
+	if err := waitForReady(ctx, conn, nil); err != nil {
+		closeErr := conn.Close()
+
+		return nil, fmt.Errorf("wait for wallet daemon readiness: %w",
+			errors.Join(err, closeErr))
+	}
+
+	closeFn := func(context.Context) error {
+		return conn.Close()
+	}
+
+	return newClient(conn, true, closedWaitChan(), closeFn), nil
+}
+
+// Stop shuts down the embedded daemon or releases the remote transport.
 func (c *Client) Stop() error {
 	return c.close()
 }
@@ -44,31 +76,12 @@ func (c *Client) Close() error {
 }
 
 // Wait returns a channel that yields the embedded daemon's terminal run error.
-//
-// Each call returns a fresh channel that receives the terminal error (if any)
-// and is then closed, so multiple goroutines can each select on Wait()
-// independently and observe the same result. For Clients that do not own a
-// daemon runtime, Wait returns an already-closed channel.
-//
-// Delivery is scheduled via context.AfterFunc on the runtime context, so no
-// explicit goroutine is leaked per Wait() call: the runtime fires the
-// callback for us when the daemon exits.
 func (c *Client) Wait() <-chan error {
-	out := make(chan error, 1)
-	if c == nil || c.runtime == nil {
-		close(out)
-
-		return out
+	if c == nil || c.waitCh == nil {
+		return closedWaitChan()
 	}
 
-	context.AfterFunc(c.runtime.ctx, func() {
-		if c.runtime.runErr != nil {
-			out <- c.runtime.runErr
-		}
-		close(out)
-	})
-
-	return out
+	return c.waitCh
 }
 
 // GRPCConn returns the private gRPC client connection used by walletdk.
@@ -78,6 +91,15 @@ func (c *Client) GRPCConn() grpc.ClientConnInterface {
 	}
 
 	return c.conn
+}
+
+// WalletRPC returns the wallet RPC client for advanced callers.
+func (c *Client) WalletRPC() walletrpc.WalletServiceClient {
+	if c == nil {
+		return nil
+	}
+
+	return c.wallet
 }
 
 // ArkRPC returns the raw daemon RPC client for advanced callers.
@@ -118,13 +140,6 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 }
 
 // CreateWallet creates or imports the embedded daemon wallet.
-//
-// All secret-bearing byte slices (seed passphrase, wallet password) are cloned
-// before being handed to the daemon RPC layer. The generated protobuf request
-// types alias their input slices and the protobuf marshaller may retain
-// references for longer than the caller expects; defensively cloning here lets
-// host applications zero their own copies on return without racing the RPC
-// goroutines that may still be touching the marshalled buffers.
 func (c *Client) CreateWallet(ctx context.Context, req CreateWalletRequest) (
 	*CreateWalletResult, error) {
 
@@ -179,182 +194,176 @@ func (c *Client) UnlockWallet(ctx context.Context, req UnlockWalletRequest) (
 	}, nil
 }
 
-// ListBalance returns the wallet's simplified balance buckets.
-func (c *Client) ListBalance(ctx context.Context) (*Balance, error) {
-	resp, err := c.daemon.GetBalance(ctx, &daemonrpc.GetBalanceRequest{})
+// Balance returns the wallet-level balance summary.
+func (c *Client) Balance(ctx context.Context) (*Balance, error) {
+	if err := c.requireWalletRPC(); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.wallet.Balance(ctx, &walletrpc.BalanceRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("get wallet balance: %w", err)
 	}
 
-	return &Balance{
-		BoardingConfirmedSat:      resp.GetBoardingConfirmedSat(),
-		BoardingUnconfirmedSat:    resp.GetBoardingUnconfirmedSat(),
-		VTXOBalanceSat:            resp.GetVtxoBalanceSat(),
-		TotalConfirmedSat:         resp.GetTotalConfirmedSat(),
-		OnchainWalletConfirmedSat: resp.GetOnchainWalletConfirmedSat(),
+	balance := balanceFromProto(resp)
+
+	return &balance, nil
+}
+
+// Deposit allocates a fresh tracked boarding address.
+func (c *Client) Deposit(ctx context.Context, req DepositRequest) (
+	*DepositResult, error) {
+
+	if err := c.requireWalletRPC(); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.wallet.Deposit(ctx, &walletrpc.DepositRequest{
+		AmtSatHint: req.AmountSatHint,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create wallet deposit: %w", err)
+	}
+
+	return &DepositResult{
+		Address: resp.GetOnchainAddress(),
+		Entry:   entryFromProto(resp.GetEntry()),
 	}, nil
 }
 
-// GetOnchainAddress allocates a fresh onboarding address.
-func (c *Client) GetOnchainAddress(ctx context.Context) (*OnchainAddress,
-	error) {
-
-	resp, err := c.daemon.NewAddress(ctx, &daemonrpc.NewAddressRequest{})
-	if err != nil {
-		return nil, fmt.Errorf("get on-chain address: %w", err)
-	}
-
-	return &OnchainAddress{Address: resp.GetAddress()}, nil
-}
-
-// Receive starts a Lightning-to-Ark receive swap in the embedded daemon.
+// Receive creates a Lightning invoice payable into the wallet.
 func (c *Client) Receive(ctx context.Context, req ReceiveRequest) (
 	*ReceiveResult, error) {
 
-	if err := c.requireSwaps(); err != nil {
+	if err := c.requireWalletRPC(); err != nil {
 		return nil, err
 	}
-	if req.AmountSat <= 0 {
+	if req.AmountSat == 0 {
 		return nil, fmt.Errorf("amount_sat must be positive")
 	}
 
-	resp, err := c.swaps.StartReceive(ctx,
-		&swapclientrpc.StartReceiveRequest{
-			AmountSat: req.AmountSat,
-		},
-	)
+	resp, err := c.wallet.Recv(ctx, &walletrpc.RecvRequest{
+		AmtSat: req.AmountSat,
+		Memo:   req.Memo,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("start receive swap: %w", err)
+		return nil, fmt.Errorf("create receive invoice: %w", err)
 	}
 
 	return &ReceiveResult{
-		PaymentHash: resp.GetPaymentHash(),
-		Invoice:     resp.GetInvoice(),
-		Swap:        swapSummaryFromProto(resp.GetSwap()),
+		Invoice: resp.GetInvoice(),
+		Entry:   entryFromProto(resp.GetEntry()),
 	}, nil
 }
 
-// Send starts an Ark-to-Lightning payment in the embedded daemon.
+// Send dispatches an outbound wallet payment.
 func (c *Client) Send(ctx context.Context, req SendRequest) (*SendResult,
 	error) {
 
-	if err := c.requireSwaps(); err != nil {
+	if err := c.requireWalletRPC(); err != nil {
 		return nil, err
 	}
-	if req.Invoice == "" {
-		return nil, fmt.Errorf("invoice is required")
+
+	protoReq := &walletrpc.SendRequest{
+		AmtSat:    req.AmountSat,
+		Note:      req.Note,
+		MaxFeeSat: req.MaxFeeSat,
+		SweepAll:  req.SweepAll,
+	}
+	switch {
+	case req.Invoice != "":
+		protoReq.Destination = &walletrpc.SendRequest_Invoice{
+			Invoice: req.Invoice,
+		}
+
+	case req.OnchainAddress != "":
+		protoReq.Destination = &walletrpc.SendRequest_OnchainAddress{
+			OnchainAddress: req.OnchainAddress,
+		}
+
+	default:
+		return nil, fmt.Errorf("invoice or onchain_address is required")
 	}
 
-	resp, err := c.swaps.StartPay(ctx, &swapclientrpc.StartPayRequest{
-		Invoice:   req.Invoice,
-		MaxFeeSat: req.MaxFeeSat,
-	})
+	resp, err := c.wallet.Send(ctx, protoReq)
 	if err != nil {
-		return nil, fmt.Errorf("start pay swap: %w", err)
+		return nil, fmt.Errorf("send wallet payment: %w", err)
 	}
 
 	return &SendResult{
-		PaymentHash: resp.GetPaymentHash(),
-		Swap:        swapSummaryFromProto(resp.GetSwap()),
+		Entry:           entryFromProto(resp.GetEntry()),
+		ActualAmountSat: resp.GetActualAmountSat(),
 	}, nil
 }
 
-// ListSwaps returns persisted daemon-owned swap summaries.
-func (c *Client) ListSwaps(ctx context.Context, req ListSwapsRequest) (
-	[]SwapSummary, error) {
-
-	if err := c.requireSwaps(); err != nil {
-		return nil, err
-	}
-
-	resp, err := c.swaps.ListSwaps(ctx, &swapclientrpc.ListSwapsRequest{
-		PendingOnly: req.PendingOnly,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list swaps: %w", err)
-	}
-
-	swaps := make([]SwapSummary, 0, len(resp.GetSwaps()))
-	for _, swap := range resp.GetSwaps() {
-		swaps = append(swaps, swapSummaryFromProto(swap))
-	}
-
-	return swaps, nil
-}
-
-// GetSwap returns one persisted swap summary.
-func (c *Client) GetSwap(ctx context.Context, req GetSwapRequest) (*SwapSummary,
+// List returns normalized wallet activity entries.
+func (c *Client) List(ctx context.Context, req ListRequest) (*ListResult,
 	error) {
 
-	if err := c.requireSwaps(); err != nil {
+	if err := c.requireWalletRPC(); err != nil {
 		return nil, err
 	}
-	if req.PaymentHash == "" {
-		return nil, fmt.Errorf("payment_hash is required")
-	}
 
-	resp, err := c.swaps.GetSwap(ctx, &swapclientrpc.GetSwapRequest{
-		PaymentHash: req.PaymentHash,
+	resp, err := c.wallet.List(ctx, &walletrpc.ListRequest{
+		PendingOnly: req.PendingOnly,
+		Kinds:       entryKindsToProto(req.Kinds),
+		Limit:       req.Limit,
+		Offset:      req.Offset,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("get swap: %w", err)
+		return nil, fmt.Errorf("list wallet entries: %w", err)
 	}
 
-	summary := swapSummaryFromProto(resp.GetSwap())
+	entries := make([]Entry, 0, len(resp.GetEntries()))
+	for _, entry := range resp.GetEntries() {
+		entries = append(entries, entryFromProto(entry))
+	}
 
-	return &summary, nil
+	return &ListResult{
+		Entries: entries,
+		Total:   resp.GetTotal(),
+	}, nil
 }
 
-// ResumeSwap asks the daemon to wake one persisted pending swap.
-func (c *Client) ResumeSwap(ctx context.Context, req ResumeSwapRequest) (
-	*SwapSummary, error) {
-
-	if err := c.requireSwaps(); err != nil {
+// Status returns wallet readiness, balance, and pending activity counts.
+func (c *Client) Status(ctx context.Context) (*Status, error) {
+	if err := c.requireWalletRPC(); err != nil {
 		return nil, err
 	}
-	if req.PaymentHash == "" {
-		return nil, fmt.Errorf("payment_hash is required")
-	}
 
-	resp, err := c.swaps.ResumeSwap(ctx, &swapclientrpc.ResumeSwapRequest{
-		PaymentHash: req.PaymentHash,
-		Direction:   swapDirectionToProto(req.Direction),
-	})
+	resp, err := c.wallet.Status(ctx, &walletrpc.StatusRequest{})
 	if err != nil {
-		return nil, fmt.Errorf("resume swap: %w", err)
+		return nil, fmt.Errorf("get wallet status: %w", err)
 	}
 
-	summary := swapSummaryFromProto(resp.GetSwap())
-
-	return &summary, nil
+	return &Status{
+		Ready:        resp.GetReady(),
+		Unlocked:     resp.GetUnlocked(),
+		Network:      resp.GetNetwork(),
+		Balance:      balanceFromProto(resp.GetBalance()),
+		PendingCount: resp.GetPendingCount(),
+	}, nil
 }
 
-// SubscribeSwaps streams daemon-owned swap summary updates until ctx ends.
-//
-// The returned updates channel is unbuffered so a slow consumer applies
-// backpressure on the proxy goroutine, which in turn applies backpressure on
-// the daemon's server-streaming send. The errs channel is cap-1 so a single
-// terminal error is always deliverable without blocking the proxy. Both
-// channels are closed together when the stream ends, giving callers a single
-// signal to tear down their selector regardless of which side cancelled.
-func (c *Client) SubscribeSwaps(ctx context.Context,
-	req SubscribeSwapsRequest) (<-chan SwapSummary, <-chan error, error) {
+// Subscribe streams normalized wallet activity entries until ctx ends.
+func (c *Client) Subscribe(ctx context.Context, req SubscribeRequest) (
+	<-chan Entry, <-chan error, error) {
 
-	if err := c.requireSwaps(); err != nil {
+	if err := c.requireWalletRPC(); err != nil {
 		return nil, nil, err
 	}
 
-	stream, err := c.swaps.SubscribeSwaps(
-		ctx, &swapclientrpc.SubscribeSwapsRequest{
+	stream, err := c.wallet.SubscribeWallet(
+		ctx, &walletrpc.SubscribeWalletRequest{
 			IncludeExisting: req.IncludeExisting,
-			PendingOnly:     req.PendingOnly,
+			Kinds:           entryKindsToProto(req.Kinds),
 		},
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("subscribe swaps: %w", err)
+		return nil, nil, fmt.Errorf("subscribe wallet: %w", err)
 	}
 
-	updates := make(chan SwapSummary)
+	updates := make(chan Entry)
 	errs := make(chan error, 1)
 	go func() {
 		defer close(updates)
@@ -367,16 +376,16 @@ func (c *Client) SubscribeSwaps(ctx context.Context,
 					return
 				}
 
-				errs <- fmt.Errorf("receive swap update: %w",
+				errs <- fmt.Errorf("receive wallet update: %w",
 					err)
 
 				return
 			}
 
 			select {
-			case updates <- swapSummaryFromProto(resp.GetSwap()):
+			case updates <- entryFromProto(resp):
 			case <-ctx.Done():
-				errs <- fmt.Errorf("swap subscription "+
+				errs <- fmt.Errorf("wallet subscription "+
 					"closed: %w", ctx.Err())
 
 				return
@@ -387,14 +396,29 @@ func (c *Client) SubscribeSwaps(ctx context.Context,
 	return updates, errs, nil
 }
 
-// requireSwaps fails fast when the build does not include the daemon-owned
-// swap executor, giving embedders a stable error before any RPC is attempted.
-func (c *Client) requireSwaps() error {
-	if c == nil || !c.canSwap {
-		return ErrSwapRuntimeUnavailable
+// requireWalletRPC fails fast when the embedded build cannot register
+// walletrpc before any RPC is attempted.
+func (c *Client) requireWalletRPC() error {
+	if c == nil || !c.canWallet {
+		return ErrWalletRPCUnavailable
 	}
 
 	return nil
+}
+
+// newClient assembles all RPC clients that share one gRPC connection.
+func newClient(conn grpc.ClientConnInterface, canWallet bool,
+	waitCh <-chan error, closeFn func(context.Context) error) *Client {
+
+	return &Client{
+		conn:      conn,
+		daemon:    daemonrpc.NewDaemonServiceClient(conn),
+		swaps:     swapclientrpc.NewSwapClientServiceClient(conn),
+		wallet:    walletrpc.NewWalletServiceClient(conn),
+		canWallet: canWallet,
+		waitCh:    waitCh,
+		closeFn:   closeFn,
+	}
 }
 
 // close releases resources once so Stop and Close can be used
