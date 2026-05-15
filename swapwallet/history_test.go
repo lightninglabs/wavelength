@@ -1,0 +1,287 @@
+//go:build walletrpc && swapruntime
+
+package swapwallet
+
+import (
+	"testing"
+
+	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/stretchr/testify/require"
+)
+
+// newHistoryFixture wires a history merger with fake swap and RPC sources.
+func newHistoryFixture(t *testing.T) (*history, *fakeSwapService,
+	*fakeRPCServer) {
+
+	t.Helper()
+
+	swap := &fakeSwapService{}
+	rpc := &fakeRPCServer{}
+	deps := &Deps{
+		SwapService: swap,
+		RPCServer:   rpc,
+	}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+
+	return newHistory(deps, runtime), swap, rpc
+}
+
+// TestHistoryListMergesSwapAndLedgerSources confirms the merger combines
+// rows from both backends and normalizes them into the flat WalletEntry
+// shape.
+func TestHistoryListMergesSwapAndLedgerSources(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: "hash1",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_PAY,
+				State: swapclientrpc.
+					SwapState_SWAP_STATE_COMPLETED,
+				AmountSat:     10_000,
+				UpdatedAtUnix: 200,
+			},
+			{
+				PaymentHash: "hash2",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_RECEIVE,
+				Pending:       true,
+				AmountSat:     5_000,
+				UpdatedAtUnix: 300,
+			},
+		},
+	}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "boarding",
+				ConfirmationStatus: "confirmed",
+				AmountSat:          50_000,
+				Txid:               "txid_deposit",
+				CreatedAtUnixS:     100,
+			},
+			{
+				Type:               "sweep",
+				ConfirmationStatus: "confirmed",
+				AmountSat:          15_000,
+				Txid:               "txid_exit",
+				CreatedAtUnixS:     250,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.GetEntries(), 4)
+
+	// Sort order is by updated_at descending: hash2(300), exit(250),
+	// hash1(200), deposit(100).
+	require.Equal(t, "hash2", resp.GetEntries()[0].GetId())
+	require.Equal(t, "txid_exit", resp.GetEntries()[1].GetId())
+	require.Equal(t, "hash1", resp.GetEntries()[2].GetId())
+	require.Equal(t, "txid_deposit", resp.GetEntries()[3].GetId())
+
+	// Kinds and statuses normalize correctly.
+	require.Equal(t,
+		walletrpc.EntryKind_ENTRY_KIND_RECV,
+		resp.GetEntries()[0].GetKind(),
+	)
+	require.Equal(t,
+		walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		resp.GetEntries()[0].GetStatus(),
+	)
+	require.Equal(t,
+		walletrpc.EntryKind_ENTRY_KIND_EXIT,
+		resp.GetEntries()[1].GetKind(),
+	)
+	require.Equal(t,
+		walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		resp.GetEntries()[1].GetStatus(),
+	)
+	require.Equal(t,
+		walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		resp.GetEntries()[3].GetKind(),
+	)
+}
+
+// TestHistoryPendingFilterDropsTerminal confirms pending_only=true
+// drops COMPLETE and FAILED rows from both sources.
+func TestHistoryPendingFilterDropsTerminal(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: "live",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_PAY,
+				Pending:       true,
+				UpdatedAtUnix: 100,
+			},
+			{
+				PaymentHash: "done",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_PAY,
+				State: swapclientrpc.
+					SwapState_SWAP_STATE_COMPLETED,
+				UpdatedAtUnix: 200,
+			},
+		},
+	}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{
+		PendingOnly: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.GetEntries(), 1)
+	require.Equal(t, "live", resp.GetEntries()[0].GetId())
+}
+
+// TestHistoryKindFilter confirms the kinds filter narrows the result.
+func TestHistoryKindFilter(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: "send-row",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_PAY,
+				State: swapclientrpc.
+					SwapState_SWAP_STATE_COMPLETED,
+				UpdatedAtUnix: 100,
+			},
+		},
+	}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "boarding",
+				ConfirmationStatus: "confirmed",
+				Txid:               "deposit-row",
+				CreatedAtUnixS:     50,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{
+		Kinds: []walletrpc.EntryKind{
+			walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.GetEntries(), 1)
+	require.Equal(t, "deposit-row", resp.GetEntries()[0].GetId())
+}
+
+// TestHistoryOverlayProjectsTimedOutFailed confirms the runtime's
+// deadline overlay surfaces as FAILED in the history view without
+// mutating the underlying source.
+func TestHistoryOverlayProjectsTimedOutFailed(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: "stuck",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_PAY,
+				Pending:       true,
+				UpdatedAtUnix: 100,
+			},
+		},
+	}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+
+	// Inject overlay directly.
+	h.runtime.pendingMu.Lock()
+	h.runtime.overlay["stuck"] = overlayStatus{
+		status: walletrpc.
+			EntryStatus_ENTRY_STATUS_FAILED,
+		failureReason: "timed_out",
+	}
+	h.runtime.pendingMu.Unlock()
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.GetEntries(), 1)
+	require.Equal(t,
+		walletrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		resp.GetEntries()[0].GetStatus(),
+	)
+	require.Equal(t, "timed_out",
+		resp.GetEntries()[0].GetFailureReason(),
+	)
+}
+
+// TestHistoryCanonicalIDProjection confirms a registered EXIT intent
+// causes a future ledger sweep row with a matching txid to surface
+// under the canonical intent id rather than the synthetic ledger id.
+func TestHistoryCanonicalIDProjection(t *testing.T) {
+	t.Parallel()
+
+	h, _, rpc := newHistoryFixture(t)
+	// Register the EXIT intent with the canonical id the user saw at
+	// submit time.
+	h.runtime.registerExitIntent("canonical-exit-id", []string{"tx1:0"})
+	// Observe a broadcast txid that the ledger will later report.
+	h.runtime.observeIntentTxid("canonical-exit-id", "broadcast-txid")
+
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "sweep",
+				ConfirmationStatus: "confirmed",
+				Txid:               "broadcast-txid",
+				CreatedAtUnixS:     100,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.GetEntries(), 1)
+	require.Equal(t, "canonical-exit-id",
+		resp.GetEntries()[0].GetId(),
+		"ledger sweep with a registered txid must project onto "+
+			"the canonical exit intent id")
+}
+
+// TestHistoryPagination confirms offset+limit produce the expected slice
+// and total tracks the pre-pagination count.
+func TestHistoryPagination(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	txns := make([]*daemonrpc.TransactionHistoryEntry, 0, 5)
+	for i := 0; i < 5; i++ {
+		txns = append(txns, &daemonrpc.TransactionHistoryEntry{
+			Type:               "boarding",
+			ConfirmationStatus: "confirmed",
+			Txid:               "deposit-" + string(rune('a'+i)),
+			CreatedAtUnixS:     int64(100 + i),
+		})
+	}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: txns,
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{
+		Offset: 1,
+		Limit:  2,
+	})
+	require.NoError(t, err)
+	require.Equal(t, uint32(5), resp.GetTotal())
+	require.Len(t, resp.GetEntries(), 2)
+}
