@@ -6,6 +6,18 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 )
 
+// cloneMsgTx returns a deep copy of a *wire.MsgTx suitable for stashing in
+// long-lived state. wire.MsgTx exposes a Copy() that allocates a fresh tx with
+// copied inputs and outputs; we wrap it for nil-safety so callers can clone
+// optional fields without a nil check.
+func cloneMsgTx(tx *wire.MsgTx) *wire.MsgTx {
+	if tx == nil {
+		return nil
+	}
+
+	return tx.Copy()
+}
+
 // Output represents an on-chain output that exists as part of a batch tree.
 type Output struct {
 	// Outpoint identifies the output on-chain.
@@ -58,6 +70,35 @@ type Output struct {
 	// a transient fraud / txconfirm failure does not strand a mature
 	// output until daemon restart.
 	CheckpointSweepRequestedHeight uint32
+
+	// RatchetSpendingTx, when non-nil, records the transaction that
+	// consumed this output but whose ratchet step failed. The watcher
+	// retains the entry in ExistingOutputs (and surfaces an error) so
+	// restart-replay can re-enter handleCheckpointOutputSpend.
+	//
+	// Spend notifications from chainsource are Tell-based and the
+	// returned error is discarded, so restart-replay was previously the
+	// only recovery path. Caching the spending tx here lets the
+	// per-block tick attempt an in-process retry without needing the
+	// chain source to re-deliver the spend.
+	//
+	// While this field is set the output is "spent-pending-retry": the
+	// checkpoint-sweep eligibility scan in handleNewBlockReceived must
+	// skip it, because a sweep against a checkpoint output that has
+	// already been consumed on-chain is a wasted (and confusing)
+	// fraud-responder request.
+	RatchetSpendingTx *wire.MsgTx
+
+	// RatchetSpendingHeight is the block height of RatchetSpendingTx,
+	// preserved so the in-process retry can replay the original spend
+	// context.
+	RatchetSpendingHeight int32
+
+	// RatchetRetryRequestedHeight is the block height at which the
+	// most recent in-process ratchet retry was attempted. Used by
+	// handleNewBlockReceived to space retries by ratchetRetryBlocks so
+	// a persistent failure does not burn one retry per block.
+	RatchetRetryRequestedHeight uint32
 }
 
 // Clone creates a deep copy of this output suitable for returning in query
@@ -95,6 +136,9 @@ func (o *Output) Clone() *Output {
 	}
 	clone.CheckpointSweepRequestedHeight =
 		o.CheckpointSweepRequestedHeight
+	clone.RatchetSpendingTx = cloneMsgTx(o.RatchetSpendingTx)
+	clone.RatchetSpendingHeight = o.RatchetSpendingHeight
+	clone.RatchetRetryRequestedHeight = o.RatchetRetryRequestedHeight
 
 	return clone
 }
