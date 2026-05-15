@@ -277,6 +277,27 @@ var (
 		[]string{"reason"},
 	)
 
+	// BatchWatcherRegisterFailures counts batches that failed to
+	// enqueue with the BatchWatcher actor at round confirmation, even
+	// after the bounded enqueue retry. Each increment represents a
+	// VTXO tree that will NOT be monitored on-chain for spends, sweeps
+	// or expiry, which is a money-loss-radius condition: missing
+	// watcher coverage disables fraud and expiry response. Operator
+	// MUST alert on any non-zero rate here; the affected round is
+	// also untracked (clients evicted) and there is no automatic
+	// redrive path -- operator-initiated re-registration is required.
+	BatchWatcherRegisterFailures = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "batch_watcher_register_failures_total",
+			Help: "Batches that failed to enqueue with the " +
+				"BatchWatcher at round confirmation. " +
+				"Operator must alert: affected batches are " +
+				"NOT monitored on-chain and there is no " +
+				"automatic redrive.",
+		},
+	)
+
 	// DispatchDuration records per-method envelope dispatch
 	// latency in the clientconn ingress loop.
 	DispatchDuration = prometheus.NewHistogramVec(
@@ -341,6 +362,7 @@ func allCollectors() []prometheus.Collector {
 		BlockHeight,
 		VTXOLockDuration,
 		VTXOLockFailures,
+		BatchWatcherRegisterFailures,
 		DispatchDuration,
 		GRPCServerMetrics,
 	}

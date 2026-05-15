@@ -1555,10 +1555,61 @@ func (a *Actor) handleConfirmation(ctx context.Context,
 		// restart via loadRoundFSM) so the watcher pins each batch to
 		// the historical descriptor rather than the operator's
 		// currently configured sweep key.
-		a.registerBatchesWithWatcher(
+		//
+		// Failure here is money-loss-radius: an unregistered tree
+		// never produces fraud/expiry notifications. We deliberately
+		// do NOT leave the round tracked on failure -- ConfirmedState
+		// is terminal in the FSM and there is no retry path, so
+		// keeping per-round state in memory would just leak forever.
+		// Instead we convert the silent loss into a LOUD observable
+		// loss: bump a dedicated operator-alert counter, run the same
+		// cleanup as the success path, then propagate the error up
+		// the actor framework. There is no automatic redrive; the
+		// operator must inspect the alert and trigger a manual
+		// re-registration (e.g. by replaying confirmation via the
+		// chain source actor once the watcher is healthy).
+		regErr := a.registerBatchesWithWatcher(
 			ctx, msg.RoundID, msg.BlockHeight, cs.VTXOTrees,
 			cs.SweepKey,
 		)
+		if regErr != nil {
+			// Count one failure per affected batch so the
+			// operator alert rate reflects the number of
+			// unwatched trees, not just rounds. We use the
+			// errors.Join unwrap to surface the per-batch
+			// errors aggregated by registerBatchesWithWatcher.
+			batchCount := countWatcherBatchFailures(regErr)
+			a.tellMetrics(ctx,
+				&metrics.BatchWatcherRegisterFailedMsg{
+					RoundID:    msg.RoundID.String(),
+					BatchCount: batchCount,
+				},
+			)
+
+			// Clean up tracked state and emit the terminal
+			// RoundCompleted metric (with a distinct status so
+			// dashboards differentiate it from a clean
+			// confirmation). Leaving the round in a.rounds
+			// would be a memory leak with no recovery path,
+			// so we drop it from the FSM map as well as the
+			// per-client tracking (untrackRound only clears
+			// the latter).
+			a.untrackRound(msg.RoundID)
+			delete(a.rounds, msg.RoundID)
+			a.tellMetrics(ctx, &metrics.RoundCompletedMsg{
+				RoundID:     msg.RoundID.String(),
+				Status:      "confirmed_watcher_failed",
+				BlockHeight: uint32(msg.BlockHeight),
+			})
+
+			return fn.Err[ActorResp](
+				fmt.Errorf("batch watcher registration "+
+					"failed for round %s; round state "+
+					"cleaned up, operator must redrive "+
+					"manually (no automatic retry): %w",
+					msg.RoundID, regErr),
+			)
+		}
 
 		// Publish VTXO created events to the indexer so
 		// recipients with registered receive scripts are
@@ -1583,6 +1634,35 @@ func (a *Actor) handleConfirmation(ctx context.Context,
 	)
 
 	return fn.Ok[ActorResp](nil)
+}
+
+// countWatcherBatchFailures returns the number of per-batch failures
+// aggregated inside a watcher registration error. registerBatches-
+// WithWatcher wraps the per-batch errors with errors.Join so we can
+// unwrap and count. Falls back to 1 if the structure does not match
+// (e.g., a non-aggregated error) so the operator alert never under-
+// counts.
+func countWatcherBatchFailures(err error) int {
+	type unwrapMulti interface {
+		Unwrap() []error
+	}
+
+	// registerBatchesWithWatcher wraps errors.Join(...) inside an
+	// fmt.Errorf with %w, so the joined error is one Unwrap() hop
+	// away. Walk a couple of levels to be safe against future
+	// wrapping changes.
+	cur := err
+	for i := 0; i < 4 && cur != nil; i++ {
+		if multi, ok := cur.(unwrapMulti); ok {
+			n := len(multi.Unwrap())
+			if n > 0 {
+				return n
+			}
+		}
+		cur = errors.Unwrap(cur)
+	}
+
+	return 1
 }
 
 // broadcastAndSubscribe broadcasts the round's signed transaction and
@@ -1669,82 +1749,218 @@ func (a *Actor) broadcastAndSubscribe(ctx context.Context,
 	return nil
 }
 
-// registerBatchesWithWatcher registers all VTXO trees from a confirmed round
+// batchWatcherEnqueueMaxAttempts is the total number of Tell attempts
+// (initial + retries) used when enqueuing a RegisterBatchRequest to the
+// BatchWatcher actor. A small bounded retry shields confirmation handling
+// from transient mailbox-context races during shutdown/restart, while
+// still failing fast enough to surface a stuck or terminated watcher to
+// the caller. Tuned conservatively: confirmations are infrequent (one
+// per round per confirmation block), so the extra latency cost of a few
+// retries is negligible compared to losing watcher coverage.
+const batchWatcherEnqueueMaxAttempts = 3
+
+// batchWatcherEnqueueRetryDelay is the fixed backoff between Tell
+// attempts when enqueuing a RegisterBatchRequest. Kept short because
+// the only retryable failures are transient context/mailbox states.
+// Retries are SERIAL across batches inside a single
+// registerBatchesWithWatcher call, so the worst-case stall for one
+// confirmation is
+// N_batches * (batchWatcherEnqueueMaxAttempts - 1) *
+// batchWatcherEnqueueRetryDelay
+// in the all-fail case. Confirmations are infrequent (~one per
+// confirmation block) so the bound is acceptable; if VTXO trees per
+// round ever grow large enough to make this matter, parallelize the
+// per-batch enqueue rather than shortening the delay.
+const batchWatcherEnqueueRetryDelay = 50 * time.Millisecond
+
 // with the BatchWatcher for on-chain monitoring. The sweepKey argument is the
 // per-round descriptor captured at finalization (and reloaded across restart);
 // it overrides the actor's currently-configured key so post-rotation restarts
-// still sign each batch with the descriptor that built its tapleaf.
+// still sign each batch with the descriptor that built its tapleaf. It returns
+// an error if the BatchWatcher is configured but one or more batches could not
+// be enqueued for registration. Returning the failure is critical: missing
+// watcher registration disables fraud/expiry response for that batch and can
+// lead to operator or client fund loss. The caller is responsible for keeping
+// the round tracked (so the operator notices the inconsistency) and surfacing
+// the failure upstream. A bounded retry-with-backoff is attempted per batch to
+// absorb transient mailbox states; see batchWatcherEnqueueMaxAttempts /
+// batchWatcherEnqueueRetryDelay for tuning.
 func (a *Actor) registerBatchesWithWatcher(ctx context.Context, roundID RoundID,
 	blockHeight int32, vtxoTrees map[int]*tree.Tree,
-	sweepKey keychain.KeyDescriptor) {
+	sweepKey keychain.KeyDescriptor) error {
 
-	// Type aliases for readability.
-	type bwMsg = batchwatcher.BatchWatcherMsg
-	type bwResp = batchwatcher.BatchWatcherResp
+	// If no watcher is configured we have nothing to register. This is a
+	// supported deployment mode (e.g., unit tests, watcher disabled by
+	// operator) and not an error.
+	if a.cfg.BatchWatcher.IsNone() {
+		return nil
+	}
+	ref := a.cfg.BatchWatcher.UnsafeFromSome()
 
-	a.cfg.BatchWatcher.WhenSome(func(ref actor.ActorRef[bwMsg, bwResp]) {
-		// Calculate expiry height based on confirmation height and
-		// sweep delay from terms.
-		expiryHeight := uint32(blockHeight) + a.cfg.Terms.SweepDelay
+	// Calculate expiry height based on confirmation height and sweep
+	// delay from terms.
+	expiryHeight := uint32(blockHeight) + a.cfg.Terms.SweepDelay
 
-		// Register each VTXO tree with the batch watcher.
-		for outputIdx, vtxoTree := range vtxoTrees {
-			if vtxoTree == nil {
-				continue
-			}
+	// Collect every per-batch failure so we surface a complete picture
+	// to the caller instead of stopping at the first error. Each entry
+	// keeps the original error for diagnostics; the caller decides how
+	// to react (operator alerting, leaving the round tracked, etc.).
+	var failures []error
 
-			// Create the deterministic BatchID for this
-			// round/output pair so watcher state can be recovered
-			// and inspected consistently.
-			batchID := batchwatcher.BatchIDForRoundOutput(
-				uuid.UUID(roundID), outputIdx,
-			)
+	// Register each VTXO tree with the batch watcher.
+	for outputIdx, vtxoTree := range vtxoTrees {
+		if vtxoTree == nil {
+			continue
+		}
 
-			req := &batchwatcher.RegisterBatchRequest{
-				BatchID:            batchID,
-				Tree:               vtxoTree,
-				ConfirmationHeight: uint32(blockHeight),
-				ExpiryHeight:       expiryHeight,
-				// Pass the descriptor used to derive the sweep
-				// tapleaf at finalization time so the sweeper
-				// signs with the matching historical locator
-				// rather than whatever key the actor is
-				// currently configured with. This descriptor
-				// is carried on ConfirmedState (set at
-				// finalization and preserved across a restart
-				// via loadRoundFSM) so a confirmation arriving
-				// after a sweep-key rotation still binds the
-				// pre-rotation descriptor to the batch.
-				SweepKey: sweepKey,
-			}
+		// Create the deterministic BatchID for this round/output
+		// pair so watcher state can be recovered and inspected
+		// consistently.
+		batchID := batchwatcher.BatchIDForRoundOutput(
+			uuid.UUID(roundID), outputIdx,
+		)
 
-			// Send registration request using fire-and-forget since
-			// we don't need to wait for acknowledgment.
-			if err := ref.Tell(ctx, req); err != nil {
-				a.log.WarnS(ctx, "Failed to register batch "+
-					"with watcher",
-					err,
-					"round_id", roundID,
-					"batch_id", batchID,
-					"output_idx", outputIdx,
-					slog.Uint64(
-						"expiry_height",
-						uint64(expiryHeight),
-					),
-				)
+		req := &batchwatcher.RegisterBatchRequest{
+			BatchID:            batchID,
+			Tree:               vtxoTree,
+			ConfirmationHeight: uint32(blockHeight),
+			ExpiryHeight:       expiryHeight,
+			// Pass the descriptor used to derive the sweep
+			// tapleaf at finalization time so the sweeper
+			// signs with the matching historical locator
+			// rather than whatever key the actor is currently
+			// configured with. This descriptor is carried on
+			// ConfirmedState (set at finalization and preserved
+			// across a restart via loadRoundFSM) so a
+			// confirmation arriving after a sweep-key rotation
+			// still binds the pre-rotation descriptor to the
+			// batch.
+			SweepKey: sweepKey,
+		}
 
-				continue
-			}
-
-			a.log.InfoS(ctx, "Registered batch with watcher",
+		// Send registration request using fire-and-forget Tell with
+		// a bounded retry. Tell enqueues into the watcher's mailbox;
+		// failures here mean the message was never accepted, not
+		// that processing failed. Failing to enqueue is a money-risk
+		// condition because the watcher will not monitor this batch
+		// for spends, sweeps, or expiry.
+		err := a.tellBatchWatcherWithRetry(ctx, ref, req)
+		if err != nil {
+			// Classify the log level: externally-triggered
+			// shutdown/cancellation errors (actor terminated,
+			// mailbox closed, context cancel/deadline) are
+			// expected during graceful shutdown and must not
+			// page operators. Anything else is an internal-bug
+			// signal and warrants ErrorS per the project's
+			// log-level convention (CLAUDE.md: error level is
+			// only for internal bugs, never external triggers).
+			// The operator-alert signal lives on the
+			// BatchWatcherRegisterFailures counter, not on the
+			// log level, so this classification only affects
+			// log volume during shutdown, not alerting.
+			logKVs := []any{
 				"round_id", roundID,
 				"batch_id", batchID,
 				"output_idx", outputIdx,
 				slog.Uint64(
 					"expiry_height", uint64(expiryHeight),
-				))
+				),
+			}
+			if isShutdownErr(err) {
+				a.log.WarnS(ctx, "Failed to register "+
+					"batch with watcher (shutdown); "+
+					"batch will not be monitored "+
+					"on-chain", err, logKVs...)
+			} else {
+				a.log.ErrorS(ctx, "Failed to register "+
+					"batch with watcher; batch will "+
+					"not be monitored on-chain", err,
+					logKVs...)
+			}
+
+			failures = append(
+				failures, fmt.Errorf("batch %s (output "+
+					"%d): %w", batchID, outputIdx, err),
+			)
+
+			continue
 		}
-	})
+
+		a.log.InfoS(ctx, "Registered batch with watcher",
+			"round_id", roundID,
+			"batch_id", batchID,
+			"output_idx", outputIdx,
+			slog.Uint64(
+				"expiry_height", uint64(expiryHeight),
+			))
+	}
+
+	if len(failures) > 0 {
+		return fmt.Errorf("failed to register %d batch(es) with "+
+			"watcher for round %s: %w", len(failures), roundID,
+			errors.Join(failures...))
+	}
+
+	return nil
+}
+
+// isShutdownErr reports whether an error originates from an
+// externally-triggered shutdown or cancellation (graceful actor
+// termination, mailbox closure, caller-context cancel/deadline).
+// Used to demote enqueue-failure log level from Error to Warn during
+// shutdown so we do not page operators on graceful drain. The
+// operator-alert signal for missing watcher coverage lives on the
+// BatchWatcherRegisterFailures counter, which is incremented regardless
+// of log level.
+func isShutdownErr(err error) bool {
+	return errors.Is(err, actor.ErrActorTerminated) ||
+		errors.Is(err, actor.ErrMailboxClosed) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
+}
+
+// tellBatchWatcherWithRetry enqueues a RegisterBatchRequest with the
+// BatchWatcher actor, retrying a bounded number of times on transient
+// errors. Caller-context cancellation is treated as terminal (no
+// retries), since the parent operation has been aborted and any retry
+// would race against actor shutdown.
+func (a *Actor) tellBatchWatcherWithRetry(ctx context.Context,
+	ref actor.ActorRef[
+		batchwatcher.BatchWatcherMsg,
+		batchwatcher.BatchWatcherResp,
+	],
+	req *batchwatcher.RegisterBatchRequest) error {
+
+	var lastErr error
+	for attempt := 0; attempt < batchWatcherEnqueueMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		err := ref.Tell(ctx, req)
+		if err == nil {
+			return nil
+		}
+
+		// Caller context cancellations are terminal; do not retry.
+		if errors.Is(err, context.Canceled) ||
+			errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+
+		lastErr = err
+
+		// Sleep before the next attempt, but bail out immediately
+		// if the caller's context fires during the delay.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case <-time.After(batchWatcherEnqueueRetryDelay):
+		}
+	}
+
+	return lastErr
 }
 
 // publishVTXOEvents iterates the confirmed round's VTXO tree leaves
