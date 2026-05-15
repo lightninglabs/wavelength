@@ -344,6 +344,18 @@ func validateProofDescriptorShape(desc *vtxo.Descriptor) error {
 	// with a confusing "tree path missing root" — at which point the
 	// FSM has already advanced into AwaitingMaterialization with a
 	// proof set it can never assemble. Fail fast at the boundary.
+	//
+	// Note: TreeDepth is intentionally NOT checked here. The proof
+	// assembler walks TreePath.Root directly, so the scalar TreeDepth
+	// is purely expiry-timing metadata (see vtxo.Descriptor.MaxTreeDepth
+	// and vtxo/expiry.go). An untrusted indexer that returns a
+	// non-empty TreePath with TreeDepth defaulted/forged to zero must
+	// NOT block unilateral exit — that would let the operator strand
+	// otherwise-recoverable funds. Receive-side validation of TreeDepth
+	// against TreePath.Depth() lives at the ingest boundary
+	// (oor.validateIncomingAncestry / darepod.ancestryFromRPC); the
+	// unroll path stays liberal about the scalar so legitimate proofs
+	// always assemble.
 	for i, frag := range desc.Ancestry {
 		switch {
 		case frag.TreePath == nil:
@@ -357,10 +369,6 @@ func validateProofDescriptorShape(desc *vtxo.Descriptor) error {
 		case frag.CommitmentTxID == (chainhash.Hash{}):
 			return fmt.Errorf("%w: ancestry fragment %d missing "+
 				"commitment txid", ErrUnrollProofUnavailable, i)
-
-		case frag.TreeDepth == 0:
-			return fmt.Errorf("%w: ancestry fragment %d has zero "+
-				"tree depth", ErrUnrollProofUnavailable, i)
 		}
 	}
 
