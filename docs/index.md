@@ -30,6 +30,7 @@ into specific topics below.
 | [testing-guide.md](testing-guide.md) | Coverage targets, test approaches, pre-commit checklist |
 | [go_workspace.md](go_workspace.md) | Multi-module Go workspace setup |
 | [policy_arkscript_review_guide.md](policy_arkscript_review_guide.md) | Policy-first arkscript reviewer guide |
+| [dev_rpc_cli_builder.md](dev_rpc_cli_builder.md) | Generated `darepocli dev` command builder and request flag rules |
 
 ## Operations
 
