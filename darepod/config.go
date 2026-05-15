@@ -175,6 +175,14 @@ type Config struct {
 	// registered unless the daemon is compiled with the swapruntime tag.
 	Swap *SwapConfig `mapstructure:"swap"`
 
+	// SwapWallet configures the optional walletrpc subserver (the
+	// simplified high-level wallet facade composed over the swap
+	// runtime and the cooperative-leave subsystem). The fields are
+	// inert in default builds because the WalletService is not
+	// registered unless the daemon is compiled with both the
+	// walletrpc and swapruntime tags.
+	SwapWallet *SwapWalletConfig `mapstructure:"swapwallet"`
+
 	// MaxOperatorFeeSat caps the per-round operator fee the client
 	// is willing to pay under the #270 seal-time fee handshake.
 	// Every JoinRoundQuote is compared against this value before
@@ -296,6 +304,70 @@ type SwapConfig struct {
 	// empty, the daemon stores swaps under DataDir/swaps.db so restart
 	// resume can discover pending sessions without CLI state.
 	DatabaseFileName string `mapstructure:"databasefilename"`
+
+	// SuppressResume disables swapclientserver's own synchronous
+	// resume-on-startup sweep so a higher layer (walletrpc subserver) can
+	// own the unified resume policy. Default false preserves identical
+	// behavior for swapruntime-only builds: the swap subserver continues
+	// to resume its pending sessions before Register returns. The flag is
+	// set programmatically by the walletrpc registrar; it is not loaded
+	// from config files.
+	SuppressResume bool `mapstructure:"-"`
+
+	// Backend is populated by swapclientserver.Register after the swap
+	// subserver is fully wired. Higher layers (the walletrpc subserver)
+	// read this handle to drive in-Go calls into the swap runtime without
+	// going through the gRPC stub. The field is set programmatically by
+	// the registrar; it is never loaded from config files.
+	Backend SwapBackend `mapstructure:"-"`
+}
+
+// SwapBackend is the in-Go handle exposed by swapclientserver after Register
+// completes. It lets higher-level subservers (such as the walletrpc subserver)
+// drive the swap runtime without dialing the daemon's gRPC server from inside
+// the same process. The interface is intentionally small and grows only as
+// new wallet-layer needs arise.
+type SwapBackend interface {
+	// ResumePending re-arms background workers for every persisted
+	// pending swap session. It is idempotent: payment hashes already
+	// owned by an active worker are skipped. Callers invoke it once at
+	// daemon startup so the gRPC server begins accepting requests with
+	// every prior session already running.
+	ResumePending(ctx context.Context)
+}
+
+// SwapWalletConfig configures the optional walletrpc subserver. The struct
+// is present in all builds so configuration files stay stable, but the
+// fields are only consumed when the daemon is compiled with both the
+// walletrpc and swapruntime build tags.
+type SwapWalletConfig struct {
+	// Deadline is the wallet-level timeout applied to every PENDING
+	// entry. When an entry is older than this duration without
+	// transitioning to a terminal state, the runtime overlays its
+	// status as FAILED with failure_reason="timed_out" so the user
+	// surface never hangs on a stuck swap. Zero means use the
+	// package default (30 minutes). The wallet deadline lives ABOVE
+	// the swap FSM's own deadline; it never mutates underlying swap
+	// state.
+	Deadline time.Duration `mapstructure:"deadline"`
+
+	// DefaultListLimit is the page size used when a List or
+	// SubscribeWallet snapshot request omits a limit. Zero means use
+	// the package default (100). The configured value is also clamped
+	// to MaxListLimit so a misconfiguration cannot silently fan out
+	// unbounded DB work.
+	DefaultListLimit uint32 `mapstructure:"defaultlistlimit"`
+
+	// MaxListLimit caps the per-call list page size. Larger callers
+	// are clamped to this maximum. Zero means use the package default
+	// (1000).
+	MaxListLimit uint32 `mapstructure:"maxlistlimit"`
+
+	// SubscribeBuffer is the per-subscriber channel buffer used by
+	// SubscribeWallet. A slow consumer drops updates when its buffer
+	// saturates; it can reconcile via List on reconnect. Zero means
+	// use the package default (32).
+	SubscribeBuffer uint32 `mapstructure:"subscribebuffer"`
 }
 
 // MailboxEdgeFactory constructs the mailbox edge client used by the

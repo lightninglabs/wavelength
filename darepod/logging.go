@@ -38,6 +38,7 @@ var allSubsystems = []string{
 	indexer.Subsystem,
 	db.Subsystem,
 	SwapSubsystem,
+	WalletRPCSubsystem,
 	"TXCF",
 	"UNRL",
 }
@@ -47,6 +48,12 @@ const (
 	// logs. It is exported so optional subservers can reuse the daemon log
 	// manager without reaching into Server internals.
 	SwapSubsystem = "SWAP"
+
+	// WalletRPCSubsystem is the subsystem tag used for the optional
+	// walletrpc subserver (the simplified wallet facade composed over the
+	// swap runtime and ark/leave subsystems). It is exported so the
+	// swapwallet package can reuse the daemon log manager.
+	WalletRPCSubsystem = "WRPC"
 )
 
 // SetupLoggersWithShutdownFn registers all subsystem loggers using a plain
