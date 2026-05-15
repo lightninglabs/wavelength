@@ -1,4 +1,4 @@
-//go:build !swapruntime && !swapdirect
+//go:build !swapruntime
 
 package darepoclicommands
 
@@ -13,4 +13,5 @@ func TestSwapStubFailsGracefully(t *testing.T) {
 
 	err := newSwapCmd().Execute()
 	require.ErrorContains(t, err, "swapruntime build")
+	require.ErrorContains(t, err, "-tags=swapruntime")
 }

@@ -84,12 +84,6 @@ The daemon owns the background worker; CLI exit does not cancel an admitted swap
 | `swap resume` | `ResumeSwap` | Wake up a persisted swap worker (idempotent) |
 | `swap watch` | `SubscribeSwaps` | Stream coarse swap summary updates; `--existing` emits current rows first |
 
-### Direct-client swap commands (`cmd_swap.go`, `swapdirect && !swapruntime` tag)
-
-Standalone swap execution without a running daemon. Connects directly to the
-swap server and an isolated SQLite database. Flags: `--swapserver`,
-`--swapserver-tlscert`, `--swapserver-insecure`, `--swapdb`.
-
 ## Relationships
 
 - **Depends on**: `daemonrpc` (generated gRPC client stubs for the main
