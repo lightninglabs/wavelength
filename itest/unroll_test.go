@@ -106,6 +106,8 @@ func newUnrollHarnessWithMutator(t *testing.T,
 // lifecycle: manual trigger, dedup, VTXO status transition, recovery
 // chain materialization, CSV wait, sweep, and completion.
 func TestUnilateralExitManualStartSingleParentTree(t *testing.T) {
+	t.Parallel()
+
 	h := newUnrollHarness(t)
 
 	alice := h.StartClientDaemon("alice")
@@ -201,6 +203,8 @@ func TestUnilateralExitManualStartSingleParentTree(t *testing.T) {
 // assertions (dedup, status query). This exercises the minimal trigger
 // → completion path.
 func TestUnilateralExitRoundBornCompletion(t *testing.T) {
+	t.Parallel()
+
 	h := newUnrollHarness(t)
 
 	alice := h.StartClientDaemon("alice")
@@ -254,6 +258,8 @@ func TestUnilateralExitRoundBornCompletion(t *testing.T) {
 // minimum needed to register. This keeps total mining low to avoid
 // overloading the per-client LND instances.
 func TestUnilateralExitOORDerivedCompletion(t *testing.T) {
+	t.Parallel()
+
 	h := newUnrollHarness(t)
 
 	alice := h.StartClientDaemon("alice")

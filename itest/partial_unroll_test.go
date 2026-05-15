@@ -247,6 +247,8 @@ func onlyChildNode(t *testing.T, root *treepkg.Node) *treepkg.Node {
 //     One branch has been partially unrolled down to leaves while
 //     the other branch is still being watched.
 func TestPartialUnrollIntegrationRatchetsWatcherForward(t *testing.T) {
+	t.Parallel()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
