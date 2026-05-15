@@ -227,6 +227,20 @@ func ancestryFromRPC(paths []*arkrpc.AncestryPath) ([]vtxo.Ancestry, error) {
 				err)
 		}
 
+		// Validate the indexer-supplied tree_depth against the
+		// reconstructed path before it can be persisted. A zero or
+		// truncated claim would otherwise survive the rest of the
+		// receive-side checks and only fail at unilateral-exit time
+		// (zero) or under-report the worst-case CSV window
+		// (truncated), which is a fund-availability surface for
+		// OOR-received VTXOs.
+		err = arkrpc.ValidateAncestryPathDepth(
+			p.GetTreeDepth(), treePath,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("path[%d] depth: %w", i, err)
+		}
+
 		out = append(out, vtxo.Ancestry{
 			TreePath:       treePath,
 			CommitmentTxID: commitmentTxID,

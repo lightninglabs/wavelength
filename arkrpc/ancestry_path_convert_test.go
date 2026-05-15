@@ -2,6 +2,7 @@ package arkrpc
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -218,5 +219,112 @@ func TestNodeMaxDepthRejectsOverCap(t *testing.T) {
 	_, err := treeMaxDepth(makeChainTree(MaxAncestryTreeWalkDepth + 1))
 	if err == nil {
 		t.Fatalf("expected error for over-cap tree depth")
+	}
+}
+
+// TestValidateAncestryPathDepth exercises the indexer→client tree_depth
+// guard introduced for darepo-client#370. Each case represents an attack
+// or edge condition: zero claim, over-cap claim, mismatched claim,
+// at-cap claim, and a valid leaf claim. The validator is the trust
+// boundary that prevents an untrusted indexer from stranding an OOR
+// VTXO via tree_depth, so coverage here is load-bearing.
+func TestValidateAncestryPathDepth(t *testing.T) {
+	t.Parallel()
+
+	leafTree := makeChainTree(1)
+	pairTree := makeChainTree(2)
+	atCapTree := makeChainTree(MaxAncestryTreeWalkDepth)
+
+	cases := []struct {
+		name    string
+		claimed uint32
+		tree    *tree.Tree
+		wantErr string
+	}{
+		{
+			name:    "zero claim is rejected",
+			claimed: 0,
+			tree:    leafTree,
+			wantErr: "must be non-zero",
+		},
+		{
+			name:    "over-cap claim is rejected",
+			claimed: MaxAncestryTreeWalkDepth + 1,
+			tree:    nil,
+			wantErr: "exceeds max",
+		},
+		{
+			name:    "claim disagrees with reconstructed",
+			claimed: 5,
+			tree:    pairTree,
+			wantErr: "does not match reconstructed",
+		},
+		{
+			name:    "valid leaf claim",
+			claimed: 1,
+			tree:    leafTree,
+		},
+		{
+			name:    "at-cap claim",
+			claimed: MaxAncestryTreeWalkDepth,
+			tree:    atCapTree,
+		},
+		{
+			// Range-only check when the tree is absent. Callers
+			// requiring usable ancestry enforce non-nil elsewhere.
+			name:    "nil tree skips path comparison",
+			claimed: 3,
+			tree:    nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateAncestryPathDepth(tc.claimed, tc.tree)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected err: %v", err)
+				}
+
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("expected error containing %q",
+					tc.wantErr)
+			}
+
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err %q does not contain %q",
+					err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateAncestryPathDepthBoundsReconstructedWalk ensures the
+// validator does not invoke the unbounded tree.Tree.Depth() on an
+// indexer-supplied reconstructed tree. A linear chain of nodes that
+// would otherwise recurse deeply must be rejected via the local
+// bounded walker (treeMaxDepth) without overflowing the stack. The
+// claimed scalar is in-range so the early range check passes and we
+// reach the actual-depth comparison; only the bounded walker
+// terminates this case safely.
+func TestValidateAncestryPathDepthBoundsReconstructedWalk(t *testing.T) {
+	t.Parallel()
+
+	// Build a chain deeper than the walk cap. A hostile indexer can
+	// produce this from a valid-looking proto TreePath (children
+	// must have a strictly higher index, but the overall chain
+	// length is not capped at the proto layer).
+	overCap := makeChainTree(MaxAncestryTreeWalkDepth + 10)
+
+	err := ValidateAncestryPathDepth(MaxAncestryTreeWalkDepth, overCap)
+	if err == nil {
+		t.Fatalf("expected error for over-cap reconstructed tree")
+	}
+
+	if !strings.Contains(err.Error(), "exceeds max") {
+		t.Fatalf("err %q does not mention bounded walker", err.Error())
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -273,6 +274,25 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 			return &ErrInvalidAncestry{
 				Reason: fmt.Sprintf(
 					"fragment %d has nil tree path", i,
+				),
+			}
+		}
+
+		// Validate the per-fragment tree depth here as a
+		// defense-in-depth check. The RPC ingress
+		// (arkrpc.ValidateAncestryPathDepth) is the primary trust
+		// boundary, but any code path that constructs Ancestry
+		// in-process (tests, future internal materializers) must
+		// also enforce that the stored TreeDepth matches the actual
+		// path. Without this, an under-reported depth could survive
+		// to drive expiry-monitoring decisions and silently delay a
+		// unilateral exit past its safe deadline.
+		if err := arkrpc.ValidateAncestryPathDepth(
+			frag.TreeDepth, frag.TreePath,
+		); err != nil {
+			return &ErrInvalidAncestry{
+				Reason: fmt.Sprintf(
+					"fragment %d depth: %v", i, err,
 				),
 			}
 		}
