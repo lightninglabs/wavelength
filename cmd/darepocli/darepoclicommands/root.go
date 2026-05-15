@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/darepo-client/cmd/darepocli/darepoclicommands/devrpc"
 	"github.com/spf13/cobra"
 )
 
@@ -60,6 +61,13 @@ func NewRootCmd() *cobra.Command {
 		newSendCmd(), newBoardCmd(), newSweepCmd(),
 		newListTransactionsCmd(), newRoundsCmd(), newFeesCmd(),
 		newSchemaCmd(), newMCPCmd(), newUnrollCmd(), newSwapCmd(),
+		devrpc.NewDevCmd(
+			devrpc.Config{
+				GetConn:     getDaemonConn,
+				PrintJSON:   printJSON,
+				MapRPCError: mapSwapRuntimeRPCError,
+			},
+		),
 	)
 
 	return cmd
