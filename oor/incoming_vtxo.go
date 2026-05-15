@@ -242,6 +242,19 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 //     Ancestry contract for incoming OOR VTXOs (those are always
 //     produced by an OOR Ark tx); an out-of-range index points at a
 //     non-existent input so the unroll proof would never resolve.
+//
+//   - No input index repeats within a fragment or across fragments,
+//     and the union of all fragments' InputIndices covers every Ark
+//     tx input exactly once. A duplicate or missing index means at
+//     least one Ark tx input has no rooted-path material attached:
+//     fraud-watch plans (BuildWatchPlan) would lack a watch for the
+//     uncovered input's lineage and unilateral-exit proof assembly
+//     would have no fragment to broadcast for that input. The
+//     descriptor would persist cleanly and the gap would only surface
+//     if the operator later refuses cooperation, at which point the
+//     user is racing a CSV with no way to recover. We reject at the
+//     receive boundary so the bad indexer response fails before any
+//     funds are credited.
 func validateIncomingAncestry(meta IncomingVTXOMetadata,
 	arkTxInputCount uint32) error {
 
@@ -251,6 +264,11 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 		}
 	}
 
+	// Track which Ark tx input indices each fragment has claimed so we
+	// can verify partition coverage at the end. Sized to the Ark tx's
+	// declared input count; we only set entries after the per-fragment
+	// range check has passed, so out-of-range writes are impossible.
+	covered := make([]bool, arkTxInputCount)
 	seen := make(map[chainhash.Hash]struct{}, len(meta.Ancestry))
 	hasPrimary := false
 	for i, frag := range meta.Ancestry {
@@ -319,6 +337,30 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 					),
 				}
 			}
+
+			// Reject duplicate input indices (either repeated
+			// within this fragment or already claimed by an
+			// earlier fragment). A duplicate means another Ark
+			// tx input is silently uncovered, which the
+			// post-loop coverage check below would also detect
+			// — we flag the duplicate here so the failure
+			// reason points at the malformed fragment rather
+			// than at a missing input that looks like a
+			// truncation.
+			if covered[idx] {
+				return &ErrInvalidAncestry{
+					Reason: fmt.Sprintf(
+						"fragment %d input index "+
+							"[%d]=%d duplicates "+
+							"an index already "+
+							"claimed by another "+
+							"fragment (or earlier "+
+							"in this fragment)",
+						i, j, idx,
+					),
+				}
+			}
+			covered[idx] = true
 		}
 	}
 
@@ -329,6 +371,25 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 					"commitment txid %s",
 				meta.CommitmentTxID,
 			),
+		}
+	}
+
+	// Every Ark tx input must be covered by exactly one fragment.
+	// Duplicates were rejected above, so a missing-coverage failure
+	// here means the indexer truncated the ancestry. Accepting it
+	// would leave the uncovered input with no rooted-path material
+	// for unilateral exit, stranding the received VTXO if the
+	// operator later refuses cooperation.
+	for idx, ok := range covered {
+		if !ok {
+			return &ErrInvalidAncestry{
+				Reason: fmt.Sprintf(
+					"ark tx input %d is not covered by "+
+						"any ancestry fragment "+
+						"(incoming ancestry must "+
+						"cover every input)", idx,
+				),
+			}
 		}
 	}
 

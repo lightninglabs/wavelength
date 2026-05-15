@@ -4,6 +4,9 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
+	lib_tree "github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
@@ -81,17 +84,64 @@ func TestBuildIncomingVTXODescriptorZeroChainDepth(t *testing.T) {
 // cross-round multi-input metadata may carry the descriptor's commitment
 // fragment after another valid fragment, and descriptor construction still
 // preserves legacy Ancestry[0] primary semantics.
+//
+// The test exercises the genuine cross-round multi-input shape: a
+// two-input Ark tx with one fragment per input. The secondary fragment
+// is supplied first in the metadata so descriptor construction must
+// reorder it before persistence.
 func TestBuildIncomingVTXODescriptorNormalizesPrimaryAncestry(t *testing.T) {
 	t.Parallel()
 
-	arkPSBT, _, recipients, commitHash, recipientKey,
-		operatorKey := buildTestIncomingMaterialization(t)
+	arkPSBT, _, recipients, commits, recipientKey,
+		operatorKey := buildTestIncomingMaterializationMultiInput(t)
 
-	otherHash := chainhash.Hash{0xee}
-	ancestry := validTestIncomingAncestry(otherHash)
-	ancestry = append(
-		ancestry, validTestIncomingAncestry(commitHash)[0],
-	)
+	// BuildArkPSBT applies BIP69 input ordering, so locate which
+	// of the two commitment hashes ends up at Ark input index 0
+	// vs 1 in the canonical PSBT. Each fragment must name the
+	// input it actually serves.
+	indexOf := func(h chainhash.Hash) uint32 {
+		for i, in := range arkPSBT.UnsignedTx.TxIn {
+			if in.PreviousOutPoint.Hash == h {
+				return uint32(i)
+			}
+		}
+		t.Fatalf("commit %s not found in ark inputs", h)
+
+		return 0
+	}
+	primaryCommit := commits[0]
+	secondaryCommit := commits[1]
+
+	ancestry := []vtxo.Ancestry{
+		// Secondary fragment first — descriptor construction must
+		// re-order so Ancestry[0] is the primary commitment.
+		{
+			TreePath: &lib_tree.Tree{
+				Root: &lib_tree.Node{},
+				BatchOutpoint: wire.OutPoint{
+					Hash: secondaryCommit,
+				},
+			},
+			CommitmentTxID: secondaryCommit,
+			InputIndices: []uint32{
+				indexOf(secondaryCommit),
+			},
+			TreeDepth: 1,
+		},
+		{
+			TreePath: &lib_tree.Tree{
+				Root: &lib_tree.Node{},
+				BatchOutpoint: wire.OutPoint{
+					Hash: primaryCommit,
+				},
+			},
+			CommitmentTxID: primaryCommit,
+			InputIndices: []uint32{
+				indexOf(primaryCommit),
+			},
+			TreeDepth: 1,
+		},
+	}
 
 	desc, err := BuildIncomingVTXODescriptor(arkPSBT,
 		IncomingVTXOConfig{
@@ -103,7 +153,7 @@ func TestBuildIncomingVTXODescriptorNormalizesPrimaryAncestry(t *testing.T) {
 			ExitDelay:   10,
 			Metadata: IncomingVTXOMetadata{
 				RoundID:        "test-round",
-				CommitmentTxID: commitHash,
+				CommitmentTxID: primaryCommit,
 				BatchExpiry:    1000,
 				ChainDepth:     1,
 				CreatedHeight:  500,
@@ -113,8 +163,8 @@ func TestBuildIncomingVTXODescriptorNormalizesPrimaryAncestry(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, desc.Ancestry, 2)
-	require.Equal(t, commitHash, desc.Ancestry[0].CommitmentTxID)
-	require.Equal(t, otherHash, desc.Ancestry[1].CommitmentTxID)
+	require.Equal(t, primaryCommit, desc.Ancestry[0].CommitmentTxID)
+	require.Equal(t, secondaryCommit, desc.Ancestry[1].CommitmentTxID)
 }
 
 // TestBuildIncomingVTXODescriptorRejectsNilArk verifies that a nil Ark
@@ -242,6 +292,136 @@ func TestBuildIncomingVTXODescriptorRejectsInvalidAncestry(t *testing.T) {
 			_, err := BuildIncomingVTXODescriptor(
 				arkPSBT, baseCfg(meta),
 			)
+			require.Error(t, err)
+			require.ErrorIs(t, err, &ErrInvalidAncestry{})
+			require.Contains(t, err.Error(), tc.wantReason)
+		})
+	}
+}
+
+// TestValidateIncomingAncestryInputCoverage exercises the InputIndices
+// partition checks for multi-input Ark transactions. The other rejection
+// branches are covered via BuildIncomingVTXODescriptor in
+// TestBuildIncomingVTXODescriptorRejectsInvalidAncestry; here we drive
+// validateIncomingAncestry directly so we can vary arkTxInputCount
+// without rebuilding a real PSBT.
+//
+// The scenarios assert two properties that the receive boundary must
+// enforce so that a malicious or truncated indexer response cannot
+// strand received OOR funds:
+//
+//   - The union of all fragments' InputIndices covers every Ark tx
+//     input (0..arkTxInputCount-1).
+//   - No input index appears in more than one fragment (or twice
+//     within a single fragment), since a duplicate hides a missing
+//     fragment behind apparently-full coverage.
+func TestValidateIncomingAncestryInputCoverage(t *testing.T) {
+	t.Parallel()
+
+	primary := chainhash.Hash{0x01}
+	secondary := chainhash.Hash{0x02}
+
+	fragment := func(commit chainhash.Hash,
+		indices ...uint32) vtxo.Ancestry {
+
+		return vtxo.Ancestry{
+			TreePath: &lib_tree.Tree{
+				Root: &lib_tree.Node{},
+				BatchOutpoint: wire.OutPoint{
+					Hash: commit,
+				},
+			},
+			CommitmentTxID: commit,
+			InputIndices: append(
+				[]uint32(nil), indices...,
+			),
+			TreeDepth: 1,
+		}
+	}
+
+	cases := []struct {
+		name            string
+		arkTxInputCount uint32
+		ancestry        []vtxo.Ancestry
+		wantReason      string
+	}{
+		{
+			name:            "single fragment covers single input",
+			arkTxInputCount: 1,
+			ancestry: []vtxo.Ancestry{
+				fragment(primary, 0),
+			},
+		},
+		{
+			name:            "two fragments partition two inputs",
+			arkTxInputCount: 2,
+			ancestry: []vtxo.Ancestry{
+				fragment(primary, 0),
+				fragment(secondary, 1),
+			},
+		},
+		{
+			name:            "single fragment covers both inputs",
+			arkTxInputCount: 2,
+			ancestry: []vtxo.Ancestry{
+				fragment(primary, 0, 1),
+			},
+		},
+		{
+			name:            "missing coverage truncated fragment",
+			arkTxInputCount: 2,
+			ancestry: []vtxo.Ancestry{
+				fragment(primary, 0),
+			},
+			wantReason: "ark tx input 1 is not covered",
+		},
+		{
+			name:            "missing coverage gap mid range",
+			arkTxInputCount: 3,
+			ancestry: []vtxo.Ancestry{
+				fragment(primary, 0, 2),
+			},
+			wantReason: "ark tx input 1 is not covered",
+		},
+		{
+			name:            "duplicate within fragment",
+			arkTxInputCount: 2,
+			ancestry: []vtxo.Ancestry{
+				fragment(primary, 0, 0),
+			},
+			wantReason: "duplicates an index already claimed",
+		},
+		{
+			name:            "duplicate across fragments",
+			arkTxInputCount: 2,
+			ancestry: []vtxo.Ancestry{
+				fragment(primary, 0),
+				fragment(secondary, 0),
+			},
+			wantReason: "duplicates an index already claimed",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			meta := IncomingVTXOMetadata{
+				RoundID:        "test-round",
+				CommitmentTxID: primary,
+				BatchExpiry:    1000,
+				ChainDepth:     1,
+				CreatedHeight:  500,
+				Ancestry:       tc.ancestry,
+			}
+
+			err := validateIncomingAncestry(
+				meta, tc.arkTxInputCount,
+			)
+
+			if tc.wantReason == "" {
+				require.NoError(t, err)
+
+				return
+			}
 			require.Error(t, err)
 			require.ErrorIs(t, err, &ErrInvalidAncestry{})
 			require.Contains(t, err.Error(), tc.wantReason)

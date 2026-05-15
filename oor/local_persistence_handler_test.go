@@ -1105,6 +1105,120 @@ func buildTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 		operatorKey.PubKey()
 }
 
+// buildTestIncomingMaterializationMultiInput is the two-checkpoint
+// variant of buildTestIncomingMaterialization. It returns an Ark PSBT
+// spending two distinct checkpoint inputs (so len(arkPSBT.UnsignedTx.TxIn)
+// == 2). Cross-round multi-input OOR receive coverage exercises
+// validateIncomingAncestry's partition checks, which require the union
+// of all fragments' InputIndices to cover every Ark input — a property
+// that cannot be exercised against the single-input helper.
+//
+// The two commitment txids returned correspond to inputs[0] and
+// inputs[1] respectively; callers stitch them into two-fragment
+// IncomingVTXOMetadata.Ancestry slices.
+func buildTestIncomingMaterializationMultiInput(t *testing.T) (*psbt.Packet,
+	[]*psbt.Packet, []ArkRecipientOutput, [2]chainhash.Hash,
+	*btcec.PrivateKey, *btcec.PublicKey) {
+
+	t.Helper()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	recipientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	// Two independent checkpoint inputs anchored to distinct
+	// upstream Ark txids so the produced Ark tx has two inputs,
+	// each contributable by a different ancestry fragment.
+	inputAmt := btcutil.Amount(5_000)
+	makeInput := func(seed byte) oortx.CheckpointInput {
+		return oortx.CheckpointInput{
+			SpentVTXO: oortx.SpentVTXORef{
+				Outpoint: wire.OutPoint{
+					Hash: [32]byte{
+						seed,
+					},
+					Index: 0,
+				},
+				Output: &wire.TxOut{
+					Value: int64(inputAmt),
+					PkScript: newTestTaprootPkScript(
+						t, operatorKey.PubKey(),
+					),
+				},
+			},
+			OwnerLeafScript: []byte{
+				0x51,
+			},
+		}
+	}
+	inputs := []oortx.CheckpointInput{
+		makeInput(0x11), makeInput(0x22),
+	}
+
+	cp0, err := oortx.BuildCheckpointPSBT(policy, inputs[0])
+	require.NoError(t, err)
+
+	cp1, err := oortx.BuildCheckpointPSBT(policy, inputs[1])
+	require.NoError(t, err)
+
+	vtxoTapKey, err := arkscript.VTXOTapKey(
+		recipientKey.PubKey(), policy.OperatorKey, 10,
+	)
+	require.NoError(t, err)
+
+	recipientPkScript, err := txscript.PayToTaprootScript(vtxoTapKey)
+	require.NoError(t, err)
+
+	outputs := []oortx.RecipientOutput{
+		{
+			PkScript: recipientPkScript,
+			Value:    inputAmt * 2,
+		},
+	}
+
+	arkPSBT, err := oortx.BuildArkPSBT(
+		[]oortx.CheckpointOutput{
+			{
+				Txid:           cp0.PSBT.UnsignedTx.TxHash(),
+				Output:         cp0.PSBT.UnsignedTx.TxOut[0],
+				TapTreeEncoded: cp0.TapTreeEncoded,
+			},
+			{
+				Txid:           cp1.PSBT.UnsignedTx.TxHash(),
+				Output:         cp1.PSBT.UnsignedTx.TxOut[0],
+				TapTreeEncoded: cp1.TapTreeEncoded,
+			},
+		},
+		outputs,
+	)
+	require.NoError(t, err)
+
+	recipients, err := ExtractArkRecipients(arkPSBT)
+	require.NoError(t, err)
+
+	// Use the checkpoint tx ids as the per-fragment "commitment"
+	// txids so that callers can name a real Ark-tx input prevout
+	// for each fragment. (Ark inputs reference checkpoint tx ids,
+	// not the upstream SpentVTXO outpoint hashes.) The validator
+	// only requires that BatchOutpoint.Hash matches CommitmentTxID
+	// across the per-fragment cross-check; it does not interpret
+	// the commitment txid itself.
+	commits := [2]chainhash.Hash{
+		cp0.PSBT.UnsignedTx.TxHash(),
+		cp1.PSBT.UnsignedTx.TxHash(),
+	}
+
+	return arkPSBT, []*psbt.Packet{cp0.PSBT, cp1.PSBT}, recipients,
+		commits, recipientKey, operatorKey.PubKey()
+}
+
 // validTestIncomingAncestry returns a minimal Ancestry slice that passes
 // BuildIncomingVTXODescriptor's structural cross-check, anchored at the
 // supplied commitment txid. The test ark PSBT built by
