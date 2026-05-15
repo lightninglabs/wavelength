@@ -15,6 +15,12 @@ type Config struct {
 	// below.
 	DaemonConfig *darepod.Config
 
+	// DisableSwaps is ignored. Embedded walletdk requires the wallet RPC
+	// runtime, which includes the daemon-owned swap executor.
+	//
+	// Deprecated: build Start with walletrpc and swapruntime.
+	DisableSwaps bool
+
 	// DataDir is the root directory for daemon and wallet state.
 	DataDir string
 
@@ -133,6 +139,21 @@ type Balance struct {
 	ConfirmedSat  int64
 	PendingInSat  int64
 	PendingOutSat int64
+
+	// Deprecated: use ConfirmedSat.
+	BoardingConfirmedSat int64
+
+	// Deprecated: use PendingInSat.
+	BoardingUnconfirmedSat int64
+
+	// Deprecated: use ConfirmedSat.
+	VTXOBalanceSat int64
+
+	// Deprecated: use ConfirmedSat.
+	TotalConfirmedSat int64
+
+	// Deprecated: use ConfirmedSat.
+	OnchainWalletConfirmedSat int64
 }
 
 // DepositRequest creates a tracked boarding address.
@@ -148,7 +169,7 @@ type DepositResult struct {
 
 // ReceiveRequest creates a Lightning invoice payable into the wallet.
 type ReceiveRequest struct {
-	AmountSat uint64
+	AmountSat int64
 	Memo      string
 }
 
@@ -156,6 +177,12 @@ type ReceiveRequest struct {
 type ReceiveResult struct {
 	Invoice string
 	Entry   Entry
+
+	// Deprecated: use Entry.ID.
+	PaymentHash string
+
+	// Deprecated: use Entry.
+	Swap SwapSummary
 }
 
 // SendRequest dispatches an outbound payment.
@@ -170,6 +197,12 @@ type SendRequest struct {
 // SendResult contains the initial wallet entry for an outbound payment.
 type SendResult struct {
 	Entry Entry
+
+	// Deprecated: use Entry.ID.
+	PaymentHash string
+
+	// Deprecated: use Entry.
+	Swap SwapSummary
 }
 
 // ListRequest controls wallet activity listing.
@@ -199,6 +232,83 @@ type Status struct {
 type SubscribeRequest struct {
 	IncludeExisting bool
 	Kinds           []EntryKind
+}
+
+// OnchainAddress is a fresh boarding address.
+//
+// Deprecated: use DepositResult.
+type OnchainAddress struct {
+	Address string
+}
+
+// ListSwapsRequest controls legacy swap listing.
+//
+// Deprecated: use ListRequest.
+type ListSwapsRequest struct {
+	PendingOnly bool
+}
+
+// GetSwapRequest fetches one legacy swap by payment hash.
+//
+// Deprecated: use ListRequest and Entry.ID.
+type GetSwapRequest struct {
+	PaymentHash string
+}
+
+// ResumeSwapRequest wakes one pending daemon-owned swap worker.
+//
+// Deprecated: walletdk resumes pending swaps during daemon startup.
+type ResumeSwapRequest struct {
+	PaymentHash string
+	Direction   SwapDirection
+}
+
+// SubscribeSwapsRequest controls legacy swap update subscriptions.
+//
+// Deprecated: use SubscribeRequest.
+type SubscribeSwapsRequest struct {
+	IncludeExisting bool
+	PendingOnly     bool
+}
+
+// SwapDirection identifies the legacy swap direction.
+//
+// Deprecated: use EntryKind.
+type SwapDirection string
+
+const (
+	// SwapDirectionPay is an Ark-to-Lightning payment.
+	//
+	// Deprecated: use EntryKindSend.
+	SwapDirectionPay SwapDirection = "pay"
+
+	// SwapDirectionReceive is a Lightning-to-Ark receive.
+	//
+	// Deprecated: use EntryKindReceive.
+	SwapDirectionReceive SwapDirection = "receive"
+)
+
+// SwapSummary is the wrapper-friendly view of one legacy persisted swap.
+//
+// Deprecated: use Entry.
+type SwapSummary struct {
+	Direction        SwapDirection
+	PaymentHash      string
+	State            string
+	Pending          bool
+	AmountSat        int64
+	FeeSat           uint64
+	MaxFeeSat        uint64
+	VHTLCOutpoint    string
+	VHTLCAmountSat   int64
+	FundingSessionID string
+	ClaimSessionID   string
+	RefundSessionID  string
+	TerminalReason   string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	Deadline         time.Time
+	RefundLocktime   uint32
 }
 
 // EntryKind is the user-visible wallet activity category.

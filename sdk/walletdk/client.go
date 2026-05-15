@@ -241,18 +241,26 @@ func (c *Client) Receive(ctx context.Context, req ReceiveRequest) (
 	if req.AmountSat == 0 {
 		return nil, fmt.Errorf("amount_sat must be positive")
 	}
+	if req.AmountSat < 0 {
+		return nil, fmt.Errorf("amount_sat must be positive")
+	}
 
 	resp, err := c.wallet.Recv(ctx, &walletrpc.RecvRequest{
-		AmtSat: req.AmountSat,
+		AmtSat: uint64(req.AmountSat),
 		Memo:   req.Memo,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create receive invoice: %w", err)
 	}
 
+	entry := entryFromProto(resp.GetEntry())
+
 	return &ReceiveResult{
 		Invoice: resp.GetInvoice(),
-		Entry:   entryFromProto(resp.GetEntry()),
+		Entry:   entry,
+
+		PaymentHash: entry.ID,
+		Swap:        swapSummaryFromEntry(entry),
 	}, nil
 }
 
@@ -289,7 +297,14 @@ func (c *Client) Send(ctx context.Context, req SendRequest) (*SendResult,
 		return nil, fmt.Errorf("send wallet payment: %w", err)
 	}
 
-	return &SendResult{Entry: entryFromProto(resp.GetEntry())}, nil
+	entry := entryFromProto(resp.GetEntry())
+
+	return &SendResult{
+		Entry: entry,
+
+		PaymentHash: entry.ID,
+		Swap:        swapSummaryFromEntry(entry),
+	}, nil
 }
 
 // List returns normalized wallet activity entries.

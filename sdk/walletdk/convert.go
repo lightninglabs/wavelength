@@ -105,10 +105,44 @@ func balanceFromProto(balance *walletrpc.BalanceResponse) Balance {
 	}
 
 	return Balance{
-		ConfirmedSat:  balance.GetConfirmedSat(),
-		PendingInSat:  balance.GetPendingInSat(),
-		PendingOutSat: balance.GetPendingOutSat(),
+		ConfirmedSat:              balance.GetConfirmedSat(),
+		PendingInSat:              balance.GetPendingInSat(),
+		PendingOutSat:             balance.GetPendingOutSat(),
+		BoardingConfirmedSat:      balance.GetConfirmedSat(),
+		BoardingUnconfirmedSat:    balance.GetPendingInSat(),
+		VTXOBalanceSat:            balance.GetConfirmedSat(),
+		TotalConfirmedSat:         balance.GetConfirmedSat(),
+		OnchainWalletConfirmedSat: balance.GetConfirmedSat(),
 	}
+}
+
+// swapSummaryFromEntry maps a wallet entry into the deprecated swap-shaped
+// view used by the pre-walletrpc walletdk TUI.
+func swapSummaryFromEntry(entry Entry) SwapSummary {
+	summary := SwapSummary{
+		PaymentHash:    entry.ID,
+		State:          string(entry.Status),
+		Pending:        entry.Status == EntryStatusPending,
+		AmountSat:      entry.AmountSat,
+		TerminalReason: entry.FailureReason,
+		CreatedAt:      entry.CreatedAt,
+		UpdatedAt:      entry.UpdatedAt,
+	}
+	if entry.FeeSat > 0 {
+		summary.FeeSat = uint64(entry.FeeSat)
+	}
+
+	switch entry.Kind {
+	case EntryKindSend:
+		summary.Direction = SwapDirectionPay
+
+	case EntryKindReceive:
+		summary.Direction = SwapDirectionReceive
+
+	case EntryKindDeposit, EntryKindExit, "":
+	}
+
+	return summary
 }
 
 // unixTime preserves unset timestamp fields as zero time values.
