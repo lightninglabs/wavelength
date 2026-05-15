@@ -180,10 +180,26 @@ type ConnectorConfig struct {
 	// server verifies this signature during client registration.
 	AuthSignature *schnorr.Signature
 
+	// TLSBindSignature is the Schnorr signature binding the
+	// client's secp256k1 mailbox identity to the SPKI bytes of
+	// the TLS leaf certificate this connector dialed with. When
+	// non-nil, it is serialized as hex and included as the
+	// x-mailbox-tls-bind-sig header on every outbound envelope.
+	// The server uses this on first-contact Send to verify the
+	// TLS leaf it observes is the one the verified identity
+	// signed over, closing the registration-time replay window
+	// described in issue #448.
+	TLSBindSignature *schnorr.Signature
+
 	// authSigHex caches the hex-encoded auth signature string,
 	// computed once by InitAuthHeader to avoid per-envelope
 	// serialization.
 	authSigHex string
+
+	// tlsBindSigHex caches the hex-encoded TLS-binding signature
+	// string, computed once by InitAuthHeader. Empty when no
+	// binding signature is configured.
+	tlsBindSigHex string
 
 	// authHeaderCache holds the singleton auth-only header map
 	// for the common case where callers provide no extra headers.
@@ -191,24 +207,41 @@ type ConnectorConfig struct {
 }
 
 // InitAuthHeader pre-computes the cached auth header state from
-// AuthSignature. Must be called after AuthSignature is set and
-// before the first mergeAuthHeaders call.
+// AuthSignature and TLSBindSignature. Must be called after both
+// signature fields are set (or left nil) and before the first
+// mergeAuthHeaders call.
 func (c *ConnectorConfig) InitAuthHeader() {
 	if c.AuthSignature == nil {
+
+		// TLS binding is meaningful only alongside mailbox auth:
+		// the server verifies the binding against the same
+		// Schnorr-authenticated mailbox identity.
 		return
 	}
 
 	c.authSigHex = hex.EncodeToString(c.AuthSignature.Serialize())
-	c.authHeaderCache = map[string]string{
+
+	cache := map[string]string{
 		AuthHeaderKey: c.authSigHex,
 	}
+
+	if c.TLSBindSignature != nil {
+		c.tlsBindSigHex = hex.EncodeToString(
+			c.TLSBindSignature.Serialize(),
+		)
+		cache[TLSBindHeaderKey] = c.tlsBindSigHex
+	}
+
+	c.authHeaderCache = cache
 }
 
 // mergeAuthHeaders returns a new header map containing both src
-// headers and the auth signature header. If AuthSignature is nil,
-// src is returned unchanged. The auth signature header always takes
-// precedence over any caller-provided header with the same key to
-// prevent accidental or malicious signature replacement.
+// headers and the auth signature headers (mailbox-auth and, if
+// configured, the TLS-binding signature). If no auth signature is
+// configured, src is returned unchanged. Server-bound auth headers
+// always take precedence over any caller-provided header with the
+// same key to prevent accidental or malicious signature
+// replacement.
 func (c *ConnectorConfig) mergeAuthHeaders(
 	src map[string]string) map[string]string {
 
@@ -221,7 +254,7 @@ func (c *ConnectorConfig) mergeAuthHeaders(
 		return c.authHeaderCache
 	}
 
-	merged := make(map[string]string, len(src)+1)
+	merged := make(map[string]string, len(src)+len(c.authHeaderCache))
 
 	// Copy caller-provided headers first.
 	for k, v := range src {
@@ -230,6 +263,11 @@ func (c *ConnectorConfig) mergeAuthHeaders(
 
 	// Auth signature always wins over caller-provided headers.
 	merged[AuthHeaderKey] = c.authSigHex
+
+	// TLS-binding signature, if configured, also wins.
+	if c.tlsBindSigHex != "" {
+		merged[TLSBindHeaderKey] = c.tlsBindSigHex
+	}
 
 	return merged
 }

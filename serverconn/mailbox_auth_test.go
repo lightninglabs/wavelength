@@ -103,6 +103,81 @@ func TestVerifyMailboxAuthBadHex(t *testing.T) {
 	require.Contains(t, err.Error(), "decode auth sig hex")
 }
 
+// TestSignVerifyMailboxTLSBind exercises the secp256k1 → TLS leaf
+// SPKI binding signature: a valid signature passes against the
+// signing key and leaf, and is rejected against any other key or
+// any other leaf SPKI. The test also confirms that the binding
+// digest is disjoint from the mailbox-auth digest, so the two
+// signatures cannot be swapped between header slots.
+func TestSignVerifyMailboxTLSBind(t *testing.T) {
+	t.Parallel()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	otherKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	// Two distinct fake SPKI byte strings standing in for two
+	// different TLS leaves. The signing/verification path does
+	// not parse them, so opaque bytes are sufficient.
+	leafSPKI := []byte("leaf-spki-1")
+	otherLeafSPKI := []byte("leaf-spki-2")
+
+	sig, err := SignMailboxTLSBind(clientKey, leafSPKI)
+	require.NoError(t, err)
+	require.NotNil(t, sig)
+
+	sigHex := hex.EncodeToString(sig.Serialize())
+
+	// Correct key + correct leaf: pass.
+	err = VerifyMailboxTLSBind(clientKey.PubKey(), leafSPKI, sigHex)
+	require.NoError(t, err)
+
+	// Wrong signing key: fail.
+	err = VerifyMailboxTLSBind(otherKey.PubKey(), leafSPKI, sigHex)
+	require.Error(t, err)
+
+	// Wrong leaf SPKI: fail (this is the registration-replay
+	// case from issue #448).
+	err = VerifyMailboxTLSBind(clientKey.PubKey(), otherLeafSPKI, sigHex)
+	require.Error(t, err)
+
+	// Empty SPKI: rejected upfront.
+	err = VerifyMailboxTLSBind(clientKey.PubKey(), nil, sigHex)
+	require.Error(t, err)
+
+	// A mailbox-auth signature must not verify as a TLS-bind
+	// signature. Sign over the auth digest then attempt to
+	// verify with the TLS-bind verifier — different tag means
+	// digest mismatch and rejection.
+	authSig, err := SignMailboxAuth(clientKey, "recipient-mbid")
+	require.NoError(t, err)
+
+	authSigHex := hex.EncodeToString(authSig.Serialize())
+
+	err = VerifyMailboxTLSBind(
+		clientKey.PubKey(), leafSPKI, authSigHex,
+	)
+	require.Error(t, err)
+}
+
+// TestSignMailboxTLSBindEmptySPKI guards against accidentally signing
+// over an empty SPKI, which would otherwise produce a signature that
+// any leaf could verify.
+func TestSignMailboxTLSBindEmptySPKI(t *testing.T) {
+	t.Parallel()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	_, err = SignMailboxTLSBind(clientKey, nil)
+	require.Error(t, err)
+
+	_, err = SignMailboxTLSBind(clientKey, []byte{})
+	require.Error(t, err)
+}
+
 // TestParseMailboxPubKeyInvalid verifies that invalid mailbox IDs
 // are rejected.
 func TestParseMailboxPubKeyInvalid(t *testing.T) {

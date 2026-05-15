@@ -219,6 +219,20 @@ type Server struct {
 	// so response envelopes can include it without re-computing.
 	authSigHex string
 
+	// tlsLeafSPKI is the DER-encoded SubjectPublicKeyInfo of the
+	// P-256 client TLS leaf certificate this daemon dialed with.
+	// It is captured during dialServer and used to compute the
+	// secp256k1 → TLS-leaf binding signature that the server
+	// verifies against the leaf it observes on the connection
+	// (issue #448). Empty when TLS is disabled (Server.Insecure).
+	tlsLeafSPKI []byte
+
+	// tlsBindSigHex caches the hex-encoded Schnorr signature
+	// binding the client's secp256k1 identity to its TLS leaf
+	// SPKI, so direct (non-connector) response envelope sends
+	// can attach the binding header without re-signing.
+	tlsBindSigHex string
+
 	runtime *serverconn.Runtime
 	ark     *arkrpc.ArkServiceMailboxClient
 	indexer *indexer.Client
@@ -2705,12 +2719,18 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 	}
 
 	// Include the auth signature in response headers so the
-	// server can verify identity on all envelopes.
+	// server can verify identity on all envelopes. Also include
+	// the TLS-binding signature so the server can complete
+	// first-contact registration even if this response is the
+	// first envelope it sees from us.
 	if headers == nil {
-		headers = make(map[string]string, 1)
+		headers = make(map[string]string, 2)
 	}
 	if s.authSigHex != "" {
 		headers[serverconn.AuthHeaderKey] = s.authSigHex
+	}
+	if s.tlsBindSigHex != "" {
+		headers[serverconn.TLSBindHeaderKey] = s.tlsBindSigHex
 	}
 
 	responseEnv := &mailboxpb.Envelope{
@@ -3006,6 +3026,24 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 
 	s.authSigHex = hex.EncodeToString(authSig.Serialize())
 
+	// When TLS is enabled (production / regtest with mTLS), bind
+	// the secp256k1 identity to the TLS leaf the server will
+	// observe. The server uses this on first-contact Send to
+	// reject envelopes whose claimed sender is not actually the
+	// owner of the connection's TLS leaf, closing the
+	// registration-time replay window described in issue #448.
+	var tlsBindSig *schnorr.Signature
+	if len(s.tlsLeafSPKI) > 0 {
+		tlsBindSig, err = s.signMailboxTLSBind(ctx, s.tlsLeafSPKI)
+		if err != nil {
+			return fmt.Errorf("sign mailbox tls bind: %w", err)
+		}
+
+		s.tlsBindSigHex = hex.EncodeToString(
+			tlsBindSig.Serialize(),
+		)
+	}
+
 	connCfg := serverconn.DefaultConnectorConfig()
 	connCfg.Edge = edge
 	connCfg.LocalMailboxID = s.localMailboxID
@@ -3014,6 +3052,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	connCfg.Store = s.deliveryStore
 	connCfg.Dispatchers = dispatchers
 	connCfg.AuthSignature = authSig
+	connCfg.TLSBindSignature = tlsBindSig
 	connCfg.InitAuthHeader()
 	connCfg.DurableUnaryBuilder = &serverDurableUnaryBuilder{
 		server: s,
@@ -3816,28 +3855,59 @@ func (s *Server) fetchOperatorPubKeyDirect(ctx context.Context) (
 func (s *Server) signMailboxAuth(ctx context.Context,
 	recipientMailboxID string) (*schnorr.Signature, error) {
 
+	msg := serverconn.MailboxAuthMessage(
+		s.clientKeyDesc.PubKey, recipientMailboxID,
+	)
+	tag := []byte(serverconn.MailboxAuthTagStr)
+
+	return s.signTaggedSchnorr(ctx, msg, tag, "mailbox auth")
+}
+
+// signMailboxTLSBind signs the BIP-340 tagged digest binding the
+// client's secp256k1 mailbox identity to the SubjectPublicKeyInfo
+// of the active TLS leaf certificate. The signature is sent in the
+// x-mailbox-tls-bind-sig header on every outbound envelope so the
+// server can verify, on first contact, that the secp256k1 holder
+// chose this exact TLS leaf — preventing a captured Send from
+// being replayed across a different TLS connection (issue #448).
+func (s *Server) signMailboxTLSBind(ctx context.Context, tlsLeafSPKI []byte) (
+	*schnorr.Signature, error) {
+
+	msg := serverconn.MailboxTLSBindMessage(
+		s.clientKeyDesc.PubKey, tlsLeafSPKI,
+	)
+	tag := []byte(serverconn.MailboxTLSBindTagStr)
+
+	return s.signTaggedSchnorr(ctx, msg, tag, "mailbox tls bind")
+}
+
+// signTaggedSchnorr produces a BIP-340 tagged Schnorr signature over
+// msg under the client's identity key, dispatching to whichever
+// wallet backend is configured (LND, lwwallet, or btcwallet). The
+// opName label is woven into error messages so callers can tell
+// which signing purpose (e.g. "mailbox auth", "mailbox tls bind")
+// the failure originated from. Private key material never leaves
+// the wallet — LND signs via its tagged SignMessage RPC, and the
+// keyring-backed wallets sign via SignMessageSchnorr.
+func (s *Server) signTaggedSchnorr(ctx context.Context, msg, tag []byte,
+	opName string) (*schnorr.Signature, error) {
+
 	var (
 		sig *schnorr.Signature
 		err error
 	)
 
-	// In LND mode, use lnd's tagged Schnorr signing RPC. We
-	// pass the raw message and tag so LND computes the BIP-340
-	// tagged hash internally, avoiding double-hashing.
+	// In LND mode, use lnd's tagged Schnorr signing RPC. We pass the
+	// raw message and tag so LND computes the BIP-340 tagged hash
+	// internally, avoiding double-hashing.
 	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
-		msg := serverconn.MailboxAuthMessage(
-			s.clientKeyDesc.PubKey, recipientMailboxID,
-		)
-
-		tag := []byte(serverconn.MailboxAuthTagStr)
-
 		var rawSig []byte
 		rawSig, err = lndSvc.Signer.SignMessage(
 			ctx, msg, s.clientKeyDesc.KeyLocator,
 			lndclient.SignSchnorr(nil), withSchnorrTag(tag),
 		)
 		if err != nil {
-			err = fmt.Errorf("lnd sign mailbox auth: %w", err)
+			err = fmt.Errorf("lnd sign %s: %w", opName, err)
 
 			return
 		}
@@ -3849,11 +3919,11 @@ func (s *Server) signMailboxAuth(ctx context.Context,
 		return sig, err
 	}
 
-	// In lwwallet mode, use the keyring's Schnorr signing
-	// directly — no private key extraction needed.
+	// In lwwallet mode, use the keyring's Schnorr signing directly
+	// — no private key extraction needed.
 	s.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
-		sig, err = s.signMailboxAuthViaKeyRing(
-			w.KeyRing(), recipientMailboxID,
+		sig, err = s.signTaggedSchnorrViaKeyRing(
+			w.KeyRing(), msg, tag, opName,
 		)
 	})
 
@@ -3861,21 +3931,37 @@ func (s *Server) signMailboxAuth(ctx context.Context,
 		return sig, err
 	}
 
-	// In btcwallet mode, use the neutrino-backed keyring's
-	// Schnorr signing — same interface, no private key
-	// extraction.
+	// In btcwallet mode, use the neutrino-backed keyring's Schnorr
+	// signing — same interface, no private key extraction.
 	s.btcwWallet.WhenSome(func(w *btcwbackend.Wallet) {
-		sig, err = s.signMailboxAuthViaKeyRing(
-			w.KeyRing(), recipientMailboxID,
+		sig, err = s.signTaggedSchnorrViaKeyRing(
+			w.KeyRing(), msg, tag, opName,
 		)
 	})
 
 	if sig == nil && err == nil {
-		return nil, fmt.Errorf("no wallet backend available to sign " +
-			"mailbox auth")
+		return nil, fmt.Errorf("no wallet backend available to sign %s",
+			opName)
 	}
 
 	return sig, err
+}
+
+// signTaggedSchnorrViaKeyRing signs msg using the keyring's
+// SignMessageSchnorr method with the supplied BIP-340 tag, avoiding
+// any private key extraction. opName is woven into the error
+// message so the caller can tell which signing purpose failed.
+func (s *Server) signTaggedSchnorrViaKeyRing(keyRing keychain.SecretKeyRing,
+	msg, tag []byte, opName string) (*schnorr.Signature, error) {
+
+	sig, err := keyRing.SignMessageSchnorr(
+		s.clientKeyDesc.KeyLocator, msg, false, nil, tag,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("keyring sign %s: %w", opName, err)
+	}
+
+	return sig, nil
 }
 
 // withSchnorrTag applies a BIP-340 tag to lnd's SignMessage request.
@@ -3883,28 +3969,6 @@ func withSchnorrTag(tag []byte) lndclient.SignMessageOption {
 	return func(req *signrpc.SignMessageReq) {
 		req.Tag = tag
 	}
-}
-
-// signMailboxAuthViaKeyRing signs the mailbox auth digest using a
-// keyring's SignMessageSchnorr method. This avoids extracting private
-// keys — the keyring handles signing internally. The BIP-340 tagged
-// hash is computed by the keyring via the tag parameter.
-func (s *Server) signMailboxAuthViaKeyRing(keyRing keychain.SecretKeyRing,
-	recipientMailboxID string) (*schnorr.Signature, error) {
-
-	msg := serverconn.MailboxAuthMessage(
-		s.clientKeyDesc.PubKey, recipientMailboxID,
-	)
-	tag := []byte(serverconn.MailboxAuthTagStr)
-
-	sig, err := keyRing.SignMessageSchnorr(
-		s.clientKeyDesc.KeyLocator, msg, false, nil, tag,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("keyring sign mailbox auth: %w", err)
-	}
-
-	return sig, nil
 }
 
 // networkToLndclient maps our network string to the lndclient network type.
