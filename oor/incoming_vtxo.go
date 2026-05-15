@@ -242,6 +242,20 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 //     Ancestry contract for incoming OOR VTXOs (those are always
 //     produced by an OOR Ark tx); an out-of-range index points at a
 //     non-existent input so the unroll proof would never resolve.
+//
+//   - No input index repeats within a fragment, and the union of all
+//     fragments' InputIndices covers every Ark tx input. Distinct
+//     fragments may name the same input when that OOR Ark input itself
+//     carries multi-fragment ancestry from an earlier chained receive.
+//     A missing index means at least one Ark tx input has no rooted-path
+//     material attached: fraud-watch plans (BuildWatchPlan) would lack
+//     a watch for the uncovered input's lineage and unilateral-exit
+//     proof assembly would have no fragment to broadcast for that
+//     input. The descriptor would persist cleanly and the gap would
+//     only surface if the operator later refuses cooperation, at which
+//     point the user is racing a CSV with no way to recover. We reject
+//     at the receive boundary so the bad indexer response fails before
+//     any funds are credited.
 func validateIncomingAncestry(meta IncomingVTXOMetadata,
 	arkTxInputCount uint32) error {
 
@@ -251,6 +265,11 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 		}
 	}
 
+	// Track whether at least one ancestry fragment serves each Ark tx
+	// input so we can verify coverage at the end. Sized to the Ark tx's
+	// declared input count; we only set entries after the per-fragment
+	// range check has passed, so out-of-range writes are impossible.
+	covered := make([]bool, arkTxInputCount)
 	seen := make(map[chainhash.Hash]struct{}, len(meta.Ancestry))
 	hasPrimary := false
 	for i, frag := range meta.Ancestry {
@@ -307,6 +326,9 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 			}
 		}
 
+		seenInFragment := make(
+			map[uint32]struct{}, len(frag.InputIndices),
+		)
 		for j, idx := range frag.InputIndices {
 			if idx >= arkTxInputCount {
 				return &ErrInvalidAncestry{
@@ -319,6 +341,24 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 					),
 				}
 			}
+
+			// Reject only duplicate indices within this
+			// fragment. Cross-fragment reuse is valid for a
+			// chained OOR receive where one Ark input is backed
+			// by multiple earlier commitment roots.
+			if _, ok := seenInFragment[idx]; ok {
+				return &ErrInvalidAncestry{
+					Reason: fmt.Sprintf(
+						"fragment %d input index "+
+							"[%d]=%d duplicates "+
+							"an earlier index in "+
+							"this fragment",
+						i, j, idx,
+					),
+				}
+			}
+			seenInFragment[idx] = struct{}{}
+			covered[idx] = true
 		}
 	}
 
@@ -329,6 +369,23 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 					"commitment txid %s",
 				meta.CommitmentTxID,
 			),
+		}
+	}
+
+	// Every Ark tx input must be covered by at least one fragment.
+	// Accepting a missing input would leave the uncovered input with no
+	// rooted-path material for unilateral exit, stranding the received
+	// VTXO if the operator later refuses cooperation.
+	for idx, ok := range covered {
+		if !ok {
+			return &ErrInvalidAncestry{
+				Reason: fmt.Sprintf(
+					"ark tx input %d is not covered by "+
+						"any ancestry fragment "+
+						"(incoming ancestry must "+
+						"cover every input)", idx,
+				),
+			}
 		}
 	}
 
