@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
@@ -17,8 +15,8 @@ import (
 
 const defaultBufConnSize = 1 << 20
 
-// DefaultConfig returns a walletdk config with darepod defaults. Swap methods
-// are enabled only when the package is built with the swapruntime tag.
+// DefaultConfig returns a walletdk config with darepod defaults. Wallet payment
+// methods are enabled only when built with walletrpc and swapruntime.
 func DefaultConfig() Config {
 	cfg := darepod.DefaultConfig()
 
@@ -47,15 +45,19 @@ func DefaultConfig() Config {
 //
 //nolint:contextcheck // embedded daemon lifetime is detached from dial ctx
 func Start(ctx context.Context, cfg Config) (*Client, error) {
+	if err := requireEmbeddedWalletRuntime(); err != nil {
+		return nil, err
+	}
+
 	daemonCfg, err := daemonConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	swapsEnabled := !cfg.DisableSwaps && swapRuntimeAvailable()
-	if err := configureSwapRuntime(daemonCfg, swapsEnabled); err != nil {
+	if err := configureSwapRuntime(daemonCfg, true); err != nil {
 		return nil, err
 	}
+	configureWalletRPC(daemonCfg, true)
 
 	bufferSize := cfg.BufferSize
 	if bufferSize == 0 {
@@ -130,13 +132,8 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 			errors.Join(err, closeErr, runErr, listenerErr))
 	}
 
-	return &Client{
-		conn:    conn,
-		daemon:  daemonrpc.NewDaemonServiceClient(conn),
-		swaps:   swapclientrpc.NewSwapClientServiceClient(conn),
-		canSwap: swapsEnabled,
-		waitCh:  waitErrChan,
-		closeFn: func(closeCtx context.Context) error {
+	return newClient(conn, true, waitErrChan,
+		func(closeCtx context.Context) error {
 			closeErr := conn.Close()
 			cancel()
 			runErr := waitForRunExit(closeCtx, runErrChan)
@@ -144,7 +141,19 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 
 			return errors.Join(closeErr, runErr, listenerErr)
 		},
-	}, nil
+	), nil
+}
+
+// requireEmbeddedWalletRuntime makes Start fail before booting a daemon when
+// the current build cannot install the wallet RPC runtime. walletdk's embedded
+// mode owns swap resume through swapwallet, so both walletrpc and swapruntime
+// must be compiled in.
+func requireEmbeddedWalletRuntime() error {
+	if !swapRuntimeAvailable() || !walletRPCAvailable() {
+		return ErrWalletRPCUnavailable
+	}
+
+	return nil
 }
 
 // daemonConfig builds the daemon config from either a full caller-supplied
@@ -311,24 +320,25 @@ func waitForReady(ctx context.Context, conn *grpc.ClientConn,
 
 		waitCtx, waitCancel := context.WithCancel(ctx)
 		runExitErr := make(chan error, 1)
-		go func() {
-			select {
-			case runErr := <-runDoneChan:
-				if runErr != nil {
-					runExitErr <- fmt.Errorf("embedded "+
-						"daemon exited before "+
-						"readiness: %w", runErr)
-				} else {
-					runExitErr <- fmt.Errorf("embedded " +
-						"daemon exited before " +
-						"readiness")
+		if runDoneChan != nil {
+			go func() {
+				select {
+				case runErr := <-runDoneChan:
+					msg := "embedded daemon exited " +
+						"before readiness"
+					if runErr != nil {
+						runExitErr <- fmt.Errorf(
+							"%s: %w", msg, runErr)
+					} else {
+						runExitErr <- errors.New(msg)
+					}
+
+					waitCancel()
+
+				case <-waitCtx.Done():
 				}
-
-				waitCancel()
-
-			case <-waitCtx.Done():
-			}
-		}()
+			}()
+		}
 
 		if !conn.WaitForStateChange(waitCtx, state) {
 			waitCancel()

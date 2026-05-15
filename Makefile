@@ -383,9 +383,9 @@ unit-race: #? Run unit tests with race detector
 	@$(call print, "Running unit race tests.")
 	env CGO_ENABLED=1 GORACE="history_size=7 halt_on_errors=1" $(UNIT_RACE)
 
-unit-swapruntime: #? Run unit tests with the optional swap client runtime enabled
-	@$(call print, "Running unit tests with swapruntime.")
-	$(MAKE) unit tags="swapruntime"
+unit-swapruntime: #? Run unit tests with the optional wallet runtime enabled
+	@$(call print, "Running unit tests with wallet runtime.")
+	$(MAKE) unit tags="swapruntime walletrpc"
 
 # Database backend for systest: sqlite (default) or postgres.
 # Usage: make systest db=postgres

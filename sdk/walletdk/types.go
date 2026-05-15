@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/darepo-client/darepod"
+	"google.golang.org/grpc"
 )
 
 // Config controls the embedded daemon and wallet facade.
@@ -13,10 +14,6 @@ type Config struct {
 	// starts from darepod.DefaultConfig and applies the convenience fields
 	// below.
 	DaemonConfig *darepod.Config
-
-	// DisableSwaps starts the daemon without registering the daemon-owned
-	// swap executor. Send and Receive require swaps to be enabled.
-	DisableSwaps bool
 
 	// DataDir is the root directory for daemon and wallet state.
 	DataDir string
@@ -85,6 +82,16 @@ type Config struct {
 	BufferSize int
 }
 
+// ConnectConfig controls a walletdk client connected to an external daemon.
+type ConnectConfig struct {
+	// Address is the gRPC target of a daemon exposing walletrpc.
+	Address string
+
+	// DialOptions are appended to the default dial options. When empty,
+	// walletdk uses insecure transport credentials for local development.
+	DialOptions []grpc.DialOption
+}
+
 // Info summarizes daemon readiness for wallet applications.
 type Info struct {
 	Version         string
@@ -111,7 +118,7 @@ type CreateWalletResult struct {
 	IdentityPubKey string
 }
 
-// UnlockWalletRequest unlocks an existing daemon wallet.
+// UnlockWalletRequest unlocks an existing embedded daemon wallet.
 type UnlockWalletRequest struct {
 	WalletPassword []byte
 }
@@ -121,94 +128,120 @@ type UnlockWalletResult struct {
 	IdentityPubKey string
 }
 
-// Balance is the simplified wallet balance view.
+// Balance is the wallet-level balance view.
 type Balance struct {
-	BoardingConfirmedSat      int64
-	BoardingUnconfirmedSat    int64
-	VTXOBalanceSat            int64
-	TotalConfirmedSat         int64
-	OnchainWalletConfirmedSat int64
+	ConfirmedSat  int64
+	PendingInSat  int64
+	PendingOutSat int64
 }
 
-// OnchainAddress is a fresh boarding address.
-type OnchainAddress struct {
+// DepositRequest creates a tracked boarding address.
+type DepositRequest struct {
+	AmountSatHint uint64
+}
+
+// DepositResult returns a boarding address and its initial activity entry.
+type DepositResult struct {
 	Address string
+	Entry   Entry
 }
 
-// ReceiveRequest starts a Lightning-to-Ark receive swap.
+// ReceiveRequest creates a Lightning invoice payable into the wallet.
 type ReceiveRequest struct {
-	AmountSat int64
+	AmountSat uint64
+	Memo      string
 }
 
-// ReceiveResult contains the invoice and initial durable swap state.
+// ReceiveResult contains the invoice and initial wallet entry.
 type ReceiveResult struct {
-	PaymentHash string
-	Invoice     string
-	Swap        SwapSummary
+	Invoice string
+	Entry   Entry
 }
 
-// SendRequest starts an Ark-to-Lightning payment.
+// SendRequest dispatches an outbound payment.
 type SendRequest struct {
-	Invoice   string
-	MaxFeeSat uint64
+	Invoice        string
+	OnchainAddress string
+	AmountSat      uint64
+	Note           string
+	MaxFeeSat      uint64
 }
 
-// SendResult contains the payment hash and initial durable swap state.
+// SendResult contains the initial wallet entry for an outbound payment.
 type SendResult struct {
-	PaymentHash string
-	Swap        SwapSummary
+	Entry Entry
 }
 
-// ListSwapsRequest controls swap listing.
-type ListSwapsRequest struct {
+// ListRequest controls wallet activity listing.
+type ListRequest struct {
 	PendingOnly bool
+	Kinds       []EntryKind
+	Limit       uint32
+	Offset      uint32
 }
 
-// GetSwapRequest fetches one swap by payment hash.
-type GetSwapRequest struct {
-	PaymentHash string
+// ListResult returns wallet activity entries and the unpaginated total.
+type ListResult struct {
+	Entries []Entry
+	Total   uint32
 }
 
-// ResumeSwapRequest wakes one pending daemon-owned swap worker.
-type ResumeSwapRequest struct {
-	PaymentHash string
-	Direction   SwapDirection
+// Status summarizes wallet readiness and pending activity.
+type Status struct {
+	Ready        bool
+	Unlocked     bool
+	Network      string
+	Balance      Balance
+	PendingCount uint32
 }
 
-// SubscribeSwapsRequest controls swap update subscriptions.
-type SubscribeSwapsRequest struct {
+// SubscribeRequest controls wallet activity subscriptions.
+type SubscribeRequest struct {
 	IncludeExisting bool
-	PendingOnly     bool
+	Kinds           []EntryKind
 }
 
-// SwapDirection identifies the swap direction.
-type SwapDirection string
+// EntryKind is the user-visible wallet activity category.
+type EntryKind string
 
 const (
-	// SwapDirectionPay is an Ark-to-Lightning payment.
-	SwapDirectionPay SwapDirection = "pay"
+	// EntryKindSend is an outbound wallet payment.
+	EntryKindSend EntryKind = "send"
 
-	// SwapDirectionReceive is a Lightning-to-Ark receive.
-	SwapDirectionReceive SwapDirection = "receive"
+	// EntryKindReceive is an inbound Lightning-to-wallet receive.
+	EntryKindReceive EntryKind = "receive"
+
+	// EntryKindDeposit is a boarding on-chain deposit.
+	EntryKindDeposit EntryKind = "deposit"
+
+	// EntryKindExit is a cooperative wallet-to-on-chain exit.
+	EntryKindExit EntryKind = "exit"
 )
 
-// SwapSummary is the wrapper-friendly view of one persisted swap.
-type SwapSummary struct {
-	Direction        SwapDirection
-	PaymentHash      string
-	State            string
-	Pending          bool
-	AmountSat        int64
-	FeeSat           uint64
-	MaxFeeSat        uint64
-	VHTLCOutpoint    string
-	VHTLCAmountSat   int64
-	FundingSessionID string
-	ClaimSessionID   string
-	RefundSessionID  string
-	TerminalReason   string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	Deadline         time.Time
-	RefundLocktime   uint32
+// EntryStatus is the collapsed wallet activity state.
+type EntryStatus string
+
+const (
+	// EntryStatusPending means the activity is still in flight.
+	EntryStatusPending EntryStatus = "pending"
+
+	// EntryStatusComplete means the activity finished successfully.
+	EntryStatusComplete EntryStatus = "complete"
+
+	// EntryStatusFailed means the activity reached a terminal failure.
+	EntryStatusFailed EntryStatus = "failed"
+)
+
+// Entry is the wallet-facing activity row used by UI and bridge layers.
+type Entry struct {
+	ID            string
+	Kind          EntryKind
+	Status        EntryStatus
+	AmountSat     int64
+	FeeSat        int64
+	Counterparty  string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	Note          string
+	FailureReason string
 }
