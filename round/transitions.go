@@ -905,9 +905,24 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 	// combined VTXORequests + LeaveRequests, the server treats that
 	// sole output as implicit change and stamps the residual on it
 	// without requiring IsChange=true on the wire (#270, see the
-	// server's resolveChangeDesignation). Mirror that contract here
-	// so single-output boarding / refresh / leave intents do not
-	// trip the non-change amount-equality check below.
+	// server's resolveChangeDesignation). The server's residual on
+	// such a slot is Σin − Σ(fixed) − fee, and because the lone
+	// output IS the implicit-change slot it does not count toward
+	// Σ(fixed); upstream wallet flows (refresh / leave / boarding /
+	// single-recipient directed-send-with-no-self-change) all set
+	// the lone output's Amount to the input value, so the only
+	// honest deviation is exactly the quote-level OperatorFeeSat.
+	//
+	// Previously this branch unconditionally skipped the amount
+	// check whenever totalOutputs == 1 (issue #378). That admitted
+	// arbitrary shaving of the single output by a malicious or
+	// compromised operator endpoint -- e.g. a single-recipient
+	// directed send could be silently underpaid because the
+	// recipient slot is IsChange=false and the wallet relied on
+	// validateQuoteEchoes to enforce the amount. The relaxation now
+	// allows exactly one deviation -- (Amount − OperatorFeeSat) on
+	// the implicit-change slot -- which is bounded by the already-
+	// capped feeCap above.
 	totalOutputs := len(intents.VTXOs) + len(intents.Leaves)
 	implicitChange := totalOutputs == 1
 
@@ -935,11 +950,33 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 				"echo mismatch", i), false
 		}
 
-		if !vtxoReq.IsChange && !implicitChange &&
-			entry.AmountSat != int64(vtxoReq.Amount) {
-			return fmt.Sprintf("vtxo[%d] non-change amount "+
-				"%d != intent target %d", i,
-				entry.AmountSat, int64(vtxoReq.Amount)), false
+		if implicitChange {
+			// Single-output implicit-change intent: the
+			// only honest deviation is (Amount −
+			// OperatorFeeSat). Anything else is a
+			// fee-shave attack on the lone output.
+			expected := int64(vtxoReq.Amount) -
+				quote.OperatorFeeSat
+			if entry.AmountSat != expected {
+				return fmt.Sprintf("vtxo[%d] "+
+					"implicit-change amount %d != "+
+					"intent target %d - operator "+
+					"fee %d (= %d)", i,
+					entry.AmountSat,
+					int64(vtxoReq.Amount),
+					quote.OperatorFeeSat, expected), false
+			}
+		} else if !vtxoReq.IsChange {
+			// Multi-output intent: only the explicit
+			// IsChange=true slot may deviate from its
+			// intent target.
+			if entry.AmountSat != int64(vtxoReq.Amount) {
+				return fmt.Sprintf("vtxo[%d] "+
+					"non-change amount %d != "+
+					"intent target %d", i,
+					entry.AmountSat,
+					int64(vtxoReq.Amount)), false
+			}
 		}
 	}
 
@@ -956,11 +993,32 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 				"mismatch", i), false
 		}
 
-		if !leaveReq.IsChange && !implicitChange &&
-			entry.AmountSat != leaveReq.Output.Value {
-			return fmt.Sprintf("leave[%d] non-change "+
-				"amount %d != intent target %d", i,
-				entry.AmountSat, leaveReq.Output.Value), false
+		if implicitChange {
+			// Single-output implicit-change intent: the
+			// only honest deviation is (Amount −
+			// OperatorFeeSat).
+			expected := leaveReq.Output.Value -
+				quote.OperatorFeeSat
+			if entry.AmountSat != expected {
+				return fmt.Sprintf("leave[%d] "+
+					"implicit-change amount %d != "+
+					"intent target %d - operator "+
+					"fee %d (= %d)", i,
+					entry.AmountSat,
+					leaveReq.Output.Value,
+					quote.OperatorFeeSat, expected), false
+			}
+		} else if !leaveReq.IsChange {
+			// Multi-output intent: only the explicit
+			// IsChange=true slot may deviate from its
+			// intent target.
+			if entry.AmountSat != leaveReq.Output.Value {
+				return fmt.Sprintf("leave[%d] "+
+					"non-change amount %d != "+
+					"intent target %d", i,
+					entry.AmountSat,
+					leaveReq.Output.Value), false
+			}
 		}
 	}
 

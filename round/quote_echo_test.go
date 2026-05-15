@@ -1,6 +1,7 @@
 package round
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -524,4 +525,194 @@ func TestEvaluateQuoteRejectsNegativeOperatorFee(t *testing.T) {
 	require.NoError(t, err)
 	_, isFail := tr.NextState.(*ClientFailedState)
 	require.True(t, isFail)
+}
+
+// buildSingleVTXOIntents returns a deterministic intent carrying a
+// single non-change VTXORequest. This mirrors the wire shape produced
+// by:
+//
+//   - a single-recipient directed send whose coin selection covered
+//     the target exactly (no self-change),
+//   - a single-VTXO refresh,
+//   - or a single-input boarding flow.
+//
+// All four flows ship one output with IsChange=false; the server then
+// treats the lone slot as implicit change. Issue #378 reported that
+// the client previously skipped the amount echo entirely in this
+// case, leaving the lone output's value at the operator's discretion.
+func buildSingleVTXOIntents(t *testing.T) Intents {
+	t.Helper()
+
+	opPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	op := opPriv.PubKey()
+
+	req := mkReq(t, op, 0x30, true)
+	req.req.Amount = 100_000
+	req.req.IsChange = false
+
+	return Intents{
+		VTXOs: []types.VTXORequest{
+			req.req,
+		},
+	}
+}
+
+// buildSingleLeaveIntents returns a deterministic intent carrying a
+// single non-change LeaveRequest. Mirrors a single-VTXO offboard.
+func buildSingleLeaveIntents() Intents {
+	// A valid P2WPKH script is OP_0 <20-byte-hash>, total 22 bytes.
+	leavePkScript := append(
+		[]byte{0x00, 0x14}, bytes.Repeat([]byte{0xab}, 20)...,
+	)
+
+	return Intents{
+		Leaves: []*types.LeaveRequest{{
+			Output: &wire.TxOut{
+				PkScript: leavePkScript,
+				Value:    100_000,
+			},
+			IsChange: false,
+		}},
+	}
+}
+
+// quoteFromSingleVTXOWithFee builds a quote echoing the lone VTXO
+// entry with its amount reduced by the supplied operator fee. This
+// matches the honest server's behaviour for a single-output intent:
+// residual = Σin − Σ(fixed) − fee, stamped on the lone (implicit-
+// change) slot.
+func quoteFromSingleVTXOWithFee(t *testing.T, intents Intents,
+	operatorFeeSat int64) *ClientQuote {
+
+	t.Helper()
+	quote := quoteFromIntents(t, intents, operatorFeeSat)
+	quote.VTXOQuotes[0].AmountSat -= operatorFeeSat
+
+	return quote
+}
+
+// TestEvaluateQuoteEchoAcceptsSingleVTXOImplicitChangeFee verifies
+// the honest single-output path: server echoes (Amount − fee) on the
+// lone slot and the client accepts. Guards against over-tightening
+// the #378 fix into rejecting honest single-output refresh / leave /
+// boarding flows.
+func TestEvaluateQuoteEchoAcceptsSingleVTXOImplicitChangeFee(t *testing.T) {
+	t.Parallel()
+
+	intents := buildSingleVTXOIntents(t)
+	quote := quoteFromSingleVTXOWithFee(t, intents, 2_500)
+
+	env := quoteReceivedTestEnv(10_000)
+	decision := evaluateQuote(env, RoundID{}, intents, quote)
+	_, ok := decision.(*QuoteAccepted)
+	require.True(
+		t, ok, "honest single-output fee deduction must accept",
+	)
+}
+
+// TestEvaluateQuoteEchoRejectsSingleVTXOUnderpayment is the primary
+// regression test for issue #378. Before the fix, a server that
+// echoed an arbitrary smaller amount on a single non-change output
+// was accepted because the implicitChange shortcut skipped the
+// amount-equality check entirely. After the fix, only the exact
+// (Amount − OperatorFeeSat) deviation is permitted; anything else
+// rejects.
+//
+// This test MUST fail without the fix.
+func TestEvaluateQuoteEchoRejectsSingleVTXOUnderpayment(t *testing.T) {
+	t.Parallel()
+
+	intents := buildSingleVTXOIntents(t)
+	quote := quoteFromIntents(t, intents, 1_000)
+
+	// Adversarial: operator claims a 1_000 sat fee but shaves
+	// 50_000 sat off the lone recipient. With the implicitChange
+	// shortcut this was silently accepted (fund theft); the
+	// tightened rule requires entry == Amount − OperatorFeeSat.
+	quote.VTXOQuotes[0].AmountSat = 50_000
+
+	env := quoteReceivedTestEnv(10_000)
+	decision := evaluateQuote(env, RoundID{}, intents, quote)
+	rej, ok := decision.(*QuoteRejected)
+	require.True(t, ok, "single-output underpayment must reject")
+	require.Contains(t, rej.Reason, "implicit-change amount")
+}
+
+// TestEvaluateQuoteEchoRejectsSingleLeaveUnderpayment is the leave-
+// channel mirror of the #378 regression. A single-output offboard
+// that the server shaves beyond the quoted operator fee must reject.
+//
+// This test MUST fail without the fix.
+func TestEvaluateQuoteEchoRejectsSingleLeaveUnderpayment(t *testing.T) {
+	t.Parallel()
+
+	intents := buildSingleLeaveIntents()
+	quote := quoteFromIntents(t, intents, 1_000)
+	quote.LeaveQuotes[0].AmountSat = 50_000
+
+	env := quoteReceivedTestEnv(10_000)
+	decision := evaluateQuote(env, RoundID{}, intents, quote)
+	rej, ok := decision.(*QuoteRejected)
+	require.True(t, ok, "single-leave underpayment must reject")
+	require.Contains(t, rej.Reason, "implicit-change amount")
+}
+
+// TestEvaluateQuoteEchoAcceptsSingleLeaveImplicitChangeFee verifies
+// the honest single-leave path: server echoes (Value − fee) on the
+// lone slot and the client accepts.
+func TestEvaluateQuoteEchoAcceptsSingleLeaveImplicitChangeFee(t *testing.T) {
+	t.Parallel()
+
+	intents := buildSingleLeaveIntents()
+	quote := quoteFromIntents(t, intents, 2_500)
+	quote.LeaveQuotes[0].AmountSat -= quote.OperatorFeeSat
+
+	env := quoteReceivedTestEnv(10_000)
+	decision := evaluateQuote(env, RoundID{}, intents, quote)
+	_, ok := decision.(*QuoteAccepted)
+	require.True(t, ok, "honest single-leave fee deduction must "+
+		"accept")
+}
+
+// TestEvaluateQuoteEchoRejectsSingleVTXOOverpayment guards against a
+// hostile server INCREASING the lone output's amount (e.g. to inflate
+// the client's claimed balance prior to a follow-on attack). The
+// tightened rule requires an exact match.
+func TestEvaluateQuoteEchoRejectsSingleVTXOOverpayment(t *testing.T) {
+	t.Parallel()
+
+	intents := buildSingleVTXOIntents(t)
+	quote := quoteFromIntents(t, intents, 1_000)
+
+	// Operator inflates the lone slot above (Amount − fee).
+	quote.VTXOQuotes[0].AmountSat = int64(intents.VTXOs[0].Amount) +
+		10_000
+
+	env := quoteReceivedTestEnv(10_000)
+	decision := evaluateQuote(env, RoundID{}, intents, quote)
+	rej, ok := decision.(*QuoteRejected)
+	require.True(t, ok, "single-output overpayment must reject")
+	require.Contains(t, rej.Reason, "implicit-change amount")
+}
+
+// TestEvaluateQuoteEchoRejectsSingleVTXOMissingFeeDeduction guards
+// the boundary case where the server claims a non-zero operator fee
+// but echoes the lone slot at the full intent target (i.e. shifts
+// the fee somewhere else, like an off-tree mint). The tightened rule
+// rejects: the residual must be stamped on the implicit-change slot.
+func TestEvaluateQuoteEchoRejectsSingleVTXOMissingFeeDeduction(t *testing.T) {
+	t.Parallel()
+
+	intents := buildSingleVTXOIntents(t)
+	quote := quoteFromIntents(t, intents, 1_000)
+	// Intentionally do not subtract the fee: echo == Amount.
+
+	env := quoteReceivedTestEnv(10_000)
+	decision := evaluateQuote(env, RoundID{}, intents, quote)
+	rej, ok := decision.(*QuoteRejected)
+	require.True(
+		t, ok, "single-output missing fee deduction must reject",
+	)
+	require.Contains(t, rej.Reason, "implicit-change amount")
 }
