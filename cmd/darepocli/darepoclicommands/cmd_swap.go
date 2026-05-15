@@ -501,6 +501,13 @@ func buildSwapClient(cmd *cobra.Command,
 	// The CLI invoice signer is intentionally process-local. Resumed
 	// receive sessions load their already-created invoice from the swap DB,
 	// so this key must not be used to recreate historical invoices.
+	//
+	// IMPORTANT: This block exists only for the standalone "swapdirect"
+	// build tag, where the CLI runs the swap FSM without a daemon. For
+	// production use, build darepod with `-tags swapruntime,walletrpc`
+	// and use `darepocli wallet send|recv|list|deposit|status`; in that
+	// path the daemon owns invoice signing via the receive-auth key
+	// hierarchy (no ephemeral process-local key, no manual resume).
 	invoiceKey, err := btcec.NewPrivateKey()
 	if err != nil {
 		return nil, nil, closeSwapConn(
