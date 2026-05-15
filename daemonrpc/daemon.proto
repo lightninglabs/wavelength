@@ -47,6 +47,11 @@ service DaemonService {
     rpc NewReceiveScript (NewReceiveScriptRequest)
         returns (NewReceiveScriptResponse);
 
+    // ListReceiveScripts lists receive targets currently registered for this
+    // wallet's mailbox principal.
+    rpc ListReceiveScripts (ListReceiveScriptsRequest)
+        returns (ListReceiveScriptsResponse);
+
     // ReceiveAuthKey returns the per-payment receive-auth public key.
     rpc ReceiveAuthKey (ReceiveAuthKeyRequest) returns (ReceiveAuthKeyResponse);
 
@@ -147,6 +152,10 @@ service DaemonService {
     // the client's local accounting and sweep databases.
     rpc ListTransactions (ListTransactionsRequest)
         returns (ListTransactionsResponse);
+
+    // ListTransfers returns a user-facing transfer status view stitched
+    // together from local round state, OOR sessions, and transaction history.
+    rpc ListTransfers (ListTransfersRequest) returns (ListTransfersResponse);
 
     // Unroll triggers a unilateral exit for the specified VTXO outpoint.
     // The daemon will assemble the recovery proof, spawn a durable unroll
@@ -488,6 +497,33 @@ message NewReceiveScriptResponse {
 
     // label is the registration label stored with the indexer.
     string label = 5;
+
+    // address is the bech32m taproot address for pk_script_hex on the active
+    // chain network.
+    string address = 6;
+}
+
+message ReceiveTarget {
+    // address is the bech32m taproot address callers can hand to a sender.
+    string address = 1;
+
+    // pk_script_hex is the raw taproot output script encoded as hex.
+    string pk_script_hex = 2;
+
+    // label is the informational registration label stored with the indexer.
+    string label = 3;
+
+    // expires_at_unix_s is the indexer-side expiration time for this
+    // registration. Zero means the indexer default applies.
+    uint64 expires_at_unix_s = 4;
+}
+
+message ListReceiveScriptsRequest {
+}
+
+message ListReceiveScriptsResponse {
+    // targets is the set of active receive targets registered for this wallet.
+    repeated ReceiveTarget targets = 1;
 }
 
 message ReceiveAuthKeyRequest {
@@ -1450,6 +1486,117 @@ message TransactionHistoryEntry {
 message ListTransactionsResponse {
     // transactions are returned newest first by created_at_unix_s.
     repeated TransactionHistoryEntry transactions = 1;
+
+    // next_offset is the offset to pass to the next request when has_more is
+    // true.
+    uint32 next_offset = 2;
+
+    // has_more is true when another page is available.
+    bool has_more = 3;
+}
+
+enum TransferMode {
+    TRANSFER_MODE_UNSPECIFIED = 0;
+    TRANSFER_MODE_INROUND = 1;
+    TRANSFER_MODE_OOR = 2;
+}
+
+enum TransferDirection {
+    TRANSFER_DIRECTION_UNSPECIFIED = 0;
+    TRANSFER_DIRECTION_OUTGOING = 1;
+    TRANSFER_DIRECTION_INCOMING = 2;
+}
+
+enum TransferStatus {
+    TRANSFER_STATUS_UNSPECIFIED = 0;
+    TRANSFER_STATUS_PENDING = 1;
+    TRANSFER_STATUS_COMPLETED = 2;
+    TRANSFER_STATUS_FAILED = 3;
+}
+
+message TransferInfo {
+    // transfer_id is a stable local identifier for this transfer status row.
+    string transfer_id = 1;
+
+    // mode identifies whether this transfer used a round or OOR session.
+    TransferMode mode = 2;
+
+    // direction is from the local wallet's perspective when the daemon has
+    // enough local input/output ownership data to infer it. Live in-memory
+    // in-round entries may report TRANSFER_DIRECTION_UNSPECIFIED until they
+    // are persisted with outpoint context.
+    TransferDirection direction = 3;
+
+    // status is the coarse lifecycle state.
+    TransferStatus status = 4;
+
+    // phase carries the detailed round state, OOR phase, or history subtype.
+    string phase = 5;
+
+    // amount_sat is the known transfer amount in satoshis. Live in-memory
+    // in-round entries and OOR session rows may leave this zero until a
+    // history source supplies a persisted amount.
+    int64 amount_sat = 6;
+
+    // round_id is set for in-round transfers when known.
+    string round_id = 7;
+
+    // session_id is set for OOR transfers when known.
+    string session_id = 8;
+
+    // input_outpoints are locally known consumed VTXOs.
+    repeated string input_outpoints = 9;
+
+    // output_outpoints are locally known created VTXOs.
+    repeated string output_outpoints = 10;
+
+    // txid is the commitment or package transaction id when known.
+    string txid = 11;
+
+    // confirmation_height is set when the transfer has a known chain
+    // confirmation height.
+    int32 confirmation_height = 12;
+
+    // created_at_unix_s is the local creation time when known.
+    int64 created_at_unix_s = 13;
+
+    // updated_at_unix_s is the local update time when known.
+    int64 updated_at_unix_s = 14;
+
+    // failure_reason is populated for failed live operations when known.
+    string failure_reason = 15;
+}
+
+message ListTransfersRequest {
+    // mode_filter restricts results to one transfer mode when set.
+    TransferMode mode_filter = 1;
+
+    // direction_filter restricts results to one local direction when set.
+    // Rows whose direction is TRANSFER_DIRECTION_UNSPECIFIED are always
+    // included regardless of this filter, because live in-round rows can be
+    // useful before the daemon has enough local input/output ownership data to
+    // classify direction.
+    TransferDirection direction_filter = 2;
+
+    // status_filter restricts results to one coarse transfer status when set.
+    TransferStatus status_filter = 3;
+
+    // limit bounds the number of status rows returned. Zero uses the daemon
+    // default. Values above the daemon maximum are silently capped to that
+    // maximum.
+    uint32 limit = 4;
+
+    // offset skips this many rows after filtering and newest-first sorting.
+    uint32 offset = 5;
+}
+
+message ListTransfersResponse {
+    // transfers are returned newest first by their best known update time.
+    // Unknown-direction rows may be present even when the request sets a
+    // direction filter; see ListTransfersRequest.direction_filter. Callers
+    // should not rely on this pass-through as exclusive-filter semantics; it
+    // may narrow once live rows always carry direction hints.
+    repeated TransferInfo transfers = 1;
 
     // next_offset is the offset to pass to the next request when has_more is
     // true.

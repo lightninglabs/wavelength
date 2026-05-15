@@ -152,6 +152,12 @@ func oorList(cmd *cobra.Command, _ []string) error {
 
 // oorReceive executes the NewReceiveScript RPC.
 func oorReceive(cmd *cobra.Command, _ []string) error {
+	return newReceiveScript(cmd)
+}
+
+// newReceiveScript executes the NewReceiveScript RPC shared by receive
+// command aliases.
+func newReceiveScript(cmd *cobra.Command) error {
 	client, conn, err := getDaemonClient(cmd)
 	if err != nil {
 		return err
@@ -160,6 +166,26 @@ func oorReceive(cmd *cobra.Command, _ []string) error {
 		_ = conn.Close()
 	}()
 
+	req, err := newReceiveScriptRequestFromCmd(cmd)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.NewReceiveScript(
+		cmd.Context(), req,
+	)
+	if err != nil {
+		return fmt.Errorf("NewReceiveScript RPC failed: %w", err)
+	}
+
+	return printJSON(resp)
+}
+
+// newReceiveScriptRequestFromCmd builds a NewReceiveScript request from cobra
+// flags or the generic JSON request input.
+func newReceiveScriptRequestFromCmd(cmd *cobra.Command) (
+	*daemonrpc.NewReceiveScriptRequest, error) {
+
 	req := &daemonrpc.NewReceiveScriptRequest{}
 	if err := parseRequest(cmd, req, func() error {
 		label, _ := cmd.Flags().GetString("label")
@@ -167,17 +193,10 @@ func oorReceive(cmd *cobra.Command, _ []string) error {
 
 		return nil
 	}); err != nil {
-		return err
+		return nil, err
 	}
 
-	resp, err := client.NewReceiveScript(
-		context.Background(), req,
-	)
-	if err != nil {
-		return fmt.Errorf("NewReceiveScript RPC failed: %w", err)
-	}
-
-	return printJSON(resp)
+	return req, nil
 }
 
 // parseOORDirectionFilter converts a CLI direction filter into the proto enum.

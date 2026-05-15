@@ -52,6 +52,8 @@ func methodRegistry() []schemaMethod {
 	out := baseMethodRegistry()
 	out = append(out, vtxoLifecycleMethodRegistry()...)
 	out = append(out, sendMethodRegistry()...)
+	out = append(out, receiveMethodRegistry()...)
+	out = append(out, transferMethodRegistry()...)
 
 	return out
 }
@@ -253,6 +255,98 @@ func baseMethodRegistry() []schemaMethod {
 	}
 }
 
+// receiveMethodRegistry returns the generic receive-target schema entries.
+func receiveMethodRegistry() []schemaMethod {
+	return []schemaMethod{
+		{
+			Method:      "receive",
+			Description: "Allocate a fresh Ark receive target",
+			Params: []schemaParam{
+				{
+					Name: "label",
+					Type: "string",
+					Description: "optional indexer " +
+						"registration label",
+				},
+			},
+			RequestType:  "NewReceiveScriptRequest",
+			ResponseType: "NewReceiveScriptResponse",
+			JSONInput:    true,
+		},
+		{
+			Method:       "receive.list",
+			Description:  "List registered Ark receive targets",
+			Params:       nil,
+			RequestType:  "ListReceiveScriptsRequest",
+			ResponseType: "ListReceiveScriptsResponse",
+			JSONInput:    true,
+		},
+	}
+}
+
+// transferMethodRegistry returns the transfer status schema entries.
+func transferMethodRegistry() []schemaMethod {
+	return []schemaMethod{
+		{
+			Method:      "transfers.list",
+			Description: "List in-round and OOR transfer statuses",
+			Params: []schemaParam{
+				{
+					Name: "mode",
+					Type: "enum",
+					Description: "mode filter: all, " +
+						"inround, or oor",
+					Values: []string{
+						"all",
+						"inround",
+						"oor",
+					},
+				},
+				{
+					Name: "direction",
+					Type: "enum",
+					Description: "direction filter: all, " +
+						"outgoing, or incoming; " +
+						"unknown pending rows " +
+						"are always shown",
+					Values: []string{
+						"all",
+						"outgoing",
+						"incoming",
+					},
+				},
+				{
+					Name: "status",
+					Type: "enum",
+					Description: "status filter: all, " +
+						"pending, completed, or failed",
+					Values: []string{
+						"all",
+						"pending",
+						"completed",
+						"failed",
+					},
+				},
+				{
+					Name: "limit",
+					Type: "uint32",
+					Description: "max rows to return; " +
+						"zero uses default",
+				},
+				{
+					Name: "offset",
+					Type: "uint32",
+					Description: "rows to skip after " +
+						"filtering and sorting",
+				},
+			},
+			RequestType:  "ListTransfersRequest",
+			ResponseType: "ListTransfersResponse",
+			JSONInput:    true,
+		},
+	}
+}
+
 // vtxoLifecycleMethodRegistry returns the VTXO lifecycle commands
 // (list / refresh / leave). Split out of methodRegistry so the parent
 // stays under the funlen cap as new entries land.
@@ -405,24 +499,14 @@ func sendMethodRegistry() []schemaMethod {
 					Name: "to",
 					Type: "string",
 					Description: "recipient address " +
-						"(exactly one of to, pubkey, " +
-						"or pk_script)",
+						"(exactly one of to or pubkey)",
 				},
 				{
 					Name: "pubkey",
 					Type: "string",
 					Description: "recipient 32-byte " +
 						"x-only pubkey hex (exactly " +
-						"one of to, pubkey, or " +
-						"pk_script)",
-				},
-				{
-					Name: "pk_script",
-					Type: "string",
-					Description: "recipient raw " +
-						"pk_script hex (exactly one " +
-						"of to, pubkey, or " +
-						"pk_script)",
+						"one of to or pubkey)",
 				},
 				{
 					Name:        "amount",

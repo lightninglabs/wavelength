@@ -27,6 +27,7 @@ const (
 	DaemonService_ListVTXOs_FullMethodName                     = "/daemonrpc.DaemonService/ListVTXOs"
 	DaemonService_NewAddress_FullMethodName                    = "/daemonrpc.DaemonService/NewAddress"
 	DaemonService_NewReceiveScript_FullMethodName              = "/daemonrpc.DaemonService/NewReceiveScript"
+	DaemonService_ListReceiveScripts_FullMethodName            = "/daemonrpc.DaemonService/ListReceiveScripts"
 	DaemonService_ReceiveAuthKey_FullMethodName                = "/daemonrpc.DaemonService/ReceiveAuthKey"
 	DaemonService_SignReceiveAuthMessage_FullMethodName        = "/daemonrpc.DaemonService/SignReceiveAuthMessage"
 	DaemonService_SignReceiveAuthMessageCompact_FullMethodName = "/daemonrpc.DaemonService/SignReceiveAuthMessageCompact"
@@ -48,6 +49,7 @@ const (
 	DaemonService_EstimateFee_FullMethodName                   = "/daemonrpc.DaemonService/EstimateFee"
 	DaemonService_GetFeeHistory_FullMethodName                 = "/daemonrpc.DaemonService/GetFeeHistory"
 	DaemonService_ListTransactions_FullMethodName              = "/daemonrpc.DaemonService/ListTransactions"
+	DaemonService_ListTransfers_FullMethodName                 = "/daemonrpc.DaemonService/ListTransfers"
 	DaemonService_Unroll_FullMethodName                        = "/daemonrpc.DaemonService/Unroll"
 	DaemonService_GetUnrollStatus_FullMethodName               = "/daemonrpc.DaemonService/GetUnrollStatus"
 )
@@ -90,6 +92,9 @@ type DaemonServiceClient interface {
 	// matching taproot receive script with the indexer, and returns the
 	// script details needed to hand the destination to a sender.
 	NewReceiveScript(ctx context.Context, in *NewReceiveScriptRequest, opts ...grpc.CallOption) (*NewReceiveScriptResponse, error)
+	// ListReceiveScripts lists receive targets currently registered for this
+	// wallet's mailbox principal.
+	ListReceiveScripts(ctx context.Context, in *ListReceiveScriptsRequest, opts ...grpc.CallOption) (*ListReceiveScriptsResponse, error)
 	// ReceiveAuthKey returns the per-payment receive-auth public key.
 	ReceiveAuthKey(ctx context.Context, in *ReceiveAuthKeyRequest, opts ...grpc.CallOption) (*ReceiveAuthKeyResponse, error)
 	// SignReceiveAuthMessage signs one message with the per-payment
@@ -161,6 +166,9 @@ type DaemonServiceClient interface {
 	// ListTransactions returns a paginated transaction history from
 	// the client's local accounting and sweep databases.
 	ListTransactions(ctx context.Context, in *ListTransactionsRequest, opts ...grpc.CallOption) (*ListTransactionsResponse, error)
+	// ListTransfers returns a user-facing transfer status view stitched
+	// together from local round state, OOR sessions, and transaction history.
+	ListTransfers(ctx context.Context, in *ListTransfersRequest, opts ...grpc.CallOption) (*ListTransfersResponse, error)
 	// Unroll triggers a unilateral exit for the specified VTXO outpoint.
 	// The daemon will assemble the recovery proof, spawn a durable unroll
 	// job, and drive the on-chain recovery process to completion.
@@ -253,6 +261,16 @@ func (c *daemonServiceClient) NewReceiveScript(ctx context.Context, in *NewRecei
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(NewReceiveScriptResponse)
 	err := c.cc.Invoke(ctx, DaemonService_NewReceiveScript_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ListReceiveScripts(ctx context.Context, in *ListReceiveScriptsRequest, opts ...grpc.CallOption) (*ListReceiveScriptsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListReceiveScriptsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListReceiveScripts_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -478,6 +496,16 @@ func (c *daemonServiceClient) ListTransactions(ctx context.Context, in *ListTran
 	return out, nil
 }
 
+func (c *daemonServiceClient) ListTransfers(ctx context.Context, in *ListTransfersRequest, opts ...grpc.CallOption) (*ListTransfersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTransfersResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListTransfers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) Unroll(ctx context.Context, in *UnrollRequest, opts ...grpc.CallOption) (*UnrollResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UnrollResponse)
@@ -536,6 +564,9 @@ type DaemonServiceServer interface {
 	// matching taproot receive script with the indexer, and returns the
 	// script details needed to hand the destination to a sender.
 	NewReceiveScript(context.Context, *NewReceiveScriptRequest) (*NewReceiveScriptResponse, error)
+	// ListReceiveScripts lists receive targets currently registered for this
+	// wallet's mailbox principal.
+	ListReceiveScripts(context.Context, *ListReceiveScriptsRequest) (*ListReceiveScriptsResponse, error)
 	// ReceiveAuthKey returns the per-payment receive-auth public key.
 	ReceiveAuthKey(context.Context, *ReceiveAuthKeyRequest) (*ReceiveAuthKeyResponse, error)
 	// SignReceiveAuthMessage signs one message with the per-payment
@@ -607,6 +638,9 @@ type DaemonServiceServer interface {
 	// ListTransactions returns a paginated transaction history from
 	// the client's local accounting and sweep databases.
 	ListTransactions(context.Context, *ListTransactionsRequest) (*ListTransactionsResponse, error)
+	// ListTransfers returns a user-facing transfer status view stitched
+	// together from local round state, OOR sessions, and transaction history.
+	ListTransfers(context.Context, *ListTransfersRequest) (*ListTransfersResponse, error)
 	// Unroll triggers a unilateral exit for the specified VTXO outpoint.
 	// The daemon will assemble the recovery proof, spawn a durable unroll
 	// job, and drive the on-chain recovery process to completion.
@@ -648,6 +682,9 @@ func (UnimplementedDaemonServiceServer) NewAddress(context.Context, *NewAddressR
 }
 func (UnimplementedDaemonServiceServer) NewReceiveScript(context.Context, *NewReceiveScriptRequest) (*NewReceiveScriptResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method NewReceiveScript not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListReceiveScripts(context.Context, *ListReceiveScriptsRequest) (*ListReceiveScriptsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListReceiveScripts not implemented")
 }
 func (UnimplementedDaemonServiceServer) ReceiveAuthKey(context.Context, *ReceiveAuthKeyRequest) (*ReceiveAuthKeyResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReceiveAuthKey not implemented")
@@ -711,6 +748,9 @@ func (UnimplementedDaemonServiceServer) GetFeeHistory(context.Context, *GetFeeHi
 }
 func (UnimplementedDaemonServiceServer) ListTransactions(context.Context, *ListTransactionsRequest) (*ListTransactionsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListTransactions not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListTransfers(context.Context, *ListTransfersRequest) (*ListTransfersResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListTransfers not implemented")
 }
 func (UnimplementedDaemonServiceServer) Unroll(context.Context, *UnrollRequest) (*UnrollResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Unroll not implemented")
@@ -879,6 +919,24 @@ func _DaemonService_NewReceiveScript_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).NewReceiveScript(ctx, req.(*NewReceiveScriptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ListReceiveScripts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListReceiveScriptsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListReceiveScripts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListReceiveScripts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListReceiveScripts(ctx, req.(*ListReceiveScriptsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1254,6 +1312,24 @@ func _DaemonService_ListTransactions_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_ListTransfers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTransfersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListTransfers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListTransfers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListTransfers(ctx, req.(*ListTransfersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_Unroll_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(UnrollRequest)
 	if err := dec(in); err != nil {
@@ -1328,6 +1404,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "NewReceiveScript",
 			Handler:    _DaemonService_NewReceiveScript_Handler,
+		},
+		{
+			MethodName: "ListReceiveScripts",
+			Handler:    _DaemonService_ListReceiveScripts_Handler,
 		},
 		{
 			MethodName: "ReceiveAuthKey",
@@ -1408,6 +1488,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListTransactions",
 			Handler:    _DaemonService_ListTransactions_Handler,
+		},
+		{
+			MethodName: "ListTransfers",
+			Handler:    _DaemonService_ListTransfers_Handler,
 		},
 		{
 			MethodName: "Unroll",
