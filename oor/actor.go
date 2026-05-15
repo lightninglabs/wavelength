@@ -564,6 +564,31 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 
 		return nil, fmt.Errorf("notify recipients pending")
 
+	case *CoSignedState:
+		// We land back in CoSignedState when a finalize attempt
+		// failed validation after the point-of-no-return. The
+		// session is intentionally kept recoverable: input locks are
+		// preserved and the client can retry finalize with a
+		// corrected package. Surface the recorded failure reason so
+		// the caller learns why the attempt was rejected without
+		// having to scrape logs. See issue #372.
+		if s.LastFinalizeFailureReason != "" {
+			a.log().WarnS(ctx, "Finalize attempt rejected; "+
+				"session remains co-signed and retryable",
+				nil,
+				btclog.Hex("session_id", msg.SessionID[:]),
+				slog.String(
+					"reason", s.LastFinalizeFailureReason,
+				),
+			)
+
+			return nil, fmt.Errorf("finalize failed: %s",
+				s.LastFinalizeFailureReason)
+		}
+
+		return nil, fmt.Errorf("finalize did not reach finalized " +
+			"state: still co-signed")
+
 	case *FailedState:
 		// Clean up the session from the map now that it has reached
 		// a terminal state.

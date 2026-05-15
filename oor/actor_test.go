@@ -860,8 +860,11 @@ func TestActorSubmitMissingTapTreeAssertsUnlock(t *testing.T) {
 	require.Empty(t, driver.SeenOutboxTypes())
 }
 
-// TestActorFinalizeMissingSigDoesNotUnlock asserts that finalize failures after
-// the point-of-no-return do not emit an unlock request.
+// TestActorFinalizeMissingSigDoesNotUnlock asserts that finalize failures
+// after the point-of-no-return do not emit an unlock request, do not
+// terminate the session, and leave the FSM in a recoverable CoSignedState
+// so the client can resubmit a corrected finalize package. Regression
+// coverage for issue #372.
 func TestActorFinalizeMissingSigDoesNotUnlock(t *testing.T) {
 	t.Parallel()
 
@@ -895,13 +898,31 @@ func TestActorFinalizeMissingSigDoesNotUnlock(t *testing.T) {
 	})
 	require.True(t, finalizeResp.IsErr())
 
-	// FailedState is terminal so the session is cleaned up from
-	// the in-memory map. Verify the error message confirms
-	// failure.
+	// The actor must surface the failure reason but keep the session
+	// alive: no terminal FailedState, no unlock side effect.
 	require.ErrorContains(t, finalizeResp.Err(), "finalize failed")
 
 	seen := strings.Join(driver.SeenOutboxTypes(), ",")
 	require.NotContains(t, seen, "UnlockInputsReq")
+
+	// The session must remain in CoSignedState so the client can retry
+	// finalize. Before the fix the FSM would have transitioned to the
+	// terminal FailedState, the session would be deleted from the map,
+	// and CurrentState would return an "unknown session" error.
+	postState, err := actor.CurrentState(ctx, sessionID)
+	require.NoError(
+		t, err, "session must still be tracked after a recoverable "+
+			"finalize failure",
+	)
+	cosigned, ok := postState.(*CoSignedState)
+	require.True(
+		t, ok, "expected CoSignedState recovery anchor, got %T",
+		postState,
+	)
+	require.NotEmpty(
+		t, cosigned.LastFinalizeFailureReason,
+		"failure reason must be surfaced on the recovered state",
+	)
 }
 
 // TestActorFinalizeNotifyFailureIsRetryable asserts recipient event-store

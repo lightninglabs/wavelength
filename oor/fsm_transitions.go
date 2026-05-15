@@ -244,12 +244,17 @@ func (s *CoSignedState) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	case *SignFailedEvent:
-		return &StateTransition{
-			NextState: &FailedState{
-				Reason: evt.Reason,
-			},
-			NewEvents: fn.None[EmittedEvent](),
-		}, nil
+		// A SignFailedEvent after CoSigned is a stale/racing late
+		// signal from the co-sign step (the FSM only reaches
+		// CoSignedState via OperatorSignedEvent, so co-sign already
+		// succeeded). Terminating here would orphan the input locks
+		// since the point-of-no-return prevents emitting
+		// UnlockInputsReq. Treat the event as unexpected and remain
+		// in CoSignedState so finalize can still proceed. See issue
+		// #372.
+		_ = evt
+
+		return unexpectedEvent(s), nil
 
 	default:
 		return unexpectedEvent(s), nil
@@ -311,9 +316,22 @@ func (s *AwaitingFinalizeValidationState) ProcessEvent(ctx context.Context,
 		}, nil
 
 	case *FinalizeFailedEvent:
+		// The session is past the point-of-no-return: input locks
+		// must not be released and the session must not terminate on
+		// a single bad finalize attempt (a malformed package or a
+		// racing duplicate would otherwise permanently freeze the
+		// VTXOs until manual intervention). Fall back to
+		// CoSignedState so the client can resubmit a corrected
+		// finalize package. We surface the failure reason via
+		// LastFinalizeFailureReason for the actor to report back to
+		// the caller. See issue #372.
 		return &StateTransition{
-			NextState: &FailedState{
-				Reason: evt.Reason,
+			NextState: &CoSignedState{
+				Inputs:  s.Inputs,
+				ArkPSBT: s.ArkPSBT,
+				CoSignedCheckpointPSBTs: s.
+					CoSignedCheckpointPSBTs,
+				LastFinalizeFailureReason: evt.Reason,
 			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
