@@ -1,106 +1,68 @@
 # walletdk Integration Guide
 
-`walletdk` is the wallet-facing SDK for applications that want a small,
-stable API over the embedded `darepod` client daemon. It starts the daemon
-in-process, connects to it over a private `bufconn` gRPC transport, and exposes
-wallet-shaped methods for onboarding, balances, Lightning receives, Lightning
-sends, and swap accounting.
+`walletdk` is the wallet-facing SDK for applications that want a small API over
+`darepod`. `Start` embeds the daemon in-process and connects to it over private
+`bufconn`; `Connect` attaches the same client API to an external daemon that
+exposes `walletrpc`.
 
-The package is intended to be the layer that app developers wrap for mobile,
-desktop, React Native, gomobile, or host-language bridges. Application code
-should call `walletdk` rather than reimplement daemon RPC wiring or swap state
-machines.
-
-## Package
-
-```go
-import "github.com/lightninglabs/darepo-client/sdk/walletdk"
-```
-
-Swap send and receive support requires the `swapruntime` build tag:
+Build embedded wallet payment support with both wallet runtime tags:
 
 ```sh
-go build -tags swapruntime ./cmd/your-wallet
-go test -tags swapruntime ./sdk/walletdk
+go build -tags walletrpc,swapruntime ./cmd/your-wallet
+go test -tags walletrpc,swapruntime ./sdk/walletdk
 ```
 
-Without that tag, wallet bootstrapping and Ark daemon RPC wrappers still build,
-but `Receive`, `Send`, `ListSwaps`, `GetSwap`, `ResumeSwap`, and
-`SubscribeSwaps` fail with `walletdk.ErrSwapRuntimeUnavailable`.
+Without those tags, `Start` fails with `walletdk.ErrWalletRPCUnavailable`.
+`Connect` can still talk to a remote daemon that was built with
+`walletrpc,swapruntime`.
 
-## Runtime Model
-
-`walletdk.Start` owns a full embedded daemon runtime:
+## Runtime Flow
 
 1. Build a `walletdk.Config`.
-2. Start the embedded daemon with `walletdk.Start`.
+2. Start the embedded daemon with `walletdk.Start`, or connect to an external
+   daemon with `walletdk.Connect`.
 3. Create or unlock the wallet.
-4. Poll or subscribe to wallet and swap state.
+4. Use `Status`, `Balance`, `Deposit`, `Receive`, `Send`, `List`, and
+   `Subscribe`.
 5. Call `Stop` when the host app shuts down.
 
-The returned `*walletdk.Client` is safe for concurrent use. The client owns
-daemon shutdown, private gRPC connection shutdown, and the swap RPC clients
-registered on the embedded daemon.
-
-## Minimal Startup
-
 ```go
-package main
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
 
-import (
-	"context"
-	"fmt"
-	"io"
-	"time"
+cfg := walletdk.DefaultConfig()
+cfg.DataDir = "/tmp/example-wallet"
+cfg.Network = "regtest"
+cfg.ServerAddress = "127.0.0.1:10010"
+cfg.ServerInsecure = true
+cfg.WalletType = "lwwallet"
+cfg.WalletEsploraURL = "http://127.0.0.1:3002"
+cfg.SwapServerAddress = "127.0.0.1:11010"
+cfg.SwapServerInsecure = true
+cfg.LogWriter = io.Discard
 
-	"github.com/lightninglabs/darepo-client/sdk/walletdk"
-)
-
-func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	cfg := walletdk.DefaultConfig()
-	cfg.DataDir = "/tmp/example-wallet"
-	cfg.Network = "regtest"
-	cfg.ServerAddress = "127.0.0.1:10010"
-	cfg.ServerInsecure = true
-	cfg.WalletType = "lwwallet"
-	cfg.WalletEsploraURL = "http://127.0.0.1:3002"
-	cfg.SwapServerAddress = "127.0.0.1:11010"
-	cfg.SwapServerInsecure = true
-	cfg.LogWriter = io.Discard
-
-	client, err := walletdk.Start(ctx, cfg)
-	if err != nil {
-		panic(err)
-	}
-	defer client.Stop()
-
-	info, err := client.GetInfo(ctx)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Printf("network=%s wallet_ready=%v\n",
-		info.Network, info.WalletReady)
+client, err := walletdk.Start(ctx, cfg)
+if err != nil {
+	panic(err)
 }
+defer client.Stop()
 ```
 
-Use a durable app-specific `DataDir`. It contains wallet state, daemon state,
-and swap accounting. Deleting it deletes the local wallet database and local
-swap history.
+Remote daemon mode uses the same methods:
 
-## Create Or Unlock
+```go
+client, err := walletdk.Connect(ctx, walletdk.ConnectConfig{
+	Address: "127.0.0.1:10009",
+})
+if err != nil {
+	panic(err)
+}
+defer client.Stop()
+```
 
-Most apps should treat wallet bootstrap as a two-branch flow:
+## Wallet Bootstrap
 
-1. Start `walletdk`.
-2. Call `GetInfo`.
-3. If `WalletReady` is false and this is first run, call `CreateWallet`.
-4. If a wallet already exists but is locked, call `UnlockWallet`.
-5. Persist only the user-approved backup material or password material your
-   product is designed to own.
+Use `GetInfo` to decide whether to create or unlock the daemon wallet:
 
 ```go
 password := []byte("correct horse battery staple")
@@ -129,93 +91,98 @@ if err != nil {
 fmt.Println("identity:", unlocked.IdentityPubKey)
 ```
 
-`CreateWallet` returns the mnemonic when it generated a new seed. Show it once,
-require the user to back it up, and avoid writing it to logs.
-
 ## Wallet Operations
 
-Fetch a balance:
+Fetch readiness and balances:
 
 ```go
-balance, err := client.ListBalance(ctx)
+status, err := client.Status(ctx)
 if err != nil {
 	panic(err)
 }
 
-fmt.Println("confirmed:", balance.TotalConfirmedSat)
-fmt.Println("ark vtxo:", balance.VTXOBalanceSat)
-```
-
-Allocate an onboarding address:
-
-```go
-addr, err := client.GetOnchainAddress(ctx)
+balance, err := client.Balance(ctx)
 if err != nil {
 	panic(err)
 }
 
-fmt.Println(addr.Address)
+fmt.Println("ready:", status.Ready)
+fmt.Println("confirmed:", balance.ConfirmedSat)
+fmt.Println("pending in:", balance.PendingInSat)
+fmt.Println("pending out:", balance.PendingOutSat)
 ```
 
-Start a Lightning-to-Ark receive:
+Create a boarding deposit address:
+
+```go
+deposit, err := client.Deposit(ctx, walletdk.DepositRequest{
+	AmountSatHint: 50_000,
+})
+if err != nil {
+	panic(err)
+}
+
+fmt.Println("address:", deposit.Address)
+fmt.Println("entry:", deposit.Entry.ID, deposit.Entry.Status)
+```
+
+Create a Lightning invoice payable into the wallet:
 
 ```go
 receive, err := client.Receive(ctx, walletdk.ReceiveRequest{
 	AmountSat: 50_000,
+	Memo:      "demo receive",
 })
 if err != nil {
 	panic(err)
 }
 
 fmt.Println("invoice:", receive.Invoice)
-fmt.Println("payment hash:", receive.PaymentHash)
-fmt.Println("initial state:", receive.Swap.State)
+fmt.Println("entry:", receive.Entry.ID, receive.Entry.Status)
 ```
 
-Start an Ark-to-Lightning send:
+Send to a Lightning invoice or on-chain address:
 
 ```go
 send, err := client.Send(ctx, walletdk.SendRequest{
 	Invoice:   bolt11Invoice,
 	MaxFeeSat: 1_000,
+	Note:      "demo payment",
 })
 if err != nil {
 	panic(err)
 }
 
-fmt.Println("payment hash:", send.PaymentHash)
-fmt.Println("initial state:", send.Swap.State)
+fmt.Println("entry:", send.Entry.ID, send.Entry.Status)
 ```
 
-## Swap Accounting
+## Wallet Activity
 
-Use `ListSwaps` for the durable accounting view:
+`List` is the durable wallet activity view. It returns normalized `Entry` rows
+for sends, receives, deposits, and exits.
 
 ```go
-swaps, err := client.ListSwaps(ctx, walletdk.ListSwapsRequest{
+history, err := client.List(ctx, walletdk.ListRequest{
 	PendingOnly: false,
 })
 if err != nil {
 	panic(err)
 }
 
-for _, swap := range swaps {
-	fmt.Println(swap.Direction, swap.PaymentHash, swap.State, swap.Pending)
+for _, entry := range history.Entries {
+	fmt.Println(entry.Kind, entry.ID, entry.Status, entry.AmountSat)
 }
 ```
 
-Use `SubscribeSwaps` to drive live UI updates:
+Use `Subscribe` to drive live UI updates:
 
 ```go
 subCtx, stopSub := context.WithCancel(context.Background())
 defer stopSub()
 
-updates, errs, err := client.SubscribeSwaps(
-	subCtx, walletdk.SubscribeSwapsRequest{
-		IncludeExisting: true,
-		PendingOnly:     false,
-	},
-)
+updates, errs, err := client.Subscribe(subCtx, walletdk.SubscribeRequest{
+	IncludeExisting: true,
+})
 if err != nil {
 	panic(err)
 }
@@ -228,42 +195,15 @@ go func() {
 				return
 			}
 
-			fmt.Println("swap update:", update.PaymentHash, update.State)
+			fmt.Println("wallet update:", update.ID, update.Status)
 
 		case err, ok := <-errs:
 			if ok && err != nil {
-				fmt.Println("swap subscription error:", err)
+				fmt.Println("wallet subscription error:", err)
 			}
 
 			return
 		}
-	}
-}()
-```
-
-After startup, applications can call `ResumeSwap` for pending swaps or rely on
-future app-specific startup logic to resume all pending work. Keep the durable
-swap list as the UI source of truth instead of inventing a second local payment
-state model.
-
-## Shutdown
-
-Always stop the SDK on application shutdown:
-
-```go
-if err := client.Stop(); err != nil {
-	// Log at warn/info level for normal app shutdown paths.
-	fmt.Println("wallet shutdown:", err)
-}
-```
-
-`Stop` and `Close` are aliases and are idempotent. `Wait` exposes the embedded
-daemon's terminal run error for hosts that want to monitor daemon death:
-
-```go
-go func() {
-	if err := <-client.Wait(); err != nil {
-		fmt.Println("wallet runtime stopped:", err)
 	}
 }()
 ```
@@ -273,9 +213,9 @@ go func() {
 Keep host-language bindings thin:
 
 - Own one `*walletdk.Client` per wallet runtime.
-- Expose explicit `Start`, `Stop`, `CreateWallet`, `UnlockWallet`,
-  `ListBalance`, `GetOnchainAddress`, `Receive`, `Send`, `ListSwaps`, and
-  `SubscribeSwaps` methods.
+- Expose explicit `Start` or `Connect`, `Stop`, `CreateWallet`,
+  `UnlockWallet`, `Status`, `Balance`, `Deposit`, `Receive`, `Send`, `List`,
+  and `Subscribe` methods.
 - Convert SDK structs into plain host DTOs. Do not expose protobuf messages to
   mobile or JavaScript callers.
 - Accept caller-provided timeouts or cancellation handles for every operation.
@@ -284,23 +224,16 @@ Keep host-language bindings thin:
   security decisions owned by the host app.
 
 For gomobile or React Native bridges, prefer a small manager object with string
-or JSON DTO methods. For example, a bridge can hold the Go client internally and
-return JSON-encoded `Balance`, `ReceiveResult`, and `SwapSummary` values to the
-host UI.
-
-For browser WASM, do not assume the current embedded daemon can run unchanged
-inside a browser sandbox. The daemon expects filesystem, networking, timers,
-and gRPC behavior that are more natural in native Go targets. A practical WASM
-path is to keep the same wallet-shaped API but back it with a remote daemon or
-host-provided transport until the daemon runtime is adapted for browser storage
-and networking.
+or JSON DTO methods. For browser WASM, prefer the `Connect` shape against a
+remote or host-provided daemon until the embedded daemon storage and transport
+stack is browser-ready.
 
 ## LLM Integration Checklist
 
 When generating wallet code against `walletdk`, follow this checklist:
 
 1. Import `github.com/lightninglabs/darepo-client/sdk/walletdk`.
-2. Build with `-tags swapruntime` if the code calls swap methods.
+2. Build embedded wallets with `-tags walletrpc,swapruntime`.
 3. Use `walletdk.DefaultConfig()` and override only deployment-specific fields.
 4. Set a durable `DataDir`.
 5. Set `Network`, Ark operator connection fields, wallet backend fields, and
@@ -309,7 +242,7 @@ When generating wallet code against `walletdk`, follow this checklist:
 7. Create or unlock the wallet before balance, address, receive, or send
    operations.
 8. Display `ReceiveResult.Invoice` as the canonical BOLT-11 value.
-9. Use `ListSwaps` and `SubscribeSwaps` for payment accounting.
+9. Use `List` and `Subscribe` for payment accounting.
 10. Call `Stop` during app shutdown.
 11. Never log wallet passwords, seed passphrases, mnemonics, or full invoices
     unless the product explicitly asks for that debug behavior.
