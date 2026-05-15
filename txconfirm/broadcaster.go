@@ -886,7 +886,17 @@ func (b *CPFPBroadcaster) fallbackDirectBroadcast(ctx context.Context,
 	b.log.WarnS(ctx, "CPFP unavailable; broadcasting parent directly",
 		err, "txid", txid, "stage", stage, "label", req.Label)
 
-	return b.broadcastDirect(ctx, req, txid)
+	result, directErr := b.broadcastDirect(ctx, req, txid)
+	if directErr == nil {
+		return result, nil
+	}
+
+	// Anchor parents often have zero fee and only relay once the CPFP child
+	// is accepted. If the direct fallback also fails, keep the tracked tx
+	// non-terminal so the caller can retry on later blocks or observe an
+	// external package that won the race.
+	return nil, fmt.Errorf("%w: %s: %w; direct parent broadcast: %w",
+		ErrCPFPFeeInputUnavailable, stage, err, directErr)
 }
 
 // EstimateFeeRate returns the current fee rate in sat/vbyte, clamped by the

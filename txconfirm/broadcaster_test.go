@@ -871,6 +871,43 @@ func TestFeeOutpointReleasedOnCPFPFallback(t *testing.T) {
 	)
 }
 
+// TestCPFPFallbackDirectRejectIsRetryable verifies that a CPFP setup failure
+// followed by a direct parent broadcast rejection does not surface as a hard
+// broadcast failure. Anchor parents usually rely on the child package for fees,
+// so the caller should keep the confirmation watch live and retry later.
+func TestCPFPFallbackDirectRejectIsRetryable(t *testing.T) {
+	tx := makeTestTx(true)
+	txid := tx.TxHash()
+	utxo := makeWalletUTXO(t)
+
+	chain := newFakeChainSourceRef(100)
+	chain.broadcastErr = fmt.Errorf("min relay fee not met")
+	broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet: &failingWallet{
+			utxos:        []*walletcore.Utxo{utxo},
+			changeScript: p2trTestPkScript(t),
+			finalizeErr:  fmt.Errorf("finalize failed"),
+		},
+	})
+
+	result, err := broadcaster.broadcastWithCPFP(
+		t.Context(), 100, &BroadcastRequest{
+			Tx: tx,
+		}, txid, 1,
+	)
+	require.ErrorIs(t, err, ErrCPFPFeeInputUnavailable)
+	require.Nil(t, result)
+	require.Equal(t, 1, chain.broadcastCallCount())
+	require.Equal(t, 0, chain.packageCallCount())
+
+	_, stillTracked := broadcaster.parentStates[txid]
+	require.False(
+		t, stillTracked,
+		"parent state should be released after CPFP fallback reject",
+	)
+}
+
 // TestFeeOutpointReleasedOnPreflightFailure verifies that when
 // TestMempoolAccept preflight rejects the package, the
 // tentatively-reserved fee outpoint is released so the caller's next
