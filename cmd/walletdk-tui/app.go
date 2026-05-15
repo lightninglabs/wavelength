@@ -72,9 +72,10 @@ type walletClient interface {
 		error,
 	)
 
-	ListBalance(context.Context) (*walletdk.Balance, error)
+	Balance(context.Context) (*walletdk.Balance, error)
 
-	GetOnchainAddress(context.Context) (*walletdk.OnchainAddress, error)
+	Deposit(context.Context,
+		walletdk.DepositRequest) (*walletdk.DepositResult, error)
 
 	Receive(context.Context,
 		walletdk.ReceiveRequest) (*walletdk.ReceiveResult, error)
@@ -82,11 +83,11 @@ type walletClient interface {
 	Send(context.Context,
 		walletdk.SendRequest) (*walletdk.SendResult, error)
 
-	ListSwaps(context.Context,
-		walletdk.ListSwapsRequest) ([]walletdk.SwapSummary, error)
+	List(context.Context,
+		walletdk.ListRequest) (*walletdk.ListResult, error)
 
-	SubscribeSwaps(context.Context, walletdk.SubscribeSwapsRequest) (
-		<-chan walletdk.SwapSummary, <-chan error, error)
+	Subscribe(context.Context, walletdk.SubscribeRequest) (
+		<-chan walletdk.Entry, <-chan error, error)
 }
 
 // walletModel holds the Bubble Tea state for the wallet dashboard.
@@ -107,8 +108,8 @@ type walletModel struct {
 
 	info        *walletdk.Info
 	balance     *walletdk.Balance
-	swaps       []walletdk.SwapSummary
-	swapUpdates <-chan walletdk.SwapSummary
+	entries     []walletdk.Entry
+	swapUpdates <-chan walletdk.Entry
 	swapErrs    <-chan error
 
 	swapTable table.Model
@@ -473,14 +474,14 @@ func (m walletModel) submitReceiveForm() (walletModel, tea.Cmd) {
 		return m, nil
 	}
 
-	amount, err := strconv.ParseInt(
+	amount, err := strconv.ParseUint(
 		strings.TrimSpace(
 			m.receiveAmount.Value(),
 		),
 		10,
 		64,
 	)
-	if err != nil || amount <= 0 {
+	if err != nil || amount == 0 {
 		m.setError("amount must be a positive integer")
 
 		return m, nil
@@ -568,7 +569,7 @@ func (m *walletModel) handleSwaps(msg swapsMsg) {
 		return
 	}
 
-	m.swaps = msg.swaps
+	m.entries = msg.entries
 	m.updateSwapRows()
 	m.clearError()
 }
@@ -581,7 +582,8 @@ func (m *walletModel) handleSwapSubscription(
 		if !errors.Is(msg.err, context.Canceled) {
 			m.setError(msg.err.Error())
 			m.addActivity(
-				"swap subscription error: " + msg.err.Error(),
+				"activity subscription error: " +
+					msg.err.Error(),
 			)
 		}
 
@@ -600,26 +602,26 @@ func (m *walletModel) handleSwapUpdate(msg swapUpdateMsg) []tea.Cmd {
 		if !errors.Is(msg.err, context.Canceled) {
 			m.setError(msg.err.Error())
 			m.addActivity(
-				"swap subscription error: " + msg.err.Error(),
+				"activity subscription error: " +
+					msg.err.Error(),
 			)
 		}
 
 		return nil
 	}
 	if msg.empty {
-		m.status = "swap stream closed; reconnecting"
-		m.addActivity("swap stream closed; reconnecting")
+		m.status = "activity stream closed; reconnecting"
+		m.addActivity("activity stream closed; reconnecting")
 
 		return []tea.Cmd{m.reconnectSwapsCmd()}
 	}
 
-	m.upsertSwap(msg.swap)
+	m.upsertSwap(msg.entry)
 	m.updateSwapRows()
 	m.addActivity(
 		fmt.Sprintf(
-			"swap %s %s state=%s pending=%t", msg.swap.Direction,
-			shortHash(msg.swap.PaymentHash), msg.swap.State,
-			msg.swap.Pending,
+			"%s %s status=%s", msg.entry.Kind,
+			shortHash(msg.entry.ID), msg.entry.Status,
 		),
 	)
 
@@ -696,6 +698,8 @@ func (m *walletModel) handleAddress(msg addressMsg) []tea.Cmd {
 	m.detailBody = msg.result.Address
 	m.detailCopyLabel = "address"
 	m.detailCopyText = msg.result.Address
+	m.upsertSwap(msg.result.Entry)
+	m.updateSwapRows()
 	m.addActivity("address created: " + msg.result.Address)
 
 	return []tea.Cmd{m.refreshAllCmd()}
@@ -714,13 +718,13 @@ func (m *walletModel) handleReceive(msg receiveMsg) []tea.Cmd {
 	m.status = "receive started"
 	m.receiveAmount.SetValue("")
 	m.detailTitle = "receive invoice"
-	m.detailBody = fmt.Sprintf("payment_hash: %s\ninvoice: %s",
-		msg.result.PaymentHash, compactCopyValue(msg.result.Invoice))
+	m.detailBody = fmt.Sprintf("entry_id: %s\ninvoice: %s",
+		msg.result.Entry.ID, compactCopyValue(msg.result.Invoice))
 	m.detailCopyLabel = "invoice"
 	m.detailCopyText = msg.result.Invoice
-	m.upsertSwap(msg.result.Swap)
+	m.upsertSwap(msg.result.Entry)
 	m.updateSwapRows()
-	m.addActivity("receive started: " + msg.result.PaymentHash)
+	m.addActivity("receive started: " + msg.result.Entry.ID)
 
 	return []tea.Cmd{m.refreshAllCmd()}
 }
@@ -739,12 +743,12 @@ func (m *walletModel) handleSend(msg sendMsg) []tea.Cmd {
 	m.sendInvoice.SetValue("")
 	m.sendFee.SetValue("")
 	m.detailTitle = "send"
-	m.detailBody = "payment_hash: " + msg.result.PaymentHash
-	m.detailCopyLabel = "payment hash"
-	m.detailCopyText = msg.result.PaymentHash
-	m.upsertSwap(msg.result.Swap)
+	m.detailBody = "entry_id: " + msg.result.Entry.ID
+	m.detailCopyLabel = "entry id"
+	m.detailCopyText = msg.result.Entry.ID
+	m.upsertSwap(msg.result.Entry)
 	m.updateSwapRows()
-	m.addActivity("send started: " + msg.result.PaymentHash)
+	m.addActivity("send started: " + msg.result.Entry.ID)
 
 	return []tea.Cmd{m.refreshAllCmd()}
 }
@@ -887,30 +891,30 @@ func (m *walletModel) addActivity(line string) {
 	m.activity.Append(time.Now().Format("15:04:05") + " " + line)
 }
 
-// upsertSwap updates or appends a swap summary by payment hash.
-func (m *walletModel) upsertSwap(next walletdk.SwapSummary) {
-	for i, swap := range m.swaps {
-		if swap.PaymentHash == next.PaymentHash {
-			m.swaps[i] = next
+// upsertSwap updates or appends a wallet activity entry by id.
+func (m *walletModel) upsertSwap(next walletdk.Entry) {
+	for i, entry := range m.entries {
+		if entry.ID == next.ID {
+			m.entries[i] = next
 
 			return
 		}
 	}
 
-	m.swaps = append([]walletdk.SwapSummary{next}, m.swaps...)
+	m.entries = append([]walletdk.Entry{next}, m.entries...)
 }
 
-// updateSwapRows renders swap summaries into the table component.
+// updateSwapRows renders wallet activity entries into the table component.
 func (m *walletModel) updateSwapRows() {
-	rows := make([]table.Row, 0, len(m.swaps))
-	for _, swap := range m.swaps {
+	rows := make([]table.Row, 0, len(m.entries))
+	for _, entry := range m.entries {
 		rows = append(rows, table.Row{
-			string(swap.Direction),
-			shortHash(swap.PaymentHash),
-			swap.State,
-			fmt.Sprintf("%t", swap.Pending),
-			formatSat(swap.AmountSat),
-			formatUint(swap.FeeSat),
+			string(entry.Kind),
+			shortHash(entry.ID),
+			string(entry.Status),
+			formatSat(entry.AmountSat),
+			formatSat(entry.FeeSat),
+			shortText(entry.Counterparty, 18),
 		})
 	}
 
@@ -978,31 +982,32 @@ func (m walletModel) balanceCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(m.ctx, rpcTimeout)
 		defer cancel()
 
-		balance, err := m.client.ListBalance(ctx)
+		balance, err := m.client.Balance(ctx)
 
 		return balanceMsg{balance: balance, err: err}
 	}
 }
 
-// swapsCmd fetches persisted swaps.
+// swapsCmd fetches wallet activity entries.
 func (m walletModel) swapsCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, rpcTimeout)
 		defer cancel()
 
-		swaps, err := m.client.ListSwaps(
-			ctx, walletdk.ListSwapsRequest{},
-		)
+		result, err := m.client.List(ctx, walletdk.ListRequest{})
+		if result == nil {
+			result = &walletdk.ListResult{}
+		}
 
-		return swapsMsg{swaps: swaps, err: err}
+		return swapsMsg{entries: result.Entries, err: err}
 	}
 }
 
-// connectSwapsCmd opens the daemon swap subscription once.
+// connectSwapsCmd opens the daemon wallet activity subscription once.
 func (m walletModel) connectSwapsCmd() tea.Cmd {
 	return func() tea.Msg {
-		updates, errs, err := m.client.SubscribeSwaps(
-			m.ctx, walletdk.SubscribeSwapsRequest{
+		updates, errs, err := m.client.Subscribe(
+			m.ctx, walletdk.SubscribeRequest{
 				IncludeExisting: true,
 			},
 		)
@@ -1024,16 +1029,16 @@ func (m walletModel) reconnectSwapsCmd() tea.Cmd {
 	})
 }
 
-// readSwapUpdateCmd waits for one update from the active swap stream.
+// readSwapUpdateCmd waits for one update from the active activity stream.
 func (m walletModel) readSwapUpdateCmd() tea.Cmd {
 	return func() tea.Msg {
 		select {
-		case swap, ok := <-m.swapUpdates:
+		case entry, ok := <-m.swapUpdates:
 			if !ok {
 				return swapUpdateMsg{empty: true}
 			}
 
-			return swapUpdateMsg{swap: swap}
+			return swapUpdateMsg{entry: entry}
 
 		case err, ok := <-m.swapErrs:
 			if !ok || err == nil {
@@ -1106,27 +1111,27 @@ func (m walletModel) addressCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(m.ctx, rpcTimeout)
 		defer cancel()
 
-		result, err := m.client.GetOnchainAddress(ctx)
+		result, err := m.client.Deposit(ctx, walletdk.DepositRequest{})
 
 		return addressMsg{result: result, err: err}
 	}
 }
 
-// receiveCmd starts a Lightning-to-Ark receive swap.
-func (m walletModel) receiveCmd(amount int64) tea.Cmd {
+// receiveCmd creates a Lightning invoice payable into the wallet.
+func (m walletModel) receiveCmd(amount uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, rpcTimeout)
 		defer cancel()
 
 		result, err := m.client.Receive(ctx, walletdk.ReceiveRequest{
-			AmountSat: amount,
+			AmountSat: int64(amount),
 		})
 
 		return receiveMsg{result: result, err: err}
 	}
 }
 
-// sendCmd starts an Ark-to-Lightning payment.
+// sendCmd starts an outbound wallet payment.
 func (m walletModel) sendCmd(invoice string, maxFee uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, rpcTimeout)
@@ -1154,18 +1159,18 @@ type balanceMsg struct {
 }
 
 type swapsMsg struct {
-	swaps []walletdk.SwapSummary
-	err   error
+	entries []walletdk.Entry
+	err     error
 }
 
 type swapSubscriptionMsg struct {
-	updates <-chan walletdk.SwapSummary
+	updates <-chan walletdk.Entry
 	errs    <-chan error
 	err     error
 }
 
 type swapUpdateMsg struct {
-	swap  walletdk.SwapSummary
+	entry walletdk.Entry
 	err   error
 	empty bool
 }
@@ -1188,7 +1193,7 @@ type unlockWalletMsg struct {
 }
 
 type addressMsg struct {
-	result *walletdk.OnchainAddress
+	result *walletdk.DepositResult
 	err    error
 }
 

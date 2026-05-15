@@ -39,24 +39,23 @@ func TestWalletModelRefreshMessagesPopulateState(t *testing.T) {
 	require.Equal(t, "regtest", model.info.Network)
 
 	next, _ = model.Update(balanceMsg{balance: &walletdk.Balance{
-		VTXOBalanceSat:    21,
-		TotalConfirmedSat: 42,
+		ConfirmedSat: 42,
 	}})
 	model = requireWalletModel(t, next)
-	require.EqualValues(t, 42, model.balance.TotalConfirmedSat)
+	require.EqualValues(t, 42, model.balance.ConfirmedSat)
 
-	swap := walletdk.SwapSummary{
-		Direction:   walletdk.SwapDirectionPay,
-		PaymentHash: "0123456789abcdef",
-		State:       "completed",
-		AmountSat:   10_000,
+	entry := walletdk.Entry{
+		ID:        "0123456789abcdef",
+		Kind:      walletdk.EntryKindSend,
+		Status:    walletdk.EntryStatusComplete,
+		AmountSat: -10_000,
 	}
-	next, _ = model.Update(swapsMsg{swaps: []walletdk.SwapSummary{swap}})
+	next, _ = model.Update(swapsMsg{entries: []walletdk.Entry{entry}})
 	model = requireWalletModel(t, next)
 
-	require.Len(t, model.swaps, 1)
+	require.Len(t, model.entries, 1)
 	require.Len(t, model.swapTable.Rows(), 1)
-	require.Equal(t, "pay", model.swapTable.Rows()[0][0])
+	require.Equal(t, "send", model.swapTable.Rows()[0][0])
 }
 
 // TestWalletModelReceiveValidationDoesNotCallClient verifies local validation.
@@ -79,14 +78,12 @@ func TestWalletModelReceiveSuccessUpdatesAccounting(t *testing.T) {
 	fake := newFakeWalletClient()
 	invoice := "lnbcrt" + strings.Repeat("a", 120) + "z"
 	fake.receiveResult = &walletdk.ReceiveResult{
-		PaymentHash: "hash",
-		Invoice:     invoice,
-		Swap: walletdk.SwapSummary{
-			Direction:   walletdk.SwapDirectionReceive,
-			PaymentHash: "hash",
-			State:       "created",
-			Pending:     true,
-			AmountSat:   123,
+		Invoice: invoice,
+		Entry: walletdk.Entry{
+			ID:        "hash",
+			Kind:      walletdk.EntryKindReceive,
+			Status:    walletdk.EntryStatusPending,
+			AmountSat: 123,
 		},
 	}
 
@@ -110,7 +107,7 @@ func TestWalletModelReceiveSuccessUpdatesAccounting(t *testing.T) {
 	require.NotContains(t, model.detailBody, invoice)
 	require.Equal(t, "invoice", model.detailCopyLabel)
 	require.Equal(t, invoice, model.detailCopyText)
-	require.Len(t, model.swaps, 1)
+	require.Len(t, model.entries, 1)
 
 	next, cmd = model.Update(keyPress("ctrl+y"))
 	model = requireWalletModel(t, next)
@@ -163,7 +160,7 @@ func TestWalletModelCreateClearsPassword(t *testing.T) {
 // TestWalletModelSwapSubscriptionUpdatesTable verifies live accounting updates.
 func TestWalletModelSwapSubscriptionUpdatesTable(t *testing.T) {
 	model := newWalletModel(t.Context(), newFakeWalletClient(), nil)
-	updates := make(chan walletdk.SwapSummary, 1)
+	updates := make(chan walletdk.Entry, 1)
 	errs := make(chan error, 1)
 
 	next, cmd := model.Update(swapSubscriptionMsg{
@@ -173,19 +170,19 @@ func TestWalletModelSwapSubscriptionUpdatesTable(t *testing.T) {
 	model = requireWalletModel(t, next)
 	require.NotNil(t, cmd)
 
-	updates <- walletdk.SwapSummary{
-		Direction:   walletdk.SwapDirectionPay,
-		PaymentHash: "abcdef",
-		State:       "completed",
-		AmountSat:   100,
+	updates <- walletdk.Entry{
+		ID:        "abcdef",
+		Kind:      walletdk.EntryKindSend,
+		Status:    walletdk.EntryStatusComplete,
+		AmountSat: -100,
 	}
 
 	msg := cmd()
 	next, _ = model.Update(msg)
 	model = requireWalletModel(t, next)
 
-	require.Len(t, model.swaps, 1)
-	require.Equal(t, "completed", model.swapTable.Rows()[0][2])
+	require.Len(t, model.entries, 1)
+	require.Equal(t, "complete", model.swapTable.Rows()[0][2])
 }
 
 // TestWalletModelReconnectsSwapSubscriptionAfterDelay verifies that a closed
@@ -203,7 +200,7 @@ func TestWalletModelReconnectsSwapSubscriptionAfterDelay(t *testing.T) {
 	cmds := model.handleSwapUpdate(swapUpdateMsg{empty: true})
 	require.Len(t, cmds, 1)
 	require.Equal(t, 0, fake.subscribeCalls)
-	require.Equal(t, "swap stream closed; reconnecting", model.status)
+	require.Equal(t, "activity stream closed; reconnecting", model.status)
 
 	msg := cmds[0]()
 	require.IsType(t, swapReconnectMsg{}, msg)
@@ -337,13 +334,13 @@ type fakeWalletClient struct {
 
 	createResult  *walletdk.CreateWalletResult
 	unlockResult  *walletdk.UnlockWalletResult
-	addressResult *walletdk.OnchainAddress
+	addressResult *walletdk.DepositResult
 	receiveResult *walletdk.ReceiveResult
 	sendResult    *walletdk.SendResult
 
 	info    *walletdk.Info
 	balance *walletdk.Balance
-	swaps   []walletdk.SwapSummary
+	entries []walletdk.Entry
 	err     error
 }
 
@@ -360,15 +357,21 @@ func newFakeWalletClient() *fakeWalletClient {
 		unlockResult: &walletdk.UnlockWalletResult{
 			IdentityPubKey: "identity",
 		},
-		addressResult: &walletdk.OnchainAddress{
+		addressResult: &walletdk.DepositResult{
 			Address: "bcrt1address",
 		},
 		receiveResult: &walletdk.ReceiveResult{
-			PaymentHash: "receive",
-			Invoice:     "invoice",
+			Invoice: "invoice",
+			Entry: walletdk.Entry{
+				ID:   "receive",
+				Kind: walletdk.EntryKindReceive,
+			},
 		},
 		sendResult: &walletdk.SendResult{
-			PaymentHash: "send",
+			Entry: walletdk.Entry{
+				ID:   "send",
+				Kind: walletdk.EntryKindSend,
+			},
 		},
 		info: &walletdk.Info{
 			Network:         "regtest",
@@ -407,16 +410,14 @@ func (f *fakeWalletClient) UnlockWallet(context.Context,
 	return f.unlockResult, f.err
 }
 
-// ListBalance satisfies walletClient.
-func (f *fakeWalletClient) ListBalance(context.Context) (*walletdk.Balance,
-	error) {
-
+// Balance satisfies walletClient.
+func (f *fakeWalletClient) Balance(context.Context) (*walletdk.Balance, error) {
 	return f.balance, f.err
 }
 
-// GetOnchainAddress satisfies walletClient.
-func (f *fakeWalletClient) GetOnchainAddress(context.Context) (
-	*walletdk.OnchainAddress, error) {
+// Deposit satisfies walletClient.
+func (f *fakeWalletClient) Deposit(context.Context, walletdk.DepositRequest) (
+	*walletdk.DepositResult, error) {
 
 	f.addressCalls++
 
@@ -441,17 +442,17 @@ func (f *fakeWalletClient) Send(context.Context, walletdk.SendRequest) (
 	return f.sendResult, f.err
 }
 
-// ListSwaps satisfies walletClient.
-func (f *fakeWalletClient) ListSwaps(context.Context,
-	walletdk.ListSwapsRequest) ([]walletdk.SwapSummary, error) {
+// List satisfies walletClient.
+func (f *fakeWalletClient) List(context.Context, walletdk.ListRequest) (
+	*walletdk.ListResult, error) {
 
-	return f.swaps, f.err
+	return &walletdk.ListResult{Entries: f.entries}, f.err
 }
 
-// SubscribeSwaps satisfies walletClient.
-func (f *fakeWalletClient) SubscribeSwaps(context.Context,
-	walletdk.SubscribeSwapsRequest) (<-chan walletdk.SwapSummary,
-	<-chan error, error) {
+// Subscribe satisfies walletClient.
+func (f *fakeWalletClient) Subscribe(context.Context,
+	walletdk.SubscribeRequest) (<-chan walletdk.Entry, <-chan error,
+	error) {
 
 	f.subscribeCalls++
 
@@ -459,7 +460,7 @@ func (f *fakeWalletClient) SubscribeSwaps(context.Context,
 		return nil, nil, f.err
 	}
 
-	updates := make(chan walletdk.SwapSummary)
+	updates := make(chan walletdk.Entry)
 	errs := make(chan error, 1)
 	errs <- errors.New("not connected")
 

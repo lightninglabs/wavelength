@@ -60,10 +60,6 @@ func run() error {
 		&cfg.SwapServerInsecure, "swap-server-insecure",
 		cfg.SwapServerInsecure, "disable swap server TLS",
 	)
-	flag.BoolVar(
-		&cfg.DisableSwaps, "no-swaps", cfg.DisableSwaps,
-		"start without daemon-owned swap runtime",
-	)
 	flag.Parse()
 
 	logs := newLogSink(2_000)

@@ -233,7 +233,7 @@ func (m walletModel) renderHeader() string {
 // renderTabs renders the navigation row.
 func (m walletModel) renderTabs() string {
 	names := []string{
-		"Overview", "Wallet", "Receive", "Send", "Swaps", "Activity",
+		"Overview", "Wallet", "Receive", "Send", "History", "Activity",
 		"Logs",
 	}
 
@@ -329,7 +329,7 @@ func (m walletModel) renderReceive() string {
 	b.WriteString("Amount\n")
 	b.WriteString(m.receiveAmount.View())
 	b.WriteString("\n\n")
-	b.WriteString(mutedStyle.Render("Enter starts a receive swap."))
+	b.WriteString(mutedStyle.Render("Enter creates an invoice."))
 	if m.detailTitle != "" {
 		b.WriteString("\n\n")
 		b.WriteString(m.renderDetailBlock())
@@ -362,11 +362,11 @@ func (m walletModel) renderSend() string {
 	return panelStyle.Width(contentWidth(m.width)).Render(b.String())
 }
 
-// renderSwaps renders the swap accounting table.
+// renderSwaps renders the wallet activity table.
 func (m walletModel) renderSwaps() string {
-	if len(m.swaps) == 0 {
+	if len(m.entries) == 0 {
 		return panelStyle.Width(contentWidth(m.width)).Render(
-			mutedStyle.Render("No swaps yet."),
+			mutedStyle.Render("No wallet activity yet."),
 		)
 	}
 
@@ -418,16 +418,12 @@ func (m walletModel) renderBalanceBlock() string {
 
 	return strings.Join([]string{
 		labelStyle.Render("Balance"),
-		fmt.Sprintf("boarding confirmed: %s sat",
-			formatSat(m.balance.BoardingConfirmedSat)),
-		fmt.Sprintf("boarding unconfirmed: %s sat",
-			formatSat(m.balance.BoardingUnconfirmedSat)),
-		fmt.Sprintf("vtxo: %s sat",
-			formatSat(m.balance.VTXOBalanceSat)),
-		fmt.Sprintf("total confirmed: %s sat",
-			formatSat(m.balance.TotalConfirmedSat)),
-		fmt.Sprintf("on-chain wallet: %s sat",
-			formatSat(m.balance.OnchainWalletConfirmedSat)),
+		fmt.Sprintf("confirmed: %s sat",
+			formatSat(m.balance.ConfirmedSat)),
+		fmt.Sprintf("pending in: %s sat",
+			formatSat(m.balance.PendingInSat)),
+		fmt.Sprintf("pending out: %s sat",
+			formatSat(m.balance.PendingOutSat)),
 	}, "\n")
 }
 
@@ -436,7 +432,7 @@ func (m walletModel) renderDetailBlock() string {
 	if m.detailTitle == "" {
 		return mutedStyle.Render(
 			"Latest results appear here: addresses, invoices, " +
-				"payment hashes, and wallet seed words.",
+				"entry ids, and wallet seed words.",
 		)
 	}
 
@@ -462,7 +458,7 @@ func (m walletModel) renderStatus() string {
 	return okStyle.Render(m.status)
 }
 
-// swapColumns returns responsive swap table columns.
+// swapColumns returns responsive wallet activity table columns.
 func swapColumns(width int) []table.Column {
 	hashWidth := 14
 	stateWidth := 14
@@ -473,20 +469,16 @@ func swapColumns(width int) []table.Column {
 
 	return []table.Column{
 		{
-			Title: "Dir",
+			Title: "Kind",
 			Width: 8,
 		},
 		{
-			Title: "Hash",
+			Title: "ID",
 			Width: hashWidth,
 		},
 		{
-			Title: "State",
+			Title: "Status",
 			Width: stateWidth,
-		},
-		{
-			Title: "Pending",
-			Width: 8,
 		},
 		{
 			Title: "Amount",
@@ -495,6 +487,10 @@ func swapColumns(width int) []table.Column {
 		{
 			Title: "Fee",
 			Width: 10,
+		},
+		{
+			Title: "Counterparty",
+			Width: 18,
 		},
 	}
 }
@@ -526,11 +522,6 @@ func boolLabel(v bool) string {
 // formatSat formats signed satoshi values.
 func formatSat(v int64) string {
 	return strconvFormatInt(v)
-}
-
-// formatUint formats unsigned satoshi values.
-func formatUint(v uint64) string {
-	return fmt.Sprintf("%d", v)
 }
 
 // strconvFormatInt wraps integer formatting for consistent UI use.
