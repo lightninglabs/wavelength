@@ -13,6 +13,22 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
+// arkCoSignSigHashType is the only taproot sighash mode the operator will
+// ever sign with on an Ark PSBT input, and the only mode it will tolerate
+// on the client-supplied taproot script-spend signatures it co-signs.
+//
+// SigHashDefault is the BIP-341 "commit to everything" mode (all inputs,
+// all outputs) and yields the compact 64-byte schnorr signature with no
+// trailing flag byte. Weaker modes such as SIGHASH_NONE, SIGHASH_SINGLE,
+// or any |SIGHASH_ANYONECANPAY variant would leave inputs and/or outputs
+// un-committed; that lets a malicious OOR submitter recover the operator
+// signature from the persisted Ark PSBT (exposed to recipients) and
+// replay it onto a conflicting Ark transaction that redirects funds away
+// from the validated recipient outputs. We therefore pin the operator's
+// signature to SigHashDefault and reject any other client-supplied
+// SigHash on the inputs we co-sign.
+const arkCoSignSigHashType = txscript.SigHashDefault
+
 // CoSignArkPSBT attaches the operator's tapscript signature to each Ark input.
 //
 // The client already commits to the intended leaf path by attaching the leaf
@@ -82,7 +98,16 @@ func coSignArkInput(signer input.Signer, operatorKey keychain.KeyDescriptor,
 		return false, nil
 	}
 
-	leaf, sigHash, err := arkSigningLeaf(pInput)
+	// Ark co-signing requires every taproot script-spend signature to
+	// commit to ALL inputs and ALL outputs. Anything other than BIP-341
+	// SIGHASH_DEFAULT (e.g. SIGHASH_NONE/SINGLE/ANYONECANPAY) lets the
+	// operator's signature replay against a conflicting Ark spend that
+	// redirects funds away from the validated recipients. We refuse to
+	// co-sign such requests at the boundary where the untrusted client
+	// PSBT enters the signing decision; arkSigningLeaf also rejects any
+	// non-default client-supplied sighash to keep the owner half of the
+	// witness on the same safe policy.
+	leaf, err := arkSigningLeaf(pInput)
 	if err != nil {
 		return false, err
 	}
@@ -100,7 +125,7 @@ func coSignArkInput(signer input.Signer, operatorKey keychain.KeyDescriptor,
 		KeyDesc:           operatorKey,
 		SignMethod:        input.TaprootScriptSpendSignMethod,
 		Output:            witnessUtxo,
-		HashType:          sigHash,
+		HashType:          arkCoSignSigHashType,
 		SigHashes:         sigHashes,
 		PrevOutputFetcher: prevFetcher,
 		InputIndex:        inputIndex,
@@ -134,14 +159,22 @@ func coSignArkInput(signer input.Signer, operatorKey keychain.KeyDescriptor,
 	return true, nil
 }
 
-func arkSigningLeaf(in *psbt.PInput) (*psbt.TaprootTapLeafScript,
-	txscript.SigHashType, error) {
-
+// arkSigningLeaf resolves the leaf script the operator should co-sign for an
+// Ark PSBT input from the client-supplied taproot script-spend signatures and
+// leaf scripts attached to the PSBT.
+//
+// It also enforces that every client-supplied TaprootScriptSpendSig.SigHash
+// equals arkCoSignSigHashType (BIP-341 SIGHASH_DEFAULT). The operator never
+// trusts the SigHash field for its own signing decision — it always signs
+// with arkCoSignSigHashType — but the owner half of the witness is persisted
+// alongside the operator signature and broadcast as one package, so a weak
+// owner sighash would still let an attacker replay the joint witness onto a
+// conflicting Ark spend. Reject such requests at the boundary instead.
+func arkSigningLeaf(in *psbt.PInput) (*psbt.TaprootTapLeafScript, error) {
 	if in == nil {
-		return nil, 0, fmt.Errorf("psbt input must be provided")
+		return nil, fmt.Errorf("psbt input must be provided")
 	}
 
-	sigHash := txscript.SigHashDefault
 	var targetLeafHash []byte
 
 	for i := range in.TaprootScriptSpendSig {
@@ -150,18 +183,24 @@ func arkSigningLeaf(in *psbt.PInput) (*psbt.TaprootTapLeafScript,
 			continue
 		}
 
+		if sigRec.SigHash != arkCoSignSigHashType {
+			return nil, fmt.Errorf("ark psbt taproot script spend "+
+				"sig %d uses disallowed sighash %d: only "+
+				"SIGHASH_DEFAULT is permitted", i,
+				sigRec.SigHash)
+		}
+
 		if len(targetLeafHash) == 0 {
 			targetLeafHash = append(
 				[]byte(nil), sigRec.LeafHash...,
 			)
-			sigHash = sigRec.SigHash
 
 			continue
 		}
 
 		if !bytes.Equal(targetLeafHash, sigRec.LeafHash) {
-			return nil, 0, fmt.Errorf("taproot signatures " +
-				"reference multiple leaf hashes")
+			return nil, fmt.Errorf("taproot signatures reference " +
+				"multiple leaf hashes")
 		}
 	}
 
@@ -172,22 +211,22 @@ func arkSigningLeaf(in *psbt.PInput) (*psbt.TaprootTapLeafScript,
 		}
 
 		if len(targetLeafHash) == 0 {
-			return leaf, sigHash, nil
+			return leaf, nil
 		}
 
 		leafHash := txscript.NewTapLeaf(
 			leaf.LeafVersion, leaf.Script,
 		).TapHash()
 		if bytes.Equal(leafHash[:], targetLeafHash) {
-			return leaf, sigHash, nil
+			return leaf, nil
 		}
 	}
 
 	if len(targetLeafHash) != 0 {
-		return nil, 0, fmt.Errorf("taproot leaf script not found")
+		return nil, fmt.Errorf("taproot leaf script not found")
 	}
 
-	return nil, 0, fmt.Errorf("missing taproot leaf script")
+	return nil, fmt.Errorf("missing taproot leaf script")
 }
 
 func reorderTaprootScriptSpendSigs(in *psbt.PInput,
