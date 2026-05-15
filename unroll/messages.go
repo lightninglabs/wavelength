@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/unrollplan"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -69,8 +70,10 @@ const (
 	txFailedTxidRecType   tlv.Type = 1
 	txFailedReasonRecType tlv.Type = 3
 
-	spendObservedTxidRecType   tlv.Type = 1
-	spendObservedHeightRecType tlv.Type = 3
+	spendObservedTxidRecType     tlv.Type = 1
+	spendObservedHeightRecType   tlv.Type = 3
+	spendObservedOutHashRecType  tlv.Type = 5
+	spendObservedOutIndexRecType tlv.Type = 7
 )
 
 // StartTrigger identifies what caused the unroll actor to start.
@@ -469,11 +472,14 @@ func (m *TxFailedMsg) Decode(r io.Reader) error {
 // unrollMsgSealed seals TxFailedMsg into the message surface.
 func (m *TxFailedMsg) unrollMsgSealed() {}
 
-// SpendObservedMsg reports that the target outpoint was spent on-chain.
+// SpendObservedMsg reports that a watched outpoint was spent on-chain.
 type SpendObservedMsg struct {
 	actor.BaseMessage
 
-	// SpendingTxid is the transaction that spent the target.
+	// Outpoint is the watched output that was spent.
+	Outpoint wire.OutPoint
+
+	// SpendingTxid is the transaction that spent the watched outpoint.
 	SpendingTxid chainhash.Hash
 
 	// SpendingHeight is the block height of the spending transaction.
@@ -499,10 +505,16 @@ func (m *SpendObservedMsg) Priority() int {
 func (m *SpendObservedMsg) Encode(w io.Writer) error {
 	txid := [32]byte(m.SpendingTxid)
 	height := uint32(m.SpendingHeight)
+	outHash := [32]byte(m.Outpoint.Hash)
+	outIndex := m.Outpoint.Index
 
 	stream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(spendObservedTxidRecType, &txid),
 		tlv.MakePrimitiveRecord(spendObservedHeightRecType, &height),
+		tlv.MakePrimitiveRecord(spendObservedOutHashRecType, &outHash),
+		tlv.MakePrimitiveRecord(
+			spendObservedOutIndexRecType, &outIndex,
+		),
 	)
 	if err != nil {
 		return fmt.Errorf("create stream: %w", err)
@@ -514,13 +526,19 @@ func (m *SpendObservedMsg) Encode(w io.Writer) error {
 // Decode deserializes the message from a TLV stream.
 func (m *SpendObservedMsg) Decode(r io.Reader) error {
 	var (
-		txid   [32]byte
-		height uint32
+		txid     [32]byte
+		height   uint32
+		outHash  [32]byte
+		outIndex uint32
 	)
 
 	stream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(spendObservedTxidRecType, &txid),
 		tlv.MakePrimitiveRecord(spendObservedHeightRecType, &height),
+		tlv.MakePrimitiveRecord(spendObservedOutHashRecType, &outHash),
+		tlv.MakePrimitiveRecord(
+			spendObservedOutIndexRecType, &outIndex,
+		),
 	)
 	if err != nil {
 		return fmt.Errorf("create stream: %w", err)
@@ -532,6 +550,10 @@ func (m *SpendObservedMsg) Decode(r io.Reader) error {
 
 	m.SpendingTxid = chainhash.Hash(txid)
 	m.SpendingHeight = int32(height)
+	m.Outpoint = wire.OutPoint{
+		Hash:  chainhash.Hash(outHash),
+		Index: outIndex,
+	}
 
 	return nil
 }

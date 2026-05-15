@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -102,6 +103,12 @@ func TestDurableMessageTLVRoundTrip(t *testing.T) {
 		t.Parallel()
 
 		orig := &SpendObservedMsg{
+			Outpoint: wire.OutPoint{
+				Hash: chainhash.Hash{
+					0xcd,
+				},
+				Index: 9,
+			},
 			SpendingTxid:   txid,
 			SpendingHeight: 777,
 		}
@@ -111,6 +118,7 @@ func TestDurableMessageTLVRoundTrip(t *testing.T) {
 
 		got := &SpendObservedMsg{}
 		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
+		require.Equal(t, orig.Outpoint, got.Outpoint)
 		require.Equal(t, orig.SpendingTxid, got.SpendingTxid)
 		require.Equal(t, orig.SpendingHeight, got.SpendingHeight)
 	})

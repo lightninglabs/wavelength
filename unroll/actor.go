@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -136,10 +137,11 @@ type behavior struct {
 	session *Session
 	pending *actorCheckpoint
 
-	sweepTx          *wire.MsgTx
-	blockSubActive   bool
-	spendWatchActive bool
-	terminalNotified bool
+	sweepTx           *wire.MsgTx
+	blockSubActive    bool
+	spendWatchActive  bool
+	proofSpendWatches map[wire.OutPoint]struct{}
+	terminalNotified  bool
 }
 
 // Receive processes one durable actor message. It is the single entry
@@ -214,6 +216,7 @@ func (b *behavior) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
 func (b *behavior) OnStop(ctx context.Context) error {
 	b.unsubscribeBlocks(ctx)
 	b.unregisterSpendWatch(ctx)
+	b.unregisterProofSpendWatches(ctx)
 
 	if b.session != nil && b.session.FSM != nil {
 		b.session.FSM.Stop()
@@ -427,6 +430,10 @@ func (b *behavior) ensureNodeConfirmed(ctx context.Context, txid chainhash.Hash,
 	pkScript, err := safeTxOutPkScript(node.Tx, 0)
 	if err != nil {
 		return fmt.Errorf("proof node %s: %w", txid, err)
+	}
+
+	if err := b.ensureProofSpendWatches(ctx, txid, node); err != nil {
+		return err
 	}
 
 	resp, err := b.cfg.TxConfirmRef.Ask(ctx, &txconfirm.EnsureConfirmedReq{
@@ -772,6 +779,7 @@ func (b *behavior) ensureSpendWatch(ctx context.Context) error {
 		b.selfRef,
 		func(event chainsource.SpendEvent) Msg {
 			return &SpendObservedMsg{
+				Outpoint:       event.Outpoint,
 				SpendingTxid:   event.SpendingTxid,
 				SpendingHeight: event.SpendingHeight,
 			}
@@ -819,24 +827,174 @@ func (b *behavior) spendCallerID() string {
 	return fmt.Sprintf("unroll-spend.%s", b.cfg.TargetOutpoint.String())
 }
 
+// ensureProofSpendWatches registers spend watches on proof node outputs that
+// later in-proof child nodes consume. Neutrino can miss the direct
+// confirmation notification under load, but a spend of one of these outputs
+// still proves the parent proof transaction confirmed.
+func (b *behavior) ensureProofSpendWatches(ctx context.Context,
+	txid chainhash.Hash, node *recovery.Node) error {
+
+	if node == nil {
+		return fmt.Errorf("proof node %s missing", txid)
+	}
+	if b.proof == nil {
+		return fmt.Errorf("proof required for spend watches")
+	}
+
+	outpoints, err := b.proofChildInputOutpoints(txid)
+	if err != nil {
+		return err
+	}
+	if len(outpoints) > 0 && b.proofSpendWatches == nil {
+		b.proofSpendWatches = make(map[wire.OutPoint]struct{})
+	}
+
+	heightHint := uint32(0)
+	if b.desc != nil && b.desc.CreatedHeight > 0 {
+		heightHint = uint32(b.desc.CreatedHeight)
+	}
+
+	for _, outpoint := range outpoints {
+		if outpoint == b.cfg.TargetOutpoint {
+			continue
+		}
+		if _, ok := b.proofSpendWatches[outpoint]; ok {
+			continue
+		}
+
+		pkScript, err := safeTxOutPkScript(node.Tx, outpoint.Index)
+		if err != nil {
+			return fmt.Errorf("proof node %s: %w", txid, err)
+		}
+
+		notifyRef := chainsource.MapSpendEvent(
+			b.selfRef,
+			func(event chainsource.SpendEvent) Msg {
+				return &SpendObservedMsg{
+					Outpoint:       event.Outpoint,
+					SpendingTxid:   event.SpendingTxid,
+					SpendingHeight: event.SpendingHeight,
+				}
+			},
+		)
+
+		_, err = b.cfg.ChainSource.Ask(
+			ctx, &chainsource.RegisterSpendRequest{
+				CallerID:    b.proofSpendCallerID(outpoint),
+				Outpoint:    &outpoint,
+				PkScript:    pkScript,
+				HeightHint:  heightHint,
+				NotifyActor: fn.Some(notifyRef),
+			},
+		).Await(ctx).Unpack()
+		if err != nil {
+			return fmt.Errorf("register proof spend watch: %w", err)
+		}
+
+		b.proofSpendWatches[outpoint] = struct{}{}
+	}
+
+	return nil
+}
+
+// proofChildInputOutpoints returns the proof-node outputs that are consumed by
+// in-proof children of txid. Recovery proofs can include Ark transactions that
+// create several sibling outputs; only the output actually referenced by a
+// child belongs to this target's materialization path.
+func (b *behavior) proofChildInputOutpoints(txid chainhash.Hash) (
+	[]wire.OutPoint, error) {
+
+	children, err := b.proof.ChildTxids(txid)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[wire.OutPoint]struct{})
+	outpoints := make([]wire.OutPoint, 0, len(children))
+
+	for _, childTxid := range children {
+		child, ok := b.proof.Node(childTxid)
+		if !ok {
+			return nil, fmt.Errorf("child proof node %s missing",
+				childTxid)
+		}
+		if child.Tx == nil {
+			return nil, fmt.Errorf("child proof node %s has nil tx",
+				childTxid)
+		}
+
+		for _, txIn := range child.Tx.TxIn {
+			if txIn == nil || txIn.PreviousOutPoint.Hash != txid {
+				continue
+			}
+
+			outpoint := txIn.PreviousOutPoint
+			if _, ok := seen[outpoint]; ok {
+				continue
+			}
+
+			seen[outpoint] = struct{}{}
+			outpoints = append(outpoints, outpoint)
+		}
+	}
+
+	sort.Slice(outpoints, func(i, j int) bool {
+		return outpoints[i].Index < outpoints[j].Index
+	})
+
+	return outpoints, nil
+}
+
+// unregisterProofSpendWatches cancels all proof-node spend watches on stop.
+func (b *behavior) unregisterProofSpendWatches(ctx context.Context) {
+	for outpoint := range b.proofSpendWatches {
+		err := b.cfg.ChainSource.Tell(
+			ctx, &chainsource.UnregisterSpendRequest{
+				CallerID: b.proofSpendCallerID(outpoint),
+				Outpoint: &outpoint,
+			},
+		)
+		if err != nil {
+			b.log.WarnS(
+				ctx,
+				"Failed to unregister proof spend watch",
+				err,
+				slog.String("outpoint", outpoint.String()),
+			)
+
+			continue
+		}
+
+		delete(b.proofSpendWatches, outpoint)
+	}
+}
+
+// proofSpendCallerID returns the stable proof-node spend-watch registration
+// ID.
+func (b *behavior) proofSpendCallerID(outpoint wire.OutPoint) string {
+	return fmt.Sprintf("unroll-proof-spend.%s.%s",
+		b.cfg.TargetOutpoint.String(), outpoint.String())
+}
+
 // handleSpendObserved processes a chainsource spend notification on the
-// target outpoint. The spend watch is a safety net — it fires whenever
-// ANY transaction spends the target, and we have to classify what we are
-// looking at before we decide the unroll job is dead.
+// target or proof-node outpoint. Spend watches are a safety net — they fire
+// when a proof output is consumed on chain, and we have to classify what we
+// are looking at before deciding whether the unroll job is dead.
 //
-// Three cases:
+// Four cases:
 //
-//  1. The spender is a known node in our recovery proof. That means an
-//     ancestor (the target itself, or a transitive parent further up the
-//     tree) just confirmed; this is normal materialization traffic
-//     already being tracked by txconfirm. Swallow the event, but use its
-//     block height to advance the planner's view of the chain.
+//  1. The spent output belongs to a known node in our recovery proof.
+//     That proves the parent transaction confirmed, even if txconfirm's
+//     direct confirmation notification was missed or delayed.
 //
-//  2. The spender is our own final sweep (matched by the sweep txid
+//  2. The spender is a known node in our recovery proof. That means an
+//     ancestor just confirmed; this is normal materialization traffic.
+//
+//  3. The spender is our own final sweep (matched by the sweep txid
 //     recorded in planner state). Again benign — our sweep confirming is
 //     the goal — so just propagate the height.
 //
-//  3. Anything else: the target was spent by someone else. This can
+//  4. Anything else: the watched output was spent by someone else. This can
 //     happen if the operator cooperatively claims it, if a fraud party
 //     beats us to a signed spend, or if a reorg replays a different
 //     history. In all cases the unroll job cannot finish; drive FailEvent
@@ -853,21 +1011,26 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 		return fn.Ok[Resp](&AckResp{})
 	}
 
-	// Case 1: the spender is a proof-graph node. That means an
-	// ancestor of our target just confirmed on chain — totally
-	// expected. chainsource will also be sending us the corresponding
-	// TxConfirmedMsg via the txconfirm subscription; here we only
-	// use the event to bump the best-height watermark so planner
-	// snapshots are consistent.
 	if b.proof != nil {
+		acked, err := b.ackProofOutputSpend(ctx, msg)
+		if err != nil {
+			return fn.Err[Resp](err)
+		}
+		if acked {
+			return fn.Ok[Resp](&AckResp{})
+		}
+
+		// Case 2: the spender is a proof-graph node. That means an
+		// ancestor of our target just confirmed on chain.
 		if _, ok := b.proof.Node(msg.SpendingTxid); ok {
-			return b.handleEvent(ctx, &HeightUpdatedEvent{
+			return b.handleEvent(ctx, &TxConfirmedEvent{
+				Txid:   msg.SpendingTxid,
 				Height: msg.SpendingHeight,
 			})
 		}
 	}
 
-	// Case 2: the spender is our own sweep. Same benign outcome — we
+	// Case 3: the spender is our own sweep. Same benign outcome — we
 	// are watching our own success from a different vantage point.
 	// Compare against the sweep txid recorded in planner state
 	// (SweepBroadcastedEvent populates that) rather than b.sweepTx,
@@ -885,17 +1048,61 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 		}
 	}
 
-	// Case 3: neither of the above. Someone else spent the target.
+	// Case 4: neither of the above. Someone else spent the watched output.
 	// This happens if the operator cooperatively claimed the VTXO,
 	// if a reorg replaced history, or in fraud scenarios. There is
 	// no way for this unroll to proceed, so terminate with a
 	// reason string that identifies the spender for operator
 	// triage.
-	reason := fmt.Sprintf("target %s spent externally by tx %s at "+
-		"height %d", b.cfg.TargetOutpoint, msg.SpendingTxid,
+	spentOutpoint := b.cfg.TargetOutpoint
+	if msg.Outpoint != (wire.OutPoint{}) {
+		spentOutpoint = msg.Outpoint
+	}
+	reason := fmt.Sprintf("watched outpoint %s spent externally by tx %s "+
+		"at height %d", spentOutpoint, msg.SpendingTxid,
 		msg.SpendingHeight)
 
 	return b.handleEvent(ctx, &FailEvent{Reason: reason})
+}
+
+// ackProofOutputSpend records proof-output spend evidence and reports whether
+// the observation is fully handled. If a proof output is spent by an unknown
+// transaction, the parent proof tx is still confirmed, but the caller must
+// continue into the external-spend failure path.
+func (b *behavior) ackProofOutputSpend(ctx context.Context,
+	msg *SpendObservedMsg) (bool, error) {
+
+	if msg.Outpoint == (wire.OutPoint{}) ||
+		msg.Outpoint == b.cfg.TargetOutpoint {
+		return false, nil
+	}
+
+	if _, ok := b.proof.Node(msg.Outpoint.Hash); !ok {
+		return false, nil
+	}
+
+	err := b.driveEvent(ctx, &TxConfirmedEvent{
+		Txid:   msg.Outpoint.Hash,
+		Height: msg.SpendingHeight,
+	})
+	if err != nil {
+		return false, err
+	}
+
+	if msg.SpendingTxid == msg.Outpoint.Hash {
+		return true, nil
+	}
+
+	if _, ok := b.proof.Node(msg.SpendingTxid); !ok {
+		return false, nil
+	}
+
+	event := &TxConfirmedEvent{
+		Txid:   msg.SpendingTxid,
+		Height: msg.SpendingHeight,
+	}
+
+	return true, b.driveEvent(ctx, event)
 }
 
 // inTerminalState reports whether the FSM has already reached a terminal
