@@ -282,6 +282,96 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.Equal(t, chainhash.Hash(sessionID), packageStore.lastSessionID)
 }
 
+// TestLocalPersistenceOutboxHandlerRejectsInvalidAncestorPackage asserts
+// untrusted incoming ancestor packages are validated before they can poison the
+// package store used by recovery.
+func TestLocalPersistenceOutboxHandlerRejectsInvalidAncestorPackage(
+	t *testing.T) {
+
+	t.Parallel()
+
+	arkPSBT, finalCheckpoints, recipients, _, _, operatorKey :=
+		buildTestIncomingMaterialization(t)
+
+	packageStore := &testPackageStore{}
+	handler := &LocalPersistenceOutboxHandler{
+		Store:        newTestVTXOStore(),
+		PackageStore: packageStore,
+		OperatorKey:  operatorKey,
+		ExitDelay:    10,
+		NotifyIncomingVTXOs: func(_ context.Context,
+			_ []*vtxo.Descriptor) error {
+
+			return nil
+		},
+		ResolveIncomingClientKey: func(ctx context.Context,
+			recipient ArkRecipientOutput) (keychain.KeyDescriptor,
+			error) {
+
+			_ = ctx
+			_ = recipient
+
+			return keychain.KeyDescriptor{}, nil
+		},
+	}
+
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	ancestorID := sessionID
+	ancestorID[0] ^= 0x01
+
+	req := &MaterializeIncomingVTXOsRequest{
+		SessionID:            sessionID,
+		ArkPSBT:              arkPSBT,
+		FinalCheckpointPSBTs: finalCheckpoints,
+		Recipients:           recipients,
+		AncestorPackages: []PackageArtifact{{
+			SessionID:            ancestorID,
+			ArkPSBT:              arkPSBT,
+			FinalCheckpointPSBTs: finalCheckpoints,
+		}},
+	}
+
+	events, err := handler.Handle(t.Context(), sessionID, req)
+	require.Error(t, err)
+	require.ErrorContains(
+		t, err, "ancestor package 0 session id does not match ark txid",
+	)
+	require.Empty(t, events)
+	require.Zero(t, packageStore.packageCalls)
+}
+
+// TestValidateIncomingPackageGraphRejectsUnconsumedAncestor asserts valid but
+// unrelated ancestor packages must not be accepted as recovery ancestors.
+func TestValidateIncomingPackageGraphRejectsUnconsumedAncestor(t *testing.T) {
+	t.Parallel()
+
+	arkPSBT, finalCheckpoints, _, _, _, _ :=
+		buildTestIncomingMaterialization(t)
+	ancestorArk, ancestorCheckpoints, _, _, _, _ :=
+		buildTestIncomingMaterialization(t)
+
+	root := packageArtifactForValidation(
+		SessionID(
+			arkPSBT.UnsignedTx.TxHash(),
+		),
+		arkPSBT,
+		finalCheckpoints,
+	)
+	ancestor := packageArtifactForValidation(
+		SessionID(
+			ancestorArk.UnsignedTx.TxHash(),
+		),
+		ancestorArk,
+		ancestorCheckpoints,
+	)
+
+	err := validateIncomingPackageGraph(root, []PackageArtifact{ancestor})
+	require.Error(t, err)
+	require.ErrorContains(
+		t, err, "is not consumed by incoming package chain",
+	)
+}
+
 // TestLocalPersistenceOutboxHandlerUsesMetadataOperatorKey asserts incoming
 // materialization prefers the per-VTXO operator key returned by the indexer
 // over the handler's compatibility fallback key.
@@ -1084,6 +1174,7 @@ func buildTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 
 	cp, err := oortx.BuildCheckpointPSBT(policy, inputs[0])
 	require.NoError(t, err)
+	cp.PSBT.Inputs[0].FinalScriptWitness = []byte{0x01, 0x51}
 
 	arkPSBT, err := oortx.BuildArkPSBT(
 		[]oortx.CheckpointOutput{
