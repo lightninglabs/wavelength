@@ -54,6 +54,18 @@ func newMockClientConnRef(t *testing.T) *mockClientConnRef {
 	}
 }
 
+// requireSendServerEventRequest asserts msg is a SendServerEventRequest.
+func requireSendServerEventRequest(t *testing.T,
+	msg clientconn.ClientConnMsg) *clientconn.SendServerEventRequest {
+
+	t.Helper()
+
+	sendReq, ok := msg.(*clientconn.SendServerEventRequest)
+	require.True(t, ok, "expected SendServerEventRequest")
+
+	return sendReq
+}
+
 // ID returns the ID of this mock actor reference.
 func (m *mockClientConnRef) ID() string {
 	return m.id
@@ -673,6 +685,60 @@ func TestActorJoinRoundRequest(t *testing.T) {
 			t, roundID, TimeoutPhaseRegistration,
 		)
 	})
+
+	t.Run(
+		"re-registration uses fresh mailbox identity",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+			h.setActiveRounds([]*Round{})
+			h.start(h.ctx)
+
+			client := h.newClient("client1", 10)
+			outpoint := wire.OutPoint{
+				Hash: chainhash.HashH(
+					[]byte("test-rereg-input"),
+				),
+				Index: 0,
+			}
+
+			roundID := h.getCurrentRound().RoundID
+			h.allowBoardingInput(&outpoint, roundID)
+			h.mockBoardingUTXO(
+				outpoint, client.boardingKey, client.exitDelay,
+				10,
+			)
+			boardingReq := client.createBoardingRequest(&outpoint)
+			req := client.createActorJoinRequest(
+				[]*types.BoardingRequest{boardingReq},
+			)
+
+			err := h.sendJoinRequest(req)
+			require.NoError(t, err)
+			h.clients.clearMessages()
+
+			err = h.sendJoinRequest(req)
+			require.NoError(t, err)
+
+			msgs := h.clients.getMessages()
+			require.Len(t, msgs, 1, "expected re-registration ack")
+
+			msg := msgs[0]
+			successReq := requireSendServerEventRequest(t, msg)
+
+			clientMsg, ok := successReq.Message.(*ClientSuccessResp)
+			require.True(
+				t, ok, "expected ClientSuccessResp message",
+			)
+			require.True(t, clientMsg.IsReregistration)
+
+			require.Equal(
+				t, reregistrationSuccessMsgID(clientMsg),
+				successReq.MailboxIdentity,
+			)
+		},
+	)
 
 	t.Run("invalid request sends error", func(t *testing.T) {
 		t.Parallel()

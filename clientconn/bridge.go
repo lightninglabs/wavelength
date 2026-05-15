@@ -101,8 +101,10 @@ func (b *ClientsConnBridge) Tell(ctx context.Context, msg ClientConnMsg) error {
 		// durable mailbox before returning nil. This guarantees
 		// crash safety.
 		err := runtime.TellRef().Tell(ctx, &sendEventMsg{
-			Message:  m.Message,
-			clientID: clientID,
+			Message:        m.Message,
+			MsgID:          m.MailboxIdentity,
+			IdempotencyKey: m.MailboxIdentity,
+			clientID:       clientID,
 		})
 		b.mu.RUnlock()
 

@@ -26,6 +26,14 @@ func roundClientCorrelationKey(clientID clientconn.ClientID,
 	return fmt.Sprintf("%s/%s", clientID, roundID)
 }
 
+// reregistrationSuccessMsgID returns the explicit mailbox identity for a
+// replayed ClientSuccessResp. The wire body matches the original admission
+// response, so body-derived ids would collide with the pre-restart ack.
+func reregistrationSuccessMsgID(resp *ClientSuccessResp) string {
+	return fmt.Sprintf("round-reregistration-success:%s:%s", resp.RoundID,
+		resp.Client)
+}
+
 // Round outbox messages use the roundpb.Method* constants from the
 // client submodule as the single source of truth for routing keys.
 // The client-side EventRouter registers handlers under the same

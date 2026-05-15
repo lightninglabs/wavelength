@@ -100,6 +100,12 @@ type SendServerEventRequest struct {
 	// clients. It must implement the ClientMessage interface which
 	// provides the ToProto() method for conversion to protobuf.
 	Message ClientMessage
+
+	// MailboxIdentity overrides the body-derived mailbox message
+	// identity. Leave empty for the connector to derive a stable identity
+	// from Message's protobuf body. When set, this value is used as both
+	// the envelope MsgID and IdempotencyKey.
+	MailboxIdentity string
 }
 
 // MessageType returns a human-readable type name for logging.
