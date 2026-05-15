@@ -737,6 +737,9 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 		nextCursor []byte
 	)
 	err = s.store.ExecReadTx(ctx, func(q Store) error {
+		txOut := make([]*arkrpc.VTXO, 0, int(limit))
+		var txNextCursor []byte
+
 		rows, qErr := q.ListVTXOsByPkScriptsAfter(
 			ctx, allowedScriptBytes, statusFilter, after,
 			int32(limit+1),
@@ -750,7 +753,7 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 		if hasMore {
 			rows = rows[:pageLimit]
 			lastOutpoint := rows[len(rows)-1].Outpoint
-			nextCursor = encodeVTXOCursor(lastOutpoint)
+			txNextCursor = encodeVTXOCursor(lastOutpoint)
 		}
 
 		// Collect unique round IDs for batch metadata fetch.
@@ -831,8 +834,11 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 				}
 			}
 
-			out = append(out, vtxo)
+			txOut = append(txOut, vtxo)
 		}
+
+		out = txOut
+		nextCursor = txNextCursor
 
 		return nil
 	})
@@ -1007,22 +1013,24 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 	// enrichment inside a read transaction so all queries see a
 	// consistent snapshot.
 	var inputs *subtreeDBInputs
-
-	nodesByTxid := make(map[string]*arkrpc.TreeNode)
-	edgesByKey := make(map[string]*arkrpc.TreeEdge)
-	leafTXByTxid := make(map[string][]byte)
+	var nodesByTxid map[string]*arkrpc.TreeNode
+	var edgesByKey map[string]*arkrpc.TreeEdge
+	var leafTXByTxid map[string][]byte
 
 	err = s.store.ExecReadTx(ctx, func(q Store) error {
-		var loadErr error
-		inputs, loadErr = loadSubtreeInputs(
+		txInputs, loadErr := loadSubtreeInputs(
 			ctx, q, allowedScripts, allowedScriptBytes,
 		)
 		if loadErr != nil {
 			return loadErr
 		}
 
-		for key, targets := range inputs.targetOutpointsByTree {
-			roundID := inputs.roundIDByHex[key.roundIDHex]
+		txNodesByTxid := make(map[string]*arkrpc.TreeNode)
+		txEdgesByKey := make(map[string]*arkrpc.TreeEdge)
+		txLeafTXByTxid := make(map[string][]byte)
+
+		for key, targets := range txInputs.targetOutpointsByTree {
+			roundID := txInputs.roundIDByHex[key.roundIDHex]
 
 			fullTree, tErr := q.LoadVTXOTree(
 				ctx, roundID, key.batchIdx,
@@ -1043,20 +1051,29 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 				return lErr
 			}
 			for txid, serializedLeafTX := range leafTXs {
-				leafTXByTxid[txid] = serializedLeafTX
+				txLeafTXByTxid[txid] = serializedLeafTX
 			}
 
 			if rErr := recordSubtreeRPCView(
 				extracted, req.IncludeInternalNodes,
-				inputs.leafTxids, nodesByTxid, edgesByKey,
+				txInputs.leafTxids, txNodesByTxid, txEdgesByKey,
 			); rErr != nil {
 				return rErr
 			}
 		}
 
-		return enrichVirtualLeafProofs(
-			ctx, q, inputs.virtualLeaves,
-		)
+		if err := enrichVirtualLeafProofs(
+			ctx, q, txInputs.virtualLeaves,
+		); err != nil {
+			return err
+		}
+
+		inputs = txInputs
+		nodesByTxid = txNodesByTxid
+		edgesByKey = txEdgesByKey
+		leafTXByTxid = txLeafTXByTxid
+
+		return nil
 	})
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
