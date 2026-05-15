@@ -79,15 +79,13 @@ func (f *fakeRPCServer) GetInfo(_ context.Context,
 }
 
 func (f *fakeRPCServer) GetBalance(_ context.Context,
-	_ *daemonrpc.GetBalanceRequest) (*daemonrpc.GetBalanceResponse,
-	error) {
+	_ *daemonrpc.GetBalanceRequest) (*daemonrpc.GetBalanceResponse, error) {
 
 	return f.getBalanceResp, f.getBalanceErr
 }
 
 func (f *fakeRPCServer) NewAddress(_ context.Context,
-	_ *daemonrpc.NewAddressRequest) (*daemonrpc.NewAddressResponse,
-	error) {
+	_ *daemonrpc.NewAddressRequest) (*daemonrpc.NewAddressResponse, error) {
 
 	return f.newAddressResp, f.newAddressErr
 }
@@ -115,8 +113,8 @@ type fakeSwapService struct {
 }
 
 func (f *fakeSwapService) StartPay(_ context.Context,
-	req *swapclientrpc.StartPayRequest) (
-	*swapclientrpc.StartPayResponse, error) {
+	req *swapclientrpc.StartPayRequest) (*swapclientrpc.StartPayResponse,
+	error) {
 
 	f.startPayCalls++
 	f.startPayLastReq = req
@@ -134,8 +132,8 @@ func (f *fakeSwapService) StartReceive(_ context.Context,
 }
 
 func (f *fakeSwapService) ListSwaps(_ context.Context,
-	_ *swapclientrpc.ListSwapsRequest) (
-	*swapclientrpc.ListSwapsResponse, error) {
+	_ *swapclientrpc.ListSwapsRequest) (*swapclientrpc.ListSwapsResponse,
+	error) {
 
 	f.listSwapsCalls++
 

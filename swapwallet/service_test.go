@@ -41,12 +41,14 @@ func TestServiceDepositRegistersIntent(t *testing.T) {
 	}
 
 	resp, err := svc.Deposit(
-		t.Context(), &walletrpc.DepositRequest{AmtSatHint: 50_000},
+		t.Context(), &walletrpc.DepositRequest{
+			AmtSatHint: 50_000,
+		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, "bcrt1qboardingaddr", resp.GetOnchainAddress())
-	require.Equal(t,
-		walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 		resp.GetEntry().GetKind(),
 	)
 
@@ -54,8 +56,10 @@ func TestServiceDepositRegistersIntent(t *testing.T) {
 	canonical := svc.runtime.resolveCanonicalID(
 		"synthetic", "", "", nil, "bcrt1qboardingaddr",
 	)
-	require.Equal(t, resp.GetEntry().GetId(), canonical,
-		"the deposit intent must be registered by boarding address")
+	require.Equal(
+		t, resp.GetEntry().GetId(), canonical,
+		"the deposit intent must be registered by boarding address",
+	)
 }
 
 // TestServiceBalanceProjectsDaemonGetBalance confirms Balance pulls from

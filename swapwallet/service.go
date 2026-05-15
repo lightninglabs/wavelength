@@ -44,8 +44,8 @@ func newService(deps *Deps, runtime *Runtime) *Service {
 // the daemon-owned swap subserver (which transparently picks same-Ark p2p
 // vHTLC vs real Lightning per PR #339); onchain destinations route through
 // the existing LeaveVTXOs cooperative-exit RPC.
-func (s *Service) Send(ctx context.Context,
-	req *walletrpc.SendRequest) (*walletrpc.SendResponse, error) {
+func (s *Service) Send(ctx context.Context, req *walletrpc.SendRequest) (
+	*walletrpc.SendResponse, error) {
 
 	return s.router.Send(ctx, req)
 }
@@ -54,16 +54,16 @@ func (s *Service) Send(ctx context.Context,
 // daemon-signed BOLT-11 invoice plus the initial WalletEntry. The invoice
 // is signed with a payment-scoped daemon-managed auth key (PR #337);
 // nothing in the wallet layer generates or holds raw private keys.
-func (s *Service) Recv(ctx context.Context,
-	req *walletrpc.RecvRequest) (*walletrpc.RecvResponse, error) {
+func (s *Service) Recv(ctx context.Context, req *walletrpc.RecvRequest) (
+	*walletrpc.RecvResponse, error) {
 
 	return s.recv.Recv(ctx, req)
 }
 
 // List returns the unified, normalized wallet history merged across the
 // swap subserver and the daemon's ledger/sweep stores.
-func (s *Service) List(ctx context.Context,
-	req *walletrpc.ListRequest) (*walletrpc.ListResponse, error) {
+func (s *Service) List(ctx context.Context, req *walletrpc.ListRequest) (
+	*walletrpc.ListResponse, error) {
 
 	return s.history.List(ctx, req)
 }
@@ -71,12 +71,13 @@ func (s *Service) List(ctx context.Context,
 // Deposit returns a fresh boarding onchain address by delegating to the
 // daemon's existing NewAddress RPC. The wallet layer never derives keys or
 // constructs scripts itself.
-func (s *Service) Deposit(ctx context.Context,
-	req *walletrpc.DepositRequest) (*walletrpc.DepositResponse, error) {
+func (s *Service) Deposit(ctx context.Context, req *walletrpc.DepositRequest) (
+	*walletrpc.DepositResponse, error) {
 
 	if s.deps.RPCServer == nil {
-		return nil, status.Error(codes.Unavailable,
-			ErrSwapBackendUnavailable.Error())
+		return nil, status.Error(
+			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
+		)
 	}
 
 	addrResp, err := s.deps.RPCServer.NewAddress(
@@ -109,8 +110,8 @@ func (s *Service) Deposit(ctx context.Context,
 // Balance composes the unified balance summary by reading the daemon's
 // existing GetBalance RPC and projecting its fields onto the flat
 // confirmed/pending shape exposed by the wallet layer.
-func (s *Service) Balance(ctx context.Context,
-	req *walletrpc.BalanceRequest) (*walletrpc.BalanceResponse, error) {
+func (s *Service) Balance(ctx context.Context, req *walletrpc.BalanceRequest) (
+	*walletrpc.BalanceResponse, error) {
 
 	return s.fetchBalance(ctx)
 }
@@ -118,12 +119,13 @@ func (s *Service) Balance(ctx context.Context,
 // Status returns wallet readiness, network, balance summary, and pending
 // count in one shot by composing over the daemon's existing GetInfo,
 // GetBalance, and the swap subserver's ListSwaps (pending_only).
-func (s *Service) Status(ctx context.Context,
-	req *walletrpc.StatusRequest) (*walletrpc.StatusResponse, error) {
+func (s *Service) Status(ctx context.Context, req *walletrpc.StatusRequest) (
+	*walletrpc.StatusResponse, error) {
 
 	if s.deps.RPCServer == nil {
-		return nil, status.Error(codes.Unavailable,
-			ErrSwapBackendUnavailable.Error())
+		return nil, status.Error(
+			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
+		)
 	}
 
 	info, err := s.deps.RPCServer.GetInfo(
@@ -203,12 +205,13 @@ func (s *Service) SubscribeWallet(req *walletrpc.SubscribeWalletRequest,
 
 // fetchBalance is the shared helper that pulls the daemon's GetBalance and
 // projects its richer breakdown onto the flat wallet shape.
-func (s *Service) fetchBalance(ctx context.Context) (
-	*walletrpc.BalanceResponse, error) {
+func (s *Service) fetchBalance(ctx context.Context) (*walletrpc.BalanceResponse,
+	error) {
 
 	if s.deps.RPCServer == nil {
-		return nil, status.Error(codes.Unavailable,
-			ErrSwapBackendUnavailable.Error())
+		return nil, status.Error(
+			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
+		)
 	}
 
 	bal, err := s.deps.RPCServer.GetBalance(

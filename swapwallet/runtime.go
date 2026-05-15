@@ -153,10 +153,12 @@ func newRuntime(parent context.Context, deps *Deps) *Runtime {
 	rootCtx, cancel := context.WithCancel(parent)
 
 	return &Runtime{
-		deps:                 deps,
-		rootCtx:              rootCtx,
-		cancel:               cancel,
-		subscribers:          make(map[chan *walletrpc.WalletEntry]struct{}),
+		deps:    deps,
+		rootCtx: rootCtx,
+		cancel:  cancel,
+		subscribers: make(
+			map[chan *walletrpc.WalletEntry]struct{},
+		),
 		pending:              make(map[string]pendingEntry),
 		overlay:              make(map[string]overlayStatus),
 		intentsByCanonical:   make(map[string]*walletIntent),
@@ -188,7 +190,8 @@ func (r *Runtime) resumeAll(ctx context.Context) {
 
 	if r.deps.SwapBackend == nil {
 		log.WarnS(ctx, "Skipping unified resume sweep",
-			ErrSwapBackendUnavailable)
+			ErrSwapBackendUnavailable,
+		)
 
 		return
 	}
@@ -421,7 +424,9 @@ func (r *Runtime) applyDeadlines(now time.Time) {
 func (r *Runtime) subscribe() chan *walletrpc.WalletEntry {
 	ch := make(
 		chan *walletrpc.WalletEntry,
-		int(r.deps.resolveSubscribeBuffer()),
+		int(
+			r.deps.resolveSubscribeBuffer(),
+		),
 	)
 
 	r.subsMu.Lock()

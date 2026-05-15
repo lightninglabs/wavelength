@@ -60,8 +60,9 @@ func TestRouterSendInvoiceDispatchesStartPay(t *testing.T) {
 	require.Equal(t, "lnbc1example", swap.startPayLastReq.GetInvoice())
 	require.Equal(t, uint64(25), swap.startPayLastReq.GetMaxFeeSat())
 	require.Equal(t, "deadbeef", resp.GetEntry().GetId())
-	require.Equal(t,
-		walletrpc.EntryKind_ENTRY_KIND_SEND, resp.GetEntry().GetKind(),
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_SEND,
+		resp.GetEntry().GetKind(),
 	)
 }
 
@@ -74,14 +75,26 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 	r, swap, rpc := newRouterFixture(t)
 	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
 		Vtxos: []*daemonrpc.VTXO{
-			{Outpoint: "tx1:0", AmountSat: 5000},
-			{Outpoint: "tx2:1", AmountSat: 7000},
-			{Outpoint: "tx3:0", AmountSat: 3000},
+			{
+				Outpoint:  "tx1:0",
+				AmountSat: 5000,
+			},
+			{
+				Outpoint:  "tx2:1",
+				AmountSat: 7000,
+			},
+			{
+				Outpoint:  "tx3:0",
+				AmountSat: 3000,
+			},
 		},
 	}
 	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
-		QueuedOutpoints: []string{"tx1:0", "tx2:1"},
-		Status:          "queued",
+		QueuedOutpoints: []string{
+			"tx1:0",
+			"tx2:1",
+		},
+		Status: "queued",
 	}
 
 	resp, err := r.Send(t.Context(), &walletrpc.SendRequest{
@@ -96,17 +109,26 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 	require.Equal(t, 1, rpc.listVTXOsCalls)
 
 	got := rpc.leaveLastReq.GetOutpoints().GetOutpoints()
-	require.Equal(t, []string{"tx1:0", "tx2:1"}, got,
-		"selected outpoints must cover the target amount and stop "+
-			"as soon as covered")
-	require.Equal(t, "bcrt1qaddr",
+	require.Equal(
+		t, []string{
+			"tx1:0",
+			"tx2:1",
+		},
+		got, "selected outpoints must cover the target amount and "+
+			"stop as soon as covered",
+	)
+	require.Equal(
+		t, "bcrt1qaddr",
 		rpc.leaveLastReq.GetDefaultDestination().GetAddress(),
 	)
-	require.Equal(t,
-		walletrpc.EntryKind_ENTRY_KIND_EXIT, resp.GetEntry().GetKind(),
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_EXIT,
+		resp.GetEntry().GetKind(),
 	)
-	require.Equal(t, "tx1:0", resp.GetEntry().GetId(),
-		"the EXIT entry id is the first queued outpoint")
+	require.Equal(
+		t, "tx1:0", resp.GetEntry().GetId(),
+		"the EXIT entry id is the first queued outpoint",
+	)
 }
 
 // TestRouterSendOnchainAmtZeroSweepsAll confirms that amt=0 routes through
@@ -116,8 +138,11 @@ func TestRouterSendOnchainAmtZeroSweepsAll(t *testing.T) {
 
 	r, _, rpc := newRouterFixture(t)
 	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
-		QueuedOutpoints: []string{"tx1:0", "tx2:1"},
-		Status:          "queued",
+		QueuedOutpoints: []string{
+			"tx1:0",
+			"tx2:1",
+		},
+		Status: "queued",
 	}
 
 	_, err := r.Send(t.Context(), &walletrpc.SendRequest{
@@ -127,10 +152,13 @@ func TestRouterSendOnchainAmtZeroSweepsAll(t *testing.T) {
 		AmtSat: 0,
 	})
 	require.NoError(t, err)
-	require.Equal(t, 0, rpc.listVTXOsCalls,
-		"amt=0 must not pre-select VTXOs")
-	require.True(t, rpc.leaveLastReq.GetAll(),
-		"amt=0 must trigger Selection.All")
+	require.Equal(
+		t, 0, rpc.listVTXOsCalls, "amt=0 must not pre-select VTXOs",
+	)
+	require.True(
+		t, rpc.leaveLastReq.GetAll(),
+		"amt=0 must trigger Selection.All",
+	)
 }
 
 // TestRouterSendOnchainInsufficientFunds confirms a request larger than
@@ -141,7 +169,10 @@ func TestRouterSendOnchainInsufficientFunds(t *testing.T) {
 	r, _, rpc := newRouterFixture(t)
 	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
 		Vtxos: []*daemonrpc.VTXO{
-			{Outpoint: "tx1:0", AmountSat: 100},
+			{
+				Outpoint:  "tx1:0",
+				AmountSat: 100,
+			},
 		},
 	}
 
@@ -152,8 +183,10 @@ func TestRouterSendOnchainInsufficientFunds(t *testing.T) {
 		AmtSat: 10_000,
 	})
 	require.ErrorIs(t, err, ErrAmountRequired)
-	require.Equal(t, 0, rpc.leaveCalls,
-		"insufficient funds must not call LeaveVTXOs")
+	require.Equal(
+		t, 0, rpc.leaveCalls,
+		"insufficient funds must not call LeaveVTXOs",
+	)
 }
 
 // TestRouterSendUnsetDestinationRejected asserts both invoice and onchain
