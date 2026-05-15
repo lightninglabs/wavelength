@@ -343,7 +343,7 @@ ITEST_CASE := $(or $(icase),$(case))
 
 # Named shards for CI fan-out. Each shard runs a disjoint set of
 # test prefixes so the per-job wall-clock drops below the slowest
-# single test in the suite. The shards partition the full 59-test
+# single test in the suite. The shards partition the full daemon itest
 # package by feature area; the union covers every TestXxx in
 # ./itest. Use shard=<name> on the make invocation to pick one;
 # unset means "run everything". Keep the regex anchored on '^'
@@ -380,18 +380,26 @@ ITEST_RUN_PATTERN := $(if $(ITEST_CASE),$(ITEST_CASE),$(ITEST_SHARD_PATTERN))
 # matches the runner's vCPU count, and let CI or local users
 # override via parallel=<n>.
 ITEST_PARALLEL := $(parallel)
+ITEST_TIMING_DIR := $(or $(timing_dir),test-artifacts/itest-timing)
+ITEST_TIMING_LABEL := $(ITEST_CLIENT_WALLET)$(if $(ITEST_SHARD),-$(ITEST_SHARD),-all)
 
 itest: #? Run daemon-level integration tests in ./itest. Use backend=lwwallet or backend=btcwallet to select backend. Use parallel=N to override the test parallelism cap. Use shard=boarding-fees|oor-sends|exits-fraud to run a subset.
 	@$(call print, "Running daemon integration tests.")
 	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
-	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
+	python3 scripts/go_test_timing.py \
+	--label "$(ITEST_TIMING_LABEL)" \
+	--out-dir "$(ITEST_TIMING_DIR)" -- \
+	$(GOTEST) -json -tags itest -v ./itest/... -timeout 60m \
 	$(if $(ITEST_PARALLEL),-parallel $(ITEST_PARALLEL),) \
 	$(if $(ITEST_RUN_PATTERN),-run "$(ITEST_RUN_PATTERN)",)
 
 itest-verbose: #? Run daemon-level integration tests with stdout logs. Use backend=lwwallet or backend=btcwallet.
 	@$(call print, "Running daemon integration tests with verbose logs.")
 	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
-	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
+	python3 scripts/go_test_timing.py \
+	--label "$(ITEST_TIMING_LABEL)-verbose" \
+	--out-dir "$(ITEST_TIMING_DIR)" -- \
+	$(GOTEST) -json -tags itest -v ./itest/... -timeout 60m \
 	$(if $(ITEST_PARALLEL),-parallel $(ITEST_PARALLEL),) \
 	-harness.logstdout $(if $(ITEST_RUN_PATTERN),-run "$(ITEST_RUN_PATTERN)",)
 
