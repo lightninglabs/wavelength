@@ -4,67 +4,59 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
 	"github.com/stretchr/testify/require"
 )
 
-// TestSwapSummaryFromProto guards the wrapper-owned accounting DTO from
+// TestEntryFromProto guards the wrapper-owned wallet activity DTO from
 // accidental protobuf field drift.
-func TestSwapSummaryFromProto(t *testing.T) {
-	proto := &swapclientrpc.SwapSummary{
-		Direction: swapclientrpc.
-			SwapDirection_SWAP_DIRECTION_PAY,
-		PaymentHash:      "hash",
-		State:            swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
-		Pending:          true,
-		AmountSat:        1000,
-		FeeSat:           12,
-		MaxFeeSat:        30,
-		VhtlcOutpoint:    "txid:0",
-		VhtlcAmountSat:   900,
-		FundingSessionId: "funding",
-		ClaimSessionId:   "claim",
-		RefundSessionId:  "refund",
-		TerminalReason:   "done",
-		CreatedAtUnix:    11,
-		UpdatedAtUnix:    12,
-		DeadlineUnix:     13,
-		RefundLocktime:   42,
+func TestEntryFromProto(t *testing.T) {
+	proto := &walletrpc.WalletEntry{
+		Id:            "id",
+		Kind:          walletrpc.EntryKind_ENTRY_KIND_SEND,
+		Status:        walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		AmountSat:     -1000,
+		FeeSat:        12,
+		Counterparty:  "counterparty",
+		CreatedAtUnix: 11,
+		UpdatedAtUnix: 12,
+		Note:          "note",
+		FailureReason: "reason",
 	}
 
-	summary := swapSummaryFromProto(proto)
-	require.Equal(t, SwapDirectionPay, summary.Direction)
-	require.Equal(t, "hash", summary.PaymentHash)
-	require.Equal(t, "completed", summary.State)
-	require.True(t, summary.Pending)
-	require.EqualValues(t, 1000, summary.AmountSat)
-	require.EqualValues(t, 12, summary.FeeSat)
-	require.EqualValues(t, 30, summary.MaxFeeSat)
-	require.Equal(t, "txid:0", summary.VHTLCOutpoint)
-	require.EqualValues(t, 900, summary.VHTLCAmountSat)
-	require.Equal(t, "funding", summary.FundingSessionID)
-	require.Equal(t, "claim", summary.ClaimSessionID)
-	require.Equal(t, "refund", summary.RefundSessionID)
-	require.Equal(t, "done", summary.TerminalReason)
-	require.Equal(t, time.Unix(11, 0), summary.CreatedAt)
-	require.Equal(t, time.Unix(12, 0), summary.UpdatedAt)
-	require.Equal(t, time.Unix(13, 0), summary.Deadline)
-	require.EqualValues(t, 42, summary.RefundLocktime)
+	entry := entryFromProto(proto)
+	require.Equal(t, "id", entry.ID)
+	require.Equal(t, EntryKindSend, entry.Kind)
+	require.Equal(t, EntryStatusComplete, entry.Status)
+	require.EqualValues(t, -1000, entry.AmountSat)
+	require.EqualValues(t, 12, entry.FeeSat)
+	require.Equal(t, "counterparty", entry.Counterparty)
+	require.Equal(t, time.Unix(11, 0), entry.CreatedAt)
+	require.Equal(t, time.Unix(12, 0), entry.UpdatedAt)
+	require.Equal(t, "note", entry.Note)
+	require.Equal(t, "reason", entry.FailureReason)
 }
 
-// TestSwapDirectionToProto verifies resume requests use the expected daemon
-// RPC direction enum.
-func TestSwapDirectionToProto(t *testing.T) {
+// TestEntryKindToProto verifies filters use the expected wallet RPC enum.
+func TestEntryKindToProto(t *testing.T) {
 	require.Equal(
-		t, swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
-		swapDirectionToProto(SwapDirectionPay),
+		t, walletrpc.EntryKind_ENTRY_KIND_SEND,
+		entryKindToProto(EntryKindSend),
 	)
 	require.Equal(
-		t, swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE,
-		swapDirectionToProto(SwapDirectionReceive),
+		t, walletrpc.EntryKind_ENTRY_KIND_RECV,
+		entryKindToProto(EntryKindReceive),
 	)
 	require.Equal(
-		t, swapclientrpc.SwapDirection_SWAP_DIRECTION_UNSPECIFIED,
-		swapDirectionToProto(""),
+		t, walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		entryKindToProto(EntryKindDeposit),
+	)
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_EXIT,
+		entryKindToProto(EntryKindExit),
+	)
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		entryKindToProto(""),
 	)
 }

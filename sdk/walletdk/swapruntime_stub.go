@@ -4,8 +4,7 @@ package walletdk
 
 import "github.com/lightninglabs/darepo-client/darepod"
 
-// configureSwapRuntime keeps default builds compiling. Swap methods return
-// ErrSwapRuntimeUnavailable when the executor is absent.
+// configureSwapRuntime keeps default builds compiling.
 func configureSwapRuntime(_ *darepod.Config, enabled bool) error {
 	return nil
 }

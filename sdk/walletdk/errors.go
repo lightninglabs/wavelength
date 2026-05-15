@@ -2,7 +2,11 @@ package walletdk
 
 import "errors"
 
-// ErrSwapRuntimeUnavailable reports that walletdk was built without the
-// daemon-owned swap executor needed by Send and Receive.
-var ErrSwapRuntimeUnavailable = errors.New("walletdk swap runtime " +
-	"unavailable; rebuild with -tags swapruntime")
+// ErrWalletRPCUnavailable reports that an embedded walletdk runtime was built
+// without the wallet RPC subserver needed by wallet payment methods.
+var ErrWalletRPCUnavailable = errors.New("walletdk wallet rpc unavailable; " +
+	"rebuild with -tags walletrpc,swapruntime")
+
+// ErrSwapRuntimeUnavailable is retained as a compatibility sentinel for code
+// that still checks the old swapruntime-only error.
+var ErrSwapRuntimeUnavailable = ErrWalletRPCUnavailable
