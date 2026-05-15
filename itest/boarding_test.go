@@ -742,7 +742,8 @@ func TestBoardingIntegrationRestartAfterInputSigSent(t *testing.T) {
 	clientOpts.StartTapd = false
 
 	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
-		ClientOptions: &clientOpts,
+		ClientOptions:         &clientOpts,
+		OperatorConfigMutator: longSignatureCollectionTimeout(),
 	})
 	t.Cleanup(h.Stop)
 

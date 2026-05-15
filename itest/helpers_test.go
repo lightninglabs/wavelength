@@ -33,6 +33,19 @@ func longRegistrationTimeout() func(cfg *darepo.Config) {
 	}
 }
 
+// longSignatureCollectionTimeout returns an OperatorConfigMutator that pins
+// the operator's signature-collection window to 60s. Restart-resume tests can
+// intentionally stop a client after the daemon durably checkpoints signatures
+// but before the server-connection actor delivers them to the operator. The
+// resumed client replays those signatures, but wallet start-up plus durable
+// message retry can exceed the production 10s window on busy btcwallet CI
+// runners.
+func longSignatureCollectionTimeout() func(cfg *darepo.Config) {
+	return func(cfg *darepo.Config) {
+		cfg.Rounds.SignatureCollectionTimeout = 60 * time.Second
+	}
+}
+
 const (
 	defaultSmallTimeout = 5 * time.Second
 	defaultTimeout      = 60 * time.Second
