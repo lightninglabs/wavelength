@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -23,6 +24,8 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
 	"github.com/lightninglabs/darepo-client/sdk/swaps"
+	"github.com/lightningnetwork/lnd/invoices"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -406,22 +409,29 @@ func (r *receiveSessionAdapter) Wait(ctx context.Context) (*swaps.ReceiveResult,
 	return r.session.Wait(ctx)
 }
 
-// daemonInvoiceGenerator constructs the fallback invoice creator used by the
+// daemonInvoiceGenerator constructs the invoice creator used by the
 // daemon-owned swap client.
 //
-// The creator still needs a local signer so sdk/swaps can build standard
-// invoices through the lnd invoice package. Receive swaps do not rely on this
-// signer for their mailbox/onion identity after the daemon-backed receive-auth
-// work from #337: sdk/swaps calls CreateInvoiceWithKey with a payment-scoped
-// auth key that delegates signing and ECDH through arkClient's DaemonConn
-// methods. The ephemeral signer here is therefore only constructor/config
-// plumbing for invoice paths that do not provide an explicit receive-auth key.
+// All production receive flows use CreateInvoiceWithKey with a payment-scoped
+// auth key derived inside the daemon (see PR #337): sdk/swaps overrides the
+// invoice NodeSigner with the daemon-supplied auth key at signing time, so the
+// underlying generator's backing key is never invoked to sign a user-visible
+// invoice. To make this property assertion-backed, the returned creator wraps
+// the underlying generator in daemonAuthOnlyInvoiceCreator, which rejects the
+// no-key CreateInvoice path entirely. If a future code change ever takes that
+// path inside the daemon, callers will see an explicit error instead of
+// silently signing with the ephemeral plumbing key.
 func daemonInvoiceGenerator(arkClient *sdkark.Client,
 	chainParams *chaincfg.Params) (swaps.InvoiceCreator, error) {
 
-	invoiceKey, err := btcec.NewPrivateKey()
+	// The ephemeral key here is plumbing required by
+	// NewEphemeralInvoiceGenerator's signature; it is never used to sign
+	// anything in the daemon path because daemonAuthOnlyInvoiceCreator
+	// forbids the no-key CreateInvoice path and CreateInvoiceWithKey
+	// overrides the NodeSigner with the daemon-derived auth key.
+	plumbingKey, err := btcec.NewPrivateKey()
 	if err != nil {
-		return nil, fmt.Errorf("create fallback invoice key: %w", err)
+		return nil, fmt.Errorf("create plumbing invoice key: %w", err)
 	}
 
 	bestHeight := func() (uint32, error) {
@@ -433,9 +443,45 @@ func daemonInvoiceGenerator(arkClient *sdkark.Client,
 		return info.BlockHeight, nil
 	}
 
-	return swaps.NewEphemeralInvoiceGenerator(
-		invoiceKey, bestHeight, chainParams,
-	), nil
+	return &daemonAuthOnlyInvoiceCreator{
+		inner: swaps.NewEphemeralInvoiceGenerator(
+			plumbingKey, bestHeight, chainParams,
+		),
+	}, nil
+}
+
+// daemonAuthOnlyInvoiceCreator enforces that all invoice creation in the
+// daemon swap path goes through CreateInvoiceWithKey with an explicit
+// daemon-derived auth key. The no-key CreateInvoice path is rejected so that
+// a regression cannot accidentally produce an invoice signed by ephemeral
+// plumbing state instead of a payment-scoped daemon key.
+type daemonAuthOnlyInvoiceCreator struct {
+	inner swaps.InvoiceCreator
+}
+
+// CreateInvoice rejects the no-key invoice creation path. In the daemon swap
+// flow every invoice must be signed with a payment-scoped auth key returned
+// by the wallet backend, so direct CreateInvoice is a programming error.
+func (d *daemonAuthOnlyInvoiceCreator) CreateInvoice(_ context.Context,
+	_ btcutil.Amount, _ string, _ *swaps.RouteHint, _ time.Duration,
+	_ *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
+
+	return nil, lntypes.Hash{}, fmt.Errorf("daemon swap path requires " +
+		"CreateInvoiceWithKey with a daemon-derived auth key")
+}
+
+// CreateInvoiceWithKey delegates to the underlying generator, which overrides
+// the NodeSigner with the supplied authKey so the daemon-managed key signs
+// the invoice rather than the generator's plumbing key.
+func (d *daemonAuthOnlyInvoiceCreator) CreateInvoiceWithKey(
+	ctx context.Context, amountSat btcutil.Amount, memo string,
+	routeHint *swaps.RouteHint, expiry time.Duration,
+	authKey keychain.SingleKeyMessageSigner,
+	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
+
+	return d.inner.CreateInvoiceWithKey(
+		ctx, amountSat, memo, routeHint, expiry, authKey, preimage,
+	)
 }
 
 // swapServerDialOptions maps daemon swap config into gRPC transport options
