@@ -25,7 +25,9 @@ type RPCServer interface {
 
 	ListVTXOs(ctx context.Context,
 		req *daemonrpc.ListVTXOsRequest) (
-		*daemonrpc.ListVTXOsResponse, error)
+		*daemonrpc.ListVTXOsResponse,
+		error,
+	)
 
 	ListTransactions(ctx context.Context,
 		req *daemonrpc.ListTransactionsRequest) (
@@ -33,7 +35,9 @@ type RPCServer interface {
 
 	GetInfo(ctx context.Context,
 		req *daemonrpc.GetInfoRequest) (
-		*daemonrpc.GetInfoResponse, error)
+		*daemonrpc.GetInfoResponse,
+		error,
+	)
 
 	GetBalance(ctx context.Context,
 		req *daemonrpc.GetBalanceRequest) (

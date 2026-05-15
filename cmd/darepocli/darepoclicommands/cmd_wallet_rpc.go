@@ -18,11 +18,8 @@ import (
 // behaviour those concerns map to.
 func addWalletRPCSubcommands(parent *cobra.Command) {
 	parent.AddCommand(
-		newWalletSendCmd(),
-		newWalletRecvCmd(),
-		newWalletListCmd(),
-		newWalletDepositCmd(),
-		newWalletStatusCmd(),
+		newWalletSendCmd(), newWalletRecvCmd(), newWalletListCmd(),
+		newWalletDepositCmd(), newWalletStatusCmd(),
 	)
 }
 
@@ -46,7 +43,8 @@ func newWalletSendCmd() *cobra.Command {
 		RunE: walletRPCSend,
 	}
 	cmd.Flags().Uint64("amt", 0,
-		"amount in satoshis (required for onchain or amountless invoice)")
+		"amount in satoshis (required for onchain or amountless "+
+			"invoice)")
 	cmd.Flags().Uint64("max_fee", 0,
 		"max fee in satoshis; 0 lets the daemon use defaults")
 	cmd.Flags().String("note", "",
@@ -147,14 +145,17 @@ func walletRPCSend(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	return withWalletClient(cmd, func(c walletrpc.WalletServiceClient) error {
-		resp, err := c.Send(cmd.Context(), req)
-		if err != nil {
-			return err
-		}
+	return withWalletClient(
+		cmd,
+		func(c walletrpc.WalletServiceClient) error {
+			resp, err := c.Send(cmd.Context(), req)
+			if err != nil {
+				return err
+			}
 
-		return walletPrintJSON(resp)
-	})
+			return walletPrintJSON(resp)
+		},
+	)
 }
 
 // walletRPCRecv is the RunE handler for `wallet recv`.
@@ -165,17 +166,22 @@ func walletRPCRecv(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("--amt is required")
 	}
 
-	return withWalletClient(cmd, func(c walletrpc.WalletServiceClient) error {
-		resp, err := c.Recv(cmd.Context(), &walletrpc.RecvRequest{
-			AmtSat: amt,
-			Memo:   memo,
-		})
-		if err != nil {
-			return err
-		}
+	return withWalletClient(
+		cmd,
+		func(c walletrpc.WalletServiceClient) error {
+			resp, err := c.Recv(
+				cmd.Context(), &walletrpc.RecvRequest{
+					AmtSat: amt,
+					Memo:   memo,
+				},
+			)
+			if err != nil {
+				return err
+			}
 
-		return walletPrintJSON(resp)
-	})
+			return walletPrintJSON(resp)
+		},
+	)
 }
 
 // walletRPCList is the RunE handler for `wallet list`.
@@ -198,46 +204,55 @@ func walletRPCList(cmd *cobra.Command, _ []string) error {
 		req.Kinds = append(req.Kinds, parsed)
 	}
 
-	return withWalletClient(cmd, func(c walletrpc.WalletServiceClient) error {
-		resp, err := c.List(cmd.Context(), req)
-		if err != nil {
-			return err
-		}
+	return withWalletClient(
+		cmd,
+		func(c walletrpc.WalletServiceClient) error {
+			resp, err := c.List(cmd.Context(), req)
+			if err != nil {
+				return err
+			}
 
-		return walletPrintJSON(resp)
-	})
+			return walletPrintJSON(resp)
+		},
+	)
 }
 
 // walletRPCDeposit is the RunE handler for `wallet deposit`.
 func walletRPCDeposit(cmd *cobra.Command, _ []string) error {
 	amtHint, _ := cmd.Flags().GetUint64("amt_hint")
 
-	return withWalletClient(cmd, func(c walletrpc.WalletServiceClient) error {
-		resp, err := c.Deposit(
-			cmd.Context(), &walletrpc.DepositRequest{
-				AmtSatHint: amtHint,
-			},
-		)
-		if err != nil {
-			return err
-		}
+	return withWalletClient(
+		cmd,
+		func(c walletrpc.WalletServiceClient) error {
+			resp, err := c.Deposit(
+				cmd.Context(), &walletrpc.DepositRequest{
+					AmtSatHint: amtHint,
+				},
+			)
+			if err != nil {
+				return err
+			}
 
-		return walletPrintJSON(resp)
-	})
+			return walletPrintJSON(resp)
+		},
+	)
 }
 
 // walletRPCStatus is the RunE handler for `wallet status`.
 func walletRPCStatus(cmd *cobra.Command, _ []string) error {
-	return withWalletClient(cmd, func(c walletrpc.WalletServiceClient) error {
-		resp, err := c.Status(
-			cmd.Context(), &walletrpc.StatusRequest{},
-		)
-		if err != nil {
-			return err
-		}
+	return withWalletClient(
+		cmd,
+		func(c walletrpc.WalletServiceClient) error {
+			resp, err := c.Status(
+				cmd.Context(), &walletrpc.StatusRequest{},
+			)
+			if err != nil {
+				return err
+			}
 
-		return walletPrintJSON(resp)
-	})
+			return walletPrintJSON(resp)
+		},
+	)
 }
 
 // isInvoicePrefix reports whether s starts with a known BOLT-11 prefix.
