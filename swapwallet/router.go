@@ -79,8 +79,8 @@ func (r *router) sendInvoice(ctx context.Context, invoice string,
 
 	entry := swapEntryFromSummary(
 		startResp.GetSwap(), req.GetNote(), invoice,
+		walletrpc.EntryKind_ENTRY_KIND_SEND,
 	)
-	entry.Kind = walletrpc.EntryKind_ENTRY_KIND_SEND
 
 	r.runtime.registerSendInvoiceIntent(entry.GetId())
 

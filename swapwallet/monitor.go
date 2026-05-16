@@ -137,7 +137,13 @@ func (r *Runtime) fanOutSwapUpdate(
 		return nil
 	}
 
-	entry := swapEntryFromSummary(summary, "", summary.GetPaymentHash())
+	// The monitor consumes summaries for swaps in both directions, so we
+	// let direction-derivation pick the kind here (callers that need a
+	// pinned kind — router.sendInvoice and recv.go — pass it explicitly).
+	entry := swapEntryFromSummary(
+		summary, "", summary.GetPaymentHash(),
+		walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+	)
 	entry.Id = r.resolveCanonicalID(
 		entry.GetId(), summary.GetPaymentHash(), "", nil, "",
 	)

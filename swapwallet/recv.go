@@ -60,14 +60,15 @@ func (r *receiver) Recv(ctx context.Context, req *walletrpc.RecvRequest) (
 		return nil, fmt.Errorf("start receive: %w", err)
 	}
 
+	// Pin the kind to RECV so the row is unambiguous even if the SDK's
+	// summary direction is UNSPECIFIED on the initial response (the
+	// publishHash update fills it in afterwards). Passing the kind in
+	// also ensures the amount sign is computed from RECV rather than
+	// the raw (possibly-zero) direction.
 	entry := swapEntryFromSummary(
 		startResp.GetSwap(), req.GetMemo(), startResp.GetPaymentHash(),
+		walletrpc.EntryKind_ENTRY_KIND_RECV,
 	)
-
-	// Override the kind to RECV regardless of how the SDK reports
-	// direction so the row is unambiguous even if the underlying summary
-	// is partially populated immediately after StartReceive returns.
-	entry.Kind = walletrpc.EntryKind_ENTRY_KIND_RECV
 
 	r.runtime.registerRecvIntent(entry.GetId())
 

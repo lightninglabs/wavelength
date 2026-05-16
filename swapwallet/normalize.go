@@ -26,8 +26,18 @@ const truncatedCounterpartyLen = 32
 // payment hash (truncated) for RECV rows so callers can correlate a
 // generated invoice with the row it produced; note carries the caller's
 // label as-is when present.
+//
+// callerKind lets the dispatcher pin the entry's user-facing direction
+// (e.g. router.sendInvoice always produces SEND; recv.go always produces
+// RECV) so the amount sign matches the operation the caller asked for
+// even when the SDK's summary direction has not yet been populated
+// (UNSPECIFIED is a real intermediate state on the first lazy summary).
+// Pass UNSPECIFIED to fall back to deriving the kind from
+// s.GetDirection(); the monitor loop, which fans every swap regardless
+// of direction, uses that fallback.
 func swapEntryFromSummary(s *swapclientrpc.SwapSummary, note string,
-	counterparty string) *walletrpc.WalletEntry {
+	counterparty string,
+	callerKind walletrpc.EntryKind) *walletrpc.WalletEntry {
 
 	if s == nil {
 		return &walletrpc.WalletEntry{
@@ -36,9 +46,14 @@ func swapEntryFromSummary(s *swapclientrpc.SwapSummary, note string,
 		}
 	}
 
+	kind := callerKind
+	if kind == walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED {
+		kind = kindFromSwapDirection(s.GetDirection())
+	}
+
 	entry := &walletrpc.WalletEntry{
 		Id:            s.GetPaymentHash(),
-		Kind:          kindFromSwapDirection(s.GetDirection()),
+		Kind:          kind,
 		Status:        statusFromSwapState(s.GetState(), s.GetPending()),
 		FeeSat:        int64(s.GetFeeSat()),
 		Counterparty:  truncate(counterparty, truncatedCounterpartyLen),
@@ -49,9 +64,12 @@ func swapEntryFromSummary(s *swapclientrpc.SwapSummary, note string,
 	}
 
 	// Render amount with the wallet's signed-amount convention: positive
-	// for incoming RECV, negative for outgoing SEND.
+	// for incoming RECV, negative for outgoing SEND. The sign is derived
+	// from the FINAL kind (caller override or direction fallback), never
+	// the raw direction, so an UNSPECIFIED direction during a lazy SDK
+	// summary cannot flip a SEND amount to positive.
 	amount := s.GetAmountSat()
-	switch entry.Kind {
+	switch kind {
 	case walletrpc.EntryKind_ENTRY_KIND_SEND:
 		entry.AmountSat = -amount
 

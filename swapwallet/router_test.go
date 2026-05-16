@@ -267,6 +267,45 @@ func TestRouterSendUnsetDestinationRejected(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidDestination)
 }
 
+// TestRouterSendInvoiceAmountSignedFromCallerKind asserts that an
+// initial StartPay summary returned with UNSPECIFIED direction (the SDK
+// fills it in on the publish-hash update) still produces a SEND entry
+// with a NEGATIVE amount, because the wallet layer pins the kind on
+// submit. Prior to this fix the amount was sign-derived from
+// s.GetDirection(), so UNSPECIFIED kept the amount positive and the
+// CLI printed +N for an outgoing send.
+func TestRouterSendInvoiceAmountSignedFromCallerKind(t *testing.T) {
+	t.Parallel()
+
+	r, swap, _ := newRouterFixture(t)
+	swap.startPayResp = &swapclientrpc.StartPayResponse{
+		PaymentHash: "deadbeef",
+		Swap: &swapclientrpc.SwapSummary{
+			PaymentHash: "deadbeef",
+			Direction: swapclientrpc.
+				SwapDirection_SWAP_DIRECTION_UNSPECIFIED,
+			AmountSat: 10_000,
+			Pending:   true,
+		},
+	}
+
+	resp, err := r.Send(t.Context(), &walletrpc.SendRequest{
+		Destination: &walletrpc.SendRequest_Invoice{
+			Invoice: "lnbc1example",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_SEND,
+		resp.GetEntry().GetKind(),
+	)
+	require.Equal(
+		t, int64(-10_000), resp.GetEntry().GetAmountSat(),
+		"SEND amount must be negative even when the SDK summary "+
+			"direction is UNSPECIFIED on the initial response",
+	)
+}
+
 // TestRouterSendInvoiceErrorBubblesUp asserts a StartPay error reaches
 // the caller with the original error wrapped.
 func TestRouterSendInvoiceErrorBubblesUp(t *testing.T) {

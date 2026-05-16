@@ -126,7 +126,13 @@ func (h *history) collectSwapEntries(ctx context.Context, pendingOnly bool) (
 		// session IDs; counterparty for swaps is the payment hash
 		// (truncated). Note is empty here because the swap
 		// subsystem does not persist the caller's note.
-		entry := swapEntryFromSummary(s, "", s.GetPaymentHash())
+		// History lists swaps in both directions; let direction
+		// drive the kind here (callers that own the SEND/RECV
+		// intent pass an explicit override on submit).
+		entry := swapEntryFromSummary(
+			s, "", s.GetPaymentHash(),
+			walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		)
 		// Project onto the canonical intent id. For swap rows the
 		// canonical id is the payment hash, which is already the
 		// id returned by swapEntryFromSummary, so the lookup is a
