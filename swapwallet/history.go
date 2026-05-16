@@ -70,7 +70,9 @@ func (h *history) List(ctx context.Context, req *walletrpc.ListRequest) (
 		h.shouldInclude(kindFilter,
 			walletrpc.EntryKind_ENTRY_KIND_SEND) {
 
-		ledgerEntries, err := h.collectLedgerEntries(ctx, limit)
+		ledgerEntries, err := h.collectLedgerEntries(
+			ctx, req.GetOffset(), limit,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("collect ledger entries: %w",
 				err)
@@ -157,16 +159,32 @@ func (h *history) collectSwapEntries(ctx context.Context, pendingOnly bool) (
 // sweep rows become EXIT, OOR rows become SEND or RECV based on the
 // debit/credit account convention. Rows the wallet layer cannot classify
 // are dropped so the user surface stays clean.
-func (h *history) collectLedgerEntries(ctx context.Context, limit uint32) (
-	[]*walletrpc.WalletEntry, error) {
+//
+// The (offset, limit) pair is the caller's unified-merger page. We pull
+// `offset + limit` rows from the ledger source (capped at the daemon's
+// internal max via the server-side clamp) so the in-memory paginate
+// after the swap-and-ledger merge has enough rows to satisfy a page
+// past the first window. Without this plumbing, page 2+ of wallet
+// history returns no ledger rows because the daemon got Limit=limit
+// and Offset=0 and only the first `limit` rows ever came back.
+func (h *history) collectLedgerEntries(ctx context.Context, offset,
+	limit uint32) ([]*walletrpc.WalletEntry, error) {
 
 	if h.deps.RPCServer == nil {
 		return nil, nil
 	}
 
+	// Compute the pull size, guarding against uint32 overflow on the
+	// addition. The daemon clamps further to maxTransactionHistoryLimit
+	// (1000) server-side.
+	pullLimit := offset + limit
+	if pullLimit < offset {
+		pullLimit = limit
+	}
+
 	resp, err := h.deps.RPCServer.ListTransactions(
 		ctx, &daemonrpc.ListTransactionsRequest{
-			Limit: limit,
+			Limit: pullLimit,
 		},
 	)
 	if err != nil {

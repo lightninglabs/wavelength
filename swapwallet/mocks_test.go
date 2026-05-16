@@ -28,6 +28,7 @@ type fakeRPCServer struct {
 	listTxResp     *daemonrpc.ListTransactionsResponse
 	listTxErr      error
 	listTxCalls    int
+	listTxLastReq  *daemonrpc.ListTransactionsRequest
 	getInfoResp    *daemonrpc.GetInfoResponse
 	getInfoErr     error
 	getBalanceResp *daemonrpc.GetBalanceResponse
@@ -61,13 +62,14 @@ func (f *fakeRPCServer) ListVTXOs(_ context.Context,
 }
 
 func (f *fakeRPCServer) ListTransactions(_ context.Context,
-	_ *daemonrpc.ListTransactionsRequest) (
+	req *daemonrpc.ListTransactionsRequest) (
 	*daemonrpc.ListTransactionsResponse, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.listTxCalls++
+	f.listTxLastReq = req
 
 	return f.listTxResp, f.listTxErr
 }

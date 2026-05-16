@@ -3,6 +3,7 @@
 package swapwallet
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
@@ -406,5 +407,55 @@ func TestHistoryDedupesByID(t *testing.T) {
 	require.Equal(
 		t, int64(200), resp.GetEntries()[0].GetUpdatedAtUnix(),
 		"the more-recent row (ledger confirmation) must win",
+	)
+}
+
+// TestHistoryPaginationOffsetPlumbedToLedger confirms that requesting
+// page 2 (offset>=limit) of wallet history returns the expected ledger
+// rows. Prior to the fix, collectLedgerEntries passed only Limit (not
+// Offset) and the daemon's first-N rows were all that ever came back,
+// so the in-memory paginate slice at [limit:] produced empty.
+func TestHistoryPaginationOffsetPlumbedToLedger(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+
+	// 20 deposit rows so page 2 must be served from the ledger.
+	txns := make([]*daemonrpc.TransactionHistoryEntry, 0, 20)
+	for i := 0; i < 20; i++ {
+		txns = append(txns, &daemonrpc.TransactionHistoryEntry{
+			Type:               "boarding",
+			ConfirmationStatus: "confirmed",
+			Txid:               fmt.Sprintf("deposit-%02d", i),
+			AmountSat:          1_000 + int64(i),
+			CreatedAtUnixS:     int64(100 + i),
+		})
+	}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: txns,
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{
+		Offset: 10,
+		Limit:  5,
+	})
+	require.NoError(t, err)
+	require.Equal(
+		t, uint32(20), resp.GetTotal(),
+		"total must reflect the full unfiltered set",
+	)
+	require.Len(
+		t, resp.GetEntries(), 5,
+		"page 2 must return a full window of 5 entries",
+	)
+
+	// The fake doesn't apply offset to its slice, so the daemon's
+	// asserted Limit must be at least offset+limit = 15.
+	require.GreaterOrEqual(
+		t, rpc.listTxLastReq.GetLimit(), uint32(15),
+		"ListTransactions must be called with Limit >= "+
+			"offset+limit so the in-memory paginate has "+
+			"enough rows to satisfy the requested page",
 	)
 }
