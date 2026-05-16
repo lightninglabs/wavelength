@@ -3,11 +3,11 @@
 ## Purpose
 
 Client-side durable actor that serializes all accounting writes (fees, VTXO
-receipts/sends, wallet UTXO deposits, exit costs) as double-entry ledger
-entries and UTXO audit log records. Provides a crash-safe financial audit
-trail for tax reporting and fee transparency. Ledger event types:
-`wallet_utxo_created` (wallet UTXO deposit), `boarding_fee_paid`,
-`refresh_fee_paid`, `onchain_fee_paid`, `vtxo_received`, `vtxo_sent`.
+receipts/sends, wallet UTXO deposits, boarding sweep fees, exit costs) as
+double-entry ledger entries and UTXO audit log records. Provides a crash-safe
+financial audit trail for tax reporting and fee transparency. Ledger event
+types: `wallet_utxo_created`, `boarding_fee_paid`, `refresh_fee_paid`,
+`onchain_fee_paid`, `boarding_sweep_fee_paid`, `vtxo_received`, `vtxo_sent`.
 
 ## Chart of Accounts
 
@@ -40,12 +40,26 @@ accounts, see [docs/fee_ledger.md](../docs/fee_ledger.md).
 - `ActorConfig` — Configuration: logger, delivery store, ledger store, UTXO audit store, actor ID, and optional `Clock` (`fn.Option[clock.Clock]`). When None, the actor falls back to `clock.NewDefaultClock()`; tests inject a deterministic clock.
 - `Sink` — Alias for `actor.TellOnlyRef[LedgerMsg]`, constructed via `NewSink(system *actor.ActorSystem)`. Producers (round / OOR / VTXO / wallet) hold an `fn.Option[ledger.Sink]` so they can fire-and-forget emissions without resolving the service key on every event.
 - `LedgerStore` — Interface for DB persistence of ledger entries (implemented by `db.LedgerStoreDB`). Has a single `InsertLedgerEntry` method; multi-leg handlers rely on the durable actor's outer tx for atomicity rather than a batch API.
-- `LedgerEntry` — Domain-level double-entry record (debit/credit accounts, amount, round ID, session ID, event type, description, created_at, and optional `IdempotencyKey []byte` for outpoint-keyed dedup on events that carry neither a round_id nor a session_id).
+- `LedgerEntry` — Domain-level double-entry record (debit/credit accounts,
+  amount, round ID, session ID, event type, description, created_at, and
+  optional `IdempotencyKey []byte` for outpoint-keyed dedup). New fields:
+  `ChainTxid []byte`, `ChainVout *int32`, `ConfirmationHeight *int32` — first-
+  class history fields linking entries to on-chain transactions without
+  requiring callers to embed chain data in Description or IdempotencyKey.
 - `exitIdempotencyKey(hash, index) []byte` — Internal helper that derives the 36-byte `outpoint_hash || outpoint_index` dedup key `handleExitCost` stamps on both the send leg and the fee leg. Keeps outpoint-keyed entries distinct from round-keyed and session-keyed ones via the separate `idx_client_ledger_idempotent_key` partial unique index.
+- `EventBoardingSweepFeePaid` — Event type `"boarding_sweep_fee_paid"` for
+  miner fees paid during boarding timeout-path sweeps (added alongside the
+  boarding sweep migration to the wallet package).
+- `ClassificationBoardingSweepInput` / `ClassificationBoardingSweepReturn` —
+  UTXO audit classification constants for boarding sweep inputs and return
+  outputs.
 - `UTXOAuditStore` — Interface for DB persistence of UTXO audit log entries (implemented by `db.UTXOAuditStoreDB`).
 - `UTXOAuditEntry` — Domain-level UTXO audit record (outpoint, amount, event, block height, classification).
 - `LedgerMsg` / `LedgerResp` — Message and response type constraints for the durable mailbox.
-- `FeePaidMsg` — Records boarding/refresh fee payments.
+- `FeePaidMsg` — Records boarding/refresh/onchain-sweep fee payments.
+  `FeeTypeOnchainSweep` books a miner fee for on-chain sweeps (e.g. boarding
+  timeout sweep): debit `onchain_fees`, credit `wallet_balance`. `RoundID` may
+  be zero for sweep fees; keyed by sweep txid via `IdempotencyKey` instead.
 - `VTXOReceivedMsg` — Records incoming VTXOs. `Source` must be one of `SourceRoundBoarding` (client's own on-chain wallet funds boarded into a round; offsets wallet_balance), `SourceRoundRefresh` (refresh output or directed-send self-change; offsets transfers_out so the paired VTXOSent cancels on that account and only the operator fee moves vtxo_balance), `SourceRoundTransfer` (in-round receive from another participant; offsets transfers_in), or `SourceOOR` (out-of-round receive; offsets transfers_in). Any other value is rejected.
 - `VTXOSentMsg` — Records outgoing VTXO transfers. Carries either `SessionID` (32-byte OOR) or `RoundID` (16-byte in-round) — exactly one must be non-zero; both-zero and both-set inputs are rejected. Also carries an optional `Outpoint wire.OutPoint` so in-round multi-VTXO events (e.g. paired refresh emissions) disambiguate per-VTXO via an outpoint-derived `IdempotencyKey` instead of collapsing on `idx_client_ledger_idempotent_round`.
 - `ExitCostMsg` — Records a unilateral exit as two ledger entries: a send leg (`transfers_out` debit, `vtxo_balance` credit) for the net-of-fee value and a fee leg (`onchain_fees` debit, `vtxo_balance` credit) for the miner fee. Together the credits reduce `vtxo_balance` by the gross exited amount. Wallet-side movement is covered separately by the `wallet_utxo_log` audit trail.

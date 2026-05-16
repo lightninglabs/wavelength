@@ -39,12 +39,18 @@ each still receives its own terminal notification.
 - `EstimatePackageFee`, `EstimateWeight`, `SelectFeeInput` — Exported
   helpers for fee estimation and fee-input selection, usable standalone.
 - `Wallet` — Wallet interface the broadcaster requires: `ListUnspent`,
-  `NewWalletPkScript`, `FinalizePsbt`, plus `wallet.OutputLeaser`
+  `NewWalletPkScript`, `FinalizePsbt`, plus `walletcore.OutputLeaser`
   (`LeaseOutput` / `ReleaseOutput`) for cross-subsystem UTXO lock
   coordination.
 - `EnsureConfirmedReq` / `EnsureConfirmedResp` — Public Ask API: register
-  interest in a txid with a `TargetConfs`, `ConfirmationPkScript`, and a
-  subscriber that receives the terminal notification.
+  interest in a txid with a `TargetConfs`, `ConfirmationPkScript`,
+  optional `HeightHint` (earliest safe confirmation height; zero derives
+  from current best height minus a safety margin), and a subscriber that
+  receives the terminal notification.
+- `ServiceKeyName` / `NewServiceKey()` / `LookupRef(system)` — Service
+  discovery helpers. Producer subsystems (unroll registry, wallet boarding
+  sweep actor) use `NewServiceKey()` or `LookupRef` to obtain a broadcaster
+  ref from the actor system without coupling to concrete types.
 - `CancelInterestReq` / `CancelInterestResp` — Public Ask API: drop a
   subscriber; the last subscriber's cancel also tears down tracking.
 - `TxConfirmed` / `TxFailed` — Terminal `Notification` types delivered to
@@ -66,14 +72,16 @@ each still receives its own terminal notification.
   - `baselib/protofsm` — per-txid state machine engine.
   - `chainsource` — confirmation watches, block epochs, broadcast,
     package submission, fee estimation, preflight.
-  - `wallet` — `Utxo`, `OutputLeaser`, `LockID` types for fee-input
-    selection and wallet-level lease coordination.
+  - `walletcore` — `Utxo`, `OutputLeaser`, `LockID` types for fee-input
+    selection and wallet-level lease coordination (avoids import cycle with
+    `wallet`).
   - `lib/tx/arktx` — canonical `TxVersion` (v3/TRUC) constant and
     `IsAnchorOutput` predicate for CPFP targeting.
 - **Depended on by**: `unroll` (plugs `TxBroadcasterActor` and
   `CPFPBroadcaster` into boarding sweep / unilateral exit flows),
-  `btcwbackend` (fee-input selection helper), `darepod` (wiring),
-  `db` (schema references).
+  `wallet` (boarding sweep actor looks up the shared broadcaster via
+  `LookupRef`), `btcwbackend` (fee-input selection helper), `darepod`
+  (wiring), `db` (schema references).
 - **Sends**:
   - → `chainsource` (Ask): `BestHeightRequest`, `SubscribeBlocksRequest`,
     `RegisterConfRequest`, `UnregisterConfRequest`, `BroadcastTxRequest`,
@@ -112,10 +120,17 @@ each still receives its own terminal notification.
   RBF requires the new child to double-spend the previous child's fee
   input.
 - **Wallet-level lease coordination**: every reserved fee UTXO is also
-  leased via `Wallet.LeaseOutput` (caller-scoped `txconfirmLockID`)
-  and released on eviction / fallback. Lease errors are soft — the
+  leased via `Wallet.LeaseOutput` (caller-scoped `txconfirmLockID`, a
+  `walletcore.LockID` derived from `"darepo-client:txconfirm"`) and
+  released on eviction / fallback. Lease errors are soft — the
   in-memory reservation map is the source of truth — but the lease
   closes a narrow cross-subsystem race.
+- **`HeightHint` matters for proof-graph ancestors.** Callers that
+  submit proof nodes (e.g. `unroll`) must pass `HeightHint = 1` (the
+  `proofNodeHeightHint` constant) so chainsource scans from genesis.
+  Proof roots and intermediate OOR checkpoint ancestors can confirm
+  before the target descriptor's `CreatedHeight`, so using the target
+  height as a hint would silently miss already-confirmed nodes.
 - **Child vsize is script-aware**: `estimateChildVSize` uses
   `input.TxWeightEstimator` with the actual fee-input and change
   pkScripts (P2TR, P2WKH, nested-P2WKH, …) to size the CPFP child,

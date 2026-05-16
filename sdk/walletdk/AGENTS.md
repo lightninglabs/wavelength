@@ -13,26 +13,40 @@ graph.
 ## Key Types
 
 - `Client` — Concurrency-safe wallet handle. Owns the embedded daemon
-  lifecycle, the private `bufconn` gRPC connection, and the daemon-owned swap
-  RPC clients. `Stop`/`Close` are aliases; both are idempotent.
+  lifecycle, the private `bufconn` gRPC connection, and the daemon-owned RPC
+  clients (daemon, swap, wallet). `Stop`/`Close` are aliases; both are
+  idempotent.
 - `Config` — Embedded daemon + wallet facade config. Two usage modes:
   zero-value plus convenience fields (`DataDir`, `Network`, `ServerAddress`,
   …), or a caller-owned `DaemonConfig` plus only the convenience fields the
   host wants to override. The convenience booleans (`AllowMainnet`,
   `ServerInsecure`, `SwapServerInsecure`) are `fn.Option[bool]`: `fn.None`
   defers to `DaemonConfig`, `fn.Some(v)` forces that value.
+- `ConnectConfig` — Configuration for `Connect` (remote daemon mode); holds
+  `Address` and optional `DialOptions`.
+- `Connect(ctx, ConnectConfig)` — Returns a `*Client` connected to an
+  external daemon (no embedded daemon). Complement to `Start` for remote
+  usage.
 - `DefaultConfig` — Returns a walletdk `Config` populated from
   `darepod.DefaultConfig()`. Convenience starting point for hosts.
 - `Start` — Boots the embedded daemon, dials it, waits for gRPC readiness,
   and returns a ready-to-use `*Client`. Detaches the daemon lifetime from the
   caller's `ctx` so a tight startup deadline does not kill the daemon.
-- `Info` / `Balance` / `OnchainAddress` / `CreateWalletResult` /
-  `UnlockWalletResult` — Wrapper-owned wallet DTOs. Mobile and JS bridges see
-  these, not protobuf types.
+- `WalletState` — Enum (`WalletStateNone`, `WalletStateLocked`,
+  `WalletStateReady`) mirroring the daemon's tri-state for host UI surfaces.
+- `Info` — Includes `WalletState` for the new tri-state wallet readiness
+  field surfaced via `GetInfo`.
+- `Balance` / `DepositRequest` / `DepositResult` — Onchain deposit address
+  and balance DTOs.
 - `ReceiveRequest` / `ReceiveResult` / `SendRequest` / `SendResult` —
-  Wrapper-owned swap-start DTOs. Receive returns a BOLT-11 invoice plus the
-  initial durable swap summary; Send returns the payment hash plus the
-  initial summary.
+  Wrapper-owned swap-start DTOs (swap-runtime only).
+- `ListRequest` / `ListResult` / `Entry` / `EntryKind` / `EntryStatus` —
+  Unified wallet history page request/response DTOs used by `List` and
+  `Subscribe` (walletrpc only).
+- `Status` — Unified balance + pending-entry summary DTO used by `Status`
+  (walletrpc only).
+- `SubscribeRequest` — Configuration for the `Subscribe` streaming call;
+  optional `ExistingEntries bool` to emit current rows first.
 - `SwapSummary` — Wrapper-owned durable swap view used for `ListSwaps`,
   `GetSwap`, `ResumeSwap`, and `SubscribeSwaps`. Stable lowercase `State`
   string is owned by `convert.go`, intentionally decoupled from the proto
@@ -42,34 +56,40 @@ graph.
 - `ErrSwapRuntimeUnavailable` — Sentinel returned by `Receive`, `Send`,
   `ListSwaps`, `GetSwap`, `ResumeSwap`, and `SubscribeSwaps` when the package
   is built without the `swapruntime` tag.
+- `WalletRPC()` — Returns the private `walletrpc.WalletServiceClient` for
+  advanced callers.
 
 ## RPC Methods (host-facing API)
 
 | Method | Description |
 |--------|-------------|
-| `GetInfo` | Daemon readiness snapshot: version, network, identity, wallet/server readiness |
+| `GetInfo` | Daemon readiness snapshot: version, network, identity, wallet/server readiness, `WalletState` |
 | `CreateWallet` | Create or import the embedded daemon wallet (auto-generates seed when mnemonic empty) |
 | `UnlockWallet` | Unlock an existing embedded daemon wallet |
-| `ListBalance` | Confirmed/unconfirmed boarding, VTXO, and on-chain balance buckets |
-| `GetOnchainAddress` | Allocate a fresh boarding address |
+| `Balance` | Confirmed/unconfirmed boarding, VTXO, and on-chain balance buckets |
+| `Deposit` | Allocate a fresh boarding address (walletrpc only) |
 | `Receive` | Start a Lightning-to-Ark receive swap (swapruntime only) |
-| `Send` | Start an Ark-to-Lightning payment swap (swapruntime only) |
+| `Send` | Start an Ark-to-Lightning payment or onchain send (walletrpc only) |
+| `List` | Page through unified wallet history — swap, OOR, boarding, exit (walletrpc only) |
+| `Status` | Unified balance + pending-entry summary (walletrpc only) |
+| `Subscribe` | Stream `Entry` updates; optionally emit existing rows first (walletrpc only) |
 | `ListSwaps` | List persisted daemon-owned swap summaries (swapruntime only) |
 | `GetSwap` | Fetch one persisted swap by hex payment hash (swapruntime only) |
 | `ResumeSwap` | Wake one pending persisted swap worker (swapruntime only) |
 | `SubscribeSwaps` | Stream swap summary updates; optionally include existing rows (swapruntime only) |
 | `Stop` / `Close` | Shut down the embedded daemon and release the private transport |
-| `Wait` | Single-reader channel yielding the daemon's terminal run error |
-| `GRPCConn` / `ArkRPC` / `SwapRPC` | Escape hatches exposing the underlying private gRPC connection and raw RPC clients |
+| `Wait` | Channel yielding the daemon's terminal run error (multi-reader via context.AfterFunc) |
+| `GRPCConn` / `ArkRPC` / `SwapRPC` / `WalletRPC` | Escape hatches for the underlying gRPC connection and raw RPC clients |
 
 ## Relationships
 
 - **Depends on**: `darepod` (embedded daemon runtime, default config,
   validation), `daemonrpc` (wallet, balance, info, address RPCs),
-  `rpc/swapclientrpc` (daemon-owned swap RPCs), `swapclientserver`
-  (`swapruntime` build only — registers the daemon-side swap subserver via
-  `RPCServiceRegistrars`), `google.golang.org/grpc/test/bufconn`
-  (in-process transport).
+  `rpc/swapclientrpc` (daemon-owned swap RPCs), `rpc/walletrpc`
+  (daemon-owned wallet RPCs), `swapclientserver` (`swapruntime` build only —
+  registers the swap subserver via `RPCServiceRegistrars`), `swapwallet`
+  (`walletrpc` + `swapruntime` build only — registers the wallet subserver),
+  `google.golang.org/grpc/test/bufconn` (in-process transport).
 - **Depended on by**: host Go apps, gomobile / React Native / WASM bridges,
   and `cmd/walletdk-tui` (Bubble Tea manual-test TUI; tracked in a sibling
   PR).
@@ -118,6 +138,12 @@ graph.
 - `SubscribeSwaps` returns an unbuffered updates channel so a slow consumer
   applies backpressure end-to-end; the errs channel is cap-1 for a single
   terminal error.
+- Wallet-RPC methods (`Deposit`, `Send`, `List`, `Status`, `Subscribe`)
+  return `ErrWalletRPCUnavailable` synchronously when the daemon was not
+  compiled with both `walletrpc` and `swapruntime` tags. This is checked via
+  `requireWalletRPC()` before any gRPC is attempted.
+- `Connect` (remote mode) sets `canWallet` based on whether the daemon's
+  `GetInfo` response advertises a `WalletService` capability.
 
 ## Deep Docs
 

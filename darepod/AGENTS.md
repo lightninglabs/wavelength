@@ -10,12 +10,44 @@ gRPC API.
 
 - `Server` — Main daemon owning wallet, DB, chainsource actor, gRPC server, and ActorSystem. Caches `localMailboxID` (pubkey-derived), `authSigHex` (Schnorr auth) and a single `clk` (`clock.Clock`) that all sub-stores share for deterministic time injection.
 - `RPCServer` — Implements the gRPC `DaemonService` API (Board, ListRounds, WatchRounds, NewReceiveScript, SendVTXO, etc.). Includes test hooks for mailbox edge factory and round registration. Holds an in-memory `customInputLocks` map (guarded by `customInputLocksMu`) that reserves custom OOR input outpoints for the duration of a `SendOOR` call to prevent concurrent callers from double-signing the same custom input.
-- `Config` — Daemon configuration (data dir, network, RPC host, wallet type, etc.). Includes `MailboxEdgeFactory` hook for test harness transport interception and `PackageSubmitter chainbackends.PackageSubmitter` for injecting a v3 CPFP package submitter (set by the test harness via `BitcoindPackageSubmitter`, and by `cmd/darepod` from `bitcoind.{host,user,pass}` flags when present; not serialized to config files). Also carries an optional `Unroll *UnrollConfig` tuning block, and a `MaxOperatorFeeSat int64` cap fed into `ClientEnvironment.MaxOperatorFee`. Under the #270 seal-time fee handshake every server-issued `JoinRoundQuote` is compared against this cap; `Config.Validate()` fails closed when the value is non-positive (zero / unset is a misconfiguration, not "no cap"). The CLI exposes the knob as `--maxoperatorfeesat`; `DefaultMaxOperatorFeeSat` provides a generous default so a user who builds from defaults never runs with the cap fail-closed by accident.
+- `Config` — Daemon configuration (data dir, network, RPC host, wallet type,
+  etc.). Includes `MailboxEdgeFactory` hook for test harness transport
+  interception, `PackageSubmitter chainbackends.PackageSubmitter` for injecting
+  a v3 CPFP package submitter, optional `Unroll *UnrollConfig` tuning, optional
+  `Swap *SwapConfig` (swap subserver config), optional
+  `SwapWallet *SwapWalletConfig` (wallet subserver config), and
+  `MaxOperatorFeeSat int64` cap. New: `LogDirPath string` overrides the
+  network-scoped log directory used by the CLI (`logdir` mapstructure key); when
+  empty, logs go to `DataDir/logs/<network>`.
+- `SwapConfig` — Swap subserver config. New fields: `SuppressResume bool`
+  (programmatic; suppresses the swap subserver's own resume sweep so a higher
+  layer can own the lifecycle) and `Backend SwapBackend` (set by
+  `swapclientserver.Register` after the swap subserver wires; lets the walletrpc
+  subserver drive `ResumePending` in-process).
+- `SwapBackend` — Interface exposed by `swapclientserver` after `Register`:
+  `ResumePending(ctx)`. Allows walletrpc to own the unified resume policy
+  without dialing the daemon's gRPC server from inside the same process.
+- `SwapWalletConfig` — Configuration for the optional walletrpc subserver
+  (compiled in when both `walletrpc` + `swapruntime` build tags are present).
+  Fields: `Deadline`, `DefaultListLimit`, `MaxListLimit`, `SubscribeBuffer`.
+  Present in all builds so config files stay stable; fields are inert in default
+  builds.
 - `UnrollConfig` — Tuning for the unilateral-exit subsystem. Fields: `BumpAfterBlocks int32` (fee-bump cadence; zero → default 6) and `MaxFeeRateSatPerVByte int64` (cap fed to both `txconfirm` and the unroll registry; zero → each subsystem's own default). Surfaced on the `Server` via `unrollMaxFeeRate()` which gates non-positive values to zero.
 - `TriggerRoundRegistration` — Test-hook method that injects a round registration event into the round actor (in `server_round_testhook.go`).
 - `GetStoredVTXO` — Harness-only accessor that returns a persisted `vtxo.Descriptor` for a given outpoint directly from the daemon's VTXO store. Lets integration tests inspect partial unroll state without reaching into internal fields.
 - `GetVTXOLineageTx` / `VTXOLineageEntry` — Harness-only accessor that returns one transaction in a VTXO's recovery lineage plus the outpoints of its parent txs. Callers walk the lineage by recursively calling with each returned parent outpoint until `OnChainRoot=true` (the parent is the on-chain batch tx). Implemented on top of the same `unroll.LocalProofAssembler` the unroll registry uses (stashed on `Server.proofAssembler` during `initUnrollSubsystem`), but routed through the assembler's terminal-tolerant `EnsureProofForHarness` entry point so the historical lineage of an already-spent or already-forfeited VTXO is still walkable — that is the load-bearing capability for fraud-response itests where the harness force-broadcasts lineage txs of a terminal VTXO to provoke server-side classification + response. The field type `harnessProofAssembler` is a 1-method local interface that exposes ONLY the terminal-tolerant entry point, so production code paths cannot reach `EnsureProof` through this seam — production proof assembly flows exclusively through the unroll registry's own `ProofAssembler` reference, which keeps the terminal-status guard in force. NOT for production use.
 - `WalletState` — Enum (None/Locked/Ready) for wallet lifecycle.
+- `WalletLifecycleState()` — Public `Server` method returning current
+  `WalletState`. Surfaced via `GetInfo` RPC as `daemonrpc.WalletState` so
+  callers can distinguish not-yet-created from locked from ready.
+- `boardingSweepWatcher` / `resumeBoardingSweeps` / `replayPendingBoardRequest`
+  — Boarding sweep subsystem moved from direct `darepod` handlers to the wallet
+  actor. The daemon calls `resumeBoardingSweeps` (step 13) and
+  `replayPendingBoardRequest` (step 13b) after txconfirm and the round-client
+  actor register with the receptionist.
+- `fraudWatcher` / `fraudWatcherRef` — Passive recipient fraud watcher wired
+  during `initOORActor`. Arms spend watches on OOR VTXO ancestors and triggers
+  unilateral exit via the unroll registry on fraud detection.
 - `serverDurableUnaryBuilder` — Implements `serverconn.DurableUnaryRequestBuilder` by delegating to the indexer client with proof-of-control credentials.
 - `IndexerProofKey` — Public server method that derives the fixed wallet key for a given key locator and returns an `indexer.SchnorrSigner` backed by the proof-key backend. Used by `EnsureDefaultOORReceiveScript` and the `serverDurableUnaryBuilder` to produce per-request proof-of-control signatures.
 - `NewOwnedReceiveScriptSigner` — Indexer signer that resolves the wallet key for any persisted owned receive script, then delegates signing to the backend-specific signer.
@@ -63,7 +95,11 @@ gRPC API.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (ActorSystem), `btcwbackend`, `chainbackends`, `chainsource`, `lib/actormsg`, `db`, `ledger` (accounting actor), `round`, `txconfirm`, `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`, `indexer`, `arkrpc`, `lndbackend`, `harness` (bitcoind package submitter wiring in `cmd/darepod`).
+- **Depends on**: `baselib/actor` (ActorSystem), `btcwbackend`, `chainbackends`,
+  `chainsource`, `lib/actormsg`, `db`, `ledger` (accounting actor), `round`,
+  `txconfirm`, `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`,
+  `indexer`, `arkrpc`, `lndbackend`, `fraud` (recipient fraud watcher),
+  `harness` (bitcoind package submitter wiring in `cmd/darepod`).
 - **Depended on by**: `cmd/darepod` (main entry point).
 
 ## Invariants

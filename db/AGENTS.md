@@ -21,7 +21,10 @@ backends.
   sweep_pending). Includes sweep operations: `CreatePendingBoardingSweep`,
   `MarkBoardingSweepPublished`, `MarkBoardingSweepFailed`,
   `ListBoardingSweeps`, `ListPendingBoardingSweeps`,
-  `MarkBoardingSweepInputSpent`.
+  `MarkBoardingSweepInputSpent`. Also implements pending Board request
+  persistence: `UpsertPendingBoardRequest`, `ListPendingBoardRequests`,
+  `ClearPendingBoardRequestByOutpoint`, `ClearAllPendingBoardRequests` —
+  used by the wallet actor's replay-on-restart path.
 - `NewBoardingSweep` / `BoardingSweepRecord` / `BoardingSweepInputRecord` —
   Domain types for the boarding sweep control plane. A sweep is an aggregate
   transaction spending one or more boarding outpoints; each outpoint has its
@@ -47,7 +50,9 @@ backends.
   idempotency). Joins the outer actor transaction via `actor.TxFromContext`.
   Exposes `GetAccountBalance`, `GetTotalOperatorFeesPaid`,
   `ListLedgerEntries`, `ListLedgerEntriesWithFeesTotal`,
-  `ListLedgerEntriesByType`, `CountLedgerEntries`, `ListAccounts`.
+  `ListLedgerEntriesByType`, `CountLedgerEntries`, `ListAccounts`. Now
+  persists optional `ChainTxid`, `ChainVout`, and `ConfirmationHeight` fields
+  from `ledger.LedgerEntry` via `sqlInt32Ptr` null helpers.
 - `UTXOAuditStoreDB` — Concrete adapter implementing `ledger.UTXOAuditStore`.
   Wraps `sqlc.InsertWalletUTXOLog` (ON CONFLICT DO NOTHING for idempotency)
   and query methods.
@@ -77,7 +82,12 @@ backends.
   bounds enforced during `DeserializeTree` to prevent stack overflow or OOM.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — Two-stage OOR
   ancestry resolver in `oor_unroll_resolver.go`.
-- `LatestMigrationVersion = 11` — Current schema version.
+- `LatestMigrationVersion` — Current schema version (updated as migrations land).
+- `BoardingSweepStatusPending` / `BoardingSweepStatusPublished` / etc. and
+  `BoardingSweepInputStatusPending` / etc. — Status string constants for
+  boarding sweep lifecycle. Previously defined in `db/`; now canonical in
+  `wallet/boarding_sweep_store.go` and re-exported as package-level aliases
+  in `db/boarding_sweep_store.go` for backward compatibility.
 
 ## Relationships
 

@@ -18,8 +18,11 @@ resume semantics.
   2-of-2 collab leaf; uses `MultiPrevOutFetcher` for correct BIP-341 sighash
   across multiple inputs.
 - `ClientActorCfg` — Configuration for OORClientActor (OutboxHandler,
-  ServerConn, PackageStore, DeliveryStore, VTXOManager, VTXOStore, and optional
-  `LedgerSink fn.Option[ledger.Sink]` for fire-and-forget accounting emission).
+  ServerConn, PackageStore, DeliveryStore, VTXOManager, VTXOStore, optional
+  `LedgerSink fn.Option[ledger.Sink]` for fire-and-forget accounting emission,
+  and optional `IncomingVTXOObserver IncomingVTXONotifier` — daemon-local
+  observer called after materialization so subsystems can arm actor-owned work
+  (e.g. fraud watcher) without making `oor` depend on those subsystems).
 - `OORClientActor` — Durable actor wrapping per-session state machines. Handles
   both outgoing transfers and incoming receive via three-phase async resolution.
   Emits `VTXOSentMsg` / `VTXOReceivedMsg` to the ledger actor at the two points
@@ -91,7 +94,10 @@ resume semantics.
   checkpoint PSBTs, recipients, and resolved `MetadataMatches`; sent to the
   wallet/state layer to persist incoming VTXO records.
 - `SendIncomingAckRequest` — Outbox event that asks the transport layer to ack
-  the incoming transfer to the server.
+  the incoming transfer to the server. Implements `CorrelationKey()` returning
+  `"oor/<sessionID>"` so all outbox messages for the same session are serialized
+  in emission order in the durable serverconn mailbox via the per-key FIFO
+  claim invariant.
 - `IncomingTransferNotification` — Outbox event emitted alongside metadata query
   during incoming transfer processing.
 - `ScheduleRetryRequest` — Outbox event for scheduling retryable outbox

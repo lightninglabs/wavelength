@@ -20,6 +20,10 @@ embed the same command tree.
   subcommand and MCP tool definitions. Built from `baseMethodRegistry`,
   `vtxoLifecycleMethodRegistry`, and `sendMethodRegistry` sub-registries
   to stay within the `funlen` lint cap.
+- `getWalletClient()` — Connects to the daemon's `walletrpc` subserver
+  (built only with the `walletrpc` + `swapruntime` tags).
+- `devrpc.NewDevCmd(cfg)` — Mounts the generated low-level `dev [service]
+  [call]` command tree from the `devrpc` sub-package.
 
 ## Commands
 
@@ -70,6 +74,18 @@ embed the same command tree.
 | `unroll` | `Unroll` | Trigger a unilateral exit for the VTXO at `--outpoint txid:index`. Routes through the VTXO manager's `ForceUnrollRequest` path so the FSM transitions cleanly; the registry job is created async via the chain resolver seam. Response includes `Created` (false if already exiting) and the `ActorId` to poll. |
 | `unroll status` | `GetUnrollStatus` | Query progress for an unroll job by `--outpoint`. Reads through to the live registry first and falls back to the persisted `unilateral_exit_jobs` table for evicted/terminal jobs; `Found=false` (not an error) distinguishes "no such job" from lookup failure. |
 
+### Wallet RPC commands (`cmd_wallet_rpc.go`, `walletrpc` + `swapruntime` tags only)
+
+These commands connect to the daemon-owned `WalletService` subserver.
+
+| Command | RPC | Description |
+|---------|-----|-------------|
+| `wallet send` | `Send` | Send to an invoice or onchain address via the wallet subserver |
+| `wallet recv` | `Recv` | Open a receive swap, return BOLT-11 invoice |
+| `wallet list` | `List` | List unified wallet history (swap, OOR, boarding, exit) |
+| `wallet deposit` | `Deposit` | Return a fresh boarding address |
+| `wallet status` | `Status` | Show unified balance and pending-entry summary |
+
 ### Lightning swap commands (`cmd_swap_rpc.go`, `swapruntime` tag only)
 
 These commands connect to the daemon-owned `SwapClientService` subserver.
@@ -87,8 +103,9 @@ The daemon owns the background worker; CLI exit does not cancel an admitted swap
 ## Relationships
 
 - **Depends on**: `daemonrpc` (generated gRPC client stubs for the main
-  daemon service), `rpc/swapclientrpc` (generated gRPC stubs for the
-  optional swap subserver, `swapruntime` tag only).
+  daemon service), `rpc/swapclientrpc` (swap subserver stubs, `swapruntime`
+  tag only), `rpc/walletrpc` (wallet subserver stubs, `walletrpc` +
+  `swapruntime` tags only), `devrpc` (generated low-level dev command tree).
 - **Depended on by**: `cmd/darepocli` (main entry point).
 
 ## Deep Docs

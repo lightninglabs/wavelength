@@ -31,8 +31,16 @@ transport, without duplicating Ark runtime behavior.
 - `WrapDaemonClient` — Constructor that creates a `Client` from an
   already-connected `daemonrpc.DaemonServiceClient` and a caller-supplied
   `closeFn`.
+- `WalletState` — Tri-state enum (`WalletStateUnspecified=0`, `WalletStateNone=1`,
+  `WalletStateLocked=2`, `WalletStateReady=3`) mirroring
+  `daemonrpc.WalletState`. Values are ordered least-to-most ready; callers use
+  `>= WalletStateLocked` for "seed exists" semantics and `== WalletStateReady`
+  for "fully usable" semantics.
 - `Info` / `ServerInfo` / `Seed` / `WalletInitResult` — SDK-owned typed
-  models for daemon status and wallet bootstrap flows.
+  models for daemon status and wallet bootstrap flows. `Info.WalletState` (type
+  `WalletState`) replaces the former `Info.WalletReady bool`; use the
+  `Info.WalletReady()` method as a convenience predicate over
+  `WalletState == WalletStateReady`.
 - `VTXOInfo` — Typed VTXO view (Outpoint, AmountSat, Status, BatchExpiry,
   RoundID, CreatedHeight, etc.) returned by `ListLiveVTXOs` /
   `ListSpentVTXOs`.

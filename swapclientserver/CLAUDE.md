@@ -33,11 +33,14 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   by a `swapruntime`-tagged `darepod` binary. Opens the daemon-owned SQLite
   swap store, dials `swapdk-server`, creates an in-process Ark SDK facade over
   `darepod.RPCServer`, wires `swaps.NewSwapClientWithStore`, installs a
-  `MailboxOutSwapEventReceiver` (empty mailbox ID — receiver derives the
-  per-swap mailbox from client identity + payment hash) on the
-  `SwapClient` so out-swap HTLC events flow over the mailbox transport,
-  registers the gRPC subserver, calls `resumePending`, and returns a cleanup
-  function.
+  `MailboxOutSwapEventReceiver` on the `SwapClient`, registers the gRPC
+  subserver, populates `cfg.Swap.Backend` with `ResumePending`, and — unless
+  `cfg.Swap.SuppressResume` is true — calls `resumePending` synchronously.
+  When `SuppressResume` is true a higher-layer subserver (walletrpc) owns the
+  resume timing.
+- `ResumePending(ctx)` — Public method satisfying `darepod.SwapBackend`.
+  Exposes the private `resumePending` helper so the walletrpc subserver can
+  drive it after its own pre-conditions are met.
 
 ## RPC Methods
 
@@ -77,9 +80,12 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `SubscribeSwaps` subscribers are best-effort, buffered (16), and
   non-blocking. Slow subscribers may miss a terminal-state update; they can
   recover current state with `GetSwap` or `ListSwaps`.
-- `Register` calls `resumePending` synchronously before returning so the
-  daemon gRPC server begins accepting calls with all prior sessions already
-  driven by a worker.
+- `Register` populates `cfg.Swap.Backend` before the resume sweep so a
+  higher layer (walletrpc) can call `ResumePending` even when
+  `SuppressResume=true`. When `SuppressResume=false` (default), `Register`
+  calls `resumePending` synchronously before returning so the daemon gRPC
+  server begins accepting calls with all prior sessions already driven by a
+  worker.
 - Swap state, persistence, and protocol behavior are never duplicated in this
   layer — they stay in `sdk/swaps`. This package is a worker registry and RPC
   facade only.

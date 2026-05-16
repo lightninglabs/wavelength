@@ -18,6 +18,13 @@ background ingress polling with event routing.
 - `AuthHeaderKey` — Envelope header key (`x-mailbox-auth-sig`) for the Schnorr auth signature.
 - `GenerateClientTLSCert` — Creates an ephemeral P-256 mTLS client cert with the secp256k1 identity pubkey hex as Subject CN. Returns error on nil key.
 - `AckState` — Four-cursor watermark state machine (PullCursor, DispatchCommittedTo, AckTarget, AckCommittedTo).
+- `SendClientEventRequest` — Durable TLV-encoded outbox message wrapping a
+  round/OOR outbox event for delivery over the mailbox. Implements
+  `actor.Message.CorrelationKey()` by forwarding the inner concrete message's
+  `CorrelationKey()` (in-process path) or a `cachedCorrelationKey` decoded
+  from TLV field 8 (outbox-CDC replay path). Without this forwarding, the
+  wrapper's embedded `BaseMessage` default of `""` would erase the inner key
+  at enqueue and land every outbox row in the unkeyed claim lane.
 - `SendUnaryRequest` — Durable typed unary request that becomes a real unary RPC after commit. The response arrives via KIND_RESPONSE and, if no in-memory waiter exists, falls back to durable route dispatch via the EventRouter.
 - `DurableUnaryRequestBuilder` — Interface for proof-gated request-body construction. Implementations build the actual proto request (e.g., with signed proofs) at send time, not at persist time. The interface is provided via `ConnectorConfig.DurableUnaryBuilder`.
 - `DurableUnaryQuery` — Interface implemented by transport-native durable query messages that persist raw query parameters (not a full proto). The `ServerConnectionActor` matches any `DurableUnaryQuery` generically in its `Receive` loop and calls `buildDurableUnary` to construct a `SendUnaryRequest` on the fly, using `BuildBody`, `QueryCorrelationID`, `QueryMsgID`, `QueryIdempotencyKey`, and `ServiceMethod`.
@@ -44,6 +51,10 @@ background ingress polling with event routing.
 - Ack watermark only advances AFTER durable local dispatch commit (prevents message loss on crash).
 - Unary RPC responses use in-memory registry first; if no waiter exists (crash replay), the ingress falls back to durable EventRouter dispatch. The ResponseRegistry returns a tri-state delivery result (waiter/buffered/dropped) so the ingress knows whether to route durably.
 - `SendClientEventRequest` auto-derives `Service`/`Method` from `Message.ServiceMethod()` when callers leave them empty, preventing silent drops.
+- `SendClientEventRequest.CorrelationKey()` MUST propagate the inner message's
+  key to the durable mailbox. The TLV codec persists it in field 8 so the
+  outbox-CDC decode path can recover it even after `rawServerMessage` replaces
+  the typed inner message.
 - Idempotency keys are derived from message payload hash; same key on retry enables server deduplication.
 - Ingress loop checkpoints pull cursor and ack state; on restart, resumes from checkpoint.
 - `DurableUnaryQuery` values are handled generically in `ServerConnectionActor.Receive` via `buildDurableUnary`: the query is converted to a `SendUnaryRequest` using the configured `DurableUnaryRequestBuilder`. Adding a new durable indexer query type requires only implementing `DurableUnaryQuery` — no new `Receive` case is needed.

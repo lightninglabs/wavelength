@@ -96,9 +96,14 @@ protocols with MuSig2 signing ceremonies.
 ### Outbox Messages (`outbox_messages.go`)
 
 - `ClientOutMsg` — Sealed interface for all FSM outbox messages.
+- `JoinRoundRequest` — Initial intent submission to the server. Implements
+  `CorrelationKey()` returning `"round/<RoundID>"` (or `""` for an
+  unassigned round) so messages cluster in a per-round FIFO lane in the
+  durable serverconn mailbox.
 - `JoinRoundAcceptOutbox` — Emitted after quote fee-cap check passes.
   Carries `RoundID` and `QuoteID [32]byte`; routed to
   `MethodAcceptQuote`. `ToProto()` encodes to `roundpb.JoinRoundAccept`.
+  Implements `CorrelationKey()` returning `"round/<RoundID>"`.
 - `JoinRoundRejectOutbox` — Emitted when client refuses the server's
   quote. Carries `RoundID`, `QuoteID [32]byte`, `Reason string`;
   routed to `MethodRejectQuote`. `ToProto()` encodes to

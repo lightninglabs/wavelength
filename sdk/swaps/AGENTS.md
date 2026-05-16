@@ -15,7 +15,9 @@ inside the same Ark instance without bridging through Lightning.
 - `SwapClient` — Top-level entry point. Constructed via `NewSwapClient`
   (no persistence) or `NewSwapClientWithStore` (SQLite-backed). Drives
   both pay and receive flows. Holds an `OutSwapEventReceiver` that can be
-  overridden via `SetOutSwapEventReceiver`.
+  overridden via `SetOutSwapEventReceiver`. `SetChainParams(*chaincfg.Params)`
+  configures the Bitcoin network used to decode pay-side BOLT-11 invoices;
+  pay flows reject invoices when no params are configured.
 - `PaySession` — Owns one Ark-to-Lightning pay flow. FSM states:
   `Created → SwapCreated → FundingInitiated → VHTLCFunded →
   WaitingForClaim → Completed` (or `Expired / RefundInitiated →
@@ -109,6 +111,15 @@ flow falls back to `WaitOutSwapHtlc` and converts the result into an
 - OOR session IDs must be persisted before transitioning; failure wraps in
   `newRetryableActionError` so the FSM retries rather than advancing past
   a durable boundary.
+- Pay flows call `validateInSwapQuote` (in `in_swap_quote.go`) before funding
+  the vHTLC; the server quote must match the caller's invoice amount within the
+  fee limit. This guard requires `chainParams` to decode the BOLT-11 invoice —
+  pay flows return an error if no chain params are configured via
+  `SetChainParams`.
+- `NewSwapClientWithStore` auto-extracts `chainParams` from built-in
+  `InvoiceCreator` implementations (`InvoiceGenerator`, `DirectInvoiceCreator`)
+  via `invoiceCreatorChainParams`. Custom `InvoiceCreator` implementations must
+  call `SetChainParams` explicitly.
 - The store is optional: `NewSwapClient` (no store) and
   `NewSwapClientWithStore` are both valid; all `persist()` calls are
   no-ops when `store == nil`.

@@ -13,8 +13,35 @@ refresh, leave, OOR spend, and directed send flows.
 - `Ark` — Main actor managing boarding addresses, UTXO enumeration, confirmation polling, admission forwarding, and VTXO selection/locking. Holds a `ledgerSink` field (`fn.Option[ledger.Sink]`) used by the `emitUTXOCreated` helper to Tell `UTXOCreatedMsg` to the ledger actor whenever a confirmed wallet UTXO is observed.
 - `NewArk` — Constructor; takes the `ledgerSink` as a **required** argument (`fn.Option[ledger.Sink]`) rather than a setter, so every call site is forced to make an explicit emission choice. Production passes `fn.Some(ledger.NewSink(actorSystem))`; harnesses and unit tests that do not register a ledger actor pass `fn.None[ledger.Sink]()`.
 - `emitUTXOCreated(ctx, utxo, blockHeight, classification)` — Internal helper that null-safely builds a `ledger.UTXOCreatedMsg` from a wallet `Utxo` and Tells it to `ledgerSink`. Negative block heights clamp to `0` rather than wrapping under a direct `uint32` cast; nil `utxo` and `fn.None` sink are silent no-ops.
-- `LockID` — `[32]byte` caller-scoped output lease identifier used to associate leased UTXOs with a specific subsystem (`txconfirmLockID` in `txconfirm`, etc.).
-- `OutputLeaser` — Interface for UTXO output leasing: `LeaseOutput(ctx, outpoint, lockID, expiry)` and `ReleaseOutput(ctx, outpoint, lockID)`. Implemented by all three `BoardingBackend` implementations (`btcwbackend`, `lndbackend`, `lwwallet`) to coordinate cross-subsystem UTXO reservation.
+- `LockID` — Type alias for `walletcore.LockID` (`[32]byte` caller-scoped
+  output lease identifier). The canonical declaration lives in `walletcore`
+  to break the import cycle between `wallet` and `txconfirm`.
+- `OutputLeaser` — Type alias for `walletcore.OutputLeaser`; canonical
+  declaration in `walletcore`. Implemented by all three `BoardingBackend`
+  backends (`btcwbackend`, `lndbackend`, `lwwallet`).
+- `Utxo` — Type alias for `walletcore.Utxo`. Canonical declaration in
+  `walletcore`.
+- `SweepSigner` — Interface providing cryptographic and address operations
+  needed for boarding-timeout sweep transactions. Mirrors
+  `unroll.SweepWallet`'s shape so the per-backend `*UnrollWallet` adapters
+  in `darepod` satisfy both without modification.
+- `SweepBoardingUTXOsRequest` / `SweepBoardingUTXOsResponse` — Ask-request
+  for building and optionally broadcasting a boarding timeout-path aggregate
+  sweep transaction. Business logic (fee guard, input cap, CPFP anchor, fee
+  estimation) previously in `darepod/boarding_sweep.go` now lives in
+  `wallet/boarding_sweep.go`.
+- `ResumeBoardingSweepsRequest` / `ResumeBoardingSweepsResponse` — Ask-request
+  for re-arming chainsource spend watches and re-submitting each persisted
+  pending boarding sweep to `txconfirm`. Driven by `darepod.resumeBoardingSweeps`
+  after both the txconfirm broadcaster and the round-client actor have
+  registered with the receptionist.
+- `ReplayPendingBoardRequest` / `ReplayPendingBoardResponse` — Ask-request
+  for replaying any persisted Board RPC that was issued before the last
+  shutdown. Driven after the round-client actor registers.
+- `BoardingSweepSpendNotification` — Tell-message delivered by chainsource
+  when a monitored boarding sweep input is confirmed spent.
+- `WithBoardingSweep(store, signer, txconfirmRef)` — Functional option that
+  enables the boarding-sweep subsystem on the wallet actor.
 - `BoardingBackend` — Interface for wallet integration (key derivation, taproot import, ListUnspent). `GetTransaction` returns `*TxInfo` (containing tx, block hash, and block height).
 - `TxInfo` — Struct wrapping a confirmed transaction with its block hash and block height. Returned by `BoardingBackend.GetTransaction`.
 - `BoardingStore` — Interface for persisting boarding addresses and intents.
@@ -37,8 +64,13 @@ refresh, leave, OOR spend, and directed send flows.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager admission types), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants).
-- **Depended on by**: `round` (boarding intents, types: `BoardingAddress`, `SelectedVTXO`), `db` (persistence), `darepod` (wiring).
+- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch
+  notifications), `lib/actormsg` (VTXO manager admission types), `ledger`
+  (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit`
+  constants), `walletcore` (`LockID`, `Utxo`, `OutputLeaser` canonical types),
+  `txconfirm` (boarding sweep actor looks up broadcaster via `LookupRef`).
+- **Depended on by**: `round` (boarding intents, types: `BoardingAddress`,
+  `SelectedVTXO`), `db` (persistence), `darepod` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
   - → `round` (via `lib/actormsg`): `TriggerBoardMsg` (VTXO amounts for
@@ -52,7 +84,13 @@ refresh, leave, OOR spend, and directed send flows.
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`
-  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`
+  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`,
+    `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`,
+    `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`,
+    `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`,
+    `SendVTXOsRequest`, `SweepBoardingUTXOsRequest`,
+    `ResumeBoardingSweepsRequest`, `ReplayPendingBoardRequest`
+  - ← `chainsource` (spend notifications): `BoardingSweepSpendNotification`
 
 ## Invariants
 
@@ -65,7 +103,18 @@ refresh, leave, OOR spend, and directed send flows.
 - Local ownership of a round-produced VTXO is no longer tracked with a per-intent `IsOwner` flag. `types.VTXORequest` / `round.VTXOIntent` no longer carry `IsOwner`; at round confirmation time the round FSM asks a `round.OwnedScriptChecker` (backed in production by the OOR owned-receive-scripts store) which pkScripts to persist as local balance. The wallet's only job is to supply the correct `OwnerKey` per intent — local-origin owner keys keep their populated `KeyLocator` so `handleRegisterIntent` registers them via `OwnedScriptRegistrar`, while remote recipients carry a zero `KeyLocator` and are intentionally left unregistered.
 - `handleSendVTXOs` uses a `defer`-based release rather than a `releaseAndFail` helper: any error path (including dry-run) falls through to the deferred release, and the `committed` flag is set only after the round actor accepts the intent. Context is preserved via `context.WithoutCancel` so cleanup is not dropped when the caller disconnects.
 - `handleSendVTXOs` rejects pre-flight any directed send with multiple recipients and exactly-zero change residual under the #270 seal-time fee handshake. The server is the amount authority and absorbs the operator fee out of the designated `IsChange=true` slot; if there is no residual to absorb the fee against, the server has no slack to deduct fees without silently shifting them onto a recipient leg. The wallet refuses the request rather than letting the server pick the loser.
-- `VTXOReader` / `VTXODescriptor` / `SelectedVTXO` break the vtxo → round → wallet import cycle by providing wallet-level types that don't reference `vtxo.Descriptor` directly.
+- `VTXOReader` / `VTXODescriptor` / `SelectedVTXO` break the vtxo → round →
+  wallet import cycle by providing wallet-level types that don't reference
+  `vtxo.Descriptor` directly.
+- `LockID`, `OutputLeaser`, and `Utxo` are type aliases pointing to
+  `walletcore`. Do not declare new `wallet`-specific copies; use `walletcore`
+  directly when the import cycle must be avoided.
+- Boarding sweep logic (fee estimation, fee-guard, CPFP anchor, input cap) now
+  lives in `wallet/boarding_sweep.go` rather than `darepod`. The
+  `darepod.SweepBoardingUTXOs` RPC handler delegates to the wallet actor.
+- `ResumeBoardingSweepsRequest` MUST be driven by `darepod` AFTER the txconfirm
+  broadcaster and round-client actor are registered. Driving from inside
+  `wallet.Ark.Start` would race service-key resolution.
 - Per-subsystem logging via `build.LoggerFromContext` (no global mutable loggers).
 
 ## Deep Docs

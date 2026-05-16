@@ -22,7 +22,10 @@ other services can reuse durable actor storage without pulling unrelated tables.
   `*sql.Tx`. Implements `actor.DeliveryStore` directly against the transaction
   without additional `ExecTx` wrapping. `EnqueueOutbox` sets a shared
   `*outboxEnqueued` flag so `TxAwareActorDeliveryStore.ExecTx` can fire
-  outbox-wake callbacks after commit.
+  outbox-wake callbacks after commit. `EnqueueMessage` now stamps
+  `CorrelationKey` (from `actor.EnqueueParams.CorrelationKey`) onto the
+  `mailbox_messages.correlation_key` column to enable per-key FIFO claim
+  ordering in the durable mailbox.
 - `TxAwareActorDeliveryStore` — Extends `Store` with `ExecTx` support for
   atomic multi-operation workflows (implements `actor.TxAwareDeliveryStore`).
   Created via `NewTxAwareActorDeliveryStore(db, querier, clock)`. `ExecTx`

@@ -46,3 +46,18 @@ containers with network isolation for end-to-end testing.
 - `electrsReadyTimeout` = 2 minutes — separate extended timeout for the
   electrs container HTTP readiness check.
 - Coinbase maturity: 100 blocks + 6-block buffer.
+- `maxBitcoindStartRetries` = 3 — number of times `startBitcoind` rebuilds
+  the bitcoind container when post-start RPC probing fails (guards against
+  containers whose port-forward exists but whose bitcoind process never bound
+  the RPC socket or crashed during init).
+- `bitcoindStartProbeDuration` = 5s — wall-clock window `probeBitcoindHealthy`
+  spends polling bitcoind after the first successful `getblockchaininfo`
+  response to catch the failure mode where bitcoind answers the first poll
+  and then dies before the harness's first user-driven RPC call.
+
+## Helper Functions
+
+- `containerHasExactName(container, name)` — Returns true only when a Docker
+  container's name list contains the exact string `"/<name>"`. Needed because
+  Docker name filters match substrings; stale containers with overlapping
+  prefixes must not be confused for the one under management.

@@ -17,11 +17,15 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
   planner, and cached sweep transaction for this one VTXO.
 - `Config` — Per-actor wiring: `TargetOutpoint`, `ActorID`, `DeliveryStore`,
   `ProofAssembler`, `VTXOStore`, `TxConfirmRef`, `ChainSource`, `Wallet`
-  (`SweepWallet`), `MaxSweepFeeRateSatPerVByte`, and a `RegistryRef` for
-  terminal notifications.
+  (`SweepWallet`), `MaxSweepFeeRateSatPerVByte`,
+  `FraudCheckpointSafetyMargin` (block backstop for fraud-triggered jobs;
+  zero falls back to `defaultFraudCheckpointSafetyMargin`), and a
+  `RegistryRef` for terminal notifications.
 - `behavior` — Actor behavior. Holds `b.sweepTx` (restored from checkpoint on
-  boot) so retries and replays converge on a single sweep txid / pkScript
-  under `txconfirm`'s txid-keyed dedup.
+  boot) and `b.proofSpendWatches map[wire.OutPoint]struct{}` (active spend
+  watches on proof-graph ancestor outpoints for fraud-triggered deferred
+  checkpoint scenarios) so retries and replays converge on a single sweep
+  txid / pkScript under `txconfirm`'s txid-keyed dedup.
 - `Msg` / `Resp` / `Event` / `OutboxEvent` — Sealed durable-mailbox,
   response, FSM event, and FSM outbox surfaces.
 - `StartUnrollRequest` / `ResumeUnrollRequest` / `HeightObservedMsg` /
@@ -87,6 +91,11 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
 - `safeTxOutPkScript(tx, index)` — Bounds-checking helper used at every
   `tx.TxOut[i].PkScript` site so malformed proof artifacts (operator-sourced
   OOR inputs) surface as retryable errors instead of goroutine panics.
+- `proofNodeHeightHint` — Constant `1` passed as `HeightHint` to
+  `txconfirm.EnsureConfirmedReq` for all proof-graph nodes. Proof roots and
+  intermediate OOR checkpoint ancestors can confirm before the target VTXO's
+  creation height; using the target height would cause `chainsource` to miss
+  already-confirmed nodes silently.
 
 ## Relationships
 

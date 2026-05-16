@@ -18,6 +18,7 @@ package may import from a higher layer.
 | [`oor`](oor/) | Out-of-round transfer coordination FSM |
 | [`wallet`](wallet/) | On-chain boarding wallet actor (address derivation, UTXO monitoring) |
 | [`ledger`](ledger/) | Client-side durable ledger actor for double-entry fee accounting |
+| [`fraud`](fraud/) | Passive recipient fraud watcher actor: monitors ancestry spend notifications for received OOR VTXOs |
 | [`lib`](lib/) | Shared domain utilities: tree paths, BIP-322, arkscript policy, types |
 | [`lib/arkscript`](lib/arkscript/) | Tapscript AST compiler and policy system for Ark taproot outputs |
 | [`lib/bip322`](lib/bip322/) | BIP-322 intent-bound message authentication |
@@ -56,13 +57,14 @@ package may import from a higher layer.
 | [`sdk/swaps`](sdk/swaps/) | Lightning-to-Ark / Ark-to-Lightning atomic swap SDK with durable FSM flows |
 | [`sdk/walletdk`](sdk/walletdk/) | Wallet-shaped SDK facade for host apps: embeds the daemon in-process, dials it over a private bufconn transport, exposes typed onboarding / balance / receive / send / swap-accounting methods. Swap methods gated behind the `swapruntime` build tag |
 | [`swapclientserver`](swapclientserver/) | Optional daemon-side swap subserver (build tag `swapruntime`): translates `swapclientrpc` RPCs into `sdk/swaps` operations and manages the daemon-local worker registry |
+| [`swapwallet`](swapwallet/) | Daemon-side `WalletService` gRPC subserver (build tags `walletrpc`+`swapruntime`): exposes wallet lifecycle and boarding RPCs without swap vocabulary |
 | [`cmd/darepod`](cmd/darepod/) | Daemon entry point |
 | [`cmd/darepocli`](cmd/darepocli/) | CLI client |
 | [`timeout`](timeout/) | Generic timeout scheduling actor |
 | [`indexer`](indexer/) | Server indexing client for receive script registration |
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
 | [`arkrpc/treeconv`](arkrpc/treeconv/) | Narrow re-export of tree-path conversion helpers without the full gRPC surface |
-| [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb, swapclientrpc) |
+| [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb, swapclientrpc, walletrpc) |
 | [`daemonrpc`](daemonrpc/) | Daemon gRPC API definitions |
 
 ### Layer 4: Testing & Tooling
@@ -72,6 +74,7 @@ package may import from a higher layer.
 | [`harness`](harness/) | Docker-based Bitcoin/LND integration test environment |
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal/actortest`](internal/actortest/) | Durable actor integration tests with real DB backends |
+| [`internal/indexerlimits`](internal/indexerlimits/) | Shared client-side cursor caps and validation for indexer pagination queries |
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |
 | [`tools`](tools/) | Development tool dependencies (protoc plugins, sqlc) |
