@@ -99,6 +99,13 @@ const (
 	// need a stricter cap override via the `maxoperatorfeesat`
 	// config knob.
 	DefaultMaxOperatorFeeSat int64 = 1_000_000
+
+	// RPCTransportGRPC selects native gRPC for daemon-owned outbound RPCs.
+	RPCTransportGRPC = "grpc"
+
+	// RPCTransportREST selects grpc-gateway HTTP/JSON for daemon-owned
+	// outbound RPCs.
+	RPCTransportREST = "rest"
 )
 
 // Config holds all configuration for the darepod daemon.
@@ -303,9 +310,15 @@ func (c *Config) OORReceiveLimits() oor.ReceiveLimits {
 // the fields are only consumed when the daemon is compiled with swapruntime and
 // registers SwapClientService.
 type SwapConfig struct {
-	// ServerAddress is the swapdk-server gRPC endpoint used by the daemon
-	// executor. Empty values fall back to the local development default.
+	// ServerAddress is the swapdk-server endpoint used by the daemon
+	// executor. Its meaning follows ServerTransport: host:port for gRPC,
+	// or an HTTP gateway base URL for REST. Empty values fall back to the
+	// local development default.
 	ServerAddress string `mapstructure:"serveraddress"`
+
+	// ServerTransport selects the daemon-owned swapdk-server transport.
+	// Empty values default to gRPC.
+	ServerTransport string `mapstructure:"servertransport"`
 
 	// ServerTLSCertPath is an optional TLS certificate path for the
 	// swapdk-server connection. When set, the daemon uses the certificate
@@ -414,9 +427,14 @@ type LndConfig struct {
 // ServerConfig holds connection parameters for the ark operator's mailbox
 // edge server.
 type ServerConfig struct {
-	// Host is the gRPC address of the ark operator's mailbox edge
-	// service.
+	// Host is the ark operator endpoint. Its meaning follows Transport:
+	// host:port for gRPC, or an HTTP gateway base URL for REST.
 	Host string `mapstructure:"host"`
+
+	// Transport selects the daemon-owned outbound transport for ArkService
+	// and MailboxService clients. OOR traffic uses the mailbox edge, so it
+	// follows this selector as well. Empty values default to gRPC.
+	Transport string `mapstructure:"transport"`
 
 	// TLSCertPath is the path to the operator's TLS certificate for
 	// verifying the server connection. If empty, the system cert pool
@@ -562,6 +580,7 @@ func DefaultConfig() *Config {
 		},
 		Server: &ServerConfig{
 			Host:         DefaultServerHost,
+			Transport:    RPCTransportGRPC,
 			MaxTreeNodes: roundpb.DefaultMaxTreeNodes,
 		},
 		RPC: &RPCConfig{
@@ -574,7 +593,8 @@ func DefaultConfig() *Config {
 			RecoveryWindow: DefaultRecoveryWindow,
 		},
 		Swap: &SwapConfig{
-			ServerAddress: "localhost:10030",
+			ServerAddress:   "localhost:10030",
+			ServerTransport: RPCTransportGRPC,
 		},
 		MaxOperatorFeeSat: DefaultMaxOperatorFeeSat,
 		OOR:               defaultOORConfig(),
@@ -661,6 +681,18 @@ func (c *Config) Validate() error {
 	if c.Server.Host == "" {
 		return fmt.Errorf("server host is required")
 	}
+	if err := validateRPCTransport(
+		"server.transport", c.Server.Transport,
+	); err != nil {
+		return err
+	}
+	if c.Swap != nil {
+		if err := validateRPCTransport(
+			"swap.servertransport", c.Swap.ServerTransport,
+		); err != nil {
+			return err
+		}
+	}
 	if c.RPC == nil {
 		return fmt.Errorf("rpc config is required")
 	}
@@ -697,6 +729,18 @@ func validateGatewayAllowedOrigins(origins []string) error {
 	}
 
 	return nil
+}
+
+// validateRPCTransport checks an optional RPC transport selector.
+func validateRPCTransport(name, transport string) error {
+	switch transport {
+	case "", RPCTransportGRPC, RPCTransportREST:
+		return nil
+
+	default:
+		return fmt.Errorf("%s must be %q or %q: got %q", name,
+			RPCTransportGRPC, RPCTransportREST, transport)
+	}
 }
 
 // validateOORLimitsConfig rejects OOR safety caps that would disable receive

@@ -27,6 +27,7 @@ func DefaultConfig() Config {
 		Network:               cfg.Network,
 		DebugLevel:            cfg.DebugLevel,
 		ServerAddress:         cfg.Server.Host,
+		ServerTransport:       Transport(cfg.Server.Transport),
 		ServerTLSCertPath:     cfg.Server.TLSCertPath,
 		ServerInsecure:        cfg.Server.Insecure,
 		WalletType:            cfg.Wallet.Type,
@@ -36,6 +37,7 @@ func DefaultConfig() Config {
 		WalletRecoveryWindow:  cfg.Wallet.RecoveryWindow,
 		WalletFeeURL:          cfg.Wallet.FeeURL,
 		SwapServerAddress:     cfg.Swap.ServerAddress,
+		SwapServerTransport:   Transport(cfg.Swap.ServerTransport),
 		SwapServerTLSCertPath: cfg.Swap.ServerTLSCertPath,
 		SwapServerInsecure:    cfg.Swap.ServerInsecure,
 		SwapDatabaseFileName:  cfg.Swap.DatabaseFileName,
@@ -201,6 +203,9 @@ func applyConfigOverrides(daemonCfg *darepod.Config, cfg Config) {
 	if cfg.ServerAddress != "" {
 		daemonCfg.Server.Host = cfg.ServerAddress
 	}
+	if cfg.ServerTransport != "" {
+		daemonCfg.Server.Transport = string(cfg.ServerTransport)
+	}
 	if cfg.ServerTLSCertPath != "" {
 		daemonCfg.Server.TLSCertPath = cfg.ServerTLSCertPath
 	}
@@ -235,6 +240,9 @@ func applyConfigOverrides(daemonCfg *darepod.Config, cfg Config) {
 	}
 	if cfg.SwapServerAddress != "" {
 		daemonCfg.Swap.ServerAddress = cfg.SwapServerAddress
+	}
+	if cfg.SwapServerTransport != "" {
+		daemonCfg.Swap.ServerTransport = string(cfg.SwapServerTransport)
 	}
 	if cfg.SwapServerTLSCertPath != "" {
 		daemonCfg.Swap.ServerTLSCertPath = cfg.SwapServerTLSCertPath

@@ -122,19 +122,7 @@ func newRootCmd() *cobra.Command {
 		"path to lnd admin macaroon",
 	)
 
-	// Ark server connection flags.
-	f.String(
-		"server.host", cfg.Server.Host,
-		"ark operator mailbox server address",
-	)
-	f.String(
-		"server.tlscertpath", cfg.Server.TLSCertPath,
-		"path to ark server TLS certificate",
-	)
-	f.Bool(
-		"server.insecure", cfg.Server.Insecure,
-		"disable TLS for the server connection (dev only)",
-	)
+	registerArkServerFlags(f, cfg)
 
 	// Wallet backend flags.
 	f.String(
@@ -194,22 +182,7 @@ func newRootCmd() *cobra.Command {
 		"trusted browser origins allowed to call the daemon gateway",
 	)
 
-	f.String(
-		"swap.serveraddress", cfg.Swap.ServerAddress,
-		"swap server gRPC address for swapruntime builds",
-	)
-	f.String(
-		"swap.servertlscertpath", cfg.Swap.ServerTLSCertPath,
-		"swap server TLS certificate path for swapruntime builds",
-	)
-	f.Bool(
-		"swap.serverinsecure", cfg.Swap.ServerInsecure,
-		"disable TLS for swap server in swapruntime builds",
-	)
-	f.String(
-		"swap.databasefilename", cfg.Swap.DatabaseFileName,
-		"swap session SQLite database path for swapruntime builds",
-	)
+	registerSwapRuntimeFlags(f, cfg)
 
 	// Safety flag for mainnet operation.
 	f.Bool(
@@ -265,6 +238,51 @@ func newRootCmd() *cobra.Command {
 	_ = v.BindPFlags(f)
 
 	return cmd
+}
+
+// registerArkServerFlags registers the daemon's outbound Ark operator flags.
+func registerArkServerFlags(f *pflag.FlagSet, cfg *darepod.Config) {
+	f.String(
+		"server.host", cfg.Server.Host,
+		"ark operator address for selected server transport",
+	)
+	f.String(
+		"server.transport", cfg.Server.Transport,
+		"ark operator RPC transport (grpc or rest)",
+	)
+	f.String(
+		"server.tlscertpath", cfg.Server.TLSCertPath,
+		"path to ark server TLS certificate",
+	)
+	f.Bool(
+		"server.insecure", cfg.Server.Insecure,
+		"disable TLS for the server connection (dev only)",
+	)
+}
+
+// registerSwapRuntimeFlags registers optional swapruntime flags.
+func registerSwapRuntimeFlags(f *pflag.FlagSet, cfg *darepod.Config) {
+	f.String(
+		"swap.serveraddress", cfg.Swap.ServerAddress,
+		"swap server address for selected swapruntime transport",
+	)
+	f.String(
+		"swap.servertransport", cfg.Swap.ServerTransport, "swap "+
+			"server RPC transport for swapruntime builds (grpc "+
+			"or rest)",
+	)
+	f.String(
+		"swap.servertlscertpath", cfg.Swap.ServerTLSCertPath,
+		"swap server TLS certificate path for swapruntime builds",
+	)
+	f.Bool(
+		"swap.serverinsecure", cfg.Swap.ServerInsecure,
+		"disable TLS for swap server in swapruntime builds",
+	)
+	f.String(
+		"swap.databasefilename", cfg.Swap.DatabaseFileName,
+		"swap session SQLite database path for swapruntime builds",
+	)
 }
 
 // bindOORLimitFlags binds hyphenated OOR CLI flags to the config keys used by

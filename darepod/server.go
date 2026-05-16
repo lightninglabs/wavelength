@@ -295,7 +295,10 @@ type Server struct {
 	// subsystem is initialized.
 	lazyChainResolver *vtxo.LazyChainResolver
 
-	serverConn *grpc.ClientConn
+	serverConn        *grpc.ClientConn
+	arkClient         arkrpc.ArkServiceClient
+	mailboxClient     mailboxpb.MailboxServiceClient
+	serverConnCleanup func() error
 
 	rpcAddrMu   sync.RWMutex
 	rpcAddr     net.Addr
@@ -832,7 +835,9 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		if s.chainBackend != nil {
 			_ = s.chainBackend.Stop()
 		}
-		if s.serverConn != nil {
+		if s.serverConnCleanup != nil {
+			_ = s.serverConnCleanup()
+		} else if s.serverConn != nil {
 			_ = s.serverConn.Close()
 		}
 		if s.db != nil {
@@ -2067,24 +2072,12 @@ func (s *Server) connectLnd(ctx context.Context) (*lndclient.GrpcLndServices,
 // edge server. When TLSCertPath is set, the connection uses a custom cert
 // pool anchored to that certificate. When Insecure is set, TLS is disabled
 // entirely (for regtest/development only).
-func (s *Server) dialServer(ctx context.Context) (*grpc.ClientConn, error) {
+func (s *Server) dialServer() (*grpc.ClientConn, error) {
 	var dialOpts []grpc.DialOption
 
-	// Generate a P-256 client TLS cert carrying the secp256k1
-	// identity pubkey in the Subject CN. The server uses this
-	// for per-RPC access control on Pull/AckUpTo. Skip cert
-	// generation in insecure mode where TLS is disabled.
-	var clientCerts []tls.Certificate
-	if !s.cfg.Server.Insecure && s.clientKeyDesc.PubKey != nil {
-		clientCert, certErr := serverconn.GenerateClientTLSCert(
-			s.clientKeyDesc.PubKey,
-		)
-		if certErr != nil {
-			return nil, fmt.Errorf("generate client TLS cert: %w",
-				certErr)
-		}
-
-		clientCerts = []tls.Certificate{clientCert}
+	clientCerts, err := s.serverClientTLSCerts()
+	if err != nil {
+		return nil, err
 	}
 
 	switch {
@@ -2139,6 +2132,9 @@ func (s *Server) dialServer(ctx context.Context) (*grpc.ClientConn, error) {
 func (s *Server) newMailboxEdge() mailboxpb.MailboxServiceClient {
 	if s.cfg.MailboxEdgeFactory != nil {
 		return s.cfg.MailboxEdgeFactory(s.serverConn)
+	}
+	if s.mailboxClient != nil {
+		return s.mailboxClient
 	}
 
 	return mailboxpb.NewMailboxServiceClient(s.serverConn)
@@ -2963,22 +2959,25 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	s.log.InfoS(ctx, "Connecting to ark server",
 		"host", s.cfg.Server.Host)
 
-	serverConn, err := s.dialServer(ctx)
+	operatorClients, err := s.connectOperatorClients()
 	if err != nil {
 		return fmt.Errorf("unable to connect to server: %w", err)
 	}
-	s.serverConn = serverConn
+	s.serverConn = operatorClients.conn
+	s.arkClient = operatorClients.ark
+	s.mailboxClient = operatorClients.mailbox
+	s.serverConnCleanup = operatorClients.cleanup
 
 	s.log.InfoS(ctx, "Connected to ark server")
 
-	// Fetch the operator's public key via direct gRPC before
+	// Fetch the operator's public key via direct ArkService before
 	// wiring the mailbox transport.
 	operatorPubKey, err := s.fetchOperatorPubKeyDirect(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch operator pubkey: %w", err)
 	}
 
-	s.log.InfoS(ctx, "Fetched operator pubkey via direct gRPC",
+	s.log.InfoS(ctx, "Fetched operator pubkey via direct ArkService",
 		slog.String(
 			"operator_mailbox_id",
 			serverconn.PubKeyMailboxID(operatorPubKey),
@@ -3609,7 +3608,7 @@ func mapRoundVTXOManagerMsg(msg round.VTXOManagerMsg) vtxo.ManagerMsg {
 }
 
 // fetchOperatorTerms retrieves the operator's terms from the Ark
-// server via a direct ArkService.GetInfo RPC on the base gRPC
+// server via a direct ArkService.GetInfo RPC on the configured
 // transport. This must not depend on mailbox ingress during startup:
 // a restarted client can already have queued server-push envelopes in
 // its mailbox, and those envelopes may target actors that have not yet
@@ -3624,7 +3623,10 @@ func mapRoundVTXOManagerMsg(msg round.VTXOManagerMsg) vtxo.ManagerMsg {
 func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 	error) {
 
-	client := arkrpc.NewArkServiceClient(s.serverConn)
+	client := s.operatorArkClient()
+	if client == nil {
+		return nil, fmt.Errorf("operator connection not initialized")
+	}
 
 	resp, err := client.GetInfo(ctx, &arkrpc.GetInfoRequest{})
 	if err != nil {
@@ -3778,14 +3780,17 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 	return nil
 }
 
-// fetchOperatorPubKeyDirect fetches the operator's public key via a
-// direct gRPC call to ArkService.GetInfo, bypassing the mailbox
+// fetchOperatorPubKeyDirect fetches the operator's public key via a direct
+// ArkService.GetInfo call, bypassing the mailbox
 // transport. This is needed before the mailbox runtime starts because
 // the remote mailbox ID is derived from the operator's pubkey.
 func (s *Server) fetchOperatorPubKeyDirect(ctx context.Context) (
 	*btcec.PublicKey, error) {
 
-	client := arkrpc.NewArkServiceClient(s.serverConn)
+	client := s.operatorArkClient()
+	if client == nil {
+		return nil, fmt.Errorf("operator connection not initialized")
+	}
 
 	resp, err := client.GetInfo(ctx, &arkrpc.GetInfoRequest{})
 	if err != nil {
