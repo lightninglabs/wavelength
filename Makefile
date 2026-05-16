@@ -396,13 +396,18 @@ unit-swapruntime: #? Run unit tests with the optional swap client runtime enable
 SYSTEST_DB_TAG := $(if $(filter postgres,$(db)),test_postgres)
 SYSTEST_TAGS := systest $(SYSTEST_DB_TAG)
 
+# Per-package test timeout for systest. CI overrides this on ARC runners
+# where the test harness boots slower than on local dev; locally 10m is
+# typically plenty.
+SYSTEST_TIMEOUT ?= 10m
+
 systest: #? Run system integration tests. Use db=postgres for PostgreSQL.
 	@$(call print, "Running system integration tests (db=$(or $(db),sqlite)).")
-	$(GOTEST) -tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout 10m
+	$(GOTEST) -tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout $(SYSTEST_TIMEOUT)
 
 systest-verbose: #? Run system integration tests with verbose logging. Use db=postgres for PostgreSQL.
 	@$(call print, "Running system integration tests with verbose logging (db=$(or $(db),sqlite)).")
-	$(GOTEST) -tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout 10m -harness.logstdout
+	$(GOTEST) -tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout $(SYSTEST_TIMEOUT) -harness.logstdout
 
 # ============
 # RPC GENERATION
