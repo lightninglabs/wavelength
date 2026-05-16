@@ -39,26 +39,44 @@ func TestEntryFromProto(t *testing.T) {
 
 // TestEntryKindToProto verifies filters use the expected wallet RPC enum.
 func TestEntryKindToProto(t *testing.T) {
+	got, err := entryKindToProto(EntryKindSend)
+	require.NoError(t, err)
 	require.Equal(
 		t, walletrpc.EntryKind_ENTRY_KIND_SEND,
-		entryKindToProto(EntryKindSend),
+		got,
 	)
+	got, err = entryKindToProto(EntryKindReceive)
+	require.NoError(t, err)
 	require.Equal(
 		t, walletrpc.EntryKind_ENTRY_KIND_RECV,
-		entryKindToProto(EntryKindReceive),
+		got,
 	)
+	got, err = entryKindToProto(EntryKindDeposit)
+	require.NoError(t, err)
 	require.Equal(
 		t, walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
-		entryKindToProto(EntryKindDeposit),
+		got,
 	)
+	got, err = entryKindToProto(EntryKindExit)
+	require.NoError(t, err)
 	require.Equal(
 		t, walletrpc.EntryKind_ENTRY_KIND_EXIT,
-		entryKindToProto(EntryKindExit),
+		got,
 	)
+
+	got, err = entryKindToProto("")
+	require.Error(t, err)
 	require.Equal(
 		t, walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
-		entryKindToProto(""),
+		got,
 	)
+}
+
+// TestEntryKindsToProtoRejectsUnknownKind confirms wrapper callers get a clear
+// validation error instead of a silently empty activity list.
+func TestEntryKindsToProtoRejectsUnknownKind(t *testing.T) {
+	_, err := entryKindsToProto([]EntryKind{EntryKindSend, "junk"})
+	require.ErrorContains(t, err, "unknown entry kind")
 }
 
 // TestListViewToProto covers every accepted view string plus the
@@ -113,8 +131,14 @@ func TestListResultFromProtoActivity(t *testing.T) {
 		Body: &walletrpc.ListResponse_Activity{
 			Activity: &walletrpc.ActivityList{
 				Entries: []*walletrpc.WalletEntry{
-					{Id: "hash1", Kind: send},
-					{Id: "hash2", Kind: recv},
+					{
+						Id:   "hash1",
+						Kind: send,
+					},
+					{
+						Id:   "hash2",
+						Kind: recv,
+					},
 				},
 				Total: 42,
 			},

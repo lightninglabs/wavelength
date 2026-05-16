@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -270,15 +271,21 @@ func (c *Client) Send(ctx context.Context, req SendRequest) (*SendResult,
 		MaxFeeSat: req.MaxFeeSat,
 		SweepAll:  req.SweepAll,
 	}
+	invoice := strings.TrimSpace(req.Invoice)
+	onchainAddress := strings.TrimSpace(req.OnchainAddress)
 	switch {
-	case req.Invoice != "":
+	case invoice != "" && onchainAddress != "":
+		return nil, fmt.Errorf("set invoice or onchain_address, not " +
+			"both")
+
+	case invoice != "":
 		protoReq.Destination = &walletrpc.SendRequest_Invoice{
-			Invoice: req.Invoice,
+			Invoice: invoice,
 		}
 
-	case req.OnchainAddress != "":
+	case onchainAddress != "":
 		protoReq.Destination = &walletrpc.SendRequest_OnchainAddress{
-			OnchainAddress: req.OnchainAddress,
+			OnchainAddress: onchainAddress,
 		}
 
 	default:
@@ -316,10 +323,15 @@ func (c *Client) List(ctx context.Context, req ListRequest) (*ListResult,
 		return nil, err
 	}
 
+	kinds, err := entryKindsToProto(req.Kinds)
+	if err != nil {
+		return nil, err
+	}
+
 	resp, err := c.wallet.List(ctx, &walletrpc.ListRequest{
 		View:        protoView,
 		PendingOnly: req.PendingOnly,
-		Kinds:       entryKindsToProto(req.Kinds),
+		Kinds:       kinds,
 		Limit:       req.Limit,
 		Offset:      req.Offset,
 	})
@@ -412,10 +424,15 @@ func (c *Client) Subscribe(ctx context.Context, req SubscribeRequest) (
 		return nil, nil, err
 	}
 
+	kinds, err := entryKindsToProto(req.Kinds)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	stream, err := c.wallet.SubscribeWallet(
 		ctx, &walletrpc.SubscribeWalletRequest{
 			IncludeExisting: req.IncludeExisting,
-			Kinds:           entryKindsToProto(req.Kinds),
+			Kinds:           kinds,
 		},
 	)
 	if err != nil {

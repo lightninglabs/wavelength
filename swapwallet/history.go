@@ -99,7 +99,10 @@ func (h *history) listActivity(ctx context.Context,
 	req *walletrpc.ListRequest) (*walletrpc.ActivityList, error) {
 
 	limit := h.deps.resolveListLimit(req.GetLimit())
-	kindFilter := buildKindFilter(req.GetKinds())
+	kindFilter, err := buildKindFilter(req.GetKinds())
+	if err != nil {
+		return nil, err
+	}
 
 	var entries []*walletrpc.WalletEntry
 
@@ -372,18 +375,27 @@ func (h *history) shouldInclude(filter map[walletrpc.EntryKind]struct{},
 // filter. An empty input yields a nil set so the merger treats the call as
 // "all kinds."
 func buildKindFilter(kinds []walletrpc.EntryKind,
-) map[walletrpc.EntryKind]struct{} {
+) (map[walletrpc.EntryKind]struct{}, error) {
 
 	if len(kinds) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	out := make(map[walletrpc.EntryKind]struct{}, len(kinds))
 	for _, k := range kinds {
+		switch k {
+		case walletrpc.EntryKind_ENTRY_KIND_SEND,
+			walletrpc.EntryKind_ENTRY_KIND_RECV,
+			walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+			walletrpc.EntryKind_ENTRY_KIND_EXIT:
+
+		default:
+			return nil, fmt.Errorf("%w: %v", ErrUnsupportedKind, k)
+		}
 		out[k] = struct{}{}
 	}
 
-	return out
+	return out, nil
 }
 
 // filterEntries applies pending_only and kind filters in one pass.

@@ -30,6 +30,7 @@ func newListCmd() *cobra.Command {
 			"  darepocli list --view vtxos\n" +
 			"  darepocli list --view onchain --limit 100\n" +
 			"  darepocli list --pending --kind send,recv",
+		Args: cobra.NoArgs,
 		RunE: walletList,
 	}
 

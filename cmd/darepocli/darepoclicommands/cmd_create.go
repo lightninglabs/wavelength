@@ -34,6 +34,7 @@ func newCreateCmd() *cobra.Command {
 			"opt in to the machine-consumable form).\n\n" +
 			"Example:\n" +
 			"  echo -n 'hunter2hunter2' | darepocli create",
+		Args: cobra.NoArgs,
 		RunE: walletCreate,
 	}
 

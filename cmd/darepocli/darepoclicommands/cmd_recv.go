@@ -26,6 +26,7 @@ func newRecvCmd() *cobra.Command {
 			"  darepocli recv --offchain --amt 5000 " +
 			"--memo \"coffee\"\n" +
 			"  darepocli recv --onchain",
+		Args: cobra.NoArgs,
 		RunE: walletRecv,
 	}
 

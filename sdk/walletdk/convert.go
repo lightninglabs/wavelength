@@ -175,22 +175,24 @@ func entryKindFromProto(kind walletrpc.EntryKind) EntryKind {
 }
 
 // entryKindToProto maps SDK filters back to the generated enum.
-func entryKindToProto(kind EntryKind) walletrpc.EntryKind {
+func entryKindToProto(kind EntryKind) (walletrpc.EntryKind, error) {
 	switch kind {
 	case EntryKindSend:
-		return walletrpc.EntryKind_ENTRY_KIND_SEND
+		return walletrpc.EntryKind_ENTRY_KIND_SEND, nil
 
 	case EntryKindReceive:
-		return walletrpc.EntryKind_ENTRY_KIND_RECV
+		return walletrpc.EntryKind_ENTRY_KIND_RECV, nil
 
 	case EntryKindDeposit:
-		return walletrpc.EntryKind_ENTRY_KIND_DEPOSIT
+		return walletrpc.EntryKind_ENTRY_KIND_DEPOSIT, nil
 
 	case EntryKindExit:
-		return walletrpc.EntryKind_ENTRY_KIND_EXIT
+		return walletrpc.EntryKind_ENTRY_KIND_EXIT, nil
 
 	default:
-		return walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED
+		return walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+			fmt.Errorf("unknown entry kind %q "+
+				"(send|receive|deposit|exit)", kind)
 	}
 }
 
@@ -212,17 +214,21 @@ func entryStatusFromProto(status walletrpc.EntryStatus) EntryStatus {
 }
 
 // entryKindsToProto copies SDK filters into generated enum values.
-func entryKindsToProto(kinds []EntryKind) []walletrpc.EntryKind {
+func entryKindsToProto(kinds []EntryKind) ([]walletrpc.EntryKind, error) {
 	if len(kinds) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	out := make([]walletrpc.EntryKind, 0, len(kinds))
 	for _, kind := range kinds {
-		out = append(out, entryKindToProto(kind))
+		protoKind, err := entryKindToProto(kind)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, protoKind)
 	}
 
-	return out
+	return out, nil
 }
 
 // balanceFromProto copies a wallet RPC balance into SDK-owned fields.

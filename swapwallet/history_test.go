@@ -191,6 +191,20 @@ func TestHistoryKindFilter(t *testing.T) {
 	)
 }
 
+// TestHistoryKindFilterRejectsUnsupportedKind confirms raw RPC callers cannot
+// silently filter on ENTRY_KIND_UNSPECIFIED and receive an empty page.
+func TestHistoryKindFilterRejectsUnsupportedKind(t *testing.T) {
+	t.Parallel()
+
+	h, _, _ := newHistoryFixture(t)
+	_, err := h.List(t.Context(), &walletrpc.ListRequest{
+		Kinds: []walletrpc.EntryKind{
+			walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		},
+	})
+	require.ErrorIs(t, err, ErrUnsupportedKind)
+}
+
 // TestHistoryOverlayProjectsTimedOutFailed confirms the runtime's
 // deadline overlay surfaces as FAILED in the history view without
 // mutating the underlying source.

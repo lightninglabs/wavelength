@@ -22,6 +22,7 @@ func newUnlockCmd() *cobra.Command {
 			"--wallet_password_file (never CLI args).\n\n" +
 			"Example:\n" +
 			"  echo -n 'hunter2hunter2' | darepocli unlock",
+		Args: cobra.NoArgs,
 		RunE: walletUnlock,
 	}
 

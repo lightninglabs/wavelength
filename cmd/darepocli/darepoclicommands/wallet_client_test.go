@@ -313,3 +313,24 @@ func TestParseEntryKindAcceptsCanonicalForms(t *testing.T) {
 		require.Equal(t, tc.want, k, "in=%q", tc.in)
 	}
 }
+
+// TestWalletCommandsRejectUnexpectedArgs confirms wallet verbs do not silently
+// ignore positional input. This is especially important for secret-bearing
+// commands where an argv typo can leak sensitive material to shell history.
+func TestWalletCommandsRejectUnexpectedArgs(t *testing.T) {
+	t.Parallel()
+
+	commands := []*cobra.Command{
+		newBalanceCmd(),
+		newCreateCmd(),
+		newUnlockCmd(),
+		newRecvCmd(),
+		newListCmd(),
+		newExitCmd(),
+		newExitStatusCmd(),
+	}
+
+	for _, cmd := range commands {
+		require.Error(t, cmd.Args(cmd, []string{"unexpected"}), cmd.Use)
+	}
+}

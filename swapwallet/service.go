@@ -242,7 +242,10 @@ func (s *Service) SubscribeWallet(req *walletrpc.SubscribeWalletRequest,
 		}
 	}
 
-	kindFilter := buildKindFilter(req.GetKinds())
+	kindFilter, err := buildKindFilter(req.GetKinds())
+	if err != nil {
+		return err
+	}
 
 	for {
 		select {

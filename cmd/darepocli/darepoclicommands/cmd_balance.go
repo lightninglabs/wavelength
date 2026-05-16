@@ -22,6 +22,7 @@ func newBalanceCmd() *cobra.Command {
 			"exit) — all in satoshis.\n\n" +
 			"Example:\n" +
 			"  darepocli balance",
+		Args: cobra.NoArgs,
 		RunE: walletBalance,
 	}
 }

@@ -27,6 +27,7 @@ func newExitCmd() *cobra.Command {
 			"Example:\n" +
 			"  darepocli exit --outpoint TXID:VOUT\n" +
 			"  darepocli exit status --outpoint TXID:VOUT",
+		Args: cobra.NoArgs,
 		RunE: walletExit,
 	}
 
@@ -74,6 +75,7 @@ func newExitStatusCmd() *cobra.Command {
 			"job phase, sweep txid, and any errors.\n\n" +
 			"Example:\n" +
 			"  darepocli exit status --outpoint TXID:VOUT",
+		Args: cobra.NoArgs,
 		RunE: walletExitStatus,
 	}
 
