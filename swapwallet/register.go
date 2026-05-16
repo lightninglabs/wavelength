@@ -29,9 +29,26 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 	rpcServer *darepod.RPCServer, cfg *darepod.Config) (func(), error) {
 
 	if cfg == nil || cfg.Swap == nil || cfg.Swap.Backend == nil {
+
+		// Without a wired backend there is nothing to compensate
+		// for: the swap subserver hasn't published the handle, so
+		// either it never ran (cfg.Swap == nil) or it failed setup
+		// itself. The swap subserver's own startup path is
+		// responsible for that diagnosis; we only fail closed here.
 		return nil, fmt.Errorf("swapwallet: %w (registrar ordering: "+
 			"swapclientserver.Register must run before "+
 			"swapwallet.Register)", ErrSwapBackendUnavailable)
+	}
+
+	// failoverResume compensates for the SuppressResume handshake when
+	// this registrar bails out after the swap subserver has already
+	// skipped its own resume sweep. Without this, a downstream failure
+	// (type assertion mismatch, future wiring errors) would leave the
+	// daemon with NO actor driving pending swap workers. Idempotent:
+	// the underlying ResumePending is already gated by a per-payment-
+	// hash admission map in the swap subserver.
+	failoverResume := func() {
+		cfg.Swap.Backend.ResumePending(ctx)
 	}
 
 	// Pull the gRPC-shaped swap handle from the in-process subserver.
@@ -43,6 +60,8 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 	swapService, ok :=
 		cfg.Swap.Backend.(swapclientrpc.SwapClientServiceServer)
 	if !ok {
+		failoverResume()
+
 		return nil, fmt.Errorf("swapwallet: swap backend does not " +
 			"implement swapclientrpc.SwapClientServiceServer")
 	}
