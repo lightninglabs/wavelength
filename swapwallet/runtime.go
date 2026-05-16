@@ -135,9 +135,17 @@ func (r *Runtime) resumeAll(ctx context.Context) {
 }
 
 // trackPending records a new or refreshed pending entry so the deadline
-// watcher can age it. Calling trackPending for an id already present
-// updates the createdAt only when the existing entry is missing one,
-// preserving the original submit time across monitor updates.
+// watcher can age it. The deadline base is the time the RUNTIME first
+// observes the entry, NOT the row's original createdAt: a swap backfill
+// at daemon startup carries the original swap submit time (possibly
+// hours old), and basing the deadline on that would flip every backfilled
+// pending row to FAILED(timed_out) within the first deadline tick. The
+// deadline is a wallet-process responsibility — it must not carry stale
+// clock state from a previous process.
+//
+// Subsequent trackPending calls for the same id are idempotent: the
+// existing first-observed createdAt and deadline are preserved so
+// follow-up monitor pushes do not extend the deadline indefinitely.
 //
 // trackPending intentionally does NOT touch the overlay map: a synthetic
 // FAILED overlay set by the deadline watcher must remain visible to
@@ -151,16 +159,25 @@ func (r *Runtime) trackPending(id string, kind walletrpc.EntryKind,
 	r.pendingMu.Lock()
 	defer r.pendingMu.Unlock()
 
-	existing, ok := r.pending[id]
-	if ok && !existing.createdAt.IsZero() {
-		createdAt = existing.createdAt
+	if existing, ok := r.pending[id]; ok {
+		// Already tracked: preserve the original first-observed
+		// createdAt and deadline. Only refresh the kind in case
+		// the source row's direction was lazily populated.
+		existing.kind = kind
+		r.pending[id] = existing
+
+		return
 	}
 
+	// First-observed: base the deadline on now, not on the source row's
+	// createdAt. This is the load-bearing fix for the
+	// restart-resume-and-immediately-time-out failure mode.
+	now := time.Now()
 	r.pending[id] = pendingEntry{
 		id:        id,
 		kind:      kind,
 		createdAt: createdAt,
-		deadline:  createdAt.Add(r.deps.resolveDeadline()),
+		deadline:  now.Add(r.deps.resolveDeadline()),
 	}
 }
 
