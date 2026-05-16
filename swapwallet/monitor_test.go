@@ -169,12 +169,15 @@ func TestMonitorLoopClearsPendingOnTerminal(t *testing.T) {
 
 // flakySwapService fails the first SubscribeSwaps with a transient error
 // then succeeds and serves updates. The monitor loop must back off,
-// re-subscribe, and recover without manual intervention.
+// re-subscribe, and recover without manual intervention. Captures the
+// include_existing flag from every subscribe attempt so tests can assert
+// only the first one requested a snapshot.
 type flakySwapService struct {
 	streamingFakeSwap
 
-	mu      sync.Mutex
-	attempt int
+	mu           sync.Mutex
+	attempt      int
+	includeFlags []bool
 }
 
 func (f *flakySwapService) SubscribeSwaps(
@@ -184,6 +187,7 @@ func (f *flakySwapService) SubscribeSwaps(
 	f.mu.Lock()
 	f.attempt++
 	attempt := f.attempt
+	f.includeFlags = append(f.includeFlags, req.GetIncludeExisting())
 	f.mu.Unlock()
 
 	if attempt == 1 {
@@ -191,6 +195,18 @@ func (f *flakySwapService) SubscribeSwaps(
 	}
 
 	return f.streamingFakeSwap.SubscribeSwaps(req, stream)
+}
+
+// capturedIncludeFlags returns a snapshot of include_existing flags seen
+// across SubscribeSwaps attempts so tests can assert reconnect behaviour.
+func (f *flakySwapService) capturedIncludeFlags() []bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]bool, len(f.includeFlags))
+	copy(out, f.includeFlags)
+
+	return out
 }
 
 // TestMonitorLoopRecoversAfterTransientFailure confirms the loop retries
@@ -231,6 +247,29 @@ func TestMonitorLoopRecoversAfterTransientFailure(t *testing.T) {
 		select {
 		case e := <-sub:
 			require.Equal(t, "after-recovery", e.GetId())
+
+			// Reconnect must NOT replay the existing-row
+			// snapshot. The first subscribe gets
+			// include_existing=true; every reconnect gets false
+			// so subscribers don't see duplicate terminal-state
+			// events on every transient failure.
+			flags := flaky.capturedIncludeFlags()
+			require.GreaterOrEqual(
+				t, len(flags), 2,
+				"monitor must have attempted at least one "+
+					"reconnect after the transient error",
+			)
+			require.True(
+				t, flags[0],
+				"first subscribe must request the snapshot",
+			)
+			for i := 1; i < len(flags); i++ {
+				require.False(
+					t, flags[i],
+					"reconnect #%d must NOT request "+
+						"the snapshot", i,
+				)
+			}
 
 			return
 

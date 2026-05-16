@@ -48,13 +48,22 @@ func (r *Runtime) monitorLoop() {
 		return
 	}
 
+	// includeExisting requests a full snapshot of currently-persisted
+	// swap rows from the subserver. We need it on the FIRST subscribe so
+	// resume-replay reaches subscribers; on every subsequent reconnect
+	// (after a transient failure) replaying the whole history would just
+	// re-fan-out terminal-state events that subscribers have already
+	// seen. Flip to false after the first attempt completes (cleanly or
+	// not) so reconnect noise stays quiet.
+	includeExisting := true
 	backoff := monitorBackoffMin
 	for {
 		if r.rootCtx.Err() != nil {
 			return
 		}
 
-		err := r.runOneSubscription()
+		err := r.runOneSubscription(includeExisting)
+		includeExisting = false
 		switch {
 		case err == nil:
 			// Clean stream end: reset backoff before the next
@@ -93,7 +102,7 @@ func (r *Runtime) monitorLoop() {
 // pushed update to fanOutSwapUpdate. The method returns when the swap
 // service ends the stream (clean nil), when rootCtx is canceled, or
 // when the inline stream forwards an error from Send.
-func (r *Runtime) runOneSubscription() error {
+func (r *Runtime) runOneSubscription(includeExisting bool) error {
 	stream := newInlineSwapStream(r.rootCtx, r.fanOutSwapUpdate)
 
 	// SubscribeSwaps is implemented as a server-streaming gRPC handler;
@@ -103,10 +112,7 @@ func (r *Runtime) runOneSubscription() error {
 	// service shuts down.
 	err := r.deps.SwapService.SubscribeSwaps(
 		&swapclientrpc.SubscribeSwapsRequest{
-			// Snapshot existing rows on each (re)subscribe so a
-			// long-running daemon's view stays consistent across
-			// transient swap-side restarts.
-			IncludeExisting: true,
+			IncludeExisting: includeExisting,
 		},
 		stream,
 	)
