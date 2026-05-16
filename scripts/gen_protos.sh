@@ -95,7 +95,7 @@ generate "rpc/walletrpc" 1
 generate "daemonrpc" 1
 
 # Generate shared swap server RPC protos for the SDK and server.
-generate "swaprpc"
+generate "swaprpc" 1
 
 # Generate OOR mailbox wire payload stubs.
 generate "rpc/oorpb"

@@ -8,6 +8,7 @@ import (
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/swaprpc"
 	"google.golang.org/grpc"
 )
 
@@ -35,6 +36,7 @@ var (
 	_ daemonrpc.DaemonServiceClient  = (*DaemonServiceClient)(nil)
 	_ mailboxpb.MailboxServiceClient = (*MailboxServiceClient)(nil)
 	_ swapClientService              = (*SwapClientServiceClient)(nil)
+	_ swaprpc.SwapServiceClient      = (*SwapServiceClient)(nil)
 	_ walletrpc.WalletServiceClient  = (*WalletServiceClient)(nil)
 	_ watchRoundsStream              = (*watchRoundsREST)(nil)
 	_ subscribeSwapsStream           = (*subscribeSwapsREST)(nil)
@@ -129,6 +131,46 @@ func (c *MailboxServiceClient) AckUpTo(ctx context.Context,
 
 	out := new(mailboxpb.AckUpToResponse)
 	err := c.client.Post(ctx, "/v1/mailbox/ack-up-to", in, out)
+
+	return out, err
+}
+
+// NewSwapServiceClient creates a SwapService REST client.
+func NewSwapServiceClient(addr string,
+	opts ...Option) swaprpc.SwapServiceClient {
+
+	return NewSwapServiceClientFromClient(New(addr, opts...))
+}
+
+// NewSwapServiceClientFromClient creates a SwapService REST client from an
+// existing shared REST transport.
+func NewSwapServiceClientFromClient(c *Client) swaprpc.SwapServiceClient {
+	return &SwapServiceClient{client: c}
+}
+
+// SwapServiceClient implements swaprpc.SwapServiceClient over grpc-gateway.
+type SwapServiceClient struct {
+	client *Client
+}
+
+// RequestChannelId asks the swap server to allocate a channel id.
+func (c *SwapServiceClient) RequestChannelId(ctx context.Context,
+	in *swaprpc.RequestChannelIdRequest, _ ...grpc.CallOption) (
+	*swaprpc.RequestChannelIdResponse, error) {
+
+	out := new(swaprpc.RequestChannelIdResponse)
+	err := c.client.Post(ctx, "/v1/swap/request-channel-id", in, out)
+
+	return out, err
+}
+
+// CreateInSwap starts one Ark-to-Lightning swap with the swap server.
+func (c *SwapServiceClient) CreateInSwap(ctx context.Context,
+	in *swaprpc.CreateInSwapRequest, _ ...grpc.CallOption) (
+	*swaprpc.CreateInSwapResponse, error) {
+
+	out := new(swaprpc.CreateInSwapResponse)
+	err := c.client.Post(ctx, "/v1/swap/create-in-swap", in, out)
 
 	return out, err
 }
