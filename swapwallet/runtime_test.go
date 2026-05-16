@@ -111,6 +111,83 @@ func TestClearPendingDropsOverlay(t *testing.T) {
 	require.False(t, ok, "clearPending must drop the overlay")
 }
 
+// TestDeadlineWatcherEmitsTimeoutToSubscribers asserts that elevating
+// an entry to FAILED via the deadline overlay also pushes a synthesized
+// WalletEntry to every live SubscribeWallet subscriber. Without this
+// emission a long-lived subscriber would never observe the timeout (the
+// hung swap, by hypothesis, never drives another monitor push).
+func TestDeadlineWatcherEmitsTimeoutToSubscribers(t *testing.T) {
+	t.Parallel()
+
+	deps := &Deps{
+		WalletDeadline: 5 * time.Minute,
+	}
+	r := newRuntime(t.Context(), deps)
+	defer r.stop()
+
+	sub := r.subscribe()
+
+	now := time.Now()
+	r.trackPending(
+		"stuck", walletrpc.EntryKind_ENTRY_KIND_SEND,
+		now.Add(-10*time.Minute),
+	)
+	r.applyDeadlines(now)
+
+	select {
+	case got := <-sub:
+		require.Equal(t, "stuck", got.GetId())
+		require.Equal(
+			t, walletrpc.EntryKind_ENTRY_KIND_SEND,
+			got.GetKind(),
+		)
+		require.Equal(
+			t, walletrpc.EntryStatus_ENTRY_STATUS_FAILED,
+			got.GetStatus(),
+		)
+		require.Equal(t, "timed_out", got.GetFailureReason())
+		require.Equal(
+			t, now.Unix(), got.GetUpdatedAtUnix(),
+			"updated_at must reflect the watcher tick time",
+		)
+
+	case <-time.After(time.Second):
+		t.Fatal("subscriber must observe the deadline transition " +
+			"without polling List")
+	}
+}
+
+// TestDeadlineWatcherDoesNotReEmitAlreadyTimedOut asserts that running
+// applyDeadlines again on the same tick does not re-emit; the watcher
+// only emits on the elevation edge.
+func TestDeadlineWatcherDoesNotReEmitAlreadyTimedOut(t *testing.T) {
+	t.Parallel()
+
+	deps := &Deps{
+		WalletDeadline: 5 * time.Minute,
+	}
+	r := newRuntime(t.Context(), deps)
+	defer r.stop()
+
+	sub := r.subscribe()
+
+	now := time.Now()
+	r.trackPending(
+		"stuck", walletrpc.EntryKind_ENTRY_KIND_SEND,
+		now.Add(-10*time.Minute),
+	)
+	r.applyDeadlines(now)
+	<-sub // drain the first emit
+
+	r.applyDeadlines(now)
+	select {
+	case <-sub:
+		t.Fatal("watcher must not re-emit on an already-timed-out " +
+			"entry")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 // TestSubscribeFanOutAndDropOnSlowConsumer asserts that emit delivers
 // updates to live subscribers and drops on a saturated buffer rather than
 // blocking the runtime.

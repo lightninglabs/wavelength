@@ -211,10 +211,30 @@ func (r *Runtime) deadlineWatcher() {
 
 // applyDeadlines is the body of deadlineWatcher, factored out so unit tests
 // can drive it with a fixed clock.
+//
+// Newly elevated entries are also emitted to SubscribeWallet subscribers so
+// long-lived UI consumers see the FAILED transition in real time. The
+// hung swap is — by hypothesis — never going to drive a fresh monitor
+// push, so without this fan-out the wallet surface would stay PENDING in
+// the subscription stream until next List materializes the overlay.
 func (r *Runtime) applyDeadlines(now time.Time) {
+	timedOut := r.markTimedOut(now)
+	for _, entry := range timedOut {
+		r.emit(entry)
+	}
+}
+
+// markTimedOut writes the FAILED overlay for every pending row whose
+// deadline has passed and returns synthesized WalletEntry rows for each
+// newly elevated entry. The slice is built under pendingMu so the
+// caller can fan it out to subscribers without holding the lock (emit
+// takes subsMu, and the runtime maintains the invariant that no two
+// runtime mutexes are held simultaneously).
+func (r *Runtime) markTimedOut(now time.Time) []*walletrpc.WalletEntry {
 	r.pendingMu.Lock()
 	defer r.pendingMu.Unlock()
 
+	var notify []*walletrpc.WalletEntry
 	for id, entry := range r.pending {
 		if _, alreadyTimedOut := r.overlay[id]; alreadyTimedOut {
 			continue
@@ -223,11 +243,22 @@ func (r *Runtime) applyDeadlines(now time.Time) {
 			continue
 		}
 
-		r.overlay[id] = overlayStatus{
+		ov := overlayStatus{
 			status:        walletrpc.EntryStatus_ENTRY_STATUS_FAILED,
 			failureReason: "timed_out",
 		}
+		r.overlay[id] = ov
+		notify = append(notify, &walletrpc.WalletEntry{
+			Id:            id,
+			Kind:          entry.kind,
+			Status:        ov.status,
+			FailureReason: ov.failureReason,
+			CreatedAtUnix: entry.createdAt.Unix(),
+			UpdatedAtUnix: now.Unix(),
+		})
 	}
+
+	return notify
 }
 
 // subscribe registers a channel to receive normalized WalletEntry updates
