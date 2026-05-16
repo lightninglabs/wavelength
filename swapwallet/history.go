@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // history merges entries from the daemon's existing history surfaces
@@ -82,6 +83,15 @@ func (h *history) List(ctx context.Context, req *walletrpc.ListRequest) (
 	// a stuck entry appears as FAILED in the wallet view even when the
 	// caller asked for pending_only=false.
 	h.applyOverlays(entries)
+
+	// Dedupe by canonical id BEFORE filtering and sorting. An OOR-backed
+	// SEND surfaces once from collectSwapEntries (swap subsystem) and
+	// once from collectLedgerEntries (ledger projection); after the
+	// canonical-id projection both rows resolve to the same id, but the
+	// merger has them as two distinct rows. Keep the most-recent
+	// updated_at (the ledger row may carry a confirmed txid the swap
+	// summary does not).
+	entries = dedupeByID(entries)
 
 	filtered := filterEntries(entries, req.GetPendingOnly(), kindFilter)
 
@@ -245,6 +255,46 @@ func filterEntries(entries []*walletrpc.WalletEntry, pendingOnly bool,
 				continue
 			}
 		}
+		out = append(out, e)
+	}
+
+	return out
+}
+
+// dedupeByID collapses entries that share a canonical id, keeping the
+// most-recent UpdatedAtUnix. Rows without an id (e.g. ledger fallbacks
+// that synthesize "ledger-N") are never deduped; collapsing them by ""
+// would silently merge unrelated rows.
+//
+// Returns a fresh slice; the input slice is sorted in place but not
+// otherwise mutated. The caller (history.List) re-sorts after filtering
+// anyway, so the local sort here is not load-bearing for output order —
+// it only governs which duplicate wins.
+func dedupeByID(entries []*walletrpc.WalletEntry) []*walletrpc.WalletEntry {
+	if len(entries) <= 1 {
+		return entries
+	}
+
+	// Sort by updated_at desc so the first occurrence of each id is the
+	// most-recent one; the set lookup then keeps it.
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].GetUpdatedAtUnix() >
+			entries[j].GetUpdatedAtUnix()
+	})
+
+	seen := fn.NewSet[string]()
+	out := make([]*walletrpc.WalletEntry, 0, len(entries))
+	for _, e := range entries {
+		id := e.GetId()
+		if id == "" {
+			out = append(out, e)
+
+			continue
+		}
+		if seen.Contains(id) {
+			continue
+		}
+		seen.Add(id)
 		out = append(out, e)
 	}
 

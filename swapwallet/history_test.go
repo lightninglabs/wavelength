@@ -359,3 +359,52 @@ func TestHistoryClassifiesOORLedgerRows(t *testing.T) {
 		"RECV amount must be positive",
 	)
 }
+
+// TestHistoryDedupesByID confirms a single logical operation that
+// surfaces from BOTH the swap subsystem (ListSwaps) and the ledger
+// (ListTransactions) collapses to ONE WalletEntry when the two rows
+// happen to share the same id. The dedupe keeps the most-recent
+// updated_at (the ledger confirmation typically wins).
+func TestHistoryDedupesByID(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: "shared-id",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_PAY,
+				State: swapclientrpc.
+					SwapState_SWAP_STATE_COMPLETED,
+				AmountSat:     10_000,
+				UpdatedAtUnix: 100,
+			},
+		},
+	}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "oor",
+				ConfirmationStatus: "confirmed",
+				AmountSat:          10_000,
+				Txid:               "shared-id",
+				CreatedAtUnixS:     200,
+				DebitAccount:       ledger.AccountTransfersOut,
+				CreditAccount:      ledger.AccountVTXOBalance,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+	require.Len(
+		t, resp.GetEntries(), 1,
+		"swap + ledger surfacing the same id must collapse to one "+
+			"row",
+	)
+	require.Equal(
+		t, int64(200), resp.GetEntries()[0].GetUpdatedAtUnix(),
+		"the more-recent row (ledger confirmation) must win",
+	)
+}
