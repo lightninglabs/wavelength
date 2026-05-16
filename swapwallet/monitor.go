@@ -15,9 +15,14 @@ import (
 
 // monitorBackoffMin is the smallest backoff used after a SubscribeSwaps
 // failure. Subsequent failures double the backoff up to monitorBackoffMax.
+// monitorEscalateAfter caps consecutive WarnS log lines before the loop
+// emits a single Error-level escalation; without this the loop would
+// produce unbounded warn-level log spam on a permanently broken swap
+// subsystem.
 const (
-	monitorBackoffMin = 500 * time.Millisecond
-	monitorBackoffMax = 30 * time.Second
+	monitorBackoffMin    = 500 * time.Millisecond
+	monitorBackoffMax    = 30 * time.Second
+	monitorEscalateAfter = 10
 )
 
 // startMonitorLoop spawns the background goroutine that consumes swap
@@ -36,6 +41,12 @@ func (r *Runtime) startMonitorLoop() {
 // registered through subscribe(). The loop survives transient upstream
 // errors with bounded exponential backoff and only exits on rootCtx
 // cancellation (daemon shutdown).
+//
+// After monitorEscalateAfter consecutive failures the loop emits ONE
+// ErrorS escalation so a permanently broken swap subsystem produces a
+// loud operator signal exactly once instead of unbounded WarnS spam.
+// Subsequent successful attempts reset the counter so transient flapping
+// does not re-trigger the alarm.
 func (r *Runtime) monitorLoop() {
 	defer r.wg.Done()
 
@@ -57,6 +68,8 @@ func (r *Runtime) monitorLoop() {
 	// not) so reconnect noise stays quiet.
 	includeExisting := true
 	backoff := monitorBackoffMin
+	consecutiveFailures := 0
+	escalated := false
 	for {
 		if r.rootCtx.Err() != nil {
 			return
@@ -66,10 +79,13 @@ func (r *Runtime) monitorLoop() {
 		includeExisting = false
 		switch {
 		case err == nil:
-			// Clean stream end: reset backoff before the next
-			// attempt so a flaky upstream that briefly drops the
-			// connection does not penalize the next try.
+			// Clean stream end: reset backoff and the failure
+			// counter so a flaky upstream that briefly drops the
+			// connection does not penalize the next try and a
+			// recovered upstream re-arms the escalation alarm.
 			backoff = monitorBackoffMin
+			consecutiveFailures = 0
+			escalated = false
 
 		case errors.Is(err, context.Canceled),
 			errors.Is(err, io.EOF):
@@ -77,11 +93,32 @@ func (r *Runtime) monitorLoop() {
 			// Shutdown path: don't log noise.
 
 		default:
+			consecutiveFailures++
+
+			// Always emit per-attempt WarnS so operators tailing
+			// logs see each failure. After the escalation
+			// threshold emit one additional WarnS with a sticky
+			// marker so monitoring filters can pull "persistent
+			// failure" out of the noise — without escalating to
+			// ErrorS, which the project reserves for internal
+			// bugs (a broken swap subsystem is external).
 			log.WarnS(
 				r.rootCtx,
 				"Swap subscribe failed; backing off",
 				err,
 			)
+			if consecutiveFailures >= monitorEscalateAfter &&
+				!escalated {
+
+				log.WarnS(
+					r.rootCtx,
+					"Swap subscribe failing "+
+						"persistently; swap "+
+						"subsystem may be down",
+					err,
+				)
+				escalated = true
+			}
 
 			select {
 			case <-r.rootCtx.Done():
