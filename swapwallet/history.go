@@ -34,16 +34,69 @@ func newHistory(deps *Deps, runtime *Runtime) *history {
 	return &history{deps: deps, runtime: runtime}
 }
 
-// List returns the unified history page. The page size is capped at the
-// daemon-level maximum so a malformed request cannot fan out unbounded
-// work; sources are queried with the request's own limit so per-source
-// pagination remains the per-source contract.
+// List dispatches the request to the typed view selected by req.view. The
+// default (LIST_VIEW_UNSPECIFIED) is treated as LIST_VIEW_ACTIVITY so older
+// callers that omit the field keep getting the unified activity stream.
+// Each view is implemented by a dedicated helper; the top-level response
+// shape is a oneof so agents see a tagged union, not a polymorphic blob.
 func (h *history) List(ctx context.Context, req *walletrpc.ListRequest) (
 	*walletrpc.ListResponse, error) {
 
 	if h == nil || h.deps == nil {
 		return nil, ErrSwapBackendUnavailable
 	}
+
+	switch req.GetView() {
+	case walletrpc.ListView_LIST_VIEW_VTXOS:
+		body, err := h.listVTXOs(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+
+		return &walletrpc.ListResponse{
+			Body: &walletrpc.ListResponse_Vtxos{
+				Vtxos: body,
+			},
+		}, nil
+
+	case walletrpc.ListView_LIST_VIEW_ONCHAIN:
+		body, err := h.listOnchain(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+
+		return &walletrpc.ListResponse{
+			Body: &walletrpc.ListResponse_Onchain{
+				Onchain: body,
+			},
+		}, nil
+
+	case walletrpc.ListView_LIST_VIEW_ACTIVITY,
+		walletrpc.ListView_LIST_VIEW_UNSPECIFIED:
+
+		body, err := h.listActivity(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+
+		return &walletrpc.ListResponse{
+			Body: &walletrpc.ListResponse_Activity{
+				Activity: body,
+			},
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unknown list view: %v", req.GetView())
+	}
+}
+
+// listActivity returns the merged WalletEntry stream — the v1 unified
+// history. The page size is capped at the daemon-level maximum so a
+// malformed request cannot fan out unbounded work; sources are queried
+// with the request's own limit so per-source pagination remains the
+// per-source contract.
+func (h *history) listActivity(ctx context.Context,
+	req *walletrpc.ListRequest) (*walletrpc.ActivityList, error) {
 
 	limit := h.deps.resolveListLimit(req.GetLimit())
 	kindFilter := buildKindFilter(req.GetKinds())
@@ -106,9 +159,85 @@ func (h *history) List(ctx context.Context, req *walletrpc.ListRequest) (
 	total := uint32(len(filtered))
 	paged := paginate(filtered, req.GetOffset(), limit)
 
-	return &walletrpc.ListResponse{
+	return &walletrpc.ActivityList{
 		Entries: paged,
 		Total:   total,
+	}, nil
+}
+
+// listVTXOs returns the live VTXO inventory. The daemon's ListVTXOs RPC
+// is filtered to live + spendable statuses so the wallet view never
+// surfaces internal terminal states (forfeited, spent, failed) the user
+// has no agency over.
+func (h *history) listVTXOs(ctx context.Context, req *walletrpc.ListRequest) (
+	*walletrpc.VTXOInventory, error) {
+
+	if h.deps.RPCServer == nil {
+		return nil, ErrSwapBackendUnavailable
+	}
+
+	limit := h.deps.resolveListLimit(req.GetLimit())
+
+	resp, err := h.deps.RPCServer.ListVTXOs(
+		ctx, &daemonrpc.ListVTXOsRequest{
+			StatusFilter: daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list vtxos: %w", err)
+	}
+
+	all := make([]*walletrpc.WalletVTXO, 0, len(resp.GetVtxos()))
+	for _, v := range resp.GetVtxos() {
+		w, keep := walletVTXOFromDaemon(v)
+		if !keep {
+			continue
+		}
+		all = append(all, w)
+	}
+
+	total := uint32(len(all))
+	paged := paginateVTXOs(all, req.GetOffset(), limit)
+
+	return &walletrpc.VTXOInventory{
+		Vtxos: paged,
+		Total: total,
+	}, nil
+}
+
+// listOnchain returns the on-chain transaction history page. It composes
+// the same daemonrpc.ListTransactions surface the legacy `listtransactions`
+// CLI verb used, but flattens the ledger row shape onto the
+// wallet-facing OnchainTx type so internal correlators don't leak into
+// the user surface.
+func (h *history) listOnchain(ctx context.Context, req *walletrpc.ListRequest) (
+	*walletrpc.OnchainHistory, error) {
+
+	if h.deps.RPCServer == nil {
+		return nil, ErrSwapBackendUnavailable
+	}
+
+	limit := h.deps.resolveListLimit(req.GetLimit())
+
+	resp, err := h.deps.RPCServer.ListTransactions(
+		ctx, &daemonrpc.ListTransactionsRequest{
+			Limit:  limit,
+			Offset: req.GetOffset(),
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list onchain transactions: %w", err)
+	}
+
+	txs := make([]*walletrpc.OnchainTx, 0, len(resp.GetTransactions()))
+	for _, t := range resp.GetTransactions() {
+		txs = append(txs, onchainTxFromLedgerRow(t))
+	}
+
+	return &walletrpc.OnchainHistory{
+		Txs:     txs,
+		Total:   uint32(len(txs)),
+		HasMore: resp.GetHasMore(),
 	}, nil
 }
 

@@ -18,6 +18,11 @@ import (
 // full daemon. The interface is intentionally minimal: every method is
 // already a stable public method on *darepod.RPCServer, and the surface
 // grows only as new wallet-layer capabilities are added.
+//
+// Create/Unlock/Exit/ExitStatus are admin-shape methods that the wallet
+// service proxies to daemonrpc. They are reachable BEFORE the swap runtime
+// is live — Create and Unlock obviously run before the wallet is even
+// usable — so the admin handlers must never depend on Runtime state.
 type RPCServer interface {
 	LeaveVTXOs(ctx context.Context,
 		req *daemonrpc.LeaveVTXOsRequest) (
@@ -46,6 +51,27 @@ type RPCServer interface {
 	NewAddress(ctx context.Context,
 		req *daemonrpc.NewAddressRequest) (
 		*daemonrpc.NewAddressResponse, error)
+
+	GenSeed(ctx context.Context,
+		req *daemonrpc.GenSeedRequest) (
+		*daemonrpc.GenSeedResponse,
+		error,
+	)
+
+	InitWallet(ctx context.Context,
+		req *daemonrpc.InitWalletRequest) (
+		*daemonrpc.InitWalletResponse, error)
+
+	UnlockWallet(ctx context.Context,
+		req *daemonrpc.UnlockWalletRequest) (
+		*daemonrpc.UnlockWalletResponse, error)
+
+	Unroll(ctx context.Context,
+		req *daemonrpc.UnrollRequest) (*daemonrpc.UnrollResponse, error)
+
+	GetUnrollStatus(ctx context.Context,
+		req *daemonrpc.GetUnrollStatusRequest) (
+		*daemonrpc.GetUnrollStatusResponse, error)
 }
 
 // defaultWalletDeadline caps how long any single wallet entry can remain

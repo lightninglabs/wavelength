@@ -80,35 +80,39 @@ func TestHistoryListMergesSwapAndLedgerSources(t *testing.T) {
 
 	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
 	require.NoError(t, err)
-	require.Len(t, resp.GetEntries(), 4)
+	require.Len(t, resp.GetActivity().GetEntries(), 4)
 
 	// Sort order is by updated_at descending: hash2(300), exit(250),
 	// hash1(200), deposit(100).
-	require.Equal(t, "hash2", resp.GetEntries()[0].GetId())
-	require.Equal(t, "txid_exit", resp.GetEntries()[1].GetId())
-	require.Equal(t, "hash1", resp.GetEntries()[2].GetId())
-	require.Equal(t, "txid_deposit", resp.GetEntries()[3].GetId())
+	require.Equal(t, "hash2", resp.GetActivity().GetEntries()[0].GetId())
+	require.Equal(
+		t, "txid_exit", resp.GetActivity().GetEntries()[1].GetId(),
+	)
+	require.Equal(t, "hash1", resp.GetActivity().GetEntries()[2].GetId())
+	require.Equal(
+		t, "txid_deposit", resp.GetActivity().GetEntries()[3].GetId(),
+	)
 
 	// Kinds and statuses normalize correctly.
 	require.Equal(
 		t, walletrpc.EntryKind_ENTRY_KIND_RECV,
-		resp.GetEntries()[0].GetKind(),
+		resp.GetActivity().GetEntries()[0].GetKind(),
 	)
 	require.Equal(
 		t, walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
-		resp.GetEntries()[0].GetStatus(),
+		resp.GetActivity().GetEntries()[0].GetStatus(),
 	)
 	require.Equal(
 		t, walletrpc.EntryKind_ENTRY_KIND_EXIT,
-		resp.GetEntries()[1].GetKind(),
+		resp.GetActivity().GetEntries()[1].GetKind(),
 	)
 	require.Equal(
 		t, walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
-		resp.GetEntries()[1].GetStatus(),
+		resp.GetActivity().GetEntries()[1].GetStatus(),
 	)
 	require.Equal(
 		t, walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
-		resp.GetEntries()[3].GetKind(),
+		resp.GetActivity().GetEntries()[3].GetKind(),
 	)
 }
 
@@ -143,8 +147,8 @@ func TestHistoryPendingFilterDropsTerminal(t *testing.T) {
 		PendingOnly: true,
 	})
 	require.NoError(t, err)
-	require.Len(t, resp.GetEntries(), 1)
-	require.Equal(t, "live", resp.GetEntries()[0].GetId())
+	require.Len(t, resp.GetActivity().GetEntries(), 1)
+	require.Equal(t, "live", resp.GetActivity().GetEntries()[0].GetId())
 }
 
 // TestHistoryKindFilter confirms the kinds filter narrows the result.
@@ -181,8 +185,10 @@ func TestHistoryKindFilter(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.Len(t, resp.GetEntries(), 1)
-	require.Equal(t, "deposit-row", resp.GetEntries()[0].GetId())
+	require.Len(t, resp.GetActivity().GetEntries(), 1)
+	require.Equal(
+		t, "deposit-row", resp.GetActivity().GetEntries()[0].GetId(),
+	)
 }
 
 // TestHistoryOverlayProjectsTimedOutFailed confirms the runtime's
@@ -216,13 +222,14 @@ func TestHistoryOverlayProjectsTimedOutFailed(t *testing.T) {
 
 	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
 	require.NoError(t, err)
-	require.Len(t, resp.GetEntries(), 1)
+	require.Len(t, resp.GetActivity().GetEntries(), 1)
 	require.Equal(
 		t, walletrpc.EntryStatus_ENTRY_STATUS_FAILED,
-		resp.GetEntries()[0].GetStatus(),
+		resp.GetActivity().GetEntries()[0].GetStatus(),
 	)
-	require.Equal(t, "timed_out",
-		resp.GetEntries()[0].GetFailureReason(),
+	require.Equal(
+		t, "timed_out",
+		resp.GetActivity().GetEntries()[0].GetFailureReason(),
 	)
 }
 
@@ -249,9 +256,10 @@ func TestHistorySwapRowIdIsPaymentHash(t *testing.T) {
 
 	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
 	require.NoError(t, err)
-	require.Len(t, resp.GetEntries(), 1)
+	require.Len(t, resp.GetActivity().GetEntries(), 1)
 	require.Equal(
-		t, "the-payment-hash", resp.GetEntries()[0].GetId(),
+		t, "the-payment-hash",
+		resp.GetActivity().GetEntries()[0].GetId(),
 		"swap row id must surface as payment_hash",
 	)
 }
@@ -281,8 +289,8 @@ func TestHistoryPagination(t *testing.T) {
 		Limit:  2,
 	})
 	require.NoError(t, err)
-	require.Equal(t, uint32(5), resp.GetTotal())
-	require.Len(t, resp.GetEntries(), 2)
+	require.Equal(t, uint32(5), resp.GetActivity().GetTotal())
+	require.Len(t, resp.GetActivity().GetEntries(), 2)
 }
 
 // TestHistoryClassifiesOORLedgerRows confirms OOR ledger rows are
@@ -334,12 +342,12 @@ func TestHistoryClassifiesOORLedgerRows(t *testing.T) {
 	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(
-		t, resp.GetEntries(), 2, "OOR send + OOR recv must "+
-			"surface; bookkeeping row stays hidden",
+		t, resp.GetActivity().GetEntries(), 2, "OOR send + OOR "+
+			"recv must surface; bookkeeping row stays hidden",
 	)
 
 	// Sort is updated_at desc: send(200) before recv(100).
-	send := resp.GetEntries()[0]
+	send := resp.GetActivity().GetEntries()[0]
 	require.Equal(t, "oor-send-txid", send.GetId())
 	require.Equal(
 		t, walletrpc.EntryKind_ENTRY_KIND_SEND, send.GetKind(),
@@ -349,7 +357,7 @@ func TestHistoryClassifiesOORLedgerRows(t *testing.T) {
 		"SEND amount must be negative",
 	)
 
-	recv := resp.GetEntries()[1]
+	recv := resp.GetActivity().GetEntries()[1]
 	require.Equal(t, "oor-recv-txid", recv.GetId())
 	require.Equal(
 		t, walletrpc.EntryKind_ENTRY_KIND_RECV, recv.GetKind(),
@@ -399,11 +407,12 @@ func TestHistoryDedupesByID(t *testing.T) {
 	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(
-		t, resp.GetEntries(), 1,
+		t, resp.GetActivity().GetEntries(), 1,
 		"swap + ledger surfacing the same id must collapse to one row",
 	)
 	require.Equal(
-		t, int64(200), resp.GetEntries()[0].GetUpdatedAtUnix(),
+		t, int64(200),
+		resp.GetActivity().GetEntries()[0].GetUpdatedAtUnix(),
 		"the more-recent row (ledger confirmation) must win",
 	)
 }
@@ -440,11 +449,11 @@ func TestHistoryPaginationOffsetPlumbedToLedger(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(
-		t, uint32(20), resp.GetTotal(),
+		t, uint32(20), resp.GetActivity().GetTotal(),
 		"total must reflect the full unfiltered set",
 	)
 	require.Len(
-		t, resp.GetEntries(), 5,
+		t, resp.GetActivity().GetEntries(), 5,
 		"page 2 must return a full window of 5 entries",
 	)
 

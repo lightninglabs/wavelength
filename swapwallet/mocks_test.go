@@ -35,6 +35,30 @@ type fakeRPCServer struct {
 	getBalanceErr  error
 	newAddressResp *daemonrpc.NewAddressResponse
 	newAddressErr  error
+
+	genSeedResp     *daemonrpc.GenSeedResponse
+	genSeedErr      error
+	genSeedCalls    int
+	genSeedLastReq  *daemonrpc.GenSeedRequest
+	initWalletResp  *daemonrpc.InitWalletResponse
+	initWalletErr   error
+	initWalletCalls int
+	initWalletLast  *daemonrpc.InitWalletRequest
+
+	unlockWalletResp  *daemonrpc.UnlockWalletResponse
+	unlockWalletErr   error
+	unlockWalletCalls int
+	unlockWalletLast  *daemonrpc.UnlockWalletRequest
+
+	unrollResp  *daemonrpc.UnrollResponse
+	unrollErr   error
+	unrollCalls int
+	unrollLast  *daemonrpc.UnrollRequest
+
+	unrollStatusResp  *daemonrpc.GetUnrollStatusResponse
+	unrollStatusErr   error
+	unrollStatusCalls int
+	unrollStatusLast  *daemonrpc.GetUnrollStatusRequest
 }
 
 func (f *fakeRPCServer) LeaveVTXOs(_ context.Context,
@@ -90,6 +114,69 @@ func (f *fakeRPCServer) NewAddress(_ context.Context,
 	_ *daemonrpc.NewAddressRequest) (*daemonrpc.NewAddressResponse, error) {
 
 	return f.newAddressResp, f.newAddressErr
+}
+
+func (f *fakeRPCServer) GenSeed(_ context.Context,
+	req *daemonrpc.GenSeedRequest) (*daemonrpc.GenSeedResponse, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.genSeedCalls++
+	f.genSeedLastReq = req
+
+	return f.genSeedResp, f.genSeedErr
+}
+
+func (f *fakeRPCServer) InitWallet(_ context.Context,
+	req *daemonrpc.InitWalletRequest) (*daemonrpc.InitWalletResponse,
+	error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.initWalletCalls++
+	f.initWalletLast = req
+
+	return f.initWalletResp, f.initWalletErr
+}
+
+func (f *fakeRPCServer) UnlockWallet(_ context.Context,
+	req *daemonrpc.UnlockWalletRequest) (*daemonrpc.UnlockWalletResponse,
+	error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.unlockWalletCalls++
+	f.unlockWalletLast = req
+
+	return f.unlockWalletResp, f.unlockWalletErr
+}
+
+func (f *fakeRPCServer) Unroll(_ context.Context,
+	req *daemonrpc.UnrollRequest) (*daemonrpc.UnrollResponse, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.unrollCalls++
+	f.unrollLast = req
+
+	return f.unrollResp, f.unrollErr
+}
+
+func (f *fakeRPCServer) GetUnrollStatus(_ context.Context,
+	req *daemonrpc.GetUnrollStatusRequest) (
+	*daemonrpc.GetUnrollStatusResponse, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.unrollStatusCalls++
+	f.unrollStatusLast = req
+
+	return f.unrollStatusResp, f.unrollStatusErr
 }
 
 // fakeSwapService is a minimal swapclientrpc.SwapClientServiceServer used
