@@ -1314,7 +1314,7 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 
 	info, err := d.RPCClient.GetInfo(ctx, &daemonrpc.GetInfoRequest{})
 	require.NoError(d.T, err, "GetInfo RPC failed")
-	if info.WalletReady {
+	if daemonWalletReady(info) {
 		return
 	}
 
@@ -1343,9 +1343,15 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 			return false
 		}
 
-		return updatedInfo.WalletReady
+		return daemonWalletReady(updatedInfo)
 	}, defaultTimeout, pollInterval,
 		"client daemon %q wallet never became ready", d.Name)
+}
+
+// daemonWalletReady returns true when the daemon reports that wallet-backed
+// services have reached the ready state.
+func daemonWalletReady(info *daemonrpc.GetInfoResponse) bool {
+	return info.GetWalletState() == daemonrpc.WalletState_WALLET_STATE_READY
 }
 
 func (d *ClientDaemonHarness) waitForDaemonReady() {

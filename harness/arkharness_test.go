@@ -68,7 +68,11 @@ func TestArkHarnessCanStartClientDaemon(t *testing.T) {
 	expectedWalletType, err := resolveClientDaemonWalletType("")
 	require.NoError(t, err)
 	require.Equal(t, expectedWalletType, info.WalletType)
-	require.True(t, info.WalletReady, "wallet should be ready")
+	require.Equal(
+		t, daemonrpc.WalletState_WALLET_STATE_READY,
+		info.GetWalletState(),
+		"wallet should be ready",
+	)
 	require.NotEmpty(
 		t, info.IdentityPubkey, "daemon identity should be set",
 	)
