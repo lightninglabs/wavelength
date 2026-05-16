@@ -44,11 +44,18 @@ func newWalletSendCmd() *cobra.Command {
 	}
 	cmd.Flags().Uint64("amt", 0,
 		"amount in satoshis (required for onchain or amountless "+
-			"invoice)")
+			"invoice; must be 0 when --sweep-all is set)")
 	cmd.Flags().Uint64("max_fee", 0,
 		"max fee in satoshis; 0 lets the daemon use defaults")
 	cmd.Flags().String("note", "",
 		"caller-supplied label to attach to the entry")
+	cmd.Flags().Bool("sweep-all", false,
+		"onchain only: drain the wallet to the destination. "+
+			"--amt MUST be 0 when set. Onchain sends sweep "+
+			"WHOLE VTXOs so the destination receives the sum "+
+			"of selected VTXOs (>= --amt). Inspect "+
+			"actual_amount_sat on the response before treating "+
+			"the send as confirmed.")
 
 	return cmd
 }
@@ -129,13 +136,32 @@ func walletRPCSend(cmd *cobra.Command, args []string) error {
 	amt, _ := cmd.Flags().GetUint64("amt")
 	maxFee, _ := cmd.Flags().GetUint64("max_fee")
 	note, _ := cmd.Flags().GetString("note")
+	sweepAll, _ := cmd.Flags().GetBool("sweep-all")
+
+	// Onchain-only: enforce the sweep_all / amt invariant up front so a
+	// typo'd zero never lands on the wallet RPC. The wallet handler
+	// re-checks defensively, but the CLI is the most common entry
+	// point.
+	isInvoice := isInvoicePrefix(dest)
+	if !isInvoice {
+		switch {
+		case sweepAll && amt != 0:
+			return fmt.Errorf("--sweep-all requires --amt=0 " +
+				"(amt is implied by sweeping every live VTXO)")
+
+		case !sweepAll && amt == 0:
+			return fmt.Errorf("--amt is required for onchain " +
+				"sends (use --sweep-all to drain the wallet)")
+		}
+	}
 
 	req := &walletrpc.SendRequest{
 		AmtSat:    amt,
 		MaxFeeSat: maxFee,
 		Note:      note,
+		SweepAll:  sweepAll,
 	}
-	if isInvoicePrefix(dest) {
+	if isInvoice {
 		req.Destination = &walletrpc.SendRequest_Invoice{
 			Invoice: dest,
 		}
@@ -151,6 +177,23 @@ func walletRPCSend(cmd *cobra.Command, args []string) error {
 			resp, err := c.Send(cmd.Context(), req)
 			if err != nil {
 				return err
+			}
+
+			// For onchain sends actual_amount_sat may exceed
+			// --amt under the v1 whole-VTXO sweep semantics.
+			// Surface it on stderr so shell pipelines can still
+			// consume the JSON body and a human reading the
+			// terminal sees the real outflow.
+			actual := resp.GetActualAmountSat()
+			if !isInvoice && actual != int64(amt) {
+				fmt.Fprintf(
+					cmd.ErrOrStderr(),
+					"note: actual_amount_sat=%d "+
+						"exceeds --amt=%d due to "+
+						"whole-VTXO sweep "+
+						"semantics\n",
+					actual, amt,
+				)
 			}
 
 			return walletPrintJSON(resp)

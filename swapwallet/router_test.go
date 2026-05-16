@@ -68,7 +68,10 @@ func TestRouterSendInvoiceDispatchesStartPay(t *testing.T) {
 
 // TestRouterSendOnchainSelectsVTXOsAndCallsLeave confirms that an onchain
 // destination triggers VTXO selection via ListVTXOs and then a LeaveVTXOs
-// call with the selected outpoints.
+// call with the selected outpoints. It also asserts the response carries
+// the actual amount that will leave the wallet (the sum of selected
+// VTXOs), which under v1 whole-VTXO sweep semantics may exceed the
+// caller's amt_sat.
 func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 	t.Parallel()
 
@@ -129,14 +132,33 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 		t, "tx1:0", resp.GetEntry().GetId(),
 		"the EXIT entry id is the first queued outpoint",
 	)
+	require.Equal(
+		t, int64(12_000), resp.GetActualAmountSat(),
+		"actual_amount_sat must be the SUM of selected VTXOs so "+
+			"the caller can see whole-VTXO overpay before "+
+			"treating the send as confirmed",
+	)
 }
 
-// TestRouterSendOnchainAmtZeroSweepsAll confirms that amt=0 routes through
-// the LeaveVTXOs Selection.All path without touching ListVTXOs.
-func TestRouterSendOnchainAmtZeroSweepsAll(t *testing.T) {
+// TestRouterSendOnchainSweepAllRoutesToAllSelection confirms that the
+// explicit sweep_all flag routes through Selection.All and surfaces the
+// total live VTXO sum on actual_amount_sat.
+func TestRouterSendOnchainSweepAllRoutesToAllSelection(t *testing.T) {
 	t.Parallel()
 
 	r, _, rpc := newRouterFixture(t)
+	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
+		Vtxos: []*daemonrpc.VTXO{
+			{
+				Outpoint:  "tx1:0",
+				AmountSat: 5_000,
+			},
+			{
+				Outpoint:  "tx2:1",
+				AmountSat: 7_000,
+			},
+		},
+	}
 	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
 		QueuedOutpoints: []string{
 			"tx1:0",
@@ -145,19 +167,64 @@ func TestRouterSendOnchainAmtZeroSweepsAll(t *testing.T) {
 		Status: "queued",
 	}
 
+	resp, err := r.Send(t.Context(), &walletrpc.SendRequest{
+		Destination: &walletrpc.SendRequest_OnchainAddress{
+			OnchainAddress: "bcrt1qaddr",
+		},
+		AmtSat:   0,
+		SweepAll: true,
+	})
+	require.NoError(t, err)
+	require.True(
+		t, rpc.leaveLastReq.GetAll(),
+		"sweep_all must trigger Selection.All",
+	)
+	require.Equal(
+		t, int64(12_000), resp.GetActualAmountSat(),
+		"actual_amount_sat on sweep must echo the total live VTXO sum",
+	)
+}
+
+// TestRouterSendOnchainAmtZeroRejectedWithoutSweepAll asserts the
+// commonest footgun — typo'd amt=0 — is rejected up front, structurally
+// distinct from a deliberate wallet-draining sweep.
+func TestRouterSendOnchainAmtZeroRejectedWithoutSweepAll(t *testing.T) {
+	t.Parallel()
+
+	r, _, rpc := newRouterFixture(t)
+
 	_, err := r.Send(t.Context(), &walletrpc.SendRequest{
 		Destination: &walletrpc.SendRequest_OnchainAddress{
 			OnchainAddress: "bcrt1qaddr",
 		},
 		AmtSat: 0,
 	})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrAmountRequired)
 	require.Equal(
-		t, 0, rpc.listVTXOsCalls, "amt=0 must not pre-select VTXOs",
+		t, 0, rpc.leaveCalls,
+		"amt=0 with sweep_all=false must never reach LeaveVTXOs",
 	)
-	require.True(
-		t, rpc.leaveLastReq.GetAll(),
-		"amt=0 must trigger Selection.All",
+	require.Equal(t, 0, rpc.listVTXOsCalls)
+}
+
+// TestRouterSendOnchainSweepAllRequiresZeroAmt asserts the contradictory
+// combination amt>0 && sweep_all=true is rejected.
+func TestRouterSendOnchainSweepAllRequiresZeroAmt(t *testing.T) {
+	t.Parallel()
+
+	r, _, rpc := newRouterFixture(t)
+
+	_, err := r.Send(t.Context(), &walletrpc.SendRequest{
+		Destination: &walletrpc.SendRequest_OnchainAddress{
+			OnchainAddress: "bcrt1qaddr",
+		},
+		AmtSat:   1_000,
+		SweepAll: true,
+	})
+	require.ErrorIs(t, err, ErrAmountInvalid)
+	require.Equal(
+		t, 0, rpc.leaveCalls,
+		"sweep_all=true with amt>0 must never reach LeaveVTXOs",
 	)
 }
 

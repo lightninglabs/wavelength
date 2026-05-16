@@ -81,8 +81,12 @@ message SendRequest {
         string onchain_address = 2;
     }
 
-    // amt_sat is required for onchain sends and for invoice sends whose
-    // BOLT-11 does not carry an amount.
+    // amt_sat is required for onchain sends. For onchain sends amt_sat
+    // must be strictly positive unless sweep_all is set, in which case
+    // it must be zero. For invoice sends amt_sat is ignored: v1 requires
+    // an amount-bearing BOLT-11 invoice; amountless invoices are rejected
+    // at the wallet layer until plumbing for caller-supplied amounts
+    // lands in the swap subserver.
     uint64 amt_sat = 3;
 
     // note is an optional caller-supplied label persisted alongside the
@@ -92,12 +96,29 @@ message SendRequest {
     // max_fee_sat is the optional caller cap on routing or sweep fees. Zero
     // means use daemon defaults.
     uint64 max_fee_sat = 5;
+
+    // sweep_all signals an explicit wallet-emptying onchain send: every
+    // live VTXO is swept to the destination, less fees. The caller must
+    // set amt_sat = 0 when this flag is true and a strictly positive
+    // amt_sat otherwise. This makes "drain the wallet" structurally
+    // distinct from "amt_sat defaulted to zero" so a typo cannot empty
+    // the wallet by accident. Ignored on the invoice path.
+    bool sweep_all = 6;
 }
 
 message SendResponse {
     // entry is the initial WalletEntry persisted for this send. The caller
     // can poll List or SubscribeWallet for subsequent status transitions.
     WalletEntry entry = 1;
+
+    // actual_amount_sat is the real amount that will leave the wallet
+    // for this operation. For invoice sends it matches the caller's
+    // amt_sat (or the invoice amount for amount-bearing invoices). For
+    // onchain sends it reflects the SUM of selected VTXOs, which under
+    // v1 whole-VTXO sweep semantics may exceed amt_sat. CLI and UI
+    // surfaces SHOULD echo this back to the user before treating the
+    // send as confirmed.
+    int64 actual_amount_sat = 2;
 }
 
 message RecvRequest {

@@ -143,15 +143,26 @@ type SendRequest struct {
 	//	*SendRequest_Invoice
 	//	*SendRequest_OnchainAddress
 	Destination isSendRequest_Destination `protobuf_oneof:"destination"`
-	// amt_sat is required for onchain sends and for invoice sends whose
-	// BOLT-11 does not carry an amount.
+	// amt_sat is required for onchain sends. For onchain sends amt_sat
+	// must be strictly positive unless sweep_all is set, in which case
+	// it must be zero. For invoice sends amt_sat is ignored: v1 requires
+	// an amount-bearing BOLT-11 invoice; amountless invoices are rejected
+	// at the wallet layer until plumbing for caller-supplied amounts
+	// lands in the swap subserver.
 	AmtSat uint64 `protobuf:"varint,3,opt,name=amt_sat,json=amtSat,proto3" json:"amt_sat,omitempty"`
 	// note is an optional caller-supplied label persisted alongside the
 	// entry. It is never interpreted by the daemon.
 	Note string `protobuf:"bytes,4,opt,name=note,proto3" json:"note,omitempty"`
 	// max_fee_sat is the optional caller cap on routing or sweep fees. Zero
 	// means use daemon defaults.
-	MaxFeeSat     uint64 `protobuf:"varint,5,opt,name=max_fee_sat,json=maxFeeSat,proto3" json:"max_fee_sat,omitempty"`
+	MaxFeeSat uint64 `protobuf:"varint,5,opt,name=max_fee_sat,json=maxFeeSat,proto3" json:"max_fee_sat,omitempty"`
+	// sweep_all signals an explicit wallet-emptying onchain send: every
+	// live VTXO is swept to the destination, less fees. The caller must
+	// set amt_sat = 0 when this flag is true and a strictly positive
+	// amt_sat otherwise. This makes "drain the wallet" structurally
+	// distinct from "amt_sat defaulted to zero" so a typo cannot empty
+	// the wallet by accident. Ignored on the invoice path.
+	SweepAll      bool `protobuf:"varint,6,opt,name=sweep_all,json=sweepAll,proto3" json:"sweep_all,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -232,6 +243,13 @@ func (x *SendRequest) GetMaxFeeSat() uint64 {
 	return 0
 }
 
+func (x *SendRequest) GetSweepAll() bool {
+	if x != nil {
+		return x.SweepAll
+	}
+	return false
+}
+
 type isSendRequest_Destination interface {
 	isSendRequest_Destination()
 }
@@ -257,9 +275,17 @@ type SendResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// entry is the initial WalletEntry persisted for this send. The caller
 	// can poll List or SubscribeWallet for subsequent status transitions.
-	Entry         *WalletEntry `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Entry *WalletEntry `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
+	// actual_amount_sat is the real amount that will leave the wallet
+	// for this operation. For invoice sends it matches the caller's
+	// amt_sat (or the invoice amount for amount-bearing invoices). For
+	// onchain sends it reflects the SUM of selected VTXOs, which under
+	// v1 whole-VTXO sweep semantics may exceed amt_sat. CLI and UI
+	// surfaces SHOULD echo this back to the user before treating the
+	// send as confirmed.
+	ActualAmountSat int64 `protobuf:"varint,2,opt,name=actual_amount_sat,json=actualAmountSat,proto3" json:"actual_amount_sat,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *SendResponse) Reset() {
@@ -297,6 +323,13 @@ func (x *SendResponse) GetEntry() *WalletEntry {
 		return x.Entry
 	}
 	return nil
+}
+
+func (x *SendResponse) GetActualAmountSat() int64 {
+	if x != nil {
+		return x.ActualAmountSat
+	}
+	return 0
 }
 
 type RecvRequest struct {
@@ -1058,16 +1091,18 @@ var File_wallet_proto protoreflect.FileDescriptor
 
 const file_wallet_proto_rawDesc = "" +
 	"\n" +
-	"\fwallet.proto\x12\twalletrpc\"\xb0\x01\n" +
+	"\fwallet.proto\x12\twalletrpc\"\xcd\x01\n" +
 	"\vSendRequest\x12\x1a\n" +
 	"\ainvoice\x18\x01 \x01(\tH\x00R\ainvoice\x12)\n" +
 	"\x0fonchain_address\x18\x02 \x01(\tH\x00R\x0eonchainAddress\x12\x17\n" +
 	"\aamt_sat\x18\x03 \x01(\x04R\x06amtSat\x12\x12\n" +
 	"\x04note\x18\x04 \x01(\tR\x04note\x12\x1e\n" +
-	"\vmax_fee_sat\x18\x05 \x01(\x04R\tmaxFeeSatB\r\n" +
-	"\vdestination\"<\n" +
+	"\vmax_fee_sat\x18\x05 \x01(\x04R\tmaxFeeSat\x12\x1b\n" +
+	"\tsweep_all\x18\x06 \x01(\bR\bsweepAllB\r\n" +
+	"\vdestination\"h\n" +
 	"\fSendResponse\x12,\n" +
-	"\x05entry\x18\x01 \x01(\v2\x16.walletrpc.WalletEntryR\x05entry\":\n" +
+	"\x05entry\x18\x01 \x01(\v2\x16.walletrpc.WalletEntryR\x05entry\x12*\n" +
+	"\x11actual_amount_sat\x18\x02 \x01(\x03R\x0factualAmountSat\":\n" +
 	"\vRecvRequest\x12\x17\n" +
 	"\aamt_sat\x18\x01 \x01(\x04R\x06amtSat\x12\x12\n" +
 	"\x04memo\x18\x02 \x01(\tR\x04memo\"V\n" +
