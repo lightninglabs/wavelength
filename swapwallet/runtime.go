@@ -138,6 +138,13 @@ func (r *Runtime) resumeAll(ctx context.Context) {
 // watcher can age it. Calling trackPending for an id already present
 // updates the createdAt only when the existing entry is missing one,
 // preserving the original submit time across monitor updates.
+//
+// trackPending intentionally does NOT touch the overlay map: a synthetic
+// FAILED overlay set by the deadline watcher must remain visible to
+// subscribers until the underlying swap subsystem actually transitions
+// to a terminal state. clearPending is the only writer that retires the
+// overlay; this keeps a still-pending source row from oscillating the
+// wallet surface between FAILED and PENDING on every monitor push.
 func (r *Runtime) trackPending(id string, kind walletrpc.EntryKind,
 	createdAt time.Time) {
 
@@ -155,7 +162,6 @@ func (r *Runtime) trackPending(id string, kind walletrpc.EntryKind,
 		createdAt: createdAt,
 		deadline:  createdAt.Add(r.deps.resolveDeadline()),
 	}
-	delete(r.overlay, id)
 }
 
 // clearPending removes the runtime record for an entry that has reached a

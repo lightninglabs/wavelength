@@ -319,3 +319,55 @@ func TestMonitorLoopTerminalStatusBeatsStaleOverlay(t *testing.T) {
 		"a terminal source status must release the pending tracker",
 	)
 }
+
+// TestMonitorLoopOverlayDoesNotFlapOnPendingUpdate asserts the M-2 fix:
+// once a wallet-layer FAILED overlay is set, a subsequent PENDING
+// monitor update neither clears the overlay nor causes oscillation in
+// the subscriber stream. The synthetic FAILED projection stays sticky
+// until the underlying swap actually terminates.
+func TestMonitorLoopOverlayDoesNotFlapOnPendingUpdate(t *testing.T) {
+	t.Parallel()
+
+	swap := newStreamingFakeSwap()
+	deps := &Deps{SwapService: swap}
+	r := newRuntime(t.Context(), deps)
+	defer r.stop()
+
+	r.trackPending(
+		"hash-stuck", walletrpc.EntryKind_ENTRY_KIND_SEND,
+		time.Now().Add(-time.Hour),
+	)
+	r.pendingMu.Lock()
+	r.overlay["hash-stuck"] = overlayStatus{
+		status:        walletrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		failureReason: "timed_out",
+	}
+	r.pendingMu.Unlock()
+
+	sub := r.subscribe()
+	r.startMonitorLoop()
+
+	// The swap subsystem still reports the swap as in-flight.
+	swap.updates <- &swapclientrpc.SwapSummary{
+		PaymentHash: "hash-stuck",
+		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
+		Pending:     true,
+	}
+
+	got := drainOne(t, sub)
+	require.Equal(
+		t, walletrpc.EntryStatus_ENTRY_STATUS_FAILED, got.GetStatus(),
+		"synthetic overlay must remain visible while the swap is "+
+			"still pending so the wallet surface is not flapping",
+	)
+	require.Equal(t, "timed_out", got.GetFailureReason())
+
+	r.pendingMu.Lock()
+	_, overlayKept := r.overlay["hash-stuck"]
+	r.pendingMu.Unlock()
+	require.True(
+		t, overlayKept,
+		"a PENDING monitor update must NOT clear an existing "+
+			"wallet-layer overlay",
+	)
+}
