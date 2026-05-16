@@ -36,7 +36,7 @@ jobs:
   ########################
   commit-message:
     name: Commit Message
-    runs-on: depot-ubuntu-24.04
+    runs-on: [self-hosted]
     steps:
       - name: Git checkout
         uses: actions/checkout@v5
@@ -67,7 +67,7 @@ jobs:
   ########################
   static-checks:
     name: Static Checks
-    runs-on: depot-ubuntu-24.04
+    runs-on: [self-hosted]
     steps:
       - name: Git checkout
         uses: actions/checkout@v5
@@ -137,15 +137,12 @@ jobs:
   ########################
   lint:
     name: Lint code
-    runs-on: depot-ubuntu-24.04-8
+    runs-on: [self-hosted]
     steps:
       - name: git checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-
-      - name: Clean up runner space
-        uses: ./.github/actions/cleanup-space
 
       - name: setup go ${{ env.GO_VERSION }}
         uses: ./.github/actions/setup-go
@@ -162,7 +159,7 @@ jobs:
   ########################
   cross-compile:
     name: Cross compilation
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: [self-hosted]
     strategy:
       fail-fast: true
       matrix:
@@ -183,9 +180,6 @@ jobs:
       - name: Git checkout
         uses: actions/checkout@v5
 
-      - name: Clean up runner space
-        uses: ./.github/actions/cleanup-space
-
       - name: Setup go ${{ env.GO_VERSION }}
         uses: ./.github/actions/setup-go
         with:
@@ -201,7 +195,7 @@ jobs:
   ########################
   unit-test:
     name: Run unit tests
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: [self-hosted]
     strategy:
       # Allow other tests in the matrix to continue if one fails.
       fail-fast: false
@@ -217,9 +211,6 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-
-      - name: Clean up runner space
-        uses: ./.github/actions/cleanup-space
 
       - name: Fetch and rebase on ${{ github.base_ref }}
         if: github.event_name == 'pull_request'
@@ -280,7 +271,7 @@ jobs:
   ########################
   systest:
     name: Run system tests
-    runs-on: depot-ubuntu-24.04-8
+    runs-on: [self-hosted]
     strategy:
       # Allow other tests in the matrix to continue if one fails.
       fail-fast: false
@@ -294,9 +285,6 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-
-      - name: Clean up runner space
-        uses: ./.github/actions/cleanup-space
 
       - name: Fetch and rebase on ${{ github.base_ref }}
         if: github.event_name == 'pull_request'
