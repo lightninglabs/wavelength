@@ -260,3 +260,62 @@ func TestMonitorLoopExitsOnRootCancel(t *testing.T) {
 	parentCancel()
 	r.stop() // joins the monitor goroutine
 }
+
+// TestMonitorLoopTerminalStatusBeatsStaleOverlay asserts that a stale
+// FAILED-overlay (left over from a deadline tick that fired before the
+// swap actually completed) does NOT corrupt a subsequent terminal-state
+// update from the swap subsystem. The source-of-truth COMPLETE status
+// must win, and clearPending must release the pending tracker so the
+// next deadline tick cannot re-overlay an already-terminal row.
+func TestMonitorLoopTerminalStatusBeatsStaleOverlay(t *testing.T) {
+	t.Parallel()
+
+	swap := newStreamingFakeSwap()
+	deps := &Deps{SwapService: swap}
+	r := newRuntime(t.Context(), deps)
+	defer r.stop()
+
+	// Set up the conditions: a PENDING entry tracked by the runtime
+	// with a stale "timed_out" overlay written by an earlier deadline
+	// tick.
+	r.trackPending(
+		"hash-late", walletrpc.EntryKind_ENTRY_KIND_SEND,
+		time.Now().Add(-time.Hour),
+	)
+	r.pendingMu.Lock()
+	r.overlay["hash-late"] = overlayStatus{
+		status:        walletrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		failureReason: "timed_out",
+	}
+	r.pendingMu.Unlock()
+
+	sub := r.subscribe()
+	r.startMonitorLoop()
+
+	// The swap actually completed: push the terminal summary.
+	swap.updates <- &swapclientrpc.SwapSummary{
+		PaymentHash: "hash-late",
+		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
+		State:       swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
+	}
+
+	got := drainOne(t, sub)
+	require.Equal(
+		t, walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		got.GetStatus(),
+		"terminal source status must beat the stale FAILED overlay",
+	)
+	require.Empty(
+		t, got.GetFailureReason(),
+		"failure_reason must not carry the stale timed_out string "+
+			"once the swap completes",
+	)
+
+	r.pendingMu.Lock()
+	_, stillPending := r.pending["hash-late"]
+	r.pendingMu.Unlock()
+	require.False(
+		t, stillPending,
+		"a terminal source status must release the pending tracker",
+	)
+}

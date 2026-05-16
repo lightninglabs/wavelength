@@ -147,16 +147,29 @@ func (r *Runtime) fanOutSwapUpdate(
 		walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 	)
 
-	if ov, ok := r.overlayFor(entry.GetId()); ok {
-		entry.Status = ov.status
-		if ov.failureReason != "" {
-			entry.FailureReason = ov.failureReason
+	// The deadline overlay only projects PENDING entries onto FAILED.
+	// A swap that has already entered a terminal state must take that
+	// terminal state at face value — projecting a stale FAILED overlay
+	// onto an actually-COMPLETE swap would diverge from history.List
+	// (which gates on PENDING here) and emit a misleading FAILED row to
+	// every SubscribeWallet subscriber. Mirror history.applyOverlays'
+	// guard so the source-of-truth status from the swap subsystem wins.
+	sourceStatus := entry.GetStatus()
+	if sourceStatus == walletrpc.EntryStatus_ENTRY_STATUS_PENDING {
+		if ov, ok := r.overlayFor(entry.GetId()); ok {
+			entry.Status = ov.status
+			if ov.failureReason != "" {
+				entry.FailureReason = ov.failureReason
+			}
 		}
 	}
 
-	// Keep the pending tracker in sync so the deadline watcher does not
-	// keep ageing an entry the swap subsystem has already terminated.
-	switch entry.GetStatus() {
+	// Keep the pending tracker in sync. Branch on the SOURCE status,
+	// not the (possibly overlay-elevated) status: only the swap
+	// subsystem's own terminal-state transition releases the pending
+	// tracker so the synthetic timed-out overlay does not flap on the
+	// next update.
+	switch sourceStatus {
 	case walletrpc.EntryStatus_ENTRY_STATUS_PENDING:
 		r.trackPending(
 			entry.GetId(), entry.GetKind(),
