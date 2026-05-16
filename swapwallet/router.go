@@ -82,8 +82,6 @@ func (r *router) sendInvoice(ctx context.Context, invoice string,
 		walletrpc.EntryKind_ENTRY_KIND_SEND,
 	)
 
-	r.runtime.registerSendInvoiceIntent(entry.GetId())
-
 	if entry.Status == walletrpc.EntryStatus_ENTRY_STATUS_PENDING {
 		r.runtime.trackPending(
 			entry.GetId(), entry.GetKind(),
@@ -207,9 +205,11 @@ func (r *router) sendOnchain(ctx context.Context, addr string,
 		resp.GetQueuedOutpoints(), addr, entryAmt, req.GetNote(),
 	)
 
-	r.runtime.registerExitIntent(
-		entry.GetId(), resp.GetQueuedOutpoints(),
-	)
+	// v1 SCOPE: we track the pending row for the deadline watcher
+	// but do NOT register an intent index. EXIT/DEPOSIT canonical-id
+	// correlation between the pending row and the eventual sweep
+	// ledger row is deferred to v2 — see swapwallet/doc.go for the
+	// limitation note.
 	r.runtime.trackPending(
 		entry.GetId(), entry.GetKind(),
 		unixToTime(

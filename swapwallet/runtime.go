@@ -28,42 +28,6 @@ type pendingEntry struct {
 	deadline  time.Time
 }
 
-// walletIntent records the canonical wallet-layer id for one user-submitted
-// operation along with the secondary keys the history merger uses to project
-// future ledger rows onto the same id. Without this map, a Send returning
-// id=X would surface as a different id when the same operation later
-// produces a ledger row, breaking caller-side correlation.
-type walletIntent struct {
-	// canonicalID is the stable id the caller saw at submit time and
-	// will continue to see in every subsequent List/Subscribe row that
-	// originates from the same operation.
-	canonicalID string
-
-	// kind is the user-visible category. Used to assert that a ledger
-	// projection matches the original intent.
-	kind walletrpc.EntryKind
-
-	// outpoints captures the queued VTXO outpoints for an EXIT intent
-	// so a later sweep ledger row whose source rows are these outpoints
-	// can be projected onto canonicalID.
-	outpoints map[string]struct{}
-
-	// address is the boarding address tied to a DEPOSIT intent. A
-	// later boarding-sweep or boarding-confirmation ledger row that
-	// references this address projects onto canonicalID.
-	address string
-
-	// paymentHash is the swap-side correlator for SEND and RECV
-	// intents. The swap subsystem's own rows already use the payment
-	// hash as id, so this also acts as the projection key.
-	paymentHash string
-
-	// txid is filled in once the underlying operation observes an
-	// onchain or OOR txid; subsequent ledger rows keyed by the same
-	// txid project onto canonicalID.
-	txid string
-}
-
 // Runtime owns the swapwallet package's background lifecycle: the unified
 // resume-on-startup sweep, the wallet-level deadline watcher, and the
 // monitor loop that fans normalized WalletEntry updates to SubscribeWallet
@@ -107,35 +71,6 @@ type Runtime struct {
 	// or leave state. Cleared when an entry transitions to a terminal
 	// status through the monitor loop.
 	overlay map[string]overlayStatus
-
-	// intentsMu guards the intent indices.
-	intentsMu sync.RWMutex
-
-	// intentsByCanonical is the canonical-id -> intent index. Send,
-	// Recv, and Deposit handlers register entries here; the history
-	// merger consults the secondary indices below to resolve a ledger
-	// row to its canonical id.
-	intentsByCanonical map[string]*walletIntent
-
-	// intentsByOutpoint maps a VTXO outpoint -> canonical EXIT intent
-	// id so a future sweep ledger row whose source rows are these
-	// outpoints projects onto the original intent.
-	intentsByOutpoint map[string]string
-
-	// intentsByAddress maps a boarding address -> canonical DEPOSIT
-	// intent id so a later boarding-confirmation ledger row references
-	// the original deposit intent rather than a synthetic id.
-	intentsByAddress map[string]string
-
-	// intentsByPaymentHash maps a payment_hash -> canonical SEND/RECV
-	// intent id. Swap-side rows already key by payment hash, so this
-	// index also serves as the swap projection key.
-	intentsByPaymentHash map[string]string
-
-	// intentsByTxid maps a txid -> canonical intent id. Populated as
-	// the runtime observes broadcast transactions for an intent so
-	// later ledger rows keyed by txid project onto the original.
-	intentsByTxid map[string]string
 }
 
 // overlayStatus is the runtime's wallet-level overlay applied on top of an
@@ -159,13 +94,8 @@ func newRuntime(parent context.Context, deps *Deps) *Runtime {
 		subscribers: make(
 			map[chan *walletrpc.WalletEntry]struct{},
 		),
-		pending:              make(map[string]pendingEntry),
-		overlay:              make(map[string]overlayStatus),
-		intentsByCanonical:   make(map[string]*walletIntent),
-		intentsByOutpoint:    make(map[string]string),
-		intentsByAddress:     make(map[string]string),
-		intentsByPaymentHash: make(map[string]string),
-		intentsByTxid:        make(map[string]string),
+		pending: make(map[string]pendingEntry),
+		overlay: make(map[string]overlayStatus),
 	}
 }
 
@@ -202,130 +132,6 @@ func (r *Runtime) resumeAll(ctx context.Context) {
 	// wallet-level resume responsibilities (deadline re-arming, future
 	// wallet-managed pending tables) layer on top in subsequent phases.
 	r.deps.SwapBackend.ResumePending(ctx)
-}
-
-// registerSendInvoiceIntent records a SEND intent submitted via Send
-// with an invoice destination. The canonical id is the swap payment hash,
-// which is also what the swap subsystem persists, so the index is mostly
-// a no-op projection — but it lets the history merger treat swap rows
-// and runtime-tracked rows uniformly.
-func (r *Runtime) registerSendInvoiceIntent(canonicalID string) {
-	r.intentsMu.Lock()
-	defer r.intentsMu.Unlock()
-
-	in := &walletIntent{
-		canonicalID: canonicalID,
-		kind:        walletrpc.EntryKind_ENTRY_KIND_SEND,
-		paymentHash: canonicalID,
-	}
-	r.intentsByCanonical[canonicalID] = in
-	r.intentsByPaymentHash[canonicalID] = canonicalID
-}
-
-// registerRecvIntent records a RECV intent submitted via Recv. Same
-// canonical-id semantics as registerSendInvoiceIntent.
-func (r *Runtime) registerRecvIntent(canonicalID string) {
-	r.intentsMu.Lock()
-	defer r.intentsMu.Unlock()
-
-	in := &walletIntent{
-		canonicalID: canonicalID,
-		kind:        walletrpc.EntryKind_ENTRY_KIND_RECV,
-		paymentHash: canonicalID,
-	}
-	r.intentsByCanonical[canonicalID] = in
-	r.intentsByPaymentHash[canonicalID] = canonicalID
-}
-
-// registerExitIntent records an EXIT intent submitted via Send with an
-// onchain destination. The canonical id is the leave-job id returned by
-// LeaveVTXOs (or the first queued outpoint as a fallback). The runtime
-// indexes the queued outpoints so a later sweep ledger row whose source
-// rows are these outpoints projects back onto canonicalID.
-func (r *Runtime) registerExitIntent(canonicalID string,
-	queuedOutpoints []string) {
-
-	r.intentsMu.Lock()
-	defer r.intentsMu.Unlock()
-
-	out := make(map[string]struct{}, len(queuedOutpoints))
-	for _, op := range queuedOutpoints {
-		out[op] = struct{}{}
-		r.intentsByOutpoint[op] = canonicalID
-	}
-
-	r.intentsByCanonical[canonicalID] = &walletIntent{
-		canonicalID: canonicalID,
-		kind:        walletrpc.EntryKind_ENTRY_KIND_EXIT,
-		outpoints:   out,
-	}
-}
-
-// registerDepositIntent records a DEPOSIT intent submitted via Deposit
-// with the freshly minted boarding address as the secondary key.
-func (r *Runtime) registerDepositIntent(canonicalID, address string) {
-	r.intentsMu.Lock()
-	defer r.intentsMu.Unlock()
-
-	r.intentsByCanonical[canonicalID] = &walletIntent{
-		canonicalID: canonicalID,
-		kind:        walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
-		address:     address,
-	}
-	r.intentsByAddress[address] = canonicalID
-}
-
-// observeIntentTxid associates a broadcast txid with a previously
-// registered intent. Subsequent ledger rows keyed by that txid project
-// onto the original canonical id.
-func (r *Runtime) observeIntentTxid(canonicalID, txid string) {
-	if txid == "" {
-		return
-	}
-	r.intentsMu.Lock()
-	defer r.intentsMu.Unlock()
-
-	in, ok := r.intentsByCanonical[canonicalID]
-	if !ok {
-		return
-	}
-	in.txid = txid
-	r.intentsByTxid[txid] = canonicalID
-}
-
-// resolveCanonicalID returns the canonical wallet-layer id for a row the
-// history merger has just produced, projected onto the registered intent
-// when one of the secondary keys (payment hash, txid, outpoint, address)
-// matches. Returns the row's synthetic id unchanged when no intent claims
-// the projection.
-func (r *Runtime) resolveCanonicalID(syntheticID, paymentHash, txid string,
-	outpoints []string, address string) string {
-
-	r.intentsMu.RLock()
-	defer r.intentsMu.RUnlock()
-
-	if paymentHash != "" {
-		if id, ok := r.intentsByPaymentHash[paymentHash]; ok {
-			return id
-		}
-	}
-	if txid != "" {
-		if id, ok := r.intentsByTxid[txid]; ok {
-			return id
-		}
-	}
-	for _, op := range outpoints {
-		if id, ok := r.intentsByOutpoint[op]; ok {
-			return id
-		}
-	}
-	if address != "" {
-		if id, ok := r.intentsByAddress[address]; ok {
-			return id
-		}
-	}
-
-	return syntheticID
 }
 
 // trackPending records a new or refreshed pending entry so the deadline

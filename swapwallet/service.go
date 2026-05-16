@@ -99,7 +99,13 @@ func (s *Service) Deposit(ctx context.Context, req *walletrpc.DepositRequest) (
 		UpdatedAtUnix: createdAt,
 	}
 
-	s.runtime.registerDepositIntent(canonicalID, addrResp.GetAddress())
+	// v1 SCOPE: deposit pending tracking is omitted because there is
+	// no daemon-side hook to observe the eventual boarding txid for
+	// this address. The boarding ledger row that lands later will
+	// surface under its own synthetic id; canonical-id correlation
+	// between the Deposit response and the ledger row is deferred to
+	// v2 — see swapwallet/doc.go for the limitation note.
+	_ = canonicalID
 
 	return &walletrpc.DepositResponse{
 		OnchainAddress: addrResp.GetAddress(),

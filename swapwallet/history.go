@@ -133,14 +133,9 @@ func (h *history) collectSwapEntries(ctx context.Context, pendingOnly bool) (
 			s, "", s.GetPaymentHash(),
 			walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 		)
-		// Project onto the canonical intent id. For swap rows the
-		// canonical id is the payment hash, which is already the
-		// id returned by swapEntryFromSummary, so the lookup is a
-		// no-op in the common case and a stable fallback when the
-		// SDK ever changes id semantics.
-		entry.Id = h.runtime.resolveCanonicalID(
-			entry.GetId(), s.GetPaymentHash(), "", nil, "",
-		)
+		// entry.Id is the swap row's payment_hash — that is the
+		// stable wallet-layer canonical id for SEND-invoice and
+		// RECV across their entire lifecycle.
 		out = append(out, entry)
 	}
 
@@ -174,14 +169,10 @@ func (h *history) collectLedgerEntries(ctx context.Context, limit uint32) (
 		if !ok {
 			continue
 		}
-		// Project onto the canonical intent id when the runtime has
-		// a registered intent that owns this ledger row. The merger
-		// uses txid as the primary projection key for sweep and OOR
-		// rows; outpoint and address keys are used by the monitor
-		// loop, where the underlying source carries them directly.
-		entry.Id = h.runtime.resolveCanonicalID(
-			entry.GetId(), "", t.GetTxid(), nil, "",
-		)
+		// v1 SCOPE: EXIT and DEPOSIT ledger rows carry txid but no
+		// link back to the original pending intent, so they
+		// surface under their synthetic id (the ledger txid or
+		// the entry_id fallback). See swapwallet/doc.go.
 		out = append(out, entry)
 	}
 

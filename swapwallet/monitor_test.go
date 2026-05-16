@@ -102,23 +102,17 @@ func TestMonitorLoopFansOutSwapUpdates(t *testing.T) {
 	)
 }
 
-// TestMonitorLoopProjectsCanonicalID confirms that an EXIT intent registered
-// before the swap update arrives causes the emitted WalletEntry to surface
-// under the canonical id rather than the swap payment hash. This catches
-// regressions in the resolveCanonicalID projection pathway.
-func TestMonitorLoopProjectsCanonicalID(t *testing.T) {
+// TestMonitorLoopTracksPendingByPaymentHash confirms a swap row fanned
+// out from the monitor reaches subscribers under its payment_hash id
+// (the wallet-layer canonical id) and is recorded in the pending
+// tracker so the deadline watcher can age it.
+func TestMonitorLoopTracksPendingByPaymentHash(t *testing.T) {
 	t.Parallel()
 
 	swap := newStreamingFakeSwap()
 	deps := &Deps{SwapService: swap}
 	r := newRuntime(t.Context(), deps)
 	defer r.stop()
-
-	// Register a SEND intent that maps payment_hash "swap-hash" onto
-	// itself. (The runtime always registers SEND intents by payment
-	// hash; this is the same id, but the projection path is identical
-	// to non-trivial EXIT cases below.)
-	r.registerSendInvoiceIntent("swap-hash")
 
 	sub := r.subscribe()
 	r.startMonitorLoop()
@@ -129,10 +123,12 @@ func TestMonitorLoopProjectsCanonicalID(t *testing.T) {
 		Pending:     true,
 	}
 	entry := drainOne(t, sub)
-	require.Equal(t, "swap-hash", entry.GetId())
+	require.Equal(
+		t, "swap-hash", entry.GetId(),
+		"swap row id must surface as payment_hash without further "+
+			"projection",
+	)
 
-	// Confirm pending was tracked (so deadline watcher would fire) by
-	// inspecting runtime state.
 	r.pendingMu.Lock()
 	_, ok := r.pending["swap-hash"]
 	r.pendingMu.Unlock()

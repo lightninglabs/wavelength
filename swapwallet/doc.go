@@ -34,4 +34,26 @@
 // The walletrpc build tag depends on swapruntime: building walletrpc without
 // swapruntime is a deliberate compile error because the subserver composes
 // the daemon-owned swap subsystem.
+//
+// V1 LIMITATIONS
+//
+// Canonical-id stability: only SEND-invoice and RECV operations carry a
+// stable WalletEntry.id across the pending → terminal lifecycle. The
+// swap subserver's row keys by Lightning payment_hash, which the wallet
+// layer also uses as the canonical id, so the projection is a no-op.
+//
+// EXIT and DEPOSIT operations DO surface a row at submit time and a
+// separate confirmed ledger row later, but the two rows do NOT share an
+// id in v1 because there is no daemon-side notification hook that links
+// (a) an exit's queued outpoints to its eventual sweep txid, or (b) a
+// deposit's boarding address to its eventual boarding txid. The earlier
+// in-process intent index was removed once it became clear it was an
+// identity-mapping ceremony for the SEND-invoice and RECV paths (the
+// swap subsystem already keys those by payment_hash). A v2 canonical-id
+// projection lands when the daemon exposes the missing hooks; the
+// right home for that link is the daemon-side persistence (leave job,
+// deposit address record), not a process-local map. Callers that need
+// to correlate EXIT/DEPOSIT pending → confirmed in v1 should track the
+// WalletEntry.Counterparty (truncated bech32 address or txid) and the
+// persisted ledger txid via separate queries.
 package swapwallet

@@ -70,8 +70,6 @@ func (r *receiver) Recv(ctx context.Context, req *walletrpc.RecvRequest) (
 		walletrpc.EntryKind_ENTRY_KIND_RECV,
 	)
 
-	r.runtime.registerRecvIntent(entry.GetId())
-
 	if entry.Status == walletrpc.EntryStatus_ENTRY_STATUS_PENDING {
 		r.runtime.trackPending(
 			entry.GetId(), entry.GetKind(),

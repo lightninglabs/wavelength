@@ -30,9 +30,13 @@ func newServiceFixture(t *testing.T) (*Service, *fakeSwapService,
 	return newService(deps, runtime), swap, rpc
 }
 
-// TestServiceDepositRegistersIntent confirms Deposit calls NewAddress and
-// registers the canonical-id intent with the returned address.
-func TestServiceDepositRegistersIntent(t *testing.T) {
+// TestServiceDepositReturnsAddress confirms Deposit calls NewAddress and
+// returns a DEPOSIT-kind WalletEntry with the boarding address. v1 does
+// NOT register a canonical-id intent for deposits because the daemon
+// has no notification hook from boarding-address to the eventual
+// boarding txid; correlation between this entry and the later boarding
+// ledger row is a v2 task (see swapwallet/doc.go).
+func TestServiceDepositReturnsAddress(t *testing.T) {
 	t.Parallel()
 
 	svc, _, rpc := newServiceFixture(t)
@@ -51,14 +55,9 @@ func TestServiceDepositRegistersIntent(t *testing.T) {
 		t, walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 		resp.GetEntry().GetKind(),
 	)
-
-	// Intent must be registered under the canonical id.
-	canonical := svc.runtime.resolveCanonicalID(
-		"synthetic", "", "", nil, "bcrt1qboardingaddr",
-	)
 	require.Equal(
-		t, resp.GetEntry().GetId(), canonical,
-		"the deposit intent must be registered by boarding address",
+		t, int64(50_000), resp.GetEntry().GetAmountSat(),
+		"deposit hint must surface on the initial entry",
 	)
 }
 

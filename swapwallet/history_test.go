@@ -225,26 +225,23 @@ func TestHistoryOverlayProjectsTimedOutFailed(t *testing.T) {
 	)
 }
 
-// TestHistoryCanonicalIDProjection confirms a registered EXIT intent
-// causes a future ledger sweep row with a matching txid to surface
-// under the canonical intent id rather than the synthetic ledger id.
-func TestHistoryCanonicalIDProjection(t *testing.T) {
+// TestHistorySwapRowIdIsPaymentHash confirms that a swap-side row
+// surfaces in List under its payment_hash — the wallet-layer's stable
+// canonical id for SEND-invoice and RECV across the entire lifecycle.
+// EXIT and DEPOSIT correlation is a v2 task; see swapwallet/doc.go.
+func TestHistorySwapRowIdIsPaymentHash(t *testing.T) {
 	t.Parallel()
 
-	h, _, rpc := newHistoryFixture(t)
-	// Register the EXIT intent with the canonical id the user saw at
-	// submit time.
-	h.runtime.registerExitIntent("canonical-exit-id", []string{"tx1:0"})
-	// Observe a broadcast txid that the ledger will later report.
-	h.runtime.observeIntentTxid("canonical-exit-id", "broadcast-txid")
-
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	h, swap, _ := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
 			{
-				Type:               "sweep",
-				ConfirmationStatus: "confirmed",
-				Txid:               "broadcast-txid",
-				CreatedAtUnixS:     100,
+				PaymentHash: "the-payment-hash",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_PAY,
+				State: swapclientrpc.
+					SwapState_SWAP_STATE_COMPLETED,
+				UpdatedAtUnix: 100,
 			},
 		},
 	}
@@ -253,9 +250,8 @@ func TestHistoryCanonicalIDProjection(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, resp.GetEntries(), 1)
 	require.Equal(
-		t, "canonical-exit-id", resp.GetEntries()[0].GetId(),
-		"ledger sweep with a registered txid must project onto the "+
-			"canonical exit intent id",
+		t, "the-payment-hash", resp.GetEntries()[0].GetId(),
+		"swap row id must surface as payment_hash",
 	)
 }
 
