@@ -82,8 +82,9 @@ func newFakeDaemonService() *fakeDaemonService {
 			Network:         "regtest",
 			ServerConnected: true,
 			WalletType:      "btcwallet",
-			WalletReady:     true,
-			IdentityPubkey:  testIdentityPubKeyHex,
+			WalletState: daemonrpc.
+				WalletState_WALLET_STATE_READY,
+			IdentityPubkey: testIdentityPubKeyHex,
 			ServerInfo: &daemonrpc.ServerInfo{
 				OperatorPubkey: mustDecodeHex(
 					testOperatorPubKeyHex,
@@ -856,7 +857,7 @@ func TestStartEmbeddedUsesBufconnTransport(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "regtest", info.Network)
 	require.Equal(t, darepod.WalletTypeBtcwallet, info.WalletType)
-	require.False(t, info.WalletReady)
+	require.False(t, info.WalletReady())
 
 	seed, err := client.GenSeed(context.Background(), nil)
 	require.NoError(t, err)

@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightningnetwork/lnd/fn/v2"
+	"google.golang.org/grpc"
 )
 
 // Config controls the embedded daemon and wallet facade.
@@ -14,10 +14,6 @@ type Config struct {
 	// starts from darepod.DefaultConfig and applies the convenience fields
 	// below.
 	DaemonConfig *darepod.Config
-
-	// DisableSwaps starts the daemon without registering the daemon-owned
-	// swap executor. Send and Receive require swaps to be enabled.
-	DisableSwaps bool
 
 	// DataDir is the root directory for daemon and wallet state.
 	DataDir string
@@ -31,9 +27,10 @@ type Config struct {
 	// LogWriter receives daemon logs. Nil uses darepod's default stdout.
 	LogWriter io.Writer
 
-	// AllowMainnet is the tri-state mainnet-allow flag. fn.None defers to
-	// DaemonConfig; fn.Some(true)/fn.Some(false) forces that value.
-	AllowMainnet fn.Option[bool]
+	// AllowMainnet must be true when Network is mainnet. This is an
+	// enable-only convenience override; set DaemonConfig directly when
+	// a caller-owned config needs an explicit false value.
+	AllowMainnet bool
 
 	// ServerAddress is the Ark operator mailbox edge server address.
 	ServerAddress string
@@ -41,10 +38,10 @@ type Config struct {
 	// ServerTLSCertPath pins the Ark operator TLS certificate.
 	ServerTLSCertPath string
 
-	// ServerInsecure is the tri-state TLS-disable flag for the Ark
-	// operator connection. fn.None defers to DaemonConfig;
-	// fn.Some(true)/fn.Some(false) forces that value.
-	ServerInsecure fn.Option[bool]
+	// ServerInsecure disables TLS for the Ark operator connection. This
+	// is an enable-only convenience override; set DaemonConfig directly
+	// when a caller-owned config needs an explicit false value.
+	ServerInsecure bool
 
 	// WalletType selects the backing wallet implementation.
 	WalletType string
@@ -70,10 +67,10 @@ type Config struct {
 	// SwapServerTLSCertPath pins the swapdk-server TLS certificate.
 	SwapServerTLSCertPath string
 
-	// SwapServerInsecure is the tri-state TLS-disable flag for the swap
-	// server connection. fn.None defers to DaemonConfig; fn.Some(true)/
-	// fn.Some(false) forces that value.
-	SwapServerInsecure fn.Option[bool]
+	// SwapServerInsecure disables TLS for the swap server connection.
+	// This is an enable-only convenience override; set DaemonConfig
+	// directly when a caller-owned config needs an explicit false value.
+	SwapServerInsecure bool
 
 	// SwapDatabaseFileName is the daemon-owned swap SQLite database path.
 	SwapDatabaseFileName string
@@ -85,6 +82,41 @@ type Config struct {
 	BufferSize int
 }
 
+// ConnectConfig controls a walletdk client connected to an external daemon.
+type ConnectConfig struct {
+	// Address is the gRPC target of a daemon exposing walletrpc.
+	Address string
+
+	// DialOptions are appended to the default dial options. When empty,
+	// walletdk uses insecure transport credentials for local development.
+	DialOptions []grpc.DialOption
+}
+
+// WalletState mirrors the daemon's wallet lifecycle enum so SDK
+// consumers can render a tri-state UI without collapsing LOCKED into
+// "not ready". The values are ordered from least to most ready;
+// compare against >= WalletStateLocked for "seed exists" semantics and
+// == WalletStateReady for "fully usable" semantics.
+type WalletState int32
+
+const (
+	// WalletStateUnspecified is the proto3 zero value. The daemon
+	// never emits this; reserved so a missing field deserializes to
+	// a safe non-ready state.
+	WalletStateUnspecified WalletState = 0
+
+	// WalletStateNone indicates no wallet has been created yet.
+	WalletStateNone WalletState = 1
+
+	// WalletStateLocked indicates an encrypted seed exists but the
+	// decryption key has not been provided; signing is unavailable.
+	WalletStateLocked WalletState = 2
+
+	// WalletStateReady indicates the wallet is initialized, unlocked,
+	// and signing is available.
+	WalletStateReady WalletState = 3
+)
+
 // Info summarizes daemon readiness for wallet applications.
 type Info struct {
 	Version         string
@@ -93,8 +125,19 @@ type Info struct {
 	BlockHeight     uint32
 	ServerConnected bool
 	WalletType      string
-	WalletReady     bool
+	WalletState     WalletState
 	IdentityPubKey  string
+}
+
+// WalletReady reports whether the daemon wallet is fully unlocked and
+// ready to sign. Convenience predicate over WalletState so callers that
+// only need the binary state don't have to import the enum.
+func (i *Info) WalletReady() bool {
+	if i == nil {
+		return false
+	}
+
+	return i.WalletState == WalletStateReady
 }
 
 // CreateWalletRequest creates or imports a daemon wallet.
@@ -111,7 +154,7 @@ type CreateWalletResult struct {
 	IdentityPubKey string
 }
 
-// UnlockWalletRequest unlocks an existing daemon wallet.
+// UnlockWalletRequest unlocks an existing embedded daemon wallet.
 type UnlockWalletRequest struct {
 	WalletPassword []byte
 }
@@ -121,94 +164,134 @@ type UnlockWalletResult struct {
 	IdentityPubKey string
 }
 
-// Balance is the simplified wallet balance view.
+// Balance is the wallet-level balance view.
 type Balance struct {
-	BoardingConfirmedSat      int64
-	BoardingUnconfirmedSat    int64
-	VTXOBalanceSat            int64
-	TotalConfirmedSat         int64
-	OnchainWalletConfirmedSat int64
+	ConfirmedSat  int64
+	PendingInSat  int64
+	PendingOutSat int64
 }
 
-// OnchainAddress is a fresh boarding address.
-type OnchainAddress struct {
+// DepositRequest creates a tracked boarding address.
+type DepositRequest struct {
+	AmountSatHint uint64
+}
+
+// DepositResult returns a boarding address and its initial activity entry.
+type DepositResult struct {
 	Address string
+	Entry   Entry
 }
 
-// ReceiveRequest starts a Lightning-to-Ark receive swap.
+// ReceiveRequest creates a Lightning invoice payable into the wallet.
 type ReceiveRequest struct {
-	AmountSat int64
+	AmountSat uint64
+	Memo      string
 }
 
-// ReceiveResult contains the invoice and initial durable swap state.
+// ReceiveResult contains the invoice and initial wallet entry.
 type ReceiveResult struct {
-	PaymentHash string
-	Invoice     string
-	Swap        SwapSummary
+	Invoice string
+	Entry   Entry
 }
 
-// SendRequest starts an Ark-to-Lightning payment.
+// SendRequest dispatches an outbound payment.
 type SendRequest struct {
-	Invoice   string
-	MaxFeeSat uint64
+	Invoice        string
+	OnchainAddress string
+	AmountSat      uint64
+	Note           string
+	MaxFeeSat      uint64
+
+	// SweepAll drains every live VTXO to OnchainAddress. When set the
+	// daemon ignores AmountSat (which must be zero) and the host SHOULD
+	// echo SendResult.ActualAmountSat back to the user before treating
+	// the send as confirmed. Ignored on the invoice path.
+	SweepAll bool
 }
 
-// SendResult contains the payment hash and initial durable swap state.
+// SendResult contains the initial wallet entry for an outbound payment.
 type SendResult struct {
-	PaymentHash string
-	Swap        SwapSummary
+	Entry Entry
+
+	// ActualAmountSat is the real amount that will leave the wallet for
+	// this operation. For invoice sends it matches the invoice principal.
+	// For onchain sends it reflects the sum of selected VTXOs and may
+	// exceed the requested amount under v1 whole-VTXO sweep semantics, so
+	// host UIs SHOULD echo it back to the user before treating the send
+	// as confirmed.
+	ActualAmountSat int64
 }
 
-// ListSwapsRequest controls swap listing.
-type ListSwapsRequest struct {
+// ListRequest controls wallet activity listing.
+type ListRequest struct {
 	PendingOnly bool
+	Kinds       []EntryKind
+	Limit       uint32
+	Offset      uint32
 }
 
-// GetSwapRequest fetches one swap by payment hash.
-type GetSwapRequest struct {
-	PaymentHash string
+// ListResult returns wallet activity entries and the unpaginated total.
+type ListResult struct {
+	Entries []Entry
+	Total   uint32
 }
 
-// ResumeSwapRequest wakes one pending daemon-owned swap worker.
-type ResumeSwapRequest struct {
-	PaymentHash string
-	Direction   SwapDirection
+// Status summarizes wallet readiness and pending activity.
+type Status struct {
+	Ready        bool
+	Unlocked     bool
+	Network      string
+	Balance      Balance
+	PendingCount uint32
 }
 
-// SubscribeSwapsRequest controls swap update subscriptions.
-type SubscribeSwapsRequest struct {
+// SubscribeRequest controls wallet activity subscriptions.
+type SubscribeRequest struct {
 	IncludeExisting bool
-	PendingOnly     bool
+	Kinds           []EntryKind
 }
 
-// SwapDirection identifies the swap direction.
-type SwapDirection string
+// EntryKind is the user-visible wallet activity category.
+type EntryKind string
 
 const (
-	// SwapDirectionPay is an Ark-to-Lightning payment.
-	SwapDirectionPay SwapDirection = "pay"
+	// EntryKindSend is an outbound wallet payment.
+	EntryKindSend EntryKind = "send"
 
-	// SwapDirectionReceive is a Lightning-to-Ark receive.
-	SwapDirectionReceive SwapDirection = "receive"
+	// EntryKindReceive is an inbound Lightning-to-wallet receive.
+	EntryKindReceive EntryKind = "receive"
+
+	// EntryKindDeposit is a boarding on-chain deposit.
+	EntryKindDeposit EntryKind = "deposit"
+
+	// EntryKindExit is a cooperative wallet-to-on-chain exit.
+	EntryKindExit EntryKind = "exit"
 )
 
-// SwapSummary is the wrapper-friendly view of one persisted swap.
-type SwapSummary struct {
-	Direction        SwapDirection
-	PaymentHash      string
-	State            string
-	Pending          bool
-	AmountSat        int64
-	FeeSat           uint64
-	MaxFeeSat        uint64
-	VHTLCOutpoint    string
-	VHTLCAmountSat   int64
-	FundingSessionID string
-	ClaimSessionID   string
-	RefundSessionID  string
-	TerminalReason   string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	Deadline         time.Time
-	RefundLocktime   uint32
+// EntryStatus is the collapsed wallet activity state.
+type EntryStatus string
+
+const (
+	// EntryStatusPending means the activity is still in flight.
+	EntryStatusPending EntryStatus = "pending"
+
+	// EntryStatusComplete means the activity finished successfully.
+	EntryStatusComplete EntryStatus = "complete"
+
+	// EntryStatusFailed means the activity reached a terminal failure.
+	EntryStatusFailed EntryStatus = "failed"
+)
+
+// Entry is the wallet-facing activity row used by UI and bridge layers.
+type Entry struct {
+	ID            string
+	Kind          EntryKind
+	Status        EntryStatus
+	AmountSat     int64
+	FeeSat        int64
+	Counterparty  string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	Note          string
+	FailureReason string
 }

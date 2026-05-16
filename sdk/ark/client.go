@@ -34,6 +34,40 @@ type Client struct {
 	closeErr  error
 }
 
+// WalletState mirrors the daemon's wallet lifecycle enum so SDK consumers
+// can render a tri-state UI. Compare against >= WalletStateLocked for
+// "seed exists" semantics and == WalletStateReady for "fully usable"
+// semantics.
+type WalletState int32
+
+const (
+	// WalletStateUnspecified is the proto3 zero value. The daemon never
+	// emits this; reserved so a missing field deserializes to a safe
+	// non-ready state.
+	WalletStateUnspecified WalletState = 0
+
+	// WalletStateNone indicates no wallet has been created yet.
+	WalletStateNone WalletState = 1
+
+	// WalletStateLocked indicates an encrypted seed exists but the
+	// decryption key has not been provided.
+	WalletStateLocked WalletState = 2
+
+	// WalletStateReady indicates the wallet is initialized, unlocked,
+	// and signing is available.
+	WalletStateReady WalletState = 3
+)
+
+// WalletReady reports whether the daemon wallet is fully unlocked and
+// ready to sign. Convenience predicate over Info.WalletState.
+func (i *Info) WalletReady() bool {
+	if i == nil {
+		return false
+	}
+
+	return i.WalletState == WalletStateReady
+}
+
 // Info describes the current status of a running darepod instance.
 type Info struct {
 	// Version is the daemon's semantic version string.
@@ -62,9 +96,12 @@ type Info struct {
 	// WalletType is the active wallet backend name.
 	WalletType string
 
-	// WalletReady reports whether the daemon wallet subsystem is
-	// initialized and ready to serve wallet-dependent RPCs.
-	WalletReady bool
+	// WalletState reports the daemon wallet lifecycle state
+	// (Unspecified/None/Locked/Ready). The values are ordered from
+	// least to most ready; callers can compare against >=
+	// WalletStateLocked for "seed exists" semantics and ==
+	// WalletStateReady for "fully usable" semantics.
+	WalletState WalletState
 
 	// IdentityPubKey is the daemon identity public key derived from the
 	// active wallet backend.
@@ -313,7 +350,7 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 		ServerConnected:   resp.ServerConnected,
 		LndAlias:          resp.LndAlias,
 		WalletType:        resp.WalletType,
-		WalletReady:       resp.WalletReady,
+		WalletState:       WalletState(resp.WalletState),
 		IdentityPubKey:    resp.IdentityPubkey,
 	}
 

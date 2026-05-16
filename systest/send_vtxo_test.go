@@ -498,7 +498,8 @@ func waitForDaemonReady(t *testing.T, client daemonrpc.DaemonServiceClient) {
 				return false
 			}
 
-			return info.WalletReady
+			return info.GetWalletState() ==
+				daemonrpc.WalletState_WALLET_STATE_READY
 		},
 		30*time.Second,
 		200*time.Millisecond,

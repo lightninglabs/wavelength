@@ -1,147 +1,113 @@
 package walletdk
 
 import (
-	"strings"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
 )
 
-// swapSummaryFromProto copies the daemon RPC summary into wrapper-owned
-// fields so mobile and UI callers do not need protobuf types.
-func swapSummaryFromProto(summary *swapclientrpc.SwapSummary) SwapSummary {
-	if summary == nil {
-		return SwapSummary{}
+// entryFromProto copies one wallet RPC entry into wrapper-owned fields so UI
+// and bridge callers do not need protobuf types.
+func entryFromProto(entry *walletrpc.WalletEntry) Entry {
+	if entry == nil {
+		return Entry{}
 	}
 
-	return SwapSummary{
-		Direction: swapDirectionFromProto(
-			summary.GetDirection(),
-		),
-		PaymentHash:      summary.GetPaymentHash(),
-		State:            swapStateFromProto(summary.GetState()),
-		Pending:          summary.GetPending(),
-		AmountSat:        summary.GetAmountSat(),
-		FeeSat:           summary.GetFeeSat(),
-		MaxFeeSat:        summary.GetMaxFeeSat(),
-		VHTLCOutpoint:    summary.GetVhtlcOutpoint(),
-		VHTLCAmountSat:   summary.GetVhtlcAmountSat(),
-		FundingSessionID: summary.GetFundingSessionId(),
-		ClaimSessionID:   summary.GetClaimSessionId(),
-		RefundSessionID:  summary.GetRefundSessionId(),
-		TerminalReason:   summary.GetTerminalReason(),
-		CreatedAt:        unixTime(summary.GetCreatedAtUnix()),
-		UpdatedAt:        unixTime(summary.GetUpdatedAtUnix()),
-		Deadline:         unixTime(summary.GetDeadlineUnix()),
-		RefundLocktime:   summary.GetRefundLocktime(),
+	return Entry{
+		ID:            entry.GetId(),
+		Kind:          entryKindFromProto(entry.GetKind()),
+		Status:        entryStatusFromProto(entry.GetStatus()),
+		AmountSat:     entry.GetAmountSat(),
+		FeeSat:        entry.GetFeeSat(),
+		Counterparty:  entry.GetCounterparty(),
+		CreatedAt:     unixTime(entry.GetCreatedAtUnix()),
+		UpdatedAt:     unixTime(entry.GetUpdatedAtUnix()),
+		Note:          entry.GetNote(),
+		FailureReason: entry.GetFailureReason(),
 	}
 }
 
-// swapDirectionFromProto maps the generated enum into walletdk's compact
-// string-like direction type. Unknown future enum values fall back to the
-// lowercased proto name (minus the SWAP_DIRECTION_ prefix) so a new value
-// added to the proto surfaces in host UIs instead of erasing into "".
-func swapDirectionFromProto(
-	direction swapclientrpc.SwapDirection) SwapDirection {
+// entryKindFromProto maps the generated enum into walletdk's string-like kind.
+func entryKindFromProto(kind walletrpc.EntryKind) EntryKind {
+	switch kind {
+	case walletrpc.EntryKind_ENTRY_KIND_SEND:
+		return EntryKindSend
 
-	switch direction {
-	case swapclientrpc.SwapDirection_SWAP_DIRECTION_UNSPECIFIED:
+	case walletrpc.EntryKind_ENTRY_KIND_RECV:
+		return EntryKindReceive
+
+	case walletrpc.EntryKind_ENTRY_KIND_DEPOSIT:
+		return EntryKindDeposit
+
+	case walletrpc.EntryKind_ENTRY_KIND_EXIT:
+		return EntryKindExit
+
+	default:
 		return ""
-
-	case swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY:
-		return SwapDirectionPay
-
-	case swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE:
-		return SwapDirectionReceive
-
-	default:
-		return SwapDirection(
-			strings.ToLower(
-				strings.TrimPrefix(
-					direction.String(),
-					"SWAP_DIRECTION_",
-				),
-			),
-		)
 	}
 }
 
-// swapDirectionToProto maps the public direction back to the daemon RPC enum
-// used by resume requests.
-func swapDirectionToProto(direction SwapDirection) swapclientrpc.SwapDirection {
-	switch direction {
-	case SwapDirectionPay:
-		return swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY
+// entryKindToProto maps SDK filters back to the generated enum.
+func entryKindToProto(kind EntryKind) walletrpc.EntryKind {
+	switch kind {
+	case EntryKindSend:
+		return walletrpc.EntryKind_ENTRY_KIND_SEND
 
-	case SwapDirectionReceive:
-		return swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE
+	case EntryKindReceive:
+		return walletrpc.EntryKind_ENTRY_KIND_RECV
+
+	case EntryKindDeposit:
+		return walletrpc.EntryKind_ENTRY_KIND_DEPOSIT
+
+	case EntryKindExit:
+		return walletrpc.EntryKind_ENTRY_KIND_EXIT
 
 	default:
-		return swapclientrpc.SwapDirection_SWAP_DIRECTION_UNSPECIFIED
+		return walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED
 	}
 }
 
-// swapStateFromProto returns stable lowercase state names for display and
-// bridge layers.
-//
-// The wrapper deliberately owns the string form so the SDK contract is
-// independent of how the proto enum is named or renumbered. Host UIs and
-// React Native / gomobile bridges can switch on these values without taking a
-// dependency on the generated enum type. Unknown future enum values fall back
-// to the lowercased proto name (minus the SWAP_STATE_ prefix) so a new state
-// added to the proto surfaces in host UIs instead of being silently flattened
-// into "unspecified".
-func swapStateFromProto(state swapclientrpc.SwapState) string {
-	switch state {
-	case swapclientrpc.SwapState_SWAP_STATE_UNSPECIFIED:
-		return "unspecified"
+// entryStatusFromProto maps generated statuses into stable display strings.
+func entryStatusFromProto(status walletrpc.EntryStatus) EntryStatus {
+	switch status {
+	case walletrpc.EntryStatus_ENTRY_STATUS_PENDING:
+		return EntryStatusPending
 
-	case swapclientrpc.SwapState_SWAP_STATE_CREATED:
-		return "created"
+	case walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE:
+		return EntryStatusComplete
 
-	case swapclientrpc.SwapState_SWAP_STATE_SWAP_CREATED:
-		return "swap_created"
-
-	case swapclientrpc.SwapState_SWAP_STATE_FUNDING_INITIATED:
-		return "funding_initiated"
-
-	case swapclientrpc.SwapState_SWAP_STATE_VHTLC_FUNDED:
-		return "vhtlc_funded"
-
-	case swapclientrpc.SwapState_SWAP_STATE_WAITING_FOR_CLAIM:
-		return "waiting_for_claim"
-
-	case swapclientrpc.SwapState_SWAP_STATE_COMPLETED:
-		return "completed"
-
-	case swapclientrpc.SwapState_SWAP_STATE_EXPIRED:
-		return "expired"
-
-	case swapclientrpc.SwapState_SWAP_STATE_REFUND_INITIATED:
-		return "refund_initiated"
-
-	case swapclientrpc.SwapState_SWAP_STATE_REFUNDED:
-		return "refunded"
-
-	case swapclientrpc.SwapState_SWAP_STATE_NEEDS_INTERVENTION:
-		return "needs_intervention"
-
-	case swapclientrpc.SwapState_SWAP_STATE_FAILED:
-		return "failed"
-
-	case swapclientrpc.SwapState_SWAP_STATE_INVOICE_CREATED:
-		return "invoice_created"
-
-	case swapclientrpc.SwapState_SWAP_STATE_CLAIM_INITIATED:
-		return "claim_initiated"
+	case walletrpc.EntryStatus_ENTRY_STATUS_FAILED:
+		return EntryStatusFailed
 
 	default:
-		return strings.ToLower(
-			strings.TrimPrefix(
-				state.String(),
-				"SWAP_STATE_",
-			),
-		)
+		return ""
+	}
+}
+
+// entryKindsToProto copies SDK filters into generated enum values.
+func entryKindsToProto(kinds []EntryKind) []walletrpc.EntryKind {
+	if len(kinds) == 0 {
+		return nil
+	}
+
+	out := make([]walletrpc.EntryKind, 0, len(kinds))
+	for _, kind := range kinds {
+		out = append(out, entryKindToProto(kind))
+	}
+
+	return out
+}
+
+// balanceFromProto copies a wallet RPC balance into SDK-owned fields.
+func balanceFromProto(balance *walletrpc.BalanceResponse) Balance {
+	if balance == nil {
+		return Balance{}
+	}
+
+	return Balance{
+		ConfirmedSat:  balance.GetConfirmedSat(),
+		PendingInSat:  balance.GetPendingInSat(),
+		PendingOutSat: balance.GetPendingOutSat(),
 	}
 }
 

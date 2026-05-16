@@ -5,12 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"sync"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightningnetwork/lnd/fn/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
@@ -19,59 +15,8 @@ import (
 
 const defaultBufConnSize = 1 << 20
 
-// daemonRuntime carries the embedded daemon's terminal signal so the startup,
-// shutdown, and Wait paths share one source of truth.
-//
-// The lifecycle is modeled as a context whose cancellation marks the daemon
-// having exited. runErr is written before the context is cancelled so any
-// goroutine observing ctx.Done() is then free to read runErr without further
-// synchronization (Go memory model: the write happens-before the receive that
-// observes the cancellation).
-//
-// signalExit is sync.Once-guarded so the daemon goroutine, panic recovery,
-// and any defensive callers cannot race on the runErr write or accidentally
-// trigger ordering issues. context.CancelFunc itself is already idempotent.
-//
-// ctx here is a lifecycle signal owned by daemonRuntime, not a per-request
-// context; storing it lets Wait and waitForReady reuse context.AfterFunc
-// without an extra goroutine — hence the containedctx suppression below.
-//
-//nolint:containedctx
-type daemonRuntime struct {
-	ctx       context.Context
-	cancelFn  context.CancelFunc
-	runErr    error
-	closeOnce sync.Once
-}
-
-// newDaemonRuntime constructs a runtime whose context is cancelled the first
-// time signalExit is called.
-func newDaemonRuntime() *daemonRuntime {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	return &daemonRuntime{
-		ctx:      ctx,
-		cancelFn: cancel,
-	}
-}
-
-// signalExit records the daemon's terminal error and cancels the runtime
-// context. Safe to call multiple times; only the first call wins.
-func (rt *daemonRuntime) signalExit(err error) {
-	rt.closeOnce.Do(func() {
-		rt.runErr = err
-		rt.cancelFn()
-	})
-}
-
-// Done returns a channel that is closed when the daemon exits. After
-// observing the close, callers may read runErr to inspect the terminal error.
-func (rt *daemonRuntime) Done() <-chan struct{} {
-	return rt.ctx.Done()
-}
-
-// DefaultConfig returns a walletdk config with darepod defaults. Swap methods
-// are enabled only when the package is built with the swapruntime tag.
+// DefaultConfig returns a walletdk config with darepod defaults. Wallet payment
+// methods are enabled only when built with walletrpc and swapruntime.
 func DefaultConfig() Config {
 	cfg := darepod.DefaultConfig()
 
@@ -81,7 +26,7 @@ func DefaultConfig() Config {
 		DebugLevel:            cfg.DebugLevel,
 		ServerAddress:         cfg.Server.Host,
 		ServerTLSCertPath:     cfg.Server.TLSCertPath,
-		ServerInsecure:        fn.Some(cfg.Server.Insecure),
+		ServerInsecure:        cfg.Server.Insecure,
 		WalletType:            cfg.Wallet.Type,
 		WalletEsploraURL:      cfg.Wallet.EsploraURL,
 		WalletPasswordFile:    cfg.Wallet.PasswordFile,
@@ -90,7 +35,7 @@ func DefaultConfig() Config {
 		WalletFeeURL:          cfg.Wallet.FeeURL,
 		SwapServerAddress:     cfg.Swap.ServerAddress,
 		SwapServerTLSCertPath: cfg.Swap.ServerTLSCertPath,
-		SwapServerInsecure:    fn.Some(cfg.Swap.ServerInsecure),
+		SwapServerInsecure:    cfg.Swap.ServerInsecure,
 		SwapDatabaseFileName:  cfg.Swap.DatabaseFileName,
 		MaxOperatorFeeSat:     cfg.MaxOperatorFeeSat,
 	}
@@ -100,15 +45,19 @@ func DefaultConfig() Config {
 //
 //nolint:contextcheck // embedded daemon lifetime is detached from dial ctx
 func Start(ctx context.Context, cfg Config) (*Client, error) {
+	if err := requireEmbeddedWalletRuntime(); err != nil {
+		return nil, err
+	}
+
 	daemonCfg, err := daemonConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	swapsEnabled := !cfg.DisableSwaps && swapRuntimeAvailable()
-	if err := configureSwapRuntime(daemonCfg, swapsEnabled); err != nil {
+	if err := configureSwapRuntime(daemonCfg, true); err != nil {
 		return nil, err
 	}
+	configureWalletRPC(daemonCfg, true)
 
 	bufferSize := cfg.BufferSize
 	if bufferSize == 0 {
@@ -134,28 +83,16 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("create embedded daemon: %w", err)
 	}
 
-	// The daemon outlives the caller's dial context: callers pass a ctx
-	// that may carry a tight startup deadline, but the daemon's lifetime is
-	// tied to runCtx, which is only cancelled by Stop or the failure paths
-	// below. That is what the //nolint:contextcheck directive on Start is
-	// guarding.
 	runCtx, cancel := context.WithCancel(context.Background())
-
-	rt := newDaemonRuntime()
+	runErrChan := make(chan error, 1)
+	runDoneChan := make(chan error, 1)
+	waitErrChan := make(chan error, 1)
 	go func() {
-		// Capture any panic from the daemon goroutine into the
-		// terminal error so Wait/Stop see a real error rather than
-		// blocking forever on an un-cancelled runtime.
-		defer func() {
-			if r := recover(); r != nil {
-				rt.signalExit(
-					fmt.Errorf("embedded daemon "+
-						"panicked: %v", r),
-				)
-			}
-		}()
-
-		rt.signalExit(server.RunWithContext(runCtx))
+		runErr := server.RunWithContext(runCtx)
+		runErrChan <- runErr
+		runDoneChan <- runErr
+		waitErrChan <- runErr
+		close(waitErrChan)
 	}()
 
 	dialOpts := []grpc.DialOption{
@@ -173,7 +110,7 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 		shutdownCtx, shutdownCancel := context.WithTimeout(
 			context.Background(), defaultCloseTimeout,
 		)
-		runErr := waitForRunExit(shutdownCtx, rt)
+		runErr := waitForRunExit(shutdownCtx, runErrChan)
 		shutdownCancel()
 		listenerErr := listener.Close()
 
@@ -181,13 +118,13 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 			errors.Join(err, runErr, listenerErr))
 	}
 
-	if err := waitForReady(ctx, conn, rt); err != nil {
+	if err := waitForReady(ctx, conn, runDoneChan); err != nil {
 		closeErr := conn.Close()
 		cancel()
 		shutdownCtx, shutdownCancel := context.WithTimeout(
 			context.Background(), defaultCloseTimeout,
 		)
-		runErr := waitForRunExit(shutdownCtx, rt)
+		runErr := waitForRunExit(shutdownCtx, runErrChan)
 		shutdownCancel()
 		listenerErr := listener.Close()
 
@@ -195,21 +132,28 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 			errors.Join(err, closeErr, runErr, listenerErr))
 	}
 
-	return &Client{
-		conn:    conn,
-		daemon:  daemonrpc.NewDaemonServiceClient(conn),
-		swaps:   swapclientrpc.NewSwapClientServiceClient(conn),
-		canSwap: swapsEnabled,
-		runtime: rt,
-		closeFn: func(closeCtx context.Context) error {
+	return newClient(conn, true, waitErrChan,
+		func(closeCtx context.Context) error {
 			closeErr := conn.Close()
 			cancel()
-			runErr := waitForRunExit(closeCtx, rt)
+			runErr := waitForRunExit(closeCtx, runErrChan)
 			listenerErr := listener.Close()
 
 			return errors.Join(closeErr, runErr, listenerErr)
 		},
-	}, nil
+	), nil
+}
+
+// requireEmbeddedWalletRuntime makes Start fail before booting a daemon when
+// the current build cannot install the wallet RPC runtime. walletdk's embedded
+// mode owns swap resume through swapwallet, so both walletrpc and swapruntime
+// must be compiled in.
+func requireEmbeddedWalletRuntime() error {
+	if !swapRuntimeAvailable() || !walletRPCAvailable() {
+		return ErrWalletRPCUnavailable
+	}
+
+	return nil
 }
 
 // daemonConfig builds the daemon config from either a full caller-supplied
@@ -229,11 +173,6 @@ func daemonConfig(cfg Config) (*darepod.Config, error) {
 
 // applyConfigOverrides applies only explicitly set convenience fields so a
 // caller-provided DaemonConfig keeps ownership of detailed daemon knobs.
-//
-// The tri-state booleans (AllowMainnet, ServerInsecure, SwapServerInsecure)
-// are fn.Option[bool]: fn.None means "no override, defer to DaemonConfig", and
-// fn.Some(v) forces that exact value. This lets callers explicitly clear a
-// true-by-default flag without having to construct a full DaemonConfig.
 func applyConfigOverrides(daemonCfg *darepod.Config, cfg Config) {
 	if cfg.DataDir != "" {
 		daemonCfg.DataDir = cfg.DataDir
@@ -247,9 +186,9 @@ func applyConfigOverrides(daemonCfg *darepod.Config, cfg Config) {
 	if cfg.LogWriter != nil {
 		daemonCfg.LogWriter = cfg.LogWriter
 	}
-	cfg.AllowMainnet.WhenSome(func(v bool) {
-		daemonCfg.AllowMainnet = v
-	})
+	if cfg.AllowMainnet {
+		daemonCfg.AllowMainnet = true
+	}
 	if cfg.MaxOperatorFeeSat != 0 {
 		daemonCfg.MaxOperatorFeeSat = cfg.MaxOperatorFeeSat
 	}
@@ -263,9 +202,9 @@ func applyConfigOverrides(daemonCfg *darepod.Config, cfg Config) {
 	if cfg.ServerTLSCertPath != "" {
 		daemonCfg.Server.TLSCertPath = cfg.ServerTLSCertPath
 	}
-	cfg.ServerInsecure.WhenSome(func(v bool) {
-		daemonCfg.Server.Insecure = v
-	})
+	if cfg.ServerInsecure {
+		daemonCfg.Server.Insecure = true
+	}
 
 	if daemonCfg.Wallet == nil {
 		daemonCfg.Wallet = &darepod.WalletConfig{}
@@ -298,9 +237,9 @@ func applyConfigOverrides(daemonCfg *darepod.Config, cfg Config) {
 	if cfg.SwapServerTLSCertPath != "" {
 		daemonCfg.Swap.ServerTLSCertPath = cfg.SwapServerTLSCertPath
 	}
-	cfg.SwapServerInsecure.WhenSome(func(v bool) {
-		daemonCfg.Swap.ServerInsecure = v
-	})
+	if cfg.SwapServerInsecure {
+		daemonCfg.Swap.ServerInsecure = true
+	}
 	if cfg.SwapDatabaseFileName != "" {
 		daemonCfg.Swap.DatabaseFileName = cfg.SwapDatabaseFileName
 	}
@@ -308,17 +247,6 @@ func applyConfigOverrides(daemonCfg *darepod.Config, cfg Config) {
 
 // cloneDaemonConfig copies reference-typed daemon config fields before walletdk
 // injects its private listener and optional service registrars.
-//
-// Start mutates the daemon config (assigning daemonCfg.RPC.Listener and
-// appending to RPCServiceRegistrars). When the caller supplies their own
-// DaemonConfig, we must not write those changes back into the caller's
-// pointer graph, otherwise a second Start call (or any caller-side inspection
-// of the config) would see walletdk's bufconn listener and registrars. Hence
-// the per-subgroup shallow copies below; new pointer/slice fields added to
-// darepod.Config in the future need a matching clone here.
-// TestCloneDaemonConfigCoversReferenceFields in embedded_test.go reflects over
-// darepod.Config and fails when a new pointer/slice/map field is added without
-// a matching clone.
 func cloneDaemonConfig(cfg *darepod.Config) *darepod.Config {
 	clone := *cfg
 
@@ -366,10 +294,10 @@ func cloneDaemonConfig(cfg *darepod.Config) *darepod.Config {
 
 // waitForRunExit bounds shutdown waits when startup or Stop cancels the
 // embedded daemon runtime.
-func waitForRunExit(ctx context.Context, rt *daemonRuntime) error {
+func waitForRunExit(ctx context.Context, runErrChan <-chan error) error {
 	select {
-	case <-rt.Done():
-		return rt.runErr
+	case runErr := <-runErrChan:
+		return runErr
 
 	case <-ctx.Done():
 		return fmt.Errorf("wait for embedded daemon shutdown: %w",
@@ -379,28 +307,10 @@ func waitForRunExit(ctx context.Context, rt *daemonRuntime) error {
 
 // waitForReady forces the lazy gRPC client to dial the embedded daemon before
 // Start returns.
-//
-// grpc.NewClient is intentionally lazy: it does not dial until the first RPC.
-// Start's contract is that callers can use the returned Client immediately, so
-// we explicitly Connect and then poll connectivity state transitions until
-// either gRPC reports Ready or the daemon exits early.
-//
-// The death watch piggybacks on context.AfterFunc: when the daemon runtime
-// context is cancelled, watchCtx is also cancelled, which unblocks
-// WaitForStateChange. This replaces an earlier per-iteration goroutine that
-// could race the loop and silently drop the daemon-death signal.
 func waitForReady(ctx context.Context, conn *grpc.ClientConn,
-	rt *daemonRuntime) error {
+	runDoneChan <-chan error) error {
 
 	conn.Connect()
-
-	watchCtx, watchCancel := context.WithCancel(ctx)
-	defer watchCancel()
-
-	//nolint:contextcheck // rt.ctx is the daemon lifecycle signal, not a
-	// request context to inherit; using it here is exactly the point.
-	stop := context.AfterFunc(rt.ctx, watchCancel)
-	defer stop()
 
 	for {
 		state := conn.GetState()
@@ -408,21 +318,38 @@ func waitForReady(ctx context.Context, conn *grpc.ClientConn,
 			return nil
 		}
 		if state == connectivity.Shutdown {
-			return errors.New("grpc connection shut down before " +
+			return fmt.Errorf("grpc connection shut down before " +
 				"readiness")
 		}
 
-		if !conn.WaitForStateChange(watchCtx, state) {
-			select {
-			case <-rt.Done():
-				if rt.runErr != nil {
-					return fmt.Errorf("embedded daemon "+
-						"exited before readiness: %w",
-						rt.runErr)
-				}
+		waitCtx, waitCancel := context.WithCancel(ctx)
+		runExitErr := make(chan error, 1)
+		if runDoneChan != nil {
+			go func() {
+				select {
+				case runErr := <-runDoneChan:
+					msg := "embedded daemon exited " +
+						"before readiness"
+					if runErr != nil {
+						runExitErr <- fmt.Errorf(
+							"%s: %w", msg, runErr)
+					} else {
+						runExitErr <- errors.New(msg)
+					}
 
-				return errors.New("embedded daemon exited " +
-					"before readiness")
+					waitCancel()
+
+				case <-waitCtx.Done():
+				}
+			}()
+		}
+
+		if !conn.WaitForStateChange(waitCtx, state) {
+			waitCancel()
+
+			select {
+			case err := <-runExitErr:
+				return err
 
 			default:
 			}
@@ -430,5 +357,16 @@ func waitForReady(ctx context.Context, conn *grpc.ClientConn,
 			return fmt.Errorf("wait for grpc readiness: %w",
 				ctx.Err())
 		}
+
+		waitCancel()
 	}
+}
+
+// closedWaitChan gives nil clients the same non-blocking Wait behavior as
+// handles without an owned runtime.
+func closedWaitChan() <-chan error {
+	ch := make(chan error)
+	close(ch)
+
+	return ch
 }

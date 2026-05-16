@@ -1,0 +1,269 @@
+//go:build walletrpc && swapruntime
+
+package swapwallet
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+// Service implements the daemon-side WalletService gRPC handler. It is a
+// thin facade: every method translates the proto request into typed internal
+// calls (router, recv, history, runtime) and returns a normalized response.
+// No business logic lives here.
+type Service struct {
+	walletrpc.UnimplementedWalletServiceServer
+
+	deps    *Deps
+	runtime *Runtime
+	router  *router
+	recv    *receiver
+	history *history
+}
+
+// newService builds the Service handle given its composed dependencies and
+// runtime owner. The internal router, receiver, and history hold the
+// dispatch logic for Send, Recv, and List respectively; service.go remains
+// pure wiring.
+func newService(deps *Deps, runtime *Runtime) *Service {
+	return &Service{
+		deps:    deps,
+		runtime: runtime,
+		router:  newRouter(deps, runtime),
+		recv:    newReceiver(deps, runtime),
+		history: newHistory(deps, runtime),
+	}
+}
+
+// Send dispatches an outbound payment. Invoice destinations route through
+// the daemon-owned swap subserver (which transparently picks same-Ark p2p
+// vHTLC vs real Lightning per PR #339); onchain destinations route through
+// the existing LeaveVTXOs cooperative-exit RPC.
+func (s *Service) Send(ctx context.Context, req *walletrpc.SendRequest) (
+	*walletrpc.SendResponse, error) {
+
+	return s.router.Send(ctx, req)
+}
+
+// Recv opens a swap-in via the daemon-owned swap subserver and returns the
+// daemon-signed BOLT-11 invoice plus the initial WalletEntry. The invoice
+// is signed with a payment-scoped daemon-managed auth key (PR #337);
+// nothing in the wallet layer generates or holds raw private keys.
+func (s *Service) Recv(ctx context.Context, req *walletrpc.RecvRequest) (
+	*walletrpc.RecvResponse, error) {
+
+	return s.recv.Recv(ctx, req)
+}
+
+// List returns the unified, normalized wallet history merged across the
+// swap subserver and the daemon's ledger/sweep stores.
+func (s *Service) List(ctx context.Context, req *walletrpc.ListRequest) (
+	*walletrpc.ListResponse, error) {
+
+	return s.history.List(ctx, req)
+}
+
+// Deposit returns a fresh boarding onchain address by delegating to the
+// daemon's existing NewAddress RPC. The wallet layer never derives keys or
+// constructs scripts itself.
+func (s *Service) Deposit(ctx context.Context, req *walletrpc.DepositRequest) (
+	*walletrpc.DepositResponse, error) {
+
+	if s.deps.RPCServer == nil {
+		return nil, status.Error(
+			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
+		)
+	}
+
+	addrResp, err := s.deps.RPCServer.NewAddress(
+		ctx, &daemonrpc.NewAddressRequest{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("new boarding address: %w", err)
+	}
+
+	createdAt := nowUnix()
+	canonicalID := fmt.Sprintf("deposit-%s", addrResp.GetAddress())
+	entry := &walletrpc.WalletEntry{
+		Id:            canonicalID,
+		Kind:          walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		Status:        walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		AmountSat:     int64(req.GetAmtSatHint()),
+		Counterparty:  "boarding",
+		CreatedAtUnix: createdAt,
+		UpdatedAtUnix: createdAt,
+	}
+
+	// v1 SCOPE: deposit pending tracking is omitted because there is
+	// no daemon-side hook to observe the eventual boarding txid for
+	// this address. The boarding ledger row that lands later will
+	// surface under its own synthetic id; canonical-id correlation
+	// between the Deposit response and the ledger row is deferred to
+	// v2 — see swapwallet/doc.go for the limitation note.
+	_ = canonicalID
+
+	return &walletrpc.DepositResponse{
+		OnchainAddress: addrResp.GetAddress(),
+		Entry:          entry,
+	}, nil
+}
+
+// Balance composes the unified balance summary by reading the daemon's
+// existing GetBalance RPC and projecting its fields onto the flat
+// confirmed/pending shape exposed by the wallet layer.
+func (s *Service) Balance(ctx context.Context, req *walletrpc.BalanceRequest) (
+	*walletrpc.BalanceResponse, error) {
+
+	return s.fetchBalance(ctx)
+}
+
+// Status returns wallet readiness, network, balance summary, and pending
+// count in one shot by composing over the daemon's existing GetInfo,
+// GetBalance, and the swap subserver's ListSwaps (pending_only).
+func (s *Service) Status(ctx context.Context, req *walletrpc.StatusRequest) (
+	*walletrpc.StatusResponse, error) {
+
+	if s.deps.RPCServer == nil {
+		return nil, status.Error(
+			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
+		)
+	}
+
+	info, err := s.deps.RPCServer.GetInfo(
+		ctx, &daemonrpc.GetInfoRequest{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get info: %w", err)
+	}
+
+	bal, err := s.fetchBalance(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	pendingCount, err := s.countPendingEntries(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	state := info.GetWalletState()
+
+	return &walletrpc.StatusResponse{
+		// Ready collapses to "wallet fully usable for signing".
+		Ready: state == daemonrpc.WalletState_WALLET_STATE_READY,
+
+		// Unlocked surfaces "seed material is loaded" — every state
+		// at or past LOCKED qualifies (the wallet has been
+		// instantiated even if it's still waiting on the unlock
+		// password).
+		Unlocked: state >= daemonrpc.WalletState_WALLET_STATE_LOCKED,
+
+		Network:      info.GetNetwork(),
+		Balance:      bal,
+		PendingCount: pendingCount,
+	}, nil
+}
+
+// SubscribeWallet streams WalletEntry updates. v1 optionally emits the
+// current snapshot before live updates and then forwards updates from the
+// runtime event bus until the caller disconnects or the daemon shuts down.
+func (s *Service) SubscribeWallet(req *walletrpc.SubscribeWalletRequest,
+	stream walletrpc.WalletService_SubscribeWalletServer) error {
+
+	ctx := stream.Context()
+
+	// Subscribe BEFORE taking the snapshot so the runtime starts
+	// buffering updates immediately. Otherwise any update that fires
+	// between snapshot fetch and subscribe registration is lost to this
+	// stream. Clients dedupe by WalletEntry.id, so the snapshot+stream
+	// overlap window is harmless.
+	updates := s.runtime.subscribe()
+	defer s.runtime.unsubscribe(updates)
+
+	if req.GetIncludeExisting() {
+		// Use the configured hard cap rather than the default page
+		// size so wallets with more than defaultListLimit entries
+		// receive a complete initial snapshot. A truncated snapshot
+		// would let the subscriber observe live updates that
+		// reference rows it never saw.
+		snapshot, err := s.history.List(ctx, &walletrpc.ListRequest{
+			Kinds: req.GetKinds(),
+			Limit: s.deps.resolveMaxListLimit(),
+		})
+		if err != nil {
+			return fmt.Errorf("snapshot: %w", err)
+		}
+
+		for _, e := range snapshot.GetEntries() {
+			if err := stream.Send(e); err != nil {
+				return err
+			}
+		}
+	}
+
+	kindFilter := buildKindFilter(req.GetKinds())
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case e, ok := <-updates:
+			if !ok {
+				return nil
+			}
+			if len(kindFilter) > 0 {
+				if _, in := kindFilter[e.GetKind()]; !in {
+					continue
+				}
+			}
+			if err := stream.Send(e); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// fetchBalance is the shared helper that pulls the daemon's GetBalance and
+// projects its richer breakdown onto the flat wallet shape.
+func (s *Service) fetchBalance(ctx context.Context) (*walletrpc.BalanceResponse,
+	error) {
+
+	if s.deps.RPCServer == nil {
+		return nil, status.Error(
+			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
+		)
+	}
+
+	bal, err := s.deps.RPCServer.GetBalance(
+		ctx, &daemonrpc.GetBalanceRequest{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get balance: %w", err)
+	}
+
+	return &walletrpc.BalanceResponse{
+		ConfirmedSat:  bal.GetTotalConfirmedSat(),
+		PendingInSat:  bal.GetBoardingUnconfirmedSat(),
+		PendingOutSat: bal.GetBoardingPendingSweepSat(),
+	}, nil
+}
+
+// countPendingEntries asks the history merger for a pending-only page and
+// returns the size as the wallet-level pending count.
+func (s *Service) countPendingEntries(ctx context.Context) (uint32, error) {
+	resp, err := s.history.List(ctx, &walletrpc.ListRequest{
+		PendingOnly: true,
+		Limit:       s.deps.resolveMaxListLimit(),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("count pending: %w", err)
+	}
+
+	return resp.GetTotal(), nil
+}
