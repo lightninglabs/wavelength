@@ -1,0 +1,93 @@
+//go:build !js
+
+package walletdk
+
+import (
+	"io"
+	"time"
+
+	"github.com/lightninglabs/darepo-client/darepod"
+)
+
+// Config controls the embedded daemon and wallet facade.
+type Config struct {
+	// DaemonConfig supplies the full daemon config. When nil, walletdk
+	// starts from darepod.DefaultConfig and applies the convenience fields
+	// below.
+	DaemonConfig *darepod.Config
+
+	// DataDir is the root directory for daemon and wallet state.
+	DataDir string
+
+	// Network selects the bitcoin network.
+	Network string
+
+	// DebugLevel controls daemon logging verbosity.
+	DebugLevel string
+
+	// LogWriter receives daemon logs. Nil uses darepod's default stdout.
+	LogWriter io.Writer
+
+	// AllowMainnet must be true when Network is mainnet. This is an
+	// enable-only convenience override; set DaemonConfig directly when
+	// a caller-owned config needs an explicit false value.
+	AllowMainnet bool
+
+	// ServerAddress is the Ark operator mailbox edge server address.
+	ServerAddress string
+
+	// ServerTransport selects how the embedded daemon talks to the Ark
+	// operator and mailbox edge. Empty defaults to gRPC.
+	ServerTransport Transport
+
+	// ServerTLSCertPath pins the Ark operator TLS certificate.
+	ServerTLSCertPath string
+
+	// ServerInsecure disables TLS for the Ark operator connection. This
+	// is an enable-only convenience override; set DaemonConfig directly
+	// when a caller-owned config needs an explicit false value.
+	ServerInsecure bool
+
+	// WalletType selects the backing wallet implementation.
+	WalletType string
+
+	// WalletEsploraURL is used by the lwwallet backend.
+	WalletEsploraURL string
+
+	// WalletPasswordFile enables daemon auto-unlock for lwwallet.
+	WalletPasswordFile string
+
+	// WalletPollInterval overrides the lwwallet chain poll interval.
+	WalletPollInterval time.Duration
+
+	// WalletRecoveryWindow overrides the wallet address look-ahead window.
+	WalletRecoveryWindow uint32
+
+	// WalletFeeURL is the fee estimator endpoint used by btcwallet.
+	WalletFeeURL string
+
+	// SwapServerAddress is the swapdk-server address for the selected
+	// transport.
+	SwapServerAddress string
+
+	// SwapServerTransport selects how the embedded daemon talks to
+	// swapdk-server. Empty defaults to gRPC.
+	SwapServerTransport Transport
+
+	// SwapServerTLSCertPath pins the swapdk-server TLS certificate.
+	SwapServerTLSCertPath string
+
+	// SwapServerInsecure disables TLS for the swap server connection.
+	// This is an enable-only convenience override; set DaemonConfig
+	// directly when a caller-owned config needs an explicit false value.
+	SwapServerInsecure bool
+
+	// SwapDatabaseFileName is the daemon-owned swap SQLite database path.
+	SwapDatabaseFileName string
+
+	// MaxOperatorFeeSat caps the per-round operator fee the daemon accepts.
+	MaxOperatorFeeSat int64
+
+	// BufferSize overrides the bufconn listener buffer size.
+	BufferSize int
+}

@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/rpc/restclient"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 const defaultCloseTimeout = 5 * time.Second
@@ -40,30 +40,41 @@ func Connect(ctx context.Context, cfg ConnectConfig) (*Client, error) {
 		return nil, fmt.Errorf("address is required")
 	}
 
-	dialOpts := append([]grpc.DialOption(nil), cfg.DialOptions...)
-	if len(dialOpts) == 0 {
-		creds := insecure.NewCredentials()
-		dialOpts = append(
-			dialOpts, grpc.WithTransportCredentials(creds),
-		)
-	}
+	switch cfg.Transport {
+	case "", TransportGRPC:
+		return connectGRPC(ctx, cfg)
 
-	conn, err := grpc.NewClient(cfg.Address, dialOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("dial wallet daemon: %w", err)
-	}
-	if err := waitForReady(ctx, conn, nil); err != nil {
-		closeErr := conn.Close()
+	case TransportREST:
+		return connectREST(ctx, cfg)
 
+	default:
+		return nil, fmt.Errorf("unknown walletdk transport %q",
+			cfg.Transport)
+	}
+}
+
+func connectREST(ctx context.Context, cfg ConnectConfig) (*Client, error) {
+	transport := restclient.New(
+		cfg.Address, restclient.WithHTTPClient(cfg.HTTPClient),
+	)
+	daemon := restclient.NewDaemonServiceClientFromClient(transport)
+	swaps := restclient.NewSwapClientServiceClientFromClient(transport)
+	wallet := restclient.NewWalletServiceClientFromClient(transport)
+
+	if _, err := daemon.GetInfo(
+		ctx, &daemonrpc.GetInfoRequest{},
+	); err != nil {
 		return nil, fmt.Errorf("wait for wallet daemon readiness: %w",
-			errors.Join(err, closeErr))
+			err)
 	}
 
 	closeFn := func(context.Context) error {
-		return conn.Close()
+		return nil
 	}
 
-	return newClient(conn, true, closedWaitChan(), closeFn), nil
+	return newClientWithRPC(
+		nil, daemon, swaps, wallet, true, closedWaitChan(), closeFn,
+	), nil
 }
 
 // Stop shuts down the embedded daemon or releases the remote transport.
@@ -486,11 +497,25 @@ func (c *Client) requireWalletRPC() error {
 func newClient(conn grpc.ClientConnInterface, canWallet bool,
 	waitCh <-chan error, closeFn func(context.Context) error) *Client {
 
+	return newClientWithRPC(
+		conn, daemonrpc.NewDaemonServiceClient(conn),
+		swapclientrpc.NewSwapClientServiceClient(conn),
+		walletrpc.NewWalletServiceClient(conn), canWallet, waitCh,
+		closeFn,
+	)
+}
+
+func newClientWithRPC(conn grpc.ClientConnInterface,
+	daemon daemonrpc.DaemonServiceClient,
+	swaps swapclientrpc.SwapClientServiceClient,
+	wallet walletrpc.WalletServiceClient, canWallet bool,
+	waitCh <-chan error, closeFn func(context.Context) error) *Client {
+
 	return &Client{
 		conn:      conn,
-		daemon:    daemonrpc.NewDaemonServiceClient(conn),
-		swaps:     swapclientrpc.NewSwapClientServiceClient(conn),
-		wallet:    walletrpc.NewWalletServiceClient(conn),
+		daemon:    daemon,
+		swaps:     swaps,
+		wallet:    wallet,
 		canWallet: canWallet,
 		waitCh:    waitCh,
 		closeFn:   closeFn,

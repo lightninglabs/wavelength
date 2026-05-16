@@ -1,3 +1,5 @@
+//go:build !js
+
 package walletdk
 
 import (
@@ -360,13 +362,4 @@ func waitForReady(ctx context.Context, conn *grpc.ClientConn,
 
 		waitCancel()
 	}
-}
-
-// closedWaitChan gives nil clients the same non-blocking Wait behavior as
-// handles without an owned runtime.
-func closedWaitChan() <-chan error {
-	ch := make(chan error)
-	close(ch)
-
-	return ch
 }
