@@ -62,7 +62,7 @@ func TestTransactionTypeFlagValid(t *testing.T) {
 func TestMethodRegistryListTransactionsSchema(t *testing.T) {
 	t.Parallel()
 
-	method := findSchemaMethod(t, "listtransactions")
+	method := findSchemaMethod(t, "ark.listtransactions")
 	require.Equal(t, "ListTransactionsRequest", method.RequestType)
 	require.Equal(t, "ListTransactionsResponse", method.ResponseType)
 	require.True(t, method.JSONInput)
