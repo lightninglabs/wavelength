@@ -1,10 +1,137 @@
 package walletdk
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
 )
+
+// listViewToProto maps the SDK ListView string onto the generated
+// enum.
+func listViewToProto(v ListView) (walletrpc.ListView, error) {
+	switch v {
+	case ListViewActivity, "":
+		return walletrpc.ListView_LIST_VIEW_ACTIVITY, nil
+
+	case ListViewVTXOs:
+		return walletrpc.ListView_LIST_VIEW_VTXOS, nil
+
+	case ListViewOnchain:
+		return walletrpc.ListView_LIST_VIEW_ONCHAIN, nil
+
+	default:
+		return walletrpc.ListView_LIST_VIEW_UNSPECIFIED,
+			fmt.Errorf("unknown list view %q "+
+				"(activity|vtxos|onchain)", v)
+	}
+}
+
+// listResultFromProto projects the typed oneof body onto the wrapper
+// ListResult shape, populating exactly one variant.
+func listResultFromProto(view ListView,
+	resp *walletrpc.ListResponse) *ListResult {
+
+	out := &ListResult{View: view}
+
+	switch view {
+	case ListViewActivity:
+		activity := resp.GetActivity()
+		if activity == nil {
+			out.Activity = &ActivityList{}
+
+			return out
+		}
+		entries := make([]Entry, 0, len(activity.GetEntries()))
+		for _, e := range activity.GetEntries() {
+			entries = append(entries, entryFromProto(e))
+		}
+		out.Activity = &ActivityList{
+			Entries: entries,
+			Total:   activity.GetTotal(),
+		}
+
+	case ListViewVTXOs:
+		inv := resp.GetVtxos()
+		if inv == nil {
+			out.VTXOs = &VTXOInventory{}
+
+			return out
+		}
+		vtxos := make([]WalletVTXO, 0, len(inv.GetVtxos()))
+		for _, v := range inv.GetVtxos() {
+			vtxos = append(vtxos, WalletVTXO{
+				Outpoint:       v.GetOutpoint(),
+				AmountSat:      v.GetAmountSat(),
+				Status:         v.GetStatus(),
+				BatchExpiry:    v.GetBatchExpiry(),
+				RelativeExpiry: v.GetRelativeExpiry(),
+				CommitmentTxid: v.GetCommitmentTxid(),
+			})
+		}
+		out.VTXOs = &VTXOInventory{
+			VTXOs: vtxos,
+			Total: inv.GetTotal(),
+		}
+
+	case ListViewOnchain:
+		hist := resp.GetOnchain()
+		if hist == nil {
+			out.Onchain = &OnchainHistory{}
+
+			return out
+		}
+		txs := make([]OnchainTx, 0, len(hist.GetTxs()))
+		for _, t := range hist.GetTxs() {
+			txs = append(txs, OnchainTx{
+				Txid:               t.GetTxid(),
+				Kind:               t.GetKind(),
+				AmountSat:          t.GetAmountSat(),
+				FeeSat:             t.GetFeeSat(),
+				Status:             t.GetStatus(),
+				ConfirmationHeight: t.GetConfirmationHeight(),
+				CreatedAt: unixTime(
+					t.GetCreatedAtUnix(),
+				),
+				Description: t.GetDescription(),
+			})
+		}
+		out.Onchain = &OnchainHistory{
+			Txs:     txs,
+			Total:   hist.GetTotal(),
+			HasMore: hist.GetHasMore(),
+		}
+	}
+
+	return out
+}
+
+// exitJobStatusFromProto maps the walletrpc ExitJobStatus enum onto the
+// SDK string set.
+func exitJobStatusFromProto(s walletrpc.ExitJobStatus) ExitJobStatus {
+	switch s {
+	case walletrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING:
+		return ExitJobStatusPending
+
+	case walletrpc.ExitJobStatus_EXIT_JOB_STATUS_MATERIALIZING:
+		return ExitJobStatusMaterializing
+
+	case walletrpc.ExitJobStatus_EXIT_JOB_STATUS_CSV_PENDING:
+		return ExitJobStatusCSVPending
+
+	case walletrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING:
+		return ExitJobStatusSweeping
+
+	case walletrpc.ExitJobStatus_EXIT_JOB_STATUS_COMPLETED:
+		return ExitJobStatusCompleted
+
+	case walletrpc.ExitJobStatus_EXIT_JOB_STATUS_FAILED:
+		return ExitJobStatusFailed
+
+	default:
+		return ExitJobStatusUnspecified
+	}
+}
 
 // entryFromProto copies one wallet RPC entry into wrapper-owned fields so UI
 // and bridge callers do not need protobuf types.

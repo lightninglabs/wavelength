@@ -222,18 +222,145 @@ type SendResult struct {
 	ActualAmountSat int64
 }
 
-// ListRequest controls wallet activity listing.
+// ListView selects which slice of wallet state List returns. The empty
+// value is treated as ListViewActivity for backwards-feel.
+type ListView string
+
+const (
+	// ListViewActivity returns the merged WalletEntry stream
+	// (send / recv / deposit / exit). Default.
+	ListViewActivity ListView = "activity"
+
+	// ListViewVTXOs returns the live VTXO inventory.
+	ListViewVTXOs ListView = "vtxos"
+
+	// ListViewOnchain returns the on-chain transaction history
+	// (boarding, sweeps, leave outputs).
+	ListViewOnchain ListView = "onchain"
+)
+
+// ListRequest controls wallet activity listing. View selects the slice
+// of wallet state to return; PendingOnly and Kinds apply only when
+// View is ListViewActivity (or empty).
 type ListRequest struct {
+	// View selects the response shape. Empty is treated as
+	// ListViewActivity.
+	View ListView
+
+	// PendingOnly applies to ListViewActivity only.
 	PendingOnly bool
-	Kinds       []EntryKind
-	Limit       uint32
-	Offset      uint32
+
+	// Kinds applies to ListViewActivity only.
+	Kinds []EntryKind
+
+	// Limit caps the page size; zero uses the daemon default.
+	Limit uint32
+
+	// Offset is the pagination offset within the chosen view.
+	Offset uint32
 }
 
-// ListResult returns wallet activity entries and the unpaginated total.
+// ListResult is a tagged union: exactly one of Activity, VTXOs, or
+// Onchain is populated according to the view requested. Callers should
+// switch on View to pick the right field.
 type ListResult struct {
+	// View is the populated variant. Mirrors ListRequest.View; an
+	// empty request view is reported as ListViewActivity.
+	View ListView
+
+	// Activity is populated when View == ListViewActivity.
+	Activity *ActivityList
+
+	// VTXOs is populated when View == ListViewVTXOs.
+	VTXOs *VTXOInventory
+
+	// Onchain is populated when View == ListViewOnchain.
+	Onchain *OnchainHistory
+}
+
+// ActivityList is the merged WalletEntry stream returned by the
+// activity view.
+type ActivityList struct {
 	Entries []Entry
 	Total   uint32
+}
+
+// VTXOInventory is the live VTXO inventory returned by the vtxos view.
+type VTXOInventory struct {
+	VTXOs []WalletVTXO
+	Total uint32
+}
+
+// WalletVTXO is the wallet-facing view of one VTXO. Internal lifecycle
+// detail (forfeiting flow, chain depth) is hidden; power-users reach
+// the full shape via `ark vtxos list`.
+type WalletVTXO struct {
+	Outpoint       string
+	AmountSat      int64
+	Status         string
+	BatchExpiry    int32
+	RelativeExpiry uint32
+	CommitmentTxid string
+}
+
+// OnchainHistory is the on-chain transaction history returned by the
+// onchain view.
+type OnchainHistory struct {
+	Txs     []OnchainTx
+	Total   uint32
+	HasMore bool
+}
+
+// OnchainTx is the wallet-facing view of one on-chain transaction.
+type OnchainTx struct {
+	Txid               string
+	Kind               string
+	AmountSat          int64
+	FeeSat             int64
+	Status             string
+	ConfirmationHeight int32
+	CreatedAt          time.Time
+	Description        string
+}
+
+// ExitRequest triggers a unilateral exit for a VTXO outpoint.
+type ExitRequest struct {
+	Outpoint string
+}
+
+// ExitResult reports whether a new exit job was spawned and the actor id
+// that owns it.
+type ExitResult struct {
+	Created bool
+	ActorID string
+}
+
+// ExitStatusRequest queries the current phase of an exit job.
+type ExitStatusRequest struct {
+	Outpoint string
+}
+
+// ExitJobStatus collapses the underlying unroll job phases to a short
+// wallet-facing string set.
+type ExitJobStatus string
+
+const (
+	ExitJobStatusUnspecified   ExitJobStatus = "unspecified"
+	ExitJobStatusPending       ExitJobStatus = "pending"
+	ExitJobStatusMaterializing ExitJobStatus = "materializing"
+	ExitJobStatusCSVPending    ExitJobStatus = "csv_pending"
+	ExitJobStatusSweeping      ExitJobStatus = "sweeping"
+	ExitJobStatusCompleted     ExitJobStatus = "completed"
+	ExitJobStatusFailed        ExitJobStatus = "failed"
+)
+
+// ExitStatusResult reports the status of one exit job. Found is false
+// when no job exists for the requested outpoint (not an error).
+type ExitStatusResult struct {
+	Found     bool
+	Status    ExitJobStatus
+	SweepTxid string
+	LastError string
 }
 
 // Status summarizes wallet readiness and pending activity.
