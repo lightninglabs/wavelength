@@ -21,6 +21,72 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// WalletState mirrors the daemon's in-process wallet lifecycle enum:
+// values are ordered from least to most ready so callers can compare
+// against >= LOCKED for "seed exists" semantics and == READY for "fully
+// usable" semantics.
+type WalletState int32
+
+const (
+	// WALLET_STATE_UNSPECIFIED is the proto3 zero value. The daemon
+	// never emits this; reserved so a missing field deserializes to a
+	// safe non-ready state.
+	WalletState_WALLET_STATE_UNSPECIFIED WalletState = 0
+	// WALLET_STATE_NONE indicates no wallet has been created yet (no
+	// encrypted seed on disk).
+	WalletState_WALLET_STATE_NONE WalletState = 1
+	// WALLET_STATE_LOCKED indicates an encrypted seed file exists but
+	// no decryption key has been provided; signing is not yet
+	// available.
+	WalletState_WALLET_STATE_LOCKED WalletState = 2
+	// WALLET_STATE_READY indicates the wallet is initialized, unlocked,
+	// and ready to sign / participate in rounds.
+	WalletState_WALLET_STATE_READY WalletState = 3
+)
+
+// Enum value maps for WalletState.
+var (
+	WalletState_name = map[int32]string{
+		0: "WALLET_STATE_UNSPECIFIED",
+		1: "WALLET_STATE_NONE",
+		2: "WALLET_STATE_LOCKED",
+		3: "WALLET_STATE_READY",
+	}
+	WalletState_value = map[string]int32{
+		"WALLET_STATE_UNSPECIFIED": 0,
+		"WALLET_STATE_NONE":        1,
+		"WALLET_STATE_LOCKED":      2,
+		"WALLET_STATE_READY":       3,
+	}
+)
+
+func (x WalletState) Enum() *WalletState {
+	p := new(WalletState)
+	*p = x
+	return p
+}
+
+func (x WalletState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WalletState) Descriptor() protoreflect.EnumDescriptor {
+	return file_daemon_proto_enumTypes[0].Descriptor()
+}
+
+func (WalletState) Type() protoreflect.EnumType {
+	return &file_daemon_proto_enumTypes[0]
+}
+
+func (x WalletState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WalletState.Descriptor instead.
+func (WalletState) EnumDescriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{0}
+}
+
 // VTXOStatus represents the lifecycle state of a virtual transaction
 // output.
 type VTXOStatus int32
@@ -89,11 +155,11 @@ func (x VTXOStatus) String() string {
 }
 
 func (VTXOStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_daemon_proto_enumTypes[0].Descriptor()
+	return file_daemon_proto_enumTypes[1].Descriptor()
 }
 
 func (VTXOStatus) Type() protoreflect.EnumType {
-	return &file_daemon_proto_enumTypes[0]
+	return &file_daemon_proto_enumTypes[1]
 }
 
 func (x VTXOStatus) Number() protoreflect.EnumNumber {
@@ -102,7 +168,7 @@ func (x VTXOStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use VTXOStatus.Descriptor instead.
 func (VTXOStatus) EnumDescriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{0}
+	return file_daemon_proto_rawDescGZIP(), []int{1}
 }
 
 // RoundState represents the lifecycle state of a client's round FSM.
@@ -210,11 +276,11 @@ func (x RoundState) String() string {
 }
 
 func (RoundState) Descriptor() protoreflect.EnumDescriptor {
-	return file_daemon_proto_enumTypes[1].Descriptor()
+	return file_daemon_proto_enumTypes[2].Descriptor()
 }
 
 func (RoundState) Type() protoreflect.EnumType {
-	return &file_daemon_proto_enumTypes[1]
+	return &file_daemon_proto_enumTypes[2]
 }
 
 func (x RoundState) Number() protoreflect.EnumNumber {
@@ -223,7 +289,7 @@ func (x RoundState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use RoundState.Descriptor instead.
 func (RoundState) EnumDescriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{1}
+	return file_daemon_proto_rawDescGZIP(), []int{2}
 }
 
 type OORSessionDirection int32
@@ -259,11 +325,11 @@ func (x OORSessionDirection) String() string {
 }
 
 func (OORSessionDirection) Descriptor() protoreflect.EnumDescriptor {
-	return file_daemon_proto_enumTypes[2].Descriptor()
+	return file_daemon_proto_enumTypes[3].Descriptor()
 }
 
 func (OORSessionDirection) Type() protoreflect.EnumType {
-	return &file_daemon_proto_enumTypes[2]
+	return &file_daemon_proto_enumTypes[3]
 }
 
 func (x OORSessionDirection) Number() protoreflect.EnumNumber {
@@ -272,7 +338,7 @@ func (x OORSessionDirection) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use OORSessionDirection.Descriptor instead.
 func (OORSessionDirection) EnumDescriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{2}
+	return file_daemon_proto_rawDescGZIP(), []int{3}
 }
 
 type OORSessionStatus int32
@@ -311,11 +377,11 @@ func (x OORSessionStatus) String() string {
 }
 
 func (OORSessionStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_daemon_proto_enumTypes[3].Descriptor()
+	return file_daemon_proto_enumTypes[4].Descriptor()
 }
 
 func (OORSessionStatus) Type() protoreflect.EnumType {
-	return &file_daemon_proto_enumTypes[3]
+	return &file_daemon_proto_enumTypes[4]
 }
 
 func (x OORSessionStatus) Number() protoreflect.EnumNumber {
@@ -324,7 +390,7 @@ func (x OORSessionStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use OORSessionStatus.Descriptor instead.
 func (OORSessionStatus) EnumDescriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{3}
+	return file_daemon_proto_rawDescGZIP(), []int{4}
 }
 
 // UnrollJobStatus represents the high-level phase of an unroll job.
@@ -385,11 +451,11 @@ func (x UnrollJobStatus) String() string {
 }
 
 func (UnrollJobStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_daemon_proto_enumTypes[4].Descriptor()
+	return file_daemon_proto_enumTypes[5].Descriptor()
 }
 
 func (UnrollJobStatus) Type() protoreflect.EnumType {
-	return &file_daemon_proto_enumTypes[4]
+	return &file_daemon_proto_enumTypes[5]
 }
 
 func (x UnrollJobStatus) Number() protoreflect.EnumNumber {
@@ -398,7 +464,7 @@ func (x UnrollJobStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use UnrollJobStatus.Descriptor instead.
 func (UnrollJobStatus) EnumDescriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{4}
+	return file_daemon_proto_rawDescGZIP(), []int{5}
 }
 
 type GetInfoRequest struct {
@@ -463,9 +529,13 @@ type GetInfoResponse struct {
 	LndAlias string `protobuf:"bytes,7,opt,name=lnd_alias,json=lndAlias,proto3" json:"lnd_alias,omitempty"`
 	// wallet_type is the active wallet backend: "lnd" or "lwwallet".
 	WalletType string `protobuf:"bytes,8,opt,name=wallet_type,json=walletType,proto3" json:"wallet_type,omitempty"`
-	// wallet_ready indicates whether the wallet subsystem is initialized
-	// and ready to process requests.
-	WalletReady bool `protobuf:"varint,9,opt,name=wallet_ready,json=walletReady,proto3" json:"wallet_ready,omitempty"`
+	// wallet_state is the lifecycle state of the wallet subsystem. The
+	// ordering reflects increasing readiness: NONE (no seed exists),
+	// LOCKED (encrypted seed exists but no decryption key has been
+	// provided), READY (wallet is initialized and signing is
+	// available). Callers compare against >= LOCKED for "seed exists /
+	// unlocked" semantics and == READY for "fully usable" semantics.
+	WalletState WalletState `protobuf:"varint,9,opt,name=wallet_state,json=walletState,proto3,enum=daemonrpc.WalletState" json:"wallet_state,omitempty"`
 	// identity_pubkey is the hex-encoded daemon wallet identity public key
 	// derived from the active wallet backend's daemon identity key locator
 	// (family 6, index 0). This key is the signing identity for Ark round
@@ -573,11 +643,11 @@ func (x *GetInfoResponse) GetWalletType() string {
 	return ""
 }
 
-func (x *GetInfoResponse) GetWalletReady() bool {
+func (x *GetInfoResponse) GetWalletState() WalletState {
 	if x != nil {
-		return x.WalletReady
+		return x.WalletState
 	}
-	return false
+	return WalletState_WALLET_STATE_UNSPECIFIED
 }
 
 func (x *GetInfoResponse) GetIdentityPubkey() string {
@@ -5878,7 +5948,7 @@ var File_daemon_proto protoreflect.FileDescriptor
 const file_daemon_proto_rawDesc = "" +
 	"\n" +
 	"\fdaemon.proto\x12\tdaemonrpc\"\x10\n" +
-	"\x0eGetInfoRequest\"\x9d\x03\n" +
+	"\x0eGetInfoRequest\"\xb5\x03\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06commit\x18\x02 \x01(\tR\x06commit\x12\x18\n" +
@@ -5888,8 +5958,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\x10server_connected\x18\x06 \x01(\bR\x0fserverConnected\x12\x1b\n" +
 	"\tlnd_alias\x18\a \x01(\tR\blndAlias\x12\x1f\n" +
 	"\vwallet_type\x18\b \x01(\tR\n" +
-	"walletType\x12!\n" +
-	"\fwallet_ready\x18\t \x01(\bR\vwalletReady\x12'\n" +
+	"walletType\x129\n" +
+	"\fwallet_state\x18\t \x01(\x0e2\x16.daemonrpc.WalletStateR\vwalletState\x12'\n" +
 	"\x0fidentity_pubkey\x18\n" +
 	" \x01(\tR\x0eidentityPubkey\x126\n" +
 	"\vserver_info\x18\v \x01(\v2\x15.daemonrpc.ServerInfoR\n" +
@@ -6269,7 +6339,12 @@ const file_daemon_proto_rawDesc = "" +
 	"\n" +
 	"sweep_txid\x18\x03 \x01(\tR\tsweepTxid\x12\x1d\n" +
 	"\n" +
-	"last_error\x18\x04 \x01(\tR\tlastError*\x81\x02\n" +
+	"last_error\x18\x04 \x01(\tR\tlastError*s\n" +
+	"\vWalletState\x12\x1c\n" +
+	"\x18WALLET_STATE_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11WALLET_STATE_NONE\x10\x01\x12\x17\n" +
+	"\x13WALLET_STATE_LOCKED\x10\x02\x12\x16\n" +
+	"\x12WALLET_STATE_READY\x10\x03*\x81\x02\n" +
 	"\n" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x14\n" +
@@ -6367,192 +6442,194 @@ func file_daemon_proto_rawDescGZIP() []byte {
 	return file_daemon_proto_rawDescData
 }
 
-var file_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
 var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 77)
 var file_daemon_proto_goTypes = []any{
-	(VTXOStatus)(0),                               // 0: daemonrpc.VTXOStatus
-	(RoundState)(0),                               // 1: daemonrpc.RoundState
-	(OORSessionDirection)(0),                      // 2: daemonrpc.OORSessionDirection
-	(OORSessionStatus)(0),                         // 3: daemonrpc.OORSessionStatus
-	(UnrollJobStatus)(0),                          // 4: daemonrpc.UnrollJobStatus
-	(*GetInfoRequest)(nil),                        // 5: daemonrpc.GetInfoRequest
-	(*GetInfoResponse)(nil),                       // 6: daemonrpc.GetInfoResponse
-	(*ServerInfo)(nil),                            // 7: daemonrpc.ServerInfo
-	(*GenSeedRequest)(nil),                        // 8: daemonrpc.GenSeedRequest
-	(*GenSeedResponse)(nil),                       // 9: daemonrpc.GenSeedResponse
-	(*InitWalletRequest)(nil),                     // 10: daemonrpc.InitWalletRequest
-	(*InitWalletResponse)(nil),                    // 11: daemonrpc.InitWalletResponse
-	(*UnlockWalletRequest)(nil),                   // 12: daemonrpc.UnlockWalletRequest
-	(*UnlockWalletResponse)(nil),                  // 13: daemonrpc.UnlockWalletResponse
-	(*GetBalanceRequest)(nil),                     // 14: daemonrpc.GetBalanceRequest
-	(*GetBalanceResponse)(nil),                    // 15: daemonrpc.GetBalanceResponse
-	(*VTXO)(nil),                                  // 16: daemonrpc.VTXO
-	(*ListVTXOsRequest)(nil),                      // 17: daemonrpc.ListVTXOsRequest
-	(*ListVTXOsResponse)(nil),                     // 18: daemonrpc.ListVTXOsResponse
-	(*NewAddressRequest)(nil),                     // 19: daemonrpc.NewAddressRequest
-	(*NewAddressResponse)(nil),                    // 20: daemonrpc.NewAddressResponse
-	(*NewReceiveScriptRequest)(nil),               // 21: daemonrpc.NewReceiveScriptRequest
-	(*NewReceiveScriptResponse)(nil),              // 22: daemonrpc.NewReceiveScriptResponse
-	(*ReceiveAuthKeyRequest)(nil),                 // 23: daemonrpc.ReceiveAuthKeyRequest
-	(*ReceiveAuthKeyResponse)(nil),                // 24: daemonrpc.ReceiveAuthKeyResponse
-	(*SignReceiveAuthMessageRequest)(nil),         // 25: daemonrpc.SignReceiveAuthMessageRequest
-	(*SignReceiveAuthMessageResponse)(nil),        // 26: daemonrpc.SignReceiveAuthMessageResponse
-	(*SignReceiveAuthMessageCompactRequest)(nil),  // 27: daemonrpc.SignReceiveAuthMessageCompactRequest
-	(*SignReceiveAuthMessageCompactResponse)(nil), // 28: daemonrpc.SignReceiveAuthMessageCompactResponse
-	(*ReceiveAuthECDHRequest)(nil),                // 29: daemonrpc.ReceiveAuthECDHRequest
-	(*ReceiveAuthECDHResponse)(nil),               // 30: daemonrpc.ReceiveAuthECDHResponse
-	(*GetIndexedVTXOByPkScriptRequest)(nil),       // 31: daemonrpc.GetIndexedVTXOByPkScriptRequest
-	(*GetIndexedVTXOByPkScriptResponse)(nil),      // 32: daemonrpc.GetIndexedVTXOByPkScriptResponse
-	(*GetIndexedOORSessionByTxidRequest)(nil),     // 33: daemonrpc.GetIndexedOORSessionByTxidRequest
-	(*GetIndexedOORSessionByTxidResponse)(nil),    // 34: daemonrpc.GetIndexedOORSessionByTxidResponse
-	(*Output)(nil),                                // 35: daemonrpc.Output
-	(*SendVTXORequest)(nil),                       // 36: daemonrpc.SendVTXORequest
-	(*SendVTXOResponse)(nil),                      // 37: daemonrpc.SendVTXOResponse
-	(*SendOORRequest)(nil),                        // 38: daemonrpc.SendOORRequest
-	(*CustomOORInput)(nil),                        // 39: daemonrpc.CustomOORInput
-	(*SendOORResponse)(nil),                       // 40: daemonrpc.SendOORResponse
-	(*OutpointSelection)(nil),                     // 41: daemonrpc.OutpointSelection
-	(*RefreshVTXOsRequest)(nil),                   // 42: daemonrpc.RefreshVTXOsRequest
-	(*RefreshVTXOsResponse)(nil),                  // 43: daemonrpc.RefreshVTXOsResponse
-	(*LeaveDestination)(nil),                      // 44: daemonrpc.LeaveDestination
-	(*LeaveVTXOsRequest)(nil),                     // 45: daemonrpc.LeaveVTXOsRequest
-	(*LeaveVTXOsResponse)(nil),                    // 46: daemonrpc.LeaveVTXOsResponse
-	(*BoardRequest)(nil),                          // 47: daemonrpc.BoardRequest
-	(*BoardResponse)(nil),                         // 48: daemonrpc.BoardResponse
-	(*SweepBoardingUTXOsRequest)(nil),             // 49: daemonrpc.SweepBoardingUTXOsRequest
-	(*BoardingSweepOutput)(nil),                   // 50: daemonrpc.BoardingSweepOutput
-	(*SweepBoardingUTXOsResponse)(nil),            // 51: daemonrpc.SweepBoardingUTXOsResponse
-	(*ListBoardingSweepsRequest)(nil),             // 52: daemonrpc.ListBoardingSweepsRequest
-	(*BoardingSweepInput)(nil),                    // 53: daemonrpc.BoardingSweepInput
-	(*BoardingSweep)(nil),                         // 54: daemonrpc.BoardingSweep
-	(*ListBoardingSweepsResponse)(nil),            // 55: daemonrpc.ListBoardingSweepsResponse
-	(*RoundVTXOInfo)(nil),                         // 56: daemonrpc.RoundVTXOInfo
-	(*RoundInfo)(nil),                             // 57: daemonrpc.RoundInfo
-	(*ListRoundsRequest)(nil),                     // 58: daemonrpc.ListRoundsRequest
-	(*GetRoundRequest)(nil),                       // 59: daemonrpc.GetRoundRequest
-	(*GetRoundResponse)(nil),                      // 60: daemonrpc.GetRoundResponse
-	(*ListRoundsResponse)(nil),                    // 61: daemonrpc.ListRoundsResponse
-	(*WatchRoundsRequest)(nil),                    // 62: daemonrpc.WatchRoundsRequest
-	(*WatchRoundsResponse)(nil),                   // 63: daemonrpc.WatchRoundsResponse
-	(*OORSessionInfo)(nil),                        // 64: daemonrpc.OORSessionInfo
-	(*ListOORSessionsRequest)(nil),                // 65: daemonrpc.ListOORSessionsRequest
-	(*ListOORSessionsResponse)(nil),               // 66: daemonrpc.ListOORSessionsResponse
-	(*GetOORSessionRequest)(nil),                  // 67: daemonrpc.GetOORSessionRequest
-	(*GetOORSessionResponse)(nil),                 // 68: daemonrpc.GetOORSessionResponse
-	(*EstimateFeeRequest)(nil),                    // 69: daemonrpc.EstimateFeeRequest
-	(*EstimateFeeResponse)(nil),                   // 70: daemonrpc.EstimateFeeResponse
-	(*GetFeeHistoryRequest)(nil),                  // 71: daemonrpc.GetFeeHistoryRequest
-	(*FeeHistoryEntry)(nil),                       // 72: daemonrpc.FeeHistoryEntry
-	(*GetFeeHistoryResponse)(nil),                 // 73: daemonrpc.GetFeeHistoryResponse
-	(*ListTransactionsRequest)(nil),               // 74: daemonrpc.ListTransactionsRequest
-	(*TransactionHistoryEntry)(nil),               // 75: daemonrpc.TransactionHistoryEntry
-	(*ListTransactionsResponse)(nil),              // 76: daemonrpc.ListTransactionsResponse
-	(*UnrollRequest)(nil),                         // 77: daemonrpc.UnrollRequest
-	(*UnrollResponse)(nil),                        // 78: daemonrpc.UnrollResponse
-	(*GetUnrollStatusRequest)(nil),                // 79: daemonrpc.GetUnrollStatusRequest
-	(*GetUnrollStatusResponse)(nil),               // 80: daemonrpc.GetUnrollStatusResponse
-	nil,                                           // 81: daemonrpc.LeaveVTXOsRequest.DestinationsEntry
+	(WalletState)(0),                              // 0: daemonrpc.WalletState
+	(VTXOStatus)(0),                               // 1: daemonrpc.VTXOStatus
+	(RoundState)(0),                               // 2: daemonrpc.RoundState
+	(OORSessionDirection)(0),                      // 3: daemonrpc.OORSessionDirection
+	(OORSessionStatus)(0),                         // 4: daemonrpc.OORSessionStatus
+	(UnrollJobStatus)(0),                          // 5: daemonrpc.UnrollJobStatus
+	(*GetInfoRequest)(nil),                        // 6: daemonrpc.GetInfoRequest
+	(*GetInfoResponse)(nil),                       // 7: daemonrpc.GetInfoResponse
+	(*ServerInfo)(nil),                            // 8: daemonrpc.ServerInfo
+	(*GenSeedRequest)(nil),                        // 9: daemonrpc.GenSeedRequest
+	(*GenSeedResponse)(nil),                       // 10: daemonrpc.GenSeedResponse
+	(*InitWalletRequest)(nil),                     // 11: daemonrpc.InitWalletRequest
+	(*InitWalletResponse)(nil),                    // 12: daemonrpc.InitWalletResponse
+	(*UnlockWalletRequest)(nil),                   // 13: daemonrpc.UnlockWalletRequest
+	(*UnlockWalletResponse)(nil),                  // 14: daemonrpc.UnlockWalletResponse
+	(*GetBalanceRequest)(nil),                     // 15: daemonrpc.GetBalanceRequest
+	(*GetBalanceResponse)(nil),                    // 16: daemonrpc.GetBalanceResponse
+	(*VTXO)(nil),                                  // 17: daemonrpc.VTXO
+	(*ListVTXOsRequest)(nil),                      // 18: daemonrpc.ListVTXOsRequest
+	(*ListVTXOsResponse)(nil),                     // 19: daemonrpc.ListVTXOsResponse
+	(*NewAddressRequest)(nil),                     // 20: daemonrpc.NewAddressRequest
+	(*NewAddressResponse)(nil),                    // 21: daemonrpc.NewAddressResponse
+	(*NewReceiveScriptRequest)(nil),               // 22: daemonrpc.NewReceiveScriptRequest
+	(*NewReceiveScriptResponse)(nil),              // 23: daemonrpc.NewReceiveScriptResponse
+	(*ReceiveAuthKeyRequest)(nil),                 // 24: daemonrpc.ReceiveAuthKeyRequest
+	(*ReceiveAuthKeyResponse)(nil),                // 25: daemonrpc.ReceiveAuthKeyResponse
+	(*SignReceiveAuthMessageRequest)(nil),         // 26: daemonrpc.SignReceiveAuthMessageRequest
+	(*SignReceiveAuthMessageResponse)(nil),        // 27: daemonrpc.SignReceiveAuthMessageResponse
+	(*SignReceiveAuthMessageCompactRequest)(nil),  // 28: daemonrpc.SignReceiveAuthMessageCompactRequest
+	(*SignReceiveAuthMessageCompactResponse)(nil), // 29: daemonrpc.SignReceiveAuthMessageCompactResponse
+	(*ReceiveAuthECDHRequest)(nil),                // 30: daemonrpc.ReceiveAuthECDHRequest
+	(*ReceiveAuthECDHResponse)(nil),               // 31: daemonrpc.ReceiveAuthECDHResponse
+	(*GetIndexedVTXOByPkScriptRequest)(nil),       // 32: daemonrpc.GetIndexedVTXOByPkScriptRequest
+	(*GetIndexedVTXOByPkScriptResponse)(nil),      // 33: daemonrpc.GetIndexedVTXOByPkScriptResponse
+	(*GetIndexedOORSessionByTxidRequest)(nil),     // 34: daemonrpc.GetIndexedOORSessionByTxidRequest
+	(*GetIndexedOORSessionByTxidResponse)(nil),    // 35: daemonrpc.GetIndexedOORSessionByTxidResponse
+	(*Output)(nil),                                // 36: daemonrpc.Output
+	(*SendVTXORequest)(nil),                       // 37: daemonrpc.SendVTXORequest
+	(*SendVTXOResponse)(nil),                      // 38: daemonrpc.SendVTXOResponse
+	(*SendOORRequest)(nil),                        // 39: daemonrpc.SendOORRequest
+	(*CustomOORInput)(nil),                        // 40: daemonrpc.CustomOORInput
+	(*SendOORResponse)(nil),                       // 41: daemonrpc.SendOORResponse
+	(*OutpointSelection)(nil),                     // 42: daemonrpc.OutpointSelection
+	(*RefreshVTXOsRequest)(nil),                   // 43: daemonrpc.RefreshVTXOsRequest
+	(*RefreshVTXOsResponse)(nil),                  // 44: daemonrpc.RefreshVTXOsResponse
+	(*LeaveDestination)(nil),                      // 45: daemonrpc.LeaveDestination
+	(*LeaveVTXOsRequest)(nil),                     // 46: daemonrpc.LeaveVTXOsRequest
+	(*LeaveVTXOsResponse)(nil),                    // 47: daemonrpc.LeaveVTXOsResponse
+	(*BoardRequest)(nil),                          // 48: daemonrpc.BoardRequest
+	(*BoardResponse)(nil),                         // 49: daemonrpc.BoardResponse
+	(*SweepBoardingUTXOsRequest)(nil),             // 50: daemonrpc.SweepBoardingUTXOsRequest
+	(*BoardingSweepOutput)(nil),                   // 51: daemonrpc.BoardingSweepOutput
+	(*SweepBoardingUTXOsResponse)(nil),            // 52: daemonrpc.SweepBoardingUTXOsResponse
+	(*ListBoardingSweepsRequest)(nil),             // 53: daemonrpc.ListBoardingSweepsRequest
+	(*BoardingSweepInput)(nil),                    // 54: daemonrpc.BoardingSweepInput
+	(*BoardingSweep)(nil),                         // 55: daemonrpc.BoardingSweep
+	(*ListBoardingSweepsResponse)(nil),            // 56: daemonrpc.ListBoardingSweepsResponse
+	(*RoundVTXOInfo)(nil),                         // 57: daemonrpc.RoundVTXOInfo
+	(*RoundInfo)(nil),                             // 58: daemonrpc.RoundInfo
+	(*ListRoundsRequest)(nil),                     // 59: daemonrpc.ListRoundsRequest
+	(*GetRoundRequest)(nil),                       // 60: daemonrpc.GetRoundRequest
+	(*GetRoundResponse)(nil),                      // 61: daemonrpc.GetRoundResponse
+	(*ListRoundsResponse)(nil),                    // 62: daemonrpc.ListRoundsResponse
+	(*WatchRoundsRequest)(nil),                    // 63: daemonrpc.WatchRoundsRequest
+	(*WatchRoundsResponse)(nil),                   // 64: daemonrpc.WatchRoundsResponse
+	(*OORSessionInfo)(nil),                        // 65: daemonrpc.OORSessionInfo
+	(*ListOORSessionsRequest)(nil),                // 66: daemonrpc.ListOORSessionsRequest
+	(*ListOORSessionsResponse)(nil),               // 67: daemonrpc.ListOORSessionsResponse
+	(*GetOORSessionRequest)(nil),                  // 68: daemonrpc.GetOORSessionRequest
+	(*GetOORSessionResponse)(nil),                 // 69: daemonrpc.GetOORSessionResponse
+	(*EstimateFeeRequest)(nil),                    // 70: daemonrpc.EstimateFeeRequest
+	(*EstimateFeeResponse)(nil),                   // 71: daemonrpc.EstimateFeeResponse
+	(*GetFeeHistoryRequest)(nil),                  // 72: daemonrpc.GetFeeHistoryRequest
+	(*FeeHistoryEntry)(nil),                       // 73: daemonrpc.FeeHistoryEntry
+	(*GetFeeHistoryResponse)(nil),                 // 74: daemonrpc.GetFeeHistoryResponse
+	(*ListTransactionsRequest)(nil),               // 75: daemonrpc.ListTransactionsRequest
+	(*TransactionHistoryEntry)(nil),               // 76: daemonrpc.TransactionHistoryEntry
+	(*ListTransactionsResponse)(nil),              // 77: daemonrpc.ListTransactionsResponse
+	(*UnrollRequest)(nil),                         // 78: daemonrpc.UnrollRequest
+	(*UnrollResponse)(nil),                        // 79: daemonrpc.UnrollResponse
+	(*GetUnrollStatusRequest)(nil),                // 80: daemonrpc.GetUnrollStatusRequest
+	(*GetUnrollStatusResponse)(nil),               // 81: daemonrpc.GetUnrollStatusResponse
+	nil,                                           // 82: daemonrpc.LeaveVTXOsRequest.DestinationsEntry
 }
 var file_daemon_proto_depIdxs = []int32{
-	7,  // 0: daemonrpc.GetInfoResponse.server_info:type_name -> daemonrpc.ServerInfo
-	0,  // 1: daemonrpc.VTXO.status:type_name -> daemonrpc.VTXOStatus
-	0,  // 2: daemonrpc.ListVTXOsRequest.status_filter:type_name -> daemonrpc.VTXOStatus
-	16, // 3: daemonrpc.ListVTXOsResponse.vtxos:type_name -> daemonrpc.VTXO
-	0,  // 4: daemonrpc.GetIndexedVTXOByPkScriptRequest.status_filter:type_name -> daemonrpc.VTXOStatus
-	16, // 5: daemonrpc.GetIndexedVTXOByPkScriptResponse.vtxo:type_name -> daemonrpc.VTXO
-	35, // 6: daemonrpc.SendVTXORequest.recipients:type_name -> daemonrpc.Output
-	35, // 7: daemonrpc.SendOORRequest.recipient:type_name -> daemonrpc.Output
-	39, // 8: daemonrpc.SendOORRequest.custom_inputs:type_name -> daemonrpc.CustomOORInput
-	41, // 9: daemonrpc.RefreshVTXOsRequest.outpoints:type_name -> daemonrpc.OutpointSelection
-	41, // 10: daemonrpc.LeaveVTXOsRequest.outpoints:type_name -> daemonrpc.OutpointSelection
-	44, // 11: daemonrpc.LeaveVTXOsRequest.default_destination:type_name -> daemonrpc.LeaveDestination
-	81, // 12: daemonrpc.LeaveVTXOsRequest.destinations:type_name -> daemonrpc.LeaveVTXOsRequest.DestinationsEntry
-	50, // 13: daemonrpc.SweepBoardingUTXOsResponse.sweepable_outputs:type_name -> daemonrpc.BoardingSweepOutput
-	53, // 14: daemonrpc.BoardingSweep.inputs:type_name -> daemonrpc.BoardingSweepInput
-	54, // 15: daemonrpc.ListBoardingSweepsResponse.sweeps:type_name -> daemonrpc.BoardingSweep
-	1,  // 16: daemonrpc.RoundInfo.state:type_name -> daemonrpc.RoundState
-	56, // 17: daemonrpc.RoundInfo.vtxos:type_name -> daemonrpc.RoundVTXOInfo
-	1,  // 18: daemonrpc.ListRoundsRequest.state_filter:type_name -> daemonrpc.RoundState
-	57, // 19: daemonrpc.GetRoundResponse.round:type_name -> daemonrpc.RoundInfo
-	57, // 20: daemonrpc.ListRoundsResponse.rounds:type_name -> daemonrpc.RoundInfo
-	57, // 21: daemonrpc.WatchRoundsResponse.round:type_name -> daemonrpc.RoundInfo
-	2,  // 22: daemonrpc.OORSessionInfo.direction:type_name -> daemonrpc.OORSessionDirection
-	3,  // 23: daemonrpc.OORSessionInfo.status:type_name -> daemonrpc.OORSessionStatus
-	2,  // 24: daemonrpc.ListOORSessionsRequest.direction_filter:type_name -> daemonrpc.OORSessionDirection
-	3,  // 25: daemonrpc.ListOORSessionsRequest.status_filter:type_name -> daemonrpc.OORSessionStatus
-	64, // 26: daemonrpc.ListOORSessionsResponse.sessions:type_name -> daemonrpc.OORSessionInfo
-	64, // 27: daemonrpc.GetOORSessionResponse.session:type_name -> daemonrpc.OORSessionInfo
-	72, // 28: daemonrpc.GetFeeHistoryResponse.entries:type_name -> daemonrpc.FeeHistoryEntry
-	75, // 29: daemonrpc.ListTransactionsResponse.transactions:type_name -> daemonrpc.TransactionHistoryEntry
-	4,  // 30: daemonrpc.GetUnrollStatusResponse.status:type_name -> daemonrpc.UnrollJobStatus
-	44, // 31: daemonrpc.LeaveVTXOsRequest.DestinationsEntry.value:type_name -> daemonrpc.LeaveDestination
-	5,  // 32: daemonrpc.DaemonService.GetInfo:input_type -> daemonrpc.GetInfoRequest
-	8,  // 33: daemonrpc.DaemonService.GenSeed:input_type -> daemonrpc.GenSeedRequest
-	10, // 34: daemonrpc.DaemonService.InitWallet:input_type -> daemonrpc.InitWalletRequest
-	12, // 35: daemonrpc.DaemonService.UnlockWallet:input_type -> daemonrpc.UnlockWalletRequest
-	14, // 36: daemonrpc.DaemonService.GetBalance:input_type -> daemonrpc.GetBalanceRequest
-	17, // 37: daemonrpc.DaemonService.ListVTXOs:input_type -> daemonrpc.ListVTXOsRequest
-	19, // 38: daemonrpc.DaemonService.NewAddress:input_type -> daemonrpc.NewAddressRequest
-	21, // 39: daemonrpc.DaemonService.NewReceiveScript:input_type -> daemonrpc.NewReceiveScriptRequest
-	23, // 40: daemonrpc.DaemonService.ReceiveAuthKey:input_type -> daemonrpc.ReceiveAuthKeyRequest
-	25, // 41: daemonrpc.DaemonService.SignReceiveAuthMessage:input_type -> daemonrpc.SignReceiveAuthMessageRequest
-	27, // 42: daemonrpc.DaemonService.SignReceiveAuthMessageCompact:input_type -> daemonrpc.SignReceiveAuthMessageCompactRequest
-	29, // 43: daemonrpc.DaemonService.ReceiveAuthECDH:input_type -> daemonrpc.ReceiveAuthECDHRequest
-	31, // 44: daemonrpc.DaemonService.GetIndexedVTXOByPkScript:input_type -> daemonrpc.GetIndexedVTXOByPkScriptRequest
-	33, // 45: daemonrpc.DaemonService.GetIndexedOORSessionByTxid:input_type -> daemonrpc.GetIndexedOORSessionByTxidRequest
-	36, // 46: daemonrpc.DaemonService.SendVTXO:input_type -> daemonrpc.SendVTXORequest
-	38, // 47: daemonrpc.DaemonService.SendOOR:input_type -> daemonrpc.SendOORRequest
-	42, // 48: daemonrpc.DaemonService.RefreshVTXOs:input_type -> daemonrpc.RefreshVTXOsRequest
-	45, // 49: daemonrpc.DaemonService.LeaveVTXOs:input_type -> daemonrpc.LeaveVTXOsRequest
-	47, // 50: daemonrpc.DaemonService.Board:input_type -> daemonrpc.BoardRequest
-	49, // 51: daemonrpc.DaemonService.SweepBoardingUTXOs:input_type -> daemonrpc.SweepBoardingUTXOsRequest
-	52, // 52: daemonrpc.DaemonService.ListBoardingSweeps:input_type -> daemonrpc.ListBoardingSweepsRequest
-	58, // 53: daemonrpc.DaemonService.ListRounds:input_type -> daemonrpc.ListRoundsRequest
-	59, // 54: daemonrpc.DaemonService.GetRound:input_type -> daemonrpc.GetRoundRequest
-	62, // 55: daemonrpc.DaemonService.WatchRounds:input_type -> daemonrpc.WatchRoundsRequest
-	65, // 56: daemonrpc.DaemonService.ListOORSessions:input_type -> daemonrpc.ListOORSessionsRequest
-	67, // 57: daemonrpc.DaemonService.GetOORSession:input_type -> daemonrpc.GetOORSessionRequest
-	69, // 58: daemonrpc.DaemonService.EstimateFee:input_type -> daemonrpc.EstimateFeeRequest
-	71, // 59: daemonrpc.DaemonService.GetFeeHistory:input_type -> daemonrpc.GetFeeHistoryRequest
-	74, // 60: daemonrpc.DaemonService.ListTransactions:input_type -> daemonrpc.ListTransactionsRequest
-	77, // 61: daemonrpc.DaemonService.Unroll:input_type -> daemonrpc.UnrollRequest
-	79, // 62: daemonrpc.DaemonService.GetUnrollStatus:input_type -> daemonrpc.GetUnrollStatusRequest
-	6,  // 63: daemonrpc.DaemonService.GetInfo:output_type -> daemonrpc.GetInfoResponse
-	9,  // 64: daemonrpc.DaemonService.GenSeed:output_type -> daemonrpc.GenSeedResponse
-	11, // 65: daemonrpc.DaemonService.InitWallet:output_type -> daemonrpc.InitWalletResponse
-	13, // 66: daemonrpc.DaemonService.UnlockWallet:output_type -> daemonrpc.UnlockWalletResponse
-	15, // 67: daemonrpc.DaemonService.GetBalance:output_type -> daemonrpc.GetBalanceResponse
-	18, // 68: daemonrpc.DaemonService.ListVTXOs:output_type -> daemonrpc.ListVTXOsResponse
-	20, // 69: daemonrpc.DaemonService.NewAddress:output_type -> daemonrpc.NewAddressResponse
-	22, // 70: daemonrpc.DaemonService.NewReceiveScript:output_type -> daemonrpc.NewReceiveScriptResponse
-	24, // 71: daemonrpc.DaemonService.ReceiveAuthKey:output_type -> daemonrpc.ReceiveAuthKeyResponse
-	26, // 72: daemonrpc.DaemonService.SignReceiveAuthMessage:output_type -> daemonrpc.SignReceiveAuthMessageResponse
-	28, // 73: daemonrpc.DaemonService.SignReceiveAuthMessageCompact:output_type -> daemonrpc.SignReceiveAuthMessageCompactResponse
-	30, // 74: daemonrpc.DaemonService.ReceiveAuthECDH:output_type -> daemonrpc.ReceiveAuthECDHResponse
-	32, // 75: daemonrpc.DaemonService.GetIndexedVTXOByPkScript:output_type -> daemonrpc.GetIndexedVTXOByPkScriptResponse
-	34, // 76: daemonrpc.DaemonService.GetIndexedOORSessionByTxid:output_type -> daemonrpc.GetIndexedOORSessionByTxidResponse
-	37, // 77: daemonrpc.DaemonService.SendVTXO:output_type -> daemonrpc.SendVTXOResponse
-	40, // 78: daemonrpc.DaemonService.SendOOR:output_type -> daemonrpc.SendOORResponse
-	43, // 79: daemonrpc.DaemonService.RefreshVTXOs:output_type -> daemonrpc.RefreshVTXOsResponse
-	46, // 80: daemonrpc.DaemonService.LeaveVTXOs:output_type -> daemonrpc.LeaveVTXOsResponse
-	48, // 81: daemonrpc.DaemonService.Board:output_type -> daemonrpc.BoardResponse
-	51, // 82: daemonrpc.DaemonService.SweepBoardingUTXOs:output_type -> daemonrpc.SweepBoardingUTXOsResponse
-	55, // 83: daemonrpc.DaemonService.ListBoardingSweeps:output_type -> daemonrpc.ListBoardingSweepsResponse
-	61, // 84: daemonrpc.DaemonService.ListRounds:output_type -> daemonrpc.ListRoundsResponse
-	60, // 85: daemonrpc.DaemonService.GetRound:output_type -> daemonrpc.GetRoundResponse
-	63, // 86: daemonrpc.DaemonService.WatchRounds:output_type -> daemonrpc.WatchRoundsResponse
-	66, // 87: daemonrpc.DaemonService.ListOORSessions:output_type -> daemonrpc.ListOORSessionsResponse
-	68, // 88: daemonrpc.DaemonService.GetOORSession:output_type -> daemonrpc.GetOORSessionResponse
-	70, // 89: daemonrpc.DaemonService.EstimateFee:output_type -> daemonrpc.EstimateFeeResponse
-	73, // 90: daemonrpc.DaemonService.GetFeeHistory:output_type -> daemonrpc.GetFeeHistoryResponse
-	76, // 91: daemonrpc.DaemonService.ListTransactions:output_type -> daemonrpc.ListTransactionsResponse
-	78, // 92: daemonrpc.DaemonService.Unroll:output_type -> daemonrpc.UnrollResponse
-	80, // 93: daemonrpc.DaemonService.GetUnrollStatus:output_type -> daemonrpc.GetUnrollStatusResponse
-	63, // [63:94] is the sub-list for method output_type
-	32, // [32:63] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	0,  // 0: daemonrpc.GetInfoResponse.wallet_state:type_name -> daemonrpc.WalletState
+	8,  // 1: daemonrpc.GetInfoResponse.server_info:type_name -> daemonrpc.ServerInfo
+	1,  // 2: daemonrpc.VTXO.status:type_name -> daemonrpc.VTXOStatus
+	1,  // 3: daemonrpc.ListVTXOsRequest.status_filter:type_name -> daemonrpc.VTXOStatus
+	17, // 4: daemonrpc.ListVTXOsResponse.vtxos:type_name -> daemonrpc.VTXO
+	1,  // 5: daemonrpc.GetIndexedVTXOByPkScriptRequest.status_filter:type_name -> daemonrpc.VTXOStatus
+	17, // 6: daemonrpc.GetIndexedVTXOByPkScriptResponse.vtxo:type_name -> daemonrpc.VTXO
+	36, // 7: daemonrpc.SendVTXORequest.recipients:type_name -> daemonrpc.Output
+	36, // 8: daemonrpc.SendOORRequest.recipient:type_name -> daemonrpc.Output
+	40, // 9: daemonrpc.SendOORRequest.custom_inputs:type_name -> daemonrpc.CustomOORInput
+	42, // 10: daemonrpc.RefreshVTXOsRequest.outpoints:type_name -> daemonrpc.OutpointSelection
+	42, // 11: daemonrpc.LeaveVTXOsRequest.outpoints:type_name -> daemonrpc.OutpointSelection
+	45, // 12: daemonrpc.LeaveVTXOsRequest.default_destination:type_name -> daemonrpc.LeaveDestination
+	82, // 13: daemonrpc.LeaveVTXOsRequest.destinations:type_name -> daemonrpc.LeaveVTXOsRequest.DestinationsEntry
+	51, // 14: daemonrpc.SweepBoardingUTXOsResponse.sweepable_outputs:type_name -> daemonrpc.BoardingSweepOutput
+	54, // 15: daemonrpc.BoardingSweep.inputs:type_name -> daemonrpc.BoardingSweepInput
+	55, // 16: daemonrpc.ListBoardingSweepsResponse.sweeps:type_name -> daemonrpc.BoardingSweep
+	2,  // 17: daemonrpc.RoundInfo.state:type_name -> daemonrpc.RoundState
+	57, // 18: daemonrpc.RoundInfo.vtxos:type_name -> daemonrpc.RoundVTXOInfo
+	2,  // 19: daemonrpc.ListRoundsRequest.state_filter:type_name -> daemonrpc.RoundState
+	58, // 20: daemonrpc.GetRoundResponse.round:type_name -> daemonrpc.RoundInfo
+	58, // 21: daemonrpc.ListRoundsResponse.rounds:type_name -> daemonrpc.RoundInfo
+	58, // 22: daemonrpc.WatchRoundsResponse.round:type_name -> daemonrpc.RoundInfo
+	3,  // 23: daemonrpc.OORSessionInfo.direction:type_name -> daemonrpc.OORSessionDirection
+	4,  // 24: daemonrpc.OORSessionInfo.status:type_name -> daemonrpc.OORSessionStatus
+	3,  // 25: daemonrpc.ListOORSessionsRequest.direction_filter:type_name -> daemonrpc.OORSessionDirection
+	4,  // 26: daemonrpc.ListOORSessionsRequest.status_filter:type_name -> daemonrpc.OORSessionStatus
+	65, // 27: daemonrpc.ListOORSessionsResponse.sessions:type_name -> daemonrpc.OORSessionInfo
+	65, // 28: daemonrpc.GetOORSessionResponse.session:type_name -> daemonrpc.OORSessionInfo
+	73, // 29: daemonrpc.GetFeeHistoryResponse.entries:type_name -> daemonrpc.FeeHistoryEntry
+	76, // 30: daemonrpc.ListTransactionsResponse.transactions:type_name -> daemonrpc.TransactionHistoryEntry
+	5,  // 31: daemonrpc.GetUnrollStatusResponse.status:type_name -> daemonrpc.UnrollJobStatus
+	45, // 32: daemonrpc.LeaveVTXOsRequest.DestinationsEntry.value:type_name -> daemonrpc.LeaveDestination
+	6,  // 33: daemonrpc.DaemonService.GetInfo:input_type -> daemonrpc.GetInfoRequest
+	9,  // 34: daemonrpc.DaemonService.GenSeed:input_type -> daemonrpc.GenSeedRequest
+	11, // 35: daemonrpc.DaemonService.InitWallet:input_type -> daemonrpc.InitWalletRequest
+	13, // 36: daemonrpc.DaemonService.UnlockWallet:input_type -> daemonrpc.UnlockWalletRequest
+	15, // 37: daemonrpc.DaemonService.GetBalance:input_type -> daemonrpc.GetBalanceRequest
+	18, // 38: daemonrpc.DaemonService.ListVTXOs:input_type -> daemonrpc.ListVTXOsRequest
+	20, // 39: daemonrpc.DaemonService.NewAddress:input_type -> daemonrpc.NewAddressRequest
+	22, // 40: daemonrpc.DaemonService.NewReceiveScript:input_type -> daemonrpc.NewReceiveScriptRequest
+	24, // 41: daemonrpc.DaemonService.ReceiveAuthKey:input_type -> daemonrpc.ReceiveAuthKeyRequest
+	26, // 42: daemonrpc.DaemonService.SignReceiveAuthMessage:input_type -> daemonrpc.SignReceiveAuthMessageRequest
+	28, // 43: daemonrpc.DaemonService.SignReceiveAuthMessageCompact:input_type -> daemonrpc.SignReceiveAuthMessageCompactRequest
+	30, // 44: daemonrpc.DaemonService.ReceiveAuthECDH:input_type -> daemonrpc.ReceiveAuthECDHRequest
+	32, // 45: daemonrpc.DaemonService.GetIndexedVTXOByPkScript:input_type -> daemonrpc.GetIndexedVTXOByPkScriptRequest
+	34, // 46: daemonrpc.DaemonService.GetIndexedOORSessionByTxid:input_type -> daemonrpc.GetIndexedOORSessionByTxidRequest
+	37, // 47: daemonrpc.DaemonService.SendVTXO:input_type -> daemonrpc.SendVTXORequest
+	39, // 48: daemonrpc.DaemonService.SendOOR:input_type -> daemonrpc.SendOORRequest
+	43, // 49: daemonrpc.DaemonService.RefreshVTXOs:input_type -> daemonrpc.RefreshVTXOsRequest
+	46, // 50: daemonrpc.DaemonService.LeaveVTXOs:input_type -> daemonrpc.LeaveVTXOsRequest
+	48, // 51: daemonrpc.DaemonService.Board:input_type -> daemonrpc.BoardRequest
+	50, // 52: daemonrpc.DaemonService.SweepBoardingUTXOs:input_type -> daemonrpc.SweepBoardingUTXOsRequest
+	53, // 53: daemonrpc.DaemonService.ListBoardingSweeps:input_type -> daemonrpc.ListBoardingSweepsRequest
+	59, // 54: daemonrpc.DaemonService.ListRounds:input_type -> daemonrpc.ListRoundsRequest
+	60, // 55: daemonrpc.DaemonService.GetRound:input_type -> daemonrpc.GetRoundRequest
+	63, // 56: daemonrpc.DaemonService.WatchRounds:input_type -> daemonrpc.WatchRoundsRequest
+	66, // 57: daemonrpc.DaemonService.ListOORSessions:input_type -> daemonrpc.ListOORSessionsRequest
+	68, // 58: daemonrpc.DaemonService.GetOORSession:input_type -> daemonrpc.GetOORSessionRequest
+	70, // 59: daemonrpc.DaemonService.EstimateFee:input_type -> daemonrpc.EstimateFeeRequest
+	72, // 60: daemonrpc.DaemonService.GetFeeHistory:input_type -> daemonrpc.GetFeeHistoryRequest
+	75, // 61: daemonrpc.DaemonService.ListTransactions:input_type -> daemonrpc.ListTransactionsRequest
+	78, // 62: daemonrpc.DaemonService.Unroll:input_type -> daemonrpc.UnrollRequest
+	80, // 63: daemonrpc.DaemonService.GetUnrollStatus:input_type -> daemonrpc.GetUnrollStatusRequest
+	7,  // 64: daemonrpc.DaemonService.GetInfo:output_type -> daemonrpc.GetInfoResponse
+	10, // 65: daemonrpc.DaemonService.GenSeed:output_type -> daemonrpc.GenSeedResponse
+	12, // 66: daemonrpc.DaemonService.InitWallet:output_type -> daemonrpc.InitWalletResponse
+	14, // 67: daemonrpc.DaemonService.UnlockWallet:output_type -> daemonrpc.UnlockWalletResponse
+	16, // 68: daemonrpc.DaemonService.GetBalance:output_type -> daemonrpc.GetBalanceResponse
+	19, // 69: daemonrpc.DaemonService.ListVTXOs:output_type -> daemonrpc.ListVTXOsResponse
+	21, // 70: daemonrpc.DaemonService.NewAddress:output_type -> daemonrpc.NewAddressResponse
+	23, // 71: daemonrpc.DaemonService.NewReceiveScript:output_type -> daemonrpc.NewReceiveScriptResponse
+	25, // 72: daemonrpc.DaemonService.ReceiveAuthKey:output_type -> daemonrpc.ReceiveAuthKeyResponse
+	27, // 73: daemonrpc.DaemonService.SignReceiveAuthMessage:output_type -> daemonrpc.SignReceiveAuthMessageResponse
+	29, // 74: daemonrpc.DaemonService.SignReceiveAuthMessageCompact:output_type -> daemonrpc.SignReceiveAuthMessageCompactResponse
+	31, // 75: daemonrpc.DaemonService.ReceiveAuthECDH:output_type -> daemonrpc.ReceiveAuthECDHResponse
+	33, // 76: daemonrpc.DaemonService.GetIndexedVTXOByPkScript:output_type -> daemonrpc.GetIndexedVTXOByPkScriptResponse
+	35, // 77: daemonrpc.DaemonService.GetIndexedOORSessionByTxid:output_type -> daemonrpc.GetIndexedOORSessionByTxidResponse
+	38, // 78: daemonrpc.DaemonService.SendVTXO:output_type -> daemonrpc.SendVTXOResponse
+	41, // 79: daemonrpc.DaemonService.SendOOR:output_type -> daemonrpc.SendOORResponse
+	44, // 80: daemonrpc.DaemonService.RefreshVTXOs:output_type -> daemonrpc.RefreshVTXOsResponse
+	47, // 81: daemonrpc.DaemonService.LeaveVTXOs:output_type -> daemonrpc.LeaveVTXOsResponse
+	49, // 82: daemonrpc.DaemonService.Board:output_type -> daemonrpc.BoardResponse
+	52, // 83: daemonrpc.DaemonService.SweepBoardingUTXOs:output_type -> daemonrpc.SweepBoardingUTXOsResponse
+	56, // 84: daemonrpc.DaemonService.ListBoardingSweeps:output_type -> daemonrpc.ListBoardingSweepsResponse
+	62, // 85: daemonrpc.DaemonService.ListRounds:output_type -> daemonrpc.ListRoundsResponse
+	61, // 86: daemonrpc.DaemonService.GetRound:output_type -> daemonrpc.GetRoundResponse
+	64, // 87: daemonrpc.DaemonService.WatchRounds:output_type -> daemonrpc.WatchRoundsResponse
+	67, // 88: daemonrpc.DaemonService.ListOORSessions:output_type -> daemonrpc.ListOORSessionsResponse
+	69, // 89: daemonrpc.DaemonService.GetOORSession:output_type -> daemonrpc.GetOORSessionResponse
+	71, // 90: daemonrpc.DaemonService.EstimateFee:output_type -> daemonrpc.EstimateFeeResponse
+	74, // 91: daemonrpc.DaemonService.GetFeeHistory:output_type -> daemonrpc.GetFeeHistoryResponse
+	77, // 92: daemonrpc.DaemonService.ListTransactions:output_type -> daemonrpc.ListTransactionsResponse
+	79, // 93: daemonrpc.DaemonService.Unroll:output_type -> daemonrpc.UnrollResponse
+	81, // 94: daemonrpc.DaemonService.GetUnrollStatus:output_type -> daemonrpc.GetUnrollStatusResponse
+	64, // [64:95] is the sub-list for method output_type
+	33, // [33:64] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_daemon_proto_init() }
@@ -6582,7 +6659,7 @@ func file_daemon_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_daemon_proto_rawDesc), len(file_daemon_proto_rawDesc)),
-			NumEnums:      5,
+			NumEnums:      6,
 			NumMessages:   77,
 			NumExtensions: 0,
 			NumServices:   1,

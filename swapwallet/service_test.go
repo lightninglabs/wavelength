@@ -89,7 +89,7 @@ func TestServiceStatusComposesInfoBalanceAndPending(t *testing.T) {
 
 	svc, swap, rpc := newServiceFixture(t)
 	rpc.getInfoResp = &daemonrpc.GetInfoResponse{
-		WalletReady: true,
+		WalletState: daemonrpc.WalletState_WALLET_STATE_READY,
 		Network:     "regtest",
 	}
 	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{

@@ -92,6 +92,31 @@ type ConnectConfig struct {
 	DialOptions []grpc.DialOption
 }
 
+// WalletState mirrors the daemon's wallet lifecycle enum so SDK
+// consumers can render a tri-state UI without collapsing LOCKED into
+// "not ready". The values are ordered from least to most ready;
+// compare against >= WalletStateLocked for "seed exists" semantics and
+// == WalletStateReady for "fully usable" semantics.
+type WalletState int32
+
+const (
+	// WalletStateUnspecified is the proto3 zero value. The daemon
+	// never emits this; reserved so a missing field deserializes to
+	// a safe non-ready state.
+	WalletStateUnspecified WalletState = 0
+
+	// WalletStateNone indicates no wallet has been created yet.
+	WalletStateNone WalletState = 1
+
+	// WalletStateLocked indicates an encrypted seed exists but the
+	// decryption key has not been provided; signing is unavailable.
+	WalletStateLocked WalletState = 2
+
+	// WalletStateReady indicates the wallet is initialized, unlocked,
+	// and signing is available.
+	WalletStateReady WalletState = 3
+)
+
 // Info summarizes daemon readiness for wallet applications.
 type Info struct {
 	Version         string
@@ -100,8 +125,19 @@ type Info struct {
 	BlockHeight     uint32
 	ServerConnected bool
 	WalletType      string
-	WalletReady     bool
+	WalletState     WalletState
 	IdentityPubKey  string
+}
+
+// WalletReady reports whether the daemon wallet is fully unlocked and
+// ready to sign. Convenience predicate over WalletState so callers that
+// only need the binary state don't have to import the enum.
+func (i *Info) WalletReady() bool {
+	if i == nil {
+		return false
+	}
+
+	return i.WalletState == WalletStateReady
 }
 
 // CreateWalletRequest creates or imports a daemon wallet.

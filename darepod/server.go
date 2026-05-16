@@ -342,6 +342,13 @@ func (s *Server) isWalletReady() bool {
 	}
 }
 
+// WalletLifecycleState returns the current wallet lifecycle state. Used
+// by RPC handlers that need to distinguish locked from not-yet-created
+// for tri-state UI surfaces (vs the binary isWalletReady predicate).
+func (s *Server) WalletLifecycleState() WalletState {
+	return WalletState(s.walletState.Load())
+}
+
 // WalletType returns the configured wallet backend type string.
 func (s *Server) WalletType() string {
 	return s.cfg.Wallet.Type

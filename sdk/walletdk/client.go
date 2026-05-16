@@ -134,7 +134,7 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 		BlockHeight:     resp.GetBlockHeight(),
 		ServerConnected: resp.GetServerConnected(),
 		WalletType:      resp.GetWalletType(),
-		WalletReady:     resp.GetWalletReady(),
+		WalletState:     WalletState(resp.GetWalletState()),
 		IdentityPubKey:  resp.GetIdentityPubkey(),
 	}, nil
 }

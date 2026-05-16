@@ -151,9 +151,18 @@ func (s *Service) Status(ctx context.Context, req *walletrpc.StatusRequest) (
 		return nil, err
 	}
 
+	state := info.GetWalletState()
+
 	return &walletrpc.StatusResponse{
-		Ready:        info.GetWalletReady(),
-		Unlocked:     info.GetWalletReady(),
+		// Ready collapses to "wallet fully usable for signing".
+		Ready: state == daemonrpc.WalletState_WALLET_STATE_READY,
+
+		// Unlocked surfaces "seed material is loaded" — every state
+		// at or past LOCKED qualifies (the wallet has been
+		// instantiated even if it's still waiting on the unlock
+		// password).
+		Unlocked: state >= daemonrpc.WalletState_WALLET_STATE_LOCKED,
+
 		Network:      info.GetNetwork(),
 		Balance:      bal,
 		PendingCount: pendingCount,

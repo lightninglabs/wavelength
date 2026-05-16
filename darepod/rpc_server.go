@@ -229,6 +229,24 @@ func appendOORChangeRecipient(ctx context.Context,
 	return out, change, nil
 }
 
+// walletStateToProto maps the daemon's in-process WalletState enum to
+// the public daemonrpc.WalletState wire enum.
+func walletStateToProto(s WalletState) daemonrpc.WalletState {
+	switch s {
+	case WalletStateNone:
+		return daemonrpc.WalletState_WALLET_STATE_NONE
+
+	case WalletStateLocked:
+		return daemonrpc.WalletState_WALLET_STATE_LOCKED
+
+	case WalletStateReady:
+		return daemonrpc.WalletState_WALLET_STATE_READY
+
+	default:
+		return daemonrpc.WalletState_WALLET_STATE_UNSPECIFIED
+	}
+}
+
 // GetInfo returns basic information about the running daemon instance,
 // including version, network, and lnd connection state.
 func (r *RPCServer) GetInfo(ctx context.Context, _ *daemonrpc.GetInfoRequest) (
@@ -240,7 +258,9 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *daemonrpc.GetInfoRequest) (
 		Network:         r.server.cfg.Network,
 		ServerConnected: r.server.isServerConnected(),
 		WalletType:      r.server.cfg.Wallet.Type,
-		WalletReady:     r.server.isWalletReady(),
+		WalletState: walletStateToProto(
+			r.server.WalletLifecycleState(),
+		),
 	}
 
 	// Populate lnd fields if connected.

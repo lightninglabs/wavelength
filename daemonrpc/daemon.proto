@@ -160,6 +160,30 @@ service DaemonService {
         returns (GetUnrollStatusResponse);
 }
 
+// WalletState mirrors the daemon's in-process wallet lifecycle enum:
+// values are ordered from least to most ready so callers can compare
+// against >= LOCKED for "seed exists" semantics and == READY for "fully
+// usable" semantics.
+enum WalletState {
+    // WALLET_STATE_UNSPECIFIED is the proto3 zero value. The daemon
+    // never emits this; reserved so a missing field deserializes to a
+    // safe non-ready state.
+    WALLET_STATE_UNSPECIFIED = 0;
+
+    // WALLET_STATE_NONE indicates no wallet has been created yet (no
+    // encrypted seed on disk).
+    WALLET_STATE_NONE = 1;
+
+    // WALLET_STATE_LOCKED indicates an encrypted seed file exists but
+    // no decryption key has been provided; signing is not yet
+    // available.
+    WALLET_STATE_LOCKED = 2;
+
+    // WALLET_STATE_READY indicates the wallet is initialized, unlocked,
+    // and ready to sign / participate in rounds.
+    WALLET_STATE_READY = 3;
+}
+
 message GetInfoRequest {
 }
 
@@ -196,9 +220,13 @@ message GetInfoResponse {
     // wallet_type is the active wallet backend: "lnd" or "lwwallet".
     string wallet_type = 8;
 
-    // wallet_ready indicates whether the wallet subsystem is initialized
-    // and ready to process requests.
-    bool wallet_ready = 9;
+    // wallet_state is the lifecycle state of the wallet subsystem. The
+    // ordering reflects increasing readiness: NONE (no seed exists),
+    // LOCKED (encrypted seed exists but no decryption key has been
+    // provided), READY (wallet is initialized and signing is
+    // available). Callers compare against >= LOCKED for "seed exists /
+    // unlocked" semantics and == READY for "fully usable" semantics.
+    WalletState wallet_state = 9;
 
     // identity_pubkey is the hex-encoded daemon wallet identity public key
     // derived from the active wallet backend's daemon identity key locator
