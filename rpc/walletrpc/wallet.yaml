@@ -3,6 +3,12 @@ config_version: 3
 
 http:
   rules:
+    - selector: walletrpc.WalletService.Create
+      post: /v1/wallet/create
+      body: "*"
+    - selector: walletrpc.WalletService.Unlock
+      post: /v1/wallet/unlock
+      body: "*"
     - selector: walletrpc.WalletService.Send
       post: /v1/wallet/send
       body: "*"
@@ -20,6 +26,12 @@ http:
       body: "*"
     - selector: walletrpc.WalletService.Status
       post: /v1/wallet/status
+      body: "*"
+    - selector: walletrpc.WalletService.Exit
+      post: /v1/wallet/exit
+      body: "*"
+    - selector: walletrpc.WalletService.ExitStatus
+      post: /v1/wallet/exit-status
       body: "*"
     - selector: walletrpc.WalletService.SubscribeWallet
       post: /v1/wallet/subscribe
