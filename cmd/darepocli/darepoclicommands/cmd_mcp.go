@@ -120,8 +120,8 @@ func registerMCPTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "balance",
 		Description: "Display wallet balance (boarding + VTXO + total)",
-	}, func(ctx context.Context, req *mcp.CallToolRequest,
-		_ balanceArgs) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, req *mcp.CallToolRequest, _ balanceArgs) (
+		*mcp.CallToolResult, any, error) {
 
 		resp, err := client.GetBalance(
 			ctx, &daemonrpc.GetBalanceRequest{},

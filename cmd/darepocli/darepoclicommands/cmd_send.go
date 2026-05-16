@@ -85,8 +85,8 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	// silently-ignored flag and so a typo (forgot --onchain) gets
 	// a clear error rather than a no-op invoice send.
 	if offchain && sweepAll {
-		return fmt.Errorf("--sweep-all is only valid with " +
-			"--onchain (invoice sends drain no VTXO set)")
+		return fmt.Errorf("--sweep-all is only valid with --onchain " +
+			"(invoice sends drain no VTXO set)")
 	}
 
 	// Onchain-only invariants: --sweep-all <=> amt==0. Enforce up
@@ -94,14 +94,12 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	if !offchain {
 		switch {
 		case sweepAll && amt != 0:
-			return fmt.Errorf("--sweep-all requires --amt=0 " +
-				"(amt is implied by sweeping every " +
-				"live VTXO)")
+			return fmt.Errorf("--sweep-all requires --amt=0 (amt " +
+				"is implied by sweeping every live VTXO)")
 
 		case !sweepAll && amt == 0:
 			return fmt.Errorf("--amt is required for onchain " +
-				"sends (use --sweep-all to drain the " +
-				"wallet)")
+				"sends (use --sweep-all to drain the wallet)")
 		}
 	}
 

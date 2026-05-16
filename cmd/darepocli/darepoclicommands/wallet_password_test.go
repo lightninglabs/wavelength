@@ -24,7 +24,9 @@ func TestReadMaskedPasswordMasksInput(t *testing.T) {
 	require.Equal(t, []byte("supersecret"), password)
 	require.Equal(
 		t,
-		strings.Repeat("*", len("supersecret")),
+		strings.Repeat(
+			"*", len("supersecret"),
+		),
 		output.String(),
 	)
 	require.NotContains(t, output.String(), "supersecret")

@@ -47,9 +47,8 @@ func (s *Service) create(ctx context.Context, req *walletrpc.CreateRequest) (
 			},
 		)
 		if err != nil {
-			return nil, status.Errorf(
-				status.Code(err), "gen seed: %v", err,
-			)
+			return nil, status.Errorf(status.Code(err), "gen "+
+				"seed: %v", err)
 		}
 		mnemonic = genResp.GetMnemonic()
 	}
@@ -62,9 +61,8 @@ func (s *Service) create(ctx context.Context, req *walletrpc.CreateRequest) (
 		},
 	)
 	if err != nil {
-		return nil, status.Errorf(
-			status.Code(err), "init wallet: %v", err,
-		)
+		return nil, status.Errorf(status.Code(err), "init wallet: %v",
+			err)
 	}
 
 	return &walletrpc.CreateResponse{
@@ -96,9 +94,8 @@ func (s *Service) unlock(ctx context.Context, req *walletrpc.UnlockRequest) (
 		},
 	)
 	if err != nil {
-		return nil, status.Errorf(
-			status.Code(err), "unlock wallet: %v", err,
-		)
+		return nil, status.Errorf(status.Code(err), "unlock wallet: %v",
+			err)
 	}
 
 	return &walletrpc.UnlockResponse{
@@ -129,9 +126,7 @@ func (s *Service) exit(ctx context.Context, req *walletrpc.ExitRequest) (
 		},
 	)
 	if err != nil {
-		return nil, status.Errorf(
-			status.Code(err), "exit: %v", err,
-		)
+		return nil, status.Errorf(status.Code(err), "exit: %v", err)
 	}
 
 	return &walletrpc.ExitResponse{
@@ -164,9 +159,8 @@ func (s *Service) exitStatus(ctx context.Context,
 		},
 	)
 	if err != nil {
-		return nil, status.Errorf(
-			status.Code(err), "exit status: %v", err,
-		)
+		return nil, status.Errorf(status.Code(err), "exit status: %v",
+			err)
 	}
 
 	return &walletrpc.ExitStatusResponse{

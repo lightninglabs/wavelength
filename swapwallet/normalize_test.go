@@ -25,16 +25,42 @@ func TestTruncate(t *testing.T) {
 		n    int
 		want string
 	}{
-		{"hello", 10, "hello"},   // shorter than cap → unchanged
-		{"hello", 5, "hello"},    // equal to cap → unchanged
-		{"helloworld", 5, "hello"},
-		{"", 5, ""},
-		{"any", 0, "any"},  // n <= 0 → unchanged (no truncation)
-		{"any", -1, "any"}, // negative n → unchanged
+		{
+			"hello",
+			10,
+			"hello",
+		}, // shorter than cap → unchanged
+		{
+			"hello",
+			5,
+			"hello",
+		}, // equal to cap → unchanged
+		{
+			"helloworld",
+			5,
+			"hello",
+		},
+		{
+			"",
+			5,
+			"",
+		},
+		{
+			"any",
+			0,
+			"any",
+		}, // n <= 0 → unchanged (no truncation)
+		{
+			"any",
+			-1,
+			"any",
+		}, // negative n → unchanged
 	}
 	for _, tc := range cases {
-		require.Equal(t, tc.want, truncate(tc.in, tc.n),
-			"in=%q n=%d", tc.in, tc.n)
+		require.Equal(
+			t, tc.want, truncate(tc.in, tc.n),
+			"in=%q n=%d", tc.in, tc.n,
+		)
 	}
 }
 
@@ -45,14 +71,12 @@ func TestKindFromSwapDirection(t *testing.T) {
 	t.Parallel()
 
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_SEND,
-		kindFromSwapDirection(
+		t, walletrpc.EntryKind_ENTRY_KIND_SEND, kindFromSwapDirection(
 			swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
 		),
 	)
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_RECV,
-		kindFromSwapDirection(
+		t, walletrpc.EntryKind_ENTRY_KIND_RECV, kindFromSwapDirection(
 			swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE,
 		),
 	)
@@ -130,8 +154,10 @@ func TestFailureReasonFromTerminal(t *testing.T) {
 func TestUnixToTime(t *testing.T) {
 	t.Parallel()
 
-	require.False(t, unixToTime(0).IsZero(),
-		"zero must surface a usable now-ish time, not the zero time")
+	require.False(
+		t, unixToTime(0).IsZero(),
+		"zero must surface a usable now-ish time, not the zero time",
+	)
 
 	ts := int64(1_700_000_000)
 	require.Equal(t, time.Unix(ts, 0), unixToTime(ts))
@@ -193,7 +219,11 @@ func TestWalletVTXOStatusFromDaemon(t *testing.T) {
 		out  string
 		keep bool
 	}{
-		{daemonrpc.VTXOStatus_VTXO_STATUS_LIVE, "live", true},
+		{
+			daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+			"live",
+			true,
+		},
 		{
 			daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT,
 			"pending_forfeit", true,
@@ -210,10 +240,26 @@ func TestWalletVTXOStatusFromDaemon(t *testing.T) {
 			daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
 			"unilateral_exit", true,
 		},
-		{daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED, "", false},
-		{daemonrpc.VTXOStatus_VTXO_STATUS_SPENT, "", false},
-		{daemonrpc.VTXOStatus_VTXO_STATUS_FAILED, "", false},
-		{daemonrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED, "", false},
+		{
+			daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+			"",
+			false,
+		},
+		{
+			daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
+			"",
+			false,
+		},
+		{
+			daemonrpc.VTXOStatus_VTXO_STATUS_FAILED,
+			"",
+			false,
+		},
+		{
+			daemonrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED,
+			"",
+			false,
+		},
 	}
 	for _, tc := range cases {
 		got, keep := walletVTXOStatusFromDaemon(tc.in)
@@ -245,8 +291,16 @@ func TestOnchainTxFromLedgerRow(t *testing.T) {
 		CreatedAtUnixS:     500,
 		Description:        "boarding deposit",
 		// Internal correlators that must NOT leak.
-		RoundId:       []byte{1, 2, 3},
-		SessionId:     []byte{9, 9, 9},
+		RoundId: []byte{
+			1,
+			2,
+			3,
+		},
+		SessionId: []byte{
+			9,
+			9,
+			9,
+		},
 		DebitAccount:  "internal:vtxo",
 		CreditAccount: "internal:transfers_in",
 	}
@@ -268,10 +322,18 @@ func TestPaginateVTXOs(t *testing.T) {
 	t.Parallel()
 
 	in := []*walletrpc.WalletVTXO{
-		{Outpoint: "a:0"},
-		{Outpoint: "b:0"},
-		{Outpoint: "c:0"},
-		{Outpoint: "d:0"},
+		{
+			Outpoint: "a:0",
+		},
+		{
+			Outpoint: "b:0",
+		},
+		{
+			Outpoint: "c:0",
+		},
+		{
+			Outpoint: "d:0",
+		},
 	}
 
 	// Whole page.
@@ -302,13 +364,16 @@ func TestLeaveEntryStub(t *testing.T) {
 	t.Parallel()
 
 	out := leaveEntryStub(
-		[]string{"abc:0", "def:1"}, "bcrt1q...", 5_000, "rent",
+		[]string{
+			"abc:0",
+			"def:1",
+		}, "bcrt1q...",
+		5_000, "rent",
 	)
 	require.Equal(t, "abc:0", out.GetId())
 	require.Equal(t, walletrpc.EntryKind_ENTRY_KIND_EXIT, out.GetKind())
 	require.Equal(
-		t, walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
-		out.GetStatus(),
+		t, walletrpc.EntryStatus_ENTRY_STATUS_PENDING, out.GetStatus(),
 	)
 	require.Equal(t, int64(-5_000), out.GetAmountSat())
 	require.Equal(t, "rent", out.GetNote())
@@ -338,15 +403,19 @@ func TestSwapEntryFromSummaryCallerKindOverride(t *testing.T) {
 		s, "", "", walletrpc.EntryKind_ENTRY_KIND_SEND,
 	)
 	require.Equal(t, walletrpc.EntryKind_ENTRY_KIND_SEND, send.GetKind())
-	require.Equal(t, int64(-10_000), send.GetAmountSat(),
-		"caller-pinned SEND must surface as outgoing (negative)")
+	require.Equal(
+		t, int64(-10_000), send.GetAmountSat(),
+		"caller-pinned SEND must surface as outgoing (negative)",
+	)
 
 	recv := swapEntryFromSummary(
 		s, "", "", walletrpc.EntryKind_ENTRY_KIND_RECV,
 	)
 	require.Equal(t, walletrpc.EntryKind_ENTRY_KIND_RECV, recv.GetKind())
-	require.Equal(t, int64(10_000), recv.GetAmountSat(),
-		"caller-pinned RECV must surface as incoming (positive)")
+	require.Equal(
+		t, int64(10_000), recv.GetAmountSat(),
+		"caller-pinned RECV must surface as incoming (positive)",
+	)
 }
 
 // TestSwapEntryFromSummaryNilSafe confirms a nil input does not

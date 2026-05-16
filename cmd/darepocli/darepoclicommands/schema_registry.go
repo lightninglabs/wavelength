@@ -259,9 +259,9 @@ func walletQueryMethodRegistry() []schemaMethod {
 			Description: "Trigger a unilateral exit for a VTXO",
 			Params: []schemaParam{
 				{
-					Name:        "outpoint",
-					Type:        "string",
-					Required:    true,
+					Name:     "outpoint",
+					Type:     "string",
+					Required: true,
 					Description: "VTXO outpoint " +
 						"(txid:vout)",
 				},
@@ -275,9 +275,9 @@ func walletQueryMethodRegistry() []schemaMethod {
 			Description: "Query the status of an exit job",
 			Params: []schemaParam{
 				{
-					Name:        "outpoint",
-					Type:        "string",
-					Required:    true,
+					Name:     "outpoint",
+					Type:     "string",
+					Required: true,
 					Description: "VTXO outpoint " +
 						"(txid:vout)",
 				},
