@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
 )
@@ -164,6 +165,97 @@ func unixToTime(ts int64) time.Time {
 	}
 
 	return time.Unix(ts, 0)
+}
+
+// walletVTXOFromDaemon projects a daemonrpc.VTXO onto the wallet-facing
+// WalletVTXO shape. Returns (vtxo, true) when the underlying VTXO maps to a
+// spendable wallet view; (nil, false) when the row should be hidden (terminal
+// states the user has no agency over).
+func walletVTXOFromDaemon(v *daemonrpc.VTXO) (*walletrpc.WalletVTXO, bool) {
+	if v == nil {
+		return nil, false
+	}
+
+	status, keep := walletVTXOStatusFromDaemon(v.GetStatus())
+	if !keep {
+		return nil, false
+	}
+
+	return &walletrpc.WalletVTXO{
+		Outpoint:       v.GetOutpoint(),
+		AmountSat:      v.GetAmountSat(),
+		Status:         status,
+		BatchExpiry:    v.GetBatchExpiry(),
+		RelativeExpiry: v.GetRelativeExpiry(),
+		CommitmentTxid: v.GetCommitmentTxid(),
+	}, true
+}
+
+// walletVTXOStatusFromDaemon maps the daemon VTXO status enum onto a short
+// lowercase wallet string. Terminal internal states (forfeited, spent,
+// failed) return keep=false so the wallet view stays focused on the
+// VTXOs a user can still act on.
+func walletVTXOStatusFromDaemon(s daemonrpc.VTXOStatus) (string, bool) {
+	switch s {
+	case daemonrpc.VTXOStatus_VTXO_STATUS_LIVE:
+		return "live", true
+
+	case daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT:
+		return "pending_forfeit", true
+
+	case daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITING:
+		return "forfeiting", true
+
+	case daemonrpc.VTXOStatus_VTXO_STATUS_SPENDING:
+		return "spending", true
+
+	case daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT:
+		return "unilateral_exit", true
+
+	default:
+		return "", false
+	}
+}
+
+// onchainTxFromLedgerRow flattens a daemonrpc.TransactionHistoryEntry onto
+// the wallet-facing OnchainTx shape. Internal correlators (round_id,
+// session_id, debit/credit accounts) are not surfaced; the wallet view
+// keeps only what's useful at the top of an everyday wallet history.
+func onchainTxFromLedgerRow(t *daemonrpc.TransactionHistoryEntry,
+) *walletrpc.OnchainTx {
+
+	if t == nil {
+		return &walletrpc.OnchainTx{}
+	}
+
+	return &walletrpc.OnchainTx{
+		Txid:               t.GetTxid(),
+		Kind:               t.GetType(),
+		AmountSat:          t.GetAmountSat(),
+		FeeSat:             t.GetFeeSat(),
+		Status:             t.GetConfirmationStatus(),
+		ConfirmationHeight: t.GetConfirmationHeight(),
+		CreatedAtUnix:      t.GetCreatedAtUnixS(),
+		Description:        t.GetDescription(),
+	}
+}
+
+// paginateVTXOs slices wallet VTXOs by offset and limit, returning a fresh
+// slice so the caller cannot mutate the merger's internal buffer.
+func paginateVTXOs(vtxos []*walletrpc.WalletVTXO, offset,
+	limit uint32) []*walletrpc.WalletVTXO {
+
+	if offset >= uint32(len(vtxos)) {
+		return nil
+	}
+	end := offset + limit
+	if end > uint32(len(vtxos)) {
+		end = uint32(len(vtxos))
+	}
+	page := make([]*walletrpc.WalletVTXO, 0, end-offset)
+	page = append(page, vtxos[offset:end]...)
+
+	return page
 }
 
 // leaveEntryStub builds the initial WalletEntry returned by Send when the

@@ -327,6 +327,8 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	swapClient := swaps.NewSwapClientWithStore(
 		serverConn, arkClient, log, invoiceGen, store,
 	)
+	swapClient.SetChainParams(chainParams)
+
 	// The out-swap event receiver must be wired before any
 	// ReceiveViaLightning starts: SwapClient captures the receiver into the
 	// receive worker at start time, so a late SetOutSwapEventReceiver would

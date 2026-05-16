@@ -1,194 +1,146 @@
 package darepoclicommands
 
 import (
-	"context"
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
 	"github.com/spf13/cobra"
 )
 
-// newSendCmd creates the send parent command with subcommands for
-// in-round and out-of-round transfers.
+// newSendCmd builds the top-level `send` verb. It dispatches an
+// outbound payment via walletrpc.WalletService.Send. Direction is
+// chosen explicitly with --offchain (default) or --onchain: the CLI
+// does NOT sniff the destination string, so an agent cannot
+// accidentally dispatch an onchain send by passing what it thinks is an
+// invoice.
+//
+// The daemon does the authoritative destination parse and returns
+// InvalidArgument on type mismatch.
 func newSendCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "send",
-		Short: "Send operations",
-		Long: "Transfer VTXOs via in-round refresh or " +
-			"out-of-round direct transfer.",
+		Use:   "send <invoice-or-onchain-address>",
+		Short: "Send a payment (offchain Lightning invoice or onchain)",
+		Long: "Dispatches an outbound payment. With --offchain " +
+			"(default) the destination is treated as a BOLT-11 " +
+			"Lightning invoice and routed through the swap " +
+			"subsystem (which transparently picks same-Ark p2p " +
+			"vs real Lightning). With --onchain the destination " +
+			"is a bech32 onchain address and the daemon submits " +
+			"a cooperative-leave (LeaveVTXOs) request.\n\n" +
+			"Onchain v1 has whole-VTXO sweep semantics: the " +
+			"actual outflow (echoed on stderr and in " +
+			"actual_amount_sat) may exceed --amt because " +
+			"selected VTXOs are swept in full. Set --sweep-all " +
+			"with --amt=0 to drain every live VTXO.\n\n" +
+			"Examples:\n" +
+			"  darepocli send lnbcrt... --offchain\n" +
+			"  darepocli send bcrt1... --onchain --amt 1000\n" +
+			"  darepocli send bcrt1... --onchain --sweep-all",
+		Args: cobra.ExactArgs(1),
+		RunE: walletSend,
 	}
 
-	cmd.AddCommand(
-		newSendInRoundCmd(),
-		newSendOORCmd(),
-	)
+	cmd.Flags().Bool("offchain", false,
+		"force offchain (BOLT-11 invoice) dispatch; default when "+
+			"neither --offchain nor --onchain is set")
+	cmd.Flags().Bool("onchain", false,
+		"force onchain (cooperative leave) dispatch")
+	cmd.Flags().Uint64("amt", 0,
+		"amount in satoshis (required for onchain unless "+
+			"--sweep-all; ignored for amount-bearing invoices)")
+	cmd.Flags().Uint64("max_fee", 0,
+		"max fee in satoshis; 0 lets the daemon use defaults")
+	cmd.Flags().String("note", "",
+		"caller-supplied label to attach to the entry")
+	cmd.Flags().Bool("sweep-all", false,
+		"onchain only: drain the wallet to the destination. "+
+			"--amt MUST be 0 when set.")
 
 	return cmd
 }
 
-// newSendInRoundCmd creates the send inround subcommand.
-func newSendInRoundCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "inround",
-		Short: "Send via in-round refresh",
-		Long: "Initiates an in-round transfer by " +
-			"submitting a refresh request to the " +
-			"round coordinator. The transfer " +
-			"completes when the next round commits.",
-		RunE: sendInRound,
+// walletSend implements the top-level `send` verb.
+func walletSend(cmd *cobra.Command, args []string) error {
+	dest := args[0]
+	if err := validateDestination(dest); err != nil {
+		return err
 	}
 
-	cmd.Flags().StringSlice("to", nil,
-		"recipient address(es)")
-
-	cmd.Flags().Int64Slice("amount", nil,
-		"amount(s) in sats (one per --to)")
-
-	cmd.Flags().Bool("dry_run", false,
-		"validate without submitting")
-
-	return cmd
-}
-
-// sendInRound executes the SendVTXO RPC.
-func sendInRound(cmd *cobra.Command, _ []string) error {
-	client, conn, err := getDaemonClient(cmd)
+	offchain, err := resolveOffchainFlag(cmd)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
 
-	req := &daemonrpc.SendVTXORequest{}
-	if err := parseRequest(cmd, req, func() error {
-		addresses, _ := cmd.Flags().GetStringSlice("to")
-		amounts, _ := cmd.Flags().GetInt64Slice("amount")
-		dryRun, _ := cmd.Flags().GetBool("dry_run")
+	amt, _ := cmd.Flags().GetUint64("amt")
+	maxFee, _ := cmd.Flags().GetUint64("max_fee")
+	note, _ := cmd.Flags().GetString("note")
+	sweepAll, _ := cmd.Flags().GetBool("sweep-all")
 
-		if len(addresses) == 0 {
-			return fmt.Errorf("at least one --to is required")
+	if err := validateFreeText("--note", note); err != nil {
+		return err
+	}
+
+	// --sweep-all only makes sense on the onchain path. Reject it
+	// up front on the offchain path so the daemon never sees a
+	// silently-ignored flag and so a typo (forgot --onchain) gets
+	// a clear error rather than a no-op invoice send.
+	if offchain && sweepAll {
+		return fmt.Errorf("--sweep-all is only valid with --onchain " +
+			"(invoice sends drain no VTXO set)")
+	}
+
+	// Onchain-only invariants: --sweep-all <=> amt==0. Enforce up
+	// front so a typo'd zero never lands on the wallet RPC.
+	if !offchain {
+		switch {
+		case sweepAll && amt != 0:
+			return fmt.Errorf("--sweep-all requires --amt=0 (amt " +
+				"is implied by sweeping every live VTXO)")
+
+		case !sweepAll && amt == 0:
+			return fmt.Errorf("--amt is required for onchain " +
+				"sends (use --sweep-all to drain the wallet)")
 		}
+	}
 
-		if len(addresses) != len(amounts) {
-			return fmt.Errorf("number of --to (%d) and --amount "+
-				"(%d) flags must match", len(addresses),
-				len(amounts))
+	req := &walletrpc.SendRequest{
+		AmtSat:    amt,
+		MaxFeeSat: maxFee,
+		Note:      note,
+		SweepAll:  sweepAll,
+	}
+	if offchain {
+		req.Destination = &walletrpc.SendRequest_Invoice{Invoice: dest}
+	} else {
+		req.Destination = &walletrpc.SendRequest_OnchainAddress{
+			OnchainAddress: dest,
 		}
+	}
 
-		// Build the recipient list.
-		recipients := make(
-			[]*daemonrpc.Output, 0, len(addresses),
-		)
-		for i := range addresses {
-			if amounts[i] <= 0 {
-				return fmt.Errorf("amount for recipient %d "+
-					"must be positive", i)
+	return withWalletClient(
+		cmd, func(c walletrpc.WalletServiceClient) error {
+			resp, err := c.Send(cmd.Context(), req)
+			if err != nil {
+				return fmt.Errorf("send: %w", err)
 			}
 
-			recipients = append(
-				recipients, &daemonrpc.Output{
-					Destination: &daemonrpc.Output_Address{
-						Address: addresses[i],
-					},
-					AmountSat: amounts[i],
-				},
-			)
-		}
+			// For onchain sends actual_amount_sat may exceed
+			// --amt under the v1 whole-VTXO sweep semantics.
+			// Surface it on stderr so a human reading the
+			// terminal sees the real outflow while shell
+			// pipelines can still consume the JSON body.
+			actual := resp.GetActualAmountSat()
+			if !offchain && !sweepAll && actual != int64(amt) {
+				fmt.Fprintf(
+					cmd.ErrOrStderr(),
+					"note: actual_amount_sat=%d exceeds "+
+						"--amt=%d due to whole-VTXO "+
+						"sweep semantics\n", actual,
+					amt,
+				)
+			}
 
-		req.Recipients = recipients
-		req.DryRun = dryRun
-
-		return nil
-	}); err != nil {
-		return err
-	}
-
-	resp, err := client.SendVTXO(
-		context.Background(), req,
+			return printWalletProto(resp)
+		},
 	)
-	if err != nil {
-		// Map well-known server-side fee rejections to a
-		// concise CLI message. Fall through to the generic
-		// error wrap if the cause is not a fee rejection.
-		if feeErr := mapFeeError(err); feeErr != nil {
-			return feeErr
-		}
-
-		return fmt.Errorf("SendVTXO RPC failed: %w", err)
-	}
-
-	return printJSON(resp)
-}
-
-// newSendOORCmd creates the send oor subcommand.
-func newSendOORCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "oor",
-		Short: "Send via out-of-round transfer",
-		Long: "Initiates an out-of-round transfer " +
-			"directly between the client and " +
-			"operator, without waiting for a round.",
-		RunE: sendOOR,
-	}
-
-	cmd.Flags().String("to", "",
-		"recipient address")
-
-	cmd.Flags().String("pubkey", "",
-		"recipient 32-byte x-only pubkey hex")
-
-	cmd.Flags().Int64("amount", 0,
-		"amount in sats")
-
-	cmd.Flags().Bool("dry_run", false,
-		"validate without initiating")
-	cmd.Flags().String("idempotency_key", "",
-		"caller-provided key for retrying the same OOR send intent")
-
-	cmd.MarkFlagsMutuallyExclusive(
-		"to", "pubkey",
-	)
-
-	return cmd
-}
-
-// sendOOR executes the SendOOR RPC.
-func sendOOR(cmd *cobra.Command, _ []string) error {
-	client, conn, err := getDaemonClient(cmd)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
-	req := &daemonrpc.SendOORRequest{}
-	if err := parseRequest(cmd, req, func() error {
-		address, _ := cmd.Flags().GetString("to")
-		pubKeyHex, _ := cmd.Flags().GetString("pubkey")
-		amount, _ := cmd.Flags().GetInt64("amount")
-		dryRun, _ := cmd.Flags().GetBool("dry_run")
-		idempotencyKey, _ := cmd.Flags().GetString("idempotency_key")
-
-		recipient, err := buildOORRecipientOutput(
-			address, pubKeyHex, amount,
-		)
-		if err != nil {
-			return err
-		}
-
-		req.Recipient = recipient
-		req.DryRun = dryRun
-		req.IdempotencyKey = idempotencyKey
-
-		return nil
-	}); err != nil {
-		return err
-	}
-
-	resp, err := client.SendOOR(
-		context.Background(), req,
-	)
-	if err != nil {
-		return fmt.Errorf("SendOOR RPC failed: %w", err)
-	}
-
-	return printJSON(resp)
 }

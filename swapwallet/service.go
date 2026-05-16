@@ -40,6 +40,23 @@ func newService(deps *Deps, runtime *Runtime) *Service {
 	}
 }
 
+// Create initializes a new wallet from a freshly generated aezeed
+// mnemonic. The handler is admin-shape — it runs BEFORE the swap runtime
+// is live — so it does not depend on Runtime, router, recv, or history.
+func (s *Service) Create(ctx context.Context, req *walletrpc.CreateRequest) (
+	*walletrpc.CreateResponse, error) {
+
+	return s.create(ctx, req)
+}
+
+// Unlock decrypts the on-disk wallet seed and starts the wallet
+// subsystem. Admin-shape handler; does not depend on Runtime.
+func (s *Service) Unlock(ctx context.Context, req *walletrpc.UnlockRequest) (
+	*walletrpc.UnlockResponse, error) {
+
+	return s.unlock(ctx, req)
+}
+
 // Send dispatches an outbound payment. Invoice destinations route through
 // the daemon-owned swap subserver (which transparently picks same-Ark p2p
 // vHTLC vs real Lightning per PR #339); onchain destinations route through
@@ -48,6 +65,24 @@ func (s *Service) Send(ctx context.Context, req *walletrpc.SendRequest) (
 	*walletrpc.SendResponse, error) {
 
 	return s.router.Send(ctx, req)
+}
+
+// Exit triggers a unilateral exit (unroll) for the specified VTXO
+// outpoint by proxying daemonrpc.Unroll. The wallet layer does not track
+// the exit job locally.
+func (s *Service) Exit(ctx context.Context, req *walletrpc.ExitRequest) (
+	*walletrpc.ExitResponse, error) {
+
+	return s.exit(ctx, req)
+}
+
+// ExitStatus reports the current phase of an exit (unroll) job for the
+// specified VTXO outpoint by proxying daemonrpc.GetUnrollStatus.
+func (s *Service) ExitStatus(ctx context.Context,
+	req *walletrpc.ExitStatusRequest) (*walletrpc.ExitStatusResponse,
+	error) {
+
+	return s.exitStatus(ctx, req)
 }
 
 // Recv opens a swap-in via the daemon-owned swap subserver and returns the
@@ -192,6 +227,7 @@ func (s *Service) SubscribeWallet(req *walletrpc.SubscribeWalletRequest,
 		// would let the subscriber observe live updates that
 		// reference rows it never saw.
 		snapshot, err := s.history.List(ctx, &walletrpc.ListRequest{
+			View:  walletrpc.ListView_LIST_VIEW_ACTIVITY,
 			Kinds: req.GetKinds(),
 			Limit: s.deps.resolveMaxListLimit(),
 		})
@@ -199,14 +235,17 @@ func (s *Service) SubscribeWallet(req *walletrpc.SubscribeWalletRequest,
 			return fmt.Errorf("snapshot: %w", err)
 		}
 
-		for _, e := range snapshot.GetEntries() {
+		for _, e := range snapshot.GetActivity().GetEntries() {
 			if err := stream.Send(e); err != nil {
 				return err
 			}
 		}
 	}
 
-	kindFilter := buildKindFilter(req.GetKinds())
+	kindFilter, err := buildKindFilter(req.GetKinds())
+	if err != nil {
+		return err
+	}
 
 	for {
 		select {
@@ -258,6 +297,7 @@ func (s *Service) fetchBalance(ctx context.Context) (*walletrpc.BalanceResponse,
 // returns the size as the wallet-level pending count.
 func (s *Service) countPendingEntries(ctx context.Context) (uint32, error) {
 	resp, err := s.history.List(ctx, &walletrpc.ListRequest{
+		View:        walletrpc.ListView_LIST_VIEW_ACTIVITY,
 		PendingOnly: true,
 		Limit:       s.deps.resolveMaxListLimit(),
 	})
@@ -265,5 +305,5 @@ func (s *Service) countPendingEntries(ctx context.Context) (uint32, error) {
 		return 0, fmt.Errorf("count pending: %w", err)
 	}
 
-	return resp.GetTotal(), nil
+	return resp.GetActivity().GetTotal(), nil
 }

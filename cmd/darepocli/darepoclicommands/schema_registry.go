@@ -39,39 +39,33 @@ type schemaMethod struct {
 	// DryRun indicates whether the command supports --dry_run.
 	DryRun bool `json:"dry_run,omitempty"`
 
-	// JSONInput indicates the command accepts --json for raw
-	// proto payloads.
+	// JSONInput indicates the command accepts --json for raw proto
+	// payloads.
 	JSONInput bool `json:"json_input"`
 }
 
 // methodRegistry returns the full schema for all darepocli commands.
-// This is the single source of truth for both the schema command and
-// MCP tool definitions. The body is split across helper functions to
-// stay under the funlen linter cap.
+// The body is split across helper functions to stay under the funlen
+// linter cap. The top-level wallet verbs (create, unlock, send, recv,
+// list, balance, exit) are the day-to-day surface; advanced commands
+// live under the `ark.*` and `swap.*` namespaces.
 func methodRegistry() []schemaMethod {
-	out := baseMethodRegistry()
-	out = append(out, vtxoLifecycleMethodRegistry()...)
-	out = append(out, sendMethodRegistry()...)
+	out := walletAdminMethodRegistry()
+	out = append(out, walletPaymentMethodRegistry()...)
+	out = append(out, walletQueryMethodRegistry()...)
+	out = append(out, arkBaseMethodRegistry()...)
+	out = append(out, arkVTXOMethodRegistry()...)
+	out = append(out, arkSendMethodRegistry()...)
 
 	return out
 }
 
-// baseMethodRegistry returns the schema entries for the base
-// daemon-level commands (info / wallet / boarding / list-* / fees /
-// unroll). Split out of methodRegistry to keep the function under the
-// funlen cap.
-func baseMethodRegistry() []schemaMethod {
+// walletAdminMethodRegistry returns the admin-shape wallet verbs
+// (create, unlock) plus daemon introspection (getinfo).
+func walletAdminMethodRegistry() []schemaMethod {
 	return []schemaMethod{
 		{
-			Method:       "getinfo",
-			Description:  "Display daemon status information",
-			Params:       nil,
-			RequestType:  "GetInfoRequest",
-			ResponseType: "GetInfoResponse",
-			JSONInput:    true,
-		},
-		{
-			Method:      "wallet.create",
+			Method:      "create",
 			Description: "Create a new wallet from a fresh seed",
 			Params: []schemaParam{
 				{
@@ -87,12 +81,12 @@ func baseMethodRegistry() []schemaMethod {
 						"passphrase",
 				},
 			},
-			RequestType:  "InitWalletRequest",
-			ResponseType: "InitWalletResponse",
+			RequestType:  "CreateRequest",
+			ResponseType: "CreateResponse",
 			JSONInput:    true,
 		},
 		{
-			Method:      "wallet.unlock",
+			Method:      "unlock",
 			Description: "Unlock an existing wallet",
 			Params: []schemaParam{
 				{
@@ -102,29 +96,207 @@ func baseMethodRegistry() []schemaMethod {
 						"containing wallet password",
 				},
 			},
-			RequestType:  "UnlockWalletRequest",
-			ResponseType: "UnlockWalletResponse",
+			RequestType:  "UnlockRequest",
+			ResponseType: "UnlockResponse",
 			JSONInput:    true,
 		},
 		{
-			Method:       "wallet.balance",
+			Method:       "getinfo",
+			Description:  "Display daemon status information",
+			Params:       nil,
+			RequestType:  "GetInfoRequest",
+			ResponseType: "GetInfoResponse",
+			JSONInput:    true,
+		},
+	}
+}
+
+// walletPaymentMethodRegistry returns the payment-shape wallet verbs
+// (send, recv).
+func walletPaymentMethodRegistry() []schemaMethod {
+	return []schemaMethod{
+		{
+			Method:      "send",
+			Description: "Send a payment (offchain or onchain)",
+			Params: []schemaParam{
+				{
+					Name: "offchain",
+					Type: "bool",
+					Description: "force offchain " +
+						"(BOLT-11 invoice) " +
+						"dispatch (default)",
+				},
+				{
+					Name: "onchain",
+					Type: "bool",
+					Description: "force onchain " +
+						"(cooperative leave) dispatch",
+				},
+				{
+					Name: "amt",
+					Type: "uint64",
+					Description: "amount in satoshis " +
+						"(required for onchain " +
+						"unless --sweep-all)",
+				},
+				{
+					Name: "max_fee",
+					Type: "uint64",
+					Description: "max fee in satoshis; " +
+						"zero uses daemon defaults",
+				},
+				{
+					Name:        "note",
+					Type:        "string",
+					Description: "caller-supplied label",
+				},
+				{
+					Name: "sweep-all",
+					Type: "bool",
+					Description: "onchain only: drain " +
+						"every live VTXO",
+				},
+			},
+			RequestType:  "SendRequest",
+			ResponseType: "SendResponse",
+			JSONInput:    true,
+		},
+		{
+			Method:      "recv",
+			Description: "Receive a payment (offchain or onchain)",
+			Params: []schemaParam{
+				{
+					Name: "offchain",
+					Type: "bool",
+					Description: "force offchain " +
+						"(invoice) recv (default)",
+				},
+				{
+					Name: "onchain",
+					Type: "bool",
+					Description: "force onchain " +
+						"(boarding address) recv",
+				},
+				{
+					Name: "amt",
+					Type: "uint64",
+					Description: "amount in satoshis " +
+						"(required for --offchain)",
+				},
+				{
+					Name:        "memo",
+					Type:        "string",
+					Description: "optional invoice memo",
+				},
+				{
+					Name: "amt_hint",
+					Type: "uint64",
+					Description: "optional expected " +
+						"deposit amount (--onchain)",
+				},
+			},
+			RequestType:  "RecvRequest",
+			ResponseType: "RecvResponse",
+			JSONInput:    true,
+		},
+	}
+}
+
+// walletQueryMethodRegistry returns the wallet query verbs (list,
+// balance, exit, exit.status).
+func walletQueryMethodRegistry() []schemaMethod {
+	return []schemaMethod{
+		{
+			Method:      "list",
+			Description: "List wallet activity, VTXOs, or onchain",
+			Params: []schemaParam{
+				{
+					Name:        "view",
+					Type:        "enum",
+					Description: "which slice of state",
+					Values: []string{
+						"activity", "vtxos", "onchain",
+					},
+				},
+				{
+					Name: "pending",
+					Type: "bool",
+					Description: "only in-flight " +
+						"(activity view)",
+				},
+				{
+					Name: "kind",
+					Type: "string[]",
+					Description: "kind filter " +
+						"(activity view)",
+				},
+				{
+					Name: "limit",
+					Type: "uint32",
+					Description: "page size; 0 uses " +
+						"daemon default",
+				},
+				{
+					Name:        "offset",
+					Type:        "uint32",
+					Description: "pagination offset",
+				},
+			},
+			RequestType:  "ListRequest",
+			ResponseType: "ListResponse",
+			JSONInput:    true,
+		},
+		{
+			Method:       "balance",
 			Description:  "Display wallet balance",
 			Params:       nil,
-			RequestType:  "GetBalanceRequest",
-			ResponseType: "GetBalanceResponse",
+			RequestType:  "BalanceRequest",
+			ResponseType: "BalanceResponse",
 			JSONInput:    true,
 		},
 		{
-			Method:       "wallet.newaddress",
-			Description:  "Generate a new boarding address",
-			Params:       nil,
-			RequestType:  "NewAddressRequest",
-			ResponseType: "NewAddressResponse",
+			Method:      "exit",
+			Description: "Trigger a unilateral exit for a VTXO",
+			Params: []schemaParam{
+				{
+					Name:     "outpoint",
+					Type:     "string",
+					Required: true,
+					Description: "VTXO outpoint " +
+						"(txid:vout)",
+				},
+			},
+			RequestType:  "ExitRequest",
+			ResponseType: "ExitResponse",
 			JSONInput:    true,
 		},
 		{
-			Method:      "sweep",
-			Description: "Sweep expired boarding UTXOs",
+			Method:      "exit.status",
+			Description: "Query the status of an exit job",
+			Params: []schemaParam{
+				{
+					Name:     "outpoint",
+					Type:     "string",
+					Required: true,
+					Description: "VTXO outpoint " +
+						"(txid:vout)",
+				},
+			},
+			RequestType:  "ExitStatusRequest",
+			ResponseType: "ExitStatusResponse",
+			JSONInput:    true,
+		},
+	}
+}
+
+// arkBaseMethodRegistry returns the schema for the `ark.*` advanced
+// subtree's non-VTXO, non-send entries: sweep, listtransactions, oor
+// receive, board, fees.
+func arkBaseMethodRegistry() []schemaMethod {
+	return []schemaMethod{
+		{
+			Method:      "ark.sweep",
+			Description: "Sweep expired boarding UTXOs (advanced)",
 			Params: []schemaParam{
 				{
 					Name: "outpoint",
@@ -163,8 +335,8 @@ func baseMethodRegistry() []schemaMethod {
 			JSONInput:    true,
 		},
 		{
-			Method:      "sweep.list",
-			Description: "List tracked boarding sweeps",
+			Method:      "ark.sweep.list",
+			Description: "List tracked boarding sweeps (advanced)",
 			Params: []schemaParam{
 				{
 					Name: "status",
@@ -192,8 +364,8 @@ func baseMethodRegistry() []schemaMethod {
 			JSONInput:    true,
 		},
 		{
-			Method:      "listtransactions",
-			Description: "List local transaction history",
+			Method:      "ark.listtransactions",
+			Description: "Raw paginated transaction history",
 			Params: []schemaParam{
 				{
 					Name: "from",
@@ -236,8 +408,8 @@ func baseMethodRegistry() []schemaMethod {
 			JSONInput:    true,
 		},
 		{
-			Method:      "oor.receive",
-			Description: "Allocate a fresh receive script",
+			Method:      "ark.oor.receive",
+			Description: "Allocate a receive script (advanced)",
 			Params: []schemaParam{
 				{
 					Name: "label",
@@ -253,13 +425,14 @@ func baseMethodRegistry() []schemaMethod {
 	}
 }
 
-// vtxoLifecycleMethodRegistry returns the VTXO lifecycle commands
-// (list / refresh / leave). Split out of methodRegistry so the parent
-// stays under the funlen cap as new entries land.
-func vtxoLifecycleMethodRegistry() []schemaMethod {
+// arkVTXOMethodRegistry returns the VTXO lifecycle commands (list /
+// refresh / leave) under the `ark.*` namespace. Split out of
+// methodRegistry so the parent stays under the funlen cap as new
+// entries land.
+func arkVTXOMethodRegistry() []schemaMethod {
 	return []schemaMethod{
 		{
-			Method:      "vtxos.list",
+			Method:      "ark.vtxos.list",
 			Description: "List VTXOs with optional filters",
 			Params: []schemaParam{
 				{
@@ -299,7 +472,7 @@ func vtxoLifecycleMethodRegistry() []schemaMethod {
 			JSONInput:    true,
 		},
 		{
-			Method:      "vtxos.refresh",
+			Method:      "ark.vtxos.refresh",
 			Description: "Queue VTXOs for refresh in next round",
 			Params: []schemaParam{
 				{
@@ -320,7 +493,7 @@ func vtxoLifecycleMethodRegistry() []schemaMethod {
 			JSONInput:    true,
 		},
 		{
-			Method: "vtxos.leave",
+			Method: "ark.vtxos.leave",
 			Description: "Queue VTXOs for cooperative leave " +
 				"(offboard)",
 			Params: []schemaParam{
@@ -369,14 +542,13 @@ func vtxoLifecycleMethodRegistry() []schemaMethod {
 	}
 }
 
-// sendMethodRegistry returns the send.* schema entries (in-round and
-// OOR). Split out of methodRegistry so the parent stays under the
-// funlen cap as new entries land.
-func sendMethodRegistry() []schemaMethod {
+// arkSendMethodRegistry returns the `ark.send.*` schema entries
+// (in-round and OOR raw daemonrpc paths).
+func arkSendMethodRegistry() []schemaMethod {
 	return []schemaMethod{
 		{
-			Method:      "send.inround",
-			Description: "Send via in-round refresh",
+			Method:      "ark.send.inround",
+			Description: "Send via in-round refresh (advanced)",
 			Params: []schemaParam{
 				{
 					Name:        "to",
@@ -398,8 +570,8 @@ func sendMethodRegistry() []schemaMethod {
 			JSONInput:    true,
 		},
 		{
-			Method:      "send.oor",
-			Description: "Send via out-of-round transfer",
+			Method:      "ark.send.oor",
+			Description: "Send via out-of-round transfer (adv.)",
 			Params: []schemaParam{
 				{
 					Name: "to",

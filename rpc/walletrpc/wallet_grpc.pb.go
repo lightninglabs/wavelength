@@ -19,12 +19,16 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	WalletService_Create_FullMethodName          = "/walletrpc.WalletService/Create"
+	WalletService_Unlock_FullMethodName          = "/walletrpc.WalletService/Unlock"
 	WalletService_Send_FullMethodName            = "/walletrpc.WalletService/Send"
 	WalletService_Recv_FullMethodName            = "/walletrpc.WalletService/Recv"
 	WalletService_List_FullMethodName            = "/walletrpc.WalletService/List"
 	WalletService_Deposit_FullMethodName         = "/walletrpc.WalletService/Deposit"
 	WalletService_Balance_FullMethodName         = "/walletrpc.WalletService/Balance"
 	WalletService_Status_FullMethodName          = "/walletrpc.WalletService/Status"
+	WalletService_Exit_FullMethodName            = "/walletrpc.WalletService/Exit"
+	WalletService_ExitStatus_FullMethodName      = "/walletrpc.WalletService/ExitStatus"
 	WalletService_SubscribeWallet_FullMethodName = "/walletrpc.WalletService/SubscribeWallet"
 )
 
@@ -34,38 +38,66 @@ const (
 //
 // WalletService exposes a simplified, swap-vocabulary-free wallet API on top
 // of the running daemon. It composes the underlying swap subsystem, ark VTXO
-// operations, boarding deposits, and cooperative leave (VTXO-to-onchain)
-// behind one small surface: Send, Recv, List, Deposit, Balance, Status. The
-// service is registered only when the daemon is built with the walletrpc
-// build tag (which also requires swapruntime).
+// operations, boarding deposits, cooperative leave (VTXO-to-onchain), and
+// unilateral exit behind one small surface: the seven core verbs that map
+// 1:1 to what a user actually does day-to-day — create, unlock, send, recv,
+// list, balance, exit — plus a few additional methods (Deposit, Status,
+// SubscribeWallet) used internally and by recv --onchain. The service is
+// registered only when the daemon is built with the walletrpc build tag
+// (which also requires swapruntime).
 type WalletServiceClient interface {
+	// Create initializes a new wallet from a freshly generated aezeed
+	// mnemonic. The daemon generates the seed, encrypts it with the
+	// supplied password, and returns the mnemonic so the caller can record
+	// it. For recovery flows the caller MAY supply an existing mnemonic in
+	// the request; in that case the same mnemonic is echoed back. Proxies
+	// daemonrpc.GenSeed + daemonrpc.InitWallet server-side.
+	Create(ctx context.Context, in *CreateRequest, opts ...grpc.CallOption) (*CreateResponse, error)
+	// Unlock decrypts the on-disk wallet seed using the supplied password
+	// and starts the wallet subsystem. Proxies daemonrpc.UnlockWallet.
+	Unlock(ctx context.Context, in *UnlockRequest, opts ...grpc.CallOption) (*UnlockResponse, error)
 	// Send dispatches an outbound payment. The destination oneof selects
-	// between paying a BOLT-11 Lightning invoice (routed via an out-swap; the
-	// swap server transparently picks same-Ark p2p or real Lightning) and
-	// sending to an onchain address (routed via LeaveVTXOs cooperative
+	// between paying a BOLT-11 Lightning invoice (routed via an out-swap;
+	// the swap server transparently picks same-Ark p2p or real Lightning)
+	// and sending to an onchain address (routed via LeaveVTXOs cooperative
 	// exit). The daemon owns all downstream lifecycle.
 	Send(ctx context.Context, in *SendRequest, opts ...grpc.CallOption) (*SendResponse, error)
-	// Recv asks the daemon for a Lightning invoice the caller can hand out.
-	// Internally this opens a swap-in via the daemon-owned swap subsystem;
-	// the invoice is signed with a daemon-managed key, not an ephemeral
-	// process-local key.
+	// Recv asks the daemon for a Lightning invoice the caller can hand
+	// out. Internally this opens a swap-in via the daemon-owned swap
+	// subsystem; the invoice is signed with a daemon-managed key, not an
+	// ephemeral process-local key.
 	Recv(ctx context.Context, in *RecvRequest, opts ...grpc.CallOption) (*RecvResponse, error)
-	// List returns the unified wallet history merged from swap, OOR,
-	// boarding, and leave sources. All rows are normalized to the flat
-	// WalletEntry shape; internal correlators are intentionally hidden.
+	// List returns the unified wallet view selected by ListRequest.view:
+	// ACTIVITY (default) is the merged WalletEntry stream; VTXOS is the
+	// live VTXO inventory; ONCHAIN is the boarding-plus-sweep on-chain
+	// history. The body oneof on ListResponse discriminates the typed
+	// result so agents see a tagged union, not a polymorphic blob.
 	List(ctx context.Context, in *ListRequest, opts ...grpc.CallOption) (*ListResponse, error)
 	// Deposit returns a boarding onchain address the caller can fund. The
 	// daemon rolls the boarding output into a VTXO during the next round.
+	// Surfaced internally and via `recv --onchain`; not a top-level CLI
+	// verb.
 	Deposit(ctx context.Context, in *DepositRequest, opts ...grpc.CallOption) (*DepositResponse, error)
 	// Balance returns the unified balance across confirmed VTXOs and
 	// in-flight inbound and outbound amounts.
 	Balance(ctx context.Context, in *BalanceRequest, opts ...grpc.CallOption) (*BalanceResponse, error)
 	// Status returns a wallet-level readiness summary: daemon readiness,
-	// wallet-unlocked state, balance summary, pending-entry count.
+	// wallet-unlocked state, balance summary, pending-entry count. Kept in
+	// the proto for programmatic callers; not surfaced as a CLI verb (the
+	// `getinfo` CLI verb covers the human-facing readiness view).
 	Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*StatusResponse, error)
-	// SubscribeWallet streams normalized WalletEntry updates as they happen.
-	// When include_existing is set, the daemon emits the current snapshot
-	// before live updates.
+	// Exit triggers a unilateral exit (unroll) for the specified VTXO
+	// outpoint. The daemon assembles the recovery proof, spawns a durable
+	// unroll job, and drives the on-chain recovery process to completion.
+	// Proxies daemonrpc.Unroll.
+	Exit(ctx context.Context, in *ExitRequest, opts ...grpc.CallOption) (*ExitResponse, error)
+	// ExitStatus reports the current phase of an unroll job for the
+	// specified VTXO outpoint, including recovery chain progress and
+	// sweep state. Proxies daemonrpc.GetUnrollStatus.
+	ExitStatus(ctx context.Context, in *ExitStatusRequest, opts ...grpc.CallOption) (*ExitStatusResponse, error)
+	// SubscribeWallet streams normalized WalletEntry updates as they
+	// happen. When include_existing is set, the daemon emits the current
+	// snapshot before live updates.
 	SubscribeWallet(ctx context.Context, in *SubscribeWalletRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WalletEntry], error)
 }
 
@@ -75,6 +107,26 @@ type walletServiceClient struct {
 
 func NewWalletServiceClient(cc grpc.ClientConnInterface) WalletServiceClient {
 	return &walletServiceClient{cc}
+}
+
+func (c *walletServiceClient) Create(ctx context.Context, in *CreateRequest, opts ...grpc.CallOption) (*CreateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateResponse)
+	err := c.cc.Invoke(ctx, WalletService_Create_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletServiceClient) Unlock(ctx context.Context, in *UnlockRequest, opts ...grpc.CallOption) (*UnlockResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnlockResponse)
+	err := c.cc.Invoke(ctx, WalletService_Unlock_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *walletServiceClient) Send(ctx context.Context, in *SendRequest, opts ...grpc.CallOption) (*SendResponse, error) {
@@ -137,6 +189,26 @@ func (c *walletServiceClient) Status(ctx context.Context, in *StatusRequest, opt
 	return out, nil
 }
 
+func (c *walletServiceClient) Exit(ctx context.Context, in *ExitRequest, opts ...grpc.CallOption) (*ExitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExitResponse)
+	err := c.cc.Invoke(ctx, WalletService_Exit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletServiceClient) ExitStatus(ctx context.Context, in *ExitStatusRequest, opts ...grpc.CallOption) (*ExitStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExitStatusResponse)
+	err := c.cc.Invoke(ctx, WalletService_ExitStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *walletServiceClient) SubscribeWallet(ctx context.Context, in *SubscribeWalletRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WalletEntry], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &WalletService_ServiceDesc.Streams[0], WalletService_SubscribeWallet_FullMethodName, cOpts...)
@@ -162,38 +234,66 @@ type WalletService_SubscribeWalletClient = grpc.ServerStreamingClient[WalletEntr
 //
 // WalletService exposes a simplified, swap-vocabulary-free wallet API on top
 // of the running daemon. It composes the underlying swap subsystem, ark VTXO
-// operations, boarding deposits, and cooperative leave (VTXO-to-onchain)
-// behind one small surface: Send, Recv, List, Deposit, Balance, Status. The
-// service is registered only when the daemon is built with the walletrpc
-// build tag (which also requires swapruntime).
+// operations, boarding deposits, cooperative leave (VTXO-to-onchain), and
+// unilateral exit behind one small surface: the seven core verbs that map
+// 1:1 to what a user actually does day-to-day — create, unlock, send, recv,
+// list, balance, exit — plus a few additional methods (Deposit, Status,
+// SubscribeWallet) used internally and by recv --onchain. The service is
+// registered only when the daemon is built with the walletrpc build tag
+// (which also requires swapruntime).
 type WalletServiceServer interface {
+	// Create initializes a new wallet from a freshly generated aezeed
+	// mnemonic. The daemon generates the seed, encrypts it with the
+	// supplied password, and returns the mnemonic so the caller can record
+	// it. For recovery flows the caller MAY supply an existing mnemonic in
+	// the request; in that case the same mnemonic is echoed back. Proxies
+	// daemonrpc.GenSeed + daemonrpc.InitWallet server-side.
+	Create(context.Context, *CreateRequest) (*CreateResponse, error)
+	// Unlock decrypts the on-disk wallet seed using the supplied password
+	// and starts the wallet subsystem. Proxies daemonrpc.UnlockWallet.
+	Unlock(context.Context, *UnlockRequest) (*UnlockResponse, error)
 	// Send dispatches an outbound payment. The destination oneof selects
-	// between paying a BOLT-11 Lightning invoice (routed via an out-swap; the
-	// swap server transparently picks same-Ark p2p or real Lightning) and
-	// sending to an onchain address (routed via LeaveVTXOs cooperative
+	// between paying a BOLT-11 Lightning invoice (routed via an out-swap;
+	// the swap server transparently picks same-Ark p2p or real Lightning)
+	// and sending to an onchain address (routed via LeaveVTXOs cooperative
 	// exit). The daemon owns all downstream lifecycle.
 	Send(context.Context, *SendRequest) (*SendResponse, error)
-	// Recv asks the daemon for a Lightning invoice the caller can hand out.
-	// Internally this opens a swap-in via the daemon-owned swap subsystem;
-	// the invoice is signed with a daemon-managed key, not an ephemeral
-	// process-local key.
+	// Recv asks the daemon for a Lightning invoice the caller can hand
+	// out. Internally this opens a swap-in via the daemon-owned swap
+	// subsystem; the invoice is signed with a daemon-managed key, not an
+	// ephemeral process-local key.
 	Recv(context.Context, *RecvRequest) (*RecvResponse, error)
-	// List returns the unified wallet history merged from swap, OOR,
-	// boarding, and leave sources. All rows are normalized to the flat
-	// WalletEntry shape; internal correlators are intentionally hidden.
+	// List returns the unified wallet view selected by ListRequest.view:
+	// ACTIVITY (default) is the merged WalletEntry stream; VTXOS is the
+	// live VTXO inventory; ONCHAIN is the boarding-plus-sweep on-chain
+	// history. The body oneof on ListResponse discriminates the typed
+	// result so agents see a tagged union, not a polymorphic blob.
 	List(context.Context, *ListRequest) (*ListResponse, error)
 	// Deposit returns a boarding onchain address the caller can fund. The
 	// daemon rolls the boarding output into a VTXO during the next round.
+	// Surfaced internally and via `recv --onchain`; not a top-level CLI
+	// verb.
 	Deposit(context.Context, *DepositRequest) (*DepositResponse, error)
 	// Balance returns the unified balance across confirmed VTXOs and
 	// in-flight inbound and outbound amounts.
 	Balance(context.Context, *BalanceRequest) (*BalanceResponse, error)
 	// Status returns a wallet-level readiness summary: daemon readiness,
-	// wallet-unlocked state, balance summary, pending-entry count.
+	// wallet-unlocked state, balance summary, pending-entry count. Kept in
+	// the proto for programmatic callers; not surfaced as a CLI verb (the
+	// `getinfo` CLI verb covers the human-facing readiness view).
 	Status(context.Context, *StatusRequest) (*StatusResponse, error)
-	// SubscribeWallet streams normalized WalletEntry updates as they happen.
-	// When include_existing is set, the daemon emits the current snapshot
-	// before live updates.
+	// Exit triggers a unilateral exit (unroll) for the specified VTXO
+	// outpoint. The daemon assembles the recovery proof, spawns a durable
+	// unroll job, and drives the on-chain recovery process to completion.
+	// Proxies daemonrpc.Unroll.
+	Exit(context.Context, *ExitRequest) (*ExitResponse, error)
+	// ExitStatus reports the current phase of an unroll job for the
+	// specified VTXO outpoint, including recovery chain progress and
+	// sweep state. Proxies daemonrpc.GetUnrollStatus.
+	ExitStatus(context.Context, *ExitStatusRequest) (*ExitStatusResponse, error)
+	// SubscribeWallet streams normalized WalletEntry updates as they
+	// happen. When include_existing is set, the daemon emits the current
+	// snapshot before live updates.
 	SubscribeWallet(*SubscribeWalletRequest, grpc.ServerStreamingServer[WalletEntry]) error
 	mustEmbedUnimplementedWalletServiceServer()
 }
@@ -205,6 +305,12 @@ type WalletServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedWalletServiceServer struct{}
 
+func (UnimplementedWalletServiceServer) Create(context.Context, *CreateRequest) (*CreateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Create not implemented")
+}
+func (UnimplementedWalletServiceServer) Unlock(context.Context, *UnlockRequest) (*UnlockResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Unlock not implemented")
+}
 func (UnimplementedWalletServiceServer) Send(context.Context, *SendRequest) (*SendResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Send not implemented")
 }
@@ -222,6 +328,12 @@ func (UnimplementedWalletServiceServer) Balance(context.Context, *BalanceRequest
 }
 func (UnimplementedWalletServiceServer) Status(context.Context, *StatusRequest) (*StatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Status not implemented")
+}
+func (UnimplementedWalletServiceServer) Exit(context.Context, *ExitRequest) (*ExitResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Exit not implemented")
+}
+func (UnimplementedWalletServiceServer) ExitStatus(context.Context, *ExitStatusRequest) (*ExitStatusResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExitStatus not implemented")
 }
 func (UnimplementedWalletServiceServer) SubscribeWallet(*SubscribeWalletRequest, grpc.ServerStreamingServer[WalletEntry]) error {
 	return status.Errorf(codes.Unimplemented, "method SubscribeWallet not implemented")
@@ -245,6 +357,42 @@ func RegisterWalletServiceServer(s grpc.ServiceRegistrar, srv WalletServiceServe
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&WalletService_ServiceDesc, srv)
+}
+
+func _WalletService_Create_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).Create(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_Create_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).Create(ctx, req.(*CreateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletService_Unlock_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnlockRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).Unlock(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_Unlock_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).Unlock(ctx, req.(*UnlockRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _WalletService_Send_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -355,6 +503,42 @@ func _WalletService_Status_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WalletService_Exit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).Exit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_Exit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).Exit(ctx, req.(*ExitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletService_ExitStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExitStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).ExitStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_ExitStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).ExitStatus(ctx, req.(*ExitStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WalletService_SubscribeWallet_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(SubscribeWalletRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -373,6 +557,14 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "walletrpc.WalletService",
 	HandlerType: (*WalletServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Create",
+			Handler:    _WalletService_Create_Handler,
+		},
+		{
+			MethodName: "Unlock",
+			Handler:    _WalletService_Unlock_Handler,
+		},
 		{
 			MethodName: "Send",
 			Handler:    _WalletService_Send_Handler,
@@ -396,6 +588,14 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Status",
 			Handler:    _WalletService_Status_Handler,
+		},
+		{
+			MethodName: "Exit",
+			Handler:    _WalletService_Exit_Handler,
+		},
+		{
+			MethodName: "ExitStatus",
+			Handler:    _WalletService_ExitStatus_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -112,13 +112,16 @@ func registerMCPTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 		return r, nil, err
 	})
 
-	// wallet_balance — no parameters.
-	type walletBalanceArgs struct{}
+	// balance — no parameters. Mirrors the top-level `balance` CLI
+	// verb. Uses the daemonrpc.GetBalance shape (richer than the
+	// flat walletrpc.Balance) so MCP consumers see boarding /
+	// VTXO / total breakdown without needing the walletrpc tag.
+	type balanceArgs struct{}
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "wallet_balance",
+		Name:        "balance",
 		Description: "Display wallet balance (boarding + VTXO + total)",
-	}, func(ctx context.Context, req *mcp.CallToolRequest,
-		_ walletBalanceArgs) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, req *mcp.CallToolRequest, _ balanceArgs) (
+		*mcp.CallToolResult, any, error) {
 
 		resp, err := client.GetBalance(
 			ctx, &daemonrpc.GetBalanceRequest{},
@@ -132,13 +135,16 @@ func registerMCPTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 		return r, nil, err
 	})
 
-	// wallet_newaddress — no parameters.
-	type walletNewAddressArgs struct{}
+	// ark.oor.newaddress — fresh boarding address. Lives under
+	// `ark.*` because the top-level `recv --onchain` verb is now
+	// the everyday surface; this MCP tool stays for power-user /
+	// scripted access to the raw daemonrpc.NewAddress path.
+	type arkOORNewAddressArgs struct{}
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "wallet_newaddress",
-		Description: "Generate a new boarding address",
+		Name:        "ark.oor.newaddress",
+		Description: "Generate a new boarding address (advanced)",
 	}, func(ctx context.Context, req *mcp.CallToolRequest,
-		_ walletNewAddressArgs) (*mcp.CallToolResult, any, error) {
+		_ arkOORNewAddressArgs) (*mcp.CallToolResult, any, error) {
 
 		resp, err := client.NewAddress(
 			ctx, &daemonrpc.NewAddressRequest{},
@@ -152,19 +158,19 @@ func registerMCPTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 		return r, nil, err
 	})
 
-	// NOTE: wallet_create, wallet_unlock, and wallet_genseed are
-	// intentionally omitted from MCP. These operations handle
-	// sensitive material (passwords, seed phrases) that should
-	// never transit the MCP protocol where they could leak into
-	// agent logs or provider APIs. Use the CLI directly for wallet
-	// setup. See #164 and #165 for secure agent wallet init plans.
+	// NOTE: create, unlock, and genseed are intentionally omitted
+	// from MCP. These operations handle sensitive material
+	// (passwords, seed phrases) that should never transit the MCP
+	// protocol where they could leak into agent logs or provider
+	// APIs. Use the CLI directly for wallet setup. See #164 and
+	// #165 for secure agent wallet init plans.
 
 	// receive_script — fresh receive script.
 	type receiveScriptArgs struct {
 		Label string `json:"label,omitempty" jsonschema:"optional indexer registration label"` //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "receive_script",
+		Name:        "ark.oor.receive",
 		Description: "Allocate a fresh receive script",
 	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args receiveScriptArgs) (*mcp.CallToolResult, any, error) {
@@ -189,7 +195,7 @@ func registerMCPTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 		MinAmountSat int64  `json:"min_amount_sat,omitempty" jsonschema:"minimum amount in sats"`                          //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "vtxos_list",
+		Name:        "ark.vtxos.list",
 		Description: "List VTXOs with optional filters",
 	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args vtxosListArgs) (*mcp.CallToolResult, any, error) {
@@ -227,7 +233,7 @@ func registerMCPTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 		DryRun    bool     `json:"dry_run,omitempty" jsonschema:"validate without queuing"`                   //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "vtxos_refresh",
+		Name:        "ark.vtxos.refresh",
 		Description: "Queue VTXOs for refresh in next round",
 	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args vtxosRefreshArgs) (*mcp.CallToolResult, any, error) {
@@ -267,7 +273,7 @@ func registerMCPTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 		DryRun       bool              `json:"dry_run,omitempty" jsonschema:"validate without queuing"`                                                     //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "vtxos_leave",
+		Name:        "ark.vtxos.leave",
 		Description: "Queue VTXOs for cooperative leave (offboard)",
 	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args vtxosLeaveArgs) (*mcp.CallToolResult, any, error) {
@@ -311,7 +317,7 @@ func registerMCPSendTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 		DryRun     bool            `json:"dry_run,omitempty" jsonschema:"validate without submitting"` //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "send_inround",
+		Name:        "ark.send.inround",
 		Description: "Send via in-round refresh",
 	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args sendInRoundArgs) (*mcp.CallToolResult, any, error) {
@@ -355,7 +361,7 @@ func registerMCPSendTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 		IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"stable caller intent key for retry-safe OOR sends"`                      //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "send_oor",
+		Name:        "ark.send.oor",
 		Description: "Send via out-of-round transfer",
 	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args sendOORArgs) (*mcp.CallToolResult, any, error) {

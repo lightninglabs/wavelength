@@ -104,7 +104,7 @@ func TestBuildOORRecipientOutputValidation(t *testing.T) {
 func TestMethodRegistrySendOORSchema(t *testing.T) {
 	t.Parallel()
 
-	method := findSchemaMethod(t, "send.oor")
+	method := findSchemaMethod(t, "ark.send.oor")
 	paramNames := make([]string, 0, len(method.Params))
 	for _, param := range method.Params {
 		paramNames = append(paramNames, param.Name)
@@ -121,7 +121,7 @@ func TestMethodRegistrySendOORSchema(t *testing.T) {
 func TestMethodRegistryOORReceiveSchema(t *testing.T) {
 	t.Parallel()
 
-	method := findSchemaMethod(t, "oor.receive")
+	method := findSchemaMethod(t, "ark.oor.receive")
 	require.Equal(t, "NewReceiveScriptRequest", method.RequestType)
 	require.Equal(t, "NewReceiveScriptResponse", method.ResponseType)
 }

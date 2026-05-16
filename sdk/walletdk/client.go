@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -270,15 +271,21 @@ func (c *Client) Send(ctx context.Context, req SendRequest) (*SendResult,
 		MaxFeeSat: req.MaxFeeSat,
 		SweepAll:  req.SweepAll,
 	}
+	invoice := strings.TrimSpace(req.Invoice)
+	onchainAddress := strings.TrimSpace(req.OnchainAddress)
 	switch {
-	case req.Invoice != "":
+	case invoice != "" && onchainAddress != "":
+		return nil, fmt.Errorf("set invoice or onchain_address, not " +
+			"both")
+
+	case invoice != "":
 		protoReq.Destination = &walletrpc.SendRequest_Invoice{
-			Invoice: req.Invoice,
+			Invoice: invoice,
 		}
 
-	case req.OnchainAddress != "":
+	case onchainAddress != "":
 		protoReq.Destination = &walletrpc.SendRequest_OnchainAddress{
-			OnchainAddress: req.OnchainAddress,
+			OnchainAddress: onchainAddress,
 		}
 
 	default:
@@ -296,7 +303,10 @@ func (c *Client) Send(ctx context.Context, req SendRequest) (*SendResult,
 	}, nil
 }
 
-// List returns normalized wallet activity entries.
+// List returns the unified wallet view selected by req.View. The
+// response carries exactly one of Activity, VTXOs, or Onchain
+// populated; callers should switch on the returned View to pick the
+// right field.
 func (c *Client) List(ctx context.Context, req ListRequest) (*ListResult,
 	error) {
 
@@ -304,9 +314,24 @@ func (c *Client) List(ctx context.Context, req ListRequest) (*ListResult,
 		return nil, err
 	}
 
+	view := req.View
+	if view == "" {
+		view = ListViewActivity
+	}
+	protoView, err := listViewToProto(view)
+	if err != nil {
+		return nil, err
+	}
+
+	kinds, err := entryKindsToProto(req.Kinds)
+	if err != nil {
+		return nil, err
+	}
+
 	resp, err := c.wallet.List(ctx, &walletrpc.ListRequest{
+		View:        protoView,
 		PendingOnly: req.PendingOnly,
-		Kinds:       entryKindsToProto(req.Kinds),
+		Kinds:       kinds,
 		Limit:       req.Limit,
 		Offset:      req.Offset,
 	})
@@ -314,14 +339,60 @@ func (c *Client) List(ctx context.Context, req ListRequest) (*ListResult,
 		return nil, fmt.Errorf("list wallet entries: %w", err)
 	}
 
-	entries := make([]Entry, 0, len(resp.GetEntries()))
-	for _, entry := range resp.GetEntries() {
-		entries = append(entries, entryFromProto(entry))
+	return listResultFromProto(view, resp), nil
+}
+
+// Exit triggers a unilateral exit (unroll) for the specified VTXO
+// outpoint. The daemon assembles a recovery proof, spawns a durable
+// exit job, and drives the on-chain recovery to completion.
+func (c *Client) Exit(ctx context.Context, req ExitRequest) (*ExitResult,
+	error) {
+
+	if err := c.requireWalletRPC(); err != nil {
+		return nil, err
+	}
+	if req.Outpoint == "" {
+		return nil, fmt.Errorf("outpoint is required")
 	}
 
-	return &ListResult{
-		Entries: entries,
-		Total:   resp.GetTotal(),
+	resp, err := c.wallet.Exit(ctx, &walletrpc.ExitRequest{
+		Outpoint: req.Outpoint,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("exit: %w", err)
+	}
+
+	return &ExitResult{
+		Created: resp.GetCreated(),
+		ActorID: resp.GetActorId(),
+	}, nil
+}
+
+// ExitStatus reports the current phase of an exit job for the
+// specified VTXO outpoint. Found is false when no job exists for the
+// outpoint; the call does not return an error in that case.
+func (c *Client) ExitStatus(ctx context.Context, req ExitStatusRequest) (
+	*ExitStatusResult, error) {
+
+	if err := c.requireWalletRPC(); err != nil {
+		return nil, err
+	}
+	if req.Outpoint == "" {
+		return nil, fmt.Errorf("outpoint is required")
+	}
+
+	resp, err := c.wallet.ExitStatus(ctx, &walletrpc.ExitStatusRequest{
+		Outpoint: req.Outpoint,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("exit status: %w", err)
+	}
+
+	return &ExitStatusResult{
+		Found:     resp.GetFound(),
+		Status:    exitJobStatusFromProto(resp.GetStatus()),
+		SweepTxid: resp.GetSweepTxid(),
+		LastError: resp.GetLastError(),
 	}, nil
 }
 
@@ -353,10 +424,15 @@ func (c *Client) Subscribe(ctx context.Context, req SubscribeRequest) (
 		return nil, nil, err
 	}
 
+	kinds, err := entryKindsToProto(req.Kinds)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	stream, err := c.wallet.SubscribeWallet(
 		ctx, &walletrpc.SubscribeWalletRequest{
 			IncludeExisting: req.IncludeExisting,
-			Kinds:           entryKindsToProto(req.Kinds),
+			Kinds:           kinds,
 		},
 	)
 	if err != nil {

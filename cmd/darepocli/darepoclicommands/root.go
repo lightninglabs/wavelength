@@ -55,12 +55,29 @@ func NewRootCmd() *cobra.Command {
 			"are ignored",
 	)
 
-	// Register subcommands.
+	// Register subcommands. The seven implicit top-level wallet verbs
+	// (create / unlock / send / recv / list / balance / exit) are the
+	// face of the CLI; everything else groups under named parents
+	// (ark / swap) or stays at root for daemon introspection.
 	cmd.AddCommand(
-		newGetInfoCmd(), newWalletCmd(), newOORCmd(), newVTXOsCmd(),
-		newSendCmd(), newBoardCmd(), newSweepCmd(),
-		newListTransactionsCmd(), newRoundsCmd(), newFeesCmd(),
-		newSchemaCmd(), newMCPCmd(), newUnrollCmd(), newSwapCmd(),
+		// Wallet verbs (top-level / implicit).
+		newCreateCmd(),
+		newUnlockCmd(),
+		newSendCmd(),
+		newRecvCmd(),
+		newListCmd(),
+		newBalanceCmd(),
+		newExitCmd(),
+
+		// Daemon introspection at root.
+		newGetInfoCmd(),
+		newSchemaCmd(),
+		newMCPCmd(),
+
+		// Advanced subtrees.
+		newArkCmd(),
+		newSwapCmd(),
+
 		devrpc.NewDevCmd(
 			devrpc.Config{
 				GetConn:     getDaemonConn,
