@@ -24,6 +24,10 @@ func NewWalletServiceMailboxClient(c rpc.RPCClient) *WalletServiceMailboxClient 
 
 // WalletServiceMailboxServer is the mailbox server interface for WalletService.
 type WalletServiceMailboxServer interface {
+	// Create handles Create.
+	Create(ctx context.Context, req *CreateRequest) (*CreateResponse, error)
+	// Unlock handles Unlock.
+	Unlock(ctx context.Context, req *UnlockRequest) (*UnlockResponse, error)
 	// Send handles Send.
 	Send(ctx context.Context, req *SendRequest) (*SendResponse, error)
 	// Recv handles Recv.
@@ -36,12 +40,36 @@ type WalletServiceMailboxServer interface {
 	Balance(ctx context.Context, req *BalanceRequest) (*BalanceResponse, error)
 	// Status handles Status.
 	Status(ctx context.Context, req *StatusRequest) (*StatusResponse, error)
+	// Exit handles Exit.
+	Exit(ctx context.Context, req *ExitRequest) (*ExitResponse, error)
+	// ExitStatus handles ExitStatus.
+	ExitStatus(ctx context.Context, req *ExitStatusRequest) (*ExitStatusResponse, error)
 	// SubscribeWallet handles SubscribeWallet.
 	SubscribeWallet(ctx context.Context, req *SubscribeWalletRequest) (*WalletEntry, error)
 }
 
 // RegisterWalletServiceMailboxServer registers handlers for WalletService.
 func RegisterWalletServiceMailboxServer(r rpc.Router, impl WalletServiceMailboxServer) {
+	r.Handle("walletrpc.WalletService", "Create", func() proto.Message {
+		return &CreateRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*CreateRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.Create(ctx, req)
+	})
+	r.Handle("walletrpc.WalletService", "Unlock", func() proto.Message {
+		return &UnlockRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*UnlockRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.Unlock(ctx, req)
+	})
 	r.Handle("walletrpc.WalletService", "Send", func() proto.Message {
 		return &SendRequest{}
 	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
@@ -102,6 +130,26 @@ func RegisterWalletServiceMailboxServer(r rpc.Router, impl WalletServiceMailboxS
 
 		return impl.Status(ctx, req)
 	})
+	r.Handle("walletrpc.WalletService", "Exit", func() proto.Message {
+		return &ExitRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ExitRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.Exit(ctx, req)
+	})
+	r.Handle("walletrpc.WalletService", "ExitStatus", func() proto.Message {
+		return &ExitStatusRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ExitStatusRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ExitStatus(ctx, req)
+	})
 	r.Handle("walletrpc.WalletService", "SubscribeWallet", func() proto.Message {
 		return &SubscribeWalletRequest{}
 	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
@@ -112,6 +160,52 @@ func RegisterWalletServiceMailboxServer(r rpc.Router, impl WalletServiceMailboxS
 
 		return impl.SubscribeWallet(ctx, req)
 	})
+}
+
+// Create calls the Create RPC.
+func (c *WalletServiceMailboxClient) Create(ctx context.Context, req *CreateRequest, opts ...rpc.RPCOptions) (*CreateResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "walletrpc.WalletService",
+		Method:  "Create",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(CreateResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// Unlock calls the Unlock RPC.
+func (c *WalletServiceMailboxClient) Unlock(ctx context.Context, req *UnlockRequest, opts ...rpc.RPCOptions) (*UnlockResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "walletrpc.WalletService",
+		Method:  "Unlock",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(UnlockResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
 }
 
 // Send calls the Send RPC.
@@ -245,6 +339,52 @@ func (c *WalletServiceMailboxClient) Status(ctx context.Context, req *StatusRequ
 	}
 
 	resp := new(StatusResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// Exit calls the Exit RPC.
+func (c *WalletServiceMailboxClient) Exit(ctx context.Context, req *ExitRequest, opts ...rpc.RPCOptions) (*ExitResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "walletrpc.WalletService",
+		Method:  "Exit",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ExitResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ExitStatus calls the ExitStatus RPC.
+func (c *WalletServiceMailboxClient) ExitStatus(ctx context.Context, req *ExitStatusRequest, opts ...rpc.RPCOptions) (*ExitStatusResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "walletrpc.WalletService",
+		Method:  "ExitStatus",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ExitStatusResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
