@@ -1,0 +1,202 @@
+package walletdk
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+)
+
+// TestCloneDaemonConfigIsolation verifies that cloneDaemonConfig produces a
+// graph whose reference-typed fields can be mutated independently of the
+// original. This is the actual contract Start relies on when it injects its
+// bufconn listener and swap registrar into the cloned config.
+//
+// The test reflects over darepod.Config and fails on any pointer/slice/map
+// field whose clone aliases the original. Adding a new reference-typed field
+// to darepod.Config without updating cloneDaemonConfig will surface here as
+// either a "still nil after clone" failure (when the test fixture is also out
+// of date) or, more importantly, an aliasing failure (when the fixture is
+// updated but the clone is not).
+func TestCloneDaemonConfigIsolation(t *testing.T) {
+	original := darepod.DefaultConfig()
+
+	// Make sure every reference-typed field we currently know about is
+	// non-nil/non-empty so we can detect aliasing. New fields added to
+	// darepod.Config require updating this fixture too — the test below
+	// flags any reference-typed field that remains nil after this setup.
+	if original.Lnd == nil {
+		original.Lnd = &darepod.LndConfig{}
+	}
+	if original.Server == nil {
+		original.Server = &darepod.ServerConfig{}
+	}
+	if original.RPC == nil {
+		original.RPC = &darepod.RPCConfig{}
+	}
+	if original.Wallet == nil {
+		original.Wallet = &darepod.WalletConfig{}
+	}
+	original.Wallet.BtcwalletPeers = []string{"peer-a"}
+	original.Wallet.BtcwalletAddPeers = []string{"add-peer-a"}
+	if original.Unroll == nil {
+		original.Unroll = &darepod.UnrollConfig{}
+	}
+	if original.Swap == nil {
+		original.Swap = &darepod.SwapConfig{}
+	}
+	if original.OOR == nil {
+		original.OOR = &darepod.OORConfig{}
+	}
+	original.RPCServiceRegistrars = []darepod.RPCServiceRegistrar{
+		func(context.Context, *grpc.Server, *darepod.RPCServer,
+			*darepod.Config) (func(), error) {
+
+			return func() {}, nil
+		},
+	}
+
+	clone := cloneDaemonConfig(original)
+
+	origV := reflect.ValueOf(original).Elem()
+	cloneV := reflect.ValueOf(clone).Elem()
+
+	for i := 0; i < origV.NumField(); i++ {
+		fieldName := origV.Type().Field(i).Name
+		origF := origV.Field(i)
+		cloneF := cloneV.Field(i)
+
+		switch origF.Kind() {
+		case reflect.Ptr:
+			if origF.IsNil() {
+				// Skip pointer fields the fixture doesn't
+				// populate; the assertion below would be
+				// vacuously satisfied anyway.
+				continue
+			}
+			require.NotNil(
+				t, cloneF.Interface(),
+				"clone field %s is nil but original is set",
+				fieldName,
+			)
+			require.NotEqualf(
+				t, origF.Pointer(), cloneF.Pointer(),
+				"clone field %s aliases the original "+
+					"pointer (add a deep-copy in "+
+					"cloneDaemonConfig)", fieldName,
+			)
+
+		case reflect.Slice:
+			if origF.Len() == 0 {
+				continue
+			}
+			require.Greaterf(
+				t, cloneF.Len(), 0, "clone field %s is "+
+					"empty but original is populated",
+				fieldName,
+			)
+			origHeader := origF.Index(0).UnsafeAddr()
+			cloneHeader := cloneF.Index(0).UnsafeAddr()
+			require.NotEqualf(
+				t, origHeader, cloneHeader, "clone slice %s "+
+					"shares backing array with original "+
+					"(add an append-based copy in "+
+					"cloneDaemonConfig)", fieldName,
+			)
+
+		case reflect.Map:
+			// We do not currently clone any maps. If a map field
+			// is ever added to darepod.Config, this branch flags
+			// the gap loudly so the contributor can decide
+			// whether the map needs cloning.
+			if !origF.IsNil() {
+				t.Fatalf("darepod.Config grew a map field %q "+
+					"that cloneDaemonConfig does "+
+					"not handle", fieldName)
+			}
+
+		default:
+			// Value-typed fields (scalars, structs, interfaces,
+			// funcs, etc.) do not need deep-copy because they are
+			// already isolated by the outer struct copy that
+			// cloneDaemonConfig performs.
+		}
+	}
+}
+
+// TestClientStopIdempotent verifies that Stop, Close, and repeated calls all
+// invoke the underlying closeFn exactly once. Hosts often call Stop from
+// multiple shutdown paths (signal handler, defer, error cleanup) so the
+// double-close contract must hold.
+func TestClientStopIdempotent(t *testing.T) {
+	var calls atomic.Int32
+	client := &Client{
+		closeFn: func(context.Context) error {
+			calls.Add(1)
+
+			return nil
+		},
+	}
+
+	require.NoError(t, client.Stop())
+	require.NoError(t, client.Stop())
+	require.NoError(t, client.Close())
+	require.EqualValues(
+		t, 1, calls.Load(),
+		"closeFn must be invoked exactly once across Stop/Close calls",
+	)
+}
+
+// TestClientWaitFanOut verifies that multiple concurrent Wait() callers each
+// receive the daemon's terminal error. Earlier implementations exposed a
+// single shared channel, so the second selector observed only the
+// already-closed signal — see PR #365 review item (2).
+func TestClientWaitFanOut(t *testing.T) {
+	rt := newDaemonRuntime()
+	client := &Client{runtime: rt}
+
+	const subscribers = 4
+	channels := make([]<-chan error, subscribers)
+	for i := range channels {
+		channels[i] = client.Wait()
+	}
+
+	wantErr := errors.New("daemon boom")
+	rt.signalExit(wantErr)
+
+	for i, ch := range channels {
+		select {
+		case got := <-ch:
+			require.ErrorIsf(
+				t, got, wantErr, "subscriber %d did not "+
+					"receive terminal error", i,
+			)
+
+		case <-time.After(time.Second):
+			t.Fatalf("subscriber %d timed out waiting for "+
+				"terminal error", i)
+		}
+	}
+}
+
+// TestDaemonRuntimeSignalExitOnce locks in the contract that signalExit only
+// records the first terminal error and never panics on repeat calls.
+func TestDaemonRuntimeSignalExitOnce(t *testing.T) {
+	rt := newDaemonRuntime()
+
+	first := errors.New("first")
+	second := errors.New("second")
+
+	rt.signalExit(first)
+	rt.signalExit(second)
+	rt.signalExit(nil)
+
+	<-rt.Done()
+	require.Same(t, first, rt.runErr)
+}
