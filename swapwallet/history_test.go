@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
 	"github.com/stretchr/testify/require"
@@ -285,4 +286,80 @@ func TestHistoryPagination(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint32(5), resp.GetTotal())
 	require.Len(t, resp.GetEntries(), 2)
+}
+
+// TestHistoryClassifiesOORLedgerRows confirms OOR ledger rows are
+// classified onto the right wallet kind and amount sign by inspecting
+// the counterparty account. The ledger books OOR receives with
+// transfers_in on the credit side and OOR sends with transfers_out on
+// the debit side; the previous magic-string check ("wallet_in" /
+// "wallet_out") never matched and silently dropped every OOR row.
+func TestHistoryClassifiesOORLedgerRows(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "oor",
+				ConfirmationStatus: "confirmed",
+				AmountSat:          7_000,
+				Txid:               "oor-recv-txid",
+				CreatedAtUnixS:     100,
+				DebitAccount:       ledger.AccountVTXOBalance,
+				CreditAccount:      ledger.AccountTransfersIn,
+			},
+			{
+				Type:               "oor",
+				ConfirmationStatus: "confirmed",
+				AmountSat:          3_000,
+				Txid:               "oor-send-txid",
+				CreatedAtUnixS:     200,
+				DebitAccount:       ledger.AccountTransfersOut,
+				CreditAccount:      ledger.AccountVTXOBalance,
+			},
+			{
+				// Internal bookkeeping row with no
+				// wallet-facing counterparty — must stay
+				// hidden.
+				Type:               "oor",
+				ConfirmationStatus: "confirmed",
+				AmountSat:          50,
+				Txid:               "oor-bookkeeping",
+				CreatedAtUnixS:     150,
+				DebitAccount:       ledger.AccountOnchainFees,
+				CreditAccount:      ledger.AccountVTXOBalance,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+	require.Len(
+		t, resp.GetEntries(), 2,
+		"OOR send + OOR recv must surface; bookkeeping row "+
+			"stays hidden",
+	)
+
+	// Sort is updated_at desc: send(200) before recv(100).
+	send := resp.GetEntries()[0]
+	require.Equal(t, "oor-send-txid", send.GetId())
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_SEND, send.GetKind(),
+	)
+	require.Equal(
+		t, int64(-3_000), send.GetAmountSat(),
+		"SEND amount must be negative",
+	)
+
+	recv := resp.GetEntries()[1]
+	require.Equal(t, "oor-recv-txid", recv.GetId())
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_RECV, recv.GetKind(),
+	)
+	require.Equal(
+		t, int64(7_000), recv.GetAmountSat(),
+		"RECV amount must be positive",
+	)
 }

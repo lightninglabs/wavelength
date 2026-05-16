@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
 )
@@ -325,17 +326,21 @@ func classifyLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 		return walletrpc.EntryKind_ENTRY_KIND_EXIT, -1, true
 
 	case "oor":
-		// Use the credit/debit accounts to decide direction.
-		// Wallet-credited rows are incoming; wallet-debited rows
-		// are outgoing.
-		if t.GetCreditAccount() == "wallet_in" {
+		// The ledger books OOR receives as
+		// `debit vtxo_balance, credit transfers_in` and OOR sends
+		// as `debit transfers_out, credit vtxo_balance` (see
+		// ledger/handlers.go handleVTXOReceived/handleVTXOSent).
+		// Classify the wallet direction off the counterparty side
+		// so we don't depend on which leg the daemon row carries.
+		switch {
+		case t.GetCreditAccount() == ledger.AccountTransfersIn:
 			return walletrpc.EntryKind_ENTRY_KIND_RECV, +1, true
-		}
-		if t.GetDebitAccount() == "wallet_out" {
+
+		case t.GetDebitAccount() == ledger.AccountTransfersOut:
 			return walletrpc.EntryKind_ENTRY_KIND_SEND, -1, true
 		}
 
-		// OOR rows without a recognisable wallet account are
+		// OOR rows without a recognisable counterparty account are
 		// internal bookkeeping — hide them from the wallet view.
 		return walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, 0, false
 
