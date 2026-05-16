@@ -41,3 +41,5 @@ go.work.sum
 /tools/llformat
 .reviews/
 .claude/worktrees/
+.claude/.substrate-plan-context
+.sessions/

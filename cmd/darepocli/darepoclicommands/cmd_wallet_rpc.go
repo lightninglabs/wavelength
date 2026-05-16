@@ -140,14 +140,13 @@ func walletRPCSend(cmd *cobra.Command, args []string) error {
 
 	// Onchain-only: enforce the sweep_all / amt invariant up front so a
 	// typo'd zero never lands on the wallet RPC. The wallet handler
-	// re-checks defensively, but the CLI is the most common entry
-	// point.
+	// re-checks defensively, but the CLI is the most common entry point.
 	isInvoice := isInvoicePrefix(dest)
 	if !isInvoice {
 		switch {
 		case sweepAll && amt != 0:
-			return fmt.Errorf("--sweep-all requires --amt=0 " +
-				"(amt is implied by sweeping every live VTXO)")
+			return fmt.Errorf("--sweep-all requires --amt=0 (amt " +
+				"is implied by sweeping every live VTXO)")
 
 		case !sweepAll && amt == 0:
 			return fmt.Errorf("--amt is required for onchain " +
@@ -179,20 +178,19 @@ func walletRPCSend(cmd *cobra.Command, args []string) error {
 				return err
 			}
 
-			// For onchain sends actual_amount_sat may exceed
-			// --amt under the v1 whole-VTXO sweep semantics.
-			// Surface it on stderr so shell pipelines can still
-			// consume the JSON body and a human reading the
-			// terminal sees the real outflow.
+			// For onchain sends actual_amount_sat may exceed --amt
+			// under the v1 whole-VTXO sweep semantics. Surface it
+			// on stderr so shell pipelines can still consume the
+			// JSON body and a human reading the terminal sees the
+			// real outflow.
 			actual := resp.GetActualAmountSat()
 			if !isInvoice && actual != int64(amt) {
 				fmt.Fprintf(
 					cmd.ErrOrStderr(),
-					"note: actual_amount_sat=%d "+
-						"exceeds --amt=%d due to "+
-						"whole-VTXO sweep "+
-						"semantics\n",
-					actual, amt,
+					"note: actual_amount_sat=%d exceeds "+
+						"--amt=%d due to whole-VTXO "+
+						"sweep semantics\n", actual,
+					amt,
 				)
 			}
 

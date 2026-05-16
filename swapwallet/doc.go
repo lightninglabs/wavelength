@@ -35,7 +35,7 @@
 // swapruntime is a deliberate compile error because the subserver composes
 // the daemon-owned swap subsystem.
 //
-// V1 LIMITATIONS
+// # V1 LIMITATIONS
 //
 // Canonical-id stability: only SEND-invoice and RECV operations carry a
 // stable WalletEntry.id across the pending → terminal lifecycle. The
@@ -56,4 +56,13 @@
 // to correlate EXIT/DEPOSIT pending → confirmed in v1 should track the
 // WalletEntry.Counterparty (truncated bech32 address or txid) and the
 // persisted ledger txid via separate queries.
+//
+// Onchain SEND sweep semantics: the cooperative-leave path sweeps WHOLE
+// selected VTXOs to the destination, so the recipient may receive more
+// than the caller's amt_sat. SendResponse.actual_amount_sat carries the
+// real outflow and SHOULD be echoed to the user before treating the
+// send as confirmed. The "drain the wallet" intent is structurally
+// distinct in v1: SendRequest.sweep_all must be set explicitly and
+// amt_sat must be zero; a typo'd amt_sat=0 without sweep_all is rejected
+// up front at the wallet layer and again at the CLI.
 package swapwallet

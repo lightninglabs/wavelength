@@ -280,6 +280,10 @@ func cloneDaemonConfig(cfg *darepod.Config) *darepod.Config {
 		swapCfg := *cfg.Swap
 		clone.Swap = &swapCfg
 	}
+	if cfg.OOR != nil {
+		oorCfg := *cfg.OOR
+		clone.OOR = &oorCfg
+	}
 
 	clone.RPCServiceRegistrars = append(
 		[]darepod.RPCServiceRegistrar(nil), cfg.RPCServiceRegistrars...,

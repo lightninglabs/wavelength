@@ -91,7 +91,13 @@ func (r *router) sendInvoice(ctx context.Context, invoice string,
 		)
 	}
 
-	return &walletrpc.SendResponse{Entry: entry}, nil
+	// For invoice sends actual_amount_sat is the swap's negotiated
+	// principal: that's what is being paid to the BOLT-11 destination
+	// (routing fees are tracked separately via fee_sat on the entry).
+	return &walletrpc.SendResponse{
+		Entry:           entry,
+		ActualAmountSat: startResp.GetSwap().GetAmountSat(),
+	}, nil
 }
 
 // sendOnchain routes an onchain destination through the existing
@@ -132,9 +138,9 @@ func (r *router) sendOnchain(ctx context.Context, addr string,
 			ErrAmountInvalid)
 
 	case !sweepAll && amtSat == 0:
-		return nil, fmt.Errorf("%w: amt_sat is required for "+
-			"onchain sends (set sweep_all to drain the "+
-			"wallet)", ErrAmountRequired)
+		return nil, fmt.Errorf("%w: amt_sat is required for onchain "+
+			"sends (set sweep_all to drain the wallet)",
+			ErrAmountRequired)
 
 	case amtSat > math.MaxInt64:
 		return nil, fmt.Errorf("%w: amt_sat exceeds int64 range",
@@ -284,6 +290,6 @@ func (r *router) selectVTXOsForAmount(ctx context.Context, target int64) (
 		}
 	}
 
-	return nil, 0, fmt.Errorf("%w: insufficient live VTXOs cover %d "+
-		"sat (covered=%d)", ErrAmountRequired, target, covered)
+	return nil, 0, fmt.Errorf("%w: insufficient live VTXOs cover %d sat "+
+		"(covered=%d)", ErrAmountRequired, target, covered)
 }

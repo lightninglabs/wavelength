@@ -255,9 +255,9 @@ func TestMonitorLoopRecoversAfterTransientFailure(t *testing.T) {
 			// events on every transient failure.
 			flags := flaky.capturedIncludeFlags()
 			require.GreaterOrEqual(
-				t, len(flags), 2,
-				"monitor must have attempted at least one "+
-					"reconnect after the transient error",
+				t, len(flags), 2, "monitor must have "+
+					"attempted at least one reconnect "+
+					"after the transient error",
 			)
 			require.True(
 				t, flags[0],
@@ -265,9 +265,8 @@ func TestMonitorLoopRecoversAfterTransientFailure(t *testing.T) {
 			)
 			for i := 1; i < len(flags); i++ {
 				require.False(
-					t, flags[i],
-					"reconnect #%d must NOT request "+
-						"the snapshot", i,
+					t, flags[i], "reconnect #%d must "+
+						"NOT request the snapshot", i,
 				)
 			}
 
@@ -340,8 +339,7 @@ func TestMonitorLoopTerminalStatusBeatsStaleOverlay(t *testing.T) {
 
 	got := drainOne(t, sub)
 	require.Equal(
-		t, walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
-		got.GetStatus(),
+		t, walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, got.GetStatus(),
 		"terminal source status must beat the stale FAILED overlay",
 	)
 	require.Empty(
@@ -405,8 +403,7 @@ func TestMonitorLoopOverlayDoesNotFlapOnPendingUpdate(t *testing.T) {
 	_, overlayKept := r.overlay["hash-stuck"]
 	r.pendingMu.Unlock()
 	require.True(
-		t, overlayKept,
-		"a PENDING monitor update must NOT clear an existing "+
-			"wallet-layer overlay",
+		t, overlayKept, "a PENDING monitor update must NOT clear "+
+			"an existing wallet-layer overlay",
 	)
 }

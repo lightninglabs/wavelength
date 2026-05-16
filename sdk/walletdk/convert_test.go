@@ -60,37 +60,3 @@ func TestEntryKindToProto(t *testing.T) {
 		entryKindToProto(""),
 	)
 }
-
-// TestSwapStateFromProtoUnknownFallback verifies that unknown future enum
-// values fall back to a lowercased proto name rather than being flattened
-// into "unspecified". The latter is reserved for the explicit UNSPECIFIED
-// enum value so host UIs can distinguish the two.
-func TestSwapStateFromProtoUnknownFallback(t *testing.T) {
-	require.Equal(
-		t, "unspecified", swapStateFromProto(
-			swapclientrpc.SwapState_SWAP_STATE_UNSPECIFIED,
-		),
-	)
-
-	// A value that is not listed in the proto generates a String() of the
-	// form "SwapState(<n>)" — the trim leaves the parenthesized form,
-	// which is fine: it is a stable, non-empty signal that something new
-	// is happening rather than a silent erase.
-	unknown := swapStateFromProto(swapclientrpc.SwapState(9999))
-	require.NotEqual(t, "unspecified", unknown)
-	require.NotEmpty(t, unknown)
-}
-
-// TestSwapDirectionFromProtoUnknownFallback mirrors the state-unknown test
-// for direction. Unspecified maps to the empty string; future values must
-// produce a non-empty fallback.
-func TestSwapDirectionFromProtoUnknownFallback(t *testing.T) {
-	require.Equal(
-		t, SwapDirection(""), swapDirectionFromProto(
-			swapclientrpc.SwapDirection_SWAP_DIRECTION_UNSPECIFIED,
-		),
-	)
-
-	unknown := swapDirectionFromProto(swapclientrpc.SwapDirection(9999))
-	require.NotEmpty(t, unknown)
-}

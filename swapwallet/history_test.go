@@ -334,9 +334,8 @@ func TestHistoryClassifiesOORLedgerRows(t *testing.T) {
 	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(
-		t, resp.GetEntries(), 2,
-		"OOR send + OOR recv must surface; bookkeeping row "+
-			"stays hidden",
+		t, resp.GetEntries(), 2, "OOR send + OOR recv must "+
+			"surface; bookkeeping row stays hidden",
 	)
 
 	// Sort is updated_at desc: send(200) before recv(100).
@@ -401,8 +400,7 @@ func TestHistoryDedupesByID(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(
 		t, resp.GetEntries(), 1,
-		"swap + ledger surfacing the same id must collapse to one "+
-			"row",
+		"swap + ledger surfacing the same id must collapse to one row",
 	)
 	require.Equal(
 		t, int64(200), resp.GetEntries()[0].GetUpdatedAtUnix(),
@@ -455,7 +453,7 @@ func TestHistoryPaginationOffsetPlumbedToLedger(t *testing.T) {
 	require.GreaterOrEqual(
 		t, rpc.listTxLastReq.GetLimit(), uint32(15),
 		"ListTransactions must be called with Limit >= "+
-			"offset+limit so the in-memory paginate has "+
-			"enough rows to satisfy the requested page",
+			"offset+limit so the in-memory paginate has enough "+
+			"rows to satisfy the requested page",
 	)
 }

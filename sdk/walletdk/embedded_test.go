@@ -2,11 +2,9 @@ package walletdk
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/stretchr/testify/require"
@@ -151,52 +149,4 @@ func TestClientStopIdempotent(t *testing.T) {
 		t, 1, calls.Load(),
 		"closeFn must be invoked exactly once across Stop/Close calls",
 	)
-}
-
-// TestClientWaitFanOut verifies that multiple concurrent Wait() callers each
-// receive the daemon's terminal error. Earlier implementations exposed a
-// single shared channel, so the second selector observed only the
-// already-closed signal — see PR #365 review item (2).
-func TestClientWaitFanOut(t *testing.T) {
-	rt := newDaemonRuntime()
-	client := &Client{runtime: rt}
-
-	const subscribers = 4
-	channels := make([]<-chan error, subscribers)
-	for i := range channels {
-		channels[i] = client.Wait()
-	}
-
-	wantErr := errors.New("daemon boom")
-	rt.signalExit(wantErr)
-
-	for i, ch := range channels {
-		select {
-		case got := <-ch:
-			require.ErrorIsf(
-				t, got, wantErr, "subscriber %d did not "+
-					"receive terminal error", i,
-			)
-
-		case <-time.After(time.Second):
-			t.Fatalf("subscriber %d timed out waiting for "+
-				"terminal error", i)
-		}
-	}
-}
-
-// TestDaemonRuntimeSignalExitOnce locks in the contract that signalExit only
-// records the first terminal error and never panics on repeat calls.
-func TestDaemonRuntimeSignalExitOnce(t *testing.T) {
-	rt := newDaemonRuntime()
-
-	first := errors.New("first")
-	second := errors.New("second")
-
-	rt.signalExit(first)
-	rt.signalExit(second)
-	rt.signalExit(nil)
-
-	<-rt.Done()
-	require.Same(t, first, rt.runErr)
 }

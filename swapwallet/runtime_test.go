@@ -54,7 +54,9 @@ func TestDeadlineWatcherFlagsStuckEntries(t *testing.T) {
 	// works, tick at a time INSIDE the deadline window.
 	r2 := newRuntime(t.Context(), deps)
 	defer r2.stop()
-	r2.trackPending(freshID, walletrpc.EntryKind_ENTRY_KIND_SEND, time.Now())
+	r2.trackPending(
+		freshID, walletrpc.EntryKind_ENTRY_KIND_SEND, time.Now(),
+	)
 	r2.applyDeadlines(time.Now())
 	_, freshTimedOut := r2.overlayFor(freshID)
 	require.False(
@@ -146,9 +148,13 @@ func TestTrackPendingBasesDeadlineOnFirstObservation(t *testing.T) {
 		"createdAt should preserve the original submit time",
 	)
 	require.True(
-		t, entry.deadline.After(time.Now().Add(deadline/2)),
+		t,
+		entry.deadline.After(
+			time.Now().Add(deadline/2),
+		),
 		"deadline must be in the FUTURE, not based on a 24h-old "+
-			"createdAt: got %s", entry.deadline,
+			"createdAt: got %s",
+		entry.deadline,
 	)
 }
 
@@ -212,8 +218,7 @@ func TestDeadlineWatcherEmitsTimeoutToSubscribers(t *testing.T) {
 	case got := <-sub:
 		require.Equal(t, "stuck", got.GetId())
 		require.Equal(
-			t, walletrpc.EntryKind_ENTRY_KIND_SEND,
-			got.GetKind(),
+			t, walletrpc.EntryKind_ENTRY_KIND_SEND, got.GetKind(),
 		)
 		require.Equal(
 			t, walletrpc.EntryStatus_ENTRY_STATUS_FAILED,
@@ -226,8 +231,10 @@ func TestDeadlineWatcherEmitsTimeoutToSubscribers(t *testing.T) {
 		)
 
 	case <-time.After(time.Second):
-		t.Fatal("subscriber must observe the deadline transition " +
-			"without polling List")
+		t.Fatal(
+			"subscriber must observe the deadline transition " +
+				"without polling List",
+		)
 	}
 }
 
@@ -256,8 +263,11 @@ func TestDeadlineWatcherDoesNotReEmitAlreadyTimedOut(t *testing.T) {
 	r.applyDeadlines(tick)
 	select {
 	case <-sub:
-		t.Fatal("watcher must not re-emit on an already-timed-out " +
-			"entry")
+		t.Fatal(
+			"watcher must not re-emit on an already-timed-out " +
+				"entry",
+		)
+
 	case <-time.After(50 * time.Millisecond):
 	}
 }
