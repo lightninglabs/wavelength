@@ -54,37 +54,6 @@ func TestValidateSubmitAcceptedRejectsArkMismatch(t *testing.T) {
 	)
 }
 
-// TestDriveEventPayloadEncodesNilArkPSBT verifies that the domain payload
-// codec accepts a SubmitAcceptedEvent with nil ArkPSBT. This supports the
-// server-push EventRouter path where the oorpb proto does not echo the Ark
-// PSBT back.
-func TestDriveEventPayloadEncodesNilArkPSBT(t *testing.T) {
-	t.Parallel()
-
-	_, checkpoints := testOutboxPSBTPair(t)
-	sessionID := SessionID(chainhash.Hash{1, 2, 3})
-
-	raw, err := encodeDriveEventRequestPayload(
-		sessionID, &SubmitAcceptedEvent{
-			SessionID:               sessionID,
-			ArkPSBT:                 nil,
-			CoSignedCheckpointPSBTs: checkpoints,
-		},
-	)
-	require.NoError(t, err)
-
-	decodedSessionID, decodedEvent, err :=
-		decodeDriveEventRequestPayloadWithLimits(raw, ReceiveLimits{})
-	require.NoError(t, err)
-	require.Equal(t, sessionID, decodedSessionID)
-
-	submitEvt, ok := decodedEvent.(*SubmitAcceptedEvent)
-	require.True(t, ok)
-	require.Nil(t, submitEvt.ArkPSBT)
-	require.Equal(t, sessionID, submitEvt.SessionID)
-	require.Len(t, submitEvt.CoSignedCheckpointPSBTs, len(checkpoints))
-}
-
 func clonePSBTForDriveEventTest(t *testing.T, pkt *psbt.Packet) *psbt.Packet {
 	t.Helper()
 

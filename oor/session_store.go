@@ -2,6 +2,8 @@ package oor
 
 import (
 	"context"
+
+	"github.com/btcsuite/btcd/btcutil/psbt"
 )
 
 // StoredClientSession is the SQL-store boundary shape used to rebuild one OOR
@@ -43,4 +45,23 @@ type OORClientIncomingEffectStore interface {
 
 	BuildMaterializeIncomingVTXOsRequest(ctx context.Context,
 		sessionID SessionID) (*MaterializeIncomingVTXOsRequest, error)
+}
+
+// OORClientSigningArtifactStore is the optional SQL artifact boundary used by
+// the signing outbox handler. Persisting signed artifacts before emitting
+// follow-up FSM events makes a restart between signing and FSM advancement
+// replay from SQL rather than asking the signer to produce the same artifacts
+// again.
+type OORClientSigningArtifactStore interface {
+	LoadArkSignedArtifact(ctx context.Context, sessionID SessionID) (
+		*psbt.Packet, bool, error)
+
+	SaveArkSignedArtifact(ctx context.Context, sessionID SessionID,
+		ark *psbt.Packet) error
+
+	LoadFinalCheckpointArtifacts(ctx context.Context, sessionID SessionID,
+		expectedCount int) ([]*psbt.Packet, bool, error)
+
+	SaveFinalCheckpointArtifacts(ctx context.Context, sessionID SessionID,
+		checkpoints []*psbt.Packet) error
 }

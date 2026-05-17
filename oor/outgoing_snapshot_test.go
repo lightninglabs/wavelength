@@ -68,12 +68,9 @@ func TestNewOutgoingSnapshotFinalizeSentMinimality(t *testing.T) {
 	require.Len(t, snapshot.TransferInputSnapshots, 1)
 }
 
-// TestSnapshotRetryMetadataRoundTrip verifies that RetryAfter and retry
-// reason survive TLV encode/decode. This is essential for restart-safe
-// retry scheduling: the actor persists retry metadata alongside the real
-// protocol state so a restarted actor can schedule a timer instead of
-// immediately re-driving the outbox.
-func TestSnapshotRetryMetadataRoundTrip(t *testing.T) {
+// TestSnapshotRetryMetadataRestoresState verifies that retry metadata remains
+// part of the normalized outgoing session state used by the SQL session store.
+func TestSnapshotRetryMetadataRestoresState(t *testing.T) {
 	t.Parallel()
 
 	operatorKey, err := btcec.NewPrivateKey()
@@ -130,21 +127,13 @@ func TestSnapshotRetryMetadataRoundTrip(t *testing.T) {
 	snapshot.RetryAfter = 3 * time.Second
 	snapshot.FailReason = "temporary transport error"
 
-	// Encode and decode the snapshot to simulate checkpoint
-	// persistence.
-	raw, err := encodeOutgoingSnapshot(snapshot)
-	require.NoError(t, err)
+	require.Equal(t, OutgoingPhaseSubmitSent, snapshot.Phase)
+	require.Equal(t, 3*time.Second, snapshot.RetryAfter)
+	require.Equal(t, "temporary transport error", snapshot.FailReason)
+	require.Equal(t, "funding-key-1", snapshot.IdempotencyKey)
 
-	decoded, err := decodeOutgoingSnapshot(raw)
-	require.NoError(t, err)
-
-	require.Equal(t, OutgoingPhaseSubmitSent, decoded.Phase)
-	require.Equal(t, 3*time.Second, decoded.RetryAfter)
-	require.Equal(t, "temporary transport error", decoded.FailReason)
-	require.Equal(t, "funding-key-1", decoded.IdempotencyKey)
-
-	// Verify the decoded snapshot can restore the original state.
-	restored, err := OutgoingStateFromSnapshot(decoded)
+	// Verify the normalized snapshot can restore the original state.
+	restored, err := OutgoingStateFromSnapshot(snapshot)
 	require.NoError(t, err)
 	restoredSubmit, ok := restored.(*AwaitingSubmitAccepted)
 	require.True(t, ok)

@@ -146,7 +146,13 @@ func ParseSubmitPackageRequest(req *SubmitPackageRequest) (*psbt.Packet,
 // NewSubmitPackageResponse builds a typed proto response for SubmitPackage's
 // success branch. Operator-side rejections use NewSubmitPackageRejection.
 func NewSubmitPackageResponse(sessionID chainhash.Hash,
+	coSignedArk *psbt.Packet,
 	coSignedCheckpoints []*psbt.Packet) (*SubmitPackageResponse, error) {
+
+	arkRaw, err := psbtutil.Serialize(coSignedArk)
+	if err != nil {
+		return nil, err
+	}
 
 	checkpointRaw, err := encodePSBTSlice(coSignedCheckpoints)
 	if err != nil {
@@ -158,6 +164,7 @@ func NewSubmitPackageResponse(sessionID chainhash.Hash,
 			Success: &SubmitPackageSuccess{
 				SessionId:               sessionID.CloneBytes(),
 				CoSignedCheckpointPsbts: checkpointRaw,
+				CoSignedArkPsbt:         arkRaw,
 			},
 		},
 	}, nil
@@ -189,37 +196,42 @@ func NewSubmitPackageRejection(sessionID chainhash.Hash, code OORRejectCode,
 // carries a rejection branch; callers can recover the typed code and
 // reason via errors.As.
 func ParseSubmitPackageResponse(resp *SubmitPackageResponse) (chainhash.Hash,
-	[]*psbt.Packet, error) {
+	*psbt.Packet, []*psbt.Packet, error) {
 
 	if resp == nil {
-		return chainhash.Hash{}, nil,
+		return chainhash.Hash{}, nil, nil,
 			fmt.Errorf("submit response is required")
 	}
 
 	switch r := resp.Result.(type) {
 	case *SubmitPackageResponse_Success:
 		if r.Success == nil {
-			return chainhash.Hash{}, nil,
+			return chainhash.Hash{}, nil, nil,
 				fmt.Errorf("submit success branch is empty")
 		}
 
 		sessionID, err := decodeSessionID(r.Success.SessionId)
 		if err != nil {
-			return chainhash.Hash{}, nil, err
+			return chainhash.Hash{}, nil, nil, err
+		}
+
+		ark, err := psbtutil.Parse(r.Success.CoSignedArkPsbt)
+		if err != nil {
+			return chainhash.Hash{}, nil, nil, err
 		}
 
 		checkpoints, err := decodePSBTSlice(
 			r.Success.CoSignedCheckpointPsbts,
 		)
 		if err != nil {
-			return chainhash.Hash{}, nil, err
+			return chainhash.Hash{}, nil, nil, err
 		}
 
-		return sessionID, checkpoints, nil
+		return sessionID, ark, checkpoints, nil
 
 	case *SubmitPackageResponse_Rejection:
 		if r.Rejection == nil {
-			return chainhash.Hash{}, nil,
+			return chainhash.Hash{}, nil, nil,
 				fmt.Errorf("submit rejection branch is empty")
 		}
 
@@ -232,17 +244,17 @@ func ParseSubmitPackageResponse(resp *SubmitPackageResponse) (chainhash.Hash,
 		// a non-routable rejection.
 		sessionID, err := decodeSessionID(r.Rejection.SessionId)
 		if err != nil {
-			return chainhash.Hash{}, nil, fmt.Errorf("decode "+
+			return chainhash.Hash{}, nil, nil, fmt.Errorf("decode "+
 				"rejected session id: %w", err)
 		}
 
-		return sessionID, nil, &SubmitRejectedError{
+		return sessionID, nil, nil, &SubmitRejectedError{
 			Code:   r.Rejection.Code,
 			Reason: r.Rejection.Reason,
 		}
 
 	default:
-		return chainhash.Hash{}, nil,
+		return chainhash.Hash{}, nil, nil,
 			fmt.Errorf("submit response carries no result branch")
 	}
 }

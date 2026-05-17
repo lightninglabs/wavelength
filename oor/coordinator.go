@@ -15,8 +15,7 @@ import (
 // mailbox.
 //
 // It keeps the existing deterministic FSM handlers for now, but the caller
-// invokes it directly. This is an interim adapter while client OOR moves from
-// the local actor checkpoint to domain SQL tables.
+// invokes it directly.
 type ClientCoordinator struct {
 	cfg      ClientActorCfg
 	behavior *oorDurableBehavior
@@ -101,9 +100,7 @@ func (c *ClientCoordinator) Start(ctx context.Context) error {
 		return fmt.Errorf("session store must be provided")
 	}
 
-	result := c.behavior.restoreCheckpointBytes(
-		ctx, false, nil,
-	)
+	result := c.behavior.restoreSessionState(ctx)
 	if result.IsErr() {
 		return result.Err()
 	}

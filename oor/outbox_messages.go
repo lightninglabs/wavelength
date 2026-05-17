@@ -456,13 +456,10 @@ func (m *SendIncomingAckRequest) CorrelationKey() string {
 
 // ToProto converts SendIncomingAckRequest to a protobuf message.
 func (m *SendIncomingAckRequest) ToProto() fn.Result[proto.Message] {
-	payload, err := encodeSessionPayload(m.SessionID)
-	if err != nil {
-		return fn.Err[proto.Message](err)
-	}
-
 	return fn.Ok[proto.Message](
-		protoEnvelope("SendIncomingAckRequest", payload),
+		protoEnvelope(
+			"SendIncomingAckRequest", sessionIDBytes(m.SessionID),
+		),
 	)
 }
 

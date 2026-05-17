@@ -5,14 +5,18 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	clientdb "github.com/lightninglabs/darepo-client/db"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	libtypes "github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/oor"
 )
 
@@ -44,6 +48,7 @@ const (
 
 type oorClientSQLSessionStore struct {
 	store          *clientdb.OORClientStoreDB
+	packageStore   *clientdb.OORArtifactPersistenceStore
 	limits         oor.ReceiveLimits
 	enqueueEffects bool
 }
@@ -54,8 +59,24 @@ func NewOORClientSQLSessionStore(store *clientdb.OORClientStoreDB,
 	limits oor.ReceiveLimits,
 	enqueueEffects bool) oor.OORClientSessionStore {
 
+	return NewOORClientSQLSessionStoreWithPackageStore(
+		store, nil, limits, enqueueEffects,
+	)
+}
+
+// NewOORClientSQLSessionStoreWithPackageStore adapts the client OOR SQL store
+// and persists incoming ancestor packages before materialization effects are
+// made visible. The package store is optional for tests that do not exercise
+// chained incoming OOR recovery.
+func NewOORClientSQLSessionStoreWithPackageStore(
+	store *clientdb.OORClientStoreDB,
+	packageStore *clientdb.OORArtifactPersistenceStore,
+	limits oor.ReceiveLimits,
+	enqueueEffects bool) oor.OORClientSessionStore {
+
 	return &oorClientSQLSessionStore{
 		store:          store,
+		packageStore:   packageStore,
 		limits:         limits,
 		enqueueEffects: enqueueEffects,
 	}
@@ -64,6 +85,7 @@ func NewOORClientSQLSessionStore(store *clientdb.OORClientStoreDB,
 var _ oor.OORClientSessionStore = (*oorClientSQLSessionStore)(nil)
 var _ oor.OORClientEffectStore = (*oorClientSQLSessionStore)(nil)
 var _ oor.OORClientIncomingEffectStore = (*oorClientSQLSessionStore)(nil)
+var _ oor.OORClientSigningArtifactStore = (*oorClientSQLSessionStore)(nil)
 
 func (s *oorClientSQLSessionStore) LoadActiveSessions(ctx context.Context) (
 	[]oor.StoredClientSession, error) {
@@ -406,11 +428,46 @@ func (s *oorClientSQLSessionStore) SaveIncomingSession(ctx context.Context,
 		)
 	}
 
+	if err := s.persistIncomingSnapshotAncestors(
+		ctx, snapshot,
+	); err != nil {
+		return err
+	}
+
 	return s.store.UpsertSessionBundle(ctx, bundle)
 }
 
-func (s *oorClientSQLSessionStore) SavePendingIncomingHint(
-	ctx context.Context, req *oor.ResolveIncomingTransferRequest) error {
+func (s *oorClientSQLSessionStore) persistIncomingSnapshotAncestors(
+	ctx context.Context, snapshot *oor.IncomingSnapshot) error {
+
+	if s.packageStore == nil || snapshot == nil ||
+		len(snapshot.AncestorPackages) == 0 {
+		return nil
+	}
+
+	for i := range snapshot.AncestorPackages {
+		ancestor := snapshot.AncestorPackages[i]
+		sessionHash := chainhash.Hash(ancestor.SessionID)
+
+		err := s.packageStore.UpsertPackage(
+			ctx, oor.PackageDirectionIncoming, sessionHash,
+			ancestor.ArkPSBT, ancestor.FinalCheckpointPSBTs,
+		)
+		if err == nil ||
+			errors.Is(err, libtypes.ErrOORPackageDirectionConflict) {
+
+			continue
+		}
+
+		return fmt.Errorf("persist incoming ancestor package %s: %w",
+			ancestor.SessionID.String(), err)
+	}
+
+	return nil
+}
+
+func (s *oorClientSQLSessionStore) SavePendingIncomingHint(ctx context.Context,
+	req *oor.ResolveIncomingTransferRequest) error {
 
 	if req == nil {
 		return nil
@@ -610,8 +667,106 @@ func (s *oorClientSQLSessionStore) loadArkPSBT(ctx context.Context,
 	return artifact.ArkPSBT, nil
 }
 
-func (s *oorClientSQLSessionStore) loadCheckpoints(
-	ctx context.Context, sessionID []byte, phase string) ([][]byte, error) {
+func (s *oorClientSQLSessionStore) LoadArkSignedArtifact(ctx context.Context,
+	sessionID oor.SessionID) (*psbt.Packet, bool, error) {
+
+	raw, err := s.loadArkPSBT(ctx, sessionID[:], oorClientArkPhaseArkSigned)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+
+	ark, err := psbtutil.Parse(raw)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return ark, true, nil
+}
+
+func (s *oorClientSQLSessionStore) SaveArkSignedArtifact(ctx context.Context,
+	sessionID oor.SessionID, ark *psbt.Packet) error {
+
+	if ark == nil {
+		return fmt.Errorf("ark psbt must be provided")
+	}
+
+	raw, err := psbtutil.Serialize(ark)
+	if err != nil {
+		return err
+	}
+
+	return s.store.SaveArkArtifact(ctx, clientdb.OORClientArkArtifact{
+		SessionID: sessionID[:],
+		Phase:     oorClientArkPhaseArkSigned,
+		ArkPSBT:   raw,
+	})
+}
+
+func (s *oorClientSQLSessionStore) LoadFinalCheckpointArtifacts(
+	ctx context.Context, sessionID oor.SessionID, expectedCount int) (
+	[]*psbt.Packet, bool, error) {
+
+	raws, err := s.loadCheckpoints(
+		ctx, sessionID[:], oorClientCheckpointPhaseFinalized,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(raws) == 0 || len(raws) != expectedCount {
+		return nil, false, nil
+	}
+
+	checkpoints := make([]*psbt.Packet, 0, len(raws))
+	for i := range raws {
+		checkpoint, err := psbtutil.Parse(raws[i])
+		if err != nil {
+			return nil, false, err
+		}
+
+		checkpoints = append(checkpoints, checkpoint)
+	}
+
+	return checkpoints, true, nil
+}
+
+func (s *oorClientSQLSessionStore) SaveFinalCheckpointArtifacts(
+	ctx context.Context, sessionID oor.SessionID,
+	checkpoints []*psbt.Packet) error {
+
+	if len(checkpoints) == 0 {
+		return fmt.Errorf("checkpoint psbts must be provided")
+	}
+
+	for i := range checkpoints {
+		if checkpoints[i] == nil {
+			return fmt.Errorf("checkpoint psbt %d must be provided",
+				i)
+		}
+
+		raw, err := psbtutil.Serialize(checkpoints[i])
+		if err != nil {
+			return err
+		}
+
+		err = s.store.SaveCheckpoint(ctx, clientdb.OORClientCheckpoint{
+			SessionID:       sessionID[:],
+			CheckpointIndex: int32(i),
+			Phase:           oorClientCheckpointPhaseFinalized,
+			CheckpointPSBT:  raw,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *oorClientSQLSessionStore) loadCheckpoints(ctx context.Context,
+	sessionID []byte, phase string) ([][]byte, error) {
 
 	if phase == "" {
 		return nil, nil

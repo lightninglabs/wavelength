@@ -251,10 +251,10 @@ func (m *DriveEventResponse) actorRespSealed() {}
 // lightweight incoming OOR notification and then resolve the full Ark package
 // asynchronously outside the live actor transaction.
 //
-// The serverconn dispatcher persists only the lightweight hint into the durable
-// OOR mailbox. The actor checkpoints a resolve-pending receive state first,
-// then performs the follow-up unary RPC on a detached callback path so restart
-// can safely re-drive the work.
+// The serverconn dispatcher persists only the lightweight hint. OOR stores a
+// resolve-pending receive state in its SQL session store, then performs the
+// follow-up unary RPC on a detached callback path so restart can safely
+// re-drive the work.
 type ResolveIncomingTransferRequest struct {
 	actor.BaseMessage
 
@@ -317,7 +317,7 @@ func (m *GetStateResponse) actorRespSealed() {}
 type RestoreSessionRequest struct {
 	actor.BaseMessage
 
-	// Snapshot is the durable-ish client-side snapshot for an outgoing
+	// Snapshot is the explicit client-side export shape for an outgoing
 	// transfer.
 	Snapshot *OutgoingSnapshot
 }

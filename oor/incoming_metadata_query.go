@@ -34,9 +34,8 @@ type IncomingMetadataResolvedEvent struct {
 func (e *IncomingMetadataResolvedEvent) eventSealed() {}
 
 // EncodeIncomingMetadataMatch serializes one incoming metadata match as a
-// named SQL artifact. The format is the same stable TLV shape historically
-// used by the OOR actor checkpoint, but callers persist it under a domain
-// column rather than as an actor payload.
+// named SQL artifact. The format is a stable TLV shape persisted under domain
+// columns rather than as an actor payload.
 func EncodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 	return encodeIncomingMetadataMatch(match)
 }

@@ -58,8 +58,8 @@ func OutboxForIncomingState(state SessionState) ([]OutboxEvent, error) {
 // session state.
 //
 // This is used to support explicit retry/resume logic: after a restart, the app
-// can either rely on durable-actor restart handling or explicitly call
-// submit/finalize request (or re-request signing steps).
+// rehydrates SQL-backed session state and can re-emit the side effect implied
+// by that state.
 func OutboxForState(state State) ([]OutboxEvent, error) {
 	if state == nil {
 		return nil, fmt.Errorf("state must be provided")

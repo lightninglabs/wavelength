@@ -76,7 +76,7 @@ type OutgoingSnapshot struct {
 	CheckpointPSBTs [][]byte
 
 	// TransferInputs are kept for in-process state handling.
-	// Durable snapshot encoding uses TransferInputSnapshots.
+	// Portable snapshot encoding uses TransferInputSnapshots.
 	TransferInputs []TransferInput
 
 	// TransferInputSnapshots are a portable encoding of

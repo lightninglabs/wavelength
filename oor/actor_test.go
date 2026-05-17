@@ -1158,44 +1158,6 @@ func TestOORClientActorUsesConfiguredIncomingMetadataQueryLimit(t *testing.T) {
 	require.EqualValues(t, 7, query.Limit)
 }
 
-// TestOORDomainPayloadDecodersUseConfiguredLimits verifies the reusable domain
-// payload decoders still apply receive caps after actor messages stopped being
-// serialized through the mailbox codec.
-func TestOORDomainPayloadDecodersUseConfiguredLimits(t *testing.T) {
-	t.Parallel()
-
-	// MaxCheckpoints and MaxVTXOMatches are covered at the adapter layer in
-	// receive_limits_test.go; this test covers the reusable payload decode
-	// caps that remain for SQL/domain byte payloads.
-	limits := ReceiveLimits{
-		MaxMailboxItems:       1,
-		MaxMailboxScriptBytes: 1,
-	}
-
-	startRaw, err := encodeStartTransferPayload(startTransferPayload{
-		Recipients: []recipientPayload{
-			{PkScript: []byte{0x51}},
-			{PkScript: []byte{0x52}},
-		},
-	})
-	require.NoError(t, err)
-
-	_, err = decodeStartTransferPayloadWithLimits(startRaw, limits)
-	require.ErrorContains(t, err, "blob list count 2 exceeds limit 1")
-
-	resolveRaw, err := encodeResolveIncomingTransferPayload(
-		SessionID{0x03}, []byte{0x51, 0x20}, 1,
-	)
-	require.NoError(t, err)
-
-	_, _, _, err = decodeResolveIncomingTransferPayloadWithLimits(
-		resolveRaw, limits,
-	)
-	require.ErrorContains(
-		t, err, "recipient pk_script length 2 exceeds limit 1",
-	)
-}
-
 // TestOORClientActorTransportViaServerConn verifies that transport outbox
 // events (submit, finalize, ack) are Tell'd to the serverconn actor when
 // configured, while local events (signing, persistence) continue through
@@ -1376,12 +1338,11 @@ func TestOORClientActorTransportViaServerConn(t *testing.T) {
 	require.Equal(t, len(inputs), packageStore.bindingCalls)
 }
 
-// TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment verifies that a
-// SubmitAcceptedEvent with nil ArkPSBT is enriched from the session's
-// AwaitingSubmitAccepted state. This is the production path for server-push
-// events dispatched via the EventRouter, where the oorpb proto response
-// does not echo the Ark PSBT back.
-func TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
+// TestOORClientActorSubmitAcceptedRequiresArkPSBT verifies that
+// SubmitAcceptedEvent must carry the operator-co-signed Ark PSBT. Falling back
+// to the pre-submit Ark PSBT would persist a non-broadcastable ancestry
+// artifact for chained recovery.
+func TestOORClientActorSubmitAcceptedRequiresArkPSBT(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -1461,9 +1422,9 @@ func TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Drive with a SubmitAcceptedEvent that has nil ArkPSBT, simulating
-	// a server-push event dispatched via the EventRouter. The actor
-	// should enrich ArkPSBT from the AwaitingSubmitAccepted state.
+	// Drive with a SubmitAcceptedEvent that has nil ArkPSBT. The actor must
+	// reject it rather than falling back to the client-only submit
+	// artifact.
 	driveResp := actor.Receive(ctx, &DriveEventRequest{
 		SessionID: sessionID,
 		Event: &SubmitAcceptedEvent{
@@ -1472,20 +1433,8 @@ func TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
 			CoSignedCheckpointPSBTs: submitMsg.CheckpointPSBTs,
 		},
 	})
-	require.True(
-		t, driveResp.IsOk(),
-		"expected enrichment to succeed, got: %v", driveResp.Err(),
-	)
-
-	// The FSM should have advanced past AwaitingSubmitAccepted.
-	stateResp := actor.Receive(ctx, &GetStateRequest{
-		SessionID: sessionID,
-	})
-	require.True(t, stateResp.IsOk())
-
-	stateMsg, ok := stateResp.UnwrapOr(nil).(*GetStateResponse)
-	require.True(t, ok)
-	require.IsType(t, &AwaitingFinalizeAccepted{}, stateMsg.State)
+	require.True(t, driveResp.IsErr())
+	require.ErrorContains(t, driveResp.Err(), "ark psbt must be provided")
 }
 
 // TestOORClientActorSkipsMissingConsumedInputBinding verifies that

@@ -857,7 +857,7 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	}
 
 	// -------------------------------------------------------
-	// 5. Open the database and create the delivery store.
+	// 5. Open the database and stores.
 	// -------------------------------------------------------
 	if err := s.initDatabase(ctx); err != nil {
 		return err
@@ -871,7 +871,7 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
 
 	// Start the ledger accounting actor. This must happen after
-	// the DB and delivery store are ready but does not depend on
+	// the DB stores are ready but does not depend on
 	// the wallet being unlocked.
 	if err := s.initLedgerActor(ctx); err != nil {
 		return err
@@ -2229,7 +2229,7 @@ func (s *Server) registerOORCoordinatorEventRoutes(
 						p)
 				}
 
-				sessionID, checkpoints, err :=
+				sessionID, arkPSBT, checkpoints, err :=
 					oorpb.ParseSubmitPackageResponse(resp)
 
 				var rejected *oorpb.SubmitRejectedError
@@ -2257,7 +2257,10 @@ func (s *Server) registerOORCoordinatorEventRoutes(
 				return handle(ctx, &oor.DriveEventRequest{
 					SessionID: oor.SessionID(sessionID),
 					Event: &oor.SubmitAcceptedEvent{
-						SessionID:               oor.SessionID(sessionID),
+						SessionID: oor.SessionID(
+							sessionID,
+						),
+						ArkPSBT:                 arkPSBT,
 						CoSignedCheckpointPSBTs: checkpoints,
 					},
 				})
@@ -2707,9 +2710,8 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 	return nil
 }
 
-// initDatabase opens the SQLite database and creates the actor
-// delivery store used by the serverconn runtime for at-least-once
-// envelope delivery.
+// initDatabase opens the SQLite database and creates the stores used by
+// SQL-backed subsystem durability and mailbox transport.
 //
 //nolint:contextcheck // database constructor owns migration startup context
 func (s *Server) initDatabase(ctx context.Context) error {
@@ -3439,9 +3441,11 @@ func (s *Server) initOORActor(ctx context.Context,
 
 	oorSQLStore := &oorClientSQLSessionStore{
 		store:          s.oorClientStore,
+		packageStore:   packageStore,
 		limits:         s.cfg.OORReceiveLimits(),
 		enqueueEffects: true,
 	}
+	signingHandler.SigningArtifactStore = oorSQLStore
 
 	s.oorCoordinator = oor.NewClientCoordinator(oor.ClientActorCfg{
 		Log:           fn.Some(s.subLogger(oor.Subsystem)),
