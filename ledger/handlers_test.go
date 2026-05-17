@@ -1,18 +1,14 @@
 package ledger
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"math"
 	"sync"
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightningnetwork/lnd/clock"
-	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1027,10 +1023,10 @@ func (f *failingLedgerStore) InsertLedgerEntry(_ context.Context,
 // returns an error instead of silently misclassifying the entry.
 // TestHandleNonPositiveAmounts exercises the early-return guards
 // on every handler that writes a single positive-amount ledger
-// entry. A corrupt TLV that decodes to a zero or negative amount
+// entry. A corrupt message that decodes to a zero or negative amount
 // must surface as ErrInvalidMessage (rejection dead-letters at
 // the mailbox layer) rather than hitting the SQL CHECK and
-// driving an infinite durable retry.
+// driving an infinite retry loop.
 func TestHandleNonPositiveAmounts(t *testing.T) {
 	t.Parallel()
 
@@ -1102,55 +1098,6 @@ func TestHandleNonPositiveAmounts(t *testing.T) {
 			})
 		}
 	}
-}
-
-// TestDecodeAmountSatOverflow exercises the int64 narrowing
-// guard on the TLV Decode path. A corrupt payload whose satoshi
-// field exceeds math.MaxInt64 must surface as ErrInvalidMessage
-// rather than silently producing a negative int64 that the
-// handler (or the SQL CHECK) would later reject with a less
-// actionable error. The single-case structure here keeps the
-// addressable temporaries local: tlv.MakePrimitiveRecord needs
-// pointers to backing storage, and the test frame happily gives
-// them stack lifetimes.
-func TestDecodeAmountSatOverflow(t *testing.T) {
-	t.Parallel()
-
-	// Full 16-byte RoundID so the fixed-length guard accepts
-	// it and the overflow guard is the next thing that fires.
-	roundIDArr := [16]byte{
-		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-	}
-	roundID := roundIDArr[:]
-	over := uint64(math.MaxInt64) + 1
-	feeType := []byte("boarding_fee")
-	height := uint32(100)
-
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(
-			feePaidRoundIDType, &roundID,
-		),
-		tlv.MakePrimitiveRecord(
-			feePaidAmountSatType, &over,
-		),
-		tlv.MakePrimitiveRecord(
-			feePaidFeeTypeType, &feeType,
-		),
-		tlv.MakePrimitiveRecord(
-			feePaidBlockHeightType, &height,
-		),
-	)
-	require.NoError(t, err)
-
-	var buf bytes.Buffer
-	require.NoError(t, stream.Encode(&buf))
-
-	m := &FeePaidMsg{}
-	err = m.Decode(&buf)
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrInvalidMessage)
-	require.Contains(t, err.Error(), "exceeds int64 range")
 }
 
 func TestHandleFeePaidUnknownType(t *testing.T) {
@@ -1272,8 +1219,8 @@ func TestHandleUTXOCreated(t *testing.T) {
 // TestHandleUTXOCreatedRejectsNonPositive locks in the validation
 // guard: a zero or negative AmountSat on UTXOCreatedMsg is a
 // malformed caller payload (impossible on-chain but reachable
-// via a corrupt TLV). The handler must return ErrInvalidMessage
-// and write nothing to either store, so a malformed durable
+// via a corrupt message). The handler must return ErrInvalidMessage
+// and write nothing to either store, so a malformed
 // message dead-letters cleanly instead of hitting the SQL
 // CHECK (amount_sat > 0) and driving an infinite retry.
 func TestHandleUTXOCreatedRejectsNonPositive(t *testing.T) {
@@ -1438,176 +1385,4 @@ func TestHandleUTXOCreatedNoAuditStore(t *testing.T) {
 	// Should not error even without UTXOAuditStore.
 	err := a.handleUTXOCreated(ctx, msg)
 	require.NoError(t, err)
-}
-
-// TestMessageTLVRoundTrip verifies that all client message types
-// can be encoded and decoded without data loss.
-func TestMessageTLVRoundTrip(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		msg  LedgerMsg
-		new  func() LedgerMsg
-	}{
-		{
-			name: "FeePaid",
-			msg: &FeePaidMsg{
-				RoundID: [16]byte{
-					1,
-					2,
-					3,
-				},
-				AmountSat:   999,
-				FeeType:     FeeTypeBoarding,
-				BlockHeight: 800_000,
-			},
-			new: func() LedgerMsg {
-				return &FeePaidMsg{}
-			},
-		},
-		{
-			name: "VTXOReceived",
-			msg: &VTXOReceivedMsg{
-				OutpointHash: [32]byte{
-					0xaa,
-				},
-				OutpointIndex: 42,
-				AmountSat:     50_000,
-				Source:        SourceOOR,
-				RoundID: [16]byte{
-					4,
-					5,
-					6,
-				},
-			},
-			new: func() LedgerMsg {
-				return &VTXOReceivedMsg{}
-			},
-		},
-		{
-			name: "VTXOSentOOR",
-			msg: &VTXOSentMsg{
-				SessionID: [32]byte{
-					0xbb,
-				},
-				AmountSat: 10_000,
-			},
-			new: func() LedgerMsg {
-				return &VTXOSentMsg{}
-			},
-		},
-		{
-			name: "VTXOSentInRound",
-			msg: &VTXOSentMsg{
-				RoundID: [16]byte{
-					0xcc,
-					0xdd,
-				},
-				AmountSat: 20_000,
-			},
-			new: func() LedgerMsg {
-				return &VTXOSentMsg{}
-			},
-		},
-		{
-			name: "ExitCost",
-			msg: &ExitCostMsg{
-				OutpointHash: [32]byte{
-					0xcc,
-				},
-				OutpointIndex: 1,
-				AmountSat:     100_000,
-				ExitCostSat:   5_000,
-				BlockHeight:   800_500,
-			},
-			new: func() LedgerMsg {
-				return &ExitCostMsg{}
-			},
-		},
-		{
-			name: "UTXOCreated",
-			msg: &UTXOCreatedMsg{
-				OutpointHash: [32]byte{
-					0xdd,
-				},
-				OutpointIndex:  7,
-				AmountSat:      30_000,
-				BlockHeight:    800_200,
-				Classification: ClassificationDeposit,
-			},
-			new: func() LedgerMsg {
-				return &UTXOCreatedMsg{}
-			},
-		},
-		{
-			name: "UTXOSpent",
-			msg: &UTXOSpentMsg{
-				OutpointHash: [32]byte{
-					0xee,
-				},
-				OutpointIndex:  2,
-				AmountSat:      45_000,
-				BlockHeight:    800_300,
-				Classification: ClassificationRoundFunding,
-			},
-			new: func() LedgerMsg {
-				return &UTXOSpentMsg{}
-			},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			// Encode.
-			var buf []byte
-			w := &bytesWriter{buf: &buf}
-			err := tc.msg.Encode(w)
-			require.NoError(t, err)
-
-			// Decode.
-			decoded := tc.new()
-			r := &bytesReader{buf: buf}
-			err = decoded.Decode(r)
-			require.NoError(t, err)
-
-			// Verify TLV type and field content
-			// match after round-trip.
-			require.Equal(t,
-				tc.msg.TLVType(),
-				decoded.TLVType(),
-			)
-			require.Equal(t, tc.msg, decoded)
-		})
-	}
-}
-
-// bytesWriter is a simple io.Writer backed by a byte slice.
-type bytesWriter struct {
-	buf *[]byte
-}
-
-func (w *bytesWriter) Write(p []byte) (int, error) {
-	*w.buf = append(*w.buf, p...)
-
-	return len(p), nil
-}
-
-// bytesReader is a simple io.Reader backed by a byte slice.
-type bytesReader struct {
-	buf []byte
-	off int
-}
-
-func (r *bytesReader) Read(p []byte) (int, error) {
-	if r.off >= len(r.buf) {
-		return 0, io.EOF
-	}
-
-	n := copy(p, r.buf[r.off:])
-	r.off += n
-
-	return n, nil
 }

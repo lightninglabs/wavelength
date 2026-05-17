@@ -87,7 +87,7 @@ const (
 
 // Canonical FeePaidMsg.FeeType values. A misspelled or missing
 // fee type is rejected by handleFeePaid with an explicit error
-// so durable-mailbox replays surface caller bugs loudly instead
+// so caller retries surface caller bugs loudly instead
 // of silently misclassifying the entry.
 //
 // FeeTypeBoarding and FeeTypeRefresh book operator (Ark protocol)
@@ -302,7 +302,7 @@ var (
 
 // NewLedgerActor creates a new client-side ledger actor
 // instance. This is a pure constructor that performs no I/O.
-// Call Start to initialize the durable runtime.
+// Call Start to initialize the actor runtime.
 func NewLedgerActor(cfg ActorConfig) *LedgerActor {
 	actorID := cfg.ActorID
 	if actorID == "" {

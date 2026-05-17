@@ -44,11 +44,11 @@ func sessionIDOrNil(id [32]byte) []byte {
 func (a *LedgerActor) handleFeePaid(ctx context.Context,
 	msg *FeePaidMsg) error {
 
-	// Reject non-positive amounts up front so a malformed TLV
+	// Reject non-positive amounts up front so a malformed message
 	// (e.g. a zero payload or a uint64 that decoded past
 	// math.MaxInt64) surfaces as ErrInvalidMessage instead of
-	// hitting the SQL CHECK constraint and driving a durable
-	// retry loop on a permanent failure.
+	// hitting the SQL CHECK constraint and driving a retry
+	// loop on a permanent failure.
 	if msg.AmountSat <= 0 {
 		return fmt.Errorf("%w: FeePaidMsg amount_sat must be positive "+
 			"(got %d)", ErrInvalidMessage, msg.AmountSat)
@@ -449,9 +449,9 @@ func exitIdempotencyKey(hash [32]byte, index uint32) []byte {
 //     without this deposit leg wallet_balance would drift negative
 //     on every boarding.
 //
-// Both inserts join the outer durable-actor transaction via
+// Both inserts join the outer SQL transaction via
 // actor.TxFromContext / db.TransactionExecutor.ExecTx, so a crash
-// between them rolls back both together with the mailbox ack.
+// between them rolls back both together with the surrounding operation.
 // The ledger leg uses an outpoint-derived idempotency key so a
 // replayed UTXOCreatedMsg dedupes silently via the partial unique
 // index idx_client_ledger_idempotent_key.
@@ -462,11 +462,11 @@ func exitIdempotencyKey(hash [32]byte, index uint32) []byte {
 // double-entry row must wire the audit store.
 //
 // Non-positive amounts are rejected up front with ErrInvalidMessage
-// so a malformed TLV dead-letters instead of hitting the SQL
+// so a malformed message dead-letters instead of hitting the SQL
 // CHECK (amount_sat > 0) and driving an infinite nack-and-retry
 // loop. A zero/negative on-chain UTXO is impossible in practice
 // (wire enforces MaxSatoshi bounds on tx outputs) but the guard
-// closes the last corruption gap on the TLV decode path.
+// closes the last corruption gap on the message validation path.
 func (a *LedgerActor) handleUTXOCreated(ctx context.Context,
 	msg *UTXOCreatedMsg) error {
 
