@@ -19,7 +19,25 @@ const (
 	defaultEffectLease     = 30 * time.Second
 	defaultEffectInterval  = time.Second
 	defaultEffectRetry     = 2 * time.Second
+
+	unrollEffectSubscribeBlocks         = "subscribe_blocks"
+	unrollEffectWatchTargetSpend        = "watch_target_spend"
+	unrollEffectEnsureTxConfirmed       = "ensure_tx_confirmed"
+	unrollEffectWatchDeferredCheckpoint = "watch_deferred_checkpoint"
+	unrollEffectBuildSweep              = "build_sweep"
+	unrollEffectEnsureSweepConfirmed    = "ensure_sweep_confirmed"
+	unrollEffectNotifyRegistry          = "notify_registry"
 )
+
+var validUnrollEffectTypes = map[string]struct{}{
+	unrollEffectSubscribeBlocks:         {},
+	unrollEffectWatchTargetSpend:        {},
+	unrollEffectEnsureTxConfirmed:       {},
+	unrollEffectWatchDeferredCheckpoint: {},
+	unrollEffectBuildSweep:              {},
+	unrollEffectEnsureSweepConfirmed:    {},
+	unrollEffectNotifyRegistry:          {},
+}
 
 // EffectStore is the SQL retry surface for unroll side effects.
 type EffectStore interface {
@@ -204,6 +222,11 @@ func (w *EffectWorker) RunOnce(ctx context.Context) error {
 
 func (w *EffectWorker) handleEffect(ctx context.Context,
 	effect db.UnrollEffectRecord) error {
+
+	if _, ok := validUnrollEffectTypes[effect.EffectType]; !ok {
+		return fmt.Errorf("unknown unroll effect type %q",
+			effect.EffectType)
+	}
 
 	_, err := w.registry.Ask(ctx, &replayUnrollEffectMsg{
 		Outpoint: effect.TargetOutpoint,

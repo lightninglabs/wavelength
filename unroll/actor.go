@@ -288,7 +288,7 @@ func (b *behavior) handleEvent(ctx context.Context,
 //     IO; this call returns synchronously with the new state persisted
 //     in the FSM session.
 //
-//  2. Persist: write the resulting job to the delivery store
+//  2. Persist: write the resulting job to the SQL job store
 //     BEFORE doing any IO on the outbox. If the process crashes between
 //     the FSM transition and the outbox routing, restart restores the
 //     exact same state that was in memory and re-emits the outbox via
@@ -588,7 +588,7 @@ func (b *behavior) stateResponse() *GetStateResp {
 // The load is lazy (not done in NewVTXOUnrollActor) for two reasons:
 //
 //   - On restore, the job has already been pulled from the
-//     delivery store but the chain subscription and FSM session should
+//     SQL job store but the chain subscription and FSM session should
 //     only spin up once the first real event arrives. Booting the actor
 //     must not fail if chainsource is momentarily unresponsive.
 //

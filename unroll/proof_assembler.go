@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	txoor "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightninglabs/darepo-client/vtxo"
 )
@@ -485,62 +486,43 @@ func extractFinalizedTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
 		}
 	}
 
-	for i := range cloned.Inputs {
-		if len(cloned.Inputs[i].FinalScriptWitness) > 0 {
-			continue
-		}
-
-		if err := psbt.Finalize(cloned, i); err == nil {
-			continue
-		}
-
-		err := finalizeTaprootScriptSpend(
-			&cloned.Inputs[i],
-		)
-		if err != nil {
-			return nil, fmt.Errorf("%w: finalize taproot script "+
-				"spend input %d: %v", ErrUnrollProofInvalid, i,
-				err)
-		}
-	}
-
-	tx, extractErr = psbt.Extract(cloned)
-	if extractErr == nil {
+	tx, witnessErr := extractTxWithPSBTWitnesses(cloned)
+	if witnessErr == nil {
 		return tx, nil
 	}
 
 	return nil, fmt.Errorf("%w: psbt not fully finalized (last extract "+
-		"error: %v)", ErrUnrollProofInvalid, extractErr)
+		"error: %v; witness build error: %v)", ErrUnrollProofInvalid,
+		extractErr, witnessErr)
 }
 
-// finalizeTaprootScriptSpend constructs FinalScriptWitness from PSBT taproot
-// script-spend signature fields.
-func finalizeTaprootScriptSpend(in *psbt.PInput) error {
-	if len(in.TaprootScriptSpendSig) == 0 {
-		return fmt.Errorf("no taproot script spend signatures")
+// extractTxWithPSBTWitnesses builds a broadcastable transaction directly from
+// PSBT taproot witness metadata. This covers the production OOR shape where
+// checkpoint and Ark PSBTs carry TaprootScriptSpendSig/TaprootLeafScript
+// records, but not FinalScriptWitness.
+func extractTxWithPSBTWitnesses(pkt *psbt.Packet) (*wire.MsgTx, error) {
+	switch {
+	case pkt == nil:
+		return nil, fmt.Errorf("psbt must be provided")
+
+	case pkt.UnsignedTx == nil:
+		return nil, fmt.Errorf("psbt missing unsigned tx")
+
+	case len(pkt.Inputs) != len(pkt.UnsignedTx.TxIn):
+		return nil, fmt.Errorf("psbt input count mismatch")
 	}
 
-	if len(in.TaprootLeafScript) == 0 {
-		return fmt.Errorf("no taproot leaf scripts")
+	tx := pkt.UnsignedTx.Copy()
+	for i := range tx.TxIn {
+		witness, err := txoor.BuildTaprootWitness(pkt.Inputs[i])
+		if err != nil {
+			return nil, fmt.Errorf("input %d: %w", i, err)
+		}
+
+		tx.TxIn[i].Witness = witness
 	}
 
-	leaf := in.TaprootLeafScript[0]
-	var witnessItems [][]byte
-	for _, sig := range in.TaprootScriptSpendSig {
-		witnessItems = append(witnessItems, sig.Signature)
-	}
-
-	witnessItems = append(witnessItems, leaf.Script)
-	witnessItems = append(witnessItems, leaf.ControlBlock)
-
-	witness := wire.TxWitness(witnessItems)
-	var buf bytes.Buffer
-	if err := psbt.WriteTxWitness(&buf, witness); err != nil {
-		return fmt.Errorf("encode witness: %w", err)
-	}
-	in.FinalScriptWitness = buf.Bytes()
-
-	return nil
+	return tx, nil
 }
 
 // proofTxFromTreeNode prefers the signed tree transaction when available, but
