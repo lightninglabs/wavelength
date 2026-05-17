@@ -27,6 +27,7 @@ package may import from a higher layer.
 | [`lib/tx/psbtutil`](lib/tx/psbtutil/) | PSBT encoding, decoding, and signature attachment helpers |
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
+| [`fraud`](fraud/) | Recipient-side OOR ancestry fraud detector; watches ancestor outpoints and triggers durable unroll on materialization |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
@@ -74,6 +75,7 @@ package may import from a higher layer.
 | [`harness`](harness/) | Docker-based Bitcoin/LND integration test environment |
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal/actortest`](internal/actortest/) | Durable actor integration tests with real DB backends |
+| [`internal/indexerlimits`](internal/indexerlimits/) | Shared client-side bounds for indexer pagination cursors |
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |
 | [`tools`](tools/) | Development tool dependencies (protoc plugins, sqlc) |

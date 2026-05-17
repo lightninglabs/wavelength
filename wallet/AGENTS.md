@@ -34,11 +34,53 @@ refresh, leave, OOR spend, and directed send flows.
 - `SendVTXOsRequest` / `SendVTXOsResponse` — Ask-request for in-round directed sends. Validates each recipient amount is within `(0, MaxSatoshi]` and that the running total never overflows `int64`, atomically selects and reserves VTXOs via `SelectAndReserveForfeitRequest`, builds forfeit + recipient VTXO intents, and registers with the round actor. Supports dry-run mode for previewing coin selection without committing. Reserved VTXOs are released via a deferred cleanup that uses `context.WithoutCancel` so cleanup survives caller disconnect; on success, a `committed` flag is set to skip the release.
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
 - `VTXODescriptor.EffectivePolicyTemplate` — Decodes the serialized `PolicyTemplate` field on the wallet-level VTXO descriptor using `lib/arkscript`.
+- `SweepSigner` — Interface for the boarding-sweep actor: `input.Signer` +
+  `NewWalletPkScript(ctx) ([]byte, error)`. Intentionally mirrors
+  `unroll.SweepWallet` so the existing per-backend adapters satisfy it
+  without modification.
+- `BoardingSweepStore` — Persistence interface for aggregate boarding-timeout
+  sweeps: `CreatePendingBoardingSweep`, `MarkBoardingSweepPublished`,
+  `MarkBoardingSweepFailed`, `MarkBoardingSweepInputSpent`,
+  `ListBoardingSweeps`, `GetBoardingSweep`, `ListPendingBoardingSweeps`,
+  `FetchBoardingIntentsBySweepableStatuses`, `GetIntent`. The concrete
+  implementation lives in `db/`.
+- `BoardingSweepRecord` — One persisted aggregate sweep + its inputs
+  (`[]BoardingSweepInputRecord`). Carries `Txid`, `Tx`, `TotalAmount`,
+  `FeeAmount`, `FeeRateSatPerVByte`, `VBytes`, `Status`, `CreatedHeight`,
+  `ConfirmedHeight`, `LastError`.
+- `BoardingSweepInputRecord` — One tracked boarding outpoint within an
+  aggregate sweep.
+- `BoardingSweepOutput` — Output record for the sweep transaction destination.
+- `NewBoardingSweep` / `NewBoardingSweepInput` — Insertion shapes passed to
+  `CreatePendingBoardingSweep`.
+- `BoardingSweepTxNotification` / `BoardingSweepSpendNotification` /
+  `BoardingSweepNotificationAck` — Actor-internal messages used by the
+  boarding sweep subsystem for txconfirm callbacks.
+- `ResumeBoardingSweepsRequest` / `ResumeBoardingSweepsResponse` — Ask-message
+  to restart in-flight sweeps after a daemon restart.
+- `WithBoardingSweep(store, signer, chainParams)` — `ArkOption` that wires the
+  boarding-sweep subsystem into the wallet actor. When omitted the RPC paths
+  for boarding sweeps return an explicit error. The txconfirm ref is resolved
+  lazily via the actor receptionist so callers do not need to guarantee
+  actor-init ordering.
+- `PendingBoardRequest` / `PendingBoardRequestStore` — Per-outpoint durable
+  row persisted before each `TriggerBoardMsg` Tell so a crash after persist
+  but before round delivery does not lose the boarding intent.
+- `ReplayPendingBoardRequest` / `ReplayPendingBoardResponse` — Ask-message to
+  re-send pending board requests to the round actor on daemon restart.
+- `BoardingSweepStatusPending` / other `BoardingSweepStatus*` — Lifecycle
+  status constants for the boarding sweep state machine.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager admission types), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants).
-- **Depended on by**: `round` (boarding intents, types: `BoardingAddress`, `SelectedVTXO`), `db` (persistence), `darepod` (wiring).
+- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch
+  notifications), `lib/actormsg` (VTXO manager admission types), `ledger`
+  (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit`
+  constants), `txconfirm` (boarding sweep broadcast + confirmation, resolved
+  lazily via receptionist), `lib/arkscript` (boarding script decode for
+  sweep construction), `walletcore` (`LockID`, `OutputLeaser`).
+- **Depended on by**: `round` (boarding intents, types: `BoardingAddress`,
+  `SelectedVTXO`), `db` (persistence), `darepod` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
   - → `round` (via `lib/actormsg`): `TriggerBoardMsg` (VTXO amounts for
@@ -52,7 +94,14 @@ refresh, leave, OOR spend, and directed send flows.
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`
-  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`
+  - ← `txconfirm` (boarding sweep path, via registered callback):
+    `BoardingSweepTxNotification`, `BoardingSweepSpendNotification`
+  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`,
+    `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`,
+    `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`,
+    `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`,
+    `SendVTXOsRequest`, `ResumeBoardingSweepsRequest`,
+    `ReplayPendingBoardRequest`
 
 ## Invariants
 

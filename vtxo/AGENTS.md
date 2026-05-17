@@ -19,17 +19,26 @@ when the local wallet owns the receive script.
 - `ManagerConfig` — Configuration holding Store, Wallet, ChainSource,
   ActorSystem, ChainParams, ExpiryConfig, RoundActor ref, ChainResolver ref,
   optional `Log`, optional `LedgerSink fn.Option[ledger.Sink]`,
-  `ForfeitVTXOActorAskTimeout`, and `RefreshFeeQuoter`. The manager
-  propagates the sink into each spawned `VTXOActor` for `ExitCostMsg`
-  emissions. `ForfeitVTXOActorAskTimeout` (default 5 s) bounds forfeit
-  and refresh child asks so a blocked child actor cannot monopolize the
-  manager until the outer RPC deadline. Zero uses the default; negative
-  disables the timeout. Spend-path asks keep the caller's context.
+  `ForfeitVTXOActorAskTimeout`, `RefreshFeeQuoter`, and optional
+  `TerminalVTXOObserver func(context.Context, wire.OutPoint) error`. The
+  manager propagates the sink into each spawned `VTXOActor` for `ExitCostMsg`
+  emissions. `ForfeitVTXOActorAskTimeout` (default 5 s) bounds forfeit and
+  refresh child asks so a blocked child actor cannot monopolize the manager
+  until the outer RPC deadline. Zero uses the default; negative disables the
+  timeout. Spend-path asks keep the caller's context.
+  `TerminalVTXOObserver`, when non-nil, is invoked with the outpoint of each
+  VTXO that leaves the manager's active set; enables daemon-local subsystems
+  (e.g. the recipient fraud watcher) to release actor-owned per-VTXO work.
 - `VTXOActorConfig.LedgerSink` — Per-VTXO actor field plumbed from the manager. The `emitExitCost` helper is wired onto the unilateral-exit transition but is currently a no-op pending chain resolver integration: the actor cannot determine the on-chain miner fee until the chain resolver reports the confirmed exit-spend transaction. The emission site exists so a single future change in the chain resolver wiring enables it without touching the FSM transition logic.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).
 - `FilterOptions` / `FilterDescriptors` — VTXO filtering by expiry status, spend state, etc.
 - `GetActiveVTXOCountRequest` / `GetActiveVTXOCountResponse` — Ask-message for querying active VTXO count from the manager.
+- `ListLiveDescriptorsRequest` / `ListLiveDescriptorsResponse` — Ask-message for
+  retrieving the snapshot of VTXO descriptors the manager recovered from durable
+  state at `Start` time. Used by daemon-local subsystems (e.g. the recipient
+  fraud watcher) to re-arm per-VTXO state after a restart without taking a
+  direct dependency on the VTXO store. The slice is caller-owned.
 - `ManagerMsg` / `ManagerResp` — Type aliases for `actormsg.VTXOManagerMsg` / `actormsg.VTXOManagerResp` (admission types live in `lib/actormsg` to avoid import cycles).
 - `IncomingVTXOHandler` — Actor that consumes `arkrpc.IncomingVTXOEvent` push notifications, looks up the receive script in the owned-script store, builds a `Descriptor` (with tapscript derived via `lib/arkscript`), persists it via `VTXOSaver`, and tells the manager via `VTXOsMaterializedNotification`. Only `VTXO_EVENT_TYPE_CREATED` events are acted on; unknown event kinds and unowned scripts are silently ignored. Inputs are validated for outpoint shape, pkScript presence, and `int64`/`MaxSatoshi` value bounds before any DB write.
 - `IncomingVTXOMsg` / `IncomingVTXOResp` — Actor envelope wrapping an `arkrpc.IncomingVTXOEvent` and the `any`-typed response.
@@ -54,6 +63,9 @@ when the local wallet owns the receive script.
   - ← `wallet` (via `lib/actormsg`): `SelectAndReserveSpendRequest`, `ReleaseSpendRequest`, `CompleteSpendRequest`, `ReserveForfeitRequest`, `ReleaseForfeitRequest`, `SelectAndReserveForfeitRequest`
   - ← `chainsource` (via Manager): `BlockEpochEvent`
   - ← `serverconn` (via `EventRouter` route `MethodIncomingVTXO`): `IncomingVTXOMsg` (wrapping `arkrpc.IncomingVTXOEvent`), routed to `IncomingVTXOHandler`
+  - ← API (manager): `ListLiveDescriptorsRequest` (returns startup snapshot of
+    live descriptors for daemon-local subsystems to re-arm per-VTXO state)
+  - ← API (manager): `GetActiveVTXOCountRequest`, `ForceUnrollRequest`
 
 ## Multi-Tree Ancestry
 

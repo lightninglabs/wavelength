@@ -7,7 +7,8 @@ receipts/sends, wallet UTXO deposits, exit costs) as double-entry ledger
 entries and UTXO audit log records. Provides a crash-safe financial audit
 trail for tax reporting and fee transparency. Ledger event types:
 `wallet_utxo_created` (wallet UTXO deposit), `boarding_fee_paid`,
-`refresh_fee_paid`, `onchain_fee_paid`, `vtxo_received`, `vtxo_sent`.
+`refresh_fee_paid`, `onchain_fee_paid`, `boarding_sweep_fee_paid`,
+`vtxo_received`, `vtxo_sent`.
 
 ## Chart of Accounts
 
@@ -45,12 +46,35 @@ accounts, see [docs/fee_ledger.md](../docs/fee_ledger.md).
 - `UTXOAuditStore` — Interface for DB persistence of UTXO audit log entries (implemented by `db.UTXOAuditStoreDB`).
 - `UTXOAuditEntry` — Domain-level UTXO audit record (outpoint, amount, event, block height, classification).
 - `LedgerMsg` / `LedgerResp` — Message and response type constraints for the durable mailbox.
-- `FeePaidMsg` — Records boarding/refresh fee payments.
+- `FeePaidMsg` — Records fee payments. Two flavors:
+  - `FeeTypeBoarding` / `FeeTypeRefresh`: Ark protocol fees paid to the
+    operator during a round. Keyed by `RoundID`; booked as
+    `fees_paid += AmountSat / vtxo_balance -= AmountSat`.
+  - `FeeTypeOnchainSweep`: L1 miner fee paid by a boarding-timeout sweep.
+    Keyed by sweep txid via `IdempotencyKey []byte` (the sweep txid bytes);
+    booked as `onchain_fees += AmountSat / wallet_balance -= AmountSat`.
+    Has no paired `VTXOReceivedMsg`. Emitted by the boarding sweep actor at
+    confirmation time.
+  New field: `IdempotencyKey []byte` (TLV type 9) for dedup on events that
+  carry neither a `RoundID` nor a `SessionID`.
 - `VTXOReceivedMsg` — Records incoming VTXOs. `Source` must be one of `SourceRoundBoarding` (client's own on-chain wallet funds boarded into a round; offsets wallet_balance), `SourceRoundRefresh` (refresh output or directed-send self-change; offsets transfers_out so the paired VTXOSent cancels on that account and only the operator fee moves vtxo_balance), `SourceRoundTransfer` (in-round receive from another participant; offsets transfers_in), or `SourceOOR` (out-of-round receive; offsets transfers_in). Any other value is rejected.
 - `VTXOSentMsg` — Records outgoing VTXO transfers. Carries either `SessionID` (32-byte OOR) or `RoundID` (16-byte in-round) — exactly one must be non-zero; both-zero and both-set inputs are rejected. Also carries an optional `Outpoint wire.OutPoint` so in-round multi-VTXO events (e.g. paired refresh emissions) disambiguate per-VTXO via an outpoint-derived `IdempotencyKey` instead of collapsing on `idx_client_ledger_idempotent_round`.
 - `ExitCostMsg` — Records a unilateral exit as two ledger entries: a send leg (`transfers_out` debit, `vtxo_balance` credit) for the net-of-fee value and a fee leg (`onchain_fees` debit, `vtxo_balance` credit) for the miner fee. Together the credits reduce `vtxo_balance` by the gross exited amount. Wallet-side movement is covered separately by the `wallet_utxo_log` audit trail.
 - `UTXOCreatedMsg` — Records new wallet UTXO confirmations with classification. `handleUTXOCreated` writes TWO rows per event: a `wallet_utxo_log` audit row and a double-entry ledger row (`debit wallet_balance, credit opening_balance`, `event_type = wallet_utxo_created`) stamped with an outpoint-derived idempotency key via `walletUTXOIdempotencyKey`. The deposit leg is what gives `wallet_balance` a non-negative balance in the presence of `SourceRoundBoarding` outflows.
 - `UTXOSpentMsg` — Records wallet UTXO spends with classification. Currently only writes the `wallet_utxo_log` audit row (double-entry leg for non-boarding wallet spends is a planned follow-up).
+
+## Constants
+
+New constants added for boarding-sweep flows:
+- `EventBoardingSweepFeePaid = "boarding_sweep_fee_paid"` — Event type for the
+  miner fee paid by a boarding-timeout sweep transaction.
+- `FeeTypeOnchainSweep = "onchain_sweep"` — Fee type value for `FeePaidMsg`
+  when recording a boarding sweep's L1 miner fee. Booked as
+  `onchain_fees += AmountSat / wallet_balance -= AmountSat`.
+- `ClassificationBoardingSweepInput = "boarding_sweep_input"` — UTXO
+  classification for boarding outputs swept by the boarding-sweep actor.
+- `ClassificationBoardingSweepReturn = "boarding_sweep_return"` — UTXO
+  classification for the change/return output of a boarding sweep.
 
 ## Relationships
 
@@ -109,6 +133,12 @@ pairs of messages:
 - **Unilateral exit:** `ExitCostMsg` with `AmountSat` gross and
   `ExitCostSat` fee. The handler expands this into two ledger entries
   internally (send leg + fee leg).
+- **Boarding-timeout sweep (miner fee):** `FeePaidMsg{FeeType=FeeTypeOnchainSweep,
+  AmountSat=fee, IdempotencyKey=sweepTxidBytes}`. Emitted by the boarding sweep
+  actor at confirmation height. Booked as
+  `onchain_fees += AmountSat / wallet_balance -= AmountSat`. No paired
+  `VTXOReceivedMsg` — the sweep moves on-chain wallet funds to a different
+  wallet address, with the fee as the only balance change.
 
 ## Invariants
 

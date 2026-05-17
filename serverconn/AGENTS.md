@@ -29,7 +29,16 @@ background ingress polling with event routing.
 - **Depends on**: `baselib/actor` (DurableActor infrastructure), `mailbox/*` (Envelope, RpcMeta, MailboxServiceClient).
 - **Depended on by**: `round` (outbound RPCs), `oor` (durable transport), `darepod` (wiring).
 - **Sends (egress → remote mailbox)**:
-  - `SendClientEventRequest` (durable): wraps `JoinRoundRequest`, `JoinRoundAccept`, `JoinRoundReject`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`. `JoinRoundAccept` / `JoinRoundReject` are the explicit responses to a server-issued seal-time `JoinRoundQuote` (#270); both echo the `quote_id` so the server can drop stale responses after a reseal.
+  - `SendClientEventRequest` (durable): wraps `JoinRoundRequest`,
+    `JoinRoundAccept`, `JoinRoundReject`, `SubmitNoncesRequest`,
+    `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`. `JoinRoundAccept` /
+    `JoinRoundReject` echo the `quote_id` so the server can drop stale
+    responses after a reseal. `CorrelationKey()` forwards the inner message's
+    per-key FIFO key (e.g. `"round/<id>"`, `"oor/<session>"`); when the
+    wrapper is decoded from the outbox CDC table the inner type becomes a
+    `rawServerMessage` that no longer carries the key, so `Encode` persists
+    the key in a dedicated TLV record (`correlationKeyRecordTLV = 8`) and
+    `Decode` caches it in `cachedCorrelationKey []byte` for the fallback path.
   - `SendRPCRequest` (unary, non-durable): low-latency request-response RPCs
   - transport-native durable query messages for proof-gated indexer lookups
 - **Routes (ingress → local actors via EventRouter)**:
@@ -44,6 +53,7 @@ background ingress polling with event routing.
 - Ack watermark only advances AFTER durable local dispatch commit (prevents message loss on crash).
 - Unary RPC responses use in-memory registry first; if no waiter exists (crash replay), the ingress falls back to durable EventRouter dispatch. The ResponseRegistry returns a tri-state delivery result (waiter/buffered/dropped) so the ingress knows whether to route durably.
 - `SendClientEventRequest` auto-derives `Service`/`Method` from `Message.ServiceMethod()` when callers leave them empty, preventing silent drops.
+- `SendClientEventRequest.CorrelationKey()` must survive TLV round-trips through the outbox CDC table. `Encode` persists the inner message's key in a dedicated TLV field; `Decode` caches it in `cachedCorrelationKey`. Without this, the decoded wrapper loses the inner key (the inner becomes `*rawServerMessage`) and all outbox events land in the unkeyed durable mailbox lane, erasing the per-key FIFO ordering established by `round` and `oor` outbox messages.
 - Idempotency keys are derived from message payload hash; same key on retry enables server deduplication.
 - Ingress loop checkpoints pull cursor and ack state; on restart, resumes from checkpoint.
 - `DurableUnaryQuery` values are handled generically in `ServerConnectionActor.Receive` via `buildDurableUnary`: the query is converted to a `SendUnaryRequest` using the configured `DurableUnaryRequestBuilder`. Adding a new durable indexer query type requires only implementing `DurableUnaryQuery` — no new `Receive` case is needed.

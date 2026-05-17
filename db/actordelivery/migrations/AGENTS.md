@@ -13,8 +13,10 @@ generic `db/migrate` orchestration layer.
   `"actor_delivery_schema_migrations"`), `DatabaseName` (default
   `"actor_delivery"`), `LatestVersion` (downgrade guard, default
   `LatestMigrationVersion`), optional `Log btclog.Logger`.
-- `LatestMigrationVersion = 1` — Current schema version; bump when adding a
-  new SQL migration file.
+- `LatestMigrationVersion = 2` — Current schema version; bump when adding a
+  new SQL migration file. Version 2 adds the nullable `correlation_key`
+  column on `mailbox_messages` and the filtered composite index that backs
+  the per-correlation-key FIFO anti-join in `LeaseNextMailboxMessage`.
 - `RunMigrations(db, backend, cfg)` — Applies actor-delivery migrations.
   Validates inputs, applies `Config` defaults, delegates to
   `dbmigrate.RunMigrations` with postgres schema token replacements.

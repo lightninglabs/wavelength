@@ -36,7 +36,17 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
   `PhaseSweepBroadcast` / `PhaseSweepConfirmation` / `PhaseCompleted` /
   `PhaseFailed`.
 - `JobState` — Durable FSM state (height, trigger, planner state,
-  `FailReason`, `SweepAttempts`).
+  `FailReason`, `SweepAttempts`, `DeferredCheckpoints []DeferredCheckpoint`).
+- `DeferredCheckpoint` — A fraud-triggered checkpoint transaction that is ready
+  to be materialized but held until `DeadlineHeight` so the operator can
+  confirm it first. Fields: `Txid chainhash.Hash`, `DeadlineHeight int32`.
+- `WatchDeferredCheckpoints` — FSM outbox event asking the actor boundary to
+  watch deferred checkpoints for operator confirmation while waiting for the
+  backstop height. `Txids []chainhash.Hash`.
+- `Config.FraudCheckpointSafetyMargin int32` — Blocks subtracted from a
+  checkpoint's relative-expiry window to compute the recipient backstop
+  deadline under `TriggerFraudSpend`. The margin gives the operator time to
+  publish the checkpoint first. Zero falls back to `defaultFraudCheckpointSafetyMargin`.
 
 ### Registry
 - `UnrollRegistryActor` — Thin coordinator over the set of
