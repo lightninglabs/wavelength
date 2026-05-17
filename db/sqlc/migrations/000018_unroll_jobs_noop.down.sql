@@ -1,0 +1,1 @@
+-- No-op: unroll checkpoint durability was folded into unroll_jobs.

@@ -63,8 +63,7 @@ type Querier interface {
 	// Returns cumulative Ark protocol fees paid to the operator (fees_paid
 	// account only). Does not include L1 chain/miner fees (onchain_fees).
 	GetTotalOperatorFeesPaid(ctx context.Context) (int64, error)
-	GetUnilateralExitJob(ctx context.Context, arg GetUnilateralExitJobParams) (UnilateralExitJob, error)
-	GetUnrollCheckpoint(ctx context.Context, actorID string) (UnrollCheckpoint, error)
+	GetUnrollJob(ctx context.Context, arg GetUnrollJobParams) (UnrollJob, error)
 	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
 	// GetVTXOForfeitTx retrieves the persisted forfeit transaction for a VTXO.
 	// Used during recovery to restore the ForfeitingState with its tx.
@@ -159,9 +158,7 @@ type Querier interface {
 	// Also filter on spent = FALSE to handle VTXOs marked spent via the earlier
 	// flag before the status field was introduced.
 	ListLiveVTXOs(ctx context.Context) ([]Vtxo, error)
-	// Status 4 = Completed, 5 = Failed (anchored to Go iota in
-	// db/unilateral_exit_store.go UnilateralExitJobStatus).
-	ListNonTerminalUnilateralExitJobs(ctx context.Context) ([]UnilateralExitJob, error)
+	ListNonTerminalUnrollJobs(ctx context.Context) ([]UnrollJob, error)
 	ListOORClientArkArtifacts(ctx context.Context, sessionID []byte) ([]OorClientArkArtifact, error)
 	ListOORClientCheckpoints(ctx context.Context, sessionID []byte) ([]OorClientCheckpoint, error)
 	ListOORClientCheckpointsByPhase(ctx context.Context, arg ListOORClientCheckpointsByPhaseParams) ([]OorClientCheckpoint, error)
@@ -215,7 +212,7 @@ type Querier interface {
 	MarkBoardingSweepStatus(ctx context.Context, arg MarkBoardingSweepStatusParams) error
 	MarkMailboxEgressSent(ctx context.Context, arg MarkMailboxEgressSentParams) error
 	MarkOORClientEffectDone(ctx context.Context, arg MarkOORClientEffectDoneParams) error
-	MarkUnilateralExitJobTerminal(ctx context.Context, arg MarkUnilateralExitJobTerminalParams) error
+	MarkUnrollJobTerminal(ctx context.Context, arg MarkUnrollJobTerminalParams) error
 	// MarkVTXOForfeited marks a VTXO as forfeited and records the forfeit
 	// transaction ID and replacement VTXO outpoint. Called when the new round's
 	// commitment transaction confirms.
@@ -233,7 +230,6 @@ type Querier interface {
 	ReleaseMailboxEgressForRetry(ctx context.Context, arg ReleaseMailboxEgressForRetryParams) error
 	ReleaseOORClientEffectForRetry(ctx context.Context, arg ReleaseOORClientEffectForRetryParams) error
 	ReleaseWalletEffectForRetry(ctx context.Context, arg ReleaseWalletEffectForRetryParams) error
-	SaveUnrollCheckpoint(ctx context.Context, arg SaveUnrollCheckpointParams) error
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
@@ -265,8 +261,8 @@ type Querier interface {
 	// intent has already adopted, swept, or failed) are cleared so the next
 	// start is a no-op.
 	UpsertPendingBoardRequest(ctx context.Context, arg UpsertPendingBoardRequestParams) error
-	// Unilateral-exit job control-plane queries.
-	UpsertUnilateralExitJob(ctx context.Context, arg UpsertUnilateralExitJobParams) error
+	// VTXO unroll job queries.
+	UpsertUnrollJob(ctx context.Context, arg UpsertUnrollJobParams) error
 }
 
 var _ Querier = (*Queries)(nil)

@@ -275,8 +275,8 @@ CREATE INDEX idx_rounds_creation_time
 CREATE INDEX idx_rounds_status
     ON rounds(status);
 
-CREATE INDEX idx_unilateral_exit_jobs_status_updated
-    ON unilateral_exit_jobs(status, updated_at DESC);
+CREATE INDEX idx_unroll_jobs_state_updated
+    ON unroll_jobs(state, updated_at DESC);
 
 CREATE INDEX idx_utxo_log_block
     ON wallet_utxo_log(block_height);
@@ -887,7 +887,7 @@ CREATE TABLE rounds (
     FOREIGN KEY (status) REFERENCES round_statuses(status_name)
 );
 
-CREATE TABLE unilateral_exit_jobs (
+CREATE TABLE unroll_jobs (
     -- target_outpoint_hash identifies the target transaction.
     target_outpoint_hash BLOB NOT NULL,
 
@@ -896,32 +896,51 @@ CREATE TABLE unilateral_exit_jobs (
         target_outpoint_index >= 0
     ),
 
-    -- actor_id is the durable actor mailbox id for this target job.
-    actor_id TEXT NOT NULL,
+    -- state is the visible unroll FSM phase.
+    state TEXT NOT NULL CHECK (state IN (
+        'pending',
+        'materializing',
+        'csv_pending',
+        'sweep_broadcast',
+        'sweep_confirmation',
+        'completed',
+        'failed'
+    )),
 
-    -- status is the control-plane job status:
-    --   0 = pending
-    --   1 = materializing
-    --   2 = csv_pending
-    --   3 = sweeping (sweep broadcast, awaiting confirmation)
-    --   4 = completed
-    --   5 = failed
-    --   6 = sweep_broadcasting (sweep built, not yet submitted)
-    status INTEGER NOT NULL,
+    -- trigger identifies what started the job.
+    trigger TEXT NOT NULL CHECK (trigger IN (
+        'manual',
+        'critical_expiry',
+        'restart',
+        'fraud_spend'
+    )),
 
-    -- trigger identifies what started the job:
-    --   0 = manual
-    --   1 = critical_expiry
-    --   2 = restart
-    --   3 = fraud_spend
-    trigger INTEGER NOT NULL,
+    -- best_height is the latest chain height observed by this job.
+    best_height INTEGER NOT NULL,
 
-    -- last_error stores the latest terminal or diagnostic error string.
-    last_error TEXT,
+    -- target_confirm_height records the target confirmation height once known.
+    target_confirm_height INTEGER,
 
-    -- sweep_txid is the 32-byte txid of the final sweep transaction.
-    -- NULL until the sweep is broadcast.
+    -- planner_state is the encoded unroll planner graph cursor.
+    planner_state BLOB NOT NULL,
+
+    -- deferred_checkpoints records fraud-triggered checkpoint deferrals.
+    deferred_checkpoints BLOB,
+
+    -- sweep_tx stores the exact final sweep transaction bytes after build.
+    sweep_tx BLOB,
+
+    -- sweep_txid is the 32-byte txid of the final sweep transaction once known.
     sweep_txid BLOB,
+
+    -- sweep_confirm_height records the sweep confirmation height when known.
+    sweep_confirm_height INTEGER,
+
+    -- sweep_attempts counts sweep build/broadcast attempts.
+    sweep_attempts INTEGER NOT NULL DEFAULT 0,
+
+    -- fail_reason stores the terminal failure when present.
+    fail_reason TEXT,
 
     -- created_at is the unix timestamp when the row was first written.
     created_at BIGINT NOT NULL,
@@ -930,14 +949,6 @@ CREATE TABLE unilateral_exit_jobs (
     updated_at BIGINT NOT NULL,
 
     PRIMARY KEY (target_outpoint_hash, target_outpoint_index)
-);
-
-CREATE TABLE unroll_checkpoints (
-    actor_id   TEXT PRIMARY KEY,
-    state_type TEXT NOT NULL,
-    state_data BLOB NOT NULL,
-    version    BIGINT NOT NULL,
-    updated_at BIGINT NOT NULL
 );
 
 CREATE TABLE utxo_classifications (

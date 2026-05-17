@@ -293,20 +293,18 @@ func (s *Store) NewOORArtifactStore(
 	return NewOORArtifactPersistenceStore(artifactDB, clk)
 }
 
-// NewUnilateralExitStore builds the unilateral-exit persistence store with
-// transactional query execution.
-func (s *Store) NewUnilateralExitStore(
-	clk clock.Clock) *UnilateralExitPersistenceStore {
-
+// NewUnrollJobStore builds the unroll job persistence store with transactional
+// query execution.
+func (s *Store) NewUnrollJobStore(clk clock.Clock) *UnrollJobPersistenceStore {
 	baseDB := s.BaseDB()
 
-	exitDB := NewTransactionExecutor(
+	jobDB := NewTransactionExecutor(
 		baseDB,
-		func(tx *sql.Tx) UnilateralExitStore {
+		func(tx *sql.Tx) UnrollJobStore {
 			return s.queries.WithTx(tx)
 		},
 		s.log,
 	)
 
-	return NewUnilateralExitPersistenceStore(exitDB, clk)
+	return NewUnrollJobPersistenceStore(jobDB, clk)
 }

@@ -2519,14 +2519,14 @@ func (r *RPCServer) GetUnrollStatus(ctx context.Context,
 		}
 	}
 
-	if r.server.ueStore == nil {
+	if r.server.unrollJobStore == nil {
 		return &daemonrpc.GetUnrollStatusResponse{
 			Found: false,
 		}, nil
 	}
 
-	job, err := r.server.ueStore.GetJob(ctx, outpoint)
-	if errors.Is(err, db.ErrUnilateralExitJobNotFound) {
+	job, err := r.server.unrollJobStore.GetJob(ctx, outpoint)
+	if errors.Is(err, db.ErrUnrollJobNotFound) {
 		return &daemonrpc.GetUnrollStatusResponse{
 			Found: false,
 		}, nil
@@ -2551,9 +2551,9 @@ func (r *RPCServer) GetUnrollStatus(ctx context.Context,
 
 	return &daemonrpc.GetUnrollStatusResponse{
 		Found:     true,
-		Status:    unrollJobStatusToProto(job.Status),
+		Status:    unrollJobStateToProto(job.State),
 		SweepTxid: sweepTxid,
-		LastError: job.LastError,
+		LastError: job.FailReason,
 	}, nil
 }
 
@@ -2648,35 +2648,26 @@ func unrollPhaseToProto(phase unroll.Phase) daemonrpc.UnrollJobStatus {
 	}
 }
 
-// unrollJobStatusToProto maps the internal job status to the proto
+// unrollJobStateToProto maps the internal SQL job state to the proto
 // enum.
-func unrollJobStatusToProto(
-	s db.UnilateralExitJobStatus) daemonrpc.UnrollJobStatus {
-
-	switch s {
-	case db.UnilateralExitJobStatusPending:
+func unrollJobStateToProto(state string) daemonrpc.UnrollJobStatus {
+	switch unroll.Phase(state) {
+	case unroll.PhasePending:
 		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING
 
-	case db.UnilateralExitJobStatusMaterializing:
+	case unroll.PhaseMaterializing:
 		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING
 
-	case db.UnilateralExitJobStatusCSVPending:
+	case unroll.PhaseCSVPending:
 		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING
 
-	// SweepBroadcasting is the pre-broadcast persist-before-send
-	// window: the registry has built a sweep tx and written it to
-	// disk but has not yet confirmed mempool acceptance. The client-
-	// visible state collapses this onto SWEEPING so callers see a
-	// single "the sweep is in flight" phase across both the broadcast
-	// and confirmation halves of the sub-FSM.
-	case db.UnilateralExitJobStatusSweepBroadcasting,
-		db.UnilateralExitJobStatusSweeping:
+	case unroll.PhaseSweepBroadcast, unroll.PhaseSweepConfirmation:
 		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING
 
-	case db.UnilateralExitJobStatusCompleted:
+	case unroll.PhaseCompleted:
 		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED
 
-	case db.UnilateralExitJobStatusFailed:
+	case unroll.PhaseFailed:
 		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED
 
 	default:

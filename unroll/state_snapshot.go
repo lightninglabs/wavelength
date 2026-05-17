@@ -9,36 +9,35 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
-// checkpointFromState exports the current protofsm state into the local actor
-// checkpoint shape.
-func checkpointFromState(state State, sweepTx *wire.MsgTx) *actorCheckpoint {
-	checkpoint := &actorCheckpoint{
-		Version: checkpointVersion,
+// snapshotFromState exports the current protofsm state into the local actor
+// snapshot shape.
+func snapshotFromState(state State, sweepTx *wire.MsgTx) *unrollSnapshot {
+	snapshot := &unrollSnapshot{
 		SweepTx: copyTx(sweepTx),
 	}
 
 	if state == nil || isIdleState(state) {
-		return checkpoint
+		return snapshot
 	}
 
 	job := stateJob(state)
-	checkpoint.Height = job.Height
-	checkpoint.Started = true
-	checkpoint.Trigger = job.Trigger
-	checkpoint.State = copyPlannerState(job.PlannerState)
-	checkpoint.DeferredCheckpoints = copyDeferredCheckpoints(
+	snapshot.Height = job.Height
+	snapshot.Started = true
+	snapshot.Trigger = job.Trigger
+	snapshot.State = copyPlannerState(job.PlannerState)
+	snapshot.DeferredCheckpoints = copyDeferredCheckpoints(
 		job.DeferredCheckpoints,
 	)
 	if sweepTxid := effectiveSweepTxid(
 		job.PlannerState, sweepTx,
 	); sweepTxid != nil {
 
-		checkpoint.State.Sweep.Txid = fn.Some(*sweepTxid)
+		snapshot.State.Sweep.Txid = fn.Some(*sweepTxid)
 	}
-	checkpoint.Fail = job.FailReason
-	checkpoint.SweepAttempts = job.SweepAttempts
+	snapshot.Fail = job.FailReason
+	snapshot.SweepAttempts = job.SweepAttempts
 
-	return checkpoint
+	return snapshot
 }
 
 // effectiveSweepTxid returns the durable sweep txid from planner state when
@@ -63,21 +62,21 @@ func effectiveSweepTxid(state unrollplan.State,
 	return &txid
 }
 
-// stateFromCheckpoint restores a concrete protofsm state from the durable
-// checkpoint shape.
-func stateFromCheckpoint(checkpoint *actorCheckpoint) State {
-	if checkpoint == nil || !checkpoint.Started {
+// stateFromSnapshot restores a concrete protofsm state from the durable
+// snapshot shape.
+func stateFromSnapshot(snapshot *unrollSnapshot) State {
+	if snapshot == nil || !snapshot.Started {
 		return &Idle{}
 	}
 
-	deferred := copyDeferredCheckpoints(checkpoint.DeferredCheckpoints)
+	deferred := copyDeferredCheckpoints(snapshot.DeferredCheckpoints)
 	job := &JobState{
-		Height:              checkpoint.Height,
-		Trigger:             checkpoint.Trigger,
-		PlannerState:        copyPlannerState(checkpoint.State),
+		Height:              snapshot.Height,
+		Trigger:             snapshot.Trigger,
+		PlannerState:        copyPlannerState(snapshot.State),
 		DeferredCheckpoints: deferred,
-		FailReason:          checkpoint.Fail,
-		SweepAttempts:       checkpoint.SweepAttempts,
+		FailReason:          snapshot.Fail,
+		SweepAttempts:       snapshot.SweepAttempts,
 	}
 
 	switch phaseFromPlannerState(job) {
@@ -132,7 +131,7 @@ func phaseFromState(state State) Phase {
 }
 
 // phaseFromPlannerState derives a coarse phase from the durable planner state
-// when restoring from checkpoint before the planner is bound.
+// when restoring from snapshot before the planner is bound.
 func phaseFromPlannerState(job *JobState) Phase {
 	if job == nil {
 		return PhasePending

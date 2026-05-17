@@ -1,3 +1,4 @@
+//nolint:ll
 package db
 
 import (

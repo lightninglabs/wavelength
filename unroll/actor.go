@@ -22,12 +22,13 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
-// CheckpointStore is the SQL persistence surface used by one per-target
-// unroll actor. The actor itself is in-memory; restart safety comes from
-// loading and saving this checkpoint around every FSM transition.
-type CheckpointStore interface {
-	SaveCheckpoint(context.Context, db.UnrollCheckpoint) error
-	LoadCheckpoint(context.Context, string) (*db.UnrollCheckpoint, error)
+// JobStore is the SQL persistence surface used by one per-target unroll FSM.
+// The actor itself is in-memory; restart safety comes from loading and saving
+// the target-keyed unroll_jobs row around every FSM transition.
+type JobStore interface {
+	UpsertJob(context.Context, db.UnrollJobRecord) error
+
+	GetJob(context.Context, wire.OutPoint) (*db.UnrollJobRecord, error)
 }
 
 // Config configures one per-target VTXO unroll actor.
@@ -35,12 +36,8 @@ type Config struct {
 	// TargetOutpoint is the VTXO being unrolled.
 	TargetOutpoint wire.OutPoint
 
-	// ActorID is the stable checkpoint/actor ID. When empty it falls back
-	// to a deterministic ID derived from the target.
-	ActorID string
-
-	// CheckpointStore provides SQL checkpoint persistence.
-	CheckpointStore CheckpointStore
+	// JobStore provides SQL job persistence.
+	JobStore JobStore
 
 	// ProofAssembler resolves the immutable local proof for the target.
 	ProofAssembler ProofAssembler
@@ -131,21 +128,18 @@ func (a *VTXOUnrollActor) StopAndWait(ctx context.Context) error {
 
 // NewVTXOUnrollActor creates and starts one VTXO unroll actor.
 func NewVTXOUnrollActor(cfg Config) (*VTXOUnrollActor, error) {
-	if cfg.ActorID == "" {
-		cfg.ActorID = actorIDForTarget(cfg.TargetOutpoint)
-	}
-
 	behavior := &behavior{
 		cfg: cfg,
 		log: cfg.Log.UnwrapOr(btclog.Disabled),
 	}
-	if err := behavior.restoreCheckpoint(context.Background()); err != nil {
+	if err := behavior.restoreJob(context.Background()); err != nil {
 		return nil, err
 	}
 
+	runtimeID := actorIDForTarget(cfg.TargetOutpoint)
 	wg := &sync.WaitGroup{}
 	runtime := actor.NewActor(actor.ActorConfig[Msg, Resp]{
-		ID:          cfg.ActorID,
+		ID:          runtimeID,
 		Behavior:    behavior,
 		MailboxSize: 128,
 		Wg:          wg,
@@ -171,7 +165,7 @@ type behavior struct {
 	planner *unrollplan.Planner
 	desc    *vtxo.Descriptor
 	session *Session
-	pending *actorCheckpoint
+	pending *unrollSnapshot
 
 	sweepTx           *wire.MsgTx
 	blockSubActive    bool
@@ -292,7 +286,7 @@ func (b *behavior) handleEvent(ctx context.Context,
 //     IO; this call returns synchronously with the new state persisted
 //     in the FSM session.
 //
-//  2. Persist: write the resulting checkpoint to the delivery store
+//  2. Persist: write the resulting job to the delivery store
 //     BEFORE doing any IO on the outbox. If the process crashes between
 //     the FSM transition and the outbox routing, restart restores the
 //     exact same state that was in memory and re-emits the outbox via
@@ -314,7 +308,7 @@ func (b *behavior) handleEvent(ctx context.Context,
 //
 // Persist-before-route is the invariant that lets the actor lose its
 // process mid-operation without corrupting on-chain state — every side
-// effect is driven by a checkpoint that is already on disk.
+// effect is driven by a job that is already on disk.
 func (b *behavior) driveEvent(ctx context.Context, event Event) error {
 	if b.session == nil || b.session.FSM == nil {
 		return fmt.Errorf("session not initialized")
@@ -325,7 +319,7 @@ func (b *behavior) driveEvent(ctx context.Context, event Event) error {
 		return err
 	}
 
-	if err := b.persistCheckpoint(ctx); err != nil {
+	if err := b.persistJob(ctx); err != nil {
 		return err
 	}
 
@@ -342,7 +336,7 @@ func (b *behavior) driveEvent(ctx context.Context, event Event) error {
 // hands it to txconfirm for broadcast-and-wait-for-confirmation.
 //
 // Ordering here is load-bearing. The guiding rule is: never cross the
-// actor-boundary with a fresh sweep that the checkpoint has not yet
+// actor-boundary with a fresh sweep that the job has not yet
 // seen. Three consequences of breaking that rule make the order
 // non-obvious:
 //
@@ -360,10 +354,10 @@ func (b *behavior) driveEvent(ctx context.Context, event Event) error {
 //     restart has no trail of the broadcast sweep at all — it would
 //     build a third sweep.
 //
-// The fix is to reuse b.sweepTx (possibly restored from the checkpoint
-// via restoreCheckpoint) when it is already set, and to persist the
-// checkpoint BEFORE asking txconfirm to broadcast. On restart the same
-// transaction materializes from the checkpoint, txconfirm sees the same
+// The fix is to reuse b.sweepTx (possibly restored from the job
+// via restoreJob) when it is already set, and to persist the
+// job BEFORE asking txconfirm to broadcast. On restart the same
+// transaction materializes from the job, txconfirm sees the same
 // txid it has been tracking, and the Ask resolves as a benign no-op.
 //
 // If buildSweepTx itself fails (fee estimation, signing, malformed
@@ -371,7 +365,7 @@ func (b *behavior) driveEvent(ctx context.Context, event Event) error {
 // retry budget is accounted for and we reach terminal Failed after
 // maxSweepAttempts.
 func (b *behavior) startSweep(ctx context.Context) error {
-	// Reuse the sweep tx restored from the checkpoint (or built on a
+	// Reuse the sweep tx restored from the job (or built on a
 	// prior attempt inside this actor lifetime) so we converge on a
 	// single sweep txid / wallet pkScript across retries.
 	if b.sweepTx == nil {
@@ -391,7 +385,7 @@ func (b *behavior) startSweep(ctx context.Context) error {
 	// Persist the built sweep before asking txconfirm to broadcast, so
 	// on any retry the same sweepTx is restored and re-submitted under
 	// txconfirm's dedup rather than a freshly-derived sweep racing it.
-	if err := b.persistCheckpoint(ctx); err != nil {
+	if err := b.persistJob(ctx); err != nil {
 		return err
 	}
 
@@ -436,7 +430,7 @@ func safeTxOutPkScript(tx *wire.MsgTx, index uint32) ([]byte, error) {
 }
 
 // proofNodeHeightHint is the earliest safe confirmation height hint for
-// proof-graph transactions. Roots and intermediate OOR checkpoint ancestors
+// proof-graph transactions. Roots and intermediate OOR job ancestors
 // can confirm before the target descriptor's CreatedHeight, so proof watches
 // must not use the target creation height as a lower bound.
 const proofNodeHeightHint uint32 = 1
@@ -501,7 +495,7 @@ func (b *behavior) ensureNodeConfirmed(ctx context.Context, txid chainhash.Hash,
 }
 
 // watchDeferredCheckpoint registers a confirmation watch for a ready
-// fraud-triggered checkpoint while the actor waits for the operator to confirm
+// fraud-triggered job while the actor waits for the operator to confirm
 // it first.
 func (b *behavior) watchDeferredCheckpoint(ctx context.Context,
 	txid chainhash.Hash, node *recovery.Node) error {
@@ -542,9 +536,9 @@ func (b *behavior) watchDeferredCheckpoint(ctx context.Context,
 }
 
 // deferredCheckpointCallerID returns the stable confirmation-watch caller ID
-// used for all deferred checkpoints in this actor.
+// used for all deferred jobs in this actor.
 func (b *behavior) deferredCheckpointCallerID() string {
-	return b.cfg.ActorID + "-deferred-checkpoint"
+	return actorIDForTarget(b.cfg.TargetOutpoint) + "-deferred-job"
 }
 
 // stateResponse builds the current state response for callers and tests.
@@ -583,7 +577,7 @@ func (b *behavior) stateResponse() *GetStateResp {
 //
 // The load is lazy (not done in NewVTXOUnrollActor) for two reasons:
 //
-//   - On restore, the checkpoint has already been pulled from the
+//   - On restore, the job has already been pulled from the
 //     delivery store but the chain subscription and FSM session should
 //     only spin up once the first real event arrives. Booting the actor
 //     must not fail if chainsource is momentarily unresponsive.
@@ -595,7 +589,7 @@ func (b *behavior) stateResponse() *GetStateResp {
 // Order matters: the planner validates against the proof, the FSM
 // session validates against the planner, and the spend watch needs the
 // proof + descriptor to derive the target pkScript. The final
-// PlannerState.Validate call catches checkpoint/proof drift (e.g. an
+// PlannerState.Validate call catches job/proof drift (e.g. an
 // InFlightTxids entry that no longer resolves in the proof) loudly
 // instead of letting the FSM silently desync.
 func (b *behavior) ensureLoaded(ctx context.Context) error {
@@ -631,7 +625,7 @@ func (b *behavior) ensureLoaded(ctx context.Context) error {
 	if b.session == nil {
 		initialState := State(&Idle{})
 		if b.pending != nil && b.pending.Started {
-			initialState = stateFromCheckpoint(b.pending)
+			initialState = stateFromSnapshot(b.pending)
 		}
 
 		session, err := NewSession(
@@ -701,35 +695,32 @@ func (b *behavior) notificationRef() actor.TellOnlyRef[txconfirm.Notification] {
 	)
 }
 
-// restoreCheckpoint restores durable state from SQL.
-func (b *behavior) restoreCheckpoint(ctx context.Context) error {
-	if b.cfg.CheckpointStore == nil {
-		return fmt.Errorf("checkpoint store must be provided")
+// restoreJob restores durable state from SQL.
+func (b *behavior) restoreJob(ctx context.Context) error {
+	if b.cfg.JobStore == nil {
+		return fmt.Errorf("unroll job store must be provided")
 	}
 
-	checkpoint, err := b.cfg.CheckpointStore.LoadCheckpoint(
-		ctx, b.cfg.ActorID,
-	)
+	record, err := b.cfg.JobStore.GetJob(ctx, b.cfg.TargetOutpoint)
 	if err != nil {
+		if errors.Is(err, db.ErrUnrollJobNotFound) {
+			return nil
+		}
+
 		return err
 	}
 
-	if checkpoint == nil {
+	if record == nil {
 		return nil
 	}
 
-	decoded, err := decodeCheckpoint(checkpoint.StateData)
+	snapshot, err := snapshotFromJobRecord(record)
 	if err != nil {
 		return err
 	}
 
-	if decoded.Version != checkpointVersion {
-		return fmt.Errorf("unknown checkpoint version %d",
-			decoded.Version)
-	}
-
-	b.pending = decoded
-	b.sweepTx = copyTx(decoded.SweepTx)
+	b.pending = snapshot
+	b.sweepTx = copyTx(snapshot.SweepTx)
 
 	return nil
 }
@@ -1142,7 +1133,7 @@ func (b *behavior) ackProofOutputSpend(ctx context.Context,
 // inTerminalState reports whether the FSM has already reached a terminal
 // phase. Late chain notifications can arrive after completion while the
 // registry is draining the child for cleanup; those observations are already
-// reflected in the terminal checkpoint and should ack as idempotent no-ops.
+// reflected in the terminal job and should ack as idempotent no-ops.
 func (b *behavior) inTerminalState() bool {
 	state, err := b.currentState()
 	if err != nil {
@@ -1152,30 +1143,25 @@ func (b *behavior) inTerminalState() bool {
 	return state.IsTerminal()
 }
 
-// persistCheckpoint writes the current SQL checkpoint.
-func (b *behavior) persistCheckpoint(ctx context.Context) error {
+// persistJob writes the current SQL job.
+func (b *behavior) persistJob(ctx context.Context) error {
 	state, err := b.currentState()
 	if err != nil {
 		return err
 	}
 
-	checkpoint := checkpointFromState(state, b.sweepTx)
-	raw, err := encodeCheckpoint(checkpoint)
+	snapshot := snapshotFromState(state, b.sweepTx)
+	record, err := jobRecordFromSnapshot(b.cfg.TargetOutpoint, snapshot)
 	if err != nil {
 		return err
 	}
 
-	err = b.cfg.CheckpointStore.SaveCheckpoint(ctx, db.UnrollCheckpoint{
-		ActorID:   b.cfg.ActorID,
-		StateType: checkpointStateType,
-		StateData: raw,
-		Version:   checkpointVersion,
-	})
+	err = b.cfg.JobStore.UpsertJob(ctx, *record)
 	if err != nil {
 		return err
 	}
 
-	b.pending = checkpoint
+	b.pending = snapshot
 
 	return nil
 }
@@ -1189,12 +1175,12 @@ func (b *behavior) persistCheckpoint(ctx context.Context) error {
 //
 //   - EnsureReadyTransactions: newly-unblocked proof nodes. Look each up
 //     in the immutable proof graph, then submit to txconfirm. A missing
-//     node is a bug in the proof-vs-checkpoint alignment (not a runtime
+//     node is a bug in the proof-vs-job alignment (not a runtime
 //     condition) so it surfaces as a hard error instead of being
 //     silently skipped.
 //
 //   - ReissueInFlightTransactions: restart path. The FSM restored
-//     InFlightTxids from the checkpoint and needs each one re-submitted
+//     InFlightTxids from the job and needs each one re-submitted
 //     to txconfirm so the shared actor re-attaches its subscription.
 //     Same node-missing rule applies — a silent skip would leave the FSM
 //     permanently waiting on a confirmation that was never re-armed.
@@ -1204,10 +1190,10 @@ func (b *behavior) persistCheckpoint(ctx context.Context) error {
 //     persist-then-broadcast dance.
 //
 //   - ReissueSweepConfirmation: restart path for a sweep that was
-//     already broadcast before the crash. The checkpoint carried the
+//     already broadcast before the crash. The job carried the
 //     sweep tx, so we re-submit it to txconfirm (idempotent via dedup)
 //     to re-attach the confirmation subscription. A nil sweepTx here
-//     means the checkpoint is corrupt and we fail loudly rather than
+//     means the job is corrupt and we fail loudly rather than
 //     silently losing the job.
 func (b *behavior) routeOutbox(ctx context.Context,
 	outbox []OutboxEvent) error {
@@ -1245,7 +1231,7 @@ func (b *behavior) routeOutbox(ctx context.Context,
 				if !ok {
 
 					// A missing node on reissue means
-					// the checkpoint referenced a
+					// the job referenced a
 					// transaction our current proof no
 					// longer knows about; silently
 					// skipping would leave the FSM
@@ -1268,7 +1254,7 @@ func (b *behavior) routeOutbox(ctx context.Context,
 				if !ok {
 					return fmt.Errorf("proof node %s "+
 						"missing for deferred "+
-						"checkpoint watch", txid)
+						"job watch", txid)
 				}
 
 				err := b.watchDeferredCheckpoint(
@@ -1288,7 +1274,7 @@ func (b *behavior) routeOutbox(ctx context.Context,
 			if b.sweepTx == nil {
 
 				// The FSM asked us to re-arm the sweep
-				// confirmation watcher, so the checkpoint
+				// confirmation watcher, so the job
 				// must have carried a sweep transaction;
 				// a nil sweepTx here signals corrupted
 				// state rather than a recoverable race.
@@ -1325,7 +1311,7 @@ func (b *behavior) currentState() (State, error) {
 		if err != nil {
 			if errors.Is(err, protofsm.ErrStateMachineShutdown) &&
 				b.pending != nil {
-				return stateFromCheckpoint(b.pending), nil
+				return stateFromSnapshot(b.pending), nil
 			}
 
 			return nil, err
@@ -1341,7 +1327,7 @@ func (b *behavior) currentState() (State, error) {
 	}
 
 	if b.pending != nil && b.pending.Started {
-		return stateFromCheckpoint(b.pending), nil
+		return stateFromSnapshot(b.pending), nil
 	}
 
 	return &Idle{}, nil
@@ -1356,7 +1342,7 @@ func (b *behavior) currentState() (State, error) {
 // that reason need to know which transaction the mempool or node
 // rejected. Rather than exposing planner internals at every call site,
 // this helper checks the recorded sweep txid (in either the pending
-// checkpoint or the current FSM state) and annotates accordingly.
+// job or the current FSM state) and annotates accordingly.
 func (b *behavior) failureReasonForTx(txid chainhash.Hash,
 	reason string) string {
 
@@ -1411,7 +1397,7 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 	job := stateJob(state)
 	msg := &UnrollTerminatedMsg{
 		Outpoint:   b.cfg.TargetOutpoint,
-		ActorID:    b.cfg.ActorID,
+		ActorID:    actorIDForTarget(b.cfg.TargetOutpoint),
 		Phase:      phase,
 		FailReason: job.FailReason,
 	}
@@ -1472,14 +1458,12 @@ func copyPlannerState(state unrollplan.State) unrollplan.State {
 	return copyState
 }
 
-// copyDeferredCheckpoints deep-copies and sorts deferred checkpoint state.
-func copyDeferredCheckpoints(
-	checkpoints []DeferredCheckpoint) []DeferredCheckpoint {
+// copyDeferredCheckpoints deep-copies and sorts deferred job state.
+func copyDeferredCheckpoints(jobs []DeferredCheckpoint) []DeferredCheckpoint {
+	copyJobs := append([]DeferredCheckpoint(nil), jobs...)
+	sortDeferredCheckpoints(copyJobs)
 
-	copyCheckpoints := append([]DeferredCheckpoint(nil), checkpoints...)
-	sortDeferredCheckpoints(copyCheckpoints)
-
-	return copyCheckpoints
+	return copyJobs
 }
 
 // copyTx deep-copies one transaction when present.
@@ -1491,52 +1475,52 @@ func copyTx(tx *wire.MsgTx) *wire.MsgTx {
 	return tx.Copy()
 }
 
-// removeDeferredCheckpoint removes one deferred checkpoint when present.
-func removeDeferredCheckpoint(checkpoints []DeferredCheckpoint,
+// removeDeferredCheckpoint removes one deferred job when present.
+func removeDeferredCheckpoint(jobs []DeferredCheckpoint,
 	txid chainhash.Hash) []DeferredCheckpoint {
 
-	result := make([]DeferredCheckpoint, 0, len(checkpoints))
-	for _, checkpoint := range checkpoints {
-		if checkpoint.Txid == txid {
+	result := make([]DeferredCheckpoint, 0, len(jobs))
+	for _, job := range jobs {
+		if job.Txid == txid {
 			continue
 		}
 
-		result = append(result, checkpoint)
+		result = append(result, job)
 	}
 
 	return result
 }
 
-// findDeferredCheckpoint returns the deferred checkpoint for txid if present.
-func findDeferredCheckpoint(checkpoints []DeferredCheckpoint,
+// findDeferredCheckpoint returns the deferred job for txid if present.
+func findDeferredCheckpoint(jobs []DeferredCheckpoint,
 	txid chainhash.Hash) (DeferredCheckpoint, bool) {
 
-	for _, checkpoint := range checkpoints {
-		if checkpoint.Txid == txid {
-			return checkpoint, true
+	for _, job := range jobs {
+		if job.Txid == txid {
+			return job, true
 		}
 	}
 
 	return DeferredCheckpoint{}, false
 }
 
-// appendDeferredCheckpoint appends a deferred checkpoint when absent.
-func appendDeferredCheckpoint(checkpoints []DeferredCheckpoint,
-	checkpoint DeferredCheckpoint) []DeferredCheckpoint {
+// appendDeferredCheckpoint appends a deferred job when absent.
+func appendDeferredCheckpoint(jobs []DeferredCheckpoint,
+	job DeferredCheckpoint) []DeferredCheckpoint {
 
-	if _, ok := findDeferredCheckpoint(checkpoints, checkpoint.Txid); ok {
-		return copyDeferredCheckpoints(checkpoints)
+	if _, ok := findDeferredCheckpoint(jobs, job.Txid); ok {
+		return copyDeferredCheckpoints(jobs)
 	}
 
-	checkpoints = append(
+	jobs = append(
 		append(
-			[]DeferredCheckpoint(nil), checkpoints...,
+			[]DeferredCheckpoint(nil), jobs...,
 		),
-		checkpoint,
+		job,
 	)
-	sortDeferredCheckpoints(checkpoints)
+	sortDeferredCheckpoints(jobs)
 
-	return checkpoints
+	return jobs
 }
 
 // removeHash removes one hash when present.
@@ -1571,17 +1555,17 @@ func sortHashes(hashes []chainhash.Hash) {
 	})
 }
 
-// sortDeferredCheckpoints sorts deferred checkpoints deterministically.
-func sortDeferredCheckpoints(checkpoints []DeferredCheckpoint) {
-	sort.Slice(checkpoints, func(i, j int) bool {
-		iDeadline := checkpoints[i].DeadlineHeight
-		jDeadline := checkpoints[j].DeadlineHeight
+// sortDeferredCheckpoints sorts deferred jobs deterministically.
+func sortDeferredCheckpoints(jobs []DeferredCheckpoint) {
+	sort.Slice(jobs, func(i, j int) bool {
+		iDeadline := jobs[i].DeadlineHeight
+		jDeadline := jobs[j].DeadlineHeight
 		if iDeadline != jDeadline {
 			return iDeadline < jDeadline
 		}
 
-		iTxid := checkpoints[i].Txid.String()
-		jTxid := checkpoints[j].Txid.String()
+		iTxid := jobs[i].Txid.String()
+		jTxid := jobs[j].Txid.String()
 
 		return iTxid < jTxid
 	})

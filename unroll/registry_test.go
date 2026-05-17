@@ -1,3 +1,4 @@
+//nolint:ll
 package unroll
 
 import (
@@ -14,7 +15,6 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/unrollplan"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -354,17 +354,17 @@ func (f *fakeRegistryChainSourceRef) Ask(_ context.Context,
 // newRegistryHarness creates a running registry actor with real child actors.
 func newRegistryHarness(t *testing.T, proof *recovery.Proof,
 	desc *vtxo.Descriptor) (*UnrollRegistryActor, *memRegistryStore,
-	*memCheckpointStore, *fakeTxConfirmRef) {
+	*memJobStore, *fakeTxConfirmRef) {
 
 	t.Helper()
 
 	store := newMemRegistryStore()
-	checkpoints := newMemCheckpointStore()
+	checkpoints := newMemJobStore()
 	txconfirmRef := &fakeTxConfirmRef{}
 
 	cfg := RegistryConfig{
-		Store:           store,
-		CheckpointStore: checkpoints,
+		Store:    store,
+		JobStore: checkpoints,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -413,8 +413,7 @@ func newRegistryHarnessWithSpawn(t *testing.T,
 		maxFee := cfg.MaxSweepFeeRateSatPerVByte
 		childCfg := Config{
 			TargetOutpoint:             target,
-			ActorID:                    actorIDForTarget(target),
-			CheckpointStore:            cfg.CheckpointStore,
+			JobStore:                   cfg.JobStore,
 			ProofAssembler:             cfg.ProofAssembler,
 			VTXOStore:                  cfg.VTXOStore,
 			TxConfirmRef:               cfg.TxConfirmRef,
@@ -428,7 +427,7 @@ func newRegistryHarnessWithSpawn(t *testing.T,
 			log: btclog.Disabled,
 		}
 		//nolint:contextcheck // test restore uses t.Context as root
-		err := childBehavior.restoreCheckpoint(t.Context())
+		err := childBehavior.restoreJob(t.Context())
 		if err != nil {
 			return nil, err
 		}
@@ -736,29 +735,21 @@ func TestRegistryRestoreNonTerminal(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	store := newMemRegistryStore()
-	checkpoints := newMemCheckpointStore()
+	checkpoints := newMemJobStore()
 	txconfirmRef := &fakeTxConfirmRef{}
 
-	raw, err := encodeCheckpoint(&actorCheckpoint{
-		Version: checkpointVersion,
-		Height:  150,
-		Started: true,
-		Trigger: TriggerRestart,
-		State: unrollplan.State{
-			InFlightTxids: []chainhash.Hash{proof.RootTxids()[0]},
-		},
-	})
+	err := checkpoints.SaveSnapshot(t.Context(), proof.TargetOutpoint(),
+		&unrollSnapshot{
+			Height:  150,
+			Started: true,
+			Trigger: TriggerRestart,
+			State: unrollplan.State{
+				InFlightTxids: []chainhash.Hash{proof.RootTxids()[0]},
+			},
+		})
 	require.NoError(t, err)
 
 	actorID := actorIDForTarget(proof.TargetOutpoint())
-	err = checkpoints.SaveCheckpoint(t.Context(), db.UnrollCheckpoint{
-		ActorID:   actorID,
-		StateType: checkpointStateType,
-		StateData: raw,
-		Version:   checkpointVersion,
-	})
-	require.NoError(t, err)
-
 	err = store.UpsertRecord(t.Context(), RegistryRecord{
 		TargetOutpoint: proof.TargetOutpoint(),
 		ActorID:        actorID,
@@ -768,13 +759,13 @@ func TestRegistryRestoreNonTerminal(t *testing.T) {
 	require.NoError(t, err)
 
 	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
-		Store:           store,
-		CheckpointStore: checkpoints,
-		ProofAssembler:  &mockProofAssembler{proof: proof},
-		VTXOStore:       &mockVTXOStore{desc: desc},
-		TxConfirmRef:    txconfirmRef,
-		ChainSource:     &fakeRegistryChainSourceRef{height: 201},
-		Wallet:          &fakeSweepWallet{},
+		Store:          store,
+		JobStore:       checkpoints,
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   txconfirmRef,
+		ChainSource:    &fakeRegistryChainSourceRef{height: 201},
+		Wallet:         &fakeSweepWallet{},
 	})
 	t.Cleanup(registry.Stop)
 
@@ -808,13 +799,13 @@ func TestRegistryStatusUsesCachedActiveRecord(t *testing.T) {
 	var stateRequests atomic.Int32
 
 	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
-		Store:           store,
-		CheckpointStore: newMemCheckpointStore(),
-		ProofAssembler:  &mockProofAssembler{proof: proof},
-		VTXOStore:       &mockVTXOStore{desc: desc},
-		TxConfirmRef:    &fakeTxConfirmRef{},
-		ChainSource:     &fakeRegistryChainSourceRef{height: 200},
-		Wallet:          &fakeSweepWallet{},
+		Store:          store,
+		JobStore:       newMemJobStore(),
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   &fakeTxConfirmRef{},
+		ChainSource:    &fakeRegistryChainSourceRef{height: 200},
+		Wallet:         &fakeSweepWallet{},
 	})
 	t.Cleanup(registry.Stop)
 
@@ -896,17 +887,17 @@ func TestRegistryEnsureFailsClosedOnInitialPersistFailure(t *testing.T) {
 
 	// Fail the very first UpsertRecord call, then succeed.
 	store := newFlakyRegistryStore(1)
-	checkpoints := newMemCheckpointStore()
+	checkpoints := newMemJobStore()
 	txconfirmRef := &fakeTxConfirmRef{}
 
 	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
-		Store:           store,
-		CheckpointStore: checkpoints,
-		ProofAssembler:  &mockProofAssembler{proof: proof},
-		VTXOStore:       &mockVTXOStore{desc: desc},
-		TxConfirmRef:    txconfirmRef,
-		ChainSource:     &fakeRegistryChainSourceRef{height: 200},
-		Wallet:          &fakeSweepWallet{},
+		Store:          store,
+		JobStore:       checkpoints,
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   txconfirmRef,
+		ChainSource:    &fakeRegistryChainSourceRef{height: 200},
+		Wallet:         &fakeSweepWallet{},
 	})
 	t.Cleanup(registry.Stop)
 
@@ -1003,13 +994,13 @@ func TestRegistryEnsureStartsChildAfterCallerCancellation(t *testing.T) {
 	started := make(chan struct{}, 1)
 	startCtxErr := make(chan error, 1)
 	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
-		Store:           store,
-		CheckpointStore: newMemCheckpointStore(),
-		ProofAssembler:  &mockProofAssembler{proof: proof},
-		VTXOStore:       &mockVTXOStore{desc: desc},
-		TxConfirmRef:    &fakeTxConfirmRef{},
-		ChainSource:     &fakeRegistryChainSourceRef{height: 200},
-		Wallet:          &fakeSweepWallet{},
+		Store:          store,
+		JobStore:       newMemJobStore(),
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   &fakeTxConfirmRef{},
+		ChainSource:    &fakeRegistryChainSourceRef{height: 200},
+		Wallet:         &fakeSweepWallet{},
 	})
 	t.Cleanup(registry.Stop)
 
@@ -1078,13 +1069,13 @@ func TestRegistryEnsureMarksRealStartErrorFailed(t *testing.T) {
 	store := newMemRegistryStore()
 
 	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
-		Store:           store,
-		CheckpointStore: newMemCheckpointStore(),
-		ProofAssembler:  &mockProofAssembler{proof: proof},
-		VTXOStore:       &mockVTXOStore{desc: desc},
-		TxConfirmRef:    &fakeTxConfirmRef{},
-		ChainSource:     &fakeRegistryChainSourceRef{height: 200},
-		Wallet:          &fakeSweepWallet{},
+		Store:          store,
+		JobStore:       newMemJobStore(),
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   &fakeTxConfirmRef{},
+		ChainSource:    &fakeRegistryChainSourceRef{height: 200},
+		Wallet:         &fakeSweepWallet{},
 	})
 	t.Cleanup(registry.Stop)
 
@@ -1148,17 +1139,17 @@ func TestRegistryTerminalPersistRetriesUntilDurable(t *testing.T) {
 	// admission write is never failed so the child boots cleanly and
 	// the fail-closed admission contract is unaffected.
 	store := newTerminalFlakyRegistryStore(1)
-	checkpoints := newMemCheckpointStore()
+	checkpoints := newMemJobStore()
 	txconfirmRef := &fakeTxConfirmRef{}
 
 	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
-		Store:           store,
-		CheckpointStore: checkpoints,
-		ProofAssembler:  &mockProofAssembler{proof: proof},
-		VTXOStore:       &mockVTXOStore{desc: desc},
-		TxConfirmRef:    txconfirmRef,
-		ChainSource:     &fakeRegistryChainSourceRef{height: 200},
-		Wallet:          &fakeSweepWallet{},
+		Store:          store,
+		JobStore:       checkpoints,
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   txconfirmRef,
+		ChainSource:    &fakeRegistryChainSourceRef{height: 200},
+		Wallet:         &fakeSweepWallet{},
 	})
 	t.Cleanup(registry.Stop)
 
@@ -1200,17 +1191,17 @@ func TestRegistryStatusFallsBackToPendingTerminalRecord(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	store := newAlwaysFailUpsertRegistryStore()
-	checkpoints := newMemCheckpointStore()
+	checkpoints := newMemJobStore()
 	txconfirmRef := &fakeTxConfirmRef{}
 
 	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
-		Store:           store,
-		CheckpointStore: checkpoints,
-		ProofAssembler:  &mockProofAssembler{proof: proof},
-		VTXOStore:       &mockVTXOStore{desc: desc},
-		TxConfirmRef:    txconfirmRef,
-		ChainSource:     &fakeRegistryChainSourceRef{height: 200},
-		Wallet:          &fakeSweepWallet{},
+		Store:          store,
+		JobStore:       checkpoints,
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   txconfirmRef,
+		ChainSource:    &fakeRegistryChainSourceRef{height: 200},
+		Wallet:         &fakeSweepWallet{},
 	})
 	t.Cleanup(registry.Stop)
 
@@ -1266,17 +1257,17 @@ func TestRegistryTerminalStatusRemainsQueryableWhilePersistBlocked(
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	store := newBlockingRegistryStore()
-	checkpoints := newMemCheckpointStore()
+	checkpoints := newMemJobStore()
 	txconfirmRef := &fakeTxConfirmRef{}
 
 	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
-		Store:           store,
-		CheckpointStore: checkpoints,
-		ProofAssembler:  &mockProofAssembler{proof: proof},
-		VTXOStore:       &mockVTXOStore{desc: desc},
-		TxConfirmRef:    txconfirmRef,
-		ChainSource:     &fakeRegistryChainSourceRef{height: 200},
-		Wallet:          &fakeSweepWallet{},
+		Store:          store,
+		JobStore:       checkpoints,
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   txconfirmRef,
+		ChainSource:    &fakeRegistryChainSourceRef{height: 200},
+		Wallet:         &fakeSweepWallet{},
 	})
 	t.Cleanup(registry.Stop)
 

@@ -142,12 +142,11 @@ type Server struct {
 	loggers    SubLoggers
 	log        btclog.Logger
 
-	db                    *db.SqliteStore
-	oorClientStore        *db.OORClientStoreDB
-	vtxoStore             *db.VTXOPersistenceStore
-	roundStore            *db.RoundPersistenceStore
-	ueStore               *db.UnilateralExitPersistenceStore
-	unrollCheckpointStore *db.UnrollCheckpointStoreDB
+	db             *db.SqliteStore
+	oorClientStore *db.OORClientStoreDB
+	vtxoStore      *db.VTXOPersistenceStore
+	roundStore     *db.RoundPersistenceStore
+	unrollJobStore *db.UnrollJobPersistenceStore
 
 	// lnd holds the lndclient connection when wallet.type is "lnd".
 	// It is None in lwwallet mode.
@@ -2732,7 +2731,6 @@ func (s *Server) initDatabase(ctx context.Context) error {
 		s.subLogger(db.Subsystem),
 	)
 	s.oorClientStore = db.NewOORClientStore(dbStore, s.clk)
-	s.unrollCheckpointStore = db.NewUnrollCheckpointStore(dbStore, s.clk)
 
 	s.log.InfoS(ctx, "Database initialized",
 		slog.String("path", sqliteCfg.DatabaseFileName),
@@ -4145,8 +4143,8 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		s.db.DB, s.db.Queries, s.db.Backend(),
 		s.subLogger(db.Subsystem),
 	)
-	ueStore := dbStore.NewUnilateralExitStore(s.clk)
-	s.ueStore = ueStore
+	unrollJobStore := dbStore.NewUnrollJobStore(s.clk)
+	s.unrollJobStore = unrollJobStore
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 
 	// Build the wallet adapter shared by txconfirm and unroll
@@ -4207,9 +4205,9 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 
 	registry := unroll.NewUnrollRegistryActor(unroll.RegistryConfig{
 		Store: &unroll.DBRegistryStore{
-			UEStore: ueStore,
+			JobStore: unrollJobStore,
 		},
-		CheckpointStore:            s.unrollCheckpointStore,
+		JobStore:                   unrollJobStore,
 		ProofAssembler:             proofAssembler,
 		VTXOStore:                  vtxoStore,
 		TxConfirmRef:               txConfirmRef,

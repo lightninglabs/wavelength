@@ -371,24 +371,22 @@ type RoundVtxoRequest struct {
 	SigningPubkey    []byte
 }
 
-type UnilateralExitJob struct {
+type UnrollJob struct {
 	TargetOutpointHash  []byte
 	TargetOutpointIndex int32
-	ActorID             string
-	Status              int32
-	Trigger             int32
-	LastError           sql.NullString
+	State               string
+	Trigger             string
+	BestHeight          int32
+	TargetConfirmHeight sql.NullInt32
+	PlannerState        []byte
+	DeferredCheckpoints []byte
+	SweepTx             []byte
 	SweepTxid           []byte
+	SweepConfirmHeight  sql.NullInt32
+	SweepAttempts       int32
+	FailReason          sql.NullString
 	CreatedAt           int64
 	UpdatedAt           int64
-}
-
-type UnrollCheckpoint struct {
-	ActorID   string
-	StateType string
-	StateData []byte
-	Version   int64
-	UpdatedAt int64
 }
 
 type UtxoClassification struct {
