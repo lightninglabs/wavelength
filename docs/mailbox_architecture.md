@@ -137,8 +137,8 @@ On restart, the runtime:
 3. Pulls from the remote mailbox at the stored cursor.
 4. Replays unacknowledged envelopes into idempotent domain handlers.
 
-There are no actor checkpoint blobs, no `RestartMessage`, no TLV actor message
-codec, and no generic durable mailbox queue in the current architecture.
+Restart recovery uses only mailbox cursors, egress rows, and idempotent domain
+tables in the current architecture.
 
 ## Extension Checklist
 

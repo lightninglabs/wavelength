@@ -38,7 +38,7 @@ See [docs/fee_ledger.md](../docs/fee_ledger.md) for the flow walkthrough.
 - `LedgerActor` - in-memory actor that serializes accounting handlers and
   persists ledger/audit entries. It caches a resolved `clock.Clock`.
 - `ActorConfig` - logger, `LedgerStore`, optional `UTXOAuditStore`, actor ID,
-  and clock. There is no `DeliveryStore`.
+  and clock. No generic delivery store participates.
 - `Sink` - `actor.TellOnlyRef[LedgerMsg]` used by producers that want a
   fire-and-forget accounting sink.
 - `LedgerStore` - DB persistence surface implemented by `db.LedgerStoreDB`.
