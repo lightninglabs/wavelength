@@ -1,7 +1,6 @@
 package oor
 
 import (
-	"bytes"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -55,36 +54,31 @@ func TestValidateSubmitAcceptedRejectsArkMismatch(t *testing.T) {
 	)
 }
 
-// TestDriveEventEncodeDecodesNilArkPSBT verifies that a DriveEventRequest
-// carrying a SubmitAcceptedEvent with nil ArkPSBT can be encoded and decoded
-// without error. This supports the server-push EventRouter path where the
-// oorpb proto does not echo the Ark PSBT back.
-func TestDriveEventEncodeDecodesNilArkPSBT(t *testing.T) {
+// TestDriveEventPayloadEncodesNilArkPSBT verifies that the domain payload
+// codec accepts a SubmitAcceptedEvent with nil ArkPSBT. This supports the
+// server-push EventRouter path where the oorpb proto does not echo the Ark
+// PSBT back.
+func TestDriveEventPayloadEncodesNilArkPSBT(t *testing.T) {
 	t.Parallel()
 
 	_, checkpoints := testOutboxPSBTPair(t)
 	sessionID := SessionID(chainhash.Hash{1, 2, 3})
 
-	msg := &DriveEventRequest{
-		SessionID: sessionID,
-		Event: &SubmitAcceptedEvent{
+	raw, err := encodeDriveEventRequestPayload(
+		sessionID, &SubmitAcceptedEvent{
 			SessionID:               sessionID,
 			ArkPSBT:                 nil,
 			CoSignedCheckpointPSBTs: checkpoints,
 		},
-	}
-
-	// Encode should succeed with nil ArkPSBT.
-	var buf bytes.Buffer
-	err := msg.Encode(&buf)
+	)
 	require.NoError(t, err)
 
-	// Decode should produce the same nil ArkPSBT.
-	decoded := &DriveEventRequest{}
-	err = decoded.Decode(bytes.NewReader(buf.Bytes()))
+	decodedSessionID, decodedEvent, err :=
+		decodeDriveEventRequestPayloadWithLimits(raw, ReceiveLimits{})
 	require.NoError(t, err)
+	require.Equal(t, sessionID, decodedSessionID)
 
-	submitEvt, ok := decoded.Event.(*SubmitAcceptedEvent)
+	submitEvt, ok := decodedEvent.(*SubmitAcceptedEvent)
 	require.True(t, ok)
 	require.Nil(t, submitEvt.ArkPSBT)
 	require.Equal(t, sessionID, submitEvt.SessionID)

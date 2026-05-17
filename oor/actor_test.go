@@ -1158,37 +1158,39 @@ func TestOORClientActorUsesConfiguredIncomingMetadataQueryLimit(t *testing.T) {
 	require.EqualValues(t, 7, query.Limit)
 }
 
-// TestOORActorCodecUsesConfiguredIncomingDecodeLimits verifies the
-// ClientActorCfg-backed codec constructors apply incoming receive decode caps.
-func TestOORActorCodecUsesConfiguredIncomingDecodeLimits(t *testing.T) {
+// TestOORDomainPayloadDecodersUseConfiguredLimits verifies the reusable domain
+// payload decoders still apply receive caps after actor messages stopped being
+// serialized through the mailbox codec.
+func TestOORDomainPayloadDecodersUseConfiguredLimits(t *testing.T) {
 	t.Parallel()
 
 	// MaxCheckpoints and MaxVTXOMatches are covered at the adapter layer in
-	// receive_limits_test.go; this test covers mailbox codec decode caps.
-	codec := newOORActorCodec(ReceiveLimits{
+	// receive_limits_test.go; this test covers the reusable payload decode
+	// caps that remain for SQL/domain byte payloads.
+	limits := ReceiveLimits{
 		MaxMailboxItems:       1,
 		MaxMailboxScriptBytes: 1,
-	})
+	}
 
-	startRaw, err := codec.Encode(&StartTransferRequest{
-		Recipients: []oortx.RecipientOutput{
+	startRaw, err := encodeStartTransferPayload(startTransferPayload{
+		Recipients: []recipientPayload{
 			{PkScript: []byte{0x51}},
 			{PkScript: []byte{0x52}},
 		},
 	})
 	require.NoError(t, err)
 
-	_, err = codec.Decode(startRaw)
+	_, err = decodeStartTransferPayloadWithLimits(startRaw, limits)
 	require.ErrorContains(t, err, "blob list count 2 exceeds limit 1")
 
-	resolveRaw, err := codec.Encode(&ResolveIncomingTransferRequest{
-		SessionID:         SessionID{0x03},
-		RecipientPkScript: []byte{0x51, 0x20},
-		RecipientEventID:  1,
-	})
+	resolveRaw, err := encodeResolveIncomingTransferPayload(
+		SessionID{0x03}, []byte{0x51, 0x20}, 1,
+	)
 	require.NoError(t, err)
 
-	_, err = codec.Decode(resolveRaw)
+	_, _, _, err = decodeResolveIncomingTransferPayloadWithLimits(
+		resolveRaw, limits,
+	)
 	require.ErrorContains(
 		t, err, "recipient pk_script length 2 exceeds limit 1",
 	)

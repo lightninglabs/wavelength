@@ -1,17 +1,12 @@
 package oor
 
 import (
-	"fmt"
-	"io"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
-	"github.com/lightningnetwork/lnd/tlv"
 )
 
 // OORActorServiceKeyName is the receptionist key used to discover the OOR
@@ -28,25 +23,6 @@ func NewServiceKey() actor.ServiceKey[ActorMsg, ActorResp] {
 		OORActorServiceKeyName,
 	)
 }
-
-// TLV type constants for OOR actor messages. Each ActorMsg type has a stable
-// identifier used for SQL mailbox serialization. The 0x7xxx range avoids
-// collisions with the actor framework's reserved types.
-const (
-	StartTransferRequestTLVType    tlv.Type = 0x7010
-	DriveEventRequestTLVType       tlv.Type = 0x7011
-	GetStateRequestTLVType         tlv.Type = 0x7012
-	RestoreSessionRequestTLVType   tlv.Type = 0x7013
-	ResumeSessionRequestTLVType    tlv.Type = 0x7014
-	ExportSnapshotRequestTLVType   tlv.Type = 0x7015
-	ResolveIncomingTransferTLVType tlv.Type = 0x7016
-
-	// ListSessionsRequestTLVType identifies ListSessionsRequest messages
-	// in the durable OOR actor mailbox.
-	ListSessionsRequestTLVType tlv.Type = 0x7017
-
-	FindOutgoingSessionByIdempotencyKeyTLVType tlv.Type = 0x7018
-)
 
 // ActorMsg is a sealed interface for messages that can be sent to the
 // OORClientActor. These messages are in-memory workflow commands; restart
@@ -68,8 +44,6 @@ type ActorResp interface {
 // session by building a submit package and sending it via the outbox boundary.
 type StartTransferRequest struct {
 	actor.BaseMessage
-
-	limits ReceiveLimits
 
 	// Policy defines the operator checkpoint policy used to build the
 	// transfer package.
@@ -97,108 +71,6 @@ func (m *StartTransferRequest) MessageType() string {
 
 // actorMsgSealed marks this as implementing the sealed ActorMsg interface.
 func (m *StartTransferRequest) actorMsgSealed() {}
-
-// TLVType returns the unique TLV type identifier for this message.
-func (m *StartTransferRequest) TLVType() tlv.Type {
-	return StartTransferRequestTLVType
-}
-
-// Encode serializes the message to the provided writer.
-func (m *StartTransferRequest) Encode(w io.Writer) error {
-	payload := startTransferPayload{
-		CSVDelay:       m.Policy.CSVDelay,
-		IdempotencyKey: m.IdempotencyKey,
-		Recipients:     make([]recipientPayload, 0, len(m.Recipients)),
-		Inputs: make(
-			[]*TransferInputSnapshot, 0, len(m.Inputs),
-		),
-	}
-
-	if m.Policy.OperatorKey != nil {
-		payload.OperatorPubKey = m.Policy.OperatorKey.
-			SerializeCompressed()
-	}
-
-	for i := range m.Inputs {
-		snap, err := m.Inputs[i].ToSnapshot()
-		if err != nil {
-			return err
-		}
-
-		payload.Inputs = append(payload.Inputs, snap)
-	}
-
-	for i := range m.Recipients {
-		payload.Recipients = append(
-			payload.Recipients, recipientPayload{
-				PkScript: m.Recipients[i].PkScript,
-				ValueSat: int64(m.Recipients[i].Value),
-				VTXOPolicyTemplate: m.Recipients[i].
-					VTXOPolicyTemplate,
-			},
-		)
-	}
-
-	raw, err := encodeStartTransferPayload(payload)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(raw)
-
-	return err
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *StartTransferRequest) Decode(r io.Reader) error {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-
-	payload, err := decodeStartTransferPayloadWithLimits(
-		raw, m.limits,
-	)
-	if err != nil {
-		return err
-	}
-
-	operatorKey, err := btcec.ParsePubKey(payload.OperatorPubKey)
-	if err != nil {
-		return err
-	}
-
-	m.Policy = arkscript.CheckpointPolicy{
-		OperatorKey: operatorKey,
-		CSVDelay:    payload.CSVDelay,
-	}
-	m.IdempotencyKey = payload.IdempotencyKey
-
-	m.Inputs = make([]TransferInput, 0, len(payload.Inputs))
-	for i := range payload.Inputs {
-		in, err := TransferInputFromSnapshot(payload.Inputs[i])
-		if err != nil {
-			return err
-		}
-
-		m.Inputs = append(m.Inputs, in)
-	}
-
-	m.Recipients = make(
-		[]oortx.RecipientOutput, 0, len(payload.Recipients),
-	)
-	for i := range payload.Recipients {
-		recipient := payload.Recipients[i]
-		m.Recipients = append(m.Recipients, oortx.RecipientOutput{
-			PkScript: recipient.PkScript,
-			Value:    btcutil.Amount(recipient.ValueSat),
-			VTXOPolicyTemplate: recipient.
-				VTXOPolicyTemplate,
-		})
-	}
-
-	return nil
-}
 
 // StartTransferResponse returns the session identifier for a start request.
 type StartTransferResponse struct {
@@ -236,40 +108,6 @@ func (m *FindOutgoingSessionByIdempotencyKeyRequest) MessageType() string {
 
 // actorMsgSealed marks this as implementing the sealed ActorMsg interface.
 func (m *FindOutgoingSessionByIdempotencyKeyRequest) actorMsgSealed() {}
-
-// TLVType returns the unique TLV type identifier for this message.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) TLVType() tlv.Type {
-	return FindOutgoingSessionByIdempotencyKeyTLVType
-}
-
-// Encode serializes the message to the provided writer.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) Encode(w io.Writer) error {
-	raw, err := encodeIdempotencyKeyPayload(m.IdempotencyKey)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(raw)
-
-	return err
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) Decode(r io.Reader) error {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-
-	idempotencyKey, err := decodeIdempotencyKeyPayload(raw)
-	if err != nil {
-		return err
-	}
-
-	m.IdempotencyKey = idempotencyKey
-
-	return nil
-}
 
 // FindOutgoingSessionByIdempotencyKeyResponse returns a keyed session lookup
 // result.
@@ -327,45 +165,6 @@ func (m *ListSessionsRequest) MessageType() string {
 // actorMsgSealed marks this as implementing the sealed ActorMsg interface.
 func (m *ListSessionsRequest) actorMsgSealed() {}
 
-// TLVType returns the unique TLV type identifier for this message.
-func (m *ListSessionsRequest) TLVType() tlv.Type {
-	return ListSessionsRequestTLVType
-}
-
-// Encode serializes the message to the provided writer.
-func (m *ListSessionsRequest) Encode(w io.Writer) error {
-	if m == nil {
-		return fmt.Errorf("list sessions request must be provided")
-	}
-
-	raw, err := encodeListSessionsPayload(m.Direction, m.PendingOnly)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(raw)
-
-	return err
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *ListSessionsRequest) Decode(r io.Reader) error {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-
-	direction, pendingOnly, err := decodeListSessionsPayload(raw)
-	if err != nil {
-		return err
-	}
-
-	m.Direction = direction
-	m.PendingOnly = pendingOnly
-
-	return nil
-}
-
 // SessionSummary is a compact operation-status view of one OOR session.
 type SessionSummary struct {
 	// SessionID is the stable OOR session identifier.
@@ -419,8 +218,6 @@ func (m *ListSessionsResponse) actorRespSealed() {}
 type DriveEventRequest struct {
 	actor.BaseMessage
 
-	limits ReceiveLimits
-
 	// SessionID identifies the session to drive.
 	SessionID SessionID
 
@@ -436,49 +233,6 @@ func (m *DriveEventRequest) MessageType() string {
 
 // actorMsgSealed marks this as implementing the sealed ActorMsg interface.
 func (m *DriveEventRequest) actorMsgSealed() {}
-
-// TLVType returns the unique TLV type identifier for this message.
-func (m *DriveEventRequest) TLVType() tlv.Type {
-	return DriveEventRequestTLVType
-}
-
-// Encode serializes the message to the provided writer. The nil receiver
-// check handles typed-nil pointers (e.g. (*DriveEventRequest)(nil)) that
-// pass interface nil checks but would panic on field access.
-func (m *DriveEventRequest) Encode(w io.Writer) error {
-	if m == nil {
-		return fmt.Errorf("drive event request must be provided")
-	}
-
-	raw, err := encodeDriveEventRequestPayload(m.SessionID, m.Event)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(raw)
-
-	return err
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *DriveEventRequest) Decode(r io.Reader) error {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-
-	sessionID, event, err := decodeDriveEventRequestPayloadWithLimits(
-		raw, m.limits,
-	)
-	if err != nil {
-		return err
-	}
-
-	m.SessionID = sessionID
-	m.Event = event
-
-	return nil
-}
 
 // DriveEventResponse acknowledges the event was processed.
 type DriveEventResponse struct {
@@ -504,8 +258,6 @@ func (m *DriveEventResponse) actorRespSealed() {}
 type ResolveIncomingTransferRequest struct {
 	actor.BaseMessage
 
-	limits ReceiveLimits
-
 	// SessionID identifies the incoming transfer session.
 	SessionID SessionID
 
@@ -528,52 +280,6 @@ func (m *ResolveIncomingTransferRequest) MessageType() string {
 // actorMsgSealed marks this as implementing the sealed ActorMsg interface.
 func (m *ResolveIncomingTransferRequest) actorMsgSealed() {}
 
-// TLVType returns the unique TLV type identifier for this message.
-func (m *ResolveIncomingTransferRequest) TLVType() tlv.Type {
-	return ResolveIncomingTransferTLVType
-}
-
-// Encode serializes the message to the provided writer.
-func (m *ResolveIncomingTransferRequest) Encode(w io.Writer) error {
-	if m == nil {
-		return fmt.Errorf("resolve incoming transfer request must be " +
-			"provided")
-	}
-
-	raw, err := encodeResolveIncomingTransferPayload(
-		m.SessionID, m.RecipientPkScript, m.RecipientEventID,
-	)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(raw)
-
-	return err
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *ResolveIncomingTransferRequest) Decode(r io.Reader) error {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-
-	sessionID, recipientPkScript, recipientEventID, err :=
-		decodeResolveIncomingTransferPayloadWithLimits(
-			raw, m.limits,
-		)
-	if err != nil {
-		return err
-	}
-
-	m.SessionID = sessionID
-	m.RecipientPkScript = recipientPkScript
-	m.RecipientEventID = recipientEventID
-
-	return nil
-}
-
 // GetStateRequest asks the actor for the current state of a session.
 type GetStateRequest struct {
 	actor.BaseMessage
@@ -589,40 +295,6 @@ func (m *GetStateRequest) MessageType() string {
 
 // actorMsgSealed marks this as implementing the sealed ActorMsg interface.
 func (m *GetStateRequest) actorMsgSealed() {}
-
-// TLVType returns the unique TLV type identifier for this message.
-func (m *GetStateRequest) TLVType() tlv.Type {
-	return GetStateRequestTLVType
-}
-
-// Encode serializes the message to the provided writer.
-func (m *GetStateRequest) Encode(w io.Writer) error {
-	raw, err := encodeSessionPayload(m.SessionID)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(raw)
-
-	return err
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *GetStateRequest) Decode(r io.Reader) error {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-
-	sessionID, err := decodeSessionPayload(raw)
-	if err != nil {
-		return err
-	}
-
-	m.SessionID = sessionID
-
-	return nil
-}
 
 // GetStateResponse returns the current session FSM state.
 type GetStateResponse struct {
@@ -645,8 +317,6 @@ func (m *GetStateResponse) actorRespSealed() {}
 type RestoreSessionRequest struct {
 	actor.BaseMessage
 
-	limits ReceiveLimits
-
 	// Snapshot is the durable-ish client-side snapshot for an outgoing
 	// transfer.
 	Snapshot *OutgoingSnapshot
@@ -659,42 +329,6 @@ func (m *RestoreSessionRequest) MessageType() string {
 
 // actorMsgSealed marks this as implementing the sealed ActorMsg interface.
 func (m *RestoreSessionRequest) actorMsgSealed() {}
-
-// TLVType returns the unique TLV type identifier for this message.
-func (m *RestoreSessionRequest) TLVType() tlv.Type {
-	return RestoreSessionRequestTLVType
-}
-
-// Encode serializes the message to the provided writer.
-func (m *RestoreSessionRequest) Encode(w io.Writer) error {
-	raw, err := encodeRestoreSnapshotPayload(m.Snapshot)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(raw)
-
-	return err
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *RestoreSessionRequest) Decode(r io.Reader) error {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-
-	snapshot, err := decodeRestoreSnapshotPayloadWithLimits(
-		raw, m.limits,
-	)
-	if err != nil {
-		return err
-	}
-
-	m.Snapshot = snapshot
-
-	return nil
-}
 
 // RestoreSessionResponse returns the restored session identifier.
 type RestoreSessionResponse struct {
@@ -732,40 +366,6 @@ func (m *ResumeSessionRequest) MessageType() string {
 // actorMsgSealed marks this as implementing the sealed ActorMsg interface.
 func (m *ResumeSessionRequest) actorMsgSealed() {}
 
-// TLVType returns the unique TLV type identifier for this message.
-func (m *ResumeSessionRequest) TLVType() tlv.Type {
-	return ResumeSessionRequestTLVType
-}
-
-// Encode serializes the message to the provided writer.
-func (m *ResumeSessionRequest) Encode(w io.Writer) error {
-	raw, err := encodeSessionPayload(m.SessionID)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(raw)
-
-	return err
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *ResumeSessionRequest) Decode(r io.Reader) error {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-
-	sessionID, err := decodeSessionPayload(raw)
-	if err != nil {
-		return err
-	}
-
-	m.SessionID = sessionID
-
-	return nil
-}
-
 // ResumeSessionResponse acknowledges the resume request.
 type ResumeSessionResponse struct {
 	actor.BaseMessage
@@ -795,40 +395,6 @@ func (m *ExportSnapshotRequest) MessageType() string {
 
 // actorMsgSealed marks this as implementing the sealed ActorMsg interface.
 func (m *ExportSnapshotRequest) actorMsgSealed() {}
-
-// TLVType returns the unique TLV type identifier for this message.
-func (m *ExportSnapshotRequest) TLVType() tlv.Type {
-	return ExportSnapshotRequestTLVType
-}
-
-// Encode serializes the message to the provided writer.
-func (m *ExportSnapshotRequest) Encode(w io.Writer) error {
-	raw, err := encodeSessionPayload(m.SessionID)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(raw)
-
-	return err
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *ExportSnapshotRequest) Decode(r io.Reader) error {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-
-	sessionID, err := decodeSessionPayload(raw)
-	if err != nil {
-		return err
-	}
-
-	m.SessionID = sessionID
-
-	return nil
-}
 
 // ExportSnapshotResponse returns an exported outgoing session snapshot.
 type ExportSnapshotResponse struct {
