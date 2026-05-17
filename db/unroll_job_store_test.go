@@ -114,7 +114,18 @@ func TestUnrollJobStoreUpsertPersistsNamedArtifacts(t *testing.T) {
 		PlannerState:   []byte{0x01},
 		SweepTx:        sweepTx,
 		SweepTxid:      sweepTxid,
-		CreatedAt:      time.Unix(40, 0),
+		TxProgress: []UnrollTxProgressRecord{{
+			Txid:   sweepTxid,
+			Role:   "sweep",
+			Status: "in_flight",
+		}},
+		Watches: []UnrollWatchRecord{{
+			WatchID: "sweep-watch",
+			Role:    "sweep",
+			Txid:    sweepTxid,
+			Status:  "registered",
+		}},
+		CreatedAt: time.Unix(40, 0),
 	})
 	require.NoError(t, err)
 
@@ -126,7 +137,18 @@ func TestUnrollJobStoreUpsertPersistsNamedArtifacts(t *testing.T) {
 		PlannerState:   []byte{0x02},
 		SweepTx:        sweepTx,
 		SweepTxid:      sweepTxid,
-		CreatedAt:      time.Unix(40, 0),
+		TxProgress: []UnrollTxProgressRecord{{
+			Txid:   sweepTxid,
+			Role:   "sweep",
+			Status: "confirmed",
+		}},
+		Watches: []UnrollWatchRecord{{
+			WatchID: "sweep-watch",
+			Role:    "sweep",
+			Txid:    sweepTxid,
+			Status:  "confirmed",
+		}},
+		CreatedAt: time.Unix(40, 0),
 	})
 	require.NoError(t, err)
 
@@ -136,4 +158,8 @@ func TestUnrollJobStoreUpsertPersistsNamedArtifacts(t *testing.T) {
 	require.Equal(t, "completed", job.State)
 	require.Equal(t, sweepTxid, job.SweepTxid)
 	require.Equal(t, sweepTx, job.SweepTx)
+	require.Len(t, job.TxProgress, 1)
+	require.Equal(t, "sweep", job.TxProgress[0].Role)
+	require.Len(t, job.Watches, 1)
+	require.Equal(t, "sweep", job.Watches[0].Role)
 }

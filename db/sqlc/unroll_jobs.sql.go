@@ -10,6 +10,38 @@ import (
 	"database/sql"
 )
 
+const DeleteUnrollTxProgressForJob = `-- name: DeleteUnrollTxProgressForJob :exec
+DELETE FROM unroll_tx_progress
+WHERE target_outpoint_hash = $1
+  AND target_outpoint_index = $2
+`
+
+type DeleteUnrollTxProgressForJobParams struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+}
+
+func (q *Queries) DeleteUnrollTxProgressForJob(ctx context.Context, arg DeleteUnrollTxProgressForJobParams) error {
+	_, err := q.db.ExecContext(ctx, DeleteUnrollTxProgressForJob, arg.TargetOutpointHash, arg.TargetOutpointIndex)
+	return err
+}
+
+const DeleteUnrollWatchesForJob = `-- name: DeleteUnrollWatchesForJob :exec
+DELETE FROM unroll_watches
+WHERE target_outpoint_hash = $1
+  AND target_outpoint_index = $2
+`
+
+type DeleteUnrollWatchesForJobParams struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+}
+
+func (q *Queries) DeleteUnrollWatchesForJob(ctx context.Context, arg DeleteUnrollWatchesForJobParams) error {
+	_, err := q.db.ExecContext(ctx, DeleteUnrollWatchesForJob, arg.TargetOutpointHash, arg.TargetOutpointIndex)
+	return err
+}
+
 const GetUnrollJob = `-- name: GetUnrollJob :one
 SELECT target_outpoint_hash, target_outpoint_index, state, trigger, best_height, target_confirm_height, planner_state, deferred_checkpoints, sweep_tx, sweep_txid, sweep_confirm_height, sweep_attempts, fail_reason, created_at, updated_at FROM unroll_jobs
 WHERE target_outpoint_hash = $1
@@ -73,6 +105,101 @@ func (q *Queries) ListNonTerminalUnrollJobs(ctx context.Context) ([]UnrollJob, e
 			&i.SweepConfirmHeight,
 			&i.SweepAttempts,
 			&i.FailReason,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListUnrollTxProgressForJob = `-- name: ListUnrollTxProgressForJob :many
+SELECT target_outpoint_hash, target_outpoint_index, txid, role, status, tx_bytes, confirm_height, last_error, created_at, updated_at FROM unroll_tx_progress
+WHERE target_outpoint_hash = $1
+  AND target_outpoint_index = $2
+ORDER BY role, txid
+`
+
+type ListUnrollTxProgressForJobParams struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+}
+
+func (q *Queries) ListUnrollTxProgressForJob(ctx context.Context, arg ListUnrollTxProgressForJobParams) ([]UnrollTxProgress, error) {
+	rows, err := q.db.QueryContext(ctx, ListUnrollTxProgressForJob, arg.TargetOutpointHash, arg.TargetOutpointIndex)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UnrollTxProgress
+	for rows.Next() {
+		var i UnrollTxProgress
+		if err := rows.Scan(
+			&i.TargetOutpointHash,
+			&i.TargetOutpointIndex,
+			&i.Txid,
+			&i.Role,
+			&i.Status,
+			&i.TxBytes,
+			&i.ConfirmHeight,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListUnrollWatchesForJob = `-- name: ListUnrollWatchesForJob :many
+SELECT target_outpoint_hash, target_outpoint_index, watch_id, role, txid, spend_outpoint_hash, spend_outpoint_index, status, height_hint, confirmation_height, last_error, created_at, updated_at FROM unroll_watches
+WHERE target_outpoint_hash = $1
+  AND target_outpoint_index = $2
+ORDER BY role, watch_id
+`
+
+type ListUnrollWatchesForJobParams struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+}
+
+func (q *Queries) ListUnrollWatchesForJob(ctx context.Context, arg ListUnrollWatchesForJobParams) ([]UnrollWatch, error) {
+	rows, err := q.db.QueryContext(ctx, ListUnrollWatchesForJob, arg.TargetOutpointHash, arg.TargetOutpointIndex)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UnrollWatch
+	for rows.Next() {
+		var i UnrollWatch
+		if err := rows.Scan(
+			&i.TargetOutpointHash,
+			&i.TargetOutpointIndex,
+			&i.WatchID,
+			&i.Role,
+			&i.Txid,
+			&i.SpendOutpointHash,
+			&i.SpendOutpointIndex,
+			&i.Status,
+			&i.HeightHint,
+			&i.ConfirmationHeight,
+			&i.LastError,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -179,6 +306,109 @@ func (q *Queries) UpsertUnrollJob(ctx context.Context, arg UpsertUnrollJobParams
 		arg.SweepConfirmHeight,
 		arg.SweepAttempts,
 		arg.FailReason,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
+const UpsertUnrollTxProgress = `-- name: UpsertUnrollTxProgress :exec
+INSERT INTO unroll_tx_progress (
+    target_outpoint_hash, target_outpoint_index, txid, role, status,
+    tx_bytes, confirm_height, last_error, created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+)
+ON CONFLICT (
+    target_outpoint_hash, target_outpoint_index, txid, role
+) DO UPDATE SET
+    status = EXCLUDED.status,
+    tx_bytes = EXCLUDED.tx_bytes,
+    confirm_height = EXCLUDED.confirm_height,
+    last_error = EXCLUDED.last_error,
+    updated_at = EXCLUDED.updated_at
+`
+
+type UpsertUnrollTxProgressParams struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+	Txid                []byte
+	Role                string
+	Status              string
+	TxBytes             []byte
+	ConfirmHeight       sql.NullInt32
+	LastError           sql.NullString
+	CreatedAt           int64
+	UpdatedAt           int64
+}
+
+func (q *Queries) UpsertUnrollTxProgress(ctx context.Context, arg UpsertUnrollTxProgressParams) error {
+	_, err := q.db.ExecContext(ctx, UpsertUnrollTxProgress,
+		arg.TargetOutpointHash,
+		arg.TargetOutpointIndex,
+		arg.Txid,
+		arg.Role,
+		arg.Status,
+		arg.TxBytes,
+		arg.ConfirmHeight,
+		arg.LastError,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
+const UpsertUnrollWatch = `-- name: UpsertUnrollWatch :exec
+INSERT INTO unroll_watches (
+    target_outpoint_hash, target_outpoint_index, watch_id, role, txid,
+    spend_outpoint_hash, spend_outpoint_index, status, height_hint,
+    confirmation_height, last_error, created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+)
+ON CONFLICT (
+    target_outpoint_hash, target_outpoint_index, watch_id
+) DO UPDATE SET
+    role = EXCLUDED.role,
+    txid = EXCLUDED.txid,
+    spend_outpoint_hash = EXCLUDED.spend_outpoint_hash,
+    spend_outpoint_index = EXCLUDED.spend_outpoint_index,
+    status = EXCLUDED.status,
+    height_hint = EXCLUDED.height_hint,
+    confirmation_height = EXCLUDED.confirmation_height,
+    last_error = EXCLUDED.last_error,
+    updated_at = EXCLUDED.updated_at
+`
+
+type UpsertUnrollWatchParams struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+	WatchID             string
+	Role                string
+	Txid                []byte
+	SpendOutpointHash   []byte
+	SpendOutpointIndex  sql.NullInt32
+	Status              string
+	HeightHint          sql.NullInt32
+	ConfirmationHeight  sql.NullInt32
+	LastError           sql.NullString
+	CreatedAt           int64
+	UpdatedAt           int64
+}
+
+func (q *Queries) UpsertUnrollWatch(ctx context.Context, arg UpsertUnrollWatchParams) error {
+	_, err := q.db.ExecContext(ctx, UpsertUnrollWatch,
+		arg.TargetOutpointHash,
+		arg.TargetOutpointIndex,
+		arg.WatchID,
+		arg.Role,
+		arg.Txid,
+		arg.SpendOutpointHash,
+		arg.SpendOutpointIndex,
+		arg.Status,
+		arg.HeightHint,
+		arg.ConfirmationHeight,
+		arg.LastError,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)

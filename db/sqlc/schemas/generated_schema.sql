@@ -275,8 +275,17 @@ CREATE INDEX idx_rounds_creation_time
 CREATE INDEX idx_rounds_status
     ON rounds(status);
 
+CREATE INDEX idx_unroll_effects_due
+    ON unroll_effects(status, next_attempt_at, created_at);
+
 CREATE INDEX idx_unroll_jobs_state_updated
     ON unroll_jobs(state, updated_at DESC);
+
+CREATE INDEX idx_unroll_tx_progress_status
+    ON unroll_tx_progress(status, updated_at DESC);
+
+CREATE INDEX idx_unroll_watches_status
+    ON unroll_watches(status, role, updated_at DESC);
 
 CREATE INDEX idx_utxo_log_block
     ON wallet_utxo_log(block_height);
@@ -887,6 +896,45 @@ CREATE TABLE rounds (
     FOREIGN KEY (status) REFERENCES round_statuses(status_name)
 );
 
+CREATE TABLE unroll_effects (
+    id TEXT PRIMARY KEY,
+    target_outpoint_hash BLOB NOT NULL,
+    target_outpoint_index INTEGER NOT NULL CHECK (
+        target_outpoint_index >= 0
+    ),
+    effect_type TEXT NOT NULL CHECK (effect_type IN (
+        'subscribe_blocks',
+        'watch_target_spend',
+        'ensure_tx_confirmed',
+        'watch_deferred_checkpoint',
+        'build_sweep',
+        'ensure_sweep_confirmed',
+        'notify_registry'
+    )),
+    txid BLOB,
+    status TEXT NOT NULL CHECK (status IN (
+        'pending',
+        'claimed',
+        'done',
+        'dead'
+    )),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 10,
+    next_attempt_at BIGINT NOT NULL,
+    claim_owner TEXT,
+    claim_token TEXT,
+    claim_until BIGINT,
+    last_error TEXT,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    done_at BIGINT,
+
+    FOREIGN KEY (target_outpoint_hash, target_outpoint_index)
+        REFERENCES unroll_jobs(target_outpoint_hash, target_outpoint_index)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE unroll_jobs (
     -- target_outpoint_hash identifies the target transaction.
     target_outpoint_hash BLOB NOT NULL,
@@ -949,6 +997,68 @@ CREATE TABLE unroll_jobs (
     updated_at BIGINT NOT NULL,
 
     PRIMARY KEY (target_outpoint_hash, target_outpoint_index)
+);
+
+CREATE TABLE unroll_tx_progress (
+    target_outpoint_hash BLOB NOT NULL,
+    target_outpoint_index INTEGER NOT NULL CHECK (
+        target_outpoint_index >= 0
+    ),
+    txid BLOB NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('proof', 'deferred_checkpoint', 'sweep')),
+    status TEXT NOT NULL CHECK (status IN (
+        'ready',
+        'in_flight',
+        'confirmed',
+        'failed'
+    )),
+    tx_bytes BLOB,
+    confirm_height INTEGER,
+    last_error TEXT,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+
+    PRIMARY KEY (
+        target_outpoint_hash, target_outpoint_index, txid, role
+    ),
+    FOREIGN KEY (target_outpoint_hash, target_outpoint_index)
+        REFERENCES unroll_jobs(target_outpoint_hash, target_outpoint_index)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE unroll_watches (
+    target_outpoint_hash BLOB NOT NULL,
+    target_outpoint_index INTEGER NOT NULL CHECK (
+        target_outpoint_index >= 0
+    ),
+    watch_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN (
+        'block_epoch',
+        'target_spend',
+        'proof_tx',
+        'deferred_checkpoint',
+        'sweep'
+    )),
+    txid BLOB,
+    spend_outpoint_hash BLOB,
+    spend_outpoint_index INTEGER,
+    status TEXT NOT NULL CHECK (status IN (
+        'registered',
+        'confirmed',
+        'spent',
+        'cancelled',
+        'failed'
+    )),
+    height_hint INTEGER,
+    confirmation_height INTEGER,
+    last_error TEXT,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+
+    PRIMARY KEY (target_outpoint_hash, target_outpoint_index, watch_id),
+    FOREIGN KEY (target_outpoint_hash, target_outpoint_index)
+        REFERENCES unroll_jobs(target_outpoint_hash, target_outpoint_index)
+        ON DELETE CASCADE
 );
 
 CREATE TABLE utxo_classifications (

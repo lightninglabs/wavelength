@@ -24,6 +24,8 @@ type Querier interface {
 	CountWalletUTXOLog(ctx context.Context) (int64, error)
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
 	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
+	DeleteUnrollTxProgressForJob(ctx context.Context, arg DeleteUnrollTxProgressForJobParams) error
+	DeleteUnrollWatchesForJob(ctx context.Context, arg DeleteUnrollWatchesForJobParams) error
 	// DeleteVTXO removes a VTXO from storage. Used for cleanup after terminal
 	// states are reached and the VTXO is no longer needed.
 	DeleteVTXO(ctx context.Context, arg DeleteVTXOParams) error
@@ -184,6 +186,8 @@ type Querier interface {
 	// applied before LIMIT/OFFSET so filtered pagination never skips over matching
 	// rows hidden behind non-matching entries.
 	ListTransactionHistory(ctx context.Context, arg ListTransactionHistoryParams) ([]ListTransactionHistoryRow, error)
+	ListUnrollTxProgressForJob(ctx context.Context, arg ListUnrollTxProgressForJobParams) ([]UnrollTxProgress, error)
+	ListUnrollWatchesForJob(ctx context.Context, arg ListUnrollWatchesForJobParams) ([]UnrollWatch, error)
 	// ListUnspentVTXOAncestryPaths returns every ancestry row whose parent
 	// VTXO is unspent (status != 4 AND spent = FALSE), mirroring the filter
 	// on ListUnspentVTXOs. Companion to the round-side ListVTXOs path.
@@ -263,6 +267,8 @@ type Querier interface {
 	UpsertPendingBoardRequest(ctx context.Context, arg UpsertPendingBoardRequestParams) error
 	// VTXO unroll job queries.
 	UpsertUnrollJob(ctx context.Context, arg UpsertUnrollJobParams) error
+	UpsertUnrollTxProgress(ctx context.Context, arg UpsertUnrollTxProgressParams) error
+	UpsertUnrollWatch(ctx context.Context, arg UpsertUnrollWatchParams) error
 }
 
 var _ Querier = (*Queries)(nil)

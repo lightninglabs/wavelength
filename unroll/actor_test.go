@@ -723,6 +723,12 @@ func (s *memJobStore) UpsertJob(_ context.Context,
 	)
 	copyRecord.SweepTx = append([]byte(nil), params.SweepTx...)
 	copyRecord.SweepTxid = append([]byte(nil), params.SweepTxid...)
+	copyRecord.TxProgress = append(
+		[]db.UnrollTxProgressRecord(nil), params.TxProgress...,
+	)
+	copyRecord.Watches = append(
+		[]db.UnrollWatchRecord(nil), params.Watches...,
+	)
 
 	s.jobs[params.TargetOutpoint] = &copyRecord
 
@@ -760,6 +766,12 @@ func (s *memJobStore) GetJob(_ context.Context, target wire.OutPoint) (
 	)
 	copyRecord.SweepTx = append([]byte(nil), job.SweepTx...)
 	copyRecord.SweepTxid = append([]byte(nil), job.SweepTxid...)
+	copyRecord.TxProgress = append(
+		[]db.UnrollTxProgressRecord(nil), job.TxProgress...,
+	)
+	copyRecord.Watches = append(
+		[]db.UnrollWatchRecord(nil), job.Watches...,
+	)
 
 	return &copyRecord, nil
 }

@@ -69,6 +69,8 @@ func jobRecordFromSnapshot(target wire.OutPoint,
 		SweepAttempts:       int32(snapshot.SweepAttempts),
 		FailReason:          snapshot.Fail,
 	}
+	record.TxProgress = txProgressFromSnapshot(snapshot)
+	record.Watches = watchesFromSnapshot(target, snapshot)
 
 	if snapshot.State.Sweep.Status == unrollplan.SweepStatusConfirmed {
 		record.SweepConfirmHeight = optionInt32Ptr(
@@ -77,6 +79,142 @@ func jobRecordFromSnapshot(target wire.OutPoint,
 	}
 
 	return record, nil
+}
+
+func txProgressFromSnapshot(
+	snapshot *unrollSnapshot) []db.UnrollTxProgressRecord {
+
+	if snapshot == nil || !snapshot.Started {
+		return nil
+	}
+
+	progress := make([]db.UnrollTxProgressRecord, 0)
+	seen := make(map[string]struct{})
+	add := func(txid chainhash.Hash, role string, status string,
+		txBytes []byte, confirmHeight *int32) {
+
+		key := txid.String() + "/" + role
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+
+		progress = append(progress, db.UnrollTxProgressRecord{
+			Txid:          hashBytes(txid),
+			Role:          role,
+			Status:        status,
+			TxBytes:       append([]byte(nil), txBytes...),
+			ConfirmHeight: confirmHeight,
+			LastError:     snapshot.Fail,
+		})
+	}
+
+	for _, txid := range snapshot.State.ConfirmedTxids {
+		add(txid, "proof", "confirmed", nil, nil)
+	}
+	for _, txid := range snapshot.State.InFlightTxids {
+		add(txid, "proof", "in_flight", nil, nil)
+	}
+	for _, deferred := range snapshot.DeferredCheckpoints {
+		add(
+			deferred.Txid, "deferred_checkpoint", "ready", nil,
+			nil,
+		)
+	}
+
+	if sweepTxid := effectiveSweepTxid(
+		snapshot.State, snapshot.SweepTx,
+	); sweepTxid != nil {
+
+		status := "ready"
+		var confirmHeight *int32
+		switch snapshot.State.Sweep.Status {
+		case unrollplan.SweepStatusPending:
+		case unrollplan.SweepStatusBroadcasted:
+			status = "in_flight"
+
+		case unrollplan.SweepStatusConfirmed:
+			status = "confirmed"
+			confirmHeight = optionInt32Ptr(
+				snapshot.State.Sweep.ConfirmHeight,
+			)
+		}
+
+		sweepBytes, _ := serializeTx(snapshot.SweepTx)
+		add(*sweepTxid, "sweep", status, sweepBytes, confirmHeight)
+	}
+
+	return progress
+}
+
+func watchesFromSnapshot(target wire.OutPoint,
+	snapshot *unrollSnapshot) []db.UnrollWatchRecord {
+
+	if snapshot == nil || !snapshot.Started ||
+		phaseFromSnapshot(snapshot) == PhaseCompleted ||
+		phaseFromSnapshot(snapshot) == PhaseFailed {
+		return nil
+	}
+
+	targetIndex := int32(target.Index)
+	watches := []db.UnrollWatchRecord{
+		{
+			WatchID: "blocks",
+			Role:    "block_epoch",
+			Status:  "registered",
+		},
+		{
+			WatchID:            "target-spend",
+			Role:               "target_spend",
+			SpendOutpointHash:  hashBytes(target.Hash),
+			SpendOutpointIndex: &targetIndex,
+			Status:             "registered",
+		},
+	}
+
+	for _, txid := range snapshot.State.InFlightTxids {
+		watches = append(watches, db.UnrollWatchRecord{
+			WatchID: "proof-" + txid.String(),
+			Role:    "proof_tx",
+			Txid:    hashBytes(txid),
+			Status:  "registered",
+		})
+	}
+
+	for _, deferred := range snapshot.DeferredCheckpoints {
+		watches = append(watches, db.UnrollWatchRecord{
+			WatchID:    "deferred-" + deferred.Txid.String(),
+			Role:       "deferred_checkpoint",
+			Txid:       hashBytes(deferred.Txid),
+			Status:     "registered",
+			HeightHint: int32Ptr(proofNodeHeightHint),
+		})
+	}
+
+	if sweepTxid := effectiveSweepTxid(
+		snapshot.State, snapshot.SweepTx,
+	); sweepTxid != nil &&
+		snapshot.State.Sweep.Status == unrollplan.SweepStatusBroadcasted {
+
+		watches = append(watches, db.UnrollWatchRecord{
+			WatchID: "sweep-" + sweepTxid.String(),
+			Role:    "sweep",
+			Txid:    hashBytes(*sweepTxid),
+			Status:  "registered",
+		})
+	}
+
+	return watches
+}
+
+func hashBytes(hash chainhash.Hash) []byte {
+	return append([]byte(nil), hash[:]...)
+}
+
+func int32Ptr[V ~int32 | ~uint32](value V) *int32 {
+	plain := int32(value)
+
+	return &plain
 }
 
 func snapshotFromJobRecord(record *db.UnrollJobRecord) (*unrollSnapshot,

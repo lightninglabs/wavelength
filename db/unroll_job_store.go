@@ -32,8 +32,33 @@ type UnrollJobRecord struct {
 	SweepConfirmHeight  *int32
 	SweepAttempts       int32
 	FailReason          string
+	TxProgress          []UnrollTxProgressRecord
+	Watches             []UnrollWatchRecord
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+}
+
+// UnrollTxProgressRecord is one transaction progress row for an unroll job.
+type UnrollTxProgressRecord struct {
+	Txid          []byte
+	Role          string
+	Status        string
+	TxBytes       []byte
+	ConfirmHeight *int32
+	LastError     string
+}
+
+// UnrollWatchRecord is one durable chain watch row for an unroll job.
+type UnrollWatchRecord struct {
+	WatchID            string
+	Role               string
+	Txid               []byte
+	SpendOutpointHash  []byte
+	SpendOutpointIndex *int32
+	Status             string
+	HeightHint         *int32
+	ConfirmationHeight *int32
+	LastError          string
 }
 
 // IsTerminal reports whether the job is in a terminal state.
@@ -55,6 +80,28 @@ type UnrollJobStore interface {
 
 	MarkUnrollJobTerminal(ctx context.Context,
 		arg sqlc.MarkUnrollJobTerminalParams) error
+
+	DeleteUnrollTxProgressForJob(ctx context.Context,
+		arg sqlc.DeleteUnrollTxProgressForJobParams) error
+
+	ListUnrollTxProgressForJob(ctx context.Context,
+		arg sqlc.ListUnrollTxProgressForJobParams) (
+		[]sqlc.UnrollTxProgress, error)
+
+	UpsertUnrollTxProgress(ctx context.Context,
+		arg sqlc.UpsertUnrollTxProgressParams) error
+
+	DeleteUnrollWatchesForJob(ctx context.Context,
+		arg sqlc.DeleteUnrollWatchesForJobParams) error
+
+	ListUnrollWatchesForJob(ctx context.Context,
+		arg sqlc.ListUnrollWatchesForJobParams) (
+		[]sqlc.UnrollWatch,
+		error,
+	)
+
+	UpsertUnrollWatch(ctx context.Context,
+		arg sqlc.UpsertUnrollWatchParams) error
 }
 
 // BatchedUnrollJobStore combines the query surface with transactions.
@@ -95,7 +142,7 @@ func (s *UnrollJobPersistenceStore) UpsertJob(ctx context.Context,
 
 	target := job.TargetOutpoint
 	writeFn := func(q UnrollJobStore) error {
-		return q.UpsertUnrollJob(
+		err := q.UpsertUnrollJob(
 			ctx,
 			sqlc.UpsertUnrollJobParams{
 				TargetOutpointHash:  target.Hash[:],
@@ -126,6 +173,44 @@ func (s *UnrollJobPersistenceStore) UpsertJob(ctx context.Context,
 				UpdatedAt: nowUnix,
 			},
 		)
+		if err != nil {
+			return err
+		}
+
+		key := jobKeyParams(target)
+		if err := q.DeleteUnrollTxProgressForJob(
+			ctx, sqlc.DeleteUnrollTxProgressForJobParams(key),
+		); err != nil {
+			return err
+		}
+
+		for i := range job.TxProgress {
+			params := txProgressParams(
+				target, job.TxProgress[i], createdAt, nowUnix,
+			)
+			if err := q.UpsertUnrollTxProgress(
+				ctx, params,
+			); err != nil {
+				return err
+			}
+		}
+
+		if err := q.DeleteUnrollWatchesForJob(
+			ctx, sqlc.DeleteUnrollWatchesForJobParams(key),
+		); err != nil {
+			return err
+		}
+
+		for i := range job.Watches {
+			params := watchParams(
+				target, job.Watches[i], createdAt, nowUnix,
+			)
+			if err := q.UpsertUnrollWatch(ctx, params); err != nil {
+				return err
+			}
+		}
+
+		return nil
 	}
 
 	return s.db.ExecTx(ctx, WriteTxOption(), writeFn)
@@ -151,6 +236,9 @@ func (s *UnrollJobPersistenceStore) GetJob(ctx context.Context,
 
 		record, err := unrollJobRecordFromRow(row)
 		if err != nil {
+			return err
+		}
+		if err := loadUnrollJobChildren(ctx, q, &record); err != nil {
 			return err
 		}
 
@@ -184,6 +272,11 @@ func (s *UnrollJobPersistenceStore) ListNonTerminalJobs(ctx context.Context) (
 			if convErr != nil {
 				return convErr
 			}
+			if err := loadUnrollJobChildren(
+				ctx, q, &record,
+			); err != nil {
+				return err
+			}
 
 			result = append(result, record)
 		}
@@ -197,6 +290,133 @@ func (s *UnrollJobPersistenceStore) ListNonTerminalJobs(ctx context.Context) (
 	}
 
 	return result, nil
+}
+
+type jobKey struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+}
+
+func jobKeyParams(target wire.OutPoint) jobKey {
+	return jobKey{
+		TargetOutpointHash:  target.Hash[:],
+		TargetOutpointIndex: int32(target.Index),
+	}
+}
+
+func txProgressParams(target wire.OutPoint, progress UnrollTxProgressRecord,
+	createdAt, updatedAt int64) sqlc.UpsertUnrollTxProgressParams {
+
+	return sqlc.UpsertUnrollTxProgressParams{
+		TargetOutpointHash:  target.Hash[:],
+		TargetOutpointIndex: int32(target.Index),
+		Txid:                append([]byte(nil), progress.Txid...),
+		Role:                progress.Role,
+		Status:              progress.Status,
+		TxBytes:             append([]byte(nil), progress.TxBytes...),
+		ConfirmHeight:       nullableInt32(progress.ConfirmHeight),
+		LastError: sql.NullString{
+			String: progress.LastError,
+			Valid:  progress.LastError != "",
+		},
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}
+}
+
+func watchParams(target wire.OutPoint, watch UnrollWatchRecord, createdAt,
+	updatedAt int64) sqlc.UpsertUnrollWatchParams {
+
+	return sqlc.UpsertUnrollWatchParams{
+		TargetOutpointHash:  target.Hash[:],
+		TargetOutpointIndex: int32(target.Index),
+		WatchID:             watch.WatchID,
+		Role:                watch.Role,
+		Txid:                append([]byte(nil), watch.Txid...),
+		SpendOutpointHash: append(
+			[]byte(nil), watch.SpendOutpointHash...,
+		),
+		SpendOutpointIndex: nullableInt32(watch.SpendOutpointIndex),
+		Status:             watch.Status,
+		HeightHint:         nullableInt32(watch.HeightHint),
+		ConfirmationHeight: nullableInt32(watch.ConfirmationHeight),
+		LastError: sql.NullString{
+			String: watch.LastError,
+			Valid:  watch.LastError != "",
+		},
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}
+}
+
+func loadUnrollJobChildren(ctx context.Context, q UnrollJobStore,
+	record *UnrollJobRecord) error {
+
+	key := jobKeyParams(record.TargetOutpoint)
+
+	progressRows, err := q.ListUnrollTxProgressForJob(
+		ctx, sqlc.ListUnrollTxProgressForJobParams(key),
+	)
+	if err != nil {
+		return err
+	}
+	record.TxProgress = make([]UnrollTxProgressRecord, 0, len(progressRows))
+	for i := range progressRows {
+		record.TxProgress = append(
+			record.TxProgress,
+			txProgressRecordFromRow(progressRows[i]),
+		)
+	}
+
+	watchRows, err := q.ListUnrollWatchesForJob(
+		ctx, sqlc.ListUnrollWatchesForJobParams(key),
+	)
+	if err != nil {
+		return err
+	}
+	record.Watches = make([]UnrollWatchRecord, 0, len(watchRows))
+	for i := range watchRows {
+		record.Watches = append(
+			record.Watches, watchRecordFromRow(watchRows[i]),
+		)
+	}
+
+	return nil
+}
+
+func txProgressRecordFromRow(row sqlc.UnrollTxProgress) UnrollTxProgressRecord {
+	record := UnrollTxProgressRecord{
+		Txid:          append([]byte(nil), row.Txid...),
+		Role:          row.Role,
+		Status:        row.Status,
+		TxBytes:       append([]byte(nil), row.TxBytes...),
+		ConfirmHeight: int32FromNull(row.ConfirmHeight),
+	}
+	if row.LastError.Valid {
+		record.LastError = row.LastError.String
+	}
+
+	return record
+}
+
+func watchRecordFromRow(row sqlc.UnrollWatch) UnrollWatchRecord {
+	record := UnrollWatchRecord{
+		WatchID: row.WatchID,
+		Role:    row.Role,
+		Txid:    append([]byte(nil), row.Txid...),
+		SpendOutpointHash: append(
+			[]byte(nil), row.SpendOutpointHash...,
+		),
+		SpendOutpointIndex: int32FromNull(row.SpendOutpointIndex),
+		Status:             row.Status,
+		HeightHint:         int32FromNull(row.HeightHint),
+		ConfirmationHeight: int32FromNull(row.ConfirmationHeight),
+	}
+	if row.LastError.Valid {
+		record.LastError = row.LastError.String
+	}
+
+	return record
 }
 
 // MarkJobTerminal updates one job row to a terminal state.

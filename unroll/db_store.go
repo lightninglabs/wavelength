@@ -48,6 +48,8 @@ func (s *DBRegistryStore) UpsertRecord(ctx context.Context,
 		job.SweepConfirmHeight = existing.SweepConfirmHeight
 		job.SweepAttempts = existing.SweepAttempts
 		job.CreatedAt = existing.CreatedAt
+		job.TxProgress = existing.TxProgress
+		job.Watches = existing.Watches
 
 	case errors.Is(err, db.ErrUnrollJobNotFound):
 		plannerState, encodeErr := unrollplan.EncodeState(

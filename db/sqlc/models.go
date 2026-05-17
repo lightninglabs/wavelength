@@ -371,6 +371,26 @@ type RoundVtxoRequest struct {
 	SigningPubkey    []byte
 }
 
+type UnrollEffect struct {
+	ID                  string
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+	EffectType          string
+	Txid                []byte
+	Status              string
+	IdempotencyKey      string
+	Attempts            int32
+	MaxAttempts         int32
+	NextAttemptAt       int64
+	ClaimOwner          sql.NullString
+	ClaimToken          sql.NullString
+	ClaimUntil          sql.NullInt64
+	LastError           sql.NullString
+	CreatedAt           int64
+	UpdatedAt           int64
+	DoneAt              sql.NullInt64
+}
+
 type UnrollJob struct {
 	TargetOutpointHash  []byte
 	TargetOutpointIndex int32
@@ -385,6 +405,35 @@ type UnrollJob struct {
 	SweepConfirmHeight  sql.NullInt32
 	SweepAttempts       int32
 	FailReason          sql.NullString
+	CreatedAt           int64
+	UpdatedAt           int64
+}
+
+type UnrollTxProgress struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+	Txid                []byte
+	Role                string
+	Status              string
+	TxBytes             []byte
+	ConfirmHeight       sql.NullInt32
+	LastError           sql.NullString
+	CreatedAt           int64
+	UpdatedAt           int64
+}
+
+type UnrollWatch struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+	WatchID             string
+	Role                string
+	Txid                []byte
+	SpendOutpointHash   []byte
+	SpendOutpointIndex  sql.NullInt32
+	Status              string
+	HeightHint          sql.NullInt32
+	ConfirmationHeight  sql.NullInt32
+	LastError           sql.NullString
 	CreatedAt           int64
 	UpdatedAt           int64
 }
