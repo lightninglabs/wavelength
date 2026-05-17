@@ -3,6 +3,7 @@ package oor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -28,6 +29,12 @@ const (
 	defaultOORClientEffectInterval  = time.Second
 	defaultOORClientEffectRetry     = 2 * time.Second
 )
+
+// ErrOORClientEffectAwaitingExternalAck means the effect was handed to an
+// external durable boundary and must remain claim-held until the session
+// advances or the claim expires for crash replay.
+var ErrOORClientEffectAwaitingExternalAck = errors.New("oor client effect " +
+	"awaiting external acknowledgement")
 
 // OORClientEffectID returns the stable durable id for a client OOR effect.
 func OORClientEffectID(sessionID SessionID, effectType string) string {
@@ -239,8 +246,16 @@ func (w *OORClientEffectWorker) RunOnce(ctx context.Context) error {
 	}
 
 	for _, effect := range effects {
-		if err := w.processor.ProcessOORClientEffect(ctx, effect); err != nil {
-			w.log.WarnS(ctx, "Client OOR effect failed", err,
+		if err := w.processor.ProcessOORClientEffect(
+			ctx, effect,
+		); err != nil {
+
+			if errors.Is(err, ErrOORClientEffectAwaitingExternalAck) {
+				continue
+			}
+
+			w.log.WarnS(ctx, "Client OOR effect failed",
+				err,
 				slog.String("effect_id", effect.ID),
 				slog.String("effect_type", effect.EffectType),
 				slog.Int("attempts", int(effect.Attempts)),

@@ -48,6 +48,36 @@ func TestOORClientEffectWorkerRunOnceDoneAndRetry(t *testing.T) {
 	require.Equal(t, "effect-retry:token-retry", store.retried[0])
 }
 
+func TestOORClientEffectWorkerLeavesExternalAckClaimOpen(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := &fakeOORClientEffectStore{
+		effects: []OORClientEffect{{
+			ID:         "effect-awaiting-ack",
+			EffectType: OORClientEffectSendFinalizePackage,
+			ClaimToken: "token-awaiting-ack",
+		}},
+	}
+	processor := &fakeOORClientEffectProcessor{
+		pendingEffectID: "effect-awaiting-ack",
+	}
+
+	worker := NewOORClientEffectWorker(OORClientEffectWorkerConfig{
+		Store:      store,
+		Processor:  processor,
+		Owner:      "test-worker",
+		BatchSize:  10,
+		Lease:      time.Minute,
+		RetryDelay: time.Second,
+	})
+
+	require.NoError(t, worker.RunOnce(ctx))
+	require.Equal(t, []string{"effect-awaiting-ack"}, processor.seen)
+	require.Empty(t, store.done)
+	require.Empty(t, store.retried)
+}
+
 type fakeOORClientEffectStore struct {
 	effects []OORClientEffect
 
@@ -88,8 +118,9 @@ func (s *fakeOORClientEffectStore) ReleaseExpiredOORClientEffectClaims(
 }
 
 type fakeOORClientEffectProcessor struct {
-	failEffectID string
-	seen         []string
+	failEffectID    string
+	pendingEffectID string
+	seen            []string
 }
 
 func (p *fakeOORClientEffectProcessor) ProcessOORClientEffect(_ context.Context,
@@ -98,6 +129,9 @@ func (p *fakeOORClientEffectProcessor) ProcessOORClientEffect(_ context.Context,
 	p.seen = append(p.seen, effect.ID)
 	if effect.ID == p.failEffectID {
 		return errors.New("boom")
+	}
+	if effect.ID == p.pendingEffectID {
+		return ErrOORClientEffectAwaitingExternalAck
 	}
 
 	return nil

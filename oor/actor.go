@@ -2335,9 +2335,19 @@ func (b *oorDurableBehavior) processSQLClientEffect(ctx context.Context,
 			slog.String("effect_type", effect.EffectType),
 		)
 
-		return b.driveOutboxNow(ctx, effect.SessionID, handle, []OutboxEvent{
-			msg,
-		})
+		err = b.driveOutboxNow(
+			ctx, effect.SessionID, handle, []OutboxEvent{
+				msg,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		if b.isTransportEvent(msg) {
+			return ErrOORClientEffectAwaitingExternalAck
+		}
+
+		return nil
 	}
 
 	b.logger(ctx).DebugS(ctx, "Skipping stale SQL OOR client effect",
