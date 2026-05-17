@@ -549,16 +549,19 @@ func (s *UnrollJobPersistenceStore) MarkEffectDone(ctx context.Context, id,
 	claimToken string) error {
 
 	now := s.clock.Now().Unix()
-	var token any
+	token := sql.NullString{}
 	if claimToken != "" {
-		token = claimToken
+		token = sql.NullString{
+			String: claimToken,
+			Valid:  true,
+		}
 	}
 
 	return s.db.ExecTx(ctx, WriteTxOption(), func(q UnrollJobStore) error {
 		return q.MarkUnrollEffectDone(
 			ctx, sqlc.MarkUnrollEffectDoneParams{
-				ID:      id,
-				Column2: token,
+				ID:         id,
+				ClaimToken: token,
 				DoneAt: sql.NullInt64{
 					Int64: now,
 					Valid: true,

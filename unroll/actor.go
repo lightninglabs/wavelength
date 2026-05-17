@@ -316,6 +316,10 @@ func (b *behavior) driveEvent(ctx context.Context, event Event) error {
 		return fmt.Errorf("session not initialized")
 	}
 
+	if b.inTerminalState() {
+		return nil
+	}
+
 	outbox, err := b.session.FSM.AskEvent(ctx, event).Await(ctx).Unpack()
 	if err != nil {
 		return err

@@ -336,6 +336,36 @@ func (a *ServerConnectionActor) dispatchAndCheckpoint(ctx context.Context,
 			envelopeNextCursor = batchNextCursor
 		}
 
+		if a.dispatchOutsideIngressTx(env) {
+			cursor, err := a.dispatchBatch(
+				ctx, []*mailboxpb.Envelope{env},
+				envelopeNextCursor,
+			)
+			if err != nil {
+				return committedCursor, err
+			}
+
+			nextState = *state
+			nextState.AdvanceDispatch(cursor)
+			nextState.PullCursor = cursor
+
+			err = a.cfg.Transport.RunInIngressTx(
+				ctx, func(txCtx context.Context) error {
+					return a.saveCheckpoint(
+						txCtx, nextState,
+					)
+				},
+			)
+			if err != nil {
+				return committedCursor, err
+			}
+
+			committedCursor = cursor
+			*state = nextState
+
+			continue
+		}
+
 		err := a.cfg.Transport.RunInIngressTx(
 			ctx, func(txCtx context.Context) error {
 				cursor, err := a.dispatchBatch(
@@ -362,6 +392,20 @@ func (a *ServerConnectionActor) dispatchAndCheckpoint(ctx context.Context,
 	}
 
 	return committedCursor, nil
+}
+
+func (a *ServerConnectionActor) dispatchOutsideIngressTx(
+	env *mailboxpb.Envelope) bool {
+
+	if env == nil || env.Rpc == nil ||
+		a.cfg.DispatchOutsideIngressTx == nil {
+		return false
+	}
+
+	return a.cfg.DispatchOutsideIngressTx[mailboxrpc.ServiceMethod{
+		Service: env.Rpc.Service,
+		Method:  env.Rpc.Method,
+	}]
 }
 
 // ackRemote calls Edge.AckUpTo with the given cursor.

@@ -42,7 +42,7 @@ func (s *TransportStoreDB) LoadIngressCursor(ctx context.Context,
 	localMailboxID, remoteMailboxID string) (serverconn.AckState, error) {
 
 	var state serverconn.AckState
-	err := s.ExecTx(ctx, ReadTxOption(), func(q *sqlc.Queries) error {
+	err := s.ExecTx(ctx, WriteTxOption(), func(q *sqlc.Queries) error {
 		row, err := q.GetMailboxIngressCursor(ctx, localMailboxID)
 		if errors.Is(err, sql.ErrNoRows) {
 			now := s.clk.Now().Unix()

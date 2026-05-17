@@ -1058,9 +1058,13 @@ func (a *RoundClientActor) processRoundEffect(ctx context.Context,
 	case RoundEffectSendNonces:
 		nonceState, ok := state.(*NoncesSentState)
 		if !ok {
-			return fmt.Errorf("round effect %s requires "+
-				"NoncesSentState, got %T", effect.EffectType,
-				state)
+			a.log.InfoS(ctx, "Dropping stale nonce send effect "+
+				"for advanced round state",
+				slog.String("round_id", effect.RoundID.String()),
+				slog.String("state", state.String()),
+			)
+
+			return nil
 		}
 
 		nonces, err := a.cfg.RoundStore.LoadSigningNonces(
@@ -1978,6 +1982,13 @@ func extractRoundID(event ClientEvent) (RoundID, bool) {
 	case *AwaitingBoardingSigs:
 		return e.RoundID, true
 
+	case *BoardingFailed:
+		if e.HasRoundID {
+			return e.RoundID, true
+		}
+
+		return RoundID{}, false
+
 	default:
 		return RoundID{}, false
 	}
@@ -2072,24 +2083,21 @@ func (a *RoundClientActor) routeServerMessageToPending(ctx context.Context,
 
 	roundFSM := a.findPendingRound()
 
-	// Round failures can arrive after the round is keyed by a
-	// server-assigned RoundID. When there is exactly one tracked
-	// round, route the failure there.
 	if roundFSM == nil {
-		_, isBoardingFailed := msg.(*BoardingFailed)
-		if isBoardingFailed && len(a.rounds) == 1 {
-			for _, candidate := range a.rounds {
-				roundFSM = candidate
-			}
+		if failed, ok := msg.(*BoardingFailed); ok &&
+			!failed.HasRoundID {
 
-			if roundFSM != nil {
-				a.log.DebugS(ctx,
-					"Routing BoardingFailed to sole "+
-						"tracked round",
-					slog.String(
-						"key", roundFSM.Key.KeyString(),
-					))
-			}
+			a.log.WarnS(ctx,
+				"Ignoring unroutable BoardingFailed without "+
+					"round ID", nil,
+				slog.String("reason", failed.Reason),
+			)
+
+			return nil, fn.Ok[actormsg.RoundActorResp](
+				&ServerMessageResponse{
+					Success: true,
+				},
+			), true
 		}
 	}
 
@@ -3026,33 +3034,38 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 		)
 	}
 
-	// Build VTXO requests from the provided amounts.
-	requests := make([]types.VTXORequest, 0, len(cmd.Amounts))
-	for i, amount := range cmd.Amounts {
-		if amount <= 0 {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("board VTXO amount %d is "+
-					"invalid: %v", i, amount),
-			)
-		}
+	var requests []types.VTXORequest
+	if len(cmd.VTXORequests) > 0 {
+		requests = slices.Clone(cmd.VTXORequests)
+	} else {
+		// Build VTXO requests from the provided amounts.
+		requests = make([]types.VTXORequest, 0, len(cmd.Amounts))
+		for i, amount := range cmd.Amounts {
+			if amount <= 0 {
+				return fn.Err[actormsg.RoundActorResp](
+					fmt.Errorf("board VTXO amount %d is "+
+						"invalid: %v", i, amount),
+				)
+			}
 
-		// Boarding flow: the output VTXO is funded by the
-		// client's on-chain wallet input, so the ledger
-		// emission must credit wallet_balance via
-		// SourceRoundBoarding. Tag origin here so the
-		// classification flows through the FSM to the
-		// VTXOCreatedNotification dispatch.
-		req, err := a.buildVTXORequest(
-			ctx, amount, types.VTXOOriginRoundBoarding,
-		)
-		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("build board VTXO request %d: %w",
-					i, err),
+			// Boarding flow: the output VTXO is funded by the
+			// client's on-chain wallet input, so the ledger
+			// emission must credit wallet_balance via
+			// SourceRoundBoarding. Tag origin here so the
+			// classification flows through the FSM to the
+			// VTXOCreatedNotification dispatch.
+			req, err := a.buildVTXORequest(
+				ctx, amount, types.VTXOOriginRoundBoarding,
 			)
-		}
+			if err != nil {
+				return fn.Err[actormsg.RoundActorResp](
+					fmt.Errorf("build board VTXO request "+
+						"%d: %w", i, err),
+				)
+			}
 
-		requests = append(requests, *req)
+			requests = append(requests, *req)
+		}
 	}
 
 	a.log.InfoS(ctx, "Processing board request",
@@ -3092,6 +3105,36 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 		}
 
 		boardingIntents = append(boardingIntents, intent)
+	}
+
+	requests, err = ensureVTXOSigningKeys(ctx, a.cfg.Wallet, requests)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("derive board VTXO signing keys: %w", err),
+		)
+	}
+	designateChangeMarker(requests, nil)
+
+	boardOutpoints := make([]wire.OutPoint, 0, len(boardingIntents))
+	for _, intent := range boardingIntents {
+		boardOutpoints = append(boardOutpoints, intent.Outpoint)
+	}
+	if len(boardOutpoints) > 0 {
+		resp := a.cfg.WalletActor.Ask(
+			ctx, &wallet.RecordPendingBoardVTXORequestsRequest{
+				Outpoints:       boardOutpoints,
+				TargetVTXOCount: cmd.TargetVTXOCount,
+				VTXORequests:    slices.Clone(requests),
+			},
+		).Await(ctx)
+		if resp.IsErr() {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf(
+					"record pending board VTXO "+
+						"requests: %w", resp.Err(),
+				),
+			)
+		}
 	}
 
 	// Find an existing assembling round or create a new one.

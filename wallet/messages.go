@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -540,6 +541,13 @@ type BoardRequest struct {
 	// self-Tell. The startup replay path always sets this to false so
 	// a replay re-persists with a fresh timestamp.
 	NoPersist bool
+
+	// VTXORequests, when set, are the exact output requests to replay. The
+	// normal RPC path leaves this empty and lets the round actor derive
+	// fresh keys. Startup replay fills it from pending_board_vtxo_requests
+	// so a restart after server admission does not derive different output
+	// scripts.
+	VTXORequests []types.VTXORequest
 }
 
 // MessageType returns the message type identifier for logging and debugging.
@@ -549,6 +557,37 @@ func (m *BoardRequest) MessageType() string {
 
 // walletMsgSealed implements the sealed WalletMsg interface.
 func (m *BoardRequest) walletMsgSealed() {}
+
+// RecordPendingBoardVTXORequestsRequest attaches the exact VTXO requests that
+// the round actor materialized for a pending Board RPC to the wallet-owned
+// pending board rows.
+type RecordPendingBoardVTXORequestsRequest struct {
+	actor.BaseMessage
+
+	Outpoints       []wire.OutPoint
+	TargetVTXOCount uint32
+	VTXORequests    []types.VTXORequest
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *RecordPendingBoardVTXORequestsRequest) MessageType() string {
+	return "RecordPendingBoardVTXORequestsRequest"
+}
+
+func (m *RecordPendingBoardVTXORequestsRequest) walletMsgSealed() {}
+
+// RecordPendingBoardVTXORequestsResponse acknowledges that replay material was
+// attached to the pending Board rows.
+type RecordPendingBoardVTXORequestsResponse struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *RecordPendingBoardVTXORequestsResponse) MessageType() string {
+	return "RecordPendingBoardVTXORequestsResponse"
+}
+
+func (m *RecordPendingBoardVTXORequestsResponse) walletRespSealed() {}
 
 // BoardResponse contains the result of a boarding request. The actual round
 // registration happens asynchronously in the round actor.

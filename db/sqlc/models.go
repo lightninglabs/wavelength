@@ -415,6 +415,25 @@ type PendingBoardRequest struct {
 	RequestedAtUnix int64
 }
 
+type PendingBoardVtxoRequest struct {
+	OutpointHash     []byte
+	OutpointIndex    int32
+	RequestIndex     int32
+	Amount           int64
+	IsChange         bool
+	PkScript         []byte
+	Expiry           int32
+	PolicyTemplate   []byte
+	ClientPubkey     []byte
+	OperatorPubkey   []byte
+	OwnerKeyFamily   int32
+	OwnerKeyIndex    int32
+	SigningKeyFamily int32
+	SigningKeyIndex  int32
+	SigningPubkey    []byte
+	Origin           int32
+}
+
 type Round struct {
 	RoundID               string
 	StartHeight           int32

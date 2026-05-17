@@ -88,6 +88,51 @@ func TestTransportStoreEgressClaimExpiresAndReclaims(t *testing.T) {
 	require.Empty(t, claimedSent)
 }
 
+func TestTransportStoreInsertEgressRequeuesSentIdempotentMessage(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	clk := clock.NewTestClock(time.Unix(1_700_000_000, 0))
+	transport, _ := newTransportStoreForTest(t, clk)
+
+	row := serverconn.EgressEnvelope{
+		ID:              "egress-1",
+		Connector:       serverconn.TransportConnectorServerConn,
+		LocalMailboxID:  "client-local",
+		RemoteMailboxID: "server-remote",
+		RPCKind:         "request",
+		Service:         "oor.v1.OORService",
+		Method:          "FinalizeOOR",
+		MsgID:           "msg-1",
+		IdempotencyKey:  "idem-1",
+		Envelope:        []byte("first-envelope"),
+	}
+	require.NoError(t, transport.InsertEgress(ctx, row))
+
+	claimed, err := transport.ClaimDueEgress(
+		ctx, "worker-a", 10, time.Minute,
+	)
+	require.NoError(t, err)
+	require.Len(t, claimed, 1)
+	require.NoError(
+		t, transport.MarkEgressSent(
+			ctx, claimed[0].ID, claimed[0].ClaimToken,
+		),
+	)
+
+	row.Envelope = []byte("replayed-envelope")
+	require.NoError(t, transport.InsertEgress(ctx, row))
+
+	replayed, err := transport.ClaimDueEgress(
+		ctx, "worker-b", 10, time.Minute,
+	)
+	require.NoError(t, err)
+	require.Len(t, replayed, 1)
+	require.Equal(t, row.ID, replayed[0].ID)
+	require.Equal(t, row.Envelope, replayed[0].Envelope)
+	require.Equal(t, int32(1), replayed[0].Attempts)
+}
+
 func TestTransportStoreIngressTxRollbackAndCommit(t *testing.T) {
 	t.Parallel()
 

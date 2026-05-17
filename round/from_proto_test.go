@@ -222,13 +222,16 @@ func TestOperatorSignedFromProto(t *testing.T) {
 // TestBoardingFailedFromProtoRoundFailed verifies that BoardingFailed
 // handles ClientRoundFailedResp.
 func TestBoardingFailedFromProtoRoundFailed(t *testing.T) {
+	roundID := testRoundID("failed-round")
 	pb := &roundpb.ClientRoundFailedResp{
-		RoundId: make([]byte, 16),
+		RoundId: roundID[:],
 		Reason:  "timeout expired",
 	}
 
 	var got BoardingFailed
 	require.NoError(t, got.FromProto(pb))
+	require.True(t, got.HasRoundID)
+	require.Equal(t, roundID, got.RoundID)
 	require.Equal(t, "timeout expired", got.Reason)
 	require.True(t, got.Recoverable)
 }
@@ -242,6 +245,8 @@ func TestBoardingFailedFromProtoErrorResp(t *testing.T) {
 
 	var got BoardingFailed
 	require.NoError(t, got.FromProto(pb))
+	require.False(t, got.HasRoundID)
+	require.Equal(t, RoundID{}, got.RoundID)
 	require.Equal(t, "internal error", got.Reason)
 	require.True(t, got.Recoverable)
 }

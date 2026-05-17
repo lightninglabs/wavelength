@@ -29,6 +29,7 @@ type Querier interface {
 	DeleteClientRoundPendingVTXOQuotes(ctx context.Context, roundID string) error
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
 	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
+	DeletePendingBoardVtxosByOutpoint(ctx context.Context, arg DeletePendingBoardVtxosByOutpointParams) error
 	DeleteUnrollTxProgressForJob(ctx context.Context, arg DeleteUnrollTxProgressForJobParams) error
 	DeleteUnrollWatchesForJob(ctx context.Context, arg DeleteUnrollWatchesForJobParams) error
 	// DeleteVTXO removes a VTXO from storage. Used for cleanup after terminal
@@ -205,6 +206,7 @@ type Querier interface {
 	ListOORVTXOBindingsBySession(ctx context.Context, sessionID []byte) ([]ListOORVTXOBindingsBySessionRow, error)
 	ListOwnedReceiveScripts(ctx context.Context) ([]OwnedReceiveScript, error)
 	ListPendingBoardRequests(ctx context.Context) ([]PendingBoardRequest, error)
+	ListPendingBoardVtxoRequests(ctx context.Context) ([]PendingBoardVtxoRequest, error)
 	ListPendingBoardingSweepInputs(ctx context.Context) ([]BoardingSweepInput, error)
 	ListPendingBoardingSweeps(ctx context.Context) ([]BoardingSweep, error)
 	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
@@ -303,6 +305,7 @@ type Querier interface {
 	// intent has already adopted, swept, or failed) are cleared so the next
 	// start is a no-op.
 	UpsertPendingBoardRequest(ctx context.Context, arg UpsertPendingBoardRequestParams) error
+	UpsertPendingBoardVtxoRequest(ctx context.Context, arg UpsertPendingBoardVtxoRequestParams) error
 	// VTXO unroll job queries.
 	UpsertUnrollJob(ctx context.Context, arg UpsertUnrollJobParams) error
 	UpsertUnrollTxProgress(ctx context.Context, arg UpsertUnrollTxProgressParams) error

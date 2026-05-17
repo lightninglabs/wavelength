@@ -155,15 +155,18 @@ RETURNING id, target_outpoint_hash, target_outpoint_index, effect_type, txid,
 -- name: MarkUnrollEffectDone :exec
 UPDATE unroll_effects
 SET status = 'done',
-    done_at = $3,
-    updated_at = $3,
+    done_at = sqlc.narg(done_at),
+    updated_at = sqlc.narg(done_at),
     claim_owner = NULL,
     claim_token = NULL,
     claim_until = NULL,
     last_error = NULL
-WHERE id = $1
+WHERE id = sqlc.arg(id)
   AND status IN ('pending', 'claimed')
-  AND ($2 IS NULL OR claim_token = $2);
+  AND (
+    CAST(sqlc.narg(claim_token) AS TEXT) IS NULL OR
+    claim_token = CAST(sqlc.narg(claim_token) AS TEXT)
+  );
 
 -- name: ReleaseUnrollEffectForRetry :exec
 UPDATE unroll_effects
@@ -171,14 +174,14 @@ SET status = CASE
         WHEN attempts >= max_attempts THEN 'dead'
         ELSE 'pending'
     END,
-    next_attempt_at = $3,
-    updated_at = $4,
+    next_attempt_at = sqlc.arg(next_attempt_at),
+    updated_at = sqlc.arg(updated_at),
     claim_owner = NULL,
     claim_token = NULL,
     claim_until = NULL,
-    last_error = $5
-WHERE id = $1
-  AND claim_token = $2
+    last_error = sqlc.narg(last_error)
+WHERE id = sqlc.arg(id)
+  AND claim_token = sqlc.arg(claim_token)
   AND status = 'claimed';
 
 -- name: ReleaseExpiredUnrollEffectClaims :exec

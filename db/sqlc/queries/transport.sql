@@ -41,7 +41,26 @@ INSERT INTO mailbox_egress (
     $10, $11, $12, 'pending', 0,
     $13, $14, $15, $15
 )
-ON CONFLICT (connector, local_mailbox_id, idempotency_key) DO NOTHING;
+ON CONFLICT (connector, local_mailbox_id, idempotency_key) DO UPDATE SET
+    remote_mailbox_id = excluded.remote_mailbox_id,
+    rpc_kind = excluded.rpc_kind,
+    service = excluded.service,
+    method = excluded.method,
+    correlation_id = excluded.correlation_id,
+    reply_to = excluded.reply_to,
+    msg_id = excluded.msg_id,
+    envelope = excluded.envelope,
+    status = 'pending',
+    attempts = 0,
+    max_attempts = excluded.max_attempts,
+    next_attempt_at = excluded.next_attempt_at,
+    claim_owner = NULL,
+    claim_token = NULL,
+    claim_until = NULL,
+    last_error = NULL,
+    sent_at = NULL,
+    updated_at = excluded.updated_at
+WHERE mailbox_egress.status = 'sent';
 
 -- name: ListDueMailboxEgressIDs :many
 SELECT id

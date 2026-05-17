@@ -946,6 +946,35 @@ CREATE TABLE pending_board_requests (
     CHECK (requested_at_unix > 0)
 );
 
+CREATE TABLE pending_board_vtxo_requests (
+    outpoint_hash BLOB NOT NULL,
+    outpoint_index INTEGER NOT NULL,
+    request_index INTEGER NOT NULL,
+
+    amount BIGINT NOT NULL,
+    is_change BOOLEAN NOT NULL,
+    pk_script BLOB NOT NULL,
+    expiry INTEGER NOT NULL,
+    policy_template BLOB NOT NULL,
+
+    client_pubkey BLOB NOT NULL,
+    operator_pubkey BLOB NOT NULL,
+
+    owner_key_family INTEGER NOT NULL DEFAULT -1,
+    owner_key_index INTEGER NOT NULL DEFAULT -1,
+
+    signing_key_family INTEGER NOT NULL,
+    signing_key_index INTEGER NOT NULL,
+    signing_pubkey BLOB NOT NULL,
+
+    origin INTEGER NOT NULL,
+
+    PRIMARY KEY (outpoint_hash, outpoint_index, request_index),
+    FOREIGN KEY (outpoint_hash, outpoint_index)
+        REFERENCES pending_board_requests(outpoint_hash, outpoint_index)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE round_boarding_intents (
     -- round_id links to the parent round.
     round_id TEXT NOT NULL,

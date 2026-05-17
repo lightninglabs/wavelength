@@ -515,9 +515,11 @@ type RoundStore interface {
 		roundID RoundID) (
 		map[SignerKey]map[tree.TxID]*musig2.PartialSignature, error)
 
-	// SaveForfeitRequests persists expected VTXO forfeit requests and the
-	// restart-safe effect that asks local VTXO actors to sign them.
-	SaveForfeitRequests(ctx context.Context, roundID RoundID,
+	// SaveForfeitRequests persists the round snapshot, expected VTXO
+	// forfeit requests, and the restart-safe effect that asks local VTXO
+	// actors to sign them.
+	SaveForfeitRequests(ctx context.Context, round *Round,
+		clientTrees map[SignerKey]*tree.Tree,
 		requests []ForfeitRequestState) error
 
 	// LoadForfeitRequests loads expected VTXO forfeit requests.

@@ -125,6 +125,15 @@ type ConnectorConfig struct {
 	// KIND_EVENT envelopes to the correct local actor via ServiceKey.
 	Dispatchers map[mailboxrpc.ServiceMethod]EnvelopeDispatcher
 
+	// DispatchOutsideIngressTx marks routes whose dispatcher must not run
+	// inside the mailbox ingress write transaction. These routes are used
+	// for actor/FSM handlers that perform long-running local work after
+	// committing their own restart-safe SQL facts. The ingress cursor is
+	// still advanced only after the dispatcher returns successfully; if
+	// that short cursor commit fails, the envelope is replayed and the
+	// domain handler must be idempotent.
+	DispatchOutsideIngressTx map[mailboxrpc.ServiceMethod]bool
+
 	// Transport persists connector-owned ingress cursors and egress
 	// mailbox envelopes. This replaces the actor delivery mailbox for
 	// transport durability.

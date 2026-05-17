@@ -655,15 +655,27 @@ func (s *RoundPersistenceStore) LoadPartialSignatures(ctx context.Context,
 
 // SaveForfeitRequests persists expected VTXO forfeit requests.
 func (s *RoundPersistenceStore) SaveForfeitRequests(ctx context.Context,
-	roundID round.RoundID, requests []round.ForfeitRequestState) error {
+	r *round.Round, clientTrees map[round.SignerKey]*tree.Tree,
+	requests []round.ForfeitRequestState) error {
 
 	if len(requests) == 0 {
 		return nil
 	}
+	if r == nil {
+		return fmt.Errorf("nil round")
+	}
 
-	roundIDStr := roundID.String()
+	roundIDStr := r.RoundID.String()
+
 	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
 		nowUnix := s.clock.Now().Unix()
+		err := s.insertRoundForfeitCollectionFacts(
+			ctx, q, r, clientTrees, nowUnix,
+		)
+		if err != nil {
+			return err
+		}
+
 		for _, request := range requests {
 			params, err := forfeitRequestToInsertParams(
 				roundIDStr, request, nowUnix,
@@ -682,22 +694,113 @@ func (s *RoundPersistenceStore) SaveForfeitRequests(ctx context.Context,
 			}
 		}
 
-		err := q.UpdateRoundStatus(
-			ctx, sqlc.UpdateRoundStatusParams{
-				RoundID:        roundIDStr,
-				Status:         "forfeit_sigs_collecting",
-				LastUpdateTime: nowUnix,
-			},
-		)
-		if err != nil {
-			return fmt.Errorf("mark forfeit collection: %w", err)
-		}
-
 		return insertRoundEffect(
 			ctx, q, roundIDStr, nowUnix,
 			round.RoundEffectRequestVTXOForfeitSigs,
 		)
 	})
+}
+
+func (s *RoundPersistenceStore) insertRoundForfeitCollectionFacts(
+	ctx context.Context, q RoundStore, r *round.Round,
+	clientTrees map[round.SignerKey]*tree.Tree, nowUnix int64) error {
+
+	commitmentTxBytes, commitmentTxid, err := serializeCommitmentTx(
+		r.CommitmentTx,
+	)
+	if err != nil {
+		return err
+	}
+
+	vtxtTreeBytes, err := serializeVTXOTreePaths(r.VTXOTreePaths)
+	if err != nil {
+		return err
+	}
+
+	roundIDStr := r.RoundID.String()
+	err = q.InsertRound(ctx, InsertRoundParams{
+		RoundID:               roundIDStr,
+		ConfirmationHeight:    sql.NullInt32{},
+		ConfirmationBlockHash: nil,
+		CommitmentTx:          commitmentTxBytes,
+		CommitmentTxid:        commitmentTxid,
+		VtxtTree:              vtxtTreeBytes,
+		Status:                "forfeit_sigs_collecting",
+		CreationTime:          nowUnix,
+		LastUpdateTime:        nowUnix,
+		StartHeight:           int32(r.StartHeight),
+	})
+	if err != nil {
+		return fmt.Errorf("insert round forfeit snapshot: %w", err)
+	}
+
+	for i := range r.Intents.Boarding {
+		intent := r.Intents.Boarding[i]
+		params, err := s.domainIntentToRoundParams(
+			roundIDStr, &intent, nil,
+		)
+		if err != nil {
+			return fmt.Errorf("convert boarding intent: %w", err)
+		}
+
+		err = q.InsertRoundBoardingIntent(ctx, params)
+		if err != nil {
+			return fmt.Errorf("insert boarding intent: %w", err)
+		}
+	}
+
+	for i, vtxoReq := range r.Intents.VTXOs {
+		reqParams, err := vtxoRequestToRoundParams(
+			roundIDStr, i, &vtxoReq,
+		)
+		if err != nil {
+			return fmt.Errorf("convert vtxo request: %w", err)
+		}
+
+		err = q.InsertRoundVtxoRequest(ctx, reqParams)
+		if err != nil {
+			return fmt.Errorf("insert vtxo request: %w", err)
+		}
+	}
+
+	for key, clientTree := range clientTrees {
+		treeData, err := SerializeTree(clientTree)
+		if err != nil {
+			return fmt.Errorf("serialize client tree: %w", err)
+		}
+
+		treeParams := sqlc.InsertRoundClientTreeParams{
+			RoundID:   roundIDStr,
+			ClientKey: key[:],
+			TreeData:  treeData,
+		}
+		err = q.InsertRoundClientTree(ctx, treeParams)
+		if err != nil {
+			return fmt.Errorf("insert client tree: %w", err)
+		}
+
+		txidEntries, err := clientTree.ExtractTxids()
+		if err != nil {
+			return fmt.Errorf("extract client tree txids: %w", err)
+		}
+
+		for _, entry := range txidEntries {
+			p := sqlc.InsertClientTreeTxidParams{
+				Txid:        entry.Txid[:],
+				RoundID:     roundIDStr,
+				ClientKey:   key[:],
+				TreeLevel:   int32(entry.TreeLevel),
+				OutputIndex: int32(entry.OutputIndex),
+			}
+			err = q.InsertClientTreeTxid(ctx, p)
+			if err != nil {
+				return fmt.Errorf("insert client tree txid: %w",
+					err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // LoadForfeitRequests loads expected VTXO forfeit requests.

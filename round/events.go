@@ -297,6 +297,15 @@ func (e *BoardingConfirmed) clientEventSealed() {}
 // BoardingFailed is emitted when an error occurs during the boarding
 // process.
 type BoardingFailed struct {
+	// RoundID is set when the failure applies to a specific server-assigned
+	// round.
+	RoundID RoundID
+
+	// HasRoundID indicates whether RoundID was present on the inbound
+	// failure. Generic client errors do not carry a round ID and must not
+	// be guessed into an already admitted round.
+	HasRoundID bool
+
 	// Reason is a human-readable description of the failure.
 	Reason string
 

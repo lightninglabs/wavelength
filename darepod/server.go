@@ -2139,6 +2139,28 @@ func (s *Server) buildRPCDispatchers(
 	return dispatchers
 }
 
+func roundDispatchOutsideIngressTx() map[mailboxrpc.ServiceMethod]bool {
+	methods := []string{
+		roundpb.MethodJoinAck,
+		roundpb.MethodJoinRoundQuote,
+		roundpb.MethodBatchInfo,
+		roundpb.MethodAwaitingInputSigs,
+		roundpb.MethodAggNonces,
+		roundpb.MethodAggSigs,
+		roundpb.MethodRoundFailed,
+	}
+
+	routes := make(map[mailboxrpc.ServiceMethod]bool, len(methods))
+	for _, method := range methods {
+		routes[mailboxrpc.ServiceMethod{
+			Service: roundpb.ServiceName,
+			Method:  method,
+		}] = true
+	}
+
+	return routes
+}
+
 // buildEventRoutes registers typed event routes for server-push envelopes.
 // Each route maps a (service, method) pair to a local handler via the
 // EventRouter, which handles proto deserialization and domain adaptation.
@@ -2941,6 +2963,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	)
 	connCfg.Transport = db.NewTransportStore(dbStore, s.clk)
 	connCfg.Dispatchers = dispatchers
+	connCfg.DispatchOutsideIngressTx = roundDispatchOutsideIngressTx()
 	connCfg.AuthSignature = authSig
 	connCfg.InitAuthHeader()
 	connCfg.DurableUnaryBuilder = &serverDurableUnaryBuilder{

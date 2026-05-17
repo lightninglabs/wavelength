@@ -357,25 +357,28 @@ func (q *Queries) ListUnrollWatchesForJob(ctx context.Context, arg ListUnrollWat
 const MarkUnrollEffectDone = `-- name: MarkUnrollEffectDone :exec
 UPDATE unroll_effects
 SET status = 'done',
-    done_at = $3,
-    updated_at = $3,
+    done_at = $1,
+    updated_at = $1,
     claim_owner = NULL,
     claim_token = NULL,
     claim_until = NULL,
     last_error = NULL
-WHERE id = $1
+WHERE id = $2
   AND status IN ('pending', 'claimed')
-  AND ($2 IS NULL OR claim_token = $2)
+  AND (
+    CAST($3 AS TEXT) IS NULL OR
+    claim_token = CAST($3 AS TEXT)
+  )
 `
 
 type MarkUnrollEffectDoneParams struct {
-	ID      string
-	Column2 interface{}
-	DoneAt  sql.NullInt64
+	DoneAt     sql.NullInt64
+	ID         string
+	ClaimToken sql.NullString
 }
 
 func (q *Queries) MarkUnrollEffectDone(ctx context.Context, arg MarkUnrollEffectDoneParams) error {
-	_, err := q.db.ExecContext(ctx, MarkUnrollEffectDone, arg.ID, arg.Column2, arg.DoneAt)
+	_, err := q.db.ExecContext(ctx, MarkUnrollEffectDone, arg.DoneAt, arg.ID, arg.ClaimToken)
 	return err
 }
 
@@ -437,32 +440,32 @@ SET status = CASE
         WHEN attempts >= max_attempts THEN 'dead'
         ELSE 'pending'
     END,
-    next_attempt_at = $3,
-    updated_at = $4,
+    next_attempt_at = $1,
+    updated_at = $2,
     claim_owner = NULL,
     claim_token = NULL,
     claim_until = NULL,
-    last_error = $5
-WHERE id = $1
-  AND claim_token = $2
+    last_error = $3
+WHERE id = $4
+  AND claim_token = $5
   AND status = 'claimed'
 `
 
 type ReleaseUnrollEffectForRetryParams struct {
-	ID            string
-	ClaimToken    sql.NullString
 	NextAttemptAt int64
 	UpdatedAt     int64
 	LastError     sql.NullString
+	ID            string
+	ClaimToken    sql.NullString
 }
 
 func (q *Queries) ReleaseUnrollEffectForRetry(ctx context.Context, arg ReleaseUnrollEffectForRetryParams) error {
 	_, err := q.db.ExecContext(ctx, ReleaseUnrollEffectForRetry,
-		arg.ID,
-		arg.ClaimToken,
 		arg.NextAttemptAt,
 		arg.UpdatedAt,
 		arg.LastError,
+		arg.ID,
+		arg.ClaimToken,
 	)
 	return err
 }

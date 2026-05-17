@@ -284,9 +284,9 @@ having to re-derive it from commitment-tx inspection.
 
 ## Idempotency and replay safety
 
-Durable actor delivery is at-least-once. Any ledger write must
-be safe to replay. The schema enforces this via three partial
-unique indexes on `ledger_entries`:
+SQL effect workers and transport ingress can redeliver work after a crash, so
+any ledger write must be safe to replay. The schema enforces this via three
+partial unique indexes on `ledger_entries`:
 
 - `idx_client_ledger_idempotent_round` on
   `(round_id, event_type, debit_account, credit_account)

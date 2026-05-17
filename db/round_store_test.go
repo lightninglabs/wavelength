@@ -692,7 +692,9 @@ func TestRoundStoreSaveForfeitRequestsReconstructsCollectingState(
 		},
 	}}
 
-	require.NoError(t, store.SaveForfeitRequests(ctx, roundID, requests))
+	require.NoError(
+		t, store.SaveForfeitRequests(ctx, testRound, nil, requests),
+	)
 
 	loaded, err := store.LoadForfeitRequests(ctx, roundID)
 	require.NoError(t, err)
@@ -715,6 +717,56 @@ func TestRoundStoreSaveForfeitRequestsReconstructsCollectingState(
 		t, round.RoundEffectRequestVTXOForfeitSigs,
 		effects[0].EffectType,
 	)
+}
+
+func TestRoundStoreSaveForfeitRequestsCreatesRoundSnapshot(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, baseDB := newRoundStoreForTest(t)
+	roundID := testRoundIDDB("test-round-forfeit-requests-snapshot")
+	testRound := createTestRound(t, roundID)
+
+	vtxoOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("snapshot-request-vtxo")),
+		Index: 21,
+	}
+	connectorOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("snapshot-request-connector")),
+		Index: 22,
+	}
+	requests := []round.ForfeitRequestState{{
+		VTXOOutpoint:      vtxoOutpoint,
+		ConnectorOutpoint: connectorOutpoint,
+		ConnectorPkScript: []byte{
+			0x51,
+			0x20,
+		},
+		ConnectorAmount: 546,
+		VTXOAmount:      50_000,
+		ServerForfeitPkScript: []byte{
+			0x51,
+		},
+	}}
+
+	require.NoError(
+		t, store.SaveForfeitRequests(
+			ctx, testRound, nil, requests,
+		),
+	)
+
+	dbRound, err := baseDB.GetRound(ctx, roundID.String())
+	require.NoError(t, err)
+	require.Equal(t, "forfeit_sigs_collecting", dbRound.Status)
+
+	_, state, err := store.FetchState(ctx, roundID)
+	require.NoError(t, err)
+	collecting, ok := state.(*round.ForfeitSignaturesCollectingState)
+	require.True(
+		t, ok, "expected ForfeitSignaturesCollectingState, got %T",
+		state,
+	)
+	require.Contains(t, collecting.ExpectedForfeits, vtxoOutpoint)
 }
 
 func TestRoundStoreSaveLoadDeletePendingQuote(t *testing.T) {

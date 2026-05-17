@@ -87,8 +87,8 @@ func (m *MockRoundStore) LoadPartialSignatures(ctx context.Context,
 	return nil, nil
 }
 
-func (m *MockRoundStore) SaveForfeitRequests(_ context.Context, _ RoundID,
-	_ []ForfeitRequestState) error {
+func (m *MockRoundStore) SaveForfeitRequests(_ context.Context, _ *Round,
+	_ map[SignerKey]*tree.Tree, _ []ForfeitRequestState) error {
 
 	return nil
 }

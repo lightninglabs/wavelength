@@ -1707,9 +1707,16 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 				})
 			}
 
+			roundSnapshot := &Round{
+				RoundID:       s.RoundID,
+				StartHeight:   env.StartHeight,
+				CommitmentTx:  fn.Some(s.CommitmentTx),
+				VTXOTreePaths: fn.Some(s.VTXOTreePaths),
+				Intents:       s.Intents.Clone(),
+			}
 			opCtx := context.WithoutCancel(ctx)
 			err := env.RoundStore.SaveForfeitRequests(
-				opCtx, s.RoundID, requests,
+				opCtx, roundSnapshot, s.ClientTrees, requests,
 			)
 			if err != nil {
 				return nil, fmt.Errorf("save forfeit "+
@@ -2499,7 +2506,16 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 	}
 
 	opCtx := context.WithoutCancel(ctx)
-	err := env.RoundStore.SaveForfeitRequests(opCtx, s.RoundID, requests)
+	roundSnapshot := &Round{
+		RoundID:       s.RoundID,
+		StartHeight:   env.StartHeight,
+		CommitmentTx:  fn.Some(s.CommitmentTx),
+		VTXOTreePaths: fn.Some(s.VTXOTreePaths),
+		Intents:       s.Intents.Clone(),
+	}
+	err := env.RoundStore.SaveForfeitRequests(
+		opCtx, roundSnapshot, s.ClientTrees, requests,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("save forfeit requests: %w", err)
 	}

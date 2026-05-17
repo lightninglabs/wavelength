@@ -125,6 +125,37 @@ func TestActorStart(t *testing.T) {
 		require.NotEmpty(t, replayed.Nonces)
 	})
 
+	t.Run(
+		"drops_stale_nonce_effect_after_round_advanced",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+
+			roundID := testRoundID("stale-nonce-effect")
+			round := h.newTestRound(roundID)
+			h.roundStore.roundEffects = []RoundEffect{{
+				ID:         "effect-send-nonces",
+				RoundID:    roundID,
+				EffectType: RoundEffectSendNonces,
+				ClaimToken: "claim-token",
+			}}
+
+			h.roundStore.On(
+				"ListActiveRounds", mock.Anything,
+			).Return([]*Round{round}, nil)
+			h.roundStore.On(
+				"FetchState", mock.Anything, roundID,
+			).Return(round, &PartialSigsSentState{
+				RoundID: roundID,
+			}, nil)
+
+			err := h.start()
+			require.NoError(t, err)
+			require.Empty(t, h.serverMessages())
+		},
+	)
+
 	t.Run("receives_wallet_confirmation", func(t *testing.T) {
 		t.Parallel()
 
@@ -1768,7 +1799,7 @@ func TestActorServerMessageRouting(t *testing.T) {
 
 				// Re-key the temp round by simulating a
 				// successful join, then send BoardingFailed
-				// without RoundID.
+				// with RoundID.
 				states := h.queryState()
 				var outpoints []wire.OutPoint
 				for _, info := range states {
@@ -1801,11 +1832,68 @@ func TestActorServerMessageRouting(t *testing.T) {
 			},
 			serverEvent: func(_ *actorTestHarness) ClientEvent {
 				return &BoardingFailed{
+					RoundID: testRoundID(
+						"test-round-failed",
+					),
+					HasRoundID:  true,
 					Reason:      "Test failure",
 					Recoverable: true,
 				}
 			},
 			expectedState: "ClientFailedState",
+			expectOutbox:  false,
+		},
+		{
+			name: "BoardingFailed_without_round_id_after_join_is_ignored",
+			//nolint:ll
+			setupState: func(
+				h *actorTestHarness,
+			) *wallet.BoardingIntent {
+
+				h.setupMockRoundStoreForStart()
+				require.NoError(h.t, h.start())
+				intent := h.newTestBoardingIntent()
+				h.sendWalletConfirmation(intent)
+				h.sendVTXORequests(50000)
+				h.sendServerMessage(&IntentRequested{})
+
+				states := h.queryState()
+				var outpoints []wire.OutPoint
+				for _, info := range states {
+					state, ok := info.State.(*IntentSentState)
+					if !ok {
+						continue
+					}
+
+					for _, boarding := range state.Intents.Boarding {
+						outpoints = append(
+							outpoints,
+							boarding.Outpoint,
+						)
+					}
+				}
+				require.NotEmpty(
+					h.t, outpoints, "registration "+
+						"state should contain "+
+						"boarding outpoints",
+				)
+
+				h.sendServerMessage(&RoundJoined{
+					RoundID: testRoundID(
+						"test-round-ignore-error",
+					),
+					AcceptedBoardingOutpoints: outpoints,
+				})
+
+				return intent
+			},
+			serverEvent: func(_ *actorTestHarness) ClientEvent {
+				return &BoardingFailed{
+					Reason:      "duplicate join",
+					Recoverable: true,
+				}
+			},
+			expectedState: "IntentSentState",
 			expectOutbox:  false,
 		},
 	}

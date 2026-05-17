@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -554,6 +555,9 @@ func (a *Ark) Receive(ctx context.Context,
 
 	case *BoardRequest:
 		return a.handleBoard(ctx, m)
+
+	case *RecordPendingBoardVTXORequestsRequest:
+		return a.handleRecordPendingBoardVTXORequests(ctx, m)
 
 	case *SelectAndLockVTXOsRequest:
 		return a.handleSelectAndLockVTXOs(ctx, m)
@@ -1538,11 +1542,28 @@ func (a *Ark) handleBoard(ctx context.Context,
 	// driven by an advisory submit-time fee estimate and would
 	// spuriously reject boards that the seal-time quote would
 	// have accepted.
-	vtxoAmounts, err := splitBoardingAmount(
-		totalBalance, req.TargetVTXOCount,
-	)
-	if err != nil {
-		return fn.Err[WalletResp](err)
+	var vtxoAmounts []btcutil.Amount
+	if len(req.VTXORequests) > 0 {
+		vtxoAmounts = make([]btcutil.Amount, len(req.VTXORequests))
+		for i := range req.VTXORequests {
+			amount := req.VTXORequests[i].Amount
+			if amount <= 0 {
+				return fn.Err[WalletResp](
+					fmt.Errorf("replay VTXO request %d "+
+						"has invalid amount: %v", i,
+						amount),
+				)
+			}
+
+			vtxoAmounts[i] = amount
+		}
+	} else {
+		vtxoAmounts, err = splitBoardingAmount(
+			totalBalance, req.TargetVTXOCount,
+		)
+		if err != nil {
+			return fn.Err[WalletResp](err)
+		}
 	}
 	vtxoAmount := sumBoardingAmounts(vtxoAmounts)
 
@@ -1584,6 +1605,9 @@ func (a *Ark) handleBoard(ctx context.Context,
 					Outpoint:        intent.Outpoint,
 					TargetVTXOCount: req.TargetVTXOCount,
 					RequestedAt:     now,
+					VTXORequests: slices.Clone(
+						req.VTXORequests,
+					),
 				},
 			)
 		}
@@ -1610,7 +1634,11 @@ func (a *Ark) handleBoard(ctx context.Context,
 
 	if err := roundRef.Tell(
 		ctx, &actormsg.TriggerBoardMsg{
-			Amounts: vtxoAmounts,
+			Amounts:         vtxoAmounts,
+			TargetVTXOCount: req.TargetVTXOCount,
+			VTXORequests: slices.Clone(
+				req.VTXORequests,
+			),
 		},
 	); err != nil {
 		// The persisted row stays in place so the next daemon
@@ -1629,6 +1657,43 @@ func (a *Ark) handleBoard(ctx context.Context,
 	}
 
 	return fn.Ok[WalletResp](resp)
+}
+
+func (a *Ark) handleRecordPendingBoardVTXORequests(ctx context.Context,
+	req *RecordPendingBoardVTXORequestsRequest) fn.Result[WalletResp] {
+
+	if len(req.Outpoints) == 0 {
+		return fn.Err[WalletResp](
+			fmt.Errorf("pending board outpoints are empty"),
+		)
+	}
+	if len(req.VTXORequests) == 0 {
+		return fn.Err[WalletResp](
+			fmt.Errorf("pending board VTXO requests are empty"),
+		)
+	}
+
+	now := a.clk.Now().Unix()
+	rows := make([]PendingBoardRequest, 0, len(req.Outpoints))
+	for _, outpoint := range req.Outpoints {
+		rows = append(rows, PendingBoardRequest{
+			Outpoint:        outpoint,
+			TargetVTXOCount: req.TargetVTXOCount,
+			RequestedAt:     now,
+			VTXORequests:    slices.Clone(req.VTXORequests),
+		})
+	}
+
+	if err := a.store.UpsertPendingBoardRequests(ctx, rows); err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("record pending board VTXO requests: %w",
+				err),
+		)
+	}
+
+	return fn.Ok[WalletResp](
+		&RecordPendingBoardVTXORequestsResponse{},
+	)
 }
 
 // replayPendingBoardOnStart is invoked from handleReplayPendingBoard
@@ -1680,9 +1745,12 @@ func (a *Ark) replayPendingBoardOnStart(ctx context.Context,
 		confirmedSet[intent.Outpoint] = struct{}{}
 	}
 
-	var liveTarget uint32
-	var earliestRequestedAt int64
-	var liveOutpoints int
+	var (
+		liveTarget        uint32
+		liveVTXORequests  []types.VTXORequest
+		earliestRequested int64
+		liveOutpoints     int
+	)
 	for _, row := range pending {
 		if _, ok := confirmedSet[row.Outpoint]; !ok {
 			continue
@@ -1695,11 +1763,14 @@ func (a *Ark) replayPendingBoardOnStart(ctx context.Context,
 		// the most recent target wins (rows are ordered ASC by
 		// requested_at_unix, so the last live row wins).
 		liveTarget = row.TargetVTXOCount
+		if len(liveVTXORequests) == 0 && len(row.VTXORequests) > 0 {
+			liveVTXORequests = slices.Clone(row.VTXORequests)
+		}
 
-		if earliestRequestedAt == 0 ||
-			row.RequestedAt < earliestRequestedAt {
+		if earliestRequested == 0 ||
+			row.RequestedAt < earliestRequested {
 
-			earliestRequestedAt = row.RequestedAt
+			earliestRequested = row.RequestedAt
 		}
 	}
 
@@ -1728,8 +1799,10 @@ func (a *Ark) replayPendingBoardOnStart(ctx context.Context,
 		"Replaying persisted Board request after restart",
 		slog.Int("target_vtxo_count", int(liveTarget)),
 		slog.Int("live_outpoint_count", liveOutpoints),
+		slog.Int("replay_vtxo_request_count",
+			len(liveVTXORequests)),
 		slog.Int("stale_row_count", len(pending)-liveOutpoints),
-		slog.Int64("earliest_requested_at_unix", earliestRequestedAt),
+		slog.Int64("earliest_requested_at_unix", earliestRequested),
 	)
 
 	// Self-Tell the BoardRequest. handleBoard will re-walk the confirmed
@@ -1742,6 +1815,7 @@ func (a *Ark) replayPendingBoardOnStart(ctx context.Context,
 	// replay.
 	err = selfRef.Tell(ctx, &BoardRequest{
 		TargetVTXOCount: liveTarget,
+		VTXORequests:    liveVTXORequests,
 	})
 	if err != nil {
 		return fmt.Errorf("self-tell pending board request: %w", err)

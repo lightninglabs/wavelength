@@ -841,6 +841,62 @@ func TestDispatchAndCheckpointPassesIngressTxToDispatcher(t *testing.T) {
 	require.Equal(t, state, persisted)
 }
 
+func TestDispatchAndCheckpointCanDispatchOutsideIngressTx(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+	store := &txMarkingTransportStore{
+		memTransportStore: newMemTransportStore(),
+	}
+	key := mailboxrpc.ServiceMethod{
+		Service: "test.v1.Round",
+		Method:  "ClientBatchInfo",
+	}
+
+	var sawTx bool
+	cfg := newTestConnectorConfig(mb, newMemCheckpointStore())
+	cfg.Transport = store
+	cfg.Dispatchers = DispatcherMap{
+		key: func(ctx context.Context, _ *mailboxpb.Envelope) error {
+			sawTx = actor.HasTx(ctx)
+
+			return nil
+		},
+	}
+	cfg.DispatchOutsideIngressTx = map[mailboxrpc.ServiceMethod]bool{
+		key: true,
+	}
+
+	connector := NewServerConnectionActor(cfg)
+	state := AckState{}
+	cursor, err := connector.dispatchAndCheckpoint(
+		t.Context(), &state,
+		[]*mailboxpb.Envelope{{
+			MsgId:    "round-event",
+			EventSeq: 9,
+			Rpc: &mailboxpb.RpcMeta{
+				Kind:    mailboxpb.RpcMeta_KIND_EVENT,
+				Service: key.Service,
+				Method:  key.Method,
+			},
+			Body: &anypb.Any{Value: []byte("payload")},
+		}},
+		10,
+	)
+	require.NoError(t, err)
+	require.False(t, sawTx)
+	require.Equal(t, uint64(10), cursor)
+	require.Equal(t, uint64(10), state.PullCursor)
+	require.Equal(t, uint64(10), state.DispatchCommittedTo)
+	require.Equal(t, uint64(10), state.AckTarget)
+
+	persisted, err := store.LoadIngressCursor(
+		t.Context(), cfg.LocalMailboxID, cfg.RemoteMailboxID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, state, persisted)
+}
+
 // TestRetryDelay verifies the exponential backoff formula with jitter.
 func TestRetryDelay(t *testing.T) {
 	t.Parallel()

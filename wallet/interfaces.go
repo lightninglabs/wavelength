@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/walletcore"
 	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -467,4 +468,10 @@ type PendingBoardRequest struct {
 	// Board call; replay uses the smallest value across all rows as the
 	// "earliest still-pending Board call" for logging.
 	RequestedAt int64
+
+	// VTXORequests is the exact set of round outputs produced for the Board
+	// call once the round actor has derived owner/signing keys. It is empty
+	// only in the short crash window after the wallet persisted the
+	// admitted outpoints but before the round actor sent JoinRoundRequest.
+	VTXORequests []types.VTXORequest
 }

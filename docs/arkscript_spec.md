@@ -447,25 +447,28 @@ Where `ver = spendPathVersion = 1` (`lib/arkscript/spend_path.go:17`). The
 decoder (`DecodeSpendPath`) caps `conditionCount` at 64 (`maxConditions`
 at `lib/arkscript/spend_path.go:131`).
 
-### 6.5 Condition witness (durable persistence)
+### 6.5 Condition witness (SQL persistence)
 
-The OOR actor durably persists a `TransferInputSnapshot` that includes a
-`ConditionWitness [][]byte`. Encoded by
-`oor/actor_durable_message.go encodeConditionWitness`:
+The OOR client runtime persists each input's signing context in typed SQL
+columns. `oor/TransferInputSnapshot` keeps the in-memory shape explicit, while
+`db/sqlc/migrations/000016_oor_client_runtime.up.sql` stores the custom spend
+condition witness in `oor_client_inputs.condition_witness`.
+
+The value is encoded by `oor/transfer_input_snapshot.go` as:
 
 ```
 varint(count) || N × varbytes(item)
 ```
 
-Caps (`oor/actor_durable_message.go:815-832`):
+Caps enforced by `oor/transfer_input_snapshot.go`:
 
 | Constant                      | Value | Bounded thing                             |
 |-------------------------------|-------|-------------------------------------------|
 | `maxConditionWitnessItems`    | 64    | Item count.                               |
 | `maxConditionWitnessItemBytes`| 520   | Per-item size (Bitcoin standard script-element max). |
 
-Encoder and decoder enforce the same caps so in-memory state cannot drift
-from what the persisted form can represent.
+Encoder and decoder enforce the same caps so in-memory state cannot drift from
+what the SQL form can represent.
 
 ---
 
@@ -524,7 +527,7 @@ the structural `ValidatePolicy`.
 | Add a new `Condition` predicate helper.                                | Yes.                      |
 | Add a new standard shape (e.g. multi-party vHTLC).                     | Yes, if it only composes existing nodes. |
 | Raise a `Max*` cap.                                                    | Yes (lenience is backward compatible). Announce it so operators can re-baseline. |
-| Lower a `Max*` cap.                                                    | No — breaks existing durable blobs. |
+| Lower a `Max*` cap.                                                    | No — breaks existing persisted bytes. |
 | Add a new `nodeKind`.                                                  | Yes on write-side only — decoders in earlier versions will reject. Coordinate rollout. |
 | Change `Multisig` key encoding (e.g. 33-byte compressed per #252).     | No — bump `policyTemplateVersion` + `leafTemplateVersion`. |
 | Change the `SpendPath` binary shape.                                   | No — bump `spendPathVersion`. |
