@@ -104,7 +104,5 @@
 // Per-package docs:
 //   - [../unroll/CLAUDE.md] — stable summary of types, relationships,
 //     invariants.
-//   - [../docs/durable_actor_architecture.md] — CDC pattern, durable
-//     mailbox lifecycle.
-//   - [../docs/durable_actor_quickstart.md] — TLVMessage, ActorBehavior.
+//   - [../docs/mailbox_architecture.md] — SQL-backed mailbox transport model.
 package unroll
