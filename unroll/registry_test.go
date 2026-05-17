@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/unrollplan"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -750,7 +751,7 @@ func TestRegistryRestoreNonTerminal(t *testing.T) {
 	require.NoError(t, err)
 
 	actorID := actorIDForTarget(proof.TargetOutpoint())
-	err = checkpoints.SaveCheckpoint(t.Context(), actor.CheckpointParams{
+	err = checkpoints.SaveCheckpoint(t.Context(), db.UnrollCheckpoint{
 		ActorID:   actorID,
 		StateType: checkpointStateType,
 		StateData: raw,

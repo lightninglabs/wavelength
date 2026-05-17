@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +25,7 @@ func TestUnrollCheckpointStoreSaveLoad(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, loaded)
 
-	err = checkpoints.SaveCheckpoint(ctx, actor.CheckpointParams{
+	err = checkpoints.SaveCheckpoint(ctx, UnrollCheckpoint{
 		ActorID:   "unroll:target",
 		StateType: "awaiting-confirmation",
 		StateData: []byte{0x01, 0x02, 0x03},
@@ -43,7 +42,7 @@ func TestUnrollCheckpointStoreSaveLoad(t *testing.T) {
 	require.Equal(t, time.Unix(1234, 0), loaded.UpdatedAt)
 
 	testClock.SetTime(time.Unix(5678, 0))
-	err = checkpoints.SaveCheckpoint(ctx, actor.CheckpointParams{
+	err = checkpoints.SaveCheckpoint(ctx, UnrollCheckpoint{
 		ActorID:   "unroll:target",
 		StateType: "swept",
 		StateData: []byte{0x04},

@@ -21,6 +21,7 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/txconfirm"
@@ -697,24 +698,24 @@ func (s testSignature) Verify([]byte, *btcec.PublicKey) bool {
 // tests.
 type memCheckpointStore struct {
 	mu          sync.Mutex
-	checkpoints map[string]*actor.Checkpoint
+	checkpoints map[string]*db.UnrollCheckpoint
 }
 
 // newMemCheckpointStore creates a new in-memory checkpoint store.
 func newMemCheckpointStore() *memCheckpointStore {
 	return &memCheckpointStore{
-		checkpoints: make(map[string]*actor.Checkpoint),
+		checkpoints: make(map[string]*db.UnrollCheckpoint),
 	}
 }
 
 // SaveCheckpoint stores one checkpoint in memory.
 func (s *memCheckpointStore) SaveCheckpoint(_ context.Context,
-	params actor.CheckpointParams) error {
+	params db.UnrollCheckpoint) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.checkpoints[params.ActorID] = &actor.Checkpoint{
+	s.checkpoints[params.ActorID] = &db.UnrollCheckpoint{
 		ActorID:   params.ActorID,
 		StateType: params.StateType,
 		StateData: append([]byte(nil), params.StateData...),
@@ -726,7 +727,7 @@ func (s *memCheckpointStore) SaveCheckpoint(_ context.Context,
 
 // LoadCheckpoint returns one checkpoint when present.
 func (s *memCheckpointStore) LoadCheckpoint(_ context.Context, actorID string) (
-	*actor.Checkpoint, error) {
+	*db.UnrollCheckpoint, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1557,7 +1558,7 @@ func TestResumeReissuesDeferredCheckpointWatch(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
+	err = store.SaveCheckpoint(t.Context(), db.UnrollCheckpoint{
 		ActorID:   "resume-deferred-test",
 		StateType: checkpointStateType,
 		StateData: raw,
@@ -1642,7 +1643,7 @@ func TestResumeReissuesInFlightArk(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
+	err = store.SaveCheckpoint(t.Context(), db.UnrollCheckpoint{
 		ActorID:   "resume-ark-test",
 		StateType: checkpointStateType,
 		StateData: raw,
@@ -1965,7 +1966,7 @@ func TestResumeReissuesInflightWork(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
+	err = store.SaveCheckpoint(t.Context(), db.UnrollCheckpoint{
 		ActorID:   "resume-test",
 		StateType: checkpointStateType,
 		StateData: raw,
@@ -2168,7 +2169,7 @@ func TestResumeReissuesSweepConfirmation(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
+	err = store.SaveCheckpoint(t.Context(), db.UnrollCheckpoint{
 		ActorID:   "resume-sweep-test",
 		StateType: checkpointStateType,
 		StateData: raw,
@@ -2422,7 +2423,7 @@ func TestResumeMultiParentPartialConfirmation(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
+	err = store.SaveCheckpoint(t.Context(), db.UnrollCheckpoint{
 		ActorID:   "resume-partial-merge",
 		StateType: checkpointStateType,
 		StateData: raw,
@@ -2503,7 +2504,7 @@ func TestResumeCSVWaitDoesNotSweepUntilMature(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
+	err = store.SaveCheckpoint(t.Context(), db.UnrollCheckpoint{
 		ActorID:   "resume-csv-test",
 		StateType: checkpointStateType,
 		StateData: raw,

@@ -6,10 +6,28 @@ import (
 	"errors"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
 )
+
+// UnrollCheckpoint is the SQL persistence record for one per-target unroll
+// FSM checkpoint.
+type UnrollCheckpoint struct {
+	// ActorID is the stable per-target actor/checkpoint identifier.
+	ActorID string
+
+	// StateType names the encoded state family.
+	StateType string
+
+	// StateData is the encoded domain checkpoint payload.
+	StateData []byte
+
+	// Version is the checkpoint payload schema version.
+	Version int64
+
+	// UpdatedAt records when the row was last written.
+	UpdatedAt time.Time
+}
 
 // UnrollCheckpointStoreDB persists per-target unroll FSM checkpoints.
 type UnrollCheckpointStoreDB struct {
@@ -42,7 +60,7 @@ func NewUnrollCheckpointStore(store *Store,
 
 // SaveCheckpoint stores the latest checkpoint for an unroll actor.
 func (s *UnrollCheckpointStoreDB) SaveCheckpoint(ctx context.Context,
-	params actor.CheckpointParams) error {
+	params UnrollCheckpoint) error {
 
 	now := s.clk.Now().Unix()
 	return s.ExecTx(ctx, WriteTxOption(), func(q *sqlc.Queries) error {
@@ -58,9 +76,9 @@ func (s *UnrollCheckpointStoreDB) SaveCheckpoint(ctx context.Context,
 
 // LoadCheckpoint loads the latest checkpoint for an unroll actor.
 func (s *UnrollCheckpointStoreDB) LoadCheckpoint(ctx context.Context,
-	actorID string) (*actor.Checkpoint, error) {
+	actorID string) (*UnrollCheckpoint, error) {
 
-	var checkpoint *actor.Checkpoint
+	var checkpoint *UnrollCheckpoint
 	err := s.ExecTx(ctx, ReadTxOption(), func(q *sqlc.Queries) error {
 		row, err := q.GetUnrollCheckpoint(ctx, actorID)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -70,7 +88,7 @@ func (s *UnrollCheckpointStoreDB) LoadCheckpoint(ctx context.Context,
 			return err
 		}
 
-		checkpoint = &actor.Checkpoint{
+		checkpoint = &UnrollCheckpoint{
 			ActorID:   row.ActorID,
 			StateType: row.StateType,
 			StateData: row.StateData,
@@ -88,6 +106,6 @@ func (s *UnrollCheckpointStoreDB) LoadCheckpoint(ctx context.Context,
 }
 
 var _ interface {
-	SaveCheckpoint(context.Context, actor.CheckpointParams) error
-	LoadCheckpoint(context.Context, string) (*actor.Checkpoint, error)
+	SaveCheckpoint(context.Context, UnrollCheckpoint) error
+	LoadCheckpoint(context.Context, string) (*UnrollCheckpoint, error)
 } = (*UnrollCheckpointStoreDB)(nil)

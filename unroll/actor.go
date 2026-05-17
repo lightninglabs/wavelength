@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/txconfirm"
 	"github.com/lightninglabs/darepo-client/unrollplan"
@@ -25,8 +26,8 @@ import (
 // unroll actor. The actor itself is in-memory; restart safety comes from
 // loading and saving this checkpoint around every FSM transition.
 type CheckpointStore interface {
-	SaveCheckpoint(context.Context, actor.CheckpointParams) error
-	LoadCheckpoint(context.Context, string) (*actor.Checkpoint, error)
+	SaveCheckpoint(context.Context, db.UnrollCheckpoint) error
+	LoadCheckpoint(context.Context, string) (*db.UnrollCheckpoint, error)
 }
 
 // Config configures one per-target VTXO unroll actor.
@@ -663,14 +664,12 @@ func (b *behavior) ensureLoaded(ctx context.Context) error {
 // notificationRef builds the subscriber ref the actor hands to txconfirm.
 //
 // txconfirm delivers notifications in its own type space
-// ([txconfirm.Notification]) but our SQL mailbox only accepts [Msg]
-// variants so the delivery store can codec them. This helper threads a
-// [chainsource.MapNotification]-style adapter: every txconfirm
-// notification is synchronously re-wrapped into the matching mailbox
-// message (TxConfirmedMsg / TxFailedMsg) and forwarded to our self-ref
-// for durable enqueue. An unknown notification type is mapped to a
-// generic TxFailedMsg so the actor still terminates loudly instead of
-// silently dropping the callback.
+// ([txconfirm.Notification]) while this actor accepts [Msg] variants. This
+// helper threads a [chainsource.MapNotification]-style adapter: every
+// txconfirm notification is synchronously re-wrapped into the matching actor
+// message (TxConfirmedMsg / TxFailedMsg) and forwarded to our self-ref. An
+// unknown notification type is mapped to a generic TxFailedMsg so the actor
+// still terminates loudly instead of silently dropping the callback.
 func (b *behavior) notificationRef() actor.TellOnlyRef[txconfirm.Notification] {
 	return txconfirm.MapNotification(
 		b.selfRef,
@@ -1166,7 +1165,7 @@ func (b *behavior) persistCheckpoint(ctx context.Context) error {
 		return err
 	}
 
-	err = b.cfg.CheckpointStore.SaveCheckpoint(ctx, actor.CheckpointParams{
+	err = b.cfg.CheckpointStore.SaveCheckpoint(ctx, db.UnrollCheckpoint{
 		ActorID:   b.cfg.ActorID,
 		StateType: checkpointStateType,
 		StateData: raw,

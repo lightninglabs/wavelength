@@ -381,12 +381,12 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		//
 		//   1. Cancellation race — the admission context (or the
 		//      child's own actor context) ended before the child
-		//      committed its first message. The pending row is
-		//      already durable, so re-issuing the StartUnrollRequest
-		//      via a fire-and-forget Tell hands the work off to the
-		//      child's SQL mailbox poll loop. Caller still sees
-		//      Created=true because the job IS admitted; the FSM
-		//      will catch up off the persisted message.
+		//      committed its first message. The pending row is already
+		//      durable, so re-issuing the StartUnrollRequest via a
+		//      fire-and-forget Tell hands the work to the child actor.
+		//      Caller still sees Created=true because the job IS
+		//      admitted; the FSM will catch up from the registry row and
+		//      checkpoint store.
 		//
 		//   2. Real start error — proof assembly, store, planner.
 		//      Hide it under a Created=true would silently strand
@@ -548,10 +548,9 @@ func isCancellationRace(err error) bool {
 // handleGetStatus answers a status probe from the registry's cached
 // control-plane view instead of asking the child actor.
 //
-// The child state request is read-only, but on a durable child actor it still
-// becomes a SQL mailbox message. Polling clients can therefore leave stale
-// GetStateRequest rows behind after their RPC context expires, and those rows
-// can starve progress notifications during block-mining-heavy tests. The
+// The child state request is read-only, but polling clients can still leave
+// stale GetStateRequest work behind after their RPC context expires, and those
+// reads can starve progress notifications during block-mining-heavy tests. The
 // registry's pending/store record is intentionally coarse, but it is enough for
 // external status: admission records Materializing, terminal notifications
 // update Completed/Failed, and active children are identified by ActorID.
