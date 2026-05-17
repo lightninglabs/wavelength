@@ -1092,46 +1092,6 @@ func (a *ServerConnectionActor) StopIngress() {
 	a.wg.Wait()
 }
 
-// NewServerConnCodec creates a MessageCodec with all server connection
-// message types registered.
-func NewServerConnCodec() *actor.MessageCodec {
-	codec := actor.NewMessageCodec()
-
-	codec.MustRegister(
-		SendClientEventRequestMsgType,
-		func() actor.TLVMessage {
-			return &SendClientEventRequest{}
-		},
-	)
-
-	codec.MustRegister(
-		SendRPCRequestMsgType,
-		func() actor.TLVMessage {
-			return &SendRPCRequest{}
-		},
-	)
-	codec.MustRegister(
-		SendUnaryRequestMsgType,
-		func() actor.TLVMessage {
-			return &SendUnaryRequest{}
-		},
-	)
-	codec.MustRegister(
-		SendListOORRecipientEventsByScriptRequestMsgType,
-		func() actor.TLVMessage {
-			return &SendListOORRecipientEventsByScriptRequest{}
-		},
-	)
-	codec.MustRegister(
-		SendListVTXOsByScriptsRequestMsgType,
-		func() actor.TLVMessage {
-			return &SendListVTXOsByScriptsRequest{}
-		},
-	)
-
-	return codec
-}
-
 // Compile-time interface checks.
 var (
 	_ ServerConnMsg  = (*SendClientEventRequest)(nil)

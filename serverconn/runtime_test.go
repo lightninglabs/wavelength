@@ -52,14 +52,13 @@ func TestNewRuntime_ValidateConfig(t *testing.T) {
 	)
 }
 
-// TestNewRuntime_DefaultCodec verifies runtime construction fills a default
-// codec when one is not supplied.
-func TestNewRuntime_DefaultCodec(t *testing.T) {
+// TestNewRuntime_ConstructsRefs verifies runtime construction wires the
+// in-memory actor and SQL-backed transport references.
+func TestNewRuntime_ConstructsRefs(t *testing.T) {
 	t.Parallel()
 
 	mb := newInMemoryMailbox()
 	cfg := newTestConnectorConfig(mb, newMemCheckpointStore())
-	cfg.Codec = nil
 
 	runtime, err := NewRuntime(cfg)
 	require.NoError(t, err)

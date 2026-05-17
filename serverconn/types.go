@@ -8,7 +8,6 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
@@ -131,10 +130,6 @@ type ConnectorConfig struct {
 	// transport durability.
 	Transport TransportStore
 
-	// Codec handles TLV serialization of ServerConnMsg types for the
-	// local actor mailbox.
-	Codec *actor.MessageCodec
-
 	// DurableUnaryBuilder constructs proof-gated unary request bodies for
 	// transport-native durable unary messages such as indexer script-scope
 	// queries. When nil, those message types are rejected.
@@ -232,7 +227,7 @@ func (c *ConnectorConfig) mergeAuthHeaders(
 
 // DefaultConnectorConfig returns a ConnectorConfig with sensible defaults for
 // polling and retry behavior. The caller must still set Edge, mailbox IDs,
-// and Store. Codec is optional — NewRuntime fills a default.
+// and Store.
 func DefaultConnectorConfig() ConnectorConfig {
 	return ConnectorConfig{
 		PullMaxEnvelopes:  50,

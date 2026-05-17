@@ -48,10 +48,6 @@ func NewRuntime(cfg ConnectorConfig) (*Runtime, error) {
 		return nil, fmt.Errorf("remote mailbox id is required")
 	}
 
-	if cfg.Codec == nil {
-		cfg.Codec = NewServerConnCodec()
-	}
-
 	connector := NewServerConnectionActor(cfg)
 	runtimeID := RuntimeID(cfg.LocalMailboxID)
 	wg := &sync.WaitGroup{}
