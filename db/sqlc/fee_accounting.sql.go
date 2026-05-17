@@ -92,10 +92,10 @@ type InsertClientLedgerEntryParams struct {
 //   - idx_client_ledger_idempotent_key covers outpoint-keyed events
 //     (unilateral exit send leg + fee leg share the same key)
 //
-// A redelivered durable-actor message that reprocesses an entry
-// already persisted in a committed tx becomes a silent no-op
-// instead of surfacing a constraint violation that would drive
-// an infinite nack-and-retry loop on a permanent condition.
+// A redelivered effect that reprocesses an entry already persisted in
+// a committed tx becomes a silent no-op instead of surfacing a
+// constraint violation that would drive an infinite retry loop on a
+// permanent condition.
 func (q *Queries) InsertClientLedgerEntry(ctx context.Context, arg InsertClientLedgerEntryParams) error {
 	_, err := q.db.ExecContext(ctx, InsertClientLedgerEntry,
 		arg.DebitAccount,

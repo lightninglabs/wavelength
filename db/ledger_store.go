@@ -42,14 +42,14 @@ func NewLedgerStoreDB(store *Store) *LedgerStoreDB {
 }
 
 // InsertLedgerEntry persists a client-side double-entry ledger record.
-// When ctx carries a durable-actor transaction (actor.TxFromContext),
-// TransactionExecutor.ExecTx joins that outer tx rather than opening
-// a fresh one, so multiple invocations from within a single actor
-// handler commit atomically alongside the mailbox ack. The underlying
-// InsertClientLedgerEntry query uses ON CONFLICT DO NOTHING against
-// the partial unique indexes on round_id, session_id, and
-// idempotency_key so redelivery of an already-persisted message
-// silently dedupes instead of raising a constraint violation.
+// When ctx carries an outer actor transaction (actor.TxFromContext),
+// TransactionExecutor.ExecTx joins that tx rather than opening a fresh
+// one, so multiple invocations from within a single handler commit
+// atomically. The underlying InsertClientLedgerEntry query uses
+// ON CONFLICT DO NOTHING against the partial unique indexes on
+// round_id, session_id, and idempotency_key so redelivery of an
+// already-persisted effect silently dedupes instead of raising a
+// constraint violation.
 func (s *LedgerStoreDB) InsertLedgerEntry(ctx context.Context,
 	entry ledger.LedgerEntry) error {
 

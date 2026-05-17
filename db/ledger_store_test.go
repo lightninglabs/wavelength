@@ -747,8 +747,8 @@ func TestLedgerStoreListAccounts(t *testing.T) {
 // message resolves to a silent no-op: the partial unique index on
 // (round_id, event_type, debit_account, credit_account) combined
 // with ON CONFLICT DO NOTHING on InsertClientLedgerEntry swallows
-// the duplicate. The call returns nil (so durable-actor replay
-// does not nack) and the row count stays at one.
+// the duplicate. The call returns nil so at-least-once effect replay
+// does not poison the worker, and the row count stays at one.
 func TestLedgerStoreIdempotentInsert(t *testing.T) {
 	t.Parallel()
 
@@ -769,9 +769,8 @@ func TestLedgerStoreIdempotentInsert(t *testing.T) {
 	// Second insert with the same (round_id, event_type,
 	// debit_account, credit_account) is swallowed by
 	// ON CONFLICT DO NOTHING rather than surfacing a
-	// constraint violation. Returning an error here would
-	// drive an infinite durable-actor retry loop on a
-	// permanent condition.
+	// constraint violation. Returning an error here would drive an
+	// infinite effect retry loop on a permanent condition.
 	require.NoError(t, store.InsertLedgerEntry(ctx, entry))
 
 	// Only one entry should exist.

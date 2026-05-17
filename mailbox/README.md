@@ -216,8 +216,8 @@ Deterministic ID derivation from payload bytes:
 - **`StableEventIdempotencyKey(payload)`** — `"idem-" + SHA256(payload)[:16]`
   (hex).
 
-Ensures that retries of persisted durable actor messages produce the same IDs,
-enabling server-side deduplication.
+Ensures that retries of persisted egress envelopes produce the same IDs,
+enabling receiver-side deduplication.
 
 ### WrappedProto
 
@@ -249,5 +249,5 @@ The caller must pre-set `Val` to a typed zero value before decode.
   Protocol-level contract (ordering, idempotency, ack watermark behavior).
 - [`serverconn/README.md`](../serverconn/README.md) — Server connection runtime
   (egress, ingress, event routing, crash recovery).
-- [`docs/durable_actor_architecture.md`](../docs/durable_actor_architecture.md)
-  — Underlying actor durability model (CDC, leasing, deduplication).
+- [`docs/operator-runbook.md`](../docs/operator-runbook.md) — SQL stuck-state
+  queries for mailbox transport and subsystem effect workers.

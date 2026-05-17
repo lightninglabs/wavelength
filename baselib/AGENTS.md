@@ -31,13 +31,13 @@ build on.
 
 - Every actor message must embed `BaseMessage` to satisfy the sealed `Message` interface.
 - Actors registered with system are auto-stopped on `system.Shutdown()`.
-- `DurableMailbox.Send` preserves the sender's DB transaction in the context. Same-DB actors share the tx for atomic enqueue via `ExecTx` joining.
+- `Tell` is asynchronous and does not preserve the caller's DB transaction.
+  Code that needs atomic domain-state plus dispatch must use an explicit SQL
+  transaction or a synchronous `Ask` path that completes before commit.
 - Protofsm processes events iteratively; internal events loop until exhausted before returning.
 - `EmittedEvent` separates internal events (routed back to FSM) from outbox events (dispatched externally).
 
 ## Deep Docs
 
 - [baselib/actor/README.md](actor/README.md) — Actor framework concepts and class diagram.
-- [docs/durable_actor_architecture.md](../docs/durable_actor_architecture.md) — Durable actor internals.
-- [docs/durable_actor_quickstart.md](../docs/durable_actor_quickstart.md) — Developer migration guide.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

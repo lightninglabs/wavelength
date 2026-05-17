@@ -3,9 +3,9 @@
 ## Purpose
 
 Database abstractions and persistent storage for all darepo-client state:
-boarding intents, boarding sweeps, rounds, VTXOs, OOR sessions, actor delivery
-checkpoints, and client-side fee accounting. Supports SQLite and PostgreSQL
-backends.
+boarding intents, boarding sweeps, rounds, VTXOs, OOR sessions, mailbox
+transport cursors/egress rows, wallet effects, unroll jobs, and client-side fee
+accounting. Supports SQLite and PostgreSQL backends.
 
 ## Key Types
 
@@ -40,6 +40,14 @@ backends.
   (`InsertClientVTXO`, `FetchByOutpoint`). Persists `ChainDepth` (OOR hop
   count) alongside other VTXO metadata.
 - `OORArtifactStore` — Interface for OOR session state persistence.
+- `OORClientStoreDB` — Client-side OOR session/effect/artifact store. Persists
+  outgoing and incoming FSM facts, signed Ark/final checkpoint artifacts,
+  pending incoming hints, and durable client OOR effect rows.
+- `TransportStoreDB` — SQL-backed mailbox transport store for ingress cursors
+  and egress envelopes at the serverconn boundary.
+- `WalletEffectStoreDB` — Durable wallet side-effect lease/retry store.
+- `UnrollJobStoreDB` — Durable unroll control-plane store for target jobs,
+  watches, tx progress, and restart replay.
 - `OwnedReceiveScriptStore` — Interface for persisting locally owned
   receive-script metadata.
 - `LedgerStoreDB` — Concrete adapter implementing `ledger.LedgerStore`. Wraps
@@ -77,14 +85,13 @@ backends.
   bounds enforced during `DeserializeTree` to prevent stack overflow or OOM.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — Two-stage OOR
   ancestry resolver in `oor_unroll_resolver.go`.
-- `LatestMigrationVersion = 11` — Current schema version.
+- `LatestMigrationVersion = 17` — Current schema version.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (DeliveryStore interface), `db/sqlc`
-  (generated query layer), `db/actordelivery` (actor delivery persistence),
-  `ledger` (LedgerStore / UTXOAuditStore interface and domain types), `wallet`
-  (BoardingStore interface and domain types).
+- **Depends on**: `baselib/actor` (context transaction helper), `db/sqlc`
+  (generated query layer), `ledger` (LedgerStore / UTXOAuditStore interface and
+  domain types), `wallet` (BoardingStore interface and domain types).
 - **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (storage interfaces),
   `darepod` (wires DB backends).
 
@@ -109,26 +116,17 @@ backends.
 - **Never write raw SQL in Go** — add queries to `db/queries/`, regenerate
   with `make sqlc`.
 - Per-subsystem logging: uses instance logger instead of global package logger.
-- Migration `000011_boarding_sweeps` adds `boarding_sweeps` and
-  `boarding_sweep_inputs` tables plus a new `sweep_pending` boarding status.
-  Input FK `FOREIGN KEY (previous_status) REFERENCES boarding_statuses` ensures
-  only valid previous statuses are stored; ON CONFLICT the FK enforces the
-  rollback contract without Go-side re-validation.
-- Migration `000010_boarding_tx_proof` adds a nullable `tx_proof BLOB` to
-  `boarding_intents`. TLV-encoded via `lib/types.SerializeTxProof`; NULL on
-  legacy rows decodes to `fn.None`; the wallet rebuilds from `conf_tx` /
-  `conf_hash` on next read. The upsert uses `COALESCE(excluded.tx_proof,
-  boarding_intents.tx_proof)` so a NULL re-insert never clobbers a good proof;
-  zero-length slices are normalised to nil in Go to avoid the dialect pitfall
-  with `x''` in Postgres BYTEA.
-- Migration `000009_vtxo_ancestry_paths` replaces scalar `tree_path` /
-  `tree_depth` columns with a normalised `vtxo_ancestry_paths` side table;
-  routine queries skip the join while the unroller loads ancestry only when
-  resolving an exit.
-- Migration `000008_unilateral_exit_store` adds `unilateral_exit_jobs`.
-- Migration `000007_utxo_audit_log` adds an append-only UTXO audit log.
-- Migration `000006_fee_accounting` seeds the client chart of accounts and
-  `ledger_entries` with three partial unique indexes for idempotent replay.
+- Recent restart-safety migrations include `000014_wallet_effects`,
+  `000015_transport_runtime`, `000016_oor_client_runtime`, and
+  `000017_unroll_jobs_noop`.
+- Migration `000016_oor_client_runtime` adds the client OOR SQL runtime:
+  session rows, typed input/recipient facts, Ark/checkpoint artifact tables,
+  pending incoming hints, and leased effect rows. These tables are the restart
+  source for the OOR client FSM.
+- Migration `000015_transport_runtime` adds mailbox ingress cursor and egress
+  envelope tables. The only envelope blob is named `envelope`.
+- Migration `000014_wallet_effects` adds durable wallet effect rows for
+  lease/retry processing.
 
 ## Deep Docs
 

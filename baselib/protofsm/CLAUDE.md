@@ -31,12 +31,12 @@ durably persisted.
 ## Invariants
 
 - Transition functions must be pure: no I/O, no network calls, no database writes. All side effects are expressed as outbox events.
-- Outbox events are dispatched only after the new state is durably persisted (prevents message-before-state bugs).
+- Outbox events must be dispatched only after the owning subsystem has persisted
+  any restart-critical domain facts.
 - `TransitionTable` enforces exhaustive (State, Event) coverage at compile time via type constraints.
 - `RoutedOutboxEvent` captures the target `ServiceKey` so the runtime can dispatch to the correct actor without the FSM knowing about actor references.
 
 ## Deep Docs
 
 - [baselib/CLAUDE.md](../CLAUDE.md) — Parent baselib package overview.
-- [docs/durable_actor_architecture.md](../../docs/durable_actor_architecture.md) — Durable actor internals.
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.

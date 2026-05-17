@@ -12,10 +12,10 @@
 --   - idx_client_ledger_idempotent_session covers per-OOR-session events
 --   - idx_client_ledger_idempotent_key covers outpoint-keyed events
 --     (unilateral exit send leg + fee leg share the same key)
--- A redelivered durable-actor message that reprocesses an entry
--- already persisted in a committed tx becomes a silent no-op
--- instead of surfacing a constraint violation that would drive
--- an infinite nack-and-retry loop on a permanent condition.
+-- A redelivered effect that reprocesses an entry already persisted in
+-- a committed tx becomes a silent no-op instead of surfacing a
+-- constraint violation that would drive an infinite retry loop on a
+-- permanent condition.
 INSERT INTO ledger_entries (
     debit_account, credit_account, amount_sat,
     round_id, session_id, idempotency_key,

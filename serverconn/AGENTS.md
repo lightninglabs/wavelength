@@ -55,5 +55,4 @@ background ingress polling with event routing.
 
 - [serverconn/README.md](README.md) — Architecture, usage guide, crash recovery paths.
 - [docs/mailbox_architecture.md](../docs/mailbox_architecture.md) — Three-layer mailbox system.
-- [docs/durable_actor_architecture.md](../docs/durable_actor_architecture.md) — Durable actor internals.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
