@@ -1,12 +1,15 @@
+//nolint:ll
 package round
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -14,6 +17,7 @@ import (
 	"github.com/lightninglabs/darepo-client/internal/testutils"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
@@ -59,6 +63,66 @@ func TestActorStart(t *testing.T) {
 			t, h.walletActor.registeredNotifier,
 			"expected wallet notifier to be registered",
 		)
+	})
+
+	t.Run("redrives_nonce_submission_after_restart", func(t *testing.T) {
+		t.Parallel()
+
+		// Build a real nonce-generating state with the FSM harness,
+		// then inject it into the actor-start recovery path. This
+		// models a crash after SaveSigningNonces commits but before the
+		// SubmitNoncesRequest reaches serverconn.
+		fsmHarness := newTestHarness(t)
+		defer fsmHarness.cancel()
+		fsmHarness.setupMockWalletForMuSig2()
+
+		roundID := testRoundID("redrive-nonce-submission")
+		intent := fsmHarness.newTestBoardingIntent()
+		state := fsmHarness.newCommitmentTxValidatedState(
+			roundID, []BoardingIntent{intent},
+		)
+		round := &Round{
+			RoundID:       roundID,
+			StartHeight:   fsmHarness.env.StartHeight,
+			CommitmentTx:  fn.Some(state.CommitmentTx),
+			VTXOTreePaths: fn.Some(state.VTXOTreePaths),
+			Intents:       state.Intents.Clone(),
+		}
+
+		h := newActorTestHarness(t)
+		h.actor.cfg.Wallet = fsmHarness.wallet
+		h.actor.env.Wallet = fsmHarness.wallet
+		h.actor.cfg.OperatorTerms = fsmHarness.env.OperatorTerms
+		h.actor.env.OperatorTerms = fsmHarness.env.OperatorTerms
+		h.actor.cfg.ChainParams = fsmHarness.env.ChainParams
+		h.actor.env.ChainParams = fsmHarness.env.ChainParams
+
+		h.roundStore.On(
+			"ListActiveRounds", mock.Anything,
+		).Return([]*Round{round}, nil)
+		h.roundStore.On(
+			"FetchState", mock.Anything, roundID,
+		).Return(round, state, nil)
+
+		err := h.start()
+		require.NoError(t, err)
+
+		msgs := h.serverMessages()
+		require.Len(t, msgs, 1)
+
+		req, ok := msgs[0].(*serverconn.SendClientEventRequest)
+		require.True(
+			t, ok, "expected SendClientEventRequest, got %T",
+			msgs[0],
+		)
+
+		replayed, ok := req.Message.(*SubmitNoncesRequest)
+		require.True(
+			t, ok, "expected SubmitNoncesRequest, got %T",
+			req.Message,
+		)
+		require.Equal(t, roundID, replayed.RoundID)
+		require.NotEmpty(t, replayed.Nonces)
 	})
 
 	t.Run("receives_wallet_confirmation", func(t *testing.T) {
@@ -320,22 +384,144 @@ func TestActorRecovery(t *testing.T) {
 		require.Len(t, h.chainSource.registrations, 3)
 	})
 
-	t.Run("replays_checkpointed_boarding_input_sigs", func(t *testing.T) {
+	t.Run("drops_stale_effect_for_confirmed_round", func(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
 
-		roundID := testRoundID("replay-input-sigs")
+		roundID := testRoundID("confirmed-stale-effect")
 		round := h.newTestRound(roundID)
-		walletIntent := h.newTestBoardingIntent()
-		intent, err := buildBoardingIntentFromWallet(walletIntent)
+		h.roundStore.roundEffects = []RoundEffect{{
+			ID:         "effect-register-confirmation",
+			RoundID:    roundID,
+			EffectType: RoundEffectRegisterConfirmation,
+			ClaimToken: "claim-token",
+		}}
+
+		h.roundStore.On(
+			"ListActiveRounds", mock.Anything,
+		).Return([]*Round{round}, nil)
+		h.roundStore.On(
+			"FetchState", mock.Anything, roundID,
+		).Return(round, &ConfirmedState{}, nil)
+
+		err := h.start()
 		require.NoError(t, err)
-		inputSig := &types.BoardingInputSignature{
-			InputIndex: 0,
-			Outpoint:   walletIntent.Outpoint,
-			ClientSignature: testutils.TestSchnorrSignature(
-				t, "replay",
-			),
+		require.Empty(t, h.chainSource.registrations)
+	})
+
+	t.Run(
+		"processes_persisted_boarding_input_sig_effect",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+
+			roundID := testRoundID("replay-input-sigs")
+			round := h.newTestRound(roundID)
+			walletIntent := h.newTestBoardingIntent()
+			intent, err := buildBoardingIntentFromWallet(
+				walletIntent,
+			)
+			require.NoError(t, err)
+			inputSig := &types.BoardingInputSignature{
+				InputIndex: 0,
+				Outpoint:   walletIntent.Outpoint,
+				ClientSignature: testutils.TestSchnorrSignature(
+					t, "replay",
+				),
+			}
+			h.roundStore.roundEffects = []RoundEffect{
+				{
+					ID:         "effect-boarding-sigs",
+					RoundID:    roundID,
+					EffectType: RoundEffectSendBoardingSigs,
+					ClaimToken: "claim-token",
+				},
+			}
+
+			h.roundStore.On(
+				"ListActiveRounds", mock.Anything,
+			).Return([]*Round{round}, nil)
+			h.roundStore.On(
+				"FetchState", mock.Anything, round.RoundID,
+			).Return(
+				round,
+				&InputSigSentState{
+					RoundID: roundID,
+					CommitmentTx: round.CommitmentTx.
+						UnwrapOrFail(
+							t,
+						),
+					Intents: Intents{
+						Boarding: []BoardingIntent{intent},
+					},
+					InputSigs: []*types.BoardingInputSignature{
+						inputSig,
+					},
+				},
+				nil,
+			)
+
+			err = h.start()
+			require.NoError(t, err)
+
+			msgs := h.serverMessages()
+			require.Len(t, msgs, 1)
+
+			req, ok := msgs[0].(*serverconn.SendClientEventRequest)
+			require.True(
+				t, ok, "expected SendClientEventRequest, "+
+					"got %T", msgs[0],
+			)
+
+			replayed, ok := req.Message.(*SubmitForfeitSigRequest)
+			require.True(
+				t, ok, "expected SubmitForfeitSigRequest, "+
+					"got %T", req.Message,
+			)
+			require.Equal(t, roundID, replayed.RoundID)
+			require.Len(t, replayed.Signatures, 1)
+			require.Equal(
+				t, walletIntent.Outpoint,
+				replayed.Signatures[0].Outpoint,
+			)
+		},
+	)
+
+	t.Run("processes_persisted_partial_sig_effect", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+
+		roundID := testRoundID("replay-partial-sigs")
+		round := h.newTestRound(roundID)
+
+		privKey, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+		signerKey := NewSignerKey(privKey.PubKey())
+
+		var txID tree.TxID
+		txHash := chainhash.HashH([]byte("partial-sig-tx"))
+		copy(txID[:], txHash[:])
+
+		var scalar btcec.ModNScalar
+		scalar.SetInt(12345)
+		partialSig := &musig2.PartialSignature{S: &scalar}
+
+		signatures := map[SignerKey]map[tree.TxID]*musig2.PartialSignature{
+			signerKey: {
+				txID: partialSig,
+			},
+		}
+
+		h.roundStore.roundEffects = []RoundEffect{
+			{
+				ID:         "effect-partial-sigs",
+				RoundID:    roundID,
+				EffectType: RoundEffectSendPartialSigs,
+				ClaimToken: "claim-token",
+			},
 		}
 
 		h.roundStore.On(
@@ -345,21 +531,14 @@ func TestActorRecovery(t *testing.T) {
 			"FetchState", mock.Anything, round.RoundID,
 		).Return(
 			round,
-			&InputSigSentState{
+			&PartialSigsSentState{
 				RoundID: roundID,
-				CommitmentTx: round.CommitmentTx.
-					UnwrapOrFail(
-						t,
-					),
-				Intents: Intents{
-					Boarding: []BoardingIntent{intent},
-				},
-				InputSigs: []*types.BoardingInputSignature{
-					inputSig,
-				},
 			},
 			nil,
 		)
+		h.roundStore.On(
+			"LoadPartialSignatures", mock.Anything, roundID,
+		).Return(signatures, nil)
 
 		err = h.start()
 		require.NoError(t, err)
@@ -373,18 +552,181 @@ func TestActorRecovery(t *testing.T) {
 			msgs[0],
 		)
 
-		replayed, ok := req.Message.(*SubmitForfeitSigRequest)
+		replayed, ok := req.Message.(*SubmitPartialSigRequest)
 		require.True(
-			t, ok, "expected SubmitForfeitSigRequest, got %T",
+			t, ok, "expected SubmitPartialSigRequest, got %T",
 			req.Message,
 		)
 		require.Equal(t, roundID, replayed.RoundID)
-		require.Len(t, replayed.Signatures, 1)
-		require.Equal(
-			t, walletIntent.Outpoint,
-			replayed.Signatures[0].Outpoint,
-		)
+		require.Equal(t, signatures, replayed.Signatures)
 	})
+
+	t.Run(
+		"processes_persisted_vtxo_forfeit_sig_effect",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+
+			roundID := testRoundID("replay-vtxo-forfeit-sigs")
+			round := h.newTestRound(roundID)
+
+			vtxoOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("forfeit-vtxo")),
+				Index: 9,
+			}
+			forfeitTx := wire.NewMsgTx(2)
+			forfeitTx.AddTxIn(&wire.TxIn{
+				PreviousOutPoint: vtxoOutpoint,
+			})
+			forfeitTx.AddTxOut(&wire.TxOut{
+				Value:    1000,
+				PkScript: []byte{0x51},
+			})
+
+			ownerKey, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			operatorKey, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			policy, err := arkscript.NewVTXOPolicy(
+				ownerKey.PubKey(), operatorKey.PubKey(), 144,
+			)
+			require.NoError(t, err)
+			spendInfo, err := policy.CollabSpendInfo()
+			require.NoError(t, err)
+
+			forfeitSigs := map[wire.OutPoint]*types.ForfeitTxSig{
+				vtxoOutpoint: {
+					UnsignedTx: forfeitTx,
+					ClientVTXOSig: testutils.TestSchnorrSignature(
+						t, "forfeit-sig",
+					),
+					SpendPath: &arkscript.SpendPath{
+						SpendInfo:        spendInfo,
+						RequiredSequence: wire.MaxTxInSequenceNum,
+					},
+				},
+			}
+
+			h.roundStore.roundEffects = []RoundEffect{
+				{
+					ID:         "effect-vtxo-forfeit-sigs",
+					RoundID:    roundID,
+					EffectType: RoundEffectSendVTXOForfeitSigs,
+					ClaimToken: "claim-token",
+				},
+			}
+
+			h.roundStore.On(
+				"ListActiveRounds", mock.Anything,
+			).Return([]*Round{round}, nil)
+			h.roundStore.On(
+				"FetchState", mock.Anything, round.RoundID,
+			).Return(
+				round,
+				&InputSigSentState{
+					RoundID: roundID,
+				},
+				nil,
+			)
+			h.roundStore.On(
+				"LoadVTXOForfeitSignatures", mock.Anything, roundID,
+			).Return(forfeitSigs, nil)
+
+			err = h.start()
+			require.NoError(t, err)
+
+			msgs := h.serverMessages()
+			require.Len(t, msgs, 1)
+
+			req, ok := msgs[0].(*serverconn.SendClientEventRequest)
+			require.True(
+				t, ok, "expected SendClientEventRequest, "+
+					"got %T", msgs[0],
+			)
+
+			replayed, ok := req.Message.(*SubmitVTXOForfeitSigsToServer)
+			require.True(
+				t, ok, "expected "+
+					"SubmitVTXOForfeitSigsToServer, got %T",
+				req.Message,
+			)
+			require.Equal(t, roundID, replayed.RoundID)
+			require.Equal(t, forfeitSigs, replayed.ForfeitTxs)
+		},
+	)
+
+	t.Run(
+		"processes_persisted_vtxo_forfeit_request_effect",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+
+			roundID := testRoundID("replay-vtxo-forfeit-requests")
+			round := h.newTestRound(roundID)
+			vtxoOutpoint := wire.OutPoint{
+				Hash: chainhash.HashH(
+					[]byte("forfeit-request-vtxo"),
+				),
+				Index: 13,
+			}
+			requests := []ForfeitRequestState{{
+				VTXOOutpoint: vtxoOutpoint,
+				ConnectorOutpoint: wire.OutPoint{
+					Hash: chainhash.HashH(
+						[]byte("connector"),
+					),
+					Index: 14,
+				},
+				ConnectorPkScript: []byte{
+					0x51,
+					0x20,
+				},
+				ConnectorAmount: 546,
+				VTXOAmount:      50_000,
+				ServerForfeitPkScript: []byte{
+					0x51,
+				},
+			}}
+
+			h.roundStore.roundEffects = []RoundEffect{
+				{
+					ID:         "effect-vtxo-forfeit-requests",
+					RoundID:    roundID,
+					EffectType: RoundEffectRequestVTXOForfeitSigs,
+					ClaimToken: "claim-token",
+				},
+			}
+
+			h.roundStore.On(
+				"ListActiveRounds", mock.Anything,
+			).Return([]*Round{round}, nil)
+			h.roundStore.On(
+				"FetchState", mock.Anything, round.RoundID,
+			).Return(
+				round,
+				&ForfeitSignaturesCollectingState{
+					RoundID: roundID,
+					CollectedForfeits: make(
+						map[wire.OutPoint]*ForfeitSignatureResponse,
+					),
+				},
+				nil,
+			)
+			h.roundStore.On(
+				"LoadForfeitRequests", mock.Anything, roundID,
+			).Return(requests, nil)
+
+			err := h.start()
+			require.NoError(t, err)
+
+			h.roundStore.AssertCalled(
+				t, "LoadForfeitRequests", mock.Anything,
+				roundID,
+			)
+		},
+	)
 }
 
 // TestActorConfirmation exercises the confirmation event routing logic,
@@ -936,6 +1278,55 @@ func TestActorReceiveUnknownMessageType(t *testing.T) {
 	require.Contains(t, result.Err().Error(), "unknown message type")
 }
 
+func TestRoundFSMOutlivesCallerContext(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+
+	err := h.start()
+	require.NoError(t, err)
+
+	callerCtx, cancel := context.WithCancel(h.ctx)
+	outpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("caller-context-refresh")),
+		Index: 0,
+	}
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		h.clientPubKey, h.operatorPubKey, 144,
+	)
+	require.NoError(t, err)
+	h.vtxoStore.On(
+		"GetVTXO", mock.Anything, outpoint,
+	).Return(&ClientVTXO{
+		Outpoint: outpoint,
+		Amount:   btcutil.Amount(50000),
+	}, nil)
+
+	result := h.actor.Receive(callerCtx, &RefreshVTXORequest{
+		VTXOOutpoint:   outpoint,
+		Amount:         50000,
+		PolicyTemplate: policyTemplate,
+	})
+	require.True(t, result.IsOk(), "actor receive failed: %v", result.Err())
+
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+
+	states := h.queryState()
+	require.NotEmpty(t, states, "round FSM should still be queryable")
+	h.assertFSMState("PendingRoundAssembly")
+
+	result = h.actor.Receive(h.ctx, &ServerMessageNotification{
+		Message: &IntentRequested{},
+	})
+	require.True(
+		t, result.IsOk(),
+		"server message failed: %v", result.Err(),
+	)
+	h.assertFSMState("IntentSentState")
+}
+
 // TestActorLifecycle verifies complete end-to-end workflows through various
 // FSM state transitions, ensuring the actor behaves correctly across the full
 // boarding lifecycle.
@@ -1197,6 +1588,16 @@ func TestActorBuffersEarlyQuote(t *testing.T) {
 		VTXOQuotes:     vtxoQuotes,
 	}
 
+	h.roundStore.On(
+		"SavePendingQuote", mock.Anything,
+		mock.MatchedBy(func(got *JoinRoundQuoteReceived) bool {
+			return got.RoundID == roundID && got.Quote == quote
+		}),
+	).Return(nil).Once()
+	h.roundStore.On(
+		"DeletePendingQuote", mock.Anything, roundID,
+	).Return(nil).Once()
+
 	h.sendServerMessage(&JoinRoundQuoteReceived{
 		RoundID: roundID,
 		Quote:   quote,
@@ -1236,6 +1637,36 @@ func TestActorBuffersEarlyQuote(t *testing.T) {
 		t, found, "FSM must advance past IntentSentState after "+
 			"draining buffered quote",
 	)
+
+	h.roundStore.AssertExpectations(t)
+}
+
+func TestActorStartLoadsPendingQuotes(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	roundID := testRoundID("pending-quote-restart")
+
+	quote := &JoinRoundQuoteReceived{
+		RoundID: roundID,
+		Quote: &ClientQuote{
+			OperatorFeeSat: 1_000,
+		},
+	}
+
+	h.roundStore.On(
+		"ListActiveRounds", mock.Anything,
+	).Return([]*Round{}, nil)
+	h.roundStore.On(
+		"LoadPendingQuotes", mock.Anything,
+	).Return(map[RoundID]*JoinRoundQuoteReceived{
+		roundID: quote,
+	}, nil).Once()
+
+	require.NoError(t, h.start())
+	require.Same(t, quote, h.actor.pendingQuotes[roundID])
+
+	h.roundStore.AssertExpectations(t)
 }
 
 func TestActorServerMessageRouting(t *testing.T) {

@@ -10,6 +10,65 @@ import (
 	"database/sql"
 )
 
+const ClaimClientRoundEffect = `-- name: ClaimClientRoundEffect :one
+UPDATE client_round_effects
+SET status = 'claimed',
+    claim_owner = $2,
+    claim_token = $3,
+    claim_until = $4,
+    attempts = attempts + 1,
+    updated_at = $5
+WHERE id = $1
+  AND next_attempt_at <= $6
+  AND attempts < max_attempts
+  AND (
+    status = 'pending' OR
+    (status = 'claimed' AND claim_until <= $6)
+  )
+RETURNING id, round_id, effect_type, status, idempotency_key,
+    attempts, max_attempts, next_attempt_at, claim_owner, claim_token,
+    claim_until, last_error, created_at, updated_at, done_at
+`
+
+type ClaimClientRoundEffectParams struct {
+	ID            string
+	ClaimOwner    sql.NullString
+	ClaimToken    sql.NullString
+	ClaimUntil    sql.NullInt64
+	UpdatedAt     int64
+	NextAttemptAt int64
+}
+
+func (q *Queries) ClaimClientRoundEffect(ctx context.Context, arg ClaimClientRoundEffectParams) (ClientRoundEffect, error) {
+	row := q.db.QueryRowContext(ctx, ClaimClientRoundEffect,
+		arg.ID,
+		arg.ClaimOwner,
+		arg.ClaimToken,
+		arg.ClaimUntil,
+		arg.UpdatedAt,
+		arg.NextAttemptAt,
+	)
+	var i ClientRoundEffect
+	err := row.Scan(
+		&i.ID,
+		&i.RoundID,
+		&i.EffectType,
+		&i.Status,
+		&i.IdempotencyKey,
+		&i.Attempts,
+		&i.MaxAttempts,
+		&i.NextAttemptAt,
+		&i.ClaimOwner,
+		&i.ClaimToken,
+		&i.ClaimUntil,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DoneAt,
+	)
+	return i, err
+}
+
 const CountUnspentVTXOs = `-- name: CountUnspentVTXOs :one
 SELECT COUNT(*) FROM vtxos
 WHERE spent = FALSE
@@ -21,6 +80,33 @@ func (q *Queries) CountUnspentVTXOs(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const DeleteClientRoundPendingLeaveQuotes = `-- name: DeleteClientRoundPendingLeaveQuotes :exec
+DELETE FROM client_round_pending_leave_quotes WHERE round_id = $1
+`
+
+func (q *Queries) DeleteClientRoundPendingLeaveQuotes(ctx context.Context, roundID string) error {
+	_, err := q.db.ExecContext(ctx, DeleteClientRoundPendingLeaveQuotes, roundID)
+	return err
+}
+
+const DeleteClientRoundPendingQuote = `-- name: DeleteClientRoundPendingQuote :exec
+DELETE FROM client_round_pending_quotes WHERE round_id = $1
+`
+
+func (q *Queries) DeleteClientRoundPendingQuote(ctx context.Context, roundID string) error {
+	_, err := q.db.ExecContext(ctx, DeleteClientRoundPendingQuote, roundID)
+	return err
+}
+
+const DeleteClientRoundPendingVTXOQuotes = `-- name: DeleteClientRoundPendingVTXOQuotes :exec
+DELETE FROM client_round_pending_vtxo_quotes WHERE round_id = $1
+`
+
+func (q *Queries) DeleteClientRoundPendingVTXOQuotes(ctx context.Context, roundID string) error {
+	_, err := q.db.ExecContext(ctx, DeleteClientRoundPendingVTXOQuotes, roundID)
+	return err
 }
 
 const DeleteClientTreeTxids = `-- name: DeleteClientTreeTxids :exec
@@ -82,6 +168,263 @@ func (q *Queries) FinalizeRound(ctx context.Context, arg FinalizeRoundParams) er
 		arg.LastUpdateTime,
 	)
 	return err
+}
+
+const GetClientRoundAggNonceState = `-- name: GetClientRoundAggNonceState :many
+SELECT round_id, txid, agg_nonce, creation_time, last_update_time FROM client_round_agg_nonce_state
+WHERE round_id = $1
+ORDER BY txid
+`
+
+func (q *Queries) GetClientRoundAggNonceState(ctx context.Context, roundID string) ([]ClientRoundAggNonceState, error) {
+	rows, err := q.db.QueryContext(ctx, GetClientRoundAggNonceState, roundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClientRoundAggNonceState
+	for rows.Next() {
+		var i ClientRoundAggNonceState
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.Txid,
+			&i.AggNonce,
+			&i.CreationTime,
+			&i.LastUpdateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const GetClientRoundForfeitRequestState = `-- name: GetClientRoundForfeitRequestState :many
+SELECT round_id, vtxo_outpoint_hash, vtxo_outpoint_index, connector_outpoint_hash, connector_outpoint_index, connector_pk_script, connector_amount, vtxo_amount, server_forfeit_pk_script, forfeit_spend, creation_time, last_update_time FROM client_round_forfeit_request_state
+WHERE round_id = $1
+ORDER BY vtxo_outpoint_hash, vtxo_outpoint_index
+`
+
+func (q *Queries) GetClientRoundForfeitRequestState(ctx context.Context, roundID string) ([]ClientRoundForfeitRequestState, error) {
+	rows, err := q.db.QueryContext(ctx, GetClientRoundForfeitRequestState, roundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClientRoundForfeitRequestState
+	for rows.Next() {
+		var i ClientRoundForfeitRequestState
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.VtxoOutpointHash,
+			&i.VtxoOutpointIndex,
+			&i.ConnectorOutpointHash,
+			&i.ConnectorOutpointIndex,
+			&i.ConnectorPkScript,
+			&i.ConnectorAmount,
+			&i.VtxoAmount,
+			&i.ServerForfeitPkScript,
+			&i.ForfeitSpend,
+			&i.CreationTime,
+			&i.LastUpdateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const GetClientRoundForfeitSigState = `-- name: GetClientRoundForfeitSigState :many
+SELECT round_id, vtxo_outpoint_hash, vtxo_outpoint_index, forfeit_tx, client_sig, spend_path, creation_time, last_update_time FROM client_round_forfeit_sig_state
+WHERE round_id = $1
+ORDER BY vtxo_outpoint_hash, vtxo_outpoint_index
+`
+
+func (q *Queries) GetClientRoundForfeitSigState(ctx context.Context, roundID string) ([]ClientRoundForfeitSigState, error) {
+	rows, err := q.db.QueryContext(ctx, GetClientRoundForfeitSigState, roundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClientRoundForfeitSigState
+	for rows.Next() {
+		var i ClientRoundForfeitSigState
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.VtxoOutpointHash,
+			&i.VtxoOutpointIndex,
+			&i.ForfeitTx,
+			&i.ClientSig,
+			&i.SpendPath,
+			&i.CreationTime,
+			&i.LastUpdateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const GetClientRoundNonceState = `-- name: GetClientRoundNonceState :many
+SELECT round_id, signing_key, txid, pub_nonce, sec_nonce, creation_time, last_update_time FROM client_round_nonce_state
+WHERE round_id = $1
+ORDER BY signing_key, txid
+`
+
+func (q *Queries) GetClientRoundNonceState(ctx context.Context, roundID string) ([]ClientRoundNonceState, error) {
+	rows, err := q.db.QueryContext(ctx, GetClientRoundNonceState, roundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClientRoundNonceState
+	for rows.Next() {
+		var i ClientRoundNonceState
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.SigningKey,
+			&i.Txid,
+			&i.PubNonce,
+			&i.SecNonce,
+			&i.CreationTime,
+			&i.LastUpdateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const GetClientRoundPartialSigState = `-- name: GetClientRoundPartialSigState :many
+SELECT round_id, signing_key, txid, partial_sig, creation_time, last_update_time FROM client_round_partial_sig_state
+WHERE round_id = $1
+ORDER BY signing_key, txid
+`
+
+func (q *Queries) GetClientRoundPartialSigState(ctx context.Context, roundID string) ([]ClientRoundPartialSigState, error) {
+	rows, err := q.db.QueryContext(ctx, GetClientRoundPartialSigState, roundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClientRoundPartialSigState
+	for rows.Next() {
+		var i ClientRoundPartialSigState
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.SigningKey,
+			&i.Txid,
+			&i.PartialSig,
+			&i.CreationTime,
+			&i.LastUpdateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const GetClientRoundPendingLeaveQuotes = `-- name: GetClientRoundPendingLeaveQuotes :many
+SELECT round_id, quote_index, pk_script, amount_sat FROM client_round_pending_leave_quotes
+WHERE round_id = $1
+ORDER BY quote_index ASC
+`
+
+func (q *Queries) GetClientRoundPendingLeaveQuotes(ctx context.Context, roundID string) ([]ClientRoundPendingLeaveQuote, error) {
+	rows, err := q.db.QueryContext(ctx, GetClientRoundPendingLeaveQuotes, roundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClientRoundPendingLeaveQuote
+	for rows.Next() {
+		var i ClientRoundPendingLeaveQuote
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.QuoteIndex,
+			&i.PkScript,
+			&i.AmountSat,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const GetClientRoundPendingVTXOQuotes = `-- name: GetClientRoundPendingVTXOQuotes :many
+SELECT round_id, quote_index, pk_script, amount_sat, recipient_key FROM client_round_pending_vtxo_quotes
+WHERE round_id = $1
+ORDER BY quote_index ASC
+`
+
+func (q *Queries) GetClientRoundPendingVTXOQuotes(ctx context.Context, roundID string) ([]ClientRoundPendingVtxoQuote, error) {
+	rows, err := q.db.QueryContext(ctx, GetClientRoundPendingVTXOQuotes, roundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClientRoundPendingVtxoQuote
+	for rows.Next() {
+		var i ClientRoundPendingVtxoQuote
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.QuoteIndex,
+			&i.PkScript,
+			&i.AmountSat,
+			&i.RecipientKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const GetClientTreeByTxid = `-- name: GetClientTreeByTxid :one
@@ -363,6 +706,288 @@ func (q *Queries) GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error) 
 		&i.ChainDepth,
 	)
 	return i, err
+}
+
+const InsertClientRoundAggNonceState = `-- name: InsertClientRoundAggNonceState :exec
+
+INSERT INTO client_round_agg_nonce_state (
+    round_id, txid, agg_nonce, creation_time, last_update_time
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (round_id, txid) DO UPDATE SET
+    agg_nonce = excluded.agg_nonce,
+    last_update_time = excluded.last_update_time
+`
+
+type InsertClientRoundAggNonceStateParams struct {
+	RoundID        string
+	Txid           []byte
+	AggNonce       []byte
+	CreationTime   int64
+	LastUpdateTime int64
+}
+
+// Client round aggregate nonce state queries.
+func (q *Queries) InsertClientRoundAggNonceState(ctx context.Context, arg InsertClientRoundAggNonceStateParams) error {
+	_, err := q.db.ExecContext(ctx, InsertClientRoundAggNonceState,
+		arg.RoundID,
+		arg.Txid,
+		arg.AggNonce,
+		arg.CreationTime,
+		arg.LastUpdateTime,
+	)
+	return err
+}
+
+const InsertClientRoundEffect = `-- name: InsertClientRoundEffect :exec
+
+INSERT INTO client_round_effects (
+    id, round_id, effect_type, status, idempotency_key, attempts,
+    max_attempts, next_attempt_at, created_at, updated_at
+) VALUES ($1, $2, $3, 'pending', $4, 0, $5, $6, $7, $8)
+ON CONFLICT (idempotency_key) DO NOTHING
+`
+
+type InsertClientRoundEffectParams struct {
+	ID             string
+	RoundID        string
+	EffectType     string
+	IdempotencyKey string
+	MaxAttempts    int32
+	NextAttemptAt  int64
+	CreatedAt      int64
+	UpdatedAt      int64
+}
+
+// Client round effect queries.
+func (q *Queries) InsertClientRoundEffect(ctx context.Context, arg InsertClientRoundEffectParams) error {
+	_, err := q.db.ExecContext(ctx, InsertClientRoundEffect,
+		arg.ID,
+		arg.RoundID,
+		arg.EffectType,
+		arg.IdempotencyKey,
+		arg.MaxAttempts,
+		arg.NextAttemptAt,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
+const InsertClientRoundForfeitRequestState = `-- name: InsertClientRoundForfeitRequestState :exec
+
+INSERT INTO client_round_forfeit_request_state (
+    round_id, vtxo_outpoint_hash, vtxo_outpoint_index,
+    connector_outpoint_hash, connector_outpoint_index, connector_pk_script,
+    connector_amount, vtxo_amount, server_forfeit_pk_script, forfeit_spend,
+    creation_time, last_update_time
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+ON CONFLICT (round_id, vtxo_outpoint_hash, vtxo_outpoint_index)
+DO UPDATE SET
+    connector_outpoint_hash = excluded.connector_outpoint_hash,
+    connector_outpoint_index = excluded.connector_outpoint_index,
+    connector_pk_script = excluded.connector_pk_script,
+    connector_amount = excluded.connector_amount,
+    vtxo_amount = excluded.vtxo_amount,
+    server_forfeit_pk_script = excluded.server_forfeit_pk_script,
+    forfeit_spend = excluded.forfeit_spend,
+    last_update_time = excluded.last_update_time
+`
+
+type InsertClientRoundForfeitRequestStateParams struct {
+	RoundID                string
+	VtxoOutpointHash       []byte
+	VtxoOutpointIndex      int32
+	ConnectorOutpointHash  []byte
+	ConnectorOutpointIndex int32
+	ConnectorPkScript      []byte
+	ConnectorAmount        int64
+	VtxoAmount             int64
+	ServerForfeitPkScript  []byte
+	ForfeitSpend           []byte
+	CreationTime           int64
+	LastUpdateTime         int64
+}
+
+// Client round expected VTXO forfeit request queries.
+func (q *Queries) InsertClientRoundForfeitRequestState(ctx context.Context, arg InsertClientRoundForfeitRequestStateParams) error {
+	_, err := q.db.ExecContext(ctx, InsertClientRoundForfeitRequestState,
+		arg.RoundID,
+		arg.VtxoOutpointHash,
+		arg.VtxoOutpointIndex,
+		arg.ConnectorOutpointHash,
+		arg.ConnectorOutpointIndex,
+		arg.ConnectorPkScript,
+		arg.ConnectorAmount,
+		arg.VtxoAmount,
+		arg.ServerForfeitPkScript,
+		arg.ForfeitSpend,
+		arg.CreationTime,
+		arg.LastUpdateTime,
+	)
+	return err
+}
+
+const InsertClientRoundForfeitSigState = `-- name: InsertClientRoundForfeitSigState :exec
+
+INSERT INTO client_round_forfeit_sig_state (
+    round_id, vtxo_outpoint_hash, vtxo_outpoint_index, forfeit_tx,
+    client_sig, spend_path, creation_time, last_update_time
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (round_id, vtxo_outpoint_hash, vtxo_outpoint_index)
+DO UPDATE SET
+    forfeit_tx = excluded.forfeit_tx,
+    client_sig = excluded.client_sig,
+    spend_path = excluded.spend_path,
+    last_update_time = excluded.last_update_time
+`
+
+type InsertClientRoundForfeitSigStateParams struct {
+	RoundID           string
+	VtxoOutpointHash  []byte
+	VtxoOutpointIndex int32
+	ForfeitTx         []byte
+	ClientSig         []byte
+	SpendPath         []byte
+	CreationTime      int64
+	LastUpdateTime    int64
+}
+
+// Client round collected VTXO forfeit signature queries.
+func (q *Queries) InsertClientRoundForfeitSigState(ctx context.Context, arg InsertClientRoundForfeitSigStateParams) error {
+	_, err := q.db.ExecContext(ctx, InsertClientRoundForfeitSigState,
+		arg.RoundID,
+		arg.VtxoOutpointHash,
+		arg.VtxoOutpointIndex,
+		arg.ForfeitTx,
+		arg.ClientSig,
+		arg.SpendPath,
+		arg.CreationTime,
+		arg.LastUpdateTime,
+	)
+	return err
+}
+
+const InsertClientRoundNonceState = `-- name: InsertClientRoundNonceState :exec
+
+INSERT INTO client_round_nonce_state (
+    round_id, signing_key, txid, pub_nonce, sec_nonce, creation_time,
+    last_update_time
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (round_id, signing_key, txid) DO UPDATE SET
+    pub_nonce = excluded.pub_nonce,
+    sec_nonce = excluded.sec_nonce,
+    last_update_time = excluded.last_update_time
+`
+
+type InsertClientRoundNonceStateParams struct {
+	RoundID        string
+	SigningKey     []byte
+	Txid           []byte
+	PubNonce       []byte
+	SecNonce       []byte
+	CreationTime   int64
+	LastUpdateTime int64
+}
+
+// Client round nonce state queries.
+func (q *Queries) InsertClientRoundNonceState(ctx context.Context, arg InsertClientRoundNonceStateParams) error {
+	_, err := q.db.ExecContext(ctx, InsertClientRoundNonceState,
+		arg.RoundID,
+		arg.SigningKey,
+		arg.Txid,
+		arg.PubNonce,
+		arg.SecNonce,
+		arg.CreationTime,
+		arg.LastUpdateTime,
+	)
+	return err
+}
+
+const InsertClientRoundPartialSigState = `-- name: InsertClientRoundPartialSigState :exec
+
+INSERT INTO client_round_partial_sig_state (
+    round_id, signing_key, txid, partial_sig, creation_time, last_update_time
+) VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (round_id, signing_key, txid) DO UPDATE SET
+    partial_sig = excluded.partial_sig,
+    last_update_time = excluded.last_update_time
+`
+
+type InsertClientRoundPartialSigStateParams struct {
+	RoundID        string
+	SigningKey     []byte
+	Txid           []byte
+	PartialSig     []byte
+	CreationTime   int64
+	LastUpdateTime int64
+}
+
+// Client round partial signature state queries.
+func (q *Queries) InsertClientRoundPartialSigState(ctx context.Context, arg InsertClientRoundPartialSigStateParams) error {
+	_, err := q.db.ExecContext(ctx, InsertClientRoundPartialSigState,
+		arg.RoundID,
+		arg.SigningKey,
+		arg.Txid,
+		arg.PartialSig,
+		arg.CreationTime,
+		arg.LastUpdateTime,
+	)
+	return err
+}
+
+const InsertClientRoundPendingLeaveQuote = `-- name: InsertClientRoundPendingLeaveQuote :exec
+INSERT INTO client_round_pending_leave_quotes (
+    round_id, quote_index, pk_script, amount_sat
+) VALUES ($1, $2, $3, $4)
+ON CONFLICT (round_id, quote_index) DO UPDATE SET
+    pk_script = excluded.pk_script,
+    amount_sat = excluded.amount_sat
+`
+
+type InsertClientRoundPendingLeaveQuoteParams struct {
+	RoundID    string
+	QuoteIndex int32
+	PkScript   []byte
+	AmountSat  int64
+}
+
+func (q *Queries) InsertClientRoundPendingLeaveQuote(ctx context.Context, arg InsertClientRoundPendingLeaveQuoteParams) error {
+	_, err := q.db.ExecContext(ctx, InsertClientRoundPendingLeaveQuote,
+		arg.RoundID,
+		arg.QuoteIndex,
+		arg.PkScript,
+		arg.AmountSat,
+	)
+	return err
+}
+
+const InsertClientRoundPendingVTXOQuote = `-- name: InsertClientRoundPendingVTXOQuote :exec
+INSERT INTO client_round_pending_vtxo_quotes (
+    round_id, quote_index, pk_script, amount_sat, recipient_key
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (round_id, quote_index) DO UPDATE SET
+    pk_script = excluded.pk_script,
+    amount_sat = excluded.amount_sat,
+    recipient_key = excluded.recipient_key
+`
+
+type InsertClientRoundPendingVTXOQuoteParams struct {
+	RoundID      string
+	QuoteIndex   int32
+	PkScript     []byte
+	AmountSat    int64
+	RecipientKey []byte
+}
+
+func (q *Queries) InsertClientRoundPendingVTXOQuote(ctx context.Context, arg InsertClientRoundPendingVTXOQuoteParams) error {
+	_, err := q.db.ExecContext(ctx, InsertClientRoundPendingVTXOQuote,
+		arg.RoundID,
+		arg.QuoteIndex,
+		arg.PkScript,
+		arg.AmountSat,
+		arg.RecipientKey,
+	)
+	return err
 }
 
 const InsertClientTreeTxid = `-- name: InsertClientTreeTxid :exec
@@ -658,7 +1283,12 @@ func (q *Queries) InsertVTXOAncestryPath(ctx context.Context, arg InsertVTXOAnce
 }
 
 const ListActiveRounds = `-- name: ListActiveRounds :many
-SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE status = 'input_sig_sent' ORDER BY creation_time ASC
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds
+WHERE status IN (
+    'nonces_generated', 'nonces_aggregated', 'partial_sigs_sent',
+    'forfeit_sigs_collecting', 'input_sig_sent'
+)
+ORDER BY creation_time ASC
 `
 
 func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
@@ -737,6 +1367,82 @@ func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListClientRoundPendingQuotes = `-- name: ListClientRoundPendingQuotes :many
+SELECT round_id, quote_id, seal_pass, operator_fee_sat, quote_expires_at, reject_reason, creation_time, last_update_time FROM client_round_pending_quotes
+ORDER BY creation_time ASC, round_id ASC
+`
+
+func (q *Queries) ListClientRoundPendingQuotes(ctx context.Context) ([]ClientRoundPendingQuote, error) {
+	rows, err := q.db.QueryContext(ctx, ListClientRoundPendingQuotes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClientRoundPendingQuote
+	for rows.Next() {
+		var i ClientRoundPendingQuote
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.QuoteID,
+			&i.SealPass,
+			&i.OperatorFeeSat,
+			&i.QuoteExpiresAt,
+			&i.RejectReason,
+			&i.CreationTime,
+			&i.LastUpdateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListDueClientRoundEffectIDs = `-- name: ListDueClientRoundEffectIDs :many
+SELECT id FROM client_round_effects
+WHERE next_attempt_at <= $1
+  AND (
+    status = 'pending' OR
+    (status = 'claimed' AND claim_until <= $1)
+  )
+ORDER BY next_attempt_at, created_at, id
+LIMIT $2
+`
+
+type ListDueClientRoundEffectIDsParams struct {
+	NextAttemptAt int64
+	Limit         int32
+}
+
+func (q *Queries) ListDueClientRoundEffectIDs(ctx context.Context, arg ListDueClientRoundEffectIDsParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, ListDueClientRoundEffectIDs, arg.NextAttemptAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -1133,6 +1839,31 @@ func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo,
 	return items, nil
 }
 
+const MarkClientRoundEffectDone = `-- name: MarkClientRoundEffectDone :exec
+UPDATE client_round_effects
+SET status = 'done',
+    done_at = $3,
+    updated_at = $3,
+    claim_owner = NULL,
+    claim_token = NULL,
+    claim_until = NULL,
+    last_error = NULL
+WHERE id = $1
+  AND claim_token = $2
+  AND status = 'claimed'
+`
+
+type MarkClientRoundEffectDoneParams struct {
+	ID         string
+	ClaimToken sql.NullString
+	DoneAt     sql.NullInt64
+}
+
+func (q *Queries) MarkClientRoundEffectDone(ctx context.Context, arg MarkClientRoundEffectDoneParams) error {
+	_, err := q.db.ExecContext(ctx, MarkClientRoundEffectDone, arg.ID, arg.ClaimToken, arg.DoneAt)
+	return err
+}
+
 const MarkVTXOSpent = `-- name: MarkVTXOSpent :exec
 UPDATE vtxos SET spent = TRUE, status = 4, last_update_time = $3
 WHERE outpoint_hash = $1 AND outpoint_index = $2
@@ -1147,6 +1878,63 @@ type MarkVTXOSpentParams struct {
 // Also sets status = 4 (Spent) to keep status in sync with spent flag.
 func (q *Queries) MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) error {
 	_, err := q.db.ExecContext(ctx, MarkVTXOSpent, arg.OutpointHash, arg.OutpointIndex, arg.LastUpdateTime)
+	return err
+}
+
+const ReleaseClientRoundEffectForRetry = `-- name: ReleaseClientRoundEffectForRetry :exec
+UPDATE client_round_effects
+SET status = CASE
+        WHEN attempts >= max_attempts THEN 'dead'
+        ELSE 'pending'
+    END,
+    next_attempt_at = $3,
+    last_error = $4,
+    claim_owner = NULL,
+    claim_token = NULL,
+    claim_until = NULL,
+    updated_at = $5
+WHERE id = $1
+  AND claim_token = $2
+  AND status = 'claimed'
+`
+
+type ReleaseClientRoundEffectForRetryParams struct {
+	ID            string
+	ClaimToken    sql.NullString
+	NextAttemptAt int64
+	LastError     sql.NullString
+	UpdatedAt     int64
+}
+
+func (q *Queries) ReleaseClientRoundEffectForRetry(ctx context.Context, arg ReleaseClientRoundEffectForRetryParams) error {
+	_, err := q.db.ExecContext(ctx, ReleaseClientRoundEffectForRetry,
+		arg.ID,
+		arg.ClaimToken,
+		arg.NextAttemptAt,
+		arg.LastError,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
+const ReleaseExpiredClientRoundEffectClaims = `-- name: ReleaseExpiredClientRoundEffectClaims :exec
+UPDATE client_round_effects
+SET status = 'pending',
+    claim_owner = NULL,
+    claim_token = NULL,
+    claim_until = NULL,
+    updated_at = $2
+WHERE status = 'claimed'
+  AND claim_until <= $1
+`
+
+type ReleaseExpiredClientRoundEffectClaimsParams struct {
+	ClaimUntil sql.NullInt64
+	UpdatedAt  int64
+}
+
+func (q *Queries) ReleaseExpiredClientRoundEffectClaims(ctx context.Context, arg ReleaseExpiredClientRoundEffectClaimsParams) error {
+	_, err := q.db.ExecContext(ctx, ReleaseExpiredClientRoundEffectClaims, arg.ClaimUntil, arg.UpdatedAt)
 	return err
 }
 
@@ -1202,5 +1990,46 @@ type UpdateRoundStatusParams struct {
 
 func (q *Queries) UpdateRoundStatus(ctx context.Context, arg UpdateRoundStatusParams) error {
 	_, err := q.db.ExecContext(ctx, UpdateRoundStatus, arg.RoundID, arg.Status, arg.LastUpdateTime)
+	return err
+}
+
+const UpsertClientRoundPendingQuote = `-- name: UpsertClientRoundPendingQuote :exec
+
+INSERT INTO client_round_pending_quotes (
+    round_id, quote_id, seal_pass, operator_fee_sat, quote_expires_at,
+    reject_reason, creation_time, last_update_time
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (round_id) DO UPDATE SET
+    quote_id = excluded.quote_id,
+    seal_pass = excluded.seal_pass,
+    operator_fee_sat = excluded.operator_fee_sat,
+    quote_expires_at = excluded.quote_expires_at,
+    reject_reason = excluded.reject_reason,
+    last_update_time = excluded.last_update_time
+`
+
+type UpsertClientRoundPendingQuoteParams struct {
+	RoundID        string
+	QuoteID        []byte
+	SealPass       int64
+	OperatorFeeSat int64
+	QuoteExpiresAt int64
+	RejectReason   int32
+	CreationTime   int64
+	LastUpdateTime int64
+}
+
+// Client round pending quote queries.
+func (q *Queries) UpsertClientRoundPendingQuote(ctx context.Context, arg UpsertClientRoundPendingQuoteParams) error {
+	_, err := q.db.ExecContext(ctx, UpsertClientRoundPendingQuote,
+		arg.RoundID,
+		arg.QuoteID,
+		arg.SealPass,
+		arg.OperatorFeeSat,
+		arg.QuoteExpiresAt,
+		arg.RejectReason,
+		arg.CreationTime,
+		arg.LastUpdateTime,
+	)
 	return err
 }

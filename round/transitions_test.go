@@ -1,12 +1,15 @@
+//nolint:ll
 package round
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -28,6 +31,26 @@ func testRoundIDTr(seed string) RoundID {
 	id, _ := uuid.FromBytes(h[:16])
 
 	return RoundID(id)
+}
+
+type nonceCaptureRoundStore struct {
+	MockRoundStore
+
+	saved []SigningNonceState
+}
+
+func (s *nonceCaptureRoundStore) SaveSigningNonces(_ context.Context, _ *Round,
+	_ map[SignerKey]*tree.Tree, nonces []SigningNonceState) error {
+
+	s.saved = append([]SigningNonceState(nil), nonces...)
+
+	return nil
+}
+
+func (s *nonceCaptureRoundStore) LoadSigningNonces(_ context.Context,
+	_ RoundID) ([]SigningNonceState, error) {
+
+	return append([]SigningNonceState(nil), s.saved...), nil
 }
 
 type reqTree struct {
@@ -1633,6 +1656,68 @@ func TestCommitmentTxValidatedState(t *testing.T) {
 		h.assertOutboxContainsType("*round.SubmitNoncesRequest")
 	})
 
+	t.Run(
+		"GenerateNonces_reuses_persisted_nonce_material",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHarness(t)
+			h.setupMockWalletForMuSig2()
+
+			store := &nonceCaptureRoundStore{}
+			h.env.RoundStore = store
+
+			intent := h.newTestBoardingIntent()
+			state := h.newCommitmentTxValidatedState(
+				testRoundIDTr("round-restart-nonces"),
+				[]BoardingIntent{intent},
+			)
+			h.withState(state)
+
+			_, err := h.sendEvent(&GenerateNonces{})
+			require.NoError(t, err)
+			require.Len(t, store.saved, 1)
+
+			firstNonce := store.saved[0]
+			firstCreateCalls := len(h.wallet.Calls)
+			require.Positive(t, firstCreateCalls)
+
+			h.clearOutbox()
+			h.withState(state)
+
+			_, err = h.sendEvent(&GenerateNonces{})
+			require.NoError(t, err)
+
+			require.Greater(
+				t, len(h.wallet.Calls), firstCreateCalls,
+			)
+			lastCall := h.wallet.Calls[len(h.wallet.Calls)-1]
+			localNonces, ok := lastCall.Arguments.Get(5).(*musig2.Nonces)
+			require.True(t, ok, "expected persisted local nonces")
+			require.NotNil(t, localNonces)
+			require.Equal(
+				t,
+				[musig2.PubNonceSize]byte(firstNonce.PubNonce),
+				localNonces.PubNonce,
+			)
+			require.Equal(
+				t,
+				[musig2.SecNonceSize]byte(firstNonce.SecNonce),
+				localNonces.SecNonce,
+			)
+
+			h.assertOutboxLen(1)
+			nonceMsg, ok := h.outboxMessages[0].(*SubmitNoncesRequest)
+			require.True(t, ok)
+			require.Contains(
+				t, nonceMsg.Nonces, firstNonce.SignerKey,
+			)
+			require.Equal(
+				t, []SigningNonceState{firstNonce}, store.saved,
+			)
+		},
+	)
+
 	t.Run("leave_only_round_starts_forfeit_timeout", func(t *testing.T) {
 		t.Parallel()
 
@@ -1689,8 +1774,10 @@ func TestCommitmentTxValidatedState(t *testing.T) {
 		require.Equal(t, roundID, cs.RoundID)
 		require.Len(t, cs.ExpectedForfeits, 1)
 
-		h.assertOutboxContainsType("*round.ForfeitRequestToVTXO")
 		h.assertOutboxContainsType("*round.StartTimeoutReq")
+		h.assertOutboxContainsType(
+			"*round.RoundCheckpointedNotification",
+		)
 	})
 }
 
@@ -1776,7 +1863,9 @@ func TestNoncesAggregatedState(t *testing.T) {
 		partialSigsState := assertStateType[*PartialSigsSentState](h)
 		expectedID := testRoundIDTr("round-001")
 		require.Equal(t, expectedID, partialSigsState.RoundID)
-		h.assertOutboxContainsType("*round.SubmitPartialSigRequest")
+		h.assertOutboxContainsType(
+			"*round.RoundCheckpointedNotification",
+		)
 	})
 }
 
@@ -1847,8 +1936,9 @@ func TestPartialSigsSentState(t *testing.T) {
 		require.Equal(t, expectedRoundID, inputSigState.RoundID)
 		require.NotEmpty(t, inputSigState.InputSigs)
 
-		h.assertOutboxContainsType("*round.SubmitForfeitSigRequest")
-		h.assertOutboxContainsType("*round.RegisterConfirmationRequest")
+		h.assertOutboxContainsType(
+			"*round.RoundCheckpointedNotification",
+		)
 	})
 
 	t.Run("OperatorSigned_propagates_sigs_to_extracted_client_tree",
@@ -1983,8 +2073,10 @@ func TestPartialSigsSentState(t *testing.T) {
 		require.Equal(t, roundID, cs.RoundID)
 		require.Len(t, cs.ExpectedForfeits, 1)
 
-		h.assertOutboxContainsType("*round.ForfeitRequestToVTXO")
 		h.assertOutboxContainsType("*round.StartTimeoutReq")
+		h.assertOutboxContainsType(
+			"*round.RoundCheckpointedNotification",
+		)
 	})
 
 	t.Run("empty_signatures_error", func(t *testing.T) {
@@ -2889,12 +2981,15 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		require.Len(t, inputSigState.ForfeitedVTXOs, 1)
 		require.Equal(t, vtxoOutpoint, inputSigState.ForfeitedVTXOs[0])
 
-		// Should emit SubmitVTXOForfeitSigsToServer and
-		// SubmitForfeitSigRequest (boarding input signatures).
-		forfeitType := "*round.SubmitVTXOForfeitSigsToServer"
-		h.assertOutboxContainsType(forfeitType)
-		h.assertOutboxContainsType("*round.SubmitForfeitSigRequest")
+		require.Len(t, inputSigState.ForfeitTxs, 1)
+
+		// The forfeit submission, boarding input signatures, and
+		// confirmation registration are persisted as SQL round effects
+		// with the checkpoint.
 		h.assertOutboxContainsType("*round.CancelTimeoutReq")
+		h.assertOutboxContainsType(
+			"*round.RoundCheckpointedNotification",
+		)
 	})
 
 	t.Run("forfeit_only_collection_skips_empty_boarding_sig_submit",
@@ -2954,10 +3049,11 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 				inputSigState.ForfeitedVTXOs[0],
 			)
 
-			h.assertOutboxContainsType(
-				"*round.SubmitVTXOForfeitSigsToServer",
-			)
+			require.Len(t, inputSigState.ForfeitTxs, 1)
 			h.assertOutboxContainsType("*round.CancelTimeoutReq")
+			h.assertOutboxContainsType(
+				"*round.RoundCheckpointedNotification",
+			)
 
 			for _, msg := range h.outboxMessages {
 				require.NotEqual(

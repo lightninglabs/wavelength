@@ -24,6 +24,7 @@ import (
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
@@ -206,6 +207,10 @@ type RoundClientActor struct {
 	// for registrations that must outlive one Receive turn but should
 	// still stop when the actor is stopped.
 	runCtx context.Context //nolint:containedctx
+
+	// runCancel cancels runCtx during actor shutdown. Round FSMs are
+	// started on runCtx so they are not tied to a single Ask caller.
+	runCancel context.CancelFunc
 
 	// rounds tracks all round FSMs keyed by their RoundKey. Rounds start
 	// with a TempRoundKey and are re-keyed to their server-assigned RoundID
@@ -620,9 +625,9 @@ func (a *RoundClientActor) queryBestHeight(ctx context.Context) (uint32,
 }
 
 // createRoundFSMFromDB creates a new FSM instance for a specific round,
-// restoring from checkpointed state. Uses FetchState to load both round data
-// and FSM state atomically. Used when loading active rounds from database on
-// startup.
+// restoring from SQL-persisted round state. Uses FetchState to load both round
+// data and FSM state atomically. Used when loading active rounds from database
+// on startup.
 func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	roundID RoundID) (*RoundFSM, error) {
 
@@ -638,6 +643,7 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 
 	fsmPrefix := roundID.LogPrefix()
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
+	fsmCtx := a.registrationCtx(ctx)
 
 	env := &ClientEnvironment{
 		RoundStore:             a.cfg.RoundStore,
@@ -656,14 +662,14 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
-		ErrorReporter: newContextErrorReporter(ctx, fsmPrefix),
+		ErrorReporter: newContextErrorReporter(fsmCtx, fsmPrefix),
 		InitialState:  state,
 		Env:           env,
 	}
 	fsm := protofsm.NewStateMachine(fsmCfg)
-	fsm.Start(ctx)
+	fsm.Start(fsmCtx)
 
-	a.log.InfoS(ctx, "Created round FSM from checkpoint",
+	a.log.InfoS(ctx, "Created round FSM from SQL state",
 		slog.String("round_id", round.RoundID.String()),
 		slog.String("initial_state", state.String()),
 	)
@@ -701,6 +707,7 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 
 	fsmPrefix := tempKey.LogPrefix()
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
+	fsmCtx := a.registrationCtx(ctx)
 
 	env := &ClientEnvironment{
 		RoundStore:             a.cfg.RoundStore,
@@ -719,12 +726,12 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
-		ErrorReporter: newContextErrorReporter(ctx, fsmPrefix),
+		ErrorReporter: newContextErrorReporter(fsmCtx, fsmPrefix),
 		InitialState:  &Idle{},
 		Env:           env,
 	}
 	fsm := protofsm.NewStateMachine(fsmCfg)
-	fsm.Start(ctx)
+	fsm.Start(fsmCtx)
 
 	roundFSM := &RoundFSM{
 		FSM: &fsm,
@@ -979,40 +986,286 @@ func (a *RoundClientActor) askEventAndProcessOutbox(ctx context.Context,
 	return nil
 }
 
-// replayCheckpointedServerMessages re-emits server-bound messages that are
-// logically required after the InputSigSent checkpoint. This closes the gap
-// where the daemon can restart after persisting the checkpoint but before the
-// in-memory actor loop forwards those messages to the durable serverconn
-// runtime.
-func (a *RoundClientActor) replayCheckpointedServerMessages(
-	ctx context.Context, roundFSM *RoundFSM,
-) error {
-
-	state, err := roundFSM.FSM.CurrentState()
-	if err != nil {
-		return fmt.Errorf("get current state: %w", err)
+func (a *RoundClientActor) processDueRoundEffects(ctx context.Context) error {
+	if err := a.cfg.RoundStore.ReleaseExpiredRoundEffectClaims(
+		ctx,
+	); err != nil {
+		return fmt.Errorf("release expired round effects: %w", err)
 	}
 
-	inputSigState, ok := state.(*InputSigSentState)
-	if !ok {
-		return nil
-	}
-
-	if len(inputSigState.InputSigs) == 0 {
-		return nil
-	}
-
-	a.log.InfoS(ctx, "Replaying checkpointed boarding input signatures",
-		slog.String("round_id", inputSigState.RoundID.String()),
-		slog.Int("boarding_sig_count", len(inputSigState.InputSigs)),
+	effects, err := a.cfg.RoundStore.ClaimDueRoundEffects(
+		ctx, "round-client-"+a.cfg.Name, 64, time.Minute,
 	)
+	if err != nil {
+		return fmt.Errorf("claim due round effects: %w", err)
+	}
 
-	return a.processOutbox(ctx, []ClientOutMsg{
-		&SubmitForfeitSigRequest{
-			RoundID:    inputSigState.RoundID,
-			Signatures: inputSigState.InputSigs,
-		},
-	})
+	for _, effect := range effects {
+		err := a.processRoundEffect(ctx, effect)
+		if err != nil {
+			_ = a.cfg.RoundStore.ReleaseRoundEffectForRetry(
+				ctx, effect.ID, effect.ClaimToken, time.Second,
+				err,
+			)
+
+			return err
+		}
+
+		err = a.cfg.RoundStore.MarkRoundEffectDone(
+			ctx, effect.ID, effect.ClaimToken,
+		)
+		if err != nil {
+			return fmt.Errorf("mark round effect done: %w", err)
+		}
+	}
+
+	return nil
+}
+
+//nolint:funlen
+func (a *RoundClientActor) processRoundEffect(ctx context.Context,
+	effect RoundEffect) error {
+
+	roundSnapshot, state, err := a.cfg.RoundStore.FetchState(
+		ctx, effect.RoundID,
+	)
+	if err != nil {
+		return fmt.Errorf("fetch round effect state: %w", err)
+	}
+	if state == nil {
+		a.log.InfoS(
+			ctx,
+			"Dropping stale round effect without active state",
+			slog.String("round_id", effect.RoundID.String()),
+			slog.String("effect_type", string(effect.EffectType)),
+		)
+
+		return nil
+	}
+	if state.IsTerminal() {
+		a.log.InfoS(
+			ctx,
+			"Dropping stale round effect for terminal state",
+			slog.String("round_id", effect.RoundID.String()),
+			slog.String("effect_type", string(effect.EffectType)),
+			slog.String("state", state.String()),
+		)
+
+		return nil
+	}
+
+	switch effect.EffectType {
+	case RoundEffectSendNonces:
+		nonceState, ok := state.(*NoncesSentState)
+		if !ok {
+			return fmt.Errorf("round effect %s requires "+
+				"NoncesSentState, got %T", effect.EffectType,
+				state)
+		}
+
+		nonces, err := a.cfg.RoundStore.LoadSigningNonces(
+			ctx, effect.RoundID,
+		)
+		if err != nil {
+			return fmt.Errorf("load signing nonces: %w", err)
+		}
+
+		grouped := make(map[SignerKey]map[tree.TxID]Musig2PubNonce)
+		for _, nonce := range nonces {
+			byTx := grouped[nonce.SignerKey]
+			if byTx == nil {
+				byTx = make(map[tree.TxID]Musig2PubNonce)
+				grouped[nonce.SignerKey] = byTx
+			}
+
+			byTx[nonce.TxID] = nonce.PubNonce
+		}
+		if len(grouped) == 0 {
+			return nil
+		}
+
+		a.log.InfoS(ctx, "Sending persisted MuSig2 nonces",
+			slog.String("round_id", nonceState.RoundID.String()),
+			slog.Int("signer_key_count", len(grouped)),
+		)
+
+		return a.processOutbox(ctx, []ClientOutMsg{
+			&SubmitNoncesRequest{
+				RoundID: nonceState.RoundID,
+				Nonces:  grouped,
+			},
+		})
+
+	case RoundEffectSendBoardingSigs:
+		inputSigState, ok := state.(*InputSigSentState)
+		if !ok {
+			return fmt.Errorf("round effect %s requires "+
+				"InputSigSentState, got %T", effect.EffectType,
+				state)
+		}
+
+		if len(inputSigState.InputSigs) == 0 {
+			return nil
+		}
+
+		a.log.InfoS(ctx, "Sending persisted boarding input signatures",
+			slog.String("round_id", inputSigState.RoundID.String()),
+			slog.Int(
+				"boarding_sig_count",
+				len(inputSigState.InputSigs),
+			),
+		)
+
+		return a.processOutbox(ctx, []ClientOutMsg{
+			&SubmitForfeitSigRequest{
+				RoundID:    inputSigState.RoundID,
+				Signatures: inputSigState.InputSigs,
+			},
+		})
+
+	case RoundEffectSendPartialSigs:
+		partialSigState, ok := state.(*PartialSigsSentState)
+		if !ok {
+			return fmt.Errorf("round effect %s requires "+
+				"PartialSigsSentState, got %T",
+				effect.EffectType, state)
+		}
+
+		signatures, err := a.cfg.RoundStore.LoadPartialSignatures(
+			ctx, effect.RoundID,
+		)
+		if err != nil {
+			return fmt.Errorf("load partial signatures: %w", err)
+		}
+		if len(signatures) == 0 {
+			return nil
+		}
+
+		a.log.InfoS(ctx, "Sending persisted partial signatures",
+			slog.String(
+				"round_id", partialSigState.RoundID.String(),
+			),
+			slog.Int("signer_key_count", len(signatures)),
+		)
+
+		return a.processOutbox(ctx, []ClientOutMsg{
+			&SubmitPartialSigRequest{
+				RoundID:    partialSigState.RoundID,
+				Signatures: signatures,
+			},
+		})
+
+	case RoundEffectRequestVTXOForfeitSigs:
+		forfeitState, ok := state.(*ForfeitSignaturesCollectingState)
+		if !ok {
+			return fmt.Errorf("round effect %s requires "+
+				"ForfeitSignaturesCollectingState, got %T",
+				effect.EffectType, state)
+		}
+
+		requests, err := a.cfg.RoundStore.LoadForfeitRequests(
+			ctx, effect.RoundID,
+		)
+		if err != nil {
+			return fmt.Errorf("load forfeit requests: %w", err)
+		}
+
+		outbox := make([]ClientOutMsg, 0, len(requests))
+		for _, request := range requests {
+			if _, ok := forfeitState.CollectedForfeits[request.VTXOOutpoint]; ok {
+				continue
+			}
+
+			outbox = append(outbox, &ForfeitRequestToVTXO{
+				VTXOOutpoint:          request.VTXOOutpoint,
+				RoundID:               effect.RoundID.String(),
+				ConnectorOutpoint:     request.ConnectorOutpoint,
+				ConnectorPkScript:     request.ConnectorPkScript,
+				ConnectorAmount:       request.ConnectorAmount,
+				ServerForfeitPkScript: request.ServerForfeitPkScript,
+				ForfeitSpend:          request.ForfeitSpend,
+			})
+		}
+		if len(outbox) == 0 {
+			return nil
+		}
+
+		a.log.InfoS(ctx, "Requesting persisted VTXO forfeit signatures",
+			slog.String("round_id", effect.RoundID.String()),
+			slog.Int("request_count", len(outbox)),
+		)
+
+		return a.processOutbox(ctx, outbox)
+
+	case RoundEffectSendVTXOForfeitSigs:
+		inputSigState, ok := state.(*InputSigSentState)
+		if !ok {
+			return fmt.Errorf("round effect %s requires "+
+				"InputSigSentState, got %T", effect.EffectType,
+				state)
+		}
+
+		forfeitTxs, err := a.cfg.RoundStore.LoadVTXOForfeitSignatures(
+			ctx, effect.RoundID,
+		)
+		if err != nil {
+			return fmt.Errorf("load VTXO forfeit signatures: %w",
+				err)
+		}
+		if len(forfeitTxs) == 0 {
+			return nil
+		}
+
+		a.log.InfoS(ctx, "Sending persisted VTXO forfeit signatures",
+			slog.String("round_id", inputSigState.RoundID.String()),
+			slog.Int("forfeit_sig_count", len(forfeitTxs)),
+		)
+
+		return a.processOutbox(ctx, []ClientOutMsg{
+			&SubmitVTXOForfeitSigsToServer{
+				RoundID:    inputSigState.RoundID,
+				ForfeitTxs: forfeitTxs,
+			},
+		})
+
+	case RoundEffectRegisterConfirmation:
+		inputSigState, ok := state.(*InputSigSentState)
+		if !ok {
+			return fmt.Errorf("round effect %s requires "+
+				"InputSigSentState, got %T", effect.EffectType,
+				state)
+		}
+
+		if inputSigState.CommitmentTx == nil ||
+			inputSigState.CommitmentTx.UnsignedTx == nil {
+			return fmt.Errorf("round %s has no commitment tx",
+				effect.RoundID)
+		}
+
+		txid := inputSigState.CommitmentTx.UnsignedTx.TxHash()
+		var pkScript []byte
+		if len(inputSigState.CommitmentTx.UnsignedTx.TxOut) > 0 {
+			pkScript = inputSigState.CommitmentTx.UnsignedTx.TxOut[0].
+				PkScript
+		}
+
+		return a.processOutbox(ctx, []ClientOutMsg{
+			&RegisterConfirmationRequest{
+				CallerID: fmt.Sprintf("commitment-%s", txid),
+				Txid:     &txid,
+				PkScript: pkScript,
+				TargetConfs: a.
+					cfg.
+					OperatorTerms.
+					MinConfirmations,
+				HeightHint: roundSnapshot.StartHeight,
+			},
+		})
+
+	default:
+		return fmt.Errorf("unknown round effect type: %s",
+			effect.EffectType)
+	}
 }
 
 // OnStop implements actor.Stoppable to gracefully shut down all FSMs when the
@@ -1021,6 +1274,12 @@ func (a *RoundClientActor) OnStop(ctx context.Context) error {
 	a.log.InfoS(ctx, "Stopping round client actor",
 		slog.Int("rounds", len(a.rounds)),
 	)
+
+	if a.runCancel != nil {
+		a.runCancel()
+		a.runCancel = nil
+		a.runCtx = nil
+	}
 
 	// Stop all round FSMs.
 	for keyStr, roundFSM := range a.rounds {
@@ -1047,14 +1306,18 @@ func (a *RoundClientActor) registrationCtx(
 		return a.runCtx
 	}
 
-	return context.WithoutCancel(ctx)
+	return actor.WithoutTx(context.WithoutCancel(ctx))
 }
 
 // Start initializes the actor by registering with the wallet actor to receive
 // boarding UTXO confirmation notifications, and resuming any active rounds.
 // This should be called once after actor creation to restore state.
 func (a *RoundClientActor) Start(ctx context.Context) error {
-	a.runCtx = ctx
+	a.runCtx, a.runCancel = context.WithCancel(
+		actor.WithoutTx(
+			context.WithoutCancel(ctx),
+		),
+	)
 
 	a.log.InfoS(ctx, "Starting round client actor",
 		slog.String("name", a.cfg.Name),
@@ -1123,9 +1386,16 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 		keyStr := RoundKeyStr(round.RoundID.KeyString())
 		a.rounds[keyStr] = roundFSM
 
-		// Register for confirmation of the commitment tx for this
-		// round.
-		if !roundFSM.TxID.IsEqual(&chainhash.Hash{}) {
+		state, err := roundFSM.FSM.CurrentState()
+		if err != nil {
+			return fmt.Errorf("get restored round state for %s: %w",
+				round.RoundID, err)
+		}
+
+		// Register for confirmation only after the point of no return.
+		if _, ok := state.(*InputSigSentState); ok &&
+			!roundFSM.TxID.IsEqual(&chainhash.Hash{}) {
+
 			a.commitmentTxIndex[roundFSM.TxID] = keyStr
 			a.registerCommitmentConfirmation(
 				ctx, roundFSM.TxID, round.CommitmentTx,
@@ -1140,12 +1410,49 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 			)
 		}
 
-		if err := a.replayCheckpointedServerMessages(
-			ctx, roundFSM,
-		); err != nil {
-			return fmt.Errorf("replay checkpointed messages for "+
-				"round %s: %w", round.RoundID, err)
+		if _, ok := state.(*CommitmentTxValidatedState); ok {
+			if err := a.askEventAndProcessOutbox(
+				ctx, roundFSM, &GenerateNonces{},
+			); err != nil {
+				return fmt.Errorf("redrive persisted nonces "+
+					"for round %s: %w", round.RoundID, err)
+			}
+
+			aggNonces, err := a.cfg.RoundStore.LoadAggregatedNonces(
+				ctx, round.RoundID,
+			)
+			if err != nil {
+				return fmt.Errorf("load aggregate nonces for "+
+					"round %s: %w", round.RoundID, err)
+			}
+			if len(aggNonces) == 0 {
+				continue
+			}
+
+			err = a.askEventAndProcessOutbox(
+				ctx, roundFSM, &NoncesAggregated{
+					RoundID:   round.RoundID,
+					AggNonces: aggNonces,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("redrive aggregate nonces "+
+					"for round %s: %w", round.RoundID, err)
+			}
 		}
+	}
+
+	pendingQuotes, err := a.cfg.RoundStore.LoadPendingQuotes(ctx)
+	if err != nil {
+		return fmt.Errorf("load pending quotes: %w", err)
+	}
+	a.pendingQuotes = pendingQuotes
+	a.log.InfoS(ctx, "Loaded pending round quotes from database",
+		slog.Int("count", len(a.pendingQuotes)),
+	)
+
+	if err := a.processDueRoundEffects(ctx); err != nil {
+		return fmt.Errorf("process persisted round effects: %w", err)
 	}
 
 	a.log.InfoS(ctx, "Round client actor started")
@@ -1567,8 +1874,6 @@ func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 	// out-of-order delivery; draining here prevents the buffered
 	// quote from stalling the FSM indefinitely.
 	if pending, ok := a.pendingQuotes[event.RoundID]; ok {
-		delete(a.pendingQuotes, event.RoundID)
-
 		a.log.InfoS(ctx, "Delivering buffered quote after re-key",
 			slog.String("round_id", event.RoundID.String()),
 		)
@@ -1581,6 +1886,17 @@ func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 					"quote: %w", drainErr),
 			)
 		}
+
+		if err := a.cfg.RoundStore.DeletePendingQuote(
+			ctx, event.RoundID,
+		); err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("delete drained pending quote: %w",
+					err),
+			)
+		}
+
+		delete(a.pendingQuotes, event.RoundID)
 	}
 
 	return fn.Ok[actormsg.RoundActorResp](
@@ -1608,7 +1924,8 @@ const maxPendingQuotes = 32
 func (a *RoundClientActor) bufferPendingQuote(ctx context.Context,
 	quote *JoinRoundQuoteReceived) fn.Result[actormsg.RoundActorResp] {
 
-	if len(a.pendingQuotes) >= maxPendingQuotes {
+	_, alreadyBuffered := a.pendingQuotes[quote.RoundID]
+	if !alreadyBuffered && len(a.pendingQuotes) >= maxPendingQuotes {
 		a.log.WarnS(
 			ctx,
 			"Dropping buffered quote: pending-quote buffer full",
@@ -1625,6 +1942,12 @@ func (a *RoundClientActor) bufferPendingQuote(ctx context.Context,
 	a.log.InfoS(ctx, "Buffering quote for round not yet admitted locally",
 		slog.String("round_id", quote.RoundID.String()),
 	)
+
+	if err := a.cfg.RoundStore.SavePendingQuote(ctx, quote); err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("persist pending quote: %w", err),
+		)
+	}
 
 	a.pendingQuotes[quote.RoundID] = quote
 
@@ -2185,29 +2508,55 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 					err)
 			}
 
-			inputSigState, ok := state.(*InputSigSentState)
-			if !ok {
+			switch state := state.(type) {
+			case *InputSigSentState:
+				// Update round FSM with commitment tx info.
+				txid := state.CommitmentTx.UnsignedTx.TxHash()
+				roundFSM.TxID = txid
+				roundFSM.CommitmentTx = fn.Some(
+					state.CommitmentTx,
+				)
+
+				// Index for confirmation routing and register.
+				a.commitmentTxIndex[txid] = keyStr
+
+				a.log.InfoS(ctx, "Round checkpoint processed",
+					slog.String(
+						"round_id", m.RoundID.String(),
+					),
+					slog.String(
+						"commitment_txid",
+						txid.String(),
+					),
+				)
+
+			case *PartialSigsSentState:
+				a.log.InfoS(
+					ctx,
+					"Round partial signatures checkpointed",
+					slog.String(
+						"round_id", m.RoundID.String(),
+					),
+				)
+
+			case *ForfeitSignaturesCollectingState:
+				a.log.InfoS(
+					ctx,
+					"Round forfeit collection checkpointed",
+					slog.String(
+						"round_id", m.RoundID.String(),
+					),
+				)
+
+			default:
 				return fmt.Errorf("round not in "+
-					"InputSigSentState, got %T", state)
+					"checkpointable state, got %T", state)
 			}
 
-			// Update round FSM with commitment tx info.
-			txid := inputSigState.CommitmentTx.UnsignedTx.TxHash()
-			roundFSM.TxID = txid
-			roundFSM.CommitmentTx = fn.Some(
-				inputSigState.CommitmentTx,
-			)
-
-			// Index for confirmation routing and register.
-			a.commitmentTxIndex[txid] = keyStr
-			a.registerCommitmentConfirmation(
-				ctx, txid, roundFSM.CommitmentTx,
-			)
-
-			a.log.InfoS(ctx, "Round checkpoint processed",
-				slog.String("round_id", m.RoundID.String()),
-				slog.String("commitment_txid", txid.String()),
-			)
+			if err := a.processDueRoundEffects(ctx); err != nil {
+				return fmt.Errorf("process persisted round "+
+					"effects: %w", err)
+			}
 
 		case *RoundFailedNotification:
 			// Round entered failed state. Log for observability.

@@ -83,6 +83,103 @@ type ChainInfo struct {
 	GenesisHash []byte
 }
 
+type ClientRoundAggNonceState struct {
+	RoundID        string
+	Txid           []byte
+	AggNonce       []byte
+	CreationTime   int64
+	LastUpdateTime int64
+}
+
+type ClientRoundEffect struct {
+	ID             string
+	RoundID        string
+	EffectType     string
+	Status         string
+	IdempotencyKey string
+	Attempts       int32
+	MaxAttempts    int32
+	NextAttemptAt  int64
+	ClaimOwner     sql.NullString
+	ClaimToken     sql.NullString
+	ClaimUntil     sql.NullInt64
+	LastError      sql.NullString
+	CreatedAt      int64
+	UpdatedAt      int64
+	DoneAt         sql.NullInt64
+}
+
+type ClientRoundForfeitRequestState struct {
+	RoundID                string
+	VtxoOutpointHash       []byte
+	VtxoOutpointIndex      int32
+	ConnectorOutpointHash  []byte
+	ConnectorOutpointIndex int32
+	ConnectorPkScript      []byte
+	ConnectorAmount        int64
+	VtxoAmount             int64
+	ServerForfeitPkScript  []byte
+	ForfeitSpend           []byte
+	CreationTime           int64
+	LastUpdateTime         int64
+}
+
+type ClientRoundForfeitSigState struct {
+	RoundID           string
+	VtxoOutpointHash  []byte
+	VtxoOutpointIndex int32
+	ForfeitTx         []byte
+	ClientSig         []byte
+	SpendPath         []byte
+	CreationTime      int64
+	LastUpdateTime    int64
+}
+
+type ClientRoundNonceState struct {
+	RoundID        string
+	SigningKey     []byte
+	Txid           []byte
+	PubNonce       []byte
+	SecNonce       []byte
+	CreationTime   int64
+	LastUpdateTime int64
+}
+
+type ClientRoundPartialSigState struct {
+	RoundID        string
+	SigningKey     []byte
+	Txid           []byte
+	PartialSig     []byte
+	CreationTime   int64
+	LastUpdateTime int64
+}
+
+type ClientRoundPendingLeaveQuote struct {
+	RoundID    string
+	QuoteIndex int32
+	PkScript   []byte
+	AmountSat  int64
+}
+
+type ClientRoundPendingQuote struct {
+	RoundID        string
+	QuoteID        []byte
+	SealPass       int64
+	OperatorFeeSat int64
+	QuoteExpiresAt int64
+	RejectReason   int32
+	CreationTime   int64
+	LastUpdateTime int64
+}
+
+type ClientRoundPendingVtxoQuote struct {
+	RoundID      string
+	QuoteIndex   int32
+	PkScript     []byte
+	AmountSat    int64
+	RecipientKey []byte
+}
+
 type ClientTreeTxid struct {
 	Txid        []byte
 	RoundID     string

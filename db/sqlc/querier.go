@@ -10,6 +10,7 @@ import (
 )
 
 type Querier interface {
+	ClaimClientRoundEffect(ctx context.Context, arg ClaimClientRoundEffectParams) (ClientRoundEffect, error)
 	ClaimMailboxEgress(ctx context.Context, arg ClaimMailboxEgressParams) (MailboxEgress, error)
 	ClaimOORClientEffect(ctx context.Context, arg ClaimOORClientEffectParams) (OorClientEffect, error)
 	ClaimUnrollEffect(ctx context.Context, arg ClaimUnrollEffectParams) (UnrollEffect, error)
@@ -23,6 +24,9 @@ type Querier interface {
 	// CountVTXOsByStatus returns the count of VTXOs with the specified status.
 	CountVTXOsByStatus(ctx context.Context, status int32) (int64, error)
 	CountWalletUTXOLog(ctx context.Context) (int64, error)
+	DeleteClientRoundPendingLeaveQuotes(ctx context.Context, roundID string) error
+	DeleteClientRoundPendingQuote(ctx context.Context, roundID string) error
+	DeleteClientRoundPendingVTXOQuotes(ctx context.Context, roundID string) error
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
 	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
 	DeleteUnrollTxProgressForJob(ctx context.Context, arg DeleteUnrollTxProgressForJobParams) error
@@ -42,6 +46,13 @@ type Querier interface {
 	GetBoardingSweepByInput(ctx context.Context, arg GetBoardingSweepByInputParams) (BoardingSweep, error)
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
 	GetClientAccountBalance(ctx context.Context, accountID string) (int64, error)
+	GetClientRoundAggNonceState(ctx context.Context, roundID string) ([]ClientRoundAggNonceState, error)
+	GetClientRoundForfeitRequestState(ctx context.Context, roundID string) ([]ClientRoundForfeitRequestState, error)
+	GetClientRoundForfeitSigState(ctx context.Context, roundID string) ([]ClientRoundForfeitSigState, error)
+	GetClientRoundNonceState(ctx context.Context, roundID string) ([]ClientRoundNonceState, error)
+	GetClientRoundPartialSigState(ctx context.Context, roundID string) ([]ClientRoundPartialSigState, error)
+	GetClientRoundPendingLeaveQuotes(ctx context.Context, roundID string) ([]ClientRoundPendingLeaveQuote, error)
+	GetClientRoundPendingVTXOQuotes(ctx context.Context, roundID string) ([]ClientRoundPendingVtxoQuote, error)
 	GetClientTreeByTxid(ctx context.Context, txid []byte) (RoundClientTree, error)
 	GetClientTreeTxidInfo(ctx context.Context, txid []byte) (ClientTreeTxid, error)
 	GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxidsParams) ([]GetClientTreeTxidsRow, error)
@@ -94,11 +105,25 @@ type Querier interface {
 	//   - idx_client_ledger_idempotent_session covers per-OOR-session events
 	//   - idx_client_ledger_idempotent_key covers outpoint-keyed events
 	//     (unilateral exit send leg + fee leg share the same key)
-	// A redelivered durable-actor message that reprocesses an entry
-	// already persisted in a committed tx becomes a silent no-op
-	// instead of surfacing a constraint violation that would drive
-	// an infinite nack-and-retry loop on a permanent condition.
+	// A redelivered effect that reprocesses an entry already persisted in
+	// a committed tx becomes a silent no-op instead of surfacing a
+	// constraint violation that would drive an infinite retry loop on a
+	// permanent condition.
 	InsertClientLedgerEntry(ctx context.Context, arg InsertClientLedgerEntryParams) error
+	// Client round aggregate nonce state queries.
+	InsertClientRoundAggNonceState(ctx context.Context, arg InsertClientRoundAggNonceStateParams) error
+	// Client round effect queries.
+	InsertClientRoundEffect(ctx context.Context, arg InsertClientRoundEffectParams) error
+	// Client round expected VTXO forfeit request queries.
+	InsertClientRoundForfeitRequestState(ctx context.Context, arg InsertClientRoundForfeitRequestStateParams) error
+	// Client round collected VTXO forfeit signature queries.
+	InsertClientRoundForfeitSigState(ctx context.Context, arg InsertClientRoundForfeitSigStateParams) error
+	// Client round nonce state queries.
+	InsertClientRoundNonceState(ctx context.Context, arg InsertClientRoundNonceStateParams) error
+	// Client round partial signature state queries.
+	InsertClientRoundPartialSigState(ctx context.Context, arg InsertClientRoundPartialSigStateParams) error
+	InsertClientRoundPendingLeaveQuote(ctx context.Context, arg InsertClientRoundPendingLeaveQuoteParams) error
+	InsertClientRoundPendingVTXOQuote(ctx context.Context, arg InsertClientRoundPendingVTXOQuoteParams) error
 	// Client tree txids queries.
 	InsertClientTreeTxid(ctx context.Context, arg InsertClientTreeTxidParams) error
 	InsertMailboxEgress(ctx context.Context, arg InsertMailboxEgressParams) error
@@ -145,6 +170,8 @@ type Querier interface {
 	ListClientAccounts(ctx context.Context) ([]Account, error)
 	ListClientLedgerEntries(ctx context.Context, arg ListClientLedgerEntriesParams) ([]LedgerEntry, error)
 	ListClientLedgerEntriesByType(ctx context.Context, arg ListClientLedgerEntriesByTypeParams) ([]LedgerEntry, error)
+	ListClientRoundPendingQuotes(ctx context.Context) ([]ClientRoundPendingQuote, error)
+	ListDueClientRoundEffectIDs(ctx context.Context, arg ListDueClientRoundEffectIDsParams) ([]string, error)
 	ListDueMailboxEgressIDs(ctx context.Context, arg ListDueMailboxEgressIDsParams) ([]string, error)
 	ListDueOORClientEffectIDs(ctx context.Context, arg ListDueOORClientEffectIDsParams) ([]string, error)
 	ListDueUnrollEffectIDs(ctx context.Context, arg ListDueUnrollEffectIDsParams) ([]string, error)
@@ -217,6 +244,7 @@ type Querier interface {
 	MarkBoardingSweepInputStatus(ctx context.Context, arg MarkBoardingSweepInputStatusParams) error
 	MarkBoardingSweepInputsStatus(ctx context.Context, arg MarkBoardingSweepInputsStatusParams) error
 	MarkBoardingSweepStatus(ctx context.Context, arg MarkBoardingSweepStatusParams) error
+	MarkClientRoundEffectDone(ctx context.Context, arg MarkClientRoundEffectDoneParams) error
 	MarkMailboxEgressSent(ctx context.Context, arg MarkMailboxEgressSentParams) error
 	MarkOORClientEffectDone(ctx context.Context, arg MarkOORClientEffectDoneParams) error
 	MarkUnrollEffectDone(ctx context.Context, arg MarkUnrollEffectDoneParams) error
@@ -232,6 +260,8 @@ type Querier interface {
 	// Also sets status = 4 (Spent) to keep status in sync with spent flag.
 	MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) error
 	MarkWalletEffectDone(ctx context.Context, arg MarkWalletEffectDoneParams) error
+	ReleaseClientRoundEffectForRetry(ctx context.Context, arg ReleaseClientRoundEffectForRetryParams) error
+	ReleaseExpiredClientRoundEffectClaims(ctx context.Context, arg ReleaseExpiredClientRoundEffectClaimsParams) error
 	ReleaseExpiredMailboxEgressClaims(ctx context.Context, arg ReleaseExpiredMailboxEgressClaimsParams) error
 	ReleaseExpiredOORClientEffectClaims(ctx context.Context, arg ReleaseExpiredOORClientEffectClaimsParams) error
 	ReleaseExpiredUnrollEffectClaims(ctx context.Context, arg ReleaseExpiredUnrollEffectClaimsParams) error
@@ -249,6 +279,8 @@ type Querier interface {
 	// method for state transitions that don't require additional data.
 	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
+	// Client round pending quote queries.
+	UpsertClientRoundPendingQuote(ctx context.Context, arg UpsertClientRoundPendingQuoteParams) error
 	UpsertMailboxIngressCursor(ctx context.Context, arg UpsertMailboxIngressCursorParams) error
 	UpsertOORClientArkArtifact(ctx context.Context, arg UpsertOORClientArkArtifactParams) error
 	UpsertOORClientCheckpoint(ctx context.Context, arg UpsertOORClientCheckpointParams) error

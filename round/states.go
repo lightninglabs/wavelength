@@ -548,6 +548,11 @@ type InputSigSentState struct {
 	// round confirms, ForfeitConfirmedToVTXO messages are emitted for each
 	// so old VTXO actors can transition to the Forfeited terminal state.
 	ForfeitedVTXOs []wire.OutPoint
+
+	// ForfeitTxs contains signed VTXO forfeit transactions collected before
+	// this checkpoint. It is persisted as a separate fact table so server
+	// submission can be retried after restart.
+	ForfeitTxs map[wire.OutPoint]*types.ForfeitTxSig
 }
 
 func (s *InputSigSentState) String() string {

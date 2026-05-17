@@ -1,3 +1,4 @@
+//nolint:ll
 package round
 
 import (
@@ -5,14 +6,17 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -35,6 +39,45 @@ type ClientStateTransition = protofsm.StateTransition[
 // ClientEmittedEvent is a type alias for the verbose protofsm.EmittedEvent type
 // used when state transitions emit new events or outbox messages.
 type ClientEmittedEvent = protofsm.EmittedEvent[ClientEvent, ClientOutMsg]
+
+// RoundEffectType identifies restart-safe work derived from persisted round
+// facts. Effect handlers reconstruct concrete messages from SQL instead of
+// storing opaque payloads.
+type RoundEffectType string
+
+const (
+	// RoundEffectSendNonces sends persisted MuSig2 public nonces to the
+	// operator.
+	RoundEffectSendNonces RoundEffectType = "send_nonces"
+
+	// RoundEffectSendBoardingSigs sends persisted boarding input
+	// signatures to the operator.
+	RoundEffectSendBoardingSigs RoundEffectType = "send_boarding_sigs"
+
+	// RoundEffectSendPartialSigs sends persisted MuSig2 partial signatures
+	// to the operator.
+	RoundEffectSendPartialSigs RoundEffectType = "send_partial_sigs"
+
+	// RoundEffectSendVTXOForfeitSigs sends persisted VTXO forfeit
+	// signatures to the operator.
+	RoundEffectSendVTXOForfeitSigs RoundEffectType = "send_vtxo_forfeit_sigs"
+
+	// RoundEffectRequestVTXOForfeitSigs asks local VTXO actors to produce
+	// forfeit signatures for a refresh/leave round.
+	RoundEffectRequestVTXOForfeitSigs RoundEffectType = "request_vtxo_forfeit_sigs"
+
+	// RoundEffectRegisterConfirmation registers commitment transaction
+	// confirmation monitoring.
+	RoundEffectRegisterConfirmation RoundEffectType = "register_confirmation"
+)
+
+// RoundEffect is a claimed SQL effect row.
+type RoundEffect struct {
+	ID         string
+	RoundID    RoundID
+	EffectType RoundEffectType
+	ClaimToken string
+}
 
 // ClientStateMachine is a type alias for the client round FSM.
 type ClientStateMachine = protofsm.StateMachine[
@@ -152,6 +195,42 @@ func (id RoundID) IsTemp() bool {
 // SignerKey is the 33-byte compressed public key used to identify a signer
 // in MuSig2 sessions and client tree mappings.
 type SignerKey = [33]byte
+
+// SigningNonceState is the SQL-persisted MuSig2 local nonce material for one
+// signer transaction in a round.
+type SigningNonceState struct {
+	SignerKey SignerKey
+	TxID      tree.TxID
+	PubNonce  tree.Musig2PubNonce
+	SecNonce  tree.Musig2SecNonce
+}
+
+// AggregatedNonceState is the SQL-persisted operator aggregate nonce for one
+// tree transaction in a round.
+type AggregatedNonceState struct {
+	TxID     tree.TxID
+	AggNonce tree.Musig2PubNonce
+}
+
+// PartialSignatureState is the SQL-persisted MuSig2 partial signature for one
+// signer transaction in a round.
+type PartialSignatureState struct {
+	SignerKey  SignerKey
+	TxID       tree.TxID
+	PartialSig *musig2.PartialSignature
+}
+
+// ForfeitRequestState is the SQL-persisted request fact used to re-ask a local
+// VTXO actor for its forfeit signature after restart.
+type ForfeitRequestState struct {
+	VTXOOutpoint          wire.OutPoint
+	ConnectorOutpoint     wire.OutPoint
+	ConnectorPkScript     []byte
+	ConnectorAmount       int64
+	VTXOAmount            int64
+	ServerForfeitPkScript []byte
+	ForfeitSpend          *arkscript.SpendPath
+}
 
 // SigningKeyHex is an alias for SignerKey, compatible with the server's
 // route.Vertex type which is also a 33-byte compressed public key.
@@ -396,7 +475,80 @@ type Round struct {
 // At the "point of no return" (after sending partial signatures), the
 // FSM state must be checkpointed to allow recovery if the server
 // broadcasts the commitment transaction.
+//
+//nolint:interfacebloat
 type RoundStore interface {
+	// SaveSigningNonces persists all local MuSig2 nonce material required
+	// to recreate signing sessions after SubmitNoncesRequest has been
+	// emitted. The round row and client trees are persisted in the same
+	// transaction so the nonce rows are anchored to reconstructable domain
+	// state.
+	SaveSigningNonces(ctx context.Context, round *Round,
+		clientTrees map[SignerKey]*tree.Tree,
+		nonces []SigningNonceState) error
+
+	// LoadSigningNonces loads local MuSig2 nonce material for a round.
+	// Implementations return an empty slice when no nonces have been
+	// persisted yet.
+	LoadSigningNonces(ctx context.Context,
+		roundID RoundID) ([]SigningNonceState, error)
+
+	// SaveAggregatedNonces persists aggregate nonces received from the
+	// operator. On restart, the actor rebuilds local signing sessions from
+	// persisted secret nonces, then feeds these aggregate nonces back
+	// through the FSM to regenerate partial signatures.
+	SaveAggregatedNonces(ctx context.Context, roundID RoundID,
+		nonces map[tree.TxID]tree.Musig2PubNonce) error
+
+	// LoadAggregatedNonces loads persisted aggregate nonces for a round.
+	LoadAggregatedNonces(ctx context.Context,
+		roundID RoundID) (map[tree.TxID]tree.Musig2PubNonce, error)
+
+	// SavePartialSignatures persists generated MuSig2 partial signatures
+	// and records the restart-safe effect that sends them to the server.
+	SavePartialSignatures(ctx context.Context, roundID RoundID,
+		signatures map[SignerKey]map[tree.TxID]*musig2.PartialSignature) error
+
+	// LoadPartialSignatures loads persisted MuSig2 partial signatures for
+	// a round.
+	LoadPartialSignatures(ctx context.Context,
+		roundID RoundID) (
+		map[SignerKey]map[tree.TxID]*musig2.PartialSignature, error)
+
+	// SaveForfeitRequests persists expected VTXO forfeit requests and the
+	// restart-safe effect that asks local VTXO actors to sign them.
+	SaveForfeitRequests(ctx context.Context, roundID RoundID,
+		requests []ForfeitRequestState) error
+
+	// LoadForfeitRequests loads expected VTXO forfeit requests.
+	LoadForfeitRequests(ctx context.Context,
+		roundID RoundID) ([]ForfeitRequestState, error)
+
+	// SaveCollectedForfeitSignature persists one VTXO actor response while
+	// the round remains in forfeit collection.
+	SaveCollectedForfeitSignature(ctx context.Context, roundID RoundID,
+		response *ForfeitSignatureResponse) error
+
+	// LoadVTXOForfeitSignatures loads persisted VTXO forfeit signatures
+	// collected from VTXO actors.
+	LoadVTXOForfeitSignatures(ctx context.Context,
+		roundID RoundID) (map[wire.OutPoint]*types.ForfeitTxSig, error)
+
+	// SavePendingQuote persists an out-of-order server quote before the
+	// actor acknowledges the envelope. The matching RoundJoined event will
+	// drain and delete it after re-keying the temp FSM.
+	SavePendingQuote(ctx context.Context,
+		quote *JoinRoundQuoteReceived) error
+
+	// LoadPendingQuotes loads acknowledged out-of-order quotes that still
+	// need a matching RoundJoined event.
+	LoadPendingQuotes(ctx context.Context) (
+		map[RoundID]*JoinRoundQuoteReceived, error)
+
+	// DeletePendingQuote deletes a pending quote after the actor has
+	// delivered it to the re-keyed FSM.
+	DeletePendingQuote(ctx context.Context, roundID RoundID) error
+
 	// CommitState atomically persists both the round data and FSM state.
 	// This should be called at the "point of no return" when the client
 	// has sent partial signatures and the server may broadcast.
@@ -405,6 +557,23 @@ type RoundStore interface {
 	// tree). The state parameter is the current FSM state. Both are
 	// persisted atomically so restart can recover to the exact state.
 	CommitState(ctx context.Context, round *Round, state ClientState) error
+
+	// ClaimDueRoundEffects claims restart-safe effects whose facts are
+	// already committed in SQL.
+	ClaimDueRoundEffects(ctx context.Context, owner string, limit int,
+		lease time.Duration) ([]RoundEffect, error)
+
+	// MarkRoundEffectDone marks a claimed effect complete.
+	MarkRoundEffectDone(ctx context.Context, id, claimToken string) error
+
+	// ReleaseRoundEffectForRetry releases a claimed effect back to pending
+	// after a transient failure, or dead after its max attempts.
+	ReleaseRoundEffectForRetry(ctx context.Context, id, claimToken string,
+		retryAfter time.Duration, failure error) error
+
+	// ReleaseExpiredRoundEffectClaims releases stale claims so a restarted
+	// actor can retry them.
+	ReleaseExpiredRoundEffectClaims(ctx context.Context) error
 
 	// FetchState retrieves a round and its FSM state by round ID. Returns
 	// (round, state, err). Both round data and FSM state are returned

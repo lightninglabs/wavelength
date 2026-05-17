@@ -1,3 +1,4 @@
+//nolint:ll
 package round
 
 import (
@@ -62,6 +63,41 @@ func selfLoop(state ClientState) *ClientStateTransition {
 	return &ClientStateTransition{
 		NextState: state,
 	}
+}
+
+func signingNonceRowsBySigner(
+	rows []SigningNonceState) map[SignerKey]map[tree.TxID]tree.Musig2Nonces {
+
+	bySigner := make(map[SignerKey]map[tree.TxID]tree.Musig2Nonces)
+	for _, row := range rows {
+		txNonces := bySigner[row.SignerKey]
+		if txNonces == nil {
+			txNonces = make(map[tree.TxID]tree.Musig2Nonces)
+			bySigner[row.SignerKey] = txNonces
+		}
+
+		txNonces[row.TxID] = tree.Musig2Nonces{
+			PubNonce: row.PubNonce,
+			SecNonce: row.SecNonce,
+		}
+	}
+
+	return bySigner
+}
+
+func appendSigningNonceRows(rows []SigningNonceState, signerKey SignerKey,
+	nonces map[tree.TxID]tree.Musig2Nonces) []SigningNonceState {
+
+	for txID, nonce := range nonces {
+		rows = append(rows, SigningNonceState{
+			SignerKey: signerKey,
+			TxID:      txID,
+			PubNonce:  nonce.PubNonce,
+			SecNonce:  nonce.SecNonce,
+		})
+	}
+
+	return rows
 }
 
 // signBoardingInputs signs all boarding inputs for a commitment transaction.
@@ -1613,6 +1649,8 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 }
 
 // ProcessEvent for CommitmentTxValidatedState.
+//
+//nolint:funlen
 func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
@@ -1647,31 +1685,45 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 			forfeitReqs := forfeitRequestMap(
 				s.Intents.Forfeits,
 			)
-			var outbox []ClientOutMsg
+			requests := make(
+				[]ForfeitRequestState, 0,
+				len(s.ForfeitMappings),
+			)
 			for vtxoOutpoint, info := range s.ForfeitMappings {
-				connOut := info.ConnectorOutpoint
-				connScript := info.ConnectorPkScript
-				connAmt := info.ConnectorAmount
-				forfeitScript := env.OperatorTerms.ForfeitScript
-				roundIDStr := s.RoundID.String()
 				req := forfeitReqs[vtxoOutpoint]
 
-				msg := &ForfeitRequestToVTXO{
-					VTXOOutpoint:          vtxoOutpoint,
-					RoundID:               roundIDStr,
-					ConnectorOutpoint:     connOut,
-					ConnectorPkScript:     connScript,
-					ConnectorAmount:       connAmt,
-					ServerForfeitPkScript: forfeitScript,
-					ForfeitSpend:          req.ForfeitSpend,
-				}
-				outbox = append(outbox, msg)
+				requests = append(requests, ForfeitRequestState{
+					VTXOOutpoint:      vtxoOutpoint,
+					ConnectorOutpoint: info.ConnectorOutpoint,
+					ConnectorPkScript: info.ConnectorPkScript,
+					ConnectorAmount:   info.ConnectorAmount,
+					VTXOAmount: int64(
+						info.VTXOAmount,
+					),
+					ServerForfeitPkScript: env.
+						OperatorTerms.
+						ForfeitScript,
+					ForfeitSpend: req.ForfeitSpend,
+				})
 			}
 
+			opCtx := context.WithoutCancel(ctx)
+			err := env.RoundStore.SaveForfeitRequests(
+				opCtx, s.RoundID, requests,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("save forfeit "+
+					"requests: %w", err)
+			}
+
+			var outbox []ClientOutMsg
 			outbox = append(outbox, &StartTimeoutReq{
 				RoundID:  s.RoundID,
 				Phase:    TimeoutPhaseForfeitCollection,
 				Duration: env.ForfeitCollectionTimeout,
+			})
+			outbox = append(outbox, &RoundCheckpointedNotification{
+				RoundID: s.RoundID,
 			})
 
 			// Transition directly to forfeit collection.
@@ -1697,11 +1749,20 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 			}, nil
 		}
 
+		persistedRows, err := env.RoundStore.LoadSigningNonces(
+			ctx, s.RoundID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("load signing nonces: %w", err)
+		}
+		persistedNonces := signingNonceRowsBySigner(persistedRows)
+
 		// At this point, all the basic validation checks have passed.
 		// So now we'll generate a musig2 session to create nonces to
 		// sign the VTXO tree. Each VTXO that we created will
 		// effectively be a new musig session.
 		musig2Sessions := make(map[SignerKey]*tree.SignerSession)
+		nonceRows := make([]SigningNonceState, 0)
 		for _, vtxoReq := range s.Intents.VTXOs {
 			signerKey := NewSignerKey(
 				vtxoReq.SigningKey.PubKey,
@@ -1727,11 +1788,24 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 					signerKey[:], err)
 			}
 
+			localNonces := persistedNonces[signerKey]
+			if len(localNonces) == 0 {
+				localNonces, err = tree.GenerateSignerNonces(
+					vtxoReq.SigningKey.PubKey,
+					clientTree.Root,
+				)
+				if err != nil {
+					return nil, fmt.Errorf("generate "+
+						"signing nonces for client "+
+						"%x: %w", signerKey[:], err)
+				}
+			}
+
 			// TODO(roasbeef): actually use the interface
 			// in front of this?
-			session, err := tree.NewSignerSession(
+			session, err := tree.NewSignerSessionWithNonces(
 				env.Wallet, &vtxoReq.SigningKey, sweepTweak,
-				prevOutFetcher, clientTree.Root,
+				prevOutFetcher, clientTree.Root, localNonces,
 			)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create "+
@@ -1740,6 +1814,9 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 			}
 
 			musig2Sessions[signerKey] = session
+			nonceRows = appendSigningNonceRows(
+				nonceRows, signerKey, localNonces,
+			)
 		}
 
 		// Now that we have all our sessions created, we'll have each
@@ -1751,6 +1828,20 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 		for signerKey, session := range musig2Sessions {
 			nonces := session.GetNonces()
 			allNonces[signerKey] = nonces
+		}
+
+		roundSnapshot := &Round{
+			RoundID:       s.RoundID,
+			StartHeight:   env.StartHeight,
+			CommitmentTx:  fn.Some(s.CommitmentTx),
+			VTXOTreePaths: fn.Some(s.VTXOTreePaths),
+			Intents:       s.Intents.Clone(),
+		}
+		err = env.RoundStore.SaveSigningNonces(
+			ctx, roundSnapshot, s.ClientTrees, nonceRows,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("save signing nonces: %w", err)
 		}
 
 		env.Log.InfoS(ctx, "Generated MuSig2 nonces, sending to server",
@@ -1836,6 +1927,15 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(ctx context.Context,
 
 			// Already have this signature, ignore duplicate.
 			return &ClientStateTransition{NextState: s}, nil
+		}
+
+		opCtx := context.WithoutCancel(ctx)
+		err = env.RoundStore.SaveCollectedForfeitSignature(
+			opCtx, s.RoundID, evt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("save collected forfeit "+
+				"signature: %w", err)
 		}
 
 		// Add to collected signatures in an immutable way. FSM states
@@ -1954,11 +2054,10 @@ func (s *ForfeitSignaturesCollectingState) finishForfeitCollection(
 		return nil, fmt.Errorf("sign boarding inputs: %w", err)
 	}
 
-	outboxMsgs := s.forfeitCollectionOutbox(
-		env, forfeitTxs, boardingInputSigs,
-	)
+	outboxMsgs := s.forfeitCollectionOutbox()
 	round := s.checkpointRound(env.StartHeight)
 	nextState := s.inputSigSentState(boardingInputSigs, forfeitedVTXOs)
+	nextState.ForfeitTxs = forfeitTxs
 
 	// Checkpointing may outlive the triggering actor request, so
 	// use a detached context for the local store write.
@@ -1986,50 +2085,13 @@ func (s *ForfeitSignaturesCollectingState) finishForfeitCollection(
 	}, nil
 }
 
-func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
-	env *ClientEnvironment,
-	forfeitTxs map[wire.OutPoint]*types.ForfeitTxSig,
-	boardingInputSigs []*types.BoardingInputSignature,
-) []ClientOutMsg {
-
-	txid := s.CommitmentTx.UnsignedTx.TxHash()
-	callerID := fmt.Sprintf("commitment-%s", txid.String())
-
-	var pkScript []byte
-	if len(s.CommitmentTx.UnsignedTx.TxOut) > 0 {
-		pkScript = s.CommitmentTx.UnsignedTx.TxOut[0].PkScript
-	}
-
-	outboxMsgs := []ClientOutMsg{
+func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox() []ClientOutMsg {
+	return []ClientOutMsg{
 		&CancelTimeoutReq{
 			RoundID: s.RoundID,
 			Phase:   TimeoutPhaseForfeitCollection,
 		},
-		&SubmitVTXOForfeitSigsToServer{
-			RoundID:    s.RoundID,
-			ForfeitTxs: forfeitTxs,
-		},
-		&RegisterConfirmationRequest{
-			CallerID:    callerID,
-			Txid:        &txid,
-			PkScript:    pkScript,
-			TargetConfs: env.OperatorTerms.MinConfirmations,
-			HeightHint:  env.StartHeight,
-		},
 	}
-
-	if len(boardingInputSigs) == 0 {
-		return outboxMsgs
-	}
-
-	return append(
-		outboxMsgs[:2], append([]ClientOutMsg{
-			&SubmitForfeitSigRequest{
-				RoundID:    s.RoundID,
-				Signatures: boardingInputSigs,
-			},
-		}, outboxMsgs[2:]...)...,
-	)
 }
 
 func (s *ForfeitSignaturesCollectingState) checkpointRound(
@@ -2088,6 +2150,12 @@ func (s *NoncesSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		//
 		// The event now contains properly typed nonces directly.
 		aggNoncesMap := evt.AggNonces
+
+		if err := env.RoundStore.SaveAggregatedNonces(
+			ctx, s.RoundID, aggNoncesMap,
+		); err != nil {
+			return nil, fmt.Errorf("save aggregate nonces: %w", err)
+		}
 
 		// With the nonces grouped, we need to register the nonces with
 		// each client session.
@@ -2175,21 +2243,24 @@ func (s *NoncesAggregatedState) ProcessEvent(ctx context.Context,
 			allSignatures[signerKey] = partialSigs
 		}
 
-		// Create a single message with all signatures grouped by signer
-		// key.
-		submitPartialSigsMsg := &SubmitPartialSigRequest{
-			RoundID:    s.RoundID,
-			Signatures: allSignatures,
+		opCtx := context.WithoutCancel(ctx)
+		err := env.RoundStore.SavePartialSignatures(
+			opCtx, s.RoundID, allSignatures,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("save partial signatures: %w",
+				err)
 		}
 
-		env.Log.InfoS(ctx, "Sending partial signatures to server",
+		env.Log.InfoS(ctx, "Persisted partial signatures",
 			slog.String("round_id", s.RoundID.String()),
 			slog.Int("signer_key_count", len(allSignatures)),
 		)
 
-		// Partial MuSig2 signatures have been generated using the
-		// aggregated nonces. Send them to the server for signature
-		// aggregation.
+		checkpointNotify := &RoundCheckpointedNotification{
+			RoundID: s.RoundID,
+		}
+
 		return &ClientStateTransition{
 			NextState: &PartialSigsSentState{
 				RoundID:              s.RoundID,
@@ -2202,7 +2273,7 @@ func (s *NoncesAggregatedState) ProcessEvent(ctx context.Context,
 				ForfeitMappings:      s.ForfeitMappings,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: []ClientOutMsg{submitPartialSigsMsg},
+				Outbox: []ClientOutMsg{checkpointNotify},
 			}),
 		}, nil
 
@@ -2320,45 +2391,7 @@ func (s *PartialSigsSentState) ProcessEvent(ctx context.Context,
 			return nil, fmt.Errorf("sign boarding inputs: %w", err)
 		}
 
-		// Create a single forfeit signature request with all
-		// signatures.
-		forfeitSigReq := &SubmitForfeitSigRequest{
-			RoundID:    s.RoundID,
-			Signatures: boardingInputSigs,
-		}
-
 		txid := s.CommitmentTx.UnsignedTx.TxHash()
-		callerID := fmt.Sprintf("commitment-%s", txid.String())
-
-		// Get pkScript from the first output for LND confirmation
-		// tracking.
-		commitTx := s.CommitmentTx.UnsignedTx
-		var pkScript []byte
-		if len(commitTx.TxOut) > 0 {
-			pkScript = commitTx.TxOut[0].PkScript
-		}
-
-		env.Log.InfoS(ctx, "Building RegisterConfirmationRequest",
-			slog.String("round_id", s.RoundID.String()),
-			slog.String("txid", txid.String()),
-			slog.Int("num_outputs", len(commitTx.TxOut)),
-			slog.Int("pkscript_len", len(pkScript)),
-			slog.Int(
-				"target_confs",
-				int(env.OperatorTerms.MinConfirmations),
-			),
-		)
-
-		outboxMsgs := []ClientOutMsg{
-			forfeitSigReq,
-			&RegisterConfirmationRequest{
-				CallerID:    callerID,
-				Txid:        &txid,
-				PkScript:    pkScript,
-				TargetConfs: env.OperatorTerms.MinConfirmations,
-				HeightHint:  env.StartHeight,
-			},
-		}
 
 		// Checkpoint the round state at the "point of no return".
 		// After sending boarding input signatures, the server may
@@ -2422,7 +2455,7 @@ func (s *PartialSigsSentState) ProcessEvent(ctx context.Context,
 		return &ClientStateTransition{
 			NextState: nextState,
 			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: append(outboxMsgs, checkpointNotify),
+				Outbox: []ClientOutMsg{checkpointNotify},
 			}),
 		}, nil
 
@@ -2451,25 +2484,34 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 	// Build forfeit request messages for each VTXO being refreshed. The
 	// forfeit script is a static operator property from OperatorTerms.
 	forfeitReqs := forfeitRequestMap(s.Intents.Forfeits)
-	var outbox []ClientOutMsg
+	requests := make([]ForfeitRequestState, 0, len(s.ForfeitMappings))
 	for vtxoOutpoint, info := range s.ForfeitMappings {
 		req := forfeitReqs[vtxoOutpoint]
-		msg := &ForfeitRequestToVTXO{
+		requests = append(requests, ForfeitRequestState{
 			VTXOOutpoint:          vtxoOutpoint,
-			RoundID:               s.RoundID.String(),
 			ConnectorOutpoint:     info.ConnectorOutpoint,
 			ConnectorPkScript:     info.ConnectorPkScript,
 			ConnectorAmount:       info.ConnectorAmount,
+			VTXOAmount:            int64(info.VTXOAmount),
 			ServerForfeitPkScript: env.OperatorTerms.ForfeitScript,
 			ForfeitSpend:          req.ForfeitSpend,
-		}
-		outbox = append(outbox, msg)
+		})
 	}
 
+	opCtx := context.WithoutCancel(ctx)
+	err := env.RoundStore.SaveForfeitRequests(opCtx, s.RoundID, requests)
+	if err != nil {
+		return nil, fmt.Errorf("save forfeit requests: %w", err)
+	}
+
+	var outbox []ClientOutMsg
 	outbox = append(outbox, &StartTimeoutReq{
 		RoundID:  s.RoundID,
 		Phase:    TimeoutPhaseForfeitCollection,
 		Duration: env.ForfeitCollectionTimeout,
+	})
+	outbox = append(outbox, &RoundCheckpointedNotification{
+		RoundID: s.RoundID,
 	})
 
 	env.Log.InfoS(ctx, "Transitioning to forfeit collection",
