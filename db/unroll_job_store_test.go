@@ -163,3 +163,81 @@ func TestUnrollJobStoreUpsertPersistsNamedArtifacts(t *testing.T) {
 	require.Len(t, job.Watches, 1)
 	require.Equal(t, "sweep", job.Watches[0].Role)
 }
+
+func TestUnrollJobStorePersistsAndClaimsEffects(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newUnrollJobStoreForTest(t)
+	target := wire.OutPoint{
+		Hash: chainhash.Hash{
+			0x55,
+			0x05,
+		},
+		Index: 5,
+	}
+	proofTxid := bytes.Repeat([]byte{0xC1}, chainhash.HashSize)
+	deferredTxid := bytes.Repeat([]byte{0xD2}, chainhash.HashSize)
+
+	err := store.UpsertJob(ctx, UnrollJobRecord{
+		TargetOutpoint: target,
+		State:          "materializing",
+		Trigger:        "manual",
+		PlannerState:   []byte{0x01},
+		TxProgress: []UnrollTxProgressRecord{
+			{
+				Txid:   proofTxid,
+				Role:   "proof",
+				Status: "in_flight",
+			},
+			{
+				Txid:   deferredTxid,
+				Role:   "deferred_checkpoint",
+				Status: "ready",
+			},
+		},
+		CreatedAt: time.Unix(50, 0),
+	})
+	require.NoError(t, err)
+
+	claimed, err := store.ClaimDueEffects(ctx, "worker-a", 10, time.Minute)
+	require.NoError(t, err)
+
+	effectTypes := make(map[string]struct{}, len(claimed))
+	for _, effect := range claimed {
+		effectTypes[effect.EffectType] = struct{}{}
+		require.Equal(t, target, effect.TargetOutpoint)
+		require.True(t, effect.ClaimToken.Valid)
+	}
+	require.Contains(t, effectTypes, "subscribe_blocks")
+	require.Contains(t, effectTypes, "watch_target_spend")
+	require.Contains(t, effectTypes, "ensure_tx_confirmed")
+	require.Contains(t, effectTypes, "watch_deferred_checkpoint")
+
+	claimedAgain, err := store.ClaimDueEffects(
+		ctx, "worker-b", 10, time.Minute,
+	)
+	require.NoError(t, err)
+	require.Empty(t, claimedAgain)
+
+	require.NoError(
+		t,
+		store.ReleaseEffectForRetry(
+			ctx, claimed[0].ID, claimed[0].ClaimToken.String,
+			time.Nanosecond, assertErr("temporary"),
+		),
+	)
+
+	require.Eventually(t, func() bool {
+		retry, err := store.ClaimDueEffects(
+			ctx, "worker-c", 10, time.Minute,
+		)
+		if err != nil || len(retry) != 1 {
+			return false
+		}
+
+		return store.MarkEffectDone(
+			ctx, retry[0].ID, retry[0].ClaimToken.String,
+		) == nil
+	}, time.Second, 10*time.Millisecond)
+}

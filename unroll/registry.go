@@ -257,6 +257,9 @@ func (r *registryBehavior) Receive(ctx context.Context,
 	case *persistRecordResultMsg:
 		return r.handlePersistRecordResult(ctx, req)
 
+	case *replayUnrollEffectMsg:
+		return r.handleReplayEffect(ctx, req)
+
 	default:
 		return fn.Err[RegistryResp](
 			fmt.Errorf("unknown registry message: %T", msg),
@@ -782,6 +785,55 @@ func (r *registryBehavior) restoreNonTerminal(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (r *registryBehavior) handleReplayEffect(ctx context.Context,
+	req *replayUnrollEffectMsg) fn.Result[RegistryResp] {
+
+	record, err := r.cfg.Store.GetRecord(ctx, req.Outpoint)
+	if err != nil {
+		return fn.Err[RegistryResp](
+			fmt.Errorf("lookup unroll effect target: %w", err),
+		)
+	}
+	if record == nil {
+		return fn.Err[RegistryResp](
+			fmt.Errorf("unroll effect target %s not found",
+				req.Outpoint),
+		)
+	}
+	if record.IsTerminal() {
+		return fn.Ok[RegistryResp](&RegistryAckResp{})
+	}
+
+	height, err := r.queryBestHeight(ctx)
+	if err != nil {
+		return fn.Err[RegistryResp](
+			fmt.Errorf("best height for effect replay: %w", err),
+		)
+	}
+
+	child, ok := r.active[req.Outpoint]
+	if !ok {
+		child, err = r.spawn(ctx, req.Outpoint)
+		if err != nil {
+			return fn.Err[RegistryResp](
+				fmt.Errorf("spawn effect target: %w", err),
+			)
+		}
+		r.active[req.Outpoint] = child
+	}
+
+	_, err = child.Ref().Ask(ctx, &ResumeUnrollRequest{
+		Height: height,
+	}).Await(ctx).Unpack()
+	if err != nil {
+		return fn.Err[RegistryResp](
+			fmt.Errorf("resume effect target: %w", err),
+		)
+	}
+
+	return fn.Ok[RegistryResp](&RegistryAckResp{})
 }
 
 // handlePersistActiveRecord is half of the two-message pair that drives

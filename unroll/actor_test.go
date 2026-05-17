@@ -776,6 +776,10 @@ func (s *memJobStore) GetJob(_ context.Context, target wire.OutPoint) (
 	return &copyRecord, nil
 }
 
+func (s *memJobStore) MarkEffectDone(context.Context, string, string) error {
+	return nil
+}
+
 // DeleteJob deletes one stored job.
 func (s *memJobStore) DeleteJob(_ context.Context, target wire.OutPoint) error {
 	s.mu.Lock()

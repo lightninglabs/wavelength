@@ -243,9 +243,10 @@ type Server struct {
 	walletRef    fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
-	oorCoordinator    *oor.ClientCoordinator
-	oorCoordinatorRef *oor.CoordinatorTellRef
-	oorEffectWorker   *oor.OORClientEffectWorker
+	oorCoordinator     *oor.ClientCoordinator
+	oorCoordinatorRef  *oor.CoordinatorTellRef
+	oorEffectWorker    *oor.OORClientEffectWorker
+	unrollEffectWorker *unroll.EffectWorker
 
 	// ledgerStore exposes the client-side ledger DB adapter for
 	// read-only RPC handlers (GetFeeHistory). Writes go through
@@ -773,6 +774,10 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 
 		if s.oorEffectWorker != nil {
 			s.oorEffectWorker.Stop()
+		}
+
+		if s.unrollEffectWorker != nil {
+			s.unrollEffectWorker.Stop()
 		}
 
 		if s.walletEffectWorker != nil {
@@ -4229,6 +4234,17 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		s.log.WarnS(ctx,
 			"Failed to restore unroll jobs", err)
 	}
+
+	effectWorker := unroll.NewEffectWorker(unroll.EffectWorkerConfig{
+		Store:    unrollJobStore,
+		Registry: registry.Ref(),
+		Clock:    s.clk,
+		Logger:   s.subLogger("UNRE"),
+	})
+	if err := effectWorker.Start(ctx); err != nil {
+		return fmt.Errorf("start unroll effect worker: %w", err)
+	}
+	s.unrollEffectWorker = effectWorker
 
 	// 4. Wire the VTXO manager's ChainResolver to the unroll registry so
 	// critical expiry triggers automatic unroll.

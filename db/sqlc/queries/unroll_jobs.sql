@@ -110,3 +110,83 @@ ON CONFLICT (
     last_error = EXCLUDED.last_error,
     updated_at = EXCLUDED.updated_at
 ;
+
+-- name: InsertUnrollEffect :exec
+INSERT INTO unroll_effects (
+    id, target_outpoint_hash, target_outpoint_index, effect_type, txid,
+    status, idempotency_key, attempts, max_attempts, next_attempt_at,
+    created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, 'pending', $6, 0, $7, $8, $9, $9
+) ON CONFLICT (idempotency_key) DO NOTHING;
+
+-- name: ListDueUnrollEffectIDs :many
+SELECT id
+FROM unroll_effects
+WHERE next_attempt_at <= $1
+  AND attempts < max_attempts
+  AND (
+    status = 'pending' OR
+    (status = 'claimed' AND claim_until <= $1)
+  )
+ORDER BY next_attempt_at, created_at, id
+LIMIT $2;
+
+-- name: ClaimUnrollEffect :one
+UPDATE unroll_effects
+SET status = 'claimed',
+    claim_owner = $2,
+    claim_token = $3,
+    claim_until = $4,
+    attempts = attempts + 1,
+    updated_at = $5
+WHERE id = $1
+  AND next_attempt_at <= $5
+  AND attempts < max_attempts
+  AND (
+    status = 'pending' OR
+    (status = 'claimed' AND claim_until <= $5)
+  )
+RETURNING id, target_outpoint_hash, target_outpoint_index, effect_type, txid,
+    status, idempotency_key, attempts, max_attempts, next_attempt_at,
+    claim_owner, claim_token, claim_until, last_error, created_at,
+    updated_at, done_at;
+
+-- name: MarkUnrollEffectDone :exec
+UPDATE unroll_effects
+SET status = 'done',
+    done_at = $3,
+    updated_at = $3,
+    claim_owner = NULL,
+    claim_token = NULL,
+    claim_until = NULL,
+    last_error = NULL
+WHERE id = $1
+  AND status IN ('pending', 'claimed')
+  AND ($2 IS NULL OR claim_token = $2);
+
+-- name: ReleaseUnrollEffectForRetry :exec
+UPDATE unroll_effects
+SET status = CASE
+        WHEN attempts >= max_attempts THEN 'dead'
+        ELSE 'pending'
+    END,
+    next_attempt_at = $3,
+    updated_at = $4,
+    claim_owner = NULL,
+    claim_token = NULL,
+    claim_until = NULL,
+    last_error = $5
+WHERE id = $1
+  AND claim_token = $2
+  AND status = 'claimed';
+
+-- name: ReleaseExpiredUnrollEffectClaims :exec
+UPDATE unroll_effects
+SET status = 'pending',
+    claim_owner = NULL,
+    claim_token = NULL,
+    claim_until = NULL,
+    updated_at = $2
+WHERE status = 'claimed'
+  AND claim_until <= $1;

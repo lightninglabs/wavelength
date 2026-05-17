@@ -10,6 +10,66 @@ import (
 	"database/sql"
 )
 
+const ClaimUnrollEffect = `-- name: ClaimUnrollEffect :one
+UPDATE unroll_effects
+SET status = 'claimed',
+    claim_owner = $2,
+    claim_token = $3,
+    claim_until = $4,
+    attempts = attempts + 1,
+    updated_at = $5
+WHERE id = $1
+  AND next_attempt_at <= $5
+  AND attempts < max_attempts
+  AND (
+    status = 'pending' OR
+    (status = 'claimed' AND claim_until <= $5)
+  )
+RETURNING id, target_outpoint_hash, target_outpoint_index, effect_type, txid,
+    status, idempotency_key, attempts, max_attempts, next_attempt_at,
+    claim_owner, claim_token, claim_until, last_error, created_at,
+    updated_at, done_at
+`
+
+type ClaimUnrollEffectParams struct {
+	ID         string
+	ClaimOwner sql.NullString
+	ClaimToken sql.NullString
+	ClaimUntil sql.NullInt64
+	UpdatedAt  int64
+}
+
+func (q *Queries) ClaimUnrollEffect(ctx context.Context, arg ClaimUnrollEffectParams) (UnrollEffect, error) {
+	row := q.db.QueryRowContext(ctx, ClaimUnrollEffect,
+		arg.ID,
+		arg.ClaimOwner,
+		arg.ClaimToken,
+		arg.ClaimUntil,
+		arg.UpdatedAt,
+	)
+	var i UnrollEffect
+	err := row.Scan(
+		&i.ID,
+		&i.TargetOutpointHash,
+		&i.TargetOutpointIndex,
+		&i.EffectType,
+		&i.Txid,
+		&i.Status,
+		&i.IdempotencyKey,
+		&i.Attempts,
+		&i.MaxAttempts,
+		&i.NextAttemptAt,
+		&i.ClaimOwner,
+		&i.ClaimToken,
+		&i.ClaimUntil,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DoneAt,
+	)
+	return i, err
+}
+
 const DeleteUnrollTxProgressForJob = `-- name: DeleteUnrollTxProgressForJob :exec
 DELETE FROM unroll_tx_progress
 WHERE target_outpoint_hash = $1
@@ -74,6 +134,84 @@ func (q *Queries) GetUnrollJob(ctx context.Context, arg GetUnrollJobParams) (Unr
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const InsertUnrollEffect = `-- name: InsertUnrollEffect :exec
+INSERT INTO unroll_effects (
+    id, target_outpoint_hash, target_outpoint_index, effect_type, txid,
+    status, idempotency_key, attempts, max_attempts, next_attempt_at,
+    created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, 'pending', $6, 0, $7, $8, $9, $9
+) ON CONFLICT (idempotency_key) DO NOTHING
+`
+
+type InsertUnrollEffectParams struct {
+	ID                  string
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+	EffectType          string
+	Txid                []byte
+	IdempotencyKey      string
+	MaxAttempts         int32
+	NextAttemptAt       int64
+	CreatedAt           int64
+}
+
+func (q *Queries) InsertUnrollEffect(ctx context.Context, arg InsertUnrollEffectParams) error {
+	_, err := q.db.ExecContext(ctx, InsertUnrollEffect,
+		arg.ID,
+		arg.TargetOutpointHash,
+		arg.TargetOutpointIndex,
+		arg.EffectType,
+		arg.Txid,
+		arg.IdempotencyKey,
+		arg.MaxAttempts,
+		arg.NextAttemptAt,
+		arg.CreatedAt,
+	)
+	return err
+}
+
+const ListDueUnrollEffectIDs = `-- name: ListDueUnrollEffectIDs :many
+SELECT id
+FROM unroll_effects
+WHERE next_attempt_at <= $1
+  AND attempts < max_attempts
+  AND (
+    status = 'pending' OR
+    (status = 'claimed' AND claim_until <= $1)
+  )
+ORDER BY next_attempt_at, created_at, id
+LIMIT $2
+`
+
+type ListDueUnrollEffectIDsParams struct {
+	NextAttemptAt int64
+	Limit         int32
+}
+
+func (q *Queries) ListDueUnrollEffectIDs(ctx context.Context, arg ListDueUnrollEffectIDsParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, ListDueUnrollEffectIDs, arg.NextAttemptAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const ListNonTerminalUnrollJobs = `-- name: ListNonTerminalUnrollJobs :many
@@ -216,6 +354,31 @@ func (q *Queries) ListUnrollWatchesForJob(ctx context.Context, arg ListUnrollWat
 	return items, nil
 }
 
+const MarkUnrollEffectDone = `-- name: MarkUnrollEffectDone :exec
+UPDATE unroll_effects
+SET status = 'done',
+    done_at = $3,
+    updated_at = $3,
+    claim_owner = NULL,
+    claim_token = NULL,
+    claim_until = NULL,
+    last_error = NULL
+WHERE id = $1
+  AND status IN ('pending', 'claimed')
+  AND ($2 IS NULL OR claim_token = $2)
+`
+
+type MarkUnrollEffectDoneParams struct {
+	ID      string
+	Column2 interface{}
+	DoneAt  sql.NullInt64
+}
+
+func (q *Queries) MarkUnrollEffectDone(ctx context.Context, arg MarkUnrollEffectDoneParams) error {
+	_, err := q.db.ExecContext(ctx, MarkUnrollEffectDone, arg.ID, arg.Column2, arg.DoneAt)
+	return err
+}
+
 const MarkUnrollJobTerminal = `-- name: MarkUnrollJobTerminal :exec
 UPDATE unroll_jobs
 SET state = $3,
@@ -243,6 +406,63 @@ func (q *Queries) MarkUnrollJobTerminal(ctx context.Context, arg MarkUnrollJobTe
 		arg.FailReason,
 		arg.UpdatedAt,
 		arg.SweepTxid,
+	)
+	return err
+}
+
+const ReleaseExpiredUnrollEffectClaims = `-- name: ReleaseExpiredUnrollEffectClaims :exec
+UPDATE unroll_effects
+SET status = 'pending',
+    claim_owner = NULL,
+    claim_token = NULL,
+    claim_until = NULL,
+    updated_at = $2
+WHERE status = 'claimed'
+  AND claim_until <= $1
+`
+
+type ReleaseExpiredUnrollEffectClaimsParams struct {
+	ClaimUntil sql.NullInt64
+	UpdatedAt  int64
+}
+
+func (q *Queries) ReleaseExpiredUnrollEffectClaims(ctx context.Context, arg ReleaseExpiredUnrollEffectClaimsParams) error {
+	_, err := q.db.ExecContext(ctx, ReleaseExpiredUnrollEffectClaims, arg.ClaimUntil, arg.UpdatedAt)
+	return err
+}
+
+const ReleaseUnrollEffectForRetry = `-- name: ReleaseUnrollEffectForRetry :exec
+UPDATE unroll_effects
+SET status = CASE
+        WHEN attempts >= max_attempts THEN 'dead'
+        ELSE 'pending'
+    END,
+    next_attempt_at = $3,
+    updated_at = $4,
+    claim_owner = NULL,
+    claim_token = NULL,
+    claim_until = NULL,
+    last_error = $5
+WHERE id = $1
+  AND claim_token = $2
+  AND status = 'claimed'
+`
+
+type ReleaseUnrollEffectForRetryParams struct {
+	ID            string
+	ClaimToken    sql.NullString
+	NextAttemptAt int64
+	UpdatedAt     int64
+	LastError     sql.NullString
+}
+
+func (q *Queries) ReleaseUnrollEffectForRetry(ctx context.Context, arg ReleaseUnrollEffectForRetryParams) error {
+	_, err := q.db.ExecContext(ctx, ReleaseUnrollEffectForRetry,
+		arg.ID,
+		arg.ClaimToken,
+		arg.NextAttemptAt,
+		arg.UpdatedAt,
+		arg.LastError,
 	)
 	return err
 }

@@ -29,6 +29,8 @@ type JobStore interface {
 	UpsertJob(context.Context, db.UnrollJobRecord) error
 
 	GetJob(context.Context, wire.OutPoint) (*db.UnrollJobRecord, error)
+
+	MarkEffectDone(context.Context, string, string) error
 }
 
 // Config configures one per-target VTXO unroll actor.
@@ -323,6 +325,9 @@ func (b *behavior) driveEvent(ctx context.Context, event Event) error {
 		return err
 	}
 
+	b.markRuntimeEffectDone(ctx, "subscribe-blocks")
+	b.markRuntimeEffectDone(ctx, "watch-target-spend")
+
 	if err := b.routeOutbox(ctx, outbox); err != nil {
 		return err
 	}
@@ -405,6 +410,8 @@ func (b *behavior) startSweep(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	b.markRuntimeEffectDone(ctx, "build-sweep")
 
 	sweepTxid := b.sweepTx.TxHash()
 
@@ -1223,6 +1230,10 @@ func (b *behavior) routeOutbox(ctx context.Context,
 				if err != nil {
 					return err
 				}
+				b.markRuntimeEffectDone(
+					ctx,
+					"ensure-tx-"+hashEffectSuffix(txid),
+				)
 			}
 
 		case *ReissueInFlightTransactions:
@@ -1246,6 +1257,10 @@ func (b *behavior) routeOutbox(ctx context.Context,
 				if err != nil {
 					return err
 				}
+				b.markRuntimeEffectDone(
+					ctx,
+					"ensure-tx-"+hashEffectSuffix(txid),
+				)
 			}
 
 		case *WatchDeferredCheckpoints:
@@ -1263,6 +1278,10 @@ func (b *behavior) routeOutbox(ctx context.Context,
 				if err != nil {
 					return err
 				}
+				b.markRuntimeEffectDone(
+					ctx, "watch-deferred-"+
+						hashEffectSuffix(txid),
+				)
 			}
 
 		case *RequestSweepBuild:
@@ -1298,6 +1317,12 @@ func (b *behavior) routeOutbox(ctx context.Context,
 			if err != nil {
 				return err
 			}
+
+			sweepTxid := b.sweepTx.TxHash()
+			b.markRuntimeEffectDone(
+				ctx,
+				"ensure-sweep-"+hashEffectSuffix(sweepTxid),
+			)
 		}
 	}
 
@@ -1425,6 +1450,24 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 	}
 
 	b.terminalNotified = true
+}
+
+func (b *behavior) markRuntimeEffectDone(ctx context.Context, suffix string) {
+	if b.cfg.JobStore == nil {
+		return
+	}
+
+	effectID := "unroll/" + b.cfg.TargetOutpoint.String() + "/" + suffix
+	if err := b.cfg.JobStore.MarkEffectDone(ctx, effectID, ""); err != nil {
+		b.log.WarnS(ctx, "Failed to mark unroll effect done",
+			err,
+			slog.String("effect_id", effectID),
+		)
+	}
+}
+
+func hashEffectSuffix(hash chainhash.Hash) string {
+	return fmt.Sprintf("%x", hash[:])
 }
 
 // actorIDForTarget derives a deterministic actor ID for one target outpoint.

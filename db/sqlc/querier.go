@@ -12,6 +12,7 @@ import (
 type Querier interface {
 	ClaimMailboxEgress(ctx context.Context, arg ClaimMailboxEgressParams) (MailboxEgress, error)
 	ClaimOORClientEffect(ctx context.Context, arg ClaimOORClientEffectParams) (OorClientEffect, error)
+	ClaimUnrollEffect(ctx context.Context, arg ClaimUnrollEffectParams) (UnrollEffect, error)
 	ClaimWalletEffect(ctx context.Context, arg ClaimWalletEffectParams) (WalletEffect, error)
 	ClearAllPendingBoardRequests(ctx context.Context) error
 	ClearPendingBoardRequestByOutpoint(ctx context.Context, arg ClearPendingBoardRequestByOutpointParams) error
@@ -111,6 +112,7 @@ type Querier interface {
 	InsertRoundClientTree(ctx context.Context, arg InsertRoundClientTreeParams) error
 	// Round VTXO request queries.
 	InsertRoundVtxoRequest(ctx context.Context, arg InsertRoundVtxoRequestParams) error
+	InsertUnrollEffect(ctx context.Context, arg InsertUnrollEffectParams) error
 	// VTXO queries.
 	// InsertVTXO creates or updates a VTXO. On conflict, richer semantic and
 	// metadata fields from the later insert win when present. This allows the
@@ -145,6 +147,7 @@ type Querier interface {
 	ListClientLedgerEntriesByType(ctx context.Context, arg ListClientLedgerEntriesByTypeParams) ([]LedgerEntry, error)
 	ListDueMailboxEgressIDs(ctx context.Context, arg ListDueMailboxEgressIDsParams) ([]string, error)
 	ListDueOORClientEffectIDs(ctx context.Context, arg ListDueOORClientEffectIDsParams) ([]string, error)
+	ListDueUnrollEffectIDs(ctx context.Context, arg ListDueUnrollEffectIDsParams) ([]string, error)
 	ListDueWalletEffectIDs(ctx context.Context, arg ListDueWalletEffectIDsParams) ([]string, error)
 	// ListLiveVTXOAncestryPaths returns every ancestry row whose parent VTXO
 	// is non-terminal, mirroring the filter on ListLiveVTXOs. Used as a
@@ -216,6 +219,7 @@ type Querier interface {
 	MarkBoardingSweepStatus(ctx context.Context, arg MarkBoardingSweepStatusParams) error
 	MarkMailboxEgressSent(ctx context.Context, arg MarkMailboxEgressSentParams) error
 	MarkOORClientEffectDone(ctx context.Context, arg MarkOORClientEffectDoneParams) error
+	MarkUnrollEffectDone(ctx context.Context, arg MarkUnrollEffectDoneParams) error
 	MarkUnrollJobTerminal(ctx context.Context, arg MarkUnrollJobTerminalParams) error
 	// MarkVTXOForfeited marks a VTXO as forfeited and records the forfeit
 	// transaction ID and replacement VTXO outpoint. Called when the new round's
@@ -230,9 +234,11 @@ type Querier interface {
 	MarkWalletEffectDone(ctx context.Context, arg MarkWalletEffectDoneParams) error
 	ReleaseExpiredMailboxEgressClaims(ctx context.Context, arg ReleaseExpiredMailboxEgressClaimsParams) error
 	ReleaseExpiredOORClientEffectClaims(ctx context.Context, arg ReleaseExpiredOORClientEffectClaimsParams) error
+	ReleaseExpiredUnrollEffectClaims(ctx context.Context, arg ReleaseExpiredUnrollEffectClaimsParams) error
 	ReleaseExpiredWalletEffectClaims(ctx context.Context, arg ReleaseExpiredWalletEffectClaimsParams) error
 	ReleaseMailboxEgressForRetry(ctx context.Context, arg ReleaseMailboxEgressForRetryParams) error
 	ReleaseOORClientEffectForRetry(ctx context.Context, arg ReleaseOORClientEffectForRetryParams) error
+	ReleaseUnrollEffectForRetry(ctx context.Context, arg ReleaseUnrollEffectForRetryParams) error
 	ReleaseWalletEffectForRetry(ctx context.Context, arg ReleaseWalletEffectForRetryParams) error
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)

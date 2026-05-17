@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
 )
@@ -61,6 +62,18 @@ type UnrollWatchRecord struct {
 	LastError          string
 }
 
+// UnrollEffectRecord is one retryable side-effect row for an unroll job.
+type UnrollEffectRecord struct {
+	ID             string
+	TargetOutpoint wire.OutPoint
+	EffectType     string
+	Txid           []byte
+	Status         string
+	IdempotencyKey string
+	ClaimToken     sql.NullString
+	Attempts       int32
+}
+
 // IsTerminal reports whether the job is in a terminal state.
 func (r UnrollJobRecord) IsTerminal() bool {
 	return r.State == "completed" || r.State == "failed"
@@ -102,6 +115,24 @@ type UnrollJobStore interface {
 
 	UpsertUnrollWatch(ctx context.Context,
 		arg sqlc.UpsertUnrollWatchParams) error
+
+	InsertUnrollEffect(ctx context.Context,
+		arg sqlc.InsertUnrollEffectParams) error
+
+	ListDueUnrollEffectIDs(ctx context.Context,
+		arg sqlc.ListDueUnrollEffectIDsParams) ([]string, error)
+
+	ClaimUnrollEffect(ctx context.Context,
+		arg sqlc.ClaimUnrollEffectParams) (sqlc.UnrollEffect, error)
+
+	MarkUnrollEffectDone(ctx context.Context,
+		arg sqlc.MarkUnrollEffectDoneParams) error
+
+	ReleaseUnrollEffectForRetry(ctx context.Context,
+		arg sqlc.ReleaseUnrollEffectForRetryParams) error
+
+	ReleaseExpiredUnrollEffectClaims(ctx context.Context,
+		arg sqlc.ReleaseExpiredUnrollEffectClaimsParams) error
 }
 
 // BatchedUnrollJobStore combines the query surface with transactions.
@@ -210,7 +241,7 @@ func (s *UnrollJobPersistenceStore) UpsertJob(ctx context.Context,
 			}
 		}
 
-		return nil
+		return insertUnrollEffectsForJob(ctx, q, job, nowUnix)
 	}
 
 	return s.db.ExecTx(ctx, WriteTxOption(), writeFn)
@@ -448,6 +479,240 @@ func (s *UnrollJobPersistenceStore) MarkJobTerminal(ctx context.Context,
 	return s.db.ExecTx(ctx, WriteTxOption(), writeFn)
 }
 
+// ClaimDueEffects claims up to limit due unroll effect rows.
+func (s *UnrollJobPersistenceStore) ClaimDueEffects(ctx context.Context,
+	owner string, limit int, lease time.Duration) ([]UnrollEffectRecord,
+	error) {
+
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	now := s.clock.Now()
+	claimed := make([]UnrollEffectRecord, 0, limit)
+
+	err := s.db.ExecTx(ctx, WriteTxOption(), func(q UnrollJobStore) error {
+		ids, err := q.ListDueUnrollEffectIDs(
+			ctx, sqlc.ListDueUnrollEffectIDsParams{
+				NextAttemptAt: now.Unix(),
+				Limit:         int32(limit),
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		for _, id := range ids {
+			token := uuid.NewString()
+			row, err := q.ClaimUnrollEffect(
+				ctx, sqlc.ClaimUnrollEffectParams{
+					ID: id,
+					ClaimOwner: sql.NullString{
+						String: owner,
+						Valid:  true,
+					},
+					ClaimToken: sql.NullString{
+						String: token,
+						Valid:  true,
+					},
+					ClaimUntil: sql.NullInt64{
+						Int64: now.Add(lease).Unix(),
+						Valid: true,
+					},
+					UpdatedAt: now.Unix(),
+				},
+			)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+
+			effect, err := unrollEffectRecordFromRow(row)
+			if err != nil {
+				return err
+			}
+			claimed = append(claimed, effect)
+		}
+
+		return nil
+	})
+
+	return claimed, err
+}
+
+// MarkEffectDone marks an unroll effect done. An empty claim token allows the
+// foreground actor path to close a pending effect it just executed; workers
+// pass the claim token they acquired.
+func (s *UnrollJobPersistenceStore) MarkEffectDone(ctx context.Context, id,
+	claimToken string) error {
+
+	now := s.clock.Now().Unix()
+	var token any
+	if claimToken != "" {
+		token = claimToken
+	}
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q UnrollJobStore) error {
+		return q.MarkUnrollEffectDone(
+			ctx, sqlc.MarkUnrollEffectDoneParams{
+				ID:      id,
+				Column2: token,
+				DoneAt: sql.NullInt64{
+					Int64: now,
+					Valid: true,
+				},
+			},
+		)
+	})
+}
+
+// ReleaseEffectForRetry releases a failed claimed effect back to pending or
+// dead after max attempts.
+func (s *UnrollJobPersistenceStore) ReleaseEffectForRetry(ctx context.Context,
+	id, claimToken string, retryAfter time.Duration, failure error) error {
+
+	now := s.clock.Now()
+	errText := ""
+	if failure != nil {
+		errText = failure.Error()
+	}
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q UnrollJobStore) error {
+		return q.ReleaseUnrollEffectForRetry(
+			ctx, sqlc.ReleaseUnrollEffectForRetryParams{
+				ID: id,
+				ClaimToken: sql.NullString{
+					String: claimToken,
+					Valid:  true,
+				},
+				NextAttemptAt: now.Add(retryAfter).Unix(),
+				UpdatedAt:     now.Unix(),
+				LastError: sql.NullString{
+					String: errText,
+					Valid:  errText != "",
+				},
+			},
+		)
+	})
+}
+
+// ReleaseExpiredEffectClaims releases timed-out effect claims.
+func (s *UnrollJobPersistenceStore) ReleaseExpiredEffectClaims(
+	ctx context.Context) error {
+
+	now := s.clock.Now().Unix()
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q UnrollJobStore) error {
+		return q.ReleaseExpiredUnrollEffectClaims(
+			ctx, sqlc.ReleaseExpiredUnrollEffectClaimsParams{
+				ClaimUntil: sql.NullInt64{
+					Int64: now,
+					Valid: true,
+				},
+				UpdatedAt: now,
+			},
+		)
+	})
+}
+
+func insertUnrollEffectsForJob(ctx context.Context, q UnrollJobStore,
+	job UnrollJobRecord, now int64) error {
+
+	if job.IsTerminal() {
+		return nil
+	}
+
+	target := job.TargetOutpoint
+	insert := func(effectType string, txid []byte, suffix string) error {
+		id := unrollEffectID(target, suffix)
+
+		return q.InsertUnrollEffect(ctx, sqlc.InsertUnrollEffectParams{
+			ID:                  id,
+			TargetOutpointHash:  target.Hash[:],
+			TargetOutpointIndex: int32(target.Index),
+			EffectType:          effectType,
+			Txid:                append([]byte(nil), txid...),
+			IdempotencyKey:      id,
+			MaxAttempts:         10,
+			NextAttemptAt:       now,
+			CreatedAt:           now,
+		})
+	}
+
+	if err := insert(
+		"subscribe_blocks", nil, "subscribe-blocks",
+	); err != nil {
+		return err
+	}
+	if err := insert(
+		"watch_target_spend", nil, "watch-target-spend",
+	); err != nil {
+		return err
+	}
+
+	if job.State == "sweep_broadcast" {
+		if err := insert(
+			"build_sweep", nil, "build-sweep",
+		); err != nil {
+			return err
+		}
+	}
+
+	for i := range job.TxProgress {
+		progress := job.TxProgress[i]
+		switch progress.Role {
+		case "proof":
+			if progress.Status == "in_flight" ||
+				progress.Status == "ready" {
+
+				err := insert(
+					"ensure_tx_confirmed", progress.Txid,
+					"ensure-tx-"+fmt.Sprintf("%x",
+						progress.Txid),
+				)
+				if err != nil {
+					return err
+				}
+			}
+
+		case "deferred_checkpoint":
+			if progress.Status == "ready" {
+				err := insert(
+					"watch_deferred_checkpoint",
+					progress.Txid,
+					"watch-deferred-"+fmt.Sprintf("%x",
+						progress.Txid),
+				)
+				if err != nil {
+					return err
+				}
+			}
+
+		case "sweep":
+			if progress.Status == "in_flight" ||
+				progress.Status == "ready" {
+
+				err := insert(
+					"ensure_sweep_confirmed", progress.Txid,
+					"ensure-sweep-"+fmt.Sprintf("%x",
+						progress.Txid),
+				)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func unrollEffectID(target wire.OutPoint, suffix string) string {
+	return "unroll/" + target.String() + "/" + suffix
+}
+
 func unrollJobRecordFromRow(row sqlc.UnrollJob) (UnrollJobRecord, error) {
 	hash, err := hashFromBytes(row.TargetOutpointHash)
 	if err != nil {
@@ -482,6 +747,30 @@ func unrollJobRecordFromRow(row sqlc.UnrollJob) (UnrollJobRecord, error) {
 	}
 
 	return record, nil
+}
+
+func unrollEffectRecordFromRow(row sqlc.UnrollEffect) (UnrollEffectRecord,
+	error) {
+
+	hash, err := hashFromBytes(row.TargetOutpointHash)
+	if err != nil {
+		return UnrollEffectRecord{}, fmt.Errorf("unexpected target "+
+			"outpoint hash: %w", err)
+	}
+
+	return UnrollEffectRecord{
+		ID: row.ID,
+		TargetOutpoint: wire.OutPoint{
+			Hash:  hash,
+			Index: uint32(row.TargetOutpointIndex),
+		},
+		EffectType:     row.EffectType,
+		Txid:           append([]byte(nil), row.Txid...),
+		Status:         row.Status,
+		IdempotencyKey: row.IdempotencyKey,
+		ClaimToken:     row.ClaimToken,
+		Attempts:       row.Attempts,
+	}, nil
 }
 
 func nullableInt32(value *int32) sql.NullInt32 {
