@@ -790,6 +790,56 @@ func (s *memJobStore) DeleteJob(_ context.Context, target wire.OutPoint) error {
 	return nil
 }
 
+func TestRestoreOutboxUsesStoredWatchRows(t *testing.T) {
+	t.Parallel()
+
+	proofTxid := chainhash.Hash{0x01}
+	deferredTxid := chainhash.Hash{0x02}
+	b := &behavior{
+		pending: &unrollSnapshot{
+			Watches: []db.UnrollWatchRecord{
+				{
+					WatchID: "proof",
+					Role:    "proof_tx",
+					Txid:    proofTxid[:],
+					Status:  "registered",
+				},
+				{
+					WatchID: "deferred",
+					Role:    "deferred_checkpoint",
+					Txid:    deferredTxid[:],
+					Status:  "registered",
+				},
+				{
+					WatchID: "sweep",
+					Role:    "sweep",
+					Status:  "registered",
+				},
+			},
+		},
+	}
+
+	outbox := b.restoreOutboxFromWatchRows([]OutboxEvent{
+		&ReissueInFlightTransactions{Txids: []chainhash.Hash{{0x99}}},
+		&WatchDeferredCheckpoints{Txids: []chainhash.Hash{{0x98}}},
+		&ReissueSweepConfirmation{},
+		&RequestSweepBuild{},
+	})
+
+	require.Len(t, outbox, 4)
+	require.IsType(t, &RequestSweepBuild{}, outbox[0])
+
+	proofReissue, ok := outbox[1].(*ReissueInFlightTransactions)
+	require.True(t, ok)
+	require.Equal(t, []chainhash.Hash{proofTxid}, proofReissue.Txids)
+
+	deferredWatch, ok := outbox[2].(*WatchDeferredCheckpoints)
+	require.True(t, ok)
+	require.Equal(t, []chainhash.Hash{deferredTxid}, deferredWatch.Txids)
+
+	require.IsType(t, &ReissueSweepConfirmation{}, outbox[3])
+}
+
 // newActorHarness creates a new unroll actor behavior behind a regular
 // in-memory actor while still persisting snapshots to the fake store.
 func newActorHarness(t *testing.T, proof *recovery.Proof,

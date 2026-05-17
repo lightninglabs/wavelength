@@ -320,6 +320,9 @@ func (b *behavior) driveEvent(ctx context.Context, event Event) error {
 	if err != nil {
 		return err
 	}
+	if _, ok := event.(*ResumeEvent); ok {
+		outbox = b.restoreOutboxFromWatchRows(outbox)
+	}
 
 	if err := b.persistJob(ctx); err != nil {
 		return err
@@ -1327,6 +1330,72 @@ func (b *behavior) routeOutbox(ctx context.Context,
 	}
 
 	return nil
+}
+
+func (b *behavior) restoreOutboxFromWatchRows(
+	outbox []OutboxEvent) []OutboxEvent {
+
+	if b.pending == nil || len(b.pending.Watches) == 0 {
+		return outbox
+	}
+
+	filtered := make([]OutboxEvent, 0, len(outbox))
+	for i := range outbox {
+		switch outbox[i].(type) {
+		case *ReissueInFlightTransactions,
+			*ReissueSweepConfirmation,
+			*WatchDeferredCheckpoints:
+
+			continue
+
+		default:
+			filtered = append(filtered, outbox[i])
+		}
+	}
+
+	var proofTxids []chainhash.Hash
+	var deferredTxids []chainhash.Hash
+	reissueSweep := false
+
+	for i := range b.pending.Watches {
+		watch := b.pending.Watches[i]
+		if watch.Status != "registered" {
+			continue
+		}
+
+		switch watch.Role {
+		case "proof_tx":
+			txid, err := txidBytesToHash(watch.Txid)
+			if err == nil && txid != nil {
+				proofTxids = append(proofTxids, *txid)
+			}
+
+		case "deferred_checkpoint":
+			txid, err := txidBytesToHash(watch.Txid)
+			if err == nil && txid != nil {
+				deferredTxids = append(deferredTxids, *txid)
+			}
+
+		case "sweep":
+			reissueSweep = true
+		}
+	}
+
+	if len(proofTxids) > 0 {
+		filtered = append(filtered, &ReissueInFlightTransactions{
+			Txids: proofTxids,
+		})
+	}
+	if len(deferredTxids) > 0 {
+		filtered = append(filtered, &WatchDeferredCheckpoints{
+			Txids: deferredTxids,
+		})
+	}
+	if reissueSweep {
+		filtered = append(filtered, &ReissueSweepConfirmation{})
+	}
+
+	return filtered
 }
 
 // currentState returns the current concrete protofsm state.

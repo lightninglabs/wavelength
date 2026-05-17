@@ -22,6 +22,7 @@ type unrollSnapshot struct {
 	Fail                string
 	SweepAttempts       int
 	DeferredCheckpoints []DeferredCheckpoint
+	Watches             []db.UnrollWatchRecord
 }
 
 func jobRecordFromSnapshot(target wire.OutPoint,
@@ -253,6 +254,9 @@ func snapshotFromJobRecord(record *db.UnrollJobRecord) (*unrollSnapshot,
 		Fail:                record.FailReason,
 		SweepAttempts:       int(record.SweepAttempts),
 		DeferredCheckpoints: deferred,
+		Watches: append(
+			[]db.UnrollWatchRecord(nil), record.Watches...,
+		),
 	}, nil
 }
 
