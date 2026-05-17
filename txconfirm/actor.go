@@ -1216,7 +1216,7 @@ func (a *TxBroadcasterActor) notifyOneTerminal(ctx context.Context,
 		return false
 	}
 
-	notifyCtx, cancel := terminalNotifyContext(ctx, inflightKey)
+	notifyCtx, cancel := terminalNotifyContext(ctx)
 	errChan := make(chan error, 1)
 	go func() {
 		errChan <- deliver(notifyCtx)
@@ -1295,8 +1295,8 @@ func terminalNotifyKey(txid chainhash.Hash, subscriberID string,
 
 // terminalNotifyContext isolates subscriber notification from txconfirm's actor
 // transaction.
-func terminalNotifyContext(ctx context.Context,
-	dedupKey string) (context.Context, context.CancelFunc) {
+func terminalNotifyContext(ctx context.Context) (context.Context,
+	context.CancelFunc) {
 
 	// Terminal delivery crosses from txconfirm into an arbitrary
 	// subscriber actor. The tracked-tx FSM has already committed its
@@ -1306,13 +1306,6 @@ func terminalNotifyContext(ctx context.Context,
 	// invalid outside this handler, or force two actor mailboxes through
 	// the same SQLite writer and deadlock under block-heavy itests.
 	notifyCtx := actor.WithoutTx(context.WithoutCancel(ctx))
-
-	// A timed-out delivery may still complete after txconfirm retries the
-	// same subscriber. Durable mailboxes consume OutboxID as their inbox
-	// message id, so a stable key keeps those late/duplicate deliveries
-	// idempotent.
-	notifyCtx = actor.WithoutOutboxID(notifyCtx)
-	notifyCtx = actor.WithOutboxID(notifyCtx, dedupKey)
 
 	return context.WithTimeout(notifyCtx, terminalNotifyTimeout)
 }
