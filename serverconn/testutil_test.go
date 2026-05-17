@@ -306,6 +306,12 @@ func (s *memTransportStore) SaveIngressCursor(_ context.Context, localMailboxID,
 	return nil
 }
 
+func (s *memTransportStore) RunInIngressTx(ctx context.Context,
+	fn func(context.Context) error) error {
+
+	return fn(ctx)
+}
+
 func (s *memTransportStore) InsertEgress(_ context.Context,
 	env EgressEnvelope) error {
 

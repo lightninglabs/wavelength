@@ -41,10 +41,11 @@ type EventRouteConfig[M actor.Message, R any] struct {
 	// provide the unmarshal target.
 	NewEvent func() proto.Message
 
-	// Key is the ServiceKey for the target local actor. The router
-	// calls key.Ref(system).Tell(ctx, msg) for each dispatched event,
-	// which persists the message to the actor's SQL mailbox before
-	// returning nil.
+	// Key is the ServiceKey for the target local actor. The router asks
+	// the target actor and waits for completion before acknowledging the
+	// envelope. When dispatch runs inside RunInIngressTx, this lets the
+	// actor's store calls join the same SQL transaction as the ingress
+	// cursor checkpoint.
 	Key actor.ServiceKey[M, R]
 
 	// Adapt converts the deserialized proto.Message to the actor message
@@ -56,8 +57,10 @@ type EventRouteConfig[M actor.Message, R any] struct {
 // EventRouter maps inbound KIND_REQUEST and KIND_EVENT envelope routes to
 // typed local actor mailboxes via ServiceKey.
 //
-// EventRouter resolves target actors through the actor system's Receptionist,
-// guaranteeing durable delivery before returning from each dispatch call.
+// EventRouter resolves target actors through the actor system's Receptionist
+// and waits for actor processing before returning from each dispatch call.
+// That keeps the mailbox ingress durability boundary at the domain SQL commit
+// instead of at an in-memory actor enqueue.
 //
 // At wiring time, callers call AddRoute for each (service, method) pair they
 // want to handle, then pass AsDispatcherMap() to ConnectorConfig.Dispatchers.
@@ -141,7 +144,8 @@ type EnvelopeRouteConfig[M actor.Message, R any] struct {
 	// the expected request or response type.
 	NewEvent func() proto.Message
 
-	// Key is the ServiceKey for the target actor.
+	// Key is the ServiceKey for the target actor. Dispatch waits for the
+	// actor to process the message before the envelope is acknowledged.
 	Key actor.ServiceKey[M, R]
 
 	// Adapt converts the deserialized proto and envelope metadata into the
@@ -223,7 +227,12 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 				cfg.Method, err)
 		}
 
-		return actorKey.Ref(system).Tell(ctx, actorMsg)
+		result := actorKey.Ref(system).Ask(ctx, actorMsg).Await(ctx)
+		if result.IsErr() {
+			return result.Err()
+		}
+
+		return nil
 	}
 
 	serviceMethod := mailboxrpc.ServiceMethod{

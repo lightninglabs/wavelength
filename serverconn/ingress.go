@@ -118,58 +118,16 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 			slog.Uint64("next_cursor", nextCursor),
 		)
 
-		// Step 3: Dispatch the batch. On partial failure, the
-		// committed cursor reflects only the successfully dispatched
-		// portion.
-		committedCursor, dispatchErr := a.dispatchBatch(
-			ctx, envelopes, nextCursor,
+		// Step 3: Dispatch the batch and persist the cursor in one
+		// transaction. Dispatchers see the transaction-bearing context
+		// and can commit domain SQL atomically with the cursor update.
+		committedCursor, dispatchErr := a.dispatchAndCheckpoint(
+			ctx, &state, envelopes, nextCursor,
 		)
 		if dispatchErr != nil {
 			a.log.WarnS(ctx, "Dispatch failed",
 				dispatchErr,
 				slog.Uint64("committed_to", committedCursor),
-			)
-
-			// Even on partial failure, advance state past the
-			// last committed envelope so we don't re-dispatch
-			// it. dispatchBatch returns the inclusive event_seq
-			// of the last successfully dispatched envelope, so
-			// we add 1 to get the exclusive next-pull position,
-			// consistent with batchNextCursor on the success
-			// path.
-			nextCursor := committedCursor + 1
-			if committedCursor > 0 &&
-				nextCursor > state.PullCursor {
-
-				state.AdvanceDispatch(nextCursor)
-				state.PullCursor = nextCursor
-
-				if cpErr := a.saveCheckpoint(
-					ctx, state,
-				); cpErr != nil {
-
-					a.log.WarnS(ctx,
-						"Failed to save checkpoint "+
-							"after partial dispatch",
-						cpErr)
-				}
-			}
-
-			a.sleepBackoff(ctx, &failCount)
-
-			continue
-		}
-
-		// Step 4: Full batch dispatched successfully. Advance state
-		// and persist checkpoint.
-		state.AdvanceDispatch(committedCursor)
-		state.PullCursor = committedCursor
-
-		if err := a.saveCheckpoint(ctx, state); err != nil {
-			a.log.WarnS(
-				ctx,
-				"Failed to save checkpoint after dispatch",
-				err,
 			)
 
 			a.sleepBackoff(ctx, &failCount)
@@ -244,7 +202,7 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 		case mailboxpb.RpcMeta_KIND_RESPONSE:
 			// Prefer unary waiters for low-latency RPC
 			// callers. When no in-memory waiter is registered,
-			// fall back to the durable dispatch table so
+			// fall back to the dispatch table so
 			// actor-driven unary flows can treat the response
 			// like any other ingress event.
 			corrID := CorrelationID(env.Rpc.CorrelationId)
@@ -301,11 +259,9 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 		case mailboxpb.RpcMeta_KIND_REQUEST,
 			mailboxpb.RpcMeta_KIND_EVENT:
 
-			// Dispatch to local actor via the dispatch table.
-			// The dispatcher is a closure that does
-			// serviceKey.Ref(system).Tell(ctx, msg). A nil error
-			// means the target local actor persisted the
-			// message.
+			// Dispatch to the local handler via the dispatch table.
+			// A nil error means the handler has reached its
+			// durability boundary.
 			key := mailboxrpc.ServiceMethod{
 				Service: env.Rpc.Service,
 				Method:  env.Rpc.Method,
@@ -361,6 +317,51 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 	}
 
 	return lastCommitted, nil
+}
+
+func (a *ServerConnectionActor) dispatchAndCheckpoint(ctx context.Context,
+	state *AckState, envelopes []*mailboxpb.Envelope,
+	batchNextCursor uint64) (uint64, error) {
+
+	if a.cfg.Transport == nil {
+		return 0, fmt.Errorf("transport store is required")
+	}
+
+	var nextState AckState
+	committedCursor := state.DispatchCommittedTo
+
+	for i, env := range envelopes {
+		envelopeNextCursor := env.EventSeq + 1
+		if i == len(envelopes)-1 {
+			envelopeNextCursor = batchNextCursor
+		}
+
+		err := a.cfg.Transport.RunInIngressTx(
+			ctx, func(txCtx context.Context) error {
+				cursor, err := a.dispatchBatch(
+					txCtx, []*mailboxpb.Envelope{env},
+					envelopeNextCursor,
+				)
+				if err != nil {
+					return err
+				}
+
+				committedCursor = cursor
+				nextState = *state
+				nextState.AdvanceDispatch(cursor)
+				nextState.PullCursor = cursor
+
+				return a.saveCheckpoint(txCtx, nextState)
+			},
+		)
+		if err != nil {
+			return committedCursor, err
+		}
+
+		*state = nextState
+	}
+
+	return committedCursor, nil
 }
 
 // ackRemote calls Edge.AckUpTo with the given cursor.

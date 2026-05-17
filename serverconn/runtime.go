@@ -84,7 +84,7 @@ func NewRuntime(cfg ConnectorConfig) (*Runtime, error) {
 // Start launches egress processing and ingress pulling. Returns an
 // error if the ingress checkpoint cannot be loaded from the store.
 func (r *Runtime) Start(ctx context.Context) error {
-	r.StartEgress()
+	r.StartEgress(ctx)
 
 	if err := r.StartIngress(ctx); err != nil {
 		r.runtime.Stop()

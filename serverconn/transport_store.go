@@ -49,6 +49,9 @@ type TransportStore interface {
 	LoadIngressCursor(ctx context.Context, localMailboxID,
 		remoteMailboxID string) (AckState, error)
 
+	RunInIngressTx(ctx context.Context,
+		fn func(context.Context) error) error
+
 	SaveIngressCursor(ctx context.Context, localMailboxID,
 		remoteMailboxID string, state AckState) error
 

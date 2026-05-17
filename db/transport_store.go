@@ -68,6 +68,18 @@ func (s *TransportStoreDB) LoadIngressCursor(ctx context.Context,
 	return state, err
 }
 
+func (s *TransportStoreDB) RunInIngressTx(ctx context.Context,
+	fn func(context.Context) error) error {
+
+	return s.ExecTxContext(
+		ctx, WriteTxOption(), func(txCtx context.Context,
+			_ *sqlc.Queries) error {
+
+			return fn(txCtx)
+		},
+	)
+}
+
 func (s *TransportStoreDB) SaveIngressCursor(ctx context.Context,
 	localMailboxID, remoteMailboxID string,
 	state serverconn.AckState) error {

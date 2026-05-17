@@ -2,6 +2,7 @@ package serverconn
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
 	"testing"
@@ -18,6 +19,16 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+type txMarkingTransportStore struct {
+	*memTransportStore
+}
+
+func (s *txMarkingTransportStore) RunInIngressTx(ctx context.Context,
+	fn func(context.Context) error) error {
+
+	return fn(actor.WithTx(ctx, (*sql.Tx)(nil)))
+}
 
 // testServerMessage is a minimal ServerMessage implementation for egress
 // tests.
@@ -775,6 +786,59 @@ func TestIngress_PartialDispatch_NoDuplicateRedelivery(t *testing.T) {
 		t, 2, dispatchCounts[2], "second envelope should be "+
 			"dispatched exactly twice (1 fail + 1 retry)",
 	)
+}
+
+func TestDispatchAndCheckpointPassesIngressTxToDispatcher(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+	store := &txMarkingTransportStore{
+		memTransportStore: newMemTransportStore(),
+	}
+	key := mailboxrpc.ServiceMethod{
+		Service: "test.v1.Tx",
+		Method:  "Event",
+	}
+
+	var sawTx bool
+	cfg := newTestConnectorConfig(mb, newMemCheckpointStore())
+	cfg.Transport = store
+	cfg.Dispatchers = DispatcherMap{
+		key: func(ctx context.Context, _ *mailboxpb.Envelope) error {
+			sawTx = actor.HasTx(ctx)
+
+			return nil
+		},
+	}
+
+	connector := NewServerConnectionActor(cfg)
+	state := AckState{}
+	cursor, err := connector.dispatchAndCheckpoint(
+		t.Context(), &state,
+		[]*mailboxpb.Envelope{{
+			MsgId:    "tx-event",
+			EventSeq: 7,
+			Rpc: &mailboxpb.RpcMeta{
+				Kind:    mailboxpb.RpcMeta_KIND_EVENT,
+				Service: key.Service,
+				Method:  key.Method,
+			},
+			Body: &anypb.Any{Value: []byte("payload")},
+		}},
+		8,
+	)
+	require.NoError(t, err)
+	require.True(t, sawTx)
+	require.Equal(t, uint64(8), cursor)
+	require.Equal(t, uint64(8), state.PullCursor)
+	require.Equal(t, uint64(8), state.DispatchCommittedTo)
+	require.Equal(t, uint64(8), state.AckTarget)
+
+	persisted, err := store.LoadIngressCursor(
+		t.Context(), cfg.LocalMailboxID, cfg.RemoteMailboxID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, state, persisted)
 }
 
 // TestRetryDelay verifies the exponential backoff formula with jitter.

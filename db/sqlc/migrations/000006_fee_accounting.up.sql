@@ -140,7 +140,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ledger_idempotent_session
     WHERE session_id IS NOT NULL;
 
 -- Partial index covering outpoint-keyed events (unilateral exit
--- legs) so crash-replay of a durable actor message does not
+-- legs) so crash-replay of a ledger event does not
 -- double-book transfers_out and onchain_fees.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ledger_idempotent_key
     ON ledger_entries(
