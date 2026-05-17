@@ -450,7 +450,7 @@ func TestUTXOAuditSpendLifecycle(t *testing.T) {
 // TestInsertWalletUTXOLogIdempotent verifies that re-inserting
 // the same (outpoint, event) pair is a silent no-op. This
 // protects the audit log from duplicate rows when the durable
-// ledger actor replays unprocessed messages via RestartMessage
+// ledger actor replays unprocessed messages via restart signal
 // after a crash between the DB write and the mailbox ack.
 func TestInsertWalletUTXOLogIdempotent(t *testing.T) {
 	t.Parallel()

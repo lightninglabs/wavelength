@@ -13,15 +13,15 @@ import (
 // a SessionID for the resume request.
 //
 // This bridges the timeout actor's fire-and-forget callback with the OOR
-// actor's durable mailbox, enabling event-driven retry scheduling without
-// blocking goroutines on time.Sleep.
+// actor, enabling event-driven retry scheduling without blocking goroutines on
+// time.Sleep.
 func NewRetryCallbackRef(
-	oorRef actor.TellOnlyRef[OORDurableMsg],
+	oorRef actor.TellOnlyRef[ActorMsg],
 ) actor.TellOnlyRef[*timeout.ExpiredMsg] {
 
 	return actor.NewMapInputRef(
 		oorRef,
-		func(expired *timeout.ExpiredMsg) OORDurableMsg {
+		func(expired *timeout.ExpiredMsg) ActorMsg {
 			// Parse the timeout ID back into a session ID.
 			// The ID was set to sessionID.String() (hex) when
 			// the timeout was scheduled.

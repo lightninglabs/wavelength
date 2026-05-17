@@ -118,7 +118,7 @@ func (m *rawServerMessage) ToProto() fn.Result[proto.Message] {
 // ServerConnMsg is the sealed interface for messages that can be sent to the
 // ServerConnectionActor. These are typically FSM outbox messages from the
 // client that need to be relayed to the server. The interface extends
-// TLVMessage for durable actor mailbox persistence.
+// TLVMessage for local actor mailbox persistence.
 type ServerConnMsg interface {
 	actor.TLVMessage
 
@@ -168,12 +168,8 @@ type SendClientEventRequest struct {
 	// encoded. It exists because Decode replaces the typed inner
 	// Message with a rawServerMessage that no longer implements
 	// CorrelationKey, so a decoded wrapper has no way to recover the
-	// key from the inner field alone. The outbox-CDC delivery path
-	// hits this branch: the wrapper is encoded into the actor outbox,
-	// later decoded by OutboxPublisher, then enqueued into the
-	// serverconn mailbox for the first time, and that first enqueue
-	// is where the durable mailbox reads CorrelationKey to stamp the
-	// claim lane. Stored as []byte so Decode can hand the TLV record
+	// key from the inner field alone. Stored as []byte so Decode can hand
+	// the TLV record
 	// straight through without a copy; the read path converts to
 	// string at the CorrelationKey() boundary. Set by Decode; read
 	// by CorrelationKey as the fallback when the structural assertion
@@ -195,12 +191,9 @@ func (m *SendClientEventRequest) TLVType() tlv.Type {
 // converted to proto, wrapped in anypb.Any (preserving type information),
 // and stored via a WrappedProto TLV record.
 //
-// We use TLV here (rather than storing raw proto bytes) because the
-// DurableActor runtime requires all messages to satisfy the TLVMessage
-// interface (TLVType, Encode, Decode). The MessageCodec uses these methods
-// to serialize messages into the durable mailbox. WrappedProto handles the
-// proto↔bytes conversion inside the TLV record, keeping the codec contract
-// simple and uniform across message types.
+// We use TLV here rather than storing raw proto bytes so the transport codec
+// can decode messages consistently across direct SQL egress and tests.
+// WrappedProto handles the proto↔bytes conversion inside the TLV record.
 func (m *SendClientEventRequest) Encode(w io.Writer) error {
 	protoMsg, err := m.Message.ToProto().Unpack()
 	if err != nil {
@@ -318,7 +311,7 @@ func (m *SendClientEventRequest) Decode(r io.Reader) error {
 }
 
 // CorrelationKey forwards the inner ServerMessage's per-key FIFO key so
-// the durable mailbox's per-correlation-key claim invariant fires on the
+// the SQL mailbox's per-correlation-key claim invariant fires on the
 // right lane (e.g. "oor/<session>", "round/<id>"). Without this hop the
 // wrapper's embedded BaseMessage default ("") would erase the inner key
 // at enqueue and every outbox row would land in the unkeyed lane, leaving
@@ -332,12 +325,9 @@ func (m *SendClientEventRequest) Decode(r io.Reader) error {
 // the inner Message is the concrete OOR/round outbox type.
 //
 // After TLV decode the inner becomes a *rawServerMessage that no longer
-// satisfies the assertion. That is the path the outbox-CDC delivery uses:
-// sendTransportEvent encodes the wrapper into the actor outbox, the
-// OutboxPublisher decodes it later, and then Tells the decoded wrapper
-// into the serverconn mailbox for the first time. The durable mailbox
-// reads CorrelationKey on that first enqueue, so we have to surface
-// the key from somewhere other than the now-erased inner type. Encode
+// satisfies the assertion. The SQL egress replay path decodes the wrapper
+// after the concrete inner type has been erased, so we have to surface the key
+// from somewhere other than the inner message. Encode
 // persists the inner key in its own TLV record and Decode caches it on
 // cachedCorrelationKey; this method falls back to that cache when the
 // structural assertion misses.
@@ -630,9 +620,8 @@ func (m *SendUnaryRequest) serverConnMsgSealed() {}
 //     manages the ack watermark state machine to ensure at-least-once
 //     delivery with crash safety.
 //
-// The actor is backed by a DurableActor for crash-safe egress. Outbound
-// messages from protocol actors persist in the durable mailbox before
-// processing, ensuring no message loss on crashes.
+// Crash-safe egress is provided by SQL mailbox_egress rows owned by the
+// transport runtime.
 type ServerConnectionActor struct {
 	// cfg holds all dependencies and tuning knobs for the connector.
 	cfg ConnectorConfig
@@ -664,8 +653,8 @@ type ServerConnectionActor struct {
 }
 
 // NewServerConnectionActor creates a new server connection actor with the
-// given configuration. The actor must be started via its DurableActor wrapper
-// and the ingress loop must be started separately via StartIngress.
+// given configuration. The ingress loop must be started separately via
+// StartIngress.
 func NewServerConnectionActor(
 	cfg ConnectorConfig,
 ) *ServerConnectionActor {

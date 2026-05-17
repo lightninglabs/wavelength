@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -131,6 +132,10 @@ type Ark struct {
 	// is silently skipped (tests, lightweight harnesses).
 	ledgerSink fn.Option[ledger.Sink]
 
+	// walletEffects persists ledger/audit notifications as wallet-owned
+	// durable effects before a background worker delivers them.
+	walletEffects WalletEffectStore
+
 	// selfRef is the actor's own ref, captured at Start time so the
 	// boarding-sweep handlers can hand it to chainsource.MapSpendEvent
 	// and txconfirm.MapNotification when registering watches.
@@ -255,6 +260,13 @@ func WithClock(clk clock.Clock) ArkOption {
 	}
 }
 
+// WithWalletEffects wires durable wallet-owned effect persistence.
+func WithWalletEffects(store WalletEffectStore) ArkOption {
+	return func(a *Ark) {
+		a.walletEffects = store
+	}
+}
+
 // logger returns the configured logger or falls back to extracting from
 // context. If no logger is found in either location, returns btclog.Disabled.
 func (a *Ark) logger(ctx context.Context) btclog.Logger {
@@ -277,11 +289,58 @@ func (a *Ark) logger(ctx context.Context) btclog.Logger {
 func (a *Ark) emitUTXOCreated(ctx context.Context, utxo *Utxo,
 	blockHeight int32, classification string) {
 
-	a.ledgerSink.WhenSome(func(sink ledger.Sink) {
-		if utxo == nil {
-			return
+	if utxo == nil {
+		return
+	}
+
+	if a.walletEffects != nil {
+		var height sql.NullInt32
+		if blockHeight > 0 {
+			height = sql.NullInt32{
+				Int32: blockHeight,
+				Valid: true,
+			}
 		}
 
+		opKey := fmt.Sprintf("%s:%d/%s", utxo.Outpoint.Hash,
+			utxo.Outpoint.Index, classification)
+		err := a.walletEffects.InsertWalletEffect(
+			ctx, WalletEffectInsert{
+				ID:         "wallet/utxo-created/" + opKey,
+				EffectType: WalletEffectRecordLedgerUTXOCreated,
+				IdempotencyKey: "wallet/utxo-created/" +
+					opKey,
+				OutpointHash: utxo.Outpoint.Hash[:],
+				OutpointIndex: sql.NullInt32{
+					Int32: int32(utxo.Outpoint.Index),
+					Valid: true,
+				},
+				AmountSat: sql.NullInt64{
+					Int64: int64(utxo.Amount),
+					Valid: true,
+				},
+				BlockHeight: height,
+				Classification: sql.NullString{
+					String: classification,
+					Valid:  true,
+				},
+			},
+		)
+		if err != nil {
+			a.logger(ctx).WarnS(
+				ctx,
+				"Failed to persist UTXOCreated wallet effect",
+				err,
+				btclog.Fmt("outpoint", "%v", utxo.Outpoint),
+				slog.Int64("amount_sat", int64(utxo.Amount)),
+				slog.String("classification", classification),
+			)
+		}
+
+		return
+	}
+
+	a.ledgerSink.WhenSome(func(sink ledger.Sink) {
 		var height uint32
 		if blockHeight > 0 {
 			height = uint32(blockHeight)

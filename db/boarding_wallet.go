@@ -134,6 +134,9 @@ type BoardingStore interface {
 	CountUnresolvedBoardingSweepInputs(ctx context.Context,
 		txid []byte) (int64, error)
 
+	InsertWalletEffect(ctx context.Context,
+		arg sqlc.InsertWalletEffectParams) error
+
 	UpsertPendingBoardRequest(ctx context.Context,
 		arg sqlc.UpsertPendingBoardRequestParams) error
 

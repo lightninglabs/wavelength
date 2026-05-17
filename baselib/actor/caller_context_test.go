@@ -184,7 +184,7 @@ func TestActorShutdownOverridesCallerDeadline(t *testing.T) {
 
 // TestAskPreservesCallerTransactionContext verifies that Ask processing keeps
 // the caller's transaction marker. Durable actors rely on this when they ask a
-// regular actor to perform DB work inside the durable actor's current tx.
+// regular actor to perform DB work inside the local actor's current tx.
 func TestAskPreservesCallerTransactionContext(t *testing.T) {
 	t.Parallel()
 
@@ -269,7 +269,7 @@ func TestTellIgnoresCallerContextAfterEnqueue(t *testing.T) {
 }
 
 // TestTellStripsCallerTransactionBeforeEnqueue verifies that Tell does not
-// retain a durable actor's active transaction in the queued envelope. Tell
+// retain a local actor's active transaction in the queued envelope. Tell
 // processing is asynchronous, so the caller's transaction may be committed or
 // rolled back before the receiving actor handles the message.
 func TestTellStripsCallerTransactionBeforeEnqueue(t *testing.T) {

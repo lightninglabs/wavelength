@@ -1,7 +1,6 @@
 package serverconn
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -9,16 +8,15 @@ import (
 	"math/rand/v2"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 )
 
-// ingressLoop is the main pull-dispatch-ack loop. It runs in its own
-// goroutine, started from ServerConnectionActor.StartIngress. The loop:
+// ingressLoop is the main pull-dispatch-ack loop. It runs in its own goroutine,
+// started from ServerConnectionActor.StartIngress. The loop:
 //
-//  1. Loads persisted ack watermark state from the checkpoint store.
+//  1. Loads persisted ack watermark state from the SQL transport cursor table.
 //  2. Continuously pulls envelopes from the remote mailbox.
 //  3. Dispatches each envelope to the appropriate local actor or response
 //     waiter.
@@ -306,7 +304,7 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 			// Dispatch to local actor via the dispatch table.
 			// The dispatcher is a closure that does
 			// serviceKey.Ref(system).Tell(ctx, msg). A nil error
-			// means the target durable actor persisted the
+			// means the target local actor persisted the
 			// message.
 			key := mailboxrpc.ServiceMethod{
 				Service: env.Rpc.Service,
@@ -388,29 +386,23 @@ func (a *ServerConnectionActor) ackRemote(
 	return nil
 }
 
-// loadCheckpoint restores the AckState from the checkpoint store on startup.
-// Returns a zero-value AckState if no checkpoint exists.
+// loadCheckpoint restores the AckState from the transport cursor table.
 func (a *ServerConnectionActor) loadCheckpoint(ctx context.Context) (AckState,
 	error) {
 
-	actorID := DurableActorID(a.cfg.LocalMailboxID)
+	if a.cfg.Transport == nil {
+		return AckState{}, fmt.Errorf("transport store is required")
+	}
 
-	checkpoint, err := a.cfg.Store.LoadCheckpoint(ctx, actorID)
+	state, err := a.cfg.Transport.LoadIngressCursor(
+		ctx, a.cfg.LocalMailboxID, a.cfg.RemoteMailboxID,
+	)
 	if err != nil {
 		return AckState{}, err
 	}
-	if checkpoint == nil {
-		return AckState{}, nil
-	}
 
-	var state AckState
-	stateReader := bytes.NewReader(checkpoint.StateData)
-	if err := state.Decode(stateReader); err != nil {
-		return AckState{}, err
-	}
-
-	a.log.InfoS(ctx, "Loaded ack checkpoint",
-		slog.String("actor_id", actorID),
+	a.log.InfoS(ctx, "Loaded ingress cursor",
+		slog.String("local_mailbox_id", a.cfg.LocalMailboxID),
 		slog.Uint64("pull_cursor", state.PullCursor),
 		slog.Uint64("dispatch_committed_to",
 			state.DispatchCommittedTo),
@@ -420,23 +412,18 @@ func (a *ServerConnectionActor) loadCheckpoint(ctx context.Context) (AckState,
 	return state, nil
 }
 
-// saveCheckpoint persists the AckState to the checkpoint store.
+// saveCheckpoint persists the AckState to the transport cursor table.
 func (a *ServerConnectionActor) saveCheckpoint(
 	ctx context.Context, state AckState,
 ) error {
 
-	var buf bytes.Buffer
-	if err := state.Encode(&buf); err != nil {
-		return err
+	if a.cfg.Transport == nil {
+		return fmt.Errorf("transport store is required")
 	}
 
-	actorID := DurableActorID(a.cfg.LocalMailboxID)
-
-	return a.cfg.Store.SaveCheckpoint(ctx, actor.CheckpointParams{
-		ActorID:   actorID,
-		StateType: ackStateType,
-		StateData: buf.Bytes(),
-	})
+	return a.cfg.Transport.SaveIngressCursor(
+		ctx, a.cfg.LocalMailboxID, a.cfg.RemoteMailboxID, state,
+	)
 }
 
 // sleepBackoff sleeps for an exponential backoff duration with jitter,

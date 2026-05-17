@@ -10,7 +10,6 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/oor"
@@ -211,16 +210,16 @@ func mergeOORSessionInfo(dst *daemonrpc.OORSessionInfo,
 	}
 }
 
-// queryOORSessionSummaries fetches live OOR summaries from the actor.
+// queryOORSessionSummaries fetches live OOR summaries from the direct
+// coordinator.
 func (r *RPCServer) queryOORSessionSummaries(ctx context.Context,
 	req *daemonrpc.ListOORSessionsRequest) ([]*daemonrpc.OORSessionInfo,
 	error) {
 
-	if r.server.actorSystem == nil {
+	if r.server.oorCoordinator == nil {
 		return nil, nil
 	}
 
-	oorRef := oor.NewServiceKey().Ref(r.server.actorSystem)
 	listReq := &oor.ListSessionsRequest{
 		Direction: protoToOORSessionDirection(
 			req.GetDirectionFilter(),
@@ -229,17 +228,12 @@ func (r *RPCServer) queryOORSessionSummaries(ctx context.Context,
 			daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_PENDING,
 	}
 
-	future := oorRef.Ask(ctx, listReq)
-	result := future.Await(ctx)
-
-	actorResp, err := result.Unpack()
+	actorResp, err := r.server.oorCoordinator.Receive(
+		ctx, listReq,
+	).Unpack()
 	if err != nil {
-		if errors.Is(err, actor.ErrNoActorsAvailable) {
-			return nil, nil
-		}
-
 		return nil, status.Errorf(codes.Internal, "failed to query "+
-			"OOR actor: %v", err)
+			"OOR coordinator: %v", err)
 	}
 
 	resp, ok := actorResp.(*oor.ListSessionsResponse)
@@ -386,7 +380,7 @@ func roundFailureReason(state round.ClientState) string {
 	return ""
 }
 
-// oorSessionSummaryToProto converts an in-memory OOR actor summary.
+// oorSessionSummaryToProto converts an in-memory OOR coordinator summary.
 func oorSessionSummaryToProto(
 	summary oor.SessionSummary) *daemonrpc.OORSessionInfo {
 

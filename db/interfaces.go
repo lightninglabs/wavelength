@@ -239,7 +239,7 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 	txOptions TxOptions, txBody func(Q) error) error {
 
 	// If the context already carries a database transaction from the
-	// durable actor framework, join it instead of creating a new one.
+	// local actor framework, join it instead of creating a new one.
 	// This ensures that all store operations within a single actor
 	// message are executed atomically in the same transaction. The
 	// provided txOptions are ignored in this case; isolation level

@@ -837,7 +837,7 @@ func TestLedgerStoreIdempotentInsertBySession(t *testing.T) {
 
 	// Replay of the same (session_id, event_type, debit,
 	// credit) tuple is swallowed by ON CONFLICT DO NOTHING
-	// and returns nil so the durable actor can ack the
+	// and returns nil so the local actor can ack the
 	// redelivery instead of nacking forever.
 	entry.CreatedAt = now + 1
 	require.NoError(t, store.InsertLedgerEntry(ctx, entry))

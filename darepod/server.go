@@ -1,3 +1,4 @@
+//nolint:ll
 package darepod
 
 import (
@@ -33,7 +34,6 @@ import (
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	"github.com/lightninglabs/darepo-client/fraud"
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/ledger"
@@ -142,11 +142,12 @@ type Server struct {
 	loggers    SubLoggers
 	log        btclog.Logger
 
-	db            *db.SqliteStore
-	deliveryStore actor.DeliveryStore
-	vtxoStore     *db.VTXOPersistenceStore
-	roundStore    *db.RoundPersistenceStore
-	ueStore       *db.UnilateralExitPersistenceStore
+	db                    *db.SqliteStore
+	oorClientStore        *db.OORClientStoreDB
+	vtxoStore             *db.VTXOPersistenceStore
+	roundStore            *db.RoundPersistenceStore
+	ueStore               *db.UnilateralExitPersistenceStore
+	unrollCheckpointStore *db.UnrollCheckpointStoreDB
 
 	// lnd holds the lndclient connection when wallet.type is "lnd".
 	// It is None in lwwallet mode.
@@ -223,8 +224,6 @@ type Server struct {
 	ark     *arkrpc.ArkServiceMailboxClient
 	indexer *indexer.Client
 
-	outboxPublisher *actor.OutboxPublisher
-
 	// proofKeyBackend derives wallet-managed keys and produces proof
 	// signers for daemon-owned receive scripts and indexer identity.
 	proofKeyBackend proofkeys.Backend
@@ -245,13 +244,17 @@ type Server struct {
 	walletRef    fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
-	oorActor         *oor.OORClientActor
-	oorSigningEffect *oor.SigningEffectActor
+	oorCoordinator    *oor.ClientCoordinator
+	oorCoordinatorRef *oor.CoordinatorTellRef
+	oorEffectWorker   *oor.OORClientEffectWorker
 
 	// ledgerStore exposes the client-side ledger DB adapter for
 	// read-only RPC handlers (GetFeeHistory). Writes go through
 	// the ledger actor; this field is for queries only.
 	ledgerStore *db.LedgerStoreDB
+
+	walletEffectStore  *db.WalletEffectStoreDB
+	walletEffectWorker *wallet.WalletEffectWorker
 
 	// boardingSweepStore exposes the boarding-sweep DB adapter for
 	// read-only RPC handlers (ListBoardingSweeps). All mutating writes
@@ -765,30 +768,16 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 			s.fraudWatcher.Stop()
 		}
 
-		if s.oorSigningEffect != nil {
-			//nolint:contextcheck // bounded shutdown
-			err := s.oorSigningEffect.StopAndWait(shutdownCtx)
-			if err != nil {
-				s.log.WarnS(
-					ctx,
-					"OOR signing effect shutdown failed",
-					err,
-				)
-			}
+		if s.oorCoordinator != nil {
+			s.oorCoordinator.Stop()
 		}
 
-		if s.oorActor != nil {
-			//nolint:contextcheck // bounded shutdown
-			err := s.oorActor.StopAndWait(shutdownCtx)
-			if err != nil {
-				s.log.WarnS(ctx, "OOR actor shutdown failed",
-					err,
-				)
-			}
+		if s.oorEffectWorker != nil {
+			s.oorEffectWorker.Stop()
 		}
 
-		if s.outboxPublisher != nil {
-			s.outboxPublisher.Stop()
+		if s.walletEffectWorker != nil {
+			s.walletEffectWorker.Stop()
 		}
 
 		if s.runtime != nil {
@@ -1745,10 +1734,10 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 	return nil
 }
 
-// startWalletDependentActors initializes and registers the wallet,
-// round, and OOR actors. This is called either synchronously during
-// startup (when the wallet is immediately ready) or asynchronously
-// after an InitWallet/UnlockWallet RPC in lwwallet mode.
+// startWalletDependentActors initializes the wallet-dependent runtime:
+// wallet and round actors plus the direct OOR coordinator. This is called
+// either synchronously during startup (when the wallet is immediately ready)
+// or asynchronously after an InitWallet/UnlockWallet RPC in lwwallet mode.
 func (s *Server) startWalletDependentActors(ctx context.Context,
 	chainSourceRef actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
@@ -2109,7 +2098,7 @@ func (s *Server) newMailboxEdge() mailboxpb.MailboxServiceClient {
 // buildRPCDispatchers creates the dispatcher map for inbound envelopes.
 // KIND_REQUEST envelopes are bridged to the local ServeMux (e.g.,
 // DaemonService.GetInfo). KIND_EVENT envelopes for server-push OOR responses
-// are routed to the OOR actor via the EventRouter and service key lookup.
+// are routed to the direct OOR coordinator via the EventRouter.
 func (s *Server) buildRPCDispatchers(
 	edge mailboxpb.MailboxServiceClient,
 ) map[mailboxrpc.ServiceMethod]serverconn.EnvelopeDispatcher {
@@ -2126,7 +2115,7 @@ func (s *Server) buildRPCDispatchers(
 	}
 
 	// Build event-based dispatch routes for server-push events
-	// that target durable actors via service key lookup.
+	// that target local actors via service key lookup.
 	eventRouter := s.buildEventRoutes()
 
 	// Start with the event router's dispatch map, then layer
@@ -2147,9 +2136,8 @@ func (s *Server) buildRPCDispatchers(
 }
 
 // buildEventRoutes registers typed event routes for server-push envelopes.
-// Each route maps a (service, method) pair to a durable actor via the
-// EventRouter, which handles proto deserialization, domain adaptation, and
-// durable Tell delivery.
+// Each route maps a (service, method) pair to a local handler via the
+// EventRouter, which handles proto deserialization and domain adaptation.
 func (s *Server) buildEventRoutes() *serverconn.EventRouter {
 	router := serverconn.NewEventRouter(s.actorSystem)
 
@@ -2194,269 +2182,281 @@ func (s *Server) registerIncomingVTXOEventRoute(
 }
 
 // registerOOREventRoutes registers OOR mailbox service event routes with the
-// EventRouter. When the server pushes SubmitPackage or FinalizePackage
-// response events, the router decodes the oorpb proto, adapts it into a
-// DriveEventRequest, and Tell's it to the OOR actor via service key.
-func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //nolint:funlen,ll
-	oorKey := oor.NewServiceKey()
+// EventRouter. Server-push OOR responses are decoded and handed directly to
+// the coordinator.
+func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
+	s.registerOORCoordinatorEventRoutes(router)
+}
+
+//nolint:funlen
+func (s *Server) registerOORCoordinatorEventRoutes(
+	router *serverconn.EventRouter) {
+
 	limits := s.cfg.OORReceiveLimits()
+	handle := func(ctx context.Context, msg oor.ActorMsg) error {
+		coordinator := s.oorCoordinator
+		if coordinator == nil {
+			return fmt.Errorf("OOR coordinator not initialized")
+		}
 
-	// SubmitPackage: server accepted the submit and returned co-signed
-	// checkpoint PSBTs. Adapt into a DriveEventRequest carrying a
-	// SubmitAcceptedEvent so the OOR FSM can advance.
-	serverconn.AddRoute(router, serverconn.EventRouteConfig[
-		oor.OORDurableMsg, oor.ActorResp,
-	]{
-		Service: oorpb.ServiceName,
-		Method:  oorpb.MethodSubmitPackage,
-		NewEvent: func() proto.Message {
-			return &oorpb.SubmitPackageResponse{}
-		},
-		Key: oorKey,
-		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
-			resp, ok := p.(*oorpb.SubmitPackageResponse)
-			if !ok {
-				return nil, fmt.Errorf("expected "+
-					"SubmitPackageResponse, got %T", p)
-			}
+		result := coordinator.Handle(ctx, msg)
+		if result.IsErr() {
+			return result.Err()
+		}
 
-			sessionID, checkpoints, err :=
-				oorpb.ParseSubmitPackageResponse(resp)
+		return nil
+	}
 
-			// A typed server-side rejection (e.g.
-			// OOR_REJECT_LINEAGE_TOO_LARGE) routes through the
-			// FSM's existing OutboxErrorEvent path rather than
-			// bubbling out as an Adapt error. The serverconn
-			// ingress dispatcher aborts the batch on any Adapt
-			// error and stalls the cursor on the offending
-			// envelope, so a sticky rejection would replay
-			// indefinitely. Emitting an OutboxErrorEvent with
-			// Retryable=false advances the cursor cleanly and
-			// drives the session to terminal Failed via the
-			// existing handleOutboxError path, where the
-			// wallet caller already routes on the typed cause.
-			var rejected *oorpb.SubmitRejectedError
-			if errors.As(err, &rejected) {
-				const submitOutbox = "SendSubmitPackageRequest"
+	serverconn.AddEnvelopeHandlerRoute(
+		router,
+		serverconn.EnvelopeHandlerRouteConfig{
+			Service: oorpb.ServiceName,
+			Method:  oorpb.MethodSubmitPackage,
+			NewEvent: func() proto.Message {
+				return &oorpb.SubmitPackageResponse{}
+			},
+			Handle: func(ctx context.Context, _ *mailboxpb.Envelope,
+				p proto.Message) error {
 
-				return &oor.DriveEventRequest{
+				resp, ok := p.(*oorpb.SubmitPackageResponse)
+				if !ok {
+					return fmt.Errorf("expected "+
+						"SubmitPackageResponse, got %T",
+						p)
+				}
+
+				sessionID, checkpoints, err :=
+					oorpb.ParseSubmitPackageResponse(resp)
+
+				var rejected *oorpb.SubmitRejectedError
+				if errors.As(err, &rejected) {
+					const submitOutbox = "SendSubmitPackageRequest"
+
+					return handle(
+						ctx, &oor.DriveEventRequest{
+							SessionID: oor.SessionID(
+								sessionID,
+							),
+							Event: &oor.OutboxErrorEvent{
+								OutboxType:  submitOutbox,
+								Retryable:   false,
+								ErrorReason: rejected.Error(),
+							},
+						},
+					)
+				}
+				if err != nil {
+					return fmt.Errorf("parse submit "+
+						"response: %w", err)
+				}
+
+				return handle(ctx, &oor.DriveEventRequest{
 					SessionID: oor.SessionID(sessionID),
-					Event: &oor.OutboxErrorEvent{
-						OutboxType:  submitOutbox,
-						Retryable:   false,
-						ErrorReason: rejected.Error(),
+					Event: &oor.SubmitAcceptedEvent{
+						SessionID:               oor.SessionID(sessionID),
+						CoSignedCheckpointPSBTs: checkpoints,
 					},
-				}, nil
-			}
-			if err != nil {
-				return nil, fmt.Errorf("parse submit "+
-					"response: %w", err)
-			}
-
-			return &oor.DriveEventRequest{
-				SessionID: oor.SessionID(sessionID),
-				Event: &oor.SubmitAcceptedEvent{
-					SessionID: oor.SessionID(
-						sessionID,
-					),
-					CoSignedCheckpointPSBTs: checkpoints,
-				},
-			}, nil
+				})
+			},
 		},
-	})
+	)
 
-	// FinalizePackage: server accepted the finalize. Adapt into a
-	// DriveEventRequest carrying a FinalizeAcceptedEvent so the OOR
-	// FSM can advance to the terminal Completed state.
-	serverconn.AddRoute(router, serverconn.EventRouteConfig[
-		oor.OORDurableMsg, oor.ActorResp,
-	]{
-		Service: oorpb.ServiceName,
-		Method:  oorpb.MethodFinalizePackage,
-		NewEvent: func() proto.Message {
-			return &oorpb.FinalizePackageResponse{}
+	serverconn.AddEnvelopeHandlerRoute(
+		router,
+		serverconn.EnvelopeHandlerRouteConfig{
+			Service: oorpb.ServiceName,
+			Method:  oorpb.MethodFinalizePackage,
+			NewEvent: func() proto.Message {
+				return &oorpb.FinalizePackageResponse{}
+			},
+			Handle: func(ctx context.Context, _ *mailboxpb.Envelope,
+				p proto.Message) error {
+
+				resp, ok := p.(*oorpb.FinalizePackageResponse)
+				if !ok {
+					return fmt.Errorf("expected "+
+						"FinalizePackageResponse, got"+
+						" %T", p)
+				}
+
+				sessionID, err :=
+					oorpb.ParseFinalizePackageResponse(resp)
+				if err != nil {
+					return fmt.Errorf("parse finalize "+
+						"response: %w", err)
+				}
+
+				return handle(ctx, &oor.DriveEventRequest{
+					SessionID: oor.SessionID(sessionID),
+					Event:     &oor.FinalizeAcceptedEvent{},
+				})
+			},
 		},
-		Key: oorKey,
-		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
-			resp, ok := p.(*oorpb.FinalizePackageResponse)
-			if !ok {
-				return nil, fmt.Errorf("expected "+
-					"FinalizePackageResponse, got %T", p)
-			}
+	)
 
-			sessionID, err :=
-				oorpb.ParseFinalizePackageResponse(resp)
-			if err != nil {
-				return nil, fmt.Errorf("parse finalize "+
-					"response: %w", err)
-			}
+	serverconn.AddEnvelopeHandlerRoute(
+		router,
+		serverconn.EnvelopeHandlerRouteConfig{
+			Service: "arkrpc.IndexerService",
+			Method:  "ListVTXOsByScripts",
+			NewEvent: func() proto.Message {
+				return &arkrpc.ListVTXOsByScriptsResponse{}
+			},
+			Handle: func(ctx context.Context,
+				env *mailboxpb.Envelope,
+				p proto.Message) error {
 
-			return &oor.DriveEventRequest{
-				SessionID: oor.SessionID(sessionID),
-				Event:     &oor.FinalizeAcceptedEvent{},
-			}, nil
-		},
-	})
+				if env == nil || env.Rpc == nil {
+					return fmt.Errorf("incoming metadata " +
+						"response envelope must be " +
+						"provided")
+				}
 
-	// ListVTXOsByScripts response: server returned authoritative incoming
-	// metadata for a durable OOR receive session query.
-	serverconn.AddEnvelopeRoute(router, serverconn.EnvelopeRouteConfig[
-		oor.OORDurableMsg, oor.ActorResp,
-	]{
-		Service: "arkrpc.IndexerService",
-		Method:  "ListVTXOsByScripts",
-		NewEvent: func() proto.Message {
-			return &arkrpc.ListVTXOsByScriptsResponse{}
-		},
-		Key: oorKey,
-		Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
-			oor.OORDurableMsg, error) {
-
-			if env == nil || env.Rpc == nil {
-				return nil, fmt.Errorf("incoming metadata " +
-					"response envelope must be provided")
-			}
-
-			sessionID, err := oor.ParseIncomingMetadataCorrelationID( //nolint:ll
-				env.Rpc.CorrelationId,
-			)
-			if err != nil {
-				return nil, err
-			}
-
-			if rpcErr := mailboxrpc.DecodeErrorHeaders(
-				env.Headers,
-			); rpcErr != nil {
-				return &oor.DriveEventRequest{
-					SessionID: sessionID,
-					Event: &oor.FailEvent{
-						Reason: fmt.Sprintf(
-							"query incoming "+
-								"metadata: %v", //nolint:ll
-							rpcErr,
-						),
-					},
-				}, nil
-			}
-
-			resp, ok := p.(*arkrpc.ListVTXOsByScriptsResponse)
-			if !ok {
-				return nil, fmt.Errorf("expected "+
-					"ListVTXOsByScriptsResponse, got %T", p)
-			}
-
-			matches, err := incomingMetadataMatchesFromResponse(
-				sessionID, resp, limits,
-			)
-			if err != nil {
-				return nil, err
-			}
-
-			return &oor.DriveEventRequest{
-				SessionID: sessionID,
-				Event: &oor.IncomingMetadataResolvedEvent{
-					Matches: matches,
-				},
-			}, nil
-		},
-	})
-
-	// ListOORRecipientEventsByScript response: server resolved the
-	// lightweight incoming transfer hint into the full Ark package for a
-	// durable OOR receive session query.
-	serverconn.AddEnvelopeRoute(router, serverconn.EnvelopeRouteConfig[
-		oor.OORDurableMsg, oor.ActorResp,
-	]{
-		Service: "arkrpc.IndexerService",
-		Method:  "ListOORRecipientEventsByScript",
-		NewEvent: func() proto.Message {
-			return &arkrpc.ListOORRecipientEventsByScriptResponse{}
-		},
-		Key: oorKey,
-		Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
-			oor.OORDurableMsg, error) {
-
-			if env == nil || env.Rpc == nil {
-				return nil, fmt.Errorf("incoming resolve " +
-					"response envelope must be provided")
-			}
-
-			sessionID, recipientEventID, err :=
-				oor.ParseIncomingResolveCorrelationID(
+				sessionID, err := oor.ParseIncomingMetadataCorrelationID( //nolint:ll
 					env.Rpc.CorrelationId,
 				)
-			if err != nil {
-				return nil, err
-			}
+				if err != nil {
+					return err
+				}
 
-			if rpcErr := mailboxrpc.DecodeErrorHeaders(
-				env.Headers,
-			); rpcErr != nil {
-				return &oor.DriveEventRequest{
-					SessionID: sessionID,
-					Event: &oor.FailEvent{
-						Reason: fmt.Sprintf(
-							"resolve incoming "+
-								"transfer: %v", //nolint:ll
-							rpcErr,
-						),
-					},
-				}, nil
-			}
+				if rpcErr := mailboxrpc.DecodeErrorHeaders(
+					env.Headers,
+				); rpcErr != nil {
+					return handle(
+						ctx, &oor.DriveEventRequest{
+							SessionID: sessionID,
+							Event: &oor.FailEvent{
+								Reason: fmt.Sprintf(
+									"query incoming "+
+										"metadata: %v",
+									rpcErr,
+								),
+							},
+						},
+					)
+				}
 
-			resp, ok := p.(*arkrpc.ListOORRecipientEventsByScriptResponse) //nolint:ll
-			if !ok {
-				return nil, fmt.Errorf("expected "+
-					"ListOORRecipientEventsByScriptRespon"+
-					"se, got %T", p)
-			}
+				resp, ok := p.(*arkrpc.ListVTXOsByScriptsResponse)
+				if !ok {
+					return fmt.Errorf("expected "+
+						"ListVTXOsByScriptsResponse, "+
+						"got %T", p)
+				}
 
-			incomingEvent, err :=
-				oor.IncomingTransferEventFromResponseWithLimits( //nolint:ll
-					sessionID, recipientEventID, resp,
-					limits,
+				matches, err := incomingMetadataMatchesFromResponse(
+					sessionID, resp, limits,
 				)
-			if err != nil {
-				return nil, err
-			}
+				if err != nil {
+					return err
+				}
 
-			return &oor.DriveEventRequest{
-				SessionID: sessionID,
-				Event:     incomingEvent,
-			}, nil
+				return handle(
+					ctx, &oor.DriveEventRequest{
+						SessionID: sessionID,
+						Event: &oor.IncomingMetadataResolvedEvent{
+							Matches: matches,
+						},
+					},
+				)
+			},
 		},
-	})
+	)
 
-	// IncomingOOR: server notifies the client about an incoming
-	// OOR transfer via the indexer's ArkService. Persist only the
-	// lightweight notification hint here; the durable OOR actor
-	// performs the follow-up indexer query from its own worker
-	// context. This avoids deadlocking mailbox ingress on a unary
-	// response that must be delivered by the same runtime.
-	serverconn.AddRoute(router, serverconn.EventRouteConfig[
-		oor.OORDurableMsg, oor.ActorResp,
-	]{
-		Service: arkServiceName,
-		Method:  MethodIncomingOOR,
-		NewEvent: func() proto.Message {
-			return &arkrpc.IncomingOOREvent{}
+	serverconn.AddEnvelopeHandlerRoute(
+		router,
+		serverconn.EnvelopeHandlerRouteConfig{
+			Service: "arkrpc.IndexerService",
+			Method:  "ListOORRecipientEventsByScript",
+			NewEvent: func() proto.Message {
+				return &arkrpc.ListOORRecipientEventsByScriptResponse{}
+			},
+			Handle: func(ctx context.Context,
+				env *mailboxpb.Envelope,
+				p proto.Message) error {
+
+				if env == nil || env.Rpc == nil {
+					return fmt.Errorf("incoming resolve " +
+						"response envelope must be " +
+						"provided")
+				}
+
+				sessionID, recipientEventID, err :=
+					oor.ParseIncomingResolveCorrelationID(
+						env.Rpc.CorrelationId,
+					)
+				if err != nil {
+					return err
+				}
+
+				if rpcErr := mailboxrpc.DecodeErrorHeaders(
+					env.Headers,
+				); rpcErr != nil {
+					return handle(
+						ctx, &oor.DriveEventRequest{
+							SessionID: sessionID,
+							Event: &oor.FailEvent{
+								Reason: fmt.Sprintf(
+									"resolve incoming "+
+										"transfer: %v",
+									rpcErr,
+								),
+							},
+						},
+					)
+				}
+
+				resp, ok := p.(*arkrpc.ListOORRecipientEventsByScriptResponse) //nolint:ll
+				if !ok {
+					return fmt.Errorf("expected "+
+						"ListOORRecipientEventsByScri"+
+						"ptResponse, got %T", p)
+				}
+
+				incomingEvent, err :=
+					oor.IncomingTransferEventFromResponseWithLimits( //nolint:ll
+						sessionID, recipientEventID, resp,
+						limits,
+					)
+				if err != nil {
+					return err
+				}
+
+				return handle(ctx, &oor.DriveEventRequest{
+					SessionID: sessionID,
+					Event:     incomingEvent,
+				})
+			},
 		},
-		Key: oorKey,
-		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
-			evt, ok := p.(*arkrpc.IncomingOOREvent)
-			if !ok {
-				return nil, fmt.Errorf("expected "+
-					"IncomingOOREvent, got %T", p)
-			}
+	)
 
-			return oor.NewResolveIncomingTransferRequest(evt)
+	serverconn.AddEnvelopeHandlerRoute(
+		router,
+		serverconn.EnvelopeHandlerRouteConfig{
+			Service: arkServiceName,
+			Method:  MethodIncomingOOR,
+			NewEvent: func() proto.Message {
+				return &arkrpc.IncomingOOREvent{}
+			},
+			Handle: func(ctx context.Context, _ *mailboxpb.Envelope,
+				p proto.Message) error {
+
+				evt, ok := p.(*arkrpc.IncomingOOREvent)
+				if !ok {
+					return fmt.Errorf("expected "+
+						"IncomingOOREvent, got %T", p)
+				}
+
+				req, err := oor.NewResolveIncomingTransferRequest(
+					evt,
+				)
+				if err != nil {
+					return err
+				}
+
+				return handle(ctx, req)
+			},
 		},
-	})
-
-	// TODO(roasbeef): Register an IncomingAck route once the
-	// oorpb proto defines an ack RPC. SendIncomingAckRequest is
-	// classified as a transport event but currently has no
-	// server-push response route.
+	)
 }
 
 // incomingMetadataMatchesFromResponse keeps registerOOREventRoutes below the
@@ -2727,12 +2727,12 @@ func (s *Server) initDatabase(ctx context.Context) error {
 		return fmt.Errorf("unable to open database: %w", err)
 	}
 
-	s.deliveryStore, err = actordelivery.NewTxAwareDeliveryStoreFromDB(
-		s.db.DB, s.db.Backend(), s.clk, s.subLogger(actor.Subsystem),
+	dbStore := db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(),
+		s.subLogger(db.Subsystem),
 	)
-	if err != nil {
-		return fmt.Errorf("unable to create delivery store: %w", err)
-	}
+	s.oorClientStore = db.NewOORClientStore(dbStore, s.clk)
+	s.unrollCheckpointStore = db.NewUnrollCheckpointStore(dbStore, s.clk)
 
 	s.log.InfoS(ctx, "Database initialized",
 		slog.String("path", sqliteCfg.DatabaseFileName),
@@ -2752,18 +2752,19 @@ func (s *Server) initLedgerActor(ctx context.Context) error {
 
 	ledgerStore := db.NewLedgerStoreDB(dbStore)
 	auditStore := db.NewUTXOAuditStoreDB(dbStore)
+	walletEffectStore := db.NewWalletEffectStore(dbStore, s.clk)
 
 	// Stash the ledger store so the RPC layer can query it
 	// directly for paginated history without going through the
 	// ledger actor (which is write-only / fire-and-forget).
 	s.ledgerStore = ledgerStore
+	s.walletEffectStore = walletEffectStore
 
 	ledgerActor := ledger.NewLedgerActor(
 		ledger.ActorConfig{
 			Log: fn.Some(
 				s.subLogger(ledger.Subsystem),
 			),
-			DeliveryStore:  s.deliveryStore,
 			LedgerStore:    ledgerStore,
 			UTXOAuditStore: auditStore,
 		},
@@ -2777,6 +2778,18 @@ func (s *Server) initLedgerActor(ctx context.Context) error {
 	actor.RegisterWithSystem(
 		s.actorSystem, "ledger-accounting", ledgerKey, ledgerActor,
 	)
+
+	worker := wallet.NewWalletEffectWorker(wallet.WalletEffectWorkerConfig{
+		Store: walletEffectStore,
+		Sink:  ledger.NewSink(s.actorSystem),
+		Clock: s.clk,
+		Log:   fn.Some(s.subLogger(wallet.Subsystem)),
+		Owner: "darepod-wallet-effects",
+	})
+	if err := worker.Start(ctx); err != nil {
+		return fmt.Errorf("start wallet effect worker: %w", err)
+	}
+	s.walletEffectWorker = worker
 
 	s.log.InfoS(ctx, "Ledger accounting actor started")
 
@@ -2852,63 +2865,6 @@ func (s *Server) initRPCClients(ctx context.Context) {
 	s.log.InfoS(ctx, "RPC clients initialized")
 }
 
-// startActorOutboxPublisher registers the serverconn durable actor under the
-// type-erased key used by the actor outbox publisher, then starts the shared
-// publisher loop. OOR transport handoff uses this path so the OOR actor can
-// commit its own state before serverconn mailbox enqueue runs.
-//
-//nolint:contextcheck // outbox publisher owns lifecycle after startup
-func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
-	if s.runtime == nil {
-		return fmt.Errorf("serverconn runtime must be initialized")
-	}
-
-	if s.actorSystem == nil {
-		return fmt.Errorf("actor system must be initialized")
-	}
-
-	if s.deliveryStore == nil {
-		return fmt.Errorf("delivery store must be initialized")
-	}
-
-	serverConnRef := s.runtime.Ref()
-	erasingRef := actor.TypeAssertingRef[
-		actor.Message,
-		serverconn.ServerConnMsg,
-		serverconn.ServerConnResp,
-	](
-		serverConnRef,
-	)
-
-	key := actor.NewServiceKey[actor.Message, any](serverConnRef.ID())
-	if err := actor.RegisterWithReceptionist(
-		s.actorSystem.Receptionist(), key, erasingRef,
-	); err != nil {
-		return fmt.Errorf("register serverconn outbox target: %w", err)
-	}
-
-	codec := serverconn.NewServerConnCodec()
-	// The shared publisher decodes serverconn outbox entries, signing
-	// effect entries, and durable ask responses. MustRegister panics if a
-	// future TLV type collides across those message sets.
-	oor.RegisterSigningEffectMessages(codec)
-	codec.MustRegister(actor.AskResponseMsgType, func() actor.TLVMessage {
-		return &actor.AskResponse{}
-	})
-
-	cfg := actor.DefaultOutboxPublisherConfig(
-		s.deliveryStore, codec, s.actorSystem,
-	)
-	s.outboxPublisher = actor.NewOutboxPublisher(cfg)
-	s.outboxPublisher.Start()
-
-	s.log.InfoS(ctx, "Actor outbox publisher started",
-		slog.String("serverconn_target", serverConnRef.ID()),
-	)
-
-	return nil
-}
-
 // connectAndBootstrapMailbox derives the identity key, connects to the
 // ark operator, fetches the operator pubkey, and wires the mailbox
 // transport runtime. This is called synchronously for LND (wallet
@@ -2974,7 +2930,11 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	connCfg.LocalMailboxID = s.localMailboxID
 	connCfg.RemoteMailboxID = remoteMailboxID
 	connCfg.ProtocolVersion = 1
-	connCfg.Store = s.deliveryStore
+	dbStore := db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(),
+		s.subLogger(db.Subsystem),
+	)
+	connCfg.Transport = db.NewTransportStore(dbStore, s.clk)
 	connCfg.Dispatchers = dispatchers
 	connCfg.AuthSignature = authSig
 	connCfg.InitAuthHeader()
@@ -2989,15 +2949,11 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 			err)
 	}
 
-	// Start durable egress immediately so unary sends and actor outbox
-	// delivery can begin, but defer ingress until wallet-dependent actors
-	// are registered. On restart the remote mailbox may already contain
-	// queued server-push envelopes targeting the round or OOR actors.
-	s.runtime.StartEgress()
-
-	if err := s.startActorOutboxPublisher(ctx); err != nil {
-		return err
-	}
+	// Start SQL-backed egress immediately so unary sends can begin, but
+	// defer ingress until wallet-dependent runtime is registered. On
+	// restart the remote mailbox may already contain queued server-push
+	// envelopes targeting rounds or the OOR coordinator.
+	s.runtime.StartEgress(ctx)
 
 	s.log.InfoS(ctx, "Mailbox transport runtime started",
 		slog.String("local_mailbox", s.localMailboxID),
@@ -3098,6 +3054,7 @@ func (s *Server) initWalletActor(ctx context.Context,
 		wallet.WithBoardingSweep(
 			s.boardingSweepStore, sweepSigner, s.chainParams,
 		),
+		wallet.WithWalletEffects(s.walletEffectStore),
 		wallet.WithClock(s.clk),
 	)
 	walletKey := actor.NewServiceKey[
@@ -3332,21 +3289,19 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	return managerRef, nil
 }
 
-// initOORActor creates and starts the OOR (out-of-round) client actor.
+// initOORActor creates and starts the OOR (out-of-round) client coordinator.
 //
-// The OOR actor manages outgoing off-chain transfers: it drives the
-// client-side FSM that builds Ark packages, signs checkpoints, and
-// coordinates with the server via the serverconn transport. Transport
-// outbox events (submit, finalize, ack) are routed through the
-// ServerConn reference, while local events (signing, persistence) are
-// handled by a layered OutboxHandler stack:
+// The OOR coordinator manages outgoing off-chain transfers: it drives the
+// client-side FSM that builds Ark packages, signs checkpoints, and coordinates
+// with the server via the serverconn transport. Transport outbox events
+// (submit, finalize, ack) are routed through the ServerConn reference, while
+// local events (signing, persistence) are handled by a layered OutboxHandler
+// stack:
 //
 //   - LocalPersistenceOutboxHandler: marks inputs spent, materializes
 //     incoming VTXOs, handles incoming ack.
 //   - SigningOutboxHandler (Next delegate): signs Ark and checkpoint
 //     PSBTs, schedules retries.
-//
-//nolint:contextcheck // OOR actors own lifecycle after registration
 func (s *Server) initOORActor(ctx context.Context,
 	vtxoManagerRef actor.TellOnlyRef[vtxo.ManagerMsg]) error {
 
@@ -3387,9 +3342,9 @@ func (s *Server) initOORActor(ctx context.Context,
 		return fmt.Errorf("operator terms missing operator pubkey")
 	}
 
-	// Create the timeout actor for scheduling retry timers. When a
-	// retry timer fires, the callback ref transforms the expiry into
-	// a DriveEventRequest and Tell's it back to the OOR actor.
+	// Create the timeout actor for scheduling retry timers. When a retry
+	// timer fires, the callback ref transforms the expiry into a
+	// DriveEventRequest and Tell's it back to the OOR coordinator.
 	// Register through the actor system so the timeout actor's
 	// AfterFunc callbacks self-tell through a real mailbox; the
 	// signing handler holds the ActorRef and Tells schedule requests
@@ -3407,22 +3362,9 @@ func (s *Server) initOORActor(ctx context.Context,
 		Signer:       oorSigner,
 		TimeoutActor: oorTimeoutRef,
 	}
-	oorKey := oor.NewServiceKey()
-
-	var err error
-	s.oorSigningEffect, err = oor.NewSigningEffectActor(
-		oor.SigningEffectActorConfig{
-			ActorID:       oor.SigningEffectActorID,
-			DeliveryStore: s.deliveryStore,
-			Signer:        oorSigner,
-			OORRef:        oorKey.Ref(s.actorSystem),
-			ActorSystem:   s.actorSystem,
-			Log:           fn.Some(s.subLogger(oor.Subsystem)),
-		},
+	oorCoordinatorRef := oor.NewCoordinatorTellRef(
+		oor.OORActorServiceKeyName,
 	)
-	if err != nil {
-		return err
-	}
 
 	// Wire spend completion through the VTXO manager so each consumed
 	// VTXO transitions to SpentState via its own FSM, rather than
@@ -3492,39 +3434,55 @@ func (s *Server) initOORActor(ctx context.Context,
 		},
 	}
 
-	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
-		Log:             fn.Some(s.subLogger(oor.Subsystem)),
-		OutboxHandler:   outboxHandler,
-		Limits:          s.cfg.OORReceiveLimits(),
-		ServerConn:      s.runtime.TellRef(),
-		TransportOutbox: true,
-		SigningEffect:   s.oorSigningEffect.Ref(),
-		PackageStore:    packageStore,
-		DeliveryStore:   s.deliveryStore,
-		ActorSystem:     s.actorSystem,
-		ActorID:         oor.OORActorServiceKeyName,
-		VTXOManager:     vtxoManagerRef,
-		VTXOStore:       vtxoStore,
-		LedgerSink:      fn.Some(ledger.NewSink(s.actorSystem)),
+	oorSQLStore := &oorClientSQLSessionStore{
+		store:          s.oorClientStore,
+		limits:         s.cfg.OORReceiveLimits(),
+		enqueueEffects: true,
+	}
+
+	s.oorCoordinator = oor.NewClientCoordinator(oor.ClientActorCfg{
+		Log:           fn.Some(s.subLogger(oor.Subsystem)),
+		OutboxHandler: outboxHandler,
+		Limits:        s.cfg.OORReceiveLimits(),
+		ServerConn:    s.runtime.TellRef(),
+		PackageStore:  packageStore,
+		SessionStore:  oorSQLStore,
+		UseSQLEffects: true,
+		ActorID:       oor.OORActorServiceKeyName,
+		VTXOManager:   vtxoManagerRef,
+		VTXOStore:     vtxoStore,
+		LedgerSink:    fn.Some(ledger.NewSink(s.actorSystem)),
 		IncomingVTXOObserver: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
 			return s.trackIncomingFraudVTXOs(ctx, descs)
 		},
 	})
+	oorCoordinatorRef.Bind(s.oorCoordinator)
+	s.oorCoordinatorRef = oorCoordinatorRef
 
-	// Wire the timeout callback ref using the registered service
-	// key. The OOR actor self-registers with the actor system
-	// during NewOORClientActor (via durable.Start and
-	// RegisterWithReceptionist). The service key resolves the
-	// OOR actor via the receptionist, and the MapInputRef
-	// transforms *timeout.ExpiredMsg into a DriveEventRequest
-	// with RetryDueEvent targeting the correct session.
 	signingHandler.CallbackRef = oor.NewRetryCallbackRef(
-		oorKey.Ref(s.actorSystem),
+		oorCoordinatorRef,
 	)
 
-	s.log.InfoS(ctx, "OOR client actor started")
+	if err := s.oorCoordinator.Start(ctx); err != nil {
+		return err
+	}
+
+	s.oorEffectWorker = oor.NewOORClientEffectWorker(
+		oor.OORClientEffectWorkerConfig{
+			Store:     oorSQLStore,
+			Processor: s.oorCoordinator,
+			Clock:     s.clk,
+			Logger:    s.subLogger(oor.Subsystem),
+			Owner:     "darepod-oor-client-effects",
+		},
+	)
+	if err := s.oorEffectWorker.Start(ctx); err != nil {
+		return fmt.Errorf("start OOR client effect worker: %w", err)
+	}
+
+	s.log.InfoS(ctx, "OOR client coordinator started")
 
 	// Register the incoming VTXO handler actor. This handles
 	// IncomingVTXOEvent push notifications from the indexer and
@@ -4251,7 +4209,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		Store: &unroll.DBRegistryStore{
 			UEStore: ueStore,
 		},
-		DeliveryStore:              s.deliveryStore,
+		CheckpointStore:            s.unrollCheckpointStore,
 		ProofAssembler:             proofAssembler,
 		VTXOStore:                  vtxoStore,
 		TxConfirmRef:               txConfirmRef,

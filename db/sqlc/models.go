@@ -111,6 +111,147 @@ type LedgerEventType struct {
 	EventType string
 }
 
+type MailboxEgress struct {
+	ID              string
+	Connector       string
+	LocalMailboxID  string
+	RemoteMailboxID string
+	RpcKind         string
+	Service         string
+	Method          string
+	CorrelationID   sql.NullString
+	ReplyTo         sql.NullString
+	MsgID           string
+	IdempotencyKey  string
+	Envelope        []byte
+	Status          string
+	Attempts        int32
+	MaxAttempts     int32
+	NextAttemptAt   int64
+	ClaimOwner      sql.NullString
+	ClaimToken      sql.NullString
+	ClaimUntil      sql.NullInt64
+	LastError       sql.NullString
+	CreatedAt       int64
+	UpdatedAt       int64
+	SentAt          sql.NullInt64
+}
+
+type MailboxIngressCursor struct {
+	LocalMailboxID      string
+	RemoteMailboxID     string
+	PullCursor          int64
+	DispatchCommittedTo int64
+	AckTarget           int64
+	AckCommittedTo      int64
+	LastPullAt          sql.NullInt64
+	LastDispatchAt      sql.NullInt64
+	LastAckAt           sql.NullInt64
+	LastError           sql.NullString
+	CreatedAt           int64
+	UpdatedAt           int64
+}
+
+type OorClientArkArtifact struct {
+	SessionID []byte
+	Phase     string
+	ArkPsbt   []byte
+	CreatedAt int64
+	UpdatedAt int64
+}
+
+type OorClientCheckpoint struct {
+	SessionID       []byte
+	CheckpointIndex int32
+	Phase           string
+	CheckpointPsbt  []byte
+	CreatedAt       int64
+	UpdatedAt       int64
+}
+
+type OorClientEffect struct {
+	ID             string
+	SessionID      []byte
+	Direction      string
+	EffectType     string
+	Status         string
+	IdempotencyKey string
+	Attempts       int32
+	MaxAttempts    int32
+	NextAttemptAt  int64
+	ClaimOwner     sql.NullString
+	ClaimToken     sql.NullString
+	ClaimUntil     sql.NullInt64
+	LastError      sql.NullString
+	CreatedAt      int64
+	UpdatedAt      int64
+	DoneAt         sql.NullInt64
+}
+
+type OorClientIncomingHint struct {
+	SessionID         []byte
+	RecipientPkScript []byte
+	RecipientEventID  int64
+	CreatedAt         int64
+	UpdatedAt         int64
+}
+
+type OorClientIncomingMetadatum struct {
+	SessionID      []byte
+	OutputIndex    int32
+	RoundID        []byte
+	ChainDepth     sql.NullInt32
+	BatchExpiry    sql.NullInt32
+	OperatorPubkey []byte
+	AncestryBlob   []byte
+	MetadataBlob   []byte
+	CreatedAt      int64
+	UpdatedAt      int64
+}
+
+type OorClientInput struct {
+	SessionID          []byte
+	InputIndex         int32
+	OutpointHash       []byte
+	OutpointIndex      int32
+	AmountSat          int64
+	PkScript           []byte
+	ClientKeyFamily    int32
+	ClientKeyIndex     int32
+	ClientPubKey       []byte
+	OperatorPubKey     []byte
+	ExitDelay          int32
+	VtxoPolicyTemplate []byte
+	OwnerLeafScript    []byte
+	OwnerLeafPolicy    []byte
+	SpendWitnessScript []byte
+	SpendControlBlock  []byte
+	ConditionWitness   []byte
+	RequiredSequence   sql.NullInt32
+	RequiredLocktime   sql.NullInt32
+}
+
+type OorClientRecipient struct {
+	SessionID          []byte
+	OutputIndex        int32
+	PkScript           []byte
+	ValueSat           int64
+	VtxoPolicyTemplate []byte
+}
+
+type OorClientSession struct {
+	SessionID      []byte
+	Direction      string
+	State          string
+	IdempotencyKey sql.NullString
+	RetryAfter     sql.NullInt64
+	RetryReason    sql.NullString
+	FailReason     sql.NullString
+	CreatedAt      int64
+	UpdatedAt      int64
+	CompletedAt    sql.NullInt64
+}
+
 type OorPackage struct {
 	SessionID []byte
 	Direction int32
@@ -242,6 +383,14 @@ type UnilateralExitJob struct {
 	UpdatedAt           int64
 }
 
+type UnrollCheckpoint struct {
+	ActorID   string
+	StateType string
+	StateData []byte
+	Version   int64
+	UpdatedAt int64
+}
+
 type UtxoClassification struct {
 	Classification string
 }
@@ -285,6 +434,30 @@ type VtxoAncestryPath struct {
 	TreePath          []byte
 	TreeDepth         int32
 	InputIndices      []byte
+}
+
+type WalletEffect struct {
+	ID             string
+	EffectType     string
+	Status         string
+	IdempotencyKey string
+	OutpointHash   []byte
+	OutpointIndex  sql.NullInt32
+	Txid           []byte
+	AmountSat      sql.NullInt64
+	FeeSat         sql.NullInt64
+	BlockHeight    sql.NullInt32
+	Classification sql.NullString
+	Attempts       int32
+	MaxAttempts    int32
+	NextAttemptAt  int64
+	ClaimOwner     sql.NullString
+	ClaimToken     sql.NullString
+	ClaimUntil     sql.NullInt64
+	LastError      sql.NullString
+	CreatedAt      int64
+	UpdatedAt      int64
+	DoneAt         sql.NullInt64
 }
 
 type WalletUtxoLog struct {

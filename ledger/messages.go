@@ -184,10 +184,7 @@ const (
 	utxoClassificationType tlv.Type = 9
 )
 
-// LedgerMsg is the message constraint for the client-side ledger
-// durable actor mailbox. It embeds actor.TLVMessage so both
-// application messages and the framework RestartMessage satisfy
-// this interface.
+// LedgerMsg is the message constraint for client-side ledger messages.
 type LedgerMsg interface {
 	actor.TLVMessage
 }
@@ -998,9 +995,9 @@ func (m *UTXOSpentMsg) Decode(r io.Reader) error {
 	return nil
 }
 
-// newLedgerCodec builds the durable mailbox codec for the
+// newLedgerCodec builds the SQL mailbox codec for the
 // client-side ledger actor. Each message type is registered
-// individually, allowing the durable actor to serialize and
+// individually, allowing the local actor to serialize and
 // dispatch messages without an intermediate envelope layer.
 func newLedgerCodec() *actor.MessageCodec {
 	codec := actor.NewMessageCodec()
@@ -1041,13 +1038,6 @@ func newLedgerCodec() *actor.MessageCodec {
 			return &UTXOSpentMsg{}
 		},
 	)
-	codec.MustRegister(
-		actor.RestartTLVType,
-		func() actor.TLVMessage {
-			return &actor.RestartMessage{}
-		},
-	)
-
 	return codec
 }
 

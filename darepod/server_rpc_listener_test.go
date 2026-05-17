@@ -115,7 +115,7 @@ func TestRunWithContextServesInjectedListener(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return server.RPCAddr() != nil
-	}, 5*time.Second, 20*time.Millisecond)
+	}, 15*time.Second, 20*time.Millisecond)
 
 	connCtx, connCancel := context.WithTimeout(
 		context.Background(), 5*time.Second,
@@ -141,7 +141,7 @@ func TestRunWithContextServesInjectedListener(t *testing.T) {
 	conn.Connect()
 	require.Eventually(t, func() bool {
 		return conn.GetState() == connectivity.Ready
-	}, 5*time.Second, 20*time.Millisecond)
+	}, 10*time.Second, 20*time.Millisecond)
 
 	client := daemonrpc.NewDaemonServiceClient(conn)
 

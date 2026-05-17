@@ -8,11 +8,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDurableActorID verifies the stable actor ID derivation helper.
-func TestDurableActorID(t *testing.T) {
+// TestRuntimeID verifies the stable runtime ID derivation helper.
+func TestRuntimeID(t *testing.T) {
 	t.Parallel()
 
-	require.Equal(t, "serverconn-client-1", DurableActorID("client-1"))
+	require.Equal(t, "serverconn-client-1", RuntimeID("client-1"))
 }
 
 // TestNewRuntime_ValidateConfig verifies runtime construction rejects missing
@@ -22,24 +22,27 @@ func TestNewRuntime_ValidateConfig(t *testing.T) {
 
 	_, err := NewRuntime(ConnectorConfig{})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "connector store is required")
+	require.Contains(
+		t, err.Error(),
+		"connector transport store is required",
+	)
 
 	_, err = NewRuntime(ConnectorConfig{
-		Store: newMemCheckpointStore(),
+		Transport: newMemTransportStore(),
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "connector edge is required")
 
 	mb := newInMemoryMailbox()
 	_, err = NewRuntime(ConnectorConfig{
-		Store: newMemCheckpointStore(),
-		Edge:  &fakeMailboxServiceClient{mb: mb},
+		Transport: newMemTransportStore(),
+		Edge:      &fakeMailboxServiceClient{mb: mb},
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "local mailbox id is required")
 
 	_, err = NewRuntime(ConnectorConfig{
-		Store:          newMemCheckpointStore(),
+		Transport:      newMemTransportStore(),
 		Edge:           &fakeMailboxServiceClient{mb: mb},
 		LocalMailboxID: "client-1",
 	})
@@ -66,7 +69,7 @@ func TestNewRuntime_DefaultCodec(t *testing.T) {
 	require.NotNil(t, runtime.TellRef())
 	require.NotNil(t, runtime.Ref())
 	require.Equal(
-		t, DurableActorID("client-1"), runtime.Ref().ID(),
+		t, RuntimeID("client-1"), runtime.Ref().ID(),
 	)
 }
 

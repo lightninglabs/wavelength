@@ -794,7 +794,7 @@ func (d *dedupLedgerStore) getEntries() []LedgerEntry {
 // TestHandleExitCostWritesBothLegsWithSharedKey verifies that
 // handleExitCost emits the send leg and the fee leg with the
 // correct account sides and that both carry the same
-// outpoint-derived IdempotencyKey. The durable actor's outer tx
+// outpoint-derived IdempotencyKey. The local actor's outer tx
 // provides crash atomicity for the two writes; the shared
 // idempotency key is what makes an out-of-band replay safe via
 // idx_client_ledger_idempotent_key + ON CONFLICT DO NOTHING.

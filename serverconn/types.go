@@ -45,17 +45,13 @@ type CorrelationID = mailboxconn.CorrelationID
 // IdempotencyKey deduplicates a semantic operation across retries.
 type IdempotencyKey = mailboxconn.IdempotencyKey
 
-// AckState tracks connector ack watermark state for checkpoint persistence.
+// AckState tracks connector ack watermark state for SQL transport persistence.
 type AckState = mailboxconn.AckState
 
-// ackStateType is the checkpoint state type used for ack watermark storage.
-const ackStateType = mailboxconn.CheckpointStateType
-
 // EnvelopeDispatcher routes an inbound envelope to the correct local actor.
-// A nil error means the envelope was durably committed to the target actor's
-// mailbox (i.e., DurableActor.Tell returned nil, confirming persistence).
-// The dispatcher is a closure configured at wiring time that captures a
-// ServiceKey reference for the target actor.
+// A nil error means the envelope was accepted by the local dispatcher. The
+// dispatcher is a closure configured at wiring time that captures the local
+// route target.
 type EnvelopeDispatcher func(
 	ctx context.Context, env *mailboxpb.Envelope,
 ) error
@@ -130,13 +126,13 @@ type ConnectorConfig struct {
 	// KIND_EVENT envelopes to the correct local actor via ServiceKey.
 	Dispatchers map[mailboxrpc.ServiceMethod]EnvelopeDispatcher
 
-	// Store is the delivery store used by both the durable actor runtime
-	// (for inbox persistence) and checkpoint persistence (for ack
-	// watermark state). This is the single durability source of truth.
-	Store actor.DeliveryStore
+	// Transport persists connector-owned ingress cursors and egress
+	// mailbox envelopes. This replaces the actor delivery mailbox for
+	// transport durability.
+	Transport TransportStore
 
 	// Codec handles TLV serialization of ServerConnMsg types for the
-	// durable actor mailbox.
+	// local actor mailbox.
 	Codec *actor.MessageCodec
 
 	// DurableUnaryBuilder constructs proof-gated unary request bodies for

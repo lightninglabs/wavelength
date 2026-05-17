@@ -15,10 +15,7 @@ type txContextKey struct{}
 
 // WithTx returns a new context with the given database transaction attached.
 // This enables passing transactions through the call chain without modifying
-// function signatures. Used primarily for:
-//   - mailbox.Send() to write outbox messages in the same transaction as FSM
-//     state
-//   - Environment storage operations to participate in actor transactions
+// function signatures.
 //
 // The transaction should only be used within the lifetime of the ExecTx closure
 // that created it.
@@ -53,11 +50,9 @@ func RequireTx(ctx context.Context) (*sql.Tx, error) {
 	return tx, nil
 }
 
-// WithoutTx returns a new context with the database transaction stripped.
-// This is used at actor boundaries (e.g., DurableMailbox.Send) to prevent
-// the sender's transaction from leaking into the receiver's mailbox store.
-// An untyped nil shadows the parent's txContextKey entry so that
-// TxFromContext returns (nil, false).
+// WithoutTx returns a new context with the database transaction stripped. An
+// untyped nil shadows the parent's txContextKey entry so that TxFromContext
+// returns (nil, false).
 func WithoutTx(ctx context.Context) context.Context {
 	return context.WithValue(ctx, txContextKey{}, nil)
 }
@@ -85,19 +80,11 @@ type TxQuerier interface {
 // Ensure *sql.Tx implements TxQuerier.
 var _ TxQuerier = (*sql.Tx)(nil)
 
-// outboxIDContextKey is the context key for propagating the outbox message ID
-// to the target actor's mailbox during CDC delivery. When the OutboxPublisher
-// delivers a message, it injects the outbox row ID into the context so the
-// receiving DurableMailbox uses it as the inbox message ID instead of
-// generating a fresh one. This gives us receiver-side deduplication for free:
-// if CompleteOutbox fails after a successful Tell, the retry will attempt to
-// INSERT the same ID. The ON CONFLICT (id) DO NOTHING clause on
-// EnqueueMailboxMessage makes this a silent no-op.
+// outboxIDContextKey is the context key for propagating a stable delivery ID
+// across actor boundaries where the caller wants idempotent downstream work.
 type outboxIDContextKey struct{}
 
-// WithOutboxID returns a new context carrying the outbox message ID. The
-// OutboxPublisher calls this before Tell so the downstream mailbox can reuse
-// the ID for idempotent enqueue.
+// WithOutboxID returns a new context carrying the outbox message ID.
 func WithOutboxID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, outboxIDContextKey{}, id)
 }

@@ -556,7 +556,7 @@ func TestIngress_Shutdown_NoGoroutineLeak(t *testing.T) {
 }
 
 // TestIngress_CheckpointSurvivesRestart verifies that after processing and
-// acking envelopes, the checkpoint can be loaded to restore state.
+// acking envelopes, the ingress cursor can be loaded to restore state.
 func TestIngress_CheckpointSurvivesRestart(t *testing.T) {
 	t.Parallel()
 
@@ -573,7 +573,7 @@ func TestIngress_CheckpointSurvivesRestart(t *testing.T) {
 		},
 	}
 
-	actor, mb, store := newTestConnector(t, dispatchers)
+	actor, mb, _ := newTestConnector(t, dispatchers)
 
 	// Inject an event.
 	sendEventToMailbox(t, mb, "client-1", "test.Svc", "DoThing")
@@ -589,12 +589,16 @@ func TestIngress_CheckpointSurvivesRestart(t *testing.T) {
 	cancel()
 	actor.StopIngress()
 
-	// Verify checkpoint was persisted.
-	actorID := "serverconn-client-1"
-	cp, err := store.LoadCheckpoint(t.Context(), actorID)
+	// Verify the SQL transport-owned ingress cursor was persisted.
+	state, err := actor.cfg.Transport.LoadIngressCursor(
+		t.Context(),
+		"client-1", "server-1",
+	)
 	require.NoError(t, err)
-	require.NotNil(t, cp, "checkpoint should be persisted")
-	require.NotEmpty(t, cp.StateData)
+	require.Greater(t, state.PullCursor, uint64(0))
+	require.Equal(t, state.PullCursor, state.DispatchCommittedTo)
+	require.Equal(t, state.PullCursor, state.AckTarget)
+	require.Equal(t, state.PullCursor, state.AckCommittedTo)
 }
 
 // TestEgress_EventRetriesPreserveIdempotencyKey verifies that egress sends for

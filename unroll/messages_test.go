@@ -10,10 +10,10 @@ import (
 )
 
 // TestDurableMessageTLVRoundTrip pins the TLV encoding of every unroll
-// durable mailbox message so a field order or record-type shuffle breaks
+// SQL mailbox message so a field order or record-type shuffle breaks
 // loudly rather than silently corrupting persisted inbox rows. Every
 // message here implements actor.TLVMessage, so the encode path is the
-// same one the durable mailbox codec drives on disk.
+// same one the SQL mailbox codec drives on disk.
 func TestDurableMessageTLVRoundTrip(t *testing.T) {
 	t.Parallel()
 

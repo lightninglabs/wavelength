@@ -12,8 +12,8 @@ func TestHandleRestoreSessionRejectsDuplicateSessionID(t *testing.T) {
 
 	behavior := &oorDurableBehavior{
 		cfg: ClientActorCfg{
-			ActorID:       "oor-duplicate-restore-test",
-			DeliveryStore: newTestDeliveryStore(t),
+			ActorID:      "oor-duplicate-restore-test",
+			SessionStore: newTestSessionStore(),
 		},
 		sessions: make(map[SessionID]*sessionHandle),
 	}

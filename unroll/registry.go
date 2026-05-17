@@ -84,9 +84,8 @@ type RegistryConfig struct {
 	// Store persists coarse registry records for restore.
 	Store RegistryStore
 
-	// DeliveryStore provides durable mailbox and checkpoint persistence for
-	// child actors.
-	DeliveryStore actor.DeliveryStore
+	// CheckpointStore provides SQL checkpoint persistence for child actors.
+	CheckpointStore CheckpointStore
 
 	// ProofAssembler resolves immutable proofs for child actors.
 	ProofAssembler ProofAssembler
@@ -385,7 +384,7 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		//      committed its first message. The pending row is
 		//      already durable, so re-issuing the StartUnrollRequest
 		//      via a fire-and-forget Tell hands the work off to the
-		//      child's durable mailbox poll loop. Caller still sees
+		//      child's SQL mailbox poll loop. Caller still sees
 		//      Created=true because the job IS admitted; the FSM
 		//      will catch up off the persisted message.
 		//
@@ -550,7 +549,7 @@ func isCancellationRace(err error) bool {
 // control-plane view instead of asking the child actor.
 //
 // The child state request is read-only, but on a durable child actor it still
-// becomes a durable mailbox message. Polling clients can therefore leave stale
+// becomes a SQL mailbox message. Polling clients can therefore leave stale
 // GetStateRequest rows behind after their RPC context expires, and those rows
 // can starve progress notifications during block-mining-heavy tests. The
 // registry's pending/store record is intentionally coarse, but it is enough for
@@ -906,10 +905,10 @@ func (r *registryBehavior) spawn(ctx context.Context, target wire.OutPoint) (
 		return r.spawnFunc(ctx, target)
 	}
 
-	//nolint:contextcheck // child actor owns its own durable lifecycle
+	//nolint:contextcheck // child actor owns its own lifecycle
 	return NewVTXOUnrollActor(Config{
 		TargetOutpoint:              target,
-		DeliveryStore:               r.cfg.DeliveryStore,
+		CheckpointStore:             r.cfg.CheckpointStore,
 		ProofAssembler:              r.cfg.ProofAssembler,
 		VTXOStore:                   r.cfg.VTXOStore,
 		TxConfirmRef:                r.cfg.TxConfirmRef,

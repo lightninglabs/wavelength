@@ -41,9 +41,9 @@ type EventRouteConfig[M actor.Message, R any] struct {
 	// provide the unmarshal target.
 	NewEvent func() proto.Message
 
-	// Key is the ServiceKey for the target durable actor. The router
+	// Key is the ServiceKey for the target local actor. The router
 	// calls key.Ref(system).Tell(ctx, msg) for each dispatched event,
-	// which persists the message to the actor's durable mailbox before
+	// which persists the message to the actor's SQL mailbox before
 	// returning nil.
 	Key actor.ServiceKey[M, R]
 
@@ -54,7 +54,7 @@ type EventRouteConfig[M actor.Message, R any] struct {
 }
 
 // EventRouter maps inbound KIND_REQUEST and KIND_EVENT envelope routes to
-// typed durable actor mailboxes via ServiceKey.
+// typed local actor mailboxes via ServiceKey.
 //
 // EventRouter resolves target actors through the actor system's Receptionist,
 // guaranteeing durable delivery before returning from each dispatch call.
@@ -114,7 +114,7 @@ type InboundEventRouteConfig[M InboundActorMessage, R any] struct {
 	// Method is the protobuf method name (e.g., "HelloStarted").
 	Method string
 
-	// Key is the ServiceKey for the target durable actor.
+	// Key is the ServiceKey for the target local actor.
 	Key actor.ServiceKey[M, R]
 
 	// NewEvent must return a fresh zero-value proto.Message for the
@@ -147,6 +147,18 @@ type EnvelopeRouteConfig[M actor.Message, R any] struct {
 	// Adapt converts the deserialized proto and envelope metadata into the
 	// actor message type M.
 	Adapt func(*mailboxpb.Envelope, proto.Message) (M, error)
+}
+
+// EnvelopeHandlerRouteConfig registers a direct handler route without an
+// actor service key. The ingress ack loop still treats a nil Handle error as
+// the durability boundary for the envelope.
+type EnvelopeHandlerRouteConfig struct {
+	Service string
+	Method  string
+
+	NewEvent func() proto.Message
+
+	Handle func(context.Context, *mailboxpb.Envelope, proto.Message) error
 }
 
 // AddEnvelopeRoute registers a typed event route that receives the full
@@ -212,6 +224,75 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 		}
 
 		return actorKey.Ref(system).Tell(ctx, actorMsg)
+	}
+
+	serviceMethod := mailboxrpc.ServiceMethod{
+		Service: cfg.Service,
+		Method:  cfg.Method,
+	}
+
+	r.mu.Lock()
+	r.routes[serviceMethod] = dispatcher
+	r.mu.Unlock()
+}
+
+// AddEnvelopeHandlerRoute registers a direct envelope handler route.
+func AddEnvelopeHandlerRoute(r *EventRouter, cfg EnvelopeHandlerRouteConfig) {
+	if cfg.Service == "" {
+		panic(
+			"serverconn: empty service name in " +
+				"EnvelopeHandlerRouteConfig",
+		)
+	}
+	if cfg.Method == "" {
+		panic(
+			"serverconn: empty method name in " +
+				"EnvelopeHandlerRouteConfig",
+		)
+	}
+	if cfg.NewEvent == nil {
+		panic("serverconn: nil NewEvent in EnvelopeHandlerRouteConfig")
+	}
+	if cfg.Handle == nil {
+		panic("serverconn: nil Handle in EnvelopeHandlerRouteConfig")
+	}
+
+	dispatcher := func(ctx context.Context, env *mailboxpb.Envelope) error {
+		if env == nil {
+			return fmt.Errorf("nil envelope for %s/%s", cfg.Service,
+				cfg.Method)
+		}
+
+		var event proto.Message
+		if env.Body == nil {
+			if mailboxrpc.DecodeErrorHeaders(env.Headers) == nil {
+				return fmt.Errorf("nil envelope body without "+
+					"encoded error for %s/%s", cfg.Service,
+					cfg.Method)
+			}
+		} else {
+			event = cfg.NewEvent()
+			if event == nil {
+				return fmt.Errorf("nil event prototype for "+
+					"%s/%s", cfg.Service, cfg.Method)
+			}
+
+			if err := (proto.UnmarshalOptions{
+				DiscardUnknown: true,
+			}).Unmarshal(env.Body.Value,
+				event,
+			); err != nil {
+				return fmt.Errorf("unmarshal %s/%s event: %w",
+					cfg.Service, cfg.Method, err)
+			}
+		}
+
+		if err := cfg.Handle(ctx, env, event); err != nil {
+			return fmt.Errorf("handle %s/%s event: %w", cfg.Service,
+				cfg.Method, err)
+		}
+
+		return nil
 	}
 
 	serviceMethod := mailboxrpc.ServiceMethod{

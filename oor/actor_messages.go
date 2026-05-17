@@ -23,14 +23,14 @@ const OORActorServiceKeyName = "oor-client"
 // NewServiceKey returns the service key for looking up the OOR client actor
 // in the actor system's receptionist. This key is used by the serverconn
 // event router to dispatch incoming server events to the OOR actor.
-func NewServiceKey() actor.ServiceKey[OORDurableMsg, ActorResp] {
-	return actor.NewServiceKey[OORDurableMsg, ActorResp](
+func NewServiceKey() actor.ServiceKey[ActorMsg, ActorResp] {
+	return actor.NewServiceKey[ActorMsg, ActorResp](
 		OORActorServiceKeyName,
 	)
 }
 
 // TLV type constants for OOR actor messages. Each ActorMsg type has a stable
-// identifier used for durable mailbox serialization. The 0x7xxx range avoids
+// identifier used for SQL mailbox serialization. The 0x7xxx range avoids
 // collisions with the actor framework's reserved types.
 const (
 	StartTransferRequestTLVType    tlv.Type = 0x7010
@@ -48,22 +48,11 @@ const (
 	FindOutgoingSessionByIdempotencyKeyTLVType tlv.Type = 0x7018
 )
 
-// OORDurableMsg is the message constraint for the OOR durable actor mailbox.
-// It embeds actor.TLVMessage so both application-level ActorMsg types and the
-// framework-injected RestartMessage satisfy this interface. The constraint is
-// structurally equivalent to actor.TLVMessage but provides a nominal type
-// that signals "messages accepted by the OOR durable actor," mirroring the
-// serverconn.ServerConnMsg pattern.
-type OORDurableMsg interface {
-	actor.TLVMessage
-}
-
 // ActorMsg is a sealed interface for messages that can be sent to the
-// OORClientActor. It extends OORDurableMsg so each message type handles its
-// own serialization directly, allowing the durable actor to persist and
-// dispatch messages without an intermediate envelope layer.
+// OORClientActor. These messages are in-memory workflow commands; restart
+// safety is moving to SQL domain/effect rows instead of local actor payloads.
 type ActorMsg interface {
-	OORDurableMsg
+	actor.Message
 
 	actorMsgSealed()
 }

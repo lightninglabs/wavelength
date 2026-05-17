@@ -693,7 +693,7 @@ func (s testSignature) Verify([]byte, *btcec.PublicKey) bool {
 	return true
 }
 
-// memCheckpointStore is a minimal in-memory checkpoint store for durable actor
+// memCheckpointStore is a minimal in-memory checkpoint store for local actor
 // tests.
 type memCheckpointStore struct {
 	mu          sync.Mutex
@@ -754,141 +754,6 @@ func (s *memCheckpointStore) DeleteCheckpoint(_ context.Context,
 	return nil
 }
 
-// EnqueueMessage is unused in these tests.
-func (s *memCheckpointStore) EnqueueMessage(context.Context,
-	actor.EnqueueParams) error {
-
-	return nil
-}
-
-// LeaseNextMessage is unused in these tests.
-func (s *memCheckpointStore) LeaseNextMessage(context.Context, string, string,
-	time.Duration) (*actor.LeasedMessage, error) {
-
-	return nil, nil
-}
-
-// AckMessage is unused in these tests.
-func (s *memCheckpointStore) AckMessage(context.Context, string, string) (int64,
-	error) {
-
-	return 1, nil
-}
-
-// NackMessage is unused in these tests.
-func (s *memCheckpointStore) NackMessage(context.Context, string, string,
-	time.Duration) (int64, error) {
-
-	return 1, nil
-}
-
-// ExtendLease is unused in these tests.
-func (s *memCheckpointStore) ExtendLease(context.Context, string, string,
-	time.Duration) (int64, error) {
-
-	return 1, nil
-}
-
-// MoveToDeadLetter is unused in these tests.
-func (s *memCheckpointStore) MoveToDeadLetter(context.Context, string,
-	string) error {
-
-	return nil
-}
-
-// DeleteMessage is unused in these tests.
-func (s *memCheckpointStore) DeleteMessage(context.Context, string) error {
-	return nil
-}
-
-// SaveAskResult is unused in these tests.
-func (s *memCheckpointStore) SaveAskResult(context.Context,
-	actor.AskResultParams) error {
-
-	return nil
-}
-
-// GetAskResult is unused in these tests.
-func (s *memCheckpointStore) GetAskResult(context.Context, string) (
-	*actor.AskResult, error) {
-
-	return nil, nil
-}
-
-// DeleteAskResult is unused in these tests.
-func (s *memCheckpointStore) DeleteAskResult(context.Context, string) error {
-	return nil
-}
-
-// EnqueueOutbox is unused in these tests.
-func (s *memCheckpointStore) EnqueueOutbox(context.Context,
-	actor.OutboxParams) error {
-
-	return nil
-}
-
-// ClaimOutboxBatch is unused in these tests.
-func (s *memCheckpointStore) ClaimOutboxBatch(context.Context,
-	actor.OutboxClaimParams) ([]actor.OutboxMessage, error) {
-
-	return nil, nil
-}
-
-// CompleteOutbox is unused in these tests.
-func (s *memCheckpointStore) CompleteOutbox(context.Context, string,
-	string) error {
-
-	return nil
-}
-
-// FailOutbox is unused in these tests.
-func (s *memCheckpointStore) FailOutbox(context.Context, string, string) error {
-	return nil
-}
-
-// IsProcessed is unused in these tests.
-func (s *memCheckpointStore) IsProcessed(context.Context, string) (bool,
-	error) {
-
-	return false, nil
-}
-
-// MarkProcessed is unused in these tests.
-func (s *memCheckpointStore) MarkProcessed(context.Context, string, string,
-	time.Duration) error {
-
-	return nil
-}
-
-// GetDeadLetter is unused in these tests.
-func (s *memCheckpointStore) GetDeadLetter(context.Context, string) (
-	*actor.DeadLetter, error) {
-
-	return nil, nil
-}
-
-// ListDeadLetters is unused in these tests.
-func (s *memCheckpointStore) ListDeadLetters(context.Context, string, int) (
-	[]actor.DeadLetter, error) {
-
-	return nil, nil
-}
-
-// DeleteDeadLetter is unused in these tests.
-func (s *memCheckpointStore) DeleteDeadLetter(context.Context, string) error {
-	return nil
-}
-
-// ExpireLeases is unused in these tests.
-func (s *memCheckpointStore) ExpireLeases(context.Context) error {
-	return nil
-}
-
-// CleanupExpired is unused in these tests.
-func (s *memCheckpointStore) CleanupExpired(context.Context) error {
-	return nil
-}
-
 // newActorHarness creates a new unroll actor behavior behind a regular
 // in-memory actor while still persisting checkpoints to the fake store.
 func newActorHarness(t *testing.T, proof *recovery.Proof,
@@ -900,9 +765,9 @@ func newActorHarness(t *testing.T, proof *recovery.Proof,
 	txconfirmRef := &fakeTxConfirmRef{}
 	store := newMemCheckpointStore()
 	cfg := Config{
-		TargetOutpoint: proof.TargetOutpoint(),
-		ActorID:        "unroll-test",
-		DeliveryStore:  store,
+		TargetOutpoint:  proof.TargetOutpoint(),
+		ActorID:         "unroll-test",
+		CheckpointStore: store,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -1701,9 +1566,9 @@ func TestResumeReissuesDeferredCheckpointWatch(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := Config{
-		TargetOutpoint: proof.TargetOutpoint(),
-		ActorID:        "resume-deferred-test",
-		DeliveryStore:  store,
+		TargetOutpoint:  proof.TargetOutpoint(),
+		ActorID:         "resume-deferred-test",
+		CheckpointStore: store,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -1786,9 +1651,9 @@ func TestResumeReissuesInFlightArk(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := Config{
-		TargetOutpoint: proof.TargetOutpoint(),
-		ActorID:        "resume-ark-test",
-		DeliveryStore:  store,
+		TargetOutpoint:  proof.TargetOutpoint(),
+		ActorID:         "resume-ark-test",
+		CheckpointStore: store,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -2109,9 +1974,9 @@ func TestResumeReissuesInflightWork(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := Config{
-		TargetOutpoint: proof.TargetOutpoint(),
-		ActorID:        "resume-test",
-		DeliveryStore:  store,
+		TargetOutpoint:  proof.TargetOutpoint(),
+		ActorID:         "resume-test",
+		CheckpointStore: store,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -2312,9 +2177,9 @@ func TestResumeReissuesSweepConfirmation(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := Config{
-		TargetOutpoint: proof.TargetOutpoint(),
-		ActorID:        "resume-sweep-test",
-		DeliveryStore:  store,
+		TargetOutpoint:  proof.TargetOutpoint(),
+		ActorID:         "resume-sweep-test",
+		CheckpointStore: store,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -2566,9 +2431,9 @@ func TestResumeMultiParentPartialConfirmation(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := Config{
-		TargetOutpoint: proof.TargetOutpoint(),
-		ActorID:        "resume-partial-merge",
-		DeliveryStore:  store,
+		TargetOutpoint:  proof.TargetOutpoint(),
+		ActorID:         "resume-partial-merge",
+		CheckpointStore: store,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -2647,9 +2512,9 @@ func TestResumeCSVWaitDoesNotSweepUntilMature(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := Config{
-		TargetOutpoint: proof.TargetOutpoint(),
-		ActorID:        "resume-csv-test",
-		DeliveryStore:  store,
+		TargetOutpoint:  proof.TargetOutpoint(),
+		ActorID:         "resume-csv-test",
+		CheckpointStore: store,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -2856,7 +2721,6 @@ func TestStartUnrollIsIdempotent(t *testing.T) {
 var _ input.Signature = testSignature{}
 var _ SweepWallet = (*fakeSweepWallet)(nil)
 var _ vtxo.VTXOStore = (*mockVTXOStore)(nil)
-var _ actor.DeliveryStore = (*memCheckpointStore)(nil)
 var _ actor.ActorRef[txconfirm.Msg, txconfirm.Resp] = (*fakeTxConfirmRef)(nil)
 var _ actor.ActorRef[
 	chainsource.ChainSourceMsg, chainsource.ChainSourceResp,

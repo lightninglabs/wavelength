@@ -23,7 +23,7 @@ type (
 )
 
 // Tree-decode safety bounds. The wire layer feeds DeserializeTree from
-// the durable mailbox, persisted rows, and operator-supplied indexer
+// the SQL mailbox, persisted rows, and operator-supplied indexer
 // responses, all of which must be treated as untrusted. Without these
 // caps, a varint-driven numChildren or a deeply nested chain could
 // trigger a make() OOM or stack overflow that crashes the actor on

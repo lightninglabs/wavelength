@@ -10,7 +10,7 @@ import (
 )
 
 // TLVMessage extends Message with TLV serialization capability. Messages that
-// need to be persisted to a durable mailbox must implement this interface.
+// need to be persisted to a SQL mailbox must implement this interface.
 // The TLV format provides efficient, backward-compatible binary encoding.
 //
 // Each message type handles its own encoding/decoding logic, giving full

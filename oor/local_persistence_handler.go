@@ -109,7 +109,7 @@ type LocalPersistenceOutboxHandler struct {
 	// NotifyIncomingVTXOs is invoked after incoming VTXOs are persisted.
 	// Production wiring should use this to notify the VTXO manager so newly
 	// received OOR VTXOs are actively monitored when the handler is used
-	// outside the OOR durable actor.
+	// outside the OOR local actor.
 	NotifyIncomingVTXOs IncomingVTXONotifier
 
 	// CompleteSpend enqueues OOR spend completion through the VTXO
@@ -221,7 +221,7 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 	// When a SpendCompleter is configured, route completion through the
 	// VTXO manager so each actor processes SpendCompletedEvent and
 	// persists VTXOStatusSpent through its own outbox path. This is a
-	// synchronous Ask: if the caller is a durable actor, the manager's
+	// synchronous Ask: if the caller is a local actor, the manager's
 	// status write should join the caller transaction so SQLite sees one
 	// writer instead of two contending transactions.
 	if h.CompleteSpend != nil {
@@ -399,7 +399,7 @@ func (h *LocalPersistenceOutboxHandler) FilterIncomingMetadataRecipients(
 
 // materializeIncoming persists recipient VTXOs for an incoming transfer and
 // optionally notifies the VTXO manager directly when the caller is not
-// resuming the durable actor with a follow-up event.
+// resuming the local actor with a follow-up event.
 func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 	msg *MaterializeIncomingVTXOsRequest, notifyIncoming bool) ([]Event,
 	error) {
@@ -470,7 +470,7 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 
 		// Legacy synchronous path for callers outside the durable
 		// actor transaction (e.g. systest, non-actor consumers).
-		// Production durable actors pre-resolve metadata via the
+		// Production local actors pre-resolve metadata via the
 		// async QueryIncomingMetadataRequest path, so this branch
 		// is never reached inside an actor DB tx.
 		if !ok && h.ResolveIncomingMetadata != nil &&
@@ -575,7 +575,7 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 		slog.Int("materialized_vtxos", len(materializedVTXOs)),
 	)
 
-	// When the durable actor will receive an
+	// When the local actor will receive an
 	// IncomingHandledEvent follow-up, defer notification to
 	// that actor path so the manager only sees the
 	// materialization once.
@@ -638,7 +638,7 @@ func (h *LocalPersistenceOutboxHandler) persistIncomingAncestorPackages(
 }
 
 // hasActorDBTx reports whether the current context is already scoped to a
-// durable actor database transaction.
+// local actor database transaction.
 func hasActorDBTx(ctx context.Context) bool {
 	_, ok := actor.TxFromContext(ctx)
 

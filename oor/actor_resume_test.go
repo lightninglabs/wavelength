@@ -454,7 +454,7 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 		},
 	}
 
-	deliveryStore := newTestDeliveryStore(t)
+	sessionStore := newTestSessionStore()
 
 	handler := &pausedFinalizeHandler{
 		t:              t,
@@ -466,7 +466,7 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 	// by the outbox handler).
 	actor1 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
+		SessionStore:  sessionStore,
 		ActorID:       "oor-resume-snapshot-actor-1",
 	})
 	defer actor1.Stop()
@@ -509,7 +509,7 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 	// Restore into a new actor and resume.
 	actor2 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
+		SessionStore:  newTestSessionStore(),
 		ActorID:       "oor-resume-snapshot-actor-2",
 	})
 	defer actor2.Stop()
@@ -589,7 +589,7 @@ func TestOORClientActorResumeAfterServerCoSigned(t *testing.T) {
 		},
 	}
 
-	deliveryStore := newTestDeliveryStore(t)
+	sessionStore := newTestSessionStore()
 	handler := &cosignedButDroppedHandler{
 		t:              t,
 		clientSigner:   clientSigner,
@@ -598,7 +598,7 @@ func TestOORClientActorResumeAfterServerCoSigned(t *testing.T) {
 
 	actor1 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
+		SessionStore:  sessionStore,
 		ActorID:       "oor-resume-cosigned-actor-1",
 	})
 	defer actor1.Stop()
@@ -639,7 +639,7 @@ func TestOORClientActorResumeAfterServerCoSigned(t *testing.T) {
 	// receive the already-co-signed artifacts).
 	actor2 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
+		SessionStore:  newTestSessionStore(),
 		ActorID:       "oor-resume-cosigned-actor-2",
 	})
 	defer actor2.Stop()
@@ -711,7 +711,7 @@ func TestOORClientActorResumeAfterServerCoSignedFromStore(t *testing.T) {
 		},
 	}
 
-	deliveryStore := newTestDeliveryStore(t)
+	sessionStore := newTestSessionStore()
 	handler := &cosignedButDroppedHandler{
 		t:              t,
 		clientSigner:   clientSigner,
@@ -722,7 +722,7 @@ func TestOORClientActorResumeAfterServerCoSignedFromStore(t *testing.T) {
 
 	actor1 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
+		SessionStore:  sessionStore,
 		ActorID:       actorID,
 	})
 	defer actor1.Stop()
@@ -752,7 +752,7 @@ func TestOORClientActorResumeAfterServerCoSignedFromStore(t *testing.T) {
 
 	actor2 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
+		SessionStore:  sessionStore,
 		ActorID:       actorID,
 	})
 	defer actor2.Stop()
@@ -820,7 +820,7 @@ func TestOORClientActorResumeFromSnapshotSubmitSent(t *testing.T) {
 		},
 	}
 
-	deliveryStore := newTestDeliveryStore(t)
+	sessionStore := newTestSessionStore()
 	handler := &pausedSubmitHandler{
 		t:              t,
 		clientSigner:   clientSigner,
@@ -829,7 +829,7 @@ func TestOORClientActorResumeFromSnapshotSubmitSent(t *testing.T) {
 
 	actor1 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
+		SessionStore:  sessionStore,
 		ActorID:       "oor-resume-submit-actor-1",
 	})
 	defer actor1.Stop()
@@ -865,7 +865,7 @@ func TestOORClientActorResumeFromSnapshotSubmitSent(t *testing.T) {
 
 	actor2 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
+		SessionStore:  newTestSessionStore(),
 		ActorID:       "oor-resume-submit-actor-2",
 	})
 	defer actor2.Stop()
@@ -937,7 +937,7 @@ func TestOORClientActorResumeFromSnapshotCoSigned(t *testing.T) {
 		},
 	}
 
-	deliveryStore := newTestDeliveryStore(t)
+	sessionStore := newTestSessionStore()
 	handler := &pausedCoSignedHandler{
 		t:              t,
 		clientSigner:   clientSigner,
@@ -946,7 +946,7 @@ func TestOORClientActorResumeFromSnapshotCoSigned(t *testing.T) {
 
 	actor1 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
+		SessionStore:  sessionStore,
 		ActorID:       "oor-resume-cosigned-phase-actor-1",
 	})
 	defer actor1.Stop()
@@ -982,7 +982,7 @@ func TestOORClientActorResumeFromSnapshotCoSigned(t *testing.T) {
 
 	actor2 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
+		SessionStore:  newTestSessionStore(),
 		ActorID:       "oor-resume-cosigned-phase-actor-2",
 	})
 	defer actor2.Stop()
@@ -1010,7 +1010,7 @@ func TestOORClientActorResumeFromSnapshotCoSigned(t *testing.T) {
 	require.IsType(t, &Completed{}, finalStateMsg.State)
 }
 
-// TestOORClientActorDurableRestartAutoResume verifies the durable actor can
+// TestOORClientActorDurableRestartAutoResume verifies the local actor can
 // restore checkpointed sessions and auto-resume pending outbox work after a
 // process restart, without using ExportSnapshot/RestoreSession requests.
 // TestOORClientActorDurableRestartWithRetryMetadata verifies that when a
@@ -1061,7 +1061,7 @@ func TestOORClientActorDurableRestartWithRetryMetadata(t *testing.T) {
 		},
 	}
 
-	deliveryStore := newTestDeliveryStore(t)
+	sessionStore := newTestSessionStore()
 
 	const actorID = "oor-restart-retry-metadata"
 
@@ -1076,7 +1076,7 @@ func TestOORClientActorDurableRestartWithRetryMetadata(t *testing.T) {
 
 	actor1 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler1,
-		DeliveryStore: deliveryStore,
+		SessionStore:  sessionStore,
 		ActorID:       actorID,
 	})
 
@@ -1134,7 +1134,7 @@ func TestOORClientActorDurableRestartWithRetryMetadata(t *testing.T) {
 
 	actor2 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler2,
-		DeliveryStore: deliveryStore,
+		SessionStore:  sessionStore,
 		ActorID:       actorID,
 	})
 	defer actor2.Stop()
@@ -1291,7 +1291,7 @@ func TestOORClientActorDurableRestartAutoResume(t *testing.T) {
 		},
 	}
 
-	deliveryStore := newTestDeliveryStore(t)
+	sessionStore := newTestSessionStore()
 	handler := &pausedFinalizeHandler{
 		t:              t,
 		clientSigner:   clientSigner,
@@ -1302,7 +1302,7 @@ func TestOORClientActorDurableRestartAutoResume(t *testing.T) {
 
 	actor1 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
+		SessionStore:  sessionStore,
 		ActorID:       actorID,
 	})
 
@@ -1329,7 +1329,7 @@ func TestOORClientActorDurableRestartAutoResume(t *testing.T) {
 
 	actor2 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
+		SessionStore:  sessionStore,
 		ActorID:       actorID,
 	})
 	defer actor2.Stop()
@@ -1401,7 +1401,7 @@ func TestOORClientActorDurableRestartRetriesMarkInputsSpent(t *testing.T) {
 		},
 	}
 
-	deliveryStore := newTestDeliveryStore(t)
+	sessionStore := newTestSessionStore()
 	const actorID = "oor-restart-mark-inputs-spent-retry"
 
 	handler1 := &retryRecordingHandler{
@@ -1429,8 +1429,8 @@ func TestOORClientActorDurableRestartRetriesMarkInputsSpent(t *testing.T) {
 			Next:          handler1,
 			CompleteSpend: completeSpend,
 		},
-		DeliveryStore: deliveryStore,
-		ActorID:       actorID,
+		SessionStore: sessionStore,
+		ActorID:      actorID,
 	})
 
 	startResp := actor1.Receive(ctx, &StartTransferRequest{
@@ -1479,8 +1479,8 @@ func TestOORClientActorDurableRestartRetriesMarkInputsSpent(t *testing.T) {
 			Next:          handler2,
 			CompleteSpend: completeSpend,
 		},
-		DeliveryStore: deliveryStore,
-		ActorID:       actorID,
+		SessionStore: sessionStore,
+		ActorID:      actorID,
 	})
 	defer actor2.Stop()
 

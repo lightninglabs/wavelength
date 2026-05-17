@@ -67,7 +67,6 @@ func main() {
 
 	migrationDirs := []string{
 		"db/sqlc/migrations",
-		"db/actordelivery/migrations",
 	}
 
 	for _, migrationDir := range migrationDirs {

@@ -11,7 +11,7 @@ import (
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
-// messages.go defines the durable mailbox surface for the per-target
+// messages.go defines the SQL mailbox surface for the per-target
 // unroll actor. Every [Msg] here implements [actor.TLVMessage] with a
 // hand-written Encode/Decode pair so that the delivery-store codec can
 // persist and later restore the exact message bytes, with no JSON
@@ -32,7 +32,7 @@ import (
 // Round-trip tests in messages_test.go pin the byte layout of every
 // message so a change in encoding semantics cannot slip past review.
 
-// Outer TLV identifiers carried by the durable mailbox codec.
+// Outer TLV identifiers carried by the SQL mailbox codec.
 const (
 	startUnrollRequestTLVType  tlv.Type = 0x7900
 	resumeUnrollRequestTLVType tlv.Type = 0x7901
@@ -129,7 +129,7 @@ const (
 	PhaseFailed Phase = "failed"
 )
 
-// Msg is the durable mailbox surface accepted by the VTXO unroll actor.
+// Msg is the SQL mailbox surface accepted by the VTXO unroll actor.
 type Msg interface {
 	actor.TLVMessage
 
@@ -159,7 +159,7 @@ func (m *StartUnrollRequest) MessageType() string {
 	return "StartUnrollRequest"
 }
 
-// TLVType returns the durable mailbox type ID.
+// TLVType returns the SQL mailbox type ID.
 func (m *StartUnrollRequest) TLVType() tlv.Type {
 	return startUnrollRequestTLVType
 }
@@ -218,7 +218,7 @@ func (m *ResumeUnrollRequest) MessageType() string {
 	return "ResumeUnrollRequest"
 }
 
-// TLVType returns the durable mailbox type ID.
+// TLVType returns the SQL mailbox type ID.
 func (m *ResumeUnrollRequest) TLVType() tlv.Type {
 	return resumeUnrollRequestTLVType
 }
@@ -273,12 +273,12 @@ func (m *HeightObservedMsg) MessageType() string {
 	return "HeightObservedMsg"
 }
 
-// TLVType returns the durable mailbox type ID.
+// TLVType returns the SQL mailbox type ID.
 func (m *HeightObservedMsg) TLVType() tlv.Type {
 	return heightObservedMsgTLVType
 }
 
-// Priority returns the durable mailbox priority for block-height ticks.
+// Priority returns the SQL mailbox priority for block-height ticks.
 func (m *HeightObservedMsg) Priority() int {
 	return unrollHeightPriority
 }
@@ -339,12 +339,12 @@ func (m *TxConfirmedMsg) MessageType() string {
 	return "TxConfirmedMsg"
 }
 
-// TLVType returns the durable mailbox type ID.
+// TLVType returns the SQL mailbox type ID.
 func (m *TxConfirmedMsg) TLVType() tlv.Type {
 	return txConfirmedMsgTLVType
 }
 
-// Priority returns the durable mailbox priority for confirmation progress.
+// Priority returns the SQL mailbox priority for confirmation progress.
 func (m *TxConfirmedMsg) Priority() int {
 	return unrollProgressPriority
 }
@@ -418,12 +418,12 @@ func (m *TxFailedMsg) MessageType() string {
 	return "TxFailedMsg"
 }
 
-// TLVType returns the durable mailbox type ID.
+// TLVType returns the SQL mailbox type ID.
 func (m *TxFailedMsg) TLVType() tlv.Type {
 	return txFailedMsgTLVType
 }
 
-// Priority returns the durable mailbox priority for terminal tx failures.
+// Priority returns the SQL mailbox priority for terminal tx failures.
 func (m *TxFailedMsg) Priority() int {
 	return unrollProgressPriority
 }
@@ -491,12 +491,12 @@ func (m *SpendObservedMsg) MessageType() string {
 	return "SpendObservedMsg"
 }
 
-// TLVType returns the durable mailbox type ID.
+// TLVType returns the SQL mailbox type ID.
 func (m *SpendObservedMsg) TLVType() tlv.Type {
 	return spendObservedMsgTLVType
 }
 
-// Priority returns the durable mailbox priority for target-spend progress.
+// Priority returns the SQL mailbox priority for target-spend progress.
 func (m *SpendObservedMsg) Priority() int {
 	return unrollProgressPriority
 }
@@ -571,12 +571,12 @@ func (m *GetStateRequest) MessageType() string {
 	return "GetStateRequest"
 }
 
-// TLVType returns the durable mailbox type ID.
+// TLVType returns the SQL mailbox type ID.
 func (m *GetStateRequest) TLVType() tlv.Type {
 	return getStateRequestTLVType
 }
 
-// Priority returns the durable mailbox priority for read-only status probes.
+// Priority returns the SQL mailbox priority for read-only status probes.
 func (m *GetStateRequest) Priority() int {
 	return unrollStatusPriority
 }

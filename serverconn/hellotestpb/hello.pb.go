@@ -207,7 +207,7 @@ func (x *GoodbyeResponse) GetFarewell() string {
 
 // JoinGreetingRequest is a client-to-server fire-and-forget event sent as a
 // KIND_EVENT envelope. The client dispatches it via SendClientEventRequest
-// through the durable actor mailbox; no response is expected.
+// through the local actor mailbox; no response is expected.
 type JoinGreetingRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// session_id identifies the greeting session the client wishes to join.

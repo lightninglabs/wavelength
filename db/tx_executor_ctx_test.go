@@ -114,7 +114,7 @@ func TestExecTxJoinOuterActorTx(t *testing.T) {
 	txExec, baseDB := newTxExecutorForTest(t)
 
 	// Start an outer transaction that simulates what the
-	// TxAwareActorDeliveryStore would create for durable actor message
+	// TxAwareActorcheckpoint store would create for local actor message
 	// processing.
 	outerTx, err := baseDB.DB.BeginTx(
 		t.Context(), &sql.TxOptions{
@@ -175,7 +175,7 @@ func TestExecTxStandaloneNoTx(t *testing.T) {
 // TestExecTxOuterTxRollbackAtomicity verifies that when two ExecTx calls
 // join the same outer transaction, rolling back the outer transaction
 // atomically discards both writes. This is the key atomicity guarantee that
-// the durable actor framework relies on.
+// the local actor framework relies on.
 func TestExecTxOuterTxRollbackAtomicity(t *testing.T) {
 	t.Parallel()
 

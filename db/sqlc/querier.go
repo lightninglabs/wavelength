@@ -6,9 +6,13 @@ package sqlc
 
 import (
 	"context"
+	"database/sql"
 )
 
 type Querier interface {
+	ClaimMailboxEgress(ctx context.Context, arg ClaimMailboxEgressParams) (MailboxEgress, error)
+	ClaimOORClientEffect(ctx context.Context, arg ClaimOORClientEffectParams) (OorClientEffect, error)
+	ClaimWalletEffect(ctx context.Context, arg ClaimWalletEffectParams) (WalletEffect, error)
 	ClearAllPendingBoardRequests(ctx context.Context) error
 	ClearPendingBoardRequestByOutpoint(ctx context.Context, arg ClearPendingBoardRequestByOutpointParams) error
 	CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error)
@@ -28,6 +32,7 @@ type Querier interface {
 	// finalized lineage on top of a partially-written round-create row.
 	DeleteVTXOAncestryPaths(ctx context.Context, arg DeleteVTXOAncestryPathsParams) error
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
+	FindOORClientOutgoingSessionByIdempotencyKey(ctx context.Context, idempotencyKey sql.NullString) (OorClientSession, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetBoardingSweep(ctx context.Context, txid []byte) (BoardingSweep, error)
@@ -37,6 +42,11 @@ type Querier interface {
 	GetClientTreeByTxid(ctx context.Context, txid []byte) (RoundClientTree, error)
 	GetClientTreeTxidInfo(ctx context.Context, txid []byte) (ClientTreeTxid, error)
 	GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxidsParams) ([]GetClientTreeTxidsRow, error)
+	GetMailboxIngressCursor(ctx context.Context, localMailboxID string) (MailboxIngressCursor, error)
+	GetOORClientArkArtifact(ctx context.Context, arg GetOORClientArkArtifactParams) (OorClientArkArtifact, error)
+	GetOORClientCheckpoint(ctx context.Context, arg GetOORClientCheckpointParams) (OorClientCheckpoint, error)
+	GetOORClientIncomingHint(ctx context.Context, sessionID []byte) (OorClientIncomingHint, error)
+	GetOORClientSession(ctx context.Context, sessionID []byte) (OorClientSession, error)
 	GetOORPackage(ctx context.Context, sessionID []byte) (OorPackage, error)
 	GetOORPackageByOutpoint(ctx context.Context, arg GetOORPackageByOutpointParams) (GetOORPackageByOutpointRow, error)
 	GetOORPackageByOutpointAndKind(ctx context.Context, arg GetOORPackageByOutpointAndKindParams) (GetOORPackageByOutpointAndKindRow, error)
@@ -54,6 +64,7 @@ type Querier interface {
 	// account only). Does not include L1 chain/miner fees (onchain_fees).
 	GetTotalOperatorFeesPaid(ctx context.Context) (int64, error)
 	GetUnilateralExitJob(ctx context.Context, arg GetUnilateralExitJobParams) (UnilateralExitJob, error)
+	GetUnrollCheckpoint(ctx context.Context, actorID string) (UnrollCheckpoint, error)
 	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
 	// GetVTXOForfeitTx retrieves the persisted forfeit transaction for a VTXO.
 	// Used during recovery to restore the ForfeitingState with its tx.
@@ -88,6 +99,8 @@ type Querier interface {
 	InsertClientLedgerEntry(ctx context.Context, arg InsertClientLedgerEntryParams) error
 	// Client tree txids queries.
 	InsertClientTreeTxid(ctx context.Context, arg InsertClientTreeTxidParams) error
+	InsertMailboxEgress(ctx context.Context, arg InsertMailboxEgressParams) error
+	InsertOORClientEffect(ctx context.Context, arg InsertOORClientEffectParams) error
 	InsertOORPackageCheckpoint(ctx context.Context, arg InsertOORPackageCheckpointParams) error
 	// Round queries.
 	InsertRound(ctx context.Context, arg InsertRoundParams) error
@@ -107,10 +120,12 @@ type Querier interface {
 	// Callers replace the full set on update by deleting via
 	// DeleteVTXOAncestryPaths first.
 	InsertVTXOAncestryPath(ctx context.Context, arg InsertVTXOAncestryPathParams) error
+	InsertWalletEffect(ctx context.Context, arg InsertWalletEffectParams) error
 	// Crash-replay safe: duplicate (outpoint, event) inserts from
-	// RestartMessage replay are silently ignored so the audit log stays
+	// retried ledger delivery are silently ignored so the audit log stays
 	// at-most-once per outpoint+event.
 	InsertWalletUTXOLog(ctx context.Context, arg InsertWalletUTXOLogParams) error
+	ListActiveOORClientSessions(ctx context.Context) ([]OorClientSession, error)
 	ListActiveRounds(ctx context.Context) ([]Round, error)
 	ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddress, error)
 	ListAllBoardingIntents(ctx context.Context) ([]BoardingIntent, error)
@@ -127,6 +142,9 @@ type Querier interface {
 	ListClientAccounts(ctx context.Context) ([]Account, error)
 	ListClientLedgerEntries(ctx context.Context, arg ListClientLedgerEntriesParams) ([]LedgerEntry, error)
 	ListClientLedgerEntriesByType(ctx context.Context, arg ListClientLedgerEntriesByTypeParams) ([]LedgerEntry, error)
+	ListDueMailboxEgressIDs(ctx context.Context, arg ListDueMailboxEgressIDsParams) ([]string, error)
+	ListDueOORClientEffectIDs(ctx context.Context, arg ListDueOORClientEffectIDsParams) ([]string, error)
+	ListDueWalletEffectIDs(ctx context.Context, arg ListDueWalletEffectIDsParams) ([]string, error)
 	// ListLiveVTXOAncestryPaths returns every ancestry row whose parent VTXO
 	// is non-terminal, mirroring the filter on ListLiveVTXOs. Used as a
 	// single batched companion query so descriptor materialization across
@@ -144,6 +162,13 @@ type Querier interface {
 	// Status 4 = Completed, 5 = Failed (anchored to Go iota in
 	// db/unilateral_exit_store.go UnilateralExitJobStatus).
 	ListNonTerminalUnilateralExitJobs(ctx context.Context) ([]UnilateralExitJob, error)
+	ListOORClientArkArtifacts(ctx context.Context, sessionID []byte) ([]OorClientArkArtifact, error)
+	ListOORClientCheckpoints(ctx context.Context, sessionID []byte) ([]OorClientCheckpoint, error)
+	ListOORClientCheckpointsByPhase(ctx context.Context, arg ListOORClientCheckpointsByPhaseParams) ([]OorClientCheckpoint, error)
+	ListOORClientIncomingMetadata(ctx context.Context, sessionID []byte) ([]OorClientIncomingMetadatum, error)
+	ListOORClientInputs(ctx context.Context, sessionID []byte) ([]OorClientInput, error)
+	ListOORClientRecipients(ctx context.Context, sessionID []byte) ([]OorClientRecipient, error)
+	ListOORClientSessions(ctx context.Context) ([]OorClientSession, error)
 	ListOORPackageCheckpoints(ctx context.Context, sessionID []byte) ([]OorPackageCheckpoint, error)
 	ListOORPackages(ctx context.Context) ([]OorPackage, error)
 	ListOORPackagesByDirection(ctx context.Context, direction int32) ([]OorPackage, error)
@@ -188,6 +213,8 @@ type Querier interface {
 	MarkBoardingSweepInputStatus(ctx context.Context, arg MarkBoardingSweepInputStatusParams) error
 	MarkBoardingSweepInputsStatus(ctx context.Context, arg MarkBoardingSweepInputsStatusParams) error
 	MarkBoardingSweepStatus(ctx context.Context, arg MarkBoardingSweepStatusParams) error
+	MarkMailboxEgressSent(ctx context.Context, arg MarkMailboxEgressSentParams) error
+	MarkOORClientEffectDone(ctx context.Context, arg MarkOORClientEffectDoneParams) error
 	MarkUnilateralExitJobTerminal(ctx context.Context, arg MarkUnilateralExitJobTerminalParams) error
 	// MarkVTXOForfeited marks a VTXO as forfeited and records the forfeit
 	// transaction ID and replacement VTXO outpoint. Called when the new round's
@@ -199,6 +226,14 @@ type Querier interface {
 	MarkVTXOForfeiting(ctx context.Context, arg MarkVTXOForfeitingParams) error
 	// Also sets status = 4 (Spent) to keep status in sync with spent flag.
 	MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) error
+	MarkWalletEffectDone(ctx context.Context, arg MarkWalletEffectDoneParams) error
+	ReleaseExpiredMailboxEgressClaims(ctx context.Context, arg ReleaseExpiredMailboxEgressClaimsParams) error
+	ReleaseExpiredOORClientEffectClaims(ctx context.Context, arg ReleaseExpiredOORClientEffectClaimsParams) error
+	ReleaseExpiredWalletEffectClaims(ctx context.Context, arg ReleaseExpiredWalletEffectClaimsParams) error
+	ReleaseMailboxEgressForRetry(ctx context.Context, arg ReleaseMailboxEgressForRetryParams) error
+	ReleaseOORClientEffectForRetry(ctx context.Context, arg ReleaseOORClientEffectForRetryParams) error
+	ReleaseWalletEffectForRetry(ctx context.Context, arg ReleaseWalletEffectForRetryParams) error
+	SaveUnrollCheckpoint(ctx context.Context, arg SaveUnrollCheckpointParams) error
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
@@ -208,6 +243,14 @@ type Querier interface {
 	// method for state transitions that don't require additional data.
 	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
+	UpsertMailboxIngressCursor(ctx context.Context, arg UpsertMailboxIngressCursorParams) error
+	UpsertOORClientArkArtifact(ctx context.Context, arg UpsertOORClientArkArtifactParams) error
+	UpsertOORClientCheckpoint(ctx context.Context, arg UpsertOORClientCheckpointParams) error
+	UpsertOORClientIncomingHint(ctx context.Context, arg UpsertOORClientIncomingHintParams) error
+	UpsertOORClientIncomingMetadata(ctx context.Context, arg UpsertOORClientIncomingMetadataParams) error
+	UpsertOORClientInput(ctx context.Context, arg UpsertOORClientInputParams) error
+	UpsertOORClientRecipient(ctx context.Context, arg UpsertOORClientRecipientParams) error
+	UpsertOORClientSession(ctx context.Context, arg UpsertOORClientSessionParams) error
 	// OOR artifact store queries.
 	UpsertOORPackage(ctx context.Context, arg UpsertOORPackageParams) (int64, error)
 	UpsertOORRecipientCursor(ctx context.Context, arg UpsertOORRecipientCursorParams) error

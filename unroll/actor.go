@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -20,17 +21,25 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
-// Config configures one durable per-target VTXO unroll actor.
+// CheckpointStore is the SQL persistence surface used by one per-target
+// unroll actor. The actor itself is in-memory; restart safety comes from
+// loading and saving this checkpoint around every FSM transition.
+type CheckpointStore interface {
+	SaveCheckpoint(context.Context, actor.CheckpointParams) error
+	LoadCheckpoint(context.Context, string) (*actor.Checkpoint, error)
+}
+
+// Config configures one per-target VTXO unroll actor.
 type Config struct {
 	// TargetOutpoint is the VTXO being unrolled.
 	TargetOutpoint wire.OutPoint
 
-	// ActorID is the durable actor mailbox ID. When empty it
-	// falls back to a deterministic ID derived from the target.
+	// ActorID is the stable checkpoint/actor ID. When empty it falls back
+	// to a deterministic ID derived from the target.
 	ActorID string
 
-	// DeliveryStore provides durable mailbox and checkpoint persistence.
-	DeliveryStore actor.DeliveryStore
+	// CheckpointStore provides SQL checkpoint persistence.
+	CheckpointStore CheckpointStore
 
 	// ProofAssembler resolves the immutable local proof for the target.
 	ProofAssembler ProofAssembler
@@ -66,10 +75,11 @@ type Config struct {
 	RegistryRef actor.TellOnlyRef[RegistryMsg]
 }
 
-// VTXOUnrollActor wraps one durable per-target unroll actor.
+// VTXOUnrollActor wraps one in-memory per-target unroll actor.
 type VTXOUnrollActor struct {
 	ref     actor.ActorRef[Msg, Resp]
-	durable *actor.DurableActor[Msg, Resp]
+	runtime *actor.Actor[Msg, Resp]
+	wg      *sync.WaitGroup
 	stop    func()
 }
 
@@ -78,7 +88,7 @@ func (a *VTXOUnrollActor) Ref() actor.ActorRef[Msg, Resp] {
 	return a.ref
 }
 
-// Stop stops the underlying durable actor.
+// Stop stops the underlying in-memory actor.
 func (a *VTXOUnrollActor) Stop() {
 	if a == nil {
 		return
@@ -90,12 +100,35 @@ func (a *VTXOUnrollActor) Stop() {
 		return
 	}
 
-	if a.durable != nil {
-		a.durable.Stop()
+	if a.runtime != nil {
+		a.runtime.Stop()
 	}
 }
 
-// NewVTXOUnrollActor creates and starts one durable VTXO unroll actor.
+// StopAndWait stops the actor and waits for its processing loop to exit.
+func (a *VTXOUnrollActor) StopAndWait(ctx context.Context) error {
+	a.Stop()
+
+	if a == nil || a.wg == nil {
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.wg.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+
+	case <-done:
+		return nil
+	}
+}
+
+// NewVTXOUnrollActor creates and starts one VTXO unroll actor.
 func NewVTXOUnrollActor(cfg Config) (*VTXOUnrollActor, error) {
 	if cfg.ActorID == "" {
 		cfg.ActorID = actorIDForTarget(cfg.TargetOutpoint)
@@ -109,23 +142,25 @@ func NewVTXOUnrollActor(cfg Config) (*VTXOUnrollActor, error) {
 		return nil, err
 	}
 
-	durableCfg := actor.DefaultDurableActorConfig[Msg, Resp](
-		cfg.ActorID, behavior, cfg.DeliveryStore, newCodec(),
-	)
-	durableCfg.Log = cfg.Log
-
-	durable := actor.NewDurableActor(durableCfg)
-	behavior.selfRef = durable.TellRef()
-	durable.Start()
+	wg := &sync.WaitGroup{}
+	runtime := actor.NewActor(actor.ActorConfig[Msg, Resp]{
+		ID:          cfg.ActorID,
+		Behavior:    behavior,
+		MailboxSize: 128,
+		Wg:          wg,
+	})
+	behavior.selfRef = runtime.TellRef()
+	runtime.Start()
 
 	return &VTXOUnrollActor{
-		ref:     durable.Ref(),
-		durable: durable,
-		stop:    durable.Stop,
+		ref:     runtime.Ref(),
+		runtime: runtime,
+		wg:      wg,
+		stop:    runtime.Stop,
 	}, nil
 }
 
-// behavior is the durable actor behavior for one target outpoint.
+// behavior is the local actor behavior for one target outpoint.
 type behavior struct {
 	cfg     Config
 	log     btclog.Logger
@@ -144,7 +179,7 @@ type behavior struct {
 	terminalNotified  bool
 }
 
-// Receive processes one durable actor message. It is the single entry
+// Receive processes one local actor message. It is the single entry
 // point for every input that drives the unroll FSM: admission, restart,
 // chain events, txconfirm notifications, external spends, and status
 // probes. The job of Receive is purely translation — it maps the durable
@@ -628,7 +663,7 @@ func (b *behavior) ensureLoaded(ctx context.Context) error {
 // notificationRef builds the subscriber ref the actor hands to txconfirm.
 //
 // txconfirm delivers notifications in its own type space
-// ([txconfirm.Notification]) but our durable mailbox only accepts [Msg]
+// ([txconfirm.Notification]) but our SQL mailbox only accepts [Msg]
 // variants so the delivery store can codec them. This helper threads a
 // [chainsource.MapNotification]-style adapter: every txconfirm
 // notification is synchronously re-wrapped into the matching mailbox
@@ -667,13 +702,13 @@ func (b *behavior) notificationRef() actor.TellOnlyRef[txconfirm.Notification] {
 	)
 }
 
-// restoreCheckpoint restores durable state from the delivery store.
+// restoreCheckpoint restores durable state from SQL.
 func (b *behavior) restoreCheckpoint(ctx context.Context) error {
-	if b.cfg.DeliveryStore == nil {
-		return fmt.Errorf("delivery store must be provided")
+	if b.cfg.CheckpointStore == nil {
+		return fmt.Errorf("checkpoint store must be provided")
 	}
 
-	checkpoint, err := b.cfg.DeliveryStore.LoadCheckpoint(
+	checkpoint, err := b.cfg.CheckpointStore.LoadCheckpoint(
 		ctx, b.cfg.ActorID,
 	)
 	if err != nil {
@@ -1118,7 +1153,7 @@ func (b *behavior) inTerminalState() bool {
 	return state.IsTerminal()
 }
 
-// persistCheckpoint writes the current durable actor checkpoint.
+// persistCheckpoint writes the current SQL checkpoint.
 func (b *behavior) persistCheckpoint(ctx context.Context) error {
 	state, err := b.currentState()
 	if err != nil {
@@ -1131,7 +1166,7 @@ func (b *behavior) persistCheckpoint(ctx context.Context) error {
 		return err
 	}
 
-	err = b.cfg.DeliveryStore.SaveCheckpoint(ctx, actor.CheckpointParams{
+	err = b.cfg.CheckpointStore.SaveCheckpoint(ctx, actor.CheckpointParams{
 		ActorID:   b.cfg.ActorID,
 		StateType: checkpointStateType,
 		StateData: raw,
@@ -1412,7 +1447,7 @@ func actorIDForTarget(target wire.OutPoint) string {
 	return "unroll-" + target.String()
 }
 
-// ActorIDForTarget derives the durable actor ID for one target outpoint.
+// ActorIDForTarget derives the local actor ID for one target outpoint.
 func ActorIDForTarget(target wire.OutPoint) string {
 	return actorIDForTarget(target)
 }

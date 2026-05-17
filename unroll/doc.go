@@ -37,7 +37,7 @@
 //     by their parents, whether the CSV has matured, whether the sweep
 //     should be built. The planner has no IO — it only computes.
 //
-//   - [VTXOUnrollActor]: one durable actor per target outpoint. It owns
+//   - [VTXOUnrollActor]: one local actor per target outpoint. It owns
 //     the FSM session, the recovery proof, the planner, the cached sweep
 //     transaction, and the checkpoint. All IO — [txconfirm] Asks, chain
 //     subscriptions, persistence, registry notifications — runs here.

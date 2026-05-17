@@ -17,7 +17,6 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
@@ -37,12 +36,11 @@ const (
 )
 
 type oorVTXOManagerSystestFixture struct {
-	h             *SysTestHarness
-	clk           clock.Clock
-	roundStore    db.RoundStore
-	vtxoStore     vtxo.VTXOStore
-	deliveryStore actor.TxAwareDeliveryStore
-	managerRef    actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]
+	h          *SysTestHarness
+	clk        clock.Clock
+	roundStore db.RoundStore
+	vtxoStore  vtxo.VTXOStore
+	managerRef actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]
 }
 
 func newOORVTXOManagerSystestFixture(t *testing.T,
@@ -59,11 +57,6 @@ func newOORVTXOManagerSystestFixture(t *testing.T,
 		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), h.Logger(),
 	)
 	vtxoStore := dbStore.NewVTXOStore(clk)
-
-	deliveryStore, err := actordelivery.NewTxAwareDeliveryStoreFromDB(
-		sqlDB.DB, sqlDB.Backend(), clk, h.Logger(),
-	)
-	require.NoError(t, err)
 
 	chainSourceRef := h.NewChainSourceActor()
 	vtxoWallet := lndbackend.NewClientWallet(
@@ -87,16 +80,15 @@ func newOORVTXOManagerSystestFixture(t *testing.T,
 		h.ActorSystem(), serviceName, managerKey, manager,
 	)
 
-	err = manager.Start(ctx, managerRef)
+	err := manager.Start(ctx, managerRef)
 	require.NoError(t, err)
 
 	return &oorVTXOManagerSystestFixture{
-		h:             h,
-		clk:           clk,
-		roundStore:    sqlDB.Queries,
-		vtxoStore:     vtxoStore,
-		deliveryStore: deliveryStore,
-		managerRef:    managerRef,
+		h:          h,
+		clk:        clk,
+		roundStore: sqlDB.Queries,
+		vtxoStore:  vtxoStore,
+		managerRef: managerRef,
 	}
 }
 
@@ -153,7 +145,6 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 	oorActor := oor.NewOORClientActor(oor.ClientActorCfg{
 		Log:           fn.Some(f.h.SubLogger(oor.Subsystem)),
 		OutboxHandler: handler,
-		DeliveryStore: f.deliveryStore,
 		ActorSystem:   f.h.ActorSystem(),
 		ActorID:       "systest-oor-vtxo-manager",
 		VTXOManager:   f.managerRef,
@@ -273,7 +264,6 @@ func TestOORSelfChangeMaterializationSkipsExternalRecipient(t *testing.T) {
 	oorActor := oor.NewOORClientActor(oor.ClientActorCfg{
 		Log:           fn.Some(f.h.SubLogger(oor.Subsystem)),
 		OutboxHandler: handler,
-		DeliveryStore: f.deliveryStore,
 		ActorSystem:   f.h.ActorSystem(),
 		ActorID:       "systest-oor-change-vtxo-manager",
 		VTXOManager:   f.managerRef,

@@ -313,10 +313,10 @@ var zeroHash chainhash.Hash
 //  2. Fee leg:  debit onchain_fees  += ExitCostSat crediting
 //     vtxo_balance. The L1 miner fee portion.
 //
-// Both entries land in the durable actor's delivery transaction
+// Both entries land in the local actor's delivery transaction
 // via two InsertLedgerEntry calls that join the outer tx. Either
 // both commit or neither does: a handler-level error returns
-// non-nil, the durable actor nacks, and the whole tx (including
+// non-nil, the local actor nacks, and the whole tx (including
 // a possibly-successful first insert) rolls back. Redelivery of
 // a committed message cannot happen because Ack/MarkProcessed
 // land in the same tx; defensive protection against out-of-band
@@ -395,7 +395,7 @@ func (a *LedgerActor) handleExitCost(ctx context.Context,
 	}
 
 	// Book the send leg and the fee leg via two separate
-	// InsertLedgerEntry calls. Both join the durable actor's
+	// InsertLedgerEntry calls. Both join the local actor's
 	// outer delivery transaction (db.TransactionExecutor.ExecTx
 	// picks up the tx from ctx via actor.TxFromContext), so a
 	// crash or error between the two calls rolls back both

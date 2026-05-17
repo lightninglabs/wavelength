@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
-	admigration "github.com/lightninglabs/darepo-client/db/actordelivery/migrations"
 	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/stretchr/testify/require"
@@ -228,29 +227,4 @@ func TestDirtySqliteVersion(t *testing.T) {
 	// error indicating that the db is in a dirty state.
 	err = db.ExecuteMigrations(db.backupAndMigrate)
 	require.ErrorContains(t, err, "database is in a dirty state")
-}
-
-// TestSqliteStoreRunsActorDeliveryMigrations verifies that the default sqlite
-// store startup path applies isolated actor-delivery migrations.
-func TestSqliteStoreRunsActorDeliveryMigrations(t *testing.T) {
-	dbFileName := filepath.Join(t.TempDir(), "actor_delivery_test.db")
-	log := btclog.Disabled
-
-	store, err := NewSqliteStore(&SqliteConfig{
-		DatabaseFileName: dbFileName,
-	}, log)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, store.DB.Close())
-	})
-
-	var cnt int
-	err = store.QueryRowContext(
-		t.Context(),
-		"SELECT COUNT(*) FROM sqlite_master "+
-			"WHERE type='table' AND name=?",
-		admigration.DefaultMigrationsTable,
-	).Scan(&cnt)
-	require.NoError(t, err)
-	require.Equal(t, 1, cnt)
 }

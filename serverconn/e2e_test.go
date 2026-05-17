@@ -45,7 +45,7 @@ func (m *helloStartedMsg) FromProto(p proto.Message) error {
 
 // joinGreetingServerMsg wraps a JoinGreetingRequest for outbound durable
 // delivery. It implements ServerMessage so it can be sent via
-// SendClientEventRequest through the DurableActor.
+// SendClientEventRequest through the SQL runtime.
 type joinGreetingServerMsg struct {
 	actor.BaseMessage
 
@@ -385,7 +385,7 @@ func TestE2EServerPushEvent(t *testing.T) {
 }
 
 // TestE2EClientFireAndForget verifies that the client can send a
-// fire-and-forget event to the server via the DurableActor egress path.
+// fire-and-forget event to the server via the SQL runtime egress path.
 // The test sends a JoinGreetingRequest through SendClientEventRequest,
 // which is durably persisted in the actor's mailbox, serialized to proto
 // via ToProto, and sent as a KIND_EVENT envelope to the server.
@@ -408,8 +408,8 @@ func TestE2EClientFireAndForget(t *testing.T) {
 	require.NoError(t, runtime.Start(ctx))
 	defer runtime.Stop()
 
-	// Client sends a fire-and-forget event via the DurableActor. The
-	// message is persisted in the actor mailbox before the DurableActor
+	// Client sends a fire-and-forget event via the SQL runtime. The
+	// message is persisted in the actor mailbox before the SQL runtime
 	// processes it and sends it to the server via Edge.Send.
 	err = runtime.TellRef().Tell(ctx, &SendClientEventRequest{
 		Message: &joinGreetingServerMsg{SessionID: "greeting-99"},

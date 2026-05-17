@@ -9,7 +9,7 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
-// checkpointFromState exports the current protofsm state into the durable actor
+// checkpointFromState exports the current protofsm state into the local actor
 // checkpoint shape.
 func checkpointFromState(state State, sweepTx *wire.MsgTx) *actorCheckpoint {
 	checkpoint := &actorCheckpoint{

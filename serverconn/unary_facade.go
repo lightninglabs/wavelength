@@ -23,9 +23,9 @@ const errMalformedResponseBody = "failed to unmarshal response body: %w"
 // registry, which the ingress loop signals when a KIND_RESPONSE envelope
 // arrives.
 //
-// Unary RPC sends do not need durable egress — callers retry on failure. The
-// durable egress path (SendClientEventRequest through DurableActor.Tell) is
-// reserved for FSM outbox messages from the round actor.
+// Unary RPC sends do not need SQL egress persistence; callers retry on failure.
+// FSM outbox messages use Runtime.TellRef so they are recorded in SQL before
+// the transport worker sends them.
 type UnaryFacade struct {
 	// connector is the server connection actor that owns the response
 	// registry and configuration.

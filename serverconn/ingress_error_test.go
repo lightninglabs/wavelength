@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -75,56 +74,47 @@ func (s *mailboxClientStub) AckUpTo(ctx context.Context,
 	}, nil
 }
 
-// checkpointLoadStore allows overriding LoadCheckpoint behavior for tests.
-type checkpointLoadStore struct {
-	*memCheckpointStore
+// errorTransportStore allows overriding transport cursor behavior for tests.
+type errorTransportStore struct {
+	*memTransportStore
 
-	loadErr        error
-	loadCheckpoint *actor.Checkpoint
-}
-
-// LoadCheckpoint returns an injected error/checkpoint when configured.
-func (s *checkpointLoadStore) LoadCheckpoint(ctx context.Context,
-	actorID string) (*actor.Checkpoint, error) {
-
-	if s.loadErr != nil {
-		return nil, s.loadErr
-	}
-	if s.loadCheckpoint != nil {
-		return s.loadCheckpoint, nil
-	}
-
-	return s.memCheckpointStore.LoadCheckpoint(ctx, actorID)
-}
-
-// checkpointSaveStore allows overriding SaveCheckpoint behavior for tests.
-type checkpointSaveStore struct {
-	*memCheckpointStore
-
+	loadErr error
 	saveErr error
 }
 
-// SaveCheckpoint returns an injected error when configured.
-func (s *checkpointSaveStore) SaveCheckpoint(
-	ctx context.Context, params actor.CheckpointParams,
-) error {
+func (s *errorTransportStore) LoadIngressCursor(ctx context.Context,
+	localMailboxID, remoteMailboxID string) (AckState, error) {
+
+	if s.loadErr != nil {
+		return AckState{}, s.loadErr
+	}
+
+	return s.memTransportStore.LoadIngressCursor(
+		ctx, localMailboxID, remoteMailboxID,
+	)
+}
+
+func (s *errorTransportStore) SaveIngressCursor(ctx context.Context,
+	localMailboxID, remoteMailboxID string, state AckState) error {
 
 	if s.saveErr != nil {
 		return s.saveErr
 	}
 
-	return s.memCheckpointStore.SaveCheckpoint(ctx, params)
+	return s.memTransportStore.SaveIngressCursor(
+		ctx, localMailboxID, remoteMailboxID, state,
+	)
 }
 
 // newErrorPathActor builds a connector actor with defaults and test overrides.
 func newErrorPathActor(
 	edge mailboxpb.MailboxServiceClient,
-	store actor.DeliveryStore,
+	store TransportStore,
 ) *ServerConnectionActor {
 
 	cfg := DefaultConnectorConfig()
 	cfg.Edge = edge
-	cfg.Store = store
+	cfg.Transport = store
 	cfg.LocalMailboxID = "client-1"
 	cfg.RemoteMailboxID = "server-1"
 	cfg.ProtocolVersion = 1
@@ -151,7 +141,7 @@ func TestPullBatch_StatusFailure(t *testing.T) {
 		},
 	}
 
-	actor := newErrorPathActor(edge, newMemCheckpointStore())
+	actor := newErrorPathActor(edge, newMemTransportStore())
 
 	_, _, err := actor.pullBatch(t.Context(), 0)
 	require.Error(t, err)
@@ -181,7 +171,7 @@ func TestAckRemote_StatusFailure(t *testing.T) {
 		},
 	}
 
-	actor := newErrorPathActor(edge, newMemCheckpointStore())
+	actor := newErrorPathActor(edge, newMemTransportStore())
 
 	err := actor.ackRemote(t.Context(), 1)
 	require.Error(t, err)
@@ -192,7 +182,7 @@ func TestAckRemote_StatusFailure(t *testing.T) {
 	require.Contains(t, stErr.Error(), "ack failed")
 }
 
-// TestLoadCheckpoint_Errors verifies loadCheckpoint surfaces store/decode
+// TestLoadCheckpoint_Errors verifies loadCheckpoint surfaces transport-store
 // failures.
 func TestLoadCheckpoint_Errors(t *testing.T) {
 	t.Parallel()
@@ -200,39 +190,26 @@ func TestLoadCheckpoint_Errors(t *testing.T) {
 	edge := &mailboxClientStub{}
 
 	loadErrActor := newErrorPathActor(
-		edge, &checkpointLoadStore{
-			memCheckpointStore: newMemCheckpointStore(),
-			loadErr:            fmt.Errorf("load failed"),
+		edge, &errorTransportStore{
+			memTransportStore: newMemTransportStore(),
+			loadErr:           fmt.Errorf("load failed"),
 		},
 	)
 
 	_, err := loadErrActor.loadCheckpoint(t.Context())
 	require.ErrorContains(t, err, "load failed")
-
-	decodeErrActor := newErrorPathActor(
-		edge, &checkpointLoadStore{
-			memCheckpointStore: newMemCheckpointStore(),
-			loadCheckpoint: &actor.Checkpoint{
-				ActorID:   "serverconn-client-1",
-				StateType: ackStateType,
-				StateData: []byte{0xff, 0x00, 0x01},
-			},
-		},
-	)
-
-	_, err = decodeErrActor.loadCheckpoint(t.Context())
-	require.Error(t, err)
 }
 
-// TestSaveCheckpoint_Error verifies saveCheckpoint surfaces store save errors.
+// TestSaveCheckpoint_Error verifies saveCheckpoint surfaces transport-store
+// save errors.
 func TestSaveCheckpoint_Error(t *testing.T) {
 	t.Parallel()
 
 	actor := newErrorPathActor(
 		&mailboxClientStub{},
-		&checkpointSaveStore{
-			memCheckpointStore: newMemCheckpointStore(),
-			saveErr:            fmt.Errorf("save failed"),
+		&errorTransportStore{
+			memTransportStore: newMemTransportStore(),
+			saveErr:           fmt.Errorf("save failed"),
 		},
 	)
 
