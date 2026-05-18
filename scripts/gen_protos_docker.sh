@@ -18,11 +18,13 @@ PROTOBUF_VERSION=$(grep -E '^\s+google\.golang\.org/protobuf\s+' "$REPO_ROOT/go.
 GRPC_GATEWAY_VERSION=$(grep -E '^\s+github\.com/grpc-ecosystem/grpc-gateway/v2\s+' "$REPO_ROOT/go.mod" \
   | awk '{print $2}')
 : "${GRPC_GATEWAY_VERSION:?Could not extract grpc-gateway version from go.mod}"
+GOOGLEAPIS_VERSION="${GOOGLEAPIS_VERSION:-v0.0.0-20260514144325-84009fb6ad89}"
 
 echo "Building protobuf compiler docker image..."
 docker build -t darepo-protobuf-builder \
   --build-arg PROTOBUF_VERSION="$PROTOBUF_VERSION" \
   --build-arg GRPC_GATEWAY_VERSION="$GRPC_GATEWAY_VERSION" \
+  --build-arg GOOGLEAPIS_VERSION="$GOOGLEAPIS_VERSION" \
   -f "$DIR/rpc.Dockerfile" \
   "$REPO_ROOT"
 
@@ -31,6 +33,7 @@ docker run \
   --rm \
   --user "$UID:$(id -g)" \
   -e COMPILE_MOBILE \
+  -e GOPATH=/tmp/build/gopath \
   -v "$REPO_ROOT":/build \
   darepo-protobuf-builder
 

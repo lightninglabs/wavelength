@@ -35,7 +35,7 @@ const (
 //
 // Back-compat: if the operator is running a zero schedule,
 // TotalFeeSat == 0 and this call reduces to the pre-fee flow. If
-// the operator is unreachable (serverConn nil, RPC failure), the
+// the operator is unreachable (no outbound client, RPC failure), the
 // caller is expected to fall back to the legacy flat
 // terms.MinOperatorFee so boarding remains possible in a degraded
 // mode rather than failing outright.
@@ -49,12 +49,12 @@ const (
 func (s *Server) quoteOperatorFee(ctx context.Context, amountSat int64,
 	isBoarding bool, remainingBlocks uint32) (btcutil.Amount, error) {
 
-	if s.serverConn == nil {
-		return 0, status.Errorf(codes.Unavailable, "operator gRPC "+
+	client := s.operatorArkClient()
+	if client == nil {
+		return 0, status.Errorf(codes.Unavailable, "operator "+
 			"connection not initialized")
 	}
 
-	client := arkrpc.NewArkServiceClient(s.serverConn)
 	resp, err := client.EstimateFee(
 		ctx, &arkrpc.EstimateFeeRequest{
 			AmountSat:       amountSat,
@@ -102,7 +102,7 @@ func (s *Server) autoRefreshFeeQuoter() vtxo.RefreshFeeQuoter {
 		// Resolve the legacy floor first so every error branch
 		// has a consistent fallback. Terms fetch failures log
 		// locally so the operator can diagnose a misconfigured
-		// serverConn without the VTXO actor spamming duplicate
+		// outbound client without the VTXO actor spamming duplicate
 		// errors from its side.
 		var minFee btcutil.Amount
 		terms, termsErr := s.fetchOperatorTerms(ctx)
@@ -150,9 +150,9 @@ func (s *Server) autoRefreshFeeQuoter() vtxo.RefreshFeeQuoter {
 }
 
 // EstimateFee proxies the operator's ArkService.EstimateFee RPC over
-// the daemon's direct gRPC connection. The daemon does not cache fee
-// estimates: each call hits the server so the returned numbers reflect
-// the operator's current treasury state.
+// the daemon's configured direct outbound transport. The daemon does not cache
+// fee estimates: each call hits the server so the returned numbers reflect the
+// operator's current treasury state.
 func (r *RPCServer) EstimateFee(ctx context.Context,
 	req *daemonrpc.EstimateFeeRequest) (*daemonrpc.EstimateFeeResponse,
 	error) {
@@ -176,12 +176,11 @@ func (r *RPCServer) EstimateFee(ctx context.Context,
 			"must be <= %d", int64(btcutil.MaxSatoshi))
 	}
 
-	if r.server.serverConn == nil {
-		return nil, status.Errorf(codes.Unavailable, "operator gRPC "+
+	client := r.server.operatorArkClient()
+	if client == nil {
+		return nil, status.Errorf(codes.Unavailable, "operator "+
 			"connection not initialized")
 	}
-
-	client := arkrpc.NewArkServiceClient(r.server.serverConn)
 
 	resp, err := client.EstimateFee(ctx, &arkrpc.EstimateFeeRequest{
 		AmountSat:       req.AmountSat,

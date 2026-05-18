@@ -1,3 +1,5 @@
+//go:build !js
+
 package walletdk
 
 import (
@@ -126,6 +128,50 @@ func TestCloneDaemonConfigIsolation(t *testing.T) {
 			// cloneDaemonConfig performs.
 		}
 	}
+}
+
+// TestDaemonConfigPropagatesOutboundTransports verifies walletdk convenience
+// fields drive only the embedded daemon's outbound client transports.
+func TestDaemonConfigPropagatesOutboundTransports(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		ServerTransport:     TransportREST,
+		SwapServerTransport: TransportREST,
+	}
+
+	daemonCfg, err := daemonConfig(cfg)
+	require.NoError(t, err)
+
+	require.Equal(
+		t, darepod.RPCTransportREST, daemonCfg.Server.Transport,
+	)
+	require.Equal(
+		t, darepod.RPCTransportREST, daemonCfg.Swap.ServerTransport,
+	)
+}
+
+// TestDaemonConfigPreservesCallerOutboundTransports verifies a caller-owned
+// daemon config remains authoritative unless walletdk convenience fields are
+// explicitly set.
+func TestDaemonConfigPreservesCallerOutboundTransports(t *testing.T) {
+	t.Parallel()
+
+	callerCfg := darepod.DefaultConfig()
+	callerCfg.Server.Transport = darepod.RPCTransportREST
+	callerCfg.Swap.ServerTransport = darepod.RPCTransportREST
+
+	daemonCfg, err := daemonConfig(Config{
+		DaemonConfig: callerCfg,
+	})
+	require.NoError(t, err)
+
+	require.Equal(
+		t, darepod.RPCTransportREST, daemonCfg.Server.Transport,
+	)
+	require.Equal(
+		t, darepod.RPCTransportREST, daemonCfg.Swap.ServerTransport,
+	)
 }
 
 // TestClientStopIdempotent verifies that Stop, Close, and repeated calls all

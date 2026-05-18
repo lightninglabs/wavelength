@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/oor"
@@ -29,6 +30,10 @@ const (
 	// DefaultRPCHost is the default listen address for the daemon's own
 	// gRPC server.
 	DefaultRPCHost = "localhost:10029"
+
+	// DefaultRPCGatewayHost is the default listen address for the
+	// daemon's HTTP/JSON gateway.
+	DefaultRPCGatewayHost = "localhost:10031"
 
 	// DefaultLndHost is the default address for connecting to the local
 	// lnd instance.
@@ -94,6 +99,13 @@ const (
 	// need a stricter cap override via the `maxoperatorfeesat`
 	// config knob.
 	DefaultMaxOperatorFeeSat int64 = 1_000_000
+
+	// RPCTransportGRPC selects native gRPC for daemon-owned outbound RPCs.
+	RPCTransportGRPC = "grpc"
+
+	// RPCTransportREST selects grpc-gateway HTTP/JSON for daemon-owned
+	// outbound RPCs.
+	RPCTransportREST = "rest"
 )
 
 // Config holds all configuration for the darepod daemon.
@@ -151,6 +163,11 @@ type Config struct {
 	// compiled-in runtime capabilities, such as swapruntime, rather than
 	// user-provided daemon settings.
 	RPCServiceRegistrars []RPCServiceRegistrar
+
+	// RPCGatewayRegistrars are programmatic hooks that may register
+	// optional subservers on the daemon HTTP/JSON gateway after
+	// DaemonService is registered.
+	RPCGatewayRegistrars []RPCGatewayRegistrar
 
 	// Wallet configures the wallet backend used for signing, key
 	// derivation, and chain access.
@@ -210,6 +227,13 @@ type RPCServiceRegistrar func(
 	ctx context.Context, grpcServer *grpc.Server, rpcServer *RPCServer,
 	cfg *Config,
 ) (func(), error)
+
+// RPCGatewayRegistrar registers one optional daemon HTTP/JSON subserver on
+// the daemon gateway.
+type RPCGatewayRegistrar func(
+	ctx context.Context, mux *runtime.ServeMux, endpoint string,
+	opts []grpc.DialOption, rpcServer *RPCServer, cfg *Config,
+) error
 
 // UnrollConfig configures the unilateral-exit subsystem.
 type UnrollConfig struct {
@@ -286,9 +310,15 @@ func (c *Config) OORReceiveLimits() oor.ReceiveLimits {
 // the fields are only consumed when the daemon is compiled with swapruntime and
 // registers SwapClientService.
 type SwapConfig struct {
-	// ServerAddress is the swapdk-server gRPC endpoint used by the daemon
-	// executor. Empty values fall back to the local development default.
+	// ServerAddress is the swapdk-server endpoint used by the daemon
+	// executor. Its meaning follows ServerTransport: host:port for gRPC,
+	// or an HTTP gateway base URL for REST. Empty values fall back to the
+	// local development default.
 	ServerAddress string `mapstructure:"serveraddress"`
+
+	// ServerTransport selects the daemon-owned swapdk-server transport.
+	// Empty values default to gRPC.
+	ServerTransport string `mapstructure:"servertransport"`
 
 	// ServerTLSCertPath is an optional TLS certificate path for the
 	// swapdk-server connection. When set, the daemon uses the certificate
@@ -397,9 +427,14 @@ type LndConfig struct {
 // ServerConfig holds connection parameters for the ark operator's mailbox
 // edge server.
 type ServerConfig struct {
-	// Host is the gRPC address of the ark operator's mailbox edge
-	// service.
+	// Host is the ark operator endpoint. Its meaning follows Transport:
+	// host:port for gRPC, or an HTTP gateway base URL for REST.
 	Host string `mapstructure:"host"`
+
+	// Transport selects the daemon-owned outbound transport for ArkService
+	// and MailboxService clients. OOR traffic uses the mailbox edge, so it
+	// follows this selector as well. Empty values default to gRPC.
+	Transport string `mapstructure:"transport"`
 
 	// TLSCertPath is the path to the operator's TLS certificate for
 	// verifying the server connection. If empty, the system cert pool
@@ -432,6 +467,10 @@ type RPCConfig struct {
 	// from config files.
 	Listener net.Listener
 
+	// Gateway contains the HTTP/JSON gateway configuration for the
+	// daemon RPC server.
+	Gateway *GatewayConfig `mapstructure:"gateway"`
+
 	// TLSCertPath is the path to the daemon's TLS certificate. If empty,
 	// one is auto-generated in the data directory.
 	TLSCertPath string `mapstructure:"tlscertpath"`
@@ -439,6 +478,36 @@ type RPCConfig struct {
 	// TLSKeyPath is the path to the daemon's TLS private key. If empty,
 	// one is auto-generated in the data directory.
 	TLSKeyPath string `mapstructure:"tlskeypath"`
+}
+
+// GatewayConfig contains configuration for an HTTP/JSON grpc-gateway
+// listener.
+type GatewayConfig struct {
+	// Enabled controls whether the HTTP gateway starts with its
+	// owning gRPC server.
+	Enabled bool `mapstructure:"enabled"`
+
+	// ListenAddr is the network address the gateway binds to.
+	ListenAddr string `mapstructure:"listenaddr"`
+
+	// AllowedOrigins lists browser origins that may call the gateway.
+	// Empty means no cross-origin browser access; requests without an
+	// Origin header, such as CLI or local service calls, are still served.
+	AllowedOrigins []string `mapstructure:"allowedorigins"`
+
+	// Listener is an optional pre-created listener. When non-nil,
+	// the gateway serves on this listener instead of binding to
+	// ListenAddr. This is programmatic-only and is not loaded from
+	// config files.
+	Listener net.Listener
+}
+
+// DefaultGatewayConfig returns an enabled HTTP gateway config.
+func DefaultGatewayConfig() *GatewayConfig {
+	return &GatewayConfig{
+		Enabled:    true,
+		ListenAddr: DefaultRPCGatewayHost,
+	}
 }
 
 // WalletConfig selects and configures the wallet backend.
@@ -511,10 +580,12 @@ func DefaultConfig() *Config {
 		},
 		Server: &ServerConfig{
 			Host:         DefaultServerHost,
+			Transport:    RPCTransportGRPC,
 			MaxTreeNodes: roundpb.DefaultMaxTreeNodes,
 		},
 		RPC: &RPCConfig{
 			ListenAddr: DefaultRPCHost,
+			Gateway:    DefaultGatewayConfig(),
 		},
 		Wallet: &WalletConfig{
 			Type:           DefaultWalletType,
@@ -522,7 +593,8 @@ func DefaultConfig() *Config {
 			RecoveryWindow: DefaultRecoveryWindow,
 		},
 		Swap: &SwapConfig{
-			ServerAddress: "localhost:10030",
+			ServerAddress:   "localhost:10030",
+			ServerTransport: RPCTransportGRPC,
 		},
 		MaxOperatorFeeSat: DefaultMaxOperatorFeeSat,
 		OOR:               defaultOORConfig(),
@@ -609,6 +681,18 @@ func (c *Config) Validate() error {
 	if c.Server.Host == "" {
 		return fmt.Errorf("server host is required")
 	}
+	if err := validateRPCTransport(
+		"server.transport", c.Server.Transport,
+	); err != nil {
+		return err
+	}
+	if c.Swap != nil {
+		if err := validateRPCTransport(
+			"swap.servertransport", c.Swap.ServerTransport,
+		); err != nil {
+			return err
+		}
+	}
 	if c.RPC == nil {
 		return fmt.Errorf("rpc config is required")
 	}
@@ -616,8 +700,47 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("rpc listen address or injected listener " +
 			"is required")
 	}
+	if c.RPC.Gateway == nil {
+		return fmt.Errorf("rpc gateway config is required")
+	}
+	if c.RPC.Gateway.Enabled && c.RPC.Gateway.Listener == nil &&
+		c.RPC.Gateway.ListenAddr == "" {
+		return fmt.Errorf("rpc gateway listen address or injected " +
+			"listener is required")
+	}
+	if err := validateGatewayAllowedOrigins(
+		c.RPC.Gateway.AllowedOrigins,
+	); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+// validateGatewayAllowedOrigins rejects wildcard CORS grants on wallet-control
+// APIs.
+func validateGatewayAllowedOrigins(origins []string) error {
+	for _, origin := range origins {
+		switch origin {
+		case "", "*":
+			return fmt.Errorf("rpc.gateway.allowedorigins must "+
+				"contain explicit origins, got %q", origin)
+		}
+	}
+
+	return nil
+}
+
+// validateRPCTransport checks an optional RPC transport selector.
+func validateRPCTransport(name, transport string) error {
+	switch transport {
+	case "", RPCTransportGRPC, RPCTransportREST:
+		return nil
+
+	default:
+		return fmt.Errorf("%s must be %q or %q: got %q", name,
+			RPCTransportGRPC, RPCTransportREST, transport)
+	}
 }
 
 // validateOORLimitsConfig rejects OOR safety caps that would disable receive

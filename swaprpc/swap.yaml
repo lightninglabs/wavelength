@@ -1,0 +1,11 @@
+type: google.api.Service
+config_version: 3
+
+http:
+  rules:
+    - selector: swaprpc.SwapService.RequestChannelId
+      post: /v1/swap/request-channel-id
+      body: "*"
+    - selector: swaprpc.SwapService.CreateInSwap
+      post: /v1/swap/create-in-swap
+      body: "*"

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
@@ -104,4 +105,15 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 	}
 
 	return cleanup, nil
+}
+
+// RegisterGateway installs the optional WalletService handlers on the daemon
+// HTTP/JSON gateway.
+func RegisterGateway(ctx context.Context, mux *runtime.ServeMux,
+	endpoint string, opts []grpc.DialOption, _ *darepod.RPCServer,
+	_ *darepod.Config) error {
+
+	return walletrpc.RegisterWalletServiceHandlerFromEndpoint(
+		ctx, mux, endpoint, opts,
+	)
 }

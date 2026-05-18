@@ -6,6 +6,7 @@ import (
 	"math"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/lightninglabs/darepo-client/rpc/restclient"
 	"github.com/lightninglabs/darepo-client/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc"
@@ -22,6 +23,16 @@ type GRPCSwapServerConn struct {
 func NewGRPCSwapServerConn(conn grpc.ClientConnInterface) *GRPCSwapServerConn {
 	return &GRPCSwapServerConn{
 		client: swaprpc.NewSwapServiceClient(conn),
+	}
+}
+
+// NewRESTSwapServerConn creates a REST-backed SwapServerConn for one
+// grpc-gateway base address.
+func NewRESTSwapServerConn(addr string,
+	opts ...restclient.Option) *GRPCSwapServerConn {
+
+	return &GRPCSwapServerConn{
+		client: restclient.NewSwapServiceClient(addr, opts...),
 	}
 }
 

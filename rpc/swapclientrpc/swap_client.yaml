@@ -1,0 +1,23 @@
+type: google.api.Service
+config_version: 3
+
+http:
+  rules:
+    - selector: swapclientrpc.SwapClientService.StartPay
+      post: /v1/swapclient/start-pay
+      body: "*"
+    - selector: swapclientrpc.SwapClientService.StartReceive
+      post: /v1/swapclient/start-receive
+      body: "*"
+    - selector: swapclientrpc.SwapClientService.ResumeSwap
+      post: /v1/swapclient/resume-swap
+      body: "*"
+    - selector: swapclientrpc.SwapClientService.ListSwaps
+      post: /v1/swapclient/list-swaps
+      body: "*"
+    - selector: swapclientrpc.SwapClientService.GetSwap
+      post: /v1/swapclient/get-swap
+      body: "*"
+    - selector: swapclientrpc.SwapClientService.SubscribeSwaps
+      post: /v1/swapclient/subscribe-swaps
+      body: "*"

@@ -1,0 +1,38 @@
+type: google.api.Service
+config_version: 3
+
+http:
+  rules:
+    - selector: walletrpc.WalletService.Create
+      post: /v1/wallet/create
+      body: "*"
+    - selector: walletrpc.WalletService.Unlock
+      post: /v1/wallet/unlock
+      body: "*"
+    - selector: walletrpc.WalletService.Send
+      post: /v1/wallet/send
+      body: "*"
+    - selector: walletrpc.WalletService.Recv
+      post: /v1/wallet/recv
+      body: "*"
+    - selector: walletrpc.WalletService.List
+      post: /v1/wallet/list
+      body: "*"
+    - selector: walletrpc.WalletService.Deposit
+      post: /v1/wallet/deposit
+      body: "*"
+    - selector: walletrpc.WalletService.Balance
+      post: /v1/wallet/balance
+      body: "*"
+    - selector: walletrpc.WalletService.Status
+      post: /v1/wallet/status
+      body: "*"
+    - selector: walletrpc.WalletService.Exit
+      post: /v1/wallet/exit
+      body: "*"
+    - selector: walletrpc.WalletService.ExitStatus
+      post: /v1/wallet/exit-status
+      body: "*"
+    - selector: walletrpc.WalletService.SubscribeWallet
+      post: /v1/wallet/subscribe
+      body: "*"

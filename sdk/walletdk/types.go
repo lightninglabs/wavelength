@@ -1,96 +1,43 @@
 package walletdk
 
 import (
-	"io"
+	"net/http"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/darepod"
 	"google.golang.org/grpc"
 )
 
-// Config controls the embedded daemon and wallet facade.
-type Config struct {
-	// DaemonConfig supplies the full daemon config. When nil, walletdk
-	// starts from darepod.DefaultConfig and applies the convenience fields
-	// below.
-	DaemonConfig *darepod.Config
-
-	// DataDir is the root directory for daemon and wallet state.
-	DataDir string
-
-	// Network selects the bitcoin network.
-	Network string
-
-	// DebugLevel controls daemon logging verbosity.
-	DebugLevel string
-
-	// LogWriter receives daemon logs. Nil uses darepod's default stdout.
-	LogWriter io.Writer
-
-	// AllowMainnet must be true when Network is mainnet. This is an
-	// enable-only convenience override; set DaemonConfig directly when
-	// a caller-owned config needs an explicit false value.
-	AllowMainnet bool
-
-	// ServerAddress is the Ark operator mailbox edge server address.
-	ServerAddress string
-
-	// ServerTLSCertPath pins the Ark operator TLS certificate.
-	ServerTLSCertPath string
-
-	// ServerInsecure disables TLS for the Ark operator connection. This
-	// is an enable-only convenience override; set DaemonConfig directly
-	// when a caller-owned config needs an explicit false value.
-	ServerInsecure bool
-
-	// WalletType selects the backing wallet implementation.
-	WalletType string
-
-	// WalletEsploraURL is used by the lwwallet backend.
-	WalletEsploraURL string
-
-	// WalletPasswordFile enables daemon auto-unlock for lwwallet.
-	WalletPasswordFile string
-
-	// WalletPollInterval overrides the lwwallet chain poll interval.
-	WalletPollInterval time.Duration
-
-	// WalletRecoveryWindow overrides the wallet address look-ahead window.
-	WalletRecoveryWindow uint32
-
-	// WalletFeeURL is the fee estimator endpoint used by btcwallet.
-	WalletFeeURL string
-
-	// SwapServerAddress is the swapdk-server gRPC address.
-	SwapServerAddress string
-
-	// SwapServerTLSCertPath pins the swapdk-server TLS certificate.
-	SwapServerTLSCertPath string
-
-	// SwapServerInsecure disables TLS for the swap server connection.
-	// This is an enable-only convenience override; set DaemonConfig
-	// directly when a caller-owned config needs an explicit false value.
-	SwapServerInsecure bool
-
-	// SwapDatabaseFileName is the daemon-owned swap SQLite database path.
-	SwapDatabaseFileName string
-
-	// MaxOperatorFeeSat caps the per-round operator fee the daemon accepts.
-	MaxOperatorFeeSat int64
-
-	// BufferSize overrides the bufconn listener buffer size.
-	BufferSize int
-}
-
 // ConnectConfig controls a walletdk client connected to an external daemon.
 type ConnectConfig struct {
-	// Address is the gRPC target of a daemon exposing walletrpc.
+	// Address is the target of a daemon exposing walletrpc. For gRPC
+	// transport this is the gRPC address; for REST transport this is the
+	// HTTP gateway base address.
 	Address string
+
+	// Transport selects how Connect talks to the daemon. Empty defaults to
+	// TransportGRPC.
+	Transport Transport
 
 	// DialOptions are appended to the default dial options. When empty,
 	// walletdk uses insecure transport credentials for local development.
+	// Only used with TransportGRPC.
 	DialOptions []grpc.DialOption
+
+	// HTTPClient is the HTTP client used with TransportREST. Nil uses
+	// http.DefaultClient.
+	HTTPClient *http.Client
 }
+
+// Transport selects the RPC transport used by Connect.
+type Transport string
+
+const (
+	// TransportGRPC connects to the daemon with native gRPC.
+	TransportGRPC Transport = "grpc"
+
+	// TransportREST connects to the daemon through grpc-gateway HTTP/JSON.
+	TransportREST Transport = "rest"
+)
 
 // WalletState mirrors the daemon's wallet lifecycle enum so SDK
 // consumers can render a tri-state UI without collapsing LOCKED into

@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletrpc && swapruntime && !js
 
 package walletdk
 

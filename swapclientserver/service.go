@@ -5,10 +5,12 @@ package swapclientserver
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,8 +21,10 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightninglabs/darepo-client/darepod"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"github.com/lightninglabs/darepo-client/rpc/restclient"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
 	"github.com/lightninglabs/darepo-client/sdk/swaps"
@@ -174,6 +178,14 @@ type swapClientAdapter struct {
 	client *swaps.SwapClient
 }
 
+// swapServerClients holds all outbound clients backed by one configured
+// swapdk-server transport.
+type swapServerClients struct {
+	server  swaps.SwapServerConn
+	mailbox mailboxpb.MailboxServiceClient
+	cleanup func() error
+}
+
 // receiveSessionAdapter adds method accessors around sdk/swaps.ReceiveSession's
 // public start-response fields so both production code and tests share the
 // same receiveSwapSession interface.
@@ -233,6 +245,17 @@ func (s *swapClientService) ResumePending(ctx context.Context) {
 	s.resumePending(ctx)
 }
 
+// RegisterGateway installs the optional SwapClientService handlers on the
+// daemon HTTP/JSON gateway.
+func RegisterGateway(ctx context.Context, mux *runtime.ServeMux,
+	endpoint string, opts []grpc.DialOption, _ *darepod.RPCServer,
+	_ *darepod.Config) error {
+
+	return swapclientrpc.RegisterSwapClientServiceHandlerFromEndpoint(
+		ctx, mux, endpoint, opts,
+	)
+}
+
 // newSwapClientService builds the daemon-owned swap executor from darepod
 // runtime dependencies.
 //
@@ -276,27 +299,19 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 		swapAddr = "localhost:10030"
 	}
 
-	dialOpts, err := swapServerDialOptions(cfg, swapAddr)
+	swapClients, err := newSwapServerClients(cfg, swapAddr)
 	if err != nil {
 		_ = store.Close()
 
 		return nil, nil, err
 	}
 
-	swapConn, err := grpc.NewClient(swapAddr, dialOpts...)
-	if err != nil {
-		_ = store.Close()
-
-		return nil, nil, fmt.Errorf("connect to swap server: %w", err)
-	}
-
-	serverConn := swaps.NewGRPCSwapServerConn(swapConn)
 	arkClient, err := sdkark.WrapDaemonServer(ctx, sdkark.InProcessConfig{
 		DaemonServer: rpcServer,
 	})
 	if err != nil {
-		_ = serverConn.Close()
-		_ = swapConn.Close()
+		_ = swapClients.server.Close()
+		_ = swapClients.cleanup()
 		_ = store.Close()
 
 		return nil, nil, fmt.Errorf("create in-process ark client: %w",
@@ -306,8 +321,8 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	chainParams, err := chainParamsForNetwork(daemonCfg.Network)
 	if err != nil {
 		_ = arkClient.Close()
-		_ = serverConn.Close()
-		_ = swapConn.Close()
+		_ = swapClients.server.Close()
+		_ = swapClients.cleanup()
 		_ = store.Close()
 
 		return nil, nil, err
@@ -316,8 +331,8 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	invoiceGen, err := daemonInvoiceGenerator(arkClient, chainParams)
 	if err != nil {
 		_ = arkClient.Close()
-		_ = serverConn.Close()
-		_ = swapConn.Close()
+		_ = swapClients.server.Close()
+		_ = swapClients.cleanup()
 		_ = store.Close()
 
 		return nil, nil, err
@@ -325,7 +340,7 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 
 	rootCtx, cancel := context.WithCancel(ctx)
 	swapClient := swaps.NewSwapClientWithStore(
-		serverConn, arkClient, log, invoiceGen, store,
+		swapClients.server, arkClient, log, invoiceGen, store,
 	)
 	swapClient.SetChainParams(chainParams)
 
@@ -339,7 +354,7 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	// the per-swap mailbox from the client identity key and payment hash.
 	swapClient.SetOutSwapEventReceiver(
 		swaps.NewMailboxOutSwapEventReceiver(
-			mailboxpb.NewMailboxServiceClient(swapConn), "",
+			swapClients.mailbox, "",
 		),
 	)
 
@@ -358,12 +373,59 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	cleanup := func() {
 		cancel()
 		_ = arkClient.Close()
-		_ = serverConn.Close()
-		_ = swapConn.Close()
+		_ = swapClients.server.Close()
+		_ = swapClients.cleanup()
 		_ = store.Close()
 	}
 
 	return service, cleanup, nil
+}
+
+// newSwapServerClients builds the swapdk-server clients for the configured
+// daemon-owned outbound transport.
+func newSwapServerClients(cfg *darepod.SwapConfig,
+	swapAddr string) (*swapServerClients, error) {
+
+	switch cfg.ServerTransport {
+	case "", darepod.RPCTransportGRPC:
+		dialOpts, err := swapServerDialOptions(cfg, swapAddr)
+		if err != nil {
+			return nil, err
+		}
+
+		swapConn, err := grpc.NewClient(swapAddr, dialOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("connect to swap server: %w",
+				err)
+		}
+
+		return &swapServerClients{
+			server:  swaps.NewGRPCSwapServerConn(swapConn),
+			mailbox: mailboxpb.NewMailboxServiceClient(swapConn),
+			cleanup: swapConn.Close,
+		}, nil
+
+	case darepod.RPCTransportREST:
+		opts, err := swapServerRESTOptions(cfg)
+		if err != nil {
+			return nil, err
+		}
+
+		baseURL := swapServerRESTBaseURL(cfg, swapAddr)
+		transport := restclient.New(baseURL, opts...)
+
+		return &swapServerClients{
+			server: swaps.NewRESTSwapServerConn(baseURL, opts...),
+			mailbox: restclient.NewMailboxServiceClientFromClient(
+				transport,
+			),
+			cleanup: func() error { return nil },
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unknown swap server transport %q",
+			cfg.ServerTransport)
+	}
 }
 
 // StartPayViaLightning starts a real sdk/swaps pay session and returns it
@@ -557,6 +619,70 @@ func swapServerDialOptions(cfg *darepod.SwapConfig,
 			),
 		}, nil
 	}
+}
+
+// swapServerRESTOptions maps the swapdk-server TLS config into the shared REST
+// transport.
+func swapServerRESTOptions(cfg *darepod.SwapConfig) ([]restclient.Option,
+	error) {
+
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+	if cfg.ServerTLSCertPath != "" {
+		certBytes, err := os.ReadFile(cfg.ServerTLSCertPath)
+		if err != nil {
+			return nil, fmt.Errorf("load swap server TLS "+
+				"certificate: %w", err)
+		}
+
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(certBytes) {
+			return nil, fmt.Errorf("unable to parse swap server "+
+				"TLS certificate at %s", cfg.ServerTLSCertPath)
+		}
+		tlsCfg.RootCAs = pool
+	}
+
+	httpTransport := cloneDefaultHTTPTransport()
+	httpTransport.TLSClientConfig = tlsCfg
+
+	return []restclient.Option{
+		restclient.WithHTTPClient(&http.Client{
+			Transport: httpTransport,
+		}),
+	}, nil
+}
+
+// cloneDefaultHTTPTransport returns a mutable copy of the default HTTP
+// transport without relying on a forced package-global type assertion.
+func cloneDefaultHTTPTransport() *http.Transport {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+		}
+	}
+
+	return transport.Clone()
+}
+
+// swapServerRESTBaseURL returns the base URL used for swapdk-server
+// grpc-gateway calls.
+func swapServerRESTBaseURL(cfg *darepod.SwapConfig, addr string) string {
+	if strings.HasPrefix(addr, "http://") ||
+		strings.HasPrefix(addr, "https://") {
+		return addr
+	}
+
+	if cfg.ServerTLSCertPath != "" {
+		return "https://" + addr
+	}
+	if cfg.ServerInsecure || isLocalSwapServerAddr(addr) {
+		return "http://" + addr
+	}
+
+	return "https://" + addr
 }
 
 // chainParamsForNetwork converts the daemon's configured network string into

@@ -1,0 +1,14 @@
+type: google.api.Service
+config_version: 3
+
+http:
+  rules:
+    - selector: mailbox.v1.MailboxService.Send
+      post: /v1/mailbox/send
+      body: "*"
+    - selector: mailbox.v1.MailboxService.Pull
+      post: /v1/mailbox/pull
+      body: "*"
+    - selector: mailbox.v1.MailboxService.AckUpTo
+      post: /v1/mailbox/ack-up-to
+      body: "*"
