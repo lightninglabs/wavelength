@@ -2612,15 +2612,48 @@ func (r *RPCServer) Unroll(ctx context.Context, req *daemonrpc.UnrollRequest) (
 
 	// Check if this VTXO is already in unilateral exit. If so, the
 	// transition already happened and we just return Created=false.
+	//
+	// Also load the descriptor (when available) so we can pre-flight
+	// the wallet's CPFP fee-input budget against the VTXO's ancestry
+	// shape. Resolving the descriptor here saves a second round-trip
+	// to the store further down.
+	var desc *vtxo.Descriptor
 	if r.server.vtxoStore != nil {
-		desc, err := r.server.vtxoStore.GetVTXO(admissionCtx, outpoint)
-		if err == nil && desc != nil &&
-			desc.Status == vtxo.VTXOStatusUnilateralExit {
-			return &daemonrpc.UnrollResponse{
-				Created: false,
-				ActorId: unroll.ActorIDForTarget(outpoint),
-			}, nil
+		d, err := r.server.vtxoStore.GetVTXO(admissionCtx, outpoint)
+		if err == nil && d != nil {
+			desc = d
+
+			if desc.Status == vtxo.VTXOStatusUnilateralExit {
+				return &daemonrpc.UnrollResponse{
+					Created: false,
+					ActorId: unroll.ActorIDForTarget(
+						outpoint,
+					),
+				}, nil
+			}
 		}
+	}
+
+	// Pre-flight the wallet's CPFP fee budget against the VTXO's
+	// ancestry shape. Each independent ancestry path (cross-
+	// commitment multi-input OOR VTXOs may have several; a round-
+	// direct VTXO has exactly one) corresponds to a distinct CPFP
+	// parent that the unroll needs to fee-bump on chain. TRUC RBF
+	// lets a single parent reuse its own fee input across bumps,
+	// but distinct parents each require their own confirmed wallet
+	// UTXO at child-construction time. If the wallet has fewer
+	// usable UTXOs than ancestry paths, the unroll will admit, the
+	// VTXO actor will transition to UnilateralExitState, but the
+	// chain layer will then thrash forever on
+	// `cpfp fee input unavailable: no confirmed wallet UTXOs
+	// available`. That leaves the VTXO in an exit state the user
+	// can't easily back out of. Fail closed here instead: refuse
+	// admission with InvalidArgument so the caller can fund the
+	// wallet and retry without contaminating state.
+	if err := r.preflightUnrollFeeInputs(
+		admissionCtx, desc,
+	); err != nil {
+		return nil, err
 	}
 
 	// Route through the VTXO manager which tells the VTXO actor to
@@ -2652,6 +2685,73 @@ func (r *RPCServer) Unroll(ctx context.Context, req *daemonrpc.UnrollRequest) (
 		Created: unrollResp.Accepted,
 		ActorId: actorID,
 	}, nil
+}
+
+// preflightUnrollMinUTXOSat is the soft floor used by the unroll fee-
+// input pre-check. Confirmed wallet UTXOs below this threshold are
+// counted as unavailable because they're too small to plausibly cover
+// a v3/TRUC CPFP child fee. The exact required amount is determined
+// per-package at broadcast time in `txconfirm.CPFPBroadcaster`; this
+// constant is intentionally conservative so the pre-check rejects
+// only obviously-dust wallets, not borderline cases the run-time
+// fee bumper might still handle. Empirical floor observed during
+// itest (BUGS_FOUND.md bug-8): ~32k sat per package.
+const preflightUnrollMinUTXOSat = btcutil.Amount(10_000)
+
+// preflightUnrollFeeInputs checks that the wallet has enough confirmed
+// UTXOs to cover the CPFP fee inputs the unroll will need. Returns a
+// codes.FailedPrecondition gRPC error with an actionable message when
+// the wallet is short. Returns nil (allow admission) when the
+// descriptor is unavailable, since we can't compute the required
+// count without it.
+func (r *RPCServer) preflightUnrollFeeInputs(ctx context.Context,
+	desc *vtxo.Descriptor) error {
+
+	if desc == nil {
+
+		// The descriptor lookup failed earlier — let the existing
+		// admission path produce its own error rather than guess
+		// at the required count here.
+		return nil
+	}
+
+	// Number of independent CPFP packages the unroll will produce
+	// is the count of ancestry paths: each path is a chain of
+	// commitment txs rooted at a distinct on-chain batch tx, and
+	// the chain layer needs one confirmed wallet UTXO per chain
+	// to fund the v3 child.
+	required := len(desc.Ancestry)
+	if required == 0 {
+
+		// A descriptor with no ancestry path is malformed in
+		// production but should not block admission — defer to
+		// the chain layer's own error handling.
+		return nil
+	}
+
+	utxos, err := r.server.ListWalletUnspent(ctx, 1, 9999999)
+	if err != nil {
+		return status.Errorf(codes.Internal, "preflight wallet "+
+			"unspent: %v", err)
+	}
+
+	usable := 0
+	for _, utxo := range utxos {
+		if utxo.Amount >= preflightUnrollMinUTXOSat {
+			usable++
+		}
+	}
+
+	if usable >= required {
+		return nil
+	}
+
+	return status.Errorf(codes.FailedPrecondition, "insufficient wallet "+
+		"UTXOs to fund unroll CPFP: need at least %d confirmed wallet "+
+		"UTXO(s) of >= %d sat each (one per ancestry path), have %d "+
+		"usable. Fund the wallet's onchain address with more inputs "+
+		"and retry.", required, int64(preflightUnrollMinUTXOSat),
+		usable)
 }
 
 // GetUnrollStatus returns the current status of an unroll job for the
