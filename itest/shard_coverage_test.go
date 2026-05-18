@@ -33,7 +33,7 @@ var shardPatterns = map[string]*regexp.Regexp{
 		`^TestUnilateral|^TestPartial|^TestSweep|^TestLeave`,
 	),
 	"fraud": regexp.MustCompile(
-		`^TestFraud`,
+		`^TestFraud|^TestRecipientFraud`,
 	),
 }
 
