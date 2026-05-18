@@ -99,6 +99,14 @@ service DaemonService {
     // the round FSM, which emits a JoinRoundRequest to the server.
     rpc Board (BoardRequest) returns (BoardResponse);
 
+    // JoinNextRound asks the client round FSM to commit any currently
+    // queued round intents and emit a JoinRoundRequest to the operator.
+    // Useful after queueing refresh or leave intents that intentionally
+    // batch in PendingRoundAssembly. The proto name avoids collision with
+    // roundpb.JoinRoundRequest, which is the underlying wire message the
+    // round FSM emits to the operator once this RPC fires.
+    rpc JoinNextRound (JoinNextRoundRequest) returns (JoinNextRoundResponse);
+
     // SweepBoardingUTXOs sweeps boarding UTXOs whose CSV timeout path is
     // mature back to the wallet.
     rpc SweepBoardingUTXOs (SweepBoardingUTXOsRequest)
@@ -840,6 +848,16 @@ message BoardResponse {
     // vtxo_count is the number of VTXO target outputs accepted for
     // boarding. It is zero when status is "no_boarding_utxos".
     uint32 vtxo_count = 2;
+}
+
+message JoinNextRoundRequest {
+}
+
+message JoinNextRoundResponse {
+    // status is "joined" when the round FSM accepted the request and emitted
+    // JoinRoundRequest to the operator. The actual round outcome is observed
+    // asynchronously via ListRounds / WatchRounds and the per-VTXO status.
+    string status = 1;
 }
 
 message SweepBoardingUTXOsRequest {

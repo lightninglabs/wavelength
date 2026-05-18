@@ -412,6 +412,19 @@ func (c *DaemonServiceClient) Board(ctx context.Context,
 	return out, err
 }
 
+// JoinNextRound commits queued round intents and joins the next round.
+func (c *DaemonServiceClient) JoinNextRound(ctx context.Context,
+	in *daemonrpc.JoinNextRoundRequest, _ ...grpc.CallOption) (
+	*daemonrpc.JoinNextRoundResponse, error) {
+
+	out := new(daemonrpc.JoinNextRoundResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/join-next-round", in, out,
+	)
+
+	return out, err
+}
+
 // SweepBoardingUTXOs sweeps mature boarding UTXOs.
 func (c *DaemonServiceClient) SweepBoardingUTXOs(ctx context.Context,
 	in *daemonrpc.SweepBoardingUTXOsRequest, _ ...grpc.CallOption) (

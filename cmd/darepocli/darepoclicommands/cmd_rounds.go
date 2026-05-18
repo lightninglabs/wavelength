@@ -23,7 +23,8 @@ func newRoundsCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(
-		newRoundsGetCmd(), newRoundsListCmd(), newRoundsWatchCmd(),
+		newRoundsGetCmd(), newRoundsJoinCmd(), newRoundsListCmd(),
+		newRoundsWatchCmd(),
 	)
 
 	return cmd
@@ -65,6 +66,21 @@ func newRoundsListCmd() *cobra.Command {
 		"only show persisted rounds created before this Unix time")
 
 	return cmd
+}
+
+// newRoundsJoinCmd creates the 'rounds join' subcommand.
+func newRoundsJoinCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "join",
+		Short: "Commit queued intents and join the next round",
+		Long: "Asks the daemon's round actor to commit currently " +
+			"queued round intents (refresh or leave) and emit a " +
+			"JoinRoundRequest to the operator. Use this after " +
+			"queueing intents via `ark vtxos refresh` or " +
+			"`ark vtxos leave` that intentionally batch in " +
+			"PendingRoundAssembly.",
+		RunE: roundsJoin,
+	}
 }
 
 // newRoundsWatchCmd creates the 'rounds watch' subcommand.
@@ -153,6 +169,31 @@ func roundsList(cmd *cobra.Command, _ []string) error {
 	resp, err := client.ListRounds(context.Background(), req)
 	if err != nil {
 		return fmt.Errorf("ListRounds RPC failed: %w", err)
+	}
+
+	return printJSON(resp)
+}
+
+// roundsJoin executes the JoinNextRound RPC and prints the result.
+func roundsJoin(cmd *cobra.Command, _ []string) error {
+	client, conn, err := getDaemonClient(cmd)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	req := &daemonrpc.JoinNextRoundRequest{}
+	if err := parseRequest(cmd, req, func() error {
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	resp, err := client.JoinNextRound(cmd.Context(), req)
+	if err != nil {
+		return fmt.Errorf("JoinNextRound RPC failed: %w", err)
 	}
 
 	return printJSON(resp)

@@ -861,8 +861,7 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	case *daemonrpc.RefreshVTXOsRequest_All:
 		if !sel.All {
 			return nil, status.Errorf(codes.InvalidArgument,
-				"refresh selection 'all' must be true when "+
-					"set")
+				"refresh selection 'all' must be true when set")
 		}
 
 		if r.server.vtxoStore == nil {
@@ -872,8 +871,8 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 
 		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "list "+
-				"live VTXOs: %v", err)
+			return nil, status.Errorf(codes.Internal, "list live "+
+				"VTXOs: %v", err)
 		}
 
 		// ListLiveVTXOs returns every VTXO not in a terminal
@@ -978,8 +977,7 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	for _, op := range targets {
 		if _, hasErr := resp.Errors[op]; !hasErr {
 			queued = append(
-				queued,
-				fmt.Sprintf("%s:%d", op.Hash, op.Index),
+				queued, fmt.Sprintf("%s:%d", op.Hash, op.Index),
 			)
 		}
 	}
@@ -1335,6 +1333,30 @@ func (r *RPCServer) Board(ctx context.Context, req *daemonrpc.BoardRequest) (
 	return &daemonrpc.BoardResponse{
 		Status:    "registered",
 		VtxoCount: uint32(len(boardResp.VTXOAmounts)),
+	}, nil
+}
+
+// JoinNextRound asks the client round actor to commit any queued round
+// intents by injecting IntentRequested into the active assembling FSM. The
+// FSM then emits a JoinRoundRequest to the operator and drives the
+// registration handshake to completion on its own turn loop.
+func (r *RPCServer) JoinNextRound(ctx context.Context,
+	_ *daemonrpc.JoinNextRoundRequest) (*daemonrpc.JoinNextRoundResponse,
+	error) {
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	if err := r.server.TriggerRoundRegistration(ctx); err != nil {
+		return nil, status.Errorf(codes.Internal, "join next round: %v",
+			err)
+	}
+
+	r.server.log.InfoS(ctx, "JoinNextRound accepted")
+
+	return &daemonrpc.JoinNextRoundResponse{
+		Status: "joined",
 	}, nil
 }
 
