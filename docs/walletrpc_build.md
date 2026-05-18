@@ -16,7 +16,8 @@ binaries are tagged.
 The wallet RPC subserver lives behind paired build tags:
 
 - `walletrpc` — registers the wallet RPC gRPC service in the daemon and
-  enables the matching `darepocli wallet *` subtree.
+  enables the top-level `darepocli` wallet verbs (`balance`, `recv`,
+  `send`, `list`, `create`, `unlock`, `mcp`).
 - `swapruntime` — the underlying swap subsystem the wallet RPC layer
   composes against. Required transitively: building with `walletrpc` but
   without `swapruntime` is a deliberate compile error.
@@ -64,15 +65,19 @@ When the daemon is started from a `walletrpc`-tagged build:
   calls, enforces a wallet-level deadline watcher that transitions stuck
   entries to FAILED, and runs a monitor loop that fans normalized updates
   to `SubscribeWallet` subscribers.
-- The CLI exposes the `darepocli wallet` subtree: `send`, `recv`, `list`,
-  `deposit`, `balance`, `status`, and `subscribe` subcommands.
+- The CLI exposes top-level wallet verbs: `send`, `recv`, `list`,
+  `balance`, `create`, `unlock`, and `mcp serve`. Boarding deposits and
+  onchain sweeps appear via `list --view onchain`. Subscriptions live
+  under `dev daemon SubscribeWallet`.
 - The `sdk/walletdk` facade can route through wallet RPC instead of the
   raw swap RPCs.
 
 When the daemon is built without `walletrpc`, the gRPC subserver is replaced
-by a stub that returns `Unimplemented` on every method, and the
-`darepocli wallet` subtree returns the same error so scripts depending on it
-fail fast rather than appearing to succeed.
+by a stub that returns `Unimplemented` on every method, and the top-level
+wallet verbs return the same error so scripts depending on them fail fast
+rather than appearing to succeed. Power-user equivalents stay available
+under the `ark *` (e.g. `ark vtxos list`, `ark send oor`) and
+`dev daemon *` (raw RPC) subtrees.
 
 ## Configuration
 
@@ -97,16 +102,17 @@ authoritative constants.
 # Build the daemon with walletrpc enabled.
 make build-walletrpc
 
-# Confirm the subserver is registered by listing CLI subcommands.
-./bin/darepocli wallet --help
+# Confirm the top-level wallet verbs appear in `darepocli --help`
+# (balance, recv, send, list, create, unlock, mcp).
+./bin/darepocli --help
 
 # After starting the daemon and creating/unlocking a wallet:
-./bin/darepocli wallet status
-./bin/darepocli wallet balance
+./bin/darepocli balance
+./bin/darepocli list --view vtxos
 ```
 
-If `darepocli wallet status` returns `unimplemented`, the binary was built
-without `-tags walletrpc`. Re-run `make build-walletrpc` or
+If `darepocli balance` returns `daemon was not built with -tags walletrpc`,
+the binary was built without the tag. Re-run `make build-walletrpc` or
 `make install-walletrpc`.
 
 ## Related docs
