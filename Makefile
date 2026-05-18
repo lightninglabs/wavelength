@@ -39,7 +39,12 @@ GOFILES_NOVENDOR = $(shell find . -type f -name '*.go' -not -path "./vendor/*" -
 
 RM := rm -f
 MAKE := make
-XARGS := xargs -L 1
+# XARGS forwards GOLIST output to go test in a single invocation, letting
+# go test parallelize compilation and execution across packages via its -p
+# flag. The historical xargs -L 1 idiom (inherited from lnd's Makefile)
+# spawned one go test per package, which serialized the per-package compile
+# cost and dominated unit-race wall clock on CI.
+XARGS := xargs
 
 COMMIT := $(shell git describe --tags --dirty 2>/dev/null || echo "unknown")
 
