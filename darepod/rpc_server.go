@@ -845,17 +845,52 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 
 	wRef := r.server.walletRef.UnsafeFromSome()
 
-	// Build the list of target outpoints. If the "all" selection
-	// is set, leave the slice empty so the wallet actor refreshes
-	// everything approaching expiry.
-	var (
-		targets    []wire.OutPoint
-		refreshAll bool
-	)
+	// Build the list of target outpoints. The wallet actor only
+	// refreshes outpoints it receives in TargetOutpoints (despite a
+	// stale docstring suggesting empty means "all"), so when the
+	// caller asks for --all we enumerate live VTXOs here and pass
+	// them as explicit targets. Without this expansion the wallet
+	// gets target_count=0, registers an empty refresh package, and
+	// nothing actually happens — but the response previously
+	// synthesised `queued_outpoints` from a separate ListLiveVTXOs
+	// call below, which made the caller believe the refresh
+	// succeeded.
+	var targets []wire.OutPoint
 
 	switch sel := req.Selection.(type) {
 	case *daemonrpc.RefreshVTXOsRequest_All:
-		refreshAll = sel.All
+		if !sel.All {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"refresh selection 'all' must be true when "+
+					"set")
+		}
+
+		if r.server.vtxoStore == nil {
+			return nil, status.Errorf(codes.Internal, "VTXO "+
+				"store not available for refresh --all")
+		}
+
+		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "list "+
+				"live VTXOs: %v", err)
+		}
+
+		// ListLiveVTXOs returns every VTXO not in a terminal
+		// state — which includes PendingForfeit. Without this
+		// filter, a second `refresh --all` immediately after a
+		// first would re-queue the same outpoints that are
+		// already on their way through the round, double-
+		// registering the same forfeit intent. Restrict --all
+		// to outpoints actually in LiveState; explicit
+		// --outpoint callers retain the existing per-outpoint
+		// error path via the wallet's Errors map.
+		for _, v := range liveVTXOs {
+			if v.Status != vtxo.VTXOStatusLive {
+				continue
+			}
+			targets = append(targets, v.Outpoint)
+		}
 
 	case *daemonrpc.RefreshVTXOsRequest_Outpoints:
 		if sel.Outpoints == nil ||
@@ -877,6 +912,16 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "selection "+
 			"is required (outpoints or all)")
+	}
+
+	// `--all` against a wallet with no live VTXOs is not an error —
+	// return an empty result so callers and scripts don't have to
+	// special-case the "nothing to refresh" path.
+	if len(targets) == 0 {
+		return &daemonrpc.RefreshVTXOsResponse{
+			QueuedOutpoints: nil,
+			Status:          "queued",
+		}, nil
 	}
 
 	// For dry_run, validate inputs and return a preview without
@@ -924,34 +969,18 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 			"outpoint", op.String())
 	}
 
-	// Build the list of outpoints that were successfully queued.
+	// Build the list of outpoints that were successfully queued by
+	// the wallet — i.e. those in `targets` that did NOT appear in
+	// `resp.Errors`. Iterating `targets` keeps this honest: it
+	// reflects what the wallet was actually asked to do, not a
+	// post-hoc snapshot from ListLiveVTXOs.
 	queued := make([]string, 0, resp.RefreshingCount)
-	if refreshAll && r.server.vtxoStore != nil {
-		// When refreshing all, list the live VTXOs to
-		// report which ones were actually queued.
-		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(
-			ctx,
-		)
-		if err == nil {
-			for _, v := range liveVTXOs {
-				_, hasErr := resp.Errors[v.Outpoint]
-				if !hasErr {
-					queued = append(
-						queued, fmt.Sprintf("%s:%d",
-							v.Outpoint.Hash,
-							v.Outpoint.Index),
-					)
-				}
-			}
-		}
-	} else {
-		for _, op := range targets {
-			if _, hasErr := resp.Errors[op]; !hasErr {
-				queued = append(
-					queued,
-					fmt.Sprintf("%s:%d", op.Hash, op.Index),
-				)
-			}
+	for _, op := range targets {
+		if _, hasErr := resp.Errors[op]; !hasErr {
+			queued = append(
+				queued,
+				fmt.Sprintf("%s:%d", op.Hash, op.Index),
+			)
 		}
 	}
 
