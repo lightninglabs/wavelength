@@ -337,18 +337,25 @@ func buildBaseState(h *darepoharness.ArkHarness,
 		binDir = "."
 	}
 
+	// The client harness names containers as `<prefix>-<groupname>` when
+	// GroupName is set, which arktest always does (default "arktest").
+	// Mirror that convention here so the `btc()` shell helper can
+	// `docker exec` into bitcoind without an extra round-trip.
+	bitcoindContainer := "bitcoin-" + startCfg.groupName
+
 	return &harnessState{
-		ArtifactsDir:     artifactsAbs,
-		RunDir:           h.Harness.BaseDir(),
-		BinDir:           binDir,
-		ArkAdminAddr:     h.ArkAdminAddr,
-		ArkRPCAddr:       h.ArkRPCAddr,
-		EsploraURL:       h.Harness.EsploraURL,
-		BitcoindRPC:      h.Harness.BitcoindRPC,
-		BitcoindRPCUser:  clientharness.BitcoindRPCUser,
-		BitcoindRPCPass:  clientharness.BitcoindRPCPass,
-		BitcoindZMQBlock: h.Harness.BitcoindZMQBlock,
-		BitcoindZMQTx:    h.Harness.BitcoindZMQTx,
+		ArtifactsDir:          artifactsAbs,
+		RunDir:                h.Harness.BaseDir(),
+		BinDir:                binDir,
+		ArkAdminAddr:          h.ArkAdminAddr,
+		ArkRPCAddr:            h.ArkRPCAddr,
+		EsploraURL:            h.Harness.EsploraURL,
+		BitcoindRPC:           h.Harness.BitcoindRPC,
+		BitcoindRPCUser:       clientharness.BitcoindRPCUser,
+		BitcoindRPCPass:       clientharness.BitcoindRPCPass,
+		BitcoindZMQBlock:      h.Harness.BitcoindZMQBlock,
+		BitcoindZMQTx:         h.Harness.BitcoindZMQTx,
+		BitcoindContainerName: bitcoindContainer,
 		OperatorLND: lndState{
 			Name:     "operator-lnd",
 			GRPCAddr: "127.0.0.1:" + h.Harness.LNDGRPCPort,
