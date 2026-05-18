@@ -12,6 +12,9 @@ each still receives its own terminal notification.
 
 ## Key Types
 
+- `ServiceKeyName` — `"txconfirm"`. Actor system receptionist key for the
+  shared transaction-confirmation broadcaster. Callers resolve the actor ref
+  via this service key rather than holding a direct pointer.
 - `TxBroadcasterActor` — Message-driven orchestrator (in `actor.go`). Holds
   a txid-keyed tracked-tx map, runs a protofsm lifecycle per txid, and
   fans chainsource callbacks (confirmations, block epochs) back into

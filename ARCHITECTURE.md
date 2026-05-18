@@ -16,7 +16,8 @@ package may import from a higher layer.
 | [`round`](round/) | Client-side Ark round participation FSM (boarding, refresh, leave) |
 | [`vtxo`](vtxo/) | VTXO lifecycle FSM (live, forfeiting, forfeited, spent, expiring) |
 | [`oor`](oor/) | Out-of-round transfer coordination FSM |
-| [`wallet`](wallet/) | On-chain boarding wallet actor (address derivation, UTXO monitoring) |
+| [`wallet`](wallet/) | On-chain boarding wallet actor (address derivation, UTXO monitoring, boarding-sweep lifecycle) |
+| [`fraud`](fraud/) | Passive OOR VTXO ancestry fraud detector: monitors ancestor outpoints and triggers unroll on unexpected spend |
 | [`ledger`](ledger/) | Client-side durable ledger actor for double-entry fee accounting |
 | [`lib`](lib/) | Shared domain utilities: tree paths, BIP-322, arkscript policy, types |
 | [`lib/arkscript`](lib/arkscript/) | Tapscript AST compiler and policy system for Ark taproot outputs |
@@ -41,7 +42,8 @@ package may import from a higher layer.
 | [`lndbackend`](lndbackend/) | `BoardingBackend` implementation via LND's wallet kit |
 | [`lwwallet`](lwwallet/) | Lightweight in-process wallet (btcwallet + Esplora, no external LND) |
 | [`btcwbackend`](btcwbackend/) | Neutrino-backed wallet backend (btcwallet + compact block filters) |
-| [`walletcore`](walletcore/) | Shared wallet abstractions and boarding logic used by lwwallet and btcwbackend |
+| [`walletcore`](walletcore/) | Shared wallet abstractions (`OutputLeaser`, `LockID`, `Utxo`) and boarding logic used by lwwallet and btcwbackend |
+| [`internal/indexerlimits`](internal/indexerlimits/) | Shared validation bounds for indexer pagination cursors (max cursor size) |
 | [`proofkeys`](proofkeys/) | Interface for wallet-managed key derivation and indexer proof signing |
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
@@ -59,6 +61,7 @@ package may import from a higher layer.
 | [`swapclientserver`](swapclientserver/) | Optional daemon-side swap subserver (build tag `swapruntime`): translates `swapclientrpc` RPCs into `sdk/swaps` operations and manages the daemon-local worker registry |
 | [`cmd/darepod`](cmd/darepod/) | Daemon entry point |
 | [`cmd/darepocli`](cmd/darepocli/) | CLI client |
+| [`cmd/darepocli/darepoclicommands/devrpc`](cmd/darepocli/darepoclicommands/devrpc/) | Generated dev RPC console: runtime proto-descriptor introspection builds a cobra command tree for all daemonrpc/swapclientrpc methods |
 | [`timeout`](timeout/) | Generic timeout scheduling actor |
 | [`indexer`](indexer/) | Server indexing client for receive script registration |
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
@@ -78,6 +81,7 @@ package may import from a higher layer.
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |
 | [`tools`](tools/) | Development tool dependencies (protoc plugins, sqlc) |
 | [`cmd/protoc-gen-mailboxrpc`](cmd/protoc-gen-mailboxrpc/) | `protoc` plugin generating typed `mailbox/rpc` client/server stubs from `.proto` service definitions |
+| [`cmd/darepocli/internal/gen-devrpc`](cmd/darepocli/internal/gen-devrpc/) | Build-time generator that produces `devrpc/registry_generated.go` from daemonrpc/swapclientrpc proto descriptors |
 | [`scripts`](scripts/) | Build and verification scripts |
 
 ## Key Dependency Flows

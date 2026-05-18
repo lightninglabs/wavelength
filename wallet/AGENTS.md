@@ -6,7 +6,11 @@ Manages on-chain boarding addresses (2-of-2 multisig with operator + CSV
 timeout), monitors for confirmed boarding UTXOs, composes cooperative
 intent packages, and gates round registration through the VTXO manager
 admission APIs. The wallet actor owns VTXO selection and locking for
-refresh, leave, OOR spend, and directed send flows.
+refresh, leave, OOR spend, and directed send flows. It also owns the
+full boarding-sweep lifecycle: building and signing aggregate sweep
+transactions, registering per-input spend watches, submitting to the
+`txconfirm` broadcaster, and persisting sweep records through their
+complete state machine.
 
 ## Key Types
 
@@ -34,11 +38,29 @@ refresh, leave, OOR spend, and directed send flows.
 - `SendVTXOsRequest` / `SendVTXOsResponse` — Ask-request for in-round directed sends. Validates each recipient amount is within `(0, MaxSatoshi]` and that the running total never overflows `int64`, atomically selects and reserves VTXOs via `SelectAndReserveForfeitRequest`, builds forfeit + recipient VTXO intents, and registers with the round actor. Supports dry-run mode for previewing coin selection without committing. Reserved VTXOs are released via a deferred cleanup that uses `context.WithoutCancel` so cleanup survives caller disconnect; on success, a `committed` flag is set to skip the release.
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
 - `VTXODescriptor.EffectivePolicyTemplate` — Decodes the serialized `PolicyTemplate` field on the wallet-level VTXO descriptor using `lib/arkscript`.
+- `SweepBoardingUTXOsRequest` / `SweepBoardingUTXOsResponse` — Ask-request to build and optionally broadcast an aggregate boarding sweep for all mature confirmed inputs (or explicit outpoints). Response includes the sweep status, txid, mature outputs, fee, vbytes, and broadcast timestamp. The handler persists the record, registers per-input chainsource spend watches, and submits the parent tx to `txconfirm` before returning.
+- `BoardingSweepOutput` — Describes one mature boarding output included in the sweep (outpoint, amount, maturity height).
+- `ResumeBoardingSweepsRequest` / `ResumeBoardingSweepsResponse` — Self-Tell sent by `Ark.Start` to reload pending/published sweeps from the store, re-arm chainsource spend watches, and re-submit to the txconfirm broadcaster.
+- `ReplayPendingBoardRequest` / `ReplayPendingBoardResponse` — Self-Tell to replay any persisted `Board` RPC after dependent actors are ready.
+- `BoardingSweepSpendNotification` — Tell from `chainsource` when a boarding input is spent on-chain; drives the sweep state machine.
+- `BoardingSweepTxNotification` — Tell from `txconfirm` when the sweep parent confirms or is evicted as failed.
+- `SweepSigner` — Wallet adapter interface for signing boarding timeout-path inputs: `SignTimeoutInput(ctx, utxo, tx, inputIndex) (wire.TxWitness, error)`.
+- `BoardingSweepStatus` / `BoardingSweepInputStatus` — String constants for the sweep state machine (`"pending"`, `"published"`, `"confirmed"`, `"external_resolved"`, `"failed"` and `"pending"`, `"published"`, `"spent"`, `"external_spent"`, `"failed"` respectively).
+- `BoardingSweepStore` — Persistence interface for sweep records. Eight methods: `CreatePending`, `MarkPublished`, `MarkFailed`, `MarkInputSpent`, `ListSweeps`, `GetSweep`, `ListPending`, `FetchByStatus`.
+- `NewBoardingSweep` — Constructor for a full signed sweep record (tx, address, amounts, fee rate, height, inputs).
+- `NewBoardingSweepInput` — Constructor for a per-input record in the sweep lifecycle.
+- `BoardingSweepRecord` / `BoardingSweepInputRecord` — Persisted sweep and per-input shapes with status, block height, and fee fields.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager admission types), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants).
-- **Depended on by**: `round` (boarding intents, types: `BoardingAddress`, `SelectedVTXO`), `db` (persistence), `darepod` (wiring).
+- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch
+  notifications, spend watches), `lib/actormsg` (VTXO manager admission
+  types), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` /
+  `ClassificationDeposit` constants), `txconfirm` (sweep tx broadcast and
+  confirmation).
+- **Depended on by**: `round` (boarding intents, types: `BoardingAddress`,
+  `SelectedVTXO`), `db` (persistence), `darepod` (wiring, RPC delegation for
+  boarding sweep).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
   - → `round` (via `lib/actormsg`): `TriggerBoardMsg` (VTXO amounts for
@@ -52,7 +74,15 @@ refresh, leave, OOR spend, and directed send flows.
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`
-  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`
+  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`,
+    `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`,
+    `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`,
+    `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`,
+    `SendVTXOsRequest`, `SweepBoardingUTXOsRequest`
+  - ← `chainsource` (mapped Tell): `BoardingSweepSpendNotification` (per-input
+    spend events for in-flight sweeps)
+  - ← `txconfirm` (subscriber Tell): `BoardingSweepTxNotification` (sweep
+    confirmed or failed)
 
 ## Invariants
 
@@ -67,6 +97,24 @@ refresh, leave, OOR spend, and directed send flows.
 - `handleSendVTXOs` rejects pre-flight any directed send with multiple recipients and exactly-zero change residual under the #270 seal-time fee handshake. The server is the amount authority and absorbs the operator fee out of the designated `IsChange=true` slot; if there is no residual to absorb the fee against, the server has no slack to deduct fees without silently shifting them onto a recipient leg. The wallet refuses the request rather than letting the server pick the loser.
 - `VTXOReader` / `VTXODescriptor` / `SelectedVTXO` break the vtxo → round → wallet import cycle by providing wallet-level types that don't reference `vtxo.Descriptor` directly.
 - Per-subsystem logging via `build.LoggerFromContext` (no global mutable loggers).
+- **Boarding sweep persist-before-broadcast.** The sweep record is persisted
+  as `"pending"` BEFORE chainsource spend watches are registered and BEFORE
+  the tx is submitted to `txconfirm`. A crash after persist but before
+  broadcast is recovered by `ResumeBoardingSweeps` on next startup, which
+  re-arms watches and re-submits the parent tx.
+- **Resume convergence.** `handleResumeBoardingSweeps` re-registers spend
+  watches using the original confirmation height (not current best height) so
+  no spend events are skipped. Re-submission to `txconfirm` is idempotent via
+  txid-keyed dedup. Partial failures schedule a retry via block-epoch
+  re-trigger.
+- **Boarding sweep confirm path emits ledger entries.** On `TxConfirmed`, the
+  handler reconciles any missed spend events, emits one ledger fee leg plus
+  per-input deposit audit rows, and one `UTXOCreatedMsg` for the destination
+  change UTXO.
+- **Boarding sweep failure path restores intent status.** On `TxFailed`, the
+  handler marks the sweep record as `"failed"`, cancels all pending spend
+  watches for that sweep, and restores each boarding intent to its previous
+  status so a new sweep can be attempted.
 
 ## Deep Docs
 

@@ -42,10 +42,17 @@ gRPC API.
 - `proxyUpstreamError(err, msg) error` — gRPC-safety helper that extracts the upstream gRPC status, preserves the code, and returns a new status carrying a generic RPC-scoped message. Errors without a status map to `codes.Unavailable` so clients can retry. Used by `EstimateFee` and `GetFeeHistory` to avoid collapsing codes to `Unknown` and leaking operator-side error text across the daemon→client boundary.
 - `quoteOperatorFee` — Internal helper that asks the operator's `ArkService.EstimateFee` via direct gRPC and returns `TotalFeeSat` as a `btcutil.Amount`. Called by `Board` and `SendVTXO` so the client's implicit fee matches the server's `validateOperatorFee` under the seal-time fee schedule. Returns zero when `serverConn` is nil (degraded mode).
 - `autoRefreshFeeQuoter` — Returns a `vtxo.RefreshFeeQuoter` closure wired into every VTXO actor for auto-refresh fee estimation. Advisory only under the #270 seal-time handshake: the closure's return value is carried on `RefreshVTXORequest.OperatorFee` for observability but is not written to the intent; the server's seal-time compute is authoritative. Falls back to `terms.MinOperatorFee` when the operator is unreachable.
-- `SweepBoardingUTXOs` — RPC handler that sweeps CSV-mature boarding UTXOs back to the wallet. Resolves candidates (explicit outpoints or all confirmed/failed/expired intents), estimates the fee, builds and signs an aggregate boarding sweep tx via `buildBoardingSweepTx`, persists the record, broadcasts it, and wakes the `boardingSweepWatcher` to register spend watches. Returns a preview (no broadcast) when `broadcast=false` or no mature outputs exist.
-- `ListBoardingSweeps` — RPC handler that returns paginated persisted aggregate boarding sweeps, with optional status filter and cursor-based pagination via a numeric offset token.
-- `boardingSweepWatcher` — Daemon-owned background watcher that resumes pending boarding sweeps on startup, rate-limited rebroadcasts published sweeps, and registers chain spend notifications via `chainsource.RegisterSpend` per input. Marks sweep inputs spent when confirmed. Started by `startBoardingSweepWatcher` on wallet unlock; idempotent so the unlock path is safe to call multiple times.
-- `boardingSweepTx` / `buildBoardingSweepTx` — Constructs and signs one aggregate timeout-path sweep transaction. Iterates the weight estimate up to three times until `SerializeSize` converges so the returned `fee` and `txid` are accurate. Validates fee-percent guard (`defaultBoardingSweepMaxFeePercent = 25%`) and input cap (`defaultBoardingSweepMaxInputs = 100`).
+- `SweepBoardingUTXOs` — RPC handler that delegates boarding sweep
+  construction and orchestration to the wallet actor via
+  `wallet.SweepBoardingUTXOsRequest`. Parses the RPC input (explicit
+  outpoints, fee rate, destination address, broadcast flag) and translates
+  between proto and wallet message types. The wallet actor owns sweep
+  persistence, spend-watch registration, txconfirm submission, and state-
+  machine transitions.
+- `ListBoardingSweeps` — RPC handler that returns paginated persisted
+  aggregate boarding sweeps, with optional status filter and cursor-based
+  pagination via a numeric offset token. Reads directly from DB without
+  going through the wallet actor.
 - `OORConfig` / `OORLimitsConfig` — Configuration block for the OOR actor's incoming receive safety caps (`MaxCheckpoints`, `MaxVTXOMatches`, `MaxMailboxItems`, `MaxMailboxScriptBytes`). `Config.OORReceiveLimits()` normalizes these into `oor.ReceiveLimits` for wiring into `ClientActorCfg.Limits`.
 - `deriveIdentityKeyEarly` — Derives the client's secp256k1 identity key from LND or lwwallet before mailbox transport starts. Propagates wallet-specific errors on failure.
 - `signMailboxAuth` — Produces Schnorr auth signature. LND path uses tagged Schnorr signing RPC (`withSchnorrTag`); lwwallet path signs locally via `serverconn.SignMailboxAuth`.
@@ -98,8 +105,10 @@ gRPC API.
 - `Server.run` registers a deferred `s.unrollRegistry.Stop()` during startup so the registry's durable persist writer drains before the actor system tears down; without this the final checkpoint of in-flight jobs could race with shutdown.
 - `registerOOREventRoutes` checks for `*oorpb.SubmitRejectedError` before a generic error check on the submit-package response. A typed server-side rejection (e.g. `OOR_REJECT_LINEAGE_TOO_LARGE`) is converted to an `oor.OutboxErrorEvent{Retryable: false}` rather than surfaced as an Adapt error, preventing the serverconn ingress dispatcher from stalling the cursor on a sticky rejection that would replay indefinitely.
 - `Unroll` and `GetUnrollStatus` guard on `s.vtxoMgrRef.IsSome()` / `s.unrollRegistryRef.IsSome()` and return `codes.Unavailable` (not `Internal`) when the subsystem is not yet initialized so clients can retry rather than treat this as a permanent failure.
-- `SweepBoardingUTXOs` always persists the sweep record before broadcasting; on broadcast failure the record is marked failed so the watcher does not attempt rebroadcast. The spend watcher is refreshed via `getBoardingSweepWatcher().Refresh` (using `context.WithoutCancel`) immediately after a successful broadcast so spend notifications start without waiting for the next poll interval.
-- `boardingSweepWatcher` uses two cancellation scopes: the per-watcher `w.ctx` for spend registration and the per-refresh `ctx` for rebroadcast RPCs. Spend registration context must be the watcher lifetime so a CLI disconnect does not cancel live spend notifications.
+- `SweepBoardingUTXOs` delegates sweep construction, persistence, and
+  broadcast to the wallet actor. The wallet actor owns all boarding sweep
+  invariants (persist-before-broadcast, resume on restart, spend-watch
+  registration). See `wallet/CLAUDE.md` for details.
 - `OORConfig.OOR.Limits` fields are validated during `Config.Validate()`; `MaxMailboxScriptBytes` must be at least `minOORMailboxScriptBytes = 34` (P2TR script length) to avoid silently rejecting all scripts.
 - `quoteOperatorFee` returns `codes.Unavailable` (not `codes.Internal`) when `serverConn` is nil so callers that can fall back to `MinOperatorFee` can distinguish transient from permanent failures.
 

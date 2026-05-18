@@ -32,12 +32,15 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `Register(ctx, grpcServer, rpcServer, cfg)` — Top-level entry point called
   by a `swapruntime`-tagged `darepod` binary. Opens the daemon-owned SQLite
   swap store, dials `swapdk-server`, creates an in-process Ark SDK facade over
-  `darepod.RPCServer`, wires `swaps.NewSwapClientWithStore`, installs a
-  `MailboxOutSwapEventReceiver` (empty mailbox ID — receiver derives the
-  per-swap mailbox from client identity + payment hash) on the
-  `SwapClient` so out-swap HTLC events flow over the mailbox transport,
-  registers the gRPC subserver, calls `resumePending`, and returns a cleanup
-  function.
+  `darepod.RPCServer`, wires `swaps.NewSwapClientWithStore` (passing
+  `cfg.ChainParams` so pay-side BOLT-11 invoice decoding validates the
+  correct network), installs a `MailboxOutSwapEventReceiver` (empty mailbox
+  ID — receiver derives the per-swap mailbox from client identity + payment
+  hash) on the `SwapClient` so out-swap HTLC events flow over the mailbox
+  transport, populates `cfg.Swap.Backend` with the live service handle (so the
+  `walletrpc` subserver can drive `ResumePending` independently), then calls
+  `resumePending` unless `cfg.Swap.SuppressResume` is set, and returns a
+  cleanup function.
 
 ## RPC Methods
 
@@ -77,9 +80,16 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `SubscribeSwaps` subscribers are best-effort, buffered (16), and
   non-blocking. Slow subscribers may miss a terminal-state update; they can
   recover current state with `GetSwap` or `ListSwaps`.
-- `Register` calls `resumePending` synchronously before returning so the
-  daemon gRPC server begins accepting calls with all prior sessions already
-  driven by a worker.
+- `Register` populates `cfg.Swap.Backend` BEFORE calling `resumePending` so
+  the `walletrpc` subserver (when built with the `walletrpc` tag) can reach
+  the swap client immediately after `Register` returns.
+- `Register` calls `resumePending` synchronously before returning, UNLESS
+  `cfg.Swap.SuppressResume` is set — in which case the higher-layer `walletrpc`
+  subserver owns the unified resume policy and calls `ResumePending` itself
+  after performing any cross-subsystem preconditions.
+- Chain params (`cfg.ChainParams`) are passed to `SwapClient` so pay-side
+  BOLT-11 invoices are decoded against the correct network; a mismatch would
+  silently accept invoices from a different chain.
 - Swap state, persistence, and protocol behavior are never duplicated in this
   layer — they stay in `sdk/swaps`. This package is a worker registry and RPC
   facade only.

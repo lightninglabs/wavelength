@@ -35,8 +35,21 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
   `PhasePending` / `PhaseMaterializing` / `PhaseCSVPending` /
   `PhaseSweepBroadcast` / `PhaseSweepConfirmation` / `PhaseCompleted` /
   `PhaseFailed`.
-- `JobState` — Durable FSM state (height, trigger, planner state,
-  `FailReason`, `SweepAttempts`).
+- `JobState` — Durable FSM state: height, trigger, planner state,
+  `DeferredCheckpoints []DeferredCheckpoint`, `FailReason`, `SweepAttempts`.
+- `DeferredCheckpoint` — A fraud-triggered checkpoint transaction that is
+  ready to be materialized but is intentionally held until `DeadlineHeight`.
+  This gives the operator time to publish the checkpoint first; the recipient
+  steps in only when the deadline arrives without observed confirmation.
+  Fields: `Txid chainhash.Hash` and `DeadlineHeight int32`.
+- `Environment.FraudCheckpointSafetyMargin` — Number of blocks subtracted
+  from a checkpoint's relative-expiry window to compute the recipient backstop
+  deadline under `TriggerFraudSpend`. Zero falls back to
+  `defaultFraudCheckpointSafetyMargin`. Clamped to `csvDelay/2` for very
+  short CSV chains.
+- `SpendObservedMsg.Outpoint` — The watched output that was spent (added in
+  addition to the existing `SpendingTxid`). TLV-encoded under record types 5
+  (hash) and 7 (index) using odd types for forward compatibility.
 
 ### Registry
 - `UnrollRegistryActor` — Thin coordinator over the set of
