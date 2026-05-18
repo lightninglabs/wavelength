@@ -344,6 +344,7 @@ func buildBaseState(h *darepoharness.ArkHarness,
 	bitcoindContainer := "bitcoin-" + startCfg.groupName
 
 	return &harnessState{
+		Pid:                   os.Getpid(),
 		ArtifactsDir:          artifactsAbs,
 		RunDir:                h.Harness.BaseDir(),
 		BinDir:                binDir,
