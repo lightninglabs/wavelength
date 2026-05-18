@@ -307,7 +307,7 @@ jobs:
   # run daemon integration tests
   ########################
   itest:
-    name: Run daemon integration tests (${{ matrix.backend }})
+    name: Run daemon integration tests (${{ matrix.backend }} / ${{ matrix.shard }})
     runs-on: depot-ubuntu-24.04-8
     strategy:
       # Allow other backend tests to continue if one fails.
@@ -317,6 +317,18 @@ jobs:
           - lnd
           - lwwallet
           - btcwallet
+        # Shards partition the ./itest package by test-name prefix.
+        # The union of shards covers every TestXxx in the package; see
+        # ITEST_SHARD in the Makefile for the regex per shard.
+        # exits and fraud are intentionally split: at parallel=2 the
+        # combined exits-fraud shard runs ~22 min because the slow
+        # TestUnilateralExit* and TestFraudResponse* tests serialize.
+        # Splitting them recovers ~5 min on the matrix wall-clock.
+        shard:
+          - boarding-fees
+          - oor-sends
+          - exits-leave-sweep
+          - fraud
     steps:
       - name: Git checkout
         uses: actions/checkout@v5
@@ -343,9 +355,13 @@ jobs:
           key-prefix: itest
 
       - name: Run daemon integration tests
-        # Run with sudo as harness uses user 0:0 which needs extra permissions
-        # on the github runner in order for docker mounts to work correctly.
-        run: sudo env "PATH=$PATH" "GOPATH=$GOPATH" make itest backend=${{ matrix.backend }}
+        # Run with sudo as harness uses user 0:0 which needs extra
+        # permissions on the github runner in order for docker mounts
+        # to work correctly. parallel=6 is the current stable sweet
+        # spot: it gives embedded-wallet shards enough room to overlap
+        # isolated harnesses without pushing wallet/container startup
+        # into the timeout-heavy behavior seen at wider fan-out.
+        run: sudo env "PATH=$PATH" "GOPATH=$GOPATH" make itest backend=${{ matrix.backend }} shard=${{ matrix.shard }} parallel=6
 
       - name: Fix artifact permissions
         if: always()
@@ -359,7 +375,17 @@ jobs:
         if: failure()
         id: artifact-name
         run: |
-          echo "name=test-artifacts-itest-${{ github.run_id }}" >> $GITHUB_OUTPUT
+          echo "name=test-artifacts-itest-${{ matrix.backend }}-${{ matrix.shard }}-${{ github.run_id }}" >> $GITHUB_OUTPUT
+
+      - name: Upload itest timing artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-timing-itest-${{ matrix.backend }}-${{ matrix.shard }}-${{ github.run_id }}
+          path: |
+            test-artifacts/itest-timing/
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Upload test artifacts on failure
         if: failure()

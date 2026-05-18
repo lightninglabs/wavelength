@@ -310,6 +310,48 @@ func (h *ArkHarness) ClientWalletBackend() string {
 	return h.clientDaemonWalletType
 }
 
+// SealRoundNow asks the operator's admin RPC to seal the current
+// registration round immediately, short-circuiting the round FSM's
+// registration timeout. The returned round ID is the round that was
+// sealed; the caller can use it to assert the subsequent broadcast /
+// confirmation transitions.
+//
+// SealRoundNow is only safe for single-client (or single-batch)
+// scenarios where the test knows every intended participant has
+// already joined the live round. Calling it from a multi-client test
+// before every client has issued JoinRound will fail the round
+// (operator sees zero or partial intents). Tests that need a
+// quiescence point before sealing must coordinate that explicitly
+// before calling this helper.
+//
+// A 5-second deadline is plenty: the admin Ask call is in-process
+// and the seal itself is a single FSM event; this is just a safety
+// rail against a misbehaving test holding the actor.
+func (h *ArkHarness) SealRoundNow() string {
+	h.T.Helper()
+
+	require.NotNil(
+		h.T, h.ArkAdminClient, "SealRoundNow requires the arkd "+
+			"admin client; harness must have been started "+
+			"without SkipArkd",
+	)
+
+	ctx, cancel := context.WithTimeout(
+		h.T.Context(), 5*time.Second,
+	)
+	defer cancel()
+
+	resp, err := h.ArkAdminClient.TriggerBatch(
+		ctx, &adminrpc.TriggerBatchRequest{},
+	)
+	require.NoError(h.T, err, "TriggerBatch RPC failed")
+	require.NotEmpty(
+		h.T, resp.RoundId, "TriggerBatch must return a sealed round id",
+	)
+
+	return resp.RoundId
+}
+
 // Start starts the harness infrastructure and optionally the in-process arkd
 // server (unless SkipArkd was set in options).
 func (h *ArkHarness) Start() {
@@ -430,6 +472,47 @@ func (h *ArkHarness) startArkd() {
 	// need the legacy floor can still set MinOperatorFee via an
 	// OperatorConfigMutator.
 	cfg.Rounds.MinOperatorFee = 0
+
+	// Compress the registration window to the minimum that still
+	// keeps the FSM honest. The production default of 10s is tuned
+	// for distributed clients on heterogeneous networks;
+	// integration tests run every actor in-process against a local
+	// regtest bitcoind, so a 10s registration window is pure dead
+	// weight that every single-client round pays in full. Each
+	// round re-arms this timer on the first join even if
+	// subsequent joins are immediate, so the floor is effectively
+	// the registration window: lowering it cascades into every
+	// round, OOR cycle, and refresh in the suite. Tests that
+	// exercise the timeout semantics directly can still raise this
+	// via an OperatorConfigMutator.
+	cfg.Rounds.RegistrationTimeout = 500 * time.Millisecond
+
+	// SignatureCollectionTimeout deliberately stays at the
+	// production default. It only matters on the slow path:
+	// happy-path single-client rounds advance on
+	// allClientsSubmitted long before this timer fires, so any
+	// savings from compressing it apply only to tests that
+	// genuinely stall a sig submission. The restart-mid-sig tests
+	// in this suite (e.g. TestBoardingIntegrationRestartAfterInputSigSent)
+	// crash the client between "checkpoint InputSigSent" and "send
+	// sigs to operator", and the resume path needs the operator to
+	// still be waiting when the daemon comes back up. Shaving this
+	// to 2s as an earlier experiment broke those tests on btcwallet
+	// where neutrino re-sync alone takes longer than 2s.
+
+	// Disable the periodic round tick entirely. The tick exists
+	// in production as a defensive seal trigger that complements
+	// the registration timeout (it lets the FSM close a round
+	// even if the timeout actor missed a fire, or seal an
+	// otherwise idle round once the seal predicate becomes
+	// satisfiable). With the registration timeout above already
+	// dropped to 500ms, the tick has no work to do on the happy
+	// path; arming it just adds a recurring goroutine and an
+	// extra event class for every round the suite creates.
+	// Tests that genuinely care about tick semantics (e.g. the
+	// `skipped_empty` metric or seal-predicate-on-tick paths)
+	// must re-enable this via an OperatorConfigMutator.
+	cfg.Rounds.RoundTickInterval = 0
 
 	// Point arkd at the LND started by the client harness.
 	// Derive credential paths from the harness artifacts directory
@@ -1408,6 +1491,17 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 			walletBackend)
 	}
 
+	// Wallet readiness on the embedded backends (btcwallet,
+	// lwwallet) includes a neutrino / electrs chain header sync
+	// which is bounded by P2P / HTTP latency rather than local
+	// FSM work. Under CI parallel pressure these syncs can take
+	// well past 30s — that's the historical flake root cause for
+	// TestBoardingIntegrationSingleClientSubsequentRounds. The
+	// FSM-driven timeouts elsewhere in the harness stayed at
+	// 30s; this one specifically wraps a chain-sync, so we give
+	// it a longer ceiling.
+	const embeddedWalletReadyTimeout = 2 * time.Minute
+
 	require.Eventually(d.T, func() bool {
 		waitCtx, waitCancel := context.WithTimeout(
 			d.T.Context(), defaultSmallTimeout,
@@ -1422,7 +1516,7 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 		}
 
 		return daemonWalletReady(updatedInfo)
-	}, defaultTimeout, pollInterval,
+	}, embeddedWalletReadyTimeout, pollInterval,
 		"client daemon %q wallet never became ready", d.Name)
 }
 

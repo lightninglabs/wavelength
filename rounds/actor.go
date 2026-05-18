@@ -895,6 +895,15 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 			sendReq := &clientconn.SendServerEventRequest{
 				Message: m,
 			}
+			if successResp, ok := m.(*ClientSuccessResp); ok &&
+				successResp.IsReregistration {
+
+				identity := reregistrationSuccessMsgID(
+					successResp,
+				)
+				sendReq.MailboxIdentity = identity
+			}
+
 			err := a.cfg.ClientsConn.Tell(ctx, sendReq)
 			if err != nil {
 				appendOutboxErr("send client event", msg, err)

@@ -393,6 +393,52 @@ func TestE2EServerToClientEvent(t *testing.T) {
 	_ = runtime
 }
 
+// TestBridgeForwardsMailboxIdentity verifies that SendServerEventRequest can
+// override the mailbox identity before the per-client durable actor derives a
+// default from the protobuf body.
+func TestBridgeForwardsMailboxIdentity(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+	store := newMemCheckpointStore()
+	bridge := NewClientsConnBridge()
+	cfg := newTestPerClientConfig(mb, store)
+	clientID := ClientID("client-1")
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	_, err := bridge.RegisterClient(ctx, clientID, cfg)
+	require.NoError(t, err)
+	defer bridge.Stop()
+
+	err = bridge.Tell(ctx, &SendServerEventRequest{
+		Message: &roundStartedServerMsg{
+			targetClientID: clientID,
+			RoundID:        "round-42",
+		},
+		MailboxIdentity: "explicit-event-id",
+	})
+	require.NoError(t, err)
+
+	var env *mailboxpb.Envelope
+	require.Eventually(t, func() bool {
+		envelopes, _, status := mb.pull(
+			ctx, "client-1", 0, 1, 0,
+		)
+		if !status.GetOk() || len(envelopes) == 0 {
+			return false
+		}
+
+		env = envelopes[0]
+
+		return true
+	}, 5*time.Second, 50*time.Millisecond)
+
+	require.Equal(t, "explicit-event-id", env.MsgId)
+	require.Equal(t, "explicit-event-id", env.IdempotencyKey)
+}
+
 // TestE2EClientToServerEvent verifies the ingress path: a client sends a
 // ClientJoinedEvent to the server via the server's per-client mailbox. The
 // server-side ingress loop pulls the envelope and dispatches it to a
