@@ -23,6 +23,8 @@ import (
 // checkpoint confirms, the restarted recipient must broadcast the matching ark
 // transaction without harness-side intervention.
 func TestRecipientFraudWatcherBroadcastsArkAfterRestart(t *testing.T) {
+	t.Parallel()
+
 	h := newUnrollHarness(t)
 	h.FundOperatorLNDTaproot(btcutil.SatoshiPerBitcoin)
 
@@ -62,6 +64,8 @@ func TestRecipientFraudWatcherBroadcastsArkAfterRestart(t *testing.T) {
 // two — so a baseline-UTXO consumption greater than two would mean the
 // recipient also funded a redundant checkpoint CPFP.
 func TestRecipientFraudDefersToOperator(t *testing.T) {
+	t.Parallel()
+
 	h := newUnrollHarness(t)
 	h.FundOperatorLNDTaproot(btcutil.SatoshiPerBitcoin)
 
@@ -361,6 +365,8 @@ func setupMultihopRecipientFraudFlow(t *testing.T,
 // ratchet autonomously: checkpoint_AB backstop → arktx_AB broadcast →
 // checkpoint_BC backstop → arktx_BC broadcast → unroll hand-off.
 func TestRecipientFraudMultihopRatchet(t *testing.T) {
+	t.Parallel()
+
 	h := newUnrollHarnessWithMutator(t, func(cfg *darepo.Config) {
 		cfg.Fraud = &darepo.FraudConfig{Disabled: true}
 	})
@@ -495,6 +501,8 @@ func TestRecipientFraudMultihopRatchet(t *testing.T) {
 // checkpoint_AB (the harness injected it externally) but did fund CPFPs for
 // arktx_AB, checkpoint_BC, and arktx_BC.
 func TestRecipientFraudPartialOperator(t *testing.T) {
+	t.Parallel()
+
 	h := newUnrollHarnessWithMutator(t, func(cfg *darepo.Config) {
 		cfg.Fraud = &darepo.FraudConfig{Disabled: true}
 	})
@@ -664,6 +672,8 @@ func TestRecipientFraudPartialOperator(t *testing.T) {
 // multi-input OOR VTXO backstops each checkpoint independently and only
 // broadcasts the shared ark transaction after every checkpoint input confirms.
 func TestRecipientFraudMultiInputOOR(t *testing.T) {
+	t.Parallel()
+
 	h := newUnrollHarnessWithMutator(t, func(cfg *darepo.Config) {
 		cfg.Fraud = &darepo.FraudConfig{Disabled: true}
 	})
@@ -857,6 +867,8 @@ func txSpendsOutpoint(tx *wire.MsgTx, outpoint wire.OutPoint) bool {
 // force-broadcast on chain, Bob consumes no wallet UTXOs and creates no
 // unroll job for vtxo_B.
 func TestRecipientFraudCleanupOnOnwardSpend(t *testing.T) {
+	t.Parallel()
+
 	h := newUnrollHarness(t)
 	h.FundOperatorLNDTaproot(btcutil.SatoshiPerBitcoin)
 
