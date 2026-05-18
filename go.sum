@@ -606,8 +606,9 @@ github.com/BurntSushi/toml v1.5.0 h1:W5quZX/G/csjUnuI8SUYlsHs9M38FC7znL0lIO+DvMg
 github.com/BurntSushi/toml v1.5.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
 github.com/BurntSushi/xgb v0.0.0-20160522181843-27f122750802/go.mod h1:IVnqGOEym/WlBOVXweHU+Q+/VP0lqqI8lqeDx9IjBqo=
 github.com/JohnCGriffin/overflow v0.0.0-20211019200055-46fa312c352c/go.mod h1:X0CRv0ky0k6m906ixxpzmDRLvX58TFUKS2eePweuyxk=
-github.com/Masterminds/semver/v3 v3.1.1 h1:hLg3sBzpNErnxhQtUy/mmLR2I9foDujNK030IGemrRc=
 github.com/Masterminds/semver/v3 v3.1.1/go.mod h1:VPu/7SZ7ePZ3QOrcuXROw5FAcLl4a0cBrbBpGY/8hQs=
+github.com/Masterminds/semver/v3 v3.3.0 h1:B8LGeaivUe71a5qox1ICM/JLl0NqZSW5CHyL+hmvYS0=
+github.com/Masterminds/semver/v3 v3.3.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/NebulousLabs/fastrand v0.0.0-20181203155948-6fb6489aac4e h1:n+DcnTNkQnHlwpsrHoQtkrJIO7CBx029fw6oR4vIob4=
@@ -1136,6 +1137,8 @@ github.com/lightninglabs/lightning-node-connect/hashmailrpc v1.0.4-0.20250610182
 github.com/lightninglabs/lightning-node-connect/hashmailrpc v1.0.4-0.20250610182311-2f1d46ef18b7/go.mod h1:bDnEKRN1u13NFBuy/C+bFLhxA5bfd3clT25y76QY0AM=
 github.com/lightninglabs/lndclient v0.21.0-rc1 h1:e9bKzd0vOVqV/+0Y+c9JXiV97RtlBJiIclxkl1bBO+4=
 github.com/lightninglabs/lndclient v0.21.0-rc1/go.mod h1:A/7o5KSbPW23wsb43Bld/kQTllLmqPzZGPpv9YgUzHg=
+github.com/lightninglabs/loop v0.33.0-beta h1:cfs+JrnmKw+ANa09XFS/2Jjm9wxHq3CfAzh9B1ym3e0=
+github.com/lightninglabs/loop v0.33.0-beta/go.mod h1:uTcjRmEC4ni4lWrOdnIvI5pyY8XJ2wXSXSE12vwFgzk=
 github.com/lightninglabs/migrate/v4 v4.18.2-9023d66a-fork-pr-2 h1:eFjp1dIB2BhhQp/THKrjLdlYuPugO9UU4kDqu91OX/Q=
 github.com/lightninglabs/migrate/v4 v4.18.2-9023d66a-fork-pr-2/go.mod h1:99BKpIi6ruaaXRM1A77eqZ+FWPQ3cfRa+ZVy5bmWMaY=
 github.com/lightninglabs/neutrino v0.16.2 h1:jHMMDLPX8asfwgN0/C4BY8uVaYupFzZYuWQkX8Go3fk=

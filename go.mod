@@ -132,6 +132,7 @@ require (
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf // indirect
 	github.com/lightninglabs/lightning-node-connect/hashmailrpc v1.0.4-0.20250610182311-2f1d46ef18b7 // indirect
+	github.com/lightninglabs/loop v0.33.0-beta // indirect
 	github.com/lightninglabs/neutrino v0.16.2 // indirect
 	github.com/lightninglabs/taproot-assets/taprpc v1.0.13 // indirect
 	github.com/lightningnetwork/lightning-onion v1.3.0 // indirect
