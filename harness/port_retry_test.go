@@ -180,3 +180,23 @@ func TestContainerHasExactName(t *testing.T) {
 		})
 	}
 }
+
+// TestContainerNameIncludesHarnessSuffix verifies explicit group names still
+// get unique Docker resource names.
+func TestContainerNameIncludesHarnessSuffix(t *testing.T) {
+	t.Parallel()
+
+	h := &Harness{
+		group:            "TestFoo",
+		dockerNameSuffix: "abc12345",
+	}
+
+	require.Equal(t, "bitcoin-TestFoo-abc12345", h.containerName("bitcoin"))
+
+	h.group = "TestFraudResponseSpentVTXOCheckpointTimeoutSweep"
+	h.dockerNameSuffix = "l4zy091q"
+
+	name := h.containerName("bitcoin")
+	require.LessOrEqual(t, len(name), maxDockerDNSLabelLen)
+	require.Contains(t, name, "-l4zy091q")
+}

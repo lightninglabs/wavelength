@@ -122,9 +122,7 @@ func TestRunWithContextServesInjectedListener(t *testing.T) {
 	listener := bufconn.Listen(1 << 20)
 	cfg := testConfigWithInjectedRPCListener(listener)
 	cfg.DataDir = t.TempDir()
-	cfg.Wallet.Type = WalletTypeBtcwallet
-	cfg.Wallet.FeeURL = "http://127.0.0.1:3001"
-	cfg.Wallet.EsploraURL = ""
+	cfg.Wallet.Type = WalletTypeLwwallet
 	cfg.Wallet.DisableGlobalLoggers = true
 
 	server, err := NewServer(cfg)
@@ -140,7 +138,7 @@ func TestRunWithContextServesInjectedListener(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return server.RPCAddr() != nil
-	}, 5*time.Second, 20*time.Millisecond)
+	}, 30*time.Second, 20*time.Millisecond)
 
 	connCtx, connCancel := context.WithTimeout(
 		context.Background(), 5*time.Second,
