@@ -46,6 +46,8 @@ import (
 //     the sweep through txconfirm. The sweep must confirm and pay a
 //     server-controlled output.
 func TestFraudResponseSpentVTXOCheckpointTimeoutSweep(t *testing.T) {
+	t.Parallel()
+
 	runFraudResponseSpentVTXOCheckpointTimeoutSweep(
 		t, fraudRestartNever,
 	)
@@ -57,6 +59,8 @@ func TestFraudResponseSpentVTXOCheckpointTimeoutSweep(t *testing.T) {
 // batch, replay the spent source VTXO, watch checkpoint output 0, and request
 // the CSV sweep once it matures.
 func TestFraudRestartCheckpointMaturity(t *testing.T) {
+	t.Parallel()
+
 	runFraudResponseSpentVTXOCheckpointTimeoutSweep(
 		t, fraudRestartAfterCheckpointConfirmed,
 	)
@@ -65,6 +69,8 @@ func TestFraudRestartCheckpointMaturity(t *testing.T) {
 // TestFraudResponseForfeitedVTXO broadcasts the stored forfeit transaction
 // when a cooperatively forfeited VTXO is later revealed on-chain.
 func TestFraudResponseForfeitedVTXO(t *testing.T) {
+	t.Parallel()
+
 	runFraudResponseForfeitedVTXO(t, forfeitResponseOptions{
 		forfeitCount: 1,
 	})
@@ -73,6 +79,8 @@ func TestFraudResponseForfeitedVTXO(t *testing.T) {
 // TestFraudRestartForfeitSweep proves startup replay can recover a confirmed
 // forfeit response whose penalty output has not yet been swept.
 func TestFraudRestartForfeitSweep(t *testing.T) {
+	t.Parallel()
+
 	runFraudResponseForfeitedVTXO(t, forfeitResponseOptions{
 		forfeitCount:                    1,
 		restartAfterForfeitMinedOffline: true,
@@ -83,6 +91,8 @@ func TestFraudRestartForfeitSweep(t *testing.T) {
 // forfeited VTXO reveal that confirmed while arkd was offline and then submit
 // the stored forfeit response.
 func TestFraudRestartForfeitResponse(t *testing.T) {
+	t.Parallel()
+
 	runFraudResponseForfeitedVTXO(t, forfeitResponseOptions{
 		forfeitCount:                    1,
 		restartAfterVTXORevealedOffline: true,
@@ -316,6 +326,8 @@ func TestFraudResponseTwoForfeitedLeavesSharingConnectorTree(t *testing.T) {
 // planning traverses a multi-level connector tree before broadcasting the
 // final stored forfeit transaction.
 func TestFraudResponseForfeitedVTXODeepConnectorTree(t *testing.T) {
+	t.Parallel()
+
 	runFraudResponseForfeitedVTXO(t, forfeitResponseOptions{
 		forfeitCount: 3,
 		mutator: func(cfg *darepo.Config) {
@@ -781,6 +793,8 @@ func runFraudResponseSpentVTXOCheckpointTimeoutSweep(t *testing.T,
 // test broadcasts the source VTXO vs. the second OOR does not change the
 // server-side multihop scenario being exercised in steps 6-8.
 func TestFraudResponseMultihopOORRatchet(t *testing.T) {
+	t.Parallel()
+
 	h := newUnrollHarness(t)
 
 	// Operator wallet UTXOs are needed to fund the CPFP child packages
