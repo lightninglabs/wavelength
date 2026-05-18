@@ -112,7 +112,8 @@ func (s *MemoryStore) Append(ctx context.Context, env *Envelope) (uint64,
 
 	state.notify()
 
-	s.log.DebugS(ctx, "Appended envelope",
+	s.log.TraceS(
+		ctx, "Appended envelope",
 		slog.String("recipient", env.Recipient),
 		slog.Uint64("seq", seq),
 	)
