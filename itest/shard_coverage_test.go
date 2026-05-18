@@ -24,7 +24,7 @@ import (
 // counted in the coverage check.
 var shardPatterns = map[string]*regexp.Regexp{
 	"boarding-fees": regexp.MustCompile(
-		`^TestBoarding|^TestFees|^TestVHTLC`,
+		`^TestBoarding|^TestFees|^TestVHTLC|^TestRESTGateway`,
 	),
 	"oor-sends": regexp.MustCompile(
 		`^TestOOR|^TestRefresh|^TestSend|^TestDirected|^TestSeal`,

@@ -350,7 +350,7 @@ ITEST_CASE := $(or $(icase),$(case))
 # so a future TestFooBarFees still lands in the correct bucket.
 ITEST_SHARD := $(shard)
 ifeq ($(ITEST_SHARD),boarding-fees)
-ITEST_SHARD_PATTERN := ^TestBoarding|^TestFees|^TestVHTLC|^TestShard
+ITEST_SHARD_PATTERN := ^TestBoarding|^TestFees|^TestVHTLC|^TestShard|^TestRESTGateway
 endif
 ifeq ($(ITEST_SHARD),oor-sends)
 ITEST_SHARD_PATTERN := ^TestOOR|^TestRefresh|^TestSend|^TestDirected|^TestSeal
