@@ -30,10 +30,13 @@ func newVTXOsCmd() *cobra.Command {
 }
 
 // validStatuses lists the valid VTXO status filter values for input
-// validation and error messages.
+// validation and error messages. These must match the proto enum
+// `daemonrpc.VTXOStatus` minus the UNSPECIFIED zero value; see
+// `parseVTXOStatus` for the lookup that converts to the proto enum.
 var validStatuses = []string{
-	"live", "refresh_requested", "forfeiting",
-	"forfeited", "spent", "expiring", "failed",
+	"live", "pending_forfeit", "forfeiting",
+	"forfeited", "spent", "unilateral_exit", "failed",
+	"spending",
 }
 
 // newVTXOsListCmd creates the vtxos list subcommand.

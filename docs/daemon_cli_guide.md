@@ -300,7 +300,7 @@ List VTXOs known to the wallet with optional filters.
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--status` | string | Filter: live, refresh_requested, forfeiting, forfeited, spent, expiring, failed |
+| `--status` | string | Filter: live, pending_forfeit, forfeiting, forfeited, spent, unilateral_exit, failed, spending |
 | `--min_amount` | int64 | Minimum amount in sats |
 | `--fields` | string | Comma-separated field names to include |
 | `--ndjson` | bool | Emit one JSON object per VTXO (newline-delimited) |

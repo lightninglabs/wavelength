@@ -441,12 +441,13 @@ func arkVTXOMethodRegistry() []schemaMethod {
 					Description: "filter by VTXO status",
 					Values: []string{
 						"live",
-						"refresh_requested",
+						"pending_forfeit",
 						"forfeiting",
 						"forfeited",
 						"spent",
-						"expiring",
+						"unilateral_exit",
 						"failed",
+						"spending",
 					},
 				},
 				{
