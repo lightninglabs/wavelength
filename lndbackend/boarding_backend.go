@@ -107,7 +107,7 @@ func (l *BoardingBackend) ImportTaprootScript(ctx context.Context,
 func (l *BoardingBackend) ListUnspent(ctx context.Context, minConfs,
 	maxConfs int32) ([]*wallet.Utxo, error) {
 
-	l.logger(ctx).DebugS(ctx, "Listing unspent UTXOs from LND wallet",
+	l.logger(ctx).TraceS(ctx, "Listing unspent UTXOs from LND wallet",
 		slog.Int("min_confs", int(minConfs)),
 		slog.Int("max_confs", int(maxConfs)),
 	)
@@ -132,7 +132,7 @@ func (l *BoardingBackend) ListUnspent(ctx context.Context, minConfs,
 		utxos = append(utxos, utxo)
 	}
 
-	l.logger(ctx).DebugS(ctx, "Listed unspent UTXOs from LND wallet",
+	l.logger(ctx).TraceS(ctx, "Listed unspent UTXOs from LND wallet",
 		slog.Int("num_utxos", len(utxos)),
 	)
 
