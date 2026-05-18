@@ -3,7 +3,6 @@ package darepod
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -19,7 +18,6 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -28,8 +26,6 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type sendOORTestWallet struct {
@@ -127,37 +123,6 @@ func (h *sendOORNoopOutboxHandler) Handle(_ context.Context, _ oor.SessionID,
 	return nil, nil
 }
 
-type blockingSendOORActor struct {
-	once      sync.Once
-	started   chan struct{}
-	release   chan struct{}
-	completed chan struct{}
-	response  oor.ActorResp
-}
-
-func (a *blockingSendOORActor) Receive(ctx context.Context,
-	msg oor.OORDurableMsg) fn.Result[oor.ActorResp] {
-
-	if _, ok := msg.(*oor.StartTransferRequest); !ok {
-		return fn.Err[oor.ActorResp](
-			fmt.Errorf("unexpected OOR message %T", msg),
-		)
-	}
-
-	a.once.Do(func() {
-		close(a.started)
-	})
-	defer close(a.completed)
-
-	select {
-	case <-a.release:
-		return fn.Ok(a.response)
-
-	case <-ctx.Done():
-		return fn.Err[oor.ActorResp](ctx.Err())
-	}
-}
-
 // TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection verifies a
 // keyed retry returns the existing OOR session before acquiring fresh wallet
 // inputs.
@@ -180,7 +145,7 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 		idempotencyKey = "rpc-send-oor-idempotency-key"
 	)
 
-	vtxoStore, deliveryStore := newSendOORTestStores(t)
+	vtxoStore, sessionStore := newSendOORTestStores(t)
 
 	firstDesc := newSendOORTestVTXO(
 		t, operatorKey.PubKey(), 0x31, btcutil.Amount(amountSat),
@@ -215,14 +180,9 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 		system, "send-oor-test-wallet", testWallet,
 	)
 
-	oorActor := oor.NewOORClientActor(oor.ClientActorCfg{
-		Log:           fn.Some[btclog.Logger](btclog.Disabled),
-		OutboxHandler: &sendOORNoopOutboxHandler{},
-		DeliveryStore: deliveryStore,
-		ActorSystem:   system,
-		ActorID:       "send-oor-test-actor",
-	})
-	defer oorActor.Stop()
+	oorCoordinator := newSendOORTestCoordinator(
+		t, ctx, sessionStore, "send-oor-test-coordinator",
+	)
 
 	walletReady := make(chan struct{})
 	close(walletReady)
@@ -241,9 +201,10 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 				DustLimit:     1,
 			},
 		}),
-		actorSystem: system,
-		vtxoStore:   vtxoStore,
-		walletRef:   fn.Some(walletRef),
+		actorSystem:    system,
+		oorCoordinator: oorCoordinator,
+		vtxoStore:      vtxoStore,
+		walletRef:      fn.Some(walletRef),
 	}
 
 	rpcServer := NewRPCServer(server)
@@ -272,7 +233,7 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 }
 
 // TestSendOORUnlocksSelectedInputsForExistingSession verifies the daemon
-// releases freshly selected wallet inputs when the OOR actor returns an
+// releases freshly selected wallet inputs when the OOR coordinator returns an
 // existing deterministic session after input selection.
 func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 	t.Parallel()
@@ -290,7 +251,7 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 		exitDelay = uint32(10)
 	)
 
-	vtxoStore, deliveryStore := newSendOORTestStores(t)
+	vtxoStore, sessionStore := newSendOORTestStores(t)
 
 	desc := newSendOORTestVTXO(
 		t, operatorKey.PubKey(), 0x31, btcutil.Amount(amountSat),
@@ -329,14 +290,9 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 		system, "send-oor-test-wallet", testWallet,
 	)
 
-	oorActor := oor.NewOORClientActor(oor.ClientActorCfg{
-		Log:           fn.Some[btclog.Logger](btclog.Disabled),
-		OutboxHandler: &sendOORNoopOutboxHandler{},
-		DeliveryStore: deliveryStore,
-		ActorSystem:   system,
-		ActorID:       "send-oor-test-actor",
-	})
-	defer oorActor.Stop()
+	oorCoordinator := newSendOORTestCoordinator(
+		t, ctx, sessionStore, "send-oor-existing-coordinator",
+	)
 
 	walletReady := make(chan struct{})
 	close(walletReady)
@@ -355,9 +311,10 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 				DustLimit:     1,
 			},
 		}),
-		actorSystem: system,
-		vtxoStore:   vtxoStore,
-		walletRef:   fn.Some(walletRef),
+		actorSystem:    system,
+		oorCoordinator: oorCoordinator,
+		vtxoStore:      vtxoStore,
+		walletRef:      fn.Some(walletRef),
 	}
 
 	rpcServer := NewRPCServer(server)
@@ -392,261 +349,8 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond)
 }
 
-// TestSendOORWaitDeadlineDoesNotUnlockSubmittedInputs verifies that once a
-// detached OOR actor Ask has been submitted, a caller wait deadline does not
-// release wallet-selected inputs while that actor work is still in flight.
-func TestSendOORWaitDeadlineDoesNotUnlockSubmittedInputs(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	recipientKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	const (
-		amountSat = int64(10000)
-		exitDelay = uint32(10)
-	)
-
-	vtxoStore, _ := newSendOORTestStores(t)
-
-	desc := newSendOORTestVTXO(
-		t, operatorKey.PubKey(), 0x31, btcutil.Amount(amountSat),
-	)
-	require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
-
-	testWallet := &sendOORTestWallet{
-		selections: [][]wallet.SelectedVTXO{
-			{
-				selectedVTXOFromDescriptor(desc),
-			},
-		},
-	}
-
-	system := actor.NewActorSystem()
-	t.Cleanup(func() {
-		shutdownCtx, cancel := context.WithTimeout(
-			context.Background(), 5*time.Second,
-		)
-		defer cancel()
-
-		require.NoError(t, system.Shutdown(shutdownCtx))
-	})
-
-	walletKey := actor.NewServiceKey[
-		wallet.WalletMsg, wallet.WalletResp,
-	](
-		"send-oor-deadline-test-wallet",
-	)
-	walletRef := walletKey.Spawn(
-		system, "send-oor-deadline-test-wallet", testWallet,
-	)
-
-	sessionHash := chainhash.HashH([]byte("send-oor-deadline-session"))
-	blockingActor := &blockingSendOORActor{
-		started:   make(chan struct{}),
-		release:   make(chan struct{}),
-		completed: make(chan struct{}),
-		response: &oor.StartTransferResponse{
-			SessionID: oor.SessionID(sessionHash),
-		},
-	}
-	oorKey := oor.NewServiceKey()
-	oorKey.Spawn(system, "send-oor-deadline-test-actor", blockingActor)
-
-	walletReady := make(chan struct{})
-	close(walletReady)
-
-	server := &Server{
-		cfg:         &Config{},
-		log:         btclog.Disabled,
-		walletReady: walletReady,
-		chainParams: &chaincfg.RegressionNetParams,
-		serverConn: newBufconnClient(t, &fakeArkService{
-			getInfoResponse: &arkrpc.GetInfoResponse{
-				Pubkey: operatorKey.
-					PubKey().
-					SerializeCompressed(),
-				VtxoExitDelay: exitDelay,
-				DustLimit:     1,
-			},
-		}),
-		actorSystem: system,
-		vtxoStore:   vtxoStore,
-		walletRef:   fn.Some(walletRef),
-	}
-
-	rpcServer := NewRPCServer(server)
-	recipient := sendOORPolicyRecipient(
-		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
-		amountSat,
-	)
-
-	waitCtx, cancel := context.WithTimeout(
-		context.Background(), 50*time.Millisecond,
-	)
-	defer cancel()
-
-	_, err = rpcServer.SendOOR(waitCtx, &daemonrpc.SendOORRequest{
-		Recipient: recipient,
-	})
-	require.Equal(t, codes.DeadlineExceeded, status.Code(err))
-
-	require.Eventually(t, func() bool {
-		select {
-		case <-blockingActor.started:
-			return true
-
-		default:
-			return false
-		}
-	}, time.Second, 10*time.Millisecond)
-	require.Empty(t, testWallet.unlockBatches())
-
-	close(blockingActor.release)
-	require.Eventually(t, func() bool {
-		select {
-		case <-blockingActor.completed:
-			return true
-
-		default:
-			return false
-		}
-	}, time.Second, 10*time.Millisecond)
-	require.Empty(t, testWallet.unlockBatches())
-}
-
-// TestSubmittedOORCleanupDefersCustomInputRelease verifies custom-input
-// double-use reservations are not released while a detached OOR actor future is
-// still in flight after the RPC caller stopped waiting.
-func TestSubmittedOORCleanupDefersCustomInputRelease(t *testing.T) {
-	t.Parallel()
-
-	rpcServer := &RPCServer{
-		server: &Server{
-			log: btclog.Disabled,
-		},
-		customInputLocks: make(map[wire.OutPoint]struct{}),
-	}
-
-	op := wire.OutPoint{
-		Hash:  chainhash.HashH([]byte("send-oor-custom-in-flight")),
-		Index: 0,
-	}
-
-	release, err := rpcServer.reserveCustomInputs([]wire.OutPoint{op})
-	require.NoError(t, err)
-
-	promise := actor.NewPromise[oor.ActorResp]()
-	rpcServer.cleanupSubmittedOORStart(
-		context.Background(), promise.Future(), nil, release,
-	)
-
-	_, err = rpcServer.reserveCustomInputs([]wire.OutPoint{op})
-	require.ErrorContains(t, err, "already reserved")
-
-	sessionHash := chainhash.HashH([]byte("send-oor-custom-complete"))
-	promise.Complete(
-		fn.Ok[oor.ActorResp](
-			&oor.StartTransferResponse{
-				SessionID: oor.SessionID(sessionHash),
-			},
-		),
-	)
-
-	require.Eventually(t, func() bool {
-		release2, err := rpcServer.reserveCustomInputs(
-			[]wire.OutPoint{op},
-		)
-		if err != nil {
-			return false
-		}
-
-		defer release2()
-
-		return true
-	}, time.Second, 10*time.Millisecond)
-}
-
-// TestSubmittedOORCleanupTimeoutReleasesCustomInput verifies the detached OOR
-// cleanup waiter is bounded even if the actor future never completes.
-func TestSubmittedOORCleanupTimeoutReleasesCustomInput(t *testing.T) {
-	t.Parallel()
-
-	rpcServer := &RPCServer{
-		server: &Server{
-			log: btclog.Disabled,
-		},
-		customInputLocks: make(map[wire.OutPoint]struct{}),
-	}
-
-	op := wire.OutPoint{
-		Hash:  chainhash.HashH([]byte("send-oor-custom-timeout")),
-		Index: 0,
-	}
-
-	release, err := rpcServer.reserveCustomInputs([]wire.OutPoint{op})
-	require.NoError(t, err)
-
-	promise := actor.NewPromise[oor.ActorResp]()
-	rpcServer.cleanupSubmittedOORStartWithTimeout(
-		context.Background(), promise.Future(), nil, release,
-		10*time.Millisecond,
-	)
-
-	_, err = rpcServer.reserveCustomInputs([]wire.OutPoint{op})
-	require.ErrorContains(t, err, "already reserved")
-
-	require.Eventually(t, func() bool {
-		release2, err := rpcServer.reserveCustomInputs(
-			[]wire.OutPoint{op},
-		)
-		if err != nil {
-			return false
-		}
-
-		defer release2()
-
-		return true
-	}, time.Second, 10*time.Millisecond)
-}
-
-func TestIsAwaitContextError(t *testing.T) {
-	t.Parallel()
-
-	deadlineCtx, cancel := context.WithTimeout(
-		context.Background(), time.Nanosecond,
-	)
-	defer cancel()
-	<-deadlineCtx.Done()
-
-	require.True(
-		t, isAwaitContextError(
-			deadlineCtx, context.DeadlineExceeded,
-		),
-	)
-	require.True(t, isAwaitContextError(
-		deadlineCtx, context.Canceled,
-	))
-	require.False(
-		t,
-		isAwaitContextError(
-			context.Background(), context.Canceled,
-		),
-	)
-	require.False(
-		t,
-		isAwaitContextError(
-			deadlineCtx, errors.New("actor failed"),
-		),
-	)
-}
-
 func newSendOORTestStores(t *testing.T) (*db.VTXOPersistenceStore,
-	actor.DeliveryStore) {
+	*oorClientSQLSessionStore) {
 
 	t.Helper()
 
@@ -663,17 +367,33 @@ func newSendOORTestStores(t *testing.T) (*db.VTXOPersistenceStore,
 		roundDB, clock.NewDefaultClock(),
 	)
 
-	deliveryStore, err := actordelivery.NewTxAwareDeliveryStoreFromDB(
-		sqlDB.DB, sqlDB.Backend(), clock.NewDefaultClock(),
-		btclog.Disabled,
+	dbStore := db.NewStore(
+		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), btclog.Disabled,
 	)
-	require.NoError(t, err)
+	sessionStore := &oorClientSQLSessionStore{
+		store: db.NewOORClientStore(dbStore, clock.NewDefaultClock()),
+	}
 
-	type txAwareDeliveryStore = actordelivery.TxAwareActorDeliveryStore
-	txAwareStore, ok := deliveryStore.(*txAwareDeliveryStore)
-	require.True(t, ok)
+	return vtxoStore, sessionStore
+}
 
-	return vtxoStore, txAwareStore.Store
+func newSendOORTestCoordinator(t *testing.T, ctx context.Context,
+	sessionStore *oorClientSQLSessionStore,
+	actorID string) *oor.ClientCoordinator {
+
+	t.Helper()
+
+	coord := oor.NewClientCoordinator(oor.ClientActorCfg{
+		Log:           fn.Some[btclog.Logger](btclog.Disabled),
+		OutboxHandler: &sendOORNoopOutboxHandler{},
+		SessionStore:  sessionStore,
+		ActorID:       actorID,
+	})
+	require.NoError(t, coord.Start(ctx))
+
+	t.Cleanup(coord.Stop)
+
+	return coord
 }
 
 func newSendOORTestVTXO(t *testing.T, operatorKey *btcec.PublicKey,

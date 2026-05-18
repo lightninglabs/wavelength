@@ -583,8 +583,8 @@ message SubmitVTXOForfeitSigsRequest {
 service RoundService {
     // JoinRound registers a client for a round by sending a
     // JoinRoundRequest (intent). The ack carries no amount
-    // commitment; the binding per-client amounts arrive later via
-    // the durable mailbox as a JoinRoundQuote.
+    // commitment; the binding per-client amounts arrive later as
+    // a JoinRoundQuote mailbox event.
     rpc JoinRound (JoinRoundRequest) returns (ClientSuccessResp);
 
     // AcceptQuote explicitly accepts a JoinRoundQuote. The

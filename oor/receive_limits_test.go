@@ -61,33 +61,6 @@ func TestIncomingMetadataMatchesFromResponseUsesConfiguredMatchLimit(
 	)
 }
 
-// TestDecodeResolveIncomingTransferPayloadUsesConfiguredPkScriptLimit verifies
-// mailbox resolve payload decoding enforces the configured recipient script
-// byte cap.
-func TestDecodeResolveIncomingTransferPayloadUsesConfiguredPkScriptLimit(
-	t *testing.T) {
-
-	t.Parallel()
-
-	raw, err := encodeResolveIncomingTransferPayload(
-		SessionID(
-			chainhash.Hash{7, 8, 9},
-		),
-		[]byte{0x51, 0x20},
-		3,
-	)
-	require.NoError(t, err)
-
-	_, _, _, err = decodeResolveIncomingTransferPayloadWithLimits(
-		raw, ReceiveLimits{
-			MaxMailboxScriptBytes: 1,
-		},
-	)
-	require.ErrorContains(
-		t, err, "recipient pk_script length 2 exceeds limit 1",
-	)
-}
-
 // TestDecodeLengthPrefixedBlobListUsesConfiguredCountLimit verifies the shared
 // mailbox blob-list decoder enforces the configured item-count cap.
 func TestDecodeLengthPrefixedBlobListUsesConfiguredCountLimit(t *testing.T) {

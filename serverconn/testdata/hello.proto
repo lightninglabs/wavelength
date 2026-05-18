@@ -37,8 +37,8 @@ message GoodbyeResponse {
 }
 
 // JoinGreetingRequest is a client-to-server fire-and-forget event sent as a
-// KIND_EVENT envelope. The client dispatches it via SendClientEventRequest
-// through the durable actor mailbox; no response is expected.
+// KIND_EVENT envelope. The client dispatches it through serverconn's
+// SQL-backed event egress path; no response is expected.
 message JoinGreetingRequest {
     // session_id identifies the greeting session the client wishes to join.
     string session_id = 1;

@@ -12,11 +12,9 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	libtypes "github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/input"
@@ -240,9 +238,9 @@ func TestOORClientActorHappyPath(t *testing.T) {
 			clientSigner:   clientSigner,
 			operatorSigner: operatorSigner,
 		},
-		PackageStore:  packageStore,
-		DeliveryStore: newTestDeliveryStore(t),
-		ActorID:       "oor-actor-test-happy",
+		PackageStore: packageStore,
+		SessionStore: newTestSessionStore(),
+		ActorID:      "oor-actor-test-happy",
 	})
 	defer actor.Stop()
 
@@ -317,9 +315,9 @@ func TestOORClientActorListSessionsSummarizesOutgoing(t *testing.T) {
 			clientSigner:   clientSigner,
 			operatorSigner: operatorSigner,
 		},
-		PackageStore:  &testPackageStore{},
-		DeliveryStore: newTestDeliveryStore(t),
-		ActorID:       "oor-actor-list-sessions",
+		PackageStore: &testPackageStore{},
+		SessionStore: newTestSessionStore(),
+		ActorID:      "oor-actor-list-sessions",
 	})
 	defer actor.Stop()
 
@@ -404,9 +402,9 @@ func TestOORClientActorStartTransferIdempotencyKeyReturnsExistingSession(
 			t:            t,
 			clientSigner: clientSigner,
 		},
-		ServerConn:    serverConn,
-		DeliveryStore: newTestDeliveryStore(t),
-		ActorID:       "oor-actor-idempotent-start",
+		ServerConn:   serverConn,
+		SessionStore: newTestSessionStore(),
+		ActorID:      "oor-actor-idempotent-start",
 	})
 	defer actor.Stop()
 
@@ -494,7 +492,7 @@ func TestOORClientActorStartTransferIdempotencyKeySurvivesRestart(
 		idempotencyKey = "test-start-key-restart"
 	)
 
-	deliveryStore := newTestDeliveryStore(t)
+	sessionStore := newTestSessionStore()
 	serverConn := newMockServerConnRef(t)
 	outboxHandler := &localOnlyOutboxHandler{
 		t:            t,
@@ -504,7 +502,7 @@ func TestOORClientActorStartTransferIdempotencyKeySurvivesRestart(
 	actor1 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: outboxHandler,
 		ServerConn:    serverConn,
-		DeliveryStore: deliveryStore,
+		SessionStore:  sessionStore,
 		ActorID:       actorID,
 	})
 
@@ -525,7 +523,7 @@ func TestOORClientActorStartTransferIdempotencyKeySurvivesRestart(
 	actor2 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: outboxHandler,
 		ServerConn:    serverConn,
-		DeliveryStore: deliveryStore,
+		SessionStore:  sessionStore,
 		ActorID:       actorID,
 	})
 	defer actor2.Stop()
@@ -611,9 +609,9 @@ func TestOORClientActorStartTransferWithoutKeyMissesIntentRetry(t *testing.T) {
 			t:            t,
 			clientSigner: clientSigner,
 		},
-		ServerConn:    serverConn,
-		DeliveryStore: newTestDeliveryStore(t),
-		ActorID:       "oor-actor-distinct-changed-input-start",
+		ServerConn:   serverConn,
+		SessionStore: newTestSessionStore(),
+		ActorID:      "oor-actor-distinct-changed-input-start",
 	})
 	defer actor.Stop()
 
@@ -701,8 +699,8 @@ func TestOORClientActorHandlesIncomingTransferWithoutExistingSession(
 				}, nil
 			},
 		},
-		DeliveryStore: newTestDeliveryStore(t),
-		ActorID:       "oor-actor-test-incoming",
+		SessionStore: newTestSessionStore(),
+		ActorID:      "oor-actor-test-incoming",
 	})
 	defer actor.Stop()
 
@@ -878,8 +876,8 @@ func TestOORClientActorRetryResume(t *testing.T) {
 			clientSigner:   clientSigner,
 			operatorSigner: operatorSigner,
 		},
-		DeliveryStore: newTestDeliveryStore(t),
-		ActorID:       "oor-actor-retry-backoff",
+		SessionStore: newTestSessionStore(),
+		ActorID:      "oor-actor-retry-backoff",
 	})
 	defer actor.Stop()
 
@@ -1160,42 +1158,6 @@ func TestOORClientActorUsesConfiguredIncomingMetadataQueryLimit(t *testing.T) {
 	require.EqualValues(t, 7, query.Limit)
 }
 
-// TestOORActorCodecUsesConfiguredIncomingDecodeLimits verifies the
-// ClientActorCfg-backed codec constructors apply incoming receive decode caps.
-func TestOORActorCodecUsesConfiguredIncomingDecodeLimits(t *testing.T) {
-	t.Parallel()
-
-	// MaxCheckpoints and MaxVTXOMatches are covered at the adapter layer in
-	// receive_limits_test.go; this test covers mailbox codec decode caps.
-	codec := newOORActorCodec(ReceiveLimits{
-		MaxMailboxItems:       1,
-		MaxMailboxScriptBytes: 1,
-	})
-
-	startRaw, err := codec.Encode(&StartTransferRequest{
-		Recipients: []oortx.RecipientOutput{
-			{PkScript: []byte{0x51}},
-			{PkScript: []byte{0x52}},
-		},
-	})
-	require.NoError(t, err)
-
-	_, err = codec.Decode(startRaw)
-	require.ErrorContains(t, err, "blob list count 2 exceeds limit 1")
-
-	resolveRaw, err := codec.Encode(&ResolveIncomingTransferRequest{
-		SessionID:         SessionID{0x03},
-		RecipientPkScript: []byte{0x51, 0x20},
-		RecipientEventID:  1,
-	})
-	require.NoError(t, err)
-
-	_, err = codec.Decode(resolveRaw)
-	require.ErrorContains(
-		t, err, "recipient pk_script length 2 exceeds limit 1",
-	)
-}
-
 // TestOORClientActorTransportViaServerConn verifies that transport outbox
 // events (submit, finalize, ack) are Tell'd to the serverconn actor when
 // configured, while local events (signing, persistence) continue through
@@ -1276,10 +1238,10 @@ func TestOORClientActorTransportViaServerConn(t *testing.T) {
 				return nil
 			},
 		},
-		ServerConn:    mockConn,
-		PackageStore:  packageStore,
-		DeliveryStore: newTestDeliveryStore(t),
-		ActorID:       "oor-actor-serverconn-test",
+		ServerConn:   mockConn,
+		PackageStore: packageStore,
+		SessionStore: newTestSessionStore(),
+		ActorID:      "oor-actor-serverconn-test",
 	})
 	defer actor.Stop()
 
@@ -1376,12 +1338,11 @@ func TestOORClientActorTransportViaServerConn(t *testing.T) {
 	require.Equal(t, len(inputs), packageStore.bindingCalls)
 }
 
-// TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment verifies that a
-// SubmitAcceptedEvent with nil ArkPSBT is enriched from the session's
-// AwaitingSubmitAccepted state. This is the production path for server-push
-// events dispatched via the EventRouter, where the oorpb proto response
-// does not echo the Ark PSBT back.
-func TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
+// TestOORClientActorSubmitAcceptedRequiresArkPSBT verifies that
+// SubmitAcceptedEvent must carry the operator-co-signed Ark PSBT. Falling back
+// to the pre-submit Ark PSBT would persist a non-broadcastable ancestry
+// artifact for chained recovery.
+func TestOORClientActorSubmitAcceptedRequiresArkPSBT(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -1432,9 +1393,9 @@ func TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
 			t:            t,
 			clientSigner: clientSigner,
 		},
-		ServerConn:    mockConn,
-		DeliveryStore: newTestDeliveryStore(t),
-		ActorID:       "oor-actor-nil-ark-enrich",
+		ServerConn:   mockConn,
+		SessionStore: newTestSessionStore(),
+		ActorID:      "oor-actor-nil-ark-enrich",
 	})
 	defer actor.Stop()
 
@@ -1461,9 +1422,9 @@ func TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Drive with a SubmitAcceptedEvent that has nil ArkPSBT, simulating
-	// a server-push event dispatched via the EventRouter. The actor
-	// should enrich ArkPSBT from the AwaitingSubmitAccepted state.
+	// Drive with a SubmitAcceptedEvent that has nil ArkPSBT. The actor must
+	// reject it rather than falling back to the client-only submit
+	// artifact.
 	driveResp := actor.Receive(ctx, &DriveEventRequest{
 		SessionID: sessionID,
 		Event: &SubmitAcceptedEvent{
@@ -1472,20 +1433,8 @@ func TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
 			CoSignedCheckpointPSBTs: submitMsg.CheckpointPSBTs,
 		},
 	})
-	require.True(
-		t, driveResp.IsOk(),
-		"expected enrichment to succeed, got: %v", driveResp.Err(),
-	)
-
-	// The FSM should have advanced past AwaitingSubmitAccepted.
-	stateResp := actor.Receive(ctx, &GetStateRequest{
-		SessionID: sessionID,
-	})
-	require.True(t, stateResp.IsOk())
-
-	stateMsg, ok := stateResp.UnwrapOr(nil).(*GetStateResponse)
-	require.True(t, ok)
-	require.IsType(t, &AwaitingFinalizeAccepted{}, stateMsg.State)
+	require.True(t, driveResp.IsErr())
+	require.ErrorContains(t, driveResp.Err(), "ark psbt must be provided")
 }
 
 // TestOORClientActorSkipsMissingConsumedInputBinding verifies that
@@ -1550,9 +1499,9 @@ func TestOORClientActorSkipsMissingConsumedInputBinding(t *testing.T) {
 			clientSigner:   clientSigner,
 			operatorSigner: operatorSigner,
 		},
-		PackageStore:  packageStore,
-		DeliveryStore: newTestDeliveryStore(t),
-		ActorID:       "oor-actor-test-skip-missing-binding",
+		PackageStore: packageStore,
+		SessionStore: newTestSessionStore(),
+		ActorID:      "oor-actor-test-skip-missing-binding",
 	})
 	defer actor.Stop()
 
@@ -1576,230 +1525,6 @@ func TestOORClientActorSkipsMissingConsumedInputBinding(t *testing.T) {
 	require.IsType(t, &Completed{}, stateMsg.State)
 	require.Equal(t, 1, packageStore.packageCalls)
 	require.Equal(t, 1, packageStore.bindingCalls)
-}
-
-// TestOORClientActorTransportViaTransactionalOutbox verifies that production
-// wiring can persist transport events into the actor outbox instead of
-// enqueueing them directly into serverconn from the OOR actor turn.
-func TestOORClientActorTransportViaTransactionalOutbox(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	policy := arkscript.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
-
-	inputValue := btcutil.Amount(10000)
-
-	clientKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	clientSigner := input.NewMockSigner(
-		[]*btcec.PrivateKey{clientKey}, nil,
-	)
-	mockConn := newMockServerConnRef(t)
-	store := newTestDeliveryStore(t)
-
-	inputs := []TransferInput{
-		newTestTransferInput(
-			t, clientKey, policy.OperatorKey,
-			wire.OutPoint{
-				Hash:  [32]byte{0x07},
-				Index: 0,
-			},
-			inputValue,
-		),
-	}
-
-	recipients := []oortx.RecipientOutput{
-		{
-			PkScript: newTestTaprootPkScript(
-				t, clientKey.PubKey(),
-			),
-			Value: inputValue,
-		},
-	}
-
-	actorInstance := NewOORClientActor(ClientActorCfg{
-		OutboxHandler: &localOnlyOutboxHandler{
-			t:            t,
-			clientSigner: clientSigner,
-		},
-		ServerConn:      mockConn,
-		TransportOutbox: true,
-		PackageStore:    &testOutgoingPackageStore{},
-		DeliveryStore:   store,
-		ActorID:         "oor-actor-transport-outbox-test",
-	})
-	defer actorInstance.Stop()
-
-	startResp := actorInstance.Receive(ctx, &StartTransferRequest{
-		Policy:     policy,
-		Inputs:     inputs,
-		Recipients: recipients,
-	})
-	require.True(t, startResp.IsOk())
-
-	mockConn.mu.Lock()
-	require.Empty(t, mockConn.messages)
-	mockConn.mu.Unlock()
-
-	outbox, err := store.ClaimOutboxBatch(ctx, actor.OutboxClaimParams{
-		Limit:         10,
-		ClaimToken:    "test-claim",
-		ClaimDuration: time.Minute,
-	})
-	require.NoError(t, err)
-	require.Len(t, outbox, 1)
-
-	require.Equal(t, mockConn.ID(), outbox[0].TargetActorID)
-	require.Equal(t, "SendClientEventRequest", outbox[0].MessageType)
-
-	decoded, err := serverconn.NewServerConnCodec().Decode(
-		outbox[0].Payload,
-	)
-	require.NoError(t, err)
-
-	sendReq, ok := decoded.(*serverconn.SendClientEventRequest)
-	require.True(t, ok)
-	require.Equal(t, oorpb.ServiceName, sendReq.Service)
-	require.Equal(t, oorpb.MethodSubmitPackage, sendReq.Method)
-
-	protoMsg, err := sendReq.Message.ToProto().Unpack()
-	require.NoError(t, err)
-	require.IsType(t, &oorpb.SubmitPackageRequest{}, protoMsg)
-}
-
-// TestOORClientActorSigningViaEffectActor verifies that OOR can commit the
-// initial session state, queue signing work through the actor outbox, and then
-// continue when the signing effect actor drives ArkSignedEvent back in.
-func TestOORClientActorSigningViaEffectActor(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-
-	system := actor.NewActorSystem()
-	t.Cleanup(func() {
-		shutdownCtx, cancel := context.WithTimeout(
-			context.Background(), 5*time.Second,
-		)
-		defer cancel()
-
-		require.NoError(t, system.Shutdown(shutdownCtx))
-	})
-
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	policy := arkscript.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
-
-	inputValue := btcutil.Amount(10000)
-
-	clientKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	clientSigner := input.NewMockSigner(
-		[]*btcec.PrivateKey{clientKey}, nil,
-	)
-	mockConn := newMockServerConnRef(t)
-	store := newTestDeliveryStore(t)
-
-	oorKey := NewServiceKey()
-	effect, err := NewSigningEffectActor(SigningEffectActorConfig{
-		ActorID:       SigningEffectActorID,
-		DeliveryStore: store,
-		Signer:        clientSigner,
-		OORRef:        oorKey.Ref(system),
-		ActorSystem:   system,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		shutdownCtx, cancel := context.WithTimeout(
-			context.Background(), 5*time.Second,
-		)
-		defer cancel()
-
-		require.NoError(t, effect.StopAndWait(shutdownCtx))
-	})
-
-	publisherCfg := actor.DefaultOutboxPublisherConfig(
-		store, NewSigningEffectCodec(), system,
-	)
-	publisherCfg.PollInterval = 10 * time.Millisecond
-	publisher := actor.NewOutboxPublisher(publisherCfg)
-	publisher.Start()
-	t.Cleanup(publisher.Stop)
-
-	inputs := []TransferInput{
-		newTestTransferInput(
-			t, clientKey, policy.OperatorKey,
-			wire.OutPoint{
-				Hash:  [32]byte{0x08},
-				Index: 0,
-			},
-			inputValue,
-		),
-	}
-
-	recipients := []oortx.RecipientOutput{
-		{
-			PkScript: newTestTaprootPkScript(
-				t, clientKey.PubKey(),
-			),
-			Value: inputValue,
-		},
-	}
-
-	actorInstance := NewOORClientActor(ClientActorCfg{
-		OutboxHandler: &localOnlyOutboxHandler{
-			t:            t,
-			clientSigner: clientSigner,
-		},
-		ServerConn:    mockConn,
-		SigningEffect: effect.Ref(),
-		PackageStore:  &testOutgoingPackageStore{},
-		DeliveryStore: store,
-		ActorSystem:   system,
-		ActorID:       "oor-actor-signing-effect-test",
-	})
-	defer actorInstance.Stop()
-
-	startResp := actorInstance.Receive(ctx, &StartTransferRequest{
-		Policy:     policy,
-		Inputs:     inputs,
-		Recipients: recipients,
-	})
-	require.True(t, startResp.IsOk())
-
-	mockConn.mu.Lock()
-	require.Empty(t, mockConn.messages)
-	mockConn.mu.Unlock()
-
-	require.Eventually(t, func() bool {
-		mockConn.mu.Lock()
-		defer mockConn.mu.Unlock()
-
-		if len(mockConn.messages) == 0 {
-			return false
-		}
-
-		req, ok := mockConn.messages[0].(*serverconn.
-			SendClientEventRequest)
-		if !ok {
-			return false
-		}
-
-		return req.Service == oorpb.ServiceName &&
-			req.Method == oorpb.MethodSubmitPackage
-	}, 5*time.Second, 10*time.Millisecond)
 }
 
 // TestIsTransportEventClassification verifies that isTransportEvent correctly
@@ -1913,10 +1638,10 @@ func TestOORClientActorTellFailurePropagation(t *testing.T) {
 			t:            t,
 			clientSigner: clientSigner,
 		},
-		ServerConn:    mockConn,
-		PackageStore:  &testOutgoingPackageStore{},
-		DeliveryStore: newTestDeliveryStore(t),
-		ActorID:       "oor-actor-tell-fail-test",
+		ServerConn:   mockConn,
+		PackageStore: &testOutgoingPackageStore{},
+		SessionStore: newTestSessionStore(),
+		ActorID:      "oor-actor-tell-fail-test",
 	})
 	defer actor.Stop()
 

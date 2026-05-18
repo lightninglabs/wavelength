@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCheckpointRoundTripByPhase verifies that durable checkpoints restore to
+// TestSnapshotRoundTripByPhase verifies that durable snapshots restore to
 // the expected concrete protofsm state shape.
-func TestCheckpointRoundTripByPhase(t *testing.T) {
+func TestSnapshotRoundTripByPhase(t *testing.T) {
 	targetTxid := chainhash.Hash{0xAA}
 	sweepTxid := chainhash.Hash{0xBB}
 
@@ -104,8 +104,8 @@ func TestCheckpointRoundTripByPhase(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			checkpoint := checkpointFromState(tc.state, nil)
-			restored := stateFromCheckpoint(checkpoint)
+			snapshot := snapshotFromState(tc.state, nil)
+			restored := stateFromSnapshot(snapshot)
 
 			require.IsType(t, tc.typ, restored)
 			require.Equal(
@@ -135,7 +135,7 @@ func TestCheckpointRoundTripByPhase(t *testing.T) {
 	}
 }
 
-// TestCheckpointFromStateUsesStoredSweepTxid verifies that checkpointing keeps
+// TestCheckpointFromStateUsesStoredSweepTxid verifies that snapshoting keeps
 // a terminal sweep txid observable even if the planner state is missing the
 // hash but the actor still has the sweep transaction.
 func TestCheckpointFromStateUsesStoredSweepTxid(t *testing.T) {
@@ -161,15 +161,15 @@ func TestCheckpointFromStateUsesStoredSweepTxid(t *testing.T) {
 		},
 	}
 
-	checkpoint := checkpointFromState(state, sweepTx)
+	snapshot := snapshotFromState(state, sweepTx)
 
-	require.True(t, checkpoint.State.Sweep.Txid.IsSome())
+	require.True(t, snapshot.State.Sweep.Txid.IsSome())
 	require.Equal(
-		t, sweepTxid, checkpoint.State.Sweep.Txid.UnsafeFromSome(),
+		t, sweepTxid, snapshot.State.Sweep.Txid.UnsafeFromSome(),
 	)
 }
 
-// unrollState builds a minimal planner state for checkpoint tests.
+// unrollState builds a minimal planner state for snapshot tests.
 func unrollState(targetTxid chainhash.Hash, targetHeight fn.Option[int32],
 	sweepTxid *chainhash.Hash) unrollplan.State {
 

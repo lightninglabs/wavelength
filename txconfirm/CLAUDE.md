@@ -25,7 +25,7 @@ each still receives its own terminal notification.
   primitives. Not safe for concurrent use; the outer `TxBroadcasterActor`
   serializes access. Constructed via `NewCPFPBroadcaster(BroadcasterConfig)`.
 - `BroadcasterConfig` — Configuration for `CPFPBroadcaster`: `ChainSource`,
-  `Wallet`, optional `Log`, `MaxFeeRateSatPerVByte` (default 100), 
+  `Wallet`, optional `Log`, `MaxFeeRateSatPerVByte` (default 100),
   `IncrementalRelayFeeSatPerVByte` (default 1, should match the node's
   `-incrementalrelayfee`), and `PreSubmitTestMempoolAccept` (opt-in
   `testmempoolaccept` preflight before every broadcast).

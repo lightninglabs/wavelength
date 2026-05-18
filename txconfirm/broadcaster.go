@@ -1547,6 +1547,17 @@ func isAnySentinel(err error, sentinels []error) bool {
 	return false
 }
 
+// IsParentAlreadyBroadcastPackageError reports whether a package submission
+// error says the parent transaction is already on the network while the CPFP
+// child failed to land. In that case callers that are already watching the
+// parent for confirmation should keep the watch alive instead of failing the
+// operation.
+func IsParentAlreadyBroadcastPackageError(parentTxid chainhash.Hash,
+	err error) bool {
+
+	return isParentKnownChildFailed(parentTxid, err)
+}
+
 // isParentKnownChildFailed returns true when a `SubmitPackage` error
 // indicates that the only failure is on the CPFP child, with the parent
 // already broadcast by another path.

@@ -9,42 +9,11 @@ import (
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/internal/indexerlimits"
-	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
-	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
-const (
-	// SendListOORRecipientEventsByScriptRequestMsgType is the TLV
-	// type for durable proof-gated indexer queries that resolve a
-	// lightweight incoming OOR hint into the full recipient-event
-	// package.
-	SendListOORRecipientEventsByScriptRequestMsgType tlv.Type = 2003
-
-	// SendListVTXOsByScriptsRequestMsgType is the TLV type for durable
-	// proof-gated indexer queries that resolve authoritative incoming VTXO
-	// metadata by taproot output script.
-	SendListVTXOsByScriptsRequestMsgType tlv.Type = 2004
-)
-
-type (
-	listRecipientPkScriptRecordTLV    = tlv.TlvType1
-	listRecipientAfterEventRecordTLV  = tlv.TlvType2
-	listRecipientLimitRecordTLV       = tlv.TlvType3
-	listRecipientCorrelationRecordTLV = tlv.TlvType4
-	listRecipientMsgIDRecordTLV       = tlv.TlvType5
-	listRecipientIdempotencyRecordTLV = tlv.TlvType6
-	listVTXOsPkScriptsRecordTLV       = tlv.TlvType1
-	listVTXOsLegacyCursorRecordTLV    = tlv.TlvType2
-	listVTXOsLimitRecordTLV           = tlv.TlvType3
-	listVTXOsCorrelationRecordTLV     = tlv.TlvType4
-	listVTXOsMsgIDRecordTLV           = tlv.TlvType5
-	listVTXOsIdempotencyRecordTLV     = tlv.TlvType6
-	listVTXOsAfterCursorRecordTLV     = tlv.TlvType7
-)
-
-// SendListOORRecipientEventsByScriptRequest describes a durable proof-gated
+// SendListOORRecipientEventsByScriptRequest describes a proof-gated
 // indexer unary query for one taproot output script.
 type SendListOORRecipientEventsByScriptRequest struct {
 	actor.BaseMessage
@@ -73,11 +42,6 @@ type SendListOORRecipientEventsByScriptRequest struct {
 // MessageType returns a human-readable type name for logging.
 func (m *SendListOORRecipientEventsByScriptRequest) MessageType() string {
 	return "SendListOORRecipientEventsByScriptRequest"
-}
-
-// TLVType returns the unique TLV type identifier for this message.
-func (m *SendListOORRecipientEventsByScriptRequest) TLVType() tlv.Type {
-	return SendListOORRecipientEventsByScriptRequestMsgType
 }
 
 // ServiceMethod returns the fixed mailbox route for this indexer unary.
@@ -138,109 +102,10 @@ func (m *SendListOORRecipientEventsByScriptRequest) QueryIdempotencyKey() string
 	return m.IdempotencyKey
 }
 
-// Encode serializes the message to the provided writer.
-func (m *SendListOORRecipientEventsByScriptRequest) Encode(w io.Writer) error {
-	stableBytes, err := encodeRecipientEventsQueryIdentity(
-		m.PkScript, m.AfterEventID, m.Limit, m.CorrelationID,
-	)
-	if err != nil {
-		return err
-	}
-
-	msgID := m.MsgID
-	if msgID == "" {
-		msgID = mailboxconn.StableEventMsgID(stableBytes)
-	}
-
-	idempotencyKey := m.IdempotencyKey
-	if idempotencyKey == "" {
-		idempotencyKey = mailboxconn.
-			StableEventIdempotencyKey(
-				stableBytes,
-			)
-	}
-
-	pkScriptRec := tlv.NewPrimitiveRecord[listRecipientPkScriptRecordTLV](
-		m.PkScript,
-	)
-	afterEventRec := tlv.NewPrimitiveRecord[listRecipientAfterEventRecordTLV]( //nolint:ll
-		m.AfterEventID,
-	)
-	limit := uint64(m.Limit)
-	limitRec := tlv.NewPrimitiveRecord[listRecipientLimitRecordTLV](
-		limit,
-	)
-	correlationRec := tlv.NewPrimitiveRecord[listRecipientCorrelationRecordTLV]( //nolint:ll
-		[]byte(m.CorrelationID),
-	)
-	msgIDRec := tlv.NewPrimitiveRecord[listRecipientMsgIDRecordTLV](
-		[]byte(msgID),
-	)
-	idempotencyRec := tlv.NewPrimitiveRecord[listRecipientIdempotencyRecordTLV]( //nolint:ll
-		[]byte(idempotencyKey),
-	)
-
-	stream, err := tlv.NewStream(
-		pkScriptRec.Record(), afterEventRec.Record(), limitRec.Record(),
-		correlationRec.Record(), msgIDRec.Record(),
-		idempotencyRec.Record(),
-	)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *SendListOORRecipientEventsByScriptRequest) Decode(r io.Reader) error {
-	pkScriptRec := tlv.ZeroRecordT[listRecipientPkScriptRecordTLV, []byte]()
-	afterEventRec := tlv.ZeroRecordT[
-		listRecipientAfterEventRecordTLV,
-		uint64,
-	]()
-	limitRec := tlv.ZeroRecordT[listRecipientLimitRecordTLV, uint64]()
-	correlationRec := tlv.ZeroRecordT[
-		listRecipientCorrelationRecordTLV,
-		[]byte,
-	]()
-	msgIDRec := tlv.ZeroRecordT[listRecipientMsgIDRecordTLV, []byte]()
-	idempotencyRec := tlv.ZeroRecordT[
-		listRecipientIdempotencyRecordTLV,
-		[]byte,
-	]()
-
-	stream, err := tlv.NewStream(
-		pkScriptRec.Record(), afterEventRec.Record(), limitRec.Record(),
-		correlationRec.Record(), msgIDRec.Record(),
-		idempotencyRec.Record(),
-	)
-	if err != nil {
-		return err
-	}
-
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
-		return err
-	}
-
-	m.PkScript = append([]byte(nil), pkScriptRec.Val...)
-	m.AfterEventID = afterEventRec.Val
-	if limitRec.Val > uint64(^uint32(0)) {
-		return fmt.Errorf("recipient query limit overflows uint32: %d",
-			limitRec.Val)
-	}
-	m.Limit = uint32(limitRec.Val)
-	m.CorrelationID = string(correlationRec.Val)
-	m.MsgID = string(msgIDRec.Val)
-	m.IdempotencyKey = string(idempotencyRec.Val)
-
-	return nil
-}
-
 // serverConnMsgSealed implements the ServerConnMsg interface seal.
 func (m *SendListOORRecipientEventsByScriptRequest) serverConnMsgSealed() {}
 
-// SendListVTXOsByScriptsRequest describes a durable proof-gated indexer unary
+// SendListVTXOsByScriptsRequest describes a proof-gated indexer unary
 // query for one or more taproot output scripts.
 type SendListVTXOsByScriptsRequest struct {
 	actor.BaseMessage
@@ -270,11 +135,6 @@ func (m *SendListVTXOsByScriptsRequest) MessageType() string {
 	return "SendListVTXOsByScriptsRequest"
 }
 
-// TLVType returns the unique TLV type identifier for this message.
-func (m *SendListVTXOsByScriptsRequest) TLVType() tlv.Type {
-	return SendListVTXOsByScriptsRequestMsgType
-}
-
 // ServiceMethod returns the fixed mailbox route for this indexer unary.
 func (m *SendListVTXOsByScriptsRequest) ServiceMethod() mailboxrpc.ServiceMethod { //nolint:ll
 
@@ -288,6 +148,12 @@ func (m *SendListVTXOsByScriptsRequest) ServiceMethod() mailboxrpc.ServiceMethod
 // stable identity bytes for deterministic ID derivation.
 func (m *SendListVTXOsByScriptsRequest) BuildBody(ctx context.Context,
 	builder DurableUnaryRequestBuilder) (*anypb.Any, []byte, error) {
+
+	if err := indexerlimits.ValidateVTXOsByScriptsCursor(
+		m.AfterCursor,
+	); err != nil {
+		return nil, nil, fmt.Errorf("after cursor: %w", err)
+	}
 
 	protoReq, err := builder.BuildListVTXOsByScriptsRequest(
 		ctx, m.PkScripts, m.AfterCursor, m.Limit,
@@ -325,168 +191,6 @@ func (m *SendListVTXOsByScriptsRequest) QueryMsgID() string {
 // key.
 func (m *SendListVTXOsByScriptsRequest) QueryIdempotencyKey() string {
 	return m.IdempotencyKey
-}
-
-// Encode serializes the message to the provided writer.
-func (m *SendListVTXOsByScriptsRequest) Encode(w io.Writer) error {
-	if err := indexerlimits.ValidateVTXOsByScriptsCursor(
-		m.AfterCursor,
-	); err != nil {
-		return fmt.Errorf("after cursor: %w", err)
-	}
-
-	stableBytes, err := encodeVTXOsByScriptsQueryIdentity(
-		m.PkScripts, m.AfterCursor, m.Limit, m.CorrelationID,
-	)
-	if err != nil {
-		return err
-	}
-
-	msgID := m.MsgID
-	if msgID == "" {
-		msgID = mailboxconn.StableEventMsgID(stableBytes)
-	}
-
-	idempotencyKey := m.IdempotencyKey
-	if idempotencyKey == "" {
-		idempotencyKey = mailboxconn.
-			StableEventIdempotencyKey(
-				stableBytes,
-			)
-	}
-
-	pkScriptsRaw, err := encodeLengthPrefixedBlobList(m.PkScripts)
-	if err != nil {
-		return err
-	}
-
-	pkScriptsRec := tlv.NewPrimitiveRecord[listVTXOsPkScriptsRecordTLV](
-		pkScriptsRaw,
-	)
-	limit := uint64(m.Limit)
-	limitRec := tlv.NewPrimitiveRecord[listVTXOsLimitRecordTLV](
-		limit,
-	)
-	correlationRec := tlv.NewPrimitiveRecord[listVTXOsCorrelationRecordTLV](
-		[]byte(m.CorrelationID),
-	)
-	msgIDRec := tlv.NewPrimitiveRecord[listVTXOsMsgIDRecordTLV](
-		[]byte(msgID),
-	)
-	idempotencyRec := tlv.NewPrimitiveRecord[listVTXOsIdempotencyRecordTLV](
-		[]byte(idempotencyKey),
-	)
-	afterCursorRec := tlv.NewPrimitiveRecord[listVTXOsAfterCursorRecordTLV](
-		append(
-			[]byte(nil), m.AfterCursor...,
-		),
-	)
-
-	stream, err := tlv.NewStream(
-		pkScriptsRec.Record(), limitRec.Record(),
-		correlationRec.Record(), msgIDRec.Record(),
-		idempotencyRec.Record(), afterCursorRec.Record(),
-	)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *SendListVTXOsByScriptsRequest) Decode(r io.Reader) error {
-	pkScriptsRec := tlv.ZeroRecordT[listVTXOsPkScriptsRecordTLV, []byte]()
-	legacyCursorRec := tlv.ZeroRecordT[
-		listVTXOsLegacyCursorRecordTLV,
-		uint64,
-	]()
-	afterCursorRec := tlv.ZeroRecordT[
-		listVTXOsAfterCursorRecordTLV,
-		[]byte,
-	]()
-	limitRec := tlv.ZeroRecordT[listVTXOsLimitRecordTLV, uint64]()
-	correlationRec := tlv.ZeroRecordT[
-		listVTXOsCorrelationRecordTLV,
-		[]byte,
-	]()
-	msgIDRec := tlv.ZeroRecordT[listVTXOsMsgIDRecordTLV, []byte]()
-	idempotencyRec := tlv.ZeroRecordT[
-		listVTXOsIdempotencyRecordTLV,
-		[]byte,
-	]()
-
-	stream, err := tlv.NewStream(
-		pkScriptsRec.Record(), legacyCursorRec.Record(),
-		limitRec.Record(), correlationRec.Record(), msgIDRec.Record(),
-		idempotencyRec.Record(), afterCursorRec.Record(),
-	)
-	if err != nil {
-		return err
-	}
-
-	parsed, err := stream.DecodeWithParsedTypes(r)
-	if err != nil {
-		return err
-	}
-
-	pkScripts, err := decodeLengthPrefixedBlobList(pkScriptsRec.Val)
-	if err != nil {
-		return err
-	}
-
-	if limitRec.Val > uint64(^uint32(0)) {
-		return fmt.Errorf("vtxo query limit overflows uint32: %d",
-			limitRec.Val)
-	}
-
-	_, legacyCursorSet := parsed[legacyCursorRec.TlvType()]
-	_, afterCursorSet := parsed[afterCursorRec.TlvType()]
-
-	afterCursor, err := normalizeVTXOAfterCursor(
-		legacyCursorRec.Val, legacyCursorSet, afterCursorRec.Val,
-		afterCursorSet,
-	)
-	if err != nil {
-		return err
-	}
-
-	m.PkScripts = pkScripts
-	m.AfterCursor = afterCursor
-	m.Limit = uint32(limitRec.Val)
-	m.CorrelationID = string(correlationRec.Val)
-	m.MsgID = string(msgIDRec.Val)
-	m.IdempotencyKey = string(idempotencyRec.Val)
-
-	return nil
-}
-
-// normalizeVTXOAfterCursor selects the decoded opaque cursor or translates an
-// old uint64 cursor when replaying a durable query persisted before keyset
-// cursors existed.
-func normalizeVTXOAfterCursor(legacyCursor uint64, legacyCursorSet bool,
-	afterCursor []byte, afterCursorSet bool) ([]byte, error) {
-
-	if afterCursorSet {
-		if err := indexerlimits.ValidateVTXOsByScriptsCursor(
-			afterCursor,
-		); err != nil {
-			return nil, fmt.Errorf("after cursor: %w", err)
-		}
-
-		return append([]byte(nil), afterCursor...), nil
-	}
-
-	if legacyCursorSet {
-		if legacyCursor != 0 {
-			return nil, fmt.Errorf("unsupported legacy vtxo "+
-				"cursor %d", legacyCursor)
-		}
-
-		return nil, nil
-	}
-
-	return nil, nil
 }
 
 // serverConnMsgSealed implements the ServerConnMsg interface seal.
@@ -573,35 +277,6 @@ func encodeLengthPrefixedBlobList(blobs [][]byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// decodeLengthPrefixedBlobList decodes a blob list encoded by
-// encodeLengthPrefixedBlobList.
-func decodeLengthPrefixedBlobList(raw []byte) ([][]byte, error) {
-	reader := bytes.NewReader(raw)
-
-	var count uint32
-	if err := binary.Read(
-		reader, binary.BigEndian, &count,
-	); err != nil {
-		return nil, err
-	}
-
-	blobs := make([][]byte, 0, count)
-	for i := uint32(0); i < count; i++ {
-		blob, err := readLengthPrefixedBlob(reader)
-		if err != nil {
-			return nil, err
-		}
-
-		blobs = append(blobs, blob)
-	}
-
-	if reader.Len() != 0 {
-		return nil, fmt.Errorf("unexpected trailing bytes in blob list")
-	}
-
-	return blobs, nil
-}
-
 // writeLengthPrefixedBlob encodes one length-prefixed byte slice.
 func writeLengthPrefixedBlob(w io.Writer, blob []byte) error {
 	size := uint32(len(blob))
@@ -612,21 +287,6 @@ func writeLengthPrefixedBlob(w io.Writer, blob []byte) error {
 	_, err := w.Write(blob)
 
 	return err
-}
-
-// readLengthPrefixedBlob decodes one length-prefixed byte slice.
-func readLengthPrefixedBlob(r *bytes.Reader) ([]byte, error) {
-	var size uint32
-	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
-		return nil, err
-	}
-
-	blob := make([]byte, size)
-	if _, err := io.ReadFull(r, blob); err != nil {
-		return nil, err
-	}
-
-	return blob, nil
 }
 
 // Compile-time interface checks.

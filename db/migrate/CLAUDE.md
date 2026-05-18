@@ -5,8 +5,7 @@
 Generic database migration orchestration for SQLite and PostgreSQL backends.
 Wraps `golang-migrate` with downgrade protection, per-step callbacks, an
 on-the-fly SQLite→Postgres token replacer, and structured logging. Used by
-both the main schema (`db/`) and the actor-delivery sub-schema
-(`db/actordelivery/migrations/`).
+the main schema (`db/`) and any downstream extension migration sets.
 
 ## Key Types
 
@@ -38,8 +37,8 @@ both the main schema (`db/`) and the actor-delivery sub-schema
 
 - **Depends on**: `db/sqlc` (BackendType enum for driver selection),
   `github.com/golang-migrate/migrate/v4`.
-- **Depended on by**: `db` (main schema runner), `db/actordelivery/migrations`
-  (actor-delivery schema runner).
+- **Depended on by**: `db` (main schema runner) and optional extension
+  migration sets registered by downstream packages.
 
 ## Invariants
 

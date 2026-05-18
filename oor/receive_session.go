@@ -85,7 +85,7 @@ func newReceiveSessionWithState(ctx context.Context, sessionID SessionID,
 // and feeds it the incoming-transfer event.
 //
 // This is intended for tests and early harnesses. In an app, the incoming
-// event would typically be delivered to an already-running durable actor.
+// event would typically be delivered to an already-running local actor.
 func DriveIncomingTransfer(ctx context.Context, sessionID SessionID,
 	ark *psbt.Packet) (*ReceiveSession, []OutboxEvent, error) {
 

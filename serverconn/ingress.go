@@ -1,7 +1,6 @@
 package serverconn
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -9,16 +8,15 @@ import (
 	"math/rand/v2"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 )
 
-// ingressLoop is the main pull-dispatch-ack loop. It runs in its own
-// goroutine, started from ServerConnectionActor.StartIngress. The loop:
+// ingressLoop is the main pull-dispatch-ack loop. It runs in its own goroutine,
+// started from ServerConnectionActor.StartIngress. The loop:
 //
-//  1. Loads persisted ack watermark state from the checkpoint store.
+//  1. Loads persisted ack watermark state from the SQL transport cursor table.
 //  2. Continuously pulls envelopes from the remote mailbox.
 //  3. Dispatches each envelope to the appropriate local actor or response
 //     waiter.
@@ -120,58 +118,16 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 			slog.Uint64("next_cursor", nextCursor),
 		)
 
-		// Step 3: Dispatch the batch. On partial failure, the
-		// committed cursor reflects only the successfully dispatched
-		// portion.
-		committedCursor, dispatchErr := a.dispatchBatch(
-			ctx, envelopes, nextCursor,
+		// Step 3: Dispatch the batch and persist the cursor in one
+		// transaction. Dispatchers see the transaction-bearing context
+		// and can commit domain SQL atomically with the cursor update.
+		committedCursor, dispatchErr := a.dispatchAndCheckpoint(
+			ctx, &state, envelopes, nextCursor,
 		)
 		if dispatchErr != nil {
 			a.log.WarnS(ctx, "Dispatch failed",
 				dispatchErr,
 				slog.Uint64("committed_to", committedCursor),
-			)
-
-			// Even on partial failure, advance state past the
-			// last committed envelope so we don't re-dispatch
-			// it. dispatchBatch returns the inclusive event_seq
-			// of the last successfully dispatched envelope, so
-			// we add 1 to get the exclusive next-pull position,
-			// consistent with batchNextCursor on the success
-			// path.
-			nextCursor := committedCursor + 1
-			if committedCursor > 0 &&
-				nextCursor > state.PullCursor {
-
-				state.AdvanceDispatch(nextCursor)
-				state.PullCursor = nextCursor
-
-				if cpErr := a.saveCheckpoint(
-					ctx, state,
-				); cpErr != nil {
-
-					a.log.WarnS(ctx,
-						"Failed to save checkpoint "+
-							"after partial dispatch",
-						cpErr)
-				}
-			}
-
-			a.sleepBackoff(ctx, &failCount)
-
-			continue
-		}
-
-		// Step 4: Full batch dispatched successfully. Advance state
-		// and persist checkpoint.
-		state.AdvanceDispatch(committedCursor)
-		state.PullCursor = committedCursor
-
-		if err := a.saveCheckpoint(ctx, state); err != nil {
-			a.log.WarnS(
-				ctx,
-				"Failed to save checkpoint after dispatch",
-				err,
 			)
 
 			a.sleepBackoff(ctx, &failCount)
@@ -246,7 +202,7 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 		case mailboxpb.RpcMeta_KIND_RESPONSE:
 			// Prefer unary waiters for low-latency RPC
 			// callers. When no in-memory waiter is registered,
-			// fall back to the durable dispatch table so
+			// fall back to the dispatch table so
 			// actor-driven unary flows can treat the response
 			// like any other ingress event.
 			corrID := CorrelationID(env.Rpc.CorrelationId)
@@ -303,11 +259,9 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 		case mailboxpb.RpcMeta_KIND_REQUEST,
 			mailboxpb.RpcMeta_KIND_EVENT:
 
-			// Dispatch to local actor via the dispatch table.
-			// The dispatcher is a closure that does
-			// serviceKey.Ref(system).Tell(ctx, msg). A nil error
-			// means the target durable actor persisted the
-			// message.
+			// Dispatch to the local handler via the dispatch table.
+			// A nil error means the handler has reached its
+			// durability boundary.
 			key := mailboxrpc.ServiceMethod{
 				Service: env.Rpc.Service,
 				Method:  env.Rpc.Method,
@@ -365,6 +319,95 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 	return lastCommitted, nil
 }
 
+func (a *ServerConnectionActor) dispatchAndCheckpoint(ctx context.Context,
+	state *AckState, envelopes []*mailboxpb.Envelope,
+	batchNextCursor uint64) (uint64, error) {
+
+	if a.cfg.Transport == nil {
+		return 0, fmt.Errorf("transport store is required")
+	}
+
+	var nextState AckState
+	committedCursor := state.DispatchCommittedTo
+
+	for i, env := range envelopes {
+		envelopeNextCursor := env.EventSeq + 1
+		if i == len(envelopes)-1 {
+			envelopeNextCursor = batchNextCursor
+		}
+
+		if a.dispatchOutsideIngressTx(env) {
+			cursor, err := a.dispatchBatch(
+				ctx, []*mailboxpb.Envelope{env},
+				envelopeNextCursor,
+			)
+			if err != nil {
+				return committedCursor, err
+			}
+
+			nextState = *state
+			nextState.AdvanceDispatch(cursor)
+			nextState.PullCursor = cursor
+
+			err = a.cfg.Transport.RunInIngressTx(
+				ctx, func(txCtx context.Context) error {
+					return a.saveCheckpoint(
+						txCtx, nextState,
+					)
+				},
+			)
+			if err != nil {
+				return committedCursor, err
+			}
+
+			committedCursor = cursor
+			*state = nextState
+
+			continue
+		}
+
+		err := a.cfg.Transport.RunInIngressTx(
+			ctx, func(txCtx context.Context) error {
+				cursor, err := a.dispatchBatch(
+					txCtx, []*mailboxpb.Envelope{env},
+					envelopeNextCursor,
+				)
+				if err != nil {
+					return err
+				}
+
+				committedCursor = cursor
+				nextState = *state
+				nextState.AdvanceDispatch(cursor)
+				nextState.PullCursor = cursor
+
+				return a.saveCheckpoint(txCtx, nextState)
+			},
+		)
+		if err != nil {
+			return committedCursor, err
+		}
+
+		*state = nextState
+	}
+
+	return committedCursor, nil
+}
+
+func (a *ServerConnectionActor) dispatchOutsideIngressTx(
+	env *mailboxpb.Envelope) bool {
+
+	if env == nil || env.Rpc == nil ||
+		a.cfg.DispatchOutsideIngressTx == nil {
+		return false
+	}
+
+	return a.cfg.DispatchOutsideIngressTx[mailboxrpc.ServiceMethod{
+		Service: env.Rpc.Service,
+		Method:  env.Rpc.Method,
+	}]
+}
+
 // ackRemote calls Edge.AckUpTo with the given cursor.
 func (a *ServerConnectionActor) ackRemote(
 	ctx context.Context, cursor uint64,
@@ -388,29 +431,23 @@ func (a *ServerConnectionActor) ackRemote(
 	return nil
 }
 
-// loadCheckpoint restores the AckState from the checkpoint store on startup.
-// Returns a zero-value AckState if no checkpoint exists.
+// loadCheckpoint restores the AckState from the transport cursor table.
 func (a *ServerConnectionActor) loadCheckpoint(ctx context.Context) (AckState,
 	error) {
 
-	actorID := DurableActorID(a.cfg.LocalMailboxID)
+	if a.cfg.Transport == nil {
+		return AckState{}, fmt.Errorf("transport store is required")
+	}
 
-	checkpoint, err := a.cfg.Store.LoadCheckpoint(ctx, actorID)
+	state, err := a.cfg.Transport.LoadIngressCursor(
+		ctx, a.cfg.LocalMailboxID, a.cfg.RemoteMailboxID,
+	)
 	if err != nil {
 		return AckState{}, err
 	}
-	if checkpoint == nil {
-		return AckState{}, nil
-	}
 
-	var state AckState
-	stateReader := bytes.NewReader(checkpoint.StateData)
-	if err := state.Decode(stateReader); err != nil {
-		return AckState{}, err
-	}
-
-	a.log.InfoS(ctx, "Loaded ack checkpoint",
-		slog.String("actor_id", actorID),
+	a.log.InfoS(ctx, "Loaded ingress cursor",
+		slog.String("local_mailbox_id", a.cfg.LocalMailboxID),
 		slog.Uint64("pull_cursor", state.PullCursor),
 		slog.Uint64("dispatch_committed_to",
 			state.DispatchCommittedTo),
@@ -420,23 +457,18 @@ func (a *ServerConnectionActor) loadCheckpoint(ctx context.Context) (AckState,
 	return state, nil
 }
 
-// saveCheckpoint persists the AckState to the checkpoint store.
+// saveCheckpoint persists the AckState to the transport cursor table.
 func (a *ServerConnectionActor) saveCheckpoint(
 	ctx context.Context, state AckState,
 ) error {
 
-	var buf bytes.Buffer
-	if err := state.Encode(&buf); err != nil {
-		return err
+	if a.cfg.Transport == nil {
+		return fmt.Errorf("transport store is required")
 	}
 
-	actorID := DurableActorID(a.cfg.LocalMailboxID)
-
-	return a.cfg.Store.SaveCheckpoint(ctx, actor.CheckpointParams{
-		ActorID:   actorID,
-		StateType: ackStateType,
-		StateData: buf.Bytes(),
-	})
+	return a.cfg.Transport.SaveIngressCursor(
+		ctx, a.cfg.LocalMailboxID, a.cfg.RemoteMailboxID, state,
+	)
 }
 
 // sleepBackoff sleeps for an exponential backoff duration with jitter,

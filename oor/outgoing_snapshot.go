@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 )
 
@@ -53,7 +54,7 @@ const (
 // needing to reconstruct taproot metadata or re-derive ordering rules.
 //
 // NOTE: TransferInputs contains rich Go types (tapscript/key descriptors) and
-// is not currently encoded for cross-process durability. The durable actor work
+// is not currently encoded for cross-process durability. The local actor work
 // in darepo-client will eventually provide a canonical encoding for these.
 //
 // TransferInputSnapshots is the portable encoding used for persistence.
@@ -75,12 +76,17 @@ type OutgoingSnapshot struct {
 	CheckpointPSBTs [][]byte
 
 	// TransferInputs are kept for in-process state handling.
-	// Durable snapshot encoding uses TransferInputSnapshots.
+	// Portable snapshot encoding uses TransferInputSnapshots.
 	TransferInputs []TransferInput
 
 	// TransferInputSnapshots are a portable encoding of
 	// TransferInputs.
 	TransferInputSnapshots []*TransferInputSnapshot
+
+	// Recipients are the canonical non-anchor Ark outputs with optional
+	// semantic policy metadata. They are needed to resume submit delivery
+	// without reconstructing the original StartTransferRequest.
+	Recipients []oortx.RecipientOutput
 
 	// RetryAfter is the requested delay for a pending retry, if any.
 	RetryAfter time.Duration
@@ -95,6 +101,8 @@ type OutgoingSnapshot struct {
 }
 
 // NewOutgoingSnapshot exports an outgoing transfer FSM state into a snapshot.
+//
+//nolint:funlen
 func NewOutgoingSnapshot(sessionID SessionID,
 	state State) (*OutgoingSnapshot, error) {
 
@@ -130,6 +138,9 @@ func NewOutgoingSnapshot(sessionID SessionID,
 		}
 		snap.CheckpointPSBTs = cps
 		snap.TransferInputs = s.TransferInputs
+		snap.Recipients = append(
+			[]oortx.RecipientOutput(nil), s.RecipientOutputs...,
+		)
 		inputSnaps, err := snapshotTransferInputs(s.TransferInputs)
 		if err != nil {
 			return nil, err
@@ -158,6 +169,9 @@ func NewOutgoingSnapshot(sessionID SessionID,
 			return nil, err
 		}
 		snap.CheckpointPSBTs = cps
+		snap.Recipients = append(
+			[]oortx.RecipientOutput(nil), s.RecipientOutputs...,
+		)
 		err = assignTransferInputSnapshots(snap, s.TransferInputs)
 		if err != nil {
 			return nil, err
@@ -309,7 +323,11 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			ArkPSBT:         ark,
 			CheckpointPSBTs: cps,
 			TransferInputs:  inputs,
-			IdempotencyKey:  snapshot.IdempotencyKey,
+			RecipientOutputs: append(
+				[]oortx.RecipientOutput(nil),
+				snapshot.Recipients...,
+			),
+			IdempotencyKey: snapshot.IdempotencyKey,
 		}, nil
 
 	case OutgoingPhaseSubmitSent:
@@ -334,7 +352,11 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			ArkPSBT:         ark,
 			CheckpointPSBTs: cps,
 			TransferInputs:  inputs,
-			IdempotencyKey:  snapshot.IdempotencyKey,
+			RecipientOutputs: append(
+				[]oortx.RecipientOutput(nil),
+				snapshot.Recipients...,
+			),
+			IdempotencyKey: snapshot.IdempotencyKey,
 		}, nil
 
 	case OutgoingPhaseCoSigned:

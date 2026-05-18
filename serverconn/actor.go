@@ -3,7 +3,6 @@ package serverconn
 import (
 	"context"
 	"fmt"
-	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,42 +13,12 @@ import (
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
-	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
-// TLV type constants for server connection messages. These are stable
-// identifiers used for message serialization and dispatch within the durable
-// actor mailbox.
-const (
-	// SendClientEventRequestMsgType is the TLV type for outbound FSM
-	// events from the round actor to the server.
-	SendClientEventRequestMsgType tlv.Type = 2000
-
-	// SendRPCRequestMsgType is the TLV type for outbound unary RPC
-	// envelopes from the unary facade.
-	SendRPCRequestMsgType tlv.Type = 2001
-
-	// SendUnaryRequestMsgType is the TLV type for durable correlated unary
-	// requests where the connector constructs the mailbox envelope.
-	SendUnaryRequestMsgType tlv.Type = 2002
-)
-
 // defaultSendEventTimeout is the timeout for outbound gRPC Edge.Send calls.
 const defaultSendEventTimeout = 30 * time.Second
-
-// TLV record type aliases for RecordT-style message field serialization.
-type (
-	protoPayloadRecordTLV   = tlv.TlvType1
-	envelopeRecordTLV       = tlv.TlvType2
-	msgIDRecordTLV          = tlv.TlvType3
-	idempotencyRecordTLV    = tlv.TlvType4
-	rpcServiceRecordTLV     = tlv.TlvType5
-	rpcMethodRecordTLV      = tlv.TlvType6
-	rpcCorrelationRecordTLV = tlv.TlvType7
-	correlationKeyRecordTLV = tlv.TlvType8
-)
 
 // ServerMessage is an interface that client FSM outbox messages must implement
 // to be sent to the server. This allows conversion to proto messages without
@@ -85,42 +54,11 @@ type InboundServerMessage interface {
 	FromProto(proto.Message) error
 }
 
-// rawServerMessage wraps a protobuf Any for reconstructing a ServerMessage
-// after TLV deserialization. The original concrete type is recovered using
-// the global protobuf type registry via anypb.UnmarshalNew.
-type rawServerMessage struct {
-	anyMsg *anypb.Any
-}
-
-// ServiceMethod returns a zero-value ServiceMethod. After TLV decoding the
-// routing metadata lives on the enclosing SendClientEventRequest rather than
-// on the raw message wrapper.
-func (m *rawServerMessage) ServiceMethod() mailboxrpc.ServiceMethod {
-	return mailboxrpc.ServiceMethod{}
-}
-
-// ToProto reconstructs the original proto message from the stored Any
-// wrapper.
-func (m *rawServerMessage) ToProto() fn.Result[proto.Message] {
-	msg, err := m.anyMsg.UnmarshalNew()
-	if err != nil {
-		return fn.Err[proto.Message](
-			fmt.Errorf(
-				"unmarshal Any type %q: %w",
-				m.anyMsg.GetTypeUrl(), err,
-			),
-		)
-	}
-
-	return fn.Ok[proto.Message](msg)
-}
-
 // ServerConnMsg is the sealed interface for messages that can be sent to the
 // ServerConnectionActor. These are typically FSM outbox messages from the
-// client that need to be relayed to the server. The interface extends
-// TLVMessage for durable actor mailbox persistence.
+// client that need to be relayed to the server.
 type ServerConnMsg interface {
-	actor.TLVMessage
+	actor.Message
 
 	serverConnMsgSealed()
 }
@@ -149,36 +87,18 @@ type SendClientEventRequest struct {
 	MsgID string
 
 	// IdempotencyKey identifies the semantic operation for remote dedupe.
-	// Retries of the same persisted request must reuse this key.
+	// Retries of the same SQL-owned request must reuse this key.
 	IdempotencyKey string
 
 	// Service is the fully-qualified protobuf service name for mailbox
 	// routing (e.g. "round.v1.RoundService"). Populated from
-	// ServerMessage.ServiceMethod() at send time, persisted in TLV for
-	// crash-safe replay.
+	// ServerMessage.ServiceMethod() at send time when empty.
 	Service string
 
 	// Method is the RPC method name for mailbox routing (e.g.
 	// "JoinRound"). Populated from ServerMessage.ServiceMethod() at
-	// send time, persisted in TLV for crash-safe replay.
+	// send time when empty.
 	Method string
-
-	// cachedCorrelationKey holds the per-key FIFO key that was stamped
-	// on the concrete inner message at the time the wrapper was last
-	// encoded. It exists because Decode replaces the typed inner
-	// Message with a rawServerMessage that no longer implements
-	// CorrelationKey, so a decoded wrapper has no way to recover the
-	// key from the inner field alone. The outbox-CDC delivery path
-	// hits this branch: the wrapper is encoded into the actor outbox,
-	// later decoded by OutboxPublisher, then enqueued into the
-	// serverconn mailbox for the first time, and that first enqueue
-	// is where the durable mailbox reads CorrelationKey to stamp the
-	// claim lane. Stored as []byte so Decode can hand the TLV record
-	// straight through without a copy; the read path converts to
-	// string at the CorrelationKey() boundary. Set by Decode; read
-	// by CorrelationKey as the fallback when the structural assertion
-	// on Message fails.
-	cachedCorrelationKey []byte
 }
 
 // MessageType returns a human-readable type name for logging.
@@ -186,139 +106,8 @@ func (m *SendClientEventRequest) MessageType() string {
 	return "SendClientEventRequest"
 }
 
-// TLVType returns the unique TLV type identifier for this message.
-func (m *SendClientEventRequest) TLVType() tlv.Type {
-	return SendClientEventRequestMsgType
-}
-
-// Encode serializes the message to the provided writer. The ServerMessage is
-// converted to proto, wrapped in anypb.Any (preserving type information),
-// and stored via a WrappedProto TLV record.
-//
-// We use TLV here (rather than storing raw proto bytes) because the
-// DurableActor runtime requires all messages to satisfy the TLVMessage
-// interface (TLVType, Encode, Decode). The MessageCodec uses these methods
-// to serialize messages into the durable mailbox. WrappedProto handles the
-// proto↔bytes conversion inside the TLV record, keeping the codec contract
-// simple and uniform across message types.
-func (m *SendClientEventRequest) Encode(w io.Writer) error {
-	protoMsg, err := m.Message.ToProto().Unpack()
-	if err != nil {
-		return fmt.Errorf("convert to proto: %w", err)
-	}
-
-	service, method := eventRoutingMetadata(m)
-
-	anyMsg, err := anypb.New(protoMsg)
-	if err != nil {
-		return fmt.Errorf("wrap proto in Any: %w", err)
-	}
-
-	// We still need the raw bytes for stable ID derivation, so marshal
-	// deterministically before constructing the TLV records.
-	anyBytes, err := (proto.MarshalOptions{
-		Deterministic: true,
-	}).Marshal(anyMsg)
-	if err != nil {
-		return fmt.Errorf("marshal Any: %w", err)
-	}
-
-	msgID := m.MsgID
-	if msgID == "" {
-		msgID = mailboxconn.StableEventMsgID(anyBytes)
-	}
-	msgIDBytes := []byte(msgID)
-
-	idempotencyKey := m.IdempotencyKey
-	if idempotencyKey == "" {
-		idempotencyKey = mailboxconn.
-			StableEventIdempotencyKey(
-				anyBytes,
-			)
-	}
-	idempotencyBytes := []byte(idempotencyKey)
-
-	payload := tlv.NewRecordT[protoPayloadRecordTLV](
-		mailboxconn.WrappedProto[*anypb.Any]{
-			Val: anyMsg,
-		},
-	)
-	msgIDRec := tlv.NewPrimitiveRecord[msgIDRecordTLV](
-		msgIDBytes,
-	)
-	idemRec := tlv.NewPrimitiveRecord[idempotencyRecordTLV](
-		idempotencyBytes,
-	)
-	svcRec := tlv.NewPrimitiveRecord[rpcServiceRecordTLV](
-		[]byte(service),
-	)
-	methodRec := tlv.NewPrimitiveRecord[rpcMethodRecordTLV](
-		[]byte(method),
-	)
-
-	// Persist the per-key FIFO key alongside the routing metadata so
-	// a wrapper round-tripped through the outbox CDC table still
-	// surfaces the right key on first enqueue into the serverconn
-	// mailbox. Computing via CorrelationKey() consults the cached
-	// value first (covering re-Encode of a previously decoded
-	// wrapper), then falls back to the structural assertion on the
-	// concrete inner Message (the normal pre-Encode path).
-	corrKeyBytes := []byte(m.CorrelationKey())
-	corrKeyRec := tlv.NewPrimitiveRecord[correlationKeyRecordTLV](
-		corrKeyBytes,
-	)
-
-	stream, err := tlv.NewStream(
-		payload.Record(), msgIDRec.Record(), idemRec.Record(),
-		svcRec.Record(), methodRec.Record(), corrKeyRec.Record(),
-	)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
-}
-
-// Decode deserializes the message from the provided reader. The proto payload
-// is stored as a rawServerMessage that lazily unmarshals via the global
-// protobuf type registry.
-func (m *SendClientEventRequest) Decode(r io.Reader) error {
-	payload := tlv.ZeroRecordT[
-		protoPayloadRecordTLV,
-		mailboxconn.WrappedProto[*anypb.Any],
-	]()
-	payload.Val.Val = &anypb.Any{}
-
-	msgIDRec := tlv.ZeroRecordT[msgIDRecordTLV, []byte]()
-	idemRec := tlv.ZeroRecordT[idempotencyRecordTLV, []byte]()
-	svcRec := tlv.ZeroRecordT[rpcServiceRecordTLV, []byte]()
-	methodRec := tlv.ZeroRecordT[rpcMethodRecordTLV, []byte]()
-	corrKeyRec := tlv.ZeroRecordT[correlationKeyRecordTLV, []byte]()
-
-	stream, err := tlv.NewStream(
-		payload.Record(), msgIDRec.Record(), idemRec.Record(),
-		svcRec.Record(), methodRec.Record(), corrKeyRec.Record(),
-	)
-	if err != nil {
-		return err
-	}
-
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
-		return err
-	}
-
-	m.Message = &rawServerMessage{anyMsg: payload.Val.Val}
-	m.MsgID = string(msgIDRec.Val)
-	m.IdempotencyKey = string(idemRec.Val)
-	m.Service = string(svcRec.Val)
-	m.Method = string(methodRec.Val)
-	m.cachedCorrelationKey = corrKeyRec.Val
-
-	return nil
-}
-
 // CorrelationKey forwards the inner ServerMessage's per-key FIFO key so
-// the durable mailbox's per-correlation-key claim invariant fires on the
+// the SQL mailbox's per-correlation-key claim invariant fires on the
 // right lane (e.g. "oor/<session>", "round/<id>"). Without this hop the
 // wrapper's embedded BaseMessage default ("") would erase the inner key
 // at enqueue and every outbox row would land in the unkeyed lane, leaving
@@ -330,17 +119,6 @@ func (m *SendClientEventRequest) Decode(r io.Reader) error {
 // opts in to per-key FIFO without coupling ServerMessage to the actor
 // interface. That assertion covers the in-process pre-Encode path where
 // the inner Message is the concrete OOR/round outbox type.
-//
-// After TLV decode the inner becomes a *rawServerMessage that no longer
-// satisfies the assertion. That is the path the outbox-CDC delivery uses:
-// sendTransportEvent encodes the wrapper into the actor outbox, the
-// OutboxPublisher decodes it later, and then Tells the decoded wrapper
-// into the serverconn mailbox for the first time. The durable mailbox
-// reads CorrelationKey on that first enqueue, so we have to surface
-// the key from somewhere other than the now-erased inner type. Encode
-// persists the inner key in its own TLV record and Decode caches it on
-// cachedCorrelationKey; this method falls back to that cache when the
-// structural assertion misses.
 func (m *SendClientEventRequest) CorrelationKey() string {
 	if m == nil {
 		return ""
@@ -355,7 +133,7 @@ func (m *SendClientEventRequest) CorrelationKey() string {
 		}
 	}
 
-	return string(m.cachedCorrelationKey)
+	return ""
 }
 
 // serverConnMsgSealed implements the ServerConnMsg interface seal.
@@ -415,56 +193,12 @@ func (m *SendRPCRequest) MessageType() string {
 	return "SendRPCRequest"
 }
 
-// TLVType returns the unique TLV type identifier for this message.
-func (m *SendRPCRequest) TLVType() tlv.Type {
-	return SendRPCRequestMsgType
-}
-
-// Encode serializes the message to the provided writer. The mailbox
-// envelope is stored via a WrappedProto TLV record.
-func (m *SendRPCRequest) Encode(w io.Writer) error {
-	envRec := tlv.NewRecordT[envelopeRecordTLV](
-		mailboxconn.WrappedProto[*mailboxpb.Envelope]{
-			Val: m.Envelope,
-		},
-	)
-
-	stream, err := tlv.NewStream(envRec.Record())
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *SendRPCRequest) Decode(r io.Reader) error {
-	envRec := tlv.ZeroRecordT[
-		envelopeRecordTLV,
-		mailboxconn.WrappedProto[*mailboxpb.Envelope],
-	]()
-	envRec.Val.Val = &mailboxpb.Envelope{}
-
-	stream, err := tlv.NewStream(envRec.Record())
-	if err != nil {
-		return err
-	}
-
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
-		return err
-	}
-
-	m.Envelope = envRec.Val.Val
-
-	return nil
-}
-
 // serverConnMsgSealed implements the ServerConnMsg interface seal.
 func (m *SendRPCRequest) serverConnMsgSealed() {}
 
-// SendUnaryRequest wraps a typed unary RPC request for durable delivery via
-// the mailbox edge. Unlike SendRPCRequest, the caller provides the request
-// body and routing metadata rather than a pre-built envelope.
+// SendUnaryRequest wraps a typed unary RPC request for delivery via the
+// mailbox edge. Unlike SendRPCRequest, the caller provides the request body
+// and routing metadata rather than a pre-built envelope.
 type SendUnaryRequest struct {
 	actor.BaseMessage
 
@@ -515,106 +249,6 @@ func (m *SendUnaryRequest) MessageType() string {
 	return "SendUnaryRequest"
 }
 
-// TLVType returns the unique TLV type identifier for this message.
-func (m *SendUnaryRequest) TLVType() tlv.Type {
-	return SendUnaryRequestMsgType
-}
-
-// Encode serializes the message to the provided writer.
-func (m *SendUnaryRequest) Encode(w io.Writer) error {
-	body := m.Body
-	if body == nil {
-		return fmt.Errorf("unary request body must be provided")
-	}
-
-	bodyBytes, err := (proto.MarshalOptions{
-		Deterministic: true,
-	}).Marshal(body)
-	if err != nil {
-		return fmt.Errorf("marshal unary request body: %w", err)
-	}
-
-	msgID := m.MsgID
-	if msgID == "" {
-		msgID = mailboxconn.StableEventMsgID(bodyBytes)
-	}
-
-	idempotencyKey := m.IdempotencyKey
-	if idempotencyKey == "" {
-		idempotencyKey = mailboxconn.
-			StableEventIdempotencyKey(
-				bodyBytes,
-			)
-	}
-
-	bodyRec := tlv.NewRecordT[protoPayloadRecordTLV](
-		mailboxconn.WrappedProto[*anypb.Any]{
-			Val: body,
-		},
-	)
-	msgIDRec := tlv.NewPrimitiveRecord[msgIDRecordTLV](
-		[]byte(msgID),
-	)
-	idemRec := tlv.NewPrimitiveRecord[idempotencyRecordTLV](
-		[]byte(idempotencyKey),
-	)
-	svcRec := tlv.NewPrimitiveRecord[rpcServiceRecordTLV](
-		[]byte(m.Service),
-	)
-	methodRec := tlv.NewPrimitiveRecord[rpcMethodRecordTLV](
-		[]byte(m.Method),
-	)
-	corrRec := tlv.NewPrimitiveRecord[rpcCorrelationRecordTLV](
-		[]byte(m.CorrelationID),
-	)
-
-	stream, err := tlv.NewStream(
-		bodyRec.Record(), msgIDRec.Record(), idemRec.Record(),
-		svcRec.Record(), methodRec.Record(), corrRec.Record(),
-	)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *SendUnaryRequest) Decode(r io.Reader) error {
-	bodyRec := tlv.ZeroRecordT[
-		protoPayloadRecordTLV,
-		mailboxconn.WrappedProto[*anypb.Any],
-	]()
-	bodyRec.Val.Val = &anypb.Any{}
-
-	msgIDRec := tlv.ZeroRecordT[msgIDRecordTLV, []byte]()
-	idemRec := tlv.ZeroRecordT[idempotencyRecordTLV, []byte]()
-	svcRec := tlv.ZeroRecordT[rpcServiceRecordTLV, []byte]()
-	methodRec := tlv.ZeroRecordT[rpcMethodRecordTLV, []byte]()
-	corrRec := tlv.ZeroRecordT[rpcCorrelationRecordTLV, []byte]()
-
-	stream, err := tlv.NewStream(
-		bodyRec.Record(), msgIDRec.Record(), idemRec.Record(),
-		svcRec.Record(), methodRec.Record(), corrRec.Record(),
-	)
-	if err != nil {
-		return err
-	}
-
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
-		return err
-	}
-
-	m.Body = bodyRec.Val.Val
-	m.MsgID = string(msgIDRec.Val)
-	m.IdempotencyKey = string(idemRec.Val)
-	m.Service = string(svcRec.Val)
-	m.Method = string(methodRec.Val)
-	m.CorrelationID = string(corrRec.Val)
-
-	return nil
-}
-
 // serverConnMsgSealed implements the ServerConnMsg interface seal.
 func (m *SendUnaryRequest) serverConnMsgSealed() {}
 
@@ -630,9 +264,8 @@ func (m *SendUnaryRequest) serverConnMsgSealed() {}
 //     manages the ack watermark state machine to ensure at-least-once
 //     delivery with crash safety.
 //
-// The actor is backed by a DurableActor for crash-safe egress. Outbound
-// messages from protocol actors persist in the durable mailbox before
-// processing, ensuring no message loss on crashes.
+// Crash-safe egress is provided by SQL mailbox_egress rows owned by the
+// transport runtime.
 type ServerConnectionActor struct {
 	// cfg holds all dependencies and tuning knobs for the connector.
 	cfg ConnectorConfig
@@ -664,8 +297,8 @@ type ServerConnectionActor struct {
 }
 
 // NewServerConnectionActor creates a new server connection actor with the
-// given configuration. The actor must be started via its DurableActor wrapper
-// and the ingress loop must be started separately via StartIngress.
+// given configuration. The ingress loop must be started separately via
+// StartIngress.
 func NewServerConnectionActor(
 	cfg ConnectorConfig,
 ) *ServerConnectionActor {
@@ -735,8 +368,7 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	idempotencyKey := req.IdempotencyKey
 
 	// Only marshal the body bytes when we need to derive stable IDs.
-	// On replay (both IDs already set from the persisted TLV), this
-	// marshal is skipped.
+	// On SQL replay (both IDs already set), this marshal is skipped.
 	if msgID == "" || idempotencyKey == "" {
 		bodyBytes, marshalErr := (proto.MarshalOptions{
 			Deterministic: true,
@@ -810,8 +442,8 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	})
 }
 
-// handleSendUnaryRequest sends a durable correlated unary request via the
-// mailbox edge.
+// handleSendUnaryRequest sends a correlated unary request via the mailbox
+// edge.
 func (a *ServerConnectionActor) handleSendUnaryRequest(ctx context.Context,
 	req *SendUnaryRequest) fn.Result[ServerConnResp] {
 
@@ -1101,46 +733,6 @@ func (a *ServerConnectionActor) StopIngress() {
 	})
 
 	a.wg.Wait()
-}
-
-// NewServerConnCodec creates a MessageCodec with all server connection
-// message types registered.
-func NewServerConnCodec() *actor.MessageCodec {
-	codec := actor.NewMessageCodec()
-
-	codec.MustRegister(
-		SendClientEventRequestMsgType,
-		func() actor.TLVMessage {
-			return &SendClientEventRequest{}
-		},
-	)
-
-	codec.MustRegister(
-		SendRPCRequestMsgType,
-		func() actor.TLVMessage {
-			return &SendRPCRequest{}
-		},
-	)
-	codec.MustRegister(
-		SendUnaryRequestMsgType,
-		func() actor.TLVMessage {
-			return &SendUnaryRequest{}
-		},
-	)
-	codec.MustRegister(
-		SendListOORRecipientEventsByScriptRequestMsgType,
-		func() actor.TLVMessage {
-			return &SendListOORRecipientEventsByScriptRequest{}
-		},
-	)
-	codec.MustRegister(
-		SendListVTXOsByScriptsRequestMsgType,
-		func() actor.TLVMessage {
-			return &SendListVTXOsByScriptsRequest{}
-		},
-	)
-
-	return codec
 }
 
 // Compile-time interface checks.

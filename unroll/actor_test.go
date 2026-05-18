@@ -1,3 +1,4 @@
+//nolint:ll
 package unroll
 
 import (
@@ -21,6 +22,7 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/txconfirm"
@@ -693,216 +695,164 @@ func (s testSignature) Verify([]byte, *btcec.PublicKey) bool {
 	return true
 }
 
-// memCheckpointStore is a minimal in-memory checkpoint store for durable actor
+// memJobStore is a minimal in-memory unroll job store for local actor
 // tests.
-type memCheckpointStore struct {
-	mu          sync.Mutex
-	checkpoints map[string]*actor.Checkpoint
+type memJobStore struct {
+	mu   sync.Mutex
+	jobs map[wire.OutPoint]*db.UnrollJobRecord
 }
 
-// newMemCheckpointStore creates a new in-memory checkpoint store.
-func newMemCheckpointStore() *memCheckpointStore {
-	return &memCheckpointStore{
-		checkpoints: make(map[string]*actor.Checkpoint),
+// newMemJobStore creates a new in-memory job store.
+func newMemJobStore() *memJobStore {
+	return &memJobStore{
+		jobs: make(map[wire.OutPoint]*db.UnrollJobRecord),
 	}
 }
 
-// SaveCheckpoint stores one checkpoint in memory.
-func (s *memCheckpointStore) SaveCheckpoint(_ context.Context,
-	params actor.CheckpointParams) error {
+// UpsertJob stores one unroll job in memory.
+func (s *memJobStore) UpsertJob(_ context.Context,
+	params db.UnrollJobRecord) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.checkpoints[params.ActorID] = &actor.Checkpoint{
-		ActorID:   params.ActorID,
-		StateType: params.StateType,
-		StateData: append([]byte(nil), params.StateData...),
-		Version:   params.Version,
-	}
+	copyRecord := params
+	copyRecord.PlannerState = append([]byte(nil), params.PlannerState...)
+	copyRecord.DeferredCheckpoints = append(
+		[]byte(nil), params.DeferredCheckpoints...,
+	)
+	copyRecord.SweepTx = append([]byte(nil), params.SweepTx...)
+	copyRecord.SweepTxid = append([]byte(nil), params.SweepTxid...)
+	copyRecord.TxProgress = append(
+		[]db.UnrollTxProgressRecord(nil), params.TxProgress...,
+	)
+	copyRecord.Watches = append(
+		[]db.UnrollWatchRecord(nil), params.Watches...,
+	)
+
+	s.jobs[params.TargetOutpoint] = &copyRecord
 
 	return nil
 }
 
-// LoadCheckpoint returns one checkpoint when present.
-func (s *memCheckpointStore) LoadCheckpoint(_ context.Context, actorID string) (
-	*actor.Checkpoint, error) {
+// SaveSnapshot stores one unroll snapshot in memory.
+func (s *memJobStore) SaveSnapshot(ctx context.Context, target wire.OutPoint,
+	snapshot *unrollSnapshot) error {
+
+	record, err := jobRecordFromSnapshot(target, snapshot)
+	if err != nil {
+		return err
+	}
+
+	return s.UpsertJob(ctx, *record)
+}
+
+// GetJob returns one unroll job when present.
+func (s *memJobStore) GetJob(_ context.Context, target wire.OutPoint) (
+	*db.UnrollJobRecord, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	checkpoint, ok := s.checkpoints[actorID]
+	job, ok := s.jobs[target]
 	if !ok {
-		return nil, nil
+		return nil, db.ErrUnrollJobNotFound
 	}
 
-	copyCheckpoint := *checkpoint
-	copyCheckpoint.StateData = append([]byte(nil), checkpoint.StateData...)
+	copyRecord := *job
+	copyRecord.PlannerState = append([]byte(nil), job.PlannerState...)
+	copyRecord.DeferredCheckpoints = append(
+		[]byte(nil), job.DeferredCheckpoints...,
+	)
+	copyRecord.SweepTx = append([]byte(nil), job.SweepTx...)
+	copyRecord.SweepTxid = append([]byte(nil), job.SweepTxid...)
+	copyRecord.TxProgress = append(
+		[]db.UnrollTxProgressRecord(nil), job.TxProgress...,
+	)
+	copyRecord.Watches = append(
+		[]db.UnrollWatchRecord(nil), job.Watches...,
+	)
 
-	return &copyCheckpoint, nil
+	return &copyRecord, nil
 }
 
-// DeleteCheckpoint deletes one stored checkpoint.
-func (s *memCheckpointStore) DeleteCheckpoint(_ context.Context,
-	actorID string) error {
+func (s *memJobStore) MarkEffectDone(context.Context, string, string) error {
+	return nil
+}
 
+// DeleteJob deletes one stored job.
+func (s *memJobStore) DeleteJob(_ context.Context, target wire.OutPoint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	delete(s.checkpoints, actorID)
+	delete(s.jobs, target)
 
 	return nil
 }
 
-// EnqueueMessage is unused in these tests.
-func (s *memCheckpointStore) EnqueueMessage(context.Context,
-	actor.EnqueueParams) error {
+func TestRestoreOutboxUsesStoredWatchRows(t *testing.T) {
+	t.Parallel()
 
-	return nil
-}
+	proofTxid := chainhash.Hash{0x01}
+	deferredTxid := chainhash.Hash{0x02}
+	b := &behavior{
+		pending: &unrollSnapshot{
+			Watches: []db.UnrollWatchRecord{
+				{
+					WatchID: "proof",
+					Role:    "proof_tx",
+					Txid:    proofTxid[:],
+					Status:  "registered",
+				},
+				{
+					WatchID: "deferred",
+					Role:    "deferred_checkpoint",
+					Txid:    deferredTxid[:],
+					Status:  "registered",
+				},
+				{
+					WatchID: "sweep",
+					Role:    "sweep",
+					Status:  "registered",
+				},
+			},
+		},
+	}
 
-// LeaseNextMessage is unused in these tests.
-func (s *memCheckpointStore) LeaseNextMessage(context.Context, string, string,
-	time.Duration) (*actor.LeasedMessage, error) {
+	outbox := b.restoreOutboxFromWatchRows([]OutboxEvent{
+		&ReissueInFlightTransactions{Txids: []chainhash.Hash{{0x99}}},
+		&WatchDeferredCheckpoints{Txids: []chainhash.Hash{{0x98}}},
+		&ReissueSweepConfirmation{},
+		&RequestSweepBuild{},
+	})
 
-	return nil, nil
-}
+	require.Len(t, outbox, 4)
+	require.IsType(t, &RequestSweepBuild{}, outbox[0])
 
-// AckMessage is unused in these tests.
-func (s *memCheckpointStore) AckMessage(context.Context, string, string) (int64,
-	error) {
+	proofReissue, ok := outbox[1].(*ReissueInFlightTransactions)
+	require.True(t, ok)
+	require.Equal(t, []chainhash.Hash{proofTxid}, proofReissue.Txids)
 
-	return 1, nil
-}
+	deferredWatch, ok := outbox[2].(*WatchDeferredCheckpoints)
+	require.True(t, ok)
+	require.Equal(t, []chainhash.Hash{deferredTxid}, deferredWatch.Txids)
 
-// NackMessage is unused in these tests.
-func (s *memCheckpointStore) NackMessage(context.Context, string, string,
-	time.Duration) (int64, error) {
-
-	return 1, nil
-}
-
-// ExtendLease is unused in these tests.
-func (s *memCheckpointStore) ExtendLease(context.Context, string, string,
-	time.Duration) (int64, error) {
-
-	return 1, nil
-}
-
-// MoveToDeadLetter is unused in these tests.
-func (s *memCheckpointStore) MoveToDeadLetter(context.Context, string,
-	string) error {
-
-	return nil
-}
-
-// DeleteMessage is unused in these tests.
-func (s *memCheckpointStore) DeleteMessage(context.Context, string) error {
-	return nil
-}
-
-// SaveAskResult is unused in these tests.
-func (s *memCheckpointStore) SaveAskResult(context.Context,
-	actor.AskResultParams) error {
-
-	return nil
-}
-
-// GetAskResult is unused in these tests.
-func (s *memCheckpointStore) GetAskResult(context.Context, string) (
-	*actor.AskResult, error) {
-
-	return nil, nil
-}
-
-// DeleteAskResult is unused in these tests.
-func (s *memCheckpointStore) DeleteAskResult(context.Context, string) error {
-	return nil
-}
-
-// EnqueueOutbox is unused in these tests.
-func (s *memCheckpointStore) EnqueueOutbox(context.Context,
-	actor.OutboxParams) error {
-
-	return nil
-}
-
-// ClaimOutboxBatch is unused in these tests.
-func (s *memCheckpointStore) ClaimOutboxBatch(context.Context,
-	actor.OutboxClaimParams) ([]actor.OutboxMessage, error) {
-
-	return nil, nil
-}
-
-// CompleteOutbox is unused in these tests.
-func (s *memCheckpointStore) CompleteOutbox(context.Context, string,
-	string) error {
-
-	return nil
-}
-
-// FailOutbox is unused in these tests.
-func (s *memCheckpointStore) FailOutbox(context.Context, string, string) error {
-	return nil
-}
-
-// IsProcessed is unused in these tests.
-func (s *memCheckpointStore) IsProcessed(context.Context, string) (bool,
-	error) {
-
-	return false, nil
-}
-
-// MarkProcessed is unused in these tests.
-func (s *memCheckpointStore) MarkProcessed(context.Context, string, string,
-	time.Duration) error {
-
-	return nil
-}
-
-// GetDeadLetter is unused in these tests.
-func (s *memCheckpointStore) GetDeadLetter(context.Context, string) (
-	*actor.DeadLetter, error) {
-
-	return nil, nil
-}
-
-// ListDeadLetters is unused in these tests.
-func (s *memCheckpointStore) ListDeadLetters(context.Context, string, int) (
-	[]actor.DeadLetter, error) {
-
-	return nil, nil
-}
-
-// DeleteDeadLetter is unused in these tests.
-func (s *memCheckpointStore) DeleteDeadLetter(context.Context, string) error {
-	return nil
-}
-
-// ExpireLeases is unused in these tests.
-func (s *memCheckpointStore) ExpireLeases(context.Context) error {
-	return nil
-}
-
-// CleanupExpired is unused in these tests.
-func (s *memCheckpointStore) CleanupExpired(context.Context) error {
-	return nil
+	require.IsType(t, &ReissueSweepConfirmation{}, outbox[3])
 }
 
 // newActorHarness creates a new unroll actor behavior behind a regular
-// in-memory actor while still persisting checkpoints to the fake store.
+// in-memory actor while still persisting snapshots to the fake store.
 func newActorHarness(t *testing.T, proof *recovery.Proof,
 	desc *vtxo.Descriptor) (*actor.Actor[Msg, Resp], *behavior,
-	*fakeTxConfirmRef, *memCheckpointStore) {
+	*fakeTxConfirmRef, *memJobStore) {
 
 	t.Helper()
 
 	txconfirmRef := &fakeTxConfirmRef{}
-	store := newMemCheckpointStore()
+	store := newMemJobStore()
 	cfg := Config{
 		TargetOutpoint: proof.TargetOutpoint(),
-		ActorID:        "unroll-test",
-		DeliveryStore:  store,
+		JobStore:       store,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -918,7 +868,7 @@ func newActorHarness(t *testing.T, proof *recovery.Proof,
 		cfg: cfg,
 		log: btclog.Disabled,
 	}
-	err := behavior.restoreCheckpoint(t.Context())
+	err := behavior.restoreJob(t.Context())
 	require.NoError(t, err)
 
 	actorInstance := actor.NewActor(actor.ActorConfig[Msg, Resp]{
@@ -1079,18 +1029,18 @@ func buildSiblingOutputProof(t *testing.T) *recovery.Proof {
 	return proof
 }
 
-// buildOORProof creates a checkpoint->ark proof.
+// buildOORProof creates a snapshot->ark proof.
 func buildOORProof(t *testing.T) *recovery.Proof {
 	t.Helper()
 
-	checkpointTx := wire.NewMsgTx(2)
-	checkpointTx.AddTxIn(&wire.TxIn{
+	snapshotTx := wire.NewMsgTx(2)
+	snapshotTx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: wire.OutPoint{
 			Hash:  chainhash.Hash{1},
 			Index: 0,
 		},
 	})
-	checkpointTx.AddTxOut(&wire.TxOut{
+	snapshotTx.AddTxOut(&wire.TxOut{
 		Value:    70_000,
 		PkScript: []byte{txscript.OP_TRUE},
 	})
@@ -1098,7 +1048,7 @@ func buildOORProof(t *testing.T) *recovery.Proof {
 	arkTx := wire.NewMsgTx(2)
 	arkTx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: wire.OutPoint{
-			Hash:  checkpointTx.TxHash(),
+			Hash:  snapshotTx.TxHash(),
 			Index: 0,
 		},
 	})
@@ -1112,7 +1062,7 @@ func buildOORProof(t *testing.T) *recovery.Proof {
 		144,
 		&recovery.Node{
 			Kind: recovery.NodeKindCheckpoint,
-			Tx:   checkpointTx,
+			Tx:   snapshotTx,
 		},
 		&recovery.Node{
 			Kind: recovery.NodeKindArk,
@@ -1124,7 +1074,7 @@ func buildOORProof(t *testing.T) *recovery.Proof {
 	return proof
 }
 
-// buildSharedArkOORProof creates two checkpoint roots feeding one ark target.
+// buildSharedArkOORProof creates two snapshot roots feeding one ark target.
 func buildSharedArkOORProof(t *testing.T) *recovery.Proof {
 	t.Helper()
 
@@ -1259,22 +1209,22 @@ func buildMergeProof(t *testing.T) *recovery.Proof {
 	return proof
 }
 
-// buildMultihopOORProof creates a checkpoint_AB -> arktx_AB ->
-// checkpoint_BC -> arktx_BC (target) proof. The intermediate checkpoint_BC
+// buildMultihopOORProof creates a snapshot_AB -> arktx_AB ->
+// snapshot_BC -> arktx_BC (target) proof. The intermediate snapshot_BC
 // is the only frontier item that gets promoted from blocked to ready by an
 // in-proof TxConfirmedEvent (the arktx_AB confirmation), which is the shape
 // the deferral-anchor race needs to reproduce.
 func buildMultihopOORProof(t *testing.T) *recovery.Proof {
 	t.Helper()
 
-	checkpointAB := wire.NewMsgTx(2)
-	checkpointAB.AddTxIn(&wire.TxIn{
+	snapshotAB := wire.NewMsgTx(2)
+	snapshotAB.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: wire.OutPoint{
 			Hash:  chainhash.Hash{1},
 			Index: 0,
 		},
 	})
-	checkpointAB.AddTxOut(&wire.TxOut{
+	snapshotAB.AddTxOut(&wire.TxOut{
 		Value:    70_000,
 		PkScript: []byte{txscript.OP_TRUE},
 	})
@@ -1282,7 +1232,7 @@ func buildMultihopOORProof(t *testing.T) *recovery.Proof {
 	arkAB := wire.NewMsgTx(2)
 	arkAB.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: wire.OutPoint{
-			Hash:  checkpointAB.TxHash(),
+			Hash:  snapshotAB.TxHash(),
 			Index: 0,
 		},
 	})
@@ -1291,14 +1241,14 @@ func buildMultihopOORProof(t *testing.T) *recovery.Proof {
 		PkScript: []byte{txscript.OP_TRUE},
 	})
 
-	checkpointBC := wire.NewMsgTx(2)
-	checkpointBC.AddTxIn(&wire.TxIn{
+	snapshotBC := wire.NewMsgTx(2)
+	snapshotBC.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: wire.OutPoint{
 			Hash:  arkAB.TxHash(),
 			Index: 0,
 		},
 	})
-	checkpointBC.AddTxOut(&wire.TxOut{
+	snapshotBC.AddTxOut(&wire.TxOut{
 		Value:    60_000,
 		PkScript: []byte{txscript.OP_TRUE},
 	})
@@ -1306,7 +1256,7 @@ func buildMultihopOORProof(t *testing.T) *recovery.Proof {
 	arkBC := wire.NewMsgTx(2)
 	arkBC.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: wire.OutPoint{
-			Hash:  checkpointBC.TxHash(),
+			Hash:  snapshotBC.TxHash(),
 			Index: 0,
 		},
 	})
@@ -1323,7 +1273,7 @@ func buildMultihopOORProof(t *testing.T) *recovery.Proof {
 		144,
 		&recovery.Node{
 			Kind: recovery.NodeKindCheckpoint,
-			Tx:   checkpointAB,
+			Tx:   snapshotAB,
 		},
 		&recovery.Node{
 			Kind: recovery.NodeKindArk,
@@ -1331,7 +1281,7 @@ func buildMultihopOORProof(t *testing.T) *recovery.Proof {
 		},
 		&recovery.Node{
 			Kind: recovery.NodeKindCheckpoint,
-			Tx:   checkpointBC,
+			Tx:   snapshotBC,
 		},
 		&recovery.Node{
 			Kind: recovery.NodeKindArk,
@@ -1343,17 +1293,17 @@ func buildMultihopOORProof(t *testing.T) *recovery.Proof {
 	return proof
 }
 
-// mustDecodeCheckpoint loads and decodes one stored actor checkpoint.
-func mustDecodeCheckpoint(t *testing.T, store *memCheckpointStore,
-	actorID string) *actorCheckpoint {
+// mustDecodeCheckpoint loads and decodes one stored unroll job snapshot.
+func mustDecodeCheckpoint(t *testing.T, store *memJobStore,
+	target wire.OutPoint) *unrollSnapshot {
 
 	t.Helper()
 
-	checkpoint, err := store.LoadCheckpoint(t.Context(), actorID)
+	job, err := store.GetJob(t.Context(), target)
 	require.NoError(t, err)
-	require.NotNil(t, checkpoint)
+	require.NotNil(t, job)
 
-	decoded, err := decodeCheckpoint(checkpoint.StateData)
+	decoded, err := snapshotFromJobRecord(job)
 	require.NoError(t, err)
 
 	return decoded
@@ -1377,13 +1327,13 @@ func TestStartUnrollSubmitsInitialFrontier(t *testing.T) {
 		txconfirmRef.lastRequest(t).Tx.TxHash(),
 	)
 
-	checkpoint, err := store.LoadCheckpoint(t.Context(), "unroll-test")
+	snapshot, err := store.GetJob(t.Context(), proof.TargetOutpoint())
 	require.NoError(t, err)
-	require.NotNil(t, checkpoint)
+	require.NotNil(t, snapshot)
 }
 
 // TestFraudTriggerDefersReadyCheckpoint verifies fraud-triggered recovery
-// watches a ready checkpoint before asking txconfirm to broadcast it.
+// watches a ready snapshot before asking txconfirm to broadcast it.
 func TestFraudTriggerDefersReadyCheckpoint(t *testing.T) {
 	proof := buildOORProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
@@ -1406,13 +1356,13 @@ func TestFraudTriggerDefersReadyCheckpoint(t *testing.T) {
 		chainRef.confRequest(t, proof.RootTxids()[0]).HeightHint,
 	)
 
-	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
-	require.Len(t, checkpoint.DeferredCheckpoints, 1)
+	snapshot := mustDecodeCheckpoint(t, store, proof.TargetOutpoint())
+	require.Len(t, snapshot.DeferredCheckpoints, 1)
 	require.Equal(
-		t, proof.RootTxids()[0], checkpoint.DeferredCheckpoints[0].Txid,
+		t, proof.RootTxids()[0], snapshot.DeferredCheckpoints[0].Txid,
 	)
 	require.Equal(
-		t, int32(220), checkpoint.DeferredCheckpoints[0].DeadlineHeight,
+		t, int32(220), snapshot.DeferredCheckpoints[0].DeadlineHeight,
 	)
 
 	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 219})
@@ -1432,17 +1382,17 @@ func TestFraudTriggerDefersReadyCheckpoint(t *testing.T) {
 		).HeightHint,
 	)
 
-	checkpoint = mustDecodeCheckpoint(t, store, "unroll-test")
-	require.Len(t, checkpoint.DeferredCheckpoints, 0)
+	snapshot = mustDecodeCheckpoint(t, store, proof.TargetOutpoint())
+	require.Len(t, snapshot.DeferredCheckpoints, 0)
 	require.Equal(
 		t, []chainhash.Hash{proof.RootTxids()[0]},
-		checkpoint.State.InFlightTxids,
+		snapshot.State.InFlightTxids,
 	)
 }
 
 // TestFraudTriggerOperatorConfirmedCheckpointUnlocksArk verifies an operator
 // confirmation during the deferral window advances recovery without recipient
-// checkpoint broadcast.
+// snapshot broadcast.
 func TestFraudTriggerOperatorConfirmedCheckpointUnlocksArk(t *testing.T) {
 	proof := buildOORProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
@@ -1475,7 +1425,7 @@ func TestFraudTriggerOperatorConfirmedCheckpointUnlocksArk(t *testing.T) {
 }
 
 // TestFraudTriggerSharedArkWaitsForAllCheckpoints verifies a fraud-triggered
-// shared ark is not broadcast until every checkpoint input is confirmed.
+// shared ark is not broadcast until every snapshot input is confirmed.
 func TestFraudTriggerSharedArkWaitsForAllCheckpoints(t *testing.T) {
 	proof := buildSharedArkOORProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
@@ -1513,7 +1463,7 @@ func TestFraudTriggerSharedArkWaitsForAllCheckpoints(t *testing.T) {
 }
 
 // TestFraudTriggerSharedCheckpointsBroadcastOnceAtDeadline verifies multiple
-// deferred checkpoint roots are each broadcast once at their recipient
+// deferred snapshot roots are each broadcast once at their recipient
 // deadline, and the shared ark still waits for both confirmations.
 func TestFraudTriggerSharedCheckpointsBroadcastOnceAtDeadline(t *testing.T) {
 	proof := buildSharedArkOORProof(t)
@@ -1533,8 +1483,8 @@ func TestFraudTriggerSharedCheckpointsBroadcastOnceAtDeadline(t *testing.T) {
 			txconfirmRef.requestCountForTxid(rootTxids[1]) == 1
 	}, testTimeout, 10*time.Millisecond)
 	require.Equal(t, 2, txconfirmRef.requestCount())
-	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
-	require.ElementsMatch(t, rootTxids, checkpoint.State.InFlightTxids)
+	snapshot := mustDecodeCheckpoint(t, store, proof.TargetOutpoint())
+	require.ElementsMatch(t, rootTxids, snapshot.State.InFlightTxids)
 
 	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 221})
 	time.Sleep(25 * time.Millisecond)
@@ -1554,14 +1504,14 @@ func TestFraudTriggerSharedCheckpointsBroadcastOnceAtDeadline(t *testing.T) {
 			proof.TargetOutpoint().Hash,
 		) == 1
 	}, testTimeout, 10*time.Millisecond)
-	checkpoint = mustDecodeCheckpoint(t, store, "unroll-test")
+	snapshot = mustDecodeCheckpoint(t, store, proof.TargetOutpoint())
 	require.Contains(
-		t, checkpoint.State.InFlightTxids, proof.TargetOutpoint().Hash,
+		t, snapshot.State.InFlightTxids, proof.TargetOutpoint().Hash,
 	)
 }
 
 // TestFraudTriggerDeferralAnchoredToParentConfirm verifies a non-root
-// checkpoint that is promoted to the ready frontier by a TxConfirmedEvent
+// snapshot that is promoted to the ready frontier by a TxConfirmedEvent
 // stamps its deferral deadline against the parent's confirm height rather
 // than the FSM's current height. This is the regression case where a
 // fast bulk-flush of HeightObservedMsg events arrives before a parent's
@@ -1569,8 +1519,8 @@ func TestFraudTriggerSharedCheckpointsBroadcastOnceAtDeadline(t *testing.T) {
 // backstop slides arbitrarily far into the future and the test harness
 // (which polls for the broadcast without mining further blocks) deadlocks.
 //
-// Proof shape: checkpoint_AB -> arktx_AB -> checkpoint_BC -> arktx_BC.
-// checkpoint_AB is the only root; checkpoint_BC is the non-root checkpoint
+// Proof shape: snapshot_AB -> arktx_AB -> snapshot_BC -> arktx_BC.
+// snapshot_AB is the only root; snapshot_BC is the non-root snapshot
 // whose deferral deadline this test pins.
 func TestFraudTriggerDeferralAnchoredToParentConfirm(t *testing.T) {
 	proof := buildMultihopOORProof(t)
@@ -1578,27 +1528,27 @@ func TestFraudTriggerDeferralAnchoredToParentConfirm(t *testing.T) {
 	unrollActor, _, txconfirmRef, store := newActorHarness(t, proof, desc)
 
 	// Lay out the four proof nodes in topological order so we can refer
-	// to them by role. Topological layers: [checkpoint_AB], [arktx_AB],
-	// [checkpoint_BC], [arktx_BC=target].
+	// to them by role. Topological layers: [snapshot_AB], [arktx_AB],
+	// [snapshot_BC], [arktx_BC=target].
 	layers := proof.Layers()
 	require.Len(t, layers, 4)
 	require.Len(t, layers[0], 1)
 	require.Len(t, layers[1], 1)
 	require.Len(t, layers[2], 1)
 	require.Len(t, layers[3], 1)
-	checkpointAB := layers[0][0]
+	snapshotAB := layers[0][0]
 	arkABTxid := layers[1][0]
-	checkpointBCTxid := layers[2][0]
+	snapshotBCTxid := layers[2][0]
 
 	arkABNode, ok := proof.Node(arkABTxid)
 	require.True(t, ok)
 	require.Equal(t, recovery.NodeKindArk, arkABNode.Kind)
-	checkpointBCNode, ok := proof.Node(checkpointBCTxid)
+	snapshotBCNode, ok := proof.Node(snapshotBCTxid)
 	require.True(t, ok)
-	require.Equal(t, recovery.NodeKindCheckpoint, checkpointBCNode.Kind)
+	require.Equal(t, recovery.NodeKindCheckpoint, snapshotBCNode.Kind)
 
 	// CSV delay 144, default safety margin 24 → deferral window = 120.
-	// Start at height 100 so checkpoint_AB's first deadline lands at
+	// Start at height 100 so snapshot_AB's first deadline lands at
 	// 100 + 144 - 24 = 220, matching the conventions in the other fraud
 	// trigger tests in this file.
 	const startHeight int32 = 100
@@ -1607,25 +1557,25 @@ func TestFraudTriggerDeferralAnchoredToParentConfirm(t *testing.T) {
 		Trigger: TriggerFraudSpend,
 	})
 
-	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
-	require.Len(t, checkpoint.DeferredCheckpoints, 1)
+	snapshot := mustDecodeCheckpoint(t, store, proof.TargetOutpoint())
+	require.Len(t, snapshot.DeferredCheckpoints, 1)
 	require.Equal(
-		t, checkpointAB, checkpoint.DeferredCheckpoints[0].Txid,
+		t, snapshotAB, snapshot.DeferredCheckpoints[0].Txid,
 	)
 	require.Equal(
-		t, int32(220), checkpoint.DeferredCheckpoints[0].DeadlineHeight,
+		t, int32(220), snapshot.DeferredCheckpoints[0].DeadlineHeight,
 	)
 
-	// Cross checkpoint_AB's deadline so the recipient broadcasts it
+	// Cross snapshot_AB's deadline so the recipient broadcasts it
 	// (txconfirm submission) and then confirm it. arktx_AB then enters
-	// the ready frontier and (as an ark, not a checkpoint) is submitted
+	// the ready frontier and (as an ark, not a snapshot) is submitted
 	// immediately — but we deliberately do NOT confirm it yet.
 	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 220})
 	require.Eventually(t, func() bool {
-		return txconfirmRef.requestCountForTxid(checkpointAB) == 1
+		return txconfirmRef.requestCountForTxid(snapshotAB) == 1
 	}, testTimeout, 10*time.Millisecond)
 
-	txconfirmRef.emitConfirmedByTxid(t, checkpointAB, 221)
+	txconfirmRef.emitConfirmedByTxid(t, snapshotAB, 221)
 	require.Eventually(t, func() bool {
 		return txconfirmRef.requestCountForTxid(arkABTxid) == 1
 	}, testTimeout, 10*time.Millisecond)
@@ -1639,71 +1589,62 @@ func TestFraudTriggerDeferralAnchoredToParentConfirm(t *testing.T) {
 	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: racedHeight})
 
 	// arktx_AB actually confirms at block 222 — well below racedHeight.
-	// This is the block where vtxo_B (checkpoint_BC's parent) becomes
-	// available. The fix anchors checkpoint_BC's deferral deadline to
+	// This is the block where vtxo_B (snapshot_BC's parent) becomes
+	// available. The fix anchors snapshot_BC's deferral deadline to
 	// THIS height, not racedHeight, so:
 	//
 	//   parent-anchored deadline = 222 + 144 - 24 = 342
 	//   bug-era deadline         = racedHeight + 144 - 24 = 520
 	//
 	// 342 has already elapsed at racedHeight=400, so the FSM bypasses
-	// the deferred set entirely and hands checkpoint_BC straight to
+	// the deferred set entirely and hands snapshot_BC straight to
 	// txconfirm. The bug-era deadline (520) is still in the future at
-	// height 400, so without the fix checkpoint_BC would be parked in
+	// height 400, so without the fix snapshot_BC would be parked in
 	// DeferredCheckpoints with DeadlineHeight=520 and never broadcast.
 	const arkABConfirmHeight int32 = 222
 	txconfirmRef.emitConfirmedByTxid(t, arkABTxid, arkABConfirmHeight)
 
 	require.Eventually(t, func() bool {
 		return txconfirmRef.requestCountForTxid(
-			checkpointBCTxid,
+			snapshotBCTxid,
 		) == 1
 	}, testTimeout, 10*time.Millisecond)
 
-	// Persisted state should not have checkpoint_BC parked in the
+	// Persisted state should not have snapshot_BC parked in the
 	// deferred set after the immediate submission.
-	c := mustDecodeCheckpoint(t, store, "unroll-test")
+	c := mustDecodeCheckpoint(t, store, proof.TargetOutpoint())
 	for _, d := range c.DeferredCheckpoints {
-		require.NotEqual(t, checkpointBCTxid, d.Txid)
+		require.NotEqual(t, snapshotBCTxid, d.Txid)
 	}
 }
 
 // TestResumeReissuesDeferredCheckpointWatch verifies restart restores
-// deferred fraud-triggered checkpoint watches without broadcasting early.
+// deferred fraud-triggered snapshot watches without broadcasting early.
 func TestResumeReissuesDeferredCheckpointWatch(t *testing.T) {
 	proof := buildOORProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	desc.CreatedHeight = 77
-	store := newMemCheckpointStore()
+	store := newMemJobStore()
 	txconfirmRef := &fakeTxConfirmRef{}
 	chainRef := &fakeChainSourceRef{}
 	rootTxid := proof.RootTxids()[0]
 
-	raw, err := encodeCheckpoint(&actorCheckpoint{
-		Version: checkpointVersion,
-		Height:  110,
-		Started: true,
-		Trigger: TriggerFraudSpend,
-		State:   unrollplan.State{},
-		DeferredCheckpoints: []DeferredCheckpoint{{
-			Txid:           rootTxid,
-			DeadlineHeight: 220,
-		}},
-	})
-	require.NoError(t, err)
-
-	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
-		ActorID:   "resume-deferred-test",
-		StateType: checkpointStateType,
-		StateData: raw,
-		Version:   checkpointVersion,
-	})
+	err := store.SaveSnapshot(t.Context(), proof.TargetOutpoint(),
+		&unrollSnapshot{
+			Height:  110,
+			Started: true,
+			Trigger: TriggerFraudSpend,
+			State:   unrollplan.State{},
+			DeferredCheckpoints: []DeferredCheckpoint{{
+				Txid:           rootTxid,
+				DeadlineHeight: 220,
+			}},
+		})
 	require.NoError(t, err)
 
 	cfg := Config{
 		TargetOutpoint: proof.TargetOutpoint(),
-		ActorID:        "resume-deferred-test",
-		DeliveryStore:  store,
+		JobStore:       store,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -1719,7 +1660,7 @@ func TestResumeReissuesDeferredCheckpointWatch(t *testing.T) {
 		cfg: cfg,
 		log: btclog.Disabled,
 	}
-	err = resumeBehavior.restoreCheckpoint(t.Context())
+	err = resumeBehavior.restoreJob(t.Context())
 	require.NoError(t, err)
 
 	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
@@ -1760,35 +1701,26 @@ func TestResumeReissuesInFlightArk(t *testing.T) {
 	proof := buildOORProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	desc.CreatedHeight = 77
-	store := newMemCheckpointStore()
+	store := newMemJobStore()
 	txconfirmRef := &fakeTxConfirmRef{}
 	rootTxid := proof.RootTxids()[0]
 	arkTxid := proof.TargetOutpoint().Hash
 
-	raw, err := encodeCheckpoint(&actorCheckpoint{
-		Version: checkpointVersion,
-		Height:  112,
-		Started: true,
-		Trigger: TriggerFraudSpend,
-		State: unrollplan.State{
-			ConfirmedTxids: []chainhash.Hash{rootTxid},
-			InFlightTxids:  []chainhash.Hash{arkTxid},
-		},
-	})
-	require.NoError(t, err)
-
-	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
-		ActorID:   "resume-ark-test",
-		StateType: checkpointStateType,
-		StateData: raw,
-		Version:   checkpointVersion,
-	})
+	err := store.SaveSnapshot(t.Context(), proof.TargetOutpoint(),
+		&unrollSnapshot{
+			Height:  112,
+			Started: true,
+			Trigger: TriggerFraudSpend,
+			State: unrollplan.State{
+				ConfirmedTxids: []chainhash.Hash{rootTxid},
+				InFlightTxids:  []chainhash.Hash{arkTxid},
+			},
+		})
 	require.NoError(t, err)
 
 	cfg := Config{
 		TargetOutpoint: proof.TargetOutpoint(),
-		ActorID:        "resume-ark-test",
-		DeliveryStore:  store,
+		JobStore:       store,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -1804,7 +1736,7 @@ func TestResumeReissuesInFlightArk(t *testing.T) {
 		cfg: cfg,
 		log: btclog.Disabled,
 	}
-	err = resumeBehavior.restoreCheckpoint(t.Context())
+	err = resumeBehavior.restoreJob(t.Context())
 	require.NoError(t, err)
 
 	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
@@ -1894,7 +1826,7 @@ func TestProofSpendObservationAdvancesMaterialization(t *testing.T) {
 		return stateResp.Phase == PhaseCSVPending
 	}, testTimeout, 10*time.Millisecond)
 
-	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	checkpoint := mustDecodeCheckpoint(t, store, proof.TargetOutpoint())
 	require.Contains(
 		t, checkpoint.State.ConfirmedTxids, proof.RootTxids()[0],
 	)
@@ -1904,7 +1836,7 @@ func TestProofSpendObservationAdvancesMaterialization(t *testing.T) {
 }
 
 // TestLegacyProofSpendObservationAdvancesKnownSpender verifies the
-// backwards-compatible spend message path. Older durable mailboxes may replay
+// backwards-compatible spend message path. Older callers may send
 // SpendObservedMsg without the spent outpoint, so the actor still treats a
 // known proof-node spender as confirmation evidence for that proof node.
 func TestLegacyProofSpendObservationAdvancesKnownSpender(t *testing.T) {
@@ -1937,7 +1869,7 @@ func TestLegacyProofSpendObservationAdvancesKnownSpender(t *testing.T) {
 		return stateResp.Phase == PhaseCSVPending
 	}, testTimeout, 10*time.Millisecond)
 
-	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	checkpoint := mustDecodeCheckpoint(t, store, proof.TargetOutpoint())
 	require.Contains(
 		t, checkpoint.State.ConfirmedTxids, proof.TargetOutpoint().Hash,
 	)
@@ -2089,29 +2021,20 @@ func TestResumeReissuesInflightWork(t *testing.T) {
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	_, _, txconfirmRef, store := newActorHarness(t, proof, desc)
 
-	raw, err := encodeCheckpoint(&actorCheckpoint{
-		Version: checkpointVersion,
-		Height:  110,
-		Started: true,
-		Trigger: TriggerRestart,
-		State: unrollplan.State{
-			InFlightTxids: []chainhash.Hash{proof.RootTxids()[0]},
-		},
-	})
-	require.NoError(t, err)
-
-	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
-		ActorID:   "resume-test",
-		StateType: checkpointStateType,
-		StateData: raw,
-		Version:   checkpointVersion,
-	})
+	err := store.SaveSnapshot(t.Context(), proof.TargetOutpoint(),
+		&unrollSnapshot{
+			Height:  110,
+			Started: true,
+			Trigger: TriggerRestart,
+			State: unrollplan.State{
+				InFlightTxids: []chainhash.Hash{proof.RootTxids()[0]},
+			},
+		})
 	require.NoError(t, err)
 
 	cfg := Config{
 		TargetOutpoint: proof.TargetOutpoint(),
-		ActorID:        "resume-test",
-		DeliveryStore:  store,
+		JobStore:       store,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -2127,7 +2050,7 @@ func TestResumeReissuesInflightWork(t *testing.T) {
 		cfg: cfg,
 		log: btclog.Disabled,
 	}
-	err = resumeBehavior.restoreCheckpoint(t.Context())
+	err = resumeBehavior.restoreJob(t.Context())
 	require.NoError(t, err)
 	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
 		ID:          "resume-test",
@@ -2169,9 +2092,9 @@ func TestStartUnrollMultiParentSubmitsAllRoots(t *testing.T) {
 		t, proof.RootTxids(), txconfirmRef.requestedTxids(),
 	)
 
-	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	snapshot := mustDecodeCheckpoint(t, store, proof.TargetOutpoint())
 	require.ElementsMatch(
-		t, proof.RootTxids(), checkpoint.State.InFlightTxids,
+		t, proof.RootTxids(), snapshot.State.InFlightTxids,
 	)
 }
 
@@ -2260,11 +2183,11 @@ func TestProofTxFailureTransitionsToFailed(t *testing.T) {
 	require.True(t, ok)
 	require.Contains(t, stateResp.FailReason, "txconfirm returned failed")
 
-	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	snapshot := mustDecodeCheckpoint(t, store, proof.TargetOutpoint())
 	require.Equal(
 		t, "proof tx "+rootTxid.String()+
 			" failed: txconfirm returned failed state",
-		checkpoint.Fail,
+		snapshot.Fail,
 	)
 }
 
@@ -2280,41 +2203,32 @@ func TestResumeReissuesSweepConfirmation(t *testing.T) {
 	require.NoError(t, err)
 
 	txconfirmRef := &fakeTxConfirmRef{}
-	store := newMemCheckpointStore()
+	store := newMemJobStore()
 	sweepTxid := sweepTx.TxHash()
 
-	raw, err := encodeCheckpoint(&actorCheckpoint{
-		Version: checkpointVersion,
-		Height:  110,
-		Started: true,
-		Trigger: TriggerRestart,
-		State: unrollplan.State{
-			ConfirmedTxids: []chainhash.Hash{
-				proof.RootTxids()[0],
-				proof.TargetOutpoint().Hash,
+	err = store.SaveSnapshot(t.Context(), proof.TargetOutpoint(),
+		&unrollSnapshot{
+			Height:  110,
+			Started: true,
+			Trigger: TriggerRestart,
+			State: unrollplan.State{
+				ConfirmedTxids: []chainhash.Hash{
+					proof.RootTxids()[0],
+					proof.TargetOutpoint().Hash,
+				},
+				TargetConfirmHeight: fn.Some[int32](108),
+				Sweep: unrollplan.SweepState{
+					Status: unrollplan.SweepStatusBroadcasted,
+					Txid:   fn.Some(sweepTxid),
+				},
 			},
-			TargetConfirmHeight: fn.Some[int32](108),
-			Sweep: unrollplan.SweepState{
-				Status: unrollplan.SweepStatusBroadcasted,
-				Txid:   fn.Some(sweepTxid),
-			},
-		},
-		SweepTx: sweepTx,
-	})
-	require.NoError(t, err)
-
-	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
-		ActorID:   "resume-sweep-test",
-		StateType: checkpointStateType,
-		StateData: raw,
-		Version:   checkpointVersion,
-	})
+			SweepTx: sweepTx,
+		})
 	require.NoError(t, err)
 
 	cfg := Config{
 		TargetOutpoint: proof.TargetOutpoint(),
-		ActorID:        "resume-sweep-test",
-		DeliveryStore:  store,
+		JobStore:       store,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -2330,7 +2244,7 @@ func TestResumeReissuesSweepConfirmation(t *testing.T) {
 		cfg: cfg,
 		log: btclog.Disabled,
 	}
-	err = resumeBehavior.restoreCheckpoint(t.Context())
+	err = resumeBehavior.restoreJob(t.Context())
 	require.NoError(t, err)
 
 	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
@@ -2424,12 +2338,11 @@ func TestSweepConfirmationCompletesActor(t *testing.T) {
 		return stateResp.Phase == PhaseCompleted
 	}, testTimeout, 10*time.Millisecond)
 
-	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	snapshot := mustDecodeCheckpoint(t, store, proof.TargetOutpoint())
 	require.Equal(
-		t, unrollplan.SweepStatusConfirmed,
-		checkpoint.State.Sweep.Status,
+		t, unrollplan.SweepStatusConfirmed, snapshot.State.Sweep.Status,
 	)
-	require.True(t, checkpoint.State.Sweep.ConfirmHeight.IsSome())
+	require.True(t, snapshot.State.Sweep.ConfirmHeight.IsSome())
 
 	// Late chain notifications can be queued behind the terminal
 	// transition while the registry is draining the actor for cleanup.
@@ -2448,7 +2361,7 @@ func TestSweepConfirmationCompletesActor(t *testing.T) {
 }
 
 // TestGetStateAfterFSMShutdownKeepsCompletedCheckpoint verifies that callers
-// still observe the last checkpointed completed state after the protofsm has
+// still observe the last snapshoted completed state after the protofsm has
 // been stopped during actor teardown.
 func TestGetStateAfterFSMShutdownKeepsCompletedCheckpoint(t *testing.T) {
 	proof := buildLinearProof(t)
@@ -2501,7 +2414,7 @@ func TestGetStateAfterFSMShutdownKeepsCompletedCheckpoint(t *testing.T) {
 }
 
 // TestGetStateUsesStoredSweepTxid verifies that GetState keeps exposing the
-// sweep txid when the checkpointed planner state is terminal but missing the
+// sweep txid when the snapshoted planner state is terminal but missing the
 // txid field.
 func TestGetStateUsesStoredSweepTxid(t *testing.T) {
 	proof := buildLinearProof(t)
@@ -2509,8 +2422,7 @@ func TestGetStateUsesStoredSweepTxid(t *testing.T) {
 	unrollActor, beh, _, _ := newActorHarness(t, proof, desc)
 
 	sweepTx := wire.NewMsgTx(2)
-	beh.pending = &actorCheckpoint{
-		Version: checkpointVersion,
+	beh.pending = &unrollSnapshot{
 		Height:  106,
 		Started: true,
 		Trigger: TriggerManual,
@@ -2542,33 +2454,24 @@ func TestResumeMultiParentPartialConfirmation(t *testing.T) {
 	proof := buildMergeProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	rootTxids := proof.RootTxids()
-	store := newMemCheckpointStore()
+	store := newMemJobStore()
 	txconfirmRef := &fakeTxConfirmRef{}
 
-	raw, err := encodeCheckpoint(&actorCheckpoint{
-		Version: checkpointVersion,
-		Height:  210,
-		Started: true,
-		Trigger: TriggerRestart,
-		State: unrollplan.State{
-			ConfirmedTxids: []chainhash.Hash{rootTxids[0]},
-			InFlightTxids:  []chainhash.Hash{rootTxids[1]},
-		},
-	})
-	require.NoError(t, err)
-
-	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
-		ActorID:   "resume-partial-merge",
-		StateType: checkpointStateType,
-		StateData: raw,
-		Version:   checkpointVersion,
-	})
+	err := store.SaveSnapshot(t.Context(), proof.TargetOutpoint(),
+		&unrollSnapshot{
+			Height:  210,
+			Started: true,
+			Trigger: TriggerRestart,
+			State: unrollplan.State{
+				ConfirmedTxids: []chainhash.Hash{rootTxids[0]},
+				InFlightTxids:  []chainhash.Hash{rootTxids[1]},
+			},
+		})
 	require.NoError(t, err)
 
 	cfg := Config{
 		TargetOutpoint: proof.TargetOutpoint(),
-		ActorID:        "resume-partial-merge",
-		DeliveryStore:  store,
+		JobStore:       store,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -2584,7 +2487,7 @@ func TestResumeMultiParentPartialConfirmation(t *testing.T) {
 		cfg: cfg,
 		log: btclog.Disabled,
 	}
-	err = resumeBehavior.restoreCheckpoint(t.Context())
+	err = resumeBehavior.restoreJob(t.Context())
 	require.NoError(t, err)
 
 	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
@@ -2620,36 +2523,27 @@ func TestResumeMultiParentPartialConfirmation(t *testing.T) {
 func TestResumeCSVWaitDoesNotSweepUntilMature(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
-	store := newMemCheckpointStore()
+	store := newMemJobStore()
 	txconfirmRef := &fakeTxConfirmRef{}
 
-	raw, err := encodeCheckpoint(&actorCheckpoint{
-		Version: checkpointVersion,
-		Height:  103,
-		Started: true,
-		Trigger: TriggerRestart,
-		State: unrollplan.State{
-			ConfirmedTxids: []chainhash.Hash{
-				proof.RootTxids()[0],
-				proof.TargetOutpoint().Hash,
+	err := store.SaveSnapshot(t.Context(), proof.TargetOutpoint(),
+		&unrollSnapshot{
+			Height:  103,
+			Started: true,
+			Trigger: TriggerRestart,
+			State: unrollplan.State{
+				ConfirmedTxids: []chainhash.Hash{
+					proof.RootTxids()[0],
+					proof.TargetOutpoint().Hash,
+				},
+				TargetConfirmHeight: fn.Some[int32](102),
 			},
-			TargetConfirmHeight: fn.Some[int32](102),
-		},
-	})
-	require.NoError(t, err)
-
-	err = store.SaveCheckpoint(t.Context(), actor.CheckpointParams{
-		ActorID:   "resume-csv-test",
-		StateType: checkpointStateType,
-		StateData: raw,
-		Version:   checkpointVersion,
-	})
+		})
 	require.NoError(t, err)
 
 	cfg := Config{
 		TargetOutpoint: proof.TargetOutpoint(),
-		ActorID:        "resume-csv-test",
-		DeliveryStore:  store,
+		JobStore:       store,
 		ProofAssembler: &mockProofAssembler{
 			proof: proof,
 		},
@@ -2665,7 +2559,7 @@ func TestResumeCSVWaitDoesNotSweepUntilMature(t *testing.T) {
 		cfg: cfg,
 		log: btclog.Disabled,
 	}
-	err = resumeBehavior.restoreCheckpoint(t.Context())
+	err = resumeBehavior.restoreJob(t.Context())
 	require.NoError(t, err)
 
 	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
@@ -2774,9 +2668,9 @@ func TestSweepFailureRetriesThenFails(t *testing.T) {
 	require.True(t, ok)
 	require.Contains(t, stateResp.FailReason, "sweep tx")
 
-	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
-	require.Contains(t, checkpoint.Fail, "sweep tx")
-	require.Equal(t, maxSweepAttempts, checkpoint.SweepAttempts)
+	snapshot := mustDecodeCheckpoint(t, store, proof.TargetOutpoint())
+	require.Contains(t, snapshot.Fail, "sweep tx")
+	require.Equal(t, maxSweepAttempts, snapshot.SweepAttempts)
 }
 
 // TestExternalSpendTerminatesActor verifies that an external spend of the
@@ -2856,7 +2750,6 @@ func TestStartUnrollIsIdempotent(t *testing.T) {
 var _ input.Signature = testSignature{}
 var _ SweepWallet = (*fakeSweepWallet)(nil)
 var _ vtxo.VTXOStore = (*mockVTXOStore)(nil)
-var _ actor.DeliveryStore = (*memCheckpointStore)(nil)
 var _ actor.ActorRef[txconfirm.Msg, txconfirm.Resp] = (*fakeTxConfirmRef)(nil)
 var _ actor.ActorRef[
 	chainsource.ChainSourceMsg, chainsource.ChainSourceResp,

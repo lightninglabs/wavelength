@@ -238,14 +238,34 @@ func NewTransactionExecutor[Querier any](db BatchedQuerier,
 func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 	txOptions TxOptions, txBody func(Q) error) error {
 
+	return t.execTxContext(
+		ctx, txOptions,
+		func(_ context.Context, q Q) error {
+			return txBody(q)
+		},
+	)
+}
+
+// ExecTxContext is like ExecTx, but passes a transaction-bearing context to
+// txBody when this executor opens the transaction. Store methods called with
+// that context can join the same transaction through actor.TxFromContext.
+func (t *TransactionExecutor[Q]) ExecTxContext(ctx context.Context,
+	txOptions TxOptions, txBody func(context.Context, Q) error) error {
+
+	return t.execTxContext(ctx, txOptions, txBody)
+}
+
+func (t *TransactionExecutor[Q]) execTxContext(ctx context.Context,
+	txOptions TxOptions, txBody func(context.Context, Q) error) error {
+
 	// If the context already carries a database transaction from the
-	// durable actor framework, join it instead of creating a new one.
+	// local actor framework, join it instead of creating a new one.
 	// This ensures that all store operations within a single actor
 	// message are executed atomically in the same transaction. The
 	// provided txOptions are ignored in this case; isolation level
 	// and read-only semantics are governed by the outer transaction.
 	if tx, ok := actor.TxFromContext(ctx); ok {
-		return txBody(t.createQuery(tx))
+		return txBody(ctx, t.createQuery(tx))
 	}
 
 	waitBeforeRetry := func(attemptNumber int) {
@@ -300,7 +320,8 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 			_ = tx.Rollback()
 		}()
 
-		if err := txBody(t.createQuery(tx)); err != nil {
+		txCtx := actor.WithTx(ctx, tx)
+		if err := txBody(txCtx, t.createQuery(tx)); err != nil {
 			dbErr := MapSQLError(err)
 			if IsSerializationOrDeadlockError(dbErr) {
 				// Roll back the transaction, then pop back up

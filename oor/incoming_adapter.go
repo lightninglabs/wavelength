@@ -14,7 +14,7 @@ import (
 const incomingResolveCorrelationPrefix = "oor-incoming-resolve:"
 
 // NewResolveIncomingTransferRequest converts a lightweight IncomingOOREvent
-// notification into a durable actor request that can be persisted without
+// notification into a local actor request that can be persisted without
 // blocking mailbox ingress on a follow-up indexer query.
 func NewResolveIncomingTransferRequest(evt *arkrpc.IncomingOOREvent) (
 	*ResolveIncomingTransferRequest, error) {

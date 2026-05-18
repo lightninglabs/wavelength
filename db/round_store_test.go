@@ -1,13 +1,17 @@
+//nolint:ll
 package db
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -21,6 +25,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -34,6 +39,22 @@ func testRoundIDDB(seed string) round.RoundID {
 	id, _ := uuid.FromBytes(h[:16])
 
 	return round.RoundID(id)
+}
+
+func markOnlyRoundEffectDone(t *testing.T, ctx context.Context,
+	store *RoundPersistenceStore, effectType round.RoundEffectType) {
+
+	t.Helper()
+
+	effects, err := store.ClaimDueRoundEffects(ctx, "test", 10, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, effects, 1)
+	require.Equal(t, effectType, effects[0].EffectType)
+	require.NoError(
+		t, store.MarkRoundEffectDone(
+			ctx, effects[0].ID, effects[0].ClaimToken,
+		),
+	)
 }
 
 // newRoundStoreForTest creates a new RoundPersistenceStore for testing.
@@ -243,6 +264,571 @@ func TestRoundStoreCommitAndFetch(t *testing.T) {
 	inputSigState, ok := fetchedState.(*round.InputSigSentState)
 	require.True(t, ok)
 	require.Equal(t, testRound.RoundID, inputSigState.RoundID)
+}
+
+func TestRoundStoreSaveAndLoadSigningNonces(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, baseDB := newRoundStoreForTest(t)
+
+	testRound := createTestRound(
+		t, testRoundIDDB("test-round-signing-nonces"),
+	)
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	var signerKey round.SignerKey
+	copy(signerKey[:], privKey.PubKey().SerializeCompressed())
+
+	var txID tree.TxID
+	copy(txID[:], bytes.Repeat([]byte{0x42}, chainhash.HashSize))
+
+	var pubNonce tree.Musig2PubNonce
+	copy(pubNonce[:], bytes.Repeat([]byte{0x01}, len(pubNonce)))
+
+	var secNonce tree.Musig2SecNonce
+	copy(secNonce[:], bytes.Repeat([]byte{0x02}, len(secNonce)))
+
+	nonceRows := []round.SigningNonceState{{
+		SignerKey: signerKey,
+		TxID:      txID,
+		PubNonce:  pubNonce,
+		SecNonce:  secNonce,
+	}}
+
+	err = store.SaveSigningNonces(ctx, testRound, nil, nonceRows)
+	require.NoError(t, err)
+
+	dbRound, err := baseDB.GetRound(ctx, testRound.RoundID.String())
+	require.NoError(t, err)
+	require.Equal(t, "nonces_generated", dbRound.Status)
+
+	loadedRows, err := store.LoadSigningNonces(ctx, testRound.RoundID)
+	require.NoError(t, err)
+	require.Equal(t, nonceRows, loadedRows)
+}
+
+func TestRoundStoreSaveSigningNoncesPersistsRoundFacts(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, baseDB := newRoundStoreForTest(t)
+	roundID := testRoundIDDB("test-round-nonce-facts")
+
+	boardingDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) BoardingStore {
+			return baseDB.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	boardingStore := NewBoardingWalletStore(
+		boardingDB, &chaincfg.RegressionNetParams,
+		clock.NewDefaultClock(),
+	)
+
+	fixture := createBoardingIntentFixture(t, roundID, 0)
+	require.NoError(
+		t, boardingStore.InsertBoardingAddress(
+			ctx, fixture.boardingAddr,
+		),
+	)
+	require.NoError(
+		t, boardingStore.InsertBoardingIntents(
+			ctx, fixture.walletIntent,
+		),
+	)
+
+	testRound := createTestRound(t, roundID)
+	testRound.Intents = round.Intents{
+		Boarding: []round.BoardingIntent{
+			fixture.roundIntent,
+		},
+		VTXOs: fixture.vtxoTemplates,
+	}
+
+	err := store.SaveSigningNonces(
+		ctx, testRound,
+		map[round.SignerKey]*tree.Tree{
+			fixture.clientTreeKey: fixture.clientTree,
+		},
+		nil,
+	)
+	require.NoError(t, err)
+
+	boardingRows, err := baseDB.GetRoundBoardingIntents(
+		ctx, roundID.String(),
+	)
+	require.NoError(t, err)
+	require.Len(t, boardingRows, 1)
+	require.Equal(t, fixture.outpoint.Hash[:], boardingRows[0].OutpointHash)
+	require.False(t, boardingRows[0].InputIndex.Valid)
+	require.Empty(t, boardingRows[0].InputSignature)
+
+	vtxoRows, err := baseDB.GetRoundVtxoRequests(ctx, roundID.String())
+	require.NoError(t, err)
+	require.Len(t, vtxoRows, len(fixture.vtxoTemplates))
+
+	treeRows, err := baseDB.GetRoundClientTrees(ctx, roundID.String())
+	require.NoError(t, err)
+	require.Len(t, treeRows, 1)
+
+	_, state, err := store.FetchState(ctx, roundID)
+	require.NoError(t, err)
+	validated, ok := state.(*round.CommitmentTxValidatedState)
+	require.True(
+		t, ok, "expected CommitmentTxValidatedState, got %T", state,
+	)
+	require.Len(t, validated.Intents.Boarding, 1)
+	require.Len(t, validated.Intents.VTXOs, len(fixture.vtxoTemplates))
+	require.Len(t, validated.ClientTrees, 1)
+}
+
+func TestRoundStoreSaveAndLoadAggregatedNonces(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, baseDB := newRoundStoreForTest(t)
+	roundID := testRoundIDDB("test-round-aggregate-nonces")
+
+	boardingDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) BoardingStore {
+			return baseDB.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	boardingStore := NewBoardingWalletStore(
+		boardingDB, &chaincfg.RegressionNetParams,
+		clock.NewDefaultClock(),
+	)
+
+	fixture := createBoardingIntentFixture(t, roundID, 0)
+	require.NoError(
+		t, boardingStore.InsertBoardingAddress(
+			ctx, fixture.boardingAddr,
+		),
+	)
+	require.NoError(
+		t, boardingStore.InsertBoardingIntents(
+			ctx, fixture.walletIntent,
+		),
+	)
+
+	testRound := createTestRound(t, roundID)
+	testRound.Intents = round.Intents{
+		Boarding: []round.BoardingIntent{
+			fixture.roundIntent,
+		},
+		VTXOs: fixture.vtxoTemplates,
+	}
+
+	require.NoError(
+		t,
+		store.SaveSigningNonces(
+			ctx, testRound, map[round.SignerKey]*tree.Tree{
+				fixture.clientTreeKey: fixture.clientTree,
+			},
+			nil,
+		),
+	)
+
+	var txID tree.TxID
+	copy(txID[:], bytes.Repeat([]byte{0x44}, chainhash.HashSize))
+
+	var aggNonce tree.Musig2PubNonce
+	copy(aggNonce[:], bytes.Repeat([]byte{0x55}, len(aggNonce)))
+
+	aggNonces := map[tree.TxID]tree.Musig2PubNonce{
+		txID: aggNonce,
+	}
+	require.NoError(
+		t, store.SaveAggregatedNonces(
+			ctx, roundID, aggNonces,
+		),
+	)
+
+	dbRound, err := baseDB.GetRound(ctx, roundID.String())
+	require.NoError(t, err)
+	require.Equal(t, "nonces_aggregated", dbRound.Status)
+
+	loaded, err := store.LoadAggregatedNonces(ctx, roundID)
+	require.NoError(t, err)
+	require.Equal(t, aggNonces, loaded)
+
+	_, state, err := store.FetchState(ctx, roundID)
+	require.NoError(t, err)
+	validated, ok := state.(*round.CommitmentTxValidatedState)
+	require.True(
+		t, ok, "expected CommitmentTxValidatedState, got %T", state,
+	)
+	require.Equal(t, roundID, validated.RoundID)
+}
+
+func TestRoundStoreSaveAndLoadPartialSignatures(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, baseDB := newRoundStoreForTest(t)
+	roundID := testRoundIDDB("test-round-partial-sigs")
+
+	boardingDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) BoardingStore {
+			return baseDB.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	boardingStore := NewBoardingWalletStore(
+		boardingDB, &chaincfg.RegressionNetParams,
+		clock.NewDefaultClock(),
+	)
+
+	fixture := createBoardingIntentFixture(t, roundID, 0)
+	require.NoError(
+		t, boardingStore.InsertBoardingAddress(
+			ctx, fixture.boardingAddr,
+		),
+	)
+	require.NoError(
+		t, boardingStore.InsertBoardingIntents(
+			ctx, fixture.walletIntent,
+		),
+	)
+
+	testRound := createTestRound(t, roundID)
+	testRound.Intents = round.Intents{
+		Boarding: []round.BoardingIntent{
+			fixture.roundIntent,
+		},
+		VTXOs: fixture.vtxoTemplates,
+	}
+
+	require.NoError(
+		t,
+		store.SaveSigningNonces(
+			ctx, testRound, map[round.SignerKey]*tree.Tree{
+				fixture.clientTreeKey: fixture.clientTree,
+			},
+			nil,
+		),
+	)
+	markOnlyRoundEffectDone(
+		t, ctx, store, round.RoundEffectSendNonces,
+	)
+
+	var txID tree.TxID
+	copy(txID[:], bytes.Repeat([]byte{0x66}, chainhash.HashSize))
+
+	var scalar btcec.ModNScalar
+	scalar.SetInt(12345)
+	partialSig := &musig2.PartialSignature{S: &scalar}
+
+	signatures := map[round.SignerKey]map[tree.TxID]*musig2.PartialSignature{
+		fixture.clientTreeKey: {
+			txID: partialSig,
+		},
+	}
+	require.NoError(
+		t, store.SavePartialSignatures(
+			ctx, roundID, signatures,
+		),
+	)
+
+	dbRound, err := baseDB.GetRound(ctx, roundID.String())
+	require.NoError(t, err)
+	require.Equal(t, "partial_sigs_sent", dbRound.Status)
+
+	loaded, err := store.LoadPartialSignatures(ctx, roundID)
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	require.Len(t, loaded[fixture.clientTreeKey], 1)
+
+	expectedBytes, err := serializePartialSig(partialSig)
+	require.NoError(t, err)
+	actualBytes, err := serializePartialSig(
+		loaded[fixture.clientTreeKey][txID],
+	)
+	require.NoError(t, err)
+	require.Equal(t, expectedBytes, actualBytes)
+
+	_, state, err := store.FetchState(ctx, roundID)
+	require.NoError(t, err)
+	partialState, ok := state.(*round.PartialSigsSentState)
+	require.True(t, ok, "expected PartialSigsSentState, got %T", state)
+	require.Equal(t, roundID, partialState.RoundID)
+
+	effects, err := store.ClaimDueRoundEffects(ctx, "test", 10, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, effects, 1)
+	require.Equal(
+		t, round.RoundEffectSendPartialSigs, effects[0].EffectType,
+	)
+}
+
+func TestRoundStoreCommitStatePersistsForfeitSignatures(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newRoundStoreForTest(t)
+	roundID := testRoundIDDB("test-round-forfeit-sigs")
+	testRound := createTestRound(t, roundID)
+
+	vtxoOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("forfeit-vtxo")),
+		Index: 7,
+	}
+	forfeitTx := wire.NewMsgTx(2)
+	forfeitTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: vtxoOutpoint,
+	})
+	forfeitTx.AddTxOut(&wire.TxOut{
+		Value:    1000,
+		PkScript: []byte{0x51},
+	})
+
+	sigKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	msgHash := chainhash.HashH([]byte("forfeit-signature"))
+	sig, err := schnorr.Sign(sigKey, msgHash[:])
+	require.NoError(t, err)
+
+	ownerKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	policy, err := arkscript.NewVTXOPolicy(
+		ownerKey.PubKey(), operatorKey.PubKey(), 144,
+	)
+	require.NoError(t, err)
+	spendInfo, err := policy.CollabSpendInfo()
+	require.NoError(t, err)
+
+	spendPath := &arkscript.SpendPath{
+		SpendInfo:        spendInfo,
+		RequiredSequence: wire.MaxTxInSequenceNum,
+	}
+	forfeitSigs := map[wire.OutPoint]*types.ForfeitTxSig{
+		vtxoOutpoint: {
+			UnsignedTx:    forfeitTx,
+			ClientVTXOSig: sig,
+			SpendPath:     spendPath,
+		},
+	}
+
+	state := &round.InputSigSentState{
+		RoundID: roundID,
+		CommitmentTx: testRound.CommitmentTx.UnwrapOrFail(
+			t,
+		),
+		VTXOTreePaths: testRound.VTXOTreePaths.UnwrapOrFail(
+			t,
+		),
+		ForfeitedVTXOs: []wire.OutPoint{
+			vtxoOutpoint,
+		},
+		ForfeitTxs: forfeitSigs,
+	}
+	require.NoError(t, store.CommitState(ctx, testRound, state))
+
+	loaded, err := store.LoadVTXOForfeitSignatures(ctx, roundID)
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	require.Contains(t, loaded, vtxoOutpoint)
+	require.Equal(
+		t, sig.Serialize(),
+		loaded[vtxoOutpoint].ClientVTXOSig.Serialize(),
+	)
+	require.Equal(
+		t, forfeitTx.TxHash(), loaded[vtxoOutpoint].UnsignedTx.TxHash(),
+	)
+
+	effects, err := store.ClaimDueRoundEffects(ctx, "test", 10, time.Minute)
+	require.NoError(t, err)
+	effectTypes := make(map[round.RoundEffectType]struct{})
+	for _, effect := range effects {
+		effectTypes[effect.EffectType] = struct{}{}
+	}
+	require.Contains(t, effectTypes, round.RoundEffectSendVTXOForfeitSigs)
+	require.Contains(t, effectTypes, round.RoundEffectRegisterConfirmation)
+}
+
+func TestRoundStoreSaveForfeitRequestsReconstructsCollectingState(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newRoundStoreForTest(t)
+	roundID := testRoundIDDB("test-round-forfeit-requests")
+	testRound := createTestRound(t, roundID)
+
+	require.NoError(t, store.SaveSigningNonces(ctx, testRound, nil, nil))
+	markOnlyRoundEffectDone(
+		t, ctx, store, round.RoundEffectSendNonces,
+	)
+
+	vtxoOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("request-vtxo")),
+		Index: 11,
+	}
+	connectorOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("request-connector")),
+		Index: 12,
+	}
+	requests := []round.ForfeitRequestState{{
+		VTXOOutpoint:      vtxoOutpoint,
+		ConnectorOutpoint: connectorOutpoint,
+		ConnectorPkScript: []byte{
+			0x51,
+			0x20,
+		},
+		ConnectorAmount: 546,
+		VTXOAmount:      50_000,
+		ServerForfeitPkScript: []byte{
+			0x51,
+		},
+	}}
+
+	require.NoError(
+		t, store.SaveForfeitRequests(ctx, testRound, nil, requests),
+	)
+
+	loaded, err := store.LoadForfeitRequests(ctx, roundID)
+	require.NoError(t, err)
+	require.Equal(t, requests, loaded)
+
+	_, state, err := store.FetchState(ctx, roundID)
+	require.NoError(t, err)
+	collecting, ok := state.(*round.ForfeitSignaturesCollectingState)
+	require.True(
+		t, ok, "expected ForfeitSignaturesCollectingState, got %T",
+		state,
+	)
+	require.Contains(t, collecting.ExpectedForfeits, vtxoOutpoint)
+	require.Empty(t, collecting.CollectedForfeits)
+
+	effects, err := store.ClaimDueRoundEffects(ctx, "test", 10, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, effects, 1)
+	require.Equal(
+		t, round.RoundEffectRequestVTXOForfeitSigs,
+		effects[0].EffectType,
+	)
+}
+
+func TestRoundStoreSaveForfeitRequestsCreatesRoundSnapshot(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, baseDB := newRoundStoreForTest(t)
+	roundID := testRoundIDDB("test-round-forfeit-requests-snapshot")
+	testRound := createTestRound(t, roundID)
+
+	vtxoOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("snapshot-request-vtxo")),
+		Index: 21,
+	}
+	connectorOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("snapshot-request-connector")),
+		Index: 22,
+	}
+	requests := []round.ForfeitRequestState{{
+		VTXOOutpoint:      vtxoOutpoint,
+		ConnectorOutpoint: connectorOutpoint,
+		ConnectorPkScript: []byte{
+			0x51,
+			0x20,
+		},
+		ConnectorAmount: 546,
+		VTXOAmount:      50_000,
+		ServerForfeitPkScript: []byte{
+			0x51,
+		},
+	}}
+
+	require.NoError(
+		t, store.SaveForfeitRequests(
+			ctx, testRound, nil, requests,
+		),
+	)
+
+	dbRound, err := baseDB.GetRound(ctx, roundID.String())
+	require.NoError(t, err)
+	require.Equal(t, "forfeit_sigs_collecting", dbRound.Status)
+
+	_, state, err := store.FetchState(ctx, roundID)
+	require.NoError(t, err)
+	collecting, ok := state.(*round.ForfeitSignaturesCollectingState)
+	require.True(
+		t, ok, "expected ForfeitSignaturesCollectingState, got %T",
+		state,
+	)
+	require.Contains(t, collecting.ExpectedForfeits, vtxoOutpoint)
+}
+
+func TestRoundStoreSaveLoadDeletePendingQuote(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newRoundStoreForTest(t)
+	roundID := testRoundIDDB("test-round-pending-quote")
+
+	var quoteID [32]byte
+	for i := range quoteID {
+		quoteID[i] = byte(i + 1)
+	}
+
+	quote := &round.JoinRoundQuoteReceived{
+		RoundID: roundID,
+		Quote: &round.ClientQuote{
+			QuoteID:        quoteID,
+			SealPass:       7,
+			OperatorFeeSat: 1234,
+			VTXOQuotes: []round.VTXOQuoteEntry{{
+				PkScript: []byte{
+					0x51,
+					0x20,
+				},
+				AmountSat:    50_000,
+				RecipientKey: bytes.Repeat([]byte{0x02}, 33),
+			}},
+			LeaveQuotes: []round.LeaveQuoteEntry{{
+				PkScript: []byte{
+					0x00,
+					0x14,
+					0x99,
+				},
+				AmountSat: 25_000,
+			}},
+			QuoteExpiresAt: 42,
+			RejectReason:   roundpb.QuoteReason_QUOTE_OK,
+		},
+	}
+
+	require.NoError(t, store.SavePendingQuote(ctx, quote))
+
+	loaded, err := store.LoadPendingQuotes(ctx)
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	got := loaded[roundID]
+	require.NotNil(t, got)
+	require.Equal(t, quote.RoundID, got.RoundID)
+	require.Equal(t, quote.Quote.QuoteID, got.Quote.QuoteID)
+	require.Equal(t, quote.Quote.SealPass, got.Quote.SealPass)
+	require.Equal(t, quote.Quote.OperatorFeeSat, got.Quote.OperatorFeeSat)
+	require.Equal(t, quote.Quote.VTXOQuotes, got.Quote.VTXOQuotes)
+	require.Equal(t, quote.Quote.LeaveQuotes, got.Quote.LeaveQuotes)
+	require.Equal(t, quote.Quote.QuoteExpiresAt, got.Quote.QuoteExpiresAt)
+	require.Equal(t, quote.Quote.RejectReason, got.Quote.RejectReason)
+
+	require.NoError(t, store.DeletePendingQuote(ctx, roundID))
+
+	loaded, err = store.LoadPendingQuotes(ctx)
+	require.NoError(t, err)
+	require.Empty(t, loaded)
 }
 
 // TestRoundStoreLookupByTxid tests looking up a round by commitment txid.

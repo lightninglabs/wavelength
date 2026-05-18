@@ -491,7 +491,7 @@ func TestBoardingSweepStoreTracksPendingAndResolved(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	store, _ := newBoardingStoreForTest(t)
+	store, baseDB := newBoardingStoreForTest(t)
 
 	intent := createSweepStoreIntent(t, store)
 	sweepTx := wire.NewMsgTx(2)
@@ -589,6 +589,27 @@ func TestBoardingSweepStoreTracksPendingAndResolved(t *testing.T) {
 	updated, err = store.GetIntent(ctx, intent.Outpoint)
 	require.NoError(t, err)
 	require.Equal(t, wallet.BoardingStatusSwept, updated.Status)
+
+	rows, err := baseDB.QueryContext(ctx, `
+SELECT effect_type, status
+FROM wallet_effects
+ORDER BY effect_type`)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, rows.Close())
+	}()
+
+	var effects []string
+	for rows.Next() {
+		var effectType, status string
+		require.NoError(t, rows.Scan(&effectType, &status))
+		effects = append(effects, effectType+":"+status)
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, []string{
+		wallet.WalletEffectRecordLedgerSweepFee + ":pending",
+		wallet.WalletEffectRecordLedgerUTXOSpent + ":pending",
+	}, effects)
 }
 
 // TestBoardingSweepFailedRestoresIntent verifies failed broadcasts put inputs

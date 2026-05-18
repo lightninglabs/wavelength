@@ -110,11 +110,11 @@ darepod (orchestrator)
 │   └── db          │ (unilateral_exit_jobs store)
 ├── txconfirm       │ (shared tx confirmation + CPFP actor; wired by darepod)
 ├── ledger          │
-│   ├── baselib/actor (durable mailbox, TLV codec)
+│   ├── baselib/actor (in-memory actor/channel abstraction)
 │   └── db          │ (LedgerStoreDB + UTXOAuditStoreDB adapters)
 ├── serverconn      │
 │   ├── mailbox     │ (protocol primitives)
-│   └── db          │ (durable delivery store)
+│   └── db          │ (mailbox ingress cursors + egress envelope store)
 ├── proofkeys       │ (wallet key derivation for indexer proofs)
 │   └── walletcore / lndbackend (implementations)
 ├── chainsource     │
@@ -135,14 +135,15 @@ Concurrent, message-driven components communicate via `Tell` (fire-and-forget)
 and `Ask` (request-response). Actors are registered with a `Receptionist` for
 service discovery. See `baselib/actor`.
 
-### Durable Actors
-Crash-safe actors persist FSM state + outbox atomically. On restart, undelivered
-outbox messages are replayed. At-least-once delivery with deduplication ensures
-exactly-once semantics. See `docs/durable_actor_architecture.md`.
+### SQL Durability
+Crash safety lives in subsystem-owned SQL tables. FSMs persist named domain
+facts before issuing retryable side effects; transport egress persists
+mailbox sends in `mailbox_egress`, and restart paths reconstruct actors from
+round/OOR/unroll/wallet tables rather than generic actor checkpoints.
 
 ### RPC-over-Mailbox
 All server communication flows through `serverconn`, which implements unary RPCs
-(low-latency) and durable event egress (crash-safe) over the mailbox protocol.
+(low-latency) and SQL-backed event egress (crash-safe) over the mailbox protocol.
 Inbound events are dispatched via `EventRouter`. Registered routes currently
 include OOR lifecycle pushes, round progress pushes, and `MethodIncomingVTXO`
 (which delivers `arkrpc.IncomingVTXOEvent` notifications to the

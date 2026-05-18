@@ -22,7 +22,12 @@ SELECT * FROM rounds WHERE round_id = $1;
 SELECT * FROM rounds WHERE commitment_txid = $1;
 
 -- name: ListActiveRounds :many
-SELECT * FROM rounds WHERE status = 'input_sig_sent' ORDER BY creation_time ASC;
+SELECT * FROM rounds
+WHERE status IN (
+    'nonces_generated', 'nonces_aggregated', 'partial_sigs_sent',
+    'forfeit_sigs_collecting', 'input_sig_sent'
+)
+ORDER BY creation_time ASC;
 
 -- name: ListRoundsByStatus :many
 SELECT * FROM rounds WHERE status = $1 ORDER BY creation_time DESC;
@@ -123,6 +128,229 @@ ORDER BY tree_level ASC;
 
 -- name: DeleteClientTreeTxids :exec
 DELETE FROM client_tree_txids WHERE round_id = $1 AND client_key = $2;
+
+-- Client round nonce state queries.
+
+-- name: InsertClientRoundNonceState :exec
+INSERT INTO client_round_nonce_state (
+    round_id, signing_key, txid, pub_nonce, sec_nonce, creation_time,
+    last_update_time
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (round_id, signing_key, txid) DO UPDATE SET
+    pub_nonce = excluded.pub_nonce,
+    sec_nonce = excluded.sec_nonce,
+    last_update_time = excluded.last_update_time;
+
+-- name: GetClientRoundNonceState :many
+SELECT * FROM client_round_nonce_state
+WHERE round_id = $1
+ORDER BY signing_key, txid;
+
+-- Client round aggregate nonce state queries.
+
+-- name: InsertClientRoundAggNonceState :exec
+INSERT INTO client_round_agg_nonce_state (
+    round_id, txid, agg_nonce, creation_time, last_update_time
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (round_id, txid) DO UPDATE SET
+    agg_nonce = excluded.agg_nonce,
+    last_update_time = excluded.last_update_time;
+
+-- name: GetClientRoundAggNonceState :many
+SELECT * FROM client_round_agg_nonce_state
+WHERE round_id = $1
+ORDER BY txid;
+
+-- Client round partial signature state queries.
+
+-- name: InsertClientRoundPartialSigState :exec
+INSERT INTO client_round_partial_sig_state (
+    round_id, signing_key, txid, partial_sig, creation_time, last_update_time
+) VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (round_id, signing_key, txid) DO UPDATE SET
+    partial_sig = excluded.partial_sig,
+    last_update_time = excluded.last_update_time;
+
+-- name: GetClientRoundPartialSigState :many
+SELECT * FROM client_round_partial_sig_state
+WHERE round_id = $1
+ORDER BY signing_key, txid;
+
+-- Client round collected VTXO forfeit signature queries.
+
+-- name: InsertClientRoundForfeitSigState :exec
+INSERT INTO client_round_forfeit_sig_state (
+    round_id, vtxo_outpoint_hash, vtxo_outpoint_index, forfeit_tx,
+    client_sig, spend_path, creation_time, last_update_time
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (round_id, vtxo_outpoint_hash, vtxo_outpoint_index)
+DO UPDATE SET
+    forfeit_tx = excluded.forfeit_tx,
+    client_sig = excluded.client_sig,
+    spend_path = excluded.spend_path,
+    last_update_time = excluded.last_update_time;
+
+-- name: GetClientRoundForfeitSigState :many
+SELECT * FROM client_round_forfeit_sig_state
+WHERE round_id = $1
+ORDER BY vtxo_outpoint_hash, vtxo_outpoint_index;
+
+-- Client round expected VTXO forfeit request queries.
+
+-- name: InsertClientRoundForfeitRequestState :exec
+INSERT INTO client_round_forfeit_request_state (
+    round_id, vtxo_outpoint_hash, vtxo_outpoint_index,
+    connector_outpoint_hash, connector_outpoint_index, connector_pk_script,
+    connector_amount, vtxo_amount, server_forfeit_pk_script, forfeit_spend,
+    creation_time, last_update_time
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+ON CONFLICT (round_id, vtxo_outpoint_hash, vtxo_outpoint_index)
+DO UPDATE SET
+    connector_outpoint_hash = excluded.connector_outpoint_hash,
+    connector_outpoint_index = excluded.connector_outpoint_index,
+    connector_pk_script = excluded.connector_pk_script,
+    connector_amount = excluded.connector_amount,
+    vtxo_amount = excluded.vtxo_amount,
+    server_forfeit_pk_script = excluded.server_forfeit_pk_script,
+    forfeit_spend = excluded.forfeit_spend,
+    last_update_time = excluded.last_update_time;
+
+-- name: GetClientRoundForfeitRequestState :many
+SELECT * FROM client_round_forfeit_request_state
+WHERE round_id = $1
+ORDER BY vtxo_outpoint_hash, vtxo_outpoint_index;
+
+-- Client round pending quote queries.
+
+-- name: UpsertClientRoundPendingQuote :exec
+INSERT INTO client_round_pending_quotes (
+    round_id, quote_id, seal_pass, operator_fee_sat, quote_expires_at,
+    reject_reason, creation_time, last_update_time
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (round_id) DO UPDATE SET
+    quote_id = excluded.quote_id,
+    seal_pass = excluded.seal_pass,
+    operator_fee_sat = excluded.operator_fee_sat,
+    quote_expires_at = excluded.quote_expires_at,
+    reject_reason = excluded.reject_reason,
+    last_update_time = excluded.last_update_time;
+
+-- name: DeleteClientRoundPendingVTXOQuotes :exec
+DELETE FROM client_round_pending_vtxo_quotes WHERE round_id = $1;
+
+-- name: InsertClientRoundPendingVTXOQuote :exec
+INSERT INTO client_round_pending_vtxo_quotes (
+    round_id, quote_index, pk_script, amount_sat, recipient_key
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (round_id, quote_index) DO UPDATE SET
+    pk_script = excluded.pk_script,
+    amount_sat = excluded.amount_sat,
+    recipient_key = excluded.recipient_key;
+
+-- name: DeleteClientRoundPendingLeaveQuotes :exec
+DELETE FROM client_round_pending_leave_quotes WHERE round_id = $1;
+
+-- name: InsertClientRoundPendingLeaveQuote :exec
+INSERT INTO client_round_pending_leave_quotes (
+    round_id, quote_index, pk_script, amount_sat
+) VALUES ($1, $2, $3, $4)
+ON CONFLICT (round_id, quote_index) DO UPDATE SET
+    pk_script = excluded.pk_script,
+    amount_sat = excluded.amount_sat;
+
+-- name: ListClientRoundPendingQuotes :many
+SELECT * FROM client_round_pending_quotes
+ORDER BY creation_time ASC, round_id ASC;
+
+-- name: GetClientRoundPendingVTXOQuotes :many
+SELECT * FROM client_round_pending_vtxo_quotes
+WHERE round_id = $1
+ORDER BY quote_index ASC;
+
+-- name: GetClientRoundPendingLeaveQuotes :many
+SELECT * FROM client_round_pending_leave_quotes
+WHERE round_id = $1
+ORDER BY quote_index ASC;
+
+-- name: DeleteClientRoundPendingQuote :exec
+DELETE FROM client_round_pending_quotes WHERE round_id = $1;
+
+-- Client round effect queries.
+
+-- name: InsertClientRoundEffect :exec
+INSERT INTO client_round_effects (
+    id, round_id, effect_type, status, idempotency_key, attempts,
+    max_attempts, next_attempt_at, created_at, updated_at
+) VALUES ($1, $2, $3, 'pending', $4, 0, $5, $6, $7, $8)
+ON CONFLICT (idempotency_key) DO NOTHING;
+
+-- name: ListDueClientRoundEffectIDs :many
+SELECT id FROM client_round_effects
+WHERE next_attempt_at <= $1
+  AND (
+    status = 'pending' OR
+    (status = 'claimed' AND claim_until <= $1)
+  )
+ORDER BY next_attempt_at, created_at, id
+LIMIT $2;
+
+-- name: ClaimClientRoundEffect :one
+UPDATE client_round_effects
+SET status = 'claimed',
+    claim_owner = $2,
+    claim_token = $3,
+    claim_until = $4,
+    attempts = attempts + 1,
+    updated_at = $5
+WHERE id = $1
+  AND next_attempt_at <= $6
+  AND attempts < max_attempts
+  AND (
+    status = 'pending' OR
+    (status = 'claimed' AND claim_until <= $6)
+  )
+RETURNING id, round_id, effect_type, status, idempotency_key,
+    attempts, max_attempts, next_attempt_at, claim_owner, claim_token,
+    claim_until, last_error, created_at, updated_at, done_at;
+
+-- name: MarkClientRoundEffectDone :exec
+UPDATE client_round_effects
+SET status = 'done',
+    done_at = $3,
+    updated_at = $3,
+    claim_owner = NULL,
+    claim_token = NULL,
+    claim_until = NULL,
+    last_error = NULL
+WHERE id = $1
+  AND claim_token = $2
+  AND status = 'claimed';
+
+-- name: ReleaseClientRoundEffectForRetry :exec
+UPDATE client_round_effects
+SET status = CASE
+        WHEN attempts >= max_attempts THEN 'dead'
+        ELSE 'pending'
+    END,
+    next_attempt_at = $3,
+    last_error = $4,
+    claim_owner = NULL,
+    claim_token = NULL,
+    claim_until = NULL,
+    updated_at = $5
+WHERE id = $1
+  AND claim_token = $2
+  AND status = 'claimed';
+
+-- name: ReleaseExpiredClientRoundEffectClaims :exec
+UPDATE client_round_effects
+SET status = 'pending',
+    claim_owner = NULL,
+    claim_token = NULL,
+    claim_until = NULL,
+    updated_at = $2
+WHERE status = 'claimed'
+  AND claim_until <= $1;
 
 -- VTXO queries.
 

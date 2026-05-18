@@ -132,10 +132,9 @@ open a file with `Read` when you actually need to *read* its body.
 
 ### Deep Docs ([`docs/index.md`](docs/index.md) for full catalog)
 - [`docs/development_guidelines.md`](docs/development_guidelines.md) — Complete style guide with WRONG/RIGHT examples
-- [`docs/durable_actor_architecture.md`](docs/durable_actor_architecture.md) — CDC pattern, durable mailbox lifecycle
-- [`docs/durable_actor_quickstart.md`](docs/durable_actor_quickstart.md) — TLVMessage, ActorBehavior, migration checklist
 - [`docs/mailbox_architecture.md`](docs/mailbox_architecture.md) — Three-layer mailbox system (pb, rpc, conn, serverconn)
 - [`docs/RPC_MAILBOX_CONTRACT.md`](docs/RPC_MAILBOX_CONTRACT.md) — Envelope semantics, ack watermarks
+- [`docs/operator-runbook.md`](docs/operator-runbook.md) — SQL durability stuck-state queries and operator recovery guidance
 - [`docs/ast-grep-guide.md`](docs/ast-grep-guide.md) — AST-level code search and lint rules
 - [`docs/structured-logging.md`](docs/structured-logging.md) — Log format, key-value helpers, error levels
 - [`docs/testing-guide.md`](docs/testing-guide.md) — Coverage targets, test approaches, pre-commit checklist

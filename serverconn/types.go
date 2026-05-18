@@ -8,7 +8,6 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
@@ -45,17 +44,13 @@ type CorrelationID = mailboxconn.CorrelationID
 // IdempotencyKey deduplicates a semantic operation across retries.
 type IdempotencyKey = mailboxconn.IdempotencyKey
 
-// AckState tracks connector ack watermark state for checkpoint persistence.
+// AckState tracks connector ack watermark state for SQL transport persistence.
 type AckState = mailboxconn.AckState
 
-// ackStateType is the checkpoint state type used for ack watermark storage.
-const ackStateType = mailboxconn.CheckpointStateType
-
 // EnvelopeDispatcher routes an inbound envelope to the correct local actor.
-// A nil error means the envelope was durably committed to the target actor's
-// mailbox (i.e., DurableActor.Tell returned nil, confirming persistence).
-// The dispatcher is a closure configured at wiring time that captures a
-// ServiceKey reference for the target actor.
+// A nil error means the envelope was accepted by the local dispatcher. The
+// dispatcher is a closure configured at wiring time that captures the local
+// route target.
 type EnvelopeDispatcher func(
 	ctx context.Context, env *mailboxpb.Envelope,
 ) error
@@ -130,14 +125,19 @@ type ConnectorConfig struct {
 	// KIND_EVENT envelopes to the correct local actor via ServiceKey.
 	Dispatchers map[mailboxrpc.ServiceMethod]EnvelopeDispatcher
 
-	// Store is the delivery store used by both the durable actor runtime
-	// (for inbox persistence) and checkpoint persistence (for ack
-	// watermark state). This is the single durability source of truth.
-	Store actor.DeliveryStore
+	// DispatchOutsideIngressTx marks routes whose dispatcher must not run
+	// inside the mailbox ingress write transaction. These routes are used
+	// for actor/FSM handlers that perform long-running local work after
+	// committing their own restart-safe SQL facts. The ingress cursor is
+	// still advanced only after the dispatcher returns successfully; if
+	// that short cursor commit fails, the envelope is replayed and the
+	// domain handler must be idempotent.
+	DispatchOutsideIngressTx map[mailboxrpc.ServiceMethod]bool
 
-	// Codec handles TLV serialization of ServerConnMsg types for the
-	// durable actor mailbox.
-	Codec *actor.MessageCodec
+	// Transport persists connector-owned ingress cursors and egress
+	// mailbox envelopes. This replaces the actor delivery mailbox for
+	// transport durability.
+	Transport TransportStore
 
 	// DurableUnaryBuilder constructs proof-gated unary request bodies for
 	// transport-native durable unary messages such as indexer script-scope
@@ -236,7 +236,7 @@ func (c *ConnectorConfig) mergeAuthHeaders(
 
 // DefaultConnectorConfig returns a ConnectorConfig with sensible defaults for
 // polling and retry behavior. The caller must still set Edge, mailbox IDs,
-// and Store. Codec is optional — NewRuntime fills a default.
+// and Store.
 func DefaultConnectorConfig() ConnectorConfig {
 	return ConnectorConfig{
 		PullMaxEnvelopes:  50,

@@ -2,6 +2,7 @@ package serverconn
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
 	"testing"
@@ -18,6 +19,16 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+type txMarkingTransportStore struct {
+	*memTransportStore
+}
+
+func (s *txMarkingTransportStore) RunInIngressTx(ctx context.Context,
+	fn func(context.Context) error) error {
+
+	return fn(actor.WithTx(ctx, (*sql.Tx)(nil)))
+}
 
 // testServerMessage is a minimal ServerMessage implementation for egress
 // tests.
@@ -556,7 +567,7 @@ func TestIngress_Shutdown_NoGoroutineLeak(t *testing.T) {
 }
 
 // TestIngress_CheckpointSurvivesRestart verifies that after processing and
-// acking envelopes, the checkpoint can be loaded to restore state.
+// acking envelopes, the ingress cursor can be loaded to restore state.
 func TestIngress_CheckpointSurvivesRestart(t *testing.T) {
 	t.Parallel()
 
@@ -573,7 +584,7 @@ func TestIngress_CheckpointSurvivesRestart(t *testing.T) {
 		},
 	}
 
-	actor, mb, store := newTestConnector(t, dispatchers)
+	actor, mb, _ := newTestConnector(t, dispatchers)
 
 	// Inject an event.
 	sendEventToMailbox(t, mb, "client-1", "test.Svc", "DoThing")
@@ -589,12 +600,16 @@ func TestIngress_CheckpointSurvivesRestart(t *testing.T) {
 	cancel()
 	actor.StopIngress()
 
-	// Verify checkpoint was persisted.
-	actorID := "serverconn-client-1"
-	cp, err := store.LoadCheckpoint(t.Context(), actorID)
+	// Verify the SQL transport-owned ingress cursor was persisted.
+	state, err := actor.cfg.Transport.LoadIngressCursor(
+		t.Context(),
+		"client-1", "server-1",
+	)
 	require.NoError(t, err)
-	require.NotNil(t, cp, "checkpoint should be persisted")
-	require.NotEmpty(t, cp.StateData)
+	require.Greater(t, state.PullCursor, uint64(0))
+	require.Equal(t, state.PullCursor, state.DispatchCommittedTo)
+	require.Equal(t, state.PullCursor, state.AckTarget)
+	require.Equal(t, state.PullCursor, state.AckCommittedTo)
 }
 
 // TestEgress_EventRetriesPreserveIdempotencyKey verifies that egress sends for
@@ -771,6 +786,115 @@ func TestIngress_PartialDispatch_NoDuplicateRedelivery(t *testing.T) {
 		t, 2, dispatchCounts[2], "second envelope should be "+
 			"dispatched exactly twice (1 fail + 1 retry)",
 	)
+}
+
+func TestDispatchAndCheckpointPassesIngressTxToDispatcher(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+	store := &txMarkingTransportStore{
+		memTransportStore: newMemTransportStore(),
+	}
+	key := mailboxrpc.ServiceMethod{
+		Service: "test.v1.Tx",
+		Method:  "Event",
+	}
+
+	var sawTx bool
+	cfg := newTestConnectorConfig(mb, newMemCheckpointStore())
+	cfg.Transport = store
+	cfg.Dispatchers = DispatcherMap{
+		key: func(ctx context.Context, _ *mailboxpb.Envelope) error {
+			sawTx = actor.HasTx(ctx)
+
+			return nil
+		},
+	}
+
+	connector := NewServerConnectionActor(cfg)
+	state := AckState{}
+	cursor, err := connector.dispatchAndCheckpoint(
+		t.Context(), &state,
+		[]*mailboxpb.Envelope{{
+			MsgId:    "tx-event",
+			EventSeq: 7,
+			Rpc: &mailboxpb.RpcMeta{
+				Kind:    mailboxpb.RpcMeta_KIND_EVENT,
+				Service: key.Service,
+				Method:  key.Method,
+			},
+			Body: &anypb.Any{Value: []byte("payload")},
+		}},
+		8,
+	)
+	require.NoError(t, err)
+	require.True(t, sawTx)
+	require.Equal(t, uint64(8), cursor)
+	require.Equal(t, uint64(8), state.PullCursor)
+	require.Equal(t, uint64(8), state.DispatchCommittedTo)
+	require.Equal(t, uint64(8), state.AckTarget)
+
+	persisted, err := store.LoadIngressCursor(
+		t.Context(), cfg.LocalMailboxID, cfg.RemoteMailboxID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, state, persisted)
+}
+
+func TestDispatchAndCheckpointCanDispatchOutsideIngressTx(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+	store := &txMarkingTransportStore{
+		memTransportStore: newMemTransportStore(),
+	}
+	key := mailboxrpc.ServiceMethod{
+		Service: "test.v1.Round",
+		Method:  "ClientBatchInfo",
+	}
+
+	var sawTx bool
+	cfg := newTestConnectorConfig(mb, newMemCheckpointStore())
+	cfg.Transport = store
+	cfg.Dispatchers = DispatcherMap{
+		key: func(ctx context.Context, _ *mailboxpb.Envelope) error {
+			sawTx = actor.HasTx(ctx)
+
+			return nil
+		},
+	}
+	cfg.DispatchOutsideIngressTx = map[mailboxrpc.ServiceMethod]bool{
+		key: true,
+	}
+
+	connector := NewServerConnectionActor(cfg)
+	state := AckState{}
+	cursor, err := connector.dispatchAndCheckpoint(
+		t.Context(), &state,
+		[]*mailboxpb.Envelope{{
+			MsgId:    "round-event",
+			EventSeq: 9,
+			Rpc: &mailboxpb.RpcMeta{
+				Kind:    mailboxpb.RpcMeta_KIND_EVENT,
+				Service: key.Service,
+				Method:  key.Method,
+			},
+			Body: &anypb.Any{Value: []byte("payload")},
+		}},
+		10,
+	)
+	require.NoError(t, err)
+	require.False(t, sawTx)
+	require.Equal(t, uint64(10), cursor)
+	require.Equal(t, uint64(10), state.PullCursor)
+	require.Equal(t, uint64(10), state.DispatchCommittedTo)
+	require.Equal(t, uint64(10), state.AckTarget)
+
+	persisted, err := store.LoadIngressCursor(
+		t.Context(), cfg.LocalMailboxID, cfg.RemoteMailboxID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, state, persisted)
 }
 
 // TestRetryDelay verifies the exponential backoff formula with jitter.

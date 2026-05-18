@@ -59,6 +59,21 @@ func (q *Queries) CountUnresolvedBoardingSweepInputs(ctx context.Context, txid [
 	return count, err
 }
 
+const DeletePendingBoardVtxosByOutpoint = `-- name: DeletePendingBoardVtxosByOutpoint :exec
+DELETE FROM pending_board_vtxo_requests
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+`
+
+type DeletePendingBoardVtxosByOutpointParams struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+func (q *Queries) DeletePendingBoardVtxosByOutpoint(ctx context.Context, arg DeletePendingBoardVtxosByOutpointParams) error {
+	_, err := q.db.ExecContext(ctx, DeletePendingBoardVtxosByOutpoint, arg.OutpointHash, arg.OutpointIndex)
+	return err
+}
+
 const GetBoardingAddress = `-- name: GetBoardingAddress :one
 SELECT pk_script, address_string, client_pubkey, client_key_family, client_key_index, operator_pubkey, exit_delay, last_confirmed_height, creation_time FROM boarding_addresses WHERE pk_script = $1
 `
@@ -843,6 +858,52 @@ func (q *Queries) ListPendingBoardRequests(ctx context.Context) ([]PendingBoardR
 	return items, nil
 }
 
+const ListPendingBoardVtxoRequests = `-- name: ListPendingBoardVtxoRequests :many
+SELECT outpoint_hash, outpoint_index, request_index, amount, is_change, pk_script, expiry, policy_template, client_pubkey, operator_pubkey, owner_key_family, owner_key_index, signing_key_family, signing_key_index, signing_pubkey, origin
+FROM pending_board_vtxo_requests
+ORDER BY outpoint_hash ASC, outpoint_index ASC, request_index ASC
+`
+
+func (q *Queries) ListPendingBoardVtxoRequests(ctx context.Context) ([]PendingBoardVtxoRequest, error) {
+	rows, err := q.db.QueryContext(ctx, ListPendingBoardVtxoRequests)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PendingBoardVtxoRequest
+	for rows.Next() {
+		var i PendingBoardVtxoRequest
+		if err := rows.Scan(
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.RequestIndex,
+			&i.Amount,
+			&i.IsChange,
+			&i.PkScript,
+			&i.Expiry,
+			&i.PolicyTemplate,
+			&i.ClientPubkey,
+			&i.OperatorPubkey,
+			&i.OwnerKeyFamily,
+			&i.OwnerKeyIndex,
+			&i.SigningKeyFamily,
+			&i.SigningKeyIndex,
+			&i.SigningPubkey,
+			&i.Origin,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListPendingBoardingSweepInputs = `-- name: ListPendingBoardingSweepInputs :many
 SELECT txid, outpoint_hash, outpoint_index, amount, previous_status, status, spent_by_txid, spent_height, last_update_time FROM boarding_sweep_inputs
 WHERE status IN ('pending', 'published')
@@ -1110,6 +1171,85 @@ func (q *Queries) UpsertPendingBoardRequest(ctx context.Context, arg UpsertPendi
 		arg.OutpointIndex,
 		arg.TargetVtxoCount,
 		arg.RequestedAtUnix,
+	)
+	return err
+}
+
+const UpsertPendingBoardVtxoRequest = `-- name: UpsertPendingBoardVtxoRequest :exec
+INSERT INTO pending_board_vtxo_requests (
+    outpoint_hash,
+    outpoint_index,
+    request_index,
+    amount,
+    is_change,
+    pk_script,
+    expiry,
+    policy_template,
+    client_pubkey,
+    operator_pubkey,
+    owner_key_family,
+    owner_key_index,
+    signing_key_family,
+    signing_key_index,
+    signing_pubkey,
+    origin
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8,
+    $9, $10, $11, $12, $13, $14, $15, $16
+)
+ON CONFLICT (outpoint_hash, outpoint_index, request_index) DO UPDATE
+SET amount = excluded.amount,
+    is_change = excluded.is_change,
+    pk_script = excluded.pk_script,
+    expiry = excluded.expiry,
+    policy_template = excluded.policy_template,
+    client_pubkey = excluded.client_pubkey,
+    operator_pubkey = excluded.operator_pubkey,
+    owner_key_family = excluded.owner_key_family,
+    owner_key_index = excluded.owner_key_index,
+    signing_key_family = excluded.signing_key_family,
+    signing_key_index = excluded.signing_key_index,
+    signing_pubkey = excluded.signing_pubkey,
+    origin = excluded.origin
+`
+
+type UpsertPendingBoardVtxoRequestParams struct {
+	OutpointHash     []byte
+	OutpointIndex    int32
+	RequestIndex     int32
+	Amount           int64
+	IsChange         bool
+	PkScript         []byte
+	Expiry           int32
+	PolicyTemplate   []byte
+	ClientPubkey     []byte
+	OperatorPubkey   []byte
+	OwnerKeyFamily   int32
+	OwnerKeyIndex    int32
+	SigningKeyFamily int32
+	SigningKeyIndex  int32
+	SigningPubkey    []byte
+	Origin           int32
+}
+
+func (q *Queries) UpsertPendingBoardVtxoRequest(ctx context.Context, arg UpsertPendingBoardVtxoRequestParams) error {
+	_, err := q.db.ExecContext(ctx, UpsertPendingBoardVtxoRequest,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.RequestIndex,
+		arg.Amount,
+		arg.IsChange,
+		arg.PkScript,
+		arg.Expiry,
+		arg.PolicyTemplate,
+		arg.ClientPubkey,
+		arg.OperatorPubkey,
+		arg.OwnerKeyFamily,
+		arg.OwnerKeyIndex,
+		arg.SigningKeyFamily,
+		arg.SigningKeyIndex,
+		arg.SigningPubkey,
+		arg.Origin,
 	)
 	return err
 }

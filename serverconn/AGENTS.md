@@ -8,7 +8,7 @@ background ingress polling with event routing.
 
 ## Key Types
 
-- `Runtime` — Main entry point wrapping DurableActor, ServerConnectionActor, and UnaryFacade.
+- `Runtime` — Main entry point wiring the in-memory ServerConnectionActor, SQL egress worker, and UnaryFacade.
 - `ServerConnectionActor` — Core behavior handling egress messages and the ingress loop. Dispatches `DurableUnaryQuery` values generically via `buildDurableUnary`.
 - `UnaryFacade` — Implements `mailboxrpc.RPCClient` for generated RPC stubs (low-latency path). Also provides `AwaitRPCTimeout` for bounded waits.
 - `ConnectorConfig` — Wiring configuration (edge address, mailbox IDs, dispatchers, store, durable unary builder). The `DurableUnaryBuilder` field must be set to handle `DurableUnaryQuery` message types; otherwise those messages are rejected. The `AuthSignature` field holds the Schnorr auth sig injected into every outbound envelope via `mergeAuthHeaders` (auth header always wins over caller-provided headers).
@@ -18,18 +18,18 @@ background ingress polling with event routing.
 - `AuthHeaderKey` — Envelope header key (`x-mailbox-auth-sig`) for the Schnorr auth signature.
 - `GenerateClientTLSCert` — Creates an ephemeral P-256 mTLS client cert with the secp256k1 identity pubkey hex as Subject CN. Returns error on nil key.
 - `AckState` — Four-cursor watermark state machine (PullCursor, DispatchCommittedTo, AckTarget, AckCommittedTo).
-- `SendUnaryRequest` — Durable typed unary request that becomes a real unary RPC after commit. The response arrives via KIND_RESPONSE and, if no in-memory waiter exists, falls back to durable route dispatch via the EventRouter.
+- `SendUnaryRequest` — Typed unary request that becomes a real unary RPC after SQL egress commit. The response arrives via KIND_RESPONSE and, if no in-memory waiter exists, falls back to route dispatch via the EventRouter.
 - `DurableUnaryRequestBuilder` — Interface for proof-gated request-body construction. Implementations build the actual proto request (e.g., with signed proofs) at send time, not at persist time. The interface is provided via `ConnectorConfig.DurableUnaryBuilder`.
-- `DurableUnaryQuery` — Interface implemented by transport-native durable query messages that persist raw query parameters (not a full proto). The `ServerConnectionActor` matches any `DurableUnaryQuery` generically in its `Receive` loop and calls `buildDurableUnary` to construct a `SendUnaryRequest` on the fly, using `BuildBody`, `QueryCorrelationID`, `QueryMsgID`, `QueryIdempotencyKey`, and `ServiceMethod`.
-- `SendListOORRecipientEventsByScriptRequest` — TLV-durable (type `2003`) indexer query message for phase-1 OOR receive resolution. Persists PkScript, AfterEventID, Limit, CorrelationID, MsgID, and IdempotencyKey; the proof-gated proto body is built at send time by `DurableUnaryRequestBuilder.BuildListOORRecipientEventsByScriptRequest`.
-- `SendListVTXOsByScriptsRequest` — TLV-durable (type `2004`) indexer query message for phase-2 OOR metadata resolution. Persists PkScripts (count-prefixed, length-prefixed list), opaque AfterCursor, Limit, CorrelationID, MsgID, and IdempotencyKey; the proof-gated proto body is built by `DurableUnaryRequestBuilder.BuildListVTXOsByScriptsRequest`.
+- `DurableUnaryQuery` — Interface implemented by transport-native query messages that hold raw query parameters (not a full proto). The `ServerConnectionActor` matches any `DurableUnaryQuery` generically in its `Receive` loop and calls `buildDurableUnary` to construct a `SendUnaryRequest` on the fly, using `BuildBody`, `QueryCorrelationID`, `QueryMsgID`, `QueryIdempotencyKey`, and `ServiceMethod`.
+- `SendListOORRecipientEventsByScriptRequest` — Indexer query message for phase-1 OOR receive resolution. Holds PkScript, AfterEventID, Limit, CorrelationID, MsgID, and IdempotencyKey; the proof-gated proto body is built at send time by `DurableUnaryRequestBuilder.BuildListOORRecipientEventsByScriptRequest`.
+- `SendListVTXOsByScriptsRequest` — Indexer query message for phase-2 OOR metadata resolution. Holds PkScripts, opaque AfterCursor, Limit, CorrelationID, MsgID, and IdempotencyKey; the proof-gated proto body is built by `DurableUnaryRequestBuilder.BuildListVTXOsByScriptsRequest`.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (DurableActor infrastructure), `mailbox/*` (Envelope, RpcMeta, MailboxServiceClient).
+- **Depends on**: `baselib/actor` (in-memory actor runtime), `mailbox/*` (Envelope, RpcMeta, MailboxServiceClient).
 - **Depended on by**: `round` (outbound RPCs), `oor` (durable transport), `darepod` (wiring).
 - **Sends (egress → remote mailbox)**:
-  - `SendClientEventRequest` (durable): wraps `JoinRoundRequest`, `JoinRoundAccept`, `JoinRoundReject`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`. `JoinRoundAccept` / `JoinRoundReject` are the explicit responses to a server-issued seal-time `JoinRoundQuote` (#270); both echo the `quote_id` so the server can drop stale responses after a reseal.
+  - `SendClientEventRequest` (SQL-backed egress): wraps `JoinRoundRequest`, `JoinRoundAccept`, `JoinRoundReject`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`. `JoinRoundAccept` / `JoinRoundReject` are the explicit responses to a server-issued seal-time `JoinRoundQuote` (#270); both echo the `quote_id` so the server can drop stale responses after a reseal.
   - `SendRPCRequest` (unary, non-durable): low-latency request-response RPCs
   - transport-native durable query messages for proof-gated indexer lookups
 - **Routes (ingress → local actors via EventRouter)**:
@@ -55,5 +55,4 @@ background ingress polling with event routing.
 
 - [serverconn/README.md](README.md) — Architecture, usage guide, crash recovery paths.
 - [docs/mailbox_architecture.md](../docs/mailbox_architecture.md) — Three-layer mailbox system.
-- [docs/durable_actor_architecture.md](../docs/durable_actor_architecture.md) — Durable actor internals.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

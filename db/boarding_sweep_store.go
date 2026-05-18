@@ -1,3 +1,4 @@
+//nolint:ll
 package db
 
 import (
@@ -11,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	"github.com/lightninglabs/darepo-client/wallet"
 )
@@ -424,12 +426,131 @@ func (b *BoardingWalletStore) MarkBoardingSweepInputSpent(ctx context.Context,
 			return fmt.Errorf("mark sweep confirmed: %w", err)
 		}
 
+		if sweepStatus == sweepStatusConfirmed {
+			err = insertBoardingSweepLedgerEffects(
+				ctx, q, sweepRow, inputs, spendingHeight, now,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
 		resolved = true
 
 		return nil
 	})
 
 	return resolved, err
+}
+
+// EmitsBoardingSweepLedgerEffects reports that this store inserts
+// wallet_effects rows in the same transaction that resolves a boarding sweep.
+func (b *BoardingWalletStore) EmitsBoardingSweepLedgerEffects() bool {
+	return true
+}
+
+func insertBoardingSweepLedgerEffects(ctx context.Context, q BoardingStore,
+	sweepRow sqlc.BoardingSweep, inputs []sqlc.BoardingSweepInput,
+	blockHeight int32, now int64) error {
+
+	sweepTxid, err := hashFromBytes(sweepRow.Txid)
+	if err != nil {
+		return fmt.Errorf("decode sweep txid: %w", err)
+	}
+
+	err = q.InsertWalletEffect(ctx, sqlc.InsertWalletEffectParams{
+		ID:         "wallet/sweep-fee/" + sweepTxid.String(),
+		EffectType: wallet.WalletEffectRecordLedgerSweepFee,
+		IdempotencyKey: "wallet/sweep-fee/" +
+			sweepTxid.String(),
+		Txid:          sweepTxid[:],
+		FeeSat:        sqlInt64(sweepRow.FeeAmount),
+		BlockHeight:   sqlInt32(blockHeight),
+		MaxAttempts:   10,
+		NextAttemptAt: now,
+		CreatedAt:     now,
+	})
+	if err != nil {
+		return fmt.Errorf("insert sweep fee effect: %w", err)
+	}
+
+	for _, input := range inputs {
+		inputHash, err := hashFromBytes(input.OutpointHash)
+		if err != nil {
+			return fmt.Errorf("decode sweep input hash: %w", err)
+		}
+		opKey := fmt.Sprintf("%s:%d", inputHash, input.OutpointIndex)
+		err = q.InsertWalletEffect(ctx, sqlc.InsertWalletEffectParams{
+			ID:         "wallet/sweep-input-spent/" + opKey,
+			EffectType: wallet.WalletEffectRecordLedgerUTXOSpent,
+			IdempotencyKey: "wallet/sweep-input-spent/" +
+				opKey,
+			OutpointHash: inputHash[:],
+			OutpointIndex: sql.NullInt32{
+				Int32: input.OutpointIndex,
+				Valid: true,
+			},
+			AmountSat:   sqlInt64(input.Amount),
+			BlockHeight: sqlInt32(blockHeight),
+			Classification: sql.NullString{
+				String: ledger.ClassificationBoardingSweepInput,
+				Valid:  true,
+			},
+			MaxAttempts:   10,
+			NextAttemptAt: now,
+			CreatedAt:     now,
+		})
+		if err != nil {
+			return fmt.Errorf("insert sweep input effect: %w", err)
+		}
+	}
+
+	if sweepRow.DestinationAddress != "" {
+		return nil
+	}
+
+	sweepTx, err := decodeSweepTx(sweepRow.RawTx)
+	if err != nil {
+		return err
+	}
+	if len(sweepTx.TxOut) == 0 {
+		return fmt.Errorf("sweep tx has no outputs")
+	}
+
+	err = q.InsertWalletEffect(ctx, sqlc.InsertWalletEffectParams{
+		ID:         "wallet/sweep-return-created/" + sweepTxid.String() + ":0",
+		EffectType: wallet.WalletEffectRecordLedgerUTXOCreated,
+		IdempotencyKey: "wallet/sweep-return-created/" +
+			sweepTxid.String() + ":0",
+		OutpointHash: sweepTxid[:],
+		OutpointIndex: sql.NullInt32{
+			Int32: 0,
+			Valid: true,
+		},
+		AmountSat:   sqlInt64(sweepTx.TxOut[0].Value),
+		BlockHeight: sqlInt32(blockHeight),
+		Classification: sql.NullString{
+			String: ledger.ClassificationBoardingSweepReturn,
+			Valid:  true,
+		},
+		MaxAttempts:   10,
+		NextAttemptAt: now,
+		CreatedAt:     now,
+	})
+	if err != nil {
+		return fmt.Errorf("insert sweep return effect: %w", err)
+	}
+
+	return nil
+}
+
+func decodeSweepTx(raw []byte) (*wire.MsgTx, error) {
+	tx := wire.NewMsgTx(2)
+	if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
+		return nil, fmt.Errorf("decode sweep tx: %w", err)
+	}
+
+	return tx, nil
 }
 
 // boardingSweepRecordFromRow converts one sqlc sweep row into the daemon-facing

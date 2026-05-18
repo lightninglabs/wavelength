@@ -10,8 +10,6 @@ into specific topics below.
 |----------|-------------|
 | [ARCHITECTURE.md](../ARCHITECTURE.md) | Package layers, dependency graph, key types, patterns |
 | [arkscript_spec.md](arkscript_spec.md) | RFC-style specification for the `lib/arkscript` tapscript policy system (AST, encoding, invariants, security considerations) |
-| [durable_actor_architecture.md](durable_actor_architecture.md) | CDC pattern, durable mailbox lifecycle, recovery flow |
-| [durable_actor_quickstart.md](durable_actor_quickstart.md) | Developer guide: TLVMessage, ActorBehavior, migration checklist |
 | [fee_ledger.md](fee_ledger.md) | Client-side double-entry fee ledger: chart of accounts, per-flow walkthroughs, emission sites, replay safety |
 | [fee-change-model.md](fee-change-model.md) | Seal-time fee handshake (#270): change-output designation rules, 11-scenario catalogue, proto contract, CLI mapping |
 | [sdk_layered_architecture.md](sdk_layered_architecture.md) | SDK layering rationale: `sdk/ark` facade, remote vs. embedded modes, `sdk/swaps` future direction |
@@ -39,6 +37,7 @@ into specific topics below.
 | Document | Description |
 |----------|-------------|
 | [daemon_cli_guide.md](daemon_cli_guide.md) | darepod/darepocli installation, configuration, CLI reference |
+| [operator-runbook.md](operator-runbook.md) | SQL durability stuck-state queries for rounds, OOR, unroll, wallet effects, and mailbox transport |
 
 ## Plans
 

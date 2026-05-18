@@ -1,23 +1,29 @@
+//nolint:ll
 package db
 
 import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -29,6 +35,15 @@ type (
 	RoundRow                  = sqlc.Round
 	RoundBoardingIntentRow    = sqlc.RoundBoardingIntent
 	RoundClientTreeRow        = sqlc.RoundClientTree
+	RoundEffectRow            = sqlc.ClientRoundEffect
+	RoundAggNonceRow          = sqlc.ClientRoundAggNonceState
+	RoundForfeitRequestRow    = sqlc.ClientRoundForfeitRequestState
+	RoundForfeitSigRow        = sqlc.ClientRoundForfeitSigState
+	RoundPendingLeaveQuoteRow = sqlc.ClientRoundPendingLeaveQuote
+	RoundPendingQuoteRow      = sqlc.ClientRoundPendingQuote
+	RoundPendingVTXOQuoteRow  = sqlc.ClientRoundPendingVtxoQuote
+	RoundPartialSigRow        = sqlc.ClientRoundPartialSigState
+	RoundSigningNonceRow      = sqlc.ClientRoundNonceState
 	RoundVtxoRequestRow       = sqlc.RoundVtxoRequest
 	VTXORow                   = sqlc.Vtxo
 	InsertRoundParams         = sqlc.InsertRoundParams
@@ -106,6 +121,80 @@ type RoundStore interface {
 
 	InsertClientTreeTxid(ctx context.Context,
 		arg sqlc.InsertClientTreeTxidParams) error
+
+	InsertClientRoundNonceState(ctx context.Context,
+		arg sqlc.InsertClientRoundNonceStateParams) error
+
+	GetClientRoundNonceState(ctx context.Context,
+		roundID string) ([]RoundSigningNonceRow, error)
+
+	InsertClientRoundAggNonceState(ctx context.Context,
+		arg sqlc.InsertClientRoundAggNonceStateParams) error
+
+	GetClientRoundAggNonceState(ctx context.Context,
+		roundID string) ([]RoundAggNonceRow, error)
+
+	InsertClientRoundPartialSigState(ctx context.Context,
+		arg sqlc.InsertClientRoundPartialSigStateParams) error
+
+	GetClientRoundPartialSigState(ctx context.Context,
+		roundID string) ([]RoundPartialSigRow, error)
+
+	InsertClientRoundForfeitSigState(ctx context.Context,
+		arg sqlc.InsertClientRoundForfeitSigStateParams) error
+
+	GetClientRoundForfeitSigState(ctx context.Context,
+		roundID string) ([]RoundForfeitSigRow, error)
+
+	InsertClientRoundForfeitRequestState(ctx context.Context,
+		arg sqlc.InsertClientRoundForfeitRequestStateParams) error
+
+	GetClientRoundForfeitRequestState(ctx context.Context,
+		roundID string) ([]RoundForfeitRequestRow, error)
+
+	UpsertClientRoundPendingQuote(ctx context.Context,
+		arg sqlc.UpsertClientRoundPendingQuoteParams) error
+
+	DeleteClientRoundPendingVTXOQuotes(ctx context.Context,
+		roundID string) error
+
+	InsertClientRoundPendingVTXOQuote(ctx context.Context,
+		arg sqlc.InsertClientRoundPendingVTXOQuoteParams) error
+
+	DeleteClientRoundPendingLeaveQuotes(ctx context.Context,
+		roundID string) error
+
+	InsertClientRoundPendingLeaveQuote(ctx context.Context,
+		arg sqlc.InsertClientRoundPendingLeaveQuoteParams) error
+
+	ListClientRoundPendingQuotes(ctx context.Context) (
+		[]RoundPendingQuoteRow, error)
+
+	GetClientRoundPendingVTXOQuotes(ctx context.Context,
+		roundID string) ([]RoundPendingVTXOQuoteRow, error)
+
+	GetClientRoundPendingLeaveQuotes(ctx context.Context,
+		roundID string) ([]RoundPendingLeaveQuoteRow, error)
+
+	DeleteClientRoundPendingQuote(ctx context.Context, roundID string) error
+
+	InsertClientRoundEffect(ctx context.Context,
+		arg sqlc.InsertClientRoundEffectParams) error
+
+	ListDueClientRoundEffectIDs(ctx context.Context,
+		arg sqlc.ListDueClientRoundEffectIDsParams) ([]string, error)
+
+	ClaimClientRoundEffect(ctx context.Context,
+		arg sqlc.ClaimClientRoundEffectParams) (RoundEffectRow, error)
+
+	MarkClientRoundEffectDone(ctx context.Context,
+		arg sqlc.MarkClientRoundEffectDoneParams) error
+
+	ReleaseClientRoundEffectForRetry(ctx context.Context,
+		arg sqlc.ReleaseClientRoundEffectForRetryParams) error
+
+	ReleaseExpiredClientRoundEffectClaims(ctx context.Context,
+		arg sqlc.ReleaseExpiredClientRoundEffectClaimsParams) error
 
 	GetClientTreeByTxid(ctx context.Context,
 		txid []byte) (RoundClientTreeRow, error)
@@ -222,9 +311,715 @@ func NewRoundPersistenceStore(
 	}
 }
 
+// SaveSigningNonces persists the round snapshot and local MuSig2 nonce
+// material before public nonces are emitted to the server.
+func (s *RoundPersistenceStore) SaveSigningNonces(ctx context.Context,
+	r *round.Round, clientTrees map[round.SignerKey]*tree.Tree,
+	nonces []round.SigningNonceState) error {
+
+	writeTxOpts := WriteTxOption()
+
+	return s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
+		commitmentTxBytes, commitmentTxid, err := serializeCommitmentTx(
+			r.CommitmentTx,
+		)
+		if err != nil {
+			return err
+		}
+
+		vtxtTreeBytes, err := serializeVTXOTreePaths(r.VTXOTreePaths)
+		if err != nil {
+			return err
+		}
+
+		nowUnix := s.clock.Now().Unix()
+		err = q.InsertRound(ctx, InsertRoundParams{
+			RoundID:               r.RoundID.String(),
+			ConfirmationHeight:    sql.NullInt32{},
+			ConfirmationBlockHash: nil,
+			CommitmentTx:          commitmentTxBytes,
+			CommitmentTxid:        commitmentTxid,
+			VtxtTree:              vtxtTreeBytes,
+			Status:                "nonces_generated",
+			CreationTime:          nowUnix,
+			LastUpdateTime:        nowUnix,
+			StartHeight:           int32(r.StartHeight),
+		})
+		if err != nil {
+			return fmt.Errorf("insert round nonce snapshot: %w",
+				err)
+		}
+
+		for i := range r.Intents.Boarding {
+			intent := r.Intents.Boarding[i]
+			iParams, err := s.domainIntentToRoundParams(
+				r.RoundID.String(), &intent, nil,
+			)
+			if err != nil {
+				return fmt.Errorf("convert boarding intent: %w",
+					err)
+			}
+
+			err = q.InsertRoundBoardingIntent(ctx, iParams)
+			if err != nil {
+				return fmt.Errorf("insert boarding intent "+
+					"nonce snapshot: %w", err)
+			}
+		}
+
+		for i, vtxoReq := range r.Intents.VTXOs {
+			reqParams, err := vtxoRequestToRoundParams(
+				r.RoundID.String(), i, &vtxoReq,
+			)
+			if err != nil {
+				return fmt.Errorf("convert vtxo request: %w",
+					err)
+			}
+
+			err = q.InsertRoundVtxoRequest(ctx, reqParams)
+			if err != nil {
+				return fmt.Errorf("insert vtxo request: %w",
+					err)
+			}
+		}
+
+		for key, clientTree := range clientTrees {
+			treeData, err := SerializeTree(clientTree)
+			if err != nil {
+				return fmt.Errorf("serialize client tree: %w",
+					err)
+			}
+
+			treeParams := sqlc.InsertRoundClientTreeParams{
+				RoundID:   r.RoundID.String(),
+				ClientKey: key[:],
+				TreeData:  treeData,
+			}
+			err = q.InsertRoundClientTree(ctx, treeParams)
+			if err != nil {
+				return fmt.Errorf("insert client tree: %w", err)
+			}
+
+			txidEntries, err := clientTree.ExtractTxids()
+			if err != nil {
+				return fmt.Errorf("extract client tree "+
+					"txids: %w", err)
+			}
+
+			for _, entry := range txidEntries {
+				p := sqlc.InsertClientTreeTxidParams{
+					Txid:        entry.Txid[:],
+					RoundID:     r.RoundID.String(),
+					ClientKey:   key[:],
+					TreeLevel:   int32(entry.TreeLevel),
+					OutputIndex: int32(entry.OutputIndex),
+				}
+				err = q.InsertClientTreeTxid(ctx, p)
+				if err != nil {
+					return fmt.Errorf("insert client tree "+
+						"txid: %w", err)
+				}
+			}
+		}
+
+		for _, nonce := range nonces {
+			err := q.InsertClientRoundNonceState(
+				ctx, sqlc.InsertClientRoundNonceStateParams{
+					RoundID:        r.RoundID.String(),
+					SigningKey:     nonce.SignerKey[:],
+					Txid:           nonce.TxID[:],
+					PubNonce:       nonce.PubNonce[:],
+					SecNonce:       nonce.SecNonce[:],
+					CreationTime:   nowUnix,
+					LastUpdateTime: nowUnix,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("insert signing nonce: %w",
+					err)
+			}
+		}
+
+		return insertRoundEffect(
+			ctx, q, r.RoundID.String(), nowUnix,
+			round.RoundEffectSendNonces,
+		)
+	})
+}
+
+// LoadSigningNonces loads local MuSig2 nonce material for a round.
+func (s *RoundPersistenceStore) LoadSigningNonces(ctx context.Context,
+	roundID round.RoundID) ([]round.SigningNonceState, error) {
+
+	readTxOpts := ReadTxOption()
+	roundIDStr := roundID.String()
+
+	var result []round.SigningNonceState
+	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
+		rows, err := q.GetClientRoundNonceState(ctx, roundIDStr)
+		if err != nil {
+			return fmt.Errorf("get signing nonces: %w", err)
+		}
+
+		result = make([]round.SigningNonceState, 0, len(rows))
+		for _, row := range rows {
+			nonce, err := signingNonceRowToDomain(row)
+			if err != nil {
+				return err
+			}
+
+			result = append(result, nonce)
+		}
+
+		return nil
+	})
+
+	return result, err
+}
+
+// SaveAggregatedNonces persists operator aggregate nonce material for a round.
+func (s *RoundPersistenceStore) SaveAggregatedNonces(ctx context.Context,
+	roundID round.RoundID, nonces map[tree.TxID]tree.Musig2PubNonce) error {
+
+	if len(nonces) == 0 {
+		return nil
+	}
+
+	roundIDStr := roundID.String()
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		nowUnix := s.clock.Now().Unix()
+		for txID, aggNonce := range nonces {
+			err := q.InsertClientRoundAggNonceState(
+				ctx, sqlc.InsertClientRoundAggNonceStateParams{
+					RoundID:        roundIDStr,
+					Txid:           txID[:],
+					AggNonce:       aggNonce[:],
+					CreationTime:   nowUnix,
+					LastUpdateTime: nowUnix,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("insert aggregate nonce: %w",
+					err)
+			}
+		}
+
+		err := q.UpdateRoundStatus(
+			ctx, sqlc.UpdateRoundStatusParams{
+				RoundID:        roundIDStr,
+				Status:         "nonces_aggregated",
+				LastUpdateTime: nowUnix,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("mark aggregate nonces persisted: %w",
+				err)
+		}
+
+		return nil
+	})
+}
+
+// LoadAggregatedNonces loads persisted operator aggregate nonce material.
+func (s *RoundPersistenceStore) LoadAggregatedNonces(ctx context.Context,
+	roundID round.RoundID) (map[tree.TxID]tree.Musig2PubNonce, error) {
+
+	roundIDStr := roundID.String()
+
+	result := make(map[tree.TxID]tree.Musig2PubNonce)
+	err := s.db.ExecTx(ctx, ReadTxOption(), func(q RoundStore) error {
+		rows, err := q.GetClientRoundAggNonceState(ctx, roundIDStr)
+		if err != nil {
+			return fmt.Errorf("get aggregate nonces: %w", err)
+		}
+
+		for _, row := range rows {
+			nonce, err := aggNonceRowToDomain(row)
+			if err != nil {
+				return err
+			}
+
+			result[nonce.TxID] = nonce.AggNonce
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// SavePartialSignatures persists generated MuSig2 partial signatures and a
+// durable send effect.
+func (s *RoundPersistenceStore) SavePartialSignatures(ctx context.Context,
+	roundID round.RoundID,
+	signatures map[round.SignerKey]map[tree.TxID]*musig2.PartialSignature) error {
+
+	if len(signatures) == 0 {
+		return nil
+	}
+
+	roundIDStr := roundID.String()
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		nowUnix := s.clock.Now().Unix()
+		for signerKey, txSigs := range signatures {
+			for txID, sig := range txSigs {
+				sigBytes, err := serializePartialSig(sig)
+				if err != nil {
+					return fmt.Errorf("serialize "+
+						"partial sig: %w", err)
+				}
+
+				err = q.InsertClientRoundPartialSigState(
+					ctx,
+					sqlc.InsertClientRoundPartialSigStateParams{
+						RoundID:        roundIDStr,
+						SigningKey:     signerKey[:],
+						Txid:           txID[:],
+						PartialSig:     sigBytes,
+						CreationTime:   nowUnix,
+						LastUpdateTime: nowUnix,
+					},
+				)
+				if err != nil {
+					return fmt.Errorf("insert "+
+						"partial sig: %w", err)
+				}
+			}
+		}
+
+		err := q.UpdateRoundStatus(
+			ctx, sqlc.UpdateRoundStatusParams{
+				RoundID:        roundIDStr,
+				Status:         "partial_sigs_sent",
+				LastUpdateTime: nowUnix,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("mark partial sigs persisted: %w",
+				err)
+		}
+
+		return insertRoundEffect(
+			ctx, q, roundIDStr, nowUnix,
+			round.RoundEffectSendPartialSigs,
+		)
+	})
+}
+
+// LoadPartialSignatures loads generated MuSig2 partial signatures.
+func (s *RoundPersistenceStore) LoadPartialSignatures(ctx context.Context,
+	roundID round.RoundID) (
+	map[round.SignerKey]map[tree.TxID]*musig2.PartialSignature, error) {
+
+	roundIDStr := roundID.String()
+
+	result := make(
+		map[round.SignerKey]map[tree.TxID]*musig2.PartialSignature,
+	)
+	err := s.db.ExecTx(ctx, ReadTxOption(), func(q RoundStore) error {
+		rows, err := q.GetClientRoundPartialSigState(ctx, roundIDStr)
+		if err != nil {
+			return fmt.Errorf("get partial signatures: %w", err)
+		}
+
+		for _, row := range rows {
+			partialSig, err := partialSigRowToDomain(row)
+			if err != nil {
+				return err
+			}
+
+			txSigs := result[partialSig.SignerKey]
+			if txSigs == nil {
+				txSigs = make(
+					map[tree.TxID]*musig2.PartialSignature,
+				)
+				result[partialSig.SignerKey] = txSigs
+			}
+
+			txSigs[partialSig.TxID] = partialSig.PartialSig
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// SaveForfeitRequests persists expected VTXO forfeit requests.
+func (s *RoundPersistenceStore) SaveForfeitRequests(ctx context.Context,
+	r *round.Round, clientTrees map[round.SignerKey]*tree.Tree,
+	requests []round.ForfeitRequestState) error {
+
+	if len(requests) == 0 {
+		return nil
+	}
+	if r == nil {
+		return fmt.Errorf("nil round")
+	}
+
+	roundIDStr := r.RoundID.String()
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		nowUnix := s.clock.Now().Unix()
+		err := s.insertRoundForfeitCollectionFacts(
+			ctx, q, r, clientTrees, nowUnix,
+		)
+		if err != nil {
+			return err
+		}
+
+		for _, request := range requests {
+			params, err := forfeitRequestToInsertParams(
+				roundIDStr, request, nowUnix,
+			)
+			if err != nil {
+				return fmt.Errorf("convert forfeit request: %w",
+					err)
+			}
+
+			err = q.InsertClientRoundForfeitRequestState(
+				ctx, params,
+			)
+			if err != nil {
+				return fmt.Errorf("insert forfeit request: %w",
+					err)
+			}
+		}
+
+		return insertRoundEffect(
+			ctx, q, roundIDStr, nowUnix,
+			round.RoundEffectRequestVTXOForfeitSigs,
+		)
+	})
+}
+
+func (s *RoundPersistenceStore) insertRoundForfeitCollectionFacts(
+	ctx context.Context, q RoundStore, r *round.Round,
+	clientTrees map[round.SignerKey]*tree.Tree, nowUnix int64) error {
+
+	commitmentTxBytes, commitmentTxid, err := serializeCommitmentTx(
+		r.CommitmentTx,
+	)
+	if err != nil {
+		return err
+	}
+
+	vtxtTreeBytes, err := serializeVTXOTreePaths(r.VTXOTreePaths)
+	if err != nil {
+		return err
+	}
+
+	roundIDStr := r.RoundID.String()
+	err = q.InsertRound(ctx, InsertRoundParams{
+		RoundID:               roundIDStr,
+		ConfirmationHeight:    sql.NullInt32{},
+		ConfirmationBlockHash: nil,
+		CommitmentTx:          commitmentTxBytes,
+		CommitmentTxid:        commitmentTxid,
+		VtxtTree:              vtxtTreeBytes,
+		Status:                "forfeit_sigs_collecting",
+		CreationTime:          nowUnix,
+		LastUpdateTime:        nowUnix,
+		StartHeight:           int32(r.StartHeight),
+	})
+	if err != nil {
+		return fmt.Errorf("insert round forfeit snapshot: %w", err)
+	}
+
+	for i := range r.Intents.Boarding {
+		intent := r.Intents.Boarding[i]
+		params, err := s.domainIntentToRoundParams(
+			roundIDStr, &intent, nil,
+		)
+		if err != nil {
+			return fmt.Errorf("convert boarding intent: %w", err)
+		}
+
+		err = q.InsertRoundBoardingIntent(ctx, params)
+		if err != nil {
+			return fmt.Errorf("insert boarding intent: %w", err)
+		}
+	}
+
+	for i, vtxoReq := range r.Intents.VTXOs {
+		reqParams, err := vtxoRequestToRoundParams(
+			roundIDStr, i, &vtxoReq,
+		)
+		if err != nil {
+			return fmt.Errorf("convert vtxo request: %w", err)
+		}
+
+		err = q.InsertRoundVtxoRequest(ctx, reqParams)
+		if err != nil {
+			return fmt.Errorf("insert vtxo request: %w", err)
+		}
+	}
+
+	for key, clientTree := range clientTrees {
+		treeData, err := SerializeTree(clientTree)
+		if err != nil {
+			return fmt.Errorf("serialize client tree: %w", err)
+		}
+
+		treeParams := sqlc.InsertRoundClientTreeParams{
+			RoundID:   roundIDStr,
+			ClientKey: key[:],
+			TreeData:  treeData,
+		}
+		err = q.InsertRoundClientTree(ctx, treeParams)
+		if err != nil {
+			return fmt.Errorf("insert client tree: %w", err)
+		}
+
+		txidEntries, err := clientTree.ExtractTxids()
+		if err != nil {
+			return fmt.Errorf("extract client tree txids: %w", err)
+		}
+
+		for _, entry := range txidEntries {
+			p := sqlc.InsertClientTreeTxidParams{
+				Txid:        entry.Txid[:],
+				RoundID:     roundIDStr,
+				ClientKey:   key[:],
+				TreeLevel:   int32(entry.TreeLevel),
+				OutputIndex: int32(entry.OutputIndex),
+			}
+			err = q.InsertClientTreeTxid(ctx, p)
+			if err != nil {
+				return fmt.Errorf("insert client tree txid: %w",
+					err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// LoadForfeitRequests loads expected VTXO forfeit requests.
+func (s *RoundPersistenceStore) LoadForfeitRequests(ctx context.Context,
+	roundID round.RoundID) ([]round.ForfeitRequestState, error) {
+
+	roundIDStr := roundID.String()
+
+	var result []round.ForfeitRequestState
+	err := s.db.ExecTx(ctx, ReadTxOption(), func(q RoundStore) error {
+		rows, err := q.GetClientRoundForfeitRequestState(
+			ctx, roundIDStr,
+		)
+		if err != nil {
+			return fmt.Errorf("get forfeit requests: %w", err)
+		}
+
+		result = make([]round.ForfeitRequestState, 0, len(rows))
+		for _, row := range rows {
+			request, err := forfeitRequestRowToDomain(row)
+			if err != nil {
+				return err
+			}
+
+			result = append(result, request)
+		}
+
+		return nil
+	})
+
+	return result, err
+}
+
+// SaveCollectedForfeitSignature persists one VTXO actor forfeit response.
+func (s *RoundPersistenceStore) SaveCollectedForfeitSignature(
+	ctx context.Context, roundID round.RoundID,
+	response *round.ForfeitSignatureResponse) error {
+
+	if response == nil {
+		return fmt.Errorf("nil forfeit signature response")
+	}
+
+	forfeitSig := &types.ForfeitTxSig{
+		UnsignedTx:    response.ForfeitTx,
+		ClientVTXOSig: response.Signature,
+		SpendPath:     response.SpendPath,
+	}
+
+	roundIDStr := roundID.String()
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		nowUnix := s.clock.Now().Unix()
+		params, err := forfeitSigToInsertParams(
+			roundIDStr, response.VTXOOutpoint, forfeitSig, nowUnix,
+		)
+		if err != nil {
+			return err
+		}
+
+		return q.InsertClientRoundForfeitSigState(ctx, params)
+	})
+}
+
+// LoadVTXOForfeitSignatures loads collected VTXO forfeit signatures.
+func (s *RoundPersistenceStore) LoadVTXOForfeitSignatures(ctx context.Context,
+	roundID round.RoundID) (map[wire.OutPoint]*types.ForfeitTxSig, error) {
+
+	roundIDStr := roundID.String()
+
+	result := make(map[wire.OutPoint]*types.ForfeitTxSig)
+	err := s.db.ExecTx(ctx, ReadTxOption(), func(q RoundStore) error {
+		rows, err := q.GetClientRoundForfeitSigState(ctx, roundIDStr)
+		if err != nil {
+			return fmt.Errorf("get forfeit signatures: %w", err)
+		}
+
+		for _, row := range rows {
+			outpoint, forfeitSig, err := forfeitSigRowToDomain(row)
+			if err != nil {
+				return err
+			}
+
+			result[outpoint] = forfeitSig
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// SavePendingQuote persists an acknowledged out-of-order quote.
+func (s *RoundPersistenceStore) SavePendingQuote(ctx context.Context,
+	quote *round.JoinRoundQuoteReceived) error {
+
+	if quote == nil {
+		return fmt.Errorf("nil pending quote")
+	}
+	if quote.Quote == nil {
+		return fmt.Errorf("nil pending quote payload")
+	}
+
+	roundIDStr := quote.RoundID.String()
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		nowUnix := s.clock.Now().Unix()
+		err := q.UpsertClientRoundPendingQuote(
+			ctx, sqlc.UpsertClientRoundPendingQuoteParams{
+				RoundID:        roundIDStr,
+				QuoteID:        quote.Quote.QuoteID[:],
+				SealPass:       int64(quote.Quote.SealPass),
+				OperatorFeeSat: quote.Quote.OperatorFeeSat,
+				QuoteExpiresAt: quote.Quote.QuoteExpiresAt,
+				RejectReason: int32(
+					quote.Quote.RejectReason,
+				),
+				CreationTime:   nowUnix,
+				LastUpdateTime: nowUnix,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("upsert pending quote: %w", err)
+		}
+
+		if err := q.DeleteClientRoundPendingVTXOQuotes(
+			ctx, roundIDStr,
+		); err != nil {
+			return fmt.Errorf("clear pending vtxo quotes: %w", err)
+		}
+
+		for idx, vtxoQuote := range quote.Quote.VTXOQuotes {
+			err := q.InsertClientRoundPendingVTXOQuote(
+				ctx,
+				sqlc.InsertClientRoundPendingVTXOQuoteParams{
+					RoundID:      roundIDStr,
+					QuoteIndex:   int32(idx),
+					PkScript:     vtxoQuote.PkScript,
+					AmountSat:    vtxoQuote.AmountSat,
+					RecipientKey: vtxoQuote.RecipientKey,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("insert pending vtxo "+
+					"quote: %w", err)
+			}
+		}
+
+		if err := q.DeleteClientRoundPendingLeaveQuotes(
+			ctx, roundIDStr,
+		); err != nil {
+			return fmt.Errorf("clear pending leave quotes: %w", err)
+		}
+
+		for idx, leaveQuote := range quote.Quote.LeaveQuotes {
+			err := q.InsertClientRoundPendingLeaveQuote(
+				ctx,
+				sqlc.InsertClientRoundPendingLeaveQuoteParams{
+					RoundID:    roundIDStr,
+					QuoteIndex: int32(idx),
+					PkScript:   leaveQuote.PkScript,
+					AmountSat:  leaveQuote.AmountSat,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("insert pending leave "+
+					"quote: %w", err)
+			}
+		}
+
+		return nil
+	})
+}
+
+// LoadPendingQuotes loads acknowledged out-of-order quotes.
+func (s *RoundPersistenceStore) LoadPendingQuotes(ctx context.Context) (
+	map[round.RoundID]*round.JoinRoundQuoteReceived, error) {
+
+	result := make(map[round.RoundID]*round.JoinRoundQuoteReceived)
+	err := s.db.ExecTx(ctx, ReadTxOption(), func(q RoundStore) error {
+		rows, err := q.ListClientRoundPendingQuotes(ctx)
+		if err != nil {
+			return fmt.Errorf("list pending quotes: %w", err)
+		}
+
+		for _, row := range rows {
+			quote, err := pendingQuoteRowToDomain(ctx, q, row)
+			if err != nil {
+				return err
+			}
+
+			result[quote.RoundID] = quote
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// DeletePendingQuote deletes a pending quote once it has been drained.
+func (s *RoundPersistenceStore) DeletePendingQuote(ctx context.Context,
+	roundID round.RoundID) error {
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		return q.DeleteClientRoundPendingQuote(ctx, roundID.String())
+	})
+}
+
 // CommitState atomically persists both the round data and FSM state. This
 // should be called at the "point of no return" when the client has sent
 // partial signatures and the server may broadcast.
+//
+//nolint:funlen
 func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 	state round.ClientState) error {
 
@@ -410,8 +1205,240 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 			}
 		}
 
+		for outpoint, forfeitSig := range inputSigState.ForfeitTxs {
+			params, err := forfeitSigToInsertParams(
+				r.RoundID.String(), outpoint, forfeitSig,
+				nowUnix,
+			)
+			if err != nil {
+				return fmt.Errorf("convert forfeit "+
+					"signature: %w", err)
+			}
+
+			err = q.InsertClientRoundForfeitSigState(ctx, params)
+			if err != nil {
+				return fmt.Errorf("insert forfeit "+
+					"signature: %w", err)
+			}
+		}
+
+		if len(inputSigState.InputSigs) > 0 {
+			err := insertRoundEffect(
+				ctx, q, r.RoundID.String(), nowUnix,
+				round.RoundEffectSendBoardingSigs,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
+		if len(inputSigState.ForfeitTxs) > 0 {
+			err := insertRoundEffect(
+				ctx, q, r.RoundID.String(), nowUnix,
+				round.RoundEffectSendVTXOForfeitSigs,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
+		if r.CommitmentTx.IsSome() {
+			err := insertRoundEffect(
+				ctx, q, r.RoundID.String(), nowUnix,
+				round.RoundEffectRegisterConfirmation,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
 		return nil
 	})
+}
+
+func insertRoundEffect(ctx context.Context, q RoundStore, roundID string,
+	nowUnix int64, effectType round.RoundEffectType) error {
+
+	idempotencyKey := fmt.Sprintf("client-round/%s/%s", roundID, effectType)
+	err := q.InsertClientRoundEffect(
+		ctx, sqlc.InsertClientRoundEffectParams{
+			ID:             idempotencyKey,
+			RoundID:        roundID,
+			EffectType:     string(effectType),
+			IdempotencyKey: idempotencyKey,
+			MaxAttempts:    10,
+			NextAttemptAt:  nowUnix,
+			CreatedAt:      nowUnix,
+			UpdatedAt:      nowUnix,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("insert round effect %s: %w", effectType, err)
+	}
+
+	return nil
+}
+
+// ClaimDueRoundEffects claims restart-safe round effect rows.
+func (s *RoundPersistenceStore) ClaimDueRoundEffects(ctx context.Context,
+	owner string, limit int, lease time.Duration) ([]round.RoundEffect,
+	error) {
+
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	now := s.clock.Now()
+	claimed := make([]round.RoundEffect, 0, limit)
+	err := s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		ids, err := q.ListDueClientRoundEffectIDs(
+			ctx, sqlc.ListDueClientRoundEffectIDsParams{
+				NextAttemptAt: now.Unix(),
+				Limit:         int32(limit),
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		for _, id := range ids {
+			token := uuid.NewString()
+			row, err := q.ClaimClientRoundEffect(
+				ctx, sqlc.ClaimClientRoundEffectParams{
+					ID: id,
+					ClaimOwner: sql.NullString{
+						String: owner,
+						Valid:  true,
+					},
+					ClaimToken: sql.NullString{
+						String: token,
+						Valid:  true,
+					},
+					ClaimUntil: sql.NullInt64{
+						Int64: now.Add(lease).Unix(),
+						Valid: true,
+					},
+					UpdatedAt:     now.Unix(),
+					NextAttemptAt: now.Unix(),
+				},
+			)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+
+			effect, err := roundEffectFromRow(row)
+			if err != nil {
+				return err
+			}
+			claimed = append(claimed, effect)
+		}
+
+		return nil
+	})
+
+	return claimed, err
+}
+
+// MarkRoundEffectDone marks a claimed round effect complete.
+func (s *RoundPersistenceStore) MarkRoundEffectDone(ctx context.Context, id,
+	claimToken string) error {
+
+	now := s.clock.Now().Unix()
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		return q.MarkClientRoundEffectDone(
+			ctx, sqlc.MarkClientRoundEffectDoneParams{
+				ID: id,
+				ClaimToken: sql.NullString{
+					String: claimToken,
+					Valid:  true,
+				},
+				DoneAt: sql.NullInt64{
+					Int64: now,
+					Valid: true,
+				},
+			},
+		)
+	})
+}
+
+// ReleaseRoundEffectForRetry releases a failed claimed round effect.
+func (s *RoundPersistenceStore) ReleaseRoundEffectForRetry(ctx context.Context,
+	id, claimToken string, retryAfter time.Duration, failure error) error {
+
+	now := s.clock.Now()
+	errText := ""
+	if failure != nil {
+		errText = failure.Error()
+	}
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		return q.ReleaseClientRoundEffectForRetry(
+			ctx, sqlc.ReleaseClientRoundEffectForRetryParams{
+				ID: id,
+				ClaimToken: sql.NullString{
+					String: claimToken,
+					Valid:  true,
+				},
+				NextAttemptAt: now.Add(retryAfter).Unix(),
+				LastError: sql.NullString{
+					String: errText,
+					Valid:  errText != "",
+				},
+				UpdatedAt: now.Unix(),
+			},
+		)
+	})
+}
+
+// ReleaseExpiredRoundEffectClaims releases stale round effect claims.
+func (s *RoundPersistenceStore) ReleaseExpiredRoundEffectClaims(
+	ctx context.Context) error {
+
+	now := s.clock.Now().Unix()
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		return q.ReleaseExpiredClientRoundEffectClaims(
+			ctx, sqlc.ReleaseExpiredClientRoundEffectClaimsParams{
+				ClaimUntil: sql.NullInt64{
+					Int64: now,
+					Valid: true,
+				},
+				UpdatedAt: now,
+			},
+		)
+	})
+}
+
+func roundEffectFromRow(row RoundEffectRow) (round.RoundEffect, error) {
+	roundID, err := round.ParseRoundID(row.RoundID)
+	if err != nil {
+		return round.RoundEffect{}, fmt.Errorf("parse round ID: %w",
+			err)
+	}
+
+	effectType := round.RoundEffectType(row.EffectType)
+	switch effectType {
+	case round.RoundEffectSendNonces,
+		round.RoundEffectSendBoardingSigs,
+		round.RoundEffectSendPartialSigs,
+		round.RoundEffectRequestVTXOForfeitSigs,
+		round.RoundEffectSendVTXOForfeitSigs,
+		round.RoundEffectRegisterConfirmation:
+	default:
+		return round.RoundEffect{}, fmt.Errorf("unknown round effect "+
+			"type: %s", row.EffectType)
+	}
+
+	return round.RoundEffect{
+		ID:         row.ID,
+		RoundID:    roundID,
+		EffectType: effectType,
+		ClaimToken: row.ClaimToken.String,
+	}, nil
 }
 
 // FetchState retrieves a round and its FSM state by round ID. Returns
@@ -745,6 +1772,366 @@ func (s *RoundPersistenceStore) MarkVTXOSpent(ctx context.Context,
 	})
 }
 
+func signingNonceRowToDomain(row RoundSigningNonceRow) (round.SigningNonceState,
+	error) {
+
+	if len(row.SigningKey) != btcec.PubKeyBytesLenCompressed {
+		return round.SigningNonceState{}, fmt.Errorf("invalid signing "+
+			"key length: %d", len(row.SigningKey))
+	}
+
+	if len(row.Txid) != chainhash.HashSize {
+		return round.SigningNonceState{}, fmt.Errorf("invalid txid "+
+			"length: %d", len(row.Txid))
+	}
+
+	if len(row.PubNonce) != len(tree.Musig2PubNonce{}) {
+		return round.SigningNonceState{}, fmt.Errorf("invalid public "+
+			"nonce length: %d", len(row.PubNonce))
+	}
+
+	if len(row.SecNonce) != len(tree.Musig2SecNonce{}) {
+		return round.SigningNonceState{}, fmt.Errorf("invalid secret "+
+			"nonce length: %d", len(row.SecNonce))
+	}
+
+	var signerKey round.SignerKey
+	copy(signerKey[:], row.SigningKey)
+
+	var txID tree.TxID
+	copy(txID[:], row.Txid)
+
+	var pubNonce tree.Musig2PubNonce
+	copy(pubNonce[:], row.PubNonce)
+
+	var secNonce tree.Musig2SecNonce
+	copy(secNonce[:], row.SecNonce)
+
+	return round.SigningNonceState{
+		SignerKey: signerKey,
+		TxID:      txID,
+		PubNonce:  pubNonce,
+		SecNonce:  secNonce,
+	}, nil
+}
+
+func aggNonceRowToDomain(row RoundAggNonceRow) (round.AggregatedNonceState,
+	error) {
+
+	if len(row.Txid) != chainhash.HashSize {
+		return round.AggregatedNonceState{}, fmt.Errorf("invalid txid "+
+			"length: %d", len(row.Txid))
+	}
+
+	if len(row.AggNonce) != len(tree.Musig2PubNonce{}) {
+		return round.AggregatedNonceState{}, fmt.Errorf("invalid "+
+			"aggregate nonce length: %d", len(row.AggNonce))
+	}
+
+	var txID tree.TxID
+	copy(txID[:], row.Txid)
+
+	var aggNonce tree.Musig2PubNonce
+	copy(aggNonce[:], row.AggNonce)
+
+	return round.AggregatedNonceState{
+		TxID:     txID,
+		AggNonce: aggNonce,
+	}, nil
+}
+
+func serializePartialSig(sig *musig2.PartialSignature) ([]byte, error) {
+	if sig == nil {
+		return nil, fmt.Errorf("nil partial signature")
+	}
+
+	var buf bytes.Buffer
+	if err := sig.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	if buf.Len() != 32 {
+		return nil, fmt.Errorf("invalid partial signature length: %d",
+			buf.Len())
+	}
+
+	return buf.Bytes(), nil
+}
+
+func partialSigRowToDomain(row RoundPartialSigRow) (round.PartialSignatureState,
+	error) {
+
+	if len(row.SigningKey) != btcec.PubKeyBytesLenCompressed {
+		return round.PartialSignatureState{}, fmt.Errorf("invalid "+
+			"signing key length: %d", len(row.SigningKey))
+	}
+
+	if len(row.Txid) != chainhash.HashSize {
+		return round.PartialSignatureState{}, fmt.Errorf("invalid "+
+			"txid length: %d", len(row.Txid))
+	}
+
+	if len(row.PartialSig) != 32 {
+		return round.PartialSignatureState{}, fmt.Errorf("invalid "+
+			"partial signature length: %d", len(row.PartialSig))
+	}
+
+	var signerKey round.SignerKey
+	copy(signerKey[:], row.SigningKey)
+
+	var txID tree.TxID
+	copy(txID[:], row.Txid)
+
+	partialSig := &musig2.PartialSignature{}
+	if err := partialSig.Decode(
+		bytes.NewReader(row.PartialSig),
+	); err != nil {
+		return round.PartialSignatureState{}, fmt.Errorf("decode "+
+			"partial signature: %w", err)
+	}
+
+	return round.PartialSignatureState{
+		SignerKey:  signerKey,
+		TxID:       txID,
+		PartialSig: partialSig,
+	}, nil
+}
+
+func forfeitSigToInsertParams(roundID string, outpoint wire.OutPoint,
+	forfeitSig *types.ForfeitTxSig,
+	nowUnix int64) (sqlc.InsertClientRoundForfeitSigStateParams, error) {
+
+	if forfeitSig == nil {
+		return sqlc.InsertClientRoundForfeitSigStateParams{},
+			fmt.Errorf("nil forfeit signature")
+	}
+	if forfeitSig.UnsignedTx == nil {
+		return sqlc.InsertClientRoundForfeitSigStateParams{},
+			fmt.Errorf("nil forfeit tx")
+	}
+	if forfeitSig.ClientVTXOSig == nil {
+		return sqlc.InsertClientRoundForfeitSigStateParams{},
+			fmt.Errorf("nil client VTXO signature")
+	}
+	if forfeitSig.SpendPath == nil {
+		return sqlc.InsertClientRoundForfeitSigStateParams{},
+			fmt.Errorf("nil spend path")
+	}
+
+	var txBuf bytes.Buffer
+	if err := forfeitSig.UnsignedTx.Serialize(&txBuf); err != nil {
+		return sqlc.InsertClientRoundForfeitSigStateParams{},
+			fmt.Errorf("serialize forfeit tx: %w", err)
+	}
+
+	spendPath, err := forfeitSig.SpendPath.Encode()
+	if err != nil {
+		return sqlc.InsertClientRoundForfeitSigStateParams{},
+			fmt.Errorf("encode spend path: %w", err)
+	}
+
+	return sqlc.InsertClientRoundForfeitSigStateParams{
+		RoundID:           roundID,
+		VtxoOutpointHash:  outpoint.Hash[:],
+		VtxoOutpointIndex: int32(outpoint.Index),
+		ForfeitTx:         txBuf.Bytes(),
+		ClientSig:         forfeitSig.ClientVTXOSig.Serialize(),
+		SpendPath:         spendPath,
+		CreationTime:      nowUnix,
+		LastUpdateTime:    nowUnix,
+	}, nil
+}
+
+func forfeitRequestToInsertParams(roundID string,
+	request round.ForfeitRequestState,
+	nowUnix int64) (sqlc.InsertClientRoundForfeitRequestStateParams,
+	error) {
+
+	var forfeitSpend []byte
+	if request.ForfeitSpend != nil {
+		var err error
+		forfeitSpend, err = request.ForfeitSpend.Encode()
+		if err != nil {
+			return sqlc.InsertClientRoundForfeitRequestStateParams{},
+				fmt.Errorf("encode forfeit spend: %w", err)
+		}
+	}
+
+	return sqlc.InsertClientRoundForfeitRequestStateParams{
+		RoundID:                roundID,
+		VtxoOutpointHash:       request.VTXOOutpoint.Hash[:],
+		VtxoOutpointIndex:      int32(request.VTXOOutpoint.Index),
+		ConnectorOutpointHash:  request.ConnectorOutpoint.Hash[:],
+		ConnectorOutpointIndex: int32(request.ConnectorOutpoint.Index),
+		ConnectorPkScript:      bytes.Clone(request.ConnectorPkScript),
+		ConnectorAmount:        request.ConnectorAmount,
+		VtxoAmount:             request.VTXOAmount,
+		ServerForfeitPkScript: bytes.Clone(
+			request.ServerForfeitPkScript,
+		),
+		ForfeitSpend:   forfeitSpend,
+		CreationTime:   nowUnix,
+		LastUpdateTime: nowUnix,
+	}, nil
+}
+
+func forfeitRequestRowToDomain(row RoundForfeitRequestRow) (
+	round.ForfeitRequestState, error) {
+
+	if len(row.VtxoOutpointHash) != chainhash.HashSize {
+		return round.ForfeitRequestState{}, fmt.Errorf("invalid VTXO "+
+			"outpoint hash length: %d", len(row.VtxoOutpointHash))
+	}
+	if len(row.ConnectorOutpointHash) != chainhash.HashSize {
+		return round.ForfeitRequestState{}, fmt.Errorf("invalid "+
+			"connector outpoint hash length: %d",
+			len(row.ConnectorOutpointHash))
+	}
+
+	var vtxoHash chainhash.Hash
+	copy(vtxoHash[:], row.VtxoOutpointHash)
+
+	var connectorHash chainhash.Hash
+	copy(connectorHash[:], row.ConnectorOutpointHash)
+
+	var forfeitSpend *arkscript.SpendPath
+	if len(row.ForfeitSpend) > 0 {
+		var err error
+		forfeitSpend, err = arkscript.DecodeSpendPath(row.ForfeitSpend)
+		if err != nil {
+			return round.ForfeitRequestState{}, fmt.Errorf(
+				"decode forfeit spend: %w", err)
+		}
+	}
+
+	return round.ForfeitRequestState{
+		VTXOOutpoint: wire.OutPoint{
+			Hash:  vtxoHash,
+			Index: uint32(row.VtxoOutpointIndex),
+		},
+		ConnectorOutpoint: wire.OutPoint{
+			Hash:  connectorHash,
+			Index: uint32(row.ConnectorOutpointIndex),
+		},
+		ConnectorPkScript:     bytes.Clone(row.ConnectorPkScript),
+		ConnectorAmount:       row.ConnectorAmount,
+		VTXOAmount:            row.VtxoAmount,
+		ServerForfeitPkScript: bytes.Clone(row.ServerForfeitPkScript),
+		ForfeitSpend:          forfeitSpend,
+	}, nil
+}
+
+func forfeitSigRowToDomain(row RoundForfeitSigRow) (wire.OutPoint,
+	*types.ForfeitTxSig, error) {
+
+	if len(row.VtxoOutpointHash) != chainhash.HashSize {
+		return wire.OutPoint{}, nil, fmt.Errorf("invalid VTXO "+
+			"outpoint hash length: %d", len(row.VtxoOutpointHash))
+	}
+
+	if len(row.ClientSig) != schnorr.SignatureSize {
+		return wire.OutPoint{}, nil, fmt.Errorf("invalid client "+
+			"signature length: %d", len(row.ClientSig))
+	}
+
+	var outpointHash chainhash.Hash
+	copy(outpointHash[:], row.VtxoOutpointHash)
+	outpoint := wire.OutPoint{
+		Hash:  outpointHash,
+		Index: uint32(row.VtxoOutpointIndex),
+	}
+
+	forfeitTx := &wire.MsgTx{}
+	if err := forfeitTx.Deserialize(
+		bytes.NewReader(row.ForfeitTx),
+	); err != nil {
+		return wire.OutPoint{}, nil, fmt.Errorf("deserialize "+
+			"forfeit tx: %w", err)
+	}
+
+	sig, err := schnorr.ParseSignature(row.ClientSig)
+	if err != nil {
+		return wire.OutPoint{}, nil, fmt.Errorf("parse client "+
+			"signature: %w", err)
+	}
+
+	spendPath, err := arkscript.DecodeSpendPath(row.SpendPath)
+	if err != nil {
+		return wire.OutPoint{}, nil, fmt.Errorf("decode spend path: %w",
+			err)
+	}
+
+	return outpoint, &types.ForfeitTxSig{
+		UnsignedTx:    forfeitTx,
+		ClientVTXOSig: sig,
+		SpendPath:     spendPath,
+	}, nil
+}
+
+func pendingQuoteRowToDomain(ctx context.Context, q RoundStore,
+	row RoundPendingQuoteRow) (*round.JoinRoundQuoteReceived, error) {
+
+	roundID, err := round.ParseRoundID(row.RoundID)
+	if err != nil {
+		return nil, fmt.Errorf("parse pending quote round ID: %w", err)
+	}
+
+	if len(row.QuoteID) != 32 {
+		return nil, fmt.Errorf("pending quote_id length %d, want 32",
+			len(row.QuoteID))
+	}
+
+	if row.SealPass < 0 || row.SealPass > int64(^uint32(0)) {
+		return nil, fmt.Errorf("pending quote seal_pass out of "+
+			"range: %d", row.SealPass)
+	}
+
+	var quoteID [32]byte
+	copy(quoteID[:], row.QuoteID)
+
+	vtxoRows, err := q.GetClientRoundPendingVTXOQuotes(ctx, row.RoundID)
+	if err != nil {
+		return nil, fmt.Errorf("get pending vtxo quotes: %w", err)
+	}
+
+	vtxoQuotes := make([]round.VTXOQuoteEntry, 0, len(vtxoRows))
+	for _, vtxoRow := range vtxoRows {
+		vtxoQuotes = append(vtxoQuotes, round.VTXOQuoteEntry{
+			PkScript:     bytes.Clone(vtxoRow.PkScript),
+			AmountSat:    vtxoRow.AmountSat,
+			RecipientKey: bytes.Clone(vtxoRow.RecipientKey),
+		})
+	}
+
+	leaveRows, err := q.GetClientRoundPendingLeaveQuotes(ctx, row.RoundID)
+	if err != nil {
+		return nil, fmt.Errorf("get pending leave quotes: %w", err)
+	}
+
+	leaveQuotes := make([]round.LeaveQuoteEntry, 0, len(leaveRows))
+	for _, leaveRow := range leaveRows {
+		leaveQuotes = append(leaveQuotes, round.LeaveQuoteEntry{
+			PkScript:  bytes.Clone(leaveRow.PkScript),
+			AmountSat: leaveRow.AmountSat,
+		})
+	}
+
+	return &round.JoinRoundQuoteReceived{
+		RoundID: roundID,
+		Quote: &round.ClientQuote{
+			QuoteID:        quoteID,
+			SealPass:       uint32(row.SealPass),
+			OperatorFeeSat: row.OperatorFeeSat,
+			VTXOQuotes:     vtxoQuotes,
+			LeaveQuotes:    leaveQuotes,
+			QuoteExpiresAt: row.QuoteExpiresAt,
+			RejectReason: roundpb.QuoteReason(
+				row.RejectReason,
+			),
+		},
+	}, nil
+}
+
 // dbRoundToDomainRound converts a database round row to a domain Round struct.
 func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 	q RoundStore, dbRound RoundRow, dbIntents []RoundBoardingIntentRow) (
@@ -933,13 +2320,10 @@ func (s *RoundPersistenceStore) dbRoundIntentToDomainIntent(ctx context.Context,
 
 // reconstructFSMState reconstructs the FSM state from relational data.
 //
-// NOTE: Only 'input_sig_sent' status is supported for full FSM reconstruction.
-// This is intentional per the "point of no return" persistence design:
-//   - Before sending input signatures, the client can safely abort and rejoin
-//     a new round with no data loss.
-//   - After sending input signatures (status='input_sig_sent'), the server may
-//     broadcast the commitment transaction at any time. The client must track
-//     confirmation to detect when VTXOs become spendable.
+// Nonce/signature exchange states are reconstructed so the actor can redrive
+// persisted send effects after a restart. After input signatures are sent, the
+// client additionally registers for commitment confirmation because the server
+// may broadcast the commitment transaction at any time.
 //
 // Terminal statuses (confirmed, failed, archived) return minimal state objects
 // to indicate the round's final status. If we encounter an unknown status, it
@@ -950,6 +2334,21 @@ func (s *RoundPersistenceStore) reconstructFSMState(ctx context.Context,
 	dbTrees []RoundClientTreeRow) (round.ClientState, error) {
 
 	switch dbRound.Status {
+	case "nonces_generated", "nonces_aggregated":
+		return s.reconstructCommitmentTxValidatedState(
+			ctx, q, dbRound, dbIntents, dbTrees,
+		)
+
+	case "partial_sigs_sent":
+		return s.reconstructPartialSigsSentState(
+			ctx, q, dbRound, dbIntents, dbTrees,
+		)
+
+	case "forfeit_sigs_collecting":
+		return s.reconstructForfeitSignaturesCollectingState(
+			ctx, q, dbRound, dbIntents, dbTrees,
+		)
+
 	case "input_sig_sent":
 		return s.reconstructInputSigSentState(
 			ctx, q, dbRound, dbIntents, dbTrees,
@@ -985,6 +2384,150 @@ func (s *RoundPersistenceStore) reconstructFSMState(ctx context.Context,
 	}
 }
 
+func (s *RoundPersistenceStore) reconstructCommitmentTxValidatedState(
+	ctx context.Context, q RoundStore, dbRound RoundRow,
+	dbIntents []RoundBoardingIntentRow, dbTrees []RoundClientTreeRow,
+) (*round.CommitmentTxValidatedState, error) {
+
+	roundID, err := round.ParseRoundID(dbRound.RoundID)
+	if err != nil {
+		return nil, fmt.Errorf("parse round ID: %w", err)
+	}
+
+	commitmentTx, err := deserializeCommitmentTx(dbRound.CommitmentTx)
+	if err != nil {
+		return nil, err
+	}
+	if commitmentTx == nil {
+		return nil, fmt.Errorf("nonce-generated round %s has no "+
+			"commitment tx", dbRound.RoundID)
+	}
+
+	vtxoTreePaths, err := deserializeStoredVTXOTreePaths(dbRound.VtxtTree)
+	if err != nil {
+		return nil, err
+	}
+
+	intents, err := s.roundIntentsFromRows(ctx, q, dbRound, dbIntents)
+	if err != nil {
+		return nil, err
+	}
+
+	clientTrees, err := deserializeClientTreeRows(dbTrees)
+	if err != nil {
+		return nil, err
+	}
+
+	return &round.CommitmentTxValidatedState{
+		RoundID:       roundID,
+		CommitmentTx:  commitmentTx,
+		VTXOTreePaths: vtxoTreePaths,
+		Intents:       intents,
+		ClientTrees:   clientTrees,
+		BoardingInputIndices: boardingInputIndices(
+			commitmentTx, intents,
+		),
+		ForfeitMappings: nil,
+	}, nil
+}
+
+func (s *RoundPersistenceStore) reconstructPartialSigsSentState(
+	ctx context.Context, q RoundStore, dbRound RoundRow,
+	dbIntents []RoundBoardingIntentRow, dbTrees []RoundClientTreeRow,
+) (*round.PartialSigsSentState, error) {
+
+	validated, err := s.reconstructCommitmentTxValidatedState(
+		ctx, q, dbRound, dbIntents, dbTrees,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &round.PartialSigsSentState{
+		RoundID:              validated.RoundID,
+		CommitmentTx:         validated.CommitmentTx,
+		VTXOTreePaths:        validated.VTXOTreePaths,
+		Intents:              validated.Intents.Clone(),
+		ClientTrees:          validated.ClientTrees,
+		BoardingInputIndices: validated.BoardingInputIndices,
+		ForfeitMappings:      validated.ForfeitMappings,
+	}, nil
+}
+
+func (s *RoundPersistenceStore) reconstructForfeitSignaturesCollectingState(
+	ctx context.Context, q RoundStore, dbRound RoundRow,
+	dbIntents []RoundBoardingIntentRow, dbTrees []RoundClientTreeRow,
+) (*round.ForfeitSignaturesCollectingState, error) {
+
+	partialState, err := s.reconstructPartialSigsSentState(
+		ctx, q, dbRound, dbIntents, dbTrees,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	requestRows, err := q.GetClientRoundForfeitRequestState(
+		ctx, dbRound.RoundID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get forfeit requests: %w", err)
+	}
+
+	expectedForfeits := make(
+		map[wire.OutPoint]*round.ConnectorLeafInfo, len(requestRows),
+	)
+	for _, row := range requestRows {
+		request, err := forfeitRequestRowToDomain(row)
+		if err != nil {
+			return nil, err
+		}
+
+		expectedForfeits[request.VTXOOutpoint] = &round.ConnectorLeafInfo{
+			ConnectorOutpoint: request.ConnectorOutpoint,
+			ConnectorPkScript: bytes.Clone(
+				request.ConnectorPkScript,
+			),
+			ConnectorAmount: request.ConnectorAmount,
+			VTXOAmount:      btcutil.Amount(request.VTXOAmount),
+		}
+	}
+
+	sigRows, err := q.GetClientRoundForfeitSigState(ctx, dbRound.RoundID)
+	if err != nil {
+		return nil, fmt.Errorf("get collected forfeit signatures: %w",
+			err)
+	}
+
+	collected := make(
+		map[wire.OutPoint]*round.ForfeitSignatureResponse, len(sigRows),
+	)
+	for _, row := range sigRows {
+		outpoint, sig, err := forfeitSigRowToDomain(row)
+		if err != nil {
+			return nil, err
+		}
+
+		collected[outpoint] = &round.ForfeitSignatureResponse{
+			VTXOOutpoint: outpoint,
+			RoundID:      dbRound.RoundID,
+			ForfeitTx:    sig.UnsignedTx,
+			Signature:    sig.ClientVTXOSig,
+			SpendPath:    sig.SpendPath,
+		}
+	}
+
+	return &round.ForfeitSignaturesCollectingState{
+		RoundID:              partialState.RoundID,
+		CommitmentTx:         partialState.CommitmentTx,
+		VTXOTreePaths:        partialState.VTXOTreePaths,
+		Intents:              partialState.Intents.Clone(),
+		ClientTrees:          partialState.ClientTrees,
+		BoardingInputIndices: partialState.BoardingInputIndices,
+		ExpectedForfeits:     expectedForfeits,
+		CollectedForfeits:    collected,
+	}, nil
+}
+
 // reconstructInputSigSentState reconstructs the InputSigSentState from
 // relational data.
 func (s *RoundPersistenceStore) reconstructInputSigSentState(
@@ -1003,29 +2546,17 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 		ClientTrees: make(map[round.SignerKey]*tree.Tree),
 	}
 
-	// Deserialize commitment tx.
-	if len(dbRound.CommitmentTx) > 0 {
-		reader := bytes.NewReader(dbRound.CommitmentTx)
-		packet, err := psbt.NewFromRawBytes(reader, false)
-		if err != nil {
-			return nil, fmt.Errorf("deserialize commitment tx: %w",
-				err)
-		}
-
-		state.CommitmentTx = packet
+	commitmentTx, err := deserializeCommitmentTx(dbRound.CommitmentTx)
+	if err != nil {
+		return nil, err
 	}
+	state.CommitmentTx = commitmentTx
 
-	// Deserialize VTXO trees.
-	if len(dbRound.VtxtTree) > 0 {
-		vtxtTree, err := DeserializeTree(dbRound.VtxtTree)
-		if err != nil {
-			return nil, fmt.Errorf("deserialize vtxt tree: %w", err)
-		}
-
-		// For now, we store a single tree. Wrap it in a map at index 0.
-		// TODO: Support proper multi-tree serialization format.
-		state.VTXOTreePaths = map[int]*tree.Tree{0: vtxtTree}
+	vtxoTreePaths, err := deserializeStoredVTXOTreePaths(dbRound.VtxtTree)
+	if err != nil {
+		return nil, err
 	}
+	state.VTXOTreePaths = vtxoTreePaths
 
 	// Fetch VTXO requests for this round.
 	dbVtxoReqs, err := q.GetRoundVtxoRequests(ctx, dbRound.RoundID)
@@ -1106,6 +2637,108 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 	}
 
 	return state, nil
+}
+
+func deserializeCommitmentTx(raw []byte) (*psbt.Packet, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	packet, err := psbt.NewFromRawBytes(bytes.NewReader(raw), false)
+	if err != nil {
+		return nil, fmt.Errorf("deserialize commitment tx: %w", err)
+	}
+
+	return packet, nil
+}
+
+func deserializeStoredVTXOTreePaths(raw []byte) (map[int]*tree.Tree, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	vtxtTree, err := DeserializeTree(raw)
+	if err != nil {
+		return nil, fmt.Errorf("deserialize vtxt tree: %w", err)
+	}
+
+	return map[int]*tree.Tree{0: vtxtTree}, nil
+}
+
+func (s *RoundPersistenceStore) roundIntentsFromRows(ctx context.Context,
+	q RoundStore, dbRound RoundRow, dbIntents []RoundBoardingIntentRow) (
+	round.Intents, error) {
+
+	dbVtxoReqs, err := q.GetRoundVtxoRequests(ctx, dbRound.RoundID)
+	if err != nil {
+		return round.Intents{}, fmt.Errorf("get round vtxo "+
+			"requests: %w", err)
+	}
+
+	vtxos := make([]types.VTXORequest, 0, len(dbVtxoReqs))
+	for _, dbReq := range dbVtxoReqs {
+		req, err := dbVtxoRequestRowToVTXORequest(dbReq)
+		if err != nil {
+			return round.Intents{}, fmt.Errorf("convert round "+
+				"vtxo request: %w", err)
+		}
+		vtxos = append(vtxos, *req)
+	}
+
+	boardings := make([]round.BoardingIntent, 0, len(dbIntents))
+	for _, dbIntent := range dbIntents {
+		intent, err := s.dbRoundIntentToDomainIntent(ctx, q, dbIntent)
+		if err != nil {
+			return round.Intents{}, fmt.Errorf("convert round "+
+				"intent: %w", err)
+		}
+		boardings = append(boardings, *intent)
+	}
+
+	return round.Intents{
+		Boarding: boardings,
+		VTXOs:    vtxos,
+	}, nil
+}
+
+func deserializeClientTreeRows(dbTrees []RoundClientTreeRow) (
+	map[round.SignerKey]*tree.Tree, error) {
+
+	clientTrees := make(map[round.SignerKey]*tree.Tree, len(dbTrees))
+	for _, dbTree := range dbTrees {
+		clientTree, err := DeserializeTree(dbTree.TreeData)
+		if err != nil {
+			return nil, fmt.Errorf("deserialize client tree: %w",
+				err)
+		}
+
+		var signerKey round.SignerKey
+		copy(signerKey[:], dbTree.ClientKey)
+		clientTrees[signerKey] = clientTree
+	}
+
+	return clientTrees, nil
+}
+
+func boardingInputIndices(commitmentTx *psbt.Packet,
+	intents round.Intents) map[wire.OutPoint]int {
+
+	indices := make(map[wire.OutPoint]int, len(intents.Boarding))
+	if commitmentTx == nil || commitmentTx.UnsignedTx == nil {
+		return indices
+	}
+
+	wanted := make(map[wire.OutPoint]struct{}, len(intents.Boarding))
+	for _, intent := range intents.Boarding {
+		wanted[intent.Outpoint] = struct{}{}
+	}
+	for i, txIn := range commitmentTx.UnsignedTx.TxIn {
+		if _, ok := wanted[txIn.PreviousOutPoint]; ok {
+			indices[txIn.PreviousOutPoint] = i
+		}
+	}
+
+	return indices
 }
 
 // domainIntentToRoundParams converts a round.BoardingIntent to sqlc insert

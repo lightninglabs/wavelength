@@ -22,7 +22,7 @@ var ErrServiceKeyTypeMismatch = fmt.Errorf("service key type mismatch")
 // messageMarker method.
 //
 // BaseMessage also provides a default CorrelationKey of "" (unkeyed). Messages
-// that need to participate in a per-key FIFO lane in a durable mailbox
+// that need to participate in a per-key FIFO lane in a SQL mailbox
 // override this by defining their own CorrelationKey method on the embedding
 // struct.
 type BaseMessage struct{}
@@ -32,9 +32,9 @@ type BaseMessage struct{}
 func (BaseMessage) messageMarker() {}
 
 // CorrelationKey returns the empty string by default, which means the message
-// is unkeyed and participates in the durable mailbox's global available_at
+// is unkeyed and participates in the SQL mailbox's global available_at
 // claim order. Concrete message types that need per-key FIFO claim ordering
-// override this method to return a non-empty key. See the durable mailbox
+// override this method to return a non-empty key. See the SQL mailbox
 // claim semantics for the full contract.
 func (BaseMessage) CorrelationKey() string { return "" }
 
@@ -53,8 +53,8 @@ type Message interface {
 	MessageType() string
 
 	// CorrelationKey returns a non-empty string when this message
-	// participates in a per-key FIFO lane in a durable mailbox. The
-	// durable mailbox claim SQL never returns a keyed message if an
+	// participates in a per-key FIFO lane in a SQL mailbox. The
+	// SQL mailbox claim SQL never returns a keyed message if an
 	// earlier same-key message is still in the queue, even if the
 	// earlier message is in retry backoff. An empty string means the
 	// message is unkeyed and uses the existing global available_at
@@ -142,7 +142,7 @@ type TellOnlyRef[M Message] interface {
 
 	// Tell sends a message without waiting for a response. Returns an error
 	// if the message could not be enqueued (e.g., context cancelled, actor
-	// stopped, or mailbox full). For durable mailboxes, a nil error
+	// stopped, or mailbox full). For SQL mailboxes, a nil error
 	// indicates the message was durably persisted.
 	Tell(ctx context.Context, msg M) error
 }

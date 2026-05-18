@@ -1,4 +1,4 @@
-.PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
+.PHONY: sqlc sqlc-check sql-durability-check migrate-create migrate-up migrate-down gen
 .PHONY: lint lint-source lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-changed fmt-check fmt-changed-check tidy-module tidy-module-check schema-check doc-check sample-conf-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race unit-swapruntime check-go-version build install clean release
@@ -189,9 +189,25 @@ sqlc-check: sqlc #? Verify SQL code generation is up to date
 		echo "Missing file: db/sqlc/schemas/generated_schema.sql"; \
 		exit 1; \
 	fi
+	@$(MAKE) sql-durability-check
 	@if test -n "$$(git status --porcelain '*.go')"; then \
 		echo "SQL models not properly generated!"; \
 		git status --porcelain '*.go'; \
+		exit 1; \
+	fi
+
+sql-durability-check: #? Verify durable actor/workflow residue stays deleted
+	@$(call print, "Checking SQL durability static gates")
+	@if rg "DurableActor|DurableMailbox|DeliveryStore|RestartMessage|OutboxPublisher" . --type go | grep -v '_test.go'; then \
+		echo "durable actor framework residue found in production Go"; \
+		exit 1; \
+	fi
+	@if rg "WorkflowStore|workflow_sessions|workflow_artifacts|workflow_outbox" . -g '!Makefile'; then \
+		echo "workflow runtime residue found"; \
+		exit 1; \
+	fi
+	@if rg -n "payload[[:space:]]+BLOB|payload BLOB" db/sqlc/migrations; then \
+		echo "generic payload BLOB column found"; \
 		exit 1; \
 	fi
 

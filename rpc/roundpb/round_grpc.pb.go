@@ -38,7 +38,7 @@ type RoundServiceClient interface {
 	// JoinRound registers a client for a round by sending a
 	// JoinRoundRequest (intent). The ack carries no amount
 	// commitment; the binding per-client amounts arrive later via
-	// the durable mailbox as a JoinRoundQuote.
+	// the SQL mailbox as a JoinRoundQuote.
 	JoinRound(ctx context.Context, in *JoinRoundRequest, opts ...grpc.CallOption) (*ClientSuccessResp, error)
 	// AcceptQuote explicitly accepts a JoinRoundQuote. The
 	// server advances from QuoteSentState to BatchBuildingState
@@ -149,7 +149,7 @@ type RoundServiceServer interface {
 	// JoinRound registers a client for a round by sending a
 	// JoinRoundRequest (intent). The ack carries no amount
 	// commitment; the binding per-client amounts arrive later via
-	// the durable mailbox as a JoinRoundQuote.
+	// the SQL mailbox as a JoinRoundQuote.
 	JoinRound(context.Context, *JoinRoundRequest) (*ClientSuccessResp, error)
 	// AcceptQuote explicitly accepts a JoinRoundQuote. The
 	// server advances from QuoteSentState to BatchBuildingState

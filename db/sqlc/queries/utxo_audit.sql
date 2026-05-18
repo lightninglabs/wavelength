@@ -1,6 +1,6 @@
 -- name: InsertWalletUTXOLog :exec
 -- Crash-replay safe: duplicate (outpoint, event) inserts from
--- RestartMessage replay are silently ignored so the audit log stays
+-- retried ledger delivery are silently ignored so the audit log stays
 -- at-most-once per outpoint+event.
 INSERT INTO wallet_utxo_log (
     outpoint_hash, outpoint_index, amount_sat,

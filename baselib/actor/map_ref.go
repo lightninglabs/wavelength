@@ -12,9 +12,9 @@ import (
 // InR]. This enables type-erased lookups (e.g., ServiceKey[Message, any]) to
 // work with actors registered with concrete types.
 //
-// This is useful for adapters like OutboxPublisher which discover actors at
-// runtime via ServiceKey[Message, any] but need to interact with actors that
-// have specific message types.
+// This is useful for adapters which discover actors at runtime via
+// ServiceKey[Message, any] but need to interact with actors that have specific
+// message types.
 type MapRef[In Message, Out Message, InR any, OutR any] struct {
 	// targetRef is the underlying ActorRef that receives transformed
 	// messages.

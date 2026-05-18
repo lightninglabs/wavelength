@@ -117,10 +117,10 @@ func validatePSBTSpends(pkt *psbt.Packet, label string) error {
 	return nil
 }
 
-// buildTaprootWitness constructs the witness stack for a taproot input using
+// BuildTaprootWitness constructs the witness stack for a taproot input using
 // any finalized witness, key spend signature, or script spend signature data
 // available in the PSBT.
-func buildTaprootWitness(in psbt.PInput) (wire.TxWitness, error) {
+func BuildTaprootWitness(in psbt.PInput) (wire.TxWitness, error) {
 	if len(in.FinalScriptWitness) > 0 {
 		return parseFinalWitness(in.FinalScriptWitness)
 	}
@@ -212,6 +212,12 @@ func buildTaprootWitness(in psbt.PInput) (wire.TxWitness, error) {
 	}
 
 	return nil, fmt.Errorf("missing taproot signature or leaf script")
+}
+
+// buildTaprootWitness is kept as the package-local spelling used by older unit
+// tests and helpers.
+func buildTaprootWitness(in psbt.PInput) (wire.TxWitness, error) {
+	return BuildTaprootWitness(in)
 }
 
 // orderTaprootScriptSpendSignatures reorders script-spend signatures into the

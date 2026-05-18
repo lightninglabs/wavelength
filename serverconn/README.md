@@ -17,12 +17,14 @@ The runtime composes three main components:
 ```mermaid
 flowchart TB
     subgraph "Runtime"
-        DA["DurableActor&lt;ServerConnMsg, ServerConnResp&gt;"]
+        A["Actor&lt;ServerConnMsg, ServerConnResp&gt;"]
+        EW["MailboxEgressWorker"]
         SCA["ServerConnectionActor"]
         UF["UnaryFacade"]
     end
 
-    DA -->|"wraps"| SCA
+    A -->|"runs"| SCA
+    EW -->|"replays SQL egress"| EDGE
     UF -->|"delegates to"| SCA
 
     SCA --> RR["ResponseRegistry"]
@@ -30,7 +32,7 @@ flowchart TB
 
     CFG["ConnectorConfig"] -.->|"feeds"| RT["NewRuntime(cfg)"]
 
-    ROUND["Round Actor"] -->|"Tell(SendClientEventRequest)"| DA
+    ROUND["Round Actor"] -->|"TellRef(SendClientEventRequest)"| EW
     CALLER["RPC Caller / Generated Stub"] -->|"SendRPC / AwaitRPC"| UF
     ER["EventRouter"] -.->|"AsDispatcherMap()"| CFG
 ```
@@ -38,8 +40,9 @@ flowchart TB
 - **`ServerConnectionActor`**: The core behavior. Handles egress messages in
   `Receive()` and runs the ingress loop as a background goroutine. Owns the
   in-memory `ResponseRegistry`.
-- **`DurableActor`**: Wraps the actor for crash-safe egress. Persists outbound
-  FSM events to a durable mailbox before processing.
+- **`MailboxEgressWorker`**: Drains SQL-owned `mailbox_egress` rows and sends
+  envelopes to the remote mailbox edge. This is the restart-safe transport
+  boundary; actor messages stay in-memory.
 - **`UnaryFacade`**: Implements `mailboxrpc.RPCClient`. Sends RPCs directly via
   the edge (low-latency, no durability) and awaits responses through the
   registry.
@@ -53,7 +56,7 @@ cfg := serverconn.DefaultConnectorConfig()
 cfg.Edge = mailboxClient          // MailboxServiceClient (gRPC)
 cfg.LocalMailboxID = "client-1"   // This client's mailbox
 cfg.RemoteMailboxID = "server-1"  // Server's mailbox
-cfg.Store = deliveryStore         // actor.DeliveryStore for persistence
+cfg.Transport = transportStore    // SQL transport store for egress/ingress
 cfg.Dispatchers = eventRouter.AsDispatcherMap()  // Inbound routing
 
 runtime, err := serverconn.NewRuntime(cfg)
@@ -62,10 +65,9 @@ if err != nil {
 }
 ```
 
-`NewRuntime` validates required fields, creates the
-`ServerConnectionActor`, wraps it in a `DurableActor` (ID:
-`"serverconn-" + localMailboxID`), and creates the `UnaryFacade`. The
-`Codec` field defaults to `NewServerConnCodec()` if not set.
+`NewRuntime` validates required fields, creates the `ServerConnectionActor`,
+starts a lightweight in-memory actor for local delivery, wires the SQL egress
+worker, and creates the `UnaryFacade`.
 
 ### Starting and Stopping
 
@@ -77,9 +79,9 @@ if err != nil {
 defer runtime.Stop()
 ```
 
-`Start` launches the DurableActor (begins processing egress inbox) and the
-ingress loop (loads ack checkpoint, starts pulling). `Stop` cancels the ingress
-loop, waits for it to exit, then stops the DurableActor.
+`Start` launches in-memory egress processing, starts the SQL egress worker, and
+starts the ingress loop (loads ack checkpoint, starts pulling). `Stop` cancels
+the ingress loop, stops the egress worker, then stops the in-memory actor.
 
 ## Unary RPC: Using Generated Stubs
 
@@ -154,16 +156,17 @@ type ServerMessage interface {
 
 The durable egress path:
 
-1. `DurableActor.Tell` persists the `SendClientEventRequest` to the durable
-   mailbox (TLV-encoded).
-2. The actor runtime calls `Receive`, which:
+1. `Runtime.TellRef().Tell` records the outbound intent in SQL transport
+   storage.
+2. The egress worker replays the row into the in-memory actor, whose `Receive`
+   method:
    - Calls `Message.ToProto()` to get the proto payload.
    - Wraps it in `anypb.Any`.
    - Derives `msg_id` and `idempotency_key` from the payload SHA256 hash
      (via `StableEventMsgID` / `StableEventIdempotencyKey`).
    - Builds a `KIND_EVENT` envelope and calls `Edge.Send`.
-3. On crash, the durable mailbox replays the persisted request. The same IDs are
-   re-derived from the stored payload, so the server deduplicates the retry.
+3. On crash, the egress worker claims the unsent SQL row and retries the same
+   envelope identifiers, so the server deduplicates the retry.
 
 ## Server-Push Events: Receiving and Routing
 
@@ -265,8 +268,7 @@ watermark.
 | `RemoteMailboxID` | `string` | *required* | Remote server's mailbox identifier. |
 | `ProtocolVersion` | `uint32` | `0` | Protocol version stamped on outbound envelopes. |
 | `Dispatchers` | `map[ServiceMethod]EnvelopeDispatcher` | `nil` | Inbound envelope routing table. |
-| `Store` | `actor.DeliveryStore` | *required* | Durability store for inbox, outbox, and checkpoints. |
-| `Codec` | `*actor.MessageCodec` | `NewServerConnCodec()` | TLV codec for ServerConnMsg serialization. |
+| `Transport` | `TransportStore` | *required* | SQL store for connector-owned egress envelopes and ingress cursors. |
 | `PullMaxEnvelopes` | `uint32` | `50` | Max envelopes per Pull call. |
 | `PullWaitTimeout` | `time.Duration` | `5s` | Long-poll timeout for Pull. |
 | `RetryBaseDelay` | `time.Duration` | `200ms` | Exponential backoff base for transient failures. |
@@ -283,46 +285,37 @@ Two independent recovery paths operate on startup:
 sequenceDiagram
     participant P as Process
     participant DB as Store
-    participant DA as DurableActor
+    participant EW as EgressWorker
     participant IL as Ingress Loop
     participant E as Edge
 
     P->>DB: loadCheckpoint(AckState)
-    P->>DA: Start() — replay egress inbox
-    DA->>DB: Load persisted SendClientEventRequest(s)
-    DA->>DA: Receive() — re-derive same IDs from payload hash
-    DA->>E: Edge.Send (server deduplicates via idempotency key)
+    P->>EW: Start() — claim unsent mailbox_egress rows
+    EW->>DB: Load pending transport envelopes
+    EW->>E: Edge.Send (server deduplicates via idempotency key)
 
     P->>IL: StartIngress(ctx)
     IL->>E: AckUpTo(AckTarget) — catch up if ack was pending
     IL->>E: Pull(PullCursor) — resume from last checkpoint
-    Note over IL,E: Re-pulled envelopes dispatched normally.<br/>Durable actors deduplicate via message ID.
+    Note over IL,E: Re-pulled envelopes dispatched normally.<br/>SQL/domain handlers deduplicate via message ID.
 ```
 
-**Egress recovery**: The DurableActor replays all unacknowledged
-`SendClientEventRequest` and `SendRPCRequest` messages from its persistent
-inbox. For event messages, the same `msg_id` and `idempotency_key` are
-reproduced from the persisted TLV payload. The server deduplicates.
+**Egress recovery**: The SQL egress worker claims unsent `mailbox_egress` rows
+for this runtime and retries the same envelope with the same `msg_id` and
+`idempotency_key`. The server deduplicates.
 
 **Ingress recovery**: `loadCheckpoint` restores the four-cursor `AckState`.
 The loop resumes from `PullCursor`. If an ack was pending at crash time
 (`AckTarget > AckCommittedTo`), it acks first. Re-pulled envelopes are
-dispatched normally — the target durable actors deduplicate via message ID.
+dispatched normally — target SQL/domain handlers deduplicate via message ID.
 
 **Unary RPC recovery**: Response waiters are in-memory only. On crash, callers'
 contexts are cancelled and they retry the RPC with new correlation IDs.
 
-## Message Types and TLV Encoding
+## Message Types
 
-Two message types flow through the durable actor mailbox:
-
-| TLV Type | Message | Description |
-|----------|---------|-------------|
-| `2000` | `SendClientEventRequest` | FSM outbox event. TLV records: proto payload (Any), msg_id, idempotency_key. |
-| `2001` | `SendRPCRequest` | Pre-built unary RPC envelope. TLV record: full Envelope via WrappedProto. |
-
-Both implement `actor.TLVMessage` (`TLVType`, `Encode`, `Decode`).
-`NewServerConnCodec()` returns a `MessageCodec` with both types registered.
+`ServerConnMsg` values are in-memory actor messages. Restart safety lives in
+SQL-owned transport rows and domain tables, not actor-message serialization.
 
 ## Testing
 
@@ -335,7 +328,7 @@ The package has comprehensive test coverage across several test files:
 | `unary_facade_test.go` | UnaryFacade send/await with mocked edge. |
 | `ingress_error_test.go` | Ingress loop error handling and backoff behavior. |
 | `ingress_property_test.go` | Property-based tests for ack watermark invariants. |
-| `actor_tlv_test.go` | TLV encode/decode round-trip for message types. |
+| `actor_messages_test.go` | In-memory actor message metadata and transport identity behavior. |
 | `restart_replay_test.go` | Crash recovery and egress replay. |
 | `runtime_test.go` | Runtime lifecycle (start, stop, validation). |
 | `testutil_test.go` | In-memory mailbox, checkpoint store, test helpers. |
@@ -361,7 +354,5 @@ make unit log="stdlog trace" pkg=serverconn case=TestE2E timeout=5m
   (proto definitions, RPC interfaces, connector primitives).
 - [`docs/RPC_MAILBOX_CONTRACT.md`](../docs/RPC_MAILBOX_CONTRACT.md) —
   Protocol-level contract (ordering, idempotency, ack semantics).
-- [`docs/durable_actor_architecture.md`](../docs/durable_actor_architecture.md)
-  — Underlying actor durability model (CDC, leasing, deduplication).
-- [`docs/durable_actor_quickstart.md`](../docs/durable_actor_quickstart.md) —
-  Practical guide to implementing durable actors and TLV messages.
+- [`docs/mailbox_architecture.md`](../docs/mailbox_architecture.md) —
+  SQL-backed mailbox transport model.

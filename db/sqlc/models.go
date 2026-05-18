@@ -83,6 +83,103 @@ type ChainInfo struct {
 	GenesisHash []byte
 }
 
+type ClientRoundAggNonceState struct {
+	RoundID        string
+	Txid           []byte
+	AggNonce       []byte
+	CreationTime   int64
+	LastUpdateTime int64
+}
+
+type ClientRoundEffect struct {
+	ID             string
+	RoundID        string
+	EffectType     string
+	Status         string
+	IdempotencyKey string
+	Attempts       int32
+	MaxAttempts    int32
+	NextAttemptAt  int64
+	ClaimOwner     sql.NullString
+	ClaimToken     sql.NullString
+	ClaimUntil     sql.NullInt64
+	LastError      sql.NullString
+	CreatedAt      int64
+	UpdatedAt      int64
+	DoneAt         sql.NullInt64
+}
+
+type ClientRoundForfeitRequestState struct {
+	RoundID                string
+	VtxoOutpointHash       []byte
+	VtxoOutpointIndex      int32
+	ConnectorOutpointHash  []byte
+	ConnectorOutpointIndex int32
+	ConnectorPkScript      []byte
+	ConnectorAmount        int64
+	VtxoAmount             int64
+	ServerForfeitPkScript  []byte
+	ForfeitSpend           []byte
+	CreationTime           int64
+	LastUpdateTime         int64
+}
+
+type ClientRoundForfeitSigState struct {
+	RoundID           string
+	VtxoOutpointHash  []byte
+	VtxoOutpointIndex int32
+	ForfeitTx         []byte
+	ClientSig         []byte
+	SpendPath         []byte
+	CreationTime      int64
+	LastUpdateTime    int64
+}
+
+type ClientRoundNonceState struct {
+	RoundID        string
+	SigningKey     []byte
+	Txid           []byte
+	PubNonce       []byte
+	SecNonce       []byte
+	CreationTime   int64
+	LastUpdateTime int64
+}
+
+type ClientRoundPartialSigState struct {
+	RoundID        string
+	SigningKey     []byte
+	Txid           []byte
+	PartialSig     []byte
+	CreationTime   int64
+	LastUpdateTime int64
+}
+
+type ClientRoundPendingLeaveQuote struct {
+	RoundID    string
+	QuoteIndex int32
+	PkScript   []byte
+	AmountSat  int64
+}
+
+type ClientRoundPendingQuote struct {
+	RoundID        string
+	QuoteID        []byte
+	SealPass       int64
+	OperatorFeeSat int64
+	QuoteExpiresAt int64
+	RejectReason   int32
+	CreationTime   int64
+	LastUpdateTime int64
+}
+
+type ClientRoundPendingVtxoQuote struct {
+	RoundID      string
+	QuoteIndex   int32
+	PkScript     []byte
+	AmountSat    int64
+	RecipientKey []byte
+}
+
 type ClientTreeTxid struct {
 	Txid        []byte
 	RoundID     string
@@ -109,6 +206,147 @@ type LedgerEntry struct {
 
 type LedgerEventType struct {
 	EventType string
+}
+
+type MailboxEgress struct {
+	ID              string
+	Connector       string
+	LocalMailboxID  string
+	RemoteMailboxID string
+	RpcKind         string
+	Service         string
+	Method          string
+	CorrelationID   sql.NullString
+	ReplyTo         sql.NullString
+	MsgID           string
+	IdempotencyKey  string
+	Envelope        []byte
+	Status          string
+	Attempts        int32
+	MaxAttempts     int32
+	NextAttemptAt   int64
+	ClaimOwner      sql.NullString
+	ClaimToken      sql.NullString
+	ClaimUntil      sql.NullInt64
+	LastError       sql.NullString
+	CreatedAt       int64
+	UpdatedAt       int64
+	SentAt          sql.NullInt64
+}
+
+type MailboxIngressCursor struct {
+	LocalMailboxID      string
+	RemoteMailboxID     string
+	PullCursor          int64
+	DispatchCommittedTo int64
+	AckTarget           int64
+	AckCommittedTo      int64
+	LastPullAt          sql.NullInt64
+	LastDispatchAt      sql.NullInt64
+	LastAckAt           sql.NullInt64
+	LastError           sql.NullString
+	CreatedAt           int64
+	UpdatedAt           int64
+}
+
+type OorClientArkArtifact struct {
+	SessionID []byte
+	Phase     string
+	ArkPsbt   []byte
+	CreatedAt int64
+	UpdatedAt int64
+}
+
+type OorClientCheckpoint struct {
+	SessionID       []byte
+	CheckpointIndex int32
+	Phase           string
+	CheckpointPsbt  []byte
+	CreatedAt       int64
+	UpdatedAt       int64
+}
+
+type OorClientEffect struct {
+	ID             string
+	SessionID      []byte
+	Direction      string
+	EffectType     string
+	Status         string
+	IdempotencyKey string
+	Attempts       int32
+	MaxAttempts    int32
+	NextAttemptAt  int64
+	ClaimOwner     sql.NullString
+	ClaimToken     sql.NullString
+	ClaimUntil     sql.NullInt64
+	LastError      sql.NullString
+	CreatedAt      int64
+	UpdatedAt      int64
+	DoneAt         sql.NullInt64
+}
+
+type OorClientIncomingHint struct {
+	SessionID         []byte
+	RecipientPkScript []byte
+	RecipientEventID  int64
+	CreatedAt         int64
+	UpdatedAt         int64
+}
+
+type OorClientIncomingMetadatum struct {
+	SessionID      []byte
+	OutputIndex    int32
+	RoundID        []byte
+	ChainDepth     sql.NullInt32
+	BatchExpiry    sql.NullInt32
+	OperatorPubkey []byte
+	AncestryBlob   []byte
+	MetadataBlob   []byte
+	CreatedAt      int64
+	UpdatedAt      int64
+}
+
+type OorClientInput struct {
+	SessionID          []byte
+	InputIndex         int32
+	OutpointHash       []byte
+	OutpointIndex      int32
+	AmountSat          int64
+	PkScript           []byte
+	ClientKeyFamily    int32
+	ClientKeyIndex     int32
+	ClientPubKey       []byte
+	OperatorPubKey     []byte
+	ExitDelay          int32
+	VtxoPolicyTemplate []byte
+	OwnerLeafScript    []byte
+	OwnerLeafPolicy    []byte
+	SpendWitnessScript []byte
+	SpendControlBlock  []byte
+	ConditionWitness   []byte
+	RequiredSequence   sql.NullInt32
+	RequiredLocktime   sql.NullInt32
+}
+
+type OorClientRecipient struct {
+	SessionID          []byte
+	OutputIndex        int32
+	PkScript           []byte
+	ValueSat           int64
+	VtxoPolicyTemplate []byte
+}
+
+type OorClientSession struct {
+	SessionID      []byte
+	Direction      string
+	State          string
+	IdempotencyKey sql.NullString
+	RetryAfter     sql.NullInt64
+	RetryReason    sql.NullString
+	FailReason     sql.NullString
+	CreatedAt      int64
+	UpdatedAt      int64
+	CompletedAt    sql.NullInt64
 }
 
 type OorPackage struct {
@@ -177,6 +415,25 @@ type PendingBoardRequest struct {
 	RequestedAtUnix int64
 }
 
+type PendingBoardVtxoRequest struct {
+	OutpointHash     []byte
+	OutpointIndex    int32
+	RequestIndex     int32
+	Amount           int64
+	IsChange         bool
+	PkScript         []byte
+	Expiry           int32
+	PolicyTemplate   []byte
+	ClientPubkey     []byte
+	OperatorPubkey   []byte
+	OwnerKeyFamily   int32
+	OwnerKeyIndex    int32
+	SigningKeyFamily int32
+	SigningKeyIndex  int32
+	SigningPubkey    []byte
+	Origin           int32
+}
+
 type Round struct {
 	RoundID               string
 	StartHeight           int32
@@ -230,14 +487,69 @@ type RoundVtxoRequest struct {
 	SigningPubkey    []byte
 }
 
-type UnilateralExitJob struct {
+type UnrollEffect struct {
+	ID                  string
 	TargetOutpointHash  []byte
 	TargetOutpointIndex int32
-	ActorID             string
-	Status              int32
-	Trigger             int32
+	EffectType          string
+	Txid                []byte
+	Status              string
+	IdempotencyKey      string
+	Attempts            int32
+	MaxAttempts         int32
+	NextAttemptAt       int64
+	ClaimOwner          sql.NullString
+	ClaimToken          sql.NullString
+	ClaimUntil          sql.NullInt64
 	LastError           sql.NullString
+	CreatedAt           int64
+	UpdatedAt           int64
+	DoneAt              sql.NullInt64
+}
+
+type UnrollJob struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+	State               string
+	Trigger             string
+	BestHeight          int32
+	TargetConfirmHeight sql.NullInt32
+	PlannerState        []byte
+	DeferredCheckpoints []byte
+	SweepTx             []byte
 	SweepTxid           []byte
+	SweepConfirmHeight  sql.NullInt32
+	SweepAttempts       int32
+	FailReason          sql.NullString
+	CreatedAt           int64
+	UpdatedAt           int64
+}
+
+type UnrollTxProgress struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+	Txid                []byte
+	Role                string
+	Status              string
+	TxBytes             []byte
+	ConfirmHeight       sql.NullInt32
+	LastError           sql.NullString
+	CreatedAt           int64
+	UpdatedAt           int64
+}
+
+type UnrollWatch struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+	WatchID             string
+	Role                string
+	Txid                []byte
+	SpendOutpointHash   []byte
+	SpendOutpointIndex  sql.NullInt32
+	Status              string
+	HeightHint          sql.NullInt32
+	ConfirmationHeight  sql.NullInt32
+	LastError           sql.NullString
 	CreatedAt           int64
 	UpdatedAt           int64
 }
@@ -285,6 +597,30 @@ type VtxoAncestryPath struct {
 	TreePath          []byte
 	TreeDepth         int32
 	InputIndices      []byte
+}
+
+type WalletEffect struct {
+	ID             string
+	EffectType     string
+	Status         string
+	IdempotencyKey string
+	OutpointHash   []byte
+	OutpointIndex  sql.NullInt32
+	Txid           []byte
+	AmountSat      sql.NullInt64
+	FeeSat         sql.NullInt64
+	BlockHeight    sql.NullInt32
+	Classification sql.NullString
+	Attempts       int32
+	MaxAttempts    int32
+	NextAttemptAt  int64
+	ClaimOwner     sql.NullString
+	ClaimToken     sql.NullString
+	ClaimUntil     sql.NullInt64
+	LastError      sql.NullString
+	CreatedAt      int64
+	UpdatedAt      int64
+	DoneAt         sql.NullInt64
 }
 
 type WalletUtxoLog struct {

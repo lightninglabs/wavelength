@@ -1,3 +1,4 @@
+//nolint:ll
 package unroll
 
 import (
@@ -84,9 +85,8 @@ type RegistryConfig struct {
 	// Store persists coarse registry records for restore.
 	Store RegistryStore
 
-	// DeliveryStore provides durable mailbox and checkpoint persistence for
-	// child actors.
-	DeliveryStore actor.DeliveryStore
+	// JobStore provides SQL job persistence for child actors.
+	JobStore JobStore
 
 	// ProofAssembler resolves immutable proofs for child actors.
 	ProofAssembler ProofAssembler
@@ -114,7 +114,7 @@ type RegistryConfig struct {
 	// FraudCheckpointSafetyMargin overrides the default backstop
 	// margin (in blocks) the recipient subtracts from the relative
 	// expiry when deciding to self-broadcast a fraud-triggered
-	// checkpoint. Zero applies defaultFraudCheckpointSafetyMargin;
+	// job. Zero applies defaultFraudCheckpointSafetyMargin;
 	// the effective margin is always clamped to csvDelay/2 when
 	// csvDelay is too small to absorb the configured value. Plumbed
 	// into every spawned VTXOUnrollActor and from there into the
@@ -257,6 +257,9 @@ func (r *registryBehavior) Receive(ctx context.Context,
 	case *persistRecordResultMsg:
 		return r.handlePersistRecordResult(ctx, req)
 
+	case *replayUnrollEffectMsg:
+		return r.handleReplayEffect(ctx, req)
+
 	default:
 		return fn.Err[RegistryResp](
 			fmt.Errorf("unknown registry message: %T", msg),
@@ -382,16 +385,16 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		//
 		//   1. Cancellation race — the admission context (or the
 		//      child's own actor context) ended before the child
-		//      committed its first message. The pending row is
-		//      already durable, so re-issuing the StartUnrollRequest
-		//      via a fire-and-forget Tell hands the work off to the
-		//      child's durable mailbox poll loop. Caller still sees
-		//      Created=true because the job IS admitted; the FSM
-		//      will catch up off the persisted message.
+		//      committed its first message. The pending row is already
+		//      durable, so re-issuing the StartUnrollRequest via a
+		//      fire-and-forget Tell hands the work to the child actor.
+		//      Caller still sees Created=true because the job IS
+		//      admitted; the FSM will catch up from the registry row and
+		//      job store.
 		//
 		//   2. Real start error — proof assembly, store, planner.
 		//      Hide it under a Created=true would silently strand
-		//      the user's funds in unilateral_exit with no progress.
+		//      the user's funds in unroll with no progress.
 		//      We mark the durable row PhaseFailed so GetUnrollStatus
 		//      surfaces a terminal status instead of "not found".
 		if isCancellationRace(err) {
@@ -413,7 +416,7 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 			r.log.WarnS(ctx, "Requeued unroll child start "+
 				"after admission context ended", err,
 				slog.String("outpoint", req.Outpoint.String()),
-				slog.String("actor_id", child.Ref().ID()),
+				slog.String("child_id", child.Ref().ID()),
 			)
 
 			return fn.Ok[RegistryResp](&EnsureUnrollResp{
@@ -446,7 +449,7 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		r.log.WarnS(ctx, "Failed to read started unroll state "+
 			"after durable admission", err,
 			slog.String("outpoint", req.Outpoint.String()),
-			slog.String("actor_id", child.Ref().ID()),
+			slog.String("child_id", child.Ref().ID()),
 		)
 
 		return fn.Ok[RegistryResp](&EnsureUnrollResp{
@@ -465,7 +468,7 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		r.log.WarnS(ctx, "Failed to refine unroll admission "+
 			"record", err,
 			slog.String("outpoint", req.Outpoint.String()),
-			slog.String("actor_id", child.Ref().ID()),
+			slog.String("child_id", child.Ref().ID()),
 		)
 
 		// Registry persistence retries are actor-owned follow-up work.
@@ -510,7 +513,7 @@ func (r *registryBehavior) failAdmittedChild(ctx context.Context,
 		r.log.WarnS(ctx, "Failed to mark admitted unroll child "+
 			"terminal", markErr,
 			slog.String("outpoint", target.String()),
-			slog.String("actor_id", child.Ref().ID()),
+			slog.String("child_id", child.Ref().ID()),
 		)
 		// Registry persistence retries are actor-owned follow-up work.
 		//nolint:contextcheck
@@ -538,7 +541,7 @@ func (r *registryBehavior) failAdmittedChild(ctx context.Context,
 //     StartUnrollRequest.
 //
 // All three are recoverable via the durable retry path; treating them
-// as terminal failure would strand the VTXO in unilateral_exit with no
+// as terminal failure would strand the VTXO in unroll with no
 // surviving registry record after eviction.
 func isCancellationRace(err error) bool {
 	return errors.Is(err, context.Canceled) ||
@@ -549,10 +552,9 @@ func isCancellationRace(err error) bool {
 // handleGetStatus answers a status probe from the registry's cached
 // control-plane view instead of asking the child actor.
 //
-// The child state request is read-only, but on a durable child actor it still
-// becomes a durable mailbox message. Polling clients can therefore leave stale
-// GetStateRequest rows behind after their RPC context expires, and those rows
-// can starve progress notifications during block-mining-heavy tests. The
+// The child state request is read-only, but polling clients can still leave
+// stale GetStateRequest work behind after their RPC context expires, and those
+// reads can starve progress notifications during block-mining-heavy tests. The
 // registry's pending/store record is intentionally coarse, but it is enough for
 // external status: admission records Materializing, terminal notifications
 // update Completed/Failed, and active children are identified by ActorID.
@@ -722,7 +724,7 @@ func stopChildAfterDrain(child *VTXOUnrollActor) {
 // already Completed or Failed, spawns a fresh VTXOUnrollActor per
 // target, and sends ResumeUnrollRequest to each.
 //
-// The per-target behavior then loads its checkpoint (proof, planner
+// The per-target behavior then loads its job (proof, planner
 // state, sweep tx, last height), reconstructs the FSM in the same state
 // it left off, and re-arms txconfirm subscriptions for every in-flight
 // node and for the sweep (see routeOutbox's Reissue* branches). Thanks
@@ -783,6 +785,55 @@ func (r *registryBehavior) restoreNonTerminal(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (r *registryBehavior) handleReplayEffect(ctx context.Context,
+	req *replayUnrollEffectMsg) fn.Result[RegistryResp] {
+
+	record, err := r.cfg.Store.GetRecord(ctx, req.Outpoint)
+	if err != nil {
+		return fn.Err[RegistryResp](
+			fmt.Errorf("lookup unroll effect target: %w", err),
+		)
+	}
+	if record == nil {
+		return fn.Err[RegistryResp](
+			fmt.Errorf("unroll effect target %s not found",
+				req.Outpoint),
+		)
+	}
+	if record.IsTerminal() {
+		return fn.Ok[RegistryResp](&RegistryAckResp{})
+	}
+
+	height, err := r.queryBestHeight(ctx)
+	if err != nil {
+		return fn.Err[RegistryResp](
+			fmt.Errorf("best height for effect replay: %w", err),
+		)
+	}
+
+	child, ok := r.active[req.Outpoint]
+	if !ok {
+		child, err = r.spawn(ctx, req.Outpoint)
+		if err != nil {
+			return fn.Err[RegistryResp](
+				fmt.Errorf("spawn effect target: %w", err),
+			)
+		}
+		r.active[req.Outpoint] = child
+	}
+
+	_, err = child.Ref().Ask(ctx, &ResumeUnrollRequest{
+		Height: height,
+	}).Await(ctx).Unpack()
+	if err != nil {
+		return fn.Err[RegistryResp](
+			fmt.Errorf("resume effect target: %w", err),
+		)
+	}
+
+	return fn.Ok[RegistryResp](&RegistryAckResp{})
 }
 
 // handlePersistActiveRecord is half of the two-message pair that drives
@@ -906,10 +957,10 @@ func (r *registryBehavior) spawn(ctx context.Context, target wire.OutPoint) (
 		return r.spawnFunc(ctx, target)
 	}
 
-	//nolint:contextcheck // child actor owns its own durable lifecycle
+	//nolint:contextcheck // child actor owns its own lifecycle
 	return NewVTXOUnrollActor(Config{
 		TargetOutpoint:              target,
-		DeliveryStore:               r.cfg.DeliveryStore,
+		JobStore:                    r.cfg.JobStore,
 		ProofAssembler:              r.cfg.ProofAssembler,
 		VTXOStore:                   r.cfg.VTXOStore,
 		TxConfirmRef:                r.cfg.TxConfirmRef,

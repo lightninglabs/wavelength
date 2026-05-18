@@ -111,13 +111,22 @@ func TestSubmitPackageResponseRoundTrip(t *testing.T) {
 		mustTestPSBT(t, 31),
 		mustTestPSBT(t, 32),
 	}
+	ark := mustTestPSBT(t, 33)
 
-	resp, err := NewSubmitPackageResponse(sessionID, checkpoints)
+	resp, err := NewSubmitPackageResponse(sessionID, ark, checkpoints)
 	require.NoError(t, err)
 
-	decSessionID, decCheckpoints, err := ParseSubmitPackageResponse(resp)
+	decSessionID, decArk, decCheckpoints, err := ParseSubmitPackageResponse(
+		resp,
+	)
 	require.NoError(t, err)
 	require.Equal(t, sessionID, decSessionID)
+	require.True(
+		t,
+		bytes.Equal(
+			mustSerializePSBT(t, ark), mustSerializePSBT(t, decArk),
+		),
+	)
 	require.Equal(t, len(checkpoints), len(decCheckpoints))
 
 	for i := range checkpoints {

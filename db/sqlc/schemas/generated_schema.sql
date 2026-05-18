@@ -9,26 +9,6 @@ CREATE TABLE accounts (
         REFERENCES account_types(account_type)
 );
 
-CREATE TABLE ask_results (
-    -- promise_id links to the original Ask message.
-    promise_id TEXT PRIMARY KEY,
-
-    -- result_blob contains the TLV-encoded successful result.
-    -- NULL if the request failed with an error.
-    result_blob BLOB,
-
-    -- error_text contains the error message if the request failed.
-    -- NULL if the request succeeded.
-    error_text TEXT,
-
-    -- created_at is the unix timestamp when the result was persisted.
-    created_at BIGINT NOT NULL,
-
-    -- expires_at is the unix timestamp after which this result can be garbage
-    -- collected. Callers should retrieve results before expiry.
-    expires_at BIGINT NOT NULL
-);
-
 CREATE TABLE boarding_addresses (
     -- pk_script is the raw output script (P2TR script) and serves as the
     -- primary key since it uniquely identifies an address.
@@ -162,6 +142,183 @@ CREATE TABLE chain_info (
     genesis_hash BLOB NOT NULL
 );
 
+CREATE TABLE client_round_agg_nonce_state (
+    round_id TEXT NOT NULL,
+
+    -- txid is the transaction this aggregate nonce belongs to.
+    txid BLOB NOT NULL,
+
+    -- agg_nonce is the 66-byte aggregate MuSig2 public nonce shared by the
+    -- operator after collecting participant nonce submissions.
+    agg_nonce BLOB NOT NULL CHECK(length(agg_nonce) = 66),
+
+    creation_time BIGINT NOT NULL,
+    last_update_time BIGINT NOT NULL,
+
+    PRIMARY KEY (round_id, txid),
+    FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE
+);
+
+CREATE TABLE client_round_effects (
+    id TEXT PRIMARY KEY NOT NULL,
+    round_id TEXT NOT NULL,
+    effect_type TEXT NOT NULL CHECK (effect_type IN (
+        'send_nonces',
+        'send_boarding_sigs',
+        'send_partial_sigs',
+        'request_vtxo_forfeit_sigs',
+        'send_vtxo_forfeit_sigs',
+        'register_confirmation'
+    )),
+    status TEXT NOT NULL CHECK (status IN (
+        'pending', 'claimed', 'done', 'dead'
+    )),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 10,
+    next_attempt_at BIGINT NOT NULL,
+    claim_owner TEXT,
+    claim_token TEXT,
+    claim_until BIGINT,
+    last_error TEXT,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    done_at BIGINT,
+
+    FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE,
+    CHECK (attempts >= 0),
+    CHECK (max_attempts > 0),
+    CHECK (next_attempt_at > 0),
+    CHECK (
+        (status = 'done' AND done_at IS NOT NULL) OR
+        (status != 'done')
+    )
+);
+
+CREATE TABLE client_round_forfeit_request_state (
+    round_id TEXT NOT NULL,
+
+    vtxo_outpoint_hash BLOB NOT NULL,
+    vtxo_outpoint_index INTEGER NOT NULL,
+
+    connector_outpoint_hash BLOB NOT NULL,
+    connector_outpoint_index INTEGER NOT NULL,
+    connector_pk_script BLOB NOT NULL,
+    connector_amount BIGINT NOT NULL,
+    vtxo_amount BIGINT NOT NULL,
+    server_forfeit_pk_script BLOB NOT NULL,
+
+    -- forfeit_spend is the optional encoded arkscript spend path override
+    -- for custom policies. NULL means the VTXO actor should use its standard
+    -- collaborative spend path.
+    forfeit_spend BLOB,
+
+    creation_time BIGINT NOT NULL,
+    last_update_time BIGINT NOT NULL,
+
+    PRIMARY KEY (round_id, vtxo_outpoint_hash, vtxo_outpoint_index),
+    FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE
+);
+
+CREATE TABLE client_round_forfeit_sig_state (
+    round_id TEXT NOT NULL,
+
+    -- vtxo_outpoint identifies the old VTXO being forfeited.
+    vtxo_outpoint_hash BLOB NOT NULL,
+    vtxo_outpoint_index INTEGER NOT NULL,
+
+    -- forfeit_tx is the unsigned Bitcoin transaction built by the VTXO actor.
+    forfeit_tx BLOB NOT NULL,
+
+    -- client_sig is the 64-byte Schnorr signature for the VTXO input.
+    client_sig BLOB NOT NULL CHECK(length(client_sig) = 64),
+
+    -- spend_path is the canonical arkscript spend path used for the VTXO input.
+    spend_path BLOB NOT NULL,
+
+    creation_time BIGINT NOT NULL,
+    last_update_time BIGINT NOT NULL,
+
+    PRIMARY KEY (round_id, vtxo_outpoint_hash, vtxo_outpoint_index),
+    FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE
+);
+
+CREATE TABLE client_round_nonce_state (
+    round_id TEXT NOT NULL,
+
+    -- signing_key is the 33-byte compressed MuSig2 signing public key.
+    signing_key BLOB NOT NULL,
+
+    -- txid is the transaction this nonce signs.
+    txid BLOB NOT NULL,
+
+    -- pub_nonce is the 66-byte MuSig2 public nonce shared with the server.
+    pub_nonce BLOB NOT NULL CHECK(length(pub_nonce) = 66),
+
+    -- sec_nonce is the 97-byte MuSig2 secret nonce consumed during partial
+    -- signing. It is sensitive wallet material.
+    sec_nonce BLOB NOT NULL CHECK(length(sec_nonce) = 97),
+
+    creation_time BIGINT NOT NULL,
+    last_update_time BIGINT NOT NULL,
+
+    PRIMARY KEY (round_id, signing_key, txid),
+    FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE
+);
+
+CREATE TABLE client_round_partial_sig_state (
+    round_id TEXT NOT NULL,
+
+    -- signing_key is the 33-byte compressed MuSig2 signing public key.
+    signing_key BLOB NOT NULL,
+
+    -- txid is the transaction this partial signature signs.
+    txid BLOB NOT NULL,
+
+    -- partial_sig is the 32-byte MuSig2 scalar signature fragment.
+    partial_sig BLOB NOT NULL CHECK(length(partial_sig) = 32),
+
+    creation_time BIGINT NOT NULL,
+    last_update_time BIGINT NOT NULL,
+
+    PRIMARY KEY (round_id, signing_key, txid),
+    FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE
+);
+
+CREATE TABLE client_round_pending_leave_quotes (
+    round_id TEXT NOT NULL,
+    quote_index INTEGER NOT NULL,
+    pk_script BLOB NOT NULL,
+    amount_sat BIGINT NOT NULL,
+
+    PRIMARY KEY (round_id, quote_index),
+    FOREIGN KEY (round_id) REFERENCES client_round_pending_quotes(round_id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE client_round_pending_quotes (
+    round_id TEXT PRIMARY KEY NOT NULL,
+    quote_id BLOB NOT NULL CHECK(length(quote_id) = 32),
+    seal_pass BIGINT NOT NULL,
+    operator_fee_sat BIGINT NOT NULL,
+    quote_expires_at BIGINT NOT NULL,
+    reject_reason INTEGER NOT NULL,
+    creation_time BIGINT NOT NULL,
+    last_update_time BIGINT NOT NULL
+);
+
+CREATE TABLE client_round_pending_vtxo_quotes (
+    round_id TEXT NOT NULL,
+    quote_index INTEGER NOT NULL,
+    pk_script BLOB NOT NULL,
+    amount_sat BIGINT NOT NULL,
+    recipient_key BLOB NOT NULL,
+
+    PRIMARY KEY (round_id, quote_index),
+    FOREIGN KEY (round_id) REFERENCES client_round_pending_quotes(round_id)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE client_tree_txids (
     -- txid is the 32-byte transaction hash (node.Input.Hash or computed from node).
     txid BLOB NOT NULL,
@@ -184,53 +341,6 @@ CREATE TABLE client_tree_txids (
         REFERENCES round_client_trees(round_id, client_key)
         ON DELETE CASCADE
 );
-
-CREATE TABLE dead_letters (
-    -- id is the original message ID.
-    id TEXT PRIMARY KEY,
-
-    -- source indicates where the message originated: 'mailbox' or 'outbox'.
-    source TEXT NOT NULL,
-
-    -- actor_id identifies the target actor (for mailbox) or source (for outbox).
-    actor_id TEXT NOT NULL,
-
-    -- message_type is the type name for the failed message.
-    message_type TEXT NOT NULL,
-
-    -- payload contains the original TLV-encoded message data.
-    payload BLOB NOT NULL,
-
-    -- failure_reason describes why the message was dead-lettered.
-    failure_reason TEXT NOT NULL,
-
-    -- attempts is the number of delivery attempts before dead-lettering.
-    attempts INTEGER NOT NULL,
-
-    -- created_at is the unix timestamp when the message was dead-lettered.
-    created_at BIGINT NOT NULL
-);
-
-CREATE TABLE fsm_checkpoints (
-    -- actor_id identifies the actor whose FSM state is checkpointed.
-    actor_id TEXT PRIMARY KEY,
-
-    -- state_type is the name of the current FSM state for quick lookup.
-    state_type TEXT NOT NULL,
-
-    -- state_data contains the TLV-encoded state snapshot.
-    state_data BLOB NOT NULL,
-
-    -- version is a monotonic counter incremented on each checkpoint.
-    -- Used for conflict detection and debugging.
-    version INTEGER NOT NULL DEFAULT 0,
-
-    -- updated_at is the unix timestamp of the last checkpoint.
-    updated_at BIGINT NOT NULL
-);
-
-CREATE INDEX idx_ask_results_expires
-    ON ask_results(expires_at);
 
 CREATE INDEX idx_boarding_addresses_creation_time
     ON boarding_addresses(creation_time DESC);
@@ -296,32 +406,54 @@ CREATE UNIQUE INDEX idx_client_ledger_idempotent_session
 CREATE INDEX idx_client_ledger_round
     ON ledger_entries(round_id);
 
+CREATE INDEX idx_client_round_agg_nonce_state_round_id
+    ON client_round_agg_nonce_state(round_id);
+
+CREATE INDEX idx_client_round_effects_due
+    ON client_round_effects(status, next_attempt_at, created_at);
+
+CREATE INDEX idx_client_round_effects_round
+    ON client_round_effects(round_id, status, created_at);
+
+CREATE INDEX idx_client_round_forfeit_request_state_round_id
+    ON client_round_forfeit_request_state(round_id);
+
+CREATE INDEX idx_client_round_forfeit_sig_state_round_id
+    ON client_round_forfeit_sig_state(round_id);
+
+CREATE INDEX idx_client_round_nonce_state_round_id
+    ON client_round_nonce_state(round_id);
+
+CREATE INDEX idx_client_round_partial_sig_state_round_id
+    ON client_round_partial_sig_state(round_id);
+
+CREATE INDEX idx_client_round_pending_quotes_created
+    ON client_round_pending_quotes(creation_time, round_id);
+
 CREATE INDEX idx_client_tree_txids_tree
     ON client_tree_txids(round_id, client_key, tree_level);
 
 CREATE INDEX idx_client_tree_txids_txid
     ON client_tree_txids(txid);
 
-CREATE INDEX idx_dead_letters_actor
-    ON dead_letters(actor_id, created_at DESC);
+CREATE INDEX idx_mailbox_egress_correlation
+    ON mailbox_egress(correlation_id);
 
-CREATE INDEX idx_dead_letters_source
-    ON dead_letters(source, created_at DESC);
+CREATE INDEX idx_mailbox_egress_due
+    ON mailbox_egress(status, next_attempt_at, created_at);
 
-CREATE INDEX idx_mailbox_messages_available
-    ON mailbox_messages(mailbox_id, priority DESC, available_at ASC, created_at ASC);
+CREATE INDEX idx_mailbox_egress_pair
+    ON mailbox_egress(connector, local_mailbox_id, remote_mailbox_id, created_at);
 
-CREATE INDEX idx_mailbox_messages_correlation
-    ON mailbox_messages(mailbox_id, correlation_key, id)
-    WHERE correlation_key IS NOT NULL;
+CREATE INDEX idx_mailbox_ingress_remote
+    ON mailbox_ingress_cursors(remote_mailbox_id);
 
-CREATE INDEX idx_mailbox_messages_lease
-    ON mailbox_messages(lease_until)
-    WHERE lease_until IS NOT NULL;
+CREATE INDEX idx_oor_client_effects_due
+    ON oor_client_effects(status, next_attempt_at, created_at);
 
-CREATE INDEX idx_mailbox_messages_promise
-    ON mailbox_messages(promise_id)
-    WHERE promise_id IS NOT NULL;
+CREATE INDEX idx_oor_client_sessions_active
+    ON oor_client_sessions(direction, updated_at)
+    WHERE completed_at IS NULL;
 
 CREATE INDEX idx_oor_package_checkpoints_session
     ON oor_package_checkpoints(session_id, checkpoint_index ASC);
@@ -331,17 +463,6 @@ CREATE INDEX idx_oor_packages_direction_updated
 
 CREATE INDEX idx_oor_vtxo_bindings_session
     ON oor_vtxo_bindings(session_id);
-
-CREATE INDEX idx_outbox_messages_domain_key
-    ON outbox_messages(domain_key)
-    WHERE domain_key IS NOT NULL;
-
-CREATE INDEX idx_outbox_messages_pending
-    ON outbox_messages(status, created_at)
-    WHERE status = 'pending';
-
-CREATE INDEX idx_processed_messages_expires
-    ON processed_messages(expires_at);
 
 CREATE INDEX idx_round_boarding_intents_round_id
     ON round_boarding_intents(round_id);
@@ -355,8 +476,17 @@ CREATE INDEX idx_rounds_creation_time
 CREATE INDEX idx_rounds_status
     ON rounds(status);
 
-CREATE INDEX idx_unilateral_exit_jobs_status_updated
-    ON unilateral_exit_jobs(status, updated_at DESC);
+CREATE INDEX idx_unroll_effects_due
+    ON unroll_effects(status, next_attempt_at, created_at);
+
+CREATE INDEX idx_unroll_jobs_state_updated
+    ON unroll_jobs(state, updated_at DESC);
+
+CREATE INDEX idx_unroll_tx_progress_status
+    ON unroll_tx_progress(status, updated_at DESC);
+
+CREATE INDEX idx_unroll_watches_status
+    ON unroll_watches(status, role, updated_at DESC);
 
 CREATE INDEX idx_utxo_log_block
     ON wallet_utxo_log(block_height);
@@ -384,6 +514,9 @@ CREATE INDEX idx_vtxos_spent
 
 CREATE INDEX idx_vtxos_status
     ON vtxos(status);
+
+CREATE INDEX idx_wallet_effects_due
+    ON wallet_effects(status, next_attempt_at, created_at);
 
 CREATE TABLE ledger_entries (
     entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -435,60 +568,204 @@ CREATE TABLE ledger_event_types (
     event_type TEXT PRIMARY KEY
 );
 
-CREATE TABLE mailbox_messages (
-    -- id is a UUIDv7 providing time-ordering and uniqueness.
-    id TEXT PRIMARY KEY,
+CREATE TABLE mailbox_egress (
+    id                TEXT PRIMARY KEY,
+    connector         TEXT NOT NULL CHECK (connector IN ('serverconn', 'clientconn')),
+    local_mailbox_id  TEXT NOT NULL,
+    remote_mailbox_id TEXT NOT NULL,
 
-    -- mailbox_id identifies the target actor's mailbox.
-    mailbox_id TEXT NOT NULL,
+    rpc_kind          TEXT NOT NULL CHECK (rpc_kind IN ('request', 'response', 'event')),
+    service           TEXT NOT NULL,
+    method            TEXT NOT NULL,
+    correlation_id    TEXT,
+    reply_to          TEXT,
 
-    -- message_type is the type name for deserialization dispatch.
-    message_type TEXT NOT NULL,
+    msg_id            TEXT NOT NULL,
+    idempotency_key   TEXT NOT NULL,
+    envelope          BLOB NOT NULL,
 
-    -- payload contains the TLV-encoded message data.
-    payload BLOB NOT NULL,
+    status            TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'sent', 'dead')),
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    max_attempts      INTEGER NOT NULL DEFAULT 10,
+    next_attempt_at   BIGINT NOT NULL,
+    claim_owner       TEXT,
+    claim_token       TEXT,
+    claim_until       BIGINT,
+    last_error        TEXT,
 
-    -- promise_id is set for Ask messages to track the response.
-    -- NULL for Tell (fire-and-forget) messages.
-    promise_id TEXT,
+    created_at        BIGINT NOT NULL,
+    updated_at        BIGINT NOT NULL,
+    sent_at           BIGINT,
 
-    -- callback_actor_id is set for DurableAsk messages to route the response.
-    -- The response will be delivered to this actor's mailbox via outbox.
-    -- NULL for regular Ask/Tell messages.
-    callback_actor_id TEXT,
+    UNIQUE (remote_mailbox_id, msg_id),
+    UNIQUE (connector, local_mailbox_id, idempotency_key)
+);
 
-    -- correlation_id links DurableAsk requests to their responses.
-    -- The response message will include this ID for matching.
-    -- NULL for regular Ask/Tell messages.
-    correlation_id TEXT,
+CREATE TABLE mailbox_ingress_cursors (
+    local_mailbox_id      TEXT PRIMARY KEY,
+    remote_mailbox_id     TEXT NOT NULL,
 
-    -- priority determines processing order (higher = more important).
-    -- Used for restart messages which need front-of-queue processing.
-    priority INTEGER NOT NULL DEFAULT 0,
+    pull_cursor           BIGINT NOT NULL DEFAULT 0,
+    dispatch_committed_to BIGINT NOT NULL DEFAULT 0,
+    ack_target            BIGINT NOT NULL DEFAULT 0,
+    ack_committed_to      BIGINT NOT NULL DEFAULT 0,
 
-    -- Lease management fields.
-    -- lease_token is an opaque token that must match for Ack/Nack to succeed.
-    -- This prevents stale acks from a previous lease holder after crash.
-    lease_token TEXT,
+    last_pull_at          BIGINT,
+    last_dispatch_at      BIGINT,
+    last_ack_at           BIGINT,
+    last_error            TEXT,
 
-    -- lease_until is the unix timestamp when the lease expires.
-    -- After expiry, the message becomes available for redelivery.
-    lease_until BIGINT,
+    created_at            BIGINT NOT NULL,
+    updated_at            BIGINT NOT NULL,
 
-    -- Delivery tracking fields.
-    -- available_at is the unix timestamp when the message becomes available.
-    -- Used for scheduling initial delivery and retry delays after Nack.
-    available_at BIGINT NOT NULL,
+    CHECK (pull_cursor >= 0),
+    CHECK (dispatch_committed_to >= 0),
+    CHECK (ack_target >= 0),
+    CHECK (ack_committed_to >= 0),
+    CHECK (ack_committed_to <= ack_target),
+    CHECK (ack_target <= dispatch_committed_to)
+);
 
-    -- attempts tracks how many times delivery has been attempted.
-    attempts INTEGER NOT NULL DEFAULT 0,
+CREATE TABLE oor_client_ark_artifacts (
+    session_id BLOB    NOT NULL REFERENCES oor_client_sessions(session_id) ON DELETE CASCADE,
+    phase      TEXT    NOT NULL CHECK (phase IN (
+        'unsigned', 'ark_signed', 'accepted', 'finalized_context'
+    )),
+    ark_psbt   BLOB    NOT NULL,
+    created_at BIGINT  NOT NULL,
+    updated_at BIGINT  NOT NULL,
+    PRIMARY KEY (session_id, phase)
+);
 
-    -- max_attempts is the maximum delivery attempts before dead-lettering.
-    max_attempts INTEGER NOT NULL DEFAULT 10,
+CREATE TABLE oor_client_checkpoints (
+    session_id       BLOB    NOT NULL REFERENCES oor_client_sessions(session_id) ON DELETE CASCADE,
+    checkpoint_index INTEGER NOT NULL,
+    phase            TEXT    NOT NULL CHECK (phase IN ('unsigned', 'cosigned', 'finalized')),
+    checkpoint_psbt  BLOB    NOT NULL,
+    created_at       BIGINT  NOT NULL,
+    updated_at       BIGINT  NOT NULL,
+    PRIMARY KEY (session_id, checkpoint_index, phase)
+);
 
-    -- created_at is the unix timestamp when the message was enqueued.
-    created_at BIGINT NOT NULL
-, correlation_key TEXT);
+CREATE TABLE oor_client_effects (
+    id              TEXT    PRIMARY KEY,
+    session_id      BLOB    NOT NULL REFERENCES oor_client_sessions(session_id) ON DELETE CASCADE,
+    direction       TEXT    NOT NULL CHECK (direction IN ('outgoing', 'incoming')),
+
+    effect_type     TEXT    NOT NULL CHECK (effect_type IN (
+        'request_ark_signatures',
+        'send_submit_package',
+        'request_checkpoint_signatures',
+        'send_finalize_package',
+        'mark_inputs_spent',
+        'persist_outgoing_package',
+        'query_incoming_transfer',
+        'notify_incoming_transfer',
+        'query_incoming_metadata',
+        'materialize_incoming_vtxos',
+        'send_incoming_ack'
+    )),
+
+    status          TEXT    NOT NULL CHECK (status IN ('pending', 'claimed', 'done', 'dead')),
+    idempotency_key TEXT    NOT NULL UNIQUE,
+
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    max_attempts    INTEGER NOT NULL DEFAULT 10,
+    next_attempt_at BIGINT  NOT NULL,
+    claim_owner     TEXT,
+    claim_token     TEXT,
+    claim_until     BIGINT,
+    last_error      TEXT,
+
+    created_at      BIGINT  NOT NULL,
+    updated_at      BIGINT  NOT NULL,
+    done_at         BIGINT
+);
+
+CREATE TABLE oor_client_incoming_hints (
+    session_id          BLOB   NOT NULL REFERENCES oor_client_sessions(session_id) ON DELETE CASCADE,
+    recipient_pk_script BLOB   NOT NULL,
+    recipient_event_id  BIGINT NOT NULL,
+    created_at          BIGINT NOT NULL,
+    updated_at          BIGINT NOT NULL,
+    UNIQUE (recipient_pk_script, recipient_event_id)
+);
+
+CREATE TABLE oor_client_incoming_metadata (
+    session_id      BLOB    NOT NULL REFERENCES oor_client_sessions(session_id) ON DELETE CASCADE,
+    output_index    INTEGER NOT NULL,
+    round_id        BLOB,
+    chain_depth     INTEGER,
+    batch_expiry    INTEGER,
+    operator_pubkey BLOB,
+    ancestry_blob   BLOB,
+    metadata_blob   BLOB,
+    created_at      BIGINT  NOT NULL,
+    updated_at      BIGINT  NOT NULL,
+    PRIMARY KEY (session_id, output_index)
+);
+
+CREATE TABLE oor_client_inputs (
+    session_id           BLOB    NOT NULL REFERENCES oor_client_sessions(session_id) ON DELETE CASCADE,
+    input_index          INTEGER NOT NULL,
+    outpoint_hash        BLOB    NOT NULL,
+    outpoint_index       INTEGER NOT NULL,
+    amount_sat           BIGINT  NOT NULL,
+    pk_script            BLOB    NOT NULL,
+    client_key_family    INTEGER NOT NULL,
+    client_key_index     INTEGER NOT NULL,
+    client_pub_key       BLOB    NOT NULL,
+    operator_pub_key     BLOB    NOT NULL,
+    exit_delay           INTEGER NOT NULL,
+    vtxo_policy_template BLOB,
+    owner_leaf_script    BLOB,
+    owner_leaf_policy    BLOB,
+    spend_witness_script BLOB,
+    spend_control_block  BLOB,
+    condition_witness    BLOB,
+    required_sequence    INTEGER,
+    required_locktime    INTEGER,
+    PRIMARY KEY (session_id, input_index)
+);
+
+CREATE TABLE oor_client_recipients (
+    session_id           BLOB    NOT NULL REFERENCES oor_client_sessions(session_id) ON DELETE CASCADE,
+    output_index         INTEGER NOT NULL,
+    pk_script            BLOB    NOT NULL,
+    value_sat            BIGINT  NOT NULL,
+    vtxo_policy_template BLOB,
+    PRIMARY KEY (session_id, output_index)
+);
+
+CREATE TABLE oor_client_sessions (
+    session_id        BLOB    PRIMARY KEY,
+    direction         TEXT    NOT NULL CHECK (direction IN ('outgoing', 'incoming')),
+
+    state             TEXT    NOT NULL CHECK (state IN (
+        'awaiting_ark_signatures',
+        'awaiting_submit_accepted',
+        'awaiting_checkpoint_signatures',
+        'awaiting_finalize_accepted',
+        'awaiting_local_vtxo_update',
+        'completed',
+        'failed',
+        'receive_resolving',
+        'receive_notified',
+        'receive_awaiting_ack',
+        'receive_completed'
+    )),
+
+    idempotency_key   TEXT,
+    retry_after       BIGINT,
+    retry_reason      TEXT,
+    fail_reason       TEXT,
+
+    created_at        BIGINT  NOT NULL,
+    updated_at        BIGINT  NOT NULL,
+    completed_at      BIGINT,
+
+    UNIQUE (direction, idempotency_key)
+);
 
 CREATE TABLE oor_package_checkpoints (
     -- session_id references the owning OOR package row.
@@ -612,56 +889,6 @@ CREATE TABLE oor_vtxo_bindings (
     )
 );
 
-CREATE TABLE outbox_messages (
-    -- id is a UUIDv7 providing time-ordering and uniqueness.
-    id TEXT PRIMARY KEY,
-
-    -- source_actor_id identifies the actor that created this message.
-    source_actor_id TEXT NOT NULL,
-
-    -- target_actor_id identifies the destination actor's mailbox.
-    target_actor_id TEXT NOT NULL,
-
-    -- message_type is the type name for deserialization dispatch.
-    message_type TEXT NOT NULL,
-
-    -- payload contains the TLV-encoded message data.
-    payload BLOB NOT NULL,
-
-    -- domain_key is an optional natural idempotency key.
-    -- For example: "round:abc123:phase:nonces" ensures the same round/phase
-    -- combination is only processed once by the receiver.
-    domain_key TEXT,
-
-    -- version is a monotonic counter for ordering within a domain.
-    -- Higher versions supersede lower versions for the same domain_key.
-    version INTEGER NOT NULL DEFAULT 0,
-
-    -- status tracks the delivery lifecycle.
-    -- Values: 'pending', 'completed', 'dead_letter'
-    status TEXT NOT NULL DEFAULT 'pending',
-
-    -- delivery_attempts tracks how many times delivery was attempted.
-    delivery_attempts INTEGER NOT NULL DEFAULT 0,
-
-    -- Claim management fields for concurrent publisher safety.
-    -- claim_token is an opaque token set by ClaimOutboxBatch. CompleteOutbox
-    -- and FailOutbox must present a matching token to mutate the message,
-    -- preventing a slow publisher from completing a message that was already
-    -- reclaimed by another publisher after lease expiry.
-    claim_token TEXT,
-
-    -- claimed_until is the unix timestamp when the current claim expires.
-    -- After expiry, the message becomes available for reclaim.
-    claimed_until BIGINT,
-
-    -- created_at is the unix timestamp when the message was enqueued.
-    created_at BIGINT NOT NULL,
-
-    -- completed_at is the unix timestamp when delivery completed (or failed).
-    completed_at BIGINT
-);
-
 CREATE TABLE owned_receive_script_sources (
     -- source is the persisted source code.
     source INTEGER PRIMARY KEY NOT NULL,
@@ -719,19 +946,33 @@ CREATE TABLE pending_board_requests (
     CHECK (requested_at_unix > 0)
 );
 
-CREATE TABLE processed_messages (
-    -- id is the message ID that was processed.
-    id TEXT PRIMARY KEY,
+CREATE TABLE pending_board_vtxo_requests (
+    outpoint_hash BLOB NOT NULL,
+    outpoint_index INTEGER NOT NULL,
+    request_index INTEGER NOT NULL,
 
-    -- actor_id identifies which actor processed this message.
-    actor_id TEXT NOT NULL,
+    amount BIGINT NOT NULL,
+    is_change BOOLEAN NOT NULL,
+    pk_script BLOB NOT NULL,
+    expiry INTEGER NOT NULL,
+    policy_template BLOB NOT NULL,
 
-    -- processed_at is the unix timestamp when processing completed.
-    processed_at BIGINT NOT NULL,
+    client_pubkey BLOB NOT NULL,
+    operator_pubkey BLOB NOT NULL,
 
-    -- expires_at is the unix timestamp after which this entry can be deleted.
-    -- Should exceed the maximum possible redelivery window.
-    expires_at BIGINT NOT NULL
+    owner_key_family INTEGER NOT NULL DEFAULT -1,
+    owner_key_index INTEGER NOT NULL DEFAULT -1,
+
+    signing_key_family INTEGER NOT NULL,
+    signing_key_index INTEGER NOT NULL,
+    signing_pubkey BLOB NOT NULL,
+
+    origin INTEGER NOT NULL,
+
+    PRIMARY KEY (outpoint_hash, outpoint_index, request_index),
+    FOREIGN KEY (outpoint_hash, outpoint_index)
+        REFERENCES pending_board_requests(outpoint_hash, outpoint_index)
+        ON DELETE CASCADE
 );
 
 CREATE TABLE round_boarding_intents (
@@ -885,7 +1126,46 @@ CREATE TABLE rounds (
     FOREIGN KEY (status) REFERENCES round_statuses(status_name)
 );
 
-CREATE TABLE unilateral_exit_jobs (
+CREATE TABLE unroll_effects (
+    id TEXT PRIMARY KEY,
+    target_outpoint_hash BLOB NOT NULL,
+    target_outpoint_index INTEGER NOT NULL CHECK (
+        target_outpoint_index >= 0
+    ),
+    effect_type TEXT NOT NULL CHECK (effect_type IN (
+        'subscribe_blocks',
+        'watch_target_spend',
+        'ensure_tx_confirmed',
+        'watch_deferred_checkpoint',
+        'build_sweep',
+        'ensure_sweep_confirmed',
+        'notify_registry'
+    )),
+    txid BLOB,
+    status TEXT NOT NULL CHECK (status IN (
+        'pending',
+        'claimed',
+        'done',
+        'dead'
+    )),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 10,
+    next_attempt_at BIGINT NOT NULL,
+    claim_owner TEXT,
+    claim_token TEXT,
+    claim_until BIGINT,
+    last_error TEXT,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    done_at BIGINT,
+
+    FOREIGN KEY (target_outpoint_hash, target_outpoint_index)
+        REFERENCES unroll_jobs(target_outpoint_hash, target_outpoint_index)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE unroll_jobs (
     -- target_outpoint_hash identifies the target transaction.
     target_outpoint_hash BLOB NOT NULL,
 
@@ -894,32 +1174,51 @@ CREATE TABLE unilateral_exit_jobs (
         target_outpoint_index >= 0
     ),
 
-    -- actor_id is the durable actor mailbox id for this target job.
-    actor_id TEXT NOT NULL,
+    -- state is the visible unroll FSM phase.
+    state TEXT NOT NULL CHECK (state IN (
+        'pending',
+        'materializing',
+        'csv_pending',
+        'sweep_broadcast',
+        'sweep_confirmation',
+        'completed',
+        'failed'
+    )),
 
-    -- status is the control-plane job status:
-    --   0 = pending
-    --   1 = materializing
-    --   2 = csv_pending
-    --   3 = sweeping (sweep broadcast, awaiting confirmation)
-    --   4 = completed
-    --   5 = failed
-    --   6 = sweep_broadcasting (sweep built, not yet submitted)
-    status INTEGER NOT NULL,
+    -- trigger identifies what started the job.
+    trigger TEXT NOT NULL CHECK (trigger IN (
+        'manual',
+        'critical_expiry',
+        'restart',
+        'fraud_spend'
+    )),
 
-    -- trigger identifies what started the job:
-    --   0 = manual
-    --   1 = critical_expiry
-    --   2 = restart
-    --   3 = fraud_spend
-    trigger INTEGER NOT NULL,
+    -- best_height is the latest chain height observed by this job.
+    best_height INTEGER NOT NULL,
 
-    -- last_error stores the latest terminal or diagnostic error string.
-    last_error TEXT,
+    -- target_confirm_height records the target confirmation height once known.
+    target_confirm_height INTEGER,
 
-    -- sweep_txid is the 32-byte txid of the final sweep transaction.
-    -- NULL until the sweep is broadcast.
+    -- planner_state is the encoded unroll planner graph cursor.
+    planner_state BLOB NOT NULL,
+
+    -- deferred_checkpoints records fraud-triggered checkpoint deferrals.
+    deferred_checkpoints BLOB,
+
+    -- sweep_tx stores the exact final sweep transaction bytes after build.
+    sweep_tx BLOB,
+
+    -- sweep_txid is the 32-byte txid of the final sweep transaction once known.
     sweep_txid BLOB,
+
+    -- sweep_confirm_height records the sweep confirmation height when known.
+    sweep_confirm_height INTEGER,
+
+    -- sweep_attempts counts sweep build/broadcast attempts.
+    sweep_attempts INTEGER NOT NULL DEFAULT 0,
+
+    -- fail_reason stores the terminal failure when present.
+    fail_reason TEXT,
 
     -- created_at is the unix timestamp when the row was first written.
     created_at BIGINT NOT NULL,
@@ -928,6 +1227,68 @@ CREATE TABLE unilateral_exit_jobs (
     updated_at BIGINT NOT NULL,
 
     PRIMARY KEY (target_outpoint_hash, target_outpoint_index)
+);
+
+CREATE TABLE unroll_tx_progress (
+    target_outpoint_hash BLOB NOT NULL,
+    target_outpoint_index INTEGER NOT NULL CHECK (
+        target_outpoint_index >= 0
+    ),
+    txid BLOB NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('proof', 'deferred_checkpoint', 'sweep')),
+    status TEXT NOT NULL CHECK (status IN (
+        'ready',
+        'in_flight',
+        'confirmed',
+        'failed'
+    )),
+    tx_bytes BLOB,
+    confirm_height INTEGER,
+    last_error TEXT,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+
+    PRIMARY KEY (
+        target_outpoint_hash, target_outpoint_index, txid, role
+    ),
+    FOREIGN KEY (target_outpoint_hash, target_outpoint_index)
+        REFERENCES unroll_jobs(target_outpoint_hash, target_outpoint_index)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE unroll_watches (
+    target_outpoint_hash BLOB NOT NULL,
+    target_outpoint_index INTEGER NOT NULL CHECK (
+        target_outpoint_index >= 0
+    ),
+    watch_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN (
+        'block_epoch',
+        'target_spend',
+        'proof_tx',
+        'deferred_checkpoint',
+        'sweep'
+    )),
+    txid BLOB,
+    spend_outpoint_hash BLOB,
+    spend_outpoint_index INTEGER,
+    status TEXT NOT NULL CHECK (status IN (
+        'registered',
+        'confirmed',
+        'spent',
+        'cancelled',
+        'failed'
+    )),
+    height_hint INTEGER,
+    confirmation_height INTEGER,
+    last_error TEXT,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+
+    PRIMARY KEY (target_outpoint_hash, target_outpoint_index, watch_id),
+    FOREIGN KEY (target_outpoint_hash, target_outpoint_index)
+        REFERENCES unroll_jobs(target_outpoint_hash, target_outpoint_index)
+        ON DELETE CASCADE
 );
 
 CREATE TABLE utxo_classifications (
@@ -1084,6 +1445,47 @@ CREATE TABLE vtxos (
 
     PRIMARY KEY (outpoint_hash, outpoint_index),
     FOREIGN KEY (round_id) REFERENCES rounds(round_id)
+);
+
+CREATE TABLE wallet_effects (
+    id TEXT PRIMARY KEY,
+    effect_type TEXT NOT NULL CHECK (effect_type IN (
+        'record_ledger_sweep_fee',
+        'record_ledger_utxo_created',
+        'record_ledger_utxo_spent'
+    )),
+    status TEXT NOT NULL CHECK (status IN (
+        'pending', 'claimed', 'done', 'dead'
+    )),
+    idempotency_key TEXT NOT NULL UNIQUE,
+
+    outpoint_hash BLOB,
+    outpoint_index INTEGER,
+    txid BLOB,
+    amount_sat BIGINT,
+    fee_sat BIGINT,
+    block_height INTEGER,
+    classification TEXT,
+
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 10,
+    next_attempt_at BIGINT NOT NULL,
+    claim_owner TEXT,
+    claim_token TEXT,
+    claim_until BIGINT,
+    last_error TEXT,
+
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    done_at BIGINT,
+
+    CHECK (id <> ''),
+    CHECK (idempotency_key <> ''),
+    CHECK (attempts >= 0),
+    CHECK (max_attempts > 0),
+    CHECK (next_attempt_at > 0),
+    CHECK (created_at > 0),
+    CHECK (updated_at >= created_at)
 );
 
 CREATE TABLE wallet_utxo_log (

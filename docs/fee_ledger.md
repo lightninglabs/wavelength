@@ -5,7 +5,7 @@ fee ledger: what accounts exist, what every event class writes,
 which subsystem emits each event, and how replay safety is
 maintained. It complements the per-package docs:
 
-- [ledger/CLAUDE.md](../ledger/CLAUDE.md) — the durable actor.
+- [ledger/CLAUDE.md](../ledger/CLAUDE.md) — the SQL-backed ledger actor.
 - [db/CLAUDE.md](../db/CLAUDE.md) — persistence adapter.
 - [round/CLAUDE.md](../round/CLAUDE.md) — origin-routed emission.
 
@@ -284,9 +284,9 @@ having to re-derive it from commitment-tx inspection.
 
 ## Idempotency and replay safety
 
-Durable actor delivery is at-least-once. Any ledger write must
-be safe to replay. The schema enforces this via three partial
-unique indexes on `ledger_entries`:
+SQL effect workers and transport ingress can redeliver work after a crash, so
+any ledger write must be safe to replay. The schema enforces this via three
+partial unique indexes on `ledger_entries`:
 
 - `idx_client_ledger_idempotent_round` on
   `(round_id, event_type, debit_account, credit_account)
@@ -312,13 +312,10 @@ index, 36 bytes) routes those rows to the third index, which
 does not share the collision.
 
 Handlers that produce multi-leg events (`handleExitCost`,
-refresh emission) rely on the durable actor's outer
-transaction for atomicity: the whole `Receive` body runs inside
-a `TxAwareDeliveryStore.ExecTx`, and
-`db.TransactionExecutor.ExecTx` joins that tx via
-`actor.TxFromContext`. Two `InsertLedgerEntry` calls from one
-handler therefore commit together with the mailbox ack; a crash
-between them rolls back both writes and the ack.
+refresh emission) rely on the ledger store transaction for
+atomicity. Two `InsertLedgerEntry` calls from one handler commit
+together; a crash between them rolls back both writes. Replay is
+absorbed by the ledger idempotency indexes.
 
 ## Clock injection
 
@@ -365,7 +362,5 @@ test runs.
   and per-origin emission dispatch.
 - [wallet/CLAUDE.md](../wallet/CLAUDE.md) — deposit emission
   and intent-composition tagging.
-- [docs/durable_actor_architecture.md](durable_actor_architecture.md)
-  — outer-tx semantics for replay safety.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — system-wide package
   map.

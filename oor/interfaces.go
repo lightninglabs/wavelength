@@ -52,6 +52,26 @@ func (id SessionID) LogPrefix() string {
 	return fmt.Sprintf("oor(%s)", hex.EncodeToString(hash[:4]))
 }
 
+// SessionIDBytes returns the canonical chainhash bytes for a session id.
+func SessionIDBytes(id SessionID) []byte {
+	hash := chainhash.Hash(id)
+
+	return hash.CloneBytes()
+}
+
+// SessionIDFromBytes parses canonical chainhash bytes into a session id.
+func SessionIDFromBytes(raw []byte) (SessionID, error) {
+	if len(raw) != chainhash.HashSize {
+		return SessionID{}, fmt.Errorf("session id must be %d bytes",
+			chainhash.HashSize)
+	}
+
+	var hash chainhash.Hash
+	copy(hash[:], raw)
+
+	return SessionID(hash), nil
+}
+
 // Environment provides the transfer FSM with access to external systems and
 // storage.
 //

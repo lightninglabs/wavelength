@@ -19,6 +19,10 @@ type OutboxHandlerConfig struct {
 	// Signer signs checkpoint and Ark PSBTs.
 	Signer input.Signer
 
+	// SigningArtifactStore persists signing outputs for restart-safe replay
+	// of local signing effects.
+	SigningArtifactStore OORClientSigningArtifactStore
+
 	// Store provides VTXO lifecycle persistence.
 	Store vtxo.VTXOStore
 
@@ -64,8 +68,9 @@ type OutboxHandlerConfig struct {
 // to ensure identical outbox handling.
 func NewOutboxHandler(cfg OutboxHandlerConfig) *LocalPersistenceOutboxHandler {
 	signingHandler := &SigningOutboxHandler{
-		Signer:       cfg.Signer,
-		TimeoutActor: cfg.TimeoutActor,
+		Signer:               cfg.Signer,
+		SigningArtifactStore: cfg.SigningArtifactStore,
+		TimeoutActor:         cfg.TimeoutActor,
 	}
 
 	return &LocalPersistenceOutboxHandler{

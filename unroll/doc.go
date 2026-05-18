@@ -37,9 +37,9 @@
 //     by their parents, whether the CSV has matured, whether the sweep
 //     should be built. The planner has no IO — it only computes.
 //
-//   - [VTXOUnrollActor]: one durable actor per target outpoint. It owns
+//   - [VTXOUnrollActor]: one local actor per target outpoint. It owns
 //     the FSM session, the recovery proof, the planner, the cached sweep
-//     transaction, and the checkpoint. All IO — [txconfirm] Asks, chain
+//     transaction, and the snapshot. All IO — [txconfirm] Asks, chain
 //     subscriptions, persistence, registry notifications — runs here.
 //
 //   - [UnrollRegistryActor]: a thin coordinator on top of the set of
@@ -50,7 +50,7 @@
 //   - Support code: [LocalProofAssembler] + [DescriptorLineageResolver]
 //     walk the local VTXO + OOR artifact state into an immutable
 //     recovery.Proof; [buildSweepTx] builds and signs the final sweep;
-//     [snapshot.go] encodes/decodes the per-actor TLV checkpoint.
+//     [snapshot.go] encodes/decodes the per-actor TLV snapshot.
 //
 // The FSM itself (see [fsm_types.go], [fsm_logic.go]) models lifecycle
 // phases only: Idle → AwaitingMaterialization → AwaitingCSV →
@@ -64,7 +64,7 @@
 //
 // Two rules are load-bearing:
 //
-//  1. "Persist before broadcast." startSweep calls persistCheckpoint
+//  1. "Persist before broadcast." startSweep calls persistJob
 //     before it asks txconfirm to broadcast the sweep. On any retry (same
 //     actor lifetime or after restart) the same sweepTx is restored
 //     instead of re-derived, so txconfirm's txid-keyed dedup turns the
@@ -92,7 +92,7 @@
 //
 // On daemon start, the registry calls RestoreNonTerminal, which lists
 // every non-terminal record, spawns a VTXOUnrollActor per target, and
-// sends ResumeUnrollRequest. The actor loads its checkpoint (proof graph,
+// sends ResumeUnrollRequest. The actor loads its snapshot (proof graph,
 // planner state, sweep tx, last height), reconstructs the FSM, and emits
 // ReissueInFlightTransactions / ReissueSweepConfirmation outbox events so
 // the behavior re-subscribes txconfirm for every tx that was in flight.
@@ -104,7 +104,5 @@
 // Per-package docs:
 //   - [../unroll/CLAUDE.md] — stable summary of types, relationships,
 //     invariants.
-//   - [../docs/durable_actor_architecture.md] — CDC pattern, durable
-//     mailbox lifecycle.
-//   - [../docs/durable_actor_quickstart.md] — TLVMessage, ActorBehavior.
+//   - [../docs/mailbox_architecture.md] — SQL-backed mailbox transport model.
 package unroll

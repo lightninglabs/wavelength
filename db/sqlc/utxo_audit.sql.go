@@ -39,7 +39,7 @@ type InsertWalletUTXOLogParams struct {
 }
 
 // Crash-replay safe: duplicate (outpoint, event) inserts from
-// RestartMessage replay are silently ignored so the audit log stays
+// retried ledger delivery are silently ignored so the audit log stays
 // at-most-once per outpoint+event.
 func (q *Queries) InsertWalletUTXOLog(ctx context.Context, arg InsertWalletUTXOLogParams) error {
 	_, err := q.db.ExecContext(ctx, InsertWalletUTXOLog,

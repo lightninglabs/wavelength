@@ -29,6 +29,11 @@ type SigningOutboxHandler struct {
 	// Signer signs checkpoint inputs at RequestCheckpointSignatures.
 	Signer input.Signer
 
+	// SigningArtifactStore persists local signing outputs. When
+	// configured, signing requests first reuse existing signed artifacts
+	// and write newly signed artifacts before returning follow-up events.
+	SigningArtifactStore OORClientSigningArtifactStore
+
 	// TimeoutActor schedules retry timers. The handler Tells schedule
 	// requests through this ref so all delivery flows through the
 	// timeout actor's mailbox; the returned future is not awaited
@@ -60,7 +65,7 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context, sessionID SessionID,
 			slog.Int("num_inputs", numInputs),
 		)
 
-		return h.handleArkSignatures(msg)
+		return h.handleArkSignatures(ctx, sessionID, msg)
 
 	case *RequestCheckpointSignatures:
 		logger(ctx).DebugS(ctx, "Checkpoint signatures requested",
@@ -71,7 +76,7 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context, sessionID SessionID,
 			),
 		)
 
-		return h.handleCheckpointSignatures(ctx, msg)
+		return h.handleCheckpointSignatures(ctx, sessionID, msg)
 
 	case *ScheduleRetryRequest:
 		logger(ctx).InfoS(ctx, "Scheduling retry",
@@ -101,8 +106,24 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context, sessionID SessionID,
 
 // handleArkSignatures signs the Ark PSBT inputs using the client key on the
 // owner leaf path of each checkpoint output.
-func (h *SigningOutboxHandler) handleArkSignatures(msg *RequestArkSignatures) (
-	[]Event, error) {
+func (h *SigningOutboxHandler) handleArkSignatures(ctx context.Context,
+	sessionID SessionID, msg *RequestArkSignatures) ([]Event, error) {
+
+	if h.SigningArtifactStore != nil {
+		ark, ok, err := h.SigningArtifactStore.LoadArkSignedArtifact(
+			ctx, sessionID,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return []Event{
+				&ArkSignedEvent{
+					ArkPSBT: ark,
+				},
+			}, nil
+		}
+	}
 
 	if h.Signer == nil {
 		return nil, fmt.Errorf("signer is required")
@@ -115,6 +136,15 @@ func (h *SigningOutboxHandler) handleArkSignatures(msg *RequestArkSignatures) (
 		return nil, err
 	}
 
+	if h.SigningArtifactStore != nil {
+		err = h.SigningArtifactStore.SaveArkSignedArtifact(
+			ctx, sessionID, msg.ArkPSBT,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return []Event{
 		&ArkSignedEvent{
 			ArkPSBT: msg.ArkPSBT,
@@ -125,7 +155,31 @@ func (h *SigningOutboxHandler) handleArkSignatures(msg *RequestArkSignatures) (
 // handleCheckpointSignatures attaches client-side collaborative VTXO spend
 // signatures to each checkpoint PSBT.
 func (h *SigningOutboxHandler) handleCheckpointSignatures(ctx context.Context,
-	msg *RequestCheckpointSignatures) ([]Event, error) {
+	sessionID SessionID, msg *RequestCheckpointSignatures) ([]Event,
+	error) {
+
+	if h.SigningArtifactStore != nil {
+		checkpoints, ok, err := h.SigningArtifactStore.
+			LoadFinalCheckpointArtifacts(
+				ctx, sessionID,
+				len(msg.CoSignedCheckpointPSBTs),
+			)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			logCheckpointSummary(
+				ctx, "Reusing finalized checkpoint signatures",
+				checkpoints,
+			)
+
+			return []Event{
+				&CheckpointsSignedEvent{
+					FinalCheckpointPSBTs: checkpoints,
+				},
+			}, nil
+		}
+	}
 
 	if h.Signer == nil {
 		return nil, fmt.Errorf("signer is required")
@@ -142,6 +196,15 @@ func (h *SigningOutboxHandler) handleCheckpointSignatures(ctx context.Context,
 		ctx, "Checkpoint signatures attached",
 		msg.CoSignedCheckpointPSBTs,
 	)
+
+	if h.SigningArtifactStore != nil {
+		err = h.SigningArtifactStore.SaveFinalCheckpointArtifacts(
+			ctx, sessionID, msg.CoSignedCheckpointPSBTs,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	return []Event{
 		&CheckpointsSignedEvent{

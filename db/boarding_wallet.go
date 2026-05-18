@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -134,11 +135,23 @@ type BoardingStore interface {
 	CountUnresolvedBoardingSweepInputs(ctx context.Context,
 		txid []byte) (int64, error)
 
+	InsertWalletEffect(ctx context.Context,
+		arg sqlc.InsertWalletEffectParams) error
+
 	UpsertPendingBoardRequest(ctx context.Context,
 		arg sqlc.UpsertPendingBoardRequestParams) error
 
+	DeletePendingBoardVtxosByOutpoint(ctx context.Context,
+		arg sqlc.DeletePendingBoardVtxosByOutpointParams) error
+
+	UpsertPendingBoardVtxoRequest(ctx context.Context,
+		arg sqlc.UpsertPendingBoardVtxoRequestParams) error
+
 	ListPendingBoardRequests(ctx context.Context) (
 		[]sqlc.PendingBoardRequest, error)
+
+	ListPendingBoardVtxoRequests(ctx context.Context) (
+		[]sqlc.PendingBoardVtxoRequest, error)
 
 	ClearPendingBoardRequestByOutpoint(ctx context.Context,
 		arg sqlc.ClearPendingBoardRequestByOutpointParams) error
@@ -948,6 +961,35 @@ func (b *BoardingWalletStore) UpsertPendingBoardRequests(ctx context.Context,
 				return fmt.Errorf("upsert pending board "+
 					"request: %w", err)
 			}
+
+			var arg sqlc.DeletePendingBoardVtxosByOutpointParams
+			arg.OutpointHash = req.Outpoint.Hash[:]
+			arg.OutpointIndex = int32(req.Outpoint.Index)
+			err = q.DeletePendingBoardVtxosByOutpoint(
+				ctx, arg,
+			)
+			if err != nil {
+				return fmt.Errorf("delete pending board vtxo "+
+					"requests: %w", err)
+			}
+
+			for idx := range req.VTXORequests {
+				params, err := pendingBoardVtxoRequestParams(
+					req.Outpoint, idx,
+					&req.VTXORequests[idx],
+				)
+				if err != nil {
+					return fmt.Errorf("pending board vtxo "+
+						"request %d: %w", idx, err)
+				}
+
+				if err := q.UpsertPendingBoardVtxoRequest(
+					ctx, params,
+				); err != nil {
+					return fmt.Errorf("upsert pending "+
+						"board vtxo request: %w", err)
+				}
+			}
 		}
 
 		return nil
@@ -972,6 +1014,30 @@ func (b *BoardingWalletStore) ListPendingBoardRequests(ctx context.Context) (
 				err)
 		}
 
+		vtxoRows, err := q.ListPendingBoardVtxoRequests(ctx)
+		if err != nil {
+			return fmt.Errorf("list pending board vtxo "+
+				"requests: %w", err)
+		}
+
+		vtxosByOutpoint := make(map[wire.OutPoint][]types.VTXORequest)
+		for _, row := range vtxoRows {
+			outpoint, err := pendingBoardVtxoOutpoint(row)
+			if err != nil {
+				return err
+			}
+
+			req, err := pendingBoardVtxoRowToRequest(row)
+			if err != nil {
+				return fmt.Errorf("parse pending board vtxo "+
+					"request: %w", err)
+			}
+
+			vtxosByOutpoint[outpoint] = append(
+				vtxosByOutpoint[outpoint], *req,
+			)
+		}
+
 		result = make([]wallet.PendingBoardRequest, 0, len(rows))
 		for _, row := range rows {
 			// Defensive: the column is INTEGER, so negative
@@ -989,16 +1055,19 @@ func (b *BoardingWalletStore) ListPendingBoardRequests(ctx context.Context) (
 					err)
 			}
 
+			outpoint := wire.OutPoint{
+				Hash:  *hash,
+				Index: uint32(row.OutpointIndex),
+			}
+
 			result = append(
 				result, wallet.PendingBoardRequest{
-					Outpoint: wire.OutPoint{
-						Hash: *hash,
-						Index: uint32(
-							row.OutpointIndex,
-						),
-					},
+					Outpoint:        outpoint,
 					TargetVTXOCount: count,
 					RequestedAt:     row.RequestedAtUnix,
+					VTXORequests: slices.Clone(
+						vtxosByOutpoint[outpoint],
+					),
 				},
 			)
 		}
@@ -1007,6 +1076,131 @@ func (b *BoardingWalletStore) ListPendingBoardRequests(ctx context.Context) (
 	})
 
 	return result, err
+}
+
+func pendingBoardVtxoRequestParams(outpoint wire.OutPoint, requestIndex int,
+	req *types.VTXORequest) (sqlc.UpsertPendingBoardVtxoRequestParams,
+	error) {
+
+	params, err := req.DecodeStandardPolicyTemplate()
+	if err != nil {
+		return sqlc.UpsertPendingBoardVtxoRequestParams{}, fmt.Errorf(
+			"decode VTXO policy "+
+				"template: %w", err)
+	}
+
+	pkScript, err := req.EffectivePkScript()
+	if err != nil {
+		return sqlc.UpsertPendingBoardVtxoRequestParams{}, fmt.Errorf(
+			"derive VTXO "+
+				"pkScript: %w", err)
+	}
+
+	if req.SigningKey.PubKey == nil {
+		return sqlc.UpsertPendingBoardVtxoRequestParams{}, fmt.Errorf(
+			"signing key is " +
+				"missing")
+	}
+
+	ownerKeyFamily := int32(-1)
+	ownerKeyIndex := int32(-1)
+	if req.OwnerKey.PubKey != nil {
+		ownerKeyFamily = int32(req.OwnerKey.KeyLocator.Family)
+		ownerKeyIndex = int32(req.OwnerKey.KeyLocator.Index)
+	}
+
+	policyTemplate, err := req.EffectivePolicyTemplate()
+	if err != nil {
+		return sqlc.UpsertPendingBoardVtxoRequestParams{}, fmt.Errorf(
+			"encode VTXO policy "+
+				"template: %w", err)
+	}
+
+	return sqlc.UpsertPendingBoardVtxoRequestParams{
+		OutpointHash:     outpoint.Hash[:],
+		OutpointIndex:    int32(outpoint.Index),
+		RequestIndex:     int32(requestIndex),
+		Amount:           int64(req.Amount),
+		IsChange:         req.IsChange,
+		PkScript:         pkScript,
+		Expiry:           int32(params.ExitDelay),
+		PolicyTemplate:   policyTemplate,
+		ClientPubkey:     params.OwnerKey.SerializeCompressed(),
+		OperatorPubkey:   params.OperatorKey.SerializeCompressed(),
+		OwnerKeyFamily:   ownerKeyFamily,
+		OwnerKeyIndex:    ownerKeyIndex,
+		SigningKeyFamily: int32(req.SigningKey.KeyLocator.Family),
+		SigningKeyIndex:  int32(req.SigningKey.KeyLocator.Index),
+		SigningPubkey: req.SigningKey.PubKey.
+			SerializeCompressed(),
+		Origin: int32(req.Origin),
+	}, nil
+}
+
+func pendingBoardVtxoOutpoint(row sqlc.PendingBoardVtxoRequest) (wire.OutPoint,
+	error) {
+
+	hash, err := chainhash.NewHash(row.OutpointHash)
+	if err != nil {
+		return wire.OutPoint{}, fmt.Errorf("parse pending board vtxo "+
+			"outpoint hash: %w", err)
+	}
+
+	return wire.OutPoint{
+		Hash:  *hash,
+		Index: uint32(row.OutpointIndex),
+	}, nil
+}
+
+func pendingBoardVtxoRowToRequest(row sqlc.PendingBoardVtxoRequest) (
+	*types.VTXORequest, error) {
+
+	clientPubkey, err := btcec.ParsePubKey(row.ClientPubkey)
+	if err != nil {
+		return nil, fmt.Errorf("parse client pubkey: %w", err)
+	}
+
+	operatorPubkey, err := btcec.ParsePubKey(row.OperatorPubkey)
+	if err != nil {
+		return nil, fmt.Errorf("parse operator pubkey: %w", err)
+	}
+
+	signingPubkey, err := btcec.ParsePubKey(row.SigningPubkey)
+	if err != nil {
+		return nil, fmt.Errorf("parse signing pubkey: %w", err)
+	}
+
+	var ownerKey keychain.KeyDescriptor
+	if row.OwnerKeyFamily >= 0 && row.OwnerKeyIndex >= 0 {
+		ownerKey = keychain.KeyDescriptor{
+			PubKey: clientPubkey,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(row.OwnerKeyFamily),
+				Index:  uint32(row.OwnerKeyIndex),
+			},
+		}
+	}
+
+	return &types.VTXORequest{
+		Amount:         btcutil.Amount(row.Amount),
+		IsChange:       row.IsChange,
+		PolicyTemplate: bytes.Clone(row.PolicyTemplate),
+		PkScript:       bytes.Clone(row.PkScript),
+		Expiry:         uint32(row.Expiry),
+		ClientKey:      clientPubkey,
+		OwnerKey:       ownerKey,
+		OperatorKey:    operatorPubkey,
+		SigningKey: keychain.KeyDescriptor{
+			PubKey: signingPubkey,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(
+					row.SigningKeyFamily,
+				),
+				Index: uint32(row.SigningKeyIndex),
+			},
+		},
+		Origin: types.VTXOOrigin(row.Origin),
+	}, nil
 }
 
 // ClearPendingBoardRequestByOutpoint removes a single pending row. Called

@@ -12,8 +12,8 @@ func TestHandleRestoreSessionRejectsDuplicateSessionID(t *testing.T) {
 
 	behavior := &oorDurableBehavior{
 		cfg: ClientActorCfg{
-			ActorID:       "oor-duplicate-restore-test",
-			DeliveryStore: newTestDeliveryStore(t),
+			ActorID:      "oor-duplicate-restore-test",
+			SessionStore: newTestSessionStore(),
 		},
 		sessions: make(map[SessionID]*sessionHandle),
 	}
@@ -38,32 +38,4 @@ func TestHandleRestoreSessionRejectsDuplicateSessionID(t *testing.T) {
 	)
 	require.True(t, second.IsErr())
 	require.ErrorContains(t, second.Err(), "duplicate session id")
-}
-
-func TestRestoreFromCheckpointRejectsDuplicateSessionID(t *testing.T) {
-	t.Parallel()
-
-	behavior := &oorDurableBehavior{
-		sessions: make(map[SessionID]*sessionHandle),
-	}
-
-	snapshot := &OutgoingSnapshot{
-		Version:   2,
-		SessionID: SessionID(chainhash.Hash{9, 8, 7}),
-		Phase:     OutgoingPhaseCompleted,
-	}
-
-	raw, err := encodeOutgoingSessionsCheckpoint(
-		outgoingSessionsCheckpoint{
-			Version: oorCheckpointVersion,
-			Snapshots: []*OutgoingSnapshot{
-				snapshot,
-				snapshot,
-			},
-		},
-	)
-	require.NoError(t, err)
-
-	err = behavior.restoreFromCheckpoint(t.Context(), raw)
-	require.ErrorContains(t, err, "duplicate session id")
 }

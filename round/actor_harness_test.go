@@ -1082,8 +1082,8 @@ func (h *actorTestHarness) setupRoundInIntentSentState() TempRoundKey {
 }
 
 // setupMockRoundStoreForRecovery configures the RoundStore mock to return
-// active rounds for recovery on Start(), using PartialSigsSentState which is
-// stable and won't immediately transition on recovery.
+// active rounds for recovery on Start(), using InputSigSentState because
+// confirmation monitoring is only restored after the point of no return.
 func (h *actorTestHarness) setupMockRoundStoreForRecovery(rounds []*Round) {
 	h.t.Helper()
 
@@ -1094,7 +1094,12 @@ func (h *actorTestHarness) setupMockRoundStoreForRecovery(rounds []*Round) {
 			"FetchState", mock.Anything, round.RoundID,
 		).Return(
 			round,
-			&PartialSigsSentState{RoundID: round.RoundID},
+			&InputSigSentState{
+				RoundID: round.RoundID,
+				CommitmentTx: round.CommitmentTx.UnwrapOrFail(
+					h.t,
+				),
+			},
 			nil,
 		)
 	}

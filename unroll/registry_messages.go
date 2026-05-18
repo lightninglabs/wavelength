@@ -86,7 +86,7 @@ type GetStatusResp struct {
 	// Active reports whether the target currently has a running actor.
 	Active bool
 
-	// ActorID is the durable actor ID when known.
+	// ActorID is the local actor ID when known.
 	ActorID string
 
 	// State is the detailed child state when an active actor was queried.

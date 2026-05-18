@@ -36,9 +36,9 @@ narrow interfaces:
 | Component | File(s) | Responsibility |
 | --- | --- | --- |
 | `UnrollRegistryActor` | `registry.go` | Spawn / dedup / terminal bookkeeping; one instance per daemon. |
-| `VTXOUnrollActor` | `actor.go` | Durable per-target actor; owns the FSM session, proof, cached sweep tx. |
+| `VTXOUnrollActor` | `actor.go` | In-memory per-target actor; owns the FSM session while SQL stores restart state. |
 | FSM (pure) | `fsm_types.go`, `fsm_logic.go`, `session.go` | Side-effect-free state machine that emits outbox events. |
-| Support | `proof_assembler.go`, `sweep.go`, `snapshot.go`, `db_store.go`, `messages.go` | Proof assembly, sweep building, checkpoint codec, DB adapter, durable mailbox codec. |
+| Support | `proof_assembler.go`, `sweep.go`, `snapshot.go`, `db_store.go`, `messages.go` | Proof assembly, sweep building, checkpoint codec, DB adapter, actor messages. |
 
 External dependencies:
 
@@ -141,11 +141,11 @@ same sweep tx is restored, so:
 sequenceDiagram
     participant FSM
     participant Behavior as VTXOUnrollActor
-    participant Store as delivery store
+    participant Store as unroll job store
     participant TxConfirm as txconfirm
     FSM->>Behavior: RequestSweepBuild (outbox)
     Behavior->>Behavior: buildSweepTx<br/>(sign + cache)
-    Behavior->>Store: persistCheckpoint<br/>(sweepTx bytes)
+    Behavior->>Store: persist job snapshot<br/>(sweepTx bytes)
     Store-->>Behavior: ok
     Behavior->>TxConfirm: EnsureConfirmedReq(sweepTx)
     TxConfirm-->>Behavior: EnsureConfirmedResp
@@ -189,7 +189,8 @@ On daemon boot, the registry calls `RestoreNonTerminal`, which re-spawns a
 `VTXOUnrollActor` for every non-terminal row in the store and sends each
 one `ResumeUnrollRequest`. The actor:
 
-1. Loads its checkpoint (proof, planner state, sweep tx, last height).
+1. Loads its SQL job snapshot and reconstructs immutable proof material from
+   local VTXO/OOR artifact lineage.
 2. Reconstructs the protofsm session in the same state it crashed in.
 3. Emits `ReissueInFlightTransactions` for every in-flight proof node and,
    if a sweep was already broadcast, `ReissueSweepConfirmation`.
@@ -202,7 +203,7 @@ flowchart LR
     Boot[daemon start] --> Rest[Registry.RestoreNonTerminal]
     Rest --> List["Store.ListNonTerminalRecords()"]
     List --> Spawn[per-target spawn + ResumeUnrollRequest]
-    Spawn --> Load[Load checkpoint<br/>from delivery store]
+    Spawn --> Load[Load job snapshot<br/>from SQL store]
     Load --> Reissue[Emit Reissue* outbox events]
     Reissue --> TxConfirm[Re-submit in-flight txs<br/>to txconfirm]
     TxConfirm --> Dedup[txconfirm dedup<br/>= idempotent resub]
@@ -259,8 +260,7 @@ catching real fraud and reorg scenarios promptly.
 
 ## Testing
 
-- `messages_test.go` — TLV round-trip tests for every durable mailbox
-  message.
+- `messages_test.go` — actor/protofsm message conversion and routing tests.
 - `db_store_test.go` — Phase ↔ DB status and Trigger ↔ DB trigger
   round-trip tests (prevents silent enum downgrades).
 - `registry_test.go` — dedup, fail-closed admission, terminal retry,
@@ -273,10 +273,6 @@ catching real fraud and reorg scenarios promptly.
 
 - [`CLAUDE.md`](CLAUDE.md) — stable per-package summary with
   invariants.
-- [`../docs/durable_actor_architecture.md`](../docs/durable_actor_architecture.md)
-  — CDC pattern and durable mailbox lifecycle.
-- [`../docs/durable_actor_quickstart.md`](../docs/durable_actor_quickstart.md)
-  — `TLVMessage`, `ActorBehavior`, migration checklist.
 - [`../unrollplan/CLAUDE.md`](../unrollplan/CLAUDE.md) — pure planner
   semantics.
 - [`../txconfirm/CLAUDE.md`](../txconfirm/CLAUDE.md) — broadcast + CPFP

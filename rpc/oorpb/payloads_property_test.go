@@ -1,3 +1,4 @@
+//nolint:ll
 package oorpb
 
 import (
@@ -225,17 +226,19 @@ func TestSubmitPackageResponseRoundTripProperty(t *testing.T) {
 		for i := range checkpoints {
 			checkpoints[i] = genPSBT(rt)
 		}
+		ark := genPSBT(rt)
 
 		resp, err := NewSubmitPackageResponse(
-			sessionID, checkpoints,
+			sessionID, ark, checkpoints,
 		)
 		require.NoError(t, err)
 
-		gotID, gotCheckpoints, err := ParseSubmitPackageResponse(
+		gotID, gotArk, gotCheckpoints, err := ParseSubmitPackageResponse(
 			resp,
 		)
 		require.NoError(t, err)
 		require.Equal(t, sessionID, gotID)
+		requirePSBTEqual(t, ark, gotArk)
 		require.Equal(
 			t, len(checkpoints), len(gotCheckpoints),
 		)

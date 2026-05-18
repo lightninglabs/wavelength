@@ -134,7 +134,7 @@ func (a *VTXOActor) logger(ctx context.Context) btclog.Logger {
 // resolver at the ExpiringNotification transition and never sees
 // the miner fee or confirmation height. Emitting with
 // ExitCostSat=0 would create a permanent poison-pill in the
-// durable mailbox (message rejected, replayed forever).
+// SQL mailbox (message rejected, replayed forever).
 //
 // Responsibility for emitting ExitCostMsg belongs to whatever
 // subsystem actually observes the unilateral-exit transaction

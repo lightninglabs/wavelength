@@ -18,7 +18,7 @@ type ReceiveState interface {
 
 // ReceiveResolving indicates the client durably recorded a lightweight
 // incoming-transfer hint and still needs to fetch the full Ark/checkpoint
-// package outside the live durable actor transaction.
+// package outside the live local actor transaction.
 type ReceiveResolving struct {
 	SessionID SessionID
 

@@ -53,9 +53,9 @@ communication alongside the raw registration API.
 - Each monitoring request spawns a dedicated sub-actor (no shared state between
   monitors).
 - Registration channels are buffered.
-- Confirmation sub-actors support two notification modes: Future-based (blocking
-  await) and actor-based (async `Tell` via `NotifyActor`). Callers use the actor
-  mode when blocking inside a durable actor transaction is unsafe.
+- Confirmation sub-actors support two notification modes: Future-based
+  blocking await and actor-based async `Tell` via `NotifyActor`. Callers choose
+  the mode that matches their concurrency boundary.
 
 ## Deep Docs
 

@@ -1,3 +1,4 @@
+//nolint:ll
 package oor
 
 import (
@@ -7,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -21,16 +23,11 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
-const (
-	oorCheckpointStateType = "oor.sessions"
-	oorCheckpointVersion   = 2
-)
-
 // OutboxHandler executes FSM outbox requests and returns follow-up events.
 //
 // This mirrors the server-side OOR coordinator approach. The goal is to keep
 // the FSM pure and move I/O (RPC, signing, persistence) behind an explicit
-// boundary that can later be implemented by durable actors.
+// boundary that can later be implemented by local actors.
 type OutboxHandler interface {
 	// Handle executes the outbox request and returns follow-up events.
 	Handle(ctx context.Context, sessionID SessionID,
@@ -60,26 +57,17 @@ type ClientActorCfg struct {
 	// events are routed through OutboxHandler for backward compatibility.
 	ServerConn actor.TellOnlyRef[serverconn.ServerConnMsg]
 
-	// TransportOutbox writes server transport events to the actor
-	// transactional outbox instead of Tell'ing ServerConn directly. This
-	// lets the OOR actor commit its FSM/checkpoint transaction before the
-	// serverconn mailbox enqueue happens. A daemon using this mode must run
-	// an actor.OutboxPublisher and register ServerConn under its target
-	// actor ID.
-	TransportOutbox bool
-
-	// SigningEffect receives durable signing requests when configured. This
-	// lets OOR persist the FSM state and queue wallet signing work without
-	// executing signer calls inside the OOR actor turn. When nil, signing
-	// continues through OutboxHandler for backward compatibility.
-	SigningEffect actor.TellOnlyRef[SigningEffectMsg]
-
 	// PackageStore persists finalized outgoing packages and local input
 	// bindings used by unroll/recovery tooling.
 	PackageStore PackagePersistence
 
-	// DeliveryStore backs the durable actor mailbox/checkpoint operations.
-	DeliveryStore actor.DeliveryStore
+	// SessionStore persists OOR-owned session rows and artifacts.
+	SessionStore OORClientSessionStore
+
+	// UseSQLEffects makes the coordinator persist session state and implied
+	// side effects, then lets OORClientEffectWorker execute those effects
+	// out-of-band. When false, the coordinator executes outbox work inline.
+	UseSQLEffects bool
 
 	// ActorSystem is the system in which the OOR actor registers itself
 	// under the OOR service key. This enables serverconn ingress
@@ -87,8 +75,7 @@ type ClientActorCfg struct {
 	// When nil, the actor is not registered (useful for unit tests).
 	ActorSystem actor.SystemContext
 
-	// ActorID is the durable mailbox id used for this actor instance.
-	// Re-using the same ActorID across restarts enables checkpoint restore.
+	// ActorID is the stable service id used for this actor instance.
 	ActorID string
 
 	// VTXOManager receives notifications after incoming VTXOs are durably
@@ -114,7 +101,7 @@ type ClientActorCfg struct {
 	IncomingVTXOObserver IncomingVTXONotifier
 }
 
-// OORClientActor wraps the outgoing-transfer client FSM in a durable actor
+// OORClientActor wraps the outgoing-transfer client FSM in an in-memory actor
 // interface.
 //
 // The actor owns a set of per-session protofsm state machines and drives them
@@ -122,103 +109,18 @@ type ClientActorCfg struct {
 type OORClientActor struct {
 	cfg ClientActorCfg
 
-	ref     actor.ActorRef[OORDurableMsg, ActorResp]
-	durable *actor.DurableActor[OORDurableMsg, ActorResp]
+	ref     actor.ActorRef[ActorMsg, ActorResp]
+	runtime *actor.Actor[ActorMsg, ActorResp]
+	wg      sync.WaitGroup
 
 	startupErr error
 }
 
-var serverConnOutboxCodec = serverconn.NewServerConnCodec()
-var signingEffectOutboxCodec = NewSigningEffectCodec()
-
-// newOORActorCodec creates a MessageCodec with all OOR actor message types
-// registered. This allows the durable actor to serialize and deserialize each
-// ActorMsg type directly without an intermediate envelope.
+// NewOORClientActor creates an outgoing-transfer OOR client actor.
 //
-// IMPORTANT: every type that implements ActorMsg must be registered here;
-// omissions cause runtime dispatch failures with no compile-time warning.
-func newOORActorCodec(limits ReceiveLimits) *actor.MessageCodec {
-	codec := actor.NewMessageCodec()
-	limits = normalizeReceiveLimits(limits)
-
-	codec.MustRegister(
-		StartTransferRequestTLVType,
-		func() actor.TLVMessage {
-			return &StartTransferRequest{
-				limits: limits,
-			}
-		},
-	)
-	codec.MustRegister(
-		FindOutgoingSessionByIdempotencyKeyTLVType,
-		func() actor.TLVMessage {
-			return &FindOutgoingSessionByIdempotencyKeyRequest{}
-		},
-	)
-	codec.MustRegister(
-		ListSessionsRequestTLVType,
-		func() actor.TLVMessage {
-			return &ListSessionsRequest{}
-		},
-	)
-	codec.MustRegister(
-		DriveEventRequestTLVType,
-		func() actor.TLVMessage {
-			return &DriveEventRequest{
-				limits: limits,
-			}
-		},
-	)
-	codec.MustRegister(
-		ResolveIncomingTransferTLVType,
-		func() actor.TLVMessage {
-			return &ResolveIncomingTransferRequest{
-				limits: limits,
-			}
-		},
-	)
-	codec.MustRegister(
-		GetStateRequestTLVType,
-		func() actor.TLVMessage {
-			return &GetStateRequest{}
-		},
-	)
-	codec.MustRegister(
-		RestoreSessionRequestTLVType,
-		func() actor.TLVMessage {
-			return &RestoreSessionRequest{
-				limits: limits,
-			}
-		},
-	)
-	codec.MustRegister(
-		ResumeSessionRequestTLVType,
-		func() actor.TLVMessage {
-			return &ResumeSessionRequest{}
-		},
-	)
-	codec.MustRegister(
-		ExportSnapshotRequestTLVType,
-		func() actor.TLVMessage {
-			return &ExportSnapshotRequest{}
-		},
-	)
-	codec.MustRegister(
-		actor.RestartTLVType,
-		func() actor.TLVMessage {
-			return &actor.RestartMessage{}
-		},
-	)
-
-	return codec
-}
-
-// NewOORClientActor creates a durable outgoing-transfer OOR client actor.
-//
-// Startup performs checkpoint loading and prepends a restart message so
-// recovery logic runs through the same behavior path as normal runtime
-// messages. If startup prerequisites fail, the returned actor stores the error
-// and surfaces it on Receive.
+// Startup restores SQL-backed workflow state before the in-memory actor starts
+// processing messages. If startup prerequisites fail, the returned actor stores
+// the error and surfaces it on Receive.
 func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 	cfg.Limits = normalizeReceiveLimits(cfg.Limits)
 
@@ -233,61 +135,53 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 
 	actorRef := &OORClientActor{cfg: cfg}
 
-	if cfg.DeliveryStore == nil {
-		actorRef.startupErr = fmt.Errorf("delivery store must be " +
+	if cfg.SessionStore == nil {
+		actorRef.startupErr = fmt.Errorf("session store must be " +
 			"provided")
 
 		return actorRef
 	}
 
-	codec := newOORActorCodec(cfg.Limits)
-
 	behavior := &oorDurableBehavior{
 		cfg:      cfg,
 		sessions: make(map[SessionID]*sessionHandle),
+		pendingIncoming: make(
+			map[SessionID]*ResolveIncomingTransferRequest,
+		),
 	}
 
-	durableCfg := actor.DefaultDurableActorConfig[OORDurableMsg,
-		ActorResp](
-		cfg.ActorID, behavior, cfg.DeliveryStore, codec,
+	restoreCtx := build.ContextWithLogger(
+		context.Background(), ctorLogger,
 	)
-	durableCfg.Log = cfg.Log
-
-	durable := actor.NewDurableActor(durableCfg)
-	actorRef.durable = durable
-	actorRef.ref = durable.Ref()
-
-	checkpoint, err := cfg.DeliveryStore.LoadCheckpoint(
-		context.Background(), cfg.ActorID,
-	)
-	if err != nil {
-		actorRef.startupErr = err
+	restore := behavior.restoreSessionState(restoreCtx)
+	if restore.IsErr() {
+		actorRef.startupErr = restore.Err()
 
 		return actorRef
 	}
 
-	err = actor.PrependRestartMessage(
-		context.Background(), cfg.DeliveryStore, codec, cfg.ActorID,
-		checkpoint,
-	)
-	if err != nil {
-		actorRef.startupErr = err
+	runtime := actor.NewActor(actor.ActorConfig[
+		ActorMsg, ActorResp,
+	]{
+		ID:          cfg.ActorID,
+		Behavior:    behavior,
+		MailboxSize: 128,
+		Wg:          &actorRef.wg,
+	})
+	actorRef.runtime = runtime
+	actorRef.ref = runtime.Ref()
+	runtime.Start()
 
-		return actorRef
-	}
-
-	durable.Start()
-
-	ctorLogger.InfoS(context.Background(), "OOR durable actor started",
+	ctorLogger.InfoS(context.Background(), "OOR client actor started",
 		slog.String("actor_id", cfg.ActorID),
 	)
 
-	// Register the durable actor's ref with the actor system so the
+	// Register the actor ref with the actor system so the
 	// serverconn event router can discover it via the OOR service key.
 	if cfg.ActorSystem != nil {
 		oorKey := NewServiceKey()
-		err = actor.RegisterWithReceptionist(
-			cfg.ActorSystem.Receptionist(), oorKey, durable.Ref(),
+		err := actor.RegisterWithReceptionist(
+			cfg.ActorSystem.Receptionist(), oorKey, runtime.Ref(),
 		)
 		if err != nil {
 			actorRef.startupErr = fmt.Errorf("register OOR "+
@@ -306,9 +200,8 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 	return actorRef
 }
 
-// Receive sends an actor message through the durable mailbox and returns
-// the response synchronously. Each ActorMsg type implements TLVMessage
-// directly, so no envelope conversion is needed.
+// Receive sends an actor message through the in-memory mailbox and returns
+// the response synchronously.
 func (a *OORClientActor) Receive(ctx context.Context,
 	msg ActorMsg) fn.Result[ActorResp] {
 
@@ -318,7 +211,7 @@ func (a *OORClientActor) Receive(ctx context.Context,
 
 	if a.ref == nil {
 		return fn.Err[ActorResp](
-			fmt.Errorf("durable actor not initialized"),
+			fmt.Errorf("actor not initialized"),
 		)
 	}
 
@@ -340,7 +233,7 @@ func (a *OORClientActor) Receive(ctx context.Context,
 	return fut.Await(ctx)
 }
 
-// Stop shuts down the underlying durable actor and releases its goroutines.
+// Stop shuts down the underlying in-memory actor and releases its goroutines.
 //
 // Stop is safe to call multiple times.
 func (a *OORClientActor) Stop() {
@@ -350,8 +243,8 @@ func (a *OORClientActor) Stop() {
 		slog.String("actor_id", a.cfg.ActorID),
 	)
 
-	if a.durable != nil {
-		a.durable.Stop()
+	if a.runtime != nil {
+		a.runtime.Stop()
 	}
 
 	a.cfg.Log.UnwrapOr(btclog.Disabled).InfoS(
@@ -361,7 +254,7 @@ func (a *OORClientActor) Stop() {
 	)
 }
 
-// StopAndWait shuts down the underlying durable actor and waits for exit.
+// StopAndWait shuts down the underlying in-memory actor and waits for exit.
 //
 // StopAndWait is safe to call multiple times.
 func (a *OORClientActor) StopAndWait(ctx context.Context) error {
@@ -371,9 +264,19 @@ func (a *OORClientActor) StopAndWait(ctx context.Context) error {
 		slog.String("actor_id", a.cfg.ActorID),
 	)
 
-	if a.durable != nil {
-		if err := a.durable.StopAndWait(ctx); err != nil {
-			return err
+	if a.runtime != nil {
+		a.runtime.Stop()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			a.wg.Wait()
+		}()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case <-done:
 		}
 	}
 
@@ -386,13 +289,14 @@ func (a *OORClientActor) StopAndWait(ctx context.Context) error {
 	return nil
 }
 
-// oorDurableBehavior implements the durable actor behavior for the OOR
-// client. It dispatches decoded TLV messages to per-session FSMs and
-// persists a combined checkpoint after every state mutation.
+// oorDurableBehavior implements the in-memory OOR client behavior. It
+// dispatches actor messages to per-session FSMs and persists domain session
+// rows after state changes.
 type oorDurableBehavior struct {
 	cfg ClientActorCfg
 
-	sessions map[SessionID]*sessionHandle
+	sessions        map[SessionID]*sessionHandle
+	pendingIncoming map[SessionID]*ResolveIncomingTransferRequest
 }
 
 // logger returns the configured logger or falls back to extracting from
@@ -401,17 +305,11 @@ func (b *oorDurableBehavior) logger(ctx context.Context) btclog.Logger {
 	return b.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
-// Receive dispatches decoded TLV messages to the appropriate handler
-// method based on message type. Each ActorMsg type is registered directly
-// in the codec and deserialized by the durable actor, so no envelope
-// unwrapping is needed.
+// Receive dispatches actor messages to the appropriate handler method.
 func (b *oorDurableBehavior) Receive(ctx context.Context,
-	msg OORDurableMsg) fn.Result[ActorResp] {
+	msg ActorMsg) fn.Result[ActorResp] {
 
 	switch m := msg.(type) {
-	case *actor.RestartMessage:
-		return b.handleRestart(ctx, m)
-
 	case *StartTransferRequest:
 		return b.handleStartTransfer(ctx, m)
 
@@ -617,9 +515,12 @@ func (b *oorDurableBehavior) handleFindOutgoingSessionByIdempotencyKey(
 		return fn.Err[ActorResp](fmt.Errorf("request must be provided"))
 	}
 
-	sessionID, found := b.findOutgoingSessionByIdempotencyKey(
-		req.IdempotencyKey,
+	sessionID, found, err := b.findOutgoingSessionByIdempotencyKey(
+		ctx, req.IdempotencyKey,
 	)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
 	if !found {
 		return fn.Ok[ActorResp](
 			&FindOutgoingSessionByIdempotencyKeyResponse{},
@@ -637,49 +538,126 @@ func (b *oorDurableBehavior) handleFindOutgoingSessionByIdempotencyKey(
 	})
 }
 
-// handleRestart restores all sessions from the durable checkpoint (if
-// present) and re-drives their outbox side effects.
-func (b *oorDurableBehavior) handleRestart(ctx context.Context,
-	msg *actor.RestartMessage) fn.Result[ActorResp] {
+func (b *oorDurableBehavior) restoreSessionState(
+	ctx context.Context) fn.Result[ActorResp] {
 
-	if msg == nil {
+	b.sessions = make(map[SessionID]*sessionHandle)
+	b.pendingIncoming = make(map[SessionID]*ResolveIncomingTransferRequest)
+
+	if b.cfg.SessionStore == nil {
 		return fn.Err[ActorResp](
-			fmt.Errorf("restart message must be provided"),
+			fmt.Errorf("session store must be provided"),
 		)
 	}
 
-	b.sessions = make(map[SessionID]*sessionHandle)
-
-	hasCheckpoint := msg.HasCheckpoint()
-
-	b.logger(ctx).InfoS(ctx, "Handling restart message",
-		slog.Bool("has_checkpoint", hasCheckpoint),
-	)
-
-	if hasCheckpoint {
-		checkpoint := msg.Checkpoint.UnsafeFromSome()
-
-		err := b.restoreFromCheckpoint(ctx, checkpoint.StateData)
-		if err != nil {
-			return fn.Err[ActorResp](err)
-		}
-	}
-
-	err := b.resumeRestoredSessions(ctx)
-	if err != nil {
+	if err := b.restoreFromSessionStore(ctx); err != nil {
 		return fn.Err[ActorResp](err)
 	}
 
-	err = b.persistCheckpoint(ctx)
-	if err != nil {
+	if err := b.resumeRestoredSessions(ctx); err != nil {
 		return fn.Err[ActorResp](err)
 	}
 
-	b.logger(ctx).InfoS(ctx, "Restart complete",
+	if err := b.persistSessionState(ctx); err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	b.logger(ctx).InfoS(ctx, "SQL session restore complete",
 		slog.Int("num_sessions", len(b.sessions)),
 	)
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
+}
+
+func (b *oorDurableBehavior) restoreFromSessionStore(
+	ctx context.Context) error {
+
+	sessions, err := b.cfg.SessionStore.LoadActiveSessions(ctx)
+	if err != nil {
+		return err
+	}
+
+	b.logger(ctx).InfoS(ctx, "Restoring sessions from SQL store",
+		slog.Int("num_sessions", len(sessions)),
+	)
+
+	for i := range sessions {
+		stored := sessions[i]
+
+		switch stored.Direction {
+		case SessionDirectionOutgoing:
+			if stored.Outgoing == nil {
+				return fmt.Errorf("stored outgoing session " +
+					"missing snapshot")
+			}
+
+			session, err := NewSessionFromSnapshot(
+				ctx, stored.Outgoing,
+			)
+			if err != nil {
+				return err
+			}
+
+			if _, exists := b.sessions[session.ID]; exists {
+				return fmt.Errorf("duplicate stored "+
+					"session id: %s", session.ID)
+			}
+
+			b.sessions[session.ID] = &sessionHandle{
+				FSM:            session.FSM,
+				kind:           sessionKindOutgoing,
+				RetryAfter:     stored.Outgoing.RetryAfter,
+				RetryReason:    stored.Outgoing.FailReason,
+				IdempotencyKey: stored.Outgoing.IdempotencyKey,
+			}
+
+		case SessionDirectionIncoming:
+			if stored.Incoming == nil {
+				return fmt.Errorf("stored incoming session " +
+					"missing snapshot")
+			}
+
+			if existing, exists := b.sessions[stored.
+				Incoming.
+				SessionID]; exists {
+
+				if existing.kind == sessionKindOutgoing &&
+					stored.Incoming.Phase ==
+						IncomingPhaseResolvePending {
+
+					b.stagePendingIncoming(
+						resolveRequestFromIncomingSnapshot(
+							stored.Incoming,
+						),
+					)
+
+					continue
+				}
+
+				return fmt.Errorf("duplicate stored "+
+					"session id: %s",
+					stored.Incoming.SessionID)
+			}
+
+			session, err := NewReceiveSessionFromSnapshot(
+				ctx, stored.Incoming,
+			)
+			if err != nil {
+				return err
+			}
+
+			b.sessions[session.ID] = &sessionHandle{
+				FSM:  session.FSM,
+				kind: sessionKindIncoming,
+			}
+
+		default:
+			return fmt.Errorf("unknown stored session "+
+				"direction: %d", stored.Direction)
+		}
+	}
+
+	return nil
 }
 
 // handleStartTransfer starts a new outgoing transfer session.
@@ -695,9 +673,12 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 		slog.Int("num_recipients", len(req.Recipients)),
 	)
 
-	existingSessionID, found := b.findOutgoingSessionByIdempotencyKey(
-		req.IdempotencyKey,
+	existingSessionID, found, err := b.findOutgoingSessionByIdempotencyKey(
+		ctx, req.IdempotencyKey,
 	)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
 	if found {
 		b.logger(ctx).InfoS(ctx, "Returning existing OOR transfer",
 			slog.String("session_id", existingSessionID.String()),
@@ -747,7 +728,7 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 		slog.Int("num_outbox", len(outbox)),
 	)
 
-	err = b.persistCheckpoint(ctx)
+	err = b.persistSessionState(ctx)
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
@@ -765,10 +746,24 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 // findOutgoingSessionByIdempotencyKey returns the existing outgoing session
 // created for the supplied caller intent key, when one is locally known.
 func (b *oorDurableBehavior) findOutgoingSessionByIdempotencyKey(
-	idempotencyKey string) (SessionID, bool) {
+	ctx context.Context, idempotencyKey string) (SessionID, bool, error) {
 
 	if idempotencyKey == "" {
-		return SessionID{}, false
+		return SessionID{}, false, nil
+	}
+
+	if b.cfg.SessionStore != nil {
+		sessionID, found, err := b.cfg.SessionStore.
+			FindOutgoingByIdempotencyKey(
+				ctx, idempotencyKey,
+			)
+		if err != nil {
+			return SessionID{}, false, fmt.Errorf("find OOR "+
+				"idempotency key: %w", err)
+		}
+		if found {
+			return sessionID, true, nil
+		}
 	}
 
 	for sessionID, handle := range b.sessions {
@@ -777,11 +772,11 @@ func (b *oorDurableBehavior) findOutgoingSessionByIdempotencyKey(
 		}
 
 		if handle.IdempotencyKey == idempotencyKey {
-			return sessionID, true
+			return sessionID, true, nil
 		}
 	}
 
-	return SessionID{}, false
+	return SessionID{}, false, nil
 }
 
 // handleDriveEvent feeds a follow-up event into an existing session.
@@ -819,20 +814,7 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 		return fn.Ok[ActorResp](&DriveEventResponse{})
 	}
 
-	// If the inbound SubmitAcceptedEvent is missing the ArkPSBT (e.g.,
-	// the server response proto does not echo it back), enrich from the
-	// current session state. The AwaitingSubmitAccepted state carries
-	// the canonical ArkPSBT that was sent in the submit request.
 	if submitAccepted, ok := req.Event.(*SubmitAcceptedEvent); ok {
-		if submitAccepted.ArkPSBT == nil {
-			err := b.enrichSubmitAcceptedArkPSBT(
-				handle, submitAccepted,
-			)
-			if err != nil {
-				return fn.Err[ActorResp](err)
-			}
-		}
-
 		err := validateSubmitAcceptedIdentity(
 			req.SessionID, submitAccepted,
 		)
@@ -842,7 +824,7 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 	}
 
 	alreadyApplied, err := b.alreadyAppliedSigningDriveEvent(
-		ctx, handle, req.Event,
+		ctx, req.SessionID, handle, req.Event,
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
@@ -867,9 +849,20 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 	b.notifyMaterializedVTXOs(ctx, req.Event)
 
 	if finalizeState == nil {
-		err = b.persistCheckpoint(ctx)
+		err = b.persistSessionState(ctx)
 		if err != nil {
 			return fn.Err[ActorResp](err)
+		}
+
+		if b.cfg.UseSQLEffects {
+			if metadata, ok := req.Event.(*IncomingMetadataResolvedEvent); ok {
+				err = b.persistIncomingMetadataEffect(
+					ctx, req.SessionID, metadata,
+				)
+				if err != nil {
+					return fn.Err[ActorResp](err)
+				}
+			}
 		}
 
 		err = b.driveOutbox(ctx, req.SessionID, handle, outbox)
@@ -881,7 +874,7 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 	}
 
 	// FinalizeAcceptedEvent emits MarkInputsSpentRequest, which may cross
-	// from this durable actor into the VTXO manager. Drive that local
+	// from this local actor into the VTXO manager. Drive that local
 	// completion before taking this actor's package-store write lock so
 	// SQLite backends do not deadlock on two actor transactions.
 	err = b.driveOutbox(ctx, req.SessionID, handle, outbox)
@@ -894,16 +887,16 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 
-	err = b.persistCheckpoint(ctx)
+	err = b.persistSessionState(ctx)
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
 
 	// Emit the outgoing-transfer ledger entry only after the
-	// checkpoint commits: the caller contract for the ledger
+	// session state commits: the caller contract for the ledger
 	// actor is that we have a durable local record of the send
-	// before posting to accounting, so a crash before checkpoint
-	// persistence does not double-book the transfers_out leg on
+	// before posting to accounting, so a crash before session persistence
+	// does not double-book the transfers_out leg on
 	// replay.
 	b.emitVTXOSent(ctx, req.SessionID, finalizeState)
 
@@ -916,7 +909,8 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 // OOR FSM must therefore treat stale duplicate signing results as no-ops once
 // the corresponding signing event has already advanced the session.
 func (b *oorDurableBehavior) alreadyAppliedSigningDriveEvent(
-	ctx context.Context, handle *sessionHandle, event Event) (bool, error) {
+	ctx context.Context, sessionID SessionID, handle *sessionHandle,
+	event Event) (bool, error) {
 
 	if handle.kind != sessionKindOutgoing {
 		return false, nil
@@ -931,12 +925,71 @@ func (b *oorDurableBehavior) alreadyAppliedSigningDriveEvent(
 		return false, nil
 	}
 
+	if err := b.recoverStaleSigningSideEffect(
+		ctx, sessionID, handle, state, event,
+	); err != nil {
+		return false, err
+	}
+
 	b.logger(ctx).DebugS(ctx, "Ignoring stale signing event",
 		slog.String("state", fmt.Sprintf("%T", state)),
 		slog.String("event_type", fmt.Sprintf("%T", event)),
 	)
 
 	return true, nil
+}
+
+func (b *oorDurableBehavior) recoverStaleSigningSideEffect(ctx context.Context,
+	sessionID SessionID, handle *sessionHandle, state State,
+	event Event) error {
+
+	var outbox []OutboxEvent
+
+	switch event.(type) {
+	case *ArkSignedEvent:
+		submitState, ok := state.(*AwaitingSubmitAccepted)
+		if !ok {
+			return nil
+		}
+
+		outbox = []OutboxEvent{
+			&SendSubmitPackageRequest{
+				ArkPSBT:         submitState.ArkPSBT,
+				CheckpointPSBTs: submitState.CheckpointPSBTs,
+				TransferInputs:  submitState.TransferInputs,
+				Recipients:      submitState.RecipientOutputs,
+			},
+		}
+
+	case *CheckpointsSignedEvent:
+		finalizeState, ok := state.(*AwaitingFinalizeAccepted)
+		if !ok {
+			return nil
+		}
+
+		outbox = []OutboxEvent{
+			&SendFinalizePackageRequest{
+				ArkPSBT: finalizeState.ArkPSBT,
+				FinalCheckpointPSBTs: finalizeState.
+					FinalCheckpointPSBTs,
+			},
+		}
+
+	default:
+		return nil
+	}
+
+	b.logger(ctx).DebugS(ctx, "Recovering stale signing side effect",
+		slog.String("session_id", sessionID.String()),
+		slog.String("state", fmt.Sprintf("%T", state)),
+		slog.String("event_type", fmt.Sprintf("%T", event)),
+	)
+
+	if err := b.persistSessionState(ctx); err != nil {
+		return err
+	}
+
+	return b.driveOutbox(ctx, sessionID, handle, outbox)
 }
 
 func isStaleSigningEvent(state State, event Event) bool {
@@ -996,7 +1049,7 @@ func isTerminalSigningFailure(state State) bool {
 
 // handleResolveIncomingTransfer durably records a lightweight incoming OOR
 // hint, then emits the transport query needed to resolve the full Ark package
-// after the checkpoint commits.
+// after the session state commits.
 func (b *oorDurableBehavior) handleResolveIncomingTransfer(ctx context.Context,
 	req *ResolveIncomingTransferRequest) fn.Result[ActorResp] {
 
@@ -1038,7 +1091,7 @@ func (b *oorDurableBehavior) handleResolveIncomingTransfer(ctx context.Context,
 		if !outgoingState.IsTerminal() {
 			b.logger(ctx).DebugS(
 				ctx,
-				"Deferring incoming self-transfer hint "+
+				"Persisting incoming self-transfer hint "+
 					"until outgoing session reaches "+
 					"terminal state",
 				slog.String(
@@ -1047,10 +1100,12 @@ func (b *oorDurableBehavior) handleResolveIncomingTransfer(ctx context.Context,
 				slog.String("state", fmt.Sprintf("%T", state)),
 			)
 
-			return fn.Err[ActorResp](
-				fmt.Errorf("outgoing session %s still active "+
-					"for incoming hint", req.SessionID),
-			)
+			b.stagePendingIncoming(req)
+			if err := b.persistSessionState(ctx); err != nil {
+				return fn.Err[ActorResp](err)
+			}
+
+			return fn.Ok[ActorResp](&DriveEventResponse{})
 		}
 
 		b.logger(ctx).DebugS(
@@ -1061,6 +1116,7 @@ func (b *oorDurableBehavior) handleResolveIncomingTransfer(ctx context.Context,
 		)
 
 		delete(b.sessions, req.SessionID)
+		delete(b.pendingIncoming, req.SessionID)
 		handle = nil
 		ok = false
 	}
@@ -1084,9 +1140,10 @@ func (b *oorDurableBehavior) handleResolveIncomingTransfer(ctx context.Context,
 			kind: sessionKindIncoming,
 		}
 		b.sessions[req.SessionID] = handle
+		delete(b.pendingIncoming, req.SessionID)
 		created = true
 
-		err = b.persistCheckpoint(ctx)
+		err = b.persistSessionState(ctx)
 		if err != nil {
 			return fn.Err[ActorResp](err)
 		}
@@ -1131,6 +1188,77 @@ func (b *oorDurableBehavior) handleResolveIncomingTransfer(ctx context.Context,
 	}
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
+}
+
+func (b *oorDurableBehavior) stagePendingIncoming(
+	req *ResolveIncomingTransferRequest) {
+
+	if b.pendingIncoming == nil {
+		b.pendingIncoming = make(
+			map[SessionID]*ResolveIncomingTransferRequest,
+		)
+	}
+
+	b.pendingIncoming[req.SessionID] = cloneResolveIncomingTransferRequest(
+		req,
+	)
+}
+
+func cloneResolveIncomingTransferRequest(
+	req *ResolveIncomingTransferRequest) *ResolveIncomingTransferRequest {
+
+	if req == nil {
+		return nil
+	}
+
+	return &ResolveIncomingTransferRequest{
+		SessionID:         req.SessionID,
+		RecipientEventID:  req.RecipientEventID,
+		RecipientPkScript: append([]byte(nil), req.RecipientPkScript...),
+	}
+}
+
+func (b *oorDurableBehavior) promotePendingIncomingIfTerminal(
+	ctx context.Context, sessionID SessionID) error {
+
+	req, ok := b.pendingIncoming[sessionID]
+	if !ok {
+		return nil
+	}
+
+	handle, ok := b.sessions[sessionID]
+	if !ok || handle == nil || handle.kind != sessionKindOutgoing {
+		return nil
+	}
+
+	state, err := handle.currentSessionState()
+	if err != nil {
+		return err
+	}
+
+	outgoingState, ok := state.(State)
+	if !ok {
+		return fmt.Errorf("session %s has unexpected outgoing "+
+			"state type %T", sessionID, state)
+	}
+
+	if !outgoingState.IsTerminal() {
+		return nil
+	}
+
+	b.logger(ctx).DebugS(
+		ctx,
+		"Promoting pending incoming self-transfer hint",
+		slog.String("session_id", sessionID.String()),
+		slog.String("state", fmt.Sprintf("%T", state)),
+	)
+
+	result := b.handleResolveIncomingTransfer(ctx, req)
+	if result.IsErr() {
+		return result.Err()
+	}
+
+	return nil
 }
 
 // handleIncomingTransfer drives a new incoming-transfer notification without
@@ -1182,39 +1310,12 @@ func (b *oorDurableBehavior) handleIncomingTransfer(ctx context.Context,
 	}
 	b.sessions[session.ID] = handle
 
-	err = b.persistCheckpoint(ctx)
+	err = b.persistSessionState(ctx)
 	if err != nil {
 		return err
 	}
 
 	return b.driveOutbox(ctx, session.ID, handle, outbox)
-}
-
-// enrichSubmitAcceptedArkPSBT populates a SubmitAcceptedEvent's ArkPSBT field
-// from the current session state when the server response does not echo it
-// back. The canonical ArkPSBT lives in the AwaitingSubmitAccepted state, which
-// was set when the client built and sent the submit package. This allows the
-// dispatch adapter to construct a SubmitAcceptedEvent from the oorpb proto
-// (which only carries sessionID + co-signed checkpoints) and have the actor
-// enrich it before validation and transition processing.
-func (b *oorDurableBehavior) enrichSubmitAcceptedArkPSBT(handle *sessionHandle,
-	event *SubmitAcceptedEvent) error {
-
-	state, err := handle.currentSessionState()
-	if err != nil {
-		return fmt.Errorf("get current state for ArkPSBT "+
-			"enrichment: %w", err)
-	}
-
-	awaitingSubmit, ok := state.(*AwaitingSubmitAccepted)
-	if !ok {
-		return fmt.Errorf("expected AwaitingSubmitAccepted state for "+
-			"ArkPSBT enrichment, got %T", state)
-	}
-
-	event.ArkPSBT = awaitingSubmit.ArkPSBT
-
-	return nil
 }
 
 // persistOutgoingPackage stores finalized outgoing package artifacts and input
@@ -1425,7 +1526,7 @@ func (b *oorDurableBehavior) handleRestoreSession(ctx context.Context,
 		IdempotencyKey: req.Snapshot.IdempotencyKey,
 	}
 
-	err = b.persistCheckpoint(ctx)
+	err = b.persistSessionState(ctx)
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
@@ -1475,7 +1576,7 @@ func (b *oorDurableBehavior) handleResumeSession(ctx context.Context,
 	}
 	handle.clearRetryMetadata()
 
-	err = b.persistCheckpoint(ctx)
+	err = b.persistSessionState(ctx)
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
@@ -1555,86 +1656,20 @@ func (b *oorDurableBehavior) handleGetState(ctx context.Context,
 	})
 }
 
-// restoreFromCheckpoint decodes a TLV checkpoint blob and rebuilds
-// per-session FSMs from the embedded outgoing snapshots.
-func (b *oorDurableBehavior) restoreFromCheckpoint(ctx context.Context,
-	raw []byte) error {
+func resolveRequestFromIncomingSnapshot(
+	snapshot *IncomingSnapshot) *ResolveIncomingTransferRequest {
 
-	if len(raw) == 0 {
+	if snapshot == nil {
 		return nil
 	}
 
-	checkpoint, err := decodeSessionsCheckpoint(raw)
-	if err != nil {
-		return err
-	}
-
-	if checkpoint.Version < 1 || checkpoint.Version > oorCheckpointVersion {
-		return fmt.Errorf("unknown checkpoint version: %d",
-			checkpoint.Version)
-	}
-
-	b.logger(ctx).InfoS(ctx, "Restoring sessions from checkpoint",
-		slog.Int("checkpoint_version", checkpoint.Version),
-		slog.Int(
-			"num_outgoing_snapshots",
-			len(checkpoint.OutgoingSnapshots),
+	return &ResolveIncomingTransferRequest{
+		SessionID:        snapshot.SessionID,
+		RecipientEventID: snapshot.RecipientEventID,
+		RecipientPkScript: append(
+			[]byte(nil), snapshot.RecipientPkScript...,
 		),
-		slog.Int(
-			"num_incoming_snapshots",
-			len(checkpoint.IncomingSnapshots),
-		))
-
-	for i := range checkpoint.OutgoingSnapshots {
-		snapshot := checkpoint.OutgoingSnapshots[i]
-
-		if _, exists := b.sessions[snapshot.SessionID]; exists {
-			return fmt.Errorf("duplicate session id in "+
-				"checkpoint: %s", snapshot.SessionID)
-		}
-
-		session, err := NewSessionFromSnapshot(ctx, snapshot)
-		if err != nil {
-			return err
-		}
-
-		b.sessions[session.ID] = &sessionHandle{
-			FSM:            session.FSM,
-			kind:           sessionKindOutgoing,
-			RetryAfter:     snapshot.RetryAfter,
-			RetryReason:    snapshot.FailReason,
-			IdempotencyKey: snapshot.IdempotencyKey,
-		}
-
-		b.logger(ctx).DebugS(ctx, "Restored session from checkpoint",
-			slog.String("session_id", session.ID.String()),
-		)
 	}
-
-	for i := range checkpoint.IncomingSnapshots {
-		snapshot := checkpoint.IncomingSnapshots[i]
-
-		if _, exists := b.sessions[snapshot.SessionID]; exists {
-			return fmt.Errorf("duplicate session id in "+
-				"checkpoint: %s", snapshot.SessionID)
-		}
-
-		session, err := NewReceiveSessionFromSnapshot(ctx, snapshot)
-		if err != nil {
-			return err
-		}
-
-		b.sessions[session.ID] = &sessionHandle{
-			FSM:  session.FSM,
-			kind: sessionKindIncoming,
-		}
-
-		b.logger(ctx).DebugS(ctx, "Restored incoming session "+
-			"from checkpoint",
-			slog.String("session_id", session.ID.String()))
-	}
-
-	return nil
 }
 
 // resumeRestoredSessions iterates all restored sessions in deterministic
@@ -1675,6 +1710,11 @@ func (b *oorDurableBehavior) resumeRestoredSessions(ctx context.Context) error {
 		)
 
 		err = b.driveOutbox(ctx, sessionID, handle, outbox)
+		if err != nil {
+			return err
+		}
+
+		err = b.promotePendingIncomingIfTerminal(ctx, sessionID)
 		if err != nil {
 			return err
 		}
@@ -1816,18 +1856,13 @@ func (b *oorDurableBehavior) buildTransportMessage(ctx context.Context,
 }
 
 // sendTransportEvent wraps the outbox message in a serverconn request and
-// either writes it to the transactional outbox or Tell's it directly to the
-// serverconn actor for durable delivery to the server.
+// Tell's it to the SQL-backed transport boundary.
 func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 	msg OutboxEvent) error {
 
 	sendReq, err := b.buildTransportMessage(ctx, msg)
 	if err != nil {
 		return err
-	}
-
-	if b.cfg.TransportOutbox {
-		return b.enqueueTransportOutbox(ctx, sendReq)
 	}
 
 	if err := b.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
@@ -1837,88 +1872,22 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 	return nil
 }
 
-// enqueueTransportOutbox writes the serverconn transport request to the actor
-// outbox so delivery happens after the OOR actor transaction commits.
-func (b *oorDurableBehavior) enqueueTransportOutbox(ctx context.Context,
-	msg serverconn.ServerConnMsg) error {
-
-	if b.cfg.DeliveryStore == nil {
-		return fmt.Errorf("delivery store must be provided")
-	}
-
-	if b.cfg.ServerConn == nil {
-		return fmt.Errorf("serverconn ref must be provided")
-	}
-
-	payload, err := serverConnOutboxCodec.Encode(msg)
-	if err != nil {
-		return fmt.Errorf("encode serverconn message: %w", err)
-	}
-
-	id := uuid.Must(uuid.NewV7()).String()
-	params := actor.OutboxParams{
-		ID:            id,
-		SourceActorID: b.cfg.ActorID,
-		TargetActorID: b.cfg.ServerConn.ID(),
-		MessageType:   msg.MessageType(),
-		Payload:       payload,
-	}
-
-	if err := b.cfg.DeliveryStore.EnqueueOutbox(ctx, params); err != nil {
-		return fmt.Errorf("enqueue transport outbox: %w", err)
-	}
-
-	b.logger(ctx).DebugS(ctx, "Queued transport event in outbox",
-		slog.String("target_actor_id", params.TargetActorID),
-		slog.String("message_type", params.MessageType),
-	)
-
-	return nil
-}
-
-// enqueueSigningEffect writes a local signing request to the actor outbox so
-// the signing effect actor can execute wallet signing after OOR commits.
-func (b *oorDurableBehavior) enqueueSigningEffect(ctx context.Context,
-	sessionID SessionID, req *SigningEffectRequest) error {
-
-	if b.cfg.DeliveryStore == nil {
-		return fmt.Errorf("delivery store must be provided")
-	}
-
-	if b.cfg.SigningEffect == nil {
-		return fmt.Errorf("signing effect ref must be provided")
-	}
-
-	payload, err := signingEffectOutboxCodec.Encode(req)
-	if err != nil {
-		return fmt.Errorf("encode signing effect request: %w", err)
-	}
-
-	id := uuid.Must(uuid.NewV7()).String()
-	params := actor.OutboxParams{
-		ID:            id,
-		SourceActorID: b.cfg.ActorID,
-		TargetActorID: b.cfg.SigningEffect.ID(),
-		MessageType:   req.MessageType(),
-		Payload:       payload,
-	}
-
-	if err := b.cfg.DeliveryStore.EnqueueOutbox(ctx, params); err != nil {
-		return fmt.Errorf("enqueue signing effect: %w", err)
-	}
-
-	b.logger(ctx).DebugS(ctx, "Queued signing effect in outbox",
-		slog.String("session_id", sessionID.String()),
-		slog.String("target_actor_id", params.TargetActorID),
-		slog.String("message_type", params.MessageType),
-	)
-
-	return nil
-}
-
 // driveOutbox executes outbox work using the configured handler and feeds any
 // follow-up events back into the FSM.
 func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
+	sessionID SessionID, handle *sessionHandle,
+	outbox []OutboxEvent) error {
+
+	if b.cfg.UseSQLEffects {
+		return nil
+	}
+
+	return b.driveOutboxNow(ctx, sessionID, handle, outbox)
+}
+
+// driveOutboxNow executes outbox work immediately. The SQL effect worker
+// uses this after claiming a durable effect row.
+func (b *oorDurableBehavior) driveOutboxNow(ctx context.Context,
 	sessionID SessionID, handle *sessionHandle,
 	outbox []OutboxEvent) error {
 
@@ -1956,12 +1925,12 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 					return err
 				}
 
-				err = b.persistCheckpoint(ctx)
+				err = b.persistSessionState(ctx)
 				if err != nil {
 					return err
 				}
 
-				err = b.driveOutbox(
+				err = b.driveOutboxNow(
 					ctx, sessionID, handle, nextOutbox,
 				)
 				if err != nil {
@@ -1970,31 +1939,6 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 			}
 
 			continue
-		}
-
-		if b.cfg.SigningEffect != nil {
-			req, ok := signingEffectRequest(sessionID, msg)
-			if ok {
-				b.logger(ctx).DebugS(
-					ctx, "Queueing signing effect",
-					slog.String(
-						"session_id",
-						sessionID.String(),
-					),
-					slog.String(
-						"event_type", fmt.Sprintf("%T",
-							msg),
-					),
-				)
-
-				if err := b.enqueueSigningEffect(
-					ctx, sessionID, req,
-				); err != nil {
-					return err
-				}
-
-				continue
-			}
 		}
 
 		b.logger(ctx).DebugS(ctx, "Handling local outbox event",
@@ -2051,13 +1995,20 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 			handle.applyRetryEvent(followUp)
 
 			if finalizeState == nil {
-				err = b.persistCheckpoint(ctx)
+				err = b.persistSessionState(ctx)
 				if err != nil {
 					return err
 				}
 
-				err = b.driveOutbox(
+				err = b.driveOutboxNow(
 					ctx, sessionID, handle, nextOutbox,
+				)
+				if err != nil {
+					return err
+				}
+
+				err = b.promotePendingIncomingIfTerminal(
+					ctx, sessionID,
 				)
 				if err != nil {
 					return err
@@ -2070,7 +2021,9 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 			// Run it before this actor writes the outgoing package.
 			// This keeps SQLite from holding two contending actor
 			// transactions.
-			err = b.driveOutbox(ctx, sessionID, handle, nextOutbox)
+			err = b.driveOutboxNow(
+				ctx, sessionID, handle, nextOutbox,
+			)
 			if err != nil {
 				return err
 			}
@@ -2082,7 +2035,12 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 				return err
 			}
 
-			err = b.persistCheckpoint(ctx)
+			err = b.persistSessionState(ctx)
+			if err != nil {
+				return err
+			}
+
+			err = b.promotePendingIncomingIfTerminal(ctx, sessionID)
 			if err != nil {
 				return err
 			}
@@ -2090,6 +2048,105 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 	}
 
 	return nil
+}
+
+func (b *oorDurableBehavior) processSQLClientEffect(ctx context.Context,
+	effect OORClientEffect) error {
+
+	handle, ok := b.sessions[effect.SessionID]
+	if !ok {
+		return fmt.Errorf("unknown session for OOR client effect: %s",
+			effect.SessionID)
+	}
+
+	state, err := handle.currentSessionState()
+	if err != nil {
+		return err
+	}
+
+	if effect.EffectType == OORClientEffectMaterializeIncomingVTXOs {
+		store, ok := b.cfg.SessionStore.(OORClientIncomingEffectStore)
+		if !ok {
+			return fmt.Errorf("session store cannot build " +
+				"incoming materialization request")
+		}
+
+		req, err := store.BuildMaterializeIncomingVTXOsRequest(
+			ctx, effect.SessionID,
+		)
+		if err != nil {
+			return err
+		}
+
+		b.logger(ctx).DebugS(ctx, "Processing SQL OOR client effect",
+			slog.String("session_id", effect.SessionID.String()),
+			slog.String("effect_id", effect.ID),
+			slog.String("effect_type", effect.EffectType),
+		)
+
+		return b.driveOutboxNow(
+			ctx, effect.SessionID, handle, []OutboxEvent{
+				req,
+			},
+		)
+	}
+
+	outbox, err := outboxForHandle(handle, state)
+	if err != nil {
+		return err
+	}
+
+	for _, msg := range outbox {
+		effectType, ok := EffectTypeForOutbox(msg)
+		if !ok || effectType != effect.EffectType {
+			continue
+		}
+
+		b.logger(ctx).DebugS(ctx, "Processing SQL OOR client effect",
+			slog.String("session_id", effect.SessionID.String()),
+			slog.String("effect_id", effect.ID),
+			slog.String("effect_type", effect.EffectType),
+		)
+
+		err = b.driveOutboxNow(
+			ctx, effect.SessionID, handle, []OutboxEvent{
+				msg,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		if b.isTransportEvent(msg) {
+			return ErrOORClientEffectAwaitingExternalAck
+		}
+
+		return nil
+	}
+
+	b.logger(ctx).DebugS(ctx, "Skipping stale SQL OOR client effect",
+		slog.String("session_id", effect.SessionID.String()),
+		slog.String("effect_id", effect.ID),
+		slog.String("effect_type", effect.EffectType),
+		slog.String("state", fmt.Sprintf("%T", state)),
+	)
+
+	return nil
+}
+
+func (b *oorDurableBehavior) persistIncomingMetadataEffect(ctx context.Context,
+	sessionID SessionID, event *IncomingMetadataResolvedEvent) error {
+
+	if event == nil {
+		return nil
+	}
+
+	store, ok := b.cfg.SessionStore.(OORClientIncomingEffectStore)
+	if !ok {
+		return fmt.Errorf("session store cannot persist incoming " +
+			"metadata effect")
+	}
+
+	return store.SaveIncomingMetadataEffect(ctx, sessionID, event.Matches)
 }
 
 // notifyMaterializedVTXOs forwards newly materialized incoming VTXOs to the
@@ -2145,7 +2202,7 @@ func (b *oorDurableBehavior) notifyMaterializedVTXOs(ctx context.Context,
 
 // loadMaterializedVTXOs reloads persisted incoming VTXO descriptors for a
 // callback event that only round-tripped outpoint identifiers through the
-// durable mailbox.
+// SQL mailbox.
 func (b *oorDurableBehavior) loadMaterializedVTXOs(ctx context.Context,
 	handled *IncomingHandledEvent) []*vtxo.Descriptor {
 
@@ -2185,13 +2242,13 @@ func (b *oorDurableBehavior) loadMaterializedVTXOs(ctx context.Context,
 	return descs
 }
 
-// persistCheckpoint snapshots every active session into a single TLV
-// blob and writes it to the durable delivery store.
-func (b *oorDurableBehavior) persistCheckpoint(ctx context.Context) error {
-	if b.cfg.DeliveryStore == nil {
-		return fmt.Errorf("delivery store must be provided")
-	}
+// persistSessionState snapshots every active session into the OOR SQL session
+// store.
+func (b *oorDurableBehavior) persistSessionState(ctx context.Context) error {
+	return b.persistSessionsToStore(ctx)
+}
 
+func (b *oorDurableBehavior) persistSessionsToStore(ctx context.Context) error {
 	sessionIDs := make([]SessionID, 0, len(b.sessions))
 	for sessionID := range b.sessions {
 		sessionIDs = append(sessionIDs, sessionID)
@@ -2201,12 +2258,6 @@ func (b *oorDurableBehavior) persistCheckpoint(ctx context.Context) error {
 		return sessionIDs[i].String() < sessionIDs[j].String()
 	})
 
-	outgoingSnapshots := make(
-		[]*OutgoingSnapshot, 0, len(sessionIDs),
-	)
-	incomingSnapshots := make(
-		[]*IncomingSnapshot, 0, len(sessionIDs),
-	)
 	for i := range sessionIDs {
 		sessionID := sessionIDs[i]
 		handle := b.sessions[sessionID]
@@ -2232,21 +2283,23 @@ func (b *oorDurableBehavior) persistCheckpoint(ctx context.Context) error {
 			}
 			handle.applyRetrySnapshot(snapshot)
 
-			outgoingSnapshots = append(
-				outgoingSnapshots, snapshot,
-			)
+			if err := b.cfg.SessionStore.SaveOutgoingSession(
+				ctx, snapshot,
+			); err != nil {
+				return err
+			}
 
 		case sessionKindIncoming:
-			snapshot, err := NewIncomingSnapshot(
-				sessionID, state,
-			)
+			snapshot, err := NewIncomingSnapshot(sessionID, state)
 			if err != nil {
 				return err
 			}
 
-			incomingSnapshots = append(
-				incomingSnapshots, snapshot,
-			)
+			if err := b.cfg.SessionStore.SaveIncomingSession(
+				ctx, snapshot,
+			); err != nil {
+				return err
+			}
 
 		default:
 			return fmt.Errorf("unknown session kind: %d",
@@ -2254,26 +2307,34 @@ func (b *oorDurableBehavior) persistCheckpoint(ctx context.Context) error {
 		}
 	}
 
-	raw, err := encodeSessionsCheckpoint(sessionsCheckpoint{
-		Version:           oorCheckpointVersion,
-		OutgoingSnapshots: outgoingSnapshots,
-		IncomingSnapshots: incomingSnapshots,
-	})
-	if err != nil {
-		return err
+	pendingIncomingIDs := make(
+		[]SessionID, 0, len(b.pendingIncoming),
+	)
+	for sessionID := range b.pendingIncoming {
+		pendingIncomingIDs = append(pendingIncomingIDs, sessionID)
 	}
 
-	return b.cfg.DeliveryStore.SaveCheckpoint(ctx, actor.CheckpointParams{
-		ActorID:   b.cfg.ActorID,
-		StateType: oorCheckpointStateType,
-		StateData: raw,
-		Version:   oorCheckpointVersion,
+	sort.SliceStable(pendingIncomingIDs, func(i, j int) bool {
+		return pendingIncomingIDs[i].String() <
+			pendingIncomingIDs[j].String()
 	})
-}
 
-type outgoingSessionsCheckpoint struct {
-	Version   int
-	Snapshots []*OutgoingSnapshot
+	for i := range pendingIncomingIDs {
+		sessionID := pendingIncomingIDs[i]
+		if handle, ok := b.sessions[sessionID]; ok &&
+			handle.kind == sessionKindIncoming {
+
+			continue
+		}
+
+		if err := b.cfg.SessionStore.SavePendingIncomingHint(
+			ctx, b.pendingIncoming[sessionID],
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // sessionHandle ties a session ID to its running state machine instance.
@@ -2435,7 +2496,7 @@ func (b *oorDurableBehavior) resumeOutboxForHandle(handle *sessionHandle,
 }
 
 type durableBehaviorIface = actor.ActorBehavior[
-	OORDurableMsg, ActorResp,
+	ActorMsg, ActorResp,
 ]
 
 var _ durableBehaviorIface = (*oorDurableBehavior)(nil)

@@ -33,6 +33,21 @@ type IncomingMetadataResolvedEvent struct {
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *IncomingMetadataResolvedEvent) eventSealed() {}
 
+// EncodeIncomingMetadataMatch serializes one incoming metadata match as a
+// named SQL artifact. The format is a stable TLV shape persisted under domain
+// columns rather than as an actor payload.
+func EncodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
+	return encodeIncomingMetadataMatch(match)
+}
+
+// DecodeIncomingMetadataMatchWithLimits decodes one SQL-persisted incoming
+// metadata artifact while applying receive-side defense-in-depth limits.
+func DecodeIncomingMetadataMatchWithLimits(raw []byte,
+	limits ReceiveLimits) (IncomingMetadataMatch, error) {
+
+	return decodeIncomingMetadataMatchWithLimits(raw, limits)
+}
+
 // IncomingMetadataCorrelationID returns the stable unary correlation ID used
 // for durable incoming metadata queries for the given session.
 func IncomingMetadataCorrelationID(sessionID SessionID) string {

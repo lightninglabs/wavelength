@@ -2,8 +2,10 @@ package wallet
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -131,6 +133,10 @@ type Ark struct {
 	// is silently skipped (tests, lightweight harnesses).
 	ledgerSink fn.Option[ledger.Sink]
 
+	// walletEffects persists ledger/audit notifications as wallet-owned
+	// durable effects before a background worker delivers them.
+	walletEffects WalletEffectStore
+
 	// selfRef is the actor's own ref, captured at Start time so the
 	// boarding-sweep handlers can hand it to chainsource.MapSpendEvent
 	// and txconfirm.MapNotification when registering watches.
@@ -255,6 +261,13 @@ func WithClock(clk clock.Clock) ArkOption {
 	}
 }
 
+// WithWalletEffects wires durable wallet-owned effect persistence.
+func WithWalletEffects(store WalletEffectStore) ArkOption {
+	return func(a *Ark) {
+		a.walletEffects = store
+	}
+}
+
 // logger returns the configured logger or falls back to extracting from
 // context. If no logger is found in either location, returns btclog.Disabled.
 func (a *Ark) logger(ctx context.Context) btclog.Logger {
@@ -277,11 +290,58 @@ func (a *Ark) logger(ctx context.Context) btclog.Logger {
 func (a *Ark) emitUTXOCreated(ctx context.Context, utxo *Utxo,
 	blockHeight int32, classification string) {
 
-	a.ledgerSink.WhenSome(func(sink ledger.Sink) {
-		if utxo == nil {
-			return
+	if utxo == nil {
+		return
+	}
+
+	if a.walletEffects != nil {
+		var height sql.NullInt32
+		if blockHeight > 0 {
+			height = sql.NullInt32{
+				Int32: blockHeight,
+				Valid: true,
+			}
 		}
 
+		opKey := fmt.Sprintf("%s:%d/%s", utxo.Outpoint.Hash,
+			utxo.Outpoint.Index, classification)
+		err := a.walletEffects.InsertWalletEffect(
+			ctx, WalletEffectInsert{
+				ID:         "wallet/utxo-created/" + opKey,
+				EffectType: WalletEffectRecordLedgerUTXOCreated,
+				IdempotencyKey: "wallet/utxo-created/" +
+					opKey,
+				OutpointHash: utxo.Outpoint.Hash[:],
+				OutpointIndex: sql.NullInt32{
+					Int32: int32(utxo.Outpoint.Index),
+					Valid: true,
+				},
+				AmountSat: sql.NullInt64{
+					Int64: int64(utxo.Amount),
+					Valid: true,
+				},
+				BlockHeight: height,
+				Classification: sql.NullString{
+					String: classification,
+					Valid:  true,
+				},
+			},
+		)
+		if err != nil {
+			a.logger(ctx).WarnS(
+				ctx,
+				"Failed to persist UTXOCreated wallet effect",
+				err,
+				btclog.Fmt("outpoint", "%v", utxo.Outpoint),
+				slog.Int64("amount_sat", int64(utxo.Amount)),
+				slog.String("classification", classification),
+			)
+		}
+
+		return
+	}
+
+	a.ledgerSink.WhenSome(func(sink ledger.Sink) {
 		var height uint32
 		if blockHeight > 0 {
 			height = uint32(blockHeight)
@@ -495,6 +555,9 @@ func (a *Ark) Receive(ctx context.Context,
 
 	case *BoardRequest:
 		return a.handleBoard(ctx, m)
+
+	case *RecordPendingBoardVTXORequestsRequest:
+		return a.handleRecordPendingBoardVTXORequests(ctx, m)
 
 	case *SelectAndLockVTXOsRequest:
 		return a.handleSelectAndLockVTXOs(ctx, m)
@@ -1479,11 +1542,28 @@ func (a *Ark) handleBoard(ctx context.Context,
 	// driven by an advisory submit-time fee estimate and would
 	// spuriously reject boards that the seal-time quote would
 	// have accepted.
-	vtxoAmounts, err := splitBoardingAmount(
-		totalBalance, req.TargetVTXOCount,
-	)
-	if err != nil {
-		return fn.Err[WalletResp](err)
+	var vtxoAmounts []btcutil.Amount
+	if len(req.VTXORequests) > 0 {
+		vtxoAmounts = make([]btcutil.Amount, len(req.VTXORequests))
+		for i := range req.VTXORequests {
+			amount := req.VTXORequests[i].Amount
+			if amount <= 0 {
+				return fn.Err[WalletResp](
+					fmt.Errorf("replay VTXO request %d "+
+						"has invalid amount: %v", i,
+						amount),
+				)
+			}
+
+			vtxoAmounts[i] = amount
+		}
+	} else {
+		vtxoAmounts, err = splitBoardingAmount(
+			totalBalance, req.TargetVTXOCount,
+		)
+		if err != nil {
+			return fn.Err[WalletResp](err)
+		}
 	}
 	vtxoAmount := sumBoardingAmounts(vtxoAmounts)
 
@@ -1525,6 +1605,9 @@ func (a *Ark) handleBoard(ctx context.Context,
 					Outpoint:        intent.Outpoint,
 					TargetVTXOCount: req.TargetVTXOCount,
 					RequestedAt:     now,
+					VTXORequests: slices.Clone(
+						req.VTXORequests,
+					),
 				},
 			)
 		}
@@ -1551,7 +1634,11 @@ func (a *Ark) handleBoard(ctx context.Context,
 
 	if err := roundRef.Tell(
 		ctx, &actormsg.TriggerBoardMsg{
-			Amounts: vtxoAmounts,
+			Amounts:         vtxoAmounts,
+			TargetVTXOCount: req.TargetVTXOCount,
+			VTXORequests: slices.Clone(
+				req.VTXORequests,
+			),
 		},
 	); err != nil {
 		// The persisted row stays in place so the next daemon
@@ -1570,6 +1657,43 @@ func (a *Ark) handleBoard(ctx context.Context,
 	}
 
 	return fn.Ok[WalletResp](resp)
+}
+
+func (a *Ark) handleRecordPendingBoardVTXORequests(ctx context.Context,
+	req *RecordPendingBoardVTXORequestsRequest) fn.Result[WalletResp] {
+
+	if len(req.Outpoints) == 0 {
+		return fn.Err[WalletResp](
+			fmt.Errorf("pending board outpoints are empty"),
+		)
+	}
+	if len(req.VTXORequests) == 0 {
+		return fn.Err[WalletResp](
+			fmt.Errorf("pending board VTXO requests are empty"),
+		)
+	}
+
+	now := a.clk.Now().Unix()
+	rows := make([]PendingBoardRequest, 0, len(req.Outpoints))
+	for _, outpoint := range req.Outpoints {
+		rows = append(rows, PendingBoardRequest{
+			Outpoint:        outpoint,
+			TargetVTXOCount: req.TargetVTXOCount,
+			RequestedAt:     now,
+			VTXORequests:    slices.Clone(req.VTXORequests),
+		})
+	}
+
+	if err := a.store.UpsertPendingBoardRequests(ctx, rows); err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("record pending board VTXO requests: %w",
+				err),
+		)
+	}
+
+	return fn.Ok[WalletResp](
+		&RecordPendingBoardVTXORequestsResponse{},
+	)
 }
 
 // replayPendingBoardOnStart is invoked from handleReplayPendingBoard
@@ -1621,9 +1745,12 @@ func (a *Ark) replayPendingBoardOnStart(ctx context.Context,
 		confirmedSet[intent.Outpoint] = struct{}{}
 	}
 
-	var liveTarget uint32
-	var earliestRequestedAt int64
-	var liveOutpoints int
+	var (
+		liveTarget        uint32
+		liveVTXORequests  []types.VTXORequest
+		earliestRequested int64
+		liveOutpoints     int
+	)
 	for _, row := range pending {
 		if _, ok := confirmedSet[row.Outpoint]; !ok {
 			continue
@@ -1636,11 +1763,14 @@ func (a *Ark) replayPendingBoardOnStart(ctx context.Context,
 		// the most recent target wins (rows are ordered ASC by
 		// requested_at_unix, so the last live row wins).
 		liveTarget = row.TargetVTXOCount
+		if len(liveVTXORequests) == 0 && len(row.VTXORequests) > 0 {
+			liveVTXORequests = slices.Clone(row.VTXORequests)
+		}
 
-		if earliestRequestedAt == 0 ||
-			row.RequestedAt < earliestRequestedAt {
+		if earliestRequested == 0 ||
+			row.RequestedAt < earliestRequested {
 
-			earliestRequestedAt = row.RequestedAt
+			earliestRequested = row.RequestedAt
 		}
 	}
 
@@ -1669,8 +1799,10 @@ func (a *Ark) replayPendingBoardOnStart(ctx context.Context,
 		"Replaying persisted Board request after restart",
 		slog.Int("target_vtxo_count", int(liveTarget)),
 		slog.Int("live_outpoint_count", liveOutpoints),
+		slog.Int("replay_vtxo_request_count",
+			len(liveVTXORequests)),
 		slog.Int("stale_row_count", len(pending)-liveOutpoints),
-		slog.Int64("earliest_requested_at_unix", earliestRequestedAt),
+		slog.Int64("earliest_requested_at_unix", earliestRequested),
 	)
 
 	// Self-Tell the BoardRequest. handleBoard will re-walk the confirmed
@@ -1683,6 +1815,7 @@ func (a *Ark) replayPendingBoardOnStart(ctx context.Context,
 	// replay.
 	err = selfRef.Tell(ctx, &BoardRequest{
 		TargetVTXOCount: liveTarget,
+		VTXORequests:    liveVTXORequests,
 	})
 	if err != nil {
 		return fmt.Errorf("self-tell pending board request: %w", err)

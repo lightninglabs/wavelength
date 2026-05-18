@@ -833,11 +833,22 @@ func (n *Node) NewSignerSession(signerKey *keychain.KeyDescriptor,
 	signer input.MuSig2Signer, sweepTapscriptRoot []byte) (
 	*input.MuSig2SessionInfo, error) {
 
+	return n.NewSignerSessionWithNonces(
+		signerKey, signer, sweepTapscriptRoot, nil,
+	)
+}
+
+// NewSignerSessionWithNonces creates a new MuSig2 signing session for this
+// node, optionally using caller-provided local nonce material.
+func (n *Node) NewSignerSessionWithNonces(signerKey *keychain.KeyDescriptor,
+	signer input.MuSig2Signer, sweepTapscriptRoot []byte,
+	localNonces *musig2.Nonces) (*input.MuSig2SessionInfo, error) {
+
 	return signer.MuSig2CreateSession(
 		input.MuSig2Version100RC2, signerKey.KeyLocator,
 		n.CoSigners, &input.MuSig2Tweaks{
 			TaprootTweak: sweepTapscriptRoot,
-		}, nil, nil,
+		}, nil, localNonces,
 	)
 }
 

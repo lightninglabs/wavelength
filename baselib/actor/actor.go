@@ -28,7 +28,7 @@ func mergeContexts(ctx1, ctx2 context.Context) (context.Context,
 	context.CancelFunc) {
 
 	// Use the caller context as the base so request-scoped values, such as
-	// durable actor database transactions, are visible while processing an
+	// local actor database transactions, are visible while processing an
 	// Ask message.
 	baseCtx := ctx2
 	baseCancel := func() {}
@@ -99,19 +99,6 @@ type envelope[M Message, R any] struct {
 	message   M
 	promise   Promise[R]
 	callerCtx context.Context
-
-	// callbackActorID is set for DurableAsk to route the response.
-	// The response will be delivered to this actor's mailbox via outbox.
-	callbackActorID string
-
-	// correlationID links DurableAsk requests to their responses.
-	// The caller uses this to match responses to original requests.
-	correlationID string
-
-	// delivery is set by DurableMailbox to pass the Delivery object to the
-	// DurableActor without using a global map. This is nil for regular
-	// (non-durable) actors.
-	delivery any
 }
 
 // Actor represents a concrete actor implementation. It encapsulates a behavior,
@@ -332,16 +319,9 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 		"actor_id", ref.actor.id,
 		"msg_type", msg.MessageType())
 
-	// Tell is fire-and-forget. If the caller is a durable actor currently
-	// processing inside a database transaction, do not retain that
-	// transaction in the queued envelope. The receiving actor cannot make
-	// async Tell processing atomic with the caller's transaction, and the
-	// transaction may already be committed or rolled back by the time the
-	// message is handled.
-	sendCtx := WithoutTx(ctx)
-
 	// Attempt to send the message to the mailbox. The mailbox's Send
 	// method handles context cancellation and actor termination internally.
+	sendCtx := WithoutTx(ctx)
 	env := envelope[M, R]{
 		message:   msg,
 		promise:   nil,

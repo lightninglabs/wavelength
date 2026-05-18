@@ -11,7 +11,6 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	admigration "github.com/lightninglabs/darepo-client/db/actordelivery/migrations"
 	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -168,18 +167,6 @@ func NewPostgresStore(cfg *PostgresConfig,
 		if err != nil {
 			return nil, fmt.Errorf("error executing migrations: %w",
 				err)
-		}
-
-		storeLog.InfoS(ctx, "Starting actor-delivery migrations")
-
-		err = admigration.RunMigrations(
-			s.DB, s.Backend(), admigration.Config{
-				Log: s.log,
-			},
-		)
-		if err != nil {
-			return nil, fmt.Errorf("error executing "+
-				"actor-delivery migrations: %w", err)
 		}
 
 		storeLog.InfoS(

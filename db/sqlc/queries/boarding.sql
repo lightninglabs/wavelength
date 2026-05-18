@@ -249,10 +249,56 @@ ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE
 SET target_vtxo_count = excluded.target_vtxo_count,
     requested_at_unix = excluded.requested_at_unix;
 
+-- name: DeletePendingBoardVtxosByOutpoint :exec
+DELETE FROM pending_board_vtxo_requests
+WHERE outpoint_hash = $1 AND outpoint_index = $2;
+
+-- name: UpsertPendingBoardVtxoRequest :exec
+INSERT INTO pending_board_vtxo_requests (
+    outpoint_hash,
+    outpoint_index,
+    request_index,
+    amount,
+    is_change,
+    pk_script,
+    expiry,
+    policy_template,
+    client_pubkey,
+    operator_pubkey,
+    owner_key_family,
+    owner_key_index,
+    signing_key_family,
+    signing_key_index,
+    signing_pubkey,
+    origin
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8,
+    $9, $10, $11, $12, $13, $14, $15, $16
+)
+ON CONFLICT (outpoint_hash, outpoint_index, request_index) DO UPDATE
+SET amount = excluded.amount,
+    is_change = excluded.is_change,
+    pk_script = excluded.pk_script,
+    expiry = excluded.expiry,
+    policy_template = excluded.policy_template,
+    client_pubkey = excluded.client_pubkey,
+    operator_pubkey = excluded.operator_pubkey,
+    owner_key_family = excluded.owner_key_family,
+    owner_key_index = excluded.owner_key_index,
+    signing_key_family = excluded.signing_key_family,
+    signing_key_index = excluded.signing_key_index,
+    signing_pubkey = excluded.signing_pubkey,
+    origin = excluded.origin;
+
 -- name: ListPendingBoardRequests :many
 SELECT outpoint_hash, outpoint_index, target_vtxo_count, requested_at_unix
 FROM pending_board_requests
 ORDER BY requested_at_unix ASC, outpoint_hash ASC, outpoint_index ASC;
+
+-- name: ListPendingBoardVtxoRequests :many
+SELECT *
+FROM pending_board_vtxo_requests
+ORDER BY outpoint_hash ASC, outpoint_index ASC, request_index ASC;
 
 -- name: ClearPendingBoardRequestByOutpoint :exec
 DELETE FROM pending_board_requests

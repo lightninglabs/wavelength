@@ -105,6 +105,16 @@ type TriggerBoardMsg struct {
 	// round. Typically a single amount equal to the confirmed boarding
 	// balance minus the operator fee.
 	Amounts []btcutil.Amount
+
+	// TargetVTXOCount carries the original Board RPC target so the round
+	// actor can attach exact replay material without losing the user's
+	// requested split shape.
+	TargetVTXOCount uint32
+
+	// VTXORequests, when non-empty, are exact output requests previously
+	// materialized for this Board RPC and must be reused instead of
+	// deriving fresh owner/signing keys.
+	VTXORequests []types.VTXORequest
 }
 
 // RoundReceivable implements the RoundReceivable marker interface.

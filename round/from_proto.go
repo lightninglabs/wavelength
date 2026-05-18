@@ -381,6 +381,13 @@ func (e *OperatorSigned) FromProto(p proto.Message) error {
 func (e *BoardingFailed) FromProto(p proto.Message) error {
 	switch pb := p.(type) {
 	case *roundpb.ClientRoundFailedResp:
+		if len(pb.RoundId) != 16 {
+			return fmt.Errorf("invalid round_id length: %d",
+				len(pb.RoundId))
+		}
+
+		copy(e.RoundID[:], pb.RoundId)
+		e.HasRoundID = true
 		e.Reason = pb.Reason
 		e.Recoverable = true
 
@@ -389,6 +396,8 @@ func (e *BoardingFailed) FromProto(p proto.Message) error {
 	case *roundpb.ClientErrorResp:
 		// ClientErrorResp is also mapped to BoardingFailed, matching
 		// the bridge's convertToClientEvent behavior.
+		e.RoundID = RoundID{}
+		e.HasRoundID = false
 		e.Reason = pb.ErrorMsg
 		e.Recoverable = true
 

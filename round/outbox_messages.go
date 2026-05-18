@@ -127,7 +127,7 @@ func (m *JoinRoundAcceptOutbox) CorrelationKey() string {
 // ToProto converts JoinRoundAcceptOutbox to the roundpb wire
 // format. Returned as fn.Result[proto.Message] so processOutbox can
 // treat this outbox message as a ServerMessage and dispatch it
-// through the durable mailbox path alongside the other round
+// through the SQL mailbox path alongside the other round
 // outbox types.
 func (m *JoinRoundAcceptOutbox) ToProto() fn.Result[proto.Message] {
 	return fn.Ok[proto.Message](&roundpb.JoinRoundAccept{
@@ -138,7 +138,7 @@ func (m *JoinRoundAcceptOutbox) ToProto() fn.Result[proto.Message] {
 
 // JoinRoundRejectOutbox is emitted by QuoteReceivedState when the
 // client refuses the server's quote (fee above cap, or quote
-// RejectReason != OK). Routed via the durable mailbox to the
+// RejectReason != OK). Routed via the SQL mailbox to the
 // server's MethodRejectQuote handler.
 type JoinRoundRejectOutbox struct {
 	actor.BaseMessage
@@ -172,7 +172,7 @@ func (m *JoinRoundRejectOutbox) CorrelationKey() string {
 // ToProto converts JoinRoundRejectOutbox to the roundpb wire
 // format. Returned as fn.Result[proto.Message] so processOutbox
 // can treat this outbox message as a ServerMessage and dispatch
-// it through the durable mailbox path alongside the other round
+// it through the SQL mailbox path alongside the other round
 // outbox types.
 func (m *JoinRoundRejectOutbox) ToProto() fn.Result[proto.Message] {
 	return fn.Ok[proto.Message](&roundpb.JoinRoundReject{

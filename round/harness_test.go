@@ -1,3 +1,4 @@
+//nolint:forcetypeassert,ll
 package round
 
 import (
@@ -32,6 +33,157 @@ import (
 // MockRoundStore implements RoundStore using mock.Mock for testing.
 type MockRoundStore struct {
 	mock.Mock
+
+	roundEffects []RoundEffect
+}
+
+func (m *MockRoundStore) SaveSigningNonces(_ context.Context, _ *Round,
+	_ map[SignerKey]*tree.Tree, _ []SigningNonceState) error {
+
+	return nil
+}
+
+func (m *MockRoundStore) LoadSigningNonces(_ context.Context, _ RoundID) (
+	[]SigningNonceState, error) {
+
+	return nil, nil
+}
+
+func (m *MockRoundStore) SaveAggregatedNonces(_ context.Context, _ RoundID,
+	_ map[tree.TxID]tree.Musig2PubNonce) error {
+
+	return nil
+}
+
+func (m *MockRoundStore) LoadAggregatedNonces(_ context.Context, _ RoundID) (
+	map[tree.TxID]tree.Musig2PubNonce, error) {
+
+	return nil, nil
+}
+
+func (m *MockRoundStore) SavePartialSignatures(_ context.Context, _ RoundID,
+	_ map[SignerKey]map[tree.TxID]*musig2.PartialSignature) error {
+
+	return nil
+}
+
+func (m *MockRoundStore) LoadPartialSignatures(ctx context.Context,
+	roundID RoundID) (map[SignerKey]map[tree.TxID]*musig2.PartialSignature,
+	error) {
+
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "LoadPartialSignatures" {
+			args := m.Called(ctx, roundID)
+			if args.Get(0) == nil {
+				return nil, args.Error(1)
+			}
+
+			sigs := args.Get(0).(map[SignerKey]map[tree.TxID]*musig2.PartialSignature) //nolint:forcetypeassert
+
+			return sigs, args.Error(1)
+		}
+	}
+
+	return nil, nil
+}
+
+func (m *MockRoundStore) SaveForfeitRequests(_ context.Context, _ *Round,
+	_ map[SignerKey]*tree.Tree, _ []ForfeitRequestState) error {
+
+	return nil
+}
+
+func (m *MockRoundStore) LoadForfeitRequests(ctx context.Context,
+	roundID RoundID) ([]ForfeitRequestState, error) {
+
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "LoadForfeitRequests" {
+			args := m.Called(ctx, roundID)
+			if args.Get(0) == nil {
+				return nil, args.Error(1)
+			}
+
+			requests :=
+				args.Get(0).([]ForfeitRequestState) //nolint:forcetypeassert
+
+			return requests, args.Error(1)
+		}
+	}
+
+	return nil, nil
+}
+
+func (m *MockRoundStore) SaveCollectedForfeitSignature(_ context.Context,
+	_ RoundID, _ *ForfeitSignatureResponse) error {
+
+	return nil
+}
+
+func (m *MockRoundStore) LoadVTXOForfeitSignatures(ctx context.Context,
+	roundID RoundID) (map[wire.OutPoint]*types.ForfeitTxSig, error) {
+
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "LoadVTXOForfeitSignatures" {
+			args := m.Called(ctx, roundID)
+			if args.Get(0) == nil {
+				return nil, args.Error(1)
+			}
+
+			sigs :=
+				args.Get(0).(map[wire.OutPoint]*types.ForfeitTxSig) //nolint:forcetypeassert
+
+			return sigs, args.Error(1)
+		}
+	}
+
+	return nil, nil
+}
+
+func (m *MockRoundStore) SavePendingQuote(ctx context.Context,
+	quote *JoinRoundQuoteReceived) error {
+
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "SavePendingQuote" {
+			args := m.Called(ctx, quote)
+
+			return args.Error(0)
+		}
+	}
+
+	return nil
+}
+
+func (m *MockRoundStore) LoadPendingQuotes(ctx context.Context) (
+	map[RoundID]*JoinRoundQuoteReceived, error) {
+
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "LoadPendingQuotes" {
+			args := m.Called(ctx)
+			if args.Get(0) == nil {
+				return nil, args.Error(1)
+			}
+
+			quotes := args.Get(0).(map[RoundID]*JoinRoundQuoteReceived)
+
+			return quotes, args.Error(1)
+		}
+	}
+
+	return make(map[RoundID]*JoinRoundQuoteReceived), nil
+}
+
+func (m *MockRoundStore) DeletePendingQuote(ctx context.Context,
+	roundID RoundID) error {
+
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "DeletePendingQuote" {
+			args := m.Called(ctx, roundID)
+
+			return args.Error(0)
+		}
+	}
+
+	return nil
 }
 
 func (m *MockRoundStore) CommitState(ctx context.Context, round *Round,
@@ -40,6 +192,33 @@ func (m *MockRoundStore) CommitState(ctx context.Context, round *Round,
 	args := m.Called(ctx, round, state)
 
 	return args.Error(0)
+}
+
+func (m *MockRoundStore) ClaimDueRoundEffects(_ context.Context, _ string,
+	_ int, _ time.Duration) ([]RoundEffect, error) {
+
+	effects := m.roundEffects
+	m.roundEffects = nil
+
+	return effects, nil
+}
+
+func (m *MockRoundStore) MarkRoundEffectDone(_ context.Context, _, _ string,
+) error {
+
+	return nil
+}
+
+func (m *MockRoundStore) ReleaseRoundEffectForRetry(_ context.Context, _,
+	_ string, _ time.Duration, _ error) error {
+
+	return nil
+}
+
+func (m *MockRoundStore) ReleaseExpiredRoundEffectClaims(
+	_ context.Context) error {
+
+	return nil
 }
 
 //nolint:forcetypeassert
@@ -91,6 +270,17 @@ func (m *MockRoundStore) ListActiveRounds(ctx context.Context) ([]*Round,
 
 func (m *MockRoundStore) FinalizeRound(ctx context.Context, roundID RoundID,
 	txid chainhash.Hash, confInfo ConfInfo) error {
+
+	hasExpectation := false
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "FinalizeRound" {
+			hasExpectation = true
+			break
+		}
+	}
+	if !hasExpectation {
+		return nil
+	}
 
 	args := m.Called(ctx, roundID, txid, confInfo)
 

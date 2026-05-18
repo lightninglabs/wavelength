@@ -44,11 +44,11 @@ func sessionIDOrNil(id [32]byte) []byte {
 func (a *LedgerActor) handleFeePaid(ctx context.Context,
 	msg *FeePaidMsg) error {
 
-	// Reject non-positive amounts up front so a malformed TLV
+	// Reject non-positive amounts up front so a malformed message
 	// (e.g. a zero payload or a uint64 that decoded past
 	// math.MaxInt64) surfaces as ErrInvalidMessage instead of
-	// hitting the SQL CHECK constraint and driving a durable
-	// retry loop on a permanent failure.
+	// hitting the SQL CHECK constraint and driving a retry
+	// loop on a permanent failure.
 	if msg.AmountSat <= 0 {
 		return fmt.Errorf("%w: FeePaidMsg amount_sat must be positive "+
 			"(got %d)", ErrInvalidMessage, msg.AmountSat)
@@ -313,10 +313,10 @@ var zeroHash chainhash.Hash
 //  2. Fee leg:  debit onchain_fees  += ExitCostSat crediting
 //     vtxo_balance. The L1 miner fee portion.
 //
-// Both entries land in the durable actor's delivery transaction
+// Both entries land in the local actor's delivery transaction
 // via two InsertLedgerEntry calls that join the outer tx. Either
 // both commit or neither does: a handler-level error returns
-// non-nil, the durable actor nacks, and the whole tx (including
+// non-nil, the local actor nacks, and the whole tx (including
 // a possibly-successful first insert) rolls back. Redelivery of
 // a committed message cannot happen because Ack/MarkProcessed
 // land in the same tx; defensive protection against out-of-band
@@ -395,7 +395,7 @@ func (a *LedgerActor) handleExitCost(ctx context.Context,
 	}
 
 	// Book the send leg and the fee leg via two separate
-	// InsertLedgerEntry calls. Both join the durable actor's
+	// InsertLedgerEntry calls. Both join the local actor's
 	// outer delivery transaction (db.TransactionExecutor.ExecTx
 	// picks up the tx from ctx via actor.TxFromContext), so a
 	// crash or error between the two calls rolls back both
@@ -449,9 +449,9 @@ func exitIdempotencyKey(hash [32]byte, index uint32) []byte {
 //     without this deposit leg wallet_balance would drift negative
 //     on every boarding.
 //
-// Both inserts join the outer durable-actor transaction via
+// Both inserts join the outer SQL transaction via
 // actor.TxFromContext / db.TransactionExecutor.ExecTx, so a crash
-// between them rolls back both together with the mailbox ack.
+// between them rolls back both together with the surrounding operation.
 // The ledger leg uses an outpoint-derived idempotency key so a
 // replayed UTXOCreatedMsg dedupes silently via the partial unique
 // index idx_client_ledger_idempotent_key.
@@ -462,11 +462,11 @@ func exitIdempotencyKey(hash [32]byte, index uint32) []byte {
 // double-entry row must wire the audit store.
 //
 // Non-positive amounts are rejected up front with ErrInvalidMessage
-// so a malformed TLV dead-letters instead of hitting the SQL
+// so a malformed message dead-letters instead of hitting the SQL
 // CHECK (amount_sat > 0) and driving an infinite nack-and-retry
 // loop. A zero/negative on-chain UTXO is impossible in practice
 // (wire enforces MaxSatoshi bounds on tx outputs) but the guard
-// closes the last corruption gap on the TLV decode path.
+// closes the last corruption gap on the message validation path.
 func (a *LedgerActor) handleUTXOCreated(ctx context.Context,
 	msg *UTXOCreatedMsg) error {
 

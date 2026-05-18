@@ -1135,6 +1135,10 @@ func (a *Ark) emitSweepConfirmedLedger(ctx context.Context,
 	if a.ledgerSink.IsNone() || a.sweepStore == nil {
 		return
 	}
+	if emitter, ok := a.sweepStore.(BoardingSweepLedgerEffectEmitter); ok &&
+		emitter.EmitsBoardingSweepLedgerEffects() {
+		return
+	}
 
 	// The persisted sweep record is the sole source of truth for
 	// inputs / destination / amounts at confirmation time.

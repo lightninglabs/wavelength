@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -22,7 +23,7 @@ import (
 var ErrInvalidMessage = errors.New("ledger: invalid message")
 
 const (
-	// defaultActorID is the durable mailbox identifier for the
+	// defaultActorID is the SQL mailbox identifier for the
 	// client-side ledger actor.
 	defaultActorID = "ledger.accounting"
 )
@@ -86,7 +87,7 @@ const (
 
 // Canonical FeePaidMsg.FeeType values. A misspelled or missing
 // fee type is rejected by handleFeePaid with an explicit error
-// so durable-mailbox replays surface caller bugs loudly instead
+// so caller retries surface caller bugs loudly instead
 // of silently misclassifying the entry.
 //
 // FeeTypeBoarding and FeeTypeRefresh book operator (Ark protocol)
@@ -191,24 +192,12 @@ type LedgerEntry struct {
 // LedgerStore is the interface for persisting client-side ledger
 // entries. Implementations bridge to the sqlc-generated queries
 // via the db package.
-//
-// Multi-leg handlers (e.g. ExitCost's send leg + fee leg) still
-// commit atomically even with two separate InsertLedgerEntry
-// calls: the durable actor framework runs the whole Receive body
-// inside a single TxAwareDeliveryStore transaction, and
-// LedgerStoreDB.InsertLedgerEntry joins that outer transaction
-// via db.TransactionExecutor.ExecTx rather than opening a new
-// one. A crash mid-handler therefore rolls back both the writes
-// and the ack together; no partial-write window exists on the
-// durable path.
 type LedgerStore interface {
 	// InsertLedgerEntry persists a single ledger leg. The call
-	// joins any outer actor transaction present in ctx so that
-	// multiple invocations within one handler commit atomically
-	// with the mailbox ack. Conflicts on the idempotency partial
+	// conflicts on the idempotency partial
 	// unique indexes (round_id / session_id / idempotency_key)
-	// are swallowed via ON CONFLICT DO NOTHING so redelivery of
-	// a partially-processed message is a silent no-op.
+	// are swallowed via ON CONFLICT DO NOTHING so duplicate
+	// emissions are silent no-ops.
 	InsertLedgerEntry(
 		ctx context.Context, entry LedgerEntry,
 	) error
@@ -258,10 +247,6 @@ type ActorConfig struct {
 	// disabled.
 	Log fn.Option[btclog.Logger]
 
-	// DeliveryStore persists actor mailbox state for crash
-	// recovery.
-	DeliveryStore actor.DeliveryStore
-
 	// LedgerStore provides DB persistence for ledger entries.
 	LedgerStore LedgerStore
 
@@ -282,22 +267,18 @@ type ActorConfig struct {
 	Clock fn.Option[clock.Clock]
 }
 
-// LedgerActor is a durable actor that serializes all client-side
+// LedgerActor is an actor that serializes all client-side
 // accounting writes from rounds, OOR transfers, and on-chain
 // exits. It receives fire-and-forget Tell messages and persists
 // double-entry ledger entries to the database.
-//
-// The actor follows the same durable pattern as the server-side
-// version: each message implements TLVMessage for crash-safe
-// mailbox delivery, and a RestartMessage is prepended on startup
-// for state reconstruction.
 type LedgerActor struct {
 	cfg ActorConfig
 
 	actorID string
 
-	durable *actor.DurableActor[LedgerMsg, LedgerResp]
+	runtime *actor.Actor[LedgerMsg, LedgerResp]
 	ref     actor.ActorRef[LedgerMsg, LedgerResp]
+	wg      sync.WaitGroup
 
 	log btclog.Logger
 
@@ -310,8 +291,8 @@ type LedgerActor struct {
 }
 
 var (
-	// Compile-time check that LedgerActor implements the durable
-	// actor behavior interface.
+	// Compile-time check that LedgerActor implements the actor behavior
+	// interface.
 	_ actor.ActorBehavior[LedgerMsg, LedgerResp] = (*LedgerActor)(nil)
 
 	// Compile-time check that LedgerActor implements actor-system
@@ -321,7 +302,7 @@ var (
 
 // NewLedgerActor creates a new client-side ledger actor
 // instance. This is a pure constructor that performs no I/O.
-// Call Start to initialize the durable runtime.
+// Call Start to initialize the actor runtime.
 func NewLedgerActor(cfg ActorConfig) *LedgerActor {
 	actorID := cfg.ActorID
 	if actorID == "" {
@@ -336,46 +317,21 @@ func NewLedgerActor(cfg ActorConfig) *LedgerActor {
 	}
 }
 
-// Start loads durable mailbox state and starts the actor
-// runtime. On restart, unprocessed messages are replayed from
-// the delivery store.
 func (a *LedgerActor) Start(ctx context.Context) error {
-	if a.cfg.DeliveryStore == nil {
-		return fmt.Errorf("delivery store must be provided")
-	}
 	if a.cfg.LedgerStore == nil {
 		return fmt.Errorf("ledger store must be provided")
 	}
 
-	codec := newLedgerCodec()
-
-	// The durable actor should not see LedgerActor's OnStop hook, because
-	// that hook waits for the durable actor itself to exit. The
-	// actor-system wrapper owns that cleanup instead.
-	durableBehavior := actor.NewFunctionBehavior(a.Receive)
-	durableCfg := actor.DefaultDurableActorConfig[
+	a.runtime = actor.NewActor(actor.ActorConfig[
 		LedgerMsg, LedgerResp,
-	](
-		a.actorID, durableBehavior, a.cfg.DeliveryStore, codec,
-	)
-	a.durable = actor.NewDurableActor(durableCfg)
-	a.ref = a.durable.Ref()
-
-	checkpoint, err := a.cfg.DeliveryStore.LoadCheckpoint(
-		ctx, a.actorID,
-	)
-	if err != nil {
-		return fmt.Errorf("load checkpoint: %w", err)
-	}
-
-	err = actor.PrependRestartMessage(
-		ctx, a.cfg.DeliveryStore, codec, a.actorID, checkpoint,
-	)
-	if err != nil {
-		return fmt.Errorf("prepend restart: %w", err)
-	}
-
-	a.durable.Start()
+	]{
+		ID:          a.actorID,
+		Behavior:    actor.NewFunctionBehavior(a.Receive),
+		MailboxSize: 128,
+		Wg:          &a.wg,
+	})
+	a.ref = a.runtime.Ref()
+	a.runtime.Start()
 
 	a.log.InfoS(ctx, "Ledger actor started",
 		slog.String("actor_id", a.actorID),
@@ -384,21 +340,35 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the durable ledger actor.
+// Stop stops the ledger actor.
 func (a *LedgerActor) Stop() {
-	if a.durable != nil {
-		a.durable.Stop()
+	if a.runtime != nil {
+		a.runtime.Stop()
 	}
 }
 
-// OnStop implements actor.Stoppable by stopping the durable ledger runtime and
-// waiting for it to exit before the actor system closes shared storage.
+// OnStop implements actor.Stoppable by stopping the ledger runtime and waiting
+// for it to exit before the actor system closes shared storage.
 func (a *LedgerActor) OnStop(ctx context.Context) error {
-	if a.durable == nil {
+	if a.runtime == nil {
 		return nil
 	}
 
-	return a.durable.StopAndWait(ctx)
+	a.runtime.Stop()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.wg.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+
+	case <-done:
+		return nil
+	}
 }
 
 // Ref returns the actor reference for sending messages.
@@ -431,17 +401,11 @@ func (a *LedgerActor) logHandlerErr(ctx context.Context, msg string,
 	_ = errors.Is(err, ErrInvalidMessage)
 }
 
-// Receive processes one durable message. This is the
-// ActorBehavior implementation called by the durable runtime.
+// Receive processes one ledger message.
 func (a *LedgerActor) Receive(ctx context.Context,
 	msg LedgerMsg) fn.Result[LedgerResp] {
 
 	switch m := msg.(type) {
-	case *actor.RestartMessage:
-		a.log.InfoS(ctx, "Ledger actor restarted")
-
-		return fn.Ok[LedgerResp](nil)
-
 	case *FeePaidMsg:
 		if err := a.handleFeePaid(ctx, m); err != nil {
 			a.logHandlerErr(
