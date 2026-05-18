@@ -20,18 +20,29 @@ const defaultBoardAmountSat = int64(100_000_000)
 
 func newBoardCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "board <client> [amount-sat]",
-		Short: "Fund a client's boarding address with regtest coins",
+		// Renamed from `board`: the old name collided with the
+		// per-client `<name>-cli ark board` verb, which is the
+		// step that actually registers the boarding UTXO into a
+		// round. This subcommand only produces a fresh, funded
+		// boarding address; the user still has to run
+		// `<name>-cli ark board` afterwards.
+		Use: "new-boarding-address <client> [amount-sat]",
+		Aliases: []string{
+			"board",
+		},
+		Short: "Allocate a fresh funded boarding address for a client",
 		Long: "Asks the named client daemon for a fresh boarding " +
 			"address (its NewAddress RPC), faucets the given " +
 			"amount, and mines 6 blocks so the boarding output " +
-			"is confirmed. The client can then `<name>-cli " +
+			"is confirmed. The client can then `<name>-cli ark " +
 			"board` to register it into the next round. The " +
 			"resulting taproot UTXO is multisig-script-spend " +
 			"only — it is not picked up by `selectFeeInput` " +
 			"because boarding-typed addresses are tracked " +
 			"separately from the LND backing wallet's regular " +
-			"key-spend UTXOs.",
+			"key-spend UTXOs.\n\n" +
+			"`arktest board` remains as a hidden alias for one " +
+			"release so existing scripts keep working.",
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
