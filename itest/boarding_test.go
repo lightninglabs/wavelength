@@ -26,12 +26,29 @@ import (
 func TestBoardingIntegrationSingleClient(t *testing.T) {
 	t.Parallel()
 
+	runSingleClientBoardingRound(t, "")
+}
+
+// TestRESTGatewayMailboxBoardingRound keeps grpc-gateway coverage on one
+// focused long path. The harness talks to client-facing RPCs over REST while
+// admin control stays on gRPC, and the client daemon completes the boarding
+// round through its mailbox session with arkd.
+func TestRESTGatewayMailboxBoardingRound(t *testing.T) {
+	t.Parallel()
+
+	runSingleClientBoardingRound(t, harness.RPCTransportREST)
+}
+
+func runSingleClientBoardingRound(t *testing.T, rpcTransport string) {
+	t.Helper()
+
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
 
 	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
 		ClientOptions: &clientOpts,
+		RPCTransport:  rpcTransport,
 	})
 	t.Cleanup(h.Stop)
 

@@ -22,6 +22,7 @@ import (
 	clientdarepod "github.com/lightninglabs/darepo-client/darepod"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"github.com/lightninglabs/darepo-client/rpc/restclient"
 	clientvtxo "github.com/lightninglabs/darepo-client/vtxo"
 	clientwallet "github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/darepo/adminrpc"
@@ -55,6 +56,14 @@ const (
 	// clientWalletBackendEnv controls which wallet backend the daemon
 	// integration harness uses for in-process client daemons.
 	clientWalletBackendEnv = "ARK_ITEST_CLIENT_WALLET"
+
+	// RPCTransportGRPC uses direct gRPC connections for harness RPC
+	// clients.
+	RPCTransportGRPC = "grpc"
+
+	// RPCTransportREST uses grpc-gateway HTTP/JSON endpoints for
+	// client-facing harness RPC clients.
+	RPCTransportREST = "rest"
 
 	// ClientWalletBackendLND runs client daemons backed by per-daemon lnd
 	// instances.
@@ -102,6 +111,11 @@ type ArkHarnessOptions struct {
 	// empty, the value is read from ARK_ITEST_CLIENT_WALLET and defaults
 	// to "lnd".
 	ClientDaemonWalletType string
+
+	// RPCTransport selects how integration tests connect to client-facing
+	// RPCs. Admin control stays on gRPC. Valid values: "grpc" and
+	// "rest". If empty, the harness defaults to "grpc".
+	RPCTransport string
 
 	// OperatorLogWriter is the stdout sink used for operator daemon logs.
 	// When nil, logs are prefixed with [operator] and written to stdout.
@@ -161,8 +175,14 @@ type ArkHarness struct {
 	// ArkRPCAddr is the host:port to reach arkd client RPC.
 	ArkRPCAddr string
 
+	// ArkRPCGatewayAddr is the host:port to reach arkd client REST.
+	ArkRPCGatewayAddr string
+
 	// ArkAdminClient is a connected arkd admin client.
 	ArkAdminClient adminrpc.OperatorAdminClient
+
+	// rpcTransport selects how harness RPC clients connect.
+	rpcTransport string
 
 	// clientDaemonWalletType selects which wallet backend newly launched
 	// in-process client daemons use.
@@ -215,6 +235,9 @@ func NewArkHarness(t *testing.T, opts *ArkHarnessOptions) *ArkHarness {
 	)
 	require.NoError(t, err)
 
+	rpcTransport, err := resolveRPCTransport(opts.RPCTransport)
+	require.NoError(t, err)
+
 	operatorLogWriter := opts.OperatorLogWriter
 	if operatorLogWriter == nil {
 		operatorLogWriter = newPrefixedWriter(
@@ -234,6 +257,7 @@ func NewArkHarness(t *testing.T, opts *ArkHarnessOptions) *ArkHarness {
 	return &ArkHarness{
 		Harness:                clientHarness,
 		skipArkd:               opts.SkipArkd,
+		rpcTransport:           rpcTransport,
 		clientDaemonWalletType: walletType,
 		operatorLogWriter:      operatorLogWriter,
 		clientLogWriterFactory: clientLogWriterFactory,
@@ -242,6 +266,21 @@ func NewArkHarness(t *testing.T, opts *ArkHarnessOptions) *ArkHarness {
 		clientMailboxEdges: make(
 			map[ClientDaemonName]*ControlledMailboxClient,
 		),
+	}
+}
+
+func resolveRPCTransport(requestedTransport string) (string, error) {
+	if requestedTransport == "" {
+		return RPCTransportGRPC, nil
+	}
+
+	switch requestedTransport {
+	case RPCTransportGRPC, RPCTransportREST:
+		return requestedTransport, nil
+
+	default:
+		return "", fmt.Errorf("invalid integration test RPC "+
+			"transport %q", requestedTransport)
 	}
 }
 
@@ -363,6 +402,7 @@ func (h *ArkHarness) startArkd() {
 	)
 	cfg.AdminRPC.ListenAddr = "127.0.0.1:0"
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
+	cfg.RPC.Gateway.ListenAddr = "127.0.0.1:0"
 	cfg.Metrics = nil
 
 	// Install the canonical itest fee schedule. This is the
@@ -449,20 +489,27 @@ func (h *ArkHarness) startArkd() {
 
 		adminAddr := server.AdminRPCAddr()
 		rpcAddr := server.RPCAddr()
+		rpcGatewayAddr := server.RPCGatewayAddr()
 
 		if adminAddr == nil || rpcAddr == nil {
+			return false
+		}
+		if h.rpcTransport == RPCTransportREST && rpcGatewayAddr == nil {
 			return false
 		}
 
 		h.ArkAdminAddr = adminAddr.String()
 		h.ArkRPCAddr = rpcAddr.String()
+		if rpcGatewayAddr != nil {
+			h.ArkRPCGatewayAddr = rpcGatewayAddr.String()
+		}
 
 		return true
 	}, defaultTimeout, pollInterval, "arkd server addresses not available")
 
 	h.T.Logf(
-		"arkd listening on AdminRPC=%s, ClientRPC=%s", h.ArkAdminAddr,
-		h.ArkRPCAddr,
+		"arkd listening on AdminRPC=%s, ClientRPC=%s, ClientREST=%s",
+		h.ArkAdminAddr, h.ArkRPCAddr, h.ArkRPCGatewayAddr,
 	)
 
 	// Wait for arkd admin RPC to be ready by connecting and calling Info.
@@ -472,20 +519,16 @@ func (h *ArkHarness) startArkd() {
 		)
 		defer cancel()
 
-		conn, err := grpc.Dial(
-			h.ArkAdminAddr,
-			grpc.WithTransportCredentials(
-				insecure.NewCredentials(),
-			),
-		)
+		conn, client, err := h.getAdminClient()
 		if err != nil {
 			return false
 		}
 
-		client := adminrpc.NewOperatorAdminClient(conn)
 		_, err = client.Info(ctx, &adminrpc.InfoRequest{})
 		if err != nil {
-			_ = conn.Close()
+			if conn != nil {
+				_ = conn.Close()
+			}
 
 			return false
 		}
@@ -508,6 +551,22 @@ func (h *ArkHarness) startArkd() {
 	h.T.Logf("arkd started successfully, version=%s", resp.Version)
 }
 
+func (h *ArkHarness) getAdminClient() (*grpc.ClientConn,
+	adminrpc.OperatorAdminClient, error) {
+
+	conn, err := grpc.Dial(
+		h.ArkAdminAddr,
+		grpc.WithTransportCredentials(
+			insecure.NewCredentials(),
+		),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return conn, adminrpc.NewOperatorAdminClient(conn), nil
+}
+
 // ClientDaemonHarness manages one real in-process darepod instance and its
 // connected daemon RPC client.
 type ClientDaemonHarness struct {
@@ -522,16 +581,23 @@ type ClientDaemonHarness struct {
 	// RPCAddr is the daemon gRPC address used by external clients.
 	RPCAddr string
 
+	// RPCGatewayAddr is the daemon HTTP gateway address used by REST
+	// clients.
+	RPCGatewayAddr string
+
 	// LND is the dedicated backing LND instance for this daemon when
 	// running with the lnd wallet backend. It is nil for lwwallet
 	// daemons.
 	LND *client_harness.LndInstance
 
-	// RPCConn is the connected daemon gRPC client transport.
+	// RPCConn is the connected daemon gRPC client transport. It is nil
+	// when the harness is using REST.
 	RPCConn *grpc.ClientConn
 
-	// RPCClient is the typed daemon gRPC client used by integration tests.
+	// RPCClient is the typed daemon RPC client used by integration tests.
 	RPCClient daemonrpc.DaemonServiceClient
+
+	rpcTransport string
 
 	server *clientdarepod.Server
 
@@ -650,6 +716,7 @@ func (h *ArkHarness) stopArkd() {
 	// block re-populates them from the fresh server instance.
 	h.ArkAdminAddr = ""
 	h.ArkRPCAddr = ""
+	h.ArkRPCGatewayAddr = ""
 	h.arkdServer = nil
 }
 
@@ -975,6 +1042,7 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	cfg.Server.Host = h.ArkRPCAddr
 	cfg.Server.Insecure = true
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
+	cfg.RPC.Gateway.ListenAddr = "127.0.0.1:0"
 
 	// Wire a package submitter for unroll CPFP package relay.
 	// This talks directly to the harness bitcoind via JSON-RPC.
@@ -993,14 +1061,15 @@ func (h *ArkHarness) launchClientDaemon(name string,
 
 	ctx, cancel := context.WithCancel(context.Background())
 	daemon := &ClientDaemonHarness{
-		T:       h.T,
-		Name:    name,
-		DataDir: dataDir,
-		LND:     lnd,
-		server:  server,
-		cancel:  cancel,
-		runErr:  make(chan error, 1),
-		logFile: logFile,
+		T:            h.T,
+		Name:         name,
+		DataDir:      dataDir,
+		LND:          lnd,
+		rpcTransport: h.rpcTransport,
+		server:       server,
+		cancel:       cancel,
+		runErr:       make(chan error, 1),
+		logFile:      logFile,
 	}
 
 	daemon.wg.Add(1)
@@ -1016,6 +1085,13 @@ func (h *ArkHarness) launchClientDaemon(name string,
 		}
 
 		daemon.RPCAddr = addr.String()
+		gatewayAddr := server.RPCGatewayAddr()
+		if gatewayAddr != nil {
+			daemon.RPCGatewayAddr = gatewayAddr.String()
+		}
+		if h.rpcTransport == RPCTransportREST && gatewayAddr == nil {
+			return false
+		}
 
 		return true
 	}, defaultTimeout, pollInterval,
@@ -1287,7 +1363,9 @@ func (d *ClientDaemonHarness) waitForReady() {
 
 		resp, err := client.GetInfo(ctx, &daemonrpc.GetInfoRequest{})
 		if err != nil {
-			_ = conn.Close()
+			if conn != nil {
+				_ = conn.Close()
+			}
 
 			return false
 		}
@@ -1410,6 +1488,12 @@ func (d *ClientDaemonHarness) initOrUnlockEmbeddedWallet() error {
 // in-process test daemon.
 func (d *ClientDaemonHarness) getDaemonServiceClient() (*grpc.ClientConn,
 	daemonrpc.DaemonServiceClient, error) {
+
+	if d.rpcTransport == RPCTransportREST {
+		return nil, restclient.NewDaemonServiceClient(
+			d.RPCGatewayAddr,
+		), nil
+	}
 
 	conn, err := grpc.Dial(
 		d.RPCAddr,

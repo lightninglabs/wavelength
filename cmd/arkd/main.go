@@ -266,6 +266,18 @@ func newRootCmd() *cobra.Command {
 	f.String(
 		"rpc.listen", cfg.RPC.ListenAddr, "client gRPC listen address",
 	)
+	f.Bool(
+		"rpc.gateway.enabled", cfg.RPC.Gateway.Enabled,
+		"enable client RPC HTTP/JSON gateway",
+	)
+	f.String(
+		"rpc.gateway.listen", cfg.RPC.Gateway.ListenAddr,
+		"client RPC HTTP/JSON gateway listen address",
+	)
+	f.StringSlice(
+		"rpc.gateway.allowedorigins", cfg.RPC.Gateway.AllowedOrigins,
+		"trusted browser origins for client RPC HTTP/JSON gateway",
+	)
 	f.String(
 		"rpc.tls.certpath", "",
 		"path to TLS certificate for client gRPC",

@@ -341,17 +341,23 @@ unit-race: #? Run unit tests with race detector
 ITEST_CLIENT_WALLET := $(if $(backend),$(backend),lnd)
 ITEST_CASE := $(or $(icase),$(case))
 
-itest: #? Run daemon-level integration tests in ./itest. Use backend=lwwallet or backend=btcwallet to select backend.
+itest: #? Run daemon-level integration tests in ./itest. Use backend=lwwallet or backend=btcwallet.
 	@$(call print, "Running daemon integration tests.")
 	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
 	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
 	$(if $(ITEST_CASE),-run $(ITEST_CASE),)
 
-itest-verbose: #? Run daemon-level integration tests with stdout logs. Use backend=lwwallet or backend=btcwallet to select backend.
+itest-verbose: #? Run daemon-level integration tests with stdout logs. Use backend=lwwallet or backend=btcwallet.
 	@$(call print, "Running daemon integration tests with verbose logs.")
 	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
 	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
 	-harness.logstdout $(if $(ITEST_CASE),-run $(ITEST_CASE),)
+
+itest-rest-gateway: #? Run the dedicated grpc-gateway REST integration test.
+	@$(call print, "Running grpc-gateway REST integration test.")
+	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
+	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
+	-run '^TestRESTGatewayMailboxBoardingRound$$'
 
 check-commits: #? Run lint+unit on each commit since branch base (use upstream=<ref>, base=<ref>, keep_going=1, no_submodules=1)
 	./scripts/check_commits_since_base.sh \
