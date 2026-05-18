@@ -33,19 +33,37 @@ func newArkSendCmd() *cobra.Command {
 // newArkSendInRoundCmd creates the `ark send inround` subcommand. This
 // is the raw daemonrpc.SendVTXO path; the top-level `send` verb
 // composes the same logic via walletrpc.WalletService.Send.
+//
+// Supports both `--to <bech32m>` and `--pubkey <hex>` parallel
+// destinations. The Output proto already has both `address` and
+// `pubkey` oneof slots; without a CLI flag for `--pubkey`, an
+// in-round send to a peer who hasn't published a bech32m VTXO
+// address required hand-encoding the recipient's pkScript into
+// bech32m yourself. Mirrors the shape of `ark send oor`, which
+// has had `--pubkey` from the start.
 func newArkSendInRoundCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "inround",
 		Short: "Send via in-round refresh",
 		Long: "Initiates an in-round transfer by submitting a " +
 			"refresh request to the round coordinator. The " +
-			"transfer completes when the next round commits.",
+			"transfer completes when the next round commits.\n\n" +
+			"Pass --to for bech32m addresses, --pubkey for " +
+			"recipient x-only pubkeys, or both. Recipients are " +
+			"paired with --amount positionally in the order " +
+			"they appear on the command line, with --to " +
+			"entries before --pubkey entries.",
 		RunE: sendInRound,
 	}
 
-	cmd.Flags().StringSlice("to", nil, "recipient address(es)")
+	cmd.Flags().StringSlice("to", nil,
+		"recipient bech32m taproot address(es)")
+	cmd.Flags().StringSlice("pubkey", nil,
+		"recipient 32-byte x-only pubkey hex (one per --amount, "+
+			"paired after any --to entries)")
 	cmd.Flags().Int64Slice("amount", nil,
-		"amount(s) in sats (one per --to)")
+		"amount(s) in sats (one per recipient, in --to + --pubkey "+
+			"order)")
 	cmd.Flags().Bool("dry_run", false, "validate without submitting")
 
 	return cmd
@@ -62,34 +80,65 @@ func sendInRound(cmd *cobra.Command, _ []string) error {
 	req := &daemonrpc.SendVTXORequest{}
 	if err := parseRequest(cmd, req, func() error {
 		addresses, _ := cmd.Flags().GetStringSlice("to")
+		pubkeyHexes, _ := cmd.Flags().GetStringSlice("pubkey")
 		amounts, _ := cmd.Flags().GetInt64Slice("amount")
 		dryRun, _ := cmd.Flags().GetBool("dry_run")
 
-		if len(addresses) == 0 {
-			return fmt.Errorf("at least one --to is required")
+		if len(addresses)+len(pubkeyHexes) == 0 {
+			return fmt.Errorf("at least one --to or --pubkey is " +
+				"required")
 		}
 
-		if len(addresses) != len(amounts) {
-			return fmt.Errorf("number of --to (%d) and --amount "+
-				"(%d) flags must match", len(addresses),
-				len(amounts))
+		total := len(addresses) + len(pubkeyHexes)
+		if total != len(amounts) {
+			return fmt.Errorf("number of recipients (%d via --to "+
+				"+ %d via --pubkey = %d) and --amount (%d) "+
+				"flags must match", len(addresses),
+				len(pubkeyHexes), total, len(amounts))
 		}
 
-		recipients := make(
-			[]*daemonrpc.Output, 0, len(addresses),
-		)
-		for i := range addresses {
-			if amounts[i] <= 0 {
+		recipients := make([]*daemonrpc.Output, 0, total)
+
+		// --to entries come first, then --pubkey entries. The
+		// composite list pairs index-by-index with --amount.
+		for i, addr := range addresses {
+			amount := amounts[i]
+			if amount <= 0 {
 				return fmt.Errorf("amount for recipient %d "+
-					"must be positive", i)
+					"(--to %q) must be positive", i, addr)
 			}
 
 			recipients = append(
 				recipients, &daemonrpc.Output{
 					Destination: &daemonrpc.Output_Address{
-						Address: addresses[i],
+						Address: addr,
 					},
-					AmountSat: amounts[i],
+					AmountSat: amount,
+				},
+			)
+		}
+
+		for i, hexStr := range pubkeyHexes {
+			pos := len(addresses) + i
+			amount := amounts[pos]
+			if amount <= 0 {
+				return fmt.Errorf("amount for recipient %d "+
+					"(--pubkey %q) must be positive", pos,
+					hexStr)
+			}
+
+			pubkey, err := parseOORPubKeyHex(hexStr)
+			if err != nil {
+				return fmt.Errorf("recipient %d --pubkey: %w",
+					pos, err)
+			}
+
+			recipients = append(
+				recipients, &daemonrpc.Output{
+					Destination: &daemonrpc.Output_Pubkey{
+						Pubkey: pubkey,
+					},
+					AmountSat: amount,
 				},
 			)
 		}
