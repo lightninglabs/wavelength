@@ -38,6 +38,7 @@ import (
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -3033,6 +3034,15 @@ func (r *RPCServer) ListRounds(ctx context.Context,
 
 	var rounds []*daemonrpc.RoundInfo
 
+	// Track in-memory round IDs so the persisted-rounds pass below
+	// can skip any round that's already represented from the
+	// pending pass. Rounds straddle the in-memory and persisted
+	// stores during the brief window between server-side
+	// confirmation and the round actor evicting the FSM, so without
+	// this dedupe a single confirmed round appeared twice in
+	// `ark rounds list`.
+	seen := fn.NewSet[string]()
+
 	// Always include pending (in-memory) rounds unless the caller
 	// explicitly requested persisted-only results.
 	if !req.PersistedOnly {
@@ -3046,6 +3056,13 @@ func (r *RPCServer) ListRounds(ctx context.Context,
 				continue
 			}
 
+			// Temp-keyed rounds don't have a persisted-side
+			// counterpart yet (the operator hasn't assigned a
+			// real round ID), so they can't collide. Only
+			// register real round IDs in the dedupe set.
+			if !info.IsTemp && info.RoundId != "" {
+				seen.Add(info.RoundId)
+			}
 			rounds = append(rounds, info)
 		}
 	}
@@ -3093,6 +3110,11 @@ func (r *RPCServer) ListRounds(ctx context.Context,
 
 		for _, s := range dbRounds {
 			info := roundSummaryToProto(&s)
+			if seen.Contains(info.RoundId) {
+				// Already returned by the in-memory pass
+				// above; skip the persisted copy.
+				continue
+			}
 			rounds = append(rounds, info)
 		}
 	}
