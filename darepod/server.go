@@ -2823,7 +2823,7 @@ func (s *Server) initDatabase(ctx context.Context) error {
 		return fmt.Errorf("resolve network directory: %w", err)
 	}
 
-	if err := os.MkdirAll(networkDir, 0700); err != nil {
+	if err := ensureDataDir(networkDir); err != nil {
 		return fmt.Errorf("unable to create data dir: %w", err)
 	}
 

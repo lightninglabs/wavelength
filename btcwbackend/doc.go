@@ -1,3 +1,5 @@
+//go:build !js || !wasm
+
 // Package btcwbackend provides a lightweight in-process Bitcoin wallet backed
 // by LND's btcwallet and a neutrino (BIP 157/158) chain backend. It wraps
 // lnwallet/btcwallet.BtcWallet with a neutrino-based chain.Interface,
