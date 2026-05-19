@@ -830,6 +830,19 @@ func TestBuildBatchOutput(t *testing.T) {
 			require.Nil(t, output)
 			require.Contains(t, err.Error(), "sweep key")
 		})
+
+		t.Run("operator cosigner key fails", func(t *testing.T) {
+			vtxo := validVTXO
+			vtxo.CoSignerKey = operatorKey
+
+			output, err := BuildBatchOutput(
+				[]VTXODescriptor{vtxo}, operatorKey, sweepKey,
+				144,
+			)
+			require.Error(t, err)
+			require.Nil(t, output)
+			require.Contains(t, err.Error(), "operator key")
+		})
 	})
 }
 

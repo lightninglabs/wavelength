@@ -328,15 +328,17 @@ func BuildBatchOutput(vtxos []VTXODescriptor, operatorMuSigKey *btcec.PublicKey,
 	// Collect unique cosigners (operator + all client cosigners).
 	signers := []*btcec.PublicKey{operatorMuSigKey}
 	seenSigners := make(map[string]struct{})
-	operatorKeyStr := hex.EncodeToString(
-		schnorr.SerializePubKey(operatorMuSigKey),
-	)
+	operatorKeyStr := xOnlyKeyString(operatorMuSigKey)
 	seenSigners[operatorKeyStr] = struct{}{}
 
 	var totalAmount btcutil.Amount
-	for _, vtxo := range vtxos {
+	for i, vtxo := range vtxos {
 		if vtxo.Amount < 0 {
 			return nil, fmt.Errorf("vtxo amount cannot be negative")
+		}
+		if vtxo.CoSignerKey == nil {
+			return nil, fmt.Errorf("VTXO %d has nil co-signer key",
+				i)
 		}
 
 		// Check overflow before adding.
@@ -348,9 +350,12 @@ func BuildBatchOutput(vtxos []VTXODescriptor, operatorMuSigKey *btcec.PublicKey,
 		totalAmount += vtxo.Amount
 
 		// Add cosigner if not already seen.
-		keyStr := hex.EncodeToString(
-			schnorr.SerializePubKey(vtxo.CoSignerKey),
-		)
+		keyStr := xOnlyKeyString(vtxo.CoSignerKey)
+		if keyStr == operatorKeyStr {
+			return nil, fmt.Errorf("VTXO %d co-signer key matches "+
+				"operator key", i)
+		}
+
 		if _, seen := seenSigners[keyStr]; !seen {
 			seenSigners[keyStr] = struct{}{}
 			signers = append(signers, vtxo.CoSignerKey)
@@ -376,6 +381,12 @@ func BuildBatchOutput(vtxos []VTXODescriptor, operatorMuSigKey *btcec.PublicKey,
 		Value:    int64(totalAmount),
 		PkScript: pkScript,
 	}, nil
+}
+
+// xOnlyKeyString serializes a public key into the stable x-only key form used
+// for tree signer de-duplication.
+func xOnlyKeyString(key *btcec.PublicKey) string {
+	return hex.EncodeToString(schnorr.SerializePubKey(key))
 }
 
 // BuildConnectorOutput computes the pkscript and output amount for a connector
