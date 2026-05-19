@@ -42,6 +42,7 @@ func DefaultConfig() Config {
 		SwapServerInsecure:    cfg.Swap.ServerInsecure,
 		SwapDatabaseFileName:  cfg.Swap.DatabaseFileName,
 		MaxOperatorFeeSat:     cfg.MaxOperatorFeeSat,
+		EagerRoundJoin:        cfg.EagerRoundJoin,
 	}
 }
 
@@ -195,6 +196,9 @@ func applyConfigOverrides(daemonCfg *darepod.Config, cfg Config) {
 	}
 	if cfg.MaxOperatorFeeSat != 0 {
 		daemonCfg.MaxOperatorFeeSat = cfg.MaxOperatorFeeSat
+	}
+	if cfg.EagerRoundJoin {
+		daemonCfg.EagerRoundJoin = true
 	}
 
 	if daemonCfg.Server == nil {

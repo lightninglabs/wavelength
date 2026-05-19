@@ -270,16 +270,83 @@ type OnchainTx struct {
 	Description        string
 }
 
-// ExitRequest triggers a unilateral exit for a VTXO outpoint.
+// ExitRequest triggers an exit for a VTXO outpoint. When Destination is
+// set, the SDK first attempts a cooperative leave (LeaveVTXOs RPC) with
+// the leave output bound for the supplied on-chain address; if that path
+// fails the SDK falls back to a unilateral unroll. When Destination is
+// empty, the SDK skips the cooperative attempt and goes straight to
+// unilateral unroll.
 type ExitRequest struct {
+	// Outpoint identifies the VTXO to exit in "txid:index" format.
 	Outpoint string
+
+	// Destination is the on-chain address that receives the leave
+	// output when the cooperative path succeeds. The address must be
+	// valid for the daemon's configured network. Empty disables the
+	// cooperative attempt and falls straight through to unilateral
+	// unroll, which always lands on a wallet-derived script.
+	Destination string
 }
 
-// ExitResult reports whether a new exit job was spawned and the actor id
-// that owns it.
+// ExitPath identifies which branch of the Exit decision tree the
+// daemon ended up taking. Callers should switch on Path rather than
+// chaining nil-checks across the result's variant fields.
+type ExitPath string
+
+const (
+	// ExitPathCooperative means the cooperative leave was admitted by
+	// the operator; QueuedOutpoints carries the round's selection
+	// echo. Cooperative round completion is asynchronous; subscribe
+	// via walletrpc.SubscribeWallet to confirm terminal state.
+	ExitPathCooperative ExitPath = "cooperative"
+
+	// ExitPathUnilateral means the caller did not supply a Destination
+	// so the SDK skipped the cooperative attempt entirely. Created
+	// and ActorID describe the unilateral unroll job.
+	ExitPathUnilateral ExitPath = "unilateral"
+
+	// ExitPathUnilateralFallback means the cooperative attempt failed
+	// and the SDK fell back to unilateral unroll. CooperativeError
+	// carries the original failure; Created and ActorID describe the
+	// fallback job.
+	ExitPathUnilateralFallback ExitPath = "unilateral_fallback"
+)
+
+// ExitResult is a tagged union over the three exit paths. Callers
+// should read Path first and only inspect the variant fields
+// associated with that path; the remaining fields are zero-valued.
 type ExitResult struct {
+	// Path discriminates between the three legal outcomes; callers
+	// MUST switch on Path before reading the variant fields below.
+	Path ExitPath
+
+	// Cooperative is true iff Path == ExitPathCooperative. Retained
+	// for backwards compatibility with the v1 result shape; new
+	// callers should prefer Path.
+	Cooperative bool
+
+	// QueuedOutpoints lists the outpoints the cooperative leave
+	// admitted into a round. Populated only when
+	// Path == ExitPathCooperative.
+	QueuedOutpoints []string
+
+	// Created reports whether the unilateral-unroll path spawned a
+	// fresh job. Populated when Path is ExitPathUnilateral or
+	// ExitPathUnilateralFallback.
 	Created bool
+
+	// ActorID identifies the durable unroll job that owns the
+	// unilateral path. Populated when Path is ExitPathUnilateral or
+	// ExitPathUnilateralFallback.
 	ActorID string
+
+	// CooperativeError holds the rendered error string returned by
+	// the cooperative attempt when the SDK fell back to unilateral.
+	// A string (rather than the error interface) keeps the field
+	// stable across gomobile / React Native / WASM bridges, which
+	// cannot marshal an opaque interface value. Populated only when
+	// Path == ExitPathUnilateralFallback; empty otherwise.
+	CooperativeError string
 }
 
 // ExitStatusRequest queries the current phase of an exit job.

@@ -88,6 +88,18 @@ type Config struct {
 	// MaxOperatorFeeSat caps the per-round operator fee the daemon accepts.
 	MaxOperatorFeeSat int64
 
+	// EagerRoundJoin makes the embedded daemon's wallet drive
+	// round-joining without waiting for a follow-up Board /
+	// LeaveVTXOs RPC. With the flag on, freshly confirmed boarding
+	// deposits join the next round automatically, and the wallet's
+	// Exit / cooperative-leave path fires registration immediately
+	// rather than batching. Set true for host apps that expect
+	// "deposit funds" and "exit a VTXO" to be one-shot user
+	// interactions. This is an enable-only convenience override;
+	// set DaemonConfig.EagerRoundJoin directly when a caller-owned
+	// config needs an explicit false value.
+	EagerRoundJoin bool
+
 	// BufferSize overrides the bufconn listener buffer size.
 	BufferSize int
 }
