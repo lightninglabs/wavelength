@@ -6,6 +6,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
@@ -67,8 +68,13 @@ func mcpServe(cmd *cobra.Command, _ []string) error {
 
 	// Register all RPC tools. The wallet-verb registrations sit
 	// above the legacy daemonrpc tools so an agent listing tools
-	// sees the everyday surface first.
+	// sees the everyday surface first. registerMCPSwapTools is a
+	// no-op in non-swapruntime builds (see mcp_swap_stub.go) so the
+	// MCP server only advertises swap.* tools when the daemon was
+	// built with the matching tag.
+	swapClient := swapclientrpc.NewSwapClientServiceClient(conn)
 	registerMCPWalletTools(server, walletClient)
+	registerMCPSwapTools(server, swapClient)
 	registerMCPTools(server, client)
 
 	// Run on stdio transport until the client disconnects.

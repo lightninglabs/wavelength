@@ -67,6 +67,23 @@ who want direct access.
 | `swap resume` | `ResumeSwap` | Wake a persisted swap worker |
 | `swap watch` | `SubscribeSwaps` | Stream swap summary updates |
 
+Every swap.* verb accepts `--json` for raw proto payloads and is
+registered as an MCP tool when the binary is built with
+`-tags swapruntime`. The streaming `swap watch` verb is CLI-only;
+MCP tool calls are request/response and a long-running subscription
+fits the CLI lifecycle better. `validatePaymentHash` /
+`validateInvoice` apply on both the CLI and MCP paths to catch the
+canonical agent-hallucination patterns (whitespace, query suffixes,
+wrong-length hashes, embedded control bytes) before the daemon's
+decoder sees them.
+
+Schema entries for swap.* are listed in `schema_registry_swap.go`
+unconditionally regardless of build tag so a stub-build agent can
+still discover the surface; the CLI itself prints a clear "rebuild
+with -tags=swapruntime" error when the verb is invoked, and the
+MCP registration is what actually gets tag-gated (`mcp_swap.go` vs
+`mcp_swap_stub.go`).
+
 ## Key Types
 
 - `NewRootCmd()` — Creates the top-level cobra command with all
