@@ -201,7 +201,7 @@ func (m *MockClientWallet) DeriveNextKey(ctx context.Context,
 		}
 	}
 
-	if family == keychain.KeyFamilyMultiSig {
+	if family == types.VTXOSigningKeyFamily {
 		privKey, err := btcec.NewPrivateKey()
 		if err != nil {
 			return nil, err
@@ -541,8 +541,10 @@ func (h *boardingTestHarness) newTestBoardingAddress() wallet.BoardingAddress {
 		KeyDesc: keychain.KeyDescriptor{
 			PubKey: h.clientPubKey,
 			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamilyMultiSig,
-				Index:  0,
+				Family: keychain.KeyFamily(
+					wallet.BoardingKeyFamily,
+				),
+				Index: 0,
 			},
 		},
 		OperatorKey: h.operatorPubKey,
@@ -597,7 +599,7 @@ func (h *boardingTestHarness) newTestVTXORequestForIntent(
 	signingKey := keychain.KeyDescriptor{
 		PubKey: h.clientPubKey,
 		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamilyMultiSig,
+			Family: types.VTXOSigningKeyFamily,
 			Index:  0,
 		},
 	}
@@ -1717,7 +1719,7 @@ func (h *realSigningTestHarness) newTestBoardingIntentWithTapscript() BoardingIn
 	signingKey := keychain.KeyDescriptor{
 		PubKey: h.clientPubKey,
 		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamilyMultiSig,
+			Family: keychain.KeyFamily(wallet.BoardingKeyFamily),
 			Index:  0,
 		},
 	}

@@ -48,6 +48,7 @@ server during round participation. These types are used across `round`, `vtxo`,
 ## Invariants
 
 - `VTXOOwnerKeyFamily` (44) is the HD key family used for deriving VTXO owner signing keys.
+- `VTXOSigningKeyFamily` (45) is the HD key family used for per-round VTXO MuSig2 signing keys.
 - `JoinRoundAuthMessage` produces a deterministic byte encoding for Schnorr signature verification.
 
 ## Deep Docs

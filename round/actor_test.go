@@ -1952,11 +1952,11 @@ func TestHandleTriggerBoard(t *testing.T) {
 		},
 	}, nil).Once()
 	h.wallet.On(
-		"DeriveNextKey", mock.Anything, keychain.KeyFamilyMultiSig,
+		"DeriveNextKey", mock.Anything, types.VTXOSigningKeyFamily,
 	).Return(&keychain.KeyDescriptor{
 		PubKey: h.clientPubKey,
 		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamilyMultiSig,
+			Family: types.VTXOSigningKeyFamily,
 			Index:  1,
 		},
 	}, nil).Once()
@@ -1987,7 +1987,7 @@ func TestHandleTriggerBoard(t *testing.T) {
 		regState.Intents.VTXOs[0].OwnerKey.Family,
 	)
 	require.Equal(
-		t, keychain.KeyFamilyMultiSig,
+		t, types.VTXOSigningKeyFamily,
 		regState.Intents.VTXOs[0].SigningKey.Family,
 	)
 }
@@ -2019,11 +2019,11 @@ func TestHandleTriggerBoardMultipleVTXOs(t *testing.T) {
 		}, nil).Once()
 		h.wallet.On(
 			"DeriveNextKey", mock.Anything,
-			keychain.KeyFamilyMultiSig,
+			types.VTXOSigningKeyFamily,
 		).Return(&keychain.KeyDescriptor{
 			PubKey: h.clientPubKey,
 			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamilyMultiSig,
+				Family: types.VTXOSigningKeyFamily,
 				Index:  uint32(i),
 			},
 		}, nil).Once()

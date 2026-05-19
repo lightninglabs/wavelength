@@ -12,11 +12,19 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
-// VTXOOwnerKeyFamily is the key family used for long-lived VTXO owner keys.
-// Owner keys are committed into the VTXO policy and must remain stable across
-// refreshes. This is distinct from the MuSig2 tree-signing key family used
-// during round construction.
-const VTXOOwnerKeyFamily keychain.KeyFamily = 44
+const (
+	// VTXOOwnerKeyFamily is the key family used for long-lived VTXO owner
+	// keys. Owner keys are committed into the VTXO policy and must remain
+	// stable across refreshes.
+	VTXOOwnerKeyFamily keychain.KeyFamily = 44
+
+	// VTXOSigningKeyFamily is the key family used for per-round VTXO
+	// MuSig2 signing keys. It is intentionally distinct from LND's
+	// internal multisig family and from the server operator family so a
+	// client sharing an LND signer with the server cannot derive the
+	// operator key as its first VTXO signing key.
+	VTXOSigningKeyFamily keychain.KeyFamily = 45
+)
 
 // OperatorTerms holds the information that the operator will share with
 // clients. It communicates the server's terms to the client.

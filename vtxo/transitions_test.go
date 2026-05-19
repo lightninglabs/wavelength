@@ -14,6 +14,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	// testOperatorKeyFamily is an arbitrary key family used for operator
+	// signing fixtures. It is intentionally distinct from the client VTXO
+	// owner and signing key families.
+	testOperatorKeyFamily = keychain.KeyFamily(201)
+)
+
 // TestStateProperties verifies basic properties of all states.
 func TestStateProperties(t *testing.T) {
 	t.Parallel()
@@ -1284,7 +1291,7 @@ func TestForfeitSignatureValidity(t *testing.T) {
 	operatorKeyDesc := keychain.KeyDescriptor{
 		PubKey: h.operatorPubKey,
 		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamilyMultiSig,
+			Family: testOperatorKeyFamily,
 			Index:  0,
 		},
 	}
