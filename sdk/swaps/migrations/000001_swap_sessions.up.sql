@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS receive_swaps (
     operator_pubkey BLOB NOT NULL,
 
     -- swap_server_pubkey is the swap server key used in the expected vHTLC.
-    swap_server_pubkey BLOB NOT NULL,
+    -- It is NULL until the server's HTLC event is accepted.
+    swap_server_pubkey BLOB,
 
     -- refund_locktime is the absolute refund locktime negotiated for the
     -- expected vHTLC.
@@ -56,12 +57,14 @@ CREATE TABLE IF NOT EXISTS receive_swaps (
     unilateral_refund_without_receiver_delay BIGINT NOT NULL,
 
     -- vhtlc_pkscript is the exact vHTLC output script the client expects the
-    -- swap server to fund.
-    vhtlc_pkscript BLOB NOT NULL,
+    -- swap server to fund. It is NULL until the server's HTLC event is
+    -- accepted.
+    vhtlc_pkscript BLOB,
 
     -- vhtlc_policy_template is the semantic vHTLC policy template sent into
-    -- the daemon when claiming the receive-side vHTLC.
-    vhtlc_policy_template BLOB NOT NULL,
+    -- the daemon when claiming the receive-side vHTLC. It is NULL until the
+    -- server's HTLC event is accepted.
+    vhtlc_policy_template BLOB,
 
     -- vhtlc_outpoint is the observed funded vHTLC outpoint once indexed.
     vhtlc_outpoint TEXT NOT NULL DEFAULT '',

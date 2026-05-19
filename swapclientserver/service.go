@@ -285,7 +285,7 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	if dbPath == "" {
 		dbPath = filepath.Join(daemonCfg.DataDir, "swaps.db")
 	}
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+	if err := ensureSwapDBDir(dbPath); err != nil {
 		return nil, nil, fmt.Errorf("create swap db dir: %w", err)
 	}
 

@@ -10,7 +10,6 @@ import (
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/vtxo"
-	"github.com/lightninglabs/neutrino/cache"
 	"github.com/stretchr/testify/require"
 )
 
@@ -193,7 +192,7 @@ func TestAncestryTreeCacheEvictsLeastRecentlyUsed(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = treeCache.trees.Get(key2)
-	require.True(t, errors.Is(err, cache.ErrElementNotFound))
+	require.True(t, errors.Is(err, errAncestryTreeCacheMiss))
 
 	got, err = treeCache.trees.Get(key1)
 	require.NoError(t, err)
