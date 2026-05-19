@@ -90,8 +90,9 @@ func IncomingMetadataMatchesFromResponseWithLimits(sessionID SessionID,
 
 	limits = normalizeReceiveLimits(limits)
 
-	matches := make([]IncomingMetadataMatch, 0, len(resp.GetVtxos()))
-	for _, candidate := range resp.GetVtxos() {
+	candidates := vtxo.FlattenListVTXOsByScriptsResponse(resp)
+	matches := make([]IncomingMetadataMatch, 0, len(candidates))
+	for _, candidate := range candidates {
 		if candidate == nil {
 			continue
 		}

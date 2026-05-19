@@ -2,6 +2,7 @@ package darepod
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"testing"
@@ -31,18 +32,18 @@ func TestResolveIncomingMetadataFromIndexerRejectsOversizedNextCursor(
 
 	idx, rpcClient, recipient, sessionID := newTestIncomingMetadataIndexer(
 		t,
-		&arkrpc.ListVTXOsByScriptsResponse{
-			Vtxos: []*arkrpc.VTXO{{
+		testIncomingMetadataResponse(
+			make(
+				[]byte,
+				indexerlimits.MaxVTXOsByScriptsCursorBytes+1,
+			),
+			&arkrpc.VTXO{
 				Outpoint: &arkrpc.OutPoint{
 					Txid: testTxIDBytes(2),
 					Vout: 0,
 				},
-			}},
-			NextCursor: make(
-				[]byte,
-				indexerlimits.MaxVTXOsByScriptsCursorBytes+1,
-			),
-		},
+			},
+		),
 	)
 
 	_, err := ResolveIncomingMetadataFromIndexerWithLimits(
@@ -62,22 +63,19 @@ func TestResolveIncomingMetadataFromIndexerCapsScannedVTXOs(t *testing.T) {
 
 	idx, rpcClient, recipient, sessionID := newTestIncomingMetadataIndexer(
 		t,
-		&arkrpc.ListVTXOsByScriptsResponse{
-			Vtxos: []*arkrpc.VTXO{
-				{
-					Outpoint: &arkrpc.OutPoint{
-						Txid: testTxIDBytes(2),
-						Vout: 0,
-					},
+		testIncomingMetadataResponse(
+			nil, &arkrpc.VTXO{
+				Outpoint: &arkrpc.OutPoint{
+					Txid: testTxIDBytes(2),
+					Vout: 0,
 				},
-				{
-					Outpoint: &arkrpc.OutPoint{
-						Txid: testTxIDBytes(3),
-						Vout: 0,
-					},
+			}, &arkrpc.VTXO{
+				Outpoint: &arkrpc.OutPoint{
+					Txid: testTxIDBytes(3),
+					Vout: 0,
 				},
 			},
-		},
+		),
 	)
 
 	_, err := ResolveIncomingMetadataFromIndexerWithLimits(
@@ -111,10 +109,7 @@ func TestResolveIncomingMetadataFromIndexerRejectsZeroTreeDepth(t *testing.T) {
 	candidate.AncestryPaths[0].TreeDepth = 0
 
 	idx, _, recipient, _ := newTestIncomingMetadataIndexer(
-		t,
-		&arkrpc.ListVTXOsByScriptsResponse{
-			Vtxos: []*arkrpc.VTXO{candidate},
-		},
+		t, testIncomingMetadataResponse(nil, candidate),
 	)
 
 	_, err := ResolveIncomingMetadataFromIndexerWithLimits(
@@ -142,10 +137,7 @@ func TestResolveIncomingMetadataFromIndexerRejectsDepthMismatch(t *testing.T) {
 	candidate.AncestryPaths[0].TreeDepth = 7
 
 	idx, _, recipient, _ := newTestIncomingMetadataIndexer(
-		t,
-		&arkrpc.ListVTXOsByScriptsResponse{
-			Vtxos: []*arkrpc.VTXO{candidate},
-		},
+		t, testIncomingMetadataResponse(nil, candidate),
 	)
 
 	_, err := ResolveIncomingMetadataFromIndexerWithLimits(
@@ -174,10 +166,7 @@ func TestResolveIncomingMetadataFromIndexerRejectsOverCapTreeDepth(
 		1
 
 	idx, _, recipient, _ := newTestIncomingMetadataIndexer(
-		t,
-		&arkrpc.ListVTXOsByScriptsResponse{
-			Vtxos: []*arkrpc.VTXO{candidate},
-		},
+		t, testIncomingMetadataResponse(nil, candidate),
 	)
 
 	_, err := ResolveIncomingMetadataFromIndexerWithLimits(
@@ -200,17 +189,15 @@ func TestResolveIncomingMetadataFromIndexerAllowsMatchAtScanLimit(
 	sessionID := oor.SessionID(testTxID(1))
 	idx, rpcClient, recipient, _ := newTestIncomingMetadataIndexer(
 		t,
-		&arkrpc.ListVTXOsByScriptsResponse{
-			Vtxos: []*arkrpc.VTXO{
-				{
-					Outpoint: &arkrpc.OutPoint{
-						Txid: testTxIDBytes(2),
-						Vout: 0,
-					},
+		testIncomingMetadataResponse(
+			nil, &arkrpc.VTXO{
+				Outpoint: &arkrpc.OutPoint{
+					Txid: testTxIDBytes(2),
+					Vout: 0,
 				},
-				testIncomingVTXO(sessionID, recipientIndex),
 			},
-		},
+			testIncomingVTXO(sessionID, recipientIndex),
+		),
 	)
 
 	metadata, err := ResolveIncomingMetadataFromIndexerWithLimits(
@@ -229,6 +216,35 @@ type scriptedIndexerRPC struct {
 	responses []*arkrpc.ListVTXOsByScriptsResponse
 	sent      []*arkrpc.ListVTXOsByScriptsRequest
 	awaits    int
+}
+
+type scriptedMetadataResponse struct {
+	nextCursor []byte
+	vtxos      []*arkrpc.VTXO
+}
+
+// testIncomingMetadataResponse returns a script-keyed response fixture.
+func testIncomingMetadataResponse(nextCursor []byte,
+	vtxos ...*arkrpc.VTXO) scriptedMetadataResponse {
+
+	return scriptedMetadataResponse{
+		nextCursor: nextCursor,
+		vtxos:      vtxos,
+	}
+}
+
+// listVTXOsByScriptResponse returns the proto response for a generated script.
+func listVTXOsByScriptResponse(pkScript []byte,
+	resp scriptedMetadataResponse) *arkrpc.ListVTXOsByScriptsResponse {
+
+	return &arkrpc.ListVTXOsByScriptsResponse{
+		VtxosByScript: map[string]*arkrpc.VTXOSet{
+			hex.EncodeToString(pkScript): {
+				Vtxos: resp.vtxos,
+			},
+		},
+		NextCursor: resp.nextCursor,
+	}
 }
 
 // SendRPC records the request and returns a deterministic correlation id.
@@ -291,7 +307,7 @@ func (r *scriptedIndexerRPC) sendCount() int {
 // newTestIncomingMetadataIndexer returns a proof-capable indexer client and a
 // recipient using a valid taproot script.
 func newTestIncomingMetadataIndexer(t *testing.T,
-	responses ...*arkrpc.ListVTXOsByScriptsResponse) (*indexer.Client,
+	responses ...scriptedMetadataResponse) (*indexer.Client,
 	*scriptedIndexerRPC, oor.ArkRecipientOutput, oor.SessionID) {
 
 	t.Helper()
@@ -304,8 +320,18 @@ func newTestIncomingMetadataIndexer(t *testing.T,
 		privKey.PubKey().SerializeCompressed()[1:]...,
 	)
 
+	protoResponses := make(
+		[]*arkrpc.ListVTXOsByScriptsResponse, 0, len(responses),
+	)
+	for _, resp := range responses {
+		protoResponses = append(
+			protoResponses,
+			listVTXOsByScriptResponse(pkScript, resp),
+		)
+	}
+
 	rpcClient := &scriptedIndexerRPC{
-		responses: responses,
+		responses: protoResponses,
 	}
 	idx := indexer.New(
 		rpcClient, &indexer.PrivKeySchnorrSigner{

@@ -88,9 +88,17 @@ func TestIncomingMetadataMatchesFromResponseUsesConfiguredMatchLimit(
 	commitmentTxID := chainhash.Hash{4, 5, 6}
 
 	resp := &arkrpc.ListVTXOsByScriptsResponse{
-		Vtxos: []*arkrpc.VTXO{
-			testIncomingMetadataVTXO(sessionID, commitmentTxID, 0),
-			testIncomingMetadataVTXO(sessionID, commitmentTxID, 1),
+		VtxosByScript: map[string]*arkrpc.VTXOSet{
+			"5120": {
+				Vtxos: []*arkrpc.VTXO{
+					testIncomingMetadataVTXO(
+						sessionID, commitmentTxID, 0,
+					),
+					testIncomingMetadataVTXO(
+						sessionID, commitmentTxID, 1,
+					),
+				},
+			},
 		},
 	}
 

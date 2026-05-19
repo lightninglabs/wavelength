@@ -79,7 +79,8 @@ func ResolveIncomingMetadataFromIndexerWithLimits(ctx context.Context,
 				"VTXOs by script: %w", err)
 		}
 
-		for _, candidate := range resp.GetVtxos() {
+		page := vtxo.ListVTXOsForScript(resp, recipient.PkScript)
+		for _, candidate := range page {
 			scanned++
 			if scanned > maxScanned {
 				return oor.IncomingVTXOMetadata{}, fmt.Errorf(
@@ -125,7 +126,7 @@ func ResolveIncomingMetadataFromIndexerWithLimits(ctx context.Context,
 		}
 
 		nextCursor := resp.GetNextCursor()
-		if len(resp.GetVtxos()) == 0 || len(nextCursor) == 0 ||
+		if len(page) == 0 || len(nextCursor) == 0 ||
 			bytes.Equal(nextCursor, cursor) {
 
 			break
