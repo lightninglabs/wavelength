@@ -18,6 +18,7 @@ package may import from a higher layer.
 | [`oor`](oor/) | Out-of-round transfer coordination FSM |
 | [`wallet`](wallet/) | On-chain boarding wallet actor (address derivation, UTXO monitoring) |
 | [`ledger`](ledger/) | Client-side durable ledger actor for double-entry fee accounting |
+| [`fraud`](fraud/) | Recipient-side OOR ancestry fraud watcher: passive ancestor-spend monitoring that triggers durable unroll on materialization |
 | [`lib`](lib/) | Shared domain utilities: tree paths, BIP-322, arkscript policy, types |
 | [`lib/arkscript`](lib/arkscript/) | Tapscript AST compiler and policy system for Ark taproot outputs |
 | [`lib/bip322`](lib/bip322/) | BIP-322 intent-bound message authentication |
@@ -46,6 +47,8 @@ package may import from a higher layer.
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
+| [`gateway`](gateway/) | Shared HTTP/JSON gateway helpers: CORS middleware, endpoint normalization, grpc-gateway ServeMux options |
+| [`internal/indexerlimits`](internal/indexerlimits/) | Client-side resource caps and cursor validation for indexer queries |
 
 ### Layer 3: Application & Orchestration
 
@@ -54,7 +57,7 @@ package may import from a higher layer.
 | [`darepod`](darepod/) | Daemon orchestrator: wires all subsystems, exposes gRPC API |
 | [`sdk/ark`](sdk/ark/) | Consumer-facing Go SDK facade: remote or embedded daemon access with typed models |
 | [`sdk/swaps`](sdk/swaps/) | Lightning-to-Ark / Ark-to-Lightning atomic swap SDK with durable FSM flows |
-| [`sdk/walletdk`](sdk/walletdk/) | Wallet-shaped SDK facade for host apps: embeds the daemon in-process, dials it over a private bufconn transport, exposes typed methods for the seven core wallet verbs (create, unlock, send, recv, list, balance, exit). The highest-level layer in the stack; wraps `walletrpc.WalletService`. Wallet RPC methods gated behind `walletrpc` (which transitively requires `swapruntime`) |
+| [`sdk/walletdk`](sdk/walletdk/) | Wallet-shaped SDK facade for host apps: embedded mode (bufconn, `Start`) or remote mode (gRPC/REST, `Connect`), exposes typed methods for the seven core wallet verbs (create, unlock, send, recv, list, balance, exit). Wraps `walletrpc.WalletService`. Wallet RPC methods gated behind `walletrpc` (which transitively requires `swapruntime`) |
 | [`swapwallet`](swapwallet/) | Optional daemon-side `walletrpc.WalletService` implementation (build tags `walletrpc swapruntime`): composes the swap subsystem, cooperative leave, boarding, ledger, and unilateral-exit registry behind one flat, swap-vocabulary-free wallet API |
 | [`swapclientserver`](swapclientserver/) | Optional daemon-side swap subserver (build tag `swapruntime`): translates `swapclientrpc` RPCs into `sdk/swaps` operations and manages the daemon-local worker registry |
 | [`cmd/darepod`](cmd/darepod/) | Daemon entry point |
@@ -64,6 +67,7 @@ package may import from a higher layer.
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
 | [`arkrpc/treeconv`](arkrpc/treeconv/) | Narrow re-export of tree-path conversion helpers without the full gRPC surface |
 | [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb, swapclientrpc, walletrpc) |
+| [`rpc/restclient`](rpc/restclient/) | Hand-written REST transport clients implementing gRPC service interfaces over grpc-gateway HTTP/JSON |
 | [`rpc/walletrpc`](rpc/walletrpc/) | Highest-level gRPC surface: `WalletService` with the seven core wallet verbs. Composes `daemonrpc` and `rpc/swapclientrpc` server-side via `swapwallet` |
 | [`daemonrpc`](daemonrpc/) | Daemon gRPC API definitions |
 

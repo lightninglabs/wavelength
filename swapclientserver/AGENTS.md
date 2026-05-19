@@ -33,11 +33,18 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   by a `swapruntime`-tagged `darepod` binary. Opens the daemon-owned SQLite
   swap store, dials `swapdk-server`, creates an in-process Ark SDK facade over
   `darepod.RPCServer`, wires `swaps.NewSwapClientWithStore`, installs a
-  `MailboxOutSwapEventReceiver` (empty mailbox ID — receiver derives the
-  per-swap mailbox from client identity + payment hash) on the
-  `SwapClient` so out-swap HTLC events flow over the mailbox transport,
-  registers the gRPC subserver, calls `resumePending`, and returns a cleanup
-  function.
+  `MailboxOutSwapEventReceiver` on the `SwapClient`, registers the gRPC
+  subserver, and (unless `cfg.Swap.SuppressResume` is true) calls
+  `ResumePending` synchronously before returning. Returns the `*swapClientService`
+  as a `Resumable` handle so the caller can drive `ResumePending` at the right
+  moment when `SuppressResume` is set.
+- `RegisterGateway(ctx, mux, addr)` — Installs the optional
+  `SwapClientService` HTTP/JSON handlers on a grpc-gateway `ServeMux`.
+  Called by `darepod`'s gateway server when the `swapruntime` tag is active.
+- `ResumePending(ctx)` — Re-arms background workers for every persisted
+  pending swap. Exported so callers that set `SuppressResume` (e.g.
+  `swapwallet`) can invoke resume after any cross-subsystem wiring is
+  complete.
 
 ## RPC Methods
 
@@ -49,6 +56,7 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 | `ListSwaps` | List persisted swap summaries; optionally filter to pending only |
 | `GetSwap` | Fetch one persisted summary by hex payment hash |
 | `SubscribeSwaps` | Stream coarse summary updates; optionally emit existing rows first |
+| `RegisterGateway` | Install service handlers on grpc-gateway `ServeMux` (HTTP/JSON path) |
 
 ## Relationships
 
@@ -77,9 +85,10 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `SubscribeSwaps` subscribers are best-effort, buffered (16), and
   non-blocking. Slow subscribers may miss a terminal-state update; they can
   recover current state with `GetSwap` or `ListSwaps`.
-- `Register` calls `resumePending` synchronously before returning so the
-  daemon gRPC server begins accepting calls with all prior sessions already
-  driven by a worker.
+- `Register` calls `ResumePending` synchronously before returning unless
+  `cfg.Swap.SuppressResume` is true. When `SuppressResume` is set, the caller
+  (e.g. `swapwallet`) owns the resume timing and must call `ResumePending`
+  explicitly after its own cross-subsystem wiring is complete.
 - Swap state, persistence, and protocol behavior are never duplicated in this
   layer — they stay in `sdk/swaps`. This package is a worker registry and RPC
   facade only.

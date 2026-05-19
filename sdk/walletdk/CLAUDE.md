@@ -3,13 +3,18 @@
 ## Purpose
 
 Wallet-shaped SDK facade for host apps that want a small, stable Go API over
-an embedded `darepod` client daemon. `Start` boots the daemon in-process,
-dials it over a private `bufconn` gRPC transport, and exposes typed methods
-that mirror the seven core CLI verbs (create, unlock, send, recv, list,
-balance, exit) plus supporting subscribe/deposit/status. walletdk is the
-highest-level layer in the stack; it wraps `walletrpc.WalletService` (the
-unified wallet API on the daemon side) with mobile-/JS-bridge-friendly
-DTOs.
+a `darepod` client daemon. Two usage modes:
+
+- **Embedded** (`Start`): boots the daemon in-process, dials it over a
+  private `bufconn` gRPC transport.
+- **Remote** (`Connect`): dials an already-running daemon over gRPC or
+  REST/HTTP (grpc-gateway), selected by `ConnectConfig.Transport`.
+
+Both modes expose typed methods that mirror the seven core CLI verbs (create,
+unlock, send, recv, list, balance, exit) plus supporting
+subscribe/deposit/status. walletdk is the highest-level layer in the stack;
+it wraps `walletrpc.WalletService` (the unified wallet API on the daemon
+side) with mobile-/JS-bridge-friendly DTOs.
 
 Wallet methods are gated behind the `walletrpc` build tag (which
 transitively requires `swapruntime`): stub builds compile, but the wallet
@@ -29,11 +34,16 @@ methods return `ErrWalletRPCUnavailable` synchronously.
   plain `bool` enable-only overrides: set `true` to force the value or
   leave at the zero value to defer to `DaemonConfig`.
 - `DefaultConfig` — Returns a walletdk `Config` populated from
-  `darepod.DefaultConfig()`. Convenience starting point for hosts.
-- `Start` — Boots the embedded daemon, dials it, waits for gRPC
-  readiness, and returns a ready-to-use `*Client`. Detaches the daemon
-  lifetime from the caller's `ctx` so a tight startup deadline does not
-  kill the daemon.
+  `darepod.DefaultConfig()`. Convenience starting point for embedded hosts.
+- `Start` — Boots the embedded daemon, dials it, waits for gRPC readiness,
+  and returns a ready-to-use `*Client`. Detaches the daemon lifetime from the
+  caller's `ctx` so a tight startup deadline does not kill the daemon.
+- `Connect` / `ConnectConfig` — Dials an external running daemon; selects
+  the transport via `ConnectConfig.Transport` (`TransportGRPC` or
+  `TransportREST`). The REST path uses `rpc/restclient` to satisfy all gRPC
+  client interfaces over grpc-gateway HTTP/JSON.
+- `TransportGRPC` / `TransportREST` — Transport selection constants for
+  `ConnectConfig`.
 - `Info` / `Balance` / `CreateWalletResult` / `UnlockWalletResult` —
   Wrapper-owned wallet DTOs. Mobile and JS bridges see these, not
   protobuf types.
@@ -94,18 +104,19 @@ methods return `ErrWalletRPCUnavailable` synchronously.
   daemonrpc-direct paths for `CreateWallet`/`UnlockWallet`),
   `rpc/walletrpc` (the unified wallet API the seven verbs target),
   `rpc/swapclientrpc` (escape hatch for raw swap RPCs),
+  `rpc/restclient` (REST transport for `Connect` in REST mode),
   `swapclientserver` (`swapruntime` build only — registers the
   daemon-side swap subserver via `RPCServiceRegistrars`),
   `swapwallet` (`walletrpc` build only — registers the daemon-side
   wallet RPC subserver),
   `google.golang.org/grpc/test/bufconn` (in-process transport).
-- **Depended on by**: host Go apps, gomobile / React Native / WASM bridges,
-  and `cmd/walletdk-tui` (Bubble Tea manual-test TUI; tracked in a sibling
-  PR).
+- **Depended on by**: host Go apps, gomobile / React Native / WASM bridges.
 - **Sends**:
-  - → `darepod` (in-process via bufconn): all daemon RPCs listed above
-    are routed across the private gRPC connection rather than the
-    daemon's public listener.
+  - → `darepod` (in-process via bufconn, embedded mode): all daemon RPCs
+    listed above are routed across the private gRPC connection rather than
+    the daemon's public listener.
+  - → remote daemon (TCP gRPC or REST, remote mode): same RPC surface over
+    the network transport selected by `ConnectConfig.Transport`.
 - **Receives**:
   - ← API: host application calls (`CreateWallet`, `Receive`, `Send`,
     `Subscribe`, `Exit`, …). walletdk does not register any RPC
@@ -114,10 +125,12 @@ methods return `ErrWalletRPCUnavailable` synchronously.
 ## Invariants
 
 - `Client` is safe for concurrent use.
-- The embedded daemon's lifetime is owned by walletdk's `runCtx`, not by the
-  caller's `Start` context. A startup deadline cancels dialing, not the
-  daemon. `Stop`/`Close` is the only correct way to terminate the runtime
-  (the `//nolint:contextcheck` on `Start` guards this).
+- In embedded mode: the daemon's lifetime is owned by walletdk's `runCtx`,
+  not the caller's `Start` context. A startup deadline cancels dialing, not
+  the daemon. `Stop`/`Close` is the only correct way to terminate.
+- In remote mode: `Connect` dials the external daemon synchronously; it does
+  not own the remote daemon's lifetime. `Stop`/`Close` only tears down the
+  local transport.
 - `Start` does not return until either gRPC reports `Ready` against the
   embedded daemon, the daemon exits early with an error, or the caller's
   startup `ctx` is cancelled.
