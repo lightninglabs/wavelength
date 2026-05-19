@@ -628,6 +628,67 @@ func TestValidateVTXORequest(t *testing.T) {
 		require.ErrorIs(t, err, ErrOperatorKeyMismatch)
 	})
 
+	t.Run("operator signing key rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinVTXOAmount = 1000
+		h.env.Terms.MaxVTXOAmount = 1000000
+		h.env.Terms.VTXOExitDelay = 100
+
+		descriptor, _ := tree.NewVTXODescriptor(
+			10000, clientPub, h.operatorPub, 144,
+		)
+
+		req := &types.VTXORequest{
+			Amount: 10000,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 144,
+			),
+			PkScript:    descriptor.PkScript,
+			Expiry:      144,
+			ClientKey:   clientPub,
+			OperatorKey: h.operatorPub,
+			SigningKey: keychain.KeyDescriptor{
+				PubKey: h.operatorPub,
+			},
+		}
+
+		usedKeys := make(map[SigningKeyHex]*btcec.PublicKey)
+		result, err := ValidateVTXORequest(h.env.Terms, req, usedKeys)
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrSigningKeyMatchesOperator)
+	})
+
+	t.Run("missing signing key rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinVTXOAmount = 1000
+		h.env.Terms.MaxVTXOAmount = 1000000
+		h.env.Terms.VTXOExitDelay = 100
+
+		descriptor, _ := tree.NewVTXODescriptor(
+			10000, clientPub, h.operatorPub, 144,
+		)
+
+		req := &types.VTXORequest{
+			Amount: 10000,
+			PolicyTemplate: testPolicyTemplate(
+				t, clientPub, h.operatorPub, 144,
+			),
+			PkScript:    descriptor.PkScript,
+			Expiry:      144,
+			ClientKey:   clientPub,
+			OperatorKey: h.operatorPub,
+		}
+
+		usedKeys := make(map[SigningKeyHex]*btcec.PublicKey)
+		result, err := ValidateVTXORequest(h.env.Terms, req, usedKeys)
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrSigningKeyMissing)
+	})
+
 	t.Run("duplicate signing key rejected", func(t *testing.T) {
 		t.Parallel()
 
