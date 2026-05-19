@@ -1,5 +1,3 @@
-//go:build !js
-
 package walletdk
 
 import (
@@ -90,7 +88,7 @@ func resolveDaemonConfig(cfg Config, opts ...Option) (*darepod.Config, error) {
 		return nil, err
 	}
 
-	if err := configureSwapRuntime(daemonCfg, true); err != nil {
+	if err := configureSwapRuntime(daemonCfg, !cfg.DisableSwaps); err != nil {
 		return nil, err
 	}
 	configureWalletRPC(daemonCfg, true)
@@ -125,6 +123,13 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 		daemonCfg.RPC = &darepod.RPCConfig{}
 	}
 	daemonCfg.RPC.Listener = listener
+	if daemonCfg.RPC.Gateway != nil {
+		// Embedded walletdk talks to darepod through the private
+		// bufconn listener above. The public HTTP gateway would need a
+		// browser-incompatible TCP listener in WASM and is not needed
+		// by native embedders using this in-process API.
+		daemonCfg.RPC.Gateway.Enabled = false
+	}
 
 	if err := daemonCfg.Validate(); err != nil {
 		_ = listener.Close()

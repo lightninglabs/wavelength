@@ -1,5 +1,3 @@
-//go:build !js
-
 package walletdk
 
 import (
@@ -84,6 +82,11 @@ type Config struct {
 
 	// SwapDatabaseFileName is the daemon-owned swap SQLite database path.
 	SwapDatabaseFileName string
+
+	// DisableSwaps starts the embedded wallet without registering the
+	// daemon-owned swap executor. Wallet RPC methods that depend on swaps
+	// will fail until the runtime is enabled again.
+	DisableSwaps bool
 
 	// MaxOperatorFeeSat caps the per-round operator fee the daemon accepts.
 	MaxOperatorFeeSat int64
