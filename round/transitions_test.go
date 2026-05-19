@@ -65,7 +65,7 @@ func mkReq(t *testing.T, op *btcec.PublicKey, seed byte, owned bool) reqTree {
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingPriv.PubKey(),
 			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamilyMultiSig,
+				Family: types.VTXOSigningKeyFamily,
 				Index:  uint32(seed),
 			},
 		},

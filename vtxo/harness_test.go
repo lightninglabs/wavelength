@@ -17,6 +17,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -377,7 +378,7 @@ func (h *vtxoTestHarness) newTestDescriptor() *Descriptor {
 		ClientKey: keychain.KeyDescriptor{
 			PubKey: h.clientPubKey,
 			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamilyMultiSig,
+				Family: types.VTXOOwnerKeyFamily,
 				Index:  0,
 			},
 		},
@@ -645,7 +646,7 @@ func (h *realVTXOSigningHarness) newTestDescriptor() *Descriptor {
 		ClientKey: keychain.KeyDescriptor{
 			PubKey: h.clientPubKey,
 			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamilyMultiSig,
+				Family: types.VTXOOwnerKeyFamily,
 				Index:  0,
 			},
 		},

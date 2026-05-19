@@ -51,7 +51,7 @@ func (s *Server) indexerProofNextKeyOps() (DeriveDefaultOORReceiveKeyFunc,
 		error) {
 
 		return s.proofKeyBackend.DeriveNextKey(
-			ctx, keychain.KeyFamilyMultiSig,
+			ctx, oorReceiveKeyFamily,
 		)
 	}
 

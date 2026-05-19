@@ -51,7 +51,7 @@ func TestIndexerProofKey(t *testing.T) {
 	require.NoError(t, err)
 
 	loc := keychain.KeyLocator{
-		Family: keychain.KeyFamilyMultiSig,
+		Family: oorReceiveKeyFamily,
 		Index:  7,
 	}
 	wantDesc := &keychain.KeyDescriptor{
@@ -89,7 +89,7 @@ func TestIndexerProofNextKeyOps(t *testing.T) {
 
 	wantDesc := &keychain.KeyDescriptor{
 		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamilyMultiSig,
+			Family: oorReceiveKeyFamily,
 			Index:  11,
 		},
 		PubKey: privKey.PubKey(),
@@ -106,7 +106,7 @@ func TestIndexerProofNextKeyOps(t *testing.T) {
 
 	gotDesc, err := deriveNext(t.Context())
 	require.NoError(t, err)
-	require.Equal(t, keychain.KeyFamilyMultiSig, backend.deriveNextFamily)
+	require.Equal(t, oorReceiveKeyFamily, backend.deriveNextFamily)
 	require.Equal(t, wantDesc, gotDesc)
 
 	signer := signerFactory(*wantDesc)

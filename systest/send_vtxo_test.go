@@ -657,7 +657,7 @@ func seedLiveVTXO(t *testing.T, cfg *darepod.Config,
 		ClientKey: keychain.KeyDescriptor{
 			PubKey: clientPriv.PubKey(),
 			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamilyMultiSig,
+				Family: types.VTXOOwnerKeyFamily,
 				Index:  7,
 			},
 		},

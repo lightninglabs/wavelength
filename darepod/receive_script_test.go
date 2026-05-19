@@ -337,7 +337,7 @@ func testKeyDescriptor(t *testing.T, seed byte) keychain.KeyDescriptor {
 
 	return keychain.KeyDescriptor{
 		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamilyMultiSig,
+			Family: oorReceiveKeyFamily,
 			Index:  uint32(seed),
 		},
 		PubKey: privKey.PubKey(),

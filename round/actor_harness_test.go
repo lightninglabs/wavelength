@@ -762,7 +762,7 @@ func (h *actorTestHarness) newTestBoardingIntentWithSuffix(
 	keyDesc := keychain.KeyDescriptor{
 		PubKey: h.clientPubKey,
 		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamilyMultiSig,
+			Family: keychain.KeyFamily(wallet.BoardingKeyFamily),
 			Index:  0,
 		},
 	}
@@ -803,7 +803,7 @@ func (h *actorTestHarness) newKeyDescriptor() keychain.KeyDescriptor {
 	return keychain.KeyDescriptor{
 		PubKey: h.clientPubKey,
 		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamilyMultiSig,
+			Family: types.VTXOSigningKeyFamily,
 			Index:  0,
 		},
 	}

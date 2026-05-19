@@ -21,7 +21,6 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
-	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // buildBoardingRequest constructs a types.BoardingRequest from a
@@ -2585,7 +2584,7 @@ func ensureVTXOSigningKeys(ctx context.Context, wallet ClientWallet,
 		}
 
 		keyDesc, err := wallet.DeriveNextKey(
-			ctx, keychain.KeyFamilyMultiSig,
+			ctx, types.VTXOSigningKeyFamily,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("derive signing key for vtxo "+
