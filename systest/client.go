@@ -834,7 +834,7 @@ func (c *TestClient) OORReceiveRecipientOutputWithKey() (oortx.RecipientOutput,
 		c.harness.ctx, c.indexerClient, c.oorPackageStore,
 		func(ctx context.Context) (*keychain.KeyDescriptor, error) {
 			return c.backend.ClientWallet().DeriveNextKey(
-				ctx, keychain.KeyFamilyMultiSig,
+				ctx, systestOORReceiveKeyFamily,
 			)
 		},
 		c.backend.IndexerSigner,
