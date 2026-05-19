@@ -10,6 +10,7 @@ import (
 	"syscall/js"
 	"time"
 
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/sdk/walletdk"
 )
@@ -142,6 +143,29 @@ func (r *runtimeState) call(ctx context.Context, method string, req js.Value) (
 			return client.Deposit(ctx, walletdk.DepositRequest{})
 		})
 
+	case "board":
+		client, err := r.currentClient()
+		if err != nil {
+			return nil, err
+		}
+
+		return client.ArkRPC().Board(ctx, &daemonrpc.BoardRequest{})
+
+	case "getRawBalance":
+		client, err := r.currentClient()
+		if err != nil {
+			return nil, err
+		}
+
+		balance, err := client.ArkRPC().GetBalance(
+			ctx, &daemonrpc.GetBalanceRequest{},
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return legacyRawBalance(balance), nil
+
 	case "receive":
 		client, err := r.currentClient()
 		if err != nil {
@@ -164,12 +188,17 @@ func (r *runtimeState) call(ctx context.Context, method string, req js.Value) (
 			return nil, err
 		}
 
-		return client.Send(ctx, walletdk.SendRequest{
+		result, err := client.Send(ctx, walletdk.SendRequest{
 			Invoice:        stringValue(req.Get("invoice")),
 			OnchainAddress: stringValue(req.Get("onchainAddress")),
-			AmountSat:      uint64(req.Get("amountSat").Int()),
-			MaxFeeSat:      uint64(req.Get("maxFeeSat").Int()),
+			AmountSat:      uint64Value(req.Get("amountSat")),
+			MaxFeeSat:      uint64Value(req.Get("maxFeeSat")),
 		})
+		if err != nil {
+			return nil, err
+		}
+
+		return legacySend(result), nil
 
 	case "listSwaps":
 		client, err := r.currentClient()
@@ -273,6 +302,23 @@ func legacyBalance(balance *walletdk.Balance) map[string]int64 {
 	}
 }
 
+func legacyRawBalance(balance *daemonrpc.GetBalanceResponse) map[string]int64 {
+	if balance == nil {
+		return map[string]int64{}
+	}
+
+	return map[string]int64{
+		"BoardingConfirmedSat":      balance.GetBoardingConfirmedSat(),
+		"BoardingUnconfirmedSat":    balance.GetBoardingUnconfirmedSat(),
+		"VtxoBalanceSat":            balance.GetVtxoBalanceSat(),
+		"VTXOBalanceSat":            balance.GetVtxoBalanceSat(),
+		"TotalConfirmedSat":         balance.GetTotalConfirmedSat(),
+		"OnchainWalletConfirmedSat": balance.GetOnchainWalletConfirmedSat(),
+		"BoardingPendingSweepSat":   balance.GetBoardingPendingSweepSat(),
+		"BoardingSweptSat":          balance.GetBoardingSweptSat(),
+	}
+}
+
 func legacyInfo(info *walletdk.Info) map[string]any {
 	if info == nil {
 		return map[string]any{}
@@ -300,6 +346,18 @@ func legacyReceive(result *walletdk.ReceiveResult) map[string]any {
 		"Invoice":     result.Invoice,
 		"PaymentHash": result.Entry.ID,
 		"Entry":       result.Entry,
+	}
+}
+
+func legacySend(result *walletdk.SendResult) map[string]any {
+	if result == nil {
+		return map[string]any{}
+	}
+
+	return map[string]any{
+		"PaymentHash":     result.Entry.ID,
+		"Entry":           result.Entry,
+		"ActualAmountSat": result.ActualAmountSat,
 	}
 }
 
@@ -541,6 +599,15 @@ func boolValue(value js.Value) bool {
 	}
 
 	return value.Bool()
+}
+
+// uint64Value extracts a JavaScript number, treating missing fields as zero.
+func uint64Value(value js.Value) uint64 {
+	if value.IsUndefined() || value.IsNull() {
+		return 0
+	}
+
+	return uint64(value.Int())
 }
 
 // bytesFromString extracts a JavaScript string as bytes.

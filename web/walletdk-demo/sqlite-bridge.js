@@ -3,6 +3,8 @@
 // after failed opens so browser reloads can retry OPFS handles cleanly.
 
 (() => {
+  const bridgeProtocolVersion = 1;
+  const expectedWorkerProtocolVersion = 1;
   let worker = null;
   let nextRequestId = 1;
   let initPromise = null;
@@ -65,12 +67,25 @@
   }
 
   globalThis.sqliteBridge = {
+    protocolVersion: bridgeProtocolVersion,
+
     async init(options = {}) {
       ensureWorker(options.workerURL);
       if (!initPromise) {
-        initPromise = request("init", { sqliteJSURL: options.sqliteJSURL || globalThis.sqliteBridgeSQLiteJSURL || "" }).then((result) => {
+        initPromise = request("init", {
+          sqliteJSURL: options.sqliteJSURL ||
+            globalThis.sqliteBridgeSQLiteJSURL || "",
+          expectedBridgeProtocolVersion: bridgeProtocolVersion
+        }).then((result) => {
+          if (result.workerProtocolVersion !== expectedWorkerProtocolVersion) {
+            throw new Error(
+              `SQLite worker protocol mismatch: expected ${
+                expectedWorkerProtocolVersion
+              }, got ${result.workerProtocolVersion}`
+            );
+          }
           console.log("SQLite oo1 worker initialized:", result.version?.libVersion || "unknown");
-          return { ok: true, ...result };
+          return { ok: true, bridgeProtocolVersion, ...result };
         });
       }
       return initPromise;
