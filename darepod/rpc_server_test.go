@@ -720,11 +720,12 @@ func TestSumOnchainWalletConfirmed(t *testing.T) {
 		}
 	}
 
+	boom := errors.New("boom")
 	tests := []struct {
 		name     string
 		fetchers []onchainWalletConfirmedFetcher
 		want     btcutil.Amount
-		wantErrs int
+		wantErr  error
 	}{
 		{
 			name:     "no fetchers returns zero",
@@ -748,23 +749,14 @@ func TestSumOnchainWalletConfirmed(t *testing.T) {
 			want: 350_042,
 		},
 		{
-			name: "failing backend does not mask siblings",
+			name: "first fetcher error short-circuits",
 			fetchers: []onchainWalletConfirmedFetcher{
 				makeFetcher(100_000, nil),
-				makeFetcher(0, errors.New("boom")),
+				makeFetcher(0, boom),
 				makeFetcher(50_000, nil),
 			},
-			want:     150_000,
-			wantErrs: 1,
-		},
-		{
-			name: "all-failing reports zero and logs each error",
-			fetchers: []onchainWalletConfirmedFetcher{
-				makeFetcher(0, errors.New("a")),
-				makeFetcher(0, errors.New("b")),
-			},
-			want:     0,
-			wantErrs: 2,
+			want:    0,
+			wantErr: boom,
 		},
 	}
 
@@ -773,39 +765,20 @@ func TestSumOnchainWalletConfirmed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			var gotErrs []error
-			total := sumOnchainWalletConfirmed(
+			total, err := sumOnchainWalletConfirmed(
 				context.Background(), tc.fetchers,
-				func(err error) {
-					gotErrs = append(gotErrs, err)
-				},
 			)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				require.Zero(t, total)
 
+				return
+			}
+
+			require.NoError(t, err)
 			require.Equal(t, tc.want, total)
-			require.Len(t, gotErrs, tc.wantErrs)
 		})
 	}
-}
-
-// TestSumOnchainWalletConfirmedNilErrCallback verifies that a nil
-// onErr callback is tolerated so callers who do not care about
-// per-fetcher failures do not have to supply a noop logger.
-func TestSumOnchainWalletConfirmedNilErrCallback(t *testing.T) {
-	t.Parallel()
-
-	fetchers := []onchainWalletConfirmedFetcher{
-		func(context.Context) (btcutil.Amount, error) {
-			return 0, errors.New("should not panic")
-		},
-		func(context.Context) (btcutil.Amount, error) {
-			return 77, nil
-		},
-	}
-
-	total := sumOnchainWalletConfirmed(
-		context.Background(), fetchers, nil,
-	)
-	require.Equal(t, btcutil.Amount(77), total)
 }
 
 // TestGetInfoIncludesServerInfo verifies that GetInfo surfaces cached

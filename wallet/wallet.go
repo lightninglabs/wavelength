@@ -644,6 +644,15 @@ func (a *Ark) handleGetActiveBoardingAddresses(ctx context.Context,
 // boarding_pending_sweep_sat and boarding_swept_sat fields exposed
 // through GetBalance, so dashboards see boarding funds in flight even
 // while a sweep tx awaits confirmation.
+//
+// CONTRACT: this handler must remain a pure read of the boarding
+// store. `darepod.RPCServer.fetchBoardingBalance` deliberately
+// duplicates this logic at the RPC layer to bypass the wallet
+// actor's serial mailbox under block-epoch catch-up bursts (see
+// BUGS_FOUND.md). If you add in-memory caching, admission gating,
+// or any other actor-local state to the computation here, the
+// bypass at the RPC layer must be updated in lockstep — otherwise
+// GetBalance will silently report a different value than this Ask.
 func (a *Ark) handleGetBoardingBalance(ctx context.Context,
 	_ *GetBoardingBalanceRequest) fn.Result[WalletResp] {
 

@@ -445,73 +445,103 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 
 	resp := &daemonrpc.GetBalanceResponse{}
 
-	// Fetch boarding balance from the wallet actor via Ask.
-	if r.server.walletRef.IsSome() {
-		wRef := r.server.walletRef.UnsafeFromSome()
-
-		balReq := &wallet.GetBoardingBalanceRequest{}
-		future := wRef.Ask(ctx, balReq)
-		result := future.Await(ctx)
-
-		balResp, err := result.Unpack()
-		if err != nil {
-			r.server.log.WarnS(
-				ctx,
-				"Unable to fetch boarding balance",
-				err,
-			)
-		} else {
-			br, ok := balResp.(*wallet.GetBoardingBalanceResponse)
-			if ok {
-				resp.BoardingConfirmedSat = int64(
-					br.TotalBalance,
-				)
-				resp.BoardingPendingSweepSat = int64(
-					br.PendingSweepBalance,
-				)
-				resp.BoardingSweptSat = int64(
-					br.SweptBalance,
-				)
-			}
-		}
+	// Fetch boarding balance by querying the boarding store directly.
+	// Going through the wallet actor's Ask path would serialize this
+	// read behind any backlogged actor work — each tip-tick handler
+	// runs one ListUnspent per tip advance, and a slow backend can
+	// keep that call in flight long enough to stall the mailbox while
+	// a GetBalance Ask sits queued behind it. The actor's
+	// handleGetBoardingBalance is a pure read of three
+	// FetchBoardingIntentsByStatus calls with no in-memory actor
+	// state, so this direct store read returns the same value
+	// without queuing behind the backlog. See bug-2 in BUGS_FOUND.md
+	// for the longer-term actor-side coalescing fix that would let
+	// us drop this bypass; the contract notes on
+	// handleGetBoardingBalance must stay in sync with this site so
+	// the two paths cannot silently diverge.
+	if err := r.fetchBoardingBalance(ctx, resp); err != nil {
+		return nil, status.Errorf(codes.Internal, "fetch boarding "+
+			"balance: %v", err)
 	}
 
 	// Fetch VTXO balance by summing all live VTXOs using the
-	// package-level SumBalance helper.
+	// package-level SumBalance helper. Propagate query errors rather
+	// than silently zeroing — a returned zero is functionally
+	// indistinguishable from "no VTXOs" and would mislead a UI that
+	// trusts the response, which is the same rationale that makes
+	// fetchBoardingBalance error-strict above.
 	if r.server.vtxoStore != nil {
-		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(
-			ctx,
-		)
+		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
 		if err != nil {
-			r.server.log.WarnS(ctx, "Unable to fetch VTXO balance",
-				err,
-			)
-		} else {
-			resp.VtxoBalanceSat = int64(
-				vtxo.SumBalance(liveVTXOs),
-			)
+			return nil, status.Errorf(codes.Internal, "fetch vtxo "+
+				"balance: %v", err)
 		}
+		resp.VtxoBalanceSat = int64(vtxo.SumBalance(liveVTXOs))
 	}
 
 	// Fetch the confirmed balance of the backing on-chain wallet so
-	// callers can observe sweep proceeds from unilateral exits.
-	fetchers := r.walletBalanceFetchers()
-	resp.OnchainWalletConfirmedSat = int64(
-		sumOnchainWalletConfirmed(
-			ctx, fetchers, func(err error) {
-				r.server.log.WarnS(
-					ctx,
-					"Unable to fetch onchain wallet balance",
-					err,
-				)
-			},
-		),
+	// callers can observe sweep proceeds from unilateral exits. Same
+	// rationale as the VTXO fetch above: a per-backend failure must
+	// surface to the caller rather than be papered over with zero.
+	onchain, err := sumOnchainWalletConfirmed(
+		ctx, r.walletBalanceFetchers(),
 	)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "fetch onchain "+
+			"wallet balance: %v", err)
+	}
+	resp.OnchainWalletConfirmedSat = int64(onchain)
 
 	resp.TotalConfirmedSat = resp.BoardingConfirmedSat +
 		resp.VtxoBalanceSat
 
 	return resp, nil
+}
+
+// fetchBoardingBalance populates the boarding-related fields of resp by
+// querying the boarding store directly, bypassing the wallet actor's
+// serial mailbox. Returns the first query error rather than mixing a
+// partial boarding view into the returned balance.
+func (r *RPCServer) fetchBoardingBalance(ctx context.Context,
+	resp *daemonrpc.GetBalanceResponse) error {
+
+	boardingStore := r.server.newBoardingStore()
+
+	sumAmounts := func(intents []wallet.BoardingIntent) btcutil.Amount {
+		var total btcutil.Amount
+		for _, intent := range intents {
+			total += intent.ChainInfo.Amount
+		}
+
+		return total
+	}
+
+	confirmed, err := boardingStore.FetchBoardingIntentsByStatus(
+		ctx, wallet.BoardingStatusConfirmed,
+	)
+	if err != nil {
+		return fmt.Errorf("fetch confirmed boarding balance: %w", err)
+	}
+	resp.BoardingConfirmedSat = int64(sumAmounts(confirmed))
+
+	pendingSweep, err := boardingStore.FetchBoardingIntentsByStatus(
+		ctx, wallet.BoardingStatusSweepPending,
+	)
+	if err != nil {
+		return fmt.Errorf("fetch sweep-pending boarding balance: %w",
+			err)
+	}
+	resp.BoardingPendingSweepSat = int64(sumAmounts(pendingSweep))
+
+	swept, err := boardingStore.FetchBoardingIntentsByStatus(
+		ctx, wallet.BoardingStatusSwept,
+	)
+	if err != nil {
+		return fmt.Errorf("fetch swept boarding balance: %w", err)
+	}
+	resp.BoardingSweptSat = int64(sumAmounts(swept))
+
+	return nil
 }
 
 // onchainWalletConfirmedFetcher returns the confirmed balance of one
@@ -573,28 +603,26 @@ func (r *RPCServer) walletBalanceFetchers() []onchainWalletConfirmedFetcher {
 }
 
 // sumOnchainWalletConfirmed invokes each fetcher in order and returns
-// the accumulated confirmed balance. A per-fetcher error is reported
-// via onErr and treated as a zero contribution so that one failing
-// backend does not mask the balance of another.
+// the accumulated confirmed balance. The first fetcher error is
+// returned; partial sums are not surfaced because the caller (the
+// GetBalance RPC handler) treats every balance component as
+// error-strict — a zero-on-failure response is structurally
+// indistinguishable from "no balance" and would mislead any UI that
+// trusts the body.
 func sumOnchainWalletConfirmed(ctx context.Context,
-	fetchers []onchainWalletConfirmedFetcher,
-	onErr func(err error)) btcutil.Amount {
+	fetchers []onchainWalletConfirmedFetcher) (btcutil.Amount, error) {
 
 	var total btcutil.Amount
 	for _, fetch := range fetchers {
 		confirmed, err := fetch(ctx)
 		if err != nil {
-			if onErr != nil {
-				onErr(err)
-			}
-
-			continue
+			return 0, err
 		}
 
 		total += confirmed
 	}
 
-	return total
+	return total, nil
 }
 
 // ListVTXOs returns the set of VTXOs known to the wallet, optionally
