@@ -214,6 +214,18 @@ type Config struct {
 
 	// OOR configures off-band receive/send actor behavior.
 	OOR *OORConfig `mapstructure:"oor"`
+
+	// EagerRoundJoin makes the wallet actor drive round-joining
+	// without waiting for a follow-up Board / LeaveVTXOs RPC. With
+	// the flag on, every freshly confirmed boarding UTXO runs the
+	// existing Board path inline, and cooperative-leave intents are
+	// forwarded with TriggerRegistration=true so the round FSM
+	// leaves PendingRoundAssembly immediately. Off (the default)
+	// keeps the batched semantics that operator-driven hosts rely
+	// on (darepocli, server deployments); wallet-shaped SDK hosts
+	// (sdk/walletdk) opt in so user-visible "deposit" and "exit"
+	// actions translate into a full round join end-to-end.
+	EagerRoundJoin bool `mapstructure:"eagerroundjoin"`
 }
 
 // RPCServiceRegistrar registers one optional daemon gRPC subserver on the
