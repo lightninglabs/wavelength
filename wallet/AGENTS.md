@@ -57,7 +57,7 @@ refresh, leave, OOR spend, and directed send flows.
 ## Invariants
 
 - UTXO confirmation requires `MinBoardingConfs` (1) on-chain confirmations.
-- `ListUnspent` queries are retried up to 3 times with 1 s delay on each block epoch (mitigates the race between block epoch arrival and wallet UTXO set update; neutrino backends can take over a second; Esplora-backed backends previously hit rate limits under higher burst).
+- `ListUnspent` runs at most once per tip-tick against the latest known chain tip; a backend whose UTXO reporting lags past one tick interval surfaces the missing UTXO on the next chain advance (whichever tick processes the new tip re-runs the scan). The per-block path no longer carries an inline retry budget — the tick loop is the retry seam.
 - Notifier registration captures `minConf` parameter per actor; different actors can require different confirmation depths.
 - Cooperative admission (refresh/leave) must reserve forfeit inputs through the VTXO manager before sending `RegisterIntentMsg` to the round actor.
 - If round registration fails after successful admission, the wallet releases the forfeit reservation so VTXOs return to LiveState.

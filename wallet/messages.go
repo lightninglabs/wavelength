@@ -313,6 +313,28 @@ func (m BlockEpochNotification) MessageType() string {
 // walletMsgSealed implements the sealed WalletMsg interface.
 func (m BlockEpochNotification) walletMsgSealed() {}
 
+// ProcessTipTickNotification fires periodically from the wallet's own
+// tick loop. The handler checks whether the latest known chain tip
+// (recorded by BlockEpochNotification, an atomic store with no actor
+// work) has advanced past the last successfully-processed height, and
+// if so runs the per-tip work (ListUnspent + boarding-sweep resume
+// kick) once for the latest tip. This decouples per-block notification
+// rate from actor processing rate, so a 200-block catch-up burst
+// resolves to a single tick's worth of work instead of saturating the
+// mailbox with one heavy handler per block.
+type ProcessTipTickNotification struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the message type identifier for logging and
+// debugging.
+func (m ProcessTipTickNotification) MessageType() string {
+	return "ProcessTipTickNotification"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m ProcessTipTickNotification) walletMsgSealed() {}
+
 // RefreshVTXOsRequest triggers refresh of specified VTXOs or all VTXOs
 // approaching expiry. This is the primary wallet-level API for refresh.
 type RefreshVTXOsRequest struct {

@@ -2173,3 +2173,155 @@ func TestIntentCompositionRequiresVTXOReader(t *testing.T) {
 		"VTXO reader not configured",
 	)
 }
+
+// TestBlockEpochBurstCoalescesToOneTipPass verifies that a burst of N
+// BlockEpochNotification Tells does not pile up N ListUnspent calls
+// behind every other Ask on the wallet actor. The block-epoch handler
+// must complete in constant time (atomic store of the latest tip),
+// the tip-tick handler must collapse the burst into one ListUnspent
+// against the latest height, and subsequent ticks must short-circuit
+// when the tip has not advanced. This is the load-bearing fix for
+// bug-2 in BUGS_FOUND.md: a 200-block catch-up burst previously took
+// ~7 minutes to drain while every wallet RPC hung behind it.
+func TestBlockEpochBurstCoalescesToOneTipPass(t *testing.T) {
+	t.Parallel()
+
+	backend := &MockBoardingBackend{}
+	store := &MockBoardingStore{}
+
+	// The per-tick handler issues exactly one ListUnspent per tip
+	// advance. What this test pins is the COALESCING property: one
+	// tick — not one per block — services the entire burst. With
+	// burstSize=200, the pre-fix path would have issued 200
+	// ListUnspent calls.
+	backend.On(
+		"ListUnspent", mock.Anything, mock.Anything, mock.Anything,
+	).Return([]*Utxo{}, nil)
+
+	epochChan := make(chan chainsource.BlockEpoch, 1)
+	chainSource := newMockChainSourceActor(epochChan)
+
+	walletActor := NewArk(
+		backend, store, nil, chainSource, nil, fn.None[ledger.Sink](),
+		btclog.Disabled,
+	)
+
+	// Inject a 200-block burst directly via Receive: each call only
+	// records the latest tip into the atomic pointer and returns,
+	// so this loop should complete near-instantly without touching
+	// ListUnspent.
+	const burstSize = 200
+	for height := int32(1); height <= burstSize; height++ {
+		result := walletActor.Receive(
+			t.Context(), BlockEpochNotification{
+				BlockEpoch: chainsource.BlockEpoch{
+					Height: height,
+					Hash: chainhash.Hash{
+						byte(height),
+					},
+				},
+			},
+		)
+		require.True(
+			t, result.IsOk(),
+			"BlockEpochNotification handler must not error",
+		)
+	}
+
+	// The atomic tip must reflect the latest height in the burst.
+	tip := walletActor.latestKnownTip.Load()
+	require.NotNil(t, tip)
+	require.Equal(t, int32(burstSize), tip.Height)
+
+	// processedTipHeight must still be zero — no tick has run yet,
+	// so no ListUnspent should have been called.
+	require.Zero(t, walletActor.processedTipHeight.Load())
+
+	// One tick services the entire burst: a single ListUnspent runs
+	// against the latest tip and processedTipHeight advances to it.
+	// The pre-fix per-block path would have fired ListUnspent up to
+	// burstSize times; coalescing collapses that to one. A backend
+	// whose UTXO reporting lags the block epoch surfaces the missing
+	// UTXO on the next chain advance (whichever tick processes the
+	// new tip will re-run the scan), so we do not need an inline
+	// multi-tick retry budget here.
+	result := walletActor.Receive(
+		t.Context(), ProcessTipTickNotification{},
+	)
+	require.True(t, result.IsOk())
+	require.Equal(
+		t, int32(burstSize), walletActor.processedTipHeight.Load(),
+		"a single tick must process the latest tip in the burst",
+	)
+	require.Equal(
+		t, 1, countMockListUnspentCalls(backend),
+		"the burst tick must issue exactly one ListUnspent",
+	)
+
+	// A follow-up tick with no new blocks must short-circuit:
+	// processedTipHeight matches the latest tip and no further
+	// ListUnspent should fire.
+	result = walletActor.Receive(
+		t.Context(), ProcessTipTickNotification{},
+	)
+	require.True(t, result.IsOk())
+	require.Equal(
+		t, 1, countMockListUnspentCalls(backend),
+		"an idle tick at an already-processed tip must not issue "+
+			"any ListUnspent calls",
+	)
+}
+
+// countMockListUnspentCalls returns how many times the mock backend
+// has observed a ListUnspent invocation across the test so far.
+// Counting from the mock.Mock.Calls slice keeps the assertion robust
+// against retry-budget changes: the test cares about how many calls
+// fired, not which specific arguments hit which expectation.
+func countMockListUnspentCalls(b *MockBoardingBackend) int {
+	count := 0
+	for _, call := range b.Calls {
+		if call.Method == "ListUnspent" {
+			count++
+		}
+	}
+
+	return count
+}
+
+// TestBlockEpochHandlerNeverCallsListUnspent locks down the contract
+// that handleBlockEpoch is a pure atomic-store. If a future change
+// re-adds work to the block-epoch hot path, bug-2 reopens for any
+// burst — this test catches that regression. The companion
+// TestBlockEpochBurstCoalescesToOneTipPass covers the deferred work;
+// here we only check what the per-block handler does NOT do.
+func TestBlockEpochHandlerNeverCallsListUnspent(t *testing.T) {
+	t.Parallel()
+
+	backend := &MockBoardingBackend{}
+	store := &MockBoardingStore{}
+
+	// No backend method is allowed to fire from a BlockEpoch handler.
+	// We do not call backend.On(...) at all — any call would panic
+	// the mock.
+
+	epochChan := make(chan chainsource.BlockEpoch, 1)
+	chainSource := newMockChainSourceActor(epochChan)
+
+	walletActor := NewArk(
+		backend, store, nil, chainSource, nil, fn.None[ledger.Sink](),
+		btclog.Disabled,
+	)
+
+	result := walletActor.Receive(t.Context(), BlockEpochNotification{
+		BlockEpoch: chainsource.BlockEpoch{
+			Height: 42,
+			Hash:   chainhash.Hash{0x42},
+		},
+	})
+	require.True(t, result.IsOk())
+
+	// Mock has no expectations — if any backend method fired, the
+	// mock would have panicked above.
+	backend.AssertExpectations(t)
+	store.AssertExpectations(t)
+}
