@@ -389,22 +389,24 @@ before any server interaction:
 
 ## CLI mapping
 
-`darepocli` flags map onto the `is_change` semantics:
+`darepocli` flags map onto the `is_change` semantics. Names below use
+the current command tree; flags marked *(future)* aren't wired up yet
+and only describe how the mapping is intended to land.
 
-- `darepocli pay --to <addr> --amount <sat>` — **scenario 10**.
-  Sender pays the fee from a self-change VTXO.
-- `darepocli pay --to <addr> --amount <sat> --subtract-fee` —
-  **scenarios 3 / 11**. Recipient absorbs the fee; the recipient's
-  `VTXORequest` is marked `is_change=true`.
-- `darepocli refresh --all` — **scenario 6**. All expiring VTXOs
-  are submitted; auto-stamped first VTXO absorbs the fee.
-- `darepocli refresh --outpoint <op>` — **scenario 5**. Implicit
-  change on the single-output intent.
-- `darepocli leave --address <addr> --amount <sat>` —
-  **scenario 8** when a single VTXO covers the leave; **scenario
-  9** with a `--keep <sat>` flag that adds a self-VTXO leg.
-- `darepocli board --amount <sat>` — **scenario 1** for a single
-  receive script; **scenario 2** when `--split-into N` is used.
+- `darepocli ark send oor --to <addr> --amount <sat>` —
+  **scenario 10**. Sender pays the fee from a self-change VTXO.
+- `darepocli ark send oor --to <addr> --amount <sat> --subtract-fee`
+  *(future)* — **scenarios 3 / 11**. Recipient absorbs the fee;
+  the recipient's `VTXORequest` is marked `is_change=true`.
+- `darepocli ark vtxos refresh --all` — **scenario 6**. All expiring
+  VTXOs are submitted; auto-stamped first VTXO absorbs the fee.
+- `darepocli ark vtxos refresh --outpoint <op>` — **scenario 5**.
+  Implicit change on the single-output intent.
+- `darepocli ark vtxos leave --address <addr> --amount <sat>` —
+  **scenario 8** when a single VTXO covers the leave; **scenario 9**
+  with a `--keep <sat>` flag *(future)* that adds a self-VTXO leg.
+- `darepocli ark board` — **scenario 1** for a single receive script;
+  **scenario 2** when `--target-vtxo-count N` is used.
 
 The CLI prints "estimated ~X sats; actual fee confirmed when the
 round seals" before submitting an intent, since `EstimateFee` and

@@ -30,10 +30,13 @@ func newVTXOsCmd() *cobra.Command {
 }
 
 // validStatuses lists the valid VTXO status filter values for input
-// validation and error messages.
+// validation and error messages. These must match the proto enum
+// `daemonrpc.VTXOStatus` minus the UNSPECIFIED zero value; see
+// `parseVTXOStatus` for the lookup that converts to the proto enum.
 var validStatuses = []string{
-	"live", "refresh_requested", "forfeiting",
-	"forfeited", "spent", "expiring", "failed",
+	"live", "pending_forfeit", "forfeiting",
+	"forfeited", "spent", "unilateral_exit", "failed",
+	"spending",
 }
 
 // newVTXOsListCmd creates the vtxos list subcommand.
@@ -165,9 +168,21 @@ func parseVTXOStatus(s string) (daemonrpc.VTXOStatus, bool) {
 func newVTXOsRefreshCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "refresh",
-		Short: "Queue VTXOs for refresh",
-		Long: "Queues one or more VTXOs for refresh in " +
-			"the next round, extending their expiry.",
+		Short: "Queue VTXOs for refresh and join the next round",
+		Long: "Queues one or more VTXOs for refresh and then " +
+			"commits the queued intents to the next round, " +
+			"extending the VTXOs' expiry.\n\n" +
+			"Under the hood the refresh intent first " +
+			"accumulates in the round actor's " +
+			"PendingRoundAssembly state. By default this " +
+			"command then issues `ark rounds join` on the " +
+			"caller's behalf so refresh is a one-shot " +
+			"operation. Pass `--no_join` to skip the join — " +
+			"useful for batching multiple refresh and/or " +
+			"leave RPCs into the same round (one shared " +
+			"change marker, one shared commitment fee). When " +
+			"`--no_join` is used, call `ark rounds join` " +
+			"explicitly once the batch is queued.",
 		RunE: vtxosRefresh,
 	}
 
@@ -179,6 +194,10 @@ func newVTXOsRefreshCmd() *cobra.Command {
 
 	cmd.Flags().Bool("dry_run", false,
 		"validate without queuing")
+
+	cmd.Flags().Bool("no_join", false,
+		"skip the implicit `ark rounds join` follow-up so this "+
+			"refresh can batch with other queued intents")
 
 	return cmd
 }
@@ -224,24 +243,43 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 	}
 
 	resp, err := client.RefreshVTXOs(
-		context.Background(), req,
+		cmd.Context(), req,
 	)
 	if err != nil {
 		return fmt.Errorf("RefreshVTXOs RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	if err := printJSON(resp); err != nil {
+		return err
+	}
+
+	noJoin, _ := cmd.Flags().GetBool("no_join")
+
+	return maybeJoinNextRound(cmd, client, req.DryRun, noJoin)
 }
 
 // newVTXOsLeaveCmd creates the vtxos leave subcommand.
 func newVTXOsLeaveCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "leave",
-		Short: "Queue VTXOs for cooperative leave (offboard)",
-		Long: "Queues one or more VTXOs for cooperative " +
-			"leave in the next round. Each forfeited " +
-			"VTXO pays out (amount - operator_fee) to " +
-			"the specified on-chain destination.",
+		Use: "leave",
+		Short: "Queue VTXOs for cooperative leave and join the " +
+			"next round",
+		Long: "Queues one or more VTXOs for cooperative leave " +
+			"and then commits the queued intents to the next " +
+			"round. Each forfeited VTXO pays out (amount - " +
+			"operator_fee) to the specified on-chain " +
+			"destination.\n\n" +
+			"Under the hood the leave intent first " +
+			"accumulates in PendingRoundAssembly alongside " +
+			"any queued refresh intents. By default this " +
+			"command then issues `ark rounds join` on the " +
+			"caller's behalf so leave is a one-shot " +
+			"operation. Pass `--no_join` to skip the join — " +
+			"useful for batching multiple leave and/or " +
+			"refresh RPCs into the same round (one shared " +
+			"change marker, one shared commitment fee). When " +
+			"`--no_join` is used, call `ark rounds join` " +
+			"explicitly once the batch is queued.",
 		RunE: vtxosLeave,
 	}
 
@@ -267,6 +305,10 @@ func newVTXOsLeaveCmd() *cobra.Command {
 
 	cmd.Flags().Bool("yes", false,
 		"skip interactive confirmation for --all")
+
+	cmd.Flags().Bool("no_join", false,
+		"skip the implicit `ark rounds join` follow-up so this "+
+			"leave can batch with other queued intents")
 
 	return cmd
 }
@@ -316,13 +358,80 @@ func vtxosLeave(cmd *cobra.Command, _ []string) error {
 	}
 
 	resp, err := client.LeaveVTXOs(
-		context.Background(), req,
+		cmd.Context(), req,
 	)
 	if err != nil {
 		return fmt.Errorf("LeaveVTXOs RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	if err := printJSON(resp); err != nil {
+		return err
+	}
+
+	noJoin, _ := cmd.Flags().GetBool("no_join")
+
+	return maybeJoinNextRound(cmd, client, req.DryRun, noJoin)
+}
+
+// autoJoinDecision is the outcome of evaluating whether to invoke
+// JoinNextRound after a refresh / leave queue RPC.
+type autoJoinDecision struct {
+	// Join is true when the implicit JoinNextRound RPC must fire.
+	Join bool
+
+	// Notice is the stderr line that explains the decision so a
+	// human reading the terminal can see whether the round was
+	// auto-joined, deferred (--no_join), or skipped (--dry_run).
+	Notice string
+}
+
+// decideAutoJoin captures the policy for whether refresh / leave should
+// auto-join the next round. Split from the IO wrapper so the policy is
+// covered by a focused unit test without needing a gRPC fixture.
+func decideAutoJoin(dryRun, noJoin bool) autoJoinDecision {
+	switch {
+	case dryRun:
+		return autoJoinDecision{
+			Notice: "dry run: skipping `ark rounds join`",
+		}
+
+	case noJoin:
+		return autoJoinDecision{
+			Notice: "--no_join set: intents queued; " +
+				"run `ark rounds join` to commit",
+		}
+
+	default:
+		return autoJoinDecision{
+			Join: true,
+			Notice: "auto-joined next round; " +
+				"pass --no_join to skip",
+		}
+	}
+}
+
+// maybeJoinNextRound issues the JoinNextRound RPC unless the caller
+// opted out via --no_join or asked for a dry run. The auto-join makes
+// refresh / leave one-shot operations by default while preserving the
+// batched workflow via --no_join. A short status line goes to stderr so
+// stdout JSON stays parseable by piped consumers.
+func maybeJoinNextRound(cmd *cobra.Command,
+	client daemonrpc.DaemonServiceClient, dryRun, noJoin bool) error {
+
+	decision := decideAutoJoin(dryRun, noJoin)
+
+	if decision.Join {
+		if _, err := client.JoinNextRound(
+			cmd.Context(), &daemonrpc.JoinNextRoundRequest{},
+		); err != nil {
+			return fmt.Errorf("auto-join next round failed: %w",
+				err)
+		}
+	}
+
+	fmt.Fprintln(cmd.ErrOrStderr(), decision.Notice)
+
+	return nil
 }
 
 // buildLeaveVTXOsRequest translates the flag surface into a

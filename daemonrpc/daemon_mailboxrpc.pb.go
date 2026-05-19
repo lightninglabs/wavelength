@@ -62,6 +62,8 @@ type DaemonServiceMailboxServer interface {
 	LeaveVTXOs(ctx context.Context, req *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error)
 	// Board handles Board.
 	Board(ctx context.Context, req *BoardRequest) (*BoardResponse, error)
+	// JoinNextRound handles JoinNextRound.
+	JoinNextRound(ctx context.Context, req *JoinNextRoundRequest) (*JoinNextRoundResponse, error)
 	// SweepBoardingUTXOs handles SweepBoardingUTXOs.
 	SweepBoardingUTXOs(ctx context.Context, req *SweepBoardingUTXOsRequest) (*SweepBoardingUTXOsResponse, error)
 	// ListBoardingSweeps handles ListBoardingSweeps.
@@ -279,6 +281,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.Board(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "JoinNextRound", func() proto.Message {
+		return &JoinNextRoundRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*JoinNextRoundRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.JoinNextRound(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "SweepBoardingUTXOs", func() proto.Message {
 		return &SweepBoardingUTXOsRequest{}
@@ -832,6 +844,29 @@ func (c *DaemonServiceMailboxClient) Board(ctx context.Context, req *BoardReques
 	}
 
 	resp := new(BoardResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// JoinNextRound calls the JoinNextRound RPC.
+func (c *DaemonServiceMailboxClient) JoinNextRound(ctx context.Context, req *JoinNextRoundRequest, opts ...rpc.RPCOptions) (*JoinNextRoundResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "JoinNextRound",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(JoinNextRoundResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

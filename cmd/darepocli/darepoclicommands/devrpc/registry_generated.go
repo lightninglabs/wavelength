@@ -148,6 +148,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "Board triggers the client to join the next round with any\nconfirmed boarding UTXOs. This sends IntentRequested to\nthe round FSM, which emits a JoinRoundRequest to the server.",
 				},
 				{
+					Name:     "JoinNextRound",
+					Aliases:  []string{"join-next-round"},
+					Input:    "daemonrpc.JoinNextRoundRequest",
+					Output:   "daemonrpc.JoinNextRoundResponse",
+					Comments: "JoinNextRound asks the client round FSM to commit any currently\nqueued round intents and emit a JoinRoundRequest to the operator.\nUseful after queueing refresh or leave intents that intentionally\nbatch in PendingRoundAssembly. The proto name avoids collision with\nroundpb.JoinRoundRequest, which is the underlying wire message the\nround FSM emits to the operator once this RPC fires.",
+				},
+				{
 					Name:     "SweepBoardingUTXOs",
 					Aliases:  []string{"sweep-boarding-utxos"},
 					Input:    "daemonrpc.SweepBoardingUTXOsRequest",

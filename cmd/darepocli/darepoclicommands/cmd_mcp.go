@@ -191,8 +191,8 @@ func registerMCPTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 
 	// vtxos_list — with optional filters.
 	type vtxosListArgs struct {
-		StatusFilter string `json:"status_filter,omitempty" jsonschema:"VTXO status filter (live, spent, expiring, etc.)"` //nolint:ll
-		MinAmountSat int64  `json:"min_amount_sat,omitempty" jsonschema:"minimum amount in sats"`                          //nolint:ll
+		StatusFilter string `json:"status_filter,omitempty" jsonschema:"VTXO status filter (live, pending_forfeit, unilateral_exit, etc.)"` //nolint:ll
+		MinAmountSat int64  `json:"min_amount_sat,omitempty" jsonschema:"minimum amount in sats"`                                           //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ark.vtxos.list",

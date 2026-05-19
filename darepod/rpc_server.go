@@ -38,6 +38,7 @@ import (
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -845,17 +846,51 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 
 	wRef := r.server.walletRef.UnsafeFromSome()
 
-	// Build the list of target outpoints. If the "all" selection
-	// is set, leave the slice empty so the wallet actor refreshes
-	// everything approaching expiry.
-	var (
-		targets    []wire.OutPoint
-		refreshAll bool
-	)
+	// Build the list of target outpoints. The wallet actor only
+	// refreshes outpoints it receives in TargetOutpoints (despite a
+	// stale docstring suggesting empty means "all"), so when the
+	// caller asks for --all we enumerate live VTXOs here and pass
+	// them as explicit targets. Without this expansion the wallet
+	// gets target_count=0, registers an empty refresh package, and
+	// nothing actually happens — but the response previously
+	// synthesised `queued_outpoints` from a separate ListLiveVTXOs
+	// call below, which made the caller believe the refresh
+	// succeeded.
+	var targets []wire.OutPoint
 
 	switch sel := req.Selection.(type) {
 	case *daemonrpc.RefreshVTXOsRequest_All:
-		refreshAll = sel.All
+		if !sel.All {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"refresh selection 'all' must be true when set")
+		}
+
+		if r.server.vtxoStore == nil {
+			return nil, status.Errorf(codes.Internal, "VTXO "+
+				"store not available for refresh --all")
+		}
+
+		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "list live "+
+				"VTXOs: %v", err)
+		}
+
+		// ListLiveVTXOs returns every VTXO not in a terminal
+		// state — which includes PendingForfeit. Without this
+		// filter, a second `refresh --all` immediately after a
+		// first would re-queue the same outpoints that are
+		// already on their way through the round, double-
+		// registering the same forfeit intent. Restrict --all
+		// to outpoints actually in LiveState; explicit
+		// --outpoint callers retain the existing per-outpoint
+		// error path via the wallet's Errors map.
+		for _, v := range liveVTXOs {
+			if v.Status != vtxo.VTXOStatusLive {
+				continue
+			}
+			targets = append(targets, v.Outpoint)
+		}
 
 	case *daemonrpc.RefreshVTXOsRequest_Outpoints:
 		if sel.Outpoints == nil ||
@@ -877,6 +912,16 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "selection "+
 			"is required (outpoints or all)")
+	}
+
+	// `--all` against a wallet with no live VTXOs is not an error —
+	// return an empty result so callers and scripts don't have to
+	// special-case the "nothing to refresh" path.
+	if len(targets) == 0 {
+		return &daemonrpc.RefreshVTXOsResponse{
+			QueuedOutpoints: nil,
+			Status:          "queued",
+		}, nil
 	}
 
 	// For dry_run, validate inputs and return a preview without
@@ -924,34 +969,17 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 			"outpoint", op.String())
 	}
 
-	// Build the list of outpoints that were successfully queued.
+	// Build the list of outpoints that were successfully queued by
+	// the wallet — i.e. those in `targets` that did NOT appear in
+	// `resp.Errors`. Iterating `targets` keeps this honest: it
+	// reflects what the wallet was actually asked to do, not a
+	// post-hoc snapshot from ListLiveVTXOs.
 	queued := make([]string, 0, resp.RefreshingCount)
-	if refreshAll && r.server.vtxoStore != nil {
-		// When refreshing all, list the live VTXOs to
-		// report which ones were actually queued.
-		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(
-			ctx,
-		)
-		if err == nil {
-			for _, v := range liveVTXOs {
-				_, hasErr := resp.Errors[v.Outpoint]
-				if !hasErr {
-					queued = append(
-						queued, fmt.Sprintf("%s:%d",
-							v.Outpoint.Hash,
-							v.Outpoint.Index),
-					)
-				}
-			}
-		}
-	} else {
-		for _, op := range targets {
-			if _, hasErr := resp.Errors[op]; !hasErr {
-				queued = append(
-					queued,
-					fmt.Sprintf("%s:%d", op.Hash, op.Index),
-				)
-			}
+	for _, op := range targets {
+		if _, hasErr := resp.Errors[op]; !hasErr {
+			queued = append(
+				queued, fmt.Sprintf("%s:%d", op.Hash, op.Index),
+			)
 		}
 	}
 
@@ -1306,6 +1334,30 @@ func (r *RPCServer) Board(ctx context.Context, req *daemonrpc.BoardRequest) (
 	return &daemonrpc.BoardResponse{
 		Status:    "registered",
 		VtxoCount: uint32(len(boardResp.VTXOAmounts)),
+	}, nil
+}
+
+// JoinNextRound asks the client round actor to commit any queued round
+// intents by injecting IntentRequested into the active assembling FSM. The
+// FSM then emits a JoinRoundRequest to the operator and drives the
+// registration handshake to completion on its own turn loop.
+func (r *RPCServer) JoinNextRound(ctx context.Context,
+	_ *daemonrpc.JoinNextRoundRequest) (*daemonrpc.JoinNextRoundResponse,
+	error) {
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	if err := r.server.TriggerRoundRegistration(ctx); err != nil {
+		return nil, status.Errorf(codes.Internal, "join next round: %v",
+			err)
+	}
+
+	r.server.log.InfoS(ctx, "JoinNextRound accepted")
+
+	return &daemonrpc.JoinNextRoundResponse{
+		Status: "joined",
 	}, nil
 }
 
@@ -2560,15 +2612,48 @@ func (r *RPCServer) Unroll(ctx context.Context, req *daemonrpc.UnrollRequest) (
 
 	// Check if this VTXO is already in unilateral exit. If so, the
 	// transition already happened and we just return Created=false.
+	//
+	// Also load the descriptor (when available) so we can pre-flight
+	// the wallet's CPFP fee-input budget against the VTXO's ancestry
+	// shape. Resolving the descriptor here saves a second round-trip
+	// to the store further down.
+	var desc *vtxo.Descriptor
 	if r.server.vtxoStore != nil {
-		desc, err := r.server.vtxoStore.GetVTXO(admissionCtx, outpoint)
-		if err == nil && desc != nil &&
-			desc.Status == vtxo.VTXOStatusUnilateralExit {
-			return &daemonrpc.UnrollResponse{
-				Created: false,
-				ActorId: unroll.ActorIDForTarget(outpoint),
-			}, nil
+		d, err := r.server.vtxoStore.GetVTXO(admissionCtx, outpoint)
+		if err == nil && d != nil {
+			desc = d
+
+			if desc.Status == vtxo.VTXOStatusUnilateralExit {
+				return &daemonrpc.UnrollResponse{
+					Created: false,
+					ActorId: unroll.ActorIDForTarget(
+						outpoint,
+					),
+				}, nil
+			}
 		}
+	}
+
+	// Pre-flight the wallet's CPFP fee budget against the VTXO's
+	// ancestry shape. Each independent ancestry path (cross-
+	// commitment multi-input OOR VTXOs may have several; a round-
+	// direct VTXO has exactly one) corresponds to a distinct CPFP
+	// parent that the unroll needs to fee-bump on chain. TRUC RBF
+	// lets a single parent reuse its own fee input across bumps,
+	// but distinct parents each require their own confirmed wallet
+	// UTXO at child-construction time. If the wallet has fewer
+	// usable UTXOs than ancestry paths, the unroll will admit, the
+	// VTXO actor will transition to UnilateralExitState, but the
+	// chain layer will then thrash forever on
+	// `cpfp fee input unavailable: no confirmed wallet UTXOs
+	// available`. That leaves the VTXO in an exit state the user
+	// can't easily back out of. Fail closed here instead: refuse
+	// admission with InvalidArgument so the caller can fund the
+	// wallet and retry without contaminating state.
+	if err := r.preflightUnrollFeeInputs(
+		admissionCtx, desc,
+	); err != nil {
+		return nil, err
 	}
 
 	// Route through the VTXO manager which tells the VTXO actor to
@@ -2600,6 +2685,73 @@ func (r *RPCServer) Unroll(ctx context.Context, req *daemonrpc.UnrollRequest) (
 		Created: unrollResp.Accepted,
 		ActorId: actorID,
 	}, nil
+}
+
+// preflightUnrollMinUTXOSat is the soft floor used by the unroll fee-
+// input pre-check. Confirmed wallet UTXOs below this threshold are
+// counted as unavailable because they're too small to plausibly cover
+// a v3/TRUC CPFP child fee. The exact required amount is determined
+// per-package at broadcast time in `txconfirm.CPFPBroadcaster`; this
+// constant is intentionally conservative so the pre-check rejects
+// only obviously-dust wallets, not borderline cases the run-time
+// fee bumper might still handle. Empirical floor observed during
+// itest (BUGS_FOUND.md bug-8): ~32k sat per package.
+const preflightUnrollMinUTXOSat = btcutil.Amount(10_000)
+
+// preflightUnrollFeeInputs checks that the wallet has enough confirmed
+// UTXOs to cover the CPFP fee inputs the unroll will need. Returns a
+// codes.FailedPrecondition gRPC error with an actionable message when
+// the wallet is short. Returns nil (allow admission) when the
+// descriptor is unavailable, since we can't compute the required
+// count without it.
+func (r *RPCServer) preflightUnrollFeeInputs(ctx context.Context,
+	desc *vtxo.Descriptor) error {
+
+	if desc == nil {
+
+		// The descriptor lookup failed earlier — let the existing
+		// admission path produce its own error rather than guess
+		// at the required count here.
+		return nil
+	}
+
+	// Number of independent CPFP packages the unroll will produce
+	// is the count of ancestry paths: each path is a chain of
+	// commitment txs rooted at a distinct on-chain batch tx, and
+	// the chain layer needs one confirmed wallet UTXO per chain
+	// to fund the v3 child.
+	required := len(desc.Ancestry)
+	if required == 0 {
+
+		// A descriptor with no ancestry path is malformed in
+		// production but should not block admission — defer to
+		// the chain layer's own error handling.
+		return nil
+	}
+
+	utxos, err := r.server.ListWalletUnspent(ctx, 1, 9999999)
+	if err != nil {
+		return status.Errorf(codes.Internal, "preflight wallet "+
+			"unspent: %v", err)
+	}
+
+	usable := 0
+	for _, utxo := range utxos {
+		if utxo.Amount >= preflightUnrollMinUTXOSat {
+			usable++
+		}
+	}
+
+	if usable >= required {
+		return nil
+	}
+
+	return status.Errorf(codes.FailedPrecondition, "insufficient wallet "+
+		"UTXOs to fund unroll CPFP: need at least %d confirmed wallet "+
+		"UTXO(s) of >= %d sat each (one per ancestry path), have %d "+
+		"usable. Fund the wallet's onchain address with more inputs "+
+		"and retry.", required, int64(preflightUnrollMinUTXOSat),
+		usable)
 }
 
 // GetUnrollStatus returns the current status of an unroll job for the
@@ -2982,6 +3134,15 @@ func (r *RPCServer) ListRounds(ctx context.Context,
 
 	var rounds []*daemonrpc.RoundInfo
 
+	// Track in-memory round IDs so the persisted-rounds pass below
+	// can skip any round that's already represented from the
+	// pending pass. Rounds straddle the in-memory and persisted
+	// stores during the brief window between server-side
+	// confirmation and the round actor evicting the FSM, so without
+	// this dedupe a single confirmed round appeared twice in
+	// `ark rounds list`.
+	seen := fn.NewSet[string]()
+
 	// Always include pending (in-memory) rounds unless the caller
 	// explicitly requested persisted-only results.
 	if !req.PersistedOnly {
@@ -2995,6 +3156,13 @@ func (r *RPCServer) ListRounds(ctx context.Context,
 				continue
 			}
 
+			// Temp-keyed rounds don't have a persisted-side
+			// counterpart yet (the operator hasn't assigned a
+			// real round ID), so they can't collide. Only
+			// register real round IDs in the dedupe set.
+			if !info.IsTemp && info.RoundId != "" {
+				seen.Add(info.RoundId)
+			}
 			rounds = append(rounds, info)
 		}
 	}
@@ -3042,6 +3210,11 @@ func (r *RPCServer) ListRounds(ctx context.Context,
 
 		for _, s := range dbRounds {
 			info := roundSummaryToProto(&s)
+			if seen.Contains(info.RoundId) {
+				// Already returned by the in-memory pass
+				// above; skip the persisted copy.
+				continue
+			}
 			rounds = append(rounds, info)
 		}
 	}

@@ -38,6 +38,7 @@ const (
 	DaemonService_RefreshVTXOs_FullMethodName                  = "/daemonrpc.DaemonService/RefreshVTXOs"
 	DaemonService_LeaveVTXOs_FullMethodName                    = "/daemonrpc.DaemonService/LeaveVTXOs"
 	DaemonService_Board_FullMethodName                         = "/daemonrpc.DaemonService/Board"
+	DaemonService_JoinNextRound_FullMethodName                 = "/daemonrpc.DaemonService/JoinNextRound"
 	DaemonService_SweepBoardingUTXOs_FullMethodName            = "/daemonrpc.DaemonService/SweepBoardingUTXOs"
 	DaemonService_ListBoardingSweeps_FullMethodName            = "/daemonrpc.DaemonService/ListBoardingSweeps"
 	DaemonService_ListRounds_FullMethodName                    = "/daemonrpc.DaemonService/ListRounds"
@@ -126,6 +127,13 @@ type DaemonServiceClient interface {
 	// confirmed boarding UTXOs. This sends IntentRequested to
 	// the round FSM, which emits a JoinRoundRequest to the server.
 	Board(ctx context.Context, in *BoardRequest, opts ...grpc.CallOption) (*BoardResponse, error)
+	// JoinNextRound asks the client round FSM to commit any currently
+	// queued round intents and emit a JoinRoundRequest to the operator.
+	// Useful after queueing refresh or leave intents that intentionally
+	// batch in PendingRoundAssembly. The proto name avoids collision with
+	// roundpb.JoinRoundRequest, which is the underlying wire message the
+	// round FSM emits to the operator once this RPC fires.
+	JoinNextRound(ctx context.Context, in *JoinNextRoundRequest, opts ...grpc.CallOption) (*JoinNextRoundResponse, error)
 	// SweepBoardingUTXOs sweeps boarding UTXOs whose CSV timeout path is
 	// mature back to the wallet.
 	SweepBoardingUTXOs(ctx context.Context, in *SweepBoardingUTXOsRequest, opts ...grpc.CallOption) (*SweepBoardingUTXOsResponse, error)
@@ -369,6 +377,16 @@ func (c *daemonServiceClient) Board(ctx context.Context, in *BoardRequest, opts 
 	return out, nil
 }
 
+func (c *daemonServiceClient) JoinNextRound(ctx context.Context, in *JoinNextRoundRequest, opts ...grpc.CallOption) (*JoinNextRoundResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(JoinNextRoundResponse)
+	err := c.cc.Invoke(ctx, DaemonService_JoinNextRound_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) SweepBoardingUTXOs(ctx context.Context, in *SweepBoardingUTXOsRequest, opts ...grpc.CallOption) (*SweepBoardingUTXOsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SweepBoardingUTXOsResponse)
@@ -572,6 +590,13 @@ type DaemonServiceServer interface {
 	// confirmed boarding UTXOs. This sends IntentRequested to
 	// the round FSM, which emits a JoinRoundRequest to the server.
 	Board(context.Context, *BoardRequest) (*BoardResponse, error)
+	// JoinNextRound asks the client round FSM to commit any currently
+	// queued round intents and emit a JoinRoundRequest to the operator.
+	// Useful after queueing refresh or leave intents that intentionally
+	// batch in PendingRoundAssembly. The proto name avoids collision with
+	// roundpb.JoinRoundRequest, which is the underlying wire message the
+	// round FSM emits to the operator once this RPC fires.
+	JoinNextRound(context.Context, *JoinNextRoundRequest) (*JoinNextRoundResponse, error)
 	// SweepBoardingUTXOs sweeps boarding UTXOs whose CSV timeout path is
 	// mature back to the wallet.
 	SweepBoardingUTXOs(context.Context, *SweepBoardingUTXOsRequest) (*SweepBoardingUTXOsResponse, error)
@@ -681,6 +706,9 @@ func (UnimplementedDaemonServiceServer) LeaveVTXOs(context.Context, *LeaveVTXOsR
 }
 func (UnimplementedDaemonServiceServer) Board(context.Context, *BoardRequest) (*BoardResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Board not implemented")
+}
+func (UnimplementedDaemonServiceServer) JoinNextRound(context.Context, *JoinNextRoundRequest) (*JoinNextRoundResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method JoinNextRound not implemented")
 }
 func (UnimplementedDaemonServiceServer) SweepBoardingUTXOs(context.Context, *SweepBoardingUTXOsRequest) (*SweepBoardingUTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SweepBoardingUTXOs not implemented")
@@ -1081,6 +1109,24 @@ func _DaemonService_Board_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_JoinNextRound_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(JoinNextRoundRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).JoinNextRound(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_JoinNextRound_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).JoinNextRound(ctx, req.(*JoinNextRoundRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_SweepBoardingUTXOs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SweepBoardingUTXOsRequest)
 	if err := dec(in); err != nil {
@@ -1372,6 +1418,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Board",
 			Handler:    _DaemonService_Board_Handler,
+		},
+		{
+			MethodName: "JoinNextRound",
+			Handler:    _DaemonService_JoinNextRound_Handler,
 		},
 		{
 			MethodName: "SweepBoardingUTXOs",

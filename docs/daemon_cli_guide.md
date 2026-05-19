@@ -25,6 +25,31 @@ After building, two binaries are produced:
 - `bin/darepod` -- the long-running daemon process
 - `bin/darepocli` -- the CLI for controlling the daemon
 
+### Optional: walletrpc
+
+The "user-facing" verbs in the CLI (`balance`, `recv`, `send`, `list`,
+`create`, `unlock`) route through the `walletrpc` subserver. That code
+is gated behind the `walletrpc` build tag; the default `make build` does
+**not** enable it. Without the tag, those verbs return:
+
+```
+daemon was not built with -tags walletrpc;
+rebuild with `make build-walletrpc` or see docs/walletrpc_build.md
+```
+
+Two options:
+
+1. **Use the `ark *` and `dev *` subtrees** — same RPCs as the
+   top-level verbs but exposed under power-user parents. Works with
+   the default build.
+2. **Build with the tag enabled** when you want the top-level verbs:
+   ```bash
+   make build-walletrpc       # produces walletrpc-enabled darepod
+   make install-walletrpc
+   ```
+
+See [walletrpc_build.md](walletrpc_build.md) for more.
+
 ## Daemon Configuration
 
 `darepod` supports two wallet backends: **lwwallet** (standalone,
@@ -112,7 +137,11 @@ prefix and dots replaced by underscores:
 After starting the daemon, the wallet must be created and unlocked
 before any operations can proceed.
 
-### Step 1: Create the Wallet
+The `create` and `unlock` CLI commands require a daemon built with
+`walletrpc` (see Installation above). For the default build, configure
+auto-unlock via `--wallet.password_file` and skip the CLI step.
+
+### Step 1: Create the Wallet (walletrpc only)
 
 In lwwallet mode, wallet creation generates a new aezeed mnemonic,
 encrypts the seed with your password, and saves it to
@@ -120,29 +149,29 @@ encrypts the seed with your password, and saves it to
 
 ```bash
 # Via environment variable (recommended for automation)
-DAREPOD_WALLET_PASSWORD=your_password darepocli wallet create --no-tls
+DAREPOD_WALLET_PASSWORD=your_password darepocli create --no-tls
 
 # Via stdin pipe
-echo -n 'your_password' | darepocli wallet create --no-tls
+echo -n 'your_password' | darepocli create --no-tls
 
 # Via password file
-darepocli wallet create \
+darepocli create \
   --wallet_password_file=/path/to/password_file \
   --no-tls
 
 # Interactive (prompts for password on TTY)
-darepocli wallet create --no-tls
+darepocli create --no-tls
 ```
 
 **Important:** The mnemonic is displayed on stderr during creation.
 Write it down and store it securely -- it is your only backup.
 
-### Step 2: Unlock the Wallet
+### Step 2: Unlock the Wallet (walletrpc only)
 
 Each time the daemon restarts, the wallet must be unlocked:
 
 ```bash
-DAREPOD_WALLET_PASSWORD=your_password darepocli wallet unlock --no-tls
+DAREPOD_WALLET_PASSWORD=your_password darepocli unlock --no-tls
 ```
 
 ### Auto-Unlock
@@ -164,6 +193,32 @@ automatically.
 
 `darepocli` connects to the daemon's gRPC server. All output is JSON.
 
+### Command tree
+
+```
+darepocli
+├── getinfo                   — daemon status (no walletrpc)
+├── balance                   — wallet balances (walletrpc)
+├── create / unlock           — wallet bring-up (walletrpc)
+├── recv                      — boarding address / Lightning invoice (walletrpc)
+├── send                      — Lightning invoice / onchain leave (walletrpc)
+├── list                      — unified activity / VTXOs / onchain (walletrpc)
+├── exit [status]             — unilateral exit a VTXO
+├── mcp serve                 — MCP server for AI agents (walletrpc)
+├── schema                    — JSON dump of CLI methods
+├── ark                       — power-user parent (no walletrpc)
+│   ├── board                 — board confirmed boarding UTXOs
+│   ├── vtxos {list|refresh|leave}
+│   ├── oor {receive|get|list}
+│   ├── send {oor|inround}
+│   ├── rounds {get|list|watch}
+│   ├── sweep [list]
+│   ├── fees {estimate|history}
+│   └── listtransactions
+└── dev                       — generated low-level RPC (no walletrpc)
+    └── daemon <Method>       — call any daemonrpc.DaemonService method
+```
+
 ### Global Flags
 
 | Flag | Default | Description |
@@ -171,10 +226,9 @@ automatically.
 | `--rpcserver` | `localhost:10029` | Daemon gRPC address |
 | `--tlscertpath` | | Daemon TLS cert path |
 | `--no-tls` | `false` | Disable TLS (use for regtest) |
+| `--json` | | Raw JSON request payload (overrides bespoke flags) |
 
-### Commands
-
-#### `getinfo`
+### `getinfo`
 
 Display daemon status information.
 
@@ -182,194 +236,249 @@ Display daemon status information.
 darepocli getinfo --no-tls
 ```
 
-#### `wallet create`
+### `balance` (walletrpc) / `dev daemon GetBalance` (no walletrpc)
 
-Create a new wallet from a fresh seed.
+Display wallet balance (boarding, VTXO, total, onchain) in satoshis.
+
+```bash
+darepocli balance --no-tls                   # requires walletrpc
+darepocli dev daemon GetBalance --no-tls     # always available
+```
+
+### `recv` (walletrpc) / `dev daemon NewAddress` (no walletrpc)
+
+Allocate an inbound payment surface.
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--wallet_password_file` | string | Path to file containing wallet password |
-| `--seed_passphrase` | string | Optional aezeed passphrase |
-| `--json` | string | Raw InitWalletRequest proto-JSON |
+| `--offchain` | bool | Returns a BOLT-11 invoice via the swap subsystem (default) |
+| `--onchain` | bool | Returns a fresh boarding address |
+| `--amt` | uint | Required for `--offchain`; ignored for `--onchain` |
+| `--amt_hint` | uint | Optional expected amount for `--onchain` (accounting only) |
+| `--memo` | string | Optional memo embedded in the offchain invoice |
 
-#### `wallet unlock`
+```bash
+darepocli recv --onchain --no-tls                  # boarding address
+darepocli recv --offchain --amt 5000 --memo coffee --no-tls
 
-Unlock an existing wallet.
+# No-walletrpc equivalent for the boarding-address case:
+darepocli dev daemon NewAddress --no-tls
+```
+
+### `ark board` / `dev daemon Board`
+
+Trigger the client to join the next round with any confirmed boarding
+UTXOs.
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--wallet_password_file` | string | Path to file containing wallet password |
-| `--json` | string | Raw UnlockWalletRequest proto-JSON |
-
-#### `wallet balance`
-
-Display wallet balance (boarding, VTXO, total) in satoshis.
+| `--target-vtxo-count` | uint32 | Fan boarded balance into N VTXOs (default 1) |
+| `--no-persist` | bool | Skip restart-safe replay (testing only) |
 
 ```bash
-darepocli wallet balance --no-tls
+darepocli ark board --no-tls
+darepocli ark board --target-vtxo-count 4 --no-tls
 ```
 
-#### `wallet newaddress`
+### `ark oor receive` — incoming OOR pubkey
 
-Generate a new taproot boarding address for receiving on-chain funds.
-
-```bash
-darepocli wallet newaddress --no-tls
-```
-
-#### `oor receive`
-
-Allocate a fresh out-of-round receive script backed by a newly derived wallet
-key. The response includes the raw `pk_script_hex`, the owner's
-`pubkey_xonly_hex`, and the wallet key locator.
+Allocate a fresh out-of-round receive script backed by a newly derived
+wallet key. Returns `pk_script_hex`, `pubkey_xonly_hex`, and the wallet
+key locator.
 
 | Flag | Type | Description |
 |------|------|-------------|
 | `--label` | string | Optional indexer registration label |
 
 ```bash
-darepocli oor receive --no-tls
+darepocli ark oor receive --no-tls
 ```
 
-#### `vtxos list`
+### `ark vtxos list`
 
 List VTXOs known to the wallet with optional filters.
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--status` | string | Filter by status: live, refresh_requested, forfeiting, forfeited, spent, expiring, failed |
+| `--status` | string | Filter: live, pending_forfeit, forfeiting, forfeited, spent, unilateral_exit, failed, spending |
 | `--min_amount` | int64 | Minimum amount in sats |
 | `--fields` | string | Comma-separated field names to include |
 | `--ndjson` | bool | Emit one JSON object per VTXO (newline-delimited) |
 
 ```bash
 # All VTXOs
-darepocli vtxos list --no-tls
+darepocli ark vtxos list --no-tls
 
 # Live VTXOs above 10k sats, only outpoint and amount
-darepocli vtxos list --status live --min_amount 10000 \
+darepocli ark vtxos list --status live --min_amount 10000 \
   --fields outpoint,amount_sat --no-tls
 
 # Streaming NDJSON for piping to jq
-darepocli vtxos list --ndjson --no-tls | jq '.amount_sat'
+darepocli ark vtxos list --ndjson --no-tls | jq '.amount_sat'
 ```
 
-#### `vtxos refresh`
+### `ark vtxos refresh`
 
-Queue VTXOs for refresh in the next round (extends expiry).
+Queue VTXOs for refresh in the next round and (by default) join that
+round immediately. Pass `--no_join` to leave the intent queued in
+`PendingRoundAssembly` so it can batch with subsequent refresh / leave
+RPCs; commit the batch later with `ark rounds join`.
 
 | Flag | Type | Description |
 |------|------|-------------|
 | `--outpoint` | string[] | VTXO outpoint(s) to refresh (txid:index) |
 | `--all` | bool | Refresh all live VTXOs |
 | `--dry_run` | bool | Validate without queuing |
+| `--no_join` | bool | Skip the implicit `ark rounds join` follow-up |
 
 ```bash
-# Refresh all
-darepocli vtxos refresh --all --no-tls
+# Explicit outpoints (auto-joins the next round)
+darepocli ark vtxos refresh --outpoint <txid:idx> --no-tls
 
-# Dry run first
-darepocli vtxos refresh --all --dry_run --no-tls
+# Batch with other intents — explicitly join later
+darepocli ark vtxos refresh --outpoint <txid:idx> --no_join --no-tls
+darepocli ark vtxos leave   --outpoint <txid:idx> --no_join \
+  --address bcrt1p... --no-tls
+darepocli ark rounds join --no-tls
 ```
 
-#### `send inround`
+### `ark send inround`
 
 Send via in-round refresh (waits for next round to commit).
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--to` | string[] | Recipient address(es) |
+| `--to` | string[] | Recipient address(es) (bech32m) |
 | `--amount` | int64[] | Amount(s) in sats (one per --to) |
 | `--dry_run` | bool | Validate without submitting |
 
 ```bash
-# Single recipient
-darepocli send inround --to tb1p... --amount 50000 --no-tls
+darepocli ark send inround --to bcrt1p... --amount 50000 --no-tls
 
 # Multiple recipients
-darepocli send inround \
-  --to tb1p...addr1 --amount 50000 \
-  --to tb1p...addr2 --amount 30000 \
+darepocli ark send inround \
+  --to bcrt1p...addr1 --amount 50000 \
+  --to bcrt1p...addr2 --amount 30000 \
   --no-tls
 
 # Via JSON input
-darepocli send inround --no-tls --json '{
+darepocli ark send inround --no-tls --json '{
   "recipients": [
-    {"address": "tb1p...", "amount_sat": 50000},
-    {"address": "tb1p...", "amount_sat": 30000}
+    {"address":"bcrt1p...","amount_sat":50000},
+    {"address":"bcrt1p...","amount_sat":30000}
   ]
 }'
 ```
 
-#### `send oor`
+### `ark send oor`
 
 Send via out-of-round transfer (immediate, through operator).
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--to` | string | Recipient address (exactly one of `--to`, `--pubkey`, or `--pk_script`) |
+| `--to` | string | Recipient address (one of `--to` / `--pubkey`) |
 | `--pubkey` | string | Recipient 32-byte x-only pubkey hex |
-| `--pk_script` | string | Recipient raw pk_script hex |
 | `--amount` | int64 | Amount in sats |
+| `--idempotency_key` | string | Caller-provided key for retry-safe sends |
 | `--dry_run` | bool | Validate without initiating |
 
 ```bash
-darepocli send oor --to tb1p... --amount 25000 --no-tls
-
-# Or send directly to the x-only pubkey returned by `oor receive`
-darepocli send oor --pubkey <pubkey_xonly_hex> --amount 25000 --no-tls
-
-# Or send to the exact registered taproot output script
-darepocli send oor --pk_script <pk_script_hex> --amount 25000 --no-tls
+darepocli ark send oor --pubkey <pubkey_xonly_hex> --amount 25000 --no-tls
+darepocli ark send oor --pubkey <hex> --amount 25000 \
+  --idempotency_key my-attempt-1 --no-tls
 ```
 
-#### `listtransactions`
+### `send <invoice-or-address>` (walletrpc)
 
-List local transaction history from the daemon's persisted accounting and
-boarding-sweep records. Entries are returned newest first and can be filtered
-by ISO 8601 timestamps or high-level type.
-
-The `sweep` type includes tracked boarding sweep transactions and
-chain-sweep-related ledger entries, such as unilateral-exit `onchain_fee_paid`
-fee rows. The `source` and `subtype` fields distinguish those cases in the
-response.
+Unified send for Lightning invoice (`--offchain`, default) or onchain
+leave (`--onchain`). Onchain v1 has whole-VTXO sweep semantics —
+selected VTXOs are swept in full, so the actual outflow (echoed in
+`actual_amount_sat`) may exceed `--amt`.
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--from` | string | Include entries at or after this ISO 8601 timestamp or date |
-| `--to` | string | Include entries at or before this ISO 8601 timestamp or date |
+| `--offchain` | bool | BOLT-11 dispatch via swap subsystem (default) |
+| `--onchain` | bool | Cooperative leave via `LeaveVTXOs` |
+| `--amt` | uint | Amount in sats (required for onchain unless `--sweep-all`) |
+| `--max_fee` | uint | Max fee in sats |
+| `--note` | string | Caller-supplied label |
+| `--sweep-all` | bool | Onchain only: drain wallet; `--amt` must be 0 |
+
+```bash
+darepocli send lnbcrt... --offchain --no-tls
+darepocli send bcrt1... --onchain --amt 1000 --no-tls
+darepocli send bcrt1... --onchain --sweep-all --no-tls
+```
+
+### `exit` (unilateral exit, formerly `unroll`)
+
+Start the on-chain recovery process for a VTXO.
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--outpoint` | string | VTXO outpoint to exit (txid:vout) |
+
+```bash
+darepocli exit --outpoint <txid:vout> --no-tls
+darepocli exit status --outpoint <txid:vout> --no-tls
+```
+
+The job survives daemon restarts; the command only submits the request.
+Status enum (`UNROLL_JOB_STATUS_*`) still uses the old "unroll" naming.
+
+### `ark listtransactions`
+
+List local transaction history from the daemon's persisted accounting
+and boarding-sweep records.
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--from` | string | Include entries at or after this ISO 8601 timestamp |
+| `--to` | string | Include entries at or before this ISO 8601 timestamp |
 | `--limit` | uint32 | Maximum entries to return |
 | `--offset` | uint32 | Number of filtered entries to skip |
 | `--type` | string | Optional filter: boarding, round, oor, or sweep |
 
 ```bash
-# Recent local history
-darepocli listtransactions --limit 25 --no-tls
+darepocli ark listtransactions --limit 25 --no-tls
 
-# OOR history during a specific window
-darepocli listtransactions \
+darepocli ark listtransactions \
   --type oor \
   --from 2026-05-01T00:00:00Z \
   --to 2026-05-08T23:59:59Z \
   --no-tls
-
-# Second page of boarding-related entries
-darepocli listtransactions --type boarding --limit 50 --offset 50 --no-tls
 ```
 
-#### `schema`
+### `list` (walletrpc)
+
+Unified wallet view selected by `--view`:
+
+| `--view` | Returns |
+|----------|---------|
+| `activity` (default) | Merged send / recv / deposit / exit history |
+| `vtxos` | Live VTXO inventory |
+| `onchain` | Boarding deposits, sweeps, leave outputs |
+
+`--pending` and `--kind` apply within the activity view and are ignored
+for the others.
+
+```bash
+darepocli list --no-tls
+darepocli list --view vtxos --no-tls
+darepocli list --view onchain --limit 100 --no-tls
+darepocli list --pending --kind send,recv --no-tls
+```
+
+### `schema`
 
 Introspect available CLI commands and their parameters.
 
 ```bash
-# List all methods
 darepocli schema --no-tls
-
-# Show specific method details
-darepocli schema --method vtxos.list --no-tls
+darepocli schema --method ark.vtxos.list --no-tls
 ```
 
-#### `mcp serve`
+### `mcp serve` (walletrpc)
 
 Start an MCP (Model Context Protocol) server on stdio for AI agent
 integration. Exposes daemon RPCs as typed tool calls.
@@ -378,58 +487,64 @@ integration. Exposes daemon RPCs as typed tool calls.
 darepocli mcp serve --no-tls
 ```
 
-**Note:** Wallet management tools (create, unlock, genseed) are
+**Note:** Wallet management tools (`create`, `unlock`, genseed) are
 intentionally excluded from MCP to prevent sensitive material from
 transiting the protocol. Use the CLI directly for wallet operations.
-`receive_script` is exposed over MCP because it only allocates a fresh
+`receive_script` is exposed because it only allocates a fresh
 wallet-derived receive target and does not reveal seed material.
 
 ## Regtest Quickstart
 
-A complete end-to-end workflow on regtest:
+A complete end-to-end workflow on regtest using the default (no
+`walletrpc`) build. With a `walletrpc`-enabled daemon, swap the
+relevant commands per the references above.
 
 ```bash
 # 1. Start a regtest bitcoind + Esplora (e.g., via Nigiri)
 nigiri start
 
-# 2. Start the daemon
+# 2. Start the daemon. Auto-unlock so you don't need walletrpc to
+#    create/unlock from the CLI.
 darepod \
   --network=regtest \
   --wallet.type=lwwallet \
   --wallet.esploraurl=http://localhost:3000 \
+  --wallet.password_file=/path/to/password_file \
   --server.host=localhost:10010 \
   --server.insecure \
   --server.localmailboxid=client1 \
   --server.remotemailboxid=server \
   --rpc.listenaddr=localhost:10029
 
-# 3. Create and unlock the wallet
-DAREPOD_WALLET_PASSWORD=testpass \
-  darepocli wallet create --no-tls
+# 3. Get a boarding address.
+ADDR=$(darepocli dev daemon NewAddress --no-tls | jq -r .address)
 
-# 4. Get a boarding address
-darepocli wallet newaddress --no-tls
+# 4. Fund it on-chain and confirm.
+bitcoin-cli -regtest sendtoaddress "$ADDR" 0.01
+bitcoin-cli -regtest -generate 6
 
-# 5. Fund it
-bitcoin-cli -regtest sendtoaddress <addr> 0.01
-bitcoin-cli -regtest generatetoaddress 1 <miner_addr>
+# 5. Verify balance.
+darepocli dev daemon GetBalance --no-tls
 
-# 6. Verify balance
-darepocli wallet balance --no-tls
+# 6. Board into the next round.
+darepocli ark board --no-tls
 
-# 7. List VTXOs
-darepocli vtxos list --no-tls
+# 7. After the round confirms, list the new VTXO.
+darepocli ark vtxos list --no-tls
 
-# 8. Send funds
-darepocli send inround --to tb1p... --amount 5000 --no-tls
+# 8. Send funds (in-round to a peer's bech32m address).
+darepocli ark send inround --to bcrt1p... --amount 5000 --no-tls
 ```
+
+For per-client manual testing under the `arktest` harness, see
+[`MANUAL_TESTING.md`](../../MANUAL_TESTING.md) at the server repo root.
 
 ## Password Handling
 
 Wallet passwords are never accepted as CLI arguments. The priority
 order for password resolution:
 
-1. **stdin pipe** -- `echo -n 'pass' | darepocli wallet unlock`
+1. **stdin pipe** -- `echo -n 'pass' | darepocli unlock`
 2. **Environment variable** -- `DAREPOD_WALLET_PASSWORD=pass`
 3. **Password file** -- `--wallet_password_file=/path/to/file`
 4. **Interactive prompt** -- prompted on TTY if none of the above
@@ -441,8 +556,9 @@ restrictive file permissions (`chmod 600`).
 
 | Problem | Solution |
 |---------|----------|
+| `daemon was not built with -tags walletrpc` | Rebuild with `make build-walletrpc`, or use the `ark *` / `dev *` subtrees |
 | `connection refused` | Daemon not running or wrong `--rpcserver` address |
-| `wallet not ready` | Run `darepocli wallet unlock` first |
+| `wallet not ready` | Run `darepocli unlock` (requires walletrpc) or restart the daemon with `--wallet.password_file` |
 | `wallet already exists` | Wallet was already created; use `unlock` instead |
 | `GenSeed: lwwallet mode only` | Switch daemon to `--wallet.type=lwwallet` |
 | TLS certificate errors | Use `--no-tls` for regtest, or set `--tlscertpath` |
