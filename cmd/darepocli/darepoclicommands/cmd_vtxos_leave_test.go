@@ -326,6 +326,42 @@ func TestConfirmLeaveAllIfNeededAcceptsYes(t *testing.T) {
 	require.NoError(t, confirmLeaveAllIfNeeded(cmd, req))
 }
 
+// TestConfirmLeaveAllIfNeededNonTTYRefusesPrompt is the agent-cli
+// regression guard: when stdin is not a terminal (the production
+// agent / pipeline path), --all without --yes or --dry_run must NOT
+// hit the y/N prompt. Instead the function fails fast with an
+// INVALID_ARGS envelope so an agent gets exit code 2 and a clear
+// error directing it to pass --yes or --dry_run, rather than
+// hanging on a read of a closed stdin.
+func TestConfirmLeaveAllIfNeededNonTTYRefusesPrompt(t *testing.T) {
+	// NOT t.Parallel() — we override the package-level
+	// stdinIsTTY indirection for this test and a parallel sibling
+	// could see the override.
+
+	prev := stdinIsTTY
+	stdinIsTTY = func(*cobra.Command) bool { return false }
+	defer func() {
+		stdinIsTTY = prev
+	}()
+
+	cmd := newVTXOsLeaveCmd()
+
+	req := &daemonrpc.LeaveVTXOsRequest{
+		Selection: &daemonrpc.LeaveVTXOsRequest_All{
+			All: true,
+		},
+	}
+
+	err := confirmLeaveAllIfNeeded(cmd, req)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--all requires --yes")
+	require.True(
+		t, ErrorWasPrinted(err),
+		"expected a printedError so main.go can exit with the "+
+			"INVALID_ARGS code",
+	)
+}
+
 // TestConfirmLeaveAllIfNeededYesFlagBypasses verifies the --yes flag
 // short-circuits the prompt for scripted use.
 func TestConfirmLeaveAllIfNeededYesFlagBypasses(t *testing.T) {

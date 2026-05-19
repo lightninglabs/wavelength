@@ -2,9 +2,9 @@ package darepoclicommands
 
 import (
 	"bufio"
-	"context"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
@@ -57,11 +57,7 @@ func newVTXOsListCmd() *cobra.Command {
 	cmd.Flags().Int64("min_amount", 0,
 		"minimum amount in sats")
 
-	cmd.Flags().String("fields", "",
-		"comma-separated field names to include")
-
-	cmd.Flags().Bool("ndjson", false,
-		"emit one JSON object per VTXO (newline-delimited)")
+	addListOutputFlags(cmd, "VTXO")
 
 	return cmd
 }
@@ -105,45 +101,20 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.ListVTXOs(
-		context.Background(), req,
-	)
+	// cmd.Context() carries Ctrl+C / SIGTERM so the RPC actually
+	// cancels when the user interrupts the CLI. context.Background()
+	// here would orphan the request until the daemon responded.
+	resp, err := client.ListVTXOs(cmd.Context(), req)
 	if err != nil {
 		return fmt.Errorf("ListVTXOs RPC failed: %w", err)
 	}
 
-	// Parse optional output modifiers.
-	ndjson, _ := cmd.Flags().GetBool("ndjson")
-	fieldsStr, _ := cmd.Flags().GetString("fields")
-
-	// Emit newline-delimited JSON if --ndjson was specified. When
-	// combined with --fields, each line is filtered to the
-	// requested fields.
-	if ndjson {
-		items := make(
-			[]proto.Message, len(resp.Vtxos),
-		)
-		for i, v := range resp.Vtxos {
-			items[i] = v
-		}
-
-		if fieldsStr != "" {
-			fields := strings.Split(fieldsStr, ",")
-
-			return printNDJSONFields(items, fields)
-		}
-
-		return printNDJSON(items)
+	items := make([]proto.Message, len(resp.Vtxos))
+	for i, v := range resp.Vtxos {
+		items[i] = v
 	}
 
-	// Apply field mask if --fields was specified.
-	if fieldsStr != "" {
-		fields := strings.Split(fieldsStr, ",")
-
-		return printJSONFields(resp, fields)
-	}
-
-	return printJSON(resp)
+	return renderListOutput(cmd, resp, items)
 }
 
 // parseVTXOStatus converts a status string to the proto enum.
@@ -555,14 +526,21 @@ func parseDestinationValue(raw string) (*daemonrpc.LeaveDestination, error) {
 	}, nil
 }
 
-// confirmLeaveAllIfNeeded gates dispatch on an interactive y/N prompt
+// confirmLeaveAllIfNeeded gates dispatch on an explicit confirmation
 // when the resolved request selects all VTXOs. The check runs after
 // parseRequest returns so it covers both the flag-driven path and the
 // --json path; previously the prompt lived inside the flag callback
 // and an agent piping `{"all":true,...}` would silently skip the gate
 // that the bespoke-flag path enforced. Skip when --yes is set
-// (scripted use) or when req.DryRun is set (just previewing, not
-// moving funds).
+// (explicit scripted consent), when req.DryRun is set (just
+// previewing, not moving funds), or when DAREPOCLI_AGENT_MODE=1 is
+// rejected entirely.
+//
+// When stdin is not a TTY (agents, CI, pipelines), the function
+// refuses to prompt: an interactive y/N read would block forever or
+// race against piped stdin. The caller must pass --yes or --dry_run
+// explicitly. Only when stdin IS a TTY does the function fall back
+// to the interactive prompt for ergonomics during operator use.
 func confirmLeaveAllIfNeeded(cmd *cobra.Command,
 	req *daemonrpc.LeaveVTXOsRequest) error {
 
@@ -576,12 +554,62 @@ func confirmLeaveAllIfNeeded(cmd *cobra.Command,
 		return nil
 	}
 
+	// Stdin is not a TTY — refuse to prompt rather than block or
+	// race agents whose stdin is closed / piped. The agent-cli
+	// skill lists interactive prompts as an anti-pattern; this
+	// guard is the explicit replacement.
+	if !stdinIsTTY(cmd) {
+		return PrintError(
+			"INVALID_ARGS", "--all requires --yes (explicit "+
+				"consent) or --dry_run (preview) on "+
+				"non-interactive stdin; refusing to prompt "+
+				"because an agent cannot respond to y/N",
+		)
+	}
+
 	return promptLeaveAllConfirmation(cmd)
+}
+
+// stdinIsTTY is a package-level indirection over the TTY detection
+// so tests can deterministically exercise both branches without
+// depending on the process's actual stdin (which inherits from `go
+// test`'s terminal in some setups and a pipe in others).
+var stdinIsTTY = defaultStdinIsTTY
+
+// defaultStdinIsTTY reports whether the y/N prompt is safe to drive
+// on the given command, returning true when the prompt may proceed
+// and false when the caller must pass --yes or --dry_run instead.
+//
+// Two paths return true (prompt is safe):
+//
+//  1. cmd.InOrStdin() returns something other than os.Stdin. Only
+//     tests and embedded harnesses install custom stdin via
+//     cmd.SetIn; production agents do not, so a custom reader is
+//     the caller's signal that they will drive the prompt
+//     themselves (e.g. by piping a scripted "y\n").
+//
+//  2. cmd.InOrStdin() is os.Stdin and os.Stdin reports a character
+//     device, i.e. an actual terminal where the operator can answer
+//     interactively.
+//
+// All other cases (os.Stdin is a pipe / file, Stat fails) return
+// false and the caller refuses to prompt.
+func defaultStdinIsTTY(cmd *cobra.Command) bool {
+	if cmd.InOrStdin() != os.Stdin {
+		return true
+	}
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+
+	return (stat.Mode() & os.ModeCharDevice) != 0
 }
 
 // promptLeaveAllConfirmation asks the operator to confirm a
 // --all invocation on stdin. Any answer other than "y" or "yes"
-// (case-insensitive) aborts the command.
+// (case-insensitive) aborts the command. Only called when stdin is
+// known to be a TTY (see confirmLeaveAllIfNeeded).
 func promptLeaveAllConfirmation(cmd *cobra.Command) error {
 	out := cmd.OutOrStdout()
 

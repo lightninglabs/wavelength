@@ -8,6 +8,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/proto"
 )
 
 // newRoundsCmd creates the rounds parent command with list and watch
@@ -64,6 +65,7 @@ func newRoundsListCmd() *cobra.Command {
 		"only show persisted rounds created at or after this Unix time")
 	cmd.Flags().Int64("created-before", 0,
 		"only show persisted rounds created before this Unix time")
+	addListOutputFlags(cmd, "round")
 
 	return cmd
 }
@@ -173,7 +175,12 @@ func roundsList(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("ListRounds RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	items := make([]proto.Message, len(resp.Rounds))
+	for i, r := range resp.Rounds {
+		items[i] = r
+	}
+
+	return renderListOutput(cmd, resp, items)
 }
 
 // roundsJoin executes the JoinNextRound RPC and prints the result.

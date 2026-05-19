@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/proto"
 )
 
 // newSweepCmd creates the sweep subcommand for recovering expired boarding
@@ -64,6 +65,7 @@ func newSweepListCmd() *cobra.Command {
 			"daemon default")
 	cmd.Flags().String("page-token", "",
 		"page token returned by a previous sweep list response")
+	addListOutputFlags(cmd, "sweep")
 
 	return cmd
 }
@@ -142,7 +144,12 @@ func sweepList(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("ListBoardingSweeps RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	items := make([]proto.Message, len(resp.Sweeps))
+	for i, s := range resp.Sweeps {
+		items[i] = s
+	}
+
+	return renderListOutput(cmd, resp, items)
 }
 
 // validateOutpointString validates the txid:index syntax accepted by sweep

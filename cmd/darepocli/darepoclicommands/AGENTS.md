@@ -45,6 +45,22 @@ The everyday wallet verbs compose `walletrpc` end-to-end; the `ark`
 parent surfaces the raw daemonrpc methods underlying them for callers
 who want direct access.
 
+All list-shaped `ark.*` verbs (`ark vtxos list`, `ark rounds list`,
+`ark oor list`, `ark sweep list`, `ark listtransactions`) accept
+`--fields <name1,name2,...>` to apply a field mask and `--ndjson` to
+emit one JSON object per row on its own line (newline-delimited
+JSON). Combine the two to shrink each line further. Both flags use
+the shared `renderListOutput` helper so a behavior change in one
+place flows to every list command.
+
+`ark vtxos leave --all` no longer prompts for y/N when stdin is not
+a terminal. An agent or pipeline must pass `--yes` (explicit
+consent) or `--dry_run` (preview); otherwise the command fails fast
+with an `INVALID_ARGS` envelope (exit code 2). When stdin is a TTY
+the prompt still works for operator ergonomics. The TTY check is
+exposed via the `stdinIsTTY` package variable so tests can pin both
+branches deterministically.
+
 | Command | RPC | Description |
 |---------|-----|-------------|
 | `ark vtxos {list,refresh,leave}` | `ListVTXOs` / `RefreshVTXOs` / `LeaveVTXOs` | VTXO inventory and lifecycle |
