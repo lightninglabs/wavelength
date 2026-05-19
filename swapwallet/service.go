@@ -286,9 +286,20 @@ func (s *Service) fetchBalance(ctx context.Context) (*walletrpc.BalanceResponse,
 		return nil, fmt.Errorf("get balance: %w", err)
 	}
 
+	// confirmed_sat is the spendable VTXO balance only — funds the
+	// user can actually send right now. Boarding-confirmed funds
+	// are NOT spendable as VTXOs until `ark board` registers them
+	// into a round, so they belong in pending_in_sat alongside
+	// boarding-unconfirmed. The daemon's GetBalance shape returns
+	// total_confirmed_sat = vtxo_balance_sat + boarding_confirmed_sat;
+	// mapping that conflated total onto confirmed_sat would tell the
+	// user they have spendable balance immediately after a faucet
+	// deposit, before any round commit, which the proto contract
+	// (and the `send` verb's runtime check) explicitly disallow.
 	return &walletrpc.BalanceResponse{
-		ConfirmedSat:  bal.GetTotalConfirmedSat(),
-		PendingInSat:  bal.GetBoardingUnconfirmedSat(),
+		ConfirmedSat: bal.GetVtxoBalanceSat(),
+		PendingInSat: bal.GetBoardingConfirmedSat() +
+			bal.GetBoardingUnconfirmedSat(),
 		PendingOutSat: bal.GetBoardingPendingSweepSat(),
 	}, nil
 }

@@ -61,15 +61,21 @@ func TestServiceDepositReturnsAddress(t *testing.T) {
 	)
 }
 
-// TestServiceBalanceProjectsDaemonGetBalance confirms Balance pulls from
-// the daemon's GetBalance and projects the unified flat shape.
+// TestServiceBalanceProjectsDaemonGetBalance confirms Balance pulls
+// from the daemon's GetBalance and projects the unified flat shape.
+// confirmed_sat must be the spendable VTXO balance only; boarding
+// outputs awaiting round registration go into pending_in_sat
+// alongside boarding-unconfirmed so the user does not see boarding
+// funds reported as immediately spendable.
 func TestServiceBalanceProjectsDaemonGetBalance(t *testing.T) {
 	t.Parallel()
 
 	svc, _, rpc := newServiceFixture(t)
 	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
-		TotalConfirmedSat:       100_000,
+		VtxoBalanceSat:          75_000,
+		BoardingConfirmedSat:    100_000,
 		BoardingUnconfirmedSat:  20_000,
+		TotalConfirmedSat:       175_000, // ignored by the mapping
 		BoardingPendingSweepSat: 5_000,
 	}
 
@@ -77,8 +83,8 @@ func TestServiceBalanceProjectsDaemonGetBalance(t *testing.T) {
 		t.Context(), &walletrpc.BalanceRequest{},
 	)
 	require.NoError(t, err)
-	require.Equal(t, int64(100_000), resp.GetConfirmedSat())
-	require.Equal(t, int64(20_000), resp.GetPendingInSat())
+	require.Equal(t, int64(75_000), resp.GetConfirmedSat())
+	require.Equal(t, int64(120_000), resp.GetPendingInSat())
 	require.Equal(t, int64(5_000), resp.GetPendingOutSat())
 }
 
@@ -93,6 +99,7 @@ func TestServiceStatusComposesInfoBalanceAndPending(t *testing.T) {
 		Network:     "regtest",
 	}
 	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+		VtxoBalanceSat:    1_000,
 		TotalConfirmedSat: 1_000,
 	}
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
