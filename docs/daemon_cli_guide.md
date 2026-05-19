@@ -319,21 +319,27 @@ darepocli ark vtxos list --ndjson --no-tls | jq '.amount_sat'
 
 ### `ark vtxos refresh`
 
-Queue VTXOs for refresh in the next round (extends expiry).
+Queue VTXOs for refresh in the next round and (by default) join that
+round immediately. Pass `--no_join` to leave the intent queued in
+`PendingRoundAssembly` so it can batch with subsequent refresh / leave
+RPCs; commit the batch later with `ark rounds join`.
 
 | Flag | Type | Description |
 |------|------|-------------|
 | `--outpoint` | string[] | VTXO outpoint(s) to refresh (txid:index) |
 | `--all` | bool | Refresh all live VTXOs |
 | `--dry_run` | bool | Validate without queuing |
+| `--no_join` | bool | Skip the implicit `ark rounds join` follow-up |
 
 ```bash
-# Explicit outpoints
+# Explicit outpoints (auto-joins the next round)
 darepocli ark vtxos refresh --outpoint <txid:idx> --no-tls
 
-# All — but see BUGS_FOUND.md bug-1; --all currently produces a
-# zero-VTXO refresh package.
-darepocli ark vtxos refresh --all --dry_run --no-tls
+# Batch with other intents — explicitly join later
+darepocli ark vtxos refresh --outpoint <txid:idx> --no_join --no-tls
+darepocli ark vtxos leave   --outpoint <txid:idx> --no_join \
+  --address bcrt1p... --no-tls
+darepocli ark rounds join --no-tls
 ```
 
 ### `ark send inround`

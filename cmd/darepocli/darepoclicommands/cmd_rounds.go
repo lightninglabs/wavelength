@@ -74,11 +74,13 @@ func newRoundsJoinCmd() *cobra.Command {
 		Use:   "join",
 		Short: "Commit queued intents and join the next round",
 		Long: "Asks the daemon's round actor to commit currently " +
-			"queued round intents (refresh or leave) and emit a " +
-			"JoinRoundRequest to the operator. Use this after " +
-			"queueing intents via `ark vtxos refresh` or " +
-			"`ark vtxos leave` that intentionally batch in " +
-			"PendingRoundAssembly.",
+			"queued round intents (refresh or leave) and emit " +
+			"a JoinRoundRequest to the operator.\n\n" +
+			"`ark vtxos refresh` and `ark vtxos leave` invoke " +
+			"this automatically on the caller's behalf. Use " +
+			"`join` directly only when one of those commands " +
+			"was passed `--no_join` to batch multiple intents " +
+			"into the same round.",
 		RunE: roundsJoin,
 	}
 }

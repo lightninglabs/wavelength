@@ -473,8 +473,9 @@ func arkVTXOMethodRegistry() []schemaMethod {
 			JSONInput:    true,
 		},
 		{
-			Method:      "ark.vtxos.refresh",
-			Description: "Queue VTXOs for refresh in next round",
+			Method: "ark.vtxos.refresh",
+			Description: "Queue VTXOs for refresh and join the " +
+				"next round (auto-joins unless --no_join)",
 			Params: []schemaParam{
 				{
 					Name: "outpoint",
@@ -487,6 +488,12 @@ func arkVTXOMethodRegistry() []schemaMethod {
 					Type:        "bool",
 					Description: "refresh all live VTXOs",
 				},
+				{
+					Name: "no_join",
+					Type: "bool",
+					Description: "skip the implicit " +
+						"`ark rounds join` follow-up",
+				},
 			},
 			RequestType:  "RefreshVTXOsRequest",
 			ResponseType: "RefreshVTXOsResponse",
@@ -496,7 +503,8 @@ func arkVTXOMethodRegistry() []schemaMethod {
 		{
 			Method: "ark.vtxos.leave",
 			Description: "Queue VTXOs for cooperative leave " +
-				"(offboard)",
+				"(offboard) and join the next round " +
+				"(auto-joins unless --no_join)",
 			Params: []schemaParam{
 				{
 					Name: "outpoint",
@@ -533,6 +541,12 @@ func arkVTXOMethodRegistry() []schemaMethod {
 					Type: "bool",
 					Description: "skip --all " +
 						"interactive confirmation",
+				},
+				{
+					Name: "no_join",
+					Type: "bool",
+					Description: "skip the implicit " +
+						"`ark rounds join` follow-up",
 				},
 			},
 			RequestType:  "LeaveVTXOsRequest",
