@@ -391,8 +391,8 @@ func TestRecipientFraudMultihopRatchet(t *testing.T) {
 
 	// Mine enough blocks to cross the backstop threshold. The backstop
 	// fires at leafConfirmHeight + VTXOExitDelay - SafetyMargin. With
-	// testVTXOExitDelay=16 and SafetyMargin=16/2=8 the backstop fires
-	// 8 blocks after the leaf tx confirms.
+	// testVTXOExitDelay=12 and SafetyMargin=12/2=6 the backstop fires
+	// 6 blocks after the leaf tx confirms; mining 9 leaves headroom.
 	h.Generate(9)
 
 	// checkpoint_AB must appear spending vtxo_A once the leaf tree tx

@@ -21,11 +21,14 @@ import (
 const (
 	// testVTXOExitDelay is a short CSV delay used by unroll integration
 	// tests to keep block-mining time reasonable.
-	// 16 blocks is the smallest value that satisfies the fraud
-	// responder's startup gate at the default connector tree shape
-	// (max depth 5 + 6-block safety margin requires > 11), while still
-	// keeping CSV-mining time short for unroll integration tests.
-	testVTXOExitDelay = 16
+	// The fraud responder's startup gate at the default connector tree
+	// shape requires `exit_delay > max_depth (5) + 6-block safety margin`,
+	// i.e. exit_delay >= 12. 12 is the floor; every additional block
+	// pays one embedded-wallet block-observation tick (~10s on
+	// btcwallet/lwwallet) during the unilateral-exit CSV wait, so this
+	// constant is the dominant driver of the trailing CSV walk in the
+	// MultiInput OOR tests in `oor_test.go`.
+	testVTXOExitDelay = 12
 
 	// unrollMempoolStallBlockIntervalFast is the heartbeat used by
 	// the LND-backed client wallet, where the daemon receives CPFP
