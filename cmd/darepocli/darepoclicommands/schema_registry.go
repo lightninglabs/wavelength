@@ -36,12 +36,21 @@ type schemaMethod struct {
 	// ResponseType is the proto response message name.
 	ResponseType string `json:"response_type"`
 
-	// DryRun indicates whether the command supports --dry_run.
+	// DryRun indicates whether the command supports --dry-run /
+	// --dry_run. Top-level wallet verbs use --dry-run (CLI-only
+	// validation, exits 10); ark.* commands use --dry_run that
+	// reaches the daemon's dry-run RPC field.
 	DryRun bool `json:"dry_run,omitempty"`
 
 	// JSONInput indicates the command accepts --json for raw proto
 	// payloads.
 	JSONInput bool `json:"json_input"`
+
+	// MCPTool indicates the method is exposed as an MCP tool with
+	// the same name. False means it is CLI-only (create / unlock
+	// are intentionally CLI-only because they handle secret
+	// material).
+	MCPTool bool `json:"mcp_tool,omitempty"`
 }
 
 // methodRegistry returns the full schema for all darepocli commands.
@@ -75,15 +84,23 @@ func walletAdminMethodRegistry() []schemaMethod {
 						"containing wallet password",
 				},
 				{
-					Name: "seed_passphrase",
+					Name: "seed_passphrase_file",
 					Type: "string",
-					Description: "optional aezeed " +
+					Description: "path to file " +
+						"containing optional aezeed " +
 						"passphrase",
+				},
+				{
+					Name: "print-mnemonic-json",
+					Type: "bool",
+					Description: "include the mnemonic " +
+						"in the JSON response on " +
+						"stdout (default: stderr only)",
 				},
 			},
 			RequestType:  "CreateRequest",
 			ResponseType: "CreateResponse",
-			JSONInput:    true,
+			JSONInput:    false,
 		},
 		{
 			Method:      "unlock",
@@ -98,7 +115,7 @@ func walletAdminMethodRegistry() []schemaMethod {
 			},
 			RequestType:  "UnlockRequest",
 			ResponseType: "UnlockResponse",
-			JSONInput:    true,
+			JSONInput:    false,
 		},
 		{
 			Method:       "getinfo",
@@ -156,10 +173,20 @@ func walletPaymentMethodRegistry() []schemaMethod {
 					Description: "onchain only: drain " +
 						"every live VTXO",
 				},
+				{
+					Name: "dry-run",
+					Type: "bool",
+					Description: "CLI-side validation " +
+						"only; print the proto-JSON " +
+						"preview and exit 10 without " +
+						"dispatching",
+				},
 			},
 			RequestType:  "SendRequest",
 			ResponseType: "SendResponse",
-			JSONInput:    true,
+			DryRun:       true,
+			JSONInput:    false,
+			MCPTool:      true,
 		},
 		{
 			Method:      "recv",
@@ -197,7 +224,8 @@ func walletPaymentMethodRegistry() []schemaMethod {
 			},
 			RequestType:  "RecvRequest",
 			ResponseType: "RecvResponse",
-			JSONInput:    true,
+			JSONInput:    false,
+			MCPTool:      true,
 		},
 	}
 }
@@ -244,7 +272,8 @@ func walletQueryMethodRegistry() []schemaMethod {
 			},
 			RequestType:  "ListRequest",
 			ResponseType: "ListResponse",
-			JSONInput:    true,
+			JSONInput:    false,
+			MCPTool:      true,
 		},
 		{
 			Method:       "balance",
@@ -252,7 +281,8 @@ func walletQueryMethodRegistry() []schemaMethod {
 			Params:       nil,
 			RequestType:  "BalanceRequest",
 			ResponseType: "BalanceResponse",
-			JSONInput:    true,
+			JSONInput:    false,
+			MCPTool:      true,
 		},
 		{
 			Method:      "exit",
@@ -265,10 +295,20 @@ func walletQueryMethodRegistry() []schemaMethod {
 					Description: "VTXO outpoint " +
 						"(txid:vout)",
 				},
+				{
+					Name: "dry-run",
+					Type: "bool",
+					Description: "CLI-side validation " +
+						"only; print the proto-JSON " +
+						"preview and exit 10 without " +
+						"dispatching",
+				},
 			},
 			RequestType:  "ExitRequest",
 			ResponseType: "ExitResponse",
-			JSONInput:    true,
+			DryRun:       true,
+			JSONInput:    false,
+			MCPTool:      true,
 		},
 		{
 			Method:      "exit.status",
@@ -284,7 +324,8 @@ func walletQueryMethodRegistry() []schemaMethod {
 			},
 			RequestType:  "ExitStatusRequest",
 			ResponseType: "ExitStatusResponse",
-			JSONInput:    true,
+			JSONInput:    false,
+			MCPTool:      true,
 		},
 	}
 }

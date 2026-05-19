@@ -106,6 +106,44 @@ who want direct access.
     `swapruntime` tag only).
 - **Depended on by**: `cmd/darepocli` (main entry point).
 
+## Agent-CLI Posture
+
+This CLI is invoked routinely by AI agents, so the design follows the
+agent-cli skill checklist (see `~/.claude/skills/agent-cli/SKILL.md`).
+The relevant pieces here:
+
+- **Machine-readable output by default**: every command emits
+  proto-JSON on stdout; diagnostics go to stderr. Errors emit a
+  structured envelope `{"error":{"code":..., "message":...}}` via
+  `PrintError`.
+- **Input hardening**: `validateDestination`, `validateOutpoint`,
+  `validateFreeText`, `validateOutpointString`, and the per-verb
+  flag-combination checks treat agent inputs as adversarial. They
+  reject query / fragment characters in destinations, embedded
+  control bytes in free-text fields, malformed outpoints, and
+  ambiguous flag combinations before any RPC dispatch.
+- **Dry-run safety rails for mutating verbs**: `send` and `exit`
+  accept `--dry-run`, which runs every local validation and prints a
+  `{"dry_run":true,"method":..., "body":...}` preview on stdout
+  without dispatching the RPC. The process exits with code 10 on a
+  passing dry-run so an agent can branch on it.
+- **Semantic exit codes**: see `exit_codes.go`. 0 = success,
+  2 = invalid args (rejected client-side), 3 = wallet/auth failure,
+  4 = not found (unknown round / job / hash), 10 = dry-run passed,
+  1 = anything else. gRPC status codes from the daemon also map onto
+  this table via `ExitCodeFor`.
+- **Schema introspection**: `schema` dumps the full method registry
+  (top-level wallet verbs, ark.*, swap.*) as JSON. Each entry carries
+  a `mcp_tool` flag indicating whether the method is also exposed
+  over MCP.
+- **MCP surface**: every read-only wallet verb (`balance`, `list`,
+  `exit.status`) and every mutating wallet verb except `create` /
+  `unlock` is registered as an MCP tool via `registerMCPWalletTools`.
+  `create` / `unlock` are CLI-only by design: their inputs are
+  secrets (wallet password, seed passphrase) that must not transit
+  the MCP protocol where they could land in agent logs or provider
+  APIs.
+
 ## Invariants
 
 - The seven top-level wallet verbs ALWAYS register at the root
@@ -122,6 +160,12 @@ who want direct access.
 - JSON output (`stdout`) and diagnostic output (`stderr`) are kept on
   separate streams so shell pipelines can consume the JSON body while
   a human reading the terminal sees informative warnings.
+- The CLI and MCP surfaces share input-hardening builders
+  (`buildWalletSendRequest`, `buildWalletListRequest`,
+  `buildLeaveVTXOsRequest`, `buildOORRecipientOutput`,
+  `parseDirectionField`). Divergence between the two surfaces would
+  let one accept shapes the other rejects, so all flag-translation
+  logic for tools that exist on both lives in shared helpers.
 
 ## Deep Docs
 

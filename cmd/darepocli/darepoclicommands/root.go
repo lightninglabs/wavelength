@@ -1,6 +1,7 @@
 package darepoclicommands
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -90,9 +91,66 @@ func NewRootCmd() *cobra.Command {
 	return cmd
 }
 
-// PrintError writes a structured error to stderr in JSON format.
-func PrintError(code string, msg string) {
+// PrintError writes a structured error to stderr in JSON format and
+// returns an error that carries the same code/message plus a marker
+// that main() can pick up via ErrorWasPrinted to avoid re-emitting the
+// envelope. Callers `return PrintError(...)` from RunE so the cobra
+// surface keeps signalling failure to the harness while stderr stays
+// machine-readable.
+func PrintError(code string, msg string) error {
 	fmt.Fprintf(
 		os.Stderr, `{"error":{"code":%q,"message":%q}}`+"\n", code, msg,
 	)
+
+	return &printedError{code: code, msg: msg}
+}
+
+// printedError is the wrapper returned by PrintError. It carries a
+// semantic exit code derived from the error code string so the binary
+// surfaces validation / auth / not-found failures distinctly without
+// callers needing to thread codes manually.
+type printedError struct {
+	code string
+	msg  string
+}
+
+// Error returns the underlying message for cobra's RunE plumbing.
+func (e *printedError) Error() string {
+	return e.msg
+}
+
+// ExitCode maps the textual error code onto a semantic exit code. The
+// known prefixes line up with the agent-cli table; everything else
+// falls through to the generic failure code.
+func (e *printedError) ExitCode() int {
+	switch e.code {
+	case "INVALID_ARGS", "INVALID_STATUS", "INVALID_OUTPOINT",
+		"INVALID_DESTINATION", "INVALID_VIEW":
+		return ExitInvalidArgs
+
+	case "AUTH_FAILURE", "WALLET_LOCKED":
+		return ExitAuthFailure
+
+	case "METHOD_NOT_FOUND", "NOT_FOUND":
+		return ExitNotFound
+
+	case "DRY_RUN_OK":
+		return ExitDryRunOK
+	}
+
+	return ExitGenericError
+}
+
+// ErrorWasPrinted reports whether err originated from PrintError and
+// therefore already produced a structured stderr envelope. main()
+// uses this to suppress its fallback EXECUTION_FAILED emission for
+// errors that have already been rendered.
+func ErrorWasPrinted(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var pe *printedError
+
+	return errors.As(err, &pe)
 }

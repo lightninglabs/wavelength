@@ -34,6 +34,10 @@ func newExitCmd() *cobra.Command {
 	cmd.Flags().String("outpoint", "",
 		"VTXO outpoint to exit (txid:vout)")
 	_ = cmd.MarkFlagRequired("outpoint")
+	cmd.Flags().Bool("dry-run", false,
+		"validate inputs locally and print the preview without "+
+			"dispatching to the daemon; exits 10 on a valid "+
+			"preview, non-zero on validation failure")
 
 	cmd.AddCommand(newExitStatusCmd())
 
@@ -43,17 +47,19 @@ func newExitCmd() *cobra.Command {
 // walletExit implements the top-level `exit` verb.
 func walletExit(cmd *cobra.Command, _ []string) error {
 	outpoint, _ := cmd.Flags().GetString("outpoint")
-	if err := validateOutpoint(outpoint); err != nil {
+	if err := invalidArgs(validateOutpoint(outpoint)); err != nil {
 		return err
+	}
+
+	req := &walletrpc.ExitRequest{Outpoint: outpoint}
+
+	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+		return walletDryRunPreview("walletrpc.WalletService/Exit", req)
 	}
 
 	return withWalletClient(
 		cmd, func(c walletrpc.WalletServiceClient) error {
-			resp, err := c.Exit(
-				cmd.Context(), &walletrpc.ExitRequest{
-					Outpoint: outpoint,
-				},
-			)
+			resp, err := c.Exit(cmd.Context(), req)
 			if err != nil {
 				return fmt.Errorf("exit: %w", err)
 			}
@@ -89,7 +95,7 @@ func newExitStatusCmd() *cobra.Command {
 // walletExitStatus implements the `exit status` subcommand.
 func walletExitStatus(cmd *cobra.Command, _ []string) error {
 	outpoint, _ := cmd.Flags().GetString("outpoint")
-	if err := validateOutpoint(outpoint); err != nil {
+	if err := invalidArgs(validateOutpoint(outpoint)); err != nil {
 		return err
 	}
 

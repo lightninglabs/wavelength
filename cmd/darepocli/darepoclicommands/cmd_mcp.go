@@ -6,6 +6,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -51,6 +52,11 @@ func mcpServe(cmd *cobra.Command, _ []string) error {
 	}
 	defer conn.Close()
 
+	// The wallet verbs live on the WalletService client; reusing the
+	// existing connection keeps TLS, --no-tls, and --tlscertpath
+	// honored across both surfaces.
+	walletClient := walletrpc.NewWalletServiceClient(conn)
+
 	server := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "darepocli",
@@ -59,7 +65,10 @@ func mcpServe(cmd *cobra.Command, _ []string) error {
 		nil,
 	)
 
-	// Register all RPC tools.
+	// Register all RPC tools. The wallet-verb registrations sit
+	// above the legacy daemonrpc tools so an agent listing tools
+	// sees the everyday surface first.
+	registerMCPWalletTools(server, walletClient)
 	registerMCPTools(server, client)
 
 	// Run on stdio transport until the client disconnects.
@@ -112,14 +121,19 @@ func registerMCPTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 		return r, nil, err
 	})
 
-	// balance — no parameters. Mirrors the top-level `balance` CLI
-	// verb. Uses the daemonrpc.GetBalance shape (richer than the
-	// flat walletrpc.Balance) so MCP consumers see boarding /
-	// VTXO / total breakdown without needing the walletrpc tag.
+	// daemon.balance — no parameters. Uses the daemonrpc.GetBalance
+	// shape (boarding + VTXO + total breakdown) and lives under the
+	// `daemon.*` namespace so the everyday flat `balance` tool that
+	// registerMCPWalletTools registers (walletrpc.Balance shape) is
+	// not silently overwritten by this richer-but-legacy registration.
+	// AddTool replaces tools on name collision, so the two names have
+	// to be distinct or the agent surface lies about which shape it
+	// returns.
 	type balanceArgs struct{}
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "balance",
-		Description: "Display wallet balance (boarding + VTXO + total)",
+		Name: "daemon.balance",
+		Description: "Display the daemonrpc balance breakdown " +
+			"(boarding + VTXO + total)",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, _ balanceArgs) (
 		*mcp.CallToolResult, any, error) {
 

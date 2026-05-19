@@ -55,6 +55,10 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().Bool("sweep-all", false,
 		"onchain only: drain the wallet to the destination. "+
 			"--amt MUST be 0 when set.")
+	cmd.Flags().Bool("dry-run", false,
+		"validate inputs locally and print the preview without "+
+			"dispatching to the daemon; exits 10 on a valid "+
+			"preview, non-zero on validation failure")
 
 	return cmd
 }
@@ -62,13 +66,13 @@ func newSendCmd() *cobra.Command {
 // walletSend implements the top-level `send` verb.
 func walletSend(cmd *cobra.Command, args []string) error {
 	dest := args[0]
-	if err := validateDestination(dest); err != nil {
+	if err := invalidArgs(validateDestination(dest)); err != nil {
 		return err
 	}
 
 	offchain, err := resolveOffchainFlag(cmd)
 	if err != nil {
-		return err
+		return invalidArgs(err)
 	}
 
 	amt, _ := cmd.Flags().GetUint64("amt")
@@ -76,7 +80,7 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	note, _ := cmd.Flags().GetString("note")
 	sweepAll, _ := cmd.Flags().GetBool("sweep-all")
 
-	if err := validateFreeText("--note", note); err != nil {
+	if err := invalidArgs(validateFreeText("--note", note)); err != nil {
 		return err
 	}
 
@@ -85,8 +89,10 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	// silently-ignored flag and so a typo (forgot --onchain) gets
 	// a clear error rather than a no-op invoice send.
 	if offchain && sweepAll {
-		return fmt.Errorf("--sweep-all is only valid with --onchain " +
-			"(invoice sends drain no VTXO set)")
+		return PrintError(
+			"INVALID_ARGS", "--sweep-all is only valid with "+
+				"--onchain (invoice sends drain no VTXO set)",
+		)
 	}
 
 	// Onchain-only invariants: --sweep-all <=> amt==0. Enforce up
@@ -94,12 +100,18 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	if !offchain {
 		switch {
 		case sweepAll && amt != 0:
-			return fmt.Errorf("--sweep-all requires --amt=0 (amt " +
-				"is implied by sweeping every live VTXO)")
+			return PrintError(
+				"INVALID_ARGS", "--sweep-all requires "+
+					"--amt=0 (amt is implied by "+
+					"sweeping every live VTXO)",
+			)
 
 		case !sweepAll && amt == 0:
-			return fmt.Errorf("--amt is required for onchain " +
-				"sends (use --sweep-all to drain the wallet)")
+			return PrintError(
+				"INVALID_ARGS", "--amt is required for "+
+					"onchain sends (use --sweep-all to "+
+					"drain the wallet)",
+			)
 		}
 	}
 
@@ -115,6 +127,15 @@ func walletSend(cmd *cobra.Command, args []string) error {
 		req.Destination = &walletrpc.SendRequest_OnchainAddress{
 			OnchainAddress: dest,
 		}
+	}
+
+	// --dry-run validates every invariant we just enforced and prints
+	// the proto-JSON preview without dispatching. Returning a code-10
+	// printedError lets main.go signal "dry-run passed" distinctly
+	// from a real send so an agent can stage a payment without
+	// risking a duplicate dispatch.
+	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+		return walletDryRunPreview("walletrpc.WalletService/Send", req)
 	}
 
 	return withWalletClient(

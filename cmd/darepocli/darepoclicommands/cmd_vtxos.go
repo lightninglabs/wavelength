@@ -84,7 +84,7 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 				statusStr,
 			)
 			if !ok {
-				PrintError(
+				return PrintError(
 					"INVALID_STATUS",
 					fmt.Sprintf(
 						"invalid status %q, valid: %s",
@@ -93,9 +93,6 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 						),
 					),
 				)
-
-				return fmt.Errorf("invalid status filter: %s",
-					statusStr)
 			}
 
 			req.StatusFilter = statusFilter

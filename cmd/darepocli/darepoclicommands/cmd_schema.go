@@ -54,11 +54,9 @@ func schemaRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	PrintError(
+	return PrintError(
 		"METHOD_NOT_FOUND", fmt.Sprintf("unknown method %q; run "+
 			"'darepocli schema' to list available methods",
 			methodName),
 	)
-
-	return fmt.Errorf("unknown method: %s", methodName)
 }
