@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>walletdk demo</title>
+    <link rel="stylesheet" href="src/styles.css" />
+    <script src="enable-threads.js"></script>
+    <script src="sqlite-bridge.js"></script>
+    <script src="wasm_exec.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>walletdk demo</h1>
+        <p>Non-production browser wallet using OPFS-backed SQLite.</p>
+      </div>
+      <div id="runtime-status" class="status">loading wasm</div>
+    </header>
+
+    <main>
+      <section id="setup-view" class="view">
+        <form id="runtime-form" class="panel">
+          <h2>Runtime</h2>
+          <div class="grid">
+            <label>
+              Network
+              <input name="network" value="regtest" />
+            </label>
+            <label>
+              Data dir
+              <input name="dataDir" value="/walletdk-demo" />
+            </label>
+            <label>
+              Ark mailbox gateway or gRPC address
+              <input name="serverAddress" value="localhost:10010" />
+            </label>
+            <label>
+              Ark gateway URL
+              <input name="arkGatewayURL" placeholder="http://127.0.0.1:7071" />
+            </label>
+            <label>
+              Mailbox gateway URL
+              <input name="mailboxGatewayURL" placeholder="http://127.0.0.1:7071" />
+            </label>
+            <label>
+              Esplora URL
+              <input name="walletEsploraURL" placeholder="http://localhost:3002" />
+            </label>
+            <label>
+              Swap server gateway or gRPC address
+              <input name="swapServerAddress" value="localhost:10030" />
+            </label>
+            <label>
+              Swap server gateway URL
+              <input name="swapServerGatewayURL" placeholder="http://127.0.0.1:18081" />
+            </label>
+            <label>
+              Swap mailbox gateway URL
+              <input name="swapMailboxGatewayURL" placeholder="http://127.0.0.1:18081" />
+            </label>
+            <label>
+              Swap DB
+              <input name="swapDatabaseFileName" value="/walletdk-swaps.db" />
+            </label>
+          </div>
+          <div class="inline">
+            <label class="check">
+              <input name="serverInsecure" type="checkbox" checked />
+              Insecure Ark transport
+            </label>
+            <label class="check">
+              <input name="swapServerInsecure" type="checkbox" checked />
+              Insecure swap transport
+            </label>
+            <label class="check">
+              <input name="disableSwaps" type="checkbox" />
+              Wallet only
+            </label>
+          </div>
+          <button type="submit">Start runtime</button>
+        </form>
+
+        <div class="split">
+          <form id="create-form" class="panel" hidden>
+            <h2>Create wallet</h2>
+            <label>
+              Password
+              <input name="password" type="password" autocomplete="new-password" />
+            </label>
+            <button type="submit">Create wallet</button>
+          </form>
+
+          <form id="unlock-form" class="panel" hidden>
+            <h2>Unlock wallet</h2>
+            <label>
+              Password
+              <input name="password" type="password" autocomplete="current-password" />
+            </label>
+            <button type="submit">Unlock wallet</button>
+          </form>
+        </div>
+
+        <section id="mnemonic-panel" class="panel warning" hidden>
+          <h2>Mnemonic backup</h2>
+          <p id="mnemonic"></p>
+          <button id="mnemonic-ack" type="button">I recorded the demo mnemonic</button>
+        </section>
+      </section>
+
+      <section id="dashboard-view" class="view" hidden>
+        <nav class="actions">
+          <button id="refresh" type="button">Refresh</button>
+          <button id="stop" type="button">Stop runtime</button>
+        </nav>
+
+        <section class="panel">
+          <h2>Overview</h2>
+          <dl id="info-grid" class="facts"></dl>
+        </section>
+
+        <section class="panel">
+          <h2>Balance</h2>
+          <dl id="balance-grid" class="facts"></dl>
+        </section>
+
+        <section class="split">
+          <form id="address-form" class="panel">
+            <h2>Onboarding address</h2>
+            <button type="submit">New address</button>
+            <output id="address-output"></output>
+          </form>
+
+          <form id="receive-form" class="panel">
+            <h2>Receive</h2>
+            <label>
+              Amount sats
+              <input name="amountSat" type="number" min="1" step="1" />
+            </label>
+            <button type="submit">Create invoice</button>
+            <output id="receive-output"></output>
+          </form>
+        </section>
+
+        <section class="split">
+          <form id="send-form" class="panel">
+            <h2>Send</h2>
+            <label>
+              BOLT-11 invoice
+              <textarea name="invoice" rows="4"></textarea>
+            </label>
+            <label>
+              Max fee sats
+              <input name="maxFeeSat" type="number" min="0" step="1" value="0" />
+            </label>
+            <button type="submit">Send payment</button>
+            <output id="send-output"></output>
+          </form>
+
+          <section class="panel">
+            <h2>Swaps</h2>
+            <button id="refresh-swaps" type="button">Refresh swaps</button>
+            <table>
+              <thead>
+                <tr>
+                  <th>Direction</th>
+                  <th>State</th>
+                  <th>Amount</th>
+                  <th>Payment hash</th>
+                </tr>
+              </thead>
+              <tbody id="swaps-body"></tbody>
+            </table>
+          </section>
+        </section>
+
+        <section class="panel">
+          <h2>Activity</h2>
+          <ol id="activity"></ol>
+        </section>
+      </section>
+    </main>
+
+    <script src="src/app.js"></script>
+  </body>
+</html>

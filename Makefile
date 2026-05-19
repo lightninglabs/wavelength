@@ -3,6 +3,7 @@
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race unit-swapruntime check-go-version build install clean release
 .PHONY: build build-swapruntime build-swapclient build-walletrpc rpc install install-swapruntime install-walletrpc help clean-networks
+.PHONY: wasm-wallet-demo-build wasm-wallet-demo-serve wasm-wallet-demo-browser-deps wasm-wallet-demo-browser-test wasm-wallet-demo-browser-live-test
 .PHONY: systest systest-verbose
 .PHONY: commitmsg-lint commitmsg-fmt commitmsg-reword
 
@@ -42,6 +43,11 @@ MAKE := make
 XARGS := xargs -L 1
 
 COMMIT := $(shell git describe --tags --dirty 2>/dev/null || echo "unknown")
+
+WASM_WALLET_DEMO_DIR := web/walletdk-demo
+WASM_WALLET_DEMO_DIST := $(WASM_WALLET_DEMO_DIR)/dist
+WASMSQLITE_DIR := $(shell go list -m -f '{{.Dir}}' github.com/sputn1ck/go-wasmsqlite 2>/dev/null)
+PLAYWRIGHT ?= npm --prefix $(WASM_WALLET_DEMO_DIR) exec -- playwright
 
 # DB connection string for migrations (example).
 DB_CONNECTIONSTRING ?= sqlite://./darepo.db
@@ -430,6 +436,56 @@ build-swapclient: build-swapruntime #? Alias for build-swapruntime
 build-walletrpc: #? Build debug binaries with walletrpc + swapruntime enabled
 	@$(call print, "Building debug binaries with walletrpc and swapruntime.")
 	$(MAKE) build tags="walletrpc swapruntime"
+
+wasm-wallet-demo-build: #? Build the walletdk browser demo into web/walletdk-demo/dist
+	@$(call print, "Building walletdk WASM demo.")
+	$(RM) -r $(WASM_WALLET_DEMO_DIST)
+	mkdir -p $(WASM_WALLET_DEMO_DIST)/src
+	GOOS=js GOARCH=wasm $(GOBUILD) -trimpath -ldflags="-s -w" \
+		-tags="walletrpc swapruntime" \
+		-o $(WASM_WALLET_DEMO_DIST)/walletdk.wasm ./cmd/walletdk-wasm
+	gzip -9 -c $(WASM_WALLET_DEMO_DIST)/walletdk.wasm \
+		> $(WASM_WALLET_DEMO_DIST)/walletdk.wasm.gz
+	cp $$(go env GOROOT)/lib/wasm/wasm_exec.js $(WASM_WALLET_DEMO_DIST)/
+	cp $(WASM_WALLET_DEMO_DIR)/index.html $(WASM_WALLET_DEMO_DIST)/
+	cp $(WASM_WALLET_DEMO_DIR)/enable-threads.js $(WASM_WALLET_DEMO_DIST)/
+	cp $(WASM_WALLET_DEMO_DIR)/src/app.js $(WASM_WALLET_DEMO_DIST)/src/
+	cp $(WASM_WALLET_DEMO_DIR)/src/styles.css $(WASM_WALLET_DEMO_DIST)/src/
+	cp $(WASM_WALLET_DEMO_DIR)/sqlite-bridge.js $(WASM_WALLET_DEMO_DIST)/
+	cp $(WASMSQLITE_DIR)/bridge/sqlite-worker.js $(WASM_WALLET_DEMO_DIST)/
+	cp $(WASMSQLITE_DIR)/assets/sqlite3.js $(WASM_WALLET_DEMO_DIST)/
+	cp $(WASMSQLITE_DIR)/assets/sqlite3.wasm $(WASM_WALLET_DEMO_DIST)/
+	cp $(WASMSQLITE_DIR)/assets/sqlite3-opfs-async-proxy.js $(WASM_WALLET_DEMO_DIST)/
+
+wasm-wallet-demo-serve: wasm-wallet-demo-build #? Serve the walletdk browser demo locally
+	@$(call print, "Serving walletdk WASM demo on http://localhost:8081.")
+	node $(WASM_WALLET_DEMO_DIR)/server.js
+
+wasm-wallet-demo-browser-deps: #? Install browser-test dependencies for the walletdk WASM demo
+	@$(call print, "Installing walletdk WASM demo browser test dependencies.")
+	npm --prefix $(WASM_WALLET_DEMO_DIR) install
+
+wasm-wallet-demo-browser-test: wasm-wallet-demo-build wasm-wallet-demo-browser-deps #? Build and smoke-test the walletdk browser demo
+	@$(call print, "walletdk WASM demo built for browser validation.")
+	test -f $(WASM_WALLET_DEMO_DIST)/walletdk.wasm
+	test -f $(WASM_WALLET_DEMO_DIST)/walletdk.wasm.gz
+	test -f $(WASM_WALLET_DEMO_DIST)/enable-threads.js
+	test -f $(WASM_WALLET_DEMO_DIST)/sqlite-bridge.js
+	test -f $(WASM_WALLET_DEMO_DIST)/sqlite-worker.js
+	test -f $(WASM_WALLET_DEMO_DIST)/sqlite3.wasm
+	@$(call print, "Running walletdk WASM demo browser smoke test.")
+	$(PLAYWRIGHT) test --config=$(WASM_WALLET_DEMO_DIR)/playwright.config.js
+
+wasm-wallet-demo-browser-live-test: wasm-wallet-demo-build wasm-wallet-demo-browser-deps #? Run the walletdk browser demo against live swapdtest REST gateways
+	@$(call print, "walletdk WASM demo built for live browser validation.")
+	test -f $(WASM_WALLET_DEMO_DIST)/walletdk.wasm
+	test -f $(WASM_WALLET_DEMO_DIST)/walletdk.wasm.gz
+	test -f $(WASM_WALLET_DEMO_DIST)/enable-threads.js
+	test -f $(WASM_WALLET_DEMO_DIST)/sqlite-bridge.js
+	test -f $(WASM_WALLET_DEMO_DIST)/sqlite-worker.js
+	test -f $(WASM_WALLET_DEMO_DIST)/sqlite3.wasm
+	@$(call print, "Running walletdk WASM demo live browser test.")
+	$(PLAYWRIGHT) test --config=$(WASM_WALLET_DEMO_DIR)/playwright.live.config.js
 
 install: #? Build and install binaries to GOPATH/bin
 	@$(call print, "Installing binaries.")
