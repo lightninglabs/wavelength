@@ -282,6 +282,164 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.Equal(t, chainhash.Hash(sessionID), packageStore.lastSessionID)
 }
 
+// TestLocalPersistenceOutboxHandlerRejectsInvalidAncestorPackage asserts
+// untrusted incoming ancestor packages are validated before they can poison the
+// package store used by recovery.
+func TestLocalPersistenceOutboxHandlerRejectsInvalidAncestorPackage(
+	t *testing.T) {
+
+	t.Parallel()
+
+	arkPSBT, finalCheckpoints, recipients, _, _, operatorKey :=
+		buildTestIncomingMaterialization(t)
+
+	packageStore := &testPackageStore{}
+	handler := &LocalPersistenceOutboxHandler{
+		Store:        newTestVTXOStore(),
+		PackageStore: packageStore,
+		OperatorKey:  operatorKey,
+		ExitDelay:    10,
+		NotifyIncomingVTXOs: func(_ context.Context,
+			_ []*vtxo.Descriptor) error {
+
+			return nil
+		},
+		ResolveIncomingClientKey: func(ctx context.Context,
+			recipient ArkRecipientOutput) (keychain.KeyDescriptor,
+			error) {
+
+			_ = ctx
+			_ = recipient
+
+			return keychain.KeyDescriptor{}, nil
+		},
+	}
+
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	ancestorID := sessionID
+	ancestorID[0] ^= 0x01
+
+	req := &MaterializeIncomingVTXOsRequest{
+		SessionID:            sessionID,
+		ArkPSBT:              arkPSBT,
+		FinalCheckpointPSBTs: finalCheckpoints,
+		Recipients:           recipients,
+		AncestorPackages: []PackageArtifact{{
+			SessionID:            ancestorID,
+			ArkPSBT:              arkPSBT,
+			FinalCheckpointPSBTs: finalCheckpoints,
+		}},
+	}
+
+	events, err := handler.Handle(t.Context(), sessionID, req)
+	require.Error(t, err)
+	require.ErrorContains(
+		t, err, "ancestor package 0 session id does not match ark txid",
+	)
+	require.Empty(t, events)
+	require.Zero(t, packageStore.packageCalls)
+}
+
+// TestValidateIncomingPackageGraphRejectsUnconsumedAncestor asserts valid but
+// unrelated ancestor packages must not be accepted as recovery ancestors.
+func TestValidateIncomingPackageGraphRejectsUnconsumedAncestor(t *testing.T) {
+	t.Parallel()
+
+	arkPSBT, finalCheckpoints, _, _, _, _ :=
+		buildTestIncomingMaterialization(t)
+	ancestorArk, ancestorCheckpoints, _, _, _, _ :=
+		buildTestIncomingMaterialization(t)
+
+	root := packageArtifactForValidation(
+		SessionID(
+			arkPSBT.UnsignedTx.TxHash(),
+		),
+		arkPSBT,
+		finalCheckpoints,
+	)
+	ancestor := packageArtifactForValidation(
+		SessionID(
+			ancestorArk.UnsignedTx.TxHash(),
+		),
+		ancestorArk,
+		ancestorCheckpoints,
+	)
+
+	err := validateIncomingPackageGraph(root, []PackageArtifact{ancestor})
+	require.Error(t, err)
+	require.ErrorContains(
+		t, err, "is not consumed by incoming package chain",
+	)
+}
+
+// TestValidateIncomingPackageGraphAcceptsConnectedAncestor asserts a package
+// whose checkpoint spends an ancestor Ark output can carry that ancestor as
+// recovery material.
+func TestValidateIncomingPackageGraphAcceptsConnectedAncestor(t *testing.T) {
+	t.Parallel()
+
+	ancestorArk, ancestorCheckpoints, _, _, _, _ :=
+		buildTestIncomingMaterialization(t)
+	rootArk, rootCheckpoints, _, _, _, _ :=
+		buildTestIncomingMaterialization(t)
+	rootArk, rootCheckpoints = reparentTestIncomingPackage(
+		t, rootArk, rootCheckpoints, ancestorArk,
+	)
+
+	root := packageArtifactForValidation(
+		SessionID(
+			rootArk.UnsignedTx.TxHash(),
+		),
+		rootArk,
+		rootCheckpoints,
+	)
+	ancestor := packageArtifactForValidation(
+		SessionID(
+			ancestorArk.UnsignedTx.TxHash(),
+		),
+		ancestorArk,
+		ancestorCheckpoints,
+	)
+
+	err := validateIncomingPackageGraph(root, []PackageArtifact{ancestor})
+	require.NoError(t, err)
+}
+
+// TestValidateIncomingPackageGraphRejectsDuplicateAncestor asserts valid
+// ancestors still cannot be supplied more than once.
+func TestValidateIncomingPackageGraphRejectsDuplicateAncestor(t *testing.T) {
+	t.Parallel()
+
+	ancestorArk, ancestorCheckpoints, _, _, _, _ :=
+		buildTestIncomingMaterialization(t)
+	rootArk, rootCheckpoints, _, _, _, _ :=
+		buildTestIncomingMaterialization(t)
+	rootArk, rootCheckpoints = reparentTestIncomingPackage(
+		t, rootArk, rootCheckpoints, ancestorArk,
+	)
+
+	root := packageArtifactForValidation(
+		SessionID(
+			rootArk.UnsignedTx.TxHash(),
+		),
+		rootArk,
+		rootCheckpoints,
+	)
+	ancestor := packageArtifactForValidation(
+		SessionID(
+			ancestorArk.UnsignedTx.TxHash(),
+		),
+		ancestorArk,
+		ancestorCheckpoints,
+	)
+
+	err := validateIncomingPackageGraph(
+		root, []PackageArtifact{ancestor, ancestor},
+	)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "duplicate ancestor package")
+}
+
 // TestLocalPersistenceOutboxHandlerUsesMetadataOperatorKey asserts incoming
 // materialization prefers the per-VTXO operator key returned by the indexer
 // over the handler's compatibility fallback key.
@@ -1084,6 +1242,7 @@ func buildTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 
 	cp, err := oortx.BuildCheckpointPSBT(policy, inputs[0])
 	require.NoError(t, err)
+	cp.PSBT.Inputs[0].FinalScriptWitness = []byte{0x01, 0x51}
 
 	arkPSBT, err := oortx.BuildArkPSBT(
 		[]oortx.CheckpointOutput{
@@ -1103,6 +1262,170 @@ func buildTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 	return arkPSBT, []*psbt.Packet{cp.PSBT}, recipients,
 		inputs[0].SpentVTXO.Outpoint.Hash, recipientKey,
 		operatorKey.PubKey()
+}
+
+// reparentTestIncomingPackage rewrites the test package's checkpoint input to
+// spend output zero of parentArk, then rebuilds the Ark transaction so its
+// session ID follows the new checkpoint txid.
+func reparentTestIncomingPackage(t *testing.T, arkPSBT *psbt.Packet,
+	checkpoints []*psbt.Packet,
+	parentArk *psbt.Packet) (*psbt.Packet, []*psbt.Packet) {
+
+	t.Helper()
+
+	require.Len(t, checkpoints, 1)
+	require.NotNil(t, parentArk)
+	require.NotNil(t, parentArk.UnsignedTx)
+	require.NotEmpty(t, parentArk.UnsignedTx.TxOut)
+
+	checkpoint := checkpoints[0]
+	require.NotNil(t, checkpoint)
+	require.NotNil(t, checkpoint.UnsignedTx)
+	require.NotEmpty(t, checkpoint.UnsignedTx.TxIn)
+	require.NotEmpty(t, checkpoint.UnsignedTx.TxOut)
+
+	parentTxid := parentArk.UnsignedTx.TxHash()
+	checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint = wire.OutPoint{
+		Hash:  parentTxid,
+		Index: 0,
+	}
+	checkpoint.Inputs[0].WitnessUtxo = parentArk.UnsignedTx.TxOut[0]
+
+	recipients, err := ExtractArkRecipients(arkPSBT)
+	require.NoError(t, err)
+
+	outputs := make([]oortx.RecipientOutput, 0, len(recipients))
+	for i := range recipients {
+		outputs = append(outputs, oortx.RecipientOutput{
+			PkScript: recipients[i].PkScript,
+			Value:    recipients[i].Value,
+		})
+	}
+
+	arkPSBT, err = oortx.BuildArkPSBT(
+		[]oortx.CheckpointOutput{{
+			Txid:   checkpoint.UnsignedTx.TxHash(),
+			Output: checkpoint.UnsignedTx.TxOut[0],
+		}},
+		outputs,
+	)
+	require.NoError(t, err)
+
+	return arkPSBT, checkpoints
+}
+
+// buildTestIncomingMaterializationMultiInput is the two-checkpoint
+// variant of buildTestIncomingMaterialization. It returns an Ark PSBT
+// spending two distinct checkpoint inputs (so len(arkPSBT.UnsignedTx.TxIn)
+// == 2). Cross-round multi-input OOR receive coverage exercises
+// validateIncomingAncestry's partition checks, which require the union
+// of all fragments' InputIndices to cover every Ark input — a property
+// that cannot be exercised against the single-input helper.
+//
+// The two commitment txids returned correspond to inputs[0] and
+// inputs[1] respectively; callers stitch them into two-fragment
+// IncomingVTXOMetadata.Ancestry slices.
+func buildTestIncomingMaterializationMultiInput(t *testing.T) (*psbt.Packet,
+	[]*psbt.Packet, []ArkRecipientOutput, [2]chainhash.Hash,
+	*btcec.PrivateKey, *btcec.PublicKey) {
+
+	t.Helper()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	recipientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	// Two independent checkpoint inputs anchored to distinct
+	// upstream Ark txids so the produced Ark tx has two inputs,
+	// each contributable by a different ancestry fragment.
+	inputAmt := btcutil.Amount(5_000)
+	makeInput := func(seed byte) oortx.CheckpointInput {
+		return oortx.CheckpointInput{
+			SpentVTXO: oortx.SpentVTXORef{
+				Outpoint: wire.OutPoint{
+					Hash: [32]byte{
+						seed,
+					},
+					Index: 0,
+				},
+				Output: &wire.TxOut{
+					Value: int64(inputAmt),
+					PkScript: newTestTaprootPkScript(
+						t, operatorKey.PubKey(),
+					),
+				},
+			},
+			OwnerLeafScript: []byte{
+				0x51,
+			},
+		}
+	}
+	inputs := []oortx.CheckpointInput{
+		makeInput(0x11), makeInput(0x22),
+	}
+
+	cp0, err := oortx.BuildCheckpointPSBT(policy, inputs[0])
+	require.NoError(t, err)
+
+	cp1, err := oortx.BuildCheckpointPSBT(policy, inputs[1])
+	require.NoError(t, err)
+
+	vtxoTapKey, err := arkscript.VTXOTapKey(
+		recipientKey.PubKey(), policy.OperatorKey, 10,
+	)
+	require.NoError(t, err)
+
+	recipientPkScript, err := txscript.PayToTaprootScript(vtxoTapKey)
+	require.NoError(t, err)
+
+	outputs := []oortx.RecipientOutput{
+		{
+			PkScript: recipientPkScript,
+			Value:    inputAmt * 2,
+		},
+	}
+
+	arkPSBT, err := oortx.BuildArkPSBT(
+		[]oortx.CheckpointOutput{
+			{
+				Txid:           cp0.PSBT.UnsignedTx.TxHash(),
+				Output:         cp0.PSBT.UnsignedTx.TxOut[0],
+				TapTreeEncoded: cp0.TapTreeEncoded,
+			},
+			{
+				Txid:           cp1.PSBT.UnsignedTx.TxHash(),
+				Output:         cp1.PSBT.UnsignedTx.TxOut[0],
+				TapTreeEncoded: cp1.TapTreeEncoded,
+			},
+		},
+		outputs,
+	)
+	require.NoError(t, err)
+
+	recipients, err := ExtractArkRecipients(arkPSBT)
+	require.NoError(t, err)
+
+	// Use the checkpoint tx ids as the per-fragment "commitment"
+	// txids so that callers can name a real Ark-tx input prevout
+	// for each fragment. (Ark inputs reference checkpoint tx ids,
+	// not the upstream SpentVTXO outpoint hashes.) The validator
+	// only requires that BatchOutpoint.Hash matches CommitmentTxID
+	// across the per-fragment cross-check; it does not interpret
+	// the commitment txid itself.
+	commits := [2]chainhash.Hash{
+		cp0.PSBT.UnsignedTx.TxHash(),
+		cp1.PSBT.UnsignedTx.TxHash(),
+	}
+
+	return arkPSBT, []*psbt.Packet{cp0.PSBT, cp1.PSBT}, recipients,
+		commits, recipientKey, operatorKey.PubKey()
 }
 
 // validTestIncomingAncestry returns a minimal Ancestry slice that passes

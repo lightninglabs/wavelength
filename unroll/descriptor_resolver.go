@@ -133,9 +133,10 @@ func (r *DescriptorLineageResolver) resolveValidatedLineage(ctx context.Context,
 	}
 
 	// validateProofDescriptorShape upstream gates every fragment for
-	// non-nil TreePath, non-empty tree, non-zero CommitmentTxID, and
-	// non-zero TreeDepth, so we can append every fragment
-	// unconditionally here.
+	// non-nil TreePath, non-empty tree, and non-zero CommitmentTxID,
+	// so we can append every fragment unconditionally here. TreeDepth
+	// is deliberately not part of that gate (it is expiry-timing
+	// metadata, not proof material).
 	for _, a := range desc.Ancestry {
 		mat.TreePaths = append(mat.TreePaths, a.TreePath)
 	}

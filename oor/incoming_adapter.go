@@ -164,8 +164,14 @@ func IncomingTransferEventFromResponseWithLimits(sessionID SessionID,
 	}
 
 	ancestors, err := packageArtifactsFromRPC(
-		recipientEvt.GetAncestorPackages(),
+		recipientEvt.GetAncestorPackages(), limits,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	root := packageArtifactForValidation(sessionID, arkPSBT, checkpoints)
+	err = validateIncomingPackageGraph(root, ancestors)
 	if err != nil {
 		return nil, err
 	}
@@ -181,8 +187,8 @@ func IncomingTransferEventFromResponseWithLimits(sessionID SessionID,
 // packageArtifactsFromRPC converts RPC package artifacts into domain
 // artifacts after enforcing the same bounded-shape policy as checkpoint
 // parsing.
-func packageArtifactsFromRPC(pkgs []*arkrpc.OORSessionPackage) (
-	[]PackageArtifact, error) {
+func packageArtifactsFromRPC(pkgs []*arkrpc.OORSessionPackage,
+	limits ReceiveLimits) ([]PackageArtifact, error) {
 
 	const maxAncestorPackages = 64
 	if len(pkgs) > maxAncestorPackages {
@@ -190,6 +196,7 @@ func packageArtifactsFromRPC(pkgs []*arkrpc.OORSessionPackage) (
 			"limit %d", len(pkgs), maxAncestorPackages)
 	}
 
+	limits = normalizeReceiveLimits(limits)
 	artifacts := make([]PackageArtifact, 0, len(pkgs))
 	for i := range pkgs {
 		pkg := pkgs[i]
@@ -207,6 +214,14 @@ func packageArtifactsFromRPC(pkgs []*arkrpc.OORSessionPackage) (
 		if err != nil {
 			return nil, fmt.Errorf("parse ancestor package ark "+
 				"psbt %d: %w", i, err)
+		}
+
+		if uint64(len(pkg.GetCheckpointPsbts())) >
+			uint64(limits.MaxCheckpoints) {
+			return nil, fmt.Errorf("ancestor package %d "+
+				"checkpoint count %d exceeds limit %d", i,
+				len(pkg.GetCheckpointPsbts()),
+				limits.MaxCheckpoints)
 		}
 
 		checkpoints := make(

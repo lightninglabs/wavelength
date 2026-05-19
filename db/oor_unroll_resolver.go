@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -226,7 +227,13 @@ func resolveInputPackage(ctx context.Context, q OORArtifactStore,
 	}
 
 	// Fall back to a session-id lookup for foreign-owned ancestors that
-	// the local wallet only has session-keyed visibility into.
+	// the local wallet only has session-keyed visibility into. Ancestor
+	// packages persisted under a session id are operator/indexer-supplied
+	// artifacts without a local outpoint binding, so we must re-verify the
+	// txid binding and the referenced output at read time before treating
+	// the package as the parent of an unroll-chain input. Trusting only
+	// the stored session id would let a poisoned row claim ancestry for
+	// any checkpoint input whose previous hash matches its session id.
 	pkg, err = loadPackageBundleBySessionID(ctx, q, input.Hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, true, nil
@@ -235,11 +242,39 @@ func resolveInputPackage(ctx context.Context, q OORArtifactStore,
 		return nil, false, err
 	}
 
-	if !packageCreatesOutput(pkg, input.Index) {
+	if !packageProducesAncestorOutput(pkg, input.Hash, input.Index) {
 		return nil, true, nil
 	}
 
 	return pkg, false, nil
+}
+
+// packageProducesAncestorOutput reports whether the foreign-ancestor package
+// actually produces the referenced checkpoint-input outpoint. It rejects:
+//
+//   - packages whose stored Ark transaction does not actually hash to the
+//     requested session id (txid binding mismatch from a tampered or
+//     mismatched row),
+//   - output indices outside the package's TxOut range,
+//   - references that land on the Ark anchor output, which is never a
+//     spendable VTXO and so cannot be a real ancestor checkpoint input.
+func packageProducesAncestorOutput(pkg *OORPackageBundle,
+	expectedTxid chainhash.Hash, index uint32) bool {
+
+	if pkg == nil || pkg.ArkPSBT == nil || pkg.ArkPSBT.UnsignedTx == nil {
+		return false
+	}
+
+	tx := pkg.ArkPSBT.UnsignedTx
+	if tx.TxHash() != expectedTxid {
+		return false
+	}
+
+	if index >= uint32(len(tx.TxOut)) {
+		return false
+	}
+
+	return !arktx.IsAnchorOutput(tx.TxOut[index])
 }
 
 // checkpointInputOutpoints returns de-duplicated checkpoint input outpoints
@@ -326,16 +361,6 @@ func loadPackageBundleBySessionID(ctx context.Context, q OORArtifactStore,
 	}
 
 	return materializePackageBundle(ctx, q, row)
-}
-
-// packageCreatesOutput reports whether the package's Ark transaction has the
-// output index referenced by a child checkpoint input.
-func packageCreatesOutput(pkg *OORPackageBundle, index uint32) bool {
-	if pkg == nil || pkg.ArkPSBT == nil || pkg.ArkPSBT.UnsignedTx == nil {
-		return false
-	}
-
-	return int(index) < len(pkg.ArkPSBT.UnsignedTx.TxOut)
 }
 
 // loadPackageBundleByCreatedOutputOutpoint resolves a full package bundle

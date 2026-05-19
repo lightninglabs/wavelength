@@ -69,13 +69,6 @@ func TestValidateProofDescriptorRejectsMalformedAncestry(t *testing.T) {
 			wantReason: "fragment 0 missing commitment txid",
 		},
 		{
-			name: "fragment 0 zero tree depth",
-			mutate: func(d *vtxo.Descriptor) {
-				d.Ancestry[0].TreeDepth = 0
-			},
-			wantReason: "ancestry fragment 0 has zero tree depth",
-		},
-		{
 			name: "fragment 1 nil tree path (multi-fragment)",
 			mutate: func(d *vtxo.Descriptor) {
 				d.Ancestry = append(d.Ancestry, vtxo.Ancestry{
@@ -100,6 +93,48 @@ func TestValidateProofDescriptorRejectsMalformedAncestry(t *testing.T) {
 			require.Contains(t, err.Error(), tc.wantReason)
 		})
 	}
+}
+
+// TestValidateProofDescriptorAcceptsZeroTreeDepth is the regression
+// guard for #372 ("Untrusted zero tree depth can block unroll
+// proofs"). TreeDepth is expiry-timing metadata, not proof material —
+// the proof assembler walks TreePath directly. A malicious indexer
+// that supplies a non-empty TreePath but a defaulted/forged TreeDepth
+// of zero must NOT prevent unilateral exit; otherwise the operator
+// can strand otherwise-recoverable funds simply by zeroing one
+// scalar.
+//
+// The test also asserts the gate has no sticky state: repeated calls
+// with the same zero-depth descriptor keep succeeding, so an unroll
+// retry after a transient failure earlier in the pipeline still
+// reaches proof assembly.
+func TestValidateProofDescriptorAcceptsZeroTreeDepth(t *testing.T) {
+	t.Parallel()
+
+	desc := &vtxo.Descriptor{
+		CommitmentTxID: chainhash.HashH([]byte("commit")),
+		RoundID:        "round-1",
+		CreatedHeight:  100,
+		BatchExpiry:    1000,
+		RelativeExpiry: 144,
+		Status:         vtxo.VTXOStatusLive,
+		Ancestry: []vtxo.Ancestry{{
+			TreePath: &tree.Tree{
+				Root: &tree.Node{},
+			},
+			CommitmentTxID: chainhash.HashH([]byte("frag")),
+			// Zero TreeDepth: hostile/legacy/forged indexer value.
+			// Proof assembly only needs TreePath, so this must
+			// pass.
+			TreeDepth: 0,
+		}},
+	}
+
+	// Two calls in a row exercise the "no sticky state" invariant:
+	// the unroll boundary cannot persist a rejection from one call
+	// into the next.
+	require.NoError(t, validateProofDescriptor(desc))
+	require.NoError(t, validateProofDescriptor(desc))
 }
 
 // TestValidateProofDescriptorAcceptsWellFormedMultiFragment is the

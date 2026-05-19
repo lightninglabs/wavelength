@@ -344,6 +344,19 @@ func (s *OORArtifactPersistenceStore) UpsertPackage(ctx context.Context,
 				)
 			}
 
+			samePayload, err := sameOORPackagePayload(
+				ctx, q, existing, arkRaw, rawCheckpoints,
+			)
+			if err != nil {
+				return err
+			}
+			if !samePayload {
+				return fmt.Errorf("oor package %x already "+
+					"exists with different payload", id)
+			}
+
+			return nil
+
 		case errors.Is(err, sql.ErrNoRows):
 			// New package insert path.
 
@@ -1275,6 +1288,39 @@ func validatePackageDirection(direction OORPackageDirection) error {
 		return fmt.Errorf("unsupported package direction: %d",
 			direction)
 	}
+}
+
+// sameOORPackagePayload reports whether an existing package row already holds
+// the exact serialized payload being upserted.
+func sameOORPackagePayload(ctx context.Context, q OORArtifactStore,
+	existing sqlc.OorPackage, arkRaw []byte,
+	rawCheckpoints [][]byte) (bool, error) {
+
+	if !bytes.Equal(existing.ArkPsbt, arkRaw) {
+		return false, nil
+	}
+
+	existingCheckpoints, err := q.ListOORPackageCheckpoints(
+		ctx, existing.SessionID,
+	)
+	if err != nil {
+		return false, err
+	}
+
+	if len(existingCheckpoints) != len(rawCheckpoints) {
+		return false, nil
+	}
+
+	for i := range rawCheckpoints {
+		if !bytes.Equal(
+			existingCheckpoints[i].CheckpointPsbt,
+			rawCheckpoints[i],
+		) {
+			return false, nil
+		}
+	}
+
+	return true, nil
 }
 
 func packageDirectionCode(direction OORPackageDirection) (int32, error) {

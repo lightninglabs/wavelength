@@ -81,6 +81,14 @@ func (s *Server) serverClientTLSCerts() ([]tls.Certificate, error) {
 		return nil, fmt.Errorf("generate client TLS cert: %w", err)
 	}
 
+	// Cache the leaf SubjectPublicKeyInfo bytes so the mailbox
+	// transport can sign over them and the server can verify the
+	// secp256k1 identity is bound to the TLS leaf it observes
+	// (issue #448).
+	if clientCert.Leaf != nil {
+		s.tlsLeafSPKI = clientCert.Leaf.RawSubjectPublicKeyInfo
+	}
+
 	return []tls.Certificate{clientCert}, nil
 }
 

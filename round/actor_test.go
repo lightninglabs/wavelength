@@ -1174,14 +1174,33 @@ func TestActorBuffersEarlyQuote(t *testing.T) {
 	roundID := testRoundID("early-quote")
 
 	// Send the quote BEFORE RoundJoined.
+	//
+	// We have a single boarding input of 50_000 sat and a single
+	// matching VTXO output. The lone output is implicit change
+	// under the #270 protocol (IsChange=false on the lone VTXO), so
+	// the server treats the lone slot as implicit change and stamps
+	// (Amount − OperatorFeeSat) on it. Mirror that here so
+	// validateQuoteEchoes accepts -- the previously-loose
+	// implicit-change shortcut would have accepted any AmountSat,
+	// but issue #378 tightened the rule to require the exact
+	// (Amount − fee) deviation. Quoting the lone (i==0) slot down
+	// by OperatorFeeSat also keeps the realised fee
+	// (Σinputs−Σoutputs) in agreement with OperatorFeeSat — see
+	// #379.
+	const operatorFeeSat = int64(1_000)
 	vtxoQuotes := make([]VTXOQuoteEntry, len(vtxos))
 	for i, v := range vtxos {
 		script, err := v.EffectivePkScript()
 		require.NoError(t, err)
 
+		amount := int64(v.Amount)
+		if i == 0 {
+			amount -= operatorFeeSat
+		}
+
 		vtxoQuotes[i] = VTXOQuoteEntry{
 			PkScript:     script,
-			AmountSat:    int64(v.Amount),
+			AmountSat:    amount,
 			RecipientKey: v.SigningKey.PubKey.SerializeCompressed(),
 		}
 	}
@@ -1193,7 +1212,7 @@ func TestActorBuffersEarlyQuote(t *testing.T) {
 
 	quote := &ClientQuote{
 		QuoteID:        quoteID,
-		OperatorFeeSat: 1_000,
+		OperatorFeeSat: operatorFeeSat,
 		VTXOQuotes:     vtxoQuotes,
 	}
 
