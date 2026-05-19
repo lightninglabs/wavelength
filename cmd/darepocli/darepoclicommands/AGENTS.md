@@ -39,6 +39,18 @@ The CLI surface is split into three tiers:
 | `mcp` | (local) | MCP server exposing the schema as tools |
 | `dev *` | dev RPC | Generated dev RPC CLI (see `devrpc/`) |
 
+Every generated `dev <service> <method>` leaf accepts `--describe`:
+when set, it emits a JSON schema for the method's input fields and
+returns without dispatching the RPC. The schema includes the fully-
+qualified request / response type names, server-streaming bit, and
+one row per flag (path, type, repeated, oneof_group, enum_values).
+This is the agent-CLI equivalent of the root `schema` command for
+the auto-generated dev tree: agents can learn the surface of a
+proto change without recompiling or grepping `.proto` sources. The
+implementation lives in `devrpc/describe.go` and reuses the same
+fieldBinder list that powers the CLI flag surface, so the describe
+output cannot drift from what `--help` advertises.
+
 ### `ark.*` advanced commands
 
 The everyday wallet verbs compose `walletrpc` end-to-end; the `ark`

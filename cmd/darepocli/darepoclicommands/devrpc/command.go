@@ -82,6 +82,20 @@ func newMethodCmd(cfg Config, service protoreflect.FullName,
 		Long:    method.spec.Comments,
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// --describe short-circuits dispatch and dumps the
+			// agent-CLI schema for this method. The flag is the
+			// dev tree's equivalent of the root `schema` command:
+			// it teaches an agent the exact input shape before
+			// the first invocation.
+			describe, _ := cmd.Flags().GetBool("describe")
+			if describe {
+				desc := describeMethod(
+					service, method, binders,
+				)
+
+				return printMethodDescription(desc)
+			}
+
 			return runMethod(cmd, cfg, service, method, binders)
 		},
 	}
@@ -92,6 +106,10 @@ func newMethodCmd(cfg Config, service protoreflect.FullName,
 
 	cmd.InitDefaultHelpFlag()
 	cmd.Flags().SortFlags = false
+
+	cmd.Flags().Bool("describe", false,
+		"emit the JSON schema for this method's input fields "+
+			"(does not dispatch the RPC)")
 
 	for i := range binders {
 		binders[i].register(cmd)
