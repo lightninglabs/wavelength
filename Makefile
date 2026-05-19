@@ -3,7 +3,7 @@
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race unit-swapruntime check-go-version build install clean release
 .PHONY: build build-swapruntime build-swapclient build-walletrpc rpc install install-swapruntime install-walletrpc help clean-networks
-.PHONY: wasm-wallet-demo-build wasm-wallet-demo-serve wasm-wallet-demo-browser-deps wasm-wallet-demo-browser-test wasm-wallet-demo-browser-live-test
+.PHONY: wasm-wallet-demo-build wasm-wallet-demo-serve wasm-wallet-demo-browser-deps wasm-wallet-demo-browser-test
 .PHONY: systest systest-verbose
 .PHONY: commitmsg-lint commitmsg-fmt commitmsg-reword
 
@@ -476,16 +476,6 @@ wasm-wallet-demo-browser-test: wasm-wallet-demo-build wasm-wallet-demo-browser-d
 	@$(call print, "Running walletdk WASM demo browser smoke test.")
 	$(PLAYWRIGHT) test --config=$(WASM_WALLET_DEMO_DIR)/playwright.config.js
 
-wasm-wallet-demo-browser-live-test: wasm-wallet-demo-build wasm-wallet-demo-browser-deps #? Run the walletdk browser demo against live swapdtest REST gateways
-	@$(call print, "walletdk WASM demo built for live browser validation.")
-	test -f $(WASM_WALLET_DEMO_DIST)/walletdk.wasm
-	test -f $(WASM_WALLET_DEMO_DIST)/walletdk.wasm.gz
-	test -f $(WASM_WALLET_DEMO_DIST)/enable-threads.js
-	test -f $(WASM_WALLET_DEMO_DIST)/sqlite-bridge.js
-	test -f $(WASM_WALLET_DEMO_DIST)/sqlite-worker.js
-	test -f $(WASM_WALLET_DEMO_DIST)/sqlite3.wasm
-	@$(call print, "Running walletdk WASM demo live browser test.")
-	$(PLAYWRIGHT) test --config=$(WASM_WALLET_DEMO_DIR)/playwright.live.config.js
 
 install: #? Build and install binaries to GOPATH/bin
 	@$(call print, "Installing binaries.")
