@@ -1295,7 +1295,7 @@ func (c *clientHarness) createVTXORequest(
 	keyDesc := &keychain.KeyDescriptor{
 		PubKey: signingKey,
 		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamilyMultiSig,
+			Family: types.VTXOSigningKeyFamily,
 			Index:  uint32(c.nextKeyIndex),
 		},
 	}

@@ -114,6 +114,12 @@ type harnessConfig struct {
 	// any other DriverCfg field that does not have a dedicated
 	// HarnessOption.
 	oorDriverMutator func(cfg *oor.DriverCfg)
+
+	// fixedOperatorKeyLocator derives the operator key from the same fixed
+	// locator production uses. This is intentionally opt-in because most
+	// systests rely on DeriveNextKey to keep server and client key streams
+	// separated.
+	fixedOperatorKeyLocator bool
 }
 
 // systestStaticFeeRate is the sat/kW chain fee rate every systest
@@ -126,6 +132,20 @@ type harnessConfig struct {
 // silently re-open the pre-#269 "operator fee below minimum"
 // rejection.
 const systestStaticFeeRate = chainfee.SatPerKWeight(2000)
+
+const (
+	// systestArkSweepKeyFamily mirrors darepo.keyFamilyArkSweep without
+	// exporting production internals into the systest package.
+	systestArkSweepKeyFamily = keychain.KeyFamily(200)
+
+	// systestArkOperatorKeyFamily mirrors darepo.keyFamilyArkOperator
+	// without exporting production internals into the systest package.
+	systestArkOperatorKeyFamily = keychain.KeyFamily(201)
+
+	// systestOORReceiveKeyFamily mirrors darepod's OOR receive key family
+	// without exporting client internals into the systest package.
+	systestOORReceiveKeyFamily = keychain.KeyFamily(987_200)
+)
 
 // defaultSystestFeeSchedule returns the canonical non-zero
 // schedule systests run against unless a test opts out via
@@ -213,6 +233,14 @@ func DisableFees() HarnessOption {
 func WithOORDriverMutator(fn func(cfg *oor.DriverCfg)) HarnessOption {
 	return func(cfg *harnessConfig) {
 		cfg.oorDriverMutator = fn
+	}
+}
+
+// WithFixedOperatorKeyLocator derives the operator and sweep keys from the
+// fixed locators production uses.
+func WithFixedOperatorKeyLocator() HarnessOption {
+	return func(cfg *harnessConfig) {
+		cfg.fixedOperatorKeyLocator = true
 	}
 }
 
@@ -1035,11 +1063,26 @@ func (h *E2EHarness) newOORRecipientNotifier() oor.RecipientNotifier {
 }
 
 // getOperatorKeyFromLND derives the operator key from the server's LND using
-// the multi-sig key family. Returns a key descriptor with both locator and
-// public key.
+// Darepo's dedicated operator key family. Returns a key descriptor with both
+// locator and public key.
 func (h *E2EHarness) getOperatorKeyFromLND() *keychain.KeyDescriptor {
+	if h.cfg.fixedOperatorKeyLocator {
+		keyDesc, err := h.serverLNDServices.WalletKit.DeriveKey(
+			h.ctx, &keychain.KeyLocator{
+				Family: systestArkOperatorKeyFamily,
+				Index:  1,
+			},
+		)
+		require.NoError(
+			h.t, err,
+			"failed to derive fixed operator key from server LND",
+		)
+
+		return keyDesc
+	}
+
 	keyDesc, err := h.serverLNDServices.WalletKit.DeriveNextKey(
-		h.ctx, int32(keychain.KeyFamilyMultiSig),
+		h.ctx, int32(systestArkOperatorKeyFamily),
 	)
 	require.NoError(
 		h.t, err, "failed to derive operator key from server LND",
@@ -1048,12 +1091,27 @@ func (h *E2EHarness) getOperatorKeyFromLND() *keychain.KeyDescriptor {
 	return keyDesc
 }
 
-// getSweepKeyFromLND derives the sweep key from the server's LND using the
-// multi-sig key family. Returns a key descriptor with both locator and public
-// key.
+// getSweepKeyFromLND derives the sweep key from the server's LND using
+// Darepo's dedicated sweep key family. Returns a key descriptor with both
+// locator and public key.
 func (h *E2EHarness) getSweepKeyFromLND() *keychain.KeyDescriptor {
+	if h.cfg.fixedOperatorKeyLocator {
+		keyDesc, err := h.serverLNDServices.WalletKit.DeriveKey(
+			h.ctx, &keychain.KeyLocator{
+				Family: systestArkSweepKeyFamily,
+				Index:  1,
+			},
+		)
+		require.NoError(
+			h.t, err,
+			"failed to derive fixed sweep key from server LND",
+		)
+
+		return keyDesc
+	}
+
 	keyDesc, err := h.serverLNDServices.WalletKit.DeriveNextKey(
-		h.ctx, int32(keychain.KeyFamilyMultiSig),
+		h.ctx, int32(systestArkSweepKeyFamily),
 	)
 	require.NoError(h.t, err, "failed to derive sweep key from server LND")
 

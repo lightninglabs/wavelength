@@ -79,6 +79,15 @@ var (
 	// been used in the batch.
 	ErrSigningKeyNotUnique = errors.New("signing key is not unique")
 
+	// ErrSigningKeyMatchesOperator is returned when the client's VTXO
+	// signing key is the operator's MuSig2 key.
+	ErrSigningKeyMatchesOperator = errors.New("signing key matches " +
+		"operator key")
+
+	// ErrSigningKeyMissing is returned when a VTXO request does not
+	// include a signing public key.
+	ErrSigningKeyMissing = errors.New("signing key is missing")
+
 	// ErrVTXODescriptorConstruction is returned when creating a VTXO
 	// descriptor fails.
 	ErrVTXODescriptorConstruction = errors.New("failed to create VTXO " +
@@ -1001,6 +1010,7 @@ func validateBoardingTxProof(env *Environment, req *types.BoardingRequest,
 //   - The amount is within the min/max bounds.
 //   - The expiry meets the minimum VTXOExitDelay.
 //   - The operator key matches this operator.
+//   - The signing key is not the operator's MuSig2 key.
 //   - The signing key is unique (not already used in the batch).
 //   - The pkScript matches the expected VTXO descriptor.
 //
@@ -1018,6 +1028,18 @@ func ValidateVTXORequest(terms *batch.Terms, req *types.VTXORequest,
 	if req.Amount > terms.MaxVTXOAmount {
 		return nil, fmt.Errorf("%w: got %v, want %v",
 			ErrVTXOAmountTooHigh, req.Amount, terms.MaxVTXOAmount)
+	}
+
+	if req.SigningKey.PubKey == nil {
+		return nil, ErrSigningKeyMissing
+	}
+
+	// The client and operator must be different MuSig2 signers. Compare
+	// x-only keys because the tree builder dedupes by the schnorr key and
+	// MuSig2 signing fails later if both roles collapse to one signer.
+	if sameXOnlyKey(req.SigningKey.PubKey, terms.OperatorKey.PubKey) {
+		return nil, fmt.Errorf("%w: %x", ErrSigningKeyMatchesOperator,
+			req.SigningKey.PubKey.SerializeCompressed())
 	}
 
 	// Verify signing key is unique for this batch.

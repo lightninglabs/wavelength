@@ -36,10 +36,20 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// keyFamilyArkSweep is a dedicated LND key family for the operator's
-// batch sweep key. Using a separate family from the MuSig2 operator key
-// avoids key-resolution ambiguity in the lndclient signing layer.
-const keyFamilyArkSweep = keychain.KeyFamily(200)
+const (
+	// keyFamilyArkSweep is a dedicated LND key family for the operator's
+	// batch sweep key. Using a separate family from the MuSig2 operator key
+	// avoids key-resolution ambiguity in the lndclient signing layer.
+	keyFamilyArkSweep = keychain.KeyFamily(200)
+
+	// keyFamilyArkOperator is the dedicated LND key family for the Ark
+	// operator's MuSig2 tree-signing key. This must stay disjoint from all
+	// client-side key families so a process using the same LND as both
+	// server and client cannot derive the same x-only public key for both
+	// signer roles. The non-zero index ensures lndclient sends both the
+	// public key and locator to LND's signer.
+	keyFamilyArkOperator = keychain.KeyFamily(201)
+)
 
 // setupRoundsSubsystem initializes the timeout actor, batch watcher,
 // and rounds actor. The rounds actor drives the round FSM lifecycle:
@@ -103,12 +113,12 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	bwLog := subLogger(s.cfg.Loggers, batchwatcher.Subsystem)
 	oorLog := subLogger(s.cfg.Loggers, oor.Subsystem)
 
-	// Derive the operator key from the multi-sig family. This is
-	// used for MuSig2 tree signing and the connector address.
+	// Derive the operator key from Darepo's operator family. This is used
+	// for MuSig2 tree signing and the connector address.
 	operatorKeyDesc, err := s.lnd.WalletKit.DeriveKey(
 		ctx, &keychain.KeyLocator{
-			Family: keychain.KeyFamilyMultiSig,
-			Index:  0,
+			Family: keyFamilyArkOperator,
+			Index:  1,
 		},
 	)
 	if err != nil {
