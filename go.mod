@@ -25,7 +25,7 @@ require (
 	github.com/lightninglabs/darepo-client/baselib v0.0.0-00010101000000-000000000000
 	github.com/lightninglabs/lndclient v0.21.0-rc1
 	github.com/lightninglabs/loop v0.33.0-beta
-	github.com/lightninglabs/neutrino v0.16.2
+	github.com/lightninglabs/neutrino v0.16.3-0.20260508212153-0f87fa7c4b36
 	github.com/lightninglabs/neutrino/cache v1.1.3
 	github.com/lightninglabs/taproot-assets v0.7.0
 	github.com/lightninglabs/taproot-assets/taprpc v1.0.11
@@ -117,7 +117,6 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgtype v1.14.4 // indirect
 	github.com/jackc/pgx/v4 v4.18.3 // indirect
-	github.com/jackc/puddle v1.3.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jackpal/gateway v1.0.5 // indirect
 	github.com/jackpal/go-nat-pmp v0.0.0-20170405195558-28a68d0c24ad // indirect
@@ -229,3 +228,5 @@ replace github.com/lightninglabs/darepo-client/baselib => ./baselib
 // Keep btcwallet aligned with the 0.21 lnd/lndclient stack while
 // taproot-assets still requires the released v0.16.17 tag.
 replace github.com/btcsuite/btcwallet => github.com/btcsuite/btcwallet v0.16.17-0.20260213031108-70a94ea39e9c
+
+replace github.com/lightningnetwork/lnd => github.com/Roasbeef/lnd v0.2.1-alpha.0.20260519020246-a51e81ce495f
