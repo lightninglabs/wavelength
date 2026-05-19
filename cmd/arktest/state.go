@@ -40,6 +40,10 @@ type arkClientState struct {
 type harnessState struct {
 	StartedAt string `json:"started_at"`
 
+	// Pid is the OS PID of the `arktest start` process. Stamped on
+	// start, used by `arktest stop` to signal the harness.
+	Pid int `json:"pid,omitempty"`
+
 	DataDir      string `json:"datadir"`
 	StateFile    string `json:"state_file"`
 	ArtifactsDir string `json:"artifacts_dir"`
@@ -50,11 +54,12 @@ type harnessState struct {
 	ArkRPCAddr   string `json:"ark_rpc_addr"`
 	EsploraURL   string `json:"esplora_url"`
 
-	BitcoindRPC      string `json:"bitcoind_rpc"`
-	BitcoindRPCUser  string `json:"bitcoind_rpc_user"`
-	BitcoindRPCPass  string `json:"bitcoind_rpc_pass"`
-	BitcoindZMQBlock string `json:"bitcoind_zmq_block"`
-	BitcoindZMQTx    string `json:"bitcoind_zmq_tx"`
+	BitcoindRPC           string `json:"bitcoind_rpc"`
+	BitcoindRPCUser       string `json:"bitcoind_rpc_user"`
+	BitcoindRPCPass       string `json:"bitcoind_rpc_pass"`
+	BitcoindZMQBlock      string `json:"bitcoind_zmq_block"`
+	BitcoindZMQTx         string `json:"bitcoind_zmq_tx"`
+	BitcoindContainerName string `json:"bitcoind_container_name"`
 
 	OperatorLND lndState `json:"operator_lnd"`
 

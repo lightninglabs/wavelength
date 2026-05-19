@@ -375,6 +375,44 @@ func TestRefreshIntegrationAllSelectionQueuesLiveOutpoints(t *testing.T) {
 	)
 	require.NoError(t, err, "RefreshVTXOs RPC failed")
 	require.Equal(t, "queued", refreshResp.Status)
-	require.Contains(t, refreshResp.QueuedOutpoints, liveVTXO1.Outpoint)
-	require.Contains(t, refreshResp.QueuedOutpoints, liveVTXO2.Outpoint)
+	require.ElementsMatch(
+		t, []string{liveVTXO1.Outpoint, liveVTXO2.Outpoint},
+		refreshResp.QueuedOutpoints, "--all should queue exactly "+
+			"the live outpoints, not more or fewer",
+	)
+
+	// Verify the wallet actually accepted the refresh intent for both
+	// outpoints — without this side-effect check, a regression where
+	// the handler reports `queued_outpoints` without ever calling the
+	// wallet (synthesized response, the original bug-1 shape) would
+	// still pass.
+	waitForVTXOStatusByOutpoint(
+		t, alice.RPCClient, liveVTXO1.Outpoint,
+		daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT,
+	)
+	waitForVTXOStatusByOutpoint(
+		t, alice.RPCClient, liveVTXO2.Outpoint,
+		daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT,
+	)
+
+	// A second `refresh --all` while every VTXO is already pending-
+	// forfeit must NOT re-queue anything — pending-forfeit outpoints
+	// are non-terminal but they are not eligible for a fresh refresh.
+	// The original bug-1 shape returned the same outpoints on every
+	// call because the handler synthesised `queued_outpoints` from a
+	// live-VTXO snapshot that ignored in-flight state.
+	secondResp, err := alice.RPCClient.RefreshVTXOs(
+		t.Context(), &daemonrpc.RefreshVTXOsRequest{
+			Selection: &daemonrpc.RefreshVTXOsRequest_All{
+				All: true,
+			},
+		},
+	)
+	require.NoError(t, err, "second RefreshVTXOs RPC failed")
+	require.Equal(t, "queued", secondResp.Status)
+	require.Empty(
+		t, secondResp.QueuedOutpoints, "second refresh --all "+
+			"should report no queued outpoints while the first "+
+			"refresh is still pending forfeit",
+	)
 }

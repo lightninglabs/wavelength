@@ -1137,6 +1137,14 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	mailboxEdge := h.clientMailboxEdge(ClientDaemonName(name))
 	cfg.MailboxEdgeFactory = newEdgeFactory(mailboxEdge)
 
+	// Wire the optional swap + walletrpc subservers when this binary
+	// is built with the walletrpc + swapruntime tags. Mirrors the
+	// equivalent configureSwapRuntime + configureWalletRPC calls in
+	// cmd/darepod, so the harness-spawned daemon registers the same
+	// gRPC subservers as a production walletrpc-tagged binary would.
+	// Falls through to a no-op when either tag is unset.
+	configureClientWalletRPC(cfg)
+
 	require.NoError(h.T, cfg.Validate())
 
 	server, err := clientdarepod.NewServer(cfg)

@@ -147,7 +147,8 @@ func (s *MailboxEnvelopeStore) Append(ctx context.Context,
 		return 0, fmt.Errorf("append envelope: %w", dbErr)
 	}
 
-	s.log.DebugS(ctx, "Appended envelope",
+	s.log.TraceS(
+		ctx, "Appended envelope",
 		slog.String("recipient", env.Recipient),
 		slog.Int64("seq", seq),
 	)

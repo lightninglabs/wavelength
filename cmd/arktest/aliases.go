@@ -53,6 +53,9 @@ func printEnv(out io.Writer, s *harnessState) {
 	export(out, "ARK_ADMIN", s.ArkAdminAddr)
 	export(out, "ARK_RPC", s.ArkRPCAddr)
 	export(out, "BITCOIND_RPC", s.BitcoindRPC)
+	export(out, "BITCOIND_RPC_USER", s.BitcoindRPCUser)
+	export(out, "BITCOIND_RPC_PASS", s.BitcoindRPCPass)
+	export(out, "BITCOIND_CONTAINER", s.BitcoindContainerName)
 	export(out, "ESPLORA_URL", s.EsploraURL)
 
 	names := make([]string, 0, len(s.Clients))
@@ -87,6 +90,20 @@ func printAliases(out io.Writer, s *harnessState) {
 	fmt.Fprintln(out, `  "$ARKTEST_ARKCLI" \`)
 	fmt.Fprintln(out, `    --rpcserver="$ARKTEST_ARK_ADMIN" \`)
 	fmt.Fprintln(out, `    --no-tls "$@"`)
+	fmt.Fprintln(out, `}`)
+
+	// btc wraps bitcoin-cli inside the harness bitcoind container so
+	// callers don't have to remember the container name, regtest flag,
+	// or RPC credentials. Use it like any bitcoin-cli invocation:
+	//   btc getblockcount
+	//   btc sendtoaddress bcrt1q... 0.001
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, `btc() {`)
+	fmt.Fprintln(out, `  docker exec "$ARKTEST_BITCOIND_CONTAINER" \`)
+	fmt.Fprintln(out, `    bitcoin-cli -regtest \`)
+	fmt.Fprintln(out, `    -rpcuser="$ARKTEST_BITCOIND_RPC_USER" \`)
+	fmt.Fprintln(out, `    -rpcpassword="$ARKTEST_BITCOIND_RPC_PASS" \`)
+	fmt.Fprintln(out, `    "$@"`)
 	fmt.Fprintln(out, `}`)
 
 	names := make([]string, 0, len(s.Clients))

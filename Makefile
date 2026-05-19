@@ -494,11 +494,27 @@ install: #? Build and install binaries to GOPATH/bin
 	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/arkd
 	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/arkcli
 
+# ARKTEST_TAGS are layered on top of $(DEV_TAGS) for the arktest harness
+# and the darepocli it ships with. The harness exists to manually
+# exercise the user-facing surface, which today lives behind these
+# subservers:
+#   - swapruntime: the daemon-owned Lightning swap executor.
+#   - walletrpc:   the flat user-facing wallet API (balance / recv /
+#                  send / list / create / unlock / mcp). Composes over
+#                  swapruntime; building one without the other is a
+#                  deliberate compile error.
+# Without them, every top-level darepocli verb errors out at first
+# contact with the daemon, which makes the harness useless for the very
+# thing it exists for. Keep the tags around in standalone make targets
+# (`make build`, `make build-swapruntime`, etc.) for non-testing builds
+# that want a slimmer binary.
+ARKTEST_TAGS := walletrpc swapruntime
+
 arktest: #? Build the arktest manual integration harness and the matching arkcli + darepocli binaries
 	@$(call print, "Building arktest harness and CLI binaries.")
-	$(GOBUILD) -trimpath -tags="itest $(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./arktest ./cmd/arktest
+	$(GOBUILD) -trimpath -tags="itest $(ARKTEST_TAGS) $(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./arktest ./cmd/arktest
 	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./arkcli ./cmd/arkcli
-	cd client && $(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ../darepocli ./cmd/darepocli
+	cd client && $(GOBUILD) -trimpath -tags="$(ARKTEST_TAGS) $(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ../darepocli ./cmd/darepocli
 
 clean: #? Remove build artifacts
 	@$(call print, "Cleaning build artifacts.")
