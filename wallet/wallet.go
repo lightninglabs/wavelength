@@ -169,6 +169,23 @@ type Ark struct {
 	// a deterministic clock via WithClock; production wires the
 	// server-wide clock instance so all stores share one source of time.
 	clk clock.Clock
+
+	// eagerRoundJoin, when true, makes the wallet drive round-joining
+	// without waiting for an explicit Board/LeaveVTXOs RPC handshake.
+	// Two behaviors change:
+	//
+	//   - On every freshly confirmed boarding UTXO, the wallet runs the
+	//     standard handleBoard path inline so the confirmation directly
+	//     produces a TriggerBoardMsg for the round actor.
+	//   - Cooperative-leave intents are submitted with
+	//     TriggerRegistration=true so the round FSM advances out of
+	//     PendingRoundAssembly immediately instead of waiting for a
+	//     batched trigger.
+	//
+	// Wallet-shaped SDK hosts (walletdk) opt in so a "deposit funds"
+	// or "leave" interaction joins a round end-to-end without the host
+	// having to chase the second RPC.
+	eagerRoundJoin bool
 }
 
 // NewArk creates a new Ark wallet actor. The logger is optional and falls back
@@ -252,6 +269,20 @@ func WithBoardingSweep(store BoardingSweepStore, signer SweepSigner,
 func WithClock(clk clock.Clock) ArkOption {
 	return func(a *Ark) {
 		a.clk = clk
+	}
+}
+
+// WithEagerRoundJoin makes the wallet drive round-joining without waiting
+// for a follow-up Board or LeaveVTXOs RPC handshake. Freshly confirmed
+// boarding UTXOs run the standard handleBoard path inline, and
+// cooperative-leave intents are forwarded with TriggerRegistration=true
+// so the round FSM advances out of PendingRoundAssembly immediately.
+// Opt in from wallet-shaped SDK hosts that want a single user action to
+// translate into a full round join; leave off for daemons whose hosts
+// drive the second RPC themselves (e.g. darepocli).
+func WithEagerRoundJoin(enabled bool) ArkOption {
+	return func(a *Ark) {
+		a.eagerRoundJoin = enabled
 	}
 }
 
@@ -818,6 +849,25 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 		slog.Int("height", int(epoch.Height)),
 		slog.Int("utxo_count", len(lastUtxos)),
 	)
+
+	// Eager round-join: when at least one new boarding UTXO confirmed
+	// in this block, drive the normal Board path inline so the user
+	// does not have to chase a follow-up RPC. We coalesce per block
+	// (not per UTXO) so multiple confirmations in the same epoch
+	// produce one round join with all of them. handleBoard reads the
+	// current confirmed boarding set from the store, so it will pick
+	// up every UTXO that processUtxo just persisted above.
+	if foundNew && a.eagerRoundJoin {
+		boardRes := a.handleBoard(ctx, &BoardRequest{}).Unpack
+		if _, err := boardRes(); err != nil {
+			a.logger(ctx).WarnS(
+				ctx,
+				"Eager board on boarding confirmation failed",
+				err,
+				slog.Int("height", int(epoch.Height)),
+			)
+		}
+	}
 
 	// Kick a boarding-sweep resume retry on every block-epoch when the
 	// subsystem is enabled. The handler is idempotent: fully-recovered
@@ -1405,9 +1455,16 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 		serviceKey := actormsg.RoundActorServiceKey()
 		roundRef := serviceKey.Ref(a.actorSystem)
 
+		// Under eager round-join the leave is treated as an
+		// interactive operation: trigger registration immediately
+		// so the round FSM leaves PendingRoundAssembly without
+		// waiting for an external nudge. The default
+		// (TriggerRegistration=false) preserves the batched-leave
+		// semantics that operator-driven hosts rely on.
 		future := roundRef.Ask(ctx, &actormsg.RegisterIntentMsg{
-			Forfeits: forfeits,
-			Leaves:   leaves,
+			Forfeits:            forfeits,
+			Leaves:              leaves,
+			TriggerRegistration: a.eagerRoundJoin,
 		})
 		result := future.Await(ctx)
 		if result.IsErr() {
