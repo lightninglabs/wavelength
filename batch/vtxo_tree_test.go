@@ -12,6 +12,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	// testClientKeyStartIndex keeps synthetic client keys disjoint from
+	// the operator and sweep keys used by these tests.
+	testClientKeyStartIndex = 100
+)
+
 // makeVTXODescriptors creates n VTXO descriptors with unique client keys. Each
 // descriptor has an amount of baseAmount * (i+1) where i is the index.
 func makeVTXODescriptors(t *testing.T, n int, baseAmount btcutil.Amount,
@@ -36,7 +42,9 @@ func makeVTXODescriptorsWithKeys(t *testing.T, n int, baseAmount btcutil.Amount,
 	clientKeys := make([]*btcec.PublicKey, 0, n)
 
 	for i := 0; i < n; i++ {
-		clientKey, _ := testutils.CreateKey(int32(i))
+		clientKey, _ := testutils.CreateKey(
+			testClientKeyStartIndex + int32(i),
+		)
 		desc, err := tree.NewVTXODescriptor(
 			baseAmount*btcutil.Amount(i+1), clientKey, opKey, 144,
 		)
