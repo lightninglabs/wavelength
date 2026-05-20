@@ -631,6 +631,9 @@ Useful smoke shapes:
   --max-unrolls 3 \
   --max-reorgs 1 \
   --max-restarts 1 \
+  --client-restarts=true \
+  --operator-restarts=true \
+  --client-crashes=true \
   --mine-interval-min 2s \
   --mine-interval-max 8s \
   --duration 12m \

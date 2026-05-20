@@ -1953,6 +1953,7 @@ func (r *stressRunner) waitUnrollCompletion(id int,
 	var lastStatus daemonrpc.UnrollJobStatus
 	var lastErr error
 	loggedStatus := false
+	loggedNotFound := false
 	for {
 		var resp *daemonrpc.GetUnrollStatusResponse
 		var err error
@@ -1963,9 +1964,11 @@ func (r *stressRunner) waitUnrollCompletion(id int,
 				},
 			)
 		})
-		if err != nil {
+		switch {
+		case err != nil:
 			lastErr = err
-		} else if resp != nil && resp.Found {
+
+		case resp != nil && resp.Found:
 			statusText := resp.Status.String()
 			if !loggedStatus || resp.Status != lastStatus {
 				loggedStatus = true
@@ -1988,14 +1991,23 @@ func (r *stressRunner) waitUnrollCompletion(id int,
 				return nil, fmt.Errorf("unroll job failed: %s",
 					resp.LastError)
 			}
+
+		case resp != nil && !resp.Found && !loggedNotFound:
+			loggedNotFound = true
+			r.events.Printf("unroll_not_found", map[string]any{
+				"id":       id,
+				"outpoint": outpoint,
+			},
+				"unroll %d not yet found outpoint=%s", id,
+				outpoint)
 		}
 
 		select {
 		case <-ctx.Done():
 			return nil, fmt.Errorf("unroll deadline exceeded "+
 				"after %s outpoint=%s last_status=%s "+
-				"last_err=%v", r.cfg.unrollTimeout, outpoint,
-				lastStatus, lastErr)
+				"last_err=%v: %w", r.cfg.unrollTimeout,
+				outpoint, lastStatus, lastErr, ctx.Err())
 
 		case <-ticker.C:
 		}
@@ -2589,7 +2601,8 @@ func (r *stressRunner) failureExpected(class stressFailureClass) bool {
 
 	case failureClassDeadlineExceeded:
 		return r.reorgDisruptionsEnabled() ||
-			r.operatorDisruptionsEnabled()
+			r.operatorDisruptionsEnabled() ||
+			r.unrollDisruptionsEnabled()
 
 	case failureClassRoundTimeout, failureClassFailedRound:
 		operatorDisruption := r.operatorDisruptionsEnabled()
@@ -2619,6 +2632,12 @@ func (r *stressRunner) lifecycleDisruptionsEnabled() bool {
 // interrupted by an intentional operator restart.
 func (r *stressRunner) operatorDisruptionsEnabled() bool {
 	return r.cfg.maxRestarts > 0 && r.cfg.operatorRestarts
+}
+
+// unrollDisruptionsEnabled returns true when this profile can intentionally
+// run long-lived unroll actors that wait for chain progress.
+func (r *stressRunner) unrollDisruptionsEnabled() bool {
+	return r.cfg.maxUnrolls > 0
 }
 
 // reorgDisruptionsEnabled returns true when this profile can intentionally

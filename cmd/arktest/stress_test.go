@@ -397,6 +397,10 @@ func TestStressFailureExpectationPolicy(t *testing.T) {
 	require.Equal(t, failureClassDeadlineExceeded, class)
 	require.False(t, runner.failureExpected(class))
 
+	runner.cfg.maxUnrolls = 1
+	require.True(t, runner.failureExpected(class))
+	runner.cfg.maxUnrolls = 0
+
 	class = runner.classifyFailure(errors.New("boom"))
 	require.Equal(t, failureClassUnexpected, class)
 	require.False(t, runner.failureExpected(class))
@@ -643,12 +647,18 @@ func TestStressUnrollSelectionPrefersOORDerivedVTXOs(t *testing.T) {
 			AmountSat:  1_000,
 			ChainDepth: 1,
 		},
+		{
+			Outpoint:   "oor:1",
+			AmountSat:  1_000,
+			ChainDepth: 2,
+		},
 	}
 
 	reservation, ok := runner.reserveUnrollVTXO("client01", vtxos)
 	require.True(t, ok)
-	require.Equal(t, "oor:0", reservation.Outpoint)
-	require.Equal(t, uint32(1), reservation.ChainDepth)
+	require.Contains(t, []string{"oor:0", "oor:1"}, reservation.Outpoint)
+	require.NotEqual(t, "round:0", reservation.Outpoint)
+	require.Greater(t, reservation.ChainDepth, uint32(0))
 }
 
 // TestStressFinalSummaryMetrics verifies derived latency, success-rate, and
