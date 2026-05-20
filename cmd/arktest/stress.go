@@ -155,6 +155,7 @@ type stressConfig struct {
 	artifactsDir     string
 	groupName        string
 	clientWallet     string
+	operatorDB       string
 	lndImage         string
 	trace            bool
 	traceFile        string
@@ -201,6 +202,7 @@ type stressSummary struct {
 	DurationMS         int64          `json:"duration_ms"`
 	ArtifactsDir       string         `json:"artifacts_dir"`
 	Clients            int            `json:"clients"`
+	OperatorDB         string         `json:"operator_db"`
 	BoardAmountSat     int64          `json:"board_amount_sat"`
 	BoardVTXOs         int            `json:"board_vtxos_per_client"`
 	HarnessResult      string         `json:"harness_result"`
@@ -362,6 +364,10 @@ func newStressCmd() *cobra.Command {
 	f.StringVar(
 		&stressCfg.clientWallet, "client-wallet", defaultClientWallet,
 		"client daemon wallet backend: lnd, lwwallet, or btcwallet",
+	)
+	f.StringVar(
+		&stressCfg.operatorDB, "operator-db", "sqlite",
+		"operator database backend: sqlite or postgres",
 	)
 	f.StringVar(
 		&stressCfg.lndImage, "lnd-image", "",
@@ -562,6 +568,9 @@ func normalizeStressConfig(t *testing.T, cfg stressConfig) stressConfig {
 	if cfg.clientCount < 2 {
 		t.Fatalf("--clients must be at least 2")
 	}
+	if cfg.operatorDB != "sqlite" && cfg.operatorDB != "postgres" {
+		t.Fatalf("--operator-db must be sqlite or postgres")
+	}
 	if cfg.maxPayments < 0 || cfg.maxRounds < 0 || cfg.maxUnrolls < 0 ||
 		cfg.maxRestarts < 0 || cfg.maxReorgs < 0 {
 
@@ -701,6 +710,7 @@ func (r *stressRunner) start() {
 
 	hopts := &darepoharness.ArkHarnessOptions{
 		ClientOptions:          clientOpts,
+		OperatorDBBackend:      r.cfg.operatorDB,
 		ClientDaemonWalletType: r.cfg.clientWallet,
 		OperatorDebugLevel:     "debug",
 		ClientDebugLevel:       "debug",
@@ -729,6 +739,7 @@ func (r *stressRunner) start() {
 			"clients":     r.cfg.clientCount,
 			"concurrency": r.cfg.concurrency,
 			"wallet":      r.cfg.clientWallet,
+			"operator_db": r.cfg.operatorDB,
 			"group":       r.cfg.groupName,
 			"artifacts":   artifactsAbs,
 		})
@@ -758,11 +769,13 @@ func (r *stressRunner) start() {
 	}
 
 	r.events.Printf("ready", map[string]any{
-		"run_dir": r.state.RunDir,
-		"clients": r.names,
+		"run_dir":     r.state.RunDir,
+		"clients":     r.names,
+		"operator_db": r.cfg.operatorDB,
 	},
-		"arktest stress ready clients=%d artifacts=%s seed=%d",
-		len(r.names), r.state.RunDir, r.cfg.seed)
+		"arktest stress ready clients=%d operator_db=%s "+
+			"artifacts=%s seed=%d",
+		len(r.names), r.cfg.operatorDB, r.state.RunDir, r.cfg.seed)
 }
 
 // stop tears down the live topology and closes the sparse event artifact.
@@ -3843,6 +3856,7 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 	summary.DurationMS = completed.Sub(r.started).Milliseconds()
 	summary.ArtifactsDir = r.state.RunDir
 	summary.Clients = len(r.names)
+	summary.OperatorDB = r.cfg.operatorDB
 	summary.BoardAmountSat = r.cfg.boardAmount
 	summary.BoardVTXOs = r.cfg.boardVTXOs
 	summary.Concurrency = r.cfg.concurrency

@@ -101,6 +101,10 @@ type ArkHarnessOptions struct {
 	// ClientOptions are the options for the underlying client harness.
 	ClientOptions *client_harness.Options
 
+	// OperatorDBBackend selects the operator database backend. Valid values
+	// are "sqlite" and "postgres". Empty defaults to "sqlite".
+	OperatorDBBackend string
+
 	// SkipArkd when true prevents arkd from being started. This is useful
 	// for in-process e2e tests where the server actors are run directly as
 	// goroutines rather than through the arkd binary.
@@ -355,6 +359,14 @@ func (h *ArkHarness) SealRoundNow() string {
 // Start starts the harness infrastructure and optionally the in-process arkd
 // server (unless SkipArkd was set in options).
 func (h *ArkHarness) Start() {
+	operatorDB := h.operatorDBBackend()
+	if operatorDB == "postgres" {
+		oldPostgres := client_harness.SetPostgresEnabled(true)
+		// The client harness only needs this global enabled while it
+		// starts and provisions the shared Postgres container.
+		defer client_harness.SetPostgresEnabled(oldPostgres)
+	}
+
 	// Start the client harness first (bitcoind, lnd, tapd, electrs).
 	h.Harness.Start()
 
@@ -362,6 +374,15 @@ func (h *ArkHarness) Start() {
 	if !h.skipArkd {
 		h.startArkd()
 	}
+}
+
+// operatorDBBackend returns the configured operator database backend.
+func (h *ArkHarness) operatorDBBackend() string {
+	if h.opts == nil || h.opts.OperatorDBBackend == "" {
+		return "sqlite"
+	}
+
+	return h.opts.OperatorDBBackend
 }
 
 // Stop stops the arkd server (if started) and then the underlying
@@ -442,6 +463,23 @@ func (h *ArkHarness) startArkd() {
 	cfg.DB.Sqlite.DatabaseFileName = filepath.Join(
 		h.arkDataDir, "darepo.db",
 	)
+	if h.operatorDBBackend() == "postgres" {
+		host, portStr, err := net.SplitHostPort(h.Harness.PostgresHost)
+		require.NoError(h.T, err, "parse postgres host")
+
+		port, err := strconv.Atoi(portStr)
+		require.NoError(h.T, err, "parse postgres port")
+
+		cfg.DB.Backend = "postgres"
+		cfg.DB.Postgres.Host = host
+		cfg.DB.Postgres.Port = port
+		// These values must match the ephemeral Postgres container
+		// credentials provisioned by client_harness.SetPostgresEnabled.
+		cfg.DB.Postgres.User = "ark"
+		cfg.DB.Postgres.Password = "ark"
+		cfg.DB.Postgres.DBName = "ark"
+		cfg.DB.Postgres.RequireSSL = false
+	}
 	cfg.AdminRPC.ListenAddr = "127.0.0.1:0"
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
 	cfg.RPC.Gateway.ListenAddr = "127.0.0.1:0"
