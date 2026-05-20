@@ -83,6 +83,15 @@ const (
 	// reserved stress reorg events.
 	defaultStressReorgMinInterval = 30 * time.Second
 
+	// defaultStressMineIntervalMin is the shortest default delay between
+	// background miner blocks. Set --mine-interval-min=0 to disable the
+	// background miner and return to event-driven mining only.
+	defaultStressMineIntervalMin = 2 * time.Second
+
+	// defaultStressMineIntervalMax is the longest default delay between
+	// background miner blocks.
+	defaultStressMineIntervalMax = 10 * time.Second
+
 	// stressReorgRecoveryTimeout bounds the best-effort rollback path used
 	// after invalidateblock succeeds but replacement mining fails.
 	stressReorgRecoveryTimeout = 30 * time.Second
@@ -158,6 +167,8 @@ type stressConfig struct {
 	reorgDepth       int
 	reorgNewBlocks   int
 	reorgMinInterval time.Duration
+	mineIntervalMin  time.Duration
+	mineIntervalMax  time.Duration
 	concurrency      int
 	duration         time.Duration
 	liquidityTimeout time.Duration
@@ -213,6 +224,9 @@ type stressSummary struct {
 	ReorgsTriggered    int            `json:"reorgs_triggered"`
 	ReorgsCompleted    int            `json:"reorgs_completed"`
 	ReorgsFailed       int            `json:"reorgs_failed"`
+	BackgroundBlocks   int            `json:"background_blocks_mined"`
+	BackgroundMineMin  int64          `json:"background_mine_min_ms,omitempty"` //nolint:ll
+	BackgroundMineMax  int64          `json:"background_mine_max_ms,omitempty"` //nolint:ll
 	ClientRestarts     int            `json:"client_restarts"`
 	ClientCrashes      int            `json:"client_crashes"`
 	OperatorRestarts   int            `json:"operator_restarts"`
@@ -271,6 +285,7 @@ type stressRunner struct {
 	liveVTXOCache    map[string]liveVTXOCacheEntry
 	roundMu          sync.Mutex
 	operatorMu       sync.Mutex
+	chainMu          sync.Mutex
 	names            []string
 	started          time.Time
 	diagnostics      *stressDiagnostics
@@ -280,6 +295,8 @@ type stressRunner struct {
 	liquidityWaits   []time.Duration
 	workloadDeadline time.Time
 	nextReorgAt      time.Time
+	minerCancel      context.CancelFunc
+	minerWG          sync.WaitGroup
 }
 
 // stressReorgResult describes one chain reorg injected by the stress runner.
@@ -411,6 +428,18 @@ func newStressCmd() *cobra.Command {
 		defaultStressReorgMinInterval,
 		"minimum delay between chain reorg disruption events",
 	)
+	f.DurationVar(
+		&stressCfg.mineIntervalMin, "mine-interval-min",
+		defaultStressMineIntervalMin, "minimum delay between "+
+			"background-mined blocks; zero disables background "+
+			"mining",
+	)
+	f.DurationVar(
+		&stressCfg.mineIntervalMax, "mine-interval-max",
+		defaultStressMineIntervalMax, "maximum delay between "+
+			"background-mined blocks; if zero, uses "+
+			"--mine-interval-min",
+	)
 	f.IntVar(
 		&stressCfg.concurrency, "concurrency", defaultStressConcurrency,
 		"maximum concurrent random workload operations",
@@ -489,6 +518,7 @@ func runStressHarness(t *testing.T) {
 	runner.start()
 	defer runner.stop()
 
+	runner.startBackgroundMiner()
 	runner.bootstrapBoarding()
 	runner.runWorkload()
 	runner.checkRecovery()
@@ -523,6 +553,23 @@ func normalizeStressConfig(t *testing.T, cfg stressConfig) stressConfig {
 	}
 	if cfg.reorgMinInterval < 0 {
 		t.Fatalf("--reorg-min-interval must be non-negative")
+	}
+	if cfg.mineIntervalMin < 0 {
+		t.Fatalf("--mine-interval-min must be non-negative")
+	}
+	if cfg.mineIntervalMax < 0 {
+		t.Fatalf("--mine-interval-max must be non-negative")
+	}
+	switch {
+	case cfg.mineIntervalMin == 0:
+		cfg.mineIntervalMax = 0
+
+	case cfg.mineIntervalMax == 0:
+		cfg.mineIntervalMax = cfg.mineIntervalMin
+
+	case cfg.mineIntervalMax < cfg.mineIntervalMin:
+		t.Fatalf("--mine-interval-max must be greater than or equal " +
+			"to --mine-interval-min")
 	}
 	if cfg.concurrency <= 0 {
 		t.Fatalf("--concurrency must be positive")
@@ -684,6 +731,7 @@ func (r *stressRunner) start() {
 
 // stop tears down the live topology and closes the sparse event artifact.
 func (r *stressRunner) stop() {
+	r.stopBackgroundMiner()
 	r.stopDiagnostics("teardown")
 	if r.h != nil {
 		r.h.Stop()
@@ -691,6 +739,128 @@ func (r *stressRunner) stop() {
 	if r.events != nil {
 		_ = r.events.Close()
 	}
+}
+
+// startBackgroundMiner starts an optional chain clock for stress runs. It
+// begins after the topology and state file are ready, before bootstrap
+// boarding, so unroll/recovery flows see steady block progress from the start
+// of the useful test workload.
+func (r *stressRunner) startBackgroundMiner() {
+	if r.cfg.mineIntervalMin == 0 {
+		r.events.Print(
+			"background_miner", "background miner disabled", nil,
+		)
+
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r.minerCancel = cancel
+	r.minerWG.Add(1)
+
+	r.events.Printf("background_miner", map[string]any{
+		"min_interval_ms": r.cfg.mineIntervalMin.Milliseconds(),
+		"max_interval_ms": r.cfg.mineIntervalMax.Milliseconds(),
+	},
+		"background miner started interval=%s..%s",
+		r.cfg.mineIntervalMin, r.cfg.mineIntervalMax)
+
+	go func() {
+		defer r.minerWG.Done()
+
+		for {
+			delay := r.nextBackgroundMineDelay()
+			timer := time.NewTimer(delay)
+
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+
+				return
+
+			case <-timer.C:
+			}
+
+			r.backgroundMineBlock(ctx, delay)
+		}
+	}()
+}
+
+// stopBackgroundMiner stops the optional chain clock before the harness tears
+// down bitcoind and dependent services.
+func (r *stressRunner) stopBackgroundMiner() {
+	if r.minerCancel == nil {
+		return
+	}
+
+	r.minerCancel()
+	r.minerWG.Wait()
+	r.minerCancel = nil
+}
+
+// nextBackgroundMineDelay returns the next variable delay between background
+// blocks. A fixed interval is used when min == max.
+func (r *stressRunner) nextBackgroundMineDelay() time.Duration {
+	minDelay := r.cfg.mineIntervalMin
+	maxDelay := r.cfg.mineIntervalMax
+	if maxDelay <= minDelay {
+		return minDelay
+	}
+
+	spread := maxDelay - minDelay
+
+	r.mu.Lock()
+	jitter := time.Duration(r.rng.Int63n(int64(spread) + 1))
+	r.mu.Unlock()
+
+	return minDelay + jitter
+}
+
+// backgroundMineBlock mines one block under the shared chain mutation lock.
+func (r *stressRunner) backgroundMineBlock(ctx context.Context,
+	delay time.Duration) {
+
+	if ctx.Err() != nil {
+		return
+	}
+
+	start := time.Now()
+	r.chainMu.Lock()
+	defer r.chainMu.Unlock()
+
+	if ctx.Err() != nil {
+		return
+	}
+
+	r.h.Harness.Generate(1)
+	count := r.recordBackgroundBlockMined()
+	r.events.Printf("background_mine", map[string]any{
+		"blocks":      1,
+		"count":       count,
+		"interval_ms": delay.Milliseconds(),
+		"latency_ms":  time.Since(start).Milliseconds(),
+	},
+		"background mined block count=%d interval=%s latency=%s", count,
+		delay.Round(time.Millisecond),
+		time.Since(start).Round(time.Millisecond))
+}
+
+// recordBackgroundBlockMined increments the background-mined block counter.
+func (r *stressRunner) recordBackgroundBlockMined() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.summary.BackgroundBlocks++
+
+	return r.summary.BackgroundBlocks
+}
+
+// mineStressBlocks mines blocks under the shared chain mutation lock.
+func (r *stressRunner) mineStressBlocks(blocks int) {
+	r.chainMu.Lock()
+	defer r.chainMu.Unlock()
+
+	r.h.Harness.Generate(blocks)
 }
 
 // startClient starts one client daemon and records its state.
@@ -879,7 +1049,7 @@ func (r *stressRunner) bootstrapBoarding() {
 		"blocks": 6,
 	},
 		"mining boarding confirmations blocks=%d", 6)
-	r.h.Harness.Generate(6)
+	r.mineStressBlocks(6)
 	r.events.Printf("bootstrap", map[string]any{
 		"blocks": 6,
 	},
@@ -2379,6 +2549,8 @@ func (r *stressRunner) applyStressReorgWithWorkloadPaused(ctx context.Context) (
 	defer r.operatorMu.Unlock()
 	r.roundMu.Lock()
 	defer r.roundMu.Unlock()
+	r.chainMu.Lock()
+	defer r.chainMu.Unlock()
 	unlockClients := r.lockAllClients()
 	defer unlockClients()
 
@@ -2854,7 +3026,7 @@ func (r *stressRunner) confirmRound(roundID string) error {
 	}
 
 	if status != adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED {
-		r.h.Harness.Generate(stressRoundMineDepth)
+		r.mineStressBlocks(stressRoundMineDepth)
 	}
 
 	_, err = r.waitAdminRoundStatus(
@@ -3203,6 +3375,10 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 	summary.BoardAmountSat = r.cfg.boardAmount
 	summary.BoardVTXOs = r.cfg.boardVTXOs
 	summary.Concurrency = r.cfg.concurrency
+	if r.cfg.mineIntervalMin > 0 {
+		summary.BackgroundMineMin = r.cfg.mineIntervalMin.Milliseconds()
+		summary.BackgroundMineMax = r.cfg.mineIntervalMax.Milliseconds()
+	}
 	summary.TraceFile = r.diagnosticPaths.TraceFile
 	summary.CPUProfileFile = r.diagnosticPaths.CPUProfileFile
 	summary.BlockProfileFile = r.diagnosticPaths.BlockProfileFile

@@ -198,6 +198,80 @@ func TestStressTraceDurationDefaultIsCapped(t *testing.T) {
 	require.Zero(t, stressCfg.traceDuration)
 }
 
+// TestStressBackgroundMiningConfig verifies the regular stress miner defaults
+// to variable block cadence while still allowing callers to disable it.
+func TestStressBackgroundMiningConfig(t *testing.T) {
+	defer func() {
+		stressCfg = stressConfig{}
+	}()
+
+	cmd := newStressCmd()
+
+	require.Equal(
+		t, defaultStressMineIntervalMin, stressCfg.mineIntervalMin,
+	)
+	require.Equal(
+		t, defaultStressMineIntervalMax, stressCfg.mineIntervalMax,
+	)
+
+	require.NoError(t, cmd.Flags().Set("mine-interval-min", "0"))
+
+	cfg := normalizeStressConfig(t, stressConfig{
+		clientCount:      2,
+		maxPayments:      0,
+		maxRounds:        0,
+		maxRestarts:      0,
+		concurrency:      1,
+		duration:         time.Second,
+		minPayment:       1,
+		maxPayment:       1,
+		boardAmount:      1_000,
+		boardVTXOs:       1,
+		mineIntervalMin:  0,
+		mineIntervalMax:  time.Minute,
+		clientRestarts:   false,
+		operatorRestarts: false,
+	})
+	require.Zero(t, cfg.mineIntervalMin)
+	require.Zero(t, cfg.mineIntervalMax)
+
+	cfg = normalizeStressConfig(t, stressConfig{
+		clientCount:      2,
+		maxPayments:      0,
+		maxRounds:        0,
+		maxRestarts:      0,
+		concurrency:      1,
+		duration:         time.Second,
+		minPayment:       1,
+		maxPayment:       1,
+		boardAmount:      1_000,
+		boardVTXOs:       1,
+		mineIntervalMin:  time.Second,
+		clientRestarts:   false,
+		operatorRestarts: false,
+	})
+	require.Equal(t, time.Second, cfg.mineIntervalMin)
+	require.Equal(t, time.Second, cfg.mineIntervalMax)
+}
+
+// TestStressBackgroundMineDelayStaysWithinBounds verifies the variable miner
+// delay keeps every sampled interval inside the configured window.
+func TestStressBackgroundMineDelayStaysWithinBounds(t *testing.T) {
+	runner := &stressRunner{
+		cfg: stressConfig{
+			mineIntervalMin: time.Second,
+			mineIntervalMax: 3 * time.Second,
+		},
+		rng: rand.New(rand.NewSource(7)),
+	}
+
+	for range 100 {
+		delay := runner.nextBackgroundMineDelay()
+		require.GreaterOrEqual(t, delay, time.Second)
+		require.LessOrEqual(t, delay, 3*time.Second)
+	}
+}
+
 // TestStressDiagnosticCommandsUseBrowserUI verifies the final summary can hand
 // callers directly to the Go trace and pprof browser views.
 func TestStressDiagnosticCommandsUseBrowserUI(t *testing.T) {
