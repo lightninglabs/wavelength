@@ -3175,6 +3175,7 @@ func (s *Server) initWalletActor(ctx context.Context,
 			s.boardingSweepStore, sweepSigner, s.chainParams,
 		),
 		wallet.WithClock(s.clk),
+		wallet.WithEagerRoundJoin(s.cfg.EagerRoundJoin),
 	)
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,

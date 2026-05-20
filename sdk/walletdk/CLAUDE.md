@@ -57,8 +57,19 @@ methods return `ErrWalletRPCUnavailable` synchronously.
 - `WalletVTXO` / `OnchainTx` — Per-row shapes for the VTXOS and ONCHAIN
   views of `List`.
 - `ExitRequest` / `ExitResult` / `ExitStatusRequest` /
-  `ExitStatusResult` / `ExitJobStatus` — Unilateral-exit DTOs. The
-  status string is the wrapper-owned lowercase set
+  `ExitStatusResult` / `ExitJobStatus` — Exit DTOs. `ExitRequest`
+  carries the target outpoint plus an optional `Destination`
+  on-chain address: when set, `Exit` first attempts a cooperative
+  leave (`daemonrpc.LeaveVTXOs`) so the VTXO is unwound via the
+  next assembling round with the leave output landing on the
+  caller-supplied address; the SDK transparently falls back to
+  `walletrpc.Exit` (unilateral unroll) when the cooperative attempt
+  fails for any reason. `ExitResult.Cooperative` reports which path
+  the daemon took, `QueuedOutpoints` carries the cooperative
+  selection echo, `Created` / `ActorID` describe the unilateral
+  fallback job, and `CooperativeError` surfaces the original
+  cooperative failure when the SDK fell back. The status string is
+  the wrapper-owned lowercase set
   (`pending`/`materializing`/`csv_pending`/`sweeping`/`completed`/`failed`/
   `unspecified`), decoupled from `walletrpc.ExitJobStatus`.
 - `ErrWalletRPCUnavailable` — Sentinel returned by every wallet method
@@ -130,6 +141,18 @@ methods return `ErrWalletRPCUnavailable` synchronously.
   `DaemonConfig`. There is no tri-state distinction between "not set"
   and "explicitly false" — set `DaemonConfig` directly when the host
   needs to force a `false`.
+- `Config.EagerRoundJoin` flips the embedded daemon's
+  `darepod.Config.EagerRoundJoin` so confirmed deposits and
+  cooperative-leave intents auto-trigger a round join without the
+  host having to call `daemonrpc.Board` or chase the round FSM
+  forward separately. Default false defers to whatever the supplied
+  `DaemonConfig` says; wallet-shaped hosts that expect single-RPC
+  user interactions (`recv --onchain` → boarded VTXO, `exit` →
+  on-chain leave) should set this true. The flag is the only
+  walletdk-side signal that controls cooperative round-joining
+  cadence; the destination resolution + cooperative-vs-unilateral
+  policy for the `Exit` verb itself is still driven by the
+  walletdk method body.
 - Secret-bearing slices (`SeedPassphrase`, `WalletPassword`, `Mnemonic`) are
   cloned at the SDK boundary via `bytes.Clone` / `append` before being handed
   to the daemon RPC layer so host apps can zero their own copies on return
