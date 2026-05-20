@@ -199,6 +199,22 @@ func newRootCmd() *cobra.Command {
 			"seal-time quote; must be positive",
 	)
 
+	// EagerRoundJoin makes the wallet actor drive round-joining
+	// without a follow-up Board / LeaveVTXOs RPC. The default is
+	// inherited from darepod.DefaultConfig, which is build-tag
+	// aware: false on the standalone non-walletrpc build (operator-
+	// driven hosts) and true under the walletrpc build tag (wallet-
+	// shaped hosts). Viper precedence (flag > env > config > default)
+	// applies, so --eagerroundjoin=false still disables it under the
+	// walletrpc build.
+	f.Bool(
+		"eagerroundjoin", cfg.EagerRoundJoin, "drive round-joining "+
+			"from the wallet without waiting for an explicit "+
+			"Board / LeaveVTXOs RPC; defaults to true when "+
+			"compiled with the walletrpc build tag, false "+
+			"otherwise",
+	)
+
 	// OOR safety limits. These are advanced knobs; most operators
 	// should keep the defaults unless a limit-exceeded error says
 	// otherwise after a protocol upgrade or operator/indexer change.

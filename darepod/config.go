@@ -220,11 +220,18 @@ type Config struct {
 	// the flag on, every freshly confirmed boarding UTXO runs the
 	// existing Board path inline, and cooperative-leave intents are
 	// forwarded with TriggerRegistration=true so the round FSM
-	// leaves PendingRoundAssembly immediately. Off (the default)
-	// keeps the batched semantics that operator-driven hosts rely
-	// on (darepocli, server deployments); wallet-shaped SDK hosts
-	// (sdk/walletdk) opt in so user-visible "deposit" and "exit"
-	// actions translate into a full round join end-to-end.
+	// leaves PendingRoundAssembly immediately. Off keeps the
+	// batched semantics that operator-driven hosts rely on
+	// (darepocli, server deployments); wallet-shaped SDK hosts
+	// (sdk/walletdk) get the eager behavior by default so
+	// user-visible "deposit" and "exit" actions translate into a
+	// full round join end-to-end.
+	//
+	// DefaultConfig seeds this from defaultEagerRoundJoin(), which
+	// is build-tag-aware: false on the standalone non-walletrpc
+	// build and true when darepod is compiled with the walletrpc
+	// build tag (both the standalone cmd/darepod binary and the
+	// sdk/walletdk embedded path).
 	EagerRoundJoin bool `mapstructure:"eagerroundjoin"`
 }
 
@@ -609,6 +616,7 @@ func DefaultConfig() *Config {
 		},
 		MaxOperatorFeeSat: DefaultMaxOperatorFeeSat,
 		OOR:               defaultOORConfig(),
+		EagerRoundJoin:    defaultEagerRoundJoin(),
 	}
 }
 

@@ -145,14 +145,30 @@ methods return `ErrWalletRPCUnavailable` synchronously.
   `darepod.Config.EagerRoundJoin` so confirmed deposits and
   cooperative-leave intents auto-trigger a round join without the
   host having to call `daemonrpc.Board` or chase the round FSM
-  forward separately. Default false defers to whatever the supplied
-  `DaemonConfig` says; wallet-shaped hosts that expect single-RPC
-  user interactions (`recv --onchain` → boarded VTXO, `exit` →
-  on-chain leave) should set this true. The flag is the only
-  walletdk-side signal that controls cooperative round-joining
-  cadence; the destination resolution + cooperative-vs-unilateral
-  policy for the `Exit` verb itself is still driven by the
-  walletdk method body.
+  forward separately. The walletrpc-tagged embedded build that
+  walletdk targets already defaults this to `true` via
+  `darepod.DefaultConfig` (see `darepod/config_walletrpc.go`), so
+  leaving the convenience field at the zero value is the right
+  choice for nearly every host. The field stays as an
+  enable-only override: set it `true` only to force the override
+  on a caller-supplied `DaemonConfig` that carries `false`. To
+  force eager round-join OFF, pass
+  `walletdk.WithEagerRoundJoinDisabled()` to `Start` — this
+  applies AFTER the convenience merge and `configureWalletRPC`
+  so the disable wins over the build-tag default and any
+  `DaemonConfig` value. The destination resolution +
+  cooperative-vs-unilateral policy for the `Exit` verb itself is
+  still driven by the walletdk method body.
+- `Option` is the functional-option type accepted as variadic
+  trailing args to `Start`. Options apply AFTER the
+  `Config` / `DaemonConfig` merge and after `configureSwapRuntime`
+  / `configureWalletRPC` so they can override values seeded by
+  `darepod.DefaultConfig` or carried on a caller-owned
+  `DaemonConfig`. The first option is
+  `WithEagerRoundJoinDisabled()`, which forces
+  `daemonCfg.EagerRoundJoin = false`. New options should follow
+  this "override after merge" placement so the semantics stay
+  consistent.
 - Secret-bearing slices (`SeedPassphrase`, `WalletPassword`, `Mnemonic`) are
   cloned at the SDK boundary via `bytes.Clone` / `append` before being handed
   to the daemon RPC layer so host apps can zero their own copies on return

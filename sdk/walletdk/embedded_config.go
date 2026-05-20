@@ -93,11 +93,14 @@ type Config struct {
 	// LeaveVTXOs RPC. With the flag on, freshly confirmed boarding
 	// deposits join the next round automatically, and the wallet's
 	// Exit / cooperative-leave path fires registration immediately
-	// rather than batching. Set true for host apps that expect
-	// "deposit funds" and "exit a VTXO" to be one-shot user
-	// interactions. This is an enable-only convenience override;
-	// set DaemonConfig.EagerRoundJoin directly when a caller-owned
-	// config needs an explicit false value.
+	// rather than batching. The walletrpc-tagged embedded build
+	// that walletdk targets already defaults this to true via
+	// darepod.DefaultConfig, so leaving this field at the zero
+	// value is the right choice for nearly every host. Set true
+	// only to force the override when supplying a caller-owned
+	// DaemonConfig that currently carries false. To force eager
+	// round-join OFF, pass WithEagerRoundJoinDisabled() to Start
+	// rather than mutating this field.
 	EagerRoundJoin bool
 
 	// BufferSize overrides the bufconn listener buffer size.
