@@ -3,6 +3,7 @@ package darepod
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -33,6 +34,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -98,6 +100,51 @@ func (r *RPCServer) SubLogger(tag string) btclog.Logger {
 	}
 
 	return r.server.subLogger(tag)
+}
+
+// SignMailboxAuth returns a hex-encoded Schnorr mailbox auth signature for
+// the daemon identity key bound to the recipient mailbox ID. Optional
+// subservers use this to authenticate mailbox RPCs without learning how the
+// daemon wallet backend stores or signs with the identity key.
+func (r *RPCServer) SignMailboxAuth(ctx context.Context,
+	recipientMailboxID string) (string, error) {
+
+	if r == nil || r.server == nil {
+		return "", fmt.Errorf("daemon server unavailable")
+	}
+	if r.server.clientKeyDesc.PubKey == nil {
+		return "", fmt.Errorf("identity key not yet derived; wallet " +
+			"not ready")
+	}
+
+	sig, err := r.server.signMailboxAuth(ctx, recipientMailboxID)
+	if err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(sig.Serialize()), nil
+}
+
+// ClientTLSCerts returns the daemon identity client certificate used when
+// optional subservers dial mTLS-protected mailbox edges.
+func (r *RPCServer) ClientTLSCerts() ([]tls.Certificate, error) {
+	if r == nil || r.server == nil {
+		return nil, fmt.Errorf("daemon server unavailable")
+	}
+
+	if r.server.clientKeyDesc.PubKey == nil {
+		return nil, fmt.Errorf("identity key not yet derived; wallet " +
+			"not ready")
+	}
+
+	clientCert, err := serverconn.GenerateClientTLSCert(
+		r.server.clientKeyDesc.PubKey,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("generate client TLS cert: %w", err)
+	}
+
+	return []tls.Certificate{clientCert}, nil
 }
 
 // reserveCustomInputs atomically claims every outpoint in the supplied

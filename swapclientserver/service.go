@@ -28,6 +28,7 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
 	"github.com/lightninglabs/darepo-client/sdk/swaps"
+	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -186,6 +187,10 @@ type swapServerClients struct {
 	cleanup func() error
 }
 
+// clientTLSCertProvider returns the daemon identity certificate at handshake
+// time, after the wallet has had a chance to derive the identity key.
+type clientTLSCertProvider func() ([]tls.Certificate, error)
+
 // receiveSessionAdapter adds method accessors around sdk/swaps.ReceiveSession's
 // public start-response fields so both production code and tests share the
 // same receiveSwapSession interface.
@@ -266,6 +271,8 @@ func RegisterGateway(ctx context.Context, mux *runtime.ServeMux,
 // its own receive-auth key material. It also returns a cleanup function that
 // must be called during daemon shutdown so the root worker context is canceled
 // before the Ark, swapdk-server, and store resources are closed.
+//
+//nolint:contextcheck
 func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	daemonCfg *darepod.Config) (*swapClientService, func(), error) {
 
@@ -299,7 +306,14 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 		swapAddr = "localhost:10030"
 	}
 
-	swapClients, err := newSwapServerClients(cfg, swapAddr)
+	var clientCerts clientTLSCertProvider
+	if !cfg.ServerInsecure {
+		clientCerts = rpcServer.ClientTLSCerts
+	}
+
+	swapClients, err := newSwapServerClients(
+		cfg, swapAddr, rpcServer.SignMailboxAuth, clientCerts,
+	)
 	if err != nil {
 		_ = store.Close()
 
@@ -383,12 +397,15 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 
 // newSwapServerClients builds the swapdk-server clients for the configured
 // daemon-owned outbound transport.
-func newSwapServerClients(cfg *darepod.SwapConfig,
-	swapAddr string) (*swapServerClients, error) {
+func newSwapServerClients(cfg *darepod.SwapConfig, swapAddr string,
+	sign serverconn.MailboxAuthSigner,
+	clientCerts clientTLSCertProvider) (*swapServerClients, error) {
 
 	switch cfg.ServerTransport {
 	case "", darepod.RPCTransportGRPC:
-		dialOpts, err := swapServerDialOptions(cfg, swapAddr)
+		dialOpts, err := swapServerDialOptions(
+			cfg, swapAddr, clientCerts,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -400,13 +417,16 @@ func newSwapServerClients(cfg *darepod.SwapConfig,
 		}
 
 		return &swapServerClients{
-			server:  swaps.NewGRPCSwapServerConn(swapConn),
-			mailbox: mailboxpb.NewMailboxServiceClient(swapConn),
+			server: swaps.NewGRPCSwapServerConn(swapConn),
+			mailbox: serverconn.NewAuthenticatedMailboxClient(
+				mailboxpb.NewMailboxServiceClient(swapConn),
+				sign,
+			),
 			cleanup: swapConn.Close,
 		}, nil
 
 	case darepod.RPCTransportREST:
-		opts, err := swapServerRESTOptions(cfg)
+		opts, err := swapServerRESTOptions(cfg, clientCerts)
 		if err != nil {
 			return nil, err
 		}
@@ -416,8 +436,11 @@ func newSwapServerClients(cfg *darepod.SwapConfig,
 
 		return &swapServerClients{
 			server: swaps.NewRESTSwapServerConn(baseURL, opts...),
-			mailbox: restclient.NewMailboxServiceClientFromClient(
-				transport,
+			mailbox: serverconn.NewAuthenticatedMailboxClient(
+				restclient.NewMailboxServiceClientFromClient(
+					transport,
+				),
+				sign,
 			),
 			cleanup: func() error { return nil },
 		}, nil
@@ -581,27 +604,26 @@ func (d *daemonAuthOnlyInvoiceCreator) CreateInvoiceWithKey(ctx context.Context,
 }
 
 // swapServerDialOptions maps daemon swap config into gRPC transport options
-// for swapdk-server. Loopback and unix-socket endpoints default to insecure
-// transport for regtest ergonomics; non-local endpoints use TLS unless the
-// caller explicitly provides ServerInsecure.
-func swapServerDialOptions(cfg *darepod.SwapConfig,
-	addr string) ([]grpc.DialOption, error) {
+// for swapdk-server.
+func swapServerDialOptions(cfg *darepod.SwapConfig, addr string,
+	clientCerts clientTLSCertProvider) ([]grpc.DialOption, error) {
 
 	switch {
 	case cfg.ServerTLSCertPath != "":
-		creds, err := credentials.NewClientTLSFromFile(
-			cfg.ServerTLSCertPath, "",
+		tlsCfg, err := swapServerTLSConfig(
+			cfg.ServerTLSCertPath, clientCerts,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("load swap server TLS "+
-				"certificate: %w", err)
+			return nil, err
 		}
 
 		return []grpc.DialOption{
-			grpc.WithTransportCredentials(creds),
+			grpc.WithTransportCredentials(
+				credentials.NewTLS(tlsCfg),
+			),
 		}, nil
 
-	case isLocalSwapServerAddr(addr) || cfg.ServerInsecure:
+	case useInsecureSwapServerTransport(cfg, addr):
 		return []grpc.DialOption{
 			grpc.WithTransportCredentials(
 				insecure.NewCredentials(),
@@ -609,13 +631,16 @@ func swapServerDialOptions(cfg *darepod.SwapConfig,
 		}, nil
 
 	default:
+		tlsCfg := &tls.Config{
+			GetClientCertificate: swapClientCertificate(
+				clientCerts,
+			),
+			MinVersion: tls.VersionTLS12,
+		}
+
 		return []grpc.DialOption{
 			grpc.WithTransportCredentials(
-				credentials.NewTLS(
-					&tls.Config{
-						MinVersion: tls.VersionTLS12,
-					},
-				),
+				credentials.NewTLS(tlsCfg),
 			),
 		}, nil
 	}
@@ -623,25 +648,21 @@ func swapServerDialOptions(cfg *darepod.SwapConfig,
 
 // swapServerRESTOptions maps the swapdk-server TLS config into the shared REST
 // transport.
-func swapServerRESTOptions(cfg *darepod.SwapConfig) ([]restclient.Option,
-	error) {
+func swapServerRESTOptions(cfg *darepod.SwapConfig,
+	clientCerts clientTLSCertProvider) ([]restclient.Option, error) {
 
 	tlsCfg := &tls.Config{
-		MinVersion: tls.VersionTLS12,
+		GetClientCertificate: swapClientCertificate(clientCerts),
+		MinVersion:           tls.VersionTLS12,
 	}
 	if cfg.ServerTLSCertPath != "" {
-		certBytes, err := os.ReadFile(cfg.ServerTLSCertPath)
+		var err error
+		tlsCfg, err = swapServerTLSConfig(
+			cfg.ServerTLSCertPath, clientCerts,
+		)
 		if err != nil {
-			return nil, fmt.Errorf("load swap server TLS "+
-				"certificate: %w", err)
+			return nil, err
 		}
-
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(certBytes) {
-			return nil, fmt.Errorf("unable to parse swap server "+
-				"TLS certificate at %s", cfg.ServerTLSCertPath)
-		}
-		tlsCfg.RootCAs = pool
 	}
 
 	httpTransport := cloneDefaultHTTPTransport()
@@ -652,6 +673,55 @@ func swapServerRESTOptions(cfg *darepod.SwapConfig) ([]restclient.Option,
 			Transport: httpTransport,
 		}),
 	}, nil
+}
+
+// swapServerTLSConfig builds a client TLS config pinned to the configured
+// swapd certificate and carrying the daemon identity client certificate.
+func swapServerTLSConfig(certPath string,
+	clientCerts clientTLSCertProvider) (*tls.Config, error) {
+
+	certBytes, err := os.ReadFile(certPath) // #nosec G304
+	if err != nil {
+		return nil, fmt.Errorf("load swap server TLS certificate: %w",
+			err)
+	}
+
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(certBytes) {
+		return nil, fmt.Errorf("unable to parse swap server TLS "+
+			"certificate at %s", certPath)
+	}
+
+	return &tls.Config{
+		RootCAs:              pool,
+		GetClientCertificate: swapClientCertificate(clientCerts),
+		MinVersion:           tls.VersionTLS12,
+	}, nil
+}
+
+// swapClientCertificate adapts the daemon identity certificate provider into a
+// TLS handshake callback. The callback is intentionally lazy because the swap
+// subserver can be registered before the daemon wallet derives its identity
+// key; gRPC/HTTP retries will ask again once the wallet is ready.
+func swapClientCertificate(
+	clientCerts clientTLSCertProvider,
+) func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+
+	if clientCerts == nil {
+		return nil
+	}
+
+	return func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+		certs, err := clientCerts()
+		if err != nil {
+			return nil, err
+		}
+		if len(certs) == 0 {
+			return &tls.Certificate{}, nil
+		}
+
+		return &certs[0], nil
+	}
 }
 
 // cloneDefaultHTTPTransport returns a mutable copy of the default HTTP
@@ -678,11 +748,43 @@ func swapServerRESTBaseURL(cfg *darepod.SwapConfig, addr string) string {
 	if cfg.ServerTLSCertPath != "" {
 		return "https://" + addr
 	}
-	if cfg.ServerInsecure || isLocalSwapServerAddr(addr) {
+	if useInsecureSwapServerTransport(cfg, addr) {
 		return "http://" + addr
 	}
 
 	return "https://" + addr
+}
+
+// useInsecureSwapServerTransport reports whether the swapserver connection
+// should use plaintext transport. Explicit TLS certificate pinning always wins;
+// otherwise local loopback endpoints keep the historical regtest default.
+func useInsecureSwapServerTransport(cfg *darepod.SwapConfig, addr string) bool {
+	return cfg.ServerTLSCertPath == "" &&
+		(cfg.ServerInsecure || isLocalSwapServerAddr(addr))
+}
+
+// isLocalSwapServerAddr reports whether a configured swapdk-server address is
+// scoped to the local machine. Local endpoints are treated as development
+// endpoints and may be dialed with plaintext credentials by default.
+func isLocalSwapServerAddr(addr string) bool {
+	if strings.HasPrefix(addr, "unix:") {
+		return true
+	}
+
+	host := addr
+	splitHost, _, err := net.SplitHostPort(addr)
+	if err == nil {
+		host = splitHost
+	}
+
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+
+	return ip != nil && ip.IsLoopback()
 }
 
 // chainParamsForNetwork converts the daemon's configured network string into
@@ -707,30 +809,6 @@ func chainParamsForNetwork(network string) (*chaincfg.Params, error) {
 	default:
 		return nil, fmt.Errorf("unknown network %q", network)
 	}
-}
-
-// isLocalSwapServerAddr reports whether a configured swapdk-server address is
-// scoped to the local machine. Local endpoints are treated as development
-// endpoints and may be dialed with insecure gRPC credentials by default.
-func isLocalSwapServerAddr(addr string) bool {
-	if strings.HasPrefix(addr, "unix:") {
-		return true
-	}
-
-	host := addr
-	splitHost, _, err := net.SplitHostPort(addr)
-	if err == nil {
-		host = splitHost
-	}
-
-	host = strings.Trim(host, "[]")
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-
-	ip := net.ParseIP(host)
-
-	return ip != nil && ip.IsLoopback()
 }
 
 // StartPay persists a pay swap through sdk/swaps, starts or reuses the daemon

@@ -19,6 +19,7 @@ import (
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/sdk/swaps"
+	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
@@ -280,6 +281,9 @@ func TestNewSwapServerClientsREST(t *testing.T) {
 		FeeProportionalPpm: 2,
 		CltvExpiryDelta:    40,
 	}
+	channelIDResp := &swaprpc.RequestChannelIdResponse{
+		RouteHint: routeHint,
+	}
 
 	server := httptest.NewServer(
 		http.HandlerFunc(
@@ -295,14 +299,28 @@ func TestNewSwapServerClientsREST(t *testing.T) {
 				switch r.URL.Path {
 				case "/v1/swap/request-channel-id":
 					msg, marshalErr = protojson.Marshal(
-						&swaprpc.RequestChannelIdResponse{
-							RouteHint: routeHint,
-						},
+						channelIDResp,
 					)
 
 				case "/v1/mailbox/pull":
+					requireMailboxAuth(t, r)
+
 					msg, marshalErr = protojson.Marshal(
 						&mailboxpb.PullResponse{},
+					)
+
+				case "/v1/mailbox/send":
+					requireMailboxAuth(t, r)
+
+					msg, marshalErr = protojson.Marshal(
+						&mailboxpb.SendResponse{},
+					)
+
+				case "/v1/mailbox/ack-up-to":
+					requireMailboxAuth(t, r)
+
+					msg, marshalErr = protojson.Marshal(
+						&mailboxpb.AckUpToResponse{},
 					)
 
 				default:
@@ -322,7 +340,11 @@ func TestNewSwapServerClientsREST(t *testing.T) {
 	clients, err := newSwapServerClients(&darepod.SwapConfig{
 		ServerTransport: darepod.RPCTransportREST,
 		ServerInsecure:  true,
-	}, server.URL)
+	}, server.URL, func(_ context.Context, recipient string) (string,
+		error) {
+
+		return "auth-" + recipient, nil
+	}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, clients.server)
 	require.NotNil(t, clients.mailbox)
@@ -339,7 +361,26 @@ func TestNewSwapServerClientsREST(t *testing.T) {
 	require.Equal(t, nodeID, hint.NodeID)
 
 	_, err = clients.mailbox.Pull(
-		t.Context(), &mailboxpb.PullRequest{},
+		t.Context(), &mailboxpb.PullRequest{
+			MailboxId: "mailbox",
+		},
+	)
+	require.NoError(t, err)
+
+	_, err = clients.mailbox.Send(
+		t.Context(), &mailboxpb.SendRequest{
+			Envelope: &mailboxpb.Envelope{
+				Recipient: "mailbox",
+			},
+		},
+	)
+	require.NoError(t, err)
+
+	_, err = clients.mailbox.AckUpTo(
+		t.Context(), &mailboxpb.AckUpToRequest{
+			MailboxId: "mailbox",
+			Cursor:    1,
+		},
 	)
 	require.NoError(t, err)
 }
@@ -349,8 +390,66 @@ func TestNewSwapServerClientsUnknownTransport(t *testing.T) {
 
 	_, err := newSwapServerClients(&darepod.SwapConfig{
 		ServerTransport: "webdav",
-	}, "localhost:10030")
+	}, "localhost:10030", nil, nil)
 	require.ErrorContains(t, err, "unknown swap server transport")
+}
+
+func TestDefaultLocalSwapServerUsesInsecureTransport(t *testing.T) {
+	t.Parallel()
+
+	cfg := &darepod.SwapConfig{}
+
+	require.True(
+		t, useInsecureSwapServerTransport(
+			cfg, "localhost:10030",
+		),
+	)
+	require.Equal(
+		t, "http://localhost:10030",
+		swapServerRESTBaseURL(cfg, "localhost:10030"),
+	)
+}
+
+func TestRemoteSwapServerUsesTLSByDefault(t *testing.T) {
+	t.Parallel()
+
+	cfg := &darepod.SwapConfig{}
+
+	require.False(
+		t, useInsecureSwapServerTransport(
+			cfg, "swap.example.com:10030",
+		),
+	)
+	require.Equal(
+		t, "https://swap.example.com:10030",
+		swapServerRESTBaseURL(cfg, "swap.example.com:10030"),
+	)
+}
+
+func TestSwapServerTLSCertPathOverridesLocalFallback(t *testing.T) {
+	t.Parallel()
+
+	cfg := &darepod.SwapConfig{
+		ServerTLSCertPath: "/tmp/swapd.pem",
+	}
+
+	require.False(
+		t, useInsecureSwapServerTransport(
+			cfg, "localhost:10030",
+		),
+	)
+	require.Equal(
+		t, "https://localhost:10030",
+		swapServerRESTBaseURL(cfg, "localhost:10030"),
+	)
+}
+
+func requireMailboxAuth(t *testing.T, r *http.Request) {
+	t.Helper()
+
+	require.Equal(
+		t, "auth-mailbox", r.Header.Get(serverconn.AuthHeaderKey),
+	)
 }
 
 func newTestSwapClientService(client swapRuntimeClient) *swapClientService {
