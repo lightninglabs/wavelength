@@ -353,25 +353,22 @@ func TestDirectedSendSelfSend(t *testing.T) {
 		"alice balance must exceed the 30k recipient amount",
 	)
 
-	// Explicitly list VTXOs and assert both exist.
-	listCtx, listCancel := context.WithTimeout(
-		t.Context(), defaultSmallTimeout,
+	// Poll for both VTXOs to land in the live set. The change-VTXO is
+	// persisted synchronously by the round actor at confirmation time
+	// (it is locally owned via OwnedScriptChecker on the same daemon
+	// that owns the source input), but the recipient VTXO materializes
+	// on a SEPARATE async path: the operator publishes an
+	// `IncomingVTXOEvent` push notification, the recipient daemon's
+	// `IncomingVTXOHandler` resolves ancestry via a synchronous indexer
+	// query (so unilateral exit is exitable from the first persist),
+	// and only then is the descriptor saved. waitForVTXOBalanceBelow
+	// returns as soon as the source VTXO is forfeited, which can be
+	// strictly before the IncomingVTXOEvent has been delivered and the
+	// ancestry fetch has completed. Polling avoids racing that
+	// materialization.
+	sendRoundVTXOs := waitForNewLiveVTXOsInRound(
+		t, alice.RPCClient, sendRound.RoundId, 2,
 	)
-	defer listCancel()
-
-	liveResp, err := alice.RPCClient.ListVTXOs(
-		listCtx, &daemonrpc.ListVTXOsRequest{
-			StatusFilter: daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
-		},
-	)
-	require.NoError(t, err, "ListVTXOs failed")
-
-	var sendRoundVTXOs []*daemonrpc.VTXO
-	for _, vtxo := range liveResp.Vtxos {
-		if vtxo.RoundId == sendRound.RoundId {
-			sendRoundVTXOs = append(sendRoundVTXOs, vtxo)
-		}
-	}
 	require.Len(
 		t, sendRoundVTXOs, 2,
 		"self-send should produce exactly 2 VTXOs (recipient + change)",
