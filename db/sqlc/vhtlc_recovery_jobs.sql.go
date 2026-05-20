@@ -61,12 +61,15 @@ func (q *Queries) CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTL
 
 const EscalateVHTLCRecoveryJob = `-- name: EscalateVHTLCRecoveryJob :execrows
 UPDATE vhtlc_recovery_jobs
-SET state = 'unroll_started',
+SET state = CASE
+        WHEN state = 'armed' THEN 'unroll_started'
+        ELSE state
+    END,
     updated_at = $2,
     escalated_at = COALESCE(escalated_at, $2),
     last_error = NULL
 WHERE id = $1
-  AND state = 'armed'
+  AND state NOT IN ('completed', 'cancelled', 'failed')
 `
 
 type EscalateVHTLCRecoveryJobParams struct {

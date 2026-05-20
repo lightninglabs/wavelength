@@ -310,3 +310,9 @@ func (s *Store) NewUnilateralExitStore(
 
 	return NewUnilateralExitPersistenceStore(exitDB, clk)
 }
+
+// NewVHTLCRecoveryStore builds the vHTLC recovery persistence store with
+// transactional execution.
+func (s *Store) NewVHTLCRecoveryStore(clk clock.Clock) *VHTLCRecoveryStoreDB {
+	return NewVHTLCRecoveryStore(s, clk)
+}

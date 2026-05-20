@@ -35,12 +35,15 @@ ORDER BY updated_at ASC, created_at ASC;
 
 -- name: EscalateVHTLCRecoveryJob :execrows
 UPDATE vhtlc_recovery_jobs
-SET state = 'unroll_started',
+SET state = CASE
+        WHEN state = 'armed' THEN 'unroll_started'
+        ELSE state
+    END,
     updated_at = $2,
     escalated_at = COALESCE(escalated_at, $2),
     last_error = NULL
 WHERE id = $1
-  AND state = 'armed';
+  AND state NOT IN ('completed', 'cancelled', 'failed');
 
 -- Intermediate states waiting_for_target and building_exit_spend are written
 -- by the execution-layer PR. This storage slice accepts them as source states

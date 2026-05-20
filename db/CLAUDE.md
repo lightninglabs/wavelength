@@ -52,6 +52,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   last so existing rows at 3 keep decoding correctly.
 - `UnilateralExitJobTrigger` — `Manual(0)`, `CriticalExpiry(1)`,
   `Restart(2)`, `FraudSpend(3)`.
+- `VHTLCRecoveryStoreDB` — durable vHTLC recovery store. Persists
+  armed and escalated recovery jobs with request-id idempotency,
+  explicit vHTLC script parameters, fee cap, unroll target linkage,
+  exact exit transaction artifacts, and terminal/cancellation state.
 - `ancestryTreeCache` — process-local LRU decode cache (≤ 4096
   entries) for finalized VTXO ancestry trees (immutable once
   committed). `groupAncestryRowsWithCache` /
@@ -63,7 +67,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 14` — current schema version.
+- `LatestMigrationVersion = 15` — current schema version.
 
 ## Relationships
 
@@ -102,6 +106,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
+- `000015_vhtlc_recovery_jobs` — vHTLC recovery control-plane rows
+  with named script parameters, request-id idempotency, SQL-visible
+  timestamps, and no raw preimage storage.
 - `000014_ledger_chain_fields` — first-class `chain_txid` / `chain_vout`
   / `confirmation_height` columns on `ledger_entries` so history reads
   don't decode wallet UTXO idempotency keys per query.
