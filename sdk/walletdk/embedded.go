@@ -46,12 +46,43 @@ func DefaultConfig() Config {
 	}
 }
 
-// Start starts an embedded darepod runtime and returns the wallet facade.
-//
-//nolint:contextcheck // embedded daemon lifetime is detached from dial ctx
-func Start(ctx context.Context, cfg Config) (*Client, error) {
-	if err := requireEmbeddedWalletRuntime(); err != nil {
-		return nil, err
+// startOptions holds the resolved functional-option state for Start. Options
+// are applied AFTER the convenience Config / DaemonConfig merge so they can
+// override values that the merge or the build-tagged darepod.DefaultConfig
+// would otherwise leave in place.
+type startOptions struct {
+	disableEagerRoundJoin bool
+}
+
+// Option mutates the embedded daemon configuration during Start. Functional
+// options express knobs that cannot be modeled by Config's plain-bool
+// enable-only fields, where "leave at zero" cannot be distinguished from
+// "explicit false".
+type Option func(*startOptions)
+
+// WithEagerRoundJoinDisabled forces the embedded daemon's
+// darepod.Config.EagerRoundJoin to false, even when DefaultConfig or a
+// caller-supplied DaemonConfig would otherwise set it true. This is the
+// walletdk-side knob for hosts that need the batched (operator-driven)
+// round-join semantics under the walletrpc build, where DefaultConfig
+// flips the default to true for wallet-shaped UX.
+func WithEagerRoundJoinDisabled() Option {
+	return func(o *startOptions) {
+		o.disableEagerRoundJoin = true
+	}
+}
+
+// resolveDaemonConfig merges the walletdk convenience Config onto a
+// darepod.Config, runs the swap-runtime + walletrpc registrars, and applies
+// functional options. It is the pure (no I/O, no bufconn) slice of Start so
+// option semantics can be unit-tested without booting a daemon. Options apply
+// AFTER the merge and the registrars so they win over the build-tag default
+// seeded by darepod.DefaultConfig and any value carried on a caller-owned
+// DaemonConfig.
+func resolveDaemonConfig(cfg Config, opts ...Option) (*darepod.Config, error) {
+	var o startOptions
+	for _, opt := range opts {
+		opt(&o)
 	}
 
 	daemonCfg, err := daemonConfig(cfg)
@@ -63,6 +94,26 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, err
 	}
 	configureWalletRPC(daemonCfg, true)
+
+	if o.disableEagerRoundJoin {
+		daemonCfg.EagerRoundJoin = false
+	}
+
+	return daemonCfg, nil
+}
+
+// Start starts an embedded darepod runtime and returns the wallet facade.
+//
+//nolint:contextcheck // embedded daemon lifetime is detached from dial ctx
+func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
+	if err := requireEmbeddedWalletRuntime(); err != nil {
+		return nil, err
+	}
+
+	daemonCfg, err := resolveDaemonConfig(cfg, opts...)
+	if err != nil {
+		return nil, err
+	}
 
 	bufferSize := cfg.BufferSize
 	if bufferSize == 0 {
