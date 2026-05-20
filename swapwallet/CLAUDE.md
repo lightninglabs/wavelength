@@ -30,7 +30,7 @@ default builds avoid the swap executor's dependency graph.
   covering every daemonrpc method swapwallet composes against:
   LeaveVTXOs, ListVTXOs, ListTransactions, NewAddress, GetInfo,
   GetBalance, GenSeed, InitWallet, UnlockWallet, Unroll,
-  GetUnrollStatus. The admin-shape methods (GenSeed/InitWallet/
+  GetUnrollStatus, JoinNextRound. The admin-shape methods (GenSeed/InitWallet/
   UnlockWallet/Unroll/GetUnrollStatus) are reachable BEFORE the swap
   runtime is live.
 - `WalletEntry` (re-exported from walletrpc) — Flat row type the entire
@@ -62,8 +62,9 @@ default builds avoid the swap executor's dependency graph.
   - → daemonrpc (in-process via RPCServer):
     `InitWalletRequest`, `UnlockWalletRequest`, `GenSeedRequest`,
     `UnrollRequest`, `GetUnrollStatusRequest`, `LeaveVTXOsRequest`,
-    `ListVTXOsRequest`, `ListTransactionsRequest`, `NewAddressRequest`,
-    `GetBalanceRequest`, `GetInfoRequest`
+    `JoinNextRoundRequest`, `ListVTXOsRequest`,
+    `ListTransactionsRequest`, `NewAddressRequest`, `GetBalanceRequest`,
+    `GetInfoRequest`
   - → swapclientrpc (in-process via SwapService): `StartPayRequest`,
     `StartReceiveRequest`, `ListSwapsRequest`, `SubscribeSwapsRequest`
 - **Receives**:
@@ -87,6 +88,15 @@ default builds avoid the swap executor's dependency graph.
   receive more than amt_sat. `SendResponse.actual_amount_sat` carries
   the true outflow and SHOULD be echoed back before the send is
   treated as confirmed.
+- Onchain SEND is a one-shot: after `LeaveVTXOs` returns successfully
+  the router immediately calls `JoinNextRound` so the queued leave
+  intent is committed to the next round without a separate CLI step.
+  The raw `ark vtxos leave --no_join` path remains the batching seam
+  for callers that want to combine multiple intents into one round;
+  the top-level `send` verb is intentionally not exposed to that mode.
+  If the implicit join fails, the error carries the explicit recovery
+  hint (`ark rounds join`) so the leave intent — already queued in
+  the round actor — is not stranded silently.
 - `ListView` defaults to Activity. The Activity view is the only view
   that honors `pending_only` and `kinds`; those filters are ignored
   for VTXOs and Onchain views.

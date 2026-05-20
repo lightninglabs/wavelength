@@ -199,6 +199,31 @@ func (r *router) sendOnchain(ctx context.Context, addr string,
 		return nil, fmt.Errorf("leave vtxos: %w", err)
 	}
 
+	// LeaveVTXOs only QUEUES the leave intent in the round actor's
+	// PendingAssembly state; the round does not actually seal until
+	// the daemon receives a JoinNextRound trigger. The everyday
+	// wallet verb is documented as a one-shot ("send onchain"), so
+	// we commit the intent here on the caller's behalf. The ark.*
+	// raw `vtxos refresh` / `vtxos leave` CLI exposes the
+	// queue-only mode via --no_join for batching use cases; that
+	// path is not reachable through walletrpc.Send and should not
+	// be — the higher-level Send verb has no batching contract.
+	//
+	// A join failure here leaves the leave intent queued in the
+	// round actor: LeaveVTXOs has already returned successfully and
+	// the intent persists in PendingAssembly. We surface the error
+	// (rather than swallowing it) so the caller is not silently
+	// stranded — but the recovery is a one-liner, and the wrapped
+	// message embeds the exact `ark rounds join` command the user
+	// needs to commit the queued intent.
+	if _, err := r.deps.RPCServer.JoinNextRound(
+		ctx, &daemonrpc.JoinNextRoundRequest{},
+	); err != nil {
+		return nil, fmt.Errorf("auto-join next round after leave: the "+
+			"leave intent is queued and can be committed manually "+
+			"with `ark rounds join`: %w", err)
+	}
+
 	// For sweep-all the caller's amt_sat is required to be zero, so
 	// recording int64(amtSat) on the pending entry would make the row
 	// show as a zero-sat exit in List/SubscribeWallet. The real outflow

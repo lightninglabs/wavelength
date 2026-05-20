@@ -59,6 +59,10 @@ type fakeRPCServer struct {
 	unrollStatusErr   error
 	unrollStatusCalls int
 	unrollStatusLast  *daemonrpc.GetUnrollStatusRequest
+
+	joinNextRoundResp  *daemonrpc.JoinNextRoundResponse
+	joinNextRoundErr   error
+	joinNextRoundCalls int
 }
 
 func (f *fakeRPCServer) LeaveVTXOs(_ context.Context,
@@ -177,6 +181,18 @@ func (f *fakeRPCServer) GetUnrollStatus(_ context.Context,
 	f.unrollStatusLast = req
 
 	return f.unrollStatusResp, f.unrollStatusErr
+}
+
+func (f *fakeRPCServer) JoinNextRound(_ context.Context,
+	_ *daemonrpc.JoinNextRoundRequest) (*daemonrpc.JoinNextRoundResponse,
+	error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.joinNextRoundCalls++
+
+	return f.joinNextRoundResp, f.joinNextRoundErr
 }
 
 // fakeSwapService is a minimal swapclientrpc.SwapClientServiceServer used
