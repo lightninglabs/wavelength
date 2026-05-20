@@ -7,9 +7,9 @@ This file is a **map**, not a manual. Follow links for details.
 | Command | Purpose |
 |---------|---------|
 | `make build` | Compile the project |
-| `make lint-native` | Run linter natively, no Docker (fastest on macOS) |
+| `make lint-local` | Run full linter locally, no Docker |
 | `make lint-changed` | Run linter on changes vs base (must pass before committing) |
-| `make lint-changed-local` | Run native local linter on changes vs base |
+| `make lint-changed-local` | Run local linter on changes vs base |
 | `make install-custom-gcl` | Build native `custom-gcl` for this host |
 | `make fmt` | Format all Go source files |
 | `make fmt-changed` | Format changed Go source files |
@@ -57,8 +57,10 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 3. **Run `make fmt-changed` before every commit.**
    This applies `goimports` and `llformat` to changed handwritten Go files.
    Use `make fmt` instead when you intentionally need a full-tree format pass.
-4. **Run `make lint-native` before every commit** (fastest path, no Docker).
-   Falls back to `make lint-changed` if you prefer the Docker-based linter.
+4. **Run `make lint-changed-local` before every commit.**
+   This is the fast local no-Docker changed-code check. Run `make lint-local`
+   when you need the full local lint scope, and `make lint` for the
+   Docker-based linter.
 5. **Run tests before every commit** — see [`docs/testing-guide.md`](docs/testing-guide.md).
 6. Use early returns; do not nest error handling.
 7. Do not batch actor messages without backpressure.
