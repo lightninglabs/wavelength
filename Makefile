@@ -210,9 +210,10 @@ lint-source: docker-tools
 
 lint-source-local: local-custom-gcl
 	@$(call print, "Linting source locally (no Docker).")
-	$(LOCAL_CUSTOM_GCL) run -v $(LINT_WORKERS)
+	GOWORK=off $(LOCAL_CUSTOM_GCL) run -v $(LINT_WORKERS)
 	@$(call print, "Linting tag-guarded packages locally.")
-	LINTER_BIN="$(LOCAL_CUSTOM_GCL)" \
+	GOWORK=off \
+		LINTER_BIN="$(LOCAL_CUSTOM_GCL)" \
 		LINT_BUILD_TAGS="$(LINT_BUILD_TAGS)" \
 		LINT_CONCURRENCY="$(workers)" \
 		./scripts/lint_tag_guarded_pkgs.sh
@@ -238,11 +239,12 @@ lint-changed: check-go-version docker-tools #? Run static code analysis only for
 
 lint-changed-local: check-go-version local-custom-gcl #? Run static code analysis on changes locally (no Docker)
 	@$(call print, "Linting source changes against $(LINT_BASE) locally.")
-	$(LOCAL_CUSTOM_GCL) run -v --timeout=15m $(LINT_WORKERS) \
+	GOWORK=off $(LOCAL_CUSTOM_GCL) run -v --timeout=15m $(LINT_WORKERS) \
 		--new-from-merge-base=$(LINT_BASE) \
 		--whole-files
 	@$(call print, "Linting source changes in tag-guarded packages locally.")
-	LINTER_BIN="$(LOCAL_CUSTOM_GCL)" \
+	GOWORK=off \
+		LINTER_BIN="$(LOCAL_CUSTOM_GCL)" \
 		LINT_BUILD_TAGS="$(LINT_BUILD_TAGS)" \
 		LINT_CONCURRENCY="$(workers)" \
 		LINT_TIMEOUT=15m \
@@ -254,10 +256,9 @@ build-native-linter: #? Build the custom golangci-lint binary natively
 	@$(call print, "Building custom linter natively.")
 	@./scripts/install-custom-gcl.sh "$(LOCAL_CUSTOM_GCL)"
 
-lint-native: check-go-version build-native-linter #? Run static code analysis natively without Docker (faster on macOS)
-	@$(call print, "Linting source (native).")
-	GOWORK=off $(LOCAL_CUSTOM_GCL) run -v $(LINT_WORKERS) \
-		--new-from-rev=$$(git merge-base HEAD $(LINT_BASE))
+lint-native: #? Deprecated alias for lint-local
+	@$(call print, "lint-native is deprecated; use lint-local instead.")
+	@$(MAKE) lint-local
 
 # Globs to exclude generated files from ast-grep.
 AST_GREP_EXCLUDE := --globs '!**/*.pb.go' --globs '!**/*.pb.gw.go' --globs '!**/*.pb.json.go' --globs '!**/db/sqlc/*.go'

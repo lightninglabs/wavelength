@@ -4,17 +4,52 @@ set -eu
 
 dest="${1:?usage: local-custom-gcl.sh <dest>}"
 script_dir=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
+repo_root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
+config_file="$repo_root/tools/.custom-gcl.yml"
+expected_version=$(
+	sed -n 's/^version:[[:space:]]*//p' "$config_file" | head -n 1
+)
+
+binary_version() {
+	"$1" --version 2>/dev/null | awk '
+		{
+			for (i = 1; i <= NF; i++) {
+				if ($i == "version") {
+					print $(i + 1)
+					exit
+				}
+			}
+		}
+	' | sed 's/-custom-gcl$//'
+}
+
+use_if_current() {
+	bin="$1"
+	label="$2"
+	version=$(binary_version "$bin" || true)
+
+	if [ "$version" = "$expected_version" ]; then
+		echo "Using ${label}: $bin"
+		return 0
+	fi
+
+	if [ -n "$version" ]; then
+		echo "Ignoring stale ${label}: $bin ($version != $expected_version)"
+	fi
+
+	return 1
+}
 
 mkdir -p "$(dirname "$dest")"
 
-if command -v custom-gcl >/dev/null 2>&1; then
+if command -v custom-gcl >/dev/null 2>&1 &&
+	use_if_current "$(command -v custom-gcl)" "custom-gcl from PATH"; then
 	ln -sf "$(command -v custom-gcl)" "$dest"
 	echo "Using custom-gcl from PATH."
 	exit 0
 fi
 
-if [ -x "$dest" ]; then
-	echo "Using local linter binary: $dest"
+if [ -x "$dest" ] && use_if_current "$dest" "local linter binary"; then
 	exit 0
 fi
 
