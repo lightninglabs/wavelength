@@ -1205,6 +1205,14 @@ CREATE TABLE unroll_jobs (
     -- deferred_checkpoints records fraud-triggered checkpoint deferrals.
     deferred_checkpoints BLOB,
 
+    -- exit_policy_kind identifies the policy used for the final exit spend.
+    -- The resolver validates this extension point so future policy kinds do
+    -- not require rebuilding this table on SQLite.
+    exit_policy_kind TEXT NOT NULL,
+
+    -- exit_policy_ref optionally points at policy-specific durable state.
+    exit_policy_ref TEXT,
+
     -- sweep_tx stores the exact final sweep transaction bytes after build.
     sweep_tx BLOB,
 

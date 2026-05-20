@@ -112,6 +112,7 @@ func TestUnrollJobStoreUpsertPersistsNamedArtifacts(t *testing.T) {
 		Trigger:        "manual",
 		BestHeight:     111,
 		PlannerState:   []byte{0x01},
+		ExitPolicyRef:  "policy-ref-a",
 		SweepTx:        sweepTx,
 		SweepTxid:      sweepTxid,
 		TxProgress: []UnrollTxProgressRecord{{
@@ -135,6 +136,7 @@ func TestUnrollJobStoreUpsertPersistsNamedArtifacts(t *testing.T) {
 		Trigger:        "manual",
 		BestHeight:     112,
 		PlannerState:   []byte{0x02},
+		ExitPolicyRef:  "policy-ref-a",
 		SweepTx:        sweepTx,
 		SweepTxid:      sweepTxid,
 		TxProgress: []UnrollTxProgressRecord{{
@@ -156,6 +158,8 @@ func TestUnrollJobStoreUpsertPersistsNamedArtifacts(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, job)
 	require.Equal(t, "completed", job.State)
+	require.Equal(t, StandardUnrollExitPolicyKind, job.ExitPolicyKind)
+	require.Equal(t, "policy-ref-a", job.ExitPolicyRef)
 	require.Equal(t, sweepTxid, job.SweepTxid)
 	require.Equal(t, sweepTx, job.SweepTx)
 	require.Len(t, job.TxProgress, 1)

@@ -516,6 +516,8 @@ type UnrollJob struct {
 	TargetConfirmHeight sql.NullInt32
 	PlannerState        []byte
 	DeferredCheckpoints []byte
+	ExitPolicyKind      string
+	ExitPolicyRef       sql.NullString
 	SweepTx             []byte
 	SweepTxid           []byte
 	SweepConfirmHeight  sql.NullInt32

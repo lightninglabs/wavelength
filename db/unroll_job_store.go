@@ -19,6 +19,14 @@ var (
 	ErrUnrollJobNotFound = errors.New("unroll job not found")
 )
 
+const (
+	// StandardUnrollExitPolicyKind is the built-in final spend policy for
+	// normal VTXO timeout sweeps. This mirrors
+	// unroll.StandardVTXOTimeoutExitPolicyKind without importing unroll
+	// into the db package.
+	StandardUnrollExitPolicyKind = "standard_vtxo_timeout"
+)
+
 // UnrollJobRecord is the restart-safe SQL state for one VTXO unroll target.
 type UnrollJobRecord struct {
 	TargetOutpoint      wire.OutPoint
@@ -28,6 +36,8 @@ type UnrollJobRecord struct {
 	TargetConfirmHeight *int32
 	PlannerState        []byte
 	DeferredCheckpoints []byte
+	ExitPolicyKind      string
+	ExitPolicyRef       string
 	SweepTx             []byte
 	SweepTxid           []byte
 	SweepConfirmHeight  *int32
@@ -171,6 +181,11 @@ func (s *UnrollJobPersistenceStore) UpsertJob(ctx context.Context,
 		createdAt = nowUnix
 	}
 
+	exitPolicyKind := job.ExitPolicyKind
+	if exitPolicyKind == "" {
+		exitPolicyKind = StandardUnrollExitPolicyKind
+	}
+
 	target := job.TargetOutpoint
 	writeFn := func(q UnrollJobStore) error {
 		err := q.UpsertUnrollJob(
@@ -190,6 +205,11 @@ func (s *UnrollJobPersistenceStore) UpsertJob(ctx context.Context,
 				DeferredCheckpoints: append(
 					[]byte(nil), job.DeferredCheckpoints...,
 				),
+				ExitPolicyKind: exitPolicyKind,
+				ExitPolicyRef: sql.NullString{
+					String: job.ExitPolicyRef,
+					Valid:  job.ExitPolicyRef != "",
+				},
 				SweepTx:   append([]byte(nil), job.SweepTx...),
 				SweepTxid: append([]byte(nil), job.SweepTxid...),
 				SweepConfirmHeight: nullableInt32(
@@ -744,6 +764,10 @@ func unrollJobRecordFromRow(row sqlc.UnrollJob) (UnrollJobRecord, error) {
 		SweepAttempts:      row.SweepAttempts,
 		CreatedAt:          time.Unix(row.CreatedAt, 0),
 		UpdatedAt:          time.Unix(row.UpdatedAt, 0),
+	}
+	record.ExitPolicyKind = row.ExitPolicyKind
+	if row.ExitPolicyRef.Valid {
+		record.ExitPolicyRef = row.ExitPolicyRef.String
 	}
 	if row.FailReason.Valid {
 		record.FailReason = row.FailReason.String

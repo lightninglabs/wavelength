@@ -4,10 +4,12 @@
 INSERT INTO unroll_jobs (
     target_outpoint_hash, target_outpoint_index, state, trigger,
     best_height, target_confirm_height, planner_state, deferred_checkpoints,
-    sweep_tx, sweep_txid, sweep_confirm_height, sweep_attempts, fail_reason,
-    created_at, updated_at
+    exit_policy_kind, exit_policy_ref, sweep_tx, sweep_txid,
+    sweep_confirm_height, sweep_attempts, fail_reason, created_at,
+    updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+    $16, $17
 )
 ON CONFLICT (target_outpoint_hash, target_outpoint_index) DO UPDATE SET
     state = EXCLUDED.state,
@@ -16,6 +18,8 @@ ON CONFLICT (target_outpoint_hash, target_outpoint_index) DO UPDATE SET
     target_confirm_height = EXCLUDED.target_confirm_height,
     planner_state = EXCLUDED.planner_state,
     deferred_checkpoints = EXCLUDED.deferred_checkpoints,
+    exit_policy_kind = EXCLUDED.exit_policy_kind,
+    exit_policy_ref = EXCLUDED.exit_policy_ref,
     sweep_tx = EXCLUDED.sweep_tx,
     sweep_txid = EXCLUDED.sweep_txid,
     sweep_confirm_height = EXCLUDED.sweep_confirm_height,

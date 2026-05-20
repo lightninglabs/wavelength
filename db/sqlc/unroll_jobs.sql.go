@@ -103,7 +103,7 @@ func (q *Queries) DeleteUnrollWatchesForJob(ctx context.Context, arg DeleteUnrol
 }
 
 const GetUnrollJob = `-- name: GetUnrollJob :one
-SELECT target_outpoint_hash, target_outpoint_index, state, trigger, best_height, target_confirm_height, planner_state, deferred_checkpoints, sweep_tx, sweep_txid, sweep_confirm_height, sweep_attempts, fail_reason, created_at, updated_at FROM unroll_jobs
+SELECT target_outpoint_hash, target_outpoint_index, state, trigger, best_height, target_confirm_height, planner_state, deferred_checkpoints, exit_policy_kind, exit_policy_ref, sweep_tx, sweep_txid, sweep_confirm_height, sweep_attempts, fail_reason, created_at, updated_at FROM unroll_jobs
 WHERE target_outpoint_hash = $1
   AND target_outpoint_index = $2
 `
@@ -125,6 +125,8 @@ func (q *Queries) GetUnrollJob(ctx context.Context, arg GetUnrollJobParams) (Unr
 		&i.TargetConfirmHeight,
 		&i.PlannerState,
 		&i.DeferredCheckpoints,
+		&i.ExitPolicyKind,
+		&i.ExitPolicyRef,
 		&i.SweepTx,
 		&i.SweepTxid,
 		&i.SweepConfirmHeight,
@@ -215,7 +217,7 @@ func (q *Queries) ListDueUnrollEffectIDs(ctx context.Context, arg ListDueUnrollE
 }
 
 const ListNonTerminalUnrollJobs = `-- name: ListNonTerminalUnrollJobs :many
-SELECT target_outpoint_hash, target_outpoint_index, state, trigger, best_height, target_confirm_height, planner_state, deferred_checkpoints, sweep_tx, sweep_txid, sweep_confirm_height, sweep_attempts, fail_reason, created_at, updated_at FROM unroll_jobs
+SELECT target_outpoint_hash, target_outpoint_index, state, trigger, best_height, target_confirm_height, planner_state, deferred_checkpoints, exit_policy_kind, exit_policy_ref, sweep_tx, sweep_txid, sweep_confirm_height, sweep_attempts, fail_reason, created_at, updated_at FROM unroll_jobs
 WHERE state NOT IN ('completed', 'failed')
 ORDER BY created_at ASC
 `
@@ -238,6 +240,8 @@ func (q *Queries) ListNonTerminalUnrollJobs(ctx context.Context) ([]UnrollJob, e
 			&i.TargetConfirmHeight,
 			&i.PlannerState,
 			&i.DeferredCheckpoints,
+			&i.ExitPolicyKind,
+			&i.ExitPolicyRef,
 			&i.SweepTx,
 			&i.SweepTxid,
 			&i.SweepConfirmHeight,
@@ -475,10 +479,12 @@ const UpsertUnrollJob = `-- name: UpsertUnrollJob :exec
 INSERT INTO unroll_jobs (
     target_outpoint_hash, target_outpoint_index, state, trigger,
     best_height, target_confirm_height, planner_state, deferred_checkpoints,
-    sweep_tx, sweep_txid, sweep_confirm_height, sweep_attempts, fail_reason,
-    created_at, updated_at
+    exit_policy_kind, exit_policy_ref, sweep_tx, sweep_txid,
+    sweep_confirm_height, sweep_attempts, fail_reason, created_at,
+    updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+    $16, $17
 )
 ON CONFLICT (target_outpoint_hash, target_outpoint_index) DO UPDATE SET
     state = EXCLUDED.state,
@@ -487,6 +493,8 @@ ON CONFLICT (target_outpoint_hash, target_outpoint_index) DO UPDATE SET
     target_confirm_height = EXCLUDED.target_confirm_height,
     planner_state = EXCLUDED.planner_state,
     deferred_checkpoints = EXCLUDED.deferred_checkpoints,
+    exit_policy_kind = EXCLUDED.exit_policy_kind,
+    exit_policy_ref = EXCLUDED.exit_policy_ref,
     sweep_tx = EXCLUDED.sweep_tx,
     sweep_txid = EXCLUDED.sweep_txid,
     sweep_confirm_height = EXCLUDED.sweep_confirm_height,
@@ -504,6 +512,8 @@ type UpsertUnrollJobParams struct {
 	TargetConfirmHeight sql.NullInt32
 	PlannerState        []byte
 	DeferredCheckpoints []byte
+	ExitPolicyKind      string
+	ExitPolicyRef       sql.NullString
 	SweepTx             []byte
 	SweepTxid           []byte
 	SweepConfirmHeight  sql.NullInt32
@@ -524,6 +534,8 @@ func (q *Queries) UpsertUnrollJob(ctx context.Context, arg UpsertUnrollJobParams
 		arg.TargetConfirmHeight,
 		arg.PlannerState,
 		arg.DeferredCheckpoints,
+		arg.ExitPolicyKind,
+		arg.ExitPolicyRef,
 		arg.SweepTx,
 		arg.SweepTxid,
 		arg.SweepConfirmHeight,
