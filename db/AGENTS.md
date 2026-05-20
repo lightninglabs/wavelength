@@ -48,6 +48,10 @@ accounting. Supports SQLite and PostgreSQL backends.
 - `WalletEffectStoreDB` — Durable wallet side-effect lease/retry store.
 - `UnrollJobStoreDB` — Durable unroll control-plane store for target jobs,
   watches, tx progress, and restart replay.
+- `VHTLCRecoveryStoreDB` — Durable vHTLC recovery store. Persists armed and
+  escalated recovery jobs with request-id idempotency, explicit vHTLC script
+  parameters, fee cap, unroll target linkage, exit transaction artifacts, and
+  terminal/cancellation state.
 - `OwnedReceiveScriptStore` — Interface for persisting locally owned
   receive-script metadata.
 - `LedgerStoreDB` — Concrete adapter implementing `ledger.LedgerStore`. Wraps
@@ -85,7 +89,7 @@ accounting. Supports SQLite and PostgreSQL backends.
   bounds enforced during `DeserializeTree` to prevent stack overflow or OOM.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — Two-stage OOR
   ancestry resolver in `oor_unroll_resolver.go`.
-- `LatestMigrationVersion = 17` — Current schema version.
+- `LatestMigrationVersion = 19` — Current schema version.
 
 ## Relationships
 
@@ -119,6 +123,11 @@ accounting. Supports SQLite and PostgreSQL backends.
 - Recent restart-safety migrations include `000014_wallet_effects`,
   `000015_transport_runtime`, `000016_oor_client_runtime`, and
   `000017_unroll_jobs_noop`.
+- Migration `000018_unroll_jobs_noop` reserves the next unroll migration slot
+  without changing schema shape.
+- Migration `000019_vhtlc_recovery_jobs` adds the vHTLC recovery control-plane
+  rows with named script parameters, request-id idempotency, SQL-visible
+  timestamps, and no raw preimage storage.
 - Migration `000016_oor_client_runtime` adds the client OOR SQL runtime:
   session rows, typed input/recipient facts, Ark/checkpoint artifact tables,
   pending incoming hints, and leased effect rows. These tables are the restart

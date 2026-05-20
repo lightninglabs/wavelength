@@ -308,3 +308,9 @@ func (s *Store) NewUnrollJobStore(clk clock.Clock) *UnrollJobPersistenceStore {
 
 	return NewUnrollJobPersistenceStore(jobDB, clk)
 }
+
+// NewVHTLCRecoveryStore builds the vHTLC recovery persistence store with
+// transactional execution.
+func (s *Store) NewVHTLCRecoveryStore(clk clock.Clock) *VHTLCRecoveryStoreDB {
+	return NewVHTLCRecoveryStore(s, clk)
+}
