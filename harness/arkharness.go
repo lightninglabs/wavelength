@@ -1124,6 +1124,13 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	cfg := clientdarepod.DefaultConfig()
 	cfg.DataDir = dataDir
 	cfg.Network = "regtest"
+	// Pin eager round-join off in the harness regardless of build tag.
+	// Under the walletrpc build tag DefaultConfig now seeds
+	// EagerRoundJoin=true so wallet-shaped hosts auto-board deposits;
+	// itests still rely on explicit Board / TriggerRoundRegistration
+	// to drive round registration, so we override the build-tag default
+	// here to keep test semantics stable across tag changes.
+	cfg.EagerRoundJoin = false
 	// Use trace for daemon subsystems by default but cap BTCW at debug.
 	// Neutrino's internal trace logging is extremely verbose and floods
 	// test output.
