@@ -107,6 +107,29 @@ func TestStressBudgetIncludesClientCrashes(t *testing.T) {
 	require.False(t, runner.hasBudget())
 }
 
+// TestStressBudgetIncludesUnrolls verifies unroll attempts are first-class
+// workload budget items.
+func TestStressBudgetIncludesUnrolls(t *testing.T) {
+	runner := &stressRunner{
+		cfg: stressConfig{
+			maxUnrolls:       1,
+			clientRestarts:   false,
+			operatorRestarts: false,
+		},
+	}
+
+	require.True(t, runner.hasBudget())
+
+	runner.unrollJobs = 1
+	require.False(t, runner.hasBudget())
+
+	runner.releaseUnrollJob()
+	id, ok := runner.reserveUnrollAttempt()
+	require.True(t, ok)
+	require.Equal(t, 1, id)
+	require.False(t, runner.hasBudget())
+}
+
 // TestStressPaymentJobsHoldBudget verifies scheduled payment workers hold a
 // temporary budget slot until they either become real payment attempts or skip.
 func TestStressPaymentJobsHoldBudget(t *testing.T) {
@@ -361,6 +384,12 @@ func TestStressFailureExpectationPolicy(t *testing.T) {
 	require.Equal(t, failureClassInsufficientFunds, class)
 	require.True(t, runner.failureExpected(class))
 
+	class = runner.classifyFailure(
+		errors.New("insufficient wallet UTXOs to fund unroll CPFP"),
+	)
+	require.Equal(t, failureClassInsufficientFunds, class)
+	require.True(t, runner.failureExpected(class))
+
 	class = runner.classifyFailure(errors.New("boom"))
 	require.Equal(t, failureClassUnexpected, class)
 	require.False(t, runner.failureExpected(class))
@@ -557,6 +586,63 @@ func TestStressPaymentReservationsAvoidOverbooking(t *testing.T) {
 	require.Empty(t, runner.paymentReserved)
 }
 
+// TestStressUnrollReservationsAvoidPaymentOverbooking verifies payment sender
+// selection will not consume a VTXO already reserved for unroll.
+func TestStressUnrollReservationsAvoidPaymentOverbooking(t *testing.T) {
+	runner := &stressRunner{
+		cfg: stressConfig{
+			minPayment: 1_000,
+			maxPayment: 1_000,
+		},
+		rng:             rand.New(rand.NewSource(1)),
+		paymentReserved: make(map[string]map[string]int64),
+		unrollReserved:  make(map[string]map[string]int64),
+	}
+	vtxos := []*daemonrpc.VTXO{{
+		Outpoint:  "txid:0",
+		AmountSat: 1_500,
+	}}
+
+	unroll, ok := runner.reserveUnrollVTXO("client01", vtxos)
+	require.True(t, ok)
+	require.Equal(t, "txid:0", unroll.Outpoint)
+
+	payment, ok := runner.reservePaymentVTXOs("client01", vtxos)
+	require.False(t, ok)
+	require.Equal(t, int64(0), payment.Available)
+
+	runner.releaseUnrollReservation("client01", "txid:0")
+
+	payment, ok = runner.reservePaymentVTXOs("client01", vtxos)
+	require.True(t, ok)
+	require.Equal(t, []string{"txid:0"}, payment.Outpoints)
+}
+
+// TestStressUnrollSelectionPrefersOORDerivedVTXOs verifies random unrolls bias
+// toward deeper ancestry when a client has both round-born and OOR VTXOs.
+func TestStressUnrollSelectionPrefersOORDerivedVTXOs(t *testing.T) {
+	runner := &stressRunner{
+		rng:            rand.New(rand.NewSource(1)),
+		unrollReserved: make(map[string]map[string]int64),
+	}
+	vtxos := []*daemonrpc.VTXO{
+		{
+			Outpoint:  "round:0",
+			AmountSat: 1_000,
+		},
+		{
+			Outpoint:   "oor:0",
+			AmountSat:  1_000,
+			ChainDepth: 1,
+		},
+	}
+
+	reservation, ok := runner.reserveUnrollVTXO("client01", vtxos)
+	require.True(t, ok)
+	require.Equal(t, "oor:0", reservation.Outpoint)
+	require.Equal(t, uint32(1), reservation.ChainDepth)
+}
+
 // TestStressFinalSummaryMetrics verifies derived latency, success-rate, and
 // throughput fields are stable snapshots of the runner counters.
 func TestStressFinalSummaryMetrics(t *testing.T) {
@@ -587,6 +673,8 @@ func TestStressFinalSummaryMetrics(t *testing.T) {
 			RoundsTriggered:   2,
 			RoundsConfirmed:   1,
 			RoundsFailed:      1,
+			UnrollsAttempted:  2,
+			UnrollsCompleted:  2,
 			ExpectedFailures:  1,
 			FailureClasses: map[string]int{
 				string(failureClassDustChange): 1,
@@ -600,6 +688,10 @@ func TestStressFinalSummaryMetrics(t *testing.T) {
 			200 * time.Millisecond,
 			300 * time.Millisecond,
 			1_000 * time.Millisecond,
+		},
+		unrollLatencies: []time.Duration{
+			2 * time.Second,
+			4 * time.Second,
 		},
 	}
 
@@ -618,6 +710,12 @@ func TestStressFinalSummaryMetrics(t *testing.T) {
 	require.Equal(t, 2, summary.RoundsTriggered)
 	require.Equal(t, 1, summary.RoundsConfirmed)
 	require.Equal(t, 1, summary.RoundsFailed)
+	require.Equal(t, 2, summary.UnrollsAttempted)
+	require.Equal(t, 2, summary.UnrollsCompleted)
+	require.Equal(t, int64(3_000), summary.UnrollAvgMS)
+	require.Equal(t, int64(2_000), summary.UnrollP50MS)
+	require.Equal(t, int64(4_000), summary.UnrollP95MS)
+	require.Equal(t, int64(4_000), summary.UnrollMaxMS)
 	require.Equal(t, stressResultPass, summary.HarnessResult)
 	require.Equal(t, stressResultExpectedFailures, summary.WorkloadResult)
 	require.Equal(t, stressResultPass, summary.InvariantsResult)

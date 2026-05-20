@@ -36,6 +36,9 @@ const (
 	// defaultStressMaxRounds is the default random refresh round budget.
 	defaultStressMaxRounds = 5
 
+	// defaultStressMaxUnrolls is the default random unroll budget.
+	defaultStressMaxUnrolls = 5
+
 	// defaultStressMaxRestarts is the default restart/crash disruption
 	// budget.
 	defaultStressMaxRestarts = 5
@@ -53,6 +56,11 @@ const (
 	// defaultStressPaymentLiquidityTimeout bounds how long a payment worker
 	// waits for live, unreserved sender VTXOs before recording a skip.
 	defaultStressPaymentLiquidityTimeout = 10 * time.Second
+
+	// defaultStressUnrollTimeout bounds one random unroll attempt. The
+	// background miner supplies block progress, so this is a job-level
+	// watchdog rather than a block-driving cadence.
+	defaultStressUnrollTimeout = 15 * time.Minute
 
 	// defaultStressTraceDuration keeps optional runtime traces short enough
 	// for the Go trace browser to load comfortably during stress runs.
@@ -162,6 +170,7 @@ type stressConfig struct {
 	clientCount      int
 	maxPayments      int
 	maxRounds        int
+	maxUnrolls       int
 	maxRestarts      int
 	maxReorgs        int
 	reorgDepth       int
@@ -172,6 +181,7 @@ type stressConfig struct {
 	concurrency      int
 	duration         time.Duration
 	liquidityTimeout time.Duration
+	unrollTimeout    time.Duration
 	seed             int64
 	minPayment       int64
 	maxPayment       int64
@@ -221,6 +231,14 @@ type stressSummary struct {
 	RoundsTriggered    int            `json:"rounds_triggered"`
 	RoundsConfirmed    int            `json:"rounds_confirmed"`
 	RoundsFailed       int            `json:"rounds_failed"`
+	UnrollsAttempted   int            `json:"unrolls_attempted"`
+	UnrollsCompleted   int            `json:"unrolls_completed"`
+	UnrollsFailed      int            `json:"unrolls_failed"`
+	UnrollsSkipped     int            `json:"unrolls_skipped"`
+	UnrollAvgMS        int64          `json:"unroll_avg_ms"`
+	UnrollP50MS        int64          `json:"unroll_p50_ms"`
+	UnrollP95MS        int64          `json:"unroll_p95_ms"`
+	UnrollMaxMS        int64          `json:"unroll_max_ms"`
 	ReorgsTriggered    int            `json:"reorgs_triggered"`
 	ReorgsCompleted    int            `json:"reorgs_completed"`
 	ReorgsFailed       int            `json:"reorgs_failed"`
@@ -280,7 +298,9 @@ type stressRunner struct {
 	clients          map[string]*darepoharness.ClientDaemonHarness
 	clientLocks      map[string]*sync.Mutex
 	paymentReserved  map[string]map[string]int64
+	unrollReserved   map[string]map[string]int64
 	paymentJobs      int
+	unrollJobs       int
 	liveVTXOMu       sync.Mutex
 	liveVTXOCache    map[string]liveVTXOCacheEntry
 	roundMu          sync.Mutex
@@ -292,6 +312,7 @@ type stressRunner struct {
 	diagnosticPaths  stressDiagnosticPaths
 	summary          stressSummary
 	paymentLatencies []time.Duration
+	unrollLatencies  []time.Duration
 	liquidityWaits   []time.Duration
 	workloadDeadline time.Time
 	nextReorgAt      time.Time
@@ -323,9 +344,9 @@ func newStressCmd() *cobra.Command {
 		Short: "Run a sparse-log random arktest workload",
 		Long: "Starts one local Ark topology, boards a client set, " +
 			"then concurrently performs random OOR payments, " +
-			"round refreshes, graceful restarts, and client " +
-			"crash/recover cycles until one of the configured " +
-			"budgets is exhausted.",
+			"round refreshes, unilateral exits, graceful " +
+			"restarts, and client crash/recover cycles while " +
+			"the background miner advances blocks.",
 		Run: runStress,
 	}
 
@@ -406,6 +427,10 @@ func newStressCmd() *cobra.Command {
 		"maximum random refresh rounds after bootstrap",
 	)
 	f.IntVar(
+		&stressCfg.maxUnrolls, "max-unrolls", defaultStressMaxUnrolls,
+		"maximum random unilateral exit attempts",
+	)
+	f.IntVar(
 		&stressCfg.maxRestarts, "max-restarts",
 		defaultStressMaxRestarts,
 		"maximum restart/crash disruption events",
@@ -453,6 +478,11 @@ func newStressCmd() *cobra.Command {
 		defaultStressPaymentLiquidityTimeout, "maximum time a "+
 			"payment worker waits for live sender liquidity; "+
 			"zero records no-funded-sender skips immediately",
+	)
+	f.DurationVar(
+		&stressCfg.unrollTimeout, "unroll-timeout",
+		defaultStressUnrollTimeout,
+		"maximum time to wait for one random unroll to complete",
 	)
 	f.Int64Var(
 		&stressCfg.seed, "seed", 0,
@@ -532,8 +562,8 @@ func normalizeStressConfig(t *testing.T, cfg stressConfig) stressConfig {
 	if cfg.clientCount < 2 {
 		t.Fatalf("--clients must be at least 2")
 	}
-	if cfg.maxPayments < 0 || cfg.maxRounds < 0 || cfg.maxRestarts < 0 ||
-		cfg.maxReorgs < 0 {
+	if cfg.maxPayments < 0 || cfg.maxRounds < 0 || cfg.maxUnrolls < 0 ||
+		cfg.maxRestarts < 0 || cfg.maxReorgs < 0 {
 
 		t.Fatalf("stress budgets must be non-negative")
 	}
@@ -579,6 +609,11 @@ func normalizeStressConfig(t *testing.T, cfg stressConfig) stressConfig {
 	}
 	if cfg.liquidityTimeout < 0 {
 		t.Fatalf("--payment-liquidity-timeout must be non-negative")
+	}
+	if cfg.unrollTimeout < 0 {
+		t.Fatalf("--unroll-timeout must be non-negative")
+	} else if cfg.unrollTimeout == 0 {
+		cfg.unrollTimeout = defaultStressUnrollTimeout
 	}
 	if cfg.traceDuration < 0 {
 		t.Fatalf("--trace-duration must be non-negative")
@@ -635,6 +670,7 @@ func newStressRunner(t *testing.T, cfg stressConfig) *stressRunner {
 		clients:         clients,
 		clientLocks:     clientLocks,
 		paymentReserved: make(map[string]map[string]int64, len(names)),
+		unrollReserved:  make(map[string]map[string]int64, len(names)),
 		liveVTXOCache: make(
 			map[string]liveVTXOCacheEntry, len(names),
 		),
@@ -1212,6 +1248,7 @@ func (r *stressRunner) hasBudget() bool {
 func (r *stressRunner) hasBudgetLocked() bool {
 	return r.eventBudgetRemainingLocked(stressEventPayment) ||
 		r.eventBudgetRemainingLocked(stressEventRound) ||
+		r.eventBudgetRemainingLocked(stressEventUnroll) ||
 		r.eventBudgetRemainingLocked(stressEventReorg) ||
 		r.eventBudgetRemainingLocked(stressEventClientRestart) ||
 		r.eventBudgetRemainingLocked(stressEventClientCrash) ||
@@ -1223,6 +1260,7 @@ func (r *stressRunner) hasBudgetLocked() bool {
 func (r *stressRunner) hasSchedulableWorkLocked() bool {
 	return r.eventAllowedLocked(stressEventPayment) ||
 		r.eventAllowedLocked(stressEventRound) ||
+		r.eventAllowedLocked(stressEventUnroll) ||
 		r.eventAllowedLocked(stressEventReorg) ||
 		r.eventAllowedLocked(stressEventClientRestart) ||
 		r.eventAllowedLocked(stressEventClientCrash) ||
@@ -1245,6 +1283,9 @@ const (
 
 	// stressEventRound queues and confirms one refresh round.
 	stressEventRound
+
+	// stressEventUnroll triggers and waits for one random unilateral exit.
+	stressEventUnroll
 
 	// stressEventReorg disconnects chain blocks and mines a longer branch.
 	stressEventReorg
@@ -1285,12 +1326,15 @@ func (r *stressRunner) reserveNextJob() (stressJob, bool) {
 			evt = stressEventRound
 
 		case roll < 82:
+			evt = stressEventUnroll
+
+		case roll < 88:
 			evt = stressEventReorg
 
-		case roll < 90:
+		case roll < 94:
 			evt = stressEventClientRestart
 
-		case roll < 98:
+		case roll < 99:
 			evt = stressEventClientCrash
 
 		default:
@@ -1308,6 +1352,9 @@ func (r *stressRunner) reserveNextJob() (stressJob, bool) {
 
 		case stressEventRound:
 			r.summary.RoundsTriggered++
+
+		case stressEventUnroll:
+			r.unrollJobs++
 
 		case stressEventReorg:
 			r.summary.ReorgsTriggered++
@@ -1335,6 +1382,9 @@ func (r *stressRunner) runJob(job stressJob) {
 
 	case stressEventRound:
 		r.randomRefreshRound()
+
+	case stressEventUnroll:
+		r.randomUnroll()
 
 	case stressEventReorg:
 		r.randomReorg()
@@ -1374,6 +1424,10 @@ func (r *stressRunner) eventBudgetRemainingLocked(evt stressEvent) bool {
 
 	case stressEventRound:
 		return r.summary.RoundsTriggered < r.cfg.maxRounds
+
+	case stressEventUnroll:
+		return r.summary.UnrollsAttempted+r.unrollJobs <
+			r.cfg.maxUnrolls
 
 	case stressEventReorg:
 		return r.summary.ReorgsTriggered < r.cfg.maxReorgs
@@ -1694,6 +1748,370 @@ func (r *stressRunner) recordPaymentSettled(latency time.Duration) {
 	r.paymentLatencies = append(r.paymentLatencies, latency)
 }
 
+// randomUnroll triggers and waits for one random unilateral exit.
+func (r *stressRunner) randomUnroll() {
+	reservation, ok := r.randomUnrollReservation()
+	if !ok {
+		r.releaseUnrollJob()
+		r.unrollSkipped()
+
+		return
+	}
+	defer r.releaseUnrollReservation(
+		reservation.Client, reservation.Outpoint,
+	)
+	defer r.invalidateLiveVTXOs(reservation.Client)
+
+	unrollID, ok := r.reserveUnrollAttempt()
+	if !ok {
+		r.events.Printf("unroll_budget_exhausted", map[string]any{
+			"client":   reservation.Client,
+			"outpoint": reservation.Outpoint,
+			"amount":   reservation.Amount,
+		},
+			"unroll budget exhausted after candidate client=%s "+
+				"outpoint=%s",
+			reservation.Client, reservation.Outpoint)
+
+		return
+	}
+
+	clientRPC, err := r.clientRPC(reservation.Client)
+	if err != nil {
+		r.unrollFailed(unrollID, "client rpc", err)
+
+		return
+	}
+
+	r.events.Printf("unroll", map[string]any{
+		"id":             unrollID,
+		"client":         reservation.Client,
+		"outpoint":       reservation.Outpoint,
+		"amount":         reservation.Amount,
+		"chain_depth":    reservation.ChainDepth,
+		"reserved_prior": reservation.ReservedPrior,
+		"available":      reservation.Available,
+	},
+		"unroll %d client=%s outpoint=%s amount=%d chain_depth=%d",
+		unrollID, reservation.Client, reservation.Outpoint,
+		reservation.Amount, reservation.ChainDepth)
+
+	start := time.Now()
+	ctx, cancel := r.shortContext()
+	var resp *daemonrpc.UnrollResponse
+	stressTraceRegion(ctx, "arktest.unroll.start", func() {
+		resp, err = clientRPC.Unroll(
+			ctx, &daemonrpc.UnrollRequest{
+				Outpoint: reservation.Outpoint,
+			},
+		)
+	})
+	cancel()
+	if err != nil {
+		r.unrollFailed(unrollID, "unroll rpc", err)
+
+		return
+	}
+	if !resp.Created {
+		err := fmt.Errorf("unroll already existed for %s",
+			reservation.Outpoint)
+		r.unrollFailed(unrollID, "unroll rpc", err)
+
+		return
+	}
+
+	status, err := r.waitUnrollCompletion(
+		unrollID, clientRPC, reservation.Outpoint,
+	)
+	if err != nil {
+		r.unrollFailed(unrollID, "unroll completion", err)
+
+		return
+	}
+	if status.SweepTxid == "" {
+		err := fmt.Errorf("completed unroll %s missing sweep txid",
+			reservation.Outpoint)
+		r.unrollFailed(unrollID, "unroll status", err)
+
+		return
+	}
+
+	latency := time.Since(start)
+	r.recordUnrollCompleted(latency)
+	r.events.Printf("unroll_completed", map[string]any{
+		"id":         unrollID,
+		"client":     reservation.Client,
+		"outpoint":   reservation.Outpoint,
+		"sweep_txid": status.SweepTxid,
+		"latency_ms": latency.Milliseconds(),
+	},
+		"unroll %d completed client=%s outpoint=%s latency=%s "+
+			"sweep_txid=%s",
+		unrollID, reservation.Client, reservation.Outpoint,
+		latency.Round(time.Millisecond), status.SweepTxid)
+}
+
+// releaseUnrollJob releases a scheduler-reserved unroll slot without consuming
+// one of the caller's requested unroll attempts.
+func (r *stressRunner) releaseUnrollJob() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.unrollJobs > 0 {
+		r.unrollJobs--
+	}
+}
+
+// reserveUnrollAttempt converts a scheduler slot into a real unroll attempt
+// after the runner has found an eligible live VTXO.
+func (r *stressRunner) reserveUnrollAttempt() (int, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.unrollJobs > 0 {
+		r.unrollJobs--
+	}
+	if r.summary.UnrollsAttempted >= r.cfg.maxUnrolls {
+		return 0, false
+	}
+
+	r.summary.UnrollsAttempted++
+
+	return r.summary.UnrollsAttempted, true
+}
+
+// unrollSkipped records a scheduler retry that found no live unroll candidate.
+func (r *stressRunner) unrollSkipped() {
+	id := r.recordUnrollSkipped()
+	r.events.Printf("unroll_skip", map[string]any{
+		"id":       id,
+		"class":    failureClassNoLiveVTXOs,
+		"expected": true,
+	},
+		"unroll skip %d: no live unreserved vtxo", id)
+}
+
+// recordUnrollSkipped increments the unroll skip counter.
+func (r *stressRunner) recordUnrollSkipped() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.summary.UnrollsSkipped++
+
+	return r.summary.UnrollsSkipped
+}
+
+// unrollFailed records a failed unroll event and increments the summary.
+func (r *stressRunner) unrollFailed(id int, phase string, err error) {
+	class := r.classifyFailure(err)
+	expected := r.failureExpected(class)
+	r.incrementUnrollFailed(class, expected)
+	r.events.Printf("unroll_failed", map[string]any{
+		"id":       id,
+		"phase":    phase,
+		"class":    class,
+		"expected": expected,
+		"error":    err.Error(),
+	},
+		"unroll %d failed phase=%s err=%v", id, phase, err)
+}
+
+// incrementUnrollFailed increments the failed unroll counter.
+func (r *stressRunner) incrementUnrollFailed(class stressFailureClass,
+	expected bool) {
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.summary.UnrollsFailed++
+	r.recordWorkloadFailureLocked(class, expected)
+}
+
+// recordUnrollCompleted records a successful unroll latency.
+func (r *stressRunner) recordUnrollCompleted(latency time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.summary.UnrollsCompleted++
+	r.unrollLatencies = append(r.unrollLatencies, latency)
+}
+
+// waitUnrollCompletion polls daemon job state until the unroll completes.
+func (r *stressRunner) waitUnrollCompletion(id int,
+	client daemonrpc.DaemonServiceClient, outpoint string) (
+	*daemonrpc.GetUnrollStatusResponse, error) {
+
+	completedStatus := daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED
+	failedStatus := daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED
+
+	ctx, cancel := r.contextWithTimeout(r.cfg.unrollTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(stressRoundPollInterval)
+	defer ticker.Stop()
+
+	var lastStatus daemonrpc.UnrollJobStatus
+	var lastErr error
+	loggedStatus := false
+	for {
+		var resp *daemonrpc.GetUnrollStatusResponse
+		var err error
+		stressTraceRegion(ctx, "arktest.unroll.status", func() {
+			resp, err = client.GetUnrollStatus(
+				ctx, &daemonrpc.GetUnrollStatusRequest{
+					Outpoint: outpoint,
+				},
+			)
+		})
+		if err != nil {
+			lastErr = err
+		} else if resp != nil && resp.Found {
+			statusText := resp.Status.String()
+			if !loggedStatus || resp.Status != lastStatus {
+				loggedStatus = true
+				lastStatus = resp.Status
+				r.events.Printf("unroll_status",
+					map[string]any{
+						"id":       id,
+						"outpoint": outpoint,
+						"status":   statusText,
+					},
+					"unroll %d status=%s outpoint=%s", id,
+					resp.Status, outpoint)
+			}
+
+			switch resp.Status {
+			case completedStatus:
+				return resp, nil
+
+			case failedStatus:
+				return nil, fmt.Errorf("unroll job failed: %s",
+					resp.LastError)
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("unroll timeout after %s "+
+				"outpoint=%s last_status=%s last_err=%v",
+				r.cfg.unrollTimeout, outpoint, lastStatus,
+				lastErr)
+
+		case <-ticker.C:
+		}
+	}
+}
+
+// unrollReservation records one runner-side VTXO reserved for unroll.
+type unrollReservation struct {
+	Client        string
+	Outpoint      string
+	Amount        int64
+	ChainDepth    uint32
+	LiveBalance   int64
+	Available     int64
+	ReservedPrior int64
+}
+
+// randomUnrollReservation chooses a client and reserves one live VTXO.
+func (r *stressRunner) randomUnrollReservation() (unrollReservation, bool) {
+	for _, name := range r.shuffledClientNames() {
+		vtxos, err := r.liveVTXOs(name)
+		if err != nil {
+			class := r.classifyFailure(err)
+			expected := r.failureExpected(class)
+			r.recordUnexpectedProbeFailure(class, expected)
+			probeMsg := "unroll probe failed client=%s err=%v"
+			r.events.Printf("unroll_probe_failed", map[string]any{
+				"client":   name,
+				"class":    class,
+				"expected": expected,
+				"error":    err.Error(),
+			},
+				probeMsg, name, err)
+
+			continue
+		}
+
+		reservation, ok := r.reserveUnrollVTXO(name, vtxos)
+		if ok {
+			return reservation, true
+		}
+	}
+
+	return unrollReservation{}, false
+}
+
+// reserveUnrollVTXO reserves one live VTXO, preferring OOR-derived VTXOs.
+func (r *stressRunner) reserveUnrollVTXO(name string, vtxos []*daemonrpc.VTXO) (
+	unrollReservation, bool) {
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.unrollReserved == nil {
+		r.unrollReserved = make(map[string]map[string]int64)
+	}
+
+	liveBalance := sumVTXOs(vtxos)
+	reserved := r.totalReservedVTXOsLocked(name)
+	availableVTXOs := make([]*daemonrpc.VTXO, 0, len(vtxos))
+	for _, vtxo := range vtxos {
+		if vtxo == nil || vtxo.Outpoint == "" {
+			continue
+		}
+		if r.outpointReservedLocked(name, vtxo.Outpoint) {
+			continue
+		}
+		availableVTXOs = append(availableVTXOs, vtxo)
+	}
+	available := sumVTXOs(availableVTXOs)
+
+	reservation := unrollReservation{
+		Client:        name,
+		LiveBalance:   liveBalance,
+		Available:     available,
+		ReservedPrior: reserved,
+	}
+	if len(availableVTXOs) == 0 {
+		return reservation, false
+	}
+
+	preferred := make([]*daemonrpc.VTXO, 0, len(availableVTXOs))
+	for _, vtxo := range availableVTXOs {
+		if vtxo.ChainDepth > 0 {
+			preferred = append(preferred, vtxo)
+		}
+	}
+	candidates := availableVTXOs
+	if len(preferred) > 0 {
+		candidates = preferred
+	}
+	target := candidates[r.rng.Intn(len(candidates))]
+
+	if r.unrollReserved[name] == nil {
+		r.unrollReserved[name] = make(map[string]int64)
+	}
+	r.unrollReserved[name][target.Outpoint] = target.AmountSat
+
+	reservation.Outpoint = target.Outpoint
+	reservation.Amount = target.AmountSat
+	reservation.ChainDepth = target.ChainDepth
+
+	return reservation, true
+}
+
+// releaseUnrollReservation releases a runner-side unroll reservation.
+func (r *stressRunner) releaseUnrollReservation(name, outpoint string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.unrollReserved[name], outpoint)
+	if len(r.unrollReserved[name]) == 0 {
+		delete(r.unrollReserved, name)
+	}
+}
+
 // senderSelectionClient records one client's sender-selection scan result.
 type senderSelectionClient struct {
 	Name        string             `json:"name"`
@@ -1969,17 +2387,14 @@ func (r *stressRunner) reservePaymentVTXOs(name string,
 		r.paymentReserved = make(map[string]map[string]int64)
 	}
 
-	reserved := sumReservedVTXOs(r.paymentReserved[name])
+	reserved := r.totalReservedVTXOsLocked(name)
 	liveBalance := sumVTXOs(vtxos)
 	availableVTXOs := make([]*daemonrpc.VTXO, 0, len(vtxos))
 	for _, vtxo := range vtxos {
-		if vtxo == nil {
+		if vtxo == nil || vtxo.Outpoint == "" {
 			continue
 		}
-		if vtxo.Outpoint == "" {
-			continue
-		}
-		if _, ok := r.paymentReserved[name][vtxo.Outpoint]; ok {
+		if r.outpointReservedLocked(name, vtxo.Outpoint) {
 			continue
 		}
 		availableVTXOs = append(availableVTXOs, vtxo)
@@ -2038,6 +2453,26 @@ func (r *stressRunner) releasePaymentReservation(name string,
 	if len(r.paymentReserved[name]) == 0 {
 		delete(r.paymentReserved, name)
 	}
+}
+
+// outpointReservedLocked reports whether any stress worker reserved an
+// outpoint. The caller must hold r.mu.
+func (r *stressRunner) outpointReservedLocked(name, outpoint string) bool {
+	if _, ok := r.paymentReserved[name][outpoint]; ok {
+		return true
+	}
+	if _, ok := r.unrollReserved[name][outpoint]; ok {
+		return true
+	}
+
+	return false
+}
+
+// totalReservedVTXOsLocked returns all runner-side reservations for a client.
+// The caller must hold r.mu.
+func (r *stressRunner) totalReservedVTXOsLocked(name string) int64 {
+	return sumReservedVTXOs(r.paymentReserved[name]) +
+		sumReservedVTXOs(r.unrollReserved[name])
 }
 
 // sumVTXOs returns the total amount of the supplied VTXOs.
@@ -2109,6 +2544,8 @@ func (r *stressRunner) classifyFailure(err error) stressFailureClass {
 		return failureClassDustChange
 
 	case strings.Contains(msg, "insufficient funds") ||
+		strings.Contains(msg, "insufficient wallet utxos") ||
+		strings.Contains(msg, "no confirmed wallet utxos") ||
 		(strings.Contains(msg, "has ") &&
 			strings.Contains(msg, "sats") &&
 			strings.Contains(msg, "need at least")):
@@ -2355,10 +2792,25 @@ func (r *stressRunner) liveVTXOOutpoints(name string) ([]string, error) {
 
 	outpoints := make([]string, 0, len(vtxos))
 	for _, vtxo := range vtxos {
+		if vtxo == nil || vtxo.Outpoint == "" {
+			continue
+		}
+		if r.outpointReserved(name, vtxo.Outpoint) {
+			continue
+		}
 		outpoints = append(outpoints, vtxo.Outpoint)
 	}
 
 	return outpoints, nil
+}
+
+// outpointReserved reports whether any stress worker currently owns an
+// outpoint reservation.
+func (r *stressRunner) outpointReserved(name, outpoint string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.outpointReservedLocked(name, outpoint)
 }
 
 // randomReceiver chooses a receiver different from sender.
@@ -3456,6 +3908,29 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 		summary.PaymentMaxMS = maxLatency.Milliseconds()
 	}
 
+	unrollLatencies := append([]time.Duration(nil), r.unrollLatencies...)
+	if len(unrollLatencies) > 0 {
+		sort.Slice(unrollLatencies, func(i, j int) bool {
+			return unrollLatencies[i] < unrollLatencies[j]
+		})
+
+		var total time.Duration
+		for _, latency := range unrollLatencies {
+			total += latency
+		}
+
+		summary.UnrollAvgMS = (total /
+			time.Duration(len(unrollLatencies))).Milliseconds()
+		summary.UnrollP50MS = percentileDuration(
+			unrollLatencies, 50,
+		).Milliseconds()
+		summary.UnrollP95MS = percentileDuration(
+			unrollLatencies, 95,
+		).Milliseconds()
+		maxLatency := unrollLatencies[len(unrollLatencies)-1]
+		summary.UnrollMaxMS = maxLatency.Milliseconds()
+	}
+
 	waitLatencies := append([]time.Duration(nil), r.liquidityWaits...)
 	if len(waitLatencies) > 0 {
 		sort.Slice(waitLatencies, func(i, j int) bool {
@@ -3548,6 +4023,22 @@ func (r *stressRunner) printFinalSummary(path string, summary stressSummary) {
 		"payment latency avg=%dms p50=%dms p95=%dms max=%dms",
 		summary.PaymentAvgMS, summary.PaymentP50MS,
 		summary.PaymentP95MS, summary.PaymentMaxMS)
+	r.events.Printf("stress_summary", map[string]any{
+		"attempted": summary.UnrollsAttempted,
+		"completed": summary.UnrollsCompleted,
+		"failed":    summary.UnrollsFailed,
+		"skipped":   summary.UnrollsSkipped,
+		"avg_ms":    summary.UnrollAvgMS,
+		"p50_ms":    summary.UnrollP50MS,
+		"p95_ms":    summary.UnrollP95MS,
+		"max_ms":    summary.UnrollMaxMS,
+	},
+		"unrolls completed=%d/%d failed=%d skipped=%d avg=%dms "+
+			"p50=%dms p95=%dms max=%dms",
+		summary.UnrollsCompleted, summary.UnrollsAttempted,
+		summary.UnrollsFailed, summary.UnrollsSkipped,
+		summary.UnrollAvgMS, summary.UnrollP50MS, summary.UnrollP95MS,
+		summary.UnrollMaxMS)
 	if summary.LiquidityWaits > 0 {
 		r.events.Printf("stress_summary", map[string]any{
 			"waits":      summary.LiquidityWaits,
