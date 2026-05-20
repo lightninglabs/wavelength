@@ -28,30 +28,29 @@ func TestBoardingBackendDuplicateImportRestoresTracking(t *testing.T) {
 	}
 
 	tipHash := chaincfg.RegressionNetParams.GenesisHash.String()
-	esplora := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/blocks/tip/height":
-				_, err := w.Write([]byte("0"))
-				require.NoError(t, err)
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/blocks/tip/height":
+			_, err := w.Write([]byte("0"))
+			require.NoError(t, err)
 
-			case "/block-height/0":
-				_, err := w.Write([]byte(tipHash))
-				require.NoError(t, err)
+		case "/block-height/0":
+			_, err := w.Write([]byte(tipHash))
+			require.NoError(t, err)
 
-			case "/block/" + tipHash:
-				err := json.NewEncoder(w).Encode(esploraBlock{
-					ID:        tipHash,
-					Height:    0,
-					Timestamp: 1,
-				})
-				require.NoError(t, err)
+		case "/block/" + tipHash:
+			err := json.NewEncoder(w).Encode(esploraBlock{
+				ID:        tipHash,
+				Height:    0,
+				Timestamp: 1,
+			})
+			require.NoError(t, err)
 
-			default:
-				http.NotFound(w, r)
-			}
-		},
-	))
+		default:
+			http.NotFound(w, r)
+		}
+	}
+	esplora := httptest.NewServer(http.HandlerFunc(handler))
 	defer esplora.Close()
 
 	w, err := New(Config{

@@ -116,9 +116,10 @@ func (b *BoardingBackendBase) ImportTaprootScript(ctx context.Context,
 					"taproot script address: %w", addrErr)
 			}
 
-			b.trackImportedAddress(addr)
+			numAddrs := b.trackImportedAddress(addr)
 			b.Log.DebugS(ctx, "Tracked duplicate taproot script",
 				slog.String("address", addr.String()),
+				slog.Int("tracked_addrs", numAddrs),
 			)
 
 			return addr, nil
@@ -129,11 +130,11 @@ func (b *BoardingBackendBase) ImportTaprootScript(ctx context.Context,
 
 	addr := managedAddr.Address()
 
-	b.trackImportedAddress(addr)
+	numAddrs := b.trackImportedAddress(addr)
 
 	b.Log.DebugS(ctx, "Imported taproot script via btcwallet",
 		slog.String("address", addr.String()),
-		slog.Int("tracked_addrs", len(b.SnapshotAddrs())),
+		slog.Int("tracked_addrs", numAddrs),
 	)
 
 	return addr, nil
@@ -141,10 +142,16 @@ func (b *BoardingBackendBase) ImportTaprootScript(ctx context.Context,
 
 // trackImportedAddress records an imported address so ListUnspent
 // implementations can filter results to only return boarding UTXOs.
-func (b *BoardingBackendBase) trackImportedAddress(addr btcutil.Address) {
+// Returns the number of currently tracked addresses after the insert,
+// which lets callers log the count without a separate locked read or
+// a full map copy via SnapshotAddrs.
+func (b *BoardingBackendBase) trackImportedAddress(addr btcutil.Address) int {
 	b.Mu.Lock()
 	b.ImportedAddrs[addr.String()] = addr
+	numAddrs := len(b.ImportedAddrs)
 	b.Mu.Unlock()
+
+	return numAddrs
 }
 
 // addressForTaprootScript derives the P2TR address that btcwallet stores for
