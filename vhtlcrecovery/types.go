@@ -112,26 +112,31 @@ type RecoveryJob struct {
 	UnilateralClaimDelay                 int32
 	UnilateralRefundDelay                int32
 	UnilateralRefundWithoutReceiverDelay int32
-	PreimageHash                         []byte
-	SignerKeyFamily                      int32
-	SignerKeyIndex                       int32
-	DestinationScript                    []byte
-	MaxFeeRateSatPerKWeight              int32
-	UnrollTargetOutpoint                 *wire.OutPoint
-	ExitPolicyKind                       string
-	ExitTx                               []byte
-	ExitTxid                             []byte
-	CooperativeTxid                      []byte
-	LastError                            string
-	CancelReason                         string
-	CreatedAt                            time.Time
-	UpdatedAt                            time.Time
-	ArmedAt                              *time.Time
-	EscalatedAt                          *time.Time
-	TargetDetectedAt                     *time.Time
-	ExitTxBuiltAt                        *time.Time
-	ExitTxBroadcastAt                    *time.Time
-	TerminalAt                           *time.Time
+	// PreimageHash is the vHTLC payment hash. It is safe to log and index.
+	PreimageHash []byte
+	// ClaimPreimage is populated only for cross-process claim recovery
+	// where the daemon cannot resolve swap-owned state through an
+	// in-process resolver. The value must never be logged.
+	ClaimPreimage           []byte
+	SignerKeyFamily         int32
+	SignerKeyIndex          int32
+	DestinationScript       []byte
+	MaxFeeRateSatPerKWeight int32
+	UnrollTargetOutpoint    *wire.OutPoint
+	ExitPolicyKind          string
+	ExitTx                  []byte
+	ExitTxid                []byte
+	CooperativeTxid         []byte
+	LastError               string
+	CancelReason            string
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+	ArmedAt                 *time.Time
+	EscalatedAt             *time.Time
+	TargetDetectedAt        *time.Time
+	ExitTxBuiltAt           *time.Time
+	ExitTxBroadcastAt       *time.Time
+	TerminalAt              *time.Time
 }
 
 // IsTerminal reports whether the job is in a terminal state.

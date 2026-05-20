@@ -251,7 +251,12 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 	require.Equal(t, uint32(42), got.GetRefundLocktime())
 }
 
-func TestNewSwapClientServiceUsesDaemonBackedReceiveAuth(t *testing.T) {
+// TestNewSwapClientServiceRequiresRecoveryPreimageRegistry verifies that the
+// swap runtime service does not start when the daemon-side vHTLC recovery
+// preimage registry is unavailable. Claim recovery depends on this registration
+// to look up swap-owned preimages after restart, so accepting a nil daemon
+// backend would make recovery appear armed while it could not actually claim.
+func TestNewSwapClientServiceRequiresRecoveryPreimageRegistry(t *testing.T) {
 	t.Parallel()
 
 	rpcServer := darepod.NewRPCServer(nil)
@@ -267,13 +272,10 @@ func TestNewSwapClientServiceUsesDaemonBackedReceiveAuth(t *testing.T) {
 	service, cleanup, err := newSwapClientService(
 		t.Context(), rpcServer, daemonCfg,
 	)
-	require.NoError(t, err)
-	require.NotNil(t, service)
-	require.NotNil(t, cleanup)
-	t.Cleanup(cleanup)
-
-	_, ok := service.client.(*swapClientAdapter)
-	require.True(t, ok)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "register recovery preimage resolver")
+	require.Nil(t, service)
+	require.Nil(t, cleanup)
 }
 
 func TestNewSwapServerClientsREST(t *testing.T) {
@@ -362,11 +364,12 @@ func TestNewSwapServerClientsREST(t *testing.T) {
 	require.NoError(t, err)
 
 	hint, err := clients.server.RequestChannelID(
-		t.Context(), clientPriv.PubKey(), lntypes.Hash{1}, 30,
+		t.Context(), clientPriv.PubKey(), lntypes.Hash{1},
+		btcutil.Amount(42_000), 30,
 	)
 	require.NoError(t, err)
-	require.Equal(t, uint64(42), hint.ChannelID)
-	require.Equal(t, nodeID, hint.NodeID)
+	require.Equal(t, uint64(42), hint.RouteHint.ChannelID)
+	require.Equal(t, nodeID, hint.RouteHint.NodeID)
 
 	_, err = clients.mailbox.Pull(
 		t.Context(), &mailboxpb.PullRequest{

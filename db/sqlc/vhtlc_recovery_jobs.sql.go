@@ -73,18 +73,23 @@ SET state = CASE
     END,
     updated_at = $2,
     escalated_at = COALESCE(escalated_at, $2),
+    claim_preimage = CASE
+        WHEN $3 IS NULL THEN claim_preimage
+        ELSE $3
+    END,
     last_error = NULL
 WHERE id = $1
   AND state NOT IN ('completed', 'cancelled', 'failed')
 `
 
 type EscalateVHTLCRecoveryJobParams struct {
-	ID        string
-	UpdatedAt int64
+	ID            string
+	UpdatedAt     int64
+	ClaimPreimage []byte
 }
 
 func (q *Queries) EscalateVHTLCRecoveryJob(ctx context.Context, arg EscalateVHTLCRecoveryJobParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, EscalateVHTLCRecoveryJob, arg.ID, arg.UpdatedAt)
+	result, err := q.db.ExecContext(ctx, EscalateVHTLCRecoveryJob, arg.ID, arg.UpdatedAt, arg.ClaimPreimage)
 	if err != nil {
 		return 0, err
 	}

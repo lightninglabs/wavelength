@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -386,6 +387,29 @@ type DaemonConn interface {
 	// standard pubkey-backed Ark receive destination.
 	SendOORWithCustomInputs(ctx context.Context, recipientPubKey []byte,
 		amountSat int64, inputs []CustomInput) (string, error)
+
+	// ArmVHTLCRecovery stores a dormant daemon-owned on-chain recovery job.
+	ArmVHTLCRecovery(ctx context.Context,
+		req *daemonrpc.ArmVHTLCRecoveryRequest) (
+		*daemonrpc.ArmVHTLCRecoveryResponse, error)
+
+	// EscalateVHTLCRecovery starts or resumes the unroll path for an armed
+	// recovery job.
+	EscalateVHTLCRecovery(ctx context.Context,
+		req *daemonrpc.EscalateVHTLCRecoveryRequest) (
+		*daemonrpc.EscalateVHTLCRecoveryResponse, error)
+
+	// CancelVHTLCRecovery records that cooperative settlement won before
+	// the armed recovery path was needed.
+	CancelVHTLCRecovery(ctx context.Context,
+		req *daemonrpc.CancelVHTLCRecoveryRequest) (
+		*daemonrpc.CancelVHTLCRecoveryResponse, error)
+
+	// GetVHTLCRecoveryStatus returns the daemon's durable recovery row and
+	// current unroll status, when present.
+	GetVHTLCRecoveryStatus(ctx context.Context,
+		req *daemonrpc.GetVHTLCRecoveryStatusRequest) (
+		*daemonrpc.GetVHTLCRecoveryStatusResponse, error)
 
 	// IdentityPubKey returns the client's identity pubkey.
 	IdentityPubKey(ctx context.Context) (*btcec.PublicKey, error)

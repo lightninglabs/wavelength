@@ -118,7 +118,12 @@ func TestVHTLCRecoveryStoreTransitions(t *testing.T) {
 	_, _, err = store.ArmRecovery(ctx, failed)
 	require.NoError(t, err)
 
-	require.NoError(t, store.EscalateRecovery(ctx, active.ID))
+	claimPreimage := bytes.Repeat([]byte{0x42}, 32)
+	require.NoError(
+		t, store.EscalateRecovery(
+			ctx, active.ID, claimPreimage,
+		),
+	)
 	require.NoError(
 		t,
 		store.CancelRecovery(
@@ -134,12 +139,14 @@ func TestVHTLCRecoveryStoreTransitions(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, jobs, 1)
 	require.Equal(t, active.ID, jobs[0].ID)
+	require.Equal(t, claimPreimage, jobs[0].ClaimPreimage)
 	require.Equal(t, vhtlcrecovery.StateUnrollStarted, jobs[0].State)
 	require.NotNil(t, jobs[0].EscalatedAt)
-	require.NoError(t, store.EscalateRecovery(ctx, active.ID))
+	require.NoError(t, store.EscalateRecovery(ctx, active.ID, nil))
 	replayedActive, err := store.GetRecovery(ctx, active.ID)
 	require.NoError(t, err)
 	require.Equal(t, vhtlcrecovery.StateUnrollStarted, replayedActive.State)
+	require.Equal(t, claimPreimage, replayedActive.ClaimPreimage)
 
 	cancelledJob, err := store.GetRecovery(ctx, cancelled.ID)
 	require.NoError(t, err)
@@ -176,11 +183,11 @@ func TestVHTLCRecoveryStoreTransitions(t *testing.T) {
 		ErrVHTLCRecoveryJobNotFound,
 	)
 	require.ErrorIs(
-		t, store.EscalateRecovery(ctx, active.ID),
+		t, store.EscalateRecovery(ctx, active.ID, nil),
 		ErrVHTLCRecoveryCannotEscalate,
 	)
 	require.ErrorIs(
-		t, store.EscalateRecovery(ctx, "missing"),
+		t, store.EscalateRecovery(ctx, "missing", nil),
 		ErrVHTLCRecoveryJobNotFound,
 	)
 

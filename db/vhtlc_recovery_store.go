@@ -263,16 +263,17 @@ func (s *VHTLCRecoveryStoreDB) ListRecoveries(ctx context.Context) (
 }
 
 // EscalateRecovery marks an armed recovery job as active.
-func (s *VHTLCRecoveryStoreDB) EscalateRecovery(ctx context.Context,
-	id string) error {
+func (s *VHTLCRecoveryStoreDB) EscalateRecovery(ctx context.Context, id string,
+	claimPreimage []byte) error {
 
 	now := s.clk.Now().Unix()
 
 	return s.ExecTx(ctx, WriteTxOption(), func(q *sqlc.Queries) error {
 		rows, err := q.EscalateVHTLCRecoveryJob(
 			ctx, sqlc.EscalateVHTLCRecoveryJobParams{
-				ID:        id,
-				UpdatedAt: now,
+				ID:            id,
+				UpdatedAt:     now,
+				ClaimPreimage: cloneBytes(claimPreimage),
 			},
 		)
 		if err != nil {
@@ -494,6 +495,9 @@ func vhtlcRecoveryJobFromRow(row sqlc.VhtlcRecoveryJob) (
 		UnilateralRefundWithoutReceiverDelay: row.UnilateralRefundWithoutReceiverDelay, //nolint:ll
 		PreimageHash: cloneBytes(
 			row.PreimageHash,
+		),
+		ClaimPreimage: cloneBytes(
+			row.ClaimPreimage,
 		),
 		SignerKeyFamily: row.SignerKeyFamily,
 		SignerKeyIndex:  row.SignerKeyIndex,

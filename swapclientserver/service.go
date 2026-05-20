@@ -300,6 +300,15 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	if err != nil {
 		return nil, nil, fmt.Errorf("open swap store: %w", err)
 	}
+	if err := rpcServer.RegisterVHTLCRecoveryPreimageResolver(
+		store,
+	); err != nil {
+
+		_ = store.Close()
+
+		return nil, nil, fmt.Errorf("register recovery preimage "+
+			"resolver: %w", err)
+	}
 
 	swapAddr := cfg.ServerAddress
 	if swapAddr == "" {

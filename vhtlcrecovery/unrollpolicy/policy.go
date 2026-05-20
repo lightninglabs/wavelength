@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -38,6 +39,52 @@ type PreimageResolver interface {
 	// resolver must verify the returned preimage matches preimageHash.
 	ResolvePreimage(ctx context.Context, swapID []byte,
 		preimageHash lntypes.Hash) (lntypes.Preimage, error)
+}
+
+// PreimageResolverRegistry is a concurrency-safe indirection point for the
+// daemon's optional swap runtime. The unroll subsystem is initialized before
+// the swapruntime subserver registers its swap store, so the recovery policy
+// resolver holds this registry and the subserver installs the concrete
+// swap-owned preimage resolver later in startup.
+type PreimageResolverRegistry struct {
+	mu       sync.RWMutex
+	resolver PreimageResolver
+}
+
+// SetResolver installs or replaces the concrete swap-owned preimage resolver.
+// Passing nil deliberately disables claim recovery resolution until another
+// resolver is registered.
+func (r *PreimageResolverRegistry) SetResolver(resolver PreimageResolver) {
+	if r == nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.resolver = resolver
+}
+
+// ResolvePreimage delegates to the currently registered resolver. If no
+// resolver has been installed, claim recovery fails closed instead of building
+// a spend without the swap-owned secret.
+func (r *PreimageResolverRegistry) ResolvePreimage(ctx context.Context,
+	swapID []byte, preimageHash lntypes.Hash) (lntypes.Preimage, error) {
+
+	if r == nil {
+		return lntypes.Preimage{}, fmt.Errorf("preimage resolver " +
+			"registry must be provided")
+	}
+
+	r.mu.RLock()
+	resolver := r.resolver
+	r.mu.RUnlock()
+	if resolver == nil {
+		return lntypes.Preimage{}, fmt.Errorf("preimage resolver is " +
+			"not registered")
+	}
+
+	return resolver.ResolvePreimage(ctx, swapID, preimageHash)
 }
 
 // ExitSpendPolicyResolver resolves durable vHTLC recovery policy refs for
@@ -89,18 +136,13 @@ func (r ExitSpendPolicyResolver) ResolveExitSpendPolicy(ctx context.Context,
 
 	switch string(req.Kind) {
 	case vhtlcrecovery.ExitPolicyKindClaim:
-		if r.Preimage == nil {
-			return nil, fmt.Errorf("preimage resolver must be " +
-				"provided for vhtlc claim recovery")
-		}
-
 		preimageHash, err := preimageHashFromJob(*job)
 		if err != nil {
 			return nil, err
 		}
 
-		preimage, err := r.Preimage.ResolvePreimage(
-			ctx, job.SwapID, preimageHash,
+		preimage, err := r.resolveClaimPreimage(
+			ctx, *job, preimageHash,
 		)
 		if err != nil {
 			return nil, err
@@ -115,6 +157,35 @@ func (r ExitSpendPolicyResolver) ResolveExitSpendPolicy(ctx context.Context,
 		return nil, fmt.Errorf("unknown vhtlc exit policy kind: %s",
 			req.Kind)
 	}
+}
+
+// resolveClaimPreimage returns the secret needed for the unilateral claim
+// witness. Cross-process callers may persist it on the recovery row during
+// escalation; in-process swap runtimes keep it in their swap store and provide
+// it through the registered resolver.
+func (r ExitSpendPolicyResolver) resolveClaimPreimage(ctx context.Context,
+	job vhtlcrecovery.RecoveryJob, preimageHash lntypes.Hash) (
+	lntypes.Preimage, error) {
+
+	if len(job.ClaimPreimage) != 0 {
+		preimage, err := lntypes.MakePreimage(job.ClaimPreimage)
+		if err != nil {
+			return lntypes.Preimage{}, fmt.Errorf("decode claim "+
+				"preimage: %w", err)
+		}
+		if !preimage.Matches(preimageHash) {
+			return lntypes.Preimage{}, fmt.Errorf("claim " +
+				"preimage does not match recovery hash")
+		}
+
+		return preimage, nil
+	}
+	if r.Preimage == nil {
+		return lntypes.Preimage{}, fmt.Errorf("preimage resolver " +
+			"must be provided for vhtlc claim recovery")
+	}
+
+	return r.Preimage.ResolvePreimage(ctx, job.SwapID, preimageHash)
 }
 
 // VHTLCExitSpendPolicy builds the final script-path spend for one recovery

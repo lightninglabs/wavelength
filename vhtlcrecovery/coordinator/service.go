@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/lntypes"
 )
 
 var errUnrollPolicyMismatch = errors.New("unroll policy mismatch")
@@ -39,7 +40,8 @@ type Store interface {
 	ListRecoveries(ctx context.Context) ([]vhtlcrecovery.RecoveryJob, error)
 
 	// EscalateRecovery moves an armed recovery row into active unroll.
-	EscalateRecovery(ctx context.Context, id string) error
+	EscalateRecovery(ctx context.Context, id string,
+		claimPreimage []byte) error
 
 	// CancelRecovery records that cooperative settlement or operator action
 	// made an unspent recovery job unnecessary.
@@ -223,11 +225,14 @@ func (s *Service) ArmRecovery(ctx context.Context,
 // generic unroll registry has a child job with this recovery id as its policy
 // reference. The SQL transition happens before unroll admission so a crash in
 // the handoff is recovered by RestoreNonTerminal.
-func (s *Service) EscalateRecovery(ctx context.Context, id, reason string) (
-	*RecoveryStatus, error) {
+func (s *Service) EscalateRecovery(ctx context.Context, id, reason string,
+	claimPreimage []byte) (*RecoveryStatus, error) {
 
 	job, err := s.store.GetRecovery(ctx, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateClaimPreimage(*job, claimPreimage); err != nil {
 		return nil, err
 	}
 
@@ -243,7 +248,9 @@ func (s *Service) EscalateRecovery(ctx context.Context, id, reason string) (
 			)...,
 		)
 
-		if err := s.store.EscalateRecovery(ctx, id); err != nil {
+		if err := s.store.EscalateRecovery(
+			ctx, id, claimPreimage,
+		); err != nil {
 			return nil, err
 		}
 
@@ -267,6 +274,35 @@ func (s *Service) EscalateRecovery(ctx context.Context, id, reason string) (
 	}
 
 	return s.GetRecoveryStatus(ctx, id)
+}
+
+// validateClaimPreimage verifies optional cross-process claim preimage material
+// before it is written into the recovery row. In-process swap runtimes may pass
+// nil and let the registered preimage resolver provide the secret later.
+func validateClaimPreimage(job vhtlcrecovery.RecoveryJob,
+	claimPreimage []byte) error {
+
+	if len(claimPreimage) == 0 {
+		return nil
+	}
+	if job.Action != vhtlcrecovery.ActionClaim {
+		return fmt.Errorf("claim preimage is only valid for claim " +
+			"recovery")
+	}
+
+	preimage, err := lntypes.MakePreimage(claimPreimage)
+	if err != nil {
+		return fmt.Errorf("decode claim preimage: %w", err)
+	}
+	preimageHash, err := lntypes.MakeHash(job.PreimageHash)
+	if err != nil {
+		return fmt.Errorf("decode preimage hash: %w", err)
+	}
+	if !preimage.Matches(preimageHash) {
+		return fmt.Errorf("claim preimage does not match recovery hash")
+	}
+
+	return nil
 }
 
 // CancelRecovery marks a non-terminal recovery cancelled. This method is

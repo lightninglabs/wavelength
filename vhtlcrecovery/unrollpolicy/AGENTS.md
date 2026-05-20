@@ -25,9 +25,10 @@ parent package.
 
 ## Invariants
 
-- The raw preimage is not stored on the recovery row. Claim recovery resolves it
-  from the swap-owned state and checks it against `preimage_hash` before
-  building a spend.
+- The raw preimage must never be logged. Claim recovery first uses durable
+  `claim_preimage` when cross-process escalation supplied it, otherwise it
+  resolves from the swap-owned in-process preimage resolver and checks it
+  against `preimage_hash` before building a spend.
 - `ValidateTarget` must confirm the materialized output matches the recovered
   vHTLC policy before any final spend is built.
 - `refund_without_receiver` spends must carry both Ark CSV (`nSequence`) and

@@ -23,12 +23,13 @@ INSERT INTO receive_swaps (
     claim_receive_pubkey,
     claim_receive_pkscript,
     claim_session_id,
+    claim_recovery_id,
     intervention_reason,
     created_at_unix,
     updated_at_unix
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-    $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
+    $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     amount_sat = EXCLUDED.amount_sat,
@@ -54,6 +55,7 @@ ON CONFLICT (payment_hash) DO UPDATE SET
     claim_receive_pubkey = EXCLUDED.claim_receive_pubkey,
     claim_receive_pkscript = EXCLUDED.claim_receive_pkscript,
     claim_session_id = EXCLUDED.claim_session_id,
+    claim_recovery_id = EXCLUDED.claim_recovery_id,
     intervention_reason = EXCLUDED.intervention_reason,
     updated_at_unix = EXCLUDED.updated_at_unix;
 
@@ -95,13 +97,14 @@ INSERT INTO pay_swaps (
     refund_receive_pubkey,
     refund_receive_pkscript,
     refund_session_id,
+    refund_recovery_id,
     preimage,
     intervention_reason,
     created_at_unix,
     updated_at_unix
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
+    $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     invoice = EXCLUDED.invoice,
@@ -126,6 +129,7 @@ ON CONFLICT (payment_hash) DO UPDATE SET
     refund_receive_pubkey = EXCLUDED.refund_receive_pubkey,
     refund_receive_pkscript = EXCLUDED.refund_receive_pkscript,
     refund_session_id = EXCLUDED.refund_session_id,
+    refund_recovery_id = EXCLUDED.refund_recovery_id,
     preimage = EXCLUDED.preimage,
     intervention_reason = EXCLUDED.intervention_reason,
     updated_at_unix = EXCLUDED.updated_at_unix;

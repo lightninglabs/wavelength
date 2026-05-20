@@ -90,6 +90,10 @@ CREATE TABLE IF NOT EXISTS receive_swaps (
     -- by the daemon when the client submits the receive-side claim.
     claim_session_id TEXT NOT NULL DEFAULT '',
 
+    -- claim_recovery_id is the daemon-owned vHTLC recovery row armed for
+    -- unilateral claim fallback. Empty means recovery has not been armed yet.
+    claim_recovery_id TEXT NOT NULL DEFAULT '',
+
     -- intervention_reason is the durable terminal explanation stored when a
     -- receive session fails or stops in NeedsIntervention.
     intervention_reason TEXT NOT NULL DEFAULT '',
@@ -188,6 +192,11 @@ CREATE TABLE IF NOT EXISTS pay_swaps (
     -- by the daemon when the client submits the timeout refund, or the
     -- observed spender txid when resume adopts an already-indexed refund.
     refund_session_id TEXT NOT NULL DEFAULT '',
+
+    -- refund_recovery_id is the daemon-owned vHTLC recovery row armed for
+    -- unilateral refund-without-receiver fallback. Empty means recovery has not
+    -- been armed yet.
+    refund_recovery_id TEXT NOT NULL DEFAULT '',
 
     -- preimage is the claim preimage once the swap server's spend is
     -- authoritatively observed.

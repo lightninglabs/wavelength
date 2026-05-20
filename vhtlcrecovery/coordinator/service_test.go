@@ -34,7 +34,7 @@ func TestServiceEscalatePersistsBeforeUnroll(t *testing.T) {
 	service := newTestService(t, store, registry)
 
 	status, err := service.EscalateRecovery(
-		t.Context(), job.ID, "cooperative path unsafe",
+		t.Context(), job.ID, "cooperative path unsafe", nil,
 	)
 	require.NoError(t, err)
 	require.Equal(t, vhtlcrecovery.StateUnrollStarted, status.Job.State)
@@ -67,7 +67,7 @@ func TestServiceEscalateFailsClosedOnPolicyMismatch(t *testing.T) {
 	service := newTestService(t, store, registry)
 
 	_, err := service.EscalateRecovery(
-		t.Context(), job.ID, "cooperative path unsafe",
+		t.Context(), job.ID, "cooperative path unsafe", nil,
 	)
 	require.ErrorContains(t, err, "unroll policy kind")
 
@@ -91,7 +91,7 @@ func TestServiceEscalateKeepsRecoveryActiveAfterStatusProbeError(t *testing.T) {
 	service := newTestService(t, store, registry)
 
 	_, err := service.EscalateRecovery(
-		t.Context(), job.ID, "cooperative path unsafe",
+		t.Context(), job.ID, "cooperative path unsafe", nil,
 	)
 	require.ErrorContains(t, err, "status probe timed out")
 	require.Len(t, registry.ensureRequests, 1)
@@ -201,6 +201,38 @@ func TestServiceStatusReconcilesTerminalUnroll(t *testing.T) {
 	)
 	store := newFakeStore(job)
 	sweepTxid := chainhash.Hash{1, 2, 3}
+	registry := &fakeUnrollRegistry{
+		status: &unroll.GetStatusResp{
+			Found:     true,
+			Phase:     unroll.PhaseCompleted,
+			SweepTxid: &sweepTxid,
+			ExitPolicyKind: unroll.ExitPolicyKind(
+				job.ExitPolicyKind,
+			),
+			ExitPolicyRef: job.ID,
+		},
+	}
+	service := newTestService(t, store, registry)
+
+	status, err := service.GetRecoveryStatus(t.Context(), job.ID)
+	require.NoError(t, err)
+	require.Equal(t, vhtlcrecovery.StateCompleted, status.Job.State)
+	require.True(t, status.UnrollFound)
+	require.Equal(t, unroll.PhaseCompleted, status.UnrollPhase)
+	require.Equal(t, &sweepTxid, status.UnrollSweep)
+}
+
+// TestServiceCompletedStatusKeepsUnrollSweep verifies a recovery row that was
+// already marked completed by an earlier status poll still joins the terminal
+// unroll snapshot so RPC callers can observe the sweep txid deterministically.
+func TestServiceCompletedStatusKeepsUnrollSweep(t *testing.T) {
+	t.Parallel()
+
+	job := testRecoveryJob(
+		"recovery-already-complete", vhtlcrecovery.StateCompleted,
+	)
+	store := newFakeStore(job)
+	sweepTxid := chainhash.Hash{4, 5, 6}
 	registry := &fakeUnrollRegistry{
 		status: &unroll.GetStatusResp{
 			Found:     true,
@@ -355,12 +387,15 @@ func (s *fakeStore) ListRecoveries(context.Context) (
 }
 
 // EscalateRecovery implements Store by moving an armed job to unroll_started.
-func (s *fakeStore) EscalateRecovery(_ context.Context, id string) error {
+func (s *fakeStore) EscalateRecovery(_ context.Context, id string,
+	claimPreimage []byte) error {
+
 	job, ok := s.jobs[id]
 	if !ok {
 		return fmt.Errorf("missing recovery %s", id)
 	}
 	job.State = vhtlcrecovery.StateUnrollStarted
+	job.ClaimPreimage = append([]byte(nil), claimPreimage...)
 	s.jobs[id] = job
 	s.events = append(s.events, "escalate")
 
@@ -459,6 +494,8 @@ func cloneRecoveryJob(
 
 	clone := job
 	clone.SwapID = append([]byte(nil), job.SwapID...)
+	clone.PreimageHash = append([]byte(nil), job.PreimageHash...)
+	clone.ClaimPreimage = append([]byte(nil), job.ClaimPreimage...)
 	clone.CooperativeTxid = append([]byte(nil), job.CooperativeTxid...)
 
 	return &clone
