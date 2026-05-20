@@ -390,6 +390,13 @@ func TestStressFailureExpectationPolicy(t *testing.T) {
 	require.Equal(t, failureClassInsufficientFunds, class)
 	require.True(t, runner.failureExpected(class))
 
+	class = runner.classifyFailure(
+		errors.New("unroll deadline exceeded after 15m0s " +
+			"outpoint=txid:0"),
+	)
+	require.Equal(t, failureClassDeadlineExceeded, class)
+	require.False(t, runner.failureExpected(class))
+
 	class = runner.classifyFailure(errors.New("boom"))
 	require.Equal(t, failureClassUnexpected, class)
 	require.False(t, runner.failureExpected(class))
@@ -404,6 +411,7 @@ func TestStressFailureExpectationPolicy(t *testing.T) {
 	runner.cfg.operatorRestarts = true
 	require.True(t, runner.failureExpected(failureClassRoundTimeout))
 	require.True(t, runner.failureExpected(failureClassFailedRound))
+	require.True(t, runner.failureExpected(failureClassDeadlineExceeded))
 
 	runner.cfg.operatorRestarts = false
 	runner.cfg.maxRestarts = 0

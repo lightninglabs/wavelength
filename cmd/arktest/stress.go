@@ -1992,10 +1992,10 @@ func (r *stressRunner) waitUnrollCompletion(id int,
 
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("unroll timeout after %s "+
-				"outpoint=%s last_status=%s last_err=%v",
-				r.cfg.unrollTimeout, outpoint, lastStatus,
-				lastErr)
+			return nil, fmt.Errorf("unroll deadline exceeded "+
+				"after %s outpoint=%s last_status=%s "+
+				"last_err=%v", r.cfg.unrollTimeout, outpoint,
+				lastStatus, lastErr)
 
 		case <-ticker.C:
 		}
