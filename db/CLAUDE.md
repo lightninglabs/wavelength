@@ -103,6 +103,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   deletion, preserving append-only ordering.
 - Per-subsystem logging via the instance logger, not the global
   package logger.
+- `unilateral_exit_jobs.exit_policy_kind` and `exit_policy_ref`
+  persist the durable final spend policy identity. Standard timeout
+  jobs use `standard_vtxo_timeout` with an empty ref; policy-specific
+  jobs store their registered kind plus the domain-owned durable ref
+  needed to reconstruct the same spend policy after restart.
 
 ### Migration notes
 

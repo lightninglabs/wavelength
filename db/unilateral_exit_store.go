@@ -82,6 +82,8 @@ type UnilateralExitJobRecord struct {
 	ActorID        string
 	Status         UnilateralExitJobStatus
 	Trigger        UnilateralExitJobTrigger
+	ExitPolicyKind string
+	ExitPolicyRef  string
 	LastError      string
 	SweepTxid      []byte
 	CreatedAt      time.Time
@@ -156,6 +158,11 @@ func (s *UnilateralExitPersistenceStore) UpsertJob(ctx context.Context,
 				ActorID:             job.ActorID,
 				Status:              int32(job.Status),
 				Trigger:             int32(job.Trigger),
+				ExitPolicyKind:      job.ExitPolicyKind,
+				ExitPolicyRef: sql.NullString{
+					String: job.ExitPolicyRef,
+					Valid:  job.ExitPolicyRef != "",
+				},
 				LastError: sql.NullString{
 					String: job.LastError,
 					Valid:  job.LastError != "",
@@ -292,12 +299,17 @@ func jobRecordFromRow(row sqlc.UnilateralExitJob) (UnilateralExitJobRecord,
 			Hash:  hash,
 			Index: uint32(row.TargetOutpointIndex),
 		},
-		ActorID:   row.ActorID,
-		Status:    UnilateralExitJobStatus(row.Status),
-		Trigger:   UnilateralExitJobTrigger(row.Trigger),
-		SweepTxid: row.SweepTxid,
-		CreatedAt: time.Unix(row.CreatedAt, 0),
-		UpdatedAt: time.Unix(row.UpdatedAt, 0),
+		ActorID:        row.ActorID,
+		Status:         UnilateralExitJobStatus(row.Status),
+		Trigger:        UnilateralExitJobTrigger(row.Trigger),
+		ExitPolicyKind: row.ExitPolicyKind,
+		SweepTxid:      row.SweepTxid,
+		CreatedAt:      time.Unix(row.CreatedAt, 0),
+		UpdatedAt:      time.Unix(row.UpdatedAt, 0),
+	}
+
+	if row.ExitPolicyRef.Valid {
+		record.ExitPolicyRef = row.ExitPolicyRef.String
 	}
 
 	if row.LastError.Valid {

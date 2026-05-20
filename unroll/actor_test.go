@@ -2387,8 +2387,9 @@ func TestStandardVTXOExitSpendPolicyRejectsNilTarget(t *testing.T) {
 func TestStandardExitSpendPolicyResolver(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	resolver := standardExitSpendPolicyResolver{}
 
-	policy, err := (standardExitSpendPolicyResolver{}).ResolveExitSpendPolicy(
+	policy, err := resolver.ResolveExitSpendPolicy(
 		t.Context(), ExitSpendPolicyRequest{
 			Kind:               StandardVTXOTimeoutExitPolicyKind,
 			StandardDescriptor: desc,
@@ -2398,7 +2399,7 @@ func TestStandardExitSpendPolicyResolver(t *testing.T) {
 	require.Equal(t, StandardVTXOTimeoutExitPolicyKind, policy.Kind())
 	require.Equal(t, desc.RelativeExpiry, policy.CSVDelay())
 
-	_, err = (standardExitSpendPolicyResolver{}).ResolveExitSpendPolicy(
+	_, err = resolver.ResolveExitSpendPolicy(
 		t.Context(), ExitSpendPolicyRequest{
 			Kind:               StandardVTXOTimeoutExitPolicyKind,
 			Ref:                "non-empty",

@@ -240,6 +240,8 @@ type UnilateralExitJob struct {
 	SweepTxid           []byte
 	CreatedAt           int64
 	UpdatedAt           int64
+	ExitPolicyKind      string
+	ExitPolicyRef       sql.NullString
 }
 
 type UtxoClassification struct {

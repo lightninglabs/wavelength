@@ -56,8 +56,10 @@ const (
 // outer mailbox codec already identifies the message, so inner types can
 // start at 1. Odd values leave room for additive even-typed extensions.
 const (
-	startUnrollHeightRecType  tlv.Type = 1
-	startUnrollTriggerRecType tlv.Type = 3
+	startUnrollHeightRecType         tlv.Type = 1
+	startUnrollTriggerRecType        tlv.Type = 3
+	startUnrollExitPolicyKindRecType tlv.Type = 5
+	startUnrollExitPolicyRefRecType  tlv.Type = 7
 
 	resumeUnrollHeightRecType tlv.Type = 1
 
@@ -152,6 +154,13 @@ type StartUnrollRequest struct {
 
 	// Trigger identifies why the unroll started.
 	Trigger StartTrigger
+
+	// ExitPolicyKind identifies the final spend policy to persist for this
+	// target. Empty requests use the standard VTXO timeout policy.
+	ExitPolicyKind string
+
+	// ExitPolicyRef is the policy-specific durable reference.
+	ExitPolicyRef string
 }
 
 // MessageType returns the stable message type identifier.
@@ -169,10 +178,30 @@ func (m *StartUnrollRequest) Encode(w io.Writer) error {
 	height := uint32(m.Height)
 	trigger := uint32(m.Trigger)
 
-	stream, err := tlv.NewStream(
+	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(startUnrollHeightRecType, &height),
 		tlv.MakePrimitiveRecord(startUnrollTriggerRecType, &trigger),
-	)
+	}
+
+	if m.ExitPolicyKind != "" {
+		policyKind := []byte(m.ExitPolicyKind)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				startUnrollExitPolicyKindRecType, &policyKind,
+			),
+		)
+	}
+
+	if m.ExitPolicyRef != "" {
+		policyRef := []byte(m.ExitPolicyRef)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				startUnrollExitPolicyRefRecType, &policyRef,
+			),
+		)
+	}
+
+	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return fmt.Errorf("create stream: %w", err)
 	}
@@ -183,21 +212,43 @@ func (m *StartUnrollRequest) Encode(w io.Writer) error {
 // Decode deserializes the message from a TLV stream.
 func (m *StartUnrollRequest) Decode(r io.Reader) error {
 	var height, trigger uint32
+	var policyKind, policyRef []byte
 
 	stream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(startUnrollHeightRecType, &height),
 		tlv.MakePrimitiveRecord(startUnrollTriggerRecType, &trigger),
+		tlv.MakePrimitiveRecord(
+			startUnrollExitPolicyKindRecType, &policyKind,
+		),
+		tlv.MakePrimitiveRecord(
+			startUnrollExitPolicyRefRecType, &policyRef,
+		),
 	)
 	if err != nil {
 		return fmt.Errorf("create stream: %w", err)
 	}
 
-	if err := stream.Decode(r); err != nil {
+	parsed, err := stream.DecodeWithParsedTypes(r)
+	if err != nil {
 		return fmt.Errorf("decode: %w", err)
+	}
+
+	if _, ok := parsed[startUnrollHeightRecType]; !ok {
+		return fmt.Errorf("start unroll request missing height")
+	}
+
+	if _, ok := parsed[startUnrollTriggerRecType]; !ok {
+		return fmt.Errorf("start unroll request missing trigger")
 	}
 
 	m.Height = int32(height)
 	m.Trigger = StartTrigger(int32(trigger))
+	if _, ok := parsed[startUnrollExitPolicyKindRecType]; ok {
+		m.ExitPolicyKind = string(policyKind)
+	}
+	if _, ok := parsed[startUnrollExitPolicyRefRecType]; ok {
+		m.ExitPolicyRef = string(policyRef)
+	}
 
 	return nil
 }
@@ -621,6 +672,12 @@ type GetStateResp struct {
 
 	// Trigger identifies why the actor was started.
 	Trigger StartTrigger
+
+	// ExitPolicyKind identifies the final spend policy for this target.
+	ExitPolicyKind string
+
+	// ExitPolicyRef is the policy-specific durable reference.
+	ExitPolicyRef string
 
 	// Height is the current best height tracked by the actor.
 	Height int32

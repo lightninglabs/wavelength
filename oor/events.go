@@ -63,10 +63,10 @@ type SubmitAcceptedEvent struct {
 	// SessionID is the session identifier (Ark txid).
 	SessionID SessionID
 
-	// ArkPSBT is the canonical session artifact for consistency checks and
-	// stateless finalize retries. The operator does not add Ark signature
-	// material in submit-accepted.
-	// Operator co-signing applies to checkpoints.
+	// ArkPSBT is the operator-co-signed Ark PSBT returned in the
+	// submit-success response. Clients persist this exact artifact so
+	// unilateral recovery can reconstruct a spendable OOR transaction
+	// without contacting the operator.
 	ArkPSBT *psbt.Packet
 
 	// CoSignedCheckpointPSBTs are checkpoint PSBTs co-signed by the

@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS vhtlc_recovery_jobs (
     -- exit_policy_kind is the unroll policy kind registered by this recovery
     -- action. The CHECK is local to vHTLC recovery because this table owns only
     -- the vHTLC policy variants; generic unroll policy extensibility lives on
-    -- unroll_jobs.
+    -- the unilateral-exit job's exit-policy identity.
     exit_policy_kind TEXT NOT NULL CHECK (exit_policy_kind IN (
         'vhtlc_claim',
         'vhtlc_refund_without_receiver'

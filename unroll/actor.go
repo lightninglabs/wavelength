@@ -178,8 +178,10 @@ func (b *behavior) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
 	switch m := msg.(type) {
 	case *StartUnrollRequest:
 		return b.handleEvent(ctx, &StartEvent{
-			Height:  m.Height,
-			Trigger: m.Trigger,
+			Height:         m.Height,
+			Trigger:        m.Trigger,
+			ExitPolicyKind: m.ExitPolicyKind,
+			ExitPolicyRef:  m.ExitPolicyRef,
 		})
 
 	case *ResumeUnrollRequest:
@@ -611,12 +613,14 @@ func (b *behavior) stateResponse() *GetStateResp {
 	job := stateJob(state)
 	sweepTxid := effectiveSweepTxid(job.PlannerState, b.sweepTx)
 	resp := &GetStateResp{
-		Started:      !isIdleState(state),
-		Trigger:      stateTrigger(state),
-		Height:       stateHeight(state),
-		Phase:        phaseFromState(state),
-		PlannerState: copyPlannerState(job.PlannerState),
-		FailReason:   job.FailReason,
+		Started:        !isIdleState(state),
+		Trigger:        stateTrigger(state),
+		ExitPolicyKind: exitPolicyKind(job.ExitPolicyKind),
+		ExitPolicyRef:  job.ExitPolicyRef,
+		Height:         stateHeight(state),
+		Phase:          phaseFromState(state),
+		PlannerState:   copyPlannerState(job.PlannerState),
+		FailReason:     job.FailReason,
 	}
 
 	if sweepTxid != nil {

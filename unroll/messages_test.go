@@ -24,8 +24,10 @@ func TestDurableMessageTLVRoundTrip(t *testing.T) {
 		t.Parallel()
 
 		orig := &StartUnrollRequest{
-			Height:  12345,
-			Trigger: TriggerCriticalExpiry,
+			Height:         12345,
+			Trigger:        TriggerCriticalExpiry,
+			ExitPolicyKind: "vhtlc_refund_without_receiver",
+			ExitPolicyRef:  "recovery-id",
 		}
 
 		var buf bytes.Buffer
@@ -35,6 +37,8 @@ func TestDurableMessageTLVRoundTrip(t *testing.T) {
 		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
 		require.Equal(t, orig.Height, got.Height)
 		require.Equal(t, orig.Trigger, got.Trigger)
+		require.Equal(t, orig.ExitPolicyKind, got.ExitPolicyKind)
+		require.Equal(t, orig.ExitPolicyRef, got.ExitPolicyRef)
 	})
 
 	t.Run("ResumeUnrollRequest", func(t *testing.T) {

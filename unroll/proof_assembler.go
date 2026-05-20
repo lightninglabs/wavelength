@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightninglabs/darepo-client/vtxo"
 )
@@ -485,6 +486,11 @@ func extractFinalizedTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
 		return tx, nil
 	}
 
+	tx, err = extractOORWitnessedTx(cloned)
+	if err == nil {
+		return tx, nil
+	}
+
 	err = psbt.MaybeFinalizeAll(cloned)
 	if err == nil {
 		tx, extractErr = psbt.Extract(cloned)
@@ -519,6 +525,49 @@ func extractFinalizedTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
 
 	return nil, fmt.Errorf("%w: psbt not fully finalized (last extract "+
 		"error: %v)", ErrUnrollProofInvalid, extractErr)
+}
+
+// extractOORWitnessedTx reconstructs the exact wire transaction for OOR PSBTs
+// that carry taproot signature fields plus Ark condition-witness metadata.
+// Generic PSBT finalization does not know how to place condition witness items
+// such as vHTLC preimages, so recovery proof extraction must share the
+// OOR validator's witness builder before falling back to generic finalization.
+func extractOORWitnessedTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
+	if pkt == nil || pkt.UnsignedTx == nil {
+		return nil, fmt.Errorf("psbt unsigned transaction missing")
+	}
+
+	if len(pkt.Inputs) != len(pkt.UnsignedTx.TxIn) {
+		return nil, fmt.Errorf("psbt input count mismatch")
+	}
+
+	tx := pkt.UnsignedTx.Copy()
+	for i := range pkt.Inputs {
+		in := pkt.Inputs[i]
+		if !hasExplicitWitnessMaterial(in) {
+			return nil, fmt.Errorf("input %d missing explicit "+
+				"witness material", i)
+		}
+
+		witness, err := oortx.BuildTaprootWitness(in)
+		if err != nil {
+			return nil, fmt.Errorf("build input %d witness: %w", i,
+				err)
+		}
+
+		tx.TxIn[i].Witness = witness
+	}
+
+	return tx, nil
+}
+
+// hasExplicitWitnessMaterial reports whether the PSBT input carries enough
+// concrete witness data to reconstruct a spendable wire input without generic
+// finalization.
+func hasExplicitWitnessMaterial(in psbt.PInput) bool {
+	return len(in.FinalScriptWitness) > 0 ||
+		len(in.TaprootKeySpendSig) > 0 ||
+		len(in.TaprootScriptSpendSig) > 0
 }
 
 // finalizeTaprootScriptSpend constructs FinalScriptWitness from PSBT taproot

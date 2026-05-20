@@ -126,6 +126,12 @@ message SubmitPackageSuccess {
     // co_signed_checkpoint_psbts are serialized server-co-signed checkpoint
     // PSBTs.
     repeated bytes co_signed_checkpoint_psbts = 2;
+
+    // co_signed_ark_psbt is the serialized Ark PSBT after the server has
+    // attached its operator-side signature material. Clients persist this exact
+    // PSBT so unilateral recovery can reconstruct a spendable OOR lineage if
+    // the cooperative path is unavailable later.
+    bytes co_signed_ark_psbt = 3;
 }
 
 // FinalizePackageRequest carries finalize-phase OOR data.

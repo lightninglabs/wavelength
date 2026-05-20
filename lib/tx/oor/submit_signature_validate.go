@@ -117,10 +117,12 @@ func validatePSBTSpends(pkt *psbt.Packet, label string) error {
 	return nil
 }
 
-// buildTaprootWitness constructs the witness stack for a taproot input using
+// BuildTaprootWitness constructs the witness stack for a taproot input using
 // any finalized witness, key spend signature, or script spend signature data
-// available in the PSBT.
-func buildTaprootWitness(in psbt.PInput) (wire.TxWitness, error) {
+// available in the PSBT. It also understands Ark condition-witness metadata,
+// so callers that need the exact wire transaction for an OOR package should use
+// this instead of generic PSBT finalization.
+func BuildTaprootWitness(in psbt.PInput) (wire.TxWitness, error) {
 	if len(in.FinalScriptWitness) > 0 {
 		return parseFinalWitness(in.FinalScriptWitness)
 	}
@@ -212,6 +214,12 @@ func buildTaprootWitness(in psbt.PInput) (wire.TxWitness, error) {
 	}
 
 	return nil, fmt.Errorf("missing taproot signature or leaf script")
+}
+
+// buildTaprootWitness constructs the witness stack for a taproot input using
+// the exported OOR-aware witness builder.
+func buildTaprootWitness(in psbt.PInput) (wire.TxWitness, error) {
+	return BuildTaprootWitness(in)
 }
 
 // orderTaprootScriptSpendSignatures reorders script-spend signatures into the
