@@ -27,6 +27,7 @@ package may import from a higher layer.
 | [`lib/tx/psbtutil`](lib/tx/psbtutil/) | PSBT encoding, decoding, and signature attachment helpers |
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
+| [`fraud`](fraud/) | Passive ancestry-spend fraud watcher: arms per-ancestor chain spend watches for locally-owned OOR VTXOs; triggers unilateral exit when fraud is detected |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
@@ -45,6 +46,8 @@ package may import from a higher layer.
 | [`proofkeys`](proofkeys/) | Interface for wallet-managed key derivation and indexer proof signing |
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
+| [`gateway`](gateway/) | Shared HTTP/JSON grpc-gateway utilities: CORS middleware, endpoint normalization, standard mux options |
+| [`rpc/restclient`](rpc/restclient/) | HTTP/JSON REST clients satisfying all daemon gRPC service interfaces (ark, daemon, mailbox, swap, wallet) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
 
 ### Layer 3: Application & Orchestration
@@ -103,6 +106,9 @@ darepod (orchestrator)
 │   ├── db          │ (oor artifact store)
 │   ├── ledger      │ (VTXOSentMsg / VTXOReceivedMsg via ledger.Sink)
 │   └── lib/tx      │ (arktx, checkpoint, oor, psbtutil)
+├── fraud           │ (recipient fraud watcher; triggers unroll on ancestor spend)
+│   ├── chainsource │ (spend watches)
+│   └── unroll      │ (EnsureUnroll on fraud detection)
 ├── unroll          │ (unilateral-exit registry + per-target actor)
 │   ├── txconfirm   │ (CPFP / confirmation tracking)
 │   ├── lib/recovery│ (recovery proof graph)

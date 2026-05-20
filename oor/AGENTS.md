@@ -185,6 +185,7 @@ resume semantics.
 - `IncomingTransferEventFromResponse` — Validates and converts one
   `ListOORRecipientEventsByScriptResponse` payload into an
   `IncomingTransferEvent` for the receive FSM.
+- `PackageArtifact` — Carries the finalized package data for one OOR session (`SessionID`, `ArkPSBT`, `FinalCheckpointPSBTs`). Used when persisting ancestor packages for chained incoming transfers that are required for unilateral exit but do not correspond to wallet-owned VTXOs.
 - `NewResolveIncomingTransferRequest` — Converts a lightweight
   `IncomingOOREvent` notification proto into a `ResolveIncomingTransferRequest`;
   shared by darepod and systest.
@@ -255,6 +256,8 @@ resume semantics.
   memory allocations. (The separate `arkscript.readVarBytes` used by policy
   template decoding caps at `MaxPolicyTemplateBytes` (64 KiB); the 520-byte cap
   applies only to persisted OOR condition witnesses.)
+- Incoming ancestry coverage: `validateIncomingAncestry` verifies that every Ark tx input has at least one ancestry fragment covering it. A missing index means the fraud-watch plan (`BuildWatchPlan`) would lack a watch for that input's lineage and unilateral-exit proof assembly would have no fragment to broadcast. The check rejects at the receive boundary so the user is never credited funds that cannot be safely unrolled.
+- Incoming package graph validation: `validateIncomingPackageGraph` checks that every ancestor `PackageArtifact` is reachable from the received package's checkpoint-input chain. This prevents persisting unrelated operator/indexer-supplied packages as recovery material.
 - At submit time only structural validation runs (`ValidateSubmitPackage`); full
   script VM validation requires both signatures and runs at finalize.
 - Point-of-no-return: when server co-signs checkpoint transaction(s).

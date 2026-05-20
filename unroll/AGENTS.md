@@ -29,6 +29,9 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
   Durable mailbox messages. Each ships a per-message TLV codec (no JSON) with
   a pinned record-type layout; round-trip tests live in
   `messages_test.go`.
+- `DeferredCheckpoint` — A fraud-triggered checkpoint that is ready to materialize but is held until `DeadlineHeight` unless it confirms first. The actor watches each deferred checkpoint's txid for on-chain confirmation and broadcasts it only if it has not confirmed by the deadline.
+- `WatchDeferredCheckpoints` — Actor boundary message asking the behavior to register spend watches on deferred checkpoint txids while waiting for the backstop height.
+- `Config.FraudCheckpointSafetyMargin int32` — Overrides the recipient backstop margin (in blocks) for fraud-triggered unroll jobs. Zero falls back to `defaultFraudCheckpointSafetyMargin`. Plumbed onto the FSM environment.
 - `StartTrigger` — What caused the job to start: `TriggerManual`,
   `TriggerCriticalExpiry`, `TriggerRestart`, `TriggerFraudSpend`.
 - `Phase` — Coarse derived phase for control-plane visibility:

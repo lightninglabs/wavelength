@@ -371,6 +371,7 @@ protocols with MuSig2 signing ceremonies.
 - Each client sub-tree in the commitment tree must contain exactly one
   non-anchor leaf. `buildOwnedClientVTXOs` fails the transition if a
   signing-key sub-tree yields anything other than one leaf.
+- Realised fee cap enforcement: when a `JoinRoundQuote` is received, the FSM recomputes the actual operator fee as `Σinputs − Σoutputs` (realised fee) rather than relying solely on the quote's `operator_fee_sat` declaration. Both the declared and realised values must be within `env.MaxOperatorFee`; a discrepancy between them indicates operator dishonesty and is rejected. This prevents a malicious server from quoting a low fee but embedding a higher one in the commitment tx amounts.
 - Seal-time fee handshake (#270): the server is the amount authority.
   When `QuoteReceivedState.Quote` is non-nil, it threads through
   `RoundJoinedState` → `CommitmentTxReceivedState`, and

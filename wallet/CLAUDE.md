@@ -34,6 +34,16 @@ refresh, leave, OOR spend, and directed send flows.
 - `SendVTXOsRequest` / `SendVTXOsResponse` — Ask-request for in-round directed sends. Validates each recipient amount is within `(0, MaxSatoshi]` and that the running total never overflows `int64`, atomically selects and reserves VTXOs via `SelectAndReserveForfeitRequest`, builds forfeit + recipient VTXO intents, and registers with the round actor. Supports dry-run mode for previewing coin selection without committing. Reserved VTXOs are released via a deferred cleanup that uses `context.WithoutCancel` so cleanup survives caller disconnect; on success, a `committed` flag is set to skip the release.
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
 - `VTXODescriptor.EffectivePolicyTemplate` — Decodes the serialized `PolicyTemplate` field on the wallet-level VTXO descriptor using `lib/arkscript`.
+- `WithBoardingSweep(store, signer, chainParams)` — `ArkOption` that wires the boarding-sweep subsystem into the wallet actor. When provided, the wallet actor also manages CSV-timeout sweep transactions for expired boarding UTXOs.
+- `BoardingSweepStore` — Interface for persisting boarding sweep records and input spend notifications. Implemented by `db.BoardingWalletStore`.
+- `SweepSigner` — Interface for signing timeout-path boarding sweep inputs. Implemented by `lndUnrollWallet`, `lwUnrollWallet`, and `btcwUnrollWallet` in darepod.
+- `SweepBoardingUTXOsRequest` / `SweepBoardingUTXOsResponse` — Ask-request to build, sign, and optionally broadcast an aggregate boarding-timeout sweep tx. Carries `Outpoints` (empty = all sweepable intents), `FeeRateSatPerVByte`, `ConfTarget`, `SweepAddress`, and `Broadcast`.
+- `ResumeBoardingSweepsRequest` / `ResumeBoardingSweepsResponse` — Tell-request to restart spend watches for all pending/published sweeps after daemon restart.
+- `BoardingSweepRecord` — Persisted record of one aggregate sweep tx: `TxID`, `FeeRateSatPerVByte`, `FeeSat`, `Status`, `CreatedAt`.
+- `BoardingSweepInputRecord` — Per-input record linking a `BoardingSweep` row to an `BoardingIntent` row.
+- `BoardingSweepSpendNotification` — Tell-message sent by `chainsource` when a tracked sweep input is spent on-chain; drives `BoardingSweepStatusConfirmed` or `BoardingSweepStatusExternalResolved`.
+- `BoardingSweepTxNotification` — Internal message fired when a spend is confirmed for the aggregate sweep tx.
+- `ListBoardingSweepsRequest` / `ListBoardingSweepsResponse` — Ask-request to list persisted aggregate boarding sweeps with optional status filter and cursor-based pagination.
 
 ## Relationships
 
@@ -57,6 +67,7 @@ refresh, leave, OOR spend, and directed send flows.
 ## Invariants
 
 - UTXO confirmation requires `MinBoardingConfs` (1) on-chain confirmations.
+- When `WithBoardingSweep` is wired, the wallet actor owns the boarding-sweep lifecycle: `SweepBoardingUTXOsRequest` builds and optionally broadcasts the aggregate sweep tx; `ResumeBoardingSweepsRequest` restarts spend watches on daemon restart. The sweep record is persisted BEFORE broadcast; on broadcast failure the record is marked failed so the watcher does not attempt rebroadcast. Spend watches use `context.WithoutCancel` so a CLI disconnect does not cancel live spend notifications.
 - `ListUnspent` queries are retried up to 3 times with 1 s delay on each block epoch (mitigates the race between block epoch arrival and wallet UTXO set update; neutrino backends can take over a second; Esplora-backed backends previously hit rate limits under higher burst).
 - Notifier registration captures `minConf` parameter per actor; different actors can require different confirmation depths.
 - Cooperative admission (refresh/leave) must reserve forfeit inputs through the VTXO manager before sending `RegisterIntentMsg` to the round actor.

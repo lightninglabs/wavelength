@@ -17,6 +17,10 @@ background ingress polling with event routing.
 - `SignMailboxAuth` / `VerifyMailboxAuth` / `ParseMailboxPubKey` — Schnorr sign/verify helpers for pubkey-derived mailbox identity.
 - `AuthHeaderKey` — Envelope header key (`x-mailbox-auth-sig`) for the Schnorr auth signature.
 - `GenerateClientTLSCert` — Creates an ephemeral P-256 mTLS client cert with the secp256k1 identity pubkey hex as Subject CN. Returns error on nil key.
+- `TLSBindHeaderKey` — Envelope header key (`x-mailbox-tls-bind-sig`) for the Schnorr signature binding the sender's secp256k1 mailbox identity to the TLS leaf SPKI.
+- `MailboxTLSBindTagStr` / `MailboxTLSBindMessage` — BIP-340 domain separator and message-bytes constructor for the TLS-bind signature. Distinct from `MailboxAuthTagStr` so the two signatures cannot be cross-used.
+- `TLSBindSignature *schnorr.Signature` (field on `ConnectorConfig`) — When non-nil, the Schnorr signature over `MailboxTLSBindMessage(senderPubKey, tlsLeafSPKIDER)` is included as `x-mailbox-tls-bind-sig` on every outbound envelope. The server verifies this on first-contact Send to bind the observed TLS leaf to the claimed mailbox identity, preventing replay of a captured envelope across a fresh connection.
+- `InitAuthHeader()` (on `ConnectorConfig`) — Must be called after both `AuthSignature` and `TLSBindSignature` are set; caches their hex encodings so `mergeAuthHeaders` does not re-encode on every envelope.
 - `AckState` — Four-cursor watermark state machine (PullCursor, DispatchCommittedTo, AckTarget, AckCommittedTo).
 - `SendUnaryRequest` — Durable typed unary request that becomes a real unary RPC after commit. The response arrives via KIND_RESPONSE and, if no in-memory waiter exists, falls back to durable route dispatch via the EventRouter.
 - `DurableUnaryRequestBuilder` — Interface for proof-gated request-body construction. Implementations build the actual proto request (e.g., with signed proofs) at send time, not at persist time. The interface is provided via `ConnectorConfig.DurableUnaryBuilder`.
@@ -41,6 +45,7 @@ background ingress polling with event routing.
 
 ## Invariants
 
+- TLS leaf SPKI binding: when `TLSBindSignature` is configured, the server can verify that the TLS leaf it observed during the handshake is the one the verified mailbox identity signed over. This closes the registration-time replay window where an attacker could replay a captured Send envelope across their own fresh TLS connection and have their leaf fingerprint bound to the victim's mailbox ID. The signature must be computed over `MailboxTLSBindMessage(senderPubKey, tlsLeafSPKIDER)` using the `MailboxTLSBindTagStr` domain separator.
 - Ack watermark only advances AFTER durable local dispatch commit (prevents message loss on crash).
 - Unary RPC responses use in-memory registry first; if no waiter exists (crash replay), the ingress falls back to durable EventRouter dispatch. The ResponseRegistry returns a tri-state delivery result (waiter/buffered/dropped) so the ingress knows whether to route durably.
 - `SendClientEventRequest` auto-derives `Service`/`Method` from `Message.ServiceMethod()` when callers leave them empty, preventing silent drops.
