@@ -337,9 +337,8 @@ type SwapConfig struct {
 	// instead of system roots or insecure local credentials.
 	ServerTLSCertPath string `mapstructure:"servertlscertpath"`
 
-	// ServerInsecure disables TLS for the swapdk-server connection. Local
-	// loopback endpoints are also treated as insecure by default for
-	// regtest and integration-test ergonomics.
+	// ServerInsecure disables TLS for the swapdk-server connection. This
+	// should only be used for explicit regtest/dev deployments.
 	ServerInsecure bool `mapstructure:"serverinsecure"`
 
 	// DatabaseFileName is the daemon-owned swap SQLite database path. When
