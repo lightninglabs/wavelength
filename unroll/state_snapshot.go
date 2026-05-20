@@ -13,8 +13,9 @@ import (
 // checkpoint shape.
 func checkpointFromState(state State, sweepTx *wire.MsgTx) *actorCheckpoint {
 	checkpoint := &actorCheckpoint{
-		Version: checkpointVersion,
-		SweepTx: copyTx(sweepTx),
+		Version:        checkpointVersion,
+		ExitPolicyKind: StandardVTXOTimeoutExitPolicyKind,
+		SweepTx:        copyTx(sweepTx),
 	}
 
 	if state == nil || isIdleState(state) {

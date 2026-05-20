@@ -34,6 +34,8 @@ import (
 //     retrying.
 //   - DeferredCheckpoints: fraud-triggered checkpoint nodes that are being
 //     watched for operator confirmation before the recipient backstop.
+//   - ExitPolicyKind / ExitPolicyRef: the durable identity of the policy
+//     used to build the final exit spend.
 //
 // TLV was picked over JSON for three reasons: schema evolution (new
 // optional records slot in without breaking old readers), determinism
@@ -83,6 +85,14 @@ const (
 	// checkpointDeferredCheckpointsRecordType carries fraud-triggered
 	// checkpoint deferrals.
 	checkpointDeferredCheckpointsRecordType tlv.Type = 17
+
+	// checkpointExitPolicyKindRecordType carries the policy kind used to
+	// reconstruct the final exit spend after restart.
+	checkpointExitPolicyKindRecordType tlv.Type = 19
+
+	// checkpointExitPolicyRefRecordType carries the policy-specific
+	// durable-state reference.
+	checkpointExitPolicyRefRecordType tlv.Type = 21
 )
 
 // actorCheckpoint is the durable checkpoint shape for one VTXO unroll actor.
@@ -92,6 +102,8 @@ type actorCheckpoint struct {
 	Started             bool
 	Trigger             StartTrigger
 	State               unrollplan.State
+	ExitPolicyKind      string
+	ExitPolicyRef       string
 	SweepTx             *wire.MsgTx
 	Fail                string
 	SweepAttempts       int
@@ -191,6 +203,29 @@ func encodeCheckpoint(value *actorCheckpoint) ([]byte, error) {
 		)
 	}
 
+	policyKind := exitPolicyKind(value.ExitPolicyKind)
+	if policyKind != StandardVTXOTimeoutExitPolicyKind ||
+		value.ExitPolicyRef != "" {
+
+		policyKindBytes := []byte(policyKind)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				checkpointExitPolicyKindRecordType,
+				&policyKindBytes,
+			),
+		)
+	}
+
+	if value.ExitPolicyRef != "" {
+		policyRefBytes := []byte(value.ExitPolicyRef)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				checkpointExitPolicyRefRecordType,
+				&policyRefBytes,
+			),
+		)
+	}
+
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, fmt.Errorf("create checkpoint stream: %w", err)
@@ -229,6 +264,8 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 		failBytes     []byte
 		attempts      uint32
 		deferredBytes []byte
+		policyKind    []byte
+		policyRef     []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -259,6 +296,12 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 		tlv.MakePrimitiveRecord(
 			checkpointDeferredCheckpointsRecordType, &deferredBytes,
 		),
+		tlv.MakePrimitiveRecord(
+			checkpointExitPolicyKindRecordType, &policyKind,
+		),
+		tlv.MakePrimitiveRecord(
+			checkpointExitPolicyRefRecordType, &policyRef,
+		),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create checkpoint stream: %w", err)
@@ -283,12 +326,21 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 	}
 
 	checkpoint := &actorCheckpoint{
-		Version:       version,
-		Height:        int32(height),
-		Started:       started != 0,
-		Trigger:       StartTrigger(int32(trigger)),
-		State:         *state,
-		SweepAttempts: int(attempts),
+		Version:        version,
+		Height:         int32(height),
+		Started:        started != 0,
+		Trigger:        StartTrigger(int32(trigger)),
+		State:          *state,
+		ExitPolicyKind: StandardVTXOTimeoutExitPolicyKind,
+		SweepAttempts:  int(attempts),
+	}
+
+	if _, ok := parsed[checkpointExitPolicyKindRecordType]; ok {
+		checkpoint.ExitPolicyKind = exitPolicyKind(string(policyKind))
+	}
+
+	if _, ok := parsed[checkpointExitPolicyRefRecordType]; ok {
+		checkpoint.ExitPolicyRef = string(policyRef)
 	}
 
 	if _, ok := parsed[checkpointSweepTxRecordType]; ok {
@@ -314,4 +366,14 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 	}
 
 	return checkpoint, nil
+}
+
+// exitPolicyKind returns the standard timeout policy when callers have not
+// supplied an explicit custom policy kind.
+func exitPolicyKind(kind string) string {
+	if kind == "" {
+		return StandardVTXOTimeoutExitPolicyKind
+	}
+
+	return kind
 }
