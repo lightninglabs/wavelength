@@ -182,6 +182,7 @@ type stressConfig struct {
 	concurrency      int
 	duration         time.Duration
 	liquidityTimeout time.Duration
+	paymentMinDelay  time.Duration
 	unrollTimeout    time.Duration
 	seed             int64
 	minPayment       int64
@@ -230,6 +231,7 @@ type stressSummary struct {
 	LiquidityWaitP50MS int64          `json:"liquidity_wait_p50_ms"`
 	LiquidityWaitP95MS int64          `json:"liquidity_wait_p95_ms"`
 	LiquidityWaitMaxMS int64          `json:"liquidity_wait_max_ms"`
+	PaymentMinDelayMS  int64          `json:"payment_min_interval_ms"`
 	RoundsTriggered    int            `json:"rounds_triggered"`
 	RoundsConfirmed    int            `json:"rounds_confirmed"`
 	RoundsFailed       int            `json:"rounds_failed"`
@@ -317,6 +319,7 @@ type stressRunner struct {
 	unrollLatencies  []time.Duration
 	liquidityWaits   []time.Duration
 	workloadDeadline time.Time
+	nextPaymentAt    time.Time
 	nextReorgAt      time.Time
 	minerCancel      context.CancelFunc
 	minerWG          sync.WaitGroup
@@ -486,6 +489,11 @@ func newStressCmd() *cobra.Command {
 			"zero records no-funded-sender skips immediately",
 	)
 	f.DurationVar(
+		&stressCfg.paymentMinDelay, "payment-min-interval", 0,
+		"minimum delay between scheduled payment jobs; zero disables "+
+			"payment pacing",
+	)
+	f.DurationVar(
 		&stressCfg.unrollTimeout, "unroll-timeout",
 		defaultStressUnrollTimeout,
 		"maximum time to wait for one random unroll to complete",
@@ -619,6 +627,9 @@ func normalizeStressConfig(t *testing.T, cfg stressConfig) stressConfig {
 	if cfg.liquidityTimeout < 0 {
 		t.Fatalf("--payment-liquidity-timeout must be non-negative")
 	}
+	if cfg.paymentMinDelay < 0 {
+		t.Fatalf("--payment-min-interval must be non-negative")
+	}
 	if cfg.unrollTimeout < 0 {
 		t.Fatalf("--unroll-timeout must be non-negative")
 	} else if cfg.unrollTimeout == 0 {
@@ -740,8 +751,10 @@ func (r *stressRunner) start() {
 			"concurrency": r.cfg.concurrency,
 			"wallet":      r.cfg.clientWallet,
 			"operator_db": r.cfg.operatorDB,
-			"group":       r.cfg.groupName,
-			"artifacts":   artifactsAbs,
+			"payment_min_interval_ms": r.cfg.paymentMinDelay.
+				Milliseconds(),
+			"group":     r.cfg.groupName,
+			"artifacts": artifactsAbs,
 		})
 
 	r.startDiagnostics()
@@ -1362,6 +1375,11 @@ func (r *stressRunner) reserveNextJob() (stressJob, bool) {
 		switch evt {
 		case stressEventPayment:
 			r.paymentJobs++
+			if r.cfg.paymentMinDelay > 0 {
+				r.nextPaymentAt = time.Now().Add(
+					r.cfg.paymentMinDelay,
+				)
+			}
 
 		case stressEventRound:
 			r.summary.RoundsTriggered++
@@ -1469,6 +1487,12 @@ func (r *stressRunner) eventAllowedLocked(evt stressEvent) bool {
 		return false
 	}
 
+	if evt == stressEventPayment && r.cfg.paymentMinDelay > 0 &&
+		!r.nextPaymentAt.IsZero() {
+
+		return !time.Now().Before(r.nextPaymentAt)
+	}
+
 	if evt != stressEventReorg || r.cfg.reorgMinInterval == 0 {
 		return true
 	}
@@ -1482,6 +1506,15 @@ func (r *stressRunner) schedulableRetryDelay() time.Duration {
 	defer r.mu.Unlock()
 
 	delay := 250 * time.Millisecond
+	if r.eventBudgetRemainingLocked(stressEventPayment) &&
+		!r.nextPaymentAt.IsZero() {
+
+		if until := time.Until(r.nextPaymentAt); until > 0 &&
+			until < delay {
+
+			delay = until
+		}
+	}
 	if !r.eventBudgetRemainingLocked(stressEventReorg) ||
 		r.nextReorgAt.IsZero() {
 		return delay
@@ -3986,6 +4019,7 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 		maxLatency := waitLatencies[len(waitLatencies)-1]
 		summary.LiquidityWaitMaxMS = maxLatency.Milliseconds()
 	}
+	summary.PaymentMinDelayMS = r.cfg.paymentMinDelay.Milliseconds()
 
 	// Persist the derived fields so summary.json and any later readers of
 	// r.summary observe the same final snapshot.
@@ -4088,6 +4122,13 @@ func (r *stressRunner) printFinalSummary(path string, summary stressSummary) {
 			summary.LiquidityWaitAvgMS, summary.LiquidityWaitP50MS,
 			summary.LiquidityWaitP95MS, summary.LiquidityWaitMaxMS,
 			r.cfg.liquidityTimeout)
+	}
+	if summary.PaymentMinDelayMS > 0 {
+		r.events.Printf("stress_summary", map[string]any{
+			"payment_min_interval_ms": summary.PaymentMinDelayMS,
+		},
+			"payment pacing min_interval=%s",
+			r.cfg.paymentMinDelay)
 	}
 	r.events.Printf("stress_summary", map[string]any{
 		"throughput_per_sec": summary.PaymentThroughput,
