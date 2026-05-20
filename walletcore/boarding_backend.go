@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
@@ -108,17 +109,28 @@ func (b *BoardingBackendBase) ImportTaprootScript(ctx context.Context,
 		waddrmgr.KeyScopeBIP0086, script,
 	)
 	if err != nil {
+		if waddrmgr.IsError(err, waddrmgr.ErrDuplicateAddress) {
+			addr, addrErr := b.addressForTaprootScript(script)
+			if addrErr != nil {
+				return nil, fmt.Errorf("derive duplicate "+
+					"taproot script address: %w", addrErr)
+			}
+
+			numAddrs := b.trackImportedAddress(addr)
+			b.Log.DebugS(ctx, "Tracked duplicate taproot script",
+				slog.String("address", addr.String()),
+				slog.Int("tracked_addrs", numAddrs),
+			)
+
+			return addr, nil
+		}
+
 		return nil, fmt.Errorf("import taproot script: %w", err)
 	}
 
 	addr := managedAddr.Address()
 
-	// Track the imported address so ListUnspent implementations
-	// can filter results to only return boarding UTXOs.
-	b.Mu.Lock()
-	b.ImportedAddrs[addr.String()] = addr
-	numAddrs := len(b.ImportedAddrs)
-	b.Mu.Unlock()
+	numAddrs := b.trackImportedAddress(addr)
 
 	b.Log.DebugS(ctx, "Imported taproot script via btcwallet",
 		slog.String("address", addr.String()),
@@ -126,6 +138,37 @@ func (b *BoardingBackendBase) ImportTaprootScript(ctx context.Context,
 	)
 
 	return addr, nil
+}
+
+// trackImportedAddress records an imported address so ListUnspent
+// implementations can filter results to only return boarding UTXOs.
+// Returns the number of currently tracked addresses after the insert,
+// which lets callers log the count without a separate locked read or
+// a full map copy via SnapshotAddrs.
+func (b *BoardingBackendBase) trackImportedAddress(addr btcutil.Address) int {
+	b.Mu.Lock()
+	b.ImportedAddrs[addr.String()] = addr
+	numAddrs := len(b.ImportedAddrs)
+	b.Mu.Unlock()
+
+	return numAddrs
+}
+
+// addressForTaprootScript derives the P2TR address that btcwallet stores for
+// a tapscript import. This lets restart recovery repopulate the in-memory
+// address filter when btcwallet reports that a persisted import already exists.
+func (b *BoardingBackendBase) addressForTaprootScript(
+	script *waddrmgr.Tapscript) (btcutil.Address, error) {
+
+	taprootKey, err := script.TaprootKey()
+	if err != nil {
+		return nil, fmt.Errorf("calculate taproot key: %w", err)
+	}
+
+	return btcutil.NewAddressTaproot(
+		schnorr.SerializePubKey(taprootKey),
+		b.BtcWallet.InternalWallet().ChainParams(),
+	)
 }
 
 // SnapshotAddrs returns a snapshot of the currently imported
