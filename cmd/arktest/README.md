@@ -210,6 +210,8 @@ initial round, and then randomly performs:
 
 - OOR payments between clients
 - refresh rounds for random clients
+- unilateral exits (`unroll`) for random live VTXOs
+- optional chain reorg disruptions
 - graceful client daemon restarts
 - client crash/recover events
 - graceful operator restarts, followed by client daemon reconnects
@@ -220,6 +222,18 @@ runner can exercise concurrent payments, balance/list calls, receive-script
 creation, and refresh requests the way a real client process can see them.
 Lifecycle events still serialize the harness-side daemon handle replacement
 needed for restart/crash/recover bookkeeping.
+
+The workload scheduler is budget-driven. Each random operation type has its own
+maximum attempt count, and the run stops when all enabled budgets are consumed
+or `--duration` expires. A worker is reserved before the operation begins, so a
+long-running unroll can coexist with payments, refresh rounds, restarts, or
+reorgs when `--concurrency` leaves another worker slot available.
+
+The event mix is weighted toward payments, with smaller slices for refresh
+rounds, unrolls, reorgs, and lifecycle disruptions. Budgets and per-event
+guards still win over the random draw: for example, reorgs are not scheduled
+when `--max-reorgs=0`, and a configured `--reorg-min-interval` must elapse
+between reserved reorg jobs.
 
 Stress OOR payments are submitted as fresh one-shot intents. The runner does
 not attach a caller idempotency key to each payment, so fresh-send latency does
@@ -239,6 +253,78 @@ per client, giving high-concurrency payment runs more real spend lanes without
 serializing the workload. The split is done through the daemon's board flow, so
 the stress run still exercises the normal multi-output boarding path.
 
+### Background mining, unrolls, and reorgs
+
+Stress starts a background miner after the topology is ready and before
+bootstrap boarding begins. By default it mines one block every 2-10 seconds,
+with the exact delay chosen from the seeded workload RNG. This gives unroll
+state machines, CSV waits, CPFP package relay, refresh rounds, and recovery
+checks steady block progress without tying block production to any single
+workload event.
+
+Configure the background chain clock with:
+
+- `--mine-interval-min`: shortest delay between background blocks. Set this to
+  `0` to disable background mining.
+- `--mine-interval-max`: longest delay between background blocks. Set this to
+  `0` to use the minimum as a fixed interval.
+
+Random unroll jobs are controlled with:
+
+- `--max-unrolls`: maximum real unroll attempts. A scheduler pass that cannot
+  find an eligible live VTXO records `unroll_skip` and does not consume this
+  attempt budget.
+- `--unroll-timeout`: per-attempt watchdog while polling `GetUnrollStatus`.
+
+When an unroll worker starts, it scans clients in random order, fetches live
+VTXOs, filters out outpoints already reserved by payment or unroll workers, and
+reserves one outpoint. If any OOR-derived VTXOs are available, it prefers those
+by choosing from VTXOs with `ChainDepth > 0`; otherwise it chooses from any live
+unreserved VTXO. The worker calls `Unroll`, then polls status until one of
+three terminal outcomes:
+
+```text
+selected live VTXO
+        |
+        v
+reserve outpoint so payments cannot spend it
+        |
+        v
+client.Unroll(outpoint)
+        |
+        v
+poll GetUnrollStatus(outpoint)
+        |
+        +--> COMPLETED with sweep_txid -> unroll_completed
+        +--> FAILED                    -> unroll_failed
+        +--> timeout                   -> unroll_failed
+```
+
+Reorgs are separate random disruption jobs. They are off by default
+(`--max-reorgs=0`) because they make runs noisier and slower. Enable them with
+`--max-reorgs`, then tune the shape with:
+
+- `--reorg-depth`: number of active-chain blocks to disconnect.
+- `--reorg-new-blocks`: number of replacement-branch blocks to mine.
+- `--reorg-min-interval`: cooldown between reserved reorg jobs.
+
+If reorgs are enabled, they can run while an unroll is in flight whenever the
+stress run has another worker slot available. In practice, concurrent
+unroll/reorg pressure requires:
+
+```text
+--max-unrolls > 0
+--max-reorgs > 0
+--concurrency > 1
+reorg budget remains
+reorg min interval has elapsed
+scheduler randomly selects reorg
+```
+
+With `--concurrency=1`, an unroll occupies the only worker slot, so a reorg can
+only run before or after that unroll. Background mining is independent of this
+random reorg budget; it continues to mine regular blocks unless disabled.
+
 Example:
 
 ```sh
@@ -246,7 +332,11 @@ Example:
   --clients 10 \
   --max-payments 200 \
   --max-rounds 20 \
+  --max-unrolls 10 \
+  --max-reorgs 2 \
   --max-restarts 10 \
+  --mine-interval-min 2s \
+  --mine-interval-max 10s \
   --duration 15m \
   --seed 42
 ```
@@ -269,12 +359,16 @@ The terminal output stays sparse:
 [18:44:42.616] arktest stress ready clients=10 artifacts=/tmp/... seed=42
 [18:44:43.008] payment 1 client03 -> client08 amount=12000
 [18:44:43.433] payment 1 settled latency=425ms session=...
+[18:44:44.012] unroll 1 client=client07 outpoint=... amount=42200 chain_depth=1
+[18:44:44.331] unroll 1 status=UNROLL_JOB_STATUS_MATERIALIZING outpoint=...
+[18:44:44.608] background mined block count=3 interval=2.841s latency=88ms
 [18:44:44.882] client restarting client=client05
 [18:44:46.104] client ready client=client05 latency=1.222s
 [18:44:47.191] client crashing client=client02
 [18:44:48.490] client recovered client=client02 latency=1.299s
 [18:44:49.500] operator restarting
 [18:44:54.220] operator ready latency=4.72s rpc=127.0.0.1:52445
+[18:45:12.481] unroll 1 completed client=client07 outpoint=... latency=28.469s sweep_txid=...
 ```
 
 Daemon logs stay in the artifact directory and can be inspected with
@@ -282,7 +376,8 @@ Daemon logs stay in the artifact directory and can be inspected with
 
 - `events.jsonl` — timestamped sparse events with structured fields
 - `summary.json` — seed, duration, result layers, failure classes, payment
-  counts, round counts, restarts, recovery checks, and artifact paths
+  counts, round counts, unroll counts and latencies, reorg counts,
+  background-mined blocks, restarts, recovery checks, and artifact paths
 - `trace.out` — optional Go runtime trace when `--trace` is enabled
 - `cpu.pprof` — CPU profile, enabled by default
 - `block.pprof` — block profile, enabled by default
@@ -375,6 +470,19 @@ Refresh failures are also workload outcomes. The summary distinguishes
 directory are the place to inspect why a refresh round did not reach broadcast
 or confirmation.
 
+Unroll failures are workload outcomes too. Expected failures include cases such
+as a client wallet temporarily lacking confirmed CPFP fee UTXOs. Unexpected
+failures are counted in the workload failure classes and cause the invariant
+layer to fail. The structured events to look for are:
+
+- `unroll`: selected client, outpoint, amount, chain depth, and available
+  runner balance.
+- `unroll_status`: daemon status transitions while the unroll actor runs.
+- `unroll_completed`: sweep txid and end-to-end latency.
+- `unroll_failed`: phase, failure class, expected flag, and error.
+- `unroll_skip`: no live unreserved VTXO was available; this does not consume
+  the `--max-unrolls` attempt budget.
+
 At the end, the terminal prints a high-signal banner so failures stand out
 without opening the JSON artifact:
 
@@ -385,9 +493,10 @@ payments settled=197/200 failed=3 skipped=12 expected=3 unexpected=0 success=98.
 failure classes: connection_closing=2 dust_change=1
 payment skip classes: no_funded_sender=12
 payment latency avg=244ms p50=180ms p95=901ms max=1800ms
+unrolls completed=8/10 failed=1 skipped=3 avg=41000ms p50=37000ms p95=92000ms max=92000ms
 liquidity wait count=31 timeouts=12 avg=411ms p50=250ms p95=10s max=10s timeout=10s
 throughput 2.18 settled payments/sec duration=1m30s concurrency=6
-rounds confirmed=19/20 failed=1 client_restarts=3 client_crashes=4 operator_restarts=3
+rounds confirmed=19/20 failed=1 client_restarts=3 client_crashes=4 operator_restarts=3 reorgs=2/2 failed=0
 diagnostics:
   trace_file=/tmp/.../trace.out
   cpu_profile=/tmp/.../cpu.pprof
@@ -510,6 +619,22 @@ Useful smoke shapes:
   --client-crashes=true \
   --duration 8m \
   --seed 7575
+
+# Unroll/reorg smoke. This keeps the background miner active, allows a small
+# number of random unilateral exits, and permits occasional chain reorg
+# disruption while other workers are running.
+./arktest stress \
+  --clients 5 \
+  --concurrency 6 \
+  --max-payments 20 \
+  --max-rounds 2 \
+  --max-unrolls 3 \
+  --max-reorgs 1 \
+  --max-restarts 1 \
+  --mine-interval-min 2s \
+  --mine-interval-max 8s \
+  --duration 12m \
+  --seed 9898
 ```
 
 Client crash/recover events simulate a mobile app or wallet process being
