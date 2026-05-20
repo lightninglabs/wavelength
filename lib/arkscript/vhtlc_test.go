@@ -210,7 +210,8 @@ func TestVHTLCNamedAccessors(t *testing.T) {
 		{
 			"UnilateralRefundWithoutReceiver",
 			policy.UnilateralRefundWithoutReceiverClosure,
-			opts.UnilateralRefundWithoutReceiverDelay, 0,
+			opts.UnilateralRefundWithoutReceiverDelay,
+			opts.RefundLocktime,
 		},
 	}
 
@@ -304,7 +305,7 @@ func TestVHTLCTxContextDerivation(t *testing.T) {
 	require.Equal(t, opts.UnilateralRefundDelay, urSeq)
 	require.Equal(t, uint32(0), urLocktime)
 
-	// UnilateralRefundWithoutReceiverClosure: CSV + Checksig.
+	// UnilateralRefundWithoutReceiverClosure: CSV + CLTV + Checksig.
 	urwrSeq := DeriveSequence(
 		policy.UnilateralRefundWithoutReceiverClosure,
 	)
@@ -313,7 +314,7 @@ func TestVHTLCTxContextDerivation(t *testing.T) {
 	)
 	require.Equal(t, opts.UnilateralRefundWithoutReceiverDelay,
 		urwrSeq)
-	require.Equal(t, uint32(0), urwrLocktime)
+	require.Equal(t, opts.RefundLocktime, urwrLocktime)
 }
 
 // TestVHTLCDeterminism tests that vHTLC construction is deterministic.
@@ -420,7 +421,7 @@ func TestVHTLCScriptDisassembly(t *testing.T) {
 			policy.UnilateralRefundClosure,
 		},
 		{
-			"UnilateralRefundWithoutReceiver (CSV+Checksig)",
+			"UnilateralRefundWithoutReceiver (CSV+CLTV+Checksig)",
 			policy.UnilateralRefundWithoutReceiverClosure,
 		},
 	}
@@ -459,5 +460,13 @@ func TestVHTLCValidation(t *testing.T) {
 		_, err := NewVHTLCPolicy(bad)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "zero")
+	})
+
+	t.Run("zero refund locktime", func(t *testing.T) {
+		bad := opts
+		bad.RefundLocktime = 0
+		_, err := NewVHTLCPolicy(bad)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "refund locktime")
 	})
 }

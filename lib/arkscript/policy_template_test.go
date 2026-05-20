@@ -155,12 +155,12 @@ func TestVHTLCSettlementPairs(t *testing.T) {
 		opts.Sender, opts.Server,
 	)
 	require.NoError(t, err)
-	require.Len(t, senderPairs, 1)
+	require.Len(t, senderPairs, 2)
 	require.Equal(
 		t, opts.UnilateralRefundDelay,
 		senderPairs[0].AuthPath.RequiredSequence,
 	)
-	// The sender's unilateral auth path (CSV + Multisig) has no CLTV.
+	// The sender/receiver refund auth path (CSV + Multisig) has no CLTV.
 	require.Zero(t, senderPairs[0].AuthPath.RequiredLockTime)
 	// The paired forfeit path is the cooperative Refund (all-party
 	// multisig) which also has no CLTV.
@@ -169,6 +169,25 @@ func TestVHTLCSettlementPairs(t *testing.T) {
 		senderPairs[0].ForfeitPath.RequiredSequence,
 	)
 	require.Zero(t, senderPairs[0].ForfeitPath.RequiredLockTime)
+
+	require.Equal(
+		t, opts.UnilateralRefundWithoutReceiverDelay,
+		senderPairs[1].AuthPath.RequiredSequence,
+	)
+	require.Equal(
+		t, opts.RefundLocktime,
+		senderPairs[1].AuthPath.RequiredLockTime,
+	)
+	// The sender-only refund auth path is both CSV-gated by Ark exit
+	// safety and CLTV-gated by the invoice refund locktime.
+	require.Equal(
+		t, uint32(0xfffffffe),
+		senderPairs[1].ForfeitPath.RequiredSequence,
+	)
+	require.Equal(
+		t, opts.RefundLocktime,
+		senderPairs[1].ForfeitPath.RequiredLockTime,
+	)
 
 	receiverPairs, err := policy.Template.SettlementPairsForParticipant(
 		opts.Receiver, opts.Server,
