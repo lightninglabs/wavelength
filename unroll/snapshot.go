@@ -18,6 +18,8 @@ type unrollSnapshot struct {
 	Started             bool
 	Trigger             StartTrigger
 	State               unrollplan.State
+	ExitPolicyKind      string
+	ExitPolicyRef       string
 	SweepTx             *wire.MsgTx
 	Fail                string
 	SweepAttempts       int
@@ -65,6 +67,8 @@ func jobRecordFromSnapshot(target wire.OutPoint,
 		),
 		PlannerState:        plannerState,
 		DeferredCheckpoints: deferred,
+		ExitPolicyKind:      exitPolicyKind(snapshot.ExitPolicyKind),
+		ExitPolicyRef:       snapshot.ExitPolicyRef,
 		SweepTx:             sweepTx,
 		SweepTxid:           sweepTxid,
 		SweepAttempts:       int32(snapshot.SweepAttempts),
@@ -250,6 +254,8 @@ func snapshotFromJobRecord(record *db.UnrollJobRecord) (*unrollSnapshot,
 		Started:             record.State != string(PhasePending),
 		Trigger:             trigger,
 		State:               *plannerState,
+		ExitPolicyKind:      exitPolicyKind(record.ExitPolicyKind),
+		ExitPolicyRef:       record.ExitPolicyRef,
 		SweepTx:             sweepTx,
 		Fail:                record.FailReason,
 		SweepAttempts:       int(record.SweepAttempts),
@@ -258,6 +264,17 @@ func snapshotFromJobRecord(record *db.UnrollJobRecord) (*unrollSnapshot,
 			[]db.UnrollWatchRecord(nil), record.Watches...,
 		),
 	}, nil
+}
+
+func exitPolicyKind(kind string) string {
+	// The DB column is NOT NULL, but in-memory callers and older tests can
+	// still build a snapshot directly. Default those programmatic paths to
+	// the only behavior that existed before policy identities were added.
+	if kind == "" {
+		return StandardVTXOTimeoutExitPolicyKind
+	}
+
+	return kind
 }
 
 func serializeTx(tx *wire.MsgTx) ([]byte, error) {

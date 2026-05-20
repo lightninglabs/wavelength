@@ -55,6 +55,11 @@ type Config struct {
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	]
 
+	// ExitSpendPolicyResolver reconstructs the exit policy for the durable
+	// kind/ref stored on the unroll job. If nil, the actor uses the
+	// built-in standard VTXO timeout resolver.
+	ExitSpendPolicyResolver ExitSpendPolicyResolver
+
 	// Wallet provides sweep destination derivation and
 	// timeout-path signing.
 	Wallet SweepWallet
@@ -381,9 +386,29 @@ func (b *behavior) startSweep(ctx context.Context) error {
 	// prior attempt inside this actor lifetime) so we converge on a
 	// single sweep txid / wallet pkScript across retries.
 	if b.sweepTx == nil {
+		policy, err := b.resolveExitSpendPolicy(ctx)
+		if err != nil {
+			return b.driveEvent(ctx, &SweepBuildFailedEvent{
+				Reason: err.Error(),
+			})
+		}
+
+		b.log.InfoS(ctx, "Building unroll exit spend",
+			slog.String(
+				"target_outpoint",
+				b.cfg.TargetOutpoint.String(),
+			),
+			slog.String(
+				"exit_policy_kind",
+				policy.Kind(),
+			),
+			slog.Uint64("csv_delay", uint64(policy.CSVDelay())),
+		)
+
 		sweepTx, err := buildSweepTx(
 			ctx, b.cfg.Wallet, b.cfg.ChainSource, b.proof, b.desc,
-			b.cfg.MaxSweepFeeRateSatPerVByte,
+			b.cfg.MaxSweepFeeRateSatPerVByte, b.currentHeight(),
+			policy,
 		)
 		if err != nil {
 			return b.driveEvent(ctx, &SweepBuildFailedEvent{
@@ -392,6 +417,18 @@ func (b *behavior) startSweep(ctx context.Context) error {
 		}
 
 		b.sweepTx = sweepTx
+	} else {
+		sweepTxid := b.sweepTx.TxHash()
+		b.log.DebugS(ctx, "Reusing persisted unroll exit spend",
+			slog.String(
+				"target_outpoint",
+				b.cfg.TargetOutpoint.String(),
+			),
+			slog.String(
+				"exit_policy_kind", b.exitPolicyKind(),
+			),
+			slog.String("txid", sweepTxid.String()),
+		)
 	}
 
 	// Persist the built sweep before asking txconfirm to broadcast, so
@@ -407,6 +444,15 @@ func (b *behavior) startSweep(ctx context.Context) error {
 	}
 
 	sweepLabel := "unroll-sweep-" + b.cfg.TargetOutpoint.String()
+	sweepTxid := b.sweepTx.TxHash()
+
+	b.log.InfoS(ctx, "Submitting unroll exit spend",
+		slog.String("target_outpoint", b.cfg.TargetOutpoint.String()),
+		slog.String(
+			"exit_policy_kind", b.exitPolicyKind(),
+		),
+		slog.String("txid", sweepTxid.String()),
+	)
 
 	_, err = b.cfg.TxConfirmRef.Ask(ctx, &txconfirm.EnsureConfirmedReq{
 		Tx:                   b.sweepTx,
@@ -420,9 +466,50 @@ func (b *behavior) startSweep(ctx context.Context) error {
 
 	b.markRuntimeEffectDone(ctx, "build-sweep")
 
-	sweepTxid := b.sweepTx.TxHash()
-
 	return b.driveEvent(ctx, &SweepBroadcastedEvent{Txid: sweepTxid})
+}
+
+// exitPolicyKind returns the durable policy kind for the current job.
+func (b *behavior) exitPolicyKind() string {
+	if b.pending == nil {
+		return StandardVTXOTimeoutExitPolicyKind
+	}
+
+	return exitPolicyKind(b.pending.ExitPolicyKind)
+}
+
+// exitPolicyRef returns the durable policy ref for the current job.
+func (b *behavior) exitPolicyRef() string {
+	if b.pending == nil {
+		return ""
+	}
+
+	return b.pending.ExitPolicyRef
+}
+
+// currentHeight returns the last persisted height for policy construction.
+func (b *behavior) currentHeight() int32 {
+	if b.pending == nil {
+		return 0
+	}
+
+	return b.pending.Height
+}
+
+// resolveExitSpendPolicy reconstructs the exit policy for this job.
+func (b *behavior) resolveExitSpendPolicy(ctx context.Context) (ExitSpendPolicy,
+	error) {
+
+	resolver := b.cfg.ExitSpendPolicyResolver
+	if resolver == nil {
+		resolver = standardExitSpendPolicyResolver{}
+	}
+
+	return resolver.ResolveExitSpendPolicy(ctx, ExitSpendPolicyRequest{
+		Kind:               b.exitPolicyKind(),
+		Ref:                b.exitPolicyRef(),
+		StandardDescriptor: b.desc,
+	})
 }
 
 // safeTxOutPkScript returns a defensive copy of tx.TxOut[index].PkScript.

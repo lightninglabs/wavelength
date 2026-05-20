@@ -13,7 +13,8 @@ import (
 // snapshot shape.
 func snapshotFromState(state State, sweepTx *wire.MsgTx) *unrollSnapshot {
 	snapshot := &unrollSnapshot{
-		SweepTx: copyTx(sweepTx),
+		ExitPolicyKind: StandardVTXOTimeoutExitPolicyKind,
+		SweepTx:        copyTx(sweepTx),
 	}
 
 	if state == nil || isIdleState(state) {
