@@ -36,12 +36,21 @@ type schemaMethod struct {
 	// ResponseType is the proto response message name.
 	ResponseType string `json:"response_type"`
 
-	// DryRun indicates whether the command supports --dry_run.
+	// DryRun indicates whether the command supports --dry-run /
+	// --dry_run. Top-level wallet verbs use --dry-run (CLI-only
+	// validation, exits 10); ark.* commands use --dry_run that
+	// reaches the daemon's dry-run RPC field.
 	DryRun bool `json:"dry_run,omitempty"`
 
 	// JSONInput indicates the command accepts --json for raw proto
 	// payloads.
 	JSONInput bool `json:"json_input"`
+
+	// MCPTool indicates the method is exposed as an MCP tool with
+	// the same name. False means it is CLI-only (create / unlock
+	// are intentionally CLI-only because they handle secret
+	// material).
+	MCPTool bool `json:"mcp_tool,omitempty"`
 }
 
 // methodRegistry returns the full schema for all darepocli commands.
@@ -49,6 +58,12 @@ type schemaMethod struct {
 // linter cap. The top-level wallet verbs (create, unlock, send, recv,
 // list, balance, exit) are the day-to-day surface; advanced commands
 // live under the `ark.*` and `swap.*` namespaces.
+//
+// The swap.* entries are listed unconditionally regardless of the
+// swapruntime build tag: an agent inspecting the schema in a stub
+// build still gets to discover what swap.* offers (the CLI itself
+// emits a clear build-tag error when the verb is invoked), and the
+// MCP registration is what actually gets tag-gated.
 func methodRegistry() []schemaMethod {
 	out := walletAdminMethodRegistry()
 	out = append(out, walletPaymentMethodRegistry()...)
@@ -56,8 +71,34 @@ func methodRegistry() []schemaMethod {
 	out = append(out, arkBaseMethodRegistry()...)
 	out = append(out, arkVTXOMethodRegistry()...)
 	out = append(out, arkSendMethodRegistry()...)
+	out = append(out, arkObservableMethodRegistry()...)
+	out = append(out, swapMethodRegistry()...)
 
 	return out
+}
+
+// listOutputParams returns the standard agent-CLI output-shape
+// modifier params (--fields, --ndjson) for list-shaped commands. The
+// helper keeps every list entry's schema description in sync with
+// addListOutputFlags so an agent inspecting the schema sees exactly
+// the flags the CLI exposes.
+func listOutputParams() []schemaParam {
+	return []schemaParam{
+		{
+			Name: "fields",
+			Type: "string",
+			Description: "comma-separated field names to " +
+				"include (response filtered before " +
+				"printing)",
+		},
+		{
+			Name: "ndjson",
+			Type: "bool",
+			Description: "emit one JSON object per row " +
+				"(newline-delimited); pairs with " +
+				"--fields to shrink each line",
+		},
+	}
 }
 
 // walletAdminMethodRegistry returns the admin-shape wallet verbs
@@ -75,15 +116,23 @@ func walletAdminMethodRegistry() []schemaMethod {
 						"containing wallet password",
 				},
 				{
-					Name: "seed_passphrase",
+					Name: "seed_passphrase_file",
 					Type: "string",
-					Description: "optional aezeed " +
+					Description: "path to file " +
+						"containing optional aezeed " +
 						"passphrase",
+				},
+				{
+					Name: "print-mnemonic-json",
+					Type: "bool",
+					Description: "include the mnemonic " +
+						"in the JSON response on " +
+						"stdout (default: stderr only)",
 				},
 			},
 			RequestType:  "CreateRequest",
 			ResponseType: "CreateResponse",
-			JSONInput:    true,
+			JSONInput:    false,
 		},
 		{
 			Method:      "unlock",
@@ -98,7 +147,7 @@ func walletAdminMethodRegistry() []schemaMethod {
 			},
 			RequestType:  "UnlockRequest",
 			ResponseType: "UnlockResponse",
-			JSONInput:    true,
+			JSONInput:    false,
 		},
 		{
 			Method:       "getinfo",
@@ -156,10 +205,20 @@ func walletPaymentMethodRegistry() []schemaMethod {
 					Description: "onchain only: drain " +
 						"every live VTXO",
 				},
+				{
+					Name: "dry-run",
+					Type: "bool",
+					Description: "CLI-side validation " +
+						"only; print the proto-JSON " +
+						"preview and exit 10 without " +
+						"dispatching",
+				},
 			},
 			RequestType:  "SendRequest",
 			ResponseType: "SendResponse",
-			JSONInput:    true,
+			DryRun:       true,
+			JSONInput:    false,
+			MCPTool:      true,
 		},
 		{
 			Method:      "recv",
@@ -197,7 +256,8 @@ func walletPaymentMethodRegistry() []schemaMethod {
 			},
 			RequestType:  "RecvRequest",
 			ResponseType: "RecvResponse",
-			JSONInput:    true,
+			JSONInput:    false,
+			MCPTool:      true,
 		},
 	}
 }
@@ -244,7 +304,8 @@ func walletQueryMethodRegistry() []schemaMethod {
 			},
 			RequestType:  "ListRequest",
 			ResponseType: "ListResponse",
-			JSONInput:    true,
+			JSONInput:    false,
+			MCPTool:      true,
 		},
 		{
 			Method:       "balance",
@@ -252,7 +313,8 @@ func walletQueryMethodRegistry() []schemaMethod {
 			Params:       nil,
 			RequestType:  "BalanceRequest",
 			ResponseType: "BalanceResponse",
-			JSONInput:    true,
+			JSONInput:    false,
+			MCPTool:      true,
 		},
 		{
 			Method:      "exit",
@@ -265,10 +327,20 @@ func walletQueryMethodRegistry() []schemaMethod {
 					Description: "VTXO outpoint " +
 						"(txid:vout)",
 				},
+				{
+					Name: "dry-run",
+					Type: "bool",
+					Description: "CLI-side validation " +
+						"only; print the proto-JSON " +
+						"preview and exit 10 without " +
+						"dispatching",
+				},
 			},
 			RequestType:  "ExitRequest",
 			ResponseType: "ExitResponse",
-			JSONInput:    true,
+			DryRun:       true,
+			JSONInput:    false,
+			MCPTool:      true,
 		},
 		{
 			Method:      "exit.status",
@@ -284,7 +356,8 @@ func walletQueryMethodRegistry() []schemaMethod {
 			},
 			RequestType:  "ExitStatusRequest",
 			ResponseType: "ExitStatusResponse",
-			JSONInput:    true,
+			JSONInput:    false,
+			MCPTool:      true,
 		},
 	}
 }
@@ -337,7 +410,7 @@ func arkBaseMethodRegistry() []schemaMethod {
 		{
 			Method:      "ark.sweep.list",
 			Description: "List tracked boarding sweeps (advanced)",
-			Params: []schemaParam{
+			Params: append([]schemaParam{
 				{
 					Name: "status",
 					Type: "string",
@@ -358,7 +431,7 @@ func arkBaseMethodRegistry() []schemaMethod {
 					Description: "token from a previous " +
 						"sweep list response",
 				},
-			},
+			}, listOutputParams()...),
 			RequestType:  "ListBoardingSweepsRequest",
 			ResponseType: "ListBoardingSweepsResponse",
 			JSONInput:    true,
@@ -366,7 +439,7 @@ func arkBaseMethodRegistry() []schemaMethod {
 		{
 			Method:      "ark.listtransactions",
 			Description: "Raw paginated transaction history",
-			Params: []schemaParam{
+			Params: append([]schemaParam{
 				{
 					Name: "from",
 					Type: "string",
@@ -402,7 +475,7 @@ func arkBaseMethodRegistry() []schemaMethod {
 						"sweep",
 					},
 				},
-			},
+			}, listOutputParams()...),
 			RequestType:  "ListTransactionsRequest",
 			ResponseType: "ListTransactionsResponse",
 			JSONInput:    true,
@@ -434,7 +507,7 @@ func arkVTXOMethodRegistry() []schemaMethod {
 		{
 			Method:      "ark.vtxos.list",
 			Description: "List VTXOs with optional filters",
-			Params: []schemaParam{
+			Params: append([]schemaParam{
 				{
 					Name:        "status",
 					Type:        "enum",
@@ -455,19 +528,7 @@ func arkVTXOMethodRegistry() []schemaMethod {
 					Type:        "int64",
 					Description: "minimum amount in sats",
 				},
-				{
-					Name: "fields",
-					Type: "string",
-					Description: "comma-separated field " +
-						"names to include",
-				},
-				{
-					Name: "ndjson",
-					Type: "bool",
-					Description: "emit one JSON object " +
-						"per VTXO (newline-delimited)",
-				},
-			},
+			}, listOutputParams()...),
 			RequestType:  "ListVTXOsRequest",
 			ResponseType: "ListVTXOsResponse",
 			JSONInput:    true,

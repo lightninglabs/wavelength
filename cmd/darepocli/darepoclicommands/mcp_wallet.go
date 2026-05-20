@@ -1,0 +1,364 @@
+package darepoclicommands
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+// registerMCPWalletTools registers the everyday wallet verbs on the
+// MCP server. Create and Unlock are intentionally omitted: those
+// operations carry secrets (wallet password, seed passphrase) that
+// must not transit the MCP protocol where they could leak into agent
+// logs or provider APIs. Wallet setup stays on the CLI's secret-input
+// ladder (DAREPOD_WALLET_PASSWORD env > --wallet_password_file > stdin
+// > TTY prompt).
+//
+// Each tool maps gRPC Unimplemented to a clear "daemon was not built
+// with walletrpc" error so an MCP consumer talking to a stub-build
+// daemon sees actionable text rather than a generic status code.
+func registerMCPWalletTools(s *mcp.Server,
+	client walletrpc.WalletServiceClient) {
+
+	registerMCPWalletQueryTools(s, client)
+	registerMCPWalletMutateTools(s, client)
+}
+
+// registerMCPWalletQueryTools registers the read-only wallet verbs
+// (balance, list). These never move funds and need no dry-run rail.
+func registerMCPWalletQueryTools(s *mcp.Server,
+	client walletrpc.WalletServiceClient) {
+
+	type balanceArgs struct{}
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "balance",
+		Description: "Wallet balance: confirmed_sat, " +
+			"pending_in_sat, pending_out_sat",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ balanceArgs) (
+		*mcp.CallToolResult, any, error) {
+
+		resp, err := client.Balance(
+			ctx, &walletrpc.BalanceRequest{},
+		)
+		if err != nil {
+			return nil, nil, mapWalletRPCError(err)
+		}
+
+		r, err := mcpResult(resp)
+
+		return r, nil, err
+	})
+
+	type listArgs struct {
+		View        string   `json:"view,omitempty" jsonschema:"slice of state: activity (default), vtxos, or onchain"`        //nolint:ll
+		PendingOnly bool     `json:"pending_only,omitempty" jsonschema:"activity view only: filter to in-flight entries"`      //nolint:ll
+		Kinds       []string `json:"kinds,omitempty" jsonschema:"activity view only: kind filter (send, recv, deposit, exit)"` //nolint:ll
+		Limit       uint32   `json:"limit,omitempty" jsonschema:"page size; zero uses daemon default"`                         //nolint:ll
+		Offset      uint32   `json:"offset,omitempty" jsonschema:"pagination offset"`                                          //nolint:ll
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "list",
+		Description: "List wallet activity, VTXOs, or onchain " +
+			"history (view selects the slice)",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args listArgs) (
+		*mcp.CallToolResult, any, error) {
+
+		req, err := buildWalletListRequest(
+			args.View, args.PendingOnly, args.Kinds, args.Limit,
+			args.Offset,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		resp, err := client.List(ctx, req)
+		if err != nil {
+			return nil, nil, mapWalletRPCError(err)
+		}
+
+		r, err := mcpResult(resp)
+
+		return r, nil, err
+	})
+
+	type exitStatusArgs struct {
+		Outpoint string `json:"outpoint" jsonschema:"VTXO outpoint to query (txid:vout)"` //nolint:ll
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "exit.status",
+		Description: "Status of a unilateral exit job",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest,
+		args exitStatusArgs) (*mcp.CallToolResult, any, error) {
+
+		if err := validateOutpoint(args.Outpoint); err != nil {
+			return nil, nil, err
+		}
+		resp, err := client.ExitStatus(
+			ctx, &walletrpc.ExitStatusRequest{
+				Outpoint: args.Outpoint,
+			},
+		)
+		if err != nil {
+			return nil, nil, mapWalletRPCError(err)
+		}
+
+		r, err := mcpResult(resp)
+
+		return r, nil, err
+	})
+}
+
+// registerMCPWalletMutateTools registers the mutating wallet verbs
+// (send, recv, exit). All three apply the same input-hardening checks
+// as the CLI path so MCP and CLI cannot drift on what shapes the
+// daemon ever sees.
+func registerMCPWalletMutateTools(s *mcp.Server,
+	client walletrpc.WalletServiceClient) {
+
+	type sendArgs struct {
+		Destination string `json:"destination" jsonschema:"BOLT-11 invoice (offchain) or onchain address; the direction field picks which"` //nolint:ll
+		Direction   string `json:"direction,omitempty" jsonschema:"'offchain' (default) for invoice, 'onchain' for cooperative leave"`      //nolint:ll
+		AmtSat      uint64 `json:"amt_sat,omitempty" jsonschema:"amount in satoshis (required for onchain unless sweep_all)"`               //nolint:ll
+		MaxFeeSat   uint64 `json:"max_fee_sat,omitempty" jsonschema:"max fee in satoshis; zero uses daemon defaults"`                       //nolint:ll
+		Note        string `json:"note,omitempty" jsonschema:"caller-supplied label persisted with the entry"`                              //nolint:ll
+		SweepAll    bool   `json:"sweep_all,omitempty" jsonschema:"onchain only: drain every live VTXO"`                                    //nolint:ll
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "send",
+		Description: "Send a payment (offchain Lightning invoice " +
+			"by default; onchain cooperative leave with " +
+			"direction='onchain')",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args sendArgs) (
+		*mcp.CallToolResult, any, error) {
+
+		offchain, err := parseDirectionField(args.Direction)
+		if err != nil {
+			return nil, nil, err
+		}
+		req, err := buildWalletSendRequest(
+			args.Destination, offchain, args.AmtSat, args.MaxFeeSat,
+			args.Note, args.SweepAll,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+		resp, err := client.Send(ctx, req)
+		if err != nil {
+			return nil, nil, mapWalletRPCError(err)
+		}
+
+		r, err := mcpResult(resp)
+
+		return r, nil, err
+	})
+
+	type recvArgs struct {
+		Direction  string `json:"direction,omitempty" jsonschema:"'offchain' (default) returns a Lightning invoice, 'onchain' returns a boarding address"` //nolint:ll
+		AmtSat     uint64 `json:"amt_sat,omitempty" jsonschema:"amount in satoshis (required for offchain)"`                                               //nolint:ll
+		Memo       string `json:"memo,omitempty" jsonschema:"optional human-readable memo embedded in the invoice"`                                        //nolint:ll
+		AmtSatHint uint64 `json:"amt_sat_hint,omitempty" jsonschema:"optional expected deposit amount for onchain (accounting only)"`                      //nolint:ll
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "recv",
+		Description: "Receive a payment (offchain Lightning invoice " +
+			"by default; onchain boarding address with " +
+			"direction='onchain')",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args recvArgs) (
+		*mcp.CallToolResult, any, error) {
+
+		offchain, err := parseDirectionField(args.Direction)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := validateFreeText("memo", args.Memo); err != nil {
+			return nil, nil, err
+		}
+
+		if offchain {
+			if args.AmtSat == 0 {
+				return nil, nil, fmt.Errorf("amt_sat is " +
+					"required for offchain recv")
+			}
+			resp, err := client.Recv(
+				ctx, &walletrpc.RecvRequest{
+					AmtSat: args.AmtSat,
+					Memo:   args.Memo,
+				},
+			)
+			if err != nil {
+				return nil, nil, mapWalletRPCError(err)
+			}
+
+			r, err := mcpResult(resp)
+
+			return r, nil, err
+		}
+
+		resp, err := client.Deposit(
+			ctx, &walletrpc.DepositRequest{
+				AmtSatHint: args.AmtSatHint,
+			},
+		)
+		if err != nil {
+			return nil, nil, mapWalletRPCError(err)
+		}
+
+		r, err := mcpResult(resp)
+
+		return r, nil, err
+	})
+
+	type exitArgs struct {
+		Outpoint string `json:"outpoint" jsonschema:"VTXO outpoint to exit (txid:vout)"` //nolint:ll
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "exit",
+		Description: "Trigger a unilateral exit for a VTXO " +
+			"(spawns a durable on-chain recovery job)",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args exitArgs) (
+		*mcp.CallToolResult, any, error) {
+
+		if err := validateOutpoint(args.Outpoint); err != nil {
+			return nil, nil, err
+		}
+		resp, err := client.Exit(
+			ctx, &walletrpc.ExitRequest{
+				Outpoint: args.Outpoint,
+			},
+		)
+		if err != nil {
+			return nil, nil, mapWalletRPCError(err)
+		}
+
+		r, err := mcpResult(resp)
+
+		return r, nil, err
+	})
+}
+
+// buildWalletListRequest translates MCP listArgs into a ListRequest,
+// applying the same view / filter combinator checks the CLI enforces
+// so the two surfaces stay in lockstep.
+func buildWalletListRequest(view string, pendingOnly bool, kinds []string,
+	limit, offset uint32) (*walletrpc.ListRequest, error) {
+
+	v, err := parseListView(view)
+	if err != nil {
+		return nil, err
+	}
+
+	req := &walletrpc.ListRequest{
+		View:        v,
+		PendingOnly: pendingOnly,
+		Limit:       limit,
+		Offset:      offset,
+	}
+
+	// Reject activity-only filters on other views so the agent can't
+	// silently no-op a filter (same invariant the CLI enforces).
+	if v != walletrpc.ListView_LIST_VIEW_ACTIVITY {
+		if pendingOnly {
+			return nil, fmt.Errorf("pending_only applies only to " +
+				"the activity view")
+		}
+		if len(kinds) > 0 {
+			return nil, fmt.Errorf("kinds applies only to the " +
+				"activity view")
+		}
+	}
+
+	for _, k := range kinds {
+		parsed, err := parseEntryKind(k)
+		if err != nil {
+			return nil, err
+		}
+		req.Kinds = append(req.Kinds, parsed)
+	}
+
+	return req, nil
+}
+
+// buildWalletSendRequest assembles a SendRequest while running the
+// CLI's input hardening (validateDestination, validateFreeText) and
+// the offchain/onchain invariants so MCP can't construct a shape the
+// CLI would reject.
+func buildWalletSendRequest(dest string, offchain bool, amt, maxFee uint64,
+	note string, sweepAll bool) (*walletrpc.SendRequest, error) {
+
+	if err := validateDestination(dest); err != nil {
+		return nil, err
+	}
+	if err := validateFreeText("note", note); err != nil {
+		return nil, err
+	}
+
+	if offchain && sweepAll {
+		return nil, fmt.Errorf("sweep_all is only valid with onchain " +
+			"sends (offchain=false)")
+	}
+	if !offchain {
+		switch {
+		case sweepAll && amt != 0:
+			return nil, fmt.Errorf("sweep_all requires amt_sat=0")
+
+		case !sweepAll && amt == 0:
+			return nil, fmt.Errorf("amt_sat is required for " +
+				"onchain sends (use sweep_all to drain)")
+		}
+	}
+
+	req := &walletrpc.SendRequest{
+		AmtSat:    amt,
+		MaxFeeSat: maxFee,
+		Note:      note,
+		SweepAll:  sweepAll,
+	}
+	if offchain {
+		req.Destination = &walletrpc.SendRequest_Invoice{
+			Invoice: dest,
+		}
+	} else {
+		req.Destination = &walletrpc.SendRequest_OnchainAddress{
+			OnchainAddress: dest,
+		}
+	}
+
+	return req, nil
+}
+
+// parseDirectionField maps the MCP-friendly direction string onto the
+// CLI's offchain bool. Empty defaults to offchain so an agent that
+// just passes a destination keeps the safe invoice path. Unknown
+// values are rejected explicitly rather than silently coerced.
+func parseDirectionField(direction string) (bool, error) {
+	switch direction {
+	case "", "offchain":
+		return true, nil
+
+	case "onchain":
+		return false, nil
+
+	default:
+		return false, fmt.Errorf("unknown direction %q (want "+
+			"'offchain' or 'onchain')", direction)
+	}
+}
+
+// mapWalletRPCError mirrors the CLI's withWalletClient mapping: a
+// gRPC Unimplemented from a stub-build daemon becomes the actionable
+// errWalletRPCDisabled instead of a generic status. Other errors pass
+// through unchanged.
+func mapWalletRPCError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if status.Code(err) == codes.Unimplemented {
+		return errWalletRPCDisabled
+	}
+
+	return err
+}

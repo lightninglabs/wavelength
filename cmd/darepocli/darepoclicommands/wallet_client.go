@@ -81,6 +81,46 @@ func printWalletProto(v proto.Message) error {
 	return nil
 }
 
+// invalidArgs wraps a client-side validation error in the canonical
+// INVALID_ARGS envelope so the structured stderr shape and the exit-
+// code-2 mapping both kick in. Returns nil if err is nil so callers
+// can use it directly in `return invalidArgs(validator(...))` style.
+// All seven top-level wallet verbs route their input-hardening
+// rejections through this helper so the envelope an agent sees
+// matches what swap.* / ark.* verbs emit for the same failure class.
+func invalidArgs(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return PrintError("INVALID_ARGS", err.Error())
+}
+
+// walletDryRunPreview emits a structured preview of the RPC that would
+// have been dispatched. The fully-validated request body is included
+// so an agent staging a transaction can diff the proto-JSON against
+// what it intended. A DRY_RUN_OK printedError is returned so main.go
+// exits with code 10 — the agent-cli skill's "dry-run passed" marker —
+// without re-printing the envelope.
+func walletDryRunPreview(method string, req proto.Message) error {
+	body, err := walletProtoMarshal.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal dry-run preview: %w", err)
+	}
+
+	// stdout carries the machine-readable preview; main.go's DRY_RUN_OK
+	// stderr envelope carries the marker that the dry-run validated.
+	fmt.Fprintf(
+		os.Stdout, `{"dry_run":true,"method":%q,"validation":"passed",`+
+			`"body":%s}`+"\n", method, string(body),
+	)
+
+	return PrintError(
+		"DRY_RUN_OK",
+		"dry-run validation passed; no RPC was dispatched",
+	)
+}
+
 // parseEntryKind maps a user-facing kind string to the proto enum used
 // in ListRequest.Kinds.
 func parseEntryKind(s string) (walletrpc.EntryKind, error) {

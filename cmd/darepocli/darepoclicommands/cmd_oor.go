@@ -6,6 +6,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/proto"
 )
 
 // newOORCmd creates the oor parent command with receive-target subcommands.
@@ -56,6 +57,7 @@ func newOORListCmd() *cobra.Command {
 		"maximum number of sessions to return")
 	cmd.Flags().String("page-token", "",
 		"cursor from a previous response for pagination")
+	addListOutputFlags(cmd, "OOR session")
 
 	return cmd
 }
@@ -147,7 +149,12 @@ func oorList(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("ListOORSessions RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	items := make([]proto.Message, len(resp.Sessions))
+	for i, s := range resp.Sessions {
+		items[i] = s
+	}
+
+	return renderListOutput(cmd, resp, items)
 }
 
 // oorReceive executes the NewReceiveScript RPC.

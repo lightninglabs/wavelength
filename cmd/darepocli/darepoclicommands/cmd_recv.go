@@ -50,20 +50,23 @@ func newRecvCmd() *cobra.Command {
 func walletRecv(cmd *cobra.Command, _ []string) error {
 	offchain, err := resolveOffchainFlag(cmd)
 	if err != nil {
-		return err
+		return invalidArgs(err)
 	}
 
 	amt, _ := cmd.Flags().GetUint64("amt")
 	memo, _ := cmd.Flags().GetString("memo")
 	amtHint, _ := cmd.Flags().GetUint64("amt_hint")
 
-	if err := validateFreeText("--memo", memo); err != nil {
+	if err := invalidArgs(validateFreeText("--memo", memo)); err != nil {
 		return err
 	}
 
 	if offchain && amt == 0 {
-		return fmt.Errorf("--amt is required for offchain recv (use " +
-			"--onchain for a boarding address without an amount)")
+		return PrintError(
+			"INVALID_ARGS", "--amt is required for offchain "+
+				"recv (use --onchain for a boarding "+
+				"address without an amount)",
+		)
 	}
 
 	return withWalletClient(

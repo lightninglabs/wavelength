@@ -3,7 +3,6 @@
 package darepoclicommands
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +11,13 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/spf13/cobra"
 )
+
+// errPaymentHashRequired is the shared message for swap show / resume
+// when neither the positional arg nor the --json input supplies a
+// payment_hash. Lifted out of the inline string concatenations so the
+// llformat wrapping cannot split the token name across a line.
+const errPaymentHashRequired = "payment_hash is required: pass the " +
+	"positional argument or --json with payment_hash"
 
 func newSwapCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -43,14 +49,20 @@ func newSwapListCmd() *cobra.Command {
 			}
 			defer conn.Close()
 
-			pendingOnly, _ := cmd.Flags().GetBool("pending")
+			req := &swapclientrpc.ListSwapsRequest{}
+			if err := parseRequest(cmd, req, func() error {
+				pendingOnly, _ := cmd.Flags().GetBool("pending")
+				req.PendingOnly = pendingOnly
 
-			resp, err := client.ListSwaps(
-				context.Background(),
-				&swapclientrpc.ListSwapsRequest{
-					PendingOnly: pendingOnly,
-				},
-			)
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			// Use cmd.Context() so Ctrl+C / SIGTERM cancels the
+			// RPC. context.Background() here would leave the
+			// gRPC call running until the daemon responds.
+			resp, err := client.ListSwaps(cmd.Context(), req)
 			if err != nil {
 				return mapSwapRuntimeRPCError(err)
 			}
@@ -66,13 +78,15 @@ func newSwapListCmd() *cobra.Command {
 }
 
 // newSwapShowCmd builds the daemon-backed command that fetches one persisted
-// swap by payment hash. This exercises the GetSwap RPC directly instead of
-// teaching the CLI how to inspect the daemon-owned swap database.
+// swap by payment hash. The positional arg is OPTIONAL at the cobra layer so
+// an agent can drive the verb entirely through `--json`; the actual
+// payment_hash requirement is enforced after parseRequest returns so it
+// applies on both the positional and the --json path.
 func newSwapShowCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show [payment_hash]",
 		Short: "Show one persisted Lightning swap session",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, conn, err := getSwapClient(cmd)
 			if err != nil {
@@ -80,12 +94,31 @@ func newSwapShowCmd() *cobra.Command {
 			}
 			defer conn.Close()
 
-			resp, err := client.GetSwap(
-				context.Background(),
-				&swapclientrpc.GetSwapRequest{
-					PaymentHash: args[0],
-				},
-			)
+			req := &swapclientrpc.GetSwapRequest{}
+			if err := parseRequest(cmd, req, func() error {
+				if len(args) != 1 {
+					return PrintError(
+						"INVALID_ARGS",
+						errPaymentHashRequired,
+					)
+				}
+				req.PaymentHash = args[0]
+
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			// Post-parse validation runs on both the flag and
+			// --json paths so a malformed payment_hash slipping
+			// in via --json is still caught client-side.
+			if err := validatePaymentHash(
+				req.PaymentHash,
+			); err != nil {
+				return PrintError("INVALID_ARGS", err.Error())
+			}
+
+			resp, err := client.GetSwap(cmd.Context(), req)
 			if err != nil {
 				return mapSwapRuntimeRPCError(err)
 			}
@@ -111,14 +144,29 @@ func newSwapReceiveCmd() *cobra.Command {
 			}
 			defer conn.Close()
 
-			amount, _ := cmd.Flags().GetInt64("amount")
+			req := &swapclientrpc.StartReceiveRequest{}
+			if err := parseRequest(cmd, req, func() error {
+				amount, _ := cmd.Flags().GetInt64("amount")
+				req.AmountSat = amount
 
-			resp, err := client.StartReceive(
-				context.Background(),
-				&swapclientrpc.StartReceiveRequest{
-					AmountSat: amount,
-				},
-			)
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			// Validate after parseRequest so the requirement
+			// applies whether the amount came from --amount or
+			// from --json.
+			if req.AmountSat <= 0 {
+				return PrintError(
+					"INVALID_ARGS", "amount_sat must "+
+						"be positive (pass "+
+						"--amount or --json with a "+
+						"positive amount_sat)",
+				)
+			}
+
+			resp, err := client.StartReceive(cmd.Context(), req)
 			if err != nil {
 				return mapSwapRuntimeRPCError(err)
 			}
@@ -127,9 +175,11 @@ func newSwapReceiveCmd() *cobra.Command {
 		},
 	}
 
+	// --amount is no longer cobra-required because that fires
+	// before RunE and blocks the --json path. The post-parse check
+	// above does the equivalent validation on both surfaces.
 	cmd.Flags().Int64("amount", 0,
-		"amount in satoshis to receive (required)")
-	_ = cmd.MarkFlagRequired("amount")
+		"amount in satoshis to receive (required; or pass via --json)")
 
 	return cmd
 }
@@ -148,16 +198,26 @@ func newSwapPayCmd() *cobra.Command {
 			}
 			defer conn.Close()
 
-			invoice, _ := cmd.Flags().GetString("invoice")
-			maxFee, _ := cmd.Flags().GetUint64("maxfee")
+			req := &swapclientrpc.StartPayRequest{}
+			if err := parseRequest(cmd, req, func() error {
+				invoice, _ := cmd.Flags().GetString("invoice")
+				maxFee, _ := cmd.Flags().GetUint64("maxfee")
+				req.Invoice = invoice
+				req.MaxFeeSat = maxFee
 
-			resp, err := client.StartPay(
-				context.Background(),
-				&swapclientrpc.StartPayRequest{
-					Invoice:   invoice,
-					MaxFeeSat: maxFee,
-				},
-			)
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			// Validate invoice on both flag and --json paths so
+			// the agent-cli input-hardening contract holds even
+			// when an agent submits the request as raw JSON.
+			if err := validateInvoice(req.Invoice); err != nil {
+				return PrintError("INVALID_ARGS", err.Error())
+			}
+
+			resp, err := client.StartPay(cmd.Context(), req)
 			if err != nil {
 				return mapSwapRuntimeRPCError(err)
 			}
@@ -166,9 +226,10 @@ func newSwapPayCmd() *cobra.Command {
 		},
 	}
 
+	// --invoice is no longer cobra-required to keep the --json path
+	// reachable; validateInvoice runs post-parse on both surfaces.
 	cmd.Flags().String("invoice", "",
-		"BOLT-11 Lightning invoice to pay (required)")
-	_ = cmd.MarkFlagRequired("invoice")
+		"BOLT-11 Lightning invoice to pay (required; or via --json)")
 	cmd.Flags().Uint64("maxfee", 0,
 		"maximum fee in satoshis (0 = no limit)")
 
@@ -182,7 +243,7 @@ func newSwapResumeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "resume [payment_hash]",
 		Short: "Resume a persisted Lightning swap session",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, conn, err := getSwapClient(cmd)
 			if err != nil {
@@ -190,19 +251,50 @@ func newSwapResumeCmd() *cobra.Command {
 			}
 			defer conn.Close()
 
-			direction, _ := cmd.Flags().GetString("direction")
-			rpcDirection, err := parseSwapRPCDirection(direction)
-			if err != nil {
+			req := &swapclientrpc.ResumeSwapRequest{}
+			if err := parseRequest(cmd, req, func() error {
+				if len(args) != 1 {
+					return PrintError(
+						"INVALID_ARGS",
+						errPaymentHashRequired,
+					)
+				}
+				req.PaymentHash = args[0]
+
+				direction, _ := cmd.Flags().GetString(
+					"direction",
+				)
+				rpcDirection, err := parseSwapRPCDirection(
+					direction,
+				)
+				if err != nil {
+					return PrintError(
+						"INVALID_ARGS", err.Error(),
+					)
+				}
+				req.Direction = rpcDirection
+
+				return nil
+			}); err != nil {
 				return err
 			}
 
-			resp, err := client.ResumeSwap(
-				context.Background(),
-				&swapclientrpc.ResumeSwapRequest{
-					PaymentHash: args[0],
-					Direction:   rpcDirection,
-				},
-			)
+			// Post-parse validation: payment_hash and direction
+			// are required on both the flag and --json paths.
+			if err := validatePaymentHash(
+				req.PaymentHash,
+			); err != nil {
+				return PrintError("INVALID_ARGS", err.Error())
+			}
+			if req.Direction ==
+				swapclientrpc.SwapDirection_SWAP_DIRECTION_UNSPECIFIED {
+				return PrintError(
+					"INVALID_ARGS", "direction is "+
+						"required (pay or receive)",
+				)
+			}
+
+			resp, err := client.ResumeSwap(cmd.Context(), req)
 			if err != nil {
 				return mapSwapRuntimeRPCError(err)
 			}
@@ -211,9 +303,11 @@ func newSwapResumeCmd() *cobra.Command {
 		},
 	}
 
+	// --direction is no longer cobra-required; post-parse validation
+	// enforces it on both the flag and --json paths.
 	cmd.Flags().String("direction", "",
-		"swap direction to resume: pay or receive (required)")
-	_ = cmd.MarkFlagRequired("direction")
+		"swap direction to resume: pay or receive "+
+			"(required; or via --json)")
 
 	return cmd
 }
@@ -232,17 +326,22 @@ func newSwapWatchCmd() *cobra.Command {
 			}
 			defer conn.Close()
 
-			pendingOnly, _ := cmd.Flags().GetBool("pending")
-			includeExisting, _ := cmd.Flags().GetBool(
-				"include-existing",
-			)
+			req := &swapclientrpc.SubscribeSwapsRequest{}
+			if err := parseRequest(cmd, req, func() error {
+				pendingOnly, _ := cmd.Flags().GetBool("pending")
+				includeExisting, _ := cmd.Flags().GetBool(
+					"include-existing",
+				)
+				req.PendingOnly = pendingOnly
+				req.IncludeExisting = includeExisting
+
+				return nil
+			}); err != nil {
+				return err
+			}
 
 			stream, err := client.SubscribeSwaps(
-				context.Background(),
-				&swapclientrpc.SubscribeSwapsRequest{
-					IncludeExisting: includeExisting,
-					PendingOnly:     pendingOnly,
-				},
+				cmd.Context(), req,
 			)
 			if err != nil {
 				return mapSwapRuntimeRPCError(err)
@@ -292,6 +391,10 @@ func parseSwapRPCDirection(direction string) (swapclientrpc.SwapDirection,
 	error) {
 
 	switch strings.ToLower(direction) {
+	case "":
+		return swapclientrpc.
+			SwapDirection_SWAP_DIRECTION_UNSPECIFIED, nil
+
 	case "pay":
 		return swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY, nil
 

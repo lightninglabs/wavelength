@@ -6,6 +6,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/proto"
 )
 
 // newArkCmd builds the `ark` parent that hosts the advanced low-level
@@ -67,6 +68,7 @@ func newArkListTransactionsCmd() *cobra.Command {
 		"type", "",
 		"optional type filter: boarding, round, oor, or sweep",
 	)
+	addListOutputFlags(cmd, "transaction")
 
 	return cmd
 }
@@ -120,7 +122,12 @@ func listTransactions(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("ListTransactions RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	items := make([]proto.Message, len(resp.Transactions))
+	for i, t := range resp.Transactions {
+		items[i] = t
+	}
+
+	return renderListOutput(cmd, resp, items)
 }
 
 // parseTransactionTimeFlag parses an ISO 8601 timestamp or date-only
