@@ -1143,17 +1143,70 @@ func (a *Actor) handleLeafSpend(ctx context.Context, batchID BatchID,
 		return err
 	}
 
-	vtxo, err := store.GetVTXO(ctx, spentOutput.Outpoint)
+	// Resolve the canonical VTXO outpoint. For round VTXOs the
+	// persisted outpoint is `leaf_tx_hash:non_anchor_index` (see
+	// `tree.Node.GetNonAnchorOutpoint`), but the watched outpoint
+	// may be one tree level higher: in a multi-leaf tree the
+	// progressive watcher arms a spend watch on every leaf-input
+	// (the branch-tx output whose script the leaf tx consumes) and
+	// flips `IsVTXO=true` because the immediate tree child IS a
+	// leaf. The watch fires when the canonical leaf tx broadcasts
+	// and spends the leaf-input — by then the VTXO has surfaced as
+	// `leaf_tx_hash:0` and the persisted record uses that
+	// outpoint, not the leaf-input we were watching.
+	//
+	// For the single-leaf-tree shape and for OOR-derived recipient
+	// leaves (`trackRecipientLeaf`, TreeNode is nil) the watched
+	// outpoint already IS the VTXO outpoint, so the fallback below
+	// is a no-op.
+	vtxoOutpoint := spentOutput.Outpoint
+	if spentOutput.TreeNode != nil && spentOutput.TreeNode.IsLeaf() {
+		// A leaf TreeNode whose Outputs slice is empty is the
+		// in-memory placeholder shape carried by some recovery
+		// paths (and by every leaf-spend unit test). Fall back to
+		// the watched outpoint there — there is nothing to derive.
+		derived, derr := spentOutput.TreeNode.GetNonAnchorOutpoint()
+		switch {
+		case derr == nil:
+			vtxoOutpoint = *derived
+
+		case len(spentOutput.TreeNode.Outputs) > 0:
+			// Non-empty Outputs means this is a real leaf node
+			// rather than the placeholder shape — a derivation
+			// failure here is unexpected (malformed tree) and
+			// would otherwise surface only as a generic
+			// "leaf spend for unknown VTXO" below. Warn-log so
+			// the actual cause is diagnosable.
+			a.log.WarnS(ctx, "Failed to derive canonical VTXO "+
+				"outpoint from leaf TreeNode; falling back "+
+				"to watched outpoint", derr,
+				"batch_id", batchID,
+				"watched_outpoint", spentOutput.Outpoint,
+			)
+		}
+	}
+
+	vtxo, err := store.GetVTXO(ctx, vtxoOutpoint)
 	if err != nil {
 		return fmt.Errorf("leaf spend lookup: %w", err)
 	}
 	if vtxo == nil {
-		return fmt.Errorf("leaf spend for unknown VTXO %s in batch %s",
+		return fmt.Errorf("leaf spend for unknown VTXO %s (watched "+
+			"outpoint %s) in batch %s", vtxoOutpoint,
 			spentOutput.Outpoint, batchID)
 	}
 
+	// The classifyAndNotify branches reach back into the recovery
+	// store using `output.Outpoint` (MarkVTXOUnrolledByClient,
+	// GetForfeitInfo, fraud-detector notifications). Forward a
+	// corrected output whose Outpoint matches the persisted VTXO
+	// record so every downstream lookup targets the canonical
+	// outpoint rather than the leaf-input we happened to watch.
+	correctedOutput := *spentOutput
+	correctedOutput.Outpoint = vtxoOutpoint
+
 	return a.classifyAndNotify(
-		ctx, batchID, spentOutput, vtxo, store, spendingTx,
+		ctx, batchID, &correctedOutput, vtxo, store, spendingTx,
 		spendingHeight,
 	)
 }
