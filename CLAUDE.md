@@ -7,8 +7,8 @@ This file is a **map**, not a manual. Follow links for details.
 | Command | Purpose |
 |---------|---------|
 | `make build` | Compile the project |
-| `make lint-native` | Run native linter on branch changes (preferred, no Docker) |
-| `make lint-changed-local` | Run native linter on changes vs base (alternative) |
+| `make lint-local` | Run full linter locally, no Docker |
+| `make lint-changed-local` | Run local linter on changes vs base |
 | `make lint` | Run linter via Docker (CI canonical) |
 | `make install-custom-gcl` | Build native `custom-gcl` for this host |
 | `make fmt` | Format all Go source files |
@@ -58,9 +58,9 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 3. **Run `make fmt-changed` before every commit.**
    This applies `goimports` and `llformat` to changed handwritten Go files.
    Use `make fmt` instead when you intentionally need a full-tree format pass.
-4. **Run `make lint-native` before every commit.**
-   This builds and runs the custom linter natively via `go tool` — much
-   faster than Docker. Only lints changes on the current branch.
+4. **Run `make lint-changed-local` before every commit.**
+   This is the fast local no-Docker changed-code check. Run `make lint-local`
+   when you need the full local lint scope.
 5. **Run tests before every commit** — see [`docs/testing-guide.md`](docs/testing-guide.md).
 6. **Run `make commitmsg-lint range="origin/main..HEAD"` before pushing.**
    CI runs the same check via [`scripts/commit_message.py`](scripts/commit_message.py);
