@@ -25,7 +25,7 @@ import (
 
 const gatewayAuthMetadataKey = "x-darepo-internal-gateway-auth"
 
-// mailboxTLSBindings tracks the binding between a Schnorr-authenticated
+// MailboxTLSBindings tracks the binding between a Schnorr-authenticated
 // secp256k1 mailbox identity and the TLS leaf certificate fingerprint
 // that the client presented during its first authenticated contact.
 //
@@ -49,7 +49,7 @@ const gatewayAuthMetadataKey = "x-darepo-internal-gateway-auth"
 // merely knows the victim's mailbox ID cannot satisfy this binding
 // because they do not hold the TLS private key for the registered
 // certificate.
-type mailboxTLSBindings struct {
+type MailboxTLSBindings struct {
 	mu sync.RWMutex
 
 	// fingerprints maps a normalized mailbox ID to the SHA-256
@@ -58,9 +58,9 @@ type mailboxTLSBindings struct {
 	fingerprints map[string]string
 }
 
-// newMailboxTLSBindings returns an initialized binding registry.
-func newMailboxTLSBindings() *mailboxTLSBindings {
-	return &mailboxTLSBindings{
+// NewMailboxTLSBindings returns an initialized binding registry.
+func NewMailboxTLSBindings() *MailboxTLSBindings {
+	return &MailboxTLSBindings{
 		fingerprints: make(map[string]string),
 	}
 }
@@ -75,7 +75,7 @@ func newMailboxTLSBindings() *mailboxTLSBindings {
 //
 // Returns true if the binding was created or updated, false if the
 // existing binding already matched the supplied fingerprint.
-func (b *mailboxTLSBindings) Bind(mailboxID, fingerprint string) bool {
+func (b *MailboxTLSBindings) Bind(mailboxID, fingerprint string) bool {
 	if mailboxID == "" || fingerprint == "" {
 		return false
 	}
@@ -96,7 +96,7 @@ func (b *mailboxTLSBindings) Bind(mailboxID, fingerprint string) bool {
 
 // Lookup returns the TLS certificate fingerprint bound to the given
 // mailbox ID, or ("", false) if no binding exists.
-func (b *mailboxTLSBindings) Lookup(mailboxID string) (string, bool) {
+func (b *MailboxTLSBindings) Lookup(mailboxID string) (string, bool) {
 	if mailboxID == "" {
 		return "", false
 	}
@@ -182,6 +182,87 @@ func extractTLSPeer(ctx context.Context) (tlsPeerInfo, bool) {
 	}, true
 }
 
+// MailboxClientIDResolver extracts the client pubkey-derived mailbox ID from
+// a mailbox ID claimed by Pull or AckUpTo.
+type MailboxClientIDResolver func(mailboxID string) string
+
+// MailboxAuthConfig configures the shared server-side mailbox auth
+// interceptor.
+//
+// The canonical Darepo server config sets Log, TLSBindings, RequireTLS, and
+// GatewayAuthToken. Direct gRPC mailbox clients authorize with the
+// Schnorr-verified TLS binding, while browser clients enter through the local
+// gateway token and x-mailbox-auth-sig metadata.
+//
+// Gateway-only downstream servers that do not maintain TLS bindings should set
+// RequireTLS, GatewayAuthToken, and RequireGatewayMailboxAuth, leaving
+// TLSBindings nil. Direct downstream gRPC clients can additionally opt into
+// x-mailbox-auth-sig metadata with AllowDirectMailboxAuth or
+// RequireDirectMailboxAuth.
+type MailboxAuthConfig struct {
+	// Log records rejected mailbox RPCs.
+	Log btclog.Logger
+
+	// TLSBindings, when set, authorizes direct mTLS mailbox RPCs by
+	// comparing the presented TLS leaf fingerprint against the binding
+	// recorded after Schnorr-verified first contact.
+	TLSBindings *MailboxTLSBindings
+
+	// RequireTLS rejects mailbox RPCs that do not present a TLS client
+	// certificate unless metadata auth succeeds.
+	RequireTLS bool
+
+	// GatewayAuthToken is the per-process token added by the local HTTP
+	// gateway dialer. It must be set when RequireGatewayMailboxAuth is set.
+	GatewayAuthToken string
+
+	// RequireGatewayMailboxAuth rejects gateway-originated mailbox RPCs
+	// that do not carry valid x-mailbox-auth-sig metadata.
+	RequireGatewayMailboxAuth bool
+
+	// AllowDirectMailboxAuth accepts x-mailbox-auth-sig metadata on direct
+	// non-gateway gRPC mailbox RPCs.
+	AllowDirectMailboxAuth bool
+
+	// RequireDirectMailboxAuth requires valid x-mailbox-auth-sig metadata
+	// for direct non-gateway mailbox RPCs when TLSBindings cannot authorize
+	// the request. This also enables direct metadata auth, even when
+	// AllowDirectMailboxAuth is false.
+	RequireDirectMailboxAuth bool
+
+	// ResolveClientID extracts the client identity from compound mailbox
+	// IDs. Nil uses ResolveMailboxClientID.
+	ResolveClientID MailboxClientIDResolver
+}
+
+// Validate rejects mailbox auth settings that cannot authorize mailbox RPCs.
+func (cfg MailboxAuthConfig) Validate() error {
+	if cfg.RequireGatewayMailboxAuth && cfg.GatewayAuthToken == "" {
+		return fmt.Errorf("gateway mailbox auth requires gateway " +
+			"auth token")
+	}
+
+	hasMetadataPath := cfg.GatewayAuthToken != "" ||
+		cfg.AllowDirectMailboxAuth || cfg.RequireDirectMailboxAuth
+	if cfg.RequireTLS && cfg.TLSBindings == nil && !hasMetadataPath {
+		return fmt.Errorf("mailbox auth requires TLS bindings or " +
+			"metadata auth path")
+	}
+
+	return nil
+}
+
+// NewMailboxAuthInterceptor returns the shared server-side mailbox auth
+// interceptor used by Darepo and downstream servers that expose the public
+// mailbox edge. Call MailboxAuthConfig.Validate at server boot so deployment
+// configuration errors fail before the listener starts; invalid configs also
+// cause this interceptor to fail mailbox RPCs closed.
+func NewMailboxAuthInterceptor(
+	cfg MailboxAuthConfig) grpc.UnaryServerInterceptor {
+
+	return newMailboxAuthInterceptorWithConfig(cfg)
+}
+
 // newMailboxAuthInterceptor returns a gRPC unary server interceptor
 // that enforces per-RPC identity matching for mailbox operations.
 //
@@ -212,30 +293,55 @@ func extractTLSPeer(ctx context.Context) (tlsPeerInfo, bool) {
 // authorization. The CN is unverified free text and was previously the
 // source of the forged-identity vulnerability tracked in
 // darepo issue #362.
-func newMailboxAuthInterceptor(log btclog.Logger, bindings *mailboxTLSBindings,
+func newMailboxAuthInterceptor(log btclog.Logger, bindings *MailboxTLSBindings,
 	requireTLS bool, gatewayAuthToken string) grpc.UnaryServerInterceptor {
+
+	return newMailboxAuthInterceptorWithConfig(MailboxAuthConfig{
+		Log:              log,
+		TLSBindings:      bindings,
+		RequireTLS:       requireTLS,
+		GatewayAuthToken: gatewayAuthToken,
+	})
+}
+
+func newMailboxAuthInterceptorWithConfig(
+	cfg MailboxAuthConfig) grpc.UnaryServerInterceptor {
+
+	validationErr := cfg.Validate()
+	log := cfg.Log
+	if log == nil {
+		log = btclog.Disabled
+	}
+	resolveClientID := cfg.ResolveClientID
+	if resolveClientID == nil {
+		resolveClientID = ResolveMailboxClientID
+	}
 
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler) (any, error) {
 
+		if validationErr != nil && isMailboxRPC(req) {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"invalid mailbox auth config: %v",
+				validationErr)
+		}
+
 		// Extract TLS peer info (fingerprint + CN for logs).
 		peerInfo, hasTLS := extractTLSPeer(ctx)
 		if !hasTLS {
-			if hasGatewayAuth(ctx, gatewayAuthToken) {
-				authed, err := verifyMailboxMetadataAuth(
-					ctx, req,
-				)
-				if err != nil {
-					return nil, err
-				}
-				if authed {
-					return handler(ctx, req)
-				}
+			authed, err := authorizeMailboxMetadataWithoutTLS(
+				ctx, req, cfg, resolveClientID,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if authed {
+				return handler(ctx, req)
 			}
 
 			// When TLS is required, reject mailbox RPCs
 			// without a client certificate.
-			if requireTLS && isMailboxRPC(req) {
+			if cfg.RequireTLS && isMailboxRPC(req) {
 				log.WarnS(ctx,
 					"Rejected mailbox RPC: no "+
 						"TLS client certificate",
@@ -254,6 +360,18 @@ func newMailboxAuthInterceptor(log btclog.Logger, bindings *mailboxTLSBindings,
 			return handler(ctx, req)
 		}
 
+		if cfg.AllowDirectMailboxAuth || cfg.RequireDirectMailboxAuth {
+			authed, err := verifyMailboxMetadataAuth(
+				ctx, req, resolveClientID,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if authed {
+				return handler(ctx, req)
+			}
+		}
+
 		// Resolve the claimed mailbox ID for the request. For
 		// non-mailbox RPCs, fall through without identity
 		// checks.
@@ -266,14 +384,70 @@ func newMailboxAuthInterceptor(log btclog.Logger, bindings *mailboxTLSBindings,
 			return handler(ctx, req)
 		}
 
+		if cfg.TLSBindings == nil {
+			if cfg.RequireDirectMailboxAuth {
+				return nil, status.Error(
+					codes.Unauthenticated,
+					"mailbox auth metadata required",
+				)
+			}
+
+			return nil, status.Error(
+				codes.PermissionDenied, "mailbox TLS "+
+					"bindings not configured; provide "+
+					"mailbox auth metadata",
+			)
+		}
+
 		if err := checkMailboxIdentity(
-			ctx, log, rpcName, claimedID, peerInfo, bindings,
+			ctx, log, rpcName, claimedID, peerInfo, cfg.TLSBindings,
+			resolveClientID,
 		); err != nil {
 			return nil, err
 		}
 
 		return handler(ctx, req)
 	}
+}
+
+func authorizeMailboxMetadataWithoutTLS(ctx context.Context, req any,
+	cfg MailboxAuthConfig,
+	resolveClientID MailboxClientIDResolver) (bool, error) {
+
+	hasGateway := hasGatewayAuth(ctx, cfg.GatewayAuthToken)
+	switch {
+	case hasGateway:
+		return authorizeMailboxMetadata(
+			ctx, req, resolveClientID,
+			cfg.RequireGatewayMailboxAuth,
+		)
+
+	case cfg.AllowDirectMailboxAuth || cfg.RequireDirectMailboxAuth:
+		return authorizeMailboxMetadata(
+			ctx, req, resolveClientID, cfg.RequireDirectMailboxAuth,
+		)
+
+	default:
+		return false, nil
+	}
+}
+
+func authorizeMailboxMetadata(ctx context.Context, req any,
+	resolveClientID MailboxClientIDResolver,
+	requireMailboxAuth bool) (bool, error) {
+
+	authed, err := verifyMailboxMetadataAuth(ctx, req, resolveClientID)
+	if err != nil || authed {
+		return authed, err
+	}
+
+	if requireMailboxAuth && isMailboxRPC(req) {
+		return false, status.Error(
+			codes.Unauthenticated, "mailbox auth metadata required",
+		)
+	}
+
+	return false, nil
 }
 
 // newGatewayAuthToken returns an unguessable per-process token used to mark
@@ -305,7 +479,9 @@ func hasGatewayAuth(ctx context.Context, token string) bool {
 }
 
 // verifyMailboxMetadataAuth checks browser-compatible mailbox auth metadata.
-func verifyMailboxMetadataAuth(ctx context.Context, req any) (bool, error) {
+func verifyMailboxMetadataAuth(ctx context.Context, req any,
+	resolveClientID MailboxClientIDResolver) (bool, error) {
+
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return false, nil
@@ -317,30 +493,13 @@ func verifyMailboxMetadataAuth(ctx context.Context, req any) (bool, error) {
 	}
 	authSig := values[0]
 
-	var (
-		senderID    string
-		recipientID string
+	senderID, recipientID, err := mailboxMetadataAuthTarget(
+		req, resolveClientID,
 	)
-
-	switch typedReq := req.(type) {
-	case *mailboxpb.SendRequest:
-		if typedReq.Envelope == nil {
-			return false, status.Errorf(codes.InvalidArgument,
-				"send request missing envelope")
-		}
-
-		senderID = typedReq.Envelope.Sender
-		recipientID = typedReq.Envelope.Recipient
-
-	case *mailboxpb.PullRequest:
-		recipientID = typedReq.MailboxId
-		senderID = claimedClientID(recipientID)
-
-	case *mailboxpb.AckUpToRequest:
-		recipientID = typedReq.MailboxId
-		senderID = claimedClientID(recipientID)
-
-	default:
+	if err != nil {
+		return false, err
+	}
+	if senderID == "" {
 		return false, nil
 	}
 
@@ -358,6 +517,58 @@ func verifyMailboxMetadataAuth(ctx context.Context, req any) (bool, error) {
 	}
 
 	return true, nil
+}
+
+// mailboxMetadataAuthTarget returns the sender key and recipient mailbox ID
+// that the metadata signature must authenticate.
+func mailboxMetadataAuthTarget(req any,
+	resolveClientID MailboxClientIDResolver) (string, string, error) {
+
+	if resolveClientID == nil {
+		resolveClientID = ResolveMailboxClientID
+	}
+
+	switch typedReq := req.(type) {
+	case *mailboxpb.SendRequest:
+		if typedReq.Envelope == nil {
+			return "", "", status.Error(
+				codes.InvalidArgument,
+				"send request missing envelope",
+			)
+		}
+
+		return typedReq.Envelope.Sender,
+			typedReq.Envelope.Recipient, nil
+
+	case *mailboxpb.PullRequest:
+		return resolveClientID(typedReq.MailboxId),
+			typedReq.MailboxId, nil
+
+	case *mailboxpb.AckUpToRequest:
+		return resolveClientID(typedReq.MailboxId),
+			typedReq.MailboxId, nil
+
+	default:
+		return "", "", nil
+	}
+}
+
+// gatewayAuthUnaryClientInterceptor marks local gateway-originated gRPC calls.
+func gatewayAuthUnaryClientInterceptor(
+	token string) grpc.UnaryClientInterceptor {
+
+	return func(ctx context.Context, method string, req any, reply any,
+		cc *grpc.ClientConn, invoker grpc.UnaryInvoker,
+		opts ...grpc.CallOption) error {
+
+		if token != "" {
+			ctx = metadata.AppendToOutgoingContext(
+				ctx, gatewayAuthMetadataKey, token,
+			)
+		}
+
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
 }
 
 // classifyMailboxRequest returns the RPC name and the mailbox ID that
@@ -387,18 +598,30 @@ func classifyMailboxRequest(req any) (string, string, error) {
 	}
 }
 
-// claimedClientID returns the client-identity portion of a claimed
-// mailbox ID. The wire format is either:
-//
-//   - a bare hex-encoded compressed pubkey (used by Send.Envelope.Sender);
-//   - a compound "operator:client" mailbox ID (used by Pull/AckUpTo).
-//
-// In the compound case the operator part is the server's mailbox ID
-// and is not the entity we authorize against; only the trailing
-// client part identifies the caller.
-func claimedClientID(claimedID string) string {
+// ResolveMailboxClientID extracts the pubkey portion from a mailbox ID.
+// Darepo server mailboxes are operator:client, while swap mailboxes are
+// client:payment_hash. Swap payment hashes are 32-byte hex strings, so the
+// right side of a swap mailbox cannot parse as a 33-byte compressed pubkey.
+// Prefer the right-side Darepo convention when it parses as a pubkey, then
+// fall back to the left side used by swap receive mailboxes. Any future
+// mailbox format with a pubkey-shaped right side needs an explicit tagged
+// parser instead of this heuristic. mailboxMetadataAuthTarget uses the same
+// resolver, so the invariant applies to metadata auth as well.
+func ResolveMailboxClientID(claimedID string) string {
 	if idx := strings.LastIndex(claimedID, ":"); idx >= 0 {
-		return claimedID[idx+1:]
+		left := claimedID[:idx]
+		right := claimedID[idx+1:]
+		if _, err := serverconn.ParseMailboxPubKey(right); err == nil {
+			return right
+		}
+
+		if _, err := serverconn.ParseMailboxPubKey(left); err == nil {
+			return left
+		}
+
+		// Preserve the historical right-side fallback for malformed
+		// compound IDs; the later auth or TLS binding check rejects it.
+		return right
 	}
 
 	return claimedID
@@ -426,14 +649,18 @@ func claimedClientID(claimedID string) string {
 //     entry point; they only make sense for a previously
 //     Schnorr-authenticated identity.
 func checkMailboxIdentity(ctx context.Context, log btclog.Logger, rpcName,
-	claimedID string, peerInfo tlsPeerInfo,
-	bindings *mailboxTLSBindings) error {
+	claimedID string, peerInfo tlsPeerInfo, bindings *MailboxTLSBindings,
+	resolveClientID MailboxClientIDResolver) error {
 
 	if rpcName == "" {
 		return nil
 	}
 
-	clientID := claimedClientID(claimedID)
+	if resolveClientID == nil {
+		resolveClientID = ResolveMailboxClientID
+	}
+
+	clientID := resolveClientID(claimedID)
 	if clientID == "" {
 		log.WarnS(ctx, "Rejected "+rpcName+": empty mailbox ID",
 			nil,
@@ -533,7 +760,7 @@ func newMailboxStreamInterceptor() grpc.StreamServerInterceptor {
 // that present one. Because clients ship self-signed certs and the
 // server does not pin a CA, the TLS layer itself cannot validate the
 // claimed identity — that binding is supplied by the
-// mailboxTLSBindings registry which is populated only after Schnorr
+// MailboxTLSBindings registry which is populated only after Schnorr
 // authentication in HandleUnknownClient.
 func loadServerTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(cfg.CertPath, cfg.KeyPath)
@@ -548,4 +775,11 @@ func loadServerTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 		ClientAuth: tls.RequestClientCert,
 		MinVersion: tls.VersionTLS12,
 	}, nil
+}
+
+// LoadServerTLSConfig loads the TLS certificate and key from the configured
+// paths and returns a tls.Config suitable for downstream public gRPC servers
+// that use Darepo-compatible mailbox mTLS authentication.
+func LoadServerTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
+	return loadServerTLSConfig(cfg)
 }

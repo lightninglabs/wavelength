@@ -67,6 +67,15 @@ func makeTestCert(t *testing.T, cn string) *x509.Certificate {
 	return leaf
 }
 
+func bytesWithValue(size int, value byte) []byte {
+	b := make([]byte, size)
+	for i := range b {
+		b[i] = value
+	}
+
+	return b
+}
+
 // tlsPeerCtx returns a context with TLS peer info carrying the given
 // already-generated client certificate.
 func tlsPeerCtx(t *testing.T, cert *x509.Certificate) context.Context {
@@ -88,6 +97,34 @@ func tlsPeerCtx(t *testing.T, cert *x509.Certificate) context.Context {
 // passHandler is a grpc.UnaryHandler that always succeeds.
 func passHandler(_ context.Context, _ any) (any, error) {
 	return "ok", nil
+}
+
+func TestResolveMailboxClientID(t *testing.T) {
+	t.Parallel()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientID := serverconn.PubKeyMailboxID(clientKey.PubKey())
+	operatorID := serverconn.PubKeyMailboxID(operatorKey.PubKey())
+	paymentHash := hex.EncodeToString(bytesWithValue(32, 1))
+
+	require.Equal(t, clientID, ResolveMailboxClientID(clientID))
+	require.Equal(
+		t, clientID,
+		ResolveMailboxClientID(
+			serverconn.CompoundMailboxID(operatorID, clientID),
+		),
+	)
+	require.Equal(
+		t, clientID,
+		ResolveMailboxClientID(
+			serverconn.CompoundMailboxID(clientID, paymentHash),
+		),
+	)
 }
 
 // TestMailboxAuthInterceptor exercises the interceptor's authorization
@@ -114,8 +151,8 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 	aliceFP := certFingerprint(aliceCert)
 
 	// Helper to build a registry pre-bound to Alice.
-	withAliceBound := func() *mailboxTLSBindings {
-		b := newMailboxTLSBindings()
+	withAliceBound := func() *MailboxTLSBindings {
+		b := NewMailboxTLSBindings()
 		b.Bind(alicePK, aliceFP)
 
 		return b
@@ -123,7 +160,7 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		bindings   func() *mailboxTLSBindings
+		bindings   func() *MailboxTLSBindings
 		requireTLS bool
 		makeCtx    func(t *testing.T) context.Context
 		req        any
@@ -132,7 +169,7 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 	}{
 		{
 			name:       "no TLS, no require — pass",
-			bindings:   newMailboxTLSBindings,
+			bindings:   NewMailboxTLSBindings,
 			requireTLS: false,
 			makeCtx: func(t *testing.T) context.Context {
 				return t.Context()
@@ -144,7 +181,7 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 		},
 		{
 			name:       "no TLS, require — reject",
-			bindings:   newMailboxTLSBindings,
+			bindings:   NewMailboxTLSBindings,
 			requireTLS: true,
 			makeCtx: func(t *testing.T) context.Context {
 				return t.Context()
@@ -156,7 +193,7 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 		},
 		{
 			name:       "no TLS, require — non-mailbox",
-			bindings:   newMailboxTLSBindings,
+			bindings:   NewMailboxTLSBindings,
 			requireTLS: true,
 			makeCtx: func(t *testing.T) context.Context {
 				return t.Context()
@@ -166,7 +203,7 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 		},
 		{
 			name:     "Send first contact — pass and binding-free",
-			bindings: newMailboxTLSBindings,
+			bindings: NewMailboxTLSBindings,
 			makeCtx: func(t *testing.T) context.Context {
 				return tlsPeerCtx(t, aliceCert)
 			},
@@ -179,7 +216,7 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 		},
 		{
 			name:     "Pull without binding — reject",
-			bindings: newMailboxTLSBindings,
+			bindings: NewMailboxTLSBindings,
 			makeCtx: func(t *testing.T) context.Context {
 				return tlsPeerCtx(t, aliceCert)
 			},
@@ -190,7 +227,7 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 		},
 		{
 			name:     "AckUpTo without binding — reject",
-			bindings: newMailboxTLSBindings,
+			bindings: NewMailboxTLSBindings,
 			makeCtx: func(t *testing.T) context.Context {
 				return tlsPeerCtx(t, aliceCert)
 			},
@@ -291,7 +328,7 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 		},
 		{
 			name:     "nil envelope — InvalidArgument",
-			bindings: newMailboxTLSBindings,
+			bindings: NewMailboxTLSBindings,
 			makeCtx: func(t *testing.T) context.Context {
 				return tlsPeerCtx(t, aliceCert)
 			},
@@ -302,7 +339,7 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 		},
 		{
 			name:       "non-mailbox with TLS — pass",
-			bindings:   newMailboxTLSBindings,
+			bindings:   NewMailboxTLSBindings,
 			requireTLS: true,
 			makeCtx: func(t *testing.T) context.Context {
 				return tlsPeerCtx(t, aliceCert)
@@ -371,7 +408,7 @@ func TestMailboxAuthInterceptorAcceptsMetadata(t *testing.T) {
 	)
 
 	interceptor := newMailboxAuthInterceptor(
-		btclog.Disabled, newMailboxTLSBindings(), true,
+		btclog.Disabled, NewMailboxTLSBindings(), true,
 		"test-gateway-token",
 	)
 	resp, err := interceptor(
@@ -412,7 +449,7 @@ func TestMailboxAuthInterceptorRejectsBadMetadata(t *testing.T) {
 	)
 
 	interceptor := newMailboxAuthInterceptor(
-		btclog.Disabled, newMailboxTLSBindings(), true,
+		btclog.Disabled, NewMailboxTLSBindings(), true,
 		"test-gateway-token",
 	)
 	_, err = interceptor(
@@ -452,7 +489,7 @@ func TestMailboxAuthInterceptorRejectsMetadataWithoutGatewayAuth(t *testing.T) {
 	)
 
 	interceptor := newMailboxAuthInterceptor(
-		btclog.Disabled, newMailboxTLSBindings(), true,
+		btclog.Disabled, NewMailboxTLSBindings(), true,
 		"test-gateway-token",
 	)
 	_, err = interceptor(
@@ -467,6 +504,188 @@ func TestMailboxAuthInterceptorRejectsMetadataWithoutGatewayAuth(t *testing.T) {
 	require.Equal(t, codes.Unauthenticated, st.Code())
 }
 
+// TestMailboxAuthInterceptorAcceptsDirectMetadata verifies downstream servers
+// can opt direct gRPC mailbox clients into the same metadata auth that the
+// gateway uses.
+func TestMailboxAuthInterceptorAcceptsDirectMetadata(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientID := serverconn.PubKeyMailboxID(privKey.PubKey())
+	recipientID := serverconn.CompoundMailboxID(
+		clientID,
+		hex.EncodeToString(
+			bytesWithValue(32, 2),
+		),
+	)
+
+	authSig, err := serverconn.SignMailboxAuth(privKey, recipientID)
+	require.NoError(t, err)
+
+	ctx := metadata.NewIncomingContext(
+		t.Context(),
+		metadata.Pairs(
+			serverconn.AuthHeaderKey,
+			hex.EncodeToString(
+				authSig.Serialize(),
+			),
+		),
+	)
+
+	interceptor := NewMailboxAuthInterceptor(MailboxAuthConfig{
+		Log:                      btclog.Disabled,
+		AllowDirectMailboxAuth:   true,
+		RequireDirectMailboxAuth: true,
+	})
+	resp, err := interceptor(
+		ctx, &mailboxpb.PullRequest{
+			MailboxId: recipientID,
+		}, &grpc.UnaryServerInfo{}, passHandler,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "ok", resp)
+}
+
+// TestMailboxAuthInterceptorAcceptsTLSDirectMetadata verifies direct metadata
+// auth is honored before TLS binding lookup, so downstream servers can require
+// TLS while still accepting browser-compatible mailbox auth metadata.
+func TestMailboxAuthInterceptorAcceptsTLSDirectMetadata(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientID := serverconn.PubKeyMailboxID(privKey.PubKey())
+	recipientID := serverconn.CompoundMailboxID(
+		clientID,
+		hex.EncodeToString(
+			bytesWithValue(32, 3),
+		),
+	)
+
+	authSig, err := serverconn.SignMailboxAuth(privKey, recipientID)
+	require.NoError(t, err)
+
+	ctx := metadata.NewIncomingContext(
+		tlsPeerCtx(
+			t, makeTestCert(t, clientID),
+		),
+		metadata.Pairs(
+			serverconn.AuthHeaderKey,
+			hex.EncodeToString(
+				authSig.Serialize(),
+			),
+		),
+	)
+
+	interceptor := NewMailboxAuthInterceptor(MailboxAuthConfig{
+		Log:                      btclog.Disabled,
+		RequireTLS:               true,
+		AllowDirectMailboxAuth:   true,
+		RequireDirectMailboxAuth: true,
+	})
+	resp, err := interceptor(
+		ctx, &mailboxpb.PullRequest{
+			MailboxId: recipientID,
+		}, &grpc.UnaryServerInfo{}, passHandler,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "ok", resp)
+}
+
+// TestMailboxAuthInterceptorRequireDirectEnablesMetadata verifies
+// RequireDirectMailboxAuth does not silently pass through when the allow bit is
+// unset. Requiring direct auth must reject unauthenticated mailbox RPCs.
+func TestMailboxAuthInterceptorRequireDirectEnablesMetadata(t *testing.T) {
+	t.Parallel()
+
+	interceptor := NewMailboxAuthInterceptor(MailboxAuthConfig{
+		Log:                      btclog.Disabled,
+		RequireDirectMailboxAuth: true,
+	})
+	_, err := interceptor(
+		t.Context(), &mailboxpb.PullRequest{
+			MailboxId: "mailbox",
+		}, &grpc.UnaryServerInfo{}, passHandler,
+	)
+	require.Error(t, err)
+
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	require.Equal(t, codes.Unauthenticated, st.Code())
+}
+
+func TestMailboxAuthConfigValidate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     MailboxAuthConfig
+		wantErr bool
+	}{
+		{
+			name: "darepo tls binding config",
+			cfg: MailboxAuthConfig{
+				TLSBindings:      NewMailboxTLSBindings(),
+				RequireTLS:       true,
+				GatewayAuthToken: "token",
+			},
+		},
+		{
+			name: "gateway only config",
+			cfg: MailboxAuthConfig{
+				RequireTLS:                true,
+				GatewayAuthToken:          "token",
+				RequireGatewayMailboxAuth: true,
+			},
+		},
+		{
+			name: "direct metadata config",
+			cfg: MailboxAuthConfig{
+				RequireTLS:                true,
+				RequireDirectMailboxAuth:  true,
+				RequireGatewayMailboxAuth: true,
+				GatewayAuthToken:          "token",
+			},
+		},
+		{
+			name: "gateway auth without token",
+			cfg: MailboxAuthConfig{
+				RequireGatewayMailboxAuth: true,
+			},
+			wantErr: true,
+		},
+		{
+			name: "require tls without auth path",
+			cfg: MailboxAuthConfig{
+				RequireTLS: true,
+			},
+			wantErr: true,
+		},
+		{
+			name: "dev passthrough config",
+			cfg:  MailboxAuthConfig{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tc.cfg.Validate()
+			if tc.wantErr {
+				require.Error(t, err)
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
 // TestMailboxTLSBindingsRotationAfterVerification verifies that once a
 // binding is recorded for a mailbox ID, a later Bind with a different
 // fingerprint updates the binding. This is safe because Bind is only
@@ -479,7 +698,7 @@ func TestMailboxTLSBindingsRotationAfterVerification(t *testing.T) {
 
 	const id = "02abc"
 
-	b := newMailboxTLSBindings()
+	b := NewMailboxTLSBindings()
 
 	// Initial registration creates the binding.
 	require.True(t, b.Bind(id, "fp-legit"))
@@ -502,7 +721,7 @@ func TestMailboxTLSBindingsRotationAfterVerification(t *testing.T) {
 func TestMailboxTLSBindingsCaseInsensitive(t *testing.T) {
 	t.Parallel()
 
-	b := newMailboxTLSBindings()
+	b := NewMailboxTLSBindings()
 	require.True(t, b.Bind("02ABCdef", "fp"))
 
 	got, ok := b.Lookup("02abcdef")
