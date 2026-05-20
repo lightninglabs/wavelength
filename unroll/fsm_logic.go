@@ -107,6 +107,12 @@ func processEventWithJob(ctx context.Context, job *JobState, event Event,
 			nextJob.Height = e.Height
 		}
 		nextJob.Trigger = e.Trigger
+		if e.ExitPolicyKind != "" {
+			nextJob.ExitPolicyKind = exitPolicyKind(
+				e.ExitPolicyKind,
+			)
+			nextJob.ExitPolicyRef = e.ExitPolicyRef
+		}
 
 	default:
 		return nil, fmt.Errorf("unexpected event %T", event)

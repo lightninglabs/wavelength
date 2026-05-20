@@ -32,8 +32,10 @@ func TestSnapshotRoundTripByPhase(t *testing.T) {
 			name: "materialization",
 			state: &AwaitingMaterialization{
 				Job: &JobState{
-					Height:  100,
-					Trigger: TriggerFraudSpend,
+					Height:         100,
+					Trigger:        TriggerFraudSpend,
+					ExitPolicyKind: "vhtlc_claim",
+					ExitPolicyRef:  "recovery-policy-ref",
 					PlannerState: unrollState(
 						chainhash.Hash{0x01},
 						fn.None[int32](), nil,
@@ -118,6 +120,18 @@ func TestSnapshotRoundTripByPhase(t *testing.T) {
 			require.Equal(
 				t, stateTrigger(tc.state),
 				stateTrigger(restored),
+			)
+			require.Equal(
+				t, exitPolicyKind(
+					stateJob(tc.state).ExitPolicyKind,
+				),
+				exitPolicyKind(
+					stateJob(restored).ExitPolicyKind,
+				),
+			)
+			require.Equal(
+				t, stateJob(tc.state).ExitPolicyRef,
+				stateJob(restored).ExitPolicyRef,
 			)
 			require.Equal(
 				t, stateJob(tc.state).FailReason,

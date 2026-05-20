@@ -30,6 +30,8 @@ func (s *DBRegistryStore) UpsertRecord(ctx context.Context,
 		TargetOutpoint: record.TargetOutpoint,
 		State:          string(record.Phase),
 		Trigger:        triggerToString(record.Trigger),
+		ExitPolicyKind: exitPolicyKind(record.ExitPolicyKind),
+		ExitPolicyRef:  record.ExitPolicyRef,
 		FailReason:     record.FailReason,
 		SweepTxid:      sweepTxidBytes(record.SweepTxid),
 	}
@@ -42,6 +44,9 @@ func (s *DBRegistryStore) UpsertRecord(ctx context.Context,
 		job.PlannerState = existing.PlannerState
 		job.DeferredCheckpoints = existing.DeferredCheckpoints
 		job.SweepTx = existing.SweepTx
+		job.ExitPolicyKind, job.ExitPolicyRef = registryExitPolicy(
+			record, existing,
+		)
 		if len(job.SweepTxid) == 0 {
 			job.SweepTxid = existing.SweepTxid
 		}
@@ -148,10 +153,27 @@ func recordFromDB(job db.UnrollJobRecord) (RegistryRecord, error) {
 		TargetOutpoint: job.TargetOutpoint,
 		ActorID:        actorIDForTarget(job.TargetOutpoint),
 		Trigger:        trigger,
+		ExitPolicyKind: exitPolicyKind(job.ExitPolicyKind),
+		ExitPolicyRef:  job.ExitPolicyRef,
 		Phase:          Phase(job.State),
 		FailReason:     job.FailReason,
 		SweepTxid:      sweepTxidFromBytes(job.SweepTxid),
 	}, nil
+}
+
+// registryExitPolicy chooses the policy identity to write when the registry
+// refines an existing DB row. Policy kind and ref are treated as one durable
+// identity pair: a record with no kind preserves both existing values, while a
+// record with any kind replaces both values so stale custom refs cannot attach
+// to a new standard policy.
+func registryExitPolicy(record RegistryRecord,
+	existing *db.UnrollJobRecord) (string, string) {
+
+	if record.ExitPolicyKind == "" && existing != nil {
+		return existing.ExitPolicyKind, existing.ExitPolicyRef
+	}
+
+	return exitPolicyKind(record.ExitPolicyKind), record.ExitPolicyRef
 }
 
 // sweepTxidBytes converts an optional txid into the stored byte format.

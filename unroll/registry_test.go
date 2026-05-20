@@ -978,6 +978,44 @@ func TestRegistryEnsurePersistsBeforeAck(t *testing.T) {
 	require.Equal(t, TriggerManual, record.Trigger)
 }
 
+// TestRegistryEnsurePersistsExitPolicyIdentity verifies custom admission
+// policy identity survives the registry and child actor start path. Without
+// this, custom recovery callers would persist an unroll job that restarts as a
+// standard VTXO timeout sweep.
+func TestRegistryEnsurePersistsExitPolicyIdentity(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	registry, store, jobs, _ := newRegistryHarness(t, proof, desc)
+
+	const (
+		policyKind = "vhtlc_claim"
+		policyRef  = "recovery-policy-ref"
+	)
+
+	resp, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint:       proof.TargetOutpoint(),
+		Trigger:        TriggerManual,
+		ExitPolicyKind: policyKind,
+		ExitPolicyRef:  policyRef,
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	ensureResp, ok := resp.(*EnsureUnrollResp)
+	require.True(t, ok)
+	require.True(t, ensureResp.Created)
+
+	record, err := store.GetRecord(t.Context(), proof.TargetOutpoint())
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	require.Equal(t, policyKind, record.ExitPolicyKind)
+	require.Equal(t, policyRef, record.ExitPolicyRef)
+
+	job, err := jobs.GetJob(t.Context(), proof.TargetOutpoint())
+	require.NoError(t, err)
+	require.Equal(t, policyKind, job.ExitPolicyKind)
+	require.Equal(t, policyRef, job.ExitPolicyRef)
+}
+
 // TestRegistryEnsureStartsChildAfterCallerCancellation verifies that once the
 // pending control-plane row exists, caller cancellation does not leak into the
 // durable child's first StartUnrollRequest.

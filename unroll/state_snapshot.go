@@ -25,6 +25,8 @@ func snapshotFromState(state State, sweepTx *wire.MsgTx) *unrollSnapshot {
 	snapshot.Height = job.Height
 	snapshot.Started = true
 	snapshot.Trigger = job.Trigger
+	snapshot.ExitPolicyKind = exitPolicyKind(job.ExitPolicyKind)
+	snapshot.ExitPolicyRef = job.ExitPolicyRef
 	snapshot.State = copyPlannerState(job.PlannerState)
 	snapshot.DeferredCheckpoints = copyDeferredCheckpoints(
 		job.DeferredCheckpoints,
@@ -74,6 +76,8 @@ func stateFromSnapshot(snapshot *unrollSnapshot) State {
 	job := &JobState{
 		Height:              snapshot.Height,
 		Trigger:             snapshot.Trigger,
+		ExitPolicyKind:      exitPolicyKind(snapshot.ExitPolicyKind),
+		ExitPolicyRef:       snapshot.ExitPolicyRef,
 		PlannerState:        copyPlannerState(snapshot.State),
 		DeferredCheckpoints: deferred,
 		FailReason:          snapshot.Fail,

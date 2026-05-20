@@ -90,6 +90,13 @@ type StartUnrollRequest struct {
 
 	// Trigger identifies why the unroll started.
 	Trigger StartTrigger
+
+	// ExitPolicyKind identifies the final spend policy to persist for this
+	// target. Empty requests use the standard VTXO timeout policy.
+	ExitPolicyKind string
+
+	// ExitPolicyRef is the policy-specific durable reference.
+	ExitPolicyRef string
 }
 
 // MessageType returns the stable message type identifier.
@@ -255,6 +262,12 @@ type GetStateResp struct {
 
 	// Trigger identifies why the actor was started.
 	Trigger StartTrigger
+
+	// ExitPolicyKind identifies the final spend policy for this target.
+	ExitPolicyKind string
+
+	// ExitPolicyRef is the policy-specific durable reference.
+	ExitPolicyRef string
 
 	// Height is the current best height tracked by the actor.
 	Height int32

@@ -47,6 +47,12 @@ type RegistryRecord struct {
 	// Trigger records why the target was started.
 	Trigger StartTrigger
 
+	// ExitPolicyKind identifies the final spend policy for this target.
+	ExitPolicyKind string
+
+	// ExitPolicyRef is the policy-specific durable reference.
+	ExitPolicyRef string
+
 	// Phase is the last known coarse lifecycle phase.
 	Phase Phase
 
@@ -355,6 +361,8 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		TargetOutpoint: req.Outpoint,
 		ActorID:        child.Ref().ID(),
 		Trigger:        req.Trigger,
+		ExitPolicyKind: exitPolicyKind(req.ExitPolicyKind),
+		ExitPolicyRef:  req.ExitPolicyRef,
 		Phase:          PhasePending,
 	}
 
@@ -371,8 +379,10 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 	r.pending[req.Outpoint] = cloneRegistryRecord(record)
 
 	startReq := &StartUnrollRequest{
-		Height:  height,
-		Trigger: req.Trigger,
+		Height:         height,
+		Trigger:        req.Trigger,
+		ExitPolicyKind: req.ExitPolicyKind,
+		ExitPolicyRef:  req.ExitPolicyRef,
 	}
 	startCtx, cancelStart := context.WithTimeout(
 		context.WithoutCancel(ctx), childAdmissionTimeout,
@@ -1109,6 +1119,8 @@ func recordFromChildState(target wire.OutPoint, actorID string,
 		TargetOutpoint: target,
 		ActorID:        actorID,
 		Trigger:        state.Trigger,
+		ExitPolicyKind: exitPolicyKind(state.ExitPolicyKind),
+		ExitPolicyRef:  state.ExitPolicyRef,
 		Phase:          state.Phase,
 		FailReason:     state.FailReason,
 		SweepTxid:      copyHash(state.SweepTxid),
@@ -1121,13 +1133,15 @@ func statusFromRegistryRecord(record RegistryRecord,
 	active bool) *GetStatusResp {
 
 	return &GetStatusResp{
-		Found:      true,
-		Active:     active,
-		ActorID:    record.ActorID,
-		Phase:      record.Phase,
-		Trigger:    record.Trigger,
-		FailReason: record.FailReason,
-		SweepTxid:  copyHash(record.SweepTxid),
+		Found:          true,
+		Active:         active,
+		ActorID:        record.ActorID,
+		Phase:          record.Phase,
+		Trigger:        record.Trigger,
+		ExitPolicyKind: record.ExitPolicyKind,
+		ExitPolicyRef:  record.ExitPolicyRef,
+		FailReason:     record.FailReason,
+		SweepTxid:      copyHash(record.SweepTxid),
 	}
 }
 
@@ -1144,6 +1158,8 @@ func sameRegistryRecord(a, b RegistryRecord) bool {
 	if a.TargetOutpoint != b.TargetOutpoint ||
 		a.ActorID != b.ActorID ||
 		a.Trigger != b.Trigger ||
+		a.ExitPolicyKind != b.ExitPolicyKind ||
+		a.ExitPolicyRef != b.ExitPolicyRef ||
 		a.Phase != b.Phase ||
 		a.FailReason != b.FailReason {
 		return false

@@ -31,6 +31,13 @@ type EnsureUnrollRequest struct {
 
 	// Trigger identifies why the unroll was requested.
 	Trigger StartTrigger
+
+	// ExitPolicyKind identifies the final spend policy to persist for this
+	// target. Empty requests use the standard VTXO timeout policy.
+	ExitPolicyKind string
+
+	// ExitPolicyRef is the policy-specific durable reference.
+	ExitPolicyRef string
 }
 
 // MessageType returns the stable message type identifier.
@@ -98,6 +105,12 @@ type GetStatusResp struct {
 
 	// Trigger is the original start trigger when known.
 	Trigger StartTrigger
+
+	// ExitPolicyKind identifies the final spend policy for this target.
+	ExitPolicyKind string
+
+	// ExitPolicyRef is the policy-specific durable reference.
+	ExitPolicyRef string
 
 	// FailReason is the last known terminal failure when present.
 	FailReason string

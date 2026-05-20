@@ -83,6 +83,12 @@ type JobState struct {
 	// Trigger identifies why the actor was started.
 	Trigger StartTrigger
 
+	// ExitPolicyKind identifies the final spend policy for this job.
+	ExitPolicyKind string
+
+	// ExitPolicyRef is the policy-specific durable reference.
+	ExitPolicyRef string
+
 	// PlannerState is the durable caller-owned planning progress.
 	PlannerState unrollplan.State
 
@@ -109,6 +115,8 @@ func (j *JobState) Copy() *JobState {
 	copyState := &JobState{
 		Height:              j.Height,
 		Trigger:             j.Trigger,
+		ExitPolicyKind:      exitPolicyKind(j.ExitPolicyKind),
+		ExitPolicyRef:       j.ExitPolicyRef,
 		PlannerState:        copyPlannerState(j.PlannerState),
 		DeferredCheckpoints: deferred,
 		FailReason:          j.FailReason,
@@ -141,6 +149,13 @@ type StartEvent struct {
 
 	// Trigger identifies why the actor was started.
 	Trigger StartTrigger
+
+	// ExitPolicyKind identifies the final spend policy to persist for this
+	// target. Empty events use the standard VTXO timeout policy.
+	ExitPolicyKind string
+
+	// ExitPolicyRef is the policy-specific durable reference.
+	ExitPolicyRef string
 }
 
 // eventSealed marks StartEvent as an FSM event.
@@ -296,8 +311,10 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 	switch e := event.(type) {
 	case *StartEvent:
 		job := &JobState{
-			Height:  e.Height,
-			Trigger: e.Trigger,
+			Height:         e.Height,
+			Trigger:        e.Trigger,
+			ExitPolicyKind: exitPolicyKind(e.ExitPolicyKind),
+			ExitPolicyRef:  e.ExitPolicyRef,
 		}
 
 		return deriveStateTransition(
