@@ -242,7 +242,7 @@ func (s *Server) verifyTLSBindingSig(ctx context.Context,
 // the connection for the bare client mailbox ID (the form Send uses in
 // Envelope.Sender). The auth interceptor reduces any compound
 // "operator:client" mailbox ID down to the bare client identity via
-// claimedClientID before lookup, so binding only the bare form is
+// ResolveMailboxClientID before lookup, so binding only the bare form is
 // sufficient to authorize Send, Pull, and AckUpTo against the single
 // Schnorr-verified registration.
 //

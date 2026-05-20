@@ -25,7 +25,7 @@ func newTLSBindingTestServer(t *testing.T, requireBinding bool) *Server {
 			},
 		},
 		log:                btclog.Disabled,
-		mailboxTLSBindings: newMailboxTLSBindings(),
+		mailboxTLSBindings: NewMailboxTLSBindings(),
 	}
 }
 

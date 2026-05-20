@@ -162,7 +162,7 @@ type Server struct {
 	// the certificate Subject CommonName, which is unauthenticated
 	// free text and was the source of the forged-identity issue
 	// tracked in issue #362.
-	mailboxTLSBindings *mailboxTLSBindings
+	mailboxTLSBindings *MailboxTLSBindings
 
 	// forfeitScript is the P2TR output script that clients must
 	// use for the penalty output in forfeit transactions. Derived
@@ -303,7 +303,7 @@ func NewServer(cfg *Config) (*Server, error) {
 		cfg:                cfg,
 		log:                cfg.Log.UnwrapOr(btclog.Disabled),
 		quit:               make(chan struct{}),
-		mailboxTLSBindings: newMailboxTLSBindings(),
+		mailboxTLSBindings: NewMailboxTLSBindings(),
 	}, nil
 }
 

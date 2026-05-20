@@ -17,7 +17,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 )
 
 const (
@@ -196,7 +195,9 @@ func gatewayDialOptions(tlsCfg *TLSConfig,
 		dialOpts = append(
 			dialOpts,
 			grpc.WithUnaryInterceptor(
-				gatewayAuthUnaryInterceptor(gatewayAuthToken),
+				gatewayAuthUnaryClientInterceptor(
+					gatewayAuthToken,
+				),
 			),
 		)
 	}
@@ -204,15 +205,10 @@ func gatewayDialOptions(tlsCfg *TLSConfig,
 	return dialOpts, nil
 }
 
-func gatewayAuthUnaryInterceptor(token string) grpc.UnaryClientInterceptor {
-	return func(ctx context.Context, method string, req, reply any,
-		cc *grpc.ClientConn, invoker grpc.UnaryInvoker,
-		opts ...grpc.CallOption) error {
+// GatewayDialOptions returns gRPC dial options for a local HTTP/JSON gateway
+// proxying into a Darepo-compatible public gRPC server.
+func GatewayDialOptions(tlsCfg *TLSConfig,
+	gatewayAuthToken string) ([]grpc.DialOption, error) {
 
-		ctx = metadata.AppendToOutgoingContext(
-			ctx, gatewayAuthMetadataKey, token,
-		)
-
-		return invoker(ctx, method, req, reply, cc, opts...)
-	}
+	return gatewayDialOptions(tlsCfg, gatewayAuthToken)
 }
