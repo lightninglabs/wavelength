@@ -9,8 +9,10 @@ import (
 )
 
 type Querier interface {
+	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) error
 	ClearAllPendingBoardRequests(ctx context.Context) error
 	ClearPendingBoardRequestByOutpoint(ctx context.Context, arg ClearPendingBoardRequestByOutpointParams) error
+	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) error
 	CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error)
 	CountClientLedgerEntries(ctx context.Context) (int64, error)
 	CountUnresolvedBoardingSweepInputs(ctx context.Context, txid []byte) (int64, error)
@@ -27,6 +29,8 @@ type Querier interface {
 	// Used as the first half of an upsert when the VTXO manager fills in
 	// finalized lineage on top of a partially-written round-create row.
 	DeleteVTXOAncestryPaths(ctx context.Context, arg DeleteVTXOAncestryPathsParams) error
+	EscalateVHTLCRecoveryJob(ctx context.Context, arg EscalateVHTLCRecoveryJobParams) (int64, error)
+	FailVHTLCRecoveryJob(ctx context.Context, arg FailVHTLCRecoveryJobParams) error
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
@@ -54,6 +58,9 @@ type Querier interface {
 	// account only). Does not include L1 chain/miner fees (onchain_fees).
 	GetTotalOperatorFeesPaid(ctx context.Context) (int64, error)
 	GetUnilateralExitJob(ctx context.Context, arg GetUnilateralExitJobParams) (UnilateralExitJob, error)
+	GetVHTLCRecoveryJob(ctx context.Context, id string) (VhtlcRecoveryJob, error)
+	GetVHTLCRecoveryJobByRequestID(ctx context.Context, requestID string) (VhtlcRecoveryJob, error)
+	GetVHTLCRecoveryJobBySwapAction(ctx context.Context, arg GetVHTLCRecoveryJobBySwapActionParams) (VhtlcRecoveryJob, error)
 	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
 	// GetVTXOForfeitTx retrieves the persisted forfeit transaction for a VTXO.
 	// Used during recovery to restore the ForfeitingState with its tx.
@@ -97,6 +104,8 @@ type Querier interface {
 	InsertRoundClientTree(ctx context.Context, arg InsertRoundClientTreeParams) error
 	// Round VTXO request queries.
 	InsertRoundVtxoRequest(ctx context.Context, arg InsertRoundVtxoRequestParams) error
+	// vHTLC recovery job queries.
+	InsertVHTLCRecoveryJob(ctx context.Context, arg InsertVHTLCRecoveryJobParams) error
 	// VTXO queries.
 	// InsertVTXO creates or updates a VTXO. On conflict, richer semantic and
 	// metadata fields from the later insert win when present. This allows the
@@ -144,6 +153,7 @@ type Querier interface {
 	// Status 4 = Completed, 5 = Failed (anchored to Go iota in
 	// db/unilateral_exit_store.go UnilateralExitJobStatus).
 	ListNonTerminalUnilateralExitJobs(ctx context.Context) ([]UnilateralExitJob, error)
+	ListNonTerminalVHTLCRecoveryJobs(ctx context.Context) ([]VhtlcRecoveryJob, error)
 	ListOORPackageCheckpoints(ctx context.Context, sessionID []byte) ([]OorPackageCheckpoint, error)
 	ListOORPackages(ctx context.Context) ([]OorPackage, error)
 	ListOORPackagesByDirection(ctx context.Context, direction int32) ([]OorPackage, error)
@@ -189,6 +199,14 @@ type Querier interface {
 	MarkBoardingSweepInputsStatus(ctx context.Context, arg MarkBoardingSweepInputsStatusParams) error
 	MarkBoardingSweepStatus(ctx context.Context, arg MarkBoardingSweepStatusParams) error
 	MarkUnilateralExitJobTerminal(ctx context.Context, arg MarkUnilateralExitJobTerminalParams) error
+	MarkVHTLCRecoveryExitTxBroadcast(ctx context.Context, arg MarkVHTLCRecoveryExitTxBroadcastParams) error
+	MarkVHTLCRecoveryExitTxBuilt(ctx context.Context, arg MarkVHTLCRecoveryExitTxBuiltParams) error
+	MarkVHTLCRecoveryExitTxSubmitting(ctx context.Context, arg MarkVHTLCRecoveryExitTxSubmittingParams) error
+	// Intermediate states waiting_for_target and building_exit_spend are written
+	// by the execution-layer PR. This storage slice accepts them as source states
+	// so replay can resume from each durable pipeline boundary once those writes
+	// exist.
+	MarkVHTLCRecoveryTargetDetected(ctx context.Context, arg MarkVHTLCRecoveryTargetDetectedParams) error
 	// MarkVTXOForfeited marks a VTXO as forfeited and records the forfeit
 	// transaction ID and replacement VTXO outpoint. Called when the new round's
 	// commitment transaction confirms.
