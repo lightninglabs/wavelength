@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/darepo/db/sqlc"
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -666,4 +667,87 @@ func TestRoundStoreEmptyCollections(t *testing.T) {
 	require.Len(t, loaded.ConnectorDescriptors, 0)
 	require.Len(t, loaded.ForfeitInfos, 0)
 	require.Len(t, loaded.ClientRegistrations, 0)
+}
+
+// TestRoundStoreSweepKeyLocatorRoundTrip is a regression test for the
+// sweep-key migration stranding bug (issue #388). The compressed sweep
+// public key pins the script committed in the tree, but lnd's signer
+// dispatches by key locator -- so the batch sweeper must recover the
+// exact KeyDescriptor (locator + pubkey) used at finalization time,
+// even after the operator rotates the configured sweep-key family or
+// index. This test asserts the locator survives a PersistRound /
+// LoadPendingRounds round trip. Without persisting the locator
+// (pre-fix), LoadPendingRounds returns SweepKeyLocator=nil and the
+// sweeper has to fall back to its configured key, producing a witness
+// that does not satisfy the historical tapleaf.
+func TestRoundStoreSweepKeyLocatorRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	sqlStore := NewTestDB(t)
+	store := NewStore(
+		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+		btclog.Disabled, clock.NewDefaultClock(),
+	)
+	roundStore := store.NewRoundStore()
+	ctx := t.Context()
+
+	// Build a round with an explicit, non-default locator so we can
+	// detect both "field dropped" and "field defaulted to zero"
+	// regressions.
+	roundID := testRoundID("locator-round")
+	testRound := createTestRound(t, roundID)
+	wantLocator := keychain.KeyLocator{
+		Family: keychain.KeyFamily(200),
+		Index:  7,
+	}
+	testRound.SweepKeyLocator = &wantLocator
+
+	require.NoError(t, roundStore.PersistRound(ctx, testRound))
+
+	pending, err := roundStore.LoadPendingRounds(ctx)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+
+	loaded := pending[0]
+	require.NotNil(
+		t, loaded.SweepKeyLocator, "sweep key locator must survive "+
+			"a persist/load round trip; without it the batch "+
+			"sweeper cannot ask lnd to sign with the key that "+
+			"derived the historical tapleaf",
+	)
+	require.Equal(t, wantLocator, *loaded.SweepKeyLocator)
+
+	// The compressed public key still serializes identically, as a
+	// sanity check that the locator addition did not perturb the
+	// existing column.
+	require.True(t, testRound.SweepKey.IsEqual(loaded.SweepKey))
+}
+
+// TestRoundStoreSweepKeyLocatorAbsent verifies pre-migration rounds
+// (where the locator columns are NULL) load with SweepKeyLocator=nil
+// rather than a zero-valued struct. Downstream code uses the nil to
+// fall back to the configured sweep key and warn; a zero-valued
+// locator would silently dispatch lnd to KeyFamily(0)/Index(0) and
+// produce an incorrect witness without any operator-visible signal.
+func TestRoundStoreSweepKeyLocatorAbsent(t *testing.T) {
+	t.Parallel()
+
+	sqlStore := NewTestDB(t)
+	store := NewStore(
+		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+		btclog.Disabled, clock.NewDefaultClock(),
+	)
+	roundStore := store.NewRoundStore()
+	ctx := t.Context()
+
+	roundID := testRoundID("no-locator-round")
+	testRound := createTestRound(t, roundID)
+	testRound.SweepKeyLocator = nil
+
+	require.NoError(t, roundStore.PersistRound(ctx, testRound))
+
+	pending, err := roundStore.LoadPendingRounds(ctx)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	require.Nil(t, pending[0].SweepKeyLocator)
 }

@@ -77,6 +77,7 @@ type spendDisposition uint8
 const (
 	spendDispositionBranchTx spendDisposition = iota
 	spendDispositionExpiredRootSweep
+	spendDispositionExpiredSubtreeSweep
 	spendDispositionLeafSpend
 	spendDispositionUnexpected
 )
@@ -165,10 +166,15 @@ func (a *Actor) handleRegisterBatch(ctx context.Context,
 		"expiry_height", req.ExpiryHeight,
 	)
 
-	// Create the tree state for this batch.
+	// Create the tree state for this batch. The sweep key is captured
+	// here so the eventual sweep tx is signed with the descriptor that
+	// derived the tapleaf committed in this specific tree, rather than
+	// the actor's currently-configured sweep key -- which may have
+	// rotated since the round was finalized.
 	treeState := NewBatchTreeState(
 		req.BatchID, req.Tree, req.ExpiryHeight,
 	)
+	treeState.SweepKey = req.SweepKey
 
 	// Record the batch output as an existing output. This ensures that a
 	// batch that never unrolls still has a sweepable operator-controlled
@@ -503,14 +509,64 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 		return fn.Ok[BatchWatcherResp](nil)
 
 	case spendDispositionExpiredRootSweep:
-		// The confirmed batch root was swept after expiry. Remove the
-		// tracked output, notify the sweeper, and stop monitoring.
+		// The confirmed batch root was swept after expiry. We must
+		// notify the sweeper BEFORE mutating state, because once the
+		// tracked output is removed and the batch is unregistered the
+		// watcher has no further on-chain trigger to redeliver this
+		// notification: a missed delivery would leave VTXOs marked
+		// live in the database even though their root was swept,
+		// which round validation would later accept as forfeit input
+		// (see issue #364). Mirrors the leaf-spend path's
+		// "classify-then-mutate" ordering.
+		err := a.notifyBatchSwept(ctx, msg.BatchID, batchState.Tree)
+		if err != nil {
+			return fn.Err[BatchWatcherResp](
+				fmt.Errorf("notify batch swept for %s: %w",
+					msg.BatchID, err),
+			)
+		}
+
 		batchState.RemoveExistingOutput(msg.SpentOutpoint)
-		a.notifyBatchSwept(ctx, msg.BatchID, batchState.Tree)
 		a.state.UnregisterBatch(msg.BatchID)
 
 		a.log.InfoS(ctx, "Expired batch root swept, unregistered",
 			"batch_id", msg.BatchID,
+			"spending_tx", spendingTxHash,
+		)
+
+		return fn.Ok[BatchWatcherResp](nil)
+
+	case spendDispositionExpiredSubtreeSweep:
+		// An exposed mid-tree branch was swept after expiry. The
+		// VTXO leaves under this subtree have been invalidated
+		// on-chain and must be marked expired in storage so they
+		// cannot be re-entered into a later round as forfeit
+		// inputs. The remaining tree may still have unspent
+		// outputs, so we keep monitoring the batch (no
+		// UnregisterBatch).
+		//
+		// Notify the sweeper BEFORE mutating watcher state. Once the
+		// tracked output is removed there is no further on-chain
+		// trigger to redeliver this notification, so a dropped
+		// notification would leave the descendant VTXOs marked live
+		// even though they were swept on-chain. Mirrors the root-
+		// sweep "classify-then-mutate" ordering above.
+		err := a.notifyBatchSubtreeSwept(
+			ctx, msg.BatchID, spentOutput.TreeNode,
+		)
+		if err != nil {
+			return fn.Err[BatchWatcherResp](
+				fmt.Errorf("notify batch subtree swept for "+
+					"%s: %w", msg.BatchID, err),
+			)
+		}
+
+		batchState.RemoveExistingOutput(msg.SpentOutpoint)
+		a.notifyTreeStateChanged(ctx, msg.BatchID)
+
+		a.log.InfoS(ctx, "Expired mid-tree branch swept",
+			"batch_id", msg.BatchID,
+			"outpoint", msg.SpentOutpoint,
 			"spending_tx", spendingTxHash,
 		)
 
@@ -609,14 +665,29 @@ func (a *Actor) classifySpend(batchState *BatchTreeState, spentOutput *Output,
 		return spendDispositionBranchTx, expectedTxid, nil
 	}
 
-	// Expired-root sweep: only the original batch output qualifies.
-	// Mid-tree branch outputs exposed by partial unrolls are not
-	// checked here; the sweeper handles those through a separate
-	// path, so they fall through to spendDispositionUnexpected.
+	// Expired-root sweep: the original batch output spent by a non-tree
+	// tx after expiry. This terminates monitoring for the whole batch.
 	if batchState.Tree != nil &&
 		spentOutput.Outpoint == batchState.Tree.BatchOutpoint &&
 		spendingHeight >= int32(batchState.ExpiryHeight) {
 		return spendDispositionExpiredRootSweep, expectedTxid, nil
+	}
+
+	// Expired-subtree sweep: a mid-tree branch output exposed by a
+	// partial unroll, spent by a non-tree tx after expiry. This is the
+	// operator's CSV sweep over a partial subtree. The remaining tree
+	// continues to be monitored, but every VTXO descendant of the swept
+	// subtree must be marked expired in storage — otherwise round
+	// validation will continue to accept those (now invalidated) VTXOs
+	// as forfeit inputs, exposing the operator to a re-entry attack.
+	//
+	// Compare in the uint32 domain. spendingHeight is signed (the chain
+	// source uses -1 to mark an unconfirmed spend) so the guard rejects
+	// negative heights up front rather than rely on a
+	// uint32(spendingHeight) cast wrapping to a huge positive value.
+	if spendingHeight >= 0 &&
+		uint32(spendingHeight) >= batchState.ExpiryHeight {
+		return spendDispositionExpiredSubtreeSweep, expectedTxid, nil
 	}
 
 	return spendDispositionUnexpected, expectedTxid, nil
@@ -1757,32 +1828,76 @@ func (a *Actor) notifyTreeStateChanged(ctx context.Context, batchID BatchID) {
 
 // notifyBatchSwept sends a notification to the BatchSweeper that a batch has
 // been fully swept by a non-tree transaction. The tree is included so the
-// sweeper can extract VTXO leaf outpoints without querying back.
+// sweeper can extract VTXO leaf outpoints without querying back. An error is
+// returned (rather than silently logged) when delivery fails or the sweeper
+// is not configured, because the caller relies on successful delivery before
+// unregistering the batch: dropping the notification would lose the only
+// signal that the tree's VTXOs must be marked expired in the database.
 func (a *Actor) notifyBatchSwept(ctx context.Context, batchID BatchID,
-	t *tree.Tree) {
+	t *tree.Tree) error {
 
-	a.cfg.BatchSweeper.WhenSome(func(
-		ref actor.TellOnlyRef[BatchSweeperMsg]) {
+	ref, err := a.cfg.BatchSweeper.UnwrapOrErr(
+		fmt.Errorf("batch sweeper not configured"),
+	)
+	if err != nil {
+		return err
+	}
 
-		notification := &BatchSweptNotification{
-			BatchID: batchID,
-			Tree:    t,
-		}
+	notification := &BatchSweptNotification{
+		BatchID: batchID,
+		Tree:    t,
+	}
 
-		if err := ref.Tell(ctx, notification); err != nil {
-			a.log.WarnS(ctx, "Failed to notify BatchSweeper of "+
-				"sweep",
-				err,
-				"batch_id", batchID,
-			)
+	if err := ref.Tell(ctx, notification); err != nil {
+		return fmt.Errorf("tell batch swept: %w", err)
+	}
 
-			return
-		}
+	a.log.DebugS(ctx, "Notified BatchSweeper of batch sweep",
+		"batch_id", batchID,
+	)
 
-		a.log.DebugS(ctx, "Notified BatchSweeper of batch sweep",
-			"batch_id", batchID,
-		)
-	})
+	return nil
+}
+
+// notifyBatchSubtreeSwept sends a notification to the BatchSweeper that a
+// mid-tree branch output has been swept after expiry. The subtree root is
+// included so the sweeper can extract the descendant VTXO leaf outpoints
+// that must be marked expired in storage. The batch is NOT unregistered:
+// other branches of the tree may still be live.
+//
+// An error is returned (rather than silently logged) when delivery fails or
+// the sweeper is not configured, because the caller must keep the tracked
+// branch output in place when delivery fails: a dropped notification would
+// leave the descendant VTXOs marked live even though their ancestor was
+// swept on-chain (see issue #364). Mirrors notifyBatchSwept.
+func (a *Actor) notifyBatchSubtreeSwept(ctx context.Context, batchID BatchID,
+	subtreeRoot *tree.Node) error {
+
+	if subtreeRoot == nil {
+		return fmt.Errorf("nil subtree root for batch %s", batchID)
+	}
+
+	ref, err := a.cfg.BatchSweeper.UnwrapOrErr(
+		fmt.Errorf("batch sweeper not configured"),
+	)
+	if err != nil {
+		return err
+	}
+
+	notification := &BatchSubtreeSweptNotification{
+		BatchID:     batchID,
+		SubtreeRoot: subtreeRoot,
+	}
+
+	if err := ref.Tell(ctx, notification); err != nil {
+		return fmt.Errorf("tell batch subtree swept: %w", err)
+	}
+
+	a.log.DebugS(ctx, "Notified BatchSweeper of subtree sweep",
+		"batch_id", batchID,
+	)
+
+	return nil
 }
 
 // isAnchorOutput returns true if the output is an anchor output (zero value

@@ -161,6 +161,11 @@ var (
 	// duplicate forfeit request outpoints.
 	ErrDuplicateForfeitRequest = errors.New("duplicate forfeit request")
 
+	// ErrDuplicateForfeitInRound is returned when a join request attempts
+	// to forfeit a VTXO already registered by another client in the same
+	// round.
+	ErrDuplicateForfeitInRound = errors.New("duplicate forfeit in round")
+
 	// ErrJoinRequestAuthMissing is returned when a join request does not
 	// include an authorization payload.
 	ErrJoinRequestAuthMissing = errors.New("join request auth is missing")

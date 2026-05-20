@@ -317,11 +317,11 @@ func TestRefreshIntegrationDryRunPreview(t *testing.T) {
 		)
 		if err != nil {
 			t.Logf(
-				"ListRounds failed during dry-run check: %v",
-				err,
+				"ListRounds failed during dry-run check, "+
+					"retrying: %v", err,
 			)
 
-			return true
+			return false
 		}
 
 		for _, round := range resp.Rounds {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
@@ -19,6 +20,7 @@ import (
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -398,15 +400,20 @@ func TestSweepConfirmedCleansUp(t *testing.T) {
 		expiryHeight: 100,
 		attempts:     3,
 	}
-	a.pendingSweeps[batchID] = &pendingSweep{
-		batchID:   batchID,
-		feeRate:   btcutil.Amount(5),
-		numInputs: 2,
+	txid := chainhash.Hash{0xaa}
+	a.pendingSweeps[batchID] = map[chainhash.Hash]*pendingSweep{
+		txid: {
+			txid:      txid,
+			batchID:   batchID,
+			feeRate:   btcutil.Amount(5),
+			numInputs: 2,
+		},
 	}
 
-	// Send SweepConfirmedEvent.
+	// Send SweepConfirmedEvent matching the broadcast txid.
 	result := a.Receive(t.Context(), &SweepConfirmedEvent{
 		BatchID:     batchID,
+		Txid:        txid,
 		BlockHeight: 120,
 	})
 	require.True(t, result.IsOk())
@@ -414,6 +421,121 @@ func TestSweepConfirmedCleansUp(t *testing.T) {
 	// Verify tracking state is cleaned up.
 	require.Empty(t, a.expired)
 	require.Empty(t, a.pendingSweeps)
+}
+
+// TestSweepConfirmedIgnoresUnknownTxid verifies that a confirmation whose
+// txid does not match the tracked pending sweep is ignored: pending and
+// expired state must stay intact so the real confirmation can still clear
+// them. This protects the actor against reorgs and against unrelated
+// transactions confirming at a watched outpoint.
+func TestSweepConfirmedIgnoresUnknownTxid(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+	}
+
+	a := NewActor(cfg)
+
+	pendingTxid := chainhash.Hash{0x11}
+	a.expired[batchID] = &expiredBatch{
+		expiryHeight: 100,
+		attempts:     2,
+	}
+	a.pendingSweeps[batchID] = map[chainhash.Hash]*pendingSweep{
+		pendingTxid: {
+			txid:      pendingTxid,
+			batchID:   batchID,
+			feeRate:   btcutil.Amount(5),
+			numInputs: 2,
+		},
+	}
+
+	// Send SweepConfirmedEvent for an UNRELATED txid.
+	unrelatedTxid := chainhash.Hash{0x22}
+	result := a.Receive(t.Context(), &SweepConfirmedEvent{
+		BatchID:     batchID,
+		Txid:        unrelatedTxid,
+		BlockHeight: 120,
+	})
+	require.True(t, result.IsOk())
+
+	// Pending and expired entries must still be present so the
+	// legitimate confirmation can still clear them later.
+	require.Contains(t, a.pendingSweeps, batchID)
+	require.Contains(t, a.pendingSweeps[batchID], pendingTxid)
+	require.Contains(t, a.expired, batchID)
+}
+
+// TestConcurrentSweepsTrackedIndependently verifies that two sweeps in flight
+// for the same batch (for example a subtree-branch sweep and a separate root
+// sweep, or a fee-bump rebroadcast) are tracked independently and each clears
+// only when its own confirmation arrives.
+func TestConcurrentSweepsTrackedIndependently(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+	}
+
+	a := NewActor(cfg)
+
+	txidA := chainhash.Hash{0xaa}
+	txidB := chainhash.Hash{0xbb}
+
+	a.expired[batchID] = &expiredBatch{
+		expiryHeight: 100,
+		attempts:     1,
+	}
+	a.pendingSweeps[batchID] = map[chainhash.Hash]*pendingSweep{
+		txidA: {
+			txid:      txidA,
+			batchID:   batchID,
+			feeRate:   btcutil.Amount(5),
+			numInputs: 1,
+		},
+		txidB: {
+			txid:      txidB,
+			batchID:   batchID,
+			feeRate:   btcutil.Amount(7),
+			numInputs: 1,
+		},
+	}
+
+	// Confirm sweep A. Only its entry should clear; sweep B and the
+	// per-batch expired bookkeeping must remain so B can still confirm.
+	resA := a.Receive(t.Context(), &SweepConfirmedEvent{
+		BatchID:     batchID,
+		Txid:        txidA,
+		BlockHeight: 120,
+	})
+	require.True(t, resA.IsOk())
+
+	require.Contains(t, a.pendingSweeps, batchID)
+	require.NotContains(t, a.pendingSweeps[batchID], txidA)
+	require.Contains(t, a.pendingSweeps[batchID], txidB)
+	require.Contains(t, a.expired, batchID)
+
+	// Confirm sweep B. Now the batch is fully cleared.
+	resB := a.Receive(t.Context(), &SweepConfirmedEvent{
+		BatchID:     batchID,
+		Txid:        txidB,
+		BlockHeight: 121,
+	})
+	require.True(t, resB.IsOk())
+
+	require.Empty(t, a.pendingSweeps)
+	require.Empty(t, a.expired)
 }
 
 // TestRepeatedBatchExpiredSkipsWhenFeeNotHigher verifies that batches with
@@ -449,9 +571,13 @@ func TestRepeatedBatchExpiredSkipsWhenFeeNotHigher(t *testing.T) {
 		expiryHeight: 100,
 		attempts:     1,
 	}
-	a.pendingSweeps[batchID] = &pendingSweep{
-		batchID: batchID,
-		feeRate: btcutil.Amount(10), // Higher than current (5)
+	txid := chainhash.Hash{0xcc}
+	a.pendingSweeps[batchID] = map[chainhash.Hash]*pendingSweep{
+		txid: {
+			txid:    txid,
+			batchID: batchID,
+			feeRate: btcutil.Amount(10), // Higher than current (5)
+		},
 	}
 
 	// Send BatchExpiredEvent (per-block retry from BatchWatcher).
@@ -483,8 +609,22 @@ func TestRepeatedBatchExpiredBumpsFeeWhenHigher(t *testing.T) {
 
 	txOut := wire.NewTxOut(1000, []byte{0x51})
 
+	// Bind a matching sweep descriptor on the tree state and the
+	// actor config so resolveSweepKey accepts the historical
+	// descriptor and the test focuses on fee-bump behaviour rather
+	// than the post-#388 fallback policy.
+	sweepPub, _ := testutils.CreateKey(33)
+	sweepKey := keychain.KeyDescriptor{
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamily(200),
+			Index:  1,
+		},
+		PubKey: sweepPub,
+	}
+
 	outpoint := wire.OutPoint{Index: 0}
 	treeState := &batchwatcher.BatchTreeState{
+		SweepKey: sweepKey,
 		ExistingOutputs: map[wire.OutPoint]*batchwatcher.Output{
 			outpoint: {
 				Outpoint:        outpoint,
@@ -519,8 +659,10 @@ func TestRepeatedBatchExpiredBumpsFeeWhenHigher(t *testing.T) {
 		BatchWatcher: mockWatcher,
 		ChainSource:  mockChainSource,
 		SweepDelay:   10,
+		SweepKey:     sweepKey,
 		SelfRef:      &nopSelfRef{},
-		BuildSweepTx: func(_ []*batchwatcher.Output, _ btcutil.Amount) (
+		BuildSweepTx: func(_ []*batchwatcher.Output,
+			_ keychain.KeyDescriptor, _ btcutil.Amount) (
 			*wire.MsgTx, error) {
 
 			tx := wire.NewMsgTx(2)
@@ -537,9 +679,14 @@ func TestRepeatedBatchExpiredBumpsFeeWhenHigher(t *testing.T) {
 		expiryHeight: 100,
 		attempts:     1,
 	}
-	a.pendingSweeps[batchID] = &pendingSweep{
-		batchID: batchID,
-		feeRate: btcutil.Amount(5), // Lower than current (15)
+	oldTxid := chainhash.Hash{0xdd}
+	a.pendingSweeps[batchID] = map[chainhash.Hash]*pendingSweep{
+		oldTxid: {
+			txid:    oldTxid,
+			batchID: batchID,
+			// Lower than current (15).
+			feeRate: btcutil.Amount(5),
+		},
 	}
 
 	// Send BatchExpiredEvent (per-block retry from BatchWatcher).
@@ -555,8 +702,18 @@ func TestRepeatedBatchExpiredBumpsFeeWhenHigher(t *testing.T) {
 	broadcast := mockChainSource.LastBroadcast()
 	require.NotNil(t, broadcast)
 
-	// Verify pending sweep was updated with new fee rate.
-	require.Equal(t, btcutil.Amount(15), a.pendingSweeps[batchID].feeRate)
+	// The rebroadcast is tracked as a new pending sweep keyed by its
+	// own txid; the original entry stays in-flight until its own
+	// confirmation arrives. The new sweep must reflect the bumped rate.
+	pending, ok := a.pendingSweeps[batchID]
+	require.True(t, ok)
+	var foundBumped bool
+	for _, p := range pending {
+		if p.feeRate == btcutil.Amount(15) {
+			foundBumped = true
+		}
+	}
+	require.True(t, foundBumped, "expected bumped sweep at fee rate 15")
 }
 
 // TestAlertOnPersistentFailure verifies that an alert is logged when sweep
@@ -748,4 +905,1078 @@ func TestAlertRepeatsAtInterval(t *testing.T) {
 		t, 3, logger.Count(),
 		"second repeat alert expected at threshold + 2*interval",
 	)
+}
+
+// newSingleLeafTree constructs a minimal one-leaf tree suitable for driving
+// handleBatchSwept. Returning a real tree (instead of a hand-rolled struct)
+// keeps the test honest with respect to the leaf-iteration code path.
+func newSingleLeafTree(t *testing.T) *treepkg.Tree {
+	t.Helper()
+
+	operatorKey, _ := testutils.CreateKey(1)
+	clientKey, _ := testutils.CreateKey(100)
+
+	batchOutpoint := wire.OutPoint{
+		Hash: [32]byte{
+			1,
+			2,
+			3,
+			4,
+		},
+		Index: 0,
+	}
+
+	leafAmount := btcutil.Amount(100_000)
+	batchOutput := wire.NewTxOut(int64(leafAmount), []byte{0x51})
+
+	leaf := treepkg.LeafDescriptor{
+		CoSignerKey: clientKey,
+		Amount:      leafAmount,
+		PkScript: []byte{
+			0x51,
+			0x20,
+			0x01,
+			0x02,
+		},
+	}
+
+	tree, err := treepkg.NewTree(
+		batchOutpoint, batchOutput, []treepkg.LeafDescriptor{leaf},
+		operatorKey, []byte{0xaa, 0xbb, 0xcc}, 2,
+	)
+	require.NoError(t, err)
+
+	return tree
+}
+
+// TestHandleBatchSweptCallbackErrorKeepsState is the regression test for the
+// security half of issue #364 on the sweeper side: if OnBatchSwept returns
+// an error (e.g. a transient DB failure marking VTXOs expired), the actor
+// must NOT drop its expired/pendingSweeps tracking entries. The original
+// code deleted them up-front and then bubbled the error, so any retry of
+// the message would find the batch already forgotten and would silently
+// succeed — leaving the VTXOs in "live" status forever.
+//
+// This test also asserts that the sweeper persists the derived outpoints
+// in pendingSweptCallbacks and schedules a timer-driven retry, so the
+// callback is automatically re-attempted in-process without relying on
+// upstream (already-unregistered) redelivery from the watcher.
+func TestHandleBatchSweptCallbackErrorKeepsState(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	callbackErr := errors.New("transient db failure")
+	var callbackInvocations int
+	mockTimeout := &mockTimeoutRef{}
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		TimeoutActor: fn.Some[actor.TellOnlyRef[timeout.Msg]](
+			mockTimeout,
+		),
+		OnBatchSwept: func(_ context.Context, _ []wire.OutPoint) error {
+			callbackInvocations++
+
+			return callbackErr
+		},
+	}
+
+	a := NewActor(cfg)
+
+	// Seed tracking state as if a sweep was previously broadcast.
+	a.expired[batchID] = &expiredBatch{
+		expiryHeight: 100,
+		attempts:     1,
+	}
+	a.pendingSweeps[batchID] = map[chainhash.Hash]*pendingSweep{
+		{}: {
+			batchID: batchID,
+		},
+	}
+
+	tree := newSingleLeafTree(t)
+
+	result := a.Receive(t.Context(), &BatchSweptEvent{
+		Notification: &batchwatcher.BatchSweptNotification{
+			BatchID: batchID,
+			Tree:    tree,
+		},
+	})
+	require.True(
+		t, result.IsErr(),
+		"callback failure must surface to the caller so the "+
+			"message can be retried",
+	)
+	require.ErrorIs(t, result.Err(), callbackErr)
+	require.Equal(t, 1, callbackInvocations)
+
+	// Tracking state must remain so a retry can re-invoke the callback.
+	require.Contains(
+		t, a.expired, batchID,
+		"expired entry must remain so retries can replay",
+	)
+	require.Contains(
+		t, a.pendingSweeps, batchID,
+		"pendingSweeps entry must remain so retries can replay",
+	)
+	require.Contains(
+		t, a.pendingSweptCallbacks, batchID, "derived outpoints "+
+			"must be persisted so the retry path can replay "+
+			"without re-deriving from the tree",
+	)
+	require.Equal(t, uint32(1), a.pendingSweptCallbacks[batchID].attempts)
+
+	// A retry timer must be scheduled — the watcher already unregistered
+	// the batch upstream, so this is the only path to re-attempt.
+	scheduled := mockTimeout.LastSchedule()
+	require.NotNil(
+		t, scheduled,
+		"a retry timer must be scheduled on callback failure",
+	)
+}
+
+// TestHandleBatchSweptMissingCallbackErrors verifies that a nil OnBatchSwept
+// returns an error rather than silently succeeding. The earlier code
+// returned OK in this case, which masked a wiring bug that would leave
+// VTXOs live after every swept batch.
+func TestHandleBatchSweptMissingCallbackErrors(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		// OnBatchSwept intentionally left nil to simulate a wiring
+		// regression.
+	}
+
+	a := NewActor(cfg)
+	a.expired[batchID] = &expiredBatch{expiryHeight: 100}
+	a.pendingSweeps[batchID] = map[chainhash.Hash]*pendingSweep{
+		{}: {
+			batchID: batchID,
+		},
+	}
+
+	tree := newSingleLeafTree(t)
+
+	result := a.Receive(t.Context(), &BatchSweptEvent{
+		Notification: &batchwatcher.BatchSweptNotification{
+			BatchID: batchID,
+			Tree:    tree,
+		},
+	})
+	require.True(
+		t, result.IsErr(),
+		"missing OnBatchSwept must surface as an error, not be "+
+			"silently swallowed",
+	)
+
+	// Tracking state must remain so a subsequent restart with proper
+	// wiring can complete the VTXO marking.
+	require.Contains(t, a.expired, batchID)
+	require.Contains(t, a.pendingSweeps, batchID)
+}
+
+// TestHandleBatchSweptSuccessClearsState verifies the happy path: a
+// successful callback advances VTXO marking and only then drops local
+// tracking state.
+func TestHandleBatchSweptSuccessClearsState(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	var observed []wire.OutPoint
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		OnBatchSwept: func(_ context.Context,
+			ops []wire.OutPoint) error {
+
+			observed = append(observed, ops...)
+
+			return nil
+		},
+	}
+
+	a := NewActor(cfg)
+	a.expired[batchID] = &expiredBatch{expiryHeight: 100}
+	a.pendingSweeps[batchID] = map[chainhash.Hash]*pendingSweep{
+		{}: {
+			batchID: batchID,
+		},
+	}
+
+	tree := newSingleLeafTree(t)
+	subtreeTxid, err := tree.Root.TXID()
+	require.NoError(t, err)
+
+	a.pendingSubtreeSweptCallbacks[subtreeSweptKey{
+		batchID:     batchID,
+		subtreeTxid: subtreeTxid,
+	}] = &pendingSweptCallback{}
+
+	result := a.Receive(t.Context(), &BatchSweptEvent{
+		Notification: &batchwatcher.BatchSweptNotification{
+			BatchID: batchID,
+			Tree:    tree,
+		},
+	})
+	require.True(t, result.IsOk())
+	require.Len(
+		t, observed, 1, "each leaf must be reported exactly once",
+	)
+	require.NotContains(t, a.expired, batchID)
+	require.NotContains(t, a.pendingSweeps, batchID)
+	require.NotContains(t, a.pendingSweptCallbacks, batchID)
+	require.Empty(
+		t, a.pendingSubtreeSweptCallbacks,
+		"root sweep must clear redundant subtree retry callbacks",
+	)
+}
+
+// TestHandleBatchSweptCallbackRetryEventuallySucceeds is the regression
+// test for the in-process retry concern raised on PR #425: when the first
+// OnBatchSwept attempt fails, the watcher (which has already enqueued the
+// notification via Tell) cannot redeliver. The sweeper must therefore
+// drive its own retry loop until the callback succeeds; only then may it
+// drop the batch tracking state. This test injects a failing callback for
+// the first invocation, simulates the timer-driven retry, and asserts:
+//
+//   - the watcher-side Tell is NOT what unblocks recovery (we never call it
+//     again here)
+//   - the DB mark eventually commits (callback observes the leaves)
+//   - all tracking state (expired/pendingSweeps/pendingSweptCallbacks) is
+//     cleared only once the mark succeeds.
+func TestHandleBatchSweptCallbackRetryEventuallySucceeds(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	var (
+		callbackInvocations int
+		observed            []wire.OutPoint
+	)
+	transientErr := errors.New("transient db failure")
+	mockTimeout := &mockTimeoutRef{}
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		TimeoutActor: fn.Some[actor.TellOnlyRef[timeout.Msg]](
+			mockTimeout,
+		),
+		OnBatchSwept: func(_ context.Context,
+			ops []wire.OutPoint) error {
+
+			callbackInvocations++
+
+			// First attempt fails; subsequent retries succeed.
+			if callbackInvocations == 1 {
+				return transientErr
+			}
+
+			observed = append(observed, ops...)
+
+			return nil
+		},
+	}
+
+	a := NewActor(cfg)
+	a.expired[batchID] = &expiredBatch{expiryHeight: 100}
+	a.pendingSweeps[batchID] = map[chainhash.Hash]*pendingSweep{
+		{}: {
+			batchID: batchID,
+		},
+	}
+
+	tree := newSingleLeafTree(t)
+
+	// First delivery — callback fails. Watcher-side bookkeeping in the
+	// production wiring would already have moved on by this point, so
+	// the sweeper must own recovery from here.
+	first := a.Receive(t.Context(), &BatchSweptEvent{
+		Notification: &batchwatcher.BatchSweptNotification{
+			BatchID: batchID,
+			Tree:    tree,
+		},
+	})
+	require.True(t, first.IsErr())
+	require.ErrorIs(t, first.Err(), transientErr)
+
+	// Tracking state survives the failure, and a retry timer is armed.
+	require.Contains(t, a.expired, batchID)
+	require.Contains(t, a.pendingSweeps, batchID)
+	require.Contains(t, a.pendingSweptCallbacks, batchID)
+	require.Empty(
+		t, observed,
+		"the failing first attempt must not have advanced the mark",
+	)
+
+	scheduled := mockTimeout.LastSchedule()
+	require.NotNil(t, scheduled, "retry timer must be scheduled")
+
+	// Fire the retry the way the timeout actor would in production: by
+	// Telling the sweeper the BatchSweptCallbackRetryEvent its mapped
+	// callback constructs.
+	retry := a.Receive(t.Context(), &BatchSweptCallbackRetryEvent{
+		BatchID: batchID,
+	})
+	require.True(
+		t, retry.IsOk(),
+		"retry attempt must succeed once the transient failure clears",
+	)
+
+	require.Equal(
+		t, 2, callbackInvocations,
+		"retry must invoke OnBatchSwept exactly once more",
+	)
+	require.Len(
+		t, observed, 1, "the successful retry must surface the "+
+			"leaf outpoint to the durable callback",
+	)
+
+	// All tracking state must be cleared only AFTER the DB mark commits.
+	require.NotContains(t, a.expired, batchID)
+	require.NotContains(t, a.pendingSweeps, batchID)
+	require.NotContains(t, a.pendingSweptCallbacks, batchID)
+}
+
+// TestHandleBatchSweptCallbackRetryNoOpAfterClear verifies that a stale
+// retry event for a batch whose callback already succeeded is a benign
+// no-op rather than re-invoking the callback or panicking. This guards
+// against double-marking when a restart-driven replay races a timer.
+func TestHandleBatchSweptCallbackRetryNoOpAfterClear(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	var callbackInvocations int
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		OnBatchSwept: func(_ context.Context, _ []wire.OutPoint) error {
+			callbackInvocations++
+
+			return nil
+		},
+	}
+
+	a := NewActor(cfg)
+
+	result := a.Receive(t.Context(), &BatchSweptCallbackRetryEvent{
+		BatchID: batchID,
+	})
+	require.True(t, result.IsOk())
+	require.Zero(
+		t, callbackInvocations,
+		"retry for an unknown batch must not invoke the callback",
+	)
+}
+
+// TestBatchSubtreeSweptMarksDescendantVTXOsExpired verifies that the
+// BatchSubtreeSweptEvent handler extracts every descendant VTXO leaf
+// outpoint from the swept subtree and feeds them to OnBatchSwept so the
+// storage layer can mark them expired. This is the load-bearing
+// invariant that prevents already-swept descendants from re-entering a
+// later round as forfeit inputs.
+func TestBatchSubtreeSweptMarksDescendantVTXOsExpired(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	// Build a small VTXO tree so we have a real *tree.Node with two
+	// descendant leaves under the root.
+	operatorKey, _ := testutils.CreateKey(1)
+	clientKeyA, _ := testutils.CreateKey(2)
+	clientKeyB, _ := testutils.CreateKey(3)
+
+	leaves := []treepkg.LeafDescriptor{
+		{
+			CoSignerKey: clientKeyA,
+			Amount:      btcutil.Amount(50_000),
+			PkScript: []byte{
+				0x51, 0x20, 0x01, 0x02,
+			},
+		},
+		{
+			CoSignerKey: clientKeyB,
+			Amount:      btcutil.Amount(30_000),
+			PkScript: []byte{
+				0x51, 0x20, 0x03, 0x04,
+			},
+		},
+	}
+
+	batchOutpoint := wire.OutPoint{
+		Hash: [32]byte{
+			0xab, 0xcd,
+		},
+		Index: 0,
+	}
+	batchOutput := wire.NewTxOut(80_000, []byte{0x51})
+
+	testTree, err := treepkg.NewTree(
+		batchOutpoint, batchOutput, leaves, operatorKey,
+		[]byte{0xaa, 0xbb, 0xcc}, 2,
+	)
+	require.NoError(t, err)
+	require.False(t, testTree.Root.IsLeaf())
+
+	// expectedOutpoints collects what OnBatchSwept must be called with.
+	var expectedOutpoints []wire.OutPoint
+	for leaf := range testTree.Root.LeavesIter() {
+		txid, txErr := leaf.TXID()
+		require.NoError(t, txErr)
+
+		expectedOutpoints = append(expectedOutpoints, wire.OutPoint{
+			Hash:  txid,
+			Index: 0,
+		})
+	}
+	require.Len(t, expectedOutpoints, 2)
+
+	var (
+		mu              sync.Mutex
+		onSweptOutpoint []wire.OutPoint
+		onSweptCalls    int
+	)
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		OnBatchSwept: func(_ context.Context,
+			outpoints []wire.OutPoint) error {
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			onSweptCalls++
+			onSweptOutpoint = append(
+				onSweptOutpoint, outpoints...,
+			)
+
+			return nil
+		},
+	}
+
+	a := NewActor(cfg)
+
+	result := a.Receive(t.Context(), &BatchSubtreeSweptEvent{
+		Notification: &batchwatcher.BatchSubtreeSweptNotification{
+			BatchID:     batchID,
+			SubtreeRoot: testTree.Root,
+		},
+	})
+	require.True(t, result.IsOk())
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.Equal(t, 1, onSweptCalls)
+	require.ElementsMatch(t, expectedOutpoints, onSweptOutpoint)
+}
+
+// TestBatchSubtreeSweptNoCallbackIsError asserts that the BatchSubtreeSwept
+// handler surfaces a missing OnBatchSwept callback as an error, mirroring
+// the root-sweep guard. Without this guard a wiring bug would silently
+// leave the descendant VTXOs in "live" status after their ancestor was
+// swept on-chain.
+func TestBatchSubtreeSweptNoCallbackIsError(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+	tree := newSingleLeafTree(t)
+
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		// OnBatchSwept intentionally unset.
+	}
+
+	a := NewActor(cfg)
+
+	result := a.Receive(t.Context(), &BatchSubtreeSweptEvent{
+		Notification: &batchwatcher.BatchSubtreeSweptNotification{
+			BatchID:     batchID,
+			SubtreeRoot: tree.Root,
+		},
+	})
+	require.True(t, result.IsErr())
+	require.ErrorContains(t, result.Err(), "OnBatchSwept")
+}
+
+// TestBatchSubtreeSweptNilSubtreeIsError asserts that the
+// BatchSubtreeSwept handler surfaces a nil subtree root as an error rather
+// than silently dropping the VTXO-expiry signal.
+func TestBatchSubtreeSweptNilSubtreeIsError(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		OnBatchSwept: func(_ context.Context, _ []wire.OutPoint) error {
+			return nil
+		},
+	}
+
+	a := NewActor(cfg)
+
+	result := a.Receive(t.Context(), &BatchSubtreeSweptEvent{
+		Notification: &batchwatcher.BatchSubtreeSweptNotification{
+			BatchID:     batchID,
+			SubtreeRoot: nil,
+		},
+	})
+	require.True(t, result.IsErr())
+	require.ErrorContains(t, result.Err(), "nil subtree root")
+}
+
+// TestHandleBatchSubtreeSweptCallbackRetryEventuallySucceeds is the
+// regression test mirroring TestHandleBatchSweptCallbackRetryEventuallySucceeds
+// for the subtree-sweep path: when OnBatchSwept fails on the first attempt,
+// the sweeper must retain the derived outpoints in
+// pendingSubtreeSweptCallbacks and drive a timer-based retry until the
+// callback succeeds. The watcher does not redeliver subtree-sweep
+// notifications, so without this loop a transient DB error would silently
+// leave the descendant VTXOs marked live.
+func TestHandleBatchSubtreeSweptCallbackRetryEventuallySucceeds(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	var (
+		callbackInvocations int
+		observed            []wire.OutPoint
+	)
+	transientErr := errors.New("transient db failure")
+	mockTimeout := &mockTimeoutRef{}
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		TimeoutActor: fn.Some[actor.TellOnlyRef[timeout.Msg]](
+			mockTimeout,
+		),
+		OnBatchSwept: func(_ context.Context,
+			ops []wire.OutPoint) error {
+
+			callbackInvocations++
+
+			// First attempt fails; subsequent retries succeed.
+			if callbackInvocations == 1 {
+				return transientErr
+			}
+
+			observed = append(observed, ops...)
+
+			return nil
+		},
+	}
+
+	a := NewActor(cfg)
+
+	tree := newSingleLeafTree(t)
+	subtreeTxid, err := tree.Root.TXID()
+	require.NoError(t, err)
+
+	// First delivery — callback fails. The watcher's notification has
+	// already been consumed at this point, so the sweeper owns recovery.
+	first := a.Receive(t.Context(), &BatchSubtreeSweptEvent{
+		Notification: &batchwatcher.BatchSubtreeSweptNotification{
+			BatchID:     batchID,
+			SubtreeRoot: tree.Root,
+		},
+	})
+	require.True(t, first.IsErr())
+	require.ErrorIs(t, first.Err(), transientErr)
+
+	key := subtreeSweptKey{
+		batchID:     batchID,
+		subtreeTxid: subtreeTxid,
+	}
+	require.Contains(t, a.pendingSubtreeSweptCallbacks, key)
+	require.Empty(
+		t, observed,
+		"the failing first attempt must not have advanced the mark",
+	)
+
+	scheduled := mockTimeout.LastSchedule()
+	require.NotNil(t, scheduled, "retry timer must be scheduled")
+
+	// Fire the retry as the timeout actor would.
+	retry := a.Receive(
+		t.Context(), &BatchSubtreeSweptCallbackRetryEvent{
+			BatchID:     batchID,
+			SubtreeTxid: subtreeTxid,
+		},
+	)
+	require.True(
+		t, retry.IsOk(),
+		"retry must succeed once the transient failure clears",
+	)
+
+	require.Equal(
+		t, 2, callbackInvocations,
+		"retry must invoke OnBatchSwept exactly once more",
+	)
+	require.Len(
+		t, observed, 1, "the successful retry must surface the "+
+			"leaf outpoint to the durable callback",
+	)
+	require.NotContains(t, a.pendingSubtreeSweptCallbacks, key)
+}
+
+// TestHandleBatchSubtreeSweptCallbackRetryNoOpAfterClear verifies that a
+// stale subtree-sweep retry event for a (batch, subtree) whose callback
+// already succeeded is a benign no-op.
+func TestHandleBatchSubtreeSweptCallbackRetryNoOpAfterClear(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	var callbackInvocations int
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: &mockBatchWatcherRef{},
+		ChainSource:  &mockChainSourceRef{},
+		SelfRef:      &nopSelfRef{},
+		OnBatchSwept: func(_ context.Context, _ []wire.OutPoint) error {
+			callbackInvocations++
+
+			return nil
+		},
+	}
+
+	a := NewActor(cfg)
+
+	result := a.Receive(
+		t.Context(), &BatchSubtreeSweptCallbackRetryEvent{
+			BatchID:     batchID,
+			SubtreeTxid: chainhash.Hash{0x01},
+		},
+	)
+	require.True(t, result.IsOk())
+	require.Zero(
+		t, callbackInvocations,
+		"retry for an unknown subtree must not invoke the callback",
+	)
+}
+
+// TestTrySweepUsesPerBatchSweepKey is a regression test for the
+// sweep-key migration stranding bug (issue #388). The batch sweeper
+// previously signed every batch with ActorConfig.SweepKey, so if the
+// operator-configured key rotated between round finalization and the
+// post-expiry sweep, the resulting witness no longer satisfied the
+// historical tapleaf and the broadcast retried indefinitely. The fix
+// has the BatchWatcher record the sweep KeyDescriptor that derived
+// each tree's tapleaf and has the sweeper sign with the per-batch
+// descriptor. This test simulates the rotation by configuring the
+// actor with a "current" sweep key while the registered batch carries
+// an "old" sweep key, and asserts the builder is invoked with the
+// historical key. Without the fix this test fails because the builder
+// receives ActorConfig.SweepKey.
+func TestTrySweepUsesPerBatchSweepKey(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	// historicalKey is the sweep key that built the persisted tree.
+	historicalPubKey, _ := testutils.CreateKey(7)
+	historicalKey := keychain.KeyDescriptor{
+		KeyLocator: keychain.KeyLocator{
+			// Pre-rotation key family / index.
+			Family: keychain.KeyFamily(9),
+			Index:  3,
+		},
+		PubKey: historicalPubKey,
+	}
+
+	// currentKey is what the actor would sign with after a rotation
+	// of the configured sweep-key family. A pre-fix sweeper signs
+	// with this key and produces a broken witness.
+	currentPubKey, _ := testutils.CreateKey(8)
+	currentKey := keychain.KeyDescriptor{
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamily(200),
+			Index:  1,
+		},
+		PubKey: currentPubKey,
+	}
+
+	internalKey, _ := testutils.CreateKey(1)
+	node := &treepkg.Node{
+		CoSigners: []*btcec.PublicKey{
+			internalKey,
+		},
+	}
+
+	txOut := wire.NewTxOut(1000, []byte{0x51})
+	outpoint := wire.OutPoint{Index: 0}
+	treeState := &batchwatcher.BatchTreeState{
+		ExpiryHeight: 100,
+		SweepKey:     historicalKey,
+		ExistingOutputs: map[wire.OutPoint]*batchwatcher.Output{
+			outpoint: {
+				Outpoint:        outpoint,
+				TxOut:           txOut,
+				ConfirmedHeight: 100,
+				IsVTXO:          false,
+				TreeNode:        node,
+				OutputIndex:     0,
+			},
+		},
+	}
+
+	mockWatcher := &mockBatchWatcherRef{
+		resp: &batchwatcher.GetTreeStateResponse{
+			Found:     true,
+			TreeState: treeState,
+		},
+	}
+
+	mockChainSource := &mockChainSourceRef{
+		bestHeightResp: &chainsource.BestHeightResponse{
+			Height: 115,
+		},
+		feeEstimateResp: &chainsource.FeeEstimateResponse{
+			SatPerVByte: btcutil.Amount(2),
+		},
+	}
+
+	var capturedKey keychain.KeyDescriptor
+	cfg := &ActorConfig{
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: mockWatcher,
+		ChainSource:  mockChainSource,
+		SweepDelay:   10,
+		// Misconfigure the actor with the post-rotation key to
+		// reproduce the production scenario where the daemon
+		// restarted with a new sweep-key family while pre-rotation
+		// batches were still pending.
+		SweepKey: currentKey,
+		SelfRef:  &nopSelfRef{},
+		BuildSweepTx: func(_ []*batchwatcher.Output,
+			sweepKey keychain.KeyDescriptor, _ btcutil.Amount) (
+			*wire.MsgTx, error) {
+
+			capturedKey = sweepKey
+
+			tx := wire.NewMsgTx(2)
+			tx.AddTxIn(&wire.TxIn{PreviousOutPoint: outpoint})
+			tx.AddTxOut(wire.NewTxOut(900, []byte{0x51}))
+
+			return tx, nil
+		},
+	}
+
+	a := NewActor(cfg)
+
+	result := a.Receive(t.Context(), &BatchExpiredEvent{
+		Notification: &batchwatcher.BatchExpiredNotification{
+			BatchID:      batchID,
+			ExpiryHeight: 100,
+		},
+	})
+	require.True(t, result.IsOk())
+
+	// The captured key must match the historical key (registered with
+	// the watcher), not the actor's current configured key. This is
+	// the assertion that catches the bug: pre-fix the sweeper signed
+	// with cfg.SweepKey, so capturedKey would equal currentKey.
+	require.Equal(
+		t, historicalKey, capturedKey, "sweeper must sign with the "+
+			"key descriptor that derived the historical "+
+			"tapleaf, not the configured key",
+	)
+	require.NotEqual(t, currentKey, capturedKey)
+}
+
+// newMockTreeState builds a single-output tree state suitable for
+// driving trySweep through a BatchExpiredEvent. The output is CSV-
+// mature against bestHeight=115.
+func newMockTreeState(persisted keychain.KeyDescriptor) (
+	*batchwatcher.BatchTreeState, wire.OutPoint) {
+
+	internalKey, _ := testutils.CreateKey(1)
+	node := &treepkg.Node{
+		CoSigners: []*btcec.PublicKey{
+			internalKey,
+		},
+	}
+
+	txOut := wire.NewTxOut(1000, []byte{0x51})
+	outpoint := wire.OutPoint{Index: 0}
+
+	return &batchwatcher.BatchTreeState{
+		ExpiryHeight: 100,
+		SweepKey:     persisted,
+		ExistingOutputs: map[wire.OutPoint]*batchwatcher.Output{
+			outpoint: {
+				Outpoint:        outpoint,
+				TxOut:           txOut,
+				ConfirmedHeight: 100,
+				IsVTXO:          false,
+				TreeNode:        node,
+				OutputIndex:     0,
+			},
+		},
+	}, outpoint
+}
+
+// TestTrySweepPreMigrationFallback covers the post-#388 fallback policy
+// for tree states whose persisted SweepKey carries only a pubkey (i.e.
+// rounds inserted before the sweep_key_family / sweep_key_index columns
+// existed). When the configured key still has the same pubkey, the
+// configured locator is by definition the historical one and signing
+// with it is safe; the sweeper proceeds with a WarnS pointing at the
+// missing-locator gap. When the pubkeys differ, the configured key has
+// been rotated and signing with it would strand the batch the same way
+// #388 originally described, so the sweeper refuses to broadcast.
+func TestTrySweepPreMigrationFallback(t *testing.T) {
+	t.Parallel()
+
+	historicalPubKey, _ := testutils.CreateKey(11)
+	otherPubKey, _ := testutils.CreateKey(12)
+
+	t.Run("pubkey match uses configured key", func(t *testing.T) {
+		t.Parallel()
+
+		// Configured key has both pubkey + locator; persisted side
+		// has only the pubkey because the row predates the
+		// migration. The configured locator matches because the
+		// operator has not rotated the key.
+		configuredKey := keychain.KeyDescriptor{
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(200),
+				Index:  1,
+			},
+			PubKey: historicalPubKey,
+		}
+		persisted := keychain.KeyDescriptor{PubKey: historicalPubKey}
+
+		treeState, outpoint := newMockTreeState(persisted)
+		mockWatcher := &mockBatchWatcherRef{
+			resp: &batchwatcher.GetTreeStateResponse{
+				Found:     true,
+				TreeState: treeState,
+			},
+		}
+		mockChainSource := &mockChainSourceRef{
+			bestHeightResp: &chainsource.BestHeightResponse{
+				Height: 115,
+			},
+			feeEstimateResp: &chainsource.FeeEstimateResponse{
+				SatPerVByte: btcutil.Amount(2),
+			},
+		}
+
+		var capturedKey keychain.KeyDescriptor
+		cfg := &ActorConfig{
+			Log:          fn.Some(btclog.Disabled),
+			BatchWatcher: mockWatcher,
+			ChainSource:  mockChainSource,
+			SweepDelay:   10,
+			SweepKey:     configuredKey,
+			SelfRef:      &nopSelfRef{},
+			BuildSweepTx: func(_ []*batchwatcher.Output,
+				sweepKey keychain.KeyDescriptor,
+				_ btcutil.Amount) (*wire.MsgTx, error) {
+
+				capturedKey = sweepKey
+
+				tx := wire.NewMsgTx(2)
+				tx.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: outpoint,
+				})
+				tx.AddTxOut(wire.NewTxOut(900, []byte{0x51}))
+
+				return tx, nil
+			},
+		}
+
+		a := NewActor(cfg)
+		batchID := batchwatcher.BatchID(uuid.New())
+
+		result := a.Receive(t.Context(), &BatchExpiredEvent{
+			Notification: &batchwatcher.BatchExpiredNotification{
+				BatchID:      batchID,
+				ExpiryHeight: 100,
+			},
+		})
+		require.True(t, result.IsOk())
+
+		require.Equal(t, configuredKey, capturedKey)
+		require.NotNil(
+			t, mockChainSource.LastBroadcast(),
+			"matching pubkey must allow broadcast",
+		)
+	})
+
+	t.Run("pubkey mismatch refuses to sweep", func(t *testing.T) {
+		t.Parallel()
+
+		// Configured key has been rotated since the round was
+		// finalized: persisted pubkey points at the old operator
+		// key, configured pubkey is the new one. Signing with the
+		// configured key would produce a witness that does not
+		// satisfy the historical tapleaf, which is exactly the
+		// wrong-key case from #388.
+		configuredKey := keychain.KeyDescriptor{
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(200),
+				Index:  1,
+			},
+			PubKey: otherPubKey,
+		}
+		persisted := keychain.KeyDescriptor{PubKey: historicalPubKey}
+
+		treeState, _ := newMockTreeState(persisted)
+		mockWatcher := &mockBatchWatcherRef{
+			resp: &batchwatcher.GetTreeStateResponse{
+				Found:     true,
+				TreeState: treeState,
+			},
+		}
+		mockChainSource := &mockChainSourceRef{
+			bestHeightResp: &chainsource.BestHeightResponse{
+				Height: 115,
+			},
+			feeEstimateResp: &chainsource.FeeEstimateResponse{
+				SatPerVByte: btcutil.Amount(2),
+			},
+		}
+
+		var builderInvocations int
+		cfg := &ActorConfig{
+			Log:          fn.Some(btclog.Disabled),
+			BatchWatcher: mockWatcher,
+			ChainSource:  mockChainSource,
+			SweepDelay:   10,
+			SweepKey:     configuredKey,
+			SelfRef:      &nopSelfRef{},
+			BuildSweepTx: func(_ []*batchwatcher.Output,
+				_ keychain.KeyDescriptor, _ btcutil.Amount) (
+				*wire.MsgTx, error) {
+
+				builderInvocations++
+
+				return nil, errors.New("builder must not run " +
+					"on refuse")
+			},
+		}
+
+		a := NewActor(cfg)
+		batchID := batchwatcher.BatchID(uuid.New())
+
+		result := a.Receive(t.Context(), &BatchExpiredEvent{
+			Notification: &batchwatcher.BatchExpiredNotification{
+				BatchID:      batchID,
+				ExpiryHeight: 100,
+			},
+		})
+		// Receive itself returns Ok because handleSweepAttemptError
+		// swallows the refusal into a scheduled retry; the refusal
+		// is what we care about asserting downstream.
+		require.True(t, result.IsOk())
+
+		require.Equal(
+			t, 0, builderInvocations,
+			"sweeper must not build a tx with a mismatched key",
+		)
+		require.Nil(
+			t, mockChainSource.LastBroadcast(),
+			"sweeper must not broadcast on refuse",
+		)
+	})
+
+	t.Run("zero descriptor refuses to sweep", func(t *testing.T) {
+		t.Parallel()
+
+		// Worst case: nothing persisted. Even if the configured
+		// key is correct, we have no way to verify that, so the
+		// safer behaviour is to refuse and surface the gap to the
+		// operator.
+		configuredKey := keychain.KeyDescriptor{
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(200),
+				Index:  1,
+			},
+			PubKey: historicalPubKey,
+		}
+
+		treeState, _ := newMockTreeState(keychain.KeyDescriptor{})
+		mockWatcher := &mockBatchWatcherRef{
+			resp: &batchwatcher.GetTreeStateResponse{
+				Found:     true,
+				TreeState: treeState,
+			},
+		}
+		mockChainSource := &mockChainSourceRef{
+			bestHeightResp: &chainsource.BestHeightResponse{
+				Height: 115,
+			},
+			feeEstimateResp: &chainsource.FeeEstimateResponse{
+				SatPerVByte: btcutil.Amount(2),
+			},
+		}
+
+		var builderInvocations int
+		cfg := &ActorConfig{
+			Log:          fn.Some(btclog.Disabled),
+			BatchWatcher: mockWatcher,
+			ChainSource:  mockChainSource,
+			SweepDelay:   10,
+			SweepKey:     configuredKey,
+			SelfRef:      &nopSelfRef{},
+			BuildSweepTx: func(_ []*batchwatcher.Output,
+				_ keychain.KeyDescriptor, _ btcutil.Amount) (
+				*wire.MsgTx, error) {
+
+				builderInvocations++
+
+				return nil, errors.New("builder must not run " +
+					"on refuse")
+			},
+		}
+
+		a := NewActor(cfg)
+		batchID := batchwatcher.BatchID(uuid.New())
+
+		result := a.Receive(t.Context(), &BatchExpiredEvent{
+			Notification: &batchwatcher.BatchExpiredNotification{
+				BatchID:      batchID,
+				ExpiryHeight: 100,
+			},
+		})
+		require.True(t, result.IsOk())
+
+		require.Equal(
+			t, 0, builderInvocations,
+			"sweeper must not build a tx without key metadata",
+		)
+		require.Nil(
+			t, mockChainSource.LastBroadcast(),
+			"sweeper must not broadcast without key metadata",
+		)
+	})
 }

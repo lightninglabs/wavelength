@@ -32,14 +32,31 @@ func TestSignFailedBeforePointOfNoReturnUnlocks(t *testing.T) {
 	require.IsType(t, &UnlockInputsReq{}, outbox[0])
 }
 
-// TestSignFailedAfterPointOfNoReturnDoesNotUnlock asserts that failures after
-// CoSigned do not emit any unlock request.
+// TestSignFailedAfterPointOfNoReturnDoesNotUnlock asserts that a stale or
+// racing SignFailedEvent arriving after CoSigned does not emit an unlock
+// request and does not terminate the session: CoSignedState is the
+// point-of-no-return and must remain recoverable for finalize. Regression
+// test for issue #372 — terminating here would orphan the input locks
+// forever because FailedState ignores subsequent finalize retries.
 func TestSignFailedAfterPointOfNoReturnDoesNotUnlock(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
 
-	state := &CoSignedState{}
+	arkTx := wire.NewMsgTx(2)
+	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
+	require.NoError(t, err)
+
+	checkpoints := makeCheckpointPSBTs(t, wire.OutPoint{Index: 7})
+	state := &CoSignedState{
+		Inputs: []wire.OutPoint{
+			{
+				Index: 7,
+			},
+		},
+		ArkPSBT:                 arkPsbt,
+		CoSignedCheckpointPSBTs: checkpoints,
+	}
 
 	tr, err := state.ProcessEvent(
 		ctx, &SignFailedEvent{
@@ -51,7 +68,23 @@ func TestSignFailedAfterPointOfNoReturnDoesNotUnlock(t *testing.T) {
 	require.NotNil(t, tr)
 
 	outbox := collectOutbox(t, tr)
-	require.Empty(t, outbox)
+	require.Empty(
+		t, outbox,
+		"no unlock may be emitted after the point-of-no-return",
+	)
+
+	// The FSM must stay in CoSignedState so the session remains
+	// recoverable; transitioning to FailedState would orphan the locks
+	// because FailedState ignores all subsequent events.
+	next, ok := tr.NextState.(*CoSignedState)
+	require.True(
+		t, ok, "expected CoSignedState, got %T", tr.NextState,
+	)
+	require.False(
+		t, next.IsTerminal(),
+		"CoSignedState must remain non-terminal so finalize can "+
+			"still be retried",
+	)
 }
 
 // TestInputsLockSucceededEventEmitsCoSign asserts locking success advances to
@@ -187,6 +220,133 @@ func TestAwaitingFinalizeValidationRetryKeepsCanonicalPackage(t *testing.T) {
 	require.True(t, ok)
 	require.Same(t, arkPsbt, validateReq.ArkPSBT)
 	require.Equal(t, storedCheckpoints, validateReq.FinalCheckpointPSBTs)
+}
+
+// TestFinalizeFailedAfterPointOfNoReturnStaysRecoverable asserts that a
+// finalize-validation failure after the point-of-no-return falls back to
+// CoSignedState (carrying the failure reason) rather than transitioning to
+// the terminal FailedState. The recoverable state preserves the input locks
+// — which must not be released after co-sign — while still permitting the
+// client to resubmit a corrected finalize package. Regression test for
+// issue #372: terminating here would orphan the input locks forever because
+// FailedState ignores all subsequent FinalizeRequestedEvents.
+func TestFinalizeFailedAfterPointOfNoReturnStaysRecoverable(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkTx := wire.NewMsgTx(2)
+	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
+	require.NoError(t, err)
+
+	inputs := []wire.OutPoint{{Index: 13}}
+	coSigned := makeCheckpointPSBTs(t, wire.OutPoint{Index: 13})
+	finalCheckpoints := makeCheckpointPSBTs(t, wire.OutPoint{Index: 13})
+
+	state := &AwaitingFinalizeValidationState{
+		Inputs:                  inputs,
+		ArkPSBT:                 arkPsbt,
+		CoSignedCheckpointPSBTs: coSigned,
+		FinalCheckpointPSBTs:    finalCheckpoints,
+	}
+
+	tr, err := state.ProcessEvent(ctx, &FinalizeFailedEvent{
+		Reason: "bad signature",
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+
+	// We must NOT enter the terminal FailedState; locks would orphan.
+	_, isFailed := tr.NextState.(*FailedState)
+	require.False(
+		t, isFailed, "finalize failure after point-of-no-return "+
+			"must not reach the terminal FailedState",
+	)
+
+	next, ok := tr.NextState.(*CoSignedState)
+	require.True(
+		t, ok, "expected CoSignedState fallback, got %T", tr.NextState,
+	)
+	require.False(
+		t, next.IsTerminal(),
+		"fallback state must be non-terminal so finalize can be "+
+			"retried",
+	)
+
+	// State must carry the data needed for a retry plus the failure
+	// reason for the caller-visible error.
+	require.Same(t, arkPsbt, next.ArkPSBT)
+	require.Equal(t, inputs, next.Inputs)
+	require.Equal(t, coSigned, next.CoSignedCheckpointPSBTs)
+	require.Equal(t, "bad signature", next.LastFinalizeFailureReason)
+
+	// No outbox: in particular no UnlockInputsReq may be emitted past
+	// the point-of-no-return.
+	require.Empty(t, collectOutbox(t, tr))
+}
+
+// TestCoSignedStateAcceptsFinalizeRetryAfterFailure end-to-end asserts the
+// recovery path is wired: a failed finalize lands back in CoSignedState, and
+// a subsequent FinalizeRequestedEvent from the same state successfully
+// re-enters AwaitingFinalizeValidationState with a fresh ValidateFinalizeReq.
+// Without the fix, the session would be terminal and the retry would be
+// silently dropped by FailedState. Regression test for issue #372.
+func TestCoSignedStateAcceptsFinalizeRetryAfterFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkTx := wire.NewMsgTx(2)
+	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
+	require.NoError(t, err)
+
+	inputs := []wire.OutPoint{{Index: 99}}
+	coSigned := makeCheckpointPSBTs(t, wire.OutPoint{Index: 99})
+
+	// Step 1: a finalize attempt fails validation.
+	awaitingValidation := &AwaitingFinalizeValidationState{
+		Inputs:                  inputs,
+		ArkPSBT:                 arkPsbt,
+		CoSignedCheckpointPSBTs: coSigned,
+		FinalCheckpointPSBTs: makeCheckpointPSBTs(
+			t, wire.OutPoint{
+				Index: 99,
+			},
+		),
+	}
+	failTr, err := awaitingValidation.ProcessEvent(
+		ctx, &FinalizeFailedEvent{
+			Reason: "malformed package",
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	recovered, ok := failTr.NextState.(*CoSignedState)
+	require.True(t, ok)
+
+	// Step 2: the client retries finalize with a corrected package; the
+	// FSM must accept it and emit a fresh validation request.
+	retryCheckpoints := makeCheckpointPSBTs(t, wire.OutPoint{Index: 99})
+	retryTr, err := recovered.ProcessEvent(ctx, &FinalizeRequestedEvent{
+		FinalCheckpointPSBTs: retryCheckpoints,
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, retryTr)
+
+	nextState, ok := retryTr.NextState.(*AwaitingFinalizeValidationState)
+	require.True(
+		t, ok, "expected AwaitingFinalizeValidationState on retry, "+
+			"got %T", retryTr.NextState,
+	)
+	require.Same(t, arkPsbt, nextState.ArkPSBT)
+	require.Equal(t, retryCheckpoints, nextState.FinalCheckpointPSBTs)
+
+	outbox := collectOutbox(t, retryTr)
+	require.Len(t, outbox, 1)
+	validateReq, ok := outbox[0].(*ValidateFinalizeReq)
+	require.True(t, ok)
+	require.Same(t, arkPsbt, validateReq.ArkPSBT)
+	require.Equal(t, retryCheckpoints, validateReq.FinalCheckpointPSBTs)
 }
 
 // TestAwaitingFinalizeValidationRetryRejectsMismatchedPackage asserts finalize

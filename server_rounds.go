@@ -575,6 +575,23 @@ func (s *Server) restoreConfirmedBatchWatches(ctx context.Context,
 		confirmationHeight := uint32(confirmed.ConfirmationHeight)
 		expiryHeight := confirmationHeight + round.CSVDelay
 
+		// Reconstruct the descriptor used to derive the sweep
+		// tapleaf at finalization. Post-migration rows yield a
+		// fully populated descriptor. Pre-migration rows carry
+		// only the pubkey; the sweeper compares it against its
+		// configured key to decide whether the configured locator
+		// is safe to use, and refuses to sign on mismatch rather
+		// than silently using a rotated key.
+		var sweepKey keychain.KeyDescriptor
+		if round.SweepKey != nil {
+			sweepKey = keychain.KeyDescriptor{
+				PubKey: round.SweepKey,
+			}
+			if round.SweepKeyLocator != nil {
+				sweepKey.KeyLocator = *round.SweepKeyLocator
+			}
+		}
+
 		for outputIdx, vtxoTree := range round.VTXOTrees {
 			batchID := batchwatcher.BatchIDForRoundOutput(
 				uuid.UUID(round.RoundID), outputIdx,
@@ -586,6 +603,7 @@ func (s *Server) restoreConfirmedBatchWatches(ctx context.Context,
 					Tree:               vtxoTree,
 					ConfirmationHeight: confirmationHeight,
 					ExpiryHeight:       expiryHeight,
+					SweepKey:           sweepKey,
 				},
 			)
 			if err != nil {

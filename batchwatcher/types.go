@@ -4,6 +4,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // cloneMsgTx returns a deep copy of a *wire.MsgTx suitable for stashing in
@@ -155,6 +156,16 @@ type BatchTreeState struct {
 	// becomes sweepable by the operator.
 	ExpiryHeight uint32
 
+	// SweepKey is the operator key descriptor that derived the sweep
+	// tapleaf committed in Tree. The batch sweeper uses it to sign the
+	// timeout spend so a configured-key rotation cannot strand
+	// pre-rotation batches by pointing the signer at a key the
+	// historical tapleaf does not commit to. A zero descriptor (PubKey
+	// == nil) signals "locator unknown" -- e.g. a pre-migration round
+	// restored without a persisted locator -- and downstream code must
+	// fall back to its configured sweep key.
+	SweepKey keychain.KeyDescriptor
+
 	// SpentNodes tracks which tree transactions have been confirmed
 	// on-chain. The key is the txid of the spent transaction.
 	SpentNodes map[chainhash.Hash]struct{}
@@ -275,6 +286,7 @@ func (b *BatchTreeState) Clone() *BatchTreeState {
 		// Tree is shallow-copied; it is immutable after registration.
 		Tree:         b.Tree,
 		ExpiryHeight: b.ExpiryHeight,
+		SweepKey:     b.SweepKey,
 		SpentNodes: make(
 			map[chainhash.Hash]struct{}, len(b.SpentNodes),
 		),

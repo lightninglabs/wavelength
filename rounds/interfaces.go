@@ -17,6 +17,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
@@ -213,6 +214,21 @@ type Round struct {
 	// SweepKey is the operator public key used in VTXO sweep timeout
 	// scripts. Required to reconstruct sweep scripts for unilateral exits.
 	SweepKey *btcec.PublicKey
+
+	// SweepKeyLocator records the LND key locator (family + index) that
+	// derived SweepKey at round-construction time. Persisted alongside
+	// the compressed public key so the batch sweeper can request a
+	// signature with the matching historical key descriptor even after
+	// the operator rotates the configured sweep-key family or index.
+	// Without the locator, an upgrade or config change would point the
+	// signer at a different key, producing a witness that does not
+	// satisfy the tapleaf committed in the persisted tree and stranding
+	// pre-upgrade batches.
+	//
+	// Nil for rounds persisted before this field existed; callers must
+	// fall back to the configured sweep key for those rows and log the
+	// locator gap so it is visible to operators.
+	SweepKeyLocator *keychain.KeyLocator
 
 	// CSVDelay is the relative timelock in blocks for the VTXO sweep
 	// timeout path. Required to reconstruct sweep scripts.

@@ -45,6 +45,7 @@ func TestDefaultConfigIncludesMailboxConfig(t *testing.T) {
 	require.NotNil(t, cfg.Mailbox)
 	require.Zero(t, cfg.Mailbox.MaxEnvelopeBytes)
 	require.Zero(t, cfg.Mailbox.MaxEnvelopesPerMailbox)
+	require.True(t, cfg.Mailbox.RequireTLSBindingSig)
 }
 
 // TestDefaultConfigEnablesClientGateway ensures the client HTTP gateway is

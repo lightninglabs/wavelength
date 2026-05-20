@@ -6,8 +6,8 @@
 INSERT INTO rounds (
 	round_id, final_tx, commitment_txid, confirmation_height,
 	confirmation_block_hash, status, sweep_key, csv_delay, created_at,
-	updated_at, change_output_idx
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+	updated_at, change_output_idx, sweep_key_family, sweep_key_index
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13);
 
 -- name: InsertRoundConnectorOutput :exec
 INSERT INTO round_connector_outputs (round_id, output_index)

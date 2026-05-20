@@ -10,6 +10,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // State is a sealed interface for all states in the round state machine.
@@ -746,6 +747,18 @@ type FinalizedState struct {
 	// reloaded from persistence without the PSBT (the ledger
 	// handler skips the leg on zero).
 	MiningFeeSat int64
+
+	// SweepKey captures the operator key descriptor that derived the
+	// sweep tapleaf committed in this round's VTXO trees at finalization
+	// time. It is threaded through to ConfirmedState and on to the batch
+	// watcher so the per-batch sweeper signs the timeout spend with the
+	// historical key descriptor rather than whatever sweep key the
+	// rounds actor happens to be configured with at restart. A nil
+	// PubKey signals "locator unknown" -- e.g. a pre-migration round
+	// reloaded without a persisted locator -- and downstream callers
+	// must refuse to fall back to the configured key when its pubkey
+	// no longer matches the persisted one.
+	SweepKey keychain.KeyDescriptor
 }
 
 // String returns a human-readable representation of FinalizedState.
@@ -801,6 +814,14 @@ type ConfirmedState struct {
 
 	// BlockHash is the hash of the block containing the transaction.
 	BlockHash chainhash.Hash
+
+	// SweepKey carries the operator key descriptor that derived the
+	// sweep tapleaf committed in VTXOTrees, propagated from
+	// FinalizedState so the post-confirmation batch-watcher
+	// registration uses the historical descriptor rather than the
+	// currently-configured sweep key. A nil PubKey signals
+	// "locator unknown" for a pre-migration round.
+	SweepKey keychain.KeyDescriptor
 }
 
 // String returns a human-readable representation of ConfirmedState.

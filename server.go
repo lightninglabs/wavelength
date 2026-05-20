@@ -155,6 +155,15 @@ type Server struct {
 	// the operator key is immutable.
 	operatorMailboxID string
 
+	// mailboxTLSBindings records, per Schnorr-verified mailbox
+	// identity, the SHA-256 fingerprint of the TLS leaf certificate
+	// the client presented during its first authenticated contact.
+	// The mailbox auth interceptor consults this registry instead of
+	// the certificate Subject CommonName, which is unauthenticated
+	// free text and was the source of the forged-identity issue
+	// tracked in issue #362.
+	mailboxTLSBindings *mailboxTLSBindings
+
 	// forfeitScript is the P2TR output script that clients must
 	// use for the penalty output in forfeit transactions. Derived
 	// from the operator key during rounds setup.
@@ -291,9 +300,10 @@ func NewServer(cfg *Config) (*Server, error) {
 	}
 
 	return &Server{
-		cfg:  cfg,
-		log:  cfg.Log.UnwrapOr(btclog.Disabled),
-		quit: make(chan struct{}),
+		cfg:                cfg,
+		log:                cfg.Log.UnwrapOr(btclog.Disabled),
+		quit:               make(chan struct{}),
+		mailboxTLSBindings: newMailboxTLSBindings(),
 	}, nil
 }
 

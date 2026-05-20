@@ -1580,6 +1580,141 @@ func TestActorLoadPendingRounds(t *testing.T) {
 		h.assertRoundCount(1)
 		h.assertCurrentRoundExists()
 	})
+
+	// Regression: the post-restart FinalizedState must carry the
+	// per-round sweep descriptor (pubkey + locator) so a confirmation
+	// arriving after a sweep-key rotation pins the historical key to
+	// the batch-watcher registration rather than picking up the
+	// currently configured key from Terms.SweepKey. Without this
+	// thread, fix/388 still strands batches in the
+	// finalized-but-not-yet-confirmed window.
+	t.Run("restores per-round sweep key locator", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+
+		// Build a sweep key that differs from h.cfg.Terms.SweepKey
+		// so we can distinguish "carried through from the
+		// persisted round" from "picked up from the actor config".
+		historicalPub, _ := testutils.CreateKey(42)
+		historicalLoc := keychain.KeyLocator{
+			Family: keychain.KeyFamily(7),
+			Index:  3,
+		}
+
+		persistedRoundID, err := NewRoundID()
+		require.NoError(t, err)
+
+		finalTx := wire.NewMsgTx(2)
+		finalTx.AddTxOut(&wire.TxOut{
+			Value:    100000,
+			PkScript: []byte{0x00, 0x14, 0x01, 0x02, 0x03},
+		})
+
+		persistedRound := &Round{
+			RoundID: persistedRoundID,
+			FinalTx: finalTx,
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {},
+			},
+			SweepKey:        historicalPub,
+			SweepKeyLocator: &historicalLoc,
+			CSVDelay:        h.cfg.Terms.SweepDelay,
+		}
+
+		h.setActiveRounds([]*Round{persistedRound})
+		h.start(h.ctx)
+
+		loadedRound := h.actor.getRound(persistedRoundID)
+		require.NotNil(t, loadedRound)
+
+		currentState, err := loadedRound.FSM.CurrentState()
+		require.NoError(t, err)
+
+		finalized, ok := currentState.(*FinalizedState)
+		require.True(t, ok)
+
+		require.True(
+			t, historicalPub.IsEqual(finalized.SweepKey.PubKey),
+			"restored FinalizedState must carry the persisted "+
+				"sweep pubkey, not the configured one",
+		)
+		require.Equal(
+			t, historicalLoc, finalized.SweepKey.KeyLocator, "re"+
+				"stored FinalizedState must carry the "+
+				"persisted sweep key locator, not the "+
+				"configured one",
+		)
+
+		// And the configured key really must differ, otherwise the
+		// assertion above does not actually prove anything.
+		require.False(
+			t, historicalPub.IsEqual(h.cfg.Terms.SweepKey.PubKey),
+		)
+	})
+
+	// Pre-migration row: locator nil, pubkey present. The restored
+	// FinalizedState carries the pubkey (so the batchsweeper can do
+	// the pubkey-match check) with a zero locator (so the sweeper
+	// can detect "locator unknown" and refuse on mismatch).
+	t.Run(
+		"restores pre-migration row with nil locator",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+
+			historicalPub, _ := testutils.CreateKey(43)
+
+			persistedRoundID, err := NewRoundID()
+			require.NoError(t, err)
+
+			finalTx := wire.NewMsgTx(2)
+			finalTx.AddTxOut(&wire.TxOut{
+				Value:    100000,
+				PkScript: []byte{0x00, 0x14, 0x01, 0x02, 0x03},
+			})
+
+			clientRegs := map[ClientID]*ClientRegistration{
+				"client1": {},
+			}
+			persistedRound := &Round{
+				RoundID:             persistedRoundID,
+				FinalTx:             finalTx,
+				ClientRegistrations: clientRegs,
+				SweepKey:            historicalPub,
+				SweepKeyLocator:     nil,
+				CSVDelay:            h.cfg.Terms.SweepDelay,
+			}
+
+			h.setActiveRounds([]*Round{persistedRound})
+			h.start(h.ctx)
+
+			loadedRound := h.actor.getRound(persistedRoundID)
+			require.NotNil(t, loadedRound)
+
+			currentState, err := loadedRound.FSM.CurrentState()
+			require.NoError(t, err)
+
+			finalized, ok := currentState.(*FinalizedState)
+			require.True(t, ok)
+
+			require.True(
+				t, historicalPub.IsEqual(
+					finalized.SweepKey.PubKey,
+				),
+				"pre-migration row must restore its "+
+					"persisted pubkey",
+			)
+			require.Equal(
+				t, keychain.KeyLocator{},
+				finalized.SweepKey.KeyLocator, "pre-migratio"+
+					"n row must restore with zero "+
+					"locator so the sweeper detects "+
+					"locator-unknown",
+			)
+		},
+	)
 }
 
 // TestActorBroadcastAndConfirmation tests the actor's handling of transaction
@@ -1646,7 +1781,11 @@ func TestActorBroadcastAndConfirmation(t *testing.T) {
 
 		h := newActorTestHarness(t)
 
-		// Create a round in FinalizedState.
+		// Create a round in FinalizedState. Use a sweep key
+		// distinct from h.cfg.Terms.SweepKey so the
+		// ConfirmedState carry-through assertion below actually
+		// proves the per-round descriptor is what flows into the
+		// batch-watcher registration path.
 		persistedRoundID, err := NewRoundID()
 		require.NoError(t, err)
 
@@ -1656,6 +1795,12 @@ func TestActorBroadcastAndConfirmation(t *testing.T) {
 			PkScript: []byte{0x00, 0x14, 0x01, 0x02, 0x03},
 		})
 
+		historicalPub, _ := testutils.CreateKey(99)
+		historicalLoc := keychain.KeyLocator{
+			Family: keychain.KeyFamily(9),
+			Index:  5,
+		}
+
 		persistedRound := &Round{
 			RoundID:   persistedRoundID,
 			FinalTx:   finalTx,
@@ -1663,8 +1808,9 @@ func TestActorBroadcastAndConfirmation(t *testing.T) {
 			ClientRegistrations: map[ClientID]*ClientRegistration{
 				"client1": {},
 			},
-			SweepKey: h.cfg.Terms.SweepKey.PubKey,
-			CSVDelay: h.cfg.Terms.SweepDelay,
+			SweepKey:        historicalPub,
+			SweepKeyLocator: &historicalLoc,
+			CSVDelay:        h.cfg.Terms.SweepDelay,
 		}
 
 		// Load the round and start the actor.
@@ -1701,6 +1847,20 @@ func TestActorBroadcastAndConfirmation(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, int32(100), confirmed.BlockHeight)
 		require.Equal(t, blockHash, confirmed.BlockHash)
+
+		// And, critically for fix/388: ConfirmedState carries the
+		// per-round sweep descriptor end-to-end across the
+		// restart, not h.cfg.Terms.SweepKey.
+		require.True(
+			t, historicalPub.IsEqual(confirmed.SweepKey.PubKey),
+			"ConfirmedState must carry the persisted sweep "+
+				"pubkey to the batch-watcher path",
+		)
+		require.Equal(
+			t, historicalLoc, confirmed.SweepKey.KeyLocator, "Co"+
+				"nfirmedState must carry the persisted "+
+				"sweep locator to the batch-watcher path",
+		)
 	})
 
 	t.Run("confirmation for unknown round ignored", func(t *testing.T) {

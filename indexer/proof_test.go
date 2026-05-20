@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
 
@@ -261,4 +263,91 @@ func TestValidateProofMessageScopedAcceptsEmptyPkScript(t *testing.T) {
 		testProofPrincipal, purposeOORRecipientEvents,
 	)
 	require.NoError(t, err)
+}
+
+// encodeTLVBigSize encodes a uint64 using the same BigSize varint format
+// the lnd/tlv package uses for record types and lengths. It exists so the
+// DoS-vector tests below can hand-craft pathological TLV streams that the
+// regular encoder would never emit.
+func encodeTLVBigSize(t *testing.T, val uint64) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	var scratch [8]byte
+	require.NoError(t, tlv.WriteVarInt(&buf, val, &scratch))
+
+	return buf.Bytes()
+}
+
+// TestParseReceiveScriptProofMessageRejectsOversizedEnvelope asserts that
+// a proof message whose total wire size exceeds maxProofMessageSize is
+// rejected before any TLV record is parsed. This is the defense-in-depth
+// outer bound that complements the per-record cap from DecodeP2P.
+func TestParseReceiveScriptProofMessageRejectsOversizedEnvelope(t *testing.T) {
+	t.Parallel()
+
+	// Exactly-at-limit must not be rejected by the size check (it may
+	// still fail downstream parsing, but not with "too large").
+	atLimit := make([]byte, maxProofMessageSize)
+	_, err := parseReceiveScriptProofMessage(atLimit)
+	if err != nil {
+		require.NotContains(t, err.Error(), "proof message too large")
+	}
+
+	// One byte over the limit must be rejected immediately with the
+	// size error, without invoking the TLV decoder.
+	overLimit := make([]byte, maxProofMessageSize+1)
+	_, err = parseReceiveScriptProofMessage(overLimit)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "proof message too large")
+}
+
+// TestParseReceiveScriptProofMessageRejectsOversizedRecord asserts that
+// a tiny TLV envelope which declares a multi-gigabyte record length is
+// rejected promptly (issue #368). Without DecodeP2P the underlying
+// tlv.DVarBytes decoder would attempt to allocate a buffer the size of
+// the declared length, which is the exact DoS vector this fix closes.
+func TestParseReceiveScriptProofMessageRejectsOversizedRecord(t *testing.T) {
+	t.Parallel()
+
+	// Build a TLV stream containing a single record of type
+	// proofTLVTypePkScript with a declared length of 1 PiB. The actual
+	// value bytes are omitted entirely: a hardened decoder must refuse
+	// the record based on its declared length and never attempt the
+	// allocation.
+	//
+	// 1 PiB is intentionally large enough to make Go's runtime panic
+	// with "makeslice: len out of range" if the decoder ever calls
+	// make([]byte, length) directly (as the unfixed tlv.DVarBytes path
+	// does). DecodeP2P short-circuits the length check, returning
+	// ErrRecordTooLarge before any allocation is attempted.
+	var payload bytes.Buffer
+	payload.Write(encodeTLVBigSize(t, uint64(proofTLVTypePkScript)))
+	payload.Write(encodeTLVBigSize(t, 1<<50))
+
+	// Sanity: confirm the malicious envelope is tiny so it would slip
+	// past any naive byte-length check that only inspects the outer
+	// payload.
+	require.Less(t, payload.Len(), 16)
+
+	_, err := parseReceiveScriptProofMessage(payload.Bytes())
+	require.Error(t, err)
+
+	// The underlying error from DecodeP2P is ErrRecordTooLarge; we
+	// match on the wrapping context so the assertion is robust to
+	// upstream error-text tweaks.
+	require.Contains(t, err.Error(), "decode TLV proof")
+}
+
+// TestParseReceiveScriptProofMessageAcceptsEmpty asserts an empty
+// payload decodes cleanly (zero records). All TLV fields are optional
+// at the decoder layer; semantic validation rejects missing fields
+// later in the pipeline, but the decoder itself must not error on
+// zero-length input.
+func TestParseReceiveScriptProofMessageAcceptsEmpty(t *testing.T) {
+	t.Parallel()
+
+	msg, err := parseReceiveScriptProofMessage(nil)
+	require.NoError(t, err)
+	require.NotNil(t, msg)
 }

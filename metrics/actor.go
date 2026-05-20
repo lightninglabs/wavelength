@@ -209,6 +209,13 @@ func (a *MetricsActor) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
 			m.ServiceMethod,
 		).Observe(m.Duration.Seconds())
 
+	case *BatchWatcherRegisterFailedMsg:
+		// Bump the counter once per failed batch so the operator
+		// alert fires proportionally to the number of unwatched
+		// trees, not just per-round. The handler in `rounds`
+		// guarantees BatchCount >= 1.
+		BatchWatcherRegisterFailures.Add(float64(m.BatchCount))
+
 	case *ClientStatusChangedMsg:
 		if m.Online {
 			ConnectedClients.Inc()

@@ -296,6 +296,31 @@ func (m *DispatchCompletedMsg) MessageType() string {
 
 func (m *DispatchCompletedMsg) metricsMsgSealed() {}
 
+// BatchWatcherRegisterFailedMsg is sent when registration of one or
+// more VTXO trees with the BatchWatcher actor fails at round
+// confirmation, even after the bounded enqueue retry. Each message
+// represents `BatchCount` batches that will NOT be monitored on-chain
+// (no fraud/expiry response). The metrics actor increments the
+// BatchWatcherRegisterFailures counter by BatchCount so operator
+// alerts fire on any non-zero rate.
+type BatchWatcherRegisterFailedMsg struct {
+	actor.BaseMessage
+
+	// RoundID identifies the round whose batch registration failed.
+	RoundID string
+
+	// BatchCount is the number of batches in the round that could
+	// not be enqueued with the watcher. At least 1.
+	BatchCount int
+}
+
+// MessageType implements actor.Message.
+func (m *BatchWatcherRegisterFailedMsg) MessageType() string {
+	return "metrics.BatchWatcherRegisterFailed"
+}
+
+func (m *BatchWatcherRegisterFailedMsg) metricsMsgSealed() {}
+
 // ClientStatusChangedMsg is sent when a client transitions between
 // online and offline status.
 type ClientStatusChangedMsg struct {

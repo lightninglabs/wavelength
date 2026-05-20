@@ -131,6 +131,12 @@ func (s *ValidatedState) stateSealed() {}
 // CoSignedState retains the Ark PSBT so finalization can validate the final
 // checkpoint package without requiring per-session state in the outbox
 // handler.
+//
+// CoSignedState is also the recovery anchor after a failed finalize attempt:
+// because the inputs are past the point-of-no-return, an invalid or racing
+// finalize package must not unlock the inputs and must not terminate the
+// session — instead the FSM falls back to CoSignedState so the client can
+// resubmit a corrected finalize package. See issue #372.
 type CoSignedState struct {
 	// Inputs are the VTXO outpoints spent by the checkpoint transactions.
 	Inputs []wire.OutPoint
@@ -140,6 +146,15 @@ type CoSignedState struct {
 
 	// CoSignedCheckpointPSBTs are checkpoint PSBTs after operator co-sign.
 	CoSignedCheckpointPSBTs []*psbt.Packet
+
+	// LastFinalizeFailureReason stores the most recent finalize-package
+	// validation failure reason, if any. Populated when finalize validation
+	// rejects a client-supplied package and we fall back to CoSignedState
+	// to allow retry. The field is in-memory only; it is intentionally not
+	// persisted because after a restart we want a clean slate for the next
+	// finalize attempt. An empty string means no failure has been recorded
+	// for the current attempt window.
+	LastFinalizeFailureReason string
 }
 
 // String returns a human-readable representation of CoSignedState.
