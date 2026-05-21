@@ -41,6 +41,7 @@ var allSubsystems = []string{
 	WalletRPCSubsystem,
 	"TXCF",
 	"UNRL",
+	VHTLCRecoverySubsystem,
 }
 
 const (
@@ -54,6 +55,10 @@ const (
 	// swap runtime and ark/leave subsystems). It is exported so the
 	// swapwallet package can reuse the daemon log manager.
 	WalletRPCSubsystem = "WRPC"
+
+	// VHTLCRecoverySubsystem is the subsystem tag used for vHTLC
+	// on-chain recovery coordination logs.
+	VHTLCRecoverySubsystem = "VREC"
 )
 
 // SetupLoggersWithShutdownFn registers all subsystem loggers using a plain

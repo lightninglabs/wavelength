@@ -178,6 +178,7 @@ type Querier interface {
 	ListUnspentVTXOAncestryPaths(ctx context.Context) ([]VtxoAncestryPath, error)
 	// Unspent requires both spent=false and status!=Spent(4).
 	ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error)
+	ListVHTLCRecoveryJobs(ctx context.Context) ([]VhtlcRecoveryJob, error)
 	// ListVTXOAncestryPaths returns the ancestry rows for one VTXO ordered by
 	// path_order so the unroller sees the fragments in the same sequence the
 	// indexer chose at materialization time.

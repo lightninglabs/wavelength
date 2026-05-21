@@ -88,6 +88,16 @@ type DaemonServiceMailboxServer interface {
 	Unroll(ctx context.Context, req *UnrollRequest) (*UnrollResponse, error)
 	// GetUnrollStatus handles GetUnrollStatus.
 	GetUnrollStatus(ctx context.Context, req *GetUnrollStatusRequest) (*GetUnrollStatusResponse, error)
+	// ArmVHTLCRecovery handles ArmVHTLCRecovery.
+	ArmVHTLCRecovery(ctx context.Context, req *ArmVHTLCRecoveryRequest) (*ArmVHTLCRecoveryResponse, error)
+	// EscalateVHTLCRecovery handles EscalateVHTLCRecovery.
+	EscalateVHTLCRecovery(ctx context.Context, req *EscalateVHTLCRecoveryRequest) (*EscalateVHTLCRecoveryResponse, error)
+	// CancelVHTLCRecovery handles CancelVHTLCRecovery.
+	CancelVHTLCRecovery(ctx context.Context, req *CancelVHTLCRecoveryRequest) (*CancelVHTLCRecoveryResponse, error)
+	// GetVHTLCRecoveryStatus handles GetVHTLCRecoveryStatus.
+	GetVHTLCRecoveryStatus(ctx context.Context, req *GetVHTLCRecoveryStatusRequest) (*GetVHTLCRecoveryStatusResponse, error)
+	// ListVHTLCRecoveries handles ListVHTLCRecoveries.
+	ListVHTLCRecoveries(ctx context.Context, req *ListVHTLCRecoveriesRequest) (*ListVHTLCRecoveriesResponse, error)
 }
 
 // RegisterDaemonServiceMailboxServer registers handlers for DaemonService.
@@ -411,6 +421,56 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.GetUnrollStatus(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ArmVHTLCRecovery", func() proto.Message {
+		return &ArmVHTLCRecoveryRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ArmVHTLCRecoveryRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ArmVHTLCRecovery(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "EscalateVHTLCRecovery", func() proto.Message {
+		return &EscalateVHTLCRecoveryRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*EscalateVHTLCRecoveryRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.EscalateVHTLCRecovery(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "CancelVHTLCRecovery", func() proto.Message {
+		return &CancelVHTLCRecoveryRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*CancelVHTLCRecoveryRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.CancelVHTLCRecovery(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "GetVHTLCRecoveryStatus", func() proto.Message {
+		return &GetVHTLCRecoveryStatusRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetVHTLCRecoveryStatusRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetVHTLCRecoveryStatus(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ListVHTLCRecoveries", func() proto.Message {
+		return &ListVHTLCRecoveriesRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListVHTLCRecoveriesRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListVHTLCRecoveries(ctx, req)
 	})
 }
 
@@ -1143,6 +1203,121 @@ func (c *DaemonServiceMailboxClient) GetUnrollStatus(ctx context.Context, req *G
 	}
 
 	resp := new(GetUnrollStatusResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ArmVHTLCRecovery calls the ArmVHTLCRecovery RPC.
+func (c *DaemonServiceMailboxClient) ArmVHTLCRecovery(ctx context.Context, req *ArmVHTLCRecoveryRequest, opts ...rpc.RPCOptions) (*ArmVHTLCRecoveryResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ArmVHTLCRecovery",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ArmVHTLCRecoveryResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// EscalateVHTLCRecovery calls the EscalateVHTLCRecovery RPC.
+func (c *DaemonServiceMailboxClient) EscalateVHTLCRecovery(ctx context.Context, req *EscalateVHTLCRecoveryRequest, opts ...rpc.RPCOptions) (*EscalateVHTLCRecoveryResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "EscalateVHTLCRecovery",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(EscalateVHTLCRecoveryResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// CancelVHTLCRecovery calls the CancelVHTLCRecovery RPC.
+func (c *DaemonServiceMailboxClient) CancelVHTLCRecovery(ctx context.Context, req *CancelVHTLCRecoveryRequest, opts ...rpc.RPCOptions) (*CancelVHTLCRecoveryResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "CancelVHTLCRecovery",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(CancelVHTLCRecoveryResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetVHTLCRecoveryStatus calls the GetVHTLCRecoveryStatus RPC.
+func (c *DaemonServiceMailboxClient) GetVHTLCRecoveryStatus(ctx context.Context, req *GetVHTLCRecoveryStatusRequest, opts ...rpc.RPCOptions) (*GetVHTLCRecoveryStatusResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetVHTLCRecoveryStatus",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetVHTLCRecoveryStatusResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListVHTLCRecoveries calls the ListVHTLCRecoveries RPC.
+func (c *DaemonServiceMailboxClient) ListVHTLCRecoveries(ctx context.Context, req *ListVHTLCRecoveriesRequest, opts ...rpc.RPCOptions) (*ListVHTLCRecoveriesResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ListVHTLCRecoveries",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListVHTLCRecoveriesResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

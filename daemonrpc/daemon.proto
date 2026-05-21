@@ -166,6 +166,31 @@ service DaemonService {
     // sweep state.
     rpc GetUnrollStatus (GetUnrollStatusRequest)
         returns (GetUnrollStatusResponse);
+
+    // ArmVHTLCRecovery persists a dormant vHTLC on-chain recovery job. The
+    // job does not start unroll until EscalateVHTLCRecovery is called.
+    rpc ArmVHTLCRecovery (ArmVHTLCRecoveryRequest)
+        returns (ArmVHTLCRecoveryResponse);
+
+    // EscalateVHTLCRecovery starts or resumes the unroll job for a previously
+    // armed vHTLC recovery.
+    rpc EscalateVHTLCRecovery (EscalateVHTLCRecoveryRequest)
+        returns (EscalateVHTLCRecoveryResponse);
+
+    // CancelVHTLCRecovery records that cooperative settlement or operator
+    // action made the dormant/on-chain recovery job unnecessary.
+    rpc CancelVHTLCRecovery (CancelVHTLCRecoveryRequest)
+        returns (CancelVHTLCRecoveryResponse);
+
+    // GetVHTLCRecoveryStatus returns the durable recovery row joined with the
+    // current unroll status when the job has escalated.
+    rpc GetVHTLCRecoveryStatus (GetVHTLCRecoveryStatusRequest)
+        returns (GetVHTLCRecoveryStatusResponse);
+
+    // ListVHTLCRecoveries returns durable recovery rows for operator
+    // inspection.
+    rpc ListVHTLCRecoveries (ListVHTLCRecoveriesRequest)
+        returns (ListVHTLCRecoveriesResponse);
 }
 
 // WalletState mirrors the daemon's in-process wallet lifecycle enum:
@@ -1592,4 +1617,267 @@ message GetUnrollStatusResponse {
     // last_error contains the failure reason if the job is in FAILED
     // status.
     string last_error = 4;
+}
+
+// VHTLCRecoveryDirection records which side owns a recovery job.
+enum VHTLCRecoveryDirection {
+    VHTLC_RECOVERY_DIRECTION_UNSPECIFIED = 0;
+
+    // VHTLC_RECOVERY_DIRECTION_PAY identifies a payer-side recovery job.
+    VHTLC_RECOVERY_DIRECTION_PAY = 1;
+
+    // VHTLC_RECOVERY_DIRECTION_RECEIVE identifies a receiver-side recovery
+    // job.
+    VHTLC_RECOVERY_DIRECTION_RECEIVE = 2;
+
+    // VHTLC_RECOVERY_DIRECTION_SERVER_IN identifies a server-owned incoming
+    // recovery job.
+    VHTLC_RECOVERY_DIRECTION_SERVER_IN = 3;
+
+    // VHTLC_RECOVERY_DIRECTION_SERVER_OUT identifies a server-owned outgoing
+    // recovery job.
+    VHTLC_RECOVERY_DIRECTION_SERVER_OUT = 4;
+}
+
+// VHTLCRecoveryAction selects the unilateral vHTLC leaf to execute.
+enum VHTLCRecoveryAction {
+    VHTLC_RECOVERY_ACTION_UNSPECIFIED = 0;
+
+    // VHTLC_RECOVERY_ACTION_CLAIM spends the unilateral claim leaf using the
+    // swap-owned preimage.
+    VHTLC_RECOVERY_ACTION_CLAIM = 1;
+
+    // VHTLC_RECOVERY_ACTION_REFUND_WITHOUT_RECEIVER spends the sender-only
+    // refund leaf after both Ark CSV and vHTLC refund CLTV are satisfied.
+    VHTLC_RECOVERY_ACTION_REFUND_WITHOUT_RECEIVER = 2;
+}
+
+// VHTLCRecoveryState mirrors the durable vhtlc_recovery_jobs state column. The
+// daemon may expose coarse durable state while the generic unroll worker owns
+// finer-grained execution; callers should inspect
+// VHTLCRecoveryStatus.unroll_status for active unroll phase detail when state
+// is UNROLL_STARTED.
+enum VHTLCRecoveryState {
+    VHTLC_RECOVERY_STATE_UNSPECIFIED = 0;
+    VHTLC_RECOVERY_STATE_ARMED = 1;
+    VHTLC_RECOVERY_STATE_UNROLL_STARTED = 2;
+    VHTLC_RECOVERY_STATE_WAITING_FOR_TARGET = 3;
+    VHTLC_RECOVERY_STATE_WAITING_FOR_CSV = 4;
+    VHTLC_RECOVERY_STATE_BUILDING_EXIT_SPEND = 5;
+    VHTLC_RECOVERY_STATE_EXIT_SPEND_BUILT = 6;
+    VHTLC_RECOVERY_STATE_SUBMITTING_EXIT_SPEND = 7;
+    VHTLC_RECOVERY_STATE_EXIT_SPEND_PENDING_CONFIRMATION = 8;
+    VHTLC_RECOVERY_STATE_COMPLETED = 9;
+    VHTLC_RECOVERY_STATE_CANCELLED = 10;
+    VHTLC_RECOVERY_STATE_FAILED = 11;
+}
+
+message ArmVHTLCRecoveryRequest {
+    // request_id is the caller-owned idempotency key. Retrying the same
+    // request_id returns the existing row when all durable parameters match.
+    string request_id = 1;
+
+    // swap_id links this recovery job to the caller's durable swap row.
+    bytes swap_id = 2;
+
+    // direction records which side owns the recovery action.
+    VHTLCRecoveryDirection direction = 3;
+
+    // action selects the unilateral vHTLC leaf to execute if recovery
+    // escalates.
+    VHTLCRecoveryAction action = 4;
+
+    // vtxo_outpoint is the vHTLC VTXO to materialize, formatted as
+    // "txid:index".
+    string vtxo_outpoint = 5;
+
+    // vtxo_amount_sat is the amount locked in the vHTLC VTXO.
+    int64 vtxo_amount_sat = 6;
+
+    // sender_pubkey is the compressed SEC public key for the sender.
+    bytes sender_pubkey = 7;
+
+    // receiver_pubkey is the compressed SEC public key for the receiver.
+    bytes receiver_pubkey = 8;
+
+    // server_pubkey is the compressed SEC public key for the swap server.
+    bytes server_pubkey = 9;
+
+    // refund_locktime is the absolute vHTLC refund CLTV height/time.
+    int32 refund_locktime = 10;
+
+    // unilateral_claim_delay is the Ark CSV delay for the claim leaf.
+    int32 unilateral_claim_delay = 11;
+
+    // unilateral_refund_delay is the Ark CSV delay for cooperative refund.
+    int32 unilateral_refund_delay = 12;
+
+    // unilateral_refund_without_receiver_delay is the Ark CSV delay for the
+    // sender-only refund leaf.
+    int32 unilateral_refund_without_receiver_delay = 13;
+
+    // preimage_hash is the 32-byte SHA256 hash committed by the vHTLC.
+    bytes preimage_hash = 14;
+
+    // signer_key_family identifies the wallet key family used to sign the
+    // final exit spend.
+    int32 signer_key_family = 15;
+
+    // signer_key_index identifies the wallet key index used to sign the final
+    // exit spend.
+    int32 signer_key_index = 16;
+
+    // destination_script receives recovered funds after the exit spend
+    // confirms.
+    bytes destination_script = 17;
+
+    // max_fee_rate_sat_per_kw caps the final exit spend fee rate.
+    int32 max_fee_rate_sat_per_kw = 18;
+}
+
+message ArmVHTLCRecoveryResponse {
+    // recovery_id is the daemon-owned durable recovery identifier.
+    string recovery_id = 1;
+
+    // created is true when the request inserted a new recovery row.
+    bool created = 2;
+
+    // status is the durable row after the arm attempt.
+    VHTLCRecoveryStatus status = 3;
+}
+
+message EscalateVHTLCRecoveryRequest {
+    // recovery_id identifies the armed recovery job to start.
+    string recovery_id = 1;
+
+    // reason records why the cooperative path is no longer sufficient.
+    string reason = 2;
+}
+
+message EscalateVHTLCRecoveryResponse {
+    // status is the durable row joined with current unroll state.
+    VHTLCRecoveryStatus status = 1;
+}
+
+message CancelVHTLCRecoveryRequest {
+    // recovery_id identifies the recovery job to cancel.
+    string recovery_id = 1;
+
+    // reason records why recovery is no longer needed.
+    string reason = 2;
+
+    // cooperative_txid is the cooperative transaction that won, when known.
+    string cooperative_txid = 3;
+}
+
+message CancelVHTLCRecoveryResponse {
+    // status is the durable row after cancellation or terminal no-op.
+    VHTLCRecoveryStatus status = 1;
+}
+
+message GetVHTLCRecoveryStatusRequest {
+    // recovery_id identifies the recovery job to query.
+    string recovery_id = 1;
+}
+
+message GetVHTLCRecoveryStatusResponse {
+    // found is true when a recovery row exists for recovery_id.
+    bool found = 1;
+
+    // status is populated when found is true.
+    VHTLCRecoveryStatus status = 2;
+}
+
+message ListVHTLCRecoveriesRequest {
+    // include_terminal includes completed, cancelled, and failed rows.
+    bool include_terminal = 1;
+}
+
+message ListVHTLCRecoveriesResponse {
+    // statuses contains matching durable recovery rows.
+    repeated VHTLCRecoveryStatus statuses = 1;
+}
+
+message VHTLCRecoveryStatus {
+    // recovery_id is the daemon-owned durable recovery identifier.
+    string recovery_id = 1;
+
+    // request_id is the caller-owned idempotency key.
+    string request_id = 2;
+
+    // swap_id links this recovery back to the caller's swap row.
+    bytes swap_id = 3;
+
+    // direction records which side owns this recovery action.
+    VHTLCRecoveryDirection direction = 4;
+
+    // action selects the unilateral vHTLC leaf.
+    VHTLCRecoveryAction action = 5;
+
+    // state is the durable recovery FSM state.
+    VHTLCRecoveryState state = 6;
+
+    // vtxo_outpoint is the vHTLC VTXO being recovered.
+    string vtxo_outpoint = 7;
+
+    // vtxo_amount_sat is the amount locked in the vHTLC VTXO.
+    int64 vtxo_amount_sat = 8;
+
+    // exit_policy_kind is the unroll final spend policy kind.
+    string exit_policy_kind = 9;
+
+    // unroll_found reports whether the generic unroll registry knows this
+    // target.
+    bool unroll_found = 10;
+
+    // unroll_status is the current high-level unroll phase, when known.
+    UnrollJobStatus unroll_status = 11;
+
+    // sweep_txid is the final exit spend txid once unroll has built or
+    // broadcast it.
+    string sweep_txid = 12;
+
+    // exit_txid is the persisted recovery exit txid, when known.
+    string exit_txid = 13;
+
+    // cooperative_txid records the cooperative settlement that cancelled this
+    // recovery, when known.
+    string cooperative_txid = 14;
+
+    // last_error is populated for failed recovery rows or failed unroll state.
+    string last_error = 15;
+
+    // cancel_reason records why the row entered CANCELLED state.
+    string cancel_reason = 16;
+
+    // created_at_unix is the row creation timestamp.
+    int64 created_at_unix = 17;
+
+    // updated_at_unix is the latest row update timestamp.
+    int64 updated_at_unix = 18;
+
+    // armed_at_unix is set when the recovery job was armed.
+    int64 armed_at_unix = 19;
+
+    // escalated_at_unix is set when the job moved into active unroll.
+    int64 escalated_at_unix = 20;
+
+    // terminal_at_unix is set when the job completed, cancelled, or failed.
+    int64 terminal_at_unix = 21;
+
+    // refund_locktime is the absolute vHTLC refund CLTV height/time recorded
+    // on the recovery row.
+    int32 refund_locktime = 22;
+
+    // unilateral_claim_delay is the Ark CSV delay for the claim leaf recorded
+    // on the recovery row.
+    int32 unilateral_claim_delay = 23;
+
+    // unilateral_refund_delay is the Ark CSV delay for the cooperative refund
+    // leaf recorded on the recovery row.
+    int32 unilateral_refund_delay = 24;
+
+    // unilateral_refund_without_receiver_delay is the Ark CSV delay for the
+    // unilateral refund leaf recorded on the recovery row.
+    int32 unilateral_refund_without_receiver_delay = 25;
 }

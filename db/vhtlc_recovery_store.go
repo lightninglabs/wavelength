@@ -232,6 +232,36 @@ func (s *VHTLCRecoveryStoreDB) ListNonTerminalRecoveries(ctx context.Context) (
 	return jobs, nil
 }
 
+// ListRecoveries loads every recovery job.
+func (s *VHTLCRecoveryStoreDB) ListRecoveries(ctx context.Context) (
+	[]vhtlcrecovery.RecoveryJob, error) {
+
+	var jobs []vhtlcrecovery.RecoveryJob
+	err := s.ExecTx(ctx, ReadTxOption(), func(q *sqlc.Queries) error {
+		rows, err := q.ListVHTLCRecoveryJobs(ctx)
+		if err != nil {
+			return err
+		}
+
+		jobs = make([]vhtlcrecovery.RecoveryJob, 0, len(rows))
+		for i := range rows {
+			job, err := vhtlcRecoveryJobFromRow(rows[i])
+			if err != nil {
+				return err
+			}
+
+			jobs = append(jobs, job)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return jobs, nil
+}
+
 // EscalateRecovery marks an armed recovery job as active.
 func (s *VHTLCRecoveryStoreDB) EscalateRecovery(ctx context.Context,
 	id string) error {
