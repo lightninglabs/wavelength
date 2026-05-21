@@ -353,6 +353,9 @@ func cloneDaemonConfig(cfg *darepod.Config) *darepod.Config {
 	clone.RPCServiceRegistrars = append(
 		[]darepod.RPCServiceRegistrar(nil), cfg.RPCServiceRegistrars...,
 	)
+	clone.WalletReadyHooks = append(
+		[]darepod.WalletReadyHook(nil), cfg.WalletReadyHooks...,
+	)
 
 	return &clone
 }

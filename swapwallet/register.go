@@ -5,6 +5,7 @@ package swapwallet
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightninglabs/darepo-client/darepod"
@@ -67,11 +68,18 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 			"implement swapclientrpc.SwapClientServiceServer")
 	}
 
+	var coreRPC RPCServer
+	if rpcServer != nil {
+		coreRPC = rpcServer
+	}
+
 	deps := &Deps{
 		SwapBackend: cfg.Swap.Backend,
 		SwapService: swapService,
-		RPCServer:   rpcServer,
-		Log:         rpcServer.SubLogger(darepod.WalletRPCSubsystem),
+		RPCServer:   coreRPC,
+	}
+	if rpcServer != nil {
+		deps.Log = rpcServer.SubLogger(darepod.WalletRPCSubsystem)
 	}
 
 	// Apply optional walletrpc-config overrides. The struct is present
@@ -90,15 +98,26 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 
 	walletrpc.RegisterWalletServiceServer(grpcServer, service)
 
-	// The unified resume sweep MUST run before this Register returns so
-	// the gRPC server begins accepting wallet RPCs with every pending
-	// entry already driven by a background worker.
-	runtime.resumeAll(ctx)
+	var startOnce sync.Once
+	cfg.WalletReadyHooks = append(cfg.WalletReadyHooks, func(
+		ctx context.Context) error {
 
-	// Start background goroutines (deadline watcher, future monitor
-	// loop). They anchor to the runtime's rootCtx and live until the
-	// cleanup function below cancels it.
-	runtime.start()
+		startOnce.Do(func() {
+			// The unified resume sweep must wait until the main
+			// daemon wallet and wallet-dependent actors are ready.
+			// Otherwise a locked self-managed wallet restart can
+			// resume workers early and persist transient unlock
+			// errors as terminal failures.
+			runtime.resumeAll(ctx)
+
+			// Start background goroutines after resume so
+			// subscribers and the deadline watcher observe a
+			// runtime that owns the pending rows it just resumed.
+			runtime.start()
+		})
+
+		return nil
+	})
 
 	cleanup := func() {
 		runtime.stop()

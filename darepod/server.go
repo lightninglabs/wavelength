@@ -1138,7 +1138,28 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 		return err
 	}
 
+	if err := s.runWalletReadyHooks(ctx); err != nil {
+		return err
+	}
+
 	s.markDaemonReady()
+
+	return nil
+}
+
+// runWalletReadyHooks runs optional post-wallet-unlock hooks in registration
+// order. Hooks are intentionally run after wallet-dependent services are
+// online so optional subservers can safely start background work that calls
+// wallet RPCs.
+func (s *Server) runWalletReadyHooks(ctx context.Context) error {
+	for _, hook := range s.cfg.WalletReadyHooks {
+		if hook == nil {
+			continue
+		}
+		if err := hook(ctx); err != nil {
+			return fmt.Errorf("wallet-ready hook: %w", err)
+		}
+	}
 
 	return nil
 }

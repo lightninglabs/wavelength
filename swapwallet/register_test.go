@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 )
 
 // fakeResumeOnlyBackend implements darepod.SwapBackend but deliberately
@@ -21,6 +23,55 @@ type fakeResumeOnlyBackend struct {
 
 func (f *fakeResumeOnlyBackend) ResumePending(_ context.Context) {
 	f.resumeCalls.Add(1)
+}
+
+// fakeWalletBackend satisfies both the in-Go resume handle and the gRPC-shaped
+// swap service required by the wallet registrar.
+type fakeWalletBackend struct {
+	swapclientrpc.UnimplementedSwapClientServiceServer
+
+	resumeCalls atomic.Int32
+}
+
+func (f *fakeWalletBackend) ResumePending(_ context.Context) {
+	f.resumeCalls.Add(1)
+}
+
+// TestRegisterDefersResumeUntilWalletReadyHook confirms the wallet subserver
+// registers its RPC surface immediately but waits for the daemon's wallet-ready
+// phase before starting persisted swap workers.
+func TestRegisterDefersResumeUntilWalletReadyHook(t *testing.T) {
+	t.Parallel()
+
+	backend := &fakeWalletBackend{}
+	cfg := &darepod.Config{
+		Swap: &darepod.SwapConfig{
+			Backend:        backend,
+			SuppressResume: true,
+		},
+	}
+
+	cleanup, err := Register(
+		t.Context(), grpc.NewServer(), nil, cfg,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, cleanup)
+	t.Cleanup(cleanup)
+
+	require.Equal(
+		t, int32(0), backend.resumeCalls.Load(),
+		"registering walletrpc while locked must not resume swaps",
+	)
+	require.Len(t, cfg.WalletReadyHooks, 1)
+
+	require.NoError(t, cfg.WalletReadyHooks[0](t.Context()))
+	require.Equal(t, int32(1), backend.resumeCalls.Load())
+
+	require.NoError(t, cfg.WalletReadyHooks[0](t.Context()))
+	require.Equal(
+		t, int32(1), backend.resumeCalls.Load(),
+		"wallet-ready hook must be idempotent",
+	)
 }
 
 // TestRegisterRecoversResumeOnTypeAssertionFailure asserts that when

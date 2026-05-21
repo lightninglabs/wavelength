@@ -169,6 +169,13 @@ type Config struct {
 	// DaemonService is registered.
 	RPCGatewayRegistrars []RPCGatewayRegistrar
 
+	// WalletReadyHooks are programmatic hooks that run after the
+	// wallet-derived mailbox transport and wallet-dependent actors are
+	// online, but before daemon readiness is marked. They are used by
+	// optional subservers that must register RPC surfaces while locked
+	// but defer background work until the wallet can sign.
+	WalletReadyHooks []WalletReadyHook
+
 	// Wallet configures the wallet backend used for signing, key
 	// derivation, and chain access.
 	Wallet *WalletConfig `mapstructure:"wallet"`
@@ -253,6 +260,10 @@ type RPCGatewayRegistrar func(
 	ctx context.Context, mux *runtime.ServeMux, endpoint string,
 	opts []grpc.DialOption, rpcServer *RPCServer, cfg *Config,
 ) error
+
+// WalletReadyHook runs once after the daemon wallet is unlocked and all
+// wallet-dependent daemon services have started.
+type WalletReadyHook func(ctx context.Context) error
 
 // UnrollConfig configures the unilateral-exit subsystem.
 type UnrollConfig struct {
@@ -378,9 +389,9 @@ type SwapConfig struct {
 type SwapBackend interface {
 	// ResumePending re-arms background workers for every persisted
 	// pending swap session. It is idempotent: payment hashes already
-	// owned by an active worker are skipped. Callers invoke it once at
-	// daemon startup so the gRPC server begins accepting requests with
-	// every prior session already running.
+	// owned by an active worker are skipped. Callers invoke it once
+	// when the active resume policy is allowed to start background
+	// workers.
 	ResumePending(ctx context.Context)
 }
 
