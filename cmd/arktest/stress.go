@@ -137,6 +137,18 @@ const (
 )
 
 var (
+	stressLatencyCDFThresholds = []time.Duration{
+		50 * time.Millisecond,
+		100 * time.Millisecond,
+		250 * time.Millisecond,
+		500 * time.Millisecond,
+		time.Second,
+		2500 * time.Millisecond,
+		5 * time.Second,
+		10 * time.Second,
+		30 * time.Second,
+	}
+
 	// stressRoundWaitTimeout bounds waits for client/operator round state
 	// transitions during bootstrap and refresh events.
 	stressRoundWaitTimeout = 2 * time.Minute
@@ -224,6 +236,7 @@ type stressSummary struct {
 	PaymentP50MS       int64          `json:"payment_p50_ms"`
 	PaymentP95MS       int64          `json:"payment_p95_ms"`
 	PaymentMaxMS       int64          `json:"payment_max_ms"`
+	PaymentLatencyCDF  []cdfBucket    `json:"payment_latency_cdf,omitempty"` //nolint:ll
 	PaymentThroughput  float64        `json:"payment_throughput_per_sec"`
 	LiquidityWaits     int            `json:"liquidity_waits"`
 	LiquidityTimeouts  int            `json:"liquidity_wait_timeouts"`
@@ -231,6 +244,7 @@ type stressSummary struct {
 	LiquidityWaitP50MS int64          `json:"liquidity_wait_p50_ms"`
 	LiquidityWaitP95MS int64          `json:"liquidity_wait_p95_ms"`
 	LiquidityWaitMaxMS int64          `json:"liquidity_wait_max_ms"`
+	LiquidityWaitCDF   []cdfBucket    `json:"liquidity_wait_cdf,omitempty"` //nolint:ll
 	PaymentMinDelayMS  int64          `json:"payment_min_interval_ms"`
 	RoundsTriggered    int            `json:"rounds_triggered"`
 	RoundsConfirmed    int            `json:"rounds_confirmed"`
@@ -243,6 +257,7 @@ type stressSummary struct {
 	UnrollP50MS        int64          `json:"unroll_p50_ms"`
 	UnrollP95MS        int64          `json:"unroll_p95_ms"`
 	UnrollMaxMS        int64          `json:"unroll_max_ms"`
+	UnrollLatencyCDF   []cdfBucket    `json:"unroll_latency_cdf,omitempty"` //nolint:ll
 	ReorgsTriggered    int            `json:"reorgs_triggered"`
 	ReorgsCompleted    int            `json:"reorgs_completed"`
 	ReorgsFailed       int            `json:"reorgs_failed"`
@@ -257,6 +272,17 @@ type stressSummary struct {
 	CPUProfileFile     string         `json:"cpu_profile_file,omitempty"`
 	BlockProfileFile   string         `json:"block_profile_file,omitempty"`
 	MutexProfileFile   string         `json:"mutex_profile_file,omitempty"`
+}
+
+// cdfBucket is one latency distribution bucket. The bounded buckets are
+// cumulative <= thresholds, while the final > threshold bucket reports only
+// the remaining tail.
+type cdfBucket struct {
+	Label string  `json:"label"`
+	LeMS  *int64  `json:"le_ms,omitempty"`
+	GtMS  *int64  `json:"gt_ms,omitempty"`
+	Count int     `json:"count"`
+	Pct   float64 `json:"pct"`
 }
 
 // stress result values written to summary.json.
@@ -489,9 +515,9 @@ func newStressCmd() *cobra.Command {
 			"zero records no-funded-sender skips immediately",
 	)
 	f.DurationVar(
-		&stressCfg.paymentMinDelay, "payment-min-interval", 0,
-		"minimum delay between scheduled payment jobs; zero disables "+
-			"payment pacing",
+		&stressCfg.paymentMinDelay, "payment-min-interval", 0, "mini"+
+			"mum delay between scheduled payment jobs; zero "+
+			"disables payment pacing",
 	)
 	f.DurationVar(
 		&stressCfg.unrollTimeout, "unroll-timeout",
@@ -786,8 +812,8 @@ func (r *stressRunner) start() {
 		"clients":     r.names,
 		"operator_db": r.cfg.operatorDB,
 	},
-		"arktest stress ready clients=%d operator_db=%s "+
-			"artifacts=%s seed=%d",
+		"arktest stress ready clients=%d operator_db=%s artifacts=%s "+
+			"seed=%d",
 		len(r.names), r.cfg.operatorDB, r.state.RunDir, r.cfg.seed)
 }
 
@@ -1489,7 +1515,6 @@ func (r *stressRunner) eventAllowedLocked(evt stressEvent) bool {
 
 	if evt == stressEventPayment && r.cfg.paymentMinDelay > 0 &&
 		!r.nextPaymentAt.IsZero() {
-
 		return !time.Now().Before(r.nextPaymentAt)
 	}
 
@@ -3972,6 +3997,7 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 			Milliseconds()
 		maxLatency := latencies[len(latencies)-1]
 		summary.PaymentMaxMS = maxLatency.Milliseconds()
+		summary.PaymentLatencyCDF = latencyCDF(latencies)
 	}
 
 	unrollLatencies := append([]time.Duration(nil), r.unrollLatencies...)
@@ -3995,6 +4021,7 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 		).Milliseconds()
 		maxLatency := unrollLatencies[len(unrollLatencies)-1]
 		summary.UnrollMaxMS = maxLatency.Milliseconds()
+		summary.UnrollLatencyCDF = latencyCDF(unrollLatencies)
 	}
 
 	waitLatencies := append([]time.Duration(nil), r.liquidityWaits...)
@@ -4018,6 +4045,7 @@ func (r *stressRunner) finalSummary(completed time.Time) stressSummary {
 		).Milliseconds()
 		maxLatency := waitLatencies[len(waitLatencies)-1]
 		summary.LiquidityWaitMaxMS = maxLatency.Milliseconds()
+		summary.LiquidityWaitCDF = latencyCDF(waitLatencies)
 	}
 	summary.PaymentMinDelayMS = r.cfg.paymentMinDelay.Milliseconds()
 
@@ -4090,6 +4118,13 @@ func (r *stressRunner) printFinalSummary(path string, summary stressSummary) {
 		"payment latency avg=%dms p50=%dms p95=%dms max=%dms",
 		summary.PaymentAvgMS, summary.PaymentP50MS,
 		summary.PaymentP95MS, summary.PaymentMaxMS)
+	if len(summary.PaymentLatencyCDF) > 0 {
+		r.events.Printf("stress_summary", map[string]any{
+			"cdf": summary.PaymentLatencyCDF,
+		},
+			"payment latency cdf: %s",
+			formatLatencyCDF(summary.PaymentLatencyCDF))
+	}
 	r.events.Printf("stress_summary", map[string]any{
 		"attempted": summary.UnrollsAttempted,
 		"completed": summary.UnrollsCompleted,
@@ -4106,6 +4141,13 @@ func (r *stressRunner) printFinalSummary(path string, summary stressSummary) {
 		summary.UnrollsFailed, summary.UnrollsSkipped,
 		summary.UnrollAvgMS, summary.UnrollP50MS, summary.UnrollP95MS,
 		summary.UnrollMaxMS)
+	if len(summary.UnrollLatencyCDF) > 0 {
+		r.events.Printf("stress_summary", map[string]any{
+			"cdf": summary.UnrollLatencyCDF,
+		},
+			"unroll latency cdf: %s",
+			formatLatencyCDF(summary.UnrollLatencyCDF))
+	}
 	if summary.LiquidityWaits > 0 {
 		r.events.Printf("stress_summary", map[string]any{
 			"waits":      summary.LiquidityWaits,
@@ -4122,13 +4164,19 @@ func (r *stressRunner) printFinalSummary(path string, summary stressSummary) {
 			summary.LiquidityWaitAvgMS, summary.LiquidityWaitP50MS,
 			summary.LiquidityWaitP95MS, summary.LiquidityWaitMaxMS,
 			r.cfg.liquidityTimeout)
+		if len(summary.LiquidityWaitCDF) > 0 {
+			r.events.Printf("stress_summary", map[string]any{
+				"cdf": summary.LiquidityWaitCDF,
+			},
+				"liquidity wait cdf: %s",
+				formatLatencyCDF(summary.LiquidityWaitCDF))
+		}
 	}
 	if summary.PaymentMinDelayMS > 0 {
 		r.events.Printf("stress_summary", map[string]any{
 			"payment_min_interval_ms": summary.PaymentMinDelayMS,
 		},
-			"payment pacing min_interval=%s",
-			r.cfg.paymentMinDelay)
+			"payment pacing min_interval=%s", r.cfg.paymentMinDelay)
 	}
 	r.events.Printf("stress_summary", map[string]any{
 		"throughput_per_sec": summary.PaymentThroughput,
@@ -4339,6 +4387,70 @@ func percentileDuration(sorted []time.Duration, pct int) time.Duration {
 	}
 
 	return sorted[idx-1]
+}
+
+// latencyCDF returns cumulative latency buckets from a sorted duration slice.
+func latencyCDF(sorted []time.Duration) []cdfBucket {
+	if len(sorted) == 0 {
+		return nil
+	}
+
+	total := len(sorted)
+	buckets := make([]cdfBucket, 0, len(stressLatencyCDFThresholds)+1)
+	idx := 0
+	for _, threshold := range stressLatencyCDFThresholds {
+		for idx < total && sorted[idx] <= threshold {
+			idx++
+		}
+
+		leMS := threshold.Milliseconds()
+		buckets = append(buckets, cdfBucket{
+			Label: "<=" + threshold.String(),
+			LeMS:  int64Ptr(leMS),
+			Count: idx,
+			Pct:   pctOfTotal(idx, total),
+		})
+	}
+
+	numThresholds := len(stressLatencyCDFThresholds)
+	lastThreshold := stressLatencyCDFThresholds[numThresholds-1]
+	gtMS := lastThreshold.Milliseconds()
+	tail := total - idx
+	buckets = append(buckets, cdfBucket{
+		Label: ">" + lastThreshold.String(),
+		GtMS:  int64Ptr(gtMS),
+		Count: tail,
+		Pct:   pctOfTotal(tail, total),
+	})
+
+	return buckets
+}
+
+// formatLatencyCDF renders compact terminal output for latency buckets.
+func formatLatencyCDF(buckets []cdfBucket) string {
+	parts := make([]string, 0, len(buckets))
+	for _, bucket := range buckets {
+		parts = append(
+			parts, fmt.Sprintf("%s=%.1f%%(%d)", bucket.Label,
+				bucket.Pct, bucket.Count),
+		)
+	}
+
+	return strings.Join(parts, " ")
+}
+
+// pctOfTotal returns count as a percentage of total.
+func pctOfTotal(count, total int) float64 {
+	if total == 0 {
+		return 0
+	}
+
+	return 100 * float64(count) / float64(total)
+}
+
+// int64Ptr returns a pointer to value.
+func int64Ptr(value int64) *int64 {
+	return &value
 }
 
 // shortContext returns a bounded context and its cancel function.
