@@ -192,11 +192,13 @@ func (s *Service) Status(ctx context.Context, req *walletrpc.StatusRequest) (
 		// Ready collapses to "wallet fully usable for signing".
 		Ready: state == daemonrpc.WalletState_WALLET_STATE_READY,
 
-		// Unlocked surfaces "seed material is loaded" — every state
-		// at or past LOCKED qualifies (the wallet has been
-		// instantiated even if it's still waiting on the unlock
-		// password).
-		Unlocked: state >= daemonrpc.WalletState_WALLET_STATE_LOCKED,
+		// Unlocked retains the legacy wallet-exists signal exposed
+		// by this field. Use Ready to determine whether wallet RPCs
+		// are currently usable.
+		Unlocked: state ==
+			daemonrpc.WalletState_WALLET_STATE_LOCKED ||
+			state == daemonrpc.WalletState_WALLET_STATE_SYNCING ||
+			state == daemonrpc.WalletState_WALLET_STATE_READY,
 
 		Network:      info.GetNetwork(),
 		Balance:      bal,

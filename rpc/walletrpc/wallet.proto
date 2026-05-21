@@ -420,8 +420,9 @@ message StatusResponse {
     // ready is true when the daemon and its dependencies are up.
     bool ready = 1;
 
-    // unlocked is true when the wallet seed is loaded and signing is
-    // available.
+    // unlocked is a legacy wallet-exists signal: true once a wallet
+    // seed exists on disk or is loaded in memory. Use ready to check
+    // whether wallet RPCs are currently usable.
     bool unlocked = 2;
 
     // network is the bitcoin network the daemon is configured for, for

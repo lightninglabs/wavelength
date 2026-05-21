@@ -238,7 +238,7 @@ func (r *RPCServer) GenSeed(ctx context.Context,
 	currentState := WalletState(r.server.walletState.Load())
 	if currentState != WalletStateNone {
 		return nil, status.Errorf(codes.FailedPrecondition, "wallet "+
-			"already exists (state=%d)", currentState)
+			"already exists (state=%s)", currentState)
 	}
 
 	mnemonic, err := GenerateSeed(req.SeedPassphrase)
@@ -277,7 +277,7 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 		state := WalletState(r.server.walletState.Load())
 
 		return nil, status.Errorf(codes.FailedPrecondition, "wallet "+
-			"already exists (state=%d)", state)
+			"already exists (state=%s)", state)
 	}
 
 	// rollbackState resets the wallet state to None so that a
@@ -349,20 +349,28 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 				"lwwallet/btcwallet mode")
 	}
 
-	// Atomically verify the wallet is locked. We do not need a CAS
-	// here because startLwwallet (called below) will perform the
-	// Locked → Ready transition via markWalletReady. A concurrent
-	// UnlockWallet that passes this check will fail inside
-	// startLwwallet when it tries to start a second wallet.
-	currentState := WalletState(r.server.walletState.Load())
-	if currentState != WalletStateLocked {
+	// Atomically claim the Locked -> Unlocking transition before
+	// decrypting or starting the wallet backend so concurrent unlock
+	// attempts cannot start multiple wallet instances.
+	if !r.server.walletState.CompareAndSwap(
+		int32(WalletStateLocked), int32(WalletStateUnlocking),
+	) {
+
+		currentState := WalletState(r.server.walletState.Load())
+
 		return nil, status.Errorf(codes.FailedPrecondition, "wallet "+
-			"is not locked (state=%d)", currentState)
+			"is not locked (state=%s)", currentState)
+	}
+
+	rollbackState := func() {
+		r.server.walletState.Store(int32(WalletStateLocked))
 	}
 
 	// Resolve the network directory for seed lookup.
 	networkDir, err := r.server.cfg.NetworkDir()
 	if err != nil {
+		rollbackState()
+
 		return nil, status.Errorf(codes.Internal, "unable to resolve "+
 			"network directory: %v", err)
 	}
@@ -374,6 +382,8 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 		networkDir, req.WalletPassword,
 	)
 	if err != nil {
+		rollbackState()
+
 		return nil, status.Errorf(codes.Internal, "unable to unlock "+
 			"wallet: %v", err)
 	}
@@ -382,6 +392,8 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 
 	// Start the wallet with the decrypted seed.
 	if err := r.server.startSelfManagedWallet(ctx, seed); err != nil {
+		rollbackState()
+
 		return nil, status.Errorf(codes.Internal, "unable to start "+
 			"wallet: %v", err)
 	}

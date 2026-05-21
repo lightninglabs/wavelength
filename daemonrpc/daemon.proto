@@ -169,9 +169,9 @@ service DaemonService {
 }
 
 // WalletState mirrors the daemon's in-process wallet lifecycle enum:
-// values are ordered from least to most ready so callers can compare
-// against >= LOCKED for "seed exists" semantics and == READY for "fully
-// usable" semantics.
+// callers should test the specific state they need. SYNCING and READY
+// both mean seed material is loaded, while only READY means wallet RPCs
+// are fully usable.
 enum WalletState {
     // WALLET_STATE_UNSPECIFIED is the proto3 zero value. The daemon
     // never emits this; reserved so a missing field deserializes to a
@@ -190,6 +190,10 @@ enum WalletState {
     // WALLET_STATE_READY indicates the wallet is initialized, unlocked,
     // and ready to sign / participate in rounds.
     WALLET_STATE_READY = 3;
+
+    // WALLET_STATE_SYNCING indicates the wallet is unlocked and the
+    // backing chain source is catching up before wallet RPCs are safe.
+    WALLET_STATE_SYNCING = 4;
 }
 
 message GetInfoRequest {
@@ -228,12 +232,11 @@ message GetInfoResponse {
     // wallet_type is the active wallet backend: "lnd" or "lwwallet".
     string wallet_type = 8;
 
-    // wallet_state is the lifecycle state of the wallet subsystem. The
-    // ordering reflects increasing readiness: NONE (no seed exists),
-    // LOCKED (encrypted seed exists but no decryption key has been
-    // provided), READY (wallet is initialized and signing is
-    // available). Callers compare against >= LOCKED for "seed exists /
-    // unlocked" semantics and == READY for "fully usable" semantics.
+    // wallet_state is the lifecycle state of the wallet subsystem.
+    // Callers should test explicit enum values instead of relying on
+    // numeric ordering: READY is fully usable, SYNCING is unlocked but
+    // waiting for the chain backend, LOCKED still needs the wallet
+    // password, and NONE has no wallet seed on disk.
     WalletState wallet_state = 9;
 
     // identity_pubkey is the hex-encoded daemon wallet identity public key

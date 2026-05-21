@@ -22,9 +22,9 @@ const (
 )
 
 // WalletState mirrors the daemon's in-process wallet lifecycle enum:
-// values are ordered from least to most ready so callers can compare
-// against >= LOCKED for "seed exists" semantics and == READY for "fully
-// usable" semantics.
+// callers should test the specific state they need. SYNCING and READY
+// both mean seed material is loaded, while only READY means wallet RPCs
+// are fully usable.
 type WalletState int32
 
 const (
@@ -42,6 +42,9 @@ const (
 	// WALLET_STATE_READY indicates the wallet is initialized, unlocked,
 	// and ready to sign / participate in rounds.
 	WalletState_WALLET_STATE_READY WalletState = 3
+	// WALLET_STATE_SYNCING indicates the wallet is unlocked and the
+	// backing chain source is catching up before wallet RPCs are safe.
+	WalletState_WALLET_STATE_SYNCING WalletState = 4
 )
 
 // Enum value maps for WalletState.
@@ -51,12 +54,14 @@ var (
 		1: "WALLET_STATE_NONE",
 		2: "WALLET_STATE_LOCKED",
 		3: "WALLET_STATE_READY",
+		4: "WALLET_STATE_SYNCING",
 	}
 	WalletState_value = map[string]int32{
 		"WALLET_STATE_UNSPECIFIED": 0,
 		"WALLET_STATE_NONE":        1,
 		"WALLET_STATE_LOCKED":      2,
 		"WALLET_STATE_READY":       3,
+		"WALLET_STATE_SYNCING":     4,
 	}
 )
 
@@ -529,12 +534,11 @@ type GetInfoResponse struct {
 	LndAlias string `protobuf:"bytes,7,opt,name=lnd_alias,json=lndAlias,proto3" json:"lnd_alias,omitempty"`
 	// wallet_type is the active wallet backend: "lnd" or "lwwallet".
 	WalletType string `protobuf:"bytes,8,opt,name=wallet_type,json=walletType,proto3" json:"wallet_type,omitempty"`
-	// wallet_state is the lifecycle state of the wallet subsystem. The
-	// ordering reflects increasing readiness: NONE (no seed exists),
-	// LOCKED (encrypted seed exists but no decryption key has been
-	// provided), READY (wallet is initialized and signing is
-	// available). Callers compare against >= LOCKED for "seed exists /
-	// unlocked" semantics and == READY for "fully usable" semantics.
+	// wallet_state is the lifecycle state of the wallet subsystem.
+	// Callers should test explicit enum values instead of relying on
+	// numeric ordering: READY is fully usable, SYNCING is unlocked but
+	// waiting for the chain backend, LOCKED still needs the wallet
+	// password, and NONE has no wallet seed on disk.
 	WalletState WalletState `protobuf:"varint,9,opt,name=wallet_state,json=walletState,proto3,enum=daemonrpc.WalletState" json:"wallet_state,omitempty"`
 	// identity_pubkey is the hex-encoded daemon wallet identity public key
 	// derived from the active wallet backend's daemon identity key locator
@@ -6425,12 +6429,13 @@ const file_daemon_proto_rawDesc = "" +
 	"\n" +
 	"sweep_txid\x18\x03 \x01(\tR\tsweepTxid\x12\x1d\n" +
 	"\n" +
-	"last_error\x18\x04 \x01(\tR\tlastError*s\n" +
+	"last_error\x18\x04 \x01(\tR\tlastError*\x8d\x01\n" +
 	"\vWalletState\x12\x1c\n" +
 	"\x18WALLET_STATE_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11WALLET_STATE_NONE\x10\x01\x12\x17\n" +
 	"\x13WALLET_STATE_LOCKED\x10\x02\x12\x16\n" +
-	"\x12WALLET_STATE_READY\x10\x03*\x81\x02\n" +
+	"\x12WALLET_STATE_READY\x10\x03\x12\x18\n" +
+	"\x14WALLET_STATE_SYNCING\x10\x04*\x81\x02\n" +
 	"\n" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x14\n" +
