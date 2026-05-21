@@ -2,6 +2,7 @@ package darepod
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -53,6 +54,11 @@ func (r *RPCServer) GetIndexedVTXOByPkScript(ctx context.Context,
 		nil, 1, statusFilter,
 	)
 	if err != nil {
+		if errors.Is(err, indexer.ErrScriptNotRegisteredForPrincipal) {
+			return &daemonrpc.GetIndexedVTXOByPkScriptResponse{},
+				nil
+		}
+
 		return nil, status.Errorf(codes.Internal, "indexer query "+
 			"failed: %v", err)
 	}
