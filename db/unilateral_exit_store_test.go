@@ -144,3 +144,50 @@ func TestUnilateralExitStoreUpsertPersistsSweepTxid(t *testing.T) {
 	require.Equal(t, "job-completed", job.ActorID)
 	require.Equal(t, sweepTxid, job.SweepTxid)
 }
+
+// TestUnilateralExitStoreGetJobMissingRowIsQuiet verifies that GetJob on a
+// missing row returns ErrUnilateralExitJobNotFound without the underlying
+// TransactionExecutor logging a "Transaction body failed" WARN. The miss is
+// the normal negative-lookup path (callers depend on the sentinel to
+// distinguish "no such job" from a real DB error), and the transaction
+// layer must recognise it as benign so noisy WARN lines do not appear in
+// production logs on every Unroll RPC.
+func TestUnilateralExitStoreGetJobMissingRowIsQuiet(t *testing.T) {
+	t.Parallel()
+
+	var logBuf bytes.Buffer
+	logger := btclog.NewSLogger(btclog.NewDefaultHandler(&logBuf))
+	logger.SetLevel(btclog.LevelTrace)
+
+	testDB := NewTestDB(t)
+
+	exitDB := NewTransactionExecutor(
+		testDB.BaseDB,
+		func(tx *sql.Tx) UnilateralExitStore {
+			return testDB.WithTx(tx)
+		},
+		logger,
+	)
+	store := NewUnilateralExitPersistenceStore(
+		exitDB, clock.NewDefaultClock(),
+	)
+
+	target := wire.OutPoint{
+		Hash: chainhash.Hash{
+			0x55,
+			0x05,
+		},
+		Index: 5,
+	}
+
+	job, err := store.GetJob(t.Context(), target)
+	require.ErrorIs(t, err, ErrUnilateralExitJobNotFound)
+	require.Nil(t, job)
+
+	require.NotContains(
+		t, logBuf.String(),
+		"Transaction body failed", "missing-row lookups must not "+
+			"log a Transaction body failed WARN; raw log: %s",
+		logBuf.String(),
+	)
+}
