@@ -102,6 +102,7 @@ gRPC API.
 - `boardingSweepWatcher` uses two cancellation scopes: the per-watcher `w.ctx` for spend registration and the per-refresh `ctx` for rebroadcast RPCs. Spend registration context must be the watcher lifetime so a CLI disconnect does not cancel live spend notifications.
 - `OORConfig.OOR.Limits` fields are validated during `Config.Validate()`; `MaxMailboxScriptBytes` must be at least `minOORMailboxScriptBytes = 34` (P2TR script length) to avoid silently rejecting all scripts.
 - `quoteOperatorFee` returns `codes.Unavailable` (not `codes.Internal`) when `serverConn` is nil so callers that can fall back to `MinOperatorFee` can distinguish transient from permanent failures.
+- `Config.EagerRoundJoin` is seeded by `defaultEagerRoundJoin()` in `DefaultConfig`, which is build-tag-aware: `false` on the standalone non-walletrpc build and `true` under the `walletrpc` build tag (both the standalone `cmd/darepod` binary and the `sdk/walletdk` embedded path). The cmd-line `--eagerroundjoin` flag inherits this default, so viper's flag / env / config precedence overrides the build-tag default naturally without any `IsSet` probing. `sdk/walletdk` exposes the disable knob via the `WithEagerRoundJoinDisabled()` functional option.
 
 ## Deep Docs
 

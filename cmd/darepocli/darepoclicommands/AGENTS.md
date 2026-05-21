@@ -39,39 +39,11 @@ The CLI surface is split into three tiers:
 | `mcp` | (local) | MCP server exposing the schema as tools |
 | `dev *` | dev RPC | Generated dev RPC CLI (see `devrpc/`) |
 
-Every generated `dev <service> <method>` leaf accepts `--describe`:
-when set, it emits a JSON schema for the method's input fields and
-returns without dispatching the RPC. The schema includes the fully-
-qualified request / response type names, server-streaming bit, and
-one row per flag (path, type, repeated, oneof_group, enum_values).
-This is the agent-CLI equivalent of the root `schema` command for
-the auto-generated dev tree: agents can learn the surface of a
-proto change without recompiling or grepping `.proto` sources. The
-implementation lives in `devrpc/describe.go` and reuses the same
-fieldBinder list that powers the CLI flag surface, so the describe
-output cannot drift from what `--help` advertises.
-
 ### `ark.*` advanced commands
 
 The everyday wallet verbs compose `walletrpc` end-to-end; the `ark`
 parent surfaces the raw daemonrpc methods underlying them for callers
 who want direct access.
-
-All list-shaped `ark.*` verbs (`ark vtxos list`, `ark rounds list`,
-`ark oor list`, `ark sweep list`, `ark listtransactions`) accept
-`--fields <name1,name2,...>` to apply a field mask and `--ndjson` to
-emit one JSON object per row on its own line (newline-delimited
-JSON). Combine the two to shrink each line further. Both flags use
-the shared `renderListOutput` helper so a behavior change in one
-place flows to every list command.
-
-`ark vtxos leave --all` no longer prompts for y/N when stdin is not
-a terminal. An agent or pipeline must pass `--yes` (explicit
-consent) or `--dry_run` (preview); otherwise the command fails fast
-with an `INVALID_ARGS` envelope (exit code 2). When stdin is a TTY
-the prompt still works for operator ergonomics. The TTY check is
-exposed via the `stdinIsTTY` package variable so tests can pin both
-branches deterministically.
 
 | Command | RPC | Description |
 |---------|-----|-------------|
@@ -94,23 +66,6 @@ branches deterministically.
 | `swap pay` | `StartPay` | Pay a Lightning invoice from Ark funds |
 | `swap resume` | `ResumeSwap` | Wake a persisted swap worker |
 | `swap watch` | `SubscribeSwaps` | Stream swap summary updates |
-
-Every swap.* verb accepts `--json` for raw proto payloads and is
-registered as an MCP tool when the binary is built with
-`-tags swapruntime`. The streaming `swap watch` verb is CLI-only;
-MCP tool calls are request/response and a long-running subscription
-fits the CLI lifecycle better. `validatePaymentHash` /
-`validateInvoice` apply on both the CLI and MCP paths to catch the
-canonical agent-hallucination patterns (whitespace, query suffixes,
-wrong-length hashes, embedded control bytes) before the daemon's
-decoder sees them.
-
-Schema entries for swap.* are listed in `schema_registry_swap.go`
-unconditionally regardless of build tag so a stub-build agent can
-still discover the surface; the CLI itself prints a clear "rebuild
-with -tags=swapruntime" error when the verb is invoked, and the
-MCP registration is what actually gets tag-gated (`mcp_swap.go` vs
-`mcp_swap_stub.go`).
 
 ## Key Types
 
@@ -151,44 +106,6 @@ MCP registration is what actually gets tag-gated (`mcp_swap.go` vs
     `swapruntime` tag only).
 - **Depended on by**: `cmd/darepocli` (main entry point).
 
-## Agent-CLI Posture
-
-This CLI is invoked routinely by AI agents, so the design follows the
-agent-cli skill checklist (see `~/.claude/skills/agent-cli/SKILL.md`).
-The relevant pieces here:
-
-- **Machine-readable output by default**: every command emits
-  proto-JSON on stdout; diagnostics go to stderr. Errors emit a
-  structured envelope `{"error":{"code":..., "message":...}}` via
-  `PrintError`.
-- **Input hardening**: `validateDestination`, `validateOutpoint`,
-  `validateFreeText`, `validateOutpointString`, and the per-verb
-  flag-combination checks treat agent inputs as adversarial. They
-  reject query / fragment characters in destinations, embedded
-  control bytes in free-text fields, malformed outpoints, and
-  ambiguous flag combinations before any RPC dispatch.
-- **Dry-run safety rails for mutating verbs**: `send` and `exit`
-  accept `--dry-run`, which runs every local validation and prints a
-  `{"dry_run":true,"method":..., "body":...}` preview on stdout
-  without dispatching the RPC. The process exits with code 10 on a
-  passing dry-run so an agent can branch on it.
-- **Semantic exit codes**: see `exit_codes.go`. 0 = success,
-  2 = invalid args (rejected client-side), 3 = wallet/auth failure,
-  4 = not found (unknown round / job / hash), 10 = dry-run passed,
-  1 = anything else. gRPC status codes from the daemon also map onto
-  this table via `ExitCodeFor`.
-- **Schema introspection**: `schema` dumps the full method registry
-  (top-level wallet verbs, ark.*, swap.*) as JSON. Each entry carries
-  a `mcp_tool` flag indicating whether the method is also exposed
-  over MCP.
-- **MCP surface**: every read-only wallet verb (`balance`, `list`,
-  `exit.status`) and every mutating wallet verb except `create` /
-  `unlock` is registered as an MCP tool via `registerMCPWalletTools`.
-  `create` / `unlock` are CLI-only by design: their inputs are
-  secrets (wallet password, seed passphrase) that must not transit
-  the MCP protocol where they could land in agent logs or provider
-  APIs.
-
 ## Invariants
 
 - The seven top-level wallet verbs ALWAYS register at the root
@@ -205,12 +122,6 @@ The relevant pieces here:
 - JSON output (`stdout`) and diagnostic output (`stderr`) are kept on
   separate streams so shell pipelines can consume the JSON body while
   a human reading the terminal sees informative warnings.
-- The CLI and MCP surfaces share input-hardening builders
-  (`buildWalletSendRequest`, `buildWalletListRequest`,
-  `buildLeaveVTXOsRequest`, `buildOORRecipientOutput`,
-  `parseDirectionField`). Divergence between the two surfaces would
-  let one accept shapes the other rejects, so all flag-translation
-  logic for tools that exist on both lives in shared helpers.
 
 ## Deep Docs
 

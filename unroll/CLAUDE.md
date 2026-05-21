@@ -17,8 +17,10 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
   planner, and cached sweep transaction for this one VTXO.
 - `Config` — Per-actor wiring: `TargetOutpoint`, `ActorID`, `DeliveryStore`,
   `ProofAssembler`, `VTXOStore`, `TxConfirmRef`, `ChainSource`, `Wallet`
-  (`SweepWallet`), `MaxSweepFeeRateSatPerVByte`, and a `RegistryRef` for
-  terminal notifications.
+  (`SweepWallet`), `MaxSweepFeeRateSatPerVByte`, `FraudCheckpointSafetyMargin
+  int32` (overrides the fraud-triggered unroll backstop margin in blocks;
+  zero falls back to the default), and a `RegistryRef` for terminal
+  notifications.
 - `behavior` — Actor behavior. Holds `b.sweepTx` (restored from checkpoint on
   boot) so retries and replays converge on a single sweep txid / pkScript
   under `txconfirm`'s txid-keyed dedup.
@@ -87,6 +89,16 @@ control-plane record per target to `db` so restart can restore in-flight jobs.
 - `safeTxOutPkScript(tx, index)` — Bounds-checking helper used at every
   `tx.TxOut[i].PkScript` site so malformed proof artifacts (operator-sourced
   OOR inputs) surface as retryable errors instead of goroutine panics.
+- `ensureProofSpendWatches(ctx, txid, node)` — Registers spend watches on
+  proof-node outputs consumed by in-proof children. Neutrino can miss direct
+  confirmation under load, but a spend of the parent output proves the parent
+  proof tx confirmed. The `proofSpendWatches` map deduplicates registrations.
+- `watchDeferredCheckpoint(ctx, txid, node)` — Registers a confirmation
+  watch for fraud-triggered checkpoints while the actor waits for operator
+  confirmation of the proof node.
+- `proofNodeHeightHint = 1` — Height hint constant used when registering
+  proof-node spend/confirmation watches. Proof roots and intermediate
+  ancestors can confirm before the target VTXO's creation height.
 
 ## Relationships
 

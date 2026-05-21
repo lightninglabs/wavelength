@@ -18,8 +18,11 @@ resume semantics.
   2-of-2 collab leaf; uses `MultiPrevOutFetcher` for correct BIP-341 sighash
   across multiple inputs.
 - `ClientActorCfg` — Configuration for OORClientActor (OutboxHandler,
-  ServerConn, PackageStore, DeliveryStore, VTXOManager, VTXOStore, and optional
-  `LedgerSink fn.Option[ledger.Sink]` for fire-and-forget accounting emission).
+  ServerConn, PackageStore, DeliveryStore, VTXOManager, VTXOStore, optional
+  `LedgerSink fn.Option[ledger.Sink]` for fire-and-forget accounting emission,
+  and optional `IncomingVTXOObserver IncomingVTXONotifier` callback invoked
+  after incoming VTXOs are durably materialized — allows daemon-local
+  subsystems to arm actor-owned work without a package dependency on `oor`).
 - `OORClientActor` — Durable actor wrapping per-session state machines. Handles
   both outgoing transfers and incoming receive via three-phase async resolution.
   Emits `VTXOSentMsg` / `VTXOReceivedMsg` to the ledger actor at the two points
@@ -257,6 +260,17 @@ resume semantics.
   applies only to persisted OOR condition witnesses.)
 - At submit time only structural validation runs (`ValidateSubmitPackage`); full
   script VM validation requires both signatures and runs at finalize.
+- Incoming ancestor packages are validated against a checkpoint count limit
+  per ancestor via `packageArtifactsFromRPC`, preventing resource exhaustion
+  from misbehaving indexers.
+- The indexer-supplied `tree_depth` on incoming ancestry paths is validated
+  against the reconstructed path via `arkrpc.ValidateAncestryPathDepth` in
+  `ancestryFromRPC`. A truncated depth claim or under-reported CSV window
+  causes the package to be rejected.
+- `validateIncomingPackageGraph` is called by
+  `IncomingTransferEventFromResponseWithLimits` after the package is
+  assembled; it validates the root + all ancestor packages as a final
+  defense-in-depth check before the event is dispatched to the FSM.
 - Point-of-no-return: when server co-signs checkpoint transaction(s).
 - After checkpoint signature, client must resume and obtain byte-identical
   co-signed PSBTs (deterministic construction).

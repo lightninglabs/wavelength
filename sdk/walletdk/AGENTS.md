@@ -57,8 +57,19 @@ methods return `ErrWalletRPCUnavailable` synchronously.
 - `WalletVTXO` / `OnchainTx` — Per-row shapes for the VTXOS and ONCHAIN
   views of `List`.
 - `ExitRequest` / `ExitResult` / `ExitStatusRequest` /
-  `ExitStatusResult` / `ExitJobStatus` — Unilateral-exit DTOs. The
-  status string is the wrapper-owned lowercase set
+  `ExitStatusResult` / `ExitJobStatus` — Exit DTOs. `ExitRequest`
+  carries the target outpoint plus an optional `Destination`
+  on-chain address: when set, `Exit` first attempts a cooperative
+  leave (`daemonrpc.LeaveVTXOs`) so the VTXO is unwound via the
+  next assembling round with the leave output landing on the
+  caller-supplied address; the SDK transparently falls back to
+  `walletrpc.Exit` (unilateral unroll) when the cooperative attempt
+  fails for any reason. `ExitResult.Cooperative` reports which path
+  the daemon took, `QueuedOutpoints` carries the cooperative
+  selection echo, `Created` / `ActorID` describe the unilateral
+  fallback job, and `CooperativeError` surfaces the original
+  cooperative failure when the SDK fell back. The status string is
+  the wrapper-owned lowercase set
   (`pending`/`materializing`/`csv_pending`/`sweeping`/`completed`/`failed`/
   `unspecified`), decoupled from `walletrpc.ExitJobStatus`.
 - `ErrWalletRPCUnavailable` — Sentinel returned by every wallet method
@@ -130,6 +141,34 @@ methods return `ErrWalletRPCUnavailable` synchronously.
   `DaemonConfig`. There is no tri-state distinction between "not set"
   and "explicitly false" — set `DaemonConfig` directly when the host
   needs to force a `false`.
+- `Config.EagerRoundJoin` flips the embedded daemon's
+  `darepod.Config.EagerRoundJoin` so confirmed deposits and
+  cooperative-leave intents auto-trigger a round join without the
+  host having to call `daemonrpc.Board` or chase the round FSM
+  forward separately. The walletrpc-tagged embedded build that
+  walletdk targets already defaults this to `true` via
+  `darepod.DefaultConfig` (see `darepod/config_walletrpc.go`), so
+  leaving the convenience field at the zero value is the right
+  choice for nearly every host. The field stays as an
+  enable-only override: set it `true` only to force the override
+  on a caller-supplied `DaemonConfig` that carries `false`. To
+  force eager round-join OFF, pass
+  `walletdk.WithEagerRoundJoinDisabled()` to `Start` — this
+  applies AFTER the convenience merge and `configureWalletRPC`
+  so the disable wins over the build-tag default and any
+  `DaemonConfig` value. The destination resolution +
+  cooperative-vs-unilateral policy for the `Exit` verb itself is
+  still driven by the walletdk method body.
+- `Option` is the functional-option type accepted as variadic
+  trailing args to `Start`. Options apply AFTER the
+  `Config` / `DaemonConfig` merge and after `configureSwapRuntime`
+  / `configureWalletRPC` so they can override values seeded by
+  `darepod.DefaultConfig` or carried on a caller-owned
+  `DaemonConfig`. The first option is
+  `WithEagerRoundJoinDisabled()`, which forces
+  `daemonCfg.EagerRoundJoin = false`. New options should follow
+  this "override after merge" placement so the semantics stay
+  consistent.
 - Secret-bearing slices (`SeedPassphrase`, `WalletPassword`, `Mnemonic`) are
   cloned at the SDK boundary via `bytes.Clone` / `append` before being handed
   to the daemon RPC layer so host apps can zero their own copies on return
