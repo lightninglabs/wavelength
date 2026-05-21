@@ -1151,6 +1151,156 @@ func TestQueryRoundStatesPopulatesUpcomingVTXOs(t *testing.T) {
 	require.Equal(t, int64(amountB), got.Vtxos[1].AmountSat)
 }
 
+// TestListVTXOsPendingRoundProjectsLiveRounds verifies that
+// ListVTXOs with status_filter=VTXO_STATUS_PENDING_ROUND projects
+// the upcoming VTXOs from in-flight rounds as synthetic VTXO
+// entries. This pins issue #501: prior to the fix there was no way
+// to see VTXOs the wallet had signed for between commitment-tx
+// signing and confirmation.
+func TestListVTXOsPendingRoundProjectsLiveRounds(t *testing.T) {
+	t.Parallel()
+
+	const (
+		amountA = btcutil.Amount(50_000)
+		amountB = btcutil.Amount(25_000)
+		// belowMin sits under the min_amount_sat filter and must
+		// be elided to confirm the filter still applies on the
+		// synthetic path.
+		belowMin = btcutil.Amount(1_000)
+	)
+
+	commitTx := wire.NewMsgTx(2)
+	commitTx.AddTxIn(&wire.TxIn{})
+	commitTx.AddTxOut(&wire.TxOut{Value: 100_000})
+	packet, err := psbt.NewFromUnsignedTx(commitTx)
+	require.NoError(t, err)
+	expectedTxid := commitTx.TxHash().String()
+
+	roundID := round.RoundID(uuid.New())
+	state := &round.InputSigSentState{
+		RoundID:      roundID,
+		CommitmentTx: packet,
+		Intents: round.Intents{
+			VTXOs: []types.VTXORequest{
+				{
+					Amount:   amountA,
+					OwnerKey: localOwnerKey(t),
+				},
+				{
+					Amount:   amountB,
+					OwnerKey: localOwnerKey(t),
+				},
+				{
+					Amount:   belowMin,
+					OwnerKey: localOwnerKey(t),
+				},
+			},
+		},
+	}
+
+	system := newRoundActorWithStates(t,
+		map[string]round.FSMStateInfo{
+			roundID.String(): {
+				State:   state,
+				RoundID: roundID,
+			},
+		},
+	)
+	defer func() {
+		require.NoError(t, system.Shutdown(t.Context()))
+	}()
+
+	// Force the wallet-ready gate open without standing up a real
+	// wallet — listPendingRoundVTXOs only consults the round
+	// actor.
+	walletReady := make(chan struct{})
+	close(walletReady)
+	srv := &RPCServer{server: &Server{
+		actorSystem: system,
+		walletReady: walletReady,
+	}}
+
+	resp, err := srv.ListVTXOs(t.Context(), &daemonrpc.ListVTXOsRequest{
+		StatusFilter: daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_ROUND,
+		MinAmountSat: int64(amountB),
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Vtxos, 2)
+
+	for _, v := range resp.Vtxos {
+		require.Equal(
+			t, daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_ROUND,
+			v.Status,
+		)
+		require.Equal(t, roundID.String(), v.RoundId)
+		require.Equal(t, expectedTxid, v.CommitmentTxid)
+		require.Empty(t, v.Outpoint)
+	}
+	require.Equal(t, int64(amountA), resp.Vtxos[0].AmountSat)
+	require.Equal(t, int64(amountB), resp.Vtxos[1].AmountSat)
+}
+
+// TestListVTXOsPendingRoundSkipsConfirmedRounds pins the guard against
+// double-reporting: between a round's commitment-tx confirmation and
+// the actor cleaning the round out of its in-memory map, the same
+// VTXOs are already in the on-disk store as VTXO_STATUS_LIVE.
+// Surfacing them under VTXO_STATUS_PENDING_ROUND too would show the
+// upcoming-balance twice for that short window.
+func TestListVTXOsPendingRoundSkipsConfirmedRounds(t *testing.T) {
+	t.Parallel()
+
+	roundID := round.RoundID(uuid.New())
+	confirmed := &round.ConfirmedState{
+		TxID: chainhash.Hash{
+			0xab,
+			0xcd,
+		},
+		VTXOs: []*round.ClientVTXO{
+			{
+				Outpoint: wire.OutPoint{
+					Hash: chainhash.Hash{
+						0x11,
+					},
+					Index: 0,
+				},
+				Amount: btcutil.Amount(50_000),
+			},
+		},
+	}
+
+	system := newRoundActorWithStates(t,
+		map[string]round.FSMStateInfo{
+			roundID.String(): {
+				State:   confirmed,
+				RoundID: roundID,
+			},
+		},
+	)
+	defer func() {
+		require.NoError(t, system.Shutdown(t.Context()))
+	}()
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+	srv := &RPCServer{server: &Server{
+		actorSystem: system,
+		walletReady: walletReady,
+	}}
+
+	resp, err := srv.ListVTXOs(
+		t.Context(), &daemonrpc.ListVTXOsRequest{
+			StatusFilter: daemonrpc.
+				VTXOStatus_VTXO_STATUS_PENDING_ROUND,
+		},
+	)
+	require.NoError(t, err)
+	require.Empty(
+		t, resp.Vtxos, "ConfirmedState VTXOs live under "+
+			"VTXO_STATUS_LIVE in the store; they must not "+
+			"double-report here",
+	)
+}
+
 // TestQueryRoundStatesEarlyStateOmitsCommitmentTxid verifies that
 // rounds before the CommitmentTxReceived transition still surface
 // their upcoming VTXO amounts but leave the commitment txid empty:

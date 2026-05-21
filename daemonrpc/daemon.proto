@@ -436,6 +436,15 @@ enum VTXOStatus {
     // VTXO_STATUS_SPENDING indicates the VTXO has been claimed for an
     // out-of-round spend but the spend has not yet completed.
     VTXO_STATUS_SPENDING = 8;
+
+    // VTXO_STATUS_PENDING_ROUND indicates a VTXO the wallet is about to
+    // receive from a round that has been signed but whose commitment
+    // transaction has not yet confirmed on-chain. Entries with this
+    // status are synthetic projections from the live round actor; they
+    // are not yet persisted, not yet spendable, and carry only the
+    // amount, originating round_id, and (once known) the commitment
+    // txid that will create them.
+    VTXO_STATUS_PENDING_ROUND = 9;
 }
 
 message VTXO {

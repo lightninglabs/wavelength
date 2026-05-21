@@ -121,6 +121,14 @@ const (
 	// VTXO_STATUS_SPENDING indicates the VTXO has been claimed for an
 	// out-of-round spend but the spend has not yet completed.
 	VTXOStatus_VTXO_STATUS_SPENDING VTXOStatus = 8
+	// VTXO_STATUS_PENDING_ROUND indicates a VTXO the wallet is about to
+	// receive from a round that has been signed but whose commitment
+	// transaction has not yet confirmed on-chain. Entries with this
+	// status are synthetic projections from the live round actor; they
+	// are not yet persisted, not yet spendable, and carry only the
+	// amount, originating round_id, and (once known) the commitment
+	// txid that will create them.
+	VTXOStatus_VTXO_STATUS_PENDING_ROUND VTXOStatus = 9
 )
 
 // Enum value maps for VTXOStatus.
@@ -135,6 +143,7 @@ var (
 		6: "VTXO_STATUS_UNILATERAL_EXIT",
 		7: "VTXO_STATUS_FAILED",
 		8: "VTXO_STATUS_SPENDING",
+		9: "VTXO_STATUS_PENDING_ROUND",
 	}
 	VTXOStatus_value = map[string]int32{
 		"VTXO_STATUS_UNSPECIFIED":     0,
@@ -146,6 +155,7 @@ var (
 		"VTXO_STATUS_UNILATERAL_EXIT": 6,
 		"VTXO_STATUS_FAILED":          7,
 		"VTXO_STATUS_SPENDING":        8,
+		"VTXO_STATUS_PENDING_ROUND":   9,
 	}
 )
 
@@ -6443,7 +6453,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x11WALLET_STATE_NONE\x10\x01\x12\x17\n" +
 	"\x13WALLET_STATE_LOCKED\x10\x02\x12\x16\n" +
 	"\x12WALLET_STATE_READY\x10\x03\x12\x18\n" +
-	"\x14WALLET_STATE_SYNCING\x10\x04*\x81\x02\n" +
+	"\x14WALLET_STATE_SYNCING\x10\x04*\xa0\x02\n" +
 	"\n" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x14\n" +
@@ -6454,7 +6464,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\x11VTXO_STATUS_SPENT\x10\x05\x12\x1f\n" +
 	"\x1bVTXO_STATUS_UNILATERAL_EXIT\x10\x06\x12\x16\n" +
 	"\x12VTXO_STATUS_FAILED\x10\a\x12\x18\n" +
-	"\x14VTXO_STATUS_SPENDING\x10\b*\xf7\x03\n" +
+	"\x14VTXO_STATUS_SPENDING\x10\b\x12\x1d\n" +
+	"\x19VTXO_STATUS_PENDING_ROUND\x10\t*\xf7\x03\n" +
 	"\n" +
 	"RoundState\x12\x17\n" +
 	"\x13ROUND_STATE_UNKNOWN\x10\x00\x12\x14\n" +

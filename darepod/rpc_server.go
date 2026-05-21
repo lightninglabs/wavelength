@@ -659,12 +659,21 @@ func sumOnchainWalletConfirmed(ctx context.Context,
 }
 
 // ListVTXOs returns the set of VTXOs known to the wallet, optionally
-// filtered by status and minimum amount.
+// filtered by status and minimum amount. The VTXO_STATUS_PENDING_ROUND
+// filter is special: it bypasses the on-disk store and projects each
+// upcoming VTXO from the live round actor as a synthetic VTXO entry,
+// giving callers a way to see the outputs they have signed for but
+// which have not yet been created by an on-chain commitment.
 func (r *RPCServer) ListVTXOs(ctx context.Context,
 	req *daemonrpc.ListVTXOsRequest) (*daemonrpc.ListVTXOsResponse, error) {
 
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
+	}
+
+	if req.StatusFilter ==
+		daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_ROUND {
+		return r.listPendingRoundVTXOs(ctx, req)
 	}
 
 	if r.server.vtxoStore == nil {
@@ -745,6 +754,57 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 		}
 
 		protoVTXOs = append(protoVTXOs, protoVTXO)
+	}
+
+	return &daemonrpc.ListVTXOsResponse{
+		Vtxos: protoVTXOs,
+	}, nil
+}
+
+// listPendingRoundVTXOs projects the upcoming VTXOs from every live
+// round FSM as synthetic VTXO entries. Each entry carries the
+// expected amount, the originating round id (once assigned), and the
+// commitment txid (once the round actor has received the commitment
+// transaction). The outpoint is intentionally empty because the
+// precise leaf outpoint inside the VTXO tree is not finalised until
+// the commitment transaction confirms.
+func (r *RPCServer) listPendingRoundVTXOs(ctx context.Context,
+	req *daemonrpc.ListVTXOsRequest) (*daemonrpc.ListVTXOsResponse, error) {
+
+	rounds, err := r.queryRoundStates(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	minAmount := btcutil.Amount(req.MinAmountSat)
+	pendingRoundStatus := daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_ROUND
+
+	protoVTXOs := make([]*daemonrpc.VTXO, 0)
+	for _, info := range rounds {
+		// Skip rounds whose commitment tx has already confirmed.
+		// Their VTXOs are written to the on-disk store as
+		// VTXO_STATUS_LIVE so they surface there; including them
+		// here too would cause a brief double-report in the window
+		// between commitment confirmation and the actor cleaning
+		// the round out of its in-memory map.
+		if info.State == daemonrpc.RoundState_ROUND_STATE_CONFIRMED {
+			continue
+		}
+
+		for _, v := range info.Vtxos {
+			amount := btcutil.Amount(v.AmountSat)
+			if amount < minAmount {
+				continue
+			}
+
+			protoVTXOs = append(protoVTXOs, &daemonrpc.VTXO{
+				AmountSat:      v.AmountSat,
+				Status:         pendingRoundStatus,
+				RoundId:        info.RoundId,
+				CommitmentTxid: info.CommitmentTxid,
+				Outpoint:       v.Outpoint,
+			})
+		}
 	}
 
 	return &daemonrpc.ListVTXOsResponse{
