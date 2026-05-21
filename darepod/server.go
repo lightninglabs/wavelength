@@ -74,11 +74,10 @@ import (
 )
 
 // WalletState represents the lifecycle state of the wallet subsystem.
-// In lwwallet mode, the wallet transitions through these states during
-// daemon startup: None → Locked → Ready (or None → Ready if the seed
-// is provided via environment variable). The underlying type is int32
-// so it can be stored in an atomic.Int32 for lock-free concurrent
-// access.
+// In self-managed wallet modes, the daemon transitions through these
+// states during startup as seed material is discovered, decrypted, and
+// made safe for wallet RPCs. The underlying type is int32 so it can be
+// stored in an atomic.Int32 for lock-free concurrent access.
 type WalletState int32
 
 const (
@@ -91,11 +90,45 @@ const (
 	// UnlockWallet RPCs in this state.
 	WalletStateLocked
 
+	// WalletStateUnlocking indicates one UnlockWallet RPC has claimed
+	// the locked wallet and is decrypting the seed or starting the
+	// wallet backend. This state is internal and reports as LOCKED on
+	// the public GetInfo surface.
+	WalletStateUnlocking
+
+	// WalletStateSyncing indicates the wallet seed has been decrypted
+	// and the wallet backend has started, but the backing chain source
+	// has not caught up enough for wallet RPCs to be safe.
+	WalletStateSyncing
+
 	// WalletStateReady indicates the wallet is initialized and
 	// operational. All wallet RPCs (GetBalance, NewAddress, etc.)
 	// are available.
 	WalletStateReady
 )
+
+// String returns a stable name for logging and RPC precondition errors.
+func (s WalletState) String() string {
+	switch s {
+	case WalletStateNone:
+		return "none"
+
+	case WalletStateLocked:
+		return "locked"
+
+	case WalletStateUnlocking:
+		return "unlocking"
+
+	case WalletStateSyncing:
+		return "syncing"
+
+	case WalletStateReady:
+		return "ready"
+
+	default:
+		return "unknown"
+	}
+}
 
 const (
 	// arkServiceName is the protobuf service name for ArkService
@@ -1599,6 +1632,7 @@ func (s *Server) startBtcwallet(ctx context.Context,
 		ctx, "Neutrino-backed wallet started, waiting for initial "+
 			"sync in background",
 	)
+	s.walletState.Store(int32(WalletStateSyncing))
 
 	// Wait for btcwallet to fully sync with the chain before
 	// marking the wallet ready. This includes the recovery scan

@@ -287,6 +287,12 @@ func walletStateToProto(s WalletState) daemonrpc.WalletState {
 	case WalletStateLocked:
 		return daemonrpc.WalletState_WALLET_STATE_LOCKED
 
+	case WalletStateUnlocking:
+		return daemonrpc.WalletState_WALLET_STATE_LOCKED
+
+	case WalletStateSyncing:
+		return daemonrpc.WalletState_WALLET_STATE_SYNCING
+
 	case WalletStateReady:
 		return daemonrpc.WalletState_WALLET_STATE_READY
 

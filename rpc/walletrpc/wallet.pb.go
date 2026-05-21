@@ -1641,8 +1641,9 @@ type StatusResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// ready is true when the daemon and its dependencies are up.
 	Ready bool `protobuf:"varint,1,opt,name=ready,proto3" json:"ready,omitempty"`
-	// unlocked is true when the wallet seed is loaded and signing is
-	// available.
+	// unlocked is a legacy wallet-exists signal: true once a wallet
+	// seed exists on disk or is loaded in memory. Use ready to check
+	// whether wallet RPCs are currently usable.
 	Unlocked bool `protobuf:"varint,2,opt,name=unlocked,proto3" json:"unlocked,omitempty"`
 	// network is the bitcoin network the daemon is configured for, for
 	// example "mainnet", "testnet", "signet", or "regtest".

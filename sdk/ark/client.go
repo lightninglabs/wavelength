@@ -34,10 +34,10 @@ type Client struct {
 	closeErr  error
 }
 
-// WalletState mirrors the daemon's wallet lifecycle enum so SDK consumers
-// can render a tri-state UI. Compare against >= WalletStateLocked for
-// "seed exists" semantics and == WalletStateReady for "fully usable"
-// semantics.
+// WalletState mirrors the daemon's wallet lifecycle enum so SDK
+// consumers can render wallet setup progress. WalletStateSyncing and
+// WalletStateReady mean seed material is loaded; only WalletStateReady
+// means the wallet is fully usable.
 type WalletState int32
 
 const (
@@ -56,6 +56,10 @@ const (
 	// WalletStateReady indicates the wallet is initialized, unlocked,
 	// and signing is available.
 	WalletStateReady WalletState = 3
+
+	// WalletStateSyncing indicates the wallet is unlocked and the
+	// backing chain source is catching up before wallet RPCs are safe.
+	WalletStateSyncing WalletState = 4
 )
 
 // WalletReady reports whether the daemon wallet is fully unlocked and
@@ -97,10 +101,9 @@ type Info struct {
 	WalletType string
 
 	// WalletState reports the daemon wallet lifecycle state
-	// (Unspecified/None/Locked/Ready). The values are ordered from
-	// least to most ready; callers can compare against >=
-	// WalletStateLocked for "seed exists" semantics and ==
-	// WalletStateReady for "fully usable" semantics.
+	// (Unspecified/None/Locked/Ready/Syncing). WalletStateSyncing
+	// and WalletStateReady mean seed material is loaded; only
+	// WalletStateReady means the wallet is fully usable.
 	WalletState WalletState
 
 	// IdentityPubKey is the daemon identity public key derived from the

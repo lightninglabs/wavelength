@@ -40,10 +40,10 @@ const (
 )
 
 // WalletState mirrors the daemon's wallet lifecycle enum so SDK
-// consumers can render a tri-state UI without collapsing LOCKED into
-// "not ready". The values are ordered from least to most ready;
-// compare against >= WalletStateLocked for "seed exists" semantics and
-// == WalletStateReady for "fully usable" semantics.
+// consumers can render wallet setup progress without collapsing
+// LOCKED and SYNCING into one "not ready" state. WalletStateSyncing
+// and WalletStateReady mean seed material is loaded; only
+// WalletStateReady means the wallet is fully usable.
 type WalletState int32
 
 const (
@@ -62,6 +62,10 @@ const (
 	// WalletStateReady indicates the wallet is initialized, unlocked,
 	// and signing is available.
 	WalletStateReady WalletState = 3
+
+	// WalletStateSyncing indicates the wallet is unlocked and the
+	// backing chain source is catching up before wallet RPCs are safe.
+	WalletStateSyncing WalletState = 4
 )
 
 // Info summarizes daemon readiness for wallet applications.

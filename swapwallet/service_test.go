@@ -117,3 +117,26 @@ func TestServiceStatusComposesInfoBalanceAndPending(t *testing.T) {
 	require.Equal(t, int64(1_000), resp.GetBalance().GetConfirmedSat())
 	require.Equal(t, uint32(1), resp.GetPendingCount())
 }
+
+// TestServiceStatusReportsSyncingWalletUnlocked confirms the wallet
+// facade reports an unlocked wallet during daemon sync without
+// promoting it to ready.
+func TestServiceStatusReportsSyncingWalletUnlocked(t *testing.T) {
+	t.Parallel()
+
+	svc, swap, rpc := newServiceFixture(t)
+	rpc.getInfoResp = &daemonrpc.GetInfoResponse{
+		WalletState: daemonrpc.WalletState_WALLET_STATE_SYNCING,
+		Network:     "regtest",
+	}
+	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+
+	resp, err := svc.Status(
+		t.Context(), &walletrpc.StatusRequest{},
+	)
+	require.NoError(t, err)
+	require.False(t, resp.GetReady())
+	require.True(t, resp.GetUnlocked())
+}
