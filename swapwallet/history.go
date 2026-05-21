@@ -504,17 +504,49 @@ func walletEntryFromLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 	amount := t.GetAmountSat() * direction
 
 	return &walletrpc.WalletEntry{
-		Id:   id,
-		Kind: kind,
-		Status: statusFromLedgerConfirmation(
-			t.GetConfirmationStatus(),
-		),
+		Id:            id,
+		Kind:          kind,
+		Status:        statusForLedgerRow(t, kind),
 		AmountSat:     amount,
 		FeeSat:        t.GetFeeSat(),
 		Counterparty:  ledgerCounterparty(t, kind),
 		CreatedAtUnix: t.GetCreatedAtUnixS(),
 		UpdatedAtUnix: t.GetCreatedAtUnixS(),
 	}, true
+}
+
+// statusForLedgerRow folds the ledger row's confirmation_status and the
+// wallet-facing entry kind into the flat EntryStatus the API surfaces.
+// Most rows are a straight projection of the chain confirmation
+// signal, but DEPOSIT rows from the `wallet_utxo_created` event are a
+// special case: chain confirmation of the boarding UTXO only means the
+// funds landed on-chain, NOT that they have been boarded into a live
+// VTXO. Reporting COMPLETE there is misleading — under
+// eagerroundjoin=false the deposit can sit forever in that state
+// while remaining unspendable through any in-Ark flow. Keep DEPOSIT
+// rows backed by wallet_utxo_created at PENDING until a follow-up
+// boarding_fee_paid (or equivalent "boarded" ledger entry) flips
+// them to COMPLETE.
+func statusForLedgerRow(t *daemonrpc.TransactionHistoryEntry,
+	kind walletrpc.EntryKind) walletrpc.EntryStatus {
+
+	confirmation := statusFromLedgerConfirmation(t.GetConfirmationStatus())
+
+	if kind == walletrpc.EntryKind_ENTRY_KIND_DEPOSIT &&
+		t.GetSubtype() == ledger.EventWalletUTXOCreated &&
+		confirmation == walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE {
+
+		// TODO(#503 follow-up): flip back to COMPLETE once the
+		// ledger emits a boarding_fee_paid (or equivalent
+		// "boarded into a round" entry) for this deposit. Until
+		// that signal exists, DEPOSIT rows backed by
+		// wallet_utxo_created are stuck at PENDING here — which
+		// is correct ("on-chain, not yet boarded") but loses the
+		// eventual "boarded" transition.
+		return walletrpc.EntryStatus_ENTRY_STATUS_PENDING
+	}
+
+	return confirmation
 }
 
 // classifyLedgerRow maps a ledger row's type+subtype+account triple onto
