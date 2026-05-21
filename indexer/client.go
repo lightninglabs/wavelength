@@ -3,8 +3,10 @@ package indexer
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -18,7 +20,15 @@ import (
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+// ErrScriptNotRegisteredForPrincipal is returned when a proof-gated script
+// query targets a script that has not been registered for the calling
+// principal.
+var ErrScriptNotRegisteredForPrincipal = errors.New("script not registered " +
+	"for principal")
 
 // Client is a small convenience wrapper around the generated
 // arkrpc.IndexerServiceMailboxClient that helps construct canonical receive
@@ -642,10 +652,30 @@ func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
 
 	resp, err := c.rpc.ListVTXOsByScripts(ctx, req, firstOpt(opts))
 	if err != nil {
-		return nil, err
+		return nil, normalizeScriptScopeError(err)
 	}
 
 	return resp, nil
+}
+
+// normalizeScriptScopeError wraps server-side script authorization failures
+// with a stable client-side sentinel while preserving the original RPC error.
+func normalizeScriptScopeError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg,
+		ErrScriptNotRegisteredForPrincipal.Error()) {
+		return err
+	}
+
+	if status.Code(err) != codes.Unauthenticated {
+		return err
+	}
+
+	return fmt.Errorf("%w: %w", ErrScriptNotRegisteredForPrincipal, err)
 }
 
 // BuildGetOORSessionByTxidTaprootRequest builds the proof-gated indexer
