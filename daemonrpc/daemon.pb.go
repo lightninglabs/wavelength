@@ -4239,12 +4239,20 @@ type RoundInfo struct {
 	// is_temp indicates this round has a temporary key and hasn't
 	// been assigned a server round ID yet.
 	IsTemp bool `protobuf:"varint,3,opt,name=is_temp,json=isTemp,proto3" json:"is_temp,omitempty"`
-	// vtxos lists the VTXOs created by this round. Only populated
-	// for persisted rounds (input_sig_sent, confirmed). Empty for
-	// pending/in-memory rounds.
+	// vtxos lists the VTXOs the wallet expects to receive from this
+	// round. For rounds still in flight (any state before confirmed)
+	// only amount_sat is populated; the outpoint is empty because the
+	// precise leaf position in the VTXO tree is not finalised until
+	// the commitment transaction confirms. For confirmed rounds both
+	// outpoint ("txid:index") and amount_sat are populated. The
+	// commitment_txid field below carries the commitment tx hash
+	// independently once the round actor has received it from the
+	// operator, so callers do not need a populated outpoint to know
+	// which commitment they have signed.
 	Vtxos []*RoundVTXOInfo `protobuf:"bytes,4,rep,name=vtxos,proto3" json:"vtxos,omitempty"`
-	// commitment_txid is the round commitment transaction id when the round
-	// has been persisted.
+	// commitment_txid is the round commitment transaction id once the
+	// round actor has received it from the operator, or once the
+	// round has been persisted.
 	CommitmentTxid string `protobuf:"bytes,5,opt,name=commitment_txid,json=commitmentTxid,proto3" json:"commitment_txid,omitempty"`
 	// commitment_height is the block height that confirmed the commitment
 	// transaction, when known.
