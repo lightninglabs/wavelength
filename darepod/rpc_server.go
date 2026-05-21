@@ -441,33 +441,27 @@ func (r *RPCServer) requireWalletReady() error {
 		return nil
 
 	case WalletStateNone:
-		return status.Error(
-			codes.FailedPrecondition,
+		return daemonrpc.WalletNotReadyError(
 			"wallet is not ready (create first)",
 		)
 
 	case WalletStateLocked:
-		return status.Error(
-			codes.FailedPrecondition,
+		return daemonrpc.WalletNotReadyError(
 			"wallet is not ready (unlock first)",
 		)
 
 	case WalletStateUnlocking:
-		return status.Error(
-			codes.FailedPrecondition,
+		return daemonrpc.WalletNotReadyError(
 			"wallet unlock is in progress",
 		)
 
 	case WalletStateSyncing:
-		return status.Error(
-			codes.FailedPrecondition,
+		return daemonrpc.WalletNotReadyError(
 			"wallet is syncing; try again once sync completes",
 		)
 
 	default:
-		return status.Error(
-			codes.FailedPrecondition, "wallet is not ready",
-		)
+		return daemonrpc.WalletNotReadyError("wallet is not ready")
 	}
 }
 
