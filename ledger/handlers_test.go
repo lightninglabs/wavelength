@@ -289,6 +289,20 @@ func TestHandleVTXOReceivedRoundBoarding(t *testing.T) {
 	require.Equal(t, int64(50_000), entries[0].AmountSat)
 	require.Equal(t, EventVTXOReceived,
 		entries[0].EventType)
+
+	// The VTXO outpoint must land on the row's structured chain
+	// fields too. Issue #504: without these the wallet's onchain
+	// view renders a "round"-kind row with an empty txid and the
+	// outpoint only available by parsing the description blob.
+	require.Equal(
+		t, msg.OutpointHash[:], entries[0].ChainTxid,
+		"chain_txid must carry the VTXO outpoint hash",
+	)
+	require.NotNil(t, entries[0].ChainVout)
+	require.Equal(
+		t, int32(msg.OutpointIndex), *entries[0].ChainVout,
+		"chain_vout must carry the VTXO outpoint index",
+	)
 }
 
 // TestHandleVTXOReceivedRoundTransfer verifies that an in-round
