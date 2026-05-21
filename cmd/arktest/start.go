@@ -30,6 +30,7 @@ type startConfig struct {
 	artifactsDir   string
 	groupName      string
 	clientWallet   string
+	operatorDB     string
 	lndImage       string
 	operatorFunds  int64
 	clientLNDFunds int64
@@ -66,6 +67,10 @@ func newStartCmd() *cobra.Command {
 		&startCfg.clientWallet, "client-wallet", defaultClientWallet,
 		"client daemon wallet backend: lnd, lwwallet, or btcwallet "+
 			"(unroll requires lnd)",
+	)
+	f.StringVar(
+		&startCfg.operatorDB, "operator-db", "sqlite",
+		"operator database backend: sqlite or postgres",
 	)
 	f.StringVar(
 		&startCfg.lndImage, "lnd-image", "", "override the default "+
@@ -117,6 +122,12 @@ func runStart(_ *cobra.Command, _ []string) {
 }
 
 func runHarness(t *testing.T) {
+	if startCfg.operatorDB != "sqlite" &&
+		startCfg.operatorDB != "postgres" {
+
+		t.Fatalf("--operator-db must be sqlite or postgres")
+	}
+
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		t.Fatalf("mkdir datadir: %v", err)
 	}
@@ -141,10 +152,13 @@ func runHarness(t *testing.T) {
 		"artifacts":     artifactsAbs,
 		"group":         startCfg.groupName,
 		"client_wallet": startCfg.clientWallet,
+		"operator_db":   startCfg.operatorDB,
 		"clients":       startCfg.clientNames,
 	},
-		"arktest starting clients=%v wallet=%s artifacts=%s",
-		startCfg.clientNames, startCfg.clientWallet, artifactsAbs)
+		"arktest starting clients=%v wallet=%s operator_db=%s "+
+			"artifacts=%s",
+		startCfg.clientNames, startCfg.clientWallet,
+		startCfg.operatorDB, artifactsAbs)
 
 	// DefaultOptions seeds image/tag defaults; we override only what the
 	// CLI cares about. Skipping this leaves BitcoindImage, LNDImage etc.
@@ -161,6 +175,7 @@ func runHarness(t *testing.T) {
 
 	hopts := &darepoharness.ArkHarnessOptions{
 		ClientOptions:          clientOpts,
+		OperatorDBBackend:      startCfg.operatorDB,
 		ClientDaemonWalletType: startCfg.clientWallet,
 	}
 	applyDaemonLogStdout(hopts, startCfg.logStdout)
