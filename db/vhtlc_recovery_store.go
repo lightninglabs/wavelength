@@ -232,7 +232,7 @@ func (s *VHTLCRecoveryStoreDB) ListNonTerminalRecoveries(ctx context.Context) (
 	return jobs, nil
 }
 
-// ListRecoveries loads every recovery job.
+// ListRecoveries loads every recovery job in newest-updated order.
 func (s *VHTLCRecoveryStoreDB) ListRecoveries(ctx context.Context) (
 	[]vhtlcrecovery.RecoveryJob, error) {
 
@@ -262,7 +262,9 @@ func (s *VHTLCRecoveryStoreDB) ListRecoveries(ctx context.Context) (
 	return jobs, nil
 }
 
-// EscalateRecovery marks an armed recovery job as active.
+// EscalateRecovery marks an armed recovery job as active. The optional claim
+// preimage is written in the same transaction so cross-process claim recovery
+// can restart after escalation without depending on the caller process.
 func (s *VHTLCRecoveryStoreDB) EscalateRecovery(ctx context.Context, id string,
 	claimPreimage []byte) error {
 

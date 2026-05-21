@@ -35,7 +35,7 @@ ORDER BY updated_at ASC, created_at ASC;
 
 -- name: ListVHTLCRecoveryJobs :many
 SELECT * FROM vhtlc_recovery_jobs
-ORDER BY updated_at ASC, created_at ASC;
+ORDER BY updated_at DESC, created_at DESC;
 
 -- name: EscalateVHTLCRecoveryJob :execrows
 UPDATE vhtlc_recovery_jobs

@@ -264,19 +264,20 @@ type ReceiveSession struct {
 	// swapServerPubKey is the remote sender in the accepted vHTLC policy.
 	// For Lightning-backed receives this is the swap server key; for
 	// direct same-Ark receives this is the paying client's sender key.
-	swapServerPubKey     *btcec.PublicKey
-	vhtlcConfig          VHTLCConfig
-	vhtlcPolicy          *arkscript.VHTLCPolicy
-	vhtlcPolicyTemplate  []byte
-	vhtlcPkScript        []byte
-	vhtlcOutpoint        string
-	vhtlcAmount          int64
-	paymentAddr          [32]byte
-	pendingHTLCAckCursor uint64
-	claimReceivePubKey   []byte
-	claimReceiveScript   []byte
-	claimSessionID       string
-	claimRecoveryID      string
+	swapServerPubKey       *btcec.PublicKey
+	vhtlcConfig            VHTLCConfig
+	vhtlcPolicy            *arkscript.VHTLCPolicy
+	vhtlcPolicyTemplate    []byte
+	vhtlcPkScript          []byte
+	vhtlcOutpoint          string
+	vhtlcAmount            int64
+	paymentAddr            [32]byte
+	pendingHTLCAckCursor   uint64
+	claimReceivePubKey     []byte
+	claimReceiveScript     []byte
+	claimSessionID         string
+	claimRecoveryID        string
+	claimRecoveryFailureAt time.Time
 	// claimIntentRecordedInProcess distinguishes freshly-recorded claim
 	// intent from a restored ClaimInitiated row whose accepted spend may
 	// still be missing from the indexer.
@@ -1351,20 +1352,11 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 		})
 	}
 	if err != nil {
-		reason := fmt.Sprintf("cooperative claim failed: %v", err)
-		if escalateErr := escalateVHTLCRecovery(
-			ctx, s.client.daemon, s.claimRecoveryID, reason,
+		if escalateErr := s.maybeEscalateReceiveClaimRecovery(
+			ctx, err,
 		); escalateErr != nil {
 			return newRetryableActionError(escalateErr)
 		}
-
-		s.client.log.WarnS(ctx, "Receive claim recovery escalated",
-			err,
-			btclog.Hex("hash", s.PaymentHash[:]),
-			slog.String("recovery_id", s.claimRecoveryID),
-			slog.String("outpoint", s.vhtlcOutpoint),
-			slog.Int64("amount_sat", s.vhtlcAmount),
-		)
 
 		return waitForFixedPoll(ctx, s.client.waitPollInterval)
 	}

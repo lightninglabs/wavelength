@@ -424,7 +424,7 @@ func (q *Queries) ListNonTerminalVHTLCRecoveryJobs(ctx context.Context) ([]Vhtlc
 
 const ListVHTLCRecoveryJobs = `-- name: ListVHTLCRecoveryJobs :many
 SELECT id, request_id, swap_id, direction, action, state, vtxo_txid, vtxo_vout, vtxo_amount_sat, sender_pubkey, receiver_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, preimage_hash, claim_preimage, signer_key_family, signer_key_index, destination_script, max_fee_rate_sat_per_kw, unroll_target_outpoint_hash, unroll_target_outpoint_index, exit_policy_kind, exit_tx, exit_txid, cooperative_txid, last_error, cancel_reason, created_at, updated_at, armed_at, escalated_at, target_detected_at, exit_tx_built_at, exit_tx_broadcast_at, terminal_at FROM vhtlc_recovery_jobs
-ORDER BY updated_at ASC, created_at ASC
+ORDER BY updated_at DESC, created_at DESC
 `
 
 func (q *Queries) ListVHTLCRecoveryJobs(ctx context.Context) ([]VhtlcRecoveryJob, error) {

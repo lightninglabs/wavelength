@@ -272,7 +272,7 @@ func generatedRegistry() []serviceSpec {
 					Aliases:  []string{"list-v-h-t-l-c-recoveries"},
 					Input:    "daemonrpc.ListVHTLCRecoveriesRequest",
 					Output:   "daemonrpc.ListVHTLCRecoveriesResponse",
-					Comments: "ListVHTLCRecoveries returns durable recovery rows for operator\ninspection.",
+					Comments: "ListVHTLCRecoveries returns all durable recovery rows for operator\ninspection. Armed rows are dormant; callers must use\nEscalateVHTLCRecovery to start costly on-chain recovery.",
 				},
 			},
 		},

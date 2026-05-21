@@ -611,7 +611,7 @@ func (c *DaemonServiceClient) GetVHTLCRecoveryStatus(ctx context.Context,
 	return out, err
 }
 
-// ListVHTLCRecoveries returns vHTLC recovery jobs.
+// ListVHTLCRecoveries returns vHTLC recovery jobs for operator inspection.
 func (c *DaemonServiceClient) ListVHTLCRecoveries(ctx context.Context,
 	in *daemonrpc.ListVHTLCRecoveriesRequest, _ ...grpc.CallOption) (
 	*daemonrpc.ListVHTLCRecoveriesResponse, error) {

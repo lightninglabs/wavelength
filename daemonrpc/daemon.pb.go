@@ -6888,7 +6888,7 @@ func (x *ListVHTLCRecoveriesRequest) GetIncludeTerminal() bool {
 
 type ListVHTLCRecoveriesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// statuses contains matching durable recovery rows.
+	// statuses are returned in newest-updated order.
 	Statuses      []*VHTLCRecoveryStatus `protobuf:"bytes,1,rep,name=statuses,proto3" json:"statuses,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

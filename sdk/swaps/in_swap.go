@@ -237,13 +237,14 @@ type paySession struct {
 	// refundSessionID stores the daemon OOR session id when this process
 	// submitted the refund, or the observed spender txid when a resume
 	// adopts an already-indexed refund spend.
-	refundSessionID    string
-	refundRecoveryID   string
-	preimage           *lntypes.Preimage
-	interventionReason string
-	clientPubKey       *btcec.PublicKey
-	operatorPubKey     *btcec.PublicKey
-	serverPubKey       *btcec.PublicKey
+	refundSessionID         string
+	refundRecoveryID        string
+	refundRecoveryFailureAt time.Time
+	preimage                *lntypes.Preimage
+	interventionReason      string
+	clientPubKey            *btcec.PublicKey
+	operatorPubKey          *btcec.PublicKey
+	serverPubKey            *btcec.PublicKey
 }
 
 // PaySession is the exported alias for the client-side Ark-to-Lightning swap
@@ -1023,20 +1024,11 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 			return newRetryableActionError(armErr)
 		}
 
-		reason := fmt.Sprintf("cooperative refund failed: %v", err)
-		if escalateErr := escalateVHTLCRecovery(
-			ctx, s.client.daemon, s.refundRecoveryID, reason,
+		if escalateErr := s.maybeEscalatePayRefundRecovery(
+			ctx, err,
 		); escalateErr != nil {
 			return newRetryableActionError(escalateErr)
 		}
-
-		s.client.log.WarnS(ctx, "Pay refund recovery escalated",
-			err,
-			btclog.Hex("hash", s.cfg.PaymentHash[:]),
-			slog.String("recovery_id", s.refundRecoveryID),
-			slog.String("outpoint", s.vhtlcOutpoint),
-			slog.Int64("amount_sat", s.vhtlcAmount),
-		)
 
 		return waitForFixedPoll(ctx, s.client.waitPollInterval)
 	}

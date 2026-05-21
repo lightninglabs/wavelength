@@ -491,6 +491,7 @@ type SwapClient struct {
 	refundLocktimeBuffer     uint32
 	claimRetryDelay          time.Duration
 	claimMaxAttempts         int
+	recoveryPolicy           RecoveryPolicy
 	decodeOutSwapOnion       outSwapOnionDecoder
 	chainParams              *chaincfg.Params
 	now                      func() time.Time
@@ -549,10 +550,22 @@ func NewSwapClientWithStore(server SwapServerConn, daemon DaemonConn,
 		refundLocktimeBuffer:     defaultRefundLocktimeBuffer,
 		claimRetryDelay:          time.Second,
 		claimMaxAttempts:         10,
+		recoveryPolicy:           DefaultRecoveryPolicy(),
 		decodeOutSwapOnion:       decodeOutSwapOnion,
 		chainParams:              invoiceCreatorChainParams(invoiceGen),
 		now:                      time.Now,
 	}
+}
+
+// SetRecoveryPolicy overrides the automatic vHTLC recovery escalation policy.
+// Arming remains immediate; this policy only decides when a cooperative
+// claim/refund failure should turn into costly on-chain unroll.
+func (c *SwapClient) SetRecoveryPolicy(policy RecoveryPolicy) {
+	if c == nil {
+		return
+	}
+
+	c.recoveryPolicy = policy.WithDefaults()
 }
 
 // invoiceCreatorChainParams returns the chain params carried by the built-in

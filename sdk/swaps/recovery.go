@@ -86,18 +86,164 @@ const (
 	// claim spend is already indexed.
 	recoveryReasonClaimIndexed = "cooperative claim indexed"
 
-	// defaultRecoveryMaxFeeRateSatPerKW caps SDK-armed vHTLC exit spends at
+	// DefaultRecoveryMaxFeeRateSatPerKW caps SDK-armed vHTLC exit spends at
 	// 100 sat/vbyte. Operators can still clamp lower through the daemon's
 	// unroll fee cap; this value prevents an armed recovery row from being
 	// uncapped if the lower layer is configured permissively.
-	defaultRecoveryMaxFeeRateSatPerKW int32 = 25_000
+	DefaultRecoveryMaxFeeRateSatPerKW int32 = 25_000
 
 	// recoverySignerKeyIndex is the fixed identity-key index used by the
 	// daemon for Ark/OOR signing. The key family is
 	// keychain.KeyFamilyNodeKey; keeping the locator explicit lets the
 	// unroll signer reconstruct the same public key after restart.
 	recoverySignerKeyIndex int32 = 0
+
+	// DefaultRecoveryCooperativeFailureGracePeriod is how long the SDK
+	// keeps retrying cooperative vHTLC settlement after the first observed
+	// cooperative send failure before automatic on-chain recovery may
+	// start.
+	DefaultRecoveryCooperativeFailureGracePeriod = time.Hour
+
+	// DefaultRecoveryMinMarginBlocks is the block-height safety margin that
+	// lets claim recovery override the wall-clock grace period before a
+	// refund locktime can make waiting unsafe.
+	DefaultRecoveryMinMarginBlocks = uint32(12)
 )
+
+// RecoveryPolicy controls automatic escalation from cooperative vHTLC retry to
+// daemon-owned on-chain recovery. Arming is still immediate and cheap; this
+// policy only gates the expensive unroll transition.
+type RecoveryPolicy struct {
+	// AutoEscalate allows the SDK to start on-chain recovery without a
+	// manual caller command once the grace/deadline policy says waiting
+	// longer is unsafe or unproductive.
+	AutoEscalate bool
+
+	// CooperativeFailureGracePeriod is measured from the first cooperative
+	// send failure observed by the current process. While this period is
+	// open, the SDK keeps retrying cooperative settlement unless deadline
+	// pressure overrides the wait.
+	CooperativeFailureGracePeriod time.Duration
+
+	// MinRecoveryMarginBlocks is the minimum block margin preserved before
+	// a refund locktime. Claim recovery may override the grace period when
+	// the current height plus this margin reaches the refund locktime.
+	MinRecoveryMarginBlocks uint32
+
+	// MaxFeeRateSatPerKW caps the final recovery exit-spend fee rate. The
+	// recovery row stores this cap at arm time so restart and manual
+	// escalation cannot accidentally use a looser later default.
+	MaxFeeRateSatPerKW int32
+}
+
+// DefaultRecoveryPolicy returns the production SDK recovery escalation policy.
+func DefaultRecoveryPolicy() RecoveryPolicy {
+	gracePeriod := DefaultRecoveryCooperativeFailureGracePeriod
+	marginBlocks := DefaultRecoveryMinMarginBlocks
+	feeCap := DefaultRecoveryMaxFeeRateSatPerKW
+
+	return RecoveryPolicy{
+		AutoEscalate:                  false,
+		CooperativeFailureGracePeriod: gracePeriod,
+		MinRecoveryMarginBlocks:       marginBlocks,
+		MaxFeeRateSatPerKW:            feeCap,
+	}
+}
+
+// WithDefaults fills numeric unset policy fields with the production recovery
+// policy. AutoEscalate is intentionally preserved so callers can disable
+// automatic on-chain recovery with RecoveryPolicy{AutoEscalate: false}.
+func (p RecoveryPolicy) WithDefaults() RecoveryPolicy {
+	if p.MinRecoveryMarginBlocks == 0 {
+		p.MinRecoveryMarginBlocks = DefaultRecoveryMinMarginBlocks
+	}
+	if p.MaxFeeRateSatPerKW == 0 {
+		p.MaxFeeRateSatPerKW = DefaultRecoveryMaxFeeRateSatPerKW
+	}
+
+	return p
+}
+
+// recoveryEscalationDecision is the policy result for one cooperative vHTLC
+// send failure.
+type recoveryEscalationDecision struct {
+	// Escalate is true when the caller should start daemon-owned unroll
+	// now.
+	Escalate bool
+
+	// Trigger explains why escalation is allowed or why it was skipped.
+	Trigger string
+
+	// FirstFailureAt is when this process first observed cooperative
+	// failure for the recovery row.
+	FirstFailureAt time.Time
+
+	// NextRetryAt is when the grace-period retry window opens. It is zero
+	// when escalation is immediate or automatic escalation is disabled.
+	NextRetryAt time.Time
+
+	// CurrentHeight is the block height used for deadline checks.
+	CurrentHeight uint32
+
+	// DeadlineHeight is the claim/refund deadline, when one exists.
+	DeadlineHeight uint32
+
+	// RemainingBlocks is the signed distance between the current height and
+	// DeadlineHeight. It is negative when the deadline has already passed.
+	RemainingBlocks int32
+}
+
+// decideRecoveryEscalation evaluates the automatic escalation policy after a
+// cooperative vHTLC send failure.
+func decideRecoveryEscalation(policy RecoveryPolicy, firstFailureAt time.Time,
+	now time.Time, currentHeight uint32,
+	deadlineHeight uint32) recoveryEscalationDecision {
+
+	policy = policy.WithDefaults()
+	decision := recoveryEscalationDecision{
+		FirstFailureAt: firstFailureAt,
+		CurrentHeight:  currentHeight,
+		DeadlineHeight: deadlineHeight,
+	}
+	if deadlineHeight != 0 {
+		decision.RemainingBlocks = int32(deadlineHeight) -
+			int32(currentHeight)
+	}
+	if !policy.AutoEscalate {
+		decision.Trigger = "auto_escalate_disabled"
+
+		return decision
+	}
+
+	if deadlineHeight != 0 &&
+		currentHeight+policy.MinRecoveryMarginBlocks >= deadlineHeight {
+
+		decision.Escalate = true
+		decision.Trigger = "deadline_margin"
+
+		return decision
+	}
+
+	if policy.CooperativeFailureGracePeriod <= 0 {
+		decision.Escalate = true
+		decision.Trigger = "grace_disabled"
+
+		return decision
+	}
+
+	readyAt := firstFailureAt.Add(policy.CooperativeFailureGracePeriod)
+	decision.NextRetryAt = readyAt
+	if !now.Before(readyAt) {
+		decision.Escalate = true
+		decision.Trigger = "grace_elapsed"
+
+		return decision
+	}
+
+	decision.Trigger = "within_grace_period"
+
+	return decision
+}
 
 // recoveryRequestID returns the caller-owned idempotency key used when arming
 // vHTLC recovery. It is deterministic from the SDK swap identity and action so
@@ -197,7 +343,8 @@ func (s *paySession) ensurePayRefundRecoveryArmed(ctx context.Context) error {
 			DestinationScript: append(
 				[]byte(nil), s.refundReceiveScript...,
 			),
-			MaxFeeRateSatPerKw: defaultRecoveryMaxFeeRateSatPerKW,
+			MaxFeeRateSatPerKw: s.client.recoveryPolicy.
+				MaxFeeRateSatPerKW,
 		},
 	)
 	if err != nil {
@@ -225,7 +372,7 @@ func (s *paySession) ensurePayRefundRecoveryArmed(ctx context.Context) error {
 		),
 		slog.Int(
 			"max_fee_rate_sat_per_kw",
-			int(defaultRecoveryMaxFeeRateSatPerKW),
+			int(s.client.recoveryPolicy.MaxFeeRateSatPerKW),
 		),
 	)
 
@@ -303,7 +450,8 @@ func (s *ReceiveSession) ensureReceiveClaimRecoveryArmed(
 			DestinationScript: append(
 				[]byte(nil), s.claimReceiveScript...,
 			),
-			MaxFeeRateSatPerKw: defaultRecoveryMaxFeeRateSatPerKW,
+			MaxFeeRateSatPerKw: s.client.recoveryPolicy.
+				MaxFeeRateSatPerKW,
 		},
 	)
 	if err != nil {
@@ -328,7 +476,7 @@ func (s *ReceiveSession) ensureReceiveClaimRecoveryArmed(
 		),
 		slog.Int(
 			"max_fee_rate_sat_per_kw",
-			int(defaultRecoveryMaxFeeRateSatPerKW),
+			int(s.client.recoveryPolicy.MaxFeeRateSatPerKW),
 		),
 	)
 
@@ -398,6 +546,185 @@ func escalateVHTLCRecovery(ctx context.Context, daemon DaemonConn, recoveryID,
 		return fmt.Errorf("escalate vhtlc recovery %s: %w", recoveryID,
 			err)
 	}
+
+	return nil
+}
+
+// firstPayRefundRecoveryFailure returns the durable lower bound for when
+// pay-side cooperative refund started failing. The pay FSM persists the
+// RefundInitiated state before retrying the custom-input refund, so UpdatedAt
+// survives restart and does not move forward while cooperative retry keeps
+// failing.
+func (s *paySession) firstPayRefundRecoveryFailure() time.Time {
+	if !s.refundRecoveryFailureAt.IsZero() {
+		return s.refundRecoveryFailureAt
+	}
+
+	first := s.updatedAt
+	if first.IsZero() {
+		first = s.client.now()
+	}
+	s.refundRecoveryFailureAt = first
+
+	return first
+}
+
+// maybeEscalatePayRefundRecovery applies the SDK recovery policy after a
+// cooperative pay-side refund send fails. It returns nil when the SDK should
+// keep retrying the cooperative path instead of starting costly unroll.
+func (s *paySession) maybeEscalatePayRefundRecovery(ctx context.Context,
+	cause error) error {
+
+	if s.refundRecoveryID == "" {
+		return nil
+	}
+
+	reason := fmt.Sprintf("cooperative refund failed: %v", cause)
+	height, err := s.client.daemon.BlockHeight(ctx)
+	if err != nil {
+		s.client.log.WarnS(
+			ctx,
+			"Pay refund recovery height unavailable",
+			err,
+			btclog.Hex("hash", s.cfg.PaymentHash[:]),
+			slog.String("recovery_id", s.refundRecoveryID),
+		)
+	}
+
+	decision := decideRecoveryEscalation(
+		s.client.recoveryPolicy, s.firstPayRefundRecoveryFailure(),
+		s.client.now(), height, 0,
+	)
+	if !decision.Escalate {
+		s.client.log.WarnS(ctx,
+			"Pay refund recovery escalation deferred", cause,
+			btclog.Hex("hash", s.cfg.PaymentHash[:]),
+			slog.String("recovery_id", s.refundRecoveryID),
+			slog.String("reason", reason),
+			slog.String("trigger", decision.Trigger),
+			slog.Time("first_failure_at", decision.FirstFailureAt),
+			slog.Time("next_retry_at", decision.NextRetryAt),
+			slog.Uint64(
+				"current_height",
+				uint64(decision.CurrentHeight),
+			),
+		)
+
+		return nil
+	}
+
+	// Pay-side refund recovery has no absolute claim deadline. The grace
+	// period is the only automatic trigger; operators can still use the
+	// recovery CLI to escalate earlier.
+	if err := escalateVHTLCRecovery(
+		ctx, s.client.daemon, s.refundRecoveryID, reason,
+	); err != nil {
+		return err
+	}
+
+	s.client.log.WarnS(ctx, "Pay refund recovery escalated",
+		cause,
+		btclog.Hex("hash", s.cfg.PaymentHash[:]),
+		slog.String("recovery_id", s.refundRecoveryID),
+		slog.String("reason", reason),
+		slog.String("trigger", decision.Trigger),
+		slog.String("outpoint", s.vhtlcOutpoint),
+		slog.Int64("amount_sat", s.vhtlcAmount),
+		slog.Uint64("current_height", uint64(decision.CurrentHeight)),
+	)
+
+	return nil
+}
+
+// firstReceiveClaimRecoveryFailure returns the durable lower bound for when
+// receive-side cooperative claim started failing. The receive FSM persists
+// ClaimInitiated before retrying the claim, so UpdatedAt survives restart and
+// does not move forward while cooperative retry keeps failing.
+func (s *ReceiveSession) firstReceiveClaimRecoveryFailure() time.Time {
+	if !s.claimRecoveryFailureAt.IsZero() {
+		return s.claimRecoveryFailureAt
+	}
+
+	first := s.updatedAt
+	if first.IsZero() {
+		first = s.client.now()
+	}
+	s.claimRecoveryFailureAt = first
+
+	return first
+}
+
+// maybeEscalateReceiveClaimRecovery applies the SDK recovery policy after a
+// cooperative receive-side claim send fails. The receive claim has a refund
+// locktime deadline, so deadline margin may override the wall-clock grace
+// period before the sender can reclaim the vHTLC.
+func (s *ReceiveSession) maybeEscalateReceiveClaimRecovery(ctx context.Context,
+	cause error) error {
+
+	if s.claimRecoveryID == "" {
+		return nil
+	}
+
+	reason := fmt.Sprintf("cooperative claim failed: %v", cause)
+	height, err := s.client.daemon.BlockHeight(ctx)
+	if err != nil {
+		s.client.log.WarnS(
+			ctx,
+			"Receive claim recovery height unavailable",
+			err,
+			btclog.Hex("hash", s.PaymentHash[:]),
+			slog.String("recovery_id", s.claimRecoveryID),
+		)
+	}
+
+	decision := decideRecoveryEscalation(
+		s.client.recoveryPolicy, s.firstReceiveClaimRecoveryFailure(),
+		s.client.now(), height, s.vhtlcConfig.RefundLocktime,
+	)
+	if !decision.Escalate {
+		s.client.log.WarnS(ctx,
+			"Receive claim recovery escalation deferred", cause,
+			btclog.Hex("hash", s.PaymentHash[:]),
+			slog.String("recovery_id", s.claimRecoveryID),
+			slog.String("reason", reason),
+			slog.String("trigger", decision.Trigger),
+			slog.Time("first_failure_at", decision.FirstFailureAt),
+			slog.Time("next_retry_at", decision.NextRetryAt),
+			slog.Uint64(
+				"current_height",
+				uint64(decision.CurrentHeight),
+			),
+			slog.Uint64(
+				"refund_locktime",
+				uint64(decision.DeadlineHeight),
+			),
+			slog.Int(
+				"remaining_blocks",
+				int(decision.RemainingBlocks),
+			),
+		)
+
+		return nil
+	}
+
+	if err := escalateVHTLCRecovery(
+		ctx, s.client.daemon, s.claimRecoveryID, reason,
+	); err != nil {
+		return err
+	}
+
+	s.client.log.WarnS(ctx, "Receive claim recovery escalated",
+		cause,
+		btclog.Hex("hash", s.PaymentHash[:]),
+		slog.String("recovery_id", s.claimRecoveryID),
+		slog.String("reason", reason),
+		slog.String("trigger", decision.Trigger),
+		slog.String("outpoint", s.vhtlcOutpoint),
+		slog.Int64("amount_sat", s.vhtlcAmount),
+		slog.Uint64("current_height", uint64(decision.CurrentHeight)),
+		slog.Uint64("refund_locktime", uint64(decision.DeadlineHeight)),
+		slog.Int("remaining_blocks", int(decision.RemainingBlocks)),
+	)
 
 	return nil
 }

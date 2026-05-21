@@ -278,7 +278,7 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 
 	cfg := daemonCfg.Swap
 	if cfg == nil {
-		cfg = &darepod.SwapConfig{}
+		cfg = darepod.DefaultConfig().Swap
 	}
 
 	dbPath := cfg.DatabaseFileName
@@ -366,6 +366,14 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 		swapClients.server, arkClient, log, invoiceGen, store,
 	)
 	swapClient.SetChainParams(chainParams)
+	recoveryCfg := cfg.VHTLCRecovery
+	swapClient.SetRecoveryPolicy(swaps.RecoveryPolicy{
+		AutoEscalate: recoveryCfg.AutoEscalate,
+		CooperativeFailureGracePeriod: recoveryCfg.
+			CooperativeFailureGracePeriod,
+		MinRecoveryMarginBlocks: recoveryCfg.MinRecoveryMarginBlocks,
+		MaxFeeRateSatPerKW:      recoveryCfg.MaxFeeRateSatPerKW,
+	})
 
 	// The out-swap event receiver must be wired before any
 	// ReceiveViaLightning starts: SwapClient captures the receiver into the

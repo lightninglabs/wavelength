@@ -187,8 +187,9 @@ service DaemonService {
     rpc GetVHTLCRecoveryStatus (GetVHTLCRecoveryStatusRequest)
         returns (GetVHTLCRecoveryStatusResponse);
 
-    // ListVHTLCRecoveries returns durable recovery rows for operator
-    // inspection.
+    // ListVHTLCRecoveries returns all durable recovery rows for operator
+    // inspection. Armed rows are dormant; callers must use
+    // EscalateVHTLCRecovery to start costly on-chain recovery.
     rpc ListVHTLCRecoveries (ListVHTLCRecoveriesRequest)
         returns (ListVHTLCRecoveriesResponse);
 }
@@ -1799,7 +1800,7 @@ message ListVHTLCRecoveriesRequest {
 }
 
 message ListVHTLCRecoveriesResponse {
-    // statuses contains matching durable recovery rows.
+    // statuses are returned in newest-updated order.
     repeated VHTLCRecoveryStatus statuses = 1;
 }
 
