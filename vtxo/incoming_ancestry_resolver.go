@@ -62,7 +62,7 @@ func ResolveIncomingAncestry(ctx context.Context, query IncomingAncestryQuery,
 				"vtxos by scripts: %w", err)
 		}
 
-		page := ListVTXOsForScript(resp, script)
+		page := FlattenListVTXOsByScriptsResponse(resp)
 		for _, candidate := range page {
 			scanned++
 			if scanned > maxScanned {

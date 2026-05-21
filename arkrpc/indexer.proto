@@ -454,16 +454,12 @@ message ListVTXOsByScriptsRequest {
     uint32 limit = 4;
 }
 
-message VTXOSet {
-    repeated VTXO vtxos = 1;
-}
-
 message ListVTXOsByScriptsResponse {
-    // vtxos_by_script maps lowercase hex-encoded pkScript to the VTXOs found
-    // for that script. The response is bucketed so clients that query multiple
-    // scripts can consume the relevant script's entries directly without
-    // re-scanning or re-grouping the flat result set.
-    map<string, VTXOSet> vtxos_by_script = 1;
+    // vtxos carries every indexer VTXO matching the queried scripts in the
+    // indexer's natural cursor order. Each entry carries its own pkScript and
+    // outpoint, so callers that need per-script or per-outpoint indexing can
+    // build the index they want locally; the wire format stays neutral.
+    repeated VTXO vtxos = 1;
 
     // next_cursor is empty when the result set is exhausted.
     bytes next_cursor = 2;

@@ -79,7 +79,7 @@ func ResolveIncomingMetadataFromIndexerWithLimits(ctx context.Context,
 				"VTXOs by script: %w", err)
 		}
 
-		page := vtxo.ListVTXOsForScript(resp, recipient.PkScript)
+		page := vtxo.FlattenListVTXOsByScriptsResponse(resp)
 		for _, candidate := range page {
 			scanned++
 			if scanned > maxScanned {

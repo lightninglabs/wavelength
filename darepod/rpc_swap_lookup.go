@@ -58,7 +58,7 @@ func (r *RPCServer) GetIndexedVTXOByPkScript(ctx context.Context,
 			"failed: %v", err)
 	}
 
-	vtxos := vtxo.ListVTXOsForScript(resp, req.PkScript)
+	vtxos := vtxo.FlattenListVTXOsByScriptsResponse(resp)
 	if len(vtxos) == 0 {
 		return &daemonrpc.GetIndexedVTXOByPkScriptResponse{}, nil
 	}

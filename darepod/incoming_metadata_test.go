@@ -2,7 +2,6 @@ package darepod
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"sync"
 	"testing"
@@ -233,16 +232,16 @@ func testIncomingMetadataResponse(nextCursor []byte,
 	}
 }
 
-// listVTXOsByScriptResponse returns the proto response for a generated script.
-func listVTXOsByScriptResponse(pkScript []byte,
+// listVTXOsByScriptResponse returns the proto response for a generated
+// script. The pkScript argument is unused: the indexer scopes responses
+// to the queried scripts, so callers iterate the flat slice and match by
+// outpoint / session metadata. The signature is retained so per-script
+// fixtures stay readable at call sites.
+func listVTXOsByScriptResponse(_ []byte,
 	resp scriptedMetadataResponse) *arkrpc.ListVTXOsByScriptsResponse {
 
 	return &arkrpc.ListVTXOsByScriptsResponse{
-		VtxosByScript: map[string]*arkrpc.VTXOSet{
-			hex.EncodeToString(pkScript): {
-				Vtxos: resp.vtxos,
-			},
-		},
+		Vtxos:      resp.vtxos,
 		NextCursor: resp.nextCursor,
 	}
 }

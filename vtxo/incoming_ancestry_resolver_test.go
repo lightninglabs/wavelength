@@ -2,7 +2,6 @@ package vtxo
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"testing"
 
@@ -141,21 +140,22 @@ func (q *scriptedQuery) Calls() int {
 
 var testAncestryPkScript = []byte{0x51, 0x20}
 
-// testIncomingAncestryResponse returns a bucketed indexer response.
+// testIncomingAncestryResponse returns an indexer response carrying the
+// flat VTXO slice the resolver iterates over.
 func testIncomingAncestryResponse(nextCursor []byte,
 	vtxos ...*arkrpc.VTXO) *arkrpc.ListVTXOsByScriptsResponse {
 
 	return &arkrpc.ListVTXOsByScriptsResponse{
-		VtxosByScript: map[string]*arkrpc.VTXOSet{
-			hex.EncodeToString(testAncestryPkScript): {
-				Vtxos: vtxos,
-			},
-		},
+		Vtxos:      vtxos,
 		NextCursor: nextCursor,
 	}
 }
 
-// testIncomingAncestryVTXO returns a valid indexer VTXO fixture.
+// testIncomingAncestryVTXO returns a valid indexer VTXO fixture. The
+// fixture stamps PkScript on the row so the response mirrors what the
+// real indexer returns; the resolver does not filter by pkScript itself
+// (the indexer query is already script-scoped) but populating it keeps
+// the fixture honest if a future caller does want to filter.
 func testIncomingAncestryVTXO(outpoint wire.OutPoint,
 	createdHeight int32) *arkrpc.VTXO {
 
@@ -164,6 +164,7 @@ func testIncomingAncestryVTXO(outpoint wire.OutPoint,
 			Txid: outpoint.Hash[:],
 			Vout: outpoint.Index,
 		},
+		PkScript:      testAncestryPkScript,
 		CreatedHeight: createdHeight,
 		AncestryPaths: []*arkrpc.AncestryPath{
 			testIncomingAncestryPath(testAncestryTxID(3)),
