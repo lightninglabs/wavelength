@@ -432,12 +432,43 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *daemonrpc.GetInfoRequest) (
 // requireWalletReady returns a gRPC error if the wallet is not yet
 // ready. Callers use this to gate RPCs that need wallet access.
 func (r *RPCServer) requireWalletReady() error {
-	if !r.server.isWalletReady() {
-		return status.Errorf(codes.FailedPrecondition, "wallet is "+
-			"not ready (create or unlock first)")
+	if r.server.isWalletReady() {
+		return nil
 	}
 
-	return nil
+	switch r.server.WalletLifecycleState() {
+	case WalletStateReady:
+		return nil
+
+	case WalletStateNone:
+		return status.Error(
+			codes.FailedPrecondition,
+			"wallet is not ready (create first)",
+		)
+
+	case WalletStateLocked:
+		return status.Error(
+			codes.FailedPrecondition,
+			"wallet is not ready (unlock first)",
+		)
+
+	case WalletStateUnlocking:
+		return status.Error(
+			codes.FailedPrecondition,
+			"wallet unlock is in progress",
+		)
+
+	case WalletStateSyncing:
+		return status.Error(
+			codes.FailedPrecondition,
+			"wallet is syncing; try again once sync completes",
+		)
+
+	default:
+		return status.Error(
+			codes.FailedPrecondition, "wallet is not ready",
+		)
+	}
 }
 
 // GetBalance returns the current balance of the wallet, broken down

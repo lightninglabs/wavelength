@@ -704,6 +704,101 @@ func TestDeriveIdentityPubkeyPreWalletInit(t *testing.T) {
 	}
 }
 
+// TestWalletStateToProtoIncludesSyncing verifies the public GetInfo
+// state can distinguish an unlocked wallet that is still catching up
+// from a wallet that still needs its password.
+func TestWalletStateToProtoIncludesSyncing(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(
+		t, daemonrpc.WalletState_WALLET_STATE_SYNCING,
+		walletStateToProto(WalletStateSyncing),
+	)
+}
+
+// TestRequireWalletReadyErrorsExplainLifecycleState verifies callers
+// get actionable setup guidance for each non-ready wallet state.
+func TestRequireWalletReadyErrorsExplainLifecycleState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		state      WalletState
+		closeReady bool
+		wantMsg    string
+		wantErr    bool
+	}{
+		{
+			name:    "none",
+			state:   WalletStateNone,
+			wantMsg: "wallet is not ready (create first)",
+			wantErr: true,
+		},
+		{
+			name:    "locked",
+			state:   WalletStateLocked,
+			wantMsg: "wallet is not ready (unlock first)",
+			wantErr: true,
+		},
+		{
+			name:    "unlocking",
+			state:   WalletStateUnlocking,
+			wantMsg: "wallet unlock is in progress",
+			wantErr: true,
+		},
+		{
+			name:  "syncing",
+			state: WalletStateSyncing,
+			wantMsg: "wallet is syncing; try again once sync " +
+				"completes",
+			wantErr: true,
+		},
+		{
+			name:       "ready channel closed",
+			state:      WalletStateReady,
+			closeReady: true,
+			wantErr:    false,
+		},
+		{
+			name:    "ready state before channel close",
+			state:   WalletStateReady,
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			walletReady := make(chan struct{})
+			if tc.closeReady {
+				close(walletReady)
+			}
+
+			r := &RPCServer{
+				server: &Server{
+					walletReady: walletReady,
+				},
+			}
+			r.server.walletState.Store(int32(tc.state))
+
+			err := r.requireWalletReady()
+			if !tc.wantErr {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.Error(t, err)
+			st, ok := status.FromError(err)
+			require.True(t, ok)
+			require.Equal(t, codes.FailedPrecondition, st.Code())
+			require.Equal(t, tc.wantMsg, st.Message())
+		})
+	}
+}
+
 // TestSumOnchainWalletConfirmed locks in the invariant that the on-chain
 // wallet balance accumulates across every registered backend fetcher and
 // that a failing fetcher does not erase the contribution of its
