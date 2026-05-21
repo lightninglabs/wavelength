@@ -61,6 +61,11 @@ func TestCloneDaemonConfigIsolation(t *testing.T) {
 			return func() {}, nil
 		},
 	}
+	original.WalletReadyHooks = []darepod.WalletReadyHook{
+		func(context.Context) error {
+			return nil
+		},
+	}
 
 	clone := cloneDaemonConfig(original)
 

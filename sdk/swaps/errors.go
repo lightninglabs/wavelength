@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	loopfsm "github.com/lightninglabs/loop/fsm"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -211,6 +212,10 @@ func handleFailure(ctx context.Context, err error, runErr *error,
 		return loopfsm.NoOp
 	}
 
+	if isWalletNotReadyErr(err) {
+		return loopfsm.NoOp
+	}
+
 	if errors.Is(err, errSwapExpired) {
 		if currentExpired {
 			return loopfsm.NoOp
@@ -249,4 +254,11 @@ func handleFailure(ctx context.Context, err error, runErr *error,
 	}
 
 	return failedEvent
+}
+
+// isWalletNotReadyErr reports daemon wallet-readiness preconditions that are
+// transient across startup and unlock. These errors must not durably fail a
+// swap because a later resume can continue once the daemon wallet is ready.
+func isWalletNotReadyErr(err error) bool {
+	return daemonrpc.IsWalletNotReadyError(err)
 }

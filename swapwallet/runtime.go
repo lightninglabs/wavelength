@@ -47,6 +47,11 @@ type Runtime struct {
 	// wg tracks background goroutines so cleanup blocks until they exit.
 	wg sync.WaitGroup
 
+	// startOnce makes runtime startup idempotent. The daemon should run
+	// the wallet-ready hook once, but this prevents duplicate monitor or
+	// deadline goroutines if future wiring accidentally invokes it twice.
+	startOnce sync.Once
+
 	// subsMu guards subscribers.
 	subsMu sync.Mutex
 
@@ -99,22 +104,26 @@ func newRuntime(parent context.Context, deps *Deps) *Runtime {
 	}
 }
 
-// start spawns the runtime's background goroutines. Called by Register
-// after the synchronous resume sweep so the daemon never accepts a wallet
-// RPC before the deadline watcher is running and the monitor loop is
-// already consuming swap updates from the in-process swap subserver.
+// start spawns the runtime's background goroutines. The wallet-ready hook
+// calls this after the resume sweep so the deadline watcher and monitor loop
+// only run once the daemon wallet can service resumed workers. Runtime keeps
+// its own guard as a local backstop in case future wiring starts it outside
+// the wallet-ready hook.
 func (r *Runtime) start() {
-	r.wg.Add(1)
-	go r.deadlineWatcher()
+	r.startOnce.Do(func() {
+		r.wg.Add(1)
+		go r.deadlineWatcher()
 
-	r.startMonitorLoop()
+		r.startMonitorLoop()
+	})
 }
 
-// resumeAll performs the unified resume sweep. It MUST run synchronously
-// before the gRPC server begins accepting wallet RPCs so the daemon never
-// surfaces a PENDING entry it is not actively driving. The implementation is
-// staged across phases; v1 delegates to the swap backend for the swap-side
-// resume and leaves room for additional wallet-managed pending tables.
+// resumeAll performs the unified resume sweep during the daemon wallet-ready
+// phase. The wallet RPC surface may already be registered while the daemon is
+// locked, but wallet-dependent workers must wait until resumed swaps can use
+// the unlocked wallet. The implementation is staged across phases; v1
+// delegates to the swap backend for the swap-side resume and leaves room for
+// additional wallet-managed pending tables.
 func (r *Runtime) resumeAll(ctx context.Context) {
 	log := r.deps.resolveLog()
 
