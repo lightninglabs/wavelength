@@ -88,6 +88,40 @@ func TestServiceBalanceProjectsDaemonGetBalance(t *testing.T) {
 	require.Equal(t, int64(5_000), resp.GetPendingOutSat())
 }
 
+// TestServiceBalanceConfirmedExcludesBoardingUTXOs pins the boarding
+// reproduction from issue #502: a wallet that holds one live VTXO and
+// one confirmed-but-not-yet-boarded UTXO must report only the VTXO
+// under confirmed_sat. The boarding UTXO is not VTXO-spendable until a
+// round adopts it, so its value belongs in pending_in_sat per the
+// proto contract on BalanceResponse.confirmed_sat
+// ("total spendable VTXO amount").
+func TestServiceBalanceConfirmedExcludesBoardingUTXOs(t *testing.T) {
+	t.Parallel()
+
+	const (
+		vtxoSat            = int64(99_745)
+		boardingConfirmed  = int64(100_000)
+		expectedConfirmed  = vtxoSat
+		expectedPendingIn  = boardingConfirmed
+		expectedPendingOut = int64(0)
+	)
+
+	svc, _, rpc := newServiceFixture(t)
+	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+		VtxoBalanceSat:       vtxoSat,
+		BoardingConfirmedSat: boardingConfirmed,
+		TotalConfirmedSat:    vtxoSat + boardingConfirmed,
+	}
+
+	resp, err := svc.Balance(
+		t.Context(), &walletrpc.BalanceRequest{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, expectedConfirmed, resp.GetConfirmedSat())
+	require.Equal(t, expectedPendingIn, resp.GetPendingInSat())
+	require.Equal(t, expectedPendingOut, resp.GetPendingOutSat())
+}
+
 // TestServiceStatusComposesInfoBalanceAndPending confirms Status reads
 // GetInfo, GetBalance, and the pending count via the history merger.
 func TestServiceStatusComposesInfoBalanceAndPending(t *testing.T) {
