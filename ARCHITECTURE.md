@@ -52,7 +52,7 @@ package may import from a higher layer.
 | Package | Purpose |
 |---------|---------|
 | [`harness`](harness/) | In-process Bitcoin/LND integration test environment |
-| [`cmd/arktest`](cmd/arktest/) | itest-only manual integration harness CLI (start/mine/board/info/stress/logs) |
+| [`cmd/arktest`](cmd/arktest/) | itest-only manual integration harness CLI (start/stop/mine/board/faucet/info/stress/logs/aliases) |
 | [`itest`](itest/) | Real-daemon integration tests (boarding, OOR, refresh, restart) |
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal`](internal/) | Internal test utilities container |
@@ -185,10 +185,26 @@ later. Wiring lives in `server_rounds.go`
 ### Mailbox Identity & mTLS
 Client mailbox IDs use a compound format `operator:client` for per-client wire
 routing. The mTLS interceptor (`server_mtls.go`) enforces per-RPC identity
-matching: the TLS client certificate CN (secp256k1 pubkey hex) must match the
-mailbox ID in Send/Pull/AckUpTo requests. Schnorr auth during initial
-registration provides the cryptographic identity proof; mTLS is
-defense-in-depth for post-registration access control.
+matching via TLS certificate fingerprint (not CN): on the first Schnorr-verified
+contact (`HandleUnknownClient`), the server stores the SHA-256 fingerprint of
+the client's TLS leaf certificate in `MailboxTLSBindings`. Subsequent
+Send/Pull/AckUpTo RPCs verify the presented TLS leaf fingerprint against this
+binding. CN-based matching is abandoned because the CN is client-chosen free
+text with no cryptographic tie to the secp256k1 identity; fingerprint binding
+closes the gap since TLS key ownership is proven by the CertificateVerify
+handshake message. `MailboxConfig.RequireTLSBindingSig` (default `true`)
+controls whether the binding signature is required.
+
+### HTTP/JSON Gateway
+The server exposes an HTTP/JSON grpc-gateway via `GatewayServer`
+(`gatewayserver.go`), listening by default at `localhost:7071`. The gateway
+translates REST calls to gRPC using generated bindings from `rpc/`. Local
+gateway-originated calls are tagged with an internal per-process auth token
+(`NewGatewayAuthToken`, `GatewayAuthUnaryClientInterceptor`) so mailbox
+interceptors can distinguish gateway traffic from direct gRPC clients.
+`GatewayConfig.AllowedOrigins` must list explicit trusted browser origins;
+wildcard `"*"` is rejected by config validation. The gateway is enabled by
+default and can be disabled via `GatewayConfig.Enabled = false`.
 
 ## Key Types and Interfaces
 
@@ -226,7 +242,10 @@ defense-in-depth for post-registration access control.
 | `SystemCollector` | metrics | Scrape-driven DB/wallet gauge collection |
 | `InstrumentedLocker` | metrics | VTXO lock timing decorator |
 | `systemStatsAdapter` | darepo | Bridges DB+LND queries for metrics collector |
-| `newMailboxAuthInterceptor` | darepo | mTLS unary interceptor for mailbox identity |
+| `NewMailboxAuthInterceptor` | darepo | Exported mTLS unary interceptor for mailbox identity (fingerprint-based) |
+| `MailboxTLSBindings` | darepo | Thread-safe map binding mailbox ID → TLS leaf certificate fingerprint |
+| `GatewayConfig` | darepo | HTTP/JSON grpc-gateway configuration (listen addr, allowed origins) |
+| `GatewayServer` | darepo | HTTP grpc-gateway server (translates REST → gRPC, local auth token) |
 
 ## State Machines
 

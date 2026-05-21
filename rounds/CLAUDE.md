@@ -175,6 +175,32 @@ confirmation monitoring.
   `Schedule.MinViablePolicy` is set to `"reject"`. Surfaces as a
   `QuoteReasonInsufficientResidual` reject reason on the
   `JoinRoundQuote` so the client drops the intent.
+- `ErrSigningKeyMatchesOperator` — Returned by `ValidateVTXORequest` when
+  the client-supplied signing key is x-only equal to the operator key.
+  Prevents VTXO-script collisions where operator and client would share a
+  tapleaf, allowing forged forfeit paths.
+- `ErrSigningKeyMissing` — Returned when the VTXO request carries a nil
+  signing key public key. Catches malformed requests before script derivation.
+- `ErrDuplicateForfeitInRound` — Returned when two VTXO requests in the
+  same join attempt reference the same forfeit input outpoint. Prevents
+  clients from double-spending a single VTXO within one round.
+- `ActorConfig.JoinRequestRate` / `JoinRequestBurst` — Per-client
+  token-bucket rate limiter for `JoinRoundRequest`. Defaults:
+  `DefaultJoinRequestRate` (one token per 2s) and `DefaultJoinRequestBurst`
+  (3). Evaluated via `allowJoinRequest(clientID)` before each admission.
+  A client that exhausts its burst receives `ClientErrorResp` without an
+  FSM state transition.
+- `ClientSuccessResp.IsReregistration` — Server-internal flag set when a
+  client re-joins a round it was already admitted to (replacement path in
+  `IntentCollectingState`). Not sent over the wire. Consumed by the actor's
+  outbox handler to suppress duplicate `ClientJoinedRoundMsg` metric
+  increments on re-registration.
+- `SweepKey keychain.KeyDescriptor` — Persisted operator key descriptor
+  (family + index + pubkey) threaded from `FinalizedState` through
+  `ConfirmedState` and into `RegisterBatchRequest` sent to `batchwatcher`.
+  Ensures the batch sweeper signs the timeout spend with the exact
+  historical key locator, not the currently-configured one — critical when
+  the configured sweep key rotates after round finalization.
 
 ## Relationships
 
@@ -209,6 +235,12 @@ confirmation monitoring.
     (fire-and-forget via `LedgerRef`).
   - Proto→domain conversion helpers exported in `proto_convert.go` for use
     by server wiring layer (`server_rounds.go`).
+  - All round-bound `ClientMessage` types (`ClientSuccessResp`,
+    `ClientAwaitingInputSigsResp`, `ClientVTXOAggNonces`, `ClientVTXOAggSigs`,
+    `ClientBatchInfo`) implement `CorrelationKey() string` returning
+    `roundClientCorrelationKey(clientID, roundID)` — the per-client/round FIFO
+    key that keeps same-round outbox events ordered despite transient send
+    failures. `ClientErrorResp` returns empty string (not round-bound).
 
 ## Invariants
 
@@ -321,6 +353,27 @@ confirmation monitoring.
   that registered boarding inputs OR forfeit inputs to have completed both
   submissions before the round advances. Clients that have neither are not
   counted.
+- **VTXO signing key must differ from the operator key.** `ValidateVTXORequest`
+  rejects any request where the client-supplied signing key is x-only equal to
+  the operator key (`ErrSigningKeyMatchesOperator`). Two participants sharing
+  the same VTXO tapleaf would allow one to forge the other's forfeit signature.
+- **Per-client JoinRoundRequest rate limiting.** `allowJoinRequest(clientID)`
+  gates admission using a per-client token-bucket limiter seeded from
+  `ActorConfig.JoinRequestRate`/`JoinRequestBurst`. Bursts above the cap
+  return `ClientErrorResp` without touching the FSM. Limiter state is
+  cleaned up when a client's round registration is removed.
+- **Boarding input locker only blocks re-joins from different rounds.** The
+  `IsLocked` check in `validateBoardingInput` now inspects the `lockedBy`
+  value; a boarding input locked by the *same* round ID is accepted. This
+  allows re-registration replacement in `IntentCollectingState` (the
+  client re-joins the round it was already in) without falsely rejecting its
+  own locked inputs.
+- **`SweepKey` is persisted per-round at finalization time.** Columns
+  `sweep_key_family` and `sweep_key_index` were added to the `rounds` schema
+  (inline alteration of migration `000002`) so the key locator survives a
+  daemon restart. A nil pubkey (`SweepKey.PubKey == nil`) signals "locator
+  unknown" — callers must refuse to fall back to the configured key when its
+  pubkey no longer matches the persisted tree commitment.
 - **Recurring ticks are scheduled only from `newRoundFSM`** — the
   scheduling call deliberately lives outside `buildAndStartRoundFSM`
   because that helper is also called from `loadRoundFSM` to restore

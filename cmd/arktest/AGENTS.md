@@ -47,6 +47,22 @@ generating shell aliases for the sibling CLI binaries.
   subcommand. `logTarget` names a component log path derived from the
   persisted harness state; `newLogsCmd` creates the `logs` subcommand that
   tail-prints or follows the last N lines of any component log.
+- `stopConfig` — Flags for the `stop` subcommand: `timeout` (default 30s,
+  how long to wait for graceful shutdown) and `force` (escalate to SIGKILL
+  after timeout). The stop command reads the PID from the state file, sends
+  SIGINT, then polls for the state file to disappear.
+- `faucetResponse` — JSON shape for the `faucet` subcommand output:
+  `address`, `amount_sat`, `txid`, `mined_blocks`, `miner_address`,
+  `block_hashes`.
+- `stressConfig` gains four new flags: `--max-unrolls` (default 5, budget for
+  random unilateral exits), `--mine-interval-min` / `--mine-interval-max`
+  (default 2s/10s, background mining cadence), `--unroll-timeout` (default
+  15m, per-unroll wait cap). The `stress` description now mentions
+  "unilateral exits" and "background miner".
+- `stressSummary` gains unroll tracking fields (`UnrollsAttempted`,
+  `UnrollsCompleted`, `UnrollsFailed`, `UnrollsSkipped`, latency percentiles
+  `UnrollAvgMS`/`UnrollP50MS`/`UnrollP95MS`/`UnrollMaxMS`) and background
+  mining fields (`BackgroundBlocks`, `BackgroundMineMin`, `BackgroundMineMax`).
 
 ## Relationships
 
@@ -61,6 +77,9 @@ generating shell aliases for the sibling CLI binaries.
 
 ## Invariants
 
+- **Subcommand inventory**: `start`, `stop`, `mine`, `board`
+  (alias: `new-boarding-address`), `faucet`, `info`, `stress`, `logs`, `aliases`.
+  `board` is a retained alias for `new-boarding-address`.
 - State is persisted to `~/.arktest/current.json` (or `--datadir`) by `start`
   and consumed by all other subcommands; running a subcommand without `start`
   running will fail with a clear "is `arktest start` running?" error.
@@ -102,6 +121,21 @@ generating shell aliases for the sibling CLI binaries.
 - The live VTXO cache (250ms TTL per client) prevents redundant `ListVTXOs`
   calls across concurrent payment workers. The cache is invalidated on
   reservation so stale entries do not hide already-reserved outputs.
+- `--max-unrolls 0` disables unilateral-exit stress entirely; the unroll
+  loop exits immediately and records zero attempts in `stressSummary`.
+- Background mining runs in a separate goroutine started by `startBackgroundMiner`;
+  mining cadence is uniform-random between `mineIntervalMin` and
+  `mineIntervalMax`. Zero `mineIntervalMin` disables background mining.
+- `stop` sends SIGINT to the PID in the state file and polls for the state
+  file's removal with `stopPollInterval = 250ms`. With `--force`, escalates to
+  SIGKILL after `--timeout` if the state file has not disappeared.
+- `faucet` requires a running `arktest start` session (reads bitcoind credentials
+  from the state file). It sends coins to any address — not just client
+  boarding addresses — and mines 6 confirmations before returning.
+- `btc()` is a shell function emitted by the `aliases` subcommand that wraps
+  `docker exec "$ARKTEST_BITCOIND_CONTAINER" bitcoin-cli -regtest` so the
+  developer can run arbitrary bitcoin-cli commands against the harness bitcoind
+  without knowing the container name.
 
 ## Deep Docs
 

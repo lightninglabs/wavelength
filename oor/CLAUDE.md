@@ -118,6 +118,29 @@ co-signing, finalization, and recipient notification.
   event; the ledger handler skips the fee leg when `fee = input - output`
   is zero, so this is a no-op on accounting but ensures the audit trail
   captures every finalized session for future fee schedule activation.
+- `CoSignedState.LastFinalizeFailureReason string` — Stores the reason from
+  the most recent failed finalize attempt. Introduced so that when finalization
+  fails after the Ark package has already been co-signed (the point-of-no-return),
+  the FSM transitions back to `CoSignedState` rather than `FailedState`. This
+  keeps the session retryable: the client can re-submit a `FinalizeOORRequest`
+  without losing the co-signed checkpoints. The old path that moved to
+  `FailedState` on any finalize error is removed.
+- `arkCoSignSigHashType = txscript.SigHashDefault` — Package-level constant
+  enforcing that all Ark co-sign operations use `SIGHASH_DEFAULT` exclusively.
+  `arkSigningLeaf` now validates that every existing taproot signature record
+  uses this sighash; a mismatch returns a hard error, preventing the operator
+  from co-signing with a weakened or non-default sighash that could enable
+  signature reuse attacks.
+- `verifyCheckpointTapTreeBindsToPkScript` — New validation in
+  `checkpoint_sweep.go` that reconstructs the expected taproot output key from
+  the checkpoint's encoded tap tree and verifies it matches the checkpoint
+  output's pkScript. Rejects checkpoints whose tap tree was substituted or
+  tampered with between submission and sweep.
+- `SubmitOORResponse.CorrelationKey()` / `FinalizeOORResponse.CorrelationKey()`
+  — Return `oorSessionCorrelationKey(clientID, sessionID)` (format:
+  `"<clientID>/oor/<sessionID>"`). Ensures submit and finalize responses for
+  the same session are claim-ordered in the durable mailbox regardless of
+  transient send failures.
 
 ## Relationships
 
@@ -206,6 +229,22 @@ co-signing, finalization, and recipient notification.
   (`OORTransferStartedMsg`/`OORTransferCompletedMsg`).
 - Structured logging emits at every key lifecycle event (submit, co-sign,
   finalize, restore, lock/unlock, validation, notification).
+- **OOR FSM remains in `CoSignedState` after finalize failures past the
+  point-of-no-return.** Once the Ark package is co-signed, any finalize
+  failure stores the failure reason in `LastFinalizeFailureReason` and
+  transitions back to `CoSignedState` (not `FailedState`). This allows the
+  client to re-submit a finalize request. The old `FailedState` transition
+  on finalize errors is removed — the FSM is now fully recoverable from
+  transient finalize failures.
+- **Ark co-sign MUST use `SIGHASH_DEFAULT`.** `arkSigningLeaf` rejects any
+  PSBT where an existing taproot signature record uses a sighash other than
+  `SIGHASH_DEFAULT`. Callers must not mutate the sighash on inputs before
+  passing PSBTs to the co-signer.
+- **Checkpoint tap-tree must bind to the checkpoint output's pkScript.**
+  `verifyCheckpointTapTreeBindsToPkScript` is called during checkpoint sweep
+  construction. It requires exactly two tap leaves and verifies the assembled
+  taproot output key matches the output's pkScript, preventing a substituted
+  or truncated tap tree from producing a sweep that never confirms.
 
 ## Deep Docs
 

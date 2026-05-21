@@ -48,6 +48,14 @@ The package also provides the HTTP `/metrics` scrape endpoint and an
   witness-weight delta cannot be applied). Sustained rate indicates an operator
   hot-wallet liquidity gap; each increment means a boarding round proceeded
   with overpay to miners rather than failing.
+- `BatchWatcherRegisterFailedMsg` — Fire-and-forget actor message sent by the
+  rounds actor when `RegisterBatchRequest` fails to enqueue with the batch
+  watcher at round confirmation. Carries `RoundID string` and `BatchCount int`.
+- `BatchWatcherRegisterFailures` — `prometheus.Counter` incremented by
+  `BatchWatcherRegisterFailedMsg`. **Operator must alert on any non-zero rate.**
+  Batches that failed registration are NOT monitored on-chain; there is no
+  automatic redrive. A non-zero value means affected VTXOs may be swept by
+  the operator without fraud detection.
 
 ## Relationships
 
@@ -68,6 +76,7 @@ The package also provides the HTTP `/metrics` scrape endpoint and an
   - Receives `VTXOLockResultMsg` <- `InstrumentedLocker` (wrapping vtxo.Locker)
   - Receives `DispatchCompletedMsg` <- `clientconn` ingress loop
   - Receives `ClientStatusChangedMsg` <- root `darepo` (status tracker callback)
+  - Receives `BatchWatcherRegisterFailedMsg` <- `rounds` (batch watcher enqueue failure at confirmation)
 
 ## Invariants
 

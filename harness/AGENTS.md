@@ -76,6 +76,20 @@ server, and client daemon processes with controlled mailbox connections.
   `ZeroFeeSchedule` also pins `StaticFeeRateSatKW` for determinism even on
   the fees-disabled path. The harness applies the non-zero schedule by default;
   tests opt out via `WithZeroFeeSchedule` or customize it via `WithFeesSchedule`.
+- `ArkHarness.SealRoundNow()` — Admin-driven seal helper that calls the
+  `TriggerBatch` admin RPC and returns the sealed round ID. Convenience
+  wrapper for tests that need to force a seal without waiting for the
+  registration timeout. Panics (via `require.NoError`) if `ArkAdminClient`
+  is nil or the RPC returns an empty round ID.
+- `RPCTransportGRPC` / `RPCTransportREST` — String constants selecting the
+  client-side RPC transport for the harness (`"grpc"` or `"rest"`).
+- `ArkHarnessOptions.RPCTransport` — Configures whether client daemons connect
+  over gRPC or the HTTP grpc-gateway. Defaults to `RPCTransportGRPC` when
+  empty. `resolveRPCTransport` validates the value at harness construction.
+- `ArkHarness.ArkRPCGatewayAddr` — Populated after `startArkd` when the
+  grpc-gateway listener is ready. Used by the REST transport path to connect
+  client daemons through the HTTP gateway. Empty on `SkipArkd` harnesses or
+  when the gateway is not enabled.
 
 ## Relationships
 
@@ -133,6 +147,12 @@ server, and client daemon processes with controlled mailbox connections.
 - `RestartArkdDuring` is a hard error when called on a `SkipArkd` harness.
 - `GetServerVTXOStatus` returns an error when the in-process arkd server is
   not initialized (nil). Callers must not call this before `startArkd`.
+- `SealRoundNow` is a hard error when `ArkAdminClient` is nil (harness
+  started with `SkipArkd=true`). The error fires via `require.NotNil` so the
+  test fails immediately with a descriptive message.
+- REST transport readiness requires `RPCGatewayAddr()` to be non-nil; the
+  `waitForArkd` loop returns false until the gateway address is available
+  when `rpcTransport == RPCTransportREST`.
 
 ## Deep Docs
 

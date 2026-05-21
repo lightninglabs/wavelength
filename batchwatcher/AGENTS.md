@@ -53,6 +53,28 @@ changes to the round and sweep subsystems.
   populated. `handleNewBlockReceived` emits a `CheckpointSweepNotification` once
   per maturity block (suppressing per-block duplicates, retrying after
   `checkpointSweepRetryBlocks` on transient failures).
+- `Output.RatchetSpendingTx` / `RatchetSpendingHeight` /
+  `RatchetRetryRequestedHeight` — Checkpoint frontier retention fields. When a
+  checkpoint output is spent but the fraud-response ratchet step fails (e.g.,
+  DB or txconfirm error), the watcher stores the spending transaction and height
+  here rather than dropping the output. On restart, `handleCheckpointOutputSpend`
+  is re-entered with the retained spending tx, retrying the ratchet step.
+  `ratchetRetryBlocks = 1` governs the retry-request gap between attempts.
+- `BatchSubtreeSweptNotification` — Sent to `batchsweeper` when a mid-tree
+  branch output is swept by the operator's expired-subtree path
+  (`spendDispositionExpiredSubtreeSweep`). Carries `BatchID` and `SubtreeRoot`.
+  Distinct from `BatchExpiredNotification` (full batch sweep) so the sweeper
+  can update tracking state for partial tree sweeps.
+- `RegisterBatchRequest.SweepKey` / `BatchTreeState.SweepKey
+  keychain.KeyDescriptor` — Historical operator key descriptor threaded from
+  the rounds actor through `RegisterBatchRequest` into `BatchTreeState`. The
+  batch sweeper uses this to sign timeout spends with the exact locator that
+  derived the tree's sweep tapleaf, surviving configured-key rotations. A zero
+  descriptor (`PubKey == nil`) signals "locator unknown" (pre-migration round).
+- `spendDispositionExpiredSubtreeSweep` — New spend classification for a batch
+  tree output spent at or after the batch's `ExpiryHeight`. Triggers
+  `notifyBatchSubtreeSwept` and removes the output from tracking without
+  marking the full batch as swept.
 
 ## Relationships
 
@@ -68,7 +90,8 @@ changes to the round and sweep subsystems.
   - Sends `VTXOOnChainNotification`, `UnexpectedSpendNotification`,
     and `CheckpointSweepNotification` -> fraud detector.
   - Receives `UnregisterBatchRequest` <- `rounds` (stop monitoring a batch).
-  - Sends `BatchExpiredNotification`, `TreeStateChangedNotification` -> `batchsweeper`.
+  - Sends `BatchExpiredNotification`, `TreeStateChangedNotification`,
+    `BatchSubtreeSweptNotification` -> `batchsweeper`.
 
 ## Invariants
 
@@ -100,6 +123,22 @@ changes to the round and sweep subsystems.
 - `BatchIDForRoundOutput` derives a deterministic batch ID from a round UUID
   and output index; callers outside the package (e.g., `harness`) use this
   function to construct batch IDs for `GetTreeStateRequest`.
+- **Failed checkpoint ratchet steps retain the frontier.** When
+  `handleCheckpointOutputSpend` encounters a DB or txconfirm error, the output
+  is NOT removed from `ExistingOutputs`. Instead, `RatchetSpendingTx` and
+  `RatchetSpendingHeight` record the spending transaction so daemon restart
+  can re-enter the handler and retry. `RatchetRetryRequestedHeight` prevents
+  duplicate retry requests within `ratchetRetryBlocks` blocks.
+- **Mid-tree branch sweeps classified as `spendDispositionExpiredSubtreeSweep`.**
+  A batch output spent at or after `ExpiryHeight` (not full-batch sweep) is
+  classified as an expired subtree sweep, triggers `BatchSubtreeSweptNotification`,
+  removes the output from tracking, and fires `notifyTreeStateChanged`. This
+  handles the case where the operator sweeps a branch output before the entire
+  tree is swept.
+- **`SweepKey` propagation is required for non-zero sweep key locators.** A
+  `RegisterBatchRequest` with `SweepKey.PubKey == nil` is accepted (pre-migration
+  compatibility) but the sweeper must fall back to its configured key and log
+  the gap. Callers must populate `SweepKey` from the persisted round data.
 
 ## Deep Docs
 

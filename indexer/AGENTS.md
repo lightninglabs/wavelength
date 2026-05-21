@@ -83,6 +83,14 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
   driver so depth bound, cycle protection, and visit ordering stay in lockstep.
   Cycle protection uses a `chainhash.Hash`-keyed seen-set; depth beyond
   `DefaultMaxLineageDepth` returns a typed error.
+- `maxProofMessageSize = 4096` — Upper bound (in bytes) on a decoded TLV proof
+  message. `decodeProofMessage` in `proof.go` rejects blobs exceeding this
+  limit before calling `tlvStream.DecodeP2P` to prevent client-supplied
+  unbounded allocations (OOM DoS). `DecodeP2P` itself bounds the reader, but
+  the size check provides an early, readable error.
+- `indexerEventMessage.CorrelationKey()` returns the empty string — event push
+  notifications are not bound to a round or session handshake, so they opt out
+  of per-key FIFO ordering and participate only in global available-at order.
 
 ## Relationships
 
@@ -160,6 +168,14 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
   pages (unlike the retired offset-cursor approach).
 - VTXO event metadata persisted at `AddVTXOEvent` time must match the
   transient push payload — poll and push paths are symmetric.
+- **TLV proof messages are bounded at 4096 bytes.** `decodeProofMessage`
+  rejects oversized blobs before TLV decoding begins. Decoding uses
+  `tlvStream.DecodeP2P` (bounded reader) rather than the unbounded `Decode`
+  to prevent a client from causing an OOM allocation via a crafted large proof.
+- **Script and recipient event reads use retry-safe transactions.**
+  `ListOORRecipientEventsByScript` and `ListVTXOsByScripts` accumulate results
+  inside an `ExecReadTx` closure so all DB reads composing one response observe
+  a consistent snapshot and are retried atomically on transient errors.
 - `BatchExpiryHeight` on published VTXO events is the **absolute** height
   (`confirmation_height + sweep_delay`), not the relative sweep delay.
 - `CommitmentTxid` on published VTXO events is the signed commitment tx

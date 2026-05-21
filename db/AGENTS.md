@@ -164,13 +164,25 @@ and SQLite backends with SQLC-generated type-safe queries.
   rowids, which breaks mailbox pull clients whose ack cursor sits above the
   recycled sequence.
 - Schema changes go through `db/sqlc/migrations/`; run `make sqlc` after
-  changes. `LatestMigrationVersion` is currently `13`. Key migrations:
+  changes. `LatestMigrationVersion` is currently `14`. Key migrations:
+  - `000014_vtxo_inherited_batch_expiry` — adds `batch_expiry INTEGER` column
+    to the VTXOs table so OOR-materialized outputs can carry the inherited
+    `min(parent.batch_expiry)` directly. Round-created VTXOs continue to
+    derive expiry at read time via `COALESCE(vtxos.batch_expiry,
+    confirmation_height + csv_delay)`.
   - `000013_round_attribution` — adds `change_output_idx INTEGER NOT NULL
     DEFAULT -1` to `rounds`, creates the `round_connector_outputs` side table
     `(round_id, output_index)`, and adds `radix INTEGER NOT NULL` to
     `round_connector_descriptors` so the fraud responder can reconstruct the
     exact connector tree shape used at finalization time regardless of later
     config changes.
+  - `000002_rounds` (in-place alteration) — adds `sweep_key_family BIGINT`
+    and `sweep_key_index BIGINT` columns to `rounds` (both nullable). These
+    persist the `keychain.KeyLocator` (family + index) that derived `sweep_key`
+    at finalization, so the batch sweeper can reconstruct the exact descriptor
+    for historical key-locator-based signing after a configured-key rotation.
+    `BIGINT` is used (not `INTEGER`) because `keychain.KeyFamily` and `Index`
+    are `uint32` and Postgres `INTEGER` is signed 32-bit.
   - `000012_utxo_attribution` — adds `source_id BLOB` column to
     `wallet_utxo_log` (carries 16-byte `round_id` / `batch_id` for
     handler-pre-inserted rows, NULL for diff-loop-produced rows) and seeds
