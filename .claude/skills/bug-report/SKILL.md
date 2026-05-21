@@ -24,33 +24,35 @@ one sentence describing what went wrong before collecting anything.
 ### 2. Collect session logs
 
 ```bash
-# Line number where the most recent daemon session started
-START=$(grep -n "Starting darepod" ~/.darepod/logs/signet/darepod.log \
-  | tail -1 | cut -d: -f1)
+LOG=~/.darepod/logs/signet/darepod.log
 
-# Full log for the current session
-SESSION=$(tail -n +${START} ~/.darepod/logs/signet/darepod.log)
+if [ -f "$LOG" ]; then
+  # Line where the most recent daemon session started. Fall back to line
+  # 1 if no marker is found — a partial log is better than none.
+  START=$(grep -n "Starting darepod" "$LOG" | tail -1 | cut -d: -f1)
+  SESSION=$(tail -n +${START:-1} "$LOG")
 
-# Build line (commit hash, network, wallet type)
-BUILD=$(echo "$SESSION" | grep "Starting darepod" | tail -1)
-
-# Warnings and errors from this session, capped at 40 lines
-ERRORS=$(echo "$SESSION" | grep -E '\[WRN\]|\[ERR\]' | tail -40)
-
-# Session window
-FIRST_TS=$(echo "$SESSION" | head -1 | cut -c1-19)
-LAST_TS=$(echo "$SESSION"  | tail -1 | cut -c1-19)
+  BUILD=$(echo "$SESSION" | grep "Starting darepod" | tail -1)
+  ERRORS=$(echo "$SESSION" | grep -E '\[WRN\]|\[ERR\]' | tail -40)
+  FIRST_TS=$(echo "$SESSION" | head -1 | cut -c1-19)
+  LAST_TS=$(echo "$SESSION"  | tail -1 | cut -c1-19)
+else
+  SESSION="" BUILD="" ERRORS="" FIRST_TS="" LAST_TS=""
+fi
 ```
 
-If `~/.darepod/logs/signet/darepod.log` does not exist, note that no log
-file was found and continue — do not abort.
+If the log file does not exist, the variables are empty — the report will
+note "no log file found" in the affected sections instead of aborting.
 
 ### 3. Collect environment
 
 ```bash
-OS=$(sw_vers 2>/dev/null | tr '\n' ' ')
+OS=$(uname -srvm)
 GO_VER=$(go version 2>/dev/null)
-IPV6=$(networksetup -getinfo Wi-Fi 2>/dev/null | grep -E "IPv6")
+# Portable IPv6 check: any non-link-local, non-loopback inet6 address.
+# ifconfig works on macOS and most Linux distros.
+IPV6=$(ifconfig 2>/dev/null | awk '/inet6/ && !/fe80|::1/ {print $2; exit}')
+IPV6=${IPV6:-none}
 ESPLORA_URL=$(grep 'esploraurl' ~/.darepod/darepod.conf 2>/dev/null \
   | cut -d= -f2)
 ESPLORA_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 \
@@ -58,10 +60,24 @@ ESPLORA_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 \
 DAEMON_PID=$(pgrep -x darepod || echo "not running")
 ```
 
-### 4. Read config
+### 4. Read and redact config
 
-Read `~/.darepod/darepod.conf` verbatim. It contains no secrets — no
-redaction needed.
+Read `~/.darepod/darepod.conf` and redact secrets before including in the
+report. Replace the value of any line whose key matches one of these
+patterns with `<REDACTED>`:
+
+- `bitcoind.user`, `bitcoind.pass`, `bitcoind.rpcuser`, `bitcoind.rpcpass`,
+  `bitcoind.rpcpassword`
+- any key ending in `password`, `pass`, `secret`, `token`, or `apikey`
+
+```bash
+CONFIG=$(sed -E '
+  s/^([[:space:]]*bitcoind\.(user|pass|rpcuser|rpcpass(word)?))[[:space:]]*=.*/\1=<REDACTED>/;
+  s/^([[:space:]]*[^=]*(password|secret|token|apikey))[[:space:]]*=.*/\1=<REDACTED>/I
+' ~/.darepod/darepod.conf 2>/dev/null)
+```
+
+Use `$CONFIG` (not the raw file) in the report body.
 
 ### 5. Collect live wallet state
 
@@ -109,10 +125,10 @@ Always include the `bug` label. Add subsystem labels on top.
 - **Daemon PID**: {DAEMON_PID}
 - **Session window**: {FIRST_TS} → {LAST_TS}
 
-## Config (~/.darepod/darepod.conf)
+## Config (~/.darepod/darepod.conf, secrets redacted)
 
 \`\`\`
-{darepod.conf contents}
+{CONFIG}
 \`\`\`
 
 ## Warnings and Errors (this session)
