@@ -220,10 +220,25 @@ func ParseSubmitPackageResponse(resp *SubmitPackageResponse) (chainhash.Hash,
 			return chainhash.Hash{}, nil, nil, err
 		}
 
-		coSignedArk, err := psbtutil.Parse(r.Success.CoSignedArkPsbt)
-		if err != nil {
-			return chainhash.Hash{}, nil, nil,
-				fmt.Errorf("decode co-signed ark psbt: %w", err)
+		// co_signed_ark_psbt is an additive field introduced after
+		// the initial submit-package wire shape: operators that have
+		// not been upgraded yet still return success without
+		// populating it. Treat empty bytes as "operator did not
+		// include the artifact" rather than as a parse error so
+		// clients can keep talking to older operators during a
+		// rolling upgrade. Recovery flows that genuinely need the
+		// co-signed PSBT will surface the absence at the recovery
+		// boundary, not here on every submit.
+		var coSignedArk *psbt.Packet
+		if len(r.Success.CoSignedArkPsbt) > 0 {
+			coSignedArk, err = psbtutil.Parse(
+				r.Success.CoSignedArkPsbt,
+			)
+			if err != nil {
+				return chainhash.Hash{}, nil, nil,
+					fmt.Errorf("decode co-signed ark "+
+						"psbt: %w", err)
+			}
 		}
 
 		checkpoints, err := decodePSBTSlice(
