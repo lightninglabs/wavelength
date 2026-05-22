@@ -116,6 +116,44 @@ type swapClientService struct {
 	chainParams *chaincfg.Params
 }
 
+// operatorPubKeyFetcher returns the current Ark operator pubkey. It exists so
+// daemon-hosted swap clients can bypass the cached GetInfo snapshot when they
+// construct fresh vHTLC policies.
+type operatorPubKeyFetcher func(context.Context) (*btcec.PublicKey, error)
+
+// liveOperatorDaemonConn delegates all daemon operations to the embedded
+// connection except OperatorPubKey, which is fetched live from the daemon's
+// direct Ark transport. This keeps ordinary status reads on the cached GetInfo
+// path while ensuring newly-created swap vHTLC policies see operator-key
+// rotations before OOR funding is submitted.
+type liveOperatorDaemonConn struct {
+	swaps.DaemonConn
+
+	operatorPubKey operatorPubKeyFetcher
+}
+
+// OperatorPubKey returns the latest operator key from the direct fetcher.
+func (d *liveOperatorDaemonConn) OperatorPubKey(ctx context.Context) (
+	*btcec.PublicKey, error) {
+
+	return d.operatorPubKey(ctx)
+}
+
+// daemonWithLiveOperatorKey wraps daemon so swap policy construction does not
+// consume a stale operator key from GetInfo's cached server-info snapshot.
+func daemonWithLiveOperatorKey(daemon swaps.DaemonConn,
+	fetch operatorPubKeyFetcher) swaps.DaemonConn {
+
+	if fetch == nil {
+		return daemon
+	}
+
+	return &liveOperatorDaemonConn{
+		DaemonConn:     daemon,
+		operatorPubKey: fetch,
+	}
+}
+
 // swapRuntimeClient is the narrow part of sdk/swaps that the daemon
 // subserver needs in order to expose a background-control RPC layer. Keeping
 // this seam local makes the subserver unit-testable without duplicating swap
@@ -385,8 +423,11 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	}
 
 	rootCtx, cancel := context.WithCancel(ctx)
+	daemonConn := daemonWithLiveOperatorKey(
+		arkClient, rpcServer.OperatorPubKey,
+	)
 	swapClient := swaps.NewSwapClientWithStore(
-		swapClients.server, arkClient, log, invoiceGen, store,
+		swapClients.server, daemonConn, log, invoiceGen, store,
 	)
 	swapClient.SetChainParams(chainParams)
 	recoveryCfg := cfg.VHTLCRecovery

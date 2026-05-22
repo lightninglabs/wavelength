@@ -145,6 +145,21 @@ func (r *RPCServer) SignMailboxAuth(ctx context.Context,
 	return hex.EncodeToString(sig.Serialize()), nil
 }
 
+// OperatorPubKey fetches the current Ark operator pubkey directly from the
+// server and refreshes the daemon's cached operator terms snapshot. Optional
+// subservers that build new policy scripts should use this rather than
+// DaemonService.GetInfo so operator-key rotations are observed before the
+// policy is handed to the wallet or OOR layer.
+func (r *RPCServer) OperatorPubKey(ctx context.Context) (*btcec.PublicKey,
+	error) {
+
+	if r == nil || r.server == nil {
+		return nil, fmt.Errorf("daemon server unavailable")
+	}
+
+	return r.server.fetchCurrentOperatorPubKey(ctx)
+}
+
 // vtxoAdmissionCode maps typed VTXO admission failures to caller-actionable
 // gRPC codes while preserving Internal for unexpected selection failures.
 func vtxoAdmissionCode(err error) codes.Code {
