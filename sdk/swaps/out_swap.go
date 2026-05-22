@@ -36,6 +36,12 @@ const (
 	// to surface in the indexer before retrying the spend.
 	defaultClaimResumeGracePeriod = 15 * time.Second
 
+	// defaultOverdueReceiveMailboxPollWindow is the grace window used when
+	// a daemon resumes an unpaid receive after its invoice deadline. It
+	// gives an already-delivered mailbox event time to arrive locally
+	// before the receive is expired.
+	defaultOverdueReceiveMailboxPollWindow = 10 * time.Second
+
 	// defaultClaimPreimageLookupAttempts bounds the short local retry loop
 	// used after a vHTLC spend is indexed before its preimage metadata is
 	// visible through the daemon.
@@ -679,10 +685,18 @@ func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 		return fmt.Errorf("get receive auth key: %w", err)
 	}
 
+	waitCtx, cancel := s.invoiceDeadlineContext(ctx)
+	defer cancel()
+
 	notification, err := s.waitIncomingVHTLCNotification(
-		ctx, authKey,
+		waitCtx, authKey,
 	)
 	if err != nil {
+		if invoiceDeadlineExceeded(ctx, waitCtx, err) {
+			return fmt.Errorf("receive invoice deadline "+
+				"elapsed: %w", errSwapExpired)
+		}
+
 		return err
 	}
 	if notification == nil {
@@ -694,6 +708,37 @@ func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 	}
 
 	return s.ackAcceptedHTLCEvent(ctx, notification.Ack)
+}
+
+// invoiceDeadlineContext bounds only the unpaid-invoice mailbox wait. When a
+// daemon resumes after the invoice deadline, it still gives mailbox delivery a
+// short grace window to surface an already-delivered HTLC event before the
+// receive is expired.
+func (s *ReceiveSession) invoiceDeadlineContext(ctx context.Context) (
+	context.Context, context.CancelFunc) {
+
+	if s == nil || s.client == nil || s.deadline.IsZero() {
+		return context.WithCancel(ctx)
+	}
+
+	now := s.client.currentTime()
+	if now.Before(s.deadline) {
+		return context.WithDeadline(ctx, s.deadline)
+	}
+
+	return context.WithTimeout(ctx, s.client.overdueReceivePollWindow)
+}
+
+// invoiceDeadlineExceeded reports whether the receive invoice's own deadline
+// context expired, rather than the caller/root context interrupting the wait.
+func invoiceDeadlineExceeded(parent, waitCtx context.Context, err error) bool {
+	if err == nil || waitCtx.Err() == nil || parent.Err() != nil {
+		return false
+	}
+
+	return isDeadlineExceededErr(err) || errors.Is(
+		waitCtx.Err(), context.DeadlineExceeded,
+	)
 }
 
 // waitForFunding waits until the expected accepted vHTLC is indexed as live.
@@ -708,7 +753,7 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 	}
 
 	outpoint, amount, err := s.client.waitForVHTLC(
-		ctx, s.vhtlcPkScript, s.deadline,
+		ctx, s.vhtlcPkScript, time.Time{},
 		s.ensureReceiveFundingStillPossible,
 	)
 	if err != nil {
@@ -1526,10 +1571,6 @@ func (c *SwapClient) waitForVHTLC(ctx context.Context, pkScript []byte,
 	int64, error) {
 
 	pkScriptHex := hex.EncodeToString(pkScript)
-	if deadline.IsZero() {
-		deadline = c.currentTime().Add(c.waitVHTLCTimeout)
-	}
-
 	for {
 		if err := ctx.Err(); err != nil {
 			return "", 0, err
