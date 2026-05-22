@@ -600,6 +600,31 @@ func (s *Server) storeOperatorTerms(terms *types.OperatorTerms) {
 	s.operatorTerms.Store(terms)
 }
 
+// fetchCurrentOperatorPubKey issues a fresh GetInfo round-trip to the
+// operator and returns the operator's current long-term public key. The
+// daemon-startup OperatorTerms cache is also refreshed as a side effect so
+// other readers see the same snapshot. Used to plumb a live operator-key
+// lookup into the wallet and VTXO subsystems so refresh emissions build
+// the NEW VTXO output's policy template against the operator's join-time
+// key — VTXOs commit to their operator key for life, so the new output's
+// key is chosen at join time and stays stable on that VTXO forever.
+func (s *Server) fetchCurrentOperatorPubKey(ctx context.Context) (
+	*btcec.PublicKey, error) {
+
+	terms, err := s.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("fetch operator terms: %w", err)
+	}
+
+	// Refresh the cache so unrelated readers (e.g. GetInfo) reflect the
+	// snapshot the refresh path used. The cache was previously only
+	// hydrated at daemon startup, which is what made it the wrong source
+	// of truth in the first place.
+	s.storeOperatorTerms(terms)
+
+	return terms.PubKey, nil
+}
+
 // isServerConnected returns the latest mailbox-ingress connectivity signal
 // reported by the daemon runtime.
 func (s *Server) isServerConnected() bool {
@@ -3231,6 +3256,7 @@ func (s *Server) initWalletActor(ctx context.Context,
 		),
 		wallet.WithClock(s.clk),
 		wallet.WithEagerRoundJoin(s.cfg.EagerRoundJoin),
+		wallet.WithFetchOperatorKey(s.fetchCurrentOperatorPubKey),
 	)
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,
@@ -3436,6 +3462,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		LedgerSink:       fn.Some(ledger.NewSink(s.actorSystem)),
 		ChainResolver:    chainResolver,
 		RefreshFeeQuoter: s.autoRefreshFeeQuoter(),
+		FetchOperatorKey: s.fetchCurrentOperatorPubKey,
 		TerminalVTXOObserver: func(ctx context.Context,
 			outpoint wire.OutPoint) error {
 

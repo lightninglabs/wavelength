@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -212,6 +213,18 @@ type Ark struct {
 	// in the mailbox, push out room for self-Tells from inside the
 	// handler, and degrade the boarding-sweep resume cadence.
 	tickInflight atomic.Bool
+
+	// fetchOperatorKey, when set, returns the operator's current
+	// long-term public key by issuing a fresh GetInfo round-trip at
+	// the moment a refresh intent is composed. The fetched key is
+	// used to build the NEW VTXO output's policy template inside
+	// handleRefreshVTXOs; the input VTXO's stored key is intentionally
+	// not reused for the new output because VTXOs commit to their
+	// operator key for life and the new output's key is chosen at
+	// join time. Nil leaves the handler falling back to the
+	// descriptor's stored bytes for harness paths and for non-standard
+	// policy shapes where the rebuild surface is unavailable.
+	fetchOperatorKey func(context.Context) (*btcec.PublicKey, error)
 }
 
 // NewArk creates a new Ark wallet actor. The logger is optional and falls back
@@ -324,10 +337,60 @@ func WithTipTickInterval(d time.Duration) ArkOption {
 	}
 }
 
+// WithFetchOperatorKey wires a closure that fetches the operator's
+// current long-term public key (via a fresh GetInfo round-trip) into
+// the wallet actor. The closure is invoked when composing refresh
+// intents so the NEW VTXO output's policy template is built against
+// the operator's join-time key, rather than the daemon-startup cache
+// (which goes stale across rotations) or the descriptor's stored K1
+// (which would defeat the rotation entirely). Tests and harnesses
+// can omit the option to keep the legacy fallback to the descriptor's
+// stored template.
+func WithFetchOperatorKey(
+	fetch func(context.Context) (*btcec.PublicKey, error)) ArkOption {
+
+	return func(a *Ark) {
+		a.fetchOperatorKey = fetch
+	}
+}
+
 // logger returns the configured logger or falls back to extracting from
 // context. If no logger is found in either location, returns btclog.Disabled.
 func (a *Ark) logger(ctx context.Context) btclog.Logger {
 	return a.actorLog.UnwrapOr(build.LoggerFromContext(ctx))
+}
+
+// composeRefreshTemplate returns the policy template that the explicit
+// RefreshVTXOs handler should attach to the new VTXO output for a given
+// input descriptor, using the operator key already resolved for the
+// surrounding batch (see handleRefreshVTXOs).
+//
+// Mirrors the vtxo-side refreshOutputTemplate helper but takes the
+// resolved key as a parameter so the caller can hoist a single GetInfo
+// round-trip out of the per-outpoint loop.
+//
+// A nil currentOperatorKey means the surrounding handler is running
+// without the fetchOperatorKey seam (harness path) or with a deliberate
+// opt-out: the descriptor's stored bytes are returned verbatim. Non-
+// standard policy shapes trigger the same fallback because the rebuild
+// surface only covers the standard shape today.
+func composeRefreshTemplate(vtxo *VTXODescriptor,
+	currentOperatorKey *btcec.PublicKey) ([]byte, error) {
+
+	if currentOperatorKey == nil {
+		return vtxo.EffectivePolicyTemplate()
+	}
+
+	rebuilt, err := vtxo.RefreshOutputTemplate(currentOperatorKey)
+	if err != nil {
+		if errors.Is(err, ErrRefreshOperatorKeyUnsupported) {
+			return vtxo.EffectivePolicyTemplate()
+		}
+
+		return nil, err
+	}
+
+	return rebuilt, nil
 }
 
 // emitUTXOCreated posts a UTXOCreatedMsg to the client ledger
@@ -1347,6 +1410,52 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		})
 	}
 
+	// Resolve the operator key once for the whole batch. Every new VTXO
+	// minted in this round commits to the same key, so a single fresh
+	// GetInfo round-trip is enough — per-outpoint fetches would just
+	// fan the same answer out N times and could disagree under a
+	// concurrent rotation. A fetch error fails the whole RPC: refreshing
+	// against an unknown key would just queue a doomed intent. When the
+	// seam is unset (harness paths) resolvedOperatorKey stays nil and
+	// composeRefreshTemplate falls back to the descriptor's stored bytes.
+	var resolvedOperatorKey *btcec.PublicKey
+	if a.fetchOperatorKey != nil {
+		key, err := a.fetchOperatorKey(ctx)
+		if err != nil {
+			a.logger(ctx).WarnS(
+				ctx,
+				"Failed to fetch current operator key for "+
+					"refresh",
+				err,
+			)
+
+			return fn.Ok[WalletResp](&RefreshVTXOsResponse{
+				Errors: allTargetErrors(
+					req.TargetOutpoints,
+					fmt.Errorf("fetch current "+
+						"operator key: %w", err),
+				),
+			})
+		}
+
+		if key == nil {
+			err := fmt.Errorf("operator key fetch returned nil")
+			a.logger(ctx).WarnS(
+				ctx,
+				"Refresh aborted: nil operator key",
+				err,
+			)
+
+			return fn.Ok[WalletResp](&RefreshVTXOsResponse{
+				Errors: allTargetErrors(
+					req.TargetOutpoints, err,
+				),
+			})
+		}
+
+		resolvedOperatorKey = key
+	}
+
 	// Build intent package by loading each VTXO descriptor and
 	// constructing the corresponding forfeit + VTXO request pair.
 	var (
@@ -1376,7 +1485,16 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		// otherwise ship a Forfeits/VTXOs mismatch to
 		// RegisterIntentMsg and reserve a VTXO into
 		// PendingForfeitState with no replacement.
-		policyTemplate, err := vtxo.EffectivePolicyTemplate()
+		//
+		// composeRefreshTemplate uses the join-time operator key
+		// resolved above to rebuild the new output's template.
+		// The resolved key is nil when the fetchOperatorKey seam
+		// is unwired, in which case the helper falls back to the
+		// descriptor's stored bytes (harness paths and non-standard
+		// policy shapes).
+		policyTemplate, err := composeRefreshTemplate(
+			vtxo, resolvedOperatorKey,
+		)
 		if err != nil {
 			a.logger(ctx).WarnS(ctx,
 				"Failed to load refresh policy",
