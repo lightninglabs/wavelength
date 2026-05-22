@@ -10,7 +10,7 @@ import (
 	"database/sql"
 )
 
-const CancelVHTLCRecoveryJob = `-- name: CancelVHTLCRecoveryJob :exec
+const CancelVHTLCRecoveryJob = `-- name: CancelVHTLCRecoveryJob :execrows
 UPDATE vhtlc_recovery_jobs
 SET state = 'cancelled',
     updated_at = $4,
@@ -29,17 +29,20 @@ type CancelVHTLCRecoveryJobParams struct {
 	UpdatedAt       int64
 }
 
-func (q *Queries) CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) error {
-	_, err := q.db.ExecContext(ctx, CancelVHTLCRecoveryJob,
+func (q *Queries) CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, CancelVHTLCRecoveryJob,
 		arg.ID,
 		arg.CancelReason,
 		arg.CooperativeTxid,
 		arg.UpdatedAt,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const CompleteVHTLCRecoveryJob = `-- name: CompleteVHTLCRecoveryJob :exec
+const CompleteVHTLCRecoveryJob = `-- name: CompleteVHTLCRecoveryJob :execrows
 UPDATE vhtlc_recovery_jobs
 SET state = 'completed',
     updated_at = $2,
@@ -54,9 +57,12 @@ type CompleteVHTLCRecoveryJobParams struct {
 	UpdatedAt int64
 }
 
-func (q *Queries) CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) error {
-	_, err := q.db.ExecContext(ctx, CompleteVHTLCRecoveryJob, arg.ID, arg.UpdatedAt)
-	return err
+func (q *Queries) CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, CompleteVHTLCRecoveryJob, arg.ID, arg.UpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const EscalateVHTLCRecoveryJob = `-- name: EscalateVHTLCRecoveryJob :execrows
@@ -85,7 +91,7 @@ func (q *Queries) EscalateVHTLCRecoveryJob(ctx context.Context, arg EscalateVHTL
 	return result.RowsAffected()
 }
 
-const FailVHTLCRecoveryJob = `-- name: FailVHTLCRecoveryJob :exec
+const FailVHTLCRecoveryJob = `-- name: FailVHTLCRecoveryJob :execrows
 UPDATE vhtlc_recovery_jobs
 SET state = 'failed',
     updated_at = $3,
@@ -101,9 +107,12 @@ type FailVHTLCRecoveryJobParams struct {
 	UpdatedAt int64
 }
 
-func (q *Queries) FailVHTLCRecoveryJob(ctx context.Context, arg FailVHTLCRecoveryJobParams) error {
-	_, err := q.db.ExecContext(ctx, FailVHTLCRecoveryJob, arg.ID, arg.LastError, arg.UpdatedAt)
-	return err
+func (q *Queries) FailVHTLCRecoveryJob(ctx context.Context, arg FailVHTLCRecoveryJobParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, FailVHTLCRecoveryJob, arg.ID, arg.LastError, arg.UpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const GetVHTLCRecoveryJob = `-- name: GetVHTLCRecoveryJob :one

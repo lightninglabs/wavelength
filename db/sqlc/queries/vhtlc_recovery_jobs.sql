@@ -85,7 +85,7 @@ SET state = 'exit_spend_pending_confirmation',
 WHERE id = $1
   AND state IN ('submitting_exit_spend', 'exit_spend_built');
 
--- name: CompleteVHTLCRecoveryJob :exec
+-- name: CompleteVHTLCRecoveryJob :execrows
 UPDATE vhtlc_recovery_jobs
 SET state = 'completed',
     updated_at = $2,
@@ -94,7 +94,7 @@ SET state = 'completed',
 WHERE id = $1
   AND state NOT IN ('completed', 'cancelled', 'failed');
 
--- name: CancelVHTLCRecoveryJob :exec
+-- name: CancelVHTLCRecoveryJob :execrows
 UPDATE vhtlc_recovery_jobs
 SET state = 'cancelled',
     updated_at = $4,
@@ -105,7 +105,7 @@ SET state = 'cancelled',
 WHERE id = $1
   AND state NOT IN ('completed', 'cancelled', 'failed');
 
--- name: FailVHTLCRecoveryJob :exec
+-- name: FailVHTLCRecoveryJob :execrows
 UPDATE vhtlc_recovery_jobs
 SET state = 'failed',
     updated_at = $3,

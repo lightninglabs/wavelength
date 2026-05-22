@@ -29,6 +29,14 @@ var (
 	// is no longer in an armed state that can be escalated.
 	ErrVHTLCRecoveryCannotEscalate = errors.New("vhtlc recovery cannot " +
 		"escalate from current state")
+
+	// ErrVHTLCRecoveryAlreadyTerminal indicates the recovery row exists
+	// but is already in a terminal state (`completed`, `cancelled`, or
+	// `failed`), so the requested transition is a no-op. Callers can
+	// distinguish this from the missing-row case to avoid masking lost
+	// updates between two racing terminal transitions.
+	ErrVHTLCRecoveryAlreadyTerminal = errors.New("vhtlc recovery job is " +
+		"already terminal")
 )
 
 // VHTLCRecoveryStoreDB persists vHTLC recovery jobs.
@@ -263,7 +271,7 @@ func (s *VHTLCRecoveryStoreDB) CancelRecovery(ctx context.Context, id,
 	now := s.clk.Now().Unix()
 
 	return s.ExecTx(ctx, WriteTxOption(), func(q *sqlc.Queries) error {
-		return q.CancelVHTLCRecoveryJob(
+		rows, err := q.CancelVHTLCRecoveryJob(
 			ctx, sqlc.CancelVHTLCRecoveryJobParams{
 				ID: id,
 				CancelReason: sql.NullString{
@@ -274,6 +282,11 @@ func (s *VHTLCRecoveryStoreDB) CancelRecovery(ctx context.Context, id,
 				UpdatedAt:       now,
 			},
 		)
+		if err != nil {
+			return err
+		}
+
+		return classifyTerminalTransition(ctx, q, id, rows)
 	})
 }
 
@@ -284,12 +297,17 @@ func (s *VHTLCRecoveryStoreDB) CompleteRecovery(ctx context.Context,
 	now := s.clk.Now().Unix()
 
 	return s.ExecTx(ctx, WriteTxOption(), func(q *sqlc.Queries) error {
-		return q.CompleteVHTLCRecoveryJob(
+		rows, err := q.CompleteVHTLCRecoveryJob(
 			ctx, sqlc.CompleteVHTLCRecoveryJobParams{
 				ID:        id,
 				UpdatedAt: now,
 			},
 		)
+		if err != nil {
+			return err
+		}
+
+		return classifyTerminalTransition(ctx, q, id, rows)
 	})
 }
 
@@ -304,7 +322,7 @@ func (s *VHTLCRecoveryStoreDB) FailRecovery(ctx context.Context, id string,
 	}
 
 	return s.ExecTx(ctx, WriteTxOption(), func(q *sqlc.Queries) error {
-		return q.FailVHTLCRecoveryJob(
+		rows, err := q.FailVHTLCRecoveryJob(
 			ctx, sqlc.FailVHTLCRecoveryJobParams{
 				ID: id,
 				LastError: sql.NullString{
@@ -314,7 +332,36 @@ func (s *VHTLCRecoveryStoreDB) FailRecovery(ctx context.Context, id string,
 				UpdatedAt: now,
 			},
 		)
+		if err != nil {
+			return err
+		}
+
+		return classifyTerminalTransition(ctx, q, id, rows)
 	})
+}
+
+// classifyTerminalTransition disambiguates a zero-row terminal-state UPDATE.
+// The three terminal queries (Cancel, Complete, Fail) all guard on
+// `state NOT IN ('completed', 'cancelled', 'failed')` so a zero row count
+// means either the recovery row is missing or it was already terminal when
+// the transition fired. Callers can tell the two apart without masking
+// lost-update bugs by checking the returned sentinel with errors.Is.
+func classifyTerminalTransition(ctx context.Context, q *sqlc.Queries, id string,
+	rows int64) error {
+
+	if rows > 0 {
+		return nil
+	}
+
+	if _, err := q.GetVHTLCRecoveryJob(ctx, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrVHTLCRecoveryJobNotFound
+		}
+
+		return err
+	}
+
+	return ErrVHTLCRecoveryAlreadyTerminal
 }
 
 // vhtlcRecoveryInsertParams converts a recovery job into insert parameters.

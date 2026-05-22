@@ -156,7 +156,25 @@ func TestVHTLCRecoveryStoreTransitions(t *testing.T) {
 	require.True(t, failedJob.IsTerminal())
 
 	require.NoError(t, store.CompleteRecovery(ctx, active.ID))
-	require.NoError(t, store.CancelRecovery(ctx, active.ID, "late", nil))
+	// A second terminal transition on the same row must surface
+	// ErrVHTLCRecoveryAlreadyTerminal rather than silently succeeding so
+	// racing terminal paths can't mask a lost-update bug.
+	require.ErrorIs(
+		t, store.CancelRecovery(ctx, active.ID, "late", nil),
+		ErrVHTLCRecoveryAlreadyTerminal,
+	)
+	require.ErrorIs(
+		t, store.CompleteRecovery(ctx, "missing"),
+		ErrVHTLCRecoveryJobNotFound,
+	)
+	require.ErrorIs(
+		t, store.FailRecovery(ctx, "missing", nil),
+		ErrVHTLCRecoveryJobNotFound,
+	)
+	require.ErrorIs(
+		t, store.CancelRecovery(ctx, "missing", "stale", nil),
+		ErrVHTLCRecoveryJobNotFound,
+	)
 	require.ErrorIs(
 		t, store.EscalateRecovery(ctx, active.ID),
 		ErrVHTLCRecoveryCannotEscalate,
