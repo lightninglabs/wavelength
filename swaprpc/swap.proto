@@ -47,12 +47,23 @@ message RequestChannelIdRequest {
     // with client_vhtlc_pubkey to derive a unique virtual channel ID without
     // adding a separate auth identity.
     bytes payment_hash = 3;
+
+    // amount_msat is the exact amount the Ark receiver expects to receive,
+    // expressed in millisatoshis. The swap server's out-swap fee is charged to
+    // the Lightning payer through the route hint and does not reduce this
+    // amount.
+    uint64 amount_msat = 4;
 }
 
 // RequestChannelIdResponse returns the route hint for one receive negotiation.
 message RequestChannelIdResponse {
     // route_hint contains the hop hint the client should embed in the invoice.
     RouteHint route_hint = 1;
+
+    // payer_fee_msat is the quoted Lightning route fee paid by the sender for
+    // the swap server's virtual hop. Callers that want a "payer pays" total
+    // compute it as amount_msat plus payer_fee_msat.
+    uint64 payer_fee_msat = 2;
 }
 
 // OutSwapHtlcEvent describes one server-funded intercepted HTLC. The event is

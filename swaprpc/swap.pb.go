@@ -89,7 +89,12 @@ type RequestChannelIdRequest struct {
 	// payment_hash is the invoice payment hash. The swap server combines it
 	// with client_vhtlc_pubkey to derive a unique virtual channel ID without
 	// adding a separate auth identity.
-	PaymentHash   []byte `protobuf:"bytes,3,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	PaymentHash []byte `protobuf:"bytes,3,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// amount_msat is the exact amount the Ark receiver expects to receive,
+	// expressed in millisatoshis. The swap server's out-swap fee is charged to
+	// the Lightning payer through the route hint and does not reduce this
+	// amount.
+	AmountMsat    uint64 `protobuf:"varint,4,opt,name=amount_msat,json=amountMsat,proto3" json:"amount_msat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -145,11 +150,22 @@ func (x *RequestChannelIdRequest) GetPaymentHash() []byte {
 	return nil
 }
 
+func (x *RequestChannelIdRequest) GetAmountMsat() uint64 {
+	if x != nil {
+		return x.AmountMsat
+	}
+	return 0
+}
+
 // RequestChannelIdResponse returns the route hint for one receive negotiation.
 type RequestChannelIdResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// route_hint contains the hop hint the client should embed in the invoice.
-	RouteHint     *RouteHint `protobuf:"bytes,1,opt,name=route_hint,json=routeHint,proto3" json:"route_hint,omitempty"`
+	RouteHint *RouteHint `protobuf:"bytes,1,opt,name=route_hint,json=routeHint,proto3" json:"route_hint,omitempty"`
+	// payer_fee_msat is the quoted Lightning route fee paid by the sender for
+	// the swap server's virtual hop. Callers that want a "payer pays" total
+	// compute it as amount_msat plus payer_fee_msat.
+	PayerFeeMsat  uint64 `protobuf:"varint,2,opt,name=payer_fee_msat,json=payerFeeMsat,proto3" json:"payer_fee_msat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -189,6 +205,13 @@ func (x *RequestChannelIdResponse) GetRouteHint() *RouteHint {
 		return x.RouteHint
 	}
 	return nil
+}
+
+func (x *RequestChannelIdResponse) GetPayerFeeMsat() uint64 {
+	if x != nil {
+		return x.PayerFeeMsat
+	}
+	return 0
 }
 
 // OutSwapHtlcEvent describes one server-funded intercepted HTLC. The event is
@@ -791,14 +814,17 @@ var File_swap_proto protoreflect.FileDescriptor
 const file_swap_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"swap.proto\x12\aswaprpc\x1a\x1fgoogle/protobuf/timestamp.proto\"\x93\x01\n" +
+	"swap.proto\x12\aswaprpc\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb4\x01\n" +
 	"\x17RequestChannelIdRequest\x12%\n" +
 	"\x0eexpiry_seconds\x18\x01 \x01(\rR\rexpirySeconds\x12.\n" +
 	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\x12!\n" +
-	"\fpayment_hash\x18\x03 \x01(\fR\vpaymentHash\"M\n" +
+	"\fpayment_hash\x18\x03 \x01(\fR\vpaymentHash\x12\x1f\n" +
+	"\vamount_msat\x18\x04 \x01(\x04R\n" +
+	"amountMsat\"s\n" +
 	"\x18RequestChannelIdResponse\x121\n" +
 	"\n" +
-	"route_hint\x18\x01 \x01(\v2\x12.swaprpc.RouteHintR\trouteHint\"\xac\x01\n" +
+	"route_hint\x18\x01 \x01(\v2\x12.swaprpc.RouteHintR\trouteHint\x12$\n" +
+	"\x0epayer_fee_msat\x18\x02 \x01(\x04R\fpayerFeeMsat\"\xac\x01\n" +
 	"\x10OutSwapHtlcEvent\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x1d\n" +
 	"\n" +
