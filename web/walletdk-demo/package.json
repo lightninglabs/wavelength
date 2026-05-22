@@ -2,7 +2,8 @@
   "name": "walletdk-demo",
   "private": true,
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:signet": "playwright test --config=playwright.signet.config.js"
   },
   "devDependencies": {
     "@playwright/test": "1.60.0"
