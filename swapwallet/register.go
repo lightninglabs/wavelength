@@ -95,8 +95,12 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 
 	runtime := newRuntime(ctx, deps)
 	service := newService(deps, runtime)
+	inspectionService := newInspectionService(deps, runtime)
 
 	walletrpc.RegisterWalletServiceServer(grpcServer, service)
+	walletrpc.RegisterWalletInspectionServiceServer(
+		grpcServer, inspectionService,
+	)
 
 	var startOnce sync.Once
 	cfg.WalletReadyHooks = append(cfg.WalletReadyHooks, func(
@@ -132,7 +136,13 @@ func RegisterGateway(ctx context.Context, mux *runtime.ServeMux,
 	endpoint string, opts []grpc.DialOption, _ *darepod.RPCServer,
 	_ *darepod.Config) error {
 
-	return walletrpc.RegisterWalletServiceHandlerFromEndpoint(
+	if err := walletrpc.RegisterWalletServiceHandlerFromEndpoint(
+		ctx, mux, endpoint, opts,
+	); err != nil {
+		return err
+	}
+
+	return walletrpc.RegisterWalletInspectionServiceHandlerFromEndpoint(
 		ctx, mux, endpoint, opts,
 	)
 }
