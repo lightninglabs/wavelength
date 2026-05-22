@@ -148,13 +148,12 @@ func TestExtractFinalizedTxPreservesOORConditionWitness(t *testing.T) {
 	pkt, err := psbt.NewFromUnsignedTx(rawTx)
 	require.NoError(t, err)
 
+	// Omit WitnessUtxo: the synthetic OP_TRUE prevout would not be a
+	// valid taproot pkScript, so the assembler's txscript.Engine
+	// verification cannot apply here. Production OOR PSBTs ship a real
+	// taproot WitnessUtxo and exercise the verification path; this test
+	// targets the witness-stack assembly behaviour specifically.
 	pkt.Inputs[0] = psbt.PInput{
-		WitnessUtxo: &wire.TxOut{
-			Value: 1000,
-			PkScript: []byte{
-				txscript.OP_TRUE,
-			},
-		},
 		TaprootScriptSpendSig: []*psbt.TaprootScriptSpendSig{
 			{
 				XOnlyPubKey: schnorr.SerializePubKey(
