@@ -42,16 +42,6 @@ CREATE TABLE IF NOT EXISTS unilateral_exit_jobs (
     -- updated_at is the unix timestamp of the latest row update.
     updated_at BIGINT NOT NULL,
 
-    -- exit_policy_kind is the durable unroll exit policy selected when
-    -- the job was admitted. Standard timeout jobs use
-    -- 'standard_vtxo_timeout'; policy-specific jobs use the registered
-    -- policy kind required to rebuild the same final spend after restart.
-    exit_policy_kind TEXT NOT NULL DEFAULT 'standard_vtxo_timeout',
-
-    -- exit_policy_ref optionally points at policy-specific durable state.
-    -- It is NULL for standard VTXO timeout jobs.
-    exit_policy_ref TEXT,
-
     PRIMARY KEY (target_outpoint_hash, target_outpoint_index)
 );
 

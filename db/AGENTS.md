@@ -67,7 +67,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 15` — current schema version.
+- `LatestMigrationVersion = 16` — current schema version.
 
 ## Relationships
 
@@ -111,6 +111,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
+- `000016_unilateral_exit_policy` — adds `exit_policy_kind`
+  (NOT NULL, default `'standard_vtxo_timeout'`) and nullable
+  `exit_policy_ref` to `unilateral_exit_jobs` via ALTER TABLE so
+  policy-specific unroll jobs restart with the same final spend policy.
+  Backfills legacy rows via the column default.
 - `000015_vhtlc_recovery_jobs` — vHTLC recovery control-plane rows
   with named script parameters, request-id idempotency, SQL-visible
   timestamps, and no raw preimage storage.
