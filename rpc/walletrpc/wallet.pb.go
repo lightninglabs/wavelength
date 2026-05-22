@@ -1849,8 +1849,8 @@ type ActivityVTXOTrace struct {
 	Source string `protobuf:"bytes,5,opt,name=source,proto3" json:"source,omitempty"`
 	// session_id is the OOR session/correlation id when known.
 	SessionId string `protobuf:"bytes,6,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	// output_index is set when the source description names a specific
-	// OOR output index.
+	// output_index is set when the source names a specific OOR output
+	// index.
 	OutputIndex   uint32 `protobuf:"varint,7,opt,name=output_index,json=outputIndex,proto3" json:"output_index,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1978,7 +1978,10 @@ type ActivityLedgerTrace struct {
 	// row because it is an internal execution leg.
 	HiddenFromActivity bool `protobuf:"varint,16,opt,name=hidden_from_activity,json=hiddenFromActivity,proto3" json:"hidden_from_activity,omitempty"`
 	// role is the inspection role inferred for this row.
-	Role          string `protobuf:"bytes,17,opt,name=role,proto3" json:"role,omitempty"`
+	Role string `protobuf:"bytes,17,opt,name=role,proto3" json:"role,omitempty"`
+	// output_index is the transaction output index associated with txid.
+	// A negative value means the source has no output index.
+	OutputIndex   int32 `protobuf:"varint,18,opt,name=output_index,json=outputIndex,proto3" json:"output_index,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2130,6 +2133,13 @@ func (x *ActivityLedgerTrace) GetRole() string {
 		return x.Role
 	}
 	return ""
+}
+
+func (x *ActivityLedgerTrace) GetOutputIndex() int32 {
+	if x != nil {
+		return x.OutputIndex
+	}
+	return 0
 }
 
 type DepositRequest struct {
@@ -3362,7 +3372,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\x06source\x18\x05 \x01(\tR\x06source\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x06 \x01(\tR\tsessionId\x12!\n" +
-	"\foutput_index\x18\a \x01(\rR\voutputIndex\"\xba\x04\n" +
+	"\foutput_index\x18\a \x01(\rR\voutputIndex\"\xdd\x04\n" +
 	"\x13ActivityLedgerTrace\x12\x16\n" +
 	"\x06source\x18\x01 \x01(\tR\x06source\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x18\n" +
@@ -3383,7 +3393,8 @@ const file_wallet_proto_rawDesc = "" +
 	"session_id\x18\x0e \x01(\tR\tsessionId\x12/\n" +
 	"\x13confirmation_height\x18\x0f \x01(\x05R\x12confirmationHeight\x120\n" +
 	"\x14hidden_from_activity\x18\x10 \x01(\bR\x12hiddenFromActivity\x12\x12\n" +
-	"\x04role\x18\x11 \x01(\tR\x04role\"2\n" +
+	"\x04role\x18\x11 \x01(\tR\x04role\x12!\n" +
+	"\foutput_index\x18\x12 \x01(\x05R\voutputIndex\"2\n" +
 	"\x0eDepositRequest\x12 \n" +
 	"\famt_sat_hint\x18\x01 \x01(\x04R\n" +
 	"amtSatHint\"h\n" +

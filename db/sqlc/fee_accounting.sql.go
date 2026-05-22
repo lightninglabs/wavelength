@@ -253,7 +253,7 @@ const ListTransactionHistory = `-- name: ListTransactionHistory :many
 SELECT source, entry_id, txid, transaction_type, subtype,
        amount_sat, fee_sat, created_at, status, description,
        debit_account, credit_account, round_id, session_id,
-       confirmation_height
+       confirmation_height, output_index
 FROM (
     SELECT 0 AS source_order,
            'ledger' AS source,
@@ -287,7 +287,8 @@ FROM (
            le.credit_account,
            le.round_id,
            le.session_id,
-           COALESCE(le.confirmation_height, 0) AS confirmation_height
+           COALESCE(le.confirmation_height, 0) AS confirmation_height,
+           COALESCE(le.chain_vout, -1) AS output_index
     FROM ledger_entries AS le
     LEFT JOIN (
         SELECT allocated.outpoint_hash,
@@ -387,7 +388,8 @@ FROM (
            '' AS credit_account,
            NULL AS round_id,
            NULL AS session_id,
-           COALESCE(confirmed_height, 0) AS confirmation_height
+           COALESCE(confirmed_height, 0) AS confirmation_height,
+           CAST(-1 AS INTEGER) AS output_index
     FROM boarding_sweeps
 ) AS history
 WHERE ($1 = ''
@@ -425,6 +427,7 @@ type ListTransactionHistoryRow struct {
 	RoundID            []byte
 	SessionID          []byte
 	ConfirmationHeight int32
+	OutputIndex        int32
 }
 
 // ListTransactionHistory returns a unified newest-first history from the
@@ -462,6 +465,7 @@ func (q *Queries) ListTransactionHistory(ctx context.Context, arg ListTransactio
 			&i.RoundID,
 			&i.SessionID,
 			&i.ConfirmationHeight,
+			&i.OutputIndex,
 		); err != nil {
 			return nil, err
 		}

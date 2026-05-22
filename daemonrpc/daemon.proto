@@ -1511,6 +1511,10 @@ message TransactionHistoryEntry {
     // confirmation_height is set when the source records a chain
     // confirmation height.
     int32 confirmation_height = 15;
+
+    // output_index is the transaction output index associated with txid.
+    // A negative value means the source has no output index.
+    int32 output_index = 16;
 }
 
 message ListTransactionsResponse {

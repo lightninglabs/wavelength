@@ -537,6 +537,7 @@ func TestTransactionHistoryRowToProtoLedger(t *testing.T) {
 		DebitAccount:    ledger.AccountTransfersOut,
 		CreditAccount:   ledger.AccountVTXOBalance,
 		SessionID:       make([]byte, 32),
+		OutputIndex:     7,
 	}
 
 	got, err := transactionHistoryRowToProto(row)
@@ -550,6 +551,7 @@ func TestTransactionHistoryRowToProtoLedger(t *testing.T) {
 	require.Equal(t, "recorded", got.ConfirmationStatus)
 	require.Equal(t, int64(99), got.EntryId)
 	require.Empty(t, got.Txid)
+	require.Equal(t, int32(7), got.OutputIndex)
 	require.Equal(t, ledger.AccountTransfersOut, got.DebitAccount)
 	require.Equal(t, ledger.AccountVTXOBalance, got.CreditAccount)
 }

@@ -509,8 +509,8 @@ message ActivityVTXOTrace {
     // session_id is the OOR session/correlation id when known.
     string session_id = 6;
 
-    // output_index is set when the source description names a specific
-    // OOR output index.
+    // output_index is set when the source names a specific OOR output
+    // index.
     uint32 output_index = 7;
 }
 
@@ -573,6 +573,10 @@ message ActivityLedgerTrace {
 
     // role is the inspection role inferred for this row.
     string role = 17;
+
+    // output_index is the transaction output index associated with txid.
+    // A negative value means the source has no output index.
+    int32 output_index = 18;
 }
 
 message DepositRequest {
