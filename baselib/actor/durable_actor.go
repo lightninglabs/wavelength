@@ -483,45 +483,22 @@ func (a *DurableActor[M, R]) processWithoutTransaction(ctx context.Context,
 	// Execute behavior with panic recovery.
 	result := a.executeBehaviorSafely(ctx, delivery)
 
+	// The message result is now known. Durable bookkeeping must be allowed
+	// to finish even if Stop cancels the actor context while ack/processed
+	// markers are being committed. In particular, SQLite's driver can race
+	// internally when database/sql auto-rolls back a context-bound
+	// transaction while an ExecContext is still in flight.
+	bookkeepingCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), a.cleanupTimeout,
+	)
+	defer cancel()
+
 	// For Ask messages, avoid marking as processed until after ack has
 	// succeeded. This prevents a crash between MarkProcessed and Ack from
 	// turning into a permanent "processed" flag while the mailbox message
 	// (and Ask result) is still pending.
 	if delivery.IsAsk() {
-		// For DurableAsk, the outbox write is the critical durable
-		// output. If it fails, we must nack for retry rather than
-		// acking (which would permanently drop the response while
-		// the request appears "done").
-		if delivery.IsDurableAsk() {
-			if err := a.writeAskResponseToOutbox(
-				ctx, delivery, result, a.store,
-			); err != nil {
-
-				logger(ctx).WarnS(ctx,
-					"Failed to write ask response to "+
-						"outbox, nacking for retry",
-					err,
-					"actor_id", a.id,
-					"delivery_id", delivery.ID,
-					"callback_actor_id",
-					delivery.CallbackActorID)
-
-				if nackErr := delivery.Nack(
-					ctx, err, 5*time.Second,
-				); nackErr != nil {
-
-					logger(ctx).WarnS(ctx,
-						"Failed to nack after "+
-							"outbox write failure",
-						nackErr,
-						"delivery_id", delivery.ID)
-				}
-
-				return
-			}
-		}
-
-		if err := delivery.Ack(ctx, result); err != nil {
+		if err := delivery.Ack(bookkeepingCtx, result); err != nil {
 			logger(ctx).WarnS(ctx, "Failed to ack Ask message", err,
 				"actor_id", a.id,
 				"delivery_id", delivery.ID)
@@ -530,7 +507,7 @@ func (a *DurableActor[M, R]) processWithoutTransaction(ctx context.Context,
 		}
 
 		if err := a.store.MarkProcessed(
-			ctx, delivery.ID, a.id, a.deduplicationTTL,
+			bookkeepingCtx, delivery.ID, a.id, a.deduplicationTTL,
 		); err != nil {
 
 			logger(ctx).WarnS(ctx, "Failed to mark processed", err,
@@ -561,7 +538,7 @@ func (a *DurableActor[M, R]) processWithoutTransaction(ctx context.Context,
 
 	if shouldMarkProcessed {
 		if err := a.store.MarkProcessed(
-			ctx, delivery.ID, a.id, a.deduplicationTTL,
+			bookkeepingCtx, delivery.ID, a.id, a.deduplicationTTL,
 		); err != nil {
 
 			logger(ctx).WarnS(ctx, "Failed to mark processed", err,
@@ -572,7 +549,7 @@ func (a *DurableActor[M, R]) processWithoutTransaction(ctx context.Context,
 	}
 
 	// Handle the result.
-	a.handleResult(ctx, delivery, result)
+	a.handleResult(bookkeepingCtx, delivery, result)
 }
 
 // executeBehaviorSafely runs the behavior with panic recovery.
