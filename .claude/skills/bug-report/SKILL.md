@@ -252,7 +252,6 @@ The body links to the gist — do not paste session logs inline.
 GIST_URL=""
 if [ -f "$LOG" ] && [ -s "$LOG" ]; then
   GIST_URL=$(gh gist create "$LOG" \
-    --secret \
     --desc "darepod session log — $NETWORK — for lightninglabs/darepo-client issue" \
     2>/dev/null | tail -1)
 fi
@@ -260,21 +259,19 @@ fi
 
 Notes:
 
-- `--secret` produces an unlisted gist. Anyone with the URL can read
-  it, but it isn't indexed or shown on the user's profile. Use this
-  even for testnet/signet logs — they can still contain wallet
-  pubkeys and node identifiers worth keeping out of search results.
+- `gh gist create` produces a secret (unlisted) gist by default —
+  anyone with the URL can read it, but it isn't indexed or shown on
+  the user's profile. Do **not** pass `--public`; testnet/signet
+  logs still contain wallet pubkeys and node identifiers worth
+  keeping out of search results.
 - If `gh gist create` fails (missing `gist` scope, network error,
   etc.) `GIST_URL` will be empty. The template in step 8 handles that
   — it falls back to "available on request, local path `{LOG}`" and
   the team can ask for it directly.
-- Do **not** retry the gist upload with `--public` as a workaround.
-  Either it works as secret or the body falls back to mentioning the
-  local path.
 
 ### 8. Build the issue body
 
-```
+````
 ## Summary
 
 {2–4 sentence description of the failure. Lead with the user-visible
@@ -291,23 +288,23 @@ between layers (e.g. inner FSM Failed but outer entry still Pending).}
 
 ## Config (`~/.darepod/darepod.conf`, secrets redacted)
 
-\`\`\`
+```
 {CONFIG}
-\`\`\`
+```
 
 ## Failure sequence
 
-\`\`\`
+```
 {5–10 curated log lines, in order, that trace the bug. Use ellipses
 on long hashes so the block stays scannable. Include the line that
 carries the rejection reason, the FSM transition into Failed, and
 the parent submit/funding line that anchors what was attempted.}
-\`\`\`
+```
 
 {If the rejection's full ErrorReason isn't visible in the line above,
 quote it on its own:}
 
-> \`{full ErrorReason}\`
+> `{full ErrorReason}`
 
 {One short paragraph if the failure is logged below WRN, surfaces no
 failure_reason on the user-facing entry, or has any other
@@ -315,11 +312,11 @@ observability gap worth flagging.}
 
 ## Correlation IDs
 
-- **mailbox_id / identity_pubkey**: \`{…}\`
-- **session_id** (if applicable): \`{…}\`
-- **payment_hash / invoice_hash** (if applicable): \`{…}\`
-- **input VTXO / outpoint** (if applicable): \`{…}\`
-- **operator key from getinfo**: \`{…}\`
+- **mailbox_id / identity_pubkey**: `{…}`
+- **session_id** (if applicable): `{…}`
+- **payment_hash / invoice_hash** (if applicable): `{…}`
+- **input VTXO / outpoint** (if applicable): `{…}`
+- **operator key from getinfo**: `{…}`
 
 {Include only the IDs that are relevant. Drop the bullet if N/A.}
 
@@ -331,12 +328,12 @@ section — don't speculate.}
 
 ## Wallet state at failure
 
-\`\`\`
+```
 balance: confirmed_sat={…} pending_in_sat={…} pending_out_sat={…}
 
 {failing entry, key fields only — id, kind, status, amount_sat,
 failure_reason. Do not paste the entire activity JSON.}
-\`\`\`
+```
 
 ## Reproduction steps
 
@@ -348,8 +345,8 @@ failure_reason. Do not paste the entire activity JSON.}
 ## Logs
 
 Full session log: {GIST_URL — or, if gist upload failed,
-"available on request, local path \`{LOG}\`"}
-```
+"available on request, local path `{LOG}`"}
+````
 
 ### 9. Preview and confirm
 
