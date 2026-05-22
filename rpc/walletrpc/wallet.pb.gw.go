@@ -328,6 +328,33 @@ func request_WalletService_SubscribeWallet_0(ctx context.Context, marshaler runt
 	return stream, metadata, nil
 }
 
+func request_WalletInspectionService_InspectActivity_0(ctx context.Context, marshaler runtime.Marshaler, client WalletInspectionServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq InspectActivityRequest
+		metadata runtime.ServerMetadata
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.InspectActivity(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_WalletInspectionService_InspectActivity_0(ctx context.Context, marshaler runtime.Marshaler, server WalletInspectionServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq InspectActivityRequest
+		metadata runtime.ServerMetadata
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	msg, err := server.InspectActivity(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 // RegisterWalletServiceHandlerServer registers the http handlers for service WalletService to "mux".
 // UnaryRPC     :call WalletServiceServer directly.
 // StreamingRPC :currently unsupported pending https://github.com/grpc/grpc-go/issues/906.
@@ -540,6 +567,36 @@ func RegisterWalletServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		_, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
 		runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 		return
+	})
+
+	return nil
+}
+
+// RegisterWalletInspectionServiceHandlerServer registers the http handlers for service WalletInspectionService to "mux".
+// UnaryRPC     :call WalletInspectionServiceServer directly.
+// StreamingRPC :currently unsupported pending https://github.com/grpc/grpc-go/issues/906.
+// Note that using this registration option will cause many gRPC library features to stop working. Consider using RegisterWalletInspectionServiceHandlerFromEndpoint instead.
+// GRPC interceptors will not work for this type of registration. To use interceptors, you must use the "runtime.WithMiddlewares" option in the "runtime.NewServeMux" call.
+func RegisterWalletInspectionServiceHandlerServer(ctx context.Context, mux *runtime.ServeMux, server WalletInspectionServiceServer) error {
+	mux.Handle(http.MethodPost, pattern_WalletInspectionService_InspectActivity_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletrpc.WalletInspectionService/InspectActivity", runtime.WithHTTPPathPattern("/v1/wallet/inspect/activity"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_WalletInspectionService_InspectActivity_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_WalletInspectionService_InspectActivity_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
 
 	return nil
@@ -797,4 +854,68 @@ var (
 	forward_WalletService_Exit_0            = runtime.ForwardResponseMessage
 	forward_WalletService_ExitStatus_0      = runtime.ForwardResponseMessage
 	forward_WalletService_SubscribeWallet_0 = runtime.ForwardResponseStream
+)
+
+// RegisterWalletInspectionServiceHandlerFromEndpoint is same as RegisterWalletInspectionServiceHandler but
+// automatically dials to "endpoint" and closes the connection when "ctx" gets done.
+func RegisterWalletInspectionServiceHandlerFromEndpoint(ctx context.Context, mux *runtime.ServeMux, endpoint string, opts []grpc.DialOption) (err error) {
+	conn, err := grpc.NewClient(endpoint, opts...)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			if cerr := conn.Close(); cerr != nil {
+				grpclog.Errorf("Failed to close conn to %s: %v", endpoint, cerr)
+			}
+			return
+		}
+		go func() {
+			<-ctx.Done()
+			if cerr := conn.Close(); cerr != nil {
+				grpclog.Errorf("Failed to close conn to %s: %v", endpoint, cerr)
+			}
+		}()
+	}()
+	return RegisterWalletInspectionServiceHandler(ctx, mux, conn)
+}
+
+// RegisterWalletInspectionServiceHandler registers the http handlers for service WalletInspectionService to "mux".
+// The handlers forward requests to the grpc endpoint over "conn".
+func RegisterWalletInspectionServiceHandler(ctx context.Context, mux *runtime.ServeMux, conn *grpc.ClientConn) error {
+	return RegisterWalletInspectionServiceHandlerClient(ctx, mux, NewWalletInspectionServiceClient(conn))
+}
+
+// RegisterWalletInspectionServiceHandlerClient registers the http handlers for service WalletInspectionService
+// to "mux". The handlers forward requests to the grpc endpoint over the given implementation of "WalletInspectionServiceClient".
+// Note: the gRPC framework executes interceptors within the gRPC handler. If the passed in "WalletInspectionServiceClient"
+// doesn't go through the normal gRPC flow (creating a gRPC client etc.) then it will be up to the passed in
+// "WalletInspectionServiceClient" to call the correct interceptors. This client ignores the HTTP middlewares.
+func RegisterWalletInspectionServiceHandlerClient(ctx context.Context, mux *runtime.ServeMux, client WalletInspectionServiceClient) error {
+	mux.Handle(http.MethodPost, pattern_WalletInspectionService_InspectActivity_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletrpc.WalletInspectionService/InspectActivity", runtime.WithHTTPPathPattern("/v1/wallet/inspect/activity"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_WalletInspectionService_InspectActivity_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_WalletInspectionService_InspectActivity_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	return nil
+}
+
+var (
+	pattern_WalletInspectionService_InspectActivity_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3}, []string{"v1", "wallet", "inspect", "activity"}, ""))
+)
+
+var (
+	forward_WalletInspectionService_InspectActivity_0 = runtime.ForwardResponseMessage
 )
