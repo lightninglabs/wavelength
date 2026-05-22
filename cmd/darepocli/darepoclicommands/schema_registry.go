@@ -262,33 +262,23 @@ func walletPaymentMethodRegistry() []schemaMethod {
 	}
 }
 
-// walletQueryMethodRegistry returns the wallet query verbs (list,
-// balance, exit, exit.status).
+// walletQueryMethodRegistry returns the wallet query verbs (activity,
+// balance, exit, exit.status, activity.inspect).
 func walletQueryMethodRegistry() []schemaMethod {
 	return []schemaMethod{
 		{
-			Method:      "list",
-			Description: "List wallet activity, VTXOs, or onchain",
+			Method:      "activity",
+			Description: "Show wallet activity",
 			Params: []schemaParam{
 				{
-					Name:        "view",
-					Type:        "enum",
-					Description: "which slice of state",
-					Values: []string{
-						"activity", "vtxos", "onchain",
-					},
+					Name:        "pending",
+					Type:        "bool",
+					Description: "only in-flight entries",
 				},
 				{
-					Name: "pending",
-					Type: "bool",
-					Description: "only in-flight " +
-						"(activity view)",
-				},
-				{
-					Name: "kind",
-					Type: "string[]",
-					Description: "kind filter " +
-						"(activity view)",
+					Name:        "kind",
+					Type:        "string[]",
+					Description: "kind filter",
 				},
 				{
 					Name: "limit",
@@ -300,6 +290,15 @@ func walletQueryMethodRegistry() []schemaMethod {
 					Name:        "offset",
 					Type:        "uint32",
 					Description: "pagination offset",
+				},
+				{
+					Name:        "format",
+					Type:        "enum",
+					Description: "output format, defaults to table",
+					Values: []string{
+						"table", "expanded",
+						"x", "json",
+					},
 				},
 			},
 			RequestType:  "ListRequest",
@@ -358,6 +357,36 @@ func walletQueryMethodRegistry() []schemaMethod {
 			ResponseType: "ExitStatusResponse",
 			JSONInput:    false,
 			MCPTool:      true,
+		},
+		{
+			Method: "activity.inspect",
+			Description: "Inspect technical swap, VTXO, and " +
+				"ledger details for one activity entry",
+			Params: []schemaParam{
+				{
+					Name:        "id",
+					Type:        "string",
+					Required:    true,
+					Description: "WalletEntry id",
+				},
+				{
+					Name: "ledger-limit",
+					Type: "uint32",
+					Description: "maximum ledger rows to " +
+						"scan; 0 uses daemon maximum",
+				},
+				{
+					Name:        "format",
+					Type:        "enum",
+					Description: "output format",
+					Values: []string{
+						"expanded", "x", "json",
+					},
+				},
+			},
+			RequestType:  "InspectActivityRequest",
+			ResponseType: "InspectActivityResponse",
+			JSONInput:    false,
 		},
 	}
 }

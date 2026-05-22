@@ -40,7 +40,7 @@ const arkTransactionDateLayout = "2006-01-02"
 
 // newArkListTransactionsCmd builds the `ark listtransactions` advanced
 // subcommand. It is the raw daemonrpc.ListTransactions surface; the
-// everyday `list --view onchain` path composes the same data with the
+// everyday wallet activity path composes the same data with the
 // internal correlators stripped.
 func newArkListTransactionsCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -49,7 +49,7 @@ func newArkListTransactionsCmd() *cobra.Command {
 		Long: "Returns the daemon's unfiltered local transaction " +
 			"history (ledger + boarding sweeps) with full " +
 			"internal correlators. For the wallet-shaped view " +
-			"use `darepocli list --view onchain`.",
+			"use `darepocli ark listtransactions`.",
 		RunE: listTransactions,
 	}
 

@@ -58,6 +58,30 @@ func withWalletClient(cmd *cobra.Command,
 	return nil
 }
 
+// withWalletInspectionClient dials the daemon's technical inspection service.
+func withWalletInspectionClient(cmd *cobra.Command,
+	fn func(walletrpc.WalletInspectionServiceClient) error) error {
+
+	conn, err := getDaemonConn(cmd)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	client := walletrpc.NewWalletInspectionServiceClient(conn)
+	if err := fn(client); err != nil {
+		if status.Code(err) == codes.Unimplemented {
+			return errWalletRPCDisabled
+		}
+
+		return err
+	}
+
+	return nil
+}
+
 // walletProtoMarshal is the canonical proto-JSON marshal config for the
 // top-level wallet verbs. It matches printJSON's shape so the output is
 // uniform across legacy and new commands.

@@ -325,7 +325,7 @@ func TestWalletCommandsRejectUnexpectedArgs(t *testing.T) {
 		newCreateCmd(),
 		newUnlockCmd(),
 		newRecvCmd(),
-		newListCmd(),
+		newActivityCmd(),
 		newExitCmd(),
 		newExitStatusCmd(),
 	}

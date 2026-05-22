@@ -119,31 +119,13 @@ func TestBuildWalletSendRequestHappyPath(t *testing.T) {
 	require.Equal(t, "coffee", req.GetNote())
 }
 
-// TestBuildWalletListRequestRejectsCrossViewFilters confirms an agent
-// can't silently no-op a filter by combining --pending with --view
-// vtxos — the rejection is the only signal the CLI is allowed to
-// give for this footgun.
-func TestBuildWalletListRequestRejectsCrossViewFilters(t *testing.T) {
+// TestBuildWalletActivityRequestHappyPath confirms the MCP activity tool
+// accepts filters and produces a populated request.
+func TestBuildWalletActivityRequestHappyPath(t *testing.T) {
 	t.Parallel()
 
-	_, err := buildWalletListRequest("vtxos", true, nil, 0, 0)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "activity view")
-
-	_, err = buildWalletListRequest(
-		"onchain", false, []string{"send"}, 0, 0,
-	)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "activity view")
-}
-
-// TestBuildWalletListRequestActivityHappyPath confirms the activity
-// view accepts filters and produces a populated request.
-func TestBuildWalletListRequestActivityHappyPath(t *testing.T) {
-	t.Parallel()
-
-	req, err := buildWalletListRequest(
-		"activity", true, []string{"send", "recv"}, 50, 100,
+	req, err := buildWalletActivityRequest(
+		true, []string{"send", "recv"}, 50, 100,
 	)
 	require.NoError(t, err)
 	require.Equal(
