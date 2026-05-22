@@ -118,7 +118,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   Backfills legacy rows via the column default.
 - `000015_vhtlc_recovery_jobs` — vHTLC recovery control-plane rows
   with named script parameters, request-id idempotency, SQL-visible
-  timestamps, and no raw preimage storage.
+  timestamps, and an optional `claim_preimage` BLOB reserved for
+  cross-process claim recovery. Initial arm never stores a raw preimage;
+  only the execution-layer escalation path may populate it, and it must
+  never be logged.
 - `000014_ledger_chain_fields` — first-class `chain_txid` / `chain_vout`
   / `confirmation_height` columns on `ledger_entries` so history reads
   don't decode wallet UTXO idempotency keys per query.

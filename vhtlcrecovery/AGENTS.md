@@ -24,8 +24,15 @@ state.
 
 ## Invariants
 
-- The raw preimage is never stored on the recovery row and must never be logged.
-  Recovery stores only `preimage_hash` plus the swap reference.
+- The arm path never stores the raw preimage on the recovery row. Recovery
+  stores only `preimage_hash` plus the swap reference, and the in-process
+  claim path resolves the preimage from swap-owned state via
+  `unrollpolicy.PreimageResolver`. A later execution-layer escalation may
+  populate the nullable `claim_preimage` column only when the caller cannot
+  rely on the daemon's registered swap store (e.g., cross-process recovery).
+  The value must never be logged: any future Go view of the row that surfaces
+  the preimage must redact it in `String` / `LogValue` so structured log
+  expansion is safe.
 - A recovery job is armed before it escalates. Armed jobs are dormant and should
   be cancelled when cooperative OOR succeeds.
 - `exit_tx` bytes are persisted before broadcast in the later execution layer so
