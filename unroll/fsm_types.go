@@ -84,7 +84,7 @@ type JobState struct {
 	Trigger StartTrigger
 
 	// ExitPolicyKind identifies the final spend policy for this job.
-	ExitPolicyKind string
+	ExitPolicyKind ExitPolicyKind
 
 	// ExitPolicyRef is the policy-specific durable reference.
 	ExitPolicyRef string
@@ -152,7 +152,7 @@ type StartEvent struct {
 
 	// ExitPolicyKind identifies the final spend policy to persist for this
 	// target. Empty events use the standard VTXO timeout policy.
-	ExitPolicyKind string
+	ExitPolicyKind ExitPolicyKind
 
 	// ExitPolicyRef is the policy-specific durable reference.
 	ExitPolicyRef string

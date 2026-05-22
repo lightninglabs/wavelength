@@ -49,6 +49,20 @@ type ExitSpendPolicyResolver struct {
 	Preimage PreimageResolver
 }
 
+// SupportsKind reports the durable recovery policy kinds this resolver
+// covers. The unroll registry consults this at boot so a persisted vHTLC
+// recovery row never starts the FSM under a resolver that cannot reconstruct
+// it.
+func (r ExitSpendPolicyResolver) SupportsKind(kind unroll.ExitPolicyKind) bool {
+	switch string(kind) {
+	case vhtlcrecovery.ExitPolicyKindClaim,
+		vhtlcrecovery.ExitPolicyKindRefundWithoutReceiver:
+		return true
+	}
+
+	return false
+}
+
 // ResolveExitSpendPolicy reconstructs the vHTLC exit spend policy for unroll.
 // Claim policies additionally resolve the swap-owned preimage and verify it
 // against the row's preimage hash before returning the spend policy. Refund
@@ -68,12 +82,12 @@ func (r ExitSpendPolicyResolver) ResolveExitSpendPolicy(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	if job.ExitPolicyKind != req.Kind {
+	if job.ExitPolicyKind != string(req.Kind) {
 		return nil, fmt.Errorf("recovery job policy kind %q does not "+
 			"match request kind %q", job.ExitPolicyKind, req.Kind)
 	}
 
-	switch req.Kind {
+	switch string(req.Kind) {
 	case vhtlcrecovery.ExitPolicyKindClaim:
 		if r.Preimage == nil {
 			return nil, fmt.Errorf("preimage resolver must be " +
@@ -198,12 +212,12 @@ func newVHTLCExitSpendPolicy(job vhtlcrecovery.RecoveryJob,
 // Kind returns the durable policy kind persisted on the recovery and unroll
 // rows. Returning the durable value keeps unroll's stored `(kind, ref)`
 // identity aligned with the concrete policy that was reconstructed from it.
-func (p *VHTLCExitSpendPolicy) Kind() string {
+func (p *VHTLCExitSpendPolicy) Kind() unroll.ExitPolicyKind {
 	if p == nil {
 		return ""
 	}
 
-	return p.job.ExitPolicyKind
+	return unroll.ExitPolicyKind(p.job.ExitPolicyKind)
 }
 
 // CSVDelay returns the raw block delay unroll waits before spending. The value
@@ -226,6 +240,18 @@ func (p *VHTLCExitSpendPolicy) CSVDelay() uint32 {
 	// Policy construction validates the action, so reaching this point
 	// means a new action was added without updating the policy adapter.
 	panic(fmt.Sprintf("unhandled vhtlc recovery action %s", p.job.Action))
+}
+
+// RequiredLockTime returns the absolute nLockTime the spend path demands. For
+// the refund-without-receiver action the value is the durable refund locktime
+// from the recovery row; for the claim action it is zero because the claim
+// leaf is gated only by CSV plus preimage knowledge.
+func (p *VHTLCExitSpendPolicy) RequiredLockTime() uint32 {
+	if p == nil || p.spendPath == nil {
+		return 0
+	}
+
+	return p.spendPath.RequiredLockTime
 }
 
 // ValidateTarget verifies the materialized output matches the vHTLC policy.
@@ -284,6 +310,17 @@ func (p *VHTLCExitSpendPolicy) BuildSpendTx(ctx context.Context,
 	}
 	if err := p.validateFeeRate(req.FeeRateSatPerVByte); err != nil {
 		return nil, err
+	}
+
+	// Refuse to construct a transaction the network would reject as
+	// non-final. The actor plumbs CurrentHeight from its last persisted
+	// height notification so this fires deterministically rather than
+	// burning broadcast retries on a tx whose nLockTime is in the future.
+	if p.spendPath.RequiredLockTime > 0 &&
+		uint32(req.CurrentHeight) < p.spendPath.RequiredLockTime {
+		return nil, fmt.Errorf("%w: locktime %d > current height %d",
+			unroll.ErrExitSpendNotMatured,
+			p.spendPath.RequiredLockTime, req.CurrentHeight)
 	}
 
 	tx := wire.NewMsgTx(arktx.TxVersion)

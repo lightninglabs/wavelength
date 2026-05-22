@@ -359,11 +359,61 @@ func (b *behavior) startSweep(ctx context.Context) error {
 				b.cfg.TargetOutpoint.String(),
 			),
 			slog.String(
-				"exit_policy_kind",
-				policy.Kind(),
+				"exit_policy_kind", policy.Kind().String(),
 			),
 			slog.Uint64("csv_delay", uint64(policy.CSVDelay())),
 		)
+
+		// Defense in depth around the planner: when the policy
+		// declares a CSV delay larger than the wrapping proof's
+		// descriptor delay, the planner would have signalled
+		// NeedSweep too early and the resulting BIP-68 sequence
+		// would be rejected as non-final. Surface this as a
+		// permanent misconfiguration so the retry budget marks the
+		// job Failed instead of looping forever broadcasting an
+		// invalid tx.
+		if b.proof != nil &&
+			policy.CSVDelay() > b.proof.CSVDelay() {
+			return b.driveEvent(ctx, &SweepBuildFailedEvent{
+				Reason: fmt.Sprintf("policy csv delay %d "+
+					"exceeds proof csv delay %d",
+					policy.CSVDelay(),
+					b.proof.CSVDelay()),
+			})
+		}
+
+		// Defer the build entirely when the policy requires an
+		// absolute locktime the chain has not yet reached. We do
+		// NOT drive SweepBuildFailedEvent here: the next
+		// HeightObservedMsg re-evaluates the FSM, re-emits
+		// RequestSweepBuild, and this branch will pass once
+		// height catches up. Returning nil keeps the FSM in
+		// AwaitingSweepBroadcast without burning a retry attempt
+		// or a wallet pkScript that the not-yet-final tx would
+		// otherwise consume.
+		if locktime := policy.RequiredLockTime(); locktime > 0 &&
+			uint32(b.currentHeight()) < locktime {
+
+			b.log.DebugS(ctx,
+				"Deferring exit spend build: locktime "+
+					"not matured",
+				slog.String(
+					"target_outpoint",
+					b.cfg.TargetOutpoint.String(),
+				),
+				slog.Uint64(
+					"required_locktime", uint64(locktime),
+				),
+				slog.Int64(
+					"current_height",
+					int64(
+						b.currentHeight(),
+					),
+				),
+			)
+
+			return nil
+		}
 
 		sweepTx, err := buildSweepTx(
 			ctx, b.cfg.Wallet, b.cfg.ChainSource, b.proof, b.desc,
@@ -371,6 +421,26 @@ func (b *behavior) startSweep(ctx context.Context) error {
 			policy,
 		)
 		if err != nil {
+			// ErrExitSpendNotMatured can still surface here as
+			// defense in depth if a future policy path bypasses
+			// the early gate above. Treat it the same way: stall
+			// without burning the retry budget so the next height
+			// observation triggers a clean retry.
+			if errors.Is(err, ErrExitSpendNotMatured) {
+				b.log.DebugS(ctx,
+					"Deferring exit spend build: "+
+						"policy reports not matured",
+					slog.String(
+						"target_outpoint",
+						b.cfg.TargetOutpoint.
+							String(),
+					),
+					slog.String("err", err.Error()),
+				)
+
+				return nil
+			}
+
 			return b.driveEvent(ctx, &SweepBuildFailedEvent{
 				Reason: err.Error(),
 			})
@@ -385,7 +455,7 @@ func (b *behavior) startSweep(ctx context.Context) error {
 				b.cfg.TargetOutpoint.String(),
 			),
 			slog.String(
-				"exit_policy_kind", b.exitPolicyKind(),
+				"exit_policy_kind", b.exitPolicyKind().String(),
 			),
 			slog.String("txid", sweepTxid.String()),
 		)
@@ -409,7 +479,7 @@ func (b *behavior) startSweep(ctx context.Context) error {
 	b.log.InfoS(ctx, "Submitting unroll exit spend",
 		slog.String("target_outpoint", b.cfg.TargetOutpoint.String()),
 		slog.String(
-			"exit_policy_kind", b.exitPolicyKind(),
+			"exit_policy_kind", b.exitPolicyKind().String(),
 		),
 		slog.String("txid", sweepTxid.String()),
 	)
@@ -428,7 +498,7 @@ func (b *behavior) startSweep(ctx context.Context) error {
 }
 
 // exitPolicyKind returns the durable policy kind for the current job.
-func (b *behavior) exitPolicyKind() string {
+func (b *behavior) exitPolicyKind() ExitPolicyKind {
 	if b.pending == nil {
 		return StandardVTXOTimeoutExitPolicyKind
 	}

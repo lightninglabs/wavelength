@@ -102,7 +102,7 @@ type actorCheckpoint struct {
 	Started             bool
 	Trigger             StartTrigger
 	State               unrollplan.State
-	ExitPolicyKind      string
+	ExitPolicyKind      ExitPolicyKind
 	ExitPolicyRef       string
 	SweepTx             *wire.MsgTx
 	Fail                string
@@ -336,7 +336,9 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 	}
 
 	if _, ok := parsed[checkpointExitPolicyKindRecordType]; ok {
-		checkpoint.ExitPolicyKind = exitPolicyKind(string(policyKind))
+		checkpoint.ExitPolicyKind = exitPolicyKind(
+			ExitPolicyKind(policyKind),
+		)
 	}
 
 	if _, ok := parsed[checkpointExitPolicyRefRecordType]; ok {
@@ -370,7 +372,7 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 
 // exitPolicyKind returns the standard timeout policy when callers have not
 // supplied an explicit custom policy kind.
-func exitPolicyKind(kind string) string {
+func exitPolicyKind(kind ExitPolicyKind) ExitPolicyKind {
 	if kind == "" {
 		return StandardVTXOTimeoutExitPolicyKind
 	}

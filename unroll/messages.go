@@ -157,7 +157,7 @@ type StartUnrollRequest struct {
 
 	// ExitPolicyKind identifies the final spend policy to persist for this
 	// target. Empty requests use the standard VTXO timeout policy.
-	ExitPolicyKind string
+	ExitPolicyKind ExitPolicyKind
 
 	// ExitPolicyRef is the policy-specific durable reference.
 	ExitPolicyRef string
@@ -244,7 +244,7 @@ func (m *StartUnrollRequest) Decode(r io.Reader) error {
 	m.Height = int32(height)
 	m.Trigger = StartTrigger(int32(trigger))
 	if _, ok := parsed[startUnrollExitPolicyKindRecType]; ok {
-		m.ExitPolicyKind = string(policyKind)
+		m.ExitPolicyKind = ExitPolicyKind(policyKind)
 	}
 	if _, ok := parsed[startUnrollExitPolicyRefRecType]; ok {
 		m.ExitPolicyRef = string(policyRef)
@@ -674,7 +674,7 @@ type GetStateResp struct {
 	Trigger StartTrigger
 
 	// ExitPolicyKind identifies the final spend policy for this target.
-	ExitPolicyKind string
+	ExitPolicyKind ExitPolicyKind
 
 	// ExitPolicyRef is the policy-specific durable reference.
 	ExitPolicyRef string

@@ -1,9 +1,11 @@
 package unroll
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -38,6 +40,13 @@ type StandardVTXOExitSpendPolicy struct {
 // policy used when no custom resolver is configured.
 type standardExitSpendPolicyResolver struct{}
 
+// SupportsKind reports the only kind the built-in resolver covers.
+func (r standardExitSpendPolicyResolver) SupportsKind(
+	kind ExitPolicyKind) bool {
+
+	return kind == "" || kind == StandardVTXOTimeoutExitPolicyKind
+}
+
 // ResolveExitSpendPolicy reconstructs the built-in standard exit policy.
 func (r standardExitSpendPolicyResolver) ResolveExitSpendPolicy(
 	ctx context.Context, req ExitSpendPolicyRequest) (ExitSpendPolicy,
@@ -67,15 +76,14 @@ func NewStandardVTXOExitSpendPolicy(
 }
 
 // Kind returns the durable policy kind.
-func (p *StandardVTXOExitSpendPolicy) Kind() string {
+func (p *StandardVTXOExitSpendPolicy) Kind() ExitPolicyKind {
 	return StandardVTXOTimeoutExitPolicyKind
 }
 
 // CSVDelay returns the descriptor relative expiry used by the timeout path.
-// Standard VTXO descriptors store this as the raw block delay. For BIP-68
-// height-mode sequences with the disable and type flags cleared, the raw block
-// delay is also the on-wire sequence value, which keeps the historical standard
-// sweep behavior equivalent to the arkscript-encoded timeout leaf.
+// Standard VTXO descriptors store this as the raw block delay. The on-wire
+// sequence is derived from this via blockchain.LockTimeToSequence so the BIP-68
+// height-mode flags are explicit.
 func (p *StandardVTXOExitSpendPolicy) CSVDelay() uint32 {
 	if p == nil || p.desc == nil {
 		return 0
@@ -84,9 +92,18 @@ func (p *StandardVTXOExitSpendPolicy) CSVDelay() uint32 {
 	return p.desc.RelativeExpiry
 }
 
-// ValidateTarget checks that a target output was materialized. Standard VTXO
-// unroll keeps the proof-derived output authoritative for behavior
-// compatibility with the existing unroll path.
+// RequiredLockTime returns zero. The standard timeout-path sweep has no
+// absolute locktime gate.
+func (p *StandardVTXOExitSpendPolicy) RequiredLockTime() uint32 {
+	return 0
+}
+
+// ValidateTarget checks that a target output was materialized and matches the
+// descriptor's pkScript. The pkScript comparison mirrors the vHTLC policy's
+// invariant so a misrouted exit-policy kind cannot silently produce a sweep
+// against the wrong taproot output; on-chain script verification would catch
+// the broken witness later, but the recovery row would loop in retries with
+// no operator-visible signal pointing at the policy mismatch.
 func (p *StandardVTXOExitSpendPolicy) ValidateTarget(target *wire.TxOut) error {
 	switch {
 	case p == nil:
@@ -101,6 +118,15 @@ func (p *StandardVTXOExitSpendPolicy) ValidateTarget(target *wire.TxOut) error {
 
 	if target.Value <= 0 {
 		return fmt.Errorf("target output value must be positive")
+	}
+
+	// The descriptor's PkScript is the authoritative output script for
+	// the wrapped VTXO; refuse to sweep a materialized output whose
+	// pkScript does not match it.
+	if len(p.desc.PkScript) > 0 &&
+		!bytes.Equal(target.PkScript, p.desc.PkScript) {
+		return fmt.Errorf("target output pkscript does not match " +
+			"descriptor pkscript")
 	}
 
 	return nil
@@ -147,10 +173,18 @@ func (p *StandardVTXOExitSpendPolicy) BuildSpendTx(ctx context.Context,
 		return nil, fmt.Errorf("descriptor missing OperatorKey")
 	}
 
+	// Encode the BIP-68 height-mode sequence explicitly: for the small
+	// height-mode delays standard VTXOs carry today the raw count and the
+	// LockTimeToSequence result are numerically identical, but routing
+	// through LockTimeToSequence locks in the disable-bit and type-flag
+	// behaviour so future time-mode or larger-count delays cannot silently
+	// flip the sequence into a non-relative value.
 	sweepTx := wire.NewMsgTx(arktx.TxVersion)
 	sweepTx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: req.TargetOutpoint,
-		Sequence:         p.CSVDelay(),
+		Sequence: blockchain.LockTimeToSequence(
+			false, p.CSVDelay(),
+		),
 	})
 
 	inputValue := btcutil.Amount(req.TargetOutput.Value)

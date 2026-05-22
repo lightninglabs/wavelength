@@ -34,7 +34,7 @@ type EnsureUnrollRequest struct {
 
 	// ExitPolicyKind identifies the final spend policy to persist for this
 	// target. Empty requests use the standard VTXO timeout policy.
-	ExitPolicyKind string
+	ExitPolicyKind ExitPolicyKind
 
 	// ExitPolicyRef is the policy-specific durable reference.
 	ExitPolicyRef string
@@ -107,7 +107,7 @@ type GetStatusResp struct {
 	Trigger StartTrigger
 
 	// ExitPolicyKind identifies the final spend policy for this target.
-	ExitPolicyKind string
+	ExitPolicyKind ExitPolicyKind
 
 	// ExitPolicyRef is the policy-specific durable reference.
 	ExitPolicyRef string

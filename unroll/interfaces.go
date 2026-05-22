@@ -2,6 +2,7 @@ package unroll
 
 import (
 	"context"
+	"errors"
 
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/chainsource"
@@ -10,6 +11,14 @@ import (
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/input"
 )
+
+// ErrExitSpendNotMatured is returned by ExitSpendPolicy.BuildSpendTx when the
+// caller asks the policy to build a transaction that would be non-final at the
+// current chain height. Callers must defer the build until the height catches
+// up to the policy's RequiredLockTime rather than retrying immediately, since
+// the produced transaction would otherwise be rejected by the mempool with
+// non-BIP-65-final until the absolute locktime is reached.
+var ErrExitSpendNotMatured = errors.New("exit spend not matured")
 
 // ProofAssembler resolves the immutable local recovery proof for one target
 // outpoint.
@@ -29,11 +38,24 @@ type SweepWallet interface {
 	NewWalletPkScript(ctx context.Context) ([]byte, error)
 }
 
+// ExitPolicyKind names a durable exit-spend policy. It is a typed string so
+// the type system catches confused arguments where `Kind` and `Ref` would
+// otherwise both be raw strings — the registry admission boundary verifies
+// the pair as a single identity, and stored snapshots round-trip values
+// through the typed form rather than free-form strings.
+type ExitPolicyKind string
+
 const (
 	// StandardVTXOTimeoutExitPolicyKind identifies the built-in timeout
 	// sweep policy for normal Ark VTXOs.
-	StandardVTXOTimeoutExitPolicyKind = "standard_vtxo_timeout"
+	StandardVTXOTimeoutExitPolicyKind ExitPolicyKind = "standard_vtxo_" +
+		"timeout"
 )
+
+// String returns the underlying string form of the policy kind.
+func (k ExitPolicyKind) String() string {
+	return string(k)
+}
 
 // ExitSpendRequest carries the materialized on-chain output and local signing
 // context needed to build the final exit spend.
@@ -63,7 +85,7 @@ type ExitSpendRequest struct {
 // ExitSpendPolicyRequest identifies the durable exit policy to reconstruct.
 type ExitSpendPolicyRequest struct {
 	// Kind is the durable policy kind persisted with the unroll job.
-	Kind string
+	Kind ExitPolicyKind
 
 	// Ref is an optional policy-specific durable-state reference. The
 	// built-in standard timeout policy requires this to be empty;
@@ -81,10 +103,21 @@ type ExitSpendPolicyRequest struct {
 // once the Ark lineage has been brought on chain.
 type ExitSpendPolicy interface {
 	// Kind returns the durable policy kind persisted with the unroll job.
-	Kind() string
+	Kind() ExitPolicyKind
 
-	// CSVDelay returns the relative delay required by this policy.
+	// CSVDelay returns the relative delay required by this policy. The
+	// wrapping proof descriptor's relative expiry must be at least this
+	// value. The actor fails the sweep build if the policy declares a
+	// larger CSV than the proof can satisfy, rather than broadcasting a
+	// non-final transaction.
 	CSVDelay() uint32
+
+	// RequiredLockTime returns the absolute nLockTime required by this
+	// policy's spend, or 0 if the policy has no absolute locktime. The
+	// unroll FSM uses this value to defer broadcast until
+	// CurrentHeight >= RequiredLockTime so the policy never produces a
+	// non-final transaction that the mempool will reject.
+	RequiredLockTime() uint32
 
 	// ValidateTarget verifies this policy can spend the materialized target
 	// output.
@@ -104,6 +137,20 @@ type ExitSpendPolicyResolver interface {
 	// pair.
 	ResolveExitSpendPolicy(ctx context.Context,
 		req ExitSpendPolicyRequest) (ExitSpendPolicy, error)
+}
+
+// ResolverKindSupport is an optional interface that exit-spend policy
+// resolvers can implement to advertise which durable policy kinds they
+// can reconstruct. The unroll registry uses this at boot to refuse to
+// start when persisted non-terminal jobs reference a kind that no
+// installed resolver covers, instead of silently leaving those jobs
+// stuck on every block until a sweep is attempted. Implementations
+// should treat unknown / empty kinds conservatively: return true for
+// the kinds they can handle and false otherwise.
+type ResolverKindSupport interface {
+	// SupportsKind reports whether this resolver can reconstruct
+	// policies for the given durable kind.
+	SupportsKind(kind ExitPolicyKind) bool
 }
 
 // ChainSource is the subset of the chainsource actor API used by the unroll

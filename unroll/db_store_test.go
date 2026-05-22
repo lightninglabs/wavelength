@@ -131,7 +131,7 @@ func TestRegistryExitPolicyTreatsKindAndRefAsPair(t *testing.T) {
 	}
 
 	kind, ref := registryExitPolicy(RegistryRecord{}, existing)
-	require.Equal(t, "vhtlc_claim", kind)
+	require.Equal(t, ExitPolicyKind("vhtlc_claim"), kind)
 	require.Equal(t, "recovery-1", ref)
 
 	kind, ref = registryExitPolicy(RegistryRecord{

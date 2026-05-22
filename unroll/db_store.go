@@ -56,7 +56,7 @@ func (s *DBRegistryStore) UpsertRecord(ctx context.Context,
 		ActorID:        record.ActorID,
 		Status:         statusForPhase(record.Phase),
 		Trigger:        triggerToDB(record.Trigger),
-		ExitPolicyKind: policyKind,
+		ExitPolicyKind: string(policyKind),
 		ExitPolicyRef:  policyRef,
 		LastError:      record.FailReason,
 		SweepTxid:      sweepTxidBytes(record.SweepTxid),
@@ -130,11 +130,13 @@ func recordFromDB(job db.UnilateralExitJobRecord) RegistryRecord {
 		TargetOutpoint: job.TargetOutpoint,
 		ActorID:        job.ActorID,
 		Trigger:        triggerFromDB(job.Trigger),
-		ExitPolicyKind: exitPolicyKind(job.ExitPolicyKind),
-		ExitPolicyRef:  job.ExitPolicyRef,
-		Phase:          phaseFromDB(job.Status),
-		FailReason:     job.LastError,
-		SweepTxid:      sweepTxidFromBytes(job.SweepTxid),
+		ExitPolicyKind: exitPolicyKind(
+			ExitPolicyKind(job.ExitPolicyKind),
+		),
+		ExitPolicyRef: job.ExitPolicyRef,
+		Phase:         phaseFromDB(job.Status),
+		FailReason:    job.LastError,
+		SweepTxid:     sweepTxidFromBytes(job.SweepTxid),
 	}
 }
 
@@ -144,7 +146,7 @@ func recordFromDB(job db.UnilateralExitJobRecord) RegistryRecord {
 // record with any kind replaces both values so stale custom refs cannot attach
 // to a new standard policy.
 func (s *DBRegistryStore) registryExitPolicy(ctx context.Context,
-	record RegistryRecord) (string, string, error) {
+	record RegistryRecord) (ExitPolicyKind, string, error) {
 
 	if record.ExitPolicyKind != "" {
 		kind := exitPolicyKind(record.ExitPolicyKind)
@@ -155,7 +157,9 @@ func (s *DBRegistryStore) registryExitPolicy(ctx context.Context,
 	existing, err := s.UEStore.GetJob(ctx, record.TargetOutpoint)
 	switch {
 	case err == nil && existing != nil:
-		return exitPolicyKind(existing.ExitPolicyKind),
+		return exitPolicyKind(
+				ExitPolicyKind(existing.ExitPolicyKind),
+			),
 			existing.ExitPolicyRef, nil
 
 	case errors.Is(err, db.ErrUnilateralExitJobNotFound):
@@ -172,10 +176,10 @@ func (s *DBRegistryStore) registryExitPolicy(ctx context.Context,
 // registryExitPolicy chooses the policy identity for an in-memory refinement
 // of an existing unilateral-exit DB row.
 func registryExitPolicy(record RegistryRecord,
-	existing *db.UnilateralExitJobRecord) (string, string) {
+	existing *db.UnilateralExitJobRecord) (ExitPolicyKind, string) {
 
 	if record.ExitPolicyKind == "" && existing != nil {
-		return exitPolicyKind(existing.ExitPolicyKind),
+		return exitPolicyKind(ExitPolicyKind(existing.ExitPolicyKind)),
 			existing.ExitPolicyRef
 	}
 

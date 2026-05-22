@@ -29,7 +29,10 @@ func TestClaimExitSpendPolicyBuildsPreimageSpend(t *testing.T) {
 
 	policy, err := NewClaimExitSpendPolicy(job, preimage)
 	require.NoError(t, err)
-	require.Equal(t, vhtlcrecovery.ExitPolicyKindClaim, policy.Kind())
+	require.Equal(
+		t, unroll.ExitPolicyKind(vhtlcrecovery.ExitPolicyKindClaim),
+		policy.Kind(),
+	)
 	require.Equal(t, uint32(job.UnilateralClaimDelay), policy.CSVDelay())
 
 	targetOutput := testPolicyTargetOutput(t, job)
@@ -86,7 +89,9 @@ func TestRefundWithoutReceiverExitSpendPolicyBuildsCSVCLTVSpend(t *testing.T) {
 	policy, err := NewRefundWithoutReceiverExitSpendPolicy(job)
 	require.NoError(t, err)
 	require.Equal(
-		t, vhtlcrecovery.ExitPolicyKindRefundWithoutReceiver,
+		t, unroll.ExitPolicyKind(
+			vhtlcrecovery.ExitPolicyKindRefundWithoutReceiver,
+		),
 		policy.Kind(),
 	)
 	require.Equal(
@@ -101,6 +106,7 @@ func TestRefundWithoutReceiverExitSpendPolicyBuildsCSVCLTVSpend(t *testing.T) {
 			TargetOutput:        targetOutput,
 			DestinationPkScript: []byte{txscript.OP_TRUE},
 			FeeRateSatPerVByte:  2,
+			CurrentHeight:       job.RefundLocktime,
 			Signer:              senderSigner,
 		},
 	)
@@ -116,6 +122,69 @@ func TestRefundWithoutReceiverExitSpendPolicyBuildsCSVCLTVSpend(t *testing.T) {
 	)
 	require.Equal(t, uint32(job.RefundLocktime), spendTx.LockTime)
 	require.Len(t, spendTx.TxIn[0].Witness, 3)
+}
+
+// TestRefundWithoutReceiverExitSpendPolicyStallsBeforeLocktime verifies the
+// CLTV maturity guard: BuildSpendTx must refuse to construct a refund tx whose
+// nLockTime exceeds the caller-supplied chain height, surfacing the typed
+// ErrExitSpendNotMatured sentinel so the actor can stall instead of burning
+// retries on a tx the mempool would reject as non-final.
+func TestRefundWithoutReceiverExitSpendPolicyStallsBeforeLocktime(
+	t *testing.T) {
+
+	t.Parallel()
+
+	job, _, senderSigner, _ := testPolicyJob(
+		t, vhtlcrecovery.ActionRefundWithoutReceiver,
+	)
+
+	policy, err := NewRefundWithoutReceiverExitSpendPolicy(job)
+	require.NoError(t, err)
+
+	_, err = policy.BuildSpendTx(
+		t.Context(), unroll.ExitSpendRequest{
+			TargetOutpoint:      job.VTXOOutpoint,
+			TargetOutput:        testPolicyTargetOutput(t, job),
+			DestinationPkScript: []byte{txscript.OP_TRUE},
+			FeeRateSatPerVByte:  2,
+			CurrentHeight:       job.RefundLocktime - 1,
+			Signer:              senderSigner,
+		},
+	)
+	require.ErrorIs(t, err, unroll.ErrExitSpendNotMatured)
+}
+
+// TestRefundWithoutReceiverExitSpendPolicyRequiredLockTime verifies the
+// policy advertises the refund locktime so the unroll FSM can gate broadcast.
+func TestRefundWithoutReceiverExitSpendPolicyRequiredLockTime(t *testing.T) {
+	t.Parallel()
+
+	job, _, _, _ := testPolicyJob(
+		t, vhtlcrecovery.ActionRefundWithoutReceiver,
+	)
+
+	policy, err := NewRefundWithoutReceiverExitSpendPolicy(job)
+	require.NoError(t, err)
+
+	require.Equal(
+		t, uint32(job.RefundLocktime), policy.RequiredLockTime(),
+	)
+}
+
+// TestClaimExitSpendPolicyRequiredLockTimeZero verifies the claim path
+// reports RequiredLockTime=0: the unilateral claim leaf is gated only by CSV
+// plus preimage knowledge, not by absolute locktime.
+func TestClaimExitSpendPolicyRequiredLockTimeZero(t *testing.T) {
+	t.Parallel()
+
+	job, preimage, _, _ := testPolicyJob(
+		t, vhtlcrecovery.ActionClaim,
+	)
+
+	policy, err := NewClaimExitSpendPolicy(job, preimage)
+	require.NoError(t, err)
+
+	require.Zero(t, policy.RequiredLockTime())
 }
 
 // TestVHTLCExitSpendPolicyRejectsWrongTarget verifies the policy refuses to
@@ -183,7 +252,10 @@ func TestExitSpendPolicyResolver(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
-	require.Equal(t, vhtlcrecovery.ExitPolicyKindClaim, policy.Kind())
+	require.Equal(
+		t, unroll.ExitPolicyKind(vhtlcrecovery.ExitPolicyKindClaim),
+		policy.Kind(),
+	)
 
 	refundJob, _, _, _ := testPolicyJob(
 		t, vhtlcrecovery.ActionRefundWithoutReceiver,
@@ -201,7 +273,9 @@ func TestExitSpendPolicyResolver(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(
-		t, vhtlcrecovery.ExitPolicyKindRefundWithoutReceiver,
+		t, unroll.ExitPolicyKind(
+			vhtlcrecovery.ExitPolicyKindRefundWithoutReceiver,
+		),
 		refundPolicy.Kind(),
 	)
 

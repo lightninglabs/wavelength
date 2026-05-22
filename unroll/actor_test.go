@@ -966,13 +966,18 @@ func testDescriptor(t *testing.T, outpoint wire.OutPoint,
 	outputKey := txscript.ComputeTaprootOutputKey(
 		tapscript.ControlBlock.InternalKey, tapscript.RootHash,
 	)
-	pkScript, err := txscript.PayToTaprootScript(outputKey)
+	_, err = txscript.PayToTaprootScript(outputKey)
 	require.NoError(t, err)
 
+	// Match the test proof builders' OP_TRUE target output pkScript so
+	// the production-side pkScript invariant in StandardVTXOExitSpendPolicy
+	// is satisfied by the in-memory test fixtures.
 	return &vtxo.Descriptor{
 		Outpoint: outpoint,
 		Amount:   50_000,
-		PkScript: pkScript,
+		PkScript: []byte{
+			txscript.OP_TRUE,
+		},
 		ClientKey: keychain.KeyDescriptor{
 			PubKey: ownerPriv.PubKey(),
 		},
@@ -2380,6 +2385,34 @@ func TestStandardVTXOExitSpendPolicyRejectsNilTarget(t *testing.T) {
 	err = policy.ValidateTarget(&wire.TxOut{Value: 0})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "positive")
+}
+
+// TestStandardVTXOExitSpendPolicyRejectsWrongPkScript verifies the standard
+// policy fails closed when the materialized output's pkScript does not match
+// the descriptor's pkScript. This guards against a misrouted exit-policy kind
+// silently producing a sweep against the wrong taproot output.
+func TestStandardVTXOExitSpendPolicyRejectsWrongPkScript(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.PkScript = []byte{txscript.OP_DROP, 0x01, 0x00}
+	policy := NewStandardVTXOExitSpendPolicy(desc)
+
+	err := policy.ValidateTarget(&wire.TxOut{
+		Value:    1_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not match descriptor pkscript")
+
+	require.NoError(
+		t,
+		policy.ValidateTarget(
+			&wire.TxOut{
+				Value:    1_000,
+				PkScript: desc.PkScript,
+			},
+		),
+	)
 }
 
 // TestStandardExitSpendPolicyResolver verifies the default resolver maps the

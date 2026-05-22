@@ -421,6 +421,7 @@ func newRegistryHarnessWithSpawn(t *testing.T,
 			Wallet:                     cfg.Wallet,
 			RegistryRef:                registryActor.TellRef(),
 			MaxSweepFeeRateSatPerVByte: maxFee,
+			ExitSpendPolicyResolver:    cfg.ExitSpendPolicyResolver,
 		}
 		childBehavior := &behavior{
 			cfg: childCfg,
@@ -996,8 +997,8 @@ func TestRegistryEnsurePersistsExitPolicyIdentity(t *testing.T) {
 	registry, store, _, _ := newRegistryHarness(t, proof, desc)
 
 	const (
-		policyKind = "vhtlc_claim"
-		policyRef  = "recovery-policy-ref"
+		policyKind ExitPolicyKind = "vhtlc_claim"
+		policyRef                 = "recovery-policy-ref"
 	)
 
 	resp, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
@@ -1732,6 +1733,61 @@ func TestRegistryEnsureRetriesAfterInlineRestoreFailure(t *testing.T) {
 	require.EqualValues(t, 2, attempts.Load())
 }
 
+// TestRegistryEnsureRejectsInlineRestoreWhenResolverMissingKind verifies that
+// the same fail-secure policy-kind gate used during boot restore also covers
+// the inline restore path in handleEnsure. Without this, a dormant persisted
+// custom-policy job could bypass startup validation and only fail later inside
+// the child actor's sweep loop.
+func TestRegistryEnsureRejectsInlineRestoreWhenResolverMissingKind(
+	t *testing.T) {
+
+	proof := buildLinearProof(t)
+	store := newMemRegistryStore()
+	checkpoints := newMemCheckpointStore()
+
+	err := store.UpsertRecord(t.Context(), RegistryRecord{
+		TargetOutpoint: proof.TargetOutpoint(),
+		ActorID:        actorIDForTarget(proof.TargetOutpoint()),
+		Trigger:        TriggerRestart,
+		Phase:          PhaseMaterializing,
+		ExitPolicyKind: "vhtlc_claim",
+		ExitPolicyRef:  "recovery-1",
+	})
+	require.NoError(t, err)
+
+	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
+		Store:         store,
+		DeliveryStore: checkpoints,
+		ChainSource: &fakeRegistryChainSourceRef{
+			height: 201,
+		},
+		ExitSpendPolicyResolver: &fixedKindResolver{
+			kinds: map[ExitPolicyKind]struct{}{
+				StandardVTXOTimeoutExitPolicyKind: {},
+			},
+		},
+	})
+	t.Cleanup(registry.Stop)
+
+	var spawns atomic.Int32
+	registry.behavior.spawnFunc = func(_ context.Context,
+		target wire.OutPoint) (*VTXOUnrollActor, error) {
+
+		spawns.Add(1)
+
+		return nil, fmt.Errorf("unexpected spawn for %s", target)
+	}
+
+	_, err = registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint: proof.TargetOutpoint(),
+		Trigger:  TriggerCriticalExpiry,
+	}).Await(t.Context()).Unpack()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "validate existing record")
+	require.Contains(t, err.Error(), "vhtlc_claim")
+	require.Zero(t, spawns.Load())
+}
+
 // TestRegistryRestoreNonTerminalDispatchedThroughActor verifies that
 // RestoreNonTerminal serializes its r.active / r.pending mutations with
 // concurrent Ensure / GetStatus traffic by going through the registry
@@ -1834,6 +1890,233 @@ func TestRegistryRestoreNonTerminalDispatchedThroughActor(t *testing.T) {
 	require.True(t, status.Found)
 	require.True(t, status.Active)
 	require.Equal(t, PhaseMaterializing, status.Phase)
+}
+
+// recordingExitSpendPolicyResolver is a test-only ExitSpendPolicyResolver
+// that records every call so tests can assert the registry forwarded the
+// resolver from RegistryConfig down into each spawned VTXOUnrollActor.
+type recordingExitSpendPolicyResolver struct {
+	mu       sync.Mutex
+	requests []ExitSpendPolicyRequest
+}
+
+// ResolveExitSpendPolicy implements ExitSpendPolicyResolver. The resolver
+// always returns an error so tests that drive a full sweep can confirm the
+// custom resolver, not the default standard resolver, was consulted.
+func (r *recordingExitSpendPolicyResolver) ResolveExitSpendPolicy(
+	_ context.Context, req ExitSpendPolicyRequest) (ExitSpendPolicy,
+	error) {
+
+	r.mu.Lock()
+	r.requests = append(r.requests, req)
+	r.mu.Unlock()
+
+	return nil, errors.New("recording resolver: not implemented")
+}
+
+// TestRegistryForwardsExitSpendPolicyResolver verifies that the
+// ExitSpendPolicyResolver configured on the registry is forwarded into the
+// Config of every spawned VTXOUnrollActor. Without this wiring the registry
+// silently falls back to the standard resolver and any non-standard policy
+// kind (e.g. vhtlc_claim) fails closed at sweep time.
+func TestRegistryForwardsExitSpendPolicyResolver(t *testing.T) {
+	resolver := &recordingExitSpendPolicyResolver{}
+
+	r := &registryBehavior{
+		cfg: RegistryConfig{
+			ExitSpendPolicyResolver: resolver,
+		},
+	}
+
+	target := wire.OutPoint{Index: 7}
+	childCfg := r.childConfig(target)
+
+	require.Equal(
+		t, ExitSpendPolicyResolver(resolver),
+		childCfg.ExitSpendPolicyResolver,
+	)
+	require.Equal(t, target, childCfg.TargetOutpoint)
+}
+
+// TestRegistryChildResolverDefaultsToNil documents the safe default: when
+// RegistryConfig.ExitSpendPolicyResolver is unset, the forwarded child Config
+// also carries nil so the per-actor fallback to the standard resolver kicks
+// in. Daemons that arm non-standard policies must wire a resolver explicitly.
+func TestRegistryChildResolverDefaultsToNil(t *testing.T) {
+	r := &registryBehavior{cfg: RegistryConfig{}}
+
+	target := wire.OutPoint{Index: 9}
+	childCfg := r.childConfig(target)
+
+	require.Nil(t, childCfg.ExitSpendPolicyResolver)
+}
+
+// fixedKindResolver implements ExitSpendPolicyResolver +
+// ResolverKindSupport for the boot-admission check tests.
+type fixedKindResolver struct {
+	kinds map[ExitPolicyKind]struct{}
+}
+
+// SupportsKind implements ResolverKindSupport.
+func (f *fixedKindResolver) SupportsKind(kind ExitPolicyKind) bool {
+	_, ok := f.kinds[kind]
+
+	return ok
+}
+
+// ResolveExitSpendPolicy returns a non-implemented sentinel since the test
+// only exercises the admission gate.
+func (f *fixedKindResolver) ResolveExitSpendPolicy(_ context.Context,
+	_ ExitSpendPolicyRequest) (ExitSpendPolicy, error) {
+
+	return nil, errors.New("fixed kind resolver: not implemented")
+}
+
+// TestValidateExitPolicyIdentity exercises the (kind, ref) pair invariant
+// the registry admission gate enforces. Standard timeout jobs must omit the
+// ref; non-standard kinds must carry one.
+func TestValidateExitPolicyIdentity(t *testing.T) {
+	cases := []struct {
+		name    string
+		kind    ExitPolicyKind
+		ref     string
+		wantErr string
+	}{
+		{
+			name: "empty kind defaults to standard, no ref ok",
+			kind: "",
+		},
+		{
+			name:    "empty kind defaults to standard, ref errors",
+			kind:    "",
+			ref:     "some-ref",
+			wantErr: "must have an empty ref",
+		},
+		{
+			name: "standard kind no ref ok",
+			kind: StandardVTXOTimeoutExitPolicyKind,
+		},
+		{
+			name:    "standard kind with ref errors",
+			kind:    StandardVTXOTimeoutExitPolicyKind,
+			ref:     "stale",
+			wantErr: "must have an empty ref",
+		},
+		{
+			name:    "custom kind without ref errors",
+			kind:    ExitPolicyKind("vhtlc_claim"),
+			wantErr: "requires a non-empty ref",
+		},
+		{
+			name: "custom kind with ref ok",
+			kind: ExitPolicyKind("vhtlc_claim"),
+			ref:  "recovery-1",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateExitPolicyIdentity(tc.kind, tc.ref)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+// TestRegistryRefusesRestoreWhenResolverMissingKind verifies the boot-time
+// admission gate: persisted non-terminal rows whose ExitPolicyKind is not
+// covered by the configured resolver must surface as a startup error rather
+// than being silently spawned and looping every block.
+func TestRegistryRefusesRestoreWhenResolverMissingKind(t *testing.T) {
+	target := wire.OutPoint{Hash: chainhash.Hash{0x33}, Index: 1}
+
+	r := &registryBehavior{
+		cfg: RegistryConfig{
+			ExitSpendPolicyResolver: &fixedKindResolver{
+				kinds: map[ExitPolicyKind]struct{}{
+					StandardVTXOTimeoutExitPolicyKind: {},
+				},
+			},
+		},
+	}
+
+	records := []RegistryRecord{{
+		TargetOutpoint: target,
+		ExitPolicyKind: "vhtlc_claim",
+		ExitPolicyRef:  "ref-1",
+	}}
+
+	err := r.validateResolverCoversRecords(records)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "vhtlc_claim")
+}
+
+// TestRegistryRestoreAdmitsSupportedKinds verifies that records whose kinds
+// are advertised by the resolver pass the boot-time admission gate.
+func TestRegistryRestoreAdmitsSupportedKinds(t *testing.T) {
+	r := &registryBehavior{
+		cfg: RegistryConfig{
+			ExitSpendPolicyResolver: &fixedKindResolver{
+				kinds: map[ExitPolicyKind]struct{}{
+					StandardVTXOTimeoutExitPolicyKind: {},
+					"vhtlc_claim":                     {},
+				},
+			},
+		},
+	}
+
+	records := []RegistryRecord{
+		{
+			TargetOutpoint: wire.OutPoint{
+				Index: 1,
+			},
+			ExitPolicyKind: StandardVTXOTimeoutExitPolicyKind,
+		},
+		{
+			TargetOutpoint: wire.OutPoint{
+				Index: 2,
+			},
+			ExitPolicyKind: "vhtlc_claim",
+			ExitPolicyRef:  "ref-1",
+		},
+		{
+			// Empty kind normalises to standard; must pass.
+			TargetOutpoint: wire.OutPoint{
+				Index: 3,
+			},
+		},
+	}
+
+	require.NoError(t, r.validateResolverCoversRecords(records))
+}
+
+// TestRegistryRestoreSkipsCheckWhenResolverHasNoKindSupport documents the
+// backwards-compatible default: a resolver that does not implement the
+// optional ResolverKindSupport interface keeps the legacy behaviour and the
+// admission gate is a no-op.
+func TestRegistryRestoreSkipsCheckWhenResolverHasNoKindSupport(t *testing.T) {
+	resolver := &recordingExitSpendPolicyResolver{}
+
+	r := &registryBehavior{
+		cfg: RegistryConfig{
+			ExitSpendPolicyResolver: resolver,
+		},
+	}
+
+	records := []RegistryRecord{{
+		TargetOutpoint: wire.OutPoint{
+			Index: 7,
+		},
+		ExitPolicyKind: "any-kind",
+	}}
+
+	require.NoError(t, r.validateResolverCoversRecords(records))
 }
 
 var _ RegistryStore = (*memRegistryStore)(nil)
