@@ -56,7 +56,7 @@ func TestDefaultConfigEnablesClientGateway(t *testing.T) {
 	cfg := DefaultConfig()
 	require.True(t, cfg.RPC.Gateway.Enabled)
 	require.Equal(t, DefaultRPCGatewayListen, cfg.RPC.Gateway.ListenAddr)
-	require.Empty(t, cfg.RPC.Gateway.AllowedOrigins)
+	require.Equal(t, []string{"*"}, cfg.RPC.Gateway.AllowedOrigins)
 }
 
 // TestConfigValidate exercises the config validation logic across a
@@ -151,7 +151,15 @@ func TestConfigValidate(t *testing.T) {
 				}
 			},
 			wantErr: "rpc.gateway.allowedorigins must list " +
-				"explicit trusted origins",
+				"explicit origins or '*'",
+		},
+		{
+			name: "rpc gateway allows wildcard origin",
+			modify: func(c *Config) {
+				c.RPC.Gateway.AllowedOrigins = []string{
+					"*",
+				}
+			},
 		},
 		{
 			name: "nil rounds config",

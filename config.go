@@ -94,7 +94,8 @@ type GatewayConfig struct {
 
 	// AllowedOrigins lists browser origins that may call the gateway.
 	// Empty means browser requests fail closed while non-browser
-	// requests without an Origin header continue to work.
+	// requests without an Origin header continue to work. Use "*"
+	// to allow browser requests from any origin.
 	AllowedOrigins []string `mapstructure:"allowedorigins"`
 
 	// Listener is an optional pre-created listener. When non-nil,
@@ -109,6 +110,9 @@ func DefaultGatewayConfig(listenAddr string) *GatewayConfig {
 	return &GatewayConfig{
 		Enabled:    true,
 		ListenAddr: listenAddr,
+		AllowedOrigins: []string{
+			"*",
+		},
 	}
 }
 
@@ -710,13 +714,14 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// validateGatewayAllowedOrigins rejects wildcard CORS grants on wallet-control
-// gateways.
+// validateGatewayAllowedOrigins rejects empty CORS origins. The wildcard
+// origin "*" is allowed for public browser gateways whose RPCs authenticate
+// explicitly per request rather than through ambient browser credentials.
 func validateGatewayAllowedOrigins(name string, origins []string) error {
 	for _, origin := range origins {
-		if strings.TrimSpace(origin) == "" || origin == "*" {
+		if strings.TrimSpace(origin) == "" {
 			return fmt.Errorf("%s must list explicit "+
-				"trusted origins", name)
+				"origins or '*'", name)
 		}
 	}
 
