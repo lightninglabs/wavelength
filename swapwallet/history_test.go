@@ -3,6 +3,7 @@
 package swapwallet
 
 import (
+	"encoding/hex"
 	"fmt"
 	"testing"
 
@@ -29,6 +30,16 @@ func newHistoryFixture(t *testing.T) (*history, *fakeSwapService,
 	t.Cleanup(runtime.stop)
 
 	return newHistory(deps, runtime), swap, rpc
+}
+
+// testBytes returns deterministic byte slices for session and round ids.
+func testBytes(length int, seed byte) []byte {
+	out := make([]byte, length)
+	for i := range out {
+		out[i] = seed + byte(i)
+	}
+
+	return out
 }
 
 // TestHistoryListMergesSwapAndLedgerSources confirms the merger combines
@@ -149,6 +160,285 @@ func TestHistoryPendingFilterDropsTerminal(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, resp.GetActivity().GetEntries(), 1)
 	require.Equal(t, "live", resp.GetActivity().GetEntries()[0].GetId())
+}
+
+// TestHistorySurfacesPendingBoardingBalance confirms unconfirmed boarding
+// funds show up even before ListTransactions has a confirmed ledger row.
+func TestHistorySurfacesPendingBoardingBalance(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+		BoardingUnconfirmedSat: 12345,
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "boarding-unconfirmed", entries[0].GetId())
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_DEPOSIT, entries[0].GetKind(),
+	)
+	require.Equal(
+		t, walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		entries[0].GetStatus(),
+	)
+	require.Equal(t, int64(12345), entries[0].GetAmountSat())
+	require.Equal(
+		t,
+		walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION,
+		entries[0].GetProgress().GetPhase(),
+	)
+	require.Equal(
+		t, "waiting_for_confirmation",
+		entries[0].GetProgress().GetPhaseLabel(),
+	)
+}
+
+// TestHistoryHidesReceiveClaimOORSend confirms wallet activity does not show
+// the outgoing OOR claim input that is paired with an incoming materialized
+// VTXO for the same receive-swap claim.
+func TestHistoryHidesReceiveClaimOORSend(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+
+	sessionID := []byte{
+		0x82, 0x0b, 0x18, 0x9f, 0xdf, 0xa9, 0x68, 0xde,
+		0x96, 0x6b, 0xe2, 0xf9, 0xa5, 0xad, 0xc0, 0xa5,
+		0x64, 0xff, 0xbb, 0x98, 0x49, 0xc7, 0x12, 0x0e,
+		0xac, 0x5b, 0xc4, 0x0d, 0x7b, 0x64, 0xcd, 0x51,
+	}
+	sessionHex := "820b189fdfa968de966be2f9a5adc0a564ffbb9849c7120eac5bc40d7b64cd51"
+
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: "payment-hash",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_RECEIVE,
+				State: swapclientrpc.
+					SwapState_SWAP_STATE_COMPLETED,
+				AmountSat:     1_000,
+				UpdatedAtUnix: 200,
+			},
+		},
+	}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOSent,
+				AmountSat:      1_000,
+				DebitAccount:   ledger.AccountTransfersOut,
+				CreditAccount:  ledger.AccountVTXOBalance,
+				SessionId:      sessionID,
+				EntryId:        3,
+				CreatedAtUnixS: 100,
+			},
+			{
+				Type:          "round",
+				Subtype:       ledger.EventVTXOReceived,
+				AmountSat:     1_000,
+				DebitAccount:  ledger.AccountVTXOBalance,
+				CreditAccount: ledger.AccountTransfersIn,
+				Description: "VTXO received via oor: " +
+					sessionHex + ":0",
+				EntryId:        4,
+				CreatedAtUnixS: 101,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "payment-hash", entries[0].GetId())
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_RECV, entries[0].GetKind(),
+	)
+}
+
+// TestHistoryKeepsUnpairedOORSend confirms ordinary OOR sends remain visible
+// when there is no matching incoming materialization row.
+func TestHistoryKeepsUnpairedOORSend(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOSent,
+				AmountSat:      1_000,
+				DebitAccount:   ledger.AccountTransfersOut,
+				CreditAccount:  ledger.AccountVTXOBalance,
+				SessionId:      testBytes(32, 0x11),
+				EntryId:        3,
+				CreatedAtUnixS: 100,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_SEND, entries[0].GetKind(),
+	)
+	require.Equal(t, int64(-1_000), entries[0].GetAmountSat())
+}
+
+// TestHistoryHidesPayFundingOORInput confirms wallet activity does not show
+// the full input consumed to fund a pay-swap vHTLC when the input's change
+// came back to the wallet and the delta is already represented by the swap
+// SEND row.
+func TestHistoryHidesPayFundingOORInput(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+
+	sessionID := testBytes(32, 0x21)
+	sessionHex := hex.EncodeToString(sessionID)
+
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: "payment-hash",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_PAY,
+				Pending:       true,
+				AmountSat:     1_234,
+				UpdatedAtUnix: 200,
+			},
+		},
+	}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOSent,
+				AmountSat:      999_745,
+				DebitAccount:   ledger.AccountTransfersOut,
+				CreditAccount:  ledger.AccountVTXOBalance,
+				SessionId:      sessionID,
+				EntryId:        13,
+				CreatedAtUnixS: 100,
+			},
+			{
+				Type:          "round",
+				Subtype:       ledger.EventVTXOReceived,
+				AmountSat:     998_511,
+				DebitAccount:  ledger.AccountVTXOBalance,
+				CreditAccount: ledger.AccountTransfersIn,
+				Description: "VTXO received via oor: " +
+					sessionHex + ":1",
+				EntryId:        14,
+				CreatedAtUnixS: 101,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "payment-hash", entries[0].GetId())
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_SEND, entries[0].GetKind(),
+	)
+	require.Equal(t, int64(-1_234), entries[0].GetAmountSat())
+}
+
+// TestHistoryKeepsOORSendWithChangeWithoutSwap confirms the change-pairing
+// heuristic is anchored to a visible swap SEND, so ordinary OOR sends are not
+// hidden just because they return change to this wallet.
+func TestHistoryKeepsOORSendWithChangeWithoutSwap(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+
+	sessionID := testBytes(32, 0x31)
+	sessionHex := hex.EncodeToString(sessionID)
+
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOSent,
+				AmountSat:      999_745,
+				DebitAccount:   ledger.AccountTransfersOut,
+				CreditAccount:  ledger.AccountVTXOBalance,
+				SessionId:      sessionID,
+				EntryId:        13,
+				CreatedAtUnixS: 100,
+			},
+			{
+				Type:          "round",
+				Subtype:       ledger.EventVTXOReceived,
+				AmountSat:     998_511,
+				DebitAccount:  ledger.AccountVTXOBalance,
+				CreditAccount: ledger.AccountTransfersIn,
+				Description: "VTXO received via oor: " +
+					sessionHex + ":1",
+				EntryId:        14,
+				CreatedAtUnixS: 101,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_SEND, entries[0].GetKind(),
+	)
+	require.Equal(t, int64(-999_745), entries[0].GetAmountSat())
+}
+
+// TestHistoryPendingFilterIncludesPendingBoarding confirms --pending includes
+// the synthetic unconfirmed boarding row.
+func TestHistoryPendingFilterIncludesPendingBoarding(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "boarding",
+				ConfirmationStatus: "confirmed",
+				AmountSat:          50_000,
+				Txid:               "confirmed-deposit",
+				CreatedAtUnixS:     100,
+			},
+		},
+	}
+	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+		BoardingUnconfirmedSat: 12345,
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{
+		PendingOnly: true,
+	})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "boarding-unconfirmed", entries[0].GetId())
 }
 
 // TestHistoryKindFilter confirms the kinds filter narrows the result.
@@ -298,6 +588,7 @@ func TestHistorySwapRowIdIsPaymentHash(t *testing.T) {
 		Swaps: []*swapclientrpc.SwapSummary{
 			{
 				PaymentHash: "the-payment-hash",
+				Invoice:     "lnbc1history",
 				Direction: swapclientrpc.
 					SwapDirection_SWAP_DIRECTION_PAY,
 				State: swapclientrpc.
@@ -314,6 +605,11 @@ func TestHistorySwapRowIdIsPaymentHash(t *testing.T) {
 		t, "the-payment-hash",
 		resp.GetActivity().GetEntries()[0].GetId(),
 		"swap row id must surface as payment_hash",
+	)
+	require.Equal(
+		t, "lnbc1history",
+		resp.GetActivity().GetEntries()[0].GetRequest().
+			GetLightningInvoice().GetInvoice(),
 	)
 }
 
@@ -520,14 +816,11 @@ func TestHistoryPaginationOffsetPlumbedToLedger(t *testing.T) {
 	)
 }
 
-// TestHistoryDepositStaysPendingOnChainConfirmation pins issue #503:
-// a DEPOSIT row derived from a wallet_utxo_created ledger entry must
-// not flip to COMPLETE the moment the boarding UTXO confirms on
-// chain. Under eagerroundjoin=false the deposit can sit indefinitely
-// in that state while remaining unspendable through any in-Ark flow;
-// COMPLETE there misleads the user about whether the funds have
-// actually been boarded into a VTXO.
-func TestHistoryDepositStaysPendingOnChainConfirmation(t *testing.T) {
+// TestHistoryDepositCompletesOnChainConfirmation confirms that a DEPOSIT row
+// mirrors the ledger confirmation status. More detailed boarding lifecycle
+// information belongs in progress/inspection rather than an activity-table
+// status override.
+func TestHistoryDepositCompletesOnChainConfirmation(t *testing.T) {
 	t.Parallel()
 
 	h, swap, rpc := newHistoryFixture(t)
@@ -554,9 +847,8 @@ func TestHistoryDepositStaysPendingOnChainConfirmation(t *testing.T) {
 		t, walletrpc.EntryKind_ENTRY_KIND_DEPOSIT, entry.GetKind(),
 	)
 	require.Equal(
-		t, walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		entry.GetStatus(),
-		"on-chain confirmation of the boarding UTXO is NOT the "+
-			"boarded-into-a-VTXO signal",
 	)
+	require.Equal(t, "confirmed", entry.GetProgress().GetPhaseLabel())
 }
