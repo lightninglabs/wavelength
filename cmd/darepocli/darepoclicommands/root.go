@@ -1,8 +1,10 @@
 package darepoclicommands
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/lightninglabs/darepo-client/build"
@@ -91,6 +93,15 @@ func NewRootCmd() *cobra.Command {
 	return cmd
 }
 
+type errorEnvelope struct {
+	Error errorPayload `json:"error"`
+}
+
+type errorPayload struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 // PrintError writes a structured error to stderr in JSON format and
 // returns an error that carries the same code/message plus a marker
 // that main() can pick up via ErrorWasPrinted to avoid re-emitting the
@@ -98,11 +109,27 @@ func NewRootCmd() *cobra.Command {
 // surface keeps signalling failure to the harness while stderr stays
 // machine-readable.
 func PrintError(code string, msg string) error {
-	fmt.Fprintf(
-		os.Stderr, `{"error":{"code":%q,"message":%q}}`+"\n", code, msg,
-	)
+	if err := printError(os.Stderr, code, msg); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
+	}
 
 	return &printedError{code: code, msg: msg}
+}
+
+func printError(w io.Writer, code string, msg string) error {
+	data, err := json.MarshalIndent(errorEnvelope{
+		Error: errorPayload{
+			Code:    code,
+			Message: msg,
+		},
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintln(w, string(data))
+
+	return err
 }
 
 // printedError is the wrapper returned by PrintError. It carries a
