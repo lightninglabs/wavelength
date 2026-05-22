@@ -50,6 +50,9 @@ type SwapSummary struct {
 	// PaymentHash is the Lightning payment hash for the swap.
 	PaymentHash lntypes.Hash
 
+	// Invoice is the BOLT-11 invoice associated with the swap.
+	Invoice string
+
 	// State is the current durable FSM state.
 	State string
 
