@@ -13,9 +13,11 @@ have a consistent configuration across all daemon sub-services.
   `UseProtoNames=true` (snake_case) and `EmitUnpopulated=true`, path-length
   fallback disabled, and an optional header matcher.
 - `BrowserHeaders(handler, allowedOrigins, metadataHeaders) http.Handler` —
-  CORS middleware. Validates the `Origin` header against the allowlist;
-  an empty allowlist closes access for browser callers (fail-closed).
-  Injects CORS headers and allows GET, POST, and OPTIONS methods.
+  CORS middleware. Requests without an `Origin` header pass through
+  unconditionally (non-browser clients are not restricted); requests
+  carrying an `Origin` are validated against the allowlist and rejected
+  with 403 when not present. Injects CORS headers and allows GET, POST,
+  and OPTIONS methods.
 - `NormalizeEndpoint(endpoint) string` — Converts listener addresses for
   loopback dialing: `0.0.0.0` → `127.0.0.1`, `[::]` → `[::1]`, others
   pass through unchanged.
@@ -28,9 +30,10 @@ have a consistent configuration across all daemon sub-services.
 
 ## Invariants
 
-- An empty `allowedOrigins` list fails closed — no browser can reach the
-  gateway. This is intentional for production hardening; pass a non-empty
-  list only when the deployment serves browser clients.
+- Browser callers (those sending an `Origin` header) need an entry in
+  `allowedOrigins` or the request is rejected with 403. An empty
+  allowlist means no browser caller can reach the gateway; non-browser
+  clients without an `Origin` header are unaffected.
 - JSON marshaling always uses `UseProtoNames` (snake_case field names) and
   `EmitUnpopulated` (include zero/default values) for API consistency with
   grpc-gateway clients.

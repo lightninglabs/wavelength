@@ -8,324 +8,267 @@ resume semantics.
 
 ## Key Types
 
-### Session Identifiers and FSM Infrastructure
+For field-level detail, use `go doc github.com/lightninglabs/darepo-client/oor.<Symbol>`.
+State transitions and validation rules live under [Invariants](#invariants).
 
-- `SessionID` — Stable session identifier (Ark txid hash in v0).
-- `Environment` — FSM environment providing SessionID and external system access.
-- `OutboxHandler` — Interface for executing FSM outbox requests (RPC, signing,
-  persistence).
-- `SignArkPSBT` — Signs Ark PSBT inputs using the client key on the checkpoint
-  2-of-2 collab leaf; uses `MultiPrevOutFetcher` for correct BIP-341 sighash
-  across multiple inputs.
-- `ClientActorCfg` — Configuration for OORClientActor (OutboxHandler,
-  ServerConn, PackageStore, DeliveryStore, VTXOManager, VTXOStore, optional
-  `LedgerSink fn.Option[ledger.Sink]` for fire-and-forget accounting emission,
-  and optional `IncomingVTXOObserver IncomingVTXONotifier` callback invoked
-  after incoming VTXOs are durably materialized — allows daemon-local
-  subsystems to arm actor-owned work without a package dependency on `oor`).
-- `OORClientActor` — Durable actor wrapping per-session state machines. Handles
-  both outgoing transfers and incoming receive via three-phase async resolution.
-  Emits `VTXOSentMsg` / `VTXOReceivedMsg` to the ledger actor at the two points
-  the package observes state transitions it owns (FinalizeAcceptedEvent and
-  materialized-VTXO notification). `ClientActorCfg.SigningEffect` optionally
-  routes wallet signing work to a separate `SigningEffectActor` so the OOR
-  actor turn commits FSM state before signer calls run. `ClientActorCfg.Limits`
-  configures incoming receive safety caps via `ReceiveLimits`; zero fields
-  use `DefaultReceiveLimits`.
-- `SigningEffectActor` — Separate durable actor that performs wallet signing
-  outside the OOR actor turn. Receives `SigningEffectRequest` messages (TLV type
-  `0x7020`, kinds: `signingEffectRequestArk` and `signingEffectRequestCheckpoint`),
-  delegates to `SigningOutboxHandler`, and feeds resulting events back into OOR
-  via `DriveEventRequest`. Duplicate signing results for an already-advanced FSM
-  state are silently discarded by the OOR handler. Registered in the actor
-  system under `SigningEffectActorID = "oor-signing-effect"`. Created and started
-  by `NewSigningEffectActor`; stopped via `StopAndWait`.
-- `ReceiveLimits` / `DefaultReceiveLimits` — Defense-in-depth bounds for incoming
-  OOR receive: `MaxCheckpoints` (default 64), `MaxVTXOMatches` (default 128),
-  `MaxMailboxItems` (default 10 000), `MaxMailboxScriptBytes` (default 10 000).
-  Zero fields are normalized to defaults by `normalizeReceiveLimits`. Codec
-  factory functions (`newOORActorCodec`) capture limits so decoders enforce them
-  at deserialization time.
-- `emitVTXOSent(ctx, sessionID, inputs)` — Internal helper called on
-  `FinalizeAcceptedEvent` after the outgoing package has been persisted. Sums
-  `TransferInputs` to get the total sent amount and Tells a `VTXOSentMsg` with
-  the 32-byte session ID stamped on the entry. Gated on `fn.Some(ledgerSink)` —
-  `fn.None` tests see a silent no-op.
-- `emitVTXOsReceived(ctx, descriptors)` — Internal helper called in
-  `notifyMaterializedVTXOs`. Tells one `VTXOReceivedMsg` per descriptor with
-  `Source = SourceOOR` so the entry books as `transfers_in` on the ledger side.
-- `NewRetryCallbackRef` — Bridges timeout actor expiry notifications into OOR
-  actor `ResumeSessionRequest` messages for event-driven retry scheduling.
-- `IncomingSnapshot` / `NewIncomingSnapshot` — Serializable snapshot of incoming
-  receive session state for checkpoint persistence and diagnostics.
+### Session, FSM & Actor Infrastructure
 
-### Actor Messages (OORDurableMsg / ActorMsg)
+- `SessionID` — stable session identifier (Ark txid hash in v0).
+- `Environment` — FSM environment exposing SessionID and external system
+  access.
+- `OutboxHandler` — interface executing FSM outbox requests (RPC,
+  signing, persistence).
+- `SignArkPSBT` — signs Ark PSBT inputs on the checkpoint 2-of-2 collab
+  leaf using `MultiPrevOutFetcher` for BIP-341 sighashes across
+  multi-input transfers.
+- `ClientActorCfg` — configuration for `OORClientActor`. Notable fields:
+  `OutboxHandler`, `ServerConn`, `PackageStore`, `DeliveryStore`,
+  `VTXOManager`, `VTXOStore`, optional `LedgerSink fn.Option[ledger.Sink]`
+  (fire-and-forget accounting), optional `IncomingVTXOObserver
+  IncomingVTXONotifier` (callback fired after incoming VTXOs are durably
+  materialized — lets daemon subsystems arm work without depending on
+  `oor`), `SigningEffect` (route signing through a separate actor),
+  `Limits *ReceiveLimits` (defaults via `DefaultReceiveLimits`).
+- `OORClientActor` — durable actor wrapping per-session state machines.
+  Handles outgoing and incoming flows via three-phase async resolution;
+  emits `VTXOSentMsg` / `VTXOReceivedMsg` to ledger at the two state
+  transitions it owns (`FinalizeAcceptedEvent` and
+  materialized-VTXO notification).
+- `SigningEffectActor` — separate durable actor performing wallet
+  signing outside the OOR turn. Receives `SigningEffectRequest`
+  messages (TLV type `0x7020`, kinds `signingEffectRequestArk` /
+  `signingEffectRequestCheckpoint`), delegates to `SigningOutboxHandler`,
+  and feeds results back via `DriveEventRequest`. Stale signing results
+  for an advanced FSM are silently discarded. Registered as
+  `SigningEffectActorID = "oor-signing-effect"`; lifecycle via
+  `NewSigningEffectActor` / `StopAndWait`.
+- `ReceiveLimits` / `DefaultReceiveLimits` — defense-in-depth bounds on
+  incoming receive (`MaxCheckpoints=64`, `MaxVTXOMatches=128`,
+  `MaxMailboxItems=10000`, `MaxMailboxScriptBytes=10000`). Zero fields
+  are normalized; codec factories capture limits so deserialization
+  enforces them.
+- `emitVTXOSent` / `emitVTXOsReceived` — internal ledger emitters
+  (gated on `fn.Some(LedgerSink)`).
+- `NewRetryCallbackRef` — bridges timeout-actor expiry notifications
+  into OOR `ResumeSessionRequest` for event-driven retry.
 
-- `ResolveIncomingTransferRequest` — TLV-durable actor message (TLV type
-  `0x7016`) persisted by the ingress route. Carries SessionID,
-  RecipientPkScript, and RecipientEventID so the actor can resume phase-1
-  indexer resolution after a crash.
-- `DriveEventRequest` — Generic actor message that wraps an Event and a
-  SessionID; used to feed FSM events back into a running session from outbox
-  callbacks and durable unary response routes.
-- `FindOutgoingSessionByIdempotencyKeyRequest` — TLV-durable actor message (TLV
-  type `0x7018`) for idempotent outgoing session lookup by caller-supplied key.
-  Response `FindOutgoingSessionByIdempotencyKeyResponse` carries `SessionID` and
-  `Found bool`; `Found=false` means no session matches the key yet.
-- `ListSessionsRequest` / `ListSessionsResponse` — TLV-durable actor message
-  (TLV type `0x7017`) for querying locally known OOR sessions. Carries a
-  `SessionDirection` filter and a `PendingOnly` flag. Response is a slice of
-  `SessionSummary`.
-- `SessionSummary` — Compact diagnostic projection of an OOR session: SessionID,
-  Direction, Phase (string), Pending bool, RetryAfter, RetryReason,
-  InputOutpoints, InputAmountSat, RecipientCount.
-- `SessionDirection` — Enum (`SessionDirectionAll`, `SessionDirectionOutgoing`,
-  `SessionDirectionIncoming`) used to filter `ListSessionsRequest`.
+### Actor Messages (`OORDurableMsg` / `ActorMsg`)
 
-### Outbox Events (OutboxEvent)
+- `ResolveIncomingTransferRequest` — TLV-durable (`0x7016`); persisted
+  by the ingress route so phase-1 indexer resolution resumes after a
+  crash.
+- `DriveEventRequest` — generic wrapper: `(Event, SessionID)`. Used by
+  outbox callbacks and durable unary response routes to feed events
+  back into a running FSM.
+- `FindOutgoingSessionByIdempotencyKeyRequest` /
+  `…Response` — TLV-durable (`0x7018`); idempotent outgoing-session
+  lookup. `Found=false` ⇒ no session matches yet.
+- `ListSessionsRequest` / `…Response` — TLV-durable (`0x7017`).
+  Carries `SessionDirection` filter and `PendingOnly`. Response is
+  `[]SessionSummary`.
+- `SessionSummary` — diagnostic projection (SessionID, Direction,
+  Phase, Pending, RetryAfter, RetryReason, InputOutpoints,
+  InputAmountSat, RecipientCount).
+- `SessionDirection` — enum (`All`, `Outgoing`, `Incoming`).
 
-- `QueryIncomingTransferRequest` — Outbox event emitted after persisting
-  `ReceiveResolving`; actor.go maps this to a
-  `serverconn.SendListOORRecipientEventsByScriptRequest` durable query.
-- `QueryIncomingMetadataRequest` — Outbox event emitted after
-  `IncomingTransferEvent` is processed; actor.go maps this to a
-  `serverconn.SendListVTXOsByScriptsRequest` durable query.
-- `MaterializeIncomingVTXOsRequest` — Outbox event carrying the Ark PSBT,
-  checkpoint PSBTs, recipients, and resolved `MetadataMatches`; sent to the
-  wallet/state layer to persist incoming VTXO records.
-- `SendIncomingAckRequest` — Outbox event that asks the transport layer to ack
-  the incoming transfer to the server.
-- `IncomingTransferNotification` — Outbox event emitted alongside metadata query
-  during incoming transfer processing.
-- `ScheduleRetryRequest` — Outbox event for scheduling retryable outbox
-  operations via the timeout actor.
+### Outbox Events
 
-### Events (Event / ReceiveState)
+- `QueryIncomingTransferRequest` — emitted after persisting
+  `ReceiveResolving`; mapped to
+  `serverconn.SendListOORRecipientEventsByScriptRequest`.
+- `QueryIncomingMetadataRequest` — emitted after
+  `IncomingTransferEvent`; mapped to
+  `serverconn.SendListVTXOsByScriptsRequest`.
+- `MaterializeIncomingVTXOsRequest` — sent to the wallet/state layer to
+  persist incoming VTXO records (carries Ark PSBT, checkpoint PSBTs,
+  recipients, resolved `MetadataMatches`).
+- `SendIncomingAckRequest` — asks transport to ack the incoming
+  transfer.
+- `IncomingTransferNotification` — emitted alongside metadata query.
+- `ScheduleRetryRequest` — retryable-outbox scheduling via the timeout
+  actor.
 
-- `IncomingTransferEvent` — FSM event carrying the full Ark PSBT and checkpoint
-  PSBTs for an incoming transfer; delivered by the phase-1 durable unary
-  response route.
-- `IncomingMetadataResolvedEvent` — FSM event delivering authoritative metadata
-  query results back into the receive FSM; delivered by the phase-2 durable
-  unary response route.
-- `IncomingHandledEvent` — FSM event indicating the wallet layer has persisted
-  incoming VTXOs; carries `MaterializedOutpoints` for the durable callback
-  round-trip.
-- `IncomingAckSentEvent` — FSM event driving `ReceiveAwaitingAck →
-  ReceiveCompleted` transition.
+### FSM Events & Incoming Receive States
 
-### Incoming Receive FSM States (ReceiveState)
+- Events: `IncomingTransferEvent`, `IncomingMetadataResolvedEvent`,
+  `IncomingHandledEvent`, `IncomingAckSentEvent`.
+- `ReceiveState`: `ReceiveIdle` → `ReceiveResolving` (durable hint
+  persisted, waiting for phase-1 indexer outside the actor tx) →
+  `ReceiveNotified` (package received, awaiting materialization) →
+  `ReceiveAwaitingAck` (materialized, awaiting transport ack) →
+  `ReceiveCompleted`.
 
-- `ReceiveIdle` — Initial state; no pending incoming transfer.
-- `ReceiveResolving` — Durable hint persisted; waiting for the phase-1 indexer
-  query (ListOORRecipientEventsByScript) to return the full Ark package outside
-  the actor transaction.
-- `ReceiveNotified` — Full Ark/checkpoint package received; waiting for local
-  materialization to complete.
-- `ReceiveAwaitingAck` — VTXOs materialized; waiting for ack transport to
-  complete.
-- `ReceiveCompleted` — Terminal success state.
+### Outbox Handler Chain & Callbacks
 
-### Local Persistence and Outbox Handler Chain
+- `LocalPersistenceOutboxHandler` — handles `MarkInputsSpentRequest`,
+  `QueryIncomingMetadataRequest`, `MaterializeIncomingVTXOsRequest`,
+  `SendIncomingAckRequest`; delegates everything else to `Next`. Also
+  implements `IncomingMetadataRecipientFilter` so the transport layer
+  can pre-filter owned recipients.
+- `SpendCompleter` — `func(ctx, []wire.OutPoint) error` routing OOR
+  spend completion through the VTXO manager. `nil` ⇒ direct store
+  writes (migration compat).
+- `IncomingClientKeyResolver` — `func(ctx, ArkRecipientOutput)
+  (keychain.KeyDescriptor, error)`. Returns
+  `ErrIncomingRecipientNotOwned` for outputs belonging to other
+  clients.
+- `IncomingMetadataResolver` — `func(ctx, SessionID,
+  ArkRecipientOutput, *psbt.Packet, []*psbt.Packet)
+  (IncomingVTXOMetadata, error)`.
+- `IncomingMetadataRecipientFilter` — `FilterIncomingMetadataRecipients`.
+- `IncomingVTXONotifier` — `func(ctx, []*vtxo.Descriptor) error` for
+  non-actor consumers (systest, etc.) after durable materialization.
+- `OutboxHandlerConfig` / `NewOutboxHandler` — shared factory for the
+  two-layer chain `LocalPersistenceOutboxHandler → SigningOutboxHandler`,
+  used identically by production darepod and systest.
 
-- `LocalPersistenceOutboxHandler` — Handles persistence-related outbox requests
-  (`MarkInputsSpentRequest`, `QueryIncomingMetadataRequest`,
-  `MaterializeIncomingVTXOsRequest`, `SendIncomingAckRequest`). Delegates all
-  others to `Next`. Also implements `IncomingMetadataRecipientFilter` via
-  `FilterIncomingMetadataRecipients` so the transport layer can pre-filter
-  owned recipients before durable server queries.
-- `SpendCompleter` — Callback type (`func(ctx, []wire.OutPoint) error`) that
-  routes OOR spend completion through the VTXO manager so each consumed VTXO
-  transitions to `SpentState` via its own FSM. When nil in
-  `LocalPersistenceOutboxHandler`, falls back to direct store writes for
-  migration compatibility.
-- `IncomingClientKeyResolver` — Callback type (`func(ctx, ArkRecipientOutput)
-  (keychain.KeyDescriptor, error)`) that resolves the local client key for a
-  recipient output being materialized. Returns `ErrIncomingRecipientNotOwned`
-  for outputs belonging to other clients.
-- `IncomingMetadataResolver` — Callback type (`func(ctx, SessionID,
-  ArkRecipientOutput, *psbt.Packet, []*psbt.Packet) (IncomingVTXOMetadata,
-  error)`) that resolves authoritative lineage and expiry metadata.
-- `IncomingMetadataRecipientFilter` — Interface with
-  `FilterIncomingMetadataRecipients`; implemented by
-  `LocalPersistenceOutboxHandler` to filter wallet-owned recipients before
-  server metadata queries.
-- `IncomingVTXONotifier` — Callback type (`func(ctx, []*vtxo.Descriptor) error`)
-  called after incoming VTXOs are durably materialized; used outside the durable
-  actor path (e.g. systest, non-actor consumers).
-- `OutboxHandlerConfig` / `NewOutboxHandler` — Shared factory for the standard
-  two-layer outbox handler chain (LocalPersistenceOutboxHandler →
-  SigningOutboxHandler). Both production darepod and systest use this for
-  identical outbox handling.
+### Snapshot, Phase & Adapter Types
 
-### Snapshot and Phase Types
-
-- `OutgoingSnapshot` — Portable outgoing session state for checkpoint and
-  restore. Carries Phase, ArkPSBT, TransferInputSnapshots, RetryAfter,
-  FailReason.
-- `OutgoingPhase` — String enum for coarse outgoing transfer stages:
-  `ark_sign_requested`, `submit_sent`, `cosigned`, `finalize_sent`,
-  `local_vtxo_update`, `completed`, `failed`.
-- `IncomingSnapshot` — Serializable snapshot of an incoming receive session;
-  used in the checkpoint blob alongside outgoing snapshots.
-- `IncomingPhase` — String enum for incoming receive stages: `resolve_pending`,
-  `materialize_pending`, `ack_pending`, `completed`, `failed`.
-- `TransferInputSnapshot` — Portable encoding of client-side signing context
-  required to finalize checkpoint PSBTs after restart. Carries Outpoint,
-  AmountSat, key material, OwnerLeafScript/Policy, VTXOPolicyTemplate, PkScript
-  (for custom spend), SpendWitnessScript, SpendControlBlock, ConditionWitness,
-  RequiredSequence, RequiredLockTime.
-
-### Shared Adapters and Metadata Types
-
-- `IncomingVTXOMetadata` — Lineage metadata for incoming OOR VTXOs including
-  `ChainDepth` (OOR checkpoint hop count).
-- `IncomingMetadataMatch` — Authoritative metadata for one materialized incoming
-  Ark output, keyed by OutputIndex.
-- `IncomingMetadataMatchesFromResponse` — Filters a
-  `ListVTXOsByScriptsResponse` down to outputs matching the current Ark session
-  and converts them to `[]IncomingMetadataMatch`.
-- `IncomingTransferEventFromResponse` — Validates and converts one
+- `OutgoingSnapshot` (Phase, ArkPSBT, TransferInputSnapshots,
+  RetryAfter, FailReason), `OutgoingPhase` (`ark_sign_requested`,
+  `submit_sent`, `cosigned`, `finalize_sent`, `local_vtxo_update`,
+  `completed`, `failed`).
+- `IncomingSnapshot`, `IncomingPhase` (`resolve_pending`,
+  `materialize_pending`, `ack_pending`, `completed`, `failed`).
+- `TransferInputSnapshot` — portable encoding of client-side signing
+  context required to finalize checkpoint PSBTs after restart.
+- `IncomingVTXOMetadata` — lineage metadata for incoming OOR VTXOs
+  (`ChainDepth` = OOR checkpoint hop count).
+- `IncomingMetadataMatch` — authoritative per-output metadata for one
+  materialized Ark output.
+- `IncomingMetadataMatchesFromResponse` — filters a
+  `ListVTXOsByScriptsResponse` down to current-session outputs.
+- `IncomingTransferEventFromResponse` — validates and converts a
   `ListOORRecipientEventsByScriptResponse` payload into an
-  `IncomingTransferEvent` for the receive FSM.
-- `NewResolveIncomingTransferRequest` — Converts a lightweight
-  `IncomingOOREvent` notification proto into a `ResolveIncomingTransferRequest`;
-  shared by darepod and systest.
-- `IncomingResolveCorrelationID` / `ParseIncomingResolveCorrelationID` —
-  Stable correlation ID helpers for phase-1 durable queries.
-- `IncomingMetadataCorrelationID` / `ParseIncomingMetadataCorrelationID` —
-  Stable correlation ID helpers for phase-2 durable queries.
+  `IncomingTransferEvent`.
+- `NewResolveIncomingTransferRequest` — converts a lightweight
+  `IncomingOOREvent` proto to a `ResolveIncomingTransferRequest`
+  (shared by darepod / systest).
+- `IncomingResolveCorrelationID` / `IncomingMetadataCorrelationID`
+  (+ `Parse…`) — stable correlation IDs for phase-1 / phase-2 durable
+  queries.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (durable
-  actors), `serverconn` (durable transport), `lib/arkscript` (policy-backed
-  tapscript for checkpoint signing and VTXO policy templates in transfer TLV
-  records), `ledger` (`Sink` + emission message types), `timeout` (retry
-  scheduling via `TimeoutActor`), `lnd/input` (signer interface for
+- **Depends on**: `baselib/protofsm`, `baselib/actor`, `serverconn`,
+  `lib/arkscript`, `ledger` (`Sink` + emission messages), `timeout`
+  (`TimeoutActor`), `lnd/input` (signer interface for
   `SigningEffectActor`).
-- **Depended on by**: `darepod` (wiring).
+- **Depended on by**: `darepod`.
 - **Sends**:
-  - → `serverconn`: `SendSubmitPackageRequest`, `SendFinalizePackageRequest`,
-    `SendIncomingAckRequest`
+  - → `serverconn`: `SendSubmitPackageRequest`,
+    `SendFinalizePackageRequest`, `SendIncomingAckRequest`.
   - → `serverconn` (durable unary, via outbox):
-    `QueryIncomingTransferRequest` → `SendListOORRecipientEventsByScriptRequest`;
-    `QueryIncomingMetadataRequest` → `SendListVTXOsByScriptsRequest`
-  - → `db` (via outbox): `MarkInputsSpentRequest`
-  - → `wallet`: `MaterializeIncomingVTXOsRequest`
-  - → `vtxo` manager: `VTXOsMaterializedNotification` (after incoming VTXOs are
-    durably materialized)
-  - → `ledger` actor (via `ledger.Sink` Tell, when `fn.Some`): `VTXOSentMsg` on
-    FinalizeAcceptedEvent (post-persistence); `VTXOReceivedMsg` with
-    `Source=SourceOOR` per materialized descriptor
+    `QueryIncomingTransferRequest` →
+    `SendListOORRecipientEventsByScriptRequest`;
+    `QueryIncomingMetadataRequest` →
+    `SendListVTXOsByScriptsRequest`.
+  - → `db` (via outbox): `MarkInputsSpentRequest`.
+  - → `wallet`: `MaterializeIncomingVTXOsRequest`.
+  - → `vtxo` manager: `VTXOsMaterializedNotification`.
+  - → `ledger` (when `LedgerSink` is `fn.Some`): `VTXOSentMsg` on
+    `FinalizeAcceptedEvent`; `VTXOReceivedMsg{Source=SourceOOR}` per
+    materialized descriptor.
 - **Receives**:
-  - ← `serverconn` (via EventRouter): `SubmitAcceptedEvent`,
-    `FinalizeAcceptedEvent`, `ResolveIncomingTransferRequest`
+  - ← `serverconn` (`EventRouter`): `SubmitAcceptedEvent`,
+    `FinalizeAcceptedEvent`, `ResolveIncomingTransferRequest`.
   - ← `serverconn` durable unary response routes:
     `DriveEventRequest{IncomingTransferEvent}`,
-    `DriveEventRequest{IncomingMetadataResolvedEvent}`
+    `DriveEventRequest{IncomingMetadataResolvedEvent}`.
   - ← local persistence callback path:
-    `DriveEventRequest{IncomingHandledEvent}`
+    `DriveEventRequest{IncomingHandledEvent}`.
   - ← API: `StartTransferRequest`, `DriveEventRequest`,
-    `RestoreSessionRequest`, `ResumeSessionRequest`, `ListSessionsRequest`
+    `RestoreSessionRequest`, `ResumeSessionRequest`,
+    `ListSessionsRequest`.
 
 ## Multi-Tree Ancestry + Lineage Cap
 
-- `IncomingVTXOMetadata.Ancestry []vtxo.Ancestry` replaces the singular
-  `TreePath` field. The TLV record on the durable mailbox is
+- `IncomingVTXOMetadata.Ancestry []vtxo.Ancestry` replaces the
+  singular `TreePath`. The durable mailbox TLV record is
   `incomingMetadataMatchAncestryPathsRecordType`; per-entry layout is
   `(TreePath, CommitmentTxID, InputIndices, TreeDepth)`.
-- Server-side rejection of an over-cap submit is surfaced as
-  `*oorpb.SubmitRejectedError{Code: OOR_REJECT_LINEAGE_TOO_LARGE}`
-  during response parsing. `oor.ClassifySubmitError(err)` maps that to
-  the typed `*oor.ErrLineageTooLarge` so wallet callers can route on
-  the cause without depending on the proto type.
+- Server-side over-cap submit rejection surfaces as
+  `*oorpb.SubmitRejectedError{Code: OOR_REJECT_LINEAGE_TOO_LARGE}`;
+  `ClassifySubmitError` maps it to `*ErrLineageTooLarge` so wallet
+  callers can switch on the cause without depending on the proto type.
 
 ## Invariants
 
 - Checkpoint output collab path is 2-of-2
-  `MultiSigCollabTapLeaf(clientKey, operatorKey)`, not single-sig. Both parties
-  must sign the Ark tx that spends checkpoint outputs.
-- `signCustomCheckpointPSBT` re-verifies that the custom spend path binds to the
-  VTXO pkScript via `SpendPath.VerifyBindsToPkScript` before signing. This
-  defense-in-depth check covers persisted `TransferInputSnapshot`s resumed from
-  disk that bypassed the `BuildCustomTransferInputs` constructor.
-- Condition witness encoding/decoding (`encodeConditionWitness` /
-  `decodeConditionWitness`) is bounded by `maxConditionWitnessItems = 64` items
-  and `maxConditionWitnessItemBytes = 520` bytes per item (matching Bitcoin's
-  `MAX_SCRIPT_ELEMENT_SIZE`). Both functions enforce these limits via
-  `wire.ReadVarBytes` so a crafted or corrupted durable blob cannot cause large
-  memory allocations. (The separate `arkscript.readVarBytes` used by policy
-  template decoding caps at `MaxPolicyTemplateBytes` (64 KiB); the 520-byte cap
-  applies only to persisted OOR condition witnesses.)
-- At submit time only structural validation runs (`ValidateSubmitPackage`); full
-  script VM validation requires both signatures and runs at finalize.
-- Incoming ancestor packages are validated against a checkpoint count limit
-  per ancestor via `packageArtifactsFromRPC`, preventing resource exhaustion
-  from misbehaving indexers.
-- The indexer-supplied `tree_depth` on incoming ancestry paths is validated
-  against the reconstructed path via `arkrpc.ValidateAncestryPathDepth` in
-  `ancestryFromRPC`. A truncated depth claim or under-reported CSV window
-  causes the package to be rejected.
-- `validateIncomingPackageGraph` is called by
-  `IncomingTransferEventFromResponseWithLimits` after the package is
-  assembled; it validates the root + all ancestor packages as a final
-  defense-in-depth check before the event is dispatched to the FSM.
-- Point-of-no-return: when server co-signs checkpoint transaction(s).
-- After checkpoint signature, client must resume and obtain byte-identical
+  `MultiSigCollabTapLeaf(clientKey, operatorKey)`, not single-sig.
+- `signCustomCheckpointPSBT` re-verifies that the custom spend path
+  binds to the VTXO pkScript via `SpendPath.VerifyBindsToPkScript`
+  before signing — covers persisted `TransferInputSnapshot`s resumed
+  from disk that bypassed `BuildCustomTransferInputs`.
+- Condition witness encoding is bounded by `maxConditionWitnessItems =
+  64` and `maxConditionWitnessItemBytes = 520` (matches Bitcoin's
+  `MAX_SCRIPT_ELEMENT_SIZE`). Both encode/decode enforce this via
+  `wire.ReadVarBytes` so a crafted blob cannot cause large
+  allocations. Policy template decoding uses the separate
+  `arkscript.readVarBytes` capped at `MaxPolicyTemplateBytes` (64 KiB).
+- Submit-time only does structural validation
+  (`ValidateSubmitPackage`); full script VM validation runs at
+  finalize (requires both signatures).
+- Incoming ancestor packages have a per-ancestor checkpoint count cap
+  (`packageArtifactsFromRPC`, `maxAncestorPackages = 64`) to prevent
+  resource exhaustion from a misbehaving indexer.
+- Indexer-supplied `tree_depth` is cross-checked against the
+  reconstructed path via `arkrpc.ValidateAncestryPathDepth` in
+  `ancestryFromRPC`. Truncated depth or under-reported CSV window
+  rejects the package.
+- `validateIncomingPackageGraph` runs from
+  `IncomingTransferEventFromResponseWithLimits` after assembly as a
+  final defense-in-depth check before FSM dispatch.
+- Point-of-no-return: server co-signing the checkpoint
+  transaction(s). After that, client must resume with byte-identical
   co-signed PSBTs (deterministic construction).
-- Transport outbox events (submit, finalize, ack) are durably enqueued, then
-  delivered to ServerConn after the OOR actor transaction commits. The enqueue
-  is part of the actor transition; the transport side effect runs outside the
-  actor DB transaction and is retried through the actor delivery store.
-- Package persistence tracks finalized outgoing packages and local input
-  bindings for recovery. On outgoing finalize, local input-spend completion is
-  driven before the package write so the VTXO manager can join the durable OOR
-  actor transaction instead of racing a second SQLite writer.
-- Incoming receive never performs synchronous unary RPCs inside the durable
-  actor DB transaction. Both incoming-hint resolution and authoritative metadata
-  lookup are emitted as transport-native durable `serverconn` query messages and
-  delivered back as fresh durable messages.
-- `LocalPersistenceOutboxHandler.CallbackRef` (on the inner `SigningOutboxHandler`)
-  receives async materialization results so indexer queries run outside the actor
-  tx, preventing SQLite write-lock starvation.
-- `handleMarkInputsSpent` skips non-local outpoints (those not found in the VTXO
-  store) before routing to `CompleteSpend` or direct store writes. When
-  `CompleteSpend` is nil, falls back to direct `UpdateVTXOStatus` writes for
-  migration compatibility. When `CompleteSpend` is configured, its synchronous
-  manager `Ask` can join the durable actor tx; package persistence is ordered
-  after this step to avoid racing a second SQLite writer. A retryable error is
-  returned if `actor.ErrNoActorsAvailable` is returned by the VTXO manager.
-- `handleMaterializeIncoming` only calls `NotifyIncomingVTXOs` directly when the
-  handler is running outside a durable actor DB tx (`hasActorDBTx` returns
-  false). Inside a durable actor tx, notification is deferred to
-  `notifyMaterializedVTXOs` via the `IncomingHandledEvent` follow-up path so the
-  manager sees materialization exactly once.
-- `ListSessionsRequest` collects summaries from the in-memory `sessions` map;
-  results are sorted deterministically by SessionID string for stable output.
-  Direction and PendingOnly filters are applied after projection.
-- Checkpoint version is `oorCheckpointVersion = 2`. The restore path accepts
-  versions 1 and 2; unknown versions are rejected.
-- Self-transfer: a `ResolveIncomingTransferRequest` for a session that has an
-  active outgoing session returns an error until the outgoing session reaches a
-  terminal state, at which point the outgoing entry is deleted and an incoming
+- Transport outbox events (submit / finalize / ack) are durably
+  enqueued in the actor transition; transport side effects run
+  outside the actor DB tx and are retried via the actor delivery
+  store.
+- Outgoing finalize ordering: local input-spend completion is driven
+  **before** the package write so the VTXO manager joins the durable
+  OOR actor tx instead of racing a second SQLite writer.
+- Incoming receive never performs synchronous unary RPCs inside the
+  durable actor DB tx. Both phase-1 hint resolution and phase-2
+  authoritative metadata lookup are durable `serverconn` query
+  messages, delivered back as fresh durable events.
+- `LocalPersistenceOutboxHandler.CallbackRef` (on the inner
+  `SigningOutboxHandler`) receives async materialization results so
+  indexer queries run outside the actor tx, preventing SQLite
+  write-lock starvation.
+- `handleMarkInputsSpent` skips non-local outpoints, routes the rest
+  to `CompleteSpend` (or direct store writes if `nil`).
+  `actor.ErrNoActorsAvailable` returns a retryable error.
+- `handleMaterializeIncoming` only calls `NotifyIncomingVTXOs`
+  directly when `hasActorDBTx` is false; inside a durable actor tx,
+  notification is deferred to `notifyMaterializedVTXOs` via the
+  `IncomingHandledEvent` follow-up path so the manager sees
+  materialization exactly once.
+- `ListSessionsRequest` sorts results deterministically by SessionID
+  string; direction / pending filters apply after projection.
+- `oorCheckpointVersion = 2`. Restore accepts versions 1 and 2.
+- Self-transfer: a `ResolveIncomingTransferRequest` for a session
+  with an active outgoing session errors until the outgoing session
+  terminates; then the outgoing entry is deleted and an incoming
   session is created in its place.
-- `SigningEffectActor` signing requests are durable: the OOR actor persists FSM
-  state and enqueues the `SigningEffectRequest` before the signing call runs.
-  A retried duplicate (restart) that reaches OOR after the FSM has already
-  advanced past the signing state is silently discarded — OOR's `DriveEventRequest`
-  handler treats stale signing events as no-ops rather than errors.
-- `ReceiveLimits` are propagated through the codec factory (`newOORActorCodec`
-  and `NewSigningEffectCodec`) so every deserialized message enforces the same
-  caps as the in-memory path. Codec instances are shared: one per actor, not one
-  per message.
-- `StartTransferRequest` carries an `IdempotencyKey` string; when non-empty the
-  actor checks `FindOutgoingSessionByIdempotencyKeyRequest` before creating a new
-  session, returning `StartTransferResponse{Existing: true}` if the key already
-  maps to a live session. Empty key preserves the historical deterministic-session
-  (Ark txid) behavior.
+- `SigningEffectActor` requests are durable: OOR persists FSM state
+  and enqueues the request before signing runs. A restart-duplicate
+  that reaches OOR after the FSM has advanced is silently discarded
+  by `DriveEventRequest`.
+- `ReceiveLimits` are propagated through codec factories
+  (`newOORActorCodec`, `NewSigningEffectCodec`) so every deserialized
+  message enforces the same caps as the in-memory path. Codec
+  instances are shared per actor.
+- `StartTransferRequest.IdempotencyKey`: when non-empty, the actor
+  checks `FindOutgoingSessionByIdempotencyKeyRequest` before creating
+  a new session, returning `StartTransferResponse{Existing: true}` on
+  hit. Empty key preserves the historical deterministic
+  (Ark txid) session.
 
 ## Deep Docs
 
 - [oor/doc.go](doc.go) — Package overview.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
+</content>
+</invoke>

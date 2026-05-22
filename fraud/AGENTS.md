@@ -10,8 +10,9 @@ automatically triggers unilateral exit for all affected recipient VTXOs.
 
 - `WatcherActor` — Durable actor managing passive fraud detection. Registered
   under service key `"recipient-fraud-watcher"` via `ServiceKey()`. Tracks
-  a `WatchPlan` per live VTXO; on spend notification, Tells
-  `SpendObservedMsg` to the unroll registry for each affected target.
+  a `WatchPlan` per live VTXO; on spend notification, asks the unroll
+  registry to `EnsureUnroll` with `TriggerFraudSpend` for each affected
+  target.
 - `WatcherConfig` — Wiring: `ChainSource` (spend monitor), `UnrollRef`
   (durable unroll job trigger), `Log`, `MailboxSize` (default 64).
 - `WatchPlan` — Passive watch set for one VTXO. Contains a target
@@ -35,7 +36,7 @@ automatically triggers unilateral exit for all affected recipient VTXOs.
   - → `chainsource`: `RegisterSpendRequest` per ancestor outpoint on
     `TrackVTXOsRequest`; `UnregisterSpendRequest` on `UntrackRequest` /
     when the last target referencing a watch point is removed.
-  - → `unroll` registry (via `UnrollRef.Tell`): `EnsureUnrollRequest` with
+  - → `unroll` registry (via `UnrollRef.Ask`): `EnsureUnrollRequest` with
     `TriggerFraudSpend` when a watched ancestor is spent.
 - **Receives**:
   - ← `darepod`: `TrackVTXOsRequest`, `UntrackRequest`

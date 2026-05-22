@@ -19,12 +19,12 @@ transport, without duplicating Ark runtime behavior.
 - `EmbeddedConfig` — In-process daemon hosting config. Currently passes
   through a cloned `*darepod.Config`; the SDK hides transport and lifecycle
   management, not the full daemon config surface.
-- `InProcessConfig` — Config for `WrapDaemonServer` (new). Wraps an
+- `InProcessConfig` — Config for `WrapDaemonServer`. Wraps an
   already-running `daemonrpc.DaemonServiceServer` behind a private
   bufconn-backed gRPC server. Holds the `DaemonServer`, optional
   `BufferSize`, `DialOptions`, and `ServerOptions`. The returned `Client`
   owns only the private transport, not the supplied daemon runtime.
-- `WrapDaemonServer` — Constructor (new) that creates a `Client` facade
+- `WrapDaemonServer` — Constructor that creates a `Client` facade
   over an in-process daemon RPC implementation without dialing the daemon's
   public network listener. Used for tight in-process integration where the
   host already owns the daemon runtime.
@@ -45,7 +45,7 @@ transport, without duplicating Ark runtime behavior.
 - Policy/OOR helpers such as `SendOORWithPolicy`, `SendOORWithCustomInputs`,
   typed indexed VTXO lookups, and typed receive-script decoding belong here
   so higher-level packages do not rebuild daemonrpc adapters.
-- Receive-auth helpers (new): `ReceiveAuthKey`, `SignReceiveAuthMessage`,
+- Receive-auth helpers: `ReceiveAuthKey`, `SignReceiveAuthMessage`,
   `SignReceiveAuthMessageCompact`, `ReceiveAuthECDH` — delegate payment-scoped
   signing and Sphinx ECDH operations to the daemon wallet without exposing the
   raw private key to the SDK caller. Used by `sdk/swaps` for receive invoice

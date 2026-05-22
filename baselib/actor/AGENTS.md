@@ -36,7 +36,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `WithoutOutboxID` — Context helper that strips the propagated outbox ID so child operations do not inherit the parent's delivery tracking scope.
 - `Promise[T]` / `Future[T]` — Async result types for Ask-pattern responses.
 - `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors).
-- `Mailbox[M, R]` — Interface for actor message queues: `Send(ctx, env) error` (blocking, returns `ErrMailboxClosed` or `ErrActorTerminated` on failure), `TrySend(env) error` (non-blocking), `Receive(ctx) iter.Seq[envelope]`, `Close()`, `IsClosed() bool`, `Drain() iter.Seq[envelope]`. `Send` previously returned `bool`; it now propagates the exact failure cause so callers can distinguish `ErrMailboxClosed`, `ErrActorTerminated`, and `context.Canceled`/`context.DeadlineExceeded` without inspecting actor state.
+- `Mailbox[M, R]` — Interface for actor message queues: `Send(ctx, env) error` (blocking; returns `ErrMailboxClosed`, `ErrActorTerminated`, or a context error on failure), `TrySend(env) error` (non-blocking), `Receive(ctx) iter.Seq[envelope]`, `Close()`, `IsClosed() bool`, `Drain() iter.Seq[envelope]`.
 - `isExpectedShutdownErr(err) bool` — Internal helper that classifies errors as expected during teardown: context cancellation/deadline, closed DB handle ("sql: database is closed", "sql: connection is already closed", "use of closed network connection"). Used by the lease loop to demote shutdown-path failures to debug instead of warn-flooding test artifacts at itest tail.
 - `Message.CorrelationKey() string` — Per-message FIFO key consumed by the
   durable mailbox's claim path. Non-empty keys participate in per-key FIFO:

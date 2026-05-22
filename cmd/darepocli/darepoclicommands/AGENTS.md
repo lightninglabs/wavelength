@@ -67,34 +67,33 @@ who want direct access.
 | `swap resume` | `ResumeSwap` | Wake a persisted swap worker |
 | `swap watch` | `SubscribeSwaps` | Stream swap summary updates |
 
-## Key Types
+## Key Helpers
 
-- `NewRootCmd()` — Creates the top-level cobra command with all
-  subcommands registered.
-- `getDaemonConn()` / `getDaemonClient()` — Connect to the daemon's
-  gRPC endpoint. TLS by default; `--no-tls` opts out for local
-  development.
-- `withWalletClient()` — Wraps a wallet RPC invocation; maps
-  `codes.Unimplemented` from daemons that lack the walletrpc tag to a
-  clear `errWalletRPCDisabled` error pointing at
-  `docs/walletrpc_build.md`.
-- `getSwapClient()` — Connects to the daemon's `swapclientrpc`
-  subserver (`swapruntime` tag only).
-- `parseRequest()` — Generic JSON-or-flags request parser for proto
-  messages (consumed by `ark.*` commands).
-- `methodRegistry()` / `schemaMethod` / `schemaParam` — Machine-readable
-  schema for all CLI commands; shared source of truth for `schema` and
-  MCP tool definitions. Built from `walletAdminMethodRegistry`,
-  `walletPaymentMethodRegistry`, `walletQueryMethodRegistry`,
-  `arkBaseMethodRegistry`, `arkVTXOMethodRegistry`, and
-  `arkSendMethodRegistry` sub-registries.
-- `readPassword()` — Reads the wallet password from
-  DAREPOD_WALLET_PASSWORD / --wallet_password_file / stdin / TTY
-  prompt. Never from CLI args.
+For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/darepocli/darepoclicommands.<Symbol>`.
+
+- `NewRootCmd()` — top-level cobra command with all subcommands
+  registered.
+- `getDaemonConn()` / `getDaemonClient()` — TLS-by-default daemon
+  gRPC dial; `--no-tls` opts out for local dev.
+- `withWalletClient()` — maps `codes.Unimplemented` to
+  `errWalletRPCDisabled` (with a pointer to `docs/walletrpc_build.md`)
+  for daemons built without the walletrpc tag.
+- `getSwapClient()` — daemon `swapclientrpc` dial (`swapruntime`
+  tag only).
+- `parseRequest()` — generic JSON-or-flags proto request parser
+  (consumed by `ark.*` commands).
+- `methodRegistry()` / `schemaMethod` / `schemaParam` —
+  machine-readable schema for all CLI commands; shared source of
+  truth for `schema` and MCP tool definitions. Built from the
+  `walletAdmin`/`walletPayment`/`walletQuery`/`arkBase`/`arkVTXO`/
+  `arkSend` sub-registries.
+- `readPassword()` — reads wallet password from
+  `DAREPOD_WALLET_PASSWORD` → `--wallet_password_file` → stdin → TTY.
+  **Never from CLI args.**
 - `validateDestination()` / `validateOutpoint()` /
-  `validateFreeText()` — Input hardening shared across the seven
-  top-level verbs. Reject control characters, query/fragment
-  characters, malformed outpoints, ambiguous flag combos.
+  `validateFreeText()` — input hardening shared across the seven
+  top-level verbs (reject control chars, query/fragment chars,
+  malformed outpoints, ambiguous flag combos).
 
 ## Relationships
 

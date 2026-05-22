@@ -30,11 +30,12 @@ btcwallet.BtcWallet regardless of the underlying chain source.
 ## Invariants
 
 - Taproot scripts must be imported under `KeyScopeBIP0086` (not the custom chain key scope), because btcwallet's block processing skips credit tracking for non-default scopes (`chainntfns.go:IsDefaultScope` check).
-- `ImportedAddrs` is in-memory only. On restart it must be repopulated from
-  the database. `ImportTaprootScript` now catches `waddrmgr.ErrDuplicateAddress`
-  and recovers the existing address via `addressForTaprootScript`, repopulating
-  the filter without a second import attempt. This handles the case where
-  btcwallet already persisted the script but the in-memory filter started empty.
+- `ImportedAddrs` is in-memory only and must be repopulated from the DB on
+  restart. `ImportTaprootScript` recovers from
+  `waddrmgr.ErrDuplicateAddress` by resolving the existing address via
+  `addressForTaprootScript`, repopulating the filter without a second
+  import attempt — covers the case where btcwallet already persisted the
+  script but the in-memory filter started empty.
 - `WalletPassphrase` is shared across all wallet backends for both `PrivatePass` and `PublicPass`.
 
 ## Deep Docs
