@@ -23,6 +23,14 @@ background ingress polling with event routing.
 - `DurableUnaryQuery` — Interface implemented by transport-native durable query messages that persist raw query parameters (not a full proto). The `ServerConnectionActor` matches any `DurableUnaryQuery` generically in its `Receive` loop and calls `buildDurableUnary` to construct a `SendUnaryRequest` on the fly, using `BuildBody`, `QueryCorrelationID`, `QueryMsgID`, `QueryIdempotencyKey`, and `ServiceMethod`.
 - `SendListOORRecipientEventsByScriptRequest` — TLV-durable (type `2003`) indexer query message for phase-1 OOR receive resolution. Persists PkScript, AfterEventID, Limit, CorrelationID, MsgID, and IdempotencyKey; the proof-gated proto body is built at send time by `DurableUnaryRequestBuilder.BuildListOORRecipientEventsByScriptRequest`.
 - `SendListVTXOsByScriptsRequest` — TLV-durable (type `2004`) indexer query message for phase-2 OOR metadata resolution. Persists PkScripts (count-prefixed, length-prefixed list), opaque AfterCursor, Limit, CorrelationID, MsgID, and IdempotencyKey; the proof-gated proto body is built by `DurableUnaryRequestBuilder.BuildListVTXOsByScriptsRequest`.
+- `CorrelationKey()` on `SendClientEventRequest` — Forwards the inner
+  `ServerMessage`'s per-key FIFO key. Uses a structural assertion on the
+  inner message in the pre-Encode path; falls back to a `cachedCorrelationKey`
+  (populated at TLV decode) in the post-Decode path, because `Decode`
+  replaces the concrete inner message with a `rawServerMessage` that no
+  longer implements `CorrelationKey()`. This ensures the durable mailbox
+  enqueues events into the correct per-key FIFO lane (e.g. `oor/<session>`,
+  `round/<id>`) even after a crash-replay decode cycle.
 
 ## Relationships
 
@@ -50,6 +58,10 @@ background ingress polling with event routing.
 - `DurableUnaryQuery` implementations must produce stable identity bytes in `BuildBody` so that `MsgID` and `IdempotencyKey` are deterministic across restarts (auto-derived via `mailboxconn.StableEventMsgID` / `StableEventIdempotencyKey` when the caller leaves them empty).
 - `ServerConnectionActor` runs a background heartbeat goroutine (`DefaultHeartbeatInterval` = 30s) to keep the mailbox session alive.
 - Ingress handles header-only error responses (nil body) by routing them as errors rather than panicking on nil proto.
+- `SendClientEventRequest.CorrelationKey()` always returns the correct
+  per-key FIFO lane key regardless of whether the message was constructed
+  fresh or decoded from TLV. The `cachedCorrelationKey` field is populated
+  during `Decode` via `tlv.TlvType8` so restarts do not lose FIFO routing.
 
 ## Deep Docs
 

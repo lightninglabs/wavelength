@@ -43,6 +43,7 @@ package may import from a higher layer.
 | [`btcwbackend`](btcwbackend/) | Neutrino-backed wallet backend (btcwallet + compact block filters) |
 | [`walletcore`](walletcore/) | Shared wallet abstractions and boarding logic used by lwwallet and btcwbackend |
 | [`proofkeys`](proofkeys/) | Interface for wallet-managed key derivation and indexer proof signing |
+| [`fraud`](fraud/) | Fraud detection actor: watches OOR ancestor outpoints on-chain and triggers unilateral exit when an ancestor is spent |
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
@@ -52,6 +53,7 @@ package may import from a higher layer.
 | Package | Purpose |
 |---------|---------|
 | [`darepod`](darepod/) | Daemon orchestrator: wires all subsystems, exposes gRPC API |
+| [`gateway`](gateway/) | HTTP gateway utilities (mux options, CORS, endpoint normalization) for grpc-gateway integration |
 | [`sdk/ark`](sdk/ark/) | Consumer-facing Go SDK facade: remote or embedded daemon access with typed models |
 | [`sdk/swaps`](sdk/swaps/) | Lightning-to-Ark / Ark-to-Lightning atomic swap SDK with durable FSM flows |
 | [`sdk/walletdk`](sdk/walletdk/) | Wallet-shaped SDK facade for host apps: embeds the daemon in-process, dials it over a private bufconn transport, exposes typed methods for the seven core wallet verbs (create, unlock, send, recv, list, balance, exit). The highest-level layer in the stack; wraps `walletrpc.WalletService`. Wallet RPC methods gated behind `walletrpc` (which transitively requires `swapruntime`) |
@@ -63,8 +65,9 @@ package may import from a higher layer.
 | [`indexer`](indexer/) | Server indexing client for receive script registration |
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
 | [`arkrpc/treeconv`](arkrpc/treeconv/) | Narrow re-export of tree-path conversion helpers without the full gRPC surface |
-| [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb, swapclientrpc, walletrpc) |
+| [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb, swapclientrpc, walletrpc) and HTTP transport (`rpc/restclient`) |
 | [`rpc/walletrpc`](rpc/walletrpc/) | Highest-level gRPC surface: `WalletService` with the seven core wallet verbs. Composes `daemonrpc` and `rpc/swapclientrpc` server-side via `swapwallet` |
+| [`rpc/restclient`](rpc/restclient/) | HTTP/protoJSON transport adapter: `Client`, `StreamClient[T]`, and per-service factory functions implementing the same gRPC stub interfaces over REST |
 | [`daemonrpc`](daemonrpc/) | Daemon gRPC API definitions |
 
 ### Layer 4: Testing & Tooling
@@ -75,6 +78,7 @@ package may import from a higher layer.
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal/actortest`](internal/actortest/) | Durable actor integration tests with real DB backends |
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
+| [`internal/indexerlimits`](internal/indexerlimits/) | Client-side bounds for indexer pagination cursors (defense-in-depth against misbehaving remotes) |
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |
 | [`tools`](tools/) | Development tool dependencies (protoc plugins, sqlc) |
 | [`cmd/protoc-gen-mailboxrpc`](cmd/protoc-gen-mailboxrpc/) | `protoc` plugin generating typed `mailbox/rpc` client/server stubs from `.proto` service definitions |

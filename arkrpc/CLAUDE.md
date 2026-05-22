@@ -9,7 +9,7 @@ Proto source: `arkrpc/ark.proto`, `arkrpc/indexer.proto`.
 ## Key Types
 
 - `TreePath` / `TreePathNode` / `TxOut` — Structured proto messages for the
-  VTXO commitment tree path. Replaces opaque TLV bytes on the wire.
+  VTXO commitment tree path.
 - `TreePathFromTree` / `TreePathToTree` — Lossless conversion between
   `tree.Tree` and `arkrpc.TreePath`. Uses deterministic pre-order flattening
   with sorted child indices. Re-exported under the narrower

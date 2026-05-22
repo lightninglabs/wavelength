@@ -8,103 +8,342 @@ gRPC API.
 
 ## Key Types
 
-- `Server` — Main daemon owning wallet, DB, chainsource actor, gRPC server, and ActorSystem. Caches `localMailboxID` (pubkey-derived), `authSigHex` (Schnorr auth) and a single `clk` (`clock.Clock`) that all sub-stores share for deterministic time injection.
-- `RPCServer` — Implements the gRPC `DaemonService` API (Board, ListRounds, WatchRounds, NewReceiveScript, SendVTXO, etc.). Includes test hooks for mailbox edge factory and round registration. Holds an in-memory `customInputLocks` map (guarded by `customInputLocksMu`) that reserves custom OOR input outpoints for the duration of a `SendOOR` call to prevent concurrent callers from double-signing the same custom input.
-- `Config` — Daemon configuration (data dir, network, RPC host, wallet type, etc.). Includes `MailboxEdgeFactory` hook for test harness transport interception and `PackageSubmitter chainbackends.PackageSubmitter` for injecting a v3 CPFP package submitter (set by the test harness via `BitcoindPackageSubmitter`, and by `cmd/darepod` from `bitcoind.{host,user,pass}` flags when present; not serialized to config files). Also carries an optional `Unroll *UnrollConfig` tuning block, and a `MaxOperatorFeeSat int64` cap fed into `ClientEnvironment.MaxOperatorFee`. Under the #270 seal-time fee handshake every server-issued `JoinRoundQuote` is compared against this cap; `Config.Validate()` fails closed when the value is non-positive (zero / unset is a misconfiguration, not "no cap"). The CLI exposes the knob as `--maxoperatorfeesat`; `DefaultMaxOperatorFeeSat` provides a generous default so a user who builds from defaults never runs with the cap fail-closed by accident.
-- `UnrollConfig` — Tuning for the unilateral-exit subsystem. Fields: `BumpAfterBlocks int32` (fee-bump cadence; zero → default 6) and `MaxFeeRateSatPerVByte int64` (cap fed to both `txconfirm` and the unroll registry; zero → each subsystem's own default). Surfaced on the `Server` via `unrollMaxFeeRate()` which gates non-positive values to zero.
-- `TriggerRoundRegistration` — Daemon-internal helper that injects an `IntentRequested` event into the round actor (in `server_round_testhook.go`). Backs the `JoinNextRound` RPC and the integration harness's round-registration hook. Uses `context.WithoutCancel` on the `Ask` so the caller's ctx doesn't propagate into the FSM's downstream forfeit-VTXO lookup; keeps the original ctx on `Await` so the handler returns promptly on caller disconnect.
-- `GetStoredVTXO` — Harness-only accessor that returns a persisted `vtxo.Descriptor` for a given outpoint directly from the daemon's VTXO store. Lets integration tests inspect partial unroll state without reaching into internal fields.
-- `GetVTXOLineageTx` / `VTXOLineageEntry` — Harness-only accessor that returns one transaction in a VTXO's recovery lineage plus the outpoints of its parent txs. Callers walk the lineage by recursively calling with each returned parent outpoint until `OnChainRoot=true` (the parent is the on-chain batch tx). Implemented on top of the same `unroll.LocalProofAssembler` the unroll registry uses (stashed on `Server.proofAssembler` during `initUnrollSubsystem`), but routed through the assembler's terminal-tolerant `EnsureProofForHarness` entry point so the historical lineage of an already-spent or already-forfeited VTXO is still walkable — that is the load-bearing capability for fraud-response itests where the harness force-broadcasts lineage txs of a terminal VTXO to provoke server-side classification + response. The field type `harnessProofAssembler` is a 1-method local interface that exposes ONLY the terminal-tolerant entry point, so production code paths cannot reach `EnsureProof` through this seam — production proof assembly flows exclusively through the unroll registry's own `ProofAssembler` reference, which keeps the terminal-status guard in force. NOT for production use.
-- `WalletState` — Enum (None/Locked/Ready) for wallet lifecycle.
-- `serverDurableUnaryBuilder` — Implements `serverconn.DurableUnaryRequestBuilder` by delegating to the indexer client with proof-of-control credentials.
-- `IndexerProofKey` — Public server method that derives the fixed wallet key for a given key locator and returns an `indexer.SchnorrSigner` backed by the proof-key backend. Used by `EnsureDefaultOORReceiveScript` and the `serverDurableUnaryBuilder` to produce per-request proof-of-control signatures.
-- `NewOwnedReceiveScriptSigner` — Indexer signer that resolves the wallet key for any persisted owned receive script, then delegates signing to the backend-specific signer.
-- `ownedScriptCheckerAdapter` — Wraps `db.OORArtifactPersistenceStore` to satisfy `round.OwnedScriptChecker`. Uses `context.WithoutCancel` so the confirmation-time ownership lookup survives FSM shutdown. Returns `false` on `sql.ErrNoRows`.
-- `ownedScriptRegistrarAdapter` — Wraps the same store to satisfy `round.OwnedScriptRegistrar`. Persists pkScripts as `OwnedReceiveScriptSourceWallet` with the operator pubkey and VTXO exit delay from `OperatorTerms`.
-- `ownedScriptLookupAdapter` — Wraps the store to satisfy `vtxo.OwnedScriptLookup` for the incoming VTXO handler, converting `db.OwnedReceiveScriptRecord` to `vtxo.OwnedReceiveScript`.
-- `EnsureDefaultOORReceiveScript` / `CreateOORReceiveScript` — Receive-key lifecycle: derive, register with indexer (proof-of-control), persist ownership record.
-- `ResolveIncomingMetadataFromIndexer` — Resolves authoritative VTXO lineage metadata from the indexer's `ListVTXOsByScripts` response for incoming materialization.
-- `SendVTXO` — RPC handler for in-round directed sends. Validates recipients (count cap, positive and `MaxSatoshi`-bounded amounts, overflow-safe sum), resolves destinations via `resolveRecipientOutput`, and delegates to the wallet actor.
-- `resolveRecipientOutput` — Extracts pkScript and client pubkey from an `Output` proto oneof (pubkey or address). Enforces taproot-only for directed sends.
-- `registerIncomingVTXOEventRoute` — Registers the `arkrpc.IncomingVTXOEvent` mailbox route under `MethodIncomingVTXO`, dispatching decoded events to the incoming VTXO handler actor via its service key.
-- `GetRound` / `ListRounds` — RPC handlers for round operation status. Live
-  rounds come from the round actor; persisted rounds come from SQL summaries
-  including commitment txid, confirmation height, creation/update timestamps,
-  locally known inputs, and created VTXOs.
-- `GetOORSession` / `ListOORSessions` — RPC handlers for OOR operation status.
-  Pending and failed sessions come from the OOR actor's `ListSessionsRequest`;
-  completed sessions come from persisted OOR package artifacts. The merge keeps
-  actor state authoritative when both live and persisted views exist.
-- `initLedgerActor` — Constructs `ledger.LedgerActor` with both `db.NewLedgerStoreDB` (double-entry ledger) and `db.NewUTXOAuditStoreDB` (UTXO audit log) as stores, starts it, registers it with the actor system under `ledger.ServiceKeyName`, and stashes the `LedgerStoreDB` on the `Server` as `s.ledgerStore` so the RPC layer can read paginated history without going through the actor mailbox. Called in `run` after the DB and delivery store are ready but before wallet unlock, since the actor does not depend on wallet state.
-- `EstimateFee` — RPC handler that proxies to the operator's `EstimateFee` over the direct gRPC connection (`s.serverConn`, reused from `fetchOperatorTerms`). No local caching: the operator's reply reflects live treasury utilization, so callers always see fresh numbers.
-- `GetFeeHistory` — RPC handler that reads through `s.ledgerStore.ListLedgerEntriesWithFeesTotal` for mutual consistency between the page and the cumulative operator-fees-paid total. Validates limit/offset bounds (offset clamped to `math.MaxInt32`) and converts sqlc rows to proto `FeeHistoryEntry` with debit/credit accounts, round_id, session_id, and event_type verbatim via `ledgerEntryToProto`.
-- `ListTransactions` — RPC handler that reads a unified newest-first transaction history page from the ledger and sweep databases. Accepts `type` filter (`boarding`, `round`, `oor`, `sweep`), optional `from_unix_s`/`to_unix_s` timestamp range, `limit` (capped at 1000), and `offset` (clamped to `math.MaxInt32`). Delegates to `ledgerStore.ListTransactionHistory` and converts each sqlc row via `transactionHistoryRowToProto`.
-- `proxyUpstreamError(err, msg) error` — gRPC-safety helper that extracts the upstream gRPC status, preserves the code, and returns a new status carrying a generic RPC-scoped message. Errors without a status map to `codes.Unavailable` so clients can retry. Used by `EstimateFee` and `GetFeeHistory` to avoid collapsing codes to `Unknown` and leaking operator-side error text across the daemon→client boundary.
-- `quoteOperatorFee` — Internal helper that asks the operator's `ArkService.EstimateFee` via direct gRPC and returns `TotalFeeSat` as a `btcutil.Amount`. Called by `Board` and `SendVTXO` so the client's implicit fee matches the server's `validateOperatorFee` under the seal-time fee schedule. Returns zero when `serverConn` is nil (degraded mode).
-- `autoRefreshFeeQuoter` — Returns a `vtxo.RefreshFeeQuoter` closure wired into every VTXO actor for auto-refresh fee estimation. Advisory only under the #270 seal-time handshake: the closure's return value is carried on `RefreshVTXORequest.OperatorFee` for observability but is not written to the intent; the server's seal-time compute is authoritative. Falls back to `terms.MinOperatorFee` when the operator is unreachable.
-- `SweepBoardingUTXOs` — RPC handler that sweeps CSV-mature boarding UTXOs back to the wallet. Resolves candidates (explicit outpoints or all confirmed/failed/expired intents), estimates the fee, builds and signs an aggregate boarding sweep tx via `buildBoardingSweepTx`, persists the record, broadcasts it, and wakes the `boardingSweepWatcher` to register spend watches. Returns a preview (no broadcast) when `broadcast=false` or no mature outputs exist.
-- `ListBoardingSweeps` — RPC handler that returns paginated persisted aggregate boarding sweeps, with optional status filter and cursor-based pagination via a numeric offset token.
-- `boardingSweepWatcher` — Daemon-owned background watcher that resumes pending boarding sweeps on startup, rate-limited rebroadcasts published sweeps, and registers chain spend notifications via `chainsource.RegisterSpend` per input. Marks sweep inputs spent when confirmed. Started by `startBoardingSweepWatcher` on wallet unlock; idempotent so the unlock path is safe to call multiple times.
-- `boardingSweepTx` / `buildBoardingSweepTx` — Constructs and signs one aggregate timeout-path sweep transaction. Iterates the weight estimate up to three times until `SerializeSize` converges so the returned `fee` and `txid` are accurate. Validates fee-percent guard (`defaultBoardingSweepMaxFeePercent = 25%`) and input cap (`defaultBoardingSweepMaxInputs = 100`).
-- `OORConfig` / `OORLimitsConfig` — Configuration block for the OOR actor's incoming receive safety caps (`MaxCheckpoints`, `MaxVTXOMatches`, `MaxMailboxItems`, `MaxMailboxScriptBytes`). `Config.OORReceiveLimits()` normalizes these into `oor.ReceiveLimits` for wiring into `ClientActorCfg.Limits`.
-- `deriveIdentityKeyEarly` — Derives the client's secp256k1 identity key from LND or lwwallet before mailbox transport starts. Propagates wallet-specific errors on failure.
-- `signMailboxAuth` — Produces Schnorr auth signature. LND path uses tagged Schnorr signing RPC (`withSchnorrTag`); lwwallet path signs locally via `serverconn.SignMailboxAuth`.
-- `fetchOperatorPubKeyDirect` — Fetches operator pubkey via direct gRPC `GetInfo` call before the mailbox runtime starts.
-- `reserveCustomInputs` (on `RPCServer`) — Atomically claims every custom OOR outpoint for the duration of a `SendOOR` call. Rejects if any outpoint is already reserved. Returns a release function (typically deferred) that frees all claimed outpoints. Prevents two concurrent `SendOOR` callers from double-signing the same vHTLC claim or other non-wallet-managed input.
-- `initUnrollSubsystem` — Wires the unilateral-exit runtime during `startWalletDependentActors` (step 12, before `initOORActor`). Order of operations: build a `{txconfirm.Wallet, unroll.SweepWallet}` adapter for the active backend (`lndUnrollWallet` / `lwUnrollWallet` / `btcwUnrollWallet`), register the shared `txconfirm.TxBroadcasterActor` under service key `"txconfirm"`, construct the `unroll.UnrollRegistryActor` with the `db.UnilateralExitPersistenceStore`, `LocalProofAssembler`, shared `txConfirmRef`, and unroll wallet, then call `RestoreNonTerminal(ctx)` to re-ingest jobs persisted across restart. Finally builds a `MapInputRef` that translates `vtxo.ExpiringNotification` → `unroll.EnsureUnrollRequest{Trigger: TriggerCriticalExpiry}` and hands it to `lazyChainResolver.Set`, which resolves the forwarding ref that every VTXO actor is already holding.
-- `unrollMaxFeeRate` — Reads `cfg.Unroll.MaxFeeRateSatPerVByte` if positive, else returns zero so each downstream subsystem falls back to its own default. Shared between `txconfirm` and the unroll registry to avoid drift.
-- `lndUnrollWallet` / `lwUnrollWallet` / `btcwUnrollWallet` — Backend-specific adapters that satisfy both `txconfirm.Wallet` (ListUnspent / NewWalletPkScript / FinalizePsbt / LeaseOutput / ReleaseOutput) and `unroll.SweepWallet`. LND forwards to the `BoardingBackend`; the lwwallet and btcwallet paths reach into `BtcWallet` directly, reinterpreting `wallet.LockID` as `wtxmgr.LockID` ([32]byte direct cast) so leases round-trip across restart.
-- `Unroll` — RPC handler for manual unilateral exit. Parses the outpoint, short-circuits with `Created=false` if the VTXO is already in `VTXOStatusUnilateralExit`, else Asks the VTXO manager an `actormsg.ForceUnrollRequest{Reason: "manual RPC request"}` so the VTXO actor transitions cleanly through `UnilateralExitState`. The registry job is created asynchronously off the manager's outbox via the chain resolver seam; the response returns `unroll.ActorIDForTarget(outpoint)` so callers can poll `GetUnrollStatus`. The Ask/Await calls use a `manualUnrollAdmissionTimeout`-bounded context derived via `context.WithoutCancel(ctx)` so a CLI disconnect does not cancel the daemon-local unilateral-exit handoff.
-- Ancestry conversion lives in [`vtxo.AncestryFromRPC`](../vtxo/incoming_ancestry.go); the darepod-local copy that previously lived here was deleted when the OOR and in-round receive paths both converged on the shared `vtxo` helper. `vtxo.MaxAncestryPaths = 64` is the shared cap.
-- `GetUnrollStatus` — Read-through RPC handler. Prefers the live `unroll.UnrollRegistryActor` via `queryUnrollRegistry` (which projects the live `JobState` onto the proto enum), and falls back to `db.UnilateralExitPersistenceStore.GetJob` for terminal/evicted jobs. Returns `Found=false` (not an error) when neither layer has a record, so CLI callers can distinguish "no job" from "lookup failed".
-- `queryUnrollRegistry` — Asks the registry actor an `unroll.GetStatusRequest`; projects the `GetStatusResp` onto the proto status, preferring `State.Phase` / `State.SweepTxid` / `State.FailReason` for `Active` jobs and falling back to the response's terminal snapshot fields otherwise.
-- `unrollPhaseToProto` / `unrollJobStatusToProto` — Dual mappers from the live `unroll.Phase` enum and the persisted `db.UnilateralExitJobStatus` enum into the same proto `UnrollJobStatus`. `PhaseSweepBroadcast` and `PhaseSweepConfirmation` both project to `UNROLL_JOB_STATUS_SWEEPING` so the RPC surface collapses the two internal sweep sub-phases into one client-visible state.
-- `NewWalletAddress` / `ListWalletUnspent` (in `wallet_testhooks.go`) — Backend-agnostic harness helpers that return a fresh backing-wallet P2TR address and the current confirmed UTXO set, respectively, regardless of whether the active backend is LND, lwwallet, or btcwallet. Used by system tests that need to fund the daemon's wallet without knowing the backend type.
+For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darepod.<Symbol>`.
+
+### Server & Configuration
+
+- `Server` — main daemon. Owns wallet, DB, chainsource actor, gRPC
+  server, and `ActorSystem`. Caches `localMailboxID` (pubkey-derived),
+  `authSigHex` (Schnorr auth) and a single `clk` (`clock.Clock`) that
+  all sub-stores share for deterministic time injection.
+- `RPCServer` — implements gRPC `DaemonService`. Holds an in-memory
+  `customInputLocks` map (guarded by `customInputLocksMu`) that
+  reserves custom OOR input outpoints for the duration of a `SendOOR`
+  call.
+- `Config` — daemon configuration. Notable fields:
+  `MailboxEdgeFactory` (test transport interception),
+  `PackageSubmitter chainbackends.PackageSubmitter` (v3 CPFP submitter
+  injected by the harness via `BitcoindPackageSubmitter` and by
+  `cmd/darepod` from `bitcoind.{host,user,pass}` flags; not
+  serialized), optional `Unroll *UnrollConfig`, and `MaxOperatorFeeSat
+  int64` cap fed into `ClientEnvironment.MaxOperatorFee`. Under the
+  #270 seal-time fee handshake every server-issued `JoinRoundQuote`
+  is compared against this cap; `Config.Validate()` fails closed when
+  the value is non-positive. CLI flag `--maxoperatorfeesat`;
+  `DefaultMaxOperatorFeeSat` is a generous default.
+- `UnrollConfig` — `BumpAfterBlocks int32` (fee-bump cadence; zero →
+  default 6), `MaxFeeRateSatPerVByte int64` (cap fed to both
+  `txconfirm` and the unroll registry; zero → each subsystem's
+  default). Surfaced via `unrollMaxFeeRate()`.
+- `OORConfig` / `OORLimitsConfig` — incoming receive safety caps
+  (`MaxCheckpoints`, `MaxVTXOMatches`, `MaxMailboxItems`,
+  `MaxMailboxScriptBytes`). `Config.OORReceiveLimits()` normalizes
+  into `oor.ReceiveLimits`.
+- `WalletState` — `None` / `Locked` / `Ready`.
+
+### RPC Handlers
+
+- `Board` — non-blocking; delegates to wallet actor.
+- `GetRound` / `ListRounds` — round operation status. Live rounds come
+  from the round actor; persisted rounds from SQL summaries. Live
+  rounds surface `commitment_txid` once the FSM reaches
+  `CommitmentTxReceived` (recovered from the state's `TxID` or the
+  embedded commitment PSBT for MuSig2 phases) plus the per-owner
+  expected VTXO amounts, filtered by `IsOwner=true` so other clients'
+  outputs don't inflate the local view (helper: `liveRoundDetails`).
+- `GetOORSession` / `ListOORSessions` — pending and failed from OOR
+  actor `ListSessionsRequest`; completed from persisted artifacts.
+  Actor state is authoritative when both views exist.
+- `SendVTXO` — in-round directed sends. Validates recipients (count
+  cap, positive and `MaxSatoshi`-bounded amounts, overflow-safe sum),
+  resolves destinations via `resolveRecipientOutput`, delegates to
+  the wallet actor.
+- `resolveRecipientOutput` — extracts pkScript and client pubkey from
+  an `Output` proto oneof (pubkey or address). Taproot-only.
+- `ListVTXOs` — paginated VTXO inventory. When called with
+  `VTXO_STATUS_PENDING_ROUND`, branches to `listPendingRoundVTXOs`
+  which bypasses `s.vtxoStore` and projects synthetic VTXOs (amount
+  + round id + commitment txid; outpoint deliberately empty) from
+  each live round FSM via `queryRoundStates`. Rounds already in
+  `ROUND_STATE_CONFIRMED` are skipped so the store-backed
+  `VTXO_STATUS_LIVE` rows don't double-report.
+- `Unroll` / `GetUnrollStatus` — manual unilateral-exit RPCs. `Unroll`
+  short-circuits with `Created=false` when the VTXO is already in
+  `VTXOStatusUnilateralExit`; else asks the VTXO manager
+  `ForceUnrollRequest{Reason: "manual RPC request"}`. Uses
+  `manualUnrollAdmissionTimeout`-bounded context derived via
+  `context.WithoutCancel(ctx)` so CLI disconnect doesn't cancel the
+  daemon-local handoff. `GetUnrollStatus` is read-through: prefers
+  live registry via `queryUnrollRegistry`, falls back to
+  `db.UnilateralExitPersistenceStore.GetJob`. Returns `Found=false`
+  (not error) when neither layer has a record.
+- `unrollPhaseToProto` / `unrollJobStatusToProto` — dual mappers from
+  live `unroll.Phase` and persisted `db.UnilateralExitJobStatus` to
+  the same proto. `PhaseSweepBroadcast` and `PhaseSweepConfirmation`
+  both project to `UNROLL_JOB_STATUS_SWEEPING`.
+- `EstimateFee` / `GetFeeHistory` — operator fee surface.
+  `EstimateFee` proxies to the operator's `EstimateFee` over the
+  direct gRPC connection (`s.serverConn`); no local caching.
+  `GetFeeHistory` reads through
+  `s.ledgerStore.ListLedgerEntriesWithFeesTotal` for page +
+  cumulative-total consistency.
+- `ListTransactions` — newest-first unified history from ledger +
+  sweep DBs. Accepts `type` filter, optional time range, `limit`
+  (cap 1000), `offset` (clamped to `math.MaxInt32`). Delegates to
+  `ledgerStore.ListTransactionHistory` and projects via
+  `transactionHistoryRowToProto`.
+- `proxyUpstreamError(err, msg)` — gRPC-safety helper preserving
+  upstream codes while stripping operator-side text. Errors without a
+  status map to `codes.Unavailable`.
+- `quoteOperatorFee` — internal helper asking the operator's
+  `ArkService.EstimateFee` via direct gRPC. Returns
+  `codes.Unavailable` when `serverConn` is nil (degraded mode) so
+  callers can distinguish transient from permanent.
+- `SweepBoardingUTXOs` — sweeps CSV-mature boarding UTXOs back to the
+  wallet. Resolves candidates (explicit outpoints or all
+  confirmed/failed/expired intents), estimates fee, builds and signs
+  an aggregate tx via `buildBoardingSweepTx`, persists, broadcasts,
+  and wakes `boardingSweepWatcher`. Returns preview when
+  `broadcast=false`.
+- `ListBoardingSweeps` — paginated persisted aggregate sweeps with
+  optional status filter and cursor-based pagination.
+
+### Adapters & Helpers
+
+- `serverDurableUnaryBuilder` — implements
+  `serverconn.DurableUnaryRequestBuilder` via the indexer client with
+  proof-of-control credentials.
+- `IndexerProofKey` — derives the fixed wallet key for a given key
+  locator; returns an `indexer.SchnorrSigner` backed by the proof-key
+  backend.
+- `NewOwnedReceiveScriptSigner` — indexer signer that resolves the
+  wallet key for any persisted owned receive script, then delegates
+  to the backend-specific signer.
+- `ownedScriptCheckerAdapter` / `ownedScriptRegistrarAdapter` /
+  `ownedScriptLookupAdapter` — wrap `db.OORArtifactPersistenceStore`
+  to satisfy `round.OwnedScriptChecker` /
+  `round.OwnedScriptRegistrar` / `vtxo.OwnedScriptLookup`. The
+  checker uses `context.WithoutCancel` so confirmation-time ownership
+  survives FSM shutdown; returns `false` on `sql.ErrNoRows`. The
+  registrar persists pkScripts as `OwnedReceiveScriptSourceWallet`
+  with the operator pubkey and VTXO exit delay from `OperatorTerms`.
+- `EnsureDefaultOORReceiveScript` / `CreateOORReceiveScript` —
+  receive-key lifecycle: derive, register with indexer
+  (proof-of-control), persist ownership record.
+- `ResolveIncomingMetadataFromIndexer` — resolves authoritative VTXO
+  lineage metadata from `ListVTXOsByScripts`.
+- Ancestry conversion lives in
+  [`vtxo.AncestryFromRPC`](../vtxo/incoming_ancestry.go); the
+  darepod-local copy that previously lived here was deleted when the
+  OOR and in-round receive paths both converged on the shared `vtxo`
+  helper. `vtxo.MaxAncestryPaths = 64` is the shared cap.
+- `lndUnrollWallet` / `lwUnrollWallet` / `btcwUnrollWallet` —
+  backend-specific adapters satisfying both `txconfirm.Wallet`
+  (`ListUnspent`/`NewWalletPkScript`/`FinalizePsbt`/`LeaseOutput`/
+  `ReleaseOutput`) and `unroll.SweepWallet`. LND forwards to the
+  `BoardingBackend`; lwwallet/btcwallet paths reach into `BtcWallet`
+  directly, reinterpreting `wallet.LockID` as `wtxmgr.LockID` via
+  direct `[32]byte` cast so leases round-trip across restart.
+- `reserveCustomInputs` (on `RPCServer`) — atomically claims every
+  custom OOR outpoint for a `SendOOR` call. Returns a release
+  function (typically deferred).
+- `autoRefreshFeeQuoter` — wires `vtxo.RefreshFeeQuoter` into every
+  VTXO actor. Advisory under #270: the closure's return value
+  populates `RefreshVTXORequest.OperatorFee` for observability but
+  is not written to the intent. Falls back to
+  `terms.MinOperatorFee` when unreachable.
+- `boardingSweepWatcher` — daemon-owned background watcher: resumes
+  pending sweeps on startup, rate-limited rebroadcasts, registers
+  spend notifications per input, marks inputs spent on confirmation.
+  Started by `startBoardingSweepWatcher` on wallet unlock;
+  idempotent.
+- `boardingSweepTx` / `buildBoardingSweepTx` — constructs and signs
+  one aggregate timeout-path sweep tx. Iterates the weight estimate
+  up to three times until `SerializeSize` converges so `fee`/`txid`
+  are accurate. Validates `defaultBoardingSweepMaxFeePercent = 25%`
+  and `defaultBoardingSweepMaxInputs = 100`.
+- `deriveIdentityKeyEarly` — derives the client's secp256k1 identity
+  key from LND or lwwallet before mailbox transport starts.
+- `signMailboxAuth` — Schnorr auth. LND uses the tagged Schnorr
+  signing RPC (`withSchnorrTag`); lwwallet signs locally via
+  `serverconn.SignMailboxAuth`.
+- `fetchOperatorPubKeyDirect` — fetches operator pubkey via direct
+  gRPC `GetInfo` before the mailbox runtime starts.
+- `initLedgerActor` — constructs `ledger.LedgerActor` with both
+  `LedgerStoreDB` and `UTXOAuditStoreDB`, registers under
+  `ledger.ServiceKeyName`, stashes `LedgerStoreDB` on the `Server`
+  for RPC reads. Called after DB ready but before wallet unlock.
+- `initUnrollSubsystem` — wires the unilateral-exit runtime during
+  `startWalletDependentActors` (step 12, before `initOORActor`).
+  Builds a backend adapter, registers the shared `TxBroadcasterActor`
+  under `"txconfirm"`, constructs `UnrollRegistryActor` with the
+  persistence store, `LocalProofAssembler`, shared `txConfirmRef`,
+  and wallet, then calls `RestoreNonTerminal(ctx)`. Builds a
+  `MapInputRef` translating `vtxo.ExpiringNotification` →
+  `unroll.EnsureUnrollRequest{Trigger: TriggerCriticalExpiry}` and
+  hands it to `lazyChainResolver.Set`.
+- `unrollMaxFeeRate` — `cfg.Unroll.MaxFeeRateSatPerVByte` if
+  positive, else zero (each downstream uses its own default).
+
+### Test Hooks (NOT for production)
+
+- `TriggerRoundRegistration` — injects an `IntentRequested` event
+  into the round actor; backs `JoinNextRound` RPC and the harness
+  registration hook. Uses `context.WithoutCancel` on `Ask` so the
+  caller's ctx doesn't propagate into the FSM's forfeit-VTXO lookup;
+  keeps original ctx on `Await`.
+- `GetStoredVTXO` — harness-only accessor returning a persisted
+  `vtxo.Descriptor` for an outpoint directly from the VTXO store.
+- `GetVTXOLineageTx` / `VTXOLineageEntry` — harness-only accessor
+  returning one lineage tx plus the outpoints of its parent txs.
+  Walked by recursing on each parent outpoint until
+  `OnChainRoot=true`. Implemented on top of the same
+  `unroll.LocalProofAssembler`, but routed through the terminal-
+  tolerant `EnsureProofForHarness` entry point so the lineage of an
+  already-spent / forfeited VTXO stays walkable. The field type
+  `harnessProofAssembler` is a 1-method local interface exposing
+  ONLY the terminal-tolerant entry point so production code paths
+  cannot reach `EnsureProof` through this seam.
+- `NewWalletAddress` / `ListWalletUnspent`
+  (`wallet_testhooks.go`) — backend-agnostic harness helpers
+  returning a fresh P2TR address and the current confirmed UTXO set.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (ActorSystem), `btcwbackend`, `chainbackends`, `chainsource`, `lib/actormsg`, `db`, `ledger` (accounting actor), `round`, `txconfirm`, `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`, `indexer`, `arkrpc`, `lndbackend`, `harness` (bitcoind package submitter wiring in `cmd/darepod`).
-- **Depended on by**: `cmd/darepod` (main entry point).
+- **Depends on**: `baselib/actor`, `btcwbackend`, `chainbackends`,
+  `chainsource`, `lib/actormsg`, `db`, `ledger`, `round`, `txconfirm`,
+  `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`,
+  `indexer`, `arkrpc`, `lndbackend`, `harness` (bitcoind package
+  submitter wiring in `cmd/darepod`), `fraud`, `gateway`,
+  `rpc/restclient`.
+- **Depended on by**: `cmd/darepod`.
 
 ## Invariants
 
-- Server owns ActorSystem lifetime; `Server.run` registers a deferred `actorSystem.Shutdown()` before the deferred `db.Close()` so all actor DB transactions drain before the connection pool is torn down. Without this ordering, in-flight actor lease loops produce "sql: database is closed" warnings at the tail of every itest.
-- Server owns ActorSystem lifetime; shutdown stops all subsystems.
-- Wallet transitions None → Locked → Ready (or direct to Ready if seed provided).
-- Three wallet modes: LND-backed, lightweight (`lwwallet`), or neutrino-backed (`btcwallet` via `btcwbackend`).
-- Mailbox IDs are derived from identity pubkeys (via `serverconn.PubKeyMailboxID`), not config strings. The operator's remote mailbox ID is fetched via direct gRPC before the mailbox runtime starts.
-- Auth headers (Schnorr signature) are injected into all outbound envelopes including response envelopes in `handleInboundRPC`.
+- Server owns `ActorSystem` lifetime; `Server.run` registers a
+  deferred `actorSystem.Shutdown()` **before** the deferred
+  `db.Close()` so all actor DB transactions drain before the
+  connection pool tears down. Without this ordering, in-flight actor
+  lease loops produce "sql: database is closed" warnings at the tail
+  of every itest.
+- Wallet transitions `None → Locked → Ready` (or direct to Ready if
+  seed provided).
+- Three wallet modes: LND-backed, lightweight (`lwwallet`), or
+  neutrino-backed (`btcwallet` via `btcwbackend`).
+- Mailbox IDs are derived from identity pubkeys (via
+  `serverconn.PubKeyMailboxID`), not config strings. The operator's
+  remote mailbox ID is fetched via direct gRPC before the mailbox
+  runtime starts.
+- Auth headers (Schnorr signature) are injected into all outbound
+  envelopes including response envelopes in `handleInboundRPC`.
 - TLS client cert generation is skipped in insecure mode.
-- Per-subsystem logging: configurable log writer, no global mutable loggers. Each subsystem receives its own logger instance.
-- All sub-stores share the single `s.clk` clock instance assigned at `NewServer`. New code must not call `clock.NewDefaultClock()` inside `init*` methods — use `s.clk` so tests can inject deterministic time.
-- Board RPC is non-blocking: delegates to wallet actor and returns immediately.
-- `SendVTXO` enforces a hard recipient cap (`maxRecipients = 256`, see TODO #241), rejects per-recipient amounts outside `(0, MaxSatoshi]`, and uses overflow-safe accumulation when summing recipient amounts. Wallet-side validation (`handleSendVTXOs`) repeats these checks as a defense-in-depth boundary.
-- `SendOOR` with custom inputs uses `reserveCustomInputs` to serialize concurrent calls on the same outpoints. Custom inputs are locked for the RPC lifetime; the lock is released via deferred release on both success and failure paths. Standard wallet-managed VTXOs are separately locked via the VTXO manager's reservation flow.
-- `BuildCustomTransferInputs` validates that (a) the caller-supplied policy template compiles to the provided pkScript (via `PolicyTemplate.MatchesPkScript`), and (b) the spend path's control block commits to the same pkScript (via `SpendPath.VerifyBindsToPkScript`). Together these prevent a caller from obtaining signatures for an unrelated tapscript by claiming a different output's policy template.
-- ListRounds splits pending (in-memory from actor) and persisted (SQL with cursor pagination) rounds.
-- Server holds a `roundStore` reference for direct SQL queries from the RPC layer.
-- Actor startup order: VTXO manager starts before round actor and OOR actor, so the manager ref is available for both. The round actor ref in the VTXO manager is lazy (service-key-based, resolved at Tell time).
-- `mapRoundVTXOManagerMsg` bridges `round.VTXOManagerMsg` → `vtxo.ManagerMsg` via `MapInputRef`. Compile-time assertions enforce that all `round.VTXOManagerMsg` implementors satisfy `vtxo.ManagerMsg`.
-- OOR receive-key is derived once at startup via `EnsureDefaultOORReceiveScript` and persisted for restart-safe re-registration. The `DurableUnaryBuilder` is wired through `serverconn.ConnectorConfig` so all indexer queries flow through the durable transport path.
-- The OOR artifact store backs three different round/vtxo abstractions via the `ownedScript*Adapter` types: `round.OwnedScriptChecker`, `round.OwnedScriptRegistrar`, and `vtxo.OwnedScriptLookup`. There is one logical "owned receive scripts" table; all ownership questions resolve through it.
-- The incoming VTXO handler actor (`vtxo.IncomingVTXOHandler`) is registered with the actor system under `vtxo.IncomingVTXOServiceKey()` during `initOORActor`. The mailbox route `MethodIncomingVTXO` decodes `arkrpc.IncomingVTXOEvent` push notifications and dispatches them to this actor for materialization.
-- Every producer actor (`wallet.NewArk`, `round.RoundClientConfig`, `vtxo.ManagerConfig`, `oor.ClientActorCfg`) is wired with `fn.Some(ledger.NewSink(s.actorSystem))` during its `init*Actor` call so emission sites can fire-and-forget ledger messages via the service-key-backed router. `wallet.NewArk` takes the sink as a required constructor argument (not a setter) so every call site must make an explicit emission choice; test harnesses that don't register a ledger actor pass `fn.None[ledger.Sink]()`.
-- `EstimateFee` and `GetFeeHistory` both route upstream errors through `proxyUpstreamError` to preserve gRPC codes and strip upstream message detail before it crosses the daemon→client boundary. `GetFeeHistory` further validates request bounds locally (limit positive, offset within `int32` range) before hitting the DB so malformed RPC input cannot trigger a SQL error path.
-- In btcwallet mode, neutrino is pre-started before seed availability so P2P sync proceeds in parallel. The `neutrinoSvc` field uses `fn.Option` and is reused by `startBtcwallet` via `NewWithNeutrino`.
-- The neutrino sync-wait goroutine polls indefinitely (no timeout) to avoid leaving the wallet permanently unready. Progress is logged every 30 seconds.
-- `ensureRoundExists` in `db/vtxo_store.go` uses check-then-insert (not upsert) because `InsertRound`'s `ON CONFLICT DO UPDATE` would overwrite richer round state.
-- The unroll subsystem is wired strictly AFTER the VTXO manager but BEFORE the OOR actor. The VTXO manager is created with a `vtxo.LazyChainResolver` placeholder (`s.lazyChainResolver = vtxo.NewLazyChainResolver()`) so VTXO actors spawned during manager construction can hold a stable ref to the resolver; `initUnrollSubsystem` later calls `lazyChainResolver.Set(...)` to point every existing VTXO actor at the live unroll registry without a restart. Any code that also needs this seam must be careful to run AFTER `initUnrollSubsystem` or it will see an unset target.
-- `initUnrollSubsystem` creates its own `dbStore` + `vtxoStore` from `s.db` to decouple the unroll store lifecycle from the VTXO manager's; the persisted `s.ueStore` is reused by the `GetUnrollStatus` RPC fallback path so terminal jobs remain queryable after the registry actor evicts them.
-- `Server.run` registers a deferred `s.unrollRegistry.Stop()` during startup so the registry's durable persist writer drains before the actor system tears down; without this the final checkpoint of in-flight jobs could race with shutdown.
-- `registerOOREventRoutes` checks for `*oorpb.SubmitRejectedError` before a generic error check on the submit-package response. A typed server-side rejection (e.g. `OOR_REJECT_LINEAGE_TOO_LARGE`) is converted to an `oor.OutboxErrorEvent{Retryable: false}` rather than surfaced as an Adapt error, preventing the serverconn ingress dispatcher from stalling the cursor on a sticky rejection that would replay indefinitely.
-- `Unroll` and `GetUnrollStatus` guard on `s.vtxoMgrRef.IsSome()` / `s.unrollRegistryRef.IsSome()` and return `codes.Unavailable` (not `Internal`) when the subsystem is not yet initialized so clients can retry rather than treat this as a permanent failure.
-- `SweepBoardingUTXOs` always persists the sweep record before broadcasting; on broadcast failure the record is marked failed so the watcher does not attempt rebroadcast. The spend watcher is refreshed via `getBoardingSweepWatcher().Refresh` (using `context.WithoutCancel`) immediately after a successful broadcast so spend notifications start without waiting for the next poll interval.
-- `boardingSweepWatcher` uses two cancellation scopes: the per-watcher `w.ctx` for spend registration and the per-refresh `ctx` for rebroadcast RPCs. Spend registration context must be the watcher lifetime so a CLI disconnect does not cancel live spend notifications.
-- `OORConfig.OOR.Limits` fields are validated during `Config.Validate()`; `MaxMailboxScriptBytes` must be at least `minOORMailboxScriptBytes = 34` (P2TR script length) to avoid silently rejecting all scripts.
-- `quoteOperatorFee` returns `codes.Unavailable` (not `codes.Internal`) when `serverConn` is nil so callers that can fall back to `MinOperatorFee` can distinguish transient from permanent failures.
-- `Config.EagerRoundJoin` is seeded by `defaultEagerRoundJoin()` in `DefaultConfig`, which is build-tag-aware: `false` on the standalone non-walletrpc build and `true` under the `walletrpc` build tag (both the standalone `cmd/darepod` binary and the `sdk/walletdk` embedded path). The cmd-line `--eagerroundjoin` flag inherits this default, so viper's flag / env / config precedence overrides the build-tag default naturally without any `IsSet` probing. `sdk/walletdk` exposes the disable knob via the `WithEagerRoundJoinDisabled()` functional option.
+- Per-subsystem logging: configurable log writer, no global mutable
+  loggers.
+- All sub-stores share the single `s.clk` clock assigned at
+  `NewServer`. **New code must not call `clock.NewDefaultClock()` in
+  `init*` methods** — use `s.clk`.
+- `SendVTXO` enforces `maxRecipients = 256` (TODO #241), rejects
+  per-recipient amounts outside `(0, MaxSatoshi]`, uses
+  overflow-safe accumulation. Wallet-side `handleSendVTXOs` repeats
+  these checks as defense-in-depth.
+- `SendOOR` with custom inputs serializes concurrent calls on the
+  same outpoints via `reserveCustomInputs`. Custom inputs lock for
+  the RPC lifetime; release is deferred on both success and failure.
+- `BuildCustomTransferInputs` validates (a) the caller-supplied
+  policy template compiles to the provided pkScript
+  (`PolicyTemplate.MatchesPkScript`), and (b) the spend path's
+  control block commits to the same pkScript
+  (`SpendPath.VerifyBindsToPkScript`). Together these prevent a
+  caller from obtaining signatures for an unrelated tapscript by
+  claiming a different output's policy template.
+- `ListRounds` splits pending (in-memory from actor) and persisted
+  (SQL with cursor pagination).
+- Actor startup order: VTXO manager starts BEFORE round actor and
+  OOR actor so the manager ref is available for both. The round
+  actor ref in the VTXO manager is lazy (service-key-based, resolved
+  at Tell time).
+- `mapRoundVTXOManagerMsg` bridges `round.VTXOManagerMsg` →
+  `vtxo.ManagerMsg` via `MapInputRef`. Compile-time assertions
+  enforce that all `round.VTXOManagerMsg` implementors satisfy
+  `vtxo.ManagerMsg`.
+- OOR receive-key is derived once at startup via
+  `EnsureDefaultOORReceiveScript` and persisted for restart-safe
+  re-registration. The `DurableUnaryBuilder` is wired through
+  `serverconn.ConnectorConfig` so all indexer queries flow through
+  the durable transport.
+- The OOR artifact store backs three round/vtxo abstractions
+  (`OwnedScriptChecker`, `OwnedScriptRegistrar`, `OwnedScriptLookup`).
+  One logical "owned receive scripts" table; all ownership questions
+  resolve through it.
+- The incoming VTXO handler actor is registered under
+  `vtxo.IncomingVTXOServiceKey()` during `initOORActor`. Mailbox
+  route `MethodIncomingVTXO` decodes `arkrpc.IncomingVTXOEvent` push
+  notifications and dispatches them.
+- Every producer actor (`wallet.NewArk`, `round.RoundClientConfig`,
+  `vtxo.ManagerConfig`, `oor.ClientActorCfg`) is wired with
+  `fn.Some(ledger.NewSink(s.actorSystem))`. `wallet.NewArk` takes
+  the sink as a required constructor argument so every call site
+  makes an explicit emission choice; test harnesses pass
+  `fn.None[ledger.Sink]()`.
+- `EstimateFee` and `GetFeeHistory` route upstream errors through
+  `proxyUpstreamError` to preserve gRPC codes and strip operator-side
+  detail. `GetFeeHistory` validates request bounds locally (limit
+  positive, offset within `int32` range) before hitting the DB.
+- In btcwallet mode, neutrino is pre-started before seed availability
+  so P2P sync proceeds in parallel. `neutrinoSvc` uses `fn.Option`
+  and is reused by `startBtcwallet` via `NewWithNeutrino`.
+- The neutrino sync-wait goroutine polls indefinitely (no timeout)
+  with 30s progress logging — avoids leaving the wallet permanently
+  unready.
+- `ensureRoundExists` in `db/vtxo_store.go` uses check-then-insert
+  (not upsert) because `InsertRound`'s `ON CONFLICT DO UPDATE` would
+  overwrite richer round state.
+- **Unroll subsystem ordering**: wired strictly AFTER the VTXO
+  manager but BEFORE the OOR actor. The VTXO manager is created with
+  a `vtxo.LazyChainResolver` placeholder so VTXO actors spawned
+  during manager construction hold a stable ref;
+  `initUnrollSubsystem` later calls `lazyChainResolver.Set(...)`.
+  Any code that also needs this seam must run AFTER
+  `initUnrollSubsystem` or it will see an unset target.
+- `initUnrollSubsystem` creates its own `dbStore` + `vtxoStore` to
+  decouple the unroll store lifecycle from the VTXO manager's; the
+  persisted `s.ueStore` is reused by the `GetUnrollStatus` fallback
+  so terminal jobs remain queryable after registry eviction.
+- `Server.run` registers a deferred `s.unrollRegistry.Stop()` during
+  startup so the registry's durable persist writer drains before
+  actor-system shutdown.
+- `registerOOREventRoutes` checks for `*oorpb.SubmitRejectedError`
+  before a generic error check on the submit-package response. A
+  typed server-side rejection (e.g. `OOR_REJECT_LINEAGE_TOO_LARGE`)
+  becomes an `oor.OutboxErrorEvent{Retryable: false}` rather than
+  surfacing as an Adapt error — prevents the serverconn ingress
+  dispatcher from stalling the cursor on a sticky rejection.
+- `Unroll` and `GetUnrollStatus` return `codes.Unavailable` (not
+  `Internal`) when subsystem refs are not yet set, so clients can
+  retry rather than treating it as permanent failure.
+- `SweepBoardingUTXOs` always persists the sweep record before
+  broadcasting; on broadcast failure the record is marked failed so
+  the watcher does not rebroadcast. Spend watcher is refreshed via
+  `getBoardingSweepWatcher().Refresh` (using
+  `context.WithoutCancel`) immediately after a successful broadcast.
+- `boardingSweepWatcher` uses two cancellation scopes: `w.ctx` for
+  spend registration (watcher lifetime, survives CLI disconnect) and
+  the per-refresh `ctx` for rebroadcast RPCs.
+- `OORConfig.OOR.Limits.MaxMailboxScriptBytes` must be at least
+  `minOORMailboxScriptBytes = 34` (P2TR script length); validated
+  during `Config.Validate()`.
+- `Config.EagerRoundJoin` is seeded by build-tag-aware
+  `defaultEagerRoundJoin()`: `false` on the standalone non-walletrpc
+  build, `true` under the `walletrpc` tag (both `cmd/darepod` and
+  `sdk/walletdk` embedded paths). The `--eagerroundjoin` flag
+  inherits this default so viper precedence overrides it naturally
+  without `IsSet` probing. `sdk/walletdk` exposes the disable knob
+  via `WithEagerRoundJoinDisabled()`.
 
 ## Deep Docs
 
-- [docs/daemon_cli_guide.md](../docs/daemon_cli_guide.md) — Installation, configuration, CLI reference.
+- [docs/daemon_cli_guide.md](../docs/daemon_cli_guide.md) —
+  Installation, configuration, CLI reference.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
+</content>
+</invoke>
