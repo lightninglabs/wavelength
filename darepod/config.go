@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
@@ -522,6 +523,7 @@ type GatewayConfig struct {
 	// AllowedOrigins lists browser origins that may call the gateway.
 	// Empty means no cross-origin browser access; requests without an
 	// Origin header, such as CLI or local service calls, are still served.
+	// Use "*" to allow browser requests from any origin.
 	AllowedOrigins []string `mapstructure:"allowedorigins"`
 
 	// Listener is an optional pre-created listener. When non-nil,
@@ -747,14 +749,15 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// validateGatewayAllowedOrigins rejects wildcard CORS grants on wallet-control
-// APIs.
+// validateGatewayAllowedOrigins rejects empty CORS origins. The wildcard
+// origin "*" is allowed for public browser gateways whose RPCs authenticate
+// explicitly per request rather than through ambient browser credentials.
 func validateGatewayAllowedOrigins(origins []string) error {
 	for _, origin := range origins {
-		switch origin {
-		case "", "*":
+		if strings.TrimSpace(origin) == "" {
 			return fmt.Errorf("rpc.gateway.allowedorigins must "+
-				"contain explicit origins, got %q", origin)
+				"contain explicit origins or '*', got %q",
+				origin)
 		}
 	}
 

@@ -43,7 +43,9 @@ func ServeMuxOptions(
 
 // BrowserHeaders wraps an HTTP handler with browser CORS handling. Empty
 // allowed origins fail closed for browser callers while still serving requests
-// without an Origin header.
+// without an Origin header. The wildcard origin "*" allows browser callers
+// from any origin and is only suitable for APIs with explicit per-request
+// authentication.
 func BrowserHeaders(next http.Handler, allowedOrigins []string,
 	metadataHeaders ...string) http.Handler {
 
@@ -53,8 +55,16 @@ func BrowserHeaders(next http.Handler, allowedOrigins []string,
 	}
 	allowedHeaders = append(allowedHeaders, metadataHeaders...)
 	origins := make(map[string]struct{}, len(allowedOrigins))
+	allowAllOrigins := false
 	for _, origin := range allowedOrigins {
-		origins[strings.TrimSpace(origin)] = struct{}{}
+		origin = strings.TrimSpace(origin)
+		if origin == "*" {
+			allowAllOrigins = true
+
+			continue
+		}
+
+		origins[origin] = struct{}{}
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +75,7 @@ func BrowserHeaders(next http.Handler, allowedOrigins []string,
 			return
 		}
 
-		if _, ok := origins[origin]; !ok {
+		if _, ok := origins[origin]; !ok && !allowAllOrigins {
 			http.Error(
 				w, "origin not allowed", http.StatusForbidden,
 			)
@@ -73,8 +83,12 @@ func BrowserHeaders(next http.Handler, allowedOrigins []string,
 			return
 		}
 
-		w.Header().Add("Vary", "Origin")
-		w.Header().Set("Access-Control-Allow-Origin", origin)
+		if allowAllOrigins {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		} else {
+			w.Header().Add("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
 		w.Header().Set("Access-Control-Allow-Headers",
 			strings.Join(allowedHeaders, ", "))
 		w.Header().Set("Access-Control-Allow-Methods",
