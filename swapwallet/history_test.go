@@ -206,7 +206,8 @@ func TestHistoryKindFilterRejectsUnsupportedKind(t *testing.T) {
 }
 
 // TestHistorySwapRowsIgnoreTimedOutOverlay confirms swap-backed rows use the
-// swap FSM as their source of truth instead of wallet timeout overlays.
+// swap FSM as their source of truth instead of wallet timeout overlays, even
+// before the lazy swap summary has a populated direction.
 func TestHistorySwapRowsIgnoreTimedOutOverlay(t *testing.T) {
 	t.Parallel()
 
@@ -214,9 +215,7 @@ func TestHistorySwapRowsIgnoreTimedOutOverlay(t *testing.T) {
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
 		Swaps: []*swapclientrpc.SwapSummary{
 			{
-				PaymentHash: "stuck",
-				Direction: swapclientrpc.
-					SwapDirection_SWAP_DIRECTION_PAY,
+				PaymentHash:   "stuck",
 				Pending:       true,
 				UpdatedAtUnix: 100,
 			},
@@ -239,6 +238,10 @@ func TestHistorySwapRowsIgnoreTimedOutOverlay(t *testing.T) {
 	require.Equal(
 		t, walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		resp.GetActivity().GetEntries()[0].GetStatus(),
+	)
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		resp.GetActivity().GetEntries()[0].GetKind(),
 	)
 	require.Empty(t, resp.GetActivity().GetEntries()[0].GetFailureReason())
 }

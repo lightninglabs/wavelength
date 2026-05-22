@@ -104,7 +104,7 @@ func TestMonitorLoopFansOutSwapUpdates(t *testing.T) {
 
 // TestMonitorLoopLeavesSwapPendingToFSM confirms a swap row fanned out from
 // the monitor reaches subscribers under its payment_hash id, but is not aged by
-// the wallet-level deadline tracker.
+// the wallet-level deadline tracker even before its direction is populated.
 func TestMonitorLoopLeavesSwapPendingToFSM(t *testing.T) {
 	t.Parallel()
 
@@ -118,7 +118,6 @@ func TestMonitorLoopLeavesSwapPendingToFSM(t *testing.T) {
 
 	swap.updates <- &swapclientrpc.SwapSummary{
 		PaymentHash: "swap-hash",
-		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
 		Pending:     true,
 	}
 	entry := drainOne(t, sub)
@@ -126,6 +125,9 @@ func TestMonitorLoopLeavesSwapPendingToFSM(t *testing.T) {
 		t, "swap-hash", entry.GetId(),
 		"swap row id must surface as payment_hash without further "+
 			"projection",
+	)
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, entry.GetKind(),
 	)
 
 	r.pendingMu.Lock()
@@ -359,7 +361,8 @@ func TestMonitorLoopTerminalStatusBeatsStaleOverlay(t *testing.T) {
 }
 
 // TestMonitorLoopPendingSwapBeatsStaleOverlay asserts that a PENDING source
-// update from the swap subsystem clears any stale wallet-level timeout overlay.
+// update from the swap subsystem clears any stale wallet-level timeout overlay,
+// even before the swap direction is populated.
 func TestMonitorLoopPendingSwapBeatsStaleOverlay(t *testing.T) {
 	t.Parallel()
 
@@ -385,7 +388,6 @@ func TestMonitorLoopPendingSwapBeatsStaleOverlay(t *testing.T) {
 	// The swap subsystem still reports the swap as in-flight.
 	swap.updates <- &swapclientrpc.SwapSummary{
 		PaymentHash: "hash-stuck",
-		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
 		Pending:     true,
 	}
 
@@ -395,6 +397,9 @@ func TestMonitorLoopPendingSwapBeatsStaleOverlay(t *testing.T) {
 		"swap source status must beat a stale wallet timeout overlay",
 	)
 	require.Empty(t, got.GetFailureReason())
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, got.GetKind(),
+	)
 
 	r.pendingMu.Lock()
 	_, overlayKept := r.overlay["hash-stuck"]

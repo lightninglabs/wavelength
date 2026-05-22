@@ -189,36 +189,18 @@ func (r *Runtime) fanOutSwapUpdate(
 		walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 	)
 
-	// Wallet-local deadline overlays never apply to swap-backed rows: the
-	// swap FSM owns their terminal state. Keep the branch for future
-	// non-swap monitor sources that may still use runtime overlays.
+	// All SubscribeSwaps rows are swap-backed, including the first lazy
+	// summaries whose direction still normalizes to UNSPECIFIED. The swap
+	// FSM owns their terminal state, so wallet-local overlays are never
+	// applied here.
 	sourceStatus := entry.GetStatus()
-	if sourceStatus == walletrpc.EntryStatus_ENTRY_STATUS_PENDING &&
-		!isSwapKind(entry.GetKind()) {
-
-		if ov, ok := r.overlayFor(entry.GetId()); ok {
-			entry.Status = ov.status
-			if ov.failureReason != "" {
-				entry.FailureReason = ov.failureReason
-			}
-		}
-	}
 
 	// Keep the pending tracker in sync. Pending swap rows are explicitly
 	// cleared so stale wallet overlays cannot outlive the swap FSM source
 	// of truth.
 	switch sourceStatus {
 	case walletrpc.EntryStatus_ENTRY_STATUS_PENDING:
-		if isSwapKind(entry.GetKind()) {
-			r.clearPending(entry.GetId())
-		} else {
-			r.trackPending(
-				entry.GetId(), entry.GetKind(),
-				unixToTime(
-					entry.GetCreatedAtUnix(),
-				),
-			)
-		}
+		r.clearPending(entry.GetId())
 
 	case walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		walletrpc.EntryStatus_ENTRY_STATUS_FAILED:

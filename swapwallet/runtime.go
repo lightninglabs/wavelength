@@ -280,9 +280,10 @@ func (r *Runtime) markTimedOut(now time.Time) []*walletrpc.WalletEntry {
 	return notify
 }
 
-// isSwapKind reports wallet rows whose lifecycle is backed by the swap FSM.
-// Those rows must not receive synthetic wallet timeout overlays because the
-// swap store owns their terminal state.
+// isSwapKind reports pinned SEND/RECV rows whose lifecycle is backed by the
+// swap FSM. SubscribeSwaps monitor updates are even stricter: every row from
+// that stream is treated as swap-backed even when its direction is still
+// UNSPECIFIED.
 func isSwapKind(kind walletrpc.EntryKind) bool {
 	return kind == walletrpc.EntryKind_ENTRY_KIND_SEND ||
 		kind == walletrpc.EntryKind_ENTRY_KIND_RECV

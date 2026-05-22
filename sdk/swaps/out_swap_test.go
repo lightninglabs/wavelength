@@ -734,7 +734,6 @@ func TestReceiveSessionWaitClaimsVHTLC(t *testing.T) {
 	client := NewSwapClient(serverConn, daemonConn, nil, creator)
 	useTestOnionDecoder(client, 42_000)
 	client.waitPollInterval = time.Millisecond
-	client.waitVHTLCTimeout = 50 * time.Millisecond
 
 	session, err := client.StartReceiveViaLightning(
 		t.Context(), btcutil.Amount(42_000),
@@ -1404,26 +1403,31 @@ func TestReceiveSessionExpiresUnpaidInvoiceAtDeadline(t *testing.T) {
 		serverConn, daemonConn, nil, creator, store,
 	)
 	client.outEvents = &blockingOutSwapEventReceiver{}
-	client.overdueReceivePollWindow = time.Millisecond
 	useTestOnionDecoder(client, 42_000)
 
 	session, err := client.StartReceiveViaLightning(
 		t.Context(), btcutil.Amount(42_000),
 	)
 	require.NoError(t, err)
+	deadline := time.Now().Add(-time.Second)
 	require.NoError(
 		t,
 		session.mutateAndPersist(
 			t.Context(),
 			func() error {
-				session.deadline = time.Now().Add(
-					10 * time.Millisecond,
-				)
+				session.deadline = deadline
 
 				return nil
 			},
 		),
 	)
+	// Keep the client's fake clock before the persisted deadline so the
+	// test takes the invoice-deadline branch, while the real context
+	// deadline is already elapsed. This avoids a millisecond-scale
+	// wall-clock race.
+	client.now = func() time.Time {
+		return deadline.Add(-time.Second)
+	}
 
 	_, err = session.Wait(t.Context())
 	require.ErrorIs(t, err, errSwapExpired)
@@ -1572,7 +1576,6 @@ func TestReceiveSessionFailsOnAmountMismatch(t *testing.T) {
 	)
 	useTestOnionDecoder(client, 42_000)
 	client.waitPollInterval = time.Millisecond
-	client.waitVHTLCTimeout = 50 * time.Millisecond
 
 	session, err := client.StartReceiveViaLightning(
 		t.Context(), btcutil.Amount(42_000),

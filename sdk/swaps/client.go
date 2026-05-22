@@ -441,7 +441,6 @@ type SwapClient struct {
 
 	waitPollInterval         time.Duration
 	overdueReceivePollWindow time.Duration
-	waitVHTLCTimeout         time.Duration
 	fundingResumeGracePeriod time.Duration
 	claimResumeGracePeriod   time.Duration
 	fundingExpiryBuffer      time.Duration
@@ -500,7 +499,6 @@ func NewSwapClientWithStore(server SwapServerConn, daemon DaemonConn,
 		log:                      log,
 		waitPollInterval:         2 * time.Second,
 		overdueReceivePollWindow: defaultOverdueReceiveMailboxPollWindow,
-		waitVHTLCTimeout:         60 * time.Second,
 		fundingResumeGracePeriod: defaultFundingResumeGracePeriod,
 		claimResumeGracePeriod:   defaultClaimResumeGracePeriod,
 		fundingExpiryBuffer:      defaultFundingExpiryBuffer,

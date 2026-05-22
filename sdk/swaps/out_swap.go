@@ -717,7 +717,7 @@ func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 func (s *ReceiveSession) invoiceDeadlineContext(ctx context.Context) (
 	context.Context, context.CancelFunc) {
 
-	if s == nil || s.client == nil || s.deadline.IsZero() {
+	if s.client == nil || s.deadline.IsZero() {
 		return context.WithCancel(ctx)
 	}
 
@@ -752,6 +752,10 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 			"yet")
 	}
 
+	// Once the HTLC event is accepted, the server may already have funded
+	// the vHTLC. Do not add a wall-clock deadline here: the refund-locktime
+	// guard below is the durable boundary, and backend/indexer outages
+	// should keep retrying until the caller shuts the worker down.
 	outpoint, amount, err := s.client.waitForVHTLC(
 		ctx, s.vhtlcPkScript, time.Time{},
 		s.ensureReceiveFundingStillPossible,
