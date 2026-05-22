@@ -8,6 +8,7 @@ import (
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/indexer"
+	"github.com/lightninglabs/darepo-client/vtxo"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -57,11 +58,12 @@ func (r *RPCServer) GetIndexedVTXOByPkScript(ctx context.Context,
 			"failed: %v", err)
 	}
 
-	if len(resp.GetVtxos()) == 0 {
+	vtxos := vtxo.FlattenListVTXOsByScriptsResponse(resp)
+	if len(vtxos) == 0 {
 		return &daemonrpc.GetIndexedVTXOByPkScriptResponse{}, nil
 	}
 
-	vtxo, err := indexedVTXOToProto(resp.GetVtxos()[0])
+	vtxo, err := indexedVTXOToProto(vtxos[0])
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "convert indexed "+
 			"vtxo: %v", err)

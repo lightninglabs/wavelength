@@ -3661,6 +3661,37 @@ func (s *Server) initOORActor(ctx context.Context,
 	// Register the incoming VTXO handler actor. This handles
 	// IncomingVTXOEvent push notifications from the indexer and
 	// materializes VTXOs for registered receive scripts.
+	//
+	// The ancestry fetcher is wired so the materialized descriptor
+	// carries the round commit tree fragments needed for unilateral
+	// exit (bug-3 in BUGS_FOUND.md). A wiring failure (no indexer or
+	// no proof-key backend) is non-fatal: the handler runs without
+	// the fetcher, persisting incoming VTXOs without ancestry, which
+	// preserves the legacy degraded behavior (cooperative paths work,
+	// unilateral exit blocked) rather than dropping incoming events
+	// on the floor.
+	var ancestryFetcher vtxo.IncomingAncestryFetcher
+	incomingSignerFactory, fetcherErr := s.indexerProofSignerFactory()
+	if fetcherErr != nil {
+		s.log.WarnS(ctx,
+			"Incoming VTXO ancestry fetch disabled; received "+
+				"VTXOs will not be unilaterally exitable",
+			fetcherErr,
+		)
+	} else {
+		ancestryFetcher, fetcherErr = incomingAncestryFetcher(
+			s.indexer, incomingSignerFactory,
+		)
+		if fetcherErr != nil {
+			s.log.WarnS(ctx,
+				"Incoming VTXO ancestry fetch disabled; "+
+					"received VTXOs will not be "+
+					"unilaterally exitable",
+				fetcherErr,
+			)
+		}
+	}
+
 	incomingVTXOStore := dbStore.NewVTXOStore(s.clk)
 	incomingHandler := vtxo.NewIncomingVTXOHandler(
 		vtxo.IncomingVTXOHandlerConfig{
@@ -3668,8 +3699,9 @@ func (s *Server) initOORActor(ctx context.Context,
 			ScriptStore: &ownedScriptLookupAdapter{
 				store: packageStore,
 			},
-			VTXOStore:   incomingVTXOStore,
-			VTXOManager: vtxoManagerRef,
+			VTXOStore:       incomingVTXOStore,
+			VTXOManager:     vtxoManagerRef,
+			AncestryFetcher: ancestryFetcher,
 		},
 	)
 	incomingKey := vtxo.IncomingVTXOServiceKey()

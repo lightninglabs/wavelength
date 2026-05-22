@@ -76,6 +76,42 @@ func IncomingVTXOServiceKey() actor.ServiceKey[
 	)
 }
 
+// IncomingVTXOExtras carries the descriptor fields the unilateral-exit
+// unroll path needs but the lightweight IncomingVTXOEvent push doesn't
+// carry. Resolved synchronously by IncomingAncestryFetcher.
+type IncomingVTXOExtras struct {
+	// Ancestry is the set of rooted commitment-tree fragments
+	// required to claim this VTXO unilaterally on-chain. Empty
+	// fails the validateProofDescriptorShape gate; the unroll FSM
+	// rejects empty-ancestry targets before advancing.
+	Ancestry []Ancestry
+
+	// CreatedHeight is the block height at which the VTXO became
+	// relevant on-chain. validateProofDescriptorShape rejects a
+	// zero value (a freshly-materialized descriptor must commit
+	// to which block its round commit confirmed in, or sweep
+	// scheduling has no reference point).
+	CreatedHeight int32
+}
+
+// IncomingAncestryFetcher resolves the per-VTXO metadata the
+// unilateral-exit unroll path needs to construct a CPFP child:
+// ancestry slice plus the created-height anchor. Invoked
+// synchronously inside IncomingVTXOHandler.Receive after the receive
+// script is matched and the descriptor is built, so the persisted
+// descriptor carries full lineage from the first save.
+//
+// The handler routes per-script signing via clientKey so the
+// implementation can issue an indexer ListVTXOsByScripts query under
+// the owner's proof-of-control. A nil fetcher (legacy harnesses /
+// non-darepod consumers) causes the handler to persist without
+// extras — the cooperative spend paths (refresh, OOR, leave) still
+// work; only unilateral exit is impossible until backfill. Production
+// wiring (see darepod) supplies an indexer-backed implementation.
+type IncomingAncestryFetcher func(ctx context.Context,
+	outpoint wire.OutPoint, pkScript []byte,
+	clientKey keychain.KeyDescriptor) (IncomingVTXOExtras, error)
+
 // IncomingVTXOHandlerConfig holds the handler's dependencies.
 type IncomingVTXOHandlerConfig struct {
 	// Log is the optional logger for the handler.
@@ -92,6 +128,13 @@ type IncomingVTXOHandlerConfig struct {
 	// VTXOManager is a tell-only reference to the VTXO manager
 	// actor, used to notify it of newly materialized VTXOs.
 	VTXOManager actor.TellOnlyRef[ManagerMsg]
+
+	// AncestryFetcher resolves the round commit tree fragments
+	// required to unilaterally exit each incoming VTXO. Nil falls
+	// back to persisting without ancestry; production must supply
+	// a non-nil implementation to keep the unilateral exit path
+	// usable for received VTXOs (see bug-3 in BUGS_FOUND.md).
+	AncestryFetcher IncomingAncestryFetcher
 }
 
 // IncomingVTXOHandler materializes VTXOs from IncomingVTXOEvent
@@ -247,6 +290,34 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 		BatchExpiry:    evt.BatchExpiryHeight,
 		RelativeExpiry: evt.RelativeExpiry,
 		Status:         VTXOStatusLive,
+	}
+
+	// Resolve ancestry before persisting so the descriptor lands
+	// with full unilateral-exit material from the first write. The
+	// indexer push (IncomingVTXOEvent) is intentionally thin and
+	// carries no tree fragments; without this fetch the unroll
+	// path fails with "descriptor missing ancestry" on every
+	// in-round-received VTXO (see bug-3 in BUGS_FOUND.md). A nil
+	// fetcher preserves the legacy degraded behavior: cooperative
+	// spend paths still work, only unilateral exit is blocked.
+	// Fetch failures are warn-logged but do not block
+	// materialization, since the receive must still succeed for
+	// cooperative use.
+	if h.cfg.AncestryFetcher != nil {
+		extras, err := h.cfg.AncestryFetcher(
+			ctx, outpoint, pkScript, rec.ClientKey,
+		)
+		if err != nil {
+			h.log.WarnS(ctx, "Failed to fetch incoming VTXO "+
+				"ancestry; persisting without — unilateral "+
+				"exit will be unavailable until backfill",
+				err,
+				slog.String("outpoint", outpoint.String()),
+			)
+		} else {
+			desc.Ancestry = extras.Ancestry
+			desc.CreatedHeight = extras.CreatedHeight
+		}
 	}
 
 	// Persist the VTXO. A save failure signals a database or

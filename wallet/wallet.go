@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -39,24 +40,16 @@ const (
 	// ListUnspent queries.
 	MaxConfsForListUnspent = 9999999
 
-	// listUnspentMaxRetries is the maximum number of times we'll retry a
-	// ListUnspent query within a single block epoch if we didn't detect any
-	// new boarding UTXOs. This mitigates a race where we receive a block
-	// epoch notification before the wallet's UTXO set is fully updated.
-	// For neutrino backends, btcwallet's internal block processing
-	// (fetching the full block from P2P, running AddCredit) can take
-	// over a second after the epoch arrives. The retry budget is kept
-	// small so idle epochs (no boarding UTXO racing) don't hammer the
-	// backend; HTTP-backed backends like lwwallet's Esplora adapter
-	// previously triggered mempool.space rate-limit (HTTP 429) responses
-	// under the old 10×200ms burst.
-	listUnspentMaxRetries = 3
-
-	// listUnspentRetryDelay is the delay between ListUnspent retries.
-	// Chosen to give a slow backend (e.g. neutrino fetching a block over
-	// P2P, or a remote Esplora roundtripping a tip update) a full second
-	// to catch up between attempts.
-	listUnspentRetryDelay = 1 * time.Second
+	// defaultTipTickInterval is how often the wallet actor's tick loop
+	// checks whether the most recently observed chain tip has advanced
+	// past the last successfully-processed height. New boarding UTXO
+	// detection latency is bounded above by one tick interval plus the
+	// chain's own block cadence; a backend whose UTXO reporting lags
+	// the block-epoch arrival is caught the next time the chain
+	// advances, since each tip advance re-runs ListUnspent.
+	// Configurable via WithTipTickInterval; tests pin this short to
+	// keep assertions tight.
+	defaultTipTickInterval = 1 * time.Second
 )
 
 // notifierInfo holds the configuration for a registered confirmation notifier.
@@ -186,6 +179,39 @@ type Ark struct {
 	// or "leave" interaction joins a round end-to-end without the host
 	// having to chase the second RPC.
 	eagerRoundJoin bool
+
+	// tipTickInterval is how often runTipTickLoop fires a
+	// ProcessTipTickNotification self-Tell to drive per-tip work
+	// (ListUnspent + boarding-sweep resume kick). Zero falls back to
+	// defaultTipTickInterval at Start time.
+	tipTickInterval time.Duration
+
+	// latestKnownTip is the most recent chain tip observed via a
+	// BlockEpochNotification Tell. The block-epoch handler stores into
+	// this atomic ptr with no other work, so a burst of N notifications
+	// completes in microseconds and does not saturate the mailbox.
+	// handleProcessTipTick reads the value to decide whether the tip
+	// has advanced since processedTipHeight and the heavy per-tip work
+	// needs to run.
+	latestKnownTip atomic.Pointer[chainsource.BlockEpoch]
+
+	// processedTipHeight is the height the wallet has successfully
+	// completed a per-tip work pass for. A tick whose latestKnownTip
+	// height equals processedTipHeight short-circuits with no work, so
+	// the steady-state idle cost of the tick loop is one atomic load
+	// per tick.
+	processedTipHeight atomic.Int32
+
+	// tickInflight is set to true when a ProcessTipTickNotification
+	// has been enqueued and not yet processed. runTipTickLoop
+	// compare-and-swaps this flag to skip firing a duplicate tick
+	// when the previous one is still queued, capping ProcessTipTick
+	// mailbox depth at 1. Without this cap, a tick handler that
+	// runs longer than tipTickInterval (~2 s when ListUnspent races
+	// against retries) would let ticker.C accumulate excess ticks
+	// in the mailbox, push out room for self-Tells from inside the
+	// handler, and degrade the boarding-sweep resume cadence.
+	tickInflight atomic.Bool
 }
 
 // NewArk creates a new Ark wallet actor. The logger is optional and falls back
@@ -283,6 +309,18 @@ func WithClock(clk clock.Clock) ArkOption {
 func WithEagerRoundJoin(enabled bool) ArkOption {
 	return func(a *Ark) {
 		a.eagerRoundJoin = enabled
+	}
+}
+
+// WithTipTickInterval overrides the wallet actor's tip-tick cadence.
+// Production typically wants the default (one second is short enough
+// that new boarding UTXO detection feels responsive while idle cost
+// stays at one atomic load per tick); test harnesses that need a
+// tight assertion timeline pin this to 50–100 ms. Zero or negative
+// values fall back to defaultTipTickInterval at Start time.
+func WithTipTickInterval(d time.Duration) ArkOption {
+	return func(a *Ark) {
+		a.tipTickInterval = d
 	}
 }
 
@@ -457,9 +495,68 @@ func (a *Ark) Start(ctx context.Context,
 	// round-client actor is up, mirroring the resumeBoardingSweeps
 	// startup-ordering fix.
 
-	a.logger(ctx).InfoS(ctx, "Boarding wallet actor started")
+	// Start the tip-tick loop that drives per-tip work off the
+	// block-epoch hot path. handleBlockEpoch only records the latest
+	// tip into latestKnownTip; this loop is what fires the deferred
+	// ListUnspent / processUtxo / sweep-resume work via a self-Tell
+	// on a configurable cadence (defaultTipTickInterval, or whatever
+	// WithTipTickInterval was set to).
+	interval := a.tipTickInterval
+	if interval <= 0 {
+		interval = defaultTipTickInterval
+	}
+	a.wg.Add(1)
+	go a.runTipTickLoop(interval)
+
+	a.logger(ctx).InfoS(ctx, "Boarding wallet actor started",
+		slog.Duration("tip_tick_interval", interval),
+	)
 
 	return nil
+}
+
+// runTipTickLoop fires a ProcessTipTickNotification self-Tell at the
+// supplied cadence until the wallet's internal context is cancelled.
+// The tickInflight compare-and-swap caps mailbox depth at one pending
+// tick: a tick handler that takes longer than the interval (a few
+// seconds is common when ListUnspent races against retries) would
+// otherwise let ticker.C events accumulate and drown out self-Tells
+// the handler makes for boarding-sweep resume kicks. Errors from the
+// Tell are debug-logged but never escalated: the next tick will
+// retry, and any backlog the actor is processing will catch up on
+// its own.
+func (a *Ark) runTipTickLoop(interval time.Duration) {
+	defer a.wg.Done()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+
+		case <-ticker.C:
+			if !a.tickInflight.CompareAndSwap(false, true) {
+				// Previous tick still queued or being
+				// processed. Skip this tick — the queued
+				// one will pick up the latest tip.
+				continue
+			}
+
+			err := a.selfRef.Tell(
+				a.ctx, ProcessTipTickNotification{},
+			)
+			if err != nil {
+				a.tickInflight.Store(false)
+				a.logger(a.ctx).DebugS(
+					a.ctx,
+					"Failed to schedule tip tick",
+					err,
+				)
+			}
+		}
+	}
 }
 
 // Stop gracefully shuts down the wallet actor by unsubscribing from block
@@ -517,6 +614,9 @@ func (a *Ark) Receive(ctx context.Context,
 
 	case BlockEpochNotification:
 		return a.handleBlockEpoch(ctx, m.BlockEpoch)
+
+	case ProcessTipTickNotification:
+		return a.handleProcessTipTick(ctx)
 
 	case *RefreshVTXOsRequest:
 		return a.handleRefreshVTXOs(ctx, m)
@@ -644,6 +744,15 @@ func (a *Ark) handleGetActiveBoardingAddresses(ctx context.Context,
 // boarding_pending_sweep_sat and boarding_swept_sat fields exposed
 // through GetBalance, so dashboards see boarding funds in flight even
 // while a sweep tx awaits confirmation.
+//
+// CONTRACT: this handler must remain a pure read of the boarding
+// store. `darepod.RPCServer.fetchBoardingBalance` deliberately
+// duplicates this logic at the RPC layer to bypass the wallet
+// actor's serial mailbox under block-epoch catch-up bursts (see
+// BUGS_FOUND.md). If you add in-memory caching, admission gating,
+// or any other actor-local state to the computation here, the
+// bypass at the RPC layer must be updated in lockstep — otherwise
+// GetBalance will silently report a different value than this Ask.
 func (a *Ark) handleGetBoardingBalance(ctx context.Context,
 	_ *GetBoardingBalanceRequest) fn.Result[WalletResp] {
 
@@ -788,72 +897,99 @@ func (a *Ark) handleUnregisterNotifier(ctx context.Context,
 	return fn.Ok[WalletResp](resp)
 }
 
-// handleBlockEpoch processes new block notifications by polling ListUnspent
-// for new boarding UTXOs.
+// handleBlockEpoch records the latest observed chain tip and returns
+// immediately. The heavy per-tip work (ListUnspent, processUtxo,
+// boarding-sweep resume kick) runs on the tip-tick handler, so a
+// burst of N block notifications completes in microseconds rather
+// than queuing N×(ListUnspent + retries) of serial work behind every
+// other Ask the actor needs to service. See handleProcessTipTick for
+// the deferred work and bug-2 in the shared BUGS_FOUND.md for the
+// rationale; the longer-term latency tradeoff is documented on
+// defaultTipTickInterval.
 func (a *Ark) handleBlockEpoch(ctx context.Context,
 	epoch chainsource.BlockEpoch) fn.Result[WalletResp] {
 
-	a.logger(ctx).InfoS(ctx, "Processing new block epoch",
+	// Copy the value so the atomic ptr points at a stable backing
+	// allocation rather than the loop-scoped argument.
+	stored := epoch
+	a.latestKnownTip.Store(&stored)
+
+	a.logger(ctx).TraceS(ctx, "Recorded new chain tip",
 		slog.Int("height", int(epoch.Height)),
 	)
 
-	// A new block just arrived, so poll ListUnspent for new UTXOs.
-	// Retry a few times because there can be a short lag between
-	// receiving the block epoch and the wallet reporting the UTXO with
-	// the expected confirmation count.
-	var (
-		lastUtxos []*Utxo
-		foundNew  bool
+	return fn.Ok[WalletResp](nil)
+}
+
+// handleProcessTipTick runs the per-tip work for the most recently
+// observed chain tip when it has advanced past the last successfully-
+// processed height. Idempotent and short-circuits cheaply when the
+// tip has not moved, which is the steady-state once catch-up is
+// complete. See handleBlockEpoch for why the work was hoisted off the
+// per-block path.
+func (a *Ark) handleProcessTipTick(ctx context.Context) fn.Result[WalletResp] {
+	// Clear the inflight latch on every exit path so the next
+	// ticker.C event can fire a fresh tick. Pair-bonded with the
+	// CompareAndSwap(false, true) gate in runTipTickLoop; together
+	// they cap pending-tick mailbox depth at 1.
+	defer a.tickInflight.Store(false)
+
+	tip := a.latestKnownTip.Load()
+	if tip == nil {
+
+		// No block epochs observed yet — nothing to do.
+		return fn.Ok[WalletResp](nil)
+	}
+
+	// Pin the tip locally so a concurrent block-epoch handler
+	// updating the atomic ptr after we read it does not introduce
+	// height/hash skew inside this work pass.
+	epoch := *tip
+
+	processed := a.processedTipHeight.Load()
+	if epoch.Height <= processed {
+
+		// Already caught up to this tip.
+		return fn.Ok[WalletResp](nil)
+	}
+
+	a.logger(ctx).InfoS(ctx, "Processing new chain tip",
+		slog.Int("height", int(epoch.Height)),
+		slog.Int("last_processed", int(processed)),
 	)
-	for attempt := 0; attempt < listUnspentMaxRetries; attempt++ {
-		utxos, err := a.backend.ListUnspent(
-			ctx, MinBoardingConfs, MaxConfsForListUnspent,
+
+	utxos, err := a.backend.ListUnspent(
+		ctx, MinBoardingConfs, MaxConfsForListUnspent,
+	)
+	if err != nil {
+		a.logger(ctx).WarnS(ctx, "Failed listing UTXOs",
+			err,
+			slog.Int("height", int(epoch.Height)),
 		)
-		if err != nil {
-			a.logger(ctx).WarnS(ctx, "Failed listing UTXOs",
-				err,
-				slog.Int("height", int(epoch.Height)),
-			)
 
-			// Return success to avoid disrupting the actor.
-			// We'll try again on the next block.
-			return fn.Ok[WalletResp](nil)
-		}
+		// Don't advance processedTipHeight — the next tick will
+		// retry against whatever the tip is then.
+		return fn.Ok[WalletResp](nil)
+	}
 
-		lastUtxos = utxos
-
-		// For each UTXO, we'll check if it's new and belongs to a fresh
-		// boarding intent, dispatching notifications if needed.
-		for _, utxo := range utxos {
-			if a.processUtxo(ctx, epoch, utxo) {
-				foundNew = true
-			}
-		}
-
-		if foundNew || attempt == listUnspentMaxRetries-1 {
-			break
-		}
-
-		timer := time.NewTimer(listUnspentRetryDelay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-
-			return fn.Ok[WalletResp](nil)
-
-		case <-timer.C:
+	// For each UTXO, we'll check if it's new and belongs to a fresh
+	// boarding intent, dispatching notifications if needed.
+	var foundNew bool
+	for _, utxo := range utxos {
+		if a.processUtxo(ctx, epoch, utxo) {
+			foundNew = true
 		}
 	}
 
 	a.logger(ctx).InfoS(ctx, "ListUnspent returned UTXOs",
 		slog.Int("height", int(epoch.Height)),
-		slog.Int("utxo_count", len(lastUtxos)),
+		slog.Int("utxo_count", len(utxos)),
 	)
 
 	// Eager round-join: when at least one new boarding UTXO confirmed
-	// in this block, drive the normal Board path inline so the user
-	// does not have to chase a follow-up RPC. We coalesce per block
-	// (not per UTXO) so multiple confirmations in the same epoch
+	// in this tip advance, drive the normal Board path inline so the
+	// user does not have to chase a follow-up RPC. We coalesce per
+	// tip (not per UTXO) so multiple confirmations in the same tip
 	// produce one round join with all of them. handleBoard reads the
 	// current confirmed boarding set from the store, so it will pick
 	// up every UTXO that processUtxo just persisted above.
@@ -869,16 +1005,26 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 		}
 	}
 
-	// Kick a boarding-sweep resume retry on every block-epoch when the
-	// subsystem is enabled. The handler is idempotent: fully-recovered
-	// sweeps short-circuit on the in-memory pendingSweeps lookup (M-4),
-	// so the steady-state cost is one ListPendingBoardingSweeps query
-	// per block. Sweeps that failed to fully recover during the initial
-	// resume (transient chainsource Ask failure, GetIntent error,
-	// txconfirm submit error) get re-attempted here without operator
+	// Kick a boarding-sweep resume retry on each successful tip
+	// advance when the subsystem is enabled. The handler is
+	// idempotent: fully-recovered sweeps short-circuit on the
+	// in-memory pendingSweeps lookup (M-4), so the steady-state cost
+	// is one ListPendingBoardingSweeps query per tip advance. Sweeps
+	// that failed to fully recover during the initial resume
+	// (transient chainsource Ask failure, GetIntent error, txconfirm
+	// submit error) get re-attempted here without operator
 	// intervention.
+	//
+	// Safe to block on the self-Tell: the runTipTickLoop inflight
+	// latch caps pending-tick mailbox depth at one, so the only
+	// other producer is the chain source (one BlockEpoch per actual
+	// block, at most ~1 every few hundred ms even under regtest
+	// burst). The mailbox has plenty of headroom for one more
+	// fire-and-forget Tell during the handler.
 	if a.boardingSweepEnabled() {
-		err := a.selfRef.Tell(ctx, &ResumeBoardingSweepsRequest{})
+		err := a.selfRef.Tell(
+			ctx, &ResumeBoardingSweepsRequest{},
+		)
 		if err != nil {
 			a.logger(ctx).DebugS(ctx,
 				"Failed to schedule boarding sweep resume "+
@@ -886,7 +1032,15 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 		}
 	}
 
-	// Block epoch handling doesn't require a response.
+	// Mark the tip processed. We deliberately advance even when
+	// foundNew is false: a backend whose UTXO reporting lags past
+	// scan time will surface the missing UTXO on the next tip
+	// advance (the next block's tick re-runs ListUnspent), which is
+	// the same coverage Roasbeef's review preferred over an inline
+	// multi-tick retry budget. Tests that need lag tolerance can
+	// drive successive tips explicitly.
+	a.processedTipHeight.Store(epoch.Height)
+
 	return fn.Ok[WalletResp](nil)
 }
 

@@ -72,6 +72,10 @@ type RPCServer interface {
 	GetUnrollStatus(ctx context.Context,
 		req *daemonrpc.GetUnrollStatusRequest) (
 		*daemonrpc.GetUnrollStatusResponse, error)
+
+	JoinNextRound(ctx context.Context,
+		req *daemonrpc.JoinNextRoundRequest) (
+		*daemonrpc.JoinNextRoundResponse, error)
 }
 
 // defaultWalletDeadline caps how long any single wallet entry can remain

@@ -184,10 +184,11 @@ func (s *UnilateralExitPersistenceStore) GetJob(ctx context.Context,
 			},
 		)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return ErrUnilateralExitJobNotFound
-			}
 
+			// Let sql.ErrNoRows propagate so ExecTx recognises
+			// this as a benign negative lookup and does not log
+			// a spurious WARN. The sentinel translation happens
+			// outside the txBody below.
 			return err
 		}
 
@@ -202,6 +203,9 @@ func (s *UnilateralExitPersistenceStore) GetJob(ctx context.Context,
 	}
 
 	err := s.db.ExecTx(ctx, ReadTxOption(), readFn)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrUnilateralExitJobNotFound
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -110,6 +110,11 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 	require.Equal(t, 0, swap.startPayCalls)
 	require.Equal(t, 1, rpc.leaveCalls)
 	require.Equal(t, 1, rpc.listVTXOsCalls)
+	require.Equal(
+		t, 1, rpc.joinNextRoundCalls, "sendOnchain must "+
+			"auto-commit the leave intent so the top-level "+
+			"`send` verb is a one-shot",
+	)
 
 	got := rpc.leaveLastReq.GetOutpoints().GetOutpoints()
 	require.Equal(
@@ -182,6 +187,57 @@ func TestRouterSendOnchainSweepAllRoutesToAllSelection(t *testing.T) {
 	require.Equal(
 		t, int64(12_000), resp.GetActualAmountSat(),
 		"actual_amount_sat on sweep must echo the total live VTXO sum",
+	)
+	require.Equal(
+		t, 1, rpc.joinNextRoundCalls,
+		"sweep-all path must also auto-commit the leave intent",
+	)
+}
+
+// TestRouterSendOnchainAutoJoinFailureSurfaced asserts that when the
+// implicit JoinNextRound after a successful LeaveVTXOs fails, the error
+// is propagated to the caller — silently swallowing it would leave the
+// caller thinking the leave dispatched while the queued intent rots in
+// the round actor's PendingAssembly state. The error message says
+// `ark rounds join` explicitly so the recovery path is discoverable
+// straight from the failure.
+func TestRouterSendOnchainAutoJoinFailureSurfaced(t *testing.T) {
+	t.Parallel()
+
+	r, _, rpc := newRouterFixture(t)
+	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
+		Vtxos: []*daemonrpc.VTXO{
+			{
+				Outpoint:  "tx1:0",
+				AmountSat: 10_000,
+			},
+		},
+	}
+	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
+		QueuedOutpoints: []string{
+			"tx1:0",
+		},
+		Status: "queued",
+	}
+	rpc.joinNextRoundErr = errors.New("round actor unavailable")
+
+	_, err := r.Send(t.Context(), &walletrpc.SendRequest{
+		Destination: &walletrpc.SendRequest_OnchainAddress{
+			OnchainAddress: "bcrt1qaddr",
+		},
+		AmtSat: 5_000,
+	})
+	require.Error(t, err)
+	require.ErrorContains(t, err, "auto-join next round after leave")
+	require.ErrorContains(t, err, "round actor unavailable")
+	require.ErrorContains(t, err, "ark rounds join")
+	require.Equal(
+		t, 1, rpc.leaveCalls,
+		"the leave call must have happened before the join failure",
+	)
+	require.Equal(
+		t, 1, rpc.joinNextRoundCalls,
+		"the join must have been attempted",
 	)
 }
 

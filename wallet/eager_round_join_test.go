@@ -347,10 +347,19 @@ func TestEagerRoundJoinAutoBoardsOnBlockEpoch(t *testing.T) {
 
 	fix := newEagerBoardFixture(t, true)
 
+	// handleBlockEpoch records the tip atomically (no heavy work);
+	// handleProcessTipTick is what runs ListUnspent + the eager-board
+	// hook on the next tick. Drive both directly so the test does
+	// not depend on the runTipTickLoop goroutine being started.
 	res := fix.wallet.handleBlockEpoch(t.Context(), fix.epoch)
 	require.True(
 		t, res.IsOk(),
 		"block-epoch handler must succeed; got %v", res.Err(),
+	)
+	res = fix.wallet.handleProcessTipTick(t.Context())
+	require.True(
+		t, res.IsOk(),
+		"tip-tick handler must succeed; got %v", res.Err(),
 	)
 
 	require.Eventually(t, func() bool {
@@ -371,10 +380,18 @@ func TestEagerRoundJoinCoalescesMultiUTXOBlockEpoch(t *testing.T) {
 
 	fix := newMultiUTXOEagerBoardFixture(t)
 
+	// Drive both handlers directly: the lightweight block-epoch
+	// handler stores the tip, the tip-tick handler runs ListUnspent
+	// + the eager-board hook.
 	res := fix.wallet.handleBlockEpoch(t.Context(), fix.epoch)
 	require.True(
 		t, res.IsOk(),
 		"block-epoch handler must succeed; got %v", res.Err(),
+	)
+	res = fix.wallet.handleProcessTipTick(t.Context())
+	require.True(
+		t, res.IsOk(),
+		"tip-tick handler must succeed; got %v", res.Err(),
 	)
 
 	// Allow the actor system to drain the Tell.
@@ -404,10 +421,18 @@ func TestEagerRoundJoinDisabledSkipsAutoBoard(t *testing.T) {
 
 	fix := newEagerBoardFixture(t, false)
 
+	// Drive both handlers: when eager mode is off, neither the
+	// block-epoch handler nor the tip-tick handler may dispatch
+	// a TriggerBoardMsg.
 	res := fix.wallet.handleBlockEpoch(t.Context(), fix.epoch)
 	require.True(
 		t, res.IsOk(),
 		"block-epoch handler must succeed; got %v", res.Err(),
+	)
+	res = fix.wallet.handleProcessTipTick(t.Context())
+	require.True(
+		t, res.IsOk(),
+		"tip-tick handler must succeed; got %v", res.Err(),
 	)
 
 	// processUtxo persists the intent, but no Fetch / Upsert / Tell

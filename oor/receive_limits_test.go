@@ -89,8 +89,12 @@ func TestIncomingMetadataMatchesFromResponseUsesConfiguredMatchLimit(
 
 	resp := &arkrpc.ListVTXOsByScriptsResponse{
 		Vtxos: []*arkrpc.VTXO{
-			testIncomingMetadataVTXO(sessionID, commitmentTxID, 0),
-			testIncomingMetadataVTXO(sessionID, commitmentTxID, 1),
+			testIncomingMetadataVTXO(
+				sessionID, commitmentTxID, 0,
+			),
+			testIncomingMetadataVTXO(
+				sessionID, commitmentTxID, 1,
+			),
 		},
 	}
 

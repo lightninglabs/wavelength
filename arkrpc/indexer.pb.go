@@ -1927,7 +1927,11 @@ func (x *ListVTXOsByScriptsRequest) GetLimit() uint32 {
 
 type ListVTXOsByScriptsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Vtxos []*VTXO                `protobuf:"bytes,1,rep,name=vtxos,proto3" json:"vtxos,omitempty"`
+	// vtxos carries every indexer VTXO matching the queried scripts in the
+	// indexer's natural cursor order. Each entry carries its own pkScript and
+	// outpoint, so callers that need per-script or per-outpoint indexing can
+	// build the index they want locally; the wire format stays neutral.
+	Vtxos []*VTXO `protobuf:"bytes,1,rep,name=vtxos,proto3" json:"vtxos,omitempty"`
 	// next_cursor is empty when the result set is exhausted.
 	NextCursor    []byte `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
 	unknownFields protoimpl.UnknownFields

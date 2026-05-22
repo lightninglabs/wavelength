@@ -455,6 +455,10 @@ message ListVTXOsByScriptsRequest {
 }
 
 message ListVTXOsByScriptsResponse {
+    // vtxos carries every indexer VTXO matching the queried scripts in the
+    // indexer's natural cursor order. Each entry carries its own pkScript and
+    // outpoint, so callers that need per-script or per-outpoint indexing can
+    // build the index they want locally; the wire format stays neutral.
     repeated VTXO vtxos = 1;
 
     // next_cursor is empty when the result set is exhausted.
