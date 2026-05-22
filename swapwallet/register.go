@@ -111,8 +111,8 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 			runtime.resumeAll(ctx)
 
 			// Start background goroutines after resume so
-			// subscribers and the deadline watcher observe a
-			// runtime that owns the pending rows it just resumed.
+			// subscribers observe a runtime that owns any
+			// wallet-local pending rows it just restored.
 			runtime.start()
 		})
 

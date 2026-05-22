@@ -143,14 +143,11 @@ func (r *Runtime) resumeAll(ctx context.Context) {
 	r.deps.SwapBackend.ResumePending(ctx)
 }
 
-// trackPending records a new or refreshed pending entry so the deadline
-// watcher can age it. The deadline base is the time the RUNTIME first
-// observes the entry, NOT the row's original createdAt: a swap backfill
-// at daemon startup carries the original swap submit time (possibly
-// hours old), and basing the deadline on that would flip every backfilled
-// pending row to FAILED(timed_out) within the first deadline tick. The
-// deadline is a wallet-process responsibility — it must not carry stale
-// clock state from a previous process.
+// trackPending records a new or refreshed wallet-local pending entry so the
+// deadline watcher can age it. The deadline base is the time the runtime first
+// observes the entry, NOT the row's original createdAt; otherwise restored
+// entries could be projected to FAILED(timed_out) within the first deadline
+// tick after restart.
 //
 // Subsequent trackPending calls for the same id are idempotent: the
 // existing first-observed createdAt and deadline are preserved so
@@ -158,10 +155,7 @@ func (r *Runtime) resumeAll(ctx context.Context) {
 //
 // trackPending intentionally does NOT touch the overlay map: a synthetic
 // FAILED overlay set by the deadline watcher must remain visible to
-// subscribers until the underlying swap subsystem actually transitions
-// to a terminal state. clearPending is the only writer that retires the
-// overlay; this keeps a still-pending source row from oscillating the
-// wallet surface between FAILED and PENDING on every monitor push.
+// subscribers until the underlying wallet-local operation is cleared.
 func (r *Runtime) trackPending(id string, kind walletrpc.EntryKind,
 	createdAt time.Time) {
 
@@ -213,11 +207,9 @@ func (r *Runtime) overlayFor(id string) (overlayStatus, bool) {
 	return ov, ok
 }
 
-// deadlineWatcher scans pending entries on a coarse tick and elevates any
-// entry past its wallet-level deadline to FAILED in the overlay map. The
-// watcher does not mutate the underlying swap or leave state — that remains
-// the source of truth for protocol-level progress. The wallet user simply
-// sees the entry as timed out.
+// deadlineWatcher scans pending wallet-local entries on a coarse tick and
+// elevates any entry past its wallet-level deadline to FAILED in the overlay
+// map. Swap rows use the swap FSM's own terminal state instead.
 func (r *Runtime) deadlineWatcher() {
 	defer r.wg.Done()
 
@@ -239,10 +231,7 @@ func (r *Runtime) deadlineWatcher() {
 // can drive it with a fixed clock.
 //
 // Newly elevated entries are also emitted to SubscribeWallet subscribers so
-// long-lived UI consumers see the FAILED transition in real time. The
-// hung swap is — by hypothesis — never going to drive a fresh monitor
-// push, so without this fan-out the wallet surface would stay PENDING in
-// the subscription stream until next List materializes the overlay.
+// long-lived UI consumers see the FAILED transition in real time.
 func (r *Runtime) applyDeadlines(now time.Time) {
 	timedOut := r.markTimedOut(now)
 	for _, entry := range timedOut {
@@ -250,18 +239,22 @@ func (r *Runtime) applyDeadlines(now time.Time) {
 	}
 }
 
-// markTimedOut writes the FAILED overlay for every pending row whose
-// deadline has passed and returns synthesized WalletEntry rows for each
-// newly elevated entry. The slice is built under pendingMu so the
-// caller can fan it out to subscribers without holding the lock (emit
-// takes subsMu, and the runtime maintains the invariant that no two
-// runtime mutexes are held simultaneously).
+// markTimedOut writes the FAILED overlay for every wallet-local pending row
+// whose deadline has passed and returns synthesized WalletEntry rows for each
+// newly elevated entry. Swap rows are dropped from tracking so they cannot
+// diverge from the swap FSM.
 func (r *Runtime) markTimedOut(now time.Time) []*walletrpc.WalletEntry {
 	r.pendingMu.Lock()
 	defer r.pendingMu.Unlock()
 
 	var notify []*walletrpc.WalletEntry
 	for id, entry := range r.pending {
+		if isSwapKind(entry.kind) {
+			delete(r.pending, id)
+			delete(r.overlay, id)
+
+			continue
+		}
 		if _, alreadyTimedOut := r.overlay[id]; alreadyTimedOut {
 			continue
 		}
@@ -285,6 +278,14 @@ func (r *Runtime) markTimedOut(now time.Time) []*walletrpc.WalletEntry {
 	}
 
 	return notify
+}
+
+// isSwapKind reports wallet rows whose lifecycle is backed by the swap FSM.
+// Those rows must not receive synthetic wallet timeout overlays because the
+// swap store owns their terminal state.
+func isSwapKind(kind walletrpc.EntryKind) bool {
+	return kind == walletrpc.EntryKind_ENTRY_KIND_SEND ||
+		kind == walletrpc.EntryKind_ENTRY_KIND_RECV
 }
 
 // subscribe registers a channel to receive normalized WalletEntry updates

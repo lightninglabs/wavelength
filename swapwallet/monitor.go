@@ -163,11 +163,10 @@ func (r *Runtime) runOneSubscription(includeExisting bool) error {
 	return err
 }
 
-// fanOutSwapUpdate translates one SubscribeSwapsResponse into a
-// WalletEntry, projects the canonical id, applies the deadline overlay,
-// updates the pending tracker, and emits to subscribers. Returns an error
-// only when rootCtx has been canceled; transient errors do not stop the
-// loop.
+// fanOutSwapUpdate translates one SubscribeSwapsResponse into a WalletEntry,
+// projects the canonical id, clears any stale wallet timeout overlay for
+// swap-backed rows, and emits to subscribers. Returns an error only when
+// rootCtx has been canceled; transient errors do not stop the loop.
 func (r *Runtime) fanOutSwapUpdate(
 	resp *swapclientrpc.SubscribeSwapsResponse) error {
 
@@ -190,15 +189,13 @@ func (r *Runtime) fanOutSwapUpdate(
 		walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 	)
 
-	// The deadline overlay only projects PENDING entries onto FAILED.
-	// A swap that has already entered a terminal state must take that
-	// terminal state at face value — projecting a stale FAILED overlay
-	// onto an actually-COMPLETE swap would diverge from history.List
-	// (which gates on PENDING here) and emit a misleading FAILED row to
-	// every SubscribeWallet subscriber. Mirror history.applyOverlays'
-	// guard so the source-of-truth status from the swap subsystem wins.
+	// Wallet-local deadline overlays never apply to swap-backed rows: the
+	// swap FSM owns their terminal state. Keep the branch for future
+	// non-swap monitor sources that may still use runtime overlays.
 	sourceStatus := entry.GetStatus()
-	if sourceStatus == walletrpc.EntryStatus_ENTRY_STATUS_PENDING {
+	if sourceStatus == walletrpc.EntryStatus_ENTRY_STATUS_PENDING &&
+		!isSwapKind(entry.GetKind()) {
+
 		if ov, ok := r.overlayFor(entry.GetId()); ok {
 			entry.Status = ov.status
 			if ov.failureReason != "" {
@@ -207,19 +204,21 @@ func (r *Runtime) fanOutSwapUpdate(
 		}
 	}
 
-	// Keep the pending tracker in sync. Branch on the SOURCE status,
-	// not the (possibly overlay-elevated) status: only the swap
-	// subsystem's own terminal-state transition releases the pending
-	// tracker so the synthetic timed-out overlay does not flap on the
-	// next update.
+	// Keep the pending tracker in sync. Pending swap rows are explicitly
+	// cleared so stale wallet overlays cannot outlive the swap FSM source
+	// of truth.
 	switch sourceStatus {
 	case walletrpc.EntryStatus_ENTRY_STATUS_PENDING:
-		r.trackPending(
-			entry.GetId(), entry.GetKind(),
-			unixToTime(
-				entry.GetCreatedAtUnix(),
-			),
-		)
+		if isSwapKind(entry.GetKind()) {
+			r.clearPending(entry.GetId())
+		} else {
+			r.trackPending(
+				entry.GetId(), entry.GetKind(),
+				unixToTime(
+					entry.GetCreatedAtUnix(),
+				),
+			)
+		}
 
 	case walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		walletrpc.EntryStatus_ENTRY_STATUS_FAILED:

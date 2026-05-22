@@ -22,8 +22,8 @@ import (
 // own canonical persistence (swap DB, ledger entries, boarding_sweeps),
 // and swapwallet must not duplicate that state. The merger simply pulls
 // the latest pages, normalizes each row to a WalletEntry, applies the
-// caller's filters, sorts by updated_at descending, paginates, and
-// overlays the runtime's deadline-driven FAILED projections.
+// caller's filters, sorts by updated_at descending, paginates, and applies
+// wallet-local deadline projections.
 type history struct {
 	deps    *Deps
 	runtime *Runtime
@@ -137,8 +137,8 @@ func (h *history) listActivity(ctx context.Context,
 		entries = append(entries, ledgerEntries...)
 	}
 
-	// Apply wallet-level overlay (deadline timeout) BEFORE filtering so
-	// a stuck entry appears as FAILED in the wallet view even when the
+	// Apply wallet-local deadline overlays BEFORE filtering so a stuck
+	// non-swap entry appears as FAILED in the wallet view even when the
 	// caller asked for pending_only=false.
 	h.applyOverlays(entries)
 
@@ -345,6 +345,9 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 func (h *history) applyOverlays(entries []*walletrpc.WalletEntry) {
 	for _, e := range entries {
 		if e.GetStatus() != walletrpc.EntryStatus_ENTRY_STATUS_PENDING {
+			continue
+		}
+		if isSwapKind(e.GetKind()) {
 			continue
 		}
 		ov, ok := h.runtime.overlayFor(e.GetId())

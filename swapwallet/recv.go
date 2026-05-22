@@ -13,16 +13,14 @@ import (
 // receiver drives wallet-layer Recv flows. It is a thin composition over
 // the existing swap subserver's StartReceive RPC; the swap subsystem owns
 // the invoice signing (with a daemon-managed payment-scoped auth key via
-// PR #337), persistence, and lifecycle. swapwallet only normalizes the
-// response into a flat WalletEntry and tracks the pending row for the
-// wallet-level deadline watcher.
+// PR #337), persistence, lifecycle, and receive expiry. swapwallet only
+// normalizes the response into a flat WalletEntry.
 type receiver struct {
 	deps    *Deps
 	runtime *Runtime
 }
 
-// newReceiver constructs a receiver bound to the runtime that will track
-// the resulting pending entry.
+// newReceiver constructs a receiver bound to the shared wallet runtime.
 func newReceiver(deps *Deps, runtime *Runtime) *receiver {
 	return &receiver{deps: deps, runtime: runtime}
 }
@@ -69,15 +67,6 @@ func (r *receiver) Recv(ctx context.Context, req *walletrpc.RecvRequest) (
 		startResp.GetSwap(), req.GetMemo(), startResp.GetPaymentHash(),
 		walletrpc.EntryKind_ENTRY_KIND_RECV,
 	)
-
-	if entry.Status == walletrpc.EntryStatus_ENTRY_STATUS_PENDING {
-		r.runtime.trackPending(
-			entry.GetId(), entry.GetKind(),
-			unixToTime(
-				entry.GetCreatedAtUnix(),
-			),
-		)
-	}
 
 	return &walletrpc.RecvResponse{
 		Invoice: startResp.GetInvoice(),

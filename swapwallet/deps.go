@@ -78,10 +78,9 @@ type RPCServer interface {
 		*daemonrpc.JoinNextRoundResponse, error)
 }
 
-// defaultWalletDeadline caps how long any single wallet entry can remain
-// PENDING before the runtime transitions it to FAILED with a timeout
-// reason. The wallet deadline lives ABOVE the swap FSM's own deadline so a
-// stuck or partially-progressed swap never leaves a user-facing row hanging.
+// defaultWalletDeadline caps how long wallet-local entries can remain PENDING
+// before the runtime projects them as FAILED with a timeout reason. Swap rows
+// use the swap FSM's own terminal state instead.
 const defaultWalletDeadline = 30 * time.Minute
 
 // defaultListLimitConst is the package-default page size used when neither
@@ -131,8 +130,8 @@ type Deps struct {
 	// when nil.
 	Log btclog.Logger
 
-	// WalletDeadline is the wallet-level deadline applied to every
-	// PENDING entry. Zero falls back to defaultWalletDeadline.
+	// WalletDeadline is the wallet-level deadline applied to wallet-local
+	// PENDING entries. Zero falls back to defaultWalletDeadline.
 	WalletDeadline time.Duration
 
 	// DefaultListLimit overrides the default page size used by List when

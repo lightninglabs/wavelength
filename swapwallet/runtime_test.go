@@ -30,8 +30,10 @@ func TestDeadlineWatcherFlagsStuckEntries(t *testing.T) {
 	freshID := "fresh"
 	staleID := "stale"
 
-	r.trackPending(freshID, walletrpc.EntryKind_ENTRY_KIND_SEND, time.Now())
-	r.trackPending(staleID, walletrpc.EntryKind_ENTRY_KIND_RECV, time.Now())
+	r.trackPending(freshID, walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now())
+	r.trackPending(
+		staleID, walletrpc.EntryKind_ENTRY_KIND_DEPOSIT, time.Now(),
+	)
 
 	// Tick the watcher past the deadline window. Both entries were
 	// first-observed essentially "now", so a tick at now+2*deadline is
@@ -55,7 +57,7 @@ func TestDeadlineWatcherFlagsStuckEntries(t *testing.T) {
 	r2 := newRuntime(t.Context(), deps)
 	defer r2.stop()
 	r2.trackPending(
-		freshID, walletrpc.EntryKind_ENTRY_KIND_SEND, time.Now(),
+		freshID, walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
 	)
 	r2.applyDeadlines(time.Now())
 	_, freshTimedOut := r2.overlayFor(freshID)
@@ -63,6 +65,31 @@ func TestDeadlineWatcherFlagsStuckEntries(t *testing.T) {
 		t, freshTimedOut,
 		"entry inside its deadline must not be flagged as timed out",
 	)
+}
+
+// TestDeadlineWatcherIgnoresSwapRows asserts SEND/RECV rows are left to the
+// swap FSM instead of receiving a wallet-level timeout overlay.
+func TestDeadlineWatcherIgnoresSwapRows(t *testing.T) {
+	t.Parallel()
+
+	deadline := 50 * time.Millisecond
+	r := newRuntime(t.Context(), &Deps{WalletDeadline: deadline})
+	defer r.stop()
+
+	r.trackPending("send", walletrpc.EntryKind_ENTRY_KIND_SEND, time.Now())
+	r.trackPending("recv", walletrpc.EntryKind_ENTRY_KIND_RECV, time.Now())
+
+	r.applyDeadlines(time.Now().Add(2 * deadline))
+
+	_, sendTimedOut := r.overlayFor("send")
+	_, recvTimedOut := r.overlayFor("recv")
+	require.False(t, sendTimedOut)
+	require.False(t, recvTimedOut)
+
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	require.NotContains(t, r.pending, "send")
+	require.NotContains(t, r.pending, "recv")
 }
 
 // TestDeadlineWatcherIdempotent asserts that running applyDeadlines twice
@@ -78,7 +105,7 @@ func TestDeadlineWatcherIdempotent(t *testing.T) {
 	defer r.stop()
 
 	id := "long-stuck"
-	r.trackPending(id, walletrpc.EntryKind_ENTRY_KIND_SEND, time.Now())
+	r.trackPending(id, walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now())
 
 	future := time.Now().Add(2 * deadline)
 	r.applyDeadlines(future)
@@ -108,7 +135,7 @@ func TestClearPendingDropsOverlay(t *testing.T) {
 	defer r.stop()
 
 	id := "transient"
-	r.trackPending(id, walletrpc.EntryKind_ENTRY_KIND_SEND, time.Now())
+	r.trackPending(id, walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now())
 	r.applyDeadlines(time.Now().Add(2 * deadline))
 	_, ok := r.overlayFor(id)
 	require.True(t, ok)
@@ -119,10 +146,10 @@ func TestClearPendingDropsOverlay(t *testing.T) {
 }
 
 // TestTrackPendingBasesDeadlineOnFirstObservation asserts that an entry
-// trackPending'd with a stale createdAt (e.g. a backfilled monitor push
-// at daemon startup for a swap submitted hours ago) gets a FRESH
+// trackPending'd with a stale createdAt (e.g. a restored wallet-local
+// operation submitted hours ago) gets a FRESH
 // deadline based on time.Now(), not on the source row's submit time.
-// Without this guard a restart would flip every long-pending swap to
+// Without this guard a restart would flip every long-pending wallet row to
 // FAILED(timed_out) within the first deadline tick.
 func TestTrackPendingBasesDeadlineOnFirstObservation(t *testing.T) {
 	t.Parallel()
@@ -132,9 +159,9 @@ func TestTrackPendingBasesDeadlineOnFirstObservation(t *testing.T) {
 	r := newRuntime(t.Context(), deps)
 	defer r.stop()
 
-	// Simulate a backfilled monitor push for a swap submitted 24h ago.
+	// Simulate a restored wallet-local row submitted 24h ago.
 	stale := time.Now().Add(-24 * time.Hour)
-	r.trackPending("backfilled", walletrpc.EntryKind_ENTRY_KIND_SEND, stale)
+	r.trackPending("backfilled", walletrpc.EntryKind_ENTRY_KIND_EXIT, stale)
 
 	r.pendingMu.Lock()
 	entry, ok := r.pending["backfilled"]
@@ -170,7 +197,7 @@ func TestTrackPendingIdempotentPreservesOriginalDeadline(t *testing.T) {
 	defer r.stop()
 
 	r.trackPending(
-		"id", walletrpc.EntryKind_ENTRY_KIND_SEND, time.Now(),
+		"id", walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
 	)
 	r.pendingMu.Lock()
 	first := r.pending["id"].deadline
@@ -179,7 +206,7 @@ func TestTrackPendingIdempotentPreservesOriginalDeadline(t *testing.T) {
 	// Sleep a small amount and re-track; the deadline must NOT advance.
 	time.Sleep(10 * time.Millisecond)
 	r.trackPending(
-		"id", walletrpc.EntryKind_ENTRY_KIND_SEND, time.Now(),
+		"id", walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
 	)
 	r.pendingMu.Lock()
 	second := r.pending["id"].deadline
@@ -209,7 +236,7 @@ func TestDeadlineWatcherEmitsTimeoutToSubscribers(t *testing.T) {
 	sub := r.subscribe()
 
 	r.trackPending(
-		"stuck", walletrpc.EntryKind_ENTRY_KIND_SEND, time.Now(),
+		"stuck", walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
 	)
 	tick := time.Now().Add(2 * deadline)
 	r.applyDeadlines(tick)
@@ -218,7 +245,7 @@ func TestDeadlineWatcherEmitsTimeoutToSubscribers(t *testing.T) {
 	case got := <-sub:
 		require.Equal(t, "stuck", got.GetId())
 		require.Equal(
-			t, walletrpc.EntryKind_ENTRY_KIND_SEND, got.GetKind(),
+			t, walletrpc.EntryKind_ENTRY_KIND_EXIT, got.GetKind(),
 		)
 		require.Equal(
 			t, walletrpc.EntryStatus_ENTRY_STATUS_FAILED,
@@ -254,7 +281,7 @@ func TestDeadlineWatcherDoesNotReEmitAlreadyTimedOut(t *testing.T) {
 	sub := r.subscribe()
 
 	r.trackPending(
-		"stuck", walletrpc.EntryKind_ENTRY_KIND_SEND, time.Now(),
+		"stuck", walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
 	)
 	tick := time.Now().Add(2 * deadline)
 	r.applyDeadlines(tick)
@@ -287,7 +314,7 @@ func TestSubscribeFanOutAndDropOnSlowConsumer(t *testing.T) {
 
 	entry := &walletrpc.WalletEntry{
 		Id:   "abc",
-		Kind: walletrpc.EntryKind_ENTRY_KIND_SEND,
+		Kind: walletrpc.EntryKind_ENTRY_KIND_EXIT,
 	}
 	r.emit(entry)
 
