@@ -45,14 +45,30 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 
 	resp, err := r.Recv(t.Context(), &walletrpc.RecvRequest{
 		AmtSat: 50_000,
+		Memo:   "coffee",
 	})
 	require.NoError(t, err)
 	require.Equal(t, 1, swap.startReceiveCalls)
+	require.Equal(t, "coffee", swap.startReceiveLast.GetMemo())
 	require.Equal(t, "lnbc1invoice", resp.GetInvoice())
 	require.Equal(t, "abc123", resp.GetEntry().GetId())
+	require.Equal(t, "coffee", resp.GetEntry().GetNote())
 	require.Equal(
 		t, walletrpc.EntryKind_ENTRY_KIND_RECV,
 		resp.GetEntry().GetKind(),
+	)
+	require.Equal(
+		t, "lnbc1invoice",
+		resp.GetEntry().GetRequest().GetLightningInvoice().GetInvoice(),
+	)
+	require.Equal(
+		t, "abc123",
+		resp.GetEntry().GetRequest().GetLightningInvoice().
+			GetPaymentHash(),
+	)
+	require.Equal(
+		t, walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+		resp.GetEntry().GetProgress().GetPhase(),
 	)
 }
 

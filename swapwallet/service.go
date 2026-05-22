@@ -132,6 +132,11 @@ func (s *Service) Deposit(ctx context.Context, req *walletrpc.DepositRequest) (
 		Counterparty:  "boarding",
 		CreatedAtUnix: createdAt,
 		UpdatedAtUnix: createdAt,
+		Request:       requestFromOnchainAddress(addrResp.GetAddress()),
+		Progress: &walletrpc.WalletEntryProgress{
+			Phase:      walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
+			PhaseLabel: "address_issued",
+		},
 	}
 
 	// v1 SCOPE: deposit pending tracking is omitted because there is

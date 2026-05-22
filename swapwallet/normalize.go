@@ -6,16 +6,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightningnetwork/lnd/zpay32"
 )
 
 // truncatedCounterpartyLen caps the rendered counterparty field length so
 // the wallet UI never has to deal with a multi-hundred-character invoice
 // string. Truncation keeps the start of the bech32 prefix plus a recognisable
 // chunk of the body.
-const truncatedCounterpartyLen = 32
+const (
+	truncatedCounterpartyLen = 32
+
+	// legacyReceiveInvoiceMemo is the historical SDK placeholder used
+	// before recv memos were threaded into receive invoices. Do not surface
+	// it as a wallet note; note should mean user-provided memo.
+	legacyReceiveInvoiceMemo = "swap"
+)
 
 // swapEntryFromSummary normalizes a swapclientrpc.SwapSummary into the flat
 // WalletEntry shape. The wallet layer collapses every internal swap state
@@ -60,8 +69,10 @@ func swapEntryFromSummary(s *swapclientrpc.SwapSummary, note string,
 		Counterparty:  truncate(counterparty, truncatedCounterpartyLen),
 		CreatedAtUnix: s.GetCreatedAtUnix(),
 		UpdatedAtUnix: s.GetUpdatedAtUnix(),
-		Note:          note,
+		Note:          entryNote(note, s.GetInvoice()),
 		FailureReason: failureReasonFromTerminal(s.GetTerminalReason()),
+		Request:       requestFromSwapSummary(s, counterparty, kind),
+		Progress:      progressFromSwapSummary(s),
 	}
 
 	// Render amount with the wallet's signed-amount convention: positive
@@ -82,6 +93,110 @@ func swapEntryFromSummary(s *swapclientrpc.SwapSummary, note string,
 	}
 
 	return entry
+}
+
+// requestFromSwapSummary surfaces the durable payment request associated with
+// a Lightning-backed wallet entry. Historical swap rows carry the invoice on
+// the summary; immediate SEND responses fall back to the caller-supplied
+// invoice passed as counterparty until the persisted summary catches up.
+// Payment hashes are tracked separately and must not be promoted into the
+// invoice field.
+func requestFromSwapSummary(s *swapclientrpc.SwapSummary, counterparty string,
+	kind walletrpc.EntryKind) *walletrpc.WalletEntryRequest {
+
+	if s == nil {
+		return nil
+	}
+
+	invoice := s.GetInvoice()
+	if invoice == "" &&
+		kind == walletrpc.EntryKind_ENTRY_KIND_SEND &&
+		counterparty != s.GetPaymentHash() {
+
+		invoice = counterparty
+	}
+	if invoice == "" && s.GetPaymentHash() == "" {
+		return nil
+	}
+
+	return &walletrpc.WalletEntryRequest{
+		Request: &walletrpc.WalletEntryRequest_LightningInvoice{
+			LightningInvoice: &walletrpc.LightningInvoiceRequest{
+				Invoice:     invoice,
+				PaymentHash: s.GetPaymentHash(),
+			},
+		},
+	}
+}
+
+// progressFromSwapSummary maps detailed swap states onto a compact
+// wallet-facing lifecycle hint. The exact SDK state remains available through
+// swapclientrpc for power users; wallet callers get stable phases.
+func progressFromSwapSummary(
+	s *swapclientrpc.SwapSummary) *walletrpc.WalletEntryProgress {
+
+	if s == nil {
+		return nil
+	}
+
+	phase, label := phaseFromSwapState(s.GetState(), s.GetPending())
+	if phase == walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_UNSPECIFIED &&
+		s.GetPaymentHash() == "" {
+		return nil
+	}
+
+	return &walletrpc.WalletEntryProgress{
+		Phase:        phase,
+		PhaseLabel:   label,
+		PaymentHash:  s.GetPaymentHash(),
+		VtxoOutpoint: s.GetVhtlcOutpoint(),
+	}
+}
+
+// phaseFromSwapState maps a swap state and pending flag to the wallet
+// lifecycle phase and display label.
+func phaseFromSwapState(state swapclientrpc.SwapState,
+	pending bool) (walletrpc.WalletEntryPhase, string) {
+
+	switch state {
+	case swapclientrpc.SwapState_SWAP_STATE_CREATED,
+		swapclientrpc.SwapState_SWAP_STATE_SWAP_CREATED,
+		swapclientrpc.SwapState_SWAP_STATE_INVOICE_CREATED:
+		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT,
+			"waiting_for_payment"
+
+	case swapclientrpc.SwapState_SWAP_STATE_FUNDING_INITIATED,
+		swapclientrpc.SwapState_SWAP_STATE_VHTLC_FUNDED,
+		swapclientrpc.SwapState_SWAP_STATE_WAITING_FOR_CLAIM,
+		swapclientrpc.SwapState_SWAP_STATE_CLAIM_INITIATED:
+		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+			"settling"
+
+	case swapclientrpc.SwapState_SWAP_STATE_COMPLETED:
+		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+			"confirmed"
+
+	case swapclientrpc.SwapState_SWAP_STATE_REFUND_INITIATED:
+		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDING,
+			"refunding"
+
+	case swapclientrpc.SwapState_SWAP_STATE_REFUNDED:
+		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDED,
+			"refunded"
+
+	case swapclientrpc.SwapState_SWAP_STATE_FAILED,
+		swapclientrpc.SwapState_SWAP_STATE_EXPIRED,
+		swapclientrpc.SwapState_SWAP_STATE_NEEDS_INTERVENTION:
+		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED,
+			"failed"
+	}
+
+	if pending {
+		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+			"settling"
+	}
+
+	return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_UNSPECIFIED, ""
 }
 
 // kindFromSwapDirection maps the swap proto direction to a user-facing
@@ -136,6 +251,55 @@ func statusFromSwapState(state swapclientrpc.SwapState,
 // check.
 func failureReasonFromTerminal(reason string) string {
 	return strings.TrimSpace(reason)
+}
+
+// entryNote prefers the explicit caller note when the submit path still has
+// it in memory. Historical receive rows derive their note from the BOLT-11
+// description because the swap DB persists the invoice but not a separate
+// wallet memo field.
+func entryNote(explicitNote, invoice string) string {
+	if note := strings.TrimSpace(explicitNote); note != "" {
+		return note
+	}
+
+	return invoiceMemo(invoice)
+}
+
+// invoiceMemo extracts the BOLT-11 description that represents the caller's
+// receive memo.
+func invoiceMemo(invoice string) string {
+	invoice = strings.TrimSpace(invoice)
+	if invoice == "" {
+		return ""
+	}
+
+	for _, params := range invoiceDecodeNetworks() {
+		decoded, err := zpay32.Decode(invoice, params)
+		if err != nil || decoded.Description == nil {
+			continue
+		}
+
+		memo := strings.TrimSpace(*decoded.Description)
+		if memo == legacyReceiveInvoiceMemo {
+			return ""
+		}
+
+		return memo
+	}
+
+	return ""
+}
+
+// invoiceDecodeNetworks returns every chain parameter set that may decode a
+// persisted invoice.
+func invoiceDecodeNetworks() []*chaincfg.Params {
+	return []*chaincfg.Params{
+		&chaincfg.MainNetParams,
+		&chaincfg.TestNet3Params,
+		&chaincfg.RegressionNetParams,
+		&chaincfg.SigNetParams,
+		&chaincfg.SimNetParams,
+	}
 }
 
 // truncate clips s to at most n characters. The function preserves the
@@ -240,6 +404,22 @@ func onchainTxFromLedgerRow(t *daemonrpc.TransactionHistoryEntry,
 	}
 }
 
+// requestFromOnchainAddress wraps an onchain destination in the wallet request
+// oneof.
+func requestFromOnchainAddress(address string) *walletrpc.WalletEntryRequest {
+	if address == "" {
+		return nil
+	}
+
+	return &walletrpc.WalletEntryRequest{
+		Request: &walletrpc.WalletEntryRequest_OnchainAddress{
+			OnchainAddress: &walletrpc.OnchainAddressRequest{
+				Address: address,
+			},
+		},
+	}
+}
+
 // paginateVTXOs slices wallet VTXOs by offset and limit, returning a fresh
 // slice so the caller cannot mutate the merger's internal buffer.
 func paginateVTXOs(vtxos []*walletrpc.WalletVTXO, offset,
@@ -280,5 +460,10 @@ func leaveEntryStub(queuedOutpoints []string, destination string, amtSat int64,
 		CreatedAtUnix: createdAt,
 		UpdatedAtUnix: createdAt,
 		Note:          note,
+		Request:       requestFromOnchainAddress(destination),
+		Progress: &walletrpc.WalletEntryProgress{
+			Phase:      walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
+			PhaseLabel: "request_created",
+		},
 	}
 }

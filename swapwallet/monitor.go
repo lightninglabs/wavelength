@@ -185,8 +185,7 @@ func (r *Runtime) fanOutSwapUpdate(
 	// entry.Id is the swap row's payment_hash, which is the stable
 	// canonical id across the swap lifecycle — no further projection.
 	entry := swapEntryFromSummary(
-		summary, "", summary.GetPaymentHash(),
-		walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		summary, "", "", walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 	)
 
 	// All SubscribeSwaps rows are swap-backed, including the first lazy

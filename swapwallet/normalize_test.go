@@ -149,6 +149,15 @@ func TestFailureReasonFromTerminal(t *testing.T) {
 	)
 }
 
+// TestEntryNotePrefersExplicitNote confirms the immediate submit path keeps
+// the user's memo even before the persisted invoice summary is read back.
+func TestEntryNotePrefersExplicitNote(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "coffee", entryNote(" coffee ", "not-an-invoice"))
+	require.Equal(t, "", entryNote("", "not-an-invoice"))
+}
+
 // TestUnixToTime confirms zero turns into "now-ish" and non-zero
 // values round-trip through time.Unix.
 func TestUnixToTime(t *testing.T) {
@@ -394,6 +403,7 @@ func TestSwapEntryFromSummaryCallerKindOverride(t *testing.T) {
 
 	s := &swapclientrpc.SwapSummary{
 		PaymentHash: "ph",
+		Invoice:     "lnbc1invoice",
 		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_UNSPECIFIED,
 		AmountSat:   10_000,
 		Pending:     true,
@@ -403,6 +413,10 @@ func TestSwapEntryFromSummaryCallerKindOverride(t *testing.T) {
 		s, "", "", walletrpc.EntryKind_ENTRY_KIND_SEND,
 	)
 	require.Equal(t, walletrpc.EntryKind_ENTRY_KIND_SEND, send.GetKind())
+	require.Equal(
+		t, "lnbc1invoice",
+		send.GetRequest().GetLightningInvoice().GetInvoice(),
+	)
 	require.Equal(
 		t, int64(-10_000), send.GetAmountSat(),
 		"caller-pinned SEND must surface as outgoing (negative)",
@@ -416,6 +430,41 @@ func TestSwapEntryFromSummaryCallerKindOverride(t *testing.T) {
 		t, int64(10_000), recv.GetAmountSat(),
 		"caller-pinned RECV must surface as incoming (positive)",
 	)
+}
+
+// TestSwapEntryFromSummaryRequestMetadata keeps invoices and payment hashes in
+// their own fields. Historical rows may not have a BOLT-11 invoice in the swap
+// summary, but the payment hash is still a useful identifier.
+func TestSwapEntryFromSummaryRequestMetadata(t *testing.T) {
+	t.Parallel()
+
+	s := &swapclientrpc.SwapSummary{
+		PaymentHash: "ph",
+		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
+		AmountSat:   10_000,
+		Pending:     true,
+	}
+
+	send := swapEntryFromSummary(
+		s, "", "", walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+	)
+	req := send.GetRequest().GetLightningInvoice()
+	require.Equal(t, "ph", req.GetPaymentHash())
+	require.Empty(t, req.GetInvoice())
+
+	withInvoice := swapEntryFromSummary(
+		s, "", "lnbc1invoice", walletrpc.EntryKind_ENTRY_KIND_SEND,
+	)
+	req = withInvoice.GetRequest().GetLightningInvoice()
+	require.Equal(t, "ph", req.GetPaymentHash())
+	require.Equal(t, "lnbc1invoice", req.GetInvoice())
+
+	withHashHint := swapEntryFromSummary(
+		s, "", "ph", walletrpc.EntryKind_ENTRY_KIND_SEND,
+	)
+	req = withHashHint.GetRequest().GetLightningInvoice()
+	require.Equal(t, "ph", req.GetPaymentHash())
+	require.Empty(t, req.GetInvoice())
 }
 
 // TestSwapEntryFromSummaryNilSafe confirms a nil input does not

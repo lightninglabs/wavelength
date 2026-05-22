@@ -211,6 +211,7 @@ type fakeSwapService struct {
 	startReceiveResp  *swapclientrpc.StartReceiveResponse
 	startReceiveErr   error
 	startReceiveCalls int
+	startReceiveLast  *swapclientrpc.StartReceiveRequest
 
 	listSwapsResp  *swapclientrpc.ListSwapsResponse
 	listSwapsErr   error
@@ -228,10 +229,11 @@ func (f *fakeSwapService) StartPay(_ context.Context,
 }
 
 func (f *fakeSwapService) StartReceive(_ context.Context,
-	_ *swapclientrpc.StartReceiveRequest) (
+	req *swapclientrpc.StartReceiveRequest) (
 	*swapclientrpc.StartReceiveResponse, error) {
 
 	f.startReceiveCalls++
+	f.startReceiveLast = req
 
 	return f.startReceiveResp, f.startReceiveErr
 }
