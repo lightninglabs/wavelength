@@ -129,6 +129,15 @@ type GetBoardingBalanceResponse struct {
 	// UtxoCount is the number of UTXOs included in the balance.
 	UtxoCount int
 
+	// UnconfirmedBalance is the sum of all zero-conf UTXOs paying to
+	// tracked boarding addresses. These are payments detected on-chain but
+	// not yet eligible to be folded into a round.
+	UnconfirmedBalance btcutil.Amount
+
+	// UnconfirmedUtxoCount is the number of zero-conf boarding UTXOs
+	// included in UnconfirmedBalance.
+	UnconfirmedUtxoCount int
+
 	// PendingSweepBalance is the total amount of boarding UTXOs that
 	// have been included in a published-but-unconfirmed boarding-sweep
 	// transaction (status "sweep_pending"). These funds are no longer

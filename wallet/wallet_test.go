@@ -1229,6 +1229,11 @@ func TestGetBoardingBalance(t *testing.T) {
 			[]BoardingIntent{}, nil,
 		)
 	}
+	backend.On(
+		"ListUnspent", mock.Anything, int32(0), int32(
+			MaxConfsForListUnspent,
+		),
+	).Return([]*Utxo{}, nil)
 
 	epochChan := make(chan chainsource.BlockEpoch, 1)
 	chainSource := newMockChainSourceActor(epochChan)
@@ -1252,9 +1257,85 @@ func TestGetBoardingBalance(t *testing.T) {
 	// With no intents, all balance breakdowns should be zero.
 	require.Equal(t, btcutil.Amount(0), resp.TotalBalance)
 	require.Equal(t, 0, resp.UtxoCount)
+	require.Equal(t, btcutil.Amount(0), resp.UnconfirmedBalance)
+	require.Equal(t, 0, resp.UnconfirmedUtxoCount)
 	require.Equal(t, btcutil.Amount(0), resp.PendingSweepBalance)
 	require.Equal(t, btcutil.Amount(0), resp.SweptBalance)
 
+	backend.AssertExpectations(t)
+	store.AssertExpectations(t)
+}
+
+// TestGetBoardingBalanceFiltersUnconfirmedUTXOs confirms pending boarding
+// balance only includes zero-conf outputs that pay to known boarding scripts.
+func TestGetBoardingBalanceFiltersUnconfirmedUTXOs(t *testing.T) {
+	t.Parallel()
+
+	backend := &MockBoardingBackend{}
+	store := &MockBoardingStore{}
+	for _, status := range []BoardingStatus{
+		BoardingStatusConfirmed, BoardingStatusSweepPending,
+		BoardingStatusSwept,
+	} {
+		store.On(
+			"FetchBoardingIntentsByStatus",
+			mock.Anything, status,
+		).Return(
+			[]BoardingIntent{}, nil,
+		)
+	}
+
+	boardingScript := []byte{1, 2, 3}
+	changeScript := []byte{4, 5, 6}
+	confirmedBoardingScript := []byte{7, 8, 9}
+	backend.On(
+		"ListUnspent", mock.Anything, int32(0), int32(
+			MaxConfsForListUnspent,
+		),
+	).Return([]*Utxo{
+		{
+			PkScript:      boardingScript,
+			Amount:        1_000_000,
+			Confirmations: 0,
+		},
+		{
+			PkScript:      changeScript,
+			Amount:        149_000_000,
+			Confirmations: 0,
+		},
+		{
+			PkScript:      confirmedBoardingScript,
+			Amount:        2_000_000,
+			Confirmations: 1,
+		},
+	}, nil)
+
+	store.On(
+		"LookupBoardingAddress", mock.Anything, boardingScript,
+	).Return(&BoardingAddress{}, nil)
+	store.On(
+		"LookupBoardingAddress", mock.Anything, changeScript,
+	).Return(nil, fmt.Errorf("not a boarding address"))
+
+	epochChan := make(chan chainsource.BlockEpoch, 1)
+	chainSource := newMockChainSourceActor(epochChan)
+
+	walletActor := NewArk(
+		backend, store, nil, chainSource, nil, fn.None[ledger.Sink](),
+		btclog.Disabled,
+	)
+
+	result := walletActor.Receive(
+		t.Context(), &GetBoardingBalanceRequest{},
+	)
+	require.True(t, result.IsOk())
+
+	respVal, _ := result.Unpack()
+	resp := respVal.(*GetBoardingBalanceResponse) //nolint:forcetypeassert
+	require.Equal(t, btcutil.Amount(1_000_000), resp.UnconfirmedBalance)
+	require.Equal(t, 1, resp.UnconfirmedUtxoCount)
+
+	backend.AssertExpectations(t)
 	store.AssertExpectations(t)
 }
 

@@ -792,14 +792,55 @@ func (a *Ark) handleGetBoardingBalance(ctx context.Context,
 		return total
 	}
 
+	unconfirmed, unconfirmedCount, err := a.unconfirmedBoardingBalance(ctx)
+	if err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("fetch unconfirmed boarding balance: %w",
+				err),
+		)
+	}
+
 	resp := &GetBoardingBalanceResponse{
-		TotalBalance:        sumAmounts(confirmed),
-		UtxoCount:           len(confirmed),
-		PendingSweepBalance: sumAmounts(pendingSweep),
-		SweptBalance:        sumAmounts(swept),
+		TotalBalance:         sumAmounts(confirmed),
+		UtxoCount:            len(confirmed),
+		UnconfirmedBalance:   unconfirmed,
+		UnconfirmedUtxoCount: unconfirmedCount,
+		PendingSweepBalance:  sumAmounts(pendingSweep),
+		SweptBalance:         sumAmounts(swept),
 	}
 
 	return fn.Ok[WalletResp](resp)
+}
+
+// unconfirmedBoardingBalance sums zero-conf backend UTXOs that pay to known
+// boarding scripts.
+func (a *Ark) unconfirmedBoardingBalance(ctx context.Context) (btcutil.Amount,
+	int, error) {
+
+	utxos, err := a.backend.ListUnspent(ctx, 0, MaxConfsForListUnspent)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list unspent: %w", err)
+	}
+
+	var total btcutil.Amount
+	var count int
+	for _, utxo := range utxos {
+		if utxo == nil || utxo.Confirmations != 0 {
+			continue
+		}
+
+		addr, err := a.store.LookupBoardingAddress(
+			ctx, utxo.PkScript,
+		)
+		if err != nil || addr == nil {
+			continue
+		}
+
+		total += utxo.Amount
+		count++
+	}
+
+	return total, count, nil
 }
 
 // handleRegisterNotifier adds an actor to the notification list and optionally
