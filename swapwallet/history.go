@@ -383,7 +383,7 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 		return nil, err
 	}
 
-	hidden := internalOORSends(resp.GetTransactions(), correlations)
+	hidden := internalOORLedgerEntries(resp.GetTransactions(), correlations)
 	out := make([]*walletrpc.WalletEntry, 0, len(resp.GetTransactions()))
 	for _, t := range resp.GetTransactions() {
 		if _, ok := hidden[t.GetEntryId()]; ok {
@@ -451,14 +451,18 @@ func swapOORCorrelationsFromSwaps(
 	return out
 }
 
-// internalOORSends returns ledger entry IDs for OOR send legs that are internal
-// to swap execution. It only hides rows when the ledger session lines up with
-// structured swap metadata, which keeps two same-amount swaps from racing each
-// other through amount-only matching.
-func internalOORSends(rows []*daemonrpc.TransactionHistoryEntry,
+// internalOORLedgerEntries returns ledger entry IDs for OOR legs that are
+// internal to swap execution or represent wallet-local OOR change. Send legs
+// are hidden only when structured swap metadata proves the external payment
+// amount. Receive legs paired with a send in the same session are change and
+// stay out of activity list noise; inspection still exposes the ledger rows.
+func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
 	correlations swapOORCorrelations) map[int64]struct{} {
 
 	receivedBySession := make(map[string]int64)
+	receiveRowsBySession := make(
+		map[string][]*daemonrpc.TransactionHistoryEntry,
+	)
 	for _, row := range rows {
 		session, ok := oorReceiveSessionID(row)
 		if !ok {
@@ -466,6 +470,9 @@ func internalOORSends(rows []*daemonrpc.TransactionHistoryEntry,
 		}
 
 		receivedBySession[session] += row.GetAmountSat()
+		receiveRowsBySession[session] = append(
+			receiveRowsBySession[session], row,
+		)
 	}
 
 	hidden := make(map[int64]struct{})
@@ -478,6 +485,10 @@ func internalOORSends(rows []*daemonrpc.TransactionHistoryEntry,
 		received := receivedBySession[session]
 		if received == 0 {
 			continue
+		}
+
+		for _, receiveRow := range receiveRowsBySession[session] {
+			hidden[receiveRow.GetEntryId()] = struct{}{}
 		}
 
 		switch delta := row.GetAmountSat() - received; {
@@ -514,7 +525,8 @@ func oorSendSessionID(row *daemonrpc.TransactionHistoryEntry) (string, bool) {
 		row.GetSubtype() != ledger.EventVTXOSent ||
 		row.GetDebitAccount() != ledger.AccountTransfersOut ||
 		row.GetCreditAccount() != ledger.AccountVTXOBalance ||
-		row.GetAmountSat() <= 0 || len(row.GetSessionId()) == 0 {
+		row.GetAmountSat() <= 0 ||
+		len(row.GetSessionId()) != chainhash.HashSize {
 		return "", false
 	}
 
@@ -541,20 +553,36 @@ func oorReceiveSessionID(row *daemonrpc.TransactionHistoryEntry) (string,
 func oorReceiveRef(row *daemonrpc.TransactionHistoryEntry) (string, uint32,
 	bool) {
 
-	if row == nil || row.GetSubtype() != ledger.EventVTXOReceived ||
+	if row == nil || row.GetType() != "oor" ||
+		row.GetSubtype() != ledger.EventVTXOReceived ||
 		row.GetDebitAccount() != ledger.AccountVTXOBalance ||
 		row.GetCreditAccount() != ledger.AccountTransfersIn ||
 		row.GetAmountSat() <= 0 {
 		return "", 0, false
 	}
 
-	session := strings.ToLower(row.GetTxid())
-	if len(session) != 64 {
-		return "", 0, false
+	var session string
+	if len(row.GetSessionId()) > 0 {
+		if len(row.GetSessionId()) != chainhash.HashSize {
+			return "", 0, false
+		}
+
+		hash, err := chainhash.NewHash(row.GetSessionId())
+		if err != nil {
+			return "", 0, false
+		}
+
+		session = hash.String()
+	} else {
+		session = strings.ToLower(row.GetTxid())
+		if len(session) != 64 {
+			return "", 0, false
+		}
+		if _, err := hex.DecodeString(session); err != nil {
+			return "", 0, false
+		}
 	}
-	if _, err := hex.DecodeString(session); err != nil {
-		return "", 0, false
-	}
+
 	if row.GetOutputIndex() < 0 {
 		return "", 0, false
 	}
