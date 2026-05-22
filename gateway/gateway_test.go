@@ -56,6 +56,33 @@ func TestBrowserHeadersAllowsTrustedOrigin(t *testing.T) {
 	)
 }
 
+func TestBrowserHeadersAllowsWildcardOrigin(t *testing.T) {
+	t.Parallel()
+
+	handler := BrowserHeaders(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatalf("preflight must not reach wrapped handler")
+		}),
+		[]string{
+			"*",
+		}, "x-darepod-auth",
+	)
+
+	req := httptest.NewRequest(http.MethodOptions, "/", nil)
+	req.Header.Set("Origin", "https://any-wallet.example")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Equal(
+		t, "*", rec.Header().Get("Access-Control-Allow-Origin"),
+	)
+	require.Contains(
+		t, rec.Header().Get("Access-Control-Allow-Headers"),
+		"x-darepod-auth",
+	)
+}
+
 func TestBrowserHeadersPassesNonBrowserRequests(t *testing.T) {
 	t.Parallel()
 

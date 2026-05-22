@@ -71,6 +71,40 @@ func TestConfigValidateAllowsDisabledGateway(t *testing.T) {
 	require.NoError(t, cfg.Validate())
 }
 
+// TestConfigValidateAllowsWildcardGatewayOrigin verifies public browser
+// gateway deployments can opt into wildcard CORS.
+func TestConfigValidateAllowsWildcardGatewayOrigin(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.Network = "regtest"
+	cfg.Wallet.EsploraURL = "http://127.0.0.1:3000"
+	cfg.RPC.Gateway.AllowedOrigins = []string{
+		"*",
+	}
+
+	require.NoError(t, cfg.Validate())
+}
+
+// TestConfigValidateRejectsEmptyGatewayOrigin keeps blank origin entries from
+// silently weakening browser-gateway configuration.
+func TestConfigValidateRejectsEmptyGatewayOrigin(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.Network = "regtest"
+	cfg.Wallet.EsploraURL = "http://127.0.0.1:3000"
+	cfg.RPC.Gateway.AllowedOrigins = []string{
+		" ",
+	}
+
+	err := cfg.Validate()
+	require.ErrorContains(
+		t, err, "rpc.gateway.allowedorigins must contain explicit "+
+			"origins or '*'",
+	)
+}
+
 // TestOpenRPCListenerUsesInjectedListener verifies the daemon reuses an
 // injected listener verbatim so embedded runtimes can own the transport.
 func TestOpenRPCListenerUsesInjectedListener(t *testing.T) {
