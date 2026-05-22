@@ -36,6 +36,7 @@ type PaySwap struct {
 type ReceiveSwap struct {
 	PaymentHash                          []byte
 	AmountSat                            int64
+	PayerFeeMsat                         int64
 	State                                string
 	Invoice                              string
 	Preimage                             []byte

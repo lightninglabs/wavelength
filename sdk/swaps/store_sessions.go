@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -308,6 +309,7 @@ func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
 		State:          state.String(),
 		Pending:        !state.IsTerminal(),
 		AmountSat:      row.AmountSat,
+		PayerFeeMsat:   uint64(row.PayerFeeMsat),
 		VHTLCOutpoint:  row.VhtlcOutpoint,
 		VHTLCAmountSat: row.VhtlcAmount,
 		ClaimSessionID: row.ClaimSessionID,
@@ -392,10 +394,15 @@ func (s *ReceiveSession) persist(ctx context.Context) error {
 	}
 
 	now := s.client.currentTime().Unix()
+	if s.payerFeeMsat > math.MaxInt64 {
+		return fmt.Errorf("payer fee %d msat overflows int64",
+			s.payerFeeMsat)
+	}
 
 	params := swapsqlc.UpsertReceiveSwapParams{
 		PaymentHash:  append([]byte(nil), s.PaymentHash[:]...),
 		AmountSat:    int64(s.amountSat),
+		PayerFeeMsat: int64(s.payerFeeMsat),
 		State:        s.state.String(),
 		Invoice:      s.Invoice,
 		Preimage:     append([]byte(nil), s.Preimage[:]...),
@@ -659,8 +666,11 @@ func receiveSessionFromRow(c *SwapClient,
 		PaymentHash: paymentHash,
 		client:      c,
 		amountSat:   btcutil.Amount(row.AmountSat),
-		state:       state,
-		deadline:    time.Unix(row.DeadlineUnix, 0),
+		payerFeeMsat: uint64(
+			row.PayerFeeMsat,
+		),
+		state:    state,
+		deadline: time.Unix(row.DeadlineUnix, 0),
 		vhtlcConfig: restoreVHTLCConfig(
 			row.RefundLocktime, row.UnilateralClaimDelay,
 			row.UnilateralRefundDelay,
