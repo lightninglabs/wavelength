@@ -5,14 +5,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math"
-	"math/rand/v2"
-	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/darepo-client/serverconn/mailboxpull"
 )
 
 // ingressLoop is the main pull-dispatch-ack loop. It runs in its own
@@ -441,49 +439,22 @@ func (a *ServerConnectionActor) saveCheckpoint(
 
 // sleepBackoff sleeps for an exponential backoff duration with jitter,
 // respecting context cancellation. The fail count is incremented on entry
-// and used to calculate the delay.
+// and used to calculate the delay. The actual backoff arithmetic lives in
+// mailboxpull.Sleep so the SDK pull loop and this loop share the same
+// schedule.
 func (a *ServerConnectionActor) sleepBackoff(ctx context.Context,
 	failCount *int) {
 
-	*failCount++
-	delay := retryDelay(
-		a.cfg.RetryBaseDelay, a.cfg.RetryMaxDelay, *failCount,
-	)
-
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-
-	select {
-	case <-ctx.Done():
-	case <-timer.C:
-	}
+	mailboxpull.Sleep(ctx, a.backoffConfig(), failCount)
 }
 
-// retryDelay returns an exponential backoff duration with jitter, capped at
-// maxDelay. The formula is: min(base * 2^attempt, max) * (0.5 + rand(0.5)).
-func retryDelay(
-	base time.Duration, maxDelay time.Duration, attempt int,
-) time.Duration {
-
-	if base <= 0 {
-		base = 200 * time.Millisecond
+// backoffConfig snapshots the actor's backoff knobs into the shared
+// mailboxpull config shape.
+func (a *ServerConnectionActor) backoffConfig() mailboxpull.BackoffConfig {
+	return mailboxpull.BackoffConfig{
+		BaseDelay: a.cfg.RetryBaseDelay,
+		MaxDelay:  a.cfg.RetryMaxDelay,
 	}
-	if maxDelay <= 0 {
-		maxDelay = 30 * time.Second
-	}
-
-	// Exponential backoff: base * 2^attempt.
-	delay := float64(base) * math.Pow(2, float64(attempt-1))
-	if delay > float64(maxDelay) {
-		delay = float64(maxDelay)
-	}
-
-	// Add jitter: multiply by a random factor in [0.5, 1.0).
-	// Crypto-grade randomness is not needed for backoff jitter.
-	jitter := 0.5 + rand.Float64()*0.5 //nolint:gosec
-	delay *= jitter
-
-	return time.Duration(delay)
 }
 
 // statusError wraps a mailbox status failure for error reporting.

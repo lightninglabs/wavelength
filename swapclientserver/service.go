@@ -366,9 +366,16 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	// so installing the receiver here, immediately after construction, is
 	// the only correct point. An empty mailbox ID makes the receiver derive
 	// the per-swap mailbox from the client identity key and payment hash.
+	//
+	// We pass the service logger so the receiver's pull retry attempts
+	// surface in operator logs alongside the equivalent serverconn ingress
+	// WARNs; without this the SDK side flaps silently while the daemon
+	// ingress logs the same endpoint failures, which is the visibility gap
+	// that made #505 hard to diagnose from logs alone.
 	swapClient.SetOutSwapEventReceiver(
 		swaps.NewMailboxOutSwapEventReceiver(
 			swapClients.mailbox, "",
+			swaps.WithMailboxReceiverLog(log),
 		),
 	)
 

@@ -773,28 +773,7 @@ func TestIngress_PartialDispatch_NoDuplicateRedelivery(t *testing.T) {
 	)
 }
 
-// TestRetryDelay verifies the exponential backoff formula with jitter.
-func TestRetryDelay(t *testing.T) {
-	t.Parallel()
-
-	base := 100 * time.Millisecond
-	maxDelay := 5 * time.Second
-
-	// First attempt should be approximately base (within jitter range).
-	d := retryDelay(base, maxDelay, 1)
-	require.GreaterOrEqual(t, d, base/2)
-	require.LessOrEqual(t, d, base)
-
-	// High attempt should be capped at maxDelay.
-	d = retryDelay(base, maxDelay, 100)
-	require.LessOrEqual(t, d, maxDelay)
-	require.GreaterOrEqual(t, d, maxDelay/2)
-}
-
-// TestRetryDelay_DefaultsOnZero verifies that zero base/max get defaults.
-func TestRetryDelay_DefaultsOnZero(t *testing.T) {
-	t.Parallel()
-
-	d := retryDelay(0, 0, 1)
-	require.Greater(t, d, time.Duration(0))
-}
+// Backoff formula tests now live in serverconn/mailboxpull/pull_test.go
+// (TestRetryDelayClampsToMax, TestRetryDelayUsesDefaults) -- the formula
+// itself moved to that subpackage so the SDK pull loop and this actor's
+// ingress loop share one schedule.

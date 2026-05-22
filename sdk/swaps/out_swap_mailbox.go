@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btclog/v2"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/serverconn"
+	"github.com/lightninglabs/darepo-client/serverconn/mailboxpull"
 	"github.com/lightninglabs/darepo-client/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 )
@@ -37,20 +39,60 @@ type MailboxOutSwapEventReceiver struct {
 	mailboxID        string
 	pullWaitTimeout  time.Duration
 	pullMaxEnvelopes uint32
+
+	// pullBackoff controls the exponential backoff schedule applied when
+	// edge.Pull returns a transport error. The default schedule matches
+	// the serverconn ingress loop so the daemon's reconnect cadence is
+	// uniform across both consumers.
+	pullBackoff mailboxpull.BackoffConfig
+
+	// log receives one WARN per failed pull attempt. nil is treated as a
+	// no-op logger.
+	log btclog.Logger
+}
+
+// MailboxReceiverOption tweaks a MailboxOutSwapEventReceiver at construction
+// time. Defaults match the production wiring; tests use these to drive the
+// retry schedule deterministically.
+type MailboxReceiverOption func(*MailboxOutSwapEventReceiver)
+
+// WithMailboxPullBackoff overrides the exponential backoff schedule used when
+// edge.Pull returns a transport error.
+func WithMailboxPullBackoff(
+	cfg mailboxpull.BackoffConfig) MailboxReceiverOption {
+
+	return func(r *MailboxOutSwapEventReceiver) {
+		r.pullBackoff = cfg
+	}
+}
+
+// WithMailboxReceiverLog wires a structured logger so retry attempts surface
+// in daemon logs alongside the equivalent serverconn ingress messages.
+func WithMailboxReceiverLog(log btclog.Logger) MailboxReceiverOption {
+	return func(r *MailboxOutSwapEventReceiver) {
+		r.log = log
+	}
 }
 
 // NewMailboxOutSwapEventReceiver creates a mailbox-backed out-swap event
 // receiver. When mailboxID is empty, WaitOutSwapHtlc derives the mailbox from
 // the client identity key supplied by the caller.
 func NewMailboxOutSwapEventReceiver(edge mailboxpb.MailboxServiceClient,
-	mailboxID string) *MailboxOutSwapEventReceiver {
+	mailboxID string,
+	opts ...MailboxReceiverOption) *MailboxOutSwapEventReceiver {
 
-	return &MailboxOutSwapEventReceiver{
+	r := &MailboxOutSwapEventReceiver{
 		edge:             edge,
 		mailboxID:        mailboxID,
 		pullWaitTimeout:  5 * time.Second,
 		pullMaxEnvelopes: 1,
+		pullBackoff:      mailboxpull.DefaultBackoffConfig(),
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+
+	return r
 }
 
 // WaitOutSwapHtlc waits until the matching out-swap HTLC mailbox event is
@@ -74,12 +116,15 @@ func (r *MailboxOutSwapEventReceiver) WaitOutSwapHtlc(ctx context.Context,
 
 	cursor := uint64(0)
 	for {
-		resp, err := r.edge.Pull(ctx, &mailboxpb.PullRequest{
+		req := &mailboxpb.PullRequest{
 			MailboxId:     mailboxID,
 			MaxEnvelopes:  r.pullMaxEnvelopes,
 			WaitTimeoutMs: uint32(r.pullWaitTimeout.Milliseconds()),
 			Cursor:        cursor,
-		})
+		}
+		resp, err := mailboxpull.PullWithRetry(
+			ctx, r.edge, req, r.pullBackoff, r.log,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("pull out-swap mailbox: %w", err)
 		}
@@ -143,12 +188,15 @@ func (r *MailboxOutSwapEventReceiver) WaitIncomingVHTLC(ctx context.Context,
 
 	cursor := uint64(0)
 	for {
-		resp, err := r.edge.Pull(ctx, &mailboxpb.PullRequest{
+		req := &mailboxpb.PullRequest{
 			MailboxId:     mailboxID,
 			MaxEnvelopes:  r.pullMaxEnvelopes,
 			WaitTimeoutMs: uint32(r.pullWaitTimeout.Milliseconds()),
 			Cursor:        cursor,
-		})
+		}
+		resp, err := mailboxpull.PullWithRetry(
+			ctx, r.edge, req, r.pullBackoff, r.log,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("pull incoming vHTLC "+
 				"mailbox: %w", err)
