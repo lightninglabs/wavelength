@@ -2,158 +2,87 @@
 
 ## Purpose
 
-In-process integration test environment for the Ark operator and client daemons.
-Manages a full Bitcoin regtest stack (bitcoind, LND nodes), an in-process arkd
-server, and client daemon processes with controlled mailbox connections.
+In-process integration test environment for the Ark operator and client
+daemons. Manages a full Bitcoin regtest stack (bitcoind, LND nodes), an
+in-process arkd server, and client daemon processes with controlled mailbox
+connections.
 
-## Key Types
+## Key Concepts
 
-- `ArkHarness` — Main test harness: spins up bitcoind, LND, arkd, and client
-  daemons. Provides chain control (mine blocks, fund wallets) and lifecycle
-  management (start/stop/restart). Exposes `GetBatchTreeState(ctx, roundID,
-  outputIdx)` for inspecting on-chain batch watcher state from integration
-  tests without going through the RPC layer. `FundClientLND(daemon, amount)`
-  sends coins directly to a client's backing LND wallet (for CPFP fee inputs
-  in unroll tests). `FundClientWallet(daemon, amount)` is backend-agnostic:
-  funds the client wallet via `NewWalletAddress` + poll on
-  `ListWalletUnspent`, working for both LND and lwwallet backends.
-  `FundClientWalletN(daemon, amountPerUTXO, count)` sends `count` independent
-  UTXOs of `amountPerUTXO` sats each; tests driving cross-round multi-input
-  unrolls call this with `count >= num_ancestry_paths` so each tree's CPFP
-  attempt has a distinct available UTXO.
-  `CrashClientDaemon(name)` simulates an abrupt client crash: it cancels the
-  daemon root context without graceful shutdown and launches a replacement
-  against the same data directory and wallet resources. This is the closest
-  in-process crash analogue available without spawning a separate OS process.
-  `RestartArkdDuring(hook)` stops arkd, optionally runs a `hook()` while it
-  is down (e.g., to simulate mid-flight state), then restarts; used for
-  fraud-response restart tests that need a window for manual state mutation.
-  `FundOperatorLNDTaproot(amount)` sends coins to a fresh P2TR address in the
-  operator's LND wallet; used in boarding/CPFP tests that need a taproot UTXO
-  for fee bumping.
-  `GetServerVTXOStatus(ctx, outpoint)` queries arkd server state directly
-  (bypassing RPC) to read the current VTXO status string for assertion in
-  integration tests.
-- `ArkHarnessOptions` — Configuration for harness (client options, seal
-  predicates, round settings, `OperatorConfigMutator` for per-test server
-  config overrides, `OperatorDebugLevel` / `ClientDebugLevel` for
-  per-test log verbosity overrides; both default to `"trace"` when empty).
-- `ClientDaemonHarness` — Per-client daemon wrapper with gRPC connections and
-  `TriggerRoundRegistration()` helper for controlled round participation.
-  Exposes `GetStoredVTXO(ctx, outpoint string)` to retrieve a stored VTXO
-  record from the client's DB-backed store for assertion in tests.
-- `ControlledMailboxClient` — Test double that intercepts mailbox message
-  delivery. Supports pausing/resuming specific message types to test ordering
-  and restart scenarios.
-- `IndexerTestClient` — Lightweight client that connects to the indexer
-  service for querying VTXOs, rounds, and OOR events. Uses compound mailbox
-  ID (`operator:client`) and Schnorr auth for identity verification.
-  `StartIndexerTestClient` uses the client daemon's backend-agnostic
-  `IndexerProofKey` capability to obtain a proof key and signer, so the
-  test client works against both `lnd` and `lwwallet` client wallet
-  backends. The harness also supports submitting prebuilt mailbox query
-  requests so offline-recipient visibility tests can reuse a signed proof
-  generated before the client daemon shuts down.
-- `LedgerSnapshot` / `TakeLedgerSnapshot` — Point-in-time view of the
-  operator's double-entry ledger computed client-side from `ListFeeEvents`
-  (admin RPC). Captures per-account signed balances, total entry count,
-  max entry ID, and per-event-type entry counts. Used in conjunction with
-  `AssertLedgerDelta` to make fee-aware integration tests strongly assert
-  exact accounting entries without adding a new server-side API surface.
-- `ExpectedDelta` — Describes the expected balance shift, new entry count,
-  and per-event-type count increase between two `LedgerSnapshot` values.
-  Missing keys in the maps assert a zero delta (strong guarantee against
-  unintended ledger legs).
-- `AssertLedgerDelta` — Compares two snapshots against an `ExpectedDelta`,
-  iterating all accounts from `AllAccounts()`. Any account not in
-  `ExpectedDelta.Balances` is asserted to have a zero delta.
-- `DefaultItestFeeSchedule` / `WithFeesSchedule` / `WithZeroFeeSchedule` /
-  `ZeroFeeSchedule` — Helpers in `fees.go` for managing the operator fee
-  schedule in integration tests. `DefaultItestFeeSchedule` returns the
-  canonical non-zero itest schedule (lower magnitudes than production) and
-  pins `StaticFeeRateSatKW` to `chainfee.FeePerKwFloor` so the chain-backed
-  WalletKit estimator does not bleed regtest mempool noise into fee assertions.
-  `ZeroFeeSchedule` also pins `StaticFeeRateSatKW` for determinism even on
-  the fees-disabled path. The harness applies the non-zero schedule by default;
-  tests opt out via `WithZeroFeeSchedule` or customize it via `WithFeesSchedule`.
-- `ArkHarness.SealRoundNow()` — Admin-driven seal helper that calls the
-  `TriggerBatch` admin RPC and returns the sealed round ID. Convenience
-  wrapper for tests that need to force a seal without waiting for the
-  registration timeout. Panics (via `require.NoError`) if `ArkAdminClient`
-  is nil or the RPC returns an empty round ID.
-- `RPCTransportGRPC` / `RPCTransportREST` — String constants selecting the
-  client-side RPC transport for the harness (`"grpc"` or `"rest"`).
-- `ArkHarnessOptions.RPCTransport` — Configures whether client daemons connect
-  over gRPC or the HTTP grpc-gateway. Defaults to `RPCTransportGRPC` when
-  empty. `resolveRPCTransport` validates the value at harness construction.
-- `ArkHarness.ArkRPCGatewayAddr` — Populated after `startArkd` when the
-  grpc-gateway listener is ready. Used by the REST transport path to connect
-  client daemons through the HTTP gateway. Empty on `SkipArkd` harnesses or
-  when the gateway is not enabled.
+Use `go doc harness.<Symbol>` for signatures.
+
+- **`ArkHarness`** — Top-level harness. Chain control (mine, fund), lifecycle
+  (start/stop/restart), and direct server-state inspection (e.g.,
+  `GetBatchTreeState(roundID, outputIdx)`, `GetServerVTXOStatus(outpoint)`
+  bypass RPC). `RestartArkd` reuses the data directory and re-applies any
+  `OperatorConfigMutator`; `SkipArkd=true` makes both Restart variants hard
+  errors.
+- **Funding** — Backend-agnostic via `FundClientWallet` (`NewWalletAddress` +
+  `ListWalletUnspent` poll). `FundClientLND` is LND-specific (CPFP fee
+  inputs for unroll tests). `FundClientWalletN(amountPerUTXO, count)`
+  drives cross-round multi-input unrolls with `count >= num_ancestry_paths`
+  so each tree has a distinct UTXO; all faucet outputs confirm in a single
+  `Generate(6)` (don't mine between faucet calls). `FundOperatorLNDTaproot`
+  produces P2TR outputs for boarding/CPFP.
+- **Crash + restart** — `CrashClientDaemon(name)` cancels the daemon root
+  context (no graceful shutdown) and starts a replacement against the same
+  data directory and wallet; removes the entry from `clientDaemons` before
+  cancel so concurrent crash calls don't see a half-crashed entry. The
+  replacement reuses the original RPC port slot. `RestartArkdDuring(hook)`
+  stops arkd, runs `hook()`, then restarts — used for fraud-response
+  restart tests.
+- **`ArkHarnessOptions`** — Options bag (client opts, seal predicates, round
+  settings, `OperatorConfigMutator`, `OperatorDebugLevel`/`ClientDebugLevel`
+  overriding the trace defaults, `RPCTransport`).
+- **Indexer test client** — `IndexerTestClient` uses compound mailbox ID
+  (`operator:client`) + Schnorr auth. `StartIndexerTestClient` consumes the
+  backend-agnostic `IndexerProofKey` capability so it works against both
+  `lnd` and `lwwallet` client wallet backends — **don't** reach into
+  `daemon.LND.Client.WalletKit`. Also supports submitting prebuilt mailbox
+  query requests so offline-recipient visibility tests can reuse a signed
+  proof generated before the daemon shut down.
+- **Ledger assertion** — `LedgerSnapshot` + `TakeLedgerSnapshot` (built from
+  `ListFeeEvents`) capture per-account signed balances, entry count, max
+  ID, and per-event-type counts. `ExpectedDelta` describes the expected
+  shift; missing keys assert zero (strong unintended-leg guarantee).
+  `AssertLedgerDelta` iterates `AllAccounts()`.
+- **Fee schedule helpers** — `DefaultItestFeeSchedule` (canonical itest
+  schedule with `StaticFeeRateSatKW = chainfee.FeePerKwFloor` so chain
+  estimator noise doesn't bleed into assertions), `ZeroFeeSchedule` (also
+  pinned), `WithFeesSchedule`, `WithZeroFeeSchedule`. Default applies the
+  non-zero schedule and zeros the legacy `MinOperatorFee` (#270 — seal-time
+  quote builder is the only fee authority; `MinOperatorFee` remains on
+  `OperatorTerms` purely as advertised value for pre-#270 clients).
+- **Admin shortcuts** — `SealRoundNow()` calls `TriggerBatch` admin RPC and
+  returns the sealed round ID; `require.NotNil` on `ArkAdminClient`. Hard
+  error on `SkipArkd` harnesses.
+- **RPC transport** — `RPCTransportGRPC` (`"grpc"`) / `RPCTransportREST`
+  (`"rest"`) string constants select client transport;
+  `ArkHarnessOptions.RPCTransport` defaults to gRPC.
+  `ArkRPCGatewayAddr` is populated after `startArkd` when the grpc-gateway
+  listener is ready; REST transport waits on it via the `waitForArkd` loop.
 
 ## Relationships
 
-- **Depends on**: `adminrpc` (ledger snapshot via `OperatorAdminClient`),
-  `clientconn` (bridge wiring), `lndbackend` (chain source),
-  `db` (server persistence), `rounds` (round actor wiring), `oor` (OOR actor
-  wiring), `indexer` (indexer wiring), `mailbox` (controlled mailbox edges),
-  `metrics` (disabled by default in tests).
-- **Depended on by**: `itest` (integration tests), `systest` (system tests).
+- **Depends on**: `adminrpc` (ledger snapshot), `clientconn` (bridge),
+  `lndbackend`, `db`, `rounds`, `oor`, `indexer`, `mailbox` (controlled
+  edges), `metrics` (disabled by default in tests).
+- **Depended on by**: `itest`, `systest`.
 
 ## Invariants
 
-- Each `ClientDaemonHarness` gets a unique name and data directory.
-- `ControlledMailboxClient` must be used for tests that require deterministic
-  message ordering or pause/resume of specific RPC types.
-- The harness manages the full lifecycle; tests must not start/stop bitcoind
+- Each `ClientDaemonHarness` gets a unique name + data directory.
+- `ControlledMailboxClient` is required for ordering / pause-resume tests.
+- The harness owns the full lifecycle — tests must not start/stop bitcoind
   or LND directly.
-- Harness waits for `DaemonReady()` before issuing test RPCs to avoid races.
-- Metrics server is disabled by default in test harnesses to avoid port
-  conflicts.
-- Wallet unlock timeout is raised in test harnesses to accommodate slower CI
-  environments.
-- `StartIndexerTestClient` must not reach into backend-specific internals
-  (no direct `daemon.LND.Client.WalletKit` access). Use the backend-agnostic
-  `IndexerProofKey` capability so the indexer test path stays stable under
-  non-LND client wallet backends.
-- The harness installs `DefaultItestFeeSchedule` and zeros the legacy
-  flat `MinOperatorFee` field by default. Under #270 the seal-time
-  quote builder is the only fee authority; the legacy `MinOperatorFee`
-  is retained on `OperatorTerms` purely as an advertised value for
-  pre-#270 clients. Tests that want a zero schedule (no dynamic fee)
-  opt out via `WithZeroFeeSchedule` or an `OperatorConfigMutator`.
-- Every client daemon launched by the harness has a `bitcoindrpc` `PackageSubmitter`
-  wired for unroll CPFP package relay; this talks directly to the harness
-  bitcoind via JSON-RPC.
+- Wait for `DaemonReady()` before issuing test RPCs.
+- Metrics server is disabled by default to avoid port conflicts.
+- Wallet unlock timeout is raised for slower CI.
+- Every client daemon has a `bitcoindrpc` `PackageSubmitter` wired for
+  unroll CPFP package relay (talks to harness bitcoind via JSON-RPC).
 - `FundClientWallet` polls `ListWalletUnspent` until the new confirmed UTXO
-  appears before returning, preventing races in unroll tests that spend from
-  the funded wallet immediately after this call.
-- `RestartArkd` stops and restarts the in-process arkd server against the
-  same data directory, re-applying the `OperatorConfigMutator` if one was
-  supplied. Calling `RestartArkd` on a harness constructed with
-  `SkipArkd=true` is a hard error.
-- `FundClientWalletN` confirms all faucet outputs in a single `Generate(6)`
-  call since all transactions land in the same regtest mempool; callers must
-  not call `Generate` between individual faucet calls in the loop.
-- `OperatorDebugLevel` and `ClientDebugLevel` override the respective
-  `DebugLevel` config fields; when either is empty the harness falls back
-  to the historical default (`"trace"` for the operator and `"trace,BTCW=debug"`
-  for client daemons). Tests that need quieter output may set these to `"info"`
-  to reduce log volume without affecting functionality.
-- `CrashClientDaemon` removes the old daemon entry from `clientDaemons` before
-  cancelling it so concurrent calls for different clients do not observe a
-  half-crashed entry. The replacement daemon reuses the original RPC address
-  slot after the old listener releases its port.
-- `RestartArkdDuring` is a hard error when called on a `SkipArkd` harness.
-- `GetServerVTXOStatus` returns an error when the in-process arkd server is
-  not initialized (nil). Callers must not call this before `startArkd`.
-- `SealRoundNow` is a hard error when `ArkAdminClient` is nil (harness
-  started with `SkipArkd=true`). The error fires via `require.NotNil` so the
-  test fails immediately with a descriptive message.
-- REST transport readiness requires `RPCGatewayAddr()` to be non-nil; the
-  `waitForArkd` loop returns false until the gateway address is available
-  when `rpcTransport == RPCTransportREST`.
+  appears, preventing immediate-spend races in unroll tests.
 
 ## Deep Docs
 
-- [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
+- [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide map.

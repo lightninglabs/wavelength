@@ -3,142 +3,112 @@
 ## Purpose
 
 Fee computation, treasury utilization tracking, and double-entry ledger
-recording for Ark operator economics. Implements the fee model specified in
-[`docs/fee-model.md`](../docs/fee-model.md): per-operation fees with
-on-chain share, liquidity cost, congestion pricing, and operator margin.
+recording for Ark operator economics. Implements the fee model in
+[`docs/fee-model.md`](../docs/fee-model.md): per-operation fees with on-chain
+share, liquidity cost, congestion pricing, and operator margin.
 
-## Key Types
+## Key Concepts
 
-- `Calculator` — Thread-safe fee computer with atomic hot-reload of the
+Use `go doc fees.<Symbol>` for signatures.
+
+- **`Calculator`** — Thread-safe fee computer with atomic hot-reload of the
   `Schedule`. Entry points: `ComputeFee` (raw days), `ComputeBoardingFee`
-  (on-chain share + margin only, no liquidity fee), `ComputeForfeitFee`
-  (applies `δ_min` floor), `MinViableAmount`, `ExitCost`.
-- `Schedule` — Immutable fee parameter set (annual rate, margin, congestion
-  thresholds, `MinRefreshDeltaBlocks` fee floor, dust policy). Swapped
-  atomically via `Calculator.UpdateSchedule`. `Schedule.Validate()` rejects
-  negative rates, out-of-range percentages, and other obvious footguns before
-  a schedule is applied at runtime or persisted via `FeeScheduleStoreDB`.
-- `FeeBreakdown` — Itemized fee result: liquidity, on-chain share, margin,
-  total, effective rate, and `BelowMinViable` flag.
-- `TreasuryTracker` — Mutex-guarded capital position tracker with three
-  buckets: deployed, pending sweep, and wallet balance. Capital transitions:
-  wallet → deployed (OnRoundConfirmed), deployed → pendingSweep
-  (OnVTXOsForfeited), pendingSweep → wallet (OnSweepCompleted). The pending
-  sweep bucket prevents utilization from spiking during the forfeit-to-sweep
-  window. The tracker is a **projection of the persisted ledger**, not an
-  independent accumulator: `Reseed(deployedCapitalSat, pendingSweepSat,
-  liveVTXOCount, walletBalance)` replaces every bucket from authoritative
-  totals (the ledger actor calls it on Start with
-  `GetAccountBalance(deployed_capital)` + `GetAccountBalance(treasury_wallet)`).
-  Subsequent `On*` events accumulate deltas until the next restart
-  re-projects from the ledger again.
-- `LedgerStore` — Interface for persisting double-entry ledger records.
-  Implemented by `db.LedgerStoreDB`.
-- `LedgerEntry` — Domain-level double-entry record. Fields carry typed
-  payloads so callers cannot accidentally swap accounts, amounts, or
-  timestamps: `DebitAccount` / `CreditAccount` are `AccountID`, `Amount` is
-  `btcutil.Amount`, `EventType` is `LedgerEventType`, and `CreatedAt` is
-  `time.Time` (the DB adapter flattens to a Unix stamp at the boundary).
-  `SessionID` is the optional 32-byte OOR session identifier, mutually
-  exclusive with `RoundID` at the schema layer. `IdempotencyKey` is the
-  opaque caller-supplied dedup key consumed by the partial unique index.
-- `AccountID` — Typed chart-of-accounts identifier. The seeded set includes
-  `treasury_wallet` / `deployed_capital` (assets), `user_vtxo_claims`
-  (liability), `boarding_fee_revenue` / `refresh_fee_revenue` /
-  `offboard_fee_revenue` / `oor_fee_revenue` (revenue, one per product),
-  `mining_fees` (expense), and `external_funding` (equity). Fee revenue is
-  split per product so tax reporting and analytics read gross per-product
-  numbers directly from account balances.
-- `LedgerEventType` — Typed event classifier. Covers the fee-model events
-  (`boarding_deposit`, `boarding_fee`, `refresh_forfeit`, `refresh_fee`,
-  `refresh_new_vtxo`, `offboard`, `offboard_fee`, `mining_fee`,
-  `round_sweep`, `capital_committed`, `oor_transfer`) plus the reserved
-  external wallet-movement events (`external_deposit`,
-  `external_withdrawal`). The reserved pair has no producer on this
-  branch — the ledger actor's UTXO diff subsystem is audit-only; the
-  classifier PR wires producers in.
-- `Record*` helpers — Debit/credit-stamped helpers for each event type.
-  Each helper derives an `IdempotencyKey` from its context identifier
-  (round ID or session ID) so at-least-once mailbox replay is a silent
-  no-op via the partial unique index in
-  `db/sqlc/migrations/000010_accounting.up.sql`. External-fund helpers
-  (`RecordExternalDeposit`, `RecordExternalWithdrawal`) take an opaque
-  caller-supplied key — the classifier PR will pass the 36-byte
-  `outpoint_hash || outpoint_index` produced by the wallet UTXO diff
-  loop. The helpers are defined today but unused on this branch.
+  (on-chain share + margin, no liquidity), `ComputeForfeitFee` (applies
+  `δ_min` floor), `MinViableAmount`, `ExitCost`.
+- **`Schedule`** — Immutable fee parameters (annual rate, margin,
+  congestion thresholds, `MinRefreshDeltaBlocks` fee floor, dust policy).
+  Swapped atomically via `Calculator.UpdateSchedule`. `Validate()` rejects
+  negative rates, out-of-range percentages, etc., before runtime apply or
+  `FeeScheduleStoreDB` persist.
+- **`FeeBreakdown`** — Itemized result (liquidity, on-chain share, margin,
+  total, effective rate, `BelowMinViable`).
+- **`TreasuryTracker`** — Mutex-guarded capital position with three buckets
+  (deployed, pending sweep, wallet). Transitions:
+  wallet → deployed (`OnRoundConfirmed`), deployed → pendingSweep
+  (`OnVTXOsForfeited`), pendingSweep → wallet (`OnSweepCompleted`).
+  Pending-sweep prevents utilization spikes during the forfeit-to-sweep
+  window. **Projection of the ledger, not an independent accumulator** —
+  `Reseed(deployedCapitalSat, pendingSweepSat, liveVTXOCount,
+  walletBalance)` overwrites every bucket from authoritative totals on
+  every restart. Pending-sweep folds into deployed at reseed (ledger
+  doesn't split them yet); forfeit/sweep events re-establish the split as
+  traffic flows. Conservative (over-counts pending as deployed) rather
+  than silently under-pricing.
+- **`LedgerEntry`** — Domain double-entry record with typed payloads:
+  `DebitAccount`/`CreditAccount` are `AccountID`, `Amount` is
+  `btcutil.Amount`, `EventType` is `LedgerEventType`, `CreatedAt` is
+  `time.Time`. The DB adapter flattens at the boundary. `SessionID` is
+  the optional 32-byte OOR id (mutually exclusive with `RoundID` at the
+  schema layer). `IdempotencyKey` is the opaque dedup key consumed by
+  the partial unique index.
+- **`AccountID`** (chart of accounts): `treasury_wallet`,
+  `deployed_capital` (assets); `user_vtxo_claims` (liability);
+  `boarding_fee_revenue`, `refresh_fee_revenue`, `offboard_fee_revenue`,
+  `oor_fee_revenue` (revenue, split per product so tax/analytics read
+  gross-per-product); `mining_fees` (expense); `external_funding`
+  (equity).
+- **`LedgerEventType`** — Fee-model events (`boarding_deposit`,
+  `boarding_fee`, `refresh_forfeit`, `refresh_fee`, `refresh_new_vtxo`,
+  `offboard`, `offboard_fee`, `mining_fee`, `round_sweep`,
+  `capital_committed`, `oor_transfer`) plus reserved external-wallet
+  events (`external_deposit`, `external_withdrawal`, unused on this
+  branch — classifier PR wires producers in).
+- **`Record*` helpers** — Per-event debit/credit-stamped helpers. Each
+  derives an `IdempotencyKey` from its context id (round/session) so
+  at-least-once mailbox replay is a silent no-op via the partial unique
+  index in `db/sqlc/migrations/000010_accounting.up.sql`. External-fund
+  helpers take an opaque caller-supplied key (will be the 36-byte
+  `outpoint_hash || little-endian-index` from the UTXO diff loop).
+- **`LedgerStore`** — Interface implemented by `db.LedgerStoreDB`.
 
 ## Relationships
 
-- **Depends on**: `lnd/lnwallet/chainfee` (fee rate types),
-  `lnd/lntypes` (weight units), `btcutil` (Amount type used throughout
-  the fee and ledger APIs).
-- **Depended on by**: `db` (`LedgerStoreDB` implements `LedgerStore`),
-  `ledger` (durable actor consumes `Record*` helpers and
-  `TreasuryTracker`), `rounds` (fee computation during registration),
-  root `darepo` (wiring), `systest` (fee assertions),
-  `client/round` (fee estimation).
+- **Depends on**: `lnd/lnwallet/chainfee`, `lnd/lntypes`, `btcutil`.
+- **Depended on by**: `db` (`LedgerStoreDB`), `ledger` (consumes
+  `Record*` + `TreasuryTracker`), `rounds`, root `darepo`, `systest`,
+  `client/round`.
 
 ## Invariants
 
-- **Boarding has zero liquidity fee.** `ComputeBoardingFee` must never
-  charge a liquidity component — the user brings on-chain BTC, no operator
-  capital is locked.
-- **Forfeit applies `δ_min` floor.** `ComputeForfeitFee` uses
-  `max(remainingBlocks, MinRefreshDeltaBlocks)` so lazy refreshes near
-  expiry still pay a minimum liquidity cost. This is a pricing floor, not
-  an admission rule.
-- **batchSize is normalized to >= 1.** `ComputeFee`, `ComputeBoardingFee`,
-  and `MinViableAmount` all clamp batchSize before dividing to prevent
-  zero on-chain share from an unset input.
-- **Schedule is immutable once created.** Updates produce a new `Schedule`
-  swapped atomically via `Calculator.UpdateSchedule`. Never mutate a
-  `Schedule` in place.
-- **Ledger accounts match the seeded chart of accounts.** The nine
-  account constants exported as `Account*` must match the seed rows in
-  `db/sqlc/migrations/000010_accounting.up.sql`. A test in `db` walks
-  `AllAccounts()` against the seeded chart to catch drift at build time.
-- **Ledger event types match the DB catalog.** Use `capital_committed`,
-  `round_sweep`, `offboard_fee`, `external_deposit`, and
+- **Boarding has zero liquidity fee** — user brings on-chain BTC, no
+  operator capital is locked.
+- **Forfeit applies `δ_min` floor**: `ComputeForfeitFee` uses
+  `max(remainingBlocks, MinRefreshDeltaBlocks)` so lazy near-expiry
+  refreshes still pay a minimum. Pricing floor, not an admission rule.
+- **batchSize normalized to ≥ 1** before dividing in `ComputeFee`,
+  `ComputeBoardingFee`, `MinViableAmount` — prevents zero on-chain share.
+- **`Schedule` is immutable** — updates produce a new `Schedule` swapped
+  atomically via `UpdateSchedule`.
+- **Account constants match `000010_accounting.up.sql`** — `db` walks
+  `AllAccounts()` against the seed at build time to catch drift.
+- **Event type names match the catalog** — `capital_committed`,
+  `round_sweep`, `offboard_fee`, `external_deposit`,
   `external_withdrawal`. The older `capital_deployed` /
-  `capital_reclaimed` / `operator_revenue` names are removed and must not
-  be reintroduced.
-- **Fee revenue is routed per product.** `RecordBoardingFee` credits
-  `boarding_fee_revenue`; `RecordRefreshFee` credits `refresh_fee_revenue`;
-  `RecordOffboardFee` credits `offboard_fee_revenue`; `RecordOORTransfer`
-  credits `oor_fee_revenue`. Collapsing any of these back into a single
-  `operator_revenue` bucket would break gross-per-product reporting.
-- **Ledger entries are strictly double-entry.** Every `Record*` function
-  debits one account and credits a different account. The sum of all
-  account balances must always be zero.
+  `capital_reclaimed` / `operator_revenue` names are removed; do not
+  reintroduce.
+- **Fee revenue is per product** — `RecordBoardingFee` →
+  `boarding_fee_revenue`, `RecordRefreshFee` → `refresh_fee_revenue`,
+  `RecordOffboardFee` → `offboard_fee_revenue`, `RecordOORTransfer` →
+  `oor_fee_revenue`. Collapsing into a single bucket breaks
+  gross-per-product reporting.
+- **Strictly double-entry** — every `Record*` debits one account and
+  credits a different one; sum of balances must always be zero.
 - **Boarding fee debits `deployed_capital`** (fee carved from deposit
-  before user claim is created), while **refresh fee debits
-  `user_vtxo_claims`** (user's outstanding claim reduced by fee).
-- **RoundID and SessionID are mutually exclusive.** The schema's
-  `CHECK (round_id IS NULL OR session_id IS NULL)` constraint enforces
-  this; helpers stamp only one of the two per event (round-scoped events
-  set `RoundID`, OOR-scoped events set `SessionID`, external events leave
-  both nil).
-- **Record* functions take injected `time.Time`.** No internal
-  `time.Now()` calls — callers pass the timestamp for deterministic
-  testing.
-- **Treasury KMax is stable across forfeits.** Forfeited capital moves to
-  `pendingSweepSat`, not removed from `KMax`. This prevents transient
-  utilization spikes from triggering incorrect congestion pricing.
-- **TreasuryTracker is a projection of the ledger on every restart.**
-  `Reseed` overwrites every bucket; `Initialize` (the fresh-install
-  constructor) and `Reseed` are the only paths that set state without
-  accumulating from current values. The ledger does not yet split
-  pending-sweep from deployed (both live in `deployed_capital`), so
-  `Reseed` folds pendingSweep into deployedCapital on startup --
-  subsequent forfeit / sweep events re-establish the split as traffic
-  flows. Utilization from the projection is conservative (over-counts
-  pending as deployed) rather than silently under-pricing, which keeps
-  congestion pricing on the right side of the tradeoff.
+  before user claim); **refresh fee debits `user_vtxo_claims`** (user's
+  outstanding claim reduced).
+- **`RoundID` and `SessionID` are mutually exclusive** — schema enforces
+  `CHECK (round_id IS NULL OR session_id IS NULL)`.
+- **No internal `time.Now()`** — `Record*` takes injected `time.Time`
+  for deterministic testing.
+- **Treasury `KMax` is stable across forfeits** — forfeited capital moves
+  to `pendingSweepSat`, not subtracted from `KMax`, preventing
+  transient utilization spikes from triggering wrong congestion pricing.
+- **`Reseed` and `Initialize` are the only paths that set tracker state
+  without accumulating** from current values.
 
 ## Deep Docs
 
-- [`docs/fee-model.md`](../docs/fee-model.md) — Full fee model
-  specification with formulas, worked examples, and accounting tables.
+- [`docs/fee-model.md`](../docs/fee-model.md) — Full fee model spec.
 - [`docs/fee-model-explorer.html`](../docs/fee-model-explorer.html) —
-  Interactive fee visualization.
-- [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
+  Interactive visualization.
+- [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide map.

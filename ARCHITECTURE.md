@@ -196,8 +196,9 @@ handshake message. `MailboxConfig.RequireTLSBindingSig` (default `true`)
 controls whether the binding signature is required.
 
 ### HTTP/JSON Gateway
-The server exposes an HTTP/JSON grpc-gateway via `GatewayServer`
-(`gatewayserver.go`), listening by default at `localhost:7071`. The gateway
+The server exposes an HTTP/JSON grpc-gateway via `gatewayServer`
+(`gatewayserver.go`, unexported; constructed via `newGatewayServer`),
+listening by default at `localhost:7071`. The gateway
 translates REST calls to gRPC using generated bindings from `rpc/`. Local
 gateway-originated calls are tagged with an internal per-process auth token
 (`NewGatewayAuthToken`, `GatewayAuthUnaryClientInterceptor`) so mailbox
@@ -245,7 +246,7 @@ default and can be disabled via `GatewayConfig.Enabled = false`.
 | `NewMailboxAuthInterceptor` | darepo | Exported mTLS unary interceptor for mailbox identity (fingerprint-based) |
 | `MailboxTLSBindings` | darepo | Thread-safe map binding mailbox ID → TLS leaf certificate fingerprint |
 | `GatewayConfig` | darepo | HTTP/JSON grpc-gateway configuration (listen addr, allowed origins) |
-| `GatewayServer` | darepo | HTTP grpc-gateway server (translates REST → gRPC, local auth token) |
+| `gatewayServer` | darepo | HTTP grpc-gateway server, unexported (translates REST → gRPC, local auth token) |
 
 ## State Machines
 
