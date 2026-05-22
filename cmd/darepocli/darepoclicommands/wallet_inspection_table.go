@@ -100,16 +100,15 @@ func renderActivitySectionWithTitle(out io.Writer, title string,
 
 	progress := entry.GetProgress()
 	if progress != nil {
-		printBullet(
-			out, 0, "progress_hash",
-			emptyDash(
-				progress.GetPaymentHash(),
-			),
-		)
+		if activityUsesPaymentHash(entry) {
+			printOptionalBullet(
+				out, "payment_hash", progress.GetPaymentHash(),
+			)
+		}
 		printOptionalBullet(
 			out, "progress_vtxo", progress.GetVtxoOutpoint(),
 		)
-		printBullet(out, 0, "txid", emptyDash(progress.GetTxid()))
+		printOptionalBullet(out, "txid", progress.GetTxid())
 		if progress.GetConfirmationHeight() != 0 {
 			printBullet(
 				out, 0, "confirmation_height",
@@ -123,6 +122,19 @@ func renderActivitySectionWithTitle(out io.Writer, title string,
 	printOptionalBullet(out, "counterparty", entry.GetCounterparty())
 	printOptionalBullet(out, "note", entry.GetNote())
 	printOptionalBullet(out, "failure", entry.GetFailureReason())
+}
+
+// activityUsesPaymentHash reports whether a payment hash is meaningful for the
+// inspected activity kind.
+func activityUsesPaymentHash(entry *walletrpc.WalletEntry) bool {
+	switch entry.GetKind() {
+	case walletrpc.EntryKind_ENTRY_KIND_SEND,
+		walletrpc.EntryKind_ENTRY_KIND_RECV:
+		return true
+
+	default:
+		return false
+	}
 }
 
 // renderSwapSection renders swap-specific trace details.
@@ -206,6 +218,14 @@ func renderLedgerTraceSection(out io.Writer,
 			out, 1, "status", row.GetConfirmationStatus(),
 		)
 		printOptionalIndentedBullet(out, 1, "txid", row.GetTxid())
+		if row.GetTxid() != "" && row.GetOutputIndex() >= 0 {
+			printBullet(
+				out, 1, "output_index",
+				fmt.Sprintf(
+					"%d", row.GetOutputIndex(),
+				),
+			)
+		}
 		printOptionalIndentedBullet(
 			out, 1, "session_id", row.GetSessionId(),
 		)
@@ -226,9 +246,6 @@ func renderLedgerTraceSection(out io.Writer,
 				),
 			)
 		}
-		printOptionalIndentedBullet(
-			out, 1, "description", row.GetDescription(),
-		)
 	}
 }
 

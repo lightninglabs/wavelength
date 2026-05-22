@@ -294,7 +294,7 @@ func walletQueryMethodRegistry() []schemaMethod {
 				{
 					Name:        "format",
 					Type:        "enum",
-					Description: "output format, defaults to table",
+					Description: "format; default table",
 					Values: []string{
 						"table", "expanded",
 						"x", "json",
