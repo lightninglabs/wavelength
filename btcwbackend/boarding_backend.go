@@ -65,6 +65,17 @@ func NewBoardingBackendAdapter(btcw *btcwallet.BtcWallet,
 func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context, minConfs,
 	maxConfs int32) ([]*wallet.Utxo, error) {
 
+	internalWallet := b.BtcWallet.InternalWallet()
+	if !internalWallet.ChainSynced() {
+		syncedTo := internalWallet.SyncedTo()
+		b.Log.DebugS(ctx, "ListUnspent skipped while btcwallet syncing",
+			slog.Int("sync_height", int(syncedTo.Height)),
+			slog.String("sync_hash", syncedTo.Hash.String()),
+		)
+
+		return nil, fmt.Errorf("btcwallet chain sync in progress")
+	}
+
 	// Treat maxConfs of 0 as "no upper bound" so callers that
 	// omit the parameter don't accidentally filter everything.
 	if maxConfs == 0 {
@@ -75,9 +86,7 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context, minConfs,
 	// scopes results to watched scripts (including those imported
 	// via ImportTaprootScript), so no additional address filtering
 	// is needed.
-	results, err := b.BtcWallet.InternalWallet().ListUnspent(
-		minConfs, maxConfs, "",
-	)
+	results, err := internalWallet.ListUnspent(minConfs, maxConfs, "")
 	if err != nil {
 		return nil, fmt.Errorf("list unspent: %w", err)
 	}
