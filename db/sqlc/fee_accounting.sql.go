@@ -258,9 +258,15 @@ FROM (
     SELECT 0 AS source_order,
            'ledger' AS source,
            le.entry_id,
-           le.chain_txid AS txid,
+           COALESCE(le.chain_txid, oor_created.outpoint_hash) AS txid,
            CASE
                WHEN le.session_id IS NOT NULL THEN 'oor'
+               WHEN le.event_type = 'vtxo_received'
+                    AND le.round_id IS NULL
+                    AND oor_created.session_id IS NOT NULL
+                    AND le.debit_account = 'vtxo_balance'
+                    AND le.credit_account = 'transfers_in'
+               THEN 'oor'
                WHEN le.event_type IN (
                    'boarding_fee_paid', 'wallet_utxo_created'
                ) THEN 'boarding'
@@ -286,10 +292,15 @@ FROM (
            le.debit_account,
            le.credit_account,
            le.round_id,
-           le.session_id,
+           COALESCE(le.session_id, oor_created.session_id) AS session_id,
            COALESCE(le.confirmation_height, 0) AS confirmation_height,
-           COALESCE(le.chain_vout, -1) AS output_index
+           COALESCE(le.chain_vout, oor_created.outpoint_index, -1) AS
+               output_index
     FROM ledger_entries AS le
+    LEFT JOIN oor_vtxo_bindings AS oor_created
+        ON oor_created.outpoint_hash = le.chain_txid
+       AND oor_created.outpoint_index = le.chain_vout
+       AND oor_created.link_kind = 0
     LEFT JOIN (
         SELECT allocated.outpoint_hash,
                allocated.outpoint_index,
@@ -370,6 +381,43 @@ FROM (
     ) AS boarding_round
         ON boarding_round.outpoint_hash = le.chain_txid
        AND boarding_round.outpoint_index = le.chain_vout
+
+    UNION ALL
+
+    SELECT 0 AS source_order,
+           'oor_binding' AS source,
+           -CAST(ROW_NUMBER() OVER (
+               ORDER BY b.session_id, b.output_index,
+                        b.outpoint_hash, b.outpoint_index
+           ) AS BIGINT) AS entry_id,
+           b.outpoint_hash AS txid,
+           'oor' AS transaction_type,
+           'vtxo_received' AS subtype,
+           v.amount AS amount_sat,
+           CAST(0 AS BIGINT) AS fee_sat,
+           b.created_at,
+           'recorded' AS status,
+           'OOR VTXO created' AS description,
+           'vtxo_balance' AS debit_account,
+           'transfers_in' AS credit_account,
+           NULL AS round_id,
+           b.session_id,
+           CAST(0 AS INTEGER) AS confirmation_height,
+           b.outpoint_index AS output_index
+    FROM oor_vtxo_bindings AS b
+    JOIN vtxos AS v
+        ON v.outpoint_hash = b.outpoint_hash
+       AND v.outpoint_index = b.outpoint_index
+    WHERE b.link_kind = 0
+      AND NOT EXISTS (
+          SELECT 1
+          FROM ledger_entries AS le_existing
+          WHERE le_existing.event_type = 'vtxo_received'
+            AND le_existing.chain_txid = b.outpoint_hash
+            AND le_existing.chain_vout = b.outpoint_index
+            AND le_existing.debit_account = 'vtxo_balance'
+            AND le_existing.credit_account = 'transfers_in'
+      )
 
     UNION ALL
 

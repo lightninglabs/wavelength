@@ -4,6 +4,7 @@ package swapwallet
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -253,7 +254,7 @@ func TestHistoryHidesReceiveClaimOORSend(t *testing.T) {
 				CreatedAtUnixS: 100,
 			},
 			{
-				Type:           "round",
+				Type:           "oor",
 				Subtype:        ledger.EventVTXOReceived,
 				AmountSat:      1_000,
 				DebitAccount:   ledger.AccountVTXOBalance,
@@ -310,6 +311,58 @@ func TestHistoryKeepsUnpairedOORSend(t *testing.T) {
 	require.Equal(t, int64(-1_000), entries[0].GetAmountSat())
 }
 
+// TestOORSendSessionIDRequiresHashSizedSession confirms malformed OOR session
+// IDs are ignored instead of being normalized into correlation keys.
+func TestOORSendSessionIDRequiresHashSizedSession(t *testing.T) {
+	t.Parallel()
+
+	row := &daemonrpc.TransactionHistoryEntry{
+		Type:          "oor",
+		Subtype:       ledger.EventVTXOSent,
+		AmountSat:     1_000,
+		DebitAccount:  ledger.AccountTransfersOut,
+		CreditAccount: ledger.AccountVTXOBalance,
+		SessionId: []byte{
+			1,
+			2,
+			3,
+		},
+	}
+
+	_, ok := oorSendSessionID(row)
+	require.False(t, ok)
+
+	sessionID := testBytes(chainhash.HashSize, 0x51)
+	row.SessionId = sessionID
+
+	session, ok := oorSendSessionID(row)
+	require.True(t, ok)
+	require.Equal(t, testSessionString(t, sessionID), session)
+}
+
+// TestOORReceiveRefRequiresOORType confirms the OOR change correlation path
+// only consumes rows already classified as OOR history by the daemon.
+func TestOORReceiveRefRequiresOORType(t *testing.T) {
+	t.Parallel()
+
+	row := &daemonrpc.TransactionHistoryEntry{
+		Type:          "round",
+		Subtype:       ledger.EventVTXOReceived,
+		AmountSat:     1_000,
+		DebitAccount:  ledger.AccountVTXOBalance,
+		CreditAccount: ledger.AccountTransfersIn,
+		Txid:          strings.Repeat("a", 64),
+		OutputIndex:   0,
+	}
+
+	_, _, ok := oorReceiveRef(row)
+	require.False(t, ok)
+
+	row.Type = "oor"
+	_, _, ok = oorReceiveRef(row)
+	require.True(t, ok)
+}
+
 // TestHistoryHidesPayFundingOORInput confirms wallet activity does not show
 // the full input consumed to fund a pay-swap vHTLC when the input's change
 // came back to the wallet and the delta is already represented by the swap
@@ -348,7 +401,7 @@ func TestHistoryHidesPayFundingOORInput(t *testing.T) {
 				CreatedAtUnixS: 100,
 			},
 			{
-				Type:           "round",
+				Type:           "oor",
 				Subtype:        ledger.EventVTXOReceived,
 				AmountSat:      998_511,
 				DebitAccount:   ledger.AccountVTXOBalance,
@@ -411,7 +464,7 @@ func TestHistoryKeepsSameAmountUnmatchedFundingInput(t *testing.T) {
 				CreatedAtUnixS: 100,
 			},
 			{
-				Type:          "round",
+				Type:          "oor",
 				Subtype:       ledger.EventVTXOReceived,
 				AmountSat:     998_511,
 				DebitAccount:  ledger.AccountVTXOBalance,
@@ -431,7 +484,7 @@ func TestHistoryKeepsSameAmountUnmatchedFundingInput(t *testing.T) {
 				CreatedAtUnixS: 99,
 			},
 			{
-				Type:          "round",
+				Type:          "oor",
 				Subtype:       ledger.EventVTXOReceived,
 				AmountSat:     998_511,
 				DebitAccount:  ledger.AccountVTXOBalance,
@@ -478,7 +531,7 @@ func TestHistoryKeepsOORSendWithChangeWithoutSwap(t *testing.T) {
 				CreatedAtUnixS: 100,
 			},
 			{
-				Type:           "round",
+				Type:           "oor",
 				Subtype:        ledger.EventVTXOReceived,
 				AmountSat:      998_511,
 				DebitAccount:   ledger.AccountVTXOBalance,

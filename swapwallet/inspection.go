@@ -379,7 +379,9 @@ func correlateOORPairs(swap *swapclientrpc.SwapSummary,
 func hiddenOORLedgerRows(swaps []*swapclientrpc.SwapSummary,
 	rows []*daemonrpc.TransactionHistoryEntry) map[int64]struct{} {
 
-	return internalOORSends(rows, swapOORCorrelationsFromSwaps(swaps))
+	return internalOORLedgerEntries(
+		rows, swapOORCorrelationsFromSwaps(swaps),
+	)
 }
 
 // ledgerTraceRows projects daemon transaction rows onto the inspection RPC

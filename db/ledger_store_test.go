@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -107,6 +108,71 @@ func insertTransactionHistorySweepRow(t *testing.T, db *BaseDB, txid []byte,
 		t.Context(), query, txid, []byte{0x01}, "bcrt1test", amount,
 		fee, int64(2), int64(120), wallet.BoardingSweepStatusPublished,
 		int32(700), createdAt,
+	)
+	require.NoError(t, err)
+}
+
+// insertTransactionHistoryOOROutput inserts the minimum package, VTXO, and
+// binding rows needed for the transaction-history query to resolve an OOR
+// created output.
+func insertTransactionHistoryOOROutput(t *testing.T, db *BaseDB, sessionID,
+	outpointHash []byte, outpointIndex int32, amount, createdAt int64,
+	seed byte) {
+
+	t.Helper()
+
+	ctx := t.Context()
+	roundID := fmt.Sprintf("019e4bc6-d95f-7caf-93c3-409e854bbb%02x", seed)
+
+	require.NoError(
+		t,
+		db.InsertRound(
+			ctx, sqlc.InsertRoundParams{
+				RoundID:        roundID,
+				Status:         "confirmed",
+				CreationTime:   createdAt,
+				LastUpdateTime: createdAt,
+			},
+		),
+	)
+	_, err := db.UpsertOORPackage(
+		ctx, sqlc.UpsertOORPackageParams{
+			SessionID: sessionID,
+			Direction: oorPackageDirectionOutgoingCode,
+			ArkPsbt:   testBytes(8, seed+1),
+			CreatedAt: createdAt,
+			UpdatedAt: createdAt,
+		},
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		db.InsertVTXO(
+			ctx, sqlc.InsertVTXOParams{
+				OutpointHash:   outpointHash,
+				OutpointIndex:  outpointIndex,
+				RoundID:        roundID,
+				Amount:         amount,
+				PkScript:       testBytes(34, seed+2),
+				Expiry:         144,
+				ClientPubkey:   testBytes(33, seed+3),
+				OperatorPubkey: testBytes(33, seed+4),
+				CommitmentTxid: testBytes(32, seed+5),
+				CreationTime:   createdAt,
+				LastUpdateTime: createdAt,
+			},
+		),
+	)
+	_, err = db.UpsertOORVTXOBinding(
+		ctx, sqlc.UpsertOORVTXOBindingParams{
+			OutpointHash:  outpointHash,
+			OutpointIndex: outpointIndex,
+			SessionID:     sessionID,
+			OutputIndex:   outpointIndex,
+			LinkKind:      oorPackageLinkKindCreatedOutputCode,
+			CreatedAt:     createdAt,
+			UpdatedAt:     createdAt,
+		},
 	)
 	require.NoError(t, err)
 }
@@ -223,6 +289,129 @@ func TestLedgerStoreTransactionHistoryFiltersBeforePagination(t *testing.T) {
 	require.Equal(t, "boarding_sweep", sweepRows[0].Source)
 	require.Equal(t, int64(4_000), sweepRows[0].AmountSat)
 	require.Equal(t, int64(40), sweepRows[0].FeeSat)
+}
+
+// TestLedgerStoreTransactionHistoryClassifiesOORReceiveWithoutSessionID
+// verifies OOR receive rows are user-visible OOR history even though the
+// ledger cannot stamp session_id on them without colliding on multi-output
+// receives from the same session.
+func TestLedgerStoreTransactionHistoryClassifiesOORReceiveWithoutSessionID(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	store, db := newLedgerStoreAndDBForTest(t)
+	sessionID := testBytes(32, 0x43)
+	outpointHash := testBytes(32, 0x44)
+	outpointIndex := int32(2)
+	insertTransactionHistoryOOROutput(
+		t, db, sessionID, outpointHash, outpointIndex, 2_500, 99, 0x46,
+	)
+
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, ledger.LedgerEntry{
+				DebitAccount:   ledger.AccountVTXOBalance,
+				CreditAccount:  ledger.AccountTransfersIn,
+				AmountSat:      2_500,
+				EventType:      ledger.EventVTXOReceived,
+				Description:    "oor receive",
+				CreatedAt:      100,
+				IdempotencyKey: testBytes(36, 0x45),
+				ChainTxid:      outpointHash,
+				ChainVout:      &outpointIndex,
+			},
+		),
+	)
+
+	rows, err := store.ListTransactionHistory(ctx, "oor", 0, 0, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "oor", rows[0].TransactionType)
+	require.Equal(t, ledger.EventVTXOReceived, rows[0].Subtype)
+	require.Equal(t, outpointHash, rows[0].Txid)
+	require.Equal(t, outpointIndex, rows[0].OutputIndex)
+	require.Equal(t, sessionID, rows[0].SessionID)
+}
+
+// TestLedgerStoreTransactionHistorySynthesizesOORReceiveFromBinding verifies
+// old ledger rows that predate structured outpoint fields can still be paired
+// through the OOR binding table without parsing descriptions.
+func TestLedgerStoreTransactionHistorySynthesizesOORReceiveFromBinding(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	store, db := newLedgerStoreAndDBForTest(t)
+	sessionID := testBytes(32, 0x50)
+	outpointHash := testBytes(32, 0x51)
+	outpointIndex := int32(1)
+	insertTransactionHistoryOOROutput(
+		t, db, sessionID, outpointHash, outpointIndex, 998_511, 99,
+		0x52,
+	)
+
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, ledger.LedgerEntry{
+				DebitAccount:  ledger.AccountVTXOBalance,
+				CreditAccount: ledger.AccountTransfersIn,
+				AmountSat:     998_511,
+				EventType:     ledger.EventVTXOReceived,
+				Description:   "old unstructured OOR receive",
+				CreatedAt:     100,
+			},
+		),
+	)
+
+	rows, err := store.ListTransactionHistory(ctx, "oor", 0, 0, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "oor_binding", rows[0].Source)
+	require.Equal(t, ledger.EventVTXOReceived, rows[0].Subtype)
+	require.Equal(t, int64(998_511), rows[0].AmountSat)
+	require.Equal(t, outpointHash, rows[0].Txid)
+	require.Equal(t, outpointIndex, rows[0].OutputIndex)
+	require.Equal(t, sessionID, rows[0].SessionID)
+}
+
+// TestLedgerStoreTransactionHistoryKeepsUnstructuredReceiveRound verifies an
+// old or malformed receive row without structured outpoint fields does not
+// become OOR history merely because its accounts look like a transfer.
+func TestLedgerStoreTransactionHistoryKeepsUnstructuredReceiveRound(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newLedgerStoreAndDBForTest(t)
+
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, ledger.LedgerEntry{
+				DebitAccount:  ledger.AccountVTXOBalance,
+				CreditAccount: ledger.AccountTransfersIn,
+				AmountSat:     2_500,
+				EventType:     ledger.EventVTXOReceived,
+				Description:   "unstructured receive",
+				CreatedAt:     100,
+			},
+		),
+	)
+
+	oorRows, err := store.ListTransactionHistory(ctx, "oor", 0, 0, 10, 0)
+	require.NoError(t, err)
+	require.Empty(t, oorRows)
+
+	rows, err := store.ListTransactionHistory(ctx, "", 0, 0, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "round", rows[0].TransactionType)
 }
 
 // TestLedgerStoreTransactionHistoryWalletUTXOCreatedChainFields verifies

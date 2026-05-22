@@ -71,7 +71,7 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 				CreatedAtUnixS: 100,
 			},
 			{
-				Type:           "round",
+				Type:           "oor",
 				Subtype:        ledger.EventVTXOReceived,
 				AmountSat:      998_511,
 				DebitAccount:   ledger.AccountVTXOBalance,
@@ -103,7 +103,7 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 
 	require.True(t, ledgerByID[13].GetHiddenFromActivity())
 	require.Equal(t, "spent_input", ledgerByID[13].GetRole())
-	require.False(t, ledgerByID[14].GetHiddenFromActivity())
+	require.True(t, ledgerByID[14].GetHiddenFromActivity())
 	require.Equal(t, "change_output", ledgerByID[14].GetRole())
 	require.Equal(t, int32(1), ledgerByID[14].GetOutputIndex())
 
