@@ -16,6 +16,33 @@ allowed-tools: Bash, Read
 Collect runtime state from the current darepod test session and file a
 structured GitHub issue against this repository.
 
+## Body discipline (read before collecting anything)
+
+The point of this skill is to give the team a report they can act on in
+under a minute, not a dump of everything the daemon knows. Target the
+final issue body at **≤ 5 KB / ~100 lines**. If a section is bigger
+than the failure it's documenting, trim it.
+
+Concrete rules:
+
+- The body leads with **what failed and why** (Summary + Failure
+  sequence), not with environment metadata.
+- The "Failure sequence" is a *curated* excerpt of the log — the 5–10
+  lines that actually trace the bug. Strip routine state-machine
+  ticks, polling loops, and unrelated subsystems.
+- The full session log goes in a **gist**, not in the body (see step
+  8a). The body links to it. If gist upload fails, note the local log
+  path and stop — do not paste hundreds of lines inline.
+- Wallet state: only the failing entry's relevant fields. Do not paste
+  the whole `list` JSON.
+- Environment: platform + arch + go version + daemon commit + network
+  + wallet backend. Not the full `uname -srvm`, not PID, not IPv6
+  address unless the bug is network-layer.
+- Reproduction steps: write the actual steps that produced the bug. If
+  the only honest thing you can write is a TODO, ask the user before
+  filing.
+- Cut secondary observations into separate issues. One issue, one bug.
+
 ## Steps
 
 ### 1. Get the description
@@ -217,64 +244,119 @@ Always include the `bug` label. Add subsystem labels on top. Also add a
 network label (`network/signet`, `network/testnet`, etc.) derived from
 `$NETWORK` so issues can be triaged per network.
 
+### 8a. Upload the full session log as a secret gist
+
+The body links to the gist — do not paste session logs inline.
+
+```bash
+GIST_URL=""
+if [ -f "$LOG" ] && [ -s "$LOG" ]; then
+  GIST_URL=$(gh gist create "$LOG" \
+    --secret \
+    --desc "darepod session log — $NETWORK — for lightninglabs/darepo-client issue" \
+    2>/dev/null | tail -1)
+fi
+```
+
+Notes:
+
+- `--secret` produces an unlisted gist. Anyone with the URL can read
+  it, but it isn't indexed or shown on the user's profile. Use this
+  even for testnet/signet logs — they can still contain wallet
+  pubkeys and node identifiers worth keeping out of search results.
+- If `gh gist create` fails (missing `gist` scope, network error,
+  etc.) `GIST_URL` will be empty. The template in step 8 handles that
+  — it falls back to "available on request, local path `{LOG}`" and
+  the team can ask for it directly.
+- Do **not** retry the gist upload with `--public` as a workaround.
+  Either it works as secret or the body falls back to mentioning the
+  local path.
+
 ### 8. Build the issue body
 
 ```
 ## Summary
 
-{user's one-line description}
+{2–4 sentence description of the failure. Lead with the user-visible
+symptom; name the component that rejected; flag any disagreement
+between layers (e.g. inner FSM Failed but outer entry still Pending).}
 
 ## Environment
 
-- **OS**: {OS}
-- **Go**: {GO_VER}
-- **Daemon**: {commit= and version= from BUILD line}
+- **OS / arch**: {short — e.g. "macOS Darwin 25.2.0, arm64"}
+- **Go**: {go version, no `go version ` prefix}
+- **Daemon**: version={…} commit={…}
 - **Network**: {NETWORK}
-- **Wallet type**: {WALLET_TYPE}
-- **Chain backend**: {BACKEND_NAME} — {BACKEND_URL} → {BACKEND_STATUS}
-- **IPv6**: {IPV6}
-- **Daemon PID**: {DAEMON_PID}
-- **Log file**: {LOG}
-- **Session window**: {FIRST_TS} → {LAST_TS}
+- **Wallet backend**: {WALLET_TYPE} → {BACKEND_URL} ({BACKEND_STATUS})
 
-## Config (~/.darepod/darepod.conf, secrets redacted)
+## Config (`~/.darepod/darepod.conf`, secrets redacted)
 
 \`\`\`
 {CONFIG}
 \`\`\`
 
-## Warnings and Errors (this session)
+## Failure sequence
 
 \`\`\`
-{ERRORS — or "none" if the session has no WRN/ERR lines}
+{5–10 curated log lines, in order, that trace the bug. Use ellipses
+on long hashes so the block stays scannable. Include the line that
+carries the rejection reason, the FSM transition into Failed, and
+the parent submit/funding line that anchors what was attempted.}
 \`\`\`
 
-## Wallet State
+{If the rejection's full ErrorReason isn't visible in the line above,
+quote it on its own:}
+
+> \`{full ErrorReason}\`
+
+{One short paragraph if the failure is logged below WRN, surfaces no
+failure_reason on the user-facing entry, or has any other
+observability gap worth flagging.}
+
+## Correlation IDs
+
+- **mailbox_id / identity_pubkey**: \`{…}\`
+- **session_id** (if applicable): \`{…}\`
+- **payment_hash / invoice_hash** (if applicable): \`{…}\`
+- **input VTXO / outpoint** (if applicable): \`{…}\`
+- **operator key from getinfo**: \`{…}\`
+
+{Include only the IDs that are relevant. Drop the bullet if N/A.}
+
+## Hypothesis (optional)
+
+{One paragraph. Only include if there is a plausible cause and you
+can name what would falsify it. If you don't have one, omit this
+section — don't speculate.}
+
+## Wallet state at failure
 
 \`\`\`
-{balance and list output, or "daemon not running at time of report"}
+balance: confirmed_sat={…} pending_in_sat={…} pending_out_sat={…}
+
+{failing entry, key fields only — id, kind, status, amount_sat,
+failure_reason. Do not paste the entire activity JSON.}
 \`\`\`
 
-## Reproduction Steps
+## Reproduction steps
 
-<!-- What were you doing when this happened? -->
-1.
-2.
+1. {actual step}
+2. {actual step}
+3. {observed outcome — include the exact log signature the team
+   can grep for}
 
-## Full Session Log
+## Logs
 
-<details>
-<summary>Expand</summary>
-
-\`\`\`
-{SESSION — truncated to 300 lines if longer, with a note of the total
-line count}
-\`\`\`
-
-</details>
+Full session log: {GIST_URL — or, if gist upload failed,
+"available on request, local path \`{LOG}\`"}
 ```
 
 ### 9. Preview and confirm
+
+Before previewing, check the body size. If it exceeds ~6 KB or ~120
+lines, stop and trim — the discipline goal is much tighter than
+GitHub's 65 KB hard limit. Usual culprits: pasted JSON, uncurated log
+excerpts, secondary observations that belong in their own issue.
 
 Print the full title and body to the terminal. Then ask:
 **"File this issue now? [y/N]"**
