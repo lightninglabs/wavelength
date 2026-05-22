@@ -480,3 +480,44 @@ func TestHistoryPaginationOffsetPlumbedToLedger(t *testing.T) {
 			"rows to satisfy the requested page",
 	)
 }
+
+// TestHistoryDepositStaysPendingOnChainConfirmation pins issue #503:
+// a DEPOSIT row derived from a wallet_utxo_created ledger entry must
+// not flip to COMPLETE the moment the boarding UTXO confirms on
+// chain. Under eagerroundjoin=false the deposit can sit indefinitely
+// in that state while remaining unspendable through any in-Ark flow;
+// COMPLETE there misleads the user about whether the funds have
+// actually been boarded into a VTXO.
+func TestHistoryDepositStaysPendingOnChainConfirmation(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "boarding",
+				Subtype:            ledger.EventWalletUTXOCreated,
+				ConfirmationStatus: "confirmed",
+				AmountSat:          100_000,
+				Txid:               "boarding-txid",
+				CreatedAtUnixS:     100,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.GetActivity().GetEntries(), 1)
+
+	entry := resp.GetActivity().GetEntries()[0]
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_DEPOSIT, entry.GetKind(),
+	)
+	require.Equal(
+		t, walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		entry.GetStatus(),
+		"on-chain confirmation of the boarding UTXO is NOT the "+
+			"boarded-into-a-VTXO signal",
+	)
+}

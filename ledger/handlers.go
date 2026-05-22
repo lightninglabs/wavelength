@@ -206,6 +206,13 @@ func (a *LedgerActor) handleVTXOReceived(ctx context.Context,
 		msg.OutpointHash, msg.OutpointIndex,
 	)
 
+	// Surface the VTXO outpoint on the row's structured chain
+	// fields too. Without these the consumer-facing onchain view
+	// renders a "round"-kind entry with an empty txid and has to
+	// string-parse the description to recover the outpoint — see
+	// issue #504.
+	chainVout := int32(msg.OutpointIndex)
+
 	return a.cfg.LedgerStore.InsertLedgerEntry(
 		ctx, LedgerEntry{
 			DebitAccount:  debitAccount,
@@ -220,6 +227,8 @@ func (a *LedgerActor) handleVTXOReceived(ctx context.Context,
 			),
 			CreatedAt:      a.clk.Now().Unix(),
 			IdempotencyKey: idempotencyKey,
+			ChainTxid:      msg.OutpointHash[:],
+			ChainVout:      &chainVout,
 		},
 	)
 }

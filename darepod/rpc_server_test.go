@@ -8,11 +8,13 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
@@ -20,8 +22,10 @@ import (
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/oor"
+	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -1012,4 +1016,331 @@ func TestGetInfoConcurrentOperatorTermsAccess(t *testing.T) {
 
 	cancel()
 	<-writerDone
+}
+
+// newRoundActorWithStates registers a stub round actor under the
+// standard round service key that responds to GetClientStateRequest
+// with the supplied map of FSM states. The caller must shut down the
+// returned actor system.
+func newRoundActorWithStates(t *testing.T,
+	states map[string]round.FSMStateInfo) *actor.ActorSystem {
+
+	t.Helper()
+
+	system := actor.NewActorSystem()
+
+	behavior := actor.NewFunctionBehavior(
+		func(_ context.Context, msg actormsg.RoundReceivable,
+		) fn.Result[actormsg.RoundActorResp] {
+
+			if _, ok := msg.(*round.GetClientStateRequest); !ok {
+				t.Fatalf("unexpected message: %T", msg)
+			}
+
+			return fn.Ok[actormsg.RoundActorResp](
+				&round.GetClientStateResponse{
+					States: states,
+				},
+			)
+		},
+	)
+	_ = actor.RegisterWithSystem(
+		system, "round-stub", round.NewServiceKey(), behavior,
+	)
+
+	return system
+}
+
+// localOwnerKey returns a non-nil owner key descriptor — what
+// types.VTXORequest.HasLocalOwner uses as the locally-owned
+// sentinel. The actual pubkey value does not matter for these
+// projection-only tests; only its non-nilness does.
+func localOwnerKey(t *testing.T) keychain.KeyDescriptor {
+	t.Helper()
+
+	priv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	return keychain.KeyDescriptor{
+		PubKey: priv.PubKey(),
+	}
+}
+
+// TestQueryRoundStatesPopulatesUpcomingVTXOs verifies that a live
+// (actor-served) round in the InputSigSentState surfaces both its
+// commitment txid and the amounts of every VTXO the wallet is about
+// to receive. This pins issue #500: prior to the fix, the live path
+// returned a mostly-empty RoundInfo and the commitment txid only
+// appeared in the daemon log.
+func TestQueryRoundStatesPopulatesUpcomingVTXOs(t *testing.T) {
+	t.Parallel()
+
+	const (
+		amountA = btcutil.Amount(123_456)
+		amountB = btcutil.Amount(78_910)
+		// notOurs sits in the same intent list with a nil OwnerKey
+		// and must NOT appear in the response; the round may carry
+		// outputs destined for other clients and surfacing them
+		// here would inflate the wallet's view of upcoming
+		// balance.
+		notOurs = btcutil.Amount(999_000)
+	)
+
+	// Build a minimal commitment PSBT so liveRoundDetails can recover
+	// its txid the same way the production code does.
+	commitTx := wire.NewMsgTx(2)
+	commitTx.AddTxIn(&wire.TxIn{})
+	commitTx.AddTxOut(&wire.TxOut{Value: 250_000})
+	packet, err := psbt.NewFromUnsignedTx(commitTx)
+	require.NoError(t, err)
+	expectedTxid := commitTx.TxHash().String()
+
+	roundID := round.RoundID(uuid.New())
+	state := &round.InputSigSentState{
+		RoundID:      roundID,
+		CommitmentTx: packet,
+		Intents: round.Intents{
+			VTXOs: []types.VTXORequest{
+				{
+					Amount:   amountA,
+					OwnerKey: localOwnerKey(t),
+				},
+				{
+					Amount:   amountB,
+					OwnerKey: localOwnerKey(t),
+				},
+				{
+					// notOurs: no OwnerKey set →
+					// HasLocalOwner returns false →
+					// filtered out.
+					Amount: notOurs,
+				},
+			},
+		},
+	}
+
+	system := newRoundActorWithStates(t,
+		map[string]round.FSMStateInfo{
+			roundID.String(): {
+				State:   state,
+				RoundID: roundID,
+			},
+		},
+	)
+	defer func() {
+		require.NoError(t, system.Shutdown(t.Context()))
+	}()
+
+	srv := &RPCServer{server: &Server{actorSystem: system}}
+
+	rounds, err := srv.queryRoundStates(t.Context())
+	require.NoError(t, err)
+	require.Len(t, rounds, 1)
+
+	got := rounds[0]
+	require.Equal(t, roundID.String(), got.RoundId)
+	require.Equal(
+		t, daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT, got.State,
+	)
+	require.False(t, got.IsTemp)
+	require.Equal(t, expectedTxid, got.CommitmentTxid)
+
+	// Only the two locally-owned entries should be surfaced.
+	require.Len(t, got.Vtxos, 2)
+	require.Equal(t, int64(amountA), got.Vtxos[0].AmountSat)
+	require.Equal(t, int64(amountB), got.Vtxos[1].AmountSat)
+}
+
+// TestListVTXOsPendingRoundProjectsLiveRounds verifies that
+// ListVTXOs with status_filter=VTXO_STATUS_PENDING_ROUND projects
+// the upcoming VTXOs from in-flight rounds as synthetic VTXO
+// entries. This pins issue #501: prior to the fix there was no way
+// to see VTXOs the wallet had signed for between commitment-tx
+// signing and confirmation.
+func TestListVTXOsPendingRoundProjectsLiveRounds(t *testing.T) {
+	t.Parallel()
+
+	const (
+		amountA = btcutil.Amount(50_000)
+		amountB = btcutil.Amount(25_000)
+		// belowMin sits under the min_amount_sat filter and must
+		// be elided to confirm the filter still applies on the
+		// synthetic path.
+		belowMin = btcutil.Amount(1_000)
+	)
+
+	commitTx := wire.NewMsgTx(2)
+	commitTx.AddTxIn(&wire.TxIn{})
+	commitTx.AddTxOut(&wire.TxOut{Value: 100_000})
+	packet, err := psbt.NewFromUnsignedTx(commitTx)
+	require.NoError(t, err)
+	expectedTxid := commitTx.TxHash().String()
+
+	roundID := round.RoundID(uuid.New())
+	state := &round.InputSigSentState{
+		RoundID:      roundID,
+		CommitmentTx: packet,
+		Intents: round.Intents{
+			VTXOs: []types.VTXORequest{
+				{
+					Amount:   amountA,
+					OwnerKey: localOwnerKey(t),
+				},
+				{
+					Amount:   amountB,
+					OwnerKey: localOwnerKey(t),
+				},
+				{
+					Amount:   belowMin,
+					OwnerKey: localOwnerKey(t),
+				},
+			},
+		},
+	}
+
+	system := newRoundActorWithStates(t,
+		map[string]round.FSMStateInfo{
+			roundID.String(): {
+				State:   state,
+				RoundID: roundID,
+			},
+		},
+	)
+	defer func() {
+		require.NoError(t, system.Shutdown(t.Context()))
+	}()
+
+	// Force the wallet-ready gate open without standing up a real
+	// wallet — listPendingRoundVTXOs only consults the round
+	// actor.
+	walletReady := make(chan struct{})
+	close(walletReady)
+	srv := &RPCServer{server: &Server{
+		actorSystem: system,
+		walletReady: walletReady,
+	}}
+
+	resp, err := srv.ListVTXOs(t.Context(), &daemonrpc.ListVTXOsRequest{
+		StatusFilter: daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_ROUND,
+		MinAmountSat: int64(amountB),
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Vtxos, 2)
+
+	for _, v := range resp.Vtxos {
+		require.Equal(
+			t, daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_ROUND,
+			v.Status,
+		)
+		require.Equal(t, roundID.String(), v.RoundId)
+		require.Equal(t, expectedTxid, v.CommitmentTxid)
+		require.Empty(t, v.Outpoint)
+	}
+	require.Equal(t, int64(amountA), resp.Vtxos[0].AmountSat)
+	require.Equal(t, int64(amountB), resp.Vtxos[1].AmountSat)
+}
+
+// TestListVTXOsPendingRoundSkipsConfirmedRounds pins the guard against
+// double-reporting: between a round's commitment-tx confirmation and
+// the actor cleaning the round out of its in-memory map, the same
+// VTXOs are already in the on-disk store as VTXO_STATUS_LIVE.
+// Surfacing them under VTXO_STATUS_PENDING_ROUND too would show the
+// upcoming-balance twice for that short window.
+func TestListVTXOsPendingRoundSkipsConfirmedRounds(t *testing.T) {
+	t.Parallel()
+
+	roundID := round.RoundID(uuid.New())
+	confirmed := &round.ConfirmedState{
+		TxID: chainhash.Hash{
+			0xab,
+			0xcd,
+		},
+		VTXOs: []*round.ClientVTXO{
+			{
+				Outpoint: wire.OutPoint{
+					Hash: chainhash.Hash{
+						0x11,
+					},
+					Index: 0,
+				},
+				Amount: btcutil.Amount(50_000),
+			},
+		},
+	}
+
+	system := newRoundActorWithStates(t,
+		map[string]round.FSMStateInfo{
+			roundID.String(): {
+				State:   confirmed,
+				RoundID: roundID,
+			},
+		},
+	)
+	defer func() {
+		require.NoError(t, system.Shutdown(t.Context()))
+	}()
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+	srv := &RPCServer{server: &Server{
+		actorSystem: system,
+		walletReady: walletReady,
+	}}
+
+	resp, err := srv.ListVTXOs(
+		t.Context(), &daemonrpc.ListVTXOsRequest{
+			StatusFilter: daemonrpc.
+				VTXOStatus_VTXO_STATUS_PENDING_ROUND,
+		},
+	)
+	require.NoError(t, err)
+	require.Empty(
+		t, resp.Vtxos, "ConfirmedState VTXOs live under "+
+			"VTXO_STATUS_LIVE in the store; they must not "+
+			"double-report here",
+	)
+}
+
+// TestQueryRoundStatesEarlyStateOmitsCommitmentTxid verifies that
+// rounds before the CommitmentTxReceived transition still surface
+// their upcoming VTXO amounts but leave the commitment txid empty:
+// the daemon does not know it yet.
+func TestQueryRoundStatesEarlyStateOmitsCommitmentTxid(t *testing.T) {
+	t.Parallel()
+
+	roundID := round.RoundID(uuid.New())
+	state := &round.RoundJoinedState{
+		RoundID: roundID,
+		Intents: round.Intents{
+			VTXOs: []types.VTXORequest{
+				{
+					Amount:   btcutil.Amount(42_000),
+					OwnerKey: localOwnerKey(t),
+				},
+			},
+		},
+	}
+
+	system := newRoundActorWithStates(t,
+		map[string]round.FSMStateInfo{
+			roundID.String(): {
+				State:   state,
+				RoundID: roundID,
+			},
+		},
+	)
+	defer func() {
+		require.NoError(t, system.Shutdown(t.Context()))
+	}()
+
+	srv := &RPCServer{server: &Server{actorSystem: system}}
+
+	rounds, err := srv.queryRoundStates(t.Context())
+	require.NoError(t, err)
+	require.Len(t, rounds, 1)
+
+	got := rounds[0]
+	require.Empty(t, got.CommitmentTxid)
+	require.Len(t, got.Vtxos, 1)
+	require.Equal(t, int64(42_000), got.Vtxos[0].AmountSat)
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -31,6 +32,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/round"
@@ -657,12 +659,21 @@ func sumOnchainWalletConfirmed(ctx context.Context,
 }
 
 // ListVTXOs returns the set of VTXOs known to the wallet, optionally
-// filtered by status and minimum amount.
+// filtered by status and minimum amount. The VTXO_STATUS_PENDING_ROUND
+// filter is special: it bypasses the on-disk store and projects each
+// upcoming VTXO from the live round actor as a synthetic VTXO entry,
+// giving callers a way to see the outputs they have signed for but
+// which have not yet been created by an on-chain commitment.
 func (r *RPCServer) ListVTXOs(ctx context.Context,
 	req *daemonrpc.ListVTXOsRequest) (*daemonrpc.ListVTXOsResponse, error) {
 
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
+	}
+
+	if req.StatusFilter ==
+		daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_ROUND {
+		return r.listPendingRoundVTXOs(ctx, req)
 	}
 
 	if r.server.vtxoStore == nil {
@@ -743,6 +754,57 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 		}
 
 		protoVTXOs = append(protoVTXOs, protoVTXO)
+	}
+
+	return &daemonrpc.ListVTXOsResponse{
+		Vtxos: protoVTXOs,
+	}, nil
+}
+
+// listPendingRoundVTXOs projects the upcoming VTXOs from every live
+// round FSM as synthetic VTXO entries. Each entry carries the
+// expected amount, the originating round id (once assigned), and the
+// commitment txid (once the round actor has received the commitment
+// transaction). The outpoint is intentionally empty because the
+// precise leaf outpoint inside the VTXO tree is not finalised until
+// the commitment transaction confirms.
+func (r *RPCServer) listPendingRoundVTXOs(ctx context.Context,
+	req *daemonrpc.ListVTXOsRequest) (*daemonrpc.ListVTXOsResponse, error) {
+
+	rounds, err := r.queryRoundStates(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	minAmount := btcutil.Amount(req.MinAmountSat)
+	pendingRoundStatus := daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_ROUND
+
+	protoVTXOs := make([]*daemonrpc.VTXO, 0)
+	for _, info := range rounds {
+		// Skip rounds whose commitment tx has already confirmed.
+		// Their VTXOs are written to the on-disk store as
+		// VTXO_STATUS_LIVE so they surface there; including them
+		// here too would cause a brief double-report in the window
+		// between commitment confirmation and the actor cleaning
+		// the round out of its in-memory map.
+		if info.State == daemonrpc.RoundState_ROUND_STATE_CONFIRMED {
+			continue
+		}
+
+		for _, v := range info.Vtxos {
+			amount := btcutil.Amount(v.AmountSat)
+			if amount < minAmount {
+				continue
+			}
+
+			protoVTXOs = append(protoVTXOs, &daemonrpc.VTXO{
+				AmountSat:      v.AmountSat,
+				Status:         pendingRoundStatus,
+				RoundId:        info.RoundId,
+				CommitmentTxid: info.CommitmentTxid,
+				Outpoint:       v.Outpoint,
+			})
+		}
 	}
 
 	return &daemonrpc.ListVTXOsResponse{
@@ -3169,15 +3231,140 @@ func (r *RPCServer) queryRoundStates(ctx context.Context) (
 			roundID = info.RoundID.String()
 		}
 
+		commitmentTxid, vtxos := liveRoundDetails(info.State)
+
 		rounds = append(rounds, &daemonrpc.RoundInfo{
-			RoundId:       roundID,
-			State:         clientStateToProto(info.State),
-			IsTemp:        info.IsTemp,
-			FailureReason: roundFailureReason(info.State),
+			RoundId:        roundID,
+			State:          clientStateToProto(info.State),
+			IsTemp:         info.IsTemp,
+			Vtxos:          vtxos,
+			CommitmentTxid: commitmentTxid,
+			FailureReason:  roundFailureReason(info.State),
 		})
 	}
 
 	return rounds, nil
+}
+
+// liveRoundDetails extracts the commitment transaction id and the
+// upcoming VTXOs the local wallet is about to receive from a live
+// (actor-served) round FSM state. The commitment txid is populated
+// from the state CommitmentTxReceived onwards. VTXO entries from
+// in-flight rounds carry only the amount because the precise leaf
+// outpoint depends on tree finalisation; once the round is
+// Confirmed the entries carry their real outpoints.
+//
+// Only VTXOs the wallet itself will own (HasLocalOwner=true) are
+// reported — the round can contain outputs destined for other
+// clients (e.g. in an in-round directed send), and surfacing those
+// here would inflate the wallet's view of its own upcoming balance.
+func liveRoundDetails(state round.ClientState) (string,
+	[]*daemonrpc.RoundVTXOInfo) {
+
+	upcomingFromVTXORequests := func(
+		reqs []types.VTXORequest) []*daemonrpc.RoundVTXOInfo {
+
+		out := make([]*daemonrpc.RoundVTXOInfo, 0, len(reqs))
+		for i := range reqs {
+			v := &reqs[i]
+			if !v.HasLocalOwner() {
+				continue
+			}
+			out = append(out, &daemonrpc.RoundVTXOInfo{
+				AmountSat: int64(v.Amount),
+			})
+		}
+
+		return out
+	}
+
+	switch s := state.(type) {
+	case *round.PendingRoundAssembly:
+		return "", upcomingFromVTXORequests(s.VTXOs)
+
+	case *round.IntentSentState:
+		return "", upcomingFromVTXORequests(s.Intents.VTXOs)
+
+	case *round.QuoteReceivedState:
+		return "", upcomingFromVTXORequests(s.Intents.VTXOs)
+
+	case *round.RoundJoinedState:
+		return "", upcomingFromVTXORequests(s.Intents.VTXOs)
+
+	case *round.CommitmentTxReceivedState:
+		return s.TxID.String(),
+			upcomingFromVTXORequests(s.Intents.VTXOs)
+
+	case *round.ConfirmedState:
+		out := make([]*daemonrpc.RoundVTXOInfo, 0, len(s.VTXOs))
+		for _, v := range s.VTXOs {
+			out = append(out, &daemonrpc.RoundVTXOInfo{
+				Outpoint: fmt.Sprintf(
+					"%s:%d", v.Outpoint.Hash,
+					v.Outpoint.Index,
+				),
+				AmountSat: int64(v.Amount),
+			})
+		}
+
+		return s.TxID.String(), out
+	}
+
+	// The MuSig2-phase states (CommitmentTxValidated through
+	// InputSigSent) all carry the same CommitmentTx + Intents pair
+	// and project onto RoundInfo identically. Fold them into one
+	// helper so the case list above does not have to grow every
+	// time a new intermediate state is added between commitment
+	// validation and input-sig-sent.
+	if pkt, vtxos, ok := psbtPhaseDetails(state); ok {
+		return commitmentPSBTTxid(pkt),
+			upcomingFromVTXORequests(vtxos)
+	}
+
+	return "", nil
+}
+
+// psbtPhaseDetails returns the commitment PSBT and the in-flight
+// VTXO intents from any MuSig2-phase state that carries them. The
+// six concrete types share the field shape but are distinct named
+// types; type-asserting against each is the price of not adding
+// methods to the FSM state contract in the round package.
+func psbtPhaseDetails(state round.ClientState) (*psbt.Packet,
+	[]types.VTXORequest, bool) {
+
+	switch s := state.(type) {
+	case *round.CommitmentTxValidatedState:
+		return s.CommitmentTx, s.Intents.VTXOs, true
+
+	case *round.ForfeitSignaturesCollectingState:
+		return s.CommitmentTx, s.Intents.VTXOs, true
+
+	case *round.NoncesSentState:
+		return s.CommitmentTx, s.Intents.VTXOs, true
+
+	case *round.NoncesAggregatedState:
+		return s.CommitmentTx, s.Intents.VTXOs, true
+
+	case *round.PartialSigsSentState:
+		return s.CommitmentTx, s.Intents.VTXOs, true
+
+	case *round.InputSigSentState:
+		return s.CommitmentTx, s.Intents.VTXOs, true
+	}
+
+	return nil, nil, false
+}
+
+// commitmentPSBTTxid returns the txid of the unsigned commitment
+// transaction carried by an in-flight round PSBT. The MuSig2 phase
+// states only carry the PSBT (not a pre-computed hash), so the txid
+// is recomputed lazily here.
+func commitmentPSBTTxid(p *psbt.Packet) string {
+	if p == nil || p.UnsignedTx == nil {
+		return ""
+	}
+
+	return p.UnsignedTx.TxHash().String()
 }
 
 // defaultListRoundsPageSize is the page size used when the client
