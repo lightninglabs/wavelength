@@ -327,14 +327,6 @@ func drainBlockConnected(t *testing.T, notifications <-chan any,
 func TestEsploraChainServiceRecoversFromTransientGetRawBlockFailure(
 	t *testing.T) {
 
-	// Skipped pending the gap-fill fix in the next commit. With the
-	// current EsploraChainService.processTipEvent, a transient
-	// GetRawBlock failure permanently strands a height between
-	// btcwallet's view and the chain tip, so this test would fail
-	// (heights=102,103 observed; 101 missing).
-	t.Skip("regression reproducer; enabled by the follow-up gap-fill " +
-		"fix in EsploraChainService.processTipEvent")
-
 	t.Parallel()
 
 	chainStub := newRawBlockStubChain(100)
