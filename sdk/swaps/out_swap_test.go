@@ -28,14 +28,16 @@ type testInvoiceCreator struct {
 	invoice     *invoices.Invoice
 	paymentHash lntypes.Hash
 	lastAuthKey keychain.SingleKeyMessageSigner
+	lastMemo    string
 	authKeys    []keychain.SingleKeyMessageSigner
 }
 
 // CreateInvoice returns the preconfigured invoice and payment hash.
 func (c *testInvoiceCreator) CreateInvoice(_ context.Context, _ btcutil.Amount,
-	_ string, _ *RouteHint, _ time.Duration, preimage *lntypes.Preimage) (
-	*invoices.Invoice, lntypes.Hash, error) {
+	memo string, _ *RouteHint, _ time.Duration,
+	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
 
+	c.lastMemo = memo
 	if preimage != nil {
 		c.paymentHash = lntypes.Hash(
 			sha256.Sum256(preimage[:]),
@@ -114,10 +116,12 @@ func TestStartReceiveDerivesReceiveAuthKeyPerPaymentHash(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		_, err := client.StartReceiveViaLightning(
 			t.Context(), btcutil.Amount(42_000),
+			"coffee",
 		)
 		require.NoError(t, err)
 	}
 
+	require.Equal(t, "coffee", creator.lastMemo)
 	require.NotNil(t, serverConn.lastVhtlcPubkey)
 	require.True(t, serverConn.lastVhtlcPubkey.IsEqual(clientPriv.PubKey()))
 	require.Len(t, creator.authKeys, 2)

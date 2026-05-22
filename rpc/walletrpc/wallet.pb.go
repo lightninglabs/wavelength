@@ -272,6 +272,97 @@ func (ExitJobStatus) EnumDescriptor() ([]byte, []int) {
 	return file_wallet_proto_rawDescGZIP(), []int{3}
 }
 
+// WalletEntryPhase is a coarse, wallet-facing lifecycle phase. It is not a
+// replacement for status; status answers whether the operation is pending,
+// complete, or failed, while phase explains the current backing-system step.
+type WalletEntryPhase int32
+
+const (
+	// WALLET_ENTRY_PHASE_UNSPECIFIED is the proto zero value used when the
+	// backing subsystem has no lifecycle hint.
+	WalletEntryPhase_WALLET_ENTRY_PHASE_UNSPECIFIED WalletEntryPhase = 0
+	// WALLET_ENTRY_PHASE_REQUEST_CREATED means the request was created but no
+	// payment has been observed.
+	WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED WalletEntryPhase = 1
+	// WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT means the wallet is waiting for an
+	// inbound payment or swap funding.
+	WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT WalletEntryPhase = 2
+	// WALLET_ENTRY_PHASE_PAYMENT_DETECTED means the backing subsystem has
+	// detected a payment but it is not yet settled.
+	WalletEntryPhase_WALLET_ENTRY_PHASE_PAYMENT_DETECTED WalletEntryPhase = 3
+	// WALLET_ENTRY_PHASE_SETTLING means the operation is being settled through
+	// Ark, Lightning, or onchain machinery.
+	WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING WalletEntryPhase = 4
+	// WALLET_ENTRY_PHASE_CONFIRMED means the backing operation is confirmed or
+	// otherwise durably complete.
+	WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED WalletEntryPhase = 5
+	// WALLET_ENTRY_PHASE_REFUNDING means the operation is currently refunding.
+	WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDING WalletEntryPhase = 6
+	// WALLET_ENTRY_PHASE_REFUNDED means the refund path completed.
+	WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDED WalletEntryPhase = 7
+	// WALLET_ENTRY_PHASE_FAILED means the backing operation reached a terminal
+	// failed state.
+	WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED WalletEntryPhase = 8
+	// WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION means an onchain payment has
+	// been detected and is waiting for block confirmation.
+	WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION WalletEntryPhase = 9
+)
+
+// Enum value maps for WalletEntryPhase.
+var (
+	WalletEntryPhase_name = map[int32]string{
+		0: "WALLET_ENTRY_PHASE_UNSPECIFIED",
+		1: "WALLET_ENTRY_PHASE_REQUEST_CREATED",
+		2: "WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT",
+		3: "WALLET_ENTRY_PHASE_PAYMENT_DETECTED",
+		4: "WALLET_ENTRY_PHASE_SETTLING",
+		5: "WALLET_ENTRY_PHASE_CONFIRMED",
+		6: "WALLET_ENTRY_PHASE_REFUNDING",
+		7: "WALLET_ENTRY_PHASE_REFUNDED",
+		8: "WALLET_ENTRY_PHASE_FAILED",
+		9: "WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION",
+	}
+	WalletEntryPhase_value = map[string]int32{
+		"WALLET_ENTRY_PHASE_UNSPECIFIED":              0,
+		"WALLET_ENTRY_PHASE_REQUEST_CREATED":          1,
+		"WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT":      2,
+		"WALLET_ENTRY_PHASE_PAYMENT_DETECTED":         3,
+		"WALLET_ENTRY_PHASE_SETTLING":                 4,
+		"WALLET_ENTRY_PHASE_CONFIRMED":                5,
+		"WALLET_ENTRY_PHASE_REFUNDING":                6,
+		"WALLET_ENTRY_PHASE_REFUNDED":                 7,
+		"WALLET_ENTRY_PHASE_FAILED":                   8,
+		"WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION": 9,
+	}
+)
+
+func (x WalletEntryPhase) Enum() *WalletEntryPhase {
+	p := new(WalletEntryPhase)
+	*p = x
+	return p
+}
+
+func (x WalletEntryPhase) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WalletEntryPhase) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallet_proto_enumTypes[4].Descriptor()
+}
+
+func (WalletEntryPhase) Type() protoreflect.EnumType {
+	return &file_wallet_proto_enumTypes[4]
+}
+
+func (x WalletEntryPhase) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WalletEntryPhase.Descriptor instead.
+func (WalletEntryPhase) EnumDescriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{4}
+}
+
 type CreateRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// wallet_password is the password used to encrypt the on-disk seed.
@@ -1396,6 +1487,661 @@ func (x *OnchainTx) GetDescription() string {
 	return ""
 }
 
+// InspectActivityRequest identifies the activity entry to inspect.
+type InspectActivityRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// id is the WalletEntry.id to inspect.
+	// InspectActivity searches the daemon's current activity window, which is
+	// capped by the daemon maximum list limit.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// ledger_limit caps how many ledger rows are scanned for correlation.
+	// Zero means use the daemon's maximum list limit.
+	LedgerLimit   uint32 `protobuf:"varint,2,opt,name=ledger_limit,json=ledgerLimit,proto3" json:"ledger_limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InspectActivityRequest) Reset() {
+	*x = InspectActivityRequest{}
+	mi := &file_wallet_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InspectActivityRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InspectActivityRequest) ProtoMessage() {}
+
+func (x *InspectActivityRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InspectActivityRequest.ProtoReflect.Descriptor instead.
+func (*InspectActivityRequest) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *InspectActivityRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *InspectActivityRequest) GetLedgerLimit() uint32 {
+	if x != nil {
+		return x.LedgerLimit
+	}
+	return 0
+}
+
+// InspectActivityResponse contains the friendly activity row plus the
+// lower-level records that explain how the daemon derived it.
+type InspectActivityResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// entry is the user-facing activity row being inspected.
+	Entry *WalletEntry `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
+	// swap is populated when the entry is backed by a pay or receive swap.
+	Swap *ActivitySwapTrace `protobuf:"bytes,2,opt,name=swap,proto3" json:"swap,omitempty"`
+	// vtxos contains best-effort VTXO movements correlated to this
+	// activity. Rows are derived from local swap summaries and ledger
+	// accounting, so ids may be OOR session/output ids when a full VTXO
+	// outpoint is not persisted by the source row.
+	Vtxos []*ActivityVTXOTrace `protobuf:"bytes,3,rep,name=vtxos,proto3" json:"vtxos,omitempty"`
+	// ledger_rows are the local accounting rows used to build the trace,
+	// including rows hidden from the friendly activity feed.
+	LedgerRows []*ActivityLedgerTrace `protobuf:"bytes,4,rep,name=ledger_rows,json=ledgerRows,proto3" json:"ledger_rows,omitempty"`
+	// notes contains plain-English caveats about best-effort correlation.
+	Notes         []string `protobuf:"bytes,5,rep,name=notes,proto3" json:"notes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InspectActivityResponse) Reset() {
+	*x = InspectActivityResponse{}
+	mi := &file_wallet_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InspectActivityResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InspectActivityResponse) ProtoMessage() {}
+
+func (x *InspectActivityResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InspectActivityResponse.ProtoReflect.Descriptor instead.
+func (*InspectActivityResponse) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *InspectActivityResponse) GetEntry() *WalletEntry {
+	if x != nil {
+		return x.Entry
+	}
+	return nil
+}
+
+func (x *InspectActivityResponse) GetSwap() *ActivitySwapTrace {
+	if x != nil {
+		return x.Swap
+	}
+	return nil
+}
+
+func (x *InspectActivityResponse) GetVtxos() []*ActivityVTXOTrace {
+	if x != nil {
+		return x.Vtxos
+	}
+	return nil
+}
+
+func (x *InspectActivityResponse) GetLedgerRows() []*ActivityLedgerTrace {
+	if x != nil {
+		return x.LedgerRows
+	}
+	return nil
+}
+
+func (x *InspectActivityResponse) GetNotes() []string {
+	if x != nil {
+		return x.Notes
+	}
+	return nil
+}
+
+// ActivitySwapTrace is the swap-service snapshot correlated to one wallet
+// activity entry.
+type ActivitySwapTrace struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// payment_hash is the Lightning payment hash that identifies the
+	// swap-backed activity.
+	PaymentHash string `protobuf:"bytes,1,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// direction is the raw swapclientrpc.SwapDirection enum name, kept as a
+	// string so this debug surface can expose swap state without importing the
+	// swap service proto into the wallet proto.
+	Direction string `protobuf:"bytes,2,opt,name=direction,proto3" json:"direction,omitempty"`
+	// state is the raw swapclientrpc.SwapState enum name at inspection time.
+	State string `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"`
+	// pending is true while the backing swap state machine is still active.
+	Pending bool `protobuf:"varint,4,opt,name=pending,proto3" json:"pending,omitempty"`
+	// amount_sat is the swap amount in satoshis using the swap service's
+	// unsigned amount convention.
+	AmountSat int64 `protobuf:"varint,5,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// fee_sat is the fee reported by the swap service for this swap.
+	FeeSat uint64 `protobuf:"varint,6,opt,name=fee_sat,json=feeSat,proto3" json:"fee_sat,omitempty"`
+	// invoice is the BOLT-11 invoice associated with the swap when known.
+	Invoice string `protobuf:"bytes,7,opt,name=invoice,proto3" json:"invoice,omitempty"`
+	// vhtlc_outpoint is the Ark vHTLC output observed for the swap when known.
+	VhtlcOutpoint string `protobuf:"bytes,8,opt,name=vhtlc_outpoint,json=vhtlcOutpoint,proto3" json:"vhtlc_outpoint,omitempty"`
+	// vhtlc_amount_sat is the amount held by vhtlc_outpoint when known.
+	VhtlcAmountSat int64 `protobuf:"varint,9,opt,name=vhtlc_amount_sat,json=vhtlcAmountSat,proto3" json:"vhtlc_amount_sat,omitempty"`
+	// funding_session_id is the OOR session that funded the swap when known.
+	FundingSessionId string `protobuf:"bytes,10,opt,name=funding_session_id,json=fundingSessionId,proto3" json:"funding_session_id,omitempty"`
+	// claim_session_id is the OOR session that claimed the swap when known.
+	ClaimSessionId string `protobuf:"bytes,11,opt,name=claim_session_id,json=claimSessionId,proto3" json:"claim_session_id,omitempty"`
+	// refund_session_id is the OOR session that refunded the swap when known.
+	RefundSessionId string `protobuf:"bytes,12,opt,name=refund_session_id,json=refundSessionId,proto3" json:"refund_session_id,omitempty"`
+	// terminal_reason is the swap service's terminal reason string when the
+	// swap reached a failed or intervention state.
+	TerminalReason string `protobuf:"bytes,13,opt,name=terminal_reason,json=terminalReason,proto3" json:"terminal_reason,omitempty"`
+	// created_at_unix is the swap creation timestamp in unix seconds.
+	CreatedAtUnix int64 `protobuf:"varint,14,opt,name=created_at_unix,json=createdAtUnix,proto3" json:"created_at_unix,omitempty"`
+	// updated_at_unix is the last swap update timestamp in unix seconds.
+	UpdatedAtUnix int64 `protobuf:"varint,15,opt,name=updated_at_unix,json=updatedAtUnix,proto3" json:"updated_at_unix,omitempty"`
+	// deadline_unix is the swap deadline in unix seconds when the swap service
+	// exposes one.
+	DeadlineUnix int64 `protobuf:"varint,16,opt,name=deadline_unix,json=deadlineUnix,proto3" json:"deadline_unix,omitempty"`
+	// refund_locktime is the absolute locktime after which the swap can be
+	// refunded.
+	RefundLocktime uint32 `protobuf:"varint,17,opt,name=refund_locktime,json=refundLocktime,proto3" json:"refund_locktime,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ActivitySwapTrace) Reset() {
+	*x = ActivitySwapTrace{}
+	mi := &file_wallet_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ActivitySwapTrace) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ActivitySwapTrace) ProtoMessage() {}
+
+func (x *ActivitySwapTrace) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ActivitySwapTrace.ProtoReflect.Descriptor instead.
+func (*ActivitySwapTrace) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *ActivitySwapTrace) GetPaymentHash() string {
+	if x != nil {
+		return x.PaymentHash
+	}
+	return ""
+}
+
+func (x *ActivitySwapTrace) GetDirection() string {
+	if x != nil {
+		return x.Direction
+	}
+	return ""
+}
+
+func (x *ActivitySwapTrace) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *ActivitySwapTrace) GetPending() bool {
+	if x != nil {
+		return x.Pending
+	}
+	return false
+}
+
+func (x *ActivitySwapTrace) GetAmountSat() int64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *ActivitySwapTrace) GetFeeSat() uint64 {
+	if x != nil {
+		return x.FeeSat
+	}
+	return 0
+}
+
+func (x *ActivitySwapTrace) GetInvoice() string {
+	if x != nil {
+		return x.Invoice
+	}
+	return ""
+}
+
+func (x *ActivitySwapTrace) GetVhtlcOutpoint() string {
+	if x != nil {
+		return x.VhtlcOutpoint
+	}
+	return ""
+}
+
+func (x *ActivitySwapTrace) GetVhtlcAmountSat() int64 {
+	if x != nil {
+		return x.VhtlcAmountSat
+	}
+	return 0
+}
+
+func (x *ActivitySwapTrace) GetFundingSessionId() string {
+	if x != nil {
+		return x.FundingSessionId
+	}
+	return ""
+}
+
+func (x *ActivitySwapTrace) GetClaimSessionId() string {
+	if x != nil {
+		return x.ClaimSessionId
+	}
+	return ""
+}
+
+func (x *ActivitySwapTrace) GetRefundSessionId() string {
+	if x != nil {
+		return x.RefundSessionId
+	}
+	return ""
+}
+
+func (x *ActivitySwapTrace) GetTerminalReason() string {
+	if x != nil {
+		return x.TerminalReason
+	}
+	return ""
+}
+
+func (x *ActivitySwapTrace) GetCreatedAtUnix() int64 {
+	if x != nil {
+		return x.CreatedAtUnix
+	}
+	return 0
+}
+
+func (x *ActivitySwapTrace) GetUpdatedAtUnix() int64 {
+	if x != nil {
+		return x.UpdatedAtUnix
+	}
+	return 0
+}
+
+func (x *ActivitySwapTrace) GetDeadlineUnix() int64 {
+	if x != nil {
+		return x.DeadlineUnix
+	}
+	return 0
+}
+
+func (x *ActivitySwapTrace) GetRefundLocktime() uint32 {
+	if x != nil {
+		return x.RefundLocktime
+	}
+	return 0
+}
+
+// ActivityVTXOTrace describes one VTXO movement correlated to a wallet activity
+// entry.
+type ActivityVTXOTrace struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// id is the best available identifier. It is an outpoint when the
+	// source has one, otherwise an OOR session/output identifier.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// amount_sat is the VTXO amount in satoshis.
+	AmountSat int64 `protobuf:"varint,2,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// role is a short technical label such as "spent_input",
+	// "change_output", "materialized_output", or "vhtlc_output".
+	Role string `protobuf:"bytes,3,opt,name=role,proto3" json:"role,omitempty"`
+	// ours is true when the row represents wallet-owned funds.
+	Ours bool `protobuf:"varint,4,opt,name=ours,proto3" json:"ours,omitempty"`
+	// source names the local source used to derive the row, such as
+	// "ledger" or "swap".
+	Source string `protobuf:"bytes,5,opt,name=source,proto3" json:"source,omitempty"`
+	// session_id is the OOR session/correlation id when known.
+	SessionId string `protobuf:"bytes,6,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// output_index is set when the source names a specific OOR output
+	// index.
+	OutputIndex   uint32 `protobuf:"varint,7,opt,name=output_index,json=outputIndex,proto3" json:"output_index,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ActivityVTXOTrace) Reset() {
+	*x = ActivityVTXOTrace{}
+	mi := &file_wallet_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ActivityVTXOTrace) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ActivityVTXOTrace) ProtoMessage() {}
+
+func (x *ActivityVTXOTrace) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ActivityVTXOTrace.ProtoReflect.Descriptor instead.
+func (*ActivityVTXOTrace) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ActivityVTXOTrace) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ActivityVTXOTrace) GetAmountSat() int64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *ActivityVTXOTrace) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *ActivityVTXOTrace) GetOurs() bool {
+	if x != nil {
+		return x.Ours
+	}
+	return false
+}
+
+func (x *ActivityVTXOTrace) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *ActivityVTXOTrace) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ActivityVTXOTrace) GetOutputIndex() uint32 {
+	if x != nil {
+		return x.OutputIndex
+	}
+	return 0
+}
+
+// ActivityLedgerTrace describes one local ledger row correlated to a wallet
+// activity entry.
+type ActivityLedgerTrace struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// source names the subsystem that produced the row, such as "ledger" or
+	// "boarding_sweep".
+	Source string `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
+	// type is the broad transaction group used by the wallet history query.
+	Type string `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
+	// subtype is the ledger event type or sweep state.
+	Subtype string `protobuf:"bytes,3,opt,name=subtype,proto3" json:"subtype,omitempty"`
+	// amount_sat is the row amount in satoshis using the ledger sign
+	// convention.
+	AmountSat int64 `protobuf:"varint,4,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// fee_sat is the row's fee contribution in satoshis when the history query
+	// can derive one.
+	FeeSat int64 `protobuf:"varint,5,opt,name=fee_sat,json=feeSat,proto3" json:"fee_sat,omitempty"`
+	// created_at_unix is the row creation timestamp in unix seconds.
+	CreatedAtUnix int64 `protobuf:"varint,6,opt,name=created_at_unix,json=createdAtUnix,proto3" json:"created_at_unix,omitempty"`
+	// confirmation_status is the best-known chain confirmation state for the
+	// row, for example "pending", "confirmed", or "recorded".
+	ConfirmationStatus string `protobuf:"bytes,7,opt,name=confirmation_status,json=confirmationStatus,proto3" json:"confirmation_status,omitempty"`
+	// description is the local ledger description persisted with the row.
+	Description string `protobuf:"bytes,8,opt,name=description,proto3" json:"description,omitempty"`
+	// entry_id is the local ledger row id when the source is the ledger.
+	EntryId int64 `protobuf:"varint,9,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
+	// txid is the associated chain transaction id when known.
+	Txid string `protobuf:"bytes,10,opt,name=txid,proto3" json:"txid,omitempty"`
+	// debit_account is the local accounting debit account.
+	DebitAccount string `protobuf:"bytes,11,opt,name=debit_account,json=debitAccount,proto3" json:"debit_account,omitempty"`
+	// credit_account is the local accounting credit account.
+	CreditAccount string `protobuf:"bytes,12,opt,name=credit_account,json=creditAccount,proto3" json:"credit_account,omitempty"`
+	// round_id is the Ark round id associated with the row when known.
+	RoundId string `protobuf:"bytes,13,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
+	// session_id is the OOR session/correlation id associated with the row when
+	// known.
+	SessionId string `protobuf:"bytes,14,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// confirmation_height is the confirmed block height when known.
+	ConfirmationHeight int32 `protobuf:"varint,15,opt,name=confirmation_height,json=confirmationHeight,proto3" json:"confirmation_height,omitempty"`
+	// hidden_from_activity is true when WalletService.List suppresses the
+	// row because it is an internal execution leg.
+	HiddenFromActivity bool `protobuf:"varint,16,opt,name=hidden_from_activity,json=hiddenFromActivity,proto3" json:"hidden_from_activity,omitempty"`
+	// role is the inspection role inferred for this row.
+	Role string `protobuf:"bytes,17,opt,name=role,proto3" json:"role,omitempty"`
+	// output_index is the transaction output index associated with txid.
+	// A negative value means the source has no output index.
+	OutputIndex   int32 `protobuf:"varint,18,opt,name=output_index,json=outputIndex,proto3" json:"output_index,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ActivityLedgerTrace) Reset() {
+	*x = ActivityLedgerTrace{}
+	mi := &file_wallet_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ActivityLedgerTrace) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ActivityLedgerTrace) ProtoMessage() {}
+
+func (x *ActivityLedgerTrace) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ActivityLedgerTrace.ProtoReflect.Descriptor instead.
+func (*ActivityLedgerTrace) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *ActivityLedgerTrace) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *ActivityLedgerTrace) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *ActivityLedgerTrace) GetSubtype() string {
+	if x != nil {
+		return x.Subtype
+	}
+	return ""
+}
+
+func (x *ActivityLedgerTrace) GetAmountSat() int64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *ActivityLedgerTrace) GetFeeSat() int64 {
+	if x != nil {
+		return x.FeeSat
+	}
+	return 0
+}
+
+func (x *ActivityLedgerTrace) GetCreatedAtUnix() int64 {
+	if x != nil {
+		return x.CreatedAtUnix
+	}
+	return 0
+}
+
+func (x *ActivityLedgerTrace) GetConfirmationStatus() string {
+	if x != nil {
+		return x.ConfirmationStatus
+	}
+	return ""
+}
+
+func (x *ActivityLedgerTrace) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *ActivityLedgerTrace) GetEntryId() int64 {
+	if x != nil {
+		return x.EntryId
+	}
+	return 0
+}
+
+func (x *ActivityLedgerTrace) GetTxid() string {
+	if x != nil {
+		return x.Txid
+	}
+	return ""
+}
+
+func (x *ActivityLedgerTrace) GetDebitAccount() string {
+	if x != nil {
+		return x.DebitAccount
+	}
+	return ""
+}
+
+func (x *ActivityLedgerTrace) GetCreditAccount() string {
+	if x != nil {
+		return x.CreditAccount
+	}
+	return ""
+}
+
+func (x *ActivityLedgerTrace) GetRoundId() string {
+	if x != nil {
+		return x.RoundId
+	}
+	return ""
+}
+
+func (x *ActivityLedgerTrace) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ActivityLedgerTrace) GetConfirmationHeight() int32 {
+	if x != nil {
+		return x.ConfirmationHeight
+	}
+	return 0
+}
+
+func (x *ActivityLedgerTrace) GetHiddenFromActivity() bool {
+	if x != nil {
+		return x.HiddenFromActivity
+	}
+	return false
+}
+
+func (x *ActivityLedgerTrace) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *ActivityLedgerTrace) GetOutputIndex() int32 {
+	if x != nil {
+		return x.OutputIndex
+	}
+	return 0
+}
+
 type DepositRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// amt_sat_hint is an optional caller hint about the expected deposit
@@ -1408,7 +2154,7 @@ type DepositRequest struct {
 
 func (x *DepositRequest) Reset() {
 	*x = DepositRequest{}
-	mi := &file_wallet_proto_msgTypes[15]
+	mi := &file_wallet_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1420,7 +2166,7 @@ func (x *DepositRequest) String() string {
 func (*DepositRequest) ProtoMessage() {}
 
 func (x *DepositRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[15]
+	mi := &file_wallet_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1433,7 +2179,7 @@ func (x *DepositRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DepositRequest.ProtoReflect.Descriptor instead.
 func (*DepositRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{15}
+	return file_wallet_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *DepositRequest) GetAmtSatHint() uint64 {
@@ -1458,7 +2204,7 @@ type DepositResponse struct {
 
 func (x *DepositResponse) Reset() {
 	*x = DepositResponse{}
-	mi := &file_wallet_proto_msgTypes[16]
+	mi := &file_wallet_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1470,7 +2216,7 @@ func (x *DepositResponse) String() string {
 func (*DepositResponse) ProtoMessage() {}
 
 func (x *DepositResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[16]
+	mi := &file_wallet_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1483,7 +2229,7 @@ func (x *DepositResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DepositResponse.ProtoReflect.Descriptor instead.
 func (*DepositResponse) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{16}
+	return file_wallet_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *DepositResponse) GetOnchainAddress() string {
@@ -1508,7 +2254,7 @@ type BalanceRequest struct {
 
 func (x *BalanceRequest) Reset() {
 	*x = BalanceRequest{}
-	mi := &file_wallet_proto_msgTypes[17]
+	mi := &file_wallet_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1520,7 +2266,7 @@ func (x *BalanceRequest) String() string {
 func (*BalanceRequest) ProtoMessage() {}
 
 func (x *BalanceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[17]
+	mi := &file_wallet_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1533,7 +2279,7 @@ func (x *BalanceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BalanceRequest.ProtoReflect.Descriptor instead.
 func (*BalanceRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{17}
+	return file_wallet_proto_rawDescGZIP(), []int{22}
 }
 
 type BalanceResponse struct {
@@ -1552,7 +2298,7 @@ type BalanceResponse struct {
 
 func (x *BalanceResponse) Reset() {
 	*x = BalanceResponse{}
-	mi := &file_wallet_proto_msgTypes[18]
+	mi := &file_wallet_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1564,7 +2310,7 @@ func (x *BalanceResponse) String() string {
 func (*BalanceResponse) ProtoMessage() {}
 
 func (x *BalanceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[18]
+	mi := &file_wallet_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1577,7 +2323,7 @@ func (x *BalanceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BalanceResponse.ProtoReflect.Descriptor instead.
 func (*BalanceResponse) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{18}
+	return file_wallet_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *BalanceResponse) GetConfirmedSat() int64 {
@@ -1609,7 +2355,7 @@ type StatusRequest struct {
 
 func (x *StatusRequest) Reset() {
 	*x = StatusRequest{}
-	mi := &file_wallet_proto_msgTypes[19]
+	mi := &file_wallet_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1621,7 +2367,7 @@ func (x *StatusRequest) String() string {
 func (*StatusRequest) ProtoMessage() {}
 
 func (x *StatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[19]
+	mi := &file_wallet_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1634,7 +2380,7 @@ func (x *StatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusRequest.ProtoReflect.Descriptor instead.
 func (*StatusRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{19}
+	return file_wallet_proto_rawDescGZIP(), []int{24}
 }
 
 type StatusResponse struct {
@@ -1659,7 +2405,7 @@ type StatusResponse struct {
 
 func (x *StatusResponse) Reset() {
 	*x = StatusResponse{}
-	mi := &file_wallet_proto_msgTypes[20]
+	mi := &file_wallet_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1671,7 +2417,7 @@ func (x *StatusResponse) String() string {
 func (*StatusResponse) ProtoMessage() {}
 
 func (x *StatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[20]
+	mi := &file_wallet_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1684,7 +2430,7 @@ func (x *StatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusResponse.ProtoReflect.Descriptor instead.
 func (*StatusResponse) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{20}
+	return file_wallet_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *StatusResponse) GetReady() bool {
@@ -1733,7 +2479,7 @@ type ExitRequest struct {
 
 func (x *ExitRequest) Reset() {
 	*x = ExitRequest{}
-	mi := &file_wallet_proto_msgTypes[21]
+	mi := &file_wallet_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1745,7 +2491,7 @@ func (x *ExitRequest) String() string {
 func (*ExitRequest) ProtoMessage() {}
 
 func (x *ExitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[21]
+	mi := &file_wallet_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1758,7 +2504,7 @@ func (x *ExitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExitRequest.ProtoReflect.Descriptor instead.
 func (*ExitRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{21}
+	return file_wallet_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ExitRequest) GetOutpoint() string {
@@ -1781,7 +2527,7 @@ type ExitResponse struct {
 
 func (x *ExitResponse) Reset() {
 	*x = ExitResponse{}
-	mi := &file_wallet_proto_msgTypes[22]
+	mi := &file_wallet_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1793,7 +2539,7 @@ func (x *ExitResponse) String() string {
 func (*ExitResponse) ProtoMessage() {}
 
 func (x *ExitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[22]
+	mi := &file_wallet_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1806,7 +2552,7 @@ func (x *ExitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExitResponse.ProtoReflect.Descriptor instead.
 func (*ExitResponse) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{22}
+	return file_wallet_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ExitResponse) GetCreated() bool {
@@ -1834,7 +2580,7 @@ type ExitStatusRequest struct {
 
 func (x *ExitStatusRequest) Reset() {
 	*x = ExitStatusRequest{}
-	mi := &file_wallet_proto_msgTypes[23]
+	mi := &file_wallet_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1846,7 +2592,7 @@ func (x *ExitStatusRequest) String() string {
 func (*ExitStatusRequest) ProtoMessage() {}
 
 func (x *ExitStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[23]
+	mi := &file_wallet_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1859,7 +2605,7 @@ func (x *ExitStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExitStatusRequest.ProtoReflect.Descriptor instead.
 func (*ExitStatusRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{23}
+	return file_wallet_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ExitStatusRequest) GetOutpoint() string {
@@ -1887,7 +2633,7 @@ type ExitStatusResponse struct {
 
 func (x *ExitStatusResponse) Reset() {
 	*x = ExitStatusResponse{}
-	mi := &file_wallet_proto_msgTypes[24]
+	mi := &file_wallet_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1899,7 +2645,7 @@ func (x *ExitStatusResponse) String() string {
 func (*ExitStatusResponse) ProtoMessage() {}
 
 func (x *ExitStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[24]
+	mi := &file_wallet_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1912,7 +2658,7 @@ func (x *ExitStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExitStatusResponse.ProtoReflect.Descriptor instead.
 func (*ExitStatusResponse) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{24}
+	return file_wallet_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ExitStatusResponse) GetFound() bool {
@@ -1957,7 +2703,7 @@ type SubscribeWalletRequest struct {
 
 func (x *SubscribeWalletRequest) Reset() {
 	*x = SubscribeWalletRequest{}
-	mi := &file_wallet_proto_msgTypes[25]
+	mi := &file_wallet_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1969,7 +2715,7 @@ func (x *SubscribeWalletRequest) String() string {
 func (*SubscribeWalletRequest) ProtoMessage() {}
 
 func (x *SubscribeWalletRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[25]
+	mi := &file_wallet_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1982,7 +2728,7 @@ func (x *SubscribeWalletRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeWalletRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeWalletRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{25}
+	return file_wallet_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *SubscribeWalletRequest) GetIncludeExisting() bool {
@@ -2000,9 +2746,10 @@ func (x *SubscribeWalletRequest) GetKinds() []EntryKind {
 }
 
 // WalletEntry is the single flat row type returned by the ACTIVITY view of
-// List and by SubscribeWallet. The shape is deliberately minimal: internal
-// correlators (session_id, round_id, settlement_type, mailbox subtype) are
-// dropped before responding. Power-user detail belongs in daemon logs.
+// List and by SubscribeWallet. The shape is deliberately minimal: display
+// clients should be able to render kind/status/amount/fee/phase directly
+// without parsing daemon-specific swap or ledger internals. Power-user detail
+// belongs in WalletInspectionService.InspectActivity.
 type WalletEntry struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// id is the stable identifier for this entry. Concretely it is the
@@ -2011,8 +2758,9 @@ type WalletEntry struct {
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// kind is the user-visible category.
 	Kind EntryKind `protobuf:"varint,2,opt,name=kind,proto3,enum=walletrpc.EntryKind" json:"kind,omitempty"`
-	// status collapses every backing FSM into PENDING, COMPLETE, or
-	// FAILED.
+	// status is the coarse user-facing outcome: PENDING, COMPLETE, or
+	// FAILED. It mirrors the backing source's durable state and should
+	// not be reinterpreted by display clients.
 	Status EntryStatus `protobuf:"varint,3,opt,name=status,proto3,enum=walletrpc.EntryStatus" json:"status,omitempty"`
 	// amount_sat is signed: positive values are incoming to the wallet,
 	// negative values are outgoing.
@@ -2037,13 +2785,22 @@ type WalletEntry struct {
 	// failure_reason is populated only when status is FAILED. It is a
 	// single human-readable string, never a coded enum tree.
 	FailureReason string `protobuf:"bytes,10,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	// request is the original payment request or destination associated
+	// with the entry, when the backing subsystem persists it. This is
+	// useful for expanded views and inspection; compact clients should
+	// not need to parse it to explain status or lifecycle.
+	Request *WalletEntryRequest `protobuf:"bytes,11,opt,name=request,proto3" json:"request,omitempty"`
+	// progress carries lifecycle-specific metadata already normalized by the
+	// wallet service. Clients can render phase_label directly or switch on
+	// phase without inferring meaning from swap/ledger internals.
+	Progress      *WalletEntryProgress `protobuf:"bytes,12,opt,name=progress,proto3" json:"progress,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WalletEntry) Reset() {
 	*x = WalletEntry{}
-	mi := &file_wallet_proto_msgTypes[26]
+	mi := &file_wallet_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2055,7 +2812,7 @@ func (x *WalletEntry) String() string {
 func (*WalletEntry) ProtoMessage() {}
 
 func (x *WalletEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[26]
+	mi := &file_wallet_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2068,7 +2825,7 @@ func (x *WalletEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WalletEntry.ProtoReflect.Descriptor instead.
 func (*WalletEntry) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{26}
+	return file_wallet_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *WalletEntry) GetId() string {
@@ -2137,6 +2894,368 @@ func (x *WalletEntry) GetNote() string {
 func (x *WalletEntry) GetFailureReason() string {
 	if x != nil {
 		return x.FailureReason
+	}
+	return ""
+}
+
+func (x *WalletEntry) GetRequest() *WalletEntryRequest {
+	if x != nil {
+		return x.Request
+	}
+	return nil
+}
+
+func (x *WalletEntry) GetProgress() *WalletEntryProgress {
+	if x != nil {
+		return x.Progress
+	}
+	return nil
+}
+
+// WalletEntryRequest describes the user-recognizable request that created a
+// WalletEntry. It is a oneof because each operation is backed by exactly one
+// request shape.
+type WalletEntryRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Request:
+	//
+	//	*WalletEntryRequest_LightningInvoice
+	//	*WalletEntryRequest_OnchainAddress
+	//	*WalletEntryRequest_ArkAddress
+	Request       isWalletEntryRequest_Request `protobuf_oneof:"request"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WalletEntryRequest) Reset() {
+	*x = WalletEntryRequest{}
+	mi := &file_wallet_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WalletEntryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WalletEntryRequest) ProtoMessage() {}
+
+func (x *WalletEntryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WalletEntryRequest.ProtoReflect.Descriptor instead.
+func (*WalletEntryRequest) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *WalletEntryRequest) GetRequest() isWalletEntryRequest_Request {
+	if x != nil {
+		return x.Request
+	}
+	return nil
+}
+
+func (x *WalletEntryRequest) GetLightningInvoice() *LightningInvoiceRequest {
+	if x != nil {
+		if x, ok := x.Request.(*WalletEntryRequest_LightningInvoice); ok {
+			return x.LightningInvoice
+		}
+	}
+	return nil
+}
+
+func (x *WalletEntryRequest) GetOnchainAddress() *OnchainAddressRequest {
+	if x != nil {
+		if x, ok := x.Request.(*WalletEntryRequest_OnchainAddress); ok {
+			return x.OnchainAddress
+		}
+	}
+	return nil
+}
+
+func (x *WalletEntryRequest) GetArkAddress() *ArkAddressRequest {
+	if x != nil {
+		if x, ok := x.Request.(*WalletEntryRequest_ArkAddress); ok {
+			return x.ArkAddress
+		}
+	}
+	return nil
+}
+
+type isWalletEntryRequest_Request interface {
+	isWalletEntryRequest_Request()
+}
+
+type WalletEntryRequest_LightningInvoice struct {
+	// lightning_invoice is populated for Lightning send and receive
+	// entries.
+	LightningInvoice *LightningInvoiceRequest `protobuf:"bytes,1,opt,name=lightning_invoice,json=lightningInvoice,proto3,oneof"`
+}
+
+type WalletEntryRequest_OnchainAddress struct {
+	// onchain_address is populated for deposit and exit entries.
+	OnchainAddress *OnchainAddressRequest `protobuf:"bytes,2,opt,name=onchain_address,json=onchainAddress,proto3,oneof"`
+}
+
+type WalletEntryRequest_ArkAddress struct {
+	// ark_address is populated for direct Ark send or receive entries.
+	ArkAddress *ArkAddressRequest `protobuf:"bytes,3,opt,name=ark_address,json=arkAddress,proto3,oneof"`
+}
+
+func (*WalletEntryRequest_LightningInvoice) isWalletEntryRequest_Request() {}
+
+func (*WalletEntryRequest_OnchainAddress) isWalletEntryRequest_Request() {}
+
+func (*WalletEntryRequest_ArkAddress) isWalletEntryRequest_Request() {}
+
+// LightningInvoiceRequest captures the Lightning request associated with an
+// activity entry.
+type LightningInvoiceRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// invoice is the BOLT-11 payment request.
+	Invoice string `protobuf:"bytes,1,opt,name=invoice,proto3" json:"invoice,omitempty"`
+	// payment_hash identifies the invoice and remains stable after the
+	// invoice itself is no longer convenient to display.
+	PaymentHash   string `protobuf:"bytes,2,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LightningInvoiceRequest) Reset() {
+	*x = LightningInvoiceRequest{}
+	mi := &file_wallet_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LightningInvoiceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LightningInvoiceRequest) ProtoMessage() {}
+
+func (x *LightningInvoiceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LightningInvoiceRequest.ProtoReflect.Descriptor instead.
+func (*LightningInvoiceRequest) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *LightningInvoiceRequest) GetInvoice() string {
+	if x != nil {
+		return x.Invoice
+	}
+	return ""
+}
+
+func (x *LightningInvoiceRequest) GetPaymentHash() string {
+	if x != nil {
+		return x.PaymentHash
+	}
+	return ""
+}
+
+// OnchainAddressRequest captures the onchain address associated with an
+// activity entry.
+type OnchainAddressRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// address is the bech32 onchain address originally issued or targeted.
+	Address       string `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OnchainAddressRequest) Reset() {
+	*x = OnchainAddressRequest{}
+	mi := &file_wallet_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OnchainAddressRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OnchainAddressRequest) ProtoMessage() {}
+
+func (x *OnchainAddressRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OnchainAddressRequest.ProtoReflect.Descriptor instead.
+func (*OnchainAddressRequest) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *OnchainAddressRequest) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+// ArkAddressRequest captures the Ark address associated with an activity entry.
+type ArkAddressRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// address is the Ark address originally issued or targeted.
+	Address       string `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ArkAddressRequest) Reset() {
+	*x = ArkAddressRequest{}
+	mi := &file_wallet_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ArkAddressRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ArkAddressRequest) ProtoMessage() {}
+
+func (x *ArkAddressRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ArkAddressRequest.ProtoReflect.Descriptor instead.
+func (*ArkAddressRequest) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *ArkAddressRequest) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+// WalletEntryProgress carries lifecycle metadata normalized by the wallet
+// service.
+type WalletEntryProgress struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// phase is the coarse lifecycle phase for this entry.
+	Phase WalletEntryPhase `protobuf:"varint,1,opt,name=phase,proto3,enum=walletrpc.WalletEntryPhase" json:"phase,omitempty"`
+	// phase_label is a short lowercase label that clients can render as-is
+	// while they migrate to enum-based presentation.
+	PhaseLabel string `protobuf:"bytes,2,opt,name=phase_label,json=phaseLabel,proto3" json:"phase_label,omitempty"`
+	// payment_hash is populated for Lightning-backed send/recv entries.
+	PaymentHash string `protobuf:"bytes,3,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// txid is populated when the backing ledger row has an onchain txid.
+	Txid string `protobuf:"bytes,4,opt,name=txid,proto3" json:"txid,omitempty"`
+	// confirmation_height is populated once the source records it.
+	ConfirmationHeight int32 `protobuf:"varint,5,opt,name=confirmation_height,json=confirmationHeight,proto3" json:"confirmation_height,omitempty"`
+	// vtxo_outpoint is populated when a swap observes the Ark vHTLC output.
+	VtxoOutpoint  string `protobuf:"bytes,6,opt,name=vtxo_outpoint,json=vtxoOutpoint,proto3" json:"vtxo_outpoint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WalletEntryProgress) Reset() {
+	*x = WalletEntryProgress{}
+	mi := &file_wallet_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WalletEntryProgress) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WalletEntryProgress) ProtoMessage() {}
+
+func (x *WalletEntryProgress) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WalletEntryProgress.ProtoReflect.Descriptor instead.
+func (*WalletEntryProgress) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *WalletEntryProgress) GetPhase() WalletEntryPhase {
+	if x != nil {
+		return x.Phase
+	}
+	return WalletEntryPhase_WALLET_ENTRY_PHASE_UNSPECIFIED
+}
+
+func (x *WalletEntryProgress) GetPhaseLabel() string {
+	if x != nil {
+		return x.PhaseLabel
+	}
+	return ""
+}
+
+func (x *WalletEntryProgress) GetPaymentHash() string {
+	if x != nil {
+		return x.PaymentHash
+	}
+	return ""
+}
+
+func (x *WalletEntryProgress) GetTxid() string {
+	if x != nil {
+		return x.Txid
+	}
+	return ""
+}
+
+func (x *WalletEntryProgress) GetConfirmationHeight() int32 {
+	if x != nil {
+		return x.ConfirmationHeight
+	}
+	return 0
+}
+
+func (x *WalletEntryProgress) GetVtxoOutpoint() string {
+	if x != nil {
+		return x.VtxoOutpoint
 	}
 	return ""
 }
@@ -2213,7 +3332,69 @@ const file_wallet_proto_rawDesc = "" +
 	"\x06status\x18\x05 \x01(\tR\x06status\x12/\n" +
 	"\x13confirmation_height\x18\x06 \x01(\x05R\x12confirmationHeight\x12&\n" +
 	"\x0fcreated_at_unix\x18\a \x01(\x03R\rcreatedAtUnix\x12 \n" +
-	"\vdescription\x18\b \x01(\tR\vdescription\"2\n" +
+	"\vdescription\x18\b \x01(\tR\vdescription\"K\n" +
+	"\x16InspectActivityRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
+	"\fledger_limit\x18\x02 \x01(\rR\vledgerLimit\"\x84\x02\n" +
+	"\x17InspectActivityResponse\x12,\n" +
+	"\x05entry\x18\x01 \x01(\v2\x16.walletrpc.WalletEntryR\x05entry\x120\n" +
+	"\x04swap\x18\x02 \x01(\v2\x1c.walletrpc.ActivitySwapTraceR\x04swap\x122\n" +
+	"\x05vtxos\x18\x03 \x03(\v2\x1c.walletrpc.ActivityVTXOTraceR\x05vtxos\x12?\n" +
+	"\vledger_rows\x18\x04 \x03(\v2\x1e.walletrpc.ActivityLedgerTraceR\n" +
+	"ledgerRows\x12\x14\n" +
+	"\x05notes\x18\x05 \x03(\tR\x05notes\"\xf2\x04\n" +
+	"\x11ActivitySwapTrace\x12!\n" +
+	"\fpayment_hash\x18\x01 \x01(\tR\vpaymentHash\x12\x1c\n" +
+	"\tdirection\x18\x02 \x01(\tR\tdirection\x12\x14\n" +
+	"\x05state\x18\x03 \x01(\tR\x05state\x12\x18\n" +
+	"\apending\x18\x04 \x01(\bR\apending\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x05 \x01(\x03R\tamountSat\x12\x17\n" +
+	"\afee_sat\x18\x06 \x01(\x04R\x06feeSat\x12\x18\n" +
+	"\ainvoice\x18\a \x01(\tR\ainvoice\x12%\n" +
+	"\x0evhtlc_outpoint\x18\b \x01(\tR\rvhtlcOutpoint\x12(\n" +
+	"\x10vhtlc_amount_sat\x18\t \x01(\x03R\x0evhtlcAmountSat\x12,\n" +
+	"\x12funding_session_id\x18\n" +
+	" \x01(\tR\x10fundingSessionId\x12(\n" +
+	"\x10claim_session_id\x18\v \x01(\tR\x0eclaimSessionId\x12*\n" +
+	"\x11refund_session_id\x18\f \x01(\tR\x0frefundSessionId\x12'\n" +
+	"\x0fterminal_reason\x18\r \x01(\tR\x0eterminalReason\x12&\n" +
+	"\x0fcreated_at_unix\x18\x0e \x01(\x03R\rcreatedAtUnix\x12&\n" +
+	"\x0fupdated_at_unix\x18\x0f \x01(\x03R\rupdatedAtUnix\x12#\n" +
+	"\rdeadline_unix\x18\x10 \x01(\x03R\fdeadlineUnix\x12'\n" +
+	"\x0frefund_locktime\x18\x11 \x01(\rR\x0erefundLocktime\"\xc4\x01\n" +
+	"\x11ActivityVTXOTrace\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x02 \x01(\x03R\tamountSat\x12\x12\n" +
+	"\x04role\x18\x03 \x01(\tR\x04role\x12\x12\n" +
+	"\x04ours\x18\x04 \x01(\bR\x04ours\x12\x16\n" +
+	"\x06source\x18\x05 \x01(\tR\x06source\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x06 \x01(\tR\tsessionId\x12!\n" +
+	"\foutput_index\x18\a \x01(\rR\voutputIndex\"\xdd\x04\n" +
+	"\x13ActivityLedgerTrace\x12\x16\n" +
+	"\x06source\x18\x01 \x01(\tR\x06source\x12\x12\n" +
+	"\x04type\x18\x02 \x01(\tR\x04type\x12\x18\n" +
+	"\asubtype\x18\x03 \x01(\tR\asubtype\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x04 \x01(\x03R\tamountSat\x12\x17\n" +
+	"\afee_sat\x18\x05 \x01(\x03R\x06feeSat\x12&\n" +
+	"\x0fcreated_at_unix\x18\x06 \x01(\x03R\rcreatedAtUnix\x12/\n" +
+	"\x13confirmation_status\x18\a \x01(\tR\x12confirmationStatus\x12 \n" +
+	"\vdescription\x18\b \x01(\tR\vdescription\x12\x19\n" +
+	"\bentry_id\x18\t \x01(\x03R\aentryId\x12\x12\n" +
+	"\x04txid\x18\n" +
+	" \x01(\tR\x04txid\x12#\n" +
+	"\rdebit_account\x18\v \x01(\tR\fdebitAccount\x12%\n" +
+	"\x0ecredit_account\x18\f \x01(\tR\rcreditAccount\x12\x19\n" +
+	"\bround_id\x18\r \x01(\tR\aroundId\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x0e \x01(\tR\tsessionId\x12/\n" +
+	"\x13confirmation_height\x18\x0f \x01(\x05R\x12confirmationHeight\x120\n" +
+	"\x14hidden_from_activity\x18\x10 \x01(\bR\x12hiddenFromActivity\x12\x12\n" +
+	"\x04role\x18\x11 \x01(\tR\x04role\x12!\n" +
+	"\foutput_index\x18\x12 \x01(\x05R\voutputIndex\"2\n" +
 	"\x0eDepositRequest\x12 \n" +
 	"\famt_sat_hint\x18\x01 \x01(\x04R\n" +
 	"amtSatHint\"h\n" +
@@ -2248,7 +3429,7 @@ const file_wallet_proto_rawDesc = "" +
 	"last_error\x18\x04 \x01(\tR\tlastError\"o\n" +
 	"\x16SubscribeWalletRequest\x12)\n" +
 	"\x10include_existing\x18\x01 \x01(\bR\x0fincludeExisting\x12*\n" +
-	"\x05kinds\x18\x02 \x03(\x0e2\x14.walletrpc.EntryKindR\x05kinds\"\xde\x02\n" +
+	"\x05kinds\x18\x02 \x03(\x0e2\x14.walletrpc.EntryKindR\x05kinds\"\xd3\x03\n" +
 	"\vWalletEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12(\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x14.walletrpc.EntryKindR\x04kind\x12.\n" +
@@ -2261,7 +3442,30 @@ const file_wallet_proto_rawDesc = "" +
 	"\x0fupdated_at_unix\x18\b \x01(\x03R\rupdatedAtUnix\x12\x12\n" +
 	"\x04note\x18\t \x01(\tR\x04note\x12%\n" +
 	"\x0efailure_reason\x18\n" +
-	" \x01(\tR\rfailureReason*~\n" +
+	" \x01(\tR\rfailureReason\x127\n" +
+	"\arequest\x18\v \x01(\v2\x1d.walletrpc.WalletEntryRequestR\arequest\x12:\n" +
+	"\bprogress\x18\f \x01(\v2\x1e.walletrpc.WalletEntryProgressR\bprogress\"\x80\x02\n" +
+	"\x12WalletEntryRequest\x12Q\n" +
+	"\x11lightning_invoice\x18\x01 \x01(\v2\".walletrpc.LightningInvoiceRequestH\x00R\x10lightningInvoice\x12K\n" +
+	"\x0fonchain_address\x18\x02 \x01(\v2 .walletrpc.OnchainAddressRequestH\x00R\x0eonchainAddress\x12?\n" +
+	"\vark_address\x18\x03 \x01(\v2\x1c.walletrpc.ArkAddressRequestH\x00R\n" +
+	"arkAddressB\t\n" +
+	"\arequest\"V\n" +
+	"\x17LightningInvoiceRequest\x12\x18\n" +
+	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12!\n" +
+	"\fpayment_hash\x18\x02 \x01(\tR\vpaymentHash\"1\n" +
+	"\x15OnchainAddressRequest\x12\x18\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\"-\n" +
+	"\x11ArkAddressRequest\x12\x18\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\"\xf6\x01\n" +
+	"\x13WalletEntryProgress\x121\n" +
+	"\x05phase\x18\x01 \x01(\x0e2\x1b.walletrpc.WalletEntryPhaseR\x05phase\x12\x1f\n" +
+	"\vphase_label\x18\x02 \x01(\tR\n" +
+	"phaseLabel\x12!\n" +
+	"\fpayment_hash\x18\x03 \x01(\tR\vpaymentHash\x12\x12\n" +
+	"\x04txid\x18\x04 \x01(\tR\x04txid\x12/\n" +
+	"\x13confirmation_height\x18\x05 \x01(\x05R\x12confirmationHeight\x12#\n" +
+	"\rvtxo_outpoint\x18\x06 \x01(\tR\fvtxoOutpoint*~\n" +
 	"\tEntryKind\x12\x1a\n" +
 	"\x16ENTRY_KIND_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fENTRY_KIND_SEND\x10\x01\x12\x13\n" +
@@ -2285,7 +3489,18 @@ const file_wallet_proto_rawDesc = "" +
 	"\x1bEXIT_JOB_STATUS_CSV_PENDING\x10\x03\x12\x1c\n" +
 	"\x18EXIT_JOB_STATUS_SWEEPING\x10\x04\x12\x1d\n" +
 	"\x19EXIT_JOB_STATUS_COMPLETED\x10\x05\x12\x1a\n" +
-	"\x16EXIT_JOB_STATUS_FAILED\x10\x062\xcf\x05\n" +
+	"\x16EXIT_JOB_STATUS_FAILED\x10\x06*\x89\x03\n" +
+	"\x10WalletEntryPhase\x12\"\n" +
+	"\x1eWALLET_ENTRY_PHASE_UNSPECIFIED\x10\x00\x12&\n" +
+	"\"WALLET_ENTRY_PHASE_REQUEST_CREATED\x10\x01\x12*\n" +
+	"&WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT\x10\x02\x12'\n" +
+	"#WALLET_ENTRY_PHASE_PAYMENT_DETECTED\x10\x03\x12\x1f\n" +
+	"\x1bWALLET_ENTRY_PHASE_SETTLING\x10\x04\x12 \n" +
+	"\x1cWALLET_ENTRY_PHASE_CONFIRMED\x10\x05\x12 \n" +
+	"\x1cWALLET_ENTRY_PHASE_REFUNDING\x10\x06\x12\x1f\n" +
+	"\x1bWALLET_ENTRY_PHASE_REFUNDED\x10\a\x12\x1d\n" +
+	"\x19WALLET_ENTRY_PHASE_FAILED\x10\b\x12/\n" +
+	"+WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION\x10\t2\xcf\x05\n" +
 	"\rWalletService\x12=\n" +
 	"\x06Create\x12\x18.walletrpc.CreateRequest\x1a\x19.walletrpc.CreateResponse\x12=\n" +
 	"\x06Unlock\x12\x18.walletrpc.UnlockRequest\x1a\x19.walletrpc.UnlockResponse\x127\n" +
@@ -2298,7 +3513,9 @@ const file_wallet_proto_rawDesc = "" +
 	"\x04Exit\x12\x16.walletrpc.ExitRequest\x1a\x17.walletrpc.ExitResponse\x12I\n" +
 	"\n" +
 	"ExitStatus\x12\x1c.walletrpc.ExitStatusRequest\x1a\x1d.walletrpc.ExitStatusResponse\x12N\n" +
-	"\x0fSubscribeWallet\x12!.walletrpc.SubscribeWalletRequest\x1a\x16.walletrpc.WalletEntry0\x01B6Z4github.com/lightninglabs/darepo-client/rpc/walletrpcb\x06proto3"
+	"\x0fSubscribeWallet\x12!.walletrpc.SubscribeWalletRequest\x1a\x16.walletrpc.WalletEntry0\x012s\n" +
+	"\x17WalletInspectionService\x12X\n" +
+	"\x0fInspectActivity\x12!.walletrpc.InspectActivityRequest\x1a\".walletrpc.InspectActivityResponseB6Z4github.com/lightninglabs/darepo-client/rpc/walletrpcb\x06proto3"
 
 var (
 	file_wallet_proto_rawDescOnce sync.Once
@@ -2312,85 +3529,108 @@ func file_wallet_proto_rawDescGZIP() []byte {
 	return file_wallet_proto_rawDescData
 }
 
-var file_wallet_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_wallet_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_wallet_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_wallet_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_wallet_proto_goTypes = []any{
-	(EntryKind)(0),                 // 0: walletrpc.EntryKind
-	(EntryStatus)(0),               // 1: walletrpc.EntryStatus
-	(ListView)(0),                  // 2: walletrpc.ListView
-	(ExitJobStatus)(0),             // 3: walletrpc.ExitJobStatus
-	(*CreateRequest)(nil),          // 4: walletrpc.CreateRequest
-	(*CreateResponse)(nil),         // 5: walletrpc.CreateResponse
-	(*UnlockRequest)(nil),          // 6: walletrpc.UnlockRequest
-	(*UnlockResponse)(nil),         // 7: walletrpc.UnlockResponse
-	(*SendRequest)(nil),            // 8: walletrpc.SendRequest
-	(*SendResponse)(nil),           // 9: walletrpc.SendResponse
-	(*RecvRequest)(nil),            // 10: walletrpc.RecvRequest
-	(*RecvResponse)(nil),           // 11: walletrpc.RecvResponse
-	(*ListRequest)(nil),            // 12: walletrpc.ListRequest
-	(*ListResponse)(nil),           // 13: walletrpc.ListResponse
-	(*ActivityList)(nil),           // 14: walletrpc.ActivityList
-	(*VTXOInventory)(nil),          // 15: walletrpc.VTXOInventory
-	(*WalletVTXO)(nil),             // 16: walletrpc.WalletVTXO
-	(*OnchainHistory)(nil),         // 17: walletrpc.OnchainHistory
-	(*OnchainTx)(nil),              // 18: walletrpc.OnchainTx
-	(*DepositRequest)(nil),         // 19: walletrpc.DepositRequest
-	(*DepositResponse)(nil),        // 20: walletrpc.DepositResponse
-	(*BalanceRequest)(nil),         // 21: walletrpc.BalanceRequest
-	(*BalanceResponse)(nil),        // 22: walletrpc.BalanceResponse
-	(*StatusRequest)(nil),          // 23: walletrpc.StatusRequest
-	(*StatusResponse)(nil),         // 24: walletrpc.StatusResponse
-	(*ExitRequest)(nil),            // 25: walletrpc.ExitRequest
-	(*ExitResponse)(nil),           // 26: walletrpc.ExitResponse
-	(*ExitStatusRequest)(nil),      // 27: walletrpc.ExitStatusRequest
-	(*ExitStatusResponse)(nil),     // 28: walletrpc.ExitStatusResponse
-	(*SubscribeWalletRequest)(nil), // 29: walletrpc.SubscribeWalletRequest
-	(*WalletEntry)(nil),            // 30: walletrpc.WalletEntry
+	(EntryKind)(0),                  // 0: walletrpc.EntryKind
+	(EntryStatus)(0),                // 1: walletrpc.EntryStatus
+	(ListView)(0),                   // 2: walletrpc.ListView
+	(ExitJobStatus)(0),              // 3: walletrpc.ExitJobStatus
+	(WalletEntryPhase)(0),           // 4: walletrpc.WalletEntryPhase
+	(*CreateRequest)(nil),           // 5: walletrpc.CreateRequest
+	(*CreateResponse)(nil),          // 6: walletrpc.CreateResponse
+	(*UnlockRequest)(nil),           // 7: walletrpc.UnlockRequest
+	(*UnlockResponse)(nil),          // 8: walletrpc.UnlockResponse
+	(*SendRequest)(nil),             // 9: walletrpc.SendRequest
+	(*SendResponse)(nil),            // 10: walletrpc.SendResponse
+	(*RecvRequest)(nil),             // 11: walletrpc.RecvRequest
+	(*RecvResponse)(nil),            // 12: walletrpc.RecvResponse
+	(*ListRequest)(nil),             // 13: walletrpc.ListRequest
+	(*ListResponse)(nil),            // 14: walletrpc.ListResponse
+	(*ActivityList)(nil),            // 15: walletrpc.ActivityList
+	(*VTXOInventory)(nil),           // 16: walletrpc.VTXOInventory
+	(*WalletVTXO)(nil),              // 17: walletrpc.WalletVTXO
+	(*OnchainHistory)(nil),          // 18: walletrpc.OnchainHistory
+	(*OnchainTx)(nil),               // 19: walletrpc.OnchainTx
+	(*InspectActivityRequest)(nil),  // 20: walletrpc.InspectActivityRequest
+	(*InspectActivityResponse)(nil), // 21: walletrpc.InspectActivityResponse
+	(*ActivitySwapTrace)(nil),       // 22: walletrpc.ActivitySwapTrace
+	(*ActivityVTXOTrace)(nil),       // 23: walletrpc.ActivityVTXOTrace
+	(*ActivityLedgerTrace)(nil),     // 24: walletrpc.ActivityLedgerTrace
+	(*DepositRequest)(nil),          // 25: walletrpc.DepositRequest
+	(*DepositResponse)(nil),         // 26: walletrpc.DepositResponse
+	(*BalanceRequest)(nil),          // 27: walletrpc.BalanceRequest
+	(*BalanceResponse)(nil),         // 28: walletrpc.BalanceResponse
+	(*StatusRequest)(nil),           // 29: walletrpc.StatusRequest
+	(*StatusResponse)(nil),          // 30: walletrpc.StatusResponse
+	(*ExitRequest)(nil),             // 31: walletrpc.ExitRequest
+	(*ExitResponse)(nil),            // 32: walletrpc.ExitResponse
+	(*ExitStatusRequest)(nil),       // 33: walletrpc.ExitStatusRequest
+	(*ExitStatusResponse)(nil),      // 34: walletrpc.ExitStatusResponse
+	(*SubscribeWalletRequest)(nil),  // 35: walletrpc.SubscribeWalletRequest
+	(*WalletEntry)(nil),             // 36: walletrpc.WalletEntry
+	(*WalletEntryRequest)(nil),      // 37: walletrpc.WalletEntryRequest
+	(*LightningInvoiceRequest)(nil), // 38: walletrpc.LightningInvoiceRequest
+	(*OnchainAddressRequest)(nil),   // 39: walletrpc.OnchainAddressRequest
+	(*ArkAddressRequest)(nil),       // 40: walletrpc.ArkAddressRequest
+	(*WalletEntryProgress)(nil),     // 41: walletrpc.WalletEntryProgress
 }
 var file_wallet_proto_depIdxs = []int32{
-	30, // 0: walletrpc.SendResponse.entry:type_name -> walletrpc.WalletEntry
-	30, // 1: walletrpc.RecvResponse.entry:type_name -> walletrpc.WalletEntry
+	36, // 0: walletrpc.SendResponse.entry:type_name -> walletrpc.WalletEntry
+	36, // 1: walletrpc.RecvResponse.entry:type_name -> walletrpc.WalletEntry
 	2,  // 2: walletrpc.ListRequest.view:type_name -> walletrpc.ListView
 	0,  // 3: walletrpc.ListRequest.kinds:type_name -> walletrpc.EntryKind
-	14, // 4: walletrpc.ListResponse.activity:type_name -> walletrpc.ActivityList
-	15, // 5: walletrpc.ListResponse.vtxos:type_name -> walletrpc.VTXOInventory
-	17, // 6: walletrpc.ListResponse.onchain:type_name -> walletrpc.OnchainHistory
-	30, // 7: walletrpc.ActivityList.entries:type_name -> walletrpc.WalletEntry
-	16, // 8: walletrpc.VTXOInventory.vtxos:type_name -> walletrpc.WalletVTXO
-	18, // 9: walletrpc.OnchainHistory.txs:type_name -> walletrpc.OnchainTx
-	30, // 10: walletrpc.DepositResponse.entry:type_name -> walletrpc.WalletEntry
-	22, // 11: walletrpc.StatusResponse.balance:type_name -> walletrpc.BalanceResponse
-	3,  // 12: walletrpc.ExitStatusResponse.status:type_name -> walletrpc.ExitJobStatus
-	0,  // 13: walletrpc.SubscribeWalletRequest.kinds:type_name -> walletrpc.EntryKind
-	0,  // 14: walletrpc.WalletEntry.kind:type_name -> walletrpc.EntryKind
-	1,  // 15: walletrpc.WalletEntry.status:type_name -> walletrpc.EntryStatus
-	4,  // 16: walletrpc.WalletService.Create:input_type -> walletrpc.CreateRequest
-	6,  // 17: walletrpc.WalletService.Unlock:input_type -> walletrpc.UnlockRequest
-	8,  // 18: walletrpc.WalletService.Send:input_type -> walletrpc.SendRequest
-	10, // 19: walletrpc.WalletService.Recv:input_type -> walletrpc.RecvRequest
-	12, // 20: walletrpc.WalletService.List:input_type -> walletrpc.ListRequest
-	19, // 21: walletrpc.WalletService.Deposit:input_type -> walletrpc.DepositRequest
-	21, // 22: walletrpc.WalletService.Balance:input_type -> walletrpc.BalanceRequest
-	23, // 23: walletrpc.WalletService.Status:input_type -> walletrpc.StatusRequest
-	25, // 24: walletrpc.WalletService.Exit:input_type -> walletrpc.ExitRequest
-	27, // 25: walletrpc.WalletService.ExitStatus:input_type -> walletrpc.ExitStatusRequest
-	29, // 26: walletrpc.WalletService.SubscribeWallet:input_type -> walletrpc.SubscribeWalletRequest
-	5,  // 27: walletrpc.WalletService.Create:output_type -> walletrpc.CreateResponse
-	7,  // 28: walletrpc.WalletService.Unlock:output_type -> walletrpc.UnlockResponse
-	9,  // 29: walletrpc.WalletService.Send:output_type -> walletrpc.SendResponse
-	11, // 30: walletrpc.WalletService.Recv:output_type -> walletrpc.RecvResponse
-	13, // 31: walletrpc.WalletService.List:output_type -> walletrpc.ListResponse
-	20, // 32: walletrpc.WalletService.Deposit:output_type -> walletrpc.DepositResponse
-	22, // 33: walletrpc.WalletService.Balance:output_type -> walletrpc.BalanceResponse
-	24, // 34: walletrpc.WalletService.Status:output_type -> walletrpc.StatusResponse
-	26, // 35: walletrpc.WalletService.Exit:output_type -> walletrpc.ExitResponse
-	28, // 36: walletrpc.WalletService.ExitStatus:output_type -> walletrpc.ExitStatusResponse
-	30, // 37: walletrpc.WalletService.SubscribeWallet:output_type -> walletrpc.WalletEntry
-	27, // [27:38] is the sub-list for method output_type
-	16, // [16:27] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	15, // 4: walletrpc.ListResponse.activity:type_name -> walletrpc.ActivityList
+	16, // 5: walletrpc.ListResponse.vtxos:type_name -> walletrpc.VTXOInventory
+	18, // 6: walletrpc.ListResponse.onchain:type_name -> walletrpc.OnchainHistory
+	36, // 7: walletrpc.ActivityList.entries:type_name -> walletrpc.WalletEntry
+	17, // 8: walletrpc.VTXOInventory.vtxos:type_name -> walletrpc.WalletVTXO
+	19, // 9: walletrpc.OnchainHistory.txs:type_name -> walletrpc.OnchainTx
+	36, // 10: walletrpc.InspectActivityResponse.entry:type_name -> walletrpc.WalletEntry
+	22, // 11: walletrpc.InspectActivityResponse.swap:type_name -> walletrpc.ActivitySwapTrace
+	23, // 12: walletrpc.InspectActivityResponse.vtxos:type_name -> walletrpc.ActivityVTXOTrace
+	24, // 13: walletrpc.InspectActivityResponse.ledger_rows:type_name -> walletrpc.ActivityLedgerTrace
+	36, // 14: walletrpc.DepositResponse.entry:type_name -> walletrpc.WalletEntry
+	28, // 15: walletrpc.StatusResponse.balance:type_name -> walletrpc.BalanceResponse
+	3,  // 16: walletrpc.ExitStatusResponse.status:type_name -> walletrpc.ExitJobStatus
+	0,  // 17: walletrpc.SubscribeWalletRequest.kinds:type_name -> walletrpc.EntryKind
+	0,  // 18: walletrpc.WalletEntry.kind:type_name -> walletrpc.EntryKind
+	1,  // 19: walletrpc.WalletEntry.status:type_name -> walletrpc.EntryStatus
+	37, // 20: walletrpc.WalletEntry.request:type_name -> walletrpc.WalletEntryRequest
+	41, // 21: walletrpc.WalletEntry.progress:type_name -> walletrpc.WalletEntryProgress
+	38, // 22: walletrpc.WalletEntryRequest.lightning_invoice:type_name -> walletrpc.LightningInvoiceRequest
+	39, // 23: walletrpc.WalletEntryRequest.onchain_address:type_name -> walletrpc.OnchainAddressRequest
+	40, // 24: walletrpc.WalletEntryRequest.ark_address:type_name -> walletrpc.ArkAddressRequest
+	4,  // 25: walletrpc.WalletEntryProgress.phase:type_name -> walletrpc.WalletEntryPhase
+	5,  // 26: walletrpc.WalletService.Create:input_type -> walletrpc.CreateRequest
+	7,  // 27: walletrpc.WalletService.Unlock:input_type -> walletrpc.UnlockRequest
+	9,  // 28: walletrpc.WalletService.Send:input_type -> walletrpc.SendRequest
+	11, // 29: walletrpc.WalletService.Recv:input_type -> walletrpc.RecvRequest
+	13, // 30: walletrpc.WalletService.List:input_type -> walletrpc.ListRequest
+	25, // 31: walletrpc.WalletService.Deposit:input_type -> walletrpc.DepositRequest
+	27, // 32: walletrpc.WalletService.Balance:input_type -> walletrpc.BalanceRequest
+	29, // 33: walletrpc.WalletService.Status:input_type -> walletrpc.StatusRequest
+	31, // 34: walletrpc.WalletService.Exit:input_type -> walletrpc.ExitRequest
+	33, // 35: walletrpc.WalletService.ExitStatus:input_type -> walletrpc.ExitStatusRequest
+	35, // 36: walletrpc.WalletService.SubscribeWallet:input_type -> walletrpc.SubscribeWalletRequest
+	20, // 37: walletrpc.WalletInspectionService.InspectActivity:input_type -> walletrpc.InspectActivityRequest
+	6,  // 38: walletrpc.WalletService.Create:output_type -> walletrpc.CreateResponse
+	8,  // 39: walletrpc.WalletService.Unlock:output_type -> walletrpc.UnlockResponse
+	10, // 40: walletrpc.WalletService.Send:output_type -> walletrpc.SendResponse
+	12, // 41: walletrpc.WalletService.Recv:output_type -> walletrpc.RecvResponse
+	14, // 42: walletrpc.WalletService.List:output_type -> walletrpc.ListResponse
+	26, // 43: walletrpc.WalletService.Deposit:output_type -> walletrpc.DepositResponse
+	28, // 44: walletrpc.WalletService.Balance:output_type -> walletrpc.BalanceResponse
+	30, // 45: walletrpc.WalletService.Status:output_type -> walletrpc.StatusResponse
+	32, // 46: walletrpc.WalletService.Exit:output_type -> walletrpc.ExitResponse
+	34, // 47: walletrpc.WalletService.ExitStatus:output_type -> walletrpc.ExitStatusResponse
+	36, // 48: walletrpc.WalletService.SubscribeWallet:output_type -> walletrpc.WalletEntry
+	21, // 49: walletrpc.WalletInspectionService.InspectActivity:output_type -> walletrpc.InspectActivityResponse
+	38, // [38:50] is the sub-list for method output_type
+	26, // [26:38] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_wallet_proto_init() }
@@ -2407,15 +3647,20 @@ func file_wallet_proto_init() {
 		(*ListResponse_Vtxos)(nil),
 		(*ListResponse_Onchain)(nil),
 	}
+	file_wallet_proto_msgTypes[32].OneofWrappers = []any{
+		(*WalletEntryRequest_LightningInvoice)(nil),
+		(*WalletEntryRequest_OnchainAddress)(nil),
+		(*WalletEntryRequest_ArkAddress)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wallet_proto_rawDesc), len(file_wallet_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   27,
+			NumEnums:      5,
+			NumMessages:   37,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   2,
 		},
 		GoTypes:           file_wallet_proto_goTypes,
 		DependencyIndexes: file_wallet_proto_depIdxs,

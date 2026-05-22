@@ -52,10 +52,17 @@ func (r *receiver) Recv(ctx context.Context, req *walletrpc.RecvRequest) (
 	startResp, err := r.deps.SwapService.StartReceive(
 		ctx, &swapclientrpc.StartReceiveRequest{
 			AmountSat: int64(amt),
+			Memo:      req.GetMemo(),
 		},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("start receive: %w", err)
+	}
+
+	if startResp.GetSwap() != nil &&
+		startResp.GetSwap().GetInvoice() == "" {
+
+		startResp.GetSwap().Invoice = startResp.GetInvoice()
 	}
 
 	// Pin the kind to RECV so the row is unambiguous even if the SDK's
@@ -64,7 +71,7 @@ func (r *receiver) Recv(ctx context.Context, req *walletrpc.RecvRequest) (
 	// also ensures the amount sign is computed from RECV rather than
 	// the raw (possibly-zero) direction.
 	entry := swapEntryFromSummary(
-		startResp.GetSwap(), req.GetMemo(), startResp.GetPaymentHash(),
+		startResp.GetSwap(), req.GetMemo(), "",
 		walletrpc.EntryKind_ENTRY_KIND_RECV,
 	)
 

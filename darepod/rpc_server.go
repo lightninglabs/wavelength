@@ -549,6 +549,14 @@ func (r *RPCServer) fetchBoardingBalance(ctx context.Context,
 		return total
 	}
 
+	unconfirmed, err := r.fetchUnconfirmedBoardingBalance(
+		ctx, boardingStore,
+	)
+	if err != nil {
+		return err
+	}
+	resp.BoardingUnconfirmedSat = int64(unconfirmed)
+
 	confirmed, err := boardingStore.FetchBoardingIntentsByStatus(
 		ctx, wallet.BoardingStatusConfirmed,
 	)
@@ -575,6 +583,37 @@ func (r *RPCServer) fetchBoardingBalance(ctx context.Context,
 	resp.BoardingSweptSat = int64(sumAmounts(swept))
 
 	return nil
+}
+
+// fetchUnconfirmedBoardingBalance sums zero-conf wallet UTXOs that pay to known
+// boarding scripts.
+func (r *RPCServer) fetchUnconfirmedBoardingBalance(ctx context.Context,
+	boardingStore *db.BoardingWalletStore) (btcutil.Amount, error) {
+
+	utxos, err := r.server.listBackingWalletUnspent(
+		ctx, 0, wallet.MaxConfsForListUnspent,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("list unspent: %w", err)
+	}
+
+	var total btcutil.Amount
+	for _, utxo := range utxos {
+		if utxo == nil || utxo.Confirmations != 0 {
+			continue
+		}
+
+		addr, err := boardingStore.LookupBoardingAddress(
+			ctx, utxo.PkScript,
+		)
+		if err != nil || addr == nil {
+			continue
+		}
+
+		total += utxo.Amount
+	}
+
+	return total, nil
 }
 
 // onchainWalletConfirmedFetcher returns the confirmed balance of one

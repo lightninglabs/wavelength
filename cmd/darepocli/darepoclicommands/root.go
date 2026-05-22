@@ -59,7 +59,7 @@ func NewRootCmd() *cobra.Command {
 	)
 
 	// Register subcommands. The seven implicit top-level wallet verbs
-	// (create / unlock / send / recv / list / balance / exit) are the
+	// (create / unlock / send / recv / activity / balance / exit) are the
 	// face of the CLI; everything else groups under named parents
 	// (ark / swap) or stays at root for daemon introspection.
 	cmd.AddCommand(
@@ -68,7 +68,7 @@ func NewRootCmd() *cobra.Command {
 		newUnlockCmd(),
 		newSendCmd(),
 		newRecvCmd(),
-		newListCmd(),
+		newActivityCmd(),
 		newBalanceCmd(),
 		newExitCmd(),
 

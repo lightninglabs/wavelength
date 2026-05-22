@@ -79,6 +79,15 @@ service WalletService {
     rpc SubscribeWallet (SubscribeWalletRequest) returns (stream WalletEntry);
 }
 
+// WalletInspectionService exposes technical drill-downs for wallet activity.
+// Unlike WalletService.List, this surface may include internal correlators and
+// ledger rows so operators can explain how a user-facing entry was executed.
+service WalletInspectionService {
+    // InspectActivity returns a technical trace for one WalletEntry id.
+    rpc InspectActivity (InspectActivityRequest)
+        returns (InspectActivityResponse);
+}
+
 // EntryKind tags each WalletEntry with the user-visible category of the
 // underlying operation. Internal subtypes (same-Ark p2p vs real Lightning,
 // OOR session correlators, round IDs) are deliberately not surfaced.
@@ -379,6 +388,197 @@ message OnchainTx {
     string description = 8;
 }
 
+// InspectActivityRequest identifies the activity entry to inspect.
+message InspectActivityRequest {
+    // id is the WalletEntry.id to inspect.
+    // InspectActivity searches the daemon's current activity window, which is
+    // capped by the daemon maximum list limit.
+    string id = 1;
+
+    // ledger_limit caps how many ledger rows are scanned for correlation.
+    // Zero means use the daemon's maximum list limit.
+    uint32 ledger_limit = 2;
+}
+
+// InspectActivityResponse contains the friendly activity row plus the
+// lower-level records that explain how the daemon derived it.
+message InspectActivityResponse {
+    // entry is the user-facing activity row being inspected.
+    WalletEntry entry = 1;
+
+    // swap is populated when the entry is backed by a pay or receive swap.
+    ActivitySwapTrace swap = 2;
+
+    // vtxos contains best-effort VTXO movements correlated to this
+    // activity. Rows are derived from local swap summaries and ledger
+    // accounting, so ids may be OOR session/output ids when a full VTXO
+    // outpoint is not persisted by the source row.
+    repeated ActivityVTXOTrace vtxos = 3;
+
+    // ledger_rows are the local accounting rows used to build the trace,
+    // including rows hidden from the friendly activity feed.
+    repeated ActivityLedgerTrace ledger_rows = 4;
+
+    // notes contains plain-English caveats about best-effort correlation.
+    repeated string notes = 5;
+}
+
+// ActivitySwapTrace is the swap-service snapshot correlated to one wallet
+// activity entry.
+message ActivitySwapTrace {
+    // payment_hash is the Lightning payment hash that identifies the
+    // swap-backed activity.
+    string payment_hash = 1;
+
+    // direction is the raw swapclientrpc.SwapDirection enum name, kept as a
+    // string so this debug surface can expose swap state without importing the
+    // swap service proto into the wallet proto.
+    string direction = 2;
+
+    // state is the raw swapclientrpc.SwapState enum name at inspection time.
+    string state = 3;
+
+    // pending is true while the backing swap state machine is still active.
+    bool pending = 4;
+
+    // amount_sat is the swap amount in satoshis using the swap service's
+    // unsigned amount convention.
+    int64 amount_sat = 5;
+
+    // fee_sat is the fee reported by the swap service for this swap.
+    uint64 fee_sat = 6;
+
+    // invoice is the BOLT-11 invoice associated with the swap when known.
+    string invoice = 7;
+
+    // vhtlc_outpoint is the Ark vHTLC output observed for the swap when known.
+    string vhtlc_outpoint = 8;
+
+    // vhtlc_amount_sat is the amount held by vhtlc_outpoint when known.
+    int64 vhtlc_amount_sat = 9;
+
+    // funding_session_id is the OOR session that funded the swap when known.
+    string funding_session_id = 10;
+
+    // claim_session_id is the OOR session that claimed the swap when known.
+    string claim_session_id = 11;
+
+    // refund_session_id is the OOR session that refunded the swap when known.
+    string refund_session_id = 12;
+
+    // terminal_reason is the swap service's terminal reason string when the
+    // swap reached a failed or intervention state.
+    string terminal_reason = 13;
+
+    // created_at_unix is the swap creation timestamp in unix seconds.
+    int64 created_at_unix = 14;
+
+    // updated_at_unix is the last swap update timestamp in unix seconds.
+    int64 updated_at_unix = 15;
+
+    // deadline_unix is the swap deadline in unix seconds when the swap service
+    // exposes one.
+    int64 deadline_unix = 16;
+
+    // refund_locktime is the absolute locktime after which the swap can be
+    // refunded.
+    uint32 refund_locktime = 17;
+}
+
+// ActivityVTXOTrace describes one VTXO movement correlated to a wallet activity
+// entry.
+message ActivityVTXOTrace {
+    // id is the best available identifier. It is an outpoint when the
+    // source has one, otherwise an OOR session/output identifier.
+    string id = 1;
+
+    // amount_sat is the VTXO amount in satoshis.
+    int64 amount_sat = 2;
+
+    // role is a short technical label such as "spent_input",
+    // "change_output", "materialized_output", or "vhtlc_output".
+    string role = 3;
+
+    // ours is true when the row represents wallet-owned funds.
+    bool ours = 4;
+
+    // source names the local source used to derive the row, such as
+    // "ledger" or "swap".
+    string source = 5;
+
+    // session_id is the OOR session/correlation id when known.
+    string session_id = 6;
+
+    // output_index is set when the source names a specific OOR output
+    // index.
+    uint32 output_index = 7;
+}
+
+// ActivityLedgerTrace describes one local ledger row correlated to a wallet
+// activity entry.
+message ActivityLedgerTrace {
+    // source names the subsystem that produced the row, such as "ledger" or
+    // "boarding_sweep".
+    string source = 1;
+
+    // type is the broad transaction group used by the wallet history query.
+    string type = 2;
+
+    // subtype is the ledger event type or sweep state.
+    string subtype = 3;
+
+    // amount_sat is the row amount in satoshis using the ledger sign
+    // convention.
+    int64 amount_sat = 4;
+
+    // fee_sat is the row's fee contribution in satoshis when the history query
+    // can derive one.
+    int64 fee_sat = 5;
+
+    // created_at_unix is the row creation timestamp in unix seconds.
+    int64 created_at_unix = 6;
+
+    // confirmation_status is the best-known chain confirmation state for the
+    // row, for example "pending", "confirmed", or "recorded".
+    string confirmation_status = 7;
+
+    // description is the local ledger description persisted with the row.
+    string description = 8;
+
+    // entry_id is the local ledger row id when the source is the ledger.
+    int64 entry_id = 9;
+
+    // txid is the associated chain transaction id when known.
+    string txid = 10;
+
+    // debit_account is the local accounting debit account.
+    string debit_account = 11;
+
+    // credit_account is the local accounting credit account.
+    string credit_account = 12;
+
+    // round_id is the Ark round id associated with the row when known.
+    string round_id = 13;
+
+    // session_id is the OOR session/correlation id associated with the row when
+    // known.
+    string session_id = 14;
+
+    // confirmation_height is the confirmed block height when known.
+    int32 confirmation_height = 15;
+
+    // hidden_from_activity is true when WalletService.List suppresses the
+    // row because it is an internal execution leg.
+    bool hidden_from_activity = 16;
+
+    // role is the inspection role inferred for this row.
+    string role = 17;
+
+    // output_index is the transaction output index associated with txid.
+    // A negative value means the source has no output index.
+    int32 output_index = 18;
+}
+
 message DepositRequest {
     // amt_sat_hint is an optional caller hint about the expected deposit
     // amount. The daemon may use it to size internal accounting; the
@@ -515,9 +715,10 @@ message SubscribeWalletRequest {
 }
 
 // WalletEntry is the single flat row type returned by the ACTIVITY view of
-// List and by SubscribeWallet. The shape is deliberately minimal: internal
-// correlators (session_id, round_id, settlement_type, mailbox subtype) are
-// dropped before responding. Power-user detail belongs in daemon logs.
+// List and by SubscribeWallet. The shape is deliberately minimal: display
+// clients should be able to render kind/status/amount/fee/phase directly
+// without parsing daemon-specific swap or ledger internals. Power-user detail
+// belongs in WalletInspectionService.InspectActivity.
 message WalletEntry {
     // id is the stable identifier for this entry. Concretely it is the
     // Lightning payment_hash for swap rows, the leave_job_id (or sweep
@@ -527,8 +728,9 @@ message WalletEntry {
     // kind is the user-visible category.
     EntryKind kind = 2;
 
-    // status collapses every backing FSM into PENDING, COMPLETE, or
-    // FAILED.
+    // status is the coarse user-facing outcome: PENDING, COMPLETE, or
+    // FAILED. It mirrors the backing source's durable state and should
+    // not be reinterpreted by display clients.
     EntryStatus status = 3;
 
     // amount_sat is signed: positive values are incoming to the wallet,
@@ -560,4 +762,122 @@ message WalletEntry {
     // failure_reason is populated only when status is FAILED. It is a
     // single human-readable string, never a coded enum tree.
     string failure_reason = 10;
+
+    // request is the original payment request or destination associated
+    // with the entry, when the backing subsystem persists it. This is
+    // useful for expanded views and inspection; compact clients should
+    // not need to parse it to explain status or lifecycle.
+    WalletEntryRequest request = 11;
+
+    // progress carries lifecycle-specific metadata already normalized by the
+    // wallet service. Clients can render phase_label directly or switch on
+    // phase without inferring meaning from swap/ledger internals.
+    WalletEntryProgress progress = 12;
+}
+
+// WalletEntryRequest describes the user-recognizable request that created a
+// WalletEntry. It is a oneof because each operation is backed by exactly one
+// request shape.
+message WalletEntryRequest {
+    oneof request {
+        // lightning_invoice is populated for Lightning send and receive
+        // entries.
+        LightningInvoiceRequest lightning_invoice = 1;
+
+        // onchain_address is populated for deposit and exit entries.
+        OnchainAddressRequest onchain_address = 2;
+
+        // ark_address is populated for direct Ark send or receive entries.
+        ArkAddressRequest ark_address = 3;
+    }
+}
+
+// LightningInvoiceRequest captures the Lightning request associated with an
+// activity entry.
+message LightningInvoiceRequest {
+    // invoice is the BOLT-11 payment request.
+    string invoice = 1;
+
+    // payment_hash identifies the invoice and remains stable after the
+    // invoice itself is no longer convenient to display.
+    string payment_hash = 2;
+}
+
+// OnchainAddressRequest captures the onchain address associated with an
+// activity entry.
+message OnchainAddressRequest {
+    // address is the bech32 onchain address originally issued or targeted.
+    string address = 1;
+}
+
+// ArkAddressRequest captures the Ark address associated with an activity entry.
+message ArkAddressRequest {
+    // address is the Ark address originally issued or targeted.
+    string address = 1;
+}
+
+// WalletEntryPhase is a coarse, wallet-facing lifecycle phase. It is not a
+// replacement for status; status answers whether the operation is pending,
+// complete, or failed, while phase explains the current backing-system step.
+enum WalletEntryPhase {
+    // WALLET_ENTRY_PHASE_UNSPECIFIED is the proto zero value used when the
+    // backing subsystem has no lifecycle hint.
+    WALLET_ENTRY_PHASE_UNSPECIFIED = 0;
+
+    // WALLET_ENTRY_PHASE_REQUEST_CREATED means the request was created but no
+    // payment has been observed.
+    WALLET_ENTRY_PHASE_REQUEST_CREATED = 1;
+
+    // WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT means the wallet is waiting for an
+    // inbound payment or swap funding.
+    WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT = 2;
+
+    // WALLET_ENTRY_PHASE_PAYMENT_DETECTED means the backing subsystem has
+    // detected a payment but it is not yet settled.
+    WALLET_ENTRY_PHASE_PAYMENT_DETECTED = 3;
+
+    // WALLET_ENTRY_PHASE_SETTLING means the operation is being settled through
+    // Ark, Lightning, or onchain machinery.
+    WALLET_ENTRY_PHASE_SETTLING = 4;
+
+    // WALLET_ENTRY_PHASE_CONFIRMED means the backing operation is confirmed or
+    // otherwise durably complete.
+    WALLET_ENTRY_PHASE_CONFIRMED = 5;
+
+    // WALLET_ENTRY_PHASE_REFUNDING means the operation is currently refunding.
+    WALLET_ENTRY_PHASE_REFUNDING = 6;
+
+    // WALLET_ENTRY_PHASE_REFUNDED means the refund path completed.
+    WALLET_ENTRY_PHASE_REFUNDED = 7;
+
+    // WALLET_ENTRY_PHASE_FAILED means the backing operation reached a terminal
+    // failed state.
+    WALLET_ENTRY_PHASE_FAILED = 8;
+
+    // WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION means an onchain payment has
+    // been detected and is waiting for block confirmation.
+    WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION = 9;
+}
+
+// WalletEntryProgress carries lifecycle metadata normalized by the wallet
+// service.
+message WalletEntryProgress {
+    // phase is the coarse lifecycle phase for this entry.
+    WalletEntryPhase phase = 1;
+
+    // phase_label is a short lowercase label that clients can render as-is
+    // while they migrate to enum-based presentation.
+    string phase_label = 2;
+
+    // payment_hash is populated for Lightning-backed send/recv entries.
+    string payment_hash = 3;
+
+    // txid is populated when the backing ledger row has an onchain txid.
+    string txid = 4;
+
+    // confirmation_height is populated once the source records it.
+    int32 confirmation_height = 5;
+
+    // vtxo_outpoint is populated when a swap observes the Ark vHTLC output.
+    string vtxo_outpoint = 6;
 }

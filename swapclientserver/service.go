@@ -116,8 +116,8 @@ type swapRuntimeClient interface {
 
 	// StartReceiveViaLightning creates a new receive swap and returns the
 	// invoice that callers hand to the remote payer.
-	StartReceiveViaLightning(context.Context,
-		btcutil.Amount) (receiveSwapSession, error)
+	StartReceiveViaLightning(context.Context, btcutil.Amount,
+		string) (receiveSwapSession, error)
 
 	// ResumePayViaLightning reloads a persisted pay swap and returns the
 	// FSM handle that the daemon worker should wait on.
@@ -469,9 +469,9 @@ func (a *swapClientAdapter) StartPayViaLightning(ctx context.Context,
 // StartReceiveViaLightning starts a real sdk/swaps receive session and wraps
 // it with method accessors for the daemon RPC response path.
 func (a *swapClientAdapter) StartReceiveViaLightning(ctx context.Context,
-	amountSat btcutil.Amount) (receiveSwapSession, error) {
+	amountSat btcutil.Amount, memo string) (receiveSwapSession, error) {
 
-	session, err := a.client.StartReceiveViaLightning(ctx, amountSat)
+	session, err := a.client.StartReceiveViaLightning(ctx, amountSat, memo)
 	if err != nil {
 		return nil, err
 	}
@@ -883,6 +883,7 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 		btcutil.Amount(
 			req.GetAmountSat(),
 		),
+		req.GetMemo(),
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start receive "+
@@ -1234,6 +1235,7 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 	return &swapclientrpc.SwapSummary{
 		Direction:        swapDirectionToProto(summary.Direction),
 		PaymentHash:      hex.EncodeToString(summary.PaymentHash[:]),
+		Invoice:          summary.Invoice,
 		State:            swapStateToProto(summary.State),
 		Pending:          summary.Pending,
 		AmountSat:        summary.AmountSat,

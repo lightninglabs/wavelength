@@ -25,7 +25,7 @@ The CLI surface is split into three tiers:
 | `unlock` | `walletrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
 | `send <dest>` | `walletrpc.Send` | Outbound payment. `--offchain` (default) for Lightning invoice, `--onchain` for cooperative leave. No prefix sniff |
 | `recv` | `walletrpc.Recv` / `walletrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
-| `list` | `walletrpc.List` | Unified wallet view. `--view {activity,vtxos,onchain}` selects the slice. `--pending` and `--kind` apply to activity |
+| `activity` | `walletrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
 | `balance` | `walletrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
 | `exit --outpoint TXID:VOUT` | `walletrpc.Exit` | Trigger a unilateral exit (proxies Unroll) |
 | `exit status --outpoint TXID:VOUT` | `walletrpc.ExitStatus` | Query an exit job's status (proxies GetUnrollStatus) |
@@ -53,7 +53,7 @@ who want direct access.
 | `ark board` | `Board` | Trigger boarding with confirmed UTXOs |
 | `ark sweep [list]` | `SweepBoardingUTXOs` / `ListBoardingSweeps` | Boarding-timeout sweeps |
 | `ark fees {estimate,history}` | `EstimateFee` / `GetFeeHistory` | Fee estimation and history |
-| `ark listtransactions` | `ListTransactions` | Raw paginated transaction history (superseded by `list --view onchain` for the wallet shape) |
+| `ark listtransactions` | `ListTransactions` | Raw paginated transaction history |
 | `ark send {inround,oor}` | `SendVTXO` / `SendOOR` | Raw in-round / OOR send (superseded by `send` for the wallet shape) |
 
 ### `swap.*` advanced commands (swapruntime build tag)

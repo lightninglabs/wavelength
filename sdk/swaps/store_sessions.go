@@ -270,6 +270,7 @@ func paySummaryFromRow(row swapsqlc.PaySwap) (SwapSummary, error) {
 	return SwapSummary{
 		Direction:        SwapDirectionPay,
 		PaymentHash:      paymentHash,
+		Invoice:          row.Invoice,
 		State:            state.String(),
 		Pending:          !state.IsTerminal(),
 		AmountSat:        row.AmountSat,
@@ -303,6 +304,7 @@ func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
 	return SwapSummary{
 		Direction:      SwapDirectionReceive,
 		PaymentHash:    paymentHash,
+		Invoice:        row.Invoice,
 		State:          state.String(),
 		Pending:        !state.IsTerminal(),
 		AmountSat:      row.AmountSat,

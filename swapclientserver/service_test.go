@@ -99,6 +99,8 @@ func TestStartPayReturnsSummaryAndStartsWorker(t *testing.T) {
 	require.Equal(t, 1, fakeClient.payResumeCount(payHash))
 }
 
+// TestStartReceiveReturnsInvoiceAndStartsWorker verifies receive startup
+// returns invoice metadata, forwards the memo, and starts the resume worker.
 func TestStartReceiveReturnsInvoiceAndStartsWorker(t *testing.T) {
 	t.Parallel()
 
@@ -122,6 +124,7 @@ func TestStartReceiveReturnsInvoiceAndStartsWorker(t *testing.T) {
 	resp, err := service.StartReceive(
 		t.Context(), &swapclientrpc.StartReceiveRequest{
 			AmountSat: 50_000,
+			Memo:      "coffee",
 		},
 	)
 	require.NoError(t, err)
@@ -132,6 +135,7 @@ func TestStartReceiveReturnsInvoiceAndStartsWorker(t *testing.T) {
 
 	fakeClient.awaitReceiveResume(t, receiveHash)
 	require.Equal(t, 1, fakeClient.startReceiveCount())
+	require.Equal(t, "coffee", fakeClient.startReceiveMemo)
 	require.Equal(t, 1, fakeClient.receiveResumeCount(receiveHash))
 }
 
@@ -191,6 +195,8 @@ func TestStartRejectsReservedIdempotencyKey(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestSwapSummaryToProtoCopiesDurableFields verifies every durable swap summary
+// field copied into the RPC response.
 func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 	t.Parallel()
 
@@ -202,6 +208,7 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 	got := swapSummaryToProto(swaps.SwapSummary{
 		Direction:        swaps.SwapDirectionReceive,
 		PaymentHash:      hash,
+		Invoice:          "lnbc1summary",
 		State:            "Completed",
 		Pending:          false,
 		AmountSat:        1_000,
@@ -224,6 +231,7 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 		got.GetDirection(),
 	)
 	require.Equal(t, hex.EncodeToString(hash[:]), got.GetPaymentHash())
+	require.Equal(t, "lnbc1summary", got.GetInvoice())
 	require.Equal(
 		t, swapclientrpc.SwapState_SWAP_STATE_COMPLETED, got.GetState(),
 	)
@@ -484,6 +492,7 @@ type fakeSwapRuntime struct {
 
 	startPayCalls      int
 	startReceiveCalls  int
+	startReceiveMemo   string
 	getSummaryCalls    int
 	listPendingOnly    []bool
 	payResumeCalls     map[lntypes.Hash]int
@@ -517,13 +526,14 @@ func (f *fakeSwapRuntime) StartPayViaLightning(context.Context, string,
 	return f.startPaySession, nil
 }
 
-func (f *fakeSwapRuntime) StartReceiveViaLightning(context.Context,
-	btcutil.Amount) (receiveSwapSession, error) {
+func (f *fakeSwapRuntime) StartReceiveViaLightning(_ context.Context,
+	_ btcutil.Amount, memo string) (receiveSwapSession, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.startReceiveCalls++
+	f.startReceiveMemo = memo
 	if f.startReceiveSession == nil {
 		return nil, errors.New("start receive session not configured")
 	}

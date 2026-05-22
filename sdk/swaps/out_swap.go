@@ -253,6 +253,7 @@ type ReceiveSession struct {
 
 	client         *SwapClient
 	amountSat      btcutil.Amount
+	memo           string
 	state          ReceiveState
 	deadline       time.Time
 	createdAt      time.Time
@@ -387,7 +388,7 @@ func (c *SwapClient) ReceiveViaLightning(ctx context.Context,
 // StartReceiveViaLightning prepares a Lightning->Ark receive flow and returns
 // the invoice plus claim context needed to complete it after payment begins.
 func (c *SwapClient) StartReceiveViaLightning(ctx context.Context,
-	amountSat btcutil.Amount) (*ReceiveSession, error) {
+	amountSat btcutil.Amount, memo ...string) (*ReceiveSession, error) {
 
 	if err := validateSatoshiAmount(
 		amountSat, "receive amount",
@@ -398,6 +399,7 @@ func (c *SwapClient) StartReceiveViaLightning(ctx context.Context,
 	session := &ReceiveSession{
 		client:    c,
 		amountSat: amountSat,
+		memo:      receiveInvoiceMemo(memo),
 		state:     ReceiveStateCreated,
 	}
 
@@ -408,6 +410,15 @@ func (c *SwapClient) StartReceiveViaLightning(ctx context.Context,
 	}
 
 	return session, nil
+}
+
+// receiveInvoiceMemo returns the optional invoice memo passed by the caller.
+func receiveInvoiceMemo(memo []string) string {
+	if len(memo) == 0 {
+		return ""
+	}
+
+	return memo[0]
 }
 
 // Wait blocks until the swap server funds the expected vHTLC, then claims it
@@ -633,7 +644,7 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	)
 
 	inv, hash, err := s.client.invoiceGen.CreateInvoiceWithKey(
-		ctx, s.amountSat, "swap", hint, expiry, authKey, &preimage,
+		ctx, s.amountSat, s.memo, hint, expiry, authKey, &preimage,
 	)
 	if err != nil {
 		return fmt.Errorf("create invoice: %w", err)

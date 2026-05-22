@@ -59,6 +59,14 @@ func TestServiceDepositReturnsAddress(t *testing.T) {
 		t, int64(50_000), resp.GetEntry().GetAmountSat(),
 		"deposit hint must surface on the initial entry",
 	)
+	require.Equal(
+		t, "bcrt1qboardingaddr",
+		resp.GetEntry().GetRequest().GetOnchainAddress().GetAddress(),
+	)
+	require.Equal(
+		t, "address_issued",
+		resp.GetEntry().GetProgress().GetPhaseLabel(),
+	)
 }
 
 // TestServiceBalanceProjectsDaemonGetBalance confirms Balance pulls

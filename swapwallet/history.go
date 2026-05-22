@@ -4,9 +4,12 @@ package swapwallet
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
@@ -104,14 +107,19 @@ func (h *history) listActivity(ctx context.Context,
 		return nil, err
 	}
 
-	var entries []*walletrpc.WalletEntry
+	var (
+		entries          []*walletrpc.WalletEntry
+		swapEntries      []*walletrpc.WalletEntry
+		swapCorrelations swapOORCorrelations
+	)
 	swapEntryIDs := make(map[string]struct{})
 
 	if h.shouldInclude(kindFilter, walletrpc.EntryKind_ENTRY_KIND_SEND) ||
 		h.shouldInclude(kindFilter,
 			walletrpc.EntryKind_ENTRY_KIND_RECV) {
 
-		swapEntries, err := h.collectSwapEntries(
+		var err error
+		swapEntries, swapCorrelations, err = h.collectSwapEntries(
 			ctx, req.GetPendingOnly(),
 		)
 		if err != nil {
@@ -131,7 +139,7 @@ func (h *history) listActivity(ctx context.Context,
 			walletrpc.EntryKind_ENTRY_KIND_SEND) {
 
 		ledgerEntries, err := h.collectLedgerEntries(
-			ctx, req.GetOffset(), limit,
+			ctx, req.GetOffset(), limit, swapCorrelations,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("collect ledger entries: %w",
@@ -141,8 +149,18 @@ func (h *history) listActivity(ctx context.Context,
 		entries = append(entries, ledgerEntries...)
 	}
 
-	// Apply wallet-local deadline overlays BEFORE filtering so a stuck
-	// non-swap entry appears as FAILED in the wallet view even when the
+	if h.shouldInclude(kindFilter, walletrpc.EntryKind_ENTRY_KIND_DEPOSIT) {
+		pendingBoarding, err := h.collectPendingBoardingEntries(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("collect pending boarding "+
+				"entries: %w", err)
+		}
+
+		entries = append(entries, pendingBoarding...)
+	}
+
+	// Apply wallet-level overlay (deadline timeout) BEFORE filtering so
+	// a stuck entry appears as FAILED in the wallet view even when the
 	// caller asked for pending_only=false.
 	h.applyOverlays(entries, swapEntryIDs)
 
@@ -253,10 +271,10 @@ func (h *history) listOnchain(ctx context.Context, req *walletrpc.ListRequest) (
 // SEND, receive rows become RECV; the underlying SwapDirection enum drives
 // the mapping.
 func (h *history) collectSwapEntries(ctx context.Context, pendingOnly bool) (
-	[]*walletrpc.WalletEntry, error) {
+	[]*walletrpc.WalletEntry, swapOORCorrelations, error) {
 
 	if h.deps.SwapService == nil {
-		return nil, nil
+		return nil, swapOORCorrelations{}, nil
 	}
 
 	resp, err := h.deps.SwapService.ListSwaps(
@@ -265,21 +283,18 @@ func (h *history) collectSwapEntries(ctx context.Context, pendingOnly bool) (
 		},
 	)
 	if err != nil {
-		return nil, err
+		return nil, swapOORCorrelations{}, err
 	}
 
 	out := make([]*walletrpc.WalletEntry, 0, len(resp.GetSwaps()))
 	for _, s := range resp.GetSwaps() {
 		// The wallet layer does not surface vHTLC outpoints or
 		// session IDs; counterparty for swaps is the payment hash
-		// (truncated). Note is empty here because the swap
-		// subsystem does not persist the caller's note.
-		// History lists swaps in both directions; let direction
-		// drive the kind here (callers that own the SEND/RECV
-		// intent pass an explicit override on submit).
+		// (truncated). History lists swaps in both directions; let
+		// direction drive the kind here (callers that own the
+		// SEND/RECV intent pass an explicit override on submit).
 		entry := swapEntryFromSummary(
-			s, "", s.GetPaymentHash(),
-			walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+			s, "", "", walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 		)
 		// entry.Id is the swap row's payment_hash — that is the
 		// stable wallet-layer canonical id for SEND-invoice and
@@ -287,7 +302,47 @@ func (h *history) collectSwapEntries(ctx context.Context, pendingOnly bool) (
 		out = append(out, entry)
 	}
 
-	return out, nil
+	return out, swapOORCorrelationsFromSwaps(resp.GetSwaps()), nil
+}
+
+// collectPendingBoardingEntries adds an aggregate row for funds seen by the
+// on-chain wallet but not yet confirmed into a ledger-backed boarding deposit.
+// Once confirmed, ListTransactions owns the durable row and this synthetic
+// pending entry naturally disappears.
+func (h *history) collectPendingBoardingEntries(ctx context.Context) (
+	[]*walletrpc.WalletEntry, error) {
+
+	if h.deps.RPCServer == nil {
+		return nil, nil
+	}
+
+	resp, err := h.deps.RPCServer.GetBalance(
+		ctx, &daemonrpc.GetBalanceRequest{},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if resp.GetBoardingUnconfirmedSat() <= 0 {
+		return nil, nil
+	}
+
+	now := nowUnix()
+
+	return []*walletrpc.WalletEntry{
+		{
+			Id:            "boarding-unconfirmed",
+			Kind:          walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+			Status:        walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+			AmountSat:     resp.GetBoardingUnconfirmedSat(),
+			Counterparty:  "boarding",
+			CreatedAtUnix: now,
+			UpdatedAtUnix: now,
+			Progress: &walletrpc.WalletEntryProgress{
+				Phase:      walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION,
+				PhaseLabel: "waiting_for_confirmation",
+			},
+		},
+	}, nil
 }
 
 // collectLedgerEntries reads the daemon's unified ledger+sweep page and
@@ -304,7 +359,8 @@ func (h *history) collectSwapEntries(ctx context.Context, pendingOnly bool) (
 // history returns no ledger rows because the daemon got Limit=limit
 // and Offset=0 and only the first `limit` rows ever came back.
 func (h *history) collectLedgerEntries(ctx context.Context, offset,
-	limit uint32) ([]*walletrpc.WalletEntry, error) {
+	limit uint32, correlations swapOORCorrelations) (
+	[]*walletrpc.WalletEntry, error) {
 
 	if h.deps.RPCServer == nil {
 		return nil, nil
@@ -327,8 +383,13 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 		return nil, err
 	}
 
+	hidden := internalOORSends(resp.GetTransactions(), correlations)
 	out := make([]*walletrpc.WalletEntry, 0, len(resp.GetTransactions()))
 	for _, t := range resp.GetTransactions() {
+		if _, ok := hidden[t.GetEntryId()]; ok {
+			continue
+		}
+
 		entry, ok := walletEntryFromLedgerRow(t)
 		if !ok {
 			continue
@@ -341,6 +402,164 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 	}
 
 	return out, nil
+}
+
+// swapOORCorrelations keeps the swap-side session metadata needed to hide
+// internal OOR ledger legs without matching by amount alone.
+type swapOORCorrelations struct {
+	payAmountsByFundingSession map[string]map[int64]int
+	claimSessions              map[string]struct{}
+}
+
+// swapOORCorrelationsFromSwaps indexes swap session ids by the internal OOR leg
+// they explain. Pay swaps hide their funding input only when the same funding
+// session returns change and the delta equals the swap amount. Receive swaps
+// hide their claim input only when the same claim session materializes a wallet
+// VTXO.
+func swapOORCorrelationsFromSwaps(
+	swaps []*swapclientrpc.SwapSummary) swapOORCorrelations {
+
+	out := swapOORCorrelations{
+		payAmountsByFundingSession: make(map[string]map[int64]int),
+		claimSessions:              make(map[string]struct{}),
+	}
+
+	for _, swap := range swaps {
+		switch swap.GetDirection() {
+		case swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY:
+			session := strings.ToLower(swap.GetFundingSessionId())
+			amount := swap.GetAmountSat()
+			if session == "" || amount <= 0 {
+				continue
+			}
+			if out.payAmountsByFundingSession[session] == nil {
+				out.payAmountsByFundingSession[session] = make(
+					map[int64]int,
+				)
+			}
+			out.payAmountsByFundingSession[session][amount]++
+
+		case swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE:
+			session := strings.ToLower(swap.GetClaimSessionId())
+			if session == "" {
+				continue
+			}
+			out.claimSessions[session] = struct{}{}
+		}
+	}
+
+	return out
+}
+
+// internalOORSends returns ledger entry IDs for OOR send legs that are internal
+// to swap execution. It only hides rows when the ledger session lines up with
+// structured swap metadata, which keeps two same-amount swaps from racing each
+// other through amount-only matching.
+func internalOORSends(rows []*daemonrpc.TransactionHistoryEntry,
+	correlations swapOORCorrelations) map[int64]struct{} {
+
+	receivedBySession := make(map[string]int64)
+	for _, row := range rows {
+		session, ok := oorReceiveSessionID(row)
+		if !ok {
+			continue
+		}
+
+		receivedBySession[session] += row.GetAmountSat()
+	}
+
+	hidden := make(map[int64]struct{})
+	for _, row := range rows {
+		session, ok := oorSendSessionID(row)
+		if !ok {
+			continue
+		}
+
+		received := receivedBySession[session]
+		if received == 0 {
+			continue
+		}
+
+		switch delta := row.GetAmountSat() - received; {
+		case delta == 0 && sessionInSet(
+			correlations.claimSessions, session,
+		):
+
+			hidden[row.GetEntryId()] = struct{}{}
+
+		case delta > 0:
+			amounts := correlations.payAmountsByFundingSession[session]
+			if amounts[delta] == 0 {
+				continue
+			}
+			hidden[row.GetEntryId()] = struct{}{}
+			amounts[delta]--
+		}
+	}
+
+	return hidden
+}
+
+// sessionInSet reports whether a normalized OOR session id appears in set.
+func sessionInSet(set map[string]struct{}, session string) bool {
+	_, ok := set[session]
+
+	return ok
+}
+
+// oorSendSessionID extracts the session id from a ledger row that spends a VTXO
+// through OOR.
+func oorSendSessionID(row *daemonrpc.TransactionHistoryEntry) (string, bool) {
+	if row == nil || row.GetType() != "oor" ||
+		row.GetSubtype() != ledger.EventVTXOSent ||
+		row.GetDebitAccount() != ledger.AccountTransfersOut ||
+		row.GetCreditAccount() != ledger.AccountVTXOBalance ||
+		row.GetAmountSat() <= 0 || len(row.GetSessionId()) == 0 {
+		return "", false
+	}
+
+	hash, err := chainhash.NewHash(row.GetSessionId())
+	if err != nil {
+		return "", false
+	}
+
+	return hash.String(), true
+}
+
+// oorReceiveSessionID extracts the session id from a ledger row that receives a
+// VTXO through OOR.
+func oorReceiveSessionID(row *daemonrpc.TransactionHistoryEntry) (string,
+	bool) {
+
+	session, _, ok := oorReceiveRef(row)
+
+	return session, ok
+}
+
+// oorReceiveRef extracts the OOR output reference from structured ledger
+// fields.
+func oorReceiveRef(row *daemonrpc.TransactionHistoryEntry) (string, uint32,
+	bool) {
+
+	if row == nil || row.GetSubtype() != ledger.EventVTXOReceived ||
+		row.GetDebitAccount() != ledger.AccountVTXOBalance ||
+		row.GetCreditAccount() != ledger.AccountTransfersIn ||
+		row.GetAmountSat() <= 0 {
+		return "", 0, false
+	}
+
+	session := strings.ToLower(row.GetTxid())
+	if len(session) != 64 {
+		return "", 0, false
+	}
+	if _, err := hex.DecodeString(session); err != nil {
+		return "", 0, false
+	}
+	if row.GetOutputIndex() < 0 {
+		return "", 0, false
+	}
+
+	return session, uint32(row.GetOutputIndex()), true
 }
 
 // applyOverlays elevates entries to FAILED in place when the runtime has
@@ -515,47 +734,43 @@ func walletEntryFromLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 	return &walletrpc.WalletEntry{
 		Id:            id,
 		Kind:          kind,
-		Status:        statusForLedgerRow(t, kind),
+		Status:        statusForLedgerRow(t),
 		AmountSat:     amount,
 		FeeSat:        t.GetFeeSat(),
 		Counterparty:  ledgerCounterparty(t, kind),
 		CreatedAtUnix: t.GetCreatedAtUnixS(),
 		UpdatedAtUnix: t.GetCreatedAtUnixS(),
+		Progress:      progressFromLedgerRow(t),
 	}, true
 }
 
-// statusForLedgerRow folds the ledger row's confirmation_status and the
-// wallet-facing entry kind into the flat EntryStatus the API surfaces.
-// Most rows are a straight projection of the chain confirmation
-// signal, but DEPOSIT rows from the `wallet_utxo_created` event are a
-// special case: chain confirmation of the boarding UTXO only means the
-// funds landed on-chain, NOT that they have been boarded into a live
-// VTXO. Reporting COMPLETE there is misleading — under
-// eagerroundjoin=false the deposit can sit forever in that state
-// while remaining unspendable through any in-Ark flow. Keep DEPOSIT
-// rows backed by wallet_utxo_created at PENDING until a follow-up
-// boarding_fee_paid (or equivalent "boarded" ledger entry) flips
-// them to COMPLETE.
-func statusForLedgerRow(t *daemonrpc.TransactionHistoryEntry,
-	kind walletrpc.EntryKind) walletrpc.EntryStatus {
+// statusForLedgerRow folds the ledger row's confirmation_status into the
+// flat EntryStatus the API surfaces. Detailed lifecycle context stays in
+// WalletEntry.progress and InspectActivity; the activity table should not
+// reinterpret confirmed ledger rows as pending.
+func statusForLedgerRow(
+	t *daemonrpc.TransactionHistoryEntry) walletrpc.EntryStatus {
 
-	confirmation := statusFromLedgerConfirmation(t.GetConfirmationStatus())
+	return statusFromLedgerConfirmation(t.GetConfirmationStatus())
+}
 
-	if kind == walletrpc.EntryKind_ENTRY_KIND_DEPOSIT &&
-		t.GetSubtype() == ledger.EventWalletUTXOCreated &&
-		confirmation == walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE {
+// progressFromLedgerRow projects ledger confirmation metadata onto
+// WalletEntryProgress.
+func progressFromLedgerRow(
+	t *daemonrpc.TransactionHistoryEntry) *walletrpc.WalletEntryProgress {
 
-		// TODO(#503 follow-up): flip back to COMPLETE once the
-		// ledger emits a boarding_fee_paid (or equivalent
-		// "boarded into a round" entry) for this deposit. Until
-		// that signal exists, DEPOSIT rows backed by
-		// wallet_utxo_created are stuck at PENDING here — which
-		// is correct ("on-chain, not yet boarded") but loses the
-		// eventual "boarded" transition.
-		return walletrpc.EntryStatus_ENTRY_STATUS_PENDING
+	if t == nil {
+		return nil
 	}
 
-	return confirmation
+	phase, label := phaseFromLedgerConfirmation(t.GetConfirmationStatus())
+
+	return &walletrpc.WalletEntryProgress{
+		Phase:              phase,
+		PhaseLabel:         label,
+		Txid:               t.GetTxid(),
+		ConfirmationHeight: t.GetConfirmationHeight(),
+	}
 }
 
 // classifyLedgerRow maps a ledger row's type+subtype+account triple onto
@@ -610,6 +825,26 @@ func statusFromLedgerConfirmation(s string) walletrpc.EntryStatus {
 
 	default:
 		return walletrpc.EntryStatus_ENTRY_STATUS_PENDING
+	}
+}
+
+// phaseFromLedgerConfirmation maps the ledger confirmation string to the
+// normalized wallet phase and label.
+func phaseFromLedgerConfirmation(s string) (walletrpc.WalletEntryPhase,
+	string) {
+
+	switch s {
+	case "confirmed", "swept":
+		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+			"confirmed"
+
+	case "failed":
+		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED,
+			"failed"
+
+	default:
+		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_PAYMENT_DETECTED,
+			"payment_detected"
 	}
 }
 

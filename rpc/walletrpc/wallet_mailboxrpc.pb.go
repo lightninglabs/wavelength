@@ -414,3 +414,59 @@ func (c *WalletServiceMailboxClient) SubscribeWallet(ctx context.Context, req *S
 
 	return resp, nil
 }
+
+// WalletInspectionServiceMailboxClient is a typed mailbox RPC client for WalletInspectionService.
+type WalletInspectionServiceMailboxClient struct {
+	// C is the underlying RPC-over-mailbox runtime client.
+	C rpc.RPCClient
+}
+
+// NewWalletInspectionServiceMailboxClient creates a typed mailbox client.
+func NewWalletInspectionServiceMailboxClient(c rpc.RPCClient) *WalletInspectionServiceMailboxClient {
+	return &WalletInspectionServiceMailboxClient{
+		C: c,
+	}
+}
+
+// WalletInspectionServiceMailboxServer is the mailbox server interface for WalletInspectionService.
+type WalletInspectionServiceMailboxServer interface {
+	// InspectActivity handles InspectActivity.
+	InspectActivity(ctx context.Context, req *InspectActivityRequest) (*InspectActivityResponse, error)
+}
+
+// RegisterWalletInspectionServiceMailboxServer registers handlers for WalletInspectionService.
+func RegisterWalletInspectionServiceMailboxServer(r rpc.Router, impl WalletInspectionServiceMailboxServer) {
+	r.Handle("walletrpc.WalletInspectionService", "InspectActivity", func() proto.Message {
+		return &InspectActivityRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*InspectActivityRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.InspectActivity(ctx, req)
+	})
+}
+
+// InspectActivity calls the InspectActivity RPC.
+func (c *WalletInspectionServiceMailboxClient) InspectActivity(ctx context.Context, req *InspectActivityRequest, opts ...rpc.RPCOptions) (*InspectActivityResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "walletrpc.WalletInspectionService",
+		Method:  "InspectActivity",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(InspectActivityResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}

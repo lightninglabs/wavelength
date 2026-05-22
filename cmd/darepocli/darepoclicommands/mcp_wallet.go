@@ -29,7 +29,7 @@ func registerMCPWalletTools(s *mcp.Server,
 }
 
 // registerMCPWalletQueryTools registers the read-only wallet verbs
-// (balance, list). These never move funds and need no dry-run rail.
+// (balance, activity). These never move funds and need no dry-run rail.
 func registerMCPWalletQueryTools(s *mcp.Server,
 	client walletrpc.WalletServiceClient) {
 
@@ -53,23 +53,20 @@ func registerMCPWalletQueryTools(s *mcp.Server,
 		return r, nil, err
 	})
 
-	type listArgs struct {
-		View        string   `json:"view,omitempty" jsonschema:"slice of state: activity (default), vtxos, or onchain"`        //nolint:ll
-		PendingOnly bool     `json:"pending_only,omitempty" jsonschema:"activity view only: filter to in-flight entries"`      //nolint:ll
-		Kinds       []string `json:"kinds,omitempty" jsonschema:"activity view only: kind filter (send, recv, deposit, exit)"` //nolint:ll
-		Limit       uint32   `json:"limit,omitempty" jsonschema:"page size; zero uses daemon default"`                         //nolint:ll
-		Offset      uint32   `json:"offset,omitempty" jsonschema:"pagination offset"`                                          //nolint:ll
+	type activityArgs struct {
+		PendingOnly bool     `json:"pending_only,omitempty" jsonschema:"filter to in-flight entries"`      //nolint:ll
+		Kinds       []string `json:"kinds,omitempty" jsonschema:"kind filter (send, recv, deposit, exit)"` //nolint:ll
+		Limit       uint32   `json:"limit,omitempty" jsonschema:"page size; zero uses daemon default"`     //nolint:ll
+		Offset      uint32   `json:"offset,omitempty" jsonschema:"pagination offset"`                      //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "list",
-		Description: "List wallet activity, VTXOs, or onchain " +
-			"history (view selects the slice)",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args listArgs) (
-		*mcp.CallToolResult, any, error) {
+		Name:        "activity",
+		Description: "Show wallet activity",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest,
+		args activityArgs) (*mcp.CallToolResult, any, error) {
 
-		req, err := buildWalletListRequest(
-			args.View, args.PendingOnly, args.Kinds, args.Limit,
-			args.Offset,
+		req, err := buildWalletActivityRequest(
+			args.PendingOnly, args.Kinds, args.Limit, args.Offset,
 		)
 		if err != nil {
 			return nil, nil, err
@@ -240,35 +237,17 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 	})
 }
 
-// buildWalletListRequest translates MCP listArgs into a ListRequest,
-// applying the same view / filter combinator checks the CLI enforces
-// so the two surfaces stay in lockstep.
-func buildWalletListRequest(view string, pendingOnly bool, kinds []string,
-	limit, offset uint32) (*walletrpc.ListRequest, error) {
-
-	v, err := parseListView(view)
-	if err != nil {
-		return nil, err
-	}
+// buildWalletActivityRequest translates MCP activityArgs into a ListRequest,
+// applying the same activity filter parsing the CLI uses so the two
+// surfaces stay in lockstep.
+func buildWalletActivityRequest(pendingOnly bool, kinds []string, limit,
+	offset uint32) (*walletrpc.ListRequest, error) {
 
 	req := &walletrpc.ListRequest{
-		View:        v,
+		View:        walletrpc.ListView_LIST_VIEW_ACTIVITY,
 		PendingOnly: pendingOnly,
 		Limit:       limit,
 		Offset:      offset,
-	}
-
-	// Reject activity-only filters on other views so the agent can't
-	// silently no-op a filter (same invariant the CLI enforces).
-	if v != walletrpc.ListView_LIST_VIEW_ACTIVITY {
-		if pendingOnly {
-			return nil, fmt.Errorf("pending_only applies only to " +
-				"the activity view")
-		}
-		if len(kinds) > 0 {
-			return nil, fmt.Errorf("kinds applies only to the " +
-				"activity view")
-		}
 	}
 
 	for _, k := range kinds {

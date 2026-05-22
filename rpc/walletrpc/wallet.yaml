@@ -36,3 +36,6 @@ http:
     - selector: walletrpc.WalletService.SubscribeWallet
       post: /v1/wallet/subscribe
       body: "*"
+    - selector: walletrpc.WalletInspectionService.InspectActivity
+      post: /v1/wallet/inspect/activity
+      body: "*"

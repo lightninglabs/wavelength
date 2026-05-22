@@ -459,6 +459,7 @@ func transactionHistoryRowToProto(row *sqlc.ListTransactionHistoryRow) (
 		RoundId:            row.RoundID,
 		SessionId:          row.SessionID,
 		ConfirmationHeight: row.ConfirmationHeight,
+		OutputIndex:        row.OutputIndex,
 	}, nil
 }
 
