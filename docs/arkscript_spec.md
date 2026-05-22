@@ -379,10 +379,23 @@ unilateral exits gated by a CSV delay:
 | 3 | RefundWithoutReceiver           | `Condition{CLTV(RefundLocktime), Multisig{sender, server}}`               |
 | 4 | UnilateralClaim                 | `CSV{UnilateralClaimDelay, Condition{PaymentHash, Multisig{receiver}}}`   |
 | 5 | UnilateralRefund                | `CSV{UnilateralRefundDelay, Multisig{sender, receiver}}`                  |
-| 6 | UnilateralRefundWithoutReceiver | `CSV{UnilateralRefundWithoutReceiverDelay, Multisig{sender}}`             |
+| 6 | UnilateralRefundWithoutReceiver | `CSV{UnilateralRefundWithoutReceiverDelay, Condition{CLTV(RefundLocktime), Multisig{sender}}}` |
 
 Full cross-party behaviour is documented inline at
 `lib/arkscript/vhtlc.go` — this spec only enumerates the shape.
+
+Leaf 6 gates the sender's unilateral refund on both the Ark CSV *and* the
+invoice/vHTLC CLTV. The CLTV gate is the cross-protocol safety property
+that keeps the sender from racing a still-pending Lightning payment: if the
+invoice expiry has not been reached, the receiver may still claim with the
+preimage on either Ark or Lightning, and a sender who could exit before
+that deadline would be able to double-spend the funds the receiver has
+already committed to. The CSV alone enforces only that recovery follows the
+descriptor's local timeout — it does not bind the sender to the Lightning
+HTLC expiry. Pairing CSV and CLTV mirrors the
+[swapdk-server](https://github.com/lightninglabs/swapdk-server) sender-side
+expectation that the unilateral refund-without-receiver leaf is reachable
+only after the invoice has expired.
 
 ---
 
