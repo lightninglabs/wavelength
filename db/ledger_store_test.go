@@ -234,13 +234,18 @@ func TestLedgerStoreTransactionHistoryWalletUTXOCreatedChainFields(
 	t.Parallel()
 
 	ctx := t.Context()
-	store := newLedgerStoreForTest(t)
+	store, db := newLedgerStoreAndDBForTest(t)
 
 	outpointHash := testHash32(0x42)
 	const (
 		outpointIndex      = uint32(7)
 		confirmationHeight = int32(304_081)
+		depositAmount      = int64(100_001)
+		vtxoAmount         = int64(99_746)
+		createdAt          = int64(1_700_000_501)
 	)
+	roundID := "019e4bc6-d95f-7caf-93c3-409e854bbb9f"
+	pkScript := testBytes(34, 0x01)
 
 	require.NoError(
 		t,
@@ -248,10 +253,10 @@ func TestLedgerStoreTransactionHistoryWalletUTXOCreatedChainFields(
 			ctx, ledger.LedgerEntry{
 				DebitAccount:   ledger.AccountWalletBalance,
 				CreditAccount:  ledger.AccountOpeningBalance,
-				AmountSat:      100_001,
+				AmountSat:      depositAmount,
 				EventType:      ledger.EventWalletUTXOCreated,
 				Description:    "boarding deposit",
-				CreatedAt:      1_700_000_501,
+				CreatedAt:      createdAt,
 				IdempotencyKey: testBytes(36, 0x51),
 				ChainTxid:      outpointHash[:],
 				ChainVout: testInt32Ptr(
@@ -260,6 +265,80 @@ func TestLedgerStoreTransactionHistoryWalletUTXOCreatedChainFields(
 				ConfirmationHeight: testInt32Ptr(
 					confirmationHeight,
 				),
+			},
+		),
+	)
+
+	require.NoError(
+		t,
+		db.InsertBoardingAddress(
+			ctx, sqlc.InsertBoardingAddressParams{
+				PkScript:       pkScript,
+				AddressString:  "bcrt1ptest",
+				ClientPubkey:   testBytes(33, 0x11),
+				OperatorPubkey: testBytes(33, 0x22),
+				ExitDelay:      144,
+				CreationTime:   createdAt,
+			},
+		),
+	)
+	require.NoError(
+		t,
+		db.InsertBoardingIntent(
+			ctx, sqlc.InsertBoardingIntentParams{
+				OutpointHash:   outpointHash[:],
+				OutpointIndex:  int32(outpointIndex),
+				PkScript:       pkScript,
+				Amount:         depositAmount,
+				ConfHeight:     confirmationHeight,
+				ConfHash:       testBytes(32, 0x02),
+				ConfTx:         testBytes(64, 0x03),
+				TxProof:        testBytes(64, 0x04),
+				Status:         "confirmed",
+				CreationTime:   createdAt,
+				LastUpdateTime: createdAt,
+			},
+		),
+	)
+	require.NoError(
+		t,
+		db.InsertRound(
+			ctx, sqlc.InsertRoundParams{
+				RoundID:        roundID,
+				Status:         "confirmed",
+				CreationTime:   createdAt,
+				LastUpdateTime: createdAt,
+			},
+		),
+	)
+	require.NoError(
+		t,
+		db.InsertRoundBoardingIntent(
+			ctx, sqlc.InsertRoundBoardingIntentParams{
+				RoundID:       roundID,
+				OutpointHash:  outpointHash[:],
+				OutpointIndex: int32(outpointIndex),
+				ClientKey:     testBytes(33, 0x11),
+				OperatorKey:   testBytes(33, 0x22),
+				ExitDelay:     144,
+			},
+		),
+	)
+	require.NoError(
+		t,
+		db.InsertVTXO(
+			ctx, sqlc.InsertVTXOParams{
+				OutpointHash:   testBytes(32, 0x31),
+				OutpointIndex:  0,
+				RoundID:        roundID,
+				Amount:         vtxoAmount,
+				PkScript:       testBytes(34, 0x41),
+				Expiry:         144,
+				ClientPubkey:   testBytes(33, 0x51),
+				OperatorPubkey: testBytes(33, 0x61),
+				CommitmentTxid: testBytes(32, 0x71),
+				CreationTime:   createdAt,
+				LastUpdateTime: createdAt,
 			},
 		),
 	)
@@ -275,6 +354,181 @@ func TestLedgerStoreTransactionHistoryWalletUTXOCreatedChainFields(
 	require.Equal(t, "confirmed", row.Status)
 	require.Equal(t, outpointHash[:], row.Txid)
 	require.Equal(t, confirmationHeight, row.ConfirmationHeight)
+	require.Equal(t, depositAmount-vtxoAmount, row.FeeSat)
+}
+
+// TestLedgerStoreTransactionHistoryWalletUTXOCreatedMultiInputFee verifies
+// multi-input boarding rounds allocate the aggregate round fee across input
+// deposit rows proportionally for display.
+func TestLedgerStoreTransactionHistoryWalletUTXOCreatedMultiInputFee(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	store, db := newLedgerStoreAndDBForTest(t)
+
+	const (
+		outpointIndex = int32(0)
+		createdAt     = int64(1_700_000_900)
+	)
+	roundID := "019e4bc6-d95f-7caf-93c3-409e854bbb9f"
+	firstOutpoint := testHash32(0x10)
+	secondOutpoint := testHash32(0x20)
+
+	require.NoError(
+		t,
+		db.InsertRound(
+			ctx, sqlc.InsertRoundParams{
+				RoundID:        roundID,
+				Status:         "confirmed",
+				CreationTime:   createdAt,
+				LastUpdateTime: createdAt,
+			},
+		),
+	)
+
+	insertBoardingInput := func(outpoint [32]byte, amount, createdAt int64,
+		pkScriptSeed byte) {
+
+		pkScript := testBytes(34, pkScriptSeed)
+		require.NoError(
+			t,
+			db.InsertBoardingAddress(
+				ctx, sqlc.InsertBoardingAddressParams{
+					PkScript:       pkScript,
+					AddressString:  "bcrt1ptest",
+					ClientPubkey:   testBytes(33, 0x11),
+					OperatorPubkey: testBytes(33, 0x22),
+					ExitDelay:      144,
+					CreationTime:   createdAt,
+				},
+			),
+		)
+		require.NoError(
+			t,
+			db.InsertBoardingIntent(
+				ctx, sqlc.InsertBoardingIntentParams{
+					OutpointHash:  outpoint[:],
+					OutpointIndex: outpointIndex,
+					PkScript:      pkScript,
+					Amount:        amount,
+					ConfHeight:    304_081,
+					ConfHash:      testBytes(32, 0x02),
+					ConfTx: testBytes(
+						64, pkScriptSeed,
+					),
+					TxProof: testBytes(
+						64, pkScriptSeed+1,
+					),
+					Status:         "confirmed",
+					CreationTime:   createdAt,
+					LastUpdateTime: createdAt,
+				},
+			),
+		)
+		require.NoError(
+			t,
+			db.InsertRoundBoardingIntent(
+				ctx, sqlc.InsertRoundBoardingIntentParams{
+					RoundID:       roundID,
+					OutpointHash:  outpoint[:],
+					OutpointIndex: outpointIndex,
+					ClientKey:     testBytes(33, 0x11),
+					OperatorKey:   testBytes(33, 0x22),
+					ExitDelay:     144,
+				},
+			),
+		)
+		require.NoError(
+			t,
+			store.InsertLedgerEntry(
+				ctx, ledger.LedgerEntry{
+					DebitAccount: ledger.
+						AccountWalletBalance,
+					CreditAccount: ledger.
+						AccountOpeningBalance,
+					AmountSat: amount,
+					EventType: ledger.
+						EventWalletUTXOCreated,
+					Description: "boarding deposit",
+					CreatedAt:   createdAt,
+					IdempotencyKey: testBytes(
+						36, pkScriptSeed+2,
+					),
+					ChainTxid: outpoint[:],
+					ChainVout: testInt32Ptr(outpointIndex),
+				},
+			),
+		)
+	}
+
+	insertBoardingInput(firstOutpoint, 10_000, createdAt, 0x31)
+	insertBoardingInput(secondOutpoint, 20_000, createdAt+1, 0x41)
+
+	require.NoError(
+		t,
+		db.InsertVTXO(
+			ctx, sqlc.InsertVTXOParams{
+				OutpointHash:   testBytes(32, 0x51),
+				OutpointIndex:  0,
+				RoundID:        roundID,
+				Amount:         29_995,
+				PkScript:       testBytes(34, 0x52),
+				Expiry:         144,
+				ClientPubkey:   testBytes(33, 0x53),
+				OperatorPubkey: testBytes(33, 0x54),
+				CommitmentTxid: testBytes(32, 0x55),
+				CreationTime:   createdAt,
+				LastUpdateTime: createdAt,
+			},
+		),
+	)
+
+	rows, err := store.ListTransactionHistory(ctx, "boarding", 0, 0, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+
+	fees := map[string]int64{}
+	for _, row := range rows {
+		fees[string(row.Txid)] = row.FeeSat
+	}
+	require.Equal(t, int64(2), fees[string(firstOutpoint[:])])
+	require.Equal(t, int64(3), fees[string(secondOutpoint[:])])
+	require.Equal(
+		t, int64(5), fees[string(firstOutpoint[:])]+
+			fees[string(secondOutpoint[:])],
+	)
+
+	require.NoError(
+		t,
+		db.InsertVTXO(
+			ctx, sqlc.InsertVTXOParams{
+				OutpointHash:   testBytes(32, 0x61),
+				OutpointIndex:  0,
+				RoundID:        roundID,
+				Amount:         10,
+				PkScript:       testBytes(34, 0x62),
+				Expiry:         144,
+				ClientPubkey:   testBytes(33, 0x63),
+				OperatorPubkey: testBytes(33, 0x64),
+				CommitmentTxid: testBytes(32, 0x65),
+				CreationTime:   createdAt,
+				LastUpdateTime: createdAt,
+			},
+		),
+	)
+
+	rows, err = store.ListTransactionHistory(ctx, "boarding", 0, 0, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+
+	for _, row := range rows {
+		require.Zero(
+			t, row.FeeSat,
+			"ambiguous round outputs should not be shown as fees",
+		)
+	}
 }
 
 // TestLedgerStoreTransactionHistoryWalletUTXOCreatedMissingHeight verifies a

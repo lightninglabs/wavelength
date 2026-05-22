@@ -271,7 +271,12 @@ FROM (
            END AS transaction_type,
            le.event_type AS subtype,
            le.amount_sat,
-           CAST(0 AS BIGINT) AS fee_sat,
+           CASE
+               WHEN le.event_type = 'wallet_utxo_created'
+                    AND boarding_round.fee_sat > 0
+               THEN boarding_round.fee_sat
+               ELSE CAST(0 AS BIGINT)
+           END AS fee_sat,
            le.created_at,
            CASE
                WHEN le.event_type = 'wallet_utxo_created' THEN 'confirmed'
@@ -284,6 +289,86 @@ FROM (
            le.session_id,
            COALESCE(le.confirmation_height, 0) AS confirmation_height
     FROM ledger_entries AS le
+    LEFT JOIN (
+        SELECT allocated.outpoint_hash,
+               allocated.outpoint_index,
+               allocated.base_fee_sat +
+                   CASE
+                       WHEN allocated.remainder_rank <=
+                            allocated.leftover_fee_sat
+                       THEN 1
+                       ELSE 0
+                   END AS fee_sat
+        FROM (
+            SELECT proportional.outpoint_hash,
+                   proportional.outpoint_index,
+                   proportional.base_fee_sat,
+                   proportional.round_fee_sat -
+                       SUM(proportional.base_fee_sat) OVER (
+                           PARTITION BY proportional.round_id
+                       ) AS leftover_fee_sat,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY proportional.round_id
+                       ORDER BY proportional.remainder_sat DESC,
+                                proportional.outpoint_hash,
+                                proportional.outpoint_index
+                   ) AS remainder_rank
+            FROM (
+                SELECT rbi.round_id,
+                       rbi.outpoint_hash,
+                       rbi.outpoint_index,
+                       CASE
+                           WHEN stats.round_fee_sat > 0
+                                AND stats.input_amount_sat > 0
+                           THEN (stats.round_fee_sat * bi.amount) /
+                                stats.input_amount_sat
+                           ELSE CAST(0 AS BIGINT)
+                       END AS base_fee_sat,
+                       CASE
+                           WHEN stats.round_fee_sat > 0
+                                AND stats.input_amount_sat > 0
+                           THEN (stats.round_fee_sat * bi.amount) %
+                                stats.input_amount_sat
+                           ELSE CAST(0 AS BIGINT)
+                       END AS remainder_sat,
+                       stats.round_fee_sat
+                FROM round_boarding_intents AS rbi
+                JOIN boarding_intents AS bi
+                    USING (outpoint_hash, outpoint_index)
+                JOIN (
+                    SELECT intent_sums.round_id,
+                           CAST(CASE
+                               WHEN vtxo_sums.vtxo_amount_sat IS NOT NULL
+                                    AND vtxo_sums.vtxo_amount_sat > 0
+                                    AND vtxo_sums.vtxo_amount_sat <
+                                        intent_sums.input_amount_sat
+                               THEN intent_sums.input_amount_sat -
+                                    vtxo_sums.vtxo_amount_sat
+                               ELSE CAST(0 AS BIGINT)
+                           END AS BIGINT) AS round_fee_sat,
+                           intent_sums.input_amount_sat
+                    FROM (
+                        SELECT round_id,
+                               CAST(SUM(amount) AS BIGINT) AS
+                                   input_amount_sat
+                        FROM round_boarding_intents
+                        JOIN boarding_intents
+                            USING (outpoint_hash, outpoint_index)
+                        GROUP BY round_id
+                    ) AS intent_sums
+                    LEFT JOIN (
+                        SELECT round_id,
+                               CAST(SUM(amount) AS BIGINT) AS vtxo_amount_sat
+                        FROM vtxos
+                        GROUP BY round_id
+                    ) AS vtxo_sums ON vtxo_sums.round_id =
+                        intent_sums.round_id
+                ) AS stats ON stats.round_id = rbi.round_id
+            ) AS proportional
+        ) AS allocated
+    ) AS boarding_round
+        ON boarding_round.outpoint_hash = le.chain_txid
+       AND boarding_round.outpoint_index = le.chain_vout
 
     UNION ALL
 
