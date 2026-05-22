@@ -3,7 +3,6 @@
 package swapwallet
 
 import (
-	"encoding/hex"
 	"testing"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
@@ -42,7 +41,7 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 	inspection, swap, rpc := newInspectionFixture(t)
 
 	sessionID := testBytes(32, 0x21)
-	sessionHex := hex.EncodeToString(sessionID)
+	sessionHex := testSessionString(t, sessionID)
 
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
 		Swaps: []*swapclientrpc.SwapSummary{
@@ -55,7 +54,7 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 				VhtlcOutpoint:    "vhtlc-txid:0",
 				VhtlcAmountSat:   1_234,
 				UpdatedAtUnix:    200,
-				FundingSessionId: "funding-session",
+				FundingSessionId: sessionHex,
 			},
 		},
 	}
@@ -72,13 +71,13 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 				CreatedAtUnixS: 100,
 			},
 			{
-				Type:          "round",
-				Subtype:       ledger.EventVTXOReceived,
-				AmountSat:     998_511,
-				DebitAccount:  ledger.AccountVTXOBalance,
-				CreditAccount: ledger.AccountTransfersIn,
-				Description: "VTXO received via oor: " +
-					sessionHex + ":1",
+				Type:           "round",
+				Subtype:        ledger.EventVTXOReceived,
+				AmountSat:      998_511,
+				DebitAccount:   ledger.AccountVTXOBalance,
+				CreditAccount:  ledger.AccountTransfersIn,
+				Txid:           sessionHex,
+				OutputIndex:    1,
 				EntryId:        14,
 				CreatedAtUnixS: 101,
 			},
@@ -106,6 +105,7 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 	require.Equal(t, "spent_input", ledgerByID[13].GetRole())
 	require.False(t, ledgerByID[14].GetHiddenFromActivity())
 	require.Equal(t, "change_output", ledgerByID[14].GetRole())
+	require.Equal(t, int32(1), ledgerByID[14].GetOutputIndex())
 
 	vtxoByRole := map[string]*walletrpc.ActivityVTXOTrace{}
 	for _, row := range resp.GetVtxos() {
@@ -123,6 +123,42 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 		t, int64(998_511), vtxoByRole["change_output"].GetAmountSat(),
 	)
 	require.True(t, vtxoByRole["change_output"].GetOurs())
+	require.Equal(
+		t, uint32(1), vtxoByRole["change_output"].GetOutputIndex(),
+	)
+	require.Len(t, resp.GetNotes(), 1)
+}
+
+// TestInspectActivityOmitsIrrelevantNotes verifies ordinary deposits do not
+// carry OOR caveats in the inspection response.
+func TestInspectActivityOmitsIrrelevantNotes(t *testing.T) {
+	t.Parallel()
+
+	inspection, swap, rpc := newInspectionFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "boarding",
+				Subtype:            ledger.EventWalletUTXOCreated,
+				AmountSat:          1_000_000,
+				ConfirmationStatus: "confirmed",
+				Txid:               "deposit-txid",
+				OutputIndex:        1,
+				EntryId:            1,
+				CreatedAtUnixS:     100,
+			},
+		},
+	}
+
+	resp, err := inspection.InspectActivity(
+		t.Context(), &walletrpc.InspectActivityRequest{
+			Id: "deposit-txid",
+		},
+	)
+	require.NoError(t, err)
+	require.Empty(t, resp.GetNotes())
+	require.Equal(t, int32(1), resp.GetLedgerRows()[0].GetOutputIndex())
 }
 
 // TestInspectActivityNotFound verifies missing ids return a NotFound status.

@@ -79,16 +79,14 @@ func (s *InspectionService) InspectActivity(ctx context.Context,
 	traceRows := correlateLedgerRows(entry, swap, ledgerRows)
 	hidden := hiddenOORLedgerRows(swaps, ledgerRows)
 	ledgerTrace := ledgerTraceRows(traceRows, hidden)
+	vtxoTrace := vtxoTraceRows(swap, ledgerTrace)
 
 	resp := &walletrpc.InspectActivityResponse{
 		Entry:      entry,
 		Swap:       swapTraceFromSummary(swap),
 		LedgerRows: ledgerTrace,
-		Vtxos:      vtxoTraceRows(swap, ledgerTrace),
-		Notes: []string{
-			"VTXO ids are best-effort: some ledger rows persist an " +
-				"OOR correlation id rather than a full outpoint.",
-		},
+		Vtxos:      vtxoTrace,
+		Notes:      inspectionNotes(vtxoTrace),
 	}
 
 	if ledgerTruncated {
@@ -203,7 +201,10 @@ func correlateLedgerRows(entry *walletrpc.WalletEntry,
 
 		key := ledgerTraceKey(row)
 		if existing, ok := out[key]; ok && existing.role != "" {
-			return
+			if inspectionRoleRank(existing.role) >=
+				inspectionRoleRank(role) {
+				return
+			}
 		}
 		out[key] = ledgerInspectionRow{
 			row:  row,
@@ -227,6 +228,24 @@ func correlateLedgerRows(entry *walletrpc.WalletEntry,
 	}
 
 	return result
+}
+
+// inspectionRoleRank lets precise execution roles replace broad correlation
+// roles when the same ledger row is discovered through multiple paths.
+func inspectionRoleRank(role string) int {
+	switch role {
+	case "activity_row":
+		return 3
+
+	case "spent_input", "change_output", "materialized_output":
+		return 2
+
+	case "vhtlc_tx", "swap_session":
+		return 1
+
+	default:
+		return 0
+	}
 }
 
 // ledgerTraceKey returns a stable de-duplication key for an inspection ledger
@@ -360,17 +379,7 @@ func correlateOORPairs(swap *swapclientrpc.SwapSummary,
 func hiddenOORLedgerRows(swaps []*swapclientrpc.SwapSummary,
 	rows []*daemonrpc.TransactionHistoryEntry) map[int64]struct{} {
 
-	entries := make([]*walletrpc.WalletEntry, 0, len(swaps))
-	for _, swap := range swaps {
-		entries = append(
-			entries, swapEntryFromSummary(
-				swap, "", "",
-				walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
-			),
-		)
-	}
-
-	return internalOORSends(rows, swapSendAmounts(entries))
+	return internalOORSends(rows, swapOORCorrelationsFromSwaps(swaps))
 }
 
 // ledgerTraceRows projects daemon transaction rows onto the inspection RPC
@@ -403,6 +412,7 @@ func ledgerTraceRows(rows []ledgerInspectionRow,
 			ConfirmationHeight: row.GetConfirmationHeight(),
 			HiddenFromActivity: isHidden,
 			Role:               item.role,
+			OutputIndex:        row.GetOutputIndex(),
 		})
 	}
 
@@ -477,22 +487,27 @@ func receiveRefFromLedgerTrace(row *walletrpc.ActivityLedgerTrace) (string,
 	if row == nil {
 		return "", 0, false
 	}
-
-	return receiveRefFromDescription(row.GetDescription())
-}
-
-// receiveRefFromDescription parses the legacy ledger description used for OOR
-// receive rows.
-func receiveRefFromDescription(desc string) (string, uint32, bool) {
-	row := &daemonrpc.TransactionHistoryEntry{
-		Subtype:       ledger.EventVTXOReceived,
-		AmountSat:     1,
-		DebitAccount:  ledger.AccountVTXOBalance,
-		CreditAccount: ledger.AccountTransfersIn,
-		Description:   desc,
+	if row.GetTxid() == "" || row.GetOutputIndex() < 0 {
+		return "", 0, false
 	}
 
-	return oorReceiveRef(row)
+	return row.GetTxid(), uint32(row.GetOutputIndex()), true
+}
+
+// inspectionNotes returns caveats that apply to the actual trace rows instead
+// of showing a blanket warning on unrelated activity kinds.
+func inspectionNotes(rows []*walletrpc.ActivityVTXOTrace) []string {
+	for _, row := range rows {
+		if row.GetSource() == "ledger" &&
+			row.GetId() == row.GetSessionId() {
+			return []string{
+				"Some sent VTXO inputs are keyed by OOR session " +
+					"rather than a full outpoint.",
+			}
+		}
+	}
+
+	return nil
 }
 
 // dedupeVTXOTrace removes duplicate VTXO trace rows while preserving order.

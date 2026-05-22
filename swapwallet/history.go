@@ -7,9 +7,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
@@ -108,8 +108,9 @@ func (h *history) listActivity(ctx context.Context,
 	}
 
 	var (
-		entries     []*walletrpc.WalletEntry
-		swapEntries []*walletrpc.WalletEntry
+		entries          []*walletrpc.WalletEntry
+		swapEntries      []*walletrpc.WalletEntry
+		swapCorrelations swapOORCorrelations
 	)
 	swapEntryIDs := make(map[string]struct{})
 
@@ -118,7 +119,7 @@ func (h *history) listActivity(ctx context.Context,
 			walletrpc.EntryKind_ENTRY_KIND_RECV) {
 
 		var err error
-		swapEntries, err = h.collectSwapEntries(
+		swapEntries, swapCorrelations, err = h.collectSwapEntries(
 			ctx, req.GetPendingOnly(),
 		)
 		if err != nil {
@@ -138,8 +139,7 @@ func (h *history) listActivity(ctx context.Context,
 			walletrpc.EntryKind_ENTRY_KIND_SEND) {
 
 		ledgerEntries, err := h.collectLedgerEntries(
-			ctx, req.GetOffset(), limit,
-			swapSendAmounts(swapEntries),
+			ctx, req.GetOffset(), limit, swapCorrelations,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("collect ledger entries: %w",
@@ -271,10 +271,10 @@ func (h *history) listOnchain(ctx context.Context, req *walletrpc.ListRequest) (
 // SEND, receive rows become RECV; the underlying SwapDirection enum drives
 // the mapping.
 func (h *history) collectSwapEntries(ctx context.Context, pendingOnly bool) (
-	[]*walletrpc.WalletEntry, error) {
+	[]*walletrpc.WalletEntry, swapOORCorrelations, error) {
 
 	if h.deps.SwapService == nil {
-		return nil, nil
+		return nil, swapOORCorrelations{}, nil
 	}
 
 	resp, err := h.deps.SwapService.ListSwaps(
@@ -283,7 +283,7 @@ func (h *history) collectSwapEntries(ctx context.Context, pendingOnly bool) (
 		},
 	)
 	if err != nil {
-		return nil, err
+		return nil, swapOORCorrelations{}, err
 	}
 
 	out := make([]*walletrpc.WalletEntry, 0, len(resp.GetSwaps()))
@@ -302,7 +302,7 @@ func (h *history) collectSwapEntries(ctx context.Context, pendingOnly bool) (
 		out = append(out, entry)
 	}
 
-	return out, nil
+	return out, swapOORCorrelationsFromSwaps(resp.GetSwaps()), nil
 }
 
 // collectPendingBoardingEntries adds an aggregate row for funds seen by the
@@ -359,8 +359,8 @@ func (h *history) collectPendingBoardingEntries(ctx context.Context) (
 // history returns no ledger rows because the daemon got Limit=limit
 // and Offset=0 and only the first `limit` rows ever came back.
 func (h *history) collectLedgerEntries(ctx context.Context, offset,
-	limit uint32, swapSendAmounts map[int64]int) ([]*walletrpc.WalletEntry,
-	error) {
+	limit uint32, correlations swapOORCorrelations) (
+	[]*walletrpc.WalletEntry, error) {
 
 	if h.deps.RPCServer == nil {
 		return nil, nil
@@ -383,7 +383,7 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 		return nil, err
 	}
 
-	hidden := internalOORSends(resp.GetTransactions(), swapSendAmounts)
+	hidden := internalOORSends(resp.GetTransactions(), correlations)
 	out := make([]*walletrpc.WalletEntry, 0, len(resp.GetTransactions()))
 	for _, t := range resp.GetTransactions() {
 		if _, ok := hidden[t.GetEntryId()]; ok {
@@ -404,30 +404,59 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 	return out, nil
 }
 
-// swapSendAmounts returns a multiset of user-facing swap SEND amounts. Ledger
-// OOR rows can consume a whole input and return change; the delta is hidden
-// only when it matches a swap SEND already shown in wallet activity.
-func swapSendAmounts(entries []*walletrpc.WalletEntry) map[int64]int {
-	out := make(map[int64]int)
-	for _, entry := range entries {
-		if entry.GetKind() != walletrpc.EntryKind_ENTRY_KIND_SEND ||
-			entry.GetAmountSat() >= 0 {
+// swapOORCorrelations keeps the swap-side session metadata needed to hide
+// internal OOR ledger legs without matching by amount alone.
+type swapOORCorrelations struct {
+	payAmountsByFundingSession map[string]map[int64]int
+	claimSessions              map[string]struct{}
+}
 
-			continue
+// swapOORCorrelationsFromSwaps indexes swap session ids by the internal OOR leg
+// they explain. Pay swaps hide their funding input only when the same funding
+// session returns change and the delta equals the swap amount. Receive swaps
+// hide their claim input only when the same claim session materializes a wallet
+// VTXO.
+func swapOORCorrelationsFromSwaps(
+	swaps []*swapclientrpc.SwapSummary) swapOORCorrelations {
+
+	out := swapOORCorrelations{
+		payAmountsByFundingSession: make(map[string]map[int64]int),
+		claimSessions:              make(map[string]struct{}),
+	}
+
+	for _, swap := range swaps {
+		switch swap.GetDirection() {
+		case swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY:
+			session := strings.ToLower(swap.GetFundingSessionId())
+			amount := swap.GetAmountSat()
+			if session == "" || amount <= 0 {
+				continue
+			}
+			if out.payAmountsByFundingSession[session] == nil {
+				out.payAmountsByFundingSession[session] = make(
+					map[int64]int,
+				)
+			}
+			out.payAmountsByFundingSession[session][amount]++
+
+		case swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE:
+			session := strings.ToLower(swap.GetClaimSessionId())
+			if session == "" {
+				continue
+			}
+			out.claimSessions[session] = struct{}{}
 		}
-
-		out[-entry.GetAmountSat()]++
 	}
 
 	return out
 }
 
-// internalOORSends returns ledger entry IDs for OOR send legs that are
-// internal to swap execution. Receive-swap claim inputs come back to the wallet
-// with the same amount; pay-swap funding inputs come back as change, with the
-// delta represented by the user-facing swap SEND row.
+// internalOORSends returns ledger entry IDs for OOR send legs that are internal
+// to swap execution. It only hides rows when the ledger session lines up with
+// structured swap metadata, which keeps two same-amount swaps from racing each
+// other through amount-only matching.
 func internalOORSends(rows []*daemonrpc.TransactionHistoryEntry,
-	swapSendAmounts map[int64]int) map[int64]struct{} {
+	correlations swapOORCorrelations) map[int64]struct{} {
 
 	receivedBySession := make(map[string]int64)
 	for _, row := range rows {
@@ -452,16 +481,30 @@ func internalOORSends(rows []*daemonrpc.TransactionHistoryEntry,
 		}
 
 		switch delta := row.GetAmountSat() - received; {
-		case delta == 0:
+		case delta == 0 && sessionInSet(
+			correlations.claimSessions, session,
+		):
+
 			hidden[row.GetEntryId()] = struct{}{}
 
-		case delta > 0 && swapSendAmounts[delta] > 0:
+		case delta > 0:
+			amounts := correlations.payAmountsByFundingSession[session]
+			if amounts[delta] == 0 {
+				continue
+			}
 			hidden[row.GetEntryId()] = struct{}{}
-			swapSendAmounts[delta]--
+			amounts[delta]--
 		}
 	}
 
 	return hidden
+}
+
+// sessionInSet reports whether a normalized OOR session id appears in set.
+func sessionInSet(set map[string]struct{}, session string) bool {
+	_, ok := set[session]
+
+	return ok
 }
 
 // oorSendSessionID extracts the session id from a ledger row that spends a VTXO
@@ -475,7 +518,12 @@ func oorSendSessionID(row *daemonrpc.TransactionHistoryEntry) (string, bool) {
 		return "", false
 	}
 
-	return strings.ToLower(hex.EncodeToString(row.GetSessionId())), true
+	hash, err := chainhash.NewHash(row.GetSessionId())
+	if err != nil {
+		return "", false
+	}
+
+	return hash.String(), true
 }
 
 // oorReceiveSessionID extracts the session id from a ledger row that receives a
@@ -488,8 +536,8 @@ func oorReceiveSessionID(row *daemonrpc.TransactionHistoryEntry) (string,
 	return session, ok
 }
 
-// oorReceiveRef extracts the session id and output index from an OOR receive
-// ledger row.
+// oorReceiveRef extracts the OOR output reference from structured ledger
+// fields.
 func oorReceiveRef(row *daemonrpc.TransactionHistoryEntry) (string, uint32,
 	bool) {
 
@@ -500,32 +548,18 @@ func oorReceiveRef(row *daemonrpc.TransactionHistoryEntry) (string, uint32,
 		return "", 0, false
 	}
 
-	const prefix = "VTXO received via oor: "
-	desc := row.GetDescription()
-	if !strings.HasPrefix(desc, prefix) {
-		return "", 0, false
-	}
-
-	rest := strings.TrimPrefix(desc, prefix)
-	idx := strings.IndexByte(rest, ':')
-	if idx <= 0 {
-		return "", 0, false
-	}
-
-	session := strings.ToLower(rest[:idx])
+	session := strings.ToLower(row.GetTxid())
 	if len(session) != 64 {
 		return "", 0, false
 	}
 	if _, err := hex.DecodeString(session); err != nil {
 		return "", 0, false
 	}
-
-	outputIndex, err := strconv.ParseUint(rest[idx+1:], 10, 32)
-	if err != nil {
+	if row.GetOutputIndex() < 0 {
 		return "", 0, false
 	}
 
-	return session, uint32(outputIndex), true
+	return session, uint32(row.GetOutputIndex()), true
 }
 
 // applyOverlays elevates entries to FAILED in place when the runtime has

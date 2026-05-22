@@ -3,10 +3,10 @@
 package swapwallet
 
 import (
-	"encoding/hex"
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
@@ -40,6 +40,17 @@ func testBytes(length int, seed byte) []byte {
 	}
 
 	return out
+}
+
+// testSessionString returns the production display form for raw OOR session
+// bytes.
+func testSessionString(t *testing.T, raw []byte) string {
+	t.Helper()
+
+	hash, err := chainhash.NewHash(raw)
+	require.NoError(t, err)
+
+	return hash.String()
 }
 
 // TestHistoryListMergesSwapAndLedgerSources confirms the merger combines
@@ -213,7 +224,7 @@ func TestHistoryHidesReceiveClaimOORSend(t *testing.T) {
 		0x64, 0xff, 0xbb, 0x98, 0x49, 0xc7, 0x12, 0x0e,
 		0xac, 0x5b, 0xc4, 0x0d, 0x7b, 0x64, 0xcd, 0x51,
 	}
-	sessionHex := "820b189fdfa968de966be2f9a5adc0a564ffbb9849c7120eac5bc40d7b64cd51"
+	sessionHex := testSessionString(t, sessionID)
 
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
 		Swaps: []*swapclientrpc.SwapSummary{
@@ -223,8 +234,9 @@ func TestHistoryHidesReceiveClaimOORSend(t *testing.T) {
 					SwapDirection_SWAP_DIRECTION_RECEIVE,
 				State: swapclientrpc.
 					SwapState_SWAP_STATE_COMPLETED,
-				AmountSat:     1_000,
-				UpdatedAtUnix: 200,
+				AmountSat:      1_000,
+				UpdatedAtUnix:  200,
+				ClaimSessionId: sessionHex,
 			},
 		},
 	}
@@ -241,13 +253,13 @@ func TestHistoryHidesReceiveClaimOORSend(t *testing.T) {
 				CreatedAtUnixS: 100,
 			},
 			{
-				Type:          "round",
-				Subtype:       ledger.EventVTXOReceived,
-				AmountSat:     1_000,
-				DebitAccount:  ledger.AccountVTXOBalance,
-				CreditAccount: ledger.AccountTransfersIn,
-				Description: "VTXO received via oor: " +
-					sessionHex + ":0",
+				Type:           "round",
+				Subtype:        ledger.EventVTXOReceived,
+				AmountSat:      1_000,
+				DebitAccount:   ledger.AccountVTXOBalance,
+				CreditAccount:  ledger.AccountTransfersIn,
+				Txid:           sessionHex,
+				OutputIndex:    0,
 				EntryId:        4,
 				CreatedAtUnixS: 101,
 			},
@@ -308,7 +320,7 @@ func TestHistoryHidesPayFundingOORInput(t *testing.T) {
 	h, swap, rpc := newHistoryFixture(t)
 
 	sessionID := testBytes(32, 0x21)
-	sessionHex := hex.EncodeToString(sessionID)
+	sessionHex := testSessionString(t, sessionID)
 
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
 		Swaps: []*swapclientrpc.SwapSummary{
@@ -316,9 +328,10 @@ func TestHistoryHidesPayFundingOORInput(t *testing.T) {
 				PaymentHash: "payment-hash",
 				Direction: swapclientrpc.
 					SwapDirection_SWAP_DIRECTION_PAY,
-				Pending:       true,
-				AmountSat:     1_234,
-				UpdatedAtUnix: 200,
+				Pending:          true,
+				AmountSat:        1_234,
+				UpdatedAtUnix:    200,
+				FundingSessionId: sessionHex,
 			},
 		},
 	}
@@ -335,13 +348,13 @@ func TestHistoryHidesPayFundingOORInput(t *testing.T) {
 				CreatedAtUnixS: 100,
 			},
 			{
-				Type:          "round",
-				Subtype:       ledger.EventVTXOReceived,
-				AmountSat:     998_511,
-				DebitAccount:  ledger.AccountVTXOBalance,
-				CreditAccount: ledger.AccountTransfersIn,
-				Description: "VTXO received via oor: " +
-					sessionHex + ":1",
+				Type:           "round",
+				Subtype:        ledger.EventVTXOReceived,
+				AmountSat:      998_511,
+				DebitAccount:   ledger.AccountVTXOBalance,
+				CreditAccount:  ledger.AccountTransfersIn,
+				Txid:           sessionHex,
+				OutputIndex:    1,
 				EntryId:        14,
 				CreatedAtUnixS: 101,
 			},
@@ -360,6 +373,86 @@ func TestHistoryHidesPayFundingOORInput(t *testing.T) {
 	require.Equal(t, int64(-1_234), entries[0].GetAmountSat())
 }
 
+// TestHistoryKeepsSameAmountUnmatchedFundingInput confirms pay-swap funding
+// legs are hidden by funding session, not by amount alone.
+func TestHistoryKeepsSameAmountUnmatchedFundingInput(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+
+	matchedSession := testBytes(32, 0x41)
+	matchedHex := testSessionString(t, matchedSession)
+	otherSession := testBytes(32, 0x42)
+	otherHex := testSessionString(t, otherSession)
+
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: "payment-hash",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_PAY,
+				Pending:          true,
+				AmountSat:        1_234,
+				UpdatedAtUnix:    200,
+				FundingSessionId: matchedHex,
+			},
+		},
+	}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOSent,
+				AmountSat:      999_745,
+				DebitAccount:   ledger.AccountTransfersOut,
+				CreditAccount:  ledger.AccountVTXOBalance,
+				SessionId:      matchedSession,
+				EntryId:        13,
+				CreatedAtUnixS: 100,
+			},
+			{
+				Type:          "round",
+				Subtype:       ledger.EventVTXOReceived,
+				AmountSat:     998_511,
+				DebitAccount:  ledger.AccountVTXOBalance,
+				CreditAccount: ledger.AccountTransfersIn,
+				Txid:          matchedHex,
+				OutputIndex:   1,
+				EntryId:       14,
+			},
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOSent,
+				AmountSat:      999_745,
+				DebitAccount:   ledger.AccountTransfersOut,
+				CreditAccount:  ledger.AccountVTXOBalance,
+				SessionId:      otherSession,
+				EntryId:        15,
+				CreatedAtUnixS: 99,
+			},
+			{
+				Type:          "round",
+				Subtype:       ledger.EventVTXOReceived,
+				AmountSat:     998_511,
+				DebitAccount:  ledger.AccountVTXOBalance,
+				CreditAccount: ledger.AccountTransfersIn,
+				Txid:          otherHex,
+				OutputIndex:   1,
+				EntryId:       16,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 2)
+	require.Equal(t, "payment-hash", entries[0].GetId())
+	require.Equal(t, "ledger-15", entries[1].GetId())
+	require.Equal(t, int64(-999_745), entries[1].GetAmountSat())
+}
+
 // TestHistoryKeepsOORSendWithChangeWithoutSwap confirms the change-pairing
 // heuristic is anchored to a visible swap SEND, so ordinary OOR sends are not
 // hidden just because they return change to this wallet.
@@ -369,7 +462,7 @@ func TestHistoryKeepsOORSendWithChangeWithoutSwap(t *testing.T) {
 	h, swap, rpc := newHistoryFixture(t)
 
 	sessionID := testBytes(32, 0x31)
-	sessionHex := hex.EncodeToString(sessionID)
+	sessionHex := testSessionString(t, sessionID)
 
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
 	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
@@ -385,13 +478,13 @@ func TestHistoryKeepsOORSendWithChangeWithoutSwap(t *testing.T) {
 				CreatedAtUnixS: 100,
 			},
 			{
-				Type:          "round",
-				Subtype:       ledger.EventVTXOReceived,
-				AmountSat:     998_511,
-				DebitAccount:  ledger.AccountVTXOBalance,
-				CreditAccount: ledger.AccountTransfersIn,
-				Description: "VTXO received via oor: " +
-					sessionHex + ":1",
+				Type:           "round",
+				Subtype:        ledger.EventVTXOReceived,
+				AmountSat:      998_511,
+				DebitAccount:   ledger.AccountVTXOBalance,
+				CreditAccount:  ledger.AccountTransfersIn,
+				Txid:           sessionHex,
+				OutputIndex:    1,
 				EntryId:        14,
 				CreatedAtUnixS: 101,
 			},
