@@ -211,6 +211,22 @@ type testIncomingEventReceiver struct {
 	notification *IncomingVHTLCNotification
 }
 
+type blockingOutSwapEventReceiver struct{}
+
+func (r *blockingOutSwapEventReceiver) WaitOutSwapHtlc(ctx context.Context,
+	_ lntypes.Hash, _ *btcec.PublicKey) (*OutSwapHtlcNotification, error) {
+
+	<-ctx.Done()
+
+	return nil, ctx.Err()
+}
+
+func (r *blockingOutSwapEventReceiver) AckOutSwapHtlc(_ context.Context,
+	_ lntypes.Hash, _ *btcec.PublicKey, _ uint64) error {
+
+	return fmt.Errorf("unexpected out-swap ack")
+}
+
 // WaitOutSwapHtlc is unused when the incoming vHTLC path is available.
 func (r *testIncomingEventReceiver) WaitOutSwapHtlc(context.Context,
 	lntypes.Hash, *btcec.PublicKey) (*OutSwapHtlcNotification, error) {
@@ -718,7 +734,6 @@ func TestReceiveSessionWaitClaimsVHTLC(t *testing.T) {
 	client := NewSwapClient(serverConn, daemonConn, nil, creator)
 	useTestOnionDecoder(client, 42_000)
 	client.waitPollInterval = time.Millisecond
-	client.waitVHTLCTimeout = 50 * time.Millisecond
 
 	session, err := client.StartReceiveViaLightning(
 		t.Context(), btcutil.Amount(42_000),
@@ -1340,6 +1355,171 @@ func TestReceiveSessionExpiresAtRefundLocktimeWithoutFunding(t *testing.T) {
 	require.ErrorIs(t, err, errSwapExpired)
 }
 
+// TestReceiveSessionExpiresUnpaidInvoiceAtDeadline asserts an unpaid receive
+// stops waiting for the mailbox event once the persisted invoice deadline
+// elapses.
+func TestReceiveSessionExpiresUnpaidInvoiceAtDeadline(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := &testInvoiceCreator{
+		invoice: &invoices.Invoice{
+			PaymentRequest: []byte("lnrtest1swap"),
+		},
+	}
+	serverPubKey := serverPriv.PubKey().SerializeCompressed()
+	serverConn := &testSwapServerConn{
+		hint: &RouteHint{
+			NodeID:          serverPubKey,
+			ChannelID:       99,
+			FeeBaseMsat:     1,
+			FeePropPpm:      2,
+			CltvExpiryDelta: 40,
+		},
+		cfg: &VHTLCConfig{
+			RefundLocktime:                       144,
+			UnilateralClaimDelay:                 12,
+			UnilateralRefundDelay:                24,
+			UnilateralRefundWithoutReceiverDelay: 36,
+			SwapServerPubkey:                     serverPubKey,
+		},
+	}
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+	}
+
+	client := NewSwapClientWithStore(
+		serverConn, daemonConn, nil, creator, store,
+	)
+	client.outEvents = &blockingOutSwapEventReceiver{}
+	useTestOnionDecoder(client, 42_000)
+
+	session, err := client.StartReceiveViaLightning(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.NoError(t, err)
+	deadline := time.Now().Add(-time.Second)
+	require.NoError(
+		t,
+		session.mutateAndPersist(
+			t.Context(),
+			func() error {
+				session.deadline = deadline
+
+				return nil
+			},
+		),
+	)
+	// Keep the client's fake clock before the persisted deadline so the
+	// test takes the invoice-deadline branch, while the real context
+	// deadline is already elapsed. This avoids a millisecond-scale
+	// wall-clock race.
+	client.now = func() time.Time {
+		return deadline.Add(-time.Second)
+	}
+
+	_, err = session.Wait(t.Context())
+	require.ErrorIs(t, err, errSwapExpired)
+	require.Equal(t, ReceiveStateExpired, session.State())
+
+	resumed, err := client.ResumeReceiveViaLightning(
+		t.Context(), session.PaymentHash,
+	)
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateExpired, resumed.State())
+
+	pending, err := client.ListPendingReceiveSessions(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, pending)
+}
+
+// TestReceiveSessionOverdueInvoiceAcceptsDeliveredEvent asserts an already
+// delivered mailbox event wins over the invoice deadline during resume.
+func TestReceiveSessionOverdueInvoiceAcceptsDeliveredEvent(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := &testInvoiceCreator{
+		invoice: &invoices.Invoice{
+			PaymentRequest: []byte("lnrtest1swap"),
+		},
+	}
+	serverPubKey := serverPriv.PubKey().SerializeCompressed()
+	serverConn := &testSwapServerConn{
+		hint: &RouteHint{
+			NodeID:          serverPubKey,
+			ChannelID:       99,
+			FeeBaseMsat:     1,
+			FeePropPpm:      2,
+			CltvExpiryDelta: 40,
+		},
+		cfg: &VHTLCConfig{
+			RefundLocktime:                       144,
+			UnilateralClaimDelay:                 12,
+			UnilateralRefundDelay:                24,
+			UnilateralRefundWithoutReceiverDelay: 36,
+			SwapServerPubkey:                     serverPubKey,
+		},
+	}
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+	}
+
+	client := NewSwapClientWithStore(
+		serverConn, daemonConn, nil, creator, store,
+	)
+	client.overdueReceivePollWindow = 100 * time.Millisecond
+	useTestOnionDecoder(client, 42_000)
+
+	session, err := client.StartReceiveViaLightning(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		session.mutateAndPersist(
+			t.Context(),
+			func() error {
+				session.deadline = time.Now().Add(-time.Second)
+
+				return nil
+			},
+		),
+	)
+
+	resumed, err := client.ResumeReceiveViaLightning(
+		t.Context(), session.PaymentHash,
+	)
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateInvoiceCreated, resumed.State())
+
+	err = resumed.waitForHTLCEvent(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateHTLCEventAccepted, resumed.State())
+}
+
 // TestReceiveSessionFailsOnAmountMismatch asserts the client stops with an
 // ordinary terminal failure when the funded vHTLC amount does not match the
 // invoice amount it requested.
@@ -1396,7 +1576,6 @@ func TestReceiveSessionFailsOnAmountMismatch(t *testing.T) {
 	)
 	useTestOnionDecoder(client, 42_000)
 	client.waitPollInterval = time.Millisecond
-	client.waitVHTLCTimeout = 50 * time.Millisecond
 
 	session, err := client.StartReceiveViaLightning(
 		t.Context(), btcutil.Amount(42_000),

@@ -24,8 +24,7 @@ type router struct {
 	runtime *Runtime
 }
 
-// newRouter constructs a router bound to the runtime that will track the
-// resulting pending entries for the deadline watcher.
+// newRouter constructs a router bound to the shared wallet runtime.
 func newRouter(deps *Deps, runtime *Runtime) *router {
 	return &router{deps: deps, runtime: runtime}
 }
@@ -81,15 +80,6 @@ func (r *router) sendInvoice(ctx context.Context, invoice string,
 		startResp.GetSwap(), req.GetNote(), invoice,
 		walletrpc.EntryKind_ENTRY_KIND_SEND,
 	)
-
-	if entry.Status == walletrpc.EntryStatus_ENTRY_STATUS_PENDING {
-		r.runtime.trackPending(
-			entry.GetId(), entry.GetKind(),
-			unixToTime(
-				entry.GetCreatedAtUnix(),
-			),
-		)
-	}
 
 	// For invoice sends actual_amount_sat is the swap's negotiated
 	// principal: that's what is being paid to the BOLT-11 destination

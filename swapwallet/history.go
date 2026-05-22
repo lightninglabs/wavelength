@@ -22,8 +22,8 @@ import (
 // own canonical persistence (swap DB, ledger entries, boarding_sweeps),
 // and swapwallet must not duplicate that state. The merger simply pulls
 // the latest pages, normalizes each row to a WalletEntry, applies the
-// caller's filters, sorts by updated_at descending, paginates, and
-// overlays the runtime's deadline-driven FAILED projections.
+// caller's filters, sorts by updated_at descending, paginates, and applies
+// wallet-local deadline projections.
 type history struct {
 	deps    *Deps
 	runtime *Runtime
@@ -105,6 +105,7 @@ func (h *history) listActivity(ctx context.Context,
 	}
 
 	var entries []*walletrpc.WalletEntry
+	swapEntryIDs := make(map[string]struct{})
 
 	if h.shouldInclude(kindFilter, walletrpc.EntryKind_ENTRY_KIND_SEND) ||
 		h.shouldInclude(kindFilter,
@@ -117,6 +118,9 @@ func (h *history) listActivity(ctx context.Context,
 			return nil, fmt.Errorf("collect swap entries: %w", err)
 		}
 
+		for _, entry := range swapEntries {
+			swapEntryIDs[entry.GetId()] = struct{}{}
+		}
 		entries = append(entries, swapEntries...)
 	}
 
@@ -137,10 +141,10 @@ func (h *history) listActivity(ctx context.Context,
 		entries = append(entries, ledgerEntries...)
 	}
 
-	// Apply wallet-level overlay (deadline timeout) BEFORE filtering so
-	// a stuck entry appears as FAILED in the wallet view even when the
+	// Apply wallet-local deadline overlays BEFORE filtering so a stuck
+	// non-swap entry appears as FAILED in the wallet view even when the
 	// caller asked for pending_only=false.
-	h.applyOverlays(entries)
+	h.applyOverlays(entries, swapEntryIDs)
 
 	// Dedupe by canonical id BEFORE filtering and sorting. An OOR-backed
 	// SEND surfaces once from collectSwapEntries (swap subsystem) and
@@ -342,9 +346,14 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 // applyOverlays elevates entries to FAILED in place when the runtime has
 // flagged them past their wallet-level deadline. The underlying swap or
 // ledger row is left alone; the elevation is a wallet-surface projection.
-func (h *history) applyOverlays(entries []*walletrpc.WalletEntry) {
+func (h *history) applyOverlays(entries []*walletrpc.WalletEntry,
+	swapEntryIDs map[string]struct{}) {
+
 	for _, e := range entries {
 		if e.GetStatus() != walletrpc.EntryStatus_ENTRY_STATUS_PENDING {
+			continue
+		}
+		if _, ok := swapEntryIDs[e.GetId()]; ok {
 			continue
 		}
 		ov, ok := h.runtime.overlayFor(e.GetId())

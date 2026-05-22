@@ -440,7 +440,7 @@ type SwapClient struct {
 	log        btclog.Logger
 
 	waitPollInterval         time.Duration
-	waitVHTLCTimeout         time.Duration
+	overdueReceivePollWindow time.Duration
 	fundingResumeGracePeriod time.Duration
 	claimResumeGracePeriod   time.Duration
 	fundingExpiryBuffer      time.Duration
@@ -498,7 +498,7 @@ func NewSwapClientWithStore(server SwapServerConn, daemon DaemonConn,
 		store:                    store,
 		log:                      log,
 		waitPollInterval:         2 * time.Second,
-		waitVHTLCTimeout:         60 * time.Second,
+		overdueReceivePollWindow: defaultOverdueReceiveMailboxPollWindow,
 		fundingResumeGracePeriod: defaultFundingResumeGracePeriod,
 		claimResumeGracePeriod:   defaultClaimResumeGracePeriod,
 		fundingExpiryBuffer:      defaultFundingExpiryBuffer,

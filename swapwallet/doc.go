@@ -23,13 +23,12 @@
 //   - Balance and Status surface a unified, summary-level view.
 //   - SubscribeWallet streams normalized WalletEntry updates.
 //
-// The package owns the full swap lifecycle in-process. Its runtime drives a
-// synchronous resume-on-startup sweep before the gRPC server accepts calls,
-// enforces a wallet-level deadline watcher that transitions stuck entries
-// to FAILED, and runs a monitor loop that fans normalized updates to
-// SubscribeWallet subscribers. Background goroutines are anchored to the
-// daemon root context, never to RPC-call contexts, so a CLI disconnect can
-// never cancel in-flight work.
+// The package composes the full swap lifecycle in-process. Its runtime drives
+// a synchronous resume-on-startup sweep before the gRPC server accepts calls,
+// keeps wallet-local pending entries from hanging forever, and runs a monitor
+// loop that fans normalized updates to SubscribeWallet subscribers. Background
+// goroutines are anchored to the daemon root context, never to RPC-call
+// contexts, so a CLI disconnect can never cancel in-flight work.
 //
 // The walletrpc build tag depends on swapruntime: building walletrpc without
 // swapruntime is a deliberate compile error because the subserver composes

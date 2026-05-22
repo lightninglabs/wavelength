@@ -102,11 +102,10 @@ func TestMonitorLoopFansOutSwapUpdates(t *testing.T) {
 	)
 }
 
-// TestMonitorLoopTracksPendingByPaymentHash confirms a swap row fanned
-// out from the monitor reaches subscribers under its payment_hash id
-// (the wallet-layer canonical id) and is recorded in the pending
-// tracker so the deadline watcher can age it.
-func TestMonitorLoopTracksPendingByPaymentHash(t *testing.T) {
+// TestMonitorLoopLeavesSwapPendingToFSM confirms a swap row fanned out from
+// the monitor reaches subscribers under its payment_hash id, but is not aged by
+// the wallet-level deadline tracker even before its direction is populated.
+func TestMonitorLoopLeavesSwapPendingToFSM(t *testing.T) {
 	t.Parallel()
 
 	swap := newStreamingFakeSwap()
@@ -119,7 +118,6 @@ func TestMonitorLoopTracksPendingByPaymentHash(t *testing.T) {
 
 	swap.updates <- &swapclientrpc.SwapSummary{
 		PaymentHash: "swap-hash",
-		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
 		Pending:     true,
 	}
 	entry := drainOne(t, sub)
@@ -128,11 +126,16 @@ func TestMonitorLoopTracksPendingByPaymentHash(t *testing.T) {
 		"swap row id must surface as payment_hash without further "+
 			"projection",
 	)
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, entry.GetKind(),
+	)
 
 	r.pendingMu.Lock()
 	_, ok := r.pending["swap-hash"]
 	r.pendingMu.Unlock()
-	require.True(t, ok, "monitor must track pending swap rows")
+	require.False(
+		t, ok, "monitor must leave pending swap rows to the swap FSM",
+	)
 }
 
 // TestMonitorLoopClearsPendingOnTerminal confirms a terminal swap event
@@ -357,12 +360,10 @@ func TestMonitorLoopTerminalStatusBeatsStaleOverlay(t *testing.T) {
 	)
 }
 
-// TestMonitorLoopOverlayDoesNotFlapOnPendingUpdate asserts the M-2 fix:
-// once a wallet-layer FAILED overlay is set, a subsequent PENDING
-// monitor update neither clears the overlay nor causes oscillation in
-// the subscriber stream. The synthetic FAILED projection stays sticky
-// until the underlying swap actually terminates.
-func TestMonitorLoopOverlayDoesNotFlapOnPendingUpdate(t *testing.T) {
+// TestMonitorLoopPendingSwapBeatsStaleOverlay asserts that a PENDING source
+// update from the swap subsystem clears any stale wallet-level timeout overlay,
+// even before the swap direction is populated.
+func TestMonitorLoopPendingSwapBeatsStaleOverlay(t *testing.T) {
 	t.Parallel()
 
 	swap := newStreamingFakeSwap()
@@ -387,23 +388,24 @@ func TestMonitorLoopOverlayDoesNotFlapOnPendingUpdate(t *testing.T) {
 	// The swap subsystem still reports the swap as in-flight.
 	swap.updates <- &swapclientrpc.SwapSummary{
 		PaymentHash: "hash-stuck",
-		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
 		Pending:     true,
 	}
 
 	got := drainOne(t, sub)
 	require.Equal(
-		t, walletrpc.EntryStatus_ENTRY_STATUS_FAILED, got.GetStatus(),
-		"synthetic overlay must remain visible while the swap is "+
-			"still pending so the wallet surface is not flapping",
+		t, walletrpc.EntryStatus_ENTRY_STATUS_PENDING, got.GetStatus(),
+		"swap source status must beat a stale wallet timeout overlay",
 	)
-	require.Equal(t, "timed_out", got.GetFailureReason())
+	require.Empty(t, got.GetFailureReason())
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, got.GetKind(),
+	)
 
 	r.pendingMu.Lock()
 	_, overlayKept := r.overlay["hash-stuck"]
 	r.pendingMu.Unlock()
-	require.True(
-		t, overlayKept, "a PENDING monitor update must NOT clear "+
-			"an existing wallet-layer overlay",
+	require.False(
+		t, overlayKept, "a PENDING swap update must clear the "+
+			"stale wallet-layer overlay",
 	)
 }

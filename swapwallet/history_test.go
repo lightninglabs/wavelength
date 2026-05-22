@@ -205,19 +205,17 @@ func TestHistoryKindFilterRejectsUnsupportedKind(t *testing.T) {
 	require.ErrorIs(t, err, ErrUnsupportedKind)
 }
 
-// TestHistoryOverlayProjectsTimedOutFailed confirms the runtime's
-// deadline overlay surfaces as FAILED in the history view without
-// mutating the underlying source.
-func TestHistoryOverlayProjectsTimedOutFailed(t *testing.T) {
+// TestHistorySwapRowsIgnoreTimedOutOverlay confirms swap-backed rows use the
+// swap FSM as their source of truth instead of wallet timeout overlays, even
+// before the lazy swap summary has a populated direction.
+func TestHistorySwapRowsIgnoreTimedOutOverlay(t *testing.T) {
 	t.Parallel()
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
 		Swaps: []*swapclientrpc.SwapSummary{
 			{
-				PaymentHash: "stuck",
-				Direction: swapclientrpc.
-					SwapDirection_SWAP_DIRECTION_PAY,
+				PaymentHash:   "stuck",
 				Pending:       true,
 				UpdatedAtUnix: 100,
 			},
@@ -228,6 +226,47 @@ func TestHistoryOverlayProjectsTimedOutFailed(t *testing.T) {
 	// Inject overlay directly.
 	h.runtime.pendingMu.Lock()
 	h.runtime.overlay["stuck"] = overlayStatus{
+		status: walletrpc.
+			EntryStatus_ENTRY_STATUS_FAILED,
+		failureReason: "timed_out",
+	}
+	h.runtime.pendingMu.Unlock()
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.GetActivity().GetEntries(), 1)
+	require.Equal(
+		t, walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		resp.GetActivity().GetEntries()[0].GetStatus(),
+	)
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		resp.GetActivity().GetEntries()[0].GetKind(),
+	)
+	require.Empty(t, resp.GetActivity().GetEntries()[0].GetFailureReason())
+}
+
+// TestHistoryWalletRowsApplyTimedOutOverlay confirms wallet-local pending rows
+// still surface the runtime's deadline projection in history.List.
+func TestHistoryWalletRowsApplyTimedOutOverlay(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Txid:               "exit-txid",
+				Type:               "sweep",
+				ConfirmationStatus: "pending",
+				CreatedAtUnixS:     100,
+			},
+		},
+	}
+
+	// Inject overlay directly.
+	h.runtime.pendingMu.Lock()
+	h.runtime.overlay["exit-txid"] = overlayStatus{
 		status: walletrpc.
 			EntryStatus_ENTRY_STATUS_FAILED,
 		failureReason: "timed_out",
