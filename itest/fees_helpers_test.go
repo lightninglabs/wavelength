@@ -106,6 +106,24 @@ func expectedNetAfterBoarding(t *testing.T, grossSat int64,
 // remainingBlocks clamps to zero when BatchExpiry is already at
 // or behind currentHeight; the server's EstimateFee then falls
 // back to SweepDelay, matching the fee builder's δ_min floor.
+//
+// Treasury-utilization race: the operator's `TreasuryTracker` is
+// reseeded reactively from ledger inserts, which happen
+// asynchronously after a round confirms. If this helper is called
+// in the window between "round confirmed" and "ledger insert /
+// treasury reseeded", `EstimateFee` reports the pre-confirmation
+// utilization; the server's seal-time quote that fires on the next
+// round then reads the post-confirmation utilization and prices
+// liquidity differently. The two diverge by exactly the delta the
+// boarded amount contributes to the liquidity leg, which is plenty
+// to fail an exact-amount assertion downstream.
+//
+// To avoid that race we poll `EstimateFee` until two consecutive
+// reads return the same `TotalFeeSat`. Once the operator has
+// stabilised on a single quote we know the ledger / treasury
+// projection has caught up to the most recent ledger insert and
+// the next seal-time quote will read the same utilization
+// snapshot we just sampled.
 func expectedNetAfterRefresh(t *testing.T, h *harness.ArkHarness,
 	vtxo *daemonrpc.VTXO) int64 {
 
@@ -118,12 +136,30 @@ func expectedNetAfterRefresh(t *testing.T, h *harness.ArkHarness,
 		remainingBlocks = uint32(vtxo.BatchExpiry - currentHeight)
 	}
 
-	quote := operatorEstimateFee(
-		t, h, vtxo.AmountSat, false, /* isBoarding */
-		remainingBlocks,
+	var (
+		stableFee int64
+		prevFee   int64 = -1
 	)
+	require.Eventually(t, func() bool {
+		quote := operatorEstimateFee(
+			t, h, vtxo.AmountSat, false, /* isBoarding */
+			remainingBlocks,
+		)
 
-	return vtxo.AmountSat - quote.TotalFeeSat
+		if prevFee == quote.TotalFeeSat {
+			stableFee = quote.TotalFeeSat
+
+			return true
+		}
+
+		prevFee = quote.TotalFeeSat
+
+		return false
+	}, defaultTimeout, pollInterval,
+		"EstimateFee never stabilised — treasury tracker did not "+
+			"converge in time")
+
+	return vtxo.AmountSat - stableFee
 }
 
 // operatorEstimateFee queries the operator's client-facing

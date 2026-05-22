@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
+	"github.com/lightninglabs/darepo/adminrpc"
 	"github.com/lightninglabs/darepo/harness"
 	"github.com/stretchr/testify/require"
 )
@@ -410,6 +411,194 @@ func TestUnilateralExitOORDerivedCompletion(t *testing.T) {
 		"Unroll completed: OOR VTXO %s swept to wallet UTXO %s, "+
 			"sweep_txid=%s", receivedVTXO.Outpoint, sweptOutpoint,
 		statusResp.SweepTxid,
+	)
+}
+
+// TestUnilateralExitInRoundDerivedCompletion verifies the full end-to-
+// end unilateral exit flow for a VTXO received via the in-round
+// directed-send path (SendVTXO), as opposed to the OOR path covered
+// by TestUnilateralExitOORDerivedCompletion. Alice boards, then sends
+// a portion of her VTXO to Bob using his receive pubkey via SendVTXO;
+// the round commits; Bob's daemon materializes the recipient VTXO via
+// the IncomingVTXOHandler push path; Bob then triggers unilateral
+// exit on the received VTXO and the funds end up in his on-chain
+// wallet.
+//
+// Locks down the bug-3 regression in BUGS_FOUND.md: incoming-VTXO
+// materialization must populate Descriptor.Ancestry so the unroll
+// CPFP child can be constructed. Without that, the unroll actor
+// terminates with "descriptor missing ancestry" and the funds stay
+// locked until batch expiry.
+func TestUnilateralExitInRoundDerivedCompletion(t *testing.T) {
+	t.Parallel()
+
+	h := newUnrollHarness(t)
+
+	alice := h.StartClientDaemon("alice")
+	bob := h.StartClientDaemon("bob")
+	operatorInfo := getOperatorInfo(t, h)
+
+	waitForRegisteredClients(t, h, 2)
+
+	// Board Alice to get a live VTXO for the directed send.
+	_, aliceLiveVTXO, _ := boardClientAndConfirmRound(
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
+	)
+
+	// Fund Bob's wallet for CPFP fees during unroll.
+	h.FundClientWallet(bob, btcutil.SatoshiPerBitcoin)
+
+	// Bob registers a receive script — same mechanism as OOR. This
+	// is what tells the operator's indexer to push an
+	// IncomingVTXOEvent at Bob whenever a round produces an output
+	// at the registered pkScript.
+	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
+
+	recvResp, err := bob.RPCClient.NewReceiveScript(
+		t.Context(), &daemonrpc.NewReceiveScriptRequest{
+			Label: "itest-unroll-inround",
+		},
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, recvResp.PubkeyXonlyHex)
+
+	recipientPubkey, err := hex.DecodeString(recvResp.PubkeyXonlyHex)
+	require.NoError(t, err)
+
+	// Alice sends a portion to Bob in-round. SendVTXO triggers
+	// round registration immediately (TriggerRegistration=true for
+	// directed sends), so no follow-up `ark rounds join` is needed.
+	sendAmount := int64(30_000)
+	sendResp, err := alice.RPCClient.SendVTXO(
+		t.Context(), &daemonrpc.SendVTXORequest{
+			Recipients: []*daemonrpc.Output{
+				{
+					AmountSat: sendAmount,
+					Destination: &daemonrpc.Output_Pubkey{
+						Pubkey: recipientPubkey,
+					},
+				},
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", sendResp.Status)
+
+	h.Logf(
+		"SendVTXO submitted: change=%d selected=%d",
+		sendResp.ChangeAmountSat, sendResp.SelectedCount,
+	)
+
+	// Drive the send round to operator-side confirmation. The new
+	// round's commit tx needs to mine before Bob's daemon sees the
+	// IncomingVTXOEvent push.
+	sendRound := waitForNewClientRoundState(
+		t, alice.RPCClient, map[string]struct{}{
+			aliceLiveVTXO.RoundId: {},
+		},
+		daemonrpc.RoundState_ROUND_STATE_JOINED,
+	)
+	require.NotEmpty(t, sendRound.RoundId)
+
+	require.Eventually(t, func() bool {
+		if operatorRoundHasStatus(
+			t, h, sendRound.RoundId,
+			adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED,
+		) {
+			return true
+		}
+
+		h.GenerateAndWait(1)
+
+		return operatorRoundHasStatus(
+			t, h, sendRound.RoundId,
+			adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED,
+		)
+	}, defaultTimeout, pollInterval,
+		"send round %s never confirmed", sendRound.RoundId)
+
+	h.Logf("Send round confirmed: round_id=%q", sendRound.RoundId)
+
+	// Wait for Bob to materialize the recipient VTXO via the
+	// IncomingVTXOHandler push path.
+	receivedVTXO := waitForNewLiveVTXOWithAmount(
+		t, bob.RPCClient, bobLiveBefore, sendAmount,
+	)
+	require.NotNil(t, receivedVTXO)
+
+	h.Logf(
+		"Bob received in-round VTXO: outpoint=%s amount=%d "+
+			"round_id=%s commitment_txid=%s chain_depth=%d",
+		receivedVTXO.Outpoint, receivedVTXO.AmountSat,
+		receivedVTXO.RoundId, receivedVTXO.CommitmentTxid,
+		receivedVTXO.ChainDepth,
+	)
+
+	// A round-direct (not OOR-derived) received VTXO carries chain
+	// depth 0 and is rooted at a fresh commitment, distinct from
+	// Alice's source commitment.
+	require.Equal(
+		t, uint32(0), receivedVTXO.ChainDepth,
+		"in-round-direct VTXO should have chain depth 0",
+	)
+	require.NotEqual(
+		t, aliceLiveVTXO.CommitmentTxid, receivedVTXO.CommitmentTxid,
+		"in-round VTXO should be anchored to a fresh commitment, "+
+			"not Alice's source commitment",
+	)
+
+	initialWalletUTXOs := confirmedWalletUTXOValues(t, bob)
+
+	// Trigger unilateral exit on Bob's received VTXO.
+	unrollResp, err := bob.RPCClient.Unroll(
+		t.Context(), &daemonrpc.UnrollRequest{
+			Outpoint: receivedVTXO.Outpoint,
+		},
+	)
+	require.NoError(t, err)
+	require.True(t, unrollResp.Created)
+
+	h.Logf(
+		"Unroll job created for in-round VTXO: actor_id=%s",
+		unrollResp.ActorId,
+	)
+
+	// Verify the VTXO retires from Bob's live set.
+	waitForVTXOStatusByOutpoint(
+		t, bob.RPCClient, receivedVTXO.Outpoint,
+		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+	)
+
+	// Mine blocks and wait for the unroll job to reach completion.
+	// This is the load-bearing assertion for bug-3: without
+	// ancestry populated on the descriptor, the unroll actor
+	// terminates immediately with "descriptor missing ancestry"
+	// and waitForUnrollSweepToWallet times out.
+	sweptOutpoint := waitForUnrollSweepToWallet(
+		t, h, bob, bob.RPCClient, receivedVTXO.Outpoint,
+		receivedVTXO.AmountSat, initialWalletUTXOs,
+	)
+
+	statusResp, err := bob.RPCClient.GetUnrollStatus(
+		t.Context(), &daemonrpc.GetUnrollStatusRequest{
+			Outpoint: receivedVTXO.Outpoint,
+		},
+	)
+	require.NoError(t, err)
+	require.True(t, statusResp.Found)
+	require.Equal(
+		t, daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
+		statusResp.Status, "unroll job should be in COMPLETED state",
+	)
+	require.NotEmpty(
+		t, statusResp.SweepTxid,
+		"completed unroll should expose the sweep txid",
+	)
+
+	h.Logf(
+		"Unroll completed: in-round VTXO %s swept to wallet UTXO "+
+			"%s, sweep_txid=%s", receivedVTXO.Outpoint,
+		sweptOutpoint, statusResp.SweepTxid,
 	)
 }
 

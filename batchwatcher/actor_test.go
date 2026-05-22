@@ -1528,6 +1528,128 @@ func TestLeafSpendExpiredVTXOIsLegitimate(t *testing.T) {
 	)
 }
 
+// TestLeafSpendUsesCanonicalLeafOutpointForMultiLeafTrees pins the fix for
+// the partial-unilateral-exit regression: in a multi-leaf VTXO tree the
+// progressive watcher arms a spend watch on the leaf-INPUT
+// (`branch_tx_hash:i`, the script output the leaf tx will consume) and
+// flips `IsVTXO=true` because the immediate tree child IS a leaf. When the
+// leaf tx subsequently broadcasts, the watch fires with `SpentOutpoint =
+// branch_tx_hash:i` — but the persisted VTXO record's outpoint is
+// `leaf_tx_hash:non_anchor_index`. Without the canonical-outpoint
+// resolution in `handleLeafSpend` the recovery store lookup misses and the
+// VTXO never transitions to `unrolled_by_client`; the operator's
+// `list-vtxos` keeps returning the leaf as `live` forever even though the
+// CSV sweep already landed on chain.
+//
+// The test threads a real `tree.Node` through the leaf output so
+// `GetNonAnchorOutpoint` can actually run (the existing harness uses an
+// empty placeholder Node and exercises the fallback path).
+func TestLeafSpendUsesCanonicalLeafOutpointForMultiLeafTrees(t *testing.T) {
+	h := newTestHarness(t)
+	batchID := createBatchID(t)
+
+	// Build a real multi-leaf tree so the leaf node carries the
+	// outputs needed to compute the canonical VTXO outpoint.
+	testTree := h.createFanOutTree(t)
+	leafNode := testTree.Root.Children[0].Children[0]
+	require.True(
+		t, leafNode.IsLeaf(),
+		"test premise: descended into the leaf layer of the "+
+			"fan-out tree",
+	)
+
+	canonicalVTXOOutpoint, err := leafNode.GetNonAnchorOutpoint()
+	require.NoError(t, err)
+
+	// Synthesize the watched leaf-input outpoint as the watcher would
+	// have recorded it after ratcheting through the branch level. The
+	// hash here is deliberately different from the leaf tx's hash so
+	// the test only passes when the lookup ignores the watched
+	// outpoint in favour of the canonical leaf-derived one.
+	leafInputOutpoint := wire.OutPoint{
+		Hash: chainhash.Hash{
+			0xfe, 0xed, 0xfa, 0xce,
+		},
+		Index: 0,
+	}
+
+	recoveryMgr := &mockSpendRecoveryStore{}
+	cpLookup := &mockCheckpointLookup{}
+	h.actor.cfg.SpendRecoveryStore = fn.Some[SpendRecoveryStore](
+		recoveryMgr,
+	)
+	h.actor.cfg.CheckpointLookup = fn.Some[CheckpointLookup](cpLookup)
+
+	// Recovery store: ONLY return a VTXO record for the canonical
+	// leaf-tx outpoint. Lookups against the watched leaf-input
+	// outpoint return nil, modelling the production DB shape.
+	var lookups []wire.OutPoint
+	recoveryMgr.getVTXOFn = func(_ context.Context, op wire.OutPoint) (
+		*RecoveryVTXO, error) {
+
+		lookups = append(lookups, op)
+		if op == *canonicalVTXOOutpoint {
+			return &RecoveryVTXO{
+				Outpoint: op,
+				Status:   VTXOStatusLive,
+			}, nil
+		}
+
+		return nil, nil
+	}
+
+	var markedOutpoint wire.OutPoint
+	recoveryMgr.markUnrolledFn = func(_ context.Context,
+		op wire.OutPoint) error {
+
+		markedOutpoint = op
+
+		return nil
+	}
+
+	leafOutput := &Output{
+		Outpoint: leafInputOutpoint,
+		TxOut:    wire.NewTxOut(50_000, []byte{0x51, 0x20}),
+		IsVTXO:   true,
+		TreeNode: leafNode,
+	}
+	treeState := NewBatchTreeState(batchID, testTree, 1000)
+	treeState.AddExistingOutput(leafOutput)
+	treeState.MarkWatched(leafInputOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	spendingTx := wire.NewMsgTx(3)
+	spendingTx.AddTxIn(&wire.TxIn{PreviousOutPoint: leafInputOutpoint})
+	spendingTx.AddTxOut(wire.NewTxOut(49_000, []byte{0x00, 0x14}))
+
+	result := h.actor.Receive(t.Context(), &NodeSpendDetected{
+		BatchID:        batchID,
+		SpentOutpoint:  leafInputOutpoint,
+		SpendingTx:     spendingTx,
+		SpendingHeight: 600,
+	})
+	require.True(
+		t, result.IsOk(),
+		"the leaf-spend handler must classify cleanly even when "+
+			"the watched outpoint and the persisted VTXO "+
+			"outpoint diverge",
+	)
+	require.Equal(
+		t, *canonicalVTXOOutpoint, markedOutpoint, "MarkVTXOUnrolled"+
+			"ByClient MUST target the canonical leaf-derived "+
+			"outpoint, not the watched leaf-input",
+	)
+	require.Contains(
+		t, lookups, *canonicalVTXOOutpoint,
+		"GetVTXO must be issued for the canonical leaf outpoint",
+	)
+	require.NotContains(
+		t, lookups, leafInputOutpoint, "GetVTXO must NOT be issued "+
+			"for the watched leaf-input outpoint — that is the "+
+			"bug the canonical resolution fixes",
+	)
+}
+
 // TestLeafSpendClassificationErrorPreservesTracking verifies that a transient
 // error during leaf-spend classification (e.g. a DB lookup failure) does NOT
 // silently lose the spend event: the tracked output must remain in the
