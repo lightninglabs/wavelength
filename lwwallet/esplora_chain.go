@@ -57,25 +57,55 @@ type EsploraChainService struct {
 	// whose methods do not accept a context parameter.
 	runCtx context.Context //nolint:containedctx
 
+	// maxGapFillPerTipEvent caps the number of missed heights that a
+	// single processTipEvent invocation will walk before yielding
+	// back to the handleTipEvents loop. Initialized from
+	// defaultMaxGapFillPerTipEvent and overridable via the
+	// WithMaxGapFillPerTipEvent functional option (tests use this to
+	// exercise the cap branch without revealing 256+ heights).
+	maxGapFillPerTipEvent int32
+
 	quit     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+}
+
+// EsploraChainServiceOption configures an EsploraChainService at
+// construction time. Options are applied in order, so a later option
+// overrides an earlier one for the same field.
+type EsploraChainServiceOption func(*EsploraChainService)
+
+// WithMaxGapFillPerTipEvent overrides the per-TipBlock gap-fill cap.
+// Intended for tests that need to exercise the bounded-walk branch
+// of fillGap; production callers should leave the default in place.
+func WithMaxGapFillPerTipEvent(n int32) EsploraChainServiceOption {
+	return func(s *EsploraChainService) {
+		s.maxGapFillPerTipEvent = n
+	}
 }
 
 // NewEsploraChainService creates a new chain.Interface backed by the
 // Esplora REST API. The provided TipPoller drives new-block
 // detection; the caller is responsible for starting and stopping it.
 func NewEsploraChainService(esplora *EsploraClient, tipPoller *TipPoller,
-	logger btclog.Logger) *EsploraChainService {
+	logger btclog.Logger,
+	opts ...EsploraChainServiceOption) *EsploraChainService {
 
-	return &EsploraChainService{
-		esplora:       esplora,
-		tipPoller:     tipPoller,
-		log:           logger,
-		notifications: make(chan interface{}, 100),
-		watchedAddrs:  make(map[string]btcutil.Address),
-		quit:          make(chan struct{}),
+	s := &EsploraChainService{
+		esplora:               esplora,
+		tipPoller:             tipPoller,
+		log:                   logger,
+		notifications:         make(chan interface{}, 100),
+		watchedAddrs:          make(map[string]btcutil.Address),
+		maxGapFillPerTipEvent: defaultMaxGapFillPerTipEvent,
+		quit:                  make(chan struct{}),
 	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	return s
 }
 
 // Start seeds the initial chain tip from the configured TipPoller
@@ -683,8 +713,10 @@ func (s *EsploraChainService) handleTipEvents(ctx context.Context,
 // height, so the cap is essentially never hit. 256 is well above any
 // realistic burst of consecutive previously-failed events while still
 // bounding each invocation's wall-clock to well under one second of
-// Esplora HTTP under typical mempool.space latency.
-const defaultMaxGapFillPerTipEvent = 256
+// Esplora HTTP under typical mempool.space latency. Overridable via
+// WithMaxGapFillPerTipEvent for tests that need to exercise the
+// per-event cap branch without producing 256+ heights of traffic.
+const defaultMaxGapFillPerTipEvent int32 = 256
 
 // processTipEvent applies one TipBlock to btcwallet's notification
 // channel. The chain service owns its own delivery cursor
@@ -773,8 +805,8 @@ func (s *EsploraChainService) fillGap(ctx context.Context,
 	start, end int32, watchedScripts map[string]struct{}) bool {
 
 	walkEnd := end
-	if end-start > defaultMaxGapFillPerTipEvent {
-		walkEnd = start + defaultMaxGapFillPerTipEvent
+	if end-start > s.maxGapFillPerTipEvent {
+		walkEnd = start + s.maxGapFillPerTipEvent
 	}
 
 	for h := start + 1; h <= walkEnd; h++ {

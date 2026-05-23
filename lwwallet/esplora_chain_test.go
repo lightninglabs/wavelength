@@ -48,16 +48,24 @@ type rawBlockStubChain struct {
 	// fetch decrements the counter; once it reaches zero the route
 	// returns the real block bytes.
 	failRawRemaining map[chainhash.Hash]int
+
+	// failHeaderRemaining records the number of times the JSON
+	// header route /block/:hash should still return an error for a
+	// given hash. Same decrement-on-fetch semantics as
+	// failRawRemaining; used to exercise the gap-fill header
+	// failure branch in EsploraChainService.fillGap.
+	failHeaderRemaining map[chainhash.Hash]int
 }
 
 // newRawBlockStubChain builds a fixture seeded with blocks 0..tipHeight.
 func newRawBlockStubChain(tipHeight int32) *rawBlockStubChain {
 	c := &rawBlockStubChain{
-		tipHeight:        tipHeight,
-		blockAt:          make(map[int32]*wire.MsgBlock),
-		hashAt:           make(map[int32]chainhash.Hash),
-		heightFor:        make(map[chainhash.Hash]int32),
-		failRawRemaining: make(map[chainhash.Hash]int),
+		tipHeight:           tipHeight,
+		blockAt:             make(map[int32]*wire.MsgBlock),
+		hashAt:              make(map[int32]chainhash.Hash),
+		heightFor:           make(map[chainhash.Hash]int32),
+		failRawRemaining:    make(map[chainhash.Hash]int),
+		failHeaderRemaining: make(map[chainhash.Hash]int),
 	}
 
 	for h := int32(0); h <= tipHeight; h++ {
@@ -138,6 +146,33 @@ func (c *rawBlockStubChain) failRawForHeight(height int32, count int) {
 	defer c.mu.Unlock()
 
 	c.failRawRemaining[c.hashAt[height]] = count
+}
+
+// failHeaderForHeight schedules the next `count` /block/:hash JSON
+// header fetches for the block at the given height to return a 502.
+// Used to exercise the gap-fill header-failure branch in
+// EsploraChainService.fillGap.
+func (c *rawBlockStubChain) failHeaderForHeight(height int32, count int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.failHeaderRemaining[c.hashAt[height]] = count
+}
+
+// hashFor returns the precomputed hash for the given height. The
+// height must already have been minted (via the initial seed or a
+// later premint/reveal); a missing entry is a test bug, not a
+// caller error, so we panic to surface it loudly.
+func (c *rawBlockStubChain) hashFor(height int32) chainhash.Hash {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	hash, ok := c.hashAt[height]
+	if !ok {
+		panic(fmt.Sprintf("hashFor: height %d not minted", height))
+	}
+
+	return hash
 }
 
 // handler returns an http.HandlerFunc that serves the routes
@@ -221,12 +256,25 @@ func (c *rawBlockStubChain) serveBlockRoute(t *testing.T, w http.ResponseWriter,
 		return
 	}
 	block := c.blockAt[height]
-	failsLeft := c.failRawRemaining[*hash]
+	rawFailsLeft := c.failRawRemaining[*hash]
+	headerFailsLeft := c.failHeaderRemaining[*hash]
 	c.mu.Unlock()
 
 	switch suffix {
 	case "":
-		// JSON header.
+		// JSON header. Honor the per-hash failure counter so
+		// tests can drive the fillGap header-fetch failure path.
+		if headerFailsLeft > 0 {
+			c.mu.Lock()
+			c.failHeaderRemaining[*hash] = headerFailsLeft - 1
+			c.mu.Unlock()
+
+			http.Error(w, "injected outage",
+				http.StatusBadGateway)
+
+			return
+		}
+
 		resp := esploraBlock{
 			ID:        hash.String(),
 			Height:    height,
@@ -236,9 +284,9 @@ func (c *rawBlockStubChain) serveBlockRoute(t *testing.T, w http.ResponseWriter,
 		require.NoError(t, err)
 
 	case "/raw":
-		if failsLeft > 0 {
+		if rawFailsLeft > 0 {
 			c.mu.Lock()
-			c.failRawRemaining[*hash] = failsLeft - 1
+			c.failRawRemaining[*hash] = rawFailsLeft - 1
 			c.mu.Unlock()
 
 			http.Error(w, "injected outage",
@@ -401,5 +449,264 @@ func TestEsploraChainServiceRecoversFromTransientGetRawBlockFailure(
 			"BlockConnected in order, even when a transient "+
 			"GetRawBlock failure dropped the original event "+
 			"(observed=%v)", observed,
+	)
+}
+
+// seedCursor sets the chain service's bestBlock to the given height
+// without going through Start (which would require a live TipPoller).
+// Tests that drive processTipEvent directly use this to plant a
+// cursor and then assert that gap-fill / live-event delivery either
+// advances it or, on failure paths, leaves it pinned.
+func seedCursor(svc *EsploraChainService, height int32, hash chainhash.Hash) {
+	svc.mu.Lock()
+	svc.bestBlock.Height = height
+	svc.bestBlock.Hash = hash
+	svc.bestBlock.Timestamp = time.Unix(int64(height)*600, 0)
+	svc.mu.Unlock()
+}
+
+// tipEventFor builds a synthetic TipBlock for the given height using
+// the stub's precomputed hash. Mirrors the (height, hash, *esploraBlock
+// header) shape TipPoller emits in production so processTipEvent
+// sees the same input it would see end-to-end.
+func tipEventFor(c *rawBlockStubChain, height int32) *TipBlock {
+	hash := c.hashFor(height)
+
+	return &TipBlock{
+		Height: height,
+		Hash:   hash,
+		Header: &esploraBlock{
+			ID:        hash.String(),
+			Height:    height,
+			Timestamp: int64(height) * 600,
+		},
+	}
+}
+
+// watchOne registers a single throwaway pubkey-hash address so
+// processTipEvent takes the block-fetch path. The actual script does
+// not need to match anything synthesized in the stub; the only branch
+// we care about is whether the raw-block fetch is even attempted.
+func watchOne(t *testing.T, svc *EsploraChainService) {
+	t.Helper()
+
+	addr, err := btcutil.NewAddressPubKeyHash(
+		make([]byte, 20), &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+	require.NoError(t, svc.NotifyReceived([]btcutil.Address{addr}))
+}
+
+// requireNoNotification asserts the chain service emitted no
+// notification within the given window. Used on failure paths where
+// processTipEvent must return without sending FilteredBlockConnected
+// or BlockConnected.
+func requireNoNotification(t *testing.T, svc *EsploraChainService,
+	window time.Duration, msg string) {
+
+	t.Helper()
+
+	select {
+	case n := <-svc.Notifications():
+		t.Fatalf("%s: unexpected notification %T %v", msg, n, n)
+
+	case <-time.After(window):
+	}
+}
+
+// requireCursor asserts the chain service's bestBlock height equals
+// want. Used to verify the cursor invariant on every gap-fill /
+// deliver-height path: success must advance, failure must pin.
+func requireCursor(t *testing.T, svc *EsploraChainService, want int32) {
+	t.Helper()
+
+	svc.mu.Lock()
+	got := svc.bestBlock.Height
+	svc.mu.Unlock()
+
+	require.Equal(t, want, got, "cursor mismatch")
+}
+
+// TestEsploraChainServiceGapFillHeaderFailureLeavesCursorPinned
+// covers the fillGap header-fetch failure branch. Production reaches
+// this when the blockHeaderCache has been evicted for a height that
+// EsploraChainService still needs to back-fill (TipPoller already
+// emitted the TipBlock but the raw-block fetch failed inside
+// processTipEvent, so the cache may have rolled over before the next
+// event triggers the retry). The invariant: a failed header fetch
+// inside fillGap must leave s.bestBlock untouched so the next
+// TipBlock event retries the same height.
+//
+// We drive processTipEvent directly rather than through TipPoller
+// because TipPoller's own emit path warms the cache for every height
+// it walks, which would mask the failure on retry. Direct invocation
+// keeps the cache cold and exercises the live HTTP path inside
+// fillGap exactly the way a cache-evicted production retry would.
+func TestEsploraChainServiceGapFillHeaderFailureLeavesCursorPinned(
+	t *testing.T) {
+
+	t.Parallel()
+
+	chainStub := newRawBlockStubChain(100)
+	srv := mockEsploraServer(t, chainStub.handler(t))
+
+	esp := NewEsploraClient(srv.URL, btclog.Disabled)
+	svc := NewEsploraChainService(esp, nil, btclog.Disabled)
+
+	seedCursor(svc, 100, chainStub.hashFor(100))
+	watchOne(t, svc)
+
+	// Premint 101..102 so we have hashes; inject a persistent
+	// header failure for 101 so the gap walk hits it before the
+	// live event can be delivered.
+	chainStub.premint(2)
+	chainStub.failHeaderForHeight(101, 999)
+
+	// processTipEvent(102): lastDelivered=100, fillGap(100, 101)
+	// fetches hash for 101 (succeeds, uncached), then header for
+	// 101 (502). fillGap returns false; processTipEvent returns
+	// without delivering the live event or advancing the cursor.
+	svc.processTipEvent(t.Context(), tipEventFor(chainStub, 102))
+
+	requireCursor(t, svc, 100)
+	requireNoNotification(
+		t, svc, 100*time.Millisecond,
+		"gap-fill header failure must not emit any notification",
+	)
+
+	// Recover: clear the header-failure injection. The next
+	// processTipEvent call must walk the gap (101 now succeeds),
+	// emit notifications for 101, then process the live event 102.
+	chainStub.mu.Lock()
+	chainStub.failHeaderRemaining[chainStub.hashAt[101]] = 0
+	chainStub.mu.Unlock()
+
+	svc.processTipEvent(t.Context(), tipEventFor(chainStub, 102))
+
+	observed := drainBlockConnected(
+		t, svc.Notifications(), []int32{101, 102}, 2*time.Second,
+	)
+	require.Equal(
+		t, []int32{101, 102}, observed,
+		"retry after header recovery must deliver 101 then 102",
+	)
+	requireCursor(t, svc, 102)
+}
+
+// TestEsploraChainServiceGapFillRespectsPerEventCap covers the
+// bounded-walk branch of fillGap. When a TipBlock event arrives with
+// a height that is more than maxGapFillPerTipEvent ahead of the
+// cursor, fillGap must walk only up to (cursor + cap), advance the
+// cursor to that intermediate height, drop the live event, and rely
+// on the next TipBlock event to make further progress.
+//
+// We override the cap to 3 via WithMaxGapFillPerTipEvent so the test
+// can drive several capped invocations without revealing 256+ heights
+// of HTTP traffic. This also doubles as functional coverage for the
+// option wiring itself: an off-by-one in the option setter would
+// either leak the default (failing the cap assertion) or zero out
+// the cap (deadlocking on the first invocation).
+func TestEsploraChainServiceGapFillRespectsPerEventCap(t *testing.T) {
+	t.Parallel()
+
+	const testCap int32 = 3
+
+	chainStub := newRawBlockStubChain(100)
+	srv := mockEsploraServer(t, chainStub.handler(t))
+
+	esp := NewEsploraClient(srv.URL, btclog.Disabled)
+	svc := NewEsploraChainService(
+		esp, nil, btclog.Disabled, WithMaxGapFillPerTipEvent(testCap),
+	)
+
+	seedCursor(svc, 100, chainStub.hashFor(100))
+	watchOne(t, svc)
+
+	// Premint 101..110 so the live event at 110 is 9 heights
+	// ahead of the cursor — three full cap-sized walks short of
+	// catching up.
+	chainStub.premint(10)
+	event := tipEventFor(chainStub, 110)
+
+	// First invocation: fillGap(100, 109). end-start=9 > cap=3,
+	// walkEnd = 103. Walks 101..103, returns walkEnd != end, so
+	// processTipEvent returns before delivering 110. Cursor at 103.
+	svc.processTipEvent(t.Context(), event)
+	requireCursor(t, svc, 103)
+	observed := drainBlockConnected(
+		t, svc.Notifications(), []int32{101, 102, 103}, 2*time.Second,
+	)
+	require.Equal(t, []int32{101, 102, 103}, observed)
+	requireNoNotification(
+		t, svc, 50*time.Millisecond,
+		"live event 110 must not be delivered while cap pending",
+	)
+
+	// Second invocation: fillGap(103, 109). end-start=6 > cap=3,
+	// walkEnd = 106. Walks 104..106. Cursor at 106.
+	svc.processTipEvent(t.Context(), event)
+	requireCursor(t, svc, 106)
+	observed = drainBlockConnected(
+		t, svc.Notifications(), []int32{104, 105, 106}, 2*time.Second,
+	)
+	require.Equal(t, []int32{104, 105, 106}, observed)
+	requireNoNotification(
+		t, svc, 50*time.Millisecond,
+		"live event 110 still must not deliver mid-walk",
+	)
+
+	// Third invocation: fillGap(106, 109). end-start=3, NOT > cap,
+	// walkEnd = 109. Walks 107..109, returns true. Live event 110
+	// then delivers. Cursor advances to 110.
+	svc.processTipEvent(t.Context(), event)
+	requireCursor(t, svc, 110)
+	observed = drainBlockConnected(
+		t, svc.Notifications(), []int32{107, 108, 109, 110},
+		2*time.Second,
+	)
+	require.Equal(t, []int32{107, 108, 109, 110}, observed)
+}
+
+// TestEsploraChainServiceDuplicateTipEventIsIgnored covers the
+// duplicate / out-of-order guard at the top of processTipEvent.
+// TipPoller dedupes by height on its emit path, but a subscribe-time
+// race or a future retry path could still hand the chain service an
+// event at or below the cursor; the guard must short-circuit before
+// any HTTP fetch or notification send.
+//
+// We assert two cases: (a) an event at the cursor height (exact
+// duplicate of the last delivered event), and (b) an event strictly
+// below the cursor (out-of-order). Both must leave the cursor pinned
+// and the notification channel idle.
+func TestEsploraChainServiceDuplicateTipEventIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	chainStub := newRawBlockStubChain(100)
+	srv := mockEsploraServer(t, chainStub.handler(t))
+
+	esp := NewEsploraClient(srv.URL, btclog.Disabled)
+	svc := NewEsploraChainService(esp, nil, btclog.Disabled)
+
+	// Plant the cursor at 102 — simulates a previous successful
+	// delivery through that height. Premint 101..102 so the stub
+	// can satisfy any hash lookup we might accidentally trigger.
+	chainStub.premint(2)
+	seedCursor(svc, 102, chainStub.hashFor(102))
+	watchOne(t, svc)
+
+	// (a) Exact duplicate. event.Height == lastDelivered.
+	svc.processTipEvent(t.Context(), tipEventFor(chainStub, 102))
+	requireCursor(t, svc, 102)
+	requireNoNotification(
+		t, svc, 100*time.Millisecond,
+		"duplicate TipBlock at cursor height must not emit",
+	)
+
+	// (b) Strictly older event. event.Height < lastDelivered.
+	svc.processTipEvent(t.Context(), tipEventFor(chainStub, 101))
+	requireCursor(t, svc, 102)
+	requireNoNotification(
+		t, svc, 100*time.Millisecond,
+		"out-of-order TipBlock below cursor must not emit",
 	)
 }
