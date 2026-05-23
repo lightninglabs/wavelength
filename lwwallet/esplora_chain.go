@@ -57,25 +57,55 @@ type EsploraChainService struct {
 	// whose methods do not accept a context parameter.
 	runCtx context.Context //nolint:containedctx
 
+	// maxGapFillPerTipEvent caps the number of missed heights that a
+	// single processTipEvent invocation will walk before yielding
+	// back to the handleTipEvents loop. Initialized from
+	// defaultMaxGapFillPerTipEvent and overridable via the
+	// WithMaxGapFillPerTipEvent functional option (tests use this to
+	// exercise the cap branch without revealing 256+ heights).
+	maxGapFillPerTipEvent int32
+
 	quit     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+}
+
+// EsploraChainServiceOption configures an EsploraChainService at
+// construction time. Options are applied in order, so a later option
+// overrides an earlier one for the same field.
+type EsploraChainServiceOption func(*EsploraChainService)
+
+// WithMaxGapFillPerTipEvent overrides the per-TipBlock gap-fill cap.
+// Intended for tests that need to exercise the bounded-walk branch
+// of fillGap; production callers should leave the default in place.
+func WithMaxGapFillPerTipEvent(n int32) EsploraChainServiceOption {
+	return func(s *EsploraChainService) {
+		s.maxGapFillPerTipEvent = n
+	}
 }
 
 // NewEsploraChainService creates a new chain.Interface backed by the
 // Esplora REST API. The provided TipPoller drives new-block
 // detection; the caller is responsible for starting and stopping it.
 func NewEsploraChainService(esplora *EsploraClient, tipPoller *TipPoller,
-	logger btclog.Logger) *EsploraChainService {
+	logger btclog.Logger,
+	opts ...EsploraChainServiceOption) *EsploraChainService {
 
-	return &EsploraChainService{
-		esplora:       esplora,
-		tipPoller:     tipPoller,
-		log:           logger,
-		notifications: make(chan interface{}, 100),
-		watchedAddrs:  make(map[string]btcutil.Address),
-		quit:          make(chan struct{}),
+	s := &EsploraChainService{
+		esplora:               esplora,
+		tipPoller:             tipPoller,
+		log:                   logger,
+		notifications:         make(chan interface{}, 100),
+		watchedAddrs:          make(map[string]btcutil.Address),
+		maxGapFillPerTipEvent: defaultMaxGapFillPerTipEvent,
+		quit:                  make(chan struct{}),
 	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	return s
 }
 
 // Start seeds the initial chain tip from the configured TipPoller
@@ -674,11 +704,35 @@ func (s *EsploraChainService) handleTipEvents(ctx context.Context,
 	}
 }
 
+// defaultMaxGapFillPerTipEvent caps how many missed heights one
+// processTipEvent invocation will walk before yielding back to the
+// handleTipEvents loop. The cap is a safety belt for pathological
+// cases (a long Esplora outage where the chain service has fallen far
+// behind the live tip and no Rescan was triggered) — under steady-
+// state operation each TipBlock event triggers at most one gap-fill
+// height, so the cap is essentially never hit. 256 is well above any
+// realistic burst of consecutive previously-failed events while still
+// bounding each invocation's wall-clock to well under one second of
+// Esplora HTTP under typical mempool.space latency. Overridable via
+// WithMaxGapFillPerTipEvent for tests that need to exercise the
+// per-event cap branch without producing 256+ heights of traffic.
+const defaultMaxGapFillPerTipEvent int32 = 256
+
 // processTipEvent applies one TipBlock to btcwallet's notification
-// channel. The full block is only fetched when there is at least one
-// watched address; without watchers there can be no relevant
-// transactions, so the EsploraClient's raw-block call (and the
-// associated bandwidth) is skipped.
+// channel. The chain service owns its own delivery cursor
+// (s.bestBlock); this function first walks any gap between
+// s.bestBlock.Height and event.Height-1 — re-emitting heights that
+// were missed by previously failed events — and only then processes
+// the current event. The per-height worker (deliverHeight) advances
+// s.bestBlock monotonically on success and leaves it untouched on
+// failure, so a transient /block/:hash/raw outage no longer strands a
+// height between btcwallet's view and the chain tip: the next
+// TipBlock event re-walks whatever stretch is missing.
+//
+// The full block is only fetched when there is at least one watched
+// address; without watchers there can be no relevant transactions, so
+// the EsploraClient's raw-block call (and the associated bandwidth)
+// is skipped.
 func (s *EsploraChainService) processTipEvent(ctx context.Context,
 	event *TipBlock) {
 
@@ -686,17 +740,13 @@ func (s *EsploraChainService) processTipEvent(ctx context.Context,
 		return
 	}
 
-	blockMeta := wtxmgr.BlockMeta{
-		Block: wtxmgr.Block{
-			Hash:   event.Hash,
-			Height: event.Height,
-		},
-		Time: time.Unix(event.Header.Timestamp, 0),
-	}
-
-	// Build pkScript lookup from currently watched addresses so
-	// we can detect relevant transactions in this block.
+	// Build pkScript lookup from currently watched addresses once
+	// and pass it through gap-fill and live-event delivery so every
+	// block processed in this invocation sees the same watch set;
+	// without this, an address added mid-walk would be visible only
+	// for the live event and not for back-filled heights.
 	s.mu.Lock()
+	lastDelivered := s.bestBlock.Height
 	watchedScripts := make(map[string]struct{}, len(s.watchedAddrs))
 	for _, addr := range s.watchedAddrs {
 		pkScript, err := txscript.PayToAddrScript(addr)
@@ -708,6 +758,120 @@ func (s *EsploraChainService) processTipEvent(ctx context.Context,
 	}
 	s.mu.Unlock()
 
+	// Duplicate or out-of-order event. This can happen on a
+	// subscribe-time race or if a retry path emits an event already
+	// covered by an earlier successful delivery. Nothing to do.
+	if event.Height <= lastDelivered {
+		return
+	}
+
+	// Re-emit anything between the last successful delivery and
+	// the live event. fillGap returns false either because a per-
+	// height fetch or send failed (in which case s.bestBlock is
+	// left at the last delivered height and the next TipBlock
+	// event will retry) or because the gap exceeded the per-event
+	// cap (same outcome, the remaining stretch picks up next tick).
+	if event.Height > lastDelivered+1 {
+		if !s.fillGap(
+			ctx, lastDelivered, event.Height-1, watchedScripts,
+		) {
+			return
+		}
+	}
+
+	// Deliver the live event. Failure here leaves s.bestBlock at
+	// the height the gap-fill walked up to, so the next event
+	// retries this one — we intentionally drop the return value
+	// because processTipEvent has no further work to do either way.
+	_ = s.deliverHeight(
+		ctx, event.Height, event.Hash,
+		time.Unix(event.Header.Timestamp, 0), watchedScripts,
+	)
+}
+
+// fillGap delivers every height in (start, end] in order. For each
+// intermediate height the block header is served warm from
+// EsploraClient.blockHeaderCache (TipPoller already populated it
+// during its own per-height walk), but the height→hash lookup is a
+// live /block-height/:h request — EsploraClient deliberately does not
+// cache mutable height→hash mappings, so gap-fill pays one small HTTP
+// round trip per missed height for that step. Work is bounded by
+// defaultMaxGapFillPerTipEvent so a very deep gap does not hold the
+// handleTipEvents goroutine for longer than one poll interval.
+// Returns true only when the full (start, end] range was delivered;
+// a false return means the caller should yield and rely on the next
+// TipBlock event to continue from s.bestBlock.
+func (s *EsploraChainService) fillGap(ctx context.Context,
+	start, end int32, watchedScripts map[string]struct{}) bool {
+
+	walkEnd := end
+	if end-start > s.maxGapFillPerTipEvent {
+		walkEnd = start + s.maxGapFillPerTipEvent
+	}
+
+	for h := start + 1; h <= walkEnd; h++ {
+		hash, err := s.esplora.GetBlockHashByHeight(ctx, h)
+		if err != nil {
+			s.log.WarnS(
+				ctx,
+				"Chain service gap-fill hash fetch failed",
+				err,
+				slog.Int("height", int(h)),
+			)
+
+			return false
+		}
+
+		header, err := s.esplora.GetBlockHeader(ctx, hash)
+		if err != nil {
+			s.log.WarnS(
+				ctx,
+				"Chain service gap-fill header fetch failed",
+				err,
+				slog.Int("height", int(h)),
+				slog.String("hash", hash.String()),
+			)
+
+			return false
+		}
+
+		ok := s.deliverHeight(
+			ctx, h, hash, time.Unix(header.Timestamp, 0),
+			watchedScripts,
+		)
+		if !ok {
+			return false
+		}
+	}
+
+	return walkEnd == end
+}
+
+// deliverHeight emits the FilteredBlockConnected + BlockConnected
+// notification pair for a single height and advances s.bestBlock on
+// success. Returns true iff both notifications were sent and
+// s.bestBlock was advanced. A failure leaves s.bestBlock untouched so
+// processTipEvent / fillGap can retry the same height on the next
+// tip event.
+//
+// We use a select with quit on each send to prevent blocking
+// indefinitely if the notification channel is full during initial
+// sync (when handleChainNotifications is busy with syncWithChain /
+// recovery). A shutdown mid-send returns without advancing
+// s.bestBlock, so the next startup's first TipBlock event re-emits
+// the same height — the cursor invariant survives crashes.
+func (s *EsploraChainService) deliverHeight(ctx context.Context,
+	height int32, hash chainhash.Hash, blockTime time.Time,
+	watchedScripts map[string]struct{}) bool {
+
+	blockMeta := wtxmgr.BlockMeta{
+		Block: wtxmgr.Block{
+			Hash:   hash,
+			Height: height,
+		},
+		Time: blockTime,
+	}
+
 	// Filter block for relevant transactions if we have any
 	// watched addresses. This requires fetching the full block
 	// from Esplora; the EsploraClient memoizes the raw block by
@@ -715,38 +879,38 @@ func (s *EsploraChainService) processTipEvent(ctx context.Context,
 	// builders) reuse the response.
 	var relevantTxs []*wtxmgr.TxRecord
 	if len(watchedScripts) > 0 {
-		block, err := s.esplora.GetRawBlock(ctx, event.Hash)
+		block, err := s.esplora.GetRawBlock(ctx, hash)
 		if err != nil {
 			s.log.WarnS(ctx, "Chain service block fetch failed",
 				err,
-				slog.Int("height", int(event.Height)),
+				slog.Int("height", int(height)),
 			)
 
-			return
+			return false
 		}
 
 		relevantTxs = s.filterBlockTxs(
-			ctx, block, watchedScripts, blockMeta.Time,
+			ctx, block, watchedScripts, blockTime,
 		)
 	}
 
 	// Send FilteredBlockConnected with relevant transactions so
 	// btcwallet processes them via addRelevantTx. This is how
 	// btcwallet learns about transactions paying to wallet-owned
-	// addresses.
-	//
-	// We use select with quit to prevent blocking indefinitely if
-	// the channel is full during initial sync (when
-	// handleChainNotifications is busy with syncWithChain /
-	// recovery).
+	// addresses. ctx.Done() gives the goroutine a second exit if the
+	// caller cancels the lifecycle context without going through
+	// Stop, so a full notifications buffer cannot wedge shutdown.
 	select {
 	case s.notifications <- chain.FilteredBlockConnected{
 		Block:       &blockMeta,
 		RelevantTxs: relevantTxs,
 	}:
 
+	case <-ctx.Done():
+		return false
+
 	case <-s.quit:
-		return
+		return false
 	}
 
 	// Send BlockConnected to update btcwallet's sync height.
@@ -754,18 +918,22 @@ func (s *EsploraChainService) processTipEvent(ctx context.Context,
 	// not update the sync height.
 	select {
 	case s.notifications <- chain.BlockConnected(blockMeta):
+	case <-ctx.Done():
+		return false
+
 	case <-s.quit:
-		return
+		return false
 	}
 
-	// Update the cached best block.
 	s.mu.Lock()
 	s.bestBlock = waddrmgr.BlockStamp{
-		Height:    event.Height,
-		Hash:      event.Hash,
-		Timestamp: blockMeta.Time,
+		Height:    height,
+		Hash:      hash,
+		Timestamp: blockTime,
 	}
 	s.mu.Unlock()
+
+	return true
 }
 
 // filterBlockTxs checks all transactions in the block against the
