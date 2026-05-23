@@ -66,6 +66,15 @@ type Config struct {
 	// WalletFeeURL is the fee estimator endpoint used by btcwallet.
 	WalletFeeURL string
 
+	// WalletBtcwalletBlockHeadersSource is a local file path or HTTP(S)
+	// URL that btcwallet/neutrino imports block headers from on startup.
+	WalletBtcwalletBlockHeadersSource string
+
+	// WalletBtcwalletFilterHeadersSource is a local file path or HTTP(S)
+	// URL that btcwallet/neutrino imports compact filter headers from on
+	// startup.
+	WalletBtcwalletFilterHeadersSource string
+
 	// SwapServerAddress is the swapdk-server address for the selected
 	// transport.
 	SwapServerAddress string

@@ -1555,6 +1555,7 @@ func (s *Server) preStartNeutrino(ctx context.Context) error {
 	svc, err := btcwbackend.NewNeutrinoService(
 		neutrinoDataDir, s.chainParams, s.cfg.Wallet.BtcwalletPeers,
 		s.cfg.Wallet.BtcwalletAddPeers, s.cfg.Wallet.PersistFilters,
+		s.cfg.Wallet.BtcwBlockSource, s.cfg.Wallet.BtcwFilterSource,
 		walletLog, neutrinoOpts...,
 	)
 	if err != nil {
@@ -1605,6 +1606,8 @@ func (s *Server) startBtcwallet(ctx context.Context,
 		NeutrinoDataDir:      s.cfg.Wallet.BtcwalletDataDir,
 		ConnectPeers:         s.cfg.Wallet.BtcwalletPeers,
 		AddPeers:             s.cfg.Wallet.BtcwalletAddPeers,
+		BlockHeadersSource:   s.cfg.Wallet.BtcwBlockSource,
+		FilterHeadersSource:  s.cfg.Wallet.BtcwFilterSource,
 		FeeURL:               s.cfg.Wallet.FeeURL,
 		PackageSubmitter:     s.cfg.PackageSubmitter,
 		PersistFilters:       s.cfg.Wallet.PersistFilters,

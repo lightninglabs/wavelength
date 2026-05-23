@@ -37,6 +37,16 @@ type Config struct {
 	// ConnectPeers, DNS seeding still runs when AddPeers is set.
 	AddPeers []string
 
+	// BlockHeadersSource is a local file path or HTTP(S) URL that
+	// neutrino imports block headers from before falling back to P2P
+	// sync. It must be set together with FilterHeadersSource.
+	BlockHeadersSource string
+
+	// FilterHeadersSource is a local file path or HTTP(S) URL that
+	// neutrino imports compact filter headers from before falling back
+	// to P2P sync. It must be set together with BlockHeadersSource.
+	FilterHeadersSource string
+
 	// FeeURL is the URL for the fee estimation API endpoint. The
 	// endpoint must return JSON in the format expected by
 	// chainfee.SparseConfFeeSource. Required for btcwallet mode.

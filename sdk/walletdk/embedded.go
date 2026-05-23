@@ -23,19 +23,23 @@ func DefaultConfig() Config {
 	cfg := darepod.DefaultConfig()
 
 	return Config{
-		DataDir:               cfg.DataDir,
-		Network:               cfg.Network,
-		DebugLevel:            cfg.DebugLevel,
-		ServerAddress:         cfg.Server.Host,
-		ServerTransport:       Transport(cfg.Server.Transport),
-		ServerTLSCertPath:     cfg.Server.TLSCertPath,
-		ServerInsecure:        cfg.Server.Insecure,
-		WalletType:            cfg.Wallet.Type,
-		WalletEsploraURL:      cfg.Wallet.EsploraURL,
-		WalletPasswordFile:    cfg.Wallet.PasswordFile,
-		WalletPollInterval:    cfg.Wallet.PollInterval,
-		WalletRecoveryWindow:  cfg.Wallet.RecoveryWindow,
-		WalletFeeURL:          cfg.Wallet.FeeURL,
+		DataDir:              cfg.DataDir,
+		Network:              cfg.Network,
+		DebugLevel:           cfg.DebugLevel,
+		ServerAddress:        cfg.Server.Host,
+		ServerTransport:      Transport(cfg.Server.Transport),
+		ServerTLSCertPath:    cfg.Server.TLSCertPath,
+		ServerInsecure:       cfg.Server.Insecure,
+		WalletType:           cfg.Wallet.Type,
+		WalletEsploraURL:     cfg.Wallet.EsploraURL,
+		WalletPasswordFile:   cfg.Wallet.PasswordFile,
+		WalletPollInterval:   cfg.Wallet.PollInterval,
+		WalletRecoveryWindow: cfg.Wallet.RecoveryWindow,
+		WalletFeeURL:         cfg.Wallet.FeeURL,
+		WalletBtcwalletBlockHeadersSource: cfg.Wallet.
+			BtcwBlockSource,
+		WalletBtcwalletFilterHeadersSource: cfg.Wallet.
+			BtcwFilterSource,
 		SwapServerAddress:     cfg.Swap.ServerAddress,
 		SwapServerTransport:   Transport(cfg.Swap.ServerTransport),
 		SwapServerTLSCertPath: cfg.Swap.ServerTLSCertPath,
@@ -288,6 +292,14 @@ func applyConfigOverrides(daemonCfg *darepod.Config, cfg Config) {
 	}
 	if cfg.WalletFeeURL != "" {
 		daemonCfg.Wallet.FeeURL = cfg.WalletFeeURL
+	}
+	if cfg.WalletBtcwalletBlockHeadersSource != "" {
+		daemonCfg.Wallet.BtcwBlockSource =
+			cfg.WalletBtcwalletBlockHeadersSource
+	}
+	if cfg.WalletBtcwalletFilterHeadersSource != "" {
+		daemonCfg.Wallet.BtcwFilterSource =
+			cfg.WalletBtcwalletFilterHeadersSource
 	}
 
 	if daemonCfg.Swap == nil {

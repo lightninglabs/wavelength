@@ -100,11 +100,14 @@ darepod \
 | `--debuglevel` | `info` | Logging verbosity: trace, debug, info, warn, error, critical |
 | `--logdir` | `~/.darepod/logs/<network>` | Directory for persistent daemon logs |
 | `--allow-mainnet` | `false` | Required to run on mainnet (safety guard) |
-| `--wallet.type` | `lwwallet` | Wallet backend: `lwwallet` or `lnd` |
+| `--wallet.type` | `lwwallet` | Wallet backend: `lwwallet`, `lnd`, or `btcwallet` |
 | `--wallet.esploraurl` | | Esplora REST API URL (lwwallet only) |
+| `--wallet.feeurl` | | Fee-estimate JSON endpoint URL (btcwallet only) |
+| `--wallet.btcwallet_blockheaderssource` | | Block header import source for btcwallet fast sync |
+| `--wallet.btcwallet_filterheaderssource` | | Filter header import source for btcwallet fast sync |
 | `--wallet.pollinterval` | `5s` | Esplora poll interval (lwwallet only) |
 | `--wallet.recoverywindow` | `100` | Address look-ahead window (lwwallet only) |
-| `--wallet.password_file` | | Auto-unlock password file path (lwwallet only) |
+| `--wallet.password_file` | | Auto-unlock password file path (lwwallet/btcwallet) |
 | `--lnd.host` | `localhost:10009` | lnd gRPC address |
 | `--lnd.tlspath` | | Path to lnd TLS certificate |
 | `--lnd.macaroonpath` | | Path to lnd admin macaroon |
