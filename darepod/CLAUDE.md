@@ -157,6 +157,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   spend notifications per input, marks inputs spent on confirmation.
   Started by `startBoardingSweepWatcher` on wallet unlock;
   idempotent.
+- `validateGatewayAllowedOrigins()` — permits the wildcard `"*"` origin
+  for public browser gateways whose RPCs authenticate per request; only
+  empty/whitespace strings are rejected.
 - `boardingSweepTx` / `buildBoardingSweepTx` — constructs and signs
   one aggregate timeout-path sweep tx. Iterates the weight estimate
   up to three times until `SerializeSize` converges so `fee`/`txid`
@@ -169,6 +172,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `serverconn.SignMailboxAuth`.
 - `fetchOperatorPubKeyDirect` — fetches operator pubkey via direct
   gRPC `GetInfo` before the mailbox runtime starts.
+- `fetchCurrentOperatorPubKey(ctx)` — live operator pubkey fetch via
+  direct gRPC `GetInfo` at runtime (not cached). Refreshes the daemon's
+  `OperatorTerms` cache as a side effect. Wired into `wallet.WithFetchOperatorKey`
+  and `vtxo.ManagerConfig.FetchOperatorKey` so VTXO refresh outputs are
+  built against the operator's join-time key rather than a stale cached value.
+- `fetchUnconfirmedBoardingBalance(ctx, boardingStore)` — sums zero-conf
+  wallet UTXOs paying to tracked boarding scripts. Integrated into
+  `fetchBoardingBalance()` to populate `BoardingUnconfirmedSat` in the
+  `GetBoardingBalance` response.
 - `initLedgerActor` — constructs `ledger.LedgerActor` with both
   `LedgerStoreDB` and `UTXOAuditStoreDB`, registers under
   `ledger.ServiceKeyName`, stashes `LedgerStoreDB` on the `Server`

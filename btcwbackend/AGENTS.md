@@ -29,6 +29,7 @@ or LND node.
   is non-relayable without its fee-paying child.
 - Block cache size is in bytes (2 MiB default), not block count. This differs from neutrino's count-based API.
 - Taproot script imports use `KeyScopeBIP0086` (via `walletcore.BoardingBackendBase`) to ensure btcwallet's block processing tracks credits correctly.
+- `BoardingBackendAdapter.ListUnspent` returns an error `"btcwallet chain sync in progress"` when `internalWallet.ChainSynced()` is false. Callers must handle this as a transient condition; the wallet actor retries on the next chain tick.
 
 ## Deep Docs
 

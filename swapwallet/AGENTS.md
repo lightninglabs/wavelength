@@ -17,6 +17,15 @@ default builds avoid the swap executor's dependency graph.
 - `Service` — gRPC handler implementing `walletrpc.WalletServiceServer`.
   Thin facade: each method dispatches to `router`, `receiver`,
   `history`, or admin proxy helpers; no business logic lives here.
+- `InspectionService` — gRPC handler implementing
+  `walletrpc.WalletInspectionServiceServer`. Exposes `InspectActivity`
+  for technical drill-down into a single activity entry. Returns the
+  friendly `WalletEntry`, correlated `ActivitySwapTrace` (full swap FSM
+  state), `ActivityLedgerTrace` rows (internal accounting with roles),
+  and `ActivityVTXOTrace` rows (VTXO movements). Best-effort: missing
+  swap data or ledger rows produce caveat notes rather than errors.
+  Deliberately separate from `Service` so callers must opt into
+  internal correlators.
 - `Runtime` — Owns the in-process swap lifecycle: synchronous
   resume-on-startup, deadline watcher (overlays stuck entries as
   FAILED), monitor loop (fans normalized updates to subscribers).
@@ -40,6 +49,13 @@ default builds avoid the swap executor's dependency graph.
 - `ListView` (re-exported from walletrpc) — Selects between Activity
   (merged WalletEntry stream), VTXOs (live inventory), and Onchain
   (boarding + sweep) views. Default is Activity.
+- Activity history merger (`history.go`) — `listActivity()` merges
+  three sources (swap summaries, ledger entries, boarding entries) into
+  a flat `WalletEntry` stream. OOR correlation logic via
+  `swapOORCorrelations` hides internal OOR legs that represent swap
+  execution internals; entries are deduplicated by canonical ID.
+  Deadline overlay projects stuck pending entries as FAILED before
+  filtering.
 
 ## Relationships
 
@@ -55,8 +71,8 @@ default builds avoid the swap executor's dependency graph.
   - `ledger` (account name constants for OOR ledger projection)
   - `btclog/v2` (subsystem logger)
 - **Depended on by**:
-  - `cmd/darepod` (`walletrpc.go` registers the subserver behind the
-    walletrpc build tag)
+  - `cmd/darepod` (`walletrpc.go` registers both `Service` and
+    `InspectionService` behind the walletrpc build tag)
   - `sdk/walletdk` (gomobile-friendly SDK wraps the same gRPC service)
 - **Sends**:
   - → daemonrpc (in-process via RPCServer):
@@ -112,6 +128,17 @@ default builds avoid the swap executor's dependency graph.
   (`statusForLedgerRow`), because a boarding UTXO landing on-chain
   is not yet a spendable VTXO. Promotion to COMPLETE waits for a
   follow-up `boarded-into-round` ledger event (issue #503).
+- **Activity merge deduplication**: swap entries and ledger entries can
+  both describe the same SEND/RECV flow. The merger uses a canonical ID
+  (Lightning payment_hash for SEND/RECV; ledger txid/entry_id for
+  EXIT/DEPOSIT) to drop duplicates; the swap entry takes precedence over
+  the ledger entry for SEND/RECV because it carries the invoice and
+  progress fields.
+- **OOR leg suppression**: `swapOORCorrelations` tracks pay/claim
+  session IDs for executed swaps. Ledger entries matching these session
+  IDs are marked `hidden_from_activity` in `InspectActivity` and are
+  filtered out of the `List(Activity)` response so the user sees one
+  row per swap rather than one per internal OOR leg.
 - **`Balance` projection** maps daemonrpc fields onto the walletrpc
   shape: `confirmed_sat` is VTXO-only (`vtxo_balance_sat`),
   `pending_in_sat` sums `boarding_confirmed_sat +

@@ -42,7 +42,14 @@ without an external LND node. Implements `wallet.BoardingBackend`,
   response is verified to hash to the requested key before insertion.
 - `EsploraChainService` — `chain.Interface` adapter over `EsploraClient`,
   driven by a shared `TipPoller`. Feeds btcwallet's internal address-credit
-  pipeline. Constructor: `NewEsploraChainService(esplora, tipPoller, logger)`.
+  pipeline. Constructor: `NewEsploraChainService(esplora, tipPoller, logger,
+  opts ...EsploraChainServiceOption)`. On each `TipBlock` event, the service
+  first back-fills any missed heights (gap-fill) before delivering the live
+  event, capped at `defaultMaxGapFillPerTipEvent = 256` heights per tick to
+  bound catch-up latency.
+- `EsploraChainServiceOption` — Functional option type for `EsploraChainService`.
+  `WithMaxGapFillPerTipEvent(n int32)` overrides the per-tip gap-fill cap;
+  intended for tests that need to exercise the bounded-walk branch.
 - `BoardingBackendAdapter` — Implements `wallet.BoardingBackend` and
   `wallet.OutputLeaser`. Queries Esplora directly for UTXOs (bypasses
   btcwallet's UTXO tracking because btcwallet skips credit marking for
@@ -65,6 +72,10 @@ without an external LND node. Implements `wallet.BoardingBackend`,
 
 - Exactly one `TipPoller` goroutine drives both `EsploraChainService` and
   `ChainBackend`; neither polls Esplora independently.
+- `EsploraChainService` gap-fills missed heights in order before the live tip
+  event. The fill cap (`defaultMaxGapFillPerTipEvent = 256`) prevents
+  pathological catch-up from blocking the processing loop indefinitely.
+  Duplicate or out-of-order events are silently dropped.
 - `BestBlockAndSubscribe` holds `TipPoller.mu` across `{Subscribe + tip-read}`
   while the poll loop holds it across `{update tip + SendUpdate}`, ensuring no
   tip event is missed or duplicated on subscribe.

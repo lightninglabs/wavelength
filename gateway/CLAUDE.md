@@ -31,9 +31,15 @@ have a consistent configuration across all daemon sub-services.
 ## Invariants
 
 - Browser callers (those sending an `Origin` header) need an entry in
-  `allowedOrigins` or the request is rejected with 403. An empty
-  allowlist means no browser caller can reach the gateway; non-browser
-  clients without an `Origin` header are unaffected.
+  `allowedOrigins` or the request is rejected with 403. The wildcard
+  value `"*"` allows any origin; use it only for APIs with per-request
+  authentication. An empty allowlist means no browser caller can reach
+  the gateway; non-browser clients without an `Origin` header are
+  unaffected.
+- When the wildcard `"*"` is present, the response sets
+  `Access-Control-Allow-Origin: *` without a `Vary` header. For
+  specific origins, `Vary: Origin` is set so CDN caches serve
+  per-origin responses correctly.
 - JSON marshaling always uses `UseProtoNames` (snake_case field names) and
   `EmitUnpopulated` (include zero/default values) for API consistency with
   grpc-gateway clients.

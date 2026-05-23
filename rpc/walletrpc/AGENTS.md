@@ -10,7 +10,9 @@ user does day-to-day.
 
 Proto source: `rpc/walletrpc/wallet.proto`.
 
-## Service Methods (the 7 wallet verbs + supporting)
+## Services
+
+### WalletService (7 wallet verbs + supporting)
 
 | Method | Purpose |
 |--------|---------|
@@ -26,12 +28,34 @@ Proto source: `rpc/walletrpc/wallet.proto`.
 | `ExitStatus` | Phase of an exit job (proxies `GetUnrollStatus`) |
 | `SubscribeWallet` | Streams normalized `WalletEntry` updates |
 
+### WalletInspectionService (technical drill-down)
+
+| Method | Purpose |
+|--------|---------|
+| `InspectActivity` | Returns full correlated trace for one activity entry |
+
+`InspectActivity` accepts an activity `id` and optional ledger row limit,
+and returns: the friendly `WalletEntry`, a correlated `ActivitySwapTrace`
+snapshot, a list of `ActivityLedgerTrace` rows with internal accounting
+details, a list of `ActivityVTXOTrace` rows for VTXO movements, and
+plain-text caveat notes. Implemented in `swapwallet.InspectionService`.
+
 ## Key Messages
 
 - `WalletEntry` — Flat activity row. Every internal correlator
   (session_id, round_id, settlement_type, mailbox subtype) is dropped
   before responding. `id` is the stable canonical id (Lightning
-  payment_hash for SEND-invoice / RECV).
+  payment_hash for SEND-invoice / RECV). Now includes optional `request`
+  (`WalletEntryRequest` oneof) and `progress` (`WalletEntryProgress`).
+- `WalletEntryRequest` — Oneof: `LightningInvoiceRequest` (invoice +
+  payment_hash), `OnchainAddressRequest` (destination address), or
+  `ArkAddressRequest`. Exposes the payment request that originated the entry.
+- `WalletEntryProgress` — Phase enum plus metadata: `phase`
+  (`WalletEntryPhase`), `phase_label`, `payment_hash`, `txid`,
+  `confirmation_height`, `vtxo_outpoint`.
+- `WalletEntryPhase` — 10-state lifecycle enum: `REQUEST_CREATED`,
+  `WAITING_FOR_PAYMENT`, `PAYMENT_DETECTED`, `SETTLING`, `CONFIRMED`,
+  `REFUNDING`, `REFUNDED`, `FAILED`, `WAITING_FOR_CONFIRMATION`.
 - `EntryKind` — User-visible category: SEND, RECV, DEPOSIT, EXIT.
 - `EntryStatus` — Collapsed FSM: PENDING, COMPLETE, FAILED.
 - `ListView` — Selects which slice of state to return: ACTIVITY
@@ -44,6 +68,14 @@ Proto source: `rpc/walletrpc/wallet.proto`.
   accounts, no round/session correlators).
 - `ExitJobStatus` — Wallet-facing projection of
   `daemonrpc.UnrollJobStatus`.
+- `ActivitySwapTrace` — Full swap FSM snapshot for inspection: state,
+  direction, pending flag, amounts/fees, session IDs (funding/claim/
+  refund), vHTLC details, terminal reason, deadlines.
+- `ActivityLedgerTrace` — Internal ledger row with `role` field
+  (activity_row, spent_input, change_output, materialized_output,
+  vhtlc_tx, swap_session) and `hidden_from_activity` flag.
+- `ActivityVTXOTrace` — VTXO movement row with outpoint, amount, role,
+  ownership flag, source (ledger/swap), session ID, output index.
 
 ## Relationships
 
@@ -73,6 +105,13 @@ Proto source: `rpc/walletrpc/wallet.proto`.
 - `Status` and `Deposit` are kept in the proto for programmatic
   callers (and `recv --onchain` plumbs through `Deposit`); they are
   NOT surfaced as top-level CLI verbs.
+- `WalletInspectionService` is a separate service from `WalletService`;
+  clients must dial it independently. Its RPCs expose internal
+  correlators (session IDs, ledger row roles) that are intentionally
+  hidden from the user-facing `WalletService.List` response.
+- `ActivityLedgerTrace.hidden_from_activity` marks rows suppressed from
+  the friendly activity feed (internal OOR legs). Inspection clients
+  MUST NOT assume these rows indicate errors.
 
 ## Deep Docs
 

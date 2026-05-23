@@ -47,6 +47,7 @@ package may import from a higher layer.
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
+| [`serverconn/mailboxpull`](serverconn/mailboxpull/) | Shared retry/backoff primitives for mailbox pull loops (used by `serverconn` and `sdk/swaps`) |
 
 ### Layer 3: Application & Orchestration
 
@@ -66,7 +67,7 @@ package may import from a higher layer.
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
 | [`arkrpc/treeconv`](arkrpc/treeconv/) | Narrow re-export of tree-path conversion helpers without the full gRPC surface |
 | [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb, swapclientrpc, walletrpc) and HTTP transport (`rpc/restclient`) |
-| [`rpc/walletrpc`](rpc/walletrpc/) | Highest-level gRPC surface: `WalletService` with the seven core wallet verbs. Composes `daemonrpc` and `rpc/swapclientrpc` server-side via `swapwallet` |
+| [`rpc/walletrpc`](rpc/walletrpc/) | Highest-level gRPC surface: `WalletService` (seven core wallet verbs) and `WalletInspectionService` (technical activity drill-down). Composes `daemonrpc` and `rpc/swapclientrpc` server-side via `swapwallet` |
 | [`rpc/restclient`](rpc/restclient/) | HTTP/protoJSON transport adapter: `Client`, `StreamClient[T]`, and per-service factory functions implementing the same gRPC stub interfaces over REST |
 | [`daemonrpc`](daemonrpc/) | Daemon gRPC API definitions |
 

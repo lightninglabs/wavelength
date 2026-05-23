@@ -14,18 +14,24 @@ when the local wallet owns the receive script.
 ## Key Types
 
 - `VTXOState` — Sealed interface for all states (Live, Spending, Spent, PendingForfeit, Forfeiting, Forfeited, UnilateralExit, Failed).
-- `Descriptor` — Complete VTXO metadata: `Outpoint`, `Amount`, `PkScript`, `OwnerKey` (keychain.KeyDescriptor), `OperatorKey`, `TapScript`, `TreePath`, `RoundID`, `CommitmentTxID`, `BatchExpiry`, `RelativeExpiry`, `TreeDepth`, `ChainDepth` (OOR hop count), `CreatedHeight`, `Status`.
+- `Descriptor` — Complete VTXO metadata: `Outpoint`, `Amount`, `PkScript`, `OwnerKey` (keychain.KeyDescriptor), `OperatorKey`, `TapScript`, `TreePath`, `RoundID`, `CommitmentTxID`, `BatchExpiry`, `RelativeExpiry`, `TreeDepth`, `ChainDepth` (OOR hop count), `CreatedHeight`, `Status`. New method: `RefreshOutputTemplate(currentOperatorKey *btcec.PublicKey) ([]byte, error)` — rebuilds the policy template for the refreshed VTXO output using the caller-supplied operator key while preserving owner key and exit delay; returns `ErrRefreshOperatorKeyUnsupported` for non-standard policy shapes.
 - `Manager` — Actor managing per-VTXO FSM instances, lifecycle, and admission gating. Configured via `ManagerConfig`.
 - `ManagerConfig` — Configuration holding Store, Wallet, ChainSource,
   ActorSystem, ChainParams, ExpiryConfig, RoundActor ref, ChainResolver ref,
   optional `Log`, optional `LedgerSink fn.Option[ledger.Sink]`,
-  `ForfeitVTXOActorAskTimeout`, and `RefreshFeeQuoter`. The manager
-  propagates the sink into each spawned `VTXOActor` for `ExitCostMsg`
-  emissions. `ForfeitVTXOActorAskTimeout` (default 5 s) bounds forfeit
-  and refresh child asks so a blocked child actor cannot monopolize the
-  manager until the outer RPC deadline. Zero uses the default; negative
-  disables the timeout. Spend-path asks keep the caller's context.
+  `ForfeitVTXOActorAskTimeout`, `RefreshFeeQuoter`, and optional
+  `FetchOperatorKey func(context.Context) (*btcec.PublicKey, error)`.
+  The manager propagates the sink into each spawned `VTXOActor` for
+  `ExitCostMsg` emissions. `ForfeitVTXOActorAskTimeout` (default 5 s)
+  bounds forfeit and refresh child asks so a blocked child actor cannot
+  monopolize the manager until the outer RPC deadline. Zero uses the
+  default; negative disables the timeout. Spend-path asks keep the
+  caller's context. `FetchOperatorKey`, when set, is propagated to each
+  spawned `VTXOActor` so auto-refresh emissions are built with the
+  operator's current join-time key.
 - `VTXOActorConfig.LedgerSink` — Per-VTXO actor field plumbed from the manager. The `emitExitCost` helper is wired onto the unilateral-exit transition but is currently a no-op pending chain resolver integration: the actor cannot determine the on-chain miner fee until the chain resolver reports the confirmed exit-spend transaction. The emission site exists so a single future change in the chain resolver wiring enables it without touching the FSM transition logic.
+- `VTXOActorConfig.FetchOperatorKey` — Optional `func(context.Context) (*btcec.PublicKey, error)` callback. When set, the actor calls it once per auto-refresh emission to obtain the operator's current long-term key, then passes it to `Descriptor.RefreshOutputTemplate` to rebuild the policy template for the new VTXO output. Nil falls back to the stored descriptor bytes (legacy behavior). Fetch errors are logged as warnings (external failures) and fall back gracefully; the next expiry tick retries.
+- `ErrRefreshOperatorKeyUnsupported` — Sentinel error returned by `Descriptor.RefreshOutputTemplate` when the VTXO policy is a non-standard shape (e.g. vHTLC) where structural operator-key rewrites are unsafe.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).
 - `FilterOptions` / `FilterDescriptors` — VTXO filtering by expiry status, spend state, etc.

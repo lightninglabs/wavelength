@@ -34,6 +34,9 @@ refresh, leave, OOR spend, and directed send flows.
 - `SendVTXOsRequest` / `SendVTXOsResponse` — Ask-request for in-round directed sends. Validates each recipient amount is within `(0, MaxSatoshi]` and that the running total never overflows `int64`, atomically selects and reserves VTXOs via `SelectAndReserveForfeitRequest`, builds forfeit + recipient VTXO intents, and registers with the round actor. Supports dry-run mode for previewing coin selection without committing. Reserved VTXOs are released via a deferred cleanup that uses `context.WithoutCancel` so cleanup survives caller disconnect; on success, a `committed` flag is set to skip the release.
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
 - `VTXODescriptor.EffectivePolicyTemplate` — Decodes the serialized `PolicyTemplate` field on the wallet-level VTXO descriptor using `lib/arkscript`.
+- `VTXODescriptor.RefreshOutputTemplate(currentOperatorKey *btcec.PublicKey) ([]byte, error)` — Returns the policy template for the new VTXO output during refresh, rewriting the operator key for standard Ark VTXO shapes. Returns `vtxo.ErrRefreshOperatorKeyUnsupported` for non-standard shapes.
+- `WithFetchOperatorKey(fetch func(ctx context.Context) (*btcec.PublicKey, error)) ArkOption` — Wires a closure that fetches the operator's current long-term key via a fresh `GetInfo` round-trip at refresh-intent composition time. The key is used to build the new VTXO output's policy template, avoiding daemon-startup cache staleness. Nil leaves fallback to stored descriptor bytes.
+- `GetBoardingBalanceResponse` — Now includes `UnconfirmedBalance btcutil.Amount` (sum of zero-conf UTXOs paying to tracked boarding addresses) and `UnconfirmedUtxoCount int` for visibility into in-flight boarding transactions.
 
 ## Relationships
 

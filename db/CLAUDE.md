@@ -100,6 +100,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 - Per-subsystem logging via the instance logger, not the global
   package logger.
 
+### Transaction History Notes
+
+- `ListTransactionHistory` resolves OOR-created outputs via LEFT JOIN
+  on `oor_vtxo_bindings` with `link_kind = 0` (created output), surfacing
+  OOR receive rows even when no `session_id` is present. This enables
+  backward-compatible display of legacy OOR receives via the binding table.
+- Multi-input boarding rounds allocate aggregate fees proportionally:
+  each input receives `(round_fee_sat * input_amount) / total_input_amount`
+  as base fee, with remainders distributed to inputs ranked by remainder
+  size (ties broken by outpoint order). Implemented as a SQL window
+  function on `ROW_NUMBER()`.
+- The `output_index` column in history results reflects `chain_vout` on
+  direct ledger rows or the OOR binding outpoint index for virtual receive
+  entries.
+
 ### Migration notes
 
 - `000014_ledger_chain_fields` — first-class `chain_txid` / `chain_vout`

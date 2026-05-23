@@ -25,7 +25,8 @@ The CLI surface is split into three tiers:
 | `unlock` | `walletrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
 | `send <dest>` | `walletrpc.Send` | Outbound payment. `--offchain` (default) for Lightning invoice, `--onchain` for cooperative leave. No prefix sniff |
 | `recv` | `walletrpc.Recv` / `walletrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
-| `activity` | `walletrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
+| `activity` | `walletrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows. `--format expanded` shows per-entry progress and request details |
+| `activity inspect <id>` | `walletrpc.InspectActivity` | Technical trace for one activity entry: swap FSM state, ledger rows with roles, VTXO movements |
 | `balance` | `walletrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
 | `exit --outpoint TXID:VOUT` | `walletrpc.Exit` | Trigger a unilateral exit (proxies Unroll) |
 | `exit status --outpoint TXID:VOUT` | `walletrpc.ExitStatus` | Query an exit job's status (proxies GetUnrollStatus) |
@@ -53,7 +54,7 @@ who want direct access.
 | `ark board` | `Board` | Trigger boarding with confirmed UTXOs |
 | `ark sweep [list]` | `SweepBoardingUTXOs` / `ListBoardingSweeps` | Boarding-timeout sweeps |
 | `ark fees {estimate,history}` | `EstimateFee` / `GetFeeHistory` | Fee estimation and history |
-| `ark listtransactions` | `ListTransactions` | Raw paginated transaction history |
+| `ark listtransactions` | `ListTransactions` | Raw paginated transaction history; `--from`/`--to` time range filters and `--type` filter |
 | `ark send {inround,oor}` | `SendVTXO` / `SendOOR` | Raw in-round / OOR send (superseded by `send` for the wallet shape) |
 
 ### `swap.*` advanced commands (swapruntime build tag)
@@ -86,7 +87,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
   machine-readable schema for all CLI commands; shared source of
   truth for `schema` and MCP tool definitions. Built from the
   `walletAdmin`/`walletPayment`/`walletQuery`/`arkBase`/`arkVTXO`/
-  `arkSend` sub-registries.
+  `arkSend` sub-registries. Lives in `schema_registry.go`.
+- `wallet_inspection_table.go` — Formats `InspectActivity` responses
+  as human-readable tables (swap trace, ledger rows by role, VTXO rows).
+- `mcp_wallet.go` — MCP tool definitions exposing wallet verbs and
+  inspection as callable tools for the `mcp` subcommand.
 - `readPassword()` — reads wallet password from
   `DAREPOD_WALLET_PASSWORD` → `--wallet_password_file` → stdin → TTY.
   **Never from CLI args.**
