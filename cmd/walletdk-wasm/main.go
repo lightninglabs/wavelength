@@ -120,7 +120,7 @@ func (r *runtimeState) call(ctx context.Context, method string, req js.Value) (
 
 		return result, nil
 
-	case "listBalance":
+	case "listBalance", "balance":
 		client, err := r.currentClient()
 		if err != nil {
 			return nil, err
@@ -133,14 +133,16 @@ func (r *runtimeState) call(ctx context.Context, method string, req js.Value) (
 
 		return legacyBalance(balance), nil
 
-	case "getOnchainAddress":
+	case "getOnchainAddress", "deposit":
 		client, err := r.currentClient()
 		if err != nil {
 			return nil, err
 		}
 
 		return retryWalletCall(ctx, func() (*walletdk.DepositResult, error) {
-			return client.Deposit(ctx, walletdk.DepositRequest{})
+			return client.Deposit(ctx, walletdk.DepositRequest{
+				AmountSatHint: uint64Value(req.Get("amountSatHint")),
+			})
 		})
 
 	case "board":
@@ -165,6 +167,14 @@ func (r *runtimeState) call(ctx context.Context, method string, req js.Value) (
 		}
 
 		return legacyRawBalance(balance), nil
+
+	case "status":
+		client, err := r.currentClient()
+		if err != nil {
+			return nil, err
+		}
+
+		return client.Status(ctx)
 
 	case "receive":
 		client, err := r.currentClient()
@@ -199,6 +209,24 @@ func (r *runtimeState) call(ctx context.Context, method string, req js.Value) (
 		}
 
 		return legacySend(result), nil
+
+	case "list":
+		client, err := r.currentClient()
+		if err != nil {
+			return nil, err
+		}
+
+		result, err := client.List(ctx, walletdk.ListRequest{
+			PendingOnly: boolValue(req.Get("pendingOnly")),
+			View:        walletdk.ListView(stringValue(req.Get("view"))),
+			Limit:       uint32Value(req.Get("limit")),
+			Offset:      uint32Value(req.Get("offset")),
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		return result, nil
 
 	case "listSwaps":
 		client, err := r.currentClient()
@@ -274,6 +302,27 @@ func (r *runtimeState) call(ctx context.Context, method string, req js.Value) (
 		}
 
 		return rows, nil
+
+	case "exit":
+		client, err := r.currentClient()
+		if err != nil {
+			return nil, err
+		}
+
+		return client.Exit(ctx, walletdk.ExitRequest{
+			Outpoint:    stringValue(req.Get("outpoint")),
+			Destination: stringValue(req.Get("destination")),
+		})
+
+	case "exitStatus":
+		client, err := r.currentClient()
+		if err != nil {
+			return nil, err
+		}
+
+		return client.ExitStatus(ctx, walletdk.ExitStatusRequest{
+			Outpoint: stringValue(req.Get("outpoint")),
+		})
 
 	case "subscribeActivity":
 		return nil, fmt.Errorf("activity subscriptions are not exposed " +
@@ -608,6 +657,15 @@ func uint64Value(value js.Value) uint64 {
 	}
 
 	return uint64(value.Int())
+}
+
+// uint32Value extracts a JavaScript number, treating missing fields as zero.
+func uint32Value(value js.Value) uint32 {
+	if value.IsUndefined() || value.IsNull() {
+		return 0
+	}
+
+	return uint32(value.Int())
 }
 
 // bytesFromString extracts a JavaScript string as bytes.
