@@ -20,6 +20,7 @@ module.exports = defineConfig({
     env: {
       HOST: host,
       PORT: String(port),
+      WALLETDK_SMOKE_VERBOSE: process.env.WALLETDK_SMOKE_VERBOSE || "",
     },
     reuseExistingServer: !process.env.CI,
     timeout: 30000,

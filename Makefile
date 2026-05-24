@@ -440,17 +440,15 @@ build-walletrpc: #? Build debug binaries with walletrpc + swapruntime enabled
 wasm-wallet-demo-build: #? Build the walletdk browser demo into web/walletdk-demo/dist
 	@$(call print, "Building walletdk WASM demo.")
 	$(RM) -r $(WASM_WALLET_DEMO_DIST)
-	mkdir -p $(WASM_WALLET_DEMO_DIST)/src
+	npm --prefix $(WASM_WALLET_DEMO_DIR) run build
 	GOOS=js GOARCH=wasm $(GOBUILD) -trimpath -ldflags="-s -w" \
 		-tags="walletrpc swapruntime" \
 		-o $(WASM_WALLET_DEMO_DIST)/walletdk.wasm ./cmd/walletdk-wasm
 	gzip -9 -c $(WASM_WALLET_DEMO_DIST)/walletdk.wasm \
 		> $(WASM_WALLET_DEMO_DIST)/walletdk.wasm.gz
 	cp $$(go env GOROOT)/lib/wasm/wasm_exec.js $(WASM_WALLET_DEMO_DIST)/
-	cp $(WASM_WALLET_DEMO_DIR)/index.html $(WASM_WALLET_DEMO_DIST)/
 	cp $(WASM_WALLET_DEMO_DIR)/enable-threads.js $(WASM_WALLET_DEMO_DIST)/
-	cp $(WASM_WALLET_DEMO_DIR)/src/app.js $(WASM_WALLET_DEMO_DIST)/src/
-	cp $(WASM_WALLET_DEMO_DIR)/src/styles.css $(WASM_WALLET_DEMO_DIST)/src/
+	cp $(WASM_WALLET_DEMO_DIR)/walletdk-worker.js $(WASM_WALLET_DEMO_DIST)/
 	cp $(WASM_WALLET_DEMO_DIR)/sqlite-bridge.js $(WASM_WALLET_DEMO_DIST)/
 	cp $(WASMSQLITE_DIR)/bridge/sqlite-worker.js $(WASM_WALLET_DEMO_DIST)/
 	cp $(WASMSQLITE_DIR)/assets/sqlite3.js $(WASM_WALLET_DEMO_DIST)/
@@ -470,6 +468,7 @@ wasm-wallet-demo-browser-test: wasm-wallet-demo-build wasm-wallet-demo-browser-d
 	test -f $(WASM_WALLET_DEMO_DIST)/walletdk.wasm
 	test -f $(WASM_WALLET_DEMO_DIST)/walletdk.wasm.gz
 	test -f $(WASM_WALLET_DEMO_DIST)/enable-threads.js
+	test -f $(WASM_WALLET_DEMO_DIST)/walletdk-worker.js
 	test -f $(WASM_WALLET_DEMO_DIST)/sqlite-bridge.js
 	test -f $(WASM_WALLET_DEMO_DIST)/sqlite-worker.js
 	test -f $(WASM_WALLET_DEMO_DIST)/sqlite3.wasm

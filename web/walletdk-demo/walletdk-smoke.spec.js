@@ -5,6 +5,7 @@ test("wallet create and address state persist with OPFS SQLite", async ({
 }, testInfo) => {
   const password = "test-password";
   const baseURL = testInfo.project.use.baseURL;
+  const dataDir = `/walletdk-smoke-${Date.now()}`;
   const swapDatabaseFileName = `/walletdk-swaps-${Date.now()}.db`;
 
   const consoleMessages = [];
@@ -28,7 +29,7 @@ test("wallet create and address state persist with OPFS SQLite", async ({
     timeout: 30000,
   });
 
-  await configureRuntime(page, baseURL, swapDatabaseFileName);
+  await configureRuntime(page, baseURL, dataDir, swapDatabaseFileName);
   await page.getByRole("button", { name: "Start runtime" }).click();
 
   await expect(page.locator("#create-form")).toBeVisible({
@@ -83,7 +84,7 @@ test("wallet create and address state persist with OPFS SQLite", async ({
     timeout: 30000,
   });
 
-  await configureRuntime(page, baseURL, swapDatabaseFileName);
+  await configureRuntime(page, baseURL, dataDir, swapDatabaseFileName);
   await page.getByRole("button", { name: "Start runtime" }).click();
 
   await expect(page.locator("#unlock-form")).toBeVisible({
@@ -111,7 +112,9 @@ test("wallet create and address state persist with OPFS SQLite", async ({
   });
 });
 
-async function configureRuntime(page, baseURL, swapDatabaseFileName) {
+async function configureRuntime(page, baseURL, dataDir, swapDatabaseFileName) {
+  await page.locator("input[name=network]").fill("regtest");
+  await page.locator("input[name=dataDir]").fill(dataDir);
   await page.locator("input[name=walletEsploraURL]").fill(baseURL);
   await page.locator("input[name=arkGatewayURL]").fill(baseURL);
   await page.locator("input[name=mailboxGatewayURL]").fill(baseURL);

@@ -121,11 +121,12 @@ function serveFile(res, filePath) {
 }
 
 async function serveAPI(req, res, urlPath) {
+  const apiPath = urlPath.startsWith("/api/") ? urlPath.slice(4) : urlPath;
   if (process.env.WALLETDK_SMOKE_VERBOSE) {
-    console.log(`${req.method} ${urlPath}`);
+    console.log(`${req.method} ${apiPath}`);
   }
 
-  if (urlPath === "/v1/ark/get-info") {
+  if (apiPath === "/v1/ark/get-info") {
     json(res, {
       version: "playwright",
       pubkey: operatorPubkey,
@@ -147,13 +148,13 @@ async function serveAPI(req, res, urlPath) {
     return true;
   }
 
-  if (urlPath === "/v1/ark/estimate-fee") {
+  if (apiPath === "/v1/ark/estimate-fee") {
     json(res, { total_fee_sat: "0" });
 
     return true;
   }
 
-  if (urlPath === "/v1/mailbox/pull") {
+  if (apiPath === "/v1/mailbox/pull") {
     const body = await readJSON(req);
     const mailboxID = body.mailbox_id;
     const envelopes = mailboxQueues.get(mailboxID) || [];
@@ -176,7 +177,7 @@ async function serveAPI(req, res, urlPath) {
     return true;
   }
 
-  if (urlPath === "/v1/mailbox/send") {
+  if (apiPath === "/v1/mailbox/send") {
     const body = await readJSON(req);
     queueIndexerResponse(body.envelope);
     json(res, { status: { ok: true } });
@@ -184,13 +185,13 @@ async function serveAPI(req, res, urlPath) {
     return true;
   }
 
-  if (urlPath === "/v1/mailbox/ack-up-to") {
+  if (apiPath === "/v1/mailbox/ack-up-to") {
     json(res, { status: { ok: true } });
 
     return true;
   }
 
-  if (urlPath === "/v1/swap/request-channel-id") {
+  if (apiPath === "/v1/swap/request-channel-id") {
     json(res, {
       route_hint: {
         node_id: operatorPubkey,
@@ -204,7 +205,7 @@ async function serveAPI(req, res, urlPath) {
     return true;
   }
 
-  if (urlPath === "/v1/swap/create-in-swap") {
+  if (apiPath === "/v1/swap/create-in-swap") {
     json(res, {
       payment_hash: testPaymentHash,
       amount_sat: "1000",
@@ -224,19 +225,19 @@ async function serveAPI(req, res, urlPath) {
     return true;
   }
 
-  if (urlPath === "/blocks/tip/height") {
+  if (apiPath === "/blocks/tip/height") {
     text(res, "0");
 
     return true;
   }
 
-  if (urlPath === "/blocks/tip/hash" || urlPath === "/block-height/0") {
+  if (apiPath === "/blocks/tip/hash" || apiPath === "/block-height/0") {
     text(res, regtestGenesis);
 
     return true;
   }
 
-  if (urlPath === `/block/${regtestGenesis}`) {
+  if (apiPath === `/block/${regtestGenesis}`) {
     json(res, {
       id: regtestGenesis,
       height: 0,
@@ -257,7 +258,7 @@ async function serveAPI(req, res, urlPath) {
     return true;
   }
 
-  if (urlPath === `/block/${regtestGenesis}/header`) {
+  if (apiPath === `/block/${regtestGenesis}/header`) {
     text(res, zeroHeader);
 
     return true;

@@ -1,9 +1,11 @@
 :root {
+  color: #16202a;
   color-scheme: light;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
-  background: #f4f6f8;
-  color: #17202a;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  line-height: 1.4;
+  text-rendering: optimizeLegibility;
 }
 
 * {
@@ -15,38 +17,69 @@
 }
 
 body {
+  background: #eef2f5;
   margin: 0;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
 }
 
 .topbar {
   align-items: center;
-  background: #111827;
-  color: #ffffff;
+  background: #18212d;
+  color: #fff;
   display: flex;
   justify-content: space-between;
-  min-height: 84px;
+  min-height: 82px;
   padding: 18px 28px;
 }
 
 .topbar h1 {
   font-size: 22px;
   font-weight: 700;
+  letter-spacing: 0;
   margin: 0 0 4px;
 }
 
 .topbar p {
-  color: #cbd5e1;
+  color: #c8d3df;
   margin: 0;
 }
 
 .status {
-  background: #2dd4bf;
+  align-items: center;
+  background: #bff4df;
+  border: 1px solid #7eddb6;
   border-radius: 6px;
-  color: #042f2e;
+  color: #0e3d2e;
+  display: inline-flex;
+  font-size: 14px;
   font-weight: 700;
-  min-width: 128px;
+  gap: 8px;
+  justify-content: center;
+  min-height: 38px;
+  min-width: 140px;
   padding: 8px 12px;
-  text-align: center;
+}
+
+.status-loading,
+.status-starting {
+  background: #fff0c2;
+  border-color: #f0cb64;
+  color: #513e08;
+}
+
+.status-error {
+  background: #ffe0df;
+  border-color: #f3aaa6;
+  color: #6a1815;
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
 }
 
 main {
@@ -61,19 +94,29 @@ main {
 }
 
 .panel {
-  background: #ffffff;
-  border: 1px solid #d7dee8;
+  background: #fff;
+  border: 1px solid #d5dee8;
   border-radius: 8px;
   padding: 18px;
 }
 
-.panel h2 {
+.panel-title {
+  align-items: center;
+  color: #1f2a37;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.panel-title h2 {
   font-size: 16px;
-  margin: 0 0 14px;
+  letter-spacing: 0;
+  margin: 0;
 }
 
 .grid,
-.split {
+.split,
+.metrics {
   display: grid;
   gap: 14px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -100,46 +143,73 @@ label {
   gap: 8px;
 }
 
+.check input {
+  min-height: 0;
+  width: auto;
+}
+
 input,
 textarea {
-  border: 1px solid #b8c2cc;
+  background: #fbfcfd;
+  border: 1px solid #b8c3ce;
   border-radius: 6px;
-  font: inherit;
+  color: #16202a;
   min-height: 38px;
   padding: 8px 10px;
   width: 100%;
 }
 
+input:focus,
+textarea:focus {
+  border-color: #2d6cdf;
+  box-shadow: 0 0 0 3px rgb(45 108 223 / 16%);
+  outline: none;
+}
+
 button {
-  background: #2563eb;
+  align-items: center;
+  background: #2d6cdf;
   border: 0;
   border-radius: 6px;
-  color: #ffffff;
+  color: #fff;
   cursor: pointer;
-  font: inherit;
+  display: inline-flex;
   font-weight: 700;
+  gap: 8px;
+  justify-content: center;
   min-height: 38px;
   padding: 8px 14px;
 }
 
 button:hover {
-  background: #1d4ed8;
+  background: #245bbf;
+}
+
+button:disabled {
+  background: #8fa4c6;
+  cursor: not-allowed;
 }
 
 .actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
 .facts {
   display: grid;
   gap: 8px 14px;
-  grid-template-columns: 180px minmax(0, 1fr);
   margin: 0;
 }
 
+.facts div {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 160px minmax(0, 1fr);
+}
+
 .facts dt {
-  color: #536170;
+  color: #586675;
   font-weight: 700;
 }
 
@@ -148,30 +218,45 @@ button:hover {
   overflow-wrap: anywhere;
 }
 
-output {
+output,
+#mnemonic {
+  background: #f6f8fa;
+  border: 1px solid #d9e1ea;
+  border-radius: 6px;
   display: block;
-  margin-top: 12px;
+  margin: 12px 0 0;
+  min-height: 42px;
   overflow-wrap: anywhere;
+  padding: 10px;
   white-space: pre-wrap;
+}
+
+.table-frame {
+  overflow-x: auto;
 }
 
 table {
   border-collapse: collapse;
   margin-top: 12px;
+  min-width: 620px;
   width: 100%;
 }
 
 th,
 td {
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e1e7ee;
   font-size: 13px;
   padding: 8px;
   text-align: left;
   vertical-align: top;
 }
 
+td {
+  overflow-wrap: anywhere;
+}
+
 .warning {
-  border-color: #f59e0b;
+  border-color: #e5a82f;
 }
 
 #activity {
@@ -181,10 +266,21 @@ td {
   padding-left: 22px;
 }
 
+#activity li {
+  margin-bottom: 6px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (max-width: 760px) {
   .topbar,
   .grid,
-  .split {
+  .split,
+  .metrics {
     grid-template-columns: 1fr;
   }
 
@@ -198,7 +294,7 @@ td {
     padding: 14px;
   }
 
-  .facts {
+  .facts div {
     grid-template-columns: 1fr;
   }
 }
