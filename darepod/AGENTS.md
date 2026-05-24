@@ -157,11 +157,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   spend notifications per input, marks inputs spent on confirmation.
   Started by `startBoardingSweepWatcher` on wallet unlock;
   idempotent.
-- `boardingSweepTx` / `buildBoardingSweepTx` — constructs and signs
-  one aggregate timeout-path sweep tx. Iterates the weight estimate
-  up to three times until `SerializeSize` converges so `fee`/`txid`
-  are accurate. Validates `defaultBoardingSweepMaxFeePercent = 25%`
-  and `defaultBoardingSweepMaxInputs = 100`.
+- `newBoardingStore` / `newSweepWallet` — factory helpers constructing
+  the `db.BoardingWalletStore` and the per-backend `unroll.SweepWallet`
+  / `wallet.SweepSigner` adapter (lndUnrollWallet / lwUnrollWallet /
+  btcwUnrollWallet). The boarding-sweep build logic itself lives in
+  `wallet/boarding_sweep.go`.
 - `deriveIdentityKeyEarly` — derives the client's secp256k1 identity
   key from LND or lwwallet before mailbox transport starts.
 - `signMailboxAuth` — Schnorr auth. LND uses the tagged Schnorr
