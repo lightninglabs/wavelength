@@ -47,6 +47,7 @@ package may import from a higher layer.
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
+| [`serverconn/mailboxpull`](serverconn/mailboxpull/) | Shared retry-and-backoff primitives for mailbox pull loops (backoff config, `PullWithRetry`) |
 
 ### Layer 3: Application & Orchestration
 

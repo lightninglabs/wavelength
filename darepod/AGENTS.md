@@ -169,6 +169,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `serverconn.SignMailboxAuth`.
 - `fetchOperatorPubKeyDirect` — fetches operator pubkey via direct
   gRPC `GetInfo` before the mailbox runtime starts.
+- `fetchUnconfirmedBoardingBalance(ctx)` — internal RPC server helper
+  that sums zero-conf UTXOs paying to known boarding scripts and
+  populates the `UnconfirmedBalance` / `UnconfirmedUtxoCount` fields on
+  `GetBoardingBalanceResponse`. Delegates to the wallet actor's
+  `GetBoardingBalanceRequest`.
+- `fetchCurrentOperatorPubKey(ctx)` — fetches the operator's current
+  long-term key at wallet startup and wires it into `vtxo.ManagerConfig`
+  via the `FetchOperatorKey` callback, enabling operator key rotation
+  at VTXO refresh time.
 - `initLedgerActor` — constructs `ledger.LedgerActor` with both
   `LedgerStoreDB` and `UTXOAuditStoreDB`, registers under
   `ledger.ServiceKeyName`, stashes `LedgerStoreDB` on the `Server`
@@ -292,6 +301,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - In btcwallet mode, neutrino is pre-started before seed availability
   so P2P sync proceeds in parallel. `neutrinoSvc` uses `fn.Option`
   and is reused by `startBtcwallet` via `NewWithNeutrino`.
+- `Config.Wallet.BtcwBlockSource` and `BtcwFilterSource` are validated
+  as a pair during `Config.Validate()`: both must be set or both omitted.
+  `sdk/walletdk` surfaces these as `WalletBtcwalletBlockHeadersSource`
+  / `WalletBtcwalletFilterHeadersSource` convenience fields.
+- Gateway CORS wildcard `"*"` origin is allowed in
+  `Config.GatewayConfig` and passed through to `gateway.BrowserHeaders`.
+  An empty non-wildcard origin string is rejected by `Config.Validate()`.
 - The neutrino sync-wait goroutine polls indefinitely (no timeout)
   with 30s progress logging — avoids leaving the wallet permanently
   unready.

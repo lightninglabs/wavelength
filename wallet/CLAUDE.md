@@ -34,10 +34,28 @@ refresh, leave, OOR spend, and directed send flows.
 - `SendVTXOsRequest` / `SendVTXOsResponse` — Ask-request for in-round directed sends. Validates each recipient amount is within `(0, MaxSatoshi]` and that the running total never overflows `int64`, atomically selects and reserves VTXOs via `SelectAndReserveForfeitRequest`, builds forfeit + recipient VTXO intents, and registers with the round actor. Supports dry-run mode for previewing coin selection without committing. Reserved VTXOs are released via a deferred cleanup that uses `context.WithoutCancel` so cleanup survives caller disconnect; on success, a `committed` flag is set to skip the release.
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
 - `VTXODescriptor.EffectivePolicyTemplate` — Decodes the serialized `PolicyTemplate` field on the wallet-level VTXO descriptor using `lib/arkscript`.
+- `ErrRefreshOperatorKeyUnsupported` — Sentinel returned by
+  `VTXODescriptor.RefreshOutputTemplate` for non-standard policy shapes.
+- `(d *VTXODescriptor) RefreshOutputTemplate(currentOperatorKey *btcec.PublicKey) ([]byte, error)` —
+  Wallet-level equivalent of `vtxo.Descriptor.RefreshOutputTemplate`.
+  Rebuilds the policy template for the NEW VTXO output using the
+  caller-supplied current operator key while preserving owner key and
+  exit delay. Wraps decode failures with `ErrRefreshOperatorKeyUnsupported`
+  so callers can branch with a single `errors.Is` check.
+- `WithFetchOperatorKey(fetch func(context.Context) (*btcec.PublicKey, error)) ArkOption` —
+  Wires a closure that fetches the operator's current long-term key via
+  a single `GetInfo` round-trip into the wallet actor. Invoked once per
+  refresh batch in `handleRefreshVTXOs` so every new VTXO in the round
+  commits to the same operator key.
+- `GetBoardingBalanceRequest` / `GetBoardingBalanceResponse` — Ask-request
+  for boarding balance. `GetBoardingBalanceResponse` now carries
+  `UnconfirmedBalance btcutil.Amount` (sum of zero-conf UTXOs paying to
+  boarding scripts) and `UnconfirmedUtxoCount int` alongside the existing
+  confirmed balance fields.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager admission types), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants).
+- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager admission types), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants), `lib/arkscript` (policy template rebuild for operator key rotation).
 - **Depended on by**: `round` (boarding intents, types: `BoardingAddress`, `SelectedVTXO`), `db` (persistence), `darepod` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
@@ -52,7 +70,7 @@ refresh, leave, OOR spend, and directed send flows.
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`
-  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`
+  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`, `GetBoardingBalanceRequest`
 
 ## Invariants
 
@@ -68,6 +86,12 @@ refresh, leave, OOR spend, and directed send flows.
 - `handleSendVTXOs` rejects pre-flight any directed send with multiple recipients and exactly-zero change residual under the #270 seal-time fee handshake. The server is the amount authority and absorbs the operator fee out of the designated `IsChange=true` slot; if there is no residual to absorb the fee against, the server has no slack to deduct fees without silently shifting them onto a recipient leg. The wallet refuses the request rather than letting the server pick the loser.
 - `VTXOReader` / `VTXODescriptor` / `SelectedVTXO` break the vtxo → round → wallet import cycle by providing wallet-level types that don't reference `vtxo.Descriptor` directly.
 - Per-subsystem logging via `build.LoggerFromContext` (no global mutable loggers).
+- When `WithFetchOperatorKey` is wired, `handleRefreshVTXOs` fetches the
+  operator's current long-term key **once** for the whole batch via a
+  single `GetInfo` call. Every new VTXO minted in that round commits to
+  the same key, avoiding N redundant round-trips. Fetch errors fail the
+  whole RPC. For non-standard policy shapes or when the option is unset
+  (harness paths), the handler falls back to the descriptor's stored bytes.
 
 ## Deep Docs
 

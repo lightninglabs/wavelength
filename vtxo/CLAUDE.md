@@ -19,13 +19,22 @@ when the local wallet owns the receive script.
 - `ManagerConfig` — Configuration holding Store, Wallet, ChainSource,
   ActorSystem, ChainParams, ExpiryConfig, RoundActor ref, ChainResolver ref,
   optional `Log`, optional `LedgerSink fn.Option[ledger.Sink]`,
-  `ForfeitVTXOActorAskTimeout`, and `RefreshFeeQuoter`. The manager
-  propagates the sink into each spawned `VTXOActor` for `ExitCostMsg`
-  emissions. `ForfeitVTXOActorAskTimeout` (default 5 s) bounds forfeit
+  `ForfeitVTXOActorAskTimeout`, `RefreshFeeQuoter`, and optional
+  `FetchOperatorKey func(context.Context) (*btcec.PublicKey, error)`. The
+  manager propagates the sink and `FetchOperatorKey` into each spawned
+  `VTXOActor`. `ForfeitVTXOActorAskTimeout` (default 5 s) bounds forfeit
   and refresh child asks so a blocked child actor cannot monopolize the
   manager until the outer RPC deadline. Zero uses the default; negative
   disables the timeout. Spend-path asks keep the caller's context.
 - `VTXOActorConfig.LedgerSink` — Per-VTXO actor field plumbed from the manager. The `emitExitCost` helper is wired onto the unilateral-exit transition but is currently a no-op pending chain resolver integration: the actor cannot determine the on-chain miner fee until the chain resolver reports the confirmed exit-spend transaction. The emission site exists so a single future change in the chain resolver wiring enables it without touching the FSM transition logic.
+- `ErrRefreshOperatorKeyUnsupported` — Sentinel returned by
+  `RefreshOutputTemplate` when the VTXO uses a non-standard policy
+  shape that cannot be rebuilt with a new operator key.
+- `(d *Descriptor) RefreshOutputTemplate(currentOperatorKey *btcec.PublicKey) ([]byte, error)` —
+  Rebuilds the policy template for the NEW VTXO output using the
+  caller-supplied current operator key while preserving owner key and
+  exit delay. Only supports standard Ark policy shapes; non-standard
+  shapes return `ErrRefreshOperatorKeyUnsupported`.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).
 - `FilterOptions` / `FilterDescriptors` — VTXO filtering by expiry status, spend state, etc.
@@ -42,7 +51,7 @@ when the local wallet owns the receive script.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/tree` (tree paths), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `ledger` (`Sink` + `ExitCostMsg` for planned exit cost emission).
+- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/tree` (tree paths), `lib/arkscript` (taproot construction, policy template helpers, operator key rotation), `lib/actormsg` (admission message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `ledger` (`Sink` + `ExitCostMsg` for planned exit cost emission).
 - **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `darepod` (wiring, owned-script adapters, incoming event route).
 - **Sends**:
   - → `round` (via manager relay): `RelayToRoundMsg` wrapping `ForfeitSignatureSubmission`
@@ -93,6 +102,13 @@ when the local wallet owns the receive script.
 - Incoming VTXOs are saved with `Status: VTXOStatusLive` and empty `Ancestry` (the round commitment tree is not pushed alongside the event); `db.VTXOPersistenceStore.descriptorToInsertParams` accepts an empty tree-path blob to support this.
 - The `CommitmentTxID` on a materialized incoming VTXO comes from `IncomingVTXOEvent.CommitmentTxid`, which is the round commitment txid — **not** the leaf txid in the outpoint.
 - Per-subsystem logging: `ManagerConfig.Log` provides an optional instance logger; falls back to `build.LoggerFromContext` (no global mutable loggers).
+- When `FetchOperatorKey` is set on `ManagerConfig`, auto-refresh
+  emissions fetch the operator's current long-term key at join time so
+  the NEW VTXO output commits to the current key rather than the key
+  stored in the input VTXO's descriptor. Fetch errors are logged at warn
+  level and cause the refresh to be skipped; the next expiry tick
+  retries naturally. Non-standard policy shapes fall back to the
+  descriptor's stored bytes.
 
 ## Deep Docs
 

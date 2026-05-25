@@ -68,6 +68,13 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - Transaction context (`WithTx`/`RequireTx`) enables same-DB-transaction joining between actors and their callers.
 - `Mailbox.Send` returns the exact failure error (`ErrMailboxClosed`, `ErrActorTerminated`, `context.Canceled`, `context.DeadlineExceeded`) rather than a boolean; `Tell` and `Ask` propagate this directly to callers.
 - During daemon teardown, the underlying DB is closed before every actor's lease loop has wound down. The lease loop uses `isExpectedShutdownErr` to demote these "database is closed" errors to debug level; real operational errors still surface as warnings because neither the actor context nor the outer context is done in those cases.
+- **Durable bookkeeping context isolation during shutdown**: message ack
+  and deduplication marker writes use `context.WithoutCancel(ctx)` wrapped
+  with `cleanupTimeout` so bookkeeping completes atomically even when
+  `Stop()` is called concurrently. This prevents a SQLite race where
+  database/sql auto-rolls-back a context-bound transaction while modernc
+  sqlite is still executing it, and ensures at-least-once delivery
+  guarantees hold through the stop sequence.
 - **Per-correlation-key FIFO claim.** Two messages in the same mailbox that
   share a non-empty `CorrelationKey()` are processed in emission order
   regardless of retry backoff. Without this invariant, a transient Tell

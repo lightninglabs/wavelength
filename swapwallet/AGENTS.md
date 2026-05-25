@@ -17,6 +17,13 @@ default builds avoid the swap executor's dependency graph.
 - `Service` — gRPC handler implementing `walletrpc.WalletServiceServer`.
   Thin facade: each method dispatches to `router`, `receiver`,
   `history`, or admin proxy helpers; no business logic lives here.
+- `InspectionService` — gRPC handler implementing
+  `walletrpc.WalletInspectionServiceServer`. Technical debugging surface
+  deliberately separate from the friendly `WalletService`. Provides
+  `InspectActivity`, which correlates one `WalletEntry` id to the
+  underlying swap summary, correlated ledger rows, VTXO movements, and
+  internal OOR session metadata. Callers must opt-in to see session IDs
+  and correlators hidden from the main Activity feed.
 - `Runtime` — Owns the in-process swap lifecycle: synchronous
   resume-on-startup, deadline watcher (overlays stuck entries as
   FAILED), monitor loop (fans normalized updates to subscribers).
@@ -70,6 +77,7 @@ default builds avoid the swap executor's dependency graph.
 - **Receives**:
   - ← API: `walletrpc.{Create,Unlock,Send,Recv,List,Balance,Deposit,
     Status,Exit,ExitStatus,SubscribeWallet}Request`
+  - ← API: `walletrpc.InspectActivityRequest` (WalletInspectionService)
 
 ## Invariants
 
@@ -103,10 +111,24 @@ default builds avoid the swap executor's dependency graph.
   and Onchain.
 - VTXOs view filters out terminal internal states (FORFEITED, SPENT,
   FAILED) so the wallet view stays focused on actionable VTXOs.
-- The runtime's deadline overlay elevates stuck PENDING entries to
-  FAILED with `failure_reason="timed_out"` BEFORE filtering, so a
-  stuck row appears as FAILED even when the caller asks for
-  `pending_only=false`.
+- The runtime's deadline overlay elevates wallet-local stuck PENDING
+  entries to FAILED with `failure_reason="timed_out"` BEFORE filtering.
+  Swap-backed rows (SEND/RECV) trust the swap FSM's own terminal state
+  and skip the wallet deadline overlay. A stuck wallet-local row appears
+  as FAILED even when the caller asks for `pending_only=false`.
+- **OOR ledger hiding**: The Activity feed hides internal OOR
+  transaction legs (send-receive pairs within the same session) to avoid
+  noise. `internalOORLedgerEntries` correlates swap metadata (session
+  IDs) and ledger fields to identify which rows are internal plumbing
+  vs. user-facing movements. `InspectActivity` exposes all ledger rows
+  including their hidden status so debugging tools can reconstruct the
+  full execution trace.
+- **Boarding confirmation tracking**: `collectPendingBoardingEntries`
+  adds a synthetic pending DEPOSIT row for unconfirmed on-chain funds
+  (from `boarding_unconfirmed_sat` balance field). Once the boarding
+  UTXO confirms and the ledger emits `wallet_utxo_created`, the
+  synthetic row is replaced by the durable ledger row so unconfirmed
+  boarding funds remain visible throughout.
 - **DEPOSIT rows backed by the `wallet_utxo_created` ledger event**
   are pinned to `ENTRY_STATUS_PENDING` even after chain confirmation
   (`statusForLedgerRow`), because a boarding UTXO landing on-chain

@@ -33,6 +33,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   waits for gRPC readiness, and returns a ready `*Client`. The daemon
   lifetime is owned by walletdk's `runCtx`, not the caller's `ctx`, so
   a tight startup deadline cancels dialing only.
+- `Config` convenience fields also include
+  `WalletBtcwalletBlockHeadersSource string` and
+  `WalletBtcwalletFilterHeadersSource string` — local file path or
+  HTTP(S) URL for btcwallet/neutrino block and filter header imports.
+  Both must be set together or both omitted. When set, neutrino imports
+  headers from the source before P2P fallback, enabling fast initial
+  sync without waiting for the full P2P header download.
 - `Option` — functional option accepted as variadic trailing args.
   Options apply **after** the `Config`/`DaemonConfig` merge and after
   `configureSwapRuntime` / `configureWalletRPC`, so they can override
@@ -148,6 +155,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 - `Wait()` is single-reader: same shared channel on every call. The
   channel delivers the daemon's terminal run error then closes; a
   closed channel reads as the zero error indefinitely.
+- `WalletBtcwalletBlockHeadersSource` and
+  `WalletBtcwalletFilterHeadersSource` are btcwallet-only convenience
+  fields. They are validated and forwarded to `darepod.Config` before
+  daemon startup. Both must be set together; providing only one is a
+  validation error surfaced before `Start` returns.
 - `Subscribe` returns an unbuffered updates channel so a slow consumer
   applies backpressure end-to-end; the errs channel is cap-1 for a
   single terminal error.

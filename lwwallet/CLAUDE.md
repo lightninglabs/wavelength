@@ -42,7 +42,14 @@ without an external LND node. Implements `wallet.BoardingBackend`,
   response is verified to hash to the requested key before insertion.
 - `EsploraChainService` — `chain.Interface` adapter over `EsploraClient`,
   driven by a shared `TipPoller`. Feeds btcwallet's internal address-credit
-  pipeline. Constructor: `NewEsploraChainService(esplora, tipPoller, logger)`.
+  pipeline. On each tip event, walks any gap between the last delivered
+  height and the live tip, re-emitting missed heights (bounded by
+  `defaultMaxGapFillPerTipEvent = 256` per event). Constructor:
+  `NewEsploraChainService(esplora, tipPoller, logger, opts...)`.
+- `EsploraChainServiceOption` — Functional option for
+  `NewEsploraChainService`. Currently one option:
+  `WithMaxGapFillPerTipEvent(n int32)` overrides the per-event gap-fill
+  cap (used in tests to exercise bounded-walk behavior).
 - `BoardingBackendAdapter` — Implements `wallet.BoardingBackend` and
   `wallet.OutputLeaser`. Queries Esplora directly for UTXOs (bypasses
   btcwallet's UTXO tracking because btcwallet skips credit marking for
@@ -76,6 +83,11 @@ without an external LND node. Implements `wallet.BoardingBackend`,
   UTXO set, because btcwallet does not credit-mark non-default scope outputs.
 - `Stop()` explicitly closes btcwallet's internal database to prevent resource
   leaks.
+- `EsploraChainService` gap-fill is capped at 256 heights per tip event
+  (`defaultMaxGapFillPerTipEvent`) to prevent long hangs during Esplora
+  outages. Heights beyond the cap are delivered on the next tip event.
+  Out-of-order or duplicate tip events are handled explicitly and do not
+  re-deliver already-processed heights.
 
 ## Deep Docs
 

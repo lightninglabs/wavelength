@@ -12,8 +12,19 @@ or LND node.
 - `Wallet` — Top-level wallet wrapping `walletcore.Wallet` with neutrino chain service, chain backend, and boarding adapter. Constructors: `New` (owns neutrino lifecycle) and `NewWithNeutrino` (reuses pre-started service).
 - `NeutrinoService` — Manages the neutrino `ChainService`, its bbolt DB, and lifecycle. Pre-started by the daemon for early P2P sync.
 - `ChainBackend` — Implements `chainsource.ChainBackend` using neutrino's native `ChainNotifier` for confirmation tracking, spend detection, fee estimation, and optional direct package relay via `chainbackends.PackageSubmitter`.
-- `BoardingBackendAdapter` — Implements `wallet.BoardingBackend` and `wallet.OutputLeaser` by embedding `walletcore.BoardingBackendBase` and adding neutrino-backed `ListUnspent`, `GetTransaction`, `GetBlock`, `LeaseOutput`, and `ReleaseOutput`. Output leasing forwards to btcwallet's native lock table, casting `wallet.LockID` → `wtxmgr.LockID`.
-- `Config` — Embeds `walletcore.Config` and adds neutrino-specific fields (peers, fee URL, persist filters) plus an optional `PackageSubmitter` for v3 parent+child relay.
+- `BoardingBackendAdapter` — Implements `wallet.BoardingBackend` and
+  `wallet.OutputLeaser` by embedding `walletcore.BoardingBackendBase` and
+  adding neutrino-backed `ListUnspent`, `GetTransaction`, `GetBlock`,
+  `LeaseOutput`, and `ReleaseOutput`. Output leasing forwards to
+  btcwallet's native lock table, casting `wallet.LockID` → `wtxmgr.LockID`.
+  `ListUnspent` checks whether btcwallet's chain sync is still in progress
+  and returns an error if so, preventing UTXO enumeration during sync.
+- `Config` — Embeds `walletcore.Config` and adds neutrino-specific fields
+  (peers, fee URL, persist filters, optional `PackageSubmitter` for v3
+  parent+child relay). New fields: `BlockHeadersSource string` and
+  `FilterHeadersSource string` — local file path or HTTP(S) URL for
+  fast-sync header imports. Both must be set together or both omitted;
+  either alone is a validation error.
 
 ## Relationships
 
@@ -29,6 +40,11 @@ or LND node.
   is non-relayable without its fee-paying child.
 - Block cache size is in bytes (2 MiB default), not block count. This differs from neutrino's count-based API.
 - Taproot script imports use `KeyScopeBIP0086` (via `walletcore.BoardingBackendBase`) to ensure btcwallet's block processing tracks credits correctly.
+- `BlockHeadersSource` and `FilterHeadersSource` must both be set or both
+  omitted. Neutrino imports headers from the source before P2P fallback,
+  using `blockchain.BFFastAdd` validation flags for historical headers.
+- `ListUnspent` returns an error when btcwallet's chain sync is still
+  in progress so callers wait for a consistent UTXO view.
 
 ## Deep Docs
 

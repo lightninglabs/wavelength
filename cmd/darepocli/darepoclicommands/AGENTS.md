@@ -25,7 +25,8 @@ The CLI surface is split into three tiers:
 | `unlock` | `walletrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
 | `send <dest>` | `walletrpc.Send` | Outbound payment. `--offchain` (default) for Lightning invoice, `--onchain` for cooperative leave. No prefix sniff |
 | `recv` | `walletrpc.Recv` / `walletrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
-| `activity` | `walletrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
+| `activity` | `walletrpc.List` | Unified wallet activity view. Defaults to table output (`--format table`); `--format expanded` / `x` shows verbose single-entry layout; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
+| `activity inspect <id>` | `walletrpc.InspectActivity` | Technical trace for one activity entry: swap summary, VTXO movements, raw ledger rows, and caveats. `--ledger-limit` caps ledger scan; `--format {expanded,x,json}` |
 | `balance` | `walletrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
 | `exit --outpoint TXID:VOUT` | `walletrpc.Exit` | Trigger a unilateral exit (proxies Unroll) |
 | `exit status --outpoint TXID:VOUT` | `walletrpc.ExitStatus` | Query an exit job's status (proxies GetUnrollStatus) |
@@ -75,6 +76,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
   registered.
 - `getDaemonConn()` / `getDaemonClient()` — TLS-by-default daemon
   gRPC dial; `--no-tls` opts out for local dev.
+- `getInspectionClient()` — daemon `walletrpc.WalletInspectionService`
+  dial for the `activity inspect` subcommand.
+- `printWalletActivityTable` / `printWalletActivityExpanded` — render
+  wallet activity in table or expanded (multi-line) format.
+- `printWalletInspectionExpanded` — render an `InspectActivityResponse`
+  as a human-readable technical trace (swap, VTXOs, ledger rows, notes).
 - `withWalletClient()` — maps `codes.Unimplemented` to
   `errWalletRPCDisabled` (with a pointer to `docs/walletrpc_build.md`)
   for daemons built without the walletrpc tag.

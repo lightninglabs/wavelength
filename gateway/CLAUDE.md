@@ -17,7 +17,11 @@ have a consistent configuration across all daemon sub-services.
   unconditionally (non-browser clients are not restricted); requests
   carrying an `Origin` are validated against the allowlist and rejected
   with 403 when not present. Injects CORS headers and allows GET, POST,
-  and OPTIONS methods.
+  and OPTIONS methods. The wildcard `"*"` may be included in
+  `allowedOrigins` to permit any browser origin; wildcard responses
+  return `"Access-Control-Allow-Origin: *"` without `Vary: Origin`
+  (correct per the CORS spec). Only suitable for APIs with explicit
+  per-request authentication.
 - `NormalizeEndpoint(endpoint) string` — Converts listener addresses for
   loopback dialing: `0.0.0.0` → `127.0.0.1`, `[::]` → `[::1]`, others
   pass through unchanged.
@@ -33,7 +37,10 @@ have a consistent configuration across all daemon sub-services.
 - Browser callers (those sending an `Origin` header) need an entry in
   `allowedOrigins` or the request is rejected with 403. An empty
   allowlist means no browser caller can reach the gateway; non-browser
-  clients without an `Origin` header are unaffected.
+  clients without an `Origin` header are unaffected. Including `"*"` in
+  `allowedOrigins` bypasses the per-request origin check and returns a
+  wildcard CORS header; the `Vary: Origin` header is omitted in this
+  mode (CORS-compliant behavior).
 - JSON marshaling always uses `UseProtoNames` (snake_case field names) and
   `EmitUnpopulated` (include zero/default values) for API consistency with
   grpc-gateway clients.

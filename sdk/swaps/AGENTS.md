@@ -28,7 +28,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
   ClaimInitiated → Completed` (or `Expired` / `NeedsIntervention` /
   `Failed`). `HTLCEventAccepted` is a durable checkpoint persisted
   after the server mailbox event is validated so funding detection
-  resumes without re-driving mailbox delivery.
+  resumes without re-driving mailbox delivery. An unpaid invoice
+  transitions to `Expired` when its deadline passes; a 10-second
+  grace window (`defaultOverdueReceiveMailboxPollWindow`) allows
+  already-delivered funding messages to arrive when the daemon
+  resumes after an invoice has exceeded its deadline.
+  `StartReceiveViaLightning` accepts an optional `memo string`
+  parameter that is embedded as the BOLT-11 invoice description.
 - `MailboxOutSwapEventReceiver` — mailbox-backed receiver. Pulls
   out-swap HTLC events from a `mailbox/pb` edge keyed by a per-session
   mailbox ID derived from the client identity key and payment hash.
@@ -66,7 +72,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 - `PayState` / `ReceiveState` — typed FSM enums with `IsTerminal()` /
   `String()`. `ReceiveState` includes `ReceiveStateHTLCEventAccepted`.
 - `VHTLCConfig`, `InSwapConfig`, `RouteHint` — server-negotiation
-  DTOs. `SwapSummary` — flat list view for persisted sessions.
+  DTOs. `SwapSummary` — flat list view for persisted sessions. Now
+  includes an `Invoice string` field: receive swaps carry the generated
+  BOLT-11 invoice; pay swaps carry the caller-submitted invoice.
 - `OutSwapMailboxID` — derives a per-receive mailbox ID from the
   client identity key and invoice payment hash.
 - Error sentinels (exported): `ErrSwapExpired`, `ErrSwapRefunded`,
@@ -125,6 +133,10 @@ result into an `IncomingVHTLCNotification`.
   the SDK never holds the raw private key for receive-auth.
 - Error sentinels (`ErrSwapExpired`, `ErrSwapRefunded`,
   `ErrSwapSummaryNotFound`) are exported; callers use `errors.Is`.
+- An unpaid `ReceiveSession` whose invoice deadline has elapsed
+  transitions to `ReceiveStateExpired` rather than `NeedsIntervention`.
+  The 10-second mailbox poll grace window prevents false expiry when
+  daemon restart races an already-delivered funding event.
 
 ## Deep Docs
 

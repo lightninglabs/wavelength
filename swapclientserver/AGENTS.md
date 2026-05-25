@@ -16,10 +16,12 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   not per-RPC), the process-local `active` worker map, and the `subscribers`
   map for `SubscribeSwaps` streaming.
 - `swapRuntimeClient` — Narrow interface over `sdk/swaps.SwapClient` that the
-  subserver uses for all RPC handlers and worker restarts. Methods: `StartPayViaLightning`,
-  `StartReceiveViaLightning`, `ResumePayViaLightning`,
-  `ResumeReceiveViaLightning`, `GetSwapSummary`, `ListSwapSummaries`. Keeps
-  the subserver unit-testable without running real swap FSMs.
+  subserver uses for all RPC handlers and worker restarts. Methods:
+  `StartPayViaLightning`, `StartReceiveViaLightning(ctx, amount, memo string)`,
+  `ResumePayViaLightning`, `ResumeReceiveViaLightning`, `GetSwapSummary`,
+  `ListSwapSummaries`. Keeps the subserver unit-testable without running real
+  swap FSMs. The `memo` parameter on `StartReceiveViaLightning` is forwarded
+  as the BOLT-11 invoice description.
 - `swapClientAdapter` — Thin production adapter that forwards calls to
   `*swaps.SwapClient`.
 - `paySwapSession` / `receiveSwapSession` — Minimal session interfaces
@@ -44,7 +46,7 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 | RPC | Description |
 |-----|-------------|
 | `StartPay` | Persist a pay swap, start or reuse its daemon worker, return summary |
-| `StartReceive` | Persist a receive swap, start or reuse its daemon worker, return invoice + summary |
+| `StartReceive` | Persist a receive swap, start or reuse its daemon worker, return invoice + summary. Optional `memo` field sets the BOLT-11 invoice description |
 | `ResumeSwap` | Manual wake-up for a persisted swap (idempotent if worker already active) |
 | `ListSwaps` | List persisted swap summaries; optionally filter to pending only |
 | `GetSwap` | Fetch one persisted summary by hex payment hash |
@@ -86,6 +88,10 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `idempotency_key` on `StartPay` / `StartReceive` is explicitly reserved and
   returns `Unimplemented` to guard against accidental duplicate-start
   assumptions.
+- `swapSummaryToProto` copies the `Invoice` string field from persisted swap
+  summaries into the proto response. Both pay and receive summaries expose
+  their respective invoices; receive swaps expose the generated invoice,
+  pay swaps expose the caller-submitted invoice.
 - `SetOutSwapEventReceiver` must run before any receive worker is started:
   `SwapClient` captures the receiver into the per-swap worker at start time,
   so a late install would leave already-running workers using whatever
