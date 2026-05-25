@@ -59,9 +59,9 @@ type Wallet struct {
 }
 
 // New creates a new lightweight wallet from the given configuration.
-// The caller must provide a DBDir for btcwallet's bbolt database and
-// is responsible for managing the directory's lifecycle (creation
-// before calling New, cleanup after Stop if desired).
+// The caller must provide a DBDir for btcwallet's wallet database. Native
+// builds use that path for btcwallet's bbolt database, while browser builds
+// derive a stable OPFS SQLite database name from it.
 func New(cfg Config) (*Wallet, error) {
 	// Constructors run before a contextual logger is guaranteed,
 	// so default to a disabled logger when one was not explicitly
@@ -97,6 +97,11 @@ func New(cfg Config) (*Wallet, error) {
 		walletcore.DefaultBlockCacheSize,
 	)
 
+	loaderOptions, err := newWalletLoaderOptions(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create wallet loader options: %w", err)
+	}
+
 	btcw, err := btcwallet.New(btcwallet.Config{
 		PrivatePass:    walletcore.WalletPassphrase,
 		PublicPass:     walletcore.WalletPassphrase,
@@ -106,11 +111,7 @@ func New(cfg Config) (*Wallet, error) {
 		NetParams:      cfg.ChainParams,
 		CoinType:       coinType,
 		RecoveryWindow: cfg.RecoveryWindow,
-		LoaderOptions: []btcwallet.LoaderOption{
-			btcwallet.LoaderWithLocalWalletDB(
-				cfg.DBDir, false, 60*time.Second,
-			),
-		},
+		LoaderOptions:  loaderOptions,
 	}, blockCache)
 	if err != nil {
 		return nil, fmt.Errorf("create btcwallet: %w", err)

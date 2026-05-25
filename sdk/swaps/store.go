@@ -6,15 +6,14 @@ import (
 	"embed"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"path/filepath"
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
+	clientdb "github.com/lightninglabs/darepo-client/db"
 	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
 	dbsqlc "github.com/lightninglabs/darepo-client/db/sqlc"
 	swapsqlc "github.com/lightninglabs/darepo-client/sdk/swaps/sqlc"
-	_ "modernc.org/sqlite"
 )
 
 const (
@@ -29,15 +28,6 @@ const (
 	// defaultMigrationDatabaseName is the golang-migrate instance label
 	// for the swap-client schema.
 	defaultMigrationDatabaseName = "swap_client"
-
-	// sqliteOptionPrefix is the modernc SQLite DSN prefix for pragma
-	// settings.
-	sqliteOptionPrefix = "_pragma"
-
-	// sqliteTxLockImmediate starts write transactions immediately so state
-	// persistence fails fast under contention instead of stalling halfway
-	// through a swap step.
-	sqliteTxLockImmediate = "_txlock=immediate"
 
 	// defaultMaxConns bounds the swap store connection pool just like
 	// the main client database.
@@ -95,56 +85,53 @@ func NewSqliteStore(cfg *SqliteStoreConfig, log btclog.Logger) (*Store, error) {
 		log = btclog.Disabled
 	}
 
-	pragmaOptions := []struct {
-		name  string
-		value string
-	}{
+	pragmaOptions := []clientdb.SQLitePragma{
 		{
-			name:  "foreign_keys",
-			value: "on",
+			Name:  "foreign_keys",
+			Value: "on",
 		},
 		{
-			name:  "journal_mode",
-			value: "WAL",
+			Name:  "journal_mode",
+			Value: "WAL",
 		},
 		{
-			name:  "busy_timeout",
-			value: "5000",
+			Name:  "busy_timeout",
+			Value: "5000",
 		},
 		{
-			name:  "synchronous",
-			value: "full",
+			Name:  "synchronous",
+			Value: "full",
 		},
 		{
-			name:  "fullfsync",
-			value: "true",
+			Name:  "fullfsync",
+			Value: "true",
 		},
 	}
-
-	sqliteOptions := make(url.Values)
-	for _, option := range pragmaOptions {
-		sqliteOptions.Add(
-			sqliteOptionPrefix,
-			fmt.Sprintf("%s=%s", option.name, option.value),
-		)
-	}
-
-	dsn := fmt.Sprintf("%s?%s&%s", cfg.DatabaseFileName,
-		sqliteOptions.Encode(), sqliteTxLockImmediate)
 
 	ctx := context.Background()
 	log.InfoS(ctx, "Opening swap SQLite database",
 		slog.String("db_file", cfg.DatabaseFileName),
 	)
 
-	db, err := sql.Open("sqlite", dsn)
+	openResult, err := clientdb.OpenSQLiteDatabase(
+		clientdb.SQLiteOpenConfig{
+			DatabaseFileName: cfg.DatabaseFileName,
+			Pragmas:          pragmaOptions,
+			TxLockImmediate:  true,
+			MaxOpenConns:     defaultMaxConns,
+			MaxIdleConns:     defaultMaxConns,
+			ConnMaxLifetime:  defaultConnMaxLifetime,
+		},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("open swap sqlite db: %w", err)
 	}
 
-	db.SetMaxOpenConns(defaultMaxConns)
-	db.SetMaxIdleConns(defaultMaxConns)
-	db.SetConnMaxLifetime(defaultConnMaxLifetime)
+	db := openResult.DB
+
+	log.DebugS(ctx, "Swap SQLite connection pool configured",
+		slog.String("driver", openResult.DriverName),
+	)
 
 	if !cfg.SkipMigrations {
 		err = RunMigrations(db, log)
