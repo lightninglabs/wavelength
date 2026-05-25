@@ -89,20 +89,26 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 
 ## Relationships
 
-- **Depends on**: `darepod` (embedded daemon runtime), `daemonrpc`
-  (wallet, balance, info, address RPCs + direct paths for
-  `CreateWallet`/`UnlockWallet`), `rpc/walletrpc` (unified wallet API
-  the seven verbs target), `rpc/swapclientrpc` (raw-swap escape hatch),
-  `swapclientserver` (registered as daemon-side swap subserver in
-  `swapruntime` builds), `swapwallet` (daemon-side walletrpc subserver
-  in `walletrpc` builds), `google.golang.org/grpc/test/bufconn`.
-- **Depended on by**: host Go apps, gomobile / React Native / WASM
-  bridges, and `cmd/walletdk-tui`.
-- **Sends** → `darepod` (in-process via bufconn): all daemon RPCs are
-  routed across the private gRPC connection, not the daemon's public
-  listener.
-- **Receives** ← host application calls. walletdk registers no RPC
-  handlers; it only consumes them.
+- **Depends on**: `darepod` (embedded daemon runtime, default config,
+  validation), `daemonrpc` (wallet, balance, info, address RPCs, plus
+  daemonrpc-direct paths for `CreateWallet`/`UnlockWallet`),
+  `rpc/walletrpc` (the unified wallet API the seven verbs target),
+  `rpc/swapclientrpc` (escape hatch for raw swap RPCs),
+  `swapclientserver` (`swapruntime` build only — registers the
+  daemon-side swap subserver via `RPCServiceRegistrars`),
+  `swapwallet` (`walletrpc` build only — registers the daemon-side
+  wallet RPC subserver),
+  `google.golang.org/grpc/test/bufconn` (in-process transport).
+- **Depended on by**: host Go apps, gomobile / React Native / WASM bridges,
+  and the browser wallet demo.
+- **Sends**:
+  - → `darepod` (in-process via bufconn): all daemon RPCs listed above
+    are routed across the private gRPC connection rather than the
+    daemon's public listener.
+- **Receives**:
+  - ← API: host application calls (`CreateWallet`, `Receive`, `Send`,
+    `Subscribe`, `Exit`, …). walletdk does not register any RPC
+    handlers itself; it only consumes them.
 
 ## Invariants
 

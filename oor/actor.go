@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -222,6 +223,10 @@ func newOORActorCodec(limits ReceiveLimits) *actor.MessageCodec {
 func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 	cfg.Limits = normalizeReceiveLimits(cfg.Limits)
 
+	if useInlineOORActor() {
+		cfg.SigningEffect = nil
+	}
+
 	if cfg.ActorID == "" {
 		cfg.ActorID = fmt.Sprintf("oor-client-%s", uuid.NewString())
 	}
@@ -245,6 +250,55 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 	behavior := &oorDurableBehavior{
 		cfg:      cfg,
 		sessions: make(map[SessionID]*sessionHandle),
+	}
+
+	if useInlineOORActor() {
+		checkpoint, err := cfg.DeliveryStore.LoadCheckpoint(
+			context.Background(), cfg.ActorID,
+		)
+		if err != nil {
+			actorRef.startupErr = err
+
+			return actorRef
+		}
+
+		restart := &actor.RestartMessage{
+			Checkpoint: fn.OptionFromPtr(checkpoint),
+		}
+		result := behavior.Receive(context.Background(), restart)
+		if err := result.Err(); err != nil {
+			actorRef.startupErr = err
+
+			return actorRef
+		}
+
+		ref := newInlineOORActorRef(cfg.ActorID, behavior)
+		actorRef.ref = ref
+
+		ctorLogger.InfoS(context.Background(), "OOR inline actor started",
+			slog.String("actor_id", cfg.ActorID),
+		)
+
+		if cfg.ActorSystem != nil {
+			oorKey := NewServiceKey()
+			err = actor.RegisterWithReceptionist(
+				cfg.ActorSystem.Receptionist(), oorKey, ref,
+			)
+			if err != nil {
+				actorRef.startupErr = fmt.Errorf("register OOR "+
+					"actor: %w", err)
+
+				return actorRef
+			}
+
+			ctorLogger.InfoS(
+				context.Background(),
+				"OOR actor registered with receptionist",
+				slog.String("actor_id", cfg.ActorID),
+			)
+		}
+
+		return actorRef
 	}
 
 	durableCfg := actor.DefaultDurableActorConfig[OORDurableMsg,
@@ -354,6 +408,10 @@ func (a *OORClientActor) Stop() {
 		a.durable.Stop()
 	}
 
+	if inlineRef, ok := a.ref.(*inlineOORActorRef); ok {
+		inlineRef.stop()
+	}
+
 	a.cfg.Log.UnwrapOr(btclog.Disabled).InfoS(
 		context.Background(),
 		"OOR client actor stopped",
@@ -377,6 +435,10 @@ func (a *OORClientActor) StopAndWait(ctx context.Context) error {
 		}
 	}
 
+	if inlineRef, ok := a.ref.(*inlineOORActorRef); ok {
+		inlineRef.stop()
+	}
+
 	a.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx)).InfoS(
 		ctx,
 		"OOR client actor stopped",
@@ -384,6 +446,118 @@ func (a *OORClientActor) StopAndWait(ctx context.Context) error {
 	)
 
 	return nil
+}
+
+type inlineOORActorRef struct {
+	id       string
+	behavior *oorDurableBehavior
+
+	queue chan inlineOORRequest
+	done  chan struct{}
+	once  sync.Once
+}
+
+type inlineOORRequest struct {
+	ctx     context.Context
+	msg     OORDurableMsg
+	promise actor.Promise[ActorResp]
+}
+
+func newInlineOORActorRef(id string,
+	behavior *oorDurableBehavior) *inlineOORActorRef {
+
+	ref := &inlineOORActorRef{
+		id:       id,
+		behavior: behavior,
+		queue:    make(chan inlineOORRequest, 32),
+		done:     make(chan struct{}),
+	}
+
+	go ref.run()
+
+	return ref
+}
+
+func (r *inlineOORActorRef) ID() string {
+	return r.id
+}
+
+func (r *inlineOORActorRef) Tell(ctx context.Context,
+	msg OORDurableMsg) error {
+
+	req := inlineOORRequest{
+		ctx: ctx,
+		msg: msg,
+	}
+
+	select {
+	case <-r.done:
+		return actor.ErrActorTerminated
+
+	case r.queue <- req:
+		return nil
+
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *inlineOORActorRef) Ask(ctx context.Context,
+	msg OORDurableMsg) actor.Future[ActorResp] {
+
+	promise := actor.NewPromise[ActorResp]()
+	req := inlineOORRequest{
+		ctx:     ctx,
+		msg:     msg,
+		promise: promise,
+	}
+
+	select {
+	case <-r.done:
+		promise.Complete(fn.Err[ActorResp](actor.ErrActorTerminated))
+
+	case r.queue <- req:
+
+	case <-ctx.Done():
+		promise.Complete(fn.Err[ActorResp](ctx.Err()))
+	}
+
+	return promise.Future()
+}
+
+func (r *inlineOORActorRef) run() {
+	for {
+		select {
+		case <-r.done:
+			return
+
+		case req := <-r.queue:
+			result := r.behavior.Receive(req.ctx, req.msg)
+			if req.promise != nil {
+				req.promise.Complete(result)
+
+				continue
+			}
+
+			if err := result.Err(); err != nil {
+				r.behavior.logger(req.ctx).WarnS(
+					req.ctx,
+					"Inline OOR actor Tell failed",
+					err,
+					slog.String(
+						"message_type",
+						req.msg.MessageType(),
+					),
+				)
+			}
+		}
+	}
+}
+
+func (r *inlineOORActorRef) stop() {
+	r.once.Do(func() {
+		close(r.done)
+	})
 }
 
 // oorDurableBehavior implements the durable actor behavior for the OOR
