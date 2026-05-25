@@ -1,0 +1,31 @@
+{
+  "name": "walletdk-demo",
+  "private": true,
+  "workspaces": [
+    "packages/core",
+    "packages/wasm-web",
+    "packages/react"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present && vite build",
+    "test": "playwright test",
+    "test:signet": "playwright test --config=playwright.signet.config.js",
+    "typecheck": "npm run build --workspaces --if-present && tsc --noEmit"
+  },
+  "dependencies": {
+    "@lightninglabs/walletdk-core": "file:packages/core",
+    "@lightninglabs/walletdk-react": "file:packages/react",
+    "@lightninglabs/walletdk-wasm-web": "file:packages/wasm-web",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.60.0",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}

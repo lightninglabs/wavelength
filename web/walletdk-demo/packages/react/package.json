@@ -1,0 +1,23 @@
+{
+  "name": "@lightninglabs/walletdk-react",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@lightninglabs/walletdk-core": "file:../core",
+    "@lightninglabs/walletdk-wasm-web": "file:../wasm-web"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18"
+  },
+  "files": ["dist"]
+}
