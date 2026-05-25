@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/chain"
@@ -81,8 +82,19 @@ func WithoutGlobalDependencyLoggers() NeutrinoServiceOption {
 // after construction.
 func NewNeutrinoService(dataDir string, chainParams *chaincfg.Params,
 	connectPeers, addPeers []string, persistFilters bool,
-	logger btclog.Logger,
+	blockHeadersSource, filterHeadersSource string, logger btclog.Logger,
 	opts ...NeutrinoServiceOption) (*NeutrinoService, error) {
+
+	if chainParams == nil {
+		return nil, fmt.Errorf("chain params are required")
+	}
+
+	headersImport, err := neutrinoHeadersImportConfig(
+		blockHeadersSource, filterHeadersSource,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	// Ensure the data directory exists before attempting to
 	// open or create the bbolt database. The daemon's
@@ -119,6 +131,7 @@ func NewNeutrinoService(dataDir string, chainParams *chaincfg.Params,
 		AddPeers:      addPeers,
 		BlockCache:    blockCache.Cache,
 		PersistToDisk: persistFilters,
+		HeadersImport: headersImport,
 	}
 
 	cs, err := neutrino.NewChainService(cfg)
@@ -143,6 +156,39 @@ func NewNeutrinoService(dataDir string, chainParams *chaincfg.Params,
 	}
 
 	return svc, nil
+}
+
+// neutrinoHeadersImportConfig validates and builds the optional neutrino
+// header import configuration used for fast initial sync.
+func neutrinoHeadersImportConfig(blockHeadersSource,
+	filterHeadersSource string) (*neutrino.HeadersImportConfig, error) {
+
+	blockSet := blockHeadersSource != ""
+	filterSet := filterHeadersSource != ""
+
+	if blockSet != filterSet {
+		return nil, fmt.Errorf("both block and filter header sources " +
+			"must be specified together for headers import")
+	}
+
+	if !blockSet {
+		return nil, nil
+	}
+
+	return &neutrino.HeadersImportConfig{
+		BlockHeadersSource:  blockHeadersSource,
+		FilterHeadersSource: filterHeadersSource,
+		ValidationFlags:     neutrinoHeadersImportValidationFlags(),
+	}, nil
+}
+
+// neutrinoHeadersImportValidationFlags returns validation flags for imported
+// headers. The import path already validates network magic, header linkage, and
+// header sanity. BFFastAdd keeps that behavior aligned with neutrino's normal
+// headers-first sync path, where historical public-network headers may be added
+// without replaying every contextual timestamp and difficulty check.
+func neutrinoHeadersImportValidationFlags() blockchain.BehaviorFlags {
+	return blockchain.BFFastAdd
 }
 
 // Start begins the neutrino chain service, connecting to peers and

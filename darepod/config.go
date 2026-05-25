@@ -579,6 +579,16 @@ type WalletConfig struct {
 	// "btcwallet".
 	BtcwalletAddPeers []string `mapstructure:"btcwallet_addpeers"`
 
+	// BtcwBlockSource is a local file path or HTTP(S)
+	// URL that neutrino imports block headers from on startup.
+	// Only used when Type is "btcwallet".
+	BtcwBlockSource string `mapstructure:"btcwallet_blockheaderssource"`
+
+	// BtcwFilterSource is a local file path or HTTP(S)
+	// URL that neutrino imports compact filter headers from on
+	// startup. Only used when Type is "btcwallet".
+	BtcwFilterSource string `mapstructure:"btcwallet_filterheaderssource"`
+
 	// BtcwalletDataDir is the directory for neutrino's chain data
 	// (headers, cfilters). Defaults to the network data directory.
 	// Only used when Type is "btcwallet".
@@ -701,6 +711,10 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("wallet.feeurl is required when " +
 				"wallet.type is btcwallet")
 		}
+		err := c.Wallet.validateBtcwalletHeadersImportConfig()
+		if err != nil {
+			return err
+		}
 
 	default:
 		return fmt.Errorf("unknown wallet type %q, valid values: lnd, "+
@@ -744,6 +758,21 @@ func (c *Config) Validate() error {
 		c.RPC.Gateway.AllowedOrigins,
 	); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// validateBtcwalletHeadersImportConfig checks that header import sources are
+// configured as the pair that neutrino requires.
+func (w *WalletConfig) validateBtcwalletHeadersImportConfig() error {
+	blockSet := w.BtcwBlockSource != ""
+	filterSet := w.BtcwFilterSource != ""
+
+	if blockSet != filterSet {
+		return fmt.Errorf("both wallet.btcwallet_blockheaderssource " +
+			"and wallet.btcwallet_filterheaderssource must be " +
+			"specified together for headers import")
 	}
 
 	return nil

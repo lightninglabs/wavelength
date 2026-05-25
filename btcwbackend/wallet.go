@@ -65,7 +65,8 @@ func New(cfg Config) (*Wallet, error) {
 	// Create and start the neutrino chain service.
 	neutrinoSvc, err := NewNeutrinoService(
 		neutrinoDataDir, cfg.ChainParams, cfg.ConnectPeers,
-		cfg.AddPeers, cfg.PersistFilters, walletLog, neutrinoOpts...,
+		cfg.AddPeers, cfg.PersistFilters, cfg.BlockHeadersSource,
+		cfg.FilterHeadersSource, walletLog, neutrinoOpts...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create neutrino service: %w", err)

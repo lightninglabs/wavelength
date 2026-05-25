@@ -137,6 +137,16 @@ func newRootCmd() *cobra.Command {
 		"wallet.feeurl", cfg.Wallet.FeeURL,
 		"fee-estimate JSON endpoint URL (required for btcwallet)",
 	)
+	f.String(
+		"wallet.btcwallet_blockheaderssource",
+		cfg.Wallet.BtcwBlockSource,
+		"block header import source for btcwallet fast sync",
+	)
+	f.String(
+		"wallet.btcwallet_filterheaderssource",
+		cfg.Wallet.BtcwFilterSource,
+		"filter header import source for btcwallet fast sync",
+	)
 	f.Duration(
 		"wallet.pollinterval", cfg.Wallet.PollInterval,
 		"chain poll interval for lwwallet backend",
