@@ -1,6 +1,7 @@
 package db
 
 import (
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -11,8 +12,6 @@ import (
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/vtxo"
-	"github.com/lightninglabs/neutrino/cache"
-	"github.com/lightninglabs/neutrino/cache/lru"
 )
 
 // ancestry_codec.go converts between vtxo.Ancestry slices and the
@@ -64,16 +63,94 @@ const maxAncestryRowsPerVTXO = 64
 // storage.
 const maxAncestryTreeCacheEntries = 4096
 
+var errAncestryTreeCacheMiss = errors.New("ancestry tree cache miss")
+
 type ancestryTreeCacheValue struct {
 	tree *tree.Tree
 }
 
-func (v *ancestryTreeCacheValue) Size() (uint64, error) {
-	return 1, nil
+type ancestryTreeCacheEntry struct {
+	key   [sha256.Size]byte
+	value *ancestryTreeCacheValue
+}
+
+type ancestryTreeLRU struct {
+	maxEntries int
+	order      *list.List
+	items      map[[sha256.Size]byte]*list.Element
+}
+
+func newAncestryTreeLRU(maxEntries int) *ancestryTreeLRU {
+	return &ancestryTreeLRU{
+		maxEntries: maxEntries,
+		order:      list.New(),
+		items:      make(map[[sha256.Size]byte]*list.Element),
+	}
+}
+
+func (c *ancestryTreeLRU) Get(key [sha256.Size]byte) (*ancestryTreeCacheValue,
+	error) {
+
+	entry, ok := c.items[key]
+	if !ok {
+		return nil, errAncestryTreeCacheMiss
+	}
+
+	c.order.MoveToFront(entry)
+	cacheEntry, ok := entry.Value.(*ancestryTreeCacheEntry)
+	if !ok {
+		return nil, fmt.Errorf("invalid ancestry tree cache entry")
+	}
+
+	return cacheEntry.value, nil
+}
+
+func (c *ancestryTreeLRU) Put(key [sha256.Size]byte,
+	value *ancestryTreeCacheValue) (bool, error) {
+
+	if entry, ok := c.items[key]; ok {
+		cacheEntry, ok := entry.Value.(*ancestryTreeCacheEntry)
+		if !ok {
+			return false, fmt.Errorf("invalid ancestry tree " +
+				"cache entry")
+		}
+
+		cacheEntry.value = value
+		c.order.MoveToFront(entry)
+
+		return false, nil
+	}
+
+	entry := c.order.PushFront(&ancestryTreeCacheEntry{
+		key:   key,
+		value: value,
+	})
+	c.items[key] = entry
+
+	if c.order.Len() > c.maxEntries {
+		c.removeOldest()
+	}
+
+	return true, nil
+}
+
+func (c *ancestryTreeLRU) removeOldest() {
+	entry := c.order.Back()
+	if entry == nil {
+		return
+	}
+
+	c.order.Remove(entry)
+	cacheEntry, ok := entry.Value.(*ancestryTreeCacheEntry)
+	if !ok {
+		return
+	}
+
+	delete(c.items, cacheEntry.key)
 }
 
 type ancestryTreeCache struct {
-	trees *lru.Cache[[sha256.Size]byte, *ancestryTreeCacheValue]
+	trees *ancestryTreeLRU
 }
 
 // newAncestryTreeCache creates a process-local decode cache for finalized
@@ -89,11 +166,7 @@ func newAncestryTreeCacheWithLimit(maxEntries int) *ancestryTreeCache {
 	}
 
 	return &ancestryTreeCache{
-		trees: lru.NewCache[
-			[sha256.Size]byte, *ancestryTreeCacheValue,
-		](
-			uint64(maxEntries),
-		),
+		trees: newAncestryTreeLRU(maxEntries),
 	}
 }
 
@@ -109,7 +182,7 @@ func (c *ancestryTreeCache) getOrDecode(treePath []byte) (*tree.Tree, error) {
 	case err == nil:
 		return cached.tree, nil
 
-	case !errors.Is(err, cache.ErrElementNotFound):
+	case !errors.Is(err, errAncestryTreeCacheMiss):
 		return nil, fmt.Errorf("get ancestry tree cache: %w", err)
 	}
 
