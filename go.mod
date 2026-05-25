@@ -15,7 +15,7 @@ require (
 	github.com/btcsuite/btcwallet v0.16.17
 	github.com/btcsuite/btcwallet/walletdb v1.5.1
 	github.com/btcsuite/btcwallet/wtxmgr v1.5.6
-	github.com/golang-migrate/migrate/v4 v4.17.0
+	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.1.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
@@ -56,6 +56,8 @@ require (
 	modernc.org/sqlite v1.40.0
 	pgregory.net/rapid v1.2.0
 )
+
+require github.com/lightninglabs/go-wasmsqlite v0.0.0-20260627090804-0dce68fc5287
 
 require (
 	dario.cat/mergo v1.0.1 // indirect
@@ -138,7 +140,7 @@ require (
 	github.com/lightningnetwork/lnd/cert v1.2.2 // indirect
 	github.com/lightningnetwork/lnd/healthcheck v1.2.6 // indirect
 	github.com/lightningnetwork/lnd/queue v1.1.2-0.20260417172355-dfb7d57826c7 // indirect
-	github.com/lightningnetwork/lnd/sqldb v1.0.13-0.20260417172355-dfb7d57826c7 // indirect
+	github.com/lightningnetwork/lnd/sqldb v1.0.13-0.20260417172355-dfb7d57826c7
 	github.com/lightningnetwork/lnd/ticker v1.1.1 // indirect
 	github.com/lightningnetwork/lnd/tor v1.1.6 // indirect
 	github.com/ltcsuite/ltcd v0.0.0-20190101042124-f37f8bf35796 // indirect
@@ -207,7 +209,7 @@ require (
 	golang.org/x/mod v0.34.0 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/tools v0.43.0 // indirect
 	google.golang.org/genproto v0.0.0-20240213162025-012b6fc9bca9 // indirect

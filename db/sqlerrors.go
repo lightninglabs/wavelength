@@ -9,8 +9,6 @@ import (
 	pgconnv4 "github.com/jackc/pgconn"
 	"github.com/jackc/pgerrcode"
 	pgconnv5 "github.com/jackc/pgx/v5/pgconn"
-	"modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // isDBClosedError reports whether err indicates the underlying sql handle
@@ -52,10 +50,8 @@ var (
 // MapSQLError attempts to interpret a given error as a database agnostic SQL
 // error.
 func MapSQLError(err error) error {
-	// Attempt to interpret the error as a sqlite error.
-	var sqliteErr *sqlite.Error
-	if errors.As(err, &sqliteErr) {
-		return parseSqliteError(sqliteErr)
+	if mapped := mapSQLiteError(err); mapped != nil {
+		return mapped
 	}
 
 	// Attempt to interpret the error as a postgres error. The pgx v4 and
@@ -78,49 +74,6 @@ func MapSQLError(err error) error {
 	// Return the error (potentially sanitized) if it could not be
 	// classified as a database specific error.
 	return err
-}
-
-// parseSqliteError attempts to parse a sqlite error as a database agnostic
-// SQL error.
-func parseSqliteError(sqliteErr *sqlite.Error) error {
-	switch sqliteErr.Code() {
-	// Handle unique constraint violation error.
-	case sqlite3.SQLITE_CONSTRAINT_UNIQUE,
-		sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY:
-		return &ErrSQLUniqueConstraintViolation{
-			DBError: sqliteErr,
-		}
-
-	// Database is currently busy, so we'll need to try again.
-	case sqlite3.SQLITE_BUSY:
-		return &ErrSerializationError{
-			DBError: sqliteErr,
-		}
-
-	// A write operation could not continue because of a conflict within
-	// the same database connection.
-	case sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_BUSY_SNAPSHOT:
-		return &ErrDeadlockError{
-			DBError: sqliteErr,
-		}
-
-	// Generic error, need to parse the message further.
-	case sqlite3.SQLITE_ERROR:
-		errMsg := sqliteErr.Error()
-
-		switch {
-		case strings.Contains(errMsg, "no such table"):
-			return &ErrSchemaError{
-				DBError: sqliteErr,
-			}
-
-		default:
-			return fmt.Errorf("unknown sqlite error: %w", sqliteErr)
-		}
-
-	default:
-		return fmt.Errorf("unknown sqlite error: %w", sqliteErr)
-	}
 }
 
 // classifyPostgresError maps a postgres SQLSTATE code to a database agnostic

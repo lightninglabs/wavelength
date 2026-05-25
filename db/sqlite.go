@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,19 +18,9 @@ import (
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
-	_ "modernc.org/sqlite" // Register relevant drivers.
 )
 
 const (
-	// sqliteOptionPrefix is the string prefix sqlite uses to set various
-	// options. This is used in the following format:
-	//   * sqliteOptionPrefix || option_name = option_value.
-	sqliteOptionPrefix = "_pragma"
-
-	// sqliteTxLockImmediate is a dsn option used to ensure that write
-	// transactions are started immediately.
-	sqliteTxLockImmediate = "_txlock=immediate"
-
 	// defaultMaxConns is the number of permitted active and idle
 	// connections. We want to limit this so it isn't unlimited. We use the
 	// same value for the number of idle connections as, this can speed up
@@ -142,17 +131,14 @@ func NewSqliteStore(cfg *SqliteConfig,
 	// The set of pragma options are accepted using query options. For now
 	// we only want to ensure that foreign key constraints are properly
 	// enforced.
-	pragmaOptions := []struct {
-		name  string
-		value string
-	}{
+	pragmaOptions := []SQLitePragma{
 		{
-			name:  "foreign_keys",
-			value: "on",
+			Name:  "foreign_keys",
+			Value: "on",
 		},
 		{
-			name:  "journal_mode",
-			value: "WAL",
+			Name:  "journal_mode",
+			Value: "WAL",
 		},
 		{
 			// busy_timeout caps how long SQLite will wait on
@@ -167,8 +153,8 @@ func NewSqliteStore(cfg *SqliteConfig,
 			// begin-tx failures, which masquerade as "mailbox
 			// full" or "Failed to lease message" upstream and
 			// confuse production diagnosis.
-			name:  "busy_timeout",
-			value: "30000",
+			Name:  "busy_timeout",
+			Value: "30000",
 		},
 		{
 			// The synchronous pragma governs commit durability.
@@ -180,8 +166,8 @@ func NewSqliteStore(cfg *SqliteConfig,
 			// configurable so operators can trade durability for
 			// performance. See resolveSqliteSynchronous for the
 			// accepted values.
-			name:  "synchronous",
-			value: synchronous,
+			Name:  "synchronous",
+			Value: synchronous,
 		},
 		{
 			// fullfsync uses the correct fsync system call on macOS
@@ -192,24 +178,10 @@ func NewSqliteStore(cfg *SqliteConfig,
 			// F_FULLFSYNC waits on a full hardware cache flush, so
 			// the config exposes an opt-out for write-heavy
 			// deployments. Enabled by default.
-			name:  "fullfsync",
-			value: strconv.FormatBool(!cfg.NoFullfsync),
+			Name:  "fullfsync",
+			Value: strconv.FormatBool(!cfg.NoFullfsync),
 		},
 	}
-	sqliteOptions := make(url.Values)
-	for _, option := range pragmaOptions {
-		sqliteOptions.Add(
-			sqliteOptionPrefix,
-			fmt.Sprintf("%v=%v", option.name, option.value),
-		)
-	}
-
-	// Construct the DSN which is just the database file name, appended
-	// with the series of pragma options as a query URL string. For more
-	// details on the formatting here, see the modernc.org/sqlite docs:
-	// https://pkg.go.dev/modernc.org/sqlite#Driver.Open.
-	dsn := fmt.Sprintf("%v?%v&%v", cfg.DatabaseFileName,
-		sqliteOptions.Encode(), sqliteTxLockImmediate)
 	ctx := context.Background()
 
 	storeLog.InfoS(ctx, "Opening SQLite database",
@@ -220,16 +192,23 @@ func NewSqliteStore(cfg *SqliteConfig,
 		slog.Duration("conn_max_lifetime", defaultConnMaxLifetime),
 	)
 
-	db, err := sql.Open("sqlite", dsn)
+	openResult, err := OpenSQLiteDatabase(SQLiteOpenConfig{
+		DatabaseFileName: cfg.DatabaseFileName,
+		Pragmas:          pragmaOptions,
+		TxLockImmediate:  true,
+		MaxOpenConns:     defaultMaxConns,
+		MaxIdleConns:     defaultMaxConns,
+		ConnMaxLifetime:  defaultConnMaxLifetime,
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	db.SetMaxOpenConns(defaultMaxConns)
-	db.SetMaxIdleConns(defaultMaxConns)
-	db.SetConnMaxLifetime(defaultConnMaxLifetime)
+	db := openResult.DB
 
-	storeLog.DebugS(ctx, "SQLite connection pool configured")
+	storeLog.DebugS(ctx, "SQLite connection pool configured",
+		slog.String("driver", openResult.DriverName),
+	)
 
 	// Persist the resolved logger into the config option so the
 	// logger(ctx) helper can retrieve it without keeping a separate
