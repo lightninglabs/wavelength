@@ -1,14 +1,18 @@
 import {
   Activity,
+  ArrowDownToLine,
+  ArrowUpFromLine,
   CircleStop,
   Copy,
   Download,
+  Eye,
   KeyRound,
   LoaderCircle,
   Play,
   Plus,
   RefreshCw,
   Send,
+  Settings,
   Wallet,
 } from "lucide-react";
 import {
@@ -18,8 +22,15 @@ import {
   useMemo,
   useState,
 } from "react";
-import { RuntimeConfig } from "@lightninglabs/walletdk-core";
-import { useWalletDK } from "@lightninglabs/walletdk-react";
+import {
+  Entry,
+  RuntimeConfig,
+} from "@lightninglabs/walletdk-core";
+import {
+  RuntimePhase,
+  WalletOperation,
+  useWalletDK,
+} from "@lightninglabs/walletdk-react";
 
 const signetDefaults: Required<RuntimeConfig> = {
   network: "signet",
@@ -43,6 +54,8 @@ type LogRow = {
   message: string;
 };
 
+type WalletTab = "home" | "receive" | "send" | "activity";
+
 export function App() {
   const wallet = useWalletDK();
   const [runtimeForm, setRuntimeForm] = useState<RuntimeForm>(signetDefaults);
@@ -52,18 +65,20 @@ export function App() {
   const [mnemonicAcknowledged, setMnemonicAcknowledged] = useState(false);
   const [address, setAddress] = useState("");
   const [receiveAmount, setReceiveAmount] = useState("1000");
-  const [receiveMemo, setReceiveMemo] = useState("walletdk demo receive");
+  const [receiveMemo, setReceiveMemo] = useState("walletdk receive");
   const [invoice, setInvoice] = useState("");
   const [sendInvoice, setSendInvoice] = useState("");
   const [sendMaxFee, setSendMaxFee] = useState("0");
   const [sendHash, setSendHash] = useState("");
-  const [busy, setBusy] = useState("");
+  const [activeTab, setActiveTab] = useState<WalletTab>("receive");
 
-  const runtimeStarted = wallet.phase === "started";
-  const walletReady = Boolean(wallet.info?.WalletReady);
+  const runtimeStarted = isRuntimeStarted(wallet.phase);
+  const walletReady = wallet.phase === "ready";
   const needsBootstrap = runtimeStarted && !walletReady;
-  const showDashboard = runtimeStarted && walletReady && mnemonicAcknowledged;
+  const showDashboard = walletReady && mnemonicAcknowledged;
+  const busy = busyOperation(wallet.operations);
   const statusText = statusLabel(wallet.phase);
+  const runtimeBusy = wallet.operations.runtime.busy;
 
   useEffect(() => {
     return wallet.client.subscribe((event) => {
@@ -98,23 +113,11 @@ export function App() {
       "boarding unconfirmed": balance.BoardingUnconfirmedSat ??
         balance.PendingInSat ?? "",
       "vtxo balance": balance.VTXOBalanceSat ?? balance.ConfirmedSat ?? "",
-      "total confirmed": balance.TotalConfirmedSat ?? balance.ConfirmedSat ??
-        "",
+      "total confirmed": totalBalance(wallet.balance),
       "on-chain wallet": balance.OnchainWalletConfirmedSat ??
         balance.ConfirmedSat ?? "",
     };
   }, [wallet.balance]);
-
-  async function guarded(label: string, fn: () => Promise<void>) {
-    try {
-      setBusy(label);
-      await fn();
-    } catch (err) {
-      log(errorMessage(err));
-    } finally {
-      setBusy("");
-    }
-  }
 
   function log(message: string) {
     console.log(message);
@@ -140,34 +143,40 @@ export function App() {
   async function startRuntime(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    await guarded("start", async () => {
+    try {
       const info = await wallet.start(runtimeForm);
       setMnemonicAcknowledged(Boolean(info.WalletReady));
       log("runtime started");
-    });
+    } catch (err) {
+      log(errorMessage(err));
+    }
   }
 
   async function createWallet(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    await guarded("create", async () => {
-      const result = await wallet.client.createWallet({ password });
+    try {
+      const result = await wallet.createWallet({ password });
       setMnemonic(result.Mnemonic || []);
       setMnemonicAcknowledged(false);
       log(`wallet created ${result.IdentityPubKey}`);
-    });
+    } catch (err) {
+      log(errorMessage(err));
+    }
   }
 
   async function unlockWallet(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    await guarded("unlock", async () => {
-      const result = await wallet.client.unlockWallet({ password });
+    try {
+      const result = await wallet.unlockWallet({ password });
       setMnemonicAcknowledged(true);
       log(`wallet unlocked ${result.IdentityPubKey}`);
       await waitForWalletReady();
       await wallet.refresh();
-    });
+    } catch (err) {
+      log(errorMessage(err));
+    }
   }
 
   async function waitForWalletReady() {
@@ -183,69 +192,84 @@ export function App() {
   }
 
   async function refreshAll() {
-    await guarded("refresh", async () => {
+    try {
       await wallet.refresh();
-    });
+      log("wallet refreshed");
+    } catch (err) {
+      log(errorMessage(err));
+    }
   }
 
   async function stopRuntime() {
-    await guarded("stop", async () => {
+    try {
       await wallet.stop();
       setMnemonic([]);
       setMnemonicAcknowledged(false);
       setAddress("");
       setInvoice("");
       setSendHash("");
+      setActiveTab("receive");
       log("runtime stopped");
-    });
+    } catch (err) {
+      log(errorMessage(err));
+    }
   }
 
   async function createAddress(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    await guarded("deposit", async () => {
-      const result = await wallet.client.deposit();
-      setAddress(result.Address);
+    try {
+      const nextAddress = await wallet.deposit();
+      setAddress(nextAddress);
       log("created onboarding address");
-      await wallet.refresh();
-    });
+    } catch (err) {
+      log(errorMessage(err));
+    }
   }
 
   async function receive(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    await guarded("receive", async () => {
-      const result = await wallet.client.receive({
+    try {
+      const nextInvoice = await wallet.receive({
         amountSat: Number(receiveAmount),
         memo: receiveMemo,
       });
-      setInvoice(result.Invoice);
-      log(`receive swap ${result.PaymentHash || result.Entry?.ID || ""}`);
-      await wallet.refresh();
-    });
+      setInvoice(nextInvoice);
+      log("receive swap created");
+      setActiveTab("activity");
+    } catch (err) {
+      log(errorMessage(err));
+    }
   }
 
   async function send(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    await guarded("send", async () => {
-      const result = await wallet.client.send({
+    try {
+      const paymentHash = await wallet.send({
         invoice: sendInvoice,
         maxFeeSat: Number(sendMaxFee),
       });
-      const paymentHash = result.PaymentHash || result.Entry?.ID || "";
       setSendHash(paymentHash);
       log(`send swap ${paymentHash}`);
-      await wallet.refresh();
-    });
+      setActiveTab("activity");
+    } catch (err) {
+      log(errorMessage(err));
+    }
   }
 
   return (
-    <>
+    <div className="wallet-app">
       <header className="topbar">
-        <div>
-          <h1>walletdk demo</h1>
-          <p>OPFS-backed browser wallet runtime for walletdk.</p>
+        <div className="brand-lockup">
+          <div className="brand-mark">
+            <Wallet size={20} />
+          </div>
+          <div>
+            <h1>Dare Wallet</h1>
+            <p>{runtimeForm.network}</p>
+          </div>
         </div>
         <div id="runtime-status" className={`status status-${wallet.phase}`}>
           {busy ? <LoaderCircle size={15} className="spin" /> : null}
@@ -253,302 +277,645 @@ export function App() {
         </div>
       </header>
 
-      <main>
-        <section id="setup-view" className="view" hidden={showDashboard}>
-          <form id="runtime-form" className="panel" onSubmit={startRuntime}>
-            <PanelHeader icon={<Wallet size={18} />} title="Runtime" />
-            <div className="grid">
-              <TextField
-                label="Network"
-                name="network"
-                value={runtimeForm.network}
-                onChange={(value) => updateRuntime("network", value)}
-              />
-              <TextField
-                label="Data dir"
-                name="dataDir"
-                value={runtimeForm.dataDir}
-                onChange={(value) => updateRuntime("dataDir", value)}
-              />
-              <TextField
-                label="Ark gateway URL"
-                name="arkGatewayURL"
-                value={runtimeForm.arkGatewayURL}
-                onChange={(value) => updateRuntime("arkGatewayURL", value)}
-              />
-              <TextField
-                label="Mailbox gateway URL"
-                name="mailboxGatewayURL"
-                value={runtimeForm.mailboxGatewayURL}
-                onChange={(value) => updateRuntime("mailboxGatewayURL", value)}
-              />
-              <TextField
-                label="Esplora URL"
-                name="walletEsploraURL"
-                value={runtimeForm.walletEsploraURL}
-                onChange={(value) => updateRuntime("walletEsploraURL", value)}
-              />
-              <TextField
-                label="Swap server gateway URL"
-                name="swapServerGatewayURL"
-                value={runtimeForm.swapServerGatewayURL}
-                onChange={(value) => updateRuntime("swapServerGatewayURL", value)}
-              />
-              <TextField
-                label="Swap mailbox gateway URL"
-                name="swapMailboxGatewayURL"
-                value={runtimeForm.swapMailboxGatewayURL}
-                onChange={(value) => {
-                  updateRuntime("swapMailboxGatewayURL", value);
-                }}
-              />
-              <TextField
-                label="Swap DB"
-                name="swapDatabaseFileName"
-                value={runtimeForm.swapDatabaseFileName}
-                onChange={(value) => {
-                  updateRuntime("swapDatabaseFileName", value);
-                }}
-              />
-            </div>
-            <div className="inline">
-              <CheckField
-                label="Insecure Ark transport"
-                name="serverInsecure"
-                checked={runtimeForm.serverInsecure}
-                onChange={(value) => updateRuntime("serverInsecure", value)}
-              />
-              <CheckField
-                label="Insecure swap transport"
-                name="swapServerInsecure"
-                checked={runtimeForm.swapServerInsecure}
-                onChange={(value) => {
-                  updateRuntime("swapServerInsecure", value);
-                }}
-              />
-              <CheckField
-                label="Wallet only"
-                name="disableSwaps"
-                checked={runtimeForm.disableSwaps}
-                onChange={(value) => updateRuntime("disableSwaps", value)}
-              />
-            </div>
-            <button type="submit" disabled={busy === "start"}>
-              <Play size={16} />
-              Start runtime
-            </button>
-          </form>
+      <main className="wallet-main">
+        <section
+          id="setup-view"
+          className="setup-view"
+          hidden={showDashboard}
+        >
+          <RuntimeCard
+            form={runtimeForm}
+            runtimeBusy={runtimeBusy}
+            updateRuntime={updateRuntime}
+            onSubmit={startRuntime}
+          />
 
-          <div className="split">
-            <form
-              id="create-form"
-              className="panel"
-              hidden={!needsBootstrap}
-              onSubmit={createWallet}
-            >
-              <PanelHeader icon={<Plus size={18} />} title="Create wallet" />
-              <PasswordField
-                autoComplete="new-password"
-                value={password}
-                onChange={setPassword}
-              />
-              <button type="submit" disabled={busy === "create"}>
-                <KeyRound size={16} />
-                Create wallet
-              </button>
-            </form>
+          <WalletSetup
+            needsBootstrap={needsBootstrap}
+            phase={wallet.phase}
+            password={password}
+            setPassword={setPassword}
+            createBusy={wallet.operations.createWallet.busy}
+            unlockBusy={wallet.operations.unlockWallet.busy}
+            createError={wallet.operations.createWallet.error}
+            unlockError={wallet.operations.unlockWallet.error}
+            onCreate={createWallet}
+            onUnlock={unlockWallet}
+          />
 
-            <form
-              id="unlock-form"
-              className="panel"
-              hidden={!needsBootstrap}
-              onSubmit={unlockWallet}
-            >
-              <PanelHeader icon={<KeyRound size={18} />} title="Unlock wallet" />
-              <PasswordField
-                autoComplete="current-password"
-                value={password}
-                onChange={setPassword}
-              />
-              <button type="submit" disabled={busy === "unlock"}>
-                <KeyRound size={16} />
-                Unlock wallet
-              </button>
-            </form>
-          </div>
-
-          <section
-            id="mnemonic-panel"
-            className="panel warning"
-            hidden={mnemonic.length === 0 || mnemonicAcknowledged}
-          >
-            <PanelHeader icon={<KeyRound size={18} />} title="Mnemonic backup" />
-            <p id="mnemonic">{mnemonic.join(" ")}</p>
-            <button
-              id="mnemonic-ack"
-              type="button"
-              onClick={async () => {
-                setMnemonicAcknowledged(true);
-                await wallet.refresh().catch((err) => log(errorMessage(err)));
-              }}
-            >
-              <Copy size={16} />
-              I recorded the demo mnemonic
-            </button>
-          </section>
+          <MnemonicBackup
+            mnemonic={mnemonic}
+            acknowledged={mnemonicAcknowledged}
+            onAcknowledge={async () => {
+              setMnemonicAcknowledged(true);
+              await wallet.refresh().catch((err) => log(errorMessage(err)));
+            }}
+          />
         </section>
 
-        <section id="dashboard-view" className="view" hidden={!showDashboard}>
-          <nav className="actions">
-            <button id="refresh" type="button" onClick={refreshAll}>
-              <RefreshCw size={16} />
-              Refresh
-            </button>
-            <button id="stop" type="button" onClick={stopRuntime}>
-              <CircleStop size={16} />
-              Stop runtime
-            </button>
-          </nav>
+        <section
+          id="dashboard-view"
+          className="wallet-dashboard"
+          hidden={!showDashboard}
+        >
+          <WalletHome
+            balanceSat={totalBalance(wallet.balance)}
+            infoFacts={facts}
+            balanceFacts={balanceFacts}
+            activity={wallet.activity}
+            onRefresh={refreshAll}
+            onStop={stopRuntime}
+            onSelectTab={setActiveTab}
+          />
 
-          <section className="metrics">
-            <Panel title="Overview" icon={<Activity size={18} />}>
-              <Facts id="info-grid" facts={facts} />
-            </Panel>
-
-            <Panel title="Balance" icon={<Wallet size={18} />}>
-              <Facts id="balance-grid" facts={balanceFacts} />
-            </Panel>
-          </section>
-
-          <section className="split">
-            <form id="address-form" className="panel" onSubmit={createAddress}>
-              <PanelHeader icon={<Download size={18} />} title="Onboarding address" />
-              <button type="submit" disabled={busy === "deposit"}>
-                <Plus size={16} />
-                New address
-              </button>
-              <output id="address-output">{address}</output>
-            </form>
-
-            <form id="receive-form" className="panel" onSubmit={receive}>
-              <PanelHeader icon={<Download size={18} />} title="Receive" />
-              <TextField
-                label="Amount sats"
-                name="amountSat"
-                type="number"
-                min="1"
-                step="1"
-                value={receiveAmount}
-                onChange={setReceiveAmount}
-              />
-              <TextField
-                label="Memo"
-                name="memo"
-                value={receiveMemo}
-                onChange={setReceiveMemo}
-              />
-              <button type="submit" disabled={busy === "receive"}>
-                <Plus size={16} />
-                Create invoice
-              </button>
-              <output id="receive-output">{invoice}</output>
-            </form>
-          </section>
-
-          <section className="split">
-            <form id="send-form" className="panel" onSubmit={send}>
-              <PanelHeader icon={<Send size={18} />} title="Send" />
-              <label>
-                BOLT-11 invoice
-                <textarea
-                  name="invoice"
-                  rows={4}
-                  value={sendInvoice}
-                  onChange={(event) => setSendInvoice(event.target.value)}
-                />
-              </label>
-              <TextField
-                label="Max fee sats"
-                name="maxFeeSat"
-                type="number"
-                min="0"
-                step="1"
-                value={sendMaxFee}
-                onChange={setSendMaxFee}
-              />
-              <button type="submit" disabled={busy === "send"}>
-                <Send size={16} />
-                Send payment
-              </button>
-              <output id="send-output">{sendHash}</output>
-            </form>
-
-            <section className="panel">
-              <PanelHeader icon={<Activity size={18} />} title="Swaps" />
-              <button id="refresh-swaps" type="button" onClick={refreshAll}>
-                <RefreshCw size={16} />
-                Refresh swaps
-              </button>
-              <div className="table-frame">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Direction</th>
-                      <th>State</th>
-                      <th>Amount</th>
-                      <th>Payment hash</th>
-                    </tr>
-                  </thead>
-                  <tbody id="swaps-body">
-                    {wallet.activity.map((entry) => (
-                      <tr key={entry.ID}>
-                        <td>{entry.Kind}</td>
-                        <td>{entry.Status}</td>
-                        <td>{entry.AmountSat}</td>
-                        <td>{entry.ID}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+          <section className="wallet-workspace">
+            <WalletTabs active={activeTab} setActive={setActiveTab} />
+            <div className="workspace-panel">
+              <div hidden={activeTab !== "home"}>
+                <QuickActions onSelectTab={setActiveTab} />
               </div>
-            </section>
-          </section>
 
-          <section className="panel">
-            <PanelHeader icon={<Activity size={18} />} title="Activity" />
-            <ol id="activity">
-              {logs.map((row) => (
-                <li key={`${row.time}-${row.message}`}>
-                  {row.time} {row.message}
-                </li>
-              ))}
-            </ol>
+              <div hidden={activeTab !== "receive"}>
+                <ReceivePanel
+                  address={address}
+                  invoice={invoice}
+                  receiveAmount={receiveAmount}
+                  receiveMemo={receiveMemo}
+                  depositBusy={wallet.operations.deposit.busy}
+                  receiveBusy={wallet.operations.receive.busy}
+                  depositError={wallet.operations.deposit.error}
+                  receiveError={wallet.operations.receive.error}
+                  setReceiveAmount={setReceiveAmount}
+                  setReceiveMemo={setReceiveMemo}
+                  onCreateAddress={createAddress}
+                  onReceive={receive}
+                />
+              </div>
+
+              <div hidden={activeTab !== "send"}>
+                <SendPanel
+                  sendHash={sendHash}
+                  sendInvoice={sendInvoice}
+                  sendMaxFee={sendMaxFee}
+                  sendBusy={wallet.operations.send.busy}
+                  sendError={wallet.operations.send.error}
+                  setSendInvoice={setSendInvoice}
+                  setSendMaxFee={setSendMaxFee}
+                  onSend={send}
+                />
+              </div>
+
+              <div hidden={activeTab !== "activity"}>
+                <ActivityPanel
+                  entries={wallet.activity}
+                  logs={logs}
+                  onRefresh={refreshAll}
+                />
+              </div>
+            </div>
           </section>
         </section>
       </main>
-    </>
+    </div>
   );
 }
 
-function Panel({ title, icon, children }: {
-  title: string;
-  icon: ReactNode;
-  children: ReactNode;
+function RuntimeCard({
+  form,
+  runtimeBusy,
+  updateRuntime,
+  onSubmit,
+}: {
+  form: RuntimeForm;
+  runtimeBusy: boolean;
+  updateRuntime<K extends keyof RuntimeForm>(
+    key: K,
+    value: RuntimeForm[K],
+  ): void;
+  onSubmit(event: FormEvent<HTMLFormElement>): void;
 }) {
   return (
-    <section className="panel">
-      <PanelHeader title={title} icon={icon} />
-      {children}
+    <form id="runtime-form" className="wallet-card runtime-card" onSubmit={onSubmit}>
+      <div className="card-heading">
+        <div>
+          <span className="eyebrow">Runtime</span>
+          <h2>Start wallet</h2>
+        </div>
+        <button type="submit" disabled={runtimeBusy}>
+          <Play size={16} />
+          Start runtime
+        </button>
+      </div>
+
+      <div className="runtime-summary">
+        <SummaryPill label="Network" value={form.network} />
+        <SummaryPill label="Ark" value={hostname(form.arkGatewayURL)} />
+        <SummaryPill label="Swap" value={hostname(form.swapServerGatewayURL)} />
+      </div>
+
+      <details className="advanced-settings">
+        <summary>
+          <Settings size={16} />
+          Advanced settings
+        </summary>
+
+        <div className="settings-grid">
+          <TextField
+            label="Network"
+            name="network"
+            value={form.network}
+            onChange={(value) => updateRuntime("network", value)}
+          />
+          <TextField
+            label="Data dir"
+            name="dataDir"
+            value={form.dataDir}
+            onChange={(value) => updateRuntime("dataDir", value)}
+          />
+          <TextField
+            label="Ark gateway URL"
+            name="arkGatewayURL"
+            value={form.arkGatewayURL}
+            onChange={(value) => updateRuntime("arkGatewayURL", value)}
+          />
+          <TextField
+            label="Mailbox gateway URL"
+            name="mailboxGatewayURL"
+            value={form.mailboxGatewayURL}
+            onChange={(value) => updateRuntime("mailboxGatewayURL", value)}
+          />
+          <TextField
+            label="Esplora URL"
+            name="walletEsploraURL"
+            value={form.walletEsploraURL}
+            onChange={(value) => updateRuntime("walletEsploraURL", value)}
+          />
+          <TextField
+            label="Swap server gateway URL"
+            name="swapServerGatewayURL"
+            value={form.swapServerGatewayURL}
+            onChange={(value) => updateRuntime("swapServerGatewayURL", value)}
+          />
+          <TextField
+            label="Swap mailbox gateway URL"
+            name="swapMailboxGatewayURL"
+            value={form.swapMailboxGatewayURL}
+            onChange={(value) => {
+              updateRuntime("swapMailboxGatewayURL", value);
+            }}
+          />
+          <TextField
+            label="Swap DB"
+            name="swapDatabaseFileName"
+            value={form.swapDatabaseFileName}
+            onChange={(value) => {
+              updateRuntime("swapDatabaseFileName", value);
+            }}
+          />
+        </div>
+
+        <div className="inline">
+          <CheckField
+            label="Insecure Ark transport"
+            name="serverInsecure"
+            checked={form.serverInsecure}
+            onChange={(value) => updateRuntime("serverInsecure", value)}
+          />
+          <CheckField
+            label="Insecure swap transport"
+            name="swapServerInsecure"
+            checked={form.swapServerInsecure}
+            onChange={(value) => updateRuntime("swapServerInsecure", value)}
+          />
+          <CheckField
+            label="Wallet only"
+            name="disableSwaps"
+            checked={form.disableSwaps}
+            onChange={(value) => updateRuntime("disableSwaps", value)}
+          />
+        </div>
+      </details>
+    </form>
+  );
+}
+
+function WalletSetup({
+  createBusy,
+  createError,
+  needsBootstrap,
+  onCreate,
+  onUnlock,
+  password,
+  phase,
+  setPassword,
+  unlockBusy,
+  unlockError,
+}: {
+  createBusy: boolean;
+  createError: string;
+  needsBootstrap: boolean;
+  onCreate(event: FormEvent<HTMLFormElement>): void;
+  onUnlock(event: FormEvent<HTMLFormElement>): void;
+  password: string;
+  phase: RuntimePhase;
+  setPassword(value: string): void;
+  unlockBusy: boolean;
+  unlockError: string;
+}) {
+  return (
+    <div className="setup-stack" hidden={!needsBootstrap}>
+      {phase === "needsWallet" ? (
+        <form
+          id="create-form"
+          className="wallet-card setup-card"
+          onSubmit={onCreate}
+        >
+          <CardTitle icon={<Plus size={18} />} title="Create wallet" />
+          <PasswordField
+            autoComplete="new-password"
+            value={password}
+            onChange={setPassword}
+          />
+          <button type="submit" disabled={createBusy}>
+            <KeyRound size={16} />
+            Create wallet
+          </button>
+          <InlineError message={createError} />
+        </form>
+      ) : null}
+
+      {phase === "locked" ? (
+        <form
+          id="unlock-form"
+          className="wallet-card setup-card"
+          onSubmit={onUnlock}
+        >
+          <CardTitle icon={<KeyRound size={18} />} title="Wallet locked" />
+          <PasswordField
+            autoComplete="current-password"
+            value={password}
+            onChange={setPassword}
+          />
+          <button type="submit" disabled={unlockBusy}>
+            <KeyRound size={16} />
+            Unlock wallet
+          </button>
+          <InlineError message={unlockError} />
+        </form>
+      ) : null}
+
+      {phase === "syncing" ? (
+        <section className="wallet-card setup-card">
+          <CardTitle icon={<LoaderCircle size={18} />} title="Wallet syncing" />
+          <p className="setup-copy">
+            The wallet exists and is syncing before it can be used.
+          </p>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function MnemonicBackup({
+  acknowledged,
+  mnemonic,
+  onAcknowledge,
+}: {
+  acknowledged: boolean;
+  mnemonic: string[];
+  onAcknowledge(): void | Promise<void>;
+}) {
+  return (
+    <section
+      id="mnemonic-panel"
+      className="wallet-card mnemonic-card"
+      hidden={mnemonic.length === 0 || acknowledged}
+    >
+      <CardTitle icon={<KeyRound size={18} />} title="Mnemonic backup" />
+      <p id="mnemonic">{mnemonic.join(" ")}</p>
+      <button id="mnemonic-ack" type="button" onClick={onAcknowledge}>
+        <Copy size={16} />
+        I recorded the demo mnemonic
+      </button>
     </section>
   );
 }
 
-function PanelHeader({ title, icon }: {
+function WalletHome({
+  activity,
+  balanceFacts,
+  balanceSat,
+  infoFacts,
+  onRefresh,
+  onSelectTab,
+  onStop,
+}: {
+  activity: Entry[];
+  balanceFacts: Record<string, string | number>;
+  balanceSat: number;
+  infoFacts: Record<string, string | number>;
+  onRefresh(): void;
+  onSelectTab(tab: WalletTab): void;
+  onStop(): void;
+}) {
+  const recent = activity.slice(0, 3);
+
+  return (
+    <section className="wallet-home">
+      <div className="balance-card">
+        <div>
+          <span className="eyebrow">Available balance</span>
+          <div className="balance-amount">{formatSats(balanceSat)}</div>
+        </div>
+        <div className="balance-actions">
+          <button type="button" onClick={() => onSelectTab("receive")}>
+            <ArrowDownToLine size={16} />
+            Receive
+          </button>
+          <button type="button" onClick={() => onSelectTab("send")}>
+            <ArrowUpFromLine size={16} />
+            Send
+          </button>
+        </div>
+      </div>
+
+      <div className="wallet-card facts-card">
+        <CardTitle icon={<Eye size={18} />} title="Overview" />
+        <Facts id="info-grid" facts={infoFacts} />
+      </div>
+
+      <div className="wallet-card facts-card">
+        <CardTitle icon={<Wallet size={18} />} title="Balance" />
+        <Facts id="balance-grid" facts={balanceFacts} />
+      </div>
+
+      <div className="wallet-card recent-card">
+        <div className="card-heading compact">
+          <CardTitle icon={<Activity size={18} />} title="Recent activity" />
+          <button type="button" onClick={onRefresh}>
+            <RefreshCw size={16} />
+            Refresh
+          </button>
+        </div>
+        {recent.length === 0 ? (
+          <EmptyState text="No wallet activity yet." />
+        ) : (
+          <EntryList entries={recent} />
+        )}
+        <button type="button" onClick={onStop}>
+          <CircleStop size={16} />
+          Stop runtime
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function WalletTabs({
+  active,
+  setActive,
+}: {
+  active: WalletTab;
+  setActive(tab: WalletTab): void;
+}) {
+  const tabs: Array<[WalletTab, ReactNode, string]> = [
+    ["home", <Wallet size={17} />, "Home"],
+    ["receive", <Download size={17} />, "Receive"],
+    ["send", <Send size={17} />, "Send"],
+    ["activity", <Activity size={17} />, "Activity"],
+  ];
+
+  return (
+    <nav className="wallet-tabs" aria-label="Wallet views">
+      {tabs.map(([tab, icon, label]) => (
+        <button
+          key={tab}
+          type="button"
+          className={active === tab ? "active" : ""}
+          onClick={() => setActive(tab)}
+        >
+          {icon}
+          {label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function QuickActions({ onSelectTab }: { onSelectTab(tab: WalletTab): void }) {
+  return (
+    <section className="wallet-card quick-card">
+      <CardTitle icon={<Wallet size={18} />} title="Wallet actions" />
+      <div className="action-grid">
+        <button type="button" onClick={() => onSelectTab("receive")}>
+          <Download size={16} />
+          New address
+        </button>
+        <button type="button" onClick={() => onSelectTab("receive")}>
+          <Plus size={16} />
+          Create invoice
+        </button>
+        <button type="button" onClick={() => onSelectTab("send")}>
+          <Send size={16} />
+          Send payment
+        </button>
+        <button type="button" onClick={() => onSelectTab("activity")}>
+          <Activity size={16} />
+          Refresh swaps
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ReceivePanel({
+  address,
+  depositBusy,
+  depositError,
+  invoice,
+  onCreateAddress,
+  onReceive,
+  receiveAmount,
+  receiveBusy,
+  receiveError,
+  receiveMemo,
+  setReceiveAmount,
+  setReceiveMemo,
+}: {
+  address: string;
+  depositBusy: boolean;
+  depositError: string;
+  invoice: string;
+  onCreateAddress(event: FormEvent<HTMLFormElement>): void;
+  onReceive(event: FormEvent<HTMLFormElement>): void;
+  receiveAmount: string;
+  receiveBusy: boolean;
+  receiveError: string;
+  receiveMemo: string;
+  setReceiveAmount(value: string): void;
+  setReceiveMemo(value: string): void;
+}) {
+  return (
+    <div className="flow-grid">
+      <form
+        id="address-form"
+        className="wallet-card action-card"
+        onSubmit={onCreateAddress}
+      >
+        <CardTitle icon={<Download size={18} />} title="Onboarding address" />
+        <button type="submit" disabled={depositBusy}>
+          <Plus size={16} />
+          New address
+        </button>
+        <output id="address-output">{address}</output>
+        <InlineError message={depositError} />
+      </form>
+
+      <form
+        id="receive-form"
+        className="wallet-card action-card"
+        onSubmit={onReceive}
+      >
+        <CardTitle icon={<Download size={18} />} title="Receive" />
+        <TextField
+          label="Amount sats"
+          name="amountSat"
+          type="number"
+          min="1"
+          step="1"
+          value={receiveAmount}
+          onChange={setReceiveAmount}
+        />
+        <TextField
+          label="Memo"
+          name="memo"
+          value={receiveMemo}
+          onChange={setReceiveMemo}
+        />
+        <button type="submit" disabled={receiveBusy}>
+          <Plus size={16} />
+          Create invoice
+        </button>
+        <output id="receive-output">{invoice}</output>
+        <InlineError message={receiveError} />
+      </form>
+    </div>
+  );
+}
+
+function SendPanel({
+  onSend,
+  sendBusy,
+  sendError,
+  sendHash,
+  sendInvoice,
+  sendMaxFee,
+  setSendInvoice,
+  setSendMaxFee,
+}: {
+  onSend(event: FormEvent<HTMLFormElement>): void;
+  sendBusy: boolean;
+  sendError: string;
+  sendHash: string;
+  sendInvoice: string;
+  sendMaxFee: string;
+  setSendInvoice(value: string): void;
+  setSendMaxFee(value: string): void;
+}) {
+  return (
+    <form id="send-form" className="wallet-card action-card" onSubmit={onSend}>
+      <CardTitle icon={<Send size={18} />} title="Send" />
+      <label>
+        BOLT-11 invoice
+        <textarea
+          name="invoice"
+          rows={4}
+          value={sendInvoice}
+          onChange={(event) => setSendInvoice(event.target.value)}
+        />
+      </label>
+      <TextField
+        label="Max fee sats"
+        name="maxFeeSat"
+        type="number"
+        min="0"
+        step="1"
+        value={sendMaxFee}
+        onChange={setSendMaxFee}
+      />
+      <button type="submit" disabled={sendBusy}>
+        <Send size={16} />
+        Send payment
+      </button>
+      <output id="send-output">{sendHash}</output>
+      <InlineError message={sendError} />
+    </form>
+  );
+}
+
+function ActivityPanel({
+  entries,
+  logs,
+  onRefresh,
+}: {
+  entries: Entry[];
+  logs: LogRow[];
+  onRefresh(): void;
+}) {
+  return (
+    <div className="activity-layout">
+      <section className="wallet-card activity-card">
+        <div className="card-heading compact">
+          <CardTitle icon={<Activity size={18} />} title="Swaps" />
+          <button id="refresh-swaps" type="button" onClick={onRefresh}>
+            <RefreshCw size={16} />
+            Refresh swaps
+          </button>
+        </div>
+        <div className="table-frame">
+          <table>
+            <thead>
+              <tr>
+                <th>Direction</th>
+                <th>State</th>
+                <th>Amount</th>
+                <th>Payment hash</th>
+              </tr>
+            </thead>
+            <tbody id="swaps-body">
+              {entries.map((entry) => (
+                <tr key={entry.ID}>
+                  <td>{entry.Kind}</td>
+                  <td>{entry.Status}</td>
+                  <td>{entry.AmountSat}</td>
+                  <td>{entry.ID}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="wallet-card log-card">
+        <CardTitle icon={<Activity size={18} />} title="Activity" />
+        <ol id="activity">
+          {logs.map((row) => (
+            <li key={`${row.time}-${row.message}`}>
+              {row.time} {row.message}
+            </li>
+          ))}
+        </ol>
+      </section>
+    </div>
+  );
+}
+
+function CardTitle({ title, icon }: {
   title: string;
   icon: ReactNode;
 }) {
   return (
-    <div className="panel-title">
+    <div className="card-title">
       {icon}
       <h2>{title}</h2>
     </div>
@@ -645,25 +1012,108 @@ function Facts({ id, facts }: {
   );
 }
 
-function statusLabel(phase: string) {
+function EntryList({ entries }: { entries: Entry[] }) {
+  return (
+    <ul className="entry-list">
+      {entries.map((entry) => (
+        <li key={entry.ID}>
+          <span>{entry.Kind}</span>
+          <strong>{formatSats(entry.AmountSat)}</strong>
+          <small>{entry.Status}</small>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function EmptyState({ text }: { text: string }) {
+  return <div className="empty-state">{text}</div>;
+}
+
+function SummaryPill({ label, value }: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="summary-pill">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function InlineError({ message }: { message: string }) {
+  if (!message) {
+    return null;
+  }
+
+  return <p className="inline-error">{message}</p>;
+}
+
+function busyOperation(operations: Record<WalletOperation, { busy: boolean }>) {
+  return Object.values(operations).some((operation) => operation.busy);
+}
+
+function isRuntimeStarted(phase: RuntimePhase) {
+  return (
+    phase === "needsWallet" ||
+    phase === "locked" ||
+    phase === "syncing" ||
+    phase === "ready"
+  );
+}
+
+function statusLabel(phase: RuntimePhase) {
   switch (phase) {
   case "loading":
     return "loading wasm";
 
-  case "wasm-ready":
+  case "runtimeReady":
     return "wasm ready";
 
   case "starting":
     return "starting";
 
-  case "started":
+  case "needsWallet":
+    return "wallet not created";
+
+  case "locked":
+    return "wallet locked";
+
+  case "syncing":
+    return "wallet syncing";
+
+  case "ready":
     return "runtime started";
+
+  case "stopping":
+    return "stopping";
 
   case "stopped":
     return "runtime stopped";
 
   default:
     return "runtime error";
+  }
+}
+
+function totalBalance(balance: ReturnType<typeof useWalletDK>["balance"]) {
+  if (!balance) {
+    return 0;
+  }
+
+  return Number(balance.TotalConfirmedSat ?? balance.ConfirmedSat ?? 0);
+}
+
+function formatSats(value: number) {
+  return `${new Intl.NumberFormat().format(value)} sats`;
+}
+
+function hostname(value: string) {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return value;
   }
 }
 

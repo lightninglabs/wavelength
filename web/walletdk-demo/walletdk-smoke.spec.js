@@ -113,6 +113,7 @@ test("wallet create and address state persist with OPFS SQLite", async ({
 });
 
 async function configureRuntime(page, baseURL, dataDir, swapDatabaseFileName) {
+  await openAdvancedSettings(page);
   await page.locator("input[name=network]").fill("regtest");
   await page.locator("input[name=dataDir]").fill(dataDir);
   await page.locator("input[name=walletEsploraURL]").fill(baseURL);
@@ -124,6 +125,15 @@ async function configureRuntime(page, baseURL, dataDir, swapDatabaseFileName) {
     swapDatabaseFileName,
   );
   await page.locator("input[name=disableSwaps]").uncheck();
+}
+
+async function openAdvancedSettings(page) {
+  const details = page.locator(".advanced-settings");
+  if (await details.evaluate((node) => node.hasAttribute("open"))) {
+    return;
+  }
+
+  await page.getByText("Advanced settings").click();
 }
 
 async function identityPubkey(page) {

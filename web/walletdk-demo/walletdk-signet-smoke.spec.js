@@ -27,6 +27,7 @@ test("walletdk demo starts with live signet defaults", async ({
   await expect(page.locator("#runtime-status")).toHaveText("wasm ready", {
     timeout: 30000,
   });
+  await openAdvancedSettings(page);
 
   await expect(page.locator("input[name=network]")).toHaveValue("signet");
   await expect(page.locator("input[name=arkGatewayURL]")).toHaveValue(
@@ -54,7 +55,7 @@ test("walletdk demo starts with live signet defaults", async ({
   await page.getByRole("button", { name: "Start runtime" }).click();
 
   await expect(page.locator("#runtime-status")).toHaveText(
-    "runtime started",
+    "wallet not created",
     { timeout: 120000 },
   );
   await expect(page.locator("#create-form")).toBeVisible({
@@ -70,3 +71,12 @@ test("walletdk demo starts with live signet defaults", async ({
     contentType: "text/plain",
   });
 });
+
+async function openAdvancedSettings(page) {
+  const details = page.locator(".advanced-settings");
+  if (await details.evaluate((node) => node.hasAttribute("open"))) {
+    return;
+  }
+
+  await page.getByText("Advanced settings").click();
+}

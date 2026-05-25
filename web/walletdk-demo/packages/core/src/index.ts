@@ -26,6 +26,17 @@ export type RuntimeConfig = {
   debugLevel?: string;
 };
 
+export const WalletState = {
+  Unspecified: 0,
+  None: 1,
+  Locked: 2,
+  Ready: 3,
+  Syncing: 4,
+} as const;
+
+export type WalletState =
+  typeof WalletState[keyof typeof WalletState];
+
 export type WalletInfo = {
   Version?: string;
   Commit?: string;
