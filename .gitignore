@@ -19,6 +19,7 @@ merge-sql-schemas
 *.out
 
 **/build/
+web/walletdk-demo/dist/
 **/log/
 **/data/
 **/datadir/
