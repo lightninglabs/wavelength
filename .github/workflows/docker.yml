@@ -55,6 +55,15 @@ jobs:
 
       - name: Compute image tags
         id: tags
+        env:
+          # Pass workflow_dispatch inputs through the environment rather
+          # than interpolating ${{ ... }} directly into the shell script.
+          # Direct interpolation lets an input value containing shell
+          # metacharacters break out of the quoting and inject commands
+          # before any in-script sanitization (e.g. the tr pipeline
+          # below) can run.
+          INPUT_CHECKOUT: ${{ github.event.inputs.checkout }}
+          INPUT_TAG_SUFFIX: ${{ github.event.inputs.tag_suffix }}
         run: |
           set -euo pipefail
           SHORT_SHA="$(git rev-parse --short=7 HEAD)"
@@ -79,17 +88,17 @@ jobs:
           ${REPO}:nightly-${DATE_TAG}"
               ;;
             workflow_dispatch)
-              SUFFIX="${{ github.event.inputs.tag_suffix }}"
-              # Sanitize the input ref for use in a docker tag: replace
+              # Sanitize both inputs for use in a docker tag: replace
               # any character that's not alphanumeric/dot/underscore/dash
-              # with a dash. Empty input means "current ref".
-              REF_INPUT="${{ github.event.inputs.checkout }}"
+              # with a dash. Empty checkout input means "current ref".
+              REF_INPUT="${INPUT_CHECKOUT}"
               if [[ -z "${REF_INPUT}" ]]; then
                 REF_INPUT="${SHORT_SHA}"
               fi
-              REF_SLUG="$(echo -n "${REF_INPUT}" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-60)"
-              if [[ -n "${SUFFIX}" ]]; then
-                TAGS="${REPO}:manual-${REF_SLUG}-${SUFFIX}"
+              REF_SLUG="$(printf '%s' "${REF_INPUT}" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-60)"
+              SUFFIX_SLUG="$(printf '%s' "${INPUT_TAG_SUFFIX}" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-60)"
+              if [[ -n "${SUFFIX_SLUG}" ]]; then
+                TAGS="${REPO}:manual-${REF_SLUG}-${SUFFIX_SLUG}"
               else
                 TAGS="${REPO}:manual-${REF_SLUG}"
               fi
