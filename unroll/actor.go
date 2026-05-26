@@ -528,16 +528,26 @@ func (b *behavior) currentHeight() int32 {
 func (b *behavior) resolveExitSpendPolicy(ctx context.Context) (ExitSpendPolicy,
 	error) {
 
-	resolver := b.cfg.ExitSpendPolicyResolver
-	if resolver == nil {
-		resolver = standardExitSpendPolicyResolver{}
-	}
-
-	return resolver.ResolveExitSpendPolicy(ctx, ExitSpendPolicyRequest{
+	req := ExitSpendPolicyRequest{
 		Kind:               b.exitPolicyKind(),
 		Ref:                b.exitPolicyRef(),
 		StandardDescriptor: b.desc,
-	})
+	}
+	if req.Kind == StandardVTXOTimeoutExitPolicyKind {
+		resolver := standardExitSpendPolicyResolver{}
+
+		return resolver.ResolveExitSpendPolicy(
+			ctx,
+			req,
+		)
+	}
+
+	if b.cfg.ExitSpendPolicyResolver == nil {
+		return nil, fmt.Errorf("exit spend policy resolver is " +
+			"required for non-standard unroll policy")
+	}
+
+	return b.cfg.ExitSpendPolicyResolver.ResolveExitSpendPolicy(ctx, req)
 }
 
 // safeTxOutPkScript returns a defensive copy of tx.TxOut[index].PkScript.

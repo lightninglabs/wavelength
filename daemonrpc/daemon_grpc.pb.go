@@ -51,6 +51,11 @@ const (
 	DaemonService_ListTransactions_FullMethodName              = "/daemonrpc.DaemonService/ListTransactions"
 	DaemonService_Unroll_FullMethodName                        = "/daemonrpc.DaemonService/Unroll"
 	DaemonService_GetUnrollStatus_FullMethodName               = "/daemonrpc.DaemonService/GetUnrollStatus"
+	DaemonService_ArmVHTLCRecovery_FullMethodName              = "/daemonrpc.DaemonService/ArmVHTLCRecovery"
+	DaemonService_EscalateVHTLCRecovery_FullMethodName         = "/daemonrpc.DaemonService/EscalateVHTLCRecovery"
+	DaemonService_CancelVHTLCRecovery_FullMethodName           = "/daemonrpc.DaemonService/CancelVHTLCRecovery"
+	DaemonService_GetVHTLCRecoveryStatus_FullMethodName        = "/daemonrpc.DaemonService/GetVHTLCRecoveryStatus"
+	DaemonService_ListVHTLCRecoveries_FullMethodName           = "/daemonrpc.DaemonService/ListVHTLCRecoveries"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -177,6 +182,21 @@ type DaemonServiceClient interface {
 	// specified VTXO outpoint, including recovery chain progress and
 	// sweep state.
 	GetUnrollStatus(ctx context.Context, in *GetUnrollStatusRequest, opts ...grpc.CallOption) (*GetUnrollStatusResponse, error)
+	// ArmVHTLCRecovery persists a dormant vHTLC on-chain recovery job. The
+	// job does not start unroll until EscalateVHTLCRecovery is called.
+	ArmVHTLCRecovery(ctx context.Context, in *ArmVHTLCRecoveryRequest, opts ...grpc.CallOption) (*ArmVHTLCRecoveryResponse, error)
+	// EscalateVHTLCRecovery starts or resumes the unroll job for a previously
+	// armed vHTLC recovery.
+	EscalateVHTLCRecovery(ctx context.Context, in *EscalateVHTLCRecoveryRequest, opts ...grpc.CallOption) (*EscalateVHTLCRecoveryResponse, error)
+	// CancelVHTLCRecovery records that cooperative settlement or operator
+	// action made the dormant/on-chain recovery job unnecessary.
+	CancelVHTLCRecovery(ctx context.Context, in *CancelVHTLCRecoveryRequest, opts ...grpc.CallOption) (*CancelVHTLCRecoveryResponse, error)
+	// GetVHTLCRecoveryStatus returns the durable recovery row joined with the
+	// current unroll status when the job has escalated.
+	GetVHTLCRecoveryStatus(ctx context.Context, in *GetVHTLCRecoveryStatusRequest, opts ...grpc.CallOption) (*GetVHTLCRecoveryStatusResponse, error)
+	// ListVHTLCRecoveries returns durable recovery rows for operator
+	// inspection.
+	ListVHTLCRecoveries(ctx context.Context, in *ListVHTLCRecoveriesRequest, opts ...grpc.CallOption) (*ListVHTLCRecoveriesResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -516,6 +536,56 @@ func (c *daemonServiceClient) GetUnrollStatus(ctx context.Context, in *GetUnroll
 	return out, nil
 }
 
+func (c *daemonServiceClient) ArmVHTLCRecovery(ctx context.Context, in *ArmVHTLCRecoveryRequest, opts ...grpc.CallOption) (*ArmVHTLCRecoveryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ArmVHTLCRecoveryResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ArmVHTLCRecovery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) EscalateVHTLCRecovery(ctx context.Context, in *EscalateVHTLCRecoveryRequest, opts ...grpc.CallOption) (*EscalateVHTLCRecoveryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EscalateVHTLCRecoveryResponse)
+	err := c.cc.Invoke(ctx, DaemonService_EscalateVHTLCRecovery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) CancelVHTLCRecovery(ctx context.Context, in *CancelVHTLCRecoveryRequest, opts ...grpc.CallOption) (*CancelVHTLCRecoveryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelVHTLCRecoveryResponse)
+	err := c.cc.Invoke(ctx, DaemonService_CancelVHTLCRecovery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) GetVHTLCRecoveryStatus(ctx context.Context, in *GetVHTLCRecoveryStatusRequest, opts ...grpc.CallOption) (*GetVHTLCRecoveryStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetVHTLCRecoveryStatusResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetVHTLCRecoveryStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ListVHTLCRecoveries(ctx context.Context, in *ListVHTLCRecoveriesRequest, opts ...grpc.CallOption) (*ListVHTLCRecoveriesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListVHTLCRecoveriesResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListVHTLCRecoveries_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -640,6 +710,21 @@ type DaemonServiceServer interface {
 	// specified VTXO outpoint, including recovery chain progress and
 	// sweep state.
 	GetUnrollStatus(context.Context, *GetUnrollStatusRequest) (*GetUnrollStatusResponse, error)
+	// ArmVHTLCRecovery persists a dormant vHTLC on-chain recovery job. The
+	// job does not start unroll until EscalateVHTLCRecovery is called.
+	ArmVHTLCRecovery(context.Context, *ArmVHTLCRecoveryRequest) (*ArmVHTLCRecoveryResponse, error)
+	// EscalateVHTLCRecovery starts or resumes the unroll job for a previously
+	// armed vHTLC recovery.
+	EscalateVHTLCRecovery(context.Context, *EscalateVHTLCRecoveryRequest) (*EscalateVHTLCRecoveryResponse, error)
+	// CancelVHTLCRecovery records that cooperative settlement or operator
+	// action made the dormant/on-chain recovery job unnecessary.
+	CancelVHTLCRecovery(context.Context, *CancelVHTLCRecoveryRequest) (*CancelVHTLCRecoveryResponse, error)
+	// GetVHTLCRecoveryStatus returns the durable recovery row joined with the
+	// current unroll status when the job has escalated.
+	GetVHTLCRecoveryStatus(context.Context, *GetVHTLCRecoveryStatusRequest) (*GetVHTLCRecoveryStatusResponse, error)
+	// ListVHTLCRecoveries returns durable recovery rows for operator
+	// inspection.
+	ListVHTLCRecoveries(context.Context, *ListVHTLCRecoveriesRequest) (*ListVHTLCRecoveriesResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -745,6 +830,21 @@ func (UnimplementedDaemonServiceServer) Unroll(context.Context, *UnrollRequest) 
 }
 func (UnimplementedDaemonServiceServer) GetUnrollStatus(context.Context, *GetUnrollStatusRequest) (*GetUnrollStatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetUnrollStatus not implemented")
+}
+func (UnimplementedDaemonServiceServer) ArmVHTLCRecovery(context.Context, *ArmVHTLCRecoveryRequest) (*ArmVHTLCRecoveryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ArmVHTLCRecovery not implemented")
+}
+func (UnimplementedDaemonServiceServer) EscalateVHTLCRecovery(context.Context, *EscalateVHTLCRecoveryRequest) (*EscalateVHTLCRecoveryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method EscalateVHTLCRecovery not implemented")
+}
+func (UnimplementedDaemonServiceServer) CancelVHTLCRecovery(context.Context, *CancelVHTLCRecoveryRequest) (*CancelVHTLCRecoveryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CancelVHTLCRecovery not implemented")
+}
+func (UnimplementedDaemonServiceServer) GetVHTLCRecoveryStatus(context.Context, *GetVHTLCRecoveryStatusRequest) (*GetVHTLCRecoveryStatusResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetVHTLCRecoveryStatus not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListVHTLCRecoveries(context.Context, *ListVHTLCRecoveriesRequest) (*ListVHTLCRecoveriesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListVHTLCRecoveries not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -1336,6 +1436,96 @@ func _DaemonService_GetUnrollStatus_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_ArmVHTLCRecovery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ArmVHTLCRecoveryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ArmVHTLCRecovery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ArmVHTLCRecovery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ArmVHTLCRecovery(ctx, req.(*ArmVHTLCRecoveryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_EscalateVHTLCRecovery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EscalateVHTLCRecoveryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).EscalateVHTLCRecovery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_EscalateVHTLCRecovery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).EscalateVHTLCRecovery(ctx, req.(*EscalateVHTLCRecoveryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_CancelVHTLCRecovery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelVHTLCRecoveryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).CancelVHTLCRecovery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_CancelVHTLCRecovery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).CancelVHTLCRecovery(ctx, req.(*CancelVHTLCRecoveryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_GetVHTLCRecoveryStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetVHTLCRecoveryStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetVHTLCRecoveryStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetVHTLCRecoveryStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetVHTLCRecoveryStatus(ctx, req.(*GetVHTLCRecoveryStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ListVHTLCRecoveries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListVHTLCRecoveriesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListVHTLCRecoveries(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListVHTLCRecoveries_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListVHTLCRecoveries(ctx, req.(*ListVHTLCRecoveriesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1466,6 +1656,26 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetUnrollStatus",
 			Handler:    _DaemonService_GetUnrollStatus_Handler,
+		},
+		{
+			MethodName: "ArmVHTLCRecovery",
+			Handler:    _DaemonService_ArmVHTLCRecovery_Handler,
+		},
+		{
+			MethodName: "EscalateVHTLCRecovery",
+			Handler:    _DaemonService_EscalateVHTLCRecovery_Handler,
+		},
+		{
+			MethodName: "CancelVHTLCRecovery",
+			Handler:    _DaemonService_CancelVHTLCRecovery_Handler,
+		},
+		{
+			MethodName: "GetVHTLCRecoveryStatus",
+			Handler:    _DaemonService_GetVHTLCRecoveryStatus_Handler,
+		},
+		{
+			MethodName: "ListVHTLCRecoveries",
+			Handler:    _DaemonService_ListVHTLCRecoveries_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

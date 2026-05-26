@@ -99,3 +99,18 @@ http:
     - selector: daemonrpc.DaemonService.GetUnrollStatus
       post: /v1/daemon/get-unroll-status
       body: "*"
+    - selector: daemonrpc.DaemonService.ArmVHTLCRecovery
+      post: /v1/daemon/arm-vhtlc-recovery
+      body: "*"
+    - selector: daemonrpc.DaemonService.EscalateVHTLCRecovery
+      post: /v1/daemon/escalate-vhtlc-recovery
+      body: "*"
+    - selector: daemonrpc.DaemonService.CancelVHTLCRecovery
+      post: /v1/daemon/cancel-vhtlc-recovery
+      body: "*"
+    - selector: daemonrpc.DaemonService.GetVHTLCRecoveryStatus
+      post: /v1/daemon/get-vhtlc-recovery-status
+      body: "*"
+    - selector: daemonrpc.DaemonService.ListVHTLCRecoveries
+      post: /v1/daemon/list-vhtlc-recoveries
+      body: "*"

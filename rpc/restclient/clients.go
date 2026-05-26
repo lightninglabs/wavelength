@@ -565,6 +565,63 @@ func (c *DaemonServiceClient) GetUnrollStatus(ctx context.Context,
 	return out, err
 }
 
+// ArmVHTLCRecovery persists a dormant vHTLC recovery job.
+func (c *DaemonServiceClient) ArmVHTLCRecovery(ctx context.Context,
+	in *daemonrpc.ArmVHTLCRecoveryRequest, _ ...grpc.CallOption) (
+	*daemonrpc.ArmVHTLCRecoveryResponse, error) {
+
+	out := new(daemonrpc.ArmVHTLCRecoveryResponse)
+	err := c.client.Post(ctx, "/v1/daemon/arm-vhtlc-recovery", in, out)
+
+	return out, err
+}
+
+// EscalateVHTLCRecovery starts an armed vHTLC recovery job.
+func (c *DaemonServiceClient) EscalateVHTLCRecovery(ctx context.Context,
+	in *daemonrpc.EscalateVHTLCRecoveryRequest, _ ...grpc.CallOption) (
+	*daemonrpc.EscalateVHTLCRecoveryResponse, error) {
+
+	out := new(daemonrpc.EscalateVHTLCRecoveryResponse)
+	err := c.client.Post(ctx, "/v1/daemon/escalate-vhtlc-recovery", in, out)
+
+	return out, err
+}
+
+// CancelVHTLCRecovery records that a vHTLC recovery job is no longer needed.
+func (c *DaemonServiceClient) CancelVHTLCRecovery(ctx context.Context,
+	in *daemonrpc.CancelVHTLCRecoveryRequest, _ ...grpc.CallOption) (
+	*daemonrpc.CancelVHTLCRecoveryResponse, error) {
+
+	out := new(daemonrpc.CancelVHTLCRecoveryResponse)
+	err := c.client.Post(ctx, "/v1/daemon/cancel-vhtlc-recovery", in, out)
+
+	return out, err
+}
+
+// GetVHTLCRecoveryStatus returns one vHTLC recovery job status.
+func (c *DaemonServiceClient) GetVHTLCRecoveryStatus(ctx context.Context,
+	in *daemonrpc.GetVHTLCRecoveryStatusRequest, _ ...grpc.CallOption) (
+	*daemonrpc.GetVHTLCRecoveryStatusResponse, error) {
+
+	out := new(daemonrpc.GetVHTLCRecoveryStatusResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/get-vhtlc-recovery-status", in, out,
+	)
+
+	return out, err
+}
+
+// ListVHTLCRecoveries returns vHTLC recovery jobs.
+func (c *DaemonServiceClient) ListVHTLCRecoveries(ctx context.Context,
+	in *daemonrpc.ListVHTLCRecoveriesRequest, _ ...grpc.CallOption) (
+	*daemonrpc.ListVHTLCRecoveriesResponse, error) {
+
+	out := new(daemonrpc.ListVHTLCRecoveriesResponse)
+	err := c.client.Post(ctx, "/v1/daemon/list-vhtlc-recoveries", in, out)
+
+	return out, err
+}
+
 // NewSwapClientServiceClient creates a SwapClientService REST client.
 func NewSwapClientServiceClient(addr string,
 	opts ...Option) swapclientrpc.SwapClientServiceClient {

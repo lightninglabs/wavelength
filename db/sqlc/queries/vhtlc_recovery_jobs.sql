@@ -33,6 +33,10 @@ SELECT * FROM vhtlc_recovery_jobs
 WHERE state NOT IN ('completed', 'cancelled', 'failed')
 ORDER BY updated_at ASC, created_at ASC;
 
+-- name: ListVHTLCRecoveryJobs :many
+SELECT * FROM vhtlc_recovery_jobs
+ORDER BY updated_at ASC, created_at ASC;
+
 -- name: EscalateVHTLCRecoveryJob :execrows
 UPDATE vhtlc_recovery_jobs
 SET state = CASE

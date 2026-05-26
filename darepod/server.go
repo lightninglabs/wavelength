@@ -53,6 +53,8 @@ import (
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/txconfirm"
 	"github.com/lightninglabs/darepo-client/unroll"
+	"github.com/lightninglabs/darepo-client/vhtlcrecovery/coordinator"
+	"github.com/lightninglabs/darepo-client/vhtlcrecovery/unrollpolicy"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/darepo-client/walletcore"
@@ -292,8 +294,11 @@ type Server struct {
 	walletRef    fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
-	oorActor         *oor.OORClientActor
-	oorSigningEffect *oor.SigningEffectActor
+	oorActor           *oor.OORClientActor
+	oorSigningEffect   *oor.SigningEffectActor
+	vhtlcRecoveryStore *db.VHTLCRecoveryStoreDB
+	vhtlcRecovery      *coordinator.Service
+	vhtlcPreimages     *vhtlcPreimageRegistry
 
 	// ledgerStore exposes the client-side ledger DB adapter for
 	// read-only RPC handlers (GetFeeHistory). Writes go through
@@ -4415,6 +4420,8 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	)
 	ueStore := dbStore.NewUnilateralExitStore(s.clk)
 	s.ueStore = ueStore
+	recoveryStore := dbStore.NewVHTLCRecoveryStore(s.clk)
+	s.vhtlcRecoveryStore = recoveryStore
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 
 	// Build the wallet adapter shared by txconfirm and unroll
@@ -4473,6 +4480,8 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	}
 	s.proofAssembler = proofAssembler
 
+	s.vhtlcPreimages = &vhtlcPreimageRegistry{}
+
 	registry := unroll.NewUnrollRegistryActor(unroll.RegistryConfig{
 		Store: &unroll.DBRegistryStore{
 			UEStore: ueStore,
@@ -4485,11 +4494,25 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		Wallet:                     unrollWallet,
 		Log:                        fn.Some(s.subLogger("UNRL")),
 		MaxSweepFeeRateSatPerVByte: s.unrollMaxFeeRate(),
+		ExitSpendPolicyResolver: unrollpolicy.ExitSpendPolicyResolver{
+			Jobs:     recoveryStore,
+			Preimage: s.vhtlcPreimages,
+		},
 	})
 	s.unrollRegistry = registry
 	s.unrollRegistryRef = fn.Some(registry.Ref())
 
-	err := s.initFraudWatcher(ctx, chainSourceRef)
+	recoverySvc, err := coordinator.NewService(coordinator.ServiceConfig{
+		Store:  recoveryStore,
+		Unroll: coordinator.NewActorUnrollRegistry(registry.Ref()),
+		Log:    fn.Some(s.subLogger(VHTLCRecoverySubsystem)),
+	})
+	if err != nil {
+		return err
+	}
+	s.vhtlcRecovery = recoverySvc
+
+	err = s.initFraudWatcher(ctx, chainSourceRef)
 	if err != nil {
 		return err
 	}
@@ -4498,6 +4521,10 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	if err := registry.RestoreNonTerminal(ctx); err != nil {
 		s.log.WarnS(ctx,
 			"Failed to restore unroll jobs", err)
+	}
+	if err := recoverySvc.RestoreNonTerminal(ctx); err != nil {
+		s.log.WarnS(ctx, "Failed to restore vhtlc recovery jobs",
+			err)
 	}
 
 	// 4. Wire the VTXO manager's ChainResolver to the unroll registry so

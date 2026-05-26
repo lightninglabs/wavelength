@@ -417,6 +417,73 @@ func (q *Queries) ListNonTerminalVHTLCRecoveryJobs(ctx context.Context) ([]Vhtlc
 	return items, nil
 }
 
+const ListVHTLCRecoveryJobs = `-- name: ListVHTLCRecoveryJobs :many
+SELECT id, request_id, swap_id, direction, action, state, vtxo_txid, vtxo_vout, vtxo_amount_sat, sender_pubkey, receiver_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, preimage_hash, claim_preimage, signer_key_family, signer_key_index, destination_script, max_fee_rate_sat_per_kw, unroll_target_outpoint_hash, unroll_target_outpoint_index, exit_policy_kind, exit_tx, exit_txid, cooperative_txid, last_error, cancel_reason, created_at, updated_at, armed_at, escalated_at, target_detected_at, exit_tx_built_at, exit_tx_broadcast_at, terminal_at FROM vhtlc_recovery_jobs
+ORDER BY updated_at ASC, created_at ASC
+`
+
+func (q *Queries) ListVHTLCRecoveryJobs(ctx context.Context) ([]VhtlcRecoveryJob, error) {
+	rows, err := q.db.QueryContext(ctx, ListVHTLCRecoveryJobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []VhtlcRecoveryJob
+	for rows.Next() {
+		var i VhtlcRecoveryJob
+		if err := rows.Scan(
+			&i.ID,
+			&i.RequestID,
+			&i.SwapID,
+			&i.Direction,
+			&i.Action,
+			&i.State,
+			&i.VtxoTxid,
+			&i.VtxoVout,
+			&i.VtxoAmountSat,
+			&i.SenderPubkey,
+			&i.ReceiverPubkey,
+			&i.ServerPubkey,
+			&i.RefundLocktime,
+			&i.UnilateralClaimDelay,
+			&i.UnilateralRefundDelay,
+			&i.UnilateralRefundWithoutReceiverDelay,
+			&i.PreimageHash,
+			&i.ClaimPreimage,
+			&i.SignerKeyFamily,
+			&i.SignerKeyIndex,
+			&i.DestinationScript,
+			&i.MaxFeeRateSatPerKw,
+			&i.UnrollTargetOutpointHash,
+			&i.UnrollTargetOutpointIndex,
+			&i.ExitPolicyKind,
+			&i.ExitTx,
+			&i.ExitTxid,
+			&i.CooperativeTxid,
+			&i.LastError,
+			&i.CancelReason,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ArmedAt,
+			&i.EscalatedAt,
+			&i.TargetDetectedAt,
+			&i.ExitTxBuiltAt,
+			&i.ExitTxBroadcastAt,
+			&i.TerminalAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const MarkVHTLCRecoveryExitTxBroadcast = `-- name: MarkVHTLCRecoveryExitTxBroadcast :exec
 UPDATE vhtlc_recovery_jobs
 SET state = 'exit_spend_pending_confirmation',

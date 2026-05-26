@@ -424,6 +424,7 @@ func newDirectedSendFixture(t *testing.T) *directedSendFixture {
 	cfg.Server.Host = mailboxAddr
 	cfg.Server.Insecure = true
 	cfg.RPC.ListenAddr = rpcAddr
+	cfg.RPC.Gateway.ListenAddr = newLoopbackAddr(t)
 
 	seededOutpoint := seedLiveVTXO(
 		t, cfg, operatorPriv.PubKey(),
