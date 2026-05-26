@@ -12,11 +12,16 @@ package bitcoindrpc
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/btcsuite/btcd/btcjson"
@@ -41,20 +46,163 @@ type PackageSubmitter struct {
 	client *http.Client
 }
 
+// Option configures a PackageSubmitter.
+type Option func(*options)
+
+type options struct {
+	tlsCertPath string
+}
+
+// WithTLSCertPath configures the HTTPS submitter to trust the CA
+// certificate at path. It is intended for operators fronting bitcoind's
+// plain HTTP RPC server with a local TLS reverse proxy.
+func WithTLSCertPath(path string) Option {
+	return func(o *options) {
+		o.tlsCertPath = path
+	}
+}
+
 // New creates a submitter that talks to the given bitcoind JSON-RPC
-// endpoint. The host string is of the form "host:port"; the URL is
-// built with an "http://" scheme because bitcoind's JSON-RPC server
-// is plain HTTP by default, and TLS termination (when present) is
-// expected to be handled by a separately configured reverse proxy.
+// endpoint. Bare host:port inputs default to http:// for compatibility.
+// Use NewWithOptions when endpoint parsing or TLS configuration errors
+// need to be surfaced to the caller.
 func New(host, user, password string) *PackageSubmitter {
+	submitter, err := NewWithOptions(host, user, password)
+	if err != nil {
+
+		// New preserves the legacy no-error constructor for callers
+		// that pass the historical bare host:port form. The fallback is
+		// kept intentionally narrow: option-using callers should use
+		// NewWithOptions so malformed URLs and TLS config errors
+		// surface.
+		return &PackageSubmitter{
+			url:      fmt.Sprintf("http://%s", host),
+			user:     user,
+			password: password,
+			client: &http.Client{
+				Timeout: submitTimeout,
+			},
+		}
+	}
+
+	return submitter
+}
+
+// NewWithOptions creates a submitter that talks to the given bitcoind
+// JSON-RPC endpoint. Bare host:port inputs default to http:// unless a
+// TLS certificate path is provided, in which case they default to
+// https://. Full http:// and https:// URLs are accepted as-is.
+func NewWithOptions(host, user, password string,
+	opts ...Option) (*PackageSubmitter, error) {
+
+	var cfg options
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	endpoint, err := endpointURL(host, cfg.tlsCertPath != "")
+	if err != nil {
+		return nil, err
+	}
+	if cfg.tlsCertPath != "" && endpoint.Scheme != "https" {
+		return nil, fmt.Errorf("bitcoind TLS cert requires https "+
+			"endpoint, got %q", endpoint.Scheme)
+	}
+
+	client, err := httpClient(endpoint.Scheme, cfg.tlsCertPath)
+	if err != nil {
+		return nil, err
+	}
+
 	return &PackageSubmitter{
-		url:      fmt.Sprintf("http://%s", host),
+		url:      endpoint.String(),
 		user:     user,
 		password: password,
-		client: &http.Client{
-			Timeout: submitTimeout,
-		},
+		client:   client,
+	}, nil
+}
+
+// endpointURL normalizes the operator-supplied bitcoind endpoint into a
+// concrete http:// or https:// URL.
+func endpointURL(host string, preferHTTPS bool) (*url.URL, error) {
+	if strings.TrimSpace(host) == "" {
+		return nil, fmt.Errorf("bitcoind host is required")
 	}
+
+	raw := host
+	if !strings.Contains(raw, "://") {
+		scheme := "http"
+		if preferHTTPS {
+			scheme = "https"
+		}
+		raw = scheme + "://" + raw
+	}
+
+	endpoint, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse bitcoind endpoint %q: %w", host,
+			err)
+	}
+	if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
+		return nil, fmt.Errorf("unsupported bitcoind endpoint "+
+			"scheme %q", endpoint.Scheme)
+	}
+	if endpoint.Host == "" {
+		return nil, fmt.Errorf("bitcoind endpoint %q has no host", host)
+	}
+
+	return endpoint, nil
+}
+
+// httpClient returns the HTTP client used for bitcoind RPC calls.
+func httpClient(scheme, tlsCertPath string) (*http.Client, error) {
+	// Always start from a clone of http.DefaultTransport so the
+	// submitter keeps connection pooling, keep-alives, dialer, and
+	// idle timeouts on every path (plain HTTP, HTTPS with the system
+	// trust store, or HTTPS with a custom CA) and never shares the
+	// process-global transport. The fallback only matters if a future
+	// stdlib change swaps the default-transport concrete type.
+	var transport *http.Transport
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = dt.Clone()
+	} else {
+		transport = &http.Transport{}
+	}
+
+	// Only an https endpoint with a custom CA needs a bespoke TLS
+	// config; an https endpoint without one verifies against the
+	// clone's default (system) trust store.
+	if scheme == "https" && tlsCertPath != "" {
+		//nolint:gosec // G304: cert path comes from operator config.
+		certBytes, err := os.ReadFile(tlsCertPath)
+		if err != nil {
+			return nil, fmt.Errorf("read bitcoind TLS cert %q: %w",
+				tlsCertPath, err)
+		}
+
+		// Augment the system trust store rather than replacing it so
+		// a custom CA is trusted in addition to the public roots.
+		// Fall back to an empty pool only if the system pool is
+		// unavailable.
+		roots, err := x509.SystemCertPool()
+		if err != nil || roots == nil {
+			roots = x509.NewCertPool()
+		}
+		if !roots.AppendCertsFromPEM(certBytes) {
+			return nil, fmt.Errorf("bitcoind TLS cert %q contains "+
+				"no PEM certificates", tlsCertPath)
+		}
+
+		transport.TLSClientConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			RootCAs:    roots,
+		}
+	}
+
+	return &http.Client{
+		Timeout:   submitTimeout,
+		Transport: transport,
+	}, nil
 }
 
 // SubmitPackage implements chainbackends.PackageSubmitter by calling

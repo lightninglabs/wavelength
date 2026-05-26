@@ -123,6 +123,160 @@ func newTestConfigCommand(t *testing.T,
 	return v, cmd
 }
 
+// TestIsLoopbackHost pins the URL parsing that decides whether the
+// cleartext warning should fire. Edge cases that previously slipped
+// through net.SplitHostPort: bracketed IPv6, hosts that carry a path,
+// and the full URL forms with explicit http:// / https:// schemes.
+func TestIsLoopbackHost(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		host string
+		want bool
+	}{
+		// Loopback shapes.
+		{
+			"127.0.0.1:8332",
+			true,
+		},
+		{
+			"127.0.0.1",
+			true,
+		},
+		{
+			"localhost:8332",
+			true,
+		},
+		{
+			"localhost",
+			true,
+		},
+		{
+			"[::1]:8332",
+			true,
+		},
+		{
+			"::1",
+			true,
+		},
+		{
+			"http://127.0.0.1:8332",
+			true,
+		},
+		{
+			"https://127.0.0.1:8332",
+			true,
+		},
+		{
+			"http://localhost",
+			true,
+		},
+		{
+			"http://[::1]:8332",
+			true,
+		},
+		{
+			"https://[::1]:8332",
+			true,
+		},
+		{
+			"127.0.0.1:8332/wallet/foo",
+			true,
+		},
+		{
+			"http://127.0.0.1:8332/wallet/foo",
+			true,
+		},
+		// every 127/8 address is loopback
+		{
+			"127.0.0.2:8332",
+			true,
+		},
+
+		// Non-loopback.
+		{
+			"10.0.0.5:8332",
+			false,
+		},
+		{
+			"bitcoind.example.com:8332",
+			false,
+		},
+		{
+			"https://bitcoind.example.com:8332",
+			false,
+		},
+		{
+			"[fd00::1]:8332",
+			false,
+		},
+
+		// Degenerate.
+		{
+			"",
+			false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.host, func(t *testing.T) {
+			t.Parallel()
+
+			if got := isLoopbackHost(tc.host); got != tc.want {
+				t.Fatalf("isLoopbackHost(%q) = %v, want %v",
+					tc.host, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsBitcoindHTTPSEndpoint verifies the warning gate used for
+// non-loopback bitcoind RPC connections.
+func TestIsBitcoindHTTPSEndpoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		host        string
+		tlsCertPath string
+		want        bool
+	}{
+		{
+			name: "explicit https",
+			host: "https://bitcoind.example:8332",
+			want: true,
+		},
+		{
+			name:        "bare host with cert",
+			host:        "bitcoind.example:8332",
+			tlsCertPath: "/path/to/ca.pem",
+			want:        true,
+		},
+		{
+			name:        "explicit http cert remains plaintext",
+			host:        "http://bitcoind.example:8332",
+			tlsCertPath: "/path/to/ca.pem",
+			want:        false,
+		},
+		{
+			name: "bare host without cert",
+			host: "bitcoind.example:8332",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := isBitcoindHTTPSEndpoint(tc.host, tc.tlsCertPath)
+			if got != tc.want {
+				t.Fatalf("isBitcoindHTTPSEndpoint() = "+
+					"%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestResolveBitcoindAuth covers the three branches of cookie-vs-
 // user/pass credential resolution: passthrough, cookie-file parsing,
 // and the mutual-exclusion guard.
