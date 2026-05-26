@@ -33,7 +33,17 @@ validated invariants.
     signature over an attacker-chosen tapscript.
 - `StandardVTXOParams` — Decoded parameters for a standard Ark VTXO policy (owner key, operator key, CSV delay). Derived via `DecodeStandardVTXOParams`.
 - `ComposedPolicy` — Composes an existing `CompiledPolicy` with an additional sibling tap branch root, allowing sub-tree aggregation. Built with `ComposeWithSiblingRoot`.
-- `AnchorOutput` / `AnchorPkScript` — `AnchorPkScript` is the standard P2A keyless pkScript; `AnchorOutput` returns a zero-value `wire.TxOut` carrying it for CPFP fee bumping.
+- `AnchorOutput(opts ...AnchorOption) *wire.TxOut` — Returns a P2A output.
+  Without options the value is zero (BIP-433 ephemeral-anchor pattern: parent
+  pays 0 fee, CPFP child funds the package). Callers whose parent pays its own
+  miner fee must pass `WithAnchorValue(sats)` to lift the anchor above the P2A
+  dust threshold (240 sats); otherwise bitcoind rejects the parent as "dust, tx
+  with dust output must be 0-fee".
+- `AnchorOption` — `func(*wire.TxOut)` functional option for `AnchorOutput`.
+- `WithAnchorValue(sats int64) AnchorOption` — Sets a non-zero anchor value.
+  Any value > 240 takes the output out of the ephemeral-dust regime.
+- `AnchorPkScript` — Package-level P2A keyless pkScript byte slice (defensive
+  copy returned by `AnchorOutput` so callers cannot mutate the global).
 - `EncodedLeaf` / `EncodeTapTree` / `DecodeTapTree` — TLV-based tap tree serialization for PSBT sidecars compatible with `waddrmgr` format.
 - `EncodeStandardVTXOArtifacts(ownerKey, operatorKey, exitDelay)` — Convenience
   helper returning both the encoded policy template bytes and the canonical P2TR

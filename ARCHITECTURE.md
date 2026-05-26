@@ -46,7 +46,7 @@ package may import from a higher layer.
 | [`fraud`](fraud/) | Fraud detection actor: watches OOR ancestor outpoints on-chain and triggers unilateral exit when an ancestor is spent |
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
-| [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
+| [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade. Sub-package `serverconn/mailboxpull` provides shared exponential-backoff retry primitives for mailbox pull loops. |
 
 ### Layer 3: Application & Orchestration
 
