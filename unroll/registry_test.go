@@ -1373,13 +1373,13 @@ func TestRegistryTerminalStatusRemainsQueryableWhilePersistBlocked(
 }
 
 // TestRegistryRestoreFailureLeavesRecordRetryable verifies that a
-// transient failure during RestoreNonTerminal does NOT mark the durable
-// record terminal: a subsequent RestoreNonTerminal call (e.g. on the
-// next daemon boot, after the transient ChainSource / DB issue is
-// resolved) must still find and resume the job. This is the regression
-// guard for issue #381 ("Restore failure permanently disables unroll
-// recovery"): an attacker or backend outage that fails the resume Ask
-// on one boot must not strand a recovery-critical job forever.
+// transient failure during RestoreNonTerminal fails the boot attempt
+// without marking the durable record terminal: a subsequent
+// RestoreNonTerminal call (e.g. on the next daemon boot, after the
+// transient ChainSource / DB issue is resolved) must still find and
+// resume the job. This is the regression guard for issue #381
+// ("Restore failure permanently disables unroll recovery") and #400
+// ("restore failure is only logged").
 func TestRegistryRestoreFailureLeavesRecordRetryable(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
@@ -1436,11 +1436,11 @@ func TestRegistryRestoreFailureLeavesRecordRetryable(t *testing.T) {
 	}
 	registry.behavior.spawnFunc = failingSpawn
 
-	// RestoreNonTerminal must NOT return an error and must NOT mark
-	// the record terminal; the durable record stays non-terminal so a
-	// future retry path can pick it up.
+	// RestoreNonTerminal must return an error so daemon startup fails
+	// closed, but must NOT mark the record terminal; the durable record
+	// stays non-terminal so a future retry path can pick it up.
 	err = registry.RestoreNonTerminal(t.Context())
-	require.NoError(t, err)
+	require.ErrorContains(t, err, "restore 1 unroll job")
 	require.EqualValues(t, 1, attempts.Load())
 
 	record, err := store.GetRecord(t.Context(), proof.TargetOutpoint())

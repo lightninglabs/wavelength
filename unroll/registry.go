@@ -1014,6 +1014,7 @@ func (r *registryBehavior) handleRestoreNonTerminal(
 		})
 	}
 
+	var restoreErrs []error
 	for i := range records {
 		record := records[i]
 		if _, ok := r.active[record.TargetOutpoint]; ok {
@@ -1035,6 +1036,14 @@ func (r *registryBehavior) handleRestoreNonTerminal(
 				slog.String("actor_id", record.ActorID),
 			)
 
+			restoreErrs = append(
+				restoreErrs,
+				fmt.Errorf(
+					"%s: %w",
+					record.TargetOutpoint.String(), err,
+				),
+			)
+
 			continue
 		}
 
@@ -1045,6 +1054,14 @@ func (r *registryBehavior) handleRestoreNonTerminal(
 		// without an extra store lookup, and so handleGetStatus
 		// answers from cache while the restored child runs.
 		r.pending[record.TargetOutpoint] = cloneRegistryRecord(record)
+	}
+
+	if len(restoreErrs) > 0 {
+		return fn.Ok[RegistryResp](&restoreNonTerminalResp{
+			Err: fmt.Errorf("restore %d unroll job(s): %w",
+				len(restoreErrs), errors.Join(restoreErrs...)).
+				Error(),
+		})
 	}
 
 	return fn.Ok[RegistryResp](&restoreNonTerminalResp{})
