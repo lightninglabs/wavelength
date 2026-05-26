@@ -46,6 +46,12 @@ type RegistryRecord struct {
 	// Trigger records why the target was started.
 	Trigger StartTrigger
 
+	// ExitPolicyKind identifies the final spend policy for this target.
+	ExitPolicyKind ExitPolicyKind
+
+	// ExitPolicyRef is the policy-specific durable reference.
+	ExitPolicyRef string
+
 	// Phase is the last known coarse lifecycle phase.
 	Phase Phase
 
@@ -110,6 +116,15 @@ type RegistryConfig struct {
 
 	// MaxSweepFeeRateSatPerVByte clamps pathological fee estimates.
 	MaxSweepFeeRateSatPerVByte int64
+
+	// ExitSpendPolicyResolver reconstructs the exit policy for each
+	// spawned child from the durable (ExitPolicyKind, ExitPolicyRef)
+	// identity persisted on the unroll job. If nil, every child uses
+	// the built-in standard VTXO timeout resolver and any non-standard
+	// kind will fail closed at sweep time. Forwarded verbatim into each
+	// spawned VTXOUnrollActor's Config so policy-specific unroll jobs
+	// (e.g. vHTLC recovery) reach their custom resolver after restart.
+	ExitSpendPolicyResolver ExitSpendPolicyResolver
 
 	// FraudCheckpointSafetyMargin overrides the default backstop
 	// margin (in blocks) the recipient subtracts from the relative
@@ -366,6 +381,12 @@ func (r *registryBehavior) OnStop(context.Context) error {
 func (r *registryBehavior) handleEnsure(ctx context.Context,
 	req *EnsureUnrollRequest) fn.Result[RegistryResp] {
 
+	if err := validateExitPolicyIdentity(
+		req.ExitPolicyKind, req.ExitPolicyRef,
+	); err != nil {
+		return fn.Err[RegistryResp](err)
+	}
+
 	if child, ok := r.active[req.Outpoint]; ok {
 		return fn.Ok[RegistryResp](&EnsureUnrollResp{
 			ActorID: child.Ref().ID(),
@@ -409,6 +430,15 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		//      stays non-terminal and will be retried on the next
 		//      Ensure / next daemon restart.
 		if !existing.IsTerminal() {
+			if err := r.validateRestorableRecords(
+				[]RegistryRecord{*existing},
+			); err != nil {
+				return fn.Err[RegistryResp](
+					fmt.Errorf("validate existing record "+
+						"for restore: %w", err),
+				)
+			}
+
 			height, err := r.queryBestHeight(ctx)
 			if err != nil {
 				return fn.Err[RegistryResp](
@@ -459,6 +489,8 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		TargetOutpoint: req.Outpoint,
 		ActorID:        child.Ref().ID(),
 		Trigger:        req.Trigger,
+		ExitPolicyKind: exitPolicyKind(req.ExitPolicyKind),
+		ExitPolicyRef:  req.ExitPolicyRef,
 		Phase:          PhasePending,
 	}
 
@@ -475,8 +507,10 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 	r.pending[req.Outpoint] = cloneRegistryRecord(record)
 
 	startReq := &StartUnrollRequest{
-		Height:  height,
-		Trigger: req.Trigger,
+		Height:         height,
+		Trigger:        req.Trigger,
+		ExitPolicyKind: req.ExitPolicyKind,
+		ExitPolicyRef:  req.ExitPolicyRef,
 	}
 	startCtx, cancelStart := context.WithTimeout(
 		context.WithoutCancel(ctx), childAdmissionTimeout,
@@ -880,6 +914,20 @@ func (r *registryBehavior) handleRestoreNonTerminal(
 		return fn.Ok[RegistryResp](&restoreNonTerminalResp{})
 	}
 
+	// Fail-secure admission gate: refuse to boot when a persisted
+	// non-terminal job names a policy kind no resolver covers. Without
+	// this check the registry would silently spawn each affected child,
+	// and the first sweep attempt would fail closed with `unknown exit
+	// policy kind` — looping every block until an operator notices. The
+	// supports check applies only when the configured resolver opts into
+	// ResolverKindSupport; resolvers that do not implement the optional
+	// interface keep the legacy behaviour for backwards compatibility.
+	if err := r.validateRestorableRecords(records); err != nil {
+		return fn.Ok[RegistryResp](&restoreNonTerminalResp{
+			Err: err.Error(),
+		})
+	}
+
 	height, err := r.queryBestHeight(ctx)
 	if err != nil {
 		return fn.Ok[RegistryResp](&restoreNonTerminalResp{
@@ -1072,7 +1120,100 @@ func (r *registryBehavior) spawn(ctx context.Context, target wire.OutPoint) (
 	}
 
 	//nolint:contextcheck // child actor owns its own durable lifecycle
-	return NewVTXOUnrollActor(Config{
+	return NewVTXOUnrollActor(r.childConfig(target))
+}
+
+// validateExitPolicyIdentity enforces the kind/ref pair invariant at the
+// registry admission boundary so a confused caller (a recovery row pointing
+// at a stale ref, or an in-tree caller forgetting to pass either half of the
+// pair) is rejected before any durable record is written. Standard timeout
+// jobs must have an empty ref; non-standard kinds must have a non-empty ref
+// so the resolver has something to load.
+func validateExitPolicyIdentity(kind ExitPolicyKind, ref string) error {
+	normalised := exitPolicyKind(kind)
+	if normalised == StandardVTXOTimeoutExitPolicyKind {
+		if ref != "" {
+			return fmt.Errorf("standard exit policy kind %q must "+
+				"have an empty ref, got %q", normalised, ref)
+		}
+
+		return nil
+	}
+
+	if ref == "" {
+		return fmt.Errorf("non-standard exit policy kind %q requires "+
+			"a non-empty ref", normalised)
+	}
+
+	return nil
+}
+
+// validateRestorableRecords enforces all durable policy identity checks before
+// respawning previously admitted records. Admission already validates new
+// EnsureUnrollRequest messages, but records loaded from storage may be legacy,
+// externally edited, or from a branch that persisted an unsupported custom
+// kind.
+func (r *registryBehavior) validateRestorableRecords(
+	records []RegistryRecord) error {
+
+	for i := range records {
+		if err := validateExitPolicyIdentity(
+			records[i].ExitPolicyKind, records[i].ExitPolicyRef,
+		); err != nil {
+			return fmt.Errorf("invalid persisted exit policy "+
+				"identity for record %s: %w",
+				records[i].TargetOutpoint, err)
+		}
+	}
+
+	return r.validateResolverCoversRecords(records)
+}
+
+// validateResolverCoversRecords refuses to restore non-terminal records when
+// the configured resolver cannot reconstruct one of the persisted policy
+// kinds. Standard timeout jobs are always handled by the built-in fallback so
+// they pass through this check regardless of the configured resolver.
+func (r *registryBehavior) validateResolverCoversRecords(
+	records []RegistryRecord) error {
+
+	resolver := r.cfg.ExitSpendPolicyResolver
+	if resolver == nil {
+		resolver = standardExitSpendPolicyResolver{}
+	}
+	support, ok := resolver.(ResolverKindSupport)
+	if !ok {
+		return nil
+	}
+
+	seen := make(map[ExitPolicyKind]struct{}, len(records))
+	for i := range records {
+		kind := exitPolicyKind(records[i].ExitPolicyKind)
+		if kind == StandardVTXOTimeoutExitPolicyKind {
+			continue
+		}
+		if _, ok := seen[kind]; ok {
+			continue
+		}
+		seen[kind] = struct{}{}
+
+		if support.SupportsKind(kind) {
+			continue
+		}
+
+		return fmt.Errorf("no resolver registered for persisted exit "+
+			"policy kind %q (record %s)", kind,
+			records[i].TargetOutpoint)
+	}
+
+	return nil
+}
+
+// childConfig builds the Config a freshly spawned VTXOUnrollActor will run
+// with. Factored out of spawn() so callers can verify the resolver and other
+// per-target wiring are forwarded from RegistryConfig without having to stand
+// up a durable mailbox.
+func (r *registryBehavior) childConfig(target wire.OutPoint) Config {
+	return Config{
 		TargetOutpoint:              target,
 		DeliveryStore:               r.cfg.DeliveryStore,
 		ProofAssembler:              r.cfg.ProofAssembler,
@@ -1082,9 +1223,10 @@ func (r *registryBehavior) spawn(ctx context.Context, target wire.OutPoint) (
 		Wallet:                      r.cfg.Wallet,
 		Log:                         r.cfg.Log,
 		MaxSweepFeeRateSatPerVByte:  r.cfg.MaxSweepFeeRateSatPerVByte,
+		ExitSpendPolicyResolver:     r.cfg.ExitSpendPolicyResolver,
 		FraudCheckpointSafetyMargin: r.cfg.FraudCheckpointSafetyMargin,
 		RegistryRef:                 r.selfRef,
-	})
+	}
 }
 
 // queryBestHeight queries the current best height from chainsource.
@@ -1223,6 +1365,8 @@ func recordFromChildState(target wire.OutPoint, actorID string,
 		TargetOutpoint: target,
 		ActorID:        actorID,
 		Trigger:        state.Trigger,
+		ExitPolicyKind: exitPolicyKind(state.ExitPolicyKind),
+		ExitPolicyRef:  state.ExitPolicyRef,
 		Phase:          state.Phase,
 		FailReason:     state.FailReason,
 		SweepTxid:      copyHash(state.SweepTxid),
@@ -1235,13 +1379,15 @@ func statusFromRegistryRecord(record RegistryRecord,
 	active bool) *GetStatusResp {
 
 	return &GetStatusResp{
-		Found:      true,
-		Active:     active,
-		ActorID:    record.ActorID,
-		Phase:      record.Phase,
-		Trigger:    record.Trigger,
-		FailReason: record.FailReason,
-		SweepTxid:  copyHash(record.SweepTxid),
+		Found:          true,
+		Active:         active,
+		ActorID:        record.ActorID,
+		Phase:          record.Phase,
+		Trigger:        record.Trigger,
+		ExitPolicyKind: record.ExitPolicyKind,
+		ExitPolicyRef:  record.ExitPolicyRef,
+		FailReason:     record.FailReason,
+		SweepTxid:      copyHash(record.SweepTxid),
 	}
 }
 
@@ -1258,6 +1404,8 @@ func sameRegistryRecord(a, b RegistryRecord) bool {
 	if a.TargetOutpoint != b.TargetOutpoint ||
 		a.ActorID != b.ActorID ||
 		a.Trigger != b.Trigger ||
+		a.ExitPolicyKind != b.ExitPolicyKind ||
+		a.ExitPolicyRef != b.ExitPolicyRef ||
 		a.Phase != b.Phase ||
 		a.FailReason != b.FailReason {
 		return false

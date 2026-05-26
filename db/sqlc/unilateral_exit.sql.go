@@ -11,7 +11,7 @@ import (
 )
 
 const GetUnilateralExitJob = `-- name: GetUnilateralExitJob :one
-SELECT target_outpoint_hash, target_outpoint_index, actor_id, status, trigger, last_error, sweep_txid, created_at, updated_at FROM unilateral_exit_jobs
+SELECT target_outpoint_hash, target_outpoint_index, actor_id, status, trigger, last_error, sweep_txid, created_at, updated_at, exit_policy_kind, exit_policy_ref FROM unilateral_exit_jobs
 WHERE target_outpoint_hash = $1
   AND target_outpoint_index = $2
 `
@@ -34,12 +34,14 @@ func (q *Queries) GetUnilateralExitJob(ctx context.Context, arg GetUnilateralExi
 		&i.SweepTxid,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ExitPolicyKind,
+		&i.ExitPolicyRef,
 	)
 	return i, err
 }
 
 const ListNonTerminalUnilateralExitJobs = `-- name: ListNonTerminalUnilateralExitJobs :many
-SELECT target_outpoint_hash, target_outpoint_index, actor_id, status, trigger, last_error, sweep_txid, created_at, updated_at FROM unilateral_exit_jobs
+SELECT target_outpoint_hash, target_outpoint_index, actor_id, status, trigger, last_error, sweep_txid, created_at, updated_at, exit_policy_kind, exit_policy_ref FROM unilateral_exit_jobs
 WHERE status NOT IN (4, 5)
 ORDER BY created_at ASC
 `
@@ -65,6 +67,8 @@ func (q *Queries) ListNonTerminalUnilateralExitJobs(ctx context.Context) ([]Unil
 			&i.SweepTxid,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ExitPolicyKind,
+			&i.ExitPolicyRef,
 		); err != nil {
 			return nil, err
 		}
@@ -114,14 +118,17 @@ const UpsertUnilateralExitJob = `-- name: UpsertUnilateralExitJob :exec
 
 INSERT INTO unilateral_exit_jobs (
     target_outpoint_hash, target_outpoint_index, actor_id, status, trigger,
-    last_error, sweep_txid, created_at, updated_at
+    exit_policy_kind, exit_policy_ref, last_error, sweep_txid, created_at,
+    updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 )
 ON CONFLICT (target_outpoint_hash, target_outpoint_index) DO UPDATE SET
     actor_id = EXCLUDED.actor_id,
     status = EXCLUDED.status,
     trigger = EXCLUDED.trigger,
+    exit_policy_kind = EXCLUDED.exit_policy_kind,
+    exit_policy_ref = EXCLUDED.exit_policy_ref,
     last_error = EXCLUDED.last_error,
     sweep_txid = EXCLUDED.sweep_txid,
     updated_at = EXCLUDED.updated_at
@@ -133,6 +140,8 @@ type UpsertUnilateralExitJobParams struct {
 	ActorID             string
 	Status              int32
 	Trigger             int32
+	ExitPolicyKind      string
+	ExitPolicyRef       sql.NullString
 	LastError           sql.NullString
 	SweepTxid           []byte
 	CreatedAt           int64
@@ -147,6 +156,8 @@ func (q *Queries) UpsertUnilateralExitJob(ctx context.Context, arg UpsertUnilate
 		arg.ActorID,
 		arg.Status,
 		arg.Trigger,
+		arg.ExitPolicyKind,
+		arg.ExitPolicyRef,
 		arg.LastError,
 		arg.SweepTxid,
 		arg.CreatedAt,

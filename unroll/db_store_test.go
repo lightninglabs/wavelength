@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestPhaseDBRoundTrip pins the Phase↔UnilateralExitJobStatus mapping so
+// TestPhaseDBRoundTrip pins the Phase<->UnilateralExitJobStatus mapping so
 // schema drift or table-entry reshuffles fail loudly rather than silently
 // collapsing distinct phases onto a single DB status (which previously
 // erased the "sweep built but not yet broadcast" vs "sweep broadcast
@@ -70,7 +70,7 @@ func TestPhaseDBRoundTrip(t *testing.T) {
 	}
 }
 
-// TestTriggerDBRoundTrip pins the StartTrigger↔UnilateralExitJobTrigger
+// TestTriggerDBRoundTrip pins the StartTrigger<->UnilateralExitJobTrigger
 // mapping so FraudSpend rows round-trip through a dedicated constant
 // rather than silently decoding as TriggerManual.
 func TestTriggerDBRoundTrip(t *testing.T) {
@@ -117,6 +117,28 @@ func TestTriggerDBRoundTrip(t *testing.T) {
 			)
 		})
 	}
+}
+
+// TestRegistryExitPolicyTreatsKindAndRefAsPair verifies policy identity
+// preservation handles kind and ref atomically when a registry update refines
+// an existing unilateral-exit DB row.
+func TestRegistryExitPolicyTreatsKindAndRefAsPair(t *testing.T) {
+	t.Parallel()
+
+	existing := &db.UnilateralExitJobRecord{
+		ExitPolicyKind: "vhtlc_claim",
+		ExitPolicyRef:  "recovery-1",
+	}
+
+	kind, ref := registryExitPolicy(RegistryRecord{}, existing)
+	require.Equal(t, ExitPolicyKind("vhtlc_claim"), kind)
+	require.Equal(t, "recovery-1", ref)
+
+	kind, ref = registryExitPolicy(RegistryRecord{
+		ExitPolicyKind: StandardVTXOTimeoutExitPolicyKind,
+	}, existing)
+	require.Equal(t, StandardVTXOTimeoutExitPolicyKind, kind)
+	require.Empty(t, ref)
 }
 
 // triggerName returns a stable subtest name for a StartTrigger.

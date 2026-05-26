@@ -77,8 +77,8 @@ type VHTLCPolicy struct {
 //  4. UnilateralClaim (exit): CSV(delay) + HashLock(preimage) +
 //     Checksig(receiver)
 //  5. UnilateralRefund (exit): CSV(delay) + Multisig([sender, receiver])
-//  6. UnilateralRefundWithoutReceiver (exit): CSV(delay) +
-//     Checksig(sender)
+//  6. UnilateralRefundWithoutReceiver (exit): CSV(delay) + CLTV(locktime)
+//     + Checksig(sender)
 func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 	if err := opts.validate(); err != nil {
 		return nil, err
@@ -162,12 +162,15 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 	}
 
 	// 6. UnilateralRefundWithoutReceiver: CSV(delay) +
-	// Multisig([sender]).
+	// CLTV(locktime) + Multisig([sender]).
 	unilateralRefundWithoutReceiverClosure := &CSV{
 		Lock: refundNoRecvSeq,
-		Inner: &Multisig{
-			Keys: []*btcec.PublicKey{
-				opts.Sender,
+		Inner: &Condition{
+			Predicate: refundPredicate,
+			Inner: &Multisig{
+				Keys: []*btcec.PublicKey{
+					opts.Sender,
+				},
 			},
 		},
 	}
@@ -302,6 +305,9 @@ func (opts *VHTLCOpts) validate() error {
 
 	case opts.PreimageHash == lntypes.Hash{}:
 		return fmt.Errorf("vhtlc: preimage hash must not be zero")
+
+	case opts.RefundLocktime == 0:
+		return fmt.Errorf("vhtlc: refund locktime must be non-zero")
 
 	case opts.UnilateralClaimDelay == 0:
 		return fmt.Errorf("vhtlc: unilateral claim delay must be " +

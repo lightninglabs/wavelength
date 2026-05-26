@@ -3,14 +3,17 @@
 -- name: UpsertUnilateralExitJob :exec
 INSERT INTO unilateral_exit_jobs (
     target_outpoint_hash, target_outpoint_index, actor_id, status, trigger,
-    last_error, sweep_txid, created_at, updated_at
+    exit_policy_kind, exit_policy_ref, last_error, sweep_txid, created_at,
+    updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 )
 ON CONFLICT (target_outpoint_hash, target_outpoint_index) DO UPDATE SET
     actor_id = EXCLUDED.actor_id,
     status = EXCLUDED.status,
     trigger = EXCLUDED.trigger,
+    exit_policy_kind = EXCLUDED.exit_policy_kind,
+    exit_policy_ref = EXCLUDED.exit_policy_ref,
     last_error = EXCLUDED.last_error,
     sweep_txid = EXCLUDED.sweep_txid,
     updated_at = EXCLUDED.updated_at

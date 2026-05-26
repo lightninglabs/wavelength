@@ -966,13 +966,18 @@ func testDescriptor(t *testing.T, outpoint wire.OutPoint,
 	outputKey := txscript.ComputeTaprootOutputKey(
 		tapscript.ControlBlock.InternalKey, tapscript.RootHash,
 	)
-	pkScript, err := txscript.PayToTaprootScript(outputKey)
+	_, err = txscript.PayToTaprootScript(outputKey)
 	require.NoError(t, err)
 
+	// Match the test proof builders' OP_TRUE target output pkScript so
+	// the production-side pkScript invariant in StandardVTXOExitSpendPolicy
+	// is satisfied by the in-memory test fixtures.
 	return &vtxo.Descriptor{
 		Outpoint: outpoint,
 		Amount:   50_000,
-		PkScript: pkScript,
+		PkScript: []byte{
+			txscript.OP_TRUE,
+		},
 		ClientKey: keychain.KeyDescriptor{
 			PubKey: ownerPriv.PubKey(),
 		},
@@ -2275,7 +2280,7 @@ func TestResumeReissuesSweepConfirmation(t *testing.T) {
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	sweepTx, err := buildSweepTx(
 		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{}, proof,
-		desc, 0,
+		desc, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
 	)
 	require.NoError(t, err)
 
@@ -2357,12 +2362,93 @@ func TestBuildSweepTx(t *testing.T) {
 
 	sweepTx, err := buildSweepTx(
 		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{}, proof,
-		desc, 0,
+		desc, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
 	)
 	require.NoError(t, err)
 	require.Len(t, sweepTx.TxIn, 1)
 	require.Len(t, sweepTx.TxOut, 1)
+	require.Equal(t, desc.RelativeExpiry, sweepTx.TxIn[0].Sequence)
 	require.NotEmpty(t, sweepTx.TxIn[0].Witness)
+}
+
+// TestStandardVTXOExitSpendPolicyRejectsNilTarget verifies the policy checks
+// that a materialized output is present before building an exit spend.
+func TestStandardVTXOExitSpendPolicyRejectsNilTarget(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	policy := NewStandardVTXOExitSpendPolicy(desc)
+
+	err := policy.ValidateTarget(nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "target output")
+
+	err = policy.ValidateTarget(&wire.TxOut{Value: 0})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "positive")
+}
+
+// TestStandardVTXOExitSpendPolicyRejectsWrongPkScript verifies the standard
+// policy fails closed when the materialized output's pkScript does not match
+// the descriptor's pkScript. This guards against a misrouted exit-policy kind
+// silently producing a sweep against the wrong taproot output.
+func TestStandardVTXOExitSpendPolicyRejectsWrongPkScript(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	desc.PkScript = []byte{txscript.OP_DROP, 0x01, 0x00}
+	policy := NewStandardVTXOExitSpendPolicy(desc)
+
+	err := policy.ValidateTarget(&wire.TxOut{
+		Value:    1_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not match descriptor pkscript")
+
+	require.NoError(
+		t,
+		policy.ValidateTarget(
+			&wire.TxOut{
+				Value:    1_000,
+				PkScript: desc.PkScript,
+			},
+		),
+	)
+}
+
+// TestStandardExitSpendPolicyResolver verifies the default resolver maps the
+// durable standard policy identity back to the standard policy implementation.
+func TestStandardExitSpendPolicyResolver(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	resolver := standardExitSpendPolicyResolver{}
+
+	policy, err := resolver.ResolveExitSpendPolicy(
+		t.Context(), ExitSpendPolicyRequest{
+			Kind:               StandardVTXOTimeoutExitPolicyKind,
+			StandardDescriptor: desc,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, StandardVTXOTimeoutExitPolicyKind, policy.Kind())
+	require.Equal(t, desc.RelativeExpiry, policy.CSVDelay())
+
+	_, err = resolver.ResolveExitSpendPolicy(
+		t.Context(), ExitSpendPolicyRequest{
+			Kind:               StandardVTXOTimeoutExitPolicyKind,
+			Ref:                "non-empty",
+			StandardDescriptor: desc,
+		},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ref must be empty")
+
+	_, err = (standardExitSpendPolicyResolver{}).ResolveExitSpendPolicy(
+		t.Context(), ExitSpendPolicyRequest{
+			Kind: "unknown_policy",
+		},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown exit policy kind")
 }
 
 // TestBuildSweepTxFallsBackWithoutFeeEstimate verifies the sweep builder uses
@@ -2374,7 +2460,7 @@ func TestBuildSweepTxFallsBackWithoutFeeEstimate(t *testing.T) {
 	sweepTx, err := buildSweepTx(
 		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{
 			feeErr: fmt.Errorf("no fee estimates available"),
-		}, proof, desc, 0,
+		}, proof, desc, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
 	)
 	require.NoError(t, err)
 

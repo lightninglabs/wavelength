@@ -8,10 +8,12 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightninglabs/darepo-client/vtxo"
 )
@@ -485,6 +487,18 @@ func extractFinalizedTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
 		return tx, nil
 	}
 
+	tx, err = extractOORWitnessedTx(cloned)
+	if err == nil {
+		return tx, nil
+	}
+
+	// Generic PSBT finalization is the last resort. Older fallback paths
+	// that synthesized witnesses by hand (picking the first leaf, raw
+	// signature slice order, no condition items) are gone: they were a
+	// foot-gun that produced witnesses that would fail consensus
+	// validation. If a PSBT cannot be finalized via the standard
+	// finalizer or the OOR-aware extractor, the caller must surface the
+	// gap rather than fall back to an unverified witness shape.
 	err = psbt.MaybeFinalizeAll(cloned)
 	if err == nil {
 		tx, extractErr = psbt.Extract(cloned)
@@ -493,62 +507,112 @@ func extractFinalizedTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
 		}
 	}
 
-	for i := range cloned.Inputs {
-		if len(cloned.Inputs[i].FinalScriptWitness) > 0 {
-			continue
-		}
-
-		if err := psbt.Finalize(cloned, i); err == nil {
-			continue
-		}
-
-		err := finalizeTaprootScriptSpend(
-			&cloned.Inputs[i],
-		)
-		if err != nil {
-			return nil, fmt.Errorf("%w: finalize taproot script "+
-				"spend input %d: %v", ErrUnrollProofInvalid, i,
-				err)
-		}
-	}
-
-	tx, extractErr = psbt.Extract(cloned)
-	if extractErr == nil {
-		return tx, nil
-	}
-
 	return nil, fmt.Errorf("%w: psbt not fully finalized (last extract "+
 		"error: %v)", ErrUnrollProofInvalid, extractErr)
 }
 
-// finalizeTaprootScriptSpend constructs FinalScriptWitness from PSBT taproot
-// script-spend signature fields.
-func finalizeTaprootScriptSpend(in *psbt.PInput) error {
-	if len(in.TaprootScriptSpendSig) == 0 {
-		return fmt.Errorf("no taproot script spend signatures")
+// extractOORWitnessedTx reconstructs the exact wire transaction for OOR PSBTs
+// that carry taproot signature fields plus Ark condition-witness metadata.
+// Generic PSBT finalization does not know how to place condition witness items
+// such as vHTLC preimages, so recovery proof extraction must share the
+// OOR validator's witness builder before falling back to generic finalization.
+//
+// When every input carries a WitnessUtxo, the reconstructed transaction is
+// also script-validated via txscript.Engine before being returned. The
+// verification step is defense in depth: if a malformed PSBT survives shape
+// checks but produces a witness that would fail consensus, the assembler
+// surfaces the gap immediately instead of letting an unbroadcastable artifact
+// flow downstream. Inputs without WitnessUtxo (typical for synthetic test
+// PSBTs) skip verification since the engine has no prevout to evaluate
+// against.
+func extractOORWitnessedTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
+	if pkt == nil || pkt.UnsignedTx == nil {
+		return nil, fmt.Errorf("psbt unsigned transaction missing")
 	}
 
-	if len(in.TaprootLeafScript) == 0 {
-		return fmt.Errorf("no taproot leaf scripts")
+	if len(pkt.Inputs) != len(pkt.UnsignedTx.TxIn) {
+		return nil, fmt.Errorf("psbt input count mismatch")
 	}
 
-	leaf := in.TaprootLeafScript[0]
-	var witnessItems [][]byte
-	for _, sig := range in.TaprootScriptSpendSig {
-		witnessItems = append(witnessItems, sig.Signature)
+	if len(pkt.UnsignedTx.TxIn) == 0 {
+		return nil, fmt.Errorf("psbt must declare at least one input")
 	}
 
-	witnessItems = append(witnessItems, leaf.Script)
-	witnessItems = append(witnessItems, leaf.ControlBlock)
+	tx := pkt.UnsignedTx.Copy()
+	prevOuts := make(map[wire.OutPoint]*wire.TxOut, len(tx.TxIn))
+	verifyAll := true
+	for i := range pkt.Inputs {
+		in := pkt.Inputs[i]
+		if !hasExplicitWitnessMaterial(in) {
+			return nil, fmt.Errorf("input %d missing explicit "+
+				"witness material", i)
+		}
 
-	witness := wire.TxWitness(witnessItems)
-	var buf bytes.Buffer
-	if err := psbt.WriteTxWitness(&buf, witness); err != nil {
-		return fmt.Errorf("encode witness: %w", err)
+		witness, err := oortx.BuildTaprootWitness(in)
+		if err != nil {
+			return nil, fmt.Errorf("build input %d witness: %w", i,
+				err)
+		}
+
+		tx.TxIn[i].Witness = witness
+
+		if in.WitnessUtxo == nil {
+			verifyAll = false
+			continue
+		}
+
+		prevOuts[tx.TxIn[i].PreviousOutPoint] = in.WitnessUtxo
 	}
-	in.FinalScriptWitness = buf.Bytes()
+
+	if verifyAll {
+		if err := verifyTxWitnesses(tx, prevOuts); err != nil {
+			return nil, err
+		}
+	}
+
+	return tx, nil
+}
+
+// verifyTxWitnesses runs txscript.Engine over every input of tx using the
+// supplied prevout map. Returns the first script-validation error so callers
+// can fail fast on an unbroadcastable witness shape.
+func verifyTxWitnesses(tx *wire.MsgTx,
+	prevOuts map[wire.OutPoint]*wire.TxOut) error {
+
+	prevFetcher := txscript.NewMultiPrevOutFetcher(prevOuts)
+	sigHashes := txscript.NewTxSigHashes(tx, prevFetcher)
+
+	for i, txIn := range tx.TxIn {
+		prevOut := prevFetcher.FetchPrevOutput(txIn.PreviousOutPoint)
+		if prevOut == nil {
+			return fmt.Errorf("input %d missing prevout", i)
+		}
+
+		engine, err := txscript.NewEngine(
+			prevOut.PkScript, tx, i, txscript.StandardVerifyFlags,
+			nil, sigHashes, prevOut.Value, prevFetcher,
+		)
+		if err != nil {
+			return fmt.Errorf("input %d: create script engine: %w",
+				i, err)
+		}
+
+		if err := engine.Execute(); err != nil {
+			return fmt.Errorf("input %d: script validation "+
+				"failed: %w", i, err)
+		}
+	}
 
 	return nil
+}
+
+// hasExplicitWitnessMaterial reports whether the PSBT input carries enough
+// concrete witness data to reconstruct a spendable wire input without generic
+// finalization.
+func hasExplicitWitnessMaterial(in psbt.PInput) bool {
+	return len(in.FinalScriptWitness) > 0 ||
+		len(in.TaprootKeySpendSig) > 0 ||
+		len(in.TaprootScriptSpendSig) > 0
 }
 
 // proofTxFromTreeNode prefers the signed tree transaction when available, but

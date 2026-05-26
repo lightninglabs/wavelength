@@ -512,8 +512,13 @@ type SubmitPackageSuccess struct {
 	// co_signed_checkpoint_psbts are serialized server-co-signed checkpoint
 	// PSBTs.
 	CoSignedCheckpointPsbts [][]byte `protobuf:"bytes,2,rep,name=co_signed_checkpoint_psbts,json=coSignedCheckpointPsbts,proto3" json:"co_signed_checkpoint_psbts,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// co_signed_ark_psbt is the serialized Ark PSBT after the server has
+	// attached its operator-side signature material. Clients persist this exact
+	// PSBT so unilateral recovery can reconstruct a spendable OOR lineage if
+	// the cooperative path is unavailable later.
+	CoSignedArkPsbt []byte `protobuf:"bytes,3,opt,name=co_signed_ark_psbt,json=coSignedArkPsbt,proto3" json:"co_signed_ark_psbt,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *SubmitPackageSuccess) Reset() {
@@ -556,6 +561,13 @@ func (x *SubmitPackageSuccess) GetSessionId() []byte {
 func (x *SubmitPackageSuccess) GetCoSignedCheckpointPsbts() [][]byte {
 	if x != nil {
 		return x.CoSignedCheckpointPsbts
+	}
+	return nil
+}
+
+func (x *SubmitPackageSuccess) GetCoSignedArkPsbt() []byte {
+	if x != nil {
+		return x.CoSignedArkPsbt
 	}
 	return nil
 }
@@ -692,11 +704,12 @@ const file_oorwire_proto_rawDesc = "" +
 	"\x15SubmitPackageResponse\x127\n" +
 	"\asuccess\x18\x01 \x01(\v2\x1b.oorpb.SubmitPackageSuccessH\x00R\asuccess\x12=\n" +
 	"\trejection\x18\x02 \x01(\v2\x1d.oorpb.SubmitPackageRejectionH\x00R\trejectionB\b\n" +
-	"\x06result\"r\n" +
+	"\x06result\"\x9f\x01\n" +
 	"\x14SubmitPackageSuccess\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\fR\tsessionId\x12;\n" +
-	"\x1aco_signed_checkpoint_psbts\x18\x02 \x03(\fR\x17coSignedCheckpointPsbts\"m\n" +
+	"\x1aco_signed_checkpoint_psbts\x18\x02 \x03(\fR\x17coSignedCheckpointPsbts\x12+\n" +
+	"\x12co_signed_ark_psbt\x18\x03 \x01(\fR\x0fcoSignedArkPsbt\"m\n" +
 	"\x16FinalizePackageRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\fR\tsessionId\x124\n" +

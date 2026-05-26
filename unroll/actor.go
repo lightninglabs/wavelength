@@ -46,6 +46,11 @@ type Config struct {
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	]
 
+	// ExitSpendPolicyResolver reconstructs the exit policy for the durable
+	// kind/ref stored on the unroll job. If nil, the actor uses the
+	// built-in standard VTXO timeout resolver.
+	ExitSpendPolicyResolver ExitSpendPolicyResolver
+
 	// Wallet provides sweep destination derivation and
 	// timeout-path signing.
 	Wallet SweepWallet
@@ -173,8 +178,10 @@ func (b *behavior) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
 	switch m := msg.(type) {
 	case *StartUnrollRequest:
 		return b.handleEvent(ctx, &StartEvent{
-			Height:  m.Height,
-			Trigger: m.Trigger,
+			Height:         m.Height,
+			Trigger:        m.Trigger,
+			ExitPolicyKind: m.ExitPolicyKind,
+			ExitPolicyRef:  m.ExitPolicyRef,
 		})
 
 	case *ResumeUnrollRequest:
@@ -339,17 +346,119 @@ func (b *behavior) startSweep(ctx context.Context) error {
 	// prior attempt inside this actor lifetime) so we converge on a
 	// single sweep txid / wallet pkScript across retries.
 	if b.sweepTx == nil {
-		sweepTx, err := buildSweepTx(
-			ctx, b.cfg.Wallet, b.cfg.ChainSource, b.proof, b.desc,
-			b.cfg.MaxSweepFeeRateSatPerVByte,
-		)
+		policy, err := b.resolveExitSpendPolicy(ctx)
 		if err != nil {
 			return b.driveEvent(ctx, &SweepBuildFailedEvent{
 				Reason: err.Error(),
 			})
 		}
 
+		b.log.InfoS(ctx, "Building unroll exit spend",
+			slog.String(
+				"target_outpoint",
+				b.cfg.TargetOutpoint.String(),
+			),
+			slog.String(
+				"exit_policy_kind", policy.Kind().String(),
+			),
+			slog.Uint64("csv_delay", uint64(policy.CSVDelay())),
+		)
+
+		// Defense in depth around the planner: when the policy
+		// declares a CSV delay larger than the wrapping proof's
+		// descriptor delay, the planner would have signalled
+		// NeedSweep too early and the resulting BIP-68 sequence
+		// would be rejected as non-final. Surface this as a
+		// permanent misconfiguration so the retry budget marks the
+		// job Failed instead of looping forever broadcasting an
+		// invalid tx.
+		if b.proof != nil &&
+			policy.CSVDelay() > b.proof.CSVDelay() {
+			return b.driveEvent(ctx, &SweepBuildFailedEvent{
+				Reason: fmt.Sprintf("policy csv delay %d "+
+					"exceeds proof csv delay %d",
+					policy.CSVDelay(),
+					b.proof.CSVDelay()),
+			})
+		}
+
+		// Defer the build entirely when the policy requires an
+		// absolute locktime the chain has not yet reached. We do
+		// NOT drive SweepBuildFailedEvent here: the next
+		// HeightObservedMsg re-evaluates the FSM, re-emits
+		// RequestSweepBuild, and this branch will pass once
+		// height catches up. Returning nil keeps the FSM in
+		// AwaitingSweepBroadcast without burning a retry attempt
+		// or a wallet pkScript that the not-yet-final tx would
+		// otherwise consume.
+		if locktime := policy.RequiredLockTime(); locktime > 0 &&
+			uint32(b.currentHeight()) < locktime {
+
+			b.log.DebugS(ctx,
+				"Deferring exit spend build: locktime "+
+					"not matured",
+				slog.String(
+					"target_outpoint",
+					b.cfg.TargetOutpoint.String(),
+				),
+				slog.Uint64(
+					"required_locktime", uint64(locktime),
+				),
+				slog.Int64(
+					"current_height",
+					int64(
+						b.currentHeight(),
+					),
+				),
+			)
+
+			return nil
+		}
+
+		sweepTx, err := buildSweepTx(
+			ctx, b.cfg.Wallet, b.cfg.ChainSource, b.proof, b.desc,
+			b.cfg.MaxSweepFeeRateSatPerVByte, b.currentHeight(),
+			policy,
+		)
+		if err != nil {
+			// ErrExitSpendNotMatured can still surface here as
+			// defense in depth if a future policy path bypasses
+			// the early gate above. Treat it the same way: stall
+			// without burning the retry budget so the next height
+			// observation triggers a clean retry.
+			if errors.Is(err, ErrExitSpendNotMatured) {
+				b.log.DebugS(ctx,
+					"Deferring exit spend build: "+
+						"policy reports not matured",
+					slog.String(
+						"target_outpoint",
+						b.cfg.TargetOutpoint.
+							String(),
+					),
+					slog.String("err", err.Error()),
+				)
+
+				return nil
+			}
+
+			return b.driveEvent(ctx, &SweepBuildFailedEvent{
+				Reason: err.Error(),
+			})
+		}
+
 		b.sweepTx = sweepTx
+	} else {
+		sweepTxid := b.sweepTx.TxHash()
+		b.log.DebugS(ctx, "Reusing persisted unroll exit spend",
+			slog.String(
+				"target_outpoint",
+				b.cfg.TargetOutpoint.String(),
+			),
+			slog.String(
+				"exit_policy_kind", b.exitPolicyKind().String(),
+			),
+			slog.String("txid", sweepTxid.String()),
+		)
 	}
 
 	// Persist the built sweep before asking txconfirm to broadcast, so
@@ -365,6 +474,15 @@ func (b *behavior) startSweep(ctx context.Context) error {
 	}
 
 	sweepLabel := "unroll-sweep-" + b.cfg.TargetOutpoint.String()
+	sweepTxid := b.sweepTx.TxHash()
+
+	b.log.InfoS(ctx, "Submitting unroll exit spend",
+		slog.String("target_outpoint", b.cfg.TargetOutpoint.String()),
+		slog.String(
+			"exit_policy_kind", b.exitPolicyKind().String(),
+		),
+		slog.String("txid", sweepTxid.String()),
+	)
 
 	_, err = b.cfg.TxConfirmRef.Ask(ctx, &txconfirm.EnsureConfirmedReq{
 		Tx:                   b.sweepTx,
@@ -376,9 +494,50 @@ func (b *behavior) startSweep(ctx context.Context) error {
 		return err
 	}
 
-	sweepTxid := b.sweepTx.TxHash()
-
 	return b.driveEvent(ctx, &SweepBroadcastedEvent{Txid: sweepTxid})
+}
+
+// exitPolicyKind returns the durable policy kind for the current job.
+func (b *behavior) exitPolicyKind() ExitPolicyKind {
+	if b.pending == nil {
+		return StandardVTXOTimeoutExitPolicyKind
+	}
+
+	return exitPolicyKind(b.pending.ExitPolicyKind)
+}
+
+// exitPolicyRef returns the durable policy ref for the current job.
+func (b *behavior) exitPolicyRef() string {
+	if b.pending == nil {
+		return ""
+	}
+
+	return b.pending.ExitPolicyRef
+}
+
+// currentHeight returns the last persisted height for policy construction.
+func (b *behavior) currentHeight() int32 {
+	if b.pending == nil {
+		return 0
+	}
+
+	return b.pending.Height
+}
+
+// resolveExitSpendPolicy reconstructs the exit policy for this job.
+func (b *behavior) resolveExitSpendPolicy(ctx context.Context) (ExitSpendPolicy,
+	error) {
+
+	resolver := b.cfg.ExitSpendPolicyResolver
+	if resolver == nil {
+		resolver = standardExitSpendPolicyResolver{}
+	}
+
+	return resolver.ResolveExitSpendPolicy(ctx, ExitSpendPolicyRequest{
+		Kind:               b.exitPolicyKind(),
+		Ref:                b.exitPolicyRef(),
+		StandardDescriptor: b.desc,
+	})
 }
 
 // safeTxOutPkScript returns a defensive copy of tx.TxOut[index].PkScript.
@@ -524,12 +683,14 @@ func (b *behavior) stateResponse() *GetStateResp {
 	job := stateJob(state)
 	sweepTxid := effectiveSweepTxid(job.PlannerState, b.sweepTx)
 	resp := &GetStateResp{
-		Started:      !isIdleState(state),
-		Trigger:      stateTrigger(state),
-		Height:       stateHeight(state),
-		Phase:        phaseFromState(state),
-		PlannerState: copyPlannerState(job.PlannerState),
-		FailReason:   job.FailReason,
+		Started:        !isIdleState(state),
+		Trigger:        stateTrigger(state),
+		ExitPolicyKind: exitPolicyKind(job.ExitPolicyKind),
+		ExitPolicyRef:  job.ExitPolicyRef,
+		Height:         stateHeight(state),
+		Phase:          phaseFromState(state),
+		PlannerState:   copyPlannerState(job.PlannerState),
+		FailReason:     job.FailReason,
 	}
 
 	if sweepTxid != nil {

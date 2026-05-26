@@ -240,6 +240,8 @@ type UnilateralExitJob struct {
 	SweepTxid           []byte
 	CreatedAt           int64
 	UpdatedAt           int64
+	ExitPolicyKind      string
+	ExitPolicyRef       sql.NullString
 }
 
 type UtxoClassification struct {
@@ -248,6 +250,47 @@ type UtxoClassification struct {
 
 type UtxoEvent struct {
 	Event string
+}
+
+type VhtlcRecoveryJob struct {
+	ID                                   string
+	RequestID                            string
+	SwapID                               []byte
+	Direction                            string
+	Action                               string
+	State                                string
+	VtxoTxid                             []byte
+	VtxoVout                             int32
+	VtxoAmountSat                        int64
+	SenderPubkey                         []byte
+	ReceiverPubkey                       []byte
+	ServerPubkey                         []byte
+	RefundLocktime                       int32
+	UnilateralClaimDelay                 int32
+	UnilateralRefundDelay                int32
+	UnilateralRefundWithoutReceiverDelay int32
+	PreimageHash                         []byte
+	ClaimPreimage                        []byte
+	SignerKeyFamily                      int32
+	SignerKeyIndex                       int32
+	DestinationScript                    []byte
+	MaxFeeRateSatPerKw                   int32
+	UnrollTargetOutpointHash             []byte
+	UnrollTargetOutpointIndex            sql.NullInt32
+	ExitPolicyKind                       string
+	ExitTx                               []byte
+	ExitTxid                             []byte
+	CooperativeTxid                      []byte
+	LastError                            sql.NullString
+	CancelReason                         sql.NullString
+	CreatedAt                            int64
+	UpdatedAt                            int64
+	ArmedAt                              sql.NullInt64
+	EscalatedAt                          sql.NullInt64
+	TargetDetectedAt                     sql.NullInt64
+	ExitTxBuiltAt                        sql.NullInt64
+	ExitTxBroadcastAt                    sql.NullInt64
+	TerminalAt                           sql.NullInt64
 }
 
 type Vtxo struct {

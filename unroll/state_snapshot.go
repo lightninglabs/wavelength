@@ -13,8 +13,9 @@ import (
 // checkpoint shape.
 func checkpointFromState(state State, sweepTx *wire.MsgTx) *actorCheckpoint {
 	checkpoint := &actorCheckpoint{
-		Version: checkpointVersion,
-		SweepTx: copyTx(sweepTx),
+		Version:        checkpointVersion,
+		ExitPolicyKind: StandardVTXOTimeoutExitPolicyKind,
+		SweepTx:        copyTx(sweepTx),
 	}
 
 	if state == nil || isIdleState(state) {
@@ -25,6 +26,8 @@ func checkpointFromState(state State, sweepTx *wire.MsgTx) *actorCheckpoint {
 	checkpoint.Height = job.Height
 	checkpoint.Started = true
 	checkpoint.Trigger = job.Trigger
+	checkpoint.ExitPolicyKind = exitPolicyKind(job.ExitPolicyKind)
+	checkpoint.ExitPolicyRef = job.ExitPolicyRef
 	checkpoint.State = copyPlannerState(job.PlannerState)
 	checkpoint.DeferredCheckpoints = copyDeferredCheckpoints(
 		job.DeferredCheckpoints,
@@ -74,6 +77,8 @@ func stateFromCheckpoint(checkpoint *actorCheckpoint) State {
 	job := &JobState{
 		Height:              checkpoint.Height,
 		Trigger:             checkpoint.Trigger,
+		ExitPolicyKind:      exitPolicyKind(checkpoint.ExitPolicyKind),
+		ExitPolicyRef:       checkpoint.ExitPolicyRef,
 		PlannerState:        copyPlannerState(checkpoint.State),
 		DeferredCheckpoints: deferred,
 		FailReason:          checkpoint.Fail,

@@ -15,7 +15,7 @@ import (
 //
 // Two enum translations happen here and are covered by round-trip tests:
 //
-//   - Phase ↔ DB status. The two sweep-related phases
+//   - Phase <-> DB status. The two sweep-related phases
 //     (PhaseSweepBroadcast, PhaseSweepConfirmation) deliberately map to
 //     two distinct DB statuses (SweepBroadcasting, Sweeping) so the
 //     operator-visible lifecycle does not collapse "sweep built but
@@ -24,10 +24,10 @@ import (
 //     existing rows written against the older numeric layout keep
 //     decoding to the same Phase they were originally written as.
 //
-//   - Trigger ↔ DB trigger. TriggerFraudSpend round-trips through
+//   - Trigger <-> DB trigger. TriggerFraudSpend round-trips through
 //     its own DB constant; earlier revisions silently downgraded it to
 //     TriggerManual, losing the "target was externally spent" signal
-//     from the control plane.
+//     from the control plane entirely.
 //
 // Round-trip tests in db_store_test.go pin these mappings.
 
@@ -46,11 +46,18 @@ func (s *DBRegistryStore) UpsertRecord(ctx context.Context,
 		return fmt.Errorf("unilateral-exit store must be provided")
 	}
 
+	policyKind, policyRef, err := s.registryExitPolicy(ctx, record)
+	if err != nil {
+		return err
+	}
+
 	return s.UEStore.UpsertJob(ctx, db.UnilateralExitJobRecord{
 		TargetOutpoint: record.TargetOutpoint,
 		ActorID:        record.ActorID,
 		Status:         statusForPhase(record.Phase),
 		Trigger:        triggerToDB(record.Trigger),
+		ExitPolicyKind: string(policyKind),
+		ExitPolicyRef:  policyRef,
 		LastError:      record.FailReason,
 		SweepTxid:      sweepTxidBytes(record.SweepTxid),
 	})
@@ -123,10 +130,60 @@ func recordFromDB(job db.UnilateralExitJobRecord) RegistryRecord {
 		TargetOutpoint: job.TargetOutpoint,
 		ActorID:        job.ActorID,
 		Trigger:        triggerFromDB(job.Trigger),
-		Phase:          phaseFromDB(job.Status),
-		FailReason:     job.LastError,
-		SweepTxid:      sweepTxidFromBytes(job.SweepTxid),
+		ExitPolicyKind: exitPolicyKind(
+			ExitPolicyKind(job.ExitPolicyKind),
+		),
+		ExitPolicyRef: job.ExitPolicyRef,
+		Phase:         phaseFromDB(job.Status),
+		FailReason:    job.LastError,
+		SweepTxid:     sweepTxidFromBytes(job.SweepTxid),
 	}
+}
+
+// registryExitPolicy chooses the policy identity to write when the registry
+// refines an existing DB row. Policy kind and ref are treated as one durable
+// identity pair: a record with no kind preserves both existing values, while a
+// record with any kind replaces both values so stale custom refs cannot attach
+// to a new standard policy.
+func (s *DBRegistryStore) registryExitPolicy(ctx context.Context,
+	record RegistryRecord) (ExitPolicyKind, string, error) {
+
+	if record.ExitPolicyKind != "" {
+		kind := exitPolicyKind(record.ExitPolicyKind)
+
+		return kind, record.ExitPolicyRef, nil
+	}
+
+	existing, err := s.UEStore.GetJob(ctx, record.TargetOutpoint)
+	switch {
+	case err == nil && existing != nil:
+		return exitPolicyKind(
+				ExitPolicyKind(existing.ExitPolicyKind),
+			),
+			existing.ExitPolicyRef, nil
+
+	case errors.Is(err, db.ErrUnilateralExitJobNotFound):
+		return StandardVTXOTimeoutExitPolicyKind, "", nil
+
+	case err != nil:
+		return "", "", err
+
+	default:
+		return StandardVTXOTimeoutExitPolicyKind, "", nil
+	}
+}
+
+// registryExitPolicy chooses the policy identity for an in-memory refinement
+// of an existing unilateral-exit DB row.
+func registryExitPolicy(record RegistryRecord,
+	existing *db.UnilateralExitJobRecord) (ExitPolicyKind, string) {
+
+	if record.ExitPolicyKind == "" && existing != nil {
+		return exitPolicyKind(ExitPolicyKind(existing.ExitPolicyKind)),
+			existing.ExitPolicyRef
+	}
+
+	return exitPolicyKind(record.ExitPolicyKind), record.ExitPolicyRef
 }
 
 // statusForPhase maps a registry phase into the legacy job status enum.

@@ -52,6 +52,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   last so existing rows at 3 keep decoding correctly.
 - `UnilateralExitJobTrigger` — `Manual(0)`, `CriticalExpiry(1)`,
   `Restart(2)`, `FraudSpend(3)`.
+- `VHTLCRecoveryStoreDB` — durable vHTLC recovery store. Persists
+  armed and escalated recovery jobs with request-id idempotency,
+  explicit vHTLC script parameters, fee cap, unroll target linkage,
+  exact exit transaction artifacts, and terminal/cancellation state.
 - `ancestryTreeCache` — process-local LRU decode cache (≤ 4096
   entries) for finalized VTXO ancestry trees (immutable once
   committed). `groupAncestryRowsWithCache` /
@@ -63,7 +67,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 14` — current schema version.
+- `LatestMigrationVersion = 16` — current schema version.
 
 ## Relationships
 
@@ -99,9 +103,25 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   deletion, preserving append-only ordering.
 - Per-subsystem logging via the instance logger, not the global
   package logger.
+- `unilateral_exit_jobs.exit_policy_kind` and `exit_policy_ref`
+  persist the durable final spend policy identity. Standard timeout
+  jobs use `standard_vtxo_timeout` with an empty ref; policy-specific
+  jobs store their registered kind plus the domain-owned durable ref
+  needed to reconstruct the same spend policy after restart.
 
 ### Migration notes
 
+- `000016_unilateral_exit_policy` — adds `exit_policy_kind`
+  (NOT NULL, default `'standard_vtxo_timeout'`) and nullable
+  `exit_policy_ref` to `unilateral_exit_jobs` via ALTER TABLE so
+  policy-specific unroll jobs restart with the same final spend policy.
+  Backfills legacy rows via the column default.
+- `000015_vhtlc_recovery_jobs` — vHTLC recovery control-plane rows
+  with named script parameters, request-id idempotency, SQL-visible
+  timestamps, and an optional `claim_preimage` BLOB reserved for
+  cross-process claim recovery. Initial arm never stores a raw preimage;
+  only the execution-layer escalation path may populate it, and it must
+  never be logged.
 - `000014_ledger_chain_fields` — first-class `chain_txid` / `chain_vout`
   / `confirmation_height` columns on `ledger_entries` so history reads
   don't decode wallet UTXO idempotency keys per query.

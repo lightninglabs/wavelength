@@ -172,8 +172,17 @@ Leaf 1 (collab): Multisig{sender, receiver, server}               ← server=ope
 Leaf 2 (collab): Condition{CLTV, Multisig{sender, server}}        ← server=operator ✓
 Leaf 3 (exit):   CSV{d1, Condition{hashlock, Multisig{receiver}}} ← no operator, CSV ✓
 Leaf 4 (exit):   CSV{d2, Multisig{sender, receiver}}              ← no operator, CSV ✓
-Leaf 5 (exit):   CSV{d3, Multisig{sender}}                        ← no operator, CSV ✓
+Leaf 5 (exit):   CSV{d3, Condition{CLTV(refundLocktime),
+                              Multisig{sender}}}                  ← no operator, CSV ✓, CLTV ✓
 ```
+
+Leaf 5 (sender unilateral refund-without-receiver) is gated on both the
+local CSV delay *and* the invoice/vHTLC CLTV. Reviewers should reject any
+out-of-tree change that drops the CLTV gate: without it, a sender can race
+an in-flight Lightning payment by exiting on chain before the receiver's
+HTLC has expired, double-spending funds the receiver has already accepted
+off-chain. This matches the swapdk-server expectation that the sender's
+unilateral refund leaf is reachable only after the invoice expiry.
 
 ---
 

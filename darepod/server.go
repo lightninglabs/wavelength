@@ -2351,7 +2351,7 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 					"SubmitPackageResponse, got %T", p)
 			}
 
-			sessionID, checkpoints, err :=
+			sessionID, ark, checkpoints, err :=
 				oorpb.ParseSubmitPackageResponse(resp)
 
 			// A typed server-side rejection (e.g.
@@ -2390,6 +2390,7 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 					SessionID: oor.SessionID(
 						sessionID,
 					),
+					ArkPSBT:                 ark,
 					CoSignedCheckpointPSBTs: checkpoints,
 				},
 			}, nil

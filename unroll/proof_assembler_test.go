@@ -1,9 +1,16 @@
 package unroll
 
 import (
+	"bytes"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/stretchr/testify/require"
@@ -93,6 +100,96 @@ func TestValidateProofDescriptorRejectsMalformedAncestry(t *testing.T) {
 			require.Contains(t, err.Error(), tc.wantReason)
 		})
 	}
+}
+
+// TestExtractFinalizedTxPreservesOORConditionWitness verifies OOR package
+// extraction reconstructs Ark condition witness metadata before falling back to
+// generic PSBT finalization. vHTLC claim packages rely on this path to carry
+// the preimage into the on-chain proof transaction.
+func TestExtractFinalizedTxPreservesOORConditionWitness(t *testing.T) {
+	t.Parallel()
+
+	receiverKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	leafScript, err := (&arkscript.Multisig{
+		Keys: []*btcec.PublicKey{
+			receiverKey.PubKey(),
+			serverKey.PubKey(),
+		},
+	}).Script()
+	require.NoError(t, err)
+
+	controlBlock := bytes.Repeat([]byte{0x01}, 33)
+	leafHash := txscript.NewBaseTapLeaf(leafScript).TapHash()
+	receiverSig := bytes.Repeat([]byte{0x02}, 64)
+	serverSig := bytes.Repeat([]byte{0x03}, 64)
+	preimage := bytes.Repeat([]byte{0x04}, 32)
+
+	rawTx := wire.NewMsgTx(2)
+	rawTx.AddTxIn(
+		wire.NewTxIn(
+			&wire.OutPoint{
+				Hash:  chainhash.Hash{1},
+				Index: 0,
+			},
+			nil,
+			nil,
+		),
+	)
+	rawTx.AddTxOut(&wire.TxOut{
+		Value:    1000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+
+	pkt, err := psbt.NewFromUnsignedTx(rawTx)
+	require.NoError(t, err)
+
+	// Omit WitnessUtxo: the synthetic OP_TRUE prevout would not be a
+	// valid taproot pkScript, so the assembler's txscript.Engine
+	// verification cannot apply here. Production OOR PSBTs ship a real
+	// taproot WitnessUtxo and exercise the verification path; this test
+	// targets the witness-stack assembly behaviour specifically.
+	pkt.Inputs[0] = psbt.PInput{
+		TaprootScriptSpendSig: []*psbt.TaprootScriptSpendSig{
+			{
+				XOnlyPubKey: schnorr.SerializePubKey(
+					receiverKey.PubKey(),
+				),
+				LeafHash:  leafHash[:],
+				Signature: receiverSig,
+			},
+			{
+				XOnlyPubKey: schnorr.SerializePubKey(
+					serverKey.PubKey(),
+				),
+				LeafHash:  leafHash[:],
+				Signature: serverSig,
+			},
+		},
+		TaprootLeafScript: []*psbt.TaprootTapLeafScript{{
+			ControlBlock: controlBlock,
+			Script:       leafScript,
+			LeafVersion:  txscript.BaseLeafVersion,
+		}},
+	}
+
+	err = arkscript.PutConditionWitnessPSBTInput(
+		pkt, 0, [][]byte{preimage},
+	)
+	require.NoError(t, err)
+
+	tx, err := extractFinalizedTx(pkt)
+	require.NoError(t, err)
+	require.Len(t, tx.TxIn[0].Witness, 5)
+	require.Equal(t, serverSig, tx.TxIn[0].Witness[0])
+	require.Equal(t, receiverSig, tx.TxIn[0].Witness[1])
+	require.Equal(t, preimage, tx.TxIn[0].Witness[2])
+	require.Equal(t, leafScript, tx.TxIn[0].Witness[3])
+	require.Equal(t, controlBlock, tx.TxIn[0].Witness[4])
 }
 
 // TestValidateProofDescriptorAcceptsZeroTreeDepth is the regression

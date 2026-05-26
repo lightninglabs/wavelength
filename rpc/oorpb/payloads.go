@@ -145,8 +145,19 @@ func ParseSubmitPackageRequest(req *SubmitPackageRequest) (*psbt.Packet,
 
 // NewSubmitPackageResponse builds a typed proto response for SubmitPackage's
 // success branch. Operator-side rejections use NewSubmitPackageRejection.
+//
+// coSignedArk is the exact Ark PSBT after the operator attaches its signature
+// material. The client must persist this artifact rather than rebuilding it
+// from local state so later unilateral OOR recovery can broadcast the proof
+// transaction without asking the operator for another signature.
 func NewSubmitPackageResponse(sessionID chainhash.Hash,
+	coSignedArk *psbt.Packet,
 	coSignedCheckpoints []*psbt.Packet) (*SubmitPackageResponse, error) {
+
+	arkRaw, err := psbtutil.Serialize(coSignedArk)
+	if err != nil {
+		return nil, err
+	}
 
 	checkpointRaw, err := encodePSBTSlice(coSignedCheckpoints)
 	if err != nil {
@@ -158,6 +169,7 @@ func NewSubmitPackageResponse(sessionID chainhash.Hash,
 			Success: &SubmitPackageSuccess{
 				SessionId:               sessionID.CloneBytes(),
 				CoSignedCheckpointPsbts: checkpointRaw,
+				CoSignedArkPsbt:         arkRaw,
 			},
 		},
 	}, nil
@@ -189,37 +201,58 @@ func NewSubmitPackageRejection(sessionID chainhash.Hash, code OORRejectCode,
 // carries a rejection branch; callers can recover the typed code and
 // reason via errors.As.
 func ParseSubmitPackageResponse(resp *SubmitPackageResponse) (chainhash.Hash,
-	[]*psbt.Packet, error) {
+	*psbt.Packet, []*psbt.Packet, error) {
 
 	if resp == nil {
-		return chainhash.Hash{}, nil,
+		return chainhash.Hash{}, nil, nil,
 			fmt.Errorf("submit response is required")
 	}
 
 	switch r := resp.Result.(type) {
 	case *SubmitPackageResponse_Success:
 		if r.Success == nil {
-			return chainhash.Hash{}, nil,
+			return chainhash.Hash{}, nil, nil,
 				fmt.Errorf("submit success branch is empty")
 		}
 
 		sessionID, err := decodeSessionID(r.Success.SessionId)
 		if err != nil {
-			return chainhash.Hash{}, nil, err
+			return chainhash.Hash{}, nil, nil, err
+		}
+
+		// co_signed_ark_psbt is an additive field introduced after
+		// the initial submit-package wire shape: operators that have
+		// not been upgraded yet still return success without
+		// populating it. Treat empty bytes as "operator did not
+		// include the artifact" rather than as a parse error so
+		// clients can keep talking to older operators during a
+		// rolling upgrade. Recovery flows that genuinely need the
+		// co-signed PSBT will surface the absence at the recovery
+		// boundary, not here on every submit.
+		var coSignedArk *psbt.Packet
+		if len(r.Success.CoSignedArkPsbt) > 0 {
+			coSignedArk, err = psbtutil.Parse(
+				r.Success.CoSignedArkPsbt,
+			)
+			if err != nil {
+				return chainhash.Hash{}, nil, nil,
+					fmt.Errorf("decode co-signed ark "+
+						"psbt: %w", err)
+			}
 		}
 
 		checkpoints, err := decodePSBTSlice(
 			r.Success.CoSignedCheckpointPsbts,
 		)
 		if err != nil {
-			return chainhash.Hash{}, nil, err
+			return chainhash.Hash{}, nil, nil, err
 		}
 
-		return sessionID, checkpoints, nil
+		return sessionID, coSignedArk, checkpoints, nil
 
 	case *SubmitPackageResponse_Rejection:
 		if r.Rejection == nil {
-			return chainhash.Hash{}, nil,
+			return chainhash.Hash{}, nil, nil,
 				fmt.Errorf("submit rejection branch is empty")
 		}
 
@@ -232,17 +265,17 @@ func ParseSubmitPackageResponse(resp *SubmitPackageResponse) (chainhash.Hash,
 		// a non-routable rejection.
 		sessionID, err := decodeSessionID(r.Rejection.SessionId)
 		if err != nil {
-			return chainhash.Hash{}, nil, fmt.Errorf("decode "+
+			return chainhash.Hash{}, nil, nil, fmt.Errorf("decode "+
 				"rejected session id: %w", err)
 		}
 
-		return sessionID, nil, &SubmitRejectedError{
+		return sessionID, nil, nil, &SubmitRejectedError{
 			Code:   r.Rejection.Code,
 			Reason: r.Rejection.Reason,
 		}
 
 	default:
-		return chainhash.Hash{}, nil,
+		return chainhash.Hash{}, nil, nil,
 			fmt.Errorf("submit response carries no result branch")
 	}
 }
