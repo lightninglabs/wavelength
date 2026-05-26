@@ -45,10 +45,7 @@ SET state = CASE
     END,
     updated_at = $2,
     escalated_at = COALESCE(escalated_at, $2),
-    claim_preimage = CASE
-        WHEN $3 IS NULL THEN claim_preimage
-        ELSE $3
-    END,
+    claim_preimage = COALESCE($3, claim_preimage),
     last_error = NULL
 WHERE id = $1
   AND state NOT IN ('completed', 'cancelled', 'failed');
