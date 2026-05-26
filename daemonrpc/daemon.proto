@@ -187,8 +187,9 @@ service DaemonService {
     rpc GetVHTLCRecoveryStatus (GetVHTLCRecoveryStatusRequest)
         returns (GetVHTLCRecoveryStatusResponse);
 
-    // ListVHTLCRecoveries returns durable recovery rows for operator
-    // inspection.
+    // ListVHTLCRecoveries returns all durable recovery rows for operator
+    // inspection. Armed rows are dormant; callers must use
+    // EscalateVHTLCRecovery to start costly on-chain recovery.
     rpc ListVHTLCRecoveries (ListVHTLCRecoveriesRequest)
         returns (ListVHTLCRecoveriesResponse);
 }
@@ -1752,6 +1753,11 @@ message EscalateVHTLCRecoveryRequest {
 
     // reason records why the cooperative path is no longer sufficient.
     string reason = 2;
+
+    // claim_preimage is optional secret witness material for cross-process
+    // claim recovery. It must be supplied only for claim recovery and must
+    // match the armed preimage_hash.
+    bytes claim_preimage = 3;
 }
 
 message EscalateVHTLCRecoveryResponse {
@@ -1794,7 +1800,7 @@ message ListVHTLCRecoveriesRequest {
 }
 
 message ListVHTLCRecoveriesResponse {
-    // statuses contains matching durable recovery rows.
+    // statuses are returned in newest-updated order.
     repeated VHTLCRecoveryStatus statuses = 1;
 }
 

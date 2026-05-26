@@ -232,7 +232,7 @@ func (s *VHTLCRecoveryStoreDB) ListNonTerminalRecoveries(ctx context.Context) (
 	return jobs, nil
 }
 
-// ListRecoveries loads every recovery job.
+// ListRecoveries loads every recovery job in newest-updated order.
 func (s *VHTLCRecoveryStoreDB) ListRecoveries(ctx context.Context) (
 	[]vhtlcrecovery.RecoveryJob, error) {
 
@@ -262,17 +262,20 @@ func (s *VHTLCRecoveryStoreDB) ListRecoveries(ctx context.Context) (
 	return jobs, nil
 }
 
-// EscalateRecovery marks an armed recovery job as active.
-func (s *VHTLCRecoveryStoreDB) EscalateRecovery(ctx context.Context,
-	id string) error {
+// EscalateRecovery marks an armed recovery job as active. The optional claim
+// preimage is written in the same transaction so cross-process claim recovery
+// can restart after escalation without depending on the caller process.
+func (s *VHTLCRecoveryStoreDB) EscalateRecovery(ctx context.Context, id string,
+	claimPreimage []byte) error {
 
 	now := s.clk.Now().Unix()
 
 	return s.ExecTx(ctx, WriteTxOption(), func(q *sqlc.Queries) error {
 		rows, err := q.EscalateVHTLCRecoveryJob(
 			ctx, sqlc.EscalateVHTLCRecoveryJobParams{
-				ID:        id,
-				UpdatedAt: now,
+				ID:            id,
+				UpdatedAt:     now,
+				ClaimPreimage: cloneBytes(claimPreimage),
 			},
 		)
 		if err != nil {
@@ -494,6 +497,9 @@ func vhtlcRecoveryJobFromRow(row sqlc.VhtlcRecoveryJob) (
 		UnilateralRefundWithoutReceiverDelay: row.UnilateralRefundWithoutReceiverDelay, //nolint:ll
 		PreimageHash: cloneBytes(
 			row.PreimageHash,
+		),
+		ClaimPreimage: cloneBytes(
+			row.ClaimPreimage,
 		),
 		SignerKeyFamily: row.SignerKeyFamily,
 		SignerKeyIndex:  row.SignerKeyIndex,

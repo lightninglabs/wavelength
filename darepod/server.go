@@ -298,7 +298,7 @@ type Server struct {
 	oorSigningEffect   *oor.SigningEffectActor
 	vhtlcRecoveryStore *db.VHTLCRecoveryStoreDB
 	vhtlcRecovery      *coordinator.Service
-	vhtlcPreimages     *vhtlcPreimageRegistry
+	vhtlcPreimages     *unrollpolicy.PreimageResolverRegistry
 
 	// ledgerStore exposes the client-side ledger DB adapter for
 	// read-only RPC handlers (GetFeeHistory). Writes go through
@@ -4422,6 +4422,8 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	s.ueStore = ueStore
 	recoveryStore := dbStore.NewVHTLCRecoveryStore(s.clk)
 	s.vhtlcRecoveryStore = recoveryStore
+	preimages := &unrollpolicy.PreimageResolverRegistry{}
+	s.vhtlcPreimages = preimages
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 
 	// Build the wallet adapter shared by txconfirm and unroll
@@ -4480,8 +4482,6 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	}
 	s.proofAssembler = proofAssembler
 
-	s.vhtlcPreimages = &vhtlcPreimageRegistry{}
-
 	registry := unroll.NewUnrollRegistryActor(unroll.RegistryConfig{
 		Store: &unroll.DBRegistryStore{
 			UEStore: ueStore,
@@ -4496,7 +4496,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		MaxSweepFeeRateSatPerVByte: s.unrollMaxFeeRate(),
 		ExitSpendPolicyResolver: unrollpolicy.ExitSpendPolicyResolver{
 			Jobs:     recoveryStore,
-			Preimage: s.vhtlcPreimages,
+			Preimage: preimages,
 		},
 	})
 	s.unrollRegistry = registry
@@ -4506,6 +4506,10 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		Store:  recoveryStore,
 		Unroll: coordinator.NewActorUnrollRegistry(registry.Ref()),
 		Log:    fn.Some(s.subLogger(VHTLCRecoverySubsystem)),
+		TargetMaterializer: newVHTLCRecoveryTargetMaterializer(
+			vtxoStore, oorStore,
+			s.subLogger(VHTLCRecoverySubsystem),
+		),
 	})
 	if err != nil {
 		return err

@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -477,6 +478,22 @@ type testDaemonConn struct {
 	lastSendPolicy    []byte
 	lastClaimPubKey   []byte
 	lastClaimInput    []CustomInput
+	armRecoveryResp   *daemonrpc.ArmVHTLCRecoveryResponse
+	armRecoveryErr    error
+	escalateResp      *daemonrpc.EscalateVHTLCRecoveryResponse
+	escalateErr       error
+	cancelResp        *daemonrpc.CancelVHTLCRecoveryResponse
+	cancelErr         error
+	statusResp        *daemonrpc.GetVHTLCRecoveryStatusResponse
+	statusErr         error
+	armRecoveryCalls  int
+	escalateCalls     int
+	cancelCalls       int
+	statusCalls       int
+	lastArmRecovery   *daemonrpc.ArmVHTLCRecoveryRequest
+	lastEscalate      *daemonrpc.EscalateVHTLCRecoveryRequest
+	lastCancel        *daemonrpc.CancelVHTLCRecoveryRequest
+	lastStatus        *daemonrpc.GetVHTLCRecoveryStatusRequest
 }
 
 // BlockHeight returns the configured best block height.
@@ -535,6 +552,95 @@ func (d *testDaemonConn) SendOORWithCustomInputs(_ context.Context,
 	}
 
 	return d.sendSessionID, d.sendCustomErr
+}
+
+// ArmVHTLCRecovery records the daemon recovery arm request.
+func (d *testDaemonConn) ArmVHTLCRecovery(_ context.Context,
+	req *daemonrpc.ArmVHTLCRecoveryRequest) (
+	*daemonrpc.ArmVHTLCRecoveryResponse, error) {
+
+	d.armRecoveryCalls++
+	d.lastArmRecovery = req
+	if d.armRecoveryErr != nil {
+		return nil, d.armRecoveryErr
+	}
+	if d.armRecoveryResp != nil {
+		return d.armRecoveryResp, nil
+	}
+
+	return &daemonrpc.ArmVHTLCRecoveryResponse{
+		RecoveryId: fmt.Sprintf("recovery-%d", d.armRecoveryCalls),
+		Created:    true,
+		Status: &daemonrpc.VHTLCRecoveryStatus{
+			RecoveryId: fmt.Sprintf(
+				"recovery-%d", d.armRecoveryCalls,
+			),
+			State: recoveryStateArmed,
+		},
+	}, nil
+}
+
+// EscalateVHTLCRecovery records the daemon recovery escalation request.
+func (d *testDaemonConn) EscalateVHTLCRecovery(_ context.Context,
+	req *daemonrpc.EscalateVHTLCRecoveryRequest) (
+	*daemonrpc.EscalateVHTLCRecoveryResponse, error) {
+
+	d.escalateCalls++
+	d.lastEscalate = req
+	if d.escalateErr != nil {
+		return nil, d.escalateErr
+	}
+	if d.escalateResp != nil {
+		return d.escalateResp, nil
+	}
+
+	return &daemonrpc.EscalateVHTLCRecoveryResponse{
+		Status: &daemonrpc.VHTLCRecoveryStatus{
+			RecoveryId: req.GetRecoveryId(),
+			State:      recoveryStateUnrollStarted,
+		},
+	}, nil
+}
+
+// CancelVHTLCRecovery records the daemon recovery cancellation request.
+func (d *testDaemonConn) CancelVHTLCRecovery(_ context.Context,
+	req *daemonrpc.CancelVHTLCRecoveryRequest) (
+	*daemonrpc.CancelVHTLCRecoveryResponse, error) {
+
+	d.cancelCalls++
+	d.lastCancel = req
+	if d.cancelErr != nil {
+		return nil, d.cancelErr
+	}
+	if d.cancelResp != nil {
+		return d.cancelResp, nil
+	}
+
+	return &daemonrpc.CancelVHTLCRecoveryResponse{
+		Status: &daemonrpc.VHTLCRecoveryStatus{
+			RecoveryId: req.GetRecoveryId(),
+			State:      recoveryStateCancelled,
+		},
+	}, nil
+}
+
+// GetVHTLCRecoveryStatus records the daemon recovery status request.
+func (d *testDaemonConn) GetVHTLCRecoveryStatus(_ context.Context,
+	req *daemonrpc.GetVHTLCRecoveryStatusRequest) (
+	*daemonrpc.GetVHTLCRecoveryStatusResponse, error) {
+
+	d.statusCalls++
+	d.lastStatus = req
+	if d.statusErr != nil {
+		return nil, d.statusErr
+	}
+	if d.statusResp != nil {
+		return d.statusResp, nil
+	}
+
+	return &daemonrpc.GetVHTLCRecoveryStatusResponse{
+		Found: false,
+	}, nil
 }
 
 // IdentityPubKey returns the configured client key.
@@ -1925,6 +2031,9 @@ func TestReceiveSessionFreshClaimBoundsSpentLookup(t *testing.T) {
 		state:               ReceiveStateVHTLCFunded,
 		Preimage:            preimage,
 		PaymentHash:         preimage.Hash(),
+		clientPubKey:        receiverPriv.PubKey(),
+		swapServerPubKey:    senderPriv.PubKey(),
+		operatorPubKey:      operatorPriv.PubKey(),
 		vhtlcPolicy:         policy,
 		vhtlcPolicyTemplate: policyTemplate,
 		vhtlcPkScript:       pkScript,
@@ -1940,6 +2049,24 @@ func TestReceiveSessionFreshClaimBoundsSpentLookup(t *testing.T) {
 	require.Equal(t, ReceiveStateCompleted, session.State())
 	require.Equal(t, 1, daemonConn.sendCustomCalls)
 	require.Equal(t, 1, daemonConn.spentLookupCalls)
+	require.Equal(t, 1, daemonConn.armRecoveryCalls)
+	require.Equal(
+		t, recoveryDirectionReceive, daemonConn.lastArmRecovery.
+			GetDirection(),
+	)
+	require.Equal(
+		t, recoveryActionClaim, daemonConn.lastArmRecovery.
+			GetAction(),
+	)
+	require.Equal(
+		t, "funding:0", daemonConn.lastArmRecovery.
+			GetVtxoOutpoint(),
+	)
+	require.Equal(
+		t, int32(144), daemonConn.lastArmRecovery.
+			GetRefundLocktime(),
+	)
+	require.Equal(t, 1, daemonConn.cancelCalls)
 }
 
 // TestReceiveSessionFreshClaimBoundsSpentLookupGRPCDeadline mirrors
@@ -2009,6 +2136,9 @@ func TestReceiveSessionFreshClaimBoundsSpentLookupGRPCDeadline(t *testing.T) {
 		state:               ReceiveStateVHTLCFunded,
 		Preimage:            preimage,
 		PaymentHash:         preimage.Hash(),
+		clientPubKey:        receiverPriv.PubKey(),
+		swapServerPubKey:    senderPriv.PubKey(),
+		operatorPubKey:      operatorPriv.PubKey(),
 		vhtlcPolicy:         policy,
 		vhtlcPolicyTemplate: policyTemplate,
 		vhtlcPkScript:       pkScript,
@@ -2065,6 +2195,8 @@ func TestReceiveSessionClaimRejectsAfterRefundLocktime(t *testing.T) {
 
 	daemonConn := &testDaemonConn{
 		blockHeight: 144,
+		identityKey: receiverPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
 		receiveInfo: &ReceiveInfo{
 			PkScript: []byte{
 				0x51,
@@ -2080,6 +2212,9 @@ func TestReceiveSessionClaimRejectsAfterRefundLocktime(t *testing.T) {
 		state:               ReceiveStateVHTLCFunded,
 		Preimage:            preimage,
 		PaymentHash:         preimage.Hash(),
+		clientPubKey:        receiverPriv.PubKey(),
+		swapServerPubKey:    senderPriv.PubKey(),
+		operatorPubKey:      operatorPriv.PubKey(),
 		vhtlcPolicy:         policy,
 		vhtlcPolicyTemplate: policyTemplate,
 		vhtlcPkScript:       pkScript,
@@ -2093,6 +2228,90 @@ func TestReceiveSessionClaimRejectsAfterRefundLocktime(t *testing.T) {
 	_, err = session.Claim(t.Context(), "funding:0", 42_000)
 	require.ErrorIs(t, err, errSwapExpired)
 	require.Equal(t, ReceiveStateExpired, session.State())
+	require.Zero(t, daemonConn.sendCustomCalls)
+}
+
+// TestReceiveSessionClaimRecoveryCompletionWinsAfterRefundLocktime asserts
+// daemon-owned recovery can complete a receive session even after the
+// cooperative claim locktime gate would otherwise expire new claim attempts.
+func TestReceiveSessionClaimRecoveryCompletionWinsAfterRefundLocktime(
+	t *testing.T) {
+
+	t.Parallel()
+
+	senderPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	receiverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:   senderPriv.PubKey(),
+		Receiver: receiverPriv.PubKey(),
+		Server:   operatorPriv.PubKey(),
+		PreimageHash: lntypes.Hash(
+			sha256.Sum256(preimage[:]),
+		),
+		RefundLocktime:                       144,
+		UnilateralClaimDelay:                 12,
+		UnilateralRefundDelay:                24,
+		UnilateralRefundWithoutReceiverDelay: 36,
+	})
+	require.NoError(t, err)
+
+	policyTemplate, err := encodeVHTLCPolicyTemplate(policy)
+	require.NoError(t, err)
+
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
+
+	recoveryID := "claim-recovery"
+	daemonConn := &testDaemonConn{
+		blockHeight: 144,
+		receiveInfo: &ReceiveInfo{
+			PkScript: []byte{
+				0x51,
+			},
+			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
+		},
+		statusResp: &daemonrpc.GetVHTLCRecoveryStatusResponse{
+			Found: true,
+			Status: &daemonrpc.VHTLCRecoveryStatus{
+				RecoveryId: recoveryID,
+				State:      recoveryStateCompleted,
+			},
+		},
+	}
+
+	client := NewSwapClient(nil, daemonConn, nil, nil)
+	session := &ReceiveSession{
+		client:              client,
+		state:               ReceiveStateVHTLCFunded,
+		Preimage:            preimage,
+		PaymentHash:         preimage.Hash(),
+		vhtlcPolicy:         policy,
+		vhtlcPolicyTemplate: policyTemplate,
+		vhtlcPkScript:       pkScript,
+		vhtlcConfig: VHTLCConfig{
+			RefundLocktime: 144,
+		},
+		vhtlcOutpoint:   "funding:0",
+		vhtlcAmount:     42_000,
+		claimRecoveryID: recoveryID,
+	}
+
+	result, err := session.Claim(t.Context(), "funding:0", 42_000)
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateCompleted, session.State())
+	require.Equal(t, "funding:0", result.VTXOOutpoint)
+	require.Equal(t, recoveryID, daemonConn.lastStatus.GetRecoveryId())
+	require.Equal(t, 1, daemonConn.statusCalls)
 	require.Zero(t, daemonConn.sendCustomCalls)
 }
 

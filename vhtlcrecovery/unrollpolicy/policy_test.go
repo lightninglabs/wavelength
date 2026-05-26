@@ -288,6 +288,33 @@ func TestExitSpendPolicyResolver(t *testing.T) {
 	require.ErrorContains(t, err, "does not match request kind")
 }
 
+// TestExitSpendPolicyResolverUsesDurableClaimPreimage verifies cross-process
+// recovery can build a claim policy from the preimage stored on the recovery
+// row without requiring an in-process swap preimage resolver.
+func TestExitSpendPolicyResolverUsesDurableClaimPreimage(t *testing.T) {
+	t.Parallel()
+
+	job, preimage, _, _ := testPolicyJob(t, vhtlcrecovery.ActionClaim)
+	job.ClaimPreimage = preimage[:]
+	resolver := ExitSpendPolicyResolver{
+		Jobs: fakeRecoveryJobLoader{
+			job.ID: job,
+		},
+	}
+
+	policy, err := resolver.ResolveExitSpendPolicy(
+		t.Context(), unroll.ExitSpendPolicyRequest{
+			Kind: vhtlcrecovery.ExitPolicyKindClaim,
+			Ref:  job.ID,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, unroll.ExitPolicyKind(vhtlcrecovery.ExitPolicyKindClaim),
+		policy.Kind(),
+	)
+}
+
 // testPolicyJob returns a fully populated recovery job and matching test
 // signers for the requested recovery action. The row mirrors the named SQL
 // columns the production adapter reconstructs.

@@ -309,6 +309,30 @@ func registerSwapRuntimeFlags(f *pflag.FlagSet, cfg *darepod.Config) {
 		"swap.databasefilename", cfg.Swap.DatabaseFileName,
 		"swap session SQLite database path for swapruntime builds",
 	)
+	f.Bool(
+		"swap.vhtlcrecovery.autoescalate",
+		cfg.Swap.VHTLCRecovery.AutoEscalate, "automatically "+
+			"escalate armed vHTLC recovery after grace or "+
+			"deadline policy in swapruntime builds",
+	)
+	f.Duration(
+		"swap.vhtlcrecovery.cooperativefailuregraceperiod",
+		cfg.Swap.VHTLCRecovery.CooperativeFailureGracePeriod, "delay"+
+			" after first cooperative vHTLC send failure "+
+			"before automatic recovery in swapruntime builds",
+	)
+	f.Uint32(
+		"swap.vhtlcrecovery.minrecoverymarginblocks",
+		cfg.Swap.VHTLCRecovery.MinRecoveryMarginBlocks, "minimum "+
+			"block margin preserved before claim recovery "+
+			"deadlines in swapruntime builds",
+	)
+	f.Int32(
+		"swap.vhtlcrecovery.maxfeeratesatperkw",
+		cfg.Swap.VHTLCRecovery.MaxFeeRateSatPerKW, "maximum fee "+
+			"rate in sat/kw for swapruntime vHTLC recovery "+
+			"exit spends",
+	)
 }
 
 // bindOORLimitFlags binds hyphenated OOR CLI flags to the config keys used by

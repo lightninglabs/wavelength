@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -13,7 +12,6 @@ import (
 	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
 	"github.com/lightninglabs/darepo-client/vhtlcrecovery/coordinator"
 	"github.com/lightninglabs/darepo-client/vhtlcrecovery/unrollpolicy"
-	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -103,6 +101,7 @@ func (r *RPCServer) EscalateVHTLCRecovery(ctx context.Context,
 
 	recoveryStatus, err := service.EscalateRecovery(
 		ctx, req.RecoveryId, req.Reason,
+		cloneRPCBytes(req.ClaimPreimage),
 	)
 	if err != nil {
 		return nil, recoveryErrorToStatus(err)
@@ -248,35 +247,6 @@ func (r *RPCServer) RegisterVHTLCRecoveryPreimageResolver(
 	r.server.vhtlcPreimages.SetResolver(resolver)
 
 	return nil
-}
-
-type vhtlcPreimageRegistry struct {
-	mu       sync.RWMutex
-	resolver unrollpolicy.PreimageResolver
-}
-
-func (r *vhtlcPreimageRegistry) SetResolver(
-	resolver unrollpolicy.PreimageResolver) {
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.resolver = resolver
-}
-
-func (r *vhtlcPreimageRegistry) ResolvePreimage(ctx context.Context,
-	swapID []byte, preimageHash lntypes.Hash) (lntypes.Preimage, error) {
-
-	r.mu.RLock()
-	resolver := r.resolver
-	r.mu.RUnlock()
-
-	if resolver == nil {
-		return lntypes.Preimage{}, fmt.Errorf("vhtlc recovery " +
-			"preimage resolver is not registered")
-	}
-
-	return resolver.ResolvePreimage(ctx, swapID, preimageHash)
 }
 
 // recoveryJobFromProto converts a public arm request into the durable recovery

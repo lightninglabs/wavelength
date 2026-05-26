@@ -613,6 +613,28 @@ func TestPaySessionRefundsWhenRefundLocktimePassesBeforeClaim(t *testing.T) {
 	_, err = session.Wait(t.Context())
 	require.ErrorIs(t, err, ErrSwapRefunded)
 	require.Equal(t, 1, daemonConn.sendCustomCalls)
+	require.Equal(t, 1, daemonConn.armRecoveryCalls)
+	require.Equal(
+		t, recoveryDirectionPay, daemonConn.lastArmRecovery.
+			GetDirection(),
+	)
+	require.Equal(
+		t, recoveryActionRefundWithoutReceiver,
+		daemonConn.lastArmRecovery.GetAction(),
+	)
+	require.Equal(
+		t, "funding:0", daemonConn.lastArmRecovery.
+			GetVtxoOutpoint(),
+	)
+	require.Equal(
+		t, int32(100), daemonConn.lastArmRecovery.
+			GetRefundLocktime(),
+	)
+	require.Equal(
+		t, int32(36), daemonConn.lastArmRecovery.
+			GetUnilateralRefundWithoutReceiverDelay(),
+	)
+	require.Equal(t, 1, daemonConn.cancelCalls)
 
 	resumed, err := client.ResumePayViaLightning(
 		t.Context(), preimage.Hash(),

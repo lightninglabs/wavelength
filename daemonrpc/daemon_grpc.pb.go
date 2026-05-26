@@ -194,8 +194,9 @@ type DaemonServiceClient interface {
 	// GetVHTLCRecoveryStatus returns the durable recovery row joined with the
 	// current unroll status when the job has escalated.
 	GetVHTLCRecoveryStatus(ctx context.Context, in *GetVHTLCRecoveryStatusRequest, opts ...grpc.CallOption) (*GetVHTLCRecoveryStatusResponse, error)
-	// ListVHTLCRecoveries returns durable recovery rows for operator
-	// inspection.
+	// ListVHTLCRecoveries returns all durable recovery rows for operator
+	// inspection. Armed rows are dormant; callers must use
+	// EscalateVHTLCRecovery to start costly on-chain recovery.
 	ListVHTLCRecoveries(ctx context.Context, in *ListVHTLCRecoveriesRequest, opts ...grpc.CallOption) (*ListVHTLCRecoveriesResponse, error)
 }
 
@@ -722,8 +723,9 @@ type DaemonServiceServer interface {
 	// GetVHTLCRecoveryStatus returns the durable recovery row joined with the
 	// current unroll status when the job has escalated.
 	GetVHTLCRecoveryStatus(context.Context, *GetVHTLCRecoveryStatusRequest) (*GetVHTLCRecoveryStatusResponse, error)
-	// ListVHTLCRecoveries returns durable recovery rows for operator
-	// inspection.
+	// ListVHTLCRecoveries returns all durable recovery rows for operator
+	// inspection. Armed rows are dormant; callers must use
+	// EscalateVHTLCRecovery to start costly on-chain recovery.
 	ListVHTLCRecoveries(context.Context, *ListVHTLCRecoveriesRequest) (*ListVHTLCRecoveriesResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }

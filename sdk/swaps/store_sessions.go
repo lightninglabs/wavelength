@@ -1,6 +1,7 @@
 package swaps
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -256,6 +257,45 @@ func (c *SwapClient) ListPendingPaySessions(ctx context.Context) ([]*PaySession,
 	return sessions, nil
 }
 
+// ResolvePreimage loads the swap-owned raw preimage for daemon claim recovery.
+// The vHTLC recovery row stores only preimage_hash plus swap_id; sdk/swaps uses
+// the Lightning payment hash as swap_id, so this resolver verifies both
+// identifiers before returning the durable receive-session preimage.
+func (s *Store) ResolvePreimage(ctx context.Context, swapID []byte,
+	preimageHash lntypes.Hash) (lntypes.Preimage, error) {
+
+	if s == nil || s.queries == nil {
+		return lntypes.Preimage{}, fmt.Errorf("swap store is not " +
+			"configured")
+	}
+	if len(swapID) != 0 && !bytes.Equal(swapID, preimageHash[:]) {
+		return lntypes.Preimage{}, fmt.Errorf("swap id does not " +
+			"match preimage hash")
+	}
+
+	row, err := s.queries.GetReceiveSwap(ctx, preimageHash[:])
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return lntypes.Preimage{}, fmt.Errorf("receive swap " +
+				"preimage not found")
+		}
+
+		return lntypes.Preimage{}, fmt.Errorf("load receive swap "+
+			"preimage: %w", err)
+	}
+
+	preimage, err := preimageFromBytes(row.Preimage)
+	if err != nil {
+		return lntypes.Preimage{}, err
+	}
+	if !preimage.Matches(preimageHash) {
+		return lntypes.Preimage{}, fmt.Errorf("receive swap preimage " +
+			"does not match requested hash")
+	}
+
+	return preimage, nil
+}
+
 // paySummaryFromRow converts one persisted pay row into the public list view.
 func paySummaryFromRow(row swapsqlc.PaySwap) (SwapSummary, error) {
 	state, err := parsePayState(row.State)
@@ -435,6 +475,7 @@ func (s *ReceiveSession) persist(ctx context.Context) error {
 		ClaimReceivePubkey:   cloneBytesOrEmpty(s.claimReceivePubKey),
 		ClaimReceivePkscript: cloneBytesOrEmpty(s.claimReceiveScript),
 		ClaimSessionID:       s.claimSessionID,
+		ClaimRecoveryID:      s.claimRecoveryID,
 		InterventionReason:   s.interventionReason,
 		CreatedAtUnix:        s.createdAt.Unix(),
 		UpdatedAtUnix:        now,
@@ -566,6 +607,7 @@ func (s *paySession) persist(ctx context.Context) error {
 			[]byte(nil), s.refundReceiveScript...,
 		),
 		RefundSessionID:    s.refundSessionID,
+		RefundRecoveryID:   s.refundRecoveryID,
 		InterventionReason: s.interventionReason,
 		CreatedAtUnix:      s.createdAt.Unix(),
 		UpdatedAtUnix:      now,
@@ -694,6 +736,7 @@ func receiveSessionFromRow(c *SwapClient,
 			[]byte(nil), row.ClaimReceivePkscript...,
 		),
 		claimSessionID:     row.ClaimSessionID,
+		claimRecoveryID:    row.ClaimRecoveryID,
 		interventionReason: row.InterventionReason,
 		clientPubKey:       clientKey,
 		operatorPubKey:     operatorKey,
@@ -790,6 +833,7 @@ func paySessionFromRow(c *SwapClient,
 			[]byte(nil), row.RefundReceivePkscript...,
 		),
 		refundSessionID:    row.RefundSessionID,
+		refundRecoveryID:   row.RefundRecoveryID,
 		interventionReason: row.InterventionReason,
 		clientPubKey:       clientKey,
 		operatorPubKey:     operatorKey,

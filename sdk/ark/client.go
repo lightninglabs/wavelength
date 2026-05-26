@@ -859,6 +859,79 @@ func (c *Client) SendOORWithCustomInputs(ctx context.Context,
 	return resp.GetSessionId(), nil
 }
 
+// ArmVHTLCRecovery asks the daemon to persist one dormant vHTLC recovery job.
+// Higher-level swap FSMs call this before the cooperative path becomes risky so
+// restart recovery has a durable handle to the vHTLC context.
+func (c *Client) ArmVHTLCRecovery(ctx context.Context,
+	req *daemonrpc.ArmVHTLCRecoveryRequest) (
+	*daemonrpc.ArmVHTLCRecoveryResponse, error) {
+
+	if req == nil {
+		req = &daemonrpc.ArmVHTLCRecoveryRequest{}
+	}
+
+	resp, err := c.daemon.ArmVHTLCRecovery(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("arm vhtlc recovery: %w", err)
+	}
+
+	return resp, nil
+}
+
+// EscalateVHTLCRecovery asks the daemon to start or resume the on-chain unroll
+// path for one previously armed vHTLC recovery job.
+func (c *Client) EscalateVHTLCRecovery(ctx context.Context,
+	req *daemonrpc.EscalateVHTLCRecoveryRequest) (
+	*daemonrpc.EscalateVHTLCRecoveryResponse, error) {
+
+	if req == nil {
+		req = &daemonrpc.EscalateVHTLCRecoveryRequest{}
+	}
+
+	resp, err := c.daemon.EscalateVHTLCRecovery(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("escalate vhtlc recovery: %w", err)
+	}
+
+	return resp, nil
+}
+
+// CancelVHTLCRecovery tells the daemon that cooperative settlement made one
+// armed vHTLC recovery job unnecessary.
+func (c *Client) CancelVHTLCRecovery(ctx context.Context,
+	req *daemonrpc.CancelVHTLCRecoveryRequest) (
+	*daemonrpc.CancelVHTLCRecoveryResponse, error) {
+
+	if req == nil {
+		req = &daemonrpc.CancelVHTLCRecoveryRequest{}
+	}
+
+	resp, err := c.daemon.CancelVHTLCRecovery(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("cancel vhtlc recovery: %w", err)
+	}
+
+	return resp, nil
+}
+
+// GetVHTLCRecoveryStatus returns the daemon's durable recovery status plus the
+// current unroll phase when the recovery has been escalated.
+func (c *Client) GetVHTLCRecoveryStatus(ctx context.Context,
+	req *daemonrpc.GetVHTLCRecoveryStatusRequest) (
+	*daemonrpc.GetVHTLCRecoveryStatusResponse, error) {
+
+	if req == nil {
+		req = &daemonrpc.GetVHTLCRecoveryStatusRequest{}
+	}
+
+	resp, err := c.daemon.GetVHTLCRecoveryStatus(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("get vhtlc recovery status: %w", err)
+	}
+
+	return resp, nil
+}
+
 // ListLiveVTXOs returns the daemon's live spendable VTXOs as typed SDK-owned
 // models.
 func (c *Client) ListLiveVTXOs(ctx context.Context) ([]VTXOInfo, error) {

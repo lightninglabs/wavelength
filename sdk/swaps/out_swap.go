@@ -264,18 +264,20 @@ type ReceiveSession struct {
 	// swapServerPubKey is the remote sender in the accepted vHTLC policy.
 	// For Lightning-backed receives this is the swap server key; for
 	// direct same-Ark receives this is the paying client's sender key.
-	swapServerPubKey     *btcec.PublicKey
-	vhtlcConfig          VHTLCConfig
-	vhtlcPolicy          *arkscript.VHTLCPolicy
-	vhtlcPolicyTemplate  []byte
-	vhtlcPkScript        []byte
-	vhtlcOutpoint        string
-	vhtlcAmount          int64
-	paymentAddr          [32]byte
-	pendingHTLCAckCursor uint64
-	claimReceivePubKey   []byte
-	claimReceiveScript   []byte
-	claimSessionID       string
+	swapServerPubKey       *btcec.PublicKey
+	vhtlcConfig            VHTLCConfig
+	vhtlcPolicy            *arkscript.VHTLCPolicy
+	vhtlcPolicyTemplate    []byte
+	vhtlcPkScript          []byte
+	vhtlcOutpoint          string
+	vhtlcAmount            int64
+	paymentAddr            [32]byte
+	pendingHTLCAckCursor   uint64
+	claimReceivePubKey     []byte
+	claimReceiveScript     []byte
+	claimSessionID         string
+	claimRecoveryID        string
+	claimRecoveryFailureAt time.Time
 	// claimIntentRecordedInProcess distinguishes freshly-recorded claim
 	// intent from a restored ClaimInitiated row whose accepted spend may
 	// still be missing from the indexer.
@@ -484,6 +486,9 @@ func (s *ReceiveSession) Claim(ctx context.Context, outpoint string,
 
 			return s.transition(receiveEventVHTLCFunded)
 		}); err != nil {
+			return nil, err
+		}
+		if err := s.ensureReceiveClaimRecoveryArmed(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -791,12 +796,17 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 		return err
 	}
 
-	return s.mutateAndPersist(ctx, func() error {
+	err = s.mutateAndPersist(ctx, func() error {
 		s.vhtlcOutpoint = outpoint
 		s.vhtlcAmount = amount
 
 		return s.transition(receiveEventVHTLCFunded)
 	})
+	if err != nil {
+		return err
+	}
+
+	return s.ensureReceiveClaimRecoveryArmed(ctx)
 }
 
 // waitIncomingVHTLCNotification waits for and validates the server notification
@@ -1232,6 +1242,12 @@ func (s *ReceiveSession) validateReceiveFunding(ctx context.Context,
 // transaction, then submits the preimage claim if no spend is indexed yet.
 func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 	if s.claimSessionID != "" {
+		if err := cancelVHTLCRecovery(
+			ctx, s.client.daemon, s.claimRecoveryID,
+			recoveryReasonClaimAccepted, "",
+		); err != nil {
+			return newRetryableActionError(err)
+		}
 
 		// A persisted claim session ID means the daemon accepted the
 		// custom-input claim spend before this attempt. Do not submit
@@ -1255,6 +1271,13 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 			return err
 		}
 		if claimed {
+			if err := cancelVHTLCRecovery(
+				ctx, s.client.daemon, s.claimRecoveryID,
+				recoveryReasonClaimIndexed, "",
+			); err != nil {
+				return newRetryableActionError(err)
+			}
+
 			return s.mutateAndPersist(ctx, func() error {
 				return s.transition(receiveEventCompleted)
 			})
@@ -1272,6 +1295,13 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 			return err
 		}
 		if claimed {
+			if err := cancelVHTLCRecovery(
+				ctx, s.client.daemon, s.claimRecoveryID,
+				recoveryReasonClaimIndexed, "",
+			); err != nil {
+				return newRetryableActionError(err)
+			}
+
 			return s.mutateAndPersist(ctx, func() error {
 				return s.transition(receiveEventCompleted)
 			})
@@ -1282,10 +1312,22 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 		return err
 	}
 
-	if err := s.ensureReceiveClaimStillPossible(ctx); err != nil {
+	if err := s.ensureClaimReceiveInfo(ctx); err != nil {
 		return err
 	}
-	if err := s.ensureClaimReceiveInfo(ctx); err != nil {
+	if err := s.ensureReceiveClaimRecoveryArmed(ctx); err != nil {
+		return err
+	}
+
+	recoveryHandled, err := s.reconcileReceiveClaimRecovery(ctx)
+	if err != nil {
+		return newRetryableActionError(err)
+	}
+	if recoveryHandled {
+		return nil
+	}
+
+	if err := s.ensureReceiveClaimStillPossible(ctx); err != nil {
 		return err
 	}
 
@@ -1295,6 +1337,12 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 		s.vhtlcAmount, s.claimReceivePubKey,
 	)
 	if errors.Is(err, errReceiveClaimAlreadyIndexed) {
+		if cancelErr := cancelVHTLCRecovery(
+			ctx, s.client.daemon, s.claimRecoveryID,
+			recoveryReasonClaimIndexed, "",
+		); cancelErr != nil {
+			return newRetryableActionError(cancelErr)
+		}
 
 		// Spent-without-preimage is terminal for retry purposes inside
 		// claimReceiveVHTLC; this branch only handles a matching
@@ -1304,7 +1352,13 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 		})
 	}
 	if err != nil {
-		return err
+		if escalateErr := s.maybeEscalateReceiveClaimRecovery(
+			ctx, err,
+		); escalateErr != nil {
+			return newRetryableActionError(escalateErr)
+		}
+
+		return waitForFixedPoll(ctx, s.client.waitPollInterval)
 	}
 	if claimSessionID == "" {
 		return fmt.Errorf("claim vHTLC returned empty session id")
@@ -1314,6 +1368,12 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 		return newRetryableActionError(err)
 	}
 	s.claimIntentRecordedInProcess = false
+	if err := cancelVHTLCRecovery(
+		ctx, s.client.daemon, s.claimRecoveryID,
+		recoveryReasonClaimAccepted, "",
+	); err != nil {
+		return newRetryableActionError(err)
+	}
 
 	if err := s.mutateAndPersist(ctx, func() error {
 		return s.transition(receiveEventCompleted)

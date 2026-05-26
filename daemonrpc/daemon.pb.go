@@ -6529,7 +6529,11 @@ type EscalateVHTLCRecoveryRequest struct {
 	// recovery_id identifies the armed recovery job to start.
 	RecoveryId string `protobuf:"bytes,1,opt,name=recovery_id,json=recoveryId,proto3" json:"recovery_id,omitempty"`
 	// reason records why the cooperative path is no longer sufficient.
-	Reason        string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Reason string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	// claim_preimage is optional secret witness material for cross-process
+	// claim recovery. It must be supplied only for claim recovery and must
+	// match the armed preimage_hash.
+	ClaimPreimage []byte `protobuf:"bytes,3,opt,name=claim_preimage,json=claimPreimage,proto3" json:"claim_preimage,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6576,6 +6580,13 @@ func (x *EscalateVHTLCRecoveryRequest) GetReason() string {
 		return x.Reason
 	}
 	return ""
+}
+
+func (x *EscalateVHTLCRecoveryRequest) GetClaimPreimage() []byte {
+	if x != nil {
+		return x.ClaimPreimage
+	}
+	return nil
 }
 
 type EscalateVHTLCRecoveryResponse struct {
@@ -6877,7 +6888,7 @@ func (x *ListVHTLCRecoveriesRequest) GetIncludeTerminal() bool {
 
 type ListVHTLCRecoveriesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// statuses contains matching durable recovery rows.
+	// statuses are returned in newest-updated order.
 	Statuses      []*VHTLCRecoveryStatus `protobuf:"bytes,1,rep,name=statuses,proto3" json:"statuses,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -7614,11 +7625,12 @@ const file_daemon_proto_rawDesc = "" +
 	"\vrecovery_id\x18\x01 \x01(\tR\n" +
 	"recoveryId\x12\x18\n" +
 	"\acreated\x18\x02 \x01(\bR\acreated\x126\n" +
-	"\x06status\x18\x03 \x01(\v2\x1e.daemonrpc.VHTLCRecoveryStatusR\x06status\"W\n" +
+	"\x06status\x18\x03 \x01(\v2\x1e.daemonrpc.VHTLCRecoveryStatusR\x06status\"~\n" +
 	"\x1cEscalateVHTLCRecoveryRequest\x12\x1f\n" +
 	"\vrecovery_id\x18\x01 \x01(\tR\n" +
 	"recoveryId\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason\"W\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12%\n" +
+	"\x0eclaim_preimage\x18\x03 \x01(\fR\rclaimPreimage\"W\n" +
 	"\x1dEscalateVHTLCRecoveryResponse\x126\n" +
 	"\x06status\x18\x01 \x01(\v2\x1e.daemonrpc.VHTLCRecoveryStatusR\x06status\"\x80\x01\n" +
 	"\x1aCancelVHTLCRecoveryRequest\x12\x1f\n" +

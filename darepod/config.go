@@ -107,6 +107,23 @@ const (
 	// RPCTransportREST selects grpc-gateway HTTP/JSON for daemon-owned
 	// outbound RPCs.
 	RPCTransportREST = "rest"
+
+	// DefaultSwapRecoveryCooperativeFailureGracePeriod is how long the
+	// daemon-owned swap runtime keeps retrying cooperative vHTLC settlement
+	// after the first observed cooperative send failure before automatic
+	// on-chain recovery may start.
+	DefaultSwapRecoveryCooperativeFailureGracePeriod = time.Hour
+
+	// DefaultSwapRecoveryMinMarginBlocks is the block-height safety margin
+	// that lets receive-side claim recovery override the wall-clock grace
+	// period before the sender refund locktime can make waiting unsafe.
+	DefaultSwapRecoveryMinMarginBlocks = uint32(12)
+
+	// DefaultSwapRecoveryMaxFeeRateSatPerKW caps swapruntime-armed vHTLC
+	// exit spends at 100 sat/vbyte. The cap is copied into the recovery row
+	// at arm time so later config changes cannot silently loosen an
+	// existing job.
+	DefaultSwapRecoveryMaxFeeRateSatPerKW int32 = 25_000
 )
 
 // Config holds all configuration for the darepod daemon.
@@ -365,6 +382,11 @@ type SwapConfig struct {
 	// resume can discover pending sessions without CLI state.
 	DatabaseFileName string `mapstructure:"databasefilename"`
 
+	// VHTLCRecovery controls when the daemon-owned swap runtime escalates
+	// an already-armed vHTLC recovery row from cooperative retry into
+	// on-chain unroll.
+	VHTLCRecovery SwapVHTLCRecoveryConfig `mapstructure:"vhtlcrecovery"`
+
 	// SuppressResume disables swapclientserver's own synchronous
 	// resume-on-startup sweep so a higher layer (walletrpc subserver) can
 	// own the unified resume policy. Default false preserves identical
@@ -380,6 +402,46 @@ type SwapConfig struct {
 	// going through the gRPC stub. The field is set programmatically by
 	// the registrar; it is never loaded from config files.
 	Backend SwapBackend `mapstructure:"-"`
+}
+
+// SwapVHTLCRecoveryConfig controls automatic escalation from cooperative vHTLC
+// retry to daemon-owned on-chain recovery. Arming is still immediate and cheap;
+// this policy only gates the expensive unroll transition.
+type SwapVHTLCRecoveryConfig struct {
+	// AutoEscalate allows the daemon-owned swap runtime to start on-chain
+	// recovery without a manual command once the grace/deadline policy says
+	// cooperative retry is no longer safe or useful.
+	AutoEscalate bool `mapstructure:"autoescalate"`
+
+	// CooperativeFailureGracePeriod is measured from the first cooperative
+	// vHTLC send failure. While the period is open, the swap runtime keeps
+	// retrying cooperative settlement unless deadline pressure overrides
+	// the wait.
+	CooperativeFailureGracePeriod time.Duration `mapstructure:"cooperativefailuregraceperiod"` //nolint:ll
+
+	// MinRecoveryMarginBlocks is the minimum block margin preserved before
+	// a refund locktime. Receive-side claim recovery may override the grace
+	// period when the current height plus this margin reaches the refund
+	// locktime.
+	MinRecoveryMarginBlocks uint32 `mapstructure:"minrecoverymarginblocks"`
+
+	// MaxFeeRateSatPerKW caps the final vHTLC recovery exit-spend fee rate.
+	MaxFeeRateSatPerKW int32 `mapstructure:"maxfeeratesatperkw"`
+}
+
+// WithDefaults fills unset numeric vHTLC recovery fields with production
+// defaults while preserving AutoEscalate. This lets operators set
+// autoescalate=false without that explicit manual-recovery mode being rewritten
+// back to the default automatic policy.
+func (c SwapVHTLCRecoveryConfig) WithDefaults() SwapVHTLCRecoveryConfig {
+	if c.MinRecoveryMarginBlocks == 0 {
+		c.MinRecoveryMarginBlocks = DefaultSwapRecoveryMinMarginBlocks
+	}
+	if c.MaxFeeRateSatPerKW == 0 {
+		c.MaxFeeRateSatPerKW = DefaultSwapRecoveryMaxFeeRateSatPerKW
+	}
+
+	return c
 }
 
 // SwapBackend is the in-Go handle exposed by swapclientserver after Register
@@ -611,6 +673,16 @@ type WalletConfig struct {
 
 // DefaultConfig returns a Config populated with sensible defaults.
 func DefaultConfig() *Config {
+	swapRecoveryGrace := DefaultSwapRecoveryCooperativeFailureGracePeriod
+	swapRecoveryMargin := DefaultSwapRecoveryMinMarginBlocks
+	swapRecoveryFeeCap := DefaultSwapRecoveryMaxFeeRateSatPerKW
+	swapRecovery := SwapVHTLCRecoveryConfig{
+		AutoEscalate:                  false,
+		CooperativeFailureGracePeriod: swapRecoveryGrace,
+		MinRecoveryMarginBlocks:       swapRecoveryMargin,
+		MaxFeeRateSatPerKW:            swapRecoveryFeeCap,
+	}
+
 	return &Config{
 		DataDir:    DefaultDataDir,
 		Network:    DefaultNetwork,
@@ -636,6 +708,7 @@ func DefaultConfig() *Config {
 		Swap: &SwapConfig{
 			ServerAddress:   "localhost:10030",
 			ServerTransport: RPCTransportGRPC,
+			VHTLCRecovery:   swapRecovery,
 		},
 		MaxOperatorFeeSat: DefaultMaxOperatorFeeSat,
 		OOR:               defaultOORConfig(),
@@ -758,6 +831,24 @@ func (c *Config) Validate() error {
 		c.RPC.Gateway.AllowedOrigins,
 	); err != nil {
 		return err
+	}
+	if c.Swap != nil {
+		c.Swap.VHTLCRecovery = c.Swap.VHTLCRecovery.WithDefaults()
+		recoveryPolicy := c.Swap.VHTLCRecovery
+		gracePeriod := recoveryPolicy.CooperativeFailureGracePeriod
+		if gracePeriod < 0 {
+			return fmt.Errorf("swap vhtlc recovery cooperative " +
+				"failure grace period must be non-negative")
+		}
+		if recoveryPolicy.AutoEscalate && gracePeriod == 0 {
+			return fmt.Errorf("swap vhtlc recovery cooperative " +
+				"failure grace period must be positive when " +
+				"auto escalation is enabled")
+		}
+		if c.Swap.VHTLCRecovery.MaxFeeRateSatPerKW <= 0 {
+			return fmt.Errorf("swap vhtlc recovery max fee rate " +
+				"must be positive")
+		}
 	}
 
 	return nil

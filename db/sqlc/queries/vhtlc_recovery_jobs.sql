@@ -35,7 +35,7 @@ ORDER BY updated_at ASC, created_at ASC;
 
 -- name: ListVHTLCRecoveryJobs :many
 SELECT * FROM vhtlc_recovery_jobs
-ORDER BY updated_at ASC, created_at ASC;
+ORDER BY updated_at DESC, created_at DESC;
 
 -- name: EscalateVHTLCRecoveryJob :execrows
 UPDATE vhtlc_recovery_jobs
@@ -45,6 +45,7 @@ SET state = CASE
     END,
     updated_at = $2,
     escalated_at = COALESCE(escalated_at, $2),
+    claim_preimage = COALESCE($3, claim_preimage),
     last_error = NULL
 WHERE id = $1
   AND state NOT IN ('completed', 'cancelled', 'failed');

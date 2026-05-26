@@ -79,6 +79,7 @@ func NewRootCmd() *cobra.Command {
 
 		// Advanced subtrees.
 		newArkCmd(),
+		newRecoveryCmd(),
 		newSwapCmd(),
 
 		devrpc.NewDevCmd(

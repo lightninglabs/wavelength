@@ -237,12 +237,14 @@ type paySession struct {
 	// refundSessionID stores the daemon OOR session id when this process
 	// submitted the refund, or the observed spender txid when a resume
 	// adopts an already-indexed refund spend.
-	refundSessionID    string
-	preimage           *lntypes.Preimage
-	interventionReason string
-	clientPubKey       *btcec.PublicKey
-	operatorPubKey     *btcec.PublicKey
-	serverPubKey       *btcec.PublicKey
+	refundSessionID         string
+	refundRecoveryID        string
+	refundRecoveryFailureAt time.Time
+	preimage                *lntypes.Preimage
+	interventionReason      string
+	clientPubKey            *btcec.PublicKey
+	operatorPubKey          *btcec.PublicKey
+	serverPubKey            *btcec.PublicKey
 }
 
 // PaySession is the exported alias for the client-side Ark-to-Lightning swap
@@ -701,6 +703,13 @@ func (s *paySession) waitForFundedVHTLC(ctx context.Context) error {
 			)
 		}
 		if preimage != nil {
+			if err := cancelVHTLCRecovery(
+				ctx, s.client.daemon, s.refundRecoveryID,
+				recoveryReasonServerClaimObserved, "",
+			); err != nil {
+				return newRetryableActionError(err)
+			}
+
 			return s.mutateAndPersist(ctx, func() error {
 				s.preimage = preimage
 
@@ -749,7 +758,9 @@ func (s *paySession) waitForFundedVHTLC(ctx context.Context) error {
 		if err := s.waitForNextPoll(ctx); err != nil {
 			if errors.Is(err, errSwapExpired) {
 				if s.fundingSessionID != "" {
-					return s.waitForFixedPoll(ctx)
+					return waitForFixedPoll(
+						ctx, s.client.waitPollInterval,
+					)
 				}
 
 				return s.mutateAndPersist(ctx, func() error {
@@ -849,6 +860,13 @@ func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 				btclog.Hex("hash", s.cfg.PaymentHash[:]),
 			)
 
+			if err := cancelVHTLCRecovery(
+				ctx, s.client.daemon, s.refundRecoveryID,
+				recoveryReasonServerClaimObserved, "",
+			); err != nil {
+				return newRetryableActionError(err)
+			}
+
 			return s.mutateAndPersist(ctx, func() error {
 				s.preimage = preimage
 
@@ -909,6 +927,13 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 			btclog.Hex("hash", s.cfg.PaymentHash[:]),
 		)
 
+		if err := cancelVHTLCRecovery(
+			ctx, s.client.daemon, s.refundRecoveryID,
+			recoveryReasonServerClaimBeforeRefund, "",
+		); err != nil {
+			return newRetryableActionError(err)
+		}
+
 		return s.mutateAndPersist(ctx, func() error {
 			s.preimage = preimage
 
@@ -928,6 +953,14 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 		return s.markRefunded(ctx, spentVHTLC)
 	}
 
+	recoveryHandled, err := s.reconcilePayRefundRecovery(ctx)
+	if err != nil {
+		return newRetryableActionError(err)
+	}
+	if recoveryHandled {
+		return nil
+	}
+
 	funded, err := s.observeRefundableVHTLC(ctx)
 	if err != nil {
 		return newRetryableActionError(
@@ -936,7 +969,7 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 		)
 	}
 	if !funded {
-		return s.waitForFixedPoll(ctx)
+		return waitForFixedPoll(ctx, s.client.waitPollInterval)
 	}
 
 	height, err := s.client.daemon.BlockHeight(ctx)
@@ -953,7 +986,7 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 			),
 		)
 
-		return s.waitForFixedPoll(ctx)
+		return waitForFixedPoll(ctx, s.client.waitPollInterval)
 	}
 
 	if s.refundSessionID != "" {
@@ -985,7 +1018,19 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 		}},
 	)
 	if err != nil {
-		return fmt.Errorf("refund vHTLC: %w", err)
+		if armErr := s.ensurePayRefundRecoveryArmed(
+			ctx,
+		); armErr != nil {
+			return newRetryableActionError(armErr)
+		}
+
+		if escalateErr := s.maybeEscalatePayRefundRecovery(
+			ctx, err,
+		); escalateErr != nil {
+			return newRetryableActionError(escalateErr)
+		}
+
+		return waitForFixedPoll(ctx, s.client.waitPollInterval)
 	}
 	if refundSessionID == "" {
 		return fmt.Errorf("refund vHTLC returned empty session id")
@@ -1023,6 +1068,9 @@ func (s *paySession) observeRefundOutput(ctx context.Context) (*VTXOInfo,
 	if err != nil || refundOutput == nil {
 		return nil, err
 	}
+	if refundOutput.Outpoint == s.vhtlcOutpoint {
+		return nil, nil
+	}
 
 	if s.vhtlcAmount != 0 && refundOutput.AmountSat != s.vhtlcAmount {
 		return nil, fmt.Errorf("refund output amount %d does not "+
@@ -1053,6 +1101,10 @@ func (s *paySession) observeRefundableVHTLC(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
+	if err := s.ensurePayRefundRecoveryArmed(ctx); err != nil {
+		return false, err
+	}
+
 	return true, nil
 }
 
@@ -1071,6 +1123,12 @@ func (s *paySession) markRefundOutputIndexed(ctx context.Context,
 		slog.Int64("amount_sat", refundOutput.AmountSat),
 		slog.String("refund_session_id", s.refundSessionID),
 	)
+	if err := cancelVHTLCRecovery(
+		ctx, s.client.daemon, s.refundRecoveryID,
+		recoveryReasonRefundOutputIndexed, "",
+	); err != nil {
+		return newRetryableActionError(err)
+	}
 
 	return s.mutateAndPersist(ctx, func() error {
 		return s.transition(payEventRefunded)
@@ -1117,6 +1175,12 @@ func (s *paySession) markRefundAccepted(ctx context.Context) error {
 	}
 	if s.refundSessionID == "" {
 		return fmt.Errorf("missing refund session id")
+	}
+	if err := cancelVHTLCRecovery(
+		ctx, s.client.daemon, s.refundRecoveryID,
+		recoveryReasonRefundAccepted, "",
+	); err != nil {
+		return newRetryableActionError(err)
 	}
 
 	return s.mutateAndPersist(ctx, func() error {
@@ -1218,6 +1282,10 @@ func (s *paySession) observeLiveVHTLC(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
+	if err := s.ensurePayRefundRecoveryArmed(ctx); err != nil {
+		return false, err
+	}
+
 	return true, nil
 }
 
@@ -1241,23 +1309,6 @@ func (s *paySession) waitForNextPoll(ctx context.Context) error {
 	}
 
 	timer := time.NewTimer(wait)
-	defer timer.Stop()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-
-	case <-timer.C:
-		return nil
-	}
-}
-
-// waitForFixedPoll sleeps for one poll interval without consulting the swap
-// deadline. It is used after a funding send may already have been accepted,
-// because the client must keep reconciling until the vHTLC appears and can be
-// claimed or refunded.
-func (s *paySession) waitForFixedPoll(ctx context.Context) error {
-	timer := time.NewTimer(s.client.waitPollInterval)
 	defer timer.Stop()
 
 	select {
