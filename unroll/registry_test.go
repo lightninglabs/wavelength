@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1505,6 +1506,62 @@ func TestRegistryRestoreFailureLeavesRecordRetryable(t *testing.T) {
 	require.True(t, status.Found)
 	require.True(t, status.Active)
 	require.Equal(t, PhaseMaterializing, status.Phase)
+}
+
+// TestRegistryLateAdmissionFailureMarksFailed verifies that when the
+// registry's synchronous admission wait times out, the eventual child
+// start result is still observed and a late deterministic start failure
+// becomes a terminal registry record instead of leaving PhasePending
+// forever.
+func TestRegistryLateAdmissionFailureMarksFailed(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	store := newMemRegistryStore()
+
+	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
+		Store:          store,
+		DeliveryStore:  newMemCheckpointStore(),
+		ProofAssembler: &mockProofAssembler{proof: proof},
+		VTXOStore:      &mockVTXOStore{desc: desc},
+		TxConfirmRef:   &fakeTxConfirmRef{},
+		ChainSource:    &fakeRegistryChainSourceRef{height: 200},
+		Wallet:         &fakeSweepWallet{},
+	})
+	t.Cleanup(registry.Stop)
+
+	target := proof.TargetOutpoint()
+	child := newTestUnrollChild(
+		t, target, actor.NewFunctionBehavior(
+			func(context.Context, Msg) fn.Result[Resp] {
+				return fn.Ok[Resp](&AckResp{})
+			},
+		),
+	)
+
+	record := RegistryRecord{
+		TargetOutpoint: target,
+		ActorID:        child.Ref().ID(),
+		Trigger:        TriggerManual,
+		Phase:          PhasePending,
+	}
+	require.NoError(t, store.UpsertRecord(t.Context(), record))
+	registry.behavior.active[target] = child
+	registry.behavior.pending[target] = cloneRegistryRecord(record)
+
+	promise := actor.NewPromise[Resp]()
+	registry.behavior.watchChildAdmissionResult(
+		t.Context(), target, child, promise.Future(),
+	)
+	promise.Complete(fn.Err[Resp](errors.New("late start boom")))
+
+	require.Eventually(t, func() bool {
+		record, err := store.GetRecord(t.Context(), target)
+		require.NoError(t, err)
+
+		return record != nil &&
+			record.Phase == PhaseFailed &&
+			strings.Contains(record.FailReason, "late start boom")
+	}, testTimeout, 10*time.Millisecond)
 }
 
 // TestRegistryEnsureRestoresFailedNonTerminalRecord verifies that when a
