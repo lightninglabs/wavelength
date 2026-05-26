@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lightninglabs/darepo-client/darepod"
@@ -120,4 +121,139 @@ func newTestConfigCommand(t *testing.T,
 	}
 
 	return v, cmd
+}
+
+// TestResolveBitcoindAuth covers the three branches of cookie-vs-
+// user/pass credential resolution: passthrough, cookie-file parsing,
+// and the mutual-exclusion guard.
+func TestResolveBitcoindAuth(t *testing.T) {
+	t.Parallel()
+
+	writeCookie := func(t *testing.T, contents string) string {
+		t.Helper()
+
+		dir := t.TempDir()
+		path := filepath.Join(dir, "bitcoind.cookie")
+		err := os.WriteFile(path, []byte(contents), 0o600)
+		if err != nil {
+			t.Fatalf("write cookie: %v", err)
+		}
+
+		return path
+	}
+
+	tests := []struct {
+		name       string
+		user       string
+		pass       string
+		cookie     func(t *testing.T) string
+		wantUser   string
+		wantPass   string
+		wantErrSub string
+	}{
+		{
+			name: "no inputs is passthrough",
+		},
+		{
+			name:     "explicit user and password are passthrough",
+			user:     "alice",
+			pass:     "secret",
+			wantUser: "alice",
+			wantPass: "secret",
+		},
+		{
+			name: "cookie only is parsed",
+			cookie: func(t *testing.T) string {
+				return writeCookie(t, "__cookie__:abc123")
+			},
+			wantUser: "__cookie__",
+			wantPass: "abc123",
+		},
+		{
+			name: "cookie tolerates surrounding whitespace",
+			cookie: func(t *testing.T) string {
+				return writeCookie(t, "  __cookie__:abc123\n")
+			},
+			wantUser: "__cookie__",
+			wantPass: "abc123",
+		},
+		{
+			name: "cookie preserves colons inside the password",
+			cookie: func(t *testing.T) string {
+				return writeCookie(t, "__cookie__:abc:def:ghi")
+			},
+			wantUser: "__cookie__",
+			wantPass: "abc:def:ghi",
+		},
+		{
+			name: "cookie plus user is rejected",
+			user: "alice",
+			cookie: func(t *testing.T) string {
+				return writeCookie(t, "__cookie__:abc123")
+			},
+			wantErrSub: "mutually exclusive",
+		},
+		{
+			name: "cookie plus pass is rejected",
+			pass: "secret",
+			cookie: func(t *testing.T) string {
+				return writeCookie(t, "__cookie__:abc123")
+			},
+			wantErrSub: "mutually exclusive",
+		},
+		{
+			name: "malformed cookie is reported",
+			cookie: func(t *testing.T) string {
+				return writeCookie(t, "no-colon-here")
+			},
+			wantErrSub: "unexpected format",
+		},
+		{
+			name: "missing cookie file is reported",
+			cookie: func(_ *testing.T) string {
+				return "/nonexistent/path/to/cookie"
+			},
+			wantErrSub: "read bitcoind cookie",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var cookiePath string
+			if tc.cookie != nil {
+				cookiePath = tc.cookie(t)
+			}
+
+			user, pass, err := resolveBitcoindAuth(
+				tc.user, tc.pass, cookiePath,
+			)
+			if tc.wantErrSub != "" {
+				if err == nil ||
+					!strings.Contains(
+						err.Error(), tc.wantErrSub,
+					) {
+
+					t.Fatalf("want error containing "+
+						"%q, got %v", tc.wantErrSub,
+						err)
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if user != tc.wantUser {
+				t.Fatalf("user: want %q, got %q", tc.wantUser,
+					user)
+			}
+			if pass != tc.wantPass {
+				t.Fatalf("pass: want %q, got %q", tc.wantPass,
+					pass)
+			}
+		})
+	}
 }

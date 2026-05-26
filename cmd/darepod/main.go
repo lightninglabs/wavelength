@@ -71,9 +71,16 @@ func newRootCmd() *cobra.Command {
 			host := v.GetString("bitcoind.host")
 			user := v.GetString("bitcoind.user")
 			pass := v.GetString("bitcoind.pass")
+			cookie := v.GetString("bitcoind.rpccookie")
 			if host != "" {
+				u, p, err := resolveBitcoindAuth(
+					user, pass, cookie,
+				)
+				if err != nil {
+					return err
+				}
 				cfg.PackageSubmitter = bitcoindrpc.New(
-					host, user, pass,
+					host, u, p,
 				)
 			}
 
@@ -170,8 +177,17 @@ func newRootCmd() *cobra.Command {
 	f.String("bitcoind.user", "",
 		"bitcoind RPC username",
 	)
-	f.String("bitcoind.pass", "",
-		"bitcoind RPC password",
+	f.String(
+		"bitcoind.pass", "", "bitcoind RPC password (prefer "+
+			"bitcoind.rpccookie: command-line passwords are "+
+			"visible to other users via 'ps')",
+	)
+	f.String(
+		"bitcoind.rpccookie", "", "path to bitcoind's '.cookie' "+
+			"auth file. Mutually exclusive with "+
+			"bitcoind.user/bitcoind.pass; preferred because "+
+			"the password never appears in process args or "+
+			"persistent config",
 	)
 
 	// Daemon RPC server flags.
@@ -543,4 +559,44 @@ func configureDaemonLogWriter(cfg *darepod.Config,
 	cfg.LogWriter = io.MultiWriter(bestEffortWriter{stdout}, logFile)
 
 	return logFile, nil
+}
+
+// resolveBitcoindAuth picks the bitcoind RPC credentials to use, given
+// the operator-supplied user/pass values and an optional path to a
+// bitcoind '.cookie' file. Cookie auth is preferred because it
+// removes two leak paths that plain user/pass have: passwords on the
+// command line are visible to every local process via 'ps', and
+// passwords in a persistent config file survive across restarts and
+// backups. The cookie file is regenerated on every bitcoind startup
+// and is mode 0600 by bitcoind. Mutual exclusion mirrors lnd's
+// behaviour and prevents silent precedence surprises.
+func resolveBitcoindAuth(user, pass, cookiePath string) (string, string,
+	error) {
+
+	if cookiePath != "" && (user != "" || pass != "") {
+		return "", "", fmt.Errorf("bitcoind.rpccookie is mutually " +
+			"exclusive with bitcoind.user / bitcoind.pass; set " +
+			"one or the other")
+	}
+
+	if cookiePath == "" {
+		return user, pass, nil
+	}
+
+	//nolint:gosec // G304: cookie path comes from operator config.
+	data, err := os.ReadFile(cookiePath)
+	if err != nil {
+		return "", "", fmt.Errorf("read bitcoind cookie %q: %w",
+			cookiePath, err)
+	}
+
+	// bitcoind writes "<user>:<password>" with no trailing newline,
+	// but tolerate stray whitespace from manual edits or copies.
+	parts := strings.SplitN(strings.TrimSpace(string(data)), ":", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("bitcoind cookie %q has unexpected "+
+			"format: want <user>:<password>", cookiePath)
+	}
+
+	return parts[0], parts[1], nil
 }
