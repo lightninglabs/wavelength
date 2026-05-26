@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo-client/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
@@ -36,7 +37,8 @@ func TestRESTSwapServerConnRequestChannelID(t *testing.T) {
 
 				body, err := protojson.Marshal(
 					&swaprpc.RequestChannelIdResponse{
-						RouteHint: routeHint,
+						RouteHint:    routeHint,
+						PayerFeeMsat: 123,
 					},
 				)
 				require.NoError(t, err)
@@ -55,10 +57,14 @@ func TestRESTSwapServerConnRequestChannelID(t *testing.T) {
 	require.NoError(t, err)
 
 	client := NewRESTSwapServerConn(server.URL)
-	hint, err := client.RequestChannelID(
-		t.Context(), clientPriv.PubKey(), lntypes.Hash{1}, 30,
+	quote, err := client.RequestChannelID(
+		t.Context(), clientPriv.PubKey(), lntypes.Hash{1},
+		btcutil.Amount(42_000), 30,
 	)
 	require.NoError(t, err)
+	hint := quote.RouteHint
 	require.Equal(t, uint64(42), hint.ChannelID)
 	require.Equal(t, nodeID, hint.NodeID)
+	require.EqualValues(t, 42_000, quote.ReceiveAmountSat)
+	require.EqualValues(t, 123, quote.PayerFeeMsat)
 }

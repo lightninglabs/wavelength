@@ -38,7 +38,8 @@ type testInSwapServerConn struct {
 
 // RequestChannelID is unused in these tests.
 func (c *testInSwapServerConn) RequestChannelID(_ context.Context,
-	_ *btcec.PublicKey, _ lntypes.Hash, _ uint32) (*RouteHint, error) {
+	_ *btcec.PublicKey, _ lntypes.Hash, _ btcutil.Amount, _ uint32) (
+	*OutSwapQuote, error) {
 
 	return nil, nil
 }

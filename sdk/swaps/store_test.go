@@ -200,6 +200,7 @@ func TestListSwapSummariesIncludesFeesAndPendingFilter(t *testing.T) {
 		ctx, swapsqlc.UpsertReceiveSwapParams{
 			PaymentHash:         receiveHash[:],
 			AmountSat:           21_000,
+			PayerFeeMsat:        123_000,
 			State:               receiveState,
 			Invoice:             "ln-receive",
 			Preimage:            receivePreimage[:],
@@ -245,6 +246,7 @@ func TestListSwapSummariesIncludesFeesAndPendingFilter(t *testing.T) {
 	require.Equal(t, SwapDirectionReceive, all[1].Direction)
 	require.Equal(t, "ln-receive", all[1].Invoice)
 	require.EqualValues(t, 0, all[1].FeeSat)
+	require.EqualValues(t, 123_000, all[1].PayerFeeMsat)
 	require.True(t, all[1].Pending)
 	require.False(t, all[2].Pending)
 
@@ -263,6 +265,7 @@ func TestListSwapSummariesIncludesFeesAndPendingFilter(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, SwapDirectionReceive, receiveSummary.Direction)
 	require.Equal(t, receiveState, receiveSummary.State)
+	require.EqualValues(t, 123_000, receiveSummary.PayerFeeMsat)
 }
 
 // testHash returns a deterministic 32-byte hash-like value.

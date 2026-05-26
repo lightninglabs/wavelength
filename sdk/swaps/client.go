@@ -65,6 +65,10 @@ type SwapSummary struct {
 	// FeeSat is the negotiated swap-server fee in satoshis when known.
 	FeeSat uint64
 
+	// PayerFeeMsat is the payer-paid Lightning route fee quoted for
+	// receive swaps. It is not deducted from AmountSat.
+	PayerFeeMsat uint64
+
 	// MaxFeeSat is the caller-provided maximum routing fee for pay swaps.
 	MaxFeeSat uint64
 
@@ -194,6 +198,19 @@ type RouteHint struct {
 	// CltvExpiryDelta is the CLTV expiry delta required by this
 	// hop.
 	CltvExpiryDelta uint32
+}
+
+// OutSwapQuote is the complete server quote for one Lightning-to-Ark receive
+// route.
+type OutSwapQuote struct {
+	// RouteHint is the private hop hint the SDK embeds in the invoice.
+	RouteHint *RouteHint
+
+	// ReceiveAmountSat is the exact Ark amount the receiver expects.
+	ReceiveAmountSat btcutil.Amount
+
+	// PayerFeeMsat is the payer-paid route fee quoted by the swap server.
+	PayerFeeMsat uint64
 }
 
 // VHTLCConfig holds the timelocks and keys for a vHTLC.
@@ -338,8 +355,8 @@ type InSwapConfig struct {
 type SwapServerConn interface {
 	// RequestChannelID asks the server for a route hint for this swap.
 	RequestChannelID(ctx context.Context, vhtlcPubkey *btcec.PublicKey,
-		paymentHash lntypes.Hash,
-		expirySeconds uint32) (*RouteHint, error)
+		paymentHash lntypes.Hash, amountSat btcutil.Amount,
+		expirySeconds uint32) (*OutSwapQuote, error)
 
 	// CreateInSwap initiates an Ark->LN swap on the server.
 	CreateInSwap(ctx context.Context, invoice string, maxFeeSat uint64,

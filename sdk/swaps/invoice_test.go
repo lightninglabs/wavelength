@@ -101,3 +101,46 @@ func TestInvoiceGeneratorIncludesPaymentAddress(t *testing.T) {
 	)
 	require.True(t, decoded.Features.HasFeature(lnwire.PaymentAddrOptional))
 }
+
+// TestInvoiceGeneratorPreservesPayerFeeRouteHint verifies receive invoices
+// encode the payer-paid route fee and keep multi-part payments disabled.
+func TestInvoiceGeneratorPreservesPayerFeeRouteHint(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := NewEphemeralInvoiceGenerator(
+		privKey, nil, &chaincfg.RegressionNetParams,
+	)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	routeHint := &RouteHint{
+		NodeID:          privKey.PubKey().SerializeCompressed(),
+		ChannelID:       42,
+		FeeBaseMsat:     0,
+		FeePropPpm:      10_000,
+		CltvExpiryDelta: 40,
+	}
+
+	invoice, _, err := creator.CreateInvoice(
+		context.Background(), btcutil.Amount(50_000),
+		"swap", routeHint, time.Hour, &preimage,
+	)
+	require.NoError(t, err)
+
+	decoded, err := zpay32.Decode(
+		string(invoice.PaymentRequest), &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+	require.Len(t, decoded.RouteHints, 1)
+	require.Len(t, decoded.RouteHints[0], 1)
+
+	hop := decoded.RouteHints[0][0]
+	require.Equal(t, uint32(0), hop.FeeBaseMSat)
+	require.Equal(t, uint32(10_000), hop.FeeProportionalMillionths)
+	require.False(t, decoded.Features.HasFeature(lnwire.MPPOptional))
+	require.False(t, decoded.Features.HasFeature(lnwire.MPPRequired))
+}

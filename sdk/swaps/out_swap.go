@@ -254,6 +254,7 @@ type ReceiveSession struct {
 	client         *SwapClient
 	amountSat      btcutil.Amount
 	memo           string
+	payerFeeMsat   uint64
 	state          ReceiveState
 	deadline       time.Time
 	createdAt      time.Time
@@ -632,19 +633,25 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	// database. The session is persisted before the invoice is returned to
 	// the caller.
 	expiry := time.Duration(defaultReceiveExpirySeconds) * time.Second
-	hint, err := s.client.server.RequestChannelID(
-		ctx, clientKey, paymentHash, defaultReceiveExpirySeconds,
+	quote, err := s.client.server.RequestChannelID(
+		ctx, clientKey, paymentHash, s.amountSat,
+		defaultReceiveExpirySeconds,
 	)
 	if err != nil {
 		return fmt.Errorf("request channel ID: %w", err)
 	}
+	if quote == nil || quote.RouteHint == nil {
+		return fmt.Errorf("route quote must be provided")
+	}
 
 	s.client.log.InfoS(ctx, "Received route hint from swap server",
-		slog.Uint64("channel_id", hint.ChannelID),
+		slog.Uint64("channel_id", quote.RouteHint.ChannelID),
+		slog.Uint64("payer_fee_msat", quote.PayerFeeMsat),
 	)
 
 	inv, hash, err := s.client.invoiceGen.CreateInvoiceWithKey(
-		ctx, s.amountSat, s.memo, hint, expiry, authKey, &preimage,
+		ctx, s.amountSat, s.memo, quote.RouteHint, expiry, authKey,
+		&preimage,
 	)
 	if err != nil {
 		return fmt.Errorf("create invoice: %w", err)
@@ -666,6 +673,7 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 		s.Invoice = string(inv.PaymentRequest)
 		s.Preimage = preimage
 		s.PaymentHash = hash
+		s.payerFeeMsat = quote.PayerFeeMsat
 		s.deadline = s.client.currentTime().Add(expiry)
 		if s.createdAt.IsZero() {
 			s.createdAt = s.client.currentTime()

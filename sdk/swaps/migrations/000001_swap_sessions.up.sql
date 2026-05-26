@@ -14,6 +14,10 @@ CREATE TABLE IF NOT EXISTS receive_swaps (
     -- amount_sat is the requested invoice amount in satoshis.
     amount_sat BIGINT NOT NULL,
 
+    -- payer_fee_msat is the payer-paid route fee quoted by the swap server.
+    -- The fee is not deducted from amount_sat.
+    payer_fee_msat BIGINT NOT NULL,
+
     -- state is the current client-side receive FSM state name.
     state TEXT NOT NULL,
 

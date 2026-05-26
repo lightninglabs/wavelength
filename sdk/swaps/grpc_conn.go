@@ -6,6 +6,7 @@ import (
 	"math"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo-client/rpc/restclient"
 	"github.com/lightninglabs/darepo-client/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -40,10 +41,13 @@ func NewRESTSwapServerConn(addr string,
 // Lightning-to-Ark receive flow.
 func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 	vhtlcPubkey *btcec.PublicKey, paymentHash lntypes.Hash,
-	expirySeconds uint32) (*RouteHint, error) {
+	amountSat btcutil.Amount, expirySeconds uint32) (*OutSwapQuote, error) {
 
 	if vhtlcPubkey == nil {
 		return nil, fmt.Errorf("vHTLC pubkey must be provided")
+	}
+	if amountSat <= 0 {
+		return nil, fmt.Errorf("receive amount must be positive")
 	}
 
 	resp, err := g.client.RequestChannelId(
@@ -54,6 +58,7 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 			PaymentHash: append(
 				[]byte(nil), paymentHash[:]...,
 			),
+			AmountMsat: uint64(amountSat) * 1000,
 		},
 	)
 	if err != nil {
@@ -65,7 +70,13 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 		return nil, err
 	}
 
-	return hint, nil
+	return &OutSwapQuote{
+		RouteHint: hint,
+		// The server binds the route to the requested amount but does
+		// not echo it, so keep the caller's amount in the quote.
+		ReceiveAmountSat: amountSat,
+		PayerFeeMsat:     resp.GetPayerFeeMsat(),
+	}, nil
 }
 
 // CreateInSwap initiates one Ark-to-Lightning swap on the swap server.

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -76,6 +77,51 @@ func TestStartReceiveRejectsInvalidAmount(t *testing.T) {
 		t.Context(), btcutil.MaxSatoshi+1,
 	)
 	require.ErrorContains(t, err, "exceeds max bitcoin supply")
+}
+
+// TestStartReceiveRejectsPayerFeeOverflow verifies quoted route fees must fit
+// the signed SQLite column before a receive session can be persisted.
+func TestStartReceiveRejectsPayerFeeOverflow(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := &testInvoiceCreator{
+		invoice: &invoices.Invoice{
+			PaymentRequest: []byte("lnrtest1swap"),
+		},
+	}
+	serverPubKey := serverPriv.PubKey().SerializeCompressed()
+	serverConn := &testSwapServerConn{
+		hint: &RouteHint{
+			NodeID:          serverPubKey,
+			ChannelID:       99,
+			FeeBaseMsat:     1,
+			FeePropPpm:      2,
+			CltvExpiryDelta: 40,
+		},
+		payerFeeMsat: uint64(math.MaxInt64) + 1,
+	}
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+	}
+
+	client := NewSwapClientWithStore(
+		serverConn, daemonConn, nil, creator, newTestSwapStore(t),
+	)
+	_, err = client.StartReceiveViaLightning(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.ErrorContains(t, err, "payer fee")
+	require.ErrorContains(t, err, "overflows int64")
 }
 
 // TestStartReceiveDerivesReceiveAuthKeyPerPaymentHash verifies new receive
@@ -198,6 +244,7 @@ func TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy(t *testing.T) {
 
 type testSwapServerConn struct {
 	hint          *RouteHint
+	payerFeeMsat  uint64
 	cfg           *VHTLCConfig
 	htlcAmountSat uint64
 	waitErr       error
@@ -209,6 +256,7 @@ type testSwapServerConn struct {
 	lastAckCursor uint64
 
 	lastVhtlcPubkey *btcec.PublicKey
+	lastAmountSat   btcutil.Amount
 }
 
 type testIncomingEventReceiver struct {
@@ -254,12 +302,17 @@ func (r *testIncomingEventReceiver) WaitIncomingVHTLC(context.Context,
 
 // RequestChannelID returns the preconfigured out-swap route hint.
 func (c *testSwapServerConn) RequestChannelID(_ context.Context,
-	vhtlcPubkey *btcec.PublicKey, _ lntypes.Hash, _ uint32) (*RouteHint,
-	error) {
+	vhtlcPubkey *btcec.PublicKey, _ lntypes.Hash, amountSat btcutil.Amount,
+	_ uint32) (*OutSwapQuote, error) {
 
 	c.lastVhtlcPubkey = vhtlcPubkey
+	c.lastAmountSat = amountSat
 
-	return c.hint, nil
+	return &OutSwapQuote{
+		RouteHint:        c.hint,
+		ReceiveAmountSat: amountSat,
+		PayerFeeMsat:     c.payerFeeMsat,
+	}, nil
 }
 
 // WaitOutSwapHtlc returns the preconfigured out-swap HTLC event.
@@ -943,6 +996,7 @@ func TestReceiveSessionResumeFromStore(t *testing.T) {
 			FeePropPpm:      2,
 			CltvExpiryDelta: 40,
 		},
+		payerFeeMsat: 123_000,
 		cfg: &VHTLCConfig{
 			RefundLocktime:                       144,
 			UnilateralClaimDelay:                 12,
@@ -974,6 +1028,8 @@ func TestReceiveSessionResumeFromStore(t *testing.T) {
 		t.Context(), btcutil.Amount(42_000),
 	)
 	require.NoError(t, err)
+	require.EqualValues(t, 42_000, serverConn.lastAmountSat)
+	require.EqualValues(t, 123_000, session.payerFeeMsat)
 	require.Equal(t, 1, daemonConn.receiveAllocCalls)
 
 	daemonConn.vhtlc = &VTXOInfo{
@@ -992,6 +1048,7 @@ func TestReceiveSessionResumeFromStore(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, ReceiveStateInvoiceCreated, resumed.State())
+	require.EqualValues(t, 123_000, resumed.payerFeeMsat)
 
 	result, err := resumed.Wait(t.Context())
 	require.NoError(t, err)

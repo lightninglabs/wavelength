@@ -2,6 +2,7 @@
 INSERT INTO receive_swaps (
     payment_hash,
     amount_sat,
+    payer_fee_msat,
     state,
     invoice,
     preimage,
@@ -26,11 +27,12 @@ INSERT INTO receive_swaps (
     created_at_unix,
     updated_at_unix
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19, $20, $21, $22, $23, $24, $25
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+    $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     amount_sat = EXCLUDED.amount_sat,
+    payer_fee_msat = EXCLUDED.payer_fee_msat,
     state = EXCLUDED.state,
     invoice = EXCLUDED.invoice,
     preimage = EXCLUDED.preimage,
