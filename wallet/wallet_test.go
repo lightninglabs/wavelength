@@ -1214,13 +1214,13 @@ func TestGetBoardingBalance(t *testing.T) {
 
 	backend := &MockBoardingBackend{}
 	store := &MockBoardingStore{}
-	// handleGetBoardingBalance now queries three statuses (confirmed,
-	// sweep_pending, swept) so monitoring callers can break boarding
-	// balance down by lifecycle. Empty results are sufficient for the
-	// happy-path zero-balance assertion.
+	// handleGetBoardingBalance queries lifecycle statuses (confirmed,
+	// adopted, sweep_pending, swept) so monitoring callers can break
+	// boarding balance down by lifecycle. Empty results are sufficient for
+	// the happy-path zero-balance assertion.
 	for _, status := range []BoardingStatus{
-		BoardingStatusConfirmed, BoardingStatusSweepPending,
-		BoardingStatusSwept,
+		BoardingStatusConfirmed, BoardingStatusAdopted,
+		BoardingStatusSweepPending, BoardingStatusSwept,
 	} {
 		store.On(
 			"FetchBoardingIntentsByStatus",
@@ -1259,8 +1259,67 @@ func TestGetBoardingBalance(t *testing.T) {
 	require.Equal(t, 0, resp.UtxoCount)
 	require.Equal(t, btcutil.Amount(0), resp.UnconfirmedBalance)
 	require.Equal(t, 0, resp.UnconfirmedUtxoCount)
+	require.Equal(t, btcutil.Amount(0), resp.AdoptedBalance)
 	require.Equal(t, btcutil.Amount(0), resp.PendingSweepBalance)
 	require.Equal(t, btcutil.Amount(0), resp.SweptBalance)
+
+	backend.AssertExpectations(t)
+	store.AssertExpectations(t)
+}
+
+// TestGetBoardingBalanceIncludesAdoptedIntents verifies that a boarding UTXO
+// adopted into a round remains visible while the resulting VTXO is not yet
+// live.
+func TestGetBoardingBalanceIncludesAdoptedIntents(t *testing.T) {
+	t.Parallel()
+
+	backend := &MockBoardingBackend{}
+	store := &MockBoardingStore{}
+	store.On(
+		"FetchBoardingIntentsByStatus",
+		mock.Anything, BoardingStatusConfirmed,
+	).Return([]BoardingIntent{}, nil)
+	store.On(
+		"FetchBoardingIntentsByStatus",
+		mock.Anything, BoardingStatusAdopted,
+	).Return([]BoardingIntent{{
+		Status: BoardingStatusAdopted,
+		ChainInfo: BoardingChainInfo{
+			Amount: 100_000,
+		},
+	}}, nil)
+	store.On(
+		"FetchBoardingIntentsByStatus",
+		mock.Anything, BoardingStatusSweepPending,
+	).Return([]BoardingIntent{}, nil)
+	store.On(
+		"FetchBoardingIntentsByStatus",
+		mock.Anything, BoardingStatusSwept,
+	).Return([]BoardingIntent{}, nil)
+	backend.On(
+		"ListUnspent", mock.Anything, int32(0), int32(
+			MaxConfsForListUnspent,
+		),
+	).Return([]*Utxo{}, nil)
+
+	epochChan := make(chan chainsource.BlockEpoch, 1)
+	chainSource := newMockChainSourceActor(epochChan)
+
+	walletActor := NewArk(
+		backend, store, nil, chainSource, nil, fn.None[ledger.Sink](),
+		btclog.Disabled,
+	)
+
+	result := walletActor.Receive(
+		t.Context(), &GetBoardingBalanceRequest{},
+	)
+	require.True(t, result.IsOk())
+
+	respVal, _ := result.Unpack()
+	resp := respVal.(*GetBoardingBalanceResponse) //nolint:forcetypeassert
+	require.Equal(t, btcutil.Amount(100_000), resp.AdoptedBalance)
+	require.Equal(t, btcutil.Amount(0), resp.TotalBalance)
+	require.Equal(t, btcutil.Amount(0), resp.UnconfirmedBalance)
 
 	backend.AssertExpectations(t)
 	store.AssertExpectations(t)
@@ -1274,8 +1333,8 @@ func TestGetBoardingBalanceFiltersUnconfirmedUTXOs(t *testing.T) {
 	backend := &MockBoardingBackend{}
 	store := &MockBoardingStore{}
 	for _, status := range []BoardingStatus{
-		BoardingStatusConfirmed, BoardingStatusSweepPending,
-		BoardingStatusSwept,
+		BoardingStatusConfirmed, BoardingStatusAdopted,
+		BoardingStatusSweepPending, BoardingStatusSwept,
 	} {
 		store.On(
 			"FetchBoardingIntentsByStatus",

@@ -402,8 +402,10 @@ message GetBalanceResponse {
     // VTXOs.
     int64 vtxo_balance_sat = 3;
 
-    // total_confirmed_sat is the sum of all confirmed balances
-    // (boarding_confirmed_sat + vtxo_balance_sat).
+    // total_confirmed_sat is the sum of boarding_confirmed_sat +
+    // vtxo_balance_sat. boarding_adopted_sat is intentionally excluded
+    // because adopted funds are no longer confirmed boarding UTXOs and
+    // the resulting VTXOs are not yet live.
     int64 total_confirmed_sat = 4;
 
     // onchain_wallet_confirmed_sat is the total confirmed on-chain
@@ -425,6 +427,13 @@ message GetBalanceResponse {
     // total_confirmed_sat — once swept the funds reappear under
     // onchain_wallet_confirmed_sat.
     int64 boarding_swept_sat = 7;
+
+    // boarding_adopted_sat is the total amount of boarding UTXOs that
+    // have been accepted into a persisted round checkpoint but whose
+    // resulting VTXOs are not yet live. These funds are no longer visible
+    // as boarding address UTXOs, but remain pending inbound balance until
+    // the round's commitment transaction confirms.
+    int64 boarding_adopted_sat = 8;
 }
 
 // VTXOStatus represents the lifecycle state of a virtual transaction

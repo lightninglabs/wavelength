@@ -115,9 +115,11 @@ default builds avoid the swap executor's dependency graph.
 - **`Balance` projection** maps daemonrpc fields onto the walletrpc
   shape: `confirmed_sat` is VTXO-only (`vtxo_balance_sat`),
   `pending_in_sat` sums `boarding_confirmed_sat +
-  boarding_unconfirmed_sat`, and `pending_out_sat` mirrors
-  `boarding_pending_sweep_sat`. Confirmed-but-not-yet-boarded UTXOs
-  must NOT inflate `confirmed_sat` (issue #502).
+  boarding_unconfirmed_sat + boarding_adopted_sat`, and
+  `pending_out_sat` mirrors `boarding_pending_sweep_sat`.
+  Confirmed-but-not-yet-boarded UTXOs must NOT inflate
+  `confirmed_sat` (issue #502), and adopted-but-not-yet-live VTXOs
+  must stay pending inbound until commitment confirmation (issue #542).
 
 ## Deep Docs
 

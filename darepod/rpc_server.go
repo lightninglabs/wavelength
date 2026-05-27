@@ -484,7 +484,7 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 	// runs one ListUnspent per tip advance, and a slow backend can
 	// keep that call in flight long enough to stall the mailbox while
 	// a GetBalance Ask sits queued behind it. The actor's
-	// handleGetBoardingBalance is a pure read of three
+	// handleGetBoardingBalance is a pure read of boarding lifecycle
 	// FetchBoardingIntentsByStatus calls with no in-memory actor
 	// state, so this direct store read returns the same value
 	// without queuing behind the backlog. See bug-2 in BUGS_FOUND.md
@@ -564,6 +564,14 @@ func (r *RPCServer) fetchBoardingBalance(ctx context.Context,
 		return fmt.Errorf("fetch confirmed boarding balance: %w", err)
 	}
 	resp.BoardingConfirmedSat = int64(sumAmounts(confirmed))
+
+	adopted, err := boardingStore.FetchBoardingIntentsByStatus(
+		ctx, wallet.BoardingStatusAdopted,
+	)
+	if err != nil {
+		return fmt.Errorf("fetch adopted boarding balance: %w", err)
+	}
+	resp.BoardingAdoptedSat = int64(sumAmounts(adopted))
 
 	pendingSweep, err := boardingStore.FetchBoardingIntentsByStatus(
 		ctx, wallet.BoardingStatusSweepPending,

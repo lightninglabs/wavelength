@@ -116,9 +116,8 @@ func (m *GetBoardingBalanceRequest) MessageType() string {
 // walletMsgSealed implements the sealed WalletMsg interface.
 func (m *GetBoardingBalanceRequest) walletMsgSealed() {}
 
-// GetBoardingBalanceResponse contains the total boarding balance, UTXO
-// count, and the boarding-sweep accounting projections used by the daemon
-// monitoring surface.
+// GetBoardingBalanceResponse contains the total boarding balance, UTXO count,
+// and lifecycle accounting projections used by the daemon monitoring surface.
 type GetBoardingBalanceResponse struct {
 	actor.BaseMessage
 
@@ -137,6 +136,10 @@ type GetBoardingBalanceResponse struct {
 	// UnconfirmedUtxoCount is the number of zero-conf boarding UTXOs
 	// included in UnconfirmedBalance.
 	UnconfirmedUtxoCount int
+
+	// AdoptedBalance is the total amount of boarding UTXOs accepted into a
+	// persisted round checkpoint whose resulting VTXOs are not yet live.
+	AdoptedBalance btcutil.Amount
 
 	// PendingSweepBalance is the total amount of boarding UTXOs that
 	// have been included in a published-but-unconfirmed boarding-sweep

@@ -121,8 +121,8 @@ var MessageSpec = struct {
 		*GetActiveBoardingAddressesResponse,
 	]
 
-	// GetBoardingBalance returns the total balance across all confirmed
-	// boarding UTXOs.
+	// GetBoardingBalance returns the balance breakdown across boarding
+	// lifecycle states.
 	GetBoardingBalance Ask[
 		*GetBoardingBalanceRequest,
 		*GetBoardingBalanceResponse,

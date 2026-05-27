@@ -1388,8 +1388,10 @@ type GetBalanceResponse struct {
 	// vtxo_balance_sat is the total balance held in live (spendable)
 	// VTXOs.
 	VtxoBalanceSat int64 `protobuf:"varint,3,opt,name=vtxo_balance_sat,json=vtxoBalanceSat,proto3" json:"vtxo_balance_sat,omitempty"`
-	// total_confirmed_sat is the sum of all confirmed balances
-	// (boarding_confirmed_sat + vtxo_balance_sat).
+	// total_confirmed_sat is the sum of boarding_confirmed_sat +
+	// vtxo_balance_sat. boarding_adopted_sat is intentionally excluded
+	// because adopted funds are no longer confirmed boarding UTXOs and
+	// the resulting VTXOs are not yet live.
 	TotalConfirmedSat int64 `protobuf:"varint,4,opt,name=total_confirmed_sat,json=totalConfirmedSat,proto3" json:"total_confirmed_sat,omitempty"`
 	// onchain_wallet_confirmed_sat is the total confirmed on-chain
 	// balance of the backing wallet (all confirmed UTXOs, including
@@ -1408,8 +1410,14 @@ type GetBalanceResponse struct {
 	// total_confirmed_sat — once swept the funds reappear under
 	// onchain_wallet_confirmed_sat.
 	BoardingSweptSat int64 `protobuf:"varint,7,opt,name=boarding_swept_sat,json=boardingSweptSat,proto3" json:"boarding_swept_sat,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// boarding_adopted_sat is the total amount of boarding UTXOs that
+	// have been accepted into a persisted round checkpoint but whose
+	// resulting VTXOs are not yet live. These funds are no longer visible
+	// as boarding address UTXOs, but remain pending inbound balance until
+	// the round's commitment transaction confirms.
+	BoardingAdoptedSat int64 `protobuf:"varint,8,opt,name=boarding_adopted_sat,json=boardingAdoptedSat,proto3" json:"boarding_adopted_sat,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *GetBalanceResponse) Reset() {
@@ -1487,6 +1495,13 @@ func (x *GetBalanceResponse) GetBoardingPendingSweepSat() int64 {
 func (x *GetBalanceResponse) GetBoardingSweptSat() int64 {
 	if x != nil {
 		return x.BoardingSweptSat
+	}
+	return 0
+}
+
+func (x *GetBalanceResponse) GetBoardingAdoptedSat() int64 {
+	if x != nil {
+		return x.BoardingAdoptedSat
 	}
 	return 0
 }
@@ -7252,7 +7267,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fwallet_password\x18\x01 \x01(\fR\x0ewalletPassword\"?\n" +
 	"\x14UnlockWalletResponse\x12'\n" +
 	"\x0fidentity_pubkey\x18\x01 \x01(\tR\x0eidentityPubkey\"\x13\n" +
-	"\x11GetBalanceRequest\"\x8a\x03\n" +
+	"\x11GetBalanceRequest\"\xbc\x03\n" +
 	"\x12GetBalanceResponse\x124\n" +
 	"\x16boarding_confirmed_sat\x18\x01 \x01(\x03R\x14boardingConfirmedSat\x128\n" +
 	"\x18boarding_unconfirmed_sat\x18\x02 \x01(\x03R\x16boardingUnconfirmedSat\x12(\n" +
@@ -7260,7 +7275,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\x13total_confirmed_sat\x18\x04 \x01(\x03R\x11totalConfirmedSat\x12?\n" +
 	"\x1conchain_wallet_confirmed_sat\x18\x05 \x01(\x03R\x19onchainWalletConfirmedSat\x12;\n" +
 	"\x1aboarding_pending_sweep_sat\x18\x06 \x01(\x03R\x17boardingPendingSweepSat\x12,\n" +
-	"\x12boarding_swept_sat\x18\a \x01(\x03R\x10boardingSweptSat\"\xc6\x03\n" +
+	"\x12boarding_swept_sat\x18\a \x01(\x03R\x10boardingSweptSat\x120\n" +
+	"\x14boarding_adopted_sat\x18\b \x01(\x03R\x12boardingAdoptedSat\"\xc6\x03\n" +
 	"\x04VTXO\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1d\n" +
 	"\n" +
