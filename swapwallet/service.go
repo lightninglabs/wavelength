@@ -106,8 +106,8 @@ func (s *Service) List(ctx context.Context, req *walletdkrpc.ListRequest) (
 // Deposit returns a fresh boarding onchain address by delegating to the
 // daemon's existing NewAddress RPC. The wallet layer never derives keys or
 // constructs scripts itself.
-func (s *Service) Deposit(ctx context.Context, req *walletdkrpc.DepositRequest) (
-	*walletdkrpc.DepositResponse, error) {
+func (s *Service) Deposit(ctx context.Context,
+	req *walletdkrpc.DepositRequest) (*walletdkrpc.DepositResponse, error) {
 
 	if s.deps.RPCServer == nil {
 		return nil, status.Error(
@@ -156,8 +156,8 @@ func (s *Service) Deposit(ctx context.Context, req *walletdkrpc.DepositRequest) 
 // Balance composes the unified balance summary by reading the daemon's
 // existing GetBalance RPC and projecting its fields onto the flat
 // confirmed/pending shape exposed by the wallet layer.
-func (s *Service) Balance(ctx context.Context, req *walletdkrpc.BalanceRequest) (
-	*walletdkrpc.BalanceResponse, error) {
+func (s *Service) Balance(ctx context.Context,
+	req *walletdkrpc.BalanceRequest) (*walletdkrpc.BalanceResponse, error) {
 
 	return s.fetchBalance(ctx)
 }
@@ -277,8 +277,8 @@ func (s *Service) SubscribeWallet(req *walletdkrpc.SubscribeWalletRequest,
 
 // fetchBalance is the shared helper that pulls the daemon's GetBalance and
 // projects its richer breakdown onto the flat wallet shape.
-func (s *Service) fetchBalance(ctx context.Context) (*walletdkrpc.BalanceResponse,
-	error) {
+func (s *Service) fetchBalance(ctx context.Context) (
+	*walletdkrpc.BalanceResponse, error) {
 
 	if s.deps.RPCServer == nil {
 		return nil, status.Error(

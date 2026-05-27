@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	btcwalletrpc "github.com/btcsuite/btcwallet/rpc/walletrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/restclient"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
@@ -27,6 +28,8 @@ type Client struct {
 	daemon daemonrpc.DaemonServiceClient
 	swaps  swapclientrpc.SwapClientServiceClient
 	wallet walletdkrpc.WalletServiceClient
+	btcw   btcwalletrpc.WalletServiceClient
+	btcwV  btcwalletrpc.VersionServiceClient
 
 	canWallet bool
 	waitCh    <-chan error
@@ -114,6 +117,24 @@ func (c *Client) WalletRPC() walletdkrpc.WalletServiceClient {
 	}
 
 	return c.wallet
+}
+
+// BtcwalletRPC returns btcsuite btcwallet's native WalletService client.
+func (c *Client) BtcwalletRPC() btcwalletrpc.WalletServiceClient {
+	if c == nil {
+		return nil
+	}
+
+	return c.btcw
+}
+
+// BtcwalletVersionRPC returns btcsuite btcwallet's VersionService client.
+func (c *Client) BtcwalletVersionRPC() btcwalletrpc.VersionServiceClient {
+	if c == nil {
+		return nil
+	}
+
+	return c.btcwV
 }
 
 // ArkRPC returns the raw daemon RPC client for advanced callers.
@@ -727,11 +748,20 @@ func newClientWithRPC(conn grpc.ClientConnInterface,
 	wallet walletdkrpc.WalletServiceClient, canWallet bool,
 	waitCh <-chan error, closeFn func(context.Context) error) *Client {
 
+	var btcw btcwalletrpc.WalletServiceClient
+	var btcwV btcwalletrpc.VersionServiceClient
+	if conn != nil {
+		btcw = btcwalletrpc.NewWalletServiceClient(conn)
+		btcwV = btcwalletrpc.NewVersionServiceClient(conn)
+	}
+
 	return &Client{
 		conn:      conn,
 		daemon:    daemon,
 		swaps:     swaps,
 		wallet:    wallet,
+		btcw:      btcw,
+		btcwV:     btcwV,
 		canWallet: canWallet,
 		waitCh:    waitCh,
 		closeFn:   closeFn,

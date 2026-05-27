@@ -71,12 +71,14 @@ func TestKindFromSwapDirection(t *testing.T) {
 	t.Parallel()
 
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, kindFromSwapDirection(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		kindFromSwapDirection(
 			swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
 		),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV, kindFromSwapDirection(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		kindFromSwapDirection(
 			swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE,
 		),
 	)
@@ -286,9 +288,8 @@ func TestOnchainTxFromLedgerRow(t *testing.T) {
 	t.Parallel()
 
 	// Nil → empty (not a panic).
-	require.Equal(t,
-		&walletdkrpc.OnchainTx{},
-		onchainTxFromLedgerRow(nil),
+	require.Equal(
+		t, &walletdkrpc.OnchainTx{}, onchainTxFromLedgerRow(nil),
 	)
 
 	in := &daemonrpc.TransactionHistoryEntry{
@@ -383,7 +384,8 @@ func TestLeaveEntryStub(t *testing.T) {
 	require.Equal(t, "abc:0", out.GetId())
 	require.Equal(t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, out.GetKind())
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, out.GetStatus(),
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		out.GetStatus(),
 	)
 	require.Equal(t, int64(-5_000), out.GetAmountSat())
 	require.Equal(t, "rent", out.GetNote())

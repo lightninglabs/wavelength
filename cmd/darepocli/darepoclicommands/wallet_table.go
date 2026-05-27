@@ -50,15 +50,35 @@ func renderWalletActivityTable(out io.Writer,
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 
 	fmt.Fprintln(
-		w, "LAST "+
-			"UPDATE	KIND	STATUS	AMOUNT	FEE	PHASE	ID"+
-			"	NOTE",
+		w,
+		strings.Join(
+			[]string{
+				"LAST UPDATE",
+				"KIND",
+				"STATUS",
+				"AMOUNT",
+				"FEE",
+				"PHASE",
+				"ID",
+				"NOTE",
+			}, "	",
+		),
 	)
+
+	format := strings.Join([]string{
+		"%s",
+		"%s",
+		"%s",
+		"%d",
+		"%d",
+		"%s",
+		"%s",
+		"%s\n",
+	}, "\t")
+
 	for _, entry := range resp.GetActivity().GetEntries() {
 		fmt.Fprintf(
-			w,
-			"%s	%s	%s	%d	%d	%s	%s"+
-				"	%s\n",
+			w, format,
 			formatEntryTime(
 				entry.GetUpdatedAtUnix(),
 			),

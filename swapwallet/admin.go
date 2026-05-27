@@ -175,7 +175,9 @@ func (s *Service) exitStatus(ctx context.Context,
 // wallet-facing ExitJobStatus enum. The mapping is 1:1 today; the
 // projection sits at the wallet boundary so daemon-side renumbering or
 // new internal phases don't leak into the user surface.
-func exitStatusFromDaemon(s daemonrpc.UnrollJobStatus) walletdkrpc.ExitJobStatus {
+func exitStatusFromDaemon(
+	s daemonrpc.UnrollJobStatus) walletdkrpc.ExitJobStatus {
+
 	switch s {
 	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING:
 		return walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING
