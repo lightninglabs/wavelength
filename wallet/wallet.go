@@ -801,12 +801,13 @@ func (a *Ark) handleGetActiveBoardingAddresses(ctx context.Context,
 	return fn.Ok[WalletResp](resp)
 }
 
-// handleGetBoardingBalance queries boarding intents in their three
-// monitoring-relevant statuses (confirmed / sweep_pending / swept) and
-// sums them. Sweep-pending and swept totals power the
-// boarding_pending_sweep_sat and boarding_swept_sat fields exposed
-// through GetBalance, so dashboards see boarding funds in flight even
-// while a sweep tx awaits confirmation.
+// handleGetBoardingBalance queries boarding intents in their
+// monitoring-relevant statuses (confirmed / adopted / sweep_pending / swept)
+// and sums them. Adopted totals keep funds visible after a round checkpoint
+// spends the boarding UTXO but before the resulting VTXO confirms.
+// Sweep-pending and swept totals power the boarding_pending_sweep_sat and
+// boarding_swept_sat fields exposed through GetBalance, so dashboards see
+// boarding funds in flight even while a sweep tx awaits confirmation.
 //
 // CONTRACT: this handler must remain a pure read of the boarding
 // store. `darepod.RPCServer.fetchBoardingBalance` deliberately
@@ -825,6 +826,15 @@ func (a *Ark) handleGetBoardingBalance(ctx context.Context,
 	if err != nil {
 		return fn.Err[WalletResp](
 			fmt.Errorf("fetch confirmed intents: %w", err),
+		)
+	}
+
+	adopted, err := a.store.FetchBoardingIntentsByStatus(
+		ctx, BoardingStatusAdopted,
+	)
+	if err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("fetch adopted intents: %w", err),
 		)
 	}
 
@@ -868,6 +878,7 @@ func (a *Ark) handleGetBoardingBalance(ctx context.Context,
 		UtxoCount:            len(confirmed),
 		UnconfirmedBalance:   unconfirmed,
 		UnconfirmedUtxoCount: unconfirmedCount,
+		AdoptedBalance:       sumAmounts(adopted),
 		PendingSweepBalance:  sumAmounts(pendingSweep),
 		SweptBalance:         sumAmounts(swept),
 	}

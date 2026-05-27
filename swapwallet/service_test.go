@@ -83,6 +83,7 @@ func TestServiceBalanceProjectsDaemonGetBalance(t *testing.T) {
 		VtxoBalanceSat:          75_000,
 		BoardingConfirmedSat:    100_000,
 		BoardingUnconfirmedSat:  20_000,
+		BoardingAdoptedSat:      15_000,
 		TotalConfirmedSat:       175_000, // ignored by the mapping
 		BoardingPendingSweepSat: 5_000,
 	}
@@ -92,8 +93,29 @@ func TestServiceBalanceProjectsDaemonGetBalance(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, int64(75_000), resp.GetConfirmedSat())
-	require.Equal(t, int64(120_000), resp.GetPendingInSat())
+	require.Equal(t, int64(135_000), resp.GetPendingInSat())
 	require.Equal(t, int64(5_000), resp.GetPendingOutSat())
+}
+
+// TestServiceBalanceKeepsAdoptedBoardingPending pins issue #542: after a
+// boarding UTXO is adopted into a round, the underlying on-chain UTXO is
+// spent before the resulting VTXO is live. The balance must keep that value
+// pending inbound rather than dropping to zero during commitment confirmation.
+func TestServiceBalanceKeepsAdoptedBoardingPending(t *testing.T) {
+	t.Parallel()
+
+	svc, _, rpc := newServiceFixture(t)
+	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+		BoardingAdoptedSat: 100_000,
+	}
+
+	resp, err := svc.Balance(
+		t.Context(), &walletrpc.BalanceRequest{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), resp.GetConfirmedSat())
+	require.Equal(t, int64(100_000), resp.GetPendingInSat())
+	require.Equal(t, int64(0), resp.GetPendingOutSat())
 }
 
 // TestServiceBalanceConfirmedExcludesBoardingUTXOs pins the boarding
