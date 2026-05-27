@@ -1,6 +1,7 @@
 package swaps
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -372,6 +373,14 @@ func (c *testSwapServerConn) CreateInSwap(context.Context, string, uint64,
 	return nil, nil
 }
 
+// AuthorizeInSwapRefund is unused in these tests.
+func (c *testSwapServerConn) AuthorizeInSwapRefund(context.Context,
+	lntypes.Hash, string, int64, []byte, []byte, []byte) (
+	*InSwapRefundAuthorization, error) {
+
+	return nil, fmt.Errorf("unexpected in-swap refund authorization")
+}
+
 // Close closes the server connection.
 func (c *testSwapServerConn) Close() error {
 	return nil
@@ -465,6 +474,8 @@ type testDaemonConn struct {
 	receiveAuthErr    error
 	receiveAllocCalls int
 	sendSessionID     string
+	preparedOOR       *PreparedOOR
+	prepareOOREErr    error
 	sendPolicyErr     error
 	sendCustomErr     error
 	listSpentErr      error
@@ -535,6 +546,35 @@ func (d *testDaemonConn) SendOORWithCustomInputs(_ context.Context,
 	}
 
 	return d.sendSessionID, d.sendCustomErr
+}
+
+// PrepareOORWithCustomInputs records the requested package and returns
+// deterministic signing material for tests.
+func (d *testDaemonConn) PrepareOORWithCustomInputs(_ context.Context,
+	recipientPubKey []byte, _ int64, inputs []CustomInput) (*PreparedOOR,
+	error) {
+
+	if d.prepareOOREErr != nil {
+		return nil, d.prepareOOREErr
+	}
+	if d.preparedOOR != nil {
+		return d.preparedOOR, nil
+	}
+	if len(inputs) == 0 {
+		return nil, fmt.Errorf("custom input is required")
+	}
+
+	return &PreparedOOR{
+		CustomInputs: []PreparedOORCustomInput{{
+			Outpoint:       inputs[0].Outpoint,
+			CheckpointPSBT: []byte("checkpoint"),
+			WitnessScript:  []byte("witness"),
+			SigningPubKeys: [][]byte{
+				append([]byte(nil), recipientPubKey...),
+			},
+		}},
+		SessionID: d.sendSessionID,
+	}, nil
 }
 
 // IdentityPubKey returns the configured client key.
@@ -662,6 +702,14 @@ func (d *testDaemonConn) FindLiveVTXOByPkScript(_ context.Context,
 		if vtxo := d.liveByPkScript[scriptKey]; vtxo != nil {
 			return vtxo, nil
 		}
+	}
+	if d.receiveInfo != nil &&
+		bytes.Equal(d.receiveInfo.PkScript, pkScript) {
+		return nil, nil
+	}
+	if d.vhtlc != nil && len(d.vhtlc.PkScript) != 0 &&
+		!bytes.Equal(d.vhtlc.PkScript, pkScript) {
+		return nil, nil
 	}
 
 	return d.vhtlc, nil

@@ -362,6 +362,14 @@ type SwapServerConn interface {
 	CreateInSwap(ctx context.Context, invoice string, maxFeeSat uint64,
 		clientVhtlcPubkey *btcec.PublicKey) (*InSwapConfig, error)
 
+	// AuthorizeInSwapRefund asks the swap server to sign one exact
+	// cooperative refund spend after it has safely failed the Lightning
+	// payment.
+	AuthorizeInSwapRefund(ctx context.Context, paymentHash lntypes.Hash,
+		vhtlcOutpoint string, vhtlcAmountSat int64, vhtlcPolicyTemplate,
+		refundSpendPath,
+		checkpointPSBT []byte) (*InSwapRefundAuthorization, error)
+
 	// Close closes the connection.
 	Close() error
 }
@@ -386,6 +394,11 @@ type DaemonConn interface {
 	// standard pubkey-backed Ark receive destination.
 	SendOORWithCustomInputs(ctx context.Context, recipientPubKey []byte,
 		amountSat int64, inputs []CustomInput) (string, error)
+
+	// PrepareOORWithCustomInputs builds a deterministic custom-input OOR
+	// package without submitting it.
+	PrepareOORWithCustomInputs(ctx context.Context, recipientPubKey []byte,
+		amountSat int64, inputs []CustomInput) (*PreparedOOR, error)
 
 	// IdentityPubKey returns the client's identity pubkey.
 	IdentityPubKey(ctx context.Context) (*btcec.PublicKey, error)
@@ -443,11 +456,32 @@ type DaemonConn interface {
 // CustomInput aliases the Ark SDK's typed custom OOR input.
 type CustomInput = sdkark.CustomOORInput
 
+// PreparedOOR aliases the Ark SDK's deterministic prepared OOR view.
+type PreparedOOR = sdkark.PreparedOOR
+
+// PreparedOORCustomInput aliases the Ark SDK's prepared custom input view.
+type PreparedOORCustomInput = sdkark.PreparedOORCustomInput
+
+// TaprootScriptSignature aliases the Ark SDK's external tapscript signature.
+type TaprootScriptSignature = sdkark.TaprootScriptSignature
+
 // VTXOInfo aliases the Ark SDK's typed VTXO metadata.
 type VTXOInfo = sdkark.VTXOInfo
 
 // OORPackageInfo aliases the Ark SDK's typed indexed OOR session view.
 type OORPackageInfo = sdkark.IndexedOORSessionInfo
+
+// InSwapRefundAuthorization carries the swap server's cooperative refund
+// signature and the terminal Lightning failure reason that made it safe.
+type InSwapRefundAuthorization struct {
+	// Signature is the server's tapscript signature for the prepared
+	// refund checkpoint input.
+	Signature TaprootScriptSignature
+
+	// FailureReason describes why the swap server considers the Lightning
+	// payment terminal and therefore safe to refund immediately.
+	FailureReason string
+}
 
 // SwapClient is the high-level client API for Lightning<->Ark
 // swaps.
