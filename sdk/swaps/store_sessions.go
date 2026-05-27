@@ -555,6 +555,22 @@ func (s *paySession) persistFundingSessionID(ctx context.Context,
 	return nil
 }
 
+// persistRefundSessionID stores the accepted refund session id without
+// rolling back the in-memory id on persistence failure. Custom-input OOR
+// submission is a daemon-side side effect, so retries must remember that an
+// accepted refund already exists even if the swap DB write fails afterwards.
+func (s *paySession) persistRefundSessionID(ctx context.Context,
+	refundSessionID, reason string) error {
+
+	s.refundSessionID = refundSessionID
+	s.interventionReason = reason
+	if err := s.persist(ctx); err != nil {
+		return fmt.Errorf("persist pay refund session id: %w", err)
+	}
+
+	return nil
+}
+
 // persist writes the full pay session snapshot into the isolated swap store
 // when one is configured.
 func (s *paySession) persist(ctx context.Context) error {
