@@ -1,6 +1,7 @@
 package swaps
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -450,6 +451,54 @@ func TestWaitIncomingVHTLCNotificationRejectsMissingAckCursor(t *testing.T) {
 	require.Zero(t, session.pendingHTLCAckCursor)
 }
 
+// TestCancelVHTLCRecoveryIgnoresNotFound verifies stale local swap metadata can
+// forget a recovery id that no longer exists in the daemon's durable recovery
+// table.
+func TestCancelVHTLCRecoveryIgnoresNotFound(t *testing.T) {
+	t.Parallel()
+
+	daemonConn := &testDaemonConn{
+		cancelErr: status.Error(codes.NotFound, "missing recovery"),
+	}
+
+	err := cancelVHTLCRecovery(
+		t.Context(), daemonConn, "missing-recovery",
+		recoveryReasonClaimAccepted, "",
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, daemonConn.cancelCalls)
+	require.Equal(
+		t, "missing-recovery", daemonConn.lastCancel.GetRecoveryId(),
+	)
+}
+
+// TestWaitForVHTLCFailsOnUnregisteredScript verifies stale accepted receive
+// events stop retrying once the current principal can no longer query the
+// expected script.
+func TestWaitForVHTLCFailsOnUnregisteredScript(t *testing.T) {
+	t.Parallel()
+
+	pkScript := bytes.Repeat([]byte{0x02}, 34)
+	daemonConn := &testDaemonConn{
+		liveLookupErr: status.Error(
+			codes.Internal, "indexer query failed: rpc error: "+
+				"code = Unauthenticated desc = script not "+
+				"registered for principal",
+		),
+	}
+	client := NewSwapClient(nil, daemonConn, nil, nil)
+
+	_, _, err := client.waitForVHTLC(
+		t.Context(), pkScript, time.Time{}, nil,
+	)
+	require.Error(t, err)
+	require.Contains(
+		t, failureReason(err),
+		"not registered for current principal",
+	)
+	require.Equal(t, 1, daemonConn.liveLookupCalls)
+}
+
 type testDaemonConn struct {
 	identityKey       *btcec.PublicKey
 	operatorKey       *btcec.PublicKey
@@ -469,11 +518,13 @@ type testDaemonConn struct {
 	sendPolicyErr     error
 	sendCustomErr     error
 	listSpentErr      error
+	liveLookupErr     error
 	spentLookupErr    error
 	spentLookupBlock  time.Duration
 	spendOnCustom     bool
 	sendPolicyCalls   int
 	sendCustomCalls   int
+	liveLookupCalls   int
 	spentLookupCalls  int
 	lastSendPolicy    []byte
 	lastClaimPubKey   []byte
@@ -762,6 +813,11 @@ func (d *testDaemonConn) ListSpentVTXOs(context.Context) ([]VTXOInfo, error) {
 // FindLiveVTXOByPkScript returns the preconfigured vHTLC.
 func (d *testDaemonConn) FindLiveVTXOByPkScript(_ context.Context,
 	pkScript []byte) (*VTXOInfo, error) {
+
+	d.liveLookupCalls++
+	if d.liveLookupErr != nil {
+		return nil, d.liveLookupErr
+	}
 
 	if d.liveByPkScript != nil {
 		scriptKey := hex.EncodeToString(pkScript)
