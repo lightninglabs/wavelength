@@ -146,7 +146,12 @@ func ParseSubmitPackageRequest(req *SubmitPackageRequest) (*psbt.Packet,
 // NewSubmitPackageResponse builds a typed proto response for SubmitPackage's
 // success branch. Operator-side rejections use NewSubmitPackageRejection.
 func NewSubmitPackageResponse(sessionID chainhash.Hash,
-	coSignedCheckpoints []*psbt.Packet) (*SubmitPackageResponse, error) {
+	args ...interface{}) (*SubmitPackageResponse, error) {
+
+	coSignedCheckpoints, err := submitPackageResponseCheckpoints(args)
+	if err != nil {
+		return nil, err
+	}
 
 	checkpointRaw, err := encodePSBTSlice(coSignedCheckpoints)
 	if err != nil {
@@ -161,6 +166,44 @@ func NewSubmitPackageResponse(sessionID chainhash.Hash,
 			},
 		},
 	}, nil
+}
+
+// submitPackageResponseCheckpoints accepts both the current response helper
+// shape, (sessionID, checkpoints), and the older darepo module shape,
+// (sessionID, arkPSBT, checkpoints). The protobuf success branch no longer
+// carries the co-signed Ark PSBT, so the compatibility argument is ignored.
+func submitPackageResponseCheckpoints(args []interface{}) ([]*psbt.Packet,
+	error) {
+
+	switch len(args) {
+	case 1:
+		checkpoints, ok := args[0].([]*psbt.Packet)
+		if !ok {
+			return nil, fmt.Errorf("submit response checkpoints "+
+				"have type %T, want []*psbt.Packet", args[0])
+		}
+
+		return checkpoints, nil
+
+	case 2:
+		if _, ok := args[0].(*psbt.Packet); !ok && args[0] != nil {
+			return nil, fmt.Errorf("submit response ark PSBT has "+
+				"type %T, want *psbt.Packet", args[0])
+		}
+
+		checkpoints, ok := args[1].([]*psbt.Packet)
+		if !ok {
+			return nil, fmt.Errorf("submit response checkpoints "+
+				"have type %T, want []*psbt.Packet", args[1])
+		}
+
+		return checkpoints, nil
+
+	default:
+		return nil, fmt.Errorf("submit response expects checkpoints "+
+			"or ark PSBT plus checkpoints, got %d arguments",
+			len(args))
+	}
 }
 
 // NewSubmitPackageRejection builds a typed proto rejection branch of

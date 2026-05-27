@@ -453,48 +453,9 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 			len(checkpoint.UnsignedTx.TxIn), len(checkpoint.Inputs))
 	}
 
-	// Defense-in-depth binding check: the caller-supplied witness script
-	// and control block must commit to a taproot output whose P2TR script
-	// is exactly the VTXO's pkScript. Without this, a malformed control
-	// block would coerce the signer into producing a Schnorr signature
-	// over an attacker-chosen tapscript. BuildCustomTransferInputs
-	// performs the same check at the RPC boundary; we re-verify here so
-	// downstream paths that bypass that constructor (e.g. persisted
-	// TransferInputSnapshots resumed from disk) are still covered.
-	if err := in.CustomSpend.VerifyBindsToPkScript(
-		in.VTXO.PkScript,
-	); err != nil {
-		return fmt.Errorf("custom spend path does not bind to VTXO "+
-			"pkScript: %w", err)
-	}
-
-	prevOut := &wire.TxOut{
-		Value:    int64(in.VTXO.Amount),
-		PkScript: in.VTXO.PkScript,
-	}
-
-	prevFetcher := txscript.NewCannedPrevOutputFetcher(
-		prevOut.PkScript, prevOut.Value,
-	)
-
-	sigHashes := txscript.NewTxSigHashes(
-		checkpoint.UnsignedTx, prevFetcher,
-	)
-
-	// Build the sign descriptor directly from the custom SpendInfo
-	// rather than deriving it from the VTXO's collaborative leaf.
-	signDesc := in.CustomSpend.SpendInfo.BuildSignDescriptor(
-		in.VTXO.ClientKey, prevOut, sigHashes, prevFetcher, 0,
-	)
-
-	sig, err := signer.SignOutputRaw(checkpoint.UnsignedTx, signDesc)
+	localSig, err := SignCustomCheckpointInput(signer, in, checkpoint)
 	if err != nil {
-		return fmt.Errorf("sign output: %w", err)
-	}
-
-	sigBytes := sig.Serialize()
-	if len(sigBytes) == 0 {
-		return fmt.Errorf("signer returned empty signature")
+		return err
 	}
 
 	// Attach the custom leaf script and client signature to the PSBT.
@@ -510,17 +471,24 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 
 	err = psbtutil.AddTaprootScriptSpendSig(
 		&checkpoint.Inputs[0], in.VTXO.ClientKey.PubKey,
-		in.CustomSpend.SpendInfo.WitnessScript, sigBytes,
-		signDesc.HashType,
+		in.CustomSpend.SpendInfo.WitnessScript, localSig.Signature,
+		localSig.SigHash,
+	)
+	if err != nil {
+		return err
+	}
+
+	err = attachExternalTaprootScriptSignatures(
+		in, &checkpoint.Inputs[0],
 	)
 	if err != nil {
 		return err
 	}
 
 	// If condition witness items are provided (e.g., hashlock
-	// preimage), assemble and set the final script witness. This
-	// combines the operator sig, client sig, condition items,
-	// witness script, and control block into BIP-174
+	// preimage), or if all custom-spend keys are known, assemble and set
+	// the final script witness. This combines all required signatures,
+	// condition items, witness script, and control block into BIP-174
 	// FinalScriptWitness format.
 	if len(in.CustomSpend.Conditions) > 0 {
 		err = arkscript.PutConditionWitnessPSBTInput(
@@ -529,7 +497,9 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 		if err != nil {
 			return err
 		}
+	}
 
+	if len(in.CustomSpendKeys) > 0 || len(in.CustomSpend.Conditions) > 0 {
 		err = assembleCustomFinalWitness(
 			in, &checkpoint.Inputs[0],
 		)
@@ -541,24 +511,134 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 	return nil
 }
 
+// SignCustomCheckpointInput signs a checkpoint input using the transfer
+// input's custom spend path and returns the raw tapscript signature.
+func SignCustomCheckpointInput(signer input.Signer, in *TransferInput,
+	checkpoint *psbt.Packet) (*ExternalTaprootScriptSignature, error) {
+
+	if signer == nil {
+		return nil, fmt.Errorf("signer must be provided")
+	}
+
+	if in == nil || in.VTXO == nil || in.CustomSpend == nil {
+		return nil, fmt.Errorf("custom transfer input is required")
+	}
+
+	if checkpoint == nil || checkpoint.UnsignedTx == nil {
+		return nil, fmt.Errorf("checkpoint psbt must include " +
+			"unsigned tx")
+	}
+
+	if len(checkpoint.UnsignedTx.TxIn) != 1 ||
+		len(checkpoint.Inputs) != 1 {
+		return nil, fmt.Errorf("checkpoint psbt must have exactly one "+
+			"input, got tx=%d psbt=%d",
+			len(checkpoint.UnsignedTx.TxIn), len(checkpoint.Inputs))
+	}
+
+	if err := in.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Defense-in-depth binding check: the caller-supplied witness script
+	// and control block must commit to a taproot output whose P2TR script
+	// is exactly the VTXO's pkScript. Without this, a malformed control
+	// block would coerce the signer into producing a Schnorr signature
+	// over an attacker-chosen tapscript.
+	if err := in.CustomSpend.VerifyBindsToPkScript(
+		in.VTXO.PkScript,
+	); err != nil {
+		return nil, fmt.Errorf("custom spend path does not bind to "+
+			"VTXO pkScript: %w", err)
+	}
+
+	prevOut := &wire.TxOut{
+		Value:    int64(in.VTXO.Amount),
+		PkScript: in.VTXO.PkScript,
+	}
+
+	prevFetcher := txscript.NewCannedPrevOutputFetcher(
+		prevOut.PkScript, prevOut.Value,
+	)
+	sigHashes := txscript.NewTxSigHashes(
+		checkpoint.UnsignedTx, prevFetcher,
+	)
+
+	signDesc := in.CustomSpend.SpendInfo.BuildSignDescriptor(
+		in.VTXO.ClientKey, prevOut, sigHashes, prevFetcher, 0,
+	)
+
+	sig, err := signer.SignOutputRaw(checkpoint.UnsignedTx, signDesc)
+	if err != nil {
+		return nil, fmt.Errorf("sign output: %w", err)
+	}
+
+	sigBytes := sig.Serialize()
+	if len(sigBytes) == 0 {
+		return nil, fmt.Errorf("signer returned empty signature")
+	}
+
+	return &ExternalTaprootScriptSignature{
+		PubKey:        in.VTXO.ClientKey.PubKey,
+		WitnessScript: in.CustomSpend.SpendInfo.WitnessScript,
+		Signature:     sigBytes,
+		SigHash:       signDesc.HashType,
+	}, nil
+}
+
+// attachExternalTaprootScriptSignatures copies externally produced custom
+// spend signatures into the checkpoint PSBT input.
+func attachExternalTaprootScriptSignatures(in *TransferInput,
+	pIn *psbt.PInput) error {
+
+	if len(in.ExternalSignatures) == 0 {
+		return nil
+	}
+
+	for i := range in.ExternalSignatures {
+		externalSig := in.ExternalSignatures[i]
+		if externalSig.PubKey == nil {
+			return fmt.Errorf("external signature %d pubkey is "+
+				"required", i)
+		}
+
+		if !bytes.Equal(
+			externalSig.WitnessScript,
+			in.CustomSpend.SpendInfo.WitnessScript,
+		) {
+			return fmt.Errorf("external signature %d witness "+
+				"script mismatch", i)
+		}
+
+		err := psbtutil.AddTaprootScriptSpendSig(
+			pIn, externalSig.PubKey, externalSig.WitnessScript,
+			externalSig.Signature, externalSig.SigHash,
+		)
+		if err != nil {
+			return fmt.Errorf("add external signature %d: %w", i,
+				err)
+		}
+	}
+
+	return nil
+}
+
 // assembleCustomFinalWitness builds the FinalScriptWitness for a custom
 // spend path that requires condition witness elements beyond signatures.
 //
-// The witness stack is: [op_sig, client_sig, ...conditionItems,
-// witnessScript, controlBlock].
+// The witness stack is: [signatures in reverse script-key order,
+// ...conditionItems, witnessScript, controlBlock].
 func assembleCustomFinalWitness(in *TransferInput, pIn *psbt.PInput) error {
-	clientKeyBytes := schnorr.SerializePubKey(
-		in.VTXO.ClientKey.PubKey,
-	)
 	leafHash := txscript.NewBaseTapLeaf(
 		in.CustomSpend.SpendInfo.WitnessScript,
 	).TapHash()
 	leafHashBytes := leafHash[:]
 
-	// Find the operator sig: any TaprootScriptSpendSig that is NOT
-	// the client key on the same leaf.
-	var opSigBytes []byte
-	var clientSigBytes []byte
+	if len(in.CustomSpendKeys) == 0 {
+		return fmt.Errorf("custom spend key order is required")
+	}
+
+	sigsByPubKey := make(map[string][]byte, len(pIn.TaprootScriptSpendSig))
 
 	for _, sigRec := range pIn.TaprootScriptSpendSig {
 		if sigRec == nil {
@@ -569,28 +649,29 @@ func assembleCustomFinalWitness(in *TransferInput, pIn *psbt.PInput) error {
 			continue
 		}
 
-		if bytes.Equal(sigRec.XOnlyPubKey, clientKeyBytes) {
-			clientSigBytes = sigRec.Signature
-		} else {
-			opSigBytes = sigRec.Signature
-		}
+		sigsByPubKey[string(sigRec.XOnlyPubKey)] = sigRec.Signature
 	}
 
-	if len(opSigBytes) == 0 {
-		return fmt.Errorf("operator signature not found in psbt input")
-	}
-
-	if len(clientSigBytes) == 0 {
-		return fmt.Errorf("client signature not found in psbt input")
-	}
-
-	// Build the witness stack: op_sig, client_sig,
-	// ...conditionItems, witnessScript, controlBlock.
-	witnessItems := make([][]byte, 0,
-		2+len(in.CustomSpend.Conditions)+2,
+	witnessItems := make(
+		[][]byte, 0,
+		len(in.CustomSpendKeys)+len(in.CustomSpend.Conditions)+2,
 	)
-	witnessItems = append(witnessItems, opSigBytes)
-	witnessItems = append(witnessItems, clientSigBytes)
+	for i := len(in.CustomSpendKeys) - 1; i >= 0; i-- {
+		pubKey := in.CustomSpendKeys[i]
+		if pubKey == nil {
+			return fmt.Errorf("custom spend key %d is nil", i)
+		}
+
+		pubKeyBytes := schnorr.SerializePubKey(pubKey)
+		sigBytes := sigsByPubKey[string(pubKeyBytes)]
+		if len(sigBytes) == 0 {
+			return fmt.Errorf("signature for custom spend key %x "+
+				"not found in psbt input", pubKeyBytes)
+		}
+
+		witnessItems = append(witnessItems, sigBytes)
+	}
+
 	witnessItems = append(witnessItems, in.CustomSpend.Conditions...)
 	witnessItems = append(
 		witnessItems, in.CustomSpend.SpendInfo.WitnessScript,

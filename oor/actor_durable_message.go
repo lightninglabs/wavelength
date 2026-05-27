@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	clientdb "github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/tree"
@@ -106,6 +107,7 @@ const (
 	transferInputVTXOPolicyRecordType         tlv.Type = 14
 	transferInputRequiredSequenceRecordType   tlv.Type = 15
 	transferInputRequiredLockTimeRecordType   tlv.Type = 16
+	transferInputExternalSignaturesRecordType tlv.Type = 17
 )
 
 const (
@@ -1022,6 +1024,22 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 		)
 	}
 
+	if len(input.ExternalSignatures) > 0 {
+		sigBlob, sigErr := encodeExternalSignatures(
+			input.ExternalSignatures,
+		)
+		if sigErr != nil {
+			return nil, sigErr
+		}
+
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputExternalSignaturesRecordType,
+				&sigBlob,
+			),
+		)
+	}
+
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, err
@@ -1051,6 +1069,7 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		witnessScript      []byte
 		controlBlock       []byte
 		condBlob           []byte
+		externalSigBlob    []byte
 		requiredSequence   uint32
 		requiredLockTime   uint32
 	)
@@ -1109,6 +1128,10 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 			transferInputRequiredLockTimeRecordType,
 			&requiredLockTime,
 		),
+		tlv.MakePrimitiveRecord(
+			transferInputExternalSignaturesRecordType,
+			&externalSigBlob,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -1165,6 +1188,15 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		snap.ConditionWitness = items
 	}
 
+	if len(externalSigBlob) > 0 {
+		sigs, sigErr := decodeExternalSignatures(externalSigBlob)
+		if sigErr != nil {
+			return nil, sigErr
+		}
+
+		snap.ExternalSignatures = sigs
+	}
+
 	return snap, nil
 }
 
@@ -1184,6 +1216,19 @@ const (
 	// cannot hold any value that could not actually make it onto
 	// the chain.
 	maxConditionWitnessItemBytes = 520
+
+	// maxExternalSignatures caps additional signatures carried by one
+	// custom input. Current vHTLC refunds need one external swap-server
+	// signature.
+	maxExternalSignatures = 8
+
+	// maxExternalSignatureScriptBytes caps the witness script copied into
+	// each external signature record.
+	maxExternalSignatureScriptBytes = 520
+
+	// maxExternalSignatureBytes caps Schnorr signatures plus optional
+	// sighash byte.
+	maxExternalSignatureBytes = 65
 )
 
 // encodeConditionWitness serializes a list of witness items as
@@ -1247,6 +1292,138 @@ func decodeConditionWitness(raw []byte) ([][]byte, error) {
 	}
 
 	return items, nil
+}
+
+// encodeExternalSignatures serializes pre-collected tapscript signatures into a
+// bounded durable blob.
+func encodeExternalSignatures(sigs []ExternalTaprootScriptSignature) ([]byte,
+	error) {
+
+	if len(sigs) > maxExternalSignatures {
+		return nil, fmt.Errorf("external signature count %d exceeds "+
+			"maximum %d", len(sigs), maxExternalSignatures)
+	}
+
+	var buf bytes.Buffer
+	if err := wire.WriteVarInt(&buf, 0, uint64(len(sigs))); err != nil {
+		return nil, err
+	}
+
+	for i := range sigs {
+		sig := sigs[i]
+		if sig.PubKey == nil {
+			return nil, fmt.Errorf("external signature %d pubkey "+
+				"is required", i)
+		}
+
+		if len(sig.WitnessScript) > maxExternalSignatureScriptBytes {
+			return nil, fmt.Errorf("external signature %d witness "+
+				"script size %d exceeds maximum %d", i,
+				len(sig.WitnessScript),
+				maxExternalSignatureScriptBytes)
+		}
+
+		if len(sig.Signature) > maxExternalSignatureBytes {
+			return nil, fmt.Errorf("external signature %d size %d "+
+				"exceeds maximum %d", i, len(sig.Signature),
+				maxExternalSignatureBytes)
+		}
+
+		if err := wire.WriteVarBytes(
+			&buf, 0, sig.PubKey.SerializeCompressed(),
+		); err != nil {
+			return nil, err
+		}
+
+		if err := wire.WriteVarBytes(
+			&buf, 0, sig.WitnessScript,
+		); err != nil {
+			return nil, err
+		}
+
+		if err := wire.WriteVarBytes(
+			&buf, 0, sig.Signature,
+		); err != nil {
+			return nil, err
+		}
+
+		if err := binary.Write(
+			&buf, binary.BigEndian, uint32(sig.SigHash),
+		); err != nil {
+			return nil, err
+		}
+	}
+
+	return buf.Bytes(), nil
+}
+
+// decodeExternalSignatures deserializes the bounded durable external signature
+// blob.
+func decodeExternalSignatures(raw []byte) ([]ExternalTaprootScriptSignature,
+	error) {
+
+	r := bytes.NewReader(raw)
+	count, err := wire.ReadVarInt(r, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	if count > maxExternalSignatures {
+		return nil, fmt.Errorf("external signature count %d exceeds "+
+			"maximum %d", count, maxExternalSignatures)
+	}
+
+	result := make([]ExternalTaprootScriptSignature, 0, count)
+	for i := uint64(0); i < count; i++ {
+		pubKeyBytes, err := wire.ReadVarBytes(
+			r, 0, 33, "external signature pubkey",
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		pubKey, err := btcec.ParsePubKey(pubKeyBytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse external signature "+
+				"pubkey %d: %w", i, err)
+		}
+
+		witnessScript, err := wire.ReadVarBytes(
+			r, 0, maxExternalSignatureScriptBytes,
+			"external signature witness script",
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		signature, err := wire.ReadVarBytes(
+			r, 0, maxExternalSignatureBytes, "external signature",
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		var sigHash uint32
+		if err := binary.Read(
+			r, binary.BigEndian, &sigHash,
+		); err != nil {
+			return nil, err
+		}
+
+		result = append(result, ExternalTaprootScriptSignature{
+			PubKey:        pubKey,
+			WitnessScript: witnessScript,
+			Signature:     signature,
+			SigHash:       txscript.SigHashType(sigHash),
+		})
+	}
+
+	if r.Len() != 0 {
+		return nil, fmt.Errorf("external signatures contain trailing " +
+			"bytes")
+	}
+
+	return result, nil
 }
 
 func encodeSessionPayload(sessionID SessionID) ([]byte, error) {

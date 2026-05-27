@@ -277,6 +277,58 @@ type CustomOORInput struct {
 
 	// PkScript is the raw taproot output script of the spent VTXO.
 	PkScript []byte
+
+	// ExternalSignatures are tapscript signatures produced by additional
+	// parties required by the selected spend path.
+	ExternalSignatures []TaprootScriptSignature
+}
+
+// TaprootScriptSignature carries one externally produced tapscript signature
+// for a custom OOR input.
+type TaprootScriptSignature struct {
+	// PubKey is the compressed public key that produced the signature.
+	PubKey []byte
+
+	// WitnessScript is the tapscript leaf this signature commits to.
+	WitnessScript []byte
+
+	// Signature is the raw Schnorr signature, optionally followed by a
+	// one-byte sighash type when the sighash is not SIGHASH_DEFAULT.
+	Signature []byte
+
+	// SigHash is the tapscript sighash type. Zero means SIGHASH_DEFAULT.
+	SigHash uint32
+}
+
+// PreparedOORCustomInput carries signing data for one prepared custom input.
+type PreparedOORCustomInput struct {
+	// Outpoint identifies the custom input.
+	Outpoint string
+
+	// CheckpointPSBT is the serialized unsigned checkpoint PSBT to sign.
+	CheckpointPSBT []byte
+
+	// WitnessScript is the tapscript leaf external parties must sign.
+	WitnessScript []byte
+
+	// SigningPubKeys are the compressed public keys required by the spend
+	// path in script order.
+	SigningPubKeys [][]byte
+}
+
+// PreparedOOR describes the deterministic package returned by PrepareOOR.
+type PreparedOOR struct {
+	// ArkPSBT is the serialized unsigned Ark PSBT.
+	ArkPSBT []byte
+
+	// CheckpointPSBTs are the serialized unsigned checkpoint PSBTs.
+	CheckpointPSBTs [][]byte
+
+	// CustomInputs carries signing data for each prepared custom input.
+	CustomInputs []PreparedOORCustomInput
+
+	// SessionID is the deterministic OOR session id.
+	SessionID string
 }
 
 // WrapDaemonClient creates an Ark SDK facade from an already-connected daemon
@@ -830,19 +882,6 @@ func (c *Client) SendOORWithCustomInputs(ctx context.Context,
 	recipientPubKey []byte, amountSat int64, inputs []CustomOORInput) (
 	string, error) {
 
-	rpcInputs := make([]*daemonrpc.CustomOORInput, len(inputs))
-	for i := range inputs {
-		rpcInputs[i] = &daemonrpc.CustomOORInput{
-			Outpoint: inputs[i].Outpoint,
-			VtxoPolicyTemplate: append(
-				[]byte(nil), inputs[i].VTXOPolicyTemplate...,
-			),
-			SpendPath: append([]byte(nil), inputs[i].SpendPath...),
-			AmountSat: inputs[i].AmountSat,
-			PkScript:  append([]byte(nil), inputs[i].PkScript...),
-		}
-	}
-
 	resp, err := c.SendOOR(ctx, &daemonrpc.SendOORRequest{
 		Recipient: &daemonrpc.Output{
 			Destination: &daemonrpc.Output_Pubkey{
@@ -850,13 +889,162 @@ func (c *Client) SendOORWithCustomInputs(ctx context.Context,
 			},
 			AmountSat: amountSat,
 		},
-		CustomInputs: rpcInputs,
+		CustomInputs: customOORInputsToRPC(inputs),
 	})
 	if err != nil {
 		return "", err
 	}
 
 	return resp.GetSessionId(), nil
+}
+
+// PrepareOORWithCustomInputs builds a deterministic custom-input OOR package
+// without submitting it.
+func (c *Client) PrepareOORWithCustomInputs(ctx context.Context,
+	recipientPubKey []byte, amountSat int64, inputs []CustomOORInput) (
+	*PreparedOOR, error) {
+
+	rpcInputs := customOORInputsToRPC(inputs)
+	resp, err := c.daemon.PrepareOOR(
+		ctx, &daemonrpc.PrepareOORRequest{
+			Recipient: &daemonrpc.Output{
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: append(
+						[]byte(nil), recipientPubKey...,
+					),
+				},
+				AmountSat: amountSat,
+			},
+			CustomInputs: rpcInputs,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	preparedInputs := make(
+		[]PreparedOORCustomInput, 0,
+		len(
+			resp.GetCustomInputs(),
+		),
+	)
+	for _, input := range resp.GetCustomInputs() {
+		signingPubKeys := make(
+			[][]byte, 0,
+			len(
+				input.GetSigningPubkeys(),
+			),
+		)
+		for _, key := range input.GetSigningPubkeys() {
+			signingPubKeys = append(
+				signingPubKeys,
+				append(
+					[]byte(nil), key...,
+				),
+			)
+		}
+
+		preparedInputs = append(preparedInputs, PreparedOORCustomInput{
+			Outpoint: input.GetOutpoint(),
+			CheckpointPSBT: append(
+				[]byte(nil), input.GetCheckpointPsbt()...,
+			),
+			WitnessScript: append(
+				[]byte(nil), input.GetWitnessScript()...,
+			),
+			SigningPubKeys: signingPubKeys,
+		})
+	}
+
+	checkpoints := make([][]byte, 0, len(resp.GetCheckpointPsbts()))
+	for _, checkpoint := range resp.GetCheckpointPsbts() {
+		checkpoints = append(
+			checkpoints,
+			append(
+				[]byte(nil), checkpoint...,
+			),
+		)
+	}
+
+	return &PreparedOOR{
+		ArkPSBT:         append([]byte(nil), resp.GetArkPsbt()...),
+		CheckpointPSBTs: checkpoints,
+		CustomInputs:    preparedInputs,
+		SessionID:       resp.GetSessionId(),
+	}, nil
+}
+
+// SignOORCustomInput asks the daemon identity key to sign one prepared custom
+// OOR input.
+func (c *Client) SignOORCustomInput(ctx context.Context, input CustomOORInput,
+	checkpointPSBT []byte) (*TaprootScriptSignature, error) {
+
+	resp, err := c.daemon.SignOORCustomInput(
+		ctx, &daemonrpc.SignOORCustomInputRequest{
+			CustomInput:    customOORInputToRPC(input),
+			CheckpointPsbt: append([]byte(nil), checkpointPSBT...),
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	sig := resp.GetSignature()
+	if sig == nil {
+		return nil, fmt.Errorf("daemon returned empty custom input " +
+			"signature")
+	}
+
+	return &TaprootScriptSignature{
+		PubKey:        append([]byte(nil), sig.GetPubkey()...),
+		WitnessScript: append([]byte(nil), sig.GetWitnessScript()...),
+		Signature:     append([]byte(nil), sig.GetSignature()...),
+		SigHash:       sig.GetSighash(),
+	}, nil
+}
+
+// customOORInputsToRPC converts SDK custom input structs to RPC messages.
+func customOORInputsToRPC(inputs []CustomOORInput) []*daemonrpc.CustomOORInput {
+	rpcInputs := make([]*daemonrpc.CustomOORInput, len(inputs))
+	for i := range inputs {
+		rpcInputs[i] = customOORInputToRPC(inputs[i])
+	}
+
+	return rpcInputs
+}
+
+// customOORInputToRPC converts one SDK custom input struct to an RPC message.
+func customOORInputToRPC(input CustomOORInput) *daemonrpc.CustomOORInput {
+	externalSigs := make(
+		[]*daemonrpc.TaprootScriptSignature, 0,
+		len(input.ExternalSignatures),
+	)
+	for j := range input.ExternalSignatures {
+		sig := input.ExternalSignatures[j]
+		externalSigs = append(
+			externalSigs, &daemonrpc.TaprootScriptSignature{
+				Pubkey: append([]byte(nil), sig.PubKey...),
+				WitnessScript: append(
+					[]byte(nil), sig.WitnessScript...,
+				),
+				Signature: append(
+					[]byte(nil), sig.Signature...,
+				),
+				Sighash: sig.SigHash,
+			},
+		)
+	}
+
+	return &daemonrpc.CustomOORInput{
+		Outpoint: input.Outpoint,
+		VtxoPolicyTemplate: append(
+			[]byte(nil), input.VTXOPolicyTemplate...,
+		),
+		SpendPath:          append([]byte(nil), input.SpendPath...),
+		AmountSat:          input.AmountSat,
+		PkScript:           append([]byte(nil), input.PkScript...),
+		ExternalSignatures: externalSigs,
+	}
 }
 
 // ListLiveVTXOs returns the daemon's live spendable VTXOs as typed SDK-owned

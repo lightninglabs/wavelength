@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
@@ -42,6 +43,32 @@ type TransferInput struct {
 	// for non-standard VTXOs (e.g., vHTLC Claim path). When set,
 	// checkpoint signing uses this spend path directly.
 	CustomSpend *arkscript.SpendPath
+
+	// CustomSpendKeys are the public keys required by CustomSpend in script
+	// evaluation order. Witness assembly reverses this order because
+	// CHECKSIGVERIFY consumes signatures from the top of the stack.
+	CustomSpendKeys []*btcec.PublicKey
+
+	// ExternalSignatures are tapscript signatures produced by additional
+	// custom-spend participants before the local daemon adds its signature.
+	ExternalSignatures []ExternalTaprootScriptSignature
+}
+
+// ExternalTaprootScriptSignature carries one externally produced tapscript
+// signature for a custom OOR input.
+type ExternalTaprootScriptSignature struct {
+	// PubKey is the compressed public key that produced the signature.
+	PubKey *btcec.PublicKey
+
+	// WitnessScript is the tapscript leaf this signature commits to.
+	WitnessScript []byte
+
+	// Signature is the raw Schnorr signature, optionally followed by a
+	// one-byte sighash type when SigHash is not SIGHASH_DEFAULT.
+	Signature []byte
+
+	// SigHash is the tapscript sighash type. Zero means SIGHASH_DEFAULT.
+	SigHash txscript.SigHashType
 }
 
 // InputOutpoints returns the VTXO outpoints for the transfer inputs.
@@ -133,6 +160,19 @@ func (i *TransferInput) Validate() error {
 		return fmt.Errorf("owner leaf policy must be provided")
 	}
 
+	if i.CustomSpend != nil && len(i.CustomSpendKeys) == 0 &&
+		len(i.VTXOPolicyTemplate) > 0 {
+
+		keys, err := customSpendKeys(
+			i.VTXOPolicyTemplate, i.CustomSpend,
+		)
+		if err != nil {
+			return err
+		}
+
+		i.CustomSpendKeys = keys
+	}
+
 	return nil
 }
 
@@ -193,6 +233,60 @@ func (i *TransferInput) EffectiveSpendPath() (*arkscript.SpendPath, error) {
 // leaf.
 func (i *TransferInput) IsCustomSpend() bool {
 	return i.CustomSpend != nil
+}
+
+// customSpendKeys returns the signing keys required by spendPath in script
+// order by matching the spend path witness script to the semantic policy leaf.
+func customSpendKeys(policyTemplate []byte,
+	spendPath *arkscript.SpendPath) ([]*btcec.PublicKey, error) {
+
+	if spendPath == nil {
+		return nil, fmt.Errorf("custom spend path must be provided")
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(policyTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("decode custom spend policy: %w", err)
+	}
+
+	for _, leaf := range template.Leaves {
+		script, err := leaf.Script()
+		if err != nil {
+			return nil, fmt.Errorf("compile custom spend leaf: %w",
+				err)
+		}
+
+		if !bytes.Equal(script, spendPath.WitnessScript) {
+			continue
+		}
+
+		keys := multisigKeys(leaf.Node)
+		if len(keys) == 0 {
+			return nil, fmt.Errorf("custom spend leaf has no " +
+				"multisig keys")
+		}
+
+		return keys, nil
+	}
+
+	return nil, fmt.Errorf("custom spend leaf not found in policy")
+}
+
+// multisigKeys extracts the first multisig key set from a semantic node.
+func multisigKeys(node arkscript.Node) []*btcec.PublicKey {
+	switch n := node.(type) {
+	case *arkscript.Multisig:
+		return append([]*btcec.PublicKey(nil), n.Keys...)
+
+	case *arkscript.Condition:
+		return multisigKeys(n.Inner)
+
+	case *arkscript.CSV:
+		return multisigKeys(n.Inner)
+
+	default:
+		return nil
+	}
 }
 
 // defaultVTXOPolicyTemplate derives the standard semantic policy for inputs

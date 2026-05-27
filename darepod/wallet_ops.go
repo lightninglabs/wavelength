@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
@@ -279,10 +280,57 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 			input.CustomSpend = spendPath
 		}
 
+		input.ExternalSignatures, err = customTaprootScriptSignatures(
+			ci.ExternalSignatures,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("decode external signatures "+
+				"for %s: %w", outpoint, err)
+		}
+
 		inputs = append(inputs, input)
 	}
 
 	return inputs, nil
+}
+
+// customTaprootScriptSignatures decodes RPC external signature records into
+// the OOR domain representation.
+func customTaprootScriptSignatures(
+	rpcSigs []*daemonrpc.TaprootScriptSignature) (
+	[]oor.ExternalTaprootScriptSignature, error) {
+
+	result := make([]oor.ExternalTaprootScriptSignature, 0, len(rpcSigs))
+	for i, rpcSig := range rpcSigs {
+		if rpcSig == nil {
+			return nil, fmt.Errorf("signature %d is nil", i)
+		}
+
+		pubKey, err := btcec.ParsePubKey(rpcSig.GetPubkey())
+		if err != nil {
+			return nil, fmt.Errorf("parse pubkey %d: %w", i, err)
+		}
+
+		if len(rpcSig.GetWitnessScript()) == 0 {
+			return nil, fmt.Errorf("signature %d witness script "+
+				"is required", i)
+		}
+
+		if len(rpcSig.GetSignature()) == 0 {
+			return nil, fmt.Errorf("signature %d is required", i)
+		}
+
+		result = append(result, oor.ExternalTaprootScriptSignature{
+			PubKey:        pubKey,
+			WitnessScript: bytes.Clone(rpcSig.GetWitnessScript()),
+			Signature:     bytes.Clone(rpcSig.GetSignature()),
+			SigHash: txscript.SigHashType(
+				rpcSig.GetSighash(),
+			),
+		})
+	}
+
+	return result, nil
 }
 
 // findSettlementOwnerLeaf maps a custom auth spend path to the
