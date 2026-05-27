@@ -1649,6 +1649,15 @@ func encodeVHTLCPolicyTemplate(policy *arkscript.VHTLCPolicy) ([]byte, error) {
 
 // waitForVHTLC polls the authoritative indexer until the expected vHTLC is
 // live, then returns its outpoint and amount.
+//
+// The polled pkScript is derived locally from the vHTLC policy parameters
+// supplied by the swap server. A persistent loop where the indexer keeps
+// rejecting the query (e.g. "Unauthenticated: script not registered for
+// principal") usually means the local and remote `lib/arkscript` packages
+// disagree on the vHTLC script structure, so the funded output is at a
+// different pkScript than this side derives. The bundled log includes the
+// indexer's error wording and the queried pkScript so the operator can
+// match it against the on-chain output for diagnosis.
 func (c *SwapClient) waitForVHTLC(ctx context.Context, pkScript []byte,
 	deadline time.Time, keepWaiting func(context.Context) error) (string,
 	int64, error) {
@@ -1662,7 +1671,7 @@ func (c *SwapClient) waitForVHTLC(ctx context.Context, pkScript []byte,
 		vtxo, err := c.daemon.FindLiveVTXOByPkScript(ctx, pkScript)
 		if err != nil {
 			c.log.DebugS(ctx, "Unable to query vHTLC state",
-				err,
+				slog.String("err", err.Error()),
 				slog.String("pk_script", pkScriptHex),
 			)
 		}
