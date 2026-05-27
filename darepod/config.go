@@ -445,10 +445,10 @@ func (c SwapVHTLCRecoveryConfig) WithDefaults() SwapVHTLCRecoveryConfig {
 }
 
 // SwapBackend is the in-Go handle exposed by swapclientserver after Register
-// completes. It lets higher-level subservers (such as the walletdkrpc subserver)
-// drive the swap runtime without dialing the daemon's gRPC server from inside
-// the same process. The interface is intentionally small and grows only as
-// new wallet-layer needs arise.
+// completes. It lets higher-level subservers (such as the walletdkrpc
+// subserver) drive the swap runtime without dialing the daemon's gRPC server
+// from inside the same process. The interface is intentionally small and grows
+// only as new wallet-layer needs arise.
 type SwapBackend interface {
 	// ResumePending re-arms background workers for every persisted
 	// pending swap session. It is idempotent: payment hashes already

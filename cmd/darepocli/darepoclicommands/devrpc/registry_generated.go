@@ -2,6 +2,7 @@
 package devrpc
 
 import (
+	_ "github.com/btcsuite/btcwallet/rpc/walletrpc"
 	_ "github.com/lightninglabs/darepo-client/daemonrpc"
 	_ "github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 )
@@ -323,6 +324,149 @@ func generatedRegistry() []serviceSpec {
 					Output:          "swapclientrpc.SubscribeSwapsResponse",
 					ServerStreaming: true,
 					Comments:        "SubscribeSwaps streams swap updates observed by the daemon. When\ninclude_existing is set, the snapshot is sent before the live\nsubscription is registered, so callers that require a complete current\nview should reconcile with ListSwaps or GetSwap after reconnect.",
+				},
+			},
+		},
+		{
+			FullName: "walletrpc.VersionService",
+			Aliases:  []string{"btcwallet-version"},
+			Comments: "",
+			Methods: []methodSpec{
+				{
+					Name:     "Version",
+					Aliases:  []string{"version"},
+					Input:    "walletrpc.VersionRequest",
+					Output:   "walletrpc.VersionResponse",
+					Comments: "",
+				},
+			},
+		},
+		{
+			FullName: "walletrpc.WalletService",
+			Aliases:  []string{"btcwallet"},
+			Comments: "",
+			Methods: []methodSpec{
+				{
+					Name:     "Ping",
+					Aliases:  []string{"ping"},
+					Input:    "walletrpc.PingRequest",
+					Output:   "walletrpc.PingResponse",
+					Comments: "",
+				},
+				{
+					Name:     "Network",
+					Aliases:  []string{"network"},
+					Input:    "walletrpc.NetworkRequest",
+					Output:   "walletrpc.NetworkResponse",
+					Comments: "",
+				},
+				{
+					Name:     "AccountNumber",
+					Aliases:  []string{"account-number"},
+					Input:    "walletrpc.AccountNumberRequest",
+					Output:   "walletrpc.AccountNumberResponse",
+					Comments: "",
+				},
+				{
+					Name:     "Accounts",
+					Aliases:  []string{"accounts"},
+					Input:    "walletrpc.AccountsRequest",
+					Output:   "walletrpc.AccountsResponse",
+					Comments: "",
+				},
+				{
+					Name:     "Balance",
+					Aliases:  []string{"balance"},
+					Input:    "walletrpc.BalanceRequest",
+					Output:   "walletrpc.BalanceResponse",
+					Comments: "",
+				},
+				{
+					Name:     "GetTransactions",
+					Aliases:  []string{"get-transactions"},
+					Input:    "walletrpc.GetTransactionsRequest",
+					Output:   "walletrpc.GetTransactionsResponse",
+					Comments: "",
+				},
+				{
+					Name:            "TransactionNotifications",
+					Aliases:         []string{"transaction-notifications"},
+					Input:           "walletrpc.TransactionNotificationsRequest",
+					Output:          "walletrpc.TransactionNotificationsResponse",
+					ServerStreaming: true,
+					Comments:        "",
+				},
+				{
+					Name:            "SpentnessNotifications",
+					Aliases:         []string{"spentness-notifications"},
+					Input:           "walletrpc.SpentnessNotificationsRequest",
+					Output:          "walletrpc.SpentnessNotificationsResponse",
+					ServerStreaming: true,
+					Comments:        "",
+				},
+				{
+					Name:            "AccountNotifications",
+					Aliases:         []string{"account-notifications"},
+					Input:           "walletrpc.AccountNotificationsRequest",
+					Output:          "walletrpc.AccountNotificationsResponse",
+					ServerStreaming: true,
+					Comments:        "",
+				},
+				{
+					Name:     "ChangePassphrase",
+					Aliases:  []string{"change-passphrase"},
+					Input:    "walletrpc.ChangePassphraseRequest",
+					Output:   "walletrpc.ChangePassphraseResponse",
+					Comments: "",
+				},
+				{
+					Name:     "RenameAccount",
+					Aliases:  []string{"rename-account"},
+					Input:    "walletrpc.RenameAccountRequest",
+					Output:   "walletrpc.RenameAccountResponse",
+					Comments: "",
+				},
+				{
+					Name:     "NextAccount",
+					Aliases:  []string{"next-account"},
+					Input:    "walletrpc.NextAccountRequest",
+					Output:   "walletrpc.NextAccountResponse",
+					Comments: "",
+				},
+				{
+					Name:     "NextAddress",
+					Aliases:  []string{"next-address"},
+					Input:    "walletrpc.NextAddressRequest",
+					Output:   "walletrpc.NextAddressResponse",
+					Comments: "",
+				},
+				{
+					Name:     "ImportPrivateKey",
+					Aliases:  []string{"import-private-key"},
+					Input:    "walletrpc.ImportPrivateKeyRequest",
+					Output:   "walletrpc.ImportPrivateKeyResponse",
+					Comments: "",
+				},
+				{
+					Name:     "FundTransaction",
+					Aliases:  []string{"fund-transaction"},
+					Input:    "walletrpc.FundTransactionRequest",
+					Output:   "walletrpc.FundTransactionResponse",
+					Comments: "",
+				},
+				{
+					Name:     "SignTransaction",
+					Aliases:  []string{"sign-transaction"},
+					Input:    "walletrpc.SignTransactionRequest",
+					Output:   "walletrpc.SignTransactionResponse",
+					Comments: "",
+				},
+				{
+					Name:     "PublishTransaction",
+					Aliases:  []string{"publish-transaction"},
+					Input:    "walletrpc.PublishTransactionRequest",
+					Output:   "walletrpc.PublishTransactionResponse",
+					Comments: "",
 				},
 			},
 		},

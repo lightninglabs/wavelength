@@ -30,7 +30,9 @@ func TestDeadlineWatcherFlagsStuckEntries(t *testing.T) {
 	freshID := "fresh"
 	staleID := "stale"
 
-	r.trackPending(freshID, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, time.Now())
+	r.trackPending(
+		freshID, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
+	)
 	r.trackPending(
 		staleID, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT, time.Now(),
 	)
@@ -76,8 +78,12 @@ func TestDeadlineWatcherIgnoresSwapRows(t *testing.T) {
 	r := newRuntime(t.Context(), &Deps{WalletDeadline: deadline})
 	defer r.stop()
 
-	r.trackPending("send", walletdkrpc.EntryKind_ENTRY_KIND_SEND, time.Now())
-	r.trackPending("recv", walletdkrpc.EntryKind_ENTRY_KIND_RECV, time.Now())
+	r.trackPending(
+		"send", walletdkrpc.EntryKind_ENTRY_KIND_SEND, time.Now(),
+	)
+	r.trackPending(
+		"recv", walletdkrpc.EntryKind_ENTRY_KIND_RECV, time.Now(),
+	)
 
 	r.applyDeadlines(time.Now().Add(2 * deadline))
 
@@ -161,7 +167,9 @@ func TestTrackPendingBasesDeadlineOnFirstObservation(t *testing.T) {
 
 	// Simulate a restored wallet-local row submitted 24h ago.
 	stale := time.Now().Add(-24 * time.Hour)
-	r.trackPending("backfilled", walletdkrpc.EntryKind_ENTRY_KIND_EXIT, stale)
+	r.trackPending(
+		"backfilled", walletdkrpc.EntryKind_ENTRY_KIND_EXIT, stale,
+	)
 
 	r.pendingMu.Lock()
 	entry, ok := r.pending["backfilled"]

@@ -127,7 +127,8 @@ func TestMonitorLoopLeavesSwapPendingToFSM(t *testing.T) {
 			"projection",
 	)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, entry.GetKind(),
+		t, walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		entry.GetKind(),
 	)
 
 	r.pendingMu.Lock()
@@ -150,7 +151,8 @@ func TestMonitorLoopClearsPendingOnTerminal(t *testing.T) {
 	defer r.stop()
 
 	r.trackPending(
-		"to-complete", walletdkrpc.EntryKind_ENTRY_KIND_SEND, time.Now(),
+		"to-complete", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		time.Now(),
 	)
 
 	sub := r.subscribe()
@@ -342,7 +344,8 @@ func TestMonitorLoopTerminalStatusBeatsStaleOverlay(t *testing.T) {
 
 	got := drainOne(t, sub)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, got.GetStatus(),
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		got.GetStatus(),
 		"terminal source status must beat the stale FAILED overlay",
 	)
 	require.Empty(
@@ -393,7 +396,8 @@ func TestMonitorLoopPendingSwapBeatsStaleOverlay(t *testing.T) {
 
 	got := drainOne(t, sub)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, got.GetStatus(),
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		got.GetStatus(),
 		"swap source status must beat a stale wallet timeout overlay",
 	)
 	require.Empty(t, got.GetFailureReason())

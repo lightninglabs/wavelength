@@ -3,7 +3,9 @@
 `walletdk` is the wallet-facing SDK for applications that want a small API over
 `darepod`. `Start` embeds the daemon in-process and connects to it over private
 `bufconn`; `Connect` attaches the same client API to an external daemon that
-exposes `walletdkrpc`.
+exposes `walletdkrpc`. Advanced callers can also reach btcsuite btcwallet's
+native `walletrpc.WalletService` through the same gRPC connection when the
+daemon is using the `lwwallet` or `btcwallet` backend.
 
 Build embedded wallet payment support with both wallet runtime tags:
 
@@ -155,6 +157,31 @@ if err != nil {
 
 fmt.Println("entry:", send.Entry.ID, send.Entry.Status)
 ```
+
+## Native btcwallet RPC
+
+`BtcwalletRPC` exposes btcsuite btcwallet's native `walletrpc.WalletService`
+for lower-level on-chain wallet operations such as fresh external addresses,
+funding PSBTs, signing, and publishing. The service uses walletdk's existing
+private `bufconn` when started with `Start`, so host apps do not need a second
+listener.
+
+```go
+btcw := client.BtcwalletRPC()
+addr, err := btcw.NextAddress(ctx, &walletrpc.NextAddressRequest{
+	Account: 0,
+	Kind:    walletrpc.NextAddressRequest_BIP0044_EXTERNAL,
+})
+if err != nil {
+	panic(err)
+}
+
+fmt.Println("on-chain address:", addr.Address)
+```
+
+The native service is only backed by self-managed wallet modes. It returns a
+gRPC failed-precondition error when the daemon is using the `lnd` backend or
+before the self-managed wallet has been created or unlocked.
 
 ## Wallet Activity
 

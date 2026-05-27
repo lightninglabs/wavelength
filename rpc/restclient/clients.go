@@ -728,7 +728,9 @@ func NewWalletServiceClient(addr string,
 
 // NewWalletServiceClientFromClient creates a WalletService REST client from an
 // existing shared REST transport.
-func NewWalletServiceClientFromClient(c *Client) walletdkrpc.WalletServiceClient {
+func NewWalletServiceClientFromClient(
+	c *Client) walletdkrpc.WalletServiceClient {
+
 	return &WalletServiceClient{client: c}
 }
 

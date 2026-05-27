@@ -193,7 +193,8 @@ func TestHistorySurfacesPendingBoardingBalance(t *testing.T) {
 	require.Len(t, entries, 1)
 	require.Equal(t, "boarding-unconfirmed", entries[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT, entries[0].GetKind(),
+		t, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		entries[0].GetKind(),
 	)
 	require.Equal(
 		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,

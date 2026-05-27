@@ -122,7 +122,9 @@ func walletSend(cmd *cobra.Command, args []string) error {
 		SweepAll:  sweepAll,
 	}
 	if offchain {
-		req.Destination = &walletdkrpc.SendRequest_Invoice{Invoice: dest}
+		req.Destination = &walletdkrpc.SendRequest_Invoice{
+			Invoice: dest,
+		}
 	} else {
 		req.Destination = &walletdkrpc.SendRequest_OnchainAddress{
 			OnchainAddress: dest,
@@ -135,7 +137,9 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	// from a real send so an agent can stage a payment without
 	// risking a duplicate dispatch.
 	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
-		return walletDryRunPreview("walletdkrpc.WalletService/Send", req)
+		return walletDryRunPreview(
+			"walletdkrpc.WalletService/Send", req,
+		)
 	}
 
 	return withWalletClient(

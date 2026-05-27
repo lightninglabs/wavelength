@@ -126,6 +126,32 @@ func TestDevCmdParsesScalarAndEnumFlags(t *testing.T) {
 	}
 }
 
+func TestDevCmdHelpShowsEnumValues(t *testing.T) {
+	var out bytes.Buffer
+	cmd, cleanup := newTestDevCmd(t, &testDaemonServer{}, &out)
+	defer cleanup()
+
+	var help bytes.Buffer
+	cmd.SetOut(&help)
+	cmd.SetErr(&help)
+	cmd.SetArgs([]string{"btcwallet", "next-address", "--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute dev btcwallet next-address help: %v", err)
+	}
+
+	got := help.String()
+	for _, want := range []string{
+		"--kind string",
+		"BIP0044_EXTERNAL",
+		"BIP0044_INTERNAL",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected help to contain %q, got:\n%s", want,
+				got)
+		}
+	}
+}
+
 func TestDevCmdParsesComplexJSONAndBoolFlags(t *testing.T) {
 	server := &testDaemonServer{}
 	var out bytes.Buffer

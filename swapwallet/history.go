@@ -115,8 +115,9 @@ func (h *history) listActivity(ctx context.Context,
 	swapEntryIDs := make(map[string]struct{})
 
 	if h.shouldInclude(kindFilter, walletdkrpc.EntryKind_ENTRY_KIND_SEND) ||
-		h.shouldInclude(kindFilter,
-			walletdkrpc.EntryKind_ENTRY_KIND_RECV) {
+		h.shouldInclude(
+			kindFilter, walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		) {
 
 		var err error
 		swapEntries, swapCorrelations, err = h.collectSwapEntries(
@@ -133,10 +134,12 @@ func (h *history) listActivity(ctx context.Context,
 	}
 
 	if h.shouldInclude(kindFilter, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT) ||
-		h.shouldInclude(kindFilter,
-			walletdkrpc.EntryKind_ENTRY_KIND_EXIT) ||
-		h.shouldInclude(kindFilter,
-			walletdkrpc.EntryKind_ENTRY_KIND_SEND) {
+		h.shouldInclude(
+			kindFilter, walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+		) ||
+		h.shouldInclude(
+			kindFilter, walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		) {
 
 		ledgerEntries, err := h.collectLedgerEntries(
 			ctx, req.GetOffset(), limit, swapCorrelations,
@@ -235,8 +238,8 @@ func (h *history) listVTXOs(ctx context.Context, req *walletdkrpc.ListRequest) (
 // CLI verb used, but flattens the ledger row shape onto the
 // wallet-facing OnchainTx type so internal correlators don't leak into
 // the user surface.
-func (h *history) listOnchain(ctx context.Context, req *walletdkrpc.ListRequest) (
-	*walletdkrpc.OnchainHistory, error) {
+func (h *history) listOnchain(ctx context.Context,
+	req *walletdkrpc.ListRequest) (*walletdkrpc.OnchainHistory, error) {
 
 	if h.deps.RPCServer == nil {
 		return nil, ErrSwapBackendUnavailable

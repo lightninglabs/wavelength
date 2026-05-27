@@ -992,6 +992,9 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	daemonrpc.RegisterDaemonServiceServer(
 		s.grpcServer, s.rpcServer,
 	)
+	if cleanup := registerBtcwalletRPC(s.grpcServer, s); cleanup != nil {
+		defer cleanup()
+	}
 	for _, registrar := range s.cfg.RPCServiceRegistrars {
 		cleanup, err := registrar(ctx, s.grpcServer, s.rpcServer, s.cfg)
 		if err != nil {

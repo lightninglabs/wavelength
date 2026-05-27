@@ -54,7 +54,9 @@ func walletExit(cmd *cobra.Command, _ []string) error {
 	req := &walletdkrpc.ExitRequest{Outpoint: outpoint}
 
 	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
-		return walletDryRunPreview("walletdkrpc.WalletService/Exit", req)
+		return walletDryRunPreview(
+			"walletdkrpc.WalletService/Exit", req,
+		)
 	}
 
 	return withWalletClient(

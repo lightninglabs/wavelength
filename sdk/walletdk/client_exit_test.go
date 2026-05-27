@@ -61,8 +61,9 @@ type stubWalletClient struct {
 	exitCalls int
 }
 
-func (s *stubWalletClient) Exit(ctx context.Context, req *walletdkrpc.ExitRequest,
-	_ ...grpc.CallOption) (*walletdkrpc.ExitResponse, error) {
+func (s *stubWalletClient) Exit(ctx context.Context,
+	req *walletdkrpc.ExitRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.ExitResponse, error) {
 
 	s.exitCalls++
 
