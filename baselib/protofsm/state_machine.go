@@ -399,8 +399,16 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) applyEvents(
 	//nolint:ll
 	for nextEvent := eventQueue.Dequeue(); nextEvent.IsSome(); nextEvent = eventQueue.Dequeue() {
 		err := fn.MapOptionZ(nextEvent, func(event InternalEvent) error {
+			// Log the event type at debug level to keep
+			// steady-state output compact. The full event payload
+			// (which may include auth blobs, signatures, etc.) is
+			// only spewed at trace.
 			s.log.DebugS(ctx, "Processing event",
-				"event", lnutils.SpewLogClosure(event),
+				btclog.Fmt("event_type", "%T", event),
+			)
+			s.log.TraceS(
+				ctx, "Processing event payload", "event",
+				lnutils.SpewLogClosure(event),
 			)
 
 			// Apply the state transition function of the current
@@ -421,12 +429,20 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) applyEvents(
 			) error {
 
 				// Next, we'll add any new emitted events to our
-				// event queue.
+				// event queue. As above, debug only carries the
+				// event type; the full body is left to trace.
 				for _, inEvent := range events.InternalEvent {
 					s.log.DebugS(
 						ctx,
 						"Adding new internal event to "+
 							"queue",
+						btclog.Fmt(
+							"event_type", "%T",
+							inEvent,
+						),
+					)
+					s.log.TraceS(
+						ctx, "Internal event payload",
 						"event",
 						lnutils.SpewLogClosure(inEvent),
 					)
