@@ -378,8 +378,9 @@ type SwapConfig struct {
 	ServerInsecure bool `mapstructure:"serverinsecure"`
 
 	// DatabaseFileName is the daemon-owned swap SQLite database path. When
-	// empty, the daemon stores swaps under DataDir/swaps.db so restart
-	// resume can discover pending sessions without CLI state.
+	// empty, the daemon stores swaps under NetworkDir()/swaps.db so a
+	// network DB reset clears persisted swap activity with the main daemon
+	// DB.
 	DatabaseFileName string `mapstructure:"databasefilename"`
 
 	// VHTLCRecovery controls when the daemon-owned swap runtime escalates
