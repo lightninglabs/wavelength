@@ -374,6 +374,14 @@ func (c *testSwapServerConn) CreateInSwap(context.Context, string, uint64,
 	return nil, nil
 }
 
+// AuthorizeInSwapRefund is unused in these tests.
+func (c *testSwapServerConn) AuthorizeInSwapRefund(context.Context,
+	lntypes.Hash, string, int64, []byte, []byte, []byte) (
+	*InSwapRefundAuthorization, error) {
+
+	return nil, fmt.Errorf("unexpected in-swap refund authorization")
+}
+
 // Close closes the server connection.
 func (c *testSwapServerConn) Close() error {
 	return nil
@@ -472,14 +480,22 @@ func TestCancelVHTLCRecoveryIgnoresNotFound(t *testing.T) {
 	)
 }
 
-// TestWaitForVHTLCFailsOnUnregisteredScript verifies stale accepted receive
-// events stop retrying once the current principal can no longer query the
-// expected script.
-func TestWaitForVHTLCFailsOnUnregisteredScript(t *testing.T) {
+// TestWaitForVHTLCFallsBackToLocalVTXOOnUnregisteredScript verifies same-Ark
+// p2p receives can proceed from the daemon-local OOR materialization path when
+// the proof-gated indexer lookup is not registered for the receiver principal.
+func TestWaitForVHTLCFallsBackToLocalVTXOOnUnregisteredScript(t *testing.T) {
 	t.Parallel()
 
 	pkScript := bytes.Repeat([]byte{0x02}, 34)
+	localVTXO := VTXOInfo{
+		Outpoint:  "local-vhtlc:0",
+		AmountSat: 42_000,
+		PkScript:  pkScript,
+	}
 	daemonConn := &testDaemonConn{
+		liveVTXOs: []VTXOInfo{
+			localVTXO,
+		},
 		liveLookupErr: status.Error(
 			codes.Internal, "indexer query failed: rpc error: "+
 				"code = Unauthenticated desc = script not "+
@@ -488,14 +504,12 @@ func TestWaitForVHTLCFailsOnUnregisteredScript(t *testing.T) {
 	}
 	client := NewSwapClient(nil, daemonConn, nil, nil)
 
-	_, _, err := client.waitForVHTLC(
+	outpoint, amount, err := client.waitForVHTLC(
 		t.Context(), pkScript, time.Time{}, nil,
 	)
-	require.Error(t, err)
-	require.Contains(
-		t, failureReason(err),
-		"not registered for current principal",
-	)
+	require.NoError(t, err)
+	require.Equal(t, localVTXO.Outpoint, outpoint)
+	require.Equal(t, localVTXO.AmountSat, amount)
 	require.Equal(t, 1, daemonConn.liveLookupCalls)
 }
 
@@ -515,6 +529,8 @@ type testDaemonConn struct {
 	receiveAuthErr    error
 	receiveAllocCalls int
 	sendSessionID     string
+	preparedOOR       *PreparedOOR
+	prepareOOREErr    error
 	sendPolicyErr     error
 	sendCustomErr     error
 	listSpentErr      error
@@ -694,6 +710,35 @@ func (d *testDaemonConn) GetVHTLCRecoveryStatus(_ context.Context,
 	}, nil
 }
 
+// PrepareOORWithCustomInputs records the requested package and returns
+// deterministic signing material for tests.
+func (d *testDaemonConn) PrepareOORWithCustomInputs(_ context.Context,
+	recipientPubKey []byte, _ int64, inputs []CustomInput) (*PreparedOOR,
+	error) {
+
+	if d.prepareOOREErr != nil {
+		return nil, d.prepareOOREErr
+	}
+	if d.preparedOOR != nil {
+		return d.preparedOOR, nil
+	}
+	if len(inputs) == 0 {
+		return nil, fmt.Errorf("custom input is required")
+	}
+
+	return &PreparedOOR{
+		CustomInputs: []PreparedOORCustomInput{{
+			Outpoint:       inputs[0].Outpoint,
+			CheckpointPSBT: []byte("checkpoint"),
+			WitnessScript:  []byte("witness"),
+			SigningPubKeys: [][]byte{
+				append([]byte(nil), recipientPubKey...),
+			},
+		}},
+		SessionID: d.sendSessionID,
+	}, nil
+}
+
 // IdentityPubKey returns the configured client key.
 func (d *testDaemonConn) IdentityPubKey(context.Context) (*btcec.PublicKey,
 	error) {
@@ -800,7 +845,7 @@ func (d *testDaemonConn) ReceiveAuthECDH(_ context.Context,
 	return sha256.Sum256(ecdhPubKey.SerializeCompressed()), nil
 }
 
-// ListLiveVTXOs is unused in these tests.
+// ListLiveVTXOs returns configured daemon-local live VTXOs.
 func (d *testDaemonConn) ListLiveVTXOs(context.Context) ([]VTXOInfo, error) {
 	return append([]VTXOInfo(nil), d.liveVTXOs...), nil
 }
@@ -824,6 +869,14 @@ func (d *testDaemonConn) FindLiveVTXOByPkScript(_ context.Context,
 		if vtxo := d.liveByPkScript[scriptKey]; vtxo != nil {
 			return vtxo, nil
 		}
+	}
+	if d.receiveInfo != nil &&
+		bytes.Equal(d.receiveInfo.PkScript, pkScript) {
+		return nil, nil
+	}
+	if d.vhtlc != nil && len(d.vhtlc.PkScript) != 0 &&
+		!bytes.Equal(d.vhtlc.PkScript, pkScript) {
+		return nil, nil
 	}
 
 	return d.vhtlc, nil
