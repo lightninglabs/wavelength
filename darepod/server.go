@@ -3572,24 +3572,9 @@ func (s *Server) initOORActor(ctx context.Context,
 		s.subLogger(db.Subsystem),
 	)
 
-	// Select the OOR signer based on wallet type. The
-	// SigningOutboxHandler only needs input.Signer for signing
-	// checkpoint PSBTs.
-	var oorSigner input.Signer
-	switch s.cfg.Wallet.Type {
-	case WalletTypeLnd:
-		lndSvc := s.lnd.UnsafeFromSome()
-		lndWallet := lndbackend.NewClientWallet(
-			lndSvc.Signer, lndSvc.WalletKit,
-		)
-		lndWallet.Log = fn.Some(s.subLogger(lndbackend.Subsystem))
-		oorSigner = lndWallet
-
-	case WalletTypeLwwallet:
-		oorSigner = s.lwWallet.UnsafeFromSome()
-
-	case WalletTypeBtcwallet:
-		oorSigner = s.btcwWallet.UnsafeFromSome()
+	oorSigner, err := s.oorSigner()
+	if err != nil {
+		return err
 	}
 
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
@@ -3626,7 +3611,6 @@ func (s *Server) initOORActor(ctx context.Context,
 	}
 	oorKey := oor.NewServiceKey()
 
-	var err error
 	s.oorSigningEffect, err = oor.NewSigningEffectActor(
 		oor.SigningEffectActorConfig{
 			ActorID:       oor.SigningEffectActorID,
@@ -3798,6 +3782,30 @@ func (s *Server) initOORActor(ctx context.Context,
 	s.log.InfoS(ctx, "Incoming VTXO handler started")
 
 	return nil
+}
+
+// oorSigner returns the wallet signer used for OOR checkpoint inputs.
+func (s *Server) oorSigner() (input.Signer, error) {
+	switch s.cfg.Wallet.Type {
+	case WalletTypeLnd:
+		lndSvc := s.lnd.UnsafeFromSome()
+		lndWallet := lndbackend.NewClientWallet(
+			lndSvc.Signer, lndSvc.WalletKit,
+		)
+		lndWallet.Log = fn.Some(s.subLogger(lndbackend.Subsystem))
+
+		return lndWallet, nil
+
+	case WalletTypeLwwallet:
+		return s.lwWallet.UnsafeFromSome(), nil
+
+	case WalletTypeBtcwallet:
+		return s.btcwWallet.UnsafeFromSome(), nil
+
+	default:
+		return nil, fmt.Errorf("unsupported wallet type %v",
+			s.cfg.Wallet.Type)
+	}
 }
 
 // Compile-time assertions: every round.VTXOManagerMsg implementor must

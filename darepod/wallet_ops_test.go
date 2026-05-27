@@ -362,10 +362,10 @@ func TestReserveCustomInputsAtomicOnCollision(t *testing.T) {
 	release2()
 }
 
-// TestBuildCustomTransferInputsUsesPolicyLeaf verifies that a policy-backed
-// custom spend preserves the exact semantic policy leaf for the checkpoint
-// owner path instead of defaulting to a generic collab leaf.
-func TestBuildCustomTransferInputsUsesPolicyLeaf(t *testing.T) {
+// TestBuildCustomTransferInputsUsesLocalOperatorPolicyLeaf verifies that a
+// policy-backed custom spend preserves an exact semantic policy leaf when the
+// checkpoint owner path remains signable by the local client and operator.
+func TestBuildCustomTransferInputsUsesLocalOperatorPolicyLeaf(t *testing.T) {
 	t.Parallel()
 
 	policy, preimage, _, receiverPriv, serverPriv :=
@@ -415,6 +415,63 @@ func TestBuildCustomTransferInputsUsesPolicyLeaf(t *testing.T) {
 	ownerLeafScript, err := ownerLeaf.Script()
 	require.NoError(t, err)
 	require.Equal(t, claimPath.WitnessScript, ownerLeafScript)
+}
+
+// TestBuildCustomTransferInputsDefaultsMultiPartyRefundOwnerLeaf verifies that
+// a custom spend which needs an extra participant signature uses a standard
+// local/operator checkpoint owner leaf after the custom input spend itself.
+func TestBuildCustomTransferInputsDefaultsMultiPartyRefundOwnerLeaf(
+	t *testing.T) {
+
+	t.Parallel()
+
+	policy, _, senderPriv, _, serverPriv := testVHTLCPolicyFixture(t)
+
+	policyTemplate, err := policy.Template.Encode()
+	require.NoError(t, err)
+
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
+
+	refundPath, err := policy.RefundPath()
+	require.NoError(t, err)
+
+	spendPath, err := refundPath.Encode()
+	require.NoError(t, err)
+
+	outpoint := testWalletOpsOutpoint(4)
+	clientKey := keychain.KeyDescriptor{
+		PubKey: senderPriv.PubKey(),
+		KeyLocator: keychain.KeyLocator{
+			Family: 7,
+			Index:  8,
+		},
+	}
+
+	inputs, err := BuildCustomTransferInputs(
+		t.Context(), &testCustomInputStore{},
+		[]*daemonrpc.CustomOORInput{{
+			Outpoint:           outpoint.String(),
+			VtxoPolicyTemplate: policyTemplate,
+			SpendPath:          spendPath,
+			AmountSat:          42_000,
+			PkScript:           pkScript,
+		}}, clientKey, serverPriv.PubKey(), 144,
+	)
+	require.NoError(t, err)
+	require.Len(t, inputs, 1)
+
+	input := inputs[0]
+	require.Empty(t, input.OwnerLeafScript)
+	require.Empty(t, input.OwnerLeafPolicy)
+	require.NoError(t, input.Validate())
+
+	defaultLeaf, err := arkscript.MultiSigCollabTapLeaf(
+		senderPriv.PubKey(), serverPriv.PubKey(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, defaultLeaf.Script, input.OwnerLeafScript)
+	require.NotEqual(t, refundPath.WitnessScript, input.OwnerLeafScript)
 }
 
 // TestFindSettlementOwnerLeafWithConditions verifies that a caller's
