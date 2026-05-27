@@ -212,16 +212,16 @@ func newRootCmd() *cobra.Command {
 	// EagerRoundJoin makes the wallet actor drive round-joining
 	// without a follow-up Board / LeaveVTXOs RPC. The default is
 	// inherited from darepod.DefaultConfig, which is build-tag
-	// aware: false on the standalone non-walletrpc build (operator-
-	// driven hosts) and true under the walletrpc build tag (wallet-
+	// aware: false on the standalone non-walletdkrpc build (operator-
+	// driven hosts) and true under the walletdkrpc build tag (wallet-
 	// shaped hosts). Viper precedence (flag > env > config > default)
 	// applies, so --eagerroundjoin=false still disables it under the
-	// walletrpc build.
+	// walletdkrpc build.
 	f.Bool(
 		"eagerroundjoin", cfg.EagerRoundJoin, "drive round-joining "+
 			"from the wallet without waiting for an explicit "+
 			"Board / LeaveVTXOs RPC; defaults to true when "+
-			"compiled with the walletrpc build tag, false "+
+			"compiled with the walletdkrpc build tag, false "+
 			"otherwise",
 	)
 

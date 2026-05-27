@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -8,7 +8,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -71,17 +71,17 @@ func TestKindFromSwapDirection(t *testing.T) {
 	t.Parallel()
 
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_SEND, kindFromSwapDirection(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, kindFromSwapDirection(
 			swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
 		),
 	)
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_RECV, kindFromSwapDirection(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV, kindFromSwapDirection(
 			swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE,
 		),
 	)
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		t, walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 		kindFromSwapDirection(
 			swapclientrpc.SwapDirection_SWAP_DIRECTION_UNSPECIFIED,
 		),
@@ -97,7 +97,7 @@ func TestStatusFromSwapState(t *testing.T) {
 
 	// Pending always wins regardless of state.
 	require.Equal(
-		t, walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		statusFromSwapState(
 			swapclientrpc.SwapState_SWAP_STATE_COMPLETED, true,
 		),
@@ -105,13 +105,13 @@ func TestStatusFromSwapState(t *testing.T) {
 
 	// Terminal completed / refunded → COMPLETE.
 	require.Equal(
-		t, walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		statusFromSwapState(
 			swapclientrpc.SwapState_SWAP_STATE_COMPLETED, false,
 		),
 	)
 	require.Equal(
-		t, walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		statusFromSwapState(
 			swapclientrpc.SwapState_SWAP_STATE_REFUNDED, false,
 		),
@@ -124,14 +124,14 @@ func TestStatusFromSwapState(t *testing.T) {
 		swapclientrpc.SwapState_SWAP_STATE_NEEDS_INTERVENTION,
 	} {
 		require.Equal(
-			t, walletrpc.EntryStatus_ENTRY_STATUS_FAILED,
+			t, walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
 			statusFromSwapState(s, false),
 		)
 	}
 
 	// Unknown non-pending falls back to PENDING.
 	require.Equal(
-		t, walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		statusFromSwapState(
 			swapclientrpc.SwapState_SWAP_STATE_UNSPECIFIED, false,
 		),
@@ -195,7 +195,7 @@ func TestWalletVTXOFromDaemon(t *testing.T) {
 	}
 	out, keep = walletVTXOFromDaemon(in)
 	require.True(t, keep)
-	require.Equal(t, &walletrpc.WalletVTXO{
+	require.Equal(t, &walletdkrpc.WalletVTXO{
 		Outpoint:       "abc:0",
 		AmountSat:      10_000,
 		Status:         "live",
@@ -286,7 +286,7 @@ func TestOnchainTxFromLedgerRow(t *testing.T) {
 
 	// Nil → empty (not a panic).
 	require.Equal(t,
-		&walletrpc.OnchainTx{},
+		&walletdkrpc.OnchainTx{},
 		onchainTxFromLedgerRow(nil),
 	)
 
@@ -330,7 +330,7 @@ func TestOnchainTxFromLedgerRow(t *testing.T) {
 func TestPaginateVTXOs(t *testing.T) {
 	t.Parallel()
 
-	in := []*walletrpc.WalletVTXO{
+	in := []*walletdkrpc.WalletVTXO{
 		{
 			Outpoint: "a:0",
 		},
@@ -380,9 +380,9 @@ func TestLeaveEntryStub(t *testing.T) {
 		5_000, "rent",
 	)
 	require.Equal(t, "abc:0", out.GetId())
-	require.Equal(t, walletrpc.EntryKind_ENTRY_KIND_EXIT, out.GetKind())
+	require.Equal(t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, out.GetKind())
 	require.Equal(
-		t, walletrpc.EntryStatus_ENTRY_STATUS_PENDING, out.GetStatus(),
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, out.GetStatus(),
 	)
 	require.Equal(t, int64(-5_000), out.GetAmountSat())
 	require.Equal(t, "rent", out.GetNote())
@@ -410,9 +410,9 @@ func TestSwapEntryFromSummaryCallerKindOverride(t *testing.T) {
 	}
 
 	send := swapEntryFromSummary(
-		s, "", "", walletrpc.EntryKind_ENTRY_KIND_SEND,
+		s, "", "", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
 	)
-	require.Equal(t, walletrpc.EntryKind_ENTRY_KIND_SEND, send.GetKind())
+	require.Equal(t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, send.GetKind())
 	require.Equal(
 		t, "lnbc1invoice",
 		send.GetRequest().GetLightningInvoice().GetInvoice(),
@@ -423,9 +423,9 @@ func TestSwapEntryFromSummaryCallerKindOverride(t *testing.T) {
 	)
 
 	recv := swapEntryFromSummary(
-		s, "", "", walletrpc.EntryKind_ENTRY_KIND_RECV,
+		s, "", "", walletdkrpc.EntryKind_ENTRY_KIND_RECV,
 	)
-	require.Equal(t, walletrpc.EntryKind_ENTRY_KIND_RECV, recv.GetKind())
+	require.Equal(t, walletdkrpc.EntryKind_ENTRY_KIND_RECV, recv.GetKind())
 	require.Equal(
 		t, int64(10_000), recv.GetAmountSat(),
 		"caller-pinned RECV must surface as incoming (positive)",
@@ -446,21 +446,21 @@ func TestSwapEntryFromSummaryRequestMetadata(t *testing.T) {
 	}
 
 	send := swapEntryFromSummary(
-		s, "", "", walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		s, "", "", walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 	)
 	req := send.GetRequest().GetLightningInvoice()
 	require.Equal(t, "ph", req.GetPaymentHash())
 	require.Empty(t, req.GetInvoice())
 
 	withInvoice := swapEntryFromSummary(
-		s, "", "lnbc1invoice", walletrpc.EntryKind_ENTRY_KIND_SEND,
+		s, "", "lnbc1invoice", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
 	)
 	req = withInvoice.GetRequest().GetLightningInvoice()
 	require.Equal(t, "ph", req.GetPaymentHash())
 	require.Equal(t, "lnbc1invoice", req.GetInvoice())
 
 	withHashHint := swapEntryFromSummary(
-		s, "", "ph", walletrpc.EntryKind_ENTRY_KIND_SEND,
+		s, "", "ph", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
 	)
 	req = withHashHint.GetRequest().GetLightningInvoice()
 	require.Equal(t, "ph", req.GetPaymentHash())
@@ -473,10 +473,10 @@ func TestSwapEntryFromSummaryNilSafe(t *testing.T) {
 	t.Parallel()
 
 	out := swapEntryFromSummary(
-		nil, "", "", walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		nil, "", "", walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 	)
 	require.NotNil(t, out)
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, out.GetKind(),
+		t, walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, out.GetKind(),
 	)
 }

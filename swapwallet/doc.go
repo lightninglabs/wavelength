@@ -1,6 +1,6 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
-// Package swapwallet implements the daemon-side walletrpc subserver that
+// Package swapwallet implements the daemon-side walletdkrpc subserver that
 // exposes a simplified, swap-vocabulary-free wallet API on top of the
 // running darepod daemon.
 //
@@ -30,7 +30,7 @@
 // goroutines are anchored to the daemon root context, never to RPC-call
 // contexts, so a CLI disconnect can never cancel in-flight work.
 //
-// The walletrpc build tag depends on swapruntime: building walletrpc without
+// The walletdkrpc build tag depends on swapruntime: building walletdkrpc without
 // swapruntime is a deliberate compile error because the subserver composes
 // the daemon-owned swap subsystem.
 //

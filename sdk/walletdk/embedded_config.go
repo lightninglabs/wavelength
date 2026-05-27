@@ -102,7 +102,7 @@ type Config struct {
 	// LeaveVTXOs RPC. With the flag on, freshly confirmed boarding
 	// deposits join the next round automatically, and the wallet's
 	// Exit / cooperative-leave path fires registration immediately
-	// rather than batching. The walletrpc-tagged embedded build
+	// rather than batching. The walletdkrpc-tagged embedded build
 	// that walletdk targets already defaults this to true via
 	// darepod.DefaultConfig, so leaving this field at the zero
 	// value is the right choice for nearly every host. Set true

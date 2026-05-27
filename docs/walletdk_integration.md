@@ -3,18 +3,18 @@
 `walletdk` is the wallet-facing SDK for applications that want a small API over
 `darepod`. `Start` embeds the daemon in-process and connects to it over private
 `bufconn`; `Connect` attaches the same client API to an external daemon that
-exposes `walletrpc`.
+exposes `walletdkrpc`.
 
 Build embedded wallet payment support with both wallet runtime tags:
 
 ```sh
-go build -tags walletrpc,swapruntime ./cmd/your-wallet
-go test -tags walletrpc,swapruntime ./sdk/walletdk
+go build -tags walletdkrpc,swapruntime ./cmd/your-wallet
+go test -tags walletdkrpc,swapruntime ./sdk/walletdk
 ```
 
 Without those tags, `Start` fails with `walletdk.ErrWalletRPCUnavailable`.
 `Connect` can still talk to a remote daemon that was built with
-`walletrpc,swapruntime`.
+`walletdkrpc,swapruntime`.
 
 ## Runtime Flow
 
@@ -233,7 +233,7 @@ stack is browser-ready.
 When generating wallet code against `walletdk`, follow this checklist:
 
 1. Import `github.com/lightninglabs/darepo-client/sdk/walletdk`.
-2. Build embedded wallets with `-tags walletrpc,swapruntime`.
+2. Build embedded wallets with `-tags walletdkrpc,swapruntime`.
 3. Use `walletdk.DefaultConfig()` and override only deployment-specific fields.
 4. Set a durable `DataDir`.
 5. Set `Network`, Ark operator connection fields, wallet backend fields, and

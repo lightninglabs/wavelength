@@ -8,7 +8,7 @@
 The CLI was flattened into "7 top-level verbs" plus parent commands for
 power-user / raw RPC access:
 
-| Top-level | Purpose | Requires walletrpc? |
+| Top-level | Purpose | Requires walletdkrpc? |
 |-----------|---------|---------------------|
 | `getinfo` | Daemon status | no |
 | `create` | Create a new wallet | yes |
@@ -23,13 +23,13 @@ power-user / raw RPC access:
 | `dev *` | Generated low-level method-by-method access | no |
 
 The user-facing verbs (`balance`, `recv`, `send`, `list`, `create`,
-`unlock`) route through the `walletrpc` subserver, which is gated by
-the `walletrpc` build tag. Default builds (`make build`, `make arktest`)
+`unlock`) route through the `walletdkrpc` subserver, which is gated by
+the `walletdkrpc` build tag. Default builds (`make build`, `make arktest`)
 **do not** enable it. Without the tag those verbs error with:
 
 ```
-daemon was not built with -tags walletrpc;
-rebuild with `make build-walletrpc` or see docs/walletrpc_build.md
+daemon was not built with -tags walletdkrpc;
+rebuild with `make build-walletdkrpc` or see docs/walletdkrpc_build.md
 ```
 
 The `ark *` and `dev *` subtrees never need that tag.
@@ -37,9 +37,9 @@ The `ark *` and `dev *` subtrees never need that tag.
 ## Critical Rules
 
 1. **Pick the right surface for the build.** If you can't be sure
-   walletrpc is enabled, use `ark *` (named) or `dev daemon <Method>`
+   walletdkrpc is enabled, use `ark *` (named) or `dev daemon <Method>`
    (raw). The top-level verbs are nicer ergonomics but fail loudly when
-   walletrpc isn't built.
+   walletdkrpc isn't built.
 
 2. **Always use `--json` for structured input.** Pass the full RPC
    request payload directly:
@@ -63,7 +63,7 @@ The `ark *` and `dev *` subtrees never need that tag.
    - JSON: `darepocli unlock --json '{"wallet_password":"cGFzcw=="}'`
      (base64 bytes)
 
-   These require `walletrpc`. With the default build there is no
+   These require `walletdkrpc`. With the default build there is no
    manual wallet-create step — the daemon initializes on startup.
 
 ## Command Reference
@@ -74,7 +74,7 @@ The `ark *` and `dev *` subtrees never need that tag.
 darepocli getinfo
 ```
 
-### Wallet bring-up (walletrpc only)
+### Wallet bring-up (walletdkrpc only)
 
 ```bash
 darepocli create
@@ -84,7 +84,7 @@ darepocli recv --onchain     # boarding address
 darepocli recv --offchain --amt 5000 --memo "coffee"   # Lightning invoice
 ```
 
-### Raw boarding / balance (no walletrpc needed)
+### Raw boarding / balance (no walletdkrpc needed)
 
 ```bash
 darepocli dev daemon NewAddress             # fresh boarding address
@@ -147,7 +147,7 @@ darepocli exit status --outpoint <txid:vout>
 
 ## Common workflows
 
-### Board funds (regtest, no walletrpc)
+### Board funds (regtest, no walletdkrpc)
 
 ```bash
 # 1. Fresh boarding address.
@@ -164,7 +164,7 @@ darepocli dev daemon GetBalance
 darepocli ark board
 ```
 
-### OOR transfer (no walletrpc)
+### OOR transfer (no walletdkrpc)
 
 ```bash
 PUBKEY=$(darepocli-bob ark oor receive | jq -r '.pubkey_xonly_hex')
@@ -191,7 +191,7 @@ Structured errors are written to stderr as JSON:
 
 | Code | Meaning |
 |------|---------|
-| `EXECUTION_FAILED` | Command execution error (incl. missing walletrpc) |
+| `EXECUTION_FAILED` | Command execution error (incl. missing walletdkrpc) |
 | `INVALID_STATUS` | Unknown VTXO status filter value |
 
 ## Global flags

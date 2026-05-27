@@ -3,12 +3,12 @@ package darepoclicommands
 import (
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/spf13/cobra"
 )
 
 // newUnlockCmd builds the top-level `unlock` verb. It dials
-// walletrpc.WalletService.Unlock which proxies
+// walletdkrpc.WalletService.Unlock which proxies
 // daemonrpc.UnlockWallet. The CLI reads the wallet password from
 // stdin / DAREPOD_WALLET_PASSWORD / --wallet_password_file (never CLI
 // args) so secrets never enter argv.
@@ -41,9 +41,9 @@ func walletUnlock(cmd *cobra.Command, _ []string) error {
 	defer zeroBytes(password)
 
 	return withWalletClient(
-		cmd, func(c walletrpc.WalletServiceClient) error {
+		cmd, func(c walletdkrpc.WalletServiceClient) error {
 			resp, err := c.Unlock(
-				cmd.Context(), &walletrpc.UnlockRequest{
+				cmd.Context(), &walletdkrpc.UnlockRequest{
 					WalletPassword: password,
 				},
 			)

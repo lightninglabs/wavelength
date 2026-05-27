@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -53,16 +53,16 @@ func (s *stubDaemonClient) ListVTXOs(ctx context.Context,
 // stubWalletClient mirrors stubDaemonClient for the wallet RPC
 // surface; only Exit is needed.
 type stubWalletClient struct {
-	walletrpc.WalletServiceClient
+	walletdkrpc.WalletServiceClient
 
-	exit func(ctx context.Context, req *walletrpc.ExitRequest) (
-		*walletrpc.ExitResponse, error)
+	exit func(ctx context.Context, req *walletdkrpc.ExitRequest) (
+		*walletdkrpc.ExitResponse, error)
 
 	exitCalls int
 }
 
-func (s *stubWalletClient) Exit(ctx context.Context, req *walletrpc.ExitRequest,
-	_ ...grpc.CallOption) (*walletrpc.ExitResponse, error) {
+func (s *stubWalletClient) Exit(ctx context.Context, req *walletdkrpc.ExitRequest,
+	_ ...grpc.CallOption) (*walletdkrpc.ExitResponse, error) {
 
 	s.exitCalls++
 
@@ -79,7 +79,7 @@ const (
 // clients so the Exit decision tree can be exercised without
 // standing up a real daemon.
 func newExitTestClient(daemon daemonrpc.DaemonServiceClient,
-	wallet walletrpc.WalletServiceClient) *Client {
+	wallet walletdkrpc.WalletServiceClient) *Client {
 
 	return &Client{
 		daemon:    daemon,
@@ -120,16 +120,16 @@ func listVTXOsHit(want daemonrpc.VTXOStatus, outpoint string) listVTXOsStub {
 
 // TestExitNoDestinationGoesStraightToUnilateral pins down the
 // no-cooperative-attempt branch: when ExitRequest.Destination is
-// empty the SDK calls walletrpc.Exit directly and reports
+// empty the SDK calls walletdkrpc.Exit directly and reports
 // ExitPathUnilateral without ever touching LeaveVTXOs / ListVTXOs.
 func TestExitNoDestinationGoesStraightToUnilateral(t *testing.T) {
 	t.Parallel()
 
 	wallet := &stubWalletClient{
-		exit: func(_ context.Context, _ *walletrpc.ExitRequest) (
-			*walletrpc.ExitResponse, error) {
+		exit: func(_ context.Context, _ *walletdkrpc.ExitRequest) (
+			*walletdkrpc.ExitResponse, error) {
 
-			return &walletrpc.ExitResponse{
+			return &walletdkrpc.ExitResponse{
 				Created: true,
 				ActorId: testActorID,
 			}, nil
@@ -229,10 +229,10 @@ func TestExitCooperativeEmptyQueuedFallsThrough(t *testing.T) {
 		},
 	}
 	wallet := &stubWalletClient{
-		exit: func(_ context.Context, _ *walletrpc.ExitRequest) (
-			*walletrpc.ExitResponse, error) {
+		exit: func(_ context.Context, _ *walletdkrpc.ExitRequest) (
+			*walletdkrpc.ExitResponse, error) {
 
-			return &walletrpc.ExitResponse{
+			return &walletdkrpc.ExitResponse{
 				Created: true,
 				ActorId: testActorID,
 			}, nil
@@ -340,10 +340,10 @@ func TestExitCooperativeTransientErrorFallsBack(t *testing.T) {
 			}
 			wallet := &stubWalletClient{
 				exit: func(_ context.Context,
-					_ *walletrpc.ExitRequest) (
-					*walletrpc.ExitResponse, error) {
+					_ *walletdkrpc.ExitRequest) (
+					*walletdkrpc.ExitResponse, error) {
 
-					return &walletrpc.ExitResponse{
+					return &walletdkrpc.ExitResponse{
 						Created: true,
 						ActorId: testActorID,
 					}, nil

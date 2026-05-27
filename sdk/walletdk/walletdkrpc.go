@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime && !js
+//go:build walletdkrpc && swapruntime && !js
 
 package walletdk
 
@@ -22,7 +22,7 @@ func configureWalletRPC(cfg *darepod.Config, enabled bool) {
 	)
 }
 
-// walletRPCAvailable reports whether this build can register walletrpc.
+// walletRPCAvailable reports whether this build can register walletdkrpc.
 func walletRPCAvailable() bool {
 	return true
 }

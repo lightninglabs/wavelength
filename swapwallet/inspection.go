@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -11,7 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -20,7 +20,7 @@ import (
 // It deliberately sits next to, not inside, the friendly WalletService so
 // callers must opt into internal correlators and ledger details.
 type InspectionService struct {
-	walletrpc.UnimplementedWalletInspectionServiceServer
+	walletdkrpc.UnimplementedWalletInspectionServiceServer
 
 	deps    *Deps
 	runtime *Runtime
@@ -39,8 +39,8 @@ func newInspectionService(deps *Deps, runtime *Runtime) *InspectionService {
 
 // InspectActivity returns a best-effort technical trace for one activity row.
 func (s *InspectionService) InspectActivity(ctx context.Context,
-	req *walletrpc.InspectActivityRequest) (
-	*walletrpc.InspectActivityResponse, error) {
+	req *walletdkrpc.InspectActivityRequest) (
+	*walletdkrpc.InspectActivityResponse, error) {
 
 	if s == nil || s.deps == nil {
 		return nil, ErrSwapBackendUnavailable
@@ -81,7 +81,7 @@ func (s *InspectionService) InspectActivity(ctx context.Context,
 	ledgerTrace := ledgerTraceRows(traceRows, hidden)
 	vtxoTrace := vtxoTraceRows(swap, ledgerTrace)
 
-	resp := &walletrpc.InspectActivityResponse{
+	resp := &walletdkrpc.InspectActivityResponse{
 		Entry:      entry,
 		Swap:       swapTraceFromSummary(swap),
 		LedgerRows: ledgerTrace,
@@ -102,10 +102,10 @@ func (s *InspectionService) InspectActivity(ctx context.Context,
 // activityEntry finds the friendly WalletEntry that the inspection report
 // should explain.
 func (s *InspectionService) activityEntry(ctx context.Context, id string) (
-	*walletrpc.WalletEntry, error) {
+	*walletdkrpc.WalletEntry, error) {
 
-	resp, err := s.history.List(ctx, &walletrpc.ListRequest{
-		View:  walletrpc.ListView_LIST_VIEW_ACTIVITY,
+	resp, err := s.history.List(ctx, &walletdkrpc.ListRequest{
+		View:  walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
 		Limit: s.deps.resolveMaxListLimit(),
 	})
 	if err != nil {
@@ -189,7 +189,7 @@ type ledgerInspectionRow struct {
 
 // correlateLedgerRows finds ledger rows that directly match the activity entry
 // or one of the swap execution sessions behind it.
-func correlateLedgerRows(entry *walletrpc.WalletEntry,
+func correlateLedgerRows(entry *walletdkrpc.WalletEntry,
 	swap *swapclientrpc.SwapSummary,
 	rows []*daemonrpc.TransactionHistoryEntry) []ledgerInspectionRow {
 
@@ -265,7 +265,7 @@ func ledgerTraceKey(row *daemonrpc.TransactionHistoryEntry) string {
 // ledgerRowMatchesEntry reports whether a ledger row is the durable source for
 // the friendly activity entry.
 func ledgerRowMatchesEntry(row *daemonrpc.TransactionHistoryEntry,
-	entry *walletrpc.WalletEntry) bool {
+	entry *walletdkrpc.WalletEntry) bool {
 
 	if row == nil || entry == nil {
 		return false
@@ -387,14 +387,14 @@ func hiddenOORLedgerRows(swaps []*swapclientrpc.SwapSummary,
 // ledgerTraceRows projects daemon transaction rows onto the inspection RPC
 // shape.
 func ledgerTraceRows(rows []ledgerInspectionRow,
-	hidden map[int64]struct{}) []*walletrpc.ActivityLedgerTrace {
+	hidden map[int64]struct{}) []*walletdkrpc.ActivityLedgerTrace {
 
-	out := make([]*walletrpc.ActivityLedgerTrace, 0, len(rows))
+	out := make([]*walletdkrpc.ActivityLedgerTrace, 0, len(rows))
 	for _, item := range rows {
 		row := item.row
 		_, isHidden := hidden[row.GetEntryId()]
 
-		out = append(out, &walletrpc.ActivityLedgerTrace{
+		out = append(out, &walletdkrpc.ActivityLedgerTrace{
 			Source:             row.GetSource(),
 			Type:               row.GetType(),
 			Subtype:            row.GetSubtype(),
@@ -424,16 +424,16 @@ func ledgerTraceRows(rows []ledgerInspectionRow,
 // vtxoTraceRows projects swap and ledger rows into a best-effort VTXO movement
 // trace.
 func vtxoTraceRows(swap *swapclientrpc.SwapSummary,
-	ledgerRows []*walletrpc.ActivityLedgerTrace) []*walletrpc.ActivityVTXOTrace {
+	ledgerRows []*walletdkrpc.ActivityLedgerTrace) []*walletdkrpc.ActivityVTXOTrace {
 
-	var out []*walletrpc.ActivityVTXOTrace
+	var out []*walletdkrpc.ActivityVTXOTrace
 	if swap != nil && swap.GetVhtlcOutpoint() != "" {
 		amount := swap.GetVhtlcAmountSat()
 		if amount == 0 {
 			amount = swap.GetAmountSat()
 		}
 
-		out = append(out, &walletrpc.ActivityVTXOTrace{
+		out = append(out, &walletdkrpc.ActivityVTXOTrace{
 			Id:        swap.GetVhtlcOutpoint(),
 			AmountSat: amount,
 			Role:      "vhtlc_output",
@@ -445,7 +445,7 @@ func vtxoTraceRows(swap *swapclientrpc.SwapSummary,
 	for _, row := range ledgerRows {
 		switch row.GetSubtype() {
 		case ledger.EventVTXOSent:
-			out = append(out, &walletrpc.ActivityVTXOTrace{
+			out = append(out, &walletdkrpc.ActivityVTXOTrace{
 				Id:        row.GetSessionId(),
 				AmountSat: row.GetAmountSat(),
 				Role: nonEmpty(
@@ -463,7 +463,7 @@ func vtxoTraceRows(swap *swapclientrpc.SwapSummary,
 				continue
 			}
 
-			out = append(out, &walletrpc.ActivityVTXOTrace{
+			out = append(out, &walletdkrpc.ActivityVTXOTrace{
 				Id:        fmt.Sprintf("%s:%d", session, index),
 				AmountSat: row.GetAmountSat(),
 				Role: nonEmpty(
@@ -483,7 +483,7 @@ func vtxoTraceRows(swap *swapclientrpc.SwapSummary,
 
 // receiveRefFromLedgerTrace extracts an OOR receive reference from an
 // inspection ledger trace row.
-func receiveRefFromLedgerTrace(row *walletrpc.ActivityLedgerTrace) (string,
+func receiveRefFromLedgerTrace(row *walletdkrpc.ActivityLedgerTrace) (string,
 	uint32, bool) {
 
 	if row == nil {
@@ -498,7 +498,7 @@ func receiveRefFromLedgerTrace(row *walletrpc.ActivityLedgerTrace) (string,
 
 // inspectionNotes returns caveats that apply to the actual trace rows instead
 // of showing a blanket warning on unrelated activity kinds.
-func inspectionNotes(rows []*walletrpc.ActivityVTXOTrace) []string {
+func inspectionNotes(rows []*walletdkrpc.ActivityVTXOTrace) []string {
 	for _, row := range rows {
 		if row.GetSource() == "ledger" &&
 			row.GetId() == row.GetSessionId() {
@@ -514,7 +514,7 @@ func inspectionNotes(rows []*walletrpc.ActivityVTXOTrace) []string {
 
 // dedupeVTXOTrace removes duplicate VTXO trace rows while preserving order.
 func dedupeVTXOTrace(
-	rows []*walletrpc.ActivityVTXOTrace) []*walletrpc.ActivityVTXOTrace {
+	rows []*walletdkrpc.ActivityVTXOTrace) []*walletdkrpc.ActivityVTXOTrace {
 
 	seen := make(map[string]struct{})
 	out := rows[:0]
@@ -542,13 +542,13 @@ func nonEmpty(s, fallback string) string {
 
 // swapTraceFromSummary projects a swap summary onto the inspection RPC shape.
 func swapTraceFromSummary(
-	swap *swapclientrpc.SwapSummary) *walletrpc.ActivitySwapTrace {
+	swap *swapclientrpc.SwapSummary) *walletdkrpc.ActivitySwapTrace {
 
 	if swap == nil {
 		return nil
 	}
 
-	return &walletrpc.ActivitySwapTrace{
+	return &walletdkrpc.ActivitySwapTrace{
 		PaymentHash:      swap.GetPaymentHash(),
 		Direction:        swap.GetDirection().String(),
 		State:            swap.GetState().String(),

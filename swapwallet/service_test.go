@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -7,7 +7,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -45,14 +45,14 @@ func TestServiceDepositReturnsAddress(t *testing.T) {
 	}
 
 	resp, err := svc.Deposit(
-		t.Context(), &walletrpc.DepositRequest{
+		t.Context(), &walletdkrpc.DepositRequest{
 			AmtSatHint: 50_000,
 		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, "bcrt1qboardingaddr", resp.GetOnchainAddress())
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		t, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 		resp.GetEntry().GetKind(),
 	)
 	require.Equal(
@@ -89,7 +89,7 @@ func TestServiceBalanceProjectsDaemonGetBalance(t *testing.T) {
 	}
 
 	resp, err := svc.Balance(
-		t.Context(), &walletrpc.BalanceRequest{},
+		t.Context(), &walletdkrpc.BalanceRequest{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, int64(75_000), resp.GetConfirmedSat())
@@ -110,7 +110,7 @@ func TestServiceBalanceKeepsAdoptedBoardingPending(t *testing.T) {
 	}
 
 	resp, err := svc.Balance(
-		t.Context(), &walletrpc.BalanceRequest{},
+		t.Context(), &walletdkrpc.BalanceRequest{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, int64(0), resp.GetConfirmedSat())
@@ -144,7 +144,7 @@ func TestServiceBalanceConfirmedExcludesBoardingUTXOs(t *testing.T) {
 	}
 
 	resp, err := svc.Balance(
-		t.Context(), &walletrpc.BalanceRequest{},
+		t.Context(), &walletdkrpc.BalanceRequest{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, expectedConfirmed, resp.GetConfirmedSat())
@@ -179,7 +179,7 @@ func TestServiceStatusComposesInfoBalanceAndPending(t *testing.T) {
 	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
 
 	resp, err := svc.Status(
-		t.Context(), &walletrpc.StatusRequest{},
+		t.Context(), &walletdkrpc.StatusRequest{},
 	)
 	require.NoError(t, err)
 	require.True(t, resp.GetReady())
@@ -205,7 +205,7 @@ func TestServiceStatusReportsSyncingWalletUnlocked(t *testing.T) {
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
 
 	resp, err := svc.Status(
-		t.Context(), &walletrpc.StatusRequest{},
+		t.Context(), &walletdkrpc.StatusRequest{},
 	)
 	require.NoError(t, err)
 	require.False(t, resp.GetReady())

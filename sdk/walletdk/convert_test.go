@@ -4,17 +4,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 )
 
 // TestEntryFromProto guards the wrapper-owned wallet activity DTO from
 // accidental protobuf field drift.
 func TestEntryFromProto(t *testing.T) {
-	proto := &walletrpc.WalletEntry{
+	proto := &walletdkrpc.WalletEntry{
 		Id:            "id",
-		Kind:          walletrpc.EntryKind_ENTRY_KIND_SEND,
-		Status:        walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		AmountSat:     -1000,
 		FeeSat:        12,
 		Counterparty:  "counterparty",
@@ -42,32 +42,32 @@ func TestEntryKindToProto(t *testing.T) {
 	got, err := entryKindToProto(EntryKindSend)
 	require.NoError(t, err)
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_SEND,
+		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND,
 		got,
 	)
 	got, err = entryKindToProto(EntryKindReceive)
 	require.NoError(t, err)
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_RECV,
+		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV,
 		got,
 	)
 	got, err = entryKindToProto(EntryKindDeposit)
 	require.NoError(t, err)
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		t, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 		got,
 	)
 	got, err = entryKindToProto(EntryKindExit)
 	require.NoError(t, err)
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_EXIT,
+		t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
 		got,
 	)
 
 	got, err = entryKindToProto("")
 	require.Error(t, err)
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		t, walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 		got,
 	)
 }
@@ -84,28 +84,28 @@ func TestEntryKindsToProtoRejectsUnknownKind(t *testing.T) {
 func TestListViewToProto(t *testing.T) {
 	cases := []struct {
 		in   ListView
-		want walletrpc.ListView
+		want walletdkrpc.ListView
 		bad  bool
 	}{
 		{
 			in:   ListViewActivity,
-			want: walletrpc.ListView_LIST_VIEW_ACTIVITY,
+			want: walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
 		},
 		{
 			in:   "",
-			want: walletrpc.ListView_LIST_VIEW_ACTIVITY,
+			want: walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
 		},
 		{
 			in:   ListViewVTXOs,
-			want: walletrpc.ListView_LIST_VIEW_VTXOS,
+			want: walletdkrpc.ListView_LIST_VIEW_VTXOS,
 		},
 		{
 			in:   ListViewOnchain,
-			want: walletrpc.ListView_LIST_VIEW_ONCHAIN,
+			want: walletdkrpc.ListView_LIST_VIEW_ONCHAIN,
 		},
 		{
 			in:   "junk",
-			want: walletrpc.ListView_LIST_VIEW_UNSPECIFIED,
+			want: walletdkrpc.ListView_LIST_VIEW_UNSPECIFIED,
 			bad:  true,
 		},
 	}
@@ -125,12 +125,12 @@ func TestListViewToProto(t *testing.T) {
 // projected: WalletEntry rows convert to Entry DTOs and Total carries
 // through.
 func TestListResultFromProtoActivity(t *testing.T) {
-	send := walletrpc.EntryKind_ENTRY_KIND_SEND
-	recv := walletrpc.EntryKind_ENTRY_KIND_RECV
-	resp := &walletrpc.ListResponse{
-		Body: &walletrpc.ListResponse_Activity{
-			Activity: &walletrpc.ActivityList{
-				Entries: []*walletrpc.WalletEntry{
+	send := walletdkrpc.EntryKind_ENTRY_KIND_SEND
+	recv := walletdkrpc.EntryKind_ENTRY_KIND_RECV
+	resp := &walletdkrpc.ListResponse{
+		Body: &walletdkrpc.ListResponse_Activity{
+			Activity: &walletdkrpc.ActivityList{
+				Entries: []*walletdkrpc.WalletEntry{
 					{
 						Id:   "hash1",
 						Kind: send,
@@ -161,7 +161,7 @@ func TestListResultFromProtoActivity(t *testing.T) {
 // than nil — callers always get a usable shape for the requested
 // view.
 func TestListResultFromProtoActivityNilBody(t *testing.T) {
-	resp := &walletrpc.ListResponse{}
+	resp := &walletdkrpc.ListResponse{}
 	out := listResultFromProto(ListViewActivity, resp)
 	require.Equal(t, ListViewActivity, out.View)
 	require.NotNil(t, out.Activity)
@@ -172,10 +172,10 @@ func TestListResultFromProtoActivityNilBody(t *testing.T) {
 // TestListResultFromProtoVTXOs confirms the VTXOs variant projects
 // WalletVTXO rows verbatim and the other variants remain nil.
 func TestListResultFromProtoVTXOs(t *testing.T) {
-	resp := &walletrpc.ListResponse{
-		Body: &walletrpc.ListResponse_Vtxos{
-			Vtxos: &walletrpc.VTXOInventory{
-				Vtxos: []*walletrpc.WalletVTXO{
+	resp := &walletdkrpc.ListResponse{
+		Body: &walletdkrpc.ListResponse_Vtxos{
+			Vtxos: &walletdkrpc.VTXOInventory{
+				Vtxos: []*walletdkrpc.WalletVTXO{
 					{
 						Outpoint:       "a:0",
 						AmountSat:      1_000,
@@ -206,10 +206,10 @@ func TestListResultFromProtoVTXOs(t *testing.T) {
 // TestListResultFromProtoOnchain confirms the Onchain variant
 // projects OnchainTx rows and preserves the HasMore pagination flag.
 func TestListResultFromProtoOnchain(t *testing.T) {
-	resp := &walletrpc.ListResponse{
-		Body: &walletrpc.ListResponse_Onchain{
-			Onchain: &walletrpc.OnchainHistory{
-				Txs: []*walletrpc.OnchainTx{
+	resp := &walletdkrpc.ListResponse{
+		Body: &walletdkrpc.ListResponse_Onchain{
+			Onchain: &walletdkrpc.OnchainHistory{
+				Txs: []*walletdkrpc.OnchainTx{
 					{
 						Txid:               "txid1",
 						Kind:               "boarding",
@@ -237,39 +237,39 @@ func TestListResultFromProtoOnchain(t *testing.T) {
 	require.Equal(t, time.Unix(500, 0), out.Onchain.Txs[0].CreatedAt)
 }
 
-// TestExitJobStatusFromProto exhaustively maps every walletrpc enum
+// TestExitJobStatusFromProto exhaustively maps every walletdkrpc enum
 // value to the wrapper-owned lowercase string.
 func TestExitJobStatusFromProto(t *testing.T) {
 	cases := []struct {
-		in   walletrpc.ExitJobStatus
+		in   walletdkrpc.ExitJobStatus
 		want ExitJobStatus
 	}{
 		{
-			walletrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING,
+			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING,
 			ExitJobStatusPending,
 		},
 		{
-			walletrpc.ExitJobStatus_EXIT_JOB_STATUS_MATERIALIZING,
+			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_MATERIALIZING,
 			ExitJobStatusMaterializing,
 		},
 		{
-			walletrpc.ExitJobStatus_EXIT_JOB_STATUS_CSV_PENDING,
+			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_CSV_PENDING,
 			ExitJobStatusCSVPending,
 		},
 		{
-			walletrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING,
+			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING,
 			ExitJobStatusSweeping,
 		},
 		{
-			walletrpc.ExitJobStatus_EXIT_JOB_STATUS_COMPLETED,
+			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_COMPLETED,
 			ExitJobStatusCompleted,
 		},
 		{
-			walletrpc.ExitJobStatus_EXIT_JOB_STATUS_FAILED,
+			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_FAILED,
 			ExitJobStatusFailed,
 		},
 		{
-			walletrpc.ExitJobStatus_EXIT_JOB_STATUS_UNSPECIFIED,
+			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_UNSPECIFIED,
 			ExitJobStatusUnspecified,
 		},
 	}

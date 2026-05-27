@@ -4,24 +4,24 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 )
 
 // listViewToProto maps the SDK ListView string onto the generated
 // enum.
-func listViewToProto(v ListView) (walletrpc.ListView, error) {
+func listViewToProto(v ListView) (walletdkrpc.ListView, error) {
 	switch v {
 	case ListViewActivity, "":
-		return walletrpc.ListView_LIST_VIEW_ACTIVITY, nil
+		return walletdkrpc.ListView_LIST_VIEW_ACTIVITY, nil
 
 	case ListViewVTXOs:
-		return walletrpc.ListView_LIST_VIEW_VTXOS, nil
+		return walletdkrpc.ListView_LIST_VIEW_VTXOS, nil
 
 	case ListViewOnchain:
-		return walletrpc.ListView_LIST_VIEW_ONCHAIN, nil
+		return walletdkrpc.ListView_LIST_VIEW_ONCHAIN, nil
 
 	default:
-		return walletrpc.ListView_LIST_VIEW_UNSPECIFIED,
+		return walletdkrpc.ListView_LIST_VIEW_UNSPECIFIED,
 			fmt.Errorf("unknown list view %q "+
 				"(activity|vtxos|onchain)", v)
 	}
@@ -30,7 +30,7 @@ func listViewToProto(v ListView) (walletrpc.ListView, error) {
 // listResultFromProto projects the typed oneof body onto the wrapper
 // ListResult shape, populating exactly one variant.
 func listResultFromProto(view ListView,
-	resp *walletrpc.ListResponse) *ListResult {
+	resp *walletdkrpc.ListResponse) *ListResult {
 
 	out := &ListResult{View: view}
 
@@ -106,26 +106,26 @@ func listResultFromProto(view ListView,
 	return out
 }
 
-// exitJobStatusFromProto maps the walletrpc ExitJobStatus enum onto the
+// exitJobStatusFromProto maps the walletdkrpc ExitJobStatus enum onto the
 // SDK string set.
-func exitJobStatusFromProto(s walletrpc.ExitJobStatus) ExitJobStatus {
+func exitJobStatusFromProto(s walletdkrpc.ExitJobStatus) ExitJobStatus {
 	switch s {
-	case walletrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING:
+	case walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING:
 		return ExitJobStatusPending
 
-	case walletrpc.ExitJobStatus_EXIT_JOB_STATUS_MATERIALIZING:
+	case walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_MATERIALIZING:
 		return ExitJobStatusMaterializing
 
-	case walletrpc.ExitJobStatus_EXIT_JOB_STATUS_CSV_PENDING:
+	case walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_CSV_PENDING:
 		return ExitJobStatusCSVPending
 
-	case walletrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING:
+	case walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING:
 		return ExitJobStatusSweeping
 
-	case walletrpc.ExitJobStatus_EXIT_JOB_STATUS_COMPLETED:
+	case walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_COMPLETED:
 		return ExitJobStatusCompleted
 
-	case walletrpc.ExitJobStatus_EXIT_JOB_STATUS_FAILED:
+	case walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_FAILED:
 		return ExitJobStatusFailed
 
 	default:
@@ -135,7 +135,7 @@ func exitJobStatusFromProto(s walletrpc.ExitJobStatus) ExitJobStatus {
 
 // entryFromProto copies one wallet RPC entry into wrapper-owned fields so UI
 // and bridge callers do not need protobuf types.
-func entryFromProto(entry *walletrpc.WalletEntry) Entry {
+func entryFromProto(entry *walletdkrpc.WalletEntry) Entry {
 	if entry == nil {
 		return Entry{}
 	}
@@ -155,18 +155,18 @@ func entryFromProto(entry *walletrpc.WalletEntry) Entry {
 }
 
 // entryKindFromProto maps the generated enum into walletdk's string-like kind.
-func entryKindFromProto(kind walletrpc.EntryKind) EntryKind {
+func entryKindFromProto(kind walletdkrpc.EntryKind) EntryKind {
 	switch kind {
-	case walletrpc.EntryKind_ENTRY_KIND_SEND:
+	case walletdkrpc.EntryKind_ENTRY_KIND_SEND:
 		return EntryKindSend
 
-	case walletrpc.EntryKind_ENTRY_KIND_RECV:
+	case walletdkrpc.EntryKind_ENTRY_KIND_RECV:
 		return EntryKindReceive
 
-	case walletrpc.EntryKind_ENTRY_KIND_DEPOSIT:
+	case walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT:
 		return EntryKindDeposit
 
-	case walletrpc.EntryKind_ENTRY_KIND_EXIT:
+	case walletdkrpc.EntryKind_ENTRY_KIND_EXIT:
 		return EntryKindExit
 
 	default:
@@ -175,37 +175,37 @@ func entryKindFromProto(kind walletrpc.EntryKind) EntryKind {
 }
 
 // entryKindToProto maps SDK filters back to the generated enum.
-func entryKindToProto(kind EntryKind) (walletrpc.EntryKind, error) {
+func entryKindToProto(kind EntryKind) (walletdkrpc.EntryKind, error) {
 	switch kind {
 	case EntryKindSend:
-		return walletrpc.EntryKind_ENTRY_KIND_SEND, nil
+		return walletdkrpc.EntryKind_ENTRY_KIND_SEND, nil
 
 	case EntryKindReceive:
-		return walletrpc.EntryKind_ENTRY_KIND_RECV, nil
+		return walletdkrpc.EntryKind_ENTRY_KIND_RECV, nil
 
 	case EntryKindDeposit:
-		return walletrpc.EntryKind_ENTRY_KIND_DEPOSIT, nil
+		return walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT, nil
 
 	case EntryKindExit:
-		return walletrpc.EntryKind_ENTRY_KIND_EXIT, nil
+		return walletdkrpc.EntryKind_ENTRY_KIND_EXIT, nil
 
 	default:
-		return walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		return walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 			fmt.Errorf("unknown entry kind %q "+
 				"(send|receive|deposit|exit)", kind)
 	}
 }
 
 // entryStatusFromProto maps generated statuses into stable display strings.
-func entryStatusFromProto(status walletrpc.EntryStatus) EntryStatus {
+func entryStatusFromProto(status walletdkrpc.EntryStatus) EntryStatus {
 	switch status {
-	case walletrpc.EntryStatus_ENTRY_STATUS_PENDING:
+	case walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING:
 		return EntryStatusPending
 
-	case walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE:
+	case walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE:
 		return EntryStatusComplete
 
-	case walletrpc.EntryStatus_ENTRY_STATUS_FAILED:
+	case walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED:
 		return EntryStatusFailed
 
 	default:
@@ -214,12 +214,12 @@ func entryStatusFromProto(status walletrpc.EntryStatus) EntryStatus {
 }
 
 // entryKindsToProto copies SDK filters into generated enum values.
-func entryKindsToProto(kinds []EntryKind) ([]walletrpc.EntryKind, error) {
+func entryKindsToProto(kinds []EntryKind) ([]walletdkrpc.EntryKind, error) {
 	if len(kinds) == 0 {
 		return nil, nil
 	}
 
-	out := make([]walletrpc.EntryKind, 0, len(kinds))
+	out := make([]walletdkrpc.EntryKind, 0, len(kinds))
 	for _, kind := range kinds {
 		protoKind, err := entryKindToProto(kind)
 		if err != nil {
@@ -232,7 +232,7 @@ func entryKindsToProto(kinds []EntryKind) ([]walletrpc.EntryKind, error) {
 }
 
 // balanceFromProto copies a wallet RPC balance into SDK-owned fields.
-func balanceFromProto(balance *walletrpc.BalanceResponse) Balance {
+func balanceFromProto(balance *walletdkrpc.BalanceResponse) Balance {
 	if balance == nil {
 		return Balance{}
 	}

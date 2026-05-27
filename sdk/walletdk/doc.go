@@ -6,6 +6,6 @@
 // receives, and unified activity history. Connect exposes the same API against
 // an external daemon.
 //
-// Embedded wallet payment operations require building with the walletrpc and
+// Embedded wallet payment operations require building with the walletdkrpc and
 // swapruntime tags so the daemon-owned wallet executor is registered.
 package walletdk

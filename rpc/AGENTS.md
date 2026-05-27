@@ -9,14 +9,14 @@ Client-side RPC message definitions and HTTP transport in sub-packages:
 | `rpc/roundpb` | generated | Round protocol messages |
 | `rpc/oorpb` | generated | OOR transfer messages |
 | `rpc/swapclientrpc` | generated | Swap client service stubs |
-| `rpc/walletrpc` | generated | Highest-level wallet service stubs |
+| `rpc/walletdkrpc` | generated | Highest-level wallet service stubs |
 | `rpc/restclient` | hand-written | HTTP/protoJSON transport adapter |
 
 ## Relationships
 
 - **Depends on**: nothing for generated sub-packages (proto definitions).
   `rpc/restclient` depends on `arkrpc`, `daemonrpc`, `mailbox/pb`,
-  `rpc/swapclientrpc`, `rpc/walletrpc`, and `swaprpc`.
+  `rpc/swapclientrpc`, `rpc/walletdkrpc`, and `swaprpc`.
 - **Depended on by**: `round`, `oor`, `serverconn` (generated types);
   `sdk/walletdk`, `sdk/swaps`, `swapclientserver`, `darepod`
   (`rpc/restclient` REST transport).

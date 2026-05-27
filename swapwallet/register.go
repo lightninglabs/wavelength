@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -10,17 +10,17 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"google.golang.org/grpc"
 )
 
-// Register installs the walletrpc subserver on the daemon's gRPC server. It
-// is wired into cfg.RPCServiceRegistrars by the walletrpc build tag in
+// Register installs the walletdkrpc subserver on the daemon's gRPC server. It
+// is wired into cfg.RPCServiceRegistrars by the walletdkrpc build tag in
 // cmd/darepod so the daemon only carries the subserver when explicitly
 // compiled in.
 //
 // Register MUST run after swapclientserver.Register has populated
-// cfg.Swap.Backend. The walletrpc build tag enforces this through the
+// cfg.Swap.Backend. The walletdkrpc build tag enforces this through the
 // configureWalletRPC wiring in cmd/darepod, which appends the swapwallet
 // registrar AFTER the swapclientserver registrar.
 //
@@ -82,9 +82,9 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 		deps.Log = rpcServer.SubLogger(darepod.WalletRPCSubsystem)
 	}
 
-	// Apply optional walletrpc-config overrides. The struct is present
+	// Apply optional walletdkrpc-config overrides. The struct is present
 	// in all builds but the wallet-layer subserver only reads it when
-	// walletrpc is compiled in (this file), so unknown-field drift
+	// walletdkrpc is compiled in (this file), so unknown-field drift
 	// across builds is impossible.
 	if cfg.SwapWallet != nil {
 		deps.WalletDeadline = cfg.SwapWallet.Deadline
@@ -97,8 +97,8 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 	service := newService(deps, runtime)
 	inspectionService := newInspectionService(deps, runtime)
 
-	walletrpc.RegisterWalletServiceServer(grpcServer, service)
-	walletrpc.RegisterWalletInspectionServiceServer(
+	walletdkrpc.RegisterWalletServiceServer(grpcServer, service)
+	walletdkrpc.RegisterWalletInspectionServiceServer(
 		grpcServer, inspectionService,
 	)
 
@@ -136,13 +136,13 @@ func RegisterGateway(ctx context.Context, mux *runtime.ServeMux,
 	endpoint string, opts []grpc.DialOption, _ *darepod.RPCServer,
 	_ *darepod.Config) error {
 
-	if err := walletrpc.RegisterWalletServiceHandlerFromEndpoint(
+	if err := walletdkrpc.RegisterWalletServiceHandlerFromEndpoint(
 		ctx, mux, endpoint, opts,
 	); err != nil {
 		return err
 	}
 
-	return walletrpc.RegisterWalletInspectionServiceHandlerFromEndpoint(
+	return walletdkrpc.RegisterWalletInspectionServiceHandlerFromEndpoint(
 		ctx, mux, endpoint, opts,
 	)
 }

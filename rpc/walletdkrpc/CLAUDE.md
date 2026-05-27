@@ -1,14 +1,14 @@
-# rpc/walletrpc
+# rpc/walletdkrpc
 
 ## Purpose
 
-Generated gRPC stubs for `walletrpc.WalletService` — the highest-level
+Generated gRPC stubs for `walletdkrpc.WalletService` — the highest-level
 RPC surface in the daemon's API stack. The service is a small, flat,
 swap-vocabulary-free wallet API that lives ABOVE `daemonrpc` and
 `swapclientrpc` and composes them; the seven verbs map 1:1 to what a
 user does day-to-day.
 
-Proto source: `rpc/walletrpc/wallet.proto`.
+Proto source: `rpc/walletdkrpc/wallet.proto`.
 
 ## Service Methods (the 7 wallet verbs + supporting)
 
@@ -52,15 +52,15 @@ Proto source: `rpc/walletrpc/wallet.proto`.
   - `swapwallet` (implements the service server-side; consumes the
     generated stubs).
   - `cmd/darepocli/darepoclicommands` (the seven top-level CLI verbs
-    dial `walletrpc.WalletService`).
+    dial `walletdkrpc.WalletService`).
   - `sdk/walletdk` (gomobile-friendly SDK wraps the same stubs).
 
 ## Invariants
 
 - **Never edit generated code** — regenerate via `make rpc`.
-- The walletrpc layer is the highest-level RPC surface; new wallet
+- The walletdkrpc layer is the highest-level RPC surface; new wallet
   verbs land HERE first and admin proxies pull from `daemonrpc`.
-  Internal correlators MUST NOT leak from `daemonrpc` into walletrpc
+  Internal correlators MUST NOT leak from `daemonrpc` into walletdkrpc
   responses.
 - `Create`, `Unlock`, `Exit`, and `ExitStatus` are admin-shape proxies
   that work BEFORE the swap subsystem is live; the server-side
@@ -76,8 +76,8 @@ Proto source: `rpc/walletrpc/wallet.proto`.
 
 ## Deep Docs
 
-- [docs/walletrpc_build.md](../../docs/walletrpc_build.md) — Build
-  modes, make targets, what the walletrpc tag enables.
+- [docs/walletdkrpc_build.md](../../docs/walletdkrpc_build.md) — Build
+  modes, make targets, what the walletdkrpc tag enables.
 - [swapwallet/CLAUDE.md](../../swapwallet/CLAUDE.md) — Daemon-side
   implementation.
 - [sdk/walletdk/CLAUDE.md](../../sdk/walletdk/CLAUDE.md) — Embedded SDK

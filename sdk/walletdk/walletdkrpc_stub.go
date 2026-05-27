@@ -1,4 +1,4 @@
-//go:build (!walletrpc || !swapruntime) && !js
+//go:build (!walletdkrpc || !swapruntime) && !js
 
 package walletdk
 

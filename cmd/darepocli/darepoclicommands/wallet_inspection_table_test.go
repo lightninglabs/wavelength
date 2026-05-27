@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -13,14 +13,14 @@ import (
 func TestRenderWalletInspectionExpanded(t *testing.T) {
 	t.Parallel()
 
-	resp := &walletrpc.InspectActivityResponse{
-		Entry: &walletrpc.WalletEntry{
+	resp := &walletdkrpc.InspectActivityResponse{
+		Entry: &walletdkrpc.WalletEntry{
 			Id:        "payment-hash",
-			Kind:      walletrpc.EntryKind_ENTRY_KIND_SEND,
-			Status:    walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+			Kind:      walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+			Status:    walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
 			AmountSat: -1234,
 		},
-		Swap: &walletrpc.ActivitySwapTrace{
+		Swap: &walletdkrpc.ActivitySwapTrace{
 			PaymentHash:      "payment-hash",
 			Direction:        "SWAP_DIRECTION_PAY",
 			State:            "SWAP_STATE_WAITING_FOR_CLAIM",
@@ -30,7 +30,7 @@ func TestRenderWalletInspectionExpanded(t *testing.T) {
 			VhtlcAmountSat:   1234,
 			FundingSessionId: "funding-session",
 		},
-		Vtxos: []*walletrpc.ActivityVTXOTrace{
+		Vtxos: []*walletdkrpc.ActivityVTXOTrace{
 			{
 				Id:        "input-id",
 				AmountSat: 999745,
@@ -46,7 +46,7 @@ func TestRenderWalletInspectionExpanded(t *testing.T) {
 				Source:    "ledger",
 			},
 		},
-		LedgerRows: []*walletrpc.ActivityLedgerTrace{
+		LedgerRows: []*walletdkrpc.ActivityLedgerTrace{
 			{
 				EntryId:            13,
 				Type:               "oor",

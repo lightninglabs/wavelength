@@ -7,7 +7,7 @@ import (
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/lightninglabs/darepo-client/swaprpc"
 	"google.golang.org/grpc"
 )
@@ -26,21 +26,21 @@ type (
 	subscribeSwapsREST = StreamClient[swapclientrpc.SubscribeSwapsResponse]
 
 	walletEntryStream interface {
-		grpc.ServerStreamingClient[walletrpc.WalletEntry]
+		grpc.ServerStreamingClient[walletdkrpc.WalletEntry]
 	}
-	walletEntryREST = StreamClient[walletrpc.WalletEntry]
+	walletEntryREST = StreamClient[walletdkrpc.WalletEntry]
 )
 
 var (
-	_ arkrpc.ArkServiceClient        = (*ArkServiceClient)(nil)
-	_ daemonrpc.DaemonServiceClient  = (*DaemonServiceClient)(nil)
-	_ mailboxpb.MailboxServiceClient = (*MailboxServiceClient)(nil)
-	_ swapClientService              = (*SwapClientServiceClient)(nil)
-	_ swaprpc.SwapServiceClient      = (*SwapServiceClient)(nil)
-	_ walletrpc.WalletServiceClient  = (*WalletServiceClient)(nil)
-	_ watchRoundsStream              = (*watchRoundsREST)(nil)
-	_ subscribeSwapsStream           = (*subscribeSwapsREST)(nil)
-	_ walletEntryStream              = (*walletEntryREST)(nil)
+	_ arkrpc.ArkServiceClient         = (*ArkServiceClient)(nil)
+	_ daemonrpc.DaemonServiceClient   = (*DaemonServiceClient)(nil)
+	_ mailboxpb.MailboxServiceClient  = (*MailboxServiceClient)(nil)
+	_ swapClientService               = (*SwapClientServiceClient)(nil)
+	_ swaprpc.SwapServiceClient       = (*SwapServiceClient)(nil)
+	_ walletdkrpc.WalletServiceClient = (*WalletServiceClient)(nil)
+	_ watchRoundsStream               = (*watchRoundsREST)(nil)
+	_ subscribeSwapsStream            = (*subscribeSwapsREST)(nil)
+	_ walletEntryStream               = (*walletEntryREST)(nil)
 )
 
 // NewArkServiceClient creates an ArkService REST client.
@@ -721,18 +721,18 @@ func (c *SwapClientServiceClient) SubscribeSwaps(ctx context.Context,
 
 // NewWalletServiceClient creates a WalletService REST client.
 func NewWalletServiceClient(addr string,
-	opts ...Option) walletrpc.WalletServiceClient {
+	opts ...Option) walletdkrpc.WalletServiceClient {
 
 	return NewWalletServiceClientFromClient(New(addr, opts...))
 }
 
 // NewWalletServiceClientFromClient creates a WalletService REST client from an
 // existing shared REST transport.
-func NewWalletServiceClientFromClient(c *Client) walletrpc.WalletServiceClient {
+func NewWalletServiceClientFromClient(c *Client) walletdkrpc.WalletServiceClient {
 	return &WalletServiceClient{client: c}
 }
 
-// WalletServiceClient implements walletrpc.WalletServiceClient over
+// WalletServiceClient implements walletdkrpc.WalletServiceClient over
 // grpc-gateway.
 type WalletServiceClient struct {
 	client *Client
@@ -740,10 +740,10 @@ type WalletServiceClient struct {
 
 // Create initializes a wallet through WalletService.
 func (c *WalletServiceClient) Create(ctx context.Context,
-	in *walletrpc.CreateRequest, _ ...grpc.CallOption) (
-	*walletrpc.CreateResponse, error) {
+	in *walletdkrpc.CreateRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.CreateResponse, error) {
 
-	out := new(walletrpc.CreateResponse)
+	out := new(walletdkrpc.CreateResponse)
 	err := c.client.Post(ctx, "/v1/wallet/create", in, out)
 
 	return out, err
@@ -751,10 +751,10 @@ func (c *WalletServiceClient) Create(ctx context.Context,
 
 // Unlock unlocks a wallet through WalletService.
 func (c *WalletServiceClient) Unlock(ctx context.Context,
-	in *walletrpc.UnlockRequest, _ ...grpc.CallOption) (
-	*walletrpc.UnlockResponse, error) {
+	in *walletdkrpc.UnlockRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.UnlockResponse, error) {
 
-	out := new(walletrpc.UnlockResponse)
+	out := new(walletdkrpc.UnlockResponse)
 	err := c.client.Post(ctx, "/v1/wallet/unlock", in, out)
 
 	return out, err
@@ -762,10 +762,10 @@ func (c *WalletServiceClient) Unlock(ctx context.Context,
 
 // Send dispatches a wallet send.
 func (c *WalletServiceClient) Send(ctx context.Context,
-	in *walletrpc.SendRequest, _ ...grpc.CallOption) (
-	*walletrpc.SendResponse, error) {
+	in *walletdkrpc.SendRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.SendResponse, error) {
 
-	out := new(walletrpc.SendResponse)
+	out := new(walletdkrpc.SendResponse)
 	err := c.client.Post(ctx, "/v1/wallet/send", in, out)
 
 	return out, err
@@ -773,10 +773,10 @@ func (c *WalletServiceClient) Send(ctx context.Context,
 
 // Recv creates a wallet receive invoice.
 func (c *WalletServiceClient) Recv(ctx context.Context,
-	in *walletrpc.RecvRequest, _ ...grpc.CallOption) (
-	*walletrpc.RecvResponse, error) {
+	in *walletdkrpc.RecvRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.RecvResponse, error) {
 
-	out := new(walletrpc.RecvResponse)
+	out := new(walletdkrpc.RecvResponse)
 	err := c.client.Post(ctx, "/v1/wallet/recv", in, out)
 
 	return out, err
@@ -784,10 +784,10 @@ func (c *WalletServiceClient) Recv(ctx context.Context,
 
 // List returns a wallet list view.
 func (c *WalletServiceClient) List(ctx context.Context,
-	in *walletrpc.ListRequest, _ ...grpc.CallOption) (
-	*walletrpc.ListResponse, error) {
+	in *walletdkrpc.ListRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.ListResponse, error) {
 
-	out := new(walletrpc.ListResponse)
+	out := new(walletdkrpc.ListResponse)
 	err := c.client.Post(ctx, "/v1/wallet/list", in, out)
 
 	return out, err
@@ -795,10 +795,10 @@ func (c *WalletServiceClient) List(ctx context.Context,
 
 // Deposit returns a wallet deposit address.
 func (c *WalletServiceClient) Deposit(ctx context.Context,
-	in *walletrpc.DepositRequest, _ ...grpc.CallOption) (
-	*walletrpc.DepositResponse, error) {
+	in *walletdkrpc.DepositRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.DepositResponse, error) {
 
-	out := new(walletrpc.DepositResponse)
+	out := new(walletdkrpc.DepositResponse)
 	err := c.client.Post(ctx, "/v1/wallet/deposit", in, out)
 
 	return out, err
@@ -806,10 +806,10 @@ func (c *WalletServiceClient) Deposit(ctx context.Context,
 
 // Balance returns the wallet balance summary.
 func (c *WalletServiceClient) Balance(ctx context.Context,
-	in *walletrpc.BalanceRequest, _ ...grpc.CallOption) (
-	*walletrpc.BalanceResponse, error) {
+	in *walletdkrpc.BalanceRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.BalanceResponse, error) {
 
-	out := new(walletrpc.BalanceResponse)
+	out := new(walletdkrpc.BalanceResponse)
 	err := c.client.Post(ctx, "/v1/wallet/balance", in, out)
 
 	return out, err
@@ -817,10 +817,10 @@ func (c *WalletServiceClient) Balance(ctx context.Context,
 
 // Status returns the wallet readiness summary.
 func (c *WalletServiceClient) Status(ctx context.Context,
-	in *walletrpc.StatusRequest, _ ...grpc.CallOption) (
-	*walletrpc.StatusResponse, error) {
+	in *walletdkrpc.StatusRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.StatusResponse, error) {
 
-	out := new(walletrpc.StatusResponse)
+	out := new(walletdkrpc.StatusResponse)
 	err := c.client.Post(ctx, "/v1/wallet/status", in, out)
 
 	return out, err
@@ -828,10 +828,10 @@ func (c *WalletServiceClient) Status(ctx context.Context,
 
 // Exit starts a wallet unilateral exit.
 func (c *WalletServiceClient) Exit(ctx context.Context,
-	in *walletrpc.ExitRequest, _ ...grpc.CallOption) (
-	*walletrpc.ExitResponse, error) {
+	in *walletdkrpc.ExitRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.ExitResponse, error) {
 
-	out := new(walletrpc.ExitResponse)
+	out := new(walletdkrpc.ExitResponse)
 	err := c.client.Post(ctx, "/v1/wallet/exit", in, out)
 
 	return out, err
@@ -839,10 +839,10 @@ func (c *WalletServiceClient) Exit(ctx context.Context,
 
 // ExitStatus returns one wallet unilateral exit status.
 func (c *WalletServiceClient) ExitStatus(ctx context.Context,
-	in *walletrpc.ExitStatusRequest, _ ...grpc.CallOption) (
-	*walletrpc.ExitStatusResponse, error) {
+	in *walletdkrpc.ExitStatusRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.ExitStatusResponse, error) {
 
-	out := new(walletrpc.ExitStatusResponse)
+	out := new(walletdkrpc.ExitStatusResponse)
 	err := c.client.Post(ctx, "/v1/wallet/exit-status", in, out)
 
 	return out, err
@@ -850,8 +850,8 @@ func (c *WalletServiceClient) ExitStatus(ctx context.Context,
 
 // SubscribeWallet streams wallet updates.
 func (c *WalletServiceClient) SubscribeWallet(ctx context.Context,
-	in *walletrpc.SubscribeWalletRequest, _ ...grpc.CallOption) (
-	grpc.ServerStreamingClient[walletrpc.WalletEntry], error) {
+	in *walletdkrpc.SubscribeWalletRequest, _ ...grpc.CallOption) (
+	grpc.ServerStreamingClient[walletdkrpc.WalletEntry], error) {
 
 	resp, err := c.client.Stream( //nolint:bodyclose // Stream owns body.
 		ctx, "/v1/wallet/subscribe", in,
@@ -860,9 +860,9 @@ func (c *WalletServiceClient) SubscribeWallet(ctx context.Context,
 		return nil, err
 	}
 
-	return NewStreamClient[walletrpc.WalletEntry](
-		resp, "SubscribeWallet", func() *walletrpc.WalletEntry {
-			return new(walletrpc.WalletEntry)
+	return NewStreamClient[walletdkrpc.WalletEntry](
+		resp, "SubscribeWallet", func() *walletdkrpc.WalletEntry {
+			return new(walletdkrpc.WalletEntry)
 		},
 	), nil
 }

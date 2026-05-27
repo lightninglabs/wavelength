@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -8,7 +8,7 @@ import (
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -85,7 +85,7 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 	}
 
 	resp, err := inspection.InspectActivity(
-		t.Context(), &walletrpc.InspectActivityRequest{
+		t.Context(), &walletdkrpc.InspectActivityRequest{
 			Id: "payment-hash",
 		},
 	)
@@ -96,7 +96,7 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 	require.Len(t, resp.GetLedgerRows(), 2)
 	require.Len(t, resp.GetVtxos(), 3)
 
-	ledgerByID := map[int64]*walletrpc.ActivityLedgerTrace{}
+	ledgerByID := map[int64]*walletdkrpc.ActivityLedgerTrace{}
 	for _, row := range resp.GetLedgerRows() {
 		ledgerByID[row.GetEntryId()] = row
 	}
@@ -107,7 +107,7 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 	require.Equal(t, "change_output", ledgerByID[14].GetRole())
 	require.Equal(t, int32(1), ledgerByID[14].GetOutputIndex())
 
-	vtxoByRole := map[string]*walletrpc.ActivityVTXOTrace{}
+	vtxoByRole := map[string]*walletdkrpc.ActivityVTXOTrace{}
 	for _, row := range resp.GetVtxos() {
 		vtxoByRole[row.GetRole()] = row
 	}
@@ -152,7 +152,7 @@ func TestInspectActivityOmitsIrrelevantNotes(t *testing.T) {
 	}
 
 	resp, err := inspection.InspectActivity(
-		t.Context(), &walletrpc.InspectActivityRequest{
+		t.Context(), &walletdkrpc.InspectActivityRequest{
 			Id: "deposit-txid",
 		},
 	)
@@ -170,7 +170,7 @@ func TestInspectActivityNotFound(t *testing.T) {
 	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
 
 	_, err := inspection.InspectActivity(
-		t.Context(), &walletrpc.InspectActivityRequest{
+		t.Context(), &walletdkrpc.InspectActivityRequest{
 			Id: "missing",
 		},
 	)

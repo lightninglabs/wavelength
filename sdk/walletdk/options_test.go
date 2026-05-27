@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime && !js
+//go:build walletdkrpc && swapruntime && !js
 
 package walletdk
 
@@ -11,7 +11,7 @@ import (
 
 // TestResolveDaemonConfigEagerRoundJoin is a table-driven test that pins the
 // walletdk-side override contract for darepod.Config.EagerRoundJoin under the
-// walletrpc build tag. The matrix covers the three production paths a host
+// walletdkrpc build tag. The matrix covers the three production paths a host
 // can take through walletdk.Start:
 //
 //  1. Pure convenience Config (no caller-owned DaemonConfig). The default
@@ -27,7 +27,7 @@ func TestResolveDaemonConfigEagerRoundJoin(t *testing.T) {
 
 	// buildCallerDaemonCfg returns a caller-owned darepod.Config with
 	// EagerRoundJoin pre-set to true, mirroring a host that supplies its
-	// own DaemonConfig and inherits the walletrpc build-tag default.
+	// own DaemonConfig and inherits the walletdkrpc build-tag default.
 	buildCallerDaemonCfg := func() *darepod.Config {
 		daemonCfg := darepod.DefaultConfig()
 		daemonCfg.EagerRoundJoin = true
@@ -49,7 +49,7 @@ func TestResolveDaemonConfigEagerRoundJoin(t *testing.T) {
 			},
 			opts:      nil,
 			wantEager: true,
-			why: "walletrpc-tagged darepod.DefaultConfig seeds " +
+			why: "walletdkrpc-tagged darepod.DefaultConfig seeds " +
 				"EagerRoundJoin=true; the convenience Config " +
 				"inherits it",
 		},

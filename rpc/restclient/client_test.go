@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/lightninglabs/darepo-client/swaprpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -183,7 +183,7 @@ func TestWalletStream(t *testing.T) {
 
 	client := NewWalletServiceClient(server.URL)
 	stream, err := client.SubscribeWallet(
-		t.Context(), &walletrpc.SubscribeWalletRequest{},
+		t.Context(), &walletdkrpc.SubscribeWalletRequest{},
 	)
 	require.NoError(t, err)
 
@@ -212,7 +212,7 @@ func TestWalletStreamError(t *testing.T) {
 
 	client := NewWalletServiceClient(server.URL)
 	stream, err := client.SubscribeWallet(
-		context.Background(), &walletrpc.SubscribeWalletRequest{},
+		context.Background(), &walletdkrpc.SubscribeWalletRequest{},
 	)
 	require.NoError(t, err)
 

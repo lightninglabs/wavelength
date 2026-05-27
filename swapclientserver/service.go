@@ -210,7 +210,7 @@ type receiveSessionAdapter struct {
 // swapdk-server connection during daemon shutdown.
 //
 // When cfg.Swap.SuppressResume is true, the synchronous resumePending sweep
-// is skipped so a higher layer (the walletrpc subserver) can own the unified
+// is skipped so a higher layer (the walletdkrpc subserver) can own the unified
 // resume policy. In that case cfg.Swap.Backend is populated so the higher
 // layer can drive ResumePending itself after performing any cross-subsystem
 // preconditions.
@@ -224,7 +224,7 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 
 	swapclientrpc.RegisterSwapClientServiceServer(grpcServer, svc)
 
-	// Publish the backend handle so the walletrpc registrar (if compiled
+	// Publish the backend handle so the walletdkrpc registrar (if compiled
 	// in) can drive ResumePending and any future in-Go calls without
 	// going through the gRPC stub. Done before the resume sweep so the
 	// handle is reachable even when this layer is configured to skip its
@@ -244,7 +244,7 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 // ResumePending re-arms background workers for every persisted pending swap
 // session. It is idempotent: payment hashes already owned by an active worker
 // are skipped. The method satisfies darepod.SwapBackend so a higher subserver
-// (such as walletrpc) can drive the resume sweep as part of a unified
+// (such as walletdkrpc) can drive the resume sweep as part of a unified
 // wallet-level lifecycle policy.
 func (s *swapClientService) ResumePending(ctx context.Context) {
 	s.resumePending(ctx)

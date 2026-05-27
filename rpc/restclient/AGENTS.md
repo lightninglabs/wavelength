@@ -29,7 +29,7 @@ interface, and per-service factory functions so callers are channel-agnostic
 ## Relationships
 
 - **Depends on**: `arkrpc`, `daemonrpc`, `mailbox/pb`, `rpc/swapclientrpc`,
-  `rpc/walletrpc`, `swaprpc` (for service stub interfaces it implements).
+  `rpc/walletdkrpc`, `swaprpc` (for service stub interfaces it implements).
 - **Depended on by**: `sdk/walletdk` (REST fallback transport),
   `sdk/swaps` (REST gRPC conn), `swapclientserver` (outbound REST
   client), `darepod/outbound_clients` (outbound mailbox/swap-server
@@ -53,5 +53,5 @@ interface, and per-service factory functions so callers are channel-agnostic
 ## Deep Docs
 
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.
-- [rpc/walletrpc/CLAUDE.md](../walletrpc/CLAUDE.md) — WalletService stubs
+- [rpc/walletdkrpc/CLAUDE.md](../walletdkrpc/CLAUDE.md) — WalletService stubs
   this package implements over HTTP.
