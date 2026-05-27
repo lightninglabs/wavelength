@@ -2,6 +2,7 @@ package serverconn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -10,6 +11,11 @@ import (
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"google.golang.org/protobuf/proto"
 )
+
+// ErrEnvelopeHandled lets an envelope route acknowledge an envelope without
+// delivering an actor message. This is useful for shared RPC methods where a
+// stale response can be identified as unrelated to the durable route.
+var ErrEnvelopeHandled = errors.New("serverconn: envelope handled")
 
 // InboundActorMessage is the type-constraint for actor messages that arrive
 // from the server. It combines actor.Message (for dispatch via the actor
@@ -145,7 +151,8 @@ type EnvelopeRouteConfig[M actor.Message, R any] struct {
 	Key actor.ServiceKey[M, R]
 
 	// Adapt converts the deserialized proto and envelope metadata into the
-	// actor message type M.
+	// actor message type M. Return ErrEnvelopeHandled when the envelope was
+	// intentionally consumed without actor delivery.
 	Adapt func(*mailboxpb.Envelope, proto.Message) (M, error)
 }
 
@@ -207,6 +214,10 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 
 		actorMsg, err := cfg.Adapt(env, event)
 		if err != nil {
+			if errors.Is(err, ErrEnvelopeHandled) {
+				return nil
+			}
+
 			return fmt.Errorf("adapt %s/%s event: %w", cfg.Service,
 				cfg.Method, err)
 		}

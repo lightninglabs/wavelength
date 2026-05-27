@@ -40,14 +40,20 @@ func IncomingMetadataCorrelationID(sessionID SessionID) string {
 		chainhash.Hash(sessionID).String()
 }
 
+// IsIncomingMetadataCorrelationID returns true when correlationID belongs to a
+// durable incoming metadata query.
+func IsIncomingMetadataCorrelationID(correlationID string) bool {
+	return len(correlationID) > len(incomingMetadataCorrelationPrefix) &&
+		correlationID[:len(incomingMetadataCorrelationPrefix)] ==
+			incomingMetadataCorrelationPrefix
+}
+
 // ParseIncomingMetadataCorrelationID decodes a durable incoming metadata query
 // correlation ID back into the OOR session ID.
 func ParseIncomingMetadataCorrelationID(correlationID string) (SessionID,
 	error) {
 
-	if len(correlationID) <= len(incomingMetadataCorrelationPrefix) ||
-		correlationID[:len(incomingMetadataCorrelationPrefix)] !=
-			incomingMetadataCorrelationPrefix {
+	if !IsIncomingMetadataCorrelationID(correlationID) {
 		return SessionID{}, fmt.Errorf("unexpected incoming metadata "+
 			"correlation id: %q", correlationID)
 	}
