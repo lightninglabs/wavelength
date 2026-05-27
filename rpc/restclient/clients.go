@@ -175,6 +175,19 @@ func (c *SwapServiceClient) CreateInSwap(ctx context.Context,
 	return out, err
 }
 
+// AuthorizeInSwapRefund asks the swap server to sign a failed in-swap refund.
+func (c *SwapServiceClient) AuthorizeInSwapRefund(ctx context.Context,
+	in *swaprpc.AuthorizeInSwapRefundRequest, _ ...grpc.CallOption) (
+	*swaprpc.AuthorizeInSwapRefundResponse, error) {
+
+	out := new(swaprpc.AuthorizeInSwapRefundResponse)
+	err := c.client.Post(
+		ctx, "/v1/swap/authorize-in-swap-refund", in, out,
+	)
+
+	return out, err
+}
+
 // NewDaemonServiceClient creates a DaemonService REST client.
 func NewDaemonServiceClient(addr string,
 	opts ...Option) daemonrpc.DaemonServiceClient {
@@ -375,6 +388,28 @@ func (c *DaemonServiceClient) SendOOR(ctx context.Context,
 
 	out := new(daemonrpc.SendOORResponse)
 	err := c.client.Post(ctx, "/v1/daemon/send-oor", in, out)
+
+	return out, err
+}
+
+// PrepareOOR builds an out-of-round transfer package without submitting it.
+func (c *DaemonServiceClient) PrepareOOR(ctx context.Context,
+	in *daemonrpc.PrepareOORRequest, _ ...grpc.CallOption) (
+	*daemonrpc.PrepareOORResponse, error) {
+
+	out := new(daemonrpc.PrepareOORResponse)
+	err := c.client.Post(ctx, "/v1/daemon/prepare-oor", in, out)
+
+	return out, err
+}
+
+// SignOORCustomInput signs one prepared custom OOR input.
+func (c *DaemonServiceClient) SignOORCustomInput(ctx context.Context,
+	in *daemonrpc.SignOORCustomInputRequest, _ ...grpc.CallOption) (
+	*daemonrpc.SignOORCustomInputResponse, error) {
+
+	out := new(daemonrpc.SignOORCustomInputResponse)
+	err := c.client.Post(ctx, "/v1/daemon/sign-oor-custom-input", in, out)
 
 	return out, err
 }

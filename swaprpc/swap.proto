@@ -31,6 +31,11 @@ service SwapService {
     // CreateInSwap initiates an Ark-to-Lightning swap for the given invoice and
     // returns the negotiated vHTLC parameters.
     rpc CreateInSwap (CreateInSwapRequest) returns (CreateInSwapResponse);
+
+    // AuthorizeInSwapRefund signs a prepared cooperative refund spend for a
+    // funded in-swap whose Lightning payment attempt has terminally failed.
+    rpc AuthorizeInSwapRefund (AuthorizeInSwapRefundRequest)
+        returns (AuthorizeInSwapRefundResponse);
 }
 
 // RequestChannelIdRequest starts one Lightning-to-Ark receive negotiation.
@@ -201,4 +206,50 @@ message CreateInSwapResponse {
     // settlement_type identifies whether this negotiation should be completed
     // through Lightning or directly inside the Ark instance.
     SettlementType settlement_type = 7;
+}
+
+message AuthorizeInSwapRefundRequest {
+    // payment_hash identifies the in-swap.
+    bytes payment_hash = 1;
+
+    // vhtlc_outpoint is the funded vHTLC outpoint in "txid:vout" format.
+    string vhtlc_outpoint = 2;
+
+    // vhtlc_amount_sat is the funded vHTLC amount.
+    uint64 vhtlc_amount_sat = 3;
+
+    // vhtlc_policy_template is the serialized vHTLC policy template.
+    bytes vhtlc_policy_template = 4;
+
+    // refund_spend_path is the serialized vHTLC Refund spend path.
+    bytes refund_spend_path = 5;
+
+    // checkpoint_psbt is the prepared custom OOR checkpoint PSBT to sign.
+    bytes checkpoint_psbt = 6;
+}
+
+message AuthorizeInSwapRefundResponse {
+    // signature is the swap server receiver key's tapscript signature.
+    TaprootScriptSignature signature = 1;
+
+    // failure_reason is the terminal Lightning payment failure that made the
+    // refund safe to authorize.
+    string failure_reason = 2;
+}
+
+// TaprootScriptSignature carries one externally produced tapscript signature.
+// Keep this in sync with daemonrpc.TaprootScriptSignature.
+message TaprootScriptSignature {
+    // pubkey is the compressed public key that produced the signature.
+    bytes pubkey = 1;
+
+    // witness_script is the tapscript leaf this signature commits to.
+    bytes witness_script = 2;
+
+    // signature is the raw Schnorr signature, optionally followed by a one-byte
+    // sighash type when the sighash is not SIGHASH_DEFAULT.
+    bytes signature = 3;
+
+    // sighash is the tapscript sighash type. Zero means SIGHASH_DEFAULT.
+    uint32 sighash = 4;
 }

@@ -35,6 +35,8 @@ const (
 	DaemonService_GetIndexedOORSessionByTxid_FullMethodName    = "/daemonrpc.DaemonService/GetIndexedOORSessionByTxid"
 	DaemonService_SendVTXO_FullMethodName                      = "/daemonrpc.DaemonService/SendVTXO"
 	DaemonService_SendOOR_FullMethodName                       = "/daemonrpc.DaemonService/SendOOR"
+	DaemonService_PrepareOOR_FullMethodName                    = "/daemonrpc.DaemonService/PrepareOOR"
+	DaemonService_SignOORCustomInput_FullMethodName            = "/daemonrpc.DaemonService/SignOORCustomInput"
 	DaemonService_RefreshVTXOs_FullMethodName                  = "/daemonrpc.DaemonService/RefreshVTXOs"
 	DaemonService_LeaveVTXOs_FullMethodName                    = "/daemonrpc.DaemonService/LeaveVTXOs"
 	DaemonService_Board_FullMethodName                         = "/daemonrpc.DaemonService/Board"
@@ -120,6 +122,13 @@ type DaemonServiceClient interface {
 	// SendOOR initiates an out-of-round transfer directly between the
 	// client and operator, without waiting for a round.
 	SendOOR(ctx context.Context, in *SendOORRequest, opts ...grpc.CallOption) (*SendOORResponse, error)
+	// PrepareOOR builds the deterministic OOR package without submitting it.
+	// This lets callers collect signatures from external custom-input
+	// participants before calling SendOOR with the same parameters.
+	PrepareOOR(ctx context.Context, in *PrepareOORRequest, opts ...grpc.CallOption) (*PrepareOORResponse, error)
+	// SignOORCustomInput signs one prepared custom OOR checkpoint input with
+	// the daemon identity key.
+	SignOORCustomInput(ctx context.Context, in *SignOORCustomInputRequest, opts ...grpc.CallOption) (*SignOORCustomInputResponse, error)
 	// RefreshVTXOs queues one or more VTXOs for refresh in the next
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(ctx context.Context, in *RefreshVTXOsRequest, opts ...grpc.CallOption) (*RefreshVTXOsResponse, error)
@@ -362,6 +371,26 @@ func (c *daemonServiceClient) SendOOR(ctx context.Context, in *SendOORRequest, o
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SendOORResponse)
 	err := c.cc.Invoke(ctx, DaemonService_SendOOR_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) PrepareOOR(ctx context.Context, in *PrepareOORRequest, opts ...grpc.CallOption) (*PrepareOORResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PrepareOORResponse)
+	err := c.cc.Invoke(ctx, DaemonService_PrepareOOR_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SignOORCustomInput(ctx context.Context, in *SignOORCustomInputRequest, opts ...grpc.CallOption) (*SignOORCustomInputResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SignOORCustomInputResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SignOORCustomInput_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -649,6 +678,13 @@ type DaemonServiceServer interface {
 	// SendOOR initiates an out-of-round transfer directly between the
 	// client and operator, without waiting for a round.
 	SendOOR(context.Context, *SendOORRequest) (*SendOORResponse, error)
+	// PrepareOOR builds the deterministic OOR package without submitting it.
+	// This lets callers collect signatures from external custom-input
+	// participants before calling SendOOR with the same parameters.
+	PrepareOOR(context.Context, *PrepareOORRequest) (*PrepareOORResponse, error)
+	// SignOORCustomInput signs one prepared custom OOR checkpoint input with
+	// the daemon identity key.
+	SignOORCustomInput(context.Context, *SignOORCustomInputRequest) (*SignOORCustomInputResponse, error)
 	// RefreshVTXOs queues one or more VTXOs for refresh in the next
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
@@ -784,6 +820,12 @@ func (UnimplementedDaemonServiceServer) SendVTXO(context.Context, *SendVTXOReque
 }
 func (UnimplementedDaemonServiceServer) SendOOR(context.Context, *SendOORRequest) (*SendOORResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SendOOR not implemented")
+}
+func (UnimplementedDaemonServiceServer) PrepareOOR(context.Context, *PrepareOORRequest) (*PrepareOORResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PrepareOOR not implemented")
+}
+func (UnimplementedDaemonServiceServer) SignOORCustomInput(context.Context, *SignOORCustomInputRequest) (*SignOORCustomInputResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SignOORCustomInput not implemented")
 }
 func (UnimplementedDaemonServiceServer) RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RefreshVTXOs not implemented")
@@ -1153,6 +1195,42 @@ func _DaemonService_SendOOR_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).SendOOR(ctx, req.(*SendOORRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_PrepareOOR_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareOORRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).PrepareOOR(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_PrepareOOR_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).PrepareOOR(ctx, req.(*PrepareOORRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SignOORCustomInput_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignOORCustomInputRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SignOORCustomInput(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SignOORCustomInput_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SignOORCustomInput(ctx, req.(*SignOORCustomInputRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1598,6 +1676,14 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SendOOR",
 			Handler:    _DaemonService_SendOOR_Handler,
+		},
+		{
+			MethodName: "PrepareOOR",
+			Handler:    _DaemonService_PrepareOOR_Handler,
+		},
+		{
+			MethodName: "SignOORCustomInput",
+			Handler:    _DaemonService_SignOORCustomInput_Handler,
 		},
 		{
 			MethodName: "RefreshVTXOs",

@@ -51,6 +51,12 @@ http:
     - selector: daemonrpc.DaemonService.SendOOR
       post: /v1/daemon/send-oor
       body: "*"
+    - selector: daemonrpc.DaemonService.PrepareOOR
+      post: /v1/daemon/prepare-oor
+      body: "*"
+    - selector: daemonrpc.DaemonService.SignOORCustomInput
+      post: /v1/daemon/sign-oor-custom-input
+      body: "*"
     - selector: daemonrpc.DaemonService.RefreshVTXOs
       post: /v1/daemon/refresh-vtxos
       body: "*"

@@ -56,6 +56,10 @@ type DaemonServiceMailboxServer interface {
 	SendVTXO(ctx context.Context, req *SendVTXORequest) (*SendVTXOResponse, error)
 	// SendOOR handles SendOOR.
 	SendOOR(ctx context.Context, req *SendOORRequest) (*SendOORResponse, error)
+	// PrepareOOR handles PrepareOOR.
+	PrepareOOR(ctx context.Context, req *PrepareOORRequest) (*PrepareOORResponse, error)
+	// SignOORCustomInput handles SignOORCustomInput.
+	SignOORCustomInput(ctx context.Context, req *SignOORCustomInputRequest) (*SignOORCustomInputResponse, error)
 	// RefreshVTXOs handles RefreshVTXOs.
 	RefreshVTXOs(ctx context.Context, req *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
 	// LeaveVTXOs handles LeaveVTXOs.
@@ -261,6 +265,26 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.SendOOR(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "PrepareOOR", func() proto.Message {
+		return &PrepareOORRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*PrepareOORRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.PrepareOOR(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "SignOORCustomInput", func() proto.Message {
+		return &SignOORCustomInputRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SignOORCustomInputRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SignOORCustomInput(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "RefreshVTXOs", func() proto.Message {
 		return &RefreshVTXOsRequest{}
@@ -835,6 +859,52 @@ func (c *DaemonServiceMailboxClient) SendOOR(ctx context.Context, req *SendOORRe
 	}
 
 	resp := new(SendOORResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// PrepareOOR calls the PrepareOOR RPC.
+func (c *DaemonServiceMailboxClient) PrepareOOR(ctx context.Context, req *PrepareOORRequest, opts ...rpc.RPCOptions) (*PrepareOORResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "PrepareOOR",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(PrepareOORResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SignOORCustomInput calls the SignOORCustomInput RPC.
+func (c *DaemonServiceMailboxClient) SignOORCustomInput(ctx context.Context, req *SignOORCustomInputRequest, opts ...rpc.RPCOptions) (*SignOORCustomInputResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SignOORCustomInput",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SignOORCustomInputResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

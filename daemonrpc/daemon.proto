@@ -84,6 +84,16 @@ service DaemonService {
     // client and operator, without waiting for a round.
     rpc SendOOR (SendOORRequest) returns (SendOORResponse);
 
+    // PrepareOOR builds the deterministic OOR package without submitting it.
+    // This lets callers collect signatures from external custom-input
+    // participants before calling SendOOR with the same parameters.
+    rpc PrepareOOR (PrepareOORRequest) returns (PrepareOORResponse);
+
+    // SignOORCustomInput signs one prepared custom OOR checkpoint input with
+    // the daemon identity key.
+    rpc SignOORCustomInput (SignOORCustomInputRequest)
+        returns (SignOORCustomInputResponse);
+
     // RefreshVTXOs queues one or more VTXOs for refresh in the next
     // round. This extends their expiry without changing ownership.
     rpc RefreshVTXOs (RefreshVTXOsRequest) returns (RefreshVTXOsResponse);
@@ -767,6 +777,30 @@ message CustomOORInput {
 
     // pk_script is the VTXO taproot output script.
     bytes pk_script = 5;
+
+    // external_signatures are taproot script-spend signatures produced by
+    // other parties required by the selected spend path. The local daemon still
+    // validates the policy/spend-path binding and adds its own signature before
+    // assembling the final witness.
+    repeated TaprootScriptSignature external_signatures = 6;
+}
+
+// TaprootScriptSignature carries one externally produced tapscript signature
+// for a custom OOR input. Keep this in sync with
+// swaprpc.TaprootScriptSignature.
+message TaprootScriptSignature {
+    // pubkey is the compressed public key that produced the signature.
+    bytes pubkey = 1;
+
+    // witness_script is the tapscript leaf this signature commits to.
+    bytes witness_script = 2;
+
+    // signature is the raw Schnorr signature, optionally followed by a one-byte
+    // sighash type when the sighash is not SIGHASH_DEFAULT.
+    bytes signature = 3;
+
+    // sighash is the tapscript sighash type. Zero means SIGHASH_DEFAULT.
+    uint32 sighash = 4;
 }
 
 message SendOORResponse {
@@ -776,6 +810,60 @@ message SendOORResponse {
 
     // session_id is the OOR session identifier. Empty on dry_run.
     string session_id = 2;
+}
+
+message PrepareOORRequest {
+    // recipient is the output to create via the out-of-round transfer.
+    Output recipient = 1;
+
+    // custom_inputs are caller-specified inputs. PrepareOOR currently only
+    // supports custom inputs because wallet-selected inputs would need wallet
+    // locks and therefore would not be side-effect free.
+    repeated CustomOORInput custom_inputs = 2;
+}
+
+message PreparedOORCustomInput {
+    // outpoint identifies the custom input this signing data belongs to.
+    string outpoint = 1;
+
+    // checkpoint_psbt is the serialized unsigned checkpoint PSBT whose input
+    // spends the custom VTXO.
+    bytes checkpoint_psbt = 2;
+
+    // witness_script is the tapscript leaf external parties must sign.
+    bytes witness_script = 3;
+
+    // signing_pubkeys are the compressed public keys required by the spend
+    // path in script order.
+    repeated bytes signing_pubkeys = 4;
+}
+
+message PrepareOORResponse {
+    // ark_psbt is the serialized unsigned Ark PSBT that would be submitted.
+    bytes ark_psbt = 1;
+
+    // checkpoint_psbts are the serialized unsigned checkpoint PSBTs that would
+    // be submitted.
+    repeated bytes checkpoint_psbts = 2;
+
+    // custom_inputs contains signing data for each prepared custom input.
+    repeated PreparedOORCustomInput custom_inputs = 3;
+
+    // session_id is the deterministic OOR session id derived from ark_psbt.
+    string session_id = 4;
+}
+
+message SignOORCustomInputRequest {
+    // custom_input describes the vHTLC/custom VTXO and selected spend path.
+    CustomOORInput custom_input = 1;
+
+    // checkpoint_psbt is the prepared checkpoint PSBT to sign.
+    bytes checkpoint_psbt = 2;
+}
+
+message SignOORCustomInputResponse {
+    // signature is the daemon identity key's tapscript signature.
+    TaprootScriptSignature signature = 1;
 }
 
 // OutpointSelection wraps a list of outpoint strings for use inside a
