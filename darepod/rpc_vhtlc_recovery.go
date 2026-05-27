@@ -141,6 +141,10 @@ func (r *RPCServer) CancelVHTLCRecovery(ctx context.Context,
 		ctx, req.RecoveryId, req.Reason, cooperativeTxid,
 	)
 	if err != nil {
+		if errors.Is(err, db.ErrVHTLCRecoveryJobNotFound) {
+			return &daemonrpc.CancelVHTLCRecoveryResponse{}, nil
+		}
+
 		return nil, recoveryErrorToStatus(err)
 	}
 

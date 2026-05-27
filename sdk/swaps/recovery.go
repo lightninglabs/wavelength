@@ -11,6 +11,8 @@ import (
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 //nolint:ll
@@ -505,6 +507,10 @@ func cancelVHTLCRecovery(ctx context.Context, daemon DaemonConn, recoveryID,
 		},
 	)
 	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+
 		return fmt.Errorf("cancel vhtlc recovery %s: %w", recoveryID,
 			err)
 	}

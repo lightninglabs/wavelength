@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	loopfsm "github.com/lightninglabs/loop/fsm"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+const unregisteredScriptErrText = "script not registered for principal"
 
 var (
 	// ErrSwapExpired is returned when a client-side swap reaches its
@@ -188,6 +191,25 @@ func isDeadlineExceededErr(err error) bool {
 	}
 
 	return status.Code(err) == codes.DeadlineExceeded
+}
+
+// isUnregisteredScriptErr reports an authoritative indexer rejection for a
+// script that is no longer bound to the caller's current mailbox principal.
+func isUnregisteredScriptErr(err error) bool {
+	if err == nil || !strings.Contains(
+		err.Error(), unregisteredScriptErrText,
+	) {
+		return false
+	}
+
+	switch status.Code(err) {
+	case codes.Unauthenticated, codes.PermissionDenied, codes.Internal,
+		codes.Unknown:
+		return true
+
+	default:
+		return false
+	}
 }
 
 // handleFailure persists the terminal swap state associated with err and
