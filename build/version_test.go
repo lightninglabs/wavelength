@@ -9,9 +9,9 @@ import (
 func TestVersion(t *testing.T) {
 	version := Version()
 
-	// Expected format: "0.0.1-alpha"
-	if !strings.HasPrefix(version, "0.0.1") {
-		t.Fatalf("expected version to start with 0.0.1, got: %s",
+	// Expected format: "0.0.2-alpha"
+	if !strings.HasPrefix(version, "0.0.2") {
+		t.Fatalf("expected version to start with 0.0.2, got: %s",
 			version)
 	}
 
@@ -21,7 +21,7 @@ func TestVersion(t *testing.T) {
 	}
 
 	// Verify exact match.
-	expectedVersion := "0.0.1-alpha"
+	expectedVersion := "0.0.2-alpha"
 	if version != expectedVersion {
 		t.Fatalf("expected version %s, got: %s", expectedVersion,
 			version)
