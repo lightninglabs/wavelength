@@ -233,7 +233,7 @@ every one that appears:
 |--------|------------|
 | LWWL   | lwwallet   |
 | ARKW   | wallet     |
-| WRPC   | walletrpc  |
+| WRPC   | walletdkrpc |
 | ROND   | round      |
 | OORC   | oor        |
 | SVRC   | serverconn |

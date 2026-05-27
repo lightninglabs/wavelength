@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,7 +43,7 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 		},
 	}
 
-	resp, err := r.Recv(t.Context(), &walletrpc.RecvRequest{
+	resp, err := r.Recv(t.Context(), &walletdkrpc.RecvRequest{
 		AmtSat: 50_000,
 		Memo:   "coffee",
 	})
@@ -54,7 +54,7 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 	require.Equal(t, "abc123", resp.GetEntry().GetId())
 	require.Equal(t, "coffee", resp.GetEntry().GetNote())
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_RECV,
+		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV,
 		resp.GetEntry().GetKind(),
 	)
 	require.Equal(
@@ -67,7 +67,7 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 			GetPaymentHash(),
 	)
 	require.Equal(
-		t, walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
 		resp.GetEntry().GetProgress().GetPhase(),
 	)
 }
@@ -79,7 +79,7 @@ func TestRecvAmtZeroRejected(t *testing.T) {
 
 	r, swap := newRecvFixture(t)
 
-	_, err := r.Recv(t.Context(), &walletrpc.RecvRequest{})
+	_, err := r.Recv(t.Context(), &walletdkrpc.RecvRequest{})
 	require.ErrorIs(t, err, ErrAmountRequired)
 	require.Equal(t, 0, swap.startReceiveCalls)
 }
@@ -92,7 +92,7 @@ func TestRecvErrorBubblesUp(t *testing.T) {
 	r, swap := newRecvFixture(t)
 	swap.startReceiveErr = errors.New("upstream broken")
 
-	_, err := r.Recv(t.Context(), &walletrpc.RecvRequest{
+	_, err := r.Recv(t.Context(), &walletdkrpc.RecvRequest{
 		AmtSat: 10_000,
 	})
 	require.Error(t, err)

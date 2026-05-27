@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	wrpc "github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	wrpc "github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 )
 

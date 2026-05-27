@@ -2,19 +2,19 @@
 
 ## Purpose
 
-Daemon-side implementation of the `walletrpc.WalletService` gRPC
+Daemon-side implementation of the `walletdkrpc.WalletService` gRPC
 subserver. It composes the swap subsystem (`swapclientserver`), the
 cooperative-leave RPC, the daemon's wallet/admin surface, the boarding
 ledger, and the unilateral-exit registry into one flat user-facing API:
 the seven wallet verbs (Create, Unlock, Send, Recv, List, Balance,
 Exit) plus the supporting Deposit / Status / SubscribeWallet methods.
 
-The whole package lives behind `//go:build walletrpc && swapruntime` so
+The whole package lives behind `//go:build walletdkrpc && swapruntime` so
 default builds avoid the swap executor's dependency graph.
 
 ## Key Types
 
-- `Service` — gRPC handler implementing `walletrpc.WalletServiceServer`.
+- `Service` — gRPC handler implementing `walletdkrpc.WalletServiceServer`.
   Thin facade: each method dispatches to `router`, `receiver`,
   `history`, or admin proxy helpers; no business logic lives here.
 - `Runtime` — Owns the in-process swap lifecycle: synchronous
@@ -33,18 +33,18 @@ default builds avoid the swap executor's dependency graph.
   GetUnrollStatus, JoinNextRound. The admin-shape methods (GenSeed/InitWallet/
   UnlockWallet/Unroll/GetUnrollStatus) are reachable BEFORE the swap
   runtime is live.
-- `WalletEntry` (re-exported from walletrpc) — Flat row type the entire
+- `WalletEntry` (re-exported from walletdkrpc) — Flat row type the entire
   history/streaming surface returns. Every internal correlator
   (session_id, round_id, settlement_type, mailbox subtype) is dropped
   before responding.
-- `ListView` (re-exported from walletrpc) — Selects between Activity
+- `ListView` (re-exported from walletdkrpc) — Selects between Activity
   (merged WalletEntry stream), VTXOs (live inventory), and Onchain
   (boarding + sweep) views. Default is Activity.
 
 ## Relationships
 
 - **Depends on**:
-  - `rpc/walletrpc` (generated gRPC stubs and request/response shapes)
+  - `rpc/walletdkrpc` (generated gRPC stubs and request/response shapes)
   - `daemonrpc` (admin RPCs proxied by Create/Unlock/Exit and the
     backends consumed for LeaveVTXOs, ListVTXOs, ListTransactions,
     GetBalance, NewAddress)
@@ -55,8 +55,8 @@ default builds avoid the swap executor's dependency graph.
   - `ledger` (account name constants for OOR ledger projection)
   - `btclog/v2` (subsystem logger)
 - **Depended on by**:
-  - `cmd/darepod` (`walletrpc.go` registers the subserver behind the
-    walletrpc build tag)
+  - `cmd/darepod` (`walletdkrpc.go` registers the subserver behind the
+    walletdkrpc build tag)
   - `sdk/walletdk` (gomobile-friendly SDK wraps the same gRPC service)
 - **Sends**:
   - → daemonrpc (in-process via RPCServer):
@@ -68,7 +68,7 @@ default builds avoid the swap executor's dependency graph.
   - → swapclientrpc (in-process via SwapService): `StartPayRequest`,
     `StartReceiveRequest`, `ListSwapsRequest`, `SubscribeSwapsRequest`
 - **Receives**:
-  - ← API: `walletrpc.{Create,Unlock,Send,Recv,List,Balance,Deposit,
+  - ← API: `walletdkrpc.{Create,Unlock,Send,Recv,List,Balance,Deposit,
     Status,Exit,ExitStatus,SubscribeWallet}Request`
 
 ## Invariants
@@ -112,7 +112,7 @@ default builds avoid the swap executor's dependency graph.
   (`statusForLedgerRow`), because a boarding UTXO landing on-chain
   is not yet a spendable VTXO. Promotion to COMPLETE waits for a
   follow-up `boarded-into-round` ledger event (issue #503).
-- **`Balance` projection** maps daemonrpc fields onto the walletrpc
+- **`Balance` projection** maps daemonrpc fields onto the walletdkrpc
   shape: `confirmed_sat` is VTXO-only (`vtxo_balance_sat`),
   `pending_in_sat` sums `boarding_confirmed_sat +
   boarding_unconfirmed_sat + boarding_adopted_sat`, and
@@ -123,12 +123,12 @@ default builds avoid the swap executor's dependency graph.
 
 ## Deep Docs
 
-- [docs/walletrpc_build.md](../docs/walletrpc_build.md) — Build modes,
-  make targets, what the walletrpc tag enables.
+- [docs/walletdkrpc_build.md](../docs/walletdkrpc_build.md) — Build modes,
+  make targets, what the walletdkrpc tag enables.
 - [docs/walletdk_integration.md](../docs/walletdk_integration.md) —
   How `sdk/walletdk` wraps the same gRPC service for embedded hosts.
 - [docs/swap_background_execution.md](../docs/swap_background_execution.md)
   — Daemon-side swap lifecycle the runtime composes over.
-- [rpc/walletrpc/CLAUDE.md](../rpc/walletrpc/CLAUDE.md) — Proto schema
+- [rpc/walletdkrpc/CLAUDE.md](../rpc/walletdkrpc/CLAUDE.md) — Proto schema
   and per-message invariants.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

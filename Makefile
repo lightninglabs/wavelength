@@ -2,7 +2,7 @@
 .PHONY: lint lint-source lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-changed fmt-check fmt-changed-check tidy-module tidy-module-check schema-check doc-check sample-conf-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race unit-swapruntime check-go-version build install clean release
-.PHONY: build build-swapruntime build-swapclient build-walletrpc rpc install install-swapruntime install-walletrpc help clean-networks
+.PHONY: build build-swapruntime build-swapclient build-walletdkrpc rpc install install-swapruntime install-walletdkrpc help clean-networks
 .PHONY: systest systest-verbose
 .PHONY: commitmsg-lint commitmsg-fmt commitmsg-reword
 
@@ -388,7 +388,7 @@ unit-race: #? Run unit tests with race detector
 
 unit-swapruntime: #? Run unit tests with the optional wallet runtime enabled
 	@$(call print, "Running unit tests with wallet runtime.")
-	$(MAKE) unit tags="swapruntime walletrpc"
+	$(MAKE) unit tags="swapruntime walletdkrpc"
 
 # Database backend for systest: sqlite (default) or postgres.
 # Usage: make systest db=postgres
@@ -427,9 +427,9 @@ build-swapruntime: #? Build debug binaries with SwapClientService enabled
 
 build-swapclient: build-swapruntime #? Alias for build-swapruntime
 
-build-walletrpc: #? Build debug binaries with walletrpc + swapruntime enabled
-	@$(call print, "Building debug binaries with walletrpc and swapruntime.")
-	$(MAKE) build tags="walletrpc swapruntime"
+build-walletdkrpc: #? Build debug binaries with walletdkrpc + swapruntime enabled
+	@$(call print, "Building debug binaries with walletdkrpc and swapruntime.")
+	$(MAKE) build tags="walletdkrpc swapruntime"
 
 install: #? Build and install binaries to GOPATH/bin
 	@$(call print, "Installing binaries.")
@@ -441,9 +441,9 @@ install-swapruntime: #? Install binaries with SwapClientService enabled
 	@$(call print, "Installing binaries with swapruntime.")
 	$(MAKE) install tags="swapruntime"
 
-install-walletrpc: #? Install binaries with walletrpc + swapruntime enabled
-	@$(call print, "Installing binaries with walletrpc and swapruntime.")
-	$(MAKE) install tags="walletrpc swapruntime"
+install-walletdkrpc: #? Install binaries with walletdkrpc + swapruntime enabled
+	@$(call print, "Installing binaries with walletdkrpc and swapruntime.")
+	$(MAKE) install tags="walletdkrpc swapruntime"
 
 clean: #? Remove build artifacts
 	@$(call print, "Cleaning build artifacts.")

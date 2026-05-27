@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -49,7 +49,7 @@ func TestCreateGeneratesSeedWhenMnemonicEmpty(t *testing.T) {
 		IdentityPubkey: "deadbeef",
 	}
 
-	resp, err := svc.Create(t.Context(), &walletrpc.CreateRequest{
+	resp, err := svc.Create(t.Context(), &walletdkrpc.CreateRequest{
 		WalletPassword: []byte("hunter2hunter2"),
 	})
 	require.NoError(t, err)
@@ -76,7 +76,7 @@ func TestCreateRecoveryEchoesProvidedMnemonic(t *testing.T) {
 	}
 
 	recovery := []string{"alpha", "beta", "gamma"}
-	resp, err := svc.Create(t.Context(), &walletrpc.CreateRequest{
+	resp, err := svc.Create(t.Context(), &walletdkrpc.CreateRequest{
 		WalletPassword: []byte("hunter2hunter2"),
 		Mnemonic:       recovery,
 	})
@@ -93,7 +93,7 @@ func TestCreateRejectsEmptyPassword(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	_, err := svc.Create(t.Context(), &walletrpc.CreateRequest{})
+	_, err := svc.Create(t.Context(), &walletdkrpc.CreateRequest{})
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 	require.Equal(t, 0, rpc.genSeedCalls)
@@ -110,7 +110,7 @@ func TestCreateRequiresRPCServer(t *testing.T) {
 	t.Cleanup(runtime.stop)
 	svc := newService(deps, runtime)
 
-	_, err := svc.Create(t.Context(), &walletrpc.CreateRequest{
+	_, err := svc.Create(t.Context(), &walletdkrpc.CreateRequest{
 		WalletPassword: []byte("password"),
 	})
 	require.Error(t, err)
@@ -127,7 +127,7 @@ func TestUnlockProxiesDaemon(t *testing.T) {
 		IdentityPubkey: "ffff",
 	}
 
-	resp, err := svc.Unlock(t.Context(), &walletrpc.UnlockRequest{
+	resp, err := svc.Unlock(t.Context(), &walletdkrpc.UnlockRequest{
 		WalletPassword: []byte("hunter2hunter2"),
 	})
 	require.NoError(t, err)
@@ -145,7 +145,7 @@ func TestUnlockRejectsEmptyPassword(t *testing.T) {
 	t.Parallel()
 
 	svc, _ := newAdminFixture(t)
-	_, err := svc.Unlock(t.Context(), &walletrpc.UnlockRequest{})
+	_, err := svc.Unlock(t.Context(), &walletdkrpc.UnlockRequest{})
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }
@@ -161,7 +161,7 @@ func TestExitProxiesUnroll(t *testing.T) {
 		ActorId: "exit-job-42",
 	}
 
-	resp, err := svc.Exit(t.Context(), &walletrpc.ExitRequest{
+	resp, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
 		Outpoint: "abc:0",
 	})
 	require.NoError(t, err)
@@ -176,7 +176,7 @@ func TestExitRejectsEmptyOutpoint(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	_, err := svc.Exit(t.Context(), &walletrpc.ExitRequest{})
+	_, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{})
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 	require.Equal(t, 0, rpc.unrollCalls)
@@ -189,36 +189,36 @@ func TestExitStatusMapsAllPhases(t *testing.T) {
 
 	cases := []struct {
 		in   daemonrpc.UnrollJobStatus
-		want walletrpc.ExitJobStatus
+		want walletdkrpc.ExitJobStatus
 	}{
 		{
 			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING,
-			walletrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING,
+			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING,
 		},
 		{
 			daemonrpc.
 				UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING,
-			walletrpc.ExitJobStatus_EXIT_JOB_STATUS_MATERIALIZING,
+			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_MATERIALIZING,
 		},
 		{
 			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING,
-			walletrpc.ExitJobStatus_EXIT_JOB_STATUS_CSV_PENDING,
+			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_CSV_PENDING,
 		},
 		{
 			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING,
-			walletrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING,
+			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING,
 		},
 		{
 			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
-			walletrpc.ExitJobStatus_EXIT_JOB_STATUS_COMPLETED,
+			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_COMPLETED,
 		},
 		{
 			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED,
-			walletrpc.ExitJobStatus_EXIT_JOB_STATUS_FAILED,
+			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_FAILED,
 		},
 		{
 			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_UNSPECIFIED,
-			walletrpc.ExitJobStatus_EXIT_JOB_STATUS_UNSPECIFIED,
+			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_UNSPECIFIED,
 		},
 	}
 	for _, tc := range cases {
@@ -239,14 +239,14 @@ func TestExitStatusProxiesAndProjects(t *testing.T) {
 	}
 
 	resp, err := svc.ExitStatus(
-		t.Context(), &walletrpc.ExitStatusRequest{
+		t.Context(), &walletdkrpc.ExitStatusRequest{
 			Outpoint: "abc:0",
 		},
 	)
 	require.NoError(t, err)
 	require.True(t, resp.GetFound())
 	require.Equal(
-		t, walletrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING,
+		t, walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING,
 		resp.GetStatus(),
 	)
 	require.Equal(t, "sweep-txid", resp.GetSweepTxid())
@@ -261,25 +261,25 @@ func TestAdminHandlersSurfaceDaemonErrors(t *testing.T) {
 	sentinel := errors.New("daemon-down")
 	rpc.genSeedErr = sentinel
 
-	_, err := svc.Create(t.Context(), &walletrpc.CreateRequest{
+	_, err := svc.Create(t.Context(), &walletdkrpc.CreateRequest{
 		WalletPassword: []byte("hunter2hunter2"),
 	})
 	require.ErrorContains(t, err, sentinel.Error())
 
 	rpc.unlockWalletErr = sentinel
-	_, err = svc.Unlock(t.Context(), &walletrpc.UnlockRequest{
+	_, err = svc.Unlock(t.Context(), &walletdkrpc.UnlockRequest{
 		WalletPassword: []byte("hunter2hunter2"),
 	})
 	require.ErrorContains(t, err, sentinel.Error())
 
 	rpc.unrollErr = sentinel
-	_, err = svc.Exit(t.Context(), &walletrpc.ExitRequest{
+	_, err = svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
 		Outpoint: "abc:0",
 	})
 	require.ErrorContains(t, err, sentinel.Error())
 
 	rpc.unrollStatusErr = sentinel
-	_, err = svc.ExitStatus(t.Context(), &walletrpc.ExitStatusRequest{
+	_, err = svc.ExitStatus(t.Context(), &walletdkrpc.ExitStatusRequest{
 		Outpoint: "abc:0",
 	})
 	require.ErrorContains(t, err, sentinel.Error())
@@ -298,7 +298,7 @@ func TestAdminHandlersPreserveGRPCCode(t *testing.T) {
 		codes.AlreadyExists, "wallet exists",
 	)
 
-	_, err := svc.Create(t.Context(), &walletrpc.CreateRequest{
+	_, err := svc.Create(t.Context(), &walletdkrpc.CreateRequest{
 		WalletPassword: []byte("hunter2hunter2"),
 	})
 	require.Equal(t, codes.AlreadyExists, status.Code(err))
@@ -306,7 +306,7 @@ func TestAdminHandlersPreserveGRPCCode(t *testing.T) {
 	rpc.unlockWalletErr = status.Error(
 		codes.PermissionDenied, "bad password",
 	)
-	_, err = svc.Unlock(t.Context(), &walletrpc.UnlockRequest{
+	_, err = svc.Unlock(t.Context(), &walletdkrpc.UnlockRequest{
 		WalletPassword: []byte("hunter2hunter2"),
 	})
 	require.Equal(t, codes.PermissionDenied, status.Code(err))
@@ -314,7 +314,7 @@ func TestAdminHandlersPreserveGRPCCode(t *testing.T) {
 	rpc.unrollErr = status.Error(
 		codes.FailedPrecondition, "not unlocked",
 	)
-	_, err = svc.Exit(t.Context(), &walletrpc.ExitRequest{
+	_, err = svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
 		Outpoint: "abc:0",
 	})
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))

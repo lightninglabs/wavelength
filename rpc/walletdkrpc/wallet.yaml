@@ -3,39 +3,39 @@ config_version: 3
 
 http:
   rules:
-    - selector: walletrpc.WalletService.Create
+    - selector: walletdkrpc.WalletService.Create
       post: /v1/wallet/create
       body: "*"
-    - selector: walletrpc.WalletService.Unlock
+    - selector: walletdkrpc.WalletService.Unlock
       post: /v1/wallet/unlock
       body: "*"
-    - selector: walletrpc.WalletService.Send
+    - selector: walletdkrpc.WalletService.Send
       post: /v1/wallet/send
       body: "*"
-    - selector: walletrpc.WalletService.Recv
+    - selector: walletdkrpc.WalletService.Recv
       post: /v1/wallet/recv
       body: "*"
-    - selector: walletrpc.WalletService.List
+    - selector: walletdkrpc.WalletService.List
       post: /v1/wallet/list
       body: "*"
-    - selector: walletrpc.WalletService.Deposit
+    - selector: walletdkrpc.WalletService.Deposit
       post: /v1/wallet/deposit
       body: "*"
-    - selector: walletrpc.WalletService.Balance
+    - selector: walletdkrpc.WalletService.Balance
       post: /v1/wallet/balance
       body: "*"
-    - selector: walletrpc.WalletService.Status
+    - selector: walletdkrpc.WalletService.Status
       post: /v1/wallet/status
       body: "*"
-    - selector: walletrpc.WalletService.Exit
+    - selector: walletdkrpc.WalletService.Exit
       post: /v1/wallet/exit
       body: "*"
-    - selector: walletrpc.WalletService.ExitStatus
+    - selector: walletdkrpc.WalletService.ExitStatus
       post: /v1/wallet/exit-status
       body: "*"
-    - selector: walletrpc.WalletService.SubscribeWallet
+    - selector: walletdkrpc.WalletService.SubscribeWallet
       post: /v1/wallet/subscribe
       body: "*"
-    - selector: walletrpc.WalletInspectionService.InspectActivity
+    - selector: walletdkrpc.WalletInspectionService.InspectActivity
       post: /v1/wallet/inspect/activity
       body: "*"

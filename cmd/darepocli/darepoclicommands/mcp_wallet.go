@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -19,10 +19,10 @@ import (
 // > TTY prompt).
 //
 // Each tool maps gRPC Unimplemented to a clear "daemon was not built
-// with walletrpc" error so an MCP consumer talking to a stub-build
+// with walletdkrpc" error so an MCP consumer talking to a stub-build
 // daemon sees actionable text rather than a generic status code.
 func registerMCPWalletTools(s *mcp.Server,
-	client walletrpc.WalletServiceClient) {
+	client walletdkrpc.WalletServiceClient) {
 
 	registerMCPWalletQueryTools(s, client)
 	registerMCPWalletMutateTools(s, client)
@@ -31,7 +31,7 @@ func registerMCPWalletTools(s *mcp.Server,
 // registerMCPWalletQueryTools registers the read-only wallet verbs
 // (balance, activity). These never move funds and need no dry-run rail.
 func registerMCPWalletQueryTools(s *mcp.Server,
-	client walletrpc.WalletServiceClient) {
+	client walletdkrpc.WalletServiceClient) {
 
 	type balanceArgs struct{}
 	mcp.AddTool(s, &mcp.Tool{
@@ -42,7 +42,7 @@ func registerMCPWalletQueryTools(s *mcp.Server,
 		*mcp.CallToolResult, any, error) {
 
 		resp, err := client.Balance(
-			ctx, &walletrpc.BalanceRequest{},
+			ctx, &walletdkrpc.BalanceRequest{},
 		)
 		if err != nil {
 			return nil, nil, mapWalletRPCError(err)
@@ -95,7 +95,7 @@ func registerMCPWalletQueryTools(s *mcp.Server,
 			return nil, nil, err
 		}
 		resp, err := client.ExitStatus(
-			ctx, &walletrpc.ExitStatusRequest{
+			ctx, &walletdkrpc.ExitStatusRequest{
 				Outpoint: args.Outpoint,
 			},
 		)
@@ -114,7 +114,7 @@ func registerMCPWalletQueryTools(s *mcp.Server,
 // as the CLI path so MCP and CLI cannot drift on what shapes the
 // daemon ever sees.
 func registerMCPWalletMutateTools(s *mcp.Server,
-	client walletrpc.WalletServiceClient) {
+	client walletdkrpc.WalletServiceClient) {
 
 	type sendArgs struct {
 		Destination string `json:"destination" jsonschema:"BOLT-11 invoice (offchain) or onchain address; the direction field picks which"` //nolint:ll
@@ -181,7 +181,7 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 					"required for offchain recv")
 			}
 			resp, err := client.Recv(
-				ctx, &walletrpc.RecvRequest{
+				ctx, &walletdkrpc.RecvRequest{
 					AmtSat: args.AmtSat,
 					Memo:   args.Memo,
 				},
@@ -196,7 +196,7 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 		}
 
 		resp, err := client.Deposit(
-			ctx, &walletrpc.DepositRequest{
+			ctx, &walletdkrpc.DepositRequest{
 				AmtSatHint: args.AmtSatHint,
 			},
 		)
@@ -223,7 +223,7 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 			return nil, nil, err
 		}
 		resp, err := client.Exit(
-			ctx, &walletrpc.ExitRequest{
+			ctx, &walletdkrpc.ExitRequest{
 				Outpoint: args.Outpoint,
 			},
 		)
@@ -241,10 +241,10 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 // applying the same activity filter parsing the CLI uses so the two
 // surfaces stay in lockstep.
 func buildWalletActivityRequest(pendingOnly bool, kinds []string, limit,
-	offset uint32) (*walletrpc.ListRequest, error) {
+	offset uint32) (*walletdkrpc.ListRequest, error) {
 
-	req := &walletrpc.ListRequest{
-		View:        walletrpc.ListView_LIST_VIEW_ACTIVITY,
+	req := &walletdkrpc.ListRequest{
+		View:        walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
 		PendingOnly: pendingOnly,
 		Limit:       limit,
 		Offset:      offset,
@@ -266,7 +266,7 @@ func buildWalletActivityRequest(pendingOnly bool, kinds []string, limit,
 // the offchain/onchain invariants so MCP can't construct a shape the
 // CLI would reject.
 func buildWalletSendRequest(dest string, offchain bool, amt, maxFee uint64,
-	note string, sweepAll bool) (*walletrpc.SendRequest, error) {
+	note string, sweepAll bool) (*walletdkrpc.SendRequest, error) {
 
 	if err := validateDestination(dest); err != nil {
 		return nil, err
@@ -290,18 +290,18 @@ func buildWalletSendRequest(dest string, offchain bool, amt, maxFee uint64,
 		}
 	}
 
-	req := &walletrpc.SendRequest{
+	req := &walletdkrpc.SendRequest{
 		AmtSat:    amt,
 		MaxFeeSat: maxFee,
 		Note:      note,
 		SweepAll:  sweepAll,
 	}
 	if offchain {
-		req.Destination = &walletrpc.SendRequest_Invoice{
+		req.Destination = &walletdkrpc.SendRequest_Invoice{
 			Invoice: dest,
 		}
 	} else {
-		req.Destination = &walletrpc.SendRequest_OnchainAddress{
+		req.Destination = &walletdkrpc.SendRequest_OnchainAddress{
 			OnchainAddress: dest,
 		}
 	}

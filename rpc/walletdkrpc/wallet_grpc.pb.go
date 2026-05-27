@@ -4,7 +4,7 @@
 // - protoc             v3.21.12
 // source: wallet.proto
 
-package walletrpc
+package walletdkrpc
 
 import (
 	context "context"
@@ -19,17 +19,17 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WalletService_Create_FullMethodName          = "/walletrpc.WalletService/Create"
-	WalletService_Unlock_FullMethodName          = "/walletrpc.WalletService/Unlock"
-	WalletService_Send_FullMethodName            = "/walletrpc.WalletService/Send"
-	WalletService_Recv_FullMethodName            = "/walletrpc.WalletService/Recv"
-	WalletService_List_FullMethodName            = "/walletrpc.WalletService/List"
-	WalletService_Deposit_FullMethodName         = "/walletrpc.WalletService/Deposit"
-	WalletService_Balance_FullMethodName         = "/walletrpc.WalletService/Balance"
-	WalletService_Status_FullMethodName          = "/walletrpc.WalletService/Status"
-	WalletService_Exit_FullMethodName            = "/walletrpc.WalletService/Exit"
-	WalletService_ExitStatus_FullMethodName      = "/walletrpc.WalletService/ExitStatus"
-	WalletService_SubscribeWallet_FullMethodName = "/walletrpc.WalletService/SubscribeWallet"
+	WalletService_Create_FullMethodName          = "/walletdkrpc.WalletService/Create"
+	WalletService_Unlock_FullMethodName          = "/walletdkrpc.WalletService/Unlock"
+	WalletService_Send_FullMethodName            = "/walletdkrpc.WalletService/Send"
+	WalletService_Recv_FullMethodName            = "/walletdkrpc.WalletService/Recv"
+	WalletService_List_FullMethodName            = "/walletdkrpc.WalletService/List"
+	WalletService_Deposit_FullMethodName         = "/walletdkrpc.WalletService/Deposit"
+	WalletService_Balance_FullMethodName         = "/walletdkrpc.WalletService/Balance"
+	WalletService_Status_FullMethodName          = "/walletdkrpc.WalletService/Status"
+	WalletService_Exit_FullMethodName            = "/walletdkrpc.WalletService/Exit"
+	WalletService_ExitStatus_FullMethodName      = "/walletdkrpc.WalletService/ExitStatus"
+	WalletService_SubscribeWallet_FullMethodName = "/walletdkrpc.WalletService/SubscribeWallet"
 )
 
 // WalletServiceClient is the client API for WalletService service.
@@ -43,7 +43,7 @@ const (
 // 1:1 to what a user actually does day-to-day — create, unlock, send, recv,
 // list, balance, exit — plus a few additional methods (Deposit, Status,
 // SubscribeWallet) used internally and by recv --onchain. The service is
-// registered only when the daemon is built with the walletrpc build tag
+// registered only when the daemon is built with the walletdkrpc build tag
 // (which also requires swapruntime).
 type WalletServiceClient interface {
 	// Create initializes a new wallet from a freshly generated aezeed
@@ -239,7 +239,7 @@ type WalletService_SubscribeWalletClient = grpc.ServerStreamingClient[WalletEntr
 // 1:1 to what a user actually does day-to-day — create, unlock, send, recv,
 // list, balance, exit — plus a few additional methods (Deposit, Status,
 // SubscribeWallet) used internally and by recv --onchain. The service is
-// registered only when the daemon is built with the walletrpc build tag
+// registered only when the daemon is built with the walletdkrpc build tag
 // (which also requires swapruntime).
 type WalletServiceServer interface {
 	// Create initializes a new wallet from a freshly generated aezeed
@@ -554,7 +554,7 @@ type WalletService_SubscribeWalletServer = grpc.ServerStreamingServer[WalletEntr
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var WalletService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "walletrpc.WalletService",
+	ServiceName: "walletdkrpc.WalletService",
 	HandlerType: (*WalletServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -609,7 +609,7 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	WalletInspectionService_InspectActivity_FullMethodName = "/walletrpc.WalletInspectionService/InspectActivity"
+	WalletInspectionService_InspectActivity_FullMethodName = "/walletdkrpc.WalletInspectionService/InspectActivity"
 )
 
 // WalletInspectionServiceClient is the client API for WalletInspectionService service.
@@ -709,7 +709,7 @@ func _WalletInspectionService_InspectActivity_Handler(srv interface{}, ctx conte
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var WalletInspectionService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "walletrpc.WalletInspectionService",
+	ServiceName: "walletdkrpc.WalletInspectionService",
 	HandlerType: (*WalletInspectionServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{

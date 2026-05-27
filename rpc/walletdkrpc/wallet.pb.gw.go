@@ -2,11 +2,11 @@
 // source: wallet.proto
 
 /*
-Package walletrpc is a reverse proxy.
+Package walletdkrpc is a reverse proxy.
 
 It translates gRPC into RESTful JSON APIs.
 */
-package walletrpc
+package walletdkrpc
 
 import (
 	"context"
@@ -367,7 +367,7 @@ func RegisterWalletServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletrpc.WalletService/Create", runtime.WithHTTPPathPattern("/v1/wallet/create"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletdkrpc.WalletService/Create", runtime.WithHTTPPathPattern("/v1/wallet/create"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -387,7 +387,7 @@ func RegisterWalletServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletrpc.WalletService/Unlock", runtime.WithHTTPPathPattern("/v1/wallet/unlock"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletdkrpc.WalletService/Unlock", runtime.WithHTTPPathPattern("/v1/wallet/unlock"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -407,7 +407,7 @@ func RegisterWalletServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletrpc.WalletService/Send", runtime.WithHTTPPathPattern("/v1/wallet/send"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletdkrpc.WalletService/Send", runtime.WithHTTPPathPattern("/v1/wallet/send"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -427,7 +427,7 @@ func RegisterWalletServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletrpc.WalletService/Recv", runtime.WithHTTPPathPattern("/v1/wallet/recv"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletdkrpc.WalletService/Recv", runtime.WithHTTPPathPattern("/v1/wallet/recv"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -447,7 +447,7 @@ func RegisterWalletServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletrpc.WalletService/List", runtime.WithHTTPPathPattern("/v1/wallet/list"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletdkrpc.WalletService/List", runtime.WithHTTPPathPattern("/v1/wallet/list"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -467,7 +467,7 @@ func RegisterWalletServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletrpc.WalletService/Deposit", runtime.WithHTTPPathPattern("/v1/wallet/deposit"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletdkrpc.WalletService/Deposit", runtime.WithHTTPPathPattern("/v1/wallet/deposit"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -487,7 +487,7 @@ func RegisterWalletServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletrpc.WalletService/Balance", runtime.WithHTTPPathPattern("/v1/wallet/balance"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletdkrpc.WalletService/Balance", runtime.WithHTTPPathPattern("/v1/wallet/balance"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -507,7 +507,7 @@ func RegisterWalletServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletrpc.WalletService/Status", runtime.WithHTTPPathPattern("/v1/wallet/status"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletdkrpc.WalletService/Status", runtime.WithHTTPPathPattern("/v1/wallet/status"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -527,7 +527,7 @@ func RegisterWalletServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletrpc.WalletService/Exit", runtime.WithHTTPPathPattern("/v1/wallet/exit"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletdkrpc.WalletService/Exit", runtime.WithHTTPPathPattern("/v1/wallet/exit"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -547,7 +547,7 @@ func RegisterWalletServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletrpc.WalletService/ExitStatus", runtime.WithHTTPPathPattern("/v1/wallet/exit-status"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletdkrpc.WalletService/ExitStatus", runtime.WithHTTPPathPattern("/v1/wallet/exit-status"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -584,7 +584,7 @@ func RegisterWalletInspectionServiceHandlerServer(ctx context.Context, mux *runt
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletrpc.WalletInspectionService/InspectActivity", runtime.WithHTTPPathPattern("/v1/wallet/inspect/activity"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/walletdkrpc.WalletInspectionService/InspectActivity", runtime.WithHTTPPathPattern("/v1/wallet/inspect/activity"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -642,7 +642,7 @@ func RegisterWalletServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletrpc.WalletService/Create", runtime.WithHTTPPathPattern("/v1/wallet/create"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletdkrpc.WalletService/Create", runtime.WithHTTPPathPattern("/v1/wallet/create"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -659,7 +659,7 @@ func RegisterWalletServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletrpc.WalletService/Unlock", runtime.WithHTTPPathPattern("/v1/wallet/unlock"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletdkrpc.WalletService/Unlock", runtime.WithHTTPPathPattern("/v1/wallet/unlock"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -676,7 +676,7 @@ func RegisterWalletServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletrpc.WalletService/Send", runtime.WithHTTPPathPattern("/v1/wallet/send"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletdkrpc.WalletService/Send", runtime.WithHTTPPathPattern("/v1/wallet/send"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -693,7 +693,7 @@ func RegisterWalletServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletrpc.WalletService/Recv", runtime.WithHTTPPathPattern("/v1/wallet/recv"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletdkrpc.WalletService/Recv", runtime.WithHTTPPathPattern("/v1/wallet/recv"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -710,7 +710,7 @@ func RegisterWalletServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletrpc.WalletService/List", runtime.WithHTTPPathPattern("/v1/wallet/list"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletdkrpc.WalletService/List", runtime.WithHTTPPathPattern("/v1/wallet/list"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -727,7 +727,7 @@ func RegisterWalletServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletrpc.WalletService/Deposit", runtime.WithHTTPPathPattern("/v1/wallet/deposit"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletdkrpc.WalletService/Deposit", runtime.WithHTTPPathPattern("/v1/wallet/deposit"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -744,7 +744,7 @@ func RegisterWalletServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletrpc.WalletService/Balance", runtime.WithHTTPPathPattern("/v1/wallet/balance"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletdkrpc.WalletService/Balance", runtime.WithHTTPPathPattern("/v1/wallet/balance"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -761,7 +761,7 @@ func RegisterWalletServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletrpc.WalletService/Status", runtime.WithHTTPPathPattern("/v1/wallet/status"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletdkrpc.WalletService/Status", runtime.WithHTTPPathPattern("/v1/wallet/status"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -778,7 +778,7 @@ func RegisterWalletServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletrpc.WalletService/Exit", runtime.WithHTTPPathPattern("/v1/wallet/exit"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletdkrpc.WalletService/Exit", runtime.WithHTTPPathPattern("/v1/wallet/exit"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -795,7 +795,7 @@ func RegisterWalletServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletrpc.WalletService/ExitStatus", runtime.WithHTTPPathPattern("/v1/wallet/exit-status"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletdkrpc.WalletService/ExitStatus", runtime.WithHTTPPathPattern("/v1/wallet/exit-status"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -812,7 +812,7 @@ func RegisterWalletServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletrpc.WalletService/SubscribeWallet", runtime.WithHTTPPathPattern("/v1/wallet/subscribe"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletdkrpc.WalletService/SubscribeWallet", runtime.WithHTTPPathPattern("/v1/wallet/subscribe"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -896,7 +896,7 @@ func RegisterWalletInspectionServiceHandlerClient(ctx context.Context, mux *runt
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletrpc.WalletInspectionService/InspectActivity", runtime.WithHTTPPathPattern("/v1/wallet/inspect/activity"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/walletdkrpc.WalletInspectionService/InspectActivity", runtime.WithHTTPPathPattern("/v1/wallet/inspect/activity"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return

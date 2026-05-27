@@ -333,8 +333,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `minOORMailboxScriptBytes = 34` (P2TR script length); validated
   during `Config.Validate()`.
 - `Config.EagerRoundJoin` is seeded by build-tag-aware
-  `defaultEagerRoundJoin()`: `false` on the standalone non-walletrpc
-  build, `true` under the `walletrpc` tag (both `cmd/darepod` and
+  `defaultEagerRoundJoin()`: `false` on the standalone non-walletdkrpc
+  build, `true` under the `walletdkrpc` tag (both `cmd/darepod` and
   `sdk/walletdk` embedded paths). The `--eagerroundjoin` flag
   inherits this default so viper precedence overrides it naturally
   without `IsSet` probing. `sdk/walletdk` exposes the disable knob

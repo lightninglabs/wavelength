@@ -3,12 +3,12 @@ package darepoclicommands
 import (
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/spf13/cobra"
 )
 
 // newBalanceCmd builds the top-level `balance` verb. It dials
-// walletrpc.WalletService.Balance which returns the unified shape
+// walletdkrpc.WalletService.Balance which returns the unified shape
 // (confirmed_sat, pending_in_sat, pending_out_sat) the wallet layer
 // projects onto every backend.
 func newBalanceCmd() *cobra.Command {
@@ -30,9 +30,9 @@ func newBalanceCmd() *cobra.Command {
 // walletBalance implements the top-level `balance` verb.
 func walletBalance(cmd *cobra.Command, _ []string) error {
 	return withWalletClient(
-		cmd, func(c walletrpc.WalletServiceClient) error {
+		cmd, func(c walletdkrpc.WalletServiceClient) error {
 			resp, err := c.Balance(
-				cmd.Context(), &walletrpc.BalanceRequest{},
+				cmd.Context(), &walletdkrpc.BalanceRequest{},
 			)
 			if err != nil {
 				return fmt.Errorf("balance: %w", err)

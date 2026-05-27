@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 

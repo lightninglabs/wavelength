@@ -37,8 +37,8 @@ make unit pkg=darepod  # run unit tests for a package
 Then create and unlock the wallet:
 
 ```bash
-# Create (password via env var for automation). Build with walletrpc:
-#   make build-walletrpc
+# Create (password via env var for automation). Build with walletdkrpc:
+#   make build-walletdkrpc
 DAREPOD_WALLET_PASSWORD=testpass darepocli create --no-tls
 
 # Or auto-unlock at startup:
@@ -72,14 +72,14 @@ All commands connect to the daemon at `--rpcserver` (default
 The CLI surface is three tiers:
 
 1. **Seven top-level wallet verbs (implicit, no parent)** — the everyday
-   surface. Backed by `walletrpc.WalletService` (build with
-   `make build-walletrpc`).
+   surface. Backed by `walletdkrpc.WalletService` (build with
+   `make build-walletdkrpc`).
 2. **Daemon introspection at root** — `getinfo`, `schema`, `mcp`, `dev`.
 3. **Advanced subtrees** — `ark.*` (raw daemonrpc) and `swap.*`
    (`swapruntime` build only).
 
-If the daemon is built without the `walletrpc` tag, the seven top-level
-verbs return a structured error pointing at `docs/walletrpc_build.md`.
+If the daemon is built without the `walletdkrpc` tag, the seven top-level
+verbs return a structured error pointing at `docs/walletdkrpc_build.md`.
 
 ### Top-level wallet verbs
 
@@ -118,7 +118,7 @@ darepocli exit status --outpoint TXID:VOUT --no-tls
 
 ### Advanced (`ark.*`) commands
 
-The everyday top-level verbs compose `walletrpc` end-to-end; `ark.*`
+The everyday top-level verbs compose `walletdkrpc` end-to-end; `ark.*`
 surfaces the raw daemonrpc methods underlying them.
 
 ```bash
@@ -174,7 +174,7 @@ echo -n 'pass' | darepocli unlock --no-tls
 
 1. Start a regtest bitcoin node + esplora.
 2. Start darepod in lwwallet mode (see above) built with
-   `make build-walletrpc`.
+   `make build-walletdkrpc`.
 3. Create + unlock the wallet via CLI:
    `DAREPOD_WALLET_PASSWORD=testpass darepocli create --no-tls`
    `DAREPOD_WALLET_PASSWORD=testpass darepocli unlock --no-tls`
@@ -204,7 +204,7 @@ prefix, dots replaced by underscores (e.g., `DAREPOD_SERVER_HOST`).
 | `connection refused` | Daemon not running or wrong `--rpcserver` |
 | `wallet not ready` | Run `darepocli unlock` first |
 | `wallet already exists` | Wallet was already created; use `unlock` |
-| `daemon was not built with -tags walletrpc` | Rebuild with `make build-walletrpc`; the seven top-level verbs require the walletrpc tag |
+| `daemon was not built with -tags walletdkrpc` | Rebuild with `make build-walletdkrpc`; the seven top-level verbs require the walletdkrpc tag |
 | `--sweep-all requires --amt=0` | On `send --onchain`: pass `--sweep-all` for "drain wallet", or set `--amt N` |
 | `--offchain and --onchain are mutually exclusive` | Pick one direction on `send` / `recv` |
 | `GenSeed: lwwallet mode only` | Switch daemon to `--wallet.type=lwwallet` |

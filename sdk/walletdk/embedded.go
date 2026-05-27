@@ -18,7 +18,7 @@ import (
 const defaultBufConnSize = 1 << 20
 
 // DefaultConfig returns a walletdk config with darepod defaults. Wallet payment
-// methods are enabled only when built with walletrpc and swapruntime.
+// methods are enabled only when built with walletdkrpc and swapruntime.
 func DefaultConfig() Config {
 	cfg := darepod.DefaultConfig()
 
@@ -68,7 +68,7 @@ type Option func(*startOptions)
 // darepod.Config.EagerRoundJoin to false, even when DefaultConfig or a
 // caller-supplied DaemonConfig would otherwise set it true. This is the
 // walletdk-side knob for hosts that need the batched (operator-driven)
-// round-join semantics under the walletrpc build, where DefaultConfig
+// round-join semantics under the walletdkrpc build, where DefaultConfig
 // flips the default to true for wallet-shaped UX.
 func WithEagerRoundJoinDisabled() Option {
 	return func(o *startOptions) {
@@ -77,7 +77,7 @@ func WithEagerRoundJoinDisabled() Option {
 }
 
 // resolveDaemonConfig merges the walletdk convenience Config onto a
-// darepod.Config, runs the swap-runtime + walletrpc registrars, and applies
+// darepod.Config, runs the swap-runtime + walletdkrpc registrars, and applies
 // functional options. It is the pure (no I/O, no bufconn) slice of Start so
 // option semantics can be unit-tested without booting a daemon. Options apply
 // AFTER the merge and the registrars so they win over the build-tag default
@@ -206,7 +206,7 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 
 // requireEmbeddedWalletRuntime makes Start fail before booting a daemon when
 // the current build cannot install the wallet RPC runtime. walletdk's embedded
-// mode owns swap resume through swapwallet, so both walletrpc and swapruntime
+// mode owns swap resume through swapwallet, so both walletdkrpc and swapruntime
 // must be compiled in.
 func requireEmbeddedWalletRuntime() error {
 	if !swapRuntimeAvailable() || !walletRPCAvailable() {

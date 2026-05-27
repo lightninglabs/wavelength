@@ -217,12 +217,12 @@ type Config struct {
 	// registered unless the daemon is compiled with the swapruntime tag.
 	Swap *SwapConfig `mapstructure:"swap"`
 
-	// SwapWallet configures the optional walletrpc subserver (the
+	// SwapWallet configures the optional walletdkrpc subserver (the
 	// simplified high-level wallet facade composed over the swap
 	// runtime and the cooperative-leave subsystem). The fields are
 	// inert in default builds because the WalletService is not
 	// registered unless the daemon is compiled with both the
-	// walletrpc and swapruntime tags.
+	// walletdkrpc and swapruntime tags.
 	SwapWallet *SwapWalletConfig `mapstructure:"swapwallet"`
 
 	// MaxOperatorFeeSat caps the per-round operator fee the client
@@ -253,8 +253,8 @@ type Config struct {
 	// full round join end-to-end.
 	//
 	// DefaultConfig seeds this from defaultEagerRoundJoin(), which
-	// is build-tag-aware: false on the standalone non-walletrpc
-	// build and true when darepod is compiled with the walletrpc
+	// is build-tag-aware: false on the standalone non-walletdkrpc
+	// build and true when darepod is compiled with the walletdkrpc
 	// build tag (both the standalone cmd/darepod binary and the
 	// sdk/walletdk embedded path).
 	EagerRoundJoin bool `mapstructure:"eagerroundjoin"`
@@ -389,16 +389,16 @@ type SwapConfig struct {
 	VHTLCRecovery SwapVHTLCRecoveryConfig `mapstructure:"vhtlcrecovery"`
 
 	// SuppressResume disables swapclientserver's own synchronous
-	// resume-on-startup sweep so a higher layer (walletrpc subserver) can
+	// resume-on-startup sweep so a higher layer (walletdkrpc subserver) can
 	// own the unified resume policy. Default false preserves identical
 	// behavior for swapruntime-only builds: the swap subserver continues
 	// to resume its pending sessions before Register returns. The flag is
-	// set programmatically by the walletrpc registrar; it is not loaded
+	// set programmatically by the walletdkrpc registrar; it is not loaded
 	// from config files.
 	SuppressResume bool `mapstructure:"-"`
 
 	// Backend is populated by swapclientserver.Register after the swap
-	// subserver is fully wired. Higher layers (the walletrpc subserver)
+	// subserver is fully wired. Higher layers (the walletdkrpc subserver)
 	// read this handle to drive in-Go calls into the swap runtime without
 	// going through the gRPC stub. The field is set programmatically by
 	// the registrar; it is never loaded from config files.
@@ -446,7 +446,7 @@ func (c SwapVHTLCRecoveryConfig) WithDefaults() SwapVHTLCRecoveryConfig {
 }
 
 // SwapBackend is the in-Go handle exposed by swapclientserver after Register
-// completes. It lets higher-level subservers (such as the walletrpc subserver)
+// completes. It lets higher-level subservers (such as the walletdkrpc subserver)
 // drive the swap runtime without dialing the daemon's gRPC server from inside
 // the same process. The interface is intentionally small and grows only as
 // new wallet-layer needs arise.
@@ -459,10 +459,10 @@ type SwapBackend interface {
 	ResumePending(ctx context.Context)
 }
 
-// SwapWalletConfig configures the optional walletrpc subserver. The struct
+// SwapWalletConfig configures the optional walletdkrpc subserver. The struct
 // is present in all builds so configuration files stay stable, but the
 // fields are only consumed when the daemon is compiled with both the
-// walletrpc and swapruntime build tags.
+// walletdkrpc and swapruntime build tags.
 type SwapWalletConfig struct {
 	// Deadline is the wallet-level timeout applied to every PENDING
 	// entry. When an entry is older than this duration without

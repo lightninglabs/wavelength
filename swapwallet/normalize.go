@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/lightningnetwork/lnd/zpay32"
 )
 
@@ -47,21 +47,21 @@ const (
 // of direction, uses that fallback.
 func swapEntryFromSummary(s *swapclientrpc.SwapSummary, note string,
 	counterparty string,
-	callerKind walletrpc.EntryKind) *walletrpc.WalletEntry {
+	callerKind walletdkrpc.EntryKind) *walletdkrpc.WalletEntry {
 
 	if s == nil {
-		return &walletrpc.WalletEntry{
-			Kind:   walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
-			Status: walletrpc.EntryStatus_ENTRY_STATUS_UNSPECIFIED,
+		return &walletdkrpc.WalletEntry{
+			Kind:   walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+			Status: walletdkrpc.EntryStatus_ENTRY_STATUS_UNSPECIFIED,
 		}
 	}
 
 	kind := callerKind
-	if kind == walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED {
+	if kind == walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED {
 		kind = kindFromSwapDirection(s.GetDirection())
 	}
 
-	entry := &walletrpc.WalletEntry{
+	entry := &walletdkrpc.WalletEntry{
 		Id:            s.GetPaymentHash(),
 		Kind:          kind,
 		Status:        statusFromSwapState(s.GetState(), s.GetPending()),
@@ -82,10 +82,10 @@ func swapEntryFromSummary(s *swapclientrpc.SwapSummary, note string,
 	// summary cannot flip a SEND amount to positive.
 	amount := s.GetAmountSat()
 	switch kind {
-	case walletrpc.EntryKind_ENTRY_KIND_SEND:
+	case walletdkrpc.EntryKind_ENTRY_KIND_SEND:
 		entry.AmountSat = -amount
 
-	case walletrpc.EntryKind_ENTRY_KIND_RECV:
+	case walletdkrpc.EntryKind_ENTRY_KIND_RECV:
 		entry.AmountSat = amount
 
 	default:
@@ -102,7 +102,7 @@ func swapEntryFromSummary(s *swapclientrpc.SwapSummary, note string,
 // Payment hashes are tracked separately and must not be promoted into the
 // invoice field.
 func requestFromSwapSummary(s *swapclientrpc.SwapSummary, counterparty string,
-	kind walletrpc.EntryKind) *walletrpc.WalletEntryRequest {
+	kind walletdkrpc.EntryKind) *walletdkrpc.WalletEntryRequest {
 
 	if s == nil {
 		return nil
@@ -110,7 +110,7 @@ func requestFromSwapSummary(s *swapclientrpc.SwapSummary, counterparty string,
 
 	invoice := s.GetInvoice()
 	if invoice == "" &&
-		kind == walletrpc.EntryKind_ENTRY_KIND_SEND &&
+		kind == walletdkrpc.EntryKind_ENTRY_KIND_SEND &&
 		counterparty != s.GetPaymentHash() {
 
 		invoice = counterparty
@@ -119,9 +119,9 @@ func requestFromSwapSummary(s *swapclientrpc.SwapSummary, counterparty string,
 		return nil
 	}
 
-	return &walletrpc.WalletEntryRequest{
-		Request: &walletrpc.WalletEntryRequest_LightningInvoice{
-			LightningInvoice: &walletrpc.LightningInvoiceRequest{
+	return &walletdkrpc.WalletEntryRequest{
+		Request: &walletdkrpc.WalletEntryRequest_LightningInvoice{
+			LightningInvoice: &walletdkrpc.LightningInvoiceRequest{
 				Invoice:     invoice,
 				PaymentHash: s.GetPaymentHash(),
 			},
@@ -133,19 +133,19 @@ func requestFromSwapSummary(s *swapclientrpc.SwapSummary, counterparty string,
 // wallet-facing lifecycle hint. The exact SDK state remains available through
 // swapclientrpc for power users; wallet callers get stable phases.
 func progressFromSwapSummary(
-	s *swapclientrpc.SwapSummary) *walletrpc.WalletEntryProgress {
+	s *swapclientrpc.SwapSummary) *walletdkrpc.WalletEntryProgress {
 
 	if s == nil {
 		return nil
 	}
 
 	phase, label := phaseFromSwapState(s.GetState(), s.GetPending())
-	if phase == walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_UNSPECIFIED &&
+	if phase == walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_UNSPECIFIED &&
 		s.GetPaymentHash() == "" {
 		return nil
 	}
 
-	return &walletrpc.WalletEntryProgress{
+	return &walletdkrpc.WalletEntryProgress{
 		Phase:        phase,
 		PhaseLabel:   label,
 		PaymentHash:  s.GetPaymentHash(),
@@ -156,63 +156,63 @@ func progressFromSwapSummary(
 // phaseFromSwapState maps a swap state and pending flag to the wallet
 // lifecycle phase and display label.
 func phaseFromSwapState(state swapclientrpc.SwapState,
-	pending bool) (walletrpc.WalletEntryPhase, string) {
+	pending bool) (walletdkrpc.WalletEntryPhase, string) {
 
 	switch state {
 	case swapclientrpc.SwapState_SWAP_STATE_CREATED,
 		swapclientrpc.SwapState_SWAP_STATE_SWAP_CREATED,
 		swapclientrpc.SwapState_SWAP_STATE_INVOICE_CREATED:
-		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT,
+		return walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT,
 			"waiting_for_payment"
 
 	case swapclientrpc.SwapState_SWAP_STATE_FUNDING_INITIATED,
 		swapclientrpc.SwapState_SWAP_STATE_VHTLC_FUNDED,
 		swapclientrpc.SwapState_SWAP_STATE_WAITING_FOR_CLAIM,
 		swapclientrpc.SwapState_SWAP_STATE_CLAIM_INITIATED:
-		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+		return walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
 			"settling"
 
 	case swapclientrpc.SwapState_SWAP_STATE_COMPLETED:
-		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+		return walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
 			"confirmed"
 
 	case swapclientrpc.SwapState_SWAP_STATE_REFUND_INITIATED:
-		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDING,
+		return walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDING,
 			"refunding"
 
 	case swapclientrpc.SwapState_SWAP_STATE_REFUNDED:
-		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDED,
+		return walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDED,
 			"refunded"
 
 	case swapclientrpc.SwapState_SWAP_STATE_FAILED,
 		swapclientrpc.SwapState_SWAP_STATE_EXPIRED,
 		swapclientrpc.SwapState_SWAP_STATE_NEEDS_INTERVENTION:
-		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED,
+		return walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED,
 			"failed"
 	}
 
 	if pending {
-		return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+		return walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
 			"settling"
 	}
 
-	return walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_UNSPECIFIED, ""
+	return walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_UNSPECIFIED, ""
 }
 
 // kindFromSwapDirection maps the swap proto direction to a user-facing
 // EntryKind.
 func kindFromSwapDirection(dir swapclientrpc.SwapDirection,
-) walletrpc.EntryKind {
+) walletdkrpc.EntryKind {
 
 	switch dir {
 	case swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY:
-		return walletrpc.EntryKind_ENTRY_KIND_SEND
+		return walletdkrpc.EntryKind_ENTRY_KIND_SEND
 
 	case swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE:
-		return walletrpc.EntryKind_ENTRY_KIND_RECV
+		return walletdkrpc.EntryKind_ENTRY_KIND_RECV
 
 	default:
-		return walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED
+		return walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED
 	}
 }
 
@@ -223,27 +223,27 @@ func kindFromSwapDirection(dir swapclientrpc.SwapDirection,
 // failure from the payment perspective; the phase carries the extra context
 // that funds returned.
 func statusFromSwapState(state swapclientrpc.SwapState,
-	pending bool) walletrpc.EntryStatus {
+	pending bool) walletdkrpc.EntryStatus {
 
 	if pending {
-		return walletrpc.EntryStatus_ENTRY_STATUS_PENDING
+		return walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING
 	}
 
 	switch state {
 	case swapclientrpc.SwapState_SWAP_STATE_COMPLETED:
-		return walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE
+		return walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE
 
 	case swapclientrpc.SwapState_SWAP_STATE_FAILED,
 		swapclientrpc.SwapState_SWAP_STATE_EXPIRED,
 		swapclientrpc.SwapState_SWAP_STATE_NEEDS_INTERVENTION,
 		swapclientrpc.SwapState_SWAP_STATE_REFUNDED:
-		return walletrpc.EntryStatus_ENTRY_STATUS_FAILED
+		return walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED
 
 	default:
 		// Non-pending, non-terminal is an unexpected state. Surface
 		// it as PENDING so the caller can poll for the next
 		// transition rather than treating the row as terminal.
-		return walletrpc.EntryStatus_ENTRY_STATUS_PENDING
+		return walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING
 	}
 }
 
@@ -337,7 +337,7 @@ func unixToTime(ts int64) time.Time {
 // WalletVTXO shape. Returns (vtxo, true) when the underlying VTXO maps to a
 // spendable wallet view; (nil, false) when the row should be hidden (terminal
 // states the user has no agency over).
-func walletVTXOFromDaemon(v *daemonrpc.VTXO) (*walletrpc.WalletVTXO, bool) {
+func walletVTXOFromDaemon(v *daemonrpc.VTXO) (*walletdkrpc.WalletVTXO, bool) {
 	if v == nil {
 		return nil, false
 	}
@@ -347,7 +347,7 @@ func walletVTXOFromDaemon(v *daemonrpc.VTXO) (*walletrpc.WalletVTXO, bool) {
 		return nil, false
 	}
 
-	return &walletrpc.WalletVTXO{
+	return &walletdkrpc.WalletVTXO{
 		Outpoint:       v.GetOutpoint(),
 		AmountSat:      v.GetAmountSat(),
 		Status:         status,
@@ -388,13 +388,13 @@ func walletVTXOStatusFromDaemon(s daemonrpc.VTXOStatus) (string, bool) {
 // session_id, debit/credit accounts) are not surfaced; the wallet view
 // keeps only what's useful at the top of an everyday wallet history.
 func onchainTxFromLedgerRow(t *daemonrpc.TransactionHistoryEntry,
-) *walletrpc.OnchainTx {
+) *walletdkrpc.OnchainTx {
 
 	if t == nil {
-		return &walletrpc.OnchainTx{}
+		return &walletdkrpc.OnchainTx{}
 	}
 
-	return &walletrpc.OnchainTx{
+	return &walletdkrpc.OnchainTx{
 		Txid:               t.GetTxid(),
 		Kind:               t.GetType(),
 		AmountSat:          t.GetAmountSat(),
@@ -408,14 +408,14 @@ func onchainTxFromLedgerRow(t *daemonrpc.TransactionHistoryEntry,
 
 // requestFromOnchainAddress wraps an onchain destination in the wallet request
 // oneof.
-func requestFromOnchainAddress(address string) *walletrpc.WalletEntryRequest {
+func requestFromOnchainAddress(address string) *walletdkrpc.WalletEntryRequest {
 	if address == "" {
 		return nil
 	}
 
-	return &walletrpc.WalletEntryRequest{
-		Request: &walletrpc.WalletEntryRequest_OnchainAddress{
-			OnchainAddress: &walletrpc.OnchainAddressRequest{
+	return &walletdkrpc.WalletEntryRequest{
+		Request: &walletdkrpc.WalletEntryRequest_OnchainAddress{
+			OnchainAddress: &walletdkrpc.OnchainAddressRequest{
 				Address: address,
 			},
 		},
@@ -424,8 +424,8 @@ func requestFromOnchainAddress(address string) *walletrpc.WalletEntryRequest {
 
 // paginateVTXOs slices wallet VTXOs by offset and limit, returning a fresh
 // slice so the caller cannot mutate the merger's internal buffer.
-func paginateVTXOs(vtxos []*walletrpc.WalletVTXO, offset,
-	limit uint32) []*walletrpc.WalletVTXO {
+func paginateVTXOs(vtxos []*walletdkrpc.WalletVTXO, offset,
+	limit uint32) []*walletdkrpc.WalletVTXO {
 
 	if offset >= uint32(len(vtxos)) {
 		return nil
@@ -434,7 +434,7 @@ func paginateVTXOs(vtxos []*walletrpc.WalletVTXO, offset,
 	if end > uint32(len(vtxos)) {
 		end = uint32(len(vtxos))
 	}
-	page := make([]*walletrpc.WalletVTXO, 0, end-offset)
+	page := make([]*walletdkrpc.WalletVTXO, 0, end-offset)
 	page = append(page, vtxos[offset:end]...)
 
 	return page
@@ -445,7 +445,7 @@ func paginateVTXOs(vtxos []*walletrpc.WalletVTXO, offset,
 // queued outpoint so the row is correlatable; downstream history merges fill
 // in the broadcast txid once the leave registry produces one.
 func leaveEntryStub(queuedOutpoints []string, destination string, amtSat int64,
-	note string) *walletrpc.WalletEntry {
+	note string) *walletdkrpc.WalletEntry {
 
 	id := ""
 	if len(queuedOutpoints) > 0 {
@@ -453,18 +453,18 @@ func leaveEntryStub(queuedOutpoints []string, destination string, amtSat int64,
 	}
 	createdAt := nowUnix()
 
-	return &walletrpc.WalletEntry{
+	return &walletdkrpc.WalletEntry{
 		Id:            id,
-		Kind:          walletrpc.EntryKind_ENTRY_KIND_EXIT,
-		Status:        walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		AmountSat:     -amtSat,
 		Counterparty:  truncate(destination, truncatedCounterpartyLen),
 		CreatedAtUnix: createdAt,
 		UpdatedAtUnix: createdAt,
 		Note:          note,
 		Request:       requestFromOnchainAddress(destination),
-		Progress: &walletrpc.WalletEntryProgress{
-			Phase:      walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
+		Progress: &walletdkrpc.WalletEntryProgress{
+			Phase:      walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
 			PhaseLabel: "request_created",
 		},
 	}

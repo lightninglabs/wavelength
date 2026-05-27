@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,9 +30,9 @@ func TestDeadlineWatcherFlagsStuckEntries(t *testing.T) {
 	freshID := "fresh"
 	staleID := "stale"
 
-	r.trackPending(freshID, walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now())
+	r.trackPending(freshID, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, time.Now())
 	r.trackPending(
-		staleID, walletrpc.EntryKind_ENTRY_KIND_DEPOSIT, time.Now(),
+		staleID, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT, time.Now(),
 	)
 
 	// Tick the watcher past the deadline window. Both entries were
@@ -47,7 +47,7 @@ func TestDeadlineWatcherFlagsStuckEntries(t *testing.T) {
 		"entry past its deadline must be flagged as timed out",
 	)
 	require.Equal(
-		t, walletrpc.EntryStatus_ENTRY_STATUS_FAILED, overlay.status,
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED, overlay.status,
 	)
 	require.Equal(t, "timed_out", overlay.failureReason)
 
@@ -57,7 +57,7 @@ func TestDeadlineWatcherFlagsStuckEntries(t *testing.T) {
 	r2 := newRuntime(t.Context(), deps)
 	defer r2.stop()
 	r2.trackPending(
-		freshID, walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
+		freshID, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
 	)
 	r2.applyDeadlines(time.Now())
 	_, freshTimedOut := r2.overlayFor(freshID)
@@ -76,8 +76,8 @@ func TestDeadlineWatcherIgnoresSwapRows(t *testing.T) {
 	r := newRuntime(t.Context(), &Deps{WalletDeadline: deadline})
 	defer r.stop()
 
-	r.trackPending("send", walletrpc.EntryKind_ENTRY_KIND_SEND, time.Now())
-	r.trackPending("recv", walletrpc.EntryKind_ENTRY_KIND_RECV, time.Now())
+	r.trackPending("send", walletdkrpc.EntryKind_ENTRY_KIND_SEND, time.Now())
+	r.trackPending("recv", walletdkrpc.EntryKind_ENTRY_KIND_RECV, time.Now())
 
 	r.applyDeadlines(time.Now().Add(2 * deadline))
 
@@ -105,7 +105,7 @@ func TestDeadlineWatcherIdempotent(t *testing.T) {
 	defer r.stop()
 
 	id := "long-stuck"
-	r.trackPending(id, walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now())
+	r.trackPending(id, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, time.Now())
 
 	future := time.Now().Add(2 * deadline)
 	r.applyDeadlines(future)
@@ -135,7 +135,7 @@ func TestClearPendingDropsOverlay(t *testing.T) {
 	defer r.stop()
 
 	id := "transient"
-	r.trackPending(id, walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now())
+	r.trackPending(id, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, time.Now())
 	r.applyDeadlines(time.Now().Add(2 * deadline))
 	_, ok := r.overlayFor(id)
 	require.True(t, ok)
@@ -161,7 +161,7 @@ func TestTrackPendingBasesDeadlineOnFirstObservation(t *testing.T) {
 
 	// Simulate a restored wallet-local row submitted 24h ago.
 	stale := time.Now().Add(-24 * time.Hour)
-	r.trackPending("backfilled", walletrpc.EntryKind_ENTRY_KIND_EXIT, stale)
+	r.trackPending("backfilled", walletdkrpc.EntryKind_ENTRY_KIND_EXIT, stale)
 
 	r.pendingMu.Lock()
 	entry, ok := r.pending["backfilled"]
@@ -197,7 +197,7 @@ func TestTrackPendingIdempotentPreservesOriginalDeadline(t *testing.T) {
 	defer r.stop()
 
 	r.trackPending(
-		"id", walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
+		"id", walletdkrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
 	)
 	r.pendingMu.Lock()
 	first := r.pending["id"].deadline
@@ -206,7 +206,7 @@ func TestTrackPendingIdempotentPreservesOriginalDeadline(t *testing.T) {
 	// Sleep a small amount and re-track; the deadline must NOT advance.
 	time.Sleep(10 * time.Millisecond)
 	r.trackPending(
-		"id", walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
+		"id", walletdkrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
 	)
 	r.pendingMu.Lock()
 	second := r.pending["id"].deadline
@@ -236,7 +236,7 @@ func TestDeadlineWatcherEmitsTimeoutToSubscribers(t *testing.T) {
 	sub := r.subscribe()
 
 	r.trackPending(
-		"stuck", walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
+		"stuck", walletdkrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
 	)
 	tick := time.Now().Add(2 * deadline)
 	r.applyDeadlines(tick)
@@ -245,10 +245,10 @@ func TestDeadlineWatcherEmitsTimeoutToSubscribers(t *testing.T) {
 	case got := <-sub:
 		require.Equal(t, "stuck", got.GetId())
 		require.Equal(
-			t, walletrpc.EntryKind_ENTRY_KIND_EXIT, got.GetKind(),
+			t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, got.GetKind(),
 		)
 		require.Equal(
-			t, walletrpc.EntryStatus_ENTRY_STATUS_FAILED,
+			t, walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
 			got.GetStatus(),
 		)
 		require.Equal(t, "timed_out", got.GetFailureReason())
@@ -281,7 +281,7 @@ func TestDeadlineWatcherDoesNotReEmitAlreadyTimedOut(t *testing.T) {
 	sub := r.subscribe()
 
 	r.trackPending(
-		"stuck", walletrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
+		"stuck", walletdkrpc.EntryKind_ENTRY_KIND_EXIT, time.Now(),
 	)
 	tick := time.Now().Add(2 * deadline)
 	r.applyDeadlines(tick)
@@ -312,9 +312,9 @@ func TestSubscribeFanOutAndDropOnSlowConsumer(t *testing.T) {
 	fast := r.subscribe()
 	slow := r.subscribe()
 
-	entry := &walletrpc.WalletEntry{
+	entry := &walletdkrpc.WalletEntry{
 		Id:   "abc",
-		Kind: walletrpc.EntryKind_ENTRY_KIND_EXIT,
+		Kind: walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
 	}
 	r.emit(entry)
 

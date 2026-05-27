@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -8,7 +8,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,8 +48,8 @@ func TestRouterSendInvoiceDispatchesStartPay(t *testing.T) {
 		},
 	}
 
-	resp, err := r.Send(t.Context(), &walletrpc.SendRequest{
-		Destination: &walletrpc.SendRequest_Invoice{
+	resp, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
+		Destination: &walletdkrpc.SendRequest_Invoice{
 			Invoice: "lnbc1example",
 		},
 		MaxFeeSat: 25,
@@ -61,7 +61,7 @@ func TestRouterSendInvoiceDispatchesStartPay(t *testing.T) {
 	require.Equal(t, uint64(25), swap.startPayLastReq.GetMaxFeeSat())
 	require.Equal(t, "deadbeef", resp.GetEntry().GetId())
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_SEND,
+		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND,
 		resp.GetEntry().GetKind(),
 	)
 }
@@ -100,8 +100,8 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 		Status: "queued",
 	}
 
-	resp, err := r.Send(t.Context(), &walletrpc.SendRequest{
-		Destination: &walletrpc.SendRequest_OnchainAddress{
+	resp, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
+		Destination: &walletdkrpc.SendRequest_OnchainAddress{
 			OnchainAddress: "bcrt1qaddr",
 		},
 		AmtSat: 10000,
@@ -130,7 +130,7 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 		rpc.leaveLastReq.GetDefaultDestination().GetAddress(),
 	)
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_EXIT,
+		t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
 		resp.GetEntry().GetKind(),
 	)
 	require.Equal(
@@ -172,8 +172,8 @@ func TestRouterSendOnchainSweepAllRoutesToAllSelection(t *testing.T) {
 		Status: "queued",
 	}
 
-	resp, err := r.Send(t.Context(), &walletrpc.SendRequest{
-		Destination: &walletrpc.SendRequest_OnchainAddress{
+	resp, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
+		Destination: &walletdkrpc.SendRequest_OnchainAddress{
 			OnchainAddress: "bcrt1qaddr",
 		},
 		AmtSat:   0,
@@ -221,8 +221,8 @@ func TestRouterSendOnchainAutoJoinFailureSurfaced(t *testing.T) {
 	}
 	rpc.joinNextRoundErr = errors.New("round actor unavailable")
 
-	_, err := r.Send(t.Context(), &walletrpc.SendRequest{
-		Destination: &walletrpc.SendRequest_OnchainAddress{
+	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
+		Destination: &walletdkrpc.SendRequest_OnchainAddress{
 			OnchainAddress: "bcrt1qaddr",
 		},
 		AmtSat: 5_000,
@@ -249,8 +249,8 @@ func TestRouterSendOnchainAmtZeroRejectedWithoutSweepAll(t *testing.T) {
 
 	r, _, rpc := newRouterFixture(t)
 
-	_, err := r.Send(t.Context(), &walletrpc.SendRequest{
-		Destination: &walletrpc.SendRequest_OnchainAddress{
+	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
+		Destination: &walletdkrpc.SendRequest_OnchainAddress{
 			OnchainAddress: "bcrt1qaddr",
 		},
 		AmtSat: 0,
@@ -270,8 +270,8 @@ func TestRouterSendOnchainSweepAllRequiresZeroAmt(t *testing.T) {
 
 	r, _, rpc := newRouterFixture(t)
 
-	_, err := r.Send(t.Context(), &walletrpc.SendRequest{
-		Destination: &walletrpc.SendRequest_OnchainAddress{
+	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
+		Destination: &walletdkrpc.SendRequest_OnchainAddress{
 			OnchainAddress: "bcrt1qaddr",
 		},
 		AmtSat:   1_000,
@@ -299,8 +299,8 @@ func TestRouterSendOnchainInsufficientFunds(t *testing.T) {
 		},
 	}
 
-	_, err := r.Send(t.Context(), &walletrpc.SendRequest{
-		Destination: &walletrpc.SendRequest_OnchainAddress{
+	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
+		Destination: &walletdkrpc.SendRequest_OnchainAddress{
 			OnchainAddress: "bcrt1qaddr",
 		},
 		AmtSat: 10_000,
@@ -319,7 +319,7 @@ func TestRouterSendUnsetDestinationRejected(t *testing.T) {
 
 	r, _, _ := newRouterFixture(t)
 
-	_, err := r.Send(t.Context(), &walletrpc.SendRequest{})
+	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{})
 	require.ErrorIs(t, err, ErrInvalidDestination)
 }
 
@@ -345,14 +345,14 @@ func TestRouterSendInvoiceAmountSignedFromCallerKind(t *testing.T) {
 		},
 	}
 
-	resp, err := r.Send(t.Context(), &walletrpc.SendRequest{
-		Destination: &walletrpc.SendRequest_Invoice{
+	resp, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
+		Destination: &walletdkrpc.SendRequest_Invoice{
 			Invoice: "lnbc1example",
 		},
 	})
 	require.NoError(t, err)
 	require.Equal(
-		t, walletrpc.EntryKind_ENTRY_KIND_SEND,
+		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND,
 		resp.GetEntry().GetKind(),
 	)
 	require.Equal(
@@ -370,8 +370,8 @@ func TestRouterSendInvoiceErrorBubblesUp(t *testing.T) {
 	r, swap, _ := newRouterFixture(t)
 	swap.startPayErr = errors.New("swap server unavailable")
 
-	_, err := r.Send(t.Context(), &walletrpc.SendRequest{
-		Destination: &walletrpc.SendRequest_Invoice{
+	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
+		Destination: &walletdkrpc.SendRequest_Invoice{
 			Invoice: "lnbc1example",
 		},
 	})

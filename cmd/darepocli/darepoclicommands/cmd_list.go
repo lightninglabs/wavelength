@@ -3,7 +3,7 @@ package darepoclicommands
 import (
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/spf13/cobra"
 )
 
@@ -49,13 +49,13 @@ func walletActivity(cmd *cobra.Command, _ []string) error {
 	format, _ := cmd.Flags().GetString("format")
 
 	if err := validateListFormat(
-		format, walletrpc.ListView_LIST_VIEW_ACTIVITY,
+		format, walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
 	); err != nil {
 		return err
 	}
 
-	req := &walletrpc.ListRequest{
-		View:        walletrpc.ListView_LIST_VIEW_ACTIVITY,
+	req := &walletdkrpc.ListRequest{
+		View:        walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
 		PendingOnly: pending,
 		Limit:       limit,
 		Offset:      offset,
@@ -69,7 +69,7 @@ func walletActivity(cmd *cobra.Command, _ []string) error {
 	}
 
 	return withWalletClient(
-		cmd, func(c walletrpc.WalletServiceClient) error {
+		cmd, func(c walletdkrpc.WalletServiceClient) error {
 			resp, err := c.List(cmd.Context(), req)
 			if err != nil {
 				return fmt.Errorf("activity: %w", err)

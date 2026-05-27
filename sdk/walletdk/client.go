@@ -13,7 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/restclient"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -26,7 +26,7 @@ type Client struct {
 	conn   grpc.ClientConnInterface
 	daemon daemonrpc.DaemonServiceClient
 	swaps  swapclientrpc.SwapClientServiceClient
-	wallet walletrpc.WalletServiceClient
+	wallet walletdkrpc.WalletServiceClient
 
 	canWallet bool
 	waitCh    <-chan error
@@ -108,7 +108,7 @@ func (c *Client) GRPCConn() grpc.ClientConnInterface {
 }
 
 // WalletRPC returns the wallet RPC client for advanced callers.
-func (c *Client) WalletRPC() walletrpc.WalletServiceClient {
+func (c *Client) WalletRPC() walletdkrpc.WalletServiceClient {
 	if c == nil {
 		return nil
 	}
@@ -214,7 +214,7 @@ func (c *Client) Balance(ctx context.Context) (*Balance, error) {
 		return nil, err
 	}
 
-	resp, err := c.wallet.Balance(ctx, &walletrpc.BalanceRequest{})
+	resp, err := c.wallet.Balance(ctx, &walletdkrpc.BalanceRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("get wallet balance: %w", err)
 	}
@@ -232,7 +232,7 @@ func (c *Client) Deposit(ctx context.Context, req DepositRequest) (
 		return nil, err
 	}
 
-	resp, err := c.wallet.Deposit(ctx, &walletrpc.DepositRequest{
+	resp, err := c.wallet.Deposit(ctx, &walletdkrpc.DepositRequest{
 		AmtSatHint: req.AmountSatHint,
 	})
 	if err != nil {
@@ -256,7 +256,7 @@ func (c *Client) Receive(ctx context.Context, req ReceiveRequest) (
 		return nil, fmt.Errorf("amount_sat must be positive")
 	}
 
-	resp, err := c.wallet.Recv(ctx, &walletrpc.RecvRequest{
+	resp, err := c.wallet.Recv(ctx, &walletdkrpc.RecvRequest{
 		AmtSat: req.AmountSat,
 		Memo:   req.Memo,
 	})
@@ -278,7 +278,7 @@ func (c *Client) Send(ctx context.Context, req SendRequest) (*SendResult,
 		return nil, err
 	}
 
-	protoReq := &walletrpc.SendRequest{
+	protoReq := &walletdkrpc.SendRequest{
 		AmtSat:    req.AmountSat,
 		Note:      req.Note,
 		MaxFeeSat: req.MaxFeeSat,
@@ -292,12 +292,12 @@ func (c *Client) Send(ctx context.Context, req SendRequest) (*SendResult,
 			"both")
 
 	case invoice != "":
-		protoReq.Destination = &walletrpc.SendRequest_Invoice{
+		protoReq.Destination = &walletdkrpc.SendRequest_Invoice{
 			Invoice: invoice,
 		}
 
 	case onchainAddress != "":
-		protoReq.Destination = &walletrpc.SendRequest_OnchainAddress{
+		protoReq.Destination = &walletdkrpc.SendRequest_OnchainAddress{
 			OnchainAddress: onchainAddress,
 		}
 
@@ -341,7 +341,7 @@ func (c *Client) List(ctx context.Context, req ListRequest) (*ListResult,
 		return nil, err
 	}
 
-	resp, err := c.wallet.List(ctx, &walletrpc.ListRequest{
+	resp, err := c.wallet.List(ctx, &walletdkrpc.ListRequest{
 		View:        protoView,
 		PendingOnly: req.PendingOnly,
 		Kinds:       kinds,
@@ -576,13 +576,13 @@ func outpointInList(target string, list []string) bool {
 	return false
 }
 
-// unilateralExit calls walletrpc.Exit (which proxies
+// unilateralExit calls walletdkrpc.Exit (which proxies
 // daemonrpc.Unroll). The caller sets Path to ExitPathUnilateral or
 // ExitPathUnilateralFallback depending on the branch.
 func (c *Client) unilateralExit(ctx context.Context, outpoint string) (
 	*ExitResult, error) {
 
-	resp, err := c.wallet.Exit(ctx, &walletrpc.ExitRequest{
+	resp, err := c.wallet.Exit(ctx, &walletdkrpc.ExitRequest{
 		Outpoint: outpoint,
 	})
 	if err != nil {
@@ -608,7 +608,7 @@ func (c *Client) ExitStatus(ctx context.Context, req ExitStatusRequest) (
 		return nil, fmt.Errorf("outpoint is required")
 	}
 
-	resp, err := c.wallet.ExitStatus(ctx, &walletrpc.ExitStatusRequest{
+	resp, err := c.wallet.ExitStatus(ctx, &walletdkrpc.ExitStatusRequest{
 		Outpoint: req.Outpoint,
 	})
 	if err != nil {
@@ -629,7 +629,7 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 
-	resp, err := c.wallet.Status(ctx, &walletrpc.StatusRequest{})
+	resp, err := c.wallet.Status(ctx, &walletdkrpc.StatusRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("get wallet status: %w", err)
 	}
@@ -657,7 +657,7 @@ func (c *Client) Subscribe(ctx context.Context, req SubscribeRequest) (
 	}
 
 	stream, err := c.wallet.SubscribeWallet(
-		ctx, &walletrpc.SubscribeWalletRequest{
+		ctx, &walletdkrpc.SubscribeWalletRequest{
 			IncludeExisting: req.IncludeExisting,
 			Kinds:           kinds,
 		},
@@ -700,7 +700,7 @@ func (c *Client) Subscribe(ctx context.Context, req SubscribeRequest) (
 }
 
 // requireWalletRPC fails fast when the embedded build cannot register
-// walletrpc before any RPC is attempted.
+// walletdkrpc before any RPC is attempted.
 func (c *Client) requireWalletRPC() error {
 	if c == nil || !c.canWallet {
 		return ErrWalletRPCUnavailable
@@ -716,7 +716,7 @@ func newClient(conn grpc.ClientConnInterface, canWallet bool,
 	return newClientWithRPC(
 		conn, daemonrpc.NewDaemonServiceClient(conn),
 		swapclientrpc.NewSwapClientServiceClient(conn),
-		walletrpc.NewWalletServiceClient(conn), canWallet, waitCh,
+		walletdkrpc.NewWalletServiceClient(conn), canWallet, waitCh,
 		closeFn,
 	)
 }
@@ -724,7 +724,7 @@ func newClient(conn grpc.ClientConnInterface, canWallet bool,
 func newClientWithRPC(conn grpc.ClientConnInterface,
 	daemon daemonrpc.DaemonServiceClient,
 	swaps swapclientrpc.SwapClientServiceClient,
-	wallet walletrpc.WalletServiceClient, canWallet bool,
+	wallet walletdkrpc.WalletServiceClient, canWallet bool,
 	waitCh <-chan error, closeFn func(context.Context) error) *Client {
 
 	return &Client{

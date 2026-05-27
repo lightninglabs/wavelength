@@ -8,18 +8,18 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 )
 
 // validateListFormat rejects presentation formats that do not apply to the
 // selected list view.
-func validateListFormat(format string, view walletrpc.ListView) error {
+func validateListFormat(format string, view walletdkrpc.ListView) error {
 	switch format {
 	case "", "json":
 		return nil
 
 	case "table", "expanded", "x":
-		if view != walletrpc.ListView_LIST_VIEW_ACTIVITY {
+		if view != walletdkrpc.ListView_LIST_VIEW_ACTIVITY {
 			return fmt.Errorf("--format %s applies only to "+
 				"activity output", format)
 		}
@@ -33,19 +33,19 @@ func validateListFormat(format string, view walletrpc.ListView) error {
 }
 
 // printWalletActivityTable writes the compact wallet activity table to stdout.
-func printWalletActivityTable(resp *walletrpc.ListResponse) error {
+func printWalletActivityTable(resp *walletdkrpc.ListResponse) error {
 	return renderWalletActivityTable(os.Stdout, resp)
 }
 
 // printWalletActivityExpanded writes the expanded wallet activity view to
 // stdout.
-func printWalletActivityExpanded(resp *walletrpc.ListResponse) error {
+func printWalletActivityExpanded(resp *walletdkrpc.ListResponse) error {
 	return renderWalletActivityExpanded(os.Stdout, resp)
 }
 
 // renderWalletActivityTable renders activity entries as a tabwriter table.
 func renderWalletActivityTable(out io.Writer,
-	resp *walletrpc.ListResponse) error {
+	resp *walletdkrpc.ListResponse) error {
 
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 
@@ -84,7 +84,7 @@ func renderWalletActivityTable(out io.Writer,
 // renderWalletActivityExpanded renders activity entries as markdown-like
 // sections.
 func renderWalletActivityExpanded(out io.Writer,
-	resp *walletrpc.ListResponse) error {
+	resp *walletdkrpc.ListResponse) error {
 
 	entries := resp.GetActivity().GetEntries()
 	for i, entry := range entries {
@@ -112,17 +112,17 @@ func formatEntryTime(ts int64) string {
 }
 
 // formatEntryKind returns the short activity kind label.
-func formatEntryKind(kind walletrpc.EntryKind) string {
+func formatEntryKind(kind walletdkrpc.EntryKind) string {
 	return strings.TrimPrefix(kind.String(), "ENTRY_KIND_")
 }
 
 // formatEntryStatus returns the short activity status label.
-func formatEntryStatus(status walletrpc.EntryStatus) string {
+func formatEntryStatus(status walletdkrpc.EntryStatus) string {
 	return strings.TrimPrefix(status.String(), "ENTRY_STATUS_")
 }
 
 // formatEntryPhase returns the most display-friendly lifecycle phase label.
-func formatEntryPhase(progress *walletrpc.WalletEntryProgress) string {
+func formatEntryPhase(progress *walletdkrpc.WalletEntryProgress) string {
 	if progress == nil {
 		return "-"
 	}

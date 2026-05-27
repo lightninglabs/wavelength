@@ -3,7 +3,7 @@ package darepoclicommands
 import (
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/spf13/cobra"
 )
 
@@ -35,13 +35,13 @@ func inspectActivity(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	req := &walletrpc.InspectActivityRequest{
+	req := &walletdkrpc.InspectActivityRequest{
 		Id:          args[0],
 		LedgerLimit: ledgerLimit,
 	}
 
 	return withWalletInspectionClient(
-		cmd, func(c walletrpc.WalletInspectionServiceClient) error {
+		cmd, func(c walletdkrpc.WalletInspectionServiceClient) error {
 			resp, err := c.InspectActivity(cmd.Context(), req)
 			if err != nil {
 				return fmt.Errorf("activity inspect: %w", err)

@@ -9,7 +9,7 @@ import (
 
 // newArkSendCmd builds the `ark send` parent command that re-hosts the
 // legacy in-round and out-of-round transfer subcommands. The everyday
-// top-level `send` verb composes the same paths via walletrpc; this
+// top-level `send` verb composes the same paths via walletdkrpc; this
 // parent is the power-user knob for callers who want to drive the
 // underlying daemonrpc methods directly.
 func newArkSendCmd() *cobra.Command {
@@ -18,7 +18,7 @@ func newArkSendCmd() *cobra.Command {
 		Short: "Raw in-round / OOR send (advanced)",
 		Long: "Power-user transfer subcommands. The everyday " +
 			"`darepocli send` verb composes the same paths via " +
-			"walletrpc; this parent surfaces the raw daemonrpc " +
+			"walletdkrpc; this parent surfaces the raw daemonrpc " +
 			"methods for callers who need them.",
 	}
 
@@ -32,7 +32,7 @@ func newArkSendCmd() *cobra.Command {
 
 // newArkSendInRoundCmd creates the `ark send inround` subcommand. This
 // is the raw daemonrpc.SendVTXO path; the top-level `send` verb
-// composes the same logic via walletrpc.WalletService.Send.
+// composes the same logic via walletdkrpc.WalletService.Send.
 //
 // Supports both `--to <bech32m>` and `--pubkey <hex>` parallel
 // destinations. The Output proto already has both `address` and

@@ -3,12 +3,12 @@ package darepoclicommands
 import (
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/spf13/cobra"
 )
 
 // newSendCmd builds the top-level `send` verb. It dispatches an
-// outbound payment via walletrpc.WalletService.Send. Direction is
+// outbound payment via walletdkrpc.WalletService.Send. Direction is
 // chosen explicitly with --offchain (default) or --onchain: the CLI
 // does NOT sniff the destination string, so an agent cannot
 // accidentally dispatch an onchain send by passing what it thinks is an
@@ -115,16 +115,16 @@ func walletSend(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	req := &walletrpc.SendRequest{
+	req := &walletdkrpc.SendRequest{
 		AmtSat:    amt,
 		MaxFeeSat: maxFee,
 		Note:      note,
 		SweepAll:  sweepAll,
 	}
 	if offchain {
-		req.Destination = &walletrpc.SendRequest_Invoice{Invoice: dest}
+		req.Destination = &walletdkrpc.SendRequest_Invoice{Invoice: dest}
 	} else {
-		req.Destination = &walletrpc.SendRequest_OnchainAddress{
+		req.Destination = &walletdkrpc.SendRequest_OnchainAddress{
 			OnchainAddress: dest,
 		}
 	}
@@ -135,11 +135,11 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	// from a real send so an agent can stage a payment without
 	// risking a duplicate dispatch.
 	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
-		return walletDryRunPreview("walletrpc.WalletService/Send", req)
+		return walletDryRunPreview("walletdkrpc.WalletService/Send", req)
 	}
 
 	return withWalletClient(
-		cmd, func(c walletrpc.WalletServiceClient) error {
+		cmd, func(c walletdkrpc.WalletServiceClient) error {
 			resp, err := c.Send(cmd.Context(), req)
 			if err != nil {
 				return fmt.Errorf("send: %w", err)
