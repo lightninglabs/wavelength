@@ -51,6 +51,12 @@ http:
     - selector: daemonrpc.DaemonService.SendOOR
       post: /v1/daemon/send-oor
       body: "*"
+    - selector: daemonrpc.DaemonService.PrepareOOR
+      post: /v1/daemon/prepare-oor
+      body: "*"
+    - selector: daemonrpc.DaemonService.SignOORCustomInput
+      post: /v1/daemon/sign-oor-custom-input
+      body: "*"
     - selector: daemonrpc.DaemonService.RefreshVTXOs
       post: /v1/daemon/refresh-vtxos
       body: "*"
@@ -59,6 +65,21 @@ http:
       body: "*"
     - selector: daemonrpc.DaemonService.Board
       post: /v1/daemon/board
+      body: "*"
+    - selector: daemonrpc.DaemonService.ArmVHTLCRecovery
+      post: /v1/daemon/arm-vhtlc-recovery
+      body: "*"
+    - selector: daemonrpc.DaemonService.EscalateVHTLCRecovery
+      post: /v1/daemon/escalate-vhtlc-recovery
+      body: "*"
+    - selector: daemonrpc.DaemonService.CancelVHTLCRecovery
+      post: /v1/daemon/cancel-vhtlc-recovery
+      body: "*"
+    - selector: daemonrpc.DaemonService.GetVHTLCRecoveryStatus
+      post: /v1/daemon/get-vhtlc-recovery-status
+      body: "*"
+    - selector: daemonrpc.DaemonService.ListVHTLCRecoveries
+      post: /v1/daemon/list-vhtlc-recoveries
       body: "*"
     - selector: daemonrpc.DaemonService.JoinNextRound
       post: /v1/daemon/join-next-round

@@ -35,9 +35,16 @@ const (
 	DaemonService_GetIndexedOORSessionByTxid_FullMethodName    = "/daemonrpc.DaemonService/GetIndexedOORSessionByTxid"
 	DaemonService_SendVTXO_FullMethodName                      = "/daemonrpc.DaemonService/SendVTXO"
 	DaemonService_SendOOR_FullMethodName                       = "/daemonrpc.DaemonService/SendOOR"
+	DaemonService_PrepareOOR_FullMethodName                    = "/daemonrpc.DaemonService/PrepareOOR"
+	DaemonService_SignOORCustomInput_FullMethodName            = "/daemonrpc.DaemonService/SignOORCustomInput"
 	DaemonService_RefreshVTXOs_FullMethodName                  = "/daemonrpc.DaemonService/RefreshVTXOs"
 	DaemonService_LeaveVTXOs_FullMethodName                    = "/daemonrpc.DaemonService/LeaveVTXOs"
 	DaemonService_Board_FullMethodName                         = "/daemonrpc.DaemonService/Board"
+	DaemonService_ArmVHTLCRecovery_FullMethodName              = "/daemonrpc.DaemonService/ArmVHTLCRecovery"
+	DaemonService_EscalateVHTLCRecovery_FullMethodName         = "/daemonrpc.DaemonService/EscalateVHTLCRecovery"
+	DaemonService_CancelVHTLCRecovery_FullMethodName           = "/daemonrpc.DaemonService/CancelVHTLCRecovery"
+	DaemonService_GetVHTLCRecoveryStatus_FullMethodName        = "/daemonrpc.DaemonService/GetVHTLCRecoveryStatus"
+	DaemonService_ListVHTLCRecoveries_FullMethodName           = "/daemonrpc.DaemonService/ListVHTLCRecoveries"
 	DaemonService_JoinNextRound_FullMethodName                 = "/daemonrpc.DaemonService/JoinNextRound"
 	DaemonService_SweepBoardingUTXOs_FullMethodName            = "/daemonrpc.DaemonService/SweepBoardingUTXOs"
 	DaemonService_ListBoardingSweeps_FullMethodName            = "/daemonrpc.DaemonService/ListBoardingSweeps"
@@ -115,6 +122,13 @@ type DaemonServiceClient interface {
 	// SendOOR initiates an out-of-round transfer directly between the
 	// client and operator, without waiting for a round.
 	SendOOR(ctx context.Context, in *SendOORRequest, opts ...grpc.CallOption) (*SendOORResponse, error)
+	// PrepareOOR builds the deterministic OOR package without submitting it.
+	// This lets callers collect signatures from external custom-input
+	// participants before calling SendOOR with the same parameters.
+	PrepareOOR(ctx context.Context, in *PrepareOORRequest, opts ...grpc.CallOption) (*PrepareOORResponse, error)
+	// SignOORCustomInput signs one prepared custom OOR checkpoint input with
+	// the daemon identity key.
+	SignOORCustomInput(ctx context.Context, in *SignOORCustomInputRequest, opts ...grpc.CallOption) (*SignOORCustomInputResponse, error)
 	// RefreshVTXOs queues one or more VTXOs for refresh in the next
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(ctx context.Context, in *RefreshVTXOsRequest, opts ...grpc.CallOption) (*RefreshVTXOsResponse, error)
@@ -127,6 +141,16 @@ type DaemonServiceClient interface {
 	// confirmed boarding UTXOs. This sends IntentRequested to
 	// the round FSM, which emits a JoinRoundRequest to the server.
 	Board(ctx context.Context, in *BoardRequest, opts ...grpc.CallOption) (*BoardResponse, error)
+	// ArmVHTLCRecovery stores a dormant daemon-owned vHTLC recovery row.
+	ArmVHTLCRecovery(ctx context.Context, in *ArmVHTLCRecoveryRequest, opts ...grpc.CallOption) (*ArmVHTLCRecoveryResponse, error)
+	// EscalateVHTLCRecovery starts or resumes daemon-owned vHTLC recovery.
+	EscalateVHTLCRecovery(ctx context.Context, in *EscalateVHTLCRecoveryRequest, opts ...grpc.CallOption) (*EscalateVHTLCRecoveryResponse, error)
+	// CancelVHTLCRecovery records that cooperative settlement won the race.
+	CancelVHTLCRecovery(ctx context.Context, in *CancelVHTLCRecoveryRequest, opts ...grpc.CallOption) (*CancelVHTLCRecoveryResponse, error)
+	// GetVHTLCRecoveryStatus returns one daemon-owned vHTLC recovery row.
+	GetVHTLCRecoveryStatus(ctx context.Context, in *GetVHTLCRecoveryStatusRequest, opts ...grpc.CallOption) (*GetVHTLCRecoveryStatusResponse, error)
+	// ListVHTLCRecoveries lists daemon-owned vHTLC recovery rows.
+	ListVHTLCRecoveries(ctx context.Context, in *ListVHTLCRecoveriesRequest, opts ...grpc.CallOption) (*ListVHTLCRecoveriesResponse, error)
 	// JoinNextRound asks the client round FSM to commit any currently
 	// queued round intents and emit a JoinRoundRequest to the operator.
 	// Useful after queueing refresh or leave intents that intentionally
@@ -347,6 +371,26 @@ func (c *daemonServiceClient) SendOOR(ctx context.Context, in *SendOORRequest, o
 	return out, nil
 }
 
+func (c *daemonServiceClient) PrepareOOR(ctx context.Context, in *PrepareOORRequest, opts ...grpc.CallOption) (*PrepareOORResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PrepareOORResponse)
+	err := c.cc.Invoke(ctx, DaemonService_PrepareOOR_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SignOORCustomInput(ctx context.Context, in *SignOORCustomInputRequest, opts ...grpc.CallOption) (*SignOORCustomInputResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SignOORCustomInputResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SignOORCustomInput_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) RefreshVTXOs(ctx context.Context, in *RefreshVTXOsRequest, opts ...grpc.CallOption) (*RefreshVTXOsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RefreshVTXOsResponse)
@@ -371,6 +415,56 @@ func (c *daemonServiceClient) Board(ctx context.Context, in *BoardRequest, opts 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BoardResponse)
 	err := c.cc.Invoke(ctx, DaemonService_Board_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ArmVHTLCRecovery(ctx context.Context, in *ArmVHTLCRecoveryRequest, opts ...grpc.CallOption) (*ArmVHTLCRecoveryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ArmVHTLCRecoveryResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ArmVHTLCRecovery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) EscalateVHTLCRecovery(ctx context.Context, in *EscalateVHTLCRecoveryRequest, opts ...grpc.CallOption) (*EscalateVHTLCRecoveryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EscalateVHTLCRecoveryResponse)
+	err := c.cc.Invoke(ctx, DaemonService_EscalateVHTLCRecovery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) CancelVHTLCRecovery(ctx context.Context, in *CancelVHTLCRecoveryRequest, opts ...grpc.CallOption) (*CancelVHTLCRecoveryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelVHTLCRecoveryResponse)
+	err := c.cc.Invoke(ctx, DaemonService_CancelVHTLCRecovery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) GetVHTLCRecoveryStatus(ctx context.Context, in *GetVHTLCRecoveryStatusRequest, opts ...grpc.CallOption) (*GetVHTLCRecoveryStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetVHTLCRecoveryStatusResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetVHTLCRecoveryStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ListVHTLCRecoveries(ctx context.Context, in *ListVHTLCRecoveriesRequest, opts ...grpc.CallOption) (*ListVHTLCRecoveriesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListVHTLCRecoveriesResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListVHTLCRecoveries_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -578,6 +672,13 @@ type DaemonServiceServer interface {
 	// SendOOR initiates an out-of-round transfer directly between the
 	// client and operator, without waiting for a round.
 	SendOOR(context.Context, *SendOORRequest) (*SendOORResponse, error)
+	// PrepareOOR builds the deterministic OOR package without submitting it.
+	// This lets callers collect signatures from external custom-input
+	// participants before calling SendOOR with the same parameters.
+	PrepareOOR(context.Context, *PrepareOORRequest) (*PrepareOORResponse, error)
+	// SignOORCustomInput signs one prepared custom OOR checkpoint input with
+	// the daemon identity key.
+	SignOORCustomInput(context.Context, *SignOORCustomInputRequest) (*SignOORCustomInputResponse, error)
 	// RefreshVTXOs queues one or more VTXOs for refresh in the next
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
@@ -590,6 +691,16 @@ type DaemonServiceServer interface {
 	// confirmed boarding UTXOs. This sends IntentRequested to
 	// the round FSM, which emits a JoinRoundRequest to the server.
 	Board(context.Context, *BoardRequest) (*BoardResponse, error)
+	// ArmVHTLCRecovery stores a dormant daemon-owned vHTLC recovery row.
+	ArmVHTLCRecovery(context.Context, *ArmVHTLCRecoveryRequest) (*ArmVHTLCRecoveryResponse, error)
+	// EscalateVHTLCRecovery starts or resumes daemon-owned vHTLC recovery.
+	EscalateVHTLCRecovery(context.Context, *EscalateVHTLCRecoveryRequest) (*EscalateVHTLCRecoveryResponse, error)
+	// CancelVHTLCRecovery records that cooperative settlement won the race.
+	CancelVHTLCRecovery(context.Context, *CancelVHTLCRecoveryRequest) (*CancelVHTLCRecoveryResponse, error)
+	// GetVHTLCRecoveryStatus returns one daemon-owned vHTLC recovery row.
+	GetVHTLCRecoveryStatus(context.Context, *GetVHTLCRecoveryStatusRequest) (*GetVHTLCRecoveryStatusResponse, error)
+	// ListVHTLCRecoveries lists daemon-owned vHTLC recovery rows.
+	ListVHTLCRecoveries(context.Context, *ListVHTLCRecoveriesRequest) (*ListVHTLCRecoveriesResponse, error)
 	// JoinNextRound asks the client round FSM to commit any currently
 	// queued round intents and emit a JoinRoundRequest to the operator.
 	// Useful after queueing refresh or leave intents that intentionally
@@ -698,6 +809,12 @@ func (UnimplementedDaemonServiceServer) SendVTXO(context.Context, *SendVTXOReque
 func (UnimplementedDaemonServiceServer) SendOOR(context.Context, *SendOORRequest) (*SendOORResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SendOOR not implemented")
 }
+func (UnimplementedDaemonServiceServer) PrepareOOR(context.Context, *PrepareOORRequest) (*PrepareOORResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PrepareOOR not implemented")
+}
+func (UnimplementedDaemonServiceServer) SignOORCustomInput(context.Context, *SignOORCustomInputRequest) (*SignOORCustomInputResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SignOORCustomInput not implemented")
+}
 func (UnimplementedDaemonServiceServer) RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RefreshVTXOs not implemented")
 }
@@ -706,6 +823,21 @@ func (UnimplementedDaemonServiceServer) LeaveVTXOs(context.Context, *LeaveVTXOsR
 }
 func (UnimplementedDaemonServiceServer) Board(context.Context, *BoardRequest) (*BoardResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Board not implemented")
+}
+func (UnimplementedDaemonServiceServer) ArmVHTLCRecovery(context.Context, *ArmVHTLCRecoveryRequest) (*ArmVHTLCRecoveryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ArmVHTLCRecovery not implemented")
+}
+func (UnimplementedDaemonServiceServer) EscalateVHTLCRecovery(context.Context, *EscalateVHTLCRecoveryRequest) (*EscalateVHTLCRecoveryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method EscalateVHTLCRecovery not implemented")
+}
+func (UnimplementedDaemonServiceServer) CancelVHTLCRecovery(context.Context, *CancelVHTLCRecoveryRequest) (*CancelVHTLCRecoveryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CancelVHTLCRecovery not implemented")
+}
+func (UnimplementedDaemonServiceServer) GetVHTLCRecoveryStatus(context.Context, *GetVHTLCRecoveryStatusRequest) (*GetVHTLCRecoveryStatusResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetVHTLCRecoveryStatus not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListVHTLCRecoveries(context.Context, *ListVHTLCRecoveriesRequest) (*ListVHTLCRecoveriesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListVHTLCRecoveries not implemented")
 }
 func (UnimplementedDaemonServiceServer) JoinNextRound(context.Context, *JoinNextRoundRequest) (*JoinNextRoundResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method JoinNextRound not implemented")
@@ -1055,6 +1187,42 @@ func _DaemonService_SendOOR_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_PrepareOOR_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareOORRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).PrepareOOR(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_PrepareOOR_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).PrepareOOR(ctx, req.(*PrepareOORRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SignOORCustomInput_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignOORCustomInputRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SignOORCustomInput(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SignOORCustomInput_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SignOORCustomInput(ctx, req.(*SignOORCustomInputRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_RefreshVTXOs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RefreshVTXOsRequest)
 	if err := dec(in); err != nil {
@@ -1105,6 +1273,96 @@ func _DaemonService_Board_Handler(srv interface{}, ctx context.Context, dec func
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).Board(ctx, req.(*BoardRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ArmVHTLCRecovery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ArmVHTLCRecoveryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ArmVHTLCRecovery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ArmVHTLCRecovery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ArmVHTLCRecovery(ctx, req.(*ArmVHTLCRecoveryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_EscalateVHTLCRecovery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EscalateVHTLCRecoveryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).EscalateVHTLCRecovery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_EscalateVHTLCRecovery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).EscalateVHTLCRecovery(ctx, req.(*EscalateVHTLCRecoveryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_CancelVHTLCRecovery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelVHTLCRecoveryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).CancelVHTLCRecovery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_CancelVHTLCRecovery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).CancelVHTLCRecovery(ctx, req.(*CancelVHTLCRecoveryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_GetVHTLCRecoveryStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetVHTLCRecoveryStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetVHTLCRecoveryStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetVHTLCRecoveryStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetVHTLCRecoveryStatus(ctx, req.(*GetVHTLCRecoveryStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ListVHTLCRecoveries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListVHTLCRecoveriesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListVHTLCRecoveries(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListVHTLCRecoveries_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListVHTLCRecoveries(ctx, req.(*ListVHTLCRecoveriesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1408,6 +1666,14 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _DaemonService_SendOOR_Handler,
 		},
 		{
+			MethodName: "PrepareOOR",
+			Handler:    _DaemonService_PrepareOOR_Handler,
+		},
+		{
+			MethodName: "SignOORCustomInput",
+			Handler:    _DaemonService_SignOORCustomInput_Handler,
+		},
+		{
 			MethodName: "RefreshVTXOs",
 			Handler:    _DaemonService_RefreshVTXOs_Handler,
 		},
@@ -1418,6 +1684,26 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Board",
 			Handler:    _DaemonService_Board_Handler,
+		},
+		{
+			MethodName: "ArmVHTLCRecovery",
+			Handler:    _DaemonService_ArmVHTLCRecovery_Handler,
+		},
+		{
+			MethodName: "EscalateVHTLCRecovery",
+			Handler:    _DaemonService_EscalateVHTLCRecovery_Handler,
+		},
+		{
+			MethodName: "CancelVHTLCRecovery",
+			Handler:    _DaemonService_CancelVHTLCRecovery_Handler,
+		},
+		{
+			MethodName: "GetVHTLCRecoveryStatus",
+			Handler:    _DaemonService_GetVHTLCRecoveryStatus_Handler,
+		},
+		{
+			MethodName: "ListVHTLCRecoveries",
+			Handler:    _DaemonService_ListVHTLCRecoveries_Handler,
 		},
 		{
 			MethodName: "JoinNextRound",

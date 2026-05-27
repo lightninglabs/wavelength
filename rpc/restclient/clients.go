@@ -175,6 +175,19 @@ func (c *SwapServiceClient) CreateInSwap(ctx context.Context,
 	return out, err
 }
 
+// AuthorizeInSwapRefund asks the swap server to sign a failed in-swap refund.
+func (c *SwapServiceClient) AuthorizeInSwapRefund(ctx context.Context,
+	in *swaprpc.AuthorizeInSwapRefundRequest, _ ...grpc.CallOption) (
+	*swaprpc.AuthorizeInSwapRefundResponse, error) {
+
+	out := new(swaprpc.AuthorizeInSwapRefundResponse)
+	err := c.client.Post(
+		ctx, "/v1/swap/authorize-in-swap-refund", in, out,
+	)
+
+	return out, err
+}
+
 // NewDaemonServiceClient creates a DaemonService REST client.
 func NewDaemonServiceClient(addr string,
 	opts ...Option) daemonrpc.DaemonServiceClient {
@@ -379,6 +392,28 @@ func (c *DaemonServiceClient) SendOOR(ctx context.Context,
 	return out, err
 }
 
+// PrepareOOR builds an out-of-round transfer package without submitting it.
+func (c *DaemonServiceClient) PrepareOOR(ctx context.Context,
+	in *daemonrpc.PrepareOORRequest, _ ...grpc.CallOption) (
+	*daemonrpc.PrepareOORResponse, error) {
+
+	out := new(daemonrpc.PrepareOORResponse)
+	err := c.client.Post(ctx, "/v1/daemon/prepare-oor", in, out)
+
+	return out, err
+}
+
+// SignOORCustomInput signs one prepared custom OOR input.
+func (c *DaemonServiceClient) SignOORCustomInput(ctx context.Context,
+	in *daemonrpc.SignOORCustomInputRequest, _ ...grpc.CallOption) (
+	*daemonrpc.SignOORCustomInputResponse, error) {
+
+	out := new(daemonrpc.SignOORCustomInputResponse)
+	err := c.client.Post(ctx, "/v1/daemon/sign-oor-custom-input", in, out)
+
+	return out, err
+}
+
 // RefreshVTXOs queues VTXOs for refresh.
 func (c *DaemonServiceClient) RefreshVTXOs(ctx context.Context,
 	in *daemonrpc.RefreshVTXOsRequest, _ ...grpc.CallOption) (
@@ -408,6 +443,65 @@ func (c *DaemonServiceClient) Board(ctx context.Context,
 
 	out := new(daemonrpc.BoardResponse)
 	err := c.client.Post(ctx, "/v1/daemon/board", in, out)
+
+	return out, err
+}
+
+// ArmVHTLCRecovery stores a dormant daemon-owned vHTLC recovery row.
+func (c *DaemonServiceClient) ArmVHTLCRecovery(ctx context.Context,
+	in *daemonrpc.ArmVHTLCRecoveryRequest, _ ...grpc.CallOption) (
+	*daemonrpc.ArmVHTLCRecoveryResponse, error) {
+
+	out := new(daemonrpc.ArmVHTLCRecoveryResponse)
+	err := c.client.Post(ctx, "/v1/daemon/arm-vhtlc-recovery", in, out)
+
+	return out, err
+}
+
+// EscalateVHTLCRecovery starts daemon-owned vHTLC recovery.
+func (c *DaemonServiceClient) EscalateVHTLCRecovery(ctx context.Context,
+	in *daemonrpc.EscalateVHTLCRecoveryRequest, _ ...grpc.CallOption) (
+	*daemonrpc.EscalateVHTLCRecoveryResponse, error) {
+
+	out := new(daemonrpc.EscalateVHTLCRecoveryResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/escalate-vhtlc-recovery", in, out,
+	)
+
+	return out, err
+}
+
+// CancelVHTLCRecovery records that cooperative settlement won recovery.
+func (c *DaemonServiceClient) CancelVHTLCRecovery(ctx context.Context,
+	in *daemonrpc.CancelVHTLCRecoveryRequest, _ ...grpc.CallOption) (
+	*daemonrpc.CancelVHTLCRecoveryResponse, error) {
+
+	out := new(daemonrpc.CancelVHTLCRecoveryResponse)
+	err := c.client.Post(ctx, "/v1/daemon/cancel-vhtlc-recovery", in, out)
+
+	return out, err
+}
+
+// GetVHTLCRecoveryStatus returns one daemon-owned vHTLC recovery row.
+func (c *DaemonServiceClient) GetVHTLCRecoveryStatus(ctx context.Context,
+	in *daemonrpc.GetVHTLCRecoveryStatusRequest, _ ...grpc.CallOption) (
+	*daemonrpc.GetVHTLCRecoveryStatusResponse, error) {
+
+	out := new(daemonrpc.GetVHTLCRecoveryStatusResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/get-vhtlc-recovery-status", in, out,
+	)
+
+	return out, err
+}
+
+// ListVHTLCRecoveries lists daemon-owned vHTLC recovery rows.
+func (c *DaemonServiceClient) ListVHTLCRecoveries(ctx context.Context,
+	in *daemonrpc.ListVHTLCRecoveriesRequest, _ ...grpc.CallOption) (
+	*daemonrpc.ListVHTLCRecoveriesResponse, error) {
+
+	out := new(daemonrpc.ListVHTLCRecoveriesResponse)
+	err := c.client.Post(ctx, "/v1/daemon/list-vhtlc-recoveries", in, out)
 
 	return out, err
 }

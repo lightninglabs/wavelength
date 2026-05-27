@@ -56,12 +56,26 @@ type DaemonServiceMailboxServer interface {
 	SendVTXO(ctx context.Context, req *SendVTXORequest) (*SendVTXOResponse, error)
 	// SendOOR handles SendOOR.
 	SendOOR(ctx context.Context, req *SendOORRequest) (*SendOORResponse, error)
+	// PrepareOOR handles PrepareOOR.
+	PrepareOOR(ctx context.Context, req *PrepareOORRequest) (*PrepareOORResponse, error)
+	// SignOORCustomInput handles SignOORCustomInput.
+	SignOORCustomInput(ctx context.Context, req *SignOORCustomInputRequest) (*SignOORCustomInputResponse, error)
 	// RefreshVTXOs handles RefreshVTXOs.
 	RefreshVTXOs(ctx context.Context, req *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
 	// LeaveVTXOs handles LeaveVTXOs.
 	LeaveVTXOs(ctx context.Context, req *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error)
 	// Board handles Board.
 	Board(ctx context.Context, req *BoardRequest) (*BoardResponse, error)
+	// ArmVHTLCRecovery handles ArmVHTLCRecovery.
+	ArmVHTLCRecovery(ctx context.Context, req *ArmVHTLCRecoveryRequest) (*ArmVHTLCRecoveryResponse, error)
+	// EscalateVHTLCRecovery handles EscalateVHTLCRecovery.
+	EscalateVHTLCRecovery(ctx context.Context, req *EscalateVHTLCRecoveryRequest) (*EscalateVHTLCRecoveryResponse, error)
+	// CancelVHTLCRecovery handles CancelVHTLCRecovery.
+	CancelVHTLCRecovery(ctx context.Context, req *CancelVHTLCRecoveryRequest) (*CancelVHTLCRecoveryResponse, error)
+	// GetVHTLCRecoveryStatus handles GetVHTLCRecoveryStatus.
+	GetVHTLCRecoveryStatus(ctx context.Context, req *GetVHTLCRecoveryStatusRequest) (*GetVHTLCRecoveryStatusResponse, error)
+	// ListVHTLCRecoveries handles ListVHTLCRecoveries.
+	ListVHTLCRecoveries(ctx context.Context, req *ListVHTLCRecoveriesRequest) (*ListVHTLCRecoveriesResponse, error)
 	// JoinNextRound handles JoinNextRound.
 	JoinNextRound(ctx context.Context, req *JoinNextRoundRequest) (*JoinNextRoundResponse, error)
 	// SweepBoardingUTXOs handles SweepBoardingUTXOs.
@@ -252,6 +266,26 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 
 		return impl.SendOOR(ctx, req)
 	})
+	r.Handle("daemonrpc.DaemonService", "PrepareOOR", func() proto.Message {
+		return &PrepareOORRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*PrepareOORRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.PrepareOOR(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "SignOORCustomInput", func() proto.Message {
+		return &SignOORCustomInputRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SignOORCustomInputRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SignOORCustomInput(ctx, req)
+	})
 	r.Handle("daemonrpc.DaemonService", "RefreshVTXOs", func() proto.Message {
 		return &RefreshVTXOsRequest{}
 	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
@@ -281,6 +315,56 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.Board(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ArmVHTLCRecovery", func() proto.Message {
+		return &ArmVHTLCRecoveryRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ArmVHTLCRecoveryRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ArmVHTLCRecovery(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "EscalateVHTLCRecovery", func() proto.Message {
+		return &EscalateVHTLCRecoveryRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*EscalateVHTLCRecoveryRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.EscalateVHTLCRecovery(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "CancelVHTLCRecovery", func() proto.Message {
+		return &CancelVHTLCRecoveryRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*CancelVHTLCRecoveryRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.CancelVHTLCRecovery(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "GetVHTLCRecoveryStatus", func() proto.Message {
+		return &GetVHTLCRecoveryStatusRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetVHTLCRecoveryStatusRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetVHTLCRecoveryStatus(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ListVHTLCRecoveries", func() proto.Message {
+		return &ListVHTLCRecoveriesRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListVHTLCRecoveriesRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListVHTLCRecoveries(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "JoinNextRound", func() proto.Message {
 		return &JoinNextRoundRequest{}
@@ -782,6 +866,52 @@ func (c *DaemonServiceMailboxClient) SendOOR(ctx context.Context, req *SendOORRe
 	return resp, nil
 }
 
+// PrepareOOR calls the PrepareOOR RPC.
+func (c *DaemonServiceMailboxClient) PrepareOOR(ctx context.Context, req *PrepareOORRequest, opts ...rpc.RPCOptions) (*PrepareOORResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "PrepareOOR",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(PrepareOORResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SignOORCustomInput calls the SignOORCustomInput RPC.
+func (c *DaemonServiceMailboxClient) SignOORCustomInput(ctx context.Context, req *SignOORCustomInputRequest, opts ...rpc.RPCOptions) (*SignOORCustomInputResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SignOORCustomInput",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SignOORCustomInputResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
 // RefreshVTXOs calls the RefreshVTXOs RPC.
 func (c *DaemonServiceMailboxClient) RefreshVTXOs(ctx context.Context, req *RefreshVTXOsRequest, opts ...rpc.RPCOptions) (*RefreshVTXOsResponse, error) {
 	var opt rpc.RPCOptions
@@ -844,6 +974,121 @@ func (c *DaemonServiceMailboxClient) Board(ctx context.Context, req *BoardReques
 	}
 
 	resp := new(BoardResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ArmVHTLCRecovery calls the ArmVHTLCRecovery RPC.
+func (c *DaemonServiceMailboxClient) ArmVHTLCRecovery(ctx context.Context, req *ArmVHTLCRecoveryRequest, opts ...rpc.RPCOptions) (*ArmVHTLCRecoveryResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ArmVHTLCRecovery",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ArmVHTLCRecoveryResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// EscalateVHTLCRecovery calls the EscalateVHTLCRecovery RPC.
+func (c *DaemonServiceMailboxClient) EscalateVHTLCRecovery(ctx context.Context, req *EscalateVHTLCRecoveryRequest, opts ...rpc.RPCOptions) (*EscalateVHTLCRecoveryResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "EscalateVHTLCRecovery",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(EscalateVHTLCRecoveryResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// CancelVHTLCRecovery calls the CancelVHTLCRecovery RPC.
+func (c *DaemonServiceMailboxClient) CancelVHTLCRecovery(ctx context.Context, req *CancelVHTLCRecoveryRequest, opts ...rpc.RPCOptions) (*CancelVHTLCRecoveryResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "CancelVHTLCRecovery",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(CancelVHTLCRecoveryResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetVHTLCRecoveryStatus calls the GetVHTLCRecoveryStatus RPC.
+func (c *DaemonServiceMailboxClient) GetVHTLCRecoveryStatus(ctx context.Context, req *GetVHTLCRecoveryStatusRequest, opts ...rpc.RPCOptions) (*GetVHTLCRecoveryStatusResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetVHTLCRecoveryStatus",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetVHTLCRecoveryStatusResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListVHTLCRecoveries calls the ListVHTLCRecoveries RPC.
+func (c *DaemonServiceMailboxClient) ListVHTLCRecoveries(ctx context.Context, req *ListVHTLCRecoveriesRequest, opts ...rpc.RPCOptions) (*ListVHTLCRecoveriesResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ListVHTLCRecoveries",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListVHTLCRecoveriesResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
