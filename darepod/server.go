@@ -363,14 +363,16 @@ type Server struct {
 }
 
 // NewServer allocates a Server from a validated Config. The server is
-// inert until RunUntilShutdown is called. The walletReady channel is
-// initialized here so RPC handlers can select on it immediately.
+// inert until RunUntilShutdown is called. The walletReady channel and
+// recovery preimage registry are initialized here so RPC handlers can use
+// them immediately.
 func NewServer(cfg *Config) (*Server, error) {
 	return &Server{
-		cfg:         cfg,
-		clk:         clock.NewDefaultClock(),
-		walletReady: make(chan struct{}),
-		daemonReady: make(chan struct{}),
+		cfg:            cfg,
+		clk:            clock.NewDefaultClock(),
+		walletReady:    make(chan struct{}),
+		daemonReady:    make(chan struct{}),
+		vhtlcPreimages: &unrollpolicy.PreimageResolverRegistry{},
 	}, nil
 }
 
@@ -4422,8 +4424,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	s.ueStore = ueStore
 	recoveryStore := dbStore.NewVHTLCRecoveryStore(s.clk)
 	s.vhtlcRecoveryStore = recoveryStore
-	preimages := &unrollpolicy.PreimageResolverRegistry{}
-	s.vhtlcPreimages = preimages
+	preimages := s.vhtlcPreimages
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 
 	// Build the wallet adapter shared by txconfirm and unroll
