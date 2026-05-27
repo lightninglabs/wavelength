@@ -69,6 +69,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
   DTOs. `SwapSummary` — flat list view for persisted sessions.
 - `OutSwapMailboxID` — derives a per-receive mailbox ID from the
   client identity key and invoice payment hash.
+- `RecoveryPolicy` — Controls automatic escalation from cooperative vHTLC
+  retry to daemon-owned on-chain recovery. Fields: `AutoEscalate bool`,
+  `CooperativeFailureGracePeriod time.Duration`,
+  `MinRecoveryMarginBlocks uint32`, `MaxFeeRateSatPerKW int32`.
+  Constructors: `DefaultRecoveryPolicy()`, `WithDefaults()`.
+  `DefaultRecoveryMaxFeeRateSatPerKW` is the built-in fee cap default.
 - Error sentinels (exported): `ErrSwapExpired`, `ErrSwapRefunded`,
   `ErrSwapSummaryNotFound`. Internal classifiers
   (`interventionError`, `failureError`, `retryableActionError`) live

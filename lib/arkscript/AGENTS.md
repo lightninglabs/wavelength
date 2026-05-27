@@ -21,8 +21,18 @@ validated invariants.
   tree, and control block derivation.
 - `VTXOPolicy` — Compiled VTXO taproot policy with collab and exit spend paths.
   Provides `CollabSpendInfo()` and `ExitSpendInfo()`.
-- `VHTLCPolicy` — 6-leaf vHTLC policy with claim/refund/unilateral paths for
-  hash-time-locked conditional transfers.
+- `VHTLCOpts` — Construction parameters for a vHTLC policy: `Sender`,
+  `Receiver`, `Server` (public keys), `PreimageHash`, `RefundLocktime`
+  (absolute CLTV), `UnilateralClaimDelay`, `UnilateralRefundDelay`,
+  `UnilateralRefundWithoutReceiverDelay` (all CSV delays in blocks).
+- `VHTLCPolicy` — 6-leaf vHTLC taproot policy: 3 collaborative
+  (claim, refund, refund-without-receiver) and 3 unilateral (claim,
+  refund, refund-without-receiver). Constructed via `NewVHTLCPolicy(opts
+  VHTLCOpts)`. Named closures (`ClaimClosure` … `UnilateralRefundWithoutReceiverClosure`)
+  provide typed access to each leaf's AST node. Methods: `ClaimPath`,
+  `RefundPath`, `RefundWithoutReceiverPath` return `*SpendPath`; `Claim/
+  Refund/…SpendInfo` methods return `*SpendInfo`. `PkScript()` returns the
+  compiled P2TR output script.
 - `CheckpointPolicy` — Parameters for OOR checkpoint taproot tree construction. `CheckpointTapScript` / `CheckpointPkScript` derive the checkpoint output.
 - `SpendInfo` — Witness script + control block needed to spend a specific leaf. Methods: `BuildSignDescriptor`, `CollabWitness`, `TimeoutWitness`.
 - `SpendPath` — Serializable spend path (leaf index + encoded leaf data) with `Witness` and `AttachTapLeafScript` helpers for PSBT integration.

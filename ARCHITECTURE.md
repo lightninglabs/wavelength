@@ -27,6 +27,7 @@ package may import from a higher layer.
 | [`lib/tx/psbtutil`](lib/tx/psbtutil/) | PSBT encoding, decoding, and signature attachment helpers |
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
+| [`vhtlcrecovery`](vhtlcrecovery/) | Pure durable data types and FSM-state constants for vHTLC on-chain recovery jobs |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
@@ -38,6 +39,8 @@ package may import from a higher layer.
 | [`chain`](chain/) | Bitcoind RPC utilities (package relay, `SubmitPackage`) |
 | [`txconfirm`](txconfirm/) | Generic "broadcast + CPFP fee-bump + notify on confirm" actor with per-parent fee-input reservations and BIP-125 Rule 3/4 enforcement |
 | [`unroll`](unroll/) | Durable per-target unilateral-exit actor + thin registry: owns proof assembly, materialization, CSV maturity, final sweep build, persist-before-broadcast, and control-plane record persistence |
+| [`vhtlcrecovery/coordinator`](vhtlcrecovery/coordinator/) | Thin stateless coordinator bridging durable vHTLC recovery rows (SQL) with the generic unroll registry; crash-safe escalation handoff and daemon-restart restore |
+| [`vhtlcrecovery/unrollpolicy`](vhtlcrecovery/unrollpolicy/) | Adapts durable vHTLC recovery rows into `unroll.ExitSpendPolicy` objects; reconstructs vHTLC scripts, resolves claim preimages, and enforces fee caps |
 | [`lndbackend`](lndbackend/) | `BoardingBackend` implementation via LND's wallet kit |
 | [`lwwallet`](lwwallet/) | Lightweight in-process wallet (btcwallet + Esplora, no external LND) |
 | [`btcwbackend`](btcwbackend/) | Neutrino-backed wallet backend (btcwallet + compact block filters) |

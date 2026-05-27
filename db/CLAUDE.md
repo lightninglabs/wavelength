@@ -56,6 +56,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   armed and escalated recovery jobs with request-id idempotency,
   explicit vHTLC script parameters, fee cap, unroll target linkage,
   exact exit transaction artifacts, and terminal/cancellation state.
+  Constructor: `NewVHTLCRecoveryStore`. Error sentinels:
+  `ErrVHTLCRecoveryJobNotFound`, `ErrVHTLCRecoveryIdempotencyConflict`,
+  `ErrVHTLCRecoveryCannotEscalate`, `ErrVHTLCRecoveryAlreadyTerminal`.
 - `ancestryTreeCache` — process-local LRU decode cache (≤ 4096
   entries) for finalized VTXO ancestry trees (immutable once
   committed). `groupAncestryRowsWithCache` /

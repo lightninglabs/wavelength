@@ -66,6 +66,39 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   historical `ActorID`, never clobbering the sweep txid / failure
   reason.
 
+### Exit Spend Policy Extension
+
+- `ExitSpendPolicy` — Interface for the final on-chain exit spend. Methods:
+  `Kind() ExitPolicyKind`, `CSVDelay() uint32`, `RequiredLockTime() uint32`,
+  `ValidateTarget(*wire.TxOut)`, `BuildSpendTx(ctx, ExitSpendRequest)`. Unroll
+  calls `ValidateTarget` before building and respects `RequiredLockTime` so it
+  never broadcasts a non-final transaction.
+- `ExitSpendPolicyResolver` — `ResolveExitSpendPolicy(ctx,
+  ExitSpendPolicyRequest) (ExitSpendPolicy, error)`. Reconstructs a policy
+  from the durable `(ExitPolicyKind, ExitPolicyRef)` identity stored on the
+  unroll job. Inject into `RegistryConfig.ExitSpendPolicyResolver` for custom
+  policy families (e.g. vHTLC recovery).
+- `ExitSpendPolicyRequest` — Carries `ExitPolicyKind` and `ExitPolicyRef`
+  identifying the policy, plus the target outpoint for context.
+- `ExitSpendRequest` — Context passed to `BuildSpendTx`: target output,
+  chain height, fee rate.
+- `ExitPolicyKind` — Typed string naming a durable policy (prevents confused
+  Kind/Ref argument swaps). Constant: `StandardVTXOTimeoutExitPolicyKind`.
+- `ResolverKindSupport` — Optional interface a resolver may implement to
+  advertise which `ExitPolicyKind` values it handles
+  (`SupportsKind(ExitPolicyKind) bool`).
+- `StandardVTXOExitSpendPolicy` — Built-in policy for standard VTXO timeout
+  exits. Created via `NewStandardVTXOExitSpendPolicy(desc *vtxo.Descriptor)`.
+- `ErrExitSpendNotMatured` — Returned by `BuildSpendTx` when the required
+  locktime has not yet been reached.
+- `EnsureUnrollRequest.ExitPolicyKind` / `.ExitPolicyRef` — Durable policy
+  identity stamped on admission. Empty kind uses the standard VTXO timeout
+  policy.
+- `RegistryConfig.ExitSpendPolicyResolver` — Optional resolver for non-standard
+  exit policies. Forwarded verbatim to every spawned child actor so
+  policy-specific jobs (e.g. vHTLC recovery) can restart with the same
+  resolver after daemon restart.
+
 ### Support
 
 - `LocalProofAssembler` — assembles a `recovery.Proof` from the VTXO
