@@ -21,6 +21,9 @@ http:
     - selector: walletdkrpc.WalletService.Deposit
       post: /v1/wallet/deposit
       body: "*"
+    - selector: walletdkrpc.WalletService.OnchainAddress
+      post: /v1/wallet/onchain-address
+      body: "*"
     - selector: walletdkrpc.WalletService.Balance
       post: /v1/wallet/balance
       body: "*"

@@ -123,6 +123,7 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 		MaxFeeSat   uint64 `json:"max_fee_sat,omitempty" jsonschema:"max fee in satoshis; zero uses daemon defaults"`                       //nolint:ll
 		Note        string `json:"note,omitempty" jsonschema:"caller-supplied label persisted with the entry"`                              //nolint:ll
 		SweepAll    bool   `json:"sweep_all,omitempty" jsonschema:"onchain only: drain every live VTXO"`                                    //nolint:ll
+		FromOnchain bool   `json:"from_onchain,omitempty" jsonschema:"onchain only: spend the backing Bitcoin wallet instead of Ark VTXOs"` //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "send",
@@ -138,7 +139,7 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 		}
 		req, err := buildWalletSendRequest(
 			args.Destination, offchain, args.AmtSat, args.MaxFeeSat,
-			args.Note, args.SweepAll,
+			args.Note, args.SweepAll, args.FromOnchain,
 		)
 		if err != nil {
 			return nil, nil, err
@@ -154,20 +155,21 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 	})
 
 	type recvArgs struct {
-		Direction  string `json:"direction,omitempty" jsonschema:"'offchain' (default) returns a Lightning invoice, 'onchain' returns a boarding address"` //nolint:ll
-		AmtSat     uint64 `json:"amt_sat,omitempty" jsonschema:"amount in satoshis (required for offchain)"`                                               //nolint:ll
-		Memo       string `json:"memo,omitempty" jsonschema:"optional human-readable memo embedded in the invoice"`                                        //nolint:ll
-		AmtSatHint uint64 `json:"amt_sat_hint,omitempty" jsonschema:"optional expected deposit amount for onchain (accounting only)"`                      //nolint:ll
+		Direction  string `json:"direction,omitempty" jsonschema:"'offchain' (default) returns a Lightning invoice, 'boarding' returns an Ark boarding address, 'onchain' returns a backing-wallet taproot address"` //nolint:ll
+		AmtSat     uint64 `json:"amt_sat,omitempty" jsonschema:"amount in satoshis (required for offchain)"`                                                                                                         //nolint:ll
+		Memo       string `json:"memo,omitempty" jsonschema:"optional human-readable memo embedded in the invoice"`                                                                                                  //nolint:ll
+		AmtSatHint uint64 `json:"amt_sat_hint,omitempty" jsonschema:"optional expected deposit amount for boarding (accounting only)"`                                                                               //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "recv",
 		Description: "Receive a payment (offchain Lightning invoice " +
-			"by default; onchain boarding address with " +
-			"direction='onchain')",
+			"by default; Ark boarding address with " +
+			"direction='boarding'; backing-wallet taproot " +
+			"address with direction='onchain')",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args recvArgs) (
 		*mcp.CallToolResult, any, error) {
 
-		offchain, err := parseDirectionField(args.Direction)
+		mode, err := parseReceiveDirectionField(args.Direction)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -175,7 +177,8 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 			return nil, nil, err
 		}
 
-		if offchain {
+		switch mode {
+		case recvModeOffchain:
 			if args.AmtSat == 0 {
 				return nil, nil, fmt.Errorf("amt_sat is " +
 					"required for offchain recv")
@@ -193,20 +196,37 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 			r, err := mcpResult(resp)
 
 			return r, nil, err
+
+		case recvModeBoarding:
+			resp, err := client.Deposit(
+				ctx, &walletdkrpc.DepositRequest{
+					AmtSatHint: args.AmtSatHint,
+				},
+			)
+			if err != nil {
+				return nil, nil, mapWalletRPCError(err)
+			}
+
+			r, err := mcpResult(resp)
+
+			return r, nil, err
+
+		case recvModeOnchain:
+			resp, err := client.OnchainAddress(
+				ctx, &walletdkrpc.WalletOnchainAddressRequest{},
+			)
+			if err != nil {
+				return nil, nil, mapWalletRPCError(err)
+			}
+
+			r, err := mcpResult(resp)
+
+			return r, nil, err
+
+		default:
+			return nil, nil, fmt.Errorf("unknown recv mode %d",
+				mode)
 		}
-
-		resp, err := client.Deposit(
-			ctx, &walletdkrpc.DepositRequest{
-				AmtSatHint: args.AmtSatHint,
-			},
-		)
-		if err != nil {
-			return nil, nil, mapWalletRPCError(err)
-		}
-
-		r, err := mcpResult(resp)
-
-		return r, nil, err
 	})
 
 	type exitArgs struct {
@@ -266,7 +286,8 @@ func buildWalletActivityRequest(pendingOnly bool, kinds []string, limit,
 // the offchain/onchain invariants so MCP can't construct a shape the
 // CLI would reject.
 func buildWalletSendRequest(dest string, offchain bool, amt, maxFee uint64,
-	note string, sweepAll bool) (*walletdkrpc.SendRequest, error) {
+	note string, sweepAll,
+	fromOnchain bool) (*walletdkrpc.SendRequest, error) {
 
 	if err := validateDestination(dest); err != nil {
 		return nil, err
@@ -278,6 +299,14 @@ func buildWalletSendRequest(dest string, offchain bool, amt, maxFee uint64,
 	if offchain && sweepAll {
 		return nil, fmt.Errorf("sweep_all is only valid with onchain " +
 			"sends (offchain=false)")
+	}
+	if offchain && fromOnchain {
+		return nil, fmt.Errorf("from_onchain is only valid with " +
+			"onchain sends (offchain=false)")
+	}
+	if fromOnchain && sweepAll {
+		return nil, fmt.Errorf("from_onchain requires an explicit " +
+			"amt_sat; sweep_all drains Ark VTXOs")
 	}
 	if !offchain {
 		switch {
@@ -291,10 +320,11 @@ func buildWalletSendRequest(dest string, offchain bool, amt, maxFee uint64,
 	}
 
 	req := &walletdkrpc.SendRequest{
-		AmtSat:    amt,
-		MaxFeeSat: maxFee,
-		Note:      note,
-		SweepAll:  sweepAll,
+		AmtSat:      amt,
+		MaxFeeSat:   maxFee,
+		Note:        note,
+		SweepAll:    sweepAll,
+		FromOnchain: fromOnchain,
 	}
 	if offchain {
 		req.Destination = &walletdkrpc.SendRequest_Invoice{
@@ -307,6 +337,26 @@ func buildWalletSendRequest(dest string, offchain bool, amt, maxFee uint64,
 	}
 
 	return req, nil
+}
+
+// parseReceiveDirectionField maps the MCP-friendly receive direction string
+// onto the same three modes as the recv CLI flags.
+func parseReceiveDirectionField(direction string) (recvMode, error) {
+	switch direction {
+	case "", "offchain":
+		return recvModeOffchain, nil
+
+	case "boarding":
+		return recvModeBoarding, nil
+
+	case "onchain":
+		return recvModeOnchain, nil
+
+	default:
+		return recvModeOffchain, fmt.Errorf("unknown direction %q "+
+			"(want 'offchain', 'boarding', or 'onchain')",
+			direction)
+	}
 }
 
 // parseDirectionField maps the MCP-friendly direction string onto the

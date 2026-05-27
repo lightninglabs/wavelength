@@ -18,23 +18,31 @@ import (
 type fakeRPCServer struct {
 	mu sync.Mutex
 
-	listVTXOsResp  *daemonrpc.ListVTXOsResponse
-	listVTXOsErr   error
-	listVTXOsCalls int
-	leaveResp      *daemonrpc.LeaveVTXOsResponse
-	leaveErr       error
-	leaveCalls     int
-	leaveLastReq   *daemonrpc.LeaveVTXOsRequest
-	listTxResp     *daemonrpc.ListTransactionsResponse
-	listTxErr      error
-	listTxCalls    int
-	listTxLastReq  *daemonrpc.ListTransactionsRequest
-	getInfoResp    *daemonrpc.GetInfoResponse
-	getInfoErr     error
-	getBalanceResp *daemonrpc.GetBalanceResponse
-	getBalanceErr  error
-	newAddressResp *daemonrpc.NewAddressResponse
-	newAddressErr  error
+	listVTXOsResp   *daemonrpc.ListVTXOsResponse
+	listVTXOsErr    error
+	listVTXOsCalls  int
+	leaveResp       *daemonrpc.LeaveVTXOsResponse
+	leaveErr        error
+	leaveCalls      int
+	leaveLastReq    *daemonrpc.LeaveVTXOsRequest
+	listTxResp      *daemonrpc.ListTransactionsResponse
+	listTxErr       error
+	listTxCalls     int
+	listTxLastReq   *daemonrpc.ListTransactionsRequest
+	getInfoResp     *daemonrpc.GetInfoResponse
+	getInfoErr      error
+	getBalanceResp  *daemonrpc.GetBalanceResponse
+	getBalanceErr   error
+	newAddressResp  *daemonrpc.NewAddressResponse
+	newAddressErr   error
+	walletAddress   string
+	walletAddrErr   error
+	walletSendTxid  string
+	walletSendErr   error
+	walletSendCalls int
+	walletSendAddr  string
+	walletSendAmt   uint64
+	walletSendNote  string
 
 	genSeedResp     *daemonrpc.GenSeedResponse
 	genSeedErr      error
@@ -118,6 +126,24 @@ func (f *fakeRPCServer) NewAddress(_ context.Context,
 	_ *daemonrpc.NewAddressRequest) (*daemonrpc.NewAddressResponse, error) {
 
 	return f.newAddressResp, f.newAddressErr
+}
+
+func (f *fakeRPCServer) NewWalletAddress(_ context.Context) (string, error) {
+	return f.walletAddress, f.walletAddrErr
+}
+
+func (f *fakeRPCServer) SendWalletOnchain(_ context.Context, address string,
+	amtSat uint64, note string) (string, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.walletSendCalls++
+	f.walletSendAddr = address
+	f.walletSendAmt = amtSat
+	f.walletSendNote = note
+
+	return f.walletSendTxid, f.walletSendErr
 }
 
 func (f *fakeRPCServer) GenSeed(_ context.Context,

@@ -36,6 +36,8 @@ type WalletServiceMailboxServer interface {
 	List(ctx context.Context, req *ListRequest) (*ListResponse, error)
 	// Deposit handles Deposit.
 	Deposit(ctx context.Context, req *DepositRequest) (*DepositResponse, error)
+	// OnchainAddress handles OnchainAddress.
+	OnchainAddress(ctx context.Context, req *WalletOnchainAddressRequest) (*WalletOnchainAddressResponse, error)
 	// Balance handles Balance.
 	Balance(ctx context.Context, req *BalanceRequest) (*BalanceResponse, error)
 	// Status handles Status.
@@ -109,6 +111,16 @@ func RegisterWalletServiceMailboxServer(r rpc.Router, impl WalletServiceMailboxS
 		}
 
 		return impl.Deposit(ctx, req)
+	})
+	r.Handle("walletdkrpc.WalletService", "OnchainAddress", func() proto.Message {
+		return &WalletOnchainAddressRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*WalletOnchainAddressRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.OnchainAddress(ctx, req)
 	})
 	r.Handle("walletdkrpc.WalletService", "Balance", func() proto.Message {
 		return &BalanceRequest{}
@@ -293,6 +305,29 @@ func (c *WalletServiceMailboxClient) Deposit(ctx context.Context, req *DepositRe
 	}
 
 	resp := new(DepositResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// OnchainAddress calls the OnchainAddress RPC.
+func (c *WalletServiceMailboxClient) OnchainAddress(ctx context.Context, req *WalletOnchainAddressRequest, opts ...rpc.RPCOptions) (*WalletOnchainAddressResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "walletdkrpc.WalletService",
+		Method:  "OnchainAddress",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(WalletOnchainAddressResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

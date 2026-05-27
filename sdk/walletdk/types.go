@@ -133,6 +133,13 @@ type DepositResult struct {
 	Entry   Entry
 }
 
+// OnchainAddressResult returns a backing-wallet taproot address and its
+// initial activity-shaped entry.
+type OnchainAddressResult struct {
+	Address string
+	Entry   Entry
+}
+
 // ReceiveRequest creates a Lightning invoice payable into the wallet.
 type ReceiveRequest struct {
 	AmountSat uint64
@@ -158,6 +165,10 @@ type SendRequest struct {
 	// echo SendResult.ActualAmountSat back to the user before treating
 	// the send as confirmed. Ignored on the invoice path.
 	SweepAll bool
+
+	// FromOnchain spends the backing Bitcoin wallet instead of Ark VTXOs.
+	// It is only valid with OnchainAddress and requires AmountSat.
+	FromOnchain bool
 }
 
 // SendResult contains the initial wallet entry for an outbound payment.

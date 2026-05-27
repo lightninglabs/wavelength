@@ -30,6 +30,20 @@ func TestParseDirectionFieldRejectsUnknown(t *testing.T) {
 	require.Contains(t, err.Error(), "unknown direction")
 }
 
+// TestParseReceiveDirectionFieldSplitsBoardingAndOnchain confirms MCP recv
+// exposes the same three modes as the CLI flags.
+func TestParseReceiveDirectionFieldSplitsBoardingAndOnchain(t *testing.T) {
+	t.Parallel()
+
+	mode, err := parseReceiveDirectionField("boarding")
+	require.NoError(t, err)
+	require.Equal(t, recvModeBoarding, mode)
+
+	mode, err = parseReceiveDirectionField("onchain")
+	require.NoError(t, err)
+	require.Equal(t, recvModeOnchain, mode)
+}
+
 // TestBuildWalletSendRequestHardensAgentInput exercises the shared
 // builder used by both the CLI send verb and the MCP send tool. The
 // MCP path can't drift past the same input-hardening checks as the
@@ -96,12 +110,26 @@ func TestBuildWalletSendRequestHardensAgentInput(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := buildWalletSendRequest(
 				tc.dest, tc.offchain, tc.amt, 0, tc.note,
-				tc.sweepAll,
+				tc.sweepAll, false,
 			)
 			require.Error(t, err)
 			require.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
+}
+
+// TestBuildWalletSendRequestFromOnchainHappyPath confirms the MCP builder
+// sets the source selector without changing the onchain destination oneof.
+func TestBuildWalletSendRequestFromOnchainHappyPath(t *testing.T) {
+	t.Parallel()
+
+	req, err := buildWalletSendRequest(
+		"bcrt1q0123", false, 1000, 0, "native", false, true,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "bcrt1q0123", req.GetOnchainAddress())
+	require.Equal(t, uint64(1000), req.GetAmtSat())
+	require.True(t, req.GetFromOnchain())
 }
 
 // TestBuildWalletSendRequestHappyPath confirms a valid invoice send
@@ -110,7 +138,7 @@ func TestBuildWalletSendRequestHappyPath(t *testing.T) {
 	t.Parallel()
 
 	req, err := buildWalletSendRequest(
-		"lnbcrt100u1pwlqxyz", true, 0, 250, "coffee", false,
+		"lnbcrt100u1pwlqxyz", true, 0, 250, "coffee", false, false,
 	)
 	require.NoError(t, err)
 

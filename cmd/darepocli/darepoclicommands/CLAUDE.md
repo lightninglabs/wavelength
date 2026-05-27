@@ -23,8 +23,8 @@ The CLI surface is split into three tiers:
 |---------|-----|-------------|
 | `create` | `walletdkrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / DAREPOD_WALLET_PASSWORD / --wallet_password_file |
 | `unlock` | `walletdkrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
-| `send <dest>` | `walletdkrpc.Send` | Outbound payment. `--offchain` (default) for Lightning invoice, `--onchain` for cooperative leave. No prefix sniff |
-| `recv` | `walletdkrpc.Recv` / `walletdkrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
+| `send <dest>` | `walletdkrpc.Send` | Outbound payment. `--offchain` (default) for Lightning invoice, `--onchain` for cooperative leave, `--onchain --fromonchain` for backing-wallet UTXOs. No prefix sniff |
+| `recv` | `walletdkrpc.Recv` / `walletdkrpc.Deposit` / `walletdkrpc.OnchainAddress` | Inbound. `--offchain` (default) returns a Lightning invoice; `--boarding` returns a boarding address; `--onchain` returns a backing-wallet taproot address |
 | `activity` | `walletdkrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
 | `balance` | `walletdkrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
 | `exit --outpoint TXID:VOUT` | `walletdkrpc.Exit` | Trigger a unilateral exit (proxies Unroll) |

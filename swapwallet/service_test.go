@@ -69,6 +69,34 @@ func TestServiceDepositReturnsAddress(t *testing.T) {
 	)
 }
 
+// TestServiceOnchainAddressReturnsWalletAddress confirms OnchainAddress
+// calls the backing-wallet address helper instead of the boarding-address
+// RPC used by Deposit.
+func TestServiceOnchainAddressReturnsWalletAddress(t *testing.T) {
+	t.Parallel()
+
+	svc, _, rpc := newServiceFixture(t)
+	rpc.walletAddress = "bcrt1ponchainaddr"
+
+	resp, err := svc.OnchainAddress(
+		t.Context(), &walletdkrpc.WalletOnchainAddressRequest{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "bcrt1ponchainaddr", resp.GetOnchainAddress())
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		resp.GetEntry().GetKind(),
+	)
+	require.Equal(
+		t, "bcrt1ponchainaddr",
+		resp.GetEntry().GetRequest().GetOnchainAddress().GetAddress(),
+	)
+	require.Equal(
+		t, "address_issued",
+		resp.GetEntry().GetProgress().GetPhaseLabel(),
+	)
+}
+
 // TestServiceBalanceProjectsDaemonGetBalance confirms Balance pulls
 // from the daemon's GetBalance and projects the unified flat shape.
 // confirmed_sat must be the spendable VTXO balance only; boarding

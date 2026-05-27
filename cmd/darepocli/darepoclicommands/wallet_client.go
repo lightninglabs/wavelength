@@ -30,6 +30,14 @@ var errWalletRPCDisabled = errors.New("daemon was not built with -tags " +
 var errOffchainOnchainConflict = errors.New("--offchain and --onchain are " +
 	"mutually exclusive; pick one")
 
+type recvMode uint8
+
+const (
+	recvModeOffchain recvMode = iota
+	recvModeBoarding
+	recvModeOnchain
+)
+
 // withWalletClient dials the daemon's WalletService and invokes fn with
 // the resulting client. The transport reuses the existing getDaemonConn
 // helper so the top-level wallet verbs honor the same global flags
@@ -207,6 +215,37 @@ func resolveOffchainFlag(cmd *cobra.Command) (bool, error) {
 		// default. Two paths converge here so an agent that omits the
 		// flag gets the friendliest behaviour.
 		return true, nil
+	}
+}
+
+// resolveRecvMode enforces the receive mode invariant: at most one of
+// --offchain, --boarding, or --onchain may be set, and absence implies
+// offchain.
+func resolveRecvMode(cmd *cobra.Command) (recvMode, error) {
+	offchain, _ := cmd.Flags().GetBool("offchain")
+	boarding, _ := cmd.Flags().GetBool("boarding")
+	onchain, _ := cmd.Flags().GetBool("onchain")
+
+	set := 0
+	for _, v := range []bool{offchain, boarding, onchain} {
+		if v {
+			set++
+		}
+	}
+	if set > 1 {
+		return recvModeOffchain, fmt.Errorf("--offchain, --boarding, " +
+			"and --onchain are mutually exclusive; pick one")
+	}
+
+	switch {
+	case boarding:
+		return recvModeBoarding, nil
+
+	case onchain:
+		return recvModeOnchain, nil
+
+	default:
+		return recvModeOffchain, nil
 	}
 }
 

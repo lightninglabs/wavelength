@@ -266,6 +266,27 @@ func (c *Client) Deposit(ctx context.Context, req DepositRequest) (
 	}, nil
 }
 
+// OnchainAddress allocates a fresh taproot address from the backing wallet.
+func (c *Client) OnchainAddress(ctx context.Context) (*OnchainAddressResult,
+	error) {
+
+	if err := c.requireWalletRPC(); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.wallet.OnchainAddress(
+		ctx, &walletdkrpc.WalletOnchainAddressRequest{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create wallet onchain address: %w", err)
+	}
+
+	return &OnchainAddressResult{
+		Address: resp.GetOnchainAddress(),
+		Entry:   entryFromProto(resp.GetEntry()),
+	}, nil
+}
+
 // Receive creates a Lightning invoice payable into the wallet.
 func (c *Client) Receive(ctx context.Context, req ReceiveRequest) (
 	*ReceiveResult, error) {
@@ -300,10 +321,11 @@ func (c *Client) Send(ctx context.Context, req SendRequest) (*SendResult,
 	}
 
 	protoReq := &walletdkrpc.SendRequest{
-		AmtSat:    req.AmountSat,
-		Note:      req.Note,
-		MaxFeeSat: req.MaxFeeSat,
-		SweepAll:  req.SweepAll,
+		AmtSat:      req.AmountSat,
+		Note:        req.Note,
+		MaxFeeSat:   req.MaxFeeSat,
+		SweepAll:    req.SweepAll,
+		FromOnchain: req.FromOnchain,
 	}
 	invoice := strings.TrimSpace(req.Invoice)
 	onchainAddress := strings.TrimSpace(req.OnchainAddress)

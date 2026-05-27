@@ -26,8 +26,10 @@ func newSendCmd() *cobra.Command {
 			"subsystem (which transparently picks same-Ark p2p " +
 			"vs real Lightning). With --onchain the destination " +
 			"is a bech32 onchain address and the daemon submits " +
-			"a cooperative-leave (LeaveVTXOs) request.\n\n" +
-			"Onchain v1 has whole-VTXO sweep semantics: the " +
+			"a cooperative-leave (LeaveVTXOs) request. Add " +
+			"--fromonchain to spend the backing Bitcoin wallet " +
+			"instead of Ark VTXOs.\n\n" +
+			"Ark onchain v1 has whole-VTXO sweep semantics: the " +
 			"actual outflow (echoed on stderr and in " +
 			"actual_amount_sat) may exceed --amt because " +
 			"selected VTXOs are swept in full. Set --sweep-all " +
@@ -35,7 +37,9 @@ func newSendCmd() *cobra.Command {
 			"Examples:\n" +
 			"  darepocli send lnbcrt... --offchain\n" +
 			"  darepocli send bcrt1... --onchain --amt 1000\n" +
-			"  darepocli send bcrt1... --onchain --sweep-all",
+			"  darepocli send bcrt1... --onchain --sweep-all\n" +
+			"  darepocli send bcrt1... --onchain --fromonchain " +
+			"--amt 1000",
 		Args: cobra.ExactArgs(1),
 		RunE: walletSend,
 	}
@@ -55,6 +59,9 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().Bool("sweep-all", false,
 		"onchain only: drain the wallet to the destination. "+
 			"--amt MUST be 0 when set.")
+	cmd.Flags().Bool("fromonchain", false,
+		"onchain only: spend the backing Bitcoin wallet instead "+
+			"of Ark VTXOs")
 	cmd.Flags().Bool("dry-run", false,
 		"validate inputs locally and print the preview without "+
 			"dispatching to the daemon; exits 10 on a valid "+
@@ -79,6 +86,7 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	maxFee, _ := cmd.Flags().GetUint64("max_fee")
 	note, _ := cmd.Flags().GetString("note")
 	sweepAll, _ := cmd.Flags().GetBool("sweep-all")
+	fromOnchain, _ := cmd.Flags().GetBool("fromonchain")
 
 	if err := invalidArgs(validateFreeText("--note", note)); err != nil {
 		return err
@@ -92,6 +100,18 @@ func walletSend(cmd *cobra.Command, args []string) error {
 		return PrintError(
 			"INVALID_ARGS", "--sweep-all is only valid with "+
 				"--onchain (invoice sends drain no VTXO set)",
+		)
+	}
+	if offchain && fromOnchain {
+		return PrintError(
+			"INVALID_ARGS",
+			"--fromonchain is only valid with --onchain",
+		)
+	}
+	if fromOnchain && sweepAll {
+		return PrintError(
+			"INVALID_ARGS", "--fromonchain requires an "+
+				"explicit --amt; --sweep-all drains Ark VTXOs",
 		)
 	}
 
@@ -116,10 +136,11 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	}
 
 	req := &walletdkrpc.SendRequest{
-		AmtSat:    amt,
-		MaxFeeSat: maxFee,
-		Note:      note,
-		SweepAll:  sweepAll,
+		AmtSat:      amt,
+		MaxFeeSat:   maxFee,
+		Note:        note,
+		SweepAll:    sweepAll,
+		FromOnchain: fromOnchain,
 	}
 	if offchain {
 		req.Destination = &walletdkrpc.SendRequest_Invoice{

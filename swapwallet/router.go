@@ -41,14 +41,77 @@ func (r *router) Send(ctx context.Context, req *walletdkrpc.SendRequest) (
 
 	switch dest := req.GetDestination().(type) {
 	case *walletdkrpc.SendRequest_Invoice:
+		if req.GetFromOnchain() {
+			return nil, fmt.Errorf("%w: from_onchain is only "+
+				"valid with onchain_address",
+				ErrInvalidDestination)
+		}
+
 		return r.sendInvoice(ctx, dest.Invoice, req)
 
 	case *walletdkrpc.SendRequest_OnchainAddress:
+		if req.GetFromOnchain() {
+			return r.sendWalletOnchain(
+				ctx, dest.OnchainAddress, req,
+			)
+		}
+
 		return r.sendOnchain(ctx, dest.OnchainAddress, req)
 
 	default:
 		return nil, ErrInvalidDestination
 	}
+}
+
+// sendWalletOnchain routes an onchain destination through the backing
+// Bitcoin wallet rather than the Ark VTXO set. It is intentionally separate
+// from sendOnchain so the source of funds is explicit in both validation and
+// tests.
+func (r *router) sendWalletOnchain(ctx context.Context, addr string,
+	req *walletdkrpc.SendRequest) (*walletdkrpc.SendResponse, error) {
+
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return nil, ErrInvalidDestination
+	}
+	if r.deps.RPCServer == nil {
+		return nil, ErrSwapBackendUnavailable
+	}
+
+	amtSat := req.GetAmtSat()
+	switch {
+	case req.GetSweepAll():
+		return nil, fmt.Errorf("%w: sweep_all drains Ark VTXOs; set "+
+			"amt_sat for from_onchain sends", ErrAmountInvalid)
+
+	case amtSat == 0:
+		return nil, fmt.Errorf("%w: amt_sat is required for "+
+			"from_onchain sends", ErrAmountRequired)
+
+	case amtSat > math.MaxInt64:
+		return nil, fmt.Errorf("%w: amt_sat exceeds int64 range",
+			ErrAmountInvalid)
+
+	case req.GetMaxFeeSat() > 0:
+		return nil, fmt.Errorf("%w: max_fee_sat is not supported for "+
+			"from_onchain sends", ErrAmountInvalid)
+	}
+
+	txid, err := r.deps.RPCServer.SendWalletOnchain(
+		ctx, addr, amtSat, req.GetNote(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("send wallet onchain: %w", err)
+	}
+
+	entry := walletOnchainSendEntry(
+		txid, addr, int64(amtSat), req.GetNote(),
+	)
+
+	return &walletdkrpc.SendResponse{
+		Entry:           entry,
+		ActualAmountSat: int64(amtSat),
+	}, nil
 }
 
 // sendInvoice routes a BOLT-11 invoice through the daemon-owned swap

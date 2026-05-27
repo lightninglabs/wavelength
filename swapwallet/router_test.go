@@ -194,6 +194,98 @@ func TestRouterSendOnchainSweepAllRoutesToAllSelection(t *testing.T) {
 	)
 }
 
+// TestRouterSendFromOnchainUsesBackingWallet confirms from_onchain routes an
+// onchain address through the native wallet send path and does not touch
+// LeaveVTXOs or JoinNextRound.
+func TestRouterSendFromOnchainUsesBackingWallet(t *testing.T) {
+	t.Parallel()
+
+	r, _, rpc := newRouterFixture(t)
+	rpc.walletSendTxid = "native-send-txid"
+
+	resp, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
+		Destination: &walletdkrpc.SendRequest_OnchainAddress{
+			OnchainAddress: "bcrt1qaddr",
+		},
+		AmtSat:      10_000,
+		Note:        "native send",
+		FromOnchain: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, rpc.walletSendCalls)
+	require.Equal(t, "bcrt1qaddr", rpc.walletSendAddr)
+	require.Equal(t, uint64(10_000), rpc.walletSendAmt)
+	require.Equal(t, "native send", rpc.walletSendNote)
+	require.Equal(t, 0, rpc.leaveCalls)
+	require.Equal(t, 0, rpc.joinNextRoundCalls)
+	require.Equal(t, "native-send-txid", resp.GetEntry().GetId())
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		resp.GetEntry().GetKind(),
+	)
+	require.Equal(t, int64(10_000), resp.GetActualAmountSat())
+}
+
+// TestRouterSendFromOnchainRejectsSweepAll keeps backing-wallet sends from
+// inheriting the Ark VTXO drain flag.
+func TestRouterSendFromOnchainRejectsSweepAll(t *testing.T) {
+	t.Parallel()
+
+	r, _, rpc := newRouterFixture(t)
+
+	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
+		Destination: &walletdkrpc.SendRequest_OnchainAddress{
+			OnchainAddress: "bcrt1qaddr",
+		},
+		SweepAll:    true,
+		FromOnchain: true,
+	})
+	require.ErrorIs(t, err, ErrAmountInvalid)
+	require.Equal(t, 0, rpc.walletSendCalls)
+	require.Equal(t, 0, rpc.leaveCalls)
+}
+
+// TestRouterSendFromOnchainRejectsMaxFeeSat keeps native backing-wallet sends
+// from silently ignoring an unenforced caller-supplied fee cap.
+func TestRouterSendFromOnchainRejectsMaxFeeSat(t *testing.T) {
+	t.Parallel()
+
+	r, _, rpc := newRouterFixture(t)
+
+	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
+		Destination: &walletdkrpc.SendRequest_OnchainAddress{
+			OnchainAddress: "bcrt1qaddr",
+		},
+		AmtSat:      10_000,
+		MaxFeeSat:   25,
+		FromOnchain: true,
+	})
+	require.ErrorIs(t, err, ErrAmountInvalid)
+	require.ErrorContains(t, err, "max_fee_sat")
+	require.Equal(t, 0, rpc.walletSendCalls)
+	require.Equal(t, 0, rpc.leaveCalls)
+}
+
+// TestRouterSendInvoiceRejectsFromOnchain keeps the native-wallet source flag
+// constrained to onchain destinations.
+func TestRouterSendInvoiceRejectsFromOnchain(t *testing.T) {
+	t.Parallel()
+
+	r, swap, rpc := newRouterFixture(t)
+
+	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
+		Destination: &walletdkrpc.SendRequest_Invoice{
+			Invoice: "lnbc1example",
+		},
+		FromOnchain: true,
+	})
+	require.ErrorIs(t, err, ErrInvalidDestination)
+	require.ErrorContains(t, err, "from_onchain")
+	require.Equal(t, 0, swap.startPayCalls)
+	require.Equal(t, 0, rpc.leaveCalls)
+	require.Equal(t, 0, rpc.walletSendCalls)
+}
+
 // TestRouterSendOnchainAutoJoinFailureSurfaced asserts that when the
 // implicit JoinNextRound after a successful LeaveVTXOs fails, the error
 // is propagated to the caller — silently swallowing it would leave the

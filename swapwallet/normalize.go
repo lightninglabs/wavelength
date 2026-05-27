@@ -467,3 +467,28 @@ func leaveEntryStub(queuedOutpoints []string, destination string, amtSat int64,
 		},
 	}
 }
+
+// walletOnchainSendEntry builds the immediate response entry for native
+// backing-wallet sends. The txid is known at broadcast time, but this layer
+// does not yet merge native wallet transaction confirmations into List.
+func walletOnchainSendEntry(txid, destination string, amtSat int64,
+	note string) *walletdkrpc.WalletEntry {
+
+	createdAt := nowUnix()
+
+	return &walletdkrpc.WalletEntry{
+		Id:            txid,
+		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		AmountSat:     -amtSat,
+		Counterparty:  truncate(destination, truncatedCounterpartyLen),
+		CreatedAtUnix: createdAt,
+		UpdatedAtUnix: createdAt,
+		Note:          note,
+		Request:       requestFromOnchainAddress(destination),
+		Progress: &walletdkrpc.WalletEntryProgress{
+			Phase:      walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+			PhaseLabel: "transaction_broadcast",
+		},
+	}
+}

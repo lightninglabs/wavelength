@@ -25,6 +25,7 @@ const (
 	WalletService_Recv_FullMethodName            = "/walletdkrpc.WalletService/Recv"
 	WalletService_List_FullMethodName            = "/walletdkrpc.WalletService/List"
 	WalletService_Deposit_FullMethodName         = "/walletdkrpc.WalletService/Deposit"
+	WalletService_OnchainAddress_FullMethodName  = "/walletdkrpc.WalletService/OnchainAddress"
 	WalletService_Balance_FullMethodName         = "/walletdkrpc.WalletService/Balance"
 	WalletService_Status_FullMethodName          = "/walletdkrpc.WalletService/Status"
 	WalletService_Exit_FullMethodName            = "/walletdkrpc.WalletService/Exit"
@@ -41,8 +42,9 @@ const (
 // operations, boarding deposits, cooperative leave (VTXO-to-onchain), and
 // unilateral exit behind one small surface: the seven core verbs that map
 // 1:1 to what a user actually does day-to-day — create, unlock, send, recv,
-// list, balance, exit — plus a few additional methods (Deposit, Status,
-// SubscribeWallet) used internally and by recv --onchain. The service is
+// list, balance, exit — plus a few additional methods (Deposit,
+// OnchainAddress, Status, SubscribeWallet) used internally and by receive
+// mode-specific helpers. The service is
 // registered only when the daemon is built with the walletdkrpc build tag
 // (which also requires swapruntime).
 type WalletServiceClient interface {
@@ -59,8 +61,10 @@ type WalletServiceClient interface {
 	// Send dispatches an outbound payment. The destination oneof selects
 	// between paying a BOLT-11 Lightning invoice (routed via an out-swap;
 	// the swap server transparently picks same-Ark p2p or real Lightning)
-	// and sending to an onchain address (routed via LeaveVTXOs cooperative
-	// exit). The daemon owns all downstream lifecycle.
+	// and sending to an onchain address. By default onchain sends spend Ark
+	// VTXOs through LeaveVTXOs; when from_onchain is true they spend the
+	// backing wallet's native UTXOs instead. The daemon owns all downstream
+	// lifecycle.
 	Send(ctx context.Context, in *SendRequest, opts ...grpc.CallOption) (*SendResponse, error)
 	// Recv asks the daemon for a Lightning invoice the caller can hand
 	// out. Internally this opens a swap-in via the daemon-owned swap
@@ -75,9 +79,13 @@ type WalletServiceClient interface {
 	List(ctx context.Context, in *ListRequest, opts ...grpc.CallOption) (*ListResponse, error)
 	// Deposit returns a boarding onchain address the caller can fund. The
 	// daemon rolls the boarding output into a VTXO during the next round.
-	// Surfaced internally and via `recv --onchain`; not a top-level CLI
+	// Surfaced internally and via `recv --boarding`; not a top-level CLI
 	// verb.
 	Deposit(ctx context.Context, in *DepositRequest, opts ...grpc.CallOption) (*DepositResponse, error)
+	// OnchainAddress returns a fresh taproot address from the backing wallet.
+	// Funds sent here remain in the underlying Bitcoin wallet rather than
+	// being boarded into Ark.
+	OnchainAddress(ctx context.Context, in *WalletOnchainAddressRequest, opts ...grpc.CallOption) (*WalletOnchainAddressResponse, error)
 	// Balance returns the unified balance across confirmed VTXOs and
 	// in-flight inbound and outbound amounts.
 	Balance(ctx context.Context, in *BalanceRequest, opts ...grpc.CallOption) (*BalanceResponse, error)
@@ -169,6 +177,16 @@ func (c *walletServiceClient) Deposit(ctx context.Context, in *DepositRequest, o
 	return out, nil
 }
 
+func (c *walletServiceClient) OnchainAddress(ctx context.Context, in *WalletOnchainAddressRequest, opts ...grpc.CallOption) (*WalletOnchainAddressResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WalletOnchainAddressResponse)
+	err := c.cc.Invoke(ctx, WalletService_OnchainAddress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *walletServiceClient) Balance(ctx context.Context, in *BalanceRequest, opts ...grpc.CallOption) (*BalanceResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BalanceResponse)
@@ -237,8 +255,9 @@ type WalletService_SubscribeWalletClient = grpc.ServerStreamingClient[WalletEntr
 // operations, boarding deposits, cooperative leave (VTXO-to-onchain), and
 // unilateral exit behind one small surface: the seven core verbs that map
 // 1:1 to what a user actually does day-to-day — create, unlock, send, recv,
-// list, balance, exit — plus a few additional methods (Deposit, Status,
-// SubscribeWallet) used internally and by recv --onchain. The service is
+// list, balance, exit — plus a few additional methods (Deposit,
+// OnchainAddress, Status, SubscribeWallet) used internally and by receive
+// mode-specific helpers. The service is
 // registered only when the daemon is built with the walletdkrpc build tag
 // (which also requires swapruntime).
 type WalletServiceServer interface {
@@ -255,8 +274,10 @@ type WalletServiceServer interface {
 	// Send dispatches an outbound payment. The destination oneof selects
 	// between paying a BOLT-11 Lightning invoice (routed via an out-swap;
 	// the swap server transparently picks same-Ark p2p or real Lightning)
-	// and sending to an onchain address (routed via LeaveVTXOs cooperative
-	// exit). The daemon owns all downstream lifecycle.
+	// and sending to an onchain address. By default onchain sends spend Ark
+	// VTXOs through LeaveVTXOs; when from_onchain is true they spend the
+	// backing wallet's native UTXOs instead. The daemon owns all downstream
+	// lifecycle.
 	Send(context.Context, *SendRequest) (*SendResponse, error)
 	// Recv asks the daemon for a Lightning invoice the caller can hand
 	// out. Internally this opens a swap-in via the daemon-owned swap
@@ -271,9 +292,13 @@ type WalletServiceServer interface {
 	List(context.Context, *ListRequest) (*ListResponse, error)
 	// Deposit returns a boarding onchain address the caller can fund. The
 	// daemon rolls the boarding output into a VTXO during the next round.
-	// Surfaced internally and via `recv --onchain`; not a top-level CLI
+	// Surfaced internally and via `recv --boarding`; not a top-level CLI
 	// verb.
 	Deposit(context.Context, *DepositRequest) (*DepositResponse, error)
+	// OnchainAddress returns a fresh taproot address from the backing wallet.
+	// Funds sent here remain in the underlying Bitcoin wallet rather than
+	// being boarded into Ark.
+	OnchainAddress(context.Context, *WalletOnchainAddressRequest) (*WalletOnchainAddressResponse, error)
 	// Balance returns the unified balance across confirmed VTXOs and
 	// in-flight inbound and outbound amounts.
 	Balance(context.Context, *BalanceRequest) (*BalanceResponse, error)
@@ -322,6 +347,9 @@ func (UnimplementedWalletServiceServer) List(context.Context, *ListRequest) (*Li
 }
 func (UnimplementedWalletServiceServer) Deposit(context.Context, *DepositRequest) (*DepositResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Deposit not implemented")
+}
+func (UnimplementedWalletServiceServer) OnchainAddress(context.Context, *WalletOnchainAddressRequest) (*WalletOnchainAddressResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method OnchainAddress not implemented")
 }
 func (UnimplementedWalletServiceServer) Balance(context.Context, *BalanceRequest) (*BalanceResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Balance not implemented")
@@ -467,6 +495,24 @@ func _WalletService_Deposit_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WalletService_OnchainAddress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WalletOnchainAddressRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).OnchainAddress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_OnchainAddress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).OnchainAddress(ctx, req.(*WalletOnchainAddressRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WalletService_Balance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BalanceRequest)
 	if err := dec(in); err != nil {
@@ -580,6 +626,10 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Deposit",
 			Handler:    _WalletService_Deposit_Handler,
+		},
+		{
+			MethodName: "OnchainAddress",
+			Handler:    _WalletService_OnchainAddress_Handler,
 		},
 		{
 			MethodName: "Balance",

@@ -446,7 +446,11 @@ func renderMethod(buf *bytes.Buffer, method methodData) {
 		fmt.Fprintf(buf, "					Serve"+
 			"rStreaming: true,\n")
 	}
-	fmt.Fprintf(buf, "					Comments: %q,\n", method.Comments)
+	fmt.Fprintf(
+		buf,
+		"					Comments: %q,\n",
+		method.Comments,
+	)
 	fmt.Fprintf(buf, "\t\t\t\t},\n")
 }
 

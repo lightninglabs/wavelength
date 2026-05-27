@@ -192,6 +192,63 @@ func TestResolveOffchainFlagRejectsConflict(t *testing.T) {
 	require.ErrorIs(t, err, errOffchainOnchainConflict)
 }
 
+// TestResolveRecvModeDefaultsToOffchain confirms recv keeps the invoice path
+// as the default when no explicit receive mode is set.
+func TestResolveRecvModeDefaultsToOffchain(t *testing.T) {
+	t.Parallel()
+
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("offchain", false, "")
+	cmd.Flags().Bool("boarding", false, "")
+	cmd.Flags().Bool("onchain", false, "")
+
+	mode, err := resolveRecvMode(cmd)
+	require.NoError(t, err)
+	require.Equal(t, recvModeOffchain, mode)
+}
+
+// TestResolveRecvModeBoardingAndOnchain confirms the two non-default receive
+// modes are distinct.
+func TestResolveRecvModeBoardingAndOnchain(t *testing.T) {
+	t.Parallel()
+
+	boarding := &cobra.Command{}
+	boarding.Flags().Bool("offchain", false, "")
+	boarding.Flags().Bool("boarding", false, "")
+	boarding.Flags().Bool("onchain", false, "")
+	require.NoError(t, boarding.Flags().Set("boarding", "true"))
+
+	mode, err := resolveRecvMode(boarding)
+	require.NoError(t, err)
+	require.Equal(t, recvModeBoarding, mode)
+
+	onchain := &cobra.Command{}
+	onchain.Flags().Bool("offchain", false, "")
+	onchain.Flags().Bool("boarding", false, "")
+	onchain.Flags().Bool("onchain", false, "")
+	require.NoError(t, onchain.Flags().Set("onchain", "true"))
+
+	mode, err = resolveRecvMode(onchain)
+	require.NoError(t, err)
+	require.Equal(t, recvModeOnchain, mode)
+}
+
+// TestResolveRecvModeRejectsConflict confirms recv accepts only one mode flag.
+func TestResolveRecvModeRejectsConflict(t *testing.T) {
+	t.Parallel()
+
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("offchain", false, "")
+	cmd.Flags().Bool("boarding", false, "")
+	cmd.Flags().Bool("onchain", false, "")
+	require.NoError(t, cmd.Flags().Set("boarding", "true"))
+	require.NoError(t, cmd.Flags().Set("onchain", "true"))
+
+	_, err := resolveRecvMode(cmd)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "mutually exclusive")
+}
+
 // TestParseListView confirms each accepted view string maps cleanly
 // onto the proto enum and unknown values are rejected.
 func TestParseListView(t *testing.T) {

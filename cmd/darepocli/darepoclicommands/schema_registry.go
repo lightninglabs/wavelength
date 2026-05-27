@@ -206,6 +206,12 @@ func walletPaymentMethodRegistry() []schemaMethod {
 						"every live VTXO",
 				},
 				{
+					Name: "fromonchain",
+					Type: "bool",
+					Description: "onchain only: spend " +
+						"the backing Bitcoin wallet",
+				},
+				{
 					Name: "dry-run",
 					Type: "bool",
 					Description: "CLI-side validation " +
@@ -221,8 +227,9 @@ func walletPaymentMethodRegistry() []schemaMethod {
 			MCPTool:      true,
 		},
 		{
-			Method:      "recv",
-			Description: "Receive a payment (offchain or onchain)",
+			Method: "recv",
+			Description: "Receive a payment (offchain, boarding, " +
+				"or onchain)",
 			Params: []schemaParam{
 				{
 					Name: "offchain",
@@ -231,10 +238,16 @@ func walletPaymentMethodRegistry() []schemaMethod {
 						"(invoice) recv (default)",
 				},
 				{
+					Name: "boarding",
+					Type: "bool",
+					Description: "force boarding " +
+						"(boarding address) recv",
+				},
+				{
 					Name: "onchain",
 					Type: "bool",
-					Description: "force onchain " +
-						"(boarding address) recv",
+					Description: "force backing-wallet " +
+						"taproot address recv",
 				},
 				{
 					Name: "amt",
@@ -251,7 +264,7 @@ func walletPaymentMethodRegistry() []schemaMethod {
 					Name: "amt_hint",
 					Type: "uint64",
 					Description: "optional expected " +
-						"deposit amount (--onchain)",
+						"deposit amount (--boarding)",
 				},
 			},
 			RequestType:  "RecvRequest",

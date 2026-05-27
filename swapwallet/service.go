@@ -153,6 +153,45 @@ func (s *Service) Deposit(ctx context.Context,
 	}, nil
 }
 
+// OnchainAddress returns a fresh taproot address controlled by the backing
+// wallet. Unlike Deposit, funds sent to this address remain native on-chain
+// wallet funds and are not boarded into Ark.
+func (s *Service) OnchainAddress(ctx context.Context,
+	_ *walletdkrpc.WalletOnchainAddressRequest) (
+	*walletdkrpc.WalletOnchainAddressResponse, error) {
+
+	if s.deps.RPCServer == nil {
+		return nil, status.Error(
+			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
+		)
+	}
+
+	addr, err := s.deps.RPCServer.NewWalletAddress(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("new wallet address: %w", err)
+	}
+
+	createdAt := nowUnix()
+	entry := &walletdkrpc.WalletEntry{
+		Id:            fmt.Sprintf("recv-onchain-%s", addr),
+		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Counterparty:  "onchain",
+		CreatedAtUnix: createdAt,
+		UpdatedAtUnix: createdAt,
+		Request:       requestFromOnchainAddress(addr),
+		Progress: &walletdkrpc.WalletEntryProgress{
+			Phase:      walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
+			PhaseLabel: "address_issued",
+		},
+	}
+
+	return &walletdkrpc.WalletOnchainAddressResponse{
+		OnchainAddress: addr,
+		Entry:          entry,
+	}, nil
+}
+
 // Balance composes the unified balance summary by reading the daemon's
 // existing GetBalance RPC and projecting its fields onto the flat
 // confirmed/pending shape exposed by the wallet layer.

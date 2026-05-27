@@ -58,7 +58,9 @@ func TestBtcwalletRPCUsesClientBufconn(t *testing.T) {
 		),
 	)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() {
+		require.NoError(t, conn.Close())
+	}()
 
 	client := newClient(conn, true, closedWaitChan(),
 		func(context.Context) error {

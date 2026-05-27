@@ -5,8 +5,10 @@
 top of the running `darepod` daemon and composes the existing swap subsystem,
 the daemon-managed signer, the
 cooperative-leave RPC (`LeaveVTXOs`), and the unified ledger surface into a
-single small RPC service with six methods: `Send`, `Recv`, `List`, `Deposit`,
-`Balance`, `Status`, and `SubscribeWallet`.
+single small RPC service. The user-facing payment/query methods are `Send`,
+`Recv`, `List`, `Deposit`, `Balance`, `Status`, `SubscribeWallet`,
+`OnchainAddress`, `Create`, `Unlock`, `Exit`, `ExitStatus`, and
+`InspectActivity`.
 
 This document covers how to build and install the daemon and CLI with the
 wallet RPC subserver enabled, and what surfaces become available once the
@@ -68,8 +70,9 @@ When the daemon is started from a `walletdkrpc`-tagged build:
   to `SubscribeWallet` subscribers.
 - The CLI exposes top-level wallet verbs: `send`, `recv`, `list`,
   `balance`, `create`, `unlock`, and `mcp serve`. Boarding deposits and
-  onchain sweeps appear via `list --view onchain`. Subscriptions live
-  under `dev daemon SubscribeWallet`.
+  onchain sweeps appear via `list --view onchain`. Subscriptions live under
+  the `walletdkrpc.WalletService` surface and can be inspected with
+  `dev walletdkrpc.WalletService SubscribeWallet`.
 - The `sdk/walletdk` facade can route through wallet RPC instead of the
   raw swap RPCs.
 

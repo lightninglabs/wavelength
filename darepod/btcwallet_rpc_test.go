@@ -53,7 +53,9 @@ func TestBtcwalletRPCRejectsUnavailableBackend(t *testing.T) {
 		),
 	)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() {
+		require.NoError(t, conn.Close())
+	}()
 
 	client := btcwalletrpc.NewWalletServiceClient(conn)
 	_, err = client.Ping(context.Background(), &btcwalletrpc.PingRequest{})

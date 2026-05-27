@@ -52,6 +52,11 @@ type RPCServer interface {
 		req *daemonrpc.NewAddressRequest) (
 		*daemonrpc.NewAddressResponse, error)
 
+	NewWalletAddress(ctx context.Context) (string, error)
+
+	SendWalletOnchain(ctx context.Context, address string, amtSat uint64,
+		note string) (string, error)
+
 	GenSeed(ctx context.Context,
 		req *daemonrpc.GenSeedRequest) (
 		*daemonrpc.GenSeedResponse,

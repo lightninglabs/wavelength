@@ -726,8 +726,8 @@ func NewWalletServiceClient(addr string,
 	return NewWalletServiceClientFromClient(New(addr, opts...))
 }
 
-// NewWalletServiceClientFromClient creates a WalletService REST client from an
-// existing shared REST transport.
+// NewWalletServiceClientFromClient creates a WalletService REST client from
+// an existing shared REST transport.
 func NewWalletServiceClientFromClient(
 	c *Client) walletdkrpc.WalletServiceClient {
 
@@ -802,6 +802,17 @@ func (c *WalletServiceClient) Deposit(ctx context.Context,
 
 	out := new(walletdkrpc.DepositResponse)
 	err := c.client.Post(ctx, "/v1/wallet/deposit", in, out)
+
+	return out, err
+}
+
+// OnchainAddress returns a backing-wallet receive address.
+func (c *WalletServiceClient) OnchainAddress(ctx context.Context,
+	in *walletdkrpc.WalletOnchainAddressRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.WalletOnchainAddressResponse, error) {
+
+	out := new(walletdkrpc.WalletOnchainAddressResponse)
+	err := c.client.Post(ctx, "/v1/wallet/onchain-address", in, out)
 
 	return out, err
 }
