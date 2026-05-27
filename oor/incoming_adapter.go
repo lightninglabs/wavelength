@@ -48,15 +48,21 @@ func IncomingResolveCorrelationID(sessionID SessionID,
 		strconv.FormatUint(recipientEventID, 10)
 }
 
+// IsIncomingResolveCorrelationID returns true when correlationID belongs to a
+// durable incoming-transfer resolution query.
+func IsIncomingResolveCorrelationID(correlationID string) bool {
+	return len(correlationID) > len(incomingResolveCorrelationPrefix) &&
+		correlationID[:len(incomingResolveCorrelationPrefix)] ==
+			incomingResolveCorrelationPrefix
+}
+
 // ParseIncomingResolveCorrelationID decodes a durable incoming-transfer
 // resolution query correlation ID back into the OOR session ID and recipient
 // event ID.
 func ParseIncomingResolveCorrelationID(correlationID string) (SessionID, uint64,
 	error) {
 
-	if len(correlationID) <= len(incomingResolveCorrelationPrefix) ||
-		correlationID[:len(incomingResolveCorrelationPrefix)] !=
-			incomingResolveCorrelationPrefix {
+	if !IsIncomingResolveCorrelationID(correlationID) {
 		return SessionID{}, 0, fmt.Errorf("unexpected incoming "+
 			"resolve correlation id: %q", correlationID)
 	}

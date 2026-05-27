@@ -9,6 +9,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestIsIncomingMetadataCorrelationID verifies only durable incoming metadata
+// query correlation IDs match the OOR metadata route prefix.
+func TestIsIncomingMetadataCorrelationID(t *testing.T) {
+	t.Parallel()
+
+	var sessionID SessionID
+	sessionID[0] = 1
+
+	require.True(
+		t,
+		IsIncomingMetadataCorrelationID(
+			IncomingMetadataCorrelationID(sessionID),
+		),
+	)
+	require.False(t, IsIncomingMetadataCorrelationID(""))
+	require.False(
+		t, IsIncomingMetadataCorrelationID("00aa8bfb11f09881bbd2"),
+	)
+	require.False(
+		t, IsIncomingMetadataCorrelationID(
+			incomingMetadataCorrelationPrefix,
+		),
+	)
+}
+
 // TestIncomingMetadataFromRPCOperatorKey verifies incoming metadata parsing
 // preserves the per-VTXO operator key returned by the indexer.
 func TestIncomingMetadataFromRPCOperatorKey(t *testing.T) {

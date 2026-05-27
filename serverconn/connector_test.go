@@ -342,9 +342,6 @@ func TestIngress_ResponseDelivery(t *testing.T) {
 	)
 }
 
-// TestIngress_ResponseDispatchWithoutWaiter verifies that a KIND_RESPONSE
-// envelope without an in-memory unary waiter falls back to the durable
-// dispatcher map keyed by service and method.
 // TestIngress_ResponseDispatchHeaderOnlyError verifies that routed response
 // dispatch still reaches EventRouter handlers when the server encodes a gRPC
 // error in headers and intentionally omits the response body.
@@ -414,6 +411,74 @@ func TestIngress_ResponseDispatchHeaderOnlyError(t *testing.T) {
 	}
 }
 
+// TestIngressAckHandledResponseWithoutActorDelivery verifies a routed response
+// can be consumed by the route and acked without enqueueing an actor message.
+func TestIngressAckHandledResponseWithoutActorDelivery(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+	store := newMemCheckpointStore()
+	system := actor.NewActorSystem()
+
+	routeKey := actor.NewServiceKey[*helloStartedMsg, struct{}](
+		"greeting-actor",
+	)
+	router := NewEventRouter(system)
+	AddEnvelopeRoute(
+		router, EnvelopeRouteConfig[*helloStartedMsg, struct{}]{
+			Service: "test.Svc",
+			Method:  "Unary",
+			NewEvent: func() proto.Message {
+				return &wrapperspb.StringValue{}
+			},
+			Key: routeKey,
+			Adapt: func(_ *mailboxpb.Envelope, _ proto.Message) (
+				*helloStartedMsg, error) {
+
+				return nil, ErrEnvelopeHandled
+			},
+		},
+	)
+
+	cfg := newTestConnectorConfig(mb, store)
+	cfg.Dispatchers = router.AsDispatcherMap()
+	cfg.RetryBaseDelay = 10 * time.Millisecond
+	cfg.RetryMaxDelay = 50 * time.Millisecond
+
+	connector := NewServerConnectionActor(cfg)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	require.NoError(t, connector.StartIngress(ctx))
+	defer connector.StopIngress()
+
+	body, err := anypb.New(wrapperspb.String("stale"))
+	require.NoError(t, err)
+
+	status := mb.send(&mailboxpb.Envelope{
+		ProtocolVersion: 1,
+		Sender:          "server-1",
+		Recipient:       "client-1",
+		Body:            body,
+		Rpc: &mailboxpb.RpcMeta{
+			Kind:          mailboxpb.RpcMeta_KIND_RESPONSE,
+			CorrelationId: "stale-corr",
+			Service:       "test.Svc",
+			Method:        "Unary",
+			ReplyTo:       "server-1",
+		},
+	})
+	require.True(t, status.Ok, "send response failed: %s", status.Message)
+
+	require.Eventually(t, func() bool {
+		return mb.getAckedUpTo("client-1") > 0
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
+// TestIngress_ResponseDispatchWithoutWaiter verifies that a KIND_RESPONSE
+// envelope without an in-memory unary waiter falls back to the durable
+// dispatcher map keyed by service and method.
 func TestIngress_ResponseDispatchWithoutWaiter(t *testing.T) {
 	t.Parallel()
 

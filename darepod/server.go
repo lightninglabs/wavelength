@@ -2456,6 +2456,30 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 					"response envelope must be provided")
 			}
 
+			// This route is shared with live, in-memory unary
+			// callers of ListVTXOsByScripts. By the time a response
+			// reaches durable dispatch without the OOR metadata
+			// correlation prefix it is either a stale response from
+			// a prior process or a malformed metadata ID; in both
+			// cases we consume and ack it so ingress can advance
+			// rather than wedging on a response we cannot adapt.
+			if !oor.IsIncomingMetadataCorrelationID(
+				env.Rpc.CorrelationId,
+			) {
+
+				s.log.DebugS(context.Background(),
+					"Acking response without OOR "+
+						"correlation prefix",
+					slog.String(
+						"correlation_id",
+						env.Rpc.CorrelationId,
+					),
+					slog.String("service", env.Rpc.Service),
+					slog.String("method", env.Rpc.Method))
+
+				return nil, serverconn.ErrEnvelopeHandled
+			}
+
 			sessionID, err := oor.ParseIncomingMetadataCorrelationID( //nolint:ll
 				env.Rpc.CorrelationId,
 			)
@@ -2518,6 +2542,29 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 			if env == nil || env.Rpc == nil {
 				return nil, fmt.Errorf("incoming resolve " +
 					"response envelope must be provided")
+			}
+
+			// As with the ListVTXOsByScripts route above, this
+			// route is shared with live, in-memory unary callers.
+			// A response that reaches durable dispatch without the
+			// OOR resolve correlation prefix is a stale or
+			// malformed response we cannot adapt; consume and ack
+			// it so ingress advances instead of wedging.
+			if !oor.IsIncomingResolveCorrelationID(
+				env.Rpc.CorrelationId,
+			) {
+
+				s.log.DebugS(context.Background(),
+					"Acking response without OOR "+
+						"correlation prefix",
+					slog.String(
+						"correlation_id",
+						env.Rpc.CorrelationId,
+					),
+					slog.String("service", env.Rpc.Service),
+					slog.String("method", env.Rpc.Method))
+
+				return nil, serverconn.ErrEnvelopeHandled
 			}
 
 			sessionID, recipientEventID, err :=
