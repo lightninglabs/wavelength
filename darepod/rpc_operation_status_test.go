@@ -78,6 +78,148 @@ func TestOORSessionMatchesFilters(t *testing.T) {
 	)
 }
 
+// TestMergeOORSessionListsPrefersPersistedDirection verifies that completed
+// package artifacts are the user-facing authority when a sender later observes
+// its own OOR change output as an incoming live actor session.
+func TestMergeOORSessionListsPrefersPersistedDirection(t *testing.T) {
+	t.Parallel()
+
+	outgoing := daemonrpc.
+		OORSessionDirection_OOR_SESSION_DIRECTION_OUTGOING
+	incoming := daemonrpc.
+		OORSessionDirection_OOR_SESSION_DIRECTION_INCOMING
+	pending := daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_PENDING
+	completed := daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_COMPLETED
+
+	live := []*daemonrpc.OORSessionInfo{
+		{
+			SessionId: "session-a",
+			Direction: incoming,
+			Status:    pending,
+		},
+	}
+	persisted := []*daemonrpc.OORSessionInfo{
+		{
+			SessionId: "session-a",
+			Direction: outgoing,
+			Status:    completed,
+			Phase:     "completed",
+			ConsumedOutpoints: []string{
+				"input:0",
+			},
+		},
+	}
+
+	all := mergeOORSessionLists(
+		live, persisted, &daemonrpc.ListOORSessionsRequest{},
+	)
+	require.Len(t, all, 1)
+	require.Equal(t, outgoing, all[0].GetDirection())
+	require.Equal(t, completed, all[0].GetStatus())
+	require.Equal(t, "completed", all[0].GetPhase())
+	require.Equal(t, []string{"input:0"}, all[0].GetConsumedOutpoints())
+
+	outgoingOnly := mergeOORSessionLists(
+		live, persisted, &daemonrpc.ListOORSessionsRequest{
+			DirectionFilter: outgoing,
+		},
+	)
+	require.Len(t, outgoingOnly, 1)
+
+	incomingOnly := mergeOORSessionLists(
+		live, persisted, &daemonrpc.ListOORSessionsRequest{
+			DirectionFilter: incoming,
+		},
+	)
+	require.Empty(t, incomingOnly)
+
+	pendingOnly := mergeOORSessionLists(
+		live, persisted, &daemonrpc.ListOORSessionsRequest{
+			StatusFilter: pending,
+		},
+	)
+	require.Empty(t, pendingOnly)
+}
+
+// TestPersistedOORPackageQueryPlanning verifies filtered OOR list requests
+// only perform package-store scans when completed artifacts can be returned.
+func TestPersistedOORPackageQueryPlanning(t *testing.T) {
+	t.Parallel()
+
+	pending := daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_PENDING
+	failed := daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED
+	completed := daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_COMPLETED
+	incoming := daemonrpc.
+		OORSessionDirection_OOR_SESSION_DIRECTION_INCOMING
+
+	tests := []struct {
+		name        string
+		req         *daemonrpc.ListOORSessionsRequest
+		wantList    bool
+		wantOverlay bool
+	}{
+		{
+			name:     "unfiltered",
+			req:      &daemonrpc.ListOORSessionsRequest{},
+			wantList: true,
+		},
+		{
+			name: "completed",
+			req: &daemonrpc.ListOORSessionsRequest{
+				StatusFilter: completed,
+			},
+			wantList: true,
+		},
+		{
+			name: "pending",
+			req: &daemonrpc.ListOORSessionsRequest{
+				StatusFilter: pending,
+			},
+			wantOverlay: true,
+		},
+		{
+			name: "failed",
+			req: &daemonrpc.ListOORSessionsRequest{
+				StatusFilter: failed,
+			},
+			wantOverlay: true,
+		},
+		{
+			name: "direction",
+			req: &daemonrpc.ListOORSessionsRequest{
+				DirectionFilter: incoming,
+			},
+			wantList:    true,
+			wantOverlay: true,
+		},
+		{
+			name: "completed direction",
+			req: &daemonrpc.ListOORSessionsRequest{
+				DirectionFilter: incoming,
+				StatusFilter:    completed,
+			},
+			wantList:    true,
+			wantOverlay: true,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(
+				t, test.wantList,
+				shouldListPersistedOORPackages(test.req),
+			)
+			require.Equal(
+				t, test.wantOverlay,
+				shouldQueryPersistedOORLiveOverlay(test.req),
+			)
+		})
+	}
+}
+
 // TestParseOORSessionIDNormalizesCase verifies uppercase session ids are
 // accepted and normalized to the canonical chainhash string form.
 func TestParseOORSessionIDNormalizesCase(t *testing.T) {

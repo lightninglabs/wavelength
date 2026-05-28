@@ -383,10 +383,12 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 		return nil, err
 	}
 
-	hidden := internalOORLedgerEntries(resp.GetTransactions(), correlations)
+	oorProjection := projectOORLedgerActivity(
+		resp.GetTransactions(), correlations,
+	)
 	out := make([]*walletdkrpc.WalletEntry, 0, len(resp.GetTransactions()))
 	for _, t := range resp.GetTransactions() {
-		if _, ok := hidden[t.GetEntryId()]; ok {
+		if _, ok := oorProjection.hidden[t.GetEntryId()]; ok {
 			continue
 		}
 
@@ -394,6 +396,11 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 		if !ok {
 			continue
 		}
+		entryID := t.GetEntryId()
+		if amount, ok := oorProjection.displayAmountByEntryID[entryID]; ok {
+			entry.AmountSat = amount
+		}
+
 		// v1 SCOPE: EXIT and DEPOSIT ledger rows carry txid but no
 		// link back to the original pending intent, so they
 		// surface under their synthetic id (the ledger txid or
@@ -458,13 +465,25 @@ func swapOORCorrelationsFromSwaps(
 	return out
 }
 
+type oorLedgerActivityProjection struct {
+	hidden                 map[int64]struct{}
+	displayAmountByEntryID map[int64]int64
+}
+
 // internalOORLedgerEntries returns ledger entry IDs for OOR legs that are
-// internal to swap execution or represent wallet-local OOR change. Send legs
-// are hidden only when structured swap metadata proves the external payment
-// amount. Receive legs paired with a send in the same session are change and
-// stay out of activity list noise; inspection still exposes the ledger rows.
+// internal to swap execution or represent wallet-local OOR change. Inspection
+// uses this compact view because it only needs to mark hidden rows.
 func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
 	correlations swapOORCorrelations) map[int64]struct{} {
+
+	return projectOORLedgerActivity(rows, correlations).hidden
+}
+
+// projectOORLedgerActivity returns the wallet-facing projection for OOR ledger
+// rows. Accounting rows stay gross; this helper only hides internal rows and
+// computes display amounts for activity.
+func projectOORLedgerActivity(rows []*daemonrpc.TransactionHistoryEntry,
+	correlations swapOORCorrelations) oorLedgerActivityProjection {
 
 	receivedBySession := make(map[string]int64)
 	receiveRowsBySession := make(
@@ -490,7 +509,10 @@ func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
 		}
 	}
 
-	hidden := make(map[int64]struct{})
+	projection := oorLedgerActivityProjection{
+		hidden:                 make(map[int64]struct{}),
+		displayAmountByEntryID: make(map[int64]int64),
+	}
 	for _, row := range rows {
 		session, ok := oorSendSessionID(row)
 		if !ok {
@@ -503,7 +525,7 @@ func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
 		}
 
 		for _, receiveRow := range receiveRowsBySession[session] {
-			hidden[receiveRow.GetEntryId()] = struct{}{}
+			projection.hidden[receiveRow.GetEntryId()] = struct{}{}
 		}
 
 		switch delta := row.GetAmountSat() - received; {
@@ -511,19 +533,22 @@ func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
 			correlations, claimOutputSessions, session,
 		):
 
-			hidden[row.GetEntryId()] = struct{}{}
+			projection.hidden[row.GetEntryId()] = struct{}{}
 
 		case delta > 0:
 			amounts := correlations.payAmountsByFundingSession[session]
-			if amounts[delta] == 0 {
+			if amounts == nil || amounts[delta] == 0 {
+				projection.displayAmountByEntryID[row.GetEntryId()] =
+					-delta
+
 				continue
 			}
-			hidden[row.GetEntryId()] = struct{}{}
+			projection.hidden[row.GetEntryId()] = struct{}{}
 			amounts[delta]--
 		}
 	}
 
-	return hidden
+	return projection
 }
 
 // internalZeroDeltaSession reports whether a balanced same-session OOR
@@ -849,6 +874,10 @@ func ledgerActivityID(t *daemonrpc.TransactionHistoryEntry,
 func statusForLedgerRow(
 	t *daemonrpc.TransactionHistoryEntry) walletdkrpc.EntryStatus {
 
+	if t.GetType() == "oor" && t.GetConfirmationStatus() == "recorded" {
+		return walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE
+	}
+
 	return statusFromLedgerConfirmation(t.GetConfirmationStatus())
 }
 
@@ -862,6 +891,10 @@ func progressFromLedgerRow(
 	}
 
 	phase, label := phaseFromLedgerConfirmation(t.GetConfirmationStatus())
+	if t.GetType() == "oor" && t.GetConfirmationStatus() == "recorded" {
+		phase = walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED
+		label = "confirmed"
+	}
 
 	return &walletdkrpc.WalletEntryProgress{
 		Phase:              phase,

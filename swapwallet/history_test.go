@@ -492,25 +492,27 @@ func TestHistoryHidesPayFundingOORInput(t *testing.T) {
 	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
 		Transactions: []*daemonrpc.TransactionHistoryEntry{
 			{
-				Type:           "oor",
-				Subtype:        ledger.EventVTXOSent,
-				AmountSat:      999_745,
-				DebitAccount:   ledger.AccountTransfersOut,
-				CreditAccount:  ledger.AccountVTXOBalance,
-				SessionId:      sessionID,
-				EntryId:        13,
-				CreatedAtUnixS: 100,
+				Type:               "oor",
+				Subtype:            ledger.EventVTXOSent,
+				ConfirmationStatus: "recorded",
+				AmountSat:          999_745,
+				DebitAccount:       ledger.AccountTransfersOut,
+				CreditAccount:      ledger.AccountVTXOBalance,
+				SessionId:          sessionID,
+				EntryId:            13,
+				CreatedAtUnixS:     100,
 			},
 			{
-				Type:           "oor",
-				Subtype:        ledger.EventVTXOReceived,
-				AmountSat:      998_511,
-				DebitAccount:   ledger.AccountVTXOBalance,
-				CreditAccount:  ledger.AccountTransfersIn,
-				Txid:           sessionHex,
-				OutputIndex:    1,
-				EntryId:        14,
-				CreatedAtUnixS: 101,
+				Type:               "oor",
+				Subtype:            ledger.EventVTXOReceived,
+				ConfirmationStatus: "recorded",
+				AmountSat:          998_511,
+				DebitAccount:       ledger.AccountVTXOBalance,
+				CreditAccount:      ledger.AccountTransfersIn,
+				Txid:               sessionHex,
+				OutputIndex:        1,
+				EntryId:            14,
+				CreatedAtUnixS:     101,
 			},
 		},
 	}
@@ -696,7 +698,8 @@ func TestHistoryPendingFilterKeepsTerminalSwapCorrelations(t *testing.T) {
 }
 
 // TestHistoryKeepsSameAmountUnmatchedFundingInput confirms pay-swap funding
-// legs are hidden by funding session, not by amount alone.
+// legs are hidden by funding session, not by amount alone. The unrelated raw
+// OOR send remains visible with its net external-send amount.
 func TestHistoryKeepsSameAmountUnmatchedFundingInput(t *testing.T) {
 	t.Parallel()
 
@@ -772,7 +775,7 @@ func TestHistoryKeepsSameAmountUnmatchedFundingInput(t *testing.T) {
 	require.Len(t, entries, 2)
 	require.Equal(t, "payment-hash", entries[0].GetId())
 	require.Equal(t, "ledger-15", entries[1].GetId())
-	require.Equal(t, int64(-999_745), entries[1].GetAmountSat())
+	require.Equal(t, int64(-1_234), entries[1].GetAmountSat())
 }
 
 // TestHistoryKeepsOORSendWithChangeWithoutSwap confirms the change-pairing
@@ -790,25 +793,27 @@ func TestHistoryKeepsOORSendWithChangeWithoutSwap(t *testing.T) {
 	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
 		Transactions: []*daemonrpc.TransactionHistoryEntry{
 			{
-				Type:           "oor",
-				Subtype:        ledger.EventVTXOSent,
-				AmountSat:      999_745,
-				DebitAccount:   ledger.AccountTransfersOut,
-				CreditAccount:  ledger.AccountVTXOBalance,
-				SessionId:      sessionID,
-				EntryId:        13,
-				CreatedAtUnixS: 100,
+				Type:               "oor",
+				Subtype:            ledger.EventVTXOSent,
+				ConfirmationStatus: "recorded",
+				AmountSat:          999_745,
+				DebitAccount:       ledger.AccountTransfersOut,
+				CreditAccount:      ledger.AccountVTXOBalance,
+				SessionId:          sessionID,
+				EntryId:            13,
+				CreatedAtUnixS:     100,
 			},
 			{
-				Type:           "oor",
-				Subtype:        ledger.EventVTXOReceived,
-				AmountSat:      998_511,
-				DebitAccount:   ledger.AccountVTXOBalance,
-				CreditAccount:  ledger.AccountTransfersIn,
-				Txid:           sessionHex,
-				OutputIndex:    1,
-				EntryId:        14,
-				CreatedAtUnixS: 101,
+				Type:               "oor",
+				Subtype:            ledger.EventVTXOReceived,
+				ConfirmationStatus: "recorded",
+				AmountSat:          998_511,
+				DebitAccount:       ledger.AccountVTXOBalance,
+				CreditAccount:      ledger.AccountTransfersIn,
+				Txid:               sessionHex,
+				OutputIndex:        1,
+				EntryId:            14,
+				CreatedAtUnixS:     101,
 			},
 		},
 	}
@@ -821,7 +826,11 @@ func TestHistoryKeepsOORSendWithChangeWithoutSwap(t *testing.T) {
 	require.Equal(
 		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, entries[0].GetKind(),
 	)
-	require.Equal(t, int64(-999_745), entries[0].GetAmountSat())
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entries[0].GetStatus(),
+	)
+	require.Equal(t, int64(-1_234), entries[0].GetAmountSat())
 }
 
 // TestHistoryKeepsZeroDeltaOORSendWithoutSwap covers a balanced OOR session
@@ -843,25 +852,27 @@ func TestHistoryKeepsZeroDeltaOORSendWithoutSwap(t *testing.T) {
 	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
 		Transactions: []*daemonrpc.TransactionHistoryEntry{
 			{
-				Type:           "oor",
-				Subtype:        ledger.EventVTXOSent,
-				AmountSat:      1_000,
-				DebitAccount:   ledger.AccountTransfersOut,
-				CreditAccount:  ledger.AccountVTXOBalance,
-				SessionId:      sessionID,
-				EntryId:        31,
-				CreatedAtUnixS: 100,
+				Type:               "oor",
+				Subtype:            ledger.EventVTXOSent,
+				ConfirmationStatus: "recorded",
+				AmountSat:          1_000,
+				DebitAccount:       ledger.AccountTransfersOut,
+				CreditAccount:      ledger.AccountVTXOBalance,
+				SessionId:          sessionID,
+				EntryId:            31,
+				CreatedAtUnixS:     100,
 			},
 			{
-				Type:           "oor",
-				Subtype:        ledger.EventVTXOReceived,
-				AmountSat:      1_000,
-				DebitAccount:   ledger.AccountVTXOBalance,
-				CreditAccount:  ledger.AccountTransfersIn,
-				Txid:           sessionHex,
-				OutputIndex:    0,
-				EntryId:        32,
-				CreatedAtUnixS: 101,
+				Type:               "oor",
+				Subtype:            ledger.EventVTXOReceived,
+				ConfirmationStatus: "recorded",
+				AmountSat:          1_000,
+				DebitAccount:       ledger.AccountVTXOBalance,
+				CreditAccount:      ledger.AccountTransfersIn,
+				Txid:               sessionHex,
+				OutputIndex:        0,
+				EntryId:            32,
+				CreatedAtUnixS:     101,
 			},
 		},
 	}
@@ -875,7 +886,54 @@ func TestHistoryKeepsZeroDeltaOORSendWithoutSwap(t *testing.T) {
 	require.Equal(
 		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, entries[0].GetKind(),
 	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entries[0].GetStatus(),
+	)
 	require.Equal(t, int64(-1_000), entries[0].GetAmountSat())
+}
+
+// TestHistoryCompletesRecordedOORReceive confirms materialized OOR receive
+// rows are terminal in the user-facing wallet activity stream. The ledger uses
+// "recorded" for durable local accounting rows, but an OOR receive row only
+// appears after the VTXO is live in the wallet.
+func TestHistoryCompletesRecordedOORReceive(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "oor",
+				Subtype:            ledger.EventVTXOReceived,
+				ConfirmationStatus: "recorded",
+				AmountSat:          7_000,
+				Txid:               "oor-recv-txid",
+				CreatedAtUnixS:     100,
+				DebitAccount:       ledger.AccountVTXOBalance,
+				CreditAccount:      ledger.AccountTransfersIn,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV, entries[0].GetKind(),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entries[0].GetStatus(),
+	)
+	require.Equal(t, int64(7_000), entries[0].GetAmountSat())
+	require.Equal(
+		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+		entries[0].GetProgress().GetPhase(),
+	)
 }
 
 // TestHistoryPendingFilterIncludesPendingBoarding confirms --pending includes
