@@ -27,17 +27,16 @@ type PaySwap struct {
 	RefundReceivePubkey                  []byte
 	RefundReceivePkscript                []byte
 	RefundSessionID                      string
-	RefundRecoveryID                     string
 	Preimage                             []byte
 	InterventionReason                   string
 	CreatedAtUnix                        int64
 	UpdatedAtUnix                        int64
+	RefundRecoveryID                     string
 }
 
 type ReceiveSwap struct {
 	PaymentHash                          []byte
 	AmountSat                            int64
-	PayerFeeMsat                         int64
 	State                                string
 	Invoice                              string
 	Preimage                             []byte
@@ -58,8 +57,9 @@ type ReceiveSwap struct {
 	ClaimReceivePubkey                   []byte
 	ClaimReceivePkscript                 []byte
 	ClaimSessionID                       string
-	ClaimRecoveryID                      string
 	InterventionReason                   string
 	CreatedAtUnix                        int64
 	UpdatedAtUnix                        int64
+	PayerFeeMsat                         int64
+	ClaimRecoveryID                      string
 }
