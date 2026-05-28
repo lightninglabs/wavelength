@@ -57,6 +57,15 @@ var (
 	// it can be broadcast safely.
 	ErrCPFPFeeInputUnavailable = errors.New("cpfp fee input unavailable")
 
+	// ErrFeeInputProducesDust indicates that the selected fee input
+	// covers the package fee but leaves a change output below the dust
+	// limit. The CPFP child's only non-anchor output is that change, so a
+	// sub-dust remainder would yield a zero-output transaction that the
+	// wallet cannot finalize. Callers should select a larger fee input,
+	// one covering totalFee + DustLimit, instead.
+	ErrFeeInputProducesDust = errors.New("cpfp fee input leaves sub-dust " +
+		"change")
+
 	// ErrNonTRUCParent indicates that the caller submitted a parent
 	// transaction whose version is not v3 (TRUC). txconfirm relies on
 	// BIP-431 ephemeral-anchor and TRUC-package semantics for its
@@ -684,7 +693,14 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 		req.Tx, txid, feeRate, totalFee, childVSize,
 	)
 
-	feeInput, err := b.selectFeeInput(ctx, txid, totalFee)
+	// Select a fee input that covers the package fee *plus* a spendable
+	// (non-dust) change output. Selecting for totalFee alone can pick a
+	// UTXO whose post-fee remainder is below the dust limit, which would
+	// force BuildCPFPChild to drop its only output and produce a
+	// zero-output child that FinalizePsbt rejects. Requiring the dust
+	// buffer up front skips near-dust UTXOs and lands on one that always
+	// yields a valid change output.
+	feeInput, err := b.selectFeeInput(ctx, txid, totalFee+DustLimit)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCPFPFeeInputUnavailable,
 			err)
@@ -707,6 +723,28 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 		)
 		if feeErr == nil && preciseFee > totalFee {
 			totalFee = preciseFee
+
+			// Growing the fee can push the already-selected
+			// input's change below the dust limit. Reselect
+			// against the precise threshold so we still land
+			// on an input that yields a spendable change
+			// output rather than tripping the dust guard and
+			// re-picking the same too-small input on every
+			// retry. The reservation cache keeps the current
+			// input when it already covers the larger fee.
+			reselected, selErr := b.selectFeeInput(
+				ctx, txid, totalFee+DustLimit,
+			)
+			if selErr != nil {
+				return b.fallbackDirectBroadcast(
+					ctx, req, txid, feeInput.Outpoint,
+					"reselect_fee_input", selErr,
+				)
+			}
+			if reselected.Outpoint != feeInput.Outpoint {
+				feeInput = reselected
+				b.reserveFeeInput(ctx, txid, feeInput)
+			}
 		}
 	}
 
@@ -1404,12 +1442,25 @@ func BuildCPFPChild(parentVersion int32, anchorOutpoint wire.OutPoint,
 			"for fee %d", feeInput.Output.Value, int64(totalFee))
 	}
 
-	if changeValue >= DustLimit {
-		childTx.AddTxOut(&wire.TxOut{
-			Value:    int64(changeValue),
-			PkScript: append([]byte(nil), changePkScript...),
-		})
+	// The CPFP child's only spendable output is this change output: the
+	// other input is the parent's zero-value ephemeral anchor. If the
+	// remainder after fees is below the dust limit we cannot emit a valid
+	// output, so refuse here rather than return a zero-output transaction
+	// that the wallet's FinalizePsbt rejects ("PSBT packet must contain at
+	// least one output"). Callers select fee inputs covering totalFee +
+	// DustLimit, so this is a defensive backstop against a post-selection
+	// fee top-up (mixed-type wallets) eroding the dust margin.
+	if changeValue < DustLimit {
+		return nil, fmt.Errorf("%w: fee input %d leaves %d change "+
+			"below dust limit %d", ErrFeeInputProducesDust,
+			feeInput.Output.Value, int64(changeValue),
+			int64(DustLimit))
 	}
+
+	childTx.AddTxOut(&wire.TxOut{
+		Value:    int64(changeValue),
+		PkScript: append([]byte(nil), changePkScript...),
+	})
 
 	return childTx, nil
 }

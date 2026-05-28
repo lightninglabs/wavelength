@@ -682,6 +682,30 @@ func p2trTestPkScript(t *testing.T) []byte {
 	return script
 }
 
+// p2pkhTestPkScript returns a fixed, canonical legacy P2PKH pkScript
+// (OP_DUP OP_HASH160 <20-byte hash> OP_EQUALVERIFY OP_CHECKSIG). A
+// P2PKH input is heavier than the P2WKH fallback used for unrecognised
+// change scripts, so it forces the precise per-input vsize
+// recalculation to grow the package fee.
+func p2pkhTestPkScript(t *testing.T) []byte {
+	t.Helper()
+
+	var hash [20]byte
+	for i := range hash {
+		hash[i] = byte(i + 1)
+	}
+	script, err := txscript.NewScriptBuilder().
+		AddOp(txscript.OP_DUP).
+		AddOp(txscript.OP_HASH160).
+		AddData(hash[:]).
+		AddOp(txscript.OP_EQUALVERIFY).
+		AddOp(txscript.OP_CHECKSIG).
+		Script()
+	require.NoError(t, err)
+
+	return script
+}
+
 // TestEnsureConfirmedDedupesTwoSubscribers verifies that the actor deduplicates
 // by txid while notifying all subscribers on confirmation.
 func TestEnsureConfirmedDedupesTwoSubscribers(t *testing.T) {

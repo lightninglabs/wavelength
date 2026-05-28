@@ -441,7 +441,12 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 			t, wire.MaxTxInSequenceNum-2, child.TxIn[1].Sequence,
 		)
 
-		dustChild, err := BuildCPFPChild(
+		// A fee input whose entire value is consumed by the fee
+		// leaves no room for a change output. Since the child's only
+		// non-anchor output is that change, BuildCPFPChild must refuse
+		// rather than emit a zero-output transaction that FinalizePsbt
+		// would reject.
+		_, err = BuildCPFPChild(
 			tx.Version, wire.OutPoint{
 				Hash:  tx.TxHash(),
 				Index: 1,
@@ -451,8 +456,39 @@ func TestBroadcasterHelperFunctions(t *testing.T) {
 			[]byte{txscript.OP_TRUE},
 			btcutil.Amount(feeInput.Output.Value),
 		)
+		require.ErrorIs(t, err, ErrFeeInputProducesDust)
+
+		// A fee input leaving change one sat below the dust limit must
+		// also be refused: a sub-dust change output is not relayable.
+		_, err = BuildCPFPChild(
+			tx.Version, wire.OutPoint{
+				Hash:  tx.TxHash(),
+				Index: 1,
+			},
+			tx.TxOut[1],
+			feeInput,
+			[]byte{txscript.OP_TRUE},
+			btcutil.Amount(feeInput.Output.Value)-DustLimit+1,
+		)
+		require.ErrorIs(t, err, ErrFeeInputProducesDust)
+
+		// Change of exactly the dust limit is the boundary that is
+		// still acceptable: the child gets its single change output.
+		boundaryChild, err := BuildCPFPChild(
+			tx.Version, wire.OutPoint{
+				Hash:  tx.TxHash(),
+				Index: 1,
+			},
+			tx.TxOut[1],
+			feeInput,
+			[]byte{txscript.OP_TRUE},
+			btcutil.Amount(feeInput.Output.Value)-DustLimit,
+		)
 		require.NoError(t, err)
-		require.Empty(t, dustChild.TxOut)
+		require.Len(t, boundaryChild.TxOut, 1)
+		require.Equal(
+			t, int64(DustLimit), boundaryChild.TxOut[0].Value,
+		)
 
 		_, err = BuildCPFPChild(
 			tx.Version, wire.OutPoint{}, tx.TxOut[1], &FeeInput{
@@ -678,6 +714,187 @@ func p2wkhTestPkScript(t *testing.T) []byte {
 	require.NoError(t, err)
 
 	return script
+}
+
+// TestCPFPChildSelectionAvoidsDustOutput is a regression test for the
+// zero-output CPFP child bug. A wallet littered with near-dust UTXOs caused
+// SelectFeeInput (which picks the smallest UTXO covering the fee) to choose an
+// input whose post-fee remainder fell below the dust limit, so BuildCPFPChild
+// dropped its only output and produced a transaction with no outputs that the
+// wallet's FinalizePsbt rejected. The fix selects for totalFee + DustLimit so a
+// spendable change output is always emitted, and BuildCPFPChild now refuses a
+// sub-dust remainder rather than silently emitting a zero-output child.
+func TestCPFPChildSelectionAvoidsDustOutput(t *testing.T) {
+	t.Parallel()
+
+	const totalFee = btcutil.Amount(500)
+
+	// A wallet mirroring the production litter: a near-dust "poison" UTXO
+	// that covers the fee but leaves one sat below dust as change, next to
+	// a large UTXO that yields ample change.
+	poison := FeeInput{
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0xaa,
+			}, Index: 0,
+		},
+		Output: &wire.TxOut{
+			Value: int64(totalFee + DustLimit - 1),
+		},
+		Confirmed: true,
+	}
+	large := FeeInput{
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0xbb,
+			}, Index: 0,
+		},
+		Output: &wire.TxOut{
+			Value: 5_000_000,
+		},
+		Confirmed: true,
+	}
+	inputs := []FeeInput{poison, large}
+
+	parent := wire.NewMsgTx(3)
+	parent.AddTxOut(&wire.TxOut{
+		Value: 0, PkScript: []byte{txscript.OP_TRUE},
+	})
+	anchorOutpoint := wire.OutPoint{Hash: parent.TxHash(), Index: 0}
+	changePkScript := []byte{txscript.OP_TRUE}
+
+	// Selecting for the bare fee reproduces the original selection: the
+	// smallest covering UTXO is the poison input, and building a child with
+	// it now yields a sub-dust change that is refused (previously this
+	// silently produced a zero-output transaction).
+	buggy, err := SelectFeeInput(inputs, totalFee, nil)
+	require.NoError(t, err)
+	require.Equal(t, poison.Outpoint, buggy.Outpoint)
+
+	_, err = BuildCPFPChild(
+		parent.Version, anchorOutpoint, parent.TxOut[0], buggy,
+		changePkScript, totalFee,
+	)
+	require.ErrorIs(t, err, ErrFeeInputProducesDust)
+
+	// Selecting with the dust buffer skips the poison UTXO and lands on the
+	// large input, so the child always carries a valid change output.
+	fixed, err := SelectFeeInput(inputs, totalFee+DustLimit, nil)
+	require.NoError(t, err)
+	require.Equal(t, large.Outpoint, fixed.Outpoint)
+
+	child, err := BuildCPFPChild(
+		parent.Version, anchorOutpoint, parent.TxOut[0], fixed,
+		changePkScript, totalFee,
+	)
+	require.NoError(t, err)
+	require.Len(t, child.TxOut, 1)
+	require.Equal(
+		t, int64(btcutil.Amount(large.Output.Value)-totalFee),
+		child.TxOut[0].Value,
+	)
+}
+
+// TestCPFPReselectsAfterPreciseFeeGrowth verifies that when the precise
+// per-input vsize recalculation grows the package fee enough to push the
+// originally selected fee input's change below the dust limit, the
+// broadcaster reselects a larger fee input instead of tripping
+// ErrFeeInputProducesDust and re-picking the same too-small input on every
+// retry.
+func TestCPFPReselectsAfterPreciseFeeGrowth(t *testing.T) {
+	t.Parallel()
+
+	const feeRate = 5
+
+	chain := newFakeChainSourceRef(100)
+	chain.feeRate = feeRate
+
+	parent := makeTestTx(true)
+
+	// The change script the wallet hands out is OP_TRUE, which fee
+	// estimation treats as the P2WKH fallback class. A P2PKH fee input is
+	// heavier than that proxy, so selecting it forces the precise vsize
+	// recalculation to grow the package fee.
+	opTrue := []byte{txscript.OP_TRUE}
+	changeVSize := estimateChildVSize(opTrue, opTrue)
+	p2pkhScript := p2pkhTestPkScript(t)
+	preciseVSize := estimateChildVSize(p2pkhScript, opTrue)
+	require.Greater(
+		t, preciseVSize, changeVSize,
+		"P2PKH fee input must be heavier than the change proxy",
+	)
+
+	baseFee, err := computePackageFee(parent, feeRate, changeVSize)
+	require.NoError(t, err)
+	preciseFee, err := computePackageFee(parent, feeRate, preciseVSize)
+	require.NoError(t, err)
+	require.Greater(t, preciseFee, baseFee)
+
+	// The small P2PKH UTXO clears the initial totalFee + DustLimit
+	// threshold but not the grown preciseFee + DustLimit one, so it is
+	// selected first and then must be abandoned.
+	small := &walletcore.Utxo{
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0xaa,
+			},
+			Index: 0,
+		},
+		Amount:   baseFee + DustLimit,
+		PkScript: p2pkhScript,
+	}
+	require.Less(
+		t, small.Amount, preciseFee+DustLimit,
+		"small UTXO must fail the precise threshold",
+	)
+
+	// A larger UTXO that comfortably covers the precise threshold.
+	large := &walletcore.Utxo{
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0xbb,
+			},
+			Index: 0,
+		},
+		Amount:   preciseFee + DustLimit + 1000,
+		PkScript: p2pkhScript,
+	}
+
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet: &fakeWallet{
+			utxos: []*walletcore.Utxo{small, large},
+		},
+	})
+
+	_, err = b.Submit(t.Context(), 100, &BroadcastRequest{
+		Tx: parent, Label: "reselect",
+	})
+	require.NoError(t, err)
+
+	// A CPFP package must have been submitted (not a direct-broadcast
+	// fallback), and its child must spend the large UTXO, not the
+	// abandoned small one.
+	require.Equal(t, 1, chain.packageCallCount())
+	require.Zero(t, chain.broadcastCallCount())
+
+	child := chain.packageCalls[0].Child
+	require.NotNil(t, child)
+
+	var spendsLarge, spendsSmall bool
+	for _, in := range child.TxIn {
+		switch in.PreviousOutPoint {
+		case large.Outpoint:
+			spendsLarge = true
+
+		case small.Outpoint:
+			spendsSmall = true
+		}
+	}
+	require.True(t, spendsLarge, "child must spend the reselected UTXO")
+	require.False(
+		t, spendsSmall, "child must not spend the abandoned UTXO",
+	)
 }
 
 // TestCPFPBroadcasterFallbackAndErrors covers the lower-level generic
