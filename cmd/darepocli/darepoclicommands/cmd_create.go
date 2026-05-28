@@ -56,13 +56,13 @@ func walletCreate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	defer zeroBytes(seedPassphrase)
 
 	password, err := readPasswordConfirmed(cmd)
 	if err != nil {
 		return err
 	}
 	defer zeroBytes(password)
-	defer zeroBytes(seedPassphrase)
 
 	printJSON, _ := cmd.Flags().GetBool("print-mnemonic-json")
 
