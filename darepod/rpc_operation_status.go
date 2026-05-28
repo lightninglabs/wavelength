@@ -148,15 +148,14 @@ func (r *RPCServer) listOORSessions(ctx context.Context,
 	req *daemonrpc.ListOORSessionsRequest) ([]*daemonrpc.OORSessionInfo,
 	error) {
 
-	merged := make(map[string]*daemonrpc.OORSessionInfo)
-
-	live, err := r.queryOORSessionSummaries(ctx, req)
-	if err != nil {
-		return nil, err
+	if req == nil {
+		req = &daemonrpc.ListOORSessionsRequest{}
 	}
 
-	for _, session := range live {
-		merged[session.GetSessionId()] = session
+	allReq := &daemonrpc.ListOORSessionsRequest{}
+	live, err := r.queryOORSessionSummaries(ctx, allReq)
+	if err != nil {
+		return nil, err
 	}
 
 	persisted, err := r.queryPersistedOORSessions(ctx, req)
@@ -164,7 +163,33 @@ func (r *RPCServer) listOORSessions(ctx context.Context,
 		return nil, err
 	}
 
+	if shouldQueryPersistedOORLiveOverlay(req) {
+		overlay, err := r.queryPersistedOORSessionsForLive(ctx, live)
+		if err != nil {
+			return nil, err
+		}
+
+		persisted = append(persisted, overlay...)
+	}
+
+	return mergeOORSessionLists(live, persisted, req), nil
+}
+
+// mergeOORSessionLists combines actor and package-store views for OOR status.
+func mergeOORSessionLists(live, persisted []*daemonrpc.OORSessionInfo,
+	req *daemonrpc.ListOORSessionsRequest) []*daemonrpc.OORSessionInfo {
+
+	if req == nil {
+		req = &daemonrpc.ListOORSessionsRequest{}
+	}
+
+	merged := make(map[string]*daemonrpc.OORSessionInfo)
+
 	for _, session := range persisted {
+		merged[session.GetSessionId()] = session
+	}
+
+	for _, session := range live {
 		if existing, ok := merged[session.GetSessionId()]; ok {
 			mergeOORSessionInfo(existing, session)
 			continue
@@ -175,6 +200,10 @@ func (r *RPCServer) listOORSessions(ctx context.Context,
 
 	sessions := make([]*daemonrpc.OORSessionInfo, 0, len(merged))
 	for _, session := range merged {
+		if !oorSessionMatchesFilters(session, req) {
+			continue
+		}
+
 		sessions = append(sessions, session)
 	}
 
@@ -182,7 +211,7 @@ func (r *RPCServer) listOORSessions(ctx context.Context,
 		return sessions[i].GetSessionId() < sessions[j].GetSessionId()
 	})
 
-	return sessions, nil
+	return sessions
 }
 
 // mergeOORSessionInfo fills artifact-backed fields missing from live state.
@@ -271,8 +300,7 @@ func (r *RPCServer) queryPersistedOORSessions(ctx context.Context,
 	req *daemonrpc.ListOORSessionsRequest) ([]*daemonrpc.OORSessionInfo,
 	error) {
 
-	if req.GetStatusFilter() ==
-		daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_PENDING {
+	if !shouldListPersistedOORPackages(req) {
 		return nil, nil
 	}
 
@@ -299,6 +327,87 @@ func (r *RPCServer) queryPersistedOORSessions(ctx context.Context,
 	}
 
 	return out, nil
+}
+
+// queryPersistedOORSessionsForLive fetches persisted package entries only for
+// live actor sessions. This preserves artifact-backed corrections for filtered
+// list calls without forcing every pending or failed query to materialize the
+// full package store.
+func (r *RPCServer) queryPersistedOORSessionsForLive(ctx context.Context,
+	live []*daemonrpc.OORSessionInfo) ([]*daemonrpc.OORSessionInfo, error) {
+
+	if len(live) == 0 {
+		return nil, nil
+	}
+
+	store := r.newLocalOORArtifactStore()
+	if store == nil {
+		return nil, nil
+	}
+
+	seen := make(map[string]struct{}, len(live))
+	out := make([]*daemonrpc.OORSessionInfo, 0, len(live))
+	for _, session := range live {
+		sessionID := session.GetSessionId()
+		if _, ok := seen[sessionID]; ok {
+			continue
+		}
+		seen[sessionID] = struct{}{}
+
+		hash, err := parseOORSessionID(sessionID)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "parse live "+
+				"OOR session id: %v", err)
+		}
+
+		pkg, err := store.GetPackage(ctx, hash)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to "+
+				"get persisted OOR package: %v", err)
+		}
+
+		out = append(out, oorPackageToProto(pkg))
+	}
+
+	return out, nil
+}
+
+// shouldListPersistedOORPackages reports whether a list request can include
+// completed package entries from a bounded store scan.
+func shouldListPersistedOORPackages(
+	req *daemonrpc.ListOORSessionsRequest) bool {
+
+	switch req.GetStatusFilter() {
+	case daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_PENDING,
+		daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED:
+		return false
+
+	default:
+		return true
+	}
+}
+
+// shouldQueryPersistedOORLiveOverlay reports whether live summaries need
+// targeted package lookups before final filter evaluation.
+func shouldQueryPersistedOORLiveOverlay(
+	req *daemonrpc.ListOORSessionsRequest) bool {
+
+	if req.GetDirectionFilter() != daemonrpc.
+		OORSessionDirection_OOR_SESSION_DIRECTION_UNSPECIFIED {
+		return true
+	}
+
+	switch req.GetStatusFilter() {
+	case daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_PENDING,
+		daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED:
+		return true
+
+	default:
+		return false
+	}
 }
 
 // roundSummaryToProto converts one persisted round summary to daemonrpc.
