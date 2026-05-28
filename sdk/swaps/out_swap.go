@@ -1652,10 +1652,12 @@ func encodeVHTLCPolicyTemplate(policy *arkscript.VHTLCPolicy) ([]byte, error) {
 //
 // The polled pkScript is derived locally from the vHTLC policy parameters
 // supplied by the swap server. A persistent loop where the indexer keeps
-// rejecting the query because the script is not registered to the current
-// principal is terminal for this receive attempt: either the local and remote
-// script derivation disagree, or stale local swap metadata survived a daemon
-// reset while the corresponding server-side script registration did not.
+// rejecting the query (e.g. "Unauthenticated: script not registered for
+// principal") usually means the local and remote `lib/arkscript` packages
+// disagree on the vHTLC script structure, so the funded output is at a
+// different pkScript than this side derives. The bundled log includes the
+// indexer's error wording and the queried pkScript so the operator can match it
+// against the on-chain output for diagnosis.
 func (c *SwapClient) waitForVHTLC(ctx context.Context, pkScript []byte,
 	deadline time.Time, keepWaiting func(context.Context) error) (string,
 	int64, error) {
@@ -1672,14 +1674,6 @@ func (c *SwapClient) waitForVHTLC(ctx context.Context, pkScript []byte,
 				slog.String("err", err.Error()),
 				slog.String("pk_script", pkScriptHex),
 			)
-			if isUnregisteredScriptErr(err) {
-				return "", 0, newFailureError(
-					fmt.Sprintf("vHTLC script %s is not "+
-						"registered for current "+
-						"principal", pkScriptHex),
-					err,
-				)
-			}
 		}
 		if vtxo != nil {
 			c.log.InfoS(ctx, "Found funded vHTLC",

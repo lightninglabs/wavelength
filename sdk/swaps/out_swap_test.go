@@ -472,31 +472,37 @@ func TestCancelVHTLCRecoveryIgnoresNotFound(t *testing.T) {
 	)
 }
 
-// TestWaitForVHTLCFailsOnUnregisteredScript verifies stale accepted receive
-// events stop retrying once the current principal can no longer query the
-// expected script.
-func TestWaitForVHTLCFailsOnUnregisteredScript(t *testing.T) {
+// TestWaitForVHTLCRetriesUnregisteredScriptUntilFunded verifies the expected
+// pre-funded window does not fail a receive before the vHTLC row is indexed.
+func TestWaitForVHTLCRetriesUnregisteredScriptUntilFunded(t *testing.T) {
 	t.Parallel()
 
 	pkScript := bytes.Repeat([]byte{0x02}, 34)
+	expected := &VTXOInfo{
+		Outpoint:  "funding:0",
+		AmountSat: 5000,
+	}
 	daemonConn := &testDaemonConn{
-		liveLookupErr: status.Error(
-			codes.Internal, "indexer query failed: rpc error: "+
-				"code = Unauthenticated desc = script not "+
-				"registered for principal",
-		),
+		liveLookupErrs: []error{
+			status.Error(
+				codes.Internal, "indexer query failed: rpc "+
+					"error: code = Unauthenticated "+
+					"desc = script not registered for "+
+					"principal",
+			),
+		},
+		vhtlc: expected,
 	}
 	client := NewSwapClient(nil, daemonConn, nil, nil)
+	client.waitPollInterval = time.Millisecond
 
-	_, _, err := client.waitForVHTLC(
-		t.Context(), pkScript, time.Time{}, nil,
+	outpoint, amount, err := client.waitForVHTLC(
+		t.Context(), pkScript, time.Now().Add(time.Second), nil,
 	)
-	require.Error(t, err)
-	require.Contains(
-		t, failureReason(err),
-		"not registered for current principal",
-	)
-	require.Equal(t, 1, daemonConn.liveLookupCalls)
+	require.NoError(t, err)
+	require.Equal(t, expected.Outpoint, outpoint)
+	require.Equal(t, expected.AmountSat, amount)
+	require.Equal(t, 2, daemonConn.liveLookupCalls)
 }
 
 type testDaemonConn struct {
@@ -518,6 +524,7 @@ type testDaemonConn struct {
 	sendPolicyErr     error
 	sendCustomErr     error
 	listSpentErr      error
+	liveLookupErrs    []error
 	liveLookupErr     error
 	spentLookupErr    error
 	spentLookupBlock  time.Duration
@@ -815,6 +822,12 @@ func (d *testDaemonConn) FindLiveVTXOByPkScript(_ context.Context,
 	pkScript []byte) (*VTXOInfo, error) {
 
 	d.liveLookupCalls++
+	if len(d.liveLookupErrs) > 0 {
+		err := d.liveLookupErrs[0]
+		d.liveLookupErrs = d.liveLookupErrs[1:]
+
+		return nil, err
+	}
 	if d.liveLookupErr != nil {
 		return nil, d.liveLookupErr
 	}
