@@ -1965,7 +1965,98 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 		return err
 	}
 
+	// -------------------------------------------------------
+	// 15. Reconcile orphaned spending reservations.
+	// -------------------------------------------------------
+	// With the VTXO manager and OOR subsystem both recovered, release any
+	// VTXO left stranded in SpendingState by a spend that died without
+	// emitting SpendReleasedEvent (see issue #587). Non-fatal: a failure
+	// here just leaves those VTXOs reserved until the next restart.
+	if err := s.reconcileOrphanedSpendingReservations(
+		ctx, vtxoManagerRef,
+	); err != nil {
+		s.log.WarnS(ctx, "Failed to reconcile orphaned spending "+
+			"reservations", err)
+	}
+
 	s.log.InfoS(ctx, "Wallet-dependent actors started")
+
+	return nil
+}
+
+// reconcileOrphanedSpendingReservations releases VTXOs stranded in
+// SpendingState that no live OOR session still claims. A VTXO enters
+// SpendingState only via the OOR send path, which reserves the selected
+// VTXOs as inputs; if that spend dies without emitting SpendReleasedEvent,
+// the reservation outlives its owner and the VTXO is unspendable until batch
+// expiry forces an on-chain unilateral exit.
+//
+// We build the claimed set from the OOR actor's live (pending) outgoing
+// sessions and hand it to the VTXO manager, which releases any Spending VTXO
+// not in that set. If the OOR set can't be determined we abort rather than
+// release, since an incomplete claimed set would free VTXOs a live spend
+// legitimately holds. The OOR actor processes its restart message before this
+// query (the mailbox is FIFO and the restart is prepended), so its in-memory
+// session set is fully restored by the time we read it.
+//
+// Forfeit-state reservations (PendingForfeit/Forfeiting) from round
+// registration are a separate lifecycle and are intentionally out of scope:
+// only the OOR SpendingState path is reconciled here.
+func (s *Server) reconcileOrphanedSpendingReservations(ctx context.Context,
+	vtxoManagerRef actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]) error {
+
+	if s.actorSystem == nil {
+		return nil
+	}
+
+	// Gather the input outpoints still held by live outgoing OOR sessions.
+	oorRef := oor.NewServiceKey().Ref(s.actorSystem)
+	listResult := oorRef.Ask(ctx, &oor.ListSessionsRequest{
+		Direction:   oor.SessionDirectionOutgoing,
+		PendingOnly: true,
+	}).Await(ctx)
+
+	actorResp, err := listResult.Unpack()
+	if err != nil {
+		return fmt.Errorf("query live OOR sessions: %w", err)
+	}
+
+	listResp, ok := actorResp.(*oor.ListSessionsResponse)
+	if !ok {
+		return fmt.Errorf("unexpected OOR list response type: %T",
+			actorResp)
+	}
+
+	var claimed []wire.OutPoint
+	for _, summary := range listResp.Sessions {
+		claimed = append(claimed, summary.InputOutpoints...)
+	}
+
+	// Hand the claimed set to the manager, which releases any Spending VTXO
+	// not present in it.
+	reconcileResult := vtxoManagerRef.Ask(ctx,
+		&vtxo.ReconcileSpendingReservationsRequest{
+			ClaimedInputs: claimed,
+		},
+	).Await(ctx)
+
+	resp, err := reconcileResult.Unpack()
+	if err != nil {
+		return fmt.Errorf("reconcile spending reservations: %w", err)
+	}
+
+	reconcileResp, ok := resp.(*vtxo.ReconcileSpendingReservationsResponse)
+	if !ok {
+		return fmt.Errorf("unexpected reconcile response type: %T", resp)
+	}
+
+	if reconcileResp.ReleasedCount > 0 {
+		s.log.InfoS(ctx, "Released orphaned spending reservations",
+			slog.Int("released", reconcileResp.ReleasedCount),
+			slog.Int("scanned", reconcileResp.ScannedCount),
+			slog.Int("claimed", reconcileResp.ClaimedCount),
+		)
+	}
 
 	return nil
 }
