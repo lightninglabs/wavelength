@@ -1651,11 +1651,11 @@ func encodeVHTLCPolicyTemplate(policy *arkscript.VHTLCPolicy) ([]byte, error) {
 // live, then returns its outpoint and amount.
 //
 // The polled pkScript is derived locally from the vHTLC policy parameters
-// supplied by the swap server. A persistent loop where the indexer keeps
-// rejecting the query because the script is not registered to the current
-// principal is terminal for this receive attempt: either the local and remote
-// script derivation disagree, or stale local swap metadata survived a daemon
-// reset while the corresponding server-side script registration did not.
+// supplied by the swap server. Some receive paths, such as same-Ark p2p OOR,
+// can materialize the vHTLC in the local daemon before the proof-gated indexer
+// lookup is registered for this principal. In that case the local live VTXO set
+// is authoritative enough to proceed, while complete absence remains retryable
+// until the refund-locktime guard expires.
 func (c *SwapClient) waitForVHTLC(ctx context.Context, pkScript []byte,
 	deadline time.Time, keepWaiting func(context.Context) error) (string,
 	int64, error) {
@@ -1673,12 +1673,44 @@ func (c *SwapClient) waitForVHTLC(ctx context.Context, pkScript []byte,
 				slog.String("pk_script", pkScriptHex),
 			)
 			if isUnregisteredScriptErr(err) {
-				return "", 0, newFailureError(
-					fmt.Sprintf("vHTLC script %s is not "+
-						"registered for current "+
-						"principal", pkScriptHex),
-					err,
-				)
+				localVTXO, localErr :=
+					c.localLiveVTXOByPkScript(
+						ctx, pkScript,
+					)
+				if localErr != nil {
+					c.log.DebugS(
+						ctx,
+						"Unable to query local vHTLC "+
+							"state",
+						slog.String(
+							"err", localErr.Error(),
+						),
+						slog.String(
+							"pk_script",
+							pkScriptHex,
+						),
+					)
+				}
+				if localVTXO != nil {
+					c.log.InfoS(ctx,
+						"Found local funded vHTLC",
+						slog.String(
+							"pk_script",
+							pkScriptHex,
+						),
+						slog.String(
+							"outpoint",
+							localVTXO.Outpoint,
+						),
+						slog.Int64(
+							"amount_sat",
+							localVTXO.AmountSat,
+						),
+					)
+
+					return localVTXO.Outpoint,
+						localVTXO.AmountSat, nil
+				}
 			}
 		}
 		if vtxo != nil {
@@ -1721,4 +1753,24 @@ func (c *SwapClient) waitForVHTLC(ctx context.Context, pkScript []byte,
 		case <-timer.C:
 		}
 	}
+}
+
+// localLiveVTXOByPkScript returns a daemon-local live VTXO matching pkScript.
+// This is a fallback for OOR-delivered vHTLCs that are locally known before a
+// proof-gated indexed lookup can be made under the receiver's principal.
+func (c *SwapClient) localLiveVTXOByPkScript(ctx context.Context,
+	pkScript []byte) (*VTXOInfo, error) {
+
+	vtxos, err := c.daemon.ListLiveVTXOs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range vtxos {
+		if bytes.Equal(vtxos[i].PkScript, pkScript) {
+			return &vtxos[i], nil
+		}
+	}
+
+	return nil, nil
 }

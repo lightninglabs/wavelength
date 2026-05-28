@@ -509,6 +509,17 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 	inputs []TransferInput, outputs []oortx.RecipientOutput) (*psbt.Packet,
 	[]*psbt.Packet, error) {
 
+	return BuildSubmitPackage(policy, inputs, outputs)
+}
+
+// BuildSubmitPackage constructs a v0 OOR submit package using the shared
+// darepo-client lib/tx/oor primitives. It only builds deterministic PSBTs from
+// caller-provided inputs and outputs; it does not acquire wallet locks, select
+// wallet inputs, or persist OOR session state.
+func BuildSubmitPackage(policy arkscript.CheckpointPolicy,
+	inputs []TransferInput, outputs []oortx.RecipientOutput) (*psbt.Packet,
+	[]*psbt.Packet, error) {
+
 	if len(inputs) == 0 {
 		return nil, nil, fmt.Errorf("checkpoint inputs required")
 	}

@@ -13,6 +13,8 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	loopfsm "github.com/lightninglabs/loop/fsm"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // PayState identifies the client-side lifecycle state of an Ark-to-Lightning
@@ -888,6 +890,14 @@ func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 			)
 		}
 
+		refunded, err := s.tryCooperativeRefund(ctx)
+		if err != nil {
+			return err
+		}
+		if refunded {
+			return nil
+		}
+
 		height, err := s.client.daemon.BlockHeight(ctx)
 		if err != nil {
 			return fmt.Errorf("get block height: %w", err)
@@ -972,6 +982,10 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 		return waitForFixedPoll(ctx, s.client.waitPollInterval)
 	}
 
+	if s.refundSessionID != "" {
+		return s.markRefundAccepted(ctx)
+	}
+
 	height, err := s.client.daemon.BlockHeight(ctx)
 	if err != nil {
 		return fmt.Errorf("get block height: %w", err)
@@ -987,10 +1001,6 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 		)
 
 		return waitForFixedPoll(ctx, s.client.waitPollInterval)
-	}
-
-	if s.refundSessionID != "" {
-		return s.markRefundAccepted(ctx)
 	}
 
 	refundPubKey, err := s.refundPubKey(ctx)
@@ -1049,6 +1059,171 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 	)
 
 	return s.markRefundAccepted(ctx)
+}
+
+// tryCooperativeRefund attempts an immediate refund before the timeout branch
+// matures. The swap server only authorizes this after its Lightning payment
+// attempt is terminal and no preimage is known, so an unavailable response just
+// means the SDK should keep waiting for either claim or timeout.
+func (s *paySession) tryCooperativeRefund(ctx context.Context) (bool, error) {
+	if s.refundSessionID != "" {
+		return true, s.initiateRefund(
+			ctx, "cooperative refund already submitted",
+		)
+	}
+
+	funded, err := s.observeRefundableVHTLC(ctx)
+	if err != nil {
+		return false, newRetryableActionError(
+			fmt.Errorf("query in-swap vHTLC before cooperative "+
+				"refund: %w", err),
+		)
+	}
+	if !funded {
+		return false, nil
+	}
+
+	refundPubKey, err := s.refundPubKey(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	refundPath, err := s.vhtlcPolicy.RefundPath()
+	if err != nil {
+		return false, fmt.Errorf("build cooperative refund path: %w",
+			err)
+	}
+
+	spendPath, err := refundPath.Encode()
+	if err != nil {
+		return false, fmt.Errorf("encode cooperative refund path: %w",
+			err)
+	}
+
+	input := CustomInput{
+		Outpoint:           s.vhtlcOutpoint,
+		VTXOPolicyTemplate: s.vhtlcPolicyTemplate,
+		SpendPath:          spendPath,
+		AmountSat:          s.vhtlcAmount,
+		PkScript:           s.vhtlcPkScript,
+	}
+
+	prepared, err := s.client.daemon.PrepareOORWithCustomInputs(
+		ctx, refundPubKey, s.vhtlcAmount, []CustomInput{input},
+	)
+	if err != nil {
+		return false, newRetryableActionError(
+			fmt.Errorf("prepare cooperative in-swap refund: %w",
+				err),
+		)
+	}
+
+	preparedInput, err := preparedCustomInput(prepared, s.vhtlcOutpoint)
+	if err != nil {
+		return false, err
+	}
+
+	authorization, err := s.client.server.AuthorizeInSwapRefund(
+		ctx, s.cfg.PaymentHash, s.vhtlcOutpoint, s.vhtlcAmount,
+		s.vhtlcPolicyTemplate, spendPath, preparedInput.CheckpointPSBT,
+	)
+	if err != nil {
+		code := status.Code(err)
+		if code == codes.FailedPrecondition ||
+			code == codes.Unavailable ||
+			code == codes.Unimplemented {
+
+			s.client.log.DebugS(
+				ctx,
+				"Cooperative in-swap refund not yet available",
+				btclog.Hex("hash", s.cfg.PaymentHash[:]),
+				slog.String("outpoint", s.vhtlcOutpoint),
+			)
+
+			return false, nil
+		}
+
+		return false, newRetryableActionError(
+			fmt.Errorf("authorize cooperative in-swap refund: %w",
+				err),
+		)
+	}
+	if authorization == nil {
+		return false, newRetryableActionError(
+			fmt.Errorf("authorize cooperative in-swap refund: " +
+				"empty response"),
+		)
+	}
+
+	input.ExternalSignatures = []TaprootScriptSignature{
+		authorization.Signature,
+	}
+
+	refundSessionID, err := s.client.daemon.SendOORWithCustomInputs(
+		ctx, refundPubKey, s.vhtlcAmount, []CustomInput{input},
+	)
+	if err != nil {
+		return false, newRetryableActionError(
+			fmt.Errorf("submit cooperative in-swap refund: %w",
+				err),
+		)
+	}
+	if refundSessionID == "" {
+		return false, fmt.Errorf("cooperative in-swap refund " +
+			"returned empty session id")
+	}
+
+	reason := authorization.FailureReason
+	if reason == "" {
+		reason = "swap server safely failed Lightning payment"
+	}
+
+	s.client.log.InfoS(ctx, "Cooperative in-swap refund submitted",
+		btclog.Hex("hash", s.cfg.PaymentHash[:]),
+		slog.String("outpoint", s.vhtlcOutpoint),
+		slog.String("refund_session_id", refundSessionID),
+		slog.String("reason", reason),
+	)
+
+	if err := s.persistRefundSessionID(
+		ctx, refundSessionID, reason,
+	); err != nil {
+		return false, newRetryableActionError(
+			fmt.Errorf("persist cooperative refund session id: %w",
+				err),
+		)
+	}
+	if err := s.initiateRefund(ctx, reason); err != nil {
+		return false, newRetryableActionError(err)
+	}
+
+	return true, nil
+}
+
+// preparedCustomInput returns the prepared checkpoint signing data for one
+// custom input outpoint.
+func preparedCustomInput(prepared *PreparedOOR,
+	outpoint string) (*PreparedOORCustomInput, error) {
+
+	if prepared == nil {
+		return nil, fmt.Errorf("prepared OOR package is required")
+	}
+
+	for i := range prepared.CustomInputs {
+		input := &prepared.CustomInputs[i]
+		if input.Outpoint != outpoint {
+			continue
+		}
+		if len(input.CheckpointPSBT) == 0 {
+			return nil, fmt.Errorf("prepared custom input %s "+
+				"missing checkpoint PSBT", outpoint)
+		}
+
+		return input, nil
+	}
+
+	return nil, fmt.Errorf("prepared OOR package missing custom input %s",
+		outpoint)
 }
 
 // observeRefundOutput returns the wallet output created by the timeout refund

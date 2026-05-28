@@ -2059,6 +2059,231 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	}, nil
 }
 
+// PrepareOOR builds a deterministic OOR package without submitting it.
+func (r *RPCServer) PrepareOOR(ctx context.Context,
+	req *daemonrpc.PrepareOORRequest) (*daemonrpc.PrepareOORResponse,
+	error) {
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	if req.GetRecipient() == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "recipient "+
+			"is required")
+	}
+
+	if req.GetRecipient().GetAmountSat() <= 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "amount "+
+			"must be positive")
+	}
+
+	if len(req.GetCustomInputs()) == 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "custom "+
+			"inputs are required")
+	}
+
+	if r.server.vtxoStore == nil {
+		return nil, status.Errorf(codes.Internal, "VTXO store not "+
+			"initialized")
+	}
+
+	pkScript, err := r.resolveOutputPkScript(ctx, req.GetRecipient())
+	if err != nil {
+		return nil, err
+	}
+
+	terms, err := r.server.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "unable to fetch "+
+			"operator terms: %v", err)
+	}
+
+	recipientPolicyTemplate, err := r.resolveOutputPolicyTemplate(
+		ctx, req.GetRecipient(), pkScript, terms.PubKey,
+		terms.VTXOExitDelay,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	selectedInputs, err := BuildCustomTransferInputs(
+		ctx, r.server.vtxoStore, req.GetCustomInputs(),
+		r.server.clientKeyDesc, terms.PubKey, terms.VTXOExitDelay,
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "build custom "+
+			"inputs: %v", err)
+	}
+
+	inputTotal, err := sumOORInputAmounts(selectedInputs)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "sum OOR input "+
+			"amounts: %v", err)
+	}
+
+	recipients := []oortx.RecipientOutput{{
+		PkScript: pkScript,
+		Value: btcutil.Amount(
+			req.GetRecipient().GetAmountSat(),
+		),
+		VTXOPolicyTemplate: recipientPolicyTemplate,
+	}}
+
+	recipients, _, err = appendOORChangeRecipient(
+		ctx, recipients, inputTotal, terms.DustLimit,
+		func(ctx context.Context, change btcutil.Amount) (
+			oortx.RecipientOutput, error) {
+
+			return r.buildOORChangeRecipient(
+				ctx, terms.PubKey, terms.VTXOExitDelay, change,
+			)
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: terms.PubKey,
+		CSVDelay:    terms.VTXOExitDelay,
+	}
+	arkPSBT, checkpointPSBTs, err := oor.BuildSubmitPackage(
+		policy, selectedInputs, recipients,
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "build OOR "+
+			"package: %v", err)
+	}
+
+	arkRaw, err := psbtutil.Serialize(arkPSBT)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "serialize ark "+
+			"psbt: %v", err)
+	}
+
+	checkpointRaw := make([][]byte, 0, len(checkpointPSBTs))
+	preparedInputs := make(
+		[]*daemonrpc.PreparedOORCustomInput, 0, len(selectedInputs),
+	)
+	for i := range checkpointPSBTs {
+		raw, err := psbtutil.Serialize(checkpointPSBTs[i])
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "serialize "+
+				"checkpoint psbt %d: %v", i, err)
+		}
+		checkpointRaw = append(checkpointRaw, raw)
+
+		input := selectedInputs[i]
+		if input.CustomSpend == nil {
+			continue
+		}
+
+		signingPubKeys := make([][]byte, 0, len(input.CustomSpendKeys))
+		for _, key := range input.CustomSpendKeys {
+			if key == nil {
+				return nil, status.Errorf(codes.Internal,
+					"custom spend key is nil")
+			}
+
+			signingPubKeys = append(
+				signingPubKeys, key.SerializeCompressed(),
+			)
+		}
+
+		preparedInputs = append(
+			preparedInputs, &daemonrpc.PreparedOORCustomInput{
+				Outpoint:       input.VTXO.Outpoint.String(),
+				CheckpointPsbt: raw,
+				WitnessScript: input.CustomSpend.SpendInfo.
+					WitnessScript,
+				SigningPubkeys: signingPubKeys,
+			},
+		)
+	}
+
+	return &daemonrpc.PrepareOORResponse{
+		ArkPsbt:         arkRaw,
+		CheckpointPsbts: checkpointRaw,
+		CustomInputs:    preparedInputs,
+		SessionId:       arkPSBT.UnsignedTx.TxHash().String(),
+	}, nil
+}
+
+// SignOORCustomInput signs one prepared custom OOR checkpoint input.
+func (r *RPCServer) SignOORCustomInput(ctx context.Context,
+	req *daemonrpc.SignOORCustomInputRequest) (
+	*daemonrpc.SignOORCustomInputResponse, error) {
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	if req.GetCustomInput() == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "custom "+
+			"input is required")
+	}
+
+	if r.server.vtxoStore == nil {
+		return nil, status.Errorf(codes.Internal, "VTXO store not "+
+			"initialized")
+	}
+
+	checkpoint, err := psbtutil.Parse(req.GetCheckpointPsbt())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "parse "+
+			"checkpoint psbt: %v", err)
+	}
+
+	terms, err := r.server.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "unable to fetch "+
+			"operator terms: %v", err)
+	}
+
+	inputs, err := BuildCustomTransferInputs(
+		ctx, r.server.vtxoStore,
+		[]*daemonrpc.CustomOORInput{req.GetCustomInput()},
+		r.server.clientKeyDesc, terms.PubKey, terms.VTXOExitDelay,
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "build custom "+
+			"input: %v", err)
+	}
+	if len(inputs) != 1 {
+		return nil, status.Errorf(codes.Internal, "expected one "+
+			"custom input, got %d", len(inputs))
+	}
+
+	signer, err := r.server.oorSigner()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "resolve signer: %v",
+			err)
+	}
+
+	sig, err := oor.SignCustomCheckpointInput(
+		signer, &inputs[0], checkpoint,
+	)
+	if err != nil {
+		if errors.Is(err, oor.ErrCustomCheckpointInputSigning) {
+			return nil, status.Errorf(codes.Internal, "sign "+
+				"custom input: %v", err)
+		}
+
+		return nil, status.Errorf(codes.InvalidArgument, "sign custom "+
+			"input: %v", err)
+	}
+
+	return &daemonrpc.SignOORCustomInputResponse{
+		Signature: &daemonrpc.TaprootScriptSignature{
+			Pubkey:        sig.PubKey.SerializeCompressed(),
+			WitnessScript: sig.WitnessScript,
+			Signature:     sig.Signature,
+			Sighash:       uint32(sig.SigHash),
+		},
+	}, nil
+}
+
 // findOutgoingOORSessionByIdempotencyKey asks the OOR actor whether the daemon
 // already knows a keyed outgoing session before acquiring wallet or custom
 // inputs for the retry.

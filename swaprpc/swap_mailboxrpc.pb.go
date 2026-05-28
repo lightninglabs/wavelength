@@ -28,6 +28,8 @@ type SwapServiceMailboxServer interface {
 	RequestChannelId(ctx context.Context, req *RequestChannelIdRequest) (*RequestChannelIdResponse, error)
 	// CreateInSwap handles CreateInSwap.
 	CreateInSwap(ctx context.Context, req *CreateInSwapRequest) (*CreateInSwapResponse, error)
+	// AuthorizeInSwapRefund handles AuthorizeInSwapRefund.
+	AuthorizeInSwapRefund(ctx context.Context, req *AuthorizeInSwapRefundRequest) (*AuthorizeInSwapRefundResponse, error)
 }
 
 // RegisterSwapServiceMailboxServer registers handlers for SwapService.
@@ -51,6 +53,16 @@ func RegisterSwapServiceMailboxServer(r rpc.Router, impl SwapServiceMailboxServe
 		}
 
 		return impl.CreateInSwap(ctx, req)
+	})
+	r.Handle("swaprpc.SwapService", "AuthorizeInSwapRefund", func() proto.Message {
+		return &AuthorizeInSwapRefundRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*AuthorizeInSwapRefundRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.AuthorizeInSwapRefund(ctx, req)
 	})
 }
 
@@ -93,6 +105,29 @@ func (c *SwapServiceMailboxClient) CreateInSwap(ctx context.Context, req *Create
 	}
 
 	resp := new(CreateInSwapResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// AuthorizeInSwapRefund calls the AuthorizeInSwapRefund RPC.
+func (c *SwapServiceMailboxClient) AuthorizeInSwapRefund(ctx context.Context, req *AuthorizeInSwapRefundRequest, opts ...rpc.RPCOptions) (*AuthorizeInSwapRefundResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "swaprpc.SwapService",
+		Method:  "AuthorizeInSwapRefund",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(AuthorizeInSwapRefundResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

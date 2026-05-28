@@ -6,7 +6,9 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
@@ -279,10 +281,57 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 			input.CustomSpend = spendPath
 		}
 
+		input.ExternalSignatures, err = customTaprootScriptSignatures(
+			ci.ExternalSignatures,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("decode external signatures "+
+				"for %s: %w", outpoint, err)
+		}
+
 		inputs = append(inputs, input)
 	}
 
 	return inputs, nil
+}
+
+// customTaprootScriptSignatures decodes RPC external signature records into
+// the OOR domain representation.
+func customTaprootScriptSignatures(
+	rpcSigs []*daemonrpc.TaprootScriptSignature) (
+	[]oor.ExternalTaprootScriptSignature, error) {
+
+	result := make([]oor.ExternalTaprootScriptSignature, 0, len(rpcSigs))
+	for i, rpcSig := range rpcSigs {
+		if rpcSig == nil {
+			return nil, fmt.Errorf("signature %d is nil", i)
+		}
+
+		pubKey, err := btcec.ParsePubKey(rpcSig.GetPubkey())
+		if err != nil {
+			return nil, fmt.Errorf("parse pubkey %d: %w", i, err)
+		}
+
+		if len(rpcSig.GetWitnessScript()) == 0 {
+			return nil, fmt.Errorf("signature %d witness script "+
+				"is required", i)
+		}
+
+		if len(rpcSig.GetSignature()) == 0 {
+			return nil, fmt.Errorf("signature %d is required", i)
+		}
+
+		result = append(result, oor.ExternalTaprootScriptSignature{
+			PubKey:        pubKey,
+			WitnessScript: bytes.Clone(rpcSig.GetWitnessScript()),
+			Signature:     bytes.Clone(rpcSig.GetSignature()),
+			SigHash: txscript.SigHashType(
+				rpcSig.GetSighash(),
+			),
+		})
+	}
+
+	return result, nil
 }
 
 // findSettlementOwnerLeaf maps a custom auth spend path to the
@@ -321,6 +370,12 @@ func findSettlementOwnerLeaf(template *arkscript.PolicyTemplate,
 
 		if !bytes.Equal(script, spendPath.WitnessScript) {
 			continue
+		}
+
+		if !localOperatorOnlyLeaf(
+			leaf.Node, participant, operator,
+		) {
+			return nil, nil, nil
 		}
 
 		encodedLeaf, err := leaf.Encode()
@@ -365,6 +420,12 @@ func findSettlementOwnerLeaf(template *arkscript.PolicyTemplate,
 				continue
 			}
 
+			if !localOperatorOnlyLeaf(
+				leaf.Node, participant, operator,
+			) {
+				return nil, nil, nil
+			}
+
 			encodedLeaf, err := leaf.Encode()
 			if err != nil {
 				return nil, nil, fmt.Errorf("encode "+
@@ -378,6 +439,50 @@ func findSettlementOwnerLeaf(template *arkscript.PolicyTemplate,
 	}
 
 	return nil, nil, fmt.Errorf("no settlement pair matches spend path")
+}
+
+// localOperatorOnlyLeaf reports whether the leaf's signing keys are exactly
+// the local participant and Ark operator. Other custom policy leaves still
+// remain valid as the checkpoint input spend, but the checkpoint output owner
+// path must be signable by the local OOR actor plus the operator cosigner.
+func localOperatorOnlyLeaf(node arkscript.Node,
+	participant, operator *btcec.PublicKey) bool {
+
+	keys := firstMultisigKeys(node)
+	if len(keys) != 2 {
+		return false
+	}
+
+	return sameXOnlyPubKey(keys[0], participant) &&
+		sameXOnlyPubKey(keys[1], operator)
+}
+
+// firstMultisigKeys extracts the signing key set from the first multisig node.
+func firstMultisigKeys(node arkscript.Node) []*btcec.PublicKey {
+	switch n := node.(type) {
+	case *arkscript.Multisig:
+		return append([]*btcec.PublicKey(nil), n.Keys...)
+
+	case *arkscript.Condition:
+		return firstMultisigKeys(n.Inner)
+
+	case *arkscript.CSV:
+		return firstMultisigKeys(n.Inner)
+
+	default:
+		return nil
+	}
+}
+
+// sameXOnlyPubKey compares pubkeys by their x-only taproot encoding.
+func sameXOnlyPubKey(a, b *btcec.PublicKey) bool {
+	if a == nil || b == nil {
+		return false
+	}
+
+	return bytes.Equal(
+		schnorr.SerializePubKey(a), schnorr.SerializePubKey(b),
+	)
 }
 
 // spendPathsMatch reports whether two semantic spend paths describe the same

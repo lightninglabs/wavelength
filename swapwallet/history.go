@@ -119,9 +119,7 @@ func (h *history) listActivity(ctx context.Context,
 			walletrpc.EntryKind_ENTRY_KIND_RECV) {
 
 		var err error
-		swapEntries, swapCorrelations, err = h.collectSwapEntries(
-			ctx, req.GetPendingOnly(),
-		)
+		swapEntries, swapCorrelations, err = h.collectSwapEntries(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("collect swap entries: %w", err)
 		}
@@ -269,8 +267,9 @@ func (h *history) listOnchain(ctx context.Context, req *walletrpc.ListRequest) (
 // collectSwapEntries pulls the latest swap summaries from the swap
 // subserver and normalizes them into WalletEntry rows. Pay rows become
 // SEND, receive rows become RECV; the underlying SwapDirection enum drives
-// the mapping.
-func (h *history) collectSwapEntries(ctx context.Context, pendingOnly bool) (
+// the mapping. The full swap set is always queried so terminal swaps can
+// still hide their internal OOR ledger rows when callers request --pending.
+func (h *history) collectSwapEntries(ctx context.Context) (
 	[]*walletrpc.WalletEntry, swapOORCorrelations, error) {
 
 	if h.deps.SwapService == nil {
@@ -278,9 +277,7 @@ func (h *history) collectSwapEntries(ctx context.Context, pendingOnly bool) (
 	}
 
 	resp, err := h.deps.SwapService.ListSwaps(
-		ctx, &swapclientrpc.ListSwapsRequest{
-			PendingOnly: pendingOnly,
-		},
+		ctx, &swapclientrpc.ListSwapsRequest{},
 	)
 	if err != nil {
 		return nil, swapOORCorrelations{}, err
@@ -409,6 +406,7 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 type swapOORCorrelations struct {
 	payAmountsByFundingSession map[string]map[int64]int
 	claimSessions              map[string]struct{}
+	refundSessions             map[string]struct{}
 }
 
 // swapOORCorrelationsFromSwaps indexes swap session ids by the internal OOR leg
@@ -422,6 +420,7 @@ func swapOORCorrelationsFromSwaps(
 	out := swapOORCorrelations{
 		payAmountsByFundingSession: make(map[string]map[int64]int),
 		claimSessions:              make(map[string]struct{}),
+		refundSessions:             make(map[string]struct{}),
 	}
 
 	for _, swap := range swaps {
@@ -429,15 +428,20 @@ func swapOORCorrelationsFromSwaps(
 		case swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY:
 			session := strings.ToLower(swap.GetFundingSessionId())
 			amount := swap.GetAmountSat()
-			if session == "" || amount <= 0 {
-				continue
+			if session != "" && amount > 0 {
+				if out.payAmountsByFundingSession[session] == nil {
+					out.payAmountsByFundingSession[session] =
+						make(map[int64]int)
+				}
+				out.payAmountsByFundingSession[session][amount]++
 			}
-			if out.payAmountsByFundingSession[session] == nil {
-				out.payAmountsByFundingSession[session] = make(
-					map[int64]int,
-				)
+
+			refundSession := strings.ToLower(
+				swap.GetRefundSessionId(),
+			)
+			if refundSession != "" {
+				out.refundSessions[refundSession] = struct{}{}
 			}
-			out.payAmountsByFundingSession[session][amount]++
 
 		case swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE:
 			session := strings.ToLower(swap.GetClaimSessionId())
@@ -492,8 +496,8 @@ func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
 		}
 
 		switch delta := row.GetAmountSat() - received; {
-		case delta == 0 && sessionInSet(
-			correlations.claimSessions, session,
+		case delta == 0 && internalZeroDeltaSession(
+			correlations, session,
 		):
 
 			hidden[row.GetEntryId()] = struct{}{}
@@ -509,6 +513,16 @@ func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
 	}
 
 	return hidden
+}
+
+// internalZeroDeltaSession reports whether a balanced same-session OOR
+// send+receive pair belongs to a swap-internal claim or refund. Those rows
+// are already represented by the swap entry itself.
+func internalZeroDeltaSession(correlations swapOORCorrelations,
+	session string) bool {
+
+	return sessionInSet(correlations.claimSessions, session) ||
+		sessionInSet(correlations.refundSessions, session)
 }
 
 // sessionInSet reports whether a normalized OOR session id appears in set.

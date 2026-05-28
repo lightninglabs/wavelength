@@ -216,6 +216,7 @@ type fakeSwapService struct {
 	listSwapsResp  *swapclientrpc.ListSwapsResponse
 	listSwapsErr   error
 	listSwapsCalls int
+	listSwapsLast  *swapclientrpc.ListSwapsRequest
 }
 
 func (f *fakeSwapService) StartPay(_ context.Context,
@@ -239,12 +240,31 @@ func (f *fakeSwapService) StartReceive(_ context.Context,
 }
 
 func (f *fakeSwapService) ListSwaps(_ context.Context,
-	_ *swapclientrpc.ListSwapsRequest) (*swapclientrpc.ListSwapsResponse,
+	req *swapclientrpc.ListSwapsRequest) (*swapclientrpc.ListSwapsResponse,
 	error) {
 
 	f.listSwapsCalls++
+	f.listSwapsLast = req
 
-	return f.listSwapsResp, f.listSwapsErr
+	if !req.GetPendingOnly() || f.listSwapsResp == nil {
+		return f.listSwapsResp, f.listSwapsErr
+	}
+
+	filtered := &swapclientrpc.ListSwapsResponse{
+		Swaps: make(
+			[]*swapclientrpc.SwapSummary, 0,
+			len(
+				f.listSwapsResp.GetSwaps(),
+			),
+		),
+	}
+	for _, swap := range f.listSwapsResp.GetSwaps() {
+		if swap.GetPending() {
+			filtered.Swaps = append(filtered.Swaps, swap)
+		}
+	}
+
+	return filtered, f.listSwapsErr
 }
 
 // errFakeStreamClosed is the canonical error returned by streaming-aware

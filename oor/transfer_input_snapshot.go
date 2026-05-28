@@ -75,6 +75,10 @@ type TransferInputSnapshot struct {
 	// path. It must survive snapshots together with RequiredSequence for
 	// CLTV-gated leaves such as vHTLC refunds.
 	RequiredLockTime uint32
+
+	// ExternalSignatures are pre-collected tapscript signatures needed to
+	// resume custom OOR spends after restart.
+	ExternalSignatures []ExternalTaprootScriptSignature
 }
 
 // ToSnapshot converts the transfer input into a portable snapshot.
@@ -125,6 +129,7 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 		snap.RequiredSequence = i.CustomSpend.RequiredSequence
 		snap.RequiredLockTime = i.CustomSpend.RequiredLockTime
 	}
+	snap.ExternalSignatures = cloneExternalSignatures(i.ExternalSignatures)
 
 	return snap, nil
 }
@@ -227,6 +232,9 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 			RequiredLockTime: snap.RequiredLockTime,
 		}
 	}
+	result.ExternalSignatures = cloneExternalSignatures(
+		snap.ExternalSignatures,
+	)
 
 	// For custom spend paths, use the stored PkScript instead of
 	// deriving from keys.
@@ -235,4 +243,28 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 	}
 
 	return result, nil
+}
+
+// cloneExternalSignatures deep-copies custom input external signatures.
+func cloneExternalSignatures(
+	sigs []ExternalTaprootScriptSignature,
+) []ExternalTaprootScriptSignature {
+
+	if len(sigs) == 0 {
+		return nil
+	}
+
+	result := make([]ExternalTaprootScriptSignature, len(sigs))
+	for i := range sigs {
+		// btcec.PublicKey is treated as immutable; clone the mutable
+		// byte slices while sharing the parsed key object.
+		result[i] = ExternalTaprootScriptSignature{
+			PubKey:        sigs[i].PubKey,
+			WitnessScript: bytes.Clone(sigs[i].WitnessScript),
+			Signature:     bytes.Clone(sigs[i].Signature),
+			SigHash:       sigs[i].SigHash,
+		}
+	}
+
+	return result
 }

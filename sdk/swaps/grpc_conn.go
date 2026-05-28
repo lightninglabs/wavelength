@@ -103,6 +103,57 @@ func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context, invoice string,
 	return inSwapConfigFromProto(resp)
 }
 
+// AuthorizeInSwapRefund asks the swap server to sign one prepared cooperative
+// in-swap refund.
+func (g *GRPCSwapServerConn) AuthorizeInSwapRefund(ctx context.Context,
+	paymentHash lntypes.Hash, vhtlcOutpoint string, vhtlcAmountSat int64,
+	vhtlcPolicyTemplate, refundSpendPath, checkpointPSBT []byte) (
+	*InSwapRefundAuthorization, error) {
+
+	if vhtlcOutpoint == "" {
+		return nil, fmt.Errorf("vHTLC outpoint must be provided")
+	}
+	if vhtlcAmountSat <= 0 {
+		return nil, fmt.Errorf("vHTLC amount must be positive")
+	}
+
+	resp, err := g.client.AuthorizeInSwapRefund(
+		ctx, &swaprpc.AuthorizeInSwapRefundRequest{
+			PaymentHash:    append([]byte(nil), paymentHash[:]...),
+			VhtlcOutpoint:  vhtlcOutpoint,
+			VhtlcAmountSat: uint64(vhtlcAmountSat),
+			VhtlcPolicyTemplate: append(
+				[]byte(nil), vhtlcPolicyTemplate...,
+			),
+			RefundSpendPath: append(
+				[]byte(nil), refundSpendPath...,
+			),
+			CheckpointPsbt: append([]byte(nil), checkpointPSBT...),
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	sig := resp.GetSignature()
+	if sig == nil {
+		return nil, fmt.Errorf("AuthorizeInSwapRefund RPC returned " +
+			"empty signature")
+	}
+
+	return &InSwapRefundAuthorization{
+		Signature: TaprootScriptSignature{
+			PubKey: append([]byte(nil), sig.GetPubkey()...),
+			WitnessScript: append(
+				[]byte(nil), sig.GetWitnessScript()...,
+			),
+			Signature: append([]byte(nil), sig.GetSignature()...),
+			SigHash:   sig.GetSighash(),
+		},
+		FailureReason: resp.GetFailureReason(),
+	}, nil
+}
+
 // Close is a no-op because the caller owns the underlying grpc.ClientConn.
 func (g *GRPCSwapServerConn) Close() error {
 	return nil

@@ -426,6 +426,174 @@ func TestHistoryHidesPayFundingOORInput(t *testing.T) {
 	require.Equal(t, int64(-1_234), entries[0].GetAmountSat())
 }
 
+// TestHistoryHidesPayRefundOORSession confirms the cooperative refund OOR
+// created for a failed pay swap stays internal to the swap row. The wallet
+// activity entry should be the refunded payment hash, not a synthetic
+// ledger-N SEND for the refund self-transfer.
+func TestHistoryHidesPayRefundOORSession(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+
+	refundSession := testBytes(32, 0x61)
+	refundHex := testSessionString(t, refundSession)
+
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: "payment-hash",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_PAY,
+				State: swapclientrpc.
+					SwapState_SWAP_STATE_REFUNDED,
+				AmountSat:       1_000,
+				UpdatedAtUnix:   200,
+				RefundSessionId: refundHex,
+			},
+		},
+	}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOSent,
+				AmountSat:      1_000,
+				DebitAccount:   ledger.AccountTransfersOut,
+				CreditAccount:  ledger.AccountVTXOBalance,
+				SessionId:      refundSession,
+				EntryId:        17,
+				CreatedAtUnixS: 100,
+			},
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOReceived,
+				AmountSat:      1_000,
+				DebitAccount:   ledger.AccountVTXOBalance,
+				CreditAccount:  ledger.AccountTransfersIn,
+				Txid:           refundHex,
+				OutputIndex:    0,
+				EntryId:        18,
+				CreatedAtUnixS: 101,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "payment-hash", entries[0].GetId())
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_SEND, entries[0].GetKind(),
+	)
+	require.Equal(
+		t, walletrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		entries[0].GetStatus(),
+	)
+	require.Equal(
+		t, walletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDED,
+		entries[0].GetProgress().GetPhase(),
+	)
+}
+
+// TestHistoryPendingFilterKeepsTerminalSwapCorrelations confirms --pending
+// still uses terminal swap metadata to hide internal OOR funding and refund
+// ledger legs before filtering terminal swap rows out of the response.
+func TestHistoryPendingFilterKeepsTerminalSwapCorrelations(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+
+	fundingSession := testBytes(32, 0x71)
+	fundingHex := testSessionString(t, fundingSession)
+	refundSession := testBytes(32, 0x81)
+	refundHex := testSessionString(t, refundSession)
+
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: "completed-payment",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_PAY,
+				State: swapclientrpc.
+					SwapState_SWAP_STATE_COMPLETED,
+				AmountSat:        1_000,
+				UpdatedAtUnix:    200,
+				FundingSessionId: fundingHex,
+			},
+			{
+				PaymentHash: "refunded-payment",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_PAY,
+				State: swapclientrpc.
+					SwapState_SWAP_STATE_REFUNDED,
+				AmountSat:       1_000,
+				UpdatedAtUnix:   300,
+				RefundSessionId: refundHex,
+			},
+		},
+	}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOSent,
+				AmountSat:      9_000,
+				DebitAccount:   ledger.AccountTransfersOut,
+				CreditAccount:  ledger.AccountVTXOBalance,
+				SessionId:      fundingSession,
+				EntryId:        21,
+				CreatedAtUnixS: 100,
+			},
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOReceived,
+				AmountSat:      8_000,
+				DebitAccount:   ledger.AccountVTXOBalance,
+				CreditAccount:  ledger.AccountTransfersIn,
+				Txid:           fundingHex,
+				OutputIndex:    1,
+				EntryId:        22,
+				CreatedAtUnixS: 101,
+			},
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOSent,
+				AmountSat:      1_000,
+				DebitAccount:   ledger.AccountTransfersOut,
+				CreditAccount:  ledger.AccountVTXOBalance,
+				SessionId:      refundSession,
+				EntryId:        23,
+				CreatedAtUnixS: 102,
+			},
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOReceived,
+				AmountSat:      1_000,
+				DebitAccount:   ledger.AccountVTXOBalance,
+				CreditAccount:  ledger.AccountTransfersIn,
+				Txid:           refundHex,
+				OutputIndex:    0,
+				EntryId:        24,
+				CreatedAtUnixS: 103,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{
+		PendingOnly: true,
+	})
+	require.NoError(t, err)
+	require.Empty(t, resp.GetActivity().GetEntries())
+	require.False(
+		t, swap.listSwapsLast.GetPendingOnly(),
+		"history must fetch all swaps so terminal rows can hide "+
+			"their internal OOR ledger legs before --pending "+
+			"filters the visible rows",
+	)
+}
+
 // TestHistoryKeepsSameAmountUnmatchedFundingInput confirms pay-swap funding
 // legs are hidden by funding session, not by amount alone.
 func TestHistoryKeepsSameAmountUnmatchedFundingInput(t *testing.T) {

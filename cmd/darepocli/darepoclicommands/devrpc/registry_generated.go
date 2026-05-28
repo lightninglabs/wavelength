@@ -127,6 +127,20 @@ func generatedRegistry() []serviceSpec {
 					Comments: "SendOOR initiates an out-of-round transfer directly between the\nclient and operator, without waiting for a round.",
 				},
 				{
+					Name:     "PrepareOOR",
+					Aliases:  []string{"prepare-oor"},
+					Input:    "daemonrpc.PrepareOORRequest",
+					Output:   "daemonrpc.PrepareOORResponse",
+					Comments: "PrepareOOR builds the deterministic OOR package without submitting it.\nThis lets callers collect signatures from external custom-input\nparticipants before calling SendOOR with the same parameters.",
+				},
+				{
+					Name:     "SignOORCustomInput",
+					Aliases:  []string{"sign-oor-custom-input"},
+					Input:    "daemonrpc.SignOORCustomInputRequest",
+					Output:   "daemonrpc.SignOORCustomInputResponse",
+					Comments: "SignOORCustomInput signs one prepared custom OOR checkpoint input with\nthe daemon identity key.",
+				},
+				{
 					Name:     "RefreshVTXOs",
 					Aliases:  []string{"refresh-vtxos"},
 					Input:    "daemonrpc.RefreshVTXOsRequest",
