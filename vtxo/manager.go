@@ -1054,23 +1054,6 @@ func (m *Manager) rollbackSpend(ctx context.Context,
 	}
 }
 
-// deleteReservation drops the durable spending-reservation row for one
-// outpoint. It is best-effort: a nil store skips the call, and an error is
-// logged but never propagated since the startup sweep is the backstop and a
-// stale row is harmless (it only delays a future orphan release by one row).
-func (m *Manager) deleteReservation(ctx context.Context, op wire.OutPoint) {
-	if m.cfg.ReservationStore == nil {
-		return
-	}
-
-	if err := m.cfg.ReservationStore.DeleteReservation(ctx, op); err != nil {
-		m.logger(ctx).WarnS(ctx, "Failed to delete spending reservation",
-			err,
-			slog.String("outpoint", op.String()),
-		)
-	}
-}
-
 // sweepOrphanedReservations releases Spending VTXOs that have no live
 // reservation row. A reservation row exists IFF the owning spend session was
 // durably checkpointed, and a checkpointed session is always restored+resumed
@@ -1089,8 +1072,11 @@ func (m *Manager) sweepOrphanedReservations(ctx context.Context) {
 		ctx, VTXOStatusSpending,
 	)
 	if err != nil {
-		m.logger(ctx).ErrorS(ctx,
-			"Reservation sweep: list Spending VTXOs failed", err)
+		m.logger(ctx).ErrorS(
+			ctx,
+			"Reservation sweep: list Spending VTXOs failed",
+			err,
+		)
 
 		return
 	}
@@ -1103,9 +1089,11 @@ func (m *Manager) sweepOrphanedReservations(ctx context.Context) {
 	if err != nil {
 		// Never release on incomplete info: an unreadable reservation
 		// list could otherwise free a VTXO an in-flight spend owns.
-		m.logger(ctx).ErrorS(ctx,
+		m.logger(ctx).ErrorS(
+			ctx,
 			"Reservation sweep aborted: list reservations failed",
-			err)
+			err,
+		)
 
 		return
 	}
@@ -1132,8 +1120,10 @@ func (m *Manager) sweepOrphanedReservations(ctx context.Context) {
 
 		result := m.askVTXOActor(ctx, ref, &SpendReleasedEvent{})
 		if _, err := result.Unpack(); err != nil {
-			m.logger(ctx).WarnS(ctx,
-				"Reservation sweep: release failed", err,
+			m.logger(ctx).WarnS(
+				ctx,
+				"Reservation sweep: release failed",
+				err,
 				slog.String("outpoint", op.String()),
 			)
 
@@ -1187,11 +1177,11 @@ func (m *Manager) handleReleaseSpend(ctx context.Context,
 			continue
 		}
 
-		// The VTXO has left SpendingState, so drop its durable
-		// reservation row. Best-effort: a stale row is harmless and
-		// would be reconciled by the next startup sweep.
-		m.deleteReservation(ctx, op)
-
+		// The SpendReleasedEvent above moved the VTXO out of
+		// SpendingState, which deletes its durable reservation row in
+		// the same transaction as the status change (see the VTXO
+		// actor's processStatusUpdate), so no separate delete is needed
+		// here.
 		released++
 	}
 
@@ -1241,11 +1231,11 @@ func (m *Manager) handleCompleteSpend(ctx context.Context,
 			)
 		}
 
-		// The VTXO has left SpendingState, so drop its durable
-		// reservation row. Best-effort: a stale row is harmless and
-		// would be reconciled by the next startup sweep.
-		m.deleteReservation(ctx, op)
-
+		// The SpendCompletedEvent above moved the VTXO out of
+		// SpendingState, which deletes its durable reservation row in
+		// the same transaction as the status change (see the VTXO
+		// actor's processStatusUpdate), so no separate delete is needed
+		// here.
 		completed++
 	}
 

@@ -82,6 +82,14 @@ func (m *MockVTXOStore) UpdateVTXOStatus(ctx context.Context,
 	return args.Error(0)
 }
 
+func (m *MockVTXOStore) UpdateVTXOStatusReleasingReservation(
+	ctx context.Context, outpoint wire.OutPoint, status VTXOStatus) error {
+
+	args := m.Called(ctx, outpoint, status)
+
+	return args.Error(0)
+}
+
 func (m *MockVTXOStore) MarkForfeited(ctx context.Context,
 	outpoint wire.OutPoint, forfeitTxID chainhash.Hash) error {
 

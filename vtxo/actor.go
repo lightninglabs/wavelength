@@ -548,7 +548,8 @@ func (a *VTXOActor) processStatusUpdate(ctx context.Context,
 		slog.Bool("is_forfeiting_with_tx", isForfeitingWithTx),
 	)
 
-	if isForfeitingWithTx {
+	switch {
+	case isForfeitingWithTx:
 		err = a.cfg.Store.MarkForfeiting(
 			ctx, m.Outpoint, m.RoundID, m.ForfeitTx,
 		)
@@ -557,7 +558,16 @@ func (a *VTXOActor) processStatusUpdate(ctx context.Context,
 			slog.String("round_id", m.RoundID),
 			slog.Bool("error", err != nil),
 		)
-	} else {
+
+	case m.ReleaseSpendReservation:
+		// Leaving SpendingState: drop the durable reservation row in
+		// the same transaction as the status change so a stale row can
+		// never mask a future orphan on this outpoint.
+		err = a.cfg.Store.UpdateVTXOStatusReleasingReservation(
+			ctx, m.Outpoint, m.NewStatus,
+		)
+
+	default:
 		err = a.cfg.Store.UpdateVTXOStatus(
 			ctx, m.Outpoint, m.NewStatus,
 		)

@@ -11,24 +11,17 @@ import (
 )
 
 // mockReservationStore is a test double for the durable spending-reservation
-// index. It records DeleteReservation calls and returns a fixed reserved set
-// (or error) from ListReservedOutpoints.
+// index. It returns a fixed reserved set (or error) from ListReservedOutpoints,
+// which is the only method the VTXO manager's startup sweep needs. Row deletion
+// is no longer a manager concern: it happens atomically with the VTXO status
+// change inside the actor's transition (the flag is asserted by
+// TestSpendReleasedFromSpendingState and friends; the atomic delete by the
+// db-level TestUpdateVTXOStatusReleasingReservation).
 type mockReservationStore struct {
 	mu sync.Mutex
 
-	reserved    []wire.OutPoint
-	listErr     error
-	deleteCalls []wire.OutPoint
-}
-
-func (m *mockReservationStore) DeleteReservation(_ context.Context,
-	op wire.OutPoint) error {
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.deleteCalls = append(m.deleteCalls, op)
-
-	return nil
+	reserved []wire.OutPoint
+	listErr  error
 }
 
 func (m *mockReservationStore) ListReservedOutpoints(_ context.Context) (
@@ -44,15 +37,6 @@ func (m *mockReservationStore) ListReservedOutpoints(_ context.Context) (
 	copy(out, m.reserved)
 
 	return out, nil
-}
-
-func (m *mockReservationStore) getDeleteCalls() []wire.OutPoint {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]wire.OutPoint, len(m.deleteCalls))
-	copy(out, m.deleteCalls)
-
-	return out
 }
 
 // Compile-time check that mockReservationStore satisfies the interface.
@@ -113,7 +97,9 @@ func TestSweepReleasesOnlyOrphanedReservations(t *testing.T) {
 	orphanB := makeDescriptor(t, 30000, 2)
 
 	resStore := &mockReservationStore{
-		reserved: []wire.OutPoint{reserved.Outpoint},
+		reserved: []wire.OutPoint{
+			reserved.Outpoint,
+		},
 	}
 
 	mgr, store := newSpendingManager(
@@ -186,9 +172,12 @@ func TestSweepSkippedWhenStoreNil(t *testing.T) {
 	require.True(t, ok, "VTXO must remain Spending when store is nil")
 }
 
-// TestReleaseSpendDeletesReservation verifies that a successful spend release
-// deletes the VTXO's durable reservation row.
-func TestReleaseSpendDeletesReservation(t *testing.T) {
+// TestReleaseSpendTransitionsToLive verifies that a successful spend release
+// drives the VTXO out of SpendingState back to LiveState. The reservation row
+// is dropped atomically inside the actor's status transition, so the manager
+// no longer issues a separate delete (see the db-level
+// TestUpdateVTXOStatusReleasingReservation).
+func TestReleaseSpendTransitionsToLive(t *testing.T) {
 	t.Parallel()
 
 	vtxo1 := makeDescriptor(t, 50000, 0)
@@ -209,19 +198,16 @@ func TestReleaseSpendDeletesReservation(t *testing.T) {
 	require.True(t, ok, "expected *ReleaseSpendResponse")
 	require.Equal(t, 1, releaseResp.ReleasedCount)
 
-	// The reservation row for the released outpoint must be deleted.
-	require.Equal(
-		t, []wire.OutPoint{vtxo1.Outpoint}, resStore.getDeleteCalls(),
-	)
-
 	// Actor is back in LiveState.
 	_, ok = actorState(t, mgr, vtxo1.Outpoint).(*LiveState)
 	require.True(t, ok, "expected LiveState after release")
 }
 
-// TestCompleteSpendDeletesReservation verifies that completing a spend deletes
-// the VTXO's durable reservation row.
-func TestCompleteSpendDeletesReservation(t *testing.T) {
+// TestCompleteSpendTransitionsToSpent verifies that completing a spend drives
+// the VTXO out of SpendingState to terminal SpentState. As with release, the
+// reservation row deletion is atomic with the status change in the actor, not
+// a separate manager call.
+func TestCompleteSpendTransitionsToSpent(t *testing.T) {
 	t.Parallel()
 
 	vtxo1 := makeDescriptor(t, 50000, 0)
@@ -240,10 +226,6 @@ func TestCompleteSpendDeletesReservation(t *testing.T) {
 	completeResp, ok := resp.(*CompleteSpendResponse)
 	require.True(t, ok, "expected *CompleteSpendResponse")
 	require.Equal(t, 1, completeResp.CompletedCount)
-
-	require.Equal(
-		t, []wire.OutPoint{vtxo1.Outpoint}, resStore.getDeleteCalls(),
-	)
 
 	_, ok = actorState(t, mgr, vtxo1.Outpoint).(*SpentState)
 	require.True(t, ok, "expected SpentState after complete")

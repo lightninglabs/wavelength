@@ -456,6 +456,15 @@ type VTXOStore interface {
 	UpdateVTXOStatus(ctx context.Context, outpoint wire.OutPoint,
 		status VTXOStatus) error
 
+	// UpdateVTXOStatusReleasingReservation updates a VTXO's status and
+	// deletes its spending-reservation row in a single transaction. Used
+	// for transitions that move a VTXO out of SpendingState (completed,
+	// released, or escalated to unilateral exit) so the durable index can
+	// never retain a stale row that would mask a future orphan on the same
+	// outpoint.
+	UpdateVTXOStatusReleasingReservation(ctx context.Context,
+		outpoint wire.OutPoint, status VTXOStatus) error
+
 	// MarkForfeiting transitions a VTXO to forfeiting state and persists
 	// the signed forfeit transaction for crash recovery. Called when
 	// entering the forfeit flow before the new round's commitment confirms.
@@ -482,15 +491,14 @@ type VTXOStore interface {
 }
 
 // SpendingReservationStore is the subset of the durable spending-reservation
-// index the VTXO manager needs: it lists live reservations during the startup
-// orphan sweep and deletes reservations when a VTXO leaves SpendingState. It
-// is intentionally narrow so the vtxo package does not import the concrete db
+// index the VTXO manager needs for its startup orphan sweep: it lists live
+// reservations so the sweep can distinguish orphaned Spending VTXOs from
+// in-flight ones. Row deletion is not part of this interface because it
+// happens atomically with the VTXO status change inside the VTXO actor's
+// transition (see VTXOStore.UpdateVTXOStatusReleasingReservation). It is
+// intentionally narrow so the vtxo package does not import the concrete db
 // type or the oor package.
 type SpendingReservationStore interface {
-	// DeleteReservation removes the reservation for one outpoint. Called
-	// when the VTXO leaves SpendingState (released or completed).
-	DeleteReservation(ctx context.Context, outpoint wire.OutPoint) error
-
 	// ListReservedOutpoints returns every outpoint currently reserved by a
 	// live spend owner. Used by the startup sweep to distinguish orphaned
 	// Spending VTXOs (no reservation row) from in-flight ones.

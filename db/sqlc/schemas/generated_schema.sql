@@ -898,6 +898,29 @@ CREATE TABLE rounds (
     FOREIGN KEY (status) REFERENCES round_statuses(status_name)
 );
 
+CREATE TABLE spending_reservations (
+    -- outpoint_hash identifies the reserved VTXO outpoint. The 32-byte
+    -- length check rejects truncated or malformed hashes at the DB layer.
+    outpoint_hash BLOB NOT NULL CHECK (length(outpoint_hash) = 32),
+
+    -- outpoint_index is the output index of the reserved outpoint.
+    outpoint_index INTEGER NOT NULL CHECK (outpoint_index >= 0),
+
+    -- owner_kind encodes the reservation owner type:
+    --   0 = oor outgoing session
+    owner_kind INTEGER NOT NULL,
+
+    -- owner_id is the owner's stable identifier (e.g. the OOR session id, a
+    -- 32-byte hash). The length check mirrors outpoint_hash.
+    owner_id BLOB NOT NULL CHECK (length(owner_id) = 32),
+
+    -- created_at is the unix timestamp when the reservation was created.
+    created_at BIGINT NOT NULL,
+
+    -- Primary key keeps one reservation row per reserved outpoint.
+    PRIMARY KEY (outpoint_hash, outpoint_index)
+);
+
 CREATE TABLE unilateral_exit_jobs (
     -- target_outpoint_hash identifies the target transaction.
     target_outpoint_hash BLOB NOT NULL,

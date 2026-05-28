@@ -61,6 +61,13 @@ func (s *testCustomInputStore) UpdateVTXOStatus(context.Context, wire.OutPoint,
 	return fmt.Errorf("unexpected UpdateVTXOStatus call")
 }
 
+func (s *testCustomInputStore) UpdateVTXOStatusReleasingReservation(
+	context.Context, wire.OutPoint, vtxo.VTXOStatus) error {
+
+	return fmt.Errorf("unexpected UpdateVTXOStatusReleasingReservation " +
+		"call")
+}
+
 func (s *testCustomInputStore) MarkForfeiting(context.Context, wire.OutPoint,
 	string, *wire.MsgTx) error {
 

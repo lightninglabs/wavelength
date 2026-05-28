@@ -151,6 +151,13 @@ func (s *testVTXOStore) UpdateVTXOStatus(_ context.Context,
 	return nil
 }
 
+func (s *testVTXOStore) UpdateVTXOStatusReleasingReservation(
+	ctx context.Context, outpoint wire.OutPoint,
+	status vtxo.VTXOStatus) error {
+
+	return s.UpdateVTXOStatus(ctx, outpoint, status)
+}
+
 // MarkForfeiting is unused by these tests.
 func (s *testVTXOStore) MarkForfeiting(_ context.Context, _ wire.OutPoint,
 	_ string, _ *wire.MsgTx) error {

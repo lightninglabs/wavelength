@@ -132,6 +132,12 @@ type VTXOStatusUpdate struct {
 	// transitions. Nil for other status updates. Persisted for crash
 	// recovery.
 	ForfeitTx *wire.MsgTx
+
+	// ReleaseSpendReservation, when true, instructs the persistence layer
+	// to delete this outpoint's durable spending-reservation row in the
+	// same transaction as the status update. Set on transitions that move
+	// the VTXO out of SpendingState so the row never outlives the spend.
+	ReleaseSpendReservation bool
 }
 
 func (m *VTXOStatusUpdate) vtxoOutMsgSealed() {}

@@ -313,6 +313,38 @@ func (s *VTXOPersistenceStore) UpdateVTXOStatus(
 	})
 }
 
+// UpdateVTXOStatusReleasingReservation updates a VTXO's status and deletes its
+// spending-reservation row in the same transaction. It is used for transitions
+// that move a VTXO out of SpendingState so the durable index never retains a
+// stale row that could mask a future orphan on the same outpoint. Deleting a
+// non-existent row is a no-op, so this is safe on outpoints that were never
+// reserved.
+func (s *VTXOPersistenceStore) UpdateVTXOStatusReleasingReservation(
+	ctx context.Context, outpoint wire.OutPoint, status vtxo.VTXOStatus,
+) error {
+
+	writeTxOpts := WriteTxOption()
+
+	return s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
+		statusParams := sqlc.UpdateVTXOStatusParams{
+			OutpointHash:   outpoint.Hash[:],
+			OutpointIndex:  int32(outpoint.Index),
+			Status:         int32(status),
+			LastUpdateTime: s.clock.Now().Unix(),
+		}
+		if err := q.UpdateVTXOStatus(ctx, statusParams); err != nil {
+			return err
+		}
+
+		return q.DeleteSpendingReservation(
+			ctx, sqlc.DeleteSpendingReservationParams{
+				OutpointHash:  outpoint.Hash[:],
+				OutpointIndex: int32(outpoint.Index),
+			},
+		)
+	})
+}
+
 // MarkForfeiting transitions a VTXO to forfeiting state and persists the signed
 // forfeit transaction for crash recovery. Called when entering the forfeit flow
 // before the new round's commitment confirms.
