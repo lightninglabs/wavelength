@@ -876,6 +876,22 @@ func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 			})
 		}
 		if spentVHTLC != nil {
+			refundOutput, err := s.observeRefundOutput(ctx)
+			if err != nil {
+				return newRetryableActionError(
+					fmt.Errorf("query in-swap refund "+
+						"output after spend: %w", err),
+				)
+			}
+			if refundOutput != nil {
+				return s.markRefundOutputIndexed(
+					ctx, refundOutput,
+				)
+			}
+			if len(s.refundReceiveScript) > 0 {
+				return s.markRefunded(ctx, spentVHTLC)
+			}
+
 			reason := "funded vHTLC spent without claim preimage"
 			if spentVHTLC.SpentByTxID != "" {
 				reason = fmt.Sprintf("%s (spender %s)", reason,
@@ -1226,10 +1242,10 @@ func preparedCustomInput(prepared *PreparedOOR,
 		outpoint)
 }
 
-// observeRefundOutput returns the wallet output created by the timeout refund
-// once the daemon indexes the persisted refund destination. The refund output
-// is the most direct proof that the client recovered funds, while the spent
-// vHTLC record can lag behind or be unavailable depending on indexer timing.
+// observeRefundOutput returns the wallet output created by a refund once the
+// daemon indexes the persisted refund destination. The refund output is the
+// most direct proof that the client recovered funds, while the spent vHTLC
+// record can lag behind or be unavailable depending on indexer timing.
 func (s *paySession) observeRefundOutput(ctx context.Context) (*VTXOInfo,
 	error) {
 
@@ -1248,9 +1264,17 @@ func (s *paySession) observeRefundOutput(ctx context.Context) (*VTXOInfo,
 	}
 
 	if s.vhtlcAmount != 0 && refundOutput.AmountSat != s.vhtlcAmount {
-		return nil, fmt.Errorf("refund output amount %d does not "+
-			"match vHTLC amount %d", refundOutput.AmountSat,
-			s.vhtlcAmount)
+		s.client.log.WarnS(
+			ctx,
+			"Ignoring refund output with unexpected amount",
+			nil,
+			btclog.Hex("hash", s.cfg.PaymentHash[:]),
+			slog.String("outpoint", refundOutput.Outpoint),
+			slog.Int64("amount", refundOutput.AmountSat),
+			slog.Int64("want_amount", s.vhtlcAmount),
+		)
+
+		return nil, nil
 	}
 
 	return refundOutput, nil
