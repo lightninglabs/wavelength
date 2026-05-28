@@ -89,9 +89,9 @@ func TestKindFromSwapDirection(t *testing.T) {
 }
 
 // TestStatusFromSwapState covers every branch: pending always wins,
-// terminal happy states map to COMPLETE, terminal failure states map
-// to FAILED, and any other non-pending state is treated as PENDING so
-// callers keep polling.
+// completed maps to COMPLETE, terminal failure states map to FAILED,
+// and any other non-pending state is treated as PENDING so callers keep
+// polling.
 func TestStatusFromSwapState(t *testing.T) {
 	t.Parallel()
 
@@ -102,26 +102,27 @@ func TestStatusFromSwapState(t *testing.T) {
 			swapclientrpc.SwapState_SWAP_STATE_COMPLETED, true,
 		),
 	)
+	require.Equal(
+		t, walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		statusFromSwapState(
+			swapclientrpc.SwapState_SWAP_STATE_REFUNDED, true,
+		),
+	)
 
-	// Terminal completed / refunded → COMPLETE.
+	// Terminal completed -> COMPLETE.
 	require.Equal(
 		t, walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		statusFromSwapState(
 			swapclientrpc.SwapState_SWAP_STATE_COMPLETED, false,
 		),
 	)
-	require.Equal(
-		t, walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
-		statusFromSwapState(
-			swapclientrpc.SwapState_SWAP_STATE_REFUNDED, false,
-		),
-	)
 
-	// Terminal failed states → FAILED.
+	// Terminal failed states, including refunded payments, -> FAILED.
 	for _, s := range []swapclientrpc.SwapState{
 		swapclientrpc.SwapState_SWAP_STATE_FAILED,
 		swapclientrpc.SwapState_SWAP_STATE_EXPIRED,
 		swapclientrpc.SwapState_SWAP_STATE_NEEDS_INTERVENTION,
+		swapclientrpc.SwapState_SWAP_STATE_REFUNDED,
 	} {
 		require.Equal(
 			t, walletrpc.EntryStatus_ENTRY_STATUS_FAILED,

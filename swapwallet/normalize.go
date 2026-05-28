@@ -219,7 +219,9 @@ func kindFromSwapDirection(dir swapclientrpc.SwapDirection,
 // statusFromSwapState collapses every backing SwapState plus the pending
 // flag into the three user-facing wallet states. Pending governs PENDING
 // vs COMPLETE / FAILED; terminal states pick between COMPLETE and FAILED
-// based on whether the run reached the happy path.
+// based on whether the run reached the happy path. REFUNDED is a terminal
+// failure from the payment perspective; the phase carries the extra context
+// that funds returned.
 func statusFromSwapState(state swapclientrpc.SwapState,
 	pending bool) walletrpc.EntryStatus {
 
@@ -228,13 +230,13 @@ func statusFromSwapState(state swapclientrpc.SwapState,
 	}
 
 	switch state {
-	case swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
-		swapclientrpc.SwapState_SWAP_STATE_REFUNDED:
+	case swapclientrpc.SwapState_SWAP_STATE_COMPLETED:
 		return walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE
 
 	case swapclientrpc.SwapState_SWAP_STATE_FAILED,
 		swapclientrpc.SwapState_SWAP_STATE_EXPIRED,
-		swapclientrpc.SwapState_SWAP_STATE_NEEDS_INTERVENTION:
+		swapclientrpc.SwapState_SWAP_STATE_NEEDS_INTERVENTION,
+		swapclientrpc.SwapState_SWAP_STATE_REFUNDED:
 		return walletrpc.EntryStatus_ENTRY_STATUS_FAILED
 
 	default:
