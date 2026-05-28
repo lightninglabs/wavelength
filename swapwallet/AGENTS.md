@@ -108,10 +108,10 @@ default builds avoid the swap executor's dependency graph.
   stuck row appears as FAILED even when the caller asks for
   `pending_only=false`.
 - **DEPOSIT rows backed by the `wallet_utxo_created` ledger event**
-  are pinned to `ENTRY_STATUS_PENDING` even after chain confirmation
-  (`statusForLedgerRow`), because a boarding UTXO landing on-chain
-  is not yet a spendable VTXO. Promotion to COMPLETE waits for a
-  follow-up `boarded-into-round` ledger event (issue #503).
+  mirror the ledger confirmation status. Confirmed on-chain boarding
+  deposits surface as `ENTRY_STATUS_COMPLETE`, while unconfirmed
+  boarding funds are represented by the synthetic
+  `boarding-unconfirmed` pending row from `GetBalance`.
 - **`Balance` projection** maps daemonrpc fields onto the walletdkrpc
   shape: `confirmed_sat` is VTXO-only (`vtxo_balance_sat`),
   `pending_in_sat` sums `boarding_confirmed_sat +
