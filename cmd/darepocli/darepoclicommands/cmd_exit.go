@@ -3,14 +3,14 @@ package darepoclicommands
 import (
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/spf13/cobra"
 )
 
 // newExitCmd builds the top-level `exit` verb. It dials
-// walletrpc.WalletService.Exit which proxies daemonrpc.Unroll to spawn
+// walletdkrpc.WalletService.Exit which proxies daemonrpc.Unroll to spawn
 // a durable unilateral-exit job. The `exit status` subcommand reads the
-// job status via walletrpc.WalletService.ExitStatus.
+// job status via walletdkrpc.WalletService.ExitStatus.
 //
 // `exit` replaces the legacy `unroll` verb at the user surface; the
 // underlying daemon actor/registry pathway is unchanged.
@@ -51,14 +51,16 @@ func walletExit(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	req := &walletrpc.ExitRequest{Outpoint: outpoint}
+	req := &walletdkrpc.ExitRequest{Outpoint: outpoint}
 
 	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
-		return walletDryRunPreview("walletrpc.WalletService/Exit", req)
+		return walletDryRunPreview(
+			"walletdkrpc.WalletService/Exit", req,
+		)
 	}
 
 	return withWalletClient(
-		cmd, func(c walletrpc.WalletServiceClient) error {
+		cmd, func(c walletdkrpc.WalletServiceClient) error {
 			resp, err := c.Exit(cmd.Context(), req)
 			if err != nil {
 				return fmt.Errorf("exit: %w", err)
@@ -70,7 +72,7 @@ func walletExit(cmd *cobra.Command, _ []string) error {
 }
 
 // newExitStatusCmd builds the `exit status` subcommand. It dials
-// walletrpc.WalletService.ExitStatus which proxies
+// walletdkrpc.WalletService.ExitStatus which proxies
 // daemonrpc.GetUnrollStatus.
 func newExitStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -100,10 +102,10 @@ func walletExitStatus(cmd *cobra.Command, _ []string) error {
 	}
 
 	return withWalletClient(
-		cmd, func(c walletrpc.WalletServiceClient) error {
+		cmd, func(c walletdkrpc.WalletServiceClient) error {
 			resp, err := c.ExitStatus(
 				cmd.Context(),
-				&walletrpc.ExitStatusRequest{
+				&walletdkrpc.ExitStatusRequest{
 					Outpoint: outpoint,
 				},
 			)

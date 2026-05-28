@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,14 +14,14 @@ import (
 func TestRenderWalletInspectionExpanded(t *testing.T) {
 	t.Parallel()
 
-	resp := &walletrpc.InspectActivityResponse{
-		Entry: &walletrpc.WalletEntry{
+	resp := &walletdkrpc.InspectActivityResponse{
+		Entry: &walletdkrpc.WalletEntry{
 			Id:        "payment-hash",
-			Kind:      walletrpc.EntryKind_ENTRY_KIND_SEND,
-			Status:    walletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+			Kind:      walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+			Status:    walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
 			AmountSat: -1234,
 		},
-		Swap: &walletrpc.ActivitySwapTrace{
+		Swap: &walletdkrpc.ActivitySwapTrace{
 			PaymentHash:      "payment-hash",
 			Direction:        "SWAP_DIRECTION_PAY",
 			State:            "SWAP_STATE_WAITING_FOR_CLAIM",
@@ -31,7 +31,7 @@ func TestRenderWalletInspectionExpanded(t *testing.T) {
 			VhtlcAmountSat:   1234,
 			FundingSessionId: "funding-session",
 		},
-		Vtxos: []*walletrpc.ActivityVTXOTrace{
+		Vtxos: []*walletdkrpc.ActivityVTXOTrace{
 			{
 				Id:        "input-id",
 				AmountSat: 999745,
@@ -47,7 +47,7 @@ func TestRenderWalletInspectionExpanded(t *testing.T) {
 				Source:    "ledger",
 			},
 		},
-		LedgerRows: []*walletrpc.ActivityLedgerTrace{
+		LedgerRows: []*walletdkrpc.ActivityLedgerTrace{
 			{
 				EntryId:            13,
 				Type:               "oor",
@@ -91,22 +91,22 @@ func TestRenderWalletInspectionExpandedDeduplicatesPaymentHash(t *testing.T) {
 	const vtxoOutpoint = "0b02c92e32692b03e4f8a336c3e21406" +
 		"cf68fa4057f699e6f95b5020d2fc800a:0"
 
-	request := &walletrpc.WalletEntryRequest{
-		Request: &walletrpc.WalletEntryRequest_LightningInvoice{
-			LightningInvoice: &walletrpc.LightningInvoiceRequest{
+	request := &walletdkrpc.WalletEntryRequest{
+		Request: &walletdkrpc.WalletEntryRequest_LightningInvoice{
+			LightningInvoice: &walletdkrpc.LightningInvoiceRequest{
 				Invoice:     "lntbs50u1example",
 				PaymentHash: paymentHash,
 			},
 		},
 	}
 
-	resp := &walletrpc.InspectActivityResponse{
-		Entry: &walletrpc.WalletEntry{
+	resp := &walletdkrpc.InspectActivityResponse{
+		Entry: &walletdkrpc.WalletEntry{
 			Id:      paymentHash,
-			Kind:    walletrpc.EntryKind_ENTRY_KIND_RECV,
-			Status:  walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+			Kind:    walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+			Status:  walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 			Request: request,
-			Progress: &walletrpc.WalletEntryProgress{
+			Progress: &walletdkrpc.WalletEntryProgress{
 				PaymentHash:  paymentHash,
 				VtxoOutpoint: vtxoOutpoint,
 			},

@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 )
 
 // receiver drives wallet-layer Recv flows. It is a thin composition over
@@ -31,8 +31,8 @@ func newReceiver(deps *Deps, runtime *Runtime) *receiver {
 // terminal transitions) is owned by the swap subsystem; the wallet layer
 // observes those transitions through the monitor loop and projects them
 // onto the WalletEntry shape.
-func (r *receiver) Recv(ctx context.Context, req *walletrpc.RecvRequest) (
-	*walletrpc.RecvResponse, error) {
+func (r *receiver) Recv(ctx context.Context, req *walletdkrpc.RecvRequest) (
+	*walletdkrpc.RecvResponse, error) {
 
 	if r == nil || r.deps == nil || r.deps.SwapService == nil {
 		return nil, ErrSwapBackendUnavailable
@@ -72,10 +72,10 @@ func (r *receiver) Recv(ctx context.Context, req *walletrpc.RecvRequest) (
 	// the raw (possibly-zero) direction.
 	entry := swapEntryFromSummary(
 		startResp.GetSwap(), req.GetMemo(), "",
-		walletrpc.EntryKind_ENTRY_KIND_RECV,
+		walletdkrpc.EntryKind_ENTRY_KIND_RECV,
 	)
 
-	return &walletrpc.RecvResponse{
+	return &walletdkrpc.RecvResponse{
 		Invoice: startResp.GetInvoice(),
 		Entry:   entry,
 	}, nil

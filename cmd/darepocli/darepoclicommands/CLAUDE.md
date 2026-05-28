@@ -12,7 +12,7 @@ The CLI surface is split into three tiers:
 
 1. **Top-level wallet verbs (implicit, no parent)** — the seven everyday
    commands that map 1:1 to what a user does day-to-day. All seven are
-   walletrpc-backed.
+   walletdkrpc-backed.
 2. **Daemon introspection at root** — getinfo, schema, mcp, dev.
 3. **Advanced subtrees (`ark`, `swap`)** — raw daemonrpc/swapclientrpc
    commands for power users and operator runbooks.
@@ -21,14 +21,14 @@ The CLI surface is split into three tiers:
 
 | Command | RPC | Description |
 |---------|-----|-------------|
-| `create` | `walletrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / DAREPOD_WALLET_PASSWORD / --wallet_password_file |
-| `unlock` | `walletrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
-| `send <dest>` | `walletrpc.Send` | Outbound payment. `--offchain` (default) for Lightning invoice, `--onchain` for cooperative leave. No prefix sniff |
-| `recv` | `walletrpc.Recv` / `walletrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
-| `activity` | `walletrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
-| `balance` | `walletrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
-| `exit --outpoint TXID:VOUT` | `walletrpc.Exit` | Trigger a unilateral exit (proxies Unroll) |
-| `exit status --outpoint TXID:VOUT` | `walletrpc.ExitStatus` | Query an exit job's status (proxies GetUnrollStatus) |
+| `create` | `walletdkrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / DAREPOD_WALLET_PASSWORD / --wallet_password_file |
+| `unlock` | `walletdkrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
+| `send <dest>` | `walletdkrpc.Send` | Outbound payment. `--offchain` (default) for Lightning invoice, `--onchain` for cooperative leave. No prefix sniff |
+| `recv` | `walletdkrpc.Recv` / `walletdkrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
+| `activity` | `walletdkrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
+| `balance` | `walletdkrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
+| `exit --outpoint TXID:VOUT` | `walletdkrpc.Exit` | Trigger a unilateral exit (proxies Unroll) |
+| `exit status --outpoint TXID:VOUT` | `walletdkrpc.ExitStatus` | Query an exit job's status (proxies GetUnrollStatus) |
 
 ### Daemon introspection
 
@@ -41,7 +41,7 @@ The CLI surface is split into three tiers:
 
 ### `ark.*` advanced commands
 
-The everyday wallet verbs compose `walletrpc` end-to-end; the `ark`
+The everyday wallet verbs compose `walletdkrpc` end-to-end; the `ark`
 parent surfaces the raw daemonrpc methods underlying them for callers
 who want direct access.
 
@@ -76,8 +76,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
 - `getDaemonConn()` / `getDaemonClient()` — TLS-by-default daemon
   gRPC dial; `--no-tls` opts out for local dev.
 - `withWalletClient()` — maps `codes.Unimplemented` to
-  `errWalletRPCDisabled` (with a pointer to `docs/walletrpc_build.md`)
-  for daemons built without the walletrpc tag.
+  `errWalletRPCDisabled` (with a pointer to `docs/walletdkrpc_build.md`)
+  for daemons built without the walletdkrpc tag.
 - `getSwapClient()` — daemon `swapclientrpc` dial (`swapruntime`
   tag only).
 - `parseRequest()` — generic JSON-or-flags proto request parser
@@ -98,7 +98,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
 ## Relationships
 
 - **Depends on**:
-  - `rpc/walletrpc` (generated stubs for the seven top-level verbs;
+  - `rpc/walletdkrpc` (generated stubs for the seven top-level verbs;
     `WalletService` client).
   - `daemonrpc` (generated stubs for `ark.*` commands and getinfo).
   - `rpc/swapclientrpc` (generated stubs for `swap.*` commands,
@@ -108,7 +108,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
 ## Invariants
 
 - The seven top-level wallet verbs ALWAYS register at the root
-  regardless of build tags; if the daemon lacks the walletrpc tag,
+  regardless of build tags; if the daemon lacks the walletdkrpc tag,
   gRPC `Unimplemented` is mapped to `errWalletRPCDisabled` with an
   actionable message pointing at the build doc.
 - The `--offchain` / `--onchain` flags on `send` and `recv` are
@@ -126,9 +126,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
 
 - [docs/daemon_cli_guide.md](../../../docs/daemon_cli_guide.md) — Full CLI
   reference.
-- [docs/walletrpc_build.md](../../../docs/walletrpc_build.md) — Build
-  modes and what the walletrpc tag enables.
-- [rpc/walletrpc/CLAUDE.md](../../../rpc/walletrpc/CLAUDE.md) — Proto
+- [docs/walletdkrpc_build.md](../../../docs/walletdkrpc_build.md) — Build
+  modes and what the walletdkrpc tag enables.
+- [rpc/walletdkrpc/CLAUDE.md](../../../rpc/walletdkrpc/CLAUDE.md) — Proto
   schema and per-message invariants.
 - [swapwallet/CLAUDE.md](../../../swapwallet/CLAUDE.md) — Daemon-side
   implementation of the wallet verbs.

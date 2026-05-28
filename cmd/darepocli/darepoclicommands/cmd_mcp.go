@@ -7,7 +7,7 @@ import (
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -56,7 +56,7 @@ func mcpServe(cmd *cobra.Command, _ []string) error {
 	// The wallet verbs live on the WalletService client; reusing the
 	// existing connection keeps TLS, --no-tls, and --tlscertpath
 	// honored across both surfaces.
-	walletClient := walletrpc.NewWalletServiceClient(conn)
+	walletClient := walletdkrpc.NewWalletServiceClient(conn)
 
 	server := mcp.NewServer(
 		&mcp.Implementation{
@@ -130,7 +130,7 @@ func registerMCPTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 	// daemon.balance — no parameters. Uses the daemonrpc.GetBalance
 	// shape (boarding + VTXO + total breakdown) and lives under the
 	// `daemon.*` namespace so the everyday flat `balance` tool that
-	// registerMCPWalletTools registers (walletrpc.Balance shape) is
+	// registerMCPWalletTools registers (walletdkrpc.Balance shape) is
 	// not silently overwritten by this richer-but-legacy registration.
 	// AddTool replaces tools on name collision, so the two names have
 	// to be distinct or the agent surface lies about which shape it

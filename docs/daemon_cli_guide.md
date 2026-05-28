@@ -25,16 +25,16 @@ After building, two binaries are produced:
 - `bin/darepod` -- the long-running daemon process
 - `bin/darepocli` -- the CLI for controlling the daemon
 
-### Optional: walletrpc
+### Optional: walletdkrpc
 
 The "user-facing" verbs in the CLI (`balance`, `recv`, `send`, `list`,
-`create`, `unlock`) route through the `walletrpc` subserver. That code
-is gated behind the `walletrpc` build tag; the default `make build` does
+`create`, `unlock`) route through the `walletdkrpc` subserver. That code
+is gated behind the `walletdkrpc` build tag; the default `make build` does
 **not** enable it. Without the tag, those verbs return:
 
 ```
-daemon was not built with -tags walletrpc;
-rebuild with `make build-walletrpc` or see docs/walletrpc_build.md
+daemon was not built with -tags walletdkrpc;
+rebuild with `make build-walletdkrpc` or see docs/walletdkrpc_build.md
 ```
 
 Two options:
@@ -44,11 +44,11 @@ Two options:
    the default build.
 2. **Build with the tag enabled** when you want the top-level verbs:
    ```bash
-   make build-walletrpc       # produces walletrpc-enabled darepod
-   make install-walletrpc
+   make build-walletdkrpc       # produces walletdkrpc-enabled darepod
+   make install-walletdkrpc
    ```
 
-See [walletrpc_build.md](walletrpc_build.md) for more.
+See [walletdkrpc_build.md](walletdkrpc_build.md) for more.
 
 ## Daemon Configuration
 
@@ -141,10 +141,10 @@ After starting the daemon, the wallet must be created and unlocked
 before any operations can proceed.
 
 The `create` and `unlock` CLI commands require a daemon built with
-`walletrpc` (see Installation above). For the default build, configure
+`walletdkrpc` (see Installation above). For the default build, configure
 auto-unlock via `--wallet.password_file` and skip the CLI step.
 
-### Step 1: Create the Wallet (walletrpc only)
+### Step 1: Create the Wallet (walletdkrpc only)
 
 In lwwallet mode, wallet creation generates a new aezeed mnemonic,
 encrypts the seed with your password, and saves it to
@@ -169,7 +169,7 @@ darepocli create --no-tls
 **Important:** The mnemonic is displayed on stderr during creation.
 Write it down and store it securely -- it is your only backup.
 
-### Step 2: Unlock the Wallet (walletrpc only)
+### Step 2: Unlock the Wallet (walletdkrpc only)
 
 Each time the daemon restarts, the wallet must be unlocked:
 
@@ -200,16 +200,16 @@ automatically.
 
 ```
 darepocli
-├── getinfo                   — daemon status (no walletrpc)
-├── balance                   — wallet balances (walletrpc)
-├── create / unlock           — wallet bring-up (walletrpc)
-├── recv                      — boarding address / Lightning invoice (walletrpc)
-├── send                      — Lightning invoice / onchain leave (walletrpc)
-├── list                      — unified activity / VTXOs / onchain (walletrpc)
+├── getinfo                   — daemon status (no walletdkrpc)
+├── balance                   — wallet balances (walletdkrpc)
+├── create / unlock           — wallet bring-up (walletdkrpc)
+├── recv                      — boarding address / Lightning invoice (walletdkrpc)
+├── send                      — Lightning invoice / onchain leave (walletdkrpc)
+├── list                      — unified activity / VTXOs / onchain (walletdkrpc)
 ├── exit [status]             — unilateral exit a VTXO
-├── mcp serve                 — MCP server for AI agents (walletrpc)
+├── mcp serve                 — MCP server for AI agents (walletdkrpc)
 ├── schema                    — JSON dump of CLI methods
-├── ark                       — power-user parent (no walletrpc)
+├── ark                       — power-user parent (no walletdkrpc)
 │   ├── board                 — board confirmed boarding UTXOs
 │   ├── vtxos {list|refresh|leave}
 │   ├── oor {receive|get|list}
@@ -218,7 +218,7 @@ darepocli
 │   ├── sweep [list]
 │   ├── fees {estimate|history}
 │   └── listtransactions
-└── dev                       — generated low-level RPC (no walletrpc)
+└── dev                       — generated low-level RPC (no walletdkrpc)
     └── daemon <Method>       — call any daemonrpc.DaemonService method
 ```
 
@@ -239,16 +239,16 @@ Display daemon status information.
 darepocli getinfo --no-tls
 ```
 
-### `balance` (walletrpc) / `dev daemon GetBalance` (no walletrpc)
+### `balance` (walletdkrpc) / `dev daemon GetBalance` (no walletdkrpc)
 
 Display wallet balance (boarding, VTXO, total, onchain) in satoshis.
 
 ```bash
-darepocli balance --no-tls                   # requires walletrpc
+darepocli balance --no-tls                   # requires walletdkrpc
 darepocli dev daemon GetBalance --no-tls     # always available
 ```
 
-### `recv` (walletrpc) / `dev daemon NewAddress` (no walletrpc)
+### `recv` (walletdkrpc) / `dev daemon NewAddress` (no walletdkrpc)
 
 Allocate an inbound payment surface.
 
@@ -264,7 +264,7 @@ Allocate an inbound payment surface.
 darepocli recv --onchain --no-tls                  # boarding address
 darepocli recv --offchain --amt 5000 --memo coffee --no-tls
 
-# No-walletrpc equivalent for the boarding-address case:
+# No-walletdkrpc equivalent for the boarding-address case:
 darepocli dev daemon NewAddress --no-tls
 ```
 
@@ -391,7 +391,7 @@ darepocli ark send oor --pubkey <hex> --amount 25000 \
   --idempotency_key my-attempt-1 --no-tls
 ```
 
-### `send <invoice-or-address>` (walletrpc)
+### `send <invoice-or-address>` (walletdkrpc)
 
 Unified send for Lightning invoice (`--offchain`, default) or onchain
 leave (`--onchain`). Onchain v1 has whole-VTXO sweep semantics —
@@ -452,7 +452,7 @@ darepocli ark listtransactions \
   --no-tls
 ```
 
-### `list` (walletrpc)
+### `list` (walletdkrpc)
 
 Unified wallet view selected by `--view`:
 
@@ -481,7 +481,7 @@ darepocli schema --no-tls
 darepocli schema --method ark.vtxos.list --no-tls
 ```
 
-### `mcp serve` (walletrpc)
+### `mcp serve` (walletdkrpc)
 
 Start an MCP (Model Context Protocol) server on stdio for AI agent
 integration. Exposes daemon RPCs as typed tool calls.
@@ -499,14 +499,14 @@ wallet-derived receive target and does not reveal seed material.
 ## Regtest Quickstart
 
 A complete end-to-end workflow on regtest using the default (no
-`walletrpc`) build. With a `walletrpc`-enabled daemon, swap the
+`walletdkrpc`) build. With a `walletdkrpc`-enabled daemon, swap the
 relevant commands per the references above.
 
 ```bash
 # 1. Start a regtest bitcoind + Esplora (e.g., via Nigiri)
 nigiri start
 
-# 2. Start the daemon. Auto-unlock so you don't need walletrpc to
+# 2. Start the daemon. Auto-unlock so you don't need walletdkrpc to
 #    create/unlock from the CLI.
 darepod \
   --network=regtest \
@@ -559,9 +559,9 @@ restrictive file permissions (`chmod 600`).
 
 | Problem | Solution |
 |---------|----------|
-| `daemon was not built with -tags walletrpc` | Rebuild with `make build-walletrpc`, or use the `ark *` / `dev *` subtrees |
+| `daemon was not built with -tags walletdkrpc` | Rebuild with `make build-walletdkrpc`, or use the `ark *` / `dev *` subtrees |
 | `connection refused` | Daemon not running or wrong `--rpcserver` address |
-| `wallet not ready` | Run `darepocli unlock` (requires walletrpc) or restart the daemon with `--wallet.password_file` |
+| `wallet not ready` | Run `darepocli unlock` (requires walletdkrpc) or restart the daemon with `--wallet.password_file` |
 | `wallet already exists` | Wallet was already created; use `unlock` instead |
 | `GenSeed: lwwallet mode only` | Switch daemon to `--wallet.type=lwwallet` |
 | TLS certificate errors | Use `--no-tls` for regtest, or set `--tlscertpath` |

@@ -8,7 +8,7 @@ dials it over a private `bufconn` gRPC transport, and exposes typed methods
 that mirror the seven core CLI verbs (create, unlock, send, recv, list,
 balance, exit) plus supporting subscribe/deposit/status.
 
-Wallet methods are gated behind the `walletrpc` build tag (transitively
+Wallet methods are gated behind the `walletdkrpc` build tag (transitively
 requires `swapruntime`): stub builds compile, but wallet methods return
 `ErrWalletRPCUnavailable` synchronously.
 
@@ -18,7 +18,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 
 - `Client` — concurrency-safe wallet handle owning the embedded daemon
   lifecycle, the private `bufconn` gRPC connection, and the
-  daemonrpc/walletrpc/swapclientrpc clients. `Stop`/`Close` are
+  daemonrpc/walletdkrpc/swapclientrpc clients. `Stop`/`Close` are
   idempotent aliases.
 - `Config` — embedded daemon + wallet facade config. Two usage modes:
   zero-value plus convenience fields (`DataDir`, `Network`,
@@ -54,7 +54,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   when set, `Exit` first attempts a cooperative leave
   (`daemonrpc.LeaveVTXOs`) so the VTXO is unwound via the next round
   with the leave output landing on the caller-supplied address; the
-  SDK transparently falls back to `walletrpc.Exit` (unilateral
+  SDK transparently falls back to `walletdkrpc.Exit` (unilateral
   unroll) on any cooperative failure. `ExitResult.Cooperative`
   reports the path taken; `QueuedOutpoints` echoes cooperative
   selection; `Created`/`ActorID` describe the unilateral fallback
@@ -63,7 +63,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   lowercase set
   (`pending`/`materializing`/`csv_pending`/`sweeping`/`completed`/`failed`/`unspecified`).
 - `ErrWalletRPCUnavailable` — sentinel returned by every wallet method
-  on builds without the `walletrpc` tag.
+  on builds without the `walletdkrpc` tag.
 - `ErrSwapRuntimeUnavailable` — back-compat alias for
   `ErrWalletRPCUnavailable`.
 
@@ -91,11 +91,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 
 - **Depends on**: `darepod` (embedded daemon runtime), `daemonrpc`
   (wallet, balance, info, address RPCs + direct paths for
-  `CreateWallet`/`UnlockWallet`), `rpc/walletrpc` (unified wallet API
+  `CreateWallet`/`UnlockWallet`), `rpc/walletdkrpc` (unified wallet API
   the seven verbs target), `rpc/swapclientrpc` (raw-swap escape hatch),
   `swapclientserver` (registered as daemon-side swap subserver in
-  `swapruntime` builds), `swapwallet` (daemon-side walletrpc subserver
-  in `walletrpc` builds), `google.golang.org/grpc/test/bufconn`.
+  `swapruntime` builds), `swapwallet` (daemon-side walletdkrpc subserver
+  in `walletdkrpc` builds), `google.golang.org/grpc/test/bufconn`.
 - **Depended on by**: host Go apps, gomobile / React Native / WASM
   bridges, and `cmd/walletdk-tui`.
 - **Sends** → `darepod` (in-process via bufconn): all daemon RPCs are
@@ -120,8 +120,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 - `Config.EagerRoundJoin` flips the embedded daemon's flag so
   confirmed deposits and cooperative-leave intents auto-trigger a
   round join without the host chasing the FSM forward. The
-  walletrpc-tagged embedded build already defaults this to `true`
-  via `darepod.DefaultConfig` (see `darepod/config_walletrpc.go`), so
+  walletdkrpc-tagged embedded build already defaults this to `true`
+  via `darepod.DefaultConfig` (see `darepod/config_walletdkrpc.go`), so
   leaving the convenience field zero is correct for nearly every
   host. To force eager round-join OFF, pass
   `walletdk.WithEagerRoundJoinDisabled()` to `Start`; it applies
@@ -133,7 +133,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   `append` before being handed to the RPC layer, so host apps can zero
   their copies on return without racing the marshaller.
 - Wallet methods fail with `ErrWalletRPCUnavailable` synchronously at
-  the wrapper boundary on builds without the `walletrpc` tag, before
+  the wrapper boundary on builds without the `walletdkrpc` tag, before
   any RPC is attempted. `ErrSwapRuntimeUnavailable` is an alias for
   source-level compatibility with older swap-only callers.
 - `Entry.Kind`/`Entry.Status` / `ListResult.View` /
@@ -167,7 +167,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   session semantics. Reach the underlying swap RPC client via
   `Client.SwapRPC()` when needed.
 - [swapwallet/CLAUDE.md](../../swapwallet/CLAUDE.md) — Daemon-side
-  walletrpc subserver.
+  walletdkrpc subserver.
 - [swapclientserver/CLAUDE.md](../../swapclientserver/CLAUDE.md) —
   Daemon-side swap subserver (`-tags swapruntime`).
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.

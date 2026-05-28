@@ -134,7 +134,7 @@ func cloneSeen(
 }
 
 func (b *fieldBinder) register(cmd *cobra.Command) {
-	usage := descriptorComment(b.leaf())
+	usage := flagUsage(b.leaf())
 
 	switch b.inputKind {
 	case fieldBool:
@@ -148,6 +148,32 @@ func (b *fieldBinder) register(cmd *cobra.Command) {
 	default:
 		cmd.Flags().StringVar(&b.stringVal, b.flagName, "", usage)
 	}
+}
+
+// flagUsage builds the Cobra help text for one generated field flag. Proto
+// comments are useful for repo-owned descriptors, while enum values make
+// comment-less external descriptors discoverable from `--help`.
+func flagUsage(field protoreflect.FieldDescriptor) string {
+	parts := make([]string, 0, 2)
+	if comment := descriptorComment(field); comment != "" {
+		parts = append(parts, comment)
+	}
+	if field.Kind() == protoreflect.EnumKind {
+		parts = append(parts, enumUsage(field.Enum()))
+	}
+
+	return strings.Join(parts, " ")
+}
+
+// enumUsage returns the accepted symbolic names for an enum-valued flag.
+func enumUsage(enum protoreflect.EnumDescriptor) string {
+	values := enum.Values()
+	names := make([]string, 0, values.Len())
+	for i := 0; i < values.Len(); i++ {
+		names = append(names, string(values.Get(i).Name()))
+	}
+
+	return "enum values: " + strings.Join(names, ", ")
 }
 
 func populateRequest(cmd *cobra.Command, msg *dynamicpb.Message,

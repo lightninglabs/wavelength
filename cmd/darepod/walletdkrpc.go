@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package main
 
@@ -7,8 +7,8 @@ import (
 	"github.com/lightninglabs/darepo-client/swapwallet"
 )
 
-// configureWalletRPC attaches the optional walletrpc subserver registrar
-// when darepod is compiled with the walletrpc build tag. The tag requires
+// configureWalletRPC attaches the optional walletdkrpc subserver registrar
+// when darepod is compiled with the walletdkrpc build tag. The tag requires
 // swapruntime because swapwallet composes the daemon-owned swap subsystem;
 // the build constraint above enforces this at compile time.
 //

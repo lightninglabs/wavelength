@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -60,7 +60,7 @@ func TestRegisterDefersResumeUntilWalletReadyHook(t *testing.T) {
 
 	require.Equal(
 		t, int32(0), backend.resumeCalls.Load(),
-		"registering walletrpc while locked must not resume swaps",
+		"registering walletdkrpc while locked must not resume swaps",
 	)
 	require.Len(t, cfg.WalletReadyHooks, 1)
 
@@ -78,7 +78,7 @@ func TestRegisterDefersResumeUntilWalletReadyHook(t *testing.T) {
 // Register bails out because the swap backend does not satisfy
 // SwapClientServiceServer, it compensates for the SuppressResume
 // handshake by calling Backend.ResumePending. Without this, the swap
-// subserver would have skipped its own resume sweep (the walletrpc
+// subserver would have skipped its own resume sweep (the walletdkrpc
 // build sets cfg.Swap.SuppressResume = true unconditionally before
 // this registrar runs) and no actor would ever drive pending workers.
 func TestRegisterRecoversResumeOnTypeAssertionFailure(t *testing.T) {

@@ -3,14 +3,14 @@ package darepoclicommands
 import (
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/spf13/cobra"
 )
 
 // newRecvCmd builds the top-level `recv` verb. Direction is chosen
 // explicitly: --offchain (default) generates a BOLT-11 Lightning
-// invoice via walletrpc.WalletService.Recv; --onchain returns a fresh
-// boarding address via walletrpc.WalletService.Deposit.
+// invoice via walletdkrpc.WalletService.Recv; --onchain returns a fresh
+// boarding address via walletdkrpc.WalletService.Deposit.
 func newRecvCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "recv",
@@ -70,11 +70,11 @@ func walletRecv(cmd *cobra.Command, _ []string) error {
 	}
 
 	return withWalletClient(
-		cmd, func(c walletrpc.WalletServiceClient) error {
+		cmd, func(c walletdkrpc.WalletServiceClient) error {
 			if offchain {
 				resp, err := c.Recv(
 					cmd.Context(),
-					&walletrpc.RecvRequest{
+					&walletdkrpc.RecvRequest{
 						AmtSat: amt,
 						Memo:   memo,
 					},
@@ -89,7 +89,7 @@ func walletRecv(cmd *cobra.Command, _ []string) error {
 
 			resp, err := c.Deposit(
 				cmd.Context(),
-				&walletrpc.DepositRequest{
+				&walletdkrpc.DepositRequest{
 					AmtSatHint: amtHint,
 				},
 			)

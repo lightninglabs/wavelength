@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -185,7 +185,7 @@ func (r *Runtime) fanOutSwapUpdate(
 	// entry.Id is the swap row's payment_hash, which is the stable
 	// canonical id across the swap lifecycle — no further projection.
 	entry := swapEntryFromSummary(
-		summary, "", "", walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		summary, "", "", walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 	)
 
 	// All SubscribeSwaps rows are swap-backed, including the first lazy
@@ -198,11 +198,11 @@ func (r *Runtime) fanOutSwapUpdate(
 	// cleared so stale wallet overlays cannot outlive the swap FSM source
 	// of truth.
 	switch sourceStatus {
-	case walletrpc.EntryStatus_ENTRY_STATUS_PENDING:
+	case walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING:
 		r.clearPending(entry.GetId())
 
-	case walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
-		walletrpc.EntryStatus_ENTRY_STATUS_FAILED:
+	case walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED:
 
 		r.clearPending(entry.GetId())
 	}

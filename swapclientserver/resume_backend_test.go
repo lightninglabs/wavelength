@@ -12,7 +12,7 @@ import (
 )
 
 // TestServiceImplementsSwapBackend confirms that *swapClientService satisfies
-// the darepod.SwapBackend interface so the walletrpc registrar can hold a
+// the darepod.SwapBackend interface so the walletdkrpc registrar can hold a
 // handle to it via cfg.Swap.Backend without depending on swapclientserver
 // internals.
 func TestServiceImplementsSwapBackend(t *testing.T) {
@@ -50,7 +50,7 @@ func TestExportedResumePendingDrivesSameSweep(t *testing.T) {
 	service := newTestSwapClientService(fakeClient)
 	defer service.cancel()
 
-	// Drive the sweep through the public Backend surface that walletrpc
+	// Drive the sweep through the public Backend surface that walletdkrpc
 	// will call.
 	var backend darepod.SwapBackend = service
 	backend.ResumePending(t.Context())

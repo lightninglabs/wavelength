@@ -3,7 +3,7 @@ package darepoclicommands
 import (
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -129,7 +129,7 @@ func TestBuildWalletActivityRequestHappyPath(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(
-		t, walletrpc.ListView_LIST_VIEW_ACTIVITY, req.GetView(),
+		t, walletdkrpc.ListView_LIST_VIEW_ACTIVITY, req.GetView(),
 	)
 	require.True(t, req.GetPendingOnly())
 	require.Len(t, req.GetKinds(), 2)

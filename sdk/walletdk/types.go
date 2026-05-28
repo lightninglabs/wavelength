@@ -9,7 +9,7 @@ import (
 
 // ConnectConfig controls a walletdk client connected to an external daemon.
 type ConnectConfig struct {
-	// Address is the target of a daemon exposing walletrpc. For gRPC
+	// Address is the target of a daemon exposing walletdkrpc. For gRPC
 	// transport this is the gRPC address; for REST transport this is the
 	// HTTP gateway base address.
 	Address string
@@ -301,7 +301,7 @@ const (
 	// ExitPathCooperative means the cooperative leave was admitted by
 	// the operator; QueuedOutpoints carries the round's selection
 	// echo. Cooperative round completion is asynchronous; subscribe
-	// via walletrpc.SubscribeWallet to confirm terminal state.
+	// via walletdkrpc.SubscribeWallet to confirm terminal state.
 	ExitPathCooperative ExitPath = "cooperative"
 
 	// ExitPathUnilateral means the caller did not supply a Destination

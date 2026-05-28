@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/spf13/cobra"
 )
 
 // newCreateCmd builds the top-level `create` verb. It is one of the
 // seven core wallet verbs (create, unlock, send, recv, list, balance,
-// exit) and dials walletrpc.WalletService.Create which proxies
+// exit) and dials walletdkrpc.WalletService.Create which proxies
 // daemonrpc.GenSeed + daemonrpc.InitWallet under the hood. Both the
 // wallet password and the optional seed passphrase are read from
 // stdin / env var / file (never CLI args) so secrets never enter argv.
@@ -66,9 +66,9 @@ func walletCreate(cmd *cobra.Command, _ []string) error {
 	printJSON, _ := cmd.Flags().GetBool("print-mnemonic-json")
 
 	return withWalletClient(
-		cmd, func(c walletrpc.WalletServiceClient) error {
+		cmd, func(c walletdkrpc.WalletServiceClient) error {
 			resp, err := c.Create(
-				cmd.Context(), &walletrpc.CreateRequest{
+				cmd.Context(), &walletdkrpc.CreateRequest{
 					WalletPassword: password,
 					SeedPassphrase: seedPassphrase,
 				},

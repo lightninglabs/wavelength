@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -10,7 +10,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 )
 
 // router dispatches outbound Send requests to the appropriate daemon
@@ -32,18 +32,18 @@ func newRouter(deps *Deps, runtime *Runtime) *router {
 // Send dispatches a SendRequest to the right backend and returns the
 // initial WalletEntry that callers can poll or subscribe to for status
 // transitions.
-func (r *router) Send(ctx context.Context, req *walletrpc.SendRequest) (
-	*walletrpc.SendResponse, error) {
+func (r *router) Send(ctx context.Context, req *walletdkrpc.SendRequest) (
+	*walletdkrpc.SendResponse, error) {
 
 	if r == nil || r.deps == nil {
 		return nil, ErrSwapBackendUnavailable
 	}
 
 	switch dest := req.GetDestination().(type) {
-	case *walletrpc.SendRequest_Invoice:
+	case *walletdkrpc.SendRequest_Invoice:
 		return r.sendInvoice(ctx, dest.Invoice, req)
 
-	case *walletrpc.SendRequest_OnchainAddress:
+	case *walletdkrpc.SendRequest_OnchainAddress:
 		return r.sendOnchain(ctx, dest.OnchainAddress, req)
 
 	default:
@@ -56,7 +56,7 @@ func (r *router) Send(ctx context.Context, req *walletrpc.SendRequest) (
 // p2p when both parties are co-located, so the caller never sees that
 // distinction at the wallet layer.
 func (r *router) sendInvoice(ctx context.Context, invoice string,
-	req *walletrpc.SendRequest) (*walletrpc.SendResponse, error) {
+	req *walletdkrpc.SendRequest) (*walletdkrpc.SendResponse, error) {
 
 	invoice = strings.TrimSpace(invoice)
 	if invoice == "" {
@@ -78,13 +78,13 @@ func (r *router) sendInvoice(ctx context.Context, invoice string,
 
 	entry := swapEntryFromSummary(
 		startResp.GetSwap(), req.GetNote(), invoice,
-		walletrpc.EntryKind_ENTRY_KIND_SEND,
+		walletdkrpc.EntryKind_ENTRY_KIND_SEND,
 	)
 
 	// For invoice sends actual_amount_sat is the swap's negotiated
 	// principal: that's what is being paid to the BOLT-11 destination
 	// (routing fees are tracked separately via fee_sat on the entry).
-	return &walletrpc.SendResponse{
+	return &walletdkrpc.SendResponse{
 		Entry:           entry,
 		ActualAmountSat: startResp.GetSwap().GetAmountSat(),
 	}, nil
@@ -109,7 +109,7 @@ func (r *router) sendInvoice(ctx context.Context, invoice string,
 // This keeps "drain the wallet" structurally distinct from a defaulted
 // zero amount.
 func (r *router) sendOnchain(ctx context.Context, addr string,
-	req *walletrpc.SendRequest) (*walletrpc.SendResponse, error) {
+	req *walletdkrpc.SendRequest) (*walletdkrpc.SendResponse, error) {
 
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
@@ -196,7 +196,7 @@ func (r *router) sendOnchain(ctx context.Context, addr string,
 	// we commit the intent here on the caller's behalf. The ark.*
 	// raw `vtxos refresh` / `vtxos leave` CLI exposes the
 	// queue-only mode via --no_join for batching use cases; that
-	// path is not reachable through walletrpc.Send and should not
+	// path is not reachable through walletdkrpc.Send and should not
 	// be — the higher-level Send verb has no batching contract.
 	//
 	// A join failure here leaves the leave intent queued in the
@@ -238,7 +238,7 @@ func (r *router) sendOnchain(ctx context.Context, addr string,
 		),
 	)
 
-	return &walletrpc.SendResponse{
+	return &walletdkrpc.SendResponse{
 		Entry:           entry,
 		ActualAmountSat: actualSat,
 	}, nil

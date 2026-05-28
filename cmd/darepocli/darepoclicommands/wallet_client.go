@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -17,13 +17,13 @@ import (
 )
 
 // errWalletRPCDisabled is the structured error printed when the daemon
-// is not built with the walletrpc tag and a top-level wallet verb is
+// is not built with the walletdkrpc tag and a top-level wallet verb is
 // invoked against it. The CLI registers the verbs unconditionally so
 // agents always see the same surface; the error message points at the
 // build documentation so the operator can rebuild the daemon if needed.
 var errWalletRPCDisabled = errors.New("daemon was not built with -tags " +
-	"walletrpc; rebuild with `make build-walletrpc` or see " +
-	"docs/walletrpc_build.md")
+	"walletdkrpc; rebuild with `make build-walletdkrpc` or see " +
+	"docs/walletdkrpc_build.md")
 
 // errOffchainOnchainConflict is the canned error returned when a caller
 // passes both --offchain and --onchain on the same invocation.
@@ -37,7 +37,7 @@ var errOffchainOnchainConflict = errors.New("--offchain and --onchain are " +
 // gRPC UNIMPLEMENTED is mapped to errWalletRPCDisabled so stub-build
 // daemons surface a clear, actionable error.
 func withWalletClient(cmd *cobra.Command,
-	fn func(walletrpc.WalletServiceClient) error) error {
+	fn func(walletdkrpc.WalletServiceClient) error) error {
 
 	conn, err := getDaemonConn(cmd)
 	if err != nil {
@@ -47,7 +47,7 @@ func withWalletClient(cmd *cobra.Command,
 		_ = conn.Close()
 	}()
 
-	if err := fn(walletrpc.NewWalletServiceClient(conn)); err != nil {
+	if err := fn(walletdkrpc.NewWalletServiceClient(conn)); err != nil {
 		if status.Code(err) == codes.Unimplemented {
 			return errWalletRPCDisabled
 		}
@@ -60,7 +60,7 @@ func withWalletClient(cmd *cobra.Command,
 
 // withWalletInspectionClient dials the daemon's technical inspection service.
 func withWalletInspectionClient(cmd *cobra.Command,
-	fn func(walletrpc.WalletInspectionServiceClient) error) error {
+	fn func(walletdkrpc.WalletInspectionServiceClient) error) error {
 
 	conn, err := getDaemonConn(cmd)
 	if err != nil {
@@ -70,7 +70,7 @@ func withWalletInspectionClient(cmd *cobra.Command,
 		_ = conn.Close()
 	}()
 
-	client := walletrpc.NewWalletInspectionServiceClient(conn)
+	client := walletdkrpc.NewWalletInspectionServiceClient(conn)
 	if err := fn(client); err != nil {
 		if status.Code(err) == codes.Unimplemented {
 			return errWalletRPCDisabled
@@ -147,22 +147,22 @@ func walletDryRunPreview(method string, req proto.Message) error {
 
 // parseEntryKind maps a user-facing kind string to the proto enum used
 // in ListRequest.Kinds.
-func parseEntryKind(s string) (walletrpc.EntryKind, error) {
+func parseEntryKind(s string) (walletdkrpc.EntryKind, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "send":
-		return walletrpc.EntryKind_ENTRY_KIND_SEND, nil
+		return walletdkrpc.EntryKind_ENTRY_KIND_SEND, nil
 
 	case "recv", "receive":
-		return walletrpc.EntryKind_ENTRY_KIND_RECV, nil
+		return walletdkrpc.EntryKind_ENTRY_KIND_RECV, nil
 
 	case "deposit":
-		return walletrpc.EntryKind_ENTRY_KIND_DEPOSIT, nil
+		return walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT, nil
 
 	case "exit":
-		return walletrpc.EntryKind_ENTRY_KIND_EXIT, nil
+		return walletdkrpc.EntryKind_ENTRY_KIND_EXIT, nil
 
 	default:
-		return walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		return walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 			fmt.Errorf("unknown kind %q (send|recv|deposit|exit)",
 				s)
 	}
@@ -170,19 +170,19 @@ func parseEntryKind(s string) (walletrpc.EntryKind, error) {
 
 // parseListView maps a user-facing view string to the proto enum used in
 // ListRequest.View. Empty/default falls back to ACTIVITY.
-func parseListView(s string) (walletrpc.ListView, error) {
+func parseListView(s string) (walletdkrpc.ListView, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "", "activity":
-		return walletrpc.ListView_LIST_VIEW_ACTIVITY, nil
+		return walletdkrpc.ListView_LIST_VIEW_ACTIVITY, nil
 
 	case "vtxos", "vtxo":
-		return walletrpc.ListView_LIST_VIEW_VTXOS, nil
+		return walletdkrpc.ListView_LIST_VIEW_VTXOS, nil
 
 	case "onchain", "on-chain":
-		return walletrpc.ListView_LIST_VIEW_ONCHAIN, nil
+		return walletdkrpc.ListView_LIST_VIEW_ONCHAIN, nil
 
 	default:
-		return walletrpc.ListView_LIST_VIEW_UNSPECIFIED,
+		return walletdkrpc.ListView_LIST_VIEW_UNSPECIFIED,
 			fmt.Errorf("unknown view %q (activity|vtxos|onchain)",
 				s)
 	}

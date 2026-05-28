@@ -2,6 +2,9 @@
 
 set -e
 
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${DIR}/.." && pwd)"
+
 GOOGLEAPIS_VERSION="${GOOGLEAPIS_VERSION:-v0.0.0-20260514144325-84009fb6ad89}"
 googleapis_include="$(go env GOMODCACHE)/github.com/googleapis/googleapis@${GOOGLEAPIS_VERSION}"
 if [ ! -d "${googleapis_include}" ]; then
@@ -29,7 +32,8 @@ function generate() {
 	pushd "${package}" > /dev/null
 
 	# Format proto files with clang-format using the proto-specific style.
-	find . -name "*.proto" -print0 | xargs -0 clang-format --style=file:/build/scripts/.clang-format-proto -i
+	find . -name "*.proto" -print0 | xargs -0 clang-format \
+		--style=file:"${REPO_ROOT}/scripts/.clang-format-proto" -i
 
 	# Generate the protos for each .proto file.
 	for file in *.proto; do
@@ -89,7 +93,7 @@ generate "rpc/roundpb"
 generate "rpc/swapclientrpc" 1
 
 # Generate optional daemon-owned simplified wallet RPC protos.
-generate "rpc/walletrpc" 1
+generate "rpc/walletdkrpc" 1
 
 # Generate daemonrpc protos for the client daemon's own gRPC API.
 generate "daemonrpc" 1

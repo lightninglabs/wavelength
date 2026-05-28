@@ -3,7 +3,7 @@ package darepoclicommands
 import (
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -199,47 +199,47 @@ func TestParseListView(t *testing.T) {
 
 	cases := []struct {
 		in   string
-		want walletrpc.ListView
+		want walletdkrpc.ListView
 		bad  bool
 	}{
 		{
 			"",
-			walletrpc.ListView_LIST_VIEW_ACTIVITY,
+			walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
 			false,
 		},
 		{
 			"activity",
-			walletrpc.ListView_LIST_VIEW_ACTIVITY,
+			walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
 			false,
 		},
 		{
 			"ACTIVITY",
-			walletrpc.ListView_LIST_VIEW_ACTIVITY,
+			walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
 			false,
 		},
 		{
 			"vtxos",
-			walletrpc.ListView_LIST_VIEW_VTXOS,
+			walletdkrpc.ListView_LIST_VIEW_VTXOS,
 			false,
 		},
 		{
 			"vtxo",
-			walletrpc.ListView_LIST_VIEW_VTXOS,
+			walletdkrpc.ListView_LIST_VIEW_VTXOS,
 			false,
 		},
 		{
 			"onchain",
-			walletrpc.ListView_LIST_VIEW_ONCHAIN,
+			walletdkrpc.ListView_LIST_VIEW_ONCHAIN,
 			false,
 		},
 		{
 			"on-chain",
-			walletrpc.ListView_LIST_VIEW_ONCHAIN,
+			walletdkrpc.ListView_LIST_VIEW_ONCHAIN,
 			false,
 		},
 		{
 			"junk",
-			walletrpc.ListView_LIST_VIEW_UNSPECIFIED,
+			walletdkrpc.ListView_LIST_VIEW_UNSPECIFIED,
 			true,
 		},
 	}
@@ -263,42 +263,42 @@ func TestParseEntryKindAcceptsCanonicalForms(t *testing.T) {
 
 	cases := []struct {
 		in   string
-		want walletrpc.EntryKind
+		want walletdkrpc.EntryKind
 		bad  bool
 	}{
 		{
 			"send",
-			walletrpc.EntryKind_ENTRY_KIND_SEND,
+			walletdkrpc.EntryKind_ENTRY_KIND_SEND,
 			false,
 		},
 		{
 			"recv",
-			walletrpc.EntryKind_ENTRY_KIND_RECV,
+			walletdkrpc.EntryKind_ENTRY_KIND_RECV,
 			false,
 		},
 		{
 			"receive",
-			walletrpc.EntryKind_ENTRY_KIND_RECV,
+			walletdkrpc.EntryKind_ENTRY_KIND_RECV,
 			false,
 		},
 		{
 			"deposit",
-			walletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+			walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 			false,
 		},
 		{
 			"exit",
-			walletrpc.EntryKind_ENTRY_KIND_EXIT,
+			walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
 			false,
 		},
 		{
 			"",
-			walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+			walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 			true,
 		},
 		{
 			"junk",
-			walletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+			walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 			true,
 		},
 	}

@@ -15,7 +15,7 @@ func TestCollectServicesIncludesExpectedRPCs(t *testing.T) {
 			len(expectedServices))
 	}
 
-	var sawDaemon, sawSwap bool
+	var sawDaemon, sawSwap, sawBtcwalletVersion, sawBtcwallet bool
 	for _, service := range services {
 		switch service.FullName {
 		case "daemonrpc.DaemonService":
@@ -37,11 +37,22 @@ func TestCollectServicesIncludesExpectedRPCs(t *testing.T) {
 				t.Fatalf("swap service has no methods")
 			}
 			assertMethodComment(t, service, "StartPay")
+
+		case "walletrpc.VersionService":
+			sawBtcwalletVersion = true
+			assertMethodExists(t, service, "Version")
+
+		case "walletrpc.WalletService":
+			sawBtcwallet = true
+			assertMethodExists(t, service, "NextAddress")
+			assertMethodExists(t, service, "FundTransaction")
 		}
 	}
 
-	if !sawDaemon || !sawSwap {
-		t.Fatalf("expected daemon and swap services, got %#v", services)
+	if !sawDaemon || !sawSwap || !sawBtcwalletVersion ||
+		!sawBtcwallet {
+
+		t.Fatalf("missing expected service, got %#v", services)
 	}
 }
 
@@ -58,6 +69,18 @@ func assertMethodComment(t *testing.T, service serviceData, name string) {
 		}
 
 		return
+	}
+
+	t.Fatalf("method %s not found", name)
+}
+
+func assertMethodExists(t *testing.T, service serviceData, name string) {
+	t.Helper()
+
+	for _, method := range service.Methods {
+		if method.Name == name {
+			return
+		}
 	}
 
 	t.Fatalf("method %s not found", name)

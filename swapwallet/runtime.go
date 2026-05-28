@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package swapwallet
 
@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 )
 
 // deadlineTickInterval is how often the deadline watcher scans pending
@@ -23,7 +23,7 @@ const deadlineTickInterval = 30 * time.Second
 // and the original PENDING start time.
 type pendingEntry struct {
 	id        string
-	kind      walletrpc.EntryKind
+	kind      walletdkrpc.EntryKind
 	createdAt time.Time
 	deadline  time.Time
 }
@@ -60,7 +60,7 @@ type Runtime struct {
 	// non-blocking: a slow consumer drops updates rather than stalling
 	// the runtime. SubscribeWallet handlers reconcile with List on
 	// reconnect.
-	subscribers map[chan *walletrpc.WalletEntry]struct{}
+	subscribers map[chan *walletdkrpc.WalletEntry]struct{}
 
 	// pendingMu guards pending and overlay.
 	pendingMu sync.Mutex
@@ -82,7 +82,7 @@ type Runtime struct {
 // underlying swap or leave status. It only ever elevates a status to FAILED
 // with a synthetic reason; happy-path transitions come from the source row.
 type overlayStatus struct {
-	status        walletrpc.EntryStatus
+	status        walletdkrpc.EntryStatus
 	failureReason string
 }
 
@@ -97,7 +97,7 @@ func newRuntime(parent context.Context, deps *Deps) *Runtime {
 		rootCtx: rootCtx,
 		cancel:  cancel,
 		subscribers: make(
-			map[chan *walletrpc.WalletEntry]struct{},
+			map[chan *walletdkrpc.WalletEntry]struct{},
 		),
 		pending: make(map[string]pendingEntry),
 		overlay: make(map[string]overlayStatus),
@@ -156,7 +156,7 @@ func (r *Runtime) resumeAll(ctx context.Context) {
 // trackPending intentionally does NOT touch the overlay map: a synthetic
 // FAILED overlay set by the deadline watcher must remain visible to
 // subscribers until the underlying wallet-local operation is cleared.
-func (r *Runtime) trackPending(id string, kind walletrpc.EntryKind,
+func (r *Runtime) trackPending(id string, kind walletdkrpc.EntryKind,
 	createdAt time.Time) {
 
 	r.pendingMu.Lock()
@@ -243,11 +243,11 @@ func (r *Runtime) applyDeadlines(now time.Time) {
 // whose deadline has passed and returns synthesized WalletEntry rows for each
 // newly elevated entry. Swap rows are dropped from tracking so they cannot
 // diverge from the swap FSM.
-func (r *Runtime) markTimedOut(now time.Time) []*walletrpc.WalletEntry {
+func (r *Runtime) markTimedOut(now time.Time) []*walletdkrpc.WalletEntry {
 	r.pendingMu.Lock()
 	defer r.pendingMu.Unlock()
 
-	var notify []*walletrpc.WalletEntry
+	var notify []*walletdkrpc.WalletEntry
 	for id, entry := range r.pending {
 		if isSwapKind(entry.kind) {
 			delete(r.pending, id)
@@ -263,11 +263,11 @@ func (r *Runtime) markTimedOut(now time.Time) []*walletrpc.WalletEntry {
 		}
 
 		ov := overlayStatus{
-			status:        walletrpc.EntryStatus_ENTRY_STATUS_FAILED,
+			status:        walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
 			failureReason: "timed_out",
 		}
 		r.overlay[id] = ov
-		notify = append(notify, &walletrpc.WalletEntry{
+		notify = append(notify, &walletdkrpc.WalletEntry{
 			Id:            id,
 			Kind:          entry.kind,
 			Status:        ov.status,
@@ -284,17 +284,17 @@ func (r *Runtime) markTimedOut(now time.Time) []*walletrpc.WalletEntry {
 // swap FSM. SubscribeSwaps monitor updates are even stricter: every row from
 // that stream is treated as swap-backed even when its direction is still
 // UNSPECIFIED.
-func isSwapKind(kind walletrpc.EntryKind) bool {
-	return kind == walletrpc.EntryKind_ENTRY_KIND_SEND ||
-		kind == walletrpc.EntryKind_ENTRY_KIND_RECV
+func isSwapKind(kind walletdkrpc.EntryKind) bool {
+	return kind == walletdkrpc.EntryKind_ENTRY_KIND_SEND ||
+		kind == walletdkrpc.EntryKind_ENTRY_KIND_RECV
 }
 
 // subscribe registers a channel to receive normalized WalletEntry updates
 // from the monitor loop. The caller must drain the channel; the runtime
 // drops updates rather than blocking on a slow consumer.
-func (r *Runtime) subscribe() chan *walletrpc.WalletEntry {
+func (r *Runtime) subscribe() chan *walletdkrpc.WalletEntry {
 	ch := make(
-		chan *walletrpc.WalletEntry,
+		chan *walletdkrpc.WalletEntry,
 		int(
 			r.deps.resolveSubscribeBuffer(),
 		),
@@ -309,7 +309,7 @@ func (r *Runtime) subscribe() chan *walletrpc.WalletEntry {
 
 // unsubscribe removes a previously-registered subscriber. Safe to call
 // multiple times; the channel is closed exactly once.
-func (r *Runtime) unsubscribe(ch chan *walletrpc.WalletEntry) {
+func (r *Runtime) unsubscribe(ch chan *walletdkrpc.WalletEntry) {
 	r.subsMu.Lock()
 	defer r.subsMu.Unlock()
 
@@ -323,7 +323,7 @@ func (r *Runtime) unsubscribe(ch chan *walletrpc.WalletEntry) {
 // emit fans a WalletEntry update out to every subscribed channel using a
 // non-blocking send. Slow consumers drop updates; they can reconcile via
 // List on reconnect.
-func (r *Runtime) emit(entry *walletrpc.WalletEntry) {
+func (r *Runtime) emit(entry *walletdkrpc.WalletEntry) {
 	r.subsMu.Lock()
 	defer r.subsMu.Unlock()
 

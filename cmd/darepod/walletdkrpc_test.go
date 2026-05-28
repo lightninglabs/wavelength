@@ -1,4 +1,4 @@
-//go:build walletrpc && swapruntime
+//go:build walletdkrpc && swapruntime
 
 package main
 
@@ -11,7 +11,7 @@ import (
 )
 
 // TestWalletRPCEagerRoundJoinDefault is a table-driven test that exercises
-// main.go's PreRunE wiring for the --eagerroundjoin flag under the walletrpc
+// main.go's PreRunE wiring for the --eagerroundjoin flag under the walletdkrpc
 // build tag. It binds a viper instance against a pflag set just like the real
 // binary, optionally sets the flag, then runs the unmarshal +
 // configureWalletRPC path and asserts the resulting Config.EagerRoundJoin
@@ -35,7 +35,7 @@ func TestWalletRPCEagerRoundJoinDefault(t *testing.T) {
 			name:      "build_tag_default",
 			setFlag:   false,
 			wantEager: true,
-			description: "walletrpc build defaults " +
+			description: "walletdkrpc build defaults " +
 				"EagerRoundJoin to true when the operator " +
 				"leaves the flag unset",
 		},
@@ -45,7 +45,7 @@ func TestWalletRPCEagerRoundJoinDefault(t *testing.T) {
 			flagValue: "false",
 			wantEager: false,
 			description: "an explicit --eagerroundjoin=false " +
-				"override wins over the walletrpc build " +
+				"override wins over the walletdkrpc build " +
 				"default of true",
 		},
 		{

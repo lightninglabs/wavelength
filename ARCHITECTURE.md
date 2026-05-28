@@ -56,8 +56,8 @@ package may import from a higher layer.
 | [`gateway`](gateway/) | HTTP gateway utilities (mux options, CORS, endpoint normalization) for grpc-gateway integration |
 | [`sdk/ark`](sdk/ark/) | Consumer-facing Go SDK facade: remote or embedded daemon access with typed models |
 | [`sdk/swaps`](sdk/swaps/) | Lightning-to-Ark / Ark-to-Lightning atomic swap SDK with durable FSM flows |
-| [`sdk/walletdk`](sdk/walletdk/) | Wallet-shaped SDK facade for host apps: embeds the daemon in-process, dials it over a private bufconn transport, exposes typed methods for the seven core wallet verbs (create, unlock, send, recv, list, balance, exit). The highest-level layer in the stack; wraps `walletrpc.WalletService`. Wallet RPC methods gated behind `walletrpc` (which transitively requires `swapruntime`) |
-| [`swapwallet`](swapwallet/) | Optional daemon-side `walletrpc.WalletService` implementation (build tags `walletrpc swapruntime`): composes the swap subsystem, cooperative leave, boarding, ledger, and unilateral-exit registry behind one flat, swap-vocabulary-free wallet API |
+| [`sdk/walletdk`](sdk/walletdk/) | Wallet-shaped SDK facade for host apps: embeds the daemon in-process, dials it over a private bufconn transport, exposes typed methods for the seven core wallet verbs (create, unlock, send, recv, list, balance, exit). The highest-level layer in the stack; wraps `walletdkrpc.WalletService`. Wallet RPC methods gated behind `walletdkrpc` (which transitively requires `swapruntime`) |
+| [`swapwallet`](swapwallet/) | Optional daemon-side `walletdkrpc.WalletService` implementation (build tags `walletdkrpc swapruntime`): composes the swap subsystem, cooperative leave, boarding, ledger, and unilateral-exit registry behind one flat, swap-vocabulary-free wallet API |
 | [`swapclientserver`](swapclientserver/) | Optional daemon-side swap subserver (build tag `swapruntime`): translates `swapclientrpc` RPCs into `sdk/swaps` operations and manages the daemon-local worker registry |
 | [`cmd/darepod`](cmd/darepod/) | Daemon entry point |
 | [`cmd/darepocli`](cmd/darepocli/) | CLI client |
@@ -65,8 +65,8 @@ package may import from a higher layer.
 | [`indexer`](indexer/) | Server indexing client for receive script registration |
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
 | [`arkrpc/treeconv`](arkrpc/treeconv/) | Narrow re-export of tree-path conversion helpers without the full gRPC surface |
-| [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb, swapclientrpc, walletrpc) and HTTP transport (`rpc/restclient`) |
-| [`rpc/walletrpc`](rpc/walletrpc/) | Highest-level gRPC surface: `WalletService` with the seven core wallet verbs. Composes `daemonrpc` and `rpc/swapclientrpc` server-side via `swapwallet` |
+| [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb, swapclientrpc, walletdkrpc) and HTTP transport (`rpc/restclient`) |
+| [`rpc/walletdkrpc`](rpc/walletdkrpc/) | Highest-level gRPC surface: `WalletService` with the seven core wallet verbs. Composes `daemonrpc` and `rpc/swapclientrpc` server-side via `swapwallet` |
 | [`rpc/restclient`](rpc/restclient/) | HTTP/protoJSON transport adapter: `Client`, `StreamClient[T]`, and per-service factory functions implementing the same gRPC stub interfaces over REST |
 | [`daemonrpc`](daemonrpc/) | Daemon gRPC API definitions |
 
