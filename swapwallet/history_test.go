@@ -723,6 +723,60 @@ func TestHistoryKeepsOORSendWithChangeWithoutSwap(t *testing.T) {
 	require.Equal(t, int64(-999_745), entries[0].GetAmountSat())
 }
 
+// TestHistoryKeepsZeroDeltaOORSendWithoutSwap covers a balanced OOR session
+// that sends funds out and receives the same amount back to this wallet without
+// any swap summary referencing the session. This shape is expected for ordinary
+// wallet-local OOR activity and must not be mistaken for a swap refund or claim
+// just because the net delta is zero. The history merger may hide the paired
+// receive leg as same-session change, but it must keep the outgoing SEND row so
+// user-initiated OOR activity remains visible in the wallet activity stream.
+func TestHistoryKeepsZeroDeltaOORSendWithoutSwap(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+
+	sessionID := testBytes(32, 0x35)
+	sessionHex := testSessionString(t, sessionID)
+
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOSent,
+				AmountSat:      1_000,
+				DebitAccount:   ledger.AccountTransfersOut,
+				CreditAccount:  ledger.AccountVTXOBalance,
+				SessionId:      sessionID,
+				EntryId:        31,
+				CreatedAtUnixS: 100,
+			},
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOReceived,
+				AmountSat:      1_000,
+				DebitAccount:   ledger.AccountVTXOBalance,
+				CreditAccount:  ledger.AccountTransfersIn,
+				Txid:           sessionHex,
+				OutputIndex:    0,
+				EntryId:        32,
+				CreatedAtUnixS: 101,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "ledger-31", entries[0].GetId())
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_SEND, entries[0].GetKind(),
+	)
+	require.Equal(t, int64(-1_000), entries[0].GetAmountSat())
+}
+
 // TestHistoryPendingFilterIncludesPendingBoarding confirms --pending includes
 // the synthetic unconfirmed boarding row.
 func TestHistoryPendingFilterIncludesPendingBoarding(t *testing.T) {
