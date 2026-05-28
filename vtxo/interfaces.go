@@ -481,6 +481,22 @@ type VTXOStore interface {
 	DeleteVTXO(ctx context.Context, outpoint wire.OutPoint) error
 }
 
+// SpendingReservationStore is the subset of the durable spending-reservation
+// index the VTXO manager needs: it lists live reservations during the startup
+// orphan sweep and deletes reservations when a VTXO leaves SpendingState. It
+// is intentionally narrow so the vtxo package does not import the concrete db
+// type or the oor package.
+type SpendingReservationStore interface {
+	// DeleteReservation removes the reservation for one outpoint. Called
+	// when the VTXO leaves SpendingState (released or completed).
+	DeleteReservation(ctx context.Context, outpoint wire.OutPoint) error
+
+	// ListReservedOutpoints returns every outpoint currently reserved by a
+	// live spend owner. Used by the startup sweep to distinguish orphaned
+	// Spending VTXOs (no reservation row) from in-flight ones.
+	ListReservedOutpoints(ctx context.Context) ([]wire.OutPoint, error)
+}
+
 // VTXOWallet defines the signing interface for VTXO operations.
 type VTXOWallet interface {
 	input.Signer
