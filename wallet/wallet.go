@@ -2276,7 +2276,7 @@ func (a *Ark) releaseManagerForfeit(ctx context.Context,
 func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 	req *SelectAndLockVTXOsRequest) fn.Result[WalletResp] {
 
-	a.logger(ctx).InfoS(ctx, "Selecting and locking VTXOs for spend",
+	a.logger(ctx).TraceS(ctx, "Selecting and locking VTXOs for spend",
 		slog.Int64("target", int64(req.TargetAmount)),
 	)
 
