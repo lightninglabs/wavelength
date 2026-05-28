@@ -2,6 +2,7 @@ package darepoclicommands
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/lightninglabs/darepo-client/rpc/walletrpc"
@@ -77,4 +78,46 @@ func TestRenderWalletInspectionExpanded(t *testing.T) {
 	require.NotContains(t, got, "HIDDEN")
 	require.NotContains(t, got, "hidden")
 	require.Contains(t, got, "Notes\n- best effort")
+}
+
+// TestRenderWalletInspectionExpandedDeduplicatesPaymentHash verifies inspect
+// output prints the Lightning payment hash once when both the request and the
+// progress snapshot carry the same stable identifier.
+func TestRenderWalletInspectionExpandedDeduplicatesPaymentHash(t *testing.T) {
+	t.Parallel()
+
+	const paymentHash = "bdaeb8a1100a27410a86ec49b05e7edb7758e465" +
+		"a3bb6855ae840b665523048c"
+	const vtxoOutpoint = "0b02c92e32692b03e4f8a336c3e21406" +
+		"cf68fa4057f699e6f95b5020d2fc800a:0"
+
+	request := &walletrpc.WalletEntryRequest{
+		Request: &walletrpc.WalletEntryRequest_LightningInvoice{
+			LightningInvoice: &walletrpc.LightningInvoiceRequest{
+				Invoice:     "lntbs50u1example",
+				PaymentHash: paymentHash,
+			},
+		},
+	}
+
+	resp := &walletrpc.InspectActivityResponse{
+		Entry: &walletrpc.WalletEntry{
+			Id:      paymentHash,
+			Kind:    walletrpc.EntryKind_ENTRY_KIND_RECV,
+			Status:  walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+			Request: request,
+			Progress: &walletrpc.WalletEntryProgress{
+				PaymentHash:  paymentHash,
+				VtxoOutpoint: vtxoOutpoint,
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	require.NoError(t, renderWalletInspectionExpanded(&out, resp))
+
+	got := out.String()
+	require.Equal(t, 1, strings.Count(got, "- payment_hash: "))
+	require.Contains(t, got, "- payment_hash: "+paymentHash)
+	require.Contains(t, got, "- progress_vtxo: ")
 }
