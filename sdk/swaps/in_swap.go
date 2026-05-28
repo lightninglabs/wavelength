@@ -17,6 +17,12 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+const (
+	refundLocktimeNearBlocks      = uint32(3)
+	refundLocktimeMaxPollMultiple = uint32(30)
+	refundLocktimeMaxPollInterval = time.Minute
+)
+
 // PayState identifies the client-side lifecycle state of an Ark-to-Lightning
 // pay flow.
 type PayState uint8
@@ -876,6 +882,22 @@ func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 			})
 		}
 		if spentVHTLC != nil {
+			refundOutput, err := s.observeRefundOutput(ctx)
+			if err != nil {
+				return newRetryableActionError(
+					fmt.Errorf("query in-swap refund "+
+						"output after spend: %w", err),
+				)
+			}
+			if refundOutput != nil {
+				return s.markRefundOutputIndexed(
+					ctx, refundOutput,
+				)
+			}
+			if len(s.refundReceiveScript) > 0 {
+				return s.markRefunded(ctx, spentVHTLC)
+			}
+
 			reason := "funded vHTLC spent without claim preimage"
 			if spentVHTLC.SpentByTxID != "" {
 				reason = fmt.Sprintf("%s (spender %s)", reason,
@@ -991,6 +1013,7 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 		return fmt.Errorf("get block height: %w", err)
 	}
 	if height < s.cfg.VHTLCConfig.RefundLocktime {
+		wait := s.refundLocktimePollInterval(height)
 		s.client.log.DebugS(ctx, "Pay swap refund not yet mature",
 			btclog.Hex("hash", s.cfg.PaymentHash[:]),
 			slog.Uint64("height", uint64(height)),
@@ -998,9 +1021,10 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 				"refund_locktime",
 				uint64(s.cfg.VHTLCConfig.RefundLocktime),
 			),
+			slog.Duration("next_poll", wait),
 		)
 
-		return waitForFixedPoll(ctx, s.client.waitPollInterval)
+		return waitForFixedPoll(ctx, wait)
 	}
 
 	refundPubKey, err := s.refundPubKey(ctx)
@@ -1059,6 +1083,38 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 	)
 
 	return s.markRefundAccepted(ctx)
+}
+
+// refundLocktimePollInterval returns a slower timeout-refund poll interval when
+// the refund branch is still many blocks away from maturity. The final few
+// blocks keep the normal SDK interval so the client remains responsive near the
+// first spendable height.
+func (s *paySession) refundLocktimePollInterval(height uint32) time.Duration {
+	wait := s.client.waitPollInterval
+	locktime := s.cfg.VHTLCConfig.RefundLocktime
+	if wait <= 0 || height >= locktime {
+		return wait
+	}
+
+	remaining := locktime - height
+	if remaining <= refundLocktimeNearBlocks {
+		return wait
+	}
+
+	multiple := remaining / 2
+	if multiple < 2 {
+		multiple = 2
+	}
+	if multiple > refundLocktimeMaxPollMultiple {
+		multiple = refundLocktimeMaxPollMultiple
+	}
+
+	backoff := wait * time.Duration(multiple)
+	if backoff > refundLocktimeMaxPollInterval {
+		return refundLocktimeMaxPollInterval
+	}
+
+	return backoff
 }
 
 // tryCooperativeRefund attempts an immediate refund before the timeout branch
@@ -1226,10 +1282,10 @@ func preparedCustomInput(prepared *PreparedOOR,
 		outpoint)
 }
 
-// observeRefundOutput returns the wallet output created by the timeout refund
-// once the daemon indexes the persisted refund destination. The refund output
-// is the most direct proof that the client recovered funds, while the spent
-// vHTLC record can lag behind or be unavailable depending on indexer timing.
+// observeRefundOutput returns the wallet output created by a refund once the
+// daemon indexes the persisted refund destination. The refund output is the
+// most direct proof that the client recovered funds, while the spent vHTLC
+// record can lag behind or be unavailable depending on indexer timing.
 func (s *paySession) observeRefundOutput(ctx context.Context) (*VTXOInfo,
 	error) {
 
@@ -1248,9 +1304,17 @@ func (s *paySession) observeRefundOutput(ctx context.Context) (*VTXOInfo,
 	}
 
 	if s.vhtlcAmount != 0 && refundOutput.AmountSat != s.vhtlcAmount {
-		return nil, fmt.Errorf("refund output amount %d does not "+
-			"match vHTLC amount %d", refundOutput.AmountSat,
-			s.vhtlcAmount)
+		s.client.log.WarnS(
+			ctx,
+			"Ignoring refund output with unexpected amount",
+			nil,
+			btclog.Hex("hash", s.cfg.PaymentHash[:]),
+			slog.String("outpoint", refundOutput.Outpoint),
+			slog.Int64("amount", refundOutput.AmountSat),
+			slog.Int64("want_amount", s.vhtlcAmount),
+		)
+
+		return nil, nil
 	}
 
 	return refundOutput, nil

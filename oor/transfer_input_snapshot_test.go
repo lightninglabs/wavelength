@@ -13,8 +13,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestTransferInputSnapshotRoundTrip asserts that transfer input snapshots
-// contain enough information to rebuild the VTXO signing descriptor.
+// TestTransferInputSnapshotRoundTrip verifies a durable TransferInputSnapshot
+// contains enough information to rebuild the VTXO signing descriptor for a
+// custom spend after process restart. The round trip covers the custom
+// spend-path script, control block, condition witness, required sequence and
+// locktime, and externally supplied tapscript signatures. Those fields are the
+// resume-critical material for cooperative refunds, where the client may
+// already hold a server signature and must reconstruct the same custom OOR
+// input before final witness assembly.
 func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -103,6 +109,17 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 			},
 		},
 	}
+	in.ExternalSignatures = []ExternalTaprootScriptSignature{
+		{
+			PubKey:        operatorKey.PubKey(),
+			WitnessScript: ownerLeaf.Script,
+			Signature: []byte{
+				0x30,
+				0x31,
+			},
+			SigHash: txscript.SigHashDefault,
+		},
+	}
 
 	snap, err := in.ToSnapshot()
 	require.NoError(t, err)
@@ -132,6 +149,9 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 		snap.RequiredSequence)
 	require.Equal(t, in.CustomSpend.RequiredLockTime,
 		snap.RequiredLockTime)
+	requireExternalSignatureEqual(
+		t, in.ExternalSignatures[0], snap.ExternalSignatures[0],
+	)
 
 	rebuilt, err := TransferInputFromSnapshot(snap)
 	require.NoError(t, err)
@@ -168,6 +188,48 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	require.Equal(
 		t, in.CustomSpend.Conditions, rebuilt.CustomSpend.Conditions,
 	)
+	requireExternalSignatureEqual(
+		t, in.ExternalSignatures[0], rebuilt.ExternalSignatures[0],
+	)
+}
+
+// TestCloneExternalSignaturesDeepCopiesMutableBytes verifies persisted custom
+// signature snapshots do not alias the mutable witness-script or signature
+// slices held by a live TransferInput. Restart recovery depends on these
+// snapshots being immutable once captured; otherwise a later signing attempt
+// could mutate the in-memory transfer input and silently corrupt the durable
+// external signature material used to resume a cooperative refund.
+func TestCloneExternalSignaturesDeepCopiesMutableBytes(t *testing.T) {
+	t.Parallel()
+
+	_, key := btcec.PrivKeyFromBytes([]byte{
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+	})
+	original := []ExternalTaprootScriptSignature{
+		{
+			PubKey: key,
+			WitnessScript: []byte{
+				0x51,
+				0x20,
+			},
+			Signature: []byte{
+				0xaa,
+				0xbb,
+			},
+			SigHash: txscript.SigHashDefault,
+		},
+	}
+
+	clone := cloneExternalSignatures(original)
+	requireExternalSignatureEqual(t, original[0], clone[0])
+
+	clone[0].WitnessScript[0] = 0x00
+	clone[0].Signature[0] = 0x00
+
+	require.Equal(t, []byte{0x51, 0x20}, original[0].WitnessScript)
+	require.Equal(t, []byte{0xaa, 0xbb}, original[0].Signature)
+	require.Same(t, original[0].PubKey, clone[0].PubKey)
 }
 
 // TestTransferInputValidateRejectsNil asserts nil receivers are rejected.
@@ -203,6 +265,21 @@ func TestTransferInputFromSnapshotRejectsMissingFields(t *testing.T) {
 		OwnerLeafScript: []byte{0x51},
 	})
 	require.Error(t, err)
+}
+
+func requireExternalSignatureEqual(t *testing.T,
+	want ExternalTaprootScriptSignature,
+	got ExternalTaprootScriptSignature) {
+
+	t.Helper()
+
+	require.Equal(
+		t, want.PubKey.SerializeCompressed(),
+		got.PubKey.SerializeCompressed(),
+	)
+	require.Equal(t, want.WitnessScript, got.WitnessScript)
+	require.Equal(t, want.Signature, got.Signature)
+	require.Equal(t, want.SigHash, got.SigHash)
 }
 
 // TestTransferInputToSnapshotRejectsMissingVTXO asserts we require a full VTXO

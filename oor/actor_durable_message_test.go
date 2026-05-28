@@ -6,6 +6,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/stretchr/testify/require"
@@ -235,6 +236,102 @@ func TestDecodeLengthPrefixedBlobListRejectsTrailingBytes(t *testing.T) {
 	raw = append(raw, 0xff)
 	_, err = decodeLengthPrefixedBlobList(raw)
 	require.ErrorContains(t, err, "trailing payload bytes")
+}
+
+// TestExternalSignaturesTLVRoundTrip verifies the durable encoding used for
+// custom-input signatures preserves each signature's signer key, witness
+// script, raw Schnorr signature bytes, and sighash flag. Cooperative refunds
+// rely on these records when a client restarts after obtaining a server
+// signature but before finalizing the custom OOR spend; a field swap or missing
+// sighash would only surface later as an invalid checkpoint witness.
+func TestExternalSignaturesTLVRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	_, key1 := btcec.PrivKeyFromBytes(bytes.Repeat([]byte{0x01}, 32))
+	_, key2 := btcec.PrivKeyFromBytes(bytes.Repeat([]byte{0x02}, 32))
+	sigs := []ExternalTaprootScriptSignature{
+		{
+			PubKey: key1,
+			WitnessScript: []byte{
+				0x51,
+				0x20,
+				0x01,
+			},
+			Signature: []byte{
+				0x11,
+				0x12,
+			},
+			SigHash: txscript.SigHashDefault,
+		},
+		{
+			PubKey: key2,
+			WitnessScript: []byte{
+				0x20,
+				0x02,
+				0xac,
+			},
+			Signature: []byte{
+				0x21,
+				0x22,
+				0x23,
+			},
+			SigHash: txscript.SigHashAll,
+		},
+	}
+
+	raw, err := encodeExternalSignatures(sigs)
+	require.NoError(t, err)
+
+	decoded, err := decodeExternalSignatures(raw)
+	require.NoError(t, err)
+	require.Len(t, decoded, len(sigs))
+	for i := range sigs {
+		require.Equal(
+			t, sigs[i].PubKey.SerializeCompressed(),
+			decoded[i].PubKey.SerializeCompressed(),
+		)
+		require.Equal(
+			t, sigs[i].WitnessScript, decoded[i].WitnessScript,
+		)
+		require.Equal(t, sigs[i].Signature, decoded[i].Signature)
+		require.Equal(t, sigs[i].SigHash, decoded[i].SigHash)
+	}
+}
+
+// TestExternalSignaturesTLVRejectsMalformedPayloads pins the defensive decode
+// rules around the external-signature durable blob. The decoder must reject
+// oversize signature lists before allocation, corrupted public keys before they
+// enter signing state, and trailing bytes that could otherwise mask partially
+// parsed data from a future or corrupt format.
+func TestExternalSignaturesTLVRejectsMalformedPayloads(t *testing.T) {
+	t.Parallel()
+
+	tooMany := make(
+		[]ExternalTaprootScriptSignature, maxExternalSignatures+1,
+	)
+	_, err := encodeExternalSignatures(tooMany)
+	require.ErrorContains(t, err, "external signature count")
+
+	var corruptKey bytes.Buffer
+	require.NoError(t, wire.WriteVarInt(&corruptKey, 0, 1))
+	require.NoError(t, wire.WriteVarBytes(&corruptKey, 0, []byte{0x02}))
+	_, err = decodeExternalSignatures(corruptKey.Bytes())
+	require.ErrorContains(t, err, "parse external signature pubkey")
+
+	_, key := btcec.PrivKeyFromBytes(bytes.Repeat([]byte{0x03}, 32))
+	raw, err := encodeExternalSignatures([]ExternalTaprootScriptSignature{
+		{
+			PubKey:        key,
+			WitnessScript: []byte{0x51},
+			Signature:     []byte{0x01},
+			SigHash:       txscript.SigHashDefault,
+		},
+	})
+	require.NoError(t, err)
+
+	raw = append(raw, 0xff)
+	_, err = decodeExternalSignatures(raw)
+	require.ErrorContains(t, err, "trailing bytes")
 }
 
 // TestDriveEventRequestRoundTripFailEvent asserts DriveEventRequest TLV

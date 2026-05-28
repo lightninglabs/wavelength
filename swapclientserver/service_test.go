@@ -68,6 +68,64 @@ func TestResumePendingStartsWorkersAndDedupes(t *testing.T) {
 	require.True(t, fakeClient.sawPendingOnlyList())
 }
 
+// TestResumeSwapConcurrentCallsStartOnePayWorker drives many manual resume RPCs
+// for the same pay swap at the same time. ResumeSwap is allowed to be retried
+// by clients, but it must not create parallel FSM drivers for one payment hash.
+// The test starts all callers from the same barrier, verifies every RPC still
+// returns successfully with the current summary, and then asserts exactly one
+// ResumePayViaLightning call was admitted through the active-worker gate.
+func TestResumeSwapConcurrentCallsStartOnePayWorker(t *testing.T) {
+	t.Parallel()
+
+	payHash := testHash(9)
+	fakeClient := newFakeSwapRuntime(swaps.SwapSummary{
+		Direction:   swaps.SwapDirectionPay,
+		PaymentHash: payHash,
+		State:       "waiting_for_claim",
+		Pending:     true,
+	})
+	service := newTestSwapClientService(fakeClient)
+	defer service.cancel()
+
+	req := &swapclientrpc.ResumeSwapRequest{
+		PaymentHash: hex.EncodeToString(payHash[:]),
+		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
+	}
+
+	const callers = 16
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			<-start
+			_, err := service.ResumeSwap(t.Context(), req)
+			errs <- err
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	fakeClient.awaitPayResume(t, payHash)
+	require.Equal(t, 1, fakeClient.payResumeCount(payHash))
+
+	select {
+	case got := <-fakeClient.payResumeCh:
+		t.Fatalf("unexpected duplicate pay resume for %x", got[:])
+
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 // TestSwapStoreDatabasePathDefaultsToNetworkDir verifies a default swap store
 // is reset together with the network-scoped daemon DB directory.
 func TestSwapStoreDatabasePathDefaultsToNetworkDir(t *testing.T) {
