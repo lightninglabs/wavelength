@@ -3,9 +3,13 @@ package darepoclicommands
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestPrintErrorFormatsIndentedJSON(t *testing.T) {
@@ -30,4 +34,96 @@ func TestPrintErrorFormatsIndentedJSON(t *testing.T) {
 		"\n    \"code\": \"EXECUTION_FAILED\"",
 	)
 	require.Contains(t, buf.String(), "\n    \"message\": ")
+}
+
+func TestPrintCommandErrorPromotesNestedGRPCStatus(t *testing.T) {
+	t.Parallel()
+
+	const msg = "send: rpc error: code = Internal desc = start pay: " +
+		"rpc error: code = Internal desc = start pay swap: " +
+		"create in-swap: CreateInSwap RPC: rpc error: code = " +
+		"AlreadyExists desc = receive intent already used"
+	const details = "send: start pay: start pay swap: create in-swap: " +
+		"CreateInSwap RPC"
+
+	var buf bytes.Buffer
+	err := printCommandError(&buf, errors.New(msg))
+	require.NoError(t, err)
+
+	expected := `{
+		"error": {
+			"code": "ALREADY_EXISTS",
+			"message": "receive intent already used",
+			"details": "` + details + `"
+		}
+	}`
+	require.JSONEq(t, expected, buf.String())
+}
+
+func TestPrintCommandErrorAddsStatusWrapperDetails(t *testing.T) {
+	t.Parallel()
+
+	statusErr := status.Error(
+		codes.AlreadyExists, "receive intent already used",
+	)
+	err := fmt.Errorf("send: %w", statusErr)
+
+	var buf bytes.Buffer
+	require.NoError(t, printCommandError(&buf, err))
+
+	expected := `{
+		"error": {
+			"code": "ALREADY_EXISTS",
+			"message": "receive intent already used",
+			"details": "send"
+		}
+	}`
+	require.JSONEq(t, expected, buf.String())
+}
+
+func TestPrintCommandErrorHandlesBareGRPCStatus(t *testing.T) {
+	t.Parallel()
+
+	err := status.Error(codes.AlreadyExists, "receive intent already used")
+
+	var buf bytes.Buffer
+	require.NoError(t, printCommandError(&buf, err))
+
+	expected := `{
+		"error": {
+			"code": "ALREADY_EXISTS",
+			"message": "receive intent already used"
+		}
+	}`
+	require.JSONEq(t, expected, buf.String())
+}
+
+func TestPrintCommandErrorLeavesPlainErrorsGeneric(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	require.NoError(t, printCommandError(&buf, errors.New("boom")))
+
+	expected := `{
+		"error": {
+			"code": "EXECUTION_FAILED",
+			"message": "boom"
+		}
+	}`
+	require.JSONEq(t, expected, buf.String())
+}
+
+func TestPrintCommandErrorHandlesNilError(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	require.NoError(t, printCommandError(&buf, nil))
+
+	expected := `{
+		"error": {
+			"code": "EXECUTION_FAILED",
+			"message": "unknown error"
+		}
+	}`
+	require.JSONEq(t, expected, buf.String())
 }

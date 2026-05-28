@@ -880,8 +880,7 @@ func (s *swapClientService) StartPay(ctx context.Context,
 		ctx, req.GetInvoice(), req.GetMaxFeeSat(),
 	)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "start pay swap: %v",
-			err)
+		return nil, fmt.Errorf("start pay swap: %w", err)
 	}
 
 	hash := session.PaymentHash()

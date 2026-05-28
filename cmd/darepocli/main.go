@@ -12,8 +12,8 @@ import (
 // for the full table (2=invalid args, 3=auth, 4=not found, 10=dry-run
 // passed). Any error that already carries the structured envelope set
 // by helpers like PrintError is treated as already-rendered; otherwise
-// we emit a generic EXECUTION_FAILED envelope so stderr stays
-// machine-readable in every failure path.
+// we emit a normalized error envelope so stderr stays machine-readable
+// in every failure path.
 func main() {
 	root := darepoclicommands.NewRootCmd()
 
@@ -23,18 +23,7 @@ func main() {
 	}
 
 	if !darepoclicommands.ErrorWasPrinted(err) {
-		// Cobra and pflag pre-RunE failures (missing required
-		// flag, wrong arg count, unknown flag) come through here
-		// as bare errors that should map onto the agent-cli
-		// INVALID_ARGS envelope, not the generic EXECUTION_FAILED
-		// one. The matching exit-code-2 mapping lives in
-		// ExitCodeFor via IsCobraArgError, so the stderr code and
-		// the exit code stay in lockstep.
-		code := "EXECUTION_FAILED"
-		if darepoclicommands.IsCobraArgError(err) {
-			code = "INVALID_ARGS"
-		}
-		_ = darepoclicommands.PrintError(code, err.Error())
+		_ = darepoclicommands.PrintCommandError(err)
 	}
 
 	os.Exit(darepoclicommands.ExitCodeFor(err))
