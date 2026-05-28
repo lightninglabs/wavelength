@@ -126,6 +126,21 @@ result into an `IncomingVHTLCNotification`.
 - Error sentinels (`ErrSwapExpired`, `ErrSwapRefunded`,
   `ErrSwapSummaryNotFound`) are exported; callers use `errors.Is`.
 
+### Migration notes
+
+- **Never add columns to an already-applied migration.** golang-migrate
+  records the version in `swap_client_schema_migrations` and never
+  re-runs it, so editing `000001` in place leaves every pre-existing
+  store without the new columns (it boots fine, then fails queries with
+  `no such column`). Always author a new forward-only `0000NN_*.up.sql`
+  with `ALTER TABLE ADD COLUMN` (backward-compatible defaults) and bump
+  `LatestMigrationVersion` in `store.go`.
+- `000002_swap_recovery_and_fee_columns` — adds `payer_fee_msat`
+  (BIGINT, default 0) and `claim_recovery_id` (TEXT, default '') to
+  `receive_swaps`, and `refund_recovery_id` (TEXT, default '') to
+  `pay_swaps`. These were originally mis-appended to `000001`.
+- `000001_swap_sessions` — base `receive_swaps` / `pay_swaps` schema.
+
 ## Deep Docs
 
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.

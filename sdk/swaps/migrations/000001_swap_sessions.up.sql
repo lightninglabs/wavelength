@@ -14,10 +14,6 @@ CREATE TABLE IF NOT EXISTS receive_swaps (
     -- amount_sat is the requested invoice amount in satoshis.
     amount_sat BIGINT NOT NULL,
 
-    -- payer_fee_msat is the payer-paid route fee quoted by the swap server.
-    -- The fee is not deducted from amount_sat.
-    payer_fee_msat BIGINT NOT NULL,
-
     -- state is the current client-side receive FSM state name.
     state TEXT NOT NULL,
 
@@ -89,10 +85,6 @@ CREATE TABLE IF NOT EXISTS receive_swaps (
     -- claim_session_id is the deterministic OOR session identifier returned
     -- by the daemon when the client submits the receive-side claim.
     claim_session_id TEXT NOT NULL DEFAULT '',
-
-    -- claim_recovery_id is the daemon-owned vHTLC recovery row armed for
-    -- unilateral claim fallback. Empty means recovery has not been armed yet.
-    claim_recovery_id TEXT NOT NULL DEFAULT '',
 
     -- intervention_reason is the durable terminal explanation stored when a
     -- receive session fails or stops in NeedsIntervention.
@@ -192,11 +184,6 @@ CREATE TABLE IF NOT EXISTS pay_swaps (
     -- by the daemon when the client submits the timeout refund, or the
     -- observed spender txid when resume adopts an already-indexed refund.
     refund_session_id TEXT NOT NULL DEFAULT '',
-
-    -- refund_recovery_id is the daemon-owned vHTLC recovery row armed for
-    -- unilateral refund-without-receiver fallback. Empty means recovery has not
-    -- been armed yet.
-    refund_recovery_id TEXT NOT NULL DEFAULT '',
 
     -- preimage is the claim preimage once the swap server's spend is
     -- authoritatively observed.

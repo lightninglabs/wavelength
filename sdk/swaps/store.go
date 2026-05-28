@@ -48,7 +48,9 @@ const (
 	defaultConnMaxLifetime = 10 * time.Minute
 
 	// LatestMigrationVersion is the latest swap-client schema migration.
-	LatestMigrationVersion uint = 1
+	//
+	// NOTE: This MUST be updated when a new migration is added.
+	LatestMigrationVersion uint = 2
 )
 
 //go:embed migrations/*.sql
