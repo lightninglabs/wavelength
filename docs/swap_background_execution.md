@@ -119,7 +119,8 @@ swaprpc -> swapdk-server
 
 The executor owns:
 
-- swap store lifecycle (`~/.darepod/swaps.db` by default, configurable);
+- swap store lifecycle (`~/.darepod/data/<network>/swaps.db` by default,
+  configurable);
 - swap-server transport config;
 - construction of `sdk/swaps.SwapClient`;
 - a per-payment-hash worker registry;

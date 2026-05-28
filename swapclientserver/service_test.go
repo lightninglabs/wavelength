@@ -8,6 +8,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -64,6 +66,79 @@ func TestResumePendingStartsWorkersAndDedupes(t *testing.T) {
 	require.Equal(t, 1, fakeClient.payResumeCount(payHash))
 	require.Equal(t, 1, fakeClient.receiveResumeCount(receiveHash))
 	require.True(t, fakeClient.sawPendingOnlyList())
+}
+
+// TestSwapStoreDatabasePathDefaultsToNetworkDir verifies a default swap store
+// is reset together with the network-scoped daemon DB directory.
+func TestSwapStoreDatabasePathDefaultsToNetworkDir(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	path, err := swapStoreDatabasePath(&darepod.Config{
+		DataDir: dataDir,
+		Network: "signet",
+	}, &darepod.SwapConfig{})
+	require.NoError(t, err)
+	require.Equal(
+		t, filepath.Join(dataDir, "data", "signet", "swaps.db"), path,
+	)
+}
+
+// TestSwapStoreDatabasePathUsesValidatedDataDir verifies the default swap store
+// follows the daemon's validated data directory, including config-level tilde
+// expansion.
+func TestSwapStoreDatabasePathUsesValidatedDataDir(t *testing.T) {
+	t.Parallel()
+
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	daemonCfg := darepod.DefaultConfig()
+	daemonCfg.Network = "regtest"
+	daemonCfg.Wallet.EsploraURL = "https://esplora.example/api"
+	require.NoError(t, daemonCfg.Validate())
+
+	path, err := swapStoreDatabasePath(daemonCfg, &darepod.SwapConfig{})
+	require.NoError(t, err)
+	require.Equal(
+		t, filepath.Join(
+			home, ".darepod", "data", "regtest", "swaps.db",
+		),
+		path,
+	)
+}
+
+// TestSwapStoreDatabasePathExpandsConfiguredHome verifies explicit operator
+// paths follow the same leading-tilde behavior as the daemon datadir.
+func TestSwapStoreDatabasePathExpandsConfiguredHome(t *testing.T) {
+	t.Parallel()
+
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	daemonCfg := darepod.DefaultConfig()
+	daemonCfg.DataDir = t.TempDir()
+	daemonCfg.Network = "signet"
+	daemonCfg.AllowMainnet = false
+	daemonCfg.Wallet.EsploraURL = "https://esplora.example/api"
+	daemonCfg.Swap.DatabaseFileName = "~/.darepod/custom-swaps.db"
+	require.NoError(t, daemonCfg.Validate())
+
+	path, err := swapStoreDatabasePath(daemonCfg, daemonCfg.Swap)
+	require.NoError(t, err)
+	require.Equal(
+		t, filepath.Join(home, ".darepod", "custom-swaps.db"), path,
+	)
+}
+
+// TestSwapStoreDatabasePathRequiresDaemonConfig verifies the helper fails
+// explicitly if a future call site reaches it without daemon config.
+func TestSwapStoreDatabasePathRequiresDaemonConfig(t *testing.T) {
+	t.Parallel()
+
+	path, err := swapStoreDatabasePath(nil, &darepod.SwapConfig{})
+	require.ErrorContains(t, err, "daemon config is required")
+	require.Empty(t, path)
 }
 
 func TestStartPayReturnsSummaryAndStartsWorker(t *testing.T) {

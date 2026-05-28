@@ -276,14 +276,18 @@ func RegisterGateway(ctx context.Context, mux *runtime.ServeMux,
 func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	daemonCfg *darepod.Config) (*swapClientService, func(), error) {
 
+	if daemonCfg == nil {
+		return nil, nil, fmt.Errorf("daemon config is required")
+	}
+
 	cfg := daemonCfg.Swap
 	if cfg == nil {
 		cfg = darepod.DefaultConfig().Swap
 	}
 
-	dbPath := cfg.DatabaseFileName
-	if dbPath == "" {
-		dbPath = filepath.Join(daemonCfg.DataDir, "swaps.db")
+	dbPath, err := swapStoreDatabasePath(daemonCfg, cfg)
+	if err != nil {
+		return nil, nil, err
 	}
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return nil, nil, fmt.Errorf("create swap db dir: %w", err)
@@ -417,6 +421,24 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	}
 
 	return service, cleanup, nil
+}
+
+// swapStoreDatabasePath returns the daemon-owned swap store path. By default it
+// follows the network-scoped daemon DB directory so a network DB reset also
+// clears wallet activity derived from persisted swap sessions.
+func swapStoreDatabasePath(daemonCfg *darepod.Config,
+	cfg *darepod.SwapConfig) (string, error) {
+
+	if daemonCfg == nil {
+		return "", fmt.Errorf("daemon config is required")
+	}
+	if cfg != nil && cfg.DatabaseFileName != "" {
+		return cfg.DatabaseFileName, nil
+	}
+
+	return filepath.Join(
+		daemonCfg.NetworkDir(), swaps.DefaultSqliteDatabaseFileName,
+	), nil
 }
 
 // newSwapServerClients builds the swapdk-server clients for the configured
