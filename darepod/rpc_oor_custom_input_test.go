@@ -98,7 +98,9 @@ func newCustomOORRPCFixture(t *testing.T) *customOORRPCFixture {
 		recipient: &daemonrpc.Output{
 			AmountSat: 42_000,
 			Destination: &daemonrpc.Output_Pubkey{
-				Pubkey: receiverPriv.PubKey().X().Bytes(),
+				Pubkey: schnorr.SerializePubKey(
+					receiverPriv.PubKey(),
+				),
 			},
 		},
 		claimPath:  claimPath,
