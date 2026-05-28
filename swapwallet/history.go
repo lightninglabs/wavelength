@@ -467,6 +467,7 @@ func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
 	receiveRowsBySession := make(
 		map[string][]*daemonrpc.TransactionHistoryEntry,
 	)
+	var claimOutputSessions map[string]struct{}
 	for _, row := range rows {
 		session, ok := oorReceiveSessionID(row)
 		if !ok {
@@ -477,6 +478,13 @@ func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
 		receiveRowsBySession[session] = append(
 			receiveRowsBySession[session], row,
 		)
+
+		if receiveMatchesClaimOutput(row, correlations.claimSessions) {
+			if claimOutputSessions == nil {
+				claimOutputSessions = make(map[string]struct{})
+			}
+			claimOutputSessions[session] = struct{}{}
+		}
 	}
 
 	hidden := make(map[int64]struct{})
@@ -497,7 +505,7 @@ func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
 
 		switch delta := row.GetAmountSat() - received; {
 		case delta == 0 && internalZeroDeltaSession(
-			correlations, session,
+			correlations, claimOutputSessions, session,
 		):
 
 			hidden[row.GetEntryId()] = struct{}{}
@@ -519,10 +527,35 @@ func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
 // send+receive pair belongs to a swap-internal claim or refund. Those rows
 // are already represented by the swap entry itself.
 func internalZeroDeltaSession(correlations swapOORCorrelations,
-	session string) bool {
+	claimOutputSessions map[string]struct{}, session string) bool {
 
 	return sessionInSet(correlations.claimSessions, session) ||
-		sessionInSet(correlations.refundSessions, session)
+		sessionInSet(correlations.refundSessions, session) ||
+		sessionInSet(claimOutputSessions, session)
+}
+
+// receiveMatchesClaimOutput reports whether an OOR receive row materialized
+// the output produced by a receive-swap claim. Some ledgers record the OOR
+// session id separately from the materialized output txid, while the swap
+// summary stores the claim id as the output txid. Matching both keeps the
+// internal send leg hidden in either shape.
+func receiveMatchesClaimOutput(row *daemonrpc.TransactionHistoryEntry,
+	claimSessions map[string]struct{}) bool {
+
+	if len(claimSessions) == 0 {
+		return false
+	}
+
+	if row == nil {
+		return false
+	}
+
+	txid := strings.ToLower(row.GetTxid())
+	if txid == "" {
+		return false
+	}
+
+	return sessionInSet(claimSessions, txid)
 }
 
 // sessionInSet reports whether a normalized OOR session id appears in set.

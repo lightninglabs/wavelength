@@ -54,6 +54,59 @@ func testSessionString(t *testing.T, raw []byte) string {
 	return hash.String()
 }
 
+// setReceiveClaimByOutputTxidFixture wires the receive-claim shape where the
+// ledger OOR session differs from the materialized claim output txid.
+func setReceiveClaimByOutputTxidFixture(t *testing.T, swap *fakeSwapService,
+	rpc *fakeRPCServer) {
+
+	t.Helper()
+
+	oorSession := testBytes(32, 0x19)
+	claimSession := testBytes(32, 0x29)
+	claimHex := testSessionString(t, claimSession)
+
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: "receive-payment",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_RECEIVE,
+				State: swapclientrpc.
+					SwapState_SWAP_STATE_COMPLETED,
+				AmountSat:      5_000,
+				UpdatedAtUnix:  200,
+				ClaimSessionId: claimHex,
+			},
+		},
+	}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOSent,
+				AmountSat:      5_000,
+				DebitAccount:   ledger.AccountTransfersOut,
+				CreditAccount:  ledger.AccountVTXOBalance,
+				SessionId:      oorSession,
+				EntryId:        13,
+				CreatedAtUnixS: 100,
+			},
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOReceived,
+				AmountSat:      5_000,
+				DebitAccount:   ledger.AccountVTXOBalance,
+				CreditAccount:  ledger.AccountTransfersIn,
+				SessionId:      oorSession,
+				Txid:           claimHex,
+				OutputIndex:    0,
+				EntryId:        14,
+				CreatedAtUnixS: 101,
+			},
+		},
+	}
+}
+
 // TestHistoryListMergesSwapAndLedgerSources confirms the merger combines
 // rows from both backends and normalizes them into the flat WalletEntry
 // shape.
@@ -276,6 +329,53 @@ func TestHistoryHidesReceiveClaimOORSend(t *testing.T) {
 	require.Equal(
 		t, walletrpc.EntryKind_ENTRY_KIND_RECV, entries[0].GetKind(),
 	)
+}
+
+// TestHistoryPendingFilterHidesReceiveClaimByOutputTxid confirms --pending
+// hides completed receive-swap OOR rows even when the ledger OOR session id is
+// different from the materialized claim output txid stored in the swap summary.
+func TestHistoryPendingFilterHidesReceiveClaimByOutputTxid(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	setReceiveClaimByOutputTxidFixture(t, swap, rpc)
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{
+		PendingOnly: true,
+	})
+	require.NoError(t, err)
+	require.Empty(t, resp.GetActivity().GetEntries())
+	require.False(
+		t, swap.listSwapsLast.GetPendingOnly(),
+		"history must fetch all swaps so terminal receive swaps "+
+			"can hide their internal OOR ledger legs before "+
+			"--pending filters the visible rows",
+	)
+}
+
+// TestHistoryHidesReceiveClaimByOutputTxid confirms normal activity shows the
+// receive swap while hiding its internal OOR rows when the OOR session differs
+// from the materialized claim output txid.
+func TestHistoryHidesReceiveClaimByOutputTxid(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	setReceiveClaimByOutputTxidFixture(t, swap, rpc)
+
+	resp, err := h.List(t.Context(), &walletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "receive-payment", entries[0].GetId())
+	require.Equal(
+		t, walletrpc.EntryKind_ENTRY_KIND_RECV, entries[0].GetKind(),
+	)
+	require.Equal(
+		t, walletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entries[0].GetStatus(),
+	)
+	require.Equal(t, int64(5_000), entries[0].GetAmountSat())
 }
 
 // TestHistoryKeepsUnpairedOORSend confirms ordinary OOR sends remain visible
