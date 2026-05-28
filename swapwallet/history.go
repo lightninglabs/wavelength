@@ -800,7 +800,7 @@ func walletEntryFromLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 		return nil, false
 	}
 
-	id := t.GetTxid()
+	id := ledgerActivityID(t, kind)
 	if id == "" {
 		// Fall back to entry_id for ledger-backed rows so every
 		// WalletEntry has a stable id.
@@ -820,6 +820,26 @@ func walletEntryFromLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 		UpdatedAtUnix: t.GetCreatedAtUnixS(),
 		Progress:      progressFromLedgerRow(t),
 	}, true
+}
+
+// ledgerActivityID returns the stable activity id for one ledger-backed row.
+// Boarding UTXO creation rows are identified by outpoint, not bare txid, so a
+// single Bitcoin transaction that pays multiple wallet-owned outputs surfaces
+// every deposit instead of collapsing them during activity de-duplication.
+func ledgerActivityID(t *daemonrpc.TransactionHistoryEntry,
+	kind walletdkrpc.EntryKind) string {
+
+	if t == nil || t.GetTxid() == "" {
+		return ""
+	}
+
+	if kind == walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT &&
+		t.GetSubtype() == ledger.EventWalletUTXOCreated &&
+		t.GetOutputIndex() >= 0 {
+		return fmt.Sprintf("%s:%d", t.GetTxid(), t.GetOutputIndex())
+	}
+
+	return t.GetTxid()
 }
 
 // statusForLedgerRow folds the ledger row's confirmation_status into the

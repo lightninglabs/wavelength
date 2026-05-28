@@ -271,6 +271,13 @@ func ledgerRowMatchesEntry(row *daemonrpc.TransactionHistoryEntry,
 		return false
 	}
 
+	if kind, _, ok := classifyLedgerRow(row); ok {
+		id := ledgerActivityID(row, kind)
+		if id != "" && id == entry.GetId() {
+			return true
+		}
+	}
+
 	if row.GetTxid() != "" && row.GetTxid() == entry.GetId() {
 		return true
 	}

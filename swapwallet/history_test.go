@@ -1235,6 +1235,75 @@ func TestHistoryDedupesByID(t *testing.T) {
 	)
 }
 
+// TestHistoryKeepsSameTransactionBoardingOutputs confirms duplicate boarding
+// deposits from the same Bitcoin transaction are keyed by outpoint before
+// activity de-duplication. A funding transaction can pay the same boarding
+// address in multiple outputs; all wallet-owned UTXOs must remain visible so
+// activity totals match the raw transaction history.
+func TestHistoryKeepsSameTransactionBoardingOutputs(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+
+	const (
+		sharedTxid = "18983d5d6f9c2dbf5166174777162f97797bed3e59d5f63b80a58833ea5391a0"
+		otherTxid  = "c4411b5d45230b71335dad7f5a20772985facf9634280dc263063b1f9b87f034"
+	)
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "boarding",
+				Subtype:            ledger.EventWalletUTXOCreated,
+				ConfirmationStatus: "confirmed",
+				AmountSat:          990_064,
+				Txid:               sharedTxid,
+				OutputIndex:        127,
+				EntryId:            1,
+				CreatedAtUnixS:     300,
+			},
+			{
+				Type:               "boarding",
+				Subtype:            ledger.EventWalletUTXOCreated,
+				ConfirmationStatus: "confirmed",
+				AmountSat:          990_064,
+				Txid:               sharedTxid,
+				OutputIndex:        23,
+				EntryId:            2,
+				CreatedAtUnixS:     200,
+			},
+			{
+				Type:               "boarding",
+				Subtype:            ledger.EventWalletUTXOCreated,
+				ConfirmationStatus: "confirmed",
+				AmountSat:          283_605,
+				Txid:               otherTxid,
+				OutputIndex:        0,
+				EntryId:            3,
+				CreatedAtUnixS:     100,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 3)
+
+	amountsByID := make(map[string]int64, len(entries))
+	var total int64
+	for _, entry := range entries {
+		amountsByID[entry.GetId()] = entry.GetAmountSat()
+		total += entry.GetAmountSat()
+	}
+
+	require.Equal(t, int64(2_263_733), total)
+	require.Equal(t, int64(990_064), amountsByID[sharedTxid+":127"])
+	require.Equal(t, int64(990_064), amountsByID[sharedTxid+":23"])
+	require.Equal(t, int64(283_605), amountsByID[otherTxid+":0"])
+}
+
 // TestHistoryPaginationOffsetPlumbedToLedger confirms that requesting
 // page 2 (offset>=limit) of wallet history returns the expected ledger
 // rows. Prior to the fix, collectLedgerEntries passed only Limit (not

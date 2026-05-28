@@ -153,7 +153,7 @@ func TestInspectActivityOmitsIrrelevantNotes(t *testing.T) {
 
 	resp, err := inspection.InspectActivity(
 		t.Context(), &walletdkrpc.InspectActivityRequest{
-			Id: "deposit-txid",
+			Id: "deposit-txid:1",
 		},
 	)
 	require.NoError(t, err)
