@@ -25,7 +25,8 @@ func newCreateCmd() *cobra.Command {
 			"The wallet password is read from stdin / " +
 			"DAREPOD_WALLET_PASSWORD env / " +
 			"--wallet_password_file (never CLI args). The " +
-			"optional seed passphrase is read from " +
+			"interactive password prompt asks for confirmation. " +
+			"The optional seed passphrase is read from " +
 			"DAREPOD_SEED_PASSPHRASE env / " +
 			"--seed_passphrase_file. The mnemonic is shown " +
 			"on stderr ONCE and is NOT included in the JSON " +
@@ -56,7 +57,7 @@ func walletCreate(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	password, err := readPassword(cmd)
+	password, err := readPasswordConfirmed(cmd)
 	if err != nil {
 		return err
 	}

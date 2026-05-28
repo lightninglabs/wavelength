@@ -2,6 +2,7 @@ package darepoclicommands
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,10 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
+
+// errPasswordConfirmationMismatch is returned when the create-wallet
+// password confirmation does not match the first interactive entry.
+var errPasswordConfirmationMismatch = errors.New("passwords do not match")
 
 // zeroBytes overwrites every byte of b with zero. Best-effort
 // scrubbing of cryptographic material before it falls out of scope —
@@ -56,6 +61,22 @@ func readSeedPassphrase(cmd *cobra.Command) ([]byte, error) {
 // so that automated environments (such as the darepotest REPL) can set
 // it without stdin races. The CLI never accepts passwords via argv.
 func readPassword(cmd *cobra.Command) ([]byte, error) {
+	return readWalletPassword(cmd, false)
+}
+
+// readPasswordConfirmed reads the wallet password with interactive
+// confirmation. Non-interactive sources (env, file, stdin pipe) stay
+// single-read so automated callers can continue to provide exactly one
+// secret.
+func readPasswordConfirmed(cmd *cobra.Command) ([]byte, error) {
+	return readWalletPassword(cmd, true)
+}
+
+// readWalletPassword reads the wallet password from one of the supported
+// sources, optionally confirming only the interactive prompt path.
+func readWalletPassword(cmd *cobra.Command,
+	confirmInteractive bool) ([]byte, error) {
+
 	// Check environment variable first — takes priority so that
 	// callers with piped stdin (e.g. REPL, CI) can override without
 	// fighting over stdin.
@@ -92,9 +113,19 @@ func readPassword(cmd *cobra.Command) ([]byte, error) {
 		return nil, fmt.Errorf("unable to read password from stdin")
 	}
 
-	// Interactive prompt (TTY).
-	fmt.Fprint(os.Stderr, "Enter wallet password: ")
+	if confirmInteractive {
+		return readConfirmedPassword(readInteractivePassword)
+	}
 
+	return readInteractivePassword("Enter wallet password: ")
+}
+
+// readInteractivePassword reads one password from the controlling TTY
+// using the supplied prompt.
+func readInteractivePassword(prompt string) ([]byte, error) {
+	fmt.Fprint(os.Stderr, prompt)
+
+	// Interactive prompt (TTY).
 	fd := int(os.Stdin.Fd())
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
@@ -120,6 +151,31 @@ func readPassword(cmd *cobra.Command) ([]byte, error) {
 	if printErr != nil {
 		return nil, fmt.Errorf("unable to finalize password prompt: %w",
 			printErr)
+	}
+
+	return password, nil
+}
+
+// readConfirmedPassword reads the password twice and rejects mismatches
+// before the daemon sees the secret.
+func readConfirmedPassword(read func(string) ([]byte, error)) ([]byte, error) {
+	password, err := read("Enter wallet password: ")
+	if err != nil {
+		return nil, err
+	}
+
+	confirmation, err := read("Confirm wallet password: ")
+	if err != nil {
+		zeroBytes(password)
+
+		return nil, err
+	}
+	defer zeroBytes(confirmation)
+
+	if !bytes.Equal(password, confirmation) {
+		zeroBytes(password)
+
+		return nil, errPasswordConfirmationMismatch
 	}
 
 	return password, nil
