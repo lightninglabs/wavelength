@@ -58,6 +58,7 @@ const (
 	DaemonService_CancelVHTLCRecovery_FullMethodName           = "/daemonrpc.DaemonService/CancelVHTLCRecovery"
 	DaemonService_GetVHTLCRecoveryStatus_FullMethodName        = "/daemonrpc.DaemonService/GetVHTLCRecoveryStatus"
 	DaemonService_ListVHTLCRecoveries_FullMethodName           = "/daemonrpc.DaemonService/ListVHTLCRecoveries"
+	DaemonService_ReleaseSpendingVTXO_FullMethodName           = "/daemonrpc.DaemonService/ReleaseSpendingVTXO"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -207,6 +208,12 @@ type DaemonServiceClient interface {
 	// inspection. Armed rows are dormant; callers must use
 	// EscalateVHTLCRecovery to start costly on-chain recovery.
 	ListVHTLCRecoveries(ctx context.Context, in *ListVHTLCRecoveriesRequest, opts ...grpc.CallOption) (*ListVHTLCRecoveriesResponse, error)
+	// ReleaseSpendingVTXO force-releases a VTXO stuck in SpendingState back to
+	// Live. This is an operator escape-hatch for an orphaned spend reservation
+	// (issue #587) whose owning spend died without releasing it; normal clients
+	// never need it. The release is rejected if the VTXO is not currently in
+	// SpendingState.
+	ReleaseSpendingVTXO(ctx context.Context, in *ReleaseSpendingVTXORequest, opts ...grpc.CallOption) (*ReleaseSpendingVTXOResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -616,6 +623,16 @@ func (c *daemonServiceClient) ListVHTLCRecoveries(ctx context.Context, in *ListV
 	return out, nil
 }
 
+func (c *daemonServiceClient) ReleaseSpendingVTXO(ctx context.Context, in *ReleaseSpendingVTXORequest, opts ...grpc.CallOption) (*ReleaseSpendingVTXOResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReleaseSpendingVTXOResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ReleaseSpendingVTXO_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -763,6 +780,12 @@ type DaemonServiceServer interface {
 	// inspection. Armed rows are dormant; callers must use
 	// EscalateVHTLCRecovery to start costly on-chain recovery.
 	ListVHTLCRecoveries(context.Context, *ListVHTLCRecoveriesRequest) (*ListVHTLCRecoveriesResponse, error)
+	// ReleaseSpendingVTXO force-releases a VTXO stuck in SpendingState back to
+	// Live. This is an operator escape-hatch for an orphaned spend reservation
+	// (issue #587) whose owning spend died without releasing it; normal clients
+	// never need it. The release is rejected if the VTXO is not currently in
+	// SpendingState.
+	ReleaseSpendingVTXO(context.Context, *ReleaseSpendingVTXORequest) (*ReleaseSpendingVTXOResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -889,6 +912,9 @@ func (UnimplementedDaemonServiceServer) GetVHTLCRecoveryStatus(context.Context, 
 }
 func (UnimplementedDaemonServiceServer) ListVHTLCRecoveries(context.Context, *ListVHTLCRecoveriesRequest) (*ListVHTLCRecoveriesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListVHTLCRecoveries not implemented")
+}
+func (UnimplementedDaemonServiceServer) ReleaseSpendingVTXO(context.Context, *ReleaseSpendingVTXORequest) (*ReleaseSpendingVTXOResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReleaseSpendingVTXO not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -1606,6 +1632,24 @@ func _DaemonService_ListVHTLCRecoveries_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_ReleaseSpendingVTXO_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseSpendingVTXORequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ReleaseSpendingVTXO(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ReleaseSpendingVTXO_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ReleaseSpendingVTXO(ctx, req.(*ReleaseSpendingVTXORequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1764,6 +1808,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListVHTLCRecoveries",
 			Handler:    _DaemonService_ListVHTLCRecoveries_Handler,
+		},
+		{
+			MethodName: "ReleaseSpendingVTXO",
+			Handler:    _DaemonService_ReleaseSpendingVTXO_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

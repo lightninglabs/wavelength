@@ -102,6 +102,8 @@ type DaemonServiceMailboxServer interface {
 	GetVHTLCRecoveryStatus(ctx context.Context, req *GetVHTLCRecoveryStatusRequest) (*GetVHTLCRecoveryStatusResponse, error)
 	// ListVHTLCRecoveries handles ListVHTLCRecoveries.
 	ListVHTLCRecoveries(ctx context.Context, req *ListVHTLCRecoveriesRequest) (*ListVHTLCRecoveriesResponse, error)
+	// ReleaseSpendingVTXO handles ReleaseSpendingVTXO.
+	ReleaseSpendingVTXO(ctx context.Context, req *ReleaseSpendingVTXORequest) (*ReleaseSpendingVTXOResponse, error)
 }
 
 // RegisterDaemonServiceMailboxServer registers handlers for DaemonService.
@@ -495,6 +497,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.ListVHTLCRecoveries(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ReleaseSpendingVTXO", func() proto.Message {
+		return &ReleaseSpendingVTXORequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ReleaseSpendingVTXORequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ReleaseSpendingVTXO(ctx, req)
 	})
 }
 
@@ -1388,6 +1400,29 @@ func (c *DaemonServiceMailboxClient) ListVHTLCRecoveries(ctx context.Context, re
 	}
 
 	resp := new(ListVHTLCRecoveriesResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ReleaseSpendingVTXO calls the ReleaseSpendingVTXO RPC.
+func (c *DaemonServiceMailboxClient) ReleaseSpendingVTXO(ctx context.Context, req *ReleaseSpendingVTXORequest, opts ...rpc.RPCOptions) (*ReleaseSpendingVTXOResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ReleaseSpendingVTXO",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ReleaseSpendingVTXOResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

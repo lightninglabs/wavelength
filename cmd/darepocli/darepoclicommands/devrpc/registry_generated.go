@@ -288,6 +288,13 @@ func generatedRegistry() []serviceSpec {
 					Output:   "daemonrpc.ListVHTLCRecoveriesResponse",
 					Comments: "ListVHTLCRecoveries returns all durable recovery rows for operator\ninspection. Armed rows are dormant; callers must use\nEscalateVHTLCRecovery to start costly on-chain recovery.",
 				},
+				{
+					Name:     "ReleaseSpendingVTXO",
+					Aliases:  []string{"release-spending-vtxo"},
+					Input:    "daemonrpc.ReleaseSpendingVTXORequest",
+					Output:   "daemonrpc.ReleaseSpendingVTXOResponse",
+					Comments: "ReleaseSpendingVTXO force-releases a VTXO stuck in SpendingState back to\nLive. This is an operator escape-hatch for an orphaned spend reservation\n(issue #587) whose owning spend died without releasing it; normal clients\nnever need it. The release is rejected if the VTXO is not currently in\nSpendingState.",
+				},
 			},
 		},
 		{

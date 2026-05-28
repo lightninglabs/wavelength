@@ -120,3 +120,6 @@ http:
     - selector: daemonrpc.DaemonService.ListVHTLCRecoveries
       post: /v1/daemon/list-vhtlc-recoveries
       body: "*"
+    - selector: daemonrpc.DaemonService.ReleaseSpendingVTXO
+      post: /v1/daemon/release-spending-vtxo
+      body: "*"

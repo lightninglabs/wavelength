@@ -202,6 +202,14 @@ service DaemonService {
     // EscalateVHTLCRecovery to start costly on-chain recovery.
     rpc ListVHTLCRecoveries (ListVHTLCRecoveriesRequest)
         returns (ListVHTLCRecoveriesResponse);
+
+    // ReleaseSpendingVTXO force-releases a VTXO stuck in SpendingState back to
+    // Live. This is an operator escape-hatch for an orphaned spend reservation
+    // (issue #587) whose owning spend died without releasing it; normal clients
+    // never need it. The release is rejected if the VTXO is not currently in
+    // SpendingState.
+    rpc ReleaseSpendingVTXO (ReleaseSpendingVTXORequest)
+        returns (ReleaseSpendingVTXOResponse);
 }
 
 // WalletState mirrors the daemon's in-process wallet lifecycle enum:
@@ -1665,6 +1673,16 @@ message UnrollResponse {
 
     // actor_id is the identifier of the durable unroll job actor.
     string actor_id = 2;
+}
+
+message ReleaseSpendingVTXORequest {
+    // outpoint is the VTXO outpoint to release, formatted as "txid:index".
+    string outpoint = 1;
+}
+
+message ReleaseSpendingVTXOResponse {
+    // released is true if the reservation was released back to Live.
+    bool released = 1;
 }
 
 message GetUnrollStatusRequest {
