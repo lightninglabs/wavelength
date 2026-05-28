@@ -657,6 +657,17 @@ func (c *DaemonServiceClient) ListVHTLCRecoveries(ctx context.Context,
 	return out, err
 }
 
+// ReleaseSpendingVTXO force-releases a VTXO stuck in spending state.
+func (c *DaemonServiceClient) ReleaseSpendingVTXO(ctx context.Context,
+	in *daemonrpc.ReleaseSpendingVTXORequest, _ ...grpc.CallOption) (
+	*daemonrpc.ReleaseSpendingVTXOResponse, error) {
+
+	out := new(daemonrpc.ReleaseSpendingVTXOResponse)
+	err := c.client.Post(ctx, "/v1/daemon/release-spending-vtxo", in, out)
+
+	return out, err
+}
+
 // NewSwapClientServiceClient creates a SwapClientService REST client.
 func NewSwapClientServiceClient(addr string,
 	opts ...Option) swapclientrpc.SwapClientServiceClient {

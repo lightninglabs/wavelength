@@ -3141,6 +3141,80 @@ func (r *RPCServer) Unroll(ctx context.Context, req *daemonrpc.UnrollRequest) (
 	}, nil
 }
 
+// ReleaseSpendingVTXO force-releases a VTXO stuck in SpendingState back
+// to LiveState. It is an operator escape-hatch for an orphaned spend
+// reservation (issue #587) whose owning spend died without releasing
+// it; the request is rejected unless the VTXO is currently Spending so
+// the hatch can't be misused on a healthy VTXO.
+func (r *RPCServer) ReleaseSpendingVTXO(ctx context.Context,
+	req *daemonrpc.ReleaseSpendingVTXORequest) (
+	*daemonrpc.ReleaseSpendingVTXOResponse, error) {
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	if !r.server.vtxoMgrRef.IsSome() {
+		return nil, status.Errorf(codes.Unavailable, "VTXO manager "+
+			"not initialized")
+	}
+
+	outpoint, err := parseOutpointString(req.Outpoint)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
+			"outpoint: %v", err)
+	}
+
+	var vtxoMgrRef actor.ActorRef[
+		vtxo.ManagerMsg, vtxo.ManagerResp,
+	]
+	r.server.vtxoMgrRef.WhenSome(
+		func(ref actor.ActorRef[
+			vtxo.ManagerMsg, vtxo.ManagerResp,
+		]) {
+
+			vtxoMgrRef = ref
+		},
+	)
+
+	// Guard the hatch: only a VTXO actually parked in SpendingState is
+	// eligible. Loading the descriptor first means a typo or a healthy
+	// VTXO is rejected before we touch the manager.
+	if r.server.vtxoStore != nil {
+		desc, err := r.server.vtxoStore.GetVTXO(ctx, outpoint)
+		if err == nil && desc != nil &&
+			desc.Status != vtxo.VTXOStatusSpending {
+
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"vtxo %s is not in spending state", outpoint)
+		}
+		if err == nil && desc == nil {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"vtxo %s is not in spending state", outpoint)
+		}
+	}
+
+	resp, askErr := vtxoMgrRef.Ask(
+		ctx, &actormsg.ReleaseSpendRequest{
+			Outpoints: []wire.OutPoint{outpoint},
+		},
+	).Await(ctx).Unpack()
+	if askErr != nil {
+		return nil, status.Errorf(codes.Internal, "release spend: %v",
+			askErr)
+	}
+
+	relResp, ok := resp.(*actormsg.ReleaseSpendResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal, "unexpected "+
+			"response type %T", resp)
+	}
+
+	return &daemonrpc.ReleaseSpendingVTXOResponse{
+		Released: relResp.ReleasedCount == 1,
+	}, nil
+}
+
 // preflightUnrollMinUTXOSat is the soft floor used by the unroll fee-
 // input pre-check. Confirmed wallet UTXOs below this threshold are
 // counted as unavailable because they're too small to plausibly cover

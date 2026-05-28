@@ -24,9 +24,55 @@ func newVTXOsCmd() *cobra.Command {
 
 	cmd.AddCommand(
 		newVTXOsListCmd(), newVTXOsRefreshCmd(), newVTXOsLeaveCmd(),
+		newVTXOsReleaseSpendingCmd(),
 	)
 
 	return cmd
+}
+
+// newVTXOsReleaseSpendingCmd creates the vtxos release-spending
+// subcommand. It is an operator escape-hatch that force-releases a VTXO
+// stuck in spending state (an orphaned spend reservation) back to Live;
+// the daemon rejects the call if the VTXO is not actually spending.
+func newVTXOsReleaseSpendingCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "release-spending [outpoint]",
+		Short: "Force-release a VTXO stuck in spending state",
+		Long: "Operator escape-hatch for a VTXO whose spend " +
+			"reservation was orphaned (the owning spend died " +
+			"without releasing it). Releases the outpoint " +
+			"(txid:index) back to Live. The daemon rejects the " +
+			"call unless the VTXO is currently in spending " +
+			"state.\n\n" +
+			"Example:\n" +
+			"  darepocli ark vtxos release-spending TXID:VOUT",
+		Args: cobra.ExactArgs(1),
+		RunE: vtxosReleaseSpending,
+	}
+}
+
+// vtxosReleaseSpending executes the ReleaseSpendingVTXO RPC.
+func vtxosReleaseSpending(cmd *cobra.Command, args []string) error {
+	if err := validateOutpointString(args[0]); err != nil {
+		return PrintError("INVALID_ARGS", err.Error())
+	}
+
+	client, conn, err := getDaemonClient(cmd)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	resp, err := client.ReleaseSpendingVTXO(
+		cmd.Context(), &daemonrpc.ReleaseSpendingVTXORequest{
+			Outpoint: args[0],
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("ReleaseSpendingVTXO RPC failed: %w", err)
+	}
+
+	return printJSON(resp)
 }
 
 // validStatuses lists the valid VTXO status filter values for input
