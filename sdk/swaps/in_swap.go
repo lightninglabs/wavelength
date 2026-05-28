@@ -658,7 +658,21 @@ func (s *paySession) ensureFundingStillSafe(ctx context.Context) error {
 // then records funding intent once the daemon accepts the OOR transfer.
 func (s *paySession) fundOrAdoptVHTLC(ctx context.Context) error {
 	funded, err := s.observeLiveVHTLC(ctx)
-	if err != nil {
+	switch {
+	// A fresh in-swap has not funded its vHTLC yet, so the script is not
+	// registered with the authoritative indexer and the pre-funding adopt
+	// query is expected to be rejected on the first pass. Log it at debug
+	// so it is not mistaken for the genuine receive-side registration loop
+	// tracked in #538; only real query failures warrant a warning.
+	case err != nil && isUnregisteredScriptErr(err):
+		s.client.log.DebugS(
+			ctx,
+			"In-swap vHTLC not yet registered before funding",
+			slog.String("err", err.Error()),
+			btclog.Hex("hash", s.cfg.PaymentHash[:]),
+		)
+
+	case err != nil:
 		s.client.log.WarnS(
 			ctx,
 			"Unable to query in-swap vHTLC before funding",
@@ -706,7 +720,7 @@ func (s *paySession) waitForFundedVHTLC(ctx context.Context) error {
 			s.client.log.DebugS(
 				ctx,
 				"Unable to query in-swap claim preimage",
-				err,
+				slog.String("err", err.Error()),
 				btclog.Hex("hash", s.cfg.PaymentHash[:]),
 			)
 		}
@@ -742,7 +756,7 @@ func (s *paySession) waitForFundedVHTLC(ctx context.Context) error {
 			s.client.log.DebugS(
 				ctx,
 				"Unable to query in-swap vHTLC",
-				err,
+				slog.String("err", err.Error()),
 				btclog.Hex("hash", s.cfg.PaymentHash[:]),
 			)
 		}
@@ -815,7 +829,7 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 				ctx,
 				"Unable to reconcile in-swap vHTLC after "+
 					"funding error",
-				reconcileErr,
+				slog.String("err", reconcileErr.Error()),
 				btclog.Hex("hash", s.cfg.PaymentHash[:]),
 			)
 		}
@@ -859,7 +873,7 @@ func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 			s.client.log.DebugS(
 				ctx,
 				"Unable to query in-swap claim preimage",
-				err,
+				slog.String("err", err.Error()),
 				btclog.Hex("hash", s.cfg.PaymentHash[:]),
 			)
 		}
