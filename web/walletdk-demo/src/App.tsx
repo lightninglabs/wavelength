@@ -31,6 +31,12 @@ import {
   WalletOperation,
   useWalletDK,
 } from "@lightninglabs/walletdk-react";
+import {
+  createPasskeyWrap,
+  hasPasskeyWrap,
+  supportsPasskeyPrf,
+  unwrapPasskeyPassword,
+} from "@lightninglabs/walletdk-wasm-web";
 
 const signetDefaults: Required<RuntimeConfig> = {
   network: "signet",
@@ -61,6 +67,10 @@ export function App() {
   const [runtimeForm, setRuntimeForm] = useState<RuntimeForm>(signetDefaults);
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [password, setPassword] = useState("");
+  const [enablePasskeyOnCreate, setEnablePasskeyOnCreate] = useState(false);
+  const [passkeySupported, setPasskeySupported] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const [passkeyError, setPasskeyError] = useState("");
   const [mnemonic, setMnemonic] = useState<string[]>([]);
   const [mnemonicAcknowledged, setMnemonicAcknowledged] = useState(false);
   const [address, setAddress] = useState("");
@@ -79,6 +89,28 @@ export function App() {
   const busy = busyOperation(wallet.operations);
   const statusText = statusLabel(wallet.phase);
   const runtimeBusy = wallet.operations.runtime.busy;
+  const passkeyWrapAvailable = useMemo(() => {
+    return hasPasskeyWrap(runtimeForm.dataDir);
+  }, [runtimeForm.dataDir, wallet.phase]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    supportsPasskeyPrf().then((supported) => {
+      if (cancelled) {
+        return;
+      }
+
+      setPasskeySupported(supported);
+      if (supported) {
+        setEnablePasskeyOnCreate(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     return wallet.client.subscribe((event) => {
@@ -154,12 +186,26 @@ export function App() {
 
   async function createWallet(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setPasskeyError("");
 
     try {
       const result = await wallet.createWallet({ password });
       setMnemonic(result.Mnemonic || []);
       setMnemonicAcknowledged(false);
       log(`wallet created ${result.IdentityPubKey}`);
+
+      if (enablePasskeyOnCreate && passkeySupported) {
+        try {
+          await createPasskeyWrap(runtimeForm.dataDir, password, {
+            appName: "Dare Wallet",
+          });
+          log("passkey unlock enabled");
+        } catch (err) {
+          const message = errorMessage(err);
+          setPasskeyError(message);
+          log(`passkey setup failed: ${message}`);
+        }
+      }
     } catch (err) {
       log(errorMessage(err));
     }
@@ -167,16 +213,40 @@ export function App() {
 
   async function unlockWallet(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setPasskeyError("");
 
     try {
-      const result = await wallet.unlockWallet({ password });
-      setMnemonicAcknowledged(true);
-      log(`wallet unlocked ${result.IdentityPubKey}`);
-      await waitForWalletReady();
-      await wallet.refresh();
+      await unlockWithPassword(password);
     } catch (err) {
       log(errorMessage(err));
     }
+  }
+
+  async function unlockWalletWithPasskey() {
+    setPasskeyError("");
+    setPasskeyBusy(true);
+
+    try {
+      const recoveredPassword = await unwrapPasskeyPassword(
+        runtimeForm.dataDir,
+      );
+      await unlockWithPassword(recoveredPassword);
+      log("wallet unlocked with passkey");
+    } catch (err) {
+      const message = errorMessage(err);
+      setPasskeyError(message);
+      log(`passkey unlock failed: ${message}`);
+    } finally {
+      setPasskeyBusy(false);
+    }
+  }
+
+  async function unlockWithPassword(unlockPassword: string) {
+    const result = await wallet.unlockWallet({ password: unlockPassword });
+    setMnemonicAcknowledged(true);
+    log(`wallet unlocked ${result.IdentityPubKey}`);
+    await waitForWalletReady();
+    await wallet.refresh();
   }
 
   async function waitForWalletReady() {
@@ -295,12 +365,19 @@ export function App() {
             phase={wallet.phase}
             password={password}
             setPassword={setPassword}
+            passkeySupported={passkeySupported}
+            enablePasskeyOnCreate={enablePasskeyOnCreate}
+            setEnablePasskeyOnCreate={setEnablePasskeyOnCreate}
+            passkeyWrapAvailable={passkeyWrapAvailable}
+            passkeyBusy={passkeyBusy}
+            passkeyError={passkeyError}
             createBusy={wallet.operations.createWallet.busy}
             unlockBusy={wallet.operations.unlockWallet.busy}
             createError={wallet.operations.createWallet.error}
             unlockError={wallet.operations.unlockWallet.error}
             onCreate={createWallet}
             onUnlock={unlockWallet}
+            onUnlockPasskey={unlockWalletWithPasskey}
           />
 
           <MnemonicBackup
@@ -502,22 +579,36 @@ function RuntimeCard({
 function WalletSetup({
   createBusy,
   createError,
+  enablePasskeyOnCreate,
   needsBootstrap,
   onCreate,
   onUnlock,
+  onUnlockPasskey,
+  passkeyBusy,
+  passkeyError,
+  passkeySupported,
+  passkeyWrapAvailable,
   password,
   phase,
+  setEnablePasskeyOnCreate,
   setPassword,
   unlockBusy,
   unlockError,
 }: {
   createBusy: boolean;
   createError: string;
+  enablePasskeyOnCreate: boolean;
   needsBootstrap: boolean;
   onCreate(event: FormEvent<HTMLFormElement>): void;
   onUnlock(event: FormEvent<HTMLFormElement>): void;
+  onUnlockPasskey(): void | Promise<void>;
+  passkeyBusy: boolean;
+  passkeyError: string;
+  passkeySupported: boolean;
+  passkeyWrapAvailable: boolean;
   password: string;
   phase: RuntimePhase;
+  setEnablePasskeyOnCreate(value: boolean): void;
   setPassword(value: string): void;
   unlockBusy: boolean;
   unlockError: string;
@@ -536,11 +627,20 @@ function WalletSetup({
             value={password}
             onChange={setPassword}
           />
+          {passkeySupported ? (
+            <CheckField
+              label="Enable passkey unlock (Touch ID / Face ID)"
+              name="enablePasskey"
+              checked={enablePasskeyOnCreate}
+              onChange={setEnablePasskeyOnCreate}
+            />
+          ) : null}
           <button type="submit" disabled={createBusy}>
             <KeyRound size={16} />
             Create wallet
           </button>
           <InlineError message={createError} />
+          <InlineError message={passkeyError} />
         </form>
       ) : null}
 
@@ -556,11 +656,25 @@ function WalletSetup({
             value={password}
             onChange={setPassword}
           />
-          <button type="submit" disabled={unlockBusy}>
+          <button type="submit" disabled={unlockBusy || passkeyBusy}>
             <KeyRound size={16} />
             Unlock wallet
           </button>
+          {passkeySupported && passkeyWrapAvailable ? (
+            <>
+              <p className="setup-copy passkey-divider">or</p>
+              <button
+                type="button"
+                disabled={unlockBusy || passkeyBusy}
+                onClick={onUnlockPasskey}
+              >
+                <KeyRound size={16} />
+                Unlock with passkey
+              </button>
+            </>
+          ) : null}
           <InlineError message={unlockError} />
+          <InlineError message={passkeyError} />
         </form>
       ) : null}
 

@@ -485,6 +485,17 @@ td {
   padding: 10px;
 }
 
+.setup-copy {
+  color: #60717d;
+  margin: 0;
+}
+
+.passkey-divider {
+  margin: 12px 0 0;
+  text-align: center;
+  text-transform: lowercase;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

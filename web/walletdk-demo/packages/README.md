@@ -6,7 +6,8 @@ SDK shape that another wallet application would use.
 - `@lightninglabs/walletdk-core` contains the stable TypeScript DTOs,
   errors, event model, and `WalletDKClient` interface.
 - `@lightninglabs/walletdk-wasm-web` loads the Go `walletdk` WASM runtime,
-  SQLite OPFS bridge assets, and exposes the `WalletDKClient` interface.
+  SQLite OPFS bridge assets, exposes the `WalletDKClient` interface, and
+  optional passkey helpers for wrapping the wallet password in `localStorage`.
 - `@lightninglabs/walletdk-react` provides `WalletDKProvider` plus hooks for
   React wallets.
 

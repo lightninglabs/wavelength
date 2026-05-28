@@ -437,3 +437,16 @@ function errorMessage(err: unknown): string {
 
   return JSON.stringify(err);
 }
+
+export {
+  clearPasskeyWrap,
+  createPasskeyWrap,
+  hasPasskeyWrap,
+  loadPasskeyWrap,
+  supportsPasskeyPrf,
+  unwrapPasskeyPassword,
+} from "./passkey";
+export type {
+  PasskeyWrapOptions,
+  PasskeyWrapRecord,
+} from "./passkey";
