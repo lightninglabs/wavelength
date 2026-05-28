@@ -17,6 +17,12 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+const (
+	refundLocktimeNearBlocks      = uint32(3)
+	refundLocktimeMaxPollMultiple = uint32(30)
+	refundLocktimeMaxPollInterval = time.Minute
+)
+
 // PayState identifies the client-side lifecycle state of an Ark-to-Lightning
 // pay flow.
 type PayState uint8
@@ -1007,6 +1013,7 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 		return fmt.Errorf("get block height: %w", err)
 	}
 	if height < s.cfg.VHTLCConfig.RefundLocktime {
+		wait := s.refundLocktimePollInterval(height)
 		s.client.log.DebugS(ctx, "Pay swap refund not yet mature",
 			btclog.Hex("hash", s.cfg.PaymentHash[:]),
 			slog.Uint64("height", uint64(height)),
@@ -1014,9 +1021,10 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 				"refund_locktime",
 				uint64(s.cfg.VHTLCConfig.RefundLocktime),
 			),
+			slog.Duration("next_poll", wait),
 		)
 
-		return waitForFixedPoll(ctx, s.client.waitPollInterval)
+		return waitForFixedPoll(ctx, wait)
 	}
 
 	refundPubKey, err := s.refundPubKey(ctx)
@@ -1075,6 +1083,38 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 	)
 
 	return s.markRefundAccepted(ctx)
+}
+
+// refundLocktimePollInterval returns a slower timeout-refund poll interval when
+// the refund branch is still many blocks away from maturity. The final few
+// blocks keep the normal SDK interval so the client remains responsive near the
+// first spendable height.
+func (s *paySession) refundLocktimePollInterval(height uint32) time.Duration {
+	wait := s.client.waitPollInterval
+	locktime := s.cfg.VHTLCConfig.RefundLocktime
+	if wait <= 0 || height >= locktime {
+		return wait
+	}
+
+	remaining := locktime - height
+	if remaining <= refundLocktimeNearBlocks {
+		return wait
+	}
+
+	multiple := remaining / 2
+	if multiple < 2 {
+		multiple = 2
+	}
+	if multiple > refundLocktimeMaxPollMultiple {
+		multiple = refundLocktimeMaxPollMultiple
+	}
+
+	backoff := wait * time.Duration(multiple)
+	if backoff > refundLocktimeMaxPollInterval {
+		return refundLocktimeMaxPollInterval
+	}
+
+	return backoff
 }
 
 // tryCooperativeRefund attempts an immediate refund before the timeout branch

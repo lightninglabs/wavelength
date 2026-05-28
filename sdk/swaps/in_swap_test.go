@@ -1248,6 +1248,41 @@ func TestPaySessionObserveRefundOutputIgnoresWrongAmount(t *testing.T) {
 	require.Equal(t, 1, daemonConn.liveLookupCalls)
 }
 
+// TestPaySessionRefundLocktimePollInterval documents the timeout-refund polling
+// schedule used while a vHTLC is known but the refund branch is not yet
+// spendable. Far from the refund locktime, the client should reduce noisy
+// wallet and indexer polling by backing off from the normal SDK interval. Near
+// the locktime, and once the locktime is reached, the helper must return the
+// normal poll interval so the client remains responsive around the first height
+// where a timeout refund can be submitted.
+func TestPaySessionRefundLocktimePollInterval(t *testing.T) {
+	t.Parallel()
+
+	session := &paySession{
+		client: &SwapClient{
+			waitPollInterval: 2 * time.Second,
+		},
+		cfg: &InSwapConfig{
+			VHTLCConfig: VHTLCConfig{
+				RefundLocktime: 200,
+			},
+		},
+	}
+
+	require.Equal(
+		t, time.Minute, session.refundLocktimePollInterval(50),
+	)
+	require.Equal(
+		t, 20*time.Second, session.refundLocktimePollInterval(180),
+	)
+	require.Equal(
+		t, 2*time.Second, session.refundLocktimePollInterval(197),
+	)
+	require.Equal(
+		t, 2*time.Second, session.refundLocktimePollInterval(200),
+	)
+}
+
 // TestPaySessionRefundsWhenRefundLocktimePassesBeforeClaim asserts that a
 // funded pay session does not wait for the wall-clock swap deadline after the
 // Ark refund locktime matures. The client should durably enter the refund path
