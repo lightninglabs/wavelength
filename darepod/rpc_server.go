@@ -43,6 +43,7 @@ import (
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -83,6 +84,10 @@ type RPCServer struct {
 	// customInputLocks is the set of custom OOR input outpoints
 	// currently reserved by an in-flight SendOOR call.
 	customInputLocks map[wire.OutPoint]struct{}
+
+	// oorSignerOverride lets focused RPC tests exercise custom-input
+	// signing without booting a full wallet backend.
+	oorSignerOverride input.Signer
 }
 
 // NewRPCServer creates a new RPCServer backed by the given Server.
@@ -2255,7 +2260,7 @@ func (r *RPCServer) SignOORCustomInput(ctx context.Context,
 			"custom input, got %d", len(inputs))
 	}
 
-	signer, err := r.server.oorSigner()
+	signer, err := r.oorSigner()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "resolve signer: %v",
 			err)
@@ -2282,6 +2287,15 @@ func (r *RPCServer) SignOORCustomInput(ctx context.Context,
 			Sighash:       uint32(sig.SigHash),
 		},
 	}, nil
+}
+
+// oorSigner returns the wallet signer used for OOR checkpoint inputs.
+func (r *RPCServer) oorSigner() (input.Signer, error) {
+	if r.oorSignerOverride != nil {
+		return r.oorSignerOverride, nil
+	}
+
+	return r.server.oorSigner()
 }
 
 // findOutgoingOORSessionByIdempotencyKey asks the OOR actor whether the daemon
