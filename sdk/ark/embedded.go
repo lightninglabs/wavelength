@@ -58,6 +58,16 @@ func StartEmbedded(ctx context.Context, cfg EmbeddedConfig) (*Client, error) {
 	}
 	daemonCfg.RPC.Listener = listener
 
+	// Validate normalizes path fields (e.g. tilde expansion) and fills
+	// in subsystem defaults that NewServer assumes are present, so the
+	// embedded path matches the standalone daemon's contract.
+	if err := daemonCfg.Validate(); err != nil {
+		_ = listener.Close()
+
+		return nil, fmt.Errorf("validate embedded daemon config: %w",
+			err)
+	}
+
 	server, err := darepod.NewServer(daemonCfg)
 	if err != nil {
 		_ = listener.Close()
@@ -146,12 +156,22 @@ func StartEmbedded(ctx context.Context, cfg EmbeddedConfig) (*Client, error) {
 	}, nil
 }
 
-// cloneDaemonConfig copies the daemon config deeply enough that embedded
-// startup can inject a listener without mutating the caller's config. This is
-// intentionally a passthrough clone of darepod.Config and must be updated if
-// new reference-typed fields are added there.
+// cloneDaemonConfig deep-copies the daemon config so embedded startup can
+// inject a listener and run Validate without mutating the caller's config.
+// This must be updated if new reference-typed fields are added to
+// darepod.Config or to any sub-config reachable from it.
 func cloneDaemonConfig(cfg *darepod.Config) *darepod.Config {
 	clone := *cfg
+
+	clone.RPCServiceRegistrars = append(
+		[]darepod.RPCServiceRegistrar(nil), cfg.RPCServiceRegistrars...,
+	)
+	clone.RPCGatewayRegistrars = append(
+		[]darepod.RPCGatewayRegistrar(nil), cfg.RPCGatewayRegistrars...,
+	)
+	clone.WalletReadyHooks = append(
+		[]darepod.WalletReadyHook(nil), cfg.WalletReadyHooks...,
+	)
 
 	if cfg.Lnd != nil {
 		lndCfg := *cfg.Lnd
@@ -165,6 +185,14 @@ func cloneDaemonConfig(cfg *darepod.Config) *darepod.Config {
 
 	if cfg.RPC != nil {
 		rpcCfg := *cfg.RPC
+		if cfg.RPC.Gateway != nil {
+			gw := *cfg.RPC.Gateway
+			gw.AllowedOrigins = append(
+				[]string(nil),
+				cfg.RPC.Gateway.AllowedOrigins...,
+			)
+			rpcCfg.Gateway = &gw
+		}
 		clone.RPC = &rpcCfg
 	}
 
@@ -177,6 +205,30 @@ func cloneDaemonConfig(cfg *darepod.Config) *darepod.Config {
 			[]string(nil), cfg.Wallet.BtcwalletAddPeers...,
 		)
 		clone.Wallet = &walletCfg
+	}
+
+	if cfg.Unroll != nil {
+		unrollCfg := *cfg.Unroll
+		clone.Unroll = &unrollCfg
+	}
+
+	if cfg.OOR != nil {
+		oorCfg := *cfg.OOR
+		if cfg.OOR.Limits != nil {
+			limits := *cfg.OOR.Limits
+			oorCfg.Limits = &limits
+		}
+		clone.OOR = &oorCfg
+	}
+
+	if cfg.Swap != nil {
+		swapCfg := *cfg.Swap
+		clone.Swap = &swapCfg
+	}
+
+	if cfg.SwapWallet != nil {
+		swapWalletCfg := *cfg.SwapWallet
+		clone.SwapWallet = &swapWalletCfg
 	}
 
 	return &clone

@@ -567,8 +567,7 @@ func seedLiveVTXO(t *testing.T, cfg *darepod.Config,
 
 	t.Helper()
 
-	networkDir, err := cfg.NetworkDir()
-	require.NoError(t, err)
+	networkDir := cfg.NetworkDir()
 	require.NoError(t, os.MkdirAll(networkDir, 0o700))
 
 	sqliteStore, err := db.NewSqliteStore(
