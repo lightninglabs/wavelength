@@ -415,8 +415,8 @@ func TestRouterSendInvoicePreservesStartPayStatusCode(t *testing.T) {
 	)
 	swap.startPayErr = startPayErr
 
-	_, err := r.Send(t.Context(), &walletrpc.SendRequest{
-		Destination: &walletrpc.SendRequest_Invoice{
+	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
+		Destination: &walletdkrpc.SendRequest_Invoice{
 			Invoice: "lnbc1example",
 		},
 	})
