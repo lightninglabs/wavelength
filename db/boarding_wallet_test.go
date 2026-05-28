@@ -150,6 +150,39 @@ func createSweepStoreIntentWithSeed(t *testing.T, store *BoardingWalletStore,
 	return intent
 }
 
+// insertRoundBoardingIntentForTest links an intent to a persisted round.
+func insertRoundBoardingIntentForTest(t *testing.T, db *BaseDB, roundID,
+	roundStatus string, intent wallet.BoardingIntent) {
+
+	t.Helper()
+
+	ctx := t.Context()
+	require.NoError(
+		t,
+		db.InsertRound(
+			ctx, sqlc.InsertRoundParams{
+				RoundID:        roundID,
+				Status:         roundStatus,
+				CreationTime:   100,
+				LastUpdateTime: 100,
+			},
+		),
+	)
+	require.NoError(
+		t,
+		db.InsertRoundBoardingIntent(
+			ctx, sqlc.InsertRoundBoardingIntentParams{
+				RoundID:       roundID,
+				OutpointHash:  intent.Outpoint.Hash[:],
+				OutpointIndex: int32(intent.Outpoint.Index),
+				ClientKey:     testBytes(33, 0x11),
+				OperatorKey:   testBytes(33, 0x22),
+				ExitDelay:     144,
+			},
+		),
+	)
+}
+
 // dbSweepInputStatus returns the only input status in a one-input sweep test.
 func dbSweepInputStatus(t *testing.T,
 	inputs []wallet.BoardingSweepInputRecord) string {
@@ -350,6 +383,150 @@ func TestBoardingIntentLifecycle(t *testing.T) {
 	retrievedIntent, err = store.GetIntent(ctx, outpoint)
 	require.NoError(t, err)
 	require.Equal(t, wallet.BoardingStatusAdopted, retrievedIntent.Status)
+}
+
+// TestBoardingIntentConfirmedReplayDoesNotRegressStatus verifies that repeated
+// boarding UTXO detection cannot move an already-adopted intent back to
+// confirmed.
+func TestBoardingIntentConfirmedReplayDoesNotRegressStatus(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newBoardingStoreForTest(t)
+	intent := createSweepStoreIntent(t, store)
+
+	require.NoError(
+		t, store.UpdateBoardingIntentStatus(
+			ctx, intent.Outpoint, wallet.BoardingStatusAdopted,
+		),
+	)
+
+	intent.Status = wallet.BoardingStatusConfirmed
+	require.NoError(t, store.InsertBoardingIntents(ctx, intent))
+
+	retrievedIntent, err := store.GetIntent(ctx, intent.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, wallet.BoardingStatusAdopted, retrievedIntent.Status)
+}
+
+// TestConfirmedBoardingIntentQueriesIgnoreRoundAdoptedRows verifies stale
+// confirmed rows that already have round boarding metadata cannot contribute to
+// pending boarding balance or board replay.
+func TestConfirmedBoardingIntentQueriesIgnoreRoundAdoptedRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, db := newBoardingStoreForTest(t)
+	intent := createSweepStoreIntent(t, store)
+
+	insertRoundBoardingIntentForTest(
+		t, db, "round-issue-564", "confirmed", intent,
+	)
+
+	confirmed, err := store.FetchBoardingIntentsByStatus(
+		ctx, wallet.BoardingStatusConfirmed,
+	)
+	require.NoError(t, err)
+	require.Empty(t, confirmed)
+
+	backlog, err := store.FetchBoardingIntentsByStatusAndMinHeight(
+		ctx, wallet.BoardingStatusConfirmed, 0,
+	)
+	require.NoError(t, err)
+	require.Empty(t, backlog)
+
+	sweepable, err := store.FetchBoardingIntentsBySweepableStatuses(
+		ctx, []wallet.BoardingStatus{
+			wallet.BoardingStatusConfirmed,
+			wallet.BoardingStatusFailed,
+			wallet.BoardingStatusExpired,
+		},
+	)
+	require.NoError(t, err)
+	require.Empty(t, sweepable)
+}
+
+// TestConfirmedBoardingIntentQueriesKeepFailedRoundRows verifies confirmed
+// intents linked only to failed rounds remain visible for retry/recovery.
+func TestConfirmedBoardingIntentQueriesKeepFailedRoundRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, db := newBoardingStoreForTest(t)
+	intent := createSweepStoreIntent(t, store)
+
+	insertRoundBoardingIntentForTest(
+		t, db, "round-failed", "failed", intent,
+	)
+
+	confirmed, err := store.FetchBoardingIntentsByStatus(
+		ctx, wallet.BoardingStatusConfirmed,
+	)
+	require.NoError(t, err)
+	require.Len(t, confirmed, 1)
+	require.Equal(t, intent.Outpoint, confirmed[0].Outpoint)
+
+	backlog, err := store.FetchBoardingIntentsByStatusAndMinHeight(
+		ctx, wallet.BoardingStatusConfirmed, 0,
+	)
+	require.NoError(t, err)
+	require.Len(t, backlog, 1)
+	require.Equal(t, intent.Outpoint, backlog[0].Outpoint)
+
+	sweepable, err := store.FetchBoardingIntentsBySweepableStatuses(
+		ctx, []wallet.BoardingStatus{
+			wallet.BoardingStatusConfirmed,
+			wallet.BoardingStatusFailed,
+			wallet.BoardingStatusExpired,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, sweepable, 1)
+	require.Equal(t, intent.Outpoint, sweepable[0].Outpoint)
+}
+
+// TestAdoptedBoardingIntentQueriesIgnoreConfirmedRoundRows verifies adopted
+// boarding intents stop contributing to pending boarding balance once their
+// linked commitment round is confirmed.
+func TestAdoptedBoardingIntentQueriesIgnoreConfirmedRoundRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, db := newBoardingStoreForTest(t)
+	intent := createSweepStoreIntent(t, store)
+
+	require.NoError(
+		t, store.UpdateBoardingIntentStatus(
+			ctx, intent.Outpoint, wallet.BoardingStatusAdopted,
+		),
+	)
+
+	insertRoundBoardingIntentForTest(
+		t, db, "round-input-sig", "input_sig_sent", intent,
+	)
+
+	adopted, err := store.FetchBoardingIntentsByStatus(
+		ctx, wallet.BoardingStatusAdopted,
+	)
+	require.NoError(t, err)
+	require.Len(t, adopted, 1)
+
+	require.NoError(
+		t,
+		db.UpdateRoundStatus(
+			ctx, sqlc.UpdateRoundStatusParams{
+				RoundID:        "round-input-sig",
+				Status:         "confirmed",
+				LastUpdateTime: 200,
+			},
+		),
+	)
+
+	adopted, err = store.FetchBoardingIntentsByStatus(
+		ctx, wallet.BoardingStatusAdopted,
+	)
+	require.NoError(t, err)
+	require.Empty(t, adopted)
 }
 
 // TestUpdateBoardingIntentStatus verifies the narrow status update helper used
