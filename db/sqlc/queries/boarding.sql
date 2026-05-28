@@ -38,7 +38,16 @@ INSERT INTO boarding_intents (
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE
 SET
     amount = COALESCE(excluded.amount, boarding_intents.amount),
-    status = excluded.status,
+    -- Re-detecting a boarding UTXO can replay the original confirmed
+    -- intent after the round store has already moved the row to adopted
+    -- or a sweep status. Such replays must refresh metadata without
+    -- regressing the lifecycle back to confirmed.
+    status = CASE
+        WHEN excluded.status = 'confirmed'
+            AND boarding_intents.status != 'confirmed'
+        THEN boarding_intents.status
+        ELSE excluded.status
+    END,
     conf_height = COALESCE(excluded.conf_height, boarding_intents.conf_height),
     conf_hash = COALESCE(excluded.conf_hash, boarding_intents.conf_hash),
     conf_tx = COALESCE(excluded.conf_tx, boarding_intents.conf_tx),
@@ -48,9 +57,7 @@ SET
     -- (domainIntentToInsertParams) normalises a zero-length proof
     -- slice to nil before the row is built, so excluded.tx_proof is
     -- either a populated blob or SQL NULL — plain COALESCE suffices
-    -- and is portable across SQLite and Postgres BYTEA. Status, by
-    -- contrast, is always authoritative on update so it overwrites
-    -- without COALESCE.
+    -- and is portable across SQLite and Postgres BYTEA.
     tx_proof = COALESCE(excluded.tx_proof, boarding_intents.tx_proof),
     last_update_time = excluded.last_update_time;
 
@@ -60,12 +67,45 @@ WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
 -- name: ListBoardingIntentsByStatus :many
 SELECT * FROM boarding_intents
-WHERE status = $1
+WHERE boarding_intents.status = $1
+  AND (
+    $1 != 'confirmed' OR NOT EXISTS (
+      SELECT 1 FROM round_boarding_intents
+      JOIN rounds ON rounds.round_id = round_boarding_intents.round_id
+      WHERE round_boarding_intents.outpoint_hash =
+        boarding_intents.outpoint_hash
+        AND round_boarding_intents.outpoint_index =
+          boarding_intents.outpoint_index
+        AND rounds.status != 'failed'
+    )
+  )
+  AND (
+    $1 != 'adopted' OR NOT EXISTS (
+      SELECT 1 FROM round_boarding_intents
+      JOIN rounds ON rounds.round_id = round_boarding_intents.round_id
+      WHERE round_boarding_intents.outpoint_hash =
+        boarding_intents.outpoint_hash
+        AND round_boarding_intents.outpoint_index =
+          boarding_intents.outpoint_index
+        AND rounds.status = 'confirmed'
+    )
+  )
 ORDER BY creation_time DESC;
 
 -- name: ListBoardingIntentsBySweepableStatuses :many
 SELECT * FROM boarding_intents
-WHERE status IN ($1, $2, $3)
+WHERE boarding_intents.status IN ($1, $2, $3)
+  AND (
+    boarding_intents.status != 'confirmed' OR NOT EXISTS (
+      SELECT 1 FROM round_boarding_intents
+      JOIN rounds ON rounds.round_id = round_boarding_intents.round_id
+      WHERE round_boarding_intents.outpoint_hash =
+        boarding_intents.outpoint_hash
+        AND round_boarding_intents.outpoint_index =
+          boarding_intents.outpoint_index
+        AND rounds.status != 'failed'
+    )
+  )
 ORDER BY creation_time DESC;
 
 -- name: ListAllBoardingIntents :many
@@ -226,7 +266,18 @@ SELECT outpoint_hash, outpoint_index FROM boarding_intents;
 
 -- name: ListBoardingIntentsByStatusAndMinHeight :many
 SELECT * FROM boarding_intents
-WHERE status = $1 AND conf_height >= $2
+WHERE boarding_intents.status = $1 AND conf_height >= $2
+  AND (
+    $1 != 'confirmed' OR NOT EXISTS (
+      SELECT 1 FROM round_boarding_intents
+      JOIN rounds ON rounds.round_id = round_boarding_intents.round_id
+      WHERE round_boarding_intents.outpoint_hash =
+        boarding_intents.outpoint_hash
+        AND round_boarding_intents.outpoint_index =
+          boarding_intents.outpoint_index
+        AND rounds.status != 'failed'
+    )
+  )
 ORDER BY conf_height ASC;
 
 -- Pending board request queries.
