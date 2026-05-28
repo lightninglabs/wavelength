@@ -17,9 +17,9 @@ func TestConfigLogDirUsesNetworkScopedDefault(t *testing.T) {
 	cfg.DataDir = dataDir
 	cfg.Network = "regtest"
 
-	logDir, err := cfg.LogDir()
-	require.NoError(t, err)
-	require.Equal(t, filepath.Join(dataDir, "logs", "regtest"), logDir)
+	require.Equal(
+		t, filepath.Join(dataDir, "logs", "regtest"), cfg.LogDir(),
+	)
 }
 
 // TestConfigLogDirUsesExplicitLogDir verifies an explicit log directory
@@ -33,7 +33,5 @@ func TestConfigLogDirUsesExplicitLogDir(t *testing.T) {
 	cfg.Network = "regtest"
 	cfg.LogDirPath = explicitLogDir
 
-	logDir, err := cfg.LogDir()
-	require.NoError(t, err)
-	require.Equal(t, explicitLogDir, logDir)
+	require.Equal(t, explicitLogDir, cfg.LogDir())
 }

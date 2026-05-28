@@ -719,6 +719,10 @@ func DefaultConfig() *Config {
 // Validate checks the config for internal consistency and returns an error
 // if any required fields are missing or invalid.
 func (c *Config) Validate() error {
+	if err := c.expandPaths(); err != nil {
+		return err
+	}
+
 	switch c.Network {
 	case "mainnet", "testnet", "regtest", "simnet", "signet":
 	default:
@@ -954,28 +958,74 @@ func networkToChainParams(network string) (*chaincfg.Params, error) {
 }
 
 // NetworkDir returns the network-scoped data directory (e.g.,
-// ~/.darepod/data/regtest).
-func (c *Config) NetworkDir() (string, error) {
-	dataDir, err := expandTilde(c.DataDir)
-	if err != nil {
-		return "", err
-	}
-
-	return filepath.Join(dataDir, "data", c.Network), nil
+// /home/user/.darepod/data/regtest). Path fields are normalized by
+// Validate via expandPaths, so callers must validate before reaching
+// this helper.
+func (c *Config) NetworkDir() string {
+	return filepath.Join(c.DataDir, "data", c.Network)
 }
 
-// LogDir returns the network-scoped log directory.
-func (c *Config) LogDir() (string, error) {
+// LogDir returns the network-scoped log directory. Path fields are
+// normalized by Validate via expandPaths, so callers must validate
+// before reaching this helper.
+func (c *Config) LogDir() string {
 	if c.LogDirPath != "" {
-		return expandTilde(c.LogDirPath)
+		return c.LogDirPath
 	}
 
-	dataDir, err := expandTilde(c.DataDir)
-	if err != nil {
-		return "", err
+	return filepath.Join(c.DataDir, "logs", c.Network)
+}
+
+// expandPaths normalizes filesystem path fields by expanding a leading tilde to
+// the user's home directory. expandTilde is a no-op on empty strings and on
+// paths that don't start with "~", so URL-or-path fields (e.g. BtcwBlockSource,
+// BtcwFilterSource) pass through unchanged.
+func (c *Config) expandPaths() error {
+	fields := []*string{
+		&c.DataDir,
+		&c.LogDirPath,
 	}
 
-	return filepath.Join(dataDir, "logs", c.Network), nil
+	if c.Lnd != nil {
+		fields = append(fields,
+			&c.Lnd.TLSPath, &c.Lnd.MacaroonPath,
+		)
+	}
+
+	if c.Server != nil {
+		fields = append(fields, &c.Server.TLSCertPath)
+	}
+
+	if c.RPC != nil {
+		fields = append(
+			fields, &c.RPC.TLSCertPath, &c.RPC.TLSKeyPath,
+		)
+	}
+
+	if c.Wallet != nil {
+		fields = append(
+			fields, &c.Wallet.PasswordFile,
+			&c.Wallet.BtcwalletDataDir, &c.Wallet.BtcwBlockSource,
+			&c.Wallet.BtcwFilterSource,
+		)
+	}
+
+	if c.Swap != nil {
+		fields = append(
+			fields, &c.Swap.DatabaseFileName,
+			&c.Swap.ServerTLSCertPath,
+		)
+	}
+
+	for _, p := range fields {
+		expanded, err := expandTilde(*p)
+		if err != nil {
+			return fmt.Errorf("expand path %q: %w", *p, err)
+		}
+		*p = expanded
+	}
+
+	return nil
 }
 
 // expandTilde replaces a leading ~ or ~/ with the user's home

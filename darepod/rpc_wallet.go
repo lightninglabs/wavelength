@@ -288,13 +288,7 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 	}
 
 	// Resolve the network directory for seed storage.
-	networkDir, err := r.server.cfg.NetworkDir()
-	if err != nil {
-		rollbackState()
-
-		return nil, status.Errorf(codes.Internal, "unable to resolve "+
-			"network directory: %v", err)
-	}
+	networkDir := r.server.cfg.NetworkDir()
 
 	// Delegate to the package-level function that validates the
 	// mnemonic, derives the seed, encrypts it, and saves it to
@@ -367,13 +361,7 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 	}
 
 	// Resolve the network directory for seed lookup.
-	networkDir, err := r.server.cfg.NetworkDir()
-	if err != nil {
-		rollbackState()
-
-		return nil, status.Errorf(codes.Internal, "unable to resolve "+
-			"network directory: %v", err)
-	}
+	networkDir := r.server.cfg.NetworkDir()
 
 	// Delegate to the package-level function that loads the
 	// encrypted seed from disk and decrypts it. This logic is

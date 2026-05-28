@@ -526,11 +526,7 @@ func configureDaemonLogWriter(cfg *darepod.Config,
 		return nil, nil
 	}
 
-	logDir, err := cfg.LogDir()
-	if err != nil {
-		return nil, err
-	}
-
+	logDir := cfg.LogDir()
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create log directory %q: %w", logDir,
 			err)

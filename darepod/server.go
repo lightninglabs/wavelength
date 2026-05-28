@@ -1288,13 +1288,7 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 		return
 	}
 
-	networkDir, err := s.cfg.NetworkDir()
-	if err != nil {
-		s.log.ErrorS(ctx, "Unable to resolve network directory",
-			err)
-
-		return
-	}
+	networkDir := s.cfg.NetworkDir()
 
 	// Check for an encrypted seed file on disk.
 	if !SeedFileExists(networkDir) {
@@ -1371,10 +1365,7 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 func (s *Server) startLwwallet(ctx context.Context,
 	seed [rawSeedLen]byte) error {
 
-	networkDir, err := s.cfg.NetworkDir()
-	if err != nil {
-		return fmt.Errorf("resolve network directory: %w", err)
-	}
+	networkDir := s.cfg.NetworkDir()
 
 	pollInterval := s.cfg.Wallet.PollInterval
 	if pollInterval == 0 {
@@ -1481,13 +1472,7 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 		return
 	}
 
-	networkDir, err := s.cfg.NetworkDir()
-	if err != nil {
-		s.log.ErrorS(ctx,
-			"Unable to resolve network directory", err)
-
-		return
-	}
+	networkDir := s.cfg.NetworkDir()
 
 	// Check for an encrypted seed file on disk.
 	if !SeedFileExists(networkDir) {
@@ -1568,12 +1553,7 @@ func (s *Server) preStartNeutrino(ctx context.Context) error {
 
 	neutrinoDataDir := s.cfg.Wallet.BtcwalletDataDir
 	if neutrinoDataDir == "" {
-		networkDir, err := s.cfg.NetworkDir()
-		if err != nil {
-			return fmt.Errorf("resolve network directory: %w", err)
-		}
-
-		neutrinoDataDir = networkDir
+		neutrinoDataDir = s.cfg.NetworkDir()
 	}
 
 	var neutrinoOpts []btcwbackend.NeutrinoServiceOption
@@ -1615,10 +1595,7 @@ func (s *Server) preStartNeutrino(ctx context.Context) error {
 func (s *Server) startBtcwallet(ctx context.Context,
 	seed [rawSeedLen]byte) error {
 
-	networkDir, err := s.cfg.NetworkDir()
-	if err != nil {
-		return fmt.Errorf("resolve network directory: %w", err)
-	}
+	networkDir := s.cfg.NetworkDir()
 
 	recoveryWindow := s.cfg.Wallet.RecoveryWindow
 	if recoveryWindow == 0 {
@@ -1649,7 +1626,10 @@ func (s *Server) startBtcwallet(ctx context.Context,
 	// Reuse the pre-started neutrino service if available.
 	// Otherwise, create a new one (fallback for callers that
 	// skip preStartNeutrino).
-	var w *btcwbackend.Wallet
+	var (
+		w   *btcwbackend.Wallet
+		err error
+	)
 	if s.neutrinoSvc.IsSome() {
 		svc := s.neutrinoSvc.UnsafeFromSome()
 		w, err = btcwbackend.NewWithNeutrino(cfg, svc)
@@ -2854,10 +2834,7 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 //
 //nolint:contextcheck // database constructor owns migration startup context
 func (s *Server) initDatabase(ctx context.Context) error {
-	networkDir, err := s.cfg.NetworkDir()
-	if err != nil {
-		return fmt.Errorf("resolve network directory: %w", err)
-	}
+	networkDir := s.cfg.NetworkDir()
 
 	if err := os.MkdirAll(networkDir, 0700); err != nil {
 		return fmt.Errorf("unable to create data dir: %w", err)
@@ -2865,6 +2842,7 @@ func (s *Server) initDatabase(ctx context.Context) error {
 
 	sqliteCfg := db.DefaultSqliteConfig(networkDir)
 
+	var err error
 	s.db, err = db.NewSqliteStore(
 		sqliteCfg, s.subLogger(db.Subsystem),
 	)
