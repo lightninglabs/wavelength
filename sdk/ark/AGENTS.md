@@ -80,6 +80,14 @@ transport, without duplicating Ark runtime behavior.
 - `darepod` remains the canonical Ark runtime; `sdk/ark` must not
   reimplement wallet, round, OOR, or persistence behavior.
 - Embedded startup must not mutate the caller's daemon config.
+  `StartEmbedded` deep-copies the caller-supplied `*darepod.Config`,
+  including all slice-typed fields (`RPCServiceRegistrars`,
+  `RPCGatewayRegistrars`, `WalletReadyHooks`,
+  `RPC.Gateway.AllowedOrigins`) so the daemon can inject its own
+  listener and call `Validate()` without touching the caller's value.
+- `StartEmbedded` calls `daemonCfg.Validate()` on the cloned config
+  before `NewServer`. This normalises paths (e.g. tilde expansion) and
+  fills subsystem defaults, matching the standalone daemon's contract.
 - Embedded startup waits until the in-process daemon is accepting RPCs
   before returning.
 - Embedded `Wait()` returns a blocking channel that surfaces the daemon's

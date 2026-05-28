@@ -33,6 +33,12 @@ refresh, leave, OOR spend, and directed send flows.
 - `SendRecipient` — Describes a single directed send destination (pkscript, amount, recipient client key).
 - `SendVTXOsRequest` / `SendVTXOsResponse` — Ask-request for in-round directed sends. Validates each recipient amount is within `(0, MaxSatoshi]` and that the running total never overflows `int64`, atomically selects and reserves VTXOs via `SelectAndReserveForfeitRequest`, builds forfeit + recipient VTXO intents, and registers with the round actor. Supports dry-run mode for previewing coin selection without committing. Reserved VTXOs are released via a deferred cleanup that uses `context.WithoutCancel` so cleanup survives caller disconnect; on success, a `committed` flag is set to skip the release.
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
+- `BoardingStatusAdopted` — Lifecycle status for boarding UTXOs that have
+  been committed to a persisted round checkpoint but whose resulting VTXOs
+  are not yet confirmed on-chain. Keeps balance visible during the VTXO
+  maturation window. The `GetBoardingBalanceResponse` now exposes a
+  corresponding `AdoptedBalance` field alongside `TotalBalance`,
+  `UnconfirmedBalance`, `PendingSweepBalance`, and `SweptBalance`.
 - `VTXODescriptor.EffectivePolicyTemplate` — Decodes the serialized `PolicyTemplate` field on the wallet-level VTXO descriptor using `lib/arkscript`.
 
 ## Relationships

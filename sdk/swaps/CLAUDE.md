@@ -72,7 +72,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 - Error sentinels (exported): `ErrSwapExpired`, `ErrSwapRefunded`,
   `ErrSwapSummaryNotFound`. Internal classifiers
   (`interventionError`, `failureError`, `retryableActionError`) live
-  in `errors.go`.
+  in `errors.go`. `isUnregisteredScriptErr` classifies indexer
+  "script not registered for principal" responses as terminal
+  (not retryable).
 
 ## Relationships
 
@@ -125,6 +127,14 @@ result into an `IncomingVHTLCNotification`.
   the SDK never holds the raw private key for receive-auth.
 - Error sentinels (`ErrSwapExpired`, `ErrSwapRefunded`,
   `ErrSwapSummaryNotFound`) are exported; callers use `errors.Is`.
+- "Script not registered for principal" errors returned by the indexer
+  during `waitForVHTLC` are terminal failures, not retryable. They
+  indicate either `arkscript` version skew between local and remote, or
+  stale local swap metadata after a daemon reset. The flow fails
+  immediately with `newFailureError` rather than looping.
+- `cancelVHTLCRecovery` treats a `codes.NotFound` response as a no-op:
+  a recovery row that has already been removed (e.g. after a daemon
+  reset) is benign and does not surface as an error.
 
 ## Deep Docs
 

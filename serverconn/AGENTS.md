@@ -23,6 +23,12 @@ background ingress polling with event routing.
 - `DurableUnaryQuery` — Interface implemented by transport-native durable query messages that persist raw query parameters (not a full proto). The `ServerConnectionActor` matches any `DurableUnaryQuery` generically in its `Receive` loop and calls `buildDurableUnary` to construct a `SendUnaryRequest` on the fly, using `BuildBody`, `QueryCorrelationID`, `QueryMsgID`, `QueryIdempotencyKey`, and `ServiceMethod`.
 - `SendListOORRecipientEventsByScriptRequest` — TLV-durable (type `2003`) indexer query message for phase-1 OOR receive resolution. Persists PkScript, AfterEventID, Limit, CorrelationID, MsgID, and IdempotencyKey; the proof-gated proto body is built at send time by `DurableUnaryRequestBuilder.BuildListOORRecipientEventsByScriptRequest`.
 - `SendListVTXOsByScriptsRequest` — TLV-durable (type `2004`) indexer query message for phase-2 OOR metadata resolution. Persists PkScripts (count-prefixed, length-prefixed list), opaque AfterCursor, Limit, CorrelationID, MsgID, and IdempotencyKey; the proof-gated proto body is built by `DurableUnaryRequestBuilder.BuildListVTXOsByScriptsRequest`.
+- `ErrEnvelopeHandled` — Sentinel error returned by an
+  `EnvelopeRouteConfig.Adapt` function to signal that the route consumed
+  the envelope without needing actor delivery. The ingress acks the
+  envelope normally but does not enqueue a message to any actor. Used to
+  silently discard stale unary responses that are recognised by the route
+  but no longer relevant to any live durable flow.
 - `CorrelationKey()` on `SendClientEventRequest` — Forwards the inner
   `ServerMessage`'s per-key FIFO key. Uses a structural assertion on the
   inner message in the pre-Encode path; falls back to a `cachedCorrelationKey`
@@ -58,6 +64,11 @@ background ingress polling with event routing.
 - `DurableUnaryQuery` implementations must produce stable identity bytes in `BuildBody` so that `MsgID` and `IdempotencyKey` are deterministic across restarts (auto-derived via `mailboxconn.StableEventMsgID` / `StableEventIdempotencyKey` when the caller leaves them empty).
 - `ServerConnectionActor` runs a background heartbeat goroutine (`DefaultHeartbeatInterval` = 30s) to keep the mailbox session alive.
 - Ingress handles header-only error responses (nil body) by routing them as errors rather than panicking on nil proto.
+- Envelope routes can return `ErrEnvelopeHandled` to acknowledge an
+  envelope without enqueueing any actor message. This is the mechanism
+  for acking stale unary responses (e.g. `ListVTXOsByScripts` replies
+  that arrived after the OOR flow already moved on) so the ack watermark
+  advances without polluting any actor mailbox.
 - `SendClientEventRequest.CorrelationKey()` always returns the correct
   per-key FIFO lane key regardless of whether the message was constructed
   fresh or decoded from TLV. The `cachedCorrelationKey` field is populated
@@ -65,6 +76,7 @@ background ingress polling with event routing.
 
 ## Deep Docs
 
+- [serverconn/mailboxpull/CLAUDE.md](mailboxpull/CLAUDE.md) — Shared retry/backoff primitives for pull loops.
 - [serverconn/README.md](README.md) — Architecture, usage guide, crash recovery paths.
 - [docs/mailbox_architecture.md](../docs/mailbox_architecture.md) — Three-layer mailbox system.
 - [docs/durable_actor_architecture.md](../docs/durable_actor_architecture.md) — Durable actor internals.

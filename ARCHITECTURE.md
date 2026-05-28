@@ -27,6 +27,7 @@ package may import from a higher layer.
 | [`lib/tx/psbtutil`](lib/tx/psbtutil/) | PSBT encoding, decoding, and signature attachment helpers |
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
+| [`vhtlcrecovery`](vhtlcrecovery/) | Pure control-plane types for durable vHTLC on-chain recovery: `RecoveryJob`, action/direction/state/policy-kind constants |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
@@ -38,6 +39,8 @@ package may import from a higher layer.
 | [`chain`](chain/) | Bitcoind RPC utilities (package relay, `SubmitPackage`) |
 | [`txconfirm`](txconfirm/) | Generic "broadcast + CPFP fee-bump + notify on confirm" actor with per-parent fee-input reservations and BIP-125 Rule 3/4 enforcement |
 | [`unroll`](unroll/) | Durable per-target unilateral-exit actor + thin registry: owns proof assembly, materialization, CSV maturity, final sweep build, persist-before-broadcast, and control-plane record persistence |
+| [`vhtlcrecovery/coordinator`](vhtlcrecovery/coordinator/) | Runtime coordinator bridging durable vHTLC recovery rows to the `unroll` subsystem: idempotent escalation, startup restore, and recovery/unroll status reconciliation |
+| [`vhtlcrecovery/unrollpolicy`](vhtlcrecovery/unrollpolicy/) | Adapter converting vHTLC recovery rows into `unroll.ExitSpendPolicy` implementations (claim and refund-without-receiver) |
 | [`lndbackend`](lndbackend/) | `BoardingBackend` implementation via LND's wallet kit |
 | [`lwwallet`](lwwallet/) | Lightweight in-process wallet (btcwallet + Esplora, no external LND) |
 | [`btcwbackend`](btcwbackend/) | Neutrino-backed wallet backend (btcwallet + compact block filters) |
