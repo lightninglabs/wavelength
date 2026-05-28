@@ -10,6 +10,8 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // newRouterFixture wires a router with the given fake deps, returning the
@@ -377,4 +379,30 @@ func TestRouterSendInvoiceErrorBubblesUp(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "swap server unavailable")
+}
+
+// TestRouterSendInvoicePreservesStartPayStatusCode verifies StartPay status
+// errors keep their gRPC code as they move through the wallet router.
+func TestRouterSendInvoicePreservesStartPayStatusCode(t *testing.T) {
+	t.Parallel()
+
+	r, swap, _ := newRouterFixture(t)
+	startPayErr := status.Error(
+		codes.AlreadyExists, "receive intent already used",
+	)
+	swap.startPayErr = startPayErr
+
+	_, err := r.Send(t.Context(), &walletrpc.SendRequest{
+		Destination: &walletrpc.SendRequest_Invoice{
+			Invoice: "lnbc1example",
+		},
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+	require.ErrorIs(t, err, startPayErr)
+	require.Contains(t, status.Convert(err).Message(), "start pay")
+	require.Contains(
+		t, status.Convert(err).Message(),
+		"receive intent already used",
+	)
 }

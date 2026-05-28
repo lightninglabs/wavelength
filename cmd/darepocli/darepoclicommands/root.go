@@ -101,6 +101,7 @@ type errorEnvelope struct {
 type errorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	Details string `json:"details,omitempty"`
 }
 
 // PrintError writes a structured error to stderr in JSON format and
@@ -110,18 +111,35 @@ type errorPayload struct {
 // surface keeps signalling failure to the harness while stderr stays
 // machine-readable.
 func PrintError(code string, msg string) error {
-	if err := printError(os.Stderr, code, msg); err != nil {
+	if err := printErrorDetails(os.Stderr, code, msg, ""); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
 	}
 
 	return &printedError{code: code, msg: msg}
 }
 
+// PrintErrorDetails writes a structured error to stderr with optional
+// diagnostic context for the message.
+func PrintErrorDetails(code string, msg string, details string) error {
+	if err := printErrorDetails(os.Stderr, code, msg, details); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
+	}
+
+	return &printedError{code: code, msg: msg, details: details}
+}
+
 func printError(w io.Writer, code string, msg string) error {
+	return printErrorDetails(w, code, msg, "")
+}
+
+func printErrorDetails(w io.Writer, code string, msg string,
+	details string) error {
+
 	data, err := json.MarshalIndent(errorEnvelope{
 		Error: errorPayload{
 			Code:    code,
 			Message: msg,
+			Details: details,
 		},
 	}, "", "  ")
 	if err != nil {
@@ -138,8 +156,9 @@ func printError(w io.Writer, code string, msg string) error {
 // surfaces validation / auth / not-found failures distinctly without
 // callers needing to thread codes manually.
 type printedError struct {
-	code string
-	msg  string
+	code    string
+	msg     string
+	details string
 }
 
 // Error returns the underlying message for cobra's RunE plumbing.

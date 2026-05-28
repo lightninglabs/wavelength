@@ -25,6 +25,8 @@ import (
 	"github.com/lightninglabs/darepo-client/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -230,6 +232,34 @@ func TestStartPayReturnsSummaryAndStartsWorker(t *testing.T) {
 	fakeClient.awaitPayResume(t, payHash)
 	require.Equal(t, 1, fakeClient.startPayCount())
 	require.Equal(t, 1, fakeClient.payResumeCount(payHash))
+}
+
+// TestStartPayPreservesRuntimeStatusCode verifies startup failures keep the
+// lower-level gRPC code instead of flattening every error to Internal.
+func TestStartPayPreservesRuntimeStatusCode(t *testing.T) {
+	t.Parallel()
+
+	fakeClient := newFakeSwapRuntime()
+	startPayErr := status.Error(
+		codes.AlreadyExists, "receive intent already used",
+	)
+	fakeClient.startPayErr = startPayErr
+	service := newTestSwapClientService(fakeClient)
+	defer service.cancel()
+
+	_, err := service.StartPay(
+		t.Context(), &swapclientrpc.StartPayRequest{
+			Invoice: "lnbc1test",
+		},
+	)
+	require.Error(t, err)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+	require.ErrorIs(t, err, startPayErr)
+	require.Contains(t, status.Convert(err).Message(), "start pay swap")
+	require.Contains(
+		t, status.Convert(err).Message(),
+		"receive intent already used",
+	)
 }
 
 // TestStartReceiveReturnsInvoiceAndStartsWorker verifies receive startup
@@ -625,6 +655,7 @@ type fakeSwapRuntime struct {
 
 	startPaySession     paySwapSession
 	startReceiveSession receiveSwapSession
+	startPayErr         error
 
 	startPayCalls      int
 	startReceiveCalls  int
@@ -655,6 +686,9 @@ func (f *fakeSwapRuntime) StartPayViaLightning(context.Context, string,
 	defer f.mu.Unlock()
 
 	f.startPayCalls++
+	if f.startPayErr != nil {
+		return nil, f.startPayErr
+	}
 	if f.startPaySession == nil {
 		return nil, errors.New("start pay session not configured")
 	}
