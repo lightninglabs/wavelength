@@ -274,6 +274,9 @@ func (m *Manager) Receive(ctx context.Context,
 	case *CompleteSpendRequest:
 		return m.handleCompleteSpend(ctx, req)
 
+	case *ReconcileSpendingReservationsRequest:
+		return m.handleReconcileSpendingReservations(ctx, req)
+
 	case *ReserveForfeitRequest:
 		return m.handleReserveForfeit(ctx, req)
 
@@ -787,6 +790,99 @@ func (m *Manager) handleReleaseSpend(ctx context.Context,
 	return fn.Ok[ManagerResp](&ReleaseSpendResponse{
 		ReleasedCount: released,
 	})
+}
+
+// handleReconcileSpendingReservations releases VTXOs stranded in SpendingState
+// that no live spend still claims. It is meant to run once at startup, after
+// the OOR subsystem has recovered, to undo orphaned reservations left behind
+// when a spend died without emitting SpendReleasedEvent. Without this, such a
+// VTXO stays unspendable until batch expiry forces an on-chain unilateral exit.
+func (m *Manager) handleReconcileSpendingReservations(ctx context.Context,
+	req *ReconcileSpendingReservationsRequest) fn.Result[ManagerResp] {
+
+	// Read the authoritative current Spending set from the store rather than
+	// the Start-time descriptor snapshot. A spend that completed or released
+	// during recovery has already updated its persisted status, so reading
+	// fresh here avoids treating an already-resolved VTXO as an orphan.
+	spending, err := m.cfg.Store.ListVTXOsByStatus(ctx, VTXOStatusSpending)
+	if err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("list spending vtxos: %w", err),
+		)
+	}
+
+	orphans := orphanedReservations(spending, req.ClaimedInputs)
+
+	var (
+		released int
+		errs     []error
+	)
+	for _, op := range orphans {
+		ref, ok := m.actors[op]
+		if !ok {
+			// No live actor for this outpoint means it was already
+			// cleaned up to a terminal state; nothing to release.
+			continue
+		}
+
+		result := m.askVTXOActor(ctx, ref, &SpendReleasedEvent{})
+		if _, err := result.Unpack(); err != nil {
+			m.logger(ctx).WarnS(ctx,
+				"Orphaned spend release failed", err,
+				slog.String("outpoint", op.String()),
+			)
+			errs = append(
+				errs, fmt.Errorf("release %s: %w", op, err),
+			)
+
+			continue
+		}
+
+		m.logger(ctx).InfoS(ctx,
+			"Released orphaned spending reservation",
+			slog.String("outpoint", op.String()),
+		)
+		released++
+	}
+
+	if len(errs) > 0 {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("reconcile spending: %d/%d release(s) "+
+				"failed: %w", len(errs), len(orphans),
+				errors.Join(errs...)),
+		)
+	}
+
+	return fn.Ok[ManagerResp](&ReconcileSpendingReservationsResponse{
+		ScannedCount:  len(spending),
+		ClaimedCount:  len(req.ClaimedInputs),
+		ReleasedCount: released,
+	})
+}
+
+// orphanedReservations returns the outpoints of Spending VTXOs that no live
+// spend still claims. A reservation is an orphan when the VTXO sits in
+// SpendingState yet no live OOR session lists it among its inputs, which is
+// exactly the state left behind when the reserving spend dies without
+// releasing it.
+func orphanedReservations(spending []*Descriptor,
+	claimed []wire.OutPoint) []wire.OutPoint {
+
+	claimedSet := make(map[wire.OutPoint]struct{}, len(claimed))
+	for _, op := range claimed {
+		claimedSet[op] = struct{}{}
+	}
+
+	var orphans []wire.OutPoint
+	for _, d := range spending {
+		if _, ok := claimedSet[d.Outpoint]; ok {
+			continue
+		}
+
+		orphans = append(orphans, d.Outpoint)
+	}
+
+	return orphans
 }
 
 // handleCompleteSpend marks VTXOs as fully spent via SpendCompletedEvent.

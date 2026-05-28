@@ -1,6 +1,7 @@
 package vtxo
 
 import (
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/round"
@@ -113,6 +114,52 @@ type ListLiveDescriptorsResponse struct {
 
 // VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
 func (r *ListLiveDescriptorsResponse) VTXOManagerResp() {}
+
+// ReconcileSpendingReservationsRequest asks the manager to release VTXOs
+// stranded in SpendingState that no live spend still claims. A VTXO enters
+// SpendingState when an OOR send reserves it; if that spend dies without
+// emitting SpendReleasedEvent (crash, abandoned funding attempt), the
+// reservation outlives its owner and the VTXO is stuck until batch expiry.
+//
+// ClaimedInputs is the set of VTXO input outpoints that live/resumable OOR
+// sessions still hold after recovery. Any Spending VTXO not in this set is an
+// orphan and is returned to LiveState.
+//
+// The caller must assemble a COMPLETE claimed set before sending this. If the
+// set can't be determined (e.g. the OOR actor is unreachable), the caller must
+// not send the request at all: an incomplete set would release VTXOs that a
+// live spend legitimately holds.
+type ReconcileSpendingReservationsRequest struct {
+	actor.BaseMessage
+
+	// ClaimedInputs are the input outpoints still held by live spends.
+	ClaimedInputs []wire.OutPoint
+}
+
+// MessageType returns the message type identifier.
+func (r *ReconcileSpendingReservationsRequest) MessageType() string {
+	return "ReconcileSpendingReservationsRequest"
+}
+
+// VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
+func (r *ReconcileSpendingReservationsRequest) VTXOManagerMsg() {}
+
+// ReconcileSpendingReservationsResponse reports the outcome of a reconcile
+// pass: how many Spending VTXOs were scanned, how many inputs the caller
+// reported as still claimed, and how many orphans were released back to Live.
+type ReconcileSpendingReservationsResponse struct {
+	// ScannedCount is the number of VTXOs found in SpendingState.
+	ScannedCount int
+
+	// ClaimedCount is the size of the claimed-input set the caller passed.
+	ClaimedCount int
+
+	// ReleasedCount is the number of orphaned reservations released.
+	ReleasedCount int
+}
+
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *ReconcileSpendingReservationsResponse) VTXOManagerResp() {}
 
 // =============================================================================
 // Relay messages: VTXO actor → Manager → external actor
