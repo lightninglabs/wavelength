@@ -70,9 +70,11 @@ func renderActivitySectionWithTitle(out io.Writer, title string,
 	printBullet(out, 0, "id", emptyDash(entry.GetId()))
 
 	req := entry.GetRequest()
+	var requestPaymentHash string
 	switch {
 	case req.GetLightningInvoice() != nil:
 		ln := req.GetLightningInvoice()
+		requestPaymentHash = ln.GetPaymentHash()
 		printBullet(out, 0, "invoice", emptyDash(ln.GetInvoice()))
 		printBullet(
 			out, 0, "payment_hash",
@@ -100,9 +102,12 @@ func renderActivitySectionWithTitle(out io.Writer, title string,
 
 	progress := entry.GetProgress()
 	if progress != nil {
-		if activityUsesPaymentHash(entry) {
+		progressPaymentHash := progress.GetPaymentHash()
+		if activityUsesPaymentHash(entry) &&
+			progressPaymentHash != requestPaymentHash {
+
 			printOptionalBullet(
-				out, "payment_hash", progress.GetPaymentHash(),
+				out, "payment_hash", progressPaymentHash,
 			)
 		}
 		printOptionalBullet(
