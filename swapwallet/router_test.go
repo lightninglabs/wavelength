@@ -145,6 +145,19 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 			"the caller can see whole-VTXO overpay before "+
 			"treating the send as confirmed",
 	)
+
+	// Regression: darepo-client#577. The bounded-amount coin
+	// selector must ask the daemon for VTXO_STATUS_LIVE only,
+	// otherwise a VTXO in PendingForfeit/Forfeiting (from an
+	// in-flight earlier leave) leaks back into the selection and
+	// the subsequent LeaveVTXOs call fails at the manager's
+	// reservation gate.
+	require.Equal(
+		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		rpc.listVTXOsLastReq.GetStatusFilter(),
+		"selectVTXOsForAmount must filter to live VTXOs only "+
+			"(darepo-client#577)",
+	)
 }
 
 // TestRouterSendOnchainSweepAllRoutesToAllSelection confirms that the
@@ -193,6 +206,16 @@ func TestRouterSendOnchainSweepAllRoutesToAllSelection(t *testing.T) {
 	require.Equal(
 		t, 1, rpc.joinNextRoundCalls,
 		"sweep-all path must also auto-commit the leave intent",
+	)
+
+	// Regression: darepo-client#577. totalLiveVTXOAmount must also
+	// filter to VTXO_STATUS_LIVE so a stuck Forfeiting VTXO from a
+	// prior leave doesn't inflate the reported sweep total.
+	require.Equal(
+		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		rpc.listVTXOsLastReq.GetStatusFilter(),
+		"totalLiveVTXOAmount must filter to live VTXOs only "+
+			"(darepo-client#577)",
 	)
 }
 

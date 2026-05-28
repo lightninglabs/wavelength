@@ -244,19 +244,43 @@ func (r *router) sendOnchain(ctx context.Context, addr string,
 	}, nil
 }
 
+// listLiveVTXOsForLeave returns the daemon's view of VTXOs that are
+// safe to feed into a fresh LeaveVTXOs call. The default ListVTXOs
+// response also includes VTXOs in PendingForfeit / Forfeiting /
+// Spending — those are "not yet terminal" but already committed to
+// another in-flight operation, and reselecting them races into the
+// VTXO manager's reservation gate (issue darepo-client#577: a second
+// onchain send while the first leave round is still unconfirmed
+// fails with "forfeiting: bad event: *round.PendingForfeitEvent").
+// Filtering to VTXO_STATUS_LIVE at the source closes that race for
+// every caller — both `--sweep-all` totalling and bounded-amount
+// coin selection.
+func (r *router) listLiveVTXOsForLeave(ctx context.Context) ([]*daemonrpc.VTXO,
+	error) {
+
+	listResp, err := r.deps.RPCServer.ListVTXOs(
+		ctx, &daemonrpc.ListVTXOsRequest{
+			StatusFilter: daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list vtxos: %w", err)
+	}
+
+	return listResp.GetVtxos(), nil
+}
+
 // totalLiveVTXOAmount sums every live VTXO so a sweep-all caller can be
 // told how much will actually leave the wallet before the daemon hands
 // the operation off to LeaveVTXOs.
 func (r *router) totalLiveVTXOAmount(ctx context.Context) (int64, error) {
-	listResp, err := r.deps.RPCServer.ListVTXOs(
-		ctx, &daemonrpc.ListVTXOsRequest{},
-	)
+	vtxos, err := r.listLiveVTXOsForLeave(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("list vtxos: %w", err)
+		return 0, err
 	}
 
 	var total int64
-	for _, v := range listResp.GetVtxos() {
+	for _, v := range vtxos {
 		if v.GetAmountSat() <= 0 {
 			continue
 		}
@@ -283,18 +307,16 @@ func (r *router) selectVTXOsForAmount(ctx context.Context, target int64) (
 		return nil, 0, ErrAmountInvalid
 	}
 
-	listResp, err := r.deps.RPCServer.ListVTXOs(
-		ctx, &daemonrpc.ListVTXOsRequest{},
-	)
+	vtxos, err := r.listLiveVTXOsForLeave(ctx)
 	if err != nil {
-		return nil, 0, fmt.Errorf("list vtxos: %w", err)
+		return nil, 0, err
 	}
 
 	var (
 		selected []string
 		covered  int64
 	)
-	for _, v := range listResp.GetVtxos() {
+	for _, v := range vtxos {
 		if v.GetAmountSat() <= 0 {
 			continue
 		}

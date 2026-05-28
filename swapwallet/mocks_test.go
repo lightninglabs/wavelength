@@ -18,23 +18,24 @@ import (
 type fakeRPCServer struct {
 	mu sync.Mutex
 
-	listVTXOsResp  *daemonrpc.ListVTXOsResponse
-	listVTXOsErr   error
-	listVTXOsCalls int
-	leaveResp      *daemonrpc.LeaveVTXOsResponse
-	leaveErr       error
-	leaveCalls     int
-	leaveLastReq   *daemonrpc.LeaveVTXOsRequest
-	listTxResp     *daemonrpc.ListTransactionsResponse
-	listTxErr      error
-	listTxCalls    int
-	listTxLastReq  *daemonrpc.ListTransactionsRequest
-	getInfoResp    *daemonrpc.GetInfoResponse
-	getInfoErr     error
-	getBalanceResp *daemonrpc.GetBalanceResponse
-	getBalanceErr  error
-	newAddressResp *daemonrpc.NewAddressResponse
-	newAddressErr  error
+	listVTXOsResp    *daemonrpc.ListVTXOsResponse
+	listVTXOsErr     error
+	listVTXOsCalls   int
+	listVTXOsLastReq *daemonrpc.ListVTXOsRequest
+	leaveResp        *daemonrpc.LeaveVTXOsResponse
+	leaveErr         error
+	leaveCalls       int
+	leaveLastReq     *daemonrpc.LeaveVTXOsRequest
+	listTxResp       *daemonrpc.ListTransactionsResponse
+	listTxErr        error
+	listTxCalls      int
+	listTxLastReq    *daemonrpc.ListTransactionsRequest
+	getInfoResp      *daemonrpc.GetInfoResponse
+	getInfoErr       error
+	getBalanceResp   *daemonrpc.GetBalanceResponse
+	getBalanceErr    error
+	newAddressResp   *daemonrpc.NewAddressResponse
+	newAddressErr    error
 
 	genSeedResp     *daemonrpc.GenSeedResponse
 	genSeedErr      error
@@ -79,12 +80,13 @@ func (f *fakeRPCServer) LeaveVTXOs(_ context.Context,
 }
 
 func (f *fakeRPCServer) ListVTXOs(_ context.Context,
-	_ *daemonrpc.ListVTXOsRequest) (*daemonrpc.ListVTXOsResponse, error) {
+	req *daemonrpc.ListVTXOsRequest) (*daemonrpc.ListVTXOsResponse, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.listVTXOsCalls++
+	f.listVTXOsLastReq = req
 
 	return f.listVTXOsResp, f.listVTXOsErr
 }
