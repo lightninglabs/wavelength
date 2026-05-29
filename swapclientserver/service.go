@@ -95,6 +95,12 @@ type swapClientService struct {
 	// subscriber, and clients can recover current state with GetSwap or
 	// ListSwaps.
 	subscribers map[chan *swapclientrpc.SwapSummary]struct{}
+
+	// receiveMinAmount returns the current minimum output amount that a
+	// receive-swap vHTLC must satisfy before it is safe to hand a BOLT-11
+	// invoice to a payer. Production derives this from the daemon's cached
+	// operator terms; tests may leave it nil to disable this preflight.
+	receiveMinAmount func(context.Context) (uint64, error)
 }
 
 // swapRuntimeClient is the narrow part of sdk/swaps that the daemon
@@ -410,6 +416,14 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 		cancel:      cancel,
 		active:      make(map[string]struct{}),
 		subscribers: make(map[chan *swapclientrpc.SwapSummary]struct{}),
+		receiveMinAmount: func(ctx context.Context) (uint64, error) {
+			info, err := arkClient.GetInfo(ctx)
+			if err != nil {
+				return 0, err
+			}
+
+			return receiveSwapMinAmountSat(info.ServerInfo)
+		},
 	}
 
 	cleanup := func() {
@@ -857,6 +871,45 @@ func chainParamsForNetwork(network string) (*chaincfg.Params, error) {
 	}
 }
 
+// receiveSwapMinAmountSat returns the operator-enforced minimum vHTLC output
+// amount for receive swaps. A Lightning-to-Ark receive is funded as an Ark
+// vHTLC, not as an on-chain boarding deposit, so the operator dust limit is the
+// relevant local preflight. The swap server may still apply additional
+// server-side policy before returning a route hint.
+func receiveSwapMinAmountSat(info *sdkark.ServerInfo) (uint64, error) {
+	if info == nil {
+		return 0, fmt.Errorf("operator terms unavailable")
+	}
+
+	return info.DustLimit, nil
+}
+
+// validateReceiveAmount rejects locally-impossible receive amounts before the
+// SDK requests a route hint and returns a payer-visible BOLT-11 invoice.
+func (s *swapClientService) validateReceiveAmount(ctx context.Context,
+	amountSat int64) error {
+
+	if s.receiveMinAmount == nil {
+		return nil
+	}
+
+	minAmountSat, err := s.receiveMinAmount(ctx)
+	if err != nil {
+		return status.Errorf(codes.Unavailable, "receive amount "+
+			"preflight failed: %v", err)
+	}
+	if minAmountSat == 0 {
+		return nil
+	}
+	if uint64(amountSat) >= minAmountSat {
+		return nil
+	}
+
+	return status.Errorf(codes.InvalidArgument, "amount_sat %d is below "+
+		"the %d sat minimum for receive swaps (operator dust limit)",
+		amountSat, minAmountSat)
+}
+
 // StartPay persists a pay swap through sdk/swaps, starts or reuses the daemon
 // background worker for the resulting payment hash, and returns the initial
 // durable summary to the RPC caller.
@@ -914,6 +967,9 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 			codes.Unimplemented,
 			"idempotency_key is reserved for future use",
 		)
+	}
+	if err := s.validateReceiveAmount(ctx, req.GetAmountSat()); err != nil {
+		return nil, err
 	}
 
 	session, err := s.client.StartReceiveViaLightning(
