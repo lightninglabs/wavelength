@@ -48,7 +48,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - `TxState` — `New`, `Broadcasting`, `AwaitingConfirmation`,
   `FeeBumping`, `Confirmed`, `Failed`.
 - Sentinels: `ErrNonTRUCParent`, `ErrCPFPFeeInputUnavailable`,
-  `ErrEnsureParamsMismatch`.
+  `ErrEnsureParamsMismatch`, `ErrFeeInputProducesDust`.
 
 ## Relationships
 

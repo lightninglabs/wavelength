@@ -138,7 +138,8 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 		return mailboxrpc.SendResult{}, sendErr
 	}
 
-	f.connector.log.DebugS(ctx, "Sent unary RPC request",
+	f.connector.log.TraceS(
+		ctx, "Sent unary RPC request",
 		slog.String("service", method.Service),
 		slog.String("method", method.Method),
 		slog.String("correlation_id", correlationID),
