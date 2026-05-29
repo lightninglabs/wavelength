@@ -73,10 +73,18 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 		coreRPC = rpcServer
 	}
 
+	chainParams, err := chainParamsForWalletNetwork(cfg.Network)
+	if err != nil {
+		failoverResume()
+
+		return nil, fmt.Errorf("swapwallet: %w", err)
+	}
+
 	deps := &Deps{
 		SwapBackend: cfg.Swap.Backend,
 		SwapService: swapService,
 		RPCServer:   coreRPC,
+		ChainParams: chainParams,
 	}
 	if rpcServer != nil {
 		deps.Log = rpcServer.SubLogger(darepod.WalletRPCSubsystem)

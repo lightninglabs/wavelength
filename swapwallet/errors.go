@@ -21,6 +21,11 @@ var (
 	ErrInvalidDestination = errors.New("send destination must set " +
 		"invoice or onchain_address")
 
+	// ErrInvalidSendIntent is returned when Send is invoked without a
+	// live prepared send intent.
+	ErrInvalidSendIntent = errors.New("send intent is missing, expired, " +
+		"or already consumed")
+
 	// ErrAmountRequired is returned when Send is invoked with an onchain
 	// destination but no amount, or with an invoice that does not encode
 	// an amount and no caller-supplied amount.

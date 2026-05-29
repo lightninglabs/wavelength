@@ -75,14 +75,14 @@ func TestBtcwalletRPCUsesClientBufconn(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestSendRejectsAmbiguousDestination ensures wrappers cannot accidentally set
-// both destination fields and have walletdk pick one.
-func TestSendRejectsAmbiguousDestination(t *testing.T) {
+// TestPrepareSendRejectsAmbiguousDestination ensures wrappers cannot
+// accidentally set both destination fields and have walletdk pick one.
+func TestPrepareSendRejectsAmbiguousDestination(t *testing.T) {
 	t.Parallel()
 
 	client := &Client{canWallet: true}
 
-	_, err := client.Send(context.Background(), SendRequest{
+	_, err := client.PrepareSend(context.Background(), PrepareSendRequest{
 		Invoice:        "lnbcrt...",
 		OnchainAddress: "bcrt1...",
 	})

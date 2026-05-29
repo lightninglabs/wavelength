@@ -5,10 +5,18 @@ package swapwallet
 import (
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/zpay32"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -27,11 +35,152 @@ func newRouterFixture(t *testing.T) (*router, *fakeSwapService,
 		SwapBackend: nil, // not used by router paths
 		SwapService: swap,
 		RPCServer:   rpc,
+		ChainParams: &chaincfg.RegressionNetParams,
 	}
 	runtime := newRuntime(t.Context(), deps)
 	t.Cleanup(runtime.stop)
 
 	return newRouter(deps, runtime), swap, rpc
+}
+
+func sendPrepared(t *testing.T, r *router,
+	resp *walletdkrpc.PrepareSendResponse) (*walletdkrpc.SendResponse,
+	error) {
+
+	t.Helper()
+
+	return r.Send(t.Context(), &walletdkrpc.SendRequest{
+		SendIntentId: resp.GetSendIntentId(),
+	})
+}
+
+func sendPreparedInvoice(t *testing.T, r *router, invoice string,
+	maxFeeSat uint64) (*walletdkrpc.SendResponse, error) {
+
+	t.Helper()
+
+	intent := &preparedSendIntent{
+		kind:      preparedSendInvoice,
+		invoice:   invoice,
+		maxFeeSat: maxFeeSat,
+	}
+	id, err := r.intents.put(intent)
+	require.NoError(t, err)
+
+	return r.Send(t.Context(), &walletdkrpc.SendRequest{
+		SendIntentId: id,
+	})
+}
+
+func testPreparedInvoice(t *testing.T, amountSat btcutil.Amount,
+	description string) (string, string) {
+
+	t.Helper()
+
+	return testPreparedInvoiceOnNet(
+		t, &chaincfg.RegressionNetParams, amountSat, description,
+	)
+}
+
+func testPreparedInvoiceOnNet(t *testing.T, params *chaincfg.Params,
+	amountSat btcutil.Amount, description string) (string, string) {
+
+	t.Helper()
+
+	invoiceKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage := lntypes.Preimage{
+		0x01, 0x02, 0x03, 0x04,
+	}
+	paymentHash := preimage.Hash()
+
+	invoice, err := zpay32.NewInvoice(
+		params, paymentHash, time.Now(),
+		zpay32.Amount(
+			lnwire.NewMSatFromSatoshis(amountSat),
+		),
+		zpay32.Description(description),
+	)
+	require.NoError(t, err)
+
+	paymentRequest, err := invoice.Encode(zpay32.MessageSigner{
+		SignCompact: func(msg []byte) ([]byte, error) {
+			return ecdsa.SignCompact(invoiceKey, msg, true), nil
+		},
+	})
+	require.NoError(t, err)
+
+	return paymentRequest, paymentHash.String()
+}
+
+// TestRouterPrepareSendInvoiceRejectsWrongNetwork confirms prepare decodes
+// BOLT-11 invoices against the daemon network before issuing an intent.
+func TestRouterPrepareSendInvoiceRejectsWrongNetwork(t *testing.T) {
+	t.Parallel()
+
+	r, swap, rpc := newRouterFixture(t)
+	invoice, _ := testPreparedInvoiceOnNet(
+		t, &chaincfg.MainNetParams, 12_345, "wrong network",
+	)
+
+	_, err := r.PrepareSend(
+		t.Context(), &walletdkrpc.PrepareSendRequest{
+			Destination: &walletdkrpc.PrepareSendRequest_Invoice{
+				Invoice: invoice,
+			},
+		},
+	)
+	require.ErrorIs(t, err, ErrInvalidDestination)
+	require.Equal(t, 0, swap.startPayCalls)
+	require.Equal(t, 0, rpc.leaveCalls)
+
+	r.intents.mu.Lock()
+	intentCount := len(r.intents.intents)
+	r.intents.mu.Unlock()
+	require.Zero(t, intentCount, "wrong-network invoices create no intent")
+}
+
+// TestRouterPrepareSendInvoiceReturnsLocalPreview confirms the invoice
+// prepare path decodes the BOLT-11 metadata locally, produces a short-lived
+// intent, and honestly marks fee/rail details as local-only until remote quote
+// APIs exist.
+func TestRouterPrepareSendInvoiceReturnsLocalPreview(t *testing.T) {
+	t.Parallel()
+
+	r, swap, rpc := newRouterFixture(t)
+	invoice, paymentHash := testPreparedInvoice(t, 12_345, "coffee")
+
+	resp, err := r.PrepareSend(
+		t.Context(), &walletdkrpc.PrepareSendRequest{
+			Destination: &walletdkrpc.PrepareSendRequest_Invoice{
+				Invoice: invoice,
+			},
+			AmtSat:    99_999,
+			MaxFeeSat: 25,
+		},
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, resp.GetSendIntentId())
+	require.Equal(t, int64(12_345), resp.GetAmountSat())
+	require.Equal(
+		t, walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN,
+		resp.GetRail(),
+	)
+	require.Equal(
+		t, walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
+		resp.GetQuoteStatus(),
+	)
+	require.False(t, resp.GetFeeKnown())
+	require.False(t, resp.GetTotalOutflowKnown())
+	require.Equal(t, int64(0), resp.GetExpectedFeeSat())
+	require.Equal(t, int64(0), resp.GetExpectedTotalOutflowSat())
+	require.Equal(t, "coffee", resp.GetInvoiceDescription())
+	require.Equal(t, paymentHash, resp.GetPaymentHash())
+	require.Contains(t, resp.GetDestinationSummary(), "lnbcrt")
+	require.Contains(t, resp.GetWarning(), "swapserver quote support")
+	require.Equal(t, 0, swap.startPayCalls)
+	require.Equal(t, 0, rpc.leaveCalls)
 }
 
 // TestRouterSendInvoiceDispatchesStartPay confirms an invoice destination
@@ -50,12 +199,7 @@ func TestRouterSendInvoiceDispatchesStartPay(t *testing.T) {
 		},
 	}
 
-	resp, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
-		Destination: &walletdkrpc.SendRequest_Invoice{
-			Invoice: "lnbc1example",
-		},
-		MaxFeeSat: 25,
-	})
+	resp, err := sendPreparedInvoice(t, r, "lnbc1example", 25)
 	require.NoError(t, err)
 	require.Equal(t, 1, swap.startPayCalls)
 	require.Equal(t, 0, rpc.leaveCalls)
@@ -102,12 +246,35 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 		Status: "queued",
 	}
 
-	resp, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
-		Destination: &walletdkrpc.SendRequest_OnchainAddress{
-			OnchainAddress: "bcrt1qaddr",
+	prepareResp, err := r.PrepareSend(
+		t.Context(), &walletdkrpc.PrepareSendRequest{
+			Destination: &walletdkrpc.
+				PrepareSendRequest_OnchainAddress{
+				OnchainAddress: "bcrt1qaddr",
+			},
+			AmtSat: 10000,
 		},
-		AmtSat: 10000,
-	})
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, walletdkrpc.SendRail_SEND_RAIL_ONCHAIN,
+		prepareResp.GetRail(),
+	)
+	require.Equal(
+		t, walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
+		prepareResp.GetQuoteStatus(),
+	)
+	require.Equal(
+		t, int64(12_000), prepareResp.GetExpectedTotalOutflowSat(),
+	)
+	require.Equal(
+		t, []string{
+			"tx1:0",
+			"tx2:1",
+		},
+		prepareResp.GetSelectedOutpoints(),
+	)
+	resp, err := sendPrepared(t, r, prepareResp)
 	require.NoError(t, err)
 	require.Equal(t, 0, swap.startPayCalls)
 	require.Equal(t, 1, rpc.leaveCalls)
@@ -158,12 +325,19 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 		"selectVTXOsForAmount must filter to live VTXOs only "+
 			"(darepo-client#577)",
 	)
+
+	_, err = sendPrepared(t, r, prepareResp)
+	require.ErrorIs(t, err, ErrInvalidSendIntent)
+	require.Equal(
+		t, 1, rpc.leaveCalls,
+		"prepared send intents must be consume-once",
+	)
 }
 
-// TestRouterSendOnchainSweepAllRoutesToAllSelection confirms that the
-// explicit sweep_all flag routes through Selection.All and surfaces the
-// total live VTXO sum on actual_amount_sat.
-func TestRouterSendOnchainSweepAllRoutesToAllSelection(t *testing.T) {
+// TestRouterSendOnchainSweepAllUsesPreparedOutpoints confirms that the
+// explicit sweep_all flag snapshots the live set during prepare and spends
+// those exact outpoints during send.
+func TestRouterSendOnchainSweepAllUsesPreparedOutpoints(t *testing.T) {
 	t.Parallel()
 
 	r, _, rpc := newRouterFixture(t)
@@ -187,17 +361,30 @@ func TestRouterSendOnchainSweepAllRoutesToAllSelection(t *testing.T) {
 		Status: "queued",
 	}
 
-	resp, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
-		Destination: &walletdkrpc.SendRequest_OnchainAddress{
-			OnchainAddress: "bcrt1qaddr",
+	prepareResp, err := r.PrepareSend(
+		t.Context(), &walletdkrpc.PrepareSendRequest{
+			Destination: &walletdkrpc.
+				PrepareSendRequest_OnchainAddress{
+				OnchainAddress: "bcrt1qaddr",
+			},
+			AmtSat:   0,
+			SweepAll: true,
 		},
-		AmtSat:   0,
-		SweepAll: true,
-	})
+	)
 	require.NoError(t, err)
-	require.True(
-		t, rpc.leaveLastReq.GetAll(),
-		"sweep_all must trigger Selection.All",
+	require.Equal(t, int64(12_000), prepareResp.GetAmountSat())
+	require.Equal(
+		t, int64(12_000), prepareResp.GetExpectedTotalOutflowSat(),
+	)
+	resp, err := sendPrepared(t, r, prepareResp)
+	require.NoError(t, err)
+	require.Equal(
+		t, []string{
+			"tx1:0",
+			"tx2:1",
+		},
+		rpc.leaveLastReq.GetOutpoints().GetOutpoints(),
+		"sweep_all must spend the exact prepared VTXO set",
 	)
 	require.Equal(
 		t, int64(12_000), resp.GetActualAmountSat(),
@@ -208,13 +395,13 @@ func TestRouterSendOnchainSweepAllRoutesToAllSelection(t *testing.T) {
 		"sweep-all path must also auto-commit the leave intent",
 	)
 
-	// Regression: darepo-client#577. totalLiveVTXOAmount must also
+	// Regression: darepo-client#577. Sweep-all prepare must also
 	// filter to VTXO_STATUS_LIVE so a stuck Forfeiting VTXO from a
 	// prior leave doesn't inflate the reported sweep total.
 	require.Equal(
 		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
 		rpc.listVTXOsLastReq.GetStatusFilter(),
-		"totalLiveVTXOAmount must filter to live VTXOs only "+
+		"sweep-all prepare must filter to live VTXOs only "+
 			"(darepo-client#577)",
 	)
 }
@@ -246,12 +433,17 @@ func TestRouterSendOnchainAutoJoinFailureSurfaced(t *testing.T) {
 	}
 	rpc.joinNextRoundErr = errors.New("round actor unavailable")
 
-	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
-		Destination: &walletdkrpc.SendRequest_OnchainAddress{
-			OnchainAddress: "bcrt1qaddr",
+	prepareResp, err := r.PrepareSend(
+		t.Context(), &walletdkrpc.PrepareSendRequest{
+			Destination: &walletdkrpc.
+				PrepareSendRequest_OnchainAddress{
+				OnchainAddress: "bcrt1qaddr",
+			},
+			AmtSat: 5_000,
 		},
-		AmtSat: 5_000,
-	})
+	)
+	require.NoError(t, err)
+	_, err = sendPrepared(t, r, prepareResp)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "auto-join next round after leave")
 	require.ErrorContains(t, err, "round actor unavailable")
@@ -274,8 +466,8 @@ func TestRouterSendOnchainAmtZeroRejectedWithoutSweepAll(t *testing.T) {
 
 	r, _, rpc := newRouterFixture(t)
 
-	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
-		Destination: &walletdkrpc.SendRequest_OnchainAddress{
+	_, err := r.PrepareSend(t.Context(), &walletdkrpc.PrepareSendRequest{
+		Destination: &walletdkrpc.PrepareSendRequest_OnchainAddress{
 			OnchainAddress: "bcrt1qaddr",
 		},
 		AmtSat: 0,
@@ -295,8 +487,8 @@ func TestRouterSendOnchainSweepAllRequiresZeroAmt(t *testing.T) {
 
 	r, _, rpc := newRouterFixture(t)
 
-	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
-		Destination: &walletdkrpc.SendRequest_OnchainAddress{
+	_, err := r.PrepareSend(t.Context(), &walletdkrpc.PrepareSendRequest{
+		Destination: &walletdkrpc.PrepareSendRequest_OnchainAddress{
 			OnchainAddress: "bcrt1qaddr",
 		},
 		AmtSat:   1_000,
@@ -324,8 +516,8 @@ func TestRouterSendOnchainInsufficientFunds(t *testing.T) {
 		},
 	}
 
-	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
-		Destination: &walletdkrpc.SendRequest_OnchainAddress{
+	_, err := r.PrepareSend(t.Context(), &walletdkrpc.PrepareSendRequest{
+		Destination: &walletdkrpc.PrepareSendRequest_OnchainAddress{
 			OnchainAddress: "bcrt1qaddr",
 		},
 		AmtSat: 10_000,
@@ -337,15 +529,39 @@ func TestRouterSendOnchainInsufficientFunds(t *testing.T) {
 	)
 }
 
-// TestRouterSendUnsetDestinationRejected asserts both invoice and onchain
-// being unset returns ErrInvalidDestination cleanly.
-func TestRouterSendUnsetDestinationRejected(t *testing.T) {
+// TestRouterPrepareSendUnsetDestinationRejected asserts both invoice and
+// onchain being unset returns ErrInvalidDestination cleanly.
+func TestRouterPrepareSendUnsetDestinationRejected(t *testing.T) {
 	t.Parallel()
 
 	r, _, _ := newRouterFixture(t)
 
-	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{})
+	_, err := r.PrepareSend(
+		t.Context(), &walletdkrpc.PrepareSendRequest{},
+	)
 	require.ErrorIs(t, err, ErrInvalidDestination)
+}
+
+// TestRouterPrepareSendNilRequestRejected confirms direct in-process callers
+// get the same validation error as an empty request rather than a panic.
+func TestRouterPrepareSendNilRequestRejected(t *testing.T) {
+	t.Parallel()
+
+	r, _, _ := newRouterFixture(t)
+
+	_, err := r.PrepareSend(t.Context(), nil)
+	require.ErrorIs(t, err, ErrInvalidDestination)
+}
+
+// TestRouterSendNilRequestRejected confirms a missing prepared intent id is
+// rejected before the store path can dereference a nil request.
+func TestRouterSendNilRequestRejected(t *testing.T) {
+	t.Parallel()
+
+	r, _, _ := newRouterFixture(t)
+
+	_, err := r.Send(t.Context(), nil)
+	require.ErrorIs(t, err, ErrInvalidSendIntent)
 }
 
 // TestRouterSendInvoiceAmountSignedFromCallerKind asserts that an
@@ -370,11 +586,7 @@ func TestRouterSendInvoiceAmountSignedFromCallerKind(t *testing.T) {
 		},
 	}
 
-	resp, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
-		Destination: &walletdkrpc.SendRequest_Invoice{
-			Invoice: "lnbc1example",
-		},
-	})
+	resp, err := sendPreparedInvoice(t, r, "lnbc1example", 0)
 	require.NoError(t, err)
 	require.Equal(
 		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND,
@@ -395,11 +607,7 @@ func TestRouterSendInvoiceErrorBubblesUp(t *testing.T) {
 	r, swap, _ := newRouterFixture(t)
 	swap.startPayErr = errors.New("swap server unavailable")
 
-	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
-		Destination: &walletdkrpc.SendRequest_Invoice{
-			Invoice: "lnbc1example",
-		},
-	})
+	_, err := sendPreparedInvoice(t, r, "lnbc1example", 0)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "swap server unavailable")
 }
@@ -415,11 +623,7 @@ func TestRouterSendInvoicePreservesStartPayStatusCode(t *testing.T) {
 	)
 	swap.startPayErr = startPayErr
 
-	_, err := r.Send(t.Context(), &walletdkrpc.SendRequest{
-		Destination: &walletdkrpc.SendRequest_Invoice{
-			Invoice: "lnbc1example",
-		},
-	})
+	_, err := sendPreparedInvoice(t, r, "lnbc1example", 0)
 	require.Error(t, err)
 	require.Equal(t, codes.AlreadyExists, status.Code(err))
 	require.ErrorIs(t, err, startPayErr)

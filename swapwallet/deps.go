@@ -4,8 +4,10 @@ package swapwallet
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
@@ -126,6 +128,11 @@ type Deps struct {
 	// (deposit), ListVTXOs (coin selection for onchain sends).
 	RPCServer RPCServer
 
+	// ChainParams is the daemon's configured Bitcoin network. Invoice
+	// prepare must decode against this exact network so a cross-network
+	// BOLT-11 invoice is rejected before a send intent is issued.
+	ChainParams *chaincfg.Params
+
 	// Log is the swapwallet subsystem logger; falls back to btclog.Disabled
 	// when nil.
 	Log btclog.Logger
@@ -209,4 +216,28 @@ func (d *Deps) resolveLog() btclog.Logger {
 	}
 
 	return btclog.Disabled
+}
+
+// chainParamsForWalletNetwork converts the daemon network string into the
+// btcd chain parameters used by wallet-layer invoice validation.
+func chainParamsForWalletNetwork(network string) (*chaincfg.Params, error) {
+	switch network {
+	case "mainnet", "bitcoin":
+		return &chaincfg.MainNetParams, nil
+
+	case "testnet", "testnet3":
+		return &chaincfg.TestNet3Params, nil
+
+	case "regtest":
+		return &chaincfg.RegressionNetParams, nil
+
+	case "simnet":
+		return &chaincfg.SimNetParams, nil
+
+	case "signet":
+		return &chaincfg.SigNetParams, nil
+
+	default:
+		return nil, fmt.Errorf("unknown network %q", network)
+	}
 }

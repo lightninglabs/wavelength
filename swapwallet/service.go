@@ -57,9 +57,17 @@ func (s *Service) Unlock(ctx context.Context, req *walletdkrpc.UnlockRequest) (
 	return s.unlock(ctx, req)
 }
 
-// Send dispatches an outbound payment. Invoice destinations route through
-// the daemon-owned swap subserver (which transparently picks same-Ark p2p
-// vHTLC vs real Lightning per PR #339); onchain destinations route through
+// PrepareSend validates and previews an outbound payment, returning a
+// short-lived intent that Send can consume.
+func (s *Service) PrepareSend(ctx context.Context,
+	req *walletdkrpc.PrepareSendRequest) (*walletdkrpc.PrepareSendResponse,
+	error) {
+
+	return s.router.PrepareSend(ctx, req)
+}
+
+// Send dispatches a previously prepared outbound payment. Invoice intents
+// route through the daemon-owned swap subserver; onchain intents route through
 // the existing LeaveVTXOs cooperative-exit RPC.
 func (s *Service) Send(ctx context.Context, req *walletdkrpc.SendRequest) (
 	*walletdkrpc.SendResponse, error) {

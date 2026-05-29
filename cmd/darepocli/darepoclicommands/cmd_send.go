@@ -1,7 +1,9 @@
 package darepoclicommands
 
 import (
+	"bufio"
 	"fmt"
+	"strings"
 
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/spf13/cobra"
@@ -56,9 +58,11 @@ func newSendCmd() *cobra.Command {
 		"onchain only: drain the wallet to the destination. "+
 			"--amt MUST be 0 when set.")
 	cmd.Flags().Bool("dry-run", false,
-		"validate inputs locally and print the preview without "+
-			"dispatching to the daemon; exits 10 on a valid "+
-			"preview, non-zero on validation failure")
+		"prepare and print the preview without dispatching funds")
+	cmd.Flags().Bool("force", false,
+		"skip interactive confirmation after prepare")
+	cmd.Flags().Bool("yes", false,
+		"alias for --force")
 
 	return cmd
 }
@@ -115,38 +119,58 @@ func walletSend(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	req := &walletdkrpc.SendRequest{
+	req := &walletdkrpc.PrepareSendRequest{
 		AmtSat:    amt,
 		MaxFeeSat: maxFee,
 		Note:      note,
 		SweepAll:  sweepAll,
 	}
 	if offchain {
-		req.Destination = &walletdkrpc.SendRequest_Invoice{
+		req.Destination = &walletdkrpc.PrepareSendRequest_Invoice{
 			Invoice: dest,
 		}
 	} else {
-		req.Destination = &walletdkrpc.SendRequest_OnchainAddress{
+		req.Destination = &walletdkrpc.
+			PrepareSendRequest_OnchainAddress{
 			OnchainAddress: dest,
 		}
 	}
 
-	// --dry-run validates every invariant we just enforced and prints
-	// the proto-JSON preview without dispatching. Returning a code-10
-	// printedError lets main.go signal "dry-run passed" distinctly
-	// from a real send so an agent can stage a payment without
-	// risking a duplicate dispatch.
-	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
-		return walletDryRunPreview(
-			"walletdkrpc.WalletService/Send", req,
-		)
-	}
-
 	return withWalletClient(
 		cmd, func(c walletdkrpc.WalletServiceClient) error {
-			resp, err := c.Send(cmd.Context(), req)
+			prepareResp, err := c.PrepareSend(cmd.Context(), req)
 			if err != nil {
-				return fmt.Errorf("send: %w", err)
+				return fmt.Errorf("prepare send: %w", err)
+			}
+
+			if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+				if err := printWalletProto(
+					prepareResp,
+				); err != nil {
+					return err
+				}
+
+				return PrintError(
+					"DRY_RUN_OK", "dry-run validation "+
+						"passed; no funds were "+
+						"dispatched",
+				)
+			}
+
+			err = confirmSendIfNeeded(cmd, prepareResp)
+			if err != nil {
+				return err
+			}
+
+			intentID := prepareResp.GetSendIntentId()
+			resp, err := c.Send(
+				cmd.Context(), &walletdkrpc.SendRequest{
+					SendIntentId: intentID,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("send prepared intent: %w",
+					err)
 			}
 
 			// For onchain sends actual_amount_sat may exceed
@@ -168,4 +192,114 @@ func walletSend(cmd *cobra.Command, args []string) error {
 			return printWalletProto(resp)
 		},
 	)
+}
+
+func confirmSendIfNeeded(cmd *cobra.Command,
+	resp *walletdkrpc.PrepareSendResponse) error {
+
+	force, _ := cmd.Flags().GetBool("force")
+	yes, _ := cmd.Flags().GetBool("yes")
+	if force || yes {
+		return nil
+	}
+
+	if !stdinIsTTY(cmd) {
+		return PrintError(
+			"INVALID_ARGS", "send requires --force or --yes on "+
+				"non-interactive stdin; refusing to prompt "+
+				"because an agent cannot respond to y/N",
+		)
+	}
+
+	return promptSendConfirmation(cmd, resp)
+}
+
+func promptSendConfirmation(cmd *cobra.Command,
+	resp *walletdkrpc.PrepareSendResponse) error {
+
+	out := cmd.ErrOrStderr()
+
+	fmt.Fprintf(out, "Send %d sats\n", sendPreviewHeadlineAmount(resp))
+	fmt.Fprintf(out, "Rail: %s\n", sendRailLabel(resp.GetRail()))
+	if resp.GetFeeKnown() {
+		fmt.Fprintf(
+			out, "Expected fee: %d sats\n",
+			resp.GetExpectedFeeSat(),
+		)
+	} else {
+		fmt.Fprintln(out, "Expected fee: unknown")
+	}
+	if resp.GetTotalOutflowKnown() {
+		fmt.Fprintf(
+			out, "Expected total outflow: %d sats\n",
+			resp.GetExpectedTotalOutflowSat(),
+		)
+	} else {
+		fmt.Fprintln(out, "Expected total outflow: unknown")
+	}
+	if dest := resp.GetDestinationSummary(); dest != "" {
+		fmt.Fprintf(out, "Destination: %s\n", dest)
+	}
+	if desc := resp.GetInvoiceDescription(); desc != "" {
+		fmt.Fprintf(out, "Invoice: %s\n", desc)
+	}
+	if hash := resp.GetPaymentHash(); hash != "" {
+		fmt.Fprintf(out, "Payment hash: %s\n", hash)
+	}
+	if warning := resp.GetWarning(); warning != "" {
+		fmt.Fprintf(out, "Warning: %s\n", warning)
+	}
+	fmt.Fprint(out, "\nProceed? [y/N]: ")
+
+	reader := bufio.NewReader(cmd.InOrStdin())
+	answer, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("read confirmation: %w", err)
+	}
+
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	if answer != "y" && answer != "yes" {
+		return fmt.Errorf("aborted by user")
+	}
+
+	return nil
+}
+
+func sendPreviewHeadlineAmount(resp *walletdkrpc.PrepareSendResponse) int64 {
+	if resp == nil {
+		return 0
+	}
+
+	amountSat := resp.GetAmountSat()
+	if amountSat != 0 {
+		return amountSat
+	}
+
+	if resp.GetRail() != walletdkrpc.SendRail_SEND_RAIL_ONCHAIN {
+		return amountSat
+	}
+	if !resp.GetTotalOutflowKnown() {
+		return amountSat
+	}
+
+	return resp.GetExpectedTotalOutflowSat()
+}
+
+func sendRailLabel(rail walletdkrpc.SendRail) string {
+	switch rail {
+	case walletdkrpc.SendRail_SEND_RAIL_IN_ARK:
+		return "in-Ark"
+
+	case walletdkrpc.SendRail_SEND_RAIL_LIGHTNING:
+		return "Lightning"
+
+	case walletdkrpc.SendRail_SEND_RAIL_ONCHAIN:
+		return "onchain"
+
+	case walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN:
+		return "offchain"
+
+	default:
+		return "unknown"
+	}
 }

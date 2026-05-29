@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	WalletService_Create_FullMethodName          = "/walletdkrpc.WalletService/Create"
 	WalletService_Unlock_FullMethodName          = "/walletdkrpc.WalletService/Unlock"
+	WalletService_PrepareSend_FullMethodName     = "/walletdkrpc.WalletService/PrepareSend"
 	WalletService_Send_FullMethodName            = "/walletdkrpc.WalletService/Send"
 	WalletService_Recv_FullMethodName            = "/walletdkrpc.WalletService/Recv"
 	WalletService_List_FullMethodName            = "/walletdkrpc.WalletService/List"
@@ -56,11 +57,14 @@ type WalletServiceClient interface {
 	// Unlock decrypts the on-disk wallet seed using the supplied password
 	// and starts the wallet subsystem. Proxies daemonrpc.UnlockWallet.
 	Unlock(ctx context.Context, in *UnlockRequest, opts ...grpc.CallOption) (*UnlockResponse, error)
-	// Send dispatches an outbound payment. The destination oneof selects
-	// between paying a BOLT-11 Lightning invoice (routed via an out-swap;
-	// the swap server transparently picks same-Ark p2p or real Lightning)
-	// and sending to an onchain address (routed via LeaveVTXOs cooperative
-	// exit). The daemon owns all downstream lifecycle.
+	// PrepareSend validates and previews an outbound payment without
+	// moving funds. The response carries a short-lived send_intent_id
+	// that must be consumed by Send.
+	PrepareSend(ctx context.Context, in *PrepareSendRequest, opts ...grpc.CallOption) (*PrepareSendResponse, error)
+	// Send dispatches a previously prepared outbound payment. The
+	// request is intentionally intent-only: callers must use
+	// PrepareSend first so they can present amount, rail, fee, and
+	// total-outflow details before funds move.
 	Send(ctx context.Context, in *SendRequest, opts ...grpc.CallOption) (*SendResponse, error)
 	// Recv asks the daemon for a Lightning invoice the caller can hand
 	// out. Internally this opens a swap-in via the daemon-owned swap
@@ -123,6 +127,16 @@ func (c *walletServiceClient) Unlock(ctx context.Context, in *UnlockRequest, opt
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UnlockResponse)
 	err := c.cc.Invoke(ctx, WalletService_Unlock_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletServiceClient) PrepareSend(ctx context.Context, in *PrepareSendRequest, opts ...grpc.CallOption) (*PrepareSendResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PrepareSendResponse)
+	err := c.cc.Invoke(ctx, WalletService_PrepareSend_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -252,11 +266,14 @@ type WalletServiceServer interface {
 	// Unlock decrypts the on-disk wallet seed using the supplied password
 	// and starts the wallet subsystem. Proxies daemonrpc.UnlockWallet.
 	Unlock(context.Context, *UnlockRequest) (*UnlockResponse, error)
-	// Send dispatches an outbound payment. The destination oneof selects
-	// between paying a BOLT-11 Lightning invoice (routed via an out-swap;
-	// the swap server transparently picks same-Ark p2p or real Lightning)
-	// and sending to an onchain address (routed via LeaveVTXOs cooperative
-	// exit). The daemon owns all downstream lifecycle.
+	// PrepareSend validates and previews an outbound payment without
+	// moving funds. The response carries a short-lived send_intent_id
+	// that must be consumed by Send.
+	PrepareSend(context.Context, *PrepareSendRequest) (*PrepareSendResponse, error)
+	// Send dispatches a previously prepared outbound payment. The
+	// request is intentionally intent-only: callers must use
+	// PrepareSend first so they can present amount, rail, fee, and
+	// total-outflow details before funds move.
 	Send(context.Context, *SendRequest) (*SendResponse, error)
 	// Recv asks the daemon for a Lightning invoice the caller can hand
 	// out. Internally this opens a swap-in via the daemon-owned swap
@@ -310,6 +327,9 @@ func (UnimplementedWalletServiceServer) Create(context.Context, *CreateRequest) 
 }
 func (UnimplementedWalletServiceServer) Unlock(context.Context, *UnlockRequest) (*UnlockResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Unlock not implemented")
+}
+func (UnimplementedWalletServiceServer) PrepareSend(context.Context, *PrepareSendRequest) (*PrepareSendResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PrepareSend not implemented")
 }
 func (UnimplementedWalletServiceServer) Send(context.Context, *SendRequest) (*SendResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Send not implemented")
@@ -391,6 +411,24 @@ func _WalletService_Unlock_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(WalletServiceServer).Unlock(ctx, req.(*UnlockRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletService_PrepareSend_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareSendRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).PrepareSend(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_PrepareSend_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).PrepareSend(ctx, req.(*PrepareSendRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -564,6 +602,10 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Unlock",
 			Handler:    _WalletService_Unlock_Handler,
+		},
+		{
+			MethodName: "PrepareSend",
+			Handler:    _WalletService_PrepareSend_Handler,
 		},
 		{
 			MethodName: "Send",

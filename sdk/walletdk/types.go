@@ -145,19 +145,64 @@ type ReceiveResult struct {
 	Entry   Entry
 }
 
-// SendRequest dispatches an outbound payment.
-type SendRequest struct {
+// PrepareSendRequest validates and previews an outbound payment without
+// moving funds.
+type PrepareSendRequest struct {
 	Invoice        string
 	OnchainAddress string
 	AmountSat      uint64
 	Note           string
 	MaxFeeSat      uint64
 
-	// SweepAll drains every live VTXO to OnchainAddress. When set the
-	// daemon ignores AmountSat (which must be zero) and the host SHOULD
-	// echo SendResult.ActualAmountSat back to the user before treating
-	// the send as confirmed. Ignored on the invoice path.
+	// SweepAll drains every live VTXO to OnchainAddress. PrepareSend
+	// snapshots the live VTXO set and SendPrepared later spends that
+	// exact set. Ignored on the invoice path.
 	SweepAll bool
+}
+
+// SendRail identifies the expected settlement rail for a prepared send.
+type SendRail string
+
+const (
+	SendRailUnspecified     SendRail = "unspecified"
+	SendRailOffchainUnknown SendRail = "offchain_unknown"
+	SendRailInArk           SendRail = "in_ark"
+	SendRailLightning       SendRail = "lightning"
+	SendRailOnchain         SendRail = "onchain"
+)
+
+// SendQuoteStatus describes how complete the prepare-time quote is.
+type SendQuoteStatus string
+
+const (
+	SendQuoteStatusUnspecified SendQuoteStatus = "unspecified"
+	SendQuoteStatusComplete    SendQuoteStatus = "complete"
+	SendQuoteStatusLocalOnly   SendQuoteStatus = "local_only"
+)
+
+// PrepareSendResult contains the preview and intent id for a send.
+type PrepareSendResult struct {
+	SendIntentID            string
+	AmountSat               int64
+	ExpectedFeeSat          int64
+	FeeKnown                bool
+	ExpectedTotalOutflowSat int64
+	TotalOutflowKnown       bool
+	Rail                    SendRail
+	QuoteStatus             SendQuoteStatus
+	DestinationSummary      string
+	InvoiceDescription      string
+	PaymentHash             string
+	ExpiresAtUnix           int64
+	SelectedOutpoints       []string
+	Warning                 string
+}
+
+// SendPreparedRequest dispatches a prepared outbound payment.
+type SendPreparedRequest struct {
+	// SendIntentID is consumed before dispatch. If dispatch returns an
+	// error, callers should prepare a fresh send before retrying.
+	SendIntentID string
 }
 
 // SendResult contains the initial wallet entry for an outbound payment.

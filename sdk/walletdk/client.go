@@ -291,15 +291,15 @@ func (c *Client) Receive(ctx context.Context, req ReceiveRequest) (
 	}, nil
 }
 
-// Send dispatches an outbound wallet payment.
-func (c *Client) Send(ctx context.Context, req SendRequest) (*SendResult,
-	error) {
+// PrepareSend validates and previews an outbound wallet payment.
+func (c *Client) PrepareSend(ctx context.Context, req PrepareSendRequest) (
+	*PrepareSendResult, error) {
 
 	if err := c.requireWalletRPC(); err != nil {
 		return nil, err
 	}
 
-	protoReq := &walletdkrpc.SendRequest{
+	protoReq := &walletdkrpc.PrepareSendRequest{
 		AmtSat:    req.AmountSat,
 		Note:      req.Note,
 		MaxFeeSat: req.MaxFeeSat,
@@ -313,12 +313,13 @@ func (c *Client) Send(ctx context.Context, req SendRequest) (*SendResult,
 			"both")
 
 	case invoice != "":
-		protoReq.Destination = &walletdkrpc.SendRequest_Invoice{
+		protoReq.Destination = &walletdkrpc.PrepareSendRequest_Invoice{
 			Invoice: invoice,
 		}
 
 	case onchainAddress != "":
-		protoReq.Destination = &walletdkrpc.SendRequest_OnchainAddress{
+		protoReq.Destination = &walletdkrpc.
+			PrepareSendRequest_OnchainAddress{
 			OnchainAddress: onchainAddress,
 		}
 
@@ -326,7 +327,28 @@ func (c *Client) Send(ctx context.Context, req SendRequest) (*SendResult,
 		return nil, fmt.Errorf("invoice or onchain_address is required")
 	}
 
-	resp, err := c.wallet.Send(ctx, protoReq)
+	resp, err := c.wallet.PrepareSend(ctx, protoReq)
+	if err != nil {
+		return nil, fmt.Errorf("prepare wallet payment: %w", err)
+	}
+
+	return prepareSendResultFromProto(resp), nil
+}
+
+// SendPrepared dispatches a previously prepared outbound wallet payment.
+func (c *Client) SendPrepared(ctx context.Context, req SendPreparedRequest) (
+	*SendResult, error) {
+
+	if err := c.requireWalletRPC(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.SendIntentID) == "" {
+		return nil, fmt.Errorf("send_intent_id is required")
+	}
+
+	resp, err := c.wallet.Send(ctx, &walletdkrpc.SendRequest{
+		SendIntentId: strings.TrimSpace(req.SendIntentID),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("send wallet payment: %w", err)
 	}

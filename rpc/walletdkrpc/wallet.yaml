@@ -9,6 +9,9 @@ http:
     - selector: walletdkrpc.WalletService.Unlock
       post: /v1/wallet/unlock
       body: "*"
+    - selector: walletdkrpc.WalletService.PrepareSend
+      post: /v1/wallet/prepare-send
+      body: "*"
     - selector: walletdkrpc.WalletService.Send
       post: /v1/wallet/send
       body: "*"

@@ -28,6 +28,8 @@ type WalletServiceMailboxServer interface {
 	Create(ctx context.Context, req *CreateRequest) (*CreateResponse, error)
 	// Unlock handles Unlock.
 	Unlock(ctx context.Context, req *UnlockRequest) (*UnlockResponse, error)
+	// PrepareSend handles PrepareSend.
+	PrepareSend(ctx context.Context, req *PrepareSendRequest) (*PrepareSendResponse, error)
 	// Send handles Send.
 	Send(ctx context.Context, req *SendRequest) (*SendResponse, error)
 	// Recv handles Recv.
@@ -69,6 +71,16 @@ func RegisterWalletServiceMailboxServer(r rpc.Router, impl WalletServiceMailboxS
 		}
 
 		return impl.Unlock(ctx, req)
+	})
+	r.Handle("walletdkrpc.WalletService", "PrepareSend", func() proto.Message {
+		return &PrepareSendRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*PrepareSendRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.PrepareSend(ctx, req)
 	})
 	r.Handle("walletdkrpc.WalletService", "Send", func() proto.Message {
 		return &SendRequest{}
@@ -201,6 +213,29 @@ func (c *WalletServiceMailboxClient) Unlock(ctx context.Context, req *UnlockRequ
 	}
 
 	resp := new(UnlockResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// PrepareSend calls the PrepareSend RPC.
+func (c *WalletServiceMailboxClient) PrepareSend(ctx context.Context, req *PrepareSendRequest, opts ...rpc.RPCOptions) (*PrepareSendResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "walletdkrpc.WalletService",
+		Method:  "PrepareSend",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(PrepareSendResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

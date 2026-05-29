@@ -30,11 +30,11 @@ func TestParseDirectionFieldRejectsUnknown(t *testing.T) {
 	require.Contains(t, err.Error(), "unknown direction")
 }
 
-// TestBuildWalletSendRequestHardensAgentInput exercises the shared
+// TestBuildWalletPrepareSendRequestHardensAgentInput exercises the shared
 // builder used by both the CLI send verb and the MCP send tool. The
 // MCP path can't drift past the same input-hardening checks as the
 // CLI, so the rejections are exhaustive.
-func TestBuildWalletSendRequestHardensAgentInput(t *testing.T) {
+func TestBuildWalletPrepareSendRequestHardensAgentInput(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -94,7 +94,7 @@ func TestBuildWalletSendRequestHardensAgentInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := buildWalletSendRequest(
+			_, err := buildWalletPrepareSendRequest(
 				tc.dest, tc.offchain, tc.amt, 0, tc.note,
 				tc.sweepAll,
 			)
@@ -104,12 +104,12 @@ func TestBuildWalletSendRequestHardensAgentInput(t *testing.T) {
 	}
 }
 
-// TestBuildWalletSendRequestHappyPath confirms a valid invoice send
+// TestBuildWalletPrepareSendRequestHappyPath confirms a valid invoice send
 // produces the expected oneof and scalar fields.
-func TestBuildWalletSendRequestHappyPath(t *testing.T) {
+func TestBuildWalletPrepareSendRequestHappyPath(t *testing.T) {
 	t.Parallel()
 
-	req, err := buildWalletSendRequest(
+	req, err := buildWalletPrepareSendRequest(
 		"lnbcrt100u1pwlqxyz", true, 0, 250, "coffee", false,
 	)
 	require.NoError(t, err)
