@@ -302,6 +302,35 @@ func TestStartReceiveReturnsInvoiceAndStartsWorker(t *testing.T) {
 	require.Equal(t, 1, fakeClient.receiveResumeCount(receiveHash))
 }
 
+// TestStartReceiveRejectsAmountBelowOperatorDust proves receive startup fails
+// before sdk/swaps creates a session or invoice when the requested amount is
+// below the operator dust limit cached in darepod's server terms.
+func TestStartReceiveRejectsAmountBelowOperatorDust(t *testing.T) {
+	t.Parallel()
+
+	fakeClient := newFakeSwapRuntime()
+	service := newTestSwapClientService(fakeClient)
+	service.receiveMinAmount = func(context.Context) (uint64, error) {
+		return 1_000, nil
+	}
+	defer service.cancel()
+
+	_, err := service.StartReceive(
+		t.Context(), &swapclientrpc.StartReceiveRequest{
+			AmountSat: 300,
+		},
+	)
+	require.Error(t, err)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "300")
+	require.Contains(t, status.Convert(err).Message(), "1000 sat minimum")
+	require.Contains(
+		t, status.Convert(err).Message(),
+		"operator dust limit",
+	)
+	require.Equal(t, 0, fakeClient.startReceiveCount())
+}
+
 func TestResumeSwapValidatesPaymentHashAndDirection(t *testing.T) {
 	t.Parallel()
 
