@@ -107,6 +107,17 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `broadcast=false`.
 - `ListBoardingSweeps` — paginated persisted aggregate sweeps with
   optional status filter and cursor-based pagination.
+- `ArmVHTLCRecovery` / `EscalateVHTLCRecovery` /
+  `CancelVHTLCRecovery` / `GetVHTLCRecoveryStatus` /
+  `ListVHTLCRecoveryJobs` — vHTLC on-chain recovery lifecycle RPCs.
+  Arm persists a dormant recovery row; Escalate starts unroll;
+  Cancel stops a non-terminal job. All route through
+  `vhtlcrecovery/coordinator.Service` via `requireVHTLCRecovery`.
+- `registerBtcwalletRPC` — registers btcsuite btcwallet's native gRPC
+  surface (`btcwalletrpc.WalletService` + version service) on
+  darepod's public gRPC server via an in-process bufconn proxy
+  (`btcwalletRPCProxy`). Active only in btcwallet mode; the proxy
+  connects to btcwallet's local listener once the wallet is unlocked.
 
 ### Adapters & Helpers
 
@@ -215,7 +226,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`,
   `indexer`, `arkrpc`, `lndbackend`, `harness` (bitcoind package
   submitter wiring in `cmd/darepod`), `fraud`, `gateway`,
-  `rpc/restclient`.
+  `rpc/restclient`, `vhtlcrecovery/coordinator` (recovery service),
+  `vhtlcrecovery/unrollpolicy` (exit policy resolver).
 - **Depended on by**: `cmd/darepod`.
 
 ## Invariants

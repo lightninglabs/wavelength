@@ -69,6 +69,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
   DTOs. `SwapSummary` — flat list view for persisted sessions.
 - `OutSwapMailboxID` — derives a per-receive mailbox ID from the
   client identity key and invoice payment hash.
+- `RecoveryPolicy` — controls automatic escalation from cooperative
+  vHTLC retry to daemon-owned on-chain recovery. Fields:
+  `AutoEscalate` (gate the expensive unroll transition),
+  `CooperativeFailureGracePeriod` (retry window before deadline
+  pressure overrides), `MinRecoveryMarginBlocks` (block margin
+  preserved before refund locktime), `MaxFeeRateSatPerKW` (exit-spend
+  fee cap stored at arm time). Use `DefaultRecoveryPolicy()` and
+  `SwapClient.SetRecoveryPolicy` to configure.
 - Error sentinels (exported): `ErrSwapExpired`, `ErrSwapRefunded`,
   `ErrSwapSummaryNotFound`. Internal classifiers
   (`interventionError`, `failureError`, `retryableActionError`) live
@@ -79,8 +87,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 - **Depends on**: `lib/arkscript` (vHTLC policy + claim/refund
   tapscript paths), `sdk/ark` (type aliases), `swaprpc` (gRPC stubs),
   `mailbox/pb` (edge pull/ack), `serverconn` (`CompoundMailboxID`,
-  `PubKeyMailboxID`), `db/migrate` + `db/sqlc`, `sdk/swaps/sqlc`,
-  `loop/fsm` (FSM engine), `lightning-onion` (Sphinx ECDH).
+  `PubKeyMailboxID`), `serverconn/mailboxpull` (retry/backoff for
+  `MailboxOutSwapEventReceiver`), `db/migrate` + `db/sqlc`,
+  `sdk/swaps/sqlc`, `loop/fsm` (FSM engine),
+  `lightning-onion` (Sphinx ECDH).
 - **Depended on by**: `cmd/darepocli/darepoclicommands` (`pay` /
   `receive` commands).
 
