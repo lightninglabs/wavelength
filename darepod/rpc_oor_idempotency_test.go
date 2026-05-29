@@ -32,11 +32,14 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+type selectionReq = wallet.SelectAndLockVTXOsRequest
+
 type sendOORTestWallet struct {
 	mu sync.Mutex
 
 	selections [][]wallet.SelectedVTXO
 	unlocks    [][]wire.OutPoint
+	selectReqs []*selectionReq
 	selects    int
 }
 
@@ -49,6 +52,8 @@ func (w *sendOORTestWallet) Receive(_ context.Context,
 	switch msg := msg.(type) {
 	case *wallet.SelectAndLockVTXOsRequest:
 		w.selects++
+		reqCopy := *msg
+		w.selectReqs = append(w.selectReqs, &reqCopy)
 
 		if len(w.selections) == 0 {
 			return fn.Err[wallet.WalletResp](
@@ -117,6 +122,21 @@ func (w *sendOORTestWallet) selectCount() int {
 	defer w.mu.Unlock()
 
 	return w.selects
+}
+
+func (w *sendOORTestWallet) selectionRequests() []*selectionReq {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	requests := make(
+		[]*selectionReq, 0, len(w.selectReqs),
+	)
+	for _, req := range w.selectReqs {
+		reqCopy := *req
+		requests = append(requests, &reqCopy)
+	}
+
+	return requests
 }
 
 type sendOORNoopOutboxHandler struct{}
@@ -261,6 +281,10 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	require.NotEmpty(t, firstResp.SessionId)
 	require.Equal(t, firstResp.SessionId+":0", firstResp.RecipientOutpoint)
 	require.Empty(t, testWallet.unlockBatches())
+	selectReqs := testWallet.selectionRequests()
+	require.Len(t, selectReqs, 1)
+	require.Equal(t, btcutil.Amount(amountSat), selectReqs[0].TargetAmount)
+	require.Equal(t, btcutil.Amount(1), selectReqs[0].MinChangeAmount)
 
 	secondResp, err := rpcServer.SendOOR(ctx, &daemonrpc.SendOORRequest{
 		Recipient:      recipient,
