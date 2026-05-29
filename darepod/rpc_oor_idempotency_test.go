@@ -259,6 +259,7 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	require.NoError(t, err)
 	require.Equal(t, "submitted", firstResp.Status)
 	require.NotEmpty(t, firstResp.SessionId)
+	require.Equal(t, firstResp.SessionId+":0", firstResp.RecipientOutpoint)
 	require.Empty(t, testWallet.unlockBatches())
 
 	secondResp, err := rpcServer.SendOOR(ctx, &daemonrpc.SendOORRequest{
@@ -267,6 +268,7 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	})
 	require.NoError(t, err)
 	require.Equal(t, firstResp.SessionId, secondResp.SessionId)
+	require.Empty(t, secondResp.RecipientOutpoint)
 	require.Equal(t, 1, testWallet.selectCount())
 	require.Empty(t, testWallet.unlockBatches())
 }
@@ -372,6 +374,7 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "submitted", firstResp.Status)
 	require.NotEmpty(t, firstResp.SessionId)
+	require.Equal(t, firstResp.SessionId+":0", firstResp.RecipientOutpoint)
 	require.Empty(t, testWallet.unlockBatches())
 
 	secondResp, err := rpcServer.SendOOR(ctx, &daemonrpc.SendOORRequest{
@@ -379,6 +382,9 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, firstResp.SessionId, secondResp.SessionId)
+	require.Equal(
+		t, firstResp.RecipientOutpoint, secondResp.RecipientOutpoint,
+	)
 	require.Equal(t, 2, testWallet.selectCount())
 
 	require.Eventually(t, func() bool {

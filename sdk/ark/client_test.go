@@ -163,7 +163,8 @@ func newFakeDaemonService() *fakeDaemonService {
 			},
 		},
 		sendOORResp: &daemonrpc.SendOORResponse{
-			SessionId: "session-123",
+			SessionId:         "session-123",
+			RecipientOutpoint: "session-123:0",
 		},
 	}
 }
@@ -643,6 +644,13 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "session-123", sessionID)
 
+	oorResult, err := client.SendOORWithPolicyDetails(
+		context.Background(), 42_000, []byte{0xaa, 0xbb},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "session-123", oorResult.SessionID)
+	require.Equal(t, "session-123:0", oorResult.RecipientOutpoint)
+
 	service.mu.Lock()
 	policyReq := service.lastSendOORReq
 	service.mu.Unlock()
@@ -841,6 +849,7 @@ func TestStartEmbeddedUsesBufconnTransport(t *testing.T) {
 	cfg.Wallet.Type = darepod.WalletTypeBtcwallet
 	cfg.Wallet.FeeURL = "http://127.0.0.1:3001"
 	cfg.Wallet.EsploraURL = ""
+	cfg.RPC.Gateway.ListenAddr = "127.0.0.1:0"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

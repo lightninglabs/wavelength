@@ -529,6 +529,7 @@ type testDaemonConn struct {
 	receiveAuthErr    error
 	receiveAllocCalls int
 	sendSessionID     string
+	sendOutpoint      string
 	preparedOOR       *PreparedOOR
 	prepareOOREErr    error
 	sendPolicyErr     error
@@ -568,16 +569,23 @@ func (d *testDaemonConn) BlockHeight(context.Context) (uint32, error) {
 	return d.blockHeight, nil
 }
 
-// SendOORWithPolicy records the requested output policy template.
-func (d *testDaemonConn) SendOORWithPolicy(_ context.Context, _ int64,
-	recipientPolicyTemplate []byte) (string, error) {
+// SendOORWithPolicyDetails records the requested output policy template.
+func (d *testDaemonConn) SendOORWithPolicyDetails(_ context.Context, _ int64,
+	recipientPolicyTemplate []byte) (*OORSendResult, error) {
 
 	d.sendPolicyCalls++
 	d.lastSendPolicy = append(
 		[]byte(nil), recipientPolicyTemplate...,
 	)
 
-	return d.sendSessionID, d.sendPolicyErr
+	if d.sendPolicyErr != nil {
+		return nil, d.sendPolicyErr
+	}
+
+	return &OORSendResult{
+		SessionID:         d.sendSessionID,
+		RecipientOutpoint: d.sendOutpoint,
+	}, nil
 }
 
 // SendOORWithCustomInputs records the claim request.

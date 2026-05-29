@@ -101,6 +101,54 @@ func CanonicalRecipientOutputs(recipients []RecipientOutput) []RecipientOutput {
 	return out
 }
 
+// RecipientOutputIndex returns the tx output index for target after applying
+// the same canonical recipient ordering used by BuildArkPSBT.
+func RecipientOutputIndex(recipients []RecipientOutput,
+	target RecipientOutput) (uint32, error) {
+
+	var (
+		found bool
+		index uint32
+	)
+
+	for i, recipient := range CanonicalRecipientOutputs(recipients) {
+		if recipient.Value != target.Value ||
+			!bytes.Equal(recipient.PkScript, target.PkScript) {
+
+			continue
+		}
+
+		if found {
+			return 0, fmt.Errorf("recipient output is ambiguous")
+		}
+
+		found = true
+		index = uint32(i)
+	}
+
+	if !found {
+		return 0, fmt.Errorf("recipient output not found")
+	}
+
+	return index, nil
+}
+
+// RecipientOutPoint returns the resolved Ark tx outpoint for target after
+// applying BuildArkPSBT recipient ordering.
+func RecipientOutPoint(txid chainhash.Hash, recipients []RecipientOutput,
+	target RecipientOutput) (wire.OutPoint, error) {
+
+	index, err := RecipientOutputIndex(recipients, target)
+	if err != nil {
+		return wire.OutPoint{}, err
+	}
+
+	return wire.OutPoint{
+		Hash:  txid,
+		Index: index,
+	}, nil
+}
+
 // BuildCheckpointPSBT constructs an unsigned checkpoint PSBT that spends a
 // VTXO input, pays the entire input value to a checkpoint P2TR output, and
 // appends a zero-value anchor output.

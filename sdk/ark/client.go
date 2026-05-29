@@ -842,14 +842,29 @@ func (c *Client) SendOOR(ctx context.Context, req *daemonrpc.SendOORRequest) (
 	return resp, nil
 }
 
+// OORSendResult contains daemon metadata for an accepted OOR transfer.
+type OORSendResult struct {
+	// SessionID is the OOR session identifier.
+	SessionID string
+
+	// RecipientOutpoint is the Ark tx outpoint created for the requested
+	// recipient when the daemon can resolve it locally.
+	RecipientOutpoint string
+}
+
 // SendOORWithPolicy sends one OOR transfer to a semantic policy-backed
 // destination and returns the resulting OOR session id.
 func (c *Client) SendOORWithPolicy(ctx context.Context, amountSat int64,
 	recipientPolicyTemplate []byte) (string, error) {
 
-	return c.SendOORWithPolicyAndKey(
+	result, err := c.SendOORWithPolicyAndKeyDetails(
 		ctx, amountSat, recipientPolicyTemplate, "",
 	)
+	if err != nil {
+		return "", err
+	}
+
+	return result.SessionID, nil
 }
 
 // SendOORWithPolicyAndKey sends one OOR transfer to a semantic policy-backed
@@ -857,6 +872,33 @@ func (c *Client) SendOORWithPolicy(ctx context.Context, amountSat int64,
 // session id.
 func (c *Client) SendOORWithPolicyAndKey(ctx context.Context, amountSat int64,
 	recipientPolicyTemplate []byte, idempotencyKey string) (string, error) {
+
+	result, err := c.SendOORWithPolicyAndKeyDetails(
+		ctx, amountSat, recipientPolicyTemplate, idempotencyKey,
+	)
+	if err != nil {
+		return "", err
+	}
+
+	return result.SessionID, nil
+}
+
+// SendOORWithPolicyDetails sends one OOR transfer to a semantic policy-backed
+// destination and returns the accepted OOR metadata.
+func (c *Client) SendOORWithPolicyDetails(ctx context.Context, amountSat int64,
+	recipientPolicyTemplate []byte) (*OORSendResult, error) {
+
+	return c.SendOORWithPolicyAndKeyDetails(
+		ctx, amountSat, recipientPolicyTemplate, "",
+	)
+}
+
+// SendOORWithPolicyAndKeyDetails sends one OOR transfer to a semantic
+// policy-backed destination using the supplied idempotency key and returns the
+// accepted OOR metadata.
+func (c *Client) SendOORWithPolicyAndKeyDetails(ctx context.Context,
+	amountSat int64, recipientPolicyTemplate []byte,
+	idempotencyKey string) (*OORSendResult, error) {
 
 	resp, err := c.SendOOR(ctx, &daemonrpc.SendOORRequest{
 		Recipient: &daemonrpc.Output{
@@ -870,10 +912,13 @@ func (c *Client) SendOORWithPolicyAndKey(ctx context.Context, amountSat int64,
 		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return resp.GetSessionId(), nil
+	return &OORSendResult{
+		SessionID:         resp.GetSessionId(),
+		RecipientOutpoint: resp.GetRecipientOutpoint(),
+	}, nil
 }
 
 // SendOORWithCustomInputs sends one OOR transfer using caller-specified

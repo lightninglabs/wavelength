@@ -3116,9 +3116,13 @@ type SendOORResponse struct {
 	// dry_run.
 	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
 	// session_id is the OOR session identifier. Empty on dry_run.
-	SessionId     string `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SessionId string `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// recipient_outpoint is the Ark transaction outpoint created for the
+	// requested recipient. Empty on dry_run or when an older idempotent
+	// session is returned without enough local request context.
+	RecipientOutpoint string `protobuf:"bytes,3,opt,name=recipient_outpoint,json=recipientOutpoint,proto3" json:"recipient_outpoint,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *SendOORResponse) Reset() {
@@ -3161,6 +3165,13 @@ func (x *SendOORResponse) GetStatus() string {
 func (x *SendOORResponse) GetSessionId() string {
 	if x != nil {
 		return x.SessionId
+	}
+	return ""
+}
+
+func (x *SendOORResponse) GetRecipientOutpoint() string {
+	if x != nil {
+		return x.RecipientOutpoint
 	}
 	return ""
 }
@@ -7771,11 +7782,12 @@ const file_daemon_proto_rawDesc = "" +
 	"\x06pubkey\x18\x01 \x01(\fR\x06pubkey\x12%\n" +
 	"\x0ewitness_script\x18\x02 \x01(\fR\rwitnessScript\x12\x1c\n" +
 	"\tsignature\x18\x03 \x01(\fR\tsignature\x12\x18\n" +
-	"\asighash\x18\x04 \x01(\rR\asighash\"H\n" +
+	"\asighash\x18\x04 \x01(\rR\asighash\"w\n" +
 	"\x0fSendOORResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x02 \x01(\tR\tsessionId\"\x84\x01\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\x12-\n" +
+	"\x12recipient_outpoint\x18\x03 \x01(\tR\x11recipientOutpoint\"\x84\x01\n" +
 	"\x11PrepareOORRequest\x12/\n" +
 	"\trecipient\x18\x01 \x01(\v2\x11.daemonrpc.OutputR\trecipient\x12>\n" +
 	"\rcustom_inputs\x18\x02 \x03(\v2\x19.daemonrpc.CustomOORInputR\fcustomInputs\"\xad\x01\n" +

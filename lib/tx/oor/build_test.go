@@ -2,9 +2,11 @@ package oor
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -145,4 +147,53 @@ func TestBuildCheckpointPSBTPreservesOwnerLeafPolicy(t *testing.T) {
 		t, cpResult.TapTreeEncoded,
 		cpResult.PSBT.Outputs[0].TaprootTapTree,
 	)
+}
+
+func TestRecipientOutPointUsesCanonicalRecipientOrder(t *testing.T) {
+	t.Parallel()
+
+	txid := chainhash.Hash{1, 2, 3}
+	target := RecipientOutput{
+		PkScript: hexBytes(t, "5120bbbb"),
+		Value:    btcutil.Amount(500),
+	}
+	recipients := []RecipientOutput{
+		{
+			PkScript: hexBytes(t, "5120aaaa"),
+			Value:    btcutil.Amount(2_000),
+		},
+		target,
+		{
+			PkScript: hexBytes(t, "5120cccc"),
+			Value:    btcutil.Amount(1_000),
+		},
+	}
+
+	outpoint, err := RecipientOutPoint(txid, recipients, target)
+	require.NoError(t, err)
+	require.Equal(t, txid, outpoint.Hash)
+	require.EqualValues(t, 0, outpoint.Index)
+}
+
+func TestRecipientOutputIndexRejectsAmbiguousTarget(t *testing.T) {
+	t.Parallel()
+
+	target := RecipientOutput{
+		PkScript: hexBytes(t, "5120bbbb"),
+		Value:    btcutil.Amount(500),
+	}
+
+	_, err := RecipientOutputIndex(
+		[]RecipientOutput{target, target}, target,
+	)
+	require.ErrorContains(t, err, "ambiguous")
+}
+
+func hexBytes(t *testing.T, value string) []byte {
+	t.Helper()
+
+	decoded, err := hex.DecodeString(value)
+	require.NoError(t, err)
+
+	return decoded
 }
