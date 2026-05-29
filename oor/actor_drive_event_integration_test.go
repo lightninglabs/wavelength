@@ -479,3 +479,95 @@ func TestOORDurableBehaviorResumeRestoredSessionsResolvePending(t *testing.T) {
 	require.NoError(t, stateErr)
 	require.IsType(t, &ReceiveResolving{}, state)
 }
+
+// TestOORDurableBehaviorResumeIncomingMetadataBackoff verifies an incoming
+// session interrupted mid-backoff on metadata resolution resumes by
+// re-scheduling the retry with the persisted backoff rather than firing the
+// query immediately. This keeps a restart from collapsing a capped backoff
+// window to zero and burning the retry budget faster than intended.
+func TestOORDurableBehaviorResumeIncomingMetadataBackoff(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkPSBT, finalCheckpoints, _, _, _, _ :=
+		buildTestIncomingMaterialization(t)
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+
+	const attempts = 3
+	session, err := newReceiveSessionWithState(
+		ctx, sessionID, &ReceiveNotified{
+			SessionID:            sessionID,
+			ArkPSBT:              arkPSBT,
+			FinalCheckpointPSBTs: finalCheckpoints,
+			MetadataAttempts:     attempts,
+		},
+	)
+	require.NoError(t, err)
+
+	behavior := &oorDurableBehavior{
+		cfg: ClientActorCfg{
+			DeliveryStore: newTestDeliveryStore(t),
+			ActorID:       "oor-resume-incoming-backoff",
+			OutboxHandler: &noopOutboxHandler{},
+		},
+	}
+
+	handle := &sessionHandle{
+		FSM:  session.FSM,
+		kind: sessionKindIncoming,
+	}
+
+	state, err := handle.currentSessionState()
+	require.NoError(t, err)
+
+	outbox, err := behavior.resumeOutboxForHandle(handle, state)
+	require.NoError(t, err)
+	require.Len(t, outbox, 1)
+
+	schedule, ok := outbox[0].(*ScheduleRetryRequest)
+	require.True(t, ok)
+	require.Equal(t, metadataRetryBackoff(attempts), schedule.After)
+}
+
+// TestOORDurableBehaviorResumeIncomingNoBackoff verifies a freshly notified
+// incoming session that has not yet retried metadata resolution resumes by
+// re-emitting the metadata query immediately.
+func TestOORDurableBehaviorResumeIncomingNoBackoff(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkPSBT, finalCheckpoints, _, _, _, _ :=
+		buildTestIncomingMaterialization(t)
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+
+	session, _, err := DriveIncomingTransferWithCheckpoints(
+		ctx, sessionID, arkPSBT, finalCheckpoints, nil,
+	)
+	require.NoError(t, err)
+
+	behavior := &oorDurableBehavior{
+		cfg: ClientActorCfg{
+			DeliveryStore: newTestDeliveryStore(t),
+			ActorID:       "oor-resume-incoming-fresh",
+			OutboxHandler: &noopOutboxHandler{},
+		},
+	}
+
+	handle := &sessionHandle{
+		FSM:  session.FSM,
+		kind: sessionKindIncoming,
+	}
+
+	state, err := handle.currentSessionState()
+	require.NoError(t, err)
+	require.IsType(t, &ReceiveNotified{}, state)
+
+	outbox, err := behavior.resumeOutboxForHandle(handle, state)
+	require.NoError(t, err)
+	require.Len(t, outbox, 1)
+
+	_, ok := outbox[0].(*QueryIncomingMetadataRequest)
+	require.True(t, ok)
+}

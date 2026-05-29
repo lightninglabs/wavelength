@@ -1,6 +1,7 @@
 package oor
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -101,6 +102,143 @@ func TestHandleOutboxError(t *testing.T) {
 	require.Equal(t, "boom", schedule.Reason)
 }
 
+// TestReceiveNotifiedMetadataRetryBackoff asserts that retryable metadata
+// failures in the notified state grow the backoff exponentially, cap it, and
+// carry the attempt counter on the returned state so it persists.
+func TestReceiveNotifiedMetadataRetryBackoff(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		startAttempts uint32
+		wantAttempts  uint32
+		wantAfter     time.Duration
+	}{
+		{
+			startAttempts: 0,
+			wantAttempts:  1,
+			wantAfter:     1 * time.Second,
+		},
+		{
+			startAttempts: 1,
+			wantAttempts:  2,
+			wantAfter:     2 * time.Second,
+		},
+		{
+			startAttempts: 2,
+			wantAttempts:  3,
+			wantAfter:     4 * time.Second,
+		},
+		{
+			startAttempts: 8,
+			wantAttempts:  9,
+			wantAfter:     256 * time.Second,
+		},
+
+		// 2^9 = 512s exceeds the 5m cap, so it clamps.
+		{
+			startAttempts: 9,
+			wantAttempts:  10,
+			wantAfter:     metadataRetryMaxDelay,
+		},
+	}
+
+	for _, tc := range cases {
+		state := &ReceiveNotified{
+			SessionID: SessionID{
+				0x01,
+			},
+			MetadataAttempts: tc.startAttempts,
+		}
+
+		transition, err := handleReceiveOutboxError(
+			state, &OutboxErrorEvent{
+				Retryable:   true,
+				RetryAfter:  defaultRetryDelay,
+				ErrorReason: "metadata missing",
+			},
+		)
+		require.NoError(t, err)
+
+		next, ok := transition.NextState.(*ReceiveNotified)
+		require.True(t, ok)
+		require.Equal(t, tc.wantAttempts, next.MetadataAttempts)
+
+		// The original state must not be mutated in place.
+		require.Equal(t, tc.startAttempts, state.MetadataAttempts)
+
+		emitted := transition.NewEvents.UnwrapOr(EmittedEvent{})
+		require.Len(t, emitted.Outbox, 1)
+		schedule, ok := emitted.Outbox[0].(*ScheduleRetryRequest)
+		require.True(t, ok)
+		require.Equal(t, tc.wantAfter, schedule.After)
+	}
+}
+
+// TestReceiveNotifiedMetadataRetryGivesUp asserts that once the retry bound is
+// exceeded the notified state fails terminally instead of scheduling another
+// metadata query.
+func TestReceiveNotifiedMetadataRetryGivesUp(t *testing.T) {
+	t.Parallel()
+
+	state := &ReceiveNotified{
+		SessionID: SessionID{
+			0x02,
+		},
+		MetadataAttempts: maxMetadataRetries,
+	}
+
+	transition, err := handleReceiveOutboxError(state, &OutboxErrorEvent{
+		Retryable:   true,
+		RetryAfter:  defaultRetryDelay,
+		ErrorReason: "metadata missing",
+	})
+	require.NoError(t, err)
+
+	failed, ok := transition.NextState.(*Failed)
+	require.True(t, ok)
+	require.Contains(t, failed.Reason, "metadata missing")
+	require.True(t, transition.NewEvents.IsNone())
+}
+
+// TestMetadataRetryBackoff covers the backoff helper bounds directly.
+func TestMetadataRetryBackoff(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, metadataRetryBaseDelay, metadataRetryBackoff(0))
+	require.Equal(t, metadataRetryBaseDelay, metadataRetryBackoff(1))
+	require.Equal(t, 2*time.Second, metadataRetryBackoff(2))
+	require.Equal(t, metadataRetryMaxDelay, metadataRetryBackoff(100))
+}
+
+// TestIncomingSnapshotMetadataAttemptsRoundTrip asserts the persisted retry
+// counter survives a snapshot encode/decode cycle so the give-up bound holds
+// across restarts.
+func TestIncomingSnapshotMetadataAttemptsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	snap := &IncomingSnapshot{
+		Version: 1,
+		SessionID: SessionID{
+			0x03,
+		},
+		Phase: IncomingPhaseMaterializePending,
+		ArkPSBT: []byte{
+			0xaa,
+			0xbb,
+		},
+		MetadataAttempts: 7,
+	}
+
+	raw, err := encodeIncomingSnapshot(snap)
+	require.NoError(t, err)
+
+	decoded, err := decodeIncomingSnapshotWithLimits(
+		raw, DefaultReceiveLimits(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, uint32(7), decoded.MetadataAttempts)
+}
+
 // TestAwaitingFinalizeAcceptedOutboxError verifies that retryable outbox
 // failures in the finalize-ack wait state stay in the current state while
 // scheduling retry.
@@ -162,4 +300,31 @@ func TestAwaitingFinalizeAcceptedOutboxError(t *testing.T) {
 	schedule, ok := emitted.Outbox[0].(*ScheduleRetryRequest)
 	require.True(t, ok)
 	require.Equal(t, defaultRetryDelay, schedule.After)
+}
+
+// TestReceiveNotifiedMetadataRetryOverflowGivesUp ensures a corrupted snapshot
+// whose attempt counter sits at the uint32 maximum still terminates terminally
+// rather than wrapping past the bound when incremented. Checking the persisted
+// counter before the increment keeps the give-up reachable.
+func TestReceiveNotifiedMetadataRetryOverflowGivesUp(t *testing.T) {
+	t.Parallel()
+
+	state := &ReceiveNotified{
+		SessionID: SessionID{
+			0x03,
+		},
+		MetadataAttempts: math.MaxUint32,
+	}
+
+	transition, err := handleReceiveOutboxError(state, &OutboxErrorEvent{
+		Retryable:   true,
+		RetryAfter:  defaultRetryDelay,
+		ErrorReason: "metadata missing",
+	})
+	require.NoError(t, err)
+
+	failed, ok := transition.NextState.(*Failed)
+	require.True(t, ok)
+	require.Contains(t, failed.Reason, "metadata missing")
+	require.True(t, transition.NewEvents.IsNone())
 }
