@@ -285,7 +285,21 @@ FROM (
            END AS fee_sat,
            le.created_at,
            CASE
-               WHEN le.event_type = 'wallet_utxo_created' THEN 'confirmed'
+               WHEN le.event_type = 'wallet_utxo_created'
+                    AND boarding_round.confirmed
+               THEN 'confirmed'
+               WHEN le.event_type = 'wallet_utxo_created'
+                    AND (le.chain_txid IS NULL OR le.chain_vout IS NULL)
+               THEN 'confirmed'
+               WHEN le.event_type = 'wallet_utxo_created'
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM boarding_intents AS status_bi
+                        WHERE status_bi.outpoint_hash = le.chain_txid
+                          AND status_bi.outpoint_index = le.chain_vout
+                    )
+               THEN 'confirmed'
+               WHEN le.event_type = 'wallet_utxo_created' THEN 'boarding'
                ELSE 'recorded'
            END AS status,
            le.description,
@@ -304,6 +318,7 @@ FROM (
     LEFT JOIN (
         SELECT allocated.outpoint_hash,
                allocated.outpoint_index,
+               allocated.confirmed,
                allocated.base_fee_sat +
                    CASE
                        WHEN allocated.remainder_rank <=
@@ -314,6 +329,7 @@ FROM (
         FROM (
             SELECT proportional.outpoint_hash,
                    proportional.outpoint_index,
+                   proportional.confirmed,
                    proportional.base_fee_sat,
                    proportional.round_fee_sat -
                        SUM(proportional.base_fee_sat) OVER (
@@ -329,6 +345,7 @@ FROM (
                 SELECT rbi.round_id,
                        rbi.outpoint_hash,
                        rbi.outpoint_index,
+                       r.status = 'confirmed' AS confirmed,
                        CASE
                            WHEN stats.round_fee_sat > 0
                                 AND stats.input_amount_sat > 0
@@ -347,6 +364,8 @@ FROM (
                 FROM round_boarding_intents AS rbi
                 JOIN boarding_intents AS bi
                     USING (outpoint_hash, outpoint_index)
+                JOIN rounds AS r
+                    ON r.round_id = rbi.round_id
                 JOIN (
                     SELECT intent_sums.round_id,
                            CAST(CASE

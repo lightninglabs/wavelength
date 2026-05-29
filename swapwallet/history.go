@@ -869,8 +869,8 @@ func ledgerActivityID(t *daemonrpc.TransactionHistoryEntry,
 
 // statusForLedgerRow folds the ledger row's confirmation_status into the
 // flat EntryStatus the API surfaces. Detailed lifecycle context stays in
-// WalletEntry.progress and InspectActivity; the activity table should not
-// reinterpret confirmed ledger rows as pending.
+// WalletEntry.progress and InspectActivity; confirmed on-chain deposits stay
+// pending while they are still waiting to board into a confirmed round.
 func statusForLedgerRow(
 	t *daemonrpc.TransactionHistoryEntry) walletdkrpc.EntryStatus {
 
@@ -965,6 +965,10 @@ func phaseFromLedgerConfirmation(s string) (walletdkrpc.WalletEntryPhase,
 	string) {
 
 	switch s {
+	case "boarding":
+		return walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+			"boarding"
+
 	case "confirmed", "swept":
 		return walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
 			"confirmed"
