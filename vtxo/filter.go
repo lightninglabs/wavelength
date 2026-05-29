@@ -54,3 +54,19 @@ func SumBalance(descs []*Descriptor) btcutil.Amount {
 
 	return total
 }
+
+// SumSpendableBalance computes the total balance across only the
+// spendable subset of descriptors. Only Live VTXOs can fund a spend;
+// the other non-terminal states (PendingForfeit, Forfeiting, Spending)
+// are still "live" for actor-recovery purposes but cannot back a spend,
+// so they are excluded here. Callers reporting a spendable balance must
+// use this rather than SumBalance over a recovery-oriented VTXO set,
+// otherwise the figure overstates spendable liquidity.
+func SumSpendableBalance(descs []*Descriptor) btcutil.Amount {
+	spendable := FilterDescriptors(descs, FilterOptions{
+		Status:    VTXOStatusLive,
+		StatusSet: true,
+	})
+
+	return SumBalance(spendable)
+}
