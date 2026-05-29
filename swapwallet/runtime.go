@@ -26,6 +26,8 @@ type pendingEntry struct {
 	kind      walletdkrpc.EntryKind
 	createdAt time.Time
 	deadline  time.Time
+	noTimeout bool
+	entry     *walletdkrpc.WalletEntry
 }
 
 // Runtime owns the swapwallet package's background lifecycle: the unified
@@ -159,15 +161,98 @@ func (r *Runtime) resumeAll(ctx context.Context) {
 func (r *Runtime) trackPending(id string, kind walletdkrpc.EntryKind,
 	createdAt time.Time) {
 
+	r.trackPendingEntryAt(&walletdkrpc.WalletEntry{
+		Id:            id,
+		Kind:          kind,
+		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		CreatedAtUnix: createdAt.Unix(),
+		UpdatedAtUnix: createdAt.Unix(),
+	}, createdAt, false)
+}
+
+// trackPendingEntry records a wallet-local pending activity row. Unlike swap
+// rows, these entries do not have a durable swap FSM feeding List/Subscribe
+// updates, so the runtime keeps the friendly WalletEntry snapshot that should
+// appear in activity until a backing ledger or status source supersedes it.
+func (r *Runtime) trackPendingEntry(entry *walletdkrpc.WalletEntry) {
+	if entry == nil || entry.GetId() == "" {
+		return
+	}
+
+	r.trackPendingEntryAt(
+		entry,
+		unixToTime(
+			entry.GetCreatedAtUnix(),
+		),
+		false,
+	)
+}
+
+// trackPendingEntryWithoutTimeout records a wallet-local pending activity row
+// that should remain pending until a source of truth supersedes it. Cooperative
+// leave uses this because a successful on-chain round can take longer than the
+// generic wallet deadline, and the v1 activity layer cannot yet correlate the
+// pending outpoint id to the later confirmed sweep txid.
+func (r *Runtime) trackPendingEntryWithoutTimeout(
+	entry *walletdkrpc.WalletEntry) {
+
+	if entry == nil || entry.GetId() == "" {
+		return
+	}
+
+	r.trackPendingEntryAt(
+		entry,
+		unixToTime(
+			entry.GetCreatedAtUnix(),
+		),
+		true,
+	)
+}
+
+// trackPendingEntryAt is the shared implementation for callers that already
+// have a precise submit time and callers that only have a WalletEntry unix
+// timestamp.
+func (r *Runtime) trackPendingEntryAt(entry *walletdkrpc.WalletEntry,
+	createdAt time.Time, noTimeout bool) {
+
+	if entry == nil || entry.GetId() == "" {
+		return
+	}
+
 	r.pendingMu.Lock()
 	defer r.pendingMu.Unlock()
 
-	if existing, ok := r.pending[id]; ok {
+	entryCopy := cloneWalletEntry(entry)
+	if entryCopy.Status == walletdkrpc.EntryStatus_ENTRY_STATUS_UNSPECIFIED {
+		entryCopy.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING
+	}
+
+	if entryCopy.GetCreatedAtUnix() == 0 {
+		entryCopy.CreatedAtUnix = createdAt.Unix()
+	}
+	if entryCopy.GetUpdatedAtUnix() == 0 {
+		entryCopy.UpdatedAtUnix = entryCopy.GetCreatedAtUnix()
+	}
+
+	if existing, ok := r.pending[entryCopy.GetId()]; ok {
 		// Already tracked: preserve the original first-observed
-		// createdAt and deadline. Only refresh the kind in case
-		// the source row's direction was lazily populated.
-		existing.kind = kind
-		r.pending[id] = existing
+		// timestamps and deadline. Refresh the rest of the snapshot
+		// in case the source row's direction or metadata was lazily
+		// populated.
+		existing.kind = entryCopy.GetKind()
+		if existing.entry != nil {
+			if existing.entry.GetCreatedAtUnix() != 0 {
+				entryCopy.CreatedAtUnix = existing.entry.
+					GetCreatedAtUnix()
+			}
+			if existing.entry.GetUpdatedAtUnix() != 0 {
+				entryCopy.UpdatedAtUnix = existing.entry.
+					GetUpdatedAtUnix()
+			}
+		}
+		existing.entry = entryCopy
+		existing.noTimeout = noTimeout
+		r.pending[entryCopy.GetId()] = existing
 
 		return
 	}
@@ -176,12 +261,38 @@ func (r *Runtime) trackPending(id string, kind walletdkrpc.EntryKind,
 	// createdAt. This is the load-bearing fix for the
 	// restart-resume-and-immediately-time-out failure mode.
 	now := time.Now()
-	r.pending[id] = pendingEntry{
-		id:        id,
-		kind:      kind,
+	r.pending[entryCopy.GetId()] = pendingEntry{
+		id:        entryCopy.GetId(),
+		kind:      entryCopy.GetKind(),
 		createdAt: createdAt,
 		deadline:  now.Add(r.deps.resolveDeadline()),
+		noTimeout: noTimeout,
+		entry:     entryCopy,
 	}
+}
+
+// pendingSnapshot returns copies of the wallet-local pending entries that
+// should be included in List/Subscribe snapshots.
+func (r *Runtime) pendingSnapshot() []*walletdkrpc.WalletEntry {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+
+	out := make([]*walletdkrpc.WalletEntry, 0, len(r.pending))
+	for _, pending := range r.pending {
+		entry := cloneWalletEntry(pending.entry)
+		if entry == nil {
+			entry = &walletdkrpc.WalletEntry{
+				Id:            pending.id,
+				Kind:          pending.kind,
+				Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+				CreatedAtUnix: pending.createdAt.Unix(),
+				UpdatedAtUnix: pending.createdAt.Unix(),
+			}
+		}
+		out = append(out, entry)
+	}
+
+	return out
 }
 
 // clearPending removes the runtime record for an entry that has reached a
@@ -258,6 +369,9 @@ func (r *Runtime) markTimedOut(now time.Time) []*walletdkrpc.WalletEntry {
 		if _, alreadyTimedOut := r.overlay[id]; alreadyTimedOut {
 			continue
 		}
+		if entry.noTimeout {
+			continue
+		}
 		if now.Before(entry.deadline) {
 			continue
 		}
@@ -267,17 +381,38 @@ func (r *Runtime) markTimedOut(now time.Time) []*walletdkrpc.WalletEntry {
 			failureReason: "timed_out",
 		}
 		r.overlay[id] = ov
-		notify = append(notify, &walletdkrpc.WalletEntry{
-			Id:            id,
-			Kind:          entry.kind,
-			Status:        ov.status,
-			FailureReason: ov.failureReason,
-			CreatedAtUnix: entry.createdAt.Unix(),
-			UpdatedAtUnix: now.Unix(),
-		})
+		notifyEntry := cloneWalletEntry(entry.entry)
+		if notifyEntry == nil {
+			notifyEntry = &walletdkrpc.WalletEntry{
+				Id:            id,
+				Kind:          entry.kind,
+				CreatedAtUnix: entry.createdAt.Unix(),
+			}
+		}
+		notifyEntry.Status = ov.status
+		notifyEntry.FailureReason = ov.failureReason
+		notifyEntry.UpdatedAtUnix = now.Unix()
+		notify = append(notify, notifyEntry)
 	}
 
 	return notify
+}
+
+// cloneWalletEntry returns a shallow copy with mutable nested fields copied
+// where the runtime updates them. Request oneofs are immutable after entry
+// creation in this package, so a shallow copy is sufficient for those.
+func cloneWalletEntry(entry *walletdkrpc.WalletEntry) *walletdkrpc.WalletEntry {
+	if entry == nil {
+		return nil
+	}
+
+	entryCopy := *entry
+	if entry.GetProgress() != nil {
+		progress := *entry.GetProgress()
+		entryCopy.Progress = &progress
+	}
+
+	return &entryCopy
 }
 
 // isSwapKind reports pinned SEND/RECV rows whose lifecycle is backed by the

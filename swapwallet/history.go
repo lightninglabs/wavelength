@@ -160,6 +160,19 @@ func (h *history) listActivity(ctx context.Context,
 		entries = append(entries, pendingBoarding...)
 	}
 
+	if h.shouldInclude(kindFilter, walletdkrpc.EntryKind_ENTRY_KIND_EXIT) {
+		exitEntries, err := h.collectUnilateralExitEntries(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("collect unilateral exit "+
+				"entries: %w", err)
+		}
+		entries = append(entries, exitEntries...)
+
+		entries = append(
+			entries, h.collectWalletLocalPendingEntries(ctx)...,
+		)
+	}
+
 	// Apply wallet-level overlay (deadline timeout) BEFORE filtering so
 	// a stuck entry appears as FAILED in the wallet view even when the
 	// caller asked for pending_only=false.
@@ -338,11 +351,146 @@ func (h *history) collectPendingBoardingEntries(ctx context.Context) (
 			CreatedAtUnix: now,
 			UpdatedAtUnix: now,
 			Progress: &walletdkrpc.WalletEntryProgress{
-				Phase:      walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION,
+				Phase: walletdkrpc.
+					WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION,
 				PhaseLabel: "waiting_for_confirmation",
 			},
 		},
 	}, nil
+}
+
+// collectUnilateralExitEntries synthesizes activity rows for VTXOs already
+// handed to the unroll subsystem. The unroll job store is the durable source
+// of truth for unilateral exits; activity consumes it through the existing
+// VTXO inventory plus per-outpoint ExitStatus surface.
+func (h *history) collectUnilateralExitEntries(ctx context.Context) (
+	[]*walletdkrpc.WalletEntry, error) {
+
+	if h.deps.RPCServer == nil {
+		return nil, nil
+	}
+
+	resp, err := h.deps.RPCServer.ListVTXOs(
+		ctx, &daemonrpc.ListVTXOsRequest{
+			StatusFilter: daemonrpc.
+				VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list unilateral-exit vtxos: %w", err)
+	}
+
+	pendingByID := make(map[string]*walletdkrpc.WalletEntry)
+	if h.runtime != nil {
+		for _, entry := range h.runtime.pendingSnapshot() {
+			pendingByID[entry.GetId()] = entry
+		}
+	}
+
+	out := make([]*walletdkrpc.WalletEntry, 0, len(resp.GetVtxos()))
+	for _, vtxo := range resp.GetVtxos() {
+		entry := unilateralExitEntryFromVTXO(vtxo)
+		if entry.GetId() == "" {
+			continue
+		}
+		if pending := pendingByID[entry.GetId()]; pending != nil {
+			if pending.GetCreatedAtUnix() != 0 {
+				entry.CreatedAtUnix = pending.GetCreatedAtUnix()
+			}
+			if pending.GetUpdatedAtUnix() != 0 {
+				entry.UpdatedAtUnix = pending.GetUpdatedAtUnix()
+			}
+		}
+
+		if err := h.decorateExitEntry(ctx, entry); err != nil {
+			return nil, err
+		}
+
+		out = append(out, entry)
+	}
+
+	return out, nil
+}
+
+// collectWalletLocalPendingEntries returns pending rows created by wallet RPC
+// calls before their durable terminal source is available. Cooperative leave
+// uses this path immediately after Send returns; unilateral exit uses it until
+// the unroll status/VTXO projection catches up.
+func (h *history) collectWalletLocalPendingEntries(
+	ctx context.Context) []*walletdkrpc.WalletEntry {
+
+	if h.runtime == nil {
+		return nil
+	}
+
+	entries := h.runtime.pendingSnapshot()
+	for _, entry := range entries {
+		if entry.GetKind() != walletdkrpc.EntryKind_ENTRY_KIND_EXIT {
+			continue
+		}
+
+		// Status lookup is best-effort for wallet-local entries. A
+		// missing unroll job usually means this is a cooperative
+		// leave pending row, not a unilateral exit.
+		_ = h.decorateExitEntry(ctx, entry)
+	}
+
+	return entries
+}
+
+// unilateralExitEntryFromVTXO projects a VTXO in UNILATERAL_EXIT into a
+// wallet-facing EXIT activity row. The amount is negative because value is
+// leaving Ark custody.
+func unilateralExitEntryFromVTXO(v *daemonrpc.VTXO) *walletdkrpc.WalletEntry {
+	if v == nil {
+		return nil
+	}
+
+	now := nowUnix()
+
+	return &walletdkrpc.WalletEntry{
+		Id:            v.GetOutpoint(),
+		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		AmountSat:     -v.GetAmountSat(),
+		Counterparty:  "unilateral",
+		CreatedAtUnix: now,
+		UpdatedAtUnix: now,
+		Progress: &walletdkrpc.WalletEntryProgress{
+			Phase: walletdkrpc.
+				WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+			PhaseLabel:   "unilateral_exit",
+			VtxoOutpoint: v.GetOutpoint(),
+		},
+	}
+}
+
+// decorateExitEntry applies unroll status to an EXIT entry when the daemon has
+// a unilateral-exit job for the entry id. Cooperative leave entries do not have
+// unroll jobs, so Found=false leaves the original pending row untouched.
+func (h *history) decorateExitEntry(ctx context.Context,
+	entry *walletdkrpc.WalletEntry) error {
+
+	if h.deps.RPCServer == nil || entry == nil || entry.GetId() == "" {
+		return nil
+	}
+
+	resp, err := h.deps.RPCServer.GetUnrollStatus(
+		ctx, &daemonrpc.GetUnrollStatusRequest{
+			Outpoint: entry.GetId(),
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("get unroll status %s: %w", entry.GetId(),
+			err)
+	}
+	if !resp.GetFound() {
+		return nil
+	}
+
+	applyUnrollStatus(entry, resp)
+
+	return nil
 }
 
 // collectLedgerEntries reads the daemon's unified ledger+sweep page and

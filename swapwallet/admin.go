@@ -103,8 +103,9 @@ func (s *Service) unlock(ctx context.Context, req *walletdkrpc.UnlockRequest) (
 	}, nil
 }
 
-// exit proxies daemonrpc.Unroll. The wallet layer doesn't track the exit
-// job locally; the daemon's unroll registry is the authoritative store.
+// exit proxies daemonrpc.Unroll. The daemon's unroll registry remains the
+// authoritative store; the wallet layer tracks only the friendly pending row
+// so activity can show the user's exit attempt immediately.
 func (s *Service) exit(ctx context.Context, req *walletdkrpc.ExitRequest) (
 	*walletdkrpc.ExitResponse, error) {
 
@@ -128,6 +129,10 @@ func (s *Service) exit(ctx context.Context, req *walletdkrpc.ExitRequest) (
 	if err != nil {
 		return nil, status.Errorf(status.Code(err), "exit: %v", err)
 	}
+
+	entry := unilateralExitEntryStub(req.GetOutpoint())
+	s.runtime.trackPendingEntryWithoutTimeout(entry)
+	s.runtime.emit(entry)
 
 	return &walletdkrpc.ExitResponse{
 		Created: resp.GetCreated(),

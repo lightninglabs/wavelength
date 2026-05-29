@@ -384,12 +384,8 @@ func (r *router) sendOnchainIntent(ctx context.Context,
 	// correlation between the pending row and the eventual sweep
 	// ledger row is deferred to v2 — see swapwallet/doc.go for the
 	// limitation note.
-	r.runtime.trackPending(
-		entry.GetId(), entry.GetKind(),
-		unixToTime(
-			entry.GetCreatedAtUnix(),
-		),
-	)
+	r.runtime.trackPendingEntryWithoutTimeout(entry)
+	r.runtime.emit(entry)
 
 	return &walletdkrpc.SendResponse{
 		Entry:           entry,

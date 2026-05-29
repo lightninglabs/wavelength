@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
@@ -1101,6 +1102,178 @@ func TestHistoryWalletRowsApplyTimedOutOverlay(t *testing.T) {
 		t, "timed_out",
 		resp.GetActivity().GetEntries()[0].GetFailureReason(),
 	)
+}
+
+// TestHistoryIncludesWalletLocalPendingExit confirms a cooperative leave row
+// returned by Send remains visible in activity before any terminal ledger row
+// exists. The regression in issue #612 was that Send returned an EXIT entry,
+// but ListActivity only read swap/ledger sources and therefore dropped the
+// wallet-local pending row immediately.
+func TestHistoryIncludesWalletLocalPendingExit(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+		Found: false,
+	}
+
+	pending := leaveEntryStub(
+		[]string{
+			"leave-outpoint:1",
+		}, "bcrt1qdest",
+		50_000, "user note",
+	)
+	h.runtime.trackPendingEntry(pending)
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "leave-outpoint:1", entries[0].GetId())
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, entries[0].GetKind(),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		entries[0].GetStatus(),
+	)
+	require.Equal(t, int64(-50_000), entries[0].GetAmountSat())
+	require.Equal(t, "user note", entries[0].GetNote())
+}
+
+// TestHistoryKeepsCSVPendingUnilateralExitPendingAfterDeadline confirms the
+// wallet-local timeout overlay cannot clobber the unroll subsystem's
+// authoritative non-terminal status. Unilateral exits normally wait through a
+// CSV delay that exceeds the generic wallet deadline, so a CSV_PENDING job must
+// remain PENDING instead of being projected to FAILED.
+func TestHistoryKeepsCSVPendingUnilateralExitPendingAfterDeadline(
+	t *testing.T) {
+
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
+		Vtxos: []*daemonrpc.VTXO{
+			{
+				Outpoint:  "exit-outpoint:0",
+				AmountSat: 7_000,
+				Status: daemonrpc.
+					VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+			},
+		},
+	}
+	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+		Found:  true,
+		Status: daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING,
+	}
+
+	pending := unilateralExitEntryStub("exit-outpoint:0")
+	pending.CreatedAtUnix = 123
+	pending.UpdatedAtUnix = 124
+	h.runtime.trackPendingEntryWithoutTimeout(pending)
+	h.runtime.applyDeadlines(time.Now().Add(2 * defaultWalletDeadline))
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "exit-outpoint:0", entries[0].GetId())
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		entries[0].GetStatus(),
+	)
+	require.Equal(
+		t, "csv_pending", entries[0].GetProgress().GetPhaseLabel(),
+	)
+	require.Equal(t, int64(123), entries[0].GetCreatedAtUnix())
+	require.Equal(t, int64(124), entries[0].GetUpdatedAtUnix())
+	require.Empty(t, entries[0].GetFailureReason())
+}
+
+// TestHistoryExitKindFilterGatesWalletLocalPendingRows confirms filtering out
+// EXIT also skips wallet-local pending rows before they issue per-row
+// ExitStatus lookups. The filterEntries pass would drop them eventually, but
+// gating at collection avoids useless unroll-status RPCs for other views.
+func TestHistoryExitKindFilterGatesWalletLocalPendingRows(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+
+	h.runtime.trackPendingEntryWithoutTimeout(
+		leaveEntryStub(
+			[]string{
+				"leave-outpoint:1",
+			}, "bcrt1qdest",
+			50_000, "",
+		),
+	)
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
+		Kinds: []walletdkrpc.EntryKind{
+			walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		},
+	})
+	require.NoError(t, err)
+	require.Empty(t, resp.GetActivity().GetEntries())
+	require.Zero(t, rpc.unrollStatusCalls)
+	require.Zero(t, rpc.listVTXOsCalls)
+}
+
+// TestHistoryIncludesUnilateralExitVTXO confirms a VTXO that has already been
+// handed to the unroll subsystem appears as EXIT activity even after the
+// original Exit RPC response is gone. The row is decorated from ExitStatus so
+// terminal unroll failures surface as FAILED rather than staying invisible or
+// permanently pending.
+func TestHistoryIncludesUnilateralExitVTXO(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
+		Vtxos: []*daemonrpc.VTXO{
+			{
+				Outpoint:  "exit-outpoint:0",
+				AmountSat: 7_000,
+				Status: daemonrpc.
+					VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+			},
+		},
+	}
+	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+		Found:     true,
+		Status:    daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED,
+		LastError: "broadcast failed",
+	}
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "exit-outpoint:0", entries[0].GetId())
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, entries[0].GetKind(),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		entries[0].GetStatus(),
+	)
+	require.Equal(t, int64(-7_000), entries[0].GetAmountSat())
+	require.Equal(t, "broadcast failed", entries[0].GetFailureReason())
+	require.Equal(
+		t, daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+		rpc.listVTXOsLastReq.GetStatusFilter(),
+	)
+	require.Equal(t, "exit-outpoint:0", rpc.unrollStatusLast.GetOutpoint())
 }
 
 // TestHistorySwapRowIdIsPaymentHash confirms that a swap-side row

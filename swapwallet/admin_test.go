@@ -168,6 +168,17 @@ func TestExitProxiesUnroll(t *testing.T) {
 	require.True(t, resp.GetCreated())
 	require.Equal(t, "exit-job-42", resp.GetActorId())
 	require.Equal(t, "abc:0", rpc.unrollLast.GetOutpoint())
+
+	entries := svc.runtime.pendingSnapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, "abc:0", entries[0].GetId())
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, entries[0].GetKind(),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		entries[0].GetStatus(),
+	)
 }
 
 // TestExitRejectsEmptyOutpoint confirms a missing outpoint is rejected

@@ -273,6 +273,44 @@ func TestDeadlineWatcherEmitsTimeoutToSubscribers(t *testing.T) {
 	}
 }
 
+// TestTrackPendingEntryPreservesTimestampsOnRefresh confirms that refreshing a
+// wallet-local pending row cannot make an existing activity row look new again.
+// Some later sources rebuild entries with fallback timestamps, so the runtime
+// keeps the original created/updated values while still accepting refreshed
+// metadata like amount and counterparty.
+func TestTrackPendingEntryPreservesTimestampsOnRefresh(t *testing.T) {
+	t.Parallel()
+
+	r := newRuntime(t.Context(), &Deps{})
+	defer r.stop()
+
+	r.trackPendingEntry(&walletdkrpc.WalletEntry{
+		Id:            "exit-outpoint:0",
+		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		AmountSat:     -1_000,
+		Counterparty:  "first",
+		CreatedAtUnix: 100,
+		UpdatedAtUnix: 100,
+	})
+	r.trackPendingEntry(&walletdkrpc.WalletEntry{
+		Id:            "exit-outpoint:0",
+		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		AmountSat:     -2_000,
+		Counterparty:  "refreshed",
+		CreatedAtUnix: 200,
+		UpdatedAtUnix: 250,
+	})
+
+	entries := r.pendingSnapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, int64(100), entries[0].GetCreatedAtUnix())
+	require.Equal(t, int64(100), entries[0].GetUpdatedAtUnix())
+	require.Equal(t, int64(-2_000), entries[0].GetAmountSat())
+	require.Equal(t, "refreshed", entries[0].GetCounterparty())
+}
+
 // TestDeadlineWatcherDoesNotReEmitAlreadyTimedOut asserts that running
 // applyDeadlines again on the same tick does not re-emit; the watcher
 // only emits on the elevation edge.
@@ -302,6 +340,39 @@ func TestDeadlineWatcherDoesNotReEmitAlreadyTimedOut(t *testing.T) {
 			"watcher must not re-emit on an already-timed-out " +
 				"entry",
 		)
+
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// TestDeadlineWatcherSkipsNoTimeoutEntries asserts that wallet-local rows
+// explicitly marked as source-owned stay pending instead of receiving a
+// synthetic FAILED overlay from the generic wallet deadline. Cooperative
+// leave uses this mode because the confirmed sweep row has a different v1 id,
+// so timing out the pending stub would create a false failed exit beside the
+// later successful on-chain row.
+func TestDeadlineWatcherSkipsNoTimeoutEntries(t *testing.T) {
+	t.Parallel()
+
+	deadline := 50 * time.Millisecond
+	deps := &Deps{
+		WalletDeadline: deadline,
+	}
+	r := newRuntime(t.Context(), deps)
+	defer r.stop()
+
+	sub := r.subscribe()
+	entry := leaveEntryStub([]string{"exit:0"}, "bcrt1qdest", 1_000, "")
+	r.trackPendingEntryWithoutTimeout(entry)
+
+	r.applyDeadlines(time.Now().Add(2 * deadline))
+
+	_, ok := r.overlayFor("exit:0")
+	require.False(t, ok, "no-timeout row must not receive overlay")
+
+	select {
+	case got := <-sub:
+		t.Fatalf("no-timeout row must not emit timeout update: %v", got)
 
 	case <-time.After(50 * time.Millisecond):
 	}
