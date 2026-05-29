@@ -629,8 +629,9 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	// Run largest-first selection.
 	selected := selectLargestFirst(candidates, p.targetAmount)
 	if selected == nil {
-		return nil, 0, fmt.Errorf("insufficient funds: need %d",
-			p.targetAmount)
+		err := m.insufficientLiquidityError(ctx, candidates, p)
+
+		return nil, 0, err
 	}
 
 	// Reserve each selected VTXO via its actor. Track successfully
@@ -655,8 +656,15 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 			)
 			p.rollback(ctx, reserved)
 
-			return nil, 0, fmt.Errorf("reserve %s %s: %w", p.label,
-				vtxo.Outpoint, err)
+			// The common post-selection failure is that another
+			// actor turn already moved this candidate out of
+			// LiveState while the store view was stale. Treat it as
+			// locked liquidity so callers can retry; unexpected
+			// actor/infrastructure errors remain wrapped inside the
+			// returned error for logs.
+			return nil, 0, fmt.Errorf("%w: reserve %s %s: %w",
+				ErrVTXOLiquidityLocked, p.label, vtxo.Outpoint,
+				err)
 		}
 
 		reserved = append(reserved, vtxo.Outpoint)
@@ -683,6 +691,42 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	)
 
 	return selectedVTXOs, totalSelected, nil
+}
+
+// insufficientLiquidityError distinguishes a true spendable-funds shortfall
+// from liquidity that is present but unavailable because another operation has
+// already moved it out of LiveState.
+func (m *Manager) insufficientLiquidityError(ctx context.Context,
+	liveCandidates []*Descriptor, p reserveParams) error {
+
+	liveTotal := SumBalance(liveCandidates)
+
+	nonTerminal, err := m.cfg.Store.ListLiveVTXOs(ctx)
+	if err != nil {
+		return fmt.Errorf("classify liquidity: %w", err)
+	}
+
+	var lockedTotal btcutil.Amount
+	for _, desc := range nonTerminal {
+		if desc == nil {
+			continue
+		}
+
+		if desc.Status == VTXOStatusLive {
+			continue
+		}
+
+		lockedTotal += desc.Amount
+	}
+
+	if lockedTotal > 0 && liveTotal+lockedTotal >= p.targetAmount {
+		return fmt.Errorf("%w: need %d, spendable %d, locked %d",
+			ErrVTXOLiquidityLocked, p.targetAmount, liveTotal,
+			lockedTotal)
+	}
+
+	return fmt.Errorf("%w: need %d, spendable %d",
+		ErrInsufficientSpendableFunds, p.targetAmount, liveTotal)
 }
 
 // handleSelectAndReserveSpend selects VTXOs covering the target amount using

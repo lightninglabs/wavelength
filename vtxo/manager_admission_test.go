@@ -254,13 +254,17 @@ func TestSelectAndReserveSpendInsufficientFunds(t *testing.T) {
 	store.On(
 		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
 	).Return([]*Descriptor{vtxo1}, nil)
+	store.On("ListLiveVTXOs", t.Context()).Return(
+		[]*Descriptor{vtxo1}, nil,
+	)
 
 	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
 		TargetAmount: 50000,
 	})
 	_, err := result.Unpack()
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "insufficient funds")
+	require.ErrorIs(t, err, ErrInsufficientSpendableFunds)
+	require.NotErrorIs(t, err, ErrVTXOLiquidityLocked)
 }
 
 // TestSelectAndReserveSpendDoubleExclusion verifies that a second selection
@@ -290,13 +294,19 @@ func TestSelectAndReserveSpendDoubleExclusion(t *testing.T) {
 	store.On(
 		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
 	).Return([]*Descriptor{vtxo2}, nil).Once()
+	spendingVTXO := *vtxo1
+	spendingVTXO.Status = VTXOStatusSpending
+	store.On("ListLiveVTXOs", t.Context()).Return(
+		[]*Descriptor{nil, &spendingVTXO, vtxo2}, nil,
+	).Once()
 
 	result = mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
 		TargetAmount: 40000,
 	})
 	_, err = result.Unpack()
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "insufficient funds")
+	require.ErrorIs(t, err, ErrVTXOLiquidityLocked)
+	require.NotErrorIs(t, err, ErrInsufficientSpendableFunds)
 }
 
 // =============================================================================
@@ -667,6 +677,7 @@ func TestSpendReserveRejectedWhenPendingForfeit(t *testing.T) {
 	})
 	_, err = result.Unpack()
 	require.Error(t, err)
+	require.ErrorIs(t, err, ErrVTXOLiquidityLocked)
 	require.Contains(t, err.Error(), "cannot reserve for spend")
 }
 
@@ -992,6 +1003,7 @@ func TestRollbackOnPartialSpendFailure(t *testing.T) {
 	})
 	_, err := result.Unpack()
 	require.Error(t, err)
+	require.ErrorIs(t, err, ErrVTXOLiquidityLocked)
 
 	// vtxo1 should be rolled back to LiveState.
 	refAny1, ok := mgr.actors[vtxo1.Outpoint]
@@ -1342,6 +1354,9 @@ func TestSelectAndReserveForfeitInsufficientFunds(t *testing.T) {
 	store.On(
 		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
 	).Return([]*Descriptor{vtxo1}, nil)
+	store.On("ListLiveVTXOs", t.Context()).Return(
+		[]*Descriptor{vtxo1}, nil,
+	)
 
 	result := mgr.Receive(
 		t.Context(), &SelectAndReserveForfeitRequest{
@@ -1350,7 +1365,7 @@ func TestSelectAndReserveForfeitInsufficientFunds(t *testing.T) {
 	)
 	_, err := result.Unpack()
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "insufficient funds")
+	require.ErrorIs(t, err, ErrInsufficientSpendableFunds)
 }
 
 // TestSelectAndReserveForfeitSkipsNonLive verifies that VTXOs already
