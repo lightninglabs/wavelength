@@ -1190,7 +1190,7 @@ func (s *ReceiveSession) ensureReceiveFundingStillPossible(
 		s.client.log.DebugS(
 			ctx,
 			"Unable to query receive refund locktime height",
-			err,
+			slog.String("err", err.Error()),
 			btclog.Hex("hash", s.PaymentHash[:]),
 		)
 
@@ -1537,7 +1537,7 @@ func (c *SwapClient) receiveClaimAlreadyIndexedBounded(ctx context.Context,
 			c.log.DebugS(
 				ctx,
 				"Timed out checking indexed receive claim",
-				err,
+				slog.String("err", err.Error()),
 				btclog.Hex("hash", paymentHash[:]),
 			)
 
