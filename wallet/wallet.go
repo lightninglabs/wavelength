@@ -702,6 +702,9 @@ func (a *Ark) Receive(ctx context.Context,
 	case *SendVTXOsRequest:
 		return a.handleSendVTXOs(ctx, m)
 
+	case *SendOnChainRequest:
+		return a.handleSendOnChain(ctx, m)
+
 	case *SweepBoardingUTXOsRequest:
 		return a.handleSweepBoardingUTXOs(ctx, m)
 
@@ -2671,6 +2674,375 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context, req *SendVTXOsRequest,
 	}
 
 	return vtxoRequests, nil
+}
+
+// handleSendOnChain plans and submits an atomic onchain payment from VTXOs.
+// The handler has two modes selected by the request:
+//
+//   - Bounded (TargetAmountSat > 0): the wallet asks the VTXO manager to
+//     select and reserve VTXOs covering TargetAmountSat plus an
+//     OperatorFee + DustLimit headroom, then builds an intent of
+//     {forfeit inputs, one fixed LeaveRequest of exactly TargetAmountSat,
+//     one change VTXORequest with IsChange=true} so the server's seal-time
+//     quote builder stamps the residual onto the change VTXO.
+//
+//   - SweepAll: the wallet reserves the outpoint set enumerated by the
+//     RPC layer (no in-wallet enumeration) and builds an intent of
+//     {forfeit inputs, one LeaveRequest with IsChange=true and zero
+//     target}, so the server stamps the full residual (Σinputs − fee)
+//     onto the single on-chain output.
+//
+// Both modes register with TriggerRegistration=true: the onchain send is
+// atomic by design and never composes with other queued intents.
+//
+//nolint:gocyclo,funlen
+func (a *Ark) handleSendOnChain(ctx context.Context,
+	req *SendOnChainRequest) fn.Result[WalletResp] {
+
+	// Pure input validation. The RPC layer already enforced these
+	// invariants; the duplicate is defense-in-depth so the wallet
+	// actor never builds a malformed intent. Sweep-all mode is
+	// implied by a non-empty SweepOutpoints set.
+	if len(req.DestinationPkScript) == 0 {
+		return fn.Err[WalletResp](
+			fmt.Errorf("destination pkScript required"),
+		)
+	}
+
+	sweepAll := req.IsSweepAll()
+
+	switch {
+	case sweepAll && req.TargetAmountSat != 0:
+		return fn.Err[WalletResp](
+			fmt.Errorf("sweep-all requires target_amount_sat == 0"),
+		)
+
+	case !sweepAll && req.TargetAmountSat <= 0:
+		return fn.Err[WalletResp](
+			fmt.Errorf("target_amount_sat must be positive for " +
+				"a bounded send"),
+		)
+
+	case !sweepAll && req.OperatorKey == nil:
+		return fn.Err[WalletResp](
+			fmt.Errorf("operator_key required to build the " +
+				"change VTXO"),
+		)
+	}
+
+	a.logger(ctx).InfoS(ctx, "Processing onchain send",
+		slog.Bool("sweep_all", sweepAll),
+		slog.Int64("target_amount_sat",
+			int64(req.TargetAmountSat)),
+		slog.Int("sweep_outpoints", len(req.SweepOutpoints)),
+		slog.Int64("operator_fee_hint",
+			int64(req.OperatorFee)),
+		slog.Bool("dry_run", req.DryRun),
+	)
+
+	// Reserve forfeit inputs. Bounded mode delegates selection to
+	// the VTXO manager (largest-first); sweep-all takes the outpoint
+	// list the RPC layer enumerated and reserves it explicitly. Both
+	// paths fill in selectedOutpoints / selectedAmounts / totalSelected.
+	var (
+		selectedOutpoints []wire.OutPoint
+		selectedAmounts   []btcutil.Amount
+		totalSelected     btcutil.Amount
+	)
+
+	if sweepAll {
+		_, err := a.askManager(
+			ctx, &actormsg.ReserveForfeitRequest{
+				Outpoints: req.SweepOutpoints,
+			},
+		)
+		if err != nil {
+			return fn.Err[WalletResp](
+				fmt.Errorf("reserve sweep outpoints: %w", err),
+			)
+		}
+
+		// Materialize amounts so the intent's ForfeitRequest set is
+		// complete. The reservation already gates concurrent
+		// consumers, so reading amounts via the descriptor here is
+		// race-free.
+		for _, op := range req.SweepOutpoints {
+			vtxo, err := a.vtxoReader.GetVTXO(ctx, op)
+			if err != nil {
+				// Release the full reserved set up front
+				// and clear selectedOutpoints so the
+				// deferred cleanup below does not attempt
+				// to release the (sub)set a second time.
+				releaseCtx := context.WithoutCancel(ctx)
+				_ = a.releaseManagerForfeitStrict(
+					releaseCtx, req.SweepOutpoints,
+				)
+				selectedOutpoints = nil
+
+				return fn.Err[WalletResp](
+					fmt.Errorf("load sweep vtxo %s: %w",
+						op, err),
+				)
+			}
+			selectedOutpoints = append(selectedOutpoints, op)
+			selectedAmounts = append(
+				selectedAmounts, vtxo.Amount,
+			)
+			totalSelected += vtxo.Amount
+		}
+	} else {
+		// Bounded: select via the manager with enough headroom so
+		// the residual change VTXO can clear dust under the
+		// seal-time fee handshake. The advisory OperatorFee hint
+		// over-selects under stale schedules; excess simply lands
+		// as a larger change VTXO.
+		target := req.TargetAmountSat + req.OperatorFee + req.DustLimit
+		resp, err := a.askManager(
+			ctx, &actormsg.SelectAndReserveForfeitRequest{
+				TargetAmount: target,
+			},
+		)
+		if err != nil {
+			return fn.Err[WalletResp](
+				fmt.Errorf("select and reserve forfeit: %w",
+					err),
+			)
+		}
+
+		//nolint:forcetypeassert
+		mgrResp := resp.(*actormsg.SelectAndReserveForfeitResponse)
+		for _, v := range mgrResp.SelectedVTXOs {
+			selectedOutpoints = append(
+				selectedOutpoints, v.Outpoint,
+			)
+			selectedAmounts = append(selectedAmounts, v.Amount)
+		}
+		totalSelected = mgrResp.TotalSelected
+	}
+
+	// Release reserved outpoints if we bail before successfully
+	// registering the intent. Same pattern as handleSendVTXOs:
+	// context.WithoutCancel survives client disconnect.
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+
+		releaseCtx := context.WithoutCancel(ctx)
+		releaseErr := a.releaseManagerForfeitStrict(
+			releaseCtx, selectedOutpoints,
+		)
+		if releaseErr != nil {
+			a.logger(releaseCtx).WarnS(
+				releaseCtx,
+				"Failed to release reserved sweep outpoints",
+				releaseErr,
+			)
+		}
+	}()
+
+	// Defensive shortfall check in bounded mode. The manager's
+	// SelectAndReserveForfeit fails closed on insufficient funds,
+	// but we re-check here so a buggy selector or stale-cache race
+	// surfaces as a wallet error rather than as a server-side
+	// admission failure on a fee-deficient intent. The dust floor
+	// is enforced locally so a below-dust change projection fails
+	// fast here instead of late at operator admission with
+	// ErrVTXOAmountBelowMinimum.
+	var change btcutil.Amount
+	if !sweepAll {
+		if totalSelected <= req.TargetAmountSat {
+			return fn.Err[WalletResp](
+				fmt.Errorf("selection shortfall: selected "+
+					"%d, need >%d", totalSelected,
+					req.TargetAmountSat),
+			)
+		}
+		change = totalSelected - req.TargetAmountSat
+		if change < req.DustLimit {
+			return fn.Err[WalletResp](
+				fmt.Errorf("change amount %d is below dust "+
+					"limit %d", change, req.DustLimit),
+			)
+		}
+	}
+
+	if req.DryRun {
+
+		// Deferred release returns the reservation.
+		return fn.Ok[WalletResp](&SendOnChainResponse{
+			Status: SendOnChainStatusPreview,
+			ActualAmountSat: sendOnChainActualAmount(
+				req, totalSelected,
+			),
+			SelectedOutpoints: selectedOutpoints,
+			TotalSelected:     totalSelected,
+			ChangeAmount:      change,
+		})
+	}
+
+	// Build the round intent. Forfeit inputs come from the
+	// reservation; the leave output is the user's onchain payment;
+	// the change VTXO (bounded mode only) absorbs the seal-time fee
+	// residual.
+	forfeits := make(
+		[]types.ForfeitRequest, 0, len(selectedOutpoints),
+	)
+	for i, op := range selectedOutpoints {
+		forfeits = append(forfeits, types.ForfeitRequest{
+			VTXOOutpoint: &op,
+			Amount:       selectedAmounts[i],
+		})
+	}
+
+	var (
+		leaves []*types.LeaveRequest
+		vtxos  []types.VTXORequest
+	)
+
+	if sweepAll {
+		// One leave output, IsChange=true: server stamps the
+		// residual (Σinputs − fee) onto it at seal time.
+		leaves = []*types.LeaveRequest{
+			{
+				Output: &wire.TxOut{
+					PkScript: req.DestinationPkScript,
+				},
+				IsChange: true,
+			},
+		}
+	} else {
+		// One fixed leave + one change VTXO. The change VTXO uses
+		// the same arkscript pattern as the directed-send self-
+		// change at buildSendVTXORequests so confirmation-time
+		// ownership persistence works through the standard
+		// OwnedScriptRegistrar path.
+		leaves = []*types.LeaveRequest{
+			{
+				Output: &wire.TxOut{
+					PkScript: req.DestinationPkScript,
+					Value:    int64(req.TargetAmountSat),
+				},
+				IsChange: false,
+			},
+		}
+
+		changeClientKey, err := a.backend.DeriveNextKey(
+			ctx, types.VTXOOwnerKeyFamily,
+		)
+		if err != nil {
+			return fn.Err[WalletResp](
+				fmt.Errorf("derive change client key: %w", err),
+			)
+		}
+
+		policyTemplate, pkScript, err := arkscript.
+			EncodeStandardVTXOArtifacts(
+				changeClientKey.PubKey, req.OperatorKey,
+				req.VTXOExitDelay,
+			)
+		if err != nil {
+			return fn.Err[WalletResp](
+				fmt.Errorf("build change descriptor: %w", err),
+			)
+		}
+
+		vtxos = []types.VTXORequest{
+			{
+				// Amount is the caller's projected change
+				// (totalSelected − TargetAmountSat). The
+				// seal-time quote rewrites this slot with
+				// the residual (Σin − Σfixed − fee) because
+				// IsChange=true, but the value must already
+				// be above the operator's dust floor at
+				// admission time — the join-request
+				// validation runs before the seal-time
+				// builder, and a zero or sub-dust placeholder
+				// is rejected with ErrVTXOAmountBelowMinimum.
+				Amount:         change,
+				PolicyTemplate: policyTemplate,
+				PkScript:       pkScript,
+				Expiry:         req.VTXOExitDelay,
+				ClientKey:      changeClientKey.PubKey,
+				OwnerKey:       *changeClientKey,
+				OperatorKey:    req.OperatorKey,
+				Origin:         types.VTXOOriginRoundRefresh,
+				IsChange:       true,
+			},
+		}
+	}
+
+	// Register the intent with the round actor. TriggerRegistration is
+	// left false here so the wallet handler stops at the "intent
+	// queued" boundary; the RPC handler fires the IntentRequested
+	// step separately (via darepod.TriggerRoundRegistration), which
+	// mirrors the OLD LeaveVTXOs+JoinNextRound split that arktest
+	// exercises today. The eager-mode RegisterIntentMsg.TriggerRegistration
+	// path collapses both steps into a single Ask and has a latent ctx
+	// issue in arktest with EagerRoundJoin=false: the FSM transition
+	// inside the same Ask interleaves with the outbound publish in a
+	// way that leaves the operator's forfeit-VTXO lookup with a
+	// cancelled context. Splitting matches the proven-working pattern.
+	//
+	// Ask context is stripped of caller cancellation as defense in
+	// depth in case any caller invokes the wallet handler directly
+	// with a request-scoped ctx; the Await keeps the original ctx.
+	serviceKey := actormsg.RoundActorServiceKey()
+	roundRef := serviceKey.Ref(a.actorSystem)
+
+	askCtx := context.WithoutCancel(ctx)
+	future := roundRef.Ask(askCtx, &actormsg.RegisterIntentMsg{
+		Forfeits:            forfeits,
+		VTXOs:               vtxos,
+		Leaves:              leaves,
+		TriggerRegistration: false,
+	})
+	result := future.Await(ctx)
+	if result.IsErr() {
+		a.logger(ctx).WarnS(ctx, "Round rejected onchain send intent",
+			result.Err(),
+		)
+
+		return fn.Err[WalletResp](
+			fmt.Errorf(
+				"round rejected onchain send intent: %w",
+				result.Err(),
+			),
+		)
+	}
+
+	committed = true
+
+	a.logger(ctx).InfoS(ctx, "Onchain send intent registered",
+		slog.Int("forfeits", len(forfeits)),
+		slog.Int("leaves", len(leaves)),
+		slog.Int("change_vtxos", len(vtxos)),
+		slog.Int64("total_selected", int64(totalSelected)),
+		slog.Int64("change_projection", int64(change)),
+	)
+
+	return fn.Ok[WalletResp](&SendOnChainResponse{
+		Status:            SendOnChainStatusSubmitted,
+		ActualAmountSat:   sendOnChainActualAmount(req, totalSelected),
+		SelectedOutpoints: selectedOutpoints,
+		TotalSelected:     totalSelected,
+		ChangeAmount:      change,
+	})
+}
+
+// sendOnChainActualAmount returns the on-chain amount that will land at
+// the destination. In bounded mode this is the exact TargetAmountSat;
+// in sweep-all it is the pre-fee Σ(inputs), which the server reduces by
+// the seal-time operator fee.
+func sendOnChainActualAmount(req *SendOnChainRequest,
+	totalSelected btcutil.Amount) btcutil.Amount {
+
+	if req.IsSweepAll() {
+		return totalSelected
+	}
+
+	return req.TargetAmountSat
 }
 
 // releaseManagerForfeitStrict releases forfeit reservations and returns
