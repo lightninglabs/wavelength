@@ -15,6 +15,7 @@ into specific topics below.
 | [fee_ledger.md](fee_ledger.md) | Client-side double-entry fee ledger: chart of accounts, per-flow walkthroughs, emission sites, replay safety |
 | [fee-change-model.md](fee-change-model.md) | Seal-time fee handshake (#270): change-output designation rules, 11-scenario catalogue, proto contract, CLI mapping |
 | [sdk_layered_architecture.md](sdk_layered_architecture.md) | SDK layering rationale: `sdk/ark` facade, remote vs. embedded modes, `sdk/swaps` future direction |
+| [swap_system.md](swap_system.md) | End-to-end swap walkthrough: vHTLC tree, receive (out-swap) and pay (in-swap) flows, same-Ark p2p detection, swap-server RPCs, and proof-gated indexer authorization, with mermaid diagrams |
 | [walletdk_integration.md](walletdk_integration.md) | Basic `walletdk` integration flow, startup/config examples, swap accounting, and wrapper guidance |
 | [walletdkrpc_build.md](walletdkrpc_build.md) | How to build and install the daemon and CLI with the wallet RPC subserver enabled (`walletdkrpc` + `swapruntime` tags) |
 | [swap_background_execution.md](swap_background_execution.md) | Optional build-tagged daemon executor for background swap progress and daemon-backed CLI control |
