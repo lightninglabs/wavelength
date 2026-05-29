@@ -968,6 +968,32 @@ func (s *ReceiveSession) acceptOutSwapHtlcEvent(ctx context.Context,
 		return fmt.Errorf("get vHTLC pkScript: %w", err)
 	}
 
+	// When the swap server reports the script it actually funded, compare
+	// it to the one derived here. A mismatch means the two sides disagree
+	// on the vHTLC script (for example a lib/arkscript version skew); the
+	// funded output then lives at an address this receiver would never
+	// query, so the poll would otherwise loop until the refund locktime.
+	// Fail fast with a clear reason instead. The check is skipped for older
+	// servers that do not populate the script.
+	if len(event.VHTLCPkScript) > 0 &&
+		!bytes.Equal(event.VHTLCPkScript, pkScript) {
+		return s.failTerminal(
+			ctx, fmt.Sprintf("swap server funded vHTLC script %x "+
+				"but receiver derived %x; client and server "+
+				"disagree on the vHTLC script (likely a "+
+				"lib/arkscript version skew)",
+				event.VHTLCPkScript, pkScript),
+			nil,
+			nil,
+		)
+	}
+
+	s.client.log.DebugS(ctx, "Accepted out-swap HTLC event",
+		btclog.Hex("hash", s.PaymentHash[:]),
+		slog.String("pk_script", hex.EncodeToString(pkScript)),
+		slog.String("server_vhtlc_outpoint", event.VHTLCOutpoint),
+	)
+
 	policyTemplate, err := encodeVHTLCPolicyTemplate(policy)
 	if err != nil {
 		return fmt.Errorf("encode vHTLC policy: %w", err)
