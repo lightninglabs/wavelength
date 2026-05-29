@@ -28,12 +28,11 @@ func newSendCmd() *cobra.Command {
 			"subsystem (which transparently picks same-Ark p2p " +
 			"vs real Lightning). With --onchain the destination " +
 			"is a bech32 onchain address and the daemon submits " +
-			"a cooperative-leave (LeaveVTXOs) request.\n\n" +
-			"Onchain v1 has whole-VTXO sweep semantics: the " +
-			"actual outflow (echoed on stderr and in " +
-			"actual_amount_sat) may exceed --amt because " +
-			"selected VTXOs are swept in full. Set --sweep-all " +
-			"with --amt=0 to drain every live VTXO.\n\n" +
+			"an atomic onchain-send (SendOnChain) request that " +
+			"lands exactly --amt sats at the destination and " +
+			"returns the residual to the wallet as a change " +
+			"VTXO. Use --sweep-all with --amt=0 to drain every " +
+			"live VTXO instead.\n\n" +
 			"Examples:\n" +
 			"  darepocli send lnbcrt... --offchain\n" +
 			"  darepocli send bcrt1... --onchain --amt 1000\n" +
@@ -171,22 +170,6 @@ func walletSend(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("send prepared intent: %w",
 					err)
-			}
-
-			// For onchain sends actual_amount_sat may exceed
-			// --amt under the v1 whole-VTXO sweep semantics.
-			// Surface it on stderr so a human reading the
-			// terminal sees the real outflow while shell
-			// pipelines can still consume the JSON body.
-			actual := resp.GetActualAmountSat()
-			if !offchain && !sweepAll && actual != int64(amt) {
-				fmt.Fprintf(
-					cmd.ErrOrStderr(),
-					"note: actual_amount_sat=%d exceeds "+
-						"--amt=%d due to whole-VTXO "+
-						"sweep semantics\n", actual,
-					amt,
-				)
 			}
 
 			return printWalletProto(resp)
