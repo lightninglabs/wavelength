@@ -45,6 +45,7 @@ func TestRegisterDefersResumeUntilWalletReadyHook(t *testing.T) {
 
 	backend := &fakeWalletBackend{}
 	cfg := &darepod.Config{
+		Network: "regtest",
 		Swap: &darepod.SwapConfig{
 			Backend:        backend,
 			SuppressResume: true,

@@ -26,11 +26,15 @@ service WalletService {
     // and starts the wallet subsystem. Proxies daemonrpc.UnlockWallet.
     rpc Unlock (UnlockRequest) returns (UnlockResponse);
 
-    // Send dispatches an outbound payment. The destination oneof selects
-    // between paying a BOLT-11 Lightning invoice (routed via an out-swap;
-    // the swap server transparently picks same-Ark p2p or real Lightning)
-    // and sending to an onchain address (routed via LeaveVTXOs cooperative
-    // exit). The daemon owns all downstream lifecycle.
+    // PrepareSend validates and previews an outbound payment without
+    // moving funds. The response carries a short-lived send_intent_id
+    // that must be consumed by Send.
+    rpc PrepareSend (PrepareSendRequest) returns (PrepareSendResponse);
+
+    // Send dispatches a previously prepared outbound payment. The
+    // request is intentionally intent-only: callers must use
+    // PrepareSend first so they can present amount, rail, fee, and
+    // total-outflow details before funds move.
     rpc Send (SendRequest) returns (SendResponse);
 
     // Recv asks the daemon for a Lightning invoice the caller can hand
@@ -130,6 +134,34 @@ enum ListView {
     LIST_VIEW_ONCHAIN = 3;
 }
 
+// SendRail identifies the expected settlement rail for a prepared send.
+enum SendRail {
+    SEND_RAIL_UNSPECIFIED = 0;
+
+    // SEND_RAIL_OFFCHAIN_UNKNOWN is used when the wallet can parse the
+    // invoice locally but the swapserver has not supplied a quote that
+    // distinguishes same-Ark settlement from Lightning settlement.
+    SEND_RAIL_OFFCHAIN_UNKNOWN = 1;
+
+    SEND_RAIL_IN_ARK = 2;
+    SEND_RAIL_LIGHTNING = 3;
+    SEND_RAIL_ONCHAIN = 4;
+}
+
+// SendQuoteStatus describes how complete the prepare-time quote is.
+enum SendQuoteStatus {
+    SEND_QUOTE_STATUS_UNSPECIFIED = 0;
+
+    // SEND_QUOTE_STATUS_COMPLETE means every user-visible amount and fee
+    // field is backed by a remote quote.
+    SEND_QUOTE_STATUS_COMPLETE = 1;
+
+    // SEND_QUOTE_STATUS_LOCAL_ONLY means the wallet performed local
+    // validation and selection but one or more remote quote APIs are not
+    // available yet.
+    SEND_QUOTE_STATUS_LOCAL_ONLY = 2;
+}
+
 message CreateRequest {
     // wallet_password is the password used to encrypt the on-disk seed.
     // Must be at least 8 bytes. The password is consumed and zeroed by
@@ -173,7 +205,7 @@ message UnlockResponse {
     string identity_pubkey = 1;
 }
 
-message SendRequest {
+message PrepareSendRequest {
     // destination selects the outbound payment target. Exactly one
     // variant must be set.
     oneof destination {
@@ -210,6 +242,58 @@ message SendRequest {
     // distinct from "amt_sat defaulted to zero" so a typo cannot empty
     // the wallet by accident. Ignored on the invoice path.
     bool sweep_all = 6;
+}
+
+message PrepareSendResponse {
+    // send_intent_id is a short-lived, single-use token consumed by Send.
+    string send_intent_id = 1;
+
+    // amount_sat is the destination principal amount.
+    int64 amount_sat = 2;
+
+    // expected_fee_sat is meaningful only when fee_known is true.
+    int64 expected_fee_sat = 3;
+
+    // fee_known is false when a required remote quote API is missing.
+    bool fee_known = 4;
+
+    // expected_total_outflow_sat is meaningful only when
+    // total_outflow_known is true.
+    int64 expected_total_outflow_sat = 5;
+
+    // total_outflow_known is false when the final outflow depends on a
+    // remote quote that is not available yet.
+    bool total_outflow_known = 6;
+
+    SendRail rail = 7;
+    SendQuoteStatus quote_status = 8;
+
+    // destination_summary is a short display string suitable for CLI and
+    // UI confirmation prompts.
+    string destination_summary = 9;
+
+    // invoice_description is the BOLT-11 description when present.
+    string invoice_description = 10;
+
+    // payment_hash is the invoice payment hash when available.
+    string payment_hash = 11;
+
+    // expires_at_unix is the unix timestamp after which Send rejects the
+    // prepared intent.
+    int64 expires_at_unix = 12;
+
+    // selected_outpoints is populated for onchain sends so Send can spend
+    // exactly the VTXO set previewed to the user.
+    repeated string selected_outpoints = 13;
+
+    // warning carries a concise human-facing caveat for local-only
+    // previews.
+    string warning = 14;
+}
+
+message SendRequest {
+    // send_intent_id is returned by PrepareSend and may be consumed once.
+    string send_intent_id = 1;
 }
 
 message SendResponse {

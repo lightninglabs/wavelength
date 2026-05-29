@@ -136,14 +136,20 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 		if err != nil {
 			return nil, nil, err
 		}
-		req, err := buildWalletSendRequest(
+		req, err := buildWalletPrepareSendRequest(
 			args.Destination, offchain, args.AmtSat, args.MaxFeeSat,
 			args.Note, args.SweepAll,
 		)
 		if err != nil {
 			return nil, nil, err
 		}
-		resp, err := client.Send(ctx, req)
+		prepareResp, err := client.PrepareSend(ctx, req)
+		if err != nil {
+			return nil, nil, mapWalletRPCError(err)
+		}
+		resp, err := client.Send(ctx, &walletdkrpc.SendRequest{
+			SendIntentId: prepareResp.GetSendIntentId(),
+		})
 		if err != nil {
 			return nil, nil, mapWalletRPCError(err)
 		}
@@ -261,12 +267,14 @@ func buildWalletActivityRequest(pendingOnly bool, kinds []string, limit,
 	return req, nil
 }
 
-// buildWalletSendRequest assembles a SendRequest while running the
+// buildWalletPrepareSendRequest assembles a PrepareSendRequest while running
+// the
 // CLI's input hardening (validateDestination, validateFreeText) and
 // the offchain/onchain invariants so MCP can't construct a shape the
 // CLI would reject.
-func buildWalletSendRequest(dest string, offchain bool, amt, maxFee uint64,
-	note string, sweepAll bool) (*walletdkrpc.SendRequest, error) {
+func buildWalletPrepareSendRequest(dest string, offchain bool, amt,
+	maxFee uint64, note string,
+	sweepAll bool) (*walletdkrpc.PrepareSendRequest, error) {
 
 	if err := validateDestination(dest); err != nil {
 		return nil, err
@@ -290,18 +298,19 @@ func buildWalletSendRequest(dest string, offchain bool, amt, maxFee uint64,
 		}
 	}
 
-	req := &walletdkrpc.SendRequest{
+	req := &walletdkrpc.PrepareSendRequest{
 		AmtSat:    amt,
 		MaxFeeSat: maxFee,
 		Note:      note,
 		SweepAll:  sweepAll,
 	}
 	if offchain {
-		req.Destination = &walletdkrpc.SendRequest_Invoice{
+		req.Destination = &walletdkrpc.PrepareSendRequest_Invoice{
 			Invoice: dest,
 		}
 	} else {
-		req.Destination = &walletdkrpc.SendRequest_OnchainAddress{
+		req.Destination = &walletdkrpc.
+			PrepareSendRequest_OnchainAddress{
 			OnchainAddress: dest,
 		}
 	}

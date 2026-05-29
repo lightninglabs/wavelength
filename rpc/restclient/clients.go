@@ -797,6 +797,17 @@ func (c *WalletServiceClient) Unlock(ctx context.Context,
 	return out, err
 }
 
+// PrepareSend validates and previews a wallet send.
+func (c *WalletServiceClient) PrepareSend(ctx context.Context,
+	in *walletdkrpc.PrepareSendRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.PrepareSendResponse, error) {
+
+	out := new(walletdkrpc.PrepareSendResponse)
+	err := c.client.Post(ctx, "/v1/wallet/prepare-send", in, out)
+
+	return out, err
+}
+
 // Send dispatches a wallet send.
 func (c *WalletServiceClient) Send(ctx context.Context,
 	in *walletdkrpc.SendRequest, _ ...grpc.CallOption) (

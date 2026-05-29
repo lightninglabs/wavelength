@@ -106,6 +106,67 @@ func listResultFromProto(view ListView,
 	return out
 }
 
+func prepareSendResultFromProto(
+	resp *walletdkrpc.PrepareSendResponse) *PrepareSendResult {
+
+	if resp == nil {
+		return &PrepareSendResult{}
+	}
+
+	return &PrepareSendResult{
+		SendIntentID:            resp.GetSendIntentId(),
+		AmountSat:               resp.GetAmountSat(),
+		ExpectedFeeSat:          resp.GetExpectedFeeSat(),
+		FeeKnown:                resp.GetFeeKnown(),
+		ExpectedTotalOutflowSat: resp.GetExpectedTotalOutflowSat(),
+		TotalOutflowKnown:       resp.GetTotalOutflowKnown(),
+		Rail:                    sendRailFromProto(resp.GetRail()),
+		QuoteStatus: quoteStatusFromProto(
+			resp.GetQuoteStatus(),
+		),
+		DestinationSummary: resp.GetDestinationSummary(),
+		InvoiceDescription: resp.GetInvoiceDescription(),
+		PaymentHash:        resp.GetPaymentHash(),
+		ExpiresAtUnix:      resp.GetExpiresAtUnix(),
+		SelectedOutpoints: append(
+			[]string(nil), resp.GetSelectedOutpoints()...,
+		),
+		Warning: resp.GetWarning(),
+	}
+}
+
+func sendRailFromProto(rail walletdkrpc.SendRail) SendRail {
+	switch rail {
+	case walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN:
+		return SendRailOffchainUnknown
+
+	case walletdkrpc.SendRail_SEND_RAIL_IN_ARK:
+		return SendRailInArk
+
+	case walletdkrpc.SendRail_SEND_RAIL_LIGHTNING:
+		return SendRailLightning
+
+	case walletdkrpc.SendRail_SEND_RAIL_ONCHAIN:
+		return SendRailOnchain
+
+	default:
+		return SendRailUnspecified
+	}
+}
+
+func quoteStatusFromProto(status walletdkrpc.SendQuoteStatus) SendQuoteStatus {
+	switch status {
+	case walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE:
+		return SendQuoteStatusComplete
+
+	case walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY:
+		return SendQuoteStatusLocalOnly
+
+	default:
+		return SendQuoteStatusUnspecified
+	}
+}
+
 // exitJobStatusFromProto maps the walletdkrpc ExitJobStatus enum onto the
 // SDK string set.
 func exitJobStatusFromProto(s walletdkrpc.ExitJobStatus) ExitJobStatus {

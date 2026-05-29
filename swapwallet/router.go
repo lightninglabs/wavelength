@@ -4,13 +4,16 @@ package swapwallet
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"strings"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightningnetwork/lnd/zpay32"
 )
 
 // router dispatches outbound Send requests to the appropriate daemon
@@ -22,54 +25,150 @@ import (
 type router struct {
 	deps    *Deps
 	runtime *Runtime
+	intents *preparedSendStore
 }
 
 // newRouter constructs a router bound to the shared wallet runtime.
 func newRouter(deps *Deps, runtime *Runtime) *router {
-	return &router{deps: deps, runtime: runtime}
+	return &router{
+		deps:    deps,
+		runtime: runtime,
+		intents: newPreparedSendStore(),
+	}
 }
 
-// Send dispatches a SendRequest to the right backend and returns the
-// initial WalletEntry that callers can poll or subscribe to for status
-// transitions.
-func (r *router) Send(ctx context.Context, req *walletdkrpc.SendRequest) (
-	*walletdkrpc.SendResponse, error) {
+// PrepareSend validates an outbound payment and records the exact intent that
+// a later Send call may consume.
+func (r *router) PrepareSend(ctx context.Context,
+	req *walletdkrpc.PrepareSendRequest) (*walletdkrpc.PrepareSendResponse,
+	error) {
 
 	if r == nil || r.deps == nil {
 		return nil, ErrSwapBackendUnavailable
 	}
+	if req == nil {
+		return nil, ErrInvalidDestination
+	}
 
 	switch dest := req.GetDestination().(type) {
-	case *walletdkrpc.SendRequest_Invoice:
-		return r.sendInvoice(ctx, dest.Invoice, req)
+	case *walletdkrpc.PrepareSendRequest_Invoice:
+		return r.prepareInvoice(ctx, dest.Invoice, req)
 
-	case *walletdkrpc.SendRequest_OnchainAddress:
-		return r.sendOnchain(ctx, dest.OnchainAddress, req)
+	case *walletdkrpc.PrepareSendRequest_OnchainAddress:
+		return r.prepareOnchain(ctx, dest.OnchainAddress, req)
 
 	default:
 		return nil, ErrInvalidDestination
 	}
 }
 
-// sendInvoice routes a BOLT-11 invoice through the daemon-owned swap
-// subserver. PR #339 lets the swap server transparently settle same-Ark
-// p2p when both parties are co-located, so the caller never sees that
-// distinction at the wallet layer.
-func (r *router) sendInvoice(ctx context.Context, invoice string,
-	req *walletdkrpc.SendRequest) (*walletdkrpc.SendResponse, error) {
+// Send consumes a prepared send intent and dispatches it to the right backend.
+func (r *router) Send(ctx context.Context, req *walletdkrpc.SendRequest) (
+	*walletdkrpc.SendResponse, error) {
+
+	if r == nil || r.deps == nil {
+		return nil, ErrSwapBackendUnavailable
+	}
+	if req == nil {
+		return nil, ErrInvalidSendIntent
+	}
+
+	intent, err := r.intents.consume(
+		strings.TrimSpace(
+			req.GetSendIntentId(),
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	switch intent.kind {
+	case preparedSendInvoice:
+		return r.sendInvoiceIntent(ctx, intent)
+
+	case preparedSendOnchain:
+		return r.sendOnchainIntent(ctx, intent)
+
+	default:
+		return nil, ErrInvalidSendIntent
+	}
+}
+
+func (r *router) prepareInvoice(ctx context.Context, invoice string,
+	req *walletdkrpc.PrepareSendRequest) (*walletdkrpc.PrepareSendResponse,
+	error) {
 
 	invoice = strings.TrimSpace(invoice)
 	if invoice == "" {
 		return nil, ErrInvalidDestination
 	}
+
+	decoded, err := decodePreparedInvoice(invoice, r.deps.ChainParams)
+	if err != nil {
+		return nil, err
+	}
+
+	amountSat, err := extractPreparedInvoiceAmountSat(decoded)
+	if err != nil {
+		return nil, err
+	}
+	if amountSat > math.MaxInt64 {
+		return nil, fmt.Errorf("%w: invoice amount exceeds int64 range",
+			ErrAmountInvalid)
+	}
+
+	paymentHash := ""
+	if decoded.PaymentHash != nil {
+		paymentHash = hex.EncodeToString(decoded.PaymentHash[:])
+	}
+
+	description := ""
+	if decoded.Description != nil {
+		description = strings.TrimSpace(*decoded.Description)
+	}
+
+	intent := &preparedSendIntent{
+		kind:      preparedSendInvoice,
+		invoice:   invoice,
+		amountSat: amountSat,
+		note:      req.GetNote(),
+		maxFeeSat: req.GetMaxFeeSat(),
+	}
+
+	if _, err := r.intents.put(intent); err != nil {
+		return nil, err
+	}
+
+	return prepareResponseFromIntent(
+		intent, prepareSendPreview{
+			rail: walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN,
+			quoteStatus: walletdkrpc.
+				SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
+			amountSat:          int64(amountSat),
+			feeKnown:           false,
+			totalOutflowKnown:  false,
+			destinationSummary: truncate(invoice, 32),
+			invoiceDescription: description,
+			paymentHash:        paymentHash,
+			warning: "swapserver quote support is not available " +
+				"yet",
+		},
+	), nil
+}
+
+// sendInvoiceIntent routes a prepared BOLT-11 invoice through the
+// daemon-owned swap subserver.
+func (r *router) sendInvoiceIntent(ctx context.Context,
+	intent *preparedSendIntent) (*walletdkrpc.SendResponse, error) {
+
 	if r.deps.SwapService == nil {
 		return nil, ErrSwapBackendUnavailable
 	}
 
 	startResp, err := r.deps.SwapService.StartPay(
 		ctx, &swapclientrpc.StartPayRequest{
-			Invoice:   invoice,
-			MaxFeeSat: req.GetMaxFeeSat(),
+			Invoice:   intent.invoice,
+			MaxFeeSat: intent.maxFeeSat,
 		},
 	)
 	if err != nil {
@@ -77,7 +176,7 @@ func (r *router) sendInvoice(ctx context.Context, invoice string,
 	}
 
 	entry := swapEntryFromSummary(
-		startResp.GetSwap(), req.GetNote(), invoice,
+		startResp.GetSwap(), intent.note, intent.invoice,
 		walletdkrpc.EntryKind_ENTRY_KIND_SEND,
 	)
 
@@ -90,8 +189,8 @@ func (r *router) sendInvoice(ctx context.Context, invoice string,
 	}, nil
 }
 
-// sendOnchain routes an onchain destination through the existing
-// LeaveVTXOs cooperative-exit RPC. The router selects VTXOs covering the
+// prepareOnchain validates an onchain destination through local VTXO
+// selection. The router selects VTXOs covering the
 // requested amount using the existing wallet listing surface — no new
 // coin-selection primitive is introduced here.
 //
@@ -103,13 +202,15 @@ func (r *router) sendInvoice(ctx context.Context, invoice string,
 // pre-split a VTXO via OOR for exact amounts; that work is intentionally
 // out of scope here.
 //
-// Sweep semantics are gated on the explicit SendRequest.sweep_all flag:
+// Sweep semantics are gated on the explicit PrepareSendRequest.sweep_all flag:
 // amt_sat = 0 with sweep_all = false is rejected (the most common typo)
 // and amt_sat > 0 with sweep_all = true is rejected (contradictory).
 // This keeps "drain the wallet" structurally distinct from a defaulted
-// zero amount.
-func (r *router) sendOnchain(ctx context.Context, addr string,
-	req *walletdkrpc.SendRequest) (*walletdkrpc.SendResponse, error) {
+// zero amount. PrepareSend snapshots sweep_all as an explicit outpoint list;
+// VTXOs arriving after prepare are not included in the subsequent Send.
+func (r *router) prepareOnchain(ctx context.Context, addr string,
+	req *walletdkrpc.PrepareSendRequest) (*walletdkrpc.PrepareSendResponse,
+	error) {
 
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
@@ -137,32 +238,21 @@ func (r *router) sendOnchain(ctx context.Context, addr string,
 			ErrAmountInvalid)
 	}
 
-	leaveReq := &daemonrpc.LeaveVTXOsRequest{
-		DefaultDestination: &daemonrpc.LeaveDestination{
-			Target: &daemonrpc.LeaveDestination_Address{
-				Address: addr,
-			},
-		},
-	}
-
-	var actualSat int64
+	var (
+		actualSat int64
+		selected  []string
+	)
 	switch {
 	case sweepAll:
-		// Sweep every live VTXO. LeaveVTXOs rejects non-empty
-		// per-outpoint overrides under selection=all, so the
-		// caller's address is applied uniformly.
-		leaveReq.Selection = &daemonrpc.LeaveVTXOsRequest_All{
-			All: true,
-		}
-
-		// Total in flight is the sum of every live VTXO so the
-		// caller's UI can echo it back before the user treats the
-		// send as confirmed.
-		total, err := r.totalLiveVTXOAmount(ctx)
+		vtxos, err := r.listLiveVTXOsForLeave(ctx)
 		if err != nil {
 			return nil, err
 		}
-		actualSat = total
+		selected, actualSat = outpointsAndSum(vtxos)
+		if actualSat == 0 {
+			return nil, fmt.Errorf("%w: no live VTXOs to sweep",
+				ErrAmountRequired)
+		}
 
 	default:
 		// Caller-bounded send: select live VTXOs whose total covers
@@ -170,18 +260,80 @@ func (r *router) sendOnchain(ctx context.Context, addr string,
 		// is the input to LeaveVTXOs; per-outpoint destinations are
 		// omitted so DefaultDestination applies to every selected
 		// outpoint.
-		selected, selectedSum, err := r.selectVTXOsForAmount(
+		selectedSet, selectedSum, err := r.selectVTXOsForAmount(
 			ctx, int64(amtSat),
 		)
 		if err != nil {
 			return nil, err
 		}
-		leaveReq.Selection = &daemonrpc.LeaveVTXOsRequest_Outpoints{
-			Outpoints: &daemonrpc.OutpointSelection{
-				Outpoints: selected,
-			},
-		}
+		selected = selectedSet
 		actualSat = selectedSum
+	}
+
+	intent := &preparedSendIntent{
+		kind:              preparedSendOnchain,
+		onchainAddress:    addr,
+		amountSat:         amtSat,
+		note:              req.GetNote(),
+		maxFeeSat:         req.GetMaxFeeSat(),
+		sweepAll:          sweepAll,
+		selectedOutpoints: append([]string(nil), selected...),
+		actualAmountSat:   actualSat,
+	}
+
+	if _, err := r.intents.put(intent); err != nil {
+		return nil, err
+	}
+
+	warning := "operator cooperative-leave quote support is not " +
+		"available yet"
+
+	previewAmount := int64(amtSat)
+	if sweepAll {
+		previewAmount = actualSat
+	}
+
+	return prepareResponseFromIntent(
+		intent, prepareSendPreview{
+			rail: walletdkrpc.SendRail_SEND_RAIL_ONCHAIN,
+			quoteStatus: walletdkrpc.
+				SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
+			amountSat:               previewAmount,
+			feeKnown:                false,
+			expectedTotalOutflowSat: actualSat,
+			totalOutflowKnown:       true,
+			destinationSummary:      addr,
+			warning:                 warning,
+		},
+	), nil
+}
+
+// sendOnchainIntent routes a prepared onchain destination through the existing
+// LeaveVTXOs cooperative-exit RPC.
+func (r *router) sendOnchainIntent(ctx context.Context,
+	intent *preparedSendIntent) (*walletdkrpc.SendResponse, error) {
+
+	if r.deps.RPCServer == nil {
+		return nil, ErrSwapBackendUnavailable
+	}
+	if len(intent.selectedOutpoints) == 0 {
+		return nil, ErrInvalidSendIntent
+	}
+
+	leaveReq := &daemonrpc.LeaveVTXOsRequest{
+		Selection: &daemonrpc.LeaveVTXOsRequest_Outpoints{
+			Outpoints: &daemonrpc.OutpointSelection{
+				Outpoints: append(
+					[]string(nil),
+					intent.selectedOutpoints...,
+				),
+			},
+		},
+		DefaultDestination: &daemonrpc.LeaveDestination{
+			Target: &daemonrpc.LeaveDestination_Address{
+				Address: intent.onchainAddress,
+			},
+		},
 	}
 
 	resp, err := r.deps.RPCServer.LeaveVTXOs(ctx, leaveReq)
@@ -218,12 +370,13 @@ func (r *router) sendOnchain(ctx context.Context, addr string,
 	// recording int64(amtSat) on the pending entry would make the row
 	// show as a zero-sat exit in List/SubscribeWallet. The real outflow
 	// is the actualSat sum of selected VTXOs computed above.
-	entryAmt := int64(amtSat)
-	if sweepAll {
-		entryAmt = actualSat
+	entryAmt := int64(intent.amountSat)
+	if intent.sweepAll {
+		entryAmt = intent.actualAmountSat
 	}
 	entry := leaveEntryStub(
-		resp.GetQueuedOutpoints(), addr, entryAmt, req.GetNote(),
+		resp.GetQueuedOutpoints(), intent.onchainAddress, entryAmt,
+		intent.note,
 	)
 
 	// v1 SCOPE: we track the pending row for the deadline watcher
@@ -240,7 +393,7 @@ func (r *router) sendOnchain(ctx context.Context, addr string,
 
 	return &walletdkrpc.SendResponse{
 		Entry:           entry,
-		ActualAmountSat: actualSat,
+		ActualAmountSat: intent.actualAmountSat,
 	}, nil
 }
 
@@ -268,26 +421,6 @@ func (r *router) listLiveVTXOsForLeave(ctx context.Context) ([]*daemonrpc.VTXO,
 	}
 
 	return listResp.GetVtxos(), nil
-}
-
-// totalLiveVTXOAmount sums every live VTXO so a sweep-all caller can be
-// told how much will actually leave the wallet before the daemon hands
-// the operation off to LeaveVTXOs.
-func (r *router) totalLiveVTXOAmount(ctx context.Context) (int64, error) {
-	vtxos, err := r.listLiveVTXOsForLeave(ctx)
-	if err != nil {
-		return 0, err
-	}
-
-	var total int64
-	for _, v := range vtxos {
-		if v.GetAmountSat() <= 0 {
-			continue
-		}
-		total += v.GetAmountSat()
-	}
-
-	return total, nil
 }
 
 // selectVTXOsForAmount returns the smallest-sufficient set of live VTXO
@@ -329,4 +462,56 @@ func (r *router) selectVTXOsForAmount(ctx context.Context, target int64) (
 
 	return nil, 0, fmt.Errorf("%w: insufficient live VTXOs cover %d sat "+
 		"(covered=%d)", ErrAmountRequired, target, covered)
+}
+
+func outpointsAndSum(vtxos []*daemonrpc.VTXO) ([]string, int64) {
+	var (
+		outpoints []string
+		total     int64
+	)
+	for _, v := range vtxos {
+		if v.GetAmountSat() <= 0 {
+			continue
+		}
+		outpoints = append(outpoints, v.GetOutpoint())
+		total += v.GetAmountSat()
+	}
+
+	return outpoints, total
+}
+
+func decodePreparedInvoice(invoice string,
+	chainParams *chaincfg.Params) (*zpay32.Invoice, error) {
+
+	if chainParams == nil {
+		return nil, fmt.Errorf("%w: invoice chain params are required",
+			ErrSwapBackendUnavailable)
+	}
+
+	decoded, err := zpay32.Decode(invoice, chainParams)
+	if err != nil {
+		return nil, fmt.Errorf("%w: decode invoice: %v",
+			ErrInvalidDestination, err)
+	}
+
+	return decoded, nil
+}
+
+func extractPreparedInvoiceAmountSat(decoded *zpay32.Invoice) (uint64, error) {
+	if decoded == nil || decoded.MilliSat == nil {
+		return 0, fmt.Errorf("%w: invoice amount is required",
+			ErrAmountRequired)
+	}
+
+	amountMSat := uint64(*decoded.MilliSat)
+	if amountMSat == 0 {
+		return 0, fmt.Errorf("%w: invoice amount must be positive",
+			ErrAmountInvalid)
+	}
+	if amountMSat%1000 != 0 {
+		return 0, fmt.Errorf("%w: invoice amount must be whole "+
+			"satoshis", ErrAmountInvalid)
+	}
+
+	return amountMSat / 1000, nil
 }

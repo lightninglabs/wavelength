@@ -19,7 +19,7 @@ func TestWalletMethodsRequireWalletRPC(t *testing.T) {
 	})
 	require.ErrorIs(t, err, ErrWalletRPCUnavailable)
 
-	_, err = client.Send(context.Background(), SendRequest{
+	_, err = client.PrepareSend(context.Background(), PrepareSendRequest{
 		Invoice: "invoice",
 	})
 	require.ErrorIs(t, err, ErrWalletRPCUnavailable)

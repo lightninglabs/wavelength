@@ -36,6 +36,10 @@ type schemaMethod struct {
 	// ResponseType is the proto response message name.
 	ResponseType string `json:"response_type"`
 
+	// DryRunResponseType is the proto response message name emitted in
+	// dry-run mode when it differs from ResponseType.
+	DryRunResponseType string `json:"dry_run_response_type,omitempty"`
+
 	// DryRun indicates whether the command supports --dry-run /
 	// --dry_run. Top-level wallet verbs use --dry-run (CLI-only
 	// validation, exits 10); ark.* commands use --dry_run that
@@ -208,17 +212,28 @@ func walletPaymentMethodRegistry() []schemaMethod {
 				{
 					Name: "dry-run",
 					Type: "bool",
-					Description: "CLI-side validation " +
-						"only; print the proto-JSON " +
-						"preview and exit 10 without " +
+					Description: "prepare and print the " +
+						"proto-JSON preview without " +
 						"dispatching",
 				},
+				{
+					Name: "force",
+					Type: "bool",
+					Description: "skip interactive " +
+						"confirmation",
+				},
+				{
+					Name:        "yes",
+					Type:        "bool",
+					Description: "alias for force",
+				},
 			},
-			RequestType:  "SendRequest",
-			ResponseType: "SendResponse",
-			DryRun:       true,
-			JSONInput:    false,
-			MCPTool:      true,
+			RequestType:        "PrepareSendRequest",
+			ResponseType:       "SendResponse",
+			DryRunResponseType: "PrepareSendResponse",
+			DryRun:             true,
+			JSONInput:          false,
+			MCPTool:            true,
 		},
 		{
 			Method:      "recv",
