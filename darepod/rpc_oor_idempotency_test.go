@@ -158,6 +158,61 @@ func (a *blockingSendOORActor) Receive(ctx context.Context,
 	}
 }
 
+// TestSendOORRejectsRecipientBelowDustBeforeWalletSelection verifies the
+// daemon enforces the operator's advertised dust limit before it selects wallet
+// inputs or submits work to the OOR actor. This is the daemon-side guard behind
+// `darepocli ark send oor`: a caller that asks to create a sub-dust recipient
+// VTXO must fail synchronously instead of leaving the receiver with a live VTXO
+// they cannot later spend cooperatively.
+func TestSendOORRejectsRecipientBelowDustBeforeWalletSelection(t *testing.T) {
+	t.Parallel()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const (
+		dustLimit = int64(1000)
+		amountSat = int64(999)
+		exitDelay = uint32(10)
+	)
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+
+	server := &Server{
+		cfg:         &Config{},
+		log:         btclog.Disabled,
+		walletReady: walletReady,
+		chainParams: &chaincfg.RegressionNetParams,
+		serverConn: newBufconnClient(t, &fakeArkService{
+			getInfoResponse: &arkrpc.GetInfoResponse{
+				Pubkey: operatorKey.
+					PubKey().
+					SerializeCompressed(),
+				VtxoExitDelay: exitDelay,
+				DustLimit:     dustLimit,
+			},
+		}),
+	}
+
+	rpcServer := NewRPCServer(server)
+	recipient := sendOORPolicyRecipient(
+		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountSat,
+	)
+
+	_, err = rpcServer.SendOOR(t.Context(), &daemonrpc.SendOORRequest{
+		Recipient: recipient,
+	})
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.ErrorContains(
+		t, err, "amount 999 below operator dust_limit 1000",
+	)
+}
+
 // TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection verifies a
 // keyed retry returns the existing OOR session before acquiring fresh wallet
 // inputs.

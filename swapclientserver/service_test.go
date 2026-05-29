@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/darepod"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
@@ -24,6 +26,8 @@ import (
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/zpay32"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -260,6 +264,62 @@ func TestStartPayPreservesRuntimeStatusCode(t *testing.T) {
 		t, status.Convert(err).Message(),
 		"receive intent already used",
 	)
+}
+
+// TestStartPayRejectsInvoiceBelowOperatorDust verifies the wallet RPC facade
+// applies the same operator dust limit as the underlying daemon OOR sender
+// before it persists a pay swap. Without this synchronous preflight, a
+// sub-dust BOLT-11 invoice could be admitted, then fail later in the
+// background worker after the user-facing Send RPC already returned.
+func TestStartPayRejectsInvoiceBelowOperatorDust(t *testing.T) {
+	t.Parallel()
+
+	fakeClient := newFakeSwapRuntime()
+	service := newTestSwapClientService(fakeClient)
+	service.chainParams = &chaincfg.RegressionNetParams
+	service.payMinAmount = func(context.Context) (uint64, error) {
+		return 1000, nil
+	}
+	defer service.cancel()
+
+	_, err := service.StartPay(
+		t.Context(), &swapclientrpc.StartPayRequest{
+			Invoice: testSwapPayInvoice(t, 999),
+		},
+	)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.ErrorContains(
+		t, err, "invoice amount_sat 999 is below the 1000 sat "+
+			"minimum for pay swaps",
+	)
+	require.Equal(t, 0, fakeClient.startPayCount())
+}
+
+// TestStartPayRejectsMissingChainParamsAsInternal verifies a daemon wiring
+// error is not reported as a caller invoice problem. Pay invoice dust
+// validation needs network parameters to parse BOLT-11 correctly; if the
+// service is missing them, the RPC should fail as an internal server error
+// before touching the swap runtime.
+func TestStartPayRejectsMissingChainParamsAsInternal(t *testing.T) {
+	t.Parallel()
+
+	fakeClient := newFakeSwapRuntime()
+	service := newTestSwapClientService(fakeClient)
+	service.payMinAmount = func(context.Context) (uint64, error) {
+		return 1000, nil
+	}
+	defer service.cancel()
+
+	_, err := service.StartPay(
+		t.Context(), &swapclientrpc.StartPayRequest{
+			Invoice: testSwapPayInvoice(t, 999),
+		},
+	)
+	require.Equal(t, codes.Internal, status.Code(err))
+	require.ErrorContains(
+		t, err, "chain params required for pay invoice validation",
+	)
+	require.Equal(t, 0, fakeClient.startPayCount())
 }
 
 // TestStartReceiveReturnsInvoiceAndStartsWorker verifies receive startup
@@ -675,6 +735,32 @@ func testHash(seed byte) lntypes.Hash {
 	}
 
 	return hash
+}
+
+func testSwapPayInvoice(t *testing.T, amountSat btcutil.Amount) string {
+	t.Helper()
+
+	invoiceKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage := lntypes.Preimage{0x60, 0x6, 0x60, 0x6}
+	invoice, err := zpay32.NewInvoice(
+		&chaincfg.RegressionNetParams, preimage.Hash(), time.Now(),
+		zpay32.Amount(
+			lnwire.NewMSatFromSatoshis(amountSat),
+		),
+		zpay32.Description("pay"),
+	)
+	require.NoError(t, err)
+
+	paymentRequest, err := invoice.Encode(zpay32.MessageSigner{
+		SignCompact: func(msg []byte) ([]byte, error) {
+			return ecdsa.SignCompact(invoiceKey, msg, true), nil
+		},
+	})
+	require.NoError(t, err)
+
+	return paymentRequest
 }
 
 type fakeSwapRuntime struct {

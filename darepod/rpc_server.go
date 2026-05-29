@@ -284,6 +284,24 @@ func appendOORChangeRecipient(ctx context.Context,
 	return out, change, nil
 }
 
+// validateOORRecipientDust enforces the operator's advertised output floor for
+// caller-selected OOR recipients. Change outputs are checked later after input
+// selection; this guard prevents creating a receiver VTXO that the operator
+// would not accept in subsequent cooperative spends.
+func validateOORRecipientDust(amountSat int64, dustLimit btcutil.Amount) error {
+	if dustLimit <= 0 {
+		return nil
+	}
+
+	amount := btcutil.Amount(amountSat)
+	if amount >= dustLimit {
+		return nil
+	}
+
+	return status.Errorf(codes.InvalidArgument, "amount %d below operator "+
+		"dust_limit %d", amount, dustLimit)
+}
+
 // walletStateToProto maps the daemon's in-process WalletState enum to
 // the public daemonrpc.WalletState wire enum.
 func walletStateToProto(s WalletState) daemonrpc.WalletState {
@@ -1793,8 +1811,24 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		return nil, err
 	}
 
-	// For dry_run, validate inputs and return a preview without
-	// contacting the operator.
+	// Fetch operator terms for the checkpoint policy.
+	phaseStart = time.Now()
+	terms, err := r.server.fetchOperatorTerms(ctx)
+	operatorTermsDuration = time.Since(phaseStart)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "unable to fetch "+
+			"operator terms: %v", err)
+	}
+
+	if err := validateOORRecipientDust(
+		req.Recipient.AmountSat, terms.DustLimit,
+	); err != nil {
+		return nil, err
+	}
+
+	// For dry_run, return a preview before selecting wallet inputs or
+	// submitting to the actor. The operator is still queried above so the
+	// preview enforces the current dust limit.
 	if req.DryRun {
 		return &daemonrpc.SendOORResponse{
 			Status: "preview",
@@ -1814,15 +1848,6 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	if r.server.vtxoStore == nil {
 		return nil, status.Errorf(codes.Internal, "VTXO store not "+
 			"initialized")
-	}
-
-	// Fetch operator terms for the checkpoint policy.
-	phaseStart = time.Now()
-	terms, err := r.server.fetchOperatorTerms(ctx)
-	operatorTermsDuration = time.Since(phaseStart)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "unable to fetch "+
-			"operator terms: %v", err)
 	}
 
 	policy := arkscript.CheckpointPolicy{
@@ -2127,6 +2152,12 @@ func (r *RPCServer) PrepareOOR(ctx context.Context,
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "unable to fetch "+
 			"operator terms: %v", err)
+	}
+
+	if err := validateOORRecipientDust(
+		req.GetRecipient().GetAmountSat(), terms.DustLimit,
+	); err != nil {
+		return nil, err
 	}
 
 	recipientPolicyTemplate, err := r.resolveOutputPolicyTemplate(
