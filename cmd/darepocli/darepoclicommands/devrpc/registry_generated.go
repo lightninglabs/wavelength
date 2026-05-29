@@ -156,6 +156,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "LeaveVTXOs queues one or more VTXOs for cooperative leave\n(offboard) in the next round. Each VTXO is forfeited and the\nforfeited amount (minus the quoted per-input operator fee)\nlands as an on-chain output at the specified destination.",
 				},
 				{
+					Name:     "SendOnChain",
+					Aliases:  []string{"send-on-chain"},
+					Input:    "daemonrpc.SendOnChainRequest",
+					Output:   "daemonrpc.SendOnChainResponse",
+					Comments: "SendOnChain is the wallet-shaped onchain payment primitive: it\npicks live VTXOs to cover the requested amount, forfeits them\nin the next round, produces one on-chain output of the exact\nrequested amount at the supplied destination, and returns any\nresidual to the caller as a change VTXO. The atomic\nforfeit + leave + change-VTXO intent registers immediately\n(TriggerRegistration=true) so the caller does not need to also\nissue JoinNextRound. sweep_all skips selection and drains every\nlive VTXO to the destination (no change VTXO produced).",
+				},
+				{
 					Name:     "Board",
 					Aliases:  []string{"board"},
 					Input:    "daemonrpc.BoardRequest",
