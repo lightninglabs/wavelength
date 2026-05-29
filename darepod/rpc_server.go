@@ -502,19 +502,25 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 			"balance: %v", err)
 	}
 
-	// Fetch VTXO balance by summing all live VTXOs using the
-	// package-level SumBalance helper. Propagate query errors rather
+	// Fetch the spendable VTXO balance. Propagate query errors rather
 	// than silently zeroing — a returned zero is functionally
 	// indistinguishable from "no VTXOs" and would mislead a UI that
 	// trusts the response, which is the same rationale that makes
 	// fetchBoardingBalance error-strict above.
 	if r.server.vtxoStore != nil {
+		// ListLiveVTXOs returns every non-terminal VTXO (Live,
+		// PendingForfeit, Forfeiting, Spending) because it backs
+		// actor recovery, not spendability. Sum only the spendable
+		// (Live) subset: counting PendingForfeit/Spending here would
+		// overstate vtxo_balance_sat, which consumers such as the
+		// auto-boarder read as spendable liquidity and would then
+		// stop replenishing.
 		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "fetch vtxo "+
 				"balance: %v", err)
 		}
-		resp.VtxoBalanceSat = int64(vtxo.SumBalance(liveVTXOs))
+		resp.VtxoBalanceSat = int64(vtxo.SumSpendableBalance(liveVTXOs))
 	}
 
 	// Fetch the confirmed balance of the backing on-chain wallet so
