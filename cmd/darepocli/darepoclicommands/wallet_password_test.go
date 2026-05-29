@@ -102,6 +102,85 @@ func TestReadMaskedPasswordCtrlDEmpty(t *testing.T) {
 	require.ErrorContains(t, err, "unable to read password")
 }
 
+// TestReadConfirmedPasswordAcceptsMatch confirms the interactive
+// confirmation flow returns the first password when both entries match.
+func TestReadConfirmedPasswordAcceptsMatch(t *testing.T) {
+	t.Parallel()
+
+	var prompts []string
+	values := [][]byte{
+		[]byte("secret"),
+		[]byte("secret"),
+	}
+	password, err := readConfirmedPassword(
+		func(prompt string) ([]byte, error) {
+			prompts = append(prompts, prompt)
+			value := values[0]
+			values = values[1:]
+
+			return value, nil
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, []byte("secret"), password)
+	require.Equal(
+		t, []string{
+			"Enter wallet password: ",
+			"Confirm wallet password: ",
+		}, prompts,
+	)
+}
+
+// TestReadConfirmedPasswordRejectsMismatch confirms a mistyped
+// confirmation fails locally and scrubs both entered secrets.
+func TestReadConfirmedPasswordRejectsMismatch(t *testing.T) {
+	t.Parallel()
+
+	passwordBytes := []byte("secret")
+	confirmationBytes := []byte("secrex")
+	values := [][]byte{
+		passwordBytes,
+		confirmationBytes,
+	}
+
+	password, err := readConfirmedPassword(
+		func(_ string) ([]byte, error) {
+			value := values[0]
+			values = values[1:]
+
+			return value, nil
+		},
+	)
+	require.Nil(t, password)
+	require.ErrorIs(t, err, errPasswordConfirmationMismatch)
+	require.Equal(t, []byte{0, 0, 0, 0, 0, 0}, passwordBytes)
+	require.Equal(t, []byte{0, 0, 0, 0, 0, 0}, confirmationBytes)
+}
+
+// TestReadConfirmedPasswordZerosOnConfirmError confirms the first
+// password entry is scrubbed if the confirmation prompt fails.
+func TestReadConfirmedPasswordZerosOnConfirmError(t *testing.T) {
+	t.Parallel()
+
+	passwordBytes := []byte("secret")
+	confirmErr := errors.New("confirmation failed")
+	reads := 0
+
+	password, err := readConfirmedPassword(
+		func(_ string) ([]byte, error) {
+			reads++
+			if reads == 1 {
+				return passwordBytes, nil
+			}
+
+			return nil, confirmErr
+		},
+	)
+	require.Nil(t, password)
+	require.ErrorIs(t, err, confirmErr)
+	require.Equal(t, []byte{0, 0, 0, 0, 0, 0}, passwordBytes)
+}
+
 // TestReadMaskedPasswordWrapsReadError confirms an underlying read
 // error is wrapped (not swallowed) and surfaces with the
 // "unable to read password" prefix.
