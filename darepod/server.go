@@ -762,6 +762,32 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		slog.String("wallet_type", s.cfg.Wallet.Type),
 	)
 
+	// -------------------------------------------------------
+	// Optional pprof debug server (disabled by default).
+	// -------------------------------------------------------
+	// pprof exposes sensitive runtime/debug data, so it only starts when
+	// the operator sets an explicit listen address. It runs on its own
+	// private HTTP mux/listener — never on the gRPC/gateway servers — and
+	// is torn down with a bounded graceful shutdown like the other
+	// long-running listeners.
+	pprofSrv := newPprofServer(&s.cfg.Pprof, s.subLogger(PprofSubsystem))
+	if err := pprofSrv.Start(ctx); err != nil {
+		return fmt.Errorf("start pprof server: %w", err)
+	}
+	//nolint:contextcheck // shutdown uses bounded process-root context
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), DefaultShutdownTimeout,
+		)
+		defer cancel()
+
+		if err := pprofSrv.Stop(shutdownCtx); err != nil {
+			s.log.WarnS(shutdownCtx, "pprof server shutdown failed",
+				err,
+			)
+		}
+	}()
+
 	// Derive chain params from the config network string. In lnd
 	// mode this is overwritten by the lnd connection's chain
 	// params, but we need it early for lwwallet mode.

@@ -39,6 +39,7 @@ var allSubsystems = []string{
 	db.Subsystem,
 	SwapSubsystem,
 	WalletRPCSubsystem,
+	PprofSubsystem,
 	"TXCF",
 	"UNRL",
 	VHTLCRecoverySubsystem,
@@ -59,6 +60,11 @@ const (
 	// VHTLCRecoverySubsystem is the subsystem tag used for vHTLC
 	// on-chain recovery coordination logs.
 	VHTLCRecoverySubsystem = "VREC"
+
+	// PprofSubsystem is the subsystem tag used for the optional pprof
+	// debug server so its logs can be level-tuned independently of the
+	// main daemon logs.
+	PprofSubsystem = "PPRF"
 )
 
 // SetupLoggersWithShutdownFn registers all subsystem loggers using a plain

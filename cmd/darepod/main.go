@@ -194,6 +194,8 @@ func newRootCmd() *cobra.Command {
 
 	registerSwapRuntimeFlags(f, cfg)
 
+	registerPprofFlags(f, cfg)
+
 	// Safety flag for mainnet operation.
 	f.Bool(
 		"allow-mainnet", cfg.AllowMainnet, "allow the daemon to "+
@@ -332,6 +334,32 @@ func registerSwapRuntimeFlags(f *pflag.FlagSet, cfg *darepod.Config) {
 		cfg.Swap.VHTLCRecovery.MaxFeeRateSatPerKW, "maximum fee "+
 			"rate in sat/kw for swapruntime vHTLC recovery "+
 			"exit spends",
+	)
+}
+
+// registerPprofFlags registers the optional pprof debug-server flags. pprof is
+// disabled by default and only starts when pprof.listen is set to a non-empty
+// address. The flag names match the mapstructure config keys, so viper binds
+// them without explicit aliases.
+func registerPprofFlags(f *pflag.FlagSet, cfg *darepod.Config) {
+	f.String(
+		"pprof.listen", cfg.Pprof.ListenAddr, "address for the "+
+			"pprof debug HTTP server (e.g. 127.0.0.1:6060); "+
+			"empty disables pprof. Exposes sensitive runtime "+
+			"data, so bind to a loopback or firewalled address "+
+			"only",
+	)
+	f.Int(
+		"pprof.blockprofilerate", cfg.Pprof.BlockProfileRate, "value"+
+			" passed to runtime.SetBlockProfileRate at startup "+
+			"when greater than zero; zero leaves block "+
+			"profiling off",
+	)
+	f.Int(
+		"pprof.mutexprofilefraction", cfg.Pprof.MutexProfileFraction,
+		"value passed to runtime.SetMutexProfileFraction at "+
+			"startup when greater than zero; zero leaves mutex "+
+			"profiling off",
 	)
 }
 

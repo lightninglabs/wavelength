@@ -258,6 +258,12 @@ type Config struct {
 	// build tag (both the standalone cmd/darepod binary and the
 	// sdk/walletdk embedded path).
 	EagerRoundJoin bool `mapstructure:"eagerroundjoin"`
+
+	// Pprof configures the optional net/http/pprof debug server. It is
+	// disabled by default and must be explicitly opted into via a
+	// non-empty listen address. A value type so a zero-value Config can
+	// never carry a nil pprof config into the start path.
+	Pprof PprofConfig `mapstructure:"pprof"`
 }
 
 // RPCServiceRegistrar registers one optional daemon gRPC subserver on the
@@ -602,6 +608,33 @@ func DefaultGatewayConfig() *GatewayConfig {
 		Enabled:    true,
 		ListenAddr: DefaultRPCGatewayHost,
 	}
+}
+
+// PprofConfig configures the optional net/http/pprof debug server.
+//
+// SECURITY: pprof exposes sensitive runtime and debug data — goroutine
+// stacks, heap and CPU profiles, the command line, and the symbol table —
+// any of which can leak internal state or enable denial-of-service. It is
+// opt-in (disabled by default) and is served on its own private HTTP mux
+// that is never attached to the daemon's gRPC/gateway listeners. Operators
+// who enable it should bind ListenAddr to a loopback or firewalled address
+// (e.g. "127.0.0.1:6060") and never expose it to untrusted networks.
+type PprofConfig struct {
+	// ListenAddr is the network address the pprof HTTP server binds to.
+	// An empty value (the default) disables pprof entirely. A non-empty
+	// value such as "127.0.0.1:6060" starts a dedicated HTTP server
+	// exposing the standard net/http/pprof endpoints.
+	ListenAddr string `mapstructure:"listen"`
+
+	// BlockProfileRate, when greater than zero, is passed to
+	// runtime.SetBlockProfileRate at startup to enable blocking-profile
+	// collection. Zero (the default) leaves block profiling disabled.
+	BlockProfileRate int `mapstructure:"blockprofilerate"`
+
+	// MutexProfileFraction, when greater than zero, is passed to
+	// runtime.SetMutexProfileFraction at startup to enable mutex-contention
+	// profiling. Zero (the default) leaves mutex profiling disabled.
+	MutexProfileFraction int `mapstructure:"mutexprofilefraction"`
 }
 
 // WalletConfig selects and configures the wallet backend.
