@@ -469,3 +469,78 @@ func leaveEntryStub(queuedOutpoints []string, destination string, amtSat int64,
 		},
 	}
 }
+
+// unilateralExitEntryStub builds the initial WalletEntry tracked after the
+// user explicitly requests a unilateral exit.
+func unilateralExitEntryStub(outpoint string) *walletdkrpc.WalletEntry {
+	createdAt := nowUnix()
+
+	return &walletdkrpc.WalletEntry{
+		Id:            outpoint,
+		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Counterparty:  "unilateral",
+		CreatedAtUnix: createdAt,
+		UpdatedAtUnix: createdAt,
+		Progress: &walletdkrpc.WalletEntryProgress{
+			Phase: walletdkrpc.
+				WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
+			PhaseLabel:   "request_created",
+			VtxoOutpoint: outpoint,
+		},
+	}
+}
+
+// applyUnrollStatus projects daemon unroll status onto an EXIT activity row.
+func applyUnrollStatus(entry *walletdkrpc.WalletEntry,
+	resp *daemonrpc.GetUnrollStatusResponse) {
+
+	if entry == nil || resp == nil || !resp.GetFound() {
+		return
+	}
+
+	progress := entry.GetProgress()
+	if progress == nil {
+		progress = &walletdkrpc.WalletEntryProgress{}
+		entry.Progress = progress
+	}
+	if progress.GetVtxoOutpoint() == "" {
+		progress.VtxoOutpoint = entry.GetId()
+	}
+	progress.Txid = resp.GetSweepTxid()
+
+	switch resp.GetStatus() {
+	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED:
+		entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE
+		progress.Phase = walletdkrpc.
+			WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED
+		progress.PhaseLabel = "confirmed"
+
+	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED:
+		entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED
+		entry.FailureReason = resp.GetLastError()
+		progress.Phase = walletdkrpc.
+			WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED
+		progress.PhaseLabel = "failed"
+
+	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING:
+		entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING
+		progress.Phase = walletdkrpc.
+			WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION
+		progress.PhaseLabel = "csv_pending"
+
+	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING:
+		entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING
+		progress.Phase = walletdkrpc.
+			WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING
+		progress.PhaseLabel = "sweeping"
+
+	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING,
+		daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING:
+
+		entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING
+		progress.Phase = walletdkrpc.
+			WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING
+		progress.PhaseLabel = "unilateral_exit"
+	}
+}
