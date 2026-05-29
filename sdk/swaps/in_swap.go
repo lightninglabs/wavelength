@@ -804,6 +804,10 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 	allowImmediate bool) error {
 
 	if s.fundingSessionID != "" {
+		if s.vhtlcOutpoint != "" && s.vhtlcAmount > 0 {
+			return s.markVHTLCFundedFromLocalMetadata(ctx)
+		}
+
 		return nil
 	}
 
@@ -816,7 +820,7 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 		}
 	}
 
-	txid, err := s.client.daemon.SendOORWithPolicy(
+	result, err := s.client.daemon.SendOORWithPolicyDetails(
 		ctx, s.cfg.AmountSat, s.vhtlcPolicyTemplate,
 	)
 	if err != nil {
@@ -844,17 +848,62 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 
 		return fmt.Errorf("fund vHTLC: %w", err)
 	}
+	if result == nil || result.SessionID == "" {
+		return fmt.Errorf("fund vHTLC: daemon returned empty OOR " +
+			"session id")
+	}
 
 	s.client.log.InfoS(ctx, "In-swap vHTLC funding submitted",
 		btclog.Hex("hash", s.cfg.PaymentHash[:]),
-		slog.String("txid", txid),
+		slog.String("txid", result.SessionID),
+		slog.String("outpoint", result.RecipientOutpoint),
 	)
 
-	if err := s.persistFundingSessionID(ctx, txid); err != nil {
+	if err := s.persistFundingResult(
+		ctx, result.SessionID, result.RecipientOutpoint,
+		s.cfg.AmountSat,
+	); err != nil {
+		return newRetryableActionError(err)
+	}
+	if result.RecipientOutpoint == "" {
+		return nil
+	}
+
+	return s.markVHTLCFundedFromLocalMetadata(ctx)
+}
+
+// markVHTLCFundedFromLocalMetadata records progress from a locally known
+// funding outpoint. This lets retries recover even if the OOR metadata was
+// persisted but the subsequent state transition did not make it to the swap
+// DB.
+func (s *paySession) markVHTLCFundedFromLocalMetadata(
+	ctx context.Context) error {
+
+	s.client.log.InfoS(ctx, "In-swap vHTLC funded from local OOR metadata",
+		btclog.Hex("hash", s.cfg.PaymentHash[:]),
+		slog.String("outpoint", s.vhtlcOutpoint),
+		slog.Int64("amount_sat", s.vhtlcAmount),
+	)
+
+	if err := s.ensurePayRefundRecoveryArmed(ctx); err != nil {
 		return newRetryableActionError(err)
 	}
 
-	return nil
+	return s.mutateAndPersist(ctx, func() error {
+		switch s.state {
+		case PayStateVHTLCFunded, PayStateWaitingForClaim:
+			return nil
+
+		case PayStateSwapCreated, PayStateFundingInitiated:
+			return s.transition(payEventVHTLCFunded)
+
+		default:
+			// The funding paths only call this helper before claim
+			// handling starts. Leave any unexpected later state
+			// alone instead of manufacturing a stale transition.
+			return nil
+		}
+	})
 }
 
 // waitForClaimPreimage waits until the server claim spend is indexed and the

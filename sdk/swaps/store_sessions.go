@@ -542,14 +542,21 @@ func (s *paySession) mutateAndPersist(ctx context.Context,
 	return nil
 }
 
-// persistFundingSessionID stores the accepted funding session id without
-// rolling back the in-memory id on persistence failure.
-func (s *paySession) persistFundingSessionID(ctx context.Context,
-	fundingSessionID string) error {
+// persistFundingResult stores the accepted funding session metadata without
+// rolling back in-memory fields on persistence failure. The funding OOR is a
+// daemon-side side effect, so retries must remember the accepted session and
+// resolved vHTLC outpoint when they are known.
+func (s *paySession) persistFundingResult(ctx context.Context, fundingSessionID,
+	vhtlcOutpoint string, vhtlcAmount int64) error {
 
 	s.fundingSessionID = fundingSessionID
+	if vhtlcOutpoint != "" {
+		s.vhtlcOutpoint = vhtlcOutpoint
+		s.vhtlcAmount = vhtlcAmount
+	}
+
 	if err := s.persist(ctx); err != nil {
-		return fmt.Errorf("persist pay funding session id: %w", err)
+		return fmt.Errorf("persist pay funding result: %w", err)
 	}
 
 	return nil

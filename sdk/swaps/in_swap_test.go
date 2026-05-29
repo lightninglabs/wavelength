@@ -1554,6 +1554,91 @@ func TestPaySessionCancelDoesNotPersistFailed(t *testing.T) {
 	require.NotEqual(t, PayStateNeedsIntervention, resumed.State())
 }
 
+// TestPaySessionUsesFundingResponseOutpointWhenIndexerRejectsLiveLookup
+// asserts the pay FSM can adopt its funded vHTLC from local OOR metadata
+// instead of depending on the remote pkScript indexer to reveal the outpoint.
+func TestPaySessionUsesFundingResponseOutpointWhenIndexerRejectsLiveLookup(
+	t *testing.T) {
+
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	serverConn := &testInSwapServerConn{
+		cfg: &InSwapConfig{
+			PaymentHash:  preimage.Hash(),
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
+			ServerPubkey: serverPriv.PubKey(),
+			VHTLCConfig: VHTLCConfig{
+				RefundLocktime:                       144,
+				UnilateralClaimDelay:                 12,
+				UnilateralRefundDelay:                24,
+				UnilateralRefundWithoutReceiverDelay: 36,
+			},
+			Expiry: time.Now().Add(time.Minute),
+		},
+	}
+
+	daemonConn := &testDaemonConn{
+		identityKey:   clientPriv.PubKey(),
+		operatorKey:   operatorPriv.PubKey(),
+		blockHeight:   100,
+		sendSessionID: "funding-session",
+		sendOutpoint:  "funding-session:0",
+		liveLookupErr: status.Error(
+			codes.Unauthenticated,
+			"script not registered for principal",
+		),
+	}
+
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
+	)
+	client.waitPollInterval = time.Millisecond
+
+	session, err := client.StartPayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat,
+	)
+	require.NoError(t, err)
+
+	err = session.runUntil(t.Context(), PayStateWaitingForClaim)
+	require.NoError(t, err)
+	require.Equal(t, PayStateWaitingForClaim, session.State())
+	require.Equal(t, "funding-session", session.fundingSessionID)
+	require.Equal(t, "funding-session:0", session.vhtlcOutpoint)
+	require.EqualValues(t, testInSwapAmountSat, session.vhtlcAmount)
+	require.Equal(t, 1, daemonConn.sendPolicyCalls)
+	require.Equal(t, 1, daemonConn.liveLookupCalls)
+	require.Equal(t, 1, daemonConn.armRecoveryCalls)
+	require.Equal(
+		t, "funding-session:0",
+		daemonConn.lastArmRecovery.GetVtxoOutpoint(),
+	)
+
+	reloaded, err := client.ResumePayViaLightning(
+		t.Context(), preimage.Hash(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, PayStateWaitingForClaim, reloaded.State())
+	require.Equal(t, "funding-session:0", reloaded.vhtlcOutpoint)
+}
+
 // TestPaySessionResumeFundingGraceSkipsImmediateResend asserts a resumed pay
 // session in the accepted-but-not-yet-persisted funding window does not
 // immediately resend funding while the ambiguity grace period is still active.

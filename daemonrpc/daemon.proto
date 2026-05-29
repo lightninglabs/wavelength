@@ -810,6 +810,11 @@ message SendOORResponse {
 
     // session_id is the OOR session identifier. Empty on dry_run.
     string session_id = 2;
+
+    // recipient_outpoint is the Ark transaction outpoint created for the
+    // requested recipient. Empty on dry_run or when an older idempotent
+    // session is returned without enough local request context.
+    string recipient_outpoint = 3;
 }
 
 message PrepareOORRequest {

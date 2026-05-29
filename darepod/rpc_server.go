@@ -1773,6 +1773,9 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 				slog.String("idempotency_key", key),
 			)
 
+			// This fast path returns before resolving the current
+			// request, so the recipient outpoint is intentionally
+			// omitted. Full request replay below can recompute it.
 			return &daemonrpc.SendOORResponse{
 				Status:    "submitted",
 				SessionId: sessionID.String(),
@@ -1952,11 +1955,12 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	targetAmt := btcutil.Amount(req.Recipient.AmountSat)
 
 	// Build the recipient output for the OOR transfer.
-	recipients := []oortx.RecipientOutput{{
+	recipient := oortx.RecipientOutput{
 		PkScript:           pkScript,
 		Value:              targetAmt,
 		VTXOPolicyTemplate: recipientPolicyTemplate,
-	}}
+	}
+	recipients := []oortx.RecipientOutput{recipient}
 
 	phaseStart = time.Now()
 	inputTotal, err := sumOORInputAmounts(selectedInputs)
@@ -2041,9 +2045,23 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		r.unlockSelectedVTXOsBestEffort(ctx, locked)
 	}
 
+	sessionHash := chainhash.Hash(resp.SessionID)
+	recipientOutpoint, err := oortx.RecipientOutPoint(
+		sessionHash, recipients, recipient,
+	)
+	recipientOutpointString := ""
+	if err != nil {
+		r.server.log.WarnS(ctx, "Unable to resolve OOR recipient "+
+			"outpoint", err,
+			slog.String("session_id", resp.SessionID.String()))
+	} else {
+		recipientOutpointString = recipientOutpoint.String()
+	}
+
 	r.server.log.InfoS(ctx, "OOR transfer submitted",
 		slog.String("session_id", resp.SessionID.String()),
 		slog.Bool("existing_session", resp.Existing),
+		slog.String("recipient_outpoint", recipientOutpointString),
 		slog.Int64("amount_sat", req.Recipient.AmountSat),
 		slog.Int64("input_total_sat", int64(inputTotal)),
 		slog.Int64("change_sat", int64(changeAmt)),
@@ -2065,8 +2083,9 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		slog.Duration("oor_actor_duration", oorActorDuration))
 
 	return &daemonrpc.SendOORResponse{
-		Status:    "submitted",
-		SessionId: resp.SessionID.String(),
+		Status:            "submitted",
+		SessionId:         resp.SessionID.String(),
+		RecipientOutpoint: recipientOutpointString,
 	}, nil
 }
 

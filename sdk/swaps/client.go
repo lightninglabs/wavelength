@@ -43,6 +43,9 @@ const (
 	SettlementTypeInArk SettlementType = "in_ark"
 )
 
+// OORSendResult contains daemon metadata for an accepted OOR transfer.
+type OORSendResult = sdkark.OORSendResult
+
 // SwapSummary is the stable list view for one persisted swap session.
 type SwapSummary struct {
 	// Direction identifies whether this is a pay or receive session.
@@ -386,10 +389,10 @@ type DaemonConn interface {
 	// BlockHeight returns the daemon's best known chain height.
 	BlockHeight(ctx context.Context) (uint32, error)
 
-	// SendOORWithPolicy sends an OOR transfer to a semantic policy-backed
-	// destination.
-	SendOORWithPolicy(ctx context.Context, amountSat int64,
-		recipientPolicyTemplate []byte) (string, error)
+	// SendOORWithPolicyDetails sends an OOR transfer to a semantic
+	// policy-backed destination.
+	SendOORWithPolicyDetails(ctx context.Context, amountSat int64,
+		recipientPolicyTemplate []byte) (*OORSendResult, error)
 
 	// SendOORWithCustomInputs sends an OOR with custom inputs into one
 	// standard pubkey-backed Ark receive destination.
