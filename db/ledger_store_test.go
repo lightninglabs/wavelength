@@ -546,6 +546,146 @@ func TestLedgerStoreTransactionHistoryWalletUTXOCreatedChainFields(
 	require.Equal(t, depositAmount-vtxoAmount, row.FeeSat)
 }
 
+// TestLedgerStoreTransactionHistoryWalletUTXOCreatedBoardingStatus confirms
+// a chain-confirmed deposit is not reported as complete until its boarding
+// outpoint has moved through a confirmed round and produced a spendable VTXO.
+func TestLedgerStoreTransactionHistoryWalletUTXOCreatedBoardingStatus(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	store, db := newLedgerStoreAndDBForTest(t)
+
+	outpointHash := testHash32(0x52)
+	const (
+		outpointIndex      = uint32(1)
+		confirmationHeight = int32(304_091)
+		depositAmount      = int64(75_000)
+		createdAt          = int64(1_700_000_601)
+	)
+	pkScript := testBytes(34, 0x09)
+
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, ledger.LedgerEntry{
+				DebitAccount:   ledger.AccountWalletBalance,
+				CreditAccount:  ledger.AccountOpeningBalance,
+				AmountSat:      depositAmount,
+				EventType:      ledger.EventWalletUTXOCreated,
+				Description:    "boarding deposit",
+				CreatedAt:      createdAt,
+				IdempotencyKey: testBytes(36, 0x61),
+				ChainTxid:      outpointHash[:],
+				ChainVout: testInt32Ptr(
+					int32(outpointIndex),
+				),
+				ConfirmationHeight: testInt32Ptr(
+					confirmationHeight,
+				),
+			},
+		),
+	)
+
+	require.NoError(
+		t,
+		db.InsertBoardingAddress(
+			ctx, sqlc.InsertBoardingAddressParams{
+				PkScript:       pkScript,
+				AddressString:  "bcrt1pboarding",
+				ClientPubkey:   testBytes(33, 0x12),
+				OperatorPubkey: testBytes(33, 0x23),
+				ExitDelay:      144,
+				CreationTime:   createdAt,
+			},
+		),
+	)
+	require.NoError(
+		t,
+		db.InsertBoardingIntent(
+			ctx, sqlc.InsertBoardingIntentParams{
+				OutpointHash:   outpointHash[:],
+				OutpointIndex:  int32(outpointIndex),
+				PkScript:       pkScript,
+				Amount:         depositAmount,
+				ConfHeight:     confirmationHeight,
+				ConfHash:       testBytes(32, 0x03),
+				ConfTx:         testBytes(64, 0x04),
+				TxProof:        testBytes(64, 0x05),
+				Status:         "confirmed",
+				CreationTime:   createdAt,
+				LastUpdateTime: createdAt,
+			},
+		),
+	)
+
+	rows, err := store.ListTransactionHistory(ctx, "boarding", 0, 0, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+
+	row := rows[0]
+	require.Equal(t, ledger.EventWalletUTXOCreated, row.Subtype)
+	require.Equal(t, "boarding", row.Status)
+	require.Equal(t, outpointHash[:], row.Txid)
+	require.Equal(t, confirmationHeight, row.ConfirmationHeight)
+	require.Zero(t, row.FeeSat)
+}
+
+// TestLedgerStoreTransactionHistoryWalletUTXOCreatedNonBoardingStatus confirms
+// a chain-confirmed wallet UTXO that is not backed by a boarding intent stays
+// confirmed. Sweep returns and future non-deposit wallet UTXOs should not be
+// shown as boarding forever just because they have wallet_utxo_created rows.
+func TestLedgerStoreTransactionHistoryWalletUTXOCreatedNonBoardingStatus(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newLedgerStoreForTest(t)
+
+	outpointHash := testHash32(0x53)
+	const (
+		outpointIndex      = uint32(0)
+		confirmationHeight = int32(304_101)
+		amount             = int64(50_000)
+		createdAt          = int64(1_700_000_602)
+	)
+
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, ledger.LedgerEntry{
+				DebitAccount:   ledger.AccountWalletBalance,
+				CreditAccount:  ledger.AccountOpeningBalance,
+				AmountSat:      amount,
+				EventType:      ledger.EventWalletUTXOCreated,
+				Description:    "boarding sweep return",
+				CreatedAt:      createdAt,
+				IdempotencyKey: testBytes(36, 0x62),
+				ChainTxid:      outpointHash[:],
+				ChainVout: testInt32Ptr(
+					int32(outpointIndex),
+				),
+				ConfirmationHeight: testInt32Ptr(
+					confirmationHeight,
+				),
+			},
+		),
+	)
+
+	rows, err := store.ListTransactionHistory(ctx, "boarding", 0, 0, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+
+	row := rows[0]
+	require.Equal(t, ledger.EventWalletUTXOCreated, row.Subtype)
+	require.Equal(t, "confirmed", row.Status)
+	require.Equal(t, outpointHash[:], row.Txid)
+	require.Equal(t, int32(outpointIndex), row.OutputIndex)
+	require.Equal(t, confirmationHeight, row.ConfirmationHeight)
+}
+
 // TestLedgerStoreTransactionHistoryWalletUTXOCreatedMultiInputFee verifies
 // multi-input boarding rounds allocate the aggregate round fee across input
 // deposit rows proportionally for display.

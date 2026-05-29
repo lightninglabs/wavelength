@@ -1412,11 +1412,47 @@ func TestHistoryPaginationOffsetPlumbedToLedger(t *testing.T) {
 	)
 }
 
-// TestHistoryDepositCompletesOnChainConfirmation confirms that a DEPOSIT row
-// mirrors the ledger confirmation status. More detailed boarding lifecycle
-// information belongs in progress/inspection rather than an activity-table
-// status override.
-func TestHistoryDepositCompletesOnChainConfirmation(t *testing.T) {
+// TestHistoryDepositBoardsBeforeCompletion confirms that a chain-confirmed
+// DEPOSIT row stays pending while the ledger reports the intermediate boarding
+// state. The user has seen the on-chain deposit, but it is not spendable until
+// the boarding round confirms and creates a live VTXO.
+func TestHistoryDepositBoardsBeforeCompletion(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "boarding",
+				Subtype:            ledger.EventWalletUTXOCreated,
+				ConfirmationStatus: "boarding",
+				AmountSat:          100_000,
+				Txid:               "boarding-txid",
+				CreatedAtUnixS:     100,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.GetActivity().GetEntries(), 1)
+
+	entry := resp.GetActivity().GetEntries()[0]
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT, entry.GetKind(),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		entry.GetStatus(),
+	)
+	require.Equal(t, "boarding", entry.GetProgress().GetPhaseLabel())
+}
+
+// TestHistoryDepositCompletesAfterBoarding confirms that a DEPOSIT row only
+// appears complete once the ledger reports that the boarding flow reached the
+// confirmed round state.
+func TestHistoryDepositCompletesAfterBoarding(t *testing.T) {
 	t.Parallel()
 
 	h, swap, rpc := newHistoryFixture(t)
