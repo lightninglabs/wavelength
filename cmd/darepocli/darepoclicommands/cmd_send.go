@@ -137,8 +137,25 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	// from a real send so an agent can stage a payment without
 	// risking a duplicate dispatch.
 	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+		var details *dryRunDetails
+		if offchain {
+			network, err := daemonNetwork(cmd.Context(), cmd)
+			if err != nil {
+				return err
+			}
+
+			invoice, err := dryRunInvoiceDetails(dest, network)
+			if err != nil {
+				return invalidArgs(err)
+			}
+
+			details = &dryRunDetails{
+				Invoice: invoice,
+			}
+		}
+
 		return walletDryRunPreview(
-			"walletdkrpc.WalletService/Send", req,
+			"walletdkrpc.WalletService/Send", req, details,
 		)
 	}
 

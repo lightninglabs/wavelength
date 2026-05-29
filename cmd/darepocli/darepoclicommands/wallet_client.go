@@ -1,14 +1,21 @@
 package darepoclicommands
 
 import (
+	"context"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightningnetwork/lnd/zpay32"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -29,6 +36,19 @@ var errWalletRPCDisabled = errors.New("daemon was not built with -tags " +
 // passes both --offchain and --onchain on the same invocation.
 var errOffchainOnchainConflict = errors.New("--offchain and --onchain are " +
 	"mutually exclusive; pick one")
+
+type dryRunDetails struct {
+	Invoice *dryRunInvoicePreview `json:"invoice,omitempty"`
+}
+
+type dryRunInvoicePreview struct {
+	Network       string `json:"network"`
+	AmountSat     uint64 `json:"amount_sat"`
+	PaymentHash   string `json:"payment_hash"`
+	CreatedAtUnix int64  `json:"created_at_unix"`
+	ExpiresAtUnix int64  `json:"expires_at_unix"`
+	ExpirySeconds int64  `json:"expiry_seconds"`
+}
 
 // withWalletClient dials the daemon's WalletService and invokes fn with
 // the resulting client. The transport reuses the existing getDaemonConn
@@ -126,23 +146,185 @@ func invalidArgs(err error) error {
 // what it intended. A DRY_RUN_OK printedError is returned so main.go
 // exits with code 10 — the agent-cli skill's "dry-run passed" marker —
 // without re-printing the envelope.
-func walletDryRunPreview(method string, req proto.Message) error {
+func walletDryRunPreview(method string, req proto.Message,
+	details ...*dryRunDetails) error {
+
 	body, err := walletProtoMarshal.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal dry-run preview: %w", err)
 	}
 
+	var detailsRaw []byte
+	if len(details) > 0 && details[0] != nil {
+		detailsRaw, err = json.Marshal(details[0])
+		if err != nil {
+			return fmt.Errorf("marshal dry-run details: %w", err)
+		}
+	}
+
 	// stdout carries the machine-readable preview; main.go's DRY_RUN_OK
 	// stderr envelope carries the marker that the dry-run validated.
-	fmt.Fprintf(
-		os.Stdout, `{"dry_run":true,"method":%q,"validation":"passed",`+
-			`"body":%s}`+"\n", method, string(body),
+	fmt.Fprintf(os.Stdout, `{"dry_run":true,"method":%q,`+
+		`"validation":"passed",`, method,
 	)
+	if len(detailsRaw) > 0 {
+		fmt.Fprintf(os.Stdout, `"details":%s,`, string(detailsRaw))
+	}
+	fmt.Fprintf(os.Stdout, `"body":%s}`+"\n", string(body))
 
 	return PrintError(
 		"DRY_RUN_OK",
-		"dry-run validation passed; no RPC was dispatched",
+		"dry-run validation passed; no mutating RPC was dispatched",
 	)
+}
+
+// daemonNetwork reads the daemon's configured Bitcoin network for dry-run
+// validation that depends on chain context. It uses GetInfo only; no mutating
+// wallet RPC is dispatched.
+func daemonNetwork(ctx context.Context, cmd *cobra.Command) (string, error) {
+	client, conn, err := getDaemonClient(cmd)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+
+	resp, err := client.GetInfo(ctx, &daemonrpc.GetInfoRequest{})
+	if err != nil {
+		return "", fmt.Errorf("get daemon network: %w", err)
+	}
+
+	network := strings.TrimSpace(resp.GetNetwork())
+	if network == "" {
+		return "", fmt.Errorf("daemon network is empty")
+	}
+
+	return network, nil
+}
+
+// dryRunInvoiceDetails decodes one offchain send invoice against the daemon's
+// active network and returns the parsed fields a caller should confirm before
+// dispatching a real payment.
+func dryRunInvoiceDetails(invoice,
+	daemonNet string) (*dryRunInvoicePreview, error) {
+
+	network := normalizeDaemonNetwork(daemonNet)
+	if hrp, invoiceNet := invoiceHRPNetwork(invoice); invoiceNet != "" &&
+		invoiceNet != network {
+		return nil, fmt.Errorf("invoice HRP %q is for %s; daemon "+
+			"is on %s", hrp, invoiceNet, network)
+	}
+
+	params, err := chainParamsForDaemonNetwork(network)
+	if err != nil {
+		return nil, err
+	}
+
+	decoded, err := zpay32.Decode(invoice, params)
+	if err != nil {
+		return nil, fmt.Errorf("decode invoice: %w", err)
+	}
+	if decoded.PaymentHash == nil {
+		return nil, fmt.Errorf("invoice payment hash is required")
+	}
+	if decoded.MilliSat == nil {
+		return nil, fmt.Errorf("invoice amount is required")
+	}
+
+	amountMSat := uint64(*decoded.MilliSat)
+	if amountMSat == 0 {
+		return nil, fmt.Errorf("invoice amount must be positive")
+	}
+	if amountMSat%1000 != 0 {
+		return nil, fmt.Errorf("invoice amount must be whole satoshis")
+	}
+
+	expiry := decoded.Expiry()
+
+	return &dryRunInvoicePreview{
+		Network:       network,
+		AmountSat:     amountMSat / 1000,
+		PaymentHash:   hex.EncodeToString(decoded.PaymentHash[:]),
+		CreatedAtUnix: decoded.Timestamp.Unix(),
+		ExpiresAtUnix: decoded.Timestamp.Add(expiry).Unix(),
+		ExpirySeconds: int64(expiry / time.Second),
+	}, nil
+}
+
+// normalizeDaemonNetwork maps daemon aliases onto the names used by
+// Config.Network and the dry-run preview.
+func normalizeDaemonNetwork(network string) string {
+	switch strings.ToLower(strings.TrimSpace(network)) {
+	case "testnet3", "testnet4":
+		return "testnet"
+
+	default:
+		return strings.ToLower(strings.TrimSpace(network))
+	}
+}
+
+// chainParamsForDaemonNetwork returns the chain params zpay32.Decode needs to
+// validate the invoice checksum and HRP against the daemon network.
+func chainParamsForDaemonNetwork(network string) (*chaincfg.Params, error) {
+	switch normalizeDaemonNetwork(network) {
+	case "mainnet":
+		return &chaincfg.MainNetParams, nil
+
+	case "testnet":
+		return &chaincfg.TestNet3Params, nil
+
+	case "regtest":
+		return &chaincfg.RegressionNetParams, nil
+
+	case "simnet":
+		return &chaincfg.SimNetParams, nil
+
+	case "signet":
+		return &chaincfg.SigNetParams, nil
+
+	default:
+		return nil, fmt.Errorf("unknown daemon network %q", network)
+	}
+}
+
+// invoiceHRPNetwork extracts the BOLT-11 currency HRP and maps it to a daemon
+// network name when it is one of the networks the CLI knows about.
+func invoiceHRPNetwork(invoice string) (string, string) {
+	hrp := strings.ToLower(invoice)
+	if idx := strings.IndexByte(hrp, '1'); idx >= 0 {
+		hrp = hrp[:idx]
+	}
+
+	for _, candidate := range []struct {
+		hrp     string
+		network string
+	}{
+		{
+			"lnbcrt",
+			"regtest",
+		},
+		{
+			"lntbs",
+			"signet",
+		},
+		{
+			"lntb",
+			"testnet",
+		},
+		{
+			"lnbc",
+			"mainnet",
+		},
+		{
+			"lnsb",
+			"simnet",
+		},
+	} {
+		if strings.HasPrefix(hrp, candidate.hrp) {
+			return candidate.hrp, candidate.network
+		}
+	}
+
+	return hrp, ""
 }
 
 // parseEntryKind maps a user-facing kind string to the proto enum used

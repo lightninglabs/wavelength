@@ -2,8 +2,14 @@ package darepoclicommands
 
 import (
 	"testing"
+	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/zpay32"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -95,6 +101,56 @@ func TestValidateFreeTextRejectsControlCharacters(t *testing.T) {
 	// DEL (0x7f) is a control char too.
 	err = validateFreeText("--note", "del\x7fchar")
 	require.ErrorContains(t, err, "control character")
+}
+
+// TestDryRunInvoiceDetailsAcceptsMatchingNetwork confirms offchain dry-run
+// validation fully decodes a BOLT-11 invoice on the daemon network and returns
+// the human-confirmable amount, hash, and expiry fields for the preview.
+func TestDryRunInvoiceDetailsAcceptsMatchingNetwork(t *testing.T) {
+	t.Parallel()
+
+	created := time.Unix(1_700_000_000, 0)
+	invoice, paymentHash := testBolt11Invoice(
+		t, &chaincfg.SigNetParams, 12_345, created,
+	)
+
+	preview, err := dryRunInvoiceDetails(invoice, "signet")
+	require.NoError(t, err)
+	require.Equal(t, "signet", preview.Network)
+	require.EqualValues(t, 12_345, preview.AmountSat)
+	require.Equal(t, paymentHash, preview.PaymentHash)
+	require.Equal(t, created.Unix(), preview.CreatedAtUnix)
+	require.Equal(
+		t, created.Add(30*time.Minute).Unix(), preview.ExpiresAtUnix,
+	)
+	require.EqualValues(t, 1_800, preview.ExpirySeconds)
+}
+
+// TestDryRunInvoiceDetailsRejectsWrongNetwork confirms dry-run rejects a
+// syntactically valid invoice when its BOLT-11 HRP is bound to a different
+// chain than the daemon reports.
+func TestDryRunInvoiceDetailsRejectsWrongNetwork(t *testing.T) {
+	t.Parallel()
+
+	invoice, _ := testBolt11Invoice(
+		t, &chaincfg.MainNetParams, 1_000, time.Unix(1, 0),
+	)
+
+	_, err := dryRunInvoiceDetails(invoice, "signet")
+	require.ErrorContains(
+		t, err,
+		`invoice HRP "lnbc" is for mainnet; daemon is on signet`,
+	)
+}
+
+// TestDryRunInvoiceDetailsRejectsMalformedInvoice confirms dry-run no longer
+// treats a non-decodable invoice-looking string as validated just because the
+// destination is non-empty.
+func TestDryRunInvoiceDetailsRejectsMalformedInvoice(t *testing.T) {
+	t.Parallel()
+
+	_, err := dryRunInvoiceDetails("lntbs1asdfasdfasdfasdf", "signet")
+	require.ErrorContains(t, err, "decode invoice")
 }
 
 // TestValidateOutpointEnforcesShape confirms the outpoint validator
@@ -333,4 +389,40 @@ func TestWalletCommandsRejectUnexpectedArgs(t *testing.T) {
 	for _, cmd := range commands {
 		require.Error(t, cmd.Args(cmd, []string{"unexpected"}), cmd.Use)
 	}
+}
+
+// testBolt11Invoice creates a signed BOLT-11 invoice for CLI-only dry-run
+// validation tests.
+func testBolt11Invoice(t *testing.T, params *chaincfg.Params, amountSat uint64,
+	created time.Time) (string, string) {
+
+	t.Helper()
+
+	var paymentHash [32]byte
+	for i := range paymentHash {
+		paymentHash[i] = byte(i + 1)
+	}
+
+	invoice, err := zpay32.NewInvoice(
+		params, paymentHash, created,
+		zpay32.Amount(
+			lnwire.MilliSatoshi(amountSat*1000),
+		),
+		zpay32.Description("dry run"),
+		zpay32.Expiry(30*time.Minute),
+	)
+	require.NoError(t, err)
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	paymentRequest, err := invoice.Encode(zpay32.MessageSigner{
+		SignCompact: func(msg []byte) ([]byte, error) {
+			return ecdsa.SignCompact(privKey, msg, true), nil
+		},
+	})
+	require.NoError(t, err)
+
+	return paymentRequest, "0102030405060708090a0b0c0d0e0f101112131415161" +
+		"718191a1b1c1d1e1f20"
 }
