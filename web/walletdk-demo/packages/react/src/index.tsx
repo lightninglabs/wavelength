@@ -23,6 +23,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -168,6 +169,38 @@ export function WalletDKProvider({ children }: { children: ReactNode }) {
       setActivity(activityEntries(rows));
     });
   }, [client, runOperation]);
+
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+
+  // Activity subscription pushes wallet updates from the daemon; refresh
+  // balance and history when an entry changes instead of polling.
+  useEffect(() => {
+    if (phase !== "ready") {
+      return;
+    }
+
+    client.callRaw("subscribeActivity", { includeExisting: true }).catch(
+      () => undefined,
+    );
+
+    let debounce: number | undefined;
+    const unsubscribe = client.subscribe((event) => {
+      if (event.type !== "activity") {
+        return;
+      }
+
+      window.clearTimeout(debounce);
+      debounce = window.setTimeout(() => {
+        refreshRef.current().catch(() => undefined);
+      }, 250);
+    });
+
+    return () => {
+      window.clearTimeout(debounce);
+      unsubscribe();
+    };
+  }, [client, phase]);
 
   const start = useCallback(async (config: RuntimeConfig) => {
     setPhase("starting");

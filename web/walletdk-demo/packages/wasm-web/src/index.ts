@@ -48,6 +48,10 @@ export class MainThreadWalletDKClient implements WalletDKClient {
     globalThis.addEventListener("walletdk-ready", () => {
       this.emit({ type: "runtimeReady" });
     });
+    globalThis.addEventListener("walletdk-activity", (event) => {
+      const detail = (event as CustomEvent).detail;
+      this.emit({ type: "activity", payload: detail });
+    });
   }
 
   ready(): Promise<void> {

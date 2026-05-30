@@ -97,27 +97,6 @@ export function App() {
     };
   }, [wallet.phase, wallet.refresh]);
 
-  // While the wallet is unlocked, poll for balance/activity updates so on-chain
-  // deposits, confirmations and incoming payments surface on the dashboard
-  // without a manual refresh.
-  useEffect(() => {
-    if (wallet.phase !== "ready") {
-      return;
-    }
-
-    let active = true;
-    const id = window.setInterval(() => {
-      if (active) {
-        wallet.refresh().catch(() => undefined);
-      }
-    }, 10000);
-
-    return () => {
-      active = false;
-      window.clearInterval(id);
-    };
-  }, [wallet.phase, wallet.refresh]);
-
   const passkeyEnrolled = useMemo(
     () => passkey.wrapExists(form.dataDir),
     // passkeyVersion forces re-read after enroll/remove (storage is untracked).
