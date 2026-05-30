@@ -36,7 +36,10 @@ default builds avoid the swap executor's dependency graph.
 - `WalletEntry` (re-exported from walletdkrpc) — Flat row type the entire
   history/streaming surface returns. Every internal correlator
   (session_id, round_id, settlement_type, mailbox subtype) is dropped
-  before responding.
+  before responding. The Activity view includes `ENTRY_KIND_EXIT` rows
+  synthesized from VTXOs in `VTXO_STATUS_UNILATERAL_EXIT` via
+  `collectUnilateralExitEntries`; these rows are decorated with live exit
+  status if a matching unroll job exists.
 - `ListView` (re-exported from walletdkrpc) — Selects between Activity
   (merged WalletEntry stream), VTXOs (live inventory), and Onchain
   (boarding + sweep) views. Default is Activity.

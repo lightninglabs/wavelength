@@ -66,6 +66,37 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   historical `ActorID`, never clobbering the sweep txid / failure
   reason.
 
+### Exit Spend Policy Extension
+
+The unroll actor supports pluggable final-spend strategies via the following
+interfaces. The built-in standard VTXO timeout policy is hard-coded; custom
+policy kinds (e.g. vHTLC recovery) register resolvers at daemon startup.
+
+- `ExitPolicyKind` — Typed string naming a durable exit-spend policy. The
+  type system catches confused `(kind, ref)` argument ordering at compile time.
+  Constant: `StandardVTXOTimeoutExitPolicyKind = "standard_vtxo_timeout"`.
+- `ExitSpendRequest` — Materialized on-chain output plus local signing
+  context: `TargetOutpoint`, `TargetOutput`, `DestinationPkScript`,
+  `FeeRateSatPerVByte`, `CurrentHeight`, `Signer`.
+- `ExitSpendPolicyRequest` — Identifies the durable policy to reconstruct:
+  `Kind`, `Ref` (optional policy-specific SQL row id), `StandardDescriptor`
+  (used only by the built-in policy; custom resolvers may ignore it).
+- `ExitSpendPolicy` interface — How unroll spends the materialized target.
+  Methods: `Kind() ExitPolicyKind`, `CSVDelay() uint32`,
+  `RequiredLockTime() uint32`, `ValidateTarget(*wire.TxOut) error`,
+  `BuildSpendTx(ctx, ExitSpendRequest) (*wire.MsgTx, error)`.
+- `ExitSpendPolicyResolver` interface — Reconstructs a policy from the
+  durable `(kind, ref)` stored with an unroll job. Method:
+  `ResolveExitSpendPolicy(ctx, ExitSpendPolicyRequest) (ExitSpendPolicy, error)`.
+- `ResolverKindSupport` interface — Optional extension of `ExitSpendPolicyResolver`.
+  `SupportsKind(ExitPolicyKind) bool`. The registry checks this at boot to
+  refuse to start when persisted non-terminal jobs reference a kind that no
+  installed resolver can handle.
+- `ErrExitSpendNotMatured` — Returned by `ExitSpendPolicy.BuildSpendTx` when
+  `RequiredLockTime > CurrentHeight`. Callers must defer the build rather than
+  retrying immediately; the produced transaction would be rejected by the
+  mempool until the absolute locktime is reached.
+
 ### Support
 
 - `LocalProofAssembler` — assembles a `recovery.Proof` from the VTXO

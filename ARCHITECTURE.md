@@ -27,6 +27,7 @@ package may import from a higher layer.
 | [`lib/tx/psbtutil`](lib/tx/psbtutil/) | PSBT encoding, decoding, and signature attachment helpers |
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
+| [`vhtlcrecovery`](vhtlcrecovery/) | Pure durable state types for vHTLC on-chain recovery: `RecoveryJob` row, direction/action/state/policy-kind constants. Leaf package imported by `db` and `vhtlcrecovery/coordinator` without import cycles |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
@@ -47,6 +48,9 @@ package may import from a higher layer.
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
+| [`serverconn/mailboxpull`](serverconn/mailboxpull/) | Shared retry+backoff primitives for mailbox pull loops (used by both `serverconn` ingress and `sdk/swaps` per-swap consumers) |
+| [`vhtlcrecovery/coordinator`](vhtlcrecovery/coordinator/) | Runtime service joining durable vHTLC recovery rows with the `unroll` registry; owns the handoff from armed recovery intent to per-target unroll execution |
+| [`vhtlcrecovery/unrollpolicy`](vhtlcrecovery/unrollpolicy/) | Adapts vHTLC recovery rows into `unroll.ExitSpendPolicy` values; handles claim and refund-without-receiver spend paths |
 
 ### Layer 3: Application & Orchestration
 

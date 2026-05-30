@@ -13,8 +13,10 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 
 - `swapClientService` — Private gRPC server implementation of
   `swapclientrpc.SwapClientServiceServer`. Owns `rootCtx` (daemon lifetime,
-  not per-RPC), the process-local `active` worker map, and the `subscribers`
-  map for `SubscribeSwaps` streaming.
+  not per-RPC), the process-local `active` worker map, the `subscribers`
+  map for `SubscribeSwaps` streaming, and the `receiveMinAmount` function
+  (derived from daemon's cached operator terms) that validates the
+  minimum receive amount before handing a BOLT-11 invoice to a payer.
 - `swapRuntimeClient` — Narrow interface over `sdk/swaps.SwapClient` that the
   subserver uses for all RPC handlers and worker restarts. Methods: `StartPayViaLightning`,
   `StartReceiveViaLightning`, `ResumePayViaLightning`,
@@ -36,8 +38,10 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   `MailboxOutSwapEventReceiver` (empty mailbox ID — receiver derives the
   per-swap mailbox from client identity + payment hash) on the
   `SwapClient` so out-swap HTLC events flow over the mailbox transport,
-  registers the gRPC subserver, calls `resumePending`, and returns a cleanup
-  function.
+  calls `rpcServer.RegisterVHTLCRecoveryPreimageResolver(store)` so the
+  daemon's vHTLC recovery subsystem can resolve claim preimages via the
+  swap store, registers the gRPC subserver, calls `resumePending`, and
+  returns a cleanup function.
 
 ## RPC Methods
 

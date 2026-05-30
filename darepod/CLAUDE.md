@@ -110,6 +110,17 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 
 ### Adapters & Helpers
 
+- `newPprofMux() *http.ServeMux` — builds a private HTTP mux exposing the
+  standard `net/http/pprof` endpoints. Keeps pprof confined to an opt-in
+  listener separate from the public gRPC server; the daemon starts the
+  pprof server only when `Config.PprofAddr` is set. Using a private mux
+  prevents `import "net/http/pprof"` side-effects from registering onto
+  `http.DefaultServeMux`.
+- `vhtlcRecoveryTargetMaterializer` — Daemon-local adapter implementing
+  `coordinator.TargetMaterializer`. Given a recovery row, it polls the VTXO
+  store and OOR artifact store until the target descriptor and package
+  bindings that generic unroll needs are present. Poll interval 100 ms,
+  timeout 10 s.
 - `serverDurableUnaryBuilder` — implements
   `serverconn.DurableUnaryRequestBuilder` via the indexer client with
   proof-of-control credentials.
@@ -147,6 +158,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - `reserveCustomInputs` (on `RPCServer`) — atomically claims every
   custom OOR outpoint for a `SendOOR` call. Returns a release
   function (typically deferred).
+- vHTLC recovery RPC handlers (`rpc_vhtlc_recovery.go`) —
+  `ArmVHTLCRecovery`, `EscalateVHTLCRecovery`, `CancelVHTLCRecovery`,
+  `GetVHTLCRecoveryStatus`, `ListVHTLCRecoveries`. All delegate to
+  `coordinator.Service`; `requireVHTLCRecovery` returns a gRPC
+  `Unavailable` error when the service is not wired (build-tag stub builds).
+  `RegisterVHTLCRecoveryPreimageResolver` is called by `swapclientserver` at
+  startup to install the swap-owned preimage resolver into the
+  `vhtlcrecovery/unrollpolicy` registry.
 - `autoRefreshFeeQuoter` — wires `vtxo.RefreshFeeQuoter` into every
   VTXO actor. Advisory under #270: the closure's return value
   populates `RefreshVTXORequest.OperatorFee` for observability but
@@ -215,7 +234,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`,
   `indexer`, `arkrpc`, `lndbackend`, `harness` (bitcoind package
   submitter wiring in `cmd/darepod`), `fraud`, `gateway`,
-  `rpc/restclient`.
+  `rpc/restclient`, `vhtlcrecovery/coordinator` (vHTLC recovery
+  coordinator service), `vhtlcrecovery/unrollpolicy` (exit spend policy
+  resolver registration).
 - **Depended on by**: `cmd/darepod`.
 
 ## Invariants

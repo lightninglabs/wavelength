@@ -62,6 +62,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   when fallback occurred. Status strings are the wrapper-owned
   lowercase set
   (`pending`/`materializing`/`csv_pending`/`sweeping`/`completed`/`failed`/`unspecified`).
+- `ConnectConfig` — Configuration for a `Client` connected to an external
+  daemon (instead of an embedded one). Fields: `Address`, `Transport`
+  (`TransportGRPC` or `TransportREST`), `DialOptions`, `HTTPClient`.
+- `PrepareSendRequest` / `PrepareSendResult` — Two-phase send flow. `PrepareSend`
+  validates and previews an outbound payment without moving funds; it returns
+  a `SendIntentID` and a `PrepareSendResult` containing fee estimates, the
+  expected `Rail`, and `QuoteStatus`. `SendPrepared` dispatches the previously
+  prepared send by intent id.
+- `SendRail` — Settlement rail for a prepared send. Values:
+  `SendRailUnspecified`, `SendRailOffchainUnknown`, `SendRailInArk`,
+  `SendRailLightning`, `SendRailOnchain`.
+- `SendQuoteStatus` — Completeness of the prepare-time fee quote.
+  Values: `SendQuoteStatusUnspecified`, `SendQuoteStatusComplete`,
+  `SendQuoteStatusLocalOnly`.
+- `SendPreparedRequest` — Dispatches a previously prepared send by intent id.
 - `ErrWalletRPCUnavailable` — sentinel returned by every wallet method
   on builds without the `walletdkrpc` tag.
 - `ErrSwapRuntimeUnavailable` — back-compat alias for
@@ -83,9 +98,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 | `ExitStatus` | Query the phase of an exit job. |
 | `Status` | Wallet readiness, balance, pending-entry count. |
 | `Subscribe` | Stream wallet activity (`Entry`) updates. |
+| `PrepareSend` | Validate and preview an outbound payment without moving funds. Returns fee estimates, rail, and a `SendIntentID`. |
+| `SendPrepared` | Dispatch a previously prepared send by intent id. |
 | `Stop` / `Close` | Shut down the embedded daemon, release the private transport. |
 | `Wait` | Single shared channel yielding the daemon's terminal run error. |
 | `GRPCConn` / `ArkRPC` / `SwapRPC` / `WalletRPC` | Escape hatches to the underlying private gRPC conn and raw clients. |
+| `BtcwalletRPC` / `BtcwalletVersionRPC` | Escape hatches to btcwallet gRPC clients (btcwallet builds only). |
 
 ## Relationships
 
