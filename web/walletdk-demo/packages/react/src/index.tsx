@@ -8,6 +8,7 @@ import {
   ReceiveRequest,
   RuntimeConfig,
   SendRequest,
+  SendResult,
   UnlockWalletRequest,
   UnlockWalletResult,
   WalletDKClient,
@@ -66,7 +67,7 @@ export type WalletDKReactState = {
   unlockWallet(req: UnlockWalletRequest): Promise<UnlockWalletResult>;
   deposit(req?: DepositRequest): Promise<string>;
   receive(req: ReceiveRequest): Promise<string>;
-  send(req: SendRequest): Promise<string>;
+  send(req: SendRequest): Promise<SendResult>;
   clearOperationError(operation: WalletOperation): void;
 };
 
@@ -254,7 +255,7 @@ export function WalletDKProvider({ children }: { children: ReactNode }) {
       const result = await client.send(req);
       await refresh();
 
-      return result.PaymentHash || result.Entry?.ID || "";
+      return result;
     });
   }, [client, refresh, runOperation]);
 

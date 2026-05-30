@@ -24,42 +24,36 @@ test("walletdk demo starts with live signet defaults", async ({
   });
 
   await page.goto("/");
-  await expect(page.locator("#runtime-status")).toHaveText("wasm ready", {
-    timeout: 30000,
-  });
-  await openAdvancedSettings(page);
+  // The connect screen (with its "Start runtime" button) renders only after the
+  // WASM runtime has loaded.
+  const startRuntime = page.getByRole("button", { name: "Start runtime" });
+  await expect(startRuntime).toBeVisible({ timeout: 30000 });
 
-  await expect(page.locator("input[name=network]")).toHaveValue("signet");
-  await expect(page.locator("input[name=arkGatewayURL]")).toHaveValue(
-    arkGatewayURL,
-  );
-  await expect(page.locator("input[name=mailboxGatewayURL]")).toHaveValue(
-    arkGatewayURL,
-  );
-  await expect(page.locator("input[name=walletEsploraURL]")).toHaveValue(
-    esploraURL,
-  );
-  await expect(page.locator("input[name=swapServerGatewayURL]")).toHaveValue(
+  // The form is seeded with the signet defaults (network defaults to signet).
+  await expect(page.getByLabel("Ark gateway URL")).toHaveValue(arkGatewayURL);
+  await expect(page.getByLabel("Wallet Esplora URL")).toHaveValue(esploraURL);
+
+  await page.getByRole("button", { name: "Advanced endpoints" }).click();
+  await expect(page.getByLabel("Mailbox gateway URL")).toHaveValue(arkGatewayURL);
+  await expect(page.getByLabel("Swap server gateway URL")).toHaveValue(
     swapGatewayURL,
   );
-  await expect(page.locator("input[name=swapMailboxGatewayURL]")).toHaveValue(
+  await expect(page.getByLabel("Swap mailbox gateway URL")).toHaveValue(
     swapGatewayURL,
   );
 
-  await page.locator("input[name=dataDir]").fill(
+  await page.getByLabel("Data directory").fill(
     `/walletdk-signet-smoke-${Date.now()}`,
   );
-  await page.locator("input[name=swapDatabaseFileName]").fill(
+  await page.getByLabel("Swap database file").fill(
     `/walletdk-signet-swaps-${Date.now()}.db`,
   );
-  await page.getByRole("button", { name: "Start runtime" }).click();
+  await startRuntime.click();
 
-  await expect(page.locator("#runtime-status")).toHaveText(
-    "wallet not created",
-    { timeout: 120000 },
-  );
-  await expect(page.locator("#create-form")).toBeVisible({
-    timeout: 30000,
+  // A fresh wallet on signet lands on the create screen once the runtime has
+  // connected to the live gateways.
+  await expect(page.getByRole("button", { name: "Create wallet" })).toBeVisible({
+    timeout: 120000,
   });
 
   await testInfo.attach("signet-start", {
@@ -71,12 +65,3 @@ test("walletdk demo starts with live signet defaults", async ({
     contentType: "text/plain",
   });
 });
-
-async function openAdvancedSettings(page) {
-  const details = page.locator(".advanced-settings");
-  if (await details.evaluate((node) => node.hasAttribute("open"))) {
-    return;
-  }
-
-  await page.getByText("Advanced settings").click();
-}

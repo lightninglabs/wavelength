@@ -1,0 +1,99 @@
+@import "tailwindcss";
+
+/* Class-based dark mode: the `.dark` class on <html> (set by ThemeProvider)
+   flips the palette by overriding the raw CSS variables below. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Light palette (default). The raw tokens are intentionally un-prefixed; they
+   are mapped to Tailwind color utilities in the `@theme inline` block so that
+   switching `.dark` re-resolves every `bg-surface`/`text-muted`/... utility at
+   runtime without rebuilding. */
+:root {
+  color-scheme: light;
+
+  --bg: #f6f6f7;
+  --surface: #ffffff;
+  --surface-alt: #f0f0f2;
+  /* `--well` is the recessed input surface: darker than both `--bg` and
+     `--surface-alt` so an inset field reads as sunken on any band. */
+  --well: #e7e7eb;
+  --border: rgba(0, 0, 0, 0.1);
+  --border-strong: rgba(0, 0, 0, 0.16);
+  --text: #19191c;
+  --muted: #5d5d67;
+  --faint: #9a9aa4;
+  --accent: #5b6cff;
+  --accent-soft: rgba(91, 108, 255, 0.12);
+  --good: #15935f;
+  --warn: #b7791f;
+  --bad: #d14343;
+}
+
+/* Dark palette — the original Onyx values. */
+.dark {
+  color-scheme: dark;
+
+  --bg: #0a0a0b;
+  --surface: #111113;
+  --surface-alt: #161619;
+  /* Sunk below the page in dark too — see the light-palette note above. */
+  --well: #050506;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --text: #ededef;
+  --muted: #8a8a93;
+  --faint: #5a5a63;
+  --accent: #5b6cff;
+  --accent-soft: rgba(91, 108, 255, 0.14);
+  --good: #46c08a;
+  --warn: #e0b54d;
+  --bad: #e0686b;
+}
+
+/* Map raw tokens to Tailwind theme utilities. `inline` makes the generated
+   utilities reference the CSS variables directly, so the `.dark` overrides
+   above take effect live. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-alt: var(--surface-alt);
+  --color-well: var(--well);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  body {
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Tailwind v4's preflight drops the historical `cursor: pointer` on buttons.
+     Restore it for interactive elements (and use the disabled cursor when a
+     control is not actionable). */
+  button:not(:disabled),
+  a[href],
+  label[role="button"],
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: default;
+  }
+}

@@ -25,52 +25,53 @@ test("wallet create and address state persist with OPFS SQLite", async ({
   });
 
   await page.goto("/");
-  await expect(page.locator("#runtime-status")).toHaveText("wasm ready", {
-    timeout: 30000,
-  });
+  // The "Start runtime" button is the connect screen, which only renders once
+  // the WASM runtime has loaded (phase runtimeReady).
+  const startRuntime = page.getByRole("button", { name: "Start runtime" });
+  await expect(startRuntime).toBeVisible({ timeout: 30000 });
 
   await configureRuntime(page, baseURL, dataDir, swapDatabaseFileName);
-  await page.getByRole("button", { name: "Start runtime" }).click();
+  await startRuntime.click();
 
-  await expect(page.locator("#create-form")).toBeVisible({
-    timeout: 60000,
-  });
-  await page.locator("#create-form input[name=password]").fill(password);
-  await page.getByRole("button", { name: "Create wallet" }).click();
+  const createWallet = page.getByRole("button", { name: "Create wallet" });
+  await expect(createWallet).toBeVisible({ timeout: 60000 });
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByLabel("Confirm password").fill(password);
+  await createWallet.click();
 
-  await expect(page.locator("#mnemonic-panel")).toBeVisible({
-    timeout: 60000,
-  });
+  await expect(page.getByRole("heading", { name: "Recovery phrase" })).toBeVisible(
+    { timeout: 60000 },
+  );
   await testInfo.attach("create-wallet", {
     body: await page.screenshot({ fullPage: true }),
     contentType: "image/png",
   });
 
-  await page.getByRole("button", {
-    name: "I recorded the demo mnemonic",
-  }).click();
-  await expect(page.locator("#dashboard-view")).toBeVisible({
-    timeout: 60000,
-  });
+  await page.getByRole("button", { name: "I saved it" }).click();
 
-  await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  const identity = await identityPubkey(page);
+  // The account chip carries the full identity pubkey and only renders inside
+  // the authenticated app shell, so its presence confirms we reached the
+  // dashboard.
+  const accountChip = page.getByTestId("account-pubkey");
+  await expect(accountChip).toBeVisible({ timeout: 60000 });
+  const identity = await accountChip.getAttribute("data-pubkey");
   expect(identity.length).toBeGreaterThan(10);
   await expectOPFSOpen(page);
 
-  await page.getByRole("button", { name: "New address" }).click();
-  await expect(page.locator("#address-output")).toContainText("bcrt", {
-    timeout: 30000,
-  });
+  // Fresh wallets are empty, so home shows the board-on-chain CTA.
+  await page.getByRole("button", { name: "Get a boarding address" }).click();
+  await page.getByRole("button", { name: "On-chain" }).click();
+  await page.getByRole("button", { name: "Get boarding address" }).click();
+  await expect(page.getByText(/bcrt1/)).toBeVisible({ timeout: 30000 });
 
-  await page.locator("input[name=amountSat]").fill("1000");
+  await page.getByRole("button", { name: "Lightning" }).click();
+  await page.getByLabel("Amount (sats)").fill("1000");
   await page.getByRole("button", { name: "Create invoice" }).click();
-  await expect(page.locator("#receive-output")).toContainText("lnbcrt", {
-    timeout: 60000,
-  });
+  await expect(page.getByText(/lnbcrt/)).toBeVisible({ timeout: 60000 });
 
-  await page.getByRole("button", { name: "Refresh swaps" }).click();
-  await expect(page.locator("#swaps-body tr")).toHaveCount(1, {
+  await page.getByRole("button", { name: "Activity" }).click();
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(page.getByTestId("activity-row").first()).toBeVisible({
     timeout: 30000,
   });
 
@@ -80,25 +81,18 @@ test("wallet create and address state persist with OPFS SQLite", async ({
   });
 
   await page.reload();
-  await expect(page.locator("#runtime-status")).toHaveText("wasm ready", {
-    timeout: 30000,
-  });
+  await expect(startRuntime).toBeVisible({ timeout: 30000 });
 
   await configureRuntime(page, baseURL, dataDir, swapDatabaseFileName);
-  await page.getByRole("button", { name: "Start runtime" }).click();
+  await startRuntime.click();
 
-  await expect(page.locator("#unlock-form")).toBeVisible({
-    timeout: 60000,
-  });
-  await page.locator("#unlock-form input[name=password]").fill(password);
-  await page.getByRole("button", { name: "Unlock wallet" }).click();
+  const unlock = page.getByRole("button", { name: "Unlock", exact: true });
+  await expect(unlock).toBeVisible({ timeout: 60000 });
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await unlock.click();
 
-  await expect(page.locator("#dashboard-view")).toBeVisible({
-    timeout: 60000,
-  });
-  await page.getByRole("button", { name: "Refresh", exact: true }).click();
-
-  const reloadedIdentity = await identityPubkey(page);
+  await expect(accountChip).toBeVisible({ timeout: 60000 });
+  const reloadedIdentity = await accountChip.getAttribute("data-pubkey");
   expect(reloadedIdentity).toBe(identity);
   await expectOPFSOpen(page);
 
@@ -113,39 +107,15 @@ test("wallet create and address state persist with OPFS SQLite", async ({
 });
 
 async function configureRuntime(page, baseURL, dataDir, swapDatabaseFileName) {
-  await openAdvancedSettings(page);
-  await page.locator("input[name=network]").fill("regtest");
-  await page.locator("input[name=dataDir]").fill(dataDir);
-  await page.locator("input[name=walletEsploraURL]").fill(baseURL);
-  await page.locator("input[name=arkGatewayURL]").fill(baseURL);
-  await page.locator("input[name=mailboxGatewayURL]").fill(baseURL);
-  await page.locator("input[name=swapServerGatewayURL]").fill(baseURL);
-  await page.locator("input[name=swapMailboxGatewayURL]").fill(baseURL);
-  await page.locator("input[name=swapDatabaseFileName]").fill(
-    swapDatabaseFileName,
-  );
-  await page.locator("input[name=disableSwaps]").uncheck();
-}
-
-async function openAdvancedSettings(page) {
-  const details = page.locator(".advanced-settings");
-  if (await details.evaluate((node) => node.hasAttribute("open"))) {
-    return;
-  }
-
-  await page.getByText("Advanced settings").click();
-}
-
-async function identityPubkey(page) {
-  const terms = page.locator("#info-grid dt");
-  const count = await terms.count();
-  for (let i = 0; i < count; i++) {
-    if ((await terms.nth(i).innerText()) === "identity pubkey") {
-      return page.locator("#info-grid dd").nth(i).innerText();
-    }
-  }
-
-  throw new Error("identity pubkey fact not found");
+  await page.getByRole("button", { name: "regtest", exact: true }).click();
+  await page.getByLabel("Ark gateway URL").fill(baseURL);
+  await page.getByLabel("Wallet Esplora URL").fill(baseURL);
+  await page.getByRole("button", { name: "Advanced endpoints" }).click();
+  await page.getByLabel("Mailbox gateway URL").fill(baseURL);
+  await page.getByLabel("Swap server gateway URL").fill(baseURL);
+  await page.getByLabel("Swap mailbox gateway URL").fill(baseURL);
+  await page.getByLabel("Data directory").fill(dataDir);
+  await page.getByLabel("Swap database file").fill(swapDatabaseFileName);
 }
 
 async function expectOPFSOpen(page) {

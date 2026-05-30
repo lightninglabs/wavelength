@@ -72,7 +72,11 @@ export class MainThreadWalletDKClient implements WalletDKClient {
   }
 
   balance(): Promise<Balance> {
-    return this.callRaw<Balance>("balance");
+    // getRawBalance returns the daemon's per-category breakdown (VTXO,
+    // boarding confirmed/unconfirmed, on-chain). The flat "balance" verb
+    // collapses everything into a single confirmed figure, which cannot
+    // represent a pending boarding deposit or an honest composition.
+    return this.callRaw<Balance>("getRawBalance");
   }
 
   createWallet(req: CreateWalletRequest): Promise<CreateWalletResult> {
@@ -233,7 +237,11 @@ export class WorkerWalletDKClient implements WalletDKClient {
   }
 
   balance(): Promise<Balance> {
-    return this.callRaw<Balance>("balance");
+    // getRawBalance returns the daemon's per-category breakdown (VTXO,
+    // boarding confirmed/unconfirmed, on-chain). The flat "balance" verb
+    // collapses everything into a single confirmed figure, which cannot
+    // represent a pending boarding deposit or an honest composition.
+    return this.callRaw<Balance>("getRawBalance");
   }
 
   createWallet(req: CreateWalletRequest): Promise<CreateWalletResult> {
