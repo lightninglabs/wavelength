@@ -130,7 +130,12 @@ export class MainThreadWalletDKClient implements WalletDKClient {
     }
 
     try {
+      // Format the current timestamp as a string in the format "YYYY-MM-DD HH:MM:SS".
+      const ts = () => new Date().toISOString().split('T').join(' ').slice(0, -1);
+      // Log RPC call request/response payloads for debugging purposes.
+      console.log(`${ts()} Executing ${method}:`, params);
       const result = await globalWallet.walletdkCall(method, params);
+      console.log(`${ts()} Executed ${method} result:`, result);
       this.emit({
         type: "sqliteOpenResults",
         payload: (globalThis as typeof globalThis & {
