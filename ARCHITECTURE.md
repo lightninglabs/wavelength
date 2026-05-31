@@ -38,6 +38,9 @@ package may import from a higher layer.
 | [`chain`](chain/) | Bitcoind RPC utilities (package relay, `SubmitPackage`) |
 | [`txconfirm`](txconfirm/) | Generic "broadcast + CPFP fee-bump + notify on confirm" actor with per-parent fee-input reservations and BIP-125 Rule 3/4 enforcement |
 | [`unroll`](unroll/) | Durable per-target unilateral-exit actor + thin registry: owns proof assembly, materialization, CSV maturity, final sweep build, persist-before-broadcast, and control-plane record persistence |
+| [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery: `RecoveryJob` row, action/state/policy-kind constants. Pure types package; no unroll logic. |
+| [`vhtlcrecovery/coordinator`](vhtlcrecovery/coordinator/) | Runtime coordinator for vHTLC recovery jobs: turns an armed SQL row into a generic unroll admission via `(exit_policy_kind, recovery_id)`. Thin service; SQL owns state. |
+| [`vhtlcrecovery/unrollpolicy`](vhtlcrecovery/unrollpolicy/) | Adapter that resolves durable vHTLC recovery rows into concrete `unroll.ExitSpendPolicy` implementations (claim and refund-without-receiver spend paths). |
 | [`lndbackend`](lndbackend/) | `BoardingBackend` implementation via LND's wallet kit |
 | [`lwwallet`](lwwallet/) | Lightweight in-process wallet (btcwallet + Esplora, no external LND) |
 | [`btcwbackend`](btcwbackend/) | Neutrino-backed wallet backend (btcwallet + compact block filters) |
@@ -47,6 +50,7 @@ package may import from a higher layer.
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
+| [`serverconn/mailboxpull`](serverconn/mailboxpull/) | Shared retry+backoff primitives for mailbox pull loops (used by serverconn ingress and `sdk/swaps` vHTLC event consumers). |
 
 ### Layer 3: Application & Orchestration
 

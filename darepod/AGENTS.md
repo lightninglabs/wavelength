@@ -39,6 +39,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   (`MaxCheckpoints`, `MaxVTXOMatches`, `MaxMailboxItems`,
   `MaxMailboxScriptBytes`). `Config.OORReceiveLimits()` normalizes
   into `oor.ReceiveLimits`.
+- `PprofConfig` — optional opt-in pprof debug HTTP server configuration
+  (`ListenAddr string`). Empty `ListenAddr` disables pprof entirely. When
+  enabled the server binds an HTTP listener exposing `net/http/pprof` endpoints
+  with conservative read/write timeouts. **Security**: pprof exposes sensitive
+  runtime and memory data; the listen address must never be publicly reachable.
 - `WalletState` — `None` / `Locked` / `Ready`.
 
 ### RPC Handlers

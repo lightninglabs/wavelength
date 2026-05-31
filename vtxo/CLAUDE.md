@@ -14,6 +14,11 @@ when the local wallet owns the receive script.
 ## Key Types
 
 - `VTXOState` — Sealed interface for all states (Live, Spending, Spent, PendingForfeit, Forfeiting, Forfeited, UnilateralExit, Failed).
+- `SumSpendableBalance` — sums balance across only the spendable (Live) subset
+  of descriptors. Other non-terminal states (PendingForfeit, Forfeiting,
+  Spending) are excluded because they cannot back a new spend. Callers
+  reporting spendable balance must use this rather than `SumBalance` to avoid
+  overstating liquidity.
 - `Descriptor` — Complete VTXO metadata: `Outpoint`, `Amount`, `PkScript`, `OwnerKey` (keychain.KeyDescriptor), `OperatorKey`, `TapScript`, `TreePath`, `RoundID`, `CommitmentTxID`, `BatchExpiry`, `RelativeExpiry`, `TreeDepth`, `ChainDepth` (OOR hop count), `CreatedHeight`, `Status`.
 - `Manager` — Actor managing per-VTXO FSM instances, lifecycle, and admission gating. Configured via `ManagerConfig`.
 - `ManagerConfig` — Configuration holding Store, Wallet, ChainSource,

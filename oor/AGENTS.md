@@ -131,7 +131,12 @@ State transitions and validation rules live under [Invariants](#invariants).
 - `IncomingSnapshot`, `IncomingPhase` (`resolve_pending`,
   `materialize_pending`, `ack_pending`, `completed`, `failed`).
 - `TransferInputSnapshot` — portable encoding of client-side signing
-  context required to finalize checkpoint PSBTs after restart.
+  context required to finalize checkpoint PSBTs after restart. Includes
+  `ExternalSignatures []ExternalSignature` (TLV type 17, cap 8) for
+  pre-collected tapscript signatures needed by custom inputs such as vHTLC
+  refunds that require an additional swap-server signature on the checkpoint
+  leaf. Each entry is bounded by `maxExternalSignatureScriptBytes = 520` and
+  `maxExternalSignatureBytes = 65`.
 - `IncomingVTXOMetadata` — lineage metadata for incoming OOR VTXOs
   (`ChainDepth` = OOR checkpoint hop count).
 - `IncomingMetadataMatch` — authoritative per-output metadata for one
