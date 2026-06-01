@@ -4655,6 +4655,23 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		s.lazyChainResolver.Set(chainResolverRef)
 	}
 
+	// Reconcile any VTXOs left in unilateral-exit against their unroll
+	// job's terminal outcome. This is the durable backstop for the
+	// best-effort exit-outcome notification: if a recovery/confirmation
+	// was lost before the manager applied it (crash, full mailbox, failed
+	// status write), the VTXO would otherwise stay stranded across restart
+	// since exiting VTXOs are excluded from ListLiveVTXOs recovery
+	// (darepo-client#602).
+	//
+	// Run it in the background so a slow or stalled manager turn cannot
+	// hold up the rest of daemon startup: each per-VTXO Ask is bounded by
+	// reconcileExitTimeout, and N stranded VTXOs would otherwise serialize
+	// to N×timeout on the startup path. ctx is the daemon-lifetime context,
+	// so the goroutine is cancelled on shutdown; the manager handler is
+	// idempotent and the durable status means a missed pass is retried on
+	// the next boot.
+	go s.reconcileUnilateralExits(ctx, vtxoStore, ueStore)
+
 	s.log.InfoS(ctx, "Unroll subsystem initialized")
 
 	return nil
@@ -4764,6 +4781,98 @@ func (s *Server) recoverOrphanedUnrollJobs(ctx context.Context,
 	}
 
 	return nil
+}
+
+// reconcileExitTimeout bounds each per-VTXO reconciliation ask so a single
+// stalled manager turn cannot hold up daemon startup. A lost reconciliation
+// is retried on the next boot because the VTXO stays in unilateral-exit, so a
+// missed deadline here is recoverable rather than fatal.
+const reconcileExitTimeout = 10 * time.Second
+
+// reconcileUnilateralExits re-converges VTXOs still in unilateral-exit with
+// the terminal on-chain outcome of their unroll job. For each such VTXO it
+// looks up the unroll control-plane record and, if the job has terminated,
+// asks the VTXO manager to apply the outcome: a recoverable (no-footprint)
+// failure rolls the VTXO back to live, a completed exit retires it to spent.
+// Non-terminal jobs are left for the unroll registry's own restore path, and
+// a footprint-bearing failure is left in unilateral-exit because the exit has
+// begun on-chain. The manager handler is idempotent, so re-running this every
+// boot is safe.
+func (s *Server) reconcileUnilateralExits(ctx context.Context,
+	vtxoStore vtxo.VTXOStore, ueStore *db.UnilateralExitPersistenceStore) {
+
+	if vtxoStore == nil || ueStore == nil || !s.vtxoMgrRef.IsSome() {
+		return
+	}
+	managerRef := s.vtxoMgrRef.UnsafeFromSome()
+
+	exiting, err := vtxoStore.ListVTXOsByStatus(
+		ctx, vtxo.VTXOStatusUnilateralExit,
+	)
+	if err != nil {
+		s.log.WarnS(ctx, "Failed to list unilateral-exit VTXOs for "+
+			"reconciliation", err)
+
+		return
+	}
+
+	for _, desc := range exiting {
+		job, err := ueStore.GetJob(ctx, desc.Outpoint)
+		if errors.Is(err, db.ErrUnilateralExitJobNotFound) {
+			// No control-plane record for an exiting VTXO: we
+			// cannot safely decide whether it is mid-exit on-chain,
+			// so leave it untouched rather than risk reviving a
+			// spent coin.
+			continue
+		}
+		if err != nil {
+			s.log.WarnS(ctx, "Failed to load unroll record for "+
+				"reconciliation", err,
+				slog.String("outpoint", desc.Outpoint.String()),
+			)
+
+			continue
+		}
+
+		var outcome vtxo.ExitOutcome
+		switch job.Status {
+		case db.UnilateralExitJobStatusCompleted:
+			outcome = vtxo.ExitOutcomeConfirmed
+
+		case db.UnilateralExitJobStatusFailedRecoverable:
+			outcome = vtxo.ExitOutcomeRecoverable
+
+		default:
+			// Non-terminal (registry restore handles it) or a
+			// footprint-bearing failure (exit is on-chain): leave
+			// it.
+			continue
+		}
+
+		askCtx, cancel := context.WithTimeout(ctx, reconcileExitTimeout)
+		_, err = managerRef.Ask(askCtx, &vtxo.ExitOutcomeNotification{
+			Outpoint: desc.Outpoint,
+			Outcome:  outcome,
+			Reason:   job.LastError,
+		}).Await(askCtx).Unpack()
+		cancel()
+		if err != nil {
+			// Best-effort: the VTXO stays in unilateral-exit and
+			// the next boot retries this reconciliation.
+			s.log.WarnS(ctx, "Failed to reconcile unilateral-exit "+
+				"VTXO", err,
+				slog.String("outpoint", desc.Outpoint.String()),
+				slog.String("outcome", outcome.String()),
+			)
+
+			continue
+		}
+
+		s.log.InfoS(ctx, "Reconciled unilateral-exit VTXO",
+			slog.String("outpoint", desc.Outpoint.String()),
+			slog.String("outcome", outcome.String()),
+		)
+	}
 }
 
 // initFraudWatcher creates the passive recipient-fraud watcher and restores
