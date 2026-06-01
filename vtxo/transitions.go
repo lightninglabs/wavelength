@@ -41,6 +41,17 @@ func (s *LiveState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	case *ForceUnrollEvent:
 		return s.handleForceUnroll(ctx, evt)
 
+	case *ExitFailedEvent, *ExitConfirmedEvent:
+		// A duplicate or stale exit-outcome event for a VTXO that is
+		// already live (e.g. boot reconciliation re-delivering a
+		// recovery that already landed). Idempotent no-op: the VTXO is
+		// live, which is the recovered state. ExitConfirmedEvent should
+		// never reach a live VTXO, but ignoring it is safer than
+		// retiring a live coin to spent on a stray signal.
+		return &VTXOStateTransition{
+			NextState: s,
+		}, nil
+
 	case *VTXOFailedEvent:
 		return &VTXOStateTransition{
 			NextState: &FailedState{

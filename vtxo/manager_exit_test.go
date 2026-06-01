@@ -89,6 +89,7 @@ func TestHandleExitOutcomeConfirmedNoActorPersistsSpent(t *testing.T) {
 	t.Parallel()
 
 	vtxo := makeDescriptor(t, 50_000, 2)
+	vtxo.Status = VTXOStatusUnilateralExit
 	store := &MockVTXOStore{}
 	mgr := &Manager{
 		cfg: &ManagerConfig{
@@ -97,9 +98,42 @@ func TestHandleExitOutcomeConfirmedNoActorPersistsSpent(t *testing.T) {
 		actors: make(map[wire.OutPoint]VTXOActorRef),
 	}
 
+	// The confirm path loads the descriptor to guard against retiring a
+	// VTXO that has since moved off the exit state.
+	store.On("GetVTXO", t.Context(), vtxo.Outpoint).Return(vtxo, nil)
 	store.On(
 		"UpdateVTXOStatus", t.Context(), vtxo.Outpoint, VTXOStatusSpent,
 	).Return(nil)
+
+	resp := mgr.Receive(t.Context(), &ExitOutcomeNotification{
+		Outpoint: vtxo.Outpoint,
+		Outcome:  ExitOutcomeConfirmed,
+	})
+	_, err := resp.Unpack()
+	require.NoError(t, err)
+
+	store.AssertExpectations(t)
+}
+
+// TestHandleExitOutcomeConfirmedNoActorAlreadySpentIsNoop verifies that a
+// re-delivered confirmation for a VTXO that is no longer in the exit state
+// (e.g. already spent) does not rewrite its status.
+func TestHandleExitOutcomeConfirmedNoActorAlreadySpentIsNoop(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 50_000, 4)
+	vtxo.Status = VTXOStatusSpent
+	store := &MockVTXOStore{}
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			Store: store,
+		},
+		actors: make(map[wire.OutPoint]VTXOActorRef),
+	}
+
+	// Only GetVTXO is expected; no UpdateVTXOStatus because the guard
+	// short-circuits on a non-exiting VTXO.
+	store.On("GetVTXO", t.Context(), vtxo.Outpoint).Return(vtxo, nil)
 
 	resp := mgr.Receive(t.Context(), &ExitOutcomeNotification{
 		Outpoint: vtxo.Outpoint,
