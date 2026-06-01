@@ -2,6 +2,8 @@ package unroll
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -204,4 +206,86 @@ func TestRegistryRecoversCleanFailureEndToEnd(t *testing.T) {
 		t, vtxo.ExitOutcomeRecoverable, notes[0].Outcome,
 		"a clean no-broadcast failure must be reported as recoverable",
 	)
+}
+
+// TestRegistryFailedAdmissionNotifiesRecoverable verifies that a child whose
+// start fails before any broadcast (failAdmittedChild) both persists a
+// recoverable terminal record and notifies the VTXO manager to roll the VTXO
+// back to live. These pre-broadcast failures move ownership to unilateral
+// exit but leave no on-chain footprint, so they must be recoverable
+// (darepo-client#602).
+func TestRegistryFailedAdmissionNotifiesRecoverable(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	store := newMemRegistryStore()
+
+	observer := &captureExitObserver{}
+	var observerRef actor.TellOnlyRef[vtxo.ManagerMsg] = observer
+
+	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
+		Store:            store,
+		DeliveryStore:    newMemCheckpointStore(),
+		ProofAssembler:   &mockProofAssembler{proof: proof},
+		VTXOStore:        &mockVTXOStore{desc: desc},
+		TxConfirmRef:     &fakeTxConfirmRef{},
+		ChainSource:      &fakeRegistryChainSourceRef{height: 200},
+		Wallet:           &fakeSweepWallet{},
+		VTXOExitObserver: fn.Some(observerRef),
+	})
+	t.Cleanup(registry.Stop)
+
+	registry.behavior.spawnFunc = func(_ context.Context,
+		target wire.OutPoint) (*VTXOUnrollActor, error) {
+
+		behavior := actor.NewFunctionBehavior(
+			func(_ context.Context, msg Msg) fn.Result[Resp] {
+				switch msg.(type) {
+				case *StartUnrollRequest:
+					return fn.Err[Resp](
+						errors.New("start boom"),
+					)
+
+				case *GetStateRequest:
+					return fn.Ok[Resp](&GetStateResp{
+						Started: false,
+						Phase:   PhasePending,
+					})
+
+				default:
+					return fn.Err[Resp](
+						fmt.Errorf("unexpected msg %T",
+							msg),
+					)
+				}
+			},
+		)
+
+		// Test children are owned by t.Cleanup after creation.
+		//nolint:contextcheck
+		return newTestUnrollChild(t, target, behavior), nil
+	}
+
+	_, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint: proof.TargetOutpoint(),
+		Trigger:  TriggerManual,
+	}).Await(t.Context()).Unpack()
+	require.Error(t, err)
+
+	// The pre-broadcast failure is reported to the manager as recoverable.
+	require.Eventually(t, func() bool {
+		return len(observer.notifications()) == 1
+	}, testTimeout, 10*time.Millisecond,
+		"failed admission should notify the manager")
+
+	notes := observer.notifications()
+	require.Equal(t, proof.TargetOutpoint(), notes[0].Outpoint)
+	require.Equal(t, vtxo.ExitOutcomeRecoverable, notes[0].Outcome)
+
+	// And the durable record is the recoverable terminal variant, so boot
+	// reconciliation can recover it even if the notification is lost.
+	record, err := store.GetRecord(t.Context(), proof.TargetOutpoint())
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	require.Equal(t, PhaseFailed, record.Phase)
+	require.True(t, record.RecoverableFailure)
 }

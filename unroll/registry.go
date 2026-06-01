@@ -60,6 +60,13 @@ type RegistryRecord struct {
 
 	// SweepTxid stores the terminal sweep txid when known.
 	SweepTxid *chainhash.Hash
+
+	// RecoverableFailure is set on a terminal failure that left no
+	// on-chain footprint, so the target VTXO is safe to roll back to
+	// live. It is persisted (as a distinct DB status) so boot-time
+	// reconciliation can recover a VTXO whose recovery notification was
+	// lost before the manager applied it (darepo-client#602).
+	RecoverableFailure bool
 }
 
 // IsTerminal reports whether the record reached a terminal phase.
@@ -80,9 +87,12 @@ type RegistryStore interface {
 	// ListNonTerminalRecords returns all targets that still need restore.
 	ListNonTerminalRecords(ctx context.Context) ([]RegistryRecord, error)
 
-	// MarkTerminal persists one terminal target state.
+	// MarkTerminal persists one terminal target state. recoverable marks a
+	// no-footprint failure that boot-time reconciliation may roll back to
+	// live.
 	MarkTerminal(ctx context.Context, target wire.OutPoint, phase Phase,
-		failReason string, sweepTxid *chainhash.Hash) error
+		recoverable bool, failReason string,
+		sweepTxid *chainhash.Hash) error
 }
 
 // RegistryConfig configures the thin unroll registry actor.
@@ -714,6 +724,12 @@ func (r *registryBehavior) handleChildAdmissionResult(ctx context.Context,
 // failAdmittedChild records a terminal failure for a child that already has
 // a durable pending row. This keeps GetUnrollStatus from falling back to
 // "not found" after VTXO ownership has moved to unilateral exit.
+//
+// These failures (start / proof-assembly / restore errors) all occur before
+// the child broadcasts anything, so the VTXO has no on-chain footprint and is
+// recoverable to live. The record is persisted as a recoverable failure and
+// the VTXO manager is notified so the VTXO is rolled back rather than
+// stranded in unilateral exit (darepo-client#602).
 func (r *registryBehavior) failAdmittedChild(ctx context.Context,
 	target wire.OutPoint, child *VTXOUnrollActor, err error) {
 
@@ -721,22 +737,34 @@ func (r *registryBehavior) failAdmittedChild(ctx context.Context,
 	delete(r.active, target)
 
 	record := RegistryRecord{
-		TargetOutpoint: target,
-		ActorID:        child.Ref().ID(),
-		Phase:          PhaseFailed,
-		FailReason:     err.Error(),
+		TargetOutpoint:     target,
+		ActorID:            child.Ref().ID(),
+		Phase:              PhaseFailed,
+		FailReason:         err.Error(),
+		RecoverableFailure: true,
 	}
 	if pending, ok := r.pending[target]; ok {
 		record = cloneRegistryRecord(pending)
 		record.Phase = PhaseFailed
 		record.FailReason = err.Error()
+		record.RecoverableFailure = true
 	}
 
 	r.pending[target] = cloneRegistryRecord(record)
 
+	// Roll the VTXO back to live. The terminal record below is the durable
+	// backstop if this best-effort notification is lost.
+	r.notifyVTXOExit(context.WithoutCancel(ctx), &UnrollTerminatedMsg{
+		Outpoint:            target,
+		ActorID:             record.ActorID,
+		Phase:               PhaseFailed,
+		FailReason:          err.Error(),
+		HadOnChainFootprint: false,
+	})
+
 	markErr := r.cfg.Store.MarkTerminal(
-		context.WithoutCancel(ctx), target, PhaseFailed, err.Error(),
-		nil,
+		context.WithoutCancel(ctx), target, PhaseFailed, true,
+		err.Error(), nil,
 	)
 	if markErr != nil {
 		r.log.WarnS(ctx, "Failed to mark admitted unroll child "+
@@ -884,12 +912,17 @@ func (r *registryBehavior) handleGetStatus(ctx context.Context,
 func (r *registryBehavior) handleTerminated(ctx context.Context,
 	req *UnrollTerminatedMsg) fn.Result[RegistryResp] {
 
+	// A terminal failure with no on-chain footprint is recoverable: the
+	// VTXO never left off-chain custody, so it can be rolled back to live.
+	recoverable := req.Phase == PhaseFailed && !req.HadOnChainFootprint
+
 	record := RegistryRecord{
-		TargetOutpoint: req.Outpoint,
-		ActorID:        req.ActorID,
-		Phase:          req.Phase,
-		FailReason:     req.FailReason,
-		SweepTxid:      copyHash(req.SweepTxid),
+		TargetOutpoint:     req.Outpoint,
+		ActorID:            req.ActorID,
+		Phase:              req.Phase,
+		FailReason:         req.FailReason,
+		SweepTxid:          copyHash(req.SweepTxid),
+		RecoverableFailure: recoverable,
 	}
 
 	if cached, ok := r.pending[req.Outpoint]; ok {
@@ -897,6 +930,7 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 		record.Phase = req.Phase
 		record.FailReason = req.FailReason
 		record.SweepTxid = copyHash(req.SweepTxid)
+		record.RecoverableFailure = recoverable
 		if record.ActorID == "" {
 			record.ActorID = req.ActorID
 		}
@@ -1568,7 +1602,8 @@ func sameRegistryRecord(a, b RegistryRecord) bool {
 		a.ExitPolicyKind != b.ExitPolicyKind ||
 		a.ExitPolicyRef != b.ExitPolicyRef ||
 		a.Phase != b.Phase ||
-		a.FailReason != b.FailReason {
+		a.FailReason != b.FailReason ||
+		a.RecoverableFailure != b.RecoverableFailure {
 		return false
 	}
 
