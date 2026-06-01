@@ -44,6 +44,33 @@ func checkpointFromState(state State, sweepTx *wire.MsgTx) *actorCheckpoint {
 	return checkpoint
 }
 
+// jobHadOnChainFootprint reports whether the job ever published anything
+// on-chain. A footprint exists if any proof node confirmed or is still
+// in-flight (submitted to txconfirm, so potentially in the mempool), or if
+// the sweep advanced past pending. It is false only for a clean failure
+// that never broadcast, which is the sole case where the target VTXO is
+// safe to roll back to live: any footprint means the unilateral exit has
+// begun on-chain and the operator no longer treats the VTXO as live. See
+// darepo-client#602.
+//
+// This reflects THIS job's own footprint. An exit driven on-chain by a
+// third party (the operator, or a prior holder of a fraudulently re-spent
+// VTXO) does not reach the recoverable branch: our submission of the same
+// proof node is an ignorable "already known" broadcast rather than a hard
+// failure, and the proof-node confirmation/spend watch fires, so that job
+// terminates Completed (→ ExitOutcomeConfirmed), not as a no-footprint
+// failure. Sweeping an externally exposed checkpoint is the fraud-response
+// path, which runs as its own (fraud-triggered) job with a real footprint.
+func jobHadOnChainFootprint(job *JobState) bool {
+	if job == nil {
+		return false
+	}
+
+	return len(job.PlannerState.ConfirmedTxids) > 0 ||
+		len(job.PlannerState.InFlightTxids) > 0 ||
+		job.PlannerState.Sweep.Status != unrollplan.SweepStatusPending
+}
+
 // effectiveSweepTxid returns the durable sweep txid from planner state when
 // present, or derives it from the stored sweep transaction once the sweep has
 // advanced beyond pending.
