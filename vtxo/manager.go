@@ -558,6 +558,21 @@ func (m *Manager) recoverExitedVTXO(ctx context.Context,
 		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
 	}
 
+	// Idempotency guard: only relive a VTXO that is still in the exit
+	// state. Boot reconciliation can re-deliver a recovery whose previous
+	// attempt already succeeded (status now Live) or whose VTXO has since
+	// moved on; reliving again would spawn a duplicate actor or clobber a
+	// later state.
+	if descriptor.Status != VTXOStatusUnilateralExit {
+		m.logger(ctx).DebugS(ctx, "Skipping exit recovery for "+
+			"non-exiting VTXO",
+			slog.String("outpoint", req.Outpoint.String()),
+			slog.String("status", descriptor.Status.String()),
+		)
+
+		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+	}
+
 	if err := m.cfg.Store.UpdateVTXOStatus(
 		ctx, req.Outpoint, VTXOStatusLive,
 	); err != nil {
@@ -603,8 +618,20 @@ func (m *Manager) confirmExitedVTXO(ctx context.Context,
 		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
 	}
 
-	// No live actor: persist the terminal status directly so a restarted
-	// daemon still records the on-chain spend.
+	// No live actor: persist the terminal spent status directly so a
+	// restarted daemon still records the on-chain spend. Only act on a VTXO
+	// still in the exit state so a re-delivered confirmation cannot stomp a
+	// VTXO that has since been reissued or recovered to live.
+	descriptor, err := m.cfg.Store.GetVTXO(ctx, req.Outpoint)
+	if err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("load vtxo for confirm: %w", err),
+		)
+	}
+	if descriptor == nil || descriptor.Status != VTXOStatusUnilateralExit {
+		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+	}
+
 	if err := m.cfg.Store.UpdateVTXOStatus(
 		ctx, req.Outpoint, VTXOStatusSpent,
 	); err != nil {
