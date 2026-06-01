@@ -85,7 +85,8 @@ func (s *memRegistryStore) ListNonTerminalRecords(_ context.Context) (
 
 // MarkTerminal records one terminal phase.
 func (s *memRegistryStore) MarkTerminal(_ context.Context, target wire.OutPoint,
-	phase Phase, failReason string, sweepTxid *chainhash.Hash) error {
+	phase Phase, recoverable bool, failReason string,
+	sweepTxid *chainhash.Hash) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -93,6 +94,7 @@ func (s *memRegistryStore) MarkTerminal(_ context.Context, target wire.OutPoint,
 	record := s.records[target]
 	record.TargetOutpoint = target
 	record.Phase = phase
+	record.RecoverableFailure = recoverable
 	record.FailReason = failReason
 	record.SweepTxid = copyHash(sweepTxid)
 	s.records[target] = record
