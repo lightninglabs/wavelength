@@ -135,6 +135,16 @@ type RegistryConfig struct {
 	// into every spawned VTXOUnrollActor and from there into the
 	// FSM Environment.
 	FraudCheckpointSafetyMargin int32
+
+	// VTXOExitObserver, when set, receives an ExitOutcomeNotification each
+	// time a child unroll job reaches a terminal phase: a clean failure
+	// (no on-chain footprint) asks the VTXO manager to roll the VTXO back
+	// to live, and a completed exit asks it to retire the VTXO to spent.
+	// This is the feedback edge that keeps VTXO lifecycle gated on the
+	// unroll job's terminal on-chain outcome rather than the user's intent
+	// to exit (darepo-client#602). When None, terminal outcomes are not
+	// forwarded (used by tests that don't exercise the manager).
+	VTXOExitObserver fn.Option[actor.TellOnlyRef[vtxo.ManagerMsg]]
 }
 
 // UnrollRegistryActor wraps the thin unroll registry actor.
@@ -908,7 +918,64 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 	//nolint:contextcheck
 	r.requestPersist(req.Outpoint, 0)
 
+	// Forward the terminal outcome to the VTXO manager so the VTXO's
+	// lifecycle tracks the unroll job's terminal on-chain result rather
+	// than the user's intent to exit (darepo-client#602). The handoff must
+	// survive caller-context cancellation, so detach the context.
+	r.notifyVTXOExit(context.WithoutCancel(ctx), req)
+
 	return fn.Ok[RegistryResp](&RegistryAckResp{})
+}
+
+// notifyVTXOExit forwards a child's terminal outcome to the VTXO manager.
+//
+//   - PhaseFailed with no on-chain footprint: the unroll never broadcast,
+//     so the VTXO is still live from the operator's perspective. Ask the
+//     manager to roll it back to live (ExitOutcomeRecoverable).
+//   - PhaseCompleted: the exit was swept and confirmed on-chain, so ask the
+//     manager to retire the VTXO to spent (ExitOutcomeConfirmed).
+//   - PhaseFailed with an on-chain footprint: the exit has begun on-chain;
+//     leave the VTXO in unilateral-exit (no notification).
+//
+// Delivery is best-effort: a failed Tell is logged, not retried. This is the
+// fast runtime path; the durable backstop is the daemon's boot-time
+// reconciliation (darepod reconcileUnilateralExits), which re-derives the
+// same outcome from the persisted unroll record via an Ask. The VTXO manager
+// is in-process and the durable unroll record remains terminal, so a dropped
+// notification only delays re-convergence until the next restart's
+// reconciliation rather than losing funds.
+func (r *registryBehavior) notifyVTXOExit(ctx context.Context,
+	req *UnrollTerminatedMsg) {
+
+	if r.cfg.VTXOExitObserver.IsNone() {
+		return
+	}
+	observer := r.cfg.VTXOExitObserver.UnsafeFromSome()
+
+	var outcome vtxo.ExitOutcome
+	switch {
+	case req.Phase == PhaseCompleted:
+		outcome = vtxo.ExitOutcomeConfirmed
+
+	case req.Phase == PhaseFailed && !req.HadOnChainFootprint:
+		outcome = vtxo.ExitOutcomeRecoverable
+
+	default:
+		return
+	}
+
+	err := observer.Tell(ctx, &vtxo.ExitOutcomeNotification{
+		Outpoint: req.Outpoint,
+		Outcome:  outcome,
+		Reason:   req.FailReason,
+	})
+	if err != nil {
+		r.log.WarnS(ctx, "Failed to notify VTXO manager of exit "+
+			"outcome", err,
+			slog.String("outpoint", req.Outpoint.String()),
+			slog.String("outcome", outcome.String()),
+		)
+	}
 }
 
 // stopChildAfterDrain stops a terminal child only after a queued status probe
