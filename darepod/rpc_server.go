@@ -1957,7 +1957,8 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		wRef := r.server.walletRef.UnsafeFromSome()
 
 		selectReq := &wallet.SelectAndLockVTXOsRequest{
-			TargetAmount: targetAmt,
+			TargetAmount:    targetAmt,
+			MinChangeAmount: terms.DustLimit,
 		}
 		selectFuture := wRef.Ask(ctx, selectReq)
 		selectResult := selectFuture.Await(ctx)

@@ -598,10 +598,11 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 // selectAndReserveVTXOs so the shared coin-selection + reservation
 // logic does not need to be duplicated.
 type reserveParams struct {
-	targetAmount btcutil.Amount
-	reserveEvent actormsg.VTXOActorMsg
-	rollback     func(ctx context.Context, ops []wire.OutPoint)
-	ask          func(context.Context, VTXOActorRef,
+	targetAmount    btcutil.Amount
+	minChangeAmount btcutil.Amount
+	reserveEvent    actormsg.VTXOActorMsg
+	rollback        func(ctx context.Context, ops []wire.OutPoint)
+	ask             func(context.Context, VTXOActorRef,
 		actormsg.VTXOActorMsg) fn.Result[actormsg.VTXOActorResp]
 	label string
 }
@@ -627,8 +628,17 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	}
 
 	// Run largest-first selection.
-	selected := selectLargestFirst(candidates, p.targetAmount)
+	selected, selectedTotal := selectLargestFirstWithMinChange(
+		candidates, p.targetAmount, p.minChangeAmount,
+	)
 	if selected == nil {
+		if selectedTotal >= p.targetAmount && p.minChangeAmount > 0 {
+			change := selectedTotal - p.targetAmount
+
+			return nil, 0, fmt.Errorf("change %d is below minimum "+
+				"change amount %d", change, p.minChangeAmount)
+		}
+
 		err := m.insufficientLiquidityError(ctx, candidates, p)
 
 		return nil, 0, err
@@ -737,11 +747,12 @@ func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
 	req *SelectAndReserveSpendRequest) fn.Result[ManagerResp] {
 
 	vtxos, total, err := m.selectAndReserveVTXOs(ctx, reserveParams{
-		targetAmount: req.TargetAmount,
-		reserveEvent: &SpendReserveEvent{},
-		rollback:     m.rollbackSpend,
-		ask:          m.askVTXOActor,
-		label:        "spend",
+		targetAmount:    req.TargetAmount,
+		minChangeAmount: req.MinChangeAmount,
+		reserveEvent:    &SpendReserveEvent{},
+		rollback:        m.rollbackSpend,
+		ask:             m.askVTXOActor,
+		label:           "spend",
 	})
 	if err != nil {
 		return fn.Err[ManagerResp](err)
@@ -1079,6 +1090,17 @@ func (m *Manager) handleSelectAndReserveForfeit(ctx context.Context,
 func selectLargestFirst(candidates []*Descriptor,
 	target btcutil.Amount) []*Descriptor {
 
+	selected, _ := selectLargestFirstWithMinChange(candidates, target, 0)
+
+	return selected
+}
+
+// selectLargestFirstWithMinChange implements largest-first coin selection
+// while avoiding non-zero change below minChange. Exact spends remain valid,
+// because no change output is produced in that case.
+func selectLargestFirstWithMinChange(candidates []*Descriptor,
+	target, minChange btcutil.Amount) ([]*Descriptor, btcutil.Amount) {
+
 	// Sort by amount descending.
 	sorted := make([]*Descriptor, len(candidates))
 	copy(sorted, candidates)
@@ -1087,20 +1109,35 @@ func selectLargestFirst(candidates []*Descriptor,
 	})
 
 	var (
-		selected []*Descriptor
-		total    btcutil.Amount
+		selected        []*Descriptor
+		total           btcutil.Amount
+		rejectedTotal   btcutil.Amount
+		rejectedForDust bool
 	)
 	for _, vtxo := range sorted {
 		selected = append(selected, vtxo)
 		total += vtxo.Amount
 
-		if total >= target {
-			return selected
+		if total < target {
+			continue
+		}
+
+		change := total - target
+		if change == 0 || minChange == 0 || change >= minChange {
+			return selected, total
+		}
+
+		if !rejectedForDust {
+			rejectedTotal = total
+			rejectedForDust = true
 		}
 	}
 
-	// Not enough funds.
-	return nil
+	if rejectedForDust {
+		return nil, rejectedTotal
+	}
+
+	return nil, total
 }
 
 // dedupOutpoints returns a copy of the slice with duplicate outpoints

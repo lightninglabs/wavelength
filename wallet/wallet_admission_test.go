@@ -25,6 +25,9 @@ import (
 // service key type. It responds to admission messages with configurable
 // results, enabling wallet handler tests without a real VTXO manager.
 type mockVTXOManagerBehavior struct {
+	// selectReq is the last SelectAndReserveSpendRequest received.
+	selectReq *actormsg.SelectAndReserveSpendRequest
+
 	// selectResp is returned for SelectAndReserveSpendRequest.
 	selectResp *actormsg.SelectAndReserveSpendResponse
 
@@ -72,8 +75,10 @@ type mockVTXOManagerBehavior struct {
 func (m *mockVTXOManagerBehavior) Receive(_ context.Context,
 	msg actormsg.VTXOManagerMsg) fn.Result[actormsg.VTXOManagerResp] {
 
-	switch msg.(type) {
+	switch msg := msg.(type) {
 	case *actormsg.SelectAndReserveSpendRequest:
+		m.selectReq = msg
+
 		if m.selectErr != nil {
 			return fn.Err[actormsg.VTXOManagerResp](
 				m.selectErr,
@@ -213,7 +218,8 @@ func TestSelectAndLockVTXOs(t *testing.T) {
 	w := newTestWalletWithManager(t, mgr)
 
 	req := &SelectAndLockVTXOsRequest{
-		TargetAmount: 70000,
+		TargetAmount:    70000,
+		MinChangeAmount: 1000,
 	}
 	result := w.Receive(t.Context(), req)
 	require.True(t, result.IsOk(), "expected ok, got: %v",
@@ -228,6 +234,8 @@ func TestSelectAndLockVTXOs(t *testing.T) {
 	require.Equal(t, testOutpoint(0), resp.SelectedVTXOs[0].Outpoint)
 	require.Equal(t, btcutil.Amount(50000),
 		resp.SelectedVTXOs[0].Amount)
+	require.Equal(t, btcutil.Amount(70000), mgr.selectReq.TargetAmount)
+	require.Equal(t, btcutil.Amount(1000), mgr.selectReq.MinChangeAmount)
 }
 
 // TestSelectAndLockVTXOsInsufficientFunds verifies that the wallet surfaces

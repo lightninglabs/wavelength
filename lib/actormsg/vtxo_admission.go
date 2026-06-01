@@ -25,6 +25,10 @@ type SelectAndReserveSpendRequest struct {
 	// TargetAmount is the minimum total value the selected VTXOs must
 	// cover.
 	TargetAmount btcutil.Amount
+
+	// MinChangeAmount, when positive, asks selection to avoid a
+	// non-zero residual below this amount. Exact spends are still valid.
+	MinChangeAmount btcutil.Amount
 }
 
 // VTXOManagerMsg implements VTXOManagerMsg marker interface.

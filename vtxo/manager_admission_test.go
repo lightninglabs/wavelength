@@ -242,6 +242,114 @@ func TestSelectAndReserveSpendMultipleVTXOs(t *testing.T) {
 	require.Equal(t, btcutil.Amount(55000), spendResp.TotalSelected)
 }
 
+// TestSelectAndReserveSpendCoalescesDustChange verifies that OOR spend
+// selection keeps adding inputs when the first covering input would require a
+// non-zero change output below the operator dust limit. This avoids opening an
+// OOR package that the daemon later rejects for dust change.
+func TestSelectAndReserveSpendCoalescesDustChange(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 1500, 0)
+	vtxo2 := makeDescriptor(t, 1500, 1)
+	vtxo3 := makeDescriptor(t, 1000, 2)
+	vtxo4 := makeDescriptor(t, 999, 3)
+
+	mgr, store := newTestManager(t, []*Descriptor{
+		vtxo1, vtxo2, vtxo3, vtxo4,
+	})
+
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{vtxo1, vtxo2, vtxo3, vtxo4}, nil)
+
+	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount:    600,
+		MinChangeAmount: 1000,
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	spendResp, ok := resp.(*SelectAndReserveSpendResponse)
+	require.True(t, ok, "expected *SelectAndReserveSpendResponse")
+
+	require.Len(t, spendResp.SelectedVTXOs, 2)
+	require.Equal(t, btcutil.Amount(3000), spendResp.TotalSelected)
+	require.Equal(t, vtxo1.Outpoint, spendResp.SelectedVTXOs[0].Outpoint)
+	require.Equal(t, vtxo2.Outpoint, spendResp.SelectedVTXOs[1].Outpoint)
+}
+
+// TestSelectAndReserveSpendAllowsExactDustlessSpend asserts that the
+// min-change guard does not force callers to select extra inputs when the
+// selected VTXO set exactly matches the spend amount. Exact spends have no
+// change output, so the operator dust limit is irrelevant.
+func TestSelectAndReserveSpendAllowsExactDustlessSpend(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 600, 0)
+	vtxo2 := makeDescriptor(t, 1500, 1)
+
+	mgr, store := newTestManager(t, []*Descriptor{
+		vtxo1, vtxo2,
+	})
+
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{vtxo1, vtxo2}, nil)
+
+	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount:    1500,
+		MinChangeAmount: 1000,
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	spendResp, ok := resp.(*SelectAndReserveSpendResponse)
+	require.True(t, ok, "expected *SelectAndReserveSpendResponse")
+
+	require.Len(t, spendResp.SelectedVTXOs, 1)
+	require.Equal(t, btcutil.Amount(1500), spendResp.TotalSelected)
+	require.Equal(t, vtxo2.Outpoint, spendResp.SelectedVTXOs[0].Outpoint)
+}
+
+// TestSelectAndReserveSpendRejectsUnavoidableDustChange verifies that a
+// wallet with enough value but no exact-or-dust-safe combination fails before
+// reserving any VTXO. This leaves the caller with a local admission error
+// instead of an OOR package rejected after partial reservation.
+func TestSelectAndReserveSpendRejectsUnavoidableDustChange(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 2000, 0)
+	vtxo2 := makeDescriptor(t, 1000, 1)
+
+	mgr, store := newTestManager(t, []*Descriptor{vtxo1, vtxo2})
+
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{vtxo1, vtxo2}, nil)
+
+	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount:    600,
+		MinChangeAmount: 5000,
+	})
+	_, err := result.Unpack()
+	require.Error(t, err)
+	require.Contains(
+		t, err.Error(),
+		"change 1400 is below minimum change amount 5000",
+	)
+
+	for _, vtxo := range []*Descriptor{vtxo1, vtxo2} {
+		refAny := mgr.actors[vtxo.Outpoint]
+		ref, ok := refAny.(*mockVTXOActorRef)
+		require.True(
+			t, ok, "expected *mockVTXOActorRef, got %T", refAny,
+		)
+
+		_, ok = ref.state.(*LiveState)
+		require.True(t, ok, "expected LiveState, got %T", ref.state)
+	}
+}
+
 // TestSelectAndReserveSpendInsufficientFunds verifies that selection fails
 // when candidates cannot cover the target.
 func TestSelectAndReserveSpendInsufficientFunds(t *testing.T) {

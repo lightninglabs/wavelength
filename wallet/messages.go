@@ -399,6 +399,10 @@ type SelectAndLockVTXOsRequest struct {
 	// TargetAmount is the minimum total value the selected VTXOs must
 	// cover.
 	TargetAmount btcutil.Amount
+
+	// MinChangeAmount, when positive, asks selection to avoid a
+	// non-zero residual below this amount. Exact spends are still valid.
+	MinChangeAmount btcutil.Amount
 }
 
 // MessageType returns the message type identifier for logging and debugging.

@@ -2282,7 +2282,8 @@ func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 
 	resp, err := a.askManager(
 		ctx, &actormsg.SelectAndReserveSpendRequest{
-			TargetAmount: req.TargetAmount,
+			TargetAmount:    req.TargetAmount,
+			MinChangeAmount: req.MinChangeAmount,
 		},
 	)
 	if err != nil {
