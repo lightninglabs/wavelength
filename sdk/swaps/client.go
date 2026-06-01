@@ -93,6 +93,15 @@ type SwapSummary struct {
 	// indexer during resume.
 	RefundSessionID string
 
+	// SettlementType identifies whether the swap settles through Lightning
+	// or as a same-Ark payment when that detail is durably known.
+	SettlementType SettlementType
+
+	// SenderPubkey is the vHTLC sender key when that remote party is
+	// durably known. For same-Ark receives this identifies the paying
+	// client; for Lightning-backed receives this is the swap server key.
+	SenderPubkey *btcec.PublicKey
+
 	// TerminalReason is the durable reason for failed or intervention
 	// terminal states.
 	TerminalReason string

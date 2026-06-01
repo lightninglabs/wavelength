@@ -32,6 +32,7 @@ type PaySwap struct {
 	InterventionReason                   string
 	CreatedAtUnix                        int64
 	UpdatedAtUnix                        int64
+	SettlementType                       string
 }
 
 type ReceiveSwap struct {
@@ -62,4 +63,5 @@ type ReceiveSwap struct {
 	InterventionReason                   string
 	CreatedAtUnix                        int64
 	UpdatedAtUnix                        int64
+	SettlementType                       string
 }

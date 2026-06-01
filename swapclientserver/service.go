@@ -1414,6 +1414,13 @@ func parsePaymentHash(encoded string) (lntypes.Hash, error) {
 // swapSummaryToProto translates the SDK's durable summary model into the
 // daemon-owned swapclientrpc summary model.
 func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
+	var senderPubKey string
+	if summary.SenderPubkey != nil {
+		senderPubKey = hex.EncodeToString(
+			summary.SenderPubkey.SerializeCompressed(),
+		)
+	}
+
 	return &swapclientrpc.SwapSummary{
 		Direction:        swapDirectionToProto(summary.Direction),
 		PaymentHash:      hex.EncodeToString(summary.PaymentHash[:]),
@@ -1433,6 +1440,10 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 		UpdatedAtUnix:    summary.UpdatedAt.Unix(),
 		DeadlineUnix:     summary.Deadline.Unix(),
 		RefundLocktime:   summary.RefundLocktime,
+		SettlementType: swapSettlementTypeToProto(
+			summary.SettlementType,
+		),
+		SenderPubkey: senderPubKey,
 	}
 }
 
@@ -1499,5 +1510,24 @@ func swapDirectionToProto(
 
 	default:
 		return swapclientrpc.SwapDirection_SWAP_DIRECTION_UNSPECIFIED
+	}
+}
+
+// swapSettlementTypeToProto maps sdk/swaps settlement rails into the public RPC
+// enum used by daemon callers.
+func swapSettlementTypeToProto(
+	settlementType swaps.SettlementType) swapclientrpc.SwapSettlementType {
+
+	switch settlementType {
+	case swaps.SettlementTypeLightning:
+		return swapclientrpc.
+			SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING
+
+	case swaps.SettlementTypeInArk:
+		return swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK
+
+	default:
+		return swapclientrpc.
+			SwapSettlementType_SWAP_SETTLEMENT_TYPE_UNSPECIFIED
 	}
 }

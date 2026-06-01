@@ -456,6 +456,11 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 	createdAt := time.Unix(100, 0)
 	updatedAt := time.Unix(200, 0)
 	deadline := time.Unix(300, 0)
+	senderSeed := testHash(9)
+	_, senderPubKey := btcec.PrivKeyFromBytes(senderSeed[:])
+	senderPubKeyHex := hex.EncodeToString(
+		senderPubKey.SerializeCompressed(),
+	)
 
 	got := swapSummaryToProto(swaps.SwapSummary{
 		Direction:        swaps.SwapDirectionReceive,
@@ -476,6 +481,8 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 		UpdatedAt:        updatedAt,
 		Deadline:         deadline,
 		RefundLocktime:   42,
+		SettlementType:   swaps.SettlementTypeInArk,
+		SenderPubkey:     senderPubKey,
 	})
 
 	require.Equal(
@@ -501,6 +508,11 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 	require.Equal(t, updatedAt.Unix(), got.GetUpdatedAtUnix())
 	require.Equal(t, deadline.Unix(), got.GetDeadlineUnix())
 	require.Equal(t, uint32(42), got.GetRefundLocktime())
+	require.Equal(
+		t, swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK,
+		got.GetSettlementType(),
+	)
+	require.Equal(t, senderPubKeyHex, got.GetSenderPubkey())
 }
 
 // TestNewSwapClientServiceRequiresRecoveryPreimageRegistry verifies that the

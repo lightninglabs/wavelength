@@ -321,6 +321,7 @@ func paySummaryFromRow(row swapsqlc.PaySwap) (SwapSummary, error) {
 		VHTLCAmountSat:   row.VhtlcAmount,
 		FundingSessionID: row.FundingSessionID,
 		RefundSessionID:  row.RefundSessionID,
+		SettlementType:   SettlementType(row.SettlementType),
 		TerminalReason:   row.InterventionReason,
 		CreatedAt:        time.Unix(row.CreatedAtUnix, 0),
 		UpdatedAt:        time.Unix(row.UpdatedAtUnix, 0),
@@ -342,6 +343,13 @@ func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
 		return SwapSummary{}, err
 	}
 
+	senderPubKey, err := optionalPubKeyFromBytes(
+		row.SwapServerPubkey, "receive sender pubkey",
+	)
+	if err != nil {
+		return SwapSummary{}, err
+	}
+
 	return SwapSummary{
 		Direction:      SwapDirectionReceive,
 		PaymentHash:    paymentHash,
@@ -353,6 +361,8 @@ func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
 		VHTLCOutpoint:  row.VhtlcOutpoint,
 		VHTLCAmountSat: row.VhtlcAmount,
 		ClaimSessionID: row.ClaimSessionID,
+		SettlementType: SettlementType(row.SettlementType),
+		SenderPubkey:   senderPubKey,
 		TerminalReason: row.InterventionReason,
 		CreatedAt:      time.Unix(row.CreatedAtUnix, 0),
 		UpdatedAt:      time.Unix(row.UpdatedAtUnix, 0),
@@ -455,6 +465,7 @@ func (s *ReceiveSession) persist(ctx context.Context) error {
 		SwapServerPubkey: cloneBytesOrEmpty(
 			pubKeyBytes(s.swapServerPubKey),
 		),
+		SettlementType: string(s.settlementType),
 		RefundLocktime: int64(s.vhtlcConfig.RefundLocktime),
 		UnilateralClaimDelay: int64(
 			s.vhtlcConfig.UnilateralClaimDelay,
@@ -513,6 +524,22 @@ func pubKeyBytes(pubKey *btcec.PublicKey) []byte {
 	}
 
 	return pubKey.SerializeCompressed()
+}
+
+// optionalPubKeyFromBytes decodes an optional compressed public key.
+func optionalPubKeyFromBytes(raw []byte,
+	name string) (*btcec.PublicKey, error) {
+
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	pubKey, err := btcec.ParsePubKey(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", name, err)
+	}
+
+	return pubKey, nil
 }
 
 // mutateAndPersist applies one in-memory pay-session mutation and rolls it
@@ -606,6 +633,7 @@ func (s *paySession) persist(ctx context.Context) error {
 		ServerPubkey: append(
 			[]byte(nil), s.serverPubKey.SerializeCompressed()...,
 		),
+		SettlementType: string(s.cfg.SettlementType),
 		RefundLocktime: int64(s.cfg.VHTLCConfig.RefundLocktime),
 		UnilateralClaimDelay: int64(
 			s.cfg.VHTLCConfig.UnilateralClaimDelay,
@@ -764,6 +792,7 @@ func receiveSessionFromRow(c *SwapClient,
 		clientPubKey:       clientKey,
 		operatorPubKey:     operatorKey,
 		swapServerPubKey:   swapServerKey,
+		settlementType:     SettlementType(row.SettlementType),
 		paymentAddr:        paymentAddr,
 		createdAt:          time.Unix(row.CreatedAtUnix, 0),
 		updatedAt:          time.Unix(row.UpdatedAtUnix, 0),
@@ -826,6 +855,9 @@ func paySessionFromRow(c *SwapClient,
 		AmountSat:    row.AmountSat,
 		FeeSat:       uint64(row.FeeSat),
 		ServerPubkey: serverKey,
+		SettlementType: SettlementType(
+			row.SettlementType,
+		),
 		VHTLCConfig: restoreVHTLCConfig(
 			row.RefundLocktime, row.UnilateralClaimDelay,
 			row.UnilateralRefundDelay,
