@@ -92,8 +92,13 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 ### Misc
 
-- `TimeoutPhase` (`fsm_timeouts.go`) — only value:
-  `TimeoutPhaseForfeitCollection`.
+- `TimeoutPhase` (`fsm_timeouts.go`) — `TimeoutPhaseForfeitCollection`
+  (forfeit-signature collection window) and `TimeoutPhaseRegistration`
+  (IntentSentState admission window; on expiry the FSM fails the round
+  recoverably and emits `ReleaseForfeitReservation` so forfeit-reserved
+  inputs are not stranded — darepo-client#653). Timeout outbox messages
+  (`StartTimeoutReq`/`CancelTimeoutReq`) key on `RoundKeyStr` so temp-keyed
+  rounds (pre-admission) can be timed.
 - `MaxQuoteEntriesPerClient = 1024` (`from_proto.go`) — bounds quote
   entry decoding to reject malformed envelopes before allocating slices.
 - `FromProto` methods on `JoinRoundQuoteReceived`, `RoundJoined`,

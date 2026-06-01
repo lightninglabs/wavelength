@@ -600,7 +600,7 @@ func TestActorProcessOutbox(t *testing.T) {
 		duration := 30 * time.Second
 		outbox := []ClientOutMsg{
 			&StartTimeoutReq{
-				RoundID:  roundID,
+				RoundKey: RoundKeyStr(roundID.KeyString()),
 				Phase:    TimeoutPhaseForfeitCollection,
 				Duration: duration,
 			},
@@ -610,7 +610,10 @@ func TestActorProcessOutbox(t *testing.T) {
 		require.NoError(t, err)
 
 		timeoutID := makeTimeoutID(
-			roundID, TimeoutPhaseForfeitCollection,
+			RoundKeyStr(
+				roundID.KeyString(),
+			),
+			TimeoutPhaseForfeitCollection,
 		)
 		h.timeoutActor.assertTimeoutScheduled(
 			t, timeoutID, duration,
@@ -628,7 +631,10 @@ func TestActorProcessOutbox(t *testing.T) {
 
 		roundID := testRoundID("timeout-round-cancel")
 		timeoutID := makeTimeoutID(
-			roundID, TimeoutPhaseForfeitCollection,
+			RoundKeyStr(
+				roundID.KeyString(),
+			),
+			TimeoutPhaseForfeitCollection,
 		)
 
 		schedReq := &timeout.ScheduleTimeoutRequest{
@@ -643,8 +649,8 @@ func TestActorProcessOutbox(t *testing.T) {
 
 		outbox := []ClientOutMsg{
 			&CancelTimeoutReq{
-				RoundID: roundID,
-				Phase:   TimeoutPhaseForfeitCollection,
+				RoundKey: RoundKeyStr(roundID.KeyString()),
+				Phase:    TimeoutPhaseForfeitCollection,
 			},
 		}
 
@@ -2095,7 +2101,10 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 		keyStr := RoundKeyStr(roundID.KeyString())
 		msg := &TimeoutMsg{
 			TimeoutID: makeTimeoutID(
-				roundID, TimeoutPhaseForfeitCollection,
+				RoundKeyStr(
+					roundID.KeyString(),
+				),
+				TimeoutPhaseForfeitCollection,
 			),
 		}
 		result := h.receive(msg)
@@ -2131,7 +2140,10 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 
 		keyStr := RoundKeyStr(roundID.KeyString())
 		tid := makeTimeoutID(
-			roundID, TimeoutPhase("unknown"),
+			RoundKeyStr(
+				roundID.KeyString(),
+			),
+			TimeoutPhase("unknown"),
 		)
 		msg := &TimeoutMsg{TimeoutID: tid}
 		result := h.receive(msg)
@@ -2165,7 +2177,10 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 		unknownID := testRoundID("nonexistent-round")
 		msg := &TimeoutMsg{
 			TimeoutID: makeTimeoutID(
-				unknownID, TimeoutPhaseForfeitCollection,
+				RoundKeyStr(
+					unknownID.KeyString(),
+				),
+				TimeoutPhaseForfeitCollection,
 			),
 		}
 		result := h.receive(msg)
@@ -2191,7 +2206,10 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 
 		timeoutMsg := &TimeoutMsg{
 			TimeoutID: makeTimeoutID(
-				roundID1, TimeoutPhaseForfeitCollection,
+				RoundKeyStr(
+					roundID1.KeyString(),
+				),
+				TimeoutPhaseForfeitCollection,
 			),
 		}
 		result := h.receive(timeoutMsg)
@@ -2254,7 +2272,7 @@ func TestRealTimeoutActorForfeitExpiry(t *testing.T) {
 	// when entering forfeit collection. This schedules the real timeout.
 	outbox := []ClientOutMsg{
 		&StartTimeoutReq{
-			RoundID:  roundID,
+			RoundKey: RoundKeyStr(roundID.KeyString()),
 			Phase:    TimeoutPhaseForfeitCollection,
 			Duration: 100 * time.Millisecond,
 		},
@@ -2271,7 +2289,13 @@ func TestRealTimeoutActorForfeitExpiry(t *testing.T) {
 	timeoutMsg, ok := rawMsg.(*TimeoutMsg)
 	require.True(t, ok, "expected *TimeoutMsg, got %T", rawMsg)
 	require.Equal(
-		t, makeTimeoutID(roundID, TimeoutPhaseForfeitCollection),
+		t,
+		makeTimeoutID(
+			RoundKeyStr(
+				roundID.KeyString(),
+			),
+			TimeoutPhaseForfeitCollection,
+		),
 		timeoutMsg.TimeoutID,
 	)
 

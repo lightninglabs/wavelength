@@ -37,6 +37,17 @@ var _ actor.Stoppable = (*RoundClientActor)(nil)
 
 const defaultForfeitCollectionTimeout = 2 * time.Minute
 
+// defaultRegistrationTimeout bounds how long the client waits in
+// IntentSentState for the server to acknowledge a JoinRoundRequest with a
+// RoundJoined admission watermark. The ack is a lightweight reply (not the
+// seal-time quote), so it should arrive within a network round-trip plus brief
+// server-side queuing; 60s is generous enough to tolerate a slow server or
+// link while still bounding how long forfeit-reserved inputs sit stranded in
+// pending-forfeit when the server never responds (darepo-client#653). It is
+// configurable via RoundClientConfig.RegistrationTimeout for operators and
+// tests that need a different bound.
+const defaultRegistrationTimeout = 60 * time.Second
+
 // RefreshVTXORequest is sent from a VTXO actor when its VTXO is approaching
 // expiry and needs to be refreshed in a new round. The round actor should
 // queue this VTXO for inclusion in the next batch swap.
@@ -138,26 +149,25 @@ func buildVTXORequestFromRefresh(req *RefreshVTXORequest) types.VTXORequest {
 	}
 }
 
-// makeTimeoutID builds a composite timeout ID from round ID and phase.
-func makeTimeoutID(roundID RoundID, phase TimeoutPhase) timeout.ID {
-	return timeout.ID(fmt.Sprintf("%s:%s", roundID.String(), phase))
+// makeTimeoutID builds a composite timeout ID from a round map key and phase.
+// The key is used verbatim (it may itself contain ":" for temp keys, e.g.
+// "temp:<uuid>"), so parseTimeoutID splits on the final ":" to recover the
+// phase.
+func makeTimeoutID(key RoundKeyStr, phase TimeoutPhase) timeout.ID {
+	return timeout.ID(fmt.Sprintf("%s:%s", key, phase))
 }
 
-// parseTimeoutID extracts round ID and phase from a composite timeout ID.
-func parseTimeoutID(id timeout.ID) (RoundID, TimeoutPhase, error) {
-	parts := strings.SplitN(string(id), ":", 2)
-	if len(parts) != 2 {
-		return RoundID{}, "", fmt.Errorf("invalid timeout ID "+
-			"format: %s", id)
+// parseTimeoutID extracts the round map key and phase from a composite timeout
+// ID. The phase is the suffix after the final ":"; everything before it is the
+// round key (which may contain ":" itself for temp-keyed rounds).
+func parseTimeoutID(id timeout.ID) (RoundKeyStr, TimeoutPhase, error) {
+	s := string(id)
+	idx := strings.LastIndex(s, ":")
+	if idx < 0 {
+		return "", "", fmt.Errorf("invalid timeout ID format: %s", id)
 	}
 
-	roundID, err := ParseRoundID(parts[0])
-	if err != nil {
-		return RoundID{}, "", fmt.Errorf("invalid round ID in "+
-			"timeout ID: %w", err)
-	}
-
-	return roundID, TimeoutPhase(parts[1]), nil
+	return RoundKeyStr(s[:idx]), TimeoutPhase(s[idx+1:]), nil
 }
 
 // RoundFSM wraps a state machine instance for a specific round.
@@ -304,6 +314,14 @@ type RoundClientConfig struct {
 	// If zero, a conservative default is used.
 	ForfeitCollectionTimeout time.Duration
 
+	// RegistrationTimeout is the max wall-clock duration to wait in
+	// IntentSentState for the server's RoundJoined admission watermark
+	// before failing the round (recoverable) and releasing any
+	// forfeit-reserved inputs. If zero, defaultRegistrationTimeout is used.
+	// A negative value disables the timeout (rounds wait indefinitely for
+	// admission), which restores the pre-#653 behavior.
+	RegistrationTimeout time.Duration
+
 	// OwnedScriptChecker determines whether a VTXO pkScript belongs
 	// to the local wallet. When nil, all VTXOs pass the ownership
 	// check (backward-compatible default for tests).
@@ -372,6 +390,15 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		forfeitTimeout = defaultForfeitCollectionTimeout
 	}
 	env.ForfeitCollectionTimeout = forfeitTimeout
+
+	// A zero value selects the default; a negative value is an explicit
+	// opt-out (wait for admission indefinitely). Only the zero case is
+	// rewritten to the default.
+	registrationTimeout := cfg.RegistrationTimeout
+	if registrationTimeout == 0 {
+		registrationTimeout = defaultRegistrationTimeout
+	}
+	env.RegistrationTimeout = registrationTimeout
 
 	actor := &RoundClientActor{
 		cfg:               cfg,
@@ -652,7 +679,9 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
 		ForfeitCollectionTimeout: a.
 			env.ForfeitCollectionTimeout,
-		OwnedScriptChecker: a.cfg.OwnedScriptChecker,
+		RegistrationTimeout: a.env.RegistrationTimeout,
+		RoundKey:            RoundKeyStr(roundID.KeyString()),
+		OwnedScriptChecker:  a.cfg.OwnedScriptChecker,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -715,7 +744,9 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
 		ForfeitCollectionTimeout: a.
 			env.ForfeitCollectionTimeout,
-		OwnedScriptChecker: a.cfg.OwnedScriptChecker,
+		RegistrationTimeout: a.env.RegistrationTimeout,
+		RoundKey:            RoundKeyStr(tempKey.KeyString()),
+		OwnedScriptChecker:  a.cfg.OwnedScriptChecker,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -1998,7 +2029,7 @@ func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 func (a *RoundClientActor) handleTimeout(ctx context.Context,
 	msg *TimeoutMsg) fn.Result[actormsg.RoundActorResp] {
 
-	roundID, phase, err := parseTimeoutID(msg.TimeoutID)
+	keyStr, phase, err := parseTimeoutID(msg.TimeoutID)
 	if err != nil {
 		a.log.WarnS(ctx, "Failed to parse timeout ID",
 			err,
@@ -2008,11 +2039,10 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 		return fn.Ok[actormsg.RoundActorResp](nil)
 	}
 
-	keyStr := RoundKeyStr(roundID.KeyString())
 	roundFSM, exists := a.rounds[keyStr]
 	if !exists {
 		a.log.DebugS(ctx, "Ignoring timeout for unknown round",
-			slog.String("round_id", roundID.String()),
+			slog.String("round_key", string(keyStr)),
 			slog.String("phase", string(phase)),
 		)
 
@@ -2022,14 +2052,29 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 	var timeoutEvt ClientEvent
 	switch phase {
 	case TimeoutPhaseForfeitCollection:
+		// Forfeit collection only runs after the round has been
+		// re-keyed to its server-assigned RoundID, so the map key
+		// parses back to a RoundID.
+		roundID, perr := ParseRoundID(string(keyStr))
+		if perr != nil {
+			a.log.WarnS(ctx, "Forfeit timeout with non-RoundID key",
+				perr,
+				slog.String("round_key", string(keyStr)),
+			)
+
+			return fn.Ok[actormsg.RoundActorResp](nil)
+		}
 		timeoutEvt = &ForfeitCollectionTimedOut{
 			RoundID: roundID,
 		}
 
+	case TimeoutPhaseRegistration:
+		timeoutEvt = &RegistrationTimedOut{}
+
 	default:
 		a.log.WarnS(ctx, "Ignoring timeout with unknown phase",
 			nil,
-			slog.String("round_id", roundID.String()),
+			slog.String("round_key", string(keyStr)),
 			slog.String("phase", string(phase)),
 		)
 
@@ -2084,7 +2129,7 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			}
 
 		case *StartTimeoutReq:
-			compositeID := makeTimeoutID(m.RoundID, m.Phase)
+			compositeID := makeTimeoutID(m.RoundKey, m.Phase)
 
 			mapFn := func(expired timeout.ExpiredMsg,
 			) actormsg.RoundReceivable {
@@ -2109,7 +2154,7 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			}
 
 		case *CancelTimeoutReq:
-			compositeID := makeTimeoutID(m.RoundID, m.Phase)
+			compositeID := makeTimeoutID(m.RoundKey, m.Phase)
 			req := &timeout.CancelTimeoutRequest{
 				ID: compositeID,
 			}
@@ -2117,6 +2162,33 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				ctx, req,
 			); err != nil {
 				return fmt.Errorf("cancel timeout: %w", err)
+			}
+
+		case *ReleaseForfeitReservation:
+			// Release forfeit-reserved VTXOs back to LiveState via
+			// the VTXO manager. Best-effort and fire-and-forget: a
+			// failed release is logged but must not halt outbox
+			// processing for the (already failed) round. Routing
+			// through the manager keeps its reservation set in sync
+			// so the released inputs can be re-selected for a
+			// retry.
+			if a.cfg.VTXOManager == nil || len(m.Outpoints) == 0 {
+				continue
+			}
+			if err := a.cfg.VTXOManager.Tell(
+				ctx, &actormsg.ReleaseForfeitRequest{
+					Outpoints: m.Outpoints,
+				},
+			); err != nil {
+
+				a.log.WarnS(
+					ctx,
+					"Failed to release forfeit reservation",
+					err,
+					slog.Int(
+						"outpoints", len(m.Outpoints),
+					),
+				)
 			}
 
 		case *VTXOCreatedNotification:
