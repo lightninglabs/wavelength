@@ -47,18 +47,46 @@ parameters:
 - four timelocks — one absolute refund locktime (CLTV) and three relative
   unilateral-exit delays (CSV).
 
-From those, `NewVHTLCPolicy` compiles a six-leaf taproot tree:
+From those, `NewVHTLCPolicy` compiles a six-leaf taproot tree
+([`lib/arkscript/vhtlc.go`](../lib/arkscript/vhtlc.go), `NewVHTLCPolicy`):
 
 ```
-1. Claim        (collab): HashLock(preimage) + Checksig(receiver) + Checksig(server)
-2. Refund       (collab): Checksig(sender) + Checksig(receiver) + Checksig(server)
-3. RefundWithoutReceiver (collab): CLTV(locktime) + Checksig(sender) + Checksig(server)
-4. UnilateralClaim  (exit): CSV(delay) + HashLock(preimage) + Checksig(receiver)
-5. UnilateralRefund (exit): CSV(delay) + Multisig([sender, receiver])
-6. UnilateralRefundWithoutReceiver (exit): CSV(delay) + CLTV(locktime) + Checksig(sender)
+collaborative (operator co-signs; settled off-chain via OOR)
+  1. Claim                 : HashLock(preimage) + Multisig([receiver, server])
+  2. Refund                : Multisig([sender, receiver, server])
+  3. RefundWithoutReceiver : CLTV(locktime) + Multisig([sender, server])
+
+unilateral exit (no operator key; CSV-gated; spent on-chain)
+  4. UnilateralClaim                 : CSV(delay) + HashLock(preimage) + Multisig([receiver])
+  5. UnilateralRefund                : CSV(delay) + Multisig([sender, receiver])
+  6. UnilateralRefundWithoutReceiver : CSV(delay) + CLTV(locktime) + Multisig([sender])
 ```
 
-Two properties of this tree drive everything downstream. First, the output is
+**The collaborative/exit split is the spine of the whole cancellation story, so
+read it carefully.** The six leaves are three pairs — claim, refund, and
+refund-without-receiver — and each pair has one *collaborative* and one
+*unilateral exit* member:
+
+- A **collaborative leaf** (1–3) always contains the **operator key** in its
+  multisig. Because the operator co-signs, the spend can be done as an **OOR
+  transfer entirely inside Ark** — no Bitcoin transaction, no confirmation wait.
+  This is the fast, cheap, *off-chain* settlement path, and it is the one the
+  client always tries first.
+- A **unilateral exit leaf** (4–6) contains **no operator key** and is gated by
+  a relative **CSV** delay. It is the fallback you take when the operator (or
+  the counterparty) stops cooperating: you broadcast the vHTLC on-chain and,
+  after the CSV matures, sweep it yourself. It costs a real transaction and a
+  timelock wait, so it is strictly a recovery path of last resort.
+
+These are not ad-hoc conventions — `lib/arkscript` *enforces* them
+(`ValidatePolicy`): every collaborative leaf must carry the operator key, every
+exit leaf must omit it and be CSV-gated, and **no leaf may let the operator
+spend unilaterally** (`Multisig{operator, operator}` is rejected). So the
+operator can always *help* settle but can never *seize* a vHTLC on its own. Hold
+onto the three-pairs picture; §5 walks the off-chain-first, on-chain-fallback
+ladder built directly on top of it.
+
+Two further properties drive everything downstream. First, the output is
 **deterministic**: any party who knows the tuple can compute the exact pkScript,
 because the script *is* a pure function of the tuple (and of the `lib/arkscript`
 version that compiles it — all parties must share that library). Second, it is
@@ -204,7 +232,7 @@ by spending its Claim leaf with the preimage (an OOR transfer to the claim
 destination it set up in §3.1), which simultaneously *reveals the preimage* to
 the swap server, who uses it to settle the held Lightning HTLC. Everyone is paid.
 
-How the proof-gated query authorises the client is the subject of §6; it is
+How the proof-gated query authorises the client is the subject of §7; it is
 worth reading before reasoning about any receive that takes longer than expected.
 
 ### 3.5 The full receive sequence
@@ -233,7 +261,7 @@ sequenceDiagram
     Note over C: FSM = HTLCEventAccepted (durable)
 
     loop waitForVHTLC (every waitPollInterval)
-        C->>A: ListVTXOsByScripts(vHTLC pkScript)  %% proof-gated, see §6
+        C->>A: ListVTXOsByScripts(vHTLC pkScript)  %% proof-gated, see §7
         A-->>C: live VTXO  /  empty  /  auth error
     end
 
@@ -256,7 +284,7 @@ The client calls the swap server's **`CreateInSwap`** RPC (swap.proto:33) with
 the invoice, a fee ceiling, and its vHTLC pubkey. The server replies with a
 `CreateInSwapResponse`: the payment hash, the amount and fee, the server's
 pubkey, the `VHTLCConfig`, a deadline, and — decisively — a `settlement_type`
-(see §7).
+(see §8).
 
 ### 4.2 The client funds the vHTLC
 
@@ -305,14 +333,192 @@ sequenceDiagram
     C-->>U: SEND complete (proof of payment = preimage)
 ```
 
-If the Lightning payment fails terminally, the client recovers its funds
-cooperatively through **`AuthorizeInSwapRefund`** (swap.proto:37): the server
-signs the vHTLC's collaborative refund leaf so the client can reclaim its money
-without waiting for the on-chain refund locktime.
+If the Lightning payment fails, the client does not have to go on-chain to get
+its money back. It walks a **refund ladder** whose first rungs all settle
+*off-chain* via OOR: an immediate operator-co-signed cooperative refund (the
+**Refund** leaf, leaf 2) if the server authorises one through
+**`AuthorizeInSwapRefund`** (swap.proto:37); failing that, a CLTV-gated
+cooperative refund the client can take with the operator *without the swap
+server's cooperation* once the refund locktime elapses (the
+**RefundWithoutReceiver** leaf, leaf 3); and only if cooperation breaks down
+entirely does it fall through to a unilateral on-chain exit (leaf 6). Note that
+the CLTV refund locktime gates an *off-chain* OOR spend of leaf 3 — it is **not**
+itself an on-chain event. §5 walks this ladder, and its receive-side mirror, in
+full.
 
 ---
 
-## 5. The same-Ark shortcut (p2p settlement)
+## 5. Cancellation, timeouts, and the recovery ladder
+
+Every swap so far has succeeded. Now suppose one does not: a Lightning payment
+dies, a counterparty goes dark, an operator stops answering. The money is locked
+in a vHTLC that belongs to nobody — so how does anyone get it back? The answer is
+a single rule applied in both directions: **try to settle off-chain by
+cooperating; fall back to an on-chain unilateral exit only when cooperation is no
+longer possible.** That rule is the three-pairs structure from §1 put in motion,
+and this section traces it from the funded vHTLC to the recovered coin.
+
+### 5.1 Each leaf, and the moment it is spent
+
+The six leaves are not six equal options a party picks from. Each one has a
+specific owner and a specific moment. Read this table as "who can take the money,
+how, and when":
+
+| Leaf | Chain | Who signs | Spent by | At what moment |
+|------|-------|-----------|----------|----------------|
+| 1 Claim | off-chain OOR | receiver + operator | the **payee** of the hash | the preimage is known — the happy path for both directions |
+| 2 Refund | off-chain OOR | sender + receiver + operator | the **payer** | both sides agree to cancel *before* the timeout |
+| 3 RefundWithoutReceiver | off-chain OOR | sender + operator | the **payer** | the timeout (CLTV) has passed and the receiver is unresponsive |
+| 4 UnilateralClaim | on-chain, CSV | receiver alone | the **payee** | the payee knows the preimage but cannot get a cooperative claim through |
+| 5 UnilateralRefund | on-chain, CSV | sender + receiver | sender & receiver together | both want to unwind but the operator will not co-sign |
+| 6 UnilateralRefundWithoutReceiver | on-chain, CSV + CLTV | sender alone | the **payer** | the payer must reclaim and neither receiver nor operator will help |
+
+The top three rows settle inside Ark in seconds; the bottom three demand a
+broadcast and a CSV wait. The client always reaches for a top row and touches a
+bottom row only when it must. The next four subsections show exactly how it
+decides.
+
+### 5.2 Arm the lifeboat before you sail
+
+The client does not wait until a swap is in trouble to think about recovery. The
+instant a vHTLC is funded — *before* it commits to the risky half of the flow —
+it stores a dormant **recovery row** in the daemon that already knows how to
+unilaterally exit this exact output. A receive session arms a *claim* recovery
+([`ensureReceiveClaimRecoveryArmed`](../sdk/swaps/recovery.go), recovery.go:392);
+a pay session arms a *refund-without-receiver* recovery
+([`ensurePayRefundRecoveryArmed`](../sdk/swaps/recovery.go), recovery.go:281).
+Each row captures everything the daemon would need to sweep the output alone: the
+outpoint and amount, all three participant keys, the CLTV refund locktime and the
+three CSV delays, the destination script, and a fee-rate cap
+(`DefaultRecoveryMaxFeeRateSatPerKW`, ~100 sat/vByte). The request carries a
+deterministic idempotency key (`recoveryRequestID`), so a crash-and-retry returns
+the same row instead of arming a second one.
+
+An armed row is **dormant**, not active. Its existence changes nothing on its
+own; it simply means that if cooperation later fails, the escalation is a flag
+flip on durable state rather than a scramble to reconstruct vHTLC context after
+the daemon has already restarted. Arm the lifeboat while the sea is calm.
+
+### 5.3 The receive side: claim before the clock runs out
+
+On a receive, the swap server funded the vHTLC and the client must claim it with
+the preimage (§3.4). The cooperative claim is an OOR spend of leaf 1, and it is
+the only outcome the client wants. But the client is racing a clock it does not
+own: once the **refund locktime** passes, the swap server may take leaf 3 and
+reclaim its own funding, leaving the client with nothing. So the receive flow
+treats the locktime as a hard deadline. Before it starts or continues waiting it
+checks that the locktime is not imminent
+([`out_swap.go`](../sdk/swaps/out_swap.go), out_swap.go:1203), keeping a
+one-block buffer (`defaultRefundLocktimeBuffer`); if the deadline has arrived it
+gives up with `errSwapExpired` rather than chase a vHTLC the server is about to
+pull back.
+
+If the cooperative claim keeps failing while the deadline approaches, the client
+escalates ([`maybeEscalateReceiveClaimRecovery`](../sdk/swaps/recovery.go),
+recovery.go:667): the daemon takes over the armed row and spends leaf 4
+(UnilateralClaim) on-chain, sweeping the output with the preimage after its CSV
+matures. Because a real deadline looms here, the policy lets **deadline pressure
+override the ordinary grace period** — there is no point waiting out a one-hour
+courtesy window if the sender can reclaim in twelve blocks.
+
+### 5.4 The pay side: the refund ladder
+
+On a pay, the client funded the vHTLC and wants either a preimage (proof it paid)
+or its money back. §4.4 named the ladder; here is each rung:
+
+1. **Immediate cooperative refund (leaf 2).**
+   [`tryCooperativeRefund`](../sdk/swaps/in_swap.go) (in_swap.go:1187) asks the
+   swap server to co-sign the three-party Refund leaf through
+   `AuthorizeInSwapRefund`. The server signs only after it has *safely* failed
+   the Lightning payment and holds no preimage, so an "unavailable" answer is not
+   an error — it just means "keep waiting, the payment might still settle." When
+   the server does sign, the client sweeps its funds off-chain at once, long
+   before any locktime.
+2. **Timeout cooperative refund (leaf 3).** If the server never authorises the
+   immediate refund, the client waits for the CLTV refund locktime to mature
+   (in_swap.go:1078) and then spends RefundWithoutReceiver as an OOR transfer
+   (in_swap.go:1098) — *still off-chain*, and now without needing the swap server
+   to cooperate at all, only the operator. This is the rung most often misread:
+   the locktime gates an off-chain spend, it does not force a broadcast.
+3. **Unilateral exit (leaf 6).** Only if even that OOR cannot get through does
+   the client escalate the armed row
+   ([`maybeEscalatePayRefundRecovery`](../sdk/swaps/recovery.go),
+   recovery.go:581) and let the daemon sweep leaf 6 on-chain after its CSV. A pay
+   refund has no absolute deadline the way a receive claim does, so here the
+   grace period is the only automatic trigger.
+
+### 5.5 When does it actually go on-chain?
+
+Escalation from the off-chain rungs to the on-chain one is deliberately
+reluctant, because an on-chain exit costs a transaction and a timelock. The
+[`RecoveryPolicy`](../sdk/swaps/recovery.go) (recovery.go:118) decides, and its
+production default is conservative:
+
+- **`AutoEscalate` is off by default.** Out of the box the SDK never unilaterally
+  exits on its own; an operator triggers it deliberately through the
+  `swapd recovery` CLI (`EscalateVHTLCRecovery`). The armed row waits patiently
+  until told.
+- With auto-escalation enabled, [`decideRecoveryEscalation`](../sdk/swaps/recovery.go)
+  (recovery.go:200) escalates only when waiting longer is unsafe or pointless:
+  when the height plus a safety margin (`MinRecoveryMarginBlocks`, 12) reaches a
+  refund-locktime deadline (`deadline_margin`), or when a grace period
+  (`CooperativeFailureGracePeriod`, one hour) has elapsed since cooperation first
+  failed (`grace_elapsed`). Until then it keeps retrying the cooperative path
+  (`within_grace_period`).
+- The fee-rate cap is frozen into the row **at arm time**, so a restart or a
+  manual escalation months later cannot quietly spend at a looser rate than the
+  client originally consented to.
+
+### 5.6 The recovery row's life, and how cooperation cancels it
+
+A recovery row moves through a small state machine: it starts **ARMED**
+(dormant), advances to **UNROLL_STARTED** when the daemon begins the on-chain
+exit, and ends **COMPLETED**, **FAILED**, or **CANCELLED**. The pivotal predicate
+is [`recoveryIsActive`](../sdk/swaps/recovery.go) (recovery.go:741): the moment a
+row leaves ARMED for unroll, the SDK stops attempting cooperative OOR spends for
+that vHTLC and simply reconciles against the daemon's progress — once the daemon
+owns the exit, two parties racing to spend the same output would only collide.
+
+The far more common ending is the happy one, where cooperation wins and the
+lifeboat is never launched. When the off-chain path succeeds, the session calls
+[`cancelVHTLCRecovery`](../sdk/swaps/recovery.go) (recovery.go:495) with a reason
+naming what won — *server claim observed*, *cooperative refund accepted*,
+*cooperative claim indexed*, and so on — and the armed row retires unused.
+
+```mermaid
+flowchart TD
+    F["vHTLC funded"] --> ARM["arm recovery row (dormant)"]
+    ARM --> COOP{"cooperative OOR\nsucceeds?"}
+    COOP -->|yes| CANCEL["cancelVHTLCRecovery\n(reason: which path won)"]
+    CANCEL --> DONE["settled off-chain ✓"]
+    COOP -->|"no, keep retrying"| POL{"escalation policy:\ndeadline margin or\ngrace elapsed?"}
+    POL -->|no| COOP
+    POL -->|yes| ESC["escalate: daemon unroll\n(UNROLL_STARTED)"]
+    ESC --> SWEEP["sweep unilateral exit leaf\non-chain after CSV"]
+    SWEEP --> COMPLETE["recovery COMPLETED\n(settled on-chain)"]
+```
+
+### 5.7 The server runs the same playbook in mirror
+
+None of this would be safe if only the client armed a lifeboat. The swap server
+arms its own recovery rows symmetrically (swapdk-server #43): on an out-swap it
+arms a refund-without-receiver row so it can reclaim the funding it advanced if
+the client never claims, and on an in-swap it arms a claim row *before it pays
+the Lightning invoice* so it can always collect the vHTLC it is about to earn.
+The same off-chain-first discipline governs the server: it co-signs the client's
+immediate cooperative refund only when it has terminally failed the payment and
+holds no preimage, and it checks that the outpoint, amount, policy template, and
+spend path all match the Refund leaf exactly before it signs (swapdk-server #55)
+— it will never sign a refund once a preimage exists, because then the right
+outcome is a claim, not a refund. Payments it cannot make atomically, such as AMP
+invoices, it fails fast into that same refund path (swapdk-server #67) rather
+than spinning, and an out-swap with no liquidity to fund the vHTLC fails the held
+Lightning HTLC immediately (swapdk-server #59) instead of stranding the payer
+until the invoice expires.
+
+---
+
+## 6. The same-Ark shortcut (p2p settlement)
 
 Not every swap needs Lightning. When the sender and receiver are both clients of
 the *same* Ark, the server can bridge them with a single vHTLC settled entirely
@@ -337,13 +543,13 @@ live VTXO set in addition to the remote indexer.
 
 ---
 
-## 6. How the indexer authorises a query
+## 7. How the indexer authorises a query
 
 Every indexer query is **proof-gated**: a client may only enumerate outputs at a
 script it can prove a relationship to. This section describes the contract end to
 end, because it is the part of the system most easily misread.
 
-### 6.1 What the client sends
+### 7.1 What the client sends
 
 The client signs each query scope with a BIP-340 Schnorr proof. The signing key
 is the client's **default principal** — the wallet identity key, which for a
@@ -355,7 +561,7 @@ vHTLC output key is NUMS and nobody holds it. So the proof says, in effect, "I a
 this participant key, and here is my signature over this query," and leaves the
 authorisation decision to the server.
 
-### 6.2 What the server checks
+### 7.2 What the server checks
 
 The operator's indexer authorises a script-scope query in two steps
 (`authorizeScriptScopeQuery`): it verifies each scope proof, then authorises the
@@ -369,7 +575,7 @@ order:
    participant-only auth leaf and an operator-backed sibling leaf that normalise
    to the same node. For a vHTLC, the receiver satisfies this: its
    `UnilateralClaim` leaf (participant-only) and its `Claim` leaf (participant +
-   operator) normalise to the same `HashLock + Checksig(receiver)` node. The
+   operator) normalise to the same `HashLock + Multisig([receiver])` node. The
    sender qualifies symmetrically via the refund leaves; the operator itself
    does **not** qualify (operator keys are filtered out). The upshot: **once the
    vHTLC is funded and indexed, both swap participants can query it with no prior
@@ -396,7 +602,7 @@ flowchart TD
     REG -->|no| DENY2["Unauthenticated:\nscript not registered for principal"]
 ```
 
-### 6.3 Why the receive flow does not pre-register the vHTLC
+### 7.3 Why the receive flow does not pre-register the vHTLC
 
 The receive flow registers its **claim destination** (§3.1) but not the vHTLC
 script, and it does not need to: by the time the client claims, the vHTLC is
@@ -408,9 +614,9 @@ address, and the vHTLC is observed purely through policy-authorised queries.
 
 ---
 
-## 7. How the client tells p2p from external
+## 8. How the client tells p2p from external
 
-Putting §3–§5 together, the client distinguishes a same-Ark (p2p) swap from a
+Putting §3–§6 together, the client distinguishes a same-Ark (p2p) swap from a
 Lightning-bridged (external) swap differently in each direction:
 
 ```mermaid
@@ -437,7 +643,7 @@ flowchart TD
 
 ---
 
-## 8. The server-side API surface, summarised
+## 9. The server-side API surface, summarised
 
 Everything the client asks of the swap server lives in `swaprpc.SwapService`:
 
@@ -445,7 +651,7 @@ Everything the client asks of the swap server lives in `swaprpc.SwapService`:
 |-----|-----------|---------|
 | `RequestChannelId` | Receive | Allocate a virtual SCID from `(clientKey, hash)` and return the route hint the client embeds in its invoice, so `swapd` becomes the final hop. |
 | `CreateInSwap` | Pay | Negotiate a vHTLC for a given invoice; returns the config, fee, deadline, and `settlement_type`. |
-| `AuthorizeInSwapRefund` | Pay | Sign the cooperative refund leaf of a funded in-swap whose Lightning payment failed, so the client can reclaim funds before the on-chain locktime. |
+| `AuthorizeInSwapRefund` | Pay | Co-sign the immediate cooperative **Refund** leaf (leaf 2) of a funded in-swap after the server has safely failed its Lightning payment, letting the client reclaim its funds off-chain at once rather than wait out the CLTV locktime. See §5.4. |
 
 Everything the client asks of the **operator's indexer** (via the daemon) is a
 proof-gated query — chiefly `ListVTXOsByScripts`, reached through
@@ -455,12 +661,20 @@ is not part of `swapd`; it belongs to `arkd`. That separation — the swap serve
 funds, but the operator's indexer witnesses — is the defining structure of the
 receive path.
 
+The recovery ladder of §5 rides on a third surface: the local daemon's
+`daemonrpc` recovery calls — `ArmVHTLCRecovery`, `EscalateVHTLCRecovery`,
+`CancelVHTLCRecovery`, and `GetVHTLCRecoveryStatus`. These are daemon-owned, not
+swap-server RPCs: the SDK arms and reconciles the rows
+([`sdk/swaps/recovery.go`](../sdk/swaps/recovery.go)), while the daemon owns the
+on-chain unroll once a row escalates.
+
 ---
 
-## 9. Further reading
+## 10. Further reading
 
 - [`docs/arkscript_spec.md`](arkscript_spec.md) — the tapscript policy system
-  that compiles the vHTLC tree.
+  that compiles the vHTLC tree, and the `ValidatePolicy` invariants behind the
+  collaborative/exit split of §1 and §5.
 - [`docs/mailbox_architecture.md`](mailbox_architecture.md) — how swap events
   are delivered and acknowledged.
 - [`docs/RPC_MAILBOX_CONTRACT.md`](RPC_MAILBOX_CONTRACT.md) — envelope and ack
