@@ -49,8 +49,11 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 				PaymentHash: "payment-hash",
 				Direction: swapclientrpc.
 					SwapDirection_SWAP_DIRECTION_PAY,
-				Pending:          true,
-				AmountSat:        1_234,
+				Pending:   true,
+				AmountSat: 1_234,
+				SettlementType: swapclientrpc.
+					SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK,
+				SenderPubkey:     "sender-pubkey",
 				VhtlcOutpoint:    "vhtlc-txid:0",
 				VhtlcAmountSat:   1_234,
 				UpdatedAtUnix:    200,
@@ -93,6 +96,11 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 
 	require.Equal(t, "payment-hash", resp.GetEntry().GetId())
 	require.Equal(t, "payment-hash", resp.GetSwap().GetPaymentHash())
+	require.Equal(
+		t, "SWAP_SETTLEMENT_TYPE_IN_ARK",
+		resp.GetSwap().GetSettlementType(),
+	)
+	require.Equal(t, "sender-pubkey", resp.GetSwap().GetSenderPubkey())
 	require.Len(t, resp.GetLedgerRows(), 2)
 	require.Len(t, resp.GetVtxos(), 3)
 

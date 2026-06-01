@@ -573,5 +573,22 @@ func swapTraceFromSummary(
 		UpdatedAtUnix:    swap.GetUpdatedAtUnix(),
 		DeadlineUnix:     swap.GetDeadlineUnix(),
 		RefundLocktime:   swap.GetRefundLocktime(),
+		SettlementType: swapSettlementTypeString(
+			swap.GetSettlementType(),
+		),
+		SenderPubkey: swap.GetSenderPubkey(),
 	}
+}
+
+// swapSettlementTypeString returns the swap settlement enum name while keeping
+// unknown older rows quiet on the inspection surface.
+func swapSettlementTypeString(
+	settlementType swapclientrpc.SwapSettlementType) string {
+
+	if settlementType ==
+		swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_UNSPECIFIED {
+		return ""
+	}
+
+	return settlementType.String()
 }

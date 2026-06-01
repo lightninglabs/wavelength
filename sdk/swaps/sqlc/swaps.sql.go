@@ -10,7 +10,7 @@ import (
 )
 
 const GetPaySwap = `-- name: GetPaySwap :one
-SELECT payment_hash, invoice, max_fee_sat, state, amount_sat, fee_sat, expiry_unix, client_pubkey, operator_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, funding_session_id, refund_receive_pubkey, refund_receive_pkscript, refund_session_id, refund_recovery_id, preimage, intervention_reason, created_at_unix, updated_at_unix FROM pay_swaps
+SELECT payment_hash, invoice, max_fee_sat, state, amount_sat, fee_sat, expiry_unix, client_pubkey, operator_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, funding_session_id, refund_receive_pubkey, refund_receive_pkscript, refund_session_id, refund_recovery_id, preimage, intervention_reason, created_at_unix, updated_at_unix, settlement_type FROM pay_swaps
 WHERE payment_hash = $1
 LIMIT 1
 `
@@ -46,12 +46,13 @@ func (q *Queries) GetPaySwap(ctx context.Context, paymentHash []byte) (PaySwap, 
 		&i.InterventionReason,
 		&i.CreatedAtUnix,
 		&i.UpdatedAtUnix,
+		&i.SettlementType,
 	)
 	return i, err
 }
 
 const GetReceiveSwap = `-- name: GetReceiveSwap :one
-SELECT payment_hash, amount_sat, payer_fee_msat, state, invoice, preimage, deadline_unix, client_pubkey, payment_addr, operator_pubkey, swap_server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, pending_htlc_ack_cursor, claim_receive_pubkey, claim_receive_pkscript, claim_session_id, claim_recovery_id, intervention_reason, created_at_unix, updated_at_unix FROM receive_swaps
+SELECT payment_hash, amount_sat, payer_fee_msat, state, invoice, preimage, deadline_unix, client_pubkey, payment_addr, operator_pubkey, swap_server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, pending_htlc_ack_cursor, claim_receive_pubkey, claim_receive_pkscript, claim_session_id, claim_recovery_id, intervention_reason, created_at_unix, updated_at_unix, settlement_type FROM receive_swaps
 WHERE payment_hash = $1
 LIMIT 1
 `
@@ -87,12 +88,13 @@ func (q *Queries) GetReceiveSwap(ctx context.Context, paymentHash []byte) (Recei
 		&i.InterventionReason,
 		&i.CreatedAtUnix,
 		&i.UpdatedAtUnix,
+		&i.SettlementType,
 	)
 	return i, err
 }
 
 const ListPaySwaps = `-- name: ListPaySwaps :many
-SELECT payment_hash, invoice, max_fee_sat, state, amount_sat, fee_sat, expiry_unix, client_pubkey, operator_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, funding_session_id, refund_receive_pubkey, refund_receive_pkscript, refund_session_id, refund_recovery_id, preimage, intervention_reason, created_at_unix, updated_at_unix FROM pay_swaps
+SELECT payment_hash, invoice, max_fee_sat, state, amount_sat, fee_sat, expiry_unix, client_pubkey, operator_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, funding_session_id, refund_receive_pubkey, refund_receive_pkscript, refund_session_id, refund_recovery_id, preimage, intervention_reason, created_at_unix, updated_at_unix, settlement_type FROM pay_swaps
 ORDER BY created_at_unix ASC
 `
 
@@ -133,6 +135,7 @@ func (q *Queries) ListPaySwaps(ctx context.Context) ([]PaySwap, error) {
 			&i.InterventionReason,
 			&i.CreatedAtUnix,
 			&i.UpdatedAtUnix,
+			&i.SettlementType,
 		); err != nil {
 			return nil, err
 		}
@@ -148,7 +151,7 @@ func (q *Queries) ListPaySwaps(ctx context.Context) ([]PaySwap, error) {
 }
 
 const ListPendingPaySwaps = `-- name: ListPendingPaySwaps :many
-SELECT payment_hash, invoice, max_fee_sat, state, amount_sat, fee_sat, expiry_unix, client_pubkey, operator_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, funding_session_id, refund_receive_pubkey, refund_receive_pkscript, refund_session_id, refund_recovery_id, preimage, intervention_reason, created_at_unix, updated_at_unix FROM pay_swaps
+SELECT payment_hash, invoice, max_fee_sat, state, amount_sat, fee_sat, expiry_unix, client_pubkey, operator_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, funding_session_id, refund_receive_pubkey, refund_receive_pkscript, refund_session_id, refund_recovery_id, preimage, intervention_reason, created_at_unix, updated_at_unix, settlement_type FROM pay_swaps
 WHERE state NOT IN (
     'Completed', 'Expired', 'Refunded', 'NeedsIntervention', 'Failed'
 )
@@ -192,6 +195,7 @@ func (q *Queries) ListPendingPaySwaps(ctx context.Context) ([]PaySwap, error) {
 			&i.InterventionReason,
 			&i.CreatedAtUnix,
 			&i.UpdatedAtUnix,
+			&i.SettlementType,
 		); err != nil {
 			return nil, err
 		}
@@ -207,7 +211,7 @@ func (q *Queries) ListPendingPaySwaps(ctx context.Context) ([]PaySwap, error) {
 }
 
 const ListPendingReceiveSwaps = `-- name: ListPendingReceiveSwaps :many
-SELECT payment_hash, amount_sat, payer_fee_msat, state, invoice, preimage, deadline_unix, client_pubkey, payment_addr, operator_pubkey, swap_server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, pending_htlc_ack_cursor, claim_receive_pubkey, claim_receive_pkscript, claim_session_id, claim_recovery_id, intervention_reason, created_at_unix, updated_at_unix FROM receive_swaps
+SELECT payment_hash, amount_sat, payer_fee_msat, state, invoice, preimage, deadline_unix, client_pubkey, payment_addr, operator_pubkey, swap_server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, pending_htlc_ack_cursor, claim_receive_pubkey, claim_receive_pkscript, claim_session_id, claim_recovery_id, intervention_reason, created_at_unix, updated_at_unix, settlement_type FROM receive_swaps
 WHERE state NOT IN ('Completed', 'Expired', 'NeedsIntervention', 'Failed')
 ORDER BY created_at_unix ASC
 `
@@ -249,6 +253,7 @@ func (q *Queries) ListPendingReceiveSwaps(ctx context.Context) ([]ReceiveSwap, e
 			&i.InterventionReason,
 			&i.CreatedAtUnix,
 			&i.UpdatedAtUnix,
+			&i.SettlementType,
 		); err != nil {
 			return nil, err
 		}
@@ -264,7 +269,7 @@ func (q *Queries) ListPendingReceiveSwaps(ctx context.Context) ([]ReceiveSwap, e
 }
 
 const ListReceiveSwaps = `-- name: ListReceiveSwaps :many
-SELECT payment_hash, amount_sat, payer_fee_msat, state, invoice, preimage, deadline_unix, client_pubkey, payment_addr, operator_pubkey, swap_server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, pending_htlc_ack_cursor, claim_receive_pubkey, claim_receive_pkscript, claim_session_id, claim_recovery_id, intervention_reason, created_at_unix, updated_at_unix FROM receive_swaps
+SELECT payment_hash, amount_sat, payer_fee_msat, state, invoice, preimage, deadline_unix, client_pubkey, payment_addr, operator_pubkey, swap_server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, pending_htlc_ack_cursor, claim_receive_pubkey, claim_receive_pkscript, claim_session_id, claim_recovery_id, intervention_reason, created_at_unix, updated_at_unix, settlement_type FROM receive_swaps
 ORDER BY created_at_unix ASC
 `
 
@@ -305,6 +310,7 @@ func (q *Queries) ListReceiveSwaps(ctx context.Context) ([]ReceiveSwap, error) {
 			&i.InterventionReason,
 			&i.CreatedAtUnix,
 			&i.UpdatedAtUnix,
+			&i.SettlementType,
 		); err != nil {
 			return nil, err
 		}
@@ -331,6 +337,7 @@ INSERT INTO pay_swaps (
     client_pubkey,
     operator_pubkey,
     server_pubkey,
+    settlement_type,
     refund_locktime,
     unilateral_claim_delay,
     unilateral_refund_delay,
@@ -350,7 +357,7 @@ INSERT INTO pay_swaps (
     updated_at_unix
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
+    $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     invoice = EXCLUDED.invoice,
@@ -362,6 +369,7 @@ ON CONFLICT (payment_hash) DO UPDATE SET
     client_pubkey = EXCLUDED.client_pubkey,
     operator_pubkey = EXCLUDED.operator_pubkey,
     server_pubkey = EXCLUDED.server_pubkey,
+    settlement_type = EXCLUDED.settlement_type,
     refund_locktime = EXCLUDED.refund_locktime,
     unilateral_claim_delay = EXCLUDED.unilateral_claim_delay,
     unilateral_refund_delay = EXCLUDED.unilateral_refund_delay,
@@ -392,6 +400,7 @@ type UpsertPaySwapParams struct {
 	ClientPubkey                         []byte
 	OperatorPubkey                       []byte
 	ServerPubkey                         []byte
+	SettlementType                       string
 	RefundLocktime                       int64
 	UnilateralClaimDelay                 int64
 	UnilateralRefundDelay                int64
@@ -423,6 +432,7 @@ func (q *Queries) UpsertPaySwap(ctx context.Context, arg UpsertPaySwapParams) er
 		arg.ClientPubkey,
 		arg.OperatorPubkey,
 		arg.ServerPubkey,
+		arg.SettlementType,
 		arg.RefundLocktime,
 		arg.UnilateralClaimDelay,
 		arg.UnilateralRefundDelay,
@@ -457,6 +467,7 @@ INSERT INTO receive_swaps (
     payment_addr,
     operator_pubkey,
     swap_server_pubkey,
+    settlement_type,
     refund_locktime,
     unilateral_claim_delay,
     unilateral_refund_delay,
@@ -475,7 +486,7 @@ INSERT INTO receive_swaps (
     updated_at_unix
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-    $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
+    $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     amount_sat = EXCLUDED.amount_sat,
@@ -488,6 +499,7 @@ ON CONFLICT (payment_hash) DO UPDATE SET
     payment_addr = EXCLUDED.payment_addr,
     operator_pubkey = EXCLUDED.operator_pubkey,
     swap_server_pubkey = EXCLUDED.swap_server_pubkey,
+    settlement_type = EXCLUDED.settlement_type,
     refund_locktime = EXCLUDED.refund_locktime,
     unilateral_claim_delay = EXCLUDED.unilateral_claim_delay,
     unilateral_refund_delay = EXCLUDED.unilateral_refund_delay,
@@ -518,6 +530,7 @@ type UpsertReceiveSwapParams struct {
 	PaymentAddr                          []byte
 	OperatorPubkey                       []byte
 	SwapServerPubkey                     []byte
+	SettlementType                       string
 	RefundLocktime                       int64
 	UnilateralClaimDelay                 int64
 	UnilateralRefundDelay                int64
@@ -549,6 +562,7 @@ func (q *Queries) UpsertReceiveSwap(ctx context.Context, arg UpsertReceiveSwapPa
 		arg.PaymentAddr,
 		arg.OperatorPubkey,
 		arg.SwapServerPubkey,
+		arg.SettlementType,
 		arg.RefundLocktime,
 		arg.UnilateralClaimDelay,
 		arg.UnilateralRefundDelay,

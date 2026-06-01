@@ -265,6 +265,7 @@ type ReceiveSession struct {
 	// For Lightning-backed receives this is the swap server key; for
 	// direct same-Ark receives this is the paying client's sender key.
 	swapServerPubKey       *btcec.PublicKey
+	settlementType         SettlementType
 	vhtlcConfig            VHTLCConfig
 	vhtlcPolicy            *arkscript.VHTLCPolicy
 	vhtlcPolicyTemplate    []byte
@@ -972,6 +973,7 @@ func (s *ReceiveSession) acceptOutSwapHtlcEvent(ctx context.Context,
 
 	return s.mutateAndPersist(ctx, func() error {
 		s.swapServerPubKey = serverKey
+		s.settlementType = SettlementTypeLightning
 		s.vhtlcConfig = event.VHTLCConfig
 		s.vhtlcPolicy = policy
 		s.vhtlcPolicyTemplate = policyTemplate
@@ -1092,6 +1094,7 @@ func (s *ReceiveSession) acceptInArkHtlcEvent(ctx context.Context,
 
 	return s.mutateAndPersist(ctx, func() error {
 		s.swapServerPubKey = event.SenderPubkey
+		s.settlementType = SettlementTypeInArk
 		s.vhtlcConfig = event.VHTLCConfig
 		s.vhtlcPolicy = policy
 		s.vhtlcPolicyTemplate = policyTemplate

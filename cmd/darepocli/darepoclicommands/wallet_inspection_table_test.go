@@ -27,6 +27,8 @@ func TestRenderWalletInspectionExpanded(t *testing.T) {
 			State:            "SWAP_STATE_WAITING_FOR_CLAIM",
 			Pending:          true,
 			AmountSat:        1234,
+			SettlementType:   "SWAP_SETTLEMENT_TYPE_IN_ARK",
+			SenderPubkey:     "sender-pubkey",
 			VhtlcOutpoint:    "vhtlc-txid:0",
 			VhtlcAmountSat:   1234,
 			FundingSessionId: "funding-session",
@@ -69,6 +71,10 @@ func TestRenderWalletInspectionExpanded(t *testing.T) {
 	got := out.String()
 	require.Contains(t, got, "Activity\n")
 	require.Contains(t, got, "- payment_hash: payment-hash")
+	require.Contains(
+		t, got, "- settlement_type: SWAP_SETTLEMENT_TYPE_IN_ARK",
+	)
+	require.Contains(t, got, "- sender_pubkey: sender-pubkey")
 	require.Contains(t, got, "VTXOs\n")
 	require.Contains(t, got, "spent_input")
 	require.Contains(t, got, "Ledger\n")

@@ -567,6 +567,13 @@ message ActivitySwapTrace {
     // refund_locktime is the absolute locktime after which the swap can be
     // refunded.
     uint32 refund_locktime = 17;
+
+    // settlement_type is the raw swapclientrpc.SwapSettlementType enum name
+    // when known.
+    string settlement_type = 18;
+
+    // sender_pubkey is the compressed SEC-encoded vHTLC sender key when known.
+    string sender_pubkey = 19;
 }
 
 // ActivityVTXOTrace describes one VTXO movement correlated to a wallet activity

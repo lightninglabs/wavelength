@@ -152,6 +152,8 @@ func renderSwapSection(out io.Writer, swap *walletdkrpc.ActivitySwapTrace) {
 	printBullet(out, 0, "pending", fmt.Sprintf("%t", swap.GetPending()))
 	printBullet(out, 0, "amount", formatSat(swap.GetAmountSat()))
 	printBullet(out, 0, "fee", fmt.Sprintf("%d sat", swap.GetFeeSat()))
+	printOptionalBullet(out, "settlement_type", swap.GetSettlementType())
+	printOptionalBullet(out, "sender_pubkey", swap.GetSenderPubkey())
 	printOptionalBullet(out, "invoice", swap.GetInvoice())
 	printOptionalBullet(out, "vhtlc_outpoint", swap.GetVhtlcOutpoint())
 	if swap.GetVhtlcAmountSat() != 0 {

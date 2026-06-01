@@ -11,6 +11,7 @@ INSERT INTO receive_swaps (
     payment_addr,
     operator_pubkey,
     swap_server_pubkey,
+    settlement_type,
     refund_locktime,
     unilateral_claim_delay,
     unilateral_refund_delay,
@@ -29,7 +30,7 @@ INSERT INTO receive_swaps (
     updated_at_unix
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-    $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
+    $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     amount_sat = EXCLUDED.amount_sat,
@@ -42,6 +43,7 @@ ON CONFLICT (payment_hash) DO UPDATE SET
     payment_addr = EXCLUDED.payment_addr,
     operator_pubkey = EXCLUDED.operator_pubkey,
     swap_server_pubkey = EXCLUDED.swap_server_pubkey,
+    settlement_type = EXCLUDED.settlement_type,
     refund_locktime = EXCLUDED.refund_locktime,
     unilateral_claim_delay = EXCLUDED.unilateral_claim_delay,
     unilateral_refund_delay = EXCLUDED.unilateral_refund_delay,
@@ -85,6 +87,7 @@ INSERT INTO pay_swaps (
     client_pubkey,
     operator_pubkey,
     server_pubkey,
+    settlement_type,
     refund_locktime,
     unilateral_claim_delay,
     unilateral_refund_delay,
@@ -104,7 +107,7 @@ INSERT INTO pay_swaps (
     updated_at_unix
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
+    $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     invoice = EXCLUDED.invoice,
@@ -116,6 +119,7 @@ ON CONFLICT (payment_hash) DO UPDATE SET
     client_pubkey = EXCLUDED.client_pubkey,
     operator_pubkey = EXCLUDED.operator_pubkey,
     server_pubkey = EXCLUDED.server_pubkey,
+    settlement_type = EXCLUDED.settlement_type,
     refund_locktime = EXCLUDED.refund_locktime,
     unilateral_claim_delay = EXCLUDED.unilateral_claim_delay,
     unilateral_refund_delay = EXCLUDED.unilateral_refund_delay,
