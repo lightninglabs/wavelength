@@ -42,14 +42,58 @@ func (q *Queries) GetUnilateralExitJob(ctx context.Context, arg GetUnilateralExi
 
 const ListNonTerminalUnilateralExitJobs = `-- name: ListNonTerminalUnilateralExitJobs :many
 SELECT target_outpoint_hash, target_outpoint_index, actor_id, status, trigger, last_error, sweep_txid, created_at, updated_at, exit_policy_kind, exit_policy_ref FROM unilateral_exit_jobs
-WHERE status NOT IN (4, 5)
+WHERE status NOT IN (4, 5, 7)
 ORDER BY created_at ASC
 `
 
-// Status 4 = Completed, 5 = Failed (anchored to Go iota in
-// db/unilateral_exit_store.go UnilateralExitJobStatus).
+// Status 4 = Completed, 5 = Failed, 7 = FailedRecoverable (anchored to Go
+// iota in db/unilateral_exit_store.go UnilateralExitJobStatus).
 func (q *Queries) ListNonTerminalUnilateralExitJobs(ctx context.Context) ([]UnilateralExitJob, error) {
 	rows, err := q.db.QueryContext(ctx, ListNonTerminalUnilateralExitJobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UnilateralExitJob
+	for rows.Next() {
+		var i UnilateralExitJob
+		if err := rows.Scan(
+			&i.TargetOutpointHash,
+			&i.TargetOutpointIndex,
+			&i.ActorID,
+			&i.Status,
+			&i.Trigger,
+			&i.LastError,
+			&i.SweepTxid,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ExitPolicyKind,
+			&i.ExitPolicyRef,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListTerminalUnilateralExitJobs = `-- name: ListTerminalUnilateralExitJobs :many
+SELECT target_outpoint_hash, target_outpoint_index, actor_id, status, trigger, last_error, sweep_txid, created_at, updated_at, exit_policy_kind, exit_policy_ref FROM unilateral_exit_jobs
+WHERE status IN (4, 5, 7)
+ORDER BY created_at ASC
+`
+
+// Returns terminal jobs (4 = Completed, 5 = Failed, 7 = FailedRecoverable)
+// so boot-time reconciliation can re-converge VTXO status against the
+// unroll job's terminal on-chain outcome (darepo-client#602).
+func (q *Queries) ListTerminalUnilateralExitJobs(ctx context.Context) ([]UnilateralExitJob, error) {
+	rows, err := q.db.QueryContext(ctx, ListTerminalUnilateralExitJobs)
 	if err != nil {
 		return nil, err
 	}

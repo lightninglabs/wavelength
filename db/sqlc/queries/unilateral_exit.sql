@@ -26,10 +26,19 @@ WHERE target_outpoint_hash = $1
 ;
 
 -- name: ListNonTerminalUnilateralExitJobs :many
--- Status 4 = Completed, 5 = Failed (anchored to Go iota in
--- db/unilateral_exit_store.go UnilateralExitJobStatus).
+-- Status 4 = Completed, 5 = Failed, 7 = FailedRecoverable (anchored to Go
+-- iota in db/unilateral_exit_store.go UnilateralExitJobStatus).
 SELECT * FROM unilateral_exit_jobs
-WHERE status NOT IN (4, 5)
+WHERE status NOT IN (4, 5, 7)
+ORDER BY created_at ASC
+;
+
+-- name: ListTerminalUnilateralExitJobs :many
+-- Returns terminal jobs (4 = Completed, 5 = Failed, 7 = FailedRecoverable)
+-- so boot-time reconciliation can re-converge VTXO status against the
+-- unroll job's terminal on-chain outcome (darepo-client#602).
+SELECT * FROM unilateral_exit_jobs
+WHERE status IN (4, 5, 7)
 ORDER BY created_at ASC
 ;
 

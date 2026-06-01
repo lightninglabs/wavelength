@@ -48,8 +48,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   `Status`, `Trigger`, `LastError`, `SweepTxid`, `Created/UpdatedAt`.
 - `UnilateralExitJobStatus` — `Pending(0)`, `Materializing(1)`,
   `CSVPending(2)`, `Sweeping(3)`, `Completed(4)`, `Failed(5)`,
-  `SweepBroadcasting(6)`. **Append-only**: `SweepBroadcasting` is
-  last so existing rows at 3 keep decoding correctly.
+  `SweepBroadcasting(6)`, `FailedRecoverable(7)`. **Append-only**: new
+  values are added at the end so a row's numeric meaning never shifts.
+  `FailedRecoverable` is a terminal failure that left no on-chain
+  footprint, so boot-time reconciliation may roll the VTXO back to live;
+  it is excluded from `ListNonTerminalUnilateralExitJobs` alongside `4`
+  and `5` (darepo-client#602).
 - `UnilateralExitJobTrigger` — `Manual(0)`, `CriticalExpiry(1)`,
   `Restart(2)`, `FraudSpend(3)`.
 - `VHTLCRecoveryStoreDB` — durable vHTLC recovery store. Persists

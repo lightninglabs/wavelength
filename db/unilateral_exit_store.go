@@ -50,12 +50,22 @@ const (
 	// broadcast. Appended after the original enum so existing rows at
 	// status=3 continue to decode as "sweep broadcast, awaiting conf".
 	UnilateralExitJobStatusSweepBroadcasting
+
+	// UnilateralExitJobStatusFailedRecoverable means the job failed
+	// terminally WITHOUT leaving any on-chain footprint (no proof or
+	// sweep tx was broadcast), so the target VTXO is still live from the
+	// operator's perspective and is safe to roll back to live. It is a
+	// separate status from UnilateralExitJobStatusFailed (which implies
+	// the exit has begun on-chain) so boot-time reconciliation can decide
+	// whether to recover the VTXO (darepo-client#602).
+	UnilateralExitJobStatusFailedRecoverable
 )
 
 // IsTerminal reports whether the control-plane job status is terminal.
 func (s UnilateralExitJobStatus) IsTerminal() bool {
 	return s == UnilateralExitJobStatusCompleted ||
-		s == UnilateralExitJobStatusFailed
+		s == UnilateralExitJobStatusFailed ||
+		s == UnilateralExitJobStatusFailedRecoverable
 }
 
 // UnilateralExitJobTrigger records what started an exit job.
@@ -104,6 +114,9 @@ type UnilateralExitStore interface {
 	)
 
 	ListNonTerminalUnilateralExitJobs(ctx context.Context) (
+		[]sqlc.UnilateralExitJob, error)
+
+	ListTerminalUnilateralExitJobs(ctx context.Context) (
 		[]sqlc.UnilateralExitJob, error)
 
 	MarkUnilateralExitJobTerminal(ctx context.Context,
@@ -228,6 +241,41 @@ func (s *UnilateralExitPersistenceStore) ListNonTerminalJobs(
 
 	readFn := func(q UnilateralExitStore) error {
 		rows, err := q.ListNonTerminalUnilateralExitJobs(ctx)
+		if err != nil {
+			return err
+		}
+
+		result = make([]UnilateralExitJobRecord, 0, len(rows))
+		for i := range rows {
+			record, convErr := jobRecordFromRow(rows[i])
+			if convErr != nil {
+				return convErr
+			}
+
+			result = append(result, record)
+		}
+
+		return nil
+	}
+
+	err := s.db.ExecTx(ctx, ReadTxOption(), readFn)
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// ListTerminalJobs loads all terminal manager-facing job rows. Boot-time
+// reconciliation uses this to re-converge VTXO status against each unroll
+// job's terminal on-chain outcome (darepo-client#602).
+func (s *UnilateralExitPersistenceStore) ListTerminalJobs(ctx context.Context) (
+	[]UnilateralExitJobRecord, error) {
+
+	result := make([]UnilateralExitJobRecord, 0)
+
+	readFn := func(q UnilateralExitStore) error {
+		rows, err := q.ListTerminalUnilateralExitJobs(ctx)
 		if err != nil {
 			return err
 		}
