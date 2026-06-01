@@ -168,26 +168,6 @@ func parseEntryKind(s string) (walletdkrpc.EntryKind, error) {
 	}
 }
 
-// parseListView maps a user-facing view string to the proto enum used in
-// ListRequest.View. Empty/default falls back to ACTIVITY.
-func parseListView(s string) (walletdkrpc.ListView, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "activity":
-		return walletdkrpc.ListView_LIST_VIEW_ACTIVITY, nil
-
-	case "vtxos", "vtxo":
-		return walletdkrpc.ListView_LIST_VIEW_VTXOS, nil
-
-	case "onchain", "on-chain":
-		return walletdkrpc.ListView_LIST_VIEW_ONCHAIN, nil
-
-	default:
-		return walletdkrpc.ListView_LIST_VIEW_UNSPECIFIED,
-			fmt.Errorf("unknown view %q (activity|vtxos|onchain)",
-				s)
-	}
-}
-
 // resolveOffchainFlag enforces the --offchain / --onchain invariant: at
 // most one may be set, and absence implies offchain (the default for
 // send and recv).

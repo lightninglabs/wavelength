@@ -192,69 +192,6 @@ func TestResolveOffchainFlagRejectsConflict(t *testing.T) {
 	require.ErrorIs(t, err, errOffchainOnchainConflict)
 }
 
-// TestParseListView confirms each accepted view string maps cleanly
-// onto the proto enum and unknown values are rejected.
-func TestParseListView(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		in   string
-		want walletdkrpc.ListView
-		bad  bool
-	}{
-		{
-			"",
-			walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
-			false,
-		},
-		{
-			"activity",
-			walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
-			false,
-		},
-		{
-			"ACTIVITY",
-			walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
-			false,
-		},
-		{
-			"vtxos",
-			walletdkrpc.ListView_LIST_VIEW_VTXOS,
-			false,
-		},
-		{
-			"vtxo",
-			walletdkrpc.ListView_LIST_VIEW_VTXOS,
-			false,
-		},
-		{
-			"onchain",
-			walletdkrpc.ListView_LIST_VIEW_ONCHAIN,
-			false,
-		},
-		{
-			"on-chain",
-			walletdkrpc.ListView_LIST_VIEW_ONCHAIN,
-			false,
-		},
-		{
-			"junk",
-			walletdkrpc.ListView_LIST_VIEW_UNSPECIFIED,
-			true,
-		},
-	}
-	for _, tc := range cases {
-		v, err := parseListView(tc.in)
-		if tc.bad {
-			require.Error(t, err, "in=%q", tc.in)
-
-			continue
-		}
-		require.NoError(t, err, "in=%q", tc.in)
-		require.Equal(t, tc.want, v, "in=%q", tc.in)
-	}
-}
-
 // TestParseEntryKindAcceptsCanonicalForms confirms the kind parser
 // accepts the canonical names plus the obvious aliases ("receive" for
 // "recv").
