@@ -60,7 +60,7 @@ type schemaMethod struct {
 // methodRegistry returns the full schema for all darepocli commands.
 // The body is split across helper functions to stay under the funlen
 // linter cap. The top-level wallet verbs (create, unlock, send, recv,
-// list, balance, exit) are the day-to-day surface; advanced commands
+// activity, balance, exit) are the day-to-day surface; advanced commands
 // live under the `ark.*` and `swap.*` namespaces.
 //
 // The swap.* entries are listed unconditionally regardless of the

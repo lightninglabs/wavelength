@@ -19,7 +19,7 @@ The wallet RPC subserver lives behind paired build tags:
 
 - `walletdkrpc` — registers the wallet RPC gRPC service in the daemon and
   enables the top-level `darepocli` wallet verbs (`balance`, `recv`,
-  `send`, `list`, `create`, `unlock`, `mcp`).
+  `send`, `activity`, `create`, `unlock`, `mcp`).
 - `swapruntime` — the underlying swap subsystem the wallet RPC layer
   composes against. Required transitively: building with `walletdkrpc` but
   without `swapruntime` is a deliberate compile error.
@@ -67,10 +67,12 @@ When the daemon is started from a `walletdkrpc`-tagged build:
   calls, enforces a wallet-level deadline watcher that transitions stuck
   entries to FAILED, and runs a monitor loop that fans normalized updates
   to `SubscribeWallet` subscribers.
-- The CLI exposes top-level wallet verbs: `send`, `recv`, `list`,
-  `balance`, `create`, `unlock`, and `mcp serve`. Boarding deposits and
-  onchain sweeps appear via `list --view onchain`. Subscriptions are
-  available from the `walletdkrpc.WalletService.SubscribeWallet` RPC.
+- The CLI exposes top-level wallet verbs: `send`, `recv`, `activity`,
+  `balance`, `create`, `unlock`, and `mcp serve`. Raw transaction / onchain
+  history is available via `ark listtransactions`, the live VTXO set via
+  `ark vtxos list`, and boarding-timeout sweep records via `ark sweep list`.
+  Subscriptions are available from the
+  `walletdkrpc.WalletService.SubscribeWallet` RPC.
 - The `sdk/walletdk` facade can route through wallet RPC instead of the
   raw swap RPCs.
 
@@ -105,12 +107,12 @@ authoritative constants.
 make build-walletdkrpc
 
 # Confirm the top-level wallet verbs appear in `darepocli --help`
-# (balance, recv, send, list, create, unlock, mcp).
+# (balance, recv, send, activity, create, unlock, mcp).
 ./bin/darepocli --help
 
 # After starting the daemon and creating/unlocking a wallet:
 ./bin/darepocli balance
-./bin/darepocli list --view vtxos
+./bin/darepocli ark vtxos list
 ```
 
 If `darepocli balance` returns `daemon was not built with -tags walletdkrpc`,

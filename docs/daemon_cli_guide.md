@@ -27,7 +27,7 @@ After building, two binaries are produced:
 
 ### Optional: walletdkrpc
 
-The "user-facing" verbs in the CLI (`balance`, `recv`, `send`, `list`,
+The "user-facing" verbs in the CLI (`balance`, `recv`, `send`, `activity`,
 `create`, `unlock`) route through the `walletdkrpc` subserver. That code
 is gated behind the `walletdkrpc` build tag; the default `make build` does
 **not** enable it. Without the tag, those verbs return:
@@ -205,7 +205,7 @@ darepocli
 ├── create / unlock           — wallet bring-up (walletdkrpc)
 ├── recv                      — boarding address / Lightning invoice (walletdkrpc)
 ├── send                      — Lightning invoice / onchain leave (walletdkrpc)
-├── list                      — unified activity / VTXOs / onchain (walletdkrpc)
+├── activity                  — unified wallet activity feed (walletdkrpc)
 ├── exit [status]             — unilateral exit a VTXO
 ├── mcp serve                 — MCP server for AI agents (walletdkrpc)
 ├── schema                    — JSON dump of CLI methods
@@ -452,24 +452,32 @@ darepocli ark listtransactions \
   --no-tls
 ```
 
-### `list` (walletdkrpc)
+### `activity` (walletdkrpc)
 
-Unified wallet view selected by `--view`:
+The merged wallet activity feed: send / recv / deposit / exit history.
 
-| `--view` | Returns |
-|----------|---------|
-| `activity` (default) | Merged send / recv / deposit / exit history |
-| `vtxos` | Live VTXO inventory |
-| `onchain` | Boarding deposits, sweeps, leave outputs |
-
-`--pending` and `--kind` apply within the activity view and are ignored
-for the others.
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--pending` | | Only entries still in flight |
+| `--kind` | | Filter by kind (`send,recv,deposit,exit`); repeatable |
+| `--limit` | daemon default | Page size |
+| `--offset` | `0` | Pagination offset |
+| `--format` | `table` | Output format (`table`, `expanded`/`x`, `json`) |
 
 ```bash
-darepocli list --no-tls
-darepocli list --view vtxos --no-tls
-darepocli list --view onchain --limit 100 --no-tls
-darepocli list --pending --kind send,recv --no-tls
+darepocli activity --no-tls
+darepocli activity --pending --kind send,recv --no-tls
+darepocli activity --format json --no-tls
+darepocli activity inspect <id> --no-tls
+```
+
+The VTXO inventory and onchain history are not part of the activity feed.
+Use the `ark` subtree for those:
+
+```bash
+darepocli ark vtxos list --no-tls          # live VTXO inventory
+darepocli ark listtransactions --no-tls    # raw transaction / onchain history
+darepocli ark sweep list --no-tls          # boarding-timeout sweep records
 ```
 
 ### `schema`
