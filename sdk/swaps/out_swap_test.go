@@ -513,6 +513,96 @@ func TestWaitForVHTLCFallsBackToLocalVTXOOnUnregisteredScript(t *testing.T) {
 	require.Equal(t, 1, daemonConn.liveLookupCalls)
 }
 
+// unregisteredScriptIndexerErr returns the indexer rejection a receiver sees
+// while the swap server has funded the vHTLC but the operator's indexer has not
+// yet exposed a live VTXO row queryable under the receiver principal. The
+// string mirrors the wording the daemon surfaces from arkd so the classifier
+// under test matches what production observes.
+func unregisteredScriptIndexerErr() error {
+	return status.Error(
+		codes.Internal, "indexer query failed: rpc error: code = "+
+			"Unauthenticated desc = script not registered for "+
+			"principal",
+	)
+}
+
+// TestWaitForVHTLCRetriesThroughIndexerRowLag is the #538 regression: a fresh
+// offchain receive must survive the pre-funded window. The swap server
+// publishes the HTLC event and funds the vHTLC, but the receiver can poll the
+// indexer before the matching row is queryable, so the first polls come back
+// "script not registered for principal". The poll must treat that as transient
+// and keep retrying until the row lands, rather than failing the receive.
+func TestWaitForVHTLCRetriesThroughIndexerRowLag(t *testing.T) {
+	t.Parallel()
+
+	pkScript := bytes.Repeat([]byte{0x02}, 34)
+	funded := &VTXOInfo{
+		Outpoint:  "funding:0",
+		AmountSat: 5_000,
+	}
+
+	// The indexer rejects the first three polls (row not yet materialized)
+	// then returns the funded vHTLC on the fourth.
+	const lagPolls = 3
+	daemonConn := &testDaemonConn{
+		liveLookupHook: func(call int) (*VTXOInfo, error) {
+			if call <= lagPolls {
+				return nil, unregisteredScriptIndexerErr()
+			}
+
+			return funded, nil
+		},
+	}
+	client := NewSwapClient(nil, daemonConn, nil, nil)
+	client.waitPollInterval = time.Millisecond
+
+	outpoint, amount, err := client.waitForVHTLC(
+		t.Context(), pkScript, time.Time{}, nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, funded.Outpoint, outpoint)
+	require.Equal(t, funded.AmountSat, amount)
+	require.Equal(t, lagPolls+1, daemonConn.liveLookupCalls)
+}
+
+// TestWaitForVHTLCExpiresOnPersistentUnregisteredScript covers the durable
+// termination boundary that the retry behavior relies on. When the queried
+// script never gains a row — for example a client/server lib/arkscript skew
+// where the funded output lives at a different pkScript — the poll must not
+// loop forever. The refund-locktime guard ends the wait with ErrSwapExpired
+// once the refund path has matured, never reporting false funding.
+func TestWaitForVHTLCExpiresOnPersistentUnregisteredScript(t *testing.T) {
+	t.Parallel()
+
+	pkScript := bytes.Repeat([]byte{0x03}, 34)
+
+	// Best height is already past the refund locktime (minus the one-block
+	// safety buffer), so the guard expires the wait on the first poll.
+	daemonConn := &testDaemonConn{
+		blockHeight:   200,
+		liveLookupErr: unregisteredScriptIndexerErr(),
+	}
+	client := NewSwapClient(nil, daemonConn, nil, nil)
+	client.waitPollInterval = time.Millisecond
+
+	session := &ReceiveSession{
+		client: client,
+		PaymentHash: lntypes.Hash{
+			0x01,
+		},
+		vhtlcConfig: VHTLCConfig{
+			RefundLocktime: 144,
+		},
+	}
+
+	_, _, err := client.waitForVHTLC(
+		t.Context(), pkScript, time.Time{},
+		session.ensureReceiveFundingStillPossible,
+	)
+	require.ErrorIs(t, err, ErrSwapExpired)
+	require.Equal(t, 1, daemonConn.liveLookupCalls)
+}
+
 type testDaemonConn struct {
 	identityKey       *btcec.PublicKey
 	operatorKey       *btcec.PublicKey
@@ -536,6 +626,7 @@ type testDaemonConn struct {
 	sendCustomErr     error
 	listSpentErr      error
 	liveLookupErr     error
+	liveLookupHook    func(call int) (*VTXOInfo, error)
 	spentLookupErr    error
 	spentLookupBlock  time.Duration
 	spendOnCustom     bool
@@ -868,6 +959,9 @@ func (d *testDaemonConn) FindLiveVTXOByPkScript(_ context.Context,
 	pkScript []byte) (*VTXOInfo, error) {
 
 	d.liveLookupCalls++
+	if d.liveLookupHook != nil {
+		return d.liveLookupHook(d.liveLookupCalls)
+	}
 	if d.liveLookupErr != nil {
 		return nil, d.liveLookupErr
 	}
@@ -1449,6 +1543,88 @@ func TestReceiveSessionResumesAfterAckedHTLCEvent(t *testing.T) {
 	require.Equal(t, "resume-txid:1", outpoint)
 	require.EqualValues(t, 42_000, amount)
 	require.Zero(t, resumeServer.waitCalls)
+}
+
+// TestReceiveSessionWaitForFundingSurvivesIndexerRowLag is the end-to-end #538
+// regression. A fresh offchain receive accepts the swap server's HTLC event and
+// then waits for funding; the indexer rejects the first polls because the
+// funded vHTLC row is still materializing. The session must keep polling and
+// reach VHTLCFunded once the row lands, rather than failing the receive
+// outright.
+func TestReceiveSessionWaitForFundingSurvivesIndexerRowLag(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := &testInvoiceCreator{
+		invoice: &invoices.Invoice{
+			PaymentRequest: []byte("lnrtest1swap"),
+		},
+	}
+	serverPubKey := serverPriv.PubKey().SerializeCompressed()
+	serverConn := &testSwapServerConn{
+		hint: &RouteHint{
+			NodeID:          serverPubKey,
+			ChannelID:       99,
+			FeeBaseMsat:     1,
+			FeePropPpm:      2,
+			CltvExpiryDelta: 40,
+		},
+		cfg: &VHTLCConfig{
+			RefundLocktime:                       144,
+			UnilateralClaimDelay:                 12,
+			UnilateralRefundDelay:                24,
+			UnilateralRefundWithoutReceiverDelay: 36,
+			SwapServerPubkey:                     serverPubKey,
+		},
+	}
+
+	// The first two funding polls hit the pre-funded window; the third
+	// observes the materialized vHTLC. Best height stays well below the
+	// refund locktime so the guard never expires the wait.
+	const lagPolls = 2
+	funded := &VTXOInfo{
+		Outpoint:  "lagged-txid:0",
+		AmountSat: 42_000,
+	}
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+		blockHeight: 100,
+		liveLookupHook: func(call int) (*VTXOInfo, error) {
+			if call <= lagPolls {
+				return nil, unregisteredScriptIndexerErr()
+			}
+
+			return funded, nil
+		},
+	}
+
+	client := NewSwapClient(serverConn, daemonConn, nil, creator)
+	useTestOnionDecoder(client, 42_000)
+	client.waitPollInterval = time.Millisecond
+
+	session, err := client.StartReceiveViaLightning(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.NoError(t, err)
+
+	err = session.waitForHTLCEvent(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateHTLCEventAccepted, session.State())
+
+	outpoint, amount, err := session.WaitForFunding(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, funded.Outpoint, outpoint)
+	require.EqualValues(t, funded.AmountSat, amount)
+	require.Equal(t, lagPolls+1, daemonConn.liveLookupCalls)
 }
 
 // TestReceiveSessionRetriesAcceptedHTLCAckOnResume asserts mailbox ack errors
