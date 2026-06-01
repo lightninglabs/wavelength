@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -138,4 +139,69 @@ func TestRegistryForwardsCompletionAsConfirmed(t *testing.T) {
 	require.Len(t, notes, 1)
 	require.Equal(t, target, notes[0].Outpoint)
 	require.Equal(t, vtxo.ExitOutcomeConfirmed, notes[0].Outcome)
+}
+
+// TestRegistryRecoversCleanFailureEndToEnd is the in-process integration test
+// for the darepo-client#602 recovery path. Unlike the unit tests above (which
+// call handleTerminated directly with a synthetic UnrollTerminatedMsg), this
+// drives a REAL child unroll actor through admission, proof submission, and a
+// txconfirm broadcast rejection to terminal Failed, then asserts the registry
+// computes HadOnChainFootprint=false from the real FSM/planner state and
+// forwards ExitOutcomeRecoverable to the VTXO manager observer.
+//
+// This is the seam the unit tests cannot cover: the bug was an emergent
+// lifecycle gap across the child actor → registry → observer chain, and the
+// footprint determination is the change's highest-risk assumption. Here it
+// runs against the real machinery rather than a hand-built message.
+func TestRegistryRecoversCleanFailureEndToEnd(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+
+	observer := &captureExitObserver{}
+	var observerRef actor.TellOnlyRef[vtxo.ManagerMsg] = observer
+
+	txconfirmRef := &fakeTxConfirmRef{}
+	cfg := RegistryConfig{
+		Store:         newMemRegistryStore(),
+		DeliveryStore: newMemCheckpointStore(),
+		ProofAssembler: &mockProofAssembler{
+			proof: proof,
+		},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
+		TxConfirmRef: txconfirmRef,
+		ChainSource: &fakeRegistryChainSourceRef{
+			height: 200,
+		},
+		Wallet:           &fakeSweepWallet{},
+		VTXOExitObserver: fn.Some(observerRef),
+	}
+
+	registry := newRegistryHarnessWithSpawn(t, cfg)
+	t.Cleanup(registry.Stop)
+
+	// Reject the first proof tx the child submits (the #602 trigger: e.g. a
+	// sub-dust proof tx that can't meet min relay fee). The child drives a
+	// terminal TxFailedEvent with nothing confirmed and nothing left
+	// in-flight, so the job is a clean failure with no on-chain footprint.
+	txconfirmRef.setImmediateFailed(proof.RootTxids()[0], "min relay fee")
+
+	_, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint: proof.TargetOutpoint(),
+		Trigger:  TriggerManual,
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		return len(observer.notifications()) == 1
+	}, testTimeout, 10*time.Millisecond,
+		"registry should forward a recovery notification")
+
+	notes := observer.notifications()
+	require.Equal(t, proof.TargetOutpoint(), notes[0].Outpoint)
+	require.Equal(
+		t, vtxo.ExitOutcomeRecoverable, notes[0].Outcome,
+		"a clean no-broadcast failure must be reported as recoverable",
+	)
 }
