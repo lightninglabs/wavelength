@@ -305,6 +305,13 @@ type Server struct {
 	// the ledger actor; this field is for queries only.
 	ledgerStore *db.LedgerStoreDB
 
+	// ledgerActor is the durable client-side accounting actor. It is
+	// retained so the daemon can stop it during shutdown; the durable
+	// mailbox is the registered delivery path (producers Tell its ref via
+	// the ledger service key), so unlike the receptionist registration it
+	// is not managed by the actor system's stoppable set.
+	ledgerActor *ledger.LedgerActor
+
 	// boardingSweepStore exposes the boarding-sweep DB adapter for
 	// read-only RPC handlers (ListBoardingSweeps). All mutating writes
 	// happen inside the wallet actor; this field is for pure CRUD reads
@@ -921,6 +928,25 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 			err := s.actorSystem.Shutdown(shutdownCtx)
 			if err != nil {
 				s.log.WarnS(ctx, "Actor system shutdown failed",
+					err,
+				)
+			}
+		}
+
+		// Stop the ledger actor only after the actor system has drained
+		// the producer actors (round, OOR, VTXO, wallet) above. The
+		// ledger is not in the actor system's stoppable set -- we
+		// register only its durable ref -- so it must be stopped here
+		// explicitly. Doing it after actorSystem.Shutdown closes the
+		// window where a still-running producer's best-effort
+		// accounting Tell would hit a cancelled ledger context and be
+		// dropped before it is persisted. It still runs before db.Close
+		// below so the actor's in-flight ledger writes drain first.
+		if s.ledgerActor != nil {
+			//nolint:contextcheck // bounded shutdown
+			err := s.ledgerActor.OnStop(shutdownCtx)
+			if err != nil {
+				s.log.WarnS(ctx, "Ledger actor shutdown failed",
 					err,
 				)
 			}
@@ -2971,11 +2997,22 @@ func (s *Server) initLedgerActor(ctx context.Context) error {
 	if err := ledgerActor.Start(ctx); err != nil {
 		return fmt.Errorf("start ledger actor: %w", err)
 	}
+	s.ledgerActor = ledgerActor
 
+	// Register the durable actor's ref with the receptionist so producers
+	// Tell the durable mailbox via the ledger service key (mirroring OOR
+	// and serverconn). The actor runs the Read/Commit execution path, so
+	// each accounting event commits its ledger legs and the mailbox ack in
+	// one lease-fenced transaction. Lifecycle is owned by the daemon: the
+	// actor is stopped explicitly during shutdown (it is not in the actor
+	// system's stoppable set, since we register only its ref, not an
+	// in-memory actor).
 	ledgerKey := ledger.NewServiceKey()
-	actor.RegisterWithSystem(
-		s.actorSystem, "ledger-accounting", ledgerKey, ledgerActor,
-	)
+	if err := actor.RegisterWithReceptionist(
+		s.actorSystem.Receptionist(), ledgerKey, ledgerActor.Ref(),
+	); err != nil {
+		return fmt.Errorf("register ledger actor: %w", err)
+	}
 
 	s.log.InfoS(ctx, "Ledger accounting actor started")
 

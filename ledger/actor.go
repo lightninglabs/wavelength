@@ -282,6 +282,21 @@ type ActorConfig struct {
 	Clock fn.Option[clock.Clock]
 }
 
+// ledgerTx is the typed, transaction-scoped store handed to ledger handlers
+// inside a single Commit. Every write a handler issues through it joins that
+// one Commit transaction (the stores pick up the *sql.Tx from the handler's
+// context), so multi-leg events such as ExitCost book all legs atomically with
+// the mailbox ack. This is the store type the durable-actor Exec handle injects
+// per message via NewLedgerActor's StoreFactory.
+type ledgerTx struct {
+	// ledger persists double-entry ledger rows.
+	ledger LedgerStore
+
+	// audit persists wallet UTXO audit-log rows. Nil when the actor runs in
+	// log-only mode (no UTXOAuditStore configured).
+	audit UTXOAuditStore
+}
+
 // LedgerActor is a durable actor that serializes all client-side
 // accounting writes from rounds, OOR transfers, and on-chain
 // exits. It receives fire-and-forget Tell messages and persists
@@ -311,8 +326,8 @@ type LedgerActor struct {
 
 var (
 	// Compile-time check that LedgerActor implements the durable
-	// actor behavior interface.
-	_ actor.ActorBehavior[LedgerMsg, LedgerResp] = (*LedgerActor)(nil)
+	// transaction-aware behavior interface over its typed ledgerTx store.
+	_ actor.TxBehavior[LedgerMsg, LedgerResp, ledgerTx] = (*LedgerActor)(nil)
 
 	// Compile-time check that LedgerActor implements actor-system
 	// cleanup.
@@ -349,16 +364,25 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 
 	codec := newLedgerCodec()
 
+	// Run on the durable actor's Read/Commit execution path: each handler
+	// books its ledger legs inside one short, lease-fenced Commit
+	// transaction rather than the framework holding a writer tx across the
+	// whole Receive. The StoreFactory injects the typed ledgerTx store
+	// bound to that Commit transaction.
+	//
 	// The durable actor should not see LedgerActor's OnStop hook, because
 	// that hook waits for the durable actor itself to exit. The
 	// actor-system wrapper owns that cleanup instead.
-	durableBehavior := actor.NewFunctionBehavior(a.Receive)
-	durableCfg := actor.DefaultDurableActorConfig[
-		LedgerMsg, LedgerResp,
+	durableCfg := actor.DefaultDurableTxActorConfig[
+		LedgerMsg, LedgerResp, ledgerTx,
 	](
-		a.actorID, durableBehavior, a.cfg.DeliveryStore, codec,
+		a.actorID, a, a.bindStores, a.cfg.DeliveryStore, codec,
 	)
-	a.durable = actor.NewDurableActor(durableCfg)
+	durable, err := actor.NewDurableActor(durableCfg).Unpack()
+	if err != nil {
+		return fmt.Errorf("build ledger durable actor: %w", err)
+	}
+	a.durable = durable
 	a.ref = a.durable.Ref()
 
 	checkpoint, err := a.cfg.DeliveryStore.LoadCheckpoint(
@@ -431,82 +455,52 @@ func (a *LedgerActor) logHandlerErr(ctx context.Context, msg string,
 	_ = errors.Is(err, ErrInvalidMessage)
 }
 
-// Receive processes one durable message. This is the
-// ActorBehavior implementation called by the durable runtime.
-func (a *LedgerActor) Receive(ctx context.Context,
-	msg LedgerMsg) fn.Result[LedgerResp] {
+// bindStores is the StoreFactory passed to the durable actor: it produces the
+// typed ledgerTx store the Exec handle hands to each handler inside a Commit.
+// The stores join the Commit transaction via the context passed to their
+// methods, so the factory itself ignores its arguments and just wires the
+// configured stores through.
+func (a *LedgerActor) bindStores(_ context.Context,
+	_ actor.DeliveryStore) ledgerTx {
+
+	return ledgerTx{
+		ledger: a.cfg.LedgerStore,
+		audit:  a.cfg.UTXOAuditStore,
+	}
+}
+
+// Receive processes one durable message. This is the TxBehavior implementation
+// called by the durable runtime: each handler that persists state runs inside a
+// single lease-fenced Commit transaction via the Exec handle, so the ledger
+// writes and the mailbox ack land atomically.
+func (a *LedgerActor) Receive(ctx context.Context, msg LedgerMsg,
+	ax actor.Exec[ledgerTx]) fn.Result[LedgerResp] {
 
 	switch m := msg.(type) {
 	case *actor.RestartMessage:
+		// Restart carries no state to persist, so it does not Commit;
+		// the framework consumes it via the non-transactional ack path.
 		a.log.InfoS(ctx, "Ledger actor restarted")
 
 		return fn.Ok[LedgerResp](nil)
 
 	case *FeePaidMsg:
-		if err := a.handleFeePaid(ctx, m); err != nil {
-			a.logHandlerErr(
-				ctx, "Failed to handle fee paid", err,
-			)
-
-			return fn.Err[LedgerResp](err)
-		}
-
-		return fn.Ok[LedgerResp](nil)
+		return a.handleFeePaid(ctx, m, ax)
 
 	case *VTXOReceivedMsg:
-		if err := a.handleVTXOReceived(ctx, m); err != nil {
-			a.logHandlerErr(
-				ctx, "Failed to handle VTXO received", err,
-			)
-
-			return fn.Err[LedgerResp](err)
-		}
-
-		return fn.Ok[LedgerResp](nil)
+		return a.handleVTXOReceived(ctx, m, ax)
 
 	case *VTXOSentMsg:
-		if err := a.handleVTXOSent(ctx, m); err != nil {
-			a.logHandlerErr(
-				ctx, "Failed to handle VTXO sent", err,
-			)
-
-			return fn.Err[LedgerResp](err)
-		}
-
-		return fn.Ok[LedgerResp](nil)
+		return a.handleVTXOSent(ctx, m, ax)
 
 	case *ExitCostMsg:
-		if err := a.handleExitCost(ctx, m); err != nil {
-			a.logHandlerErr(
-				ctx, "Failed to handle exit cost", err,
-			)
-
-			return fn.Err[LedgerResp](err)
-		}
-
-		return fn.Ok[LedgerResp](nil)
+		return a.handleExitCost(ctx, m, ax)
 
 	case *UTXOCreatedMsg:
-		if err := a.handleUTXOCreated(ctx, m); err != nil {
-			a.logHandlerErr(
-				ctx, "Failed to handle UTXO created", err,
-			)
-
-			return fn.Err[LedgerResp](err)
-		}
-
-		return fn.Ok[LedgerResp](nil)
+		return a.handleUTXOCreated(ctx, m, ax)
 
 	case *UTXOSpentMsg:
-		if err := a.handleUTXOSpent(ctx, m); err != nil {
-			a.logHandlerErr(
-				ctx, "Failed to handle UTXO spent", err,
-			)
-
-			return fn.Err[LedgerResp](err)
-		}
-
-		return fn.Ok[LedgerResp](nil)
+		return a.handleUTXOSpent(ctx, m, ax)
 
 	default:
 		return fn.Err[LedgerResp](
@@ -514,4 +508,40 @@ func (a *LedgerActor) Receive(ctx context.Context,
 				ErrInvalidMessage, msg),
 		)
 	}
+}
+
+// fail logs a pre-Commit handler failure (validation or message-building) and
+// returns it as the result. These failures happen before any Commit, so they
+// do not flow through commit's logging below; logging here keeps the operator
+// view uniform. ErrLeaseLost never originates from this path.
+func (a *LedgerActor) fail(ctx context.Context, errMsg string,
+	err error) fn.Result[LedgerResp] {
+
+	a.logHandlerErr(ctx, errMsg, err)
+
+	return fn.Err[LedgerResp](err)
+}
+
+// commit runs the write closure inside one lease-fenced Commit transaction and
+// maps the outcome to a LedgerResp result. Handlers do their validation and
+// entry construction BEFORE calling commit, so the closure passed here contains
+// only the persistence (InsertLedgerEntry / InsertUTXOAuditEntry) and the
+// writer lock is held for nothing else. Commit failures are logged at WarnS via
+// logHandlerErr. A lost lease (ErrLeaseLost) is not a handler fault -- the
+// message was reclaimed and reprocessed elsewhere -- so it is returned without
+// the handler-error log; the framework's retry path takes over.
+func (a *LedgerActor) commit(ctx context.Context, ax actor.Exec[ledgerTx],
+	errMsg string,
+	write func(ctx context.Context, q ledgerTx) error,
+) fn.Result[LedgerResp] {
+
+	if err := ax.Commit(ctx, write); err != nil {
+		if !errors.Is(err, actor.ErrLeaseLost) {
+			a.logHandlerErr(ctx, errMsg, err)
+		}
+
+		return fn.Err[LedgerResp](err)
+	}
+
+	return fn.Ok[LedgerResp](nil)
 }
