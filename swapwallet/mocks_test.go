@@ -64,6 +64,11 @@ type fakeRPCServer struct {
 	joinNextRoundResp  *daemonrpc.JoinNextRoundResponse
 	joinNextRoundErr   error
 	joinNextRoundCalls int
+
+	sendOnChainResp    *daemonrpc.SendOnChainResponse
+	sendOnChainErr     error
+	sendOnChainCalls   int
+	sendOnChainLastReq *daemonrpc.SendOnChainRequest
 }
 
 func (f *fakeRPCServer) LeaveVTXOs(_ context.Context,
@@ -195,6 +200,19 @@ func (f *fakeRPCServer) JoinNextRound(_ context.Context,
 	f.joinNextRoundCalls++
 
 	return f.joinNextRoundResp, f.joinNextRoundErr
+}
+
+func (f *fakeRPCServer) SendOnChain(_ context.Context,
+	req *daemonrpc.SendOnChainRequest) (*daemonrpc.SendOnChainResponse,
+	error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.sendOnChainCalls++
+	f.sendOnChainLastReq = req
+
+	return f.sendOnChainResp, f.sendOnChainErr
 }
 
 // fakeSwapService is a minimal swapclientrpc.SwapClientServiceServer used

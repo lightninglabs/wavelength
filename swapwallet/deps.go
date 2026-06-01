@@ -30,6 +30,10 @@ type RPCServer interface {
 		req *daemonrpc.LeaveVTXOsRequest) (
 		*daemonrpc.LeaveVTXOsResponse, error)
 
+	SendOnChain(ctx context.Context,
+		req *daemonrpc.SendOnChainRequest) (
+		*daemonrpc.SendOnChainResponse, error)
+
 	ListVTXOs(ctx context.Context,
 		req *daemonrpc.ListVTXOsRequest) (
 		*daemonrpc.ListVTXOsResponse,
