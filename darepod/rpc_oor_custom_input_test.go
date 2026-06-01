@@ -56,7 +56,7 @@ func newCustomOORRPCFixture(t *testing.T) *customOORRPCFixture {
 		getInfoResponse: &arkrpc.GetInfoResponse{
 			Pubkey:        serverPubkey,
 			VtxoExitDelay: 144,
-			DustLimit:     1,
+			DustLimit:     1000,
 		},
 	}
 
@@ -107,6 +107,32 @@ func newCustomOORRPCFixture(t *testing.T) *customOORRPCFixture {
 		clientPriv: receiverPriv,
 		outpoint:   outpoint,
 	}
+}
+
+// TestPrepareOORRejectsRecipientBelowDust verifies prepared custom-input OOR
+// packages use the same recipient dust guard as submitted OOR sends. The swap
+// cooperative-refund flow asks PrepareOOR to build a deterministic package
+// before any operator authorization happens, so a sub-dust recipient amount
+// must be rejected at this boundary instead of producing checkpoint material
+// that would later create an unusable receiver VTXO.
+func TestPrepareOORRejectsRecipientBelowDust(t *testing.T) {
+	t.Parallel()
+
+	fixture := newCustomOORRPCFixture(t)
+	fixture.recipient.AmountSat = 999
+
+	_, err := fixture.rpcServer.PrepareOOR(
+		t.Context(), &daemonrpc.PrepareOORRequest{
+			Recipient: fixture.recipient,
+			CustomInputs: []*daemonrpc.CustomOORInput{
+				fixture.customIn,
+			},
+		},
+	)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.ErrorContains(
+		t, err, "amount 999 below operator dust_limit 1000",
+	)
 }
 
 // TestPrepareOORCustomInputMapsPreparedInput exercises the daemon-level

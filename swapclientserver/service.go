@@ -32,6 +32,7 @@ import (
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/zpay32"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -101,6 +102,17 @@ type swapClientService struct {
 	// invoice to a payer. Production derives this from the daemon's cached
 	// operator terms; tests may leave it nil to disable this preflight.
 	receiveMinAmount func(context.Context) (uint64, error)
+
+	// payMinAmount returns the current minimum output amount that a
+	// pay-swap vHTLC must satisfy before sdk/swaps persists the pay
+	// session. This mirrors the receive guard so high-level wallet RPC
+	// callers fail before a background worker reaches the daemon's SendOOR
+	// dust check.
+	payMinAmount func(context.Context) (uint64, error)
+
+	// chainParams is used only for BOLT-11 pay invoice decoding. Tests that
+	// leave payMinAmount unset do not need to provide it.
+	chainParams *chaincfg.Params
 }
 
 // swapRuntimeClient is the narrow part of sdk/swaps that the daemon
@@ -406,24 +418,30 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 		),
 	)
 
+	dustLimit := func(ctx context.Context) (uint64, error) {
+		info, err := arkClient.GetInfo(ctx)
+		if err != nil {
+			return 0, err
+		}
+
+		return receiveSwapMinAmountSat(info.ServerInfo)
+	}
+
 	service := &swapClientService{
 		client: &swapClientAdapter{
 			client: swapClient,
 		},
-		store:       store,
-		log:         log,
-		rootCtx:     rootCtx,
-		cancel:      cancel,
-		active:      make(map[string]struct{}),
-		subscribers: make(map[chan *swapclientrpc.SwapSummary]struct{}),
-		receiveMinAmount: func(ctx context.Context) (uint64, error) {
-			info, err := arkClient.GetInfo(ctx)
-			if err != nil {
-				return 0, err
-			}
-
-			return receiveSwapMinAmountSat(info.ServerInfo)
-		},
+		store:   store,
+		log:     log,
+		rootCtx: rootCtx,
+		cancel:  cancel,
+		active:  make(map[string]struct{}),
+		subscribers: make(
+			map[chan *swapclientrpc.SwapSummary]struct{},
+		),
+		receiveMinAmount: dustLimit,
+		payMinAmount:     dustLimit,
+		chainParams:      chainParams,
 	}
 
 	cleanup := func() {
@@ -910,6 +928,71 @@ func (s *swapClientService) validateReceiveAmount(ctx context.Context,
 		amountSat, minAmountSat)
 }
 
+// payInvoiceAmountSat decodes the BOLT-11 invoice amount in whole satoshis.
+// The swap pay path funds one Ark vHTLC of this value, so a nil, zero, or
+// millisatoshi-only invoice cannot be admitted through the daemon subserver.
+func payInvoiceAmountSat(invoice string,
+	chainParams *chaincfg.Params) (uint64, error) {
+
+	decoded, err := zpay32.Decode(invoice, chainParams)
+	if err != nil {
+		return 0, err
+	}
+
+	if decoded.MilliSat == nil {
+		return 0, fmt.Errorf("invoice amount is required")
+	}
+
+	amountMSat := uint64(*decoded.MilliSat)
+	if amountMSat == 0 {
+		return 0, fmt.Errorf("invoice amount must be positive")
+	}
+	if amountMSat%1000 != 0 {
+		return 0, fmt.Errorf("invoice amount must be whole satoshis")
+	}
+
+	return amountMSat / 1000, nil
+}
+
+// validatePayInvoiceAmount rejects locally-impossible pay invoices before the
+// SDK persists a swap session and starts a background worker.
+func (s *swapClientService) validatePayInvoiceAmount(ctx context.Context,
+	invoice string) error {
+
+	if s.payMinAmount == nil {
+		return nil
+	}
+
+	if s.chainParams == nil {
+		return status.Error(
+			codes.Internal,
+			"chain params required for pay invoice validation",
+		)
+	}
+
+	amountSat, err := payInvoiceAmountSat(invoice, s.chainParams)
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "invoice amount "+
+			"preflight failed: %v", err)
+	}
+
+	minAmountSat, err := s.payMinAmount(ctx)
+	if err != nil {
+		return status.Errorf(codes.Unavailable, "pay amount preflight "+
+			"failed: %v", err)
+	}
+	if minAmountSat == 0 {
+		return nil
+	}
+	if amountSat >= minAmountSat {
+		return nil
+	}
+
+	return status.Errorf(codes.InvalidArgument, "invoice amount_sat %d is "+
+		"below the %d sat minimum for pay swaps (operator dust limit)",
+		amountSat, minAmountSat)
+}
+
 // StartPay persists a pay swap through sdk/swaps, starts or reuses the daemon
 // background worker for the resulting payment hash, and returns the initial
 // durable summary to the RPC caller.
@@ -927,6 +1010,11 @@ func (s *swapClientService) StartPay(ctx context.Context,
 			codes.Unimplemented,
 			"idempotency_key is reserved for future use",
 		)
+	}
+	if err := s.validatePayInvoiceAmount(
+		ctx, req.GetInvoice(),
+	); err != nil {
+		return nil, err
 	}
 
 	session, err := s.client.StartPayViaLightning(
