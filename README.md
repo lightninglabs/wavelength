@@ -25,7 +25,7 @@ and exposes a typed gRPC + REST API for host applications.
 - **Lightning swaps.** Optional swap subsystem (`swapruntime`) provides
   Lightning-to-Ark and Ark-to-Lightning atomic swaps with a durable FSM.
 - **Wallet RPC facade.** Optional flat, swap-vocabulary-free wallet API
-  (`walletrpc`) exposes seven core verbs: `create`, `unlock`, `send`,
+  (`walletdkrpc`) exposes seven core verbs: `create`, `unlock`, `send`,
   `recv`, `activity`, `balance`, `exit`.
 - **Host-app SDK.** `sdk/ark`, `sdk/swaps`, and `sdk/walletdk` embed the
   daemon in-process and expose typed Go APIs over a private transport.
@@ -42,7 +42,7 @@ and exposes a typed gRPC + REST API for host applications.
 # enabled (recommended; gives you the top-level wallet verbs).
 git clone https://github.com/lightninglabs/darepo-client.git
 cd darepo-client
-make install-walletrpc
+make install-walletdkrpc
 
 # Start the daemon against a local regtest Ark operator + Esplora. The local
 # and remote mailbox IDs are derived from the client and operator pubkeys, so
@@ -81,15 +81,15 @@ nothing in binary size or surface area.
 |----------------------------|-----------------------------|-----------------------------------------------------------|
 | `make build`               | _(none)_                    | Core Ark client. Power-user `ark *` and `dev *` CLI only. |
 | `make build-swapruntime`   | `swapruntime`               | + Lightning swap subsystem (`sdk/swaps`, swap CLI).       |
-| `make build-walletrpc`     | `walletrpc swapruntime`     | + Wallet RPC subserver and top-level wallet verbs.        |
+| `make build-walletdkrpc`   | `walletdkrpc swapruntime`   | + Wallet RPC subserver and top-level wallet verbs.        |
 | `make install`             | _(none)_                    | Installs the core build to `$GOPATH/bin`.                 |
 | `make install-swapruntime` | `swapruntime`               | Installs the swap-enabled build.                          |
-| `make install-walletrpc`   | `walletrpc swapruntime`     | Installs the full walletrpc-enabled build (recommended).  |
+| `make install-walletdkrpc` | `walletdkrpc swapruntime`   | Installs the full walletdkrpc-enabled build (recommended).|
 
-The `walletrpc` build is a strict superset of `swapruntime`. Most users
-want `make install-walletrpc`.
+The `walletdkrpc` build is a strict superset of `swapruntime`. Most users
+want `make install-walletdkrpc`.
 
-See [`docs/walletrpc_build.md`](docs/walletrpc_build.md) for the full
+See [`docs/walletdkrpc_build.md`](docs/walletdkrpc_build.md) for the full
 matrix, what each tag enables, and what the CLI surface looks like in each
 mode.
 
@@ -100,11 +100,11 @@ mode.
 ```
 darepocli
 ├── getinfo                   daemon status                          (all builds)
-├── balance / recv / send     unified wallet verbs                   (walletrpc)
-├── create / unlock           wallet bring-up                        (walletrpc)
-├── activity                  unified wallet activity history        (walletrpc)
+├── balance / recv / send     unified wallet verbs                   (walletdkrpc)
+├── create / unlock           wallet bring-up                        (walletdkrpc)
+├── activity                  unified wallet activity history        (walletdkrpc)
 ├── exit [status]             unilateral exit a VTXO                 (all builds)
-├── mcp serve                 MCP server for AI agents               (walletrpc)
+├── mcp serve                 MCP server for AI agents               (walletdkrpc)
 ├── schema                    JSON dump of all CLI methods           (all builds)
 ├── ark ...                   power-user Ark RPCs                    (all builds)
 │   ├── board                 board confirmed boarding UTXOs
@@ -173,7 +173,7 @@ own `CLAUDE.md` / `AGENTS.md` with package-local context.
 |----------------------------------|-----------------------------------------------------------------------|
 | System architecture              | [`ARCHITECTURE.md`](ARCHITECTURE.md)                                  |
 | Install, configure, operate      | [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md)                |
-| Build-tag matrix                 | [`docs/walletrpc_build.md`](docs/walletrpc_build.md)                  |
+| Build-tag matrix                 | [`docs/walletdkrpc_build.md`](docs/walletdkrpc_build.md)                  |
 | Durable actor pattern            | [`docs/durable_actor_architecture.md`](docs/durable_actor_architecture.md) |
 | Mailbox transport                | [`docs/mailbox_architecture.md`](docs/mailbox_architecture.md)        |
 | SDK layering                     | [`docs/sdk_layered_architecture.md`](docs/sdk_layered_architecture.md)|

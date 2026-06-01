@@ -38,11 +38,11 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 ```bash
 git clone https://github.com/lightninglabs/darepo-client.git
 cd darepo-client
-make install-walletrpc
+make install-walletdkrpc
 ```
 
 That single target builds and installs both `darepod` and `darepocli` to
-`$GOPATH/bin` with the optional `walletrpc` + `swapruntime` subsystems
+`$GOPATH/bin` with the optional `walletdkrpc` + `swapruntime` subsystems
 enabled. After it completes you have access to:
 
 - The top-level wallet verbs: `darepocli {create, unlock, balance, recv,
@@ -59,9 +59,9 @@ darepod   --version
 darepocli --help
 ```
 
-If `darepocli balance` reports `daemon was not built with -tags walletrpc`,
+If `darepocli balance` reports `daemon was not built with -tags walletdkrpc`,
 the binary on `PATH` came from a default build. Re-run
-`make install-walletrpc` and ensure `$GOPATH/bin` precedes any older copy.
+`make install-walletdkrpc` and ensure `$GOPATH/bin` precedes any older copy.
 
 ---
 
@@ -74,10 +74,10 @@ the variant that matches your needs.
 |----------------------------------|----------------------------|-------------------------|--------------------------------------------------------|
 | Core (default)                   | _(none)_                   | `darepod`, `darepocli`  | Headless Ark client; no swaps; power-user CLI only.    |
 | With Lightning swaps             | `swapruntime`              | `darepod`, `darepocli`  | Use Lightning-to-Ark / Ark-to-Lightning swaps.         |
-| With wallet RPC (recommended)    | `walletrpc swapruntime`    | `darepod`, `darepocli`  | Use the top-level wallet verbs and host-app SDK.       |
+| With wallet RPC (recommended)    | `walletdkrpc swapruntime`  | `darepod`, `darepocli`  | Use the top-level wallet verbs and host-app SDK.       |
 
-`walletrpc` is a strict superset of `swapruntime`; you cannot enable
-`walletrpc` without `swapruntime` (the combination is enforced at compile
+`walletdkrpc` is a strict superset of `swapruntime`; you cannot enable
+`walletdkrpc` without `swapruntime` (the combination is enforced at compile
 time).
 
 ### Local debug builds (output to `./bin/`)
@@ -85,7 +85,7 @@ time).
 ```bash
 make build                       # core
 make build-swapruntime           # + swap subsystem
-make build-walletrpc             # + walletrpc and swap subsystem  (recommended)
+make build-walletdkrpc             # + walletdkrpc and swap subsystem  (recommended)
 ```
 
 After any of these, the binaries are at:
@@ -98,11 +98,11 @@ After any of these, the binaries are at:
 ```bash
 make install                     # core
 make install-swapruntime         # + swap subsystem
-make install-walletrpc           # + walletrpc and swap subsystem  (recommended)
+make install-walletdkrpc           # + walletdkrpc and swap subsystem  (recommended)
 ```
 
 For more on what each tag turns on, see
-[`docs/walletrpc_build.md`](docs/walletrpc_build.md).
+[`docs/walletdkrpc_build.md`](docs/walletdkrpc_build.md).
 
 ---
 
@@ -122,11 +122,11 @@ go version
 #    workspace (see docs/go_workspace.md); this is normally automatic.
 go mod download
 
-# 4. Build the recommended (walletrpc) variant into ./bin.
-make build-walletrpc
+# 4. Build the recommended (walletdkrpc) variant into ./bin.
+make build-walletdkrpc
 
 # 5. Or install the same variant to $GOPATH/bin.
-make install-walletrpc
+make install-walletdkrpc
 
 # 6. Confirm the binaries.
 ./bin/darepod   --help
@@ -190,7 +190,7 @@ darepod \
 After starting the daemon, the wallet must be created and unlocked before
 any operation can proceed.
 
-With a `walletrpc`-enabled build (`make install-walletrpc`):
+With a `walletdkrpc`-enabled build (`make install-walletdkrpc`):
 
 ```bash
 # Create a wallet (prints the seed mnemonic on stderr; write it down!).
@@ -203,7 +203,7 @@ DAREPOD_WALLET_PASSWORD=your_password darepocli unlock --no-tls
 To skip manual unlock entirely, pass `--wallet.password_file=/path/to/file`
 to `darepod` at startup; the daemon will auto-unlock from the file.
 
-Without `walletrpc`, the only supported path is the password-file auto-unlock
+Without `walletdkrpc`, the only supported path is the password-file auto-unlock
 above. The `create` / `unlock` CLI commands are not present in the default
 build. Full password-handling rules:
 [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md#password-handling).
@@ -216,7 +216,7 @@ build. Full password-handling rules:
 # 1. Daemon answers basic status.
 darepocli getinfo --no-tls
 
-# 2. (walletrpc only) wallet verbs work.
+# 2. (walletdkrpc only) wallet verbs work.
 darepocli balance --no-tls
 darepocli activity --no-tls
 
@@ -227,9 +227,9 @@ darepocli ark vtxos list --no-tls
 darepocli schema --no-tls
 ```
 
-If you see `daemon was not built with -tags walletrpc` for the wallet
+If you see `daemon was not built with -tags walletdkrpc` for the wallet
 verbs, your `darepod` binary is the default (untagged) build. Reinstall
-with `make install-walletrpc`.
+with `make install-walletdkrpc`.
 
 ---
 
@@ -239,7 +239,7 @@ Pull the latest source and reinstall the same variant you previously used:
 
 ```bash
 git pull --rebase
-make install-walletrpc       # or whichever variant you run
+make install-walletdkrpc       # or whichever variant you run
 ```
 
 ---
@@ -262,9 +262,9 @@ Deleting `~/.darepod` is irreversible without the recorded mnemonic.
 
 | Symptom                                                | Fix                                                                                  |
 |--------------------------------------------------------|--------------------------------------------------------------------------------------|
-| `daemon was not built with -tags walletrpc`            | Reinstall with `make install-walletrpc`.                                             |
+| `daemon was not built with -tags walletdkrpc`            | Reinstall with `make install-walletdkrpc`.                                             |
 | `connection refused` on `darepocli`                    | Daemon not running, or wrong `--rpcserver` address.                                  |
-| `wallet not ready`                                     | Run `darepocli unlock` (walletrpc), or restart `darepod` with `--wallet.password_file`. |
+| `wallet not ready`                                     | Run `darepocli unlock` (walletdkrpc), or restart `darepod` with `--wallet.password_file`. |
 | `wallet already exists`                                | Use `darepocli unlock` instead of `create`.                                          |
 | TLS / x509 errors against the daemon                   | Use `--no-tls` on regtest, or pass `--tlscertpath` to `darepocli`.                   |
 | `go: module ... requires go 1.25.5` or similar         | Upgrade to Go 1.25.5+ (see Prerequisites).                                           |
@@ -278,7 +278,7 @@ Deeper troubleshooting (per-flag and per-backend) is in
 ## Next Steps
 
 - **Run the daemon:** [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md)
-- **Build-tag deep dive:** [`docs/walletrpc_build.md`](docs/walletrpc_build.md)
+- **Build-tag deep dive:** [`docs/walletdkrpc_build.md`](docs/walletdkrpc_build.md)
 - **Embed the daemon in a host app:** [`docs/walletdk_integration.md`](docs/walletdk_integration.md)
 - **Codebase map:** [`ARCHITECTURE.md`](ARCHITECTURE.md)
 - **Contribute:** style guide and pre-commit checklist in
