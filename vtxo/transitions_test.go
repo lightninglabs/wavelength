@@ -269,6 +269,74 @@ func TestLiveStateForceUnroll(t *testing.T) {
 	assertOutboxContains[*VTXOTerminatedNotification](h)
 }
 
+// TestForceUnrollStrandsVTXOOnFailedUnroll reproduces darepo-client#602.
+//
+// A manual unroll (ForceUnrollEvent) moves the VTXO straight to the
+// TERMINAL UnilateralExitState on the strength of the user's *intent*,
+// emitting VTXOTerminatedNotification (which reaps the actor and drops
+// the VTXO out of the wallet's live set) before anything is broadcast
+// on-chain. If the downstream unroll job then FAILS without broadcasting
+// (e.g. proof tx can't meet min relay fee on a sub-dust VTXO), there is
+// no FSM path back to LiveState: the state is terminal and self-loops on
+// every event, including the ResumeVTXOEvent and BlockEpochEvent that a
+// recovery path might use. The VTXO is permanently stranded out of the
+// live set even though the operator still considers it live.
+//
+// This test documents the soundness gap. It should be UPDATED (not just
+// deleted) once a restore-to-live path exists: the final assertion that
+// the state stays UnilateralExit on a restore signal is the load-bearing
+// line that encodes the bug.
+func TestForceUnrollStrandsVTXOOnFailedUnroll(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+	vtxo.BatchExpiry = 10000
+	vtxo.CreatedHeight = 100
+
+	h.withState(&LiveState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 100,
+	})
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+		VTXOStatusUnilateralExit,
+	).Return(nil)
+
+	// Step 1: the user triggers a manual unroll. The FSM commits to the
+	// terminal UnilateralExitState and emits the termination notice on
+	// intent alone — no broadcast has happened yet.
+	_, err := h.sendEvent(&ForceUnrollEvent{
+		Reason: "manual RPC request",
+	})
+	require.NoError(t, err)
+
+	assertState[*UnilateralExitState](h)
+
+	// The actor is reaped (manager deletes it, VTXO leaves the live set)
+	// purely on intent.
+	assertOutboxContains[*VTXOTerminatedNotification](h)
+
+	// Step 2: simulate "the unroll job failed without broadcasting". The
+	// only signals that could plausibly resurrect the VTXO are a resume
+	// (crash-recovery replay) or a fresh block epoch. Neither restores
+	// the VTXO to LiveState — UnilateralExitState is terminal and
+	// self-loops, so the VTXO is permanently stranded.
+	_, err = h.sendEvent(&ResumeVTXOEvent{})
+	require.NoError(t, err)
+	assertState[*UnilateralExitState](h)
+
+	_, err = h.sendEvent(h.newBlockEpochEvent(200))
+	require.NoError(t, err)
+
+	// BUG (darepo-client#602): the VTXO never returns to LiveState after a
+	// failed-no-broadcast unroll. A correct implementation would restore
+	// it to LiveState (VTXOStatusLive) so the wallet's view matches the
+	// operator's. Until then this assertion encodes the stranding.
+	assertState[*UnilateralExitState](h)
+}
+
 // TestForfeitRequestFromLiveState verifies that LiveState transitions to
 // ForfeitingState on ForfeitRequest from round actor.
 func TestForfeitRequestFromLiveState(t *testing.T) {
