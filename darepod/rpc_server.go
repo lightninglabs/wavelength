@@ -3733,7 +3733,12 @@ func unrollJobStatusToProto(
 	case db.UnilateralExitJobStatusCompleted:
 		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED
 
-	case db.UnilateralExitJobStatusFailed:
+	// Both terminal failure flavours surface as FAILED to clients. The
+	// recoverable variant is an internal distinction used by boot-time
+	// reconciliation to roll a no-footprint failure back to live; the
+	// user-visible job still failed.
+	case db.UnilateralExitJobStatusFailed,
+		db.UnilateralExitJobStatusFailedRecoverable:
 		return daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED
 
 	default:

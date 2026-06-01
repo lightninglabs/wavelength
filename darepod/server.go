@@ -3515,6 +3515,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		s.subLogger(db.Subsystem),
 	)
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
+	ueStore := dbStore.NewUnilateralExitStore(s.clk)
 
 	manager := vtxo.NewManager(&vtxo.ManagerConfig{
 		Store:            vtxoStore,
@@ -3532,6 +3533,12 @@ func (s *Server) initVTXOManager(ctx context.Context,
 			outpoint wire.OutPoint) error {
 
 			return s.untrackFraudVTXO(ctx, outpoint)
+		},
+		ExitOutcomeResolver: func(ctx context.Context,
+			outpoint wire.OutPoint) (
+			fn.Option[vtxo.ExitOutcomeResolution], error) {
+
+			return resolveExitOutcome(ctx, ueStore, outpoint)
 		},
 	})
 
@@ -3554,6 +3561,42 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	s.log.InfoS(ctx, "VTXO manager registered and started")
 
 	return managerRef, nil
+}
+
+// resolveExitOutcome maps the persisted unroll job for an exiting VTXO to the
+// terminal outcome that the VTXO manager should apply at startup.
+func resolveExitOutcome(ctx context.Context,
+	ueStore *db.UnilateralExitPersistenceStore,
+	outpoint wire.OutPoint) (fn.Option[vtxo.ExitOutcomeResolution], error) {
+
+	if ueStore == nil {
+		return fn.None[vtxo.ExitOutcomeResolution](), nil
+	}
+
+	job, err := ueStore.GetJob(ctx, outpoint)
+	if errors.Is(err, db.ErrUnilateralExitJobNotFound) {
+		return fn.None[vtxo.ExitOutcomeResolution](), nil
+	}
+	if err != nil {
+		return fn.None[vtxo.ExitOutcomeResolution](), err
+	}
+
+	switch job.Status {
+	case db.UnilateralExitJobStatusCompleted:
+		return fn.Some(vtxo.ExitOutcomeResolution{
+			Outcome: vtxo.ExitOutcomeConfirmed,
+			Reason:  job.LastError,
+		}), nil
+
+	case db.UnilateralExitJobStatusFailedRecoverable:
+		return fn.Some(vtxo.ExitOutcomeResolution{
+			Outcome: vtxo.ExitOutcomeRecoverable,
+			Reason:  job.LastError,
+		}), nil
+
+	default:
+		return fn.None[vtxo.ExitOutcomeResolution](), nil
+	}
 }
 
 // initOORActor creates and starts the OOR (out-of-round) client actor.

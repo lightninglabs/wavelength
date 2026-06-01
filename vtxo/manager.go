@@ -28,6 +28,23 @@ import (
 // actor turn without making healthy child work race an overly short deadline.
 const defaultForfeitVTXOActorAskTimeout = 5 * time.Second
 
+// ExitOutcomeResolution is the persisted terminal result for an exiting VTXO,
+// as resolved from the subsystem that owns unilateral-exit jobs.
+type ExitOutcomeResolution struct {
+	// Outcome classifies the terminal exit result to apply.
+	Outcome ExitOutcome
+
+	// Reason carries the terminal failure reason when Outcome is
+	// ExitOutcomeRecoverable.
+	Reason string
+}
+
+// ExitOutcomeResolver resolves the terminal unilateral-exit outcome, if any,
+// for a VTXO that is still persisted as VTXOStatusUnilateralExit.
+type ExitOutcomeResolver func(
+	context.Context, wire.OutPoint,
+) (fn.Option[ExitOutcomeResolution], error)
+
 // VTXOActorRef is the actor reference type for VTXO actors. Uses
 // actormsg.VTXOActorMsg as the message type to enable both round and vtxo
 // packages to use the same service key for registration and lookup.
@@ -100,6 +117,12 @@ type ManagerConfig struct {
 	// manager's active set so daemon-local observers can clean up related
 	// actor-owned work.
 	TerminalVTXOObserver func(context.Context, wire.OutPoint) error
+
+	// ExitOutcomeResolver resolves terminal unilateral-exit job outcomes
+	// for VTXOs that remain persisted in VTXOStatusUnilateralExit at
+	// manager startup. When set, Start uses it to re-converge VTXO status
+	// with the exit job's terminal result.
+	ExitOutcomeResolver ExitOutcomeResolver
 }
 
 // Manager coordinates VTXO actor lifecycle - spawning new actors when VTXOs
@@ -240,7 +263,71 @@ func (m *Manager) Start(ctx context.Context,
 		slog.Int("recovered", len(m.actors)),
 	)
 
+	m.reconcileUnilateralExits(ctx)
+
 	return nil
+}
+
+// reconcileUnilateralExits re-converges VTXOs still persisted in
+// unilateral-exit with their terminal exit job outcome. A recoverable
+// no-footprint failure rolls the VTXO back to live; a completed exit retires
+// it to spent. Non-terminal jobs and footprint-bearing failures are left in
+// unilateral-exit.
+func (m *Manager) reconcileUnilateralExits(ctx context.Context) {
+	if m.cfg.ExitOutcomeResolver == nil {
+		return
+	}
+
+	log := m.logger(ctx)
+	exiting, err := m.cfg.Store.ListVTXOsByStatus(
+		ctx, VTXOStatusUnilateralExit,
+	)
+	if err != nil {
+		log.WarnS(ctx, "List unilateral-exit VTXOs failed", err)
+
+		return
+	}
+
+	for _, desc := range exiting {
+		resolution, err := m.cfg.ExitOutcomeResolver(
+			ctx, desc.Outpoint,
+		)
+		if err != nil {
+			log.WarnS(ctx, "Resolve exit outcome failed",
+				err,
+				slog.String("outpoint", desc.Outpoint.String()),
+			)
+
+			continue
+		}
+		if resolution.IsNone() {
+			continue
+		}
+
+		outcome := resolution.UnsafeFromSome()
+		req := &ExitOutcomeNotification{
+			Outpoint: desc.Outpoint,
+			Outcome:  outcome.Outcome,
+			Reason:   outcome.Reason,
+		}
+
+		_, err = m.handleExitOutcome(ctx, req).Unpack()
+		if err != nil {
+			log.WarnS(ctx, "Reconcile exit VTXO failed",
+				err,
+				slog.String("outpoint", desc.Outpoint.String()),
+				slog.String("outcome",
+					outcome.Outcome.String()),
+			)
+
+			continue
+		}
+
+		log.InfoS(ctx, "Reconciled unilateral-exit VTXO",
+			slog.String("outpoint", desc.Outpoint.String()),
+			slog.String("outcome", outcome.Outcome.String()),
+		)
+	}
 }
 
 // Stop gracefully shuts down the manager.

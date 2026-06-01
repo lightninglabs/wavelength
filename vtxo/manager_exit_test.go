@@ -1,9 +1,11 @@
 package vtxo
 
 import (
+	"context"
 	"testing"
 
 	"github.com/btcsuite/btcd/wire"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -167,6 +169,45 @@ func TestHandleExitOutcomeRecoverableNoDescriptorIsNoop(t *testing.T) {
 		Outcome:  ExitOutcomeRecoverable,
 	})
 	_, err := resp.Unpack()
+	require.NoError(t, err)
+
+	store.AssertExpectations(t)
+}
+
+// TestManagerStartReconcilesConfirmedExit verifies that startup reconciliation
+// is owned by the VTXO manager: VTXOs still persisted as unilateral-exit are
+// resolved through the configured exit outcome resolver and retired to spent
+// when their exit job completed.
+func TestManagerStartReconcilesConfirmedExit(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 50_000, 5)
+	vtxo.Status = VTXOStatusUnilateralExit
+	store := &MockVTXOStore{}
+	mgr := NewManager(&ManagerConfig{
+		Store: store,
+		ExitOutcomeResolver: func(_ context.Context,
+			outpoint wire.OutPoint) (
+			fn.Option[ExitOutcomeResolution], error) {
+
+			require.Equal(t, vtxo.Outpoint, outpoint)
+
+			return fn.Some(ExitOutcomeResolution{
+				Outcome: ExitOutcomeConfirmed,
+			}), nil
+		},
+	})
+
+	store.On("ListLiveVTXOs", t.Context()).Return([]*Descriptor{}, nil)
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusUnilateralExit,
+	).Return([]*Descriptor{vtxo}, nil)
+	store.On("GetVTXO", t.Context(), vtxo.Outpoint).Return(vtxo, nil)
+	store.On(
+		"UpdateVTXOStatus", t.Context(), vtxo.Outpoint, VTXOStatusSpent,
+	).Return(nil)
+
+	err := mgr.Start(t.Context(), nil)
 	require.NoError(t, err)
 
 	store.AssertExpectations(t)
