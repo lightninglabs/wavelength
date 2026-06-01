@@ -259,7 +259,7 @@ func TestDurableActorPerKeyFIFOSurvivesTransientFailure(t *testing.T) {
 	cfg.LeaseDuration = 5 * time.Second
 	cfg.HeartbeatInterval = 2 * time.Second
 
-	a := actor.NewDurableActor(cfg)
+	a := actor.NewDurableActor(cfg).UnwrapOrFail(t)
 
 	a.Start()
 	defer func() {
@@ -335,7 +335,7 @@ func TestDurableActorCrossKeyIndependence(t *testing.T) {
 	cfg.LeaseDuration = 5 * time.Second
 	cfg.HeartbeatInterval = 2 * time.Second
 
-	a := actor.NewDurableActor(cfg)
+	a := actor.NewDurableActor(cfg).UnwrapOrFail(t)
 
 	a.Start()
 	defer func() {

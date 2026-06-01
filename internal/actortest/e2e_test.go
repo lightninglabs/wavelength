@@ -113,7 +113,7 @@ func (h *testHarness) newDurableCounter(id string) (
 	cfg.LeaseDuration = 5 * time.Second
 	cfg.HeartbeatInterval = 1 * time.Second
 
-	durableActor := actor.NewDurableActor(cfg)
+	durableActor := actor.NewDurableActor(cfg).UnwrapOrFail(h.t)
 
 	// Register with [Message, any] types so OutboxPublisher can find it.
 	// The OutboxPublisher looks up actors using ServiceKey[Message, any],

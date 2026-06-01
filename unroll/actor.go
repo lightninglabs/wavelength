@@ -119,7 +119,10 @@ func NewVTXOUnrollActor(cfg Config) (*VTXOUnrollActor, error) {
 	)
 	durableCfg.Log = cfg.Log
 
-	durable := actor.NewDurableActor(durableCfg)
+	durable, err := actor.NewDurableActor(durableCfg).Unpack()
+	if err != nil {
+		return nil, err
+	}
 	behavior.selfRef = durable.TellRef()
 	durable.Start()
 
