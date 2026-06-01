@@ -39,9 +39,7 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 	for {
 		select {
 		case <-ctx.Done():
-			a.log.InfoS(ctx, "Ingress loop exiting",
-				slog.String("mailbox_id",
-					a.cfg.LocalMailboxID))
+			a.logIngressExit(ctx)
 
 			return
 
@@ -55,6 +53,12 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 			if err := a.ackRemote(
 				ctx, state.AckTarget,
 			); err != nil {
+
+				if isIngressShutdownErr(ctx, err) {
+					a.logIngressExit(ctx)
+
+					return
+				}
 
 				a.log.WarnS(ctx, "AckUpTo failed, retrying",
 					err,
@@ -93,6 +97,12 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 			ctx, state.PullCursor,
 		)
 		if err != nil {
+			if isIngressShutdownErr(ctx, err) {
+				a.logIngressExit(ctx)
+
+				return
+			}
+
 			a.log.WarnS(ctx, "Pull failed, retrying",
 				err,
 				slog.Uint64("cursor", state.PullCursor),
@@ -179,6 +189,24 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 
 		failCount = 0
 	}
+}
+
+// logIngressExit emits the common ingress shutdown log line.
+func (a *ServerConnectionActor) logIngressExit(ctx context.Context) {
+	a.log.InfoS(ctx, "Ingress loop exiting",
+		slog.String("mailbox_id", a.cfg.LocalMailboxID),
+	)
+}
+
+// isIngressShutdownErr reports whether err is an expected result of shutting
+// down the ingress loop. Only local loop-context cancellation is terminal; a
+// remote transport cancellation can be transient and must stay retryable.
+func isIngressShutdownErr(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+
+	return ctx.Err() != nil
 }
 
 // pullBatch calls Edge.Pull and returns the envelopes and next cursor.

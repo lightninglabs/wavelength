@@ -2,6 +2,7 @@ package serverconn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -9,6 +10,8 @@ import (
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // mailboxClientStub is a configurable MailboxServiceClient test double.
@@ -190,6 +193,66 @@ func TestAckRemote_StatusFailure(t *testing.T) {
 	require.ErrorAs(t, err, &stErr)
 	require.Equal(t, "AckUpTo", stErr.Op)
 	require.Contains(t, stErr.Error(), "ack failed")
+}
+
+// TestIsIngressShutdownErr verifies expected shutdown cancellation is
+// distinguished from retryable ingress failures.
+func TestIsIngressShutdownErr(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		cancel bool
+		err    error
+		want   bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name:   "local context canceled",
+			cancel: true,
+			err:    context.Canceled,
+			want:   true,
+		},
+		{
+			name: "grpc canceled",
+			err:  status.Error(codes.Canceled, "context canceled"),
+			want: false,
+		},
+		{
+			name:   "ctx canceled after transport error",
+			cancel: true,
+			err:    errors.New("transport closed"),
+			want:   true,
+		},
+		{
+			name: "retryable transport error",
+			err:  errors.New("temporary transport failure"),
+			want: false,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			if test.cancel {
+				cancel()
+			}
+
+			require.Equal(
+				t, test.want,
+				isIngressShutdownErr(ctx, test.err),
+			)
+		})
+	}
 }
 
 // TestLoadCheckpoint_Errors verifies loadCheckpoint surfaces store/decode
