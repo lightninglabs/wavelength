@@ -4545,6 +4545,17 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	}
 	s.proofAssembler = proofAssembler
 
+	// Adapt the VTXO manager ref into a tell-only exit observer so the
+	// unroll registry can report each job's terminal outcome back to the
+	// VTXO lifecycle (recover-to-live on a clean failure, retire-to-spent
+	// on a confirmed exit). See darepo-client#602.
+	var exitObserver fn.Option[actor.TellOnlyRef[vtxo.ManagerMsg]]
+	s.vtxoMgrRef.WhenSome(func(
+		ref actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]) {
+
+		exitObserver = fn.Some[actor.TellOnlyRef[vtxo.ManagerMsg]](ref)
+	})
+
 	registry := unroll.NewUnrollRegistryActor(unroll.RegistryConfig{
 		Store: &unroll.DBRegistryStore{
 			UEStore: ueStore,
@@ -4561,6 +4572,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 			Jobs:     recoveryStore,
 			Preimage: preimages,
 		},
+		VTXOExitObserver: exitObserver,
 	})
 	s.unrollRegistry = registry
 	s.unrollRegistryRef = fn.Some(registry.Ref())
