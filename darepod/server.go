@@ -4580,6 +4580,12 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	)
 	txConfirm.SetSelfRef(txConfirmRef)
 
+	// The unroll children use this ref to submit proof/sweep txs. In tests
+	// it may be wrapped to reject broadcasts pre-mempool so the
+	// darepo-client#602 no-footprint failure can be reproduced
+	// end-to-end. Production leaves it untouched.
+	unrollTxConfirmRef := s.maybeFaultyUnrollTxConfirm(txConfirmRef)
+
 	// 2. Create and register the unroll registry.
 	oorStore := dbStore.NewOORArtifactStore(s.clk)
 	proofAssembler := &unroll.LocalProofAssembler{
@@ -4606,7 +4612,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		DeliveryStore:              s.deliveryStore,
 		ProofAssembler:             proofAssembler,
 		VTXOStore:                  vtxoStore,
-		TxConfirmRef:               txConfirmRef,
+		TxConfirmRef:               unrollTxConfirmRef,
 		ChainSource:                chainSourceRef,
 		Wallet:                     unrollWallet,
 		Log:                        fn.Some(s.subLogger("UNRL")),
@@ -4807,6 +4813,70 @@ func (s *Server) recoverOrphanedUnrollJobs(ctx context.Context,
 	}
 
 	return nil
+}
+
+// maybeFaultyUnrollTxConfirm returns the given tx-confirmation ref unchanged
+// in production. When the test-only Config.FailUnrollBroadcastReason is set,
+// it wraps the ref so the unroll subsystem's broadcasts are rejected before
+// they reach the mempool, reproducing the darepo-client#602 no-footprint
+// exit failure.
+func (s *Server) maybeFaultyUnrollTxConfirm(
+	ref actor.ActorRef[txconfirm.Msg, txconfirm.Resp],
+) actor.ActorRef[txconfirm.Msg, txconfirm.Resp] {
+
+	if s.cfg.FailUnrollBroadcastReason == "" {
+		return ref
+	}
+
+	return &faultyUnrollTxConfirm{
+		inner:  ref,
+		reason: s.cfg.FailUnrollBroadcastReason,
+	}
+}
+
+// faultyUnrollTxConfirm is a TEST-ONLY decorator that rejects every
+// EnsureConfirmedReq with a failed state, simulating a proof tx that cannot
+// enter the mempool. All other messages (and Tell) pass through to the real
+// tx-confirmation actor. Because the rejection is returned before any
+// broadcast, the unroll job fails terminally with no on-chain footprint,
+// which is exactly the recoverable case the VTXO manager rolls back to live.
+type faultyUnrollTxConfirm struct {
+	inner  actor.ActorRef[txconfirm.Msg, txconfirm.Resp]
+	reason string
+}
+
+// ID implements actor.BaseActorRef.
+func (f *faultyUnrollTxConfirm) ID() string { return f.inner.ID() }
+
+// Tell forwards fire-and-forget messages to the real actor.
+func (f *faultyUnrollTxConfirm) Tell(ctx context.Context,
+	msg txconfirm.Msg) error {
+
+	return f.inner.Tell(ctx, msg)
+}
+
+// Ask rejects confirmation requests with a failed state and forwards
+// everything else to the real actor.
+func (f *faultyUnrollTxConfirm) Ask(ctx context.Context,
+	msg txconfirm.Msg) actor.Future[txconfirm.Resp] {
+
+	req, ok := msg.(*txconfirm.EnsureConfirmedReq)
+	if !ok {
+		return f.inner.Ask(ctx, msg)
+	}
+
+	promise := actor.NewPromise[txconfirm.Resp]()
+	promise.Complete(
+		fn.Ok[txconfirm.Resp](
+			&txconfirm.EnsureConfirmedResp{
+				Txid:    req.Tx.TxHash(),
+				State:   txconfirm.TxStateFailed,
+				Created: true,
+			},
+		),
+	)
+
+	return promise.Future()
 }
 
 // initFraudWatcher creates the passive recipient-fraud watcher and restores
