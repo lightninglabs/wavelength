@@ -516,6 +516,44 @@ than spinning, and an out-swap with no liquidity to fund the vHTLC fails the hel
 Lightning HTLC immediately (swapdk-server #59) instead of stranding the payer
 until the invoice expires.
 
+### 5.8 Where a recovered swap ends up
+
+All of this machinery resolves to one of a handful of terminal states on the
+session FSM — the only thing a caller actually observes
+([`sdk/swaps/CLAUDE.md`](../sdk/swaps/CLAUDE.md) lists the full state sets). The
+reconciliation loops in [`recovery.go`](../sdk/swaps/recovery.go) translate a
+recovery row's outcome into that terminal state:
+
+- **Pay, money returned.** Whether the client refunded off-chain (leaf 2 or 3) or
+  the daemon completed an on-chain exit (leaf 6), the session lands in
+  **`Refunded`**. `reconcilePayRefundRecovery` (recovery.go:781) drives
+  `payEventRefunded` when the recovery row reports COMPLETED.
+- **Receive, money collected.** A cooperative claim *or* a completed unilateral
+  claim recovery both end in **`Completed`**
+  (`reconcileReceiveClaimRecovery` → `receiveEventCompleted`, recovery.go:847):
+  from the user's seat, an on-chain sweep that lands the funds is still a
+  successful receive.
+- **Recovery hit a wall.** A recovery row that reports FAILED parks a pay session
+  in **`NeedsIntervention`** and fails a receive session terminally
+  (**`Failed`**), each carrying the daemon's last error.
+- **The vHTLC was funded with the wrong amount.** This short-circuits the
+  cooperative path entirely: a pay session goes straight to `RefundInitiated`
+  ([in_swap.go:1484](../sdk/swaps/in_swap.go)), a receive session to `Failed` —
+  never `NeedsIntervention`, because a wrong amount is unambiguous, not anomalous.
+- **`NeedsIntervention` is the "stop and call a human" state**, reserved for
+  genuinely anomalous server behaviour — most notably a vHTLC spent *without* a
+  matching preimage. The SDK refuses to guess and parks the swap.
+
+One detail worth its own line, because it is the pay side's whole point: the
+client's proof that it paid is the **preimage**, which it lifts out of the swap
+server's claim transaction. The server's claim can take slightly different shapes
+across indexer versions, so `extractPreimageFromCheckpoint`
+([preimage.go](../sdk/swaps/preimage.go)) scans the finalized checkpoint PSBT
+with several strategies — final witness, condition witness, taproot spend
+signature — and accepts a candidate only when its `SHA256` equals the payment
+hash. A preimage that does not hash to the expected value is not proof of
+anything and is discarded.
+
 ---
 
 ## 6. The same-Ark shortcut (p2p settlement)
@@ -540,6 +578,11 @@ for Lightning. Because the in-Ark sender funds the vHTLC with an OOR transfer
 that the receiver's own daemon may materialise locally, the receive flow keeps a
 fallback — `localLiveVTXOByPkScript` (out_swap.go:1761) — that consults the local
 live VTXO set in addition to the remote indexer.
+
+Cancellation needs no special case here. An in-Ark swap rides the same six-leaf
+vHTLC as a Lightning-bridged one, so the receiver still arms a claim recovery and
+the sender still has the cooperative-refund and unilateral-exit leaves: the
+ladder of §5 applies unchanged, only without a Lightning HTLC behind it.
 
 ---
 
