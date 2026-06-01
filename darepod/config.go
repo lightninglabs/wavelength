@@ -187,6 +187,12 @@ type Config struct {
 	//nolint:ll
 	ForfeitCollectionTimeout time.Duration `mapstructure:"forfeitcollectiontimeout"`
 
+	// RegistrationTimeout is the maximum wall-clock duration to
+	// wait for the server's RoundJoined admission watermark after
+	// sending a JoinRoundRequest. If zero, the round package
+	// default is used; a negative value disables the timeout.
+	RegistrationTimeout time.Duration `mapstructure:"registrationtimeout"`
+
 	// AllowMainnet must be set to true explicitly to run the daemon
 	// on mainnet. This guard prevents accidentally operating on
 	// mainnet during development, since DefaultNetwork is "mainnet".
