@@ -554,6 +554,48 @@ signature — and accepts a candidate only when its `SHA256` equals the payment
 hash. A preimage that does not hash to the expected value is not proof of
 anything and is discarded.
 
+### 5.9 Who turns the crank — and why a healthy swap can sit still
+
+Sections 5.3–5.8 describe the rungs and the states, but not the motor. The motor
+is the **client's own running reconciliation loops** — and nothing in the ladder
+turns while they are stopped. The swap server never pushes a "your payment
+failed" event: `SwapService` (§9) has no status or subscription RPC, only the
+three request-response calls. The client *discovers* that the server has safely
+failed a pay by polling `AuthorizeInSwapRefund`
+([`tryCooperativeRefund`](../sdk/swaps/in_swap.go), in_swap.go:1187) — a returned
+co-signature **is** the notification, and the "unavailable" answer from §5.4
+simply means "not yet, keep polling." A receive likewise advances only because
+the client keeps re-querying the indexer and re-attempting the OOR claim. Stop
+the client process and every rung freezes where it stood: the durable recovery
+rows (§5.2) survive, but nobody is reading them.
+
+This is why a funded swap whose off-chain settlement has not completed sits with
+its vHTLC plainly **`live`** on the ledger and reads, to anyone watching
+balances, as "pending" — for minutes, hours, or longer. That resting state is
+almost always **a sleeping client, not a stuck server**. By the time the vHTLC is
+funded the server has already done everything it will do unprompted: it failed
+the Lightning payment, armed its own mirror row (§5.7), and stands ready to
+co-sign leaf 2 the instant the client asks. The move that unblocks it is bringing
+the client online so its loops run, not restarting the server.
+
+The on-chain backstop is no more automatic. With `AutoEscalate` off by default
+(§5.5) the armed row never unilaterally exits on its own; it waits for an
+operator's `swapd recovery` escalation. So both fast and slow recovery wait on
+**someone acting** — the client for the immediate off-chain refund, the operator
+for the on-chain exit — and "nothing is happening yet" is the system's normal
+idle, not a fault.
+
+Reading a swap that looks stuck, then, comes down to three questions. *Are the
+funds safe?* Yes — they sit in the `live` vHTLC, reclaimable by their owner along
+the ladder. *What is the real deadline?* The CLTV refund locktime, and after it
+the CSV on whichever on-chain leaf applies; on a slow chain those waits run to
+hours or days, so "still pending" is often expected rather than alarming. *What
+is the fast resolution?* Drive the cooperative refund (leaf 2) — off-chain and
+immediate — by getting the client polling again, rather than waiting out any
+timelock. The one shape that is *not* benign is `NeedsIntervention` (§5.8): that
+state is reserved for genuinely anomalous server behaviour and is the only one
+that means "stop and call a human."
+
 ---
 
 ## 6. The same-Ark shortcut (p2p settlement)
