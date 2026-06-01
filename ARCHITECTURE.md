@@ -27,6 +27,7 @@ package may import from a higher layer.
 | [`lib/tx/psbtutil`](lib/tx/psbtutil/) | PSBT encoding, decoding, and signature attachment helpers |
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
+| [`vhtlcrecovery`](vhtlcrecovery/) | Durable vHTLC on-chain recovery control-plane types: row model, action/state/policy-kind constants |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
@@ -47,6 +48,9 @@ package may import from a higher layer.
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
+| [`serverconn/mailboxpull`](serverconn/mailboxpull/) | Shared exponential-backoff retry primitives for mailbox pull loops (used by serverconn and sdk/swaps) |
+| [`vhtlcrecovery/coordinator`](vhtlcrecovery/coordinator/) | Runtime coordinator: turns armed SQL recovery rows into unroll admissions via the unroll registry |
+| [`vhtlcrecovery/unrollpolicy`](vhtlcrecovery/unrollpolicy/) | Adapter: resolves durable vHTLC recovery rows into `unroll.ExitSpendPolicy` implementations |
 
 ### Layer 3: Application & Orchestration
 
@@ -112,6 +116,12 @@ darepod (orchestrator)
 │   ├── lib/recovery│ (recovery proof graph)
 │   ├── unrollplan  │ (pure dependency-resolution planner)
 │   └── db          │ (unilateral_exit_jobs store)
+├── vhtlcrecovery/coordinator│ (vHTLC recovery service → unroll registry)
+│   ├── vhtlcrecovery        │ (row types)
+│   └── unroll               │ (admission / status)
+├── vhtlcrecovery/unrollpolicy│ (exit spend policy adapter)
+│   ├── vhtlcrecovery        │ (row types)
+│   └── unroll               │ (ExitSpendPolicy interface)
 ├── txconfirm       │ (shared tx confirmation + CPFP actor; wired by darepod)
 ├── ledger          │
 │   ├── baselib/actor (durable mailbox, TLV codec)

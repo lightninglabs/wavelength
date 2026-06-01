@@ -35,6 +35,16 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   default 6), `MaxFeeRateSatPerVByte int64` (cap fed to both
   `txconfirm` and the unroll registry; zero → each subsystem's
   default). Surfaced via `unrollMaxFeeRate()`.
+- `PprofConfig` — Optional net/http/pprof debug server configuration.
+  `ListenAddr` (empty → disabled), `BlockProfileRate`, and
+  `MutexProfileFraction`. Security: pprof exposes sensitive runtime data;
+  bind only to loopback. Registered via `registerPprofFlags` in
+  `cmd/darepod`.
+- `SwapVHTLCRecoveryConfig` — Controls automatic vHTLC recovery escalation:
+  `EscalationThresholdBlocks` (how early before CLTV to escalate),
+  `MinRecoveryMarginBlocks`, `MaxFeeRateSatPerKW` (fee cap for recovery
+  transactions). Applied in `swapclientserver.Register` via
+  `SwapClient.SetRecoveryPolicy`.
 - `OORConfig` / `OORLimitsConfig` — incoming receive safety caps
   (`MaxCheckpoints`, `MaxVTXOMatches`, `MaxMailboxItems`,
   `MaxMailboxScriptBytes`). `Config.OORReceiveLimits()` normalizes

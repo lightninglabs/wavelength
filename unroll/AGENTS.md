@@ -64,7 +64,28 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   runs against `r.active`, `r.pending`, AND `Store.GetRecord` so a
   repeat after termination returns `Created=false` with the
   historical `ActorID`, never clobbering the sweep txid / failure
-  reason.
+  reason. `EnsureUnrollRequest` carries `ExitPolicyKind` and
+  `ExitPolicyRef` for non-standard policies.
+- `ExitPolicyKind` — Durable string identifying the exit spend policy
+  family. `StandardVTXOTimeoutExitPolicyKind` is the built-in timeout
+  path; vHTLC recovery uses `vhtlc_claim` and
+  `vhtlc_refund_without_receiver`.
+- `ExitSpendPolicy` — Interface a per-target actor uses to build the
+  final exit transaction. Methods: `Kind()`, `CSVDelay()`,
+  `RequiredLockTime()`, `ValidateTarget(*wire.TxOut)`,
+  `BuildSpendTx(ctx, ExitSpendRequest) (*wire.MsgTx, error)`.
+- `ExitSpendPolicyResolver` — Resolves a durable
+  `(ExitPolicyKind, ExitPolicyRef)` pair back into an
+  `ExitSpendPolicy`. Injected into `RegistryConfig` so custom policy
+  families (e.g. vHTLC) are handled without modifying the unroll actor.
+- `ExitSpendPolicyRequest` — `ExitPolicyKind` + `ExitPolicyRef` passed
+  to `ExitSpendPolicyResolver.ResolveExitSpendPolicy`.
+- `ExitSpendRequest` — Carries the materialized `TargetOutput`,
+  `CurrentHeight`, `MaxFeeRateSatPerKWeight`, and wallet signing
+  context for `ExitSpendPolicy.BuildSpendTx`.
+- `ErrExitSpendNotMatured` — Sentinel returned when `CurrentHeight <
+  RequiredLockTime`; the FSM defers broadcast rather than looping on a
+  non-final transaction.
 
 ### Support
 

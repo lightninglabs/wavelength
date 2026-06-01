@@ -37,7 +37,13 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   per-swap mailbox from client identity + payment hash) on the
   `SwapClient` so out-swap HTLC events flow over the mailbox transport,
   registers the gRPC subserver, calls `resumePending`, and returns a cleanup
-  function.
+  function. Also registers the vHTLC recovery preimage resolver on
+  `rpcServer` and applies `SwapVHTLCRecoveryConfig` via
+  `SwapClient.SetRecoveryPolicy`.
+- `receiveMinAmount` — Lazily-evaluated closure on `swapClientService` that
+  fetches the operator's `DustLimit` from `GetInfo` and caches it per call.
+  `StartReceive` rejects requests below this threshold with an explicit error
+  to avoid creating dust-amount receive swaps that the operator will reject.
 
 ## RPC Methods
 
@@ -86,6 +92,9 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `idempotency_key` on `StartPay` / `StartReceive` is explicitly reserved and
   returns `Unimplemented` to guard against accidental duplicate-start
   assumptions.
+- `StartReceive` rejects amounts below the operator's dust limit to prevent
+  creating swaps that will be immediately rejected server-side. The minimum
+  is fetched dynamically via `GetInfo` so it tracks operator-side changes.
 - `SetOutSwapEventReceiver` must run before any receive worker is started:
   `SwapClient` captures the receiver into the per-swap worker at start time,
   so a late install would leave already-running workers using whatever
