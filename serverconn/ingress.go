@@ -122,7 +122,8 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 			continue
 		}
 
-		a.log.DebugS(ctx, "Pulled envelopes",
+		a.log.TraceS(
+			ctx, "Pulled envelopes",
 			slog.Int("count", len(envelopes)),
 			slog.Uint64("cursor", state.PullCursor),
 			slog.Uint64("next_cursor", nextCursor),
