@@ -76,11 +76,15 @@ func TestStateProperties(t *testing.T) {
 			isTerminal: true,
 		},
 		{
+			// UnilateralExitState is non-terminal: the actor stays
+			// alive to observe the exit and recover the VTXO if the
+			// unroll fails without an on-chain footprint
+			// (darepo-client#602).
 			name: "UnilateralExitState",
 			state: &UnilateralExitState{
 				VTXO: vtxo,
 			},
-			isTerminal: true,
+			isTerminal: false,
 		},
 		{
 			name: "FailedState",
@@ -237,9 +241,10 @@ func TestLiveStateBlockEpochCritical(t *testing.T) {
 	assertOutboxContains[*ExpiringNotification](h)
 }
 
-// TestLiveStateForceUnroll verifies that LiveState transitions to
-// UnilateralExitState on ForceUnrollEvent, emitting the same outbox as
-// the critical expiry path.
+// TestLiveStateForceUnroll verifies that LiveState transitions to the
+// non-terminal UnilateralExitState on ForceUnrollEvent, handing the VTXO to
+// the chain resolver without reaping the actor: no VTXOTerminatedNotification
+// is emitted on intent (darepo-client#602).
 func TestLiveStateForceUnroll(t *testing.T) {
 	t.Parallel()
 
@@ -263,29 +268,29 @@ func TestLiveStateForceUnroll(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	assertState[*UnilateralExitState](h)
+	exit := assertState[*UnilateralExitState](h)
+	require.Equal(t, int32(100), exit.LastCheckedHeight)
 	assertOutboxContains[*ExpiringNotification](h)
 	assertOutboxContains[*VTXOStatusUpdate](h)
-	assertOutboxContains[*VTXOTerminatedNotification](h)
+	assertOutboxLacks[*VTXOTerminatedNotification](h)
 }
 
-// TestForceUnrollStrandsVTXOOnFailedUnroll reproduces darepo-client#602.
+// TestForceUnrollStrandsVTXOOnFailedUnroll is the regression lock for
+// darepo-client#602.
 //
-// A manual unroll (ForceUnrollEvent) moves the VTXO straight to the
-// TERMINAL UnilateralExitState on the strength of the user's *intent*,
-// emitting VTXOTerminatedNotification (which reaps the actor and drops
-// the VTXO out of the wallet's live set) before anything is broadcast
-// on-chain. If the downstream unroll job then FAILS without broadcasting
-// (e.g. proof tx can't meet min relay fee on a sub-dust VTXO), there is
-// no FSM path back to LiveState: the state is terminal and self-loops on
-// every event, including the ResumeVTXOEvent and BlockEpochEvent that a
-// recovery path might use. The VTXO is permanently stranded out of the
-// live set even though the operator still considers it live.
+// Before the fix, a manual unroll (ForceUnrollEvent) moved the VTXO straight
+// to a TERMINAL UnilateralExitState on the strength of the user's intent,
+// emitting VTXOTerminatedNotification (which reaped the actor and dropped the
+// VTXO from the wallet's live set) before anything was broadcast on-chain. A
+// downstream unroll that then failed without broadcasting (e.g. a sub-dust
+// proof tx that can't meet min relay fee) left the VTXO permanently stranded
+// out of the live set even though the operator still considered it live.
 //
-// This test documents the soundness gap. It should be UPDATED (not just
-// deleted) once a restore-to-live path exists: the final assertion that
-// the state stays UnilateralExit on a restore signal is the load-bearing
-// line that encodes the bug.
+// The fix makes UnilateralExitState non-terminal: the actor stays alive, no
+// termination is emitted on intent, and an ExitFailedEvent (a clean failure
+// with no on-chain footprint) rolls the VTXO back to LiveState. The assertions
+// below — actor not reaped, then recovered to live — would both have failed on
+// the old terminal design.
 func TestForceUnrollStrandsVTXOOnFailedUnroll(t *testing.T) {
 	t.Parallel()
 
@@ -303,38 +308,134 @@ func TestForceUnrollStrandsVTXOOnFailedUnroll(t *testing.T) {
 		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
 		VTXOStatusUnilateralExit,
 	).Return(nil)
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusLive,
+	).Return(nil)
 
-	// Step 1: the user triggers a manual unroll. The FSM commits to the
-	// terminal UnilateralExitState and emits the termination notice on
-	// intent alone — no broadcast has happened yet.
+	// Step 1: the user triggers a manual unroll. The VTXO moves to the
+	// non-terminal exit state and is handed to the chain resolver, but the
+	// actor is NOT reaped — no VTXOTerminatedNotification on intent.
 	_, err := h.sendEvent(&ForceUnrollEvent{
 		Reason: "manual RPC request",
 	})
 	require.NoError(t, err)
 
 	assertState[*UnilateralExitState](h)
+	assertOutboxContains[*ExpiringNotification](h)
+	assertOutboxLacks[*VTXOTerminatedNotification](h)
 
-	// The actor is reaped (manager deletes it, VTXO leaves the live set)
-	// purely on intent.
-	assertOutboxContains[*VTXOTerminatedNotification](h)
+	// Drop the intent-phase outbox so the recovery assertions below see
+	// only what the ExitFailedEvent emits.
+	h.outboxMessages = nil
 
-	// Step 2: simulate "the unroll job failed without broadcasting". The
-	// only signals that could plausibly resurrect the VTXO are a resume
-	// (crash-recovery replay) or a fresh block epoch. Neither restores
-	// the VTXO to LiveState — UnilateralExitState is terminal and
-	// self-loops, so the VTXO is permanently stranded.
-	_, err = h.sendEvent(&ResumeVTXOEvent{})
+	// Step 2: the unroll job fails without broadcasting. The manager
+	// delivers ExitFailedEvent, which rolls the VTXO back to LiveState and
+	// re-publishes the live status so the wallet's view re-converges with
+	// the operator's.
+	_, err = h.sendEvent(&ExitFailedEvent{
+		Reason: "min relay fee not met",
+	})
 	require.NoError(t, err)
-	assertState[*UnilateralExitState](h)
 
-	_, err = h.sendEvent(h.newBlockEpochEvent(200))
+	live := assertState[*LiveState](h)
+	require.Equal(
+		t, int32(100), live.LastCheckedHeight,
+		"recovery should resume expiry monitoring from the exit height",
+	)
+	restored := assertOutboxContains[*VTXOStatusUpdate](h)
+	require.Equal(t, VTXOStatusLive, restored.NewStatus)
+	assertOutboxLacks[*VTXOTerminatedNotification](h)
+}
+
+// TestUnilateralExitRecoversToLive verifies that an ExitFailedEvent delivered
+// to UnilateralExitState rolls the VTXO back to LiveState and republishes the
+// live status, resuming expiry monitoring from the recorded exit height.
+func TestUnilateralExitRecoversToLive(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&UnilateralExitState{
+		VTXO:              vtxo,
+		Reason:            "manual unroll",
+		LastCheckedHeight: 321,
+	})
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusLive,
+	).Return(nil)
+
+	_, err := h.sendEvent(&ExitFailedEvent{Reason: "min relay fee not met"})
 	require.NoError(t, err)
 
-	// BUG (darepo-client#602): the VTXO never returns to LiveState after a
-	// failed-no-broadcast unroll. A correct implementation would restore
-	// it to LiveState (VTXOStatusLive) so the wallet's view matches the
-	// operator's. Until then this assertion encodes the stranding.
-	assertState[*UnilateralExitState](h)
+	live := assertState[*LiveState](h)
+	require.Equal(t, int32(321), live.LastCheckedHeight)
+	update := assertOutboxContains[*VTXOStatusUpdate](h)
+	require.Equal(t, VTXOStatusLive, update.NewStatus)
+	assertOutboxLacks[*VTXOTerminatedNotification](h)
+}
+
+// TestUnilateralExitConfirms verifies that an ExitConfirmedEvent retires the
+// VTXO to the terminal SpentState and emits a VTXOTerminatedNotification so
+// the manager reaps the actor — now gated on the on-chain confirmation rather
+// than the user's intent to exit.
+func TestUnilateralExitConfirms(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&UnilateralExitState{
+		VTXO:   vtxo,
+		Reason: "manual unroll",
+	})
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusSpent,
+	).Return(nil)
+
+	_, err := h.sendEvent(&ExitConfirmedEvent{})
+	require.NoError(t, err)
+
+	assertState[*SpentState](h)
+	update := assertOutboxContains[*VTXOStatusUpdate](h)
+	require.Equal(t, VTXOStatusSpent, update.NewStatus)
+	term := assertOutboxContains[*VTXOTerminatedNotification](h)
+	require.Equal(t, "Spent", term.FinalState)
+}
+
+// TestUnilateralExitSelfLoopsWhileExiting verifies that stray events received
+// while the exit is in flight (block epochs, a duplicate force-unroll, resume)
+// leave the VTXO in UnilateralExitState rather than erroring or transitioning.
+func TestUnilateralExitSelfLoopsWhileExiting(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&UnilateralExitState{
+		VTXO:              vtxo,
+		Reason:            "manual unroll",
+		LastCheckedHeight: 100,
+	})
+
+	for _, evt := range []VTXOEvent{
+		h.newBlockEpochEvent(200),
+		&ForceUnrollEvent{
+			Reason: "duplicate",
+		},
+		&ResumeVTXOEvent{},
+	} {
+		_, err := h.sendEvent(evt)
+		require.NoError(t, err)
+		assertState[*UnilateralExitState](h)
+	}
+
+	require.Empty(
+		t, h.outboxMessages,
+		"self-loop while exiting should emit nothing",
+	)
 }
 
 // TestForfeitRequestFromLiveState verifies that LiveState transitions to
@@ -502,14 +603,16 @@ func TestTerminalStatesSelfLoop(t *testing.T) {
 	h := newVTXOTestHarness(t)
 	vtxo := h.newTestDescriptor()
 
+	// UnilateralExitState is intentionally excluded: it is no longer
+	// terminal (darepo-client#602). Its event handling — self-loop while
+	// exiting, recover-to-live, and confirm-to-spent — is covered by
+	// TestUnilateralExitRecoversToLive, TestUnilateralExitConfirms, and
+	// TestForceUnrollStrandsVTXOOnFailedUnroll.
 	terminalStates := []VTXOState{
 		&SpentState{
 			VTXO: vtxo,
 		},
 		&ForfeitedState{
-			VTXO: vtxo,
-		},
-		&UnilateralExitState{
 			VTXO: vtxo,
 		},
 		&FailedState{
@@ -737,9 +840,11 @@ func TestForfeitingStateCriticalExpiry(t *testing.T) {
 
 	assertState[*UnilateralExitState](h)
 
-	// Should emit ExpiringNotification and VTXOTerminatedNotification.
+	// Should emit ExpiringNotification but NOT a
+	// VTXOTerminatedNotification: the exit is observed, not fire-and-forget
+	// (darepo-client#602).
 	assertOutboxContains[*ExpiringNotification](h)
-	assertOutboxContains[*VTXOTerminatedNotification](h)
+	assertOutboxLacks[*VTXOTerminatedNotification](h)
 }
 
 // TestForfeitSignedEventPreservesForfeitTx verifies that handling
@@ -1111,9 +1216,10 @@ func TestSpendingStateCriticalExpiry(t *testing.T) {
 	_, err := h.sendEvent(evt)
 	require.NoError(t, err)
 
-	assertState[*UnilateralExitState](h)
+	exit := assertState[*UnilateralExitState](h)
+	require.Equal(t, int32(970), exit.LastCheckedHeight)
 	assertOutboxContains[*ExpiringNotification](h)
-	assertOutboxContains[*VTXOTerminatedNotification](h)
+	assertOutboxLacks[*VTXOTerminatedNotification](h)
 }
 
 // TestSpendingStateSafeBlockEpoch verifies that SpendingState stays in
@@ -1230,10 +1336,10 @@ func TestSpendingStateFailedEvent(t *testing.T) {
 	require.Equal(t, "test failure", state.Reason)
 }
 
-// TestSpendingStateForceUnroll verifies that SpendingState escalates to
-// UnilateralExitState on ForceUnrollEvent, emitting the same outbox shape
-// as the critical-expiry branch so manual and automatic exits converge on
-// a single chain resolver seam.
+// TestSpendingStateForceUnroll verifies that SpendingState escalates to the
+// non-terminal UnilateralExitState on ForceUnrollEvent, carrying the last
+// checked height through and NOT reaping the actor on intent
+// (darepo-client#602).
 func TestSpendingStateForceUnroll(t *testing.T) {
 	t.Parallel()
 
@@ -1255,10 +1361,11 @@ func TestSpendingStateForceUnroll(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	assertState[*UnilateralExitState](h)
+	exit := assertState[*UnilateralExitState](h)
+	require.Equal(t, int32(200), exit.LastCheckedHeight)
 	assertOutboxContains[*ExpiringNotification](h)
 	assertOutboxContains[*VTXOStatusUpdate](h)
-	assertOutboxContains[*VTXOTerminatedNotification](h)
+	assertOutboxLacks[*VTXOTerminatedNotification](h)
 }
 
 // TestForfeitingStateForceUnroll verifies that ForfeitingState escalates to
@@ -1288,7 +1395,7 @@ func TestForfeitingStateForceUnroll(t *testing.T) {
 	assertState[*UnilateralExitState](h)
 	assertOutboxContains[*ExpiringNotification](h)
 	assertOutboxContains[*VTXOStatusUpdate](h)
-	assertOutboxContains[*VTXOTerminatedNotification](h)
+	assertOutboxLacks[*VTXOTerminatedNotification](h)
 }
 
 // TestForfeitSignatureValidity verifies that forfeit signatures produced by
