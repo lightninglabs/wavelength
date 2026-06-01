@@ -132,6 +132,27 @@ func (r *RPCServer) SignMailboxAuth(ctx context.Context,
 	return hex.EncodeToString(sig.Serialize()), nil
 }
 
+// vtxoAdmissionCode maps typed VTXO admission failures to caller-actionable
+// gRPC codes while preserving Internal for unexpected selection failures.
+func vtxoAdmissionCode(err error) codes.Code {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return codes.Canceled
+
+	case errors.Is(err, context.DeadlineExceeded):
+		return codes.DeadlineExceeded
+
+	case errors.Is(err, vtxo.ErrVTXOLiquidityLocked):
+		return codes.Aborted
+
+	case errors.Is(err, vtxo.ErrInsufficientSpendableFunds):
+		return codes.ResourceExhausted
+
+	default:
+		return codes.Internal
+	}
+}
+
 // ClientTLSCerts returns the daemon identity client certificate used when
 // optional subservers dial mTLS-protected mailbox edges.
 func (r *RPCServer) ClientTLSCerts() ([]tls.Certificate, error) {
@@ -1695,8 +1716,8 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 
 	resp, err := result.Unpack()
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "send failed: %v",
-			err)
+		return nil, status.Errorf(vtxoAdmissionCode(err), "send "+
+			"failed: %v", err)
 	}
 
 	sendResp, ok := resp.(*wallet.SendVTXOsResponse)
@@ -1918,8 +1939,8 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 
 		selectResp, err := selectResult.Unpack()
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "VTXO "+
-				"selection failed: %v", err)
+			return nil, status.Errorf(vtxoAdmissionCode(err),
+				"VTXO selection failed: %v", err)
 		}
 
 		var ok bool

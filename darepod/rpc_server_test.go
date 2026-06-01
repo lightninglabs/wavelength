@@ -3,6 +3,7 @@ package darepod
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -39,6 +40,46 @@ func newTestRPCServer() *RPCServer {
 			chainParams: &chaincfg.RegressionNetParams,
 		},
 	}
+}
+
+// TestVTXOAdmissionCode verifies wallet admission errors surface as
+// caller-actionable gRPC codes instead of being collapsed into Internal.
+func TestVTXOAdmissionCode(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(
+		t, codes.Canceled,
+		vtxoAdmissionCode(
+			fmt.Errorf("select and reserve: %w", context.Canceled),
+		),
+	)
+	require.Equal(
+		t, codes.DeadlineExceeded,
+		vtxoAdmissionCode(
+			fmt.Errorf("select and reserve: %w",
+				context.DeadlineExceeded),
+		),
+	)
+	require.Equal(
+		t, codes.Aborted,
+		vtxoAdmissionCode(
+			fmt.Errorf("select and reserve: %w",
+				vtxo.ErrVTXOLiquidityLocked),
+		),
+	)
+	require.Equal(
+		t, codes.ResourceExhausted,
+		vtxoAdmissionCode(
+			fmt.Errorf("select and reserve: %w",
+				vtxo.ErrInsufficientSpendableFunds),
+		),
+	)
+	require.Equal(
+		t, codes.Internal,
+		vtxoAdmissionCode(
+			errors.New("actor system unavailable"),
+		),
+	)
 }
 
 // TestUnrollAdmissionSurvivesCallerCancellation verifies that a caller
