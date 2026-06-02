@@ -66,10 +66,10 @@ service WalletService {
     // `getinfo` CLI verb covers the human-facing readiness view).
     rpc Status (StatusRequest) returns (StatusResponse);
 
-    // Exit triggers a unilateral exit (unroll) for the specified VTXO
-    // outpoint. The daemon assembles the recovery proof, spawns a durable
-    // unroll job, and drives the on-chain recovery process to completion.
-    // Proxies daemonrpc.Unroll.
+    // Exit queues a cooperative leave for the specified VTXO outpoint by
+    // default. When the caller supplies force_unroll_ack exactly, the daemon
+    // starts a unilateral unroll instead after checking that the outpoint is
+    // present in the local backing wallet's UTXO set.
     rpc Exit (ExitRequest) returns (ExitResponse);
 
     // ExitStatus reports the current phase of an unroll job for the
@@ -160,6 +160,14 @@ enum SendQuoteStatus {
     // validation and selection but one or more remote quote APIs are not
     // available yet.
     SEND_QUOTE_STATUS_LOCAL_ONLY = 2;
+}
+
+// ExitMode identifies whether Exit queued a cooperative leave or started a
+// forced unilateral unroll.
+enum ExitMode {
+    EXIT_MODE_UNSPECIFIED = 0;
+    EXIT_MODE_COOPERATIVE = 1;
+    EXIT_MODE_UNILATERAL = 2;
 }
 
 message CreateRequest {
@@ -729,18 +737,38 @@ message StatusResponse {
 }
 
 message ExitRequest {
-    // outpoint is the VTXO outpoint to unilaterally exit, formatted as
-    // "txid:index".
+    // outpoint is the VTXO outpoint to exit, formatted as "txid:index".
     string outpoint = 1;
+
+    // onchain_address is the cooperative leave destination. Empty asks the
+    // daemon to generate a fresh backing-wallet address internally.
+    string onchain_address = 2;
+
+    // force_unroll_ack must be exactly "I_KNOW_WHAT_I_AM_DOING" to bypass
+    // cooperative leave and start unilateral unroll. It cannot be combined
+    // with onchain_address, and the server requires at least one confirmed
+    // local backing-wallet UTXO before admitting forced unroll.
+    string force_unroll_ack = 3;
 }
 
 message ExitResponse {
-    // created indicates whether a new exit job was spawned. False if
-    // an existing job already covers this target.
+    // created indicates whether a new unilateral exit job was spawned.
+    // False if an existing job already covers this target. Cooperative
+    // exits leave this unset.
     bool created = 1;
 
-    // actor_id is the identifier of the durable exit job actor.
+    // actor_id is the identifier of the durable unilateral exit job actor.
     string actor_id = 2;
+
+    // mode identifies the branch the daemon took.
+    ExitMode mode = 3;
+
+    // queued_outpoints lists the outpoints accepted into cooperative leave.
+    repeated string queued_outpoints = 4;
+
+    // onchain_address is the cooperative leave destination used by the
+    // daemon. It may be caller-supplied or daemon-generated.
+    string onchain_address = 5;
 }
 
 message ExitStatusRequest {

@@ -216,21 +216,42 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 	})
 
 	type exitArgs struct {
-		Outpoint string `json:"outpoint" jsonschema:"VTXO outpoint to exit (txid:vout)"` //nolint:ll
+		Outpoint       string `json:"outpoint" jsonschema:"VTXO outpoint to exit (txid:vout)"`                                 //nolint:ll
+		OnchainAddress string `json:"onchain_address,omitempty" jsonschema:"cooperative leave destination; empty uses wallet"` //nolint:ll
+		ForceUnrollAck string `json:"force_unroll_ack,omitempty" jsonschema:"exact acknowledgement required for unroll"`       //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "exit",
-		Description: "Trigger a unilateral exit for a VTXO " +
-			"(spawns a durable on-chain recovery job)",
+		Description: "Cooperatively exit a VTXO by default; forced " +
+			"unroll requires the exact acknowledgement string",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args exitArgs) (
 		*mcp.CallToolResult, any, error) {
 
 		if err := validateOutpoint(args.Outpoint); err != nil {
 			return nil, nil, err
 		}
+		if args.OnchainAddress != "" {
+			if err := validateDestination(
+				args.OnchainAddress,
+			); err != nil {
+				return nil, nil, err
+			}
+		}
+		if args.ForceUnrollAck != "" &&
+			args.ForceUnrollAck != forceUnrollAck {
+			return nil, nil, fmt.Errorf("force_unroll_ack must be "+
+				"exactly %q", forceUnrollAck)
+		}
+		if args.ForceUnrollAck != "" && args.OnchainAddress != "" {
+			return nil, nil, fmt.Errorf("onchain_address cannot " +
+				"be combined with force_unroll_ack")
+		}
+
 		resp, err := client.Exit(
 			ctx, &walletdkrpc.ExitRequest{
-				Outpoint: args.Outpoint,
+				Outpoint:       args.Outpoint,
+				OnchainAddress: args.OnchainAddress,
+				ForceUnrollAck: args.ForceUnrollAck,
 			},
 		)
 		if err != nil {

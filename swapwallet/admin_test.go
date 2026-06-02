@@ -8,6 +8,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -150,24 +151,109 @@ func TestUnlockRejectsEmptyPassword(t *testing.T) {
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }
 
-// TestExitProxiesUnroll confirms Exit plumbs the outpoint and surfaces
-// the created flag plus actor id.
-func TestExitProxiesUnroll(t *testing.T) {
+// TestExitDefaultsToCooperativeLeave confirms Exit queues LeaveVTXOs by
+// default and generates a fresh backing-wallet destination when omitted.
+func TestExitDefaultsToCooperativeLeave(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.unrollResp = &daemonrpc.UnrollResponse{
-		Created: true,
-		ActorId: "exit-job-42",
+	rpc.newWalletAddressResp = "bcrt1qwallet"
+	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
+		QueuedOutpoints: []string{
+			"abc:0",
+		},
 	}
 
 	resp, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
 		Outpoint: "abc:0",
 	})
 	require.NoError(t, err)
+	require.Equal(
+		t, walletdkrpc.ExitMode_EXIT_MODE_COOPERATIVE, resp.GetMode(),
+	)
+	require.Equal(t, []string{"abc:0"}, resp.GetQueuedOutpoints())
+	require.Equal(t, "bcrt1qwallet", resp.GetOnchainAddress())
+	require.Equal(t, 1, rpc.leaveCalls)
+	require.Equal(t, 0, rpc.unrollCalls)
+
+	sel := rpc.leaveLastReq.GetOutpoints()
+	require.NotNil(t, sel)
+	require.Equal(t, []string{"abc:0"}, sel.GetOutpoints())
+	dest := rpc.leaveLastReq.GetDefaultDestination().GetAddress()
+	require.Equal(t, "bcrt1qwallet", dest)
+}
+
+// TestExitUsesProvidedCooperativeDestination confirms callers can provide the
+// cooperative leave destination explicitly.
+func TestExitUsesProvidedCooperativeDestination(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
+		QueuedOutpoints: []string{
+			"abc:0",
+		},
+	}
+
+	resp, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+		Outpoint:       "abc:0",
+		OnchainAddress: "bcrt1qexternal",
+	})
+	require.NoError(t, err)
+	require.Equal(
+		t, walletdkrpc.ExitMode_EXIT_MODE_COOPERATIVE, resp.GetMode(),
+	)
+	require.Equal(t, "bcrt1qexternal", resp.GetOnchainAddress())
+	require.Empty(t, rpc.newWalletAddressResp)
+
+	dest := rpc.leaveLastReq.GetDefaultDestination().GetAddress()
+	require.Equal(t, "bcrt1qexternal", dest)
+}
+
+// TestExitCooperativeRequiresQueuedOutpoint prevents a false cooperative
+// success when LeaveVTXOs returns nil error but drops the requested outpoint.
+func TestExitCooperativeRequiresQueuedOutpoint(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
+		QueuedOutpoints: []string{
+			"other:0",
+		},
+	}
+
+	_, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+		Outpoint:       "abc:0",
+		OnchainAddress: "bcrt1qexternal",
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.Internal, status.Code(err))
+}
+
+// TestExitForcedUnrollProxiesUnroll confirms the forced branch plumbs the
+// outpoint and surfaces the created flag plus actor id.
+func TestExitForcedUnrollProxiesUnroll(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	rpc.listWalletUnspent = []*wallet.Utxo{{}}
+	rpc.unrollResp = &daemonrpc.UnrollResponse{
+		Created: true,
+		ActorId: "exit-job-42",
+	}
+
+	resp, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+		Outpoint:       "abc:0",
+		ForceUnrollAck: forceUnrollAck,
+	})
+	require.NoError(t, err)
+	require.Equal(
+		t, walletdkrpc.ExitMode_EXIT_MODE_UNILATERAL, resp.GetMode(),
+	)
 	require.True(t, resp.GetCreated())
 	require.Equal(t, "exit-job-42", resp.GetActorId())
 	require.Equal(t, "abc:0", rpc.unrollLast.GetOutpoint())
+	require.Equal(t, 0, rpc.leaveCalls)
 
 	entries := svc.runtime.pendingSnapshot()
 	require.Len(t, entries, 1)
@@ -179,6 +265,53 @@ func TestExitProxiesUnroll(t *testing.T) {
 		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		entries[0].GetStatus(),
 	)
+}
+
+// TestExitForcedUnrollRequiresAck verifies a partial acknowledgement does not
+// start unroll.
+func TestExitForcedUnrollRequiresAck(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	_, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+		Outpoint:       "abc:0",
+		ForceUnrollAck: "sure",
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Equal(t, 0, rpc.unrollCalls)
+	require.Equal(t, 0, rpc.leaveCalls)
+}
+
+// TestExitForcedUnrollRejectsDestination verifies the force branch cannot
+// silently ignore a cooperative destination.
+func TestExitForcedUnrollRejectsDestination(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	_, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+		Outpoint:       "abc:0",
+		OnchainAddress: "bcrt1qexternal",
+		ForceUnrollAck: forceUnrollAck,
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Equal(t, 0, rpc.unrollCalls)
+}
+
+// TestExitForcedUnrollRequiresLocalUTXO verifies unilateral unroll is refused
+// unless the target outpoint is in the local backing-wallet UTXO set.
+func TestExitForcedUnrollRequiresLocalUTXO(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	_, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+		Outpoint:       "abc:0",
+		ForceUnrollAck: forceUnrollAck,
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Equal(t, 0, rpc.unrollCalls)
 }
 
 // TestExitRejectsEmptyOutpoint confirms a missing outpoint is rejected
@@ -283,7 +416,8 @@ func TestAdminHandlersSurfaceDaemonErrors(t *testing.T) {
 	})
 	require.ErrorContains(t, err, sentinel.Error())
 
-	rpc.unrollErr = sentinel
+	rpc.newWalletAddressResp = "bcrt1qwallet"
+	rpc.leaveErr = sentinel
 	_, err = svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
 		Outpoint: "abc:0",
 	})
@@ -322,8 +456,9 @@ func TestAdminHandlersPreserveGRPCCode(t *testing.T) {
 	})
 	require.Equal(t, codes.PermissionDenied, status.Code(err))
 
-	rpc.unrollErr = status.Error(
-		codes.FailedPrecondition, "not unlocked",
+	rpc.newWalletAddressResp = "bcrt1qwallet"
+	rpc.leaveErr = status.Error(
+		codes.FailedPrecondition, "not enough funds",
 	)
 	_, err = svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
 		Outpoint: "abc:0",

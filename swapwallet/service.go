@@ -75,9 +75,8 @@ func (s *Service) Send(ctx context.Context, req *walletdkrpc.SendRequest) (
 	return s.router.Send(ctx, req)
 }
 
-// Exit triggers a unilateral exit (unroll) for the specified VTXO
-// outpoint by proxying daemonrpc.Unroll. The wallet layer does not track
-// the exit job locally.
+// Exit queues cooperative leave by default, or starts forced unroll when the
+// request carries the exact acknowledgement string.
 func (s *Service) Exit(ctx context.Context, req *walletdkrpc.ExitRequest) (
 	*walletdkrpc.ExitResponse, error) {
 

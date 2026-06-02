@@ -50,16 +50,18 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   `WalletVTXO`, `OnchainTx`.
 - `ExitRequest` / `ExitResult` / `ExitStatusRequest` /
   `ExitStatusResult` / `ExitJobStatus` — exit DTOs. `ExitRequest`
-  carries the target outpoint plus an optional on-chain `Destination`:
-  when set, `Exit` first attempts a cooperative leave
-  (`daemonrpc.LeaveVTXOs`) so the VTXO is unwound via the next round
-  with the leave output landing on the caller-supplied address; the
-  SDK transparently falls back to `walletdkrpc.Exit` (unilateral
-  unroll) on any cooperative failure. `ExitResult.Cooperative`
+  carries the target outpoint plus an optional on-chain `Destination`
+  for cooperative leave; when omitted, the daemon generates an
+  internal backing-wallet address. The SDK delegates exit policy to
+  `walletdkrpc.Exit`, which queues cooperative leave by default and
+  starts unilateral unroll only when `ForceUnrollAck` carries the
+  daemon's exact acknowledgement string. `Destination` and
+  `ForceUnrollAck` are mutually exclusive. `ExitResult.Cooperative`
   reports the path taken; `QueuedOutpoints` echoes cooperative
-  selection; `Created`/`ActorID` describe the unilateral fallback
-  job; `CooperativeError` carries the original cooperative failure
-  when fallback occurred. Status strings are the wrapper-owned
+  selection; `Created`/`ActorID` describe a forced unilateral job.
+  `CooperativeError` and `ExitPathUnilateralFallback` are retained for
+  source compatibility with the old fallback result shape but are not
+  populated by current behavior. Status strings are the wrapper-owned
   lowercase set
   (`pending`/`materializing`/`csv_pending`/`sweeping`/`completed`/`failed`/`unspecified`).
 - `ErrWalletRPCUnavailable` — sentinel returned by every wallet method

@@ -9,6 +9,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
+	"github.com/lightninglabs/darepo-client/wallet"
 )
 
 // fakeRPCServer is a hand-written implementation of swapwallet.RPCServer
@@ -36,6 +37,11 @@ type fakeRPCServer struct {
 	getBalanceErr    error
 	newAddressResp   *daemonrpc.NewAddressResponse
 	newAddressErr    error
+
+	newWalletAddressResp string
+	newWalletAddressErr  error
+	listWalletUnspent    []*wallet.Utxo
+	listWalletUnspentErr error
 
 	genSeedResp     *daemonrpc.GenSeedResponse
 	genSeedErr      error
@@ -125,6 +131,16 @@ func (f *fakeRPCServer) NewAddress(_ context.Context,
 	_ *daemonrpc.NewAddressRequest) (*daemonrpc.NewAddressResponse, error) {
 
 	return f.newAddressResp, f.newAddressErr
+}
+
+func (f *fakeRPCServer) NewWalletAddress(_ context.Context) (string, error) {
+	return f.newWalletAddressResp, f.newWalletAddressErr
+}
+
+func (f *fakeRPCServer) ListWalletUnspent(_ context.Context, _ int32, _ int32) (
+	[]*wallet.Utxo, error) {
+
+	return f.listWalletUnspent, f.listWalletUnspentErr
 }
 
 func (f *fakeRPCServer) GenSeed(_ context.Context,

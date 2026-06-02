@@ -90,10 +90,10 @@ type WalletServiceClient interface {
 	// the proto for programmatic callers; not surfaced as a CLI verb (the
 	// `getinfo` CLI verb covers the human-facing readiness view).
 	Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*StatusResponse, error)
-	// Exit triggers a unilateral exit (unroll) for the specified VTXO
-	// outpoint. The daemon assembles the recovery proof, spawns a durable
-	// unroll job, and drives the on-chain recovery process to completion.
-	// Proxies daemonrpc.Unroll.
+	// Exit queues a cooperative leave for the specified VTXO outpoint by
+	// default. When the caller supplies force_unroll_ack exactly, the daemon
+	// starts a unilateral unroll instead after checking that the outpoint is
+	// present in the local backing wallet's UTXO set.
 	Exit(ctx context.Context, in *ExitRequest, opts ...grpc.CallOption) (*ExitResponse, error)
 	// ExitStatus reports the current phase of an unroll job for the
 	// specified VTXO outpoint, including recovery chain progress and
@@ -299,10 +299,10 @@ type WalletServiceServer interface {
 	// the proto for programmatic callers; not surfaced as a CLI verb (the
 	// `getinfo` CLI verb covers the human-facing readiness view).
 	Status(context.Context, *StatusRequest) (*StatusResponse, error)
-	// Exit triggers a unilateral exit (unroll) for the specified VTXO
-	// outpoint. The daemon assembles the recovery proof, spawns a durable
-	// unroll job, and drives the on-chain recovery process to completion.
-	// Proxies daemonrpc.Unroll.
+	// Exit queues a cooperative leave for the specified VTXO outpoint by
+	// default. When the caller supplies force_unroll_ack exactly, the daemon
+	// starts a unilateral unroll instead after checking that the outpoint is
+	// present in the local backing wallet's UTXO set.
 	Exit(context.Context, *ExitRequest) (*ExitResponse, error)
 	// ExitStatus reports the current phase of an unroll job for the
 	// specified VTXO outpoint, including recovery chain progress and
