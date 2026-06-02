@@ -51,20 +51,29 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   children, persists records, and runs `RestoreNonTerminal` on boot.
 - `RegistryConfig` — `Store`, `DeliveryStore`, `ProofAssembler`,
   `VTXOStore`, `TxConfirmRef`, `ChainSource`, `Wallet`,
-  `MaxSweepFeeRateSatPerVByte`.
+  `MaxSweepFeeRateSatPerVByte`, `ExitSpendPolicyResolver` (optional;
+  reconstructs the exit spend policy from `(ExitPolicyKind, ExitPolicyRef)`
+  after restart; nil means every child uses the standard VTXO timeout).
 - `RegistryRecord` — control-plane row (`TargetOutpoint`, `ActorID`,
-  `Phase`, `Trigger`, `FailReason`, `SweepTxid`).
+  `Phase`, `Trigger`, `FailReason`, `SweepTxid`, `ExitPolicyKind`,
+  `ExitPolicyRef`).
 - `RegistryStore` — `UpsertRecord`, `GetRecord`,
   `ListNonTerminalRecords`, `MarkTerminal`. `DBRegistryStore`
   (`db_store.go`) is production. Adapts to
   `db.UnilateralExitStore` via `statusForPhase`/`phaseFromDB` +
   `triggerToDB`/`triggerFromDB` (round-tripped in
   `db_store_test.go`).
-- `EnsureUnrollRequest` / `EnsureUnrollResp` — admission API. Dedup
+- `EnsureUnrollRequest` / `EnsureUnrollResp` — admission API. Must
+  include `ExitPolicyKind` and `ExitPolicyRef` for non-standard exits;
+  `validateExitPolicyIdentity` checks consistency at admit time. Dedup
   runs against `r.active`, `r.pending`, AND `Store.GetRecord` so a
-  repeat after termination returns `Created=false` with the
-  historical `ActorID`, never clobbering the sweep txid / failure
-  reason.
+  repeat after termination returns `Created=false` with the historical
+  `ActorID`, never clobbering the sweep txid / failure reason. Any
+  existing unroll job for the same target must carry the same
+  `(ExitPolicyKind, ExitPolicyRef)`; mismatches fail closed.
+- `ExitSpendPolicyResolver` — interface for looking up the final spend
+  policy by `(ExitPolicyKind, ExitPolicyRef)`. Implemented by
+  `vhtlcrecovery/unrollpolicy.ExitSpendPolicyResolver`.
 
 ### Support
 
@@ -114,7 +123,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   estimate), `vtxo` (`Descriptor`, `VTXOStore`), `db`
   (`UnilateralExitStore`, `RegistryRecord` shape), `lib/arkscript`.
 - **Depended on by**: `darepod` (wires the registry via the lazy
-  chain-resolver seam, PR #264).
+  chain-resolver seam, PR #264), `vhtlcrecovery/coordinator` (admission via
+  `EnsureUnrollRequest`), `vhtlcrecovery/unrollpolicy` (implements
+  `ExitSpendPolicyResolver` and `ExitSpendPolicy`).
 - **Sends**:
   - → `txconfirm` (Ask): `EnsureConfirmedReq` per proof node and for
     the final sweep; txid dedup makes retries idempotent.
@@ -171,6 +182,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   `r.active`, `r.pending`, AND `Store.GetRecord` before spawning so
   a repeat for an already-terminal outpoint returns the historical
   `ActorID` and never overwrites stored sweep txid / failure reason.
+- **Fail-closed on restore gaps.** `handleEnsure` validates restorable
+  non-terminal records via `validateRestorableRecords` before re-admitting
+  them; a record with an unrecognized `ExitPolicyKind` or missing ref fails
+  closed rather than spawning an actor that cannot build the final spend.
+  Late admission failures observed after the synchronous timeout window are
+  delivered as `childAdmissionResultMsg` so they remain serialized with
+  registry mutations.
 - **Fail-closed admission write.** `handleEnsure` calls
   `Store.UpsertRecord` synchronously and only returns `Created=true`
   after the record is durable. On write failure the spawned child is

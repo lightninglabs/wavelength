@@ -107,6 +107,20 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `broadcast=false`.
 - `ListBoardingSweeps` — paginated persisted aggregate sweeps with
   optional status filter and cursor-based pagination.
+- `ArmVHTLCRecovery` — persists a dormant vHTLC on-chain recovery job (armed
+  state). The job remains dormant until `EscalateVHTLCRecovery` is called.
+  Idempotent on `request_id`.
+- `EscalateVHTLCRecovery` — transitions an armed job into active unroll by
+  calling `coordinator.Service.EscalateRecovery`. Triggers
+  `TargetMaterializer.EnsureRecoveryTarget` before admitting the target to
+  the unroll registry.
+- `CancelVHTLCRecovery` — marks a recovery job cancelled (cooperative
+  settlement or explicit operator action).
+- `StatusVHTLCRecovery` — returns the current recovery row joined with live
+  unroll status for the target outpoint.
+- `SendOnChain` — RPC handler delegating to the wallet actor's
+  `SendOnChainRequest`. Routes through coin selection, leave output
+  construction, and eager round join. Supports bounded and sweep-all modes.
 
 ### Adapters & Helpers
 
@@ -157,6 +171,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   spend notifications per input, marks inputs spent on confirmation.
   Started by `startBoardingSweepWatcher` on wallet unlock;
   idempotent.
+- `vhtlcRecoveryTargetMaterializer` — darepod adapter implementing
+  `coordinator.TargetMaterializer`. Binds vHTLC recovery rows to local OOR
+  packages and VTXO descriptors so the generic unroll subsystem can assemble
+  lineage and watch the target without swap-specific knowledge.
 - `boardingSweepTx` / `buildBoardingSweepTx` — constructs and signs
   one aggregate timeout-path sweep tx. Iterates the weight estimate
   up to three times until `SerializeSize` converges so `fee`/`txid`
@@ -215,7 +233,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`,
   `indexer`, `arkrpc`, `lndbackend`, `harness` (bitcoind package
   submitter wiring in `cmd/darepod`), `fraud`, `gateway`,
-  `rpc/restclient`.
+  `rpc/restclient`, `vhtlcrecovery`, `vhtlcrecovery/coordinator`,
+  `vhtlcrecovery/unrollpolicy`.
 - **Depended on by**: `cmd/darepod`.
 
 ## Invariants
