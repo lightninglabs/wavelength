@@ -104,6 +104,17 @@ service DaemonService {
     // lands as an on-chain output at the specified destination.
     rpc LeaveVTXOs (LeaveVTXOsRequest) returns (LeaveVTXOsResponse);
 
+    // SendOnChain is the wallet-shaped onchain payment primitive: it
+    // picks live VTXOs to cover the requested amount, forfeits them
+    // in the next round, produces one on-chain output of the exact
+    // requested amount at the supplied destination, and returns any
+    // residual to the caller as a change VTXO. The atomic
+    // forfeit + leave + change-VTXO intent registers immediately
+    // (TriggerRegistration=true) so the caller does not need to also
+    // issue JoinNextRound. sweep_all skips selection and drains every
+    // live VTXO to the destination (no change VTXO produced).
+    rpc SendOnChain (SendOnChainRequest) returns (SendOnChainResponse);
+
     // Board triggers the client to join the next round with any
     // confirmed boarding UTXOs. This sends IntentRequested to
     // the round FSM, which emits a JoinRoundRequest to the server.
@@ -961,6 +972,63 @@ message LeaveVTXOsResponse {
 
     // status is the result: "queued" on success, "preview" on dry_run.
     string status = 2;
+}
+
+message SendOnChainRequest {
+    // destination is the on-chain recipient. Same shape (and standardness
+    // gating) as LeaveVTXOsRequest.default_destination.
+    LeaveDestination destination = 1;
+
+    // amount picks the send mode. Exactly one variant must be set.
+    oneof amount {
+        // amount_sat is the exact number of sats to send on-chain to
+        // destination. The daemon selects live VTXOs whose summed value
+        // covers amount_sat plus an operator-fee headroom plus dust,
+        // forfeits them, produces one on-chain output of exactly
+        // amount_sat, and returns the residual to the caller as a
+        // change VTXO. Must be > 0 and ≤ MaxSatoshi.
+        int64 amount_sat = 2;
+
+        // sweep_all, when true, drains every live VTXO into a single
+        // on-chain output at destination. No change VTXO is produced;
+        // the actual on-chain amount equals Σ(live VTXOs) − operator
+        // fee and is echoed back as actual_amount_sat.
+        bool sweep_all = 3;
+    }
+
+    // dry_run validates inputs and returns the planned selection
+    // without submitting the round intent.
+    bool dry_run = 5;
+}
+
+message SendOnChainResponse {
+    // actual_amount_sat is the exact value of the on-chain output
+    // that will land at destination. For amount_sat mode this echoes
+    // the requested amount. For sweep_all it is Σ(selected VTXOs) −
+    // operator fee.
+    int64 actual_amount_sat = 1;
+
+    // fee_sat is the operator fee deducted from the input set for
+    // this send. Under the #270 seal-time fee handshake this is the
+    // server-stamped figure, not a pre-flight estimate. Zero in
+    // dry_run mode.
+    int64 fee_sat = 2;
+
+    // selected_outpoints lists the VTXOs the daemon picked to
+    // forfeit for this send, in the order they were chosen.
+    repeated string selected_outpoints = 3;
+
+    // change_outpoint is the outpoint of the change VTXO produced
+    // by an amount_sat send. Empty in dry_run, in sweep_all mode,
+    // or when no change is needed (input set exactly covers
+    // amount_sat + fee + dust). The outpoint is populated once the
+    // round seals and the new VTXO is persisted; in fast-path
+    // responses it may be empty pending the round.
+    string change_outpoint = 4;
+
+    // status is "submitted" on a successful intent registration,
+    // "preview" when dry_run is set.
+    string status = 5;
 }
 
 message BoardRequest {

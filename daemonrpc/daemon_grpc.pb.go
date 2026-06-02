@@ -39,6 +39,7 @@ const (
 	DaemonService_SignOORCustomInput_FullMethodName            = "/daemonrpc.DaemonService/SignOORCustomInput"
 	DaemonService_RefreshVTXOs_FullMethodName                  = "/daemonrpc.DaemonService/RefreshVTXOs"
 	DaemonService_LeaveVTXOs_FullMethodName                    = "/daemonrpc.DaemonService/LeaveVTXOs"
+	DaemonService_SendOnChain_FullMethodName                   = "/daemonrpc.DaemonService/SendOnChain"
 	DaemonService_Board_FullMethodName                         = "/daemonrpc.DaemonService/Board"
 	DaemonService_JoinNextRound_FullMethodName                 = "/daemonrpc.DaemonService/JoinNextRound"
 	DaemonService_SweepBoardingUTXOs_FullMethodName            = "/daemonrpc.DaemonService/SweepBoardingUTXOs"
@@ -137,6 +138,16 @@ type DaemonServiceClient interface {
 	// forfeited amount (minus the quoted per-input operator fee)
 	// lands as an on-chain output at the specified destination.
 	LeaveVTXOs(ctx context.Context, in *LeaveVTXOsRequest, opts ...grpc.CallOption) (*LeaveVTXOsResponse, error)
+	// SendOnChain is the wallet-shaped onchain payment primitive: it
+	// picks live VTXOs to cover the requested amount, forfeits them
+	// in the next round, produces one on-chain output of the exact
+	// requested amount at the supplied destination, and returns any
+	// residual to the caller as a change VTXO. The atomic
+	// forfeit + leave + change-VTXO intent registers immediately
+	// (TriggerRegistration=true) so the caller does not need to also
+	// issue JoinNextRound. sweep_all skips selection and drains every
+	// live VTXO to the destination (no change VTXO produced).
+	SendOnChain(ctx context.Context, in *SendOnChainRequest, opts ...grpc.CallOption) (*SendOnChainResponse, error)
 	// Board triggers the client to join the next round with any
 	// confirmed boarding UTXOs. This sends IntentRequested to
 	// the round FSM, which emits a JoinRoundRequest to the server.
@@ -411,6 +422,16 @@ func (c *daemonServiceClient) LeaveVTXOs(ctx context.Context, in *LeaveVTXOsRequ
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(LeaveVTXOsResponse)
 	err := c.cc.Invoke(ctx, DaemonService_LeaveVTXOs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SendOnChain(ctx context.Context, in *SendOnChainRequest, opts ...grpc.CallOption) (*SendOnChainResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SendOnChainResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SendOnChain_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -693,6 +714,16 @@ type DaemonServiceServer interface {
 	// forfeited amount (minus the quoted per-input operator fee)
 	// lands as an on-chain output at the specified destination.
 	LeaveVTXOs(context.Context, *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error)
+	// SendOnChain is the wallet-shaped onchain payment primitive: it
+	// picks live VTXOs to cover the requested amount, forfeits them
+	// in the next round, produces one on-chain output of the exact
+	// requested amount at the supplied destination, and returns any
+	// residual to the caller as a change VTXO. The atomic
+	// forfeit + leave + change-VTXO intent registers immediately
+	// (TriggerRegistration=true) so the caller does not need to also
+	// issue JoinNextRound. sweep_all skips selection and drains every
+	// live VTXO to the destination (no change VTXO produced).
+	SendOnChain(context.Context, *SendOnChainRequest) (*SendOnChainResponse, error)
 	// Board triggers the client to join the next round with any
 	// confirmed boarding UTXOs. This sends IntentRequested to
 	// the round FSM, which emits a JoinRoundRequest to the server.
@@ -832,6 +863,9 @@ func (UnimplementedDaemonServiceServer) RefreshVTXOs(context.Context, *RefreshVT
 }
 func (UnimplementedDaemonServiceServer) LeaveVTXOs(context.Context, *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method LeaveVTXOs not implemented")
+}
+func (UnimplementedDaemonServiceServer) SendOnChain(context.Context, *SendOnChainRequest) (*SendOnChainResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SendOnChain not implemented")
 }
 func (UnimplementedDaemonServiceServer) Board(context.Context, *BoardRequest) (*BoardResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Board not implemented")
@@ -1271,6 +1305,24 @@ func _DaemonService_LeaveVTXOs_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_SendOnChain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SendOnChainRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SendOnChain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SendOnChain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SendOnChain(ctx, req.(*SendOnChainRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_Board_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BoardRequest)
 	if err := dec(in); err != nil {
@@ -1692,6 +1744,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "LeaveVTXOs",
 			Handler:    _DaemonService_LeaveVTXOs_Handler,
+		},
+		{
+			MethodName: "SendOnChain",
+			Handler:    _DaemonService_SendOnChain_Handler,
 		},
 		{
 			MethodName: "Board",

@@ -64,6 +64,8 @@ type DaemonServiceMailboxServer interface {
 	RefreshVTXOs(ctx context.Context, req *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
 	// LeaveVTXOs handles LeaveVTXOs.
 	LeaveVTXOs(ctx context.Context, req *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error)
+	// SendOnChain handles SendOnChain.
+	SendOnChain(ctx context.Context, req *SendOnChainRequest) (*SendOnChainResponse, error)
 	// Board handles Board.
 	Board(ctx context.Context, req *BoardRequest) (*BoardResponse, error)
 	// JoinNextRound handles JoinNextRound.
@@ -305,6 +307,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.LeaveVTXOs(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "SendOnChain", func() proto.Message {
+		return &SendOnChainRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SendOnChainRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SendOnChain(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "Board", func() proto.Message {
 		return &BoardRequest{}
@@ -951,6 +963,29 @@ func (c *DaemonServiceMailboxClient) LeaveVTXOs(ctx context.Context, req *LeaveV
 	}
 
 	resp := new(LeaveVTXOsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SendOnChain calls the SendOnChain RPC.
+func (c *DaemonServiceMailboxClient) SendOnChain(ctx context.Context, req *SendOnChainRequest, opts ...rpc.RPCOptions) (*SendOnChainResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SendOnChain",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SendOnChainResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

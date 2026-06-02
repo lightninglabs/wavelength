@@ -718,3 +718,147 @@ func (m *SendVTXOsResponse) MessageType() string {
 
 // walletRespSealed implements the sealed WalletResp interface.
 func (m *SendVTXOsResponse) walletRespSealed() {}
+
+// SendOnChainRequest asks the wallet actor to plan and submit an atomic
+// onchain payment from VTXOs: select the inputs, build one fixed leave
+// output and one change VTXO (bounded mode) or one fee-absorbing leave
+// output (sweep-all mode), and register the resulting intent with the
+// round actor with eager registration.
+//
+// The mode is implicit in the field set: a non-empty SweepOutpoints
+// means sweep-all (drain those VTXOs), otherwise it is a bounded send
+// for TargetAmountSat. The RPC layer enforces that exactly one shape is
+// populated before dispatching the request to the wallet.
+type SendOnChainRequest struct {
+	actor.BaseMessage
+
+	// DestinationPkScript is the on-chain destination script for the
+	// leave output. The script is validated and resolved by the RPC
+	// layer before dispatch; the wallet treats it as opaque.
+	DestinationPkScript []byte
+
+	// TargetAmountSat is the exact on-chain amount the caller wants
+	// to land at DestinationPkScript. Must be > 0 for a bounded send
+	// (empty SweepOutpoints). The wallet selects VTXOs whose summed
+	// value covers TargetAmountSat plus an OperatorFee + DustLimit
+	// headroom so a residual change VTXO can land above dust.
+	TargetAmountSat btcutil.Amount
+
+	// SweepOutpoints carries the live-VTXO outpoint set enumerated by
+	// the RPC server for sweep-all mode; a non-empty value selects
+	// sweep-all. Every live VTXO is drained to DestinationPkScript
+	// with no change VTXO; the single leave output absorbs the
+	// residual under the #270 fee handshake. Empty means a bounded
+	// send. The wallet does not enumerate live VTXOs itself; the RPC
+	// layer's vtxoStore listing is the single source of truth.
+	SweepOutpoints []wire.OutPoint
+
+	// OperatorFee is the daemon's current operator-fee hint
+	// (typically OperatorTerms.MinOperatorFee). Used as
+	// coin-selection headroom in bounded mode so the residual change
+	// VTXO does not land below dust. Advisory only under #270; the
+	// binding fee comes from the server's seal-time quote.
+	OperatorFee btcutil.Amount
+
+	// DustLimit is the change-VTXO dust floor (typically
+	// OperatorTerms.DustLimit). Added to OperatorFee when computing
+	// coin-selection headroom in bounded mode.
+	DustLimit btcutil.Amount
+
+	// OperatorKey is the operator's pubkey for the change-VTXO
+	// policy template. Required in bounded mode; unused in sweep-all.
+	OperatorKey *btcec.PublicKey
+
+	// VTXOExitDelay is the CSV delay for the change VTXO's exit
+	// path. Required in bounded mode; unused in sweep-all.
+	VTXOExitDelay uint32
+
+	// DryRun validates inputs and reserves a selection without
+	// submitting the round intent. The reservation is released
+	// immediately after the preview is built.
+	DryRun bool
+}
+
+// IsSweepAll reports whether the request drains the wallet (sweep-all)
+// rather than sending a bounded TargetAmountSat. Sweep-all is implied
+// by a non-empty SweepOutpoints set.
+func (m *SendOnChainRequest) IsSweepAll() bool {
+	return len(m.SweepOutpoints) > 0
+}
+
+// MessageType returns the message type identifier for logging.
+func (m *SendOnChainRequest) MessageType() string {
+	return "SendOnChainRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *SendOnChainRequest) walletMsgSealed() {}
+
+// SendOnChainStatus enumerates the terminal outcomes of a
+// SendOnChainRequest as surfaced to the caller.
+type SendOnChainStatus uint8
+
+const (
+	// SendOnChainStatusSubmitted indicates the onchain send intent
+	// was registered with the round actor for the next round.
+	SendOnChainStatusSubmitted SendOnChainStatus = iota
+
+	// SendOnChainStatusPreview indicates a dry-run: inputs were
+	// validated and a selection previewed without submitting an
+	// intent.
+	SendOnChainStatusPreview
+)
+
+// String returns the wire string form of the status, consumed by the
+// RPC layer when projecting onto the proto response.
+func (s SendOnChainStatus) String() string {
+	switch s {
+	case SendOnChainStatusSubmitted:
+		return "submitted"
+
+	case SendOnChainStatusPreview:
+		return "preview"
+
+	default:
+		return "unknown"
+	}
+}
+
+// SendOnChainResponse carries the outcome of a SendOnChainRequest.
+type SendOnChainResponse struct {
+	actor.BaseMessage
+
+	// Status is Submitted for a successfully registered intent or
+	// Preview for a dry-run.
+	Status SendOnChainStatus
+
+	// ActualAmountSat is the on-chain amount that will land at
+	// DestinationPkScript. In bounded mode this equals the
+	// TargetAmountSat the caller requested (the server stamps fee
+	// deviations onto the change VTXO). In SweepAll mode this is
+	// the pre-fee Σ(SelectedOutpoints); the actual landing amount
+	// is reduced by the server's seal-time operator fee.
+	ActualAmountSat btcutil.Amount
+
+	// SelectedOutpoints is the set of VTXOs forfeited for this send,
+	// in selection order.
+	SelectedOutpoints []wire.OutPoint
+
+	// TotalSelected is the sum of all SelectedOutpoints' VTXO
+	// amounts.
+	TotalSelected btcutil.Amount
+
+	// ChangeAmount is the projected change-VTXO value in bounded
+	// mode (TotalSelected − TargetAmountSat, before fee). Zero for
+	// SweepAll. The on-chain value is finalized by the server at
+	// seal time and may differ by the operator fee.
+	ChangeAmount btcutil.Amount
+}
+
+// MessageType returns the message type identifier for logging.
+func (m *SendOnChainResponse) MessageType() string {
+	return "SendOnChainResponse"
+}
+
+// walletRespSealed implements the sealed WalletResp interface.
+func (m *SendOnChainResponse) walletRespSealed() {}

@@ -308,75 +308,66 @@ func (r *router) prepareOnchain(ctx context.Context, addr string,
 	), nil
 }
 
-// sendOnchainIntent routes a prepared onchain destination through the existing
-// LeaveVTXOs cooperative-exit RPC.
+// sendOnchainIntent routes a prepared onchain destination through the
+// daemon's SendOnChain RPC. The daemon owns VTXO selection, intent
+// composition (forfeits + one fixed leave output + one change VTXO in
+// bounded mode; forfeits + one fee-absorbing leave output in sweep-all
+// mode), and atomic round registration — the wallet layer is a thin
+// translator from the prepared intent to daemonrpc.SendOnChainRequest
+// plus the WalletEntry stub the deadline watcher needs.
+//
+// Exact-amount semantics: a bounded send (--amt N) lands exactly N
+// sats at the destination; any residual returns to the caller as a
+// change VTXO under the #270 seal-time fee handshake. The earlier
+// "whole-VTXO sweep semantics" overpay (issue #634) is gone.
 func (r *router) sendOnchainIntent(ctx context.Context,
 	intent *preparedSendIntent) (*walletdkrpc.SendResponse, error) {
 
 	if r.deps.RPCServer == nil {
 		return nil, ErrSwapBackendUnavailable
 	}
-	if len(intent.selectedOutpoints) == 0 {
-		return nil, ErrInvalidSendIntent
-	}
 
-	leaveReq := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_Outpoints{
-			Outpoints: &daemonrpc.OutpointSelection{
-				Outpoints: append(
-					[]string(nil),
-					intent.selectedOutpoints...,
-				),
-			},
-		},
-		DefaultDestination: &daemonrpc.LeaveDestination{
+	sendReq := &daemonrpc.SendOnChainRequest{
+		Destination: &daemonrpc.LeaveDestination{
 			Target: &daemonrpc.LeaveDestination_Address{
 				Address: intent.onchainAddress,
 			},
 		},
 	}
+	if intent.sweepAll {
+		sendReq.Amount = &daemonrpc.SendOnChainRequest_SweepAll{
+			SweepAll: true,
+		}
+	} else {
+		sendReq.Amount = &daemonrpc.SendOnChainRequest_AmountSat{
+			AmountSat: int64(intent.amountSat),
+		}
+	}
 
-	resp, err := r.deps.RPCServer.LeaveVTXOs(ctx, leaveReq)
+	sendResp, err := r.deps.RPCServer.SendOnChain(ctx, sendReq)
 	if err != nil {
-		return nil, fmt.Errorf("leave vtxos: %w", err)
+		return nil, fmt.Errorf("send on-chain: %w", err)
 	}
 
-	// LeaveVTXOs only QUEUES the leave intent in the round actor's
-	// PendingAssembly state; the round does not actually seal until
-	// the daemon receives a JoinNextRound trigger. The everyday
-	// wallet verb is documented as a one-shot ("send onchain"), so
-	// we commit the intent here on the caller's behalf. The ark.*
-	// raw `vtxos refresh` / `vtxos leave` CLI exposes the
-	// queue-only mode via --no_join for batching use cases; that
-	// path is not reachable through walletdkrpc.Send and should not
-	// be — the higher-level Send verb has no batching contract.
-	//
-	// A join failure here leaves the leave intent queued in the
-	// round actor: LeaveVTXOs has already returned successfully and
-	// the intent persists in PendingAssembly. We surface the error
-	// (rather than swallowing it) so the caller is not silently
-	// stranded — but the recovery is a one-liner, and the wrapped
-	// message embeds the exact `ark rounds join` command the user
-	// needs to commit the queued intent.
-	if _, err := r.deps.RPCServer.JoinNextRound(
-		ctx, &daemonrpc.JoinNextRoundRequest{},
-	); err != nil {
-		return nil, fmt.Errorf("auto-join next round after leave: the "+
-			"leave intent is queued and can be committed manually "+
-			"with `ark rounds join`: %w", err)
-	}
+	// SendOnChain registers the intent atomically (TriggerRegistration
+	// is set inside the daemon handler), so there is no explicit
+	// JoinNextRound call to make here — that was an artifact of the
+	// previous LeaveVTXOs-based implementation that queued without
+	// committing.
 
-	// For sweep-all the caller's amt_sat is required to be zero, so
-	// recording int64(amtSat) on the pending entry would make the row
-	// show as a zero-sat exit in List/SubscribeWallet. The real outflow
-	// is the actualSat sum of selected VTXOs computed above.
+	// In sweep-all mode the caller's amount_sat is zero, so the
+	// pending entry must carry the daemon-reported actual amount
+	// rather than logging a zero-sat exit row in
+	// List/SubscribeWallet. In bounded mode actual_amount_sat equals
+	// the requested --amt exactly under the new exact-amount path.
+	actualSat := sendResp.GetActualAmountSat()
 	entryAmt := int64(intent.amountSat)
 	if intent.sweepAll {
-		entryAmt = intent.actualAmountSat
+		entryAmt = actualSat
 	}
 	entry := leaveEntryStub(
-		resp.GetQueuedOutpoints(), intent.onchainAddress, entryAmt,
-		intent.note,
+		sendResp.GetSelectedOutpoints(), intent.onchainAddress,
+		entryAmt, intent.note,
 	)
 
 	// v1 SCOPE: we track the pending row for the deadline watcher
@@ -389,7 +380,7 @@ func (r *router) sendOnchainIntent(ctx context.Context,
 
 	return &walletdkrpc.SendResponse{
 		Entry:           entry,
-		ActualAmountSat: intent.actualAmountSat,
+		ActualAmountSat: actualSat,
 	}, nil
 }
 

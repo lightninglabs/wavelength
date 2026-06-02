@@ -436,6 +436,17 @@ func (c *DaemonServiceClient) LeaveVTXOs(ctx context.Context,
 	return out, err
 }
 
+// SendOnChain plans and submits an atomic onchain payment from VTXOs.
+func (c *DaemonServiceClient) SendOnChain(ctx context.Context,
+	in *daemonrpc.SendOnChainRequest, _ ...grpc.CallOption) (
+	*daemonrpc.SendOnChainResponse, error) {
+
+	out := new(daemonrpc.SendOnChainResponse)
+	err := c.client.Post(ctx, "/v1/daemon/send-onchain", in, out)
+
+	return out, err
+}
+
 // Board queues confirmed boarding UTXOs for the next round.
 func (c *DaemonServiceClient) Board(ctx context.Context,
 	in *daemonrpc.BoardRequest, _ ...grpc.CallOption) (

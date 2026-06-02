@@ -1507,6 +1507,189 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	}, nil
 }
 
+// SendOnChain plans and submits an atomic onchain payment from VTXOs.
+// The RPC enforces the wallet-API invariants on the request shape
+// (exactly one of amount_sat / sweep_all set, destination present,
+// destination resolves to a standard pkScript) and then dispatches to
+// the wallet actor's handleSendOnChain. For sweep_all the RPC layer
+// also enumerates the live VTXO set via vtxoStore so the wallet does
+// not have to bypass the manager's admission gate to drain the wallet.
+func (r *RPCServer) SendOnChain(ctx context.Context,
+	req *daemonrpc.SendOnChainRequest) (*daemonrpc.SendOnChainResponse,
+	error) {
+
+	// Pure-argument validation first so a malformed request surfaces
+	// InvalidArgument before any wallet-state check.
+	if req.GetDestination() == nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"destination is required")
+	}
+
+	pkScript, err := r.resolveLeaveDestination(req.GetDestination())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"destination: %v", err)
+	}
+
+	var (
+		targetAmount btcutil.Amount
+		sweepAll     bool
+	)
+	switch amt := req.Amount.(type) {
+	case *daemonrpc.SendOnChainRequest_AmountSat:
+		if amt.AmountSat <= 0 ||
+			amt.AmountSat > int64(btcutil.MaxSatoshi) {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"amount_sat must be between 1 and %d",
+				int64(btcutil.MaxSatoshi))
+		}
+		targetAmount = btcutil.Amount(amt.AmountSat)
+
+	case *daemonrpc.SendOnChainRequest_SweepAll:
+		if !amt.SweepAll {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"sweep_all must be true when selected")
+		}
+		sweepAll = true
+
+	default:
+		return nil, status.Errorf(codes.InvalidArgument, "amount "+
+			"mode is required (amount_sat or sweep_all)")
+	}
+
+	// Fetch operator terms for the change VTXO descriptor + the
+	// coin-selection headroom hint. Under #270 the binding fee is
+	// stamped server-side; MinOperatorFee is advisory only.
+	terms, err := r.server.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "fetch operator "+
+			"terms: %v", err)
+	}
+
+	// For sweep_all, enumerate live VTXOs up front. We do this at
+	// the RPC layer (not in the wallet actor) so the dry_run path
+	// can echo the planned outpoint set without reserving anything,
+	// and so the wallet does not need its own live-set listing seam.
+	var sweepOutpoints []wire.OutPoint
+	if sweepAll {
+		if r.server.vtxoStore == nil {
+			return nil, status.Errorf(codes.Internal, "vtxo "+
+				"store not initialized")
+		}
+
+		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "list live "+
+				"VTXOs: %v", err)
+		}
+		if len(liveVTXOs) == 0 {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"no live VTXOs to sweep")
+		}
+
+		for _, v := range liveVTXOs {
+			sweepOutpoints = append(sweepOutpoints, v.Outpoint)
+		}
+	}
+
+	// Every path below touches the wallet, so gate on it now.
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	if !r.server.walletRef.IsSome() {
+		return nil, status.Errorf(codes.Internal, "wallet actor not "+
+			"initialized")
+	}
+
+	wRef := r.server.walletRef.UnsafeFromSome()
+
+	sendReq := &wallet.SendOnChainRequest{
+		DestinationPkScript: pkScript,
+		TargetAmountSat:     targetAmount,
+		SweepOutpoints:      sweepOutpoints,
+		OperatorFee:         terms.MinOperatorFee,
+		DustLimit:           terms.DustLimit,
+		OperatorKey:         terms.PubKey,
+		VTXOExitDelay:       terms.VTXOExitDelay,
+		DryRun:              req.DryRun,
+	}
+
+	// Strip caller cancellation from the wallet Ask: SendOnChain is
+	// the wallet-shaped onchain-payment one-shot, and the CLI client
+	// typically disconnects as soon as this RPC returns "submitted".
+	// The downstream pipeline (wallet → client-side round actor →
+	// outbound mailbox publish → operator-side join validation →
+	// forfeit-VTXO lookup) all inherits the actor-system per-message
+	// ctx from this Ask; without WithoutCancel here the CLI exit
+	// races the operator's admission lookup and the round fails with
+	// "context canceled". The Await keeps the original ctx so the
+	// caller can still abort waiting for the wallet response. Mirrors
+	// JoinNextRound → TriggerRoundRegistration.
+	askCtx := context.WithoutCancel(ctx)
+	future := wRef.Ask(askCtx, sendReq)
+	result := future.Await(ctx)
+
+	resp, err := result.Unpack()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "send on-chain "+
+			"failed: %v", err)
+	}
+
+	sendResp, ok := resp.(*wallet.SendOnChainResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal, "unexpected "+
+			"response type: %T", resp)
+	}
+
+	// Trigger round registration on a fresh Ask boundary so the
+	// IntentRequested → outbound JoinRoundRequest publish → operator
+	// admission lookup chain runs under TriggerRoundRegistration's
+	// detached context. This mirrors the JoinNextRound RPC pattern:
+	// SendOnChain is a one-shot, so the wallet host must not be
+	// asked to also call JoinNextRound separately. Skip for dry_run
+	// since the wallet handler released the reservation rather than
+	// committing the intent.
+	if !req.DryRun {
+		if err := r.server.TriggerRoundRegistration(ctx); err != nil {
+			return nil, status.Errorf(codes.Internal, "trigger "+
+				"round registration: %v", err)
+		}
+	}
+
+	outpointStrs := make([]string, 0, len(sendResp.SelectedOutpoints))
+	for _, op := range sendResp.SelectedOutpoints {
+		outpointStrs = append(
+			outpointStrs, fmt.Sprintf("%s:%d", op.Hash, op.Index),
+		)
+	}
+
+	r.server.log.InfoS(ctx, "SendOnChain completed",
+		slog.String("status", sendResp.Status.String()),
+		slog.Bool("sweep_all", sweepAll),
+		slog.Int64("actual_amount_sat",
+			int64(sendResp.ActualAmountSat)),
+		slog.Int("selected_count",
+			len(sendResp.SelectedOutpoints)),
+		slog.Int64("change_amount",
+			int64(sendResp.ChangeAmount)),
+	)
+
+	return &daemonrpc.SendOnChainResponse{
+		ActualAmountSat:   int64(sendResp.ActualAmountSat),
+		SelectedOutpoints: outpointStrs,
+		Status:            sendResp.Status.String(),
+
+		// FeeSat and ChangeOutpoint are populated once the round
+		// seals and the seal-time quote becomes known. The fast-
+		// path response returns zero / empty here; callers that
+		// need the final values look them up via the wallet
+		// history once the round confirms.
+		FeeSat:         0,
+		ChangeOutpoint: "",
+	}, nil
+}
+
 // Board triggers the client to join the next round with any confirmed
 // boarding UTXOs. The RPC delegates the full flow to the wallet actor:
 // balance check, VTXO amount computation, and round registration. It

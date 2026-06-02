@@ -63,6 +63,9 @@ http:
     - selector: daemonrpc.DaemonService.LeaveVTXOs
       post: /v1/daemon/leave-vtxos
       body: "*"
+    - selector: daemonrpc.DaemonService.SendOnChain
+      post: /v1/daemon/send-onchain
+      body: "*"
     - selector: daemonrpc.DaemonService.Board
       post: /v1/daemon/board
       body: "*"

@@ -213,11 +213,12 @@ func TestRouterSendInvoiceDispatchesStartPay(t *testing.T) {
 }
 
 // TestRouterSendOnchainSelectsVTXOsAndCallsLeave confirms that an onchain
-// destination triggers VTXO selection via ListVTXOs and then a LeaveVTXOs
-// call with the selected outpoints. It also asserts the response carries
-// the actual amount that will leave the wallet (the sum of selected
-// VTXOs), which under v1 whole-VTXO sweep semantics may exceed the
-// caller's amt_sat.
+// destination triggers a local VTXO snapshot via ListVTXOs during prepare
+// (for the preview), and that the Send step then dispatches to the
+// daemon's SendOnChain RPC with the caller's --amt passed through
+// exactly. ActualAmountSat on the response equals --amt: the exact-
+// amount path (issue #634) replaces the previous whole-VTXO sweep where
+// the destination could receive significantly more than --amt.
 func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 	t.Parallel()
 
@@ -238,12 +239,13 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 			},
 		},
 	}
-	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
-		QueuedOutpoints: []string{
+	rpc.sendOnChainResp = &daemonrpc.SendOnChainResponse{
+		ActualAmountSat: 10_000,
+		SelectedOutpoints: []string{
 			"tx1:0",
 			"tx2:1",
 		},
-		Status: "queued",
+		Status: "submitted",
 	}
 
 	prepareResp, err := r.PrepareSend(
@@ -277,26 +279,30 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 	resp, err := sendPrepared(t, r, prepareResp)
 	require.NoError(t, err)
 	require.Equal(t, 0, swap.startPayCalls)
-	require.Equal(t, 1, rpc.leaveCalls)
-	require.Equal(t, 1, rpc.listVTXOsCalls)
 	require.Equal(
-		t, 1, rpc.joinNextRoundCalls, "sendOnchain must "+
-			"auto-commit the leave intent so the top-level "+
-			"`send` verb is a one-shot",
+		t, 0, rpc.leaveCalls,
+		"new SendOnChain path must not fall back to LeaveVTXOs",
+	)
+	require.Equal(t, 1, rpc.sendOnChainCalls)
+	require.Equal(
+		t, 1, rpc.listVTXOsCalls,
+		"prepare-time preview still snapshots live VTXOs",
+	)
+	require.Equal(
+		t, 0, rpc.joinNextRoundCalls, "SendOnChain registers "+
+			"atomically; no JoinNextRound from the wallet layer",
 	)
 
-	got := rpc.leaveLastReq.GetOutpoints().GetOutpoints()
+	gotReq := rpc.sendOnChainLastReq
 	require.Equal(
-		t, []string{
-			"tx1:0",
-			"tx2:1",
-		},
-		got, "selected outpoints must cover the target amount and "+
-			"stop as soon as covered",
+		t, int64(10_000), gotReq.GetAmountSat(),
+		"--amt is passed to SendOnChain exactly under the new "+
+			"exact-amount semantics (issue #634)",
 	)
+	require.False(t, gotReq.GetSweepAll())
 	require.Equal(
 		t, "bcrt1qaddr",
-		rpc.leaveLastReq.GetDefaultDestination().GetAddress(),
+		gotReq.GetDestination().GetAddress(),
 	)
 	require.Equal(
 		t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
@@ -304,40 +310,39 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 	)
 	require.Equal(
 		t, "tx1:0", resp.GetEntry().GetId(),
-		"the EXIT entry id is the first queued outpoint",
+		"the EXIT entry id is the first selected outpoint",
 	)
 	require.Equal(
-		t, int64(12_000), resp.GetActualAmountSat(),
-		"actual_amount_sat must be the SUM of selected VTXOs so "+
-			"the caller can see whole-VTXO overpay before "+
-			"treating the send as confirmed",
+		t, int64(10_000), resp.GetActualAmountSat(),
+		"actual_amount_sat must equal --amt exactly under the new "+
+			"change-VTXO semantics (issue #634)",
 	)
 
-	// Regression: darepo-client#577. The bounded-amount coin
-	// selector must ask the daemon for VTXO_STATUS_LIVE only,
-	// otherwise a VTXO in PendingForfeit/Forfeiting (from an
-	// in-flight earlier leave) leaks back into the selection and
-	// the subsequent LeaveVTXOs call fails at the manager's
-	// reservation gate.
+	// Regression: darepo-client#577. The prepare-time preview must
+	// still filter to live VTXOs only so a stuck Forfeiting VTXO
+	// from a prior leave doesn't inflate the preview's reported
+	// outflow.
 	require.Equal(
 		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
 		rpc.listVTXOsLastReq.GetStatusFilter(),
-		"selectVTXOsForAmount must filter to live VTXOs only "+
-			"(darepo-client#577)",
+		"prepare must filter to live VTXOs only (darepo-client#577)",
 	)
 
 	_, err = sendPrepared(t, r, prepareResp)
 	require.ErrorIs(t, err, ErrInvalidSendIntent)
 	require.Equal(
-		t, 1, rpc.leaveCalls,
+		t, 1, rpc.sendOnChainCalls,
 		"prepared send intents must be consume-once",
 	)
 }
 
-// TestRouterSendOnchainSweepAllUsesPreparedOutpoints confirms that the
-// explicit sweep_all flag snapshots the live set during prepare and spends
-// those exact outpoints during send.
-func TestRouterSendOnchainSweepAllUsesPreparedOutpoints(t *testing.T) {
+// TestRouterSendOnchainSweepAllRoutesToSendOnChain confirms that the
+// explicit sweep_all flag snapshots the live set during prepare (for the
+// preview total) and dispatches to SendOnChain in sweep_all mode at
+// Send time. The daemon enumerates the live set again at execution
+// time, so the actual swept set may diverge from the prepare-time
+// snapshot if new VTXOs land between prepare and Send.
+func TestRouterSendOnchainSweepAllRoutesToSendOnChain(t *testing.T) {
 	t.Parallel()
 
 	r, _, rpc := newRouterFixture(t)
@@ -353,12 +358,13 @@ func TestRouterSendOnchainSweepAllUsesPreparedOutpoints(t *testing.T) {
 			},
 		},
 	}
-	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
-		QueuedOutpoints: []string{
+	rpc.sendOnChainResp = &daemonrpc.SendOnChainResponse{
+		ActualAmountSat: 12_000,
+		SelectedOutpoints: []string{
 			"tx1:0",
 			"tx2:1",
 		},
-		Status: "queued",
+		Status: "submitted",
 	}
 
 	prepareResp, err := r.PrepareSend(
@@ -378,21 +384,14 @@ func TestRouterSendOnchainSweepAllUsesPreparedOutpoints(t *testing.T) {
 	)
 	resp, err := sendPrepared(t, r, prepareResp)
 	require.NoError(t, err)
-	require.Equal(
-		t, []string{
-			"tx1:0",
-			"tx2:1",
-		},
-		rpc.leaveLastReq.GetOutpoints().GetOutpoints(),
-		"sweep_all must spend the exact prepared VTXO set",
+	require.Equal(t, 1, rpc.sendOnChainCalls)
+	require.True(
+		t, rpc.sendOnChainLastReq.GetSweepAll(),
+		"sweep_all must set the sweep_all variant on SendOnChain",
 	)
 	require.Equal(
 		t, int64(12_000), resp.GetActualAmountSat(),
-		"actual_amount_sat on sweep must echo the total live VTXO sum",
-	)
-	require.Equal(
-		t, 1, rpc.joinNextRoundCalls,
-		"sweep-all path must also auto-commit the leave intent",
+		"actual_amount_sat on sweep must echo the daemon response",
 	)
 
 	// Regression: darepo-client#577. Sweep-all prepare must also
@@ -406,14 +405,11 @@ func TestRouterSendOnchainSweepAllUsesPreparedOutpoints(t *testing.T) {
 	)
 }
 
-// TestRouterSendOnchainAutoJoinFailureSurfaced asserts that when the
-// implicit JoinNextRound after a successful LeaveVTXOs fails, the error
-// is propagated to the caller — silently swallowing it would leave the
-// caller thinking the leave dispatched while the queued intent rots in
-// the round actor's PendingAssembly state. The error message says
-// `ark rounds join` explicitly so the recovery path is discoverable
-// straight from the failure.
-func TestRouterSendOnchainAutoJoinFailureSurfaced(t *testing.T) {
+// TestRouterSendOnchainDaemonErrorBubblesUp asserts that when the
+// daemon's SendOnChain RPC fails (insufficient funds, round actor
+// rejection, selection shortfall, etc.) the error is surfaced to the
+// caller wrapped with the router's context.
+func TestRouterSendOnchainDaemonErrorBubblesUp(t *testing.T) {
 	t.Parallel()
 
 	r, _, rpc := newRouterFixture(t)
@@ -425,13 +421,7 @@ func TestRouterSendOnchainAutoJoinFailureSurfaced(t *testing.T) {
 			},
 		},
 	}
-	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
-		QueuedOutpoints: []string{
-			"tx1:0",
-		},
-		Status: "queued",
-	}
-	rpc.joinNextRoundErr = errors.New("round actor unavailable")
+	rpc.sendOnChainErr = errors.New("insufficient live VTXOs")
 
 	prepareResp, err := r.PrepareSend(
 		t.Context(), &walletdkrpc.PrepareSendRequest{
@@ -445,17 +435,9 @@ func TestRouterSendOnchainAutoJoinFailureSurfaced(t *testing.T) {
 	require.NoError(t, err)
 	_, err = sendPrepared(t, r, prepareResp)
 	require.Error(t, err)
-	require.ErrorContains(t, err, "auto-join next round after leave")
-	require.ErrorContains(t, err, "round actor unavailable")
-	require.ErrorContains(t, err, "ark rounds join")
-	require.Equal(
-		t, 1, rpc.leaveCalls,
-		"the leave call must have happened before the join failure",
-	)
-	require.Equal(
-		t, 1, rpc.joinNextRoundCalls,
-		"the join must have been attempted",
-	)
+	require.ErrorContains(t, err, "send on-chain")
+	require.ErrorContains(t, err, "insufficient live VTXOs")
+	require.Equal(t, 1, rpc.sendOnChainCalls)
 }
 
 // TestRouterSendOnchainAmtZeroRejectedWithoutSweepAll asserts the
