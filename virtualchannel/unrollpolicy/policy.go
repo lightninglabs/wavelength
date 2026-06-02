@@ -7,9 +7,9 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/unroll"
-	"github.com/lightninglabs/darepo-client/virtualchannel"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/unroll"
+	"github.com/lightninglabs/wavelength/virtualchannel"
+	"github.com/lightninglabs/wavelength/vtxo"
 )
 
 const (
@@ -21,7 +21,8 @@ const (
 
 // ChannelLoader loads virtual-channel registrations by stable id.
 type ChannelLoader interface {
-	// GetVirtualChannel loads a virtual channel by its stable darepo id.
+	// GetVirtualChannel loads a virtual channel by its stable Wavelength
+	// id.
 	GetVirtualChannel(ctx context.Context,
 		id virtualchannel.ID) (*virtualchannel.Channel, error)
 }

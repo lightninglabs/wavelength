@@ -299,6 +299,7 @@ type LndInstance struct {
 	Macaroon      string
 	GRPCPort      string
 	RESTPort      string
+	P2PPort       string
 	Client        *lndclient.LndServices
 	ContainerName string
 }
@@ -321,7 +322,6 @@ type Options struct {
 	// LNDBuildPath is optional: build LND image from local path instead of
 	// pulling tag. Leave empty to skip build and pull image instead.
 	LNDBuildPath string
-
 	// TapdImage is the docker image:tag to use for tapd.
 	TapdImage string
 
@@ -2209,6 +2209,7 @@ func (h *Harness) startLNDInstance(name, dataDir string,
 		DataDir:  dataDir,
 		GRPCPort: res.GetPort("10009/tcp"),
 		RESTPort: res.GetPort("8080/tcp"),
+		P2PPort:  res.GetPort("9735/tcp"),
 	}
 	inst.ContainerName = strings.TrimPrefix(res.Container.Name, "/")
 	inst.TLSCert = filepath.Join(dataDir, "tls.cert")
@@ -2218,8 +2219,8 @@ func (h *Harness) startLNDInstance(name, dataDir string,
 	)
 
 	h.Logf(
-		"%s gRPC=127.0.0.1:%s REST=127.0.0.1:%s", name, inst.GRPCPort,
-		inst.RESTPort,
+		"%s gRPC=127.0.0.1:%s REST=127.0.0.1:%s P2P=127.0.0.1:%s", name,
+		inst.GRPCPort, inst.RESTPort, inst.P2PPort,
 	)
 
 	require.Eventually(

@@ -217,13 +217,15 @@ func (h *Harness) startLNDContainer(cfg lndConfig) *dockertest.Resource {
 		*dockertest.Resource, error) {
 
 		return h.pool.RunWithOptions(&dockertest.RunOptions{
-			Repository:   cfg.image,
-			Tag:          cfg.tag,
-			Cmd:          cmd,
-			ExposedPorts: []string{"10009/tcp", "8080/tcp"},
-			Name:         lndName,
-			Networks:     []*dockertest.Network{cfg.network},
-			User:         user,
+			Repository: cfg.image,
+			Tag:        cfg.tag,
+			Cmd:        cmd,
+			ExposedPorts: []string{
+				"10009/tcp", "8080/tcp", "9735/tcp",
+			},
+			Name:     lndName,
+			Networks: []*dockertest.Network{cfg.network},
+			User:     user,
 			Mounts: []string{
 				fmt.Sprintf("%s:%s", lndHostDir,
 					lndDirInContainer),
@@ -241,6 +243,10 @@ func (h *Harness) startLNDContainer(cfg lndConfig) *dockertest.Resource {
 						HostPort: "",
 					}},
 					"8080/tcp": {{
+						HostIP:   "0.0.0.0",
+						HostPort: "",
+					}},
+					"9735/tcp": {{
 						HostIP:   "0.0.0.0",
 						HostPort: "",
 					}},

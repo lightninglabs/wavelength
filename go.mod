@@ -236,3 +236,9 @@ replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-d
 
 // Use local baselib for development and CI.
 replace github.com/lightninglabs/wavelength/baselib => ./baselib
+
+replace github.com/lightningnetwork/lnd => ../third_party/lnd
+
+replace github.com/lightningnetwork/lnd/queue => ../third_party/lnd/queue
+
+replace github.com/lightningnetwork/lnd/sqldb => ../third_party/lnd/sqldb

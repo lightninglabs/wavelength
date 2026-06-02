@@ -9,7 +9,7 @@ import (
 )
 
 // BuildAuxComponents builds the lnd auxiliary components needed by virtual
-// channels when darepod runs lnd in the same process.
+// channels when waved runs lnd in the same process.
 func BuildAuxComponents(cfg MaterializingPublishInterceptorConfig) (
 	*lnd.AuxComponents, error) {
 

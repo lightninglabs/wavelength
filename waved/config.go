@@ -23,6 +23,7 @@ import (
 	"github.com/lightninglabs/wavelength/metrics"
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
+	lnd "github.com/lightningnetwork/lnd"
 	"google.golang.org/grpc"
 )
 
@@ -891,6 +892,36 @@ type LndConfig struct {
 	// RPCTimeout is the maximum duration for individual RPC calls to
 	// lnd. If zero, DefaultRPCTimeout is used.
 	RPCTimeout time.Duration `mapstructure:"rpctimeout"`
+
+	// Integrated configures an in-process lnd runtime owned by waved.
+	Integrated *IntegratedLndConfig `mapstructure:"integrated"`
+}
+
+// IntegratedLndConfig holds in-process lnd startup options.
+type IntegratedLndConfig struct {
+	// Enabled starts lnd.Main inside waved instead of connecting to an
+	// already-running external lnd process.
+	Enabled bool `mapstructure:"enabled"`
+
+	// Args are lnd command-line arguments, excluding argv[0]. These are
+	// passed directly to lnd's config loader.
+	Args []string `mapstructure:"args"`
+
+	// WalletPassword is used to initialize or unlock the integrated lnd
+	// wallet. It is intended for local development and integration tests;
+	// production callers should wire a secret source before enabling
+	// integrated lnd.
+	WalletPassword string `mapstructure:"walletpassword"`
+
+	// CreateWallet initializes the wallet if it does not already exist.
+	CreateWallet bool `mapstructure:"createwallet"`
+
+	// ReadyTimeout bounds startup waits for lnd's local RPC listener.
+	ReadyTimeout time.Duration `mapstructure:"readytimeout"`
+
+	// AuxComponents are programmatic lnd hooks. This field is not populated
+	// from config files; harnesses and daemon wiring set it directly.
+	AuxComponents *lnd.AuxComponents `mapstructure:"-"`
 }
 
 // ServerConfig holds connection parameters for the ark operator's mailbox
@@ -1295,9 +1326,19 @@ func (c *Config) validateWalletConfig() error {
 			return fmt.Errorf("lnd config is required when " +
 				"wallet.type is lnd")
 		}
-		if c.Lnd.Host == "" {
+		integratedLnd := c.Lnd.Integrated != nil &&
+			c.Lnd.Integrated.Enabled
+		if !integratedLnd && c.Lnd.Host == "" {
 			return fmt.Errorf("lnd host is required when " +
 				"wallet.type is lnd")
+		}
+		if integratedLnd && len(c.Lnd.Integrated.Args) == 0 {
+			return fmt.Errorf("integrated lnd args are required " +
+				"when wallet.type is lnd")
+		}
+		if integratedLnd && c.Lnd.Integrated.WalletPassword == "" {
+			return fmt.Errorf("integrated lnd wallet password is " +
+				"required when wallet.type is lnd")
 		}
 
 	case WalletTypeLwwallet:

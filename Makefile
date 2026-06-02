@@ -49,10 +49,14 @@ COMMIT := $(shell git describe --tags --dirty 2>/dev/null || echo "unknown")
 DB_CONNECTIONSTRING ?= sqlite://./wavelength.db
 
 # Build tags.
-DEV_TAGS := dev
+#
+# Embedded lnd needs the subserver implementations compiled in so the
+# in-process daemon exposes the same RPC surface waved uses through lndclient.
+LND_RPC_TAGS := signrpc walletrpc chainrpc invoicesrpc routerrpc
+DEV_TAGS := dev $(LND_RPC_TAGS)
 LOG_TAGS := nolog
 TEST_FLAGS :=
-RELEASE_TAGS :=
+RELEASE_TAGS := $(LND_RPC_TAGS)
 
 # Build flags for debug builds (similar to lnd).
 DEV_GCFLAGS := -gcflags "all=-N -l"
