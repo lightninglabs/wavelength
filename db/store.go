@@ -378,3 +378,8 @@ func (s *Store) NewOORSessionRegistryStore(
 
 	return NewOORSessionRegistryStore(s, clk)
 }
+
+// NewVirtualChannelStore builds the virtual channel registration store.
+func (s *Store) NewVirtualChannelStore() *VirtualChannelStoreDB {
+	return NewVirtualChannelStoreDB(s)
+}

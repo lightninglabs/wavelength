@@ -422,6 +422,60 @@ type VhtlcRecoveryJob struct {
 	TerminalAt                           sql.NullInt64
 }
 
+type VirtualChannel struct {
+	VirtualChannelID  []byte
+	PendingChannelID  []byte
+	ChannelPointHash  []byte
+	ChannelPointIndex int32
+	RemoteNodePubkey  []byte
+	Role              string
+	Status            string
+	CapacitySat       int64
+	LocalBalanceSat   int64
+	RemoteBalanceSat  int64
+	BackingTx         []byte
+	FundingPsbt       []byte
+	CloseTx           []byte
+	CreatedAt         int64
+	UpdatedAt         int64
+	MaterializedAt    sql.NullInt64
+	ClosedAt          sql.NullInt64
+}
+
+type VirtualChannelIntent struct {
+	PendingChannelID []byte
+	RemoteNodePubkey []byte
+	Role             string
+	Status           string
+	CapacitySat      int64
+	LocalBalanceSat  int64
+	RemoteBalanceSat int64
+	CreatedAt        int64
+	UpdatedAt        int64
+}
+
+type VirtualChannelIntentVtxo struct {
+	PendingChannelID []byte
+	OutpointHash     []byte
+	OutpointIndex    int32
+	AmountSat        int64
+}
+
+type VirtualChannelRole struct {
+	Role string
+}
+
+type VirtualChannelStatus struct {
+	Status string
+}
+
+type VirtualChannelVtxo struct {
+	VirtualChannelID []byte
+	OutpointHash     []byte
+	OutpointIndex    int32
+	AmountSat        int64
+}
+
 type Vtxo struct {
 	OutpointHash        []byte
 	OutpointIndex       int32
