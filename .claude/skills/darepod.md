@@ -105,11 +105,14 @@ darepocli send lnbcrt... --offchain --no-tls
 darepocli send bcrt1... --onchain --amt 1000 --no-tls
 darepocli send bcrt1... --onchain --sweep-all --no-tls
 
-# List: pick a view (activity = default).
-darepocli list --no-tls                            # activity
-darepocli list --view vtxos --no-tls               # VTXO inventory
-darepocli list --view onchain --limit 100 --no-tls # on-chain history
-darepocli list --pending --kind send,recv --no-tls # filter (activity)
+# Activity: merged send/recv/deposit/exit feed.
+darepocli activity --no-tls                            # all activity
+darepocli activity --pending --kind send,recv --no-tls # filter
+darepocli activity --format json --no-tls              # JSON output
+# VTXO inventory and on-chain history are not part of the activity feed;
+# use the `ark` subtree: `ark vtxos list` (live VTXOs),
+# `ark listtransactions` (raw tx / onchain history),
+# `ark sweep list` (boarding-timeout sweep records).
 
 # Exit: trigger and query a unilateral exit (unroll).
 darepocli exit --outpoint TXID:VOUT --no-tls
@@ -127,8 +130,7 @@ darepocli ark vtxos list --no-tls
 darepocli ark vtxos list --status live --min_amount 10000 --no-tls
 darepocli ark vtxos refresh --all --no-tls
 
-# Raw transaction history (superseded for the wallet shape by
-# `list --view onchain`)
+# Raw transaction history (the wallet-shaped feed is `activity`)
 darepocli ark listtransactions --no-tls
 
 # Raw send paths
@@ -183,7 +185,7 @@ echo -n 'pass' | darepocli unlock --no-tls
 6. Mine a block: `bitcoin-cli generatetoaddress 1 <miner_addr>`
 7. Check balance: `darepocli balance --no-tls`
 8. List VTXOs (once boarding completes):
-   `darepocli list --view vtxos --no-tls`
+   `darepocli ark vtxos list --no-tls`
 
 ## Environment Variables
 

@@ -9,7 +9,7 @@ import (
 )
 
 // newCreateCmd builds the top-level `create` verb. It is one of the
-// seven core wallet verbs (create, unlock, send, recv, list, balance,
+// seven core wallet verbs (create, unlock, send, recv, activity, balance,
 // exit) and dials walletdkrpc.WalletService.Create which proxies
 // daemonrpc.GenSeed + daemonrpc.InitWallet under the hood. Both the
 // wallet password and the optional seed passphrase are read from
