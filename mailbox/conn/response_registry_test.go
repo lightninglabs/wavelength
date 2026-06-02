@@ -52,7 +52,7 @@ func TestResponseRegistry_RegisterThenDeliver(t *testing.T) {
 func TestResponseRegistry_TTLPrunesPending(t *testing.T) {
 	t.Parallel()
 
-	registry := NewResponseRegistry(5 * time.Millisecond)
+	registry := NewResponseRegistry(time.Minute)
 	id := CorrelationID("corr-3")
 
 	require.Equal(
@@ -64,7 +64,9 @@ func TestResponseRegistry_TTLPrunesPending(t *testing.T) {
 		),
 	)
 
-	time.Sleep(20 * time.Millisecond)
+	registry.mu.Lock()
+	registry.pending[id].Created = time.Now().Add(-2 * time.Minute)
+	registry.mu.Unlock()
 
 	// Register after the buffered response has expired. The future
 	// should not be immediately completed.

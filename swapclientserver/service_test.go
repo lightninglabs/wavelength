@@ -4,6 +4,7 @@ package swapclientserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -236,6 +237,102 @@ func TestStartPayReturnsSummaryAndStartsWorker(t *testing.T) {
 	fakeClient.awaitPayResume(t, payHash)
 	require.Equal(t, 1, fakeClient.startPayCount())
 	require.Equal(t, 1, fakeClient.payResumeCount(payHash))
+}
+
+// TestStartPayReturnsPendingDuplicateInvoice verifies a repeated StartPay for
+// an invoice with a pending local swap returns that durable swap summary before
+// it can create another server-side in-swap.
+func TestStartPayReturnsPendingDuplicateInvoice(t *testing.T) {
+	t.Parallel()
+
+	payHash := testHash(33)
+	invoice := testStartPayInvoice(t, payHash, 10_000)
+	fakeClient := newFakeSwapRuntime(
+		swaps.SwapSummary{
+			Direction:   swaps.SwapDirectionPay,
+			PaymentHash: payHash,
+			Invoice:     invoice,
+			State:       "FundingInitiated",
+			Pending:     true,
+			AmountSat:   10_000,
+			MaxFeeSat:   25,
+		},
+	)
+	service := newTestSwapClientService(fakeClient)
+	service.chainParams = &chaincfg.RegressionNetParams
+	defer service.cancel()
+
+	resp, err := service.StartPay(
+		t.Context(), &swapclientrpc.StartPayRequest{
+			Invoice:   invoice,
+			MaxFeeSat: 25,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, hex.EncodeToString(payHash[:]), resp.GetPaymentHash())
+	require.True(t, resp.GetSwap().GetPending())
+	require.Equal(
+		t, swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
+		resp.GetSwap().GetDirection(),
+	)
+	require.Equal(
+		t, swapclientrpc.SwapState_SWAP_STATE_FUNDING_INITIATED,
+		resp.GetSwap().GetState(),
+	)
+
+	fakeClient.awaitPayResume(t, payHash)
+	require.Equal(t, 0, fakeClient.startPayCount())
+	require.Equal(t, 1, fakeClient.payResumeCount(payHash))
+}
+
+// TestStartPayIgnoresPendingReceiveDuplicate verifies a receive swap with the
+// invoice payment hash does not satisfy the duplicate-pay preflight.
+func TestStartPayIgnoresPendingReceiveDuplicate(t *testing.T) {
+	t.Parallel()
+
+	receiveHash := testHash(34)
+	payHash := testHash(35)
+	invoice := testStartPayInvoice(t, receiveHash, 10_000)
+	fakeClient := newFakeSwapRuntime(
+		swaps.SwapSummary{
+			Direction:   swaps.SwapDirectionReceive,
+			PaymentHash: receiveHash,
+			Invoice:     invoice,
+			State:       "VHTLCAccepted",
+			Pending:     true,
+			AmountSat:   10_000,
+		},
+		swaps.SwapSummary{
+			Direction:   swaps.SwapDirectionPay,
+			PaymentHash: payHash,
+			Invoice:     invoice,
+			State:       "SwapCreated",
+			Pending:     true,
+			AmountSat:   10_000,
+		},
+	)
+	fakeClient.startPaySession = &fakePaySession{hash: payHash}
+	service := newTestSwapClientService(fakeClient)
+	service.chainParams = &chaincfg.RegressionNetParams
+	defer service.cancel()
+
+	resp, err := service.StartPay(
+		t.Context(), &swapclientrpc.StartPayRequest{
+			Invoice:   invoice,
+			MaxFeeSat: 25,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, hex.EncodeToString(payHash[:]), resp.GetPaymentHash())
+	require.Equal(
+		t, swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
+		resp.GetSwap().GetDirection(),
+	)
+
+	fakeClient.awaitPayResume(t, payHash)
+	require.Equal(t, 1, fakeClient.startPayCount())
+	require.Equal(t, 1, fakeClient.payResumeCount(payHash))
+	require.Equal(t, 0, fakeClient.receiveResumeCount(receiveHash))
 }
 
 // TestStartPayPreservesRuntimeStatusCode verifies startup failures keep the
@@ -738,6 +835,35 @@ func newTestSwapClientService(client swapRuntimeClient) *swapClientService {
 		active:      make(map[string]struct{}),
 		subscribers: make(map[chan *swapclientrpc.SwapSummary]struct{}),
 	}
+}
+
+// testStartPayInvoice returns a signed regtest invoice for StartPay tests that
+// need the subserver's local payment-hash preflight to decode a real BOLT-11.
+func testStartPayInvoice(t *testing.T, hash lntypes.Hash,
+	amountSat int64) string {
+
+	t.Helper()
+
+	invoice, err := zpay32.NewInvoice(
+		&chaincfg.RegressionNetParams, hash, time.Now(),
+		zpay32.Amount(
+			lnwire.MilliSatoshi(amountSat*1000),
+		),
+		zpay32.Description("swapclientserver test invoice"),
+	)
+	require.NoError(t, err)
+
+	privKey, _ := btcec.PrivKeyFromBytes([]byte{77})
+	encoded, err := invoice.Encode(zpay32.MessageSigner{
+		SignCompact: func(msg []byte) ([]byte, error) {
+			digest := sha256.Sum256(msg)
+
+			return ecdsa.SignCompact(privKey, digest[:], true), nil
+		},
+	})
+	require.NoError(t, err)
+
+	return encoded
 }
 
 func testHash(seed byte) lntypes.Hash {

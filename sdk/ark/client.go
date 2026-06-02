@@ -808,6 +808,23 @@ func (c *Client) GetIndexedOORSession(ctx context.Context, pkScript []byte,
 	return newIndexedOORSessionInfo(resp), nil
 }
 
+// GetOORSession returns the daemon's local durable status for one OOR
+// transfer session.
+func (c *Client) GetOORSession(ctx context.Context, sessionID string) (
+	*daemonrpc.OORSessionInfo, error) {
+
+	resp, err := c.daemon.GetOORSession(ctx,
+		&daemonrpc.GetOORSessionRequest{
+			SessionId: sessionID,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get oor session: %w", err)
+	}
+
+	return resp.GetSession(), nil
+}
+
 // SendVTXO submits an in-round send request through the daemon. Passing nil
 // uses an empty request.
 func (c *Client) SendVTXO(ctx context.Context, req *daemonrpc.SendVTXORequest) (
