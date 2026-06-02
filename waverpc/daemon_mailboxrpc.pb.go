@@ -68,6 +68,8 @@ type DaemonServiceMailboxServer interface {
 	RefreshVTXOs(ctx context.Context, req *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
 	// RefreshCustomVTXOs handles RefreshCustomVTXOs.
 	RefreshCustomVTXOs(ctx context.Context, req *RefreshCustomVTXOsRequest) (*RefreshCustomVTXOsResponse, error)
+	// OpenVirtualChannel handles OpenVirtualChannel.
+	OpenVirtualChannel(ctx context.Context, req *OpenVirtualChannelRequest) (*OpenVirtualChannelResponse, error)
 	// ListPendingForfeitParticipantSignatureRequests handles ListPendingForfeitParticipantSignatureRequests.
 	ListPendingForfeitParticipantSignatureRequests(ctx context.Context, req *ListPendingForfeitParticipantSignatureRequestsRequest) (*ListPendingForfeitParticipantSignatureRequestsResponse, error)
 	// SubmitForfeitParticipantSignatures handles SubmitForfeitParticipantSignatures.
@@ -337,6 +339,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.RefreshCustomVTXOs(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "OpenVirtualChannel", func() proto.Message {
+		return &OpenVirtualChannelRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*OpenVirtualChannelRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.OpenVirtualChannel(ctx, req)
 	})
 	r.Handle("waverpc.DaemonService", "ListPendingForfeitParticipantSignatureRequests", func() proto.Message {
 		return &ListPendingForfeitParticipantSignatureRequestsRequest{}
@@ -1069,6 +1081,29 @@ func (c *DaemonServiceMailboxClient) RefreshCustomVTXOs(ctx context.Context, req
 	}
 
 	resp := new(RefreshCustomVTXOsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// OpenVirtualChannel calls the OpenVirtualChannel RPC.
+func (c *DaemonServiceMailboxClient) OpenVirtualChannel(ctx context.Context, req *OpenVirtualChannelRequest, opts ...rpc.RPCOptions) (*OpenVirtualChannelResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "OpenVirtualChannel",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(OpenVirtualChannelResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

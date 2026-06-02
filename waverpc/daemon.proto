@@ -124,6 +124,11 @@ service DaemonService {
     rpc RefreshCustomVTXOs (RefreshCustomVTXOsRequest)
         returns (RefreshCustomVTXOsResponse);
 
+    // OpenVirtualChannel promotes existing VTXO liquidity into an LND channel
+    // whose funding parent remains unpublished on the happy path.
+    rpc OpenVirtualChannel (OpenVirtualChannelRequest)
+        returns (OpenVirtualChannelResponse);
+
     // ListPendingForfeitParticipantSignatureRequests returns exact
     // connector-bound forfeit signing requests emitted by custom refresh
     // inputs whose policies require signatures from external participants.
@@ -1240,6 +1245,42 @@ message RefreshVTXOsResponse {
 
     // status is the result: "queued" on success, "preview" on dry_run.
     string status = 2;
+}
+
+message VirtualChannelVTXOInput {
+    // outpoint identifies the VTXO to use in txid:vout form. When omitted,
+    // the daemon selects wallet VTXOs covering the requested amount.
+    string outpoint = 1;
+
+    // amount_sat is optional for caller-selected inputs. The daemon verifies
+    // it against durable VTXO state before signing.
+    int64 amount_sat = 2;
+}
+
+message VirtualChannelSelectedVTXO {
+    string outpoint = 1;
+    int64 amount_sat = 2;
+}
+
+message OpenVirtualChannelRequest {
+    bytes peer_node_pubkey = 1;
+    int64 capacity_sat = 2;
+    int64 push_sat = 3;
+    bool private = 4;
+    bool zero_conf = 5;
+    repeated VirtualChannelVTXOInput backing_vtxos = 6;
+    string idempotency_key = 7;
+    bool dry_run = 8;
+}
+
+message OpenVirtualChannelResponse {
+    string status = 1;
+    bytes virtual_channel_id = 2;
+    bytes pending_channel_id = 3;
+    string channel_point = 4;
+    repeated VirtualChannelSelectedVTXO selected_vtxos = 5;
+    bytes backing_tx = 6;
+    bytes funding_psbt = 7;
 }
 
 // CustomRefreshVTXOInput specifies one custom-policy VTXO input to refresh in

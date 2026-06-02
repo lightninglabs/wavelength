@@ -8,6 +8,8 @@ set -e
 
 DIR="$(cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd)"
 REPO_ROOT="$(cd "$DIR/.." && pwd)"
+PARENT_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
+LND_SUBMODULE="$PARENT_ROOT/third_party/lnd"
 
 # Extract dependency versions directly from go.mod instead of spinning up
 # Docker containers. This avoids two ~10s docker run calls per invocation.
@@ -35,6 +37,7 @@ docker run \
   -e COMPILE_MOBILE \
   -e GOPATH=/tmp/build/gopath \
   -v "$REPO_ROOT":/build \
+  -v "$LND_SUBMODULE":/third_party/lnd \
   wavelength-protobuf-builder
 
 echo "Proto compilation complete!"

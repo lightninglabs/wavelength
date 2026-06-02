@@ -12,6 +12,22 @@ service ArkService {
     // showing liquidity cost, on-chain share, margin, and minimum
     // viable VTXO at current rates and utilization.
     rpc EstimateFee (EstimateFeeRequest) returns (EstimateFeeResponse);
+
+    // RegisterVirtualChannel persists the operator-side view of an lnd
+    // channel funded by an unbroadcast VTXO backing parent.
+    rpc RegisterVirtualChannel (RegisterVirtualChannelRequest)
+        returns (RegisterVirtualChannelResponse);
+
+    // ActivateVirtualChannel replaces the negotiating backing parent with the
+    // signed, conflict-publishable parent and marks the channel active.
+    rpc ActivateVirtualChannel (ActivateVirtualChannelRequest)
+        returns (ActivateVirtualChannelResponse);
+
+    // CosignVirtualChannelBacking verifies the client's VTXO input signatures,
+    // adds the operator signatures, persists the signed parent as active
+    // material, and returns the fully witnessed backing transaction.
+    rpc CosignVirtualChannelBacking (CosignVirtualChannelBackingRequest)
+        returns (CosignVirtualChannelBackingResponse);
 }
 
 message GetInfoRequest {
@@ -180,4 +196,87 @@ message EstimateFeeResponse {
     // exit (miner fees exceed the VTXO value) and should be
     // rejected client-side rather than paid for.
     bool below_dust_warning = 7;
+}
+
+message VirtualChannelBackingVTXO {
+    // outpoint is the backing VTXO outpoint in txid:vout format.
+    string outpoint = 1;
+
+    // amount_sat is the value of the backing VTXO.
+    int64 amount_sat = 2;
+}
+
+message RegisterVirtualChannelRequest {
+    // virtual_channel_id is the stable darepo identifier chosen by the client.
+    bytes virtual_channel_id = 1;
+
+    // pending_channel_id is lnd's 32-byte PSBT funding identifier.
+    bytes pending_channel_id = 2;
+
+    // channel_point is the lnd funding outpoint in txid:vout format.
+    string channel_point = 3;
+
+    // client_node_pubkey is the compressed lnd node key of the client.
+    bytes client_node_pubkey = 4;
+
+    // capacity_sat is the channel capacity.
+    int64 capacity_sat = 5;
+
+    // operator_local_balance_sat is the operator's initial channel balance.
+    int64 operator_local_balance_sat = 6;
+
+    // client_local_balance_sat is the client's initial channel balance.
+    int64 client_local_balance_sat = 7;
+
+    // backing_tx is the serialized VTXO-to-channel-point parent.
+    bytes backing_tx = 8;
+
+    // funding_psbt is the funded PSBT verified by lnd with skip_finalize.
+    bytes funding_psbt = 9;
+
+    // backing_vtxos are the existing VTXOs consumed by backing_tx.
+    repeated VirtualChannelBackingVTXO backing_vtxos = 10;
+}
+
+message RegisterVirtualChannelResponse {
+    // status is the persisted operator-side virtual channel status.
+    string status = 1;
+}
+
+message ActivateVirtualChannelRequest {
+    // virtual_channel_id is the stable darepo identifier.
+    bytes virtual_channel_id = 1;
+
+    // signed_backing_tx is the serialized VTXO-to-channel-point parent with
+    // all witnesses required for conflict publication.
+    bytes signed_backing_tx = 2;
+}
+
+message ActivateVirtualChannelResponse {
+    // status is the persisted operator-side virtual channel status.
+    string status = 1;
+}
+
+message VirtualChannelInputSignature {
+    // outpoint identifies the backing VTXO input being signed.
+    string outpoint = 1;
+
+    // signature is the client's Schnorr signature for the collaborative leaf.
+    bytes signature = 2;
+}
+
+message CosignVirtualChannelBackingRequest {
+    // virtual_channel_id is the stable darepo identifier.
+    bytes virtual_channel_id = 1;
+
+    // client_signatures contains one owner signature per backing VTXO input.
+    repeated VirtualChannelInputSignature client_signatures = 2;
+}
+
+message CosignVirtualChannelBackingResponse {
+    // signed_backing_tx is the fully witnessed VTXO-to-channel-point parent.
+    bytes signed_backing_tx = 1;
+
+    // status is the persisted operator-side virtual channel status.
+    string status = 2;
 }

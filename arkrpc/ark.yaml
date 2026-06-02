@@ -9,3 +9,12 @@ http:
     - selector: arkrpc.ArkService.EstimateFee
       post: /v1/ark/estimate-fee
       body: "*"
+    - selector: arkrpc.ArkService.RegisterVirtualChannel
+      post: /v1/ark/register-virtual-channel
+      body: "*"
+    - selector: arkrpc.ArkService.ActivateVirtualChannel
+      post: /v1/ark/activate-virtual-channel
+      body: "*"
+    - selector: arkrpc.ArkService.CosignVirtualChannelBacking
+      post: /v1/ark/cosign-virtual-channel-backing
+      body: "*"

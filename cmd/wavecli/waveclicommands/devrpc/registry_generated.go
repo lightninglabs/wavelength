@@ -171,6 +171,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for\nrefresh in the next round. Unlike RefreshVTXOs, this does not require\nthe inputs to be wallet-managed live VTXOs; callers provide the policy,\nproof/auth spend path, and forfeit spend path explicitly.\n\nThis RPC only queues the old VTXO and the replacement output. It cannot\ncollect every participant signature yet because the round has not\nassigned the connector output, so the final forfeit transaction does not\nexist. If a queued input needs a non-daemon participant signature, the\ndaemon exposes that exact connector-bound transcript later through\nListPendingForfeitParticipantSignatureRequests.",
 				},
 				{
+					Name:     "OpenVirtualChannel",
+					Aliases:  []string{"open-virtual-channel"},
+					Input:    "waverpc.OpenVirtualChannelRequest",
+					Output:   "waverpc.OpenVirtualChannelResponse",
+					Comments: "OpenVirtualChannel promotes existing VTXO liquidity into an LND channel\nwhose funding parent remains unpublished on the happy path.",
+				},
+				{
 					Name:     "ListPendingForfeitParticipantSignatureRequests",
 					Aliases:  []string{"list-pending-forfeit-participant-signature-requests"},
 					Input:    "waverpc.ListPendingForfeitParticipantSignatureRequestsRequest",

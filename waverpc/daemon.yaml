@@ -69,6 +69,9 @@ http:
     - selector: waverpc.DaemonService.RefreshCustomVTXOs
       post: /v1/daemon/refresh-custom-vtxos
       body: "*"
+    - selector: waverpc.DaemonService.OpenVirtualChannel
+      post: /v1/daemon/open-virtual-channel
+      body: "*"
     - selector: waverpc.DaemonService.ListPendingForfeitParticipantSignatureRequests
       post: /v1/daemon/list-pending-forfeit-participant-signature-requests
       body: "*"

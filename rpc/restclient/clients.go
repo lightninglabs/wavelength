@@ -86,6 +86,41 @@ func (c *ArkServiceClient) EstimateFee(ctx context.Context,
 	return out, err
 }
 
+// RegisterVirtualChannel persists the operator-side virtual channel record.
+func (c *ArkServiceClient) RegisterVirtualChannel(ctx context.Context,
+	in *arkrpc.RegisterVirtualChannelRequest, _ ...grpc.CallOption) (
+	*arkrpc.RegisterVirtualChannelResponse, error) {
+
+	out := new(arkrpc.RegisterVirtualChannelResponse)
+	err := c.client.Post(ctx, "/v1/ark/register-virtual-channel", in, out)
+
+	return out, err
+}
+
+// ActivateVirtualChannel marks a virtual channel active with its signed parent.
+func (c *ArkServiceClient) ActivateVirtualChannel(ctx context.Context,
+	in *arkrpc.ActivateVirtualChannelRequest, _ ...grpc.CallOption) (
+	*arkrpc.ActivateVirtualChannelResponse, error) {
+
+	out := new(arkrpc.ActivateVirtualChannelResponse)
+	err := c.client.Post(ctx, "/v1/ark/activate-virtual-channel", in, out)
+
+	return out, err
+}
+
+// CosignVirtualChannelBacking completes the VTXO backing parent witnesses.
+func (c *ArkServiceClient) CosignVirtualChannelBacking(ctx context.Context,
+	in *arkrpc.CosignVirtualChannelBackingRequest, _ ...grpc.CallOption) (
+	*arkrpc.CosignVirtualChannelBackingResponse, error) {
+
+	out := new(arkrpc.CosignVirtualChannelBackingResponse)
+	err := c.client.Post(
+		ctx, "/v1/ark/cosign-virtual-channel-backing", in, out,
+	)
+
+	return out, err
+}
+
 // NewMailboxServiceClient creates a MailboxService REST client.
 func NewMailboxServiceClient(addr string,
 	opts ...Option) mailboxpb.MailboxServiceClient {
@@ -534,6 +569,17 @@ func (c *DaemonServiceClient) RefreshVTXOs(ctx context.Context,
 
 	out := new(waverpc.RefreshVTXOsResponse)
 	err := c.client.Post(ctx, "/v1/daemon/refresh-vtxos", in, out)
+
+	return out, err
+}
+
+// OpenVirtualChannel promotes VTXO liquidity into a virtual LND channel.
+func (c *DaemonServiceClient) OpenVirtualChannel(ctx context.Context,
+	in *waverpc.OpenVirtualChannelRequest, _ ...grpc.CallOption) (
+	*waverpc.OpenVirtualChannelResponse, error) {
+
+	out := new(waverpc.OpenVirtualChannelResponse)
+	err := c.client.Post(ctx, "/v1/daemon/open-virtual-channel", in, out)
 
 	return out, err
 }
