@@ -45,6 +45,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/darepo-client/metrics"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/proofkeys"
 	"github.com/lightninglabs/darepo-client/round"
@@ -190,6 +191,17 @@ type Server struct {
 	// for direct RPC reads (idempotency pre-flight); the OOR registry
 	// actor owns all writes.
 	oorSessionStore oor.SessionRegistryStore
+
+	// metricsSrv is the optional Prometheus metrics HTTP server. It is
+	// nil until startMetricsServer runs and stays effectively disabled
+	// (no listener) unless Metrics.ListenAddr is set.
+	metricsSrv *metrics.Server
+
+	// metricsSink is the fire-and-forget reference to the metrics actor
+	// for event-driven lifecycle counters. It is None unless the metrics
+	// server is enabled, so emission sites skip cleanly when metrics are
+	// off.
+	metricsSink fn.Option[metrics.Sink]
 
 	// lnd holds the lndclient connection when wallet.type is "lnd".
 	// It is None in lwwallet mode.
@@ -1017,6 +1029,31 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		s.subLogger(db.Subsystem),
 	)
 	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
+
+	// -------------------------------------------------------
+	// Optional Prometheus metrics server (disabled by default).
+	// -------------------------------------------------------
+	// The /metrics endpoint exposes operational and balance data, so it
+	// only starts when the operator sets an explicit listen address. It
+	// runs on its own private HTTP mux/listener and is torn down with a
+	// bounded graceful shutdown like the other long-running listeners.
+	// Started here, once the VTXO store exists, so the scrape-driven
+	// collector has a backing store before the first scrape.
+	if err := s.startMetricsServer(ctx); err != nil {
+		return fmt.Errorf("start metrics server: %w", err)
+	}
+	//nolint:contextcheck // shutdown uses bounded process-root context
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), DefaultShutdownTimeout,
+		)
+		defer cancel()
+
+		if err := s.stopMetricsServer(shutdownCtx); err != nil {
+			s.log.WarnS(shutdownCtx, "Metrics server shutdown "+
+				"failed", err)
+		}
+	}()
 
 	// Start the ledger accounting actor. This must happen after
 	// the DB and delivery store are ready but does not depend on
@@ -2223,6 +2260,23 @@ func (s *Server) connectLnd(ctx context.Context) (*lndclient.GrpcLndServices,
 func (s *Server) dialServer() (*grpc.ClientConn, error) {
 	var dialOpts []grpc.DialOption
 
+	// Instrument the operator connection with client-side gRPC metrics
+	// (per-method request count, error rate, handling-time histograms).
+	// The shared GRPCClientMetrics collector is registered with the
+	// Prometheus registry only when the metrics server is enabled, but
+	// the interceptors are always installed: an unregistered collector
+	// simply accumulates samples nobody scrapes, so this keeps the dial
+	// path uniform without coupling it to the metrics opt-in.
+	dialOpts = append(
+		dialOpts,
+		grpc.WithChainUnaryInterceptor(
+			metrics.GRPCClientMetrics.UnaryClientInterceptor(),
+		),
+		grpc.WithChainStreamInterceptor(
+			metrics.GRPCClientMetrics.StreamClientInterceptor(),
+		),
+	)
+
 	clientCerts, err := s.serverClientTLSCerts()
 	if err != nil {
 		return nil, err
@@ -2363,11 +2417,27 @@ func (s *Server) registerIncomingVTXOEventRoute(
 		Adapt: func(p proto.Message) (vtxo.IncomingVTXOMsg, error) {
 			evt, ok := p.(*arkrpc.IncomingVTXOEvent)
 			if !ok {
+				// A malformed push never reaches the handler,
+				// so count the failed receive here at the
+				// boundary.
+				s.emitMetric(
+					context.Background(),
+					&metrics.OORTransferReceivedMsg{
+						Status: "failed",
+					},
+				)
+
 				return vtxo.IncomingVTXOMsg{},
 					fmt.Errorf("expected "+
 						"IncomingVTXOEvent, got %T", p)
 			}
 
+			// The "materialized" / handler-side "failed" outcomes
+			// are emitted by the IncomingVTXOHandler itself, which
+			// is the only place that knows whether the event was
+			// relevant and the save succeeded. Counting here at
+			// adapt time would report a materialization before the
+			// handler verified ownership and persisted the VTXO.
 			return vtxo.IncomingVTXOMsg{
 				Event: evt,
 			}, nil
@@ -3253,6 +3323,14 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 		),
 	)
 
+	// A successful direct GetInfo round-trip is the earliest proof the
+	// operator connection is healthy, so mark it up and stamp the sync
+	// time. These gauges are safe to set unconditionally: they are
+	// registered only when the metrics server is enabled, and writing a
+	// gauge that nobody scrapes is harmless.
+	metrics.ServerConnectionUp.Set(1)
+	metrics.ServerSyncTimestamp.SetToCurrentTime()
+
 	// Build the mailbox transport runtime.
 	edge := s.newMailboxEdge()
 	dispatchers := s.buildRPCDispatchers(edge)
@@ -3961,6 +4039,7 @@ func (s *Server) initOORActor(ctx context.Context,
 			VTXOStore:       incomingVTXOStore,
 			VTXOManager:     vtxoManagerRef,
 			AncestryFetcher: ancestryFetcher,
+			MetricsSink:     s.metricsSink,
 		},
 	)
 	incomingKey := vtxo.IncomingVTXOServiceKey()

@@ -31,7 +31,9 @@ func TestMetricsActorReceive(t *testing.T) {
 		},
 		{
 			name: "round completed confirmed",
-			msg:  &RoundCompletedMsg{Status: "confirmed"},
+			msg: &RoundCompletedMsg{
+				Status: "confirmed",
+			},
 			counter: func() float64 {
 				return testutil.ToFloat64(
 					RoundsCompletedTotal.WithLabelValues(
@@ -42,7 +44,9 @@ func TestMetricsActorReceive(t *testing.T) {
 		},
 		{
 			name: "oor sent submitted",
-			msg:  &OORTransferSentMsg{Status: "submitted"},
+			msg: &OORTransferSentMsg{
+				Status: "submitted",
+			},
 			counter: func() float64 {
 				return testutil.ToFloat64(
 					OORTransfersSentTotal.WithLabelValues(
@@ -53,17 +57,23 @@ func TestMetricsActorReceive(t *testing.T) {
 		},
 		{
 			name: "oor received materialized",
-			msg:  &OORTransferReceivedMsg{Status: "materialized"},
+			msg: &OORTransferReceivedMsg{
+				Status: "materialized",
+			},
 			counter: func() float64 {
 				return testutil.ToFloat64(
 					OORTransfersReceivedTotal.
-						WithLabelValues("materialized"),
+						WithLabelValues(
+							"materialized",
+						),
 				)
 			},
 		},
 		{
 			name: "boarding submitted",
-			msg:  &BoardingEventMsg{Status: "submitted"},
+			msg: &BoardingEventMsg{
+				Status: "submitted",
+			},
 			counter: func() float64 {
 				return testutil.ToFloat64(
 					BoardingEventsTotal.WithLabelValues(
@@ -74,7 +84,9 @@ func TestMetricsActorReceive(t *testing.T) {
 		},
 		{
 			name: "background task error",
-			msg:  &BackgroundTaskErrorMsg{Task: "sweep_watcher"},
+			msg: &BackgroundTaskErrorMsg{
+				Task: "sweep_watcher",
+			},
 			counter: func() float64 {
 				return testutil.ToFloat64(
 					BackgroundTaskErrorsTotal.

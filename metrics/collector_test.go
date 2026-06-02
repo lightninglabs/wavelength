@@ -55,8 +55,16 @@ func TestSystemCollectorCollect(t *testing.T) {
 		{
 			name: "mixed statuses",
 			rows: []VTXOStatRow{
-				{Status: "live", Count: 3, TotalValue: 30000},
-				{Status: "spent", Count: 2, TotalValue: 20000},
+				{
+					Status:     "live",
+					Count:      3,
+					TotalValue: 30000,
+				},
+				{
+					Status:     "spent",
+					Count:      2,
+					TotalValue: 20000,
+				},
 				{
 					Status:     "unilateral_exit",
 					Count:      1,
@@ -86,7 +94,11 @@ darepod_vtxos_value_satoshis{status="unilateral_exit"} 5000
 		{
 			name: "only non-live statuses have zero spendable",
 			rows: []VTXOStatRow{
-				{Status: "spent", Count: 4, TotalValue: 9000},
+				{
+					Status:     "spent",
+					Count:      4,
+					TotalValue: 9000,
+				},
 				{
 					Status:     "forfeited",
 					Count:      2,
@@ -135,8 +147,7 @@ darepod_vtxos_value_satoshis{status="spent"} 9000
 				tc.wantSpendable
 			err := testutil.CollectAndCompare(
 				c, strings.NewReader(expfmt),
-				"darepod_vtxos",
-				"darepod_vtxos_value_satoshis",
+				"darepod_vtxos", "darepod_vtxos_value_satoshis",
 				"darepod_spendable_balance_satoshis",
 			)
 			require.NoError(t, err)

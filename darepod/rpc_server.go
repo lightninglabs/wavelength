@@ -34,6 +34,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/lwwallet"
+	"github.com/lightninglabs/darepo-client/metrics"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/serverconn"
@@ -1922,14 +1923,26 @@ func (r *RPCServer) Board(ctx context.Context, req *daemonrpc.BoardRequest) (
 				ctx, "Board skipped: no boarding UTXOs",
 			)
 
+			r.server.emitMetric(ctx, &metrics.BoardingEventMsg{
+				Status: "skipped",
+			})
+
 			return &daemonrpc.BoardResponse{
 				Status: "no_boarding_utxos",
 			}, nil
 
 		case strings.Contains(errStr, "too small after"):
+			r.server.emitMetric(ctx, &metrics.BoardingEventMsg{
+				Status: "failed",
+			})
+
 			return nil, status.Errorf(codes.FailedPrecondition,
 				"boarding balance too small: %v", err)
 		}
+
+		r.server.emitMetric(ctx, &metrics.BoardingEventMsg{
+			Status: "failed",
+		})
 
 		return nil, status.Errorf(codes.Internal, "board failed: %v",
 			err)
@@ -1947,6 +1960,10 @@ func (r *RPCServer) Board(ctx context.Context, req *daemonrpc.BoardRequest) (
 		btclog.Fmt("vtxo_amount", "%v",
 			boardResp.VTXOAmount),
 		slog.Int("vtxo_count", len(boardResp.VTXOAmounts)))
+
+	r.server.emitMetric(ctx, &metrics.BoardingEventMsg{
+		Status: "submitted",
+	})
 
 	return &daemonrpc.BoardResponse{
 		Status:    "registered",
@@ -1972,6 +1989,8 @@ func (r *RPCServer) JoinNextRound(ctx context.Context,
 	}
 
 	r.server.log.InfoS(ctx, "JoinNextRound accepted")
+
+	r.server.emitMetric(ctx, &metrics.RoundJoinedMsg{})
 
 	return &daemonrpc.JoinNextRoundResponse{
 		Status: "joined",
@@ -2163,6 +2182,13 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 				slog.String("idempotency_key", key),
 			)
 
+			// This is an idempotent replay: the original SendOOR
+			// already counted the submission, so we deliberately do
+			// NOT emit OORTransferSentMsg here. Counting replays
+			// would inflate oor_transfers_sent_total under any
+			// client retry loop even though no new transfer was
+			// initiated.
+			//
 			// This fast path returns before resolving the current
 			// request, so the recipient outpoint is intentionally
 			// omitted. Full request replay below can recompute it.
@@ -2418,6 +2444,10 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		// reused (only for wallet-selected inputs).
 		r.unlockSelectedVTXOsBestEffort(ctx, locked)
 
+		r.server.emitMetric(ctx, &metrics.OORTransferSentMsg{
+			Status: "failed",
+		})
+
 		return nil, status.Errorf(codes.Internal, "OOR transfer "+
 			"failed: %v", err)
 	}
@@ -2459,6 +2489,11 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		slog.Duration("change_output_duration",
 			changeOutputDuration),
 		slog.Duration("oor_actor_duration", oorActorDuration))
+
+	r.server.emitMetric(ctx, &metrics.OORTransferSentMsg{
+		SessionID: resp.SessionID.String(),
+		Status:    "submitted",
+	})
 
 	return &daemonrpc.SendOORResponse{
 		Status:             "submitted",

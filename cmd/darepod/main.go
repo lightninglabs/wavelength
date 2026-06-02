@@ -183,6 +183,8 @@ func newRootCmd() *cobra.Command {
 
 	registerPprofFlags(f, cfg)
 
+	registerMetricsFlags(f, cfg)
+
 	// Safety flag for mainnet operation.
 	f.Bool(
 		"allow-mainnet", cfg.AllowMainnet, "allow the daemon to "+
@@ -364,6 +366,20 @@ func registerPprofFlags(f *pflag.FlagSet, cfg *darepod.Config) {
 		"value passed to runtime.SetMutexProfileFraction at "+
 			"startup when greater than zero; zero leaves mutex "+
 			"profiling off",
+	)
+}
+
+// registerMetricsFlags registers the optional Prometheus metrics-server flag.
+// Metrics are disabled by default and only start when metrics.listen is set to
+// a non-empty address. The flag name matches the mapstructure config key, so
+// viper binds it without an explicit alias.
+func registerMetricsFlags(f *pflag.FlagSet, cfg *darepod.Config) {
+	f.String(
+		"metrics.listen", cfg.Metrics.ListenAddr, "address for the "+
+			"Prometheus /metrics HTTP server (e.g. "+
+			"127.0.0.1:9092); empty disables metrics. Exposes "+
+			"operational and balance data, so bind to a "+
+			"loopback or firewalled address only",
 	)
 }
 

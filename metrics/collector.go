@@ -57,7 +57,9 @@ var (
 		prometheus.BuildFQName(
 			namespace, "", "spendable_balance_satoshis",
 		),
-		"Total value in satoshis of spendable (live) VTXOs.", nil, nil,
+		"Total value in satoshis of spendable (live) VTXOs.",
+		nil,
+		nil,
 	)
 )
 
@@ -127,7 +129,6 @@ func (c *SystemCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	ch <- prometheus.MustNewConstMetric(
-		spendableBalanceDesc, prometheus.GaugeValue,
-		float64(spendable),
+		spendableBalanceDesc, prometheus.GaugeValue, float64(spendable),
 	)
 }

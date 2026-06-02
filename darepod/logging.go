@@ -40,6 +40,7 @@ var allSubsystems = []string{
 	SwapSubsystem,
 	WalletRPCSubsystem,
 	PprofSubsystem,
+	MetricsSubsystem,
 	"TXCF",
 	"UNRL",
 	VHTLCRecoverySubsystem,
@@ -65,6 +66,11 @@ const (
 	// debug server so its logs can be level-tuned independently of the
 	// main daemon logs.
 	PprofSubsystem = "PPRF"
+
+	// MetricsSubsystem is the subsystem tag used for the optional
+	// Prometheus metrics HTTP server so its logs can be level-tuned
+	// independently of the main daemon logs.
+	MetricsSubsystem = "PROM"
 )
 
 // SetupLoggersWithShutdownFn registers all subsystem loggers using a plain

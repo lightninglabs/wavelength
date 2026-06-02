@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/metrics"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -135,6 +136,17 @@ type IncomingVTXOHandlerConfig struct {
 	// a non-nil implementation to keep the unilateral exit path
 	// usable for received VTXOs (see bug-3 in BUGS_FOUND.md).
 	AncestryFetcher IncomingAncestryFetcher
+
+	// MetricsSink is an optional reference to the client-side metrics
+	// actor. When set, the handler emits OORTransferReceivedMsg once
+	// it knows the terminal outcome of an owned incoming VTXO:
+	// "materialized" after the descriptor is persisted, or "failed"
+	// when a relevant receive cannot be persisted. Emission lives here
+	// (not at the darepod routing boundary) because only this handler
+	// observes whether the event was relevant and the save succeeded;
+	// counting at adapt time would report success for events that are
+	// later ignored or fail to persist.
+	MetricsSink fn.Option[metrics.Sink]
 }
 
 // IncomingVTXOHandler materializes VTXOs from IncomingVTXOEvent
@@ -153,6 +165,26 @@ func NewIncomingVTXOHandler(
 		cfg: cfg,
 		log: cfg.Log.UnwrapOr(btclog.Disabled),
 	}
+}
+
+// emitReceived reports the terminal outcome of an owned incoming VTXO to
+// the metrics actor so oor_transfers_received_total reflects reality.
+// Status is "materialized" (persisted) or "failed" (a relevant receive
+// that could not be persisted). It is best-effort and fire-and-forget: a
+// Tell failure is logged at debug level and never fails the receive. The
+// pre-ownership ignore paths (non-CREATED events, malformed pushes,
+// scripts that are not ours) emit nothing — they are not transfers to
+// this wallet.
+func (h *IncomingVTXOHandler) emitReceived(ctx context.Context, status string) {
+	h.cfg.MetricsSink.WhenSome(func(sink metrics.Sink) {
+		msg := &metrics.OORTransferReceivedMsg{Status: status}
+		if err := sink.Tell(ctx, msg); err != nil {
+			h.log.DebugS(ctx, "Failed to emit received metric",
+				err,
+				slog.String("status", status),
+			)
+		}
+	})
 }
 
 // Receive processes IncomingVTXOEvent messages.
@@ -215,6 +247,10 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 		if errors.Is(err, sql.ErrNoRows) {
 			return fn.Ok[IncomingVTXOResp](nil)
 		}
+
+		// A real store failure means we could not process an
+		// incoming event; count it as a failed receive.
+		h.emitReceived(ctx, "failed")
 
 		return fn.Err[IncomingVTXOResp](
 			fmt.Errorf("lookup owned receive script: %w", err),
@@ -325,6 +361,8 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 	if h.cfg.VTXOStore != nil {
 		saveErr := h.cfg.VTXOStore.SaveVTXO(ctx, desc)
 		if saveErr != nil {
+			h.emitReceived(ctx, "failed")
+
 			return fn.Err[IncomingVTXOResp](
 				fmt.Errorf(
 					"save incoming VTXO %s: %w",
@@ -333,6 +371,12 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 			)
 		}
 	}
+
+	// The owned incoming VTXO is now persisted: count it as a
+	// materialized receive. This is the authoritative success point —
+	// the darepod routing boundary cannot observe it because dispatch
+	// to this handler is an async durable Tell.
+	h.emitReceived(ctx, "materialized")
 
 	// Notify the VTXO manager to spawn an actor.
 	if h.cfg.VTXOManager != nil {
