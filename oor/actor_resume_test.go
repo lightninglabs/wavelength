@@ -774,7 +774,7 @@ func TestOORClientActorResumeAfterServerCoSignedFromStore(t *testing.T) {
 		_, ok = finalStateMsg.State.(*Completed)
 
 		return ok
-	}, 5*time.Second, 50*time.Millisecond)
+	}, signingChainEventuallyTimeout, 50*time.Millisecond)
 }
 
 // TestOORClientActorResumeFromSnapshotSubmitSent verifies the client can resume
@@ -1146,7 +1146,7 @@ func TestOORClientActorDurableRestartWithRetryMetadata(t *testing.T) {
 		})
 
 		return resp.IsOk()
-	}, 5*time.Second, 50*time.Millisecond)
+	}, signingChainEventuallyTimeout, 50*time.Millisecond)
 
 	// The restarted actor should have emitted ScheduleRetryRequest
 	// (not SendSubmitPackageRequest) because the checkpoint had
@@ -1354,7 +1354,7 @@ func TestOORClientActorDurableRestartAutoResume(t *testing.T) {
 		default:
 			return false
 		}
-	}, 5*time.Second, 50*time.Millisecond)
+	}, signingChainEventuallyTimeout, 50*time.Millisecond)
 }
 
 // TestOORClientActorDurableRestartRetriesMarkInputsSpent asserts that a
@@ -1503,7 +1503,7 @@ func TestOORClientActorDurableRestartRetriesMarkInputsSpent(t *testing.T) {
 		_, awaitingLocalUpdate := got.State.(*AwaitingLocalVTXOUpdate)
 
 		return awaitingLocalUpdate
-	}, 5*time.Second, 50*time.Millisecond)
+	}, signingChainEventuallyTimeout, 50*time.Millisecond)
 
 	require.True(
 		t, handler2.sawScheduleRetry.Load(),
@@ -1540,7 +1540,7 @@ func TestOORClientActorDurableRestartRetriesMarkInputsSpent(t *testing.T) {
 		_, completed := got.State.(*Completed)
 
 		return completed
-	}, 5*time.Second, 50*time.Millisecond)
+	}, signingChainEventuallyTimeout, 50*time.Millisecond)
 
 	require.EqualValues(t, 2, completeSpendAttempts.Load())
 }

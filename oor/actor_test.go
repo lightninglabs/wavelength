@@ -24,6 +24,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// signingChainEventuallyTimeout bounds how long a test waits for the
+// asynchronous signing chain (StartTransfer -> durable signing-effect outbox ->
+// OutboxPublisher delivery -> SigningEffectActor signs -> ArkSignedEvent driven
+// back -> SubmitPackage emitted) to complete. Every hop commits a separate
+// durable SQLite transaction, each fsync'd (synchronous=full, fullfsync=true),
+// so the critical path is a sequence of disk syncs plus ECDSA/Schnorr signing.
+// Idle the chain finishes in well under a second, but under the race detector
+// on a loaded, slow CI runner it is ~10x slower and was overrunning the
+// previous 5s budget, surfacing as a spurious "Condition never satisfied"
+// flake. 30s matches the DB busy_timeout rationale (multi-actor contention
+// "can comfortably exceed 5s") and gives generous headroom without masking a
+// genuine hang — a real stall still fails the test, just later.
+const signingChainEventuallyTimeout = 30 * time.Second
+
 // testOutboxHandler is a minimal in-process outbox handler for client actor
 // tests. It simulates a server and wallet by returning follow-up events that
 // drive the FSM forward.
@@ -536,7 +550,7 @@ func TestOORClientActorStartTransferIdempotencyKeySurvivesRestart(
 		})
 
 		return resp.IsOk()
-	}, 5*time.Second, 50*time.Millisecond)
+	}, signingChainEventuallyTimeout, 50*time.Millisecond)
 
 	serverConn.mu.Lock()
 	messagesBeforeRetry := len(serverConn.messages)
@@ -1799,7 +1813,7 @@ func TestOORClientActorSigningViaEffectActor(t *testing.T) {
 
 		return req.Service == oorpb.ServiceName &&
 			req.Method == oorpb.MethodSubmitPackage
-	}, 5*time.Second, 10*time.Millisecond)
+	}, signingChainEventuallyTimeout, 10*time.Millisecond)
 }
 
 // TestIsTransportEventClassification verifies that isTransportEvent correctly
