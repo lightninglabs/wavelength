@@ -24,6 +24,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -1384,4 +1385,84 @@ func TestQueryRoundStatesEarlyStateOmitsCommitmentTxid(t *testing.T) {
 	require.Empty(t, got.CommitmentTxid)
 	require.Len(t, got.Vtxos, 1)
 	require.Equal(t, int64(42_000), got.Vtxos[0].AmountSat)
+}
+
+// TestUnrollInfeasibleError verifies each infeasibility reason maps to a
+// codes.FailedPrecondition gRPC error whose message names the concrete
+// figures the caller needs to act on.
+func TestUnrollInfeasibleError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		verdict  unroll.ExitFeasibility
+		contains []string
+	}{
+		{
+			name: "sweep below dust names value, fee, and floor",
+			verdict: unroll.ExitFeasibility{
+				Reason:             unroll.ExitSweepBelowDust,
+				VTXOAmountSat:      1,
+				SweepFeeSat:        200,
+				FeeRateSatPerVByte: 1,
+				NetRecoveredSat:    -199,
+				DustLimitSat:       330,
+			},
+			contains: []string{
+				"not viable", "cooperative leave", "330 sat",
+			},
+		},
+		{
+			name: "uneconomical names tx count and total cost",
+			verdict: unroll.ExitFeasibility{
+				Reason:               unroll.ExitUneconomical,
+				NumRecoveryTxs:       50,
+				TotalRecoveryCostSat: 30_000,
+				VTXOAmountSat:        20_000,
+			},
+			contains: []string{
+				"uneconomical", "50 transaction",
+				"cooperative leave",
+			},
+		},
+		{
+			name: "underfunded names required and confirmed sats",
+			verdict: unroll.ExitFeasibility{
+				Reason: unroll.ExitWalletUnderfunded,
+
+				CPFPFeeTotalSat:    6_200,
+				NumRecoveryTxs:     4,
+				WalletConfirmedSat: 100,
+			},
+			contains: []string{
+				"wallet balance too low", "Deposit more",
+			},
+		},
+		{
+			name: "too few inputs names required and usable count",
+			verdict: unroll.ExitFeasibility{
+				Reason: unroll.ExitWalletTooFewInputs,
+
+				RequiredWalletInputs: 2,
+				WalletUsableInputs:   1,
+			},
+			contains: []string{
+				"insufficient", "one per ancestry path",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := unrollInfeasibleError(tc.verdict)
+			require.Equal(
+				t, codes.FailedPrecondition, status.Code(err),
+			)
+			for _, sub := range tc.contains {
+				require.Contains(t, err.Error(), sub)
+			}
+		})
+	}
 }
