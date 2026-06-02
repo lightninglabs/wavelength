@@ -274,6 +274,29 @@ func (m *persistRecordResultMsg) MessageType() string {
 // registryMsgSealed seals persistRecordResultMsg into the registry surface.
 func (m *persistRecordResultMsg) registryMsgSealed() {}
 
+// childAdmissionResultMsg reports the eventual result of a child start
+// request after the registry's synchronous admission wait timed out.
+type childAdmissionResultMsg struct {
+	actor.BaseMessage
+
+	// Outpoint identifies the target whose start completed late.
+	Outpoint wire.OutPoint
+
+	// ActorID identifies the child that produced the late result.
+	ActorID string
+
+	// Err is populated when the child start failed.
+	Err string
+}
+
+// MessageType returns the stable message type identifier.
+func (m *childAdmissionResultMsg) MessageType() string {
+	return "childAdmissionResultMsg"
+}
+
+// registryMsgSealed seals childAdmissionResultMsg into the registry surface.
+func (m *childAdmissionResultMsg) registryMsgSealed() {}
+
 // restoreNonTerminalMsg drives the boot-time restore of every non-terminal
 // record through the registry actor's goroutine. Sending it via Ask keeps
 // all mutations of r.active and r.pending serialized with concurrent
@@ -327,6 +350,9 @@ func (r *registryBehavior) Receive(ctx context.Context,
 
 	case *persistRecordResultMsg:
 		return r.handlePersistRecordResult(ctx, req)
+
+	case *childAdmissionResultMsg:
+		return r.handleChildAdmissionResult(ctx, req)
 
 	case *restoreNonTerminalMsg:
 		return r.handleRestoreNonTerminal(ctx)
@@ -517,42 +543,42 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 	)
 	defer cancelStart()
 
-	_, err = child.Ref().Ask(startCtx, startReq).Await(startCtx).Unpack()
+	startFuture := child.Ref().Ask(context.WithoutCancel(ctx), startReq)
+	_, err = startFuture.Await(startCtx).Unpack()
 	if err != nil {
 		// Two failure classes here, treated very differently:
 		//
-		//   1. Cancellation race — the admission context (or the
-		//      child's own actor context) ended before the child
-		//      committed its first message. The pending row is
-		//      already durable, so re-issuing the StartUnrollRequest
-		//      via a fire-and-forget Tell hands the work off to the
-		//      child's durable mailbox poll loop. Caller still sees
-		//      Created=true because the job IS admitted; the FSM
-		//      will catch up off the persisted message.
+		//   1. Cancellation race — the admission context ended
+		//      before the child responded. baselib/actor's durable
+		//      Ask persists the message inside mailbox.Send BEFORE
+		//      returning the future, so a context error from Await
+		//      proves only that we stopped waiting; the message is
+		//      already in the child's durable mailbox and the FSM
+		//      will pick it up via the normal claim loop. We do
+		//      NOT re-issue the request via Tell here: that would
+		//      enqueue a second copy of an identical
+		//      StartUnrollRequest, and the original Ask future may
+		//      still complete (success or failure) inside the
+		//      actor afterwards with no one listening. Returning
+		//      Created=true is honest — the job IS durably
+		//      admitted. The child's eventual terminal transition
+		//      (success or failure) flows back through
+		//      notifyRegistryIfTerminal so the registry record
+		//      cannot stay PhasePending forever.
 		//
 		//   2. Real start error — proof assembly, store, planner.
-		//      Hide it under a Created=true would silently strand
-		//      the user's funds in unilateral_exit with no progress.
-		//      We mark the durable row PhaseFailed so GetUnrollStatus
-		//      surfaces a terminal status instead of "not found".
+		//      Hiding it under a Created=true would silently strand
+		//      the user's funds in unilateral_exit with no
+		//      progress. Mark the durable row PhaseFailed so
+		//      GetUnrollStatus surfaces a terminal status.
 		if isCancellationRace(err) {
-			tellErr := child.Ref().Tell(
-				context.WithoutCancel(ctx), startReq,
+			r.watchChildAdmissionResult(
+				context.WithoutCancel(ctx), req.Outpoint, child,
+				startFuture,
 			)
-			if tellErr != nil {
-				r.failAdmittedChild(
-					ctx, req.Outpoint, child,
-					fmt.Errorf("requeue start child: %w",
-						tellErr),
-				)
-
-				return fn.Err[RegistryResp](
-					fmt.Errorf("start child: %w", err),
-				)
-			}
-
-			r.log.WarnS(ctx, "Requeued unroll child start "+
-				"after admission context ended", err,
+			r.log.WarnS(ctx, "Unroll child start did not "+
+				"respond before admission timeout; trusting "+
+				"durable enqueue", err,
 				slog.String("outpoint", req.Outpoint.String()),
 				slog.String("actor_id", child.Ref().ID()),
 			)
@@ -620,6 +646,61 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 	})
 }
 
+// watchChildAdmissionResult waits for a previously enqueued child start to
+// finish after the registry has already returned Created=true to the caller.
+// The wait runs outside the registry actor goroutine, then reports back via a
+// normal registry message so r.active / r.pending mutations remain serialized.
+func (r *registryBehavior) watchChildAdmissionResult(ctx context.Context,
+	target wire.OutPoint, child *VTXOUnrollActor,
+	future actor.Future[Resp]) {
+
+	actorID := child.Ref().ID()
+	go func() {
+		_, err := future.Await(ctx).Unpack()
+		if err == nil || isCancellationRace(err) ||
+			errors.Is(err, actor.ErrActorTerminated) {
+			return
+		}
+
+		tellErr := r.selfRef.Tell(ctx,
+			&childAdmissionResultMsg{
+				Outpoint: target,
+				ActorID:  actorID,
+				Err:      err.Error(),
+			},
+		)
+		if tellErr != nil {
+			r.log.WarnS(
+				ctx,
+				"Failed to report late unroll child start "+
+					"result",
+				tellErr,
+				slog.String("outpoint", target.String()),
+				slog.String("actor_id", actorID),
+			)
+		}
+	}()
+}
+
+// handleChildAdmissionResult converts a late child start failure into the
+// same terminal registry state that a synchronous start failure would have
+// produced.
+func (r *registryBehavior) handleChildAdmissionResult(ctx context.Context,
+	req *childAdmissionResultMsg) fn.Result[RegistryResp] {
+
+	child, ok := r.active[req.Outpoint]
+	if !ok || child.Ref().ID() != req.ActorID {
+		return fn.Ok[RegistryResp](&RegistryAckResp{})
+	}
+
+	r.failAdmittedChild(
+		ctx, req.Outpoint, child, fmt.Errorf("start child: %s",
+			req.Err),
+	)
+
+	return fn.Ok[RegistryResp](&RegistryAckResp{})
+}
+
 // failAdmittedChild records a terminal failure for a child that already has
 // a durable pending row. This keeps GetUnrollStatus from falling back to
 // "not found" after VTXO ownership has moved to unilateral exit.
@@ -660,10 +741,10 @@ func (r *registryBehavior) failAdmittedChild(ctx context.Context,
 }
 
 // isCancellationRace reports whether admission should preserve the pending
-// row and retry instead of converting the job into a deterministic failure.
-//
-// Three error classes count as the same "lifecycle ended too early"
-// signal:
+// row and trust the durable mailbox instead of converting the job into a
+// deterministic failure. It covers only the cases where mailbox.Send is
+// known to have completed (the durable enqueue happened) and the future's
+// Await stopped waiting:
 //
 //   - context.Canceled: the admission ctx (RPC ctx via WithoutCancel +
 //     WithTimeout) reached its bound while the child was still
@@ -672,19 +753,15 @@ func (r *registryBehavior) failAdmittedChild(ctx context.Context,
 //   - context.DeadlineExceeded: same shape as Canceled but driven by the
 //     WithTimeout cap rather than an explicit cancel. Same handoff.
 //
-//   - actor.ErrActorTerminated: the child actor's own ctx ended (e.g.
-//     during a fast-shutdown race or a follow-on Stop). The durable
-//     mailbox still holds the message, so RestoreNonTerminal on the
-//     next boot will respawn the actor and re-process the persisted
-//     StartUnrollRequest.
-//
-// All three are recoverable via the durable retry path; treating them
-// as terminal failure would strand the VTXO in unilateral_exit with no
-// surviving registry record after eviction.
+// actor.ErrActorTerminated is intentionally NOT classified as a race:
+// baselib/actor's durable Ask short-circuits and returns that error
+// BEFORE calling mailbox.Send when the actor's own ctx is already done,
+// so there is no persisted message to trust. Letting it fall through to
+// failAdmittedChild surfaces a deterministic terminal record instead of
+// pretending the job is in flight.
 func isCancellationRace(err error) bool {
 	return errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded) ||
-		errors.Is(err, actor.ErrActorTerminated)
+		errors.Is(err, context.DeadlineExceeded)
 }
 
 // handleGetStatus answers a status probe from the registry's cached
@@ -937,6 +1014,7 @@ func (r *registryBehavior) handleRestoreNonTerminal(
 		})
 	}
 
+	var restoreErrs []error
 	for i := range records {
 		record := records[i]
 		if _, ok := r.active[record.TargetOutpoint]; ok {
@@ -958,6 +1036,14 @@ func (r *registryBehavior) handleRestoreNonTerminal(
 				slog.String("actor_id", record.ActorID),
 			)
 
+			restoreErrs = append(
+				restoreErrs,
+				fmt.Errorf(
+					"%s: %w",
+					record.TargetOutpoint.String(), err,
+				),
+			)
+
 			continue
 		}
 
@@ -968,6 +1054,14 @@ func (r *registryBehavior) handleRestoreNonTerminal(
 		// without an extra store lookup, and so handleGetStatus
 		// answers from cache while the restored child runs.
 		r.pending[record.TargetOutpoint] = cloneRegistryRecord(record)
+	}
+
+	if len(restoreErrs) > 0 {
+		return fn.Ok[RegistryResp](&restoreNonTerminalResp{
+			Err: fmt.Errorf("restore %d unroll job(s): %w",
+				len(restoreErrs), errors.Join(restoreErrs...)).
+				Error(),
+		})
 	}
 
 	return fn.Ok[RegistryResp](&restoreNonTerminalResp{})

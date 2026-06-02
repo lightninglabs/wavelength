@@ -245,6 +245,20 @@ func (b *behavior) handleEvent(ctx context.Context,
 	}
 
 	if b.inTerminalState() {
+		// The FSM is already terminal — either we reached this
+		// state inside the current actor lifetime and have nothing
+		// new to do, or we just restored from a terminal checkpoint
+		// on boot and the registry's view is still the older
+		// non-terminal record. notifyRegistryIfTerminal is a no-op
+		// in the first case (terminalNotified short-circuits it)
+		// and the load-bearing call in the second: without it, the
+		// restored child sits in r.active forever while
+		// handleGetStatus serves the stale non-terminal record from
+		// r.pending. terminalNotified is in-memory and resets on
+		// every restart, so a restored terminal checkpoint always
+		// drives one notification through.
+		b.notifyRegistryIfTerminal(ctx)
+
 		return fn.Ok[Resp](&AckResp{})
 	}
 

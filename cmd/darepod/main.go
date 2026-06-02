@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,13 +70,9 @@ func newRootCmd() *cobra.Command {
 
 			// Wire bitcoind package submitter for V3
 			// ephemeral anchor package relay (unroll).
-			host := v.GetString("bitcoind.host")
-			user := v.GetString("bitcoind.user")
-			pass := v.GetString("bitcoind.pass")
-			if host != "" {
-				cfg.PackageSubmitter = bitcoindrpc.New(
-					host, user, pass,
-				)
+			err := configureBitcoindSubmitter(v, cfg)
+			if err != nil {
+				return err
 			}
 
 			configureSwapRuntime(cfg)
@@ -161,18 +159,7 @@ func newRootCmd() *cobra.Command {
 			"at startup (lwwallet/btcwallet)",
 	)
 
-	// Optional bitcoind direct connection for package relay.
-	// Required for V3 ephemeral anchor transactions (unroll).
-	f.String(
-		"bitcoind.host", "",
-		"bitcoind RPC address (host:port) for submitpackage support",
-	)
-	f.String("bitcoind.user", "",
-		"bitcoind RPC username",
-	)
-	f.String("bitcoind.pass", "",
-		"bitcoind RPC password",
-	)
+	registerBitcoindFlags(f)
 
 	// Daemon RPC server flags.
 	f.String(
@@ -571,4 +558,186 @@ func configureDaemonLogWriter(cfg *darepod.Config,
 	cfg.LogWriter = io.MultiWriter(bestEffortWriter{stdout}, logFile)
 
 	return logFile, nil
+}
+
+// registerBitcoindFlags registers optional direct bitcoind package relay
+// flags. Direct bitcoind relay is used for V3 ephemeral anchor transactions.
+func registerBitcoindFlags(f *pflag.FlagSet) {
+	f.String(
+		"bitcoind.host", "",
+		"bitcoind RPC address (host:port) for submitpackage support",
+	)
+	f.String("bitcoind.user", "",
+		"bitcoind RPC username",
+	)
+	f.String(
+		"bitcoind.pass", "", "bitcoind RPC password (prefer "+
+			"bitcoind.rpccookie: command-line passwords are "+
+			"visible to other users via 'ps')",
+	)
+	f.String(
+		"bitcoind.rpccookie", "", "path to bitcoind's '.cookie' "+
+			"auth file. Mutually exclusive with "+
+			"bitcoind.user/bitcoind.pass; preferred because "+
+			"the password never appears in process args or "+
+			"persistent config",
+	)
+	f.String(
+		"bitcoind.tlscertpath", "", "path to a PEM CA certificate "+
+			"for HTTPS bitcoind RPC. Bare bitcoind.host values "+
+			"use https:// when this is set",
+	)
+}
+
+// configureBitcoindSubmitter wires the optional bitcoind package
+// submitter onto cfg, reading the bitcoind.* config keys from v.
+// Bitcoind support is opt-in: when bitcoind.host is unset the daemon
+// runs without a direct submitpackage path (lnd v3 relay is used
+// instead when available).
+func configureBitcoindSubmitter(v *viper.Viper, cfg *darepod.Config) error {
+	host := v.GetString("bitcoind.host")
+	if host == "" {
+		return nil
+	}
+
+	user, pass, err := resolveBitcoindAuth(
+		v.GetString("bitcoind.user"), v.GetString("bitcoind.pass"),
+		v.GetString("bitcoind.rpccookie"),
+	)
+	if err != nil {
+		return err
+	}
+
+	tlsCertPath := v.GetString("bitcoind.tlscertpath")
+	submitter, err := bitcoindrpc.NewWithOptions(
+		host, user, pass, bitcoindrpc.WithTLSCertPath(tlsCertPath),
+	)
+	if err != nil {
+		return err
+	}
+
+	// Plain HTTP with Basic Auth exposes the cookie/password and the
+	// submitpackage payload to anyone observing the network path. We
+	// only warn (rather than refuse) because some operators deliberately
+	// run bitcoind over a trusted local network; HTTPS can be enabled by
+	// setting bitcoind.host to an https:// URL or by providing
+	// bitcoind.tlscertpath with a bare host.
+	if !isLoopbackHost(host) &&
+		!isBitcoindHTTPSEndpoint(host, tlsCertPath) {
+
+		fmt.Fprintf(
+			os.Stderr, "WARNING: bitcoind.host %q is not "+
+				"loopback. The RPC connection is plain HTTP "+
+				"with Basic Auth, so credentials and "+
+				"submitpackage payloads are sent in "+
+				"cleartext over the network. Run bitcoind "+
+				"on the same host (127.0.0.1) or front it "+
+				"with a TLS reverse proxy reachable only "+
+				"over a trusted link.\n", host,
+		)
+	}
+
+	cfg.PackageSubmitter = submitter
+
+	return nil
+}
+
+// isLoopbackHost reports whether the given bitcoind RPC address points
+// at the local machine. It accepts a full URL ("http://...", "https://
+// ..."), a bare "host:port", or a bare host. URLs are parsed via
+// url.Parse + u.Hostname() so bracketed IPv6 addresses ("[::1]:8332")
+// and trailing paths ("127.0.0.1:8332/wallet/foo") are handled
+// correctly. The "localhost" hostname is treated as loopback even
+// though it is technically a name lookup, matching the expectation
+// operators have when they write it in a config file.
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+
+	// A bare IP literal (including IPv6 like "::1") doesn't parse
+	// usefully through url.Parse — "http://::1" treats the ":" as
+	// part of the scheme delimiter. Try the direct ParseIP path
+	// first so this case is handled before any URL parsing.
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+
+	// Synthesise a scheme when missing so url.Parse populates the
+	// authority component (otherwise the input ends up in Path).
+	// This is what makes bracketed IPv6 like "[::1]:8332" parse
+	// correctly via u.Hostname(), which strips the brackets.
+	parseURL := host
+	if !strings.HasPrefix(host, "http://") &&
+		!strings.HasPrefix(host, "https://") {
+
+		parseURL = "http://" + host
+	}
+
+	u, err := url.Parse(parseURL)
+	if err != nil {
+		return false
+	}
+
+	raw := u.Hostname()
+	if raw == "localhost" {
+		return true
+	}
+
+	ip := net.ParseIP(raw)
+
+	return ip != nil && ip.IsLoopback()
+}
+
+// isBitcoindHTTPSEndpoint reports whether configureBitcoindSubmitter
+// will configure an HTTPS endpoint for the given host/TLS settings.
+func isBitcoindHTTPSEndpoint(host, tlsCertPath string) bool {
+	if strings.HasPrefix(host, "https://") {
+		return true
+	}
+	if strings.Contains(host, "://") {
+		return false
+	}
+
+	return tlsCertPath != ""
+}
+
+// resolveBitcoindAuth picks the bitcoind RPC credentials to use, given
+// the operator-supplied user/pass values and an optional path to a
+// bitcoind '.cookie' file. Cookie auth is preferred because it
+// removes two leak paths that plain user/pass have: passwords on the
+// command line are visible to every local process via 'ps', and
+// passwords in a persistent config file survive across restarts and
+// backups. The cookie file is regenerated on every bitcoind startup
+// and is mode 0600 by bitcoind. Mutual exclusion mirrors lnd's
+// behaviour and prevents silent precedence surprises.
+func resolveBitcoindAuth(user, pass, cookiePath string) (string, string,
+	error) {
+
+	if cookiePath != "" && (user != "" || pass != "") {
+		return "", "", fmt.Errorf("bitcoind.rpccookie is mutually " +
+			"exclusive with bitcoind.user / bitcoind.pass; set " +
+			"one or the other")
+	}
+
+	if cookiePath == "" {
+		return user, pass, nil
+	}
+
+	//nolint:gosec // G304: cookie path comes from operator config.
+	data, err := os.ReadFile(cookiePath)
+	if err != nil {
+		return "", "", fmt.Errorf("read bitcoind cookie %q: %w",
+			cookiePath, err)
+	}
+
+	// bitcoind writes "<user>:<password>" with no trailing newline,
+	// but tolerate stray whitespace from manual edits or copies.
+	parts := strings.SplitN(strings.TrimSpace(string(data)), ":", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("bitcoind cookie %q has unexpected "+
+			"format: want <user>:<password>", cookiePath)
+	}
+
+	return parts[0], parts[1], nil
 }

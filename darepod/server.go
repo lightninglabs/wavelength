@@ -4584,10 +4584,39 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		return err
 	}
 
-	// 3. Restore non-terminal jobs from durable state.
+	// 3. Restore non-terminal jobs from durable state. A failure here
+	// is fatal at boot: any non-terminal record we silently drop is a
+	// VTXO that already transitioned to unilateral_exit but whose
+	// recovery actor will not be respawned by RestoreNonTerminal or
+	// re-driven by handleEnsure (the dormant non-terminal record makes
+	// EnsureUnroll return Created=false). The previous WarnS-only
+	// posture let unilateral-exit recovery sit dormant until manual
+	// intervention; for VTXOs near expiry that translates to lost
+	// funds. Fail closed so the operator notices.
 	if err := registry.RestoreNonTerminal(ctx); err != nil {
-		s.log.WarnS(ctx,
-			"Failed to restore unroll jobs", err)
+		return fmt.Errorf("restore non-terminal unroll jobs: %w", err)
+	}
+
+	// 3a. Convergent boot-time recovery for VTXOs that are already in
+	// VTXOStatusUnilateralExit in the VTXO store but have no matching
+	// unroll registry record. The two writes are not atomic: the VTXO
+	// actor flips status in its own DB tx and then Tells the chain
+	// resolver, which eventually triggers a separate registry
+	// UpsertRecord. A crash, full mailbox, or context cancel between
+	// those steps leaves the VTXO terminal-from-the-manager's
+	// perspective (it will not respawn a child actor) while the
+	// registry has nothing to drive forward. Without this scan such a
+	// VTXO stays stranded until the next manual EnsureUnroll. The
+	// scan is convergent: EnsureUnrollRequest dedups against
+	// r.active / r.pending / store.GetRecord, so a target that
+	// already has a record (e.g. just restored above) is a benign
+	// no-op. Per-target failures are collected and returned after the
+	// scan so startup fails closed instead of serving traffic with a
+	// known-stranded VTXO.
+	if err := s.recoverOrphanedUnrollJobs(
+		ctx, vtxoStore, registry,
+	); err != nil {
+		return fmt.Errorf("recover orphaned unroll jobs: %w", err)
 	}
 	if err := recoverySvc.RestoreNonTerminal(ctx); err != nil {
 		s.log.WarnS(ctx, "Failed to restore vhtlc recovery jobs",
@@ -4615,6 +4644,112 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	}
 
 	s.log.InfoS(ctx, "Unroll subsystem initialized")
+
+	return nil
+}
+
+// recoverOrphanedUnrollJobs closes the atomicity gap between the VTXO
+// store's status flip to VTXOStatusUnilateralExit and the unroll
+// registry's UpsertRecord (#400). It lists every VTXO that the store
+// believes is already exiting and admits an EnsureUnrollRequest for
+// each so the registry's dedup path (r.active / r.pending /
+// Store.GetRecord) either confirms an existing record or spawns a
+// fresh recovery actor.
+//
+// Whole-scan failures (e.g. the VTXO store query itself errors) are
+// fatal at the caller: without a recovery scan we have no other
+// trigger for an orphaned VTXO until the next manual EnsureUnroll.
+// Per-target failures are collected and returned after the scan so startup
+// fails closed instead of serving traffic while known unilateral-exit VTXOs
+// remain stranded.
+func (s *Server) recoverOrphanedUnrollJobs(ctx context.Context,
+	vtxoStore vtxo.VTXOStore, registry *unroll.UnrollRegistryActor) error {
+
+	descs, err := vtxoStore.ListVTXOsByStatus(
+		ctx, vtxo.VTXOStatusUnilateralExit,
+	)
+	if err != nil {
+		return fmt.Errorf("list unilateral-exit VTXOs: %w", err)
+	}
+
+	if len(descs) == 0 {
+		return nil
+	}
+
+	ref := registry.Ref()
+	recovered := 0
+	var recoveryErrs []error
+	for _, desc := range descs {
+		op := desc.Outpoint
+
+		resp, askErr := ref.Ask(ctx, &unroll.EnsureUnrollRequest{
+			Outpoint: op,
+			Trigger:  unroll.TriggerRestart,
+		}).Await(ctx).Unpack()
+		if askErr != nil {
+			s.log.WarnS(ctx, "Failed to recover orphaned "+
+				"unroll job; VTXO remains stranded until "+
+				"next boot", askErr,
+				slog.String("outpoint", op.String()),
+			)
+
+			if ctx.Err() != nil {
+				return fmt.Errorf("orphan recovery aborted: %w",
+					ctx.Err())
+			}
+
+			recoveryErrs = append(
+				recoveryErrs,
+				fmt.Errorf(
+					"%s: %w", op.String(), askErr,
+				),
+			)
+
+			continue
+		}
+
+		// EnsureUnrollRequest is defined to return *EnsureUnrollResp
+		// on success, so a successful Ask + a different concrete
+		// type would mean the registry contract changed without
+		// this call site catching up. Treat it as a recovery
+		// failure rather than silently mis-counting.
+		ensureResp, ok := resp.(*unroll.EnsureUnrollResp)
+		if !ok {
+			s.log.WarnS(ctx, "Unroll registry returned an "+
+				"unexpected response type during orphan "+
+				"recovery; treating as failure", nil,
+				slog.String("outpoint", op.String()),
+				slog.String(
+					"response_type",
+					fmt.Sprintf("%T", resp),
+				),
+			)
+
+			recoveryErrs = append(
+				recoveryErrs,
+				fmt.Errorf(
+					"%s: unexpected response type %T",
+					op.String(), resp,
+				),
+			)
+
+			continue
+		}
+		if ensureResp.Created {
+			recovered++
+		}
+	}
+
+	if recovered > 0 {
+		s.log.InfoS(ctx, "Recovered orphaned unroll jobs",
+			slog.Int("count", recovered),
+			slog.Int("scanned", len(descs)),
+		)
+	}
+	if len(recoveryErrs) > 0 {
+		return fmt.Errorf("recover %d orphaned unroll job(s): %w",
+			len(recoveryErrs), errors.Join(recoveryErrs...))
+	}
 
 	return nil
 }
