@@ -226,6 +226,12 @@ replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-d
 // Use local baselib for development and CI.
 replace github.com/lightninglabs/darepo-client/baselib => ./baselib
 
+replace github.com/lightningnetwork/lnd => ../third_party/lnd
+
+replace github.com/lightningnetwork/lnd/queue => ../third_party/lnd/queue
+
+replace github.com/lightningnetwork/lnd/sqldb => ../third_party/lnd/sqldb
+
 // Keep btcwallet aligned with the 0.21 lnd/lndclient stack while
 // taproot-assets still requires the released v0.16.17 tag.
 replace github.com/btcsuite/btcwallet => github.com/btcsuite/btcwallet v0.16.17-0.20260213031108-70a94ea39e9c

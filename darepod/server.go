@@ -41,6 +41,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/lndbackend"
+	"github.com/lightninglabs/darepo-client/lndruntime"
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
@@ -55,16 +56,20 @@ import (
 	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/vhtlcrecovery/coordinator"
 	"github.com/lightninglabs/darepo-client/vhtlcrecovery/unrollpolicy"
+	"github.com/lightninglabs/darepo-client/virtualchannel"
+	vcunrollpolicy "github.com/lightninglabs/darepo-client/virtualchannel/unrollpolicy"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/darepo-client/walletcore"
 	"github.com/lightninglabs/lndclient"
+	lnd "github.com/lightningnetwork/lnd"
 	lndbuild "github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/verrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/signal"
@@ -180,12 +185,17 @@ type Server struct {
 	db            *db.SqliteStore
 	deliveryStore actor.DeliveryStore
 	vtxoStore     *db.VTXOPersistenceStore
+	vcStore       *db.VirtualChannelStoreDB
 	roundStore    *db.RoundPersistenceStore
 	ueStore       *db.UnilateralExitPersistenceStore
 
 	// lnd holds the lndclient connection when wallet.type is "lnd".
 	// It is None in lwwallet mode.
 	lnd fn.Option[*lndclient.GrpcLndServices]
+
+	// integratedLnd holds the in-process lnd runtime when lnd.integrated
+	// is enabled.
+	integratedLnd *lndruntime.Runtime
 
 	// lwWallet holds the lightweight wallet instance when
 	// wallet.type is "lwwallet". It is None in lnd mode.
@@ -772,13 +782,32 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	s.chainParams = chainParams
 
 	// -------------------------------------------------------
-	// 1. Initialize wallet backend (lnd or lwwallet).
+	// 1. Open durable stores needed by wallet hooks.
+	// -------------------------------------------------------
+	if err := s.initDatabase(ctx); err != nil {
+		return err
+	}
+
+	dbStore := db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(),
+		s.subLogger(db.Subsystem),
+	)
+	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
+	s.vcStore = dbStore.NewVirtualChannelStore()
+
+	// -------------------------------------------------------
+	// 2. Initialize wallet backend (lnd or lwwallet).
 	// -------------------------------------------------------
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLnd:
 		if err := s.initLndBackend(ctx); err != nil {
 			return err
 		}
+		defer func() {
+			if s.integratedLnd != nil {
+				s.integratedLnd.Shutdown()
+			}
+		}()
 		defer s.lnd.UnsafeFromSome().Close()
 
 	case WalletTypeLwwallet:
@@ -959,19 +988,8 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	}
 
 	// -------------------------------------------------------
-	// 5. Open the database and create the delivery store.
+	// 5. Start database-dependent actors.
 	// -------------------------------------------------------
-	if err := s.initDatabase(ctx); err != nil {
-		return err
-	}
-
-	// Create the VTXO store for RPC queries (ListVTXOs, GetBalance).
-	dbStore := db.NewStore(
-		s.db.DB, s.db.Queries, s.db.Backend(),
-		s.subLogger(db.Subsystem),
-	)
-	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
-
 	// Start the ledger accounting actor. This must happen after
 	// the DB and delivery store are ready but does not depend on
 	// the wallet being unlocked.
@@ -1202,6 +1220,10 @@ func (s *Server) runWalletReadyHooks(ctx context.Context) error {
 // initLndBackend connects to the lnd node and populates the server's
 // lnd connection, chain params, and marks the wallet as ready.
 func (s *Server) initLndBackend(ctx context.Context) error {
+	if err := s.startIntegratedLnd(ctx); err != nil {
+		return err
+	}
+
 	s.log.InfoS(ctx, "Connecting to lnd",
 		"host", s.cfg.Lnd.Host)
 
@@ -1222,6 +1244,85 @@ func (s *Server) initLndBackend(ctx context.Context) error {
 
 	// In lnd mode the wallet is immediately ready.
 	s.markWalletReady()
+
+	return nil
+}
+
+// startIntegratedLnd starts lnd in-process when lnd.integrated is enabled.
+func (s *Server) startIntegratedLnd(ctx context.Context) error {
+	if s.cfg.Lnd == nil || s.cfg.Lnd.Integrated == nil ||
+		!s.cfg.Lnd.Integrated.Enabled {
+		return nil
+	}
+	if s.integratedLnd != nil {
+		return nil
+	}
+
+	integratedCfg := s.cfg.Lnd.Integrated
+	walletMode := lndruntime.WalletModeUnlock
+	if integratedCfg.CreateWallet {
+		walletMode = lndruntime.WalletModeCreateOrUnlock
+	}
+
+	var auxComponents lnd.AuxComponents
+	if integratedCfg.AuxComponents != nil {
+		auxComponents = *integratedCfg.AuxComponents
+	} else {
+		if s.vcStore == nil {
+			return fmt.Errorf("virtual channel store not " +
+				"initialized")
+		}
+
+		aux, err := virtualchannel.BuildAuxComponents(
+			virtualchannel.MaterializingPublishInterceptorConfig{
+				Store: s.vcStore,
+				Materializer: newVirtualChannelBackingMaterializer(
+					func() (
+
+						actor.ActorRef[
+							unroll.RegistryMsg,
+							unroll.RegistryResp,
+						],
+						bool) {
+
+						if s.unrollRegistry == nil {
+							return nil, false
+						}
+
+						return s.unrollRegistry.Ref(), true
+					},
+				),
+				Context: func() context.Context {
+					return ctx
+				},
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("build virtual channel lnd hooks: %w",
+				err)
+		}
+
+		auxComponents = *aux
+	}
+
+	rt, err := lndruntime.Start(ctx, lndruntime.Config{
+		Args:           integratedCfg.Args,
+		AuxComponents:  auxComponents,
+		WalletMode:     walletMode,
+		WalletPassword: []byte(integratedCfg.WalletPassword),
+		ReadyTimeout:   integratedCfg.ReadyTimeout,
+	})
+	if err != nil {
+		return fmt.Errorf("start integrated lnd: %w", err)
+	}
+
+	s.integratedLnd = rt
+	s.cfg.Lnd.Host = rt.Address()
+	s.cfg.Lnd.TLSPath = rt.TLSPath()
+	s.cfg.Lnd.MacaroonPath = rt.MacaroonPath()
+
+	s.log.InfoS(ctx, "Integrated lnd started",
+		"host", s.cfg.Lnd.Host)
 
 	return nil
 }
@@ -2143,7 +2244,7 @@ func (s *Server) connectLnd(ctx context.Context) (*lndclient.GrpcLndServices,
 		rpcTimeout = DefaultRPCTimeout
 	}
 
-	return lndclient.NewLndServices(&lndclient.LndServicesConfig{
+	cfg := &lndclient.LndServicesConfig{
 		LndAddress:            s.cfg.Lnd.Host,
 		Network:               network,
 		CustomMacaroonPath:    s.cfg.Lnd.MacaroonPath,
@@ -2152,7 +2253,23 @@ func (s *Server) connectLnd(ctx context.Context) (*lndclient.GrpcLndServices,
 		BlockUntilUnlocked:    true,
 		CallerCtx:             ctx,
 		RPCTimeout:            rpcTimeout,
-	})
+	}
+	if s.cfg.Lnd.Integrated != nil && s.cfg.Lnd.Integrated.Enabled {
+		cfg.CheckVersion = integratedLndClientVersion()
+	}
+
+	return lndclient.NewLndServices(cfg)
+}
+
+// integratedLndClientVersion relaxes lndclient's build-tag check for
+// in-process lnd. The binary already compiled the subserver packages used by
+// darepod, while lnd's version RPC only reports command-line build tags.
+func integratedLndClientVersion() *verrpc.Version {
+	return &verrpc.Version{
+		AppMajor: 0,
+		AppMinor: 19,
+		AppPatch: 0,
+	}
 }
 
 // dialServer establishes a gRPC connection to the ark operator's mailbox
@@ -4531,9 +4648,16 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		Wallet:                     unrollWallet,
 		Log:                        fn.Some(s.subLogger("UNRL")),
 		MaxSweepFeeRateSatPerVByte: s.unrollMaxFeeRate(),
-		ExitSpendPolicyResolver: unrollpolicy.ExitSpendPolicyResolver{
-			Jobs:     recoveryStore,
-			Preimage: preimages,
+		ExitSpendPolicyResolver: compositeExitSpendPolicyResolver{
+			resolvers: []unroll.ExitSpendPolicyResolver{
+				unrollpolicy.ExitSpendPolicyResolver{
+					Jobs:     recoveryStore,
+					Preimage: preimages,
+				},
+				vcunrollpolicy.ExitSpendPolicyResolver{
+					Channels: s.vcStore,
+				},
+			},
 		},
 	})
 	s.unrollRegistry = registry
