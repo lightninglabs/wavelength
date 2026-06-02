@@ -1351,7 +1351,7 @@ func TestActorValidationAndCleanup(t *testing.T) {
 				},
 			},
 			trackedTxProgress: trackedTxProgress{
-				LastBroadcastHeight: 99,
+				LastBroadcastHeight: fn.Some[int32](99),
 			},
 		}
 		entry := newTrackedTxForState(t, awaitState)
@@ -1364,7 +1364,7 @@ func TestActorValidationAndCleanup(t *testing.T) {
 				},
 			},
 			trackedTxProgress: trackedTxProgress{
-				LastBroadcastHeight: 98,
+				LastBroadcastHeight: fn.Some[int32](98),
 			},
 		}
 		entry = newTrackedTxForState(t, awaitState2)
@@ -1375,7 +1375,7 @@ func TestActorValidationAndCleanup(t *testing.T) {
 				Txid: chainhash.Hash{7},
 			},
 			trackedTxProgress: trackedTxProgress{
-				LastBroadcastHeight: 98,
+				LastBroadcastHeight: fn.Some[int32](98),
 			},
 			ConfirmHeight: 100,
 		})
@@ -1397,7 +1397,7 @@ func TestActorValidationAndCleanup(t *testing.T) {
 				TargetConfs: 1,
 			},
 			trackedTxProgress: trackedTxProgress{
-				LastBroadcastHeight: 99,
+				LastBroadcastHeight: fn.Some[int32](99),
 			},
 		}
 		entry := newTrackedTxForState(t, awaitConf)

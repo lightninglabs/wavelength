@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -20,6 +21,13 @@ const (
 	// blocks to wait before retrying a still-unconfirmed transaction
 	// with a fresh CPFP child.
 	DefaultFeeBumpIntervalBlocks int32 = 2
+
+	// DefaultBroadcastFailureAlertThreshold is the default number of
+	// consecutive initial-broadcast failures (a tx that reached no mempool
+	// at all) after which the actor emits an operator-visible escalation.
+	// The tx keeps being re-attempted regardless; this only controls when
+	// the actor starts asking for operator attention.
+	DefaultBroadcastFailureAlertThreshold = 5
 )
 
 var (
@@ -62,6 +70,15 @@ type Config struct {
 	// before retrying an unconfirmed transaction. Zero falls back to
 	// DefaultFeeBumpIntervalBlocks.
 	FeeBumpIntervalBlocks int32
+
+	// BroadcastFailureAlertThreshold is the number of consecutive
+	// initial-broadcast failures (a tx that reached no mempool at all)
+	// after which the actor escalates with an operator-visible warning.
+	// The actor never gives up on the tx — escalation is informational so
+	// dashboards and alerts can distinguish "cannot broadcast" from a tx
+	// that is genuinely awaiting confirmation. Zero falls back to
+	// DefaultBroadcastFailureAlertThreshold.
+	BroadcastFailureAlertThreshold int
 
 	// MaxFeeRateSatPerVByte caps fee estimates used by the internal CPFP
 	// broadcaster. Zero falls back to DefaultMaxFeeRateSatPerVByte.
@@ -213,6 +230,11 @@ func (m *blockEpochObservedMsg) txConfirmMsgSealed() {}
 func NewTxBroadcasterActor(cfg Config) *TxBroadcasterActor {
 	if cfg.FeeBumpIntervalBlocks <= 0 {
 		cfg.FeeBumpIntervalBlocks = DefaultFeeBumpIntervalBlocks
+	}
+
+	if cfg.BroadcastFailureAlertThreshold <= 0 {
+		cfg.BroadcastFailureAlertThreshold =
+			DefaultBroadcastFailureAlertThreshold
 	}
 
 	return &TxBroadcasterActor{
@@ -407,49 +429,124 @@ func (a *TxBroadcasterActor) handleEnsure(ctx context.Context,
 		return a.ensureResp(entry, true), nil
 	}
 
-	if err := a.broadcastTrackedTx(
-		ctx, entry, TxStateBroadcasting,
-	); err != nil {
-
-		switch {
-		case errors.Is(err, ErrCPFPFeeInputUnavailable):
-			a.log.WarnS(ctx,
-				"Initial anchor broadcast waiting for CPFP "+
-					"fee input",
-				err, "txid", entry.data.Txid,
-			)
-
-		case errors.Is(err, ErrParentAlreadyBroadcast):
-			// Parent is already broadcast by another path
-			// (typically the operator's redundant CPFP racing the
-			// client's own broadcast). The conf watch is already
-			// registered on the parent, so let it ride to
-			// confirmation rather than failing the tracked tx.
-			a.log.WarnS(ctx,
-				"Initial anchor broadcast deferring to "+
-					"existing path",
-				err, "txid", entry.data.Txid,
-			)
-
-		default:
-			a.failTrackedTx(
-				ctx, entry, fmt.Sprintf("broadcast: %v", err),
-			)
-
-			return a.ensureResp(entry, true), nil
-		}
-
-		progress := trackedTxProgress{
-			LastBroadcastHeight: a.bestHeight,
-		}
-		_ = a.advanceTrackedTxFSM(
-			ctx, entry, &trackedTxBroadcastAccepted{
-				Progress: progress,
-			},
-		)
-	}
+	err = a.broadcastTrackedTx(ctx, entry, TxStateBroadcasting)
+	a.recordInitialBroadcastOutcome(ctx, entry, err)
 
 	return a.ensureResp(entry, true), nil
+}
+
+// recordInitialBroadcastOutcome advances the FSM based on the result of an
+// initial (or retried) broadcast for a tracked tx that had not yet reached any
+// mempool. It is shared by the initial submit in handleEnsure and the
+// interval-driven re-attempt in handleBlockObserved so both apply identical
+// state semantics.
+//
+// The outcome is routed by error class:
+//
+//   - nil: broadcastTrackedTx already advanced the FSM to
+//     AwaitingConfirmation, so there is nothing left to do.
+//
+//   - ErrParentAlreadyBroadcast: a live parent genuinely exists on another
+//     path (typically the operator's redundant CPFP racing the client's own
+//     broadcast). The conf watch is already registered, so advance to
+//     AwaitingConfirmation and let it ride.
+//
+//   - ErrCPFPFeeInputUnavailable: a total broadcast failure — both the CPFP
+//     child sign and the direct-parent fallback failed, so nothing reached any
+//     mempool. The tx stays in Broadcasting (it must NOT report
+//     AwaitingConfirmation) and is re-attempted on the next interval. The
+//     consecutive-failure counter is bumped and, past the configured
+//     threshold, the operator is alerted. The actor never gives up.
+//
+//   - any other error: a genuine terminal broadcast failure.
+func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
+	entry *trackedTx, err error) {
+
+	if err == nil {
+		return
+	}
+
+	switch {
+	case errors.Is(err, ErrParentAlreadyBroadcast):
+		// A live parent exists on another path, so the conf watch can
+		// ride to confirmation. Advance to AwaitingConfirmation.
+		a.log.WarnS(ctx,
+			"Initial anchor broadcast deferring to existing path",
+			err, "txid", entry.data.Txid,
+		)
+
+		_ = a.advanceTrackedTxFSM(
+			ctx, entry, &trackedTxBroadcastAccepted{
+				Progress: trackedTxProgress{
+					LastBroadcastHeight: fn.Some(
+						a.bestHeight,
+					),
+				},
+			},
+		)
+
+	case errors.Is(err, ErrCPFPFeeInputUnavailable):
+		// Nothing reached any mempool. Stay in Broadcasting so the next
+		// interval re-attempts, and track the failure for escalation.
+		a.recordBroadcastFailure(ctx, entry, err)
+
+	default:
+		a.failTrackedTx(
+			ctx, entry, fmt.Sprintf("broadcast: %v", err),
+		)
+	}
+}
+
+// recordBroadcastFailure keeps a never-broadcast tx in the Broadcasting state,
+// increments its consecutive-failure counter, and escalates to the operator
+// once the counter crosses the configured threshold. It never transitions the
+// tx to a terminal state: a fraud-response checkpoint (and similar fund-risk
+// txs) must keep retrying until it lands, so the escalation is informational
+// rather than a give-up.
+func (a *TxBroadcasterActor) recordBroadcastFailure(ctx context.Context,
+	entry *trackedTx, cause error) {
+
+	currentState, stateErr := entry.currentFSMState()
+	if stateErr != nil {
+		a.log.WarnS(ctx, "Failed to read tracked tx state",
+			stateErr, "txid", entry.data.Txid)
+
+		return
+	}
+
+	failures := trackedTxBroadcastFailures(currentState) + 1
+
+	a.log.WarnS(ctx,
+		"Initial broadcast reached no mempool; will retry",
+		cause,
+		"txid", entry.data.Txid,
+		slog.String("label", entry.data.Label),
+		slog.Int("consecutive_failures", failures),
+	)
+
+	_ = a.advanceTrackedTxFSM(
+		ctx, entry, &trackedTxBroadcastFailed{
+			Progress: trackedTxProgress{
+				LastBroadcastHeight: fn.Some(a.bestHeight),
+				BroadcastFailures:   failures,
+			},
+		},
+	)
+
+	// Escalate once the failure count reaches the threshold and on every
+	// subsequent attempt, so a persistent deterministic failure stays
+	// visible to operators without giving up. The message is intentionally
+	// static so alerting can key on it.
+	if failures >= a.cfg.BroadcastFailureAlertThreshold {
+		a.log.WarnS(ctx,
+			"Tx broadcast repeatedly failing; operator "+
+				"intervention may be required",
+			cause,
+			"txid", entry.data.Txid,
+			slog.String("label", entry.data.Label),
+			slog.Int("consecutive_failures", failures),
+		)
+	}
 }
 
 // handleCancel removes one subscriber from one tracked txid.
@@ -559,16 +656,23 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 	}
 }
 
-// handleBlockObserved records a new best height and fee-bumps any
-// eligible pending transactions.
+// handleBlockObserved records a new best height and drives interval-paced
+// retries for eligible pending transactions. Two distinct retry paths exist:
 //
-// Fee-bump failures are intentionally non-terminal: the original
-// broadcast is still live on the network and the confirmation watch
-// remains active, so the tracked tx may still confirm on its own. We
-// recover the FSM back to AwaitingConfirmation with the new height so
-// the next block observation evaluates shouldFeeBump freshly — a bump
-// attempt that failed at height H is not retried until at least
-// FeeBumpIntervalBlocks have elapsed since H.
+//   - A tx still in Broadcasting reached no mempool on its initial attempt.
+//     It is re-broadcast from scratch and the result routed through
+//     recordInitialBroadcastOutcome, so a continued failure stays in
+//     Broadcasting (and escalates) while a success advances to
+//     AwaitingConfirmation.
+//
+//   - A tx in AwaitingConfirmation already reached a mempool and is
+//     fee-bumped. Fee-bump failures are intentionally non-terminal: the
+//     original broadcast is still live and the confirmation watch remains
+//     active, so the tx may still confirm on its own. We recover the FSM back
+//     to AwaitingConfirmation with the new height so the next block
+//     observation evaluates eligibility freshly — an attempt that failed at
+//     height H is not retried until at least FeeBumpIntervalBlocks have
+//     elapsed since H.
 func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 	msg *blockEpochObservedMsg) {
 
@@ -593,31 +697,42 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 			continue
 		}
 
-		if !a.shouldFeeBump(entry) {
-			continue
-		}
-
-		if err := a.broadcastTrackedTx(
-			ctx, entry, TxStateFeeBumping,
-		); err != nil {
-
-			// Fee-bump failures are non-terminal. The original
-			// broadcast is still live and the confirmation watch
-			// remains active, so the tx may still confirm without
-			// the bump. Recover the FSM back to
-			// AwaitingConfirmation with an updated broadcast
-			// height so the next bump waits the full interval.
-			a.log.WarnS(ctx, "Fee bump failed, will retry",
-				err, "txid", entry.data.Txid)
-
-			progress := trackedTxProgress{
-				LastBroadcastHeight: a.bestHeight,
-			}
-			_ = a.advanceTrackedTxFSM(
-				ctx, entry, &trackedTxBroadcastAccepted{
-					Progress: progress,
-				},
+		switch {
+		// A tx that never reached any mempool is re-attempted from
+		// scratch and routed through the shared outcome handler.
+		case a.shouldRetryBroadcast(entry):
+			err := a.broadcastTrackedTx(
+				ctx, entry, TxStateBroadcasting,
 			)
+			a.recordInitialBroadcastOutcome(ctx, entry, err)
+
+		// A tx already in a mempool is fee-bumped.
+		case a.shouldFeeBump(entry):
+			if err := a.broadcastTrackedTx(
+				ctx, entry, TxStateFeeBumping,
+			); err != nil {
+
+				// Fee-bump failures are non-terminal. The
+				// original broadcast is still live and the
+				// confirmation watch remains active, so the tx
+				// may still confirm without the bump. Recover
+				// the FSM back to AwaitingConfirmation with an
+				// updated broadcast height so the next bump
+				// waits the full interval.
+				a.log.WarnS(ctx, "Fee bump failed, will retry",
+					err, "txid", entry.data.Txid)
+
+				progress := trackedTxProgress{
+					LastBroadcastHeight: fn.Some(
+						a.bestHeight,
+					),
+				}
+				_ = a.advanceTrackedTxFSM(
+					ctx, entry, &trackedTxBroadcastAccepted{
+						Progress: progress,
+					},
+				)
+			}
 		}
 	}
 }
@@ -956,7 +1071,7 @@ func (a *TxBroadcasterActor) broadcastTrackedTx(ctx context.Context,
 	if err := a.advanceTrackedTxFSM(
 		ctx, entry, &trackedTxBroadcastAccepted{
 			Progress: trackedTxProgress{
-				LastBroadcastHeight: a.bestHeight,
+				LastBroadcastHeight: fn.Some(a.bestHeight),
 				CurrentFeeRate:      result.FeeRate,
 				ChildTxid:           copyHash(result.ChildTxid),
 			},
@@ -968,15 +1083,30 @@ func (a *TxBroadcasterActor) broadcastTrackedTx(ctx context.Context,
 	return nil
 }
 
-// shouldFeeBump reports whether a tracked transaction is eligible for another
-// broadcast attempt at the current height.
+// shouldFeeBump reports whether a tracked transaction that already reached a
+// mempool is eligible for another fee-bump attempt at the current height.
 func (a *TxBroadcasterActor) shouldFeeBump(entry *trackedTx) bool {
+	return a.broadcastIntervalElapsed(entry, TxStateAwaitingConfirmation)
+}
+
+// shouldRetryBroadcast reports whether a tracked transaction that has not yet
+// reached any mempool (still in Broadcasting after a total broadcast failure)
+// is due for another initial-broadcast attempt at the current height.
+func (a *TxBroadcasterActor) shouldRetryBroadcast(entry *trackedTx) bool {
+	return a.broadcastIntervalElapsed(entry, TxStateBroadcasting)
+}
+
+// broadcastIntervalElapsed reports whether the tracked tx is in wantState and
+// at least FeeBumpIntervalBlocks have elapsed since its last broadcast attempt.
+func (a *TxBroadcasterActor) broadcastIntervalElapsed(entry *trackedTx,
+	wantState TxState) bool {
+
 	state, err := entry.currentTxState()
 	if err != nil {
 		return false
 	}
 
-	if state != TxStateAwaitingConfirmation {
+	if state != wantState {
 		return false
 	}
 
@@ -985,13 +1115,19 @@ func (a *TxBroadcasterActor) shouldFeeBump(entry *trackedTx) bool {
 		return false
 	}
 
-	lastBroadcastHeight := trackedTxLastBroadcastHeight(currentState)
-	if lastBroadcastHeight == 0 {
-		return false
-	}
-
-	return a.bestHeight-lastBroadcastHeight >=
-		a.cfg.FeeBumpIntervalBlocks
+	// A tx with no recorded broadcast height has not been submitted yet, so
+	// it is not due for a re-attempt. MapOptionZ yields the bool zero value
+	// (false) for the None case, which is exactly that. Keying on the
+	// Option presence rather than a zero height means a genuine attempt at
+	// height zero (fresh chain / early sync) is still paced correctly
+	// instead of being wedged forever.
+	return fn.MapOptionZ(
+		trackedTxLastBroadcastHeight(currentState),
+		func(lastBroadcastHeight int32) bool {
+			return a.bestHeight-lastBroadcastHeight >=
+				a.cfg.FeeBumpIntervalBlocks
+		},
+	)
 }
 
 // failTrackedTx moves one tracked txid into terminal failure and notifies all
