@@ -12,6 +12,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainbackends/bitcoindrpc"
+	"github.com/lightninglabs/darepo-client/chainbackends/esplorarpc"
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/spf13/cobra"
@@ -71,6 +72,14 @@ func newRootCmd() *cobra.Command {
 			// Wire bitcoind package submitter for V3
 			// ephemeral anchor package relay (unroll).
 			err := configureBitcoindSubmitter(v, cfg)
+			if err != nil {
+				return err
+			}
+
+			// Fall back to an Esplora-backed package submitter when
+			// no direct bitcoind path was configured, so the lnd
+			// and neutrino backends can still relay v3 packages.
+			err = configurePackageRelayFallback(v, cfg)
 			if err != nil {
 				return err
 			}
@@ -560,12 +569,24 @@ func configureDaemonLogWriter(cfg *darepod.Config,
 	return logFile, nil
 }
 
-// registerBitcoindFlags registers optional direct bitcoind package relay
-// flags. Direct bitcoind relay is used for V3 ephemeral anchor transactions.
+// registerBitcoindFlags registers the optional v3 ephemeral-anchor package
+// relay flags. Two relay sources are supported: a direct bitcoind JSON-RPC
+// connection (bitcoind.*) and an Esplora/electrs `/txs/package` endpoint
+// (package.esploraurl). A bitcoind source takes precedence; see
+// configurePackageRelayFallback.
 func registerBitcoindFlags(f *pflag.FlagSet) {
 	f.String(
 		"bitcoind.host", "",
 		"bitcoind RPC address (host:port) for submitpackage support",
+	)
+	f.String(
+		"package.esploraurl", "", "Esplora/electrs REST base URL "+
+			"whose /txs/package endpoint relays v3 "+
+			"ephemeral-anchor packages for the lnd and "+
+			"neutrino backends. Falls back to "+
+			"wallet.esploraurl when unset; ignored when "+
+			"bitcoind.host is set. Routing packages through a "+
+			"third-party Esplora reveals them to that server",
 	)
 	f.String("bitcoind.user", "",
 		"bitcoind RPC username",
@@ -640,6 +661,71 @@ func configureBitcoindSubmitter(v *viper.Viper, cfg *darepod.Config) error {
 	cfg.PackageSubmitter = submitter
 
 	return nil
+}
+
+// configurePackageRelayFallback wires an Esplora-backed package submitter
+// onto cfg when no direct bitcoind submitter was configured. This gives the
+// lnd and neutrino chain backends — which cannot relay v3 ephemeral-anchor
+// packages themselves — a working submitpackage path via an Esplora/electrs
+// `/txs/package` endpoint, which unilateral exit and fraud response need to
+// broadcast their zero-fee parents (darepo-client#590).
+//
+// Precedence: a bitcoind submitter always wins (it is configured first and
+// this returns early when one is set); otherwise an explicit
+// package.esploraurl wins; otherwise the lwwallet wallet.esploraurl is reused.
+// The lwwallet backend does not need this — it relays packages through its
+// own Esplora chain backend — but reusing its URL is harmless and covers
+// operators who switch wallet types.
+//
+// Trust note: broadcasting through a third-party Esplora reveals the package
+// to that server, a privacy regression for an otherwise-trustless SPV wallet.
+// It is therefore opt-in: absent any URL the daemon runs without a package
+// path and warns when the active backend needs one.
+func configurePackageRelayFallback(v *viper.Viper, cfg *darepod.Config) error {
+	if cfg.PackageSubmitter != nil {
+		return nil
+	}
+
+	esploraURL := v.GetString("package.esploraurl")
+	if esploraURL == "" {
+		esploraURL = v.GetString("wallet.esploraurl")
+	}
+	if esploraURL == "" {
+		warnIfNoPackagePath(cfg)
+
+		return nil
+	}
+
+	submitter, err := esplorarpc.New(esploraURL)
+	if err != nil {
+		return fmt.Errorf("configure esplora package submitter: %w",
+			err)
+	}
+
+	cfg.PackageSubmitter = submitter
+
+	return nil
+}
+
+// warnIfNoPackagePath prints a startup warning when the configured wallet
+// backend cannot relay v3 ephemeral-anchor packages on its own and no package
+// submitter was wired. Without a package path, unilateral exit and fraud
+// response cannot broadcast their zero-fee parents (darepo-client#590). The
+// lwwallet backend is exempt: it relays packages through its own Esplora
+// chain backend.
+func warnIfNoPackagePath(cfg *darepod.Config) {
+	switch cfg.Wallet.Type {
+	case darepod.WalletTypeLnd, darepod.WalletTypeBtcwallet:
+		fmt.Fprintf(
+			os.Stderr, "WARNING: wallet.type %q has no v3 "+
+				"package relay path configured: set "+
+				"bitcoind.host for direct submitpackage, or "+
+				"package.esploraurl for Esplora relay. "+
+				"Without one, unilateral exit (darepocli "+
+				"exit) cannot broadcast and will fail.\n",
+			cfg.Wallet.Type,
+		)
+	}
 }
 
 // isLoopbackHost reports whether the given bitcoind RPC address points
