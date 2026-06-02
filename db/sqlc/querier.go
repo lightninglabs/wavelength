@@ -29,6 +29,7 @@ type Querier interface {
 	// Used as the first half of an upsert when the VTXO manager fills in
 	// finalized lineage on top of a partially-written round-create row.
 	DeleteVTXOAncestryPaths(ctx context.Context, arg DeleteVTXOAncestryPathsParams) error
+	DeleteVirtualChannelIntent(ctx context.Context, pendingChannelID []byte) (int64, error)
 	EscalateVHTLCRecoveryJob(ctx context.Context, arg EscalateVHTLCRecoveryJobParams) (int64, error)
 	FailVHTLCRecoveryJob(ctx context.Context, arg FailVHTLCRecoveryJobParams) (int64, error)
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
@@ -68,6 +69,10 @@ type Querier interface {
 	// GetVTXOReplacement retrieves the replacement VTXO outpoint for a forfeited
 	// VTXO. Returns NULL if not forfeited or no replacement recorded.
 	GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacementParams) (GetVTXOReplacementRow, error)
+	GetVirtualChannel(ctx context.Context, virtualChannelID []byte) (VirtualChannel, error)
+	GetVirtualChannelByChannelPoint(ctx context.Context, arg GetVirtualChannelByChannelPointParams) (VirtualChannel, error)
+	GetVirtualChannelByPendingID(ctx context.Context, pendingChannelID []byte) (VirtualChannel, error)
+	GetVirtualChannelIntentByPendingID(ctx context.Context, pendingChannelID []byte) (VirtualChannelIntent, error)
 	// Boarding address queries.
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
@@ -116,6 +121,10 @@ type Querier interface {
 	// Callers replace the full set on update by deleting via
 	// DeleteVTXOAncestryPaths first.
 	InsertVTXOAncestryPath(ctx context.Context, arg InsertVTXOAncestryPathParams) error
+	InsertVirtualChannel(ctx context.Context, arg InsertVirtualChannelParams) error
+	InsertVirtualChannelIntent(ctx context.Context, arg InsertVirtualChannelIntentParams) error
+	InsertVirtualChannelIntentVTXO(ctx context.Context, arg InsertVirtualChannelIntentVTXOParams) error
+	InsertVirtualChannelVTXO(ctx context.Context, arg InsertVirtualChannelVTXOParams) error
 	// Crash-replay safe: duplicate (outpoint, event) inserts from
 	// RestartMessage replay are silently ignored so the audit log stays
 	// at-most-once per outpoint+event.
@@ -192,6 +201,10 @@ type Querier interface {
 	// management, including status transitions and forfeit transaction tracking.
 	// ListVTXOsByStatus returns all VTXOs with the specified status.
 	ListVTXOsByStatus(ctx context.Context, status int32) ([]Vtxo, error)
+	ListVirtualChannelIntentVTXOs(ctx context.Context, pendingChannelID []byte) ([]VirtualChannelIntentVtxo, error)
+	ListVirtualChannelVTXOs(ctx context.Context, virtualChannelID []byte) ([]VirtualChannelVtxo, error)
+	ListVirtualChannelsByChannelPointHash(ctx context.Context, channelPointHash []byte) ([]VirtualChannel, error)
+	ListVirtualChannelsByStatus(ctx context.Context, status string) ([]VirtualChannel, error)
 	ListWalletUTXOLog(ctx context.Context, arg ListWalletUTXOLogParams) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByBlock(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByClassification(ctx context.Context, arg ListWalletUTXOLogByClassificationParams) ([]WalletUtxoLog, error)
@@ -218,6 +231,12 @@ type Querier interface {
 	MarkVTXOForfeiting(ctx context.Context, arg MarkVTXOForfeitingParams) error
 	// Also sets status = 4 (Spent) to keep status in sync with spent flag.
 	MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) error
+	MarkVirtualChannelActive(ctx context.Context, arg MarkVirtualChannelActiveParams) (int64, error)
+	MarkVirtualChannelClosed(ctx context.Context, arg MarkVirtualChannelClosedParams) (int64, error)
+	MarkVirtualChannelClosing(ctx context.Context, arg MarkVirtualChannelClosingParams) (int64, error)
+	MarkVirtualChannelCoopClosed(ctx context.Context, arg MarkVirtualChannelCoopClosedParams) (int64, error)
+	MarkVirtualChannelFailed(ctx context.Context, arg MarkVirtualChannelFailedParams) (int64, error)
+	MarkVirtualChannelMaterializing(ctx context.Context, arg MarkVirtualChannelMaterializingParams) (int64, error)
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
@@ -226,6 +245,7 @@ type Querier interface {
 	// UpdateVTXOStatus atomically updates a VTXO's status. This is the primary
 	// method for state transitions that don't require additional data.
 	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) error
+	UpdateVirtualChannelStatus(ctx context.Context, arg UpdateVirtualChannelStatusParams) (int64, error)
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
 	// OOR artifact store queries.
 	UpsertOORPackage(ctx context.Context, arg UpsertOORPackageParams) (int64, error)

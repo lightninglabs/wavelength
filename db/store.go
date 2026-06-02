@@ -316,3 +316,8 @@ func (s *Store) NewUnilateralExitStore(
 func (s *Store) NewVHTLCRecoveryStore(clk clock.Clock) *VHTLCRecoveryStoreDB {
 	return NewVHTLCRecoveryStore(s, clk)
 }
+
+// NewVirtualChannelStore builds the virtual channel registration store.
+func (s *Store) NewVirtualChannelStore() *VirtualChannelStoreDB {
+	return NewVirtualChannelStoreDB(s)
+}
