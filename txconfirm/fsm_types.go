@@ -69,6 +69,9 @@ type trackedTxData struct {
 
 	// TargetConfs is the required confirmation count.
 	TargetConfs uint32
+
+	// DirectBroadcast records whether this tracker bypasses CPFP handling.
+	DirectBroadcast bool
 }
 
 // trackedTxProgress is the mutable per-broadcast progress carried by FSM

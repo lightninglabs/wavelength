@@ -144,7 +144,7 @@ func TestStateValidateNegativeTargetHeight(t *testing.T) {
 // target confirm height.
 func TestCSVInfoRejectsMissingTargetHeight(t *testing.T) {
 	_, proof := newPlannerFixture(t, linearProofFixture(t))
-	_, err := csvInfoAt(proof, 100, fn.None[int32]())
+	_, err := csvInfoAt(proof.CSVDelay(), 100, fn.None[int32]())
 	require.Error(t, err)
 }
 

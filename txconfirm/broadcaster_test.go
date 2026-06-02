@@ -939,6 +939,29 @@ func TestCPFPBroadcasterFallbackAndErrors(t *testing.T) {
 		require.ErrorIs(t, err, ErrNonTRUCParent)
 	})
 
+	t.Run("direct broadcast accepts non-v3 tx", func(t *testing.T) {
+		chain := newFakeChainSourceRef(100)
+		broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource: chain,
+		})
+
+		tx := makeTestTx(true)
+		tx.Version = 2
+
+		result, err := broadcaster.Submit(
+			t.Context(), 100, &BroadcastRequest{
+				Tx:              tx,
+				Label:           "direct-not-truc",
+				DirectBroadcast: true,
+			},
+		)
+		require.NoError(t, err)
+		require.Equal(t, tx.TxHash(), result.Txid)
+		require.Nil(t, result.ChildTxid)
+		require.Equal(t, 1, chain.broadcastCallCount())
+		require.Equal(t, 0, chain.packageCallCount())
+	})
+
 	t.Run("submit validation and fee estimate errors", func(t *testing.T) {
 		broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
 			ChainSource: newFakeChainSourceRef(100),

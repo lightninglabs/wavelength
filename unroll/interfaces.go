@@ -128,6 +128,15 @@ type ExitSpendPolicy interface {
 		req ExitSpendRequest) (*wire.MsgTx, error)
 }
 
+// DirectBroadcastExitSpendPolicy is an optional policy extension for exit
+// spends that must be relayed exactly as built instead of going through
+// txconfirm's anchor CPFP path.
+type DirectBroadcastExitSpendPolicy interface {
+	// DirectBroadcast reports whether the final exit spend should bypass
+	// txconfirm's CPFP handling.
+	DirectBroadcast() bool
+}
+
 // ExitSpendPolicyResolver reconstructs a policy from the durable identity
 // stored with an unroll job. Custom actor factories can inject resolvers for
 // their policy families; the built-in actor default handles standard VTXO

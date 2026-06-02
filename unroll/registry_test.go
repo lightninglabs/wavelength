@@ -799,9 +799,10 @@ func TestRegistryRestoreNonTerminal(t *testing.T) {
 	require.Equal(t, PhaseMaterializing, status.Phase)
 }
 
-// TestRegistryStatusUsesCachedActiveRecord verifies that live status probes do
-// not enqueue read-only GetStateRequest messages into the child actor.
-func TestRegistryStatusUsesCachedActiveRecord(t *testing.T) {
+// TestRegistryStatusIncludesActiveChildState verifies that live status probes
+// include the active child state instead of only returning the admission
+// record.
+func TestRegistryStatusIncludesActiveChildState(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	store := newMemRegistryStore()
@@ -876,11 +877,11 @@ func TestRegistryStatusUsesCachedActiveRecord(t *testing.T) {
 		require.True(t, ok)
 		require.True(t, status.Found)
 		require.True(t, status.Active)
-		require.Nil(t, status.State)
+		require.NotNil(t, status.State)
 		require.Equal(t, PhaseMaterializing, status.Phase)
 	}
 
-	require.EqualValues(t, 1, stateRequests.Load())
+	require.EqualValues(t, 4, stateRequests.Load())
 }
 
 // TestRegistryEnsureFailsClosedOnInitialPersistFailure verifies the

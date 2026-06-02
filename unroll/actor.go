@@ -240,7 +240,7 @@ func (b *behavior) OnStop(ctx context.Context) error {
 func (b *behavior) handleEvent(ctx context.Context,
 	event Event) fn.Result[Resp] {
 
-	if err := b.ensureLoaded(ctx); err != nil {
+	if err := b.ensureLoaded(ctx, event); err != nil {
 		return fn.Err[Resp](err)
 	}
 
@@ -342,17 +342,17 @@ func (b *behavior) driveEvent(ctx context.Context, event Event) error {
 // retry budget is accounted for and we reach terminal Failed after
 // maxSweepAttempts.
 func (b *behavior) startSweep(ctx context.Context) error {
+	policy, err := b.resolveExitSpendPolicy(ctx)
+	if err != nil {
+		return b.driveEvent(ctx, &SweepBuildFailedEvent{
+			Reason: err.Error(),
+		})
+	}
+
 	// Reuse the sweep tx restored from the checkpoint (or built on a
 	// prior attempt inside this actor lifetime) so we converge on a
 	// single sweep txid / wallet pkScript across retries.
 	if b.sweepTx == nil {
-		policy, err := b.resolveExitSpendPolicy(ctx)
-		if err != nil {
-			return b.driveEvent(ctx, &SweepBuildFailedEvent{
-				Reason: err.Error(),
-			})
-		}
-
 		b.log.InfoS(ctx, "Building unroll exit spend",
 			slog.String(
 				"target_outpoint",
@@ -488,6 +488,7 @@ func (b *behavior) startSweep(ctx context.Context) error {
 		Tx:                   b.sweepTx,
 		ConfirmationPkScript: sweepPkScript,
 		Label:                sweepLabel,
+		DirectBroadcast:      shouldDirectBroadcastExitSpend(policy),
 		Subscriber:           b.notificationRef(),
 	}).Await(ctx).Unpack()
 	if err != nil {
@@ -495,6 +496,14 @@ func (b *behavior) startSweep(ctx context.Context) error {
 	}
 
 	return b.driveEvent(ctx, &SweepBroadcastedEvent{Txid: sweepTxid})
+}
+
+// shouldDirectBroadcastExitSpend reports whether a policy opted out of
+// txconfirm's CPFP handling for its final spend.
+func shouldDirectBroadcastExitSpend(policy ExitSpendPolicy) bool {
+	directPolicy, ok := policy.(DirectBroadcastExitSpendPolicy)
+
+	return ok && directPolicy.DirectBroadcast()
 }
 
 // exitPolicyKind returns the durable policy kind for the current job.
@@ -528,9 +537,18 @@ func (b *behavior) currentHeight() int32 {
 func (b *behavior) resolveExitSpendPolicy(ctx context.Context) (ExitSpendPolicy,
 	error) {
 
+	return b.resolveExitSpendPolicyFor(
+		ctx, b.exitPolicyKind(), b.exitPolicyRef(),
+	)
+}
+
+// resolveExitSpendPolicyFor reconstructs a specific exit policy identity.
+func (b *behavior) resolveExitSpendPolicyFor(ctx context.Context,
+	kind ExitPolicyKind, ref string) (ExitSpendPolicy, error) {
+
 	req := ExitSpendPolicyRequest{
-		Kind:               b.exitPolicyKind(),
-		Ref:                b.exitPolicyRef(),
+		Kind:               exitPolicyKind(kind),
+		Ref:                ref,
 		StandardDescriptor: b.desc,
 	}
 	if req.Kind == StandardVTXOTimeoutExitPolicyKind {
@@ -548,6 +566,21 @@ func (b *behavior) resolveExitSpendPolicy(ctx context.Context) (ExitSpendPolicy,
 	}
 
 	return b.cfg.ExitSpendPolicyResolver.ResolveExitSpendPolicy(ctx, req)
+}
+
+// exitPolicyIdentityForEvent returns the policy identity to use while lazily
+// loading the actor. The first StartEvent has not been checkpointed yet, so a
+// non-standard policy must be read from the event. Restored jobs and all later
+// events use the checkpointed identity.
+func (b *behavior) exitPolicyIdentityForEvent(event Event) (ExitPolicyKind,
+	string) {
+
+	if start, ok := event.(*StartEvent); ok &&
+		(start.ExitPolicyKind != "" || start.ExitPolicyRef != "") {
+		return exitPolicyKind(start.ExitPolicyKind), start.ExitPolicyRef
+	}
+
+	return b.exitPolicyKind(), b.exitPolicyRef()
 }
 
 // safeTxOutPkScript returns a defensive copy of tx.TxOut[index].PkScript.
@@ -733,7 +766,7 @@ func (b *behavior) stateResponse() *GetStateResp {
 // PlannerState.Validate call catches checkpoint/proof drift (e.g. an
 // InFlightTxids entry that no longer resolves in the proof) loudly
 // instead of letting the FSM silently desync.
-func (b *behavior) ensureLoaded(ctx context.Context) error {
+func (b *behavior) ensureLoaded(ctx context.Context, event Event) error {
 	if b.proof == nil {
 		proof, err := b.cfg.ProofAssembler.EnsureProof(
 			ctx, b.cfg.TargetOutpoint,
@@ -755,7 +788,15 @@ func (b *behavior) ensureLoaded(ctx context.Context) error {
 	}
 
 	if b.planner == nil {
-		planner, err := unrollplan.NewPlanner(b.proof)
+		kind, ref := b.exitPolicyIdentityForEvent(event)
+		policy, err := b.resolveExitSpendPolicyFor(ctx, kind, ref)
+		if err != nil {
+			return err
+		}
+
+		planner, err := unrollplan.NewPlannerWithSweepCSVDelay(
+			b.proof, policy.CSVDelay(),
+		)
 		if err != nil {
 			return err
 		}
@@ -1174,7 +1215,7 @@ func (b *behavior) proofSpendCallerID(outpoint wire.OutPoint) string {
 func (b *behavior) handleSpendObserved(ctx context.Context,
 	msg *SpendObservedMsg) fn.Result[Resp] {
 
-	if err := b.ensureLoaded(ctx); err != nil {
+	if err := b.ensureLoaded(ctx, nil); err != nil {
 		return fn.Err[Resp](err)
 	}
 

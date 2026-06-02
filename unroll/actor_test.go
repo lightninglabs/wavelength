@@ -2087,6 +2087,39 @@ func TestConfirmedNodesAdvanceToSweep(t *testing.T) {
 	require.NotNil(t, stateResp.SweepTxid)
 }
 
+// TestDirectBroadcastPolicySetsTxConfirmFlag verifies that custom exit
+// policies can opt out of txconfirm's CPFP handling for their final spend.
+func TestDirectBroadcastPolicySetsTxConfirmFlag(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, behavior, txconfirmRef, _ := newActorHarness(
+		t, proof, desc,
+	)
+	behavior.cfg.ExitSpendPolicyResolver = directBroadcastResolver{}
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:         100,
+		Trigger:        TriggerManual,
+		ExitPolicyKind: testDirectBroadcastPolicyKind,
+		ExitPolicyRef:  "direct-1",
+	})
+
+	txconfirmRef.emitConfirmed(t, 0, proof.RootTxids()[0], 101)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() >= 2
+	}, testTimeout, 10*time.Millisecond)
+
+	txconfirmRef.emitConfirmed(t, 1, proof.TargetOutpoint().Hash, 102)
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 103})
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 104})
+
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() >= 3
+	}, testTimeout, 10*time.Millisecond)
+
+	require.True(t, txconfirmRef.lastRequest(t).DirectBroadcast)
+}
+
 // TestResumeReissuesInflightWork verifies that resume reattaches the actor to
 // in-flight proof txs without importing the old unroller subsystem.
 func TestResumeReissuesInflightWork(t *testing.T) {
@@ -2941,6 +2974,63 @@ func TestStartUnrollIsIdempotent(t *testing.T) {
 
 var _ input.Signature = testSignature{}
 var _ SweepWallet = (*fakeSweepWallet)(nil)
+
+const testDirectBroadcastPolicyKind ExitPolicyKind = "test_direct_broadcast"
+
+type directBroadcastResolver struct{}
+
+// ResolveExitSpendPolicy returns a standard sweep policy that opts into direct
+// txconfirm broadcast.
+func (r directBroadcastResolver) ResolveExitSpendPolicy(_ context.Context,
+	req ExitSpendPolicyRequest) (ExitSpendPolicy, error) {
+
+	if req.Kind != testDirectBroadcastPolicyKind {
+		return nil, fmt.Errorf("unexpected policy kind %s", req.Kind)
+	}
+
+	return &directBroadcastPolicy{
+		inner: NewStandardVTXOExitSpendPolicy(req.StandardDescriptor),
+	}, nil
+}
+
+type directBroadcastPolicy struct {
+	inner *StandardVTXOExitSpendPolicy
+}
+
+// Kind returns the durable test policy kind.
+func (p *directBroadcastPolicy) Kind() ExitPolicyKind {
+	return testDirectBroadcastPolicyKind
+}
+
+// CSVDelay returns the standard descriptor delay.
+func (p *directBroadcastPolicy) CSVDelay() uint32 {
+	return p.inner.CSVDelay()
+}
+
+// RequiredLockTime returns the standard policy locktime.
+func (p *directBroadcastPolicy) RequiredLockTime() uint32 {
+	return p.inner.RequiredLockTime()
+}
+
+// ValidateTarget delegates to the standard policy target checks.
+func (p *directBroadcastPolicy) ValidateTarget(target *wire.TxOut) error {
+	return p.inner.ValidateTarget(target)
+}
+
+// BuildSpendTx delegates to the standard policy sweep builder.
+func (p *directBroadcastPolicy) BuildSpendTx(ctx context.Context,
+	req ExitSpendRequest) (*wire.MsgTx, error) {
+
+	return p.inner.BuildSpendTx(ctx, req)
+}
+
+// DirectBroadcast reports that txconfirm must skip CPFP handling.
+func (p *directBroadcastPolicy) DirectBroadcast() bool {
+	return true
+}
+
+var _ ExitSpendPolicyResolver = directBroadcastResolver{}
+var _ DirectBroadcastExitSpendPolicy = (*directBroadcastPolicy)(nil)
 var _ vtxo.VTXOStore = (*mockVTXOStore)(nil)
 var _ actor.DeliveryStore = (*memCheckpointStore)(nil)
 var _ actor.ActorRef[txconfirm.Msg, txconfirm.Resp] = (*fakeTxConfirmRef)(nil)

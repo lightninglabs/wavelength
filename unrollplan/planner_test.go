@@ -293,6 +293,41 @@ func TestPlannerRejectsNilInputs(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestPlannerUsesPolicySweepCSV verifies non-standard exit policies can spend
+// the materialized target before the proof timeout CSV matures.
+func TestPlannerUsesPolicySweepCSV(t *testing.T) {
+	proof := linearProofFixture(t)
+	planner, err := NewPlannerWithSweepCSVDelay(proof, 0)
+	require.NoError(t, err)
+
+	targetHeight := int32(100)
+	snapshot, err := planner.Plan(targetHeight, &State{
+		ConfirmedTxids: []chainhash.Hash{
+			proof.Layers()[0][0],
+			proof.TargetOutpoint().Hash,
+		},
+		TargetConfirmHeight: fn.Some(targetHeight),
+	})
+	require.NoError(t, err)
+	require.True(t, snapshot.CSV.IsSome())
+	require.True(t, snapshot.CSV.UnwrapOr(CSVInfo{}).Ready)
+	require.True(t, snapshot.NeedSweep)
+
+	standardPlanner, err := NewPlanner(proof)
+	require.NoError(t, err)
+
+	snapshot, err = standardPlanner.Plan(targetHeight, &State{
+		ConfirmedTxids: []chainhash.Hash{
+			proof.Layers()[0][0],
+			proof.TargetOutpoint().Hash,
+		},
+		TargetConfirmHeight: fn.Some(targetHeight),
+	})
+	require.NoError(t, err)
+	require.False(t, snapshot.CSV.UnwrapOr(CSVInfo{}).Ready)
+	require.False(t, snapshot.NeedSweep)
+}
+
 func newPlannerFixture(t *testing.T,
 	proof *recovery.Proof) (*Planner, *recovery.Proof) {
 

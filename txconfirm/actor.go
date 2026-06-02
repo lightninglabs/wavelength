@@ -708,9 +708,10 @@ func (a *TxBroadcasterActor) newTrackedTx(ctx context.Context,
 		ConfirmationPkScript: append(
 			[]byte(nil), confirmationPkScript...,
 		),
-		Label:       req.Label,
-		HeightHint:  heightHint,
-		TargetConfs: targetConfs,
+		Label:           req.Label,
+		HeightHint:      heightHint,
+		TargetConfs:     targetConfs,
+		DirectBroadcast: req.DirectBroadcast,
 	}
 	fsm := newTrackedTxStateMachine(fsmLog, data)
 	fsm.Start(ctx)
@@ -765,6 +766,11 @@ func validateEnsureMatch(req *EnsureConfirmedReq, existing *trackedTx) error {
 
 	if !bytes.Equal(reqScript, existing.data.ConfirmationPkScript) {
 		return fmt.Errorf("%w: txid=%s pkscript mismatch",
+			ErrEnsureParamsMismatch, existing.data.Txid)
+	}
+
+	if req.DirectBroadcast != existing.data.DirectBroadcast {
+		return fmt.Errorf("%w: txid=%s direct broadcast mismatch",
 			ErrEnsureParamsMismatch, existing.data.Txid)
 	}
 
@@ -945,8 +951,9 @@ func (a *TxBroadcasterActor) broadcastTrackedTx(ctx context.Context,
 
 	result, err := a.broadcaster.Submit(
 		ctx, a.bestHeight, &BroadcastRequest{
-			Tx:    entry.data.Tx,
-			Label: entry.data.Label,
+			Tx:              entry.data.Tx,
+			Label:           entry.data.Label,
+			DirectBroadcast: entry.data.DirectBroadcast,
 		},
 	)
 	if err != nil {

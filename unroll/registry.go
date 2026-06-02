@@ -715,6 +715,23 @@ func (r *registryBehavior) handleGetStatus(ctx context.Context,
 	req *GetStatusRequest) fn.Result[RegistryResp] {
 
 	if child, ok := r.active[req.Outpoint]; ok {
+		state, err := child.Ref().Ask(
+			ctx, &GetStateRequest{},
+		).Await(ctx).Unpack()
+		if err != nil {
+			return fn.Err[RegistryResp](
+				fmt.Errorf("get active child state: %w", err),
+			)
+		}
+
+		stateResp, ok := state.(*GetStateResp)
+		if !ok {
+			return fn.Err[RegistryResp](
+				fmt.Errorf("unexpected active child state %T",
+					state),
+			)
+		}
+
 		if record, ok := r.pending[req.Outpoint]; ok {
 			cached := cloneRegistryRecord(record)
 			if cached.ActorID == "" {
@@ -722,7 +739,9 @@ func (r *registryBehavior) handleGetStatus(ctx context.Context,
 			}
 
 			return fn.Ok[RegistryResp](
-				statusFromRegistryRecord(cached, true),
+				statusFromRegistryRecordAndState(
+					cached, true, stateResp,
+				),
 			)
 		}
 
@@ -740,15 +759,23 @@ func (r *registryBehavior) handleGetStatus(ctx context.Context,
 			}
 
 			return fn.Ok[RegistryResp](
-				statusFromRegistryRecord(cached, true),
+				statusFromRegistryRecordAndState(
+					cached, true, stateResp,
+				),
 			)
 		}
 
 		return fn.Ok[RegistryResp](&GetStatusResp{
-			Found:   true,
-			Active:  true,
-			ActorID: child.Ref().ID(),
-			Phase:   PhasePending,
+			Found:          true,
+			Active:         true,
+			ActorID:        child.Ref().ID(),
+			State:          stateResp,
+			Phase:          stateResp.Phase,
+			Trigger:        stateResp.Trigger,
+			ExitPolicyKind: stateResp.ExitPolicyKind,
+			ExitPolicyRef:  stateResp.ExitPolicyRef,
+			FailReason:     stateResp.FailReason,
+			SweepTxid:      copyHash(stateResp.SweepTxid),
 		})
 	}
 
@@ -1389,6 +1416,27 @@ func statusFromRegistryRecord(record RegistryRecord,
 		FailReason:     record.FailReason,
 		SweepTxid:      copyHash(record.SweepTxid),
 	}
+}
+
+// statusFromRegistryRecordAndState converts one cached registry record and an
+// active child snapshot into a status response.
+func statusFromRegistryRecordAndState(record RegistryRecord, active bool,
+	state *GetStateResp) *GetStatusResp {
+
+	resp := statusFromRegistryRecord(record, active)
+	if state == nil {
+		return resp
+	}
+
+	resp.State = state
+	resp.Phase = state.Phase
+	resp.Trigger = state.Trigger
+	resp.ExitPolicyKind = exitPolicyKind(state.ExitPolicyKind)
+	resp.ExitPolicyRef = state.ExitPolicyRef
+	resp.FailReason = state.FailReason
+	resp.SweepTxid = copyHash(state.SweepTxid)
+
+	return resp
 }
 
 // cloneRegistryRecord deep-copies one registry record.

@@ -957,6 +957,35 @@ func TestEnsureConfirmedRejectsMismatchedPkScript(t *testing.T) {
 	require.ErrorIs(t, err, ErrEnsureParamsMismatch)
 }
 
+// TestEnsureConfirmedRejectsMismatchedDirectBroadcast verifies that deduped
+// callers agree on whether txconfirm may use CPFP for a tracked txid.
+func TestEnsureConfirmedRejectsMismatchedDirectBroadcast(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	ref, _ := newTestActor(t, Config{
+		ChainSource: chain,
+	})
+
+	tx := makeTestTx(false)
+	subA := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	subB := actor.NewChannelTellOnlyRef[Notification]("sub-b", 4)
+
+	firstResp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:              tx,
+		DirectBroadcast: true,
+		Subscriber:      subA,
+	})
+	require.True(t, firstResp.Created)
+
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	defer cancel()
+
+	_, err := ref.Ref().Ask(ctx, &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: subB,
+	}).Await(ctx).Unpack()
+	require.ErrorIs(t, err, ErrEnsureParamsMismatch)
+}
+
 // TestEnsureConfirmedAlreadyConfirmedUsesSuccessPath verifies that a
 // transaction already confirmed elsewhere is treated as success.
 func TestEnsureConfirmedAlreadyConfirmedUsesSuccessPath(t *testing.T) {

@@ -111,6 +111,13 @@ type EnsureConfirmedReq struct {
 	// TargetConfs is the required confirmation count. Zero defaults to one.
 	TargetConfs uint32
 
+	// DirectBroadcast disables anchor CPFP handling for this transaction.
+	// This is for pre-signed protocol transactions that must keep their
+	// exact version and outputs, such as an LND funding transaction. The
+	// actor still watches for confirmation and may re-submit the same tx
+	// on later fee-bump ticks.
+	DirectBroadcast bool
+
 	// Subscriber receives TxConfirmed or TxFailed notifications for this
 	// request.
 	Subscriber actor.TellOnlyRef[Notification]

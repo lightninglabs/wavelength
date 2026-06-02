@@ -170,6 +170,11 @@ type BroadcastRequest struct {
 
 	// Label is a human-readable label for logging.
 	Label string
+
+	// DirectBroadcast skips CPFP anchor handling and relays Tx directly.
+	// Callers use this only for transactions whose version/output set is
+	// fixed by an external protocol.
+	DirectBroadcast bool
 }
 
 // BroadcastResult describes the outcome of one broadcast attempt.
@@ -513,12 +518,16 @@ func (b *CPFPBroadcaster) Submit(ctx context.Context, height int32,
 		return nil, fmt.Errorf("broadcast request and tx required")
 	}
 
+	txid := req.Tx.TxHash()
+	if req.DirectBroadcast {
+		return b.broadcastDirect(ctx, req, txid)
+	}
+
 	if req.Tx.Version != arktx.TxVersion {
 		return nil, fmt.Errorf("%w: got version %d, want %d",
 			ErrNonTRUCParent, req.Tx.Version, arktx.TxVersion)
 	}
 
-	txid := req.Tx.TxHash()
 	anchorIdx := findAnchorOutput(req.Tx)
 	if anchorIdx < 0 {
 		return b.broadcastDirect(ctx, req, txid)

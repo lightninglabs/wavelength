@@ -14,24 +14,43 @@ import (
 // proof.
 //
 // The Planner is intentionally stateless: it wraps a *recovery.Proof and
-// nothing else. All progress state lives in the caller-owned `State` passed
-// to Plan. This shape makes the Planner trivially re-usable across restarts
-// (build once, call Plan whenever state changes) and avoids the
-// cache-invalidation bugs a stateful planner would invite when the durable
-// state evolves on disk.
+// the final spend CSV policy. All progress state lives in the caller-owned
+// `State` passed to Plan. This shape makes the Planner trivially re-usable
+// across restarts (build once, call Plan whenever state changes) and avoids
+// the cache-invalidation bugs a stateful planner would invite when the
+// durable state evolves on disk.
 type Planner struct {
-	proof *recovery.Proof
+	proof         *recovery.Proof
+	sweepCSVDelay uint32
 }
 
 // NewPlanner creates a pure planner for one immutable recovery proof. The
 // only failure mode is a nil proof, which indicates a caller bug; there is
-// no filesystem or network I/O.
+// no filesystem or network I/O. The proof CSV delay is used as the standard
+// final spend delay.
 func NewPlanner(proof *recovery.Proof) (*Planner, error) {
 	if proof == nil {
 		return nil, fmt.Errorf("proof cannot be nil")
 	}
 
-	return &Planner{proof: proof}, nil
+	return NewPlannerWithSweepCSVDelay(proof, proof.CSVDelay())
+}
+
+// NewPlannerWithSweepCSVDelay creates a planner whose final spend can use a
+// policy-specific CSV delay. Standard VTXO timeout exits use the proof CSV;
+// cooperative policies that spend the materialized target through another
+// path, such as virtual channel backing publication, can use a smaller delay.
+func NewPlannerWithSweepCSVDelay(proof *recovery.Proof,
+	sweepCSVDelay uint32) (*Planner, error) {
+
+	if proof == nil {
+		return nil, fmt.Errorf("proof cannot be nil")
+	}
+
+	return &Planner{
+		proof:         proof,
+		sweepCSVDelay: sweepCSVDelay,
+	}, nil
 }
 
 // Proof returns the immutable recovery proof the planner is evaluating.
@@ -140,6 +159,16 @@ func (s *State) Validate(proof *recovery.Proof) error {
 		return fmt.Errorf("proof cannot be nil")
 	}
 
+	return s.validate(proof, proof.CSVDelay())
+}
+
+// validate checks state invariants against the final spend CSV delay the
+// planner will actually use.
+func (s *State) validate(proof *recovery.Proof, sweepCSVDelay uint32) error {
+	if proof == nil {
+		return fmt.Errorf("proof cannot be nil")
+	}
+
 	if s == nil {
 		return fmt.Errorf("state cannot be nil")
 	}
@@ -198,7 +227,7 @@ func (s *State) Validate(proof *recovery.Proof) error {
 	}
 
 	err = validateSweepState(
-		s.Sweep, confirmed, proof, s.TargetConfirmHeight,
+		s.Sweep, confirmed, proof, s.TargetConfirmHeight, sweepCSVDelay,
 	)
 	if err != nil {
 		return err
@@ -337,7 +366,7 @@ func (p *Planner) Plan(height int32, state *State) (*Snapshot, error) {
 	// Validate first. The planner never plans against a state that
 	// violates an invariant, because any downstream broadcast decisions
 	// would be incorrect by construction.
-	if err := state.Validate(p.proof); err != nil {
+	if err := state.validate(p.proof, p.sweepCSVDelay); err != nil {
 		return nil, err
 	}
 
@@ -429,7 +458,7 @@ func (p *Planner) Plan(height int32, state *State) (*Snapshot, error) {
 
 	if snapshot.TargetConfirmed {
 		csv, err := csvInfoAt(
-			p.proof, height, state.TargetConfirmHeight,
+			p.sweepCSVDelay, height, state.TargetConfirmHeight,
 		)
 		if err != nil {
 			return nil, err
@@ -457,7 +486,7 @@ func (p *Planner) Plan(height int32, state *State) (*Snapshot, error) {
 // See recovery.ComputeMaturityHeight for the overflow reasoning; it is
 // worth keeping the single overflow-safe implementation shared between
 // packages so a fix to one side automatically benefits the other.
-func csvInfoAt(proof *recovery.Proof, height int32,
+func csvInfoAt(sweepCSVDelay uint32, height int32,
 	targetConfirmHeight fn.Option[int32]) (CSVInfo, error) {
 
 	confirmHeight, err := targetConfirmHeight.UnwrapOrErr(
@@ -468,7 +497,7 @@ func csvInfoAt(proof *recovery.Proof, height int32,
 	}
 
 	maturityHeight, err := recovery.ComputeMaturityHeight(
-		confirmHeight, proof.CSVDelay(),
+		confirmHeight, sweepCSVDelay,
 	)
 	if err != nil {
 		return CSVInfo{}, err
@@ -571,14 +600,15 @@ func ensureParentsConfirmed(proof *recovery.Proof,
 //	Confirmed    : the sweep confirmed on-chain. Both Txid and
 //	               ConfirmHeight are set. The target must be confirmed
 //	               AND the sweep's confirm height must be at or past
-//	               target_confirm_height + csv_delay.
+//	               target_confirm_height + policy csv_delay.
 //
 // A Txid that collides with any proof node txid is rejected up front,
 // regardless of status: a collision would leave the planner treating the
 // same hash as both a confirmed proof node AND a sweep step, which is
 // logically incoherent and masks genuine progress.
 func validateSweepState(sweep SweepState, confirmed fn.Set[chainhash.Hash],
-	proof *recovery.Proof, targetConfirmHeight fn.Option[int32]) error {
+	proof *recovery.Proof, targetConfirmHeight fn.Option[int32],
+	sweepCSVDelay uint32) error {
 
 	// A sweep Txid that collides with a proof node would leave the planner
 	// treating the same hash as both a confirmed proof node and a sweep
@@ -662,7 +692,7 @@ func validateSweepState(sweep SweepState, confirmed fn.Set[chainhash.Hash],
 			return err
 		}
 		maturityHeight, err := recovery.ComputeMaturityHeight(
-			targetHeight, proof.CSVDelay(),
+			targetHeight, sweepCSVDelay,
 		)
 		if err != nil {
 			return fmt.Errorf("confirmed sweep: %w", err)
