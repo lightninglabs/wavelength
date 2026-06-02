@@ -19,6 +19,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
@@ -895,6 +896,165 @@ func TestCPFPReselectsAfterPreciseFeeGrowth(t *testing.T) {
 	require.False(
 		t, spendsSmall, "child must not spend the abandoned UTXO",
 	)
+}
+
+// makeCheckpointShapedParent builds a v3/TRUC parent that mirrors a finalized
+// OOR checkpoint / fraud-response tx: its sole non-anchor input already carries
+// a real (pre-signed) taproot key-spend witness, it has a taproot checkpoint
+// output, and the canonical P2A anchor is the last output. This differs from a
+// round commitment tx only in the parent's own input witness — the trait
+// issue #509 hypothesised would break the CPFP child finalize path.
+func makeCheckpointShapedParent() (*wire.MsgTx, wire.TxWitness) {
+	tx := wire.NewMsgTx(3)
+
+	// A pre-signed taproot key-spend witness (single 64-byte schnorr sig),
+	// as a finalized OOR checkpoint input would carry.
+	signedWitness := wire.TxWitness{bytes.Repeat([]byte{0x07}, 64)}
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{0xcc},
+			Index: 1,
+		},
+		Witness: signedWitness,
+	})
+
+	// A P2TR checkpoint output (OP_1 <32-byte key>).
+	checkpointPkScript := append(
+		[]byte{txscript.OP_1, txscript.OP_DATA_32},
+		bytes.Repeat([]byte{0x02}, 32)...,
+	)
+	tx.AddTxOut(&wire.TxOut{
+		Value:    50_000,
+		PkScript: checkpointPkScript,
+	})
+
+	// The canonical P2A anchor, always last.
+	tx.AddTxOut(arkscript.AnchorOutput())
+
+	return tx, signedWitness
+}
+
+// TestCPFPChildFinalizesCheckpointShapedParent is a regression test for
+// issue #509. It proves the CPFP child finalize path is agnostic to the
+// parent's input type: a checkpoint / fraud-response parent — whose own input
+// is a pre-signed taproot key-spend, unlike a round commitment tx — still
+// yields a CPFP child whose canonical P2A anchor input is pre-finalized with an
+// empty witness, so LND FinalizePsbt only has to sign the wallet fee input. The
+// parent's signed input is preserved byte-for-byte; the broadcaster never
+// re-finalizes it.
+func TestCPFPChildFinalizesCheckpointShapedParent(t *testing.T) {
+	t.Parallel()
+
+	chain := newFakeChainSourceRef(100)
+	chain.feeRate = 5
+
+	parent, parentWitness := makeCheckpointShapedParent()
+	parentTxid := parent.TxHash()
+
+	anchorIdx := findAnchorOutput(parent)
+	require.GreaterOrEqual(t, anchorIdx, 0, "parent must carry an anchor")
+	anchorOutpoint := wire.OutPoint{
+		Hash:  parentTxid,
+		Index: uint32(anchorIdx),
+	}
+
+	feeUtxo := &walletcore.Utxo{
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0xfe,
+			},
+			Index: 0,
+		},
+		Amount:   200_000,
+		PkScript: p2pkhTestPkScript(t),
+	}
+
+	// inspect runs on the child PSBT before the wallet attaches dummy
+	// witnesses. It directly asserts the mechanism #509 claimed was
+	// missing: signCPFPChild pre-finalizes the anchor input (empty witness)
+	// and leaves the wallet fee input for FinalizePsbt to sign.
+	var inspected bool
+	wlt := &rewritingWallet{
+		utxos: []*walletcore.Utxo{
+			feeUtxo,
+		},
+		changeScript: []byte{
+			txscript.OP_TRUE,
+		},
+		inspect: func(p *psbt.Packet) {
+			inspected = true
+			for i, in := range p.UnsignedTx.TxIn {
+				switch in.PreviousOutPoint {
+				case anchorOutpoint:
+					require.Equal(
+						t, []byte{0x00},
+						p.Inputs[i].FinalScriptWitness,
+						"anchor input must be "+
+							"pre-finalized empty",
+					)
+
+				case feeUtxo.Outpoint:
+					require.Empty(
+						t,
+						p.Inputs[i].FinalScriptWitness,
+						"fee input must be left "+
+							"for the wallet to "+
+							"sign",
+					)
+					require.NotNil(
+						t, p.Inputs[i].WitnessUtxo,
+					)
+				}
+			}
+		},
+	}
+
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wlt,
+	})
+
+	_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+		Tx: parent, Label: "fraud-spent_leaf",
+	})
+	require.NoError(t, err)
+	require.True(t, inspected, "FinalizePsbt inspect hook must have run")
+
+	// A CPFP package — not a direct-broadcast fallback — must have been
+	// submitted.
+	require.Equal(t, 1, chain.packageCallCount())
+	require.Zero(t, chain.broadcastCallCount())
+
+	child := chain.packageCalls[0].Child
+	require.NotNil(t, child)
+
+	// The child's anchor input is spent with an empty witness (P2A is
+	// anyone-can-spend), while the wallet fee input carries a signature.
+	var sawAnchor, sawFee bool
+	for _, in := range child.TxIn {
+		switch in.PreviousOutPoint {
+		case anchorOutpoint:
+			sawAnchor = true
+			require.Empty(
+				t, in.Witness,
+				"anchor input witness must be empty",
+			)
+
+		case feeUtxo.Outpoint:
+			sawFee = true
+			require.NotEmpty(
+				t, in.Witness,
+				"fee input must be signed by the wallet",
+			)
+		}
+	}
+	require.True(t, sawAnchor, "child must spend the parent anchor")
+	require.True(t, sawFee, "child must spend the wallet fee input")
+
+	// The parent in the submitted package is untouched: its pre-signed
+	// checkpoint input witness is preserved byte-for-byte.
+	submittedParent := chain.packageCalls[0].Parents[0]
+	require.Equal(t, parentWitness, submittedParent.TxIn[0].Witness)
 }
 
 // TestCPFPBroadcasterFallbackAndErrors covers the lower-level generic
