@@ -38,6 +38,7 @@ const (
 	DaemonService_PrepareOOR_FullMethodName                    = "/daemonrpc.DaemonService/PrepareOOR"
 	DaemonService_SignOORCustomInput_FullMethodName            = "/daemonrpc.DaemonService/SignOORCustomInput"
 	DaemonService_RefreshVTXOs_FullMethodName                  = "/daemonrpc.DaemonService/RefreshVTXOs"
+	DaemonService_OpenVirtualChannel_FullMethodName            = "/daemonrpc.DaemonService/OpenVirtualChannel"
 	DaemonService_LeaveVTXOs_FullMethodName                    = "/daemonrpc.DaemonService/LeaveVTXOs"
 	DaemonService_Board_FullMethodName                         = "/daemonrpc.DaemonService/Board"
 	DaemonService_JoinNextRound_FullMethodName                 = "/daemonrpc.DaemonService/JoinNextRound"
@@ -132,6 +133,10 @@ type DaemonServiceClient interface {
 	// RefreshVTXOs queues one or more VTXOs for refresh in the next
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(ctx context.Context, in *RefreshVTXOsRequest, opts ...grpc.CallOption) (*RefreshVTXOsResponse, error)
+	// OpenVirtualChannel negotiates an lnd channel backed by existing
+	// VTXO(s). The backing transaction is registered durably but is not
+	// broadcast during the happy path.
+	OpenVirtualChannel(ctx context.Context, in *OpenVirtualChannelRequest, opts ...grpc.CallOption) (*OpenVirtualChannelResponse, error)
 	// LeaveVTXOs queues one or more VTXOs for cooperative leave
 	// (offboard) in the next round. Each VTXO is forfeited and the
 	// forfeited amount (minus the quoted per-input operator fee)
@@ -401,6 +406,16 @@ func (c *daemonServiceClient) RefreshVTXOs(ctx context.Context, in *RefreshVTXOs
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RefreshVTXOsResponse)
 	err := c.cc.Invoke(ctx, DaemonService_RefreshVTXOs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) OpenVirtualChannel(ctx context.Context, in *OpenVirtualChannelRequest, opts ...grpc.CallOption) (*OpenVirtualChannelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OpenVirtualChannelResponse)
+	err := c.cc.Invoke(ctx, DaemonService_OpenVirtualChannel_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -688,6 +703,10 @@ type DaemonServiceServer interface {
 	// RefreshVTXOs queues one or more VTXOs for refresh in the next
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
+	// OpenVirtualChannel negotiates an lnd channel backed by existing
+	// VTXO(s). The backing transaction is registered durably but is not
+	// broadcast during the happy path.
+	OpenVirtualChannel(context.Context, *OpenVirtualChannelRequest) (*OpenVirtualChannelResponse, error)
 	// LeaveVTXOs queues one or more VTXOs for cooperative leave
 	// (offboard) in the next round. Each VTXO is forfeited and the
 	// forfeited amount (minus the quoted per-input operator fee)
@@ -829,6 +848,9 @@ func (UnimplementedDaemonServiceServer) SignOORCustomInput(context.Context, *Sig
 }
 func (UnimplementedDaemonServiceServer) RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RefreshVTXOs not implemented")
+}
+func (UnimplementedDaemonServiceServer) OpenVirtualChannel(context.Context, *OpenVirtualChannelRequest) (*OpenVirtualChannelResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method OpenVirtualChannel not implemented")
 }
 func (UnimplementedDaemonServiceServer) LeaveVTXOs(context.Context, *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method LeaveVTXOs not implemented")
@@ -1249,6 +1271,24 @@ func _DaemonService_RefreshVTXOs_Handler(srv interface{}, ctx context.Context, d
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).RefreshVTXOs(ctx, req.(*RefreshVTXOsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_OpenVirtualChannel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OpenVirtualChannelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).OpenVirtualChannel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_OpenVirtualChannel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).OpenVirtualChannel(ctx, req.(*OpenVirtualChannelRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1688,6 +1728,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RefreshVTXOs",
 			Handler:    _DaemonService_RefreshVTXOs_Handler,
+		},
+		{
+			MethodName: "OpenVirtualChannel",
+			Handler:    _DaemonService_OpenVirtualChannel_Handler,
 		},
 		{
 			MethodName: "LeaveVTXOs",

@@ -98,6 +98,12 @@ service DaemonService {
     // round. This extends their expiry without changing ownership.
     rpc RefreshVTXOs (RefreshVTXOsRequest) returns (RefreshVTXOsResponse);
 
+    // OpenVirtualChannel negotiates an lnd channel backed by existing
+    // VTXO(s). The backing transaction is registered durably but is not
+    // broadcast during the happy path.
+    rpc OpenVirtualChannel (OpenVirtualChannelRequest)
+        returns (OpenVirtualChannelResponse);
+
     // LeaveVTXOs queues one or more VTXOs for cooperative leave
     // (offboard) in the next round. Each VTXO is forfeited and the
     // forfeited amount (minus the quoted per-input operator fee)
@@ -895,6 +901,77 @@ message RefreshVTXOsResponse {
 
     // status is the result: "queued" on success, "preview" on dry_run.
     string status = 2;
+}
+
+message VirtualChannelVTXOInput {
+    // outpoint identifies the VTXO to use in "txid:vout" format. When no
+    // explicit inputs are provided, the daemon selects and locks VTXOs.
+    string outpoint = 1;
+
+    // amount_sat is optional for caller-specified inputs. If omitted, the
+    // daemon loads the amount from its VTXO store.
+    int64 amount_sat = 2;
+}
+
+message VirtualChannelSelectedVTXO {
+    // outpoint identifies the selected backing VTXO in "txid:vout" format.
+    string outpoint = 1;
+
+    // amount_sat is the backing VTXO value.
+    int64 amount_sat = 2;
+}
+
+message OpenVirtualChannelRequest {
+    // peer_node_pubkey is the compressed lnd node pubkey of the operator peer.
+    bytes peer_node_pubkey = 1;
+
+    // capacity_sat is the lnd channel capacity.
+    int64 capacity_sat = 2;
+
+    // push_sat is the initial balance pushed to the remote peer.
+    int64 push_sat = 3;
+
+    // private marks the lnd channel private.
+    bool private = 4;
+
+    // zero_conf requests lnd zero-conf/scid-alias activation.
+    bool zero_conf = 5;
+
+    // backing_vtxos optionally pins the VTXOs to use. Empty means the daemon
+    // selects enough wallet VTXOs to cover capacity and fees.
+    repeated VirtualChannelVTXOInput backing_vtxos = 6;
+
+    // idempotency_key identifies this negotiation across retries.
+    string idempotency_key = 7;
+
+    // dry_run validates selection and returns a preview without activating lnd
+    // or persisting a virtual channel registration.
+    bool dry_run = 8;
+}
+
+message OpenVirtualChannelResponse {
+    // status is "preview", "negotiating", or "active".
+    string status = 1;
+
+    // virtual_channel_id is the stable darepo virtual channel id.
+    bytes virtual_channel_id = 2;
+
+    // pending_channel_id is lnd's temporary channel id during funding.
+    bytes pending_channel_id = 3;
+
+    // channel_point is the lnd funding outpoint in "txid:vout" format.
+    string channel_point = 4;
+
+    // selected_vtxos is the set of VTXOs backing the channel.
+    repeated VirtualChannelSelectedVTXO selected_vtxos = 5;
+
+    // backing_tx is the fully signed VTXO-to-channel-point transaction. It is
+    // empty for dry_run previews.
+    bytes backing_tx = 6;
+
+    // funding_psbt is the lnd funding PSBT retained for audit/recovery. It is
+    // empty for dry_run previews.
+    bytes funding_psbt = 7;
 }
 
 // LeaveDestination describes where a single leave output should land.

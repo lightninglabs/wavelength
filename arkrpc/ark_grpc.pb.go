@@ -19,8 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ArkService_GetInfo_FullMethodName     = "/arkrpc.ArkService/GetInfo"
-	ArkService_EstimateFee_FullMethodName = "/arkrpc.ArkService/EstimateFee"
+	ArkService_GetInfo_FullMethodName                     = "/arkrpc.ArkService/GetInfo"
+	ArkService_EstimateFee_FullMethodName                 = "/arkrpc.ArkService/EstimateFee"
+	ArkService_RegisterVirtualChannel_FullMethodName      = "/arkrpc.ArkService/RegisterVirtualChannel"
+	ArkService_ActivateVirtualChannel_FullMethodName      = "/arkrpc.ArkService/ActivateVirtualChannel"
+	ArkService_CosignVirtualChannelBacking_FullMethodName = "/arkrpc.ArkService/CosignVirtualChannelBacking"
 )
 
 // ArkServiceClient is the client API for ArkService service.
@@ -33,6 +36,16 @@ type ArkServiceClient interface {
 	// showing liquidity cost, on-chain share, margin, and minimum
 	// viable VTXO at current rates and utilization.
 	EstimateFee(ctx context.Context, in *EstimateFeeRequest, opts ...grpc.CallOption) (*EstimateFeeResponse, error)
+	// RegisterVirtualChannel persists the operator-side view of an lnd
+	// channel funded by an unbroadcast VTXO backing parent.
+	RegisterVirtualChannel(ctx context.Context, in *RegisterVirtualChannelRequest, opts ...grpc.CallOption) (*RegisterVirtualChannelResponse, error)
+	// ActivateVirtualChannel replaces the negotiating backing parent with the
+	// signed, conflict-publishable parent and marks the channel active.
+	ActivateVirtualChannel(ctx context.Context, in *ActivateVirtualChannelRequest, opts ...grpc.CallOption) (*ActivateVirtualChannelResponse, error)
+	// CosignVirtualChannelBacking verifies the client's VTXO input signatures,
+	// adds the operator signatures, persists the signed parent as active
+	// material, and returns the fully witnessed backing transaction.
+	CosignVirtualChannelBacking(ctx context.Context, in *CosignVirtualChannelBackingRequest, opts ...grpc.CallOption) (*CosignVirtualChannelBackingResponse, error)
 }
 
 type arkServiceClient struct {
@@ -63,6 +76,36 @@ func (c *arkServiceClient) EstimateFee(ctx context.Context, in *EstimateFeeReque
 	return out, nil
 }
 
+func (c *arkServiceClient) RegisterVirtualChannel(ctx context.Context, in *RegisterVirtualChannelRequest, opts ...grpc.CallOption) (*RegisterVirtualChannelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RegisterVirtualChannelResponse)
+	err := c.cc.Invoke(ctx, ArkService_RegisterVirtualChannel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *arkServiceClient) ActivateVirtualChannel(ctx context.Context, in *ActivateVirtualChannelRequest, opts ...grpc.CallOption) (*ActivateVirtualChannelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ActivateVirtualChannelResponse)
+	err := c.cc.Invoke(ctx, ArkService_ActivateVirtualChannel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *arkServiceClient) CosignVirtualChannelBacking(ctx context.Context, in *CosignVirtualChannelBackingRequest, opts ...grpc.CallOption) (*CosignVirtualChannelBackingResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CosignVirtualChannelBackingResponse)
+	err := c.cc.Invoke(ctx, ArkService_CosignVirtualChannelBacking_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ArkServiceServer is the server API for ArkService service.
 // All implementations must embed UnimplementedArkServiceServer
 // for forward compatibility.
@@ -73,6 +116,16 @@ type ArkServiceServer interface {
 	// showing liquidity cost, on-chain share, margin, and minimum
 	// viable VTXO at current rates and utilization.
 	EstimateFee(context.Context, *EstimateFeeRequest) (*EstimateFeeResponse, error)
+	// RegisterVirtualChannel persists the operator-side view of an lnd
+	// channel funded by an unbroadcast VTXO backing parent.
+	RegisterVirtualChannel(context.Context, *RegisterVirtualChannelRequest) (*RegisterVirtualChannelResponse, error)
+	// ActivateVirtualChannel replaces the negotiating backing parent with the
+	// signed, conflict-publishable parent and marks the channel active.
+	ActivateVirtualChannel(context.Context, *ActivateVirtualChannelRequest) (*ActivateVirtualChannelResponse, error)
+	// CosignVirtualChannelBacking verifies the client's VTXO input signatures,
+	// adds the operator signatures, persists the signed parent as active
+	// material, and returns the fully witnessed backing transaction.
+	CosignVirtualChannelBacking(context.Context, *CosignVirtualChannelBackingRequest) (*CosignVirtualChannelBackingResponse, error)
 	mustEmbedUnimplementedArkServiceServer()
 }
 
@@ -88,6 +141,15 @@ func (UnimplementedArkServiceServer) GetInfo(context.Context, *GetInfoRequest) (
 }
 func (UnimplementedArkServiceServer) EstimateFee(context.Context, *EstimateFeeRequest) (*EstimateFeeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method EstimateFee not implemented")
+}
+func (UnimplementedArkServiceServer) RegisterVirtualChannel(context.Context, *RegisterVirtualChannelRequest) (*RegisterVirtualChannelResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RegisterVirtualChannel not implemented")
+}
+func (UnimplementedArkServiceServer) ActivateVirtualChannel(context.Context, *ActivateVirtualChannelRequest) (*ActivateVirtualChannelResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ActivateVirtualChannel not implemented")
+}
+func (UnimplementedArkServiceServer) CosignVirtualChannelBacking(context.Context, *CosignVirtualChannelBackingRequest) (*CosignVirtualChannelBackingResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CosignVirtualChannelBacking not implemented")
 }
 func (UnimplementedArkServiceServer) mustEmbedUnimplementedArkServiceServer() {}
 func (UnimplementedArkServiceServer) testEmbeddedByValue()                    {}
@@ -146,6 +208,60 @@ func _ArkService_EstimateFee_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ArkService_RegisterVirtualChannel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegisterVirtualChannelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArkServiceServer).RegisterVirtualChannel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArkService_RegisterVirtualChannel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArkServiceServer).RegisterVirtualChannel(ctx, req.(*RegisterVirtualChannelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ArkService_ActivateVirtualChannel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ActivateVirtualChannelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArkServiceServer).ActivateVirtualChannel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArkService_ActivateVirtualChannel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArkServiceServer).ActivateVirtualChannel(ctx, req.(*ActivateVirtualChannelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ArkService_CosignVirtualChannelBacking_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CosignVirtualChannelBackingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ArkServiceServer).CosignVirtualChannelBacking(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ArkService_CosignVirtualChannelBacking_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ArkServiceServer).CosignVirtualChannelBacking(ctx, req.(*CosignVirtualChannelBackingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ArkService_ServiceDesc is the grpc.ServiceDesc for ArkService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -160,6 +276,18 @@ var ArkService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "EstimateFee",
 			Handler:    _ArkService_EstimateFee_Handler,
+		},
+		{
+			MethodName: "RegisterVirtualChannel",
+			Handler:    _ArkService_RegisterVirtualChannel_Handler,
+		},
+		{
+			MethodName: "ActivateVirtualChannel",
+			Handler:    _ArkService_ActivateVirtualChannel_Handler,
+		},
+		{
+			MethodName: "CosignVirtualChannelBacking",
+			Handler:    _ArkService_CosignVirtualChannelBacking_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

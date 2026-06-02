@@ -149,6 +149,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "RefreshVTXOs queues one or more VTXOs for refresh in the next\nround. This extends their expiry without changing ownership.",
 				},
 				{
+					Name:     "OpenVirtualChannel",
+					Aliases:  []string{"open-virtual-channel"},
+					Input:    "daemonrpc.OpenVirtualChannelRequest",
+					Output:   "daemonrpc.OpenVirtualChannelResponse",
+					Comments: "OpenVirtualChannel negotiates an lnd channel backed by existing\nVTXO(s). The backing transaction is registered durably but is not\nbroadcast during the happy path.",
+				},
+				{
 					Name:     "LeaveVTXOs",
 					Aliases:  []string{"leave-vtxos"},
 					Input:    "daemonrpc.LeaveVTXOsRequest",

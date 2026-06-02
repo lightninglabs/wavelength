@@ -60,6 +60,9 @@ http:
     - selector: daemonrpc.DaemonService.RefreshVTXOs
       post: /v1/daemon/refresh-vtxos
       body: "*"
+    - selector: daemonrpc.DaemonService.OpenVirtualChannel
+      post: /v1/daemon/open-virtual-channel
+      body: "*"
     - selector: daemonrpc.DaemonService.LeaveVTXOs
       post: /v1/daemon/leave-vtxos
       body: "*"
