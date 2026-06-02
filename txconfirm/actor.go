@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -27,7 +28,21 @@ const (
 	// at all) after which the actor emits an operator-visible escalation.
 	// The tx keeps being re-attempted regardless; this only controls when
 	// the actor starts asking for operator attention.
-	DefaultBroadcastFailureAlertThreshold = 5
+	//
+	// Note the effective time to first alert is roughly this threshold
+	// times FeeBumpIntervalBlocks blocks, because re-attempts are
+	// interval-paced. The default is kept small so a fund-risk tx (e.g. a
+	// fraud-response checkpoint) surfaces to operators quickly rather than
+	// after a long silent window.
+	DefaultBroadcastFailureAlertThreshold = 3
+
+	// broadcastEscalationReminder bounds how often the operator-facing
+	// "repeatedly failing" escalation repeats once the alert threshold has
+	// been crossed. The first crossing always logs; subsequent reminders
+	// are emitted at most once per this interval, decoupling the reminder
+	// cadence from the (block-driven) retry interval so a permanently stuck
+	// tx does not flood the log.
+	broadcastEscalationReminder = 10 * time.Minute
 )
 
 var (
@@ -78,6 +93,11 @@ type Config struct {
 	// dashboards and alerts can distinguish "cannot broadcast" from a tx
 	// that is genuinely awaiting confirmation. Zero falls back to
 	// DefaultBroadcastFailureAlertThreshold.
+	//
+	// Because re-attempts are interval-paced, the effective time to the
+	// first alert is roughly BroadcastFailureAlertThreshold *
+	// FeeBumpIntervalBlocks blocks. Tune both together when changing how
+	// quickly a stuck fund-risk tx should surface to operators.
 	BroadcastFailureAlertThreshold int
 
 	// MaxFeeRateSatPerVByte caps fee estimates used by the internal CPFP
@@ -162,6 +182,14 @@ type trackedTx struct {
 	fsm  *trackedTxStateMachine
 
 	subscribers map[string]actor.TellOnlyRef[Notification]
+
+	// escalateLog rate-limits the operator-facing escalation that fires
+	// once a tx has failed to reach any mempool repeatedly. It
+	// edge-triggers on the first crossing of the alert threshold and then
+	// emits at most one reminder per broadcastEscalationReminder, so a
+	// persistently stuck tx stays visible without flooding the log on every
+	// retry interval.
+	escalateLog rate.Sometimes
 
 	// confWatchRegistered reports whether a chainsource confirmation
 	// watch is currently active for this txid. It is flipped true by
@@ -451,22 +479,31 @@ func (a *TxBroadcasterActor) handleEnsure(ctx context.Context,
 //     broadcast). The conf watch is already registered, so advance to
 //     AwaitingConfirmation and let it ride.
 //
-//   - ErrCPFPFeeInputUnavailable: a total broadcast failure — both the CPFP
-//     child sign and the direct-parent fallback failed, so nothing reached any
-//     mempool. The tx stays in Broadcasting (it must NOT report
-//     AwaitingConfirmation) and is re-attempted on the next interval. The
-//     consecutive-failure counter is bumped and, past the configured
-//     threshold, the operator is alerted. The actor never gives up.
+//   - a permanent/structural error (see isPermanentBroadcastError): the tx can
+//     never be accepted as submitted, so retrying is pointless. Fail it
+//     terminally and notify subscribers.
 //
-//   - any other error: a genuine terminal broadcast failure.
+//   - any other error on an anchor (CPFP) parent: the tx reached no mempool but
+//     the failure is plausibly transient — a missing confirmed fee input
+//     (ErrCPFPFeeInputUnavailable), a min-relay-fee rejection of the zero-fee
+//     anchor parent, a mempool-full condition, or a fee input spent out from
+//     under us. These are exactly the conditions CPFP retry exists to overcome,
+//     so the tx stays in Broadcasting (it must NOT report
+//     AwaitingConfirmation), is re-attempted on the next interval, and
+//     escalates to the operator past the configured threshold. The actor never
+//     gives up on such a tx: a fraud-response checkpoint must land before the
+//     counterparty's CSV-timeout path can win.
+//
+//   - any other error on a non-anchor parent: a plain direct broadcast with no
+//     CPFP retry machinery. There is nothing to fee-bump and no fund-risk
+//     retry contract, so fail it terminally as before.
 func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
 	entry *trackedTx, err error) {
 
-	if err == nil {
-		return
-	}
-
 	switch {
+	case err == nil:
+		return
+
 	case errors.Is(err, ErrParentAlreadyBroadcast):
 		// A live parent exists on another path, so the conf watch can
 		// ride to confirmation. Advance to AwaitingConfirmation.
@@ -485,16 +522,40 @@ func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
 			},
 		)
 
-	case errors.Is(err, ErrCPFPFeeInputUnavailable):
-		// Nothing reached any mempool. Stay in Broadcasting so the next
-		// interval re-attempts, and track the failure for escalation.
+	case isPermanentBroadcastError(err):
+		// The tx is structurally unacceptable (e.g. a non-TRUC parent);
+		// no amount of retrying will land it, so fail terminally.
+		a.failTrackedTx(
+			ctx, entry, fmt.Sprintf("broadcast: %v", err),
+		)
+
+	case findAnchorOutput(entry.data.Tx) >= 0:
+		// An anchor (CPFP) parent reached no mempool. The failure is
+		// plausibly transient and this is the fund-risk path, so stay
+		// in Broadcasting, re-attempt next interval, and escalate
+		// rather than give up.
 		a.recordBroadcastFailure(ctx, entry, err)
 
 	default:
+		// A non-anchor direct broadcast failed and has no CPFP retry
+		// contract; fail terminally.
 		a.failTrackedTx(
 			ctx, entry, fmt.Sprintf("broadcast: %v", err),
 		)
 	}
+}
+
+// isPermanentBroadcastError reports whether a broadcast error is structural and
+// can never succeed on retry, so an anchor-bearing tracked tx should fail
+// terminally rather than spin in the Broadcasting retry loop. Transient
+// conditions on an anchor parent are kept retryable, because on a fund-risk
+// path (e.g. a fraud-response checkpoint) it is safer to keep trying and alert
+// an operator than to silently abort a tx that must confirm.
+func isPermanentBroadcastError(err error) bool {
+
+	// A non-TRUC (non-v3) parent is a caller/programming error: the version
+	// gate rejects it identically on every attempt, so retrying only spams.
+	return errors.Is(err, ErrNonTRUCParent)
 }
 
 // recordBroadcastFailure keeps a never-broadcast tx in the Broadcasting state,
@@ -516,12 +577,15 @@ func (a *TxBroadcasterActor) recordBroadcastFailure(ctx context.Context,
 
 	failures := trackedTxBroadcastFailures(currentState) + 1
 
-	a.log.WarnS(ctx,
+	// The per-attempt record is routine (one line per retry interval), so
+	// it logs at debug; the operator-facing signal is the throttled
+	// escalation below.
+	a.log.DebugS(ctx,
 		"Initial broadcast reached no mempool; will retry",
-		cause,
 		"txid", entry.data.Txid,
 		slog.String("label", entry.data.Label),
 		slog.Int("consecutive_failures", failures),
+		slog.Any("cause", cause),
 	)
 
 	_ = a.advanceTrackedTxFSM(
@@ -533,19 +597,22 @@ func (a *TxBroadcasterActor) recordBroadcastFailure(ctx context.Context,
 		},
 	)
 
-	// Escalate once the failure count reaches the threshold and on every
-	// subsequent attempt, so a persistent deterministic failure stays
-	// visible to operators without giving up. The message is intentionally
-	// static so alerting can key on it.
+	// Escalate once the failure count reaches the threshold. escalateLog
+	// edge-triggers on the first crossing and then emits at most one
+	// reminder per broadcastEscalationReminder, so a persistently stuck tx
+	// stays visible without a warning on every retry interval. The message
+	// is intentionally static so alerting can key on it.
 	if failures >= a.cfg.BroadcastFailureAlertThreshold {
-		a.log.WarnS(ctx,
-			"Tx broadcast repeatedly failing; operator "+
-				"intervention may be required",
-			cause,
-			"txid", entry.data.Txid,
-			slog.String("label", entry.data.Label),
-			slog.Int("consecutive_failures", failures),
-		)
+		entry.escalateLog.Do(func() {
+			a.log.WarnS(ctx,
+				"Tx broadcast repeatedly failing; operator "+
+					"intervention may be required",
+				cause,
+				"txid", entry.data.Txid,
+				slog.String("label", entry.data.Label),
+				slog.Int("consecutive_failures", failures),
+			)
+		})
 	}
 }
 
@@ -835,6 +902,10 @@ func (a *TxBroadcasterActor) newTrackedTx(ctx context.Context,
 		fsm:  fsm,
 		subscribers: map[string]actor.TellOnlyRef[Notification]{
 			req.Subscriber.ID(): req.Subscriber,
+		},
+		escalateLog: rate.Sometimes{
+			First:    1,
+			Interval: broadcastEscalationReminder,
 		},
 	}, nil
 }

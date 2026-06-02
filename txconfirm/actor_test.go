@@ -1733,3 +1733,75 @@ func TestEnsureConfirmedEscalatesAfterRepeatedFailures(t *testing.T) {
 		"repeated failures must escalate to the operator",
 	)
 }
+
+// TestEnsureConfirmedRetriesTransientPackageRejection verifies that an anchor
+// (CPFP) parent whose package submission is rejected for a transient reason
+// (e.g. min relay fee not met on the zero-fee anchor parent) stays in
+// Broadcasting and is re-attempted, rather than failing terminally. This is the
+// fund-risk retry contract: such a checkpoint must keep trying until it lands.
+func TestEnsureConfirmedRetriesTransientPackageRejection(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	chain.packageErr = fmt.Errorf("transaction rejected by the mempool " +
+		"because of low fees: min relay fee not met")
+	walletRef := &fakeWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXO(t),
+		},
+	}
+	ref, _ := newTestActor(t, Config{
+		ChainSource:           chain,
+		Wallet:                walletRef,
+		FeeBumpIntervalBlocks: 1,
+	})
+
+	tx := makeTestTx(true)
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+
+	// A transient package rejection must NOT fail the fund-risk tx; it
+	// stays in Broadcasting for re-attempt.
+	require.Equal(t, TxStateBroadcasting, resp.State)
+	require.Equal(t, 1, chain.packageCallCount())
+	mustHaveNoNotification(t, sub)
+
+	// The next interval re-attempts (hitting the same rejection) and the tx
+	// remains non-terminal.
+	chain.emitBlock(t, 101)
+	require.Equal(
+		t, TxStateBroadcasting,
+		mustTrackedState(
+			t, ref.Ref(), tx, sub,
+		),
+	)
+	require.Equal(t, 2, chain.packageCallCount())
+	mustHaveNoNotification(t, sub)
+}
+
+// TestEnsureConfirmedFailsPermanentBroadcastError verifies that a structurally
+// permanent broadcast error (a non-TRUC parent) fails terminally instead of
+// spinning in the Broadcasting retry loop.
+func TestEnsureConfirmedFailsPermanentBroadcastError(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	ref, _ := newTestActor(t, Config{
+		ChainSource: chain,
+		Wallet:      &fakeWallet{},
+	})
+
+	// A v2 (non-TRUC) parent is rejected by the broadcaster's version gate
+	// with ErrNonTRUCParent on every attempt.
+	tx := makeTestTx(true)
+	tx.Version = 2
+
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.Equal(t, TxStateFailed, resp.State)
+
+	failed := mustAwaitNotification(t, sub)
+	require.IsType(t, &TxFailed{}, failed)
+}
