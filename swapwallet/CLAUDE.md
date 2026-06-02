@@ -24,11 +24,13 @@ default builds avoid the swap executor's dependency graph.
   never cancel in-flight work.
 - `Deps` — Composition struct: `SwapBackend` (in-Go swap runtime),
   `SwapService` (gRPC-shaped swap subserver handle), `RPCServer`
-  (narrow daemonrpc contract), plus wallet-level deadline, list-limit,
-  and subscribe-buffer knobs.
+  (narrow daemonrpc contract), `ChainParams` (Bitcoin network — used to
+  validate BOLT-11 invoice decoding in `PrepareSend` so a cross-network
+  invoice is rejected before a send intent is issued), plus wallet-level
+  deadline, list-limit, and subscribe-buffer knobs.
 - `RPCServer` interface — Narrow contract over `*darepod.RPCServer`
   covering every daemonrpc method swapwallet composes against:
-  LeaveVTXOs, ListVTXOs, ListTransactions, NewAddress, GetInfo,
+  LeaveVTXOs, SendOnChain, ListVTXOs, ListTransactions, NewAddress, GetInfo,
   GetBalance, GenSeed, InitWallet, UnlockWallet, Unroll,
   GetUnrollStatus, JoinNextRound. The admin-shape methods (GenSeed/InitWallet/
   UnlockWallet/Unroll/GetUnrollStatus) are reachable BEFORE the swap
@@ -62,7 +64,7 @@ default builds avoid the swap executor's dependency graph.
   - → daemonrpc (in-process via RPCServer):
     `InitWalletRequest`, `UnlockWalletRequest`, `GenSeedRequest`,
     `UnrollRequest`, `GetUnrollStatusRequest`, `LeaveVTXOsRequest`,
-    `JoinNextRoundRequest`, `ListVTXOsRequest`,
+    `SendOnChainRequest`, `JoinNextRoundRequest`, `ListVTXOsRequest`,
     `ListTransactionsRequest`, `NewAddressRequest`, `GetBalanceRequest`,
     `GetInfoRequest`
   - → swapclientrpc (in-process via SwapService): `StartPayRequest`,
@@ -84,20 +86,19 @@ default builds avoid the swap executor's dependency graph.
   RECV (Lightning payment_hash) across the entire pending → terminal
   lifecycle. EXIT and DEPOSIT rows do not yet share an id between
   pending and confirmed in v1; see `doc.go`.
-- Onchain SEND has whole-VTXO sweep semantics; the recipient may
-  receive more than `amt_sat`. `SendResponse.actual_amount_sat`
-  carries the true outflow and SHOULD be echoed back before the send
-  is treated as confirmed.
-- **Onchain SEND is a one-shot**: after `LeaveVTXOs` returns
-  successfully the router immediately calls `JoinNextRound` so the
-  queued leave intent is committed to the next round without a
-  separate CLI step. The raw `ark vtxos leave --no_join` path
-  remains the batching seam for callers that want to combine
-  multiple intents into one round; the top-level `send` verb is
-  intentionally not exposed to that mode. If the implicit join
-  fails, the error carries the explicit recovery hint (`ark rounds
-  join`) so the leave intent — already queued in the round actor —
-  is not stranded silently.
+- Onchain SEND is routed through `RPCServer.SendOnChain` which delegates to
+  `wallet.SendOnChainRequest`. Two modes: **sweep-all** (non-empty
+  `SweepOutpoints` — drains those VTXOs exactly, no change, leave output
+  absorbs fee under the #270 handshake) and **bounded** (selects VTXOs to
+  cover `TargetAmountSat` + headroom, produces a change VTXO). The router
+  calls `listLiveVTXOsForLeave` for sweep-all enumeration.
+- `SendResponse.actual_amount_sat` carries the true outflow for sweep-all
+  sends and SHOULD be echoed back before the send is treated as confirmed.
+- **Onchain SEND is a one-shot**: after the intent is accepted the router
+  immediately calls `JoinNextRound` so the queued leave intent is committed
+  to the next round without a separate CLI step. If the implicit join fails,
+  the error carries the explicit recovery hint (`ark rounds join`) so the
+  leave intent — already queued in the round actor — is not stranded silently.
 - `ListView` defaults to Activity. Only Activity honors
   `pending_only` and `kinds`; those filters are ignored for VTXOs
   and Onchain.
