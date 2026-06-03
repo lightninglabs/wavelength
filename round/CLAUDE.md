@@ -201,6 +201,17 @@ state transitions and validation rules live under [Invariants](#invariants).
 - `ConnectorLeafInfo.VTXOAmount` is populated from local VTXO state
   (not from the server's proto), so the forfeit penalty output equals
   the canonical local value rather than a server-supplied one.
+- **Connector ancestry is proven before any forfeit is signed**
+  (`validateConnectorAncestry`, darepo-client#681). In
+  `CommitmentTxReceivedState`, after VTXO-tree validation, each assigned
+  connector leaf is checked by deterministically reconstructing its
+  connector tree via `tree.BuildConnectorTree` from the commitment-tx
+  output at `ConnectorLeafInfo.RootOutputIndex`, the operator key, and
+  the server-supplied `NumLeaves`/`Radix`, then asserting the assigned
+  leaf is the one at `LeafIndex` (outpoint + output). Because the leaf is
+  rebuilt on top of a real commitment output, the connector is only
+  spendable once the commitment tx confirms, preserving round atomicity.
+  No connector transactions cross the wire — only the four scalars.
 - `MaxQuoteEntriesPerClient = 1024` is enforced in `FromProto` before
   allocating quote slices to prevent resource exhaustion.
 - `SubmitForfeitSigRequest` (boarding input signatures) is distinct

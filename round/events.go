@@ -177,9 +177,8 @@ func (e *CommitmentTxBuilt) clientEventSealed() {}
 // connector output, paying the VTXO value to the operator's forfeit address.
 type ConnectorLeafInfo struct {
 	// LeafIndex is the position of this connector in the connector tree.
-	// Note that this field is NOT populated by FromProto since the
-	// server's ConnectorLeafInfo proto does not carry it. It is only
-	// set by local tree-building code. Zero is a valid index.
+	// Populated by FromProto from the server's ConnectorLeafInfo proto and
+	// also set by local tree-building code. Zero is a valid index.
 	LeafIndex int
 
 	// ConnectorOutpoint is the outpoint of the connector output in the
@@ -197,6 +196,21 @@ type ConnectorLeafInfo struct {
 	// combined with ConnectorAmount when validating that the zero-fee
 	// forfeit tx pays the full input value to the penalty output.
 	VTXOAmount btcutil.Amount
+
+	// RootOutputIndex is the commitment-tx output index that the connector
+	// tree's root transaction spends. It binds this connector leaf's tree
+	// to the commitment tx the client is about to sign into.
+	RootOutputIndex uint32
+
+	// NumLeaves is the total number of connector leaves in the tree this
+	// leaf belongs to. Together with Radix and the operator key it lets the
+	// client deterministically reconstruct the connector tree and prove the
+	// assigned leaf descends from the commitment tx (darepo-client#681).
+	NumLeaves uint32
+
+	// Radix is the branching factor used to build the connector tree. It is
+	// not derivable from the commitment tx, so the operator supplies it.
+	Radix uint32
 }
 
 // CommitmentTxValidated is emitted after the client successfully validates

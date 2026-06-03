@@ -264,6 +264,10 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 				ConnectorOutpoint: connOP,
 				ConnectorPkScript: leafOut.PkScript,
 				ConnectorAmount:   leafOut.Value,
+				RootOutputIndex:   info.GetRootOutputIndex(),
+				NumLeaves:         info.GetNumLeaves(),
+				Radix:             info.GetRadix(),
+				LeafIndex:         int(info.GetLeafIndex()),
 			}
 		}
 	}
