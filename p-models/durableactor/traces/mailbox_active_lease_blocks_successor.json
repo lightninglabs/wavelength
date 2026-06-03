@@ -1,0 +1,39 @@
+{
+  "trace_id": "mailbox_active_lease_blocks_successor",
+  "description": "Same-key successor is not claimable while an earlier same-key row has an active lease.",
+  "events": [
+    {
+      "op": "enqueue",
+      "id": "00000000-0000-7000-8000-000000000101",
+      "mailbox_id": "actor-A",
+      "correlation_key": "round/active",
+      "now": 0,
+      "available_at": 0,
+      "max_attempts": 3
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-1",
+      "now": 0,
+      "lease_duration": 10,
+      "expect_id": "00000000-0000-7000-8000-000000000101"
+    },
+    {
+      "op": "enqueue",
+      "id": "00000000-0000-7000-8000-000000000102",
+      "mailbox_id": "actor-A",
+      "correlation_key": "round/active",
+      "now": 1,
+      "available_at": 1,
+      "max_attempts": 3
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-2",
+      "now": 1,
+      "expect_id": ""
+    }
+  ]
+}

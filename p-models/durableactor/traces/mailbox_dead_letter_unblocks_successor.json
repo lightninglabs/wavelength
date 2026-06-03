@@ -1,0 +1,44 @@
+{
+  "trace_id": "mailbox_dead_letter_unblocks_successor",
+  "description": "A dead-lettered same-key predecessor is removed from the mailbox and no longer blocks its successor.",
+  "events": [
+    {
+      "op": "enqueue",
+      "id": "00000000-0000-7000-8000-000000000701",
+      "mailbox_id": "actor-A",
+      "correlation_key": "round/dead-letter",
+      "now": 0,
+      "available_at": 0,
+      "max_attempts": 3
+    },
+    {
+      "op": "enqueue",
+      "id": "00000000-0000-7000-8000-000000000702",
+      "mailbox_id": "actor-A",
+      "correlation_key": "round/dead-letter",
+      "now": 0,
+      "available_at": 0,
+      "max_attempts": 3
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-1",
+      "now": 0,
+      "expect_id": "00000000-0000-7000-8000-000000000701"
+    },
+    {
+      "op": "dead_letter",
+      "id": "00000000-0000-7000-8000-000000000701",
+      "now": 0,
+      "failure_reason": "model trace poison message"
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-2",
+      "now": 0,
+      "expect_id": "00000000-0000-7000-8000-000000000702"
+    }
+  ]
+}

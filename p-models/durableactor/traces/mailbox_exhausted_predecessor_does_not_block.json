@@ -1,0 +1,66 @@
+{
+  "trace_id": "mailbox_exhausted_predecessor_does_not_block",
+  "description": "An attempts-exhausted same-key row that is still physically present does not block a successor.",
+  "events": [
+    {
+      "op": "enqueue",
+      "id": "00000000-0000-7000-8000-000000000501",
+      "mailbox_id": "actor-A",
+      "correlation_key": "round/exhaust",
+      "now": 0,
+      "available_at": 0,
+      "max_attempts": 2
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-1",
+      "now": 0,
+      "expect_id": "00000000-0000-7000-8000-000000000501"
+    },
+    {
+      "op": "nack",
+      "id": "00000000-0000-7000-8000-000000000501",
+      "lease_token": "lease-1",
+      "now": 0,
+      "retry_after": 1
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-2",
+      "now": 2,
+      "expect_id": "00000000-0000-7000-8000-000000000501"
+    },
+    {
+      "op": "nack",
+      "id": "00000000-0000-7000-8000-000000000501",
+      "lease_token": "lease-2",
+      "now": 2,
+      "retry_after": 1
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-sanity",
+      "now": 4,
+      "expect_id": ""
+    },
+    {
+      "op": "enqueue",
+      "id": "00000000-0000-7000-8000-000000000502",
+      "mailbox_id": "actor-A",
+      "correlation_key": "round/exhaust",
+      "now": 4,
+      "available_at": 4,
+      "max_attempts": 3
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-3",
+      "now": 4,
+      "expect_id": "00000000-0000-7000-8000-000000000502"
+    }
+  ]
+}

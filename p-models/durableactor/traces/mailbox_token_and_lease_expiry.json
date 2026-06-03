@@ -1,0 +1,53 @@
+{
+  "trace_id": "mailbox_token_and_lease_expiry",
+  "description": "Wrong-token ack is rejected, lease expiry redelivers the same row, and current-token ack removes it.",
+  "events": [
+    {
+      "op": "enqueue",
+      "id": "00000000-0000-7000-8000-000000000301",
+      "mailbox_id": "actor-A",
+      "correlation_key": "round/token",
+      "now": 0,
+      "available_at": 0,
+      "max_attempts": 3
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-1",
+      "now": 0,
+      "lease_duration": 5,
+      "expect_id": "00000000-0000-7000-8000-000000000301"
+    },
+    {
+      "op": "ack",
+      "id": "00000000-0000-7000-8000-000000000301",
+      "lease_token": "wrong-lease",
+      "expect_rows": 0
+    },
+    {
+      "op": "expire_leases",
+      "now": 6
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-2",
+      "now": 6,
+      "lease_duration": 5,
+      "expect_id": "00000000-0000-7000-8000-000000000301"
+    },
+    {
+      "op": "ack",
+      "id": "00000000-0000-7000-8000-000000000301",
+      "lease_token": "lease-2"
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "lease-3",
+      "now": 6,
+      "expect_id": ""
+    }
+  ]
+}
