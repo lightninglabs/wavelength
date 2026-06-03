@@ -463,6 +463,11 @@ type DaemonConn interface {
 	GetIndexedOORSession(ctx context.Context, pkScript []byte,
 		sessionTxID string) (*OORPackageInfo, error)
 
+	// GetOORSession returns the daemon's local durable status for one OOR
+	// session.
+	GetOORSession(ctx context.Context,
+		sessionID string) (*daemonrpc.OORSessionInfo, error)
+
 	// AllocateReceiveScript allocates a fresh wallet-owned receive
 	// destination.
 	AllocateReceiveScript(ctx context.Context,

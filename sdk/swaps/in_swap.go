@@ -10,6 +10,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	loopfsm "github.com/lightninglabs/loop/fsm"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -1056,6 +1057,14 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 		return nil
 	}
 
+	sessionHandled, err := s.reconcilePayRefundSession(ctx)
+	if err != nil {
+		return newRetryableActionError(err)
+	}
+	if sessionHandled {
+		return nil
+	}
+
 	funded, err := s.observeRefundableVHTLC(ctx)
 	if err != nil {
 		return newRetryableActionError(
@@ -1065,10 +1074,6 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 	}
 	if !funded {
 		return waitForFixedPoll(ctx, s.client.waitPollInterval)
-	}
-
-	if s.refundSessionID != "" {
-		return s.markRefundAccepted(ctx)
 	}
 
 	height, err := s.client.daemon.BlockHeight(ctx)
@@ -1145,7 +1150,7 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 		slog.String("refund_session_id", refundSessionID),
 	)
 
-	return s.markRefundAccepted(ctx)
+	return waitForFixedPoll(ctx, s.client.waitPollInterval)
 }
 
 // refundLocktimePollInterval returns a slower timeout-refund poll interval when
@@ -1389,8 +1394,31 @@ func (s *paySession) observeRefundableVHTLC(ctx context.Context) (bool, error) {
 	vtxo, err := s.client.daemon.FindLiveVTXOByPkScript(
 		ctx, s.vhtlcPkScript,
 	)
-	if err != nil || vtxo == nil {
+	if err != nil {
+		if isUnregisteredScriptErr(err) && s.vhtlcOutpoint != "" &&
+			s.vhtlcAmount > 0 {
+
+			s.client.log.DebugS(
+				ctx,
+				"Using local in-swap vHTLC metadata for refund",
+				slog.String("err", err.Error()),
+				btclog.Hex("hash", s.cfg.PaymentHash[:]),
+				slog.String("outpoint", s.vhtlcOutpoint),
+			)
+
+			if err := s.ensurePayRefundRecoveryArmed(
+				ctx,
+			); err != nil {
+				return false, err
+			}
+
+			return true, nil
+		}
+
 		return false, err
+	}
+	if vtxo == nil {
+		return false, nil
 	}
 
 	err = s.mutateAndPersist(ctx, func() error {
@@ -1408,6 +1436,84 @@ func (s *paySession) observeRefundableVHTLC(ctx context.Context) (bool, error) {
 	}
 
 	return true, nil
+}
+
+// reconcilePayRefundSession checks whether the daemon has durable local OOR
+// status for an accepted cooperative refund. This avoids depending solely on
+// refund output indexing while still keeping retry blocked until the daemon
+// reports a terminal refund session.
+func (s *paySession) reconcilePayRefundSession(ctx context.Context) (bool,
+	error) {
+
+	if s.refundSessionID == "" {
+		return false, nil
+	}
+
+	session, err := s.client.daemon.GetOORSession(ctx, s.refundSessionID)
+	if err != nil {
+		return true, err
+	}
+	if session == nil {
+		s.client.log.DebugS(ctx, "Pay refund OOR session not found",
+			btclog.Hex("hash", s.cfg.PaymentHash[:]),
+			slog.String("refund_session_id", s.refundSessionID),
+		)
+
+		return true, waitForFixedPoll(ctx, s.client.waitPollInterval)
+	}
+
+	switch session.GetStatus() {
+	case daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_COMPLETED:
+		return true, s.markRefundSessionCompleted(ctx, session)
+
+	case daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED:
+		reason := session.GetFailureReason()
+		s.client.log.WarnS(ctx, "Pay refund OOR session failed",
+			nil,
+			btclog.Hex("hash", s.cfg.PaymentHash[:]),
+			slog.String("refund_session_id", s.refundSessionID),
+			slog.String("phase", session.GetPhase()),
+			slog.String("reason", reason),
+		)
+
+		return false, s.mutateAndPersist(ctx, func() error {
+			s.refundSessionID = ""
+
+			return nil
+		})
+
+	default:
+		s.client.log.DebugS(ctx, "Pay refund OOR session pending",
+			btclog.Hex("hash", s.cfg.PaymentHash[:]),
+			slog.String("refund_session_id", s.refundSessionID),
+			slog.String("phase", session.GetPhase()),
+			slog.String("status", session.GetStatus().String()),
+		)
+
+		return true, waitForFixedPoll(ctx, s.client.waitPollInterval)
+	}
+}
+
+// markRefundSessionCompleted persists terminal recovery after the daemon's
+// durable OOR session state confirms cooperative refund completion.
+func (s *paySession) markRefundSessionCompleted(ctx context.Context,
+	session *daemonrpc.OORSessionInfo) error {
+
+	s.client.log.InfoS(ctx, "Pay swap refund session completed",
+		btclog.Hex("hash", s.cfg.PaymentHash[:]),
+		slog.String("refund_session_id", s.refundSessionID),
+		slog.String("phase", session.GetPhase()),
+	)
+	if err := cancelVHTLCRecovery(
+		ctx, s.client.daemon, s.refundRecoveryID,
+		recoveryReasonRefundSessionCompleted, "",
+	); err != nil {
+		return err
+	}
+
+	return s.mutateAndPersist(ctx, func() error {
+		return s.transition(payEventRefunded)
+	})
 }
 
 // markRefundOutputIndexed persists terminal recovery after the refund output
@@ -1463,29 +1569,6 @@ func (s *paySession) markRefunded(ctx context.Context,
 			s.refundSessionID = spentVHTLC.SpentByTxID
 		}
 
-		return s.transition(payEventRefunded)
-	})
-}
-
-// markRefundAccepted persists terminal recovery after the daemon accepts the
-// custom-input OOR refund. The indexed refund output can lag behind the OOR
-// acceptance, but the accepted session is the durable point where the vHTLC has
-// been reassigned back to the client wallet.
-func (s *paySession) markRefundAccepted(ctx context.Context) error {
-	if s.state == PayStateRefunded {
-		return nil
-	}
-	if s.refundSessionID == "" {
-		return fmt.Errorf("missing refund session id")
-	}
-	if err := cancelVHTLCRecovery(
-		ctx, s.client.daemon, s.refundRecoveryID,
-		recoveryReasonRefundAccepted, "",
-	); err != nil {
-		return newRetryableActionError(err)
-	}
-
-	return s.mutateAndPersist(ctx, func() error {
 		return s.transition(payEventRefunded)
 	})
 }

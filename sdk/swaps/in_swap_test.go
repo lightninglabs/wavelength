@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	swapsqlc "github.com/lightninglabs/darepo-client/sdk/swaps/sqlc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/zpay32"
@@ -719,6 +720,230 @@ func TestPaySessionCooperativeRefundsBeforeTimeout(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, PayStateRefunded, resumed.State())
 	require.Equal(t, "refund-session", resumed.refundSessionID)
+}
+
+// TestPaySessionCooperativeRefundUsesLocalFundingMetadata asserts the refund
+// path can proceed from the persisted funding response when the authoritative
+// indexer rejects the vHTLC script lookup for the client's principal.
+func TestPaySessionCooperativeRefundUsesLocalFundingMetadata(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	refundScript, err := txscript.PayToTaprootScript(clientPriv.PubKey())
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	serverConn := &testInSwapServerConn{
+		cfg: &InSwapConfig{
+			PaymentHash:  preimage.Hash(),
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
+			ServerPubkey: serverPriv.PubKey(),
+			VHTLCConfig: VHTLCConfig{
+				RefundLocktime:                       100,
+				UnilateralClaimDelay:                 12,
+				UnilateralRefundDelay:                24,
+				UnilateralRefundWithoutReceiverDelay: 36,
+			},
+			Expiry: time.Now().Add(time.Minute),
+		},
+		refundAuthorization: &InSwapRefundAuthorization{
+			Signature: TaprootScriptSignature{
+				PubKey: serverPriv.
+					PubKey().
+					SerializeCompressed(),
+				WitnessScript: []byte("witness"),
+				Signature:     []byte("server-sig"),
+			},
+			FailureReason: "payment failed",
+		},
+	}
+
+	daemonConn := &testDaemonConn{
+		identityKey:   clientPriv.PubKey(),
+		operatorKey:   operatorPriv.PubKey(),
+		blockHeight:   50,
+		sendSessionID: "refund-session",
+		sendOutpoint:  "funding:0",
+		receiveInfo: &ReceiveInfo{
+			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
+			PkScript:    refundScript,
+		},
+		spendOnCustom: true,
+	}
+	daemonConn.liveLookupHook = func(call int) (*VTXOInfo, error) {
+		if call <= 2 {
+			return nil, unregisteredScriptIndexerErr()
+		}
+
+		scriptKey := hex.EncodeToString(refundScript)
+		if vtxo := daemonConn.liveByPkScript[scriptKey]; vtxo != nil {
+			return vtxo, nil
+		}
+
+		return nil, nil
+	}
+
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
+	)
+	client.waitPollInterval = time.Millisecond
+	client.refundLocktimeBuffer = 0
+
+	session, err := client.StartPayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat,
+	)
+	require.NoError(t, err)
+
+	_, err = session.Wait(t.Context())
+	require.ErrorIs(t, err, ErrSwapRefunded)
+	require.Equal(t, 1, daemonConn.sendPolicyCalls)
+	require.GreaterOrEqual(t, daemonConn.liveLookupCalls, 1)
+	require.Equal(t, 1, daemonConn.sendCustomCalls)
+	require.NotNil(t, serverConn.refundAuthorizeReq)
+	require.Equal(
+		t, "funding:0", serverConn.refundAuthorizeReq.vhtlcOutpoint,
+	)
+	require.EqualValues(
+		t, testInSwapAmountSat,
+		serverConn.refundAuthorizeReq.vhtlcAmountSat,
+	)
+	require.Equal(t, "funding:0", session.vhtlcOutpoint)
+	require.EqualValues(t, testInSwapAmountSat, session.vhtlcAmount)
+}
+
+// TestPaySessionCooperativeRefundWaitsForOutputBeforeTerminal verifies the
+// client does not make a refund-accepted swap terminal before wallet recovery
+// is visible. A caller retrying the same invoice should still see this swap as
+// pending until the refund output or spent vHTLC is indexed.
+func TestPaySessionCooperativeRefundWaitsForOutputBeforeTerminal(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	refundScript, err := txscript.PayToTaprootScript(clientPriv.PubKey())
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	serverConn := &testInSwapServerConn{
+		cfg: &InSwapConfig{
+			PaymentHash:  preimage.Hash(),
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
+			ServerPubkey: serverPriv.PubKey(),
+			VHTLCConfig: VHTLCConfig{
+				RefundLocktime:                       100,
+				UnilateralClaimDelay:                 12,
+				UnilateralRefundDelay:                24,
+				UnilateralRefundWithoutReceiverDelay: 36,
+			},
+			Expiry: time.Now().Add(time.Minute),
+		},
+		refundAuthorization: &InSwapRefundAuthorization{
+			Signature: TaprootScriptSignature{
+				PubKey: serverPriv.
+					PubKey().
+					SerializeCompressed(),
+				WitnessScript: []byte("witness"),
+				Signature:     []byte("server-sig"),
+			},
+			FailureReason: "payment failed",
+		},
+	}
+
+	daemonConn := &testDaemonConn{
+		identityKey:   clientPriv.PubKey(),
+		operatorKey:   operatorPriv.PubKey(),
+		blockHeight:   50,
+		sendSessionID: "refund-session",
+		sendOutpoint:  "funding:0",
+		receiveInfo: &ReceiveInfo{
+			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
+			PkScript:    refundScript,
+		},
+	}
+	daemonConn.liveLookupHook = func(call int) (*VTXOInfo, error) {
+		if daemonConn.sendCustomCalls == 0 {
+			return nil, unregisteredScriptIndexerErr()
+		}
+
+		return nil, nil
+	}
+
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
+	)
+	client.waitPollInterval = 5 * time.Millisecond
+	client.refundLocktimeBuffer = 0
+
+	session, err := client.StartPayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat,
+	)
+	require.NoError(t, err)
+
+	err = session.runUntil(t.Context(), PayStateWaitingForClaim)
+	require.NoError(t, err)
+	require.Equal(t, PayStateWaitingForClaim, session.State())
+
+	refunded, err := session.tryCooperativeRefund(t.Context())
+	require.NoError(t, err)
+	require.True(t, refunded)
+	require.Equal(t, PayStateRefundInitiated, session.State())
+	require.Equal(t, "refund-session", session.refundSessionID)
+	require.Equal(t, 1, daemonConn.sendCustomCalls)
+	require.NotNil(t, serverConn.refundAuthorizeReq)
+
+	waitCtx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer cancel()
+
+	err = session.completeRefund(waitCtx)
+	require.NoError(t, err)
+	require.Equal(t, PayStateRefundInitiated, session.State())
+	require.Equal(t, 1, daemonConn.oorSessionCalls)
+	require.Equal(t, "refund-session", daemonConn.lastOORSessionID)
+
+	daemonConn.oorSession = &daemonrpc.OORSessionInfo{
+		SessionId: "refund-session",
+		Status: daemonrpc.
+			OORSessionStatus_OOR_SESSION_STATUS_COMPLETED,
+		Phase: "completed",
+	}
+
+	err = session.completeRefund(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, PayStateRefunded, session.State())
+	require.Equal(t, 1, daemonConn.cancelCalls)
+	require.Equal(
+		t, recoveryReasonRefundSessionCompleted,
+		daemonConn.lastCancel.GetReason(),
+	)
 }
 
 // TestPaySessionCooperativeRefundIgnoresServerUnavailable asserts a pay

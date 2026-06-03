@@ -624,6 +624,8 @@ type testDaemonConn struct {
 	prepareOOREErr    error
 	sendPolicyErr     error
 	sendCustomErr     error
+	oorSession        *daemonrpc.OORSessionInfo
+	oorSessionErr     error
 	listSpentErr      error
 	liveLookupErr     error
 	liveLookupHook    func(call int) (*VTXOInfo, error)
@@ -632,11 +634,13 @@ type testDaemonConn struct {
 	spendOnCustom     bool
 	sendPolicyCalls   int
 	sendCustomCalls   int
+	oorSessionCalls   int
 	liveLookupCalls   int
 	spentLookupCalls  int
 	lastSendPolicy    []byte
 	lastClaimPubKey   []byte
 	lastClaimInput    []CustomInput
+	lastOORSessionID  string
 	armRecoveryResp   *daemonrpc.ArmVHTLCRecoveryResponse
 	armRecoveryErr    error
 	escalateResp      *daemonrpc.EscalateVHTLCRecoveryResponse
@@ -715,9 +719,34 @@ func (d *testDaemonConn) SendOORWithCustomInputs(_ context.Context,
 					}
 			}
 		}
+
+		d.oorSession = &daemonrpc.OORSessionInfo{
+			SessionId: d.sendSessionID,
+			Status: daemonrpc.
+				OORSessionStatus_OOR_SESSION_STATUS_COMPLETED,
+			ConsumedOutpoints: []string{
+				inputs[0].Outpoint,
+			},
+			CreatedOutpoints: []string{
+				d.sendSessionID + ":0",
+			},
+		}
 	}
 
 	return d.sendSessionID, d.sendCustomErr
+}
+
+// GetOORSession returns the configured local OOR session status.
+func (d *testDaemonConn) GetOORSession(_ context.Context, sessionID string) (
+	*daemonrpc.OORSessionInfo, error) {
+
+	d.oorSessionCalls++
+	d.lastOORSessionID = sessionID
+	if d.oorSessionErr != nil {
+		return nil, d.oorSessionErr
+	}
+
+	return d.oorSession, nil
 }
 
 // ArmVHTLCRecovery records the daemon recovery arm request.

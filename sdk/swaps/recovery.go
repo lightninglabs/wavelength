@@ -76,9 +76,11 @@ const (
 	// cooperative refund output is already indexed.
 	recoveryReasonRefundOutputIndexed = "cooperative refund output indexed"
 
-	// recoveryReasonRefundAccepted explains cancellation when the daemon
-	// accepted the cooperative refund OOR.
-	recoveryReasonRefundAccepted = "cooperative refund accepted"
+	// recoveryReasonRefundSessionCompleted explains cancellation when the
+	// daemon's durable OOR session status confirms cooperative refund
+	// completion before refund output indexing catches up.
+	recoveryReasonRefundSessionCompleted = "cooperative refund session " +
+		"completed"
 
 	// recoveryReasonClaimAccepted explains cancellation when the daemon
 	// accepted the cooperative claim OOR.

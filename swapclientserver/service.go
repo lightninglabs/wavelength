@@ -110,8 +110,9 @@ type swapClientService struct {
 	// dust check.
 	payMinAmount func(context.Context) (uint64, error)
 
-	// chainParams is used only for BOLT-11 pay invoice decoding. Tests that
-	// leave payMinAmount unset do not need to provide it.
+	// chainParams decodes BOLT-11 pay invoices for local amount preflight
+	// and duplicate in-flight checks before swap creation mutates remote
+	// swapdk-server state.
 	chainParams *chaincfg.Params
 }
 
@@ -1017,6 +1018,14 @@ func (s *swapClientService) StartPay(ctx context.Context,
 		return nil, err
 	}
 
+	existing, ok, err := s.pendingSwapForInvoice(ctx, req.GetInvoice())
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		return existing, nil
+	}
+
 	session, err := s.client.StartPayViaLightning(
 		ctx, req.GetInvoice(), req.GetMaxFeeSat(),
 	)
@@ -1085,6 +1094,52 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 		Invoice:     session.Invoice(),
 		Swap:        summary,
 	}, nil
+}
+
+// pendingSwapForInvoice decodes a real BOLT-11 invoice and checks whether the
+// daemon already has a pending swap for its payment hash. Placeholder invoices
+// used by tests, or malformed invoices that sdk/swaps must reject later, skip
+// this best-effort preflight so the existing validation path is preserved.
+func (s *swapClientService) pendingSwapForInvoice(ctx context.Context,
+	invoice string) (*swapclientrpc.StartPayResponse, bool, error) {
+
+	if s.chainParams == nil {
+		return nil, false, nil
+	}
+
+	decoded, err := zpay32.Decode(
+		strings.TrimSpace(invoice), s.chainParams,
+	)
+	if err != nil || decoded.PaymentHash == nil {
+		return nil, false, nil
+	}
+
+	var hash lntypes.Hash
+	copy(hash[:], decoded.PaymentHash[:])
+
+	summary, err := s.client.GetSwapSummary(ctx, hash)
+	if err != nil {
+		if errors.Is(err, swaps.ErrSwapSummaryNotFound) {
+			return nil, false, nil
+		}
+
+		return nil, false, status.Errorf(codes.Internal, "get "+
+			"existing swap: %v", err)
+	}
+	if !summary.Pending {
+		return nil, false, nil
+	}
+
+	if summary.Direction != swaps.SwapDirectionPay {
+		return nil, false, nil
+	}
+
+	s.startPayWorker(hash)
+
+	return &swapclientrpc.StartPayResponse{
+		PaymentHash: hex.EncodeToString(hash[:]),
+		Swap:        swapSummaryToProto(summary),
+	}, true, nil
 }
 
 // ResumeSwap is a manual wake-up path for a persisted swap. It does not create
