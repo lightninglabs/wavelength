@@ -778,8 +778,12 @@ func (m *RoundCheckpointedNotification) clientOutMsgSealed() {}
 type StartTimeoutReq struct {
 	actor.BaseMessage
 
-	// RoundID identifies which round owns this timeout.
-	RoundID RoundID
+	// RoundKey identifies which round owns this timeout. It is the actor's
+	// map key for the round FSM (a RoundID for re-keyed rounds, or a
+	// TempRoundKey for rounds still awaiting admission), so timeouts can be
+	// scheduled for rounds that have not yet received a server-assigned
+	// RoundID.
+	RoundKey RoundKeyStr
 
 	// Phase identifies the round FSM phase that scheduled the timeout.
 	Phase TimeoutPhase
@@ -794,14 +798,31 @@ func (m *StartTimeoutReq) clientOutMsgSealed() {}
 type CancelTimeoutReq struct {
 	actor.BaseMessage
 
-	// RoundID identifies which round owns this timeout.
-	RoundID RoundID
+	// RoundKey identifies which round owns this timeout. See
+	// StartTimeoutReq.RoundKey for why this is a map key rather than a
+	// RoundID.
+	RoundKey RoundKeyStr
 
 	// Phase identifies the round FSM phase timeout to cancel.
 	Phase TimeoutPhase
 }
 
 func (m *CancelTimeoutReq) clientOutMsgSealed() {}
+
+// ReleaseForfeitReservation asks the actor to release the given VTXOs from
+// pending-forfeit back to LiveState via the VTXO manager. The FSM emits it when
+// a round fails before any forfeit signatures have been submitted to the
+// server (e.g. registration/admission timeout), so the forfeit-reserved inputs
+// are not stranded in pending-forfeit. Releasing is safe at that point because
+// nothing has been signed against the (non-existent) commitment transaction.
+type ReleaseForfeitReservation struct {
+	actor.BaseMessage
+
+	// Outpoints identifies the VTXOs to release from pending-forfeit.
+	Outpoints []wire.OutPoint
+}
+
+func (m *ReleaseForfeitReservation) clientOutMsgSealed() {}
 
 // RoundFailedNotification is emitted when a round FSM transitions to
 // ClientFailedState. This notifies higher layers (actor, wallet) of the

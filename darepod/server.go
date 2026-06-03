@@ -3492,6 +3492,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 		LedgerSink:           fn.Some(ledger.NewSink(s.actorSystem)),
 		ForfeitCollectionTimeout: s.cfg.
 			ForfeitCollectionTimeout,
+		RegistrationTimeout: s.cfg.RegistrationTimeout,
 	}
 
 	roundActor, err := round.NewRoundClientActor(
@@ -3857,6 +3858,11 @@ func (s *Server) oorSigner() (input.Signer, error) {
 // mapRoundVTXOManagerMsg infallible.
 var _ vtxo.ManagerMsg = (*round.VTXOCreatedNotification)(nil)
 var _ vtxo.ManagerMsg = (*round.VTXOTerminatedMsg)(nil)
+
+// The round actor releases forfeit-reserved inputs on registration timeout by
+// Telling an actormsg.ReleaseForfeitRequest through the same bridged
+// VTXOManager ref, so it too must satisfy vtxo.ManagerMsg.
+var _ vtxo.ManagerMsg = (*actormsg.ReleaseForfeitRequest)(nil)
 
 // mapRoundVTXOManagerMsg adapts round-owned manager notifications into the
 // concrete message type accepted by the VTXO manager actor.

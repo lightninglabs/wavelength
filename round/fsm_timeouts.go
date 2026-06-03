@@ -7,6 +7,14 @@ const (
 	// TimeoutPhaseForfeitCollection is the timeout phase for
 	// ForfeitSignaturesCollectingState.
 	TimeoutPhaseForfeitCollection TimeoutPhase = "forfeit-collection"
+
+	// TimeoutPhaseRegistration is the timeout phase for IntentSentState.
+	// It bounds how long the client waits for the server to acknowledge a
+	// JoinRoundRequest (the RoundJoined admission watermark). Without it a
+	// silent or unresponsive server would leave the round parked in
+	// IntentSentState forever, stranding any forfeit-reserved VTXOs in
+	// pending-forfeit (see darepo-client#653).
+	TimeoutPhaseRegistration TimeoutPhase = "registration"
 )
 
 // cancelForfeitTimeout builds a single-element outbox slice that
@@ -14,8 +22,8 @@ const (
 func cancelForfeitTimeout(roundID RoundID) []ClientOutMsg {
 	return []ClientOutMsg{
 		&CancelTimeoutReq{
-			RoundID: roundID,
-			Phase:   TimeoutPhaseForfeitCollection,
+			RoundKey: RoundKeyStr(roundID.KeyString()),
+			Phase:    TimeoutPhaseForfeitCollection,
 		},
 	}
 }

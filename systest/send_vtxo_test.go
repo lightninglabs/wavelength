@@ -372,8 +372,12 @@ type directedSendFixture struct {
 
 // newDirectedSendFixture starts a full darepod instance against the systest
 // LND backend and a fake mailbox edge, then waits for the daemon RPC to become
-// ready.
-func newDirectedSendFixture(t *testing.T) *directedSendFixture {
+// ready. Optional cfgMutators are applied to the daemon Config after the base
+// setup (and before the DB is seeded / the server starts) so callers can tune
+// timeouts and feature flags for their scenario.
+func newDirectedSendFixture(t *testing.T,
+	cfgMutators ...func(*darepod.Config)) *directedSendFixture {
+
 	t.Helper()
 
 	h := NewSysTestHarness(t)
@@ -425,6 +429,10 @@ func newDirectedSendFixture(t *testing.T) *directedSendFixture {
 	cfg.Server.Insecure = true
 	cfg.RPC.ListenAddr = rpcAddr
 	cfg.RPC.Gateway.ListenAddr = newLoopbackAddr(t)
+
+	for _, mutate := range cfgMutators {
+		mutate(cfg)
+	}
 
 	seededOutpoint := seedLiveVTXO(
 		t, cfg, operatorPriv.PubKey(),

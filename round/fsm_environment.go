@@ -75,6 +75,19 @@ type ClientEnvironment struct {
 	// forfeit signatures from VTXO actors.
 	ForfeitCollectionTimeout time.Duration
 
+	// RegistrationTimeout is the timeout used while parked in
+	// IntentSentState waiting for the server's RoundJoined admission
+	// watermark. A non-positive value disables arming the registration
+	// timeout for the round.
+	RegistrationTimeout time.Duration
+
+	// RoundKey is the actor's map key for this round FSM (a TempRoundKey
+	// string before admission, a RoundID string after re-keying). The
+	// registration-timeout outbox messages carry it so the actor can
+	// schedule/cancel a timeout for a round that has not yet been assigned
+	// a server RoundID.
+	RoundKey RoundKeyStr
+
 	// OwnedScriptChecker determines whether a pkScript belongs to
 	// the local wallet. Used by buildOwnedClientVTXOs to filter
 	// VTXOs that should be persisted locally. This replaces the

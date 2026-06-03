@@ -476,21 +476,36 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 
 		// With all this extracted, we'll now send the
 		// JoinRoundRequest to kick off the signing process.
+		outbox := []ClientOutMsg{
+			&JoinRoundRequest{
+				BoardingRequests: boardingReqs,
+				VTXORequests:     vtxoReqs,
+				ForfeitRequests:  forfeitReqs,
+				LeaveRequests:    leaveReqs,
+				Identifier:       idPub,
+				Auth:             joinAuth,
+			},
+		}
+
+		// Arm the registration (admission) timeout so a server that
+		// never returns a RoundJoined watermark cannot park us in
+		// IntentSentState forever. On expiry the FSM fails the round
+		// and releases any forfeit-reserved inputs (darepo-client#653).
+		// A non-positive timeout disables the safety net.
+		if env.RegistrationTimeout > 0 {
+			outbox = append(outbox, &StartTimeoutReq{
+				RoundKey: env.RoundKey,
+				Phase:    TimeoutPhaseRegistration,
+				Duration: env.RegistrationTimeout,
+			})
+		}
+
 		return &ClientStateTransition{
 			NextState: &IntentSentState{
 				Intents: intent,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: []ClientOutMsg{
-					&JoinRoundRequest{
-						BoardingRequests: boardingReqs,
-						VTXORequests:     vtxoReqs,
-						ForfeitRequests:  forfeitReqs,
-						LeaveRequests:    leaveReqs,
-						Identifier:       idPub,
-						Auth:             joinAuth,
-					},
-				},
+				Outbox: outbox,
 			}),
 		}, nil
 
@@ -539,11 +554,89 @@ func (s *IntentSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 			slog.Int("vtxo_intent_count", len(s.Intents.VTXOs)),
 		)
 
+		// Admission arrived, so cancel the registration timeout. The
+		// post-admission wait for the seal-time quote is governed by
+		// the quote's own expiry, not this watermark timer.
+		cancelReg := []ClientOutMsg{
+			&CancelTimeoutReq{
+				RoundKey: env.RoundKey,
+				Phase:    TimeoutPhaseRegistration,
+			},
+		}
+
 		return &ClientStateTransition{
 			NextState: &IntentSentState{
 				Intents:         s.Intents.Clone(),
 				AdmittedRoundID: evt.RoundID,
 			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: cancelReg,
+			}),
+		}, nil
+
+	case *RegistrationTimedOut:
+		// Ignore a stale timeout once the round has been admitted.
+		// Admission (RoundJoined) cancels the timer and re-keys the
+		// round away from its temp key, so the actor layer already
+		// drops a late TimeoutMsg whose composite id carries the temp
+		// key. This guard is belt-and-suspenders for any in-flight
+		// RegistrationTimedOut that raced past the cancel, and keeps
+		// the invariant explicit at the FSM if the arming/re-key timing
+		// ever changes: never abort a round we know the server
+		// admitted.
+		if s.AdmittedRoundID != (RoundID{}) {
+			env.Log.DebugS(ctx, "Ignoring stale registration timeout; "+
+				"round already admitted",
+				slog.String(
+					"round_id", s.AdmittedRoundID.String(),
+				),
+			)
+
+			return selfLoop(s), nil
+		}
+
+		// The server never acknowledged our JoinRoundRequest within the
+		// admission window. Fail the round as recoverable (the client
+		// may retry) and release any forfeit-reserved inputs back to
+		// LiveState so they are not stranded in pending-forfeit
+		// (darepo-client#653). Releasing is safe here: at this phase no
+		// forfeit signatures have been produced or sent to the server,
+		// so there is nothing to double-spend.
+		const reason = "round admission timed out"
+		timeoutErr := fmt.Errorf("server did not acknowledge join " +
+			"request before registration timeout")
+
+		env.Log.WarnS(ctx, "Round admission timed out; failing round "+
+			"and releasing forfeit reservation", timeoutErr,
+			slog.Int("forfeit_count", len(s.Intents.Forfeits)),
+		)
+
+		outbox := []ClientOutMsg{
+			&RoundFailedNotification{
+				RoundID:       fn.None[RoundID](),
+				Reason:        reason,
+				Recoverable:   true,
+				OriginalError: timeoutErr,
+			},
+		}
+		if outpoints := forfeitOutpoints(s.Intents.Forfeits); len(
+			outpoints,
+		) > 0 {
+
+			outbox = append(outbox, &ReleaseForfeitReservation{
+				Outpoints: outpoints,
+			})
+		}
+
+		return &ClientStateTransition{
+			NextState: &ClientFailedState{
+				Reason:      reason,
+				Error:       timeoutErr,
+				Recoverable: true,
+			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: outbox,
+			}),
 		}, nil
 
 	case *JoinRoundQuoteReceived:
@@ -1819,7 +1912,7 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 			}
 
 			outbox = append(outbox, &StartTimeoutReq{
-				RoundID:  s.RoundID,
+				RoundKey: RoundKeyStr(s.RoundID.KeyString()),
 				Phase:    TimeoutPhaseForfeitCollection,
 				Duration: env.ForfeitCollectionTimeout,
 			})
@@ -2152,8 +2245,8 @@ func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 
 	outboxMsgs := []ClientOutMsg{
 		&CancelTimeoutReq{
-			RoundID: s.RoundID,
-			Phase:   TimeoutPhaseForfeitCollection,
+			RoundKey: RoundKeyStr(s.RoundID.KeyString()),
+			Phase:    TimeoutPhaseForfeitCollection,
 		},
 		&SubmitVTXOForfeitSigsToServer{
 			RoundID:    s.RoundID,
@@ -2617,7 +2710,7 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 	}
 
 	outbox = append(outbox, &StartTimeoutReq{
-		RoundID:  s.RoundID,
+		RoundKey: RoundKeyStr(s.RoundID.KeyString()),
 		Phase:    TimeoutPhaseForfeitCollection,
 		Duration: env.ForfeitCollectionTimeout,
 	})
@@ -2648,6 +2741,29 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 			Outbox: outbox,
 		}),
 	}, nil
+}
+
+// forfeitOutpoints returns the deduplicated VTXO outpoints carried by the given
+// forfeit requests, skipping any request without an outpoint. Used to release a
+// round's forfeit reservation when the round fails before signing.
+func forfeitOutpoints(requests []types.ForfeitRequest) []wire.OutPoint {
+	seen := make(map[wire.OutPoint]struct{}, len(requests))
+	outpoints := make([]wire.OutPoint, 0, len(requests))
+	for i := range requests {
+		if requests[i].VTXOOutpoint == nil {
+			continue
+		}
+
+		op := *requests[i].VTXOOutpoint
+		if _, ok := seen[op]; ok {
+			continue
+		}
+
+		seen[op] = struct{}{}
+		outpoints = append(outpoints, op)
+	}
+
+	return outpoints
 }
 
 // forfeitRequestMap indexes local forfeit requests by outpoint so custom local

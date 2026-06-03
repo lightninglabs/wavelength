@@ -413,3 +413,14 @@ type ForfeitCollectionTimedOut struct {
 }
 
 func (e *ForfeitCollectionTimedOut) clientEventSealed() {}
+
+// RegistrationTimedOut is emitted by the round actor when the registration
+// (admission) window expires while the FSM is still parked in IntentSentState,
+// i.e. the server never returned a RoundJoined admission watermark for the
+// JoinRoundRequest. The FSM consumes this in IntentSentState to fail the round
+// (recoverable) and release any forfeit-reserved inputs back to LiveState so
+// they are not stranded in pending-forfeit (darepo-client#653). The timeout is
+// armed when the FSM is still temp-keyed, so the event carries no RoundID.
+type RegistrationTimedOut struct{}
+
+func (e *RegistrationTimedOut) clientEventSealed() {}
