@@ -145,6 +145,14 @@ func (e fakeExec) Read(ctx context.Context,
 	return fn(ctx, e.store)
 }
 
+// Stage runs fn against the actor's stores. The ledger handlers do not stage
+// (they validate then Commit), but the Exec interface requires it.
+func (e fakeExec) Stage(ctx context.Context,
+	fn func(context.Context, ledgerTx) error) error {
+
+	return fn(ctx, e.store)
+}
+
 // Commit runs fn against the actor's stores.
 func (e fakeExec) Commit(ctx context.Context,
 	fn func(context.Context, ledgerTx) error) error {
