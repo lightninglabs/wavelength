@@ -1007,6 +1007,13 @@ func (a *RoundClientActor) askEventAndProcessOutbox(ctx context.Context,
 		}
 	}
 
+	// If the event settled the round in the terminal failed state, reap it
+	// so timed-out / failed rounds don't accumulate in the actor's map and
+	// ListRounds view. This runs unconditionally (not only when the outbox
+	// is non-empty) because some failure transitions — e.g. BoardingFailed
+	// in PendingRoundAssembly / IntentSentState — emit no outbox.
+	a.reapIfFailed(ctx, roundFSM)
+
 	return nil
 }
 
@@ -1932,9 +1939,17 @@ func (a *RoundClientActor) handleCancelRound(ctx context.Context,
 		})
 	}
 
-	// Remove the cancelled round from the map.
+	// Remove the cancelled round. When the injected BoardingFailed settles
+	// the round in ClientFailedState, the reap in askEventAndProcessOutbox
+	// has already stopped the FSM and removed it. But some states (e.g.
+	// QuoteReceivedState) self-loop on BoardingFailed, so the reap does not
+	// fire there — an explicit cancel must still drop the round. Guard on
+	// presence so we don't double-stop an FSM the reap already cleaned up.
 	keyStr := RoundKeyStr(targetFSM.Key.KeyString())
-	delete(a.rounds, keyStr)
+	if _, exists := a.rounds[keyStr]; exists {
+		targetFSM.FSM.Stop()
+		delete(a.rounds, keyStr)
+	}
 
 	a.log.InfoS(ctx, "Round participation cancelled successfully")
 
@@ -1962,6 +1977,57 @@ func (a *RoundClientActor) onRoundComplete(ctx context.Context, roundID RoundID,
 	delete(a.commitmentTxIndex, txid)
 
 	return a.cfg.RoundStore.FinalizeRound(ctx, roundID, txid, confInfo)
+}
+
+// reapIfFailed removes a round FSM from active tracking once an event has
+// settled it in the terminal ClientFailedState. Rounds that fail or time out
+// (registration/admission timeout, server rejection, quote rejection,
+// forfeit-collection timeout, etc.) would otherwise linger in the rounds map
+// for the lifetime of the daemon — and keep surfacing in ListRounds — because
+// only successful completion (onRoundComplete) and explicit cancellation
+// (handleCancelRound) removed rounds. Nothing reuses a failed round in
+// production: findAssemblingRound only returns Idle / PendingRoundAssembly
+// rounds, and the FSM's IntentPackage / RecoveryInitiated recovery transitions
+// have no production producer. This closes that gap for autonomous failures.
+//
+// Reaping only the *settled* terminal-failed state is safe even against the
+// recovery transition: a round that recovers within the same turn
+// (ClientFailed -> Idle -> PendingRoundAssembly via an internal IntentPackage)
+// does not end the turn in ClientFailedState, so it is left untouched.
+func (a *RoundClientActor) reapIfFailed(ctx context.Context,
+	roundFSM *RoundFSM) {
+
+	keyStr := RoundKeyStr(roundFSM.Key.KeyString())
+
+	// If the round was already removed during outbox processing (e.g. a
+	// successful round handled by onRoundComplete), there is nothing to do
+	// and the FSM may already be stopped.
+	if _, ok := a.rounds[keyStr]; !ok {
+		return
+	}
+
+	state, err := roundFSM.FSM.CurrentState()
+	if err != nil {
+		return
+	}
+
+	// Only the settled, truly-terminal ClientFailedState is reaped.
+	// RecoveryInitiatedState is deliberately NOT reaped: it is
+	// semi-terminal (states.go) and represents a round whose CSV-timeout
+	// sweep tx has been broadcast and is awaiting confirmation — in-flight
+	// work, not a settled failure. Dropping it on entry would stop tracking
+	// an active recovery.
+	if _, failed := state.(*ClientFailedState); !failed {
+		return
+	}
+
+	a.log.InfoS(ctx, "Reaping failed round",
+		slog.String("round_key", string(keyStr)),
+	)
+
+	roundFSM.FSM.Stop()
+	delete(a.rounds, keyStr)
+	delete(a.commitmentTxIndex, roundFSM.TxID)
 }
 
 // handleConfirmation processes a commitment transaction confirmation event

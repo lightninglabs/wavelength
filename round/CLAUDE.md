@@ -163,6 +163,15 @@ state transitions and validation rules live under [Invariants](#invariants).
   dedicated FSM per round handles confirmation monitoring.
 - The round actor does **not** mark VTXOs as `PendingForfeit` — the
   wallet/manager admits VTXOs before sending `RegisterIntentMsg`.
+- A round that settles in the terminal `ClientFailedState` (admission
+  timeout, server rejection, quote rejection, forfeit-collection timeout,
+  etc.) is reaped from the actor's `rounds` map by `reapIfFailed`, called
+  after every event in `askEventAndProcessOutbox`. This mirrors
+  `onRoundComplete` (success) and `handleCancelRound` (explicit cancel) so
+  failed/timed-out rounds don't accumulate in memory or `ListRounds`.
+  Nothing reuses a failed round — `findAssemblingRound` only returns
+  `Idle`/`PendingRoundAssembly` rounds, and the FSM's recovery transitions
+  have no production producer — so reaping the settled failed state is safe.
 - `ClientWallet` provides MuSig2 signing and key derivation; boarding
   address creation is handled by the wallet actor (not the round FSM).
 - Persisted VTXO ownership uses `OwnerKey` (not `SigningKey`). For
