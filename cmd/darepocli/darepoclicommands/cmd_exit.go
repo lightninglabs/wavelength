@@ -7,25 +7,33 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const forceUnrollAck = "I_KNOW_WHAT_I_AM_DOING"
+
 // newExitCmd builds the top-level `exit` verb. It dials
-// walletdkrpc.WalletService.Exit which proxies daemonrpc.Unroll to spawn
-// a durable unilateral-exit job. The `exit status` subcommand reads the
-// job status via walletdkrpc.WalletService.ExitStatus.
+// walletdkrpc.WalletService.Exit, which queues a cooperative leave by default
+// and starts unilateral unroll only when the caller supplies the exact force
+// acknowledgement. The `exit status` subcommand reads the forced-unroll job
+// status via walletdkrpc.WalletService.ExitStatus.
 //
 // `exit` replaces the legacy `unroll` verb at the user surface; the
-// underlying daemon actor/registry pathway is unchanged.
+// underlying daemon actor/registry pathway is only used for acknowledged
+// forced exits.
 func newExitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "exit",
-		Short: "Trigger a unilateral exit for a VTXO",
-		Long: "Starts the on-chain recovery process for the " +
-			"specified VTXO outpoint. The daemon assembles a " +
-			"recovery proof, spawns a durable exit (unroll) " +
-			"job, and drives the on-chain recovery to " +
-			"completion. The job survives daemon restarts; " +
-			"this command only submits the request.\n\n" +
+		Short: "Cooperatively exit a VTXO",
+		Long: "Queues the specified VTXO outpoint for cooperative " +
+			"leave. If --onchain-address is omitted, the daemon " +
+			"generates a fresh backing-wallet destination. " +
+			"Unilateral unroll is only started when " +
+			"--force-unroll-ack is exactly " +
+			forceUnrollAck + ".\n\n" +
 			"Example:\n" +
 			"  darepocli exit --outpoint TXID:VOUT\n" +
+			"  darepocli exit --outpoint TXID:VOUT " +
+			"--onchain-address bcrt1...\n" +
+			"  darepocli exit --outpoint TXID:VOUT " +
+			"--force-unroll-ack " + forceUnrollAck + "\n" +
 			"  darepocli exit status --outpoint TXID:VOUT",
 		Args: cobra.NoArgs,
 		RunE: walletExit,
@@ -34,6 +42,11 @@ func newExitCmd() *cobra.Command {
 	cmd.Flags().String("outpoint", "",
 		"VTXO outpoint to exit (txid:vout)")
 	_ = cmd.MarkFlagRequired("outpoint")
+	cmd.Flags().String("onchain-address", "",
+		"cooperative leave destination; omitted means a fresh "+
+			"wallet-owned address")
+	cmd.Flags().String("force-unroll-ack", "",
+		"exact acknowledgement required to force unilateral unroll")
 	cmd.Flags().Bool("dry-run", false,
 		"validate inputs locally and print the preview without "+
 			"dispatching to the daemon; exits 10 on a valid "+
@@ -51,7 +64,34 @@ func walletExit(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	req := &walletdkrpc.ExitRequest{Outpoint: outpoint}
+	onchainAddress, _ := cmd.Flags().GetString("onchain-address")
+	if onchainAddress != "" {
+		if err := invalidArgs(
+			validateDestination(onchainAddress),
+		); err != nil {
+			return err
+		}
+	}
+
+	forceAck, _ := cmd.Flags().GetString("force-unroll-ack")
+	if forceAck != "" && forceAck != forceUnrollAck {
+		return invalidArgs(
+			fmt.Errorf("--force-unroll-ack must be exactly %q",
+				forceUnrollAck),
+		)
+	}
+	if forceAck != "" && onchainAddress != "" {
+		return invalidArgs(
+			fmt.Errorf("--onchain-address cannot be combined " +
+				"with --force-unroll-ack"),
+		)
+	}
+
+	req := &walletdkrpc.ExitRequest{
+		Outpoint:       outpoint,
+		OnchainAddress: onchainAddress,
+		ForceUnrollAck: forceAck,
+	}
 
 	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
 		return walletDryRunPreview(

@@ -4,12 +4,19 @@ package swapwallet
 
 import (
 	"context"
+	"strings"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+const forceUnrollAck = "I_KNOW_WHAT_I_AM_DOING"
+
+// walletUnspentMaxConfs is intentionally high enough to behave as unbounded
+// for a local wallet UTXO fee-input preflight.
+const walletUnspentMaxConfs int32 = 9999999
 
 // create is the implementation of WalletService.Create. It proxies the
 // daemonrpc admin surface: if the caller supplied a mnemonic, we treat the
@@ -103,9 +110,8 @@ func (s *Service) unlock(ctx context.Context, req *walletdkrpc.UnlockRequest) (
 	}, nil
 }
 
-// exit proxies daemonrpc.Unroll. The daemon's unroll registry remains the
-// authoritative store; the wallet layer tracks only the friendly pending row
-// so activity can show the user's exit attempt immediately.
+// exit queues cooperative leave by default. Forced unilateral unroll is gated
+// by an exact acknowledgement string and a local backing-wallet UTXO preflight.
 func (s *Service) exit(ctx context.Context, req *walletdkrpc.ExitRequest) (
 	*walletdkrpc.ExitResponse, error) {
 
@@ -119,6 +125,84 @@ func (s *Service) exit(ctx context.Context, req *walletdkrpc.ExitRequest) (
 		return nil, status.Error(
 			codes.InvalidArgument, "outpoint is required",
 		)
+	}
+
+	ack := strings.TrimSpace(req.GetForceUnrollAck())
+	if ack != "" {
+		return s.forceUnroll(ctx, req, ack)
+	}
+
+	return s.cooperativeExit(ctx, req)
+}
+
+// cooperativeExit routes wallet-facing Exit through LeaveVTXOs. If the caller
+// did not supply a destination, the daemon generates a fresh backing-wallet
+// address so the default path stays cooperative without asking the user for
+// an on-chain address.
+func (s *Service) cooperativeExit(ctx context.Context,
+	req *walletdkrpc.ExitRequest) (*walletdkrpc.ExitResponse, error) {
+
+	destination := strings.TrimSpace(req.GetOnchainAddress())
+	if destination == "" {
+		addr, err := s.deps.RPCServer.NewWalletAddress(ctx)
+		if err != nil {
+			return nil, status.Errorf(status.Code(err), "new "+
+				"wallet address: %v", err)
+		}
+		destination = addr
+	}
+
+	resp, err := s.deps.RPCServer.LeaveVTXOs(
+		ctx, &daemonrpc.LeaveVTXOsRequest{
+			Selection: &daemonrpc.LeaveVTXOsRequest_Outpoints{
+				Outpoints: &daemonrpc.OutpointSelection{
+					Outpoints: []string{
+						req.GetOutpoint(),
+					},
+				},
+			},
+			DefaultDestination: &daemonrpc.LeaveDestination{
+				Target: &daemonrpc.LeaveDestination_Address{
+					Address: destination,
+				},
+			},
+		},
+	)
+	if err != nil {
+		return nil, status.Errorf(status.Code(err), "exit: %v", err)
+	}
+
+	queued := resp.GetQueuedOutpoints()
+	if !outpointQueued(req.GetOutpoint(), queued) {
+		return nil, status.Errorf(codes.Internal, "exit: cooperative "+
+			"leave did not echo outpoint %s", req.GetOutpoint())
+	}
+
+	return &walletdkrpc.ExitResponse{
+		Mode:            walletdkrpc.ExitMode_EXIT_MODE_COOPERATIVE,
+		QueuedOutpoints: queued,
+		OnchainAddress:  destination,
+	}, nil
+}
+
+// forceUnroll runs the legacy unilateral path only after the caller opts in
+// with the exact acknowledgement string and the local backing wallet has at
+// least one confirmed UTXO available for sweep fees.
+func (s *Service) forceUnroll(ctx context.Context, req *walletdkrpc.ExitRequest,
+	ack string) (*walletdkrpc.ExitResponse, error) {
+
+	if req.GetOnchainAddress() != "" {
+		return nil, status.Error(
+			codes.InvalidArgument,
+			"onchain_address cannot be set with force_unroll_ack",
+		)
+	}
+	if ack != forceUnrollAck {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"force_unroll_ack must be exactly %q", forceUnrollAck)
+	}
+	if err := s.requireLocalUnrollBalance(ctx); err != nil {
+		return nil, err
 	}
 
 	resp, err := s.deps.RPCServer.Unroll(
@@ -137,7 +221,41 @@ func (s *Service) exit(ctx context.Context, req *walletdkrpc.ExitRequest) (
 	return &walletdkrpc.ExitResponse{
 		Created: resp.GetCreated(),
 		ActorId: resp.GetActorId(),
+		Mode:    walletdkrpc.ExitMode_EXIT_MODE_UNILATERAL,
 	}, nil
+}
+
+// requireLocalUnrollBalance checks that the local backing wallet has at least
+// one confirmed UTXO before unilateral unroll starts. The lower-level unroll
+// path still owns target-specific recovery validation; this wallet-facing gate
+// rejects the obvious no-fee-input case before entering the emergency path.
+func (s *Service) requireLocalUnrollBalance(ctx context.Context) error {
+	utxos, err := s.deps.RPCServer.ListWalletUnspent(
+		ctx, 1, walletUnspentMaxConfs,
+	)
+	if err != nil {
+		return status.Errorf(status.Code(err), "list wallet "+
+			"unspent: %v", err)
+	}
+	if len(utxos) > 0 {
+		return nil
+	}
+
+	return status.Errorf(codes.FailedPrecondition, "no confirmed local "+
+		"wallet UTXOs available for forced unroll")
+}
+
+// outpointQueued reports whether the daemon echoed target in a cooperative
+// leave response. A missing echo means the daemon accepted the RPC but did not
+// admit this outpoint into the round.
+func outpointQueued(target string, queued []string) bool {
+	for _, outpoint := range queued {
+		if outpoint == target {
+			return true
+		}
+	}
+
+	return false
 }
 
 // exitStatus proxies daemonrpc.GetUnrollStatus and projects the daemon's

@@ -16,8 +16,6 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 const defaultCloseTimeout = 5 * time.Second
@@ -398,32 +396,10 @@ func (c *Client) List(ctx context.Context, req ListRequest) (*ListResult,
 	return listResultFromProto(view, resp), nil
 }
 
-// Exit drives the SDK's two-track exit policy for a single VTXO
-// outpoint. When req.Destination is set, Exit first attempts a
-// server-cooperative leave (LeaveVTXOs RPC) so the VTXO is unwound
-// through the next assembling round and the leave output lands on
-// the caller-supplied on-chain address. The SDK only falls back to
-// unilateral unroll on transport-class errors (operator unreachable
-// or the caller's ctx fired); caller-side errors such as
-// InvalidArgument are returned verbatim so a typo on Destination is
-// loud rather than silently routed to a wallet-derived script. A
-// nil-error LeaveVTXOs response that does not echo req.Outpoint in
-// QueuedOutpoints (H-2) is treated as a per-outpoint cooperative
-// failure and routed through the same fallback pipeline. When
-// req.Destination is empty the cooperative path is skipped and Exit
-// goes straight to unilateral unroll.
-//
-// Before falling back, Exit cross-checks via ListVTXOs that the
-// daemon did not already admit the cooperative leave server-side
-// (which can happen when the caller's ctx cancels mid-handler but
-// the wallet actor keeps processing on its own root-anchored ctx).
-// The fallback is refused if the VTXO is in PendingForfeit /
-// Forfeiting, since racing an Unroll in either state risks a
-// double-claim of the same VTXO.
-//
-// Read ExitResult.Path to dispatch on which branch the daemon took;
-// the remaining fields are zero-valued for paths they do not apply
-// to.
+// Exit requests wallet-facing exit for a single VTXO outpoint. The daemon
+// queues cooperative leave by default, generating an internal destination when
+// req.Destination is empty. Unilateral unroll is reachable only when
+// req.ForceUnrollAck carries the daemon's exact acknowledgement string.
 func (c *Client) Exit(ctx context.Context, req ExitRequest) (*ExitResult,
 	error) {
 
@@ -435,207 +411,40 @@ func (c *Client) Exit(ctx context.Context, req ExitRequest) (*ExitResult,
 	}
 
 	dest := strings.TrimSpace(req.Destination)
-	if dest == "" {
-		res, err := c.unilateralExit(ctx, req.Outpoint)
-		if err != nil {
-			return nil, err
-		}
-		res.Path = ExitPathUnilateral
-
-		return res, nil
+	ack := strings.TrimSpace(req.ForceUnrollAck)
+	if dest != "" && ack != "" {
+		return nil, fmt.Errorf("destination cannot be combined with " +
+			"force_unroll_ack")
 	}
-
-	leaveResp, leaveErr := c.cooperativeLeave(ctx, req.Outpoint, dest)
-	if leaveErr == nil {
-		// H-2 guard: the daemon's LeaveVTXOs surfaces per-outpoint
-		// wallet failures as log lines rather than as a top-level
-		// error, returning a (possibly empty) queued set. Treat a
-		// queued list that does not echo our outpoint as cooperative
-		// failure and fall through to the fallback decision tree.
-		queued := leaveResp.GetQueuedOutpoints()
-		if outpointInList(req.Outpoint, queued) {
-			return &ExitResult{
-				Path:            ExitPathCooperative,
-				Cooperative:     true,
-				QueuedOutpoints: queued,
-			}, nil
-		}
-		leaveErr = fmt.Errorf("%w for %s", errCooperativeEmptyQueued,
-			req.Outpoint)
-	}
-
-	// H-1 triage: caller-class errors are not eligible for
-	// silent fallback. Returning them verbatim keeps caller bugs
-	// (typo'd address, wrong-network destination, malformed
-	// outpoint) loud rather than rerouting funds to a wallet
-	// script via the unilateral path.
-	if !isCooperativeRetryable(leaveErr) {
-		return nil, fmt.Errorf("exit: cooperative leave failed: %w",
-			leaveErr)
-	}
-
-	// M-6 short-circuit: if the caller's ctx already fired,
-	// the fallback would also fail against the same ctx. Return
-	// the cooperative error wrapped in the ctx error so the
-	// caller sees what happened without a misleading
-	// "fallback failed" suffix.
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, fmt.Errorf("exit: cooperative leave failed (%w) "+
-			"and ctx cancelled: %v", ctxErr, leaveErr)
-	}
-
-	// H-3 ListVTXOs guard: the wallet actor processes the leave
-	// against its own root-anchored ctx, so a caller-side ctx
-	// cancel can race the daemon's admission to completion. If
-	// the VTXO is already PendingForfeit / Forfeiting the
-	// cooperative leave is in flight on the operator; firing
-	// Unroll on top would risk a double-claim.
-	if admitted, err := c.cooperativeAttemptAdmitted(
-		ctx, req.Outpoint,
-	); err != nil {
-		// Lookup failure is itself a transport-class problem;
-		// surface it alongside the cooperative error rather
-		// than silently choosing for the caller.
-		return nil, fmt.Errorf("exit: cooperative leave failed (%w) "+
-			"and admission probe failed: %v", leaveErr, err)
-	} else if admitted {
-		return nil, fmt.Errorf("exit: cooperative leave failed at the "+
-			"RPC boundary but the daemon already admitted the "+
-			"intent; retry the cooperative path or wait for the "+
-			"round to settle: %w", leaveErr)
-	}
-
-	fallback, err := c.unilateralExit(ctx, req.Outpoint)
-	if err != nil {
-		return nil, fmt.Errorf("exit: cooperative leave failed (%v) "+
-			"and unilateral fallback failed: %w", leaveErr, err)
-	}
-	fallback.Path = ExitPathUnilateralFallback
-	fallback.CooperativeError = leaveErr.Error()
-
-	return fallback, nil
-}
-
-// cooperativeLeave builds the single-outpoint LeaveVTXOs request and
-// dispatches it. Factored out of Exit so the cooperative dispatch and
-// the post-call triage logic read cleanly.
-func (c *Client) cooperativeLeave(ctx context.Context, outpoint,
-	destination string) (*daemonrpc.LeaveVTXOsResponse, error) {
-
-	leaveReq := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_Outpoints{
-			Outpoints: &daemonrpc.OutpointSelection{
-				Outpoints: []string{
-					outpoint,
-				},
-			},
-		},
-		DefaultDestination: &daemonrpc.LeaveDestination{
-			Target: &daemonrpc.LeaveDestination_Address{
-				Address: destination,
-			},
-		},
-	}
-
-	return c.daemon.LeaveVTXOs(ctx, leaveReq)
-}
-
-// cooperativeAttemptAdmitted reports whether the daemon's wallet
-// state shows the supplied outpoint already locked into a
-// cooperative leave (PendingForfeit / Forfeiting). The probe is used
-// by Exit to guard the unilateral fallback against a double-claim
-// race when a caller-side ctx cancel returned an error from
-// LeaveVTXOs but the wallet actor kept processing on its root ctx.
-func (c *Client) cooperativeAttemptAdmitted(ctx context.Context,
-	outpoint string) (bool, error) {
-
-	for _, st := range []daemonrpc.VTXOStatus{
-		daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT,
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITING,
-	} {
-		resp, err := c.daemon.ListVTXOs(
-			ctx, &daemonrpc.ListVTXOsRequest{
-				StatusFilter: st,
-			},
-		)
-		if err != nil {
-			return false, err
-		}
-		for _, vtxo := range resp.GetVtxos() {
-			if vtxo.GetOutpoint() == outpoint {
-				return true, nil
-			}
-		}
-	}
-
-	return false, nil
-}
-
-// errCooperativeEmptyQueued sentinels the H-2 case where the
-// daemon's LeaveVTXOs accepted the request but returned no queued
-// outpoint for the caller's target — typically a per-outpoint
-// wallet failure that LeaveVTXOs logs and swallows. We treat this
-// like a transport-class failure so the SDK falls back to
-// unilateral exit.
-var errCooperativeEmptyQueued = errors.New("cooperative leave returned no " +
-	"queued outpoint")
-
-// isCooperativeRetryable reports whether an error from the
-// cooperative LeaveVTXOs RPC is eligible for the unilateral
-// fallback. Only transport- or operator-availability-class codes
-// qualify, plus the empty-queued sentinel; caller-side errors
-// (InvalidArgument, FailedPrecondition, NotFound, PermissionDenied)
-// are returned verbatim so callers see their mistakes directly
-// instead of having the SDK silently route the funds via the
-// unilateral path.
-func isCooperativeRetryable(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, errCooperativeEmptyQueued) {
-		return true
-	}
-	switch status.Code(err) {
-	case codes.Unavailable, codes.DeadlineExceeded,
-		codes.Canceled, codes.Aborted, codes.ResourceExhausted:
-
-		return true
-
-	default:
-		return false
-	}
-}
-
-// outpointInList reports whether target is contained in the supplied
-// outpoint string slice. Used by Exit's H-2 guard against the
-// daemon's "queued nothing but no error" failure mode.
-func outpointInList(target string, list []string) bool {
-	for _, op := range list {
-		if op == target {
-			return true
-		}
-	}
-
-	return false
-}
-
-// unilateralExit calls walletdkrpc.Exit (which proxies
-// daemonrpc.Unroll). The caller sets Path to ExitPathUnilateral or
-// ExitPathUnilateralFallback depending on the branch.
-func (c *Client) unilateralExit(ctx context.Context, outpoint string) (
-	*ExitResult, error) {
 
 	resp, err := c.wallet.Exit(ctx, &walletdkrpc.ExitRequest{
-		Outpoint: outpoint,
+		Outpoint:       req.Outpoint,
+		OnchainAddress: dest,
+		ForceUnrollAck: ack,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("exit: %w", err)
 	}
 
-	return &ExitResult{
-		Created: resp.GetCreated(),
-		ActorID: resp.GetActorId(),
-	}, nil
+	switch resp.GetMode() {
+	case walletdkrpc.ExitMode_EXIT_MODE_COOPERATIVE:
+		return &ExitResult{
+			Path:            ExitPathCooperative,
+			Cooperative:     true,
+			QueuedOutpoints: resp.GetQueuedOutpoints(),
+		}, nil
+
+	case walletdkrpc.ExitMode_EXIT_MODE_UNILATERAL:
+		return &ExitResult{
+			Path:    ExitPathUnilateral,
+			Created: resp.GetCreated(),
+			ActorID: resp.GetActorId(),
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("exit: daemon returned unknown mode %v",
+			resp.GetMode())
+	}
 }
 
 // ExitStatus reports the current phase of an exit job for the

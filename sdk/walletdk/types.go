@@ -322,19 +322,23 @@ type OnchainTx struct {
 // ExitRequest triggers an exit for a VTXO outpoint. When Destination is
 // set, the SDK first attempts a cooperative leave (LeaveVTXOs RPC) with
 // the leave output bound for the supplied on-chain address; if that path
-// fails the SDK falls back to a unilateral unroll. When Destination is
-// empty, the SDK skips the cooperative attempt and goes straight to
-// unilateral unroll.
+// succeeds, the SDK returns a cooperative result. Unilateral unroll is
+// reachable only when ForceUnrollAck carries the daemon's exact
+// acknowledgement string.
 type ExitRequest struct {
 	// Outpoint identifies the VTXO to exit in "txid:index" format.
 	Outpoint string
 
 	// Destination is the on-chain address that receives the leave
 	// output when the cooperative path succeeds. The address must be
-	// valid for the daemon's configured network. Empty disables the
-	// cooperative attempt and falls straight through to unilateral
-	// unroll, which always lands on a wallet-derived script.
+	// valid for the daemon's configured network. Empty asks the daemon
+	// to generate a fresh backing-wallet destination internally.
 	Destination string
+
+	// ForceUnrollAck must be exactly "I_KNOW_WHAT_I_AM_DOING" to bypass
+	// cooperative leave and start unilateral unroll. Cannot be combined
+	// with Destination; the server rejects the pair with InvalidArgument.
+	ForceUnrollAck string
 }
 
 // ExitPath identifies which branch of the Exit decision tree the
@@ -349,15 +353,15 @@ const (
 	// via walletdkrpc.SubscribeWallet to confirm terminal state.
 	ExitPathCooperative ExitPath = "cooperative"
 
-	// ExitPathUnilateral means the caller did not supply a Destination
-	// so the SDK skipped the cooperative attempt entirely. Created
+	// ExitPathUnilateral means the caller supplied the exact force
+	// acknowledgement and the daemon started unilateral unroll. Created
 	// and ActorID describe the unilateral unroll job.
 	ExitPathUnilateral ExitPath = "unilateral"
 
-	// ExitPathUnilateralFallback means the cooperative attempt failed
-	// and the SDK fell back to unilateral unroll. CooperativeError
-	// carries the original failure; Created and ActorID describe the
-	// fallback job.
+	// ExitPathUnilateralFallback is retained for source compatibility
+	// with the prior SDK result shape. New forced unrolls return
+	// ExitPathUnilateral; current wallet RPC behavior never returns this
+	// path because cooperative failures are surfaced directly.
 	ExitPathUnilateralFallback ExitPath = "unilateral_fallback"
 )
 
@@ -389,12 +393,10 @@ type ExitResult struct {
 	// ExitPathUnilateralFallback.
 	ActorID string
 
-	// CooperativeError holds the rendered error string returned by
-	// the cooperative attempt when the SDK fell back to unilateral.
-	// A string (rather than the error interface) keeps the field
-	// stable across gomobile / React Native / WASM bridges, which
-	// cannot marshal an opaque interface value. Populated only when
-	// Path == ExitPathUnilateralFallback; empty otherwise.
+	// CooperativeError is retained for source compatibility with the
+	// prior SDK fallback result shape. Current wallet RPC behavior never
+	// populates it because cooperative failures are returned directly
+	// instead of falling back to unilateral unroll.
 	CooperativeError string
 }
 

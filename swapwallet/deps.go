@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
+	"github.com/lightninglabs/darepo-client/wallet"
 )
 
 // RPCServer is the narrow contract swapwallet composes against from the
@@ -57,6 +58,11 @@ type RPCServer interface {
 	NewAddress(ctx context.Context,
 		req *daemonrpc.NewAddressRequest) (
 		*daemonrpc.NewAddressResponse, error)
+
+	NewWalletAddress(ctx context.Context) (string, error)
+
+	ListWalletUnspent(ctx context.Context, minConfs,
+		maxConfs int32) ([]*wallet.Utxo, error)
 
 	GenSeed(ctx context.Context,
 		req *daemonrpc.GenSeedRequest) (
