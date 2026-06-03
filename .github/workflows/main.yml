@@ -155,6 +155,51 @@ jobs:
         run: GOGC=50 make lint
 
   ########################
+  # P formal model check
+  ########################
+  p-model:
+    name: P durable mailbox model
+    runs-on: [self-hosted]
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+
+      - name: Setup go ${{ env.GO_VERSION }}
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '${{ env.GO_VERSION }}'
+          key-prefix: p-model
+          use-build-cache: 'no'
+
+      # The self-hosted ARC runners cannot write to the default
+      # /usr/share/dotnet, so install the SDK under the writable runner temp
+      # dir. setup-dotnet honours DOTNET_INSTALL_DIR and adds it to PATH and
+      # DOTNET_ROOT for later steps.
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+
+      - name: Install P checker
+        run: |
+          dotnet tool install --global P --version 3.0.4
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+
+      # Compiles the P model, model-checks the green safety suite
+      # (tcMailboxCorrelationKeyFIFO) and the liveness property
+      # (tcMailboxLiveness), then replays the model traces against the real
+      # actordelivery SQLite store via the Go bridge. GOWORK is disabled so the
+      # bridge builds against the module exactly as an external consumer would.
+      - name: Check P model and bridge conformance
+        run: ./p-models/scripts/check.sh
+        env:
+          GOWORK: off
+
+  ########################
   # cross compilation
   ########################
   cross-compile:
