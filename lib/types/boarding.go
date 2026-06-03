@@ -362,6 +362,25 @@ type ConnectorLeafInfo struct {
 	// contains the value and pkScript needed to construct the forfeit
 	// transaction witness.
 	LeafOutput *wire.TxOut
+
+	// RootOutputIndex is the commitment-tx output index that this
+	// connector tree's root transaction spends. It lets the client bind
+	// the connector tree to the commitment tx it is about to sign into.
+	RootOutputIndex uint32
+
+	// NumLeaves is the total number of connector leaves in the tree this
+	// leaf belongs to. Connector trees have identical leaves, so this plus
+	// the radix and operator key fully determine the tree shape.
+	NumLeaves uint32
+
+	// Radix is the branching factor used to build the connector tree. It
+	// is not derivable from the commitment tx, so the operator must supply
+	// it for deterministic reconstruction.
+	Radix uint32
+
+	// LeafIndex is the position of this leaf within the connector tree's
+	// flattened leaf list. Zero is a valid index.
+	LeafIndex uint32
 }
 
 // BatchOutputInfo contains the information about a batch output in the
