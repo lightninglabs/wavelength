@@ -26,6 +26,9 @@ exactly-once effect application under lease-expiry-during-IO).
 | `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxReadCommitFence` | Run the green Read/Commit exactly-once-effect test |
 | `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxLegacyReorderCounterexample` | Demonstrate the old ordering bug |
 | `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxUnfencedCommitCounterexample` | Demonstrate the unfenced-commit double-apply bug |
+| `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxStageCommitExactlyOnce` | Run the green Stage-then-Commit replay-safety test |
+| `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxStagedDoubleBroadcastCounterexample` | Demonstrate the unstable-broadcast double-broadcast bug |
+| `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxStaleStageRegressesCounterexample` | Demonstrate the unfenced-stage checkpoint regression bug |
 | `go test ./p-models/durableactor/bridge` | Replay traces against Go |
 
 ## Modeling Guidance
