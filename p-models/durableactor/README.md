@@ -18,10 +18,25 @@ that matter for the bug:
 `src/mailbox_fifo.p` keeps both the old available-at ordering profile and the
 new per-correlation-key FIFO profile. It also includes a stateful
 `DurableMailboxSpec` machine with token ownership, lease expiry, nack retry,
-idempotent enqueue, ack deletion, and dead-letter removal semantics. The test
-suite proves that the legacy profile permits a same-key overtake after a
-nack/backoff, while the new profile blocks same-key overtakes without blocking
-other keys, other mailboxes, or unkeyed rows.
+idempotent enqueue, ack deletion, dead-letter removal, and the durable actor's
+Read/Commit consume step (`eDurableMailboxCommit`). The test suite proves that
+the legacy profile permits a same-key overtake after a nack/backoff, while the
+new profile blocks same-key overtakes without blocking other keys, other
+mailboxes, or unkeyed rows.
+
+### Read/Commit consume step
+
+`eDurableMailboxCommit` models the durable actor's Read/Commit execution path
+(`baselib/actor`): a behavior does its side-effect IO outside the writer
+transaction, then Commit folds the behavior effect, the dedup mark, and the
+lease-fenced ack into one atomic unit. The model exercises the scenario the
+fence exists for: a consumer leases a row and starts IO, its lease expires
+mid-IO, and a second consumer reclaims and reprocesses the same row. Under the
+fenced design the first consumer's stale Commit is an `ErrLeaseLost` no-op, so
+the behavior effect is applied exactly once. The `fenced` flag on the commit
+request also selects an unfenced profile for the counterexample, where the
+effect is applied regardless of the lease token and a stale consumer
+double-applies it under reclaim.
 
 ### Spec monitors
 
@@ -45,6 +60,17 @@ globally; each test case attaches the ones it wants with `assert <spec> in
   driver enqueues a same-key pair plus a cross-key row, then leases-and-acks in
   a loop; a model in which a row could never be claimed would leave the monitor
   hot forever. It is checked by `tcMailboxLiveness`.
+- `LeaseFencedCommitAppliesEffectAtMostOnce` is the safety contract for the
+  Read/Commit consume step: a row's behavior effect must be applied at most once
+  even when its lease expires mid-IO and the row is reclaimed and reprocessed.
+  `tcMailboxReadCommitFence` checks the fenced design holds it; the negative
+  `tcMailboxUnfencedCommitCounterexample` runs the unfenced profile with no
+  in-machine assertion, so the double-apply is raised solely by this monitor.
+  This monitor deliberately verifies the lease fence is sufficient *in
+  isolation*: it does not model the receiver-side `ON CONFLICT (id) DO NOTHING`
+  dedup that production also has as a downstream backstop. That omission is
+  intentional (it proves the fence alone enforces exactly-once at the source);
+  it is not a claim that the downstream dedup is unnecessary in every flow.
 
 The Go bridge in `bridge/` replays JSON model traces from `traces/` against the real
 `db/actordelivery` SQLite store. This keeps the P model tied to the SQL claim
