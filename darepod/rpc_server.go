@@ -3349,23 +3349,15 @@ func (r *RPCServer) Unroll(ctx context.Context, req *daemonrpc.UnrollRequest) (
 		}
 	}
 
-	// Pre-flight the wallet's CPFP fee budget against the VTXO's
-	// ancestry shape. Each independent ancestry path (cross-
-	// commitment multi-input OOR VTXOs may have several; a round-
-	// direct VTXO has exactly one) corresponds to a distinct CPFP
-	// parent that the unroll needs to fee-bump on chain. TRUC RBF
-	// lets a single parent reuse its own fee input across bumps,
-	// but distinct parents each require their own confirmed wallet
-	// UTXO at child-construction time. If the wallet has fewer
-	// usable UTXOs than ancestry paths, the unroll will admit, the
-	// VTXO actor will transition to UnilateralExitState, but the
-	// chain layer will then thrash forever on
-	// `cpfp fee input unavailable: no confirmed wallet UTXOs
-	// available`. That leaves the VTXO in an exit state the user
-	// can't easily back out of. Fail closed here instead: refuse
-	// admission with InvalidArgument so the caller can fund the
-	// wallet and retry without contaminating state.
-	if err := r.preflightUnrollFeeInputs(
+	// Pre-flight the whole-picture feasibility of the exit before
+	// committing the VTXO to UnilateralExitState. This refuses an exit
+	// that can never succeed (the swept output would be dust and the
+	// sweep tx unrelayable — darepo-client #608), that is economically
+	// irrational (it burns more in fees than the coin is worth), or
+	// that the wallet cannot fund (insufficient balance or too few
+	// distinct CPFP fee inputs). Failing closed here keeps the VTXO out
+	// of an exit state the user can't easily back out of.
+	if err := r.preflightUnrollFeasibility(
 		admissionCtx, desc,
 	); err != nil {
 		return nil, err
@@ -3402,47 +3394,57 @@ func (r *RPCServer) Unroll(ctx context.Context, req *daemonrpc.UnrollRequest) (
 	}, nil
 }
 
-// preflightUnrollMinUTXOSat is the soft floor used by the unroll fee-
-// input pre-check. Confirmed wallet UTXOs below this threshold are
-// counted as unavailable because they're too small to plausibly cover
-// a v3/TRUC CPFP child fee. The exact required amount is determined
-// per-package at broadcast time in `txconfirm.CPFPBroadcaster`; this
-// constant is intentionally conservative so the pre-check rejects
-// only obviously-dust wallets, not borderline cases the run-time
-// fee bumper might still handle. Empirical floor observed during
-// itest (BUGS_FOUND.md bug-8): ~32k sat per package.
+// preflightUnrollMinUTXOSat is the soft floor that decides which
+// confirmed wallet UTXOs count as a "usable" CPFP fee input in the
+// unroll feasibility pre-flight. UTXOs below this threshold are too small
+// to plausibly cover a v3/TRUC CPFP child fee on their own, so they don't
+// count toward the one-input-per-ancestry-path requirement. The exact
+// required amount is determined per-package at broadcast time in
+// `txconfirm.CPFPBroadcaster`; this floor is intentionally conservative
+// so the pre-check rejects only obviously-dust wallets, not borderline
+// cases the run-time fee bumper might still handle. Empirical floor
+// observed during itest (BUGS_FOUND.md bug-8): ~32k sat per package.
 const preflightUnrollMinUTXOSat = btcutil.Amount(10_000)
 
-// preflightUnrollFeeInputs checks that the wallet has enough confirmed
-// UTXOs to cover the CPFP fee inputs the unroll will need. Returns a
-// codes.FailedPrecondition gRPC error with an actionable message when
-// the wallet is short. Returns nil (allow admission) when the
-// descriptor is unavailable, since we can't compute the required
-// count without it.
-func (r *RPCServer) preflightUnrollFeeInputs(ctx context.Context,
+const (
+	// unrollFeeConfTarget is the confirmation target used to estimate
+	// the fee rate for the unroll feasibility pre-flight. Six blocks
+	// matches the sweep estimator so the pre-check and the sweep the
+	// unroll actor later builds agree on the rate.
+	unrollFeeConfTarget = 6
+
+	// unrollFallbackFeeRateSatPerVByte is used when fee estimation is
+	// temporarily unavailable (cold backend, regtest) so the pre-flight
+	// can still produce a plausible estimate rather than blocking. Two
+	// sat/vB matches the sweep estimator's fallback.
+	unrollFallbackFeeRateSatPerVByte = btcutil.Amount(2)
+
+	// unrollMaxFeeRateSatPerVByte clamps a pathological fee estimate so
+	// a transient spike can't make every exit look uneconomical. Matches
+	// the sweep estimator's clamp.
+	unrollMaxFeeRateSatPerVByte = btcutil.Amount(100)
+)
+
+// preflightUnrollFeasibility assesses the whole-picture feasibility of a
+// unilateral exit before admission and returns a gRPC error when it is
+// infeasible. It gathers the recovery-transaction count from the VTXO
+// descriptor, the current fee rate from the chain backend, and the
+// wallet's confirmed UTXO set, then defers the verdict to the pure
+// unroll.AssessExitFeasibility model. Returns nil (allow admission) when
+// the descriptor is unavailable, since we can't assess without it and the
+// downstream admission path will surface its own error.
+func (r *RPCServer) preflightUnrollFeasibility(ctx context.Context,
 	desc *vtxo.Descriptor) error {
 
 	if desc == nil {
 
 		// The descriptor lookup failed earlier — let the existing
-		// admission path produce its own error rather than guess
-		// at the required count here.
+		// admission path produce its own error rather than guess at
+		// the feasibility here.
 		return nil
 	}
 
-	// Number of independent CPFP packages the unroll will produce
-	// is the count of ancestry paths: each path is a chain of
-	// commitment txs rooted at a distinct on-chain batch tx, and
-	// the chain layer needs one confirmed wallet UTXO per chain
-	// to fund the v3 child.
-	required := len(desc.Ancestry)
-	if required == 0 {
-
-		// A descriptor with no ancestry path is malformed in
-		// production but should not block admission — defer to
-		// the chain layer's own error handling.
-		return nil
-	}
+	numTxs, numPaths := unroll.RecoveryTxCount(desc)
 
 	utxos, err := r.server.ListWalletUnspent(ctx, 1, 9999999)
 	if err != nil {
@@ -3450,23 +3452,104 @@ func (r *RPCServer) preflightUnrollFeeInputs(ctx context.Context,
 			"unspent: %v", err)
 	}
 
+	// Derive both wallet inputs the model needs from a single snapshot:
+	// the total confirmed balance (can it fund the CPFP fees at all?)
+	// and the count of UTXOs large enough to each fund a CPFP child (are
+	// there enough distinct fee inputs for the concurrent packages?).
+	var confirmed btcutil.Amount
 	usable := 0
 	for _, utxo := range utxos {
+		confirmed += utxo.Amount
 		if utxo.Amount >= preflightUnrollMinUTXOSat {
 			usable++
 		}
 	}
 
-	if usable >= required {
+	verdict := unroll.AssessExitFeasibility(unroll.ExitFeasibilityInput{
+		NumRecoveryTxs:     numTxs,
+		NumAncestryPaths:   numPaths,
+		VTXOAmountSat:      desc.Amount,
+		FeeRateSatPerVByte: r.estimateUnrollFeeRate(ctx),
+		WalletConfirmedSat: confirmed,
+		WalletUsableInputs: usable,
+	})
+	if verdict.Feasible {
 		return nil
 	}
 
-	return status.Errorf(codes.FailedPrecondition, "insufficient wallet "+
-		"UTXOs to fund unroll CPFP: need at least %d confirmed wallet "+
-		"UTXO(s) of >= %d sat each (one per ancestry path), have %d "+
-		"usable. Fund the wallet's onchain address with more inputs "+
-		"and retry.", required, int64(preflightUnrollMinUTXOSat),
-		usable)
+	return unrollInfeasibleError(verdict)
+}
+
+// estimateUnrollFeeRate returns the current fee rate (sat/vByte) for the
+// unroll feasibility estimate, clamped to a sane range. It falls back to
+// a small fixed rate when the chain backend is missing or estimation
+// fails, so a cold backend never blocks an otherwise-viable exit.
+func (r *RPCServer) estimateUnrollFeeRate(ctx context.Context) btcutil.Amount {
+	if r.server.chainBackend == nil {
+		return unrollFallbackFeeRateSatPerVByte
+	}
+
+	feeRate, err := r.server.chainBackend.EstimateFee(
+		ctx, unrollFeeConfTarget,
+	)
+	if err != nil || feeRate <= 0 {
+		return unrollFallbackFeeRateSatPerVByte
+	}
+
+	if feeRate > unrollMaxFeeRateSatPerVByte {
+		return unrollMaxFeeRateSatPerVByte
+	}
+
+	return feeRate
+}
+
+// unrollInfeasibleError maps an infeasible exit verdict to an actionable
+// gRPC error. Every case is codes.FailedPrecondition: the request is
+// well-formed but the current VTXO/wallet/fee state forbids it. The
+// messages name the concrete numbers (cost, value, dust floor) so the
+// caller can act without re-deriving them, and point at cooperative leave
+// where unilateral exit is not the right tool.
+func unrollInfeasibleError(f unroll.ExitFeasibility) error {
+	switch f.Reason {
+	case unroll.ExitSweepBelowDust:
+		return status.Errorf(codes.FailedPrecondition, "unilateral "+
+			"exit not viable: VTXO is worth %d sat but after the "+
+			"~%d sat sweep fee (at %d sat/vB) only %d sat would "+
+			"remain, below the %d sat dust limit, so the exit "+
+			"transaction cannot be broadcast. Use a cooperative "+
+			"leave instead.", int64(f.VTXOAmountSat),
+			int64(f.SweepFeeSat), int64(f.FeeRateSatPerVByte),
+			int64(f.NetRecoveredSat), int64(f.DustLimitSat))
+
+	case unroll.ExitUneconomical:
+		return status.Errorf(codes.FailedPrecondition, "unilateral "+
+			"exit uneconomical: recovering this VTXO requires "+
+			"broadcasting %d transaction(s) costing ~%d sat in "+
+			"on-chain fees, but the VTXO is only worth %d sat. "+
+			"Use a cooperative leave instead.", f.NumRecoveryTxs,
+			int64(f.TotalRecoveryCostSat), int64(f.VTXOAmountSat))
+
+	case unroll.ExitWalletUnderfunded:
+		return status.Errorf(codes.FailedPrecondition, "on-chain "+
+			"wallet balance too low for unroll: need ~%d sat to "+
+			"fund CPFP fees for %d recovery transaction(s), but "+
+			"only %d sat confirmed. Deposit more and retry.",
+			int64(f.CPFPFeeTotalSat), f.NumRecoveryTxs,
+			int64(f.WalletConfirmedSat))
+
+	case unroll.ExitWalletTooFewInputs:
+		return status.Errorf(codes.FailedPrecondition, "insufficient "+
+			"wallet UTXOs to fund unroll CPFP: need at least %d "+
+			"confirmed wallet UTXO(s) of >= %d sat each (one per "+
+			"ancestry path), have %d usable. Fund the wallet's "+
+			"onchain address with more inputs and retry.",
+			f.RequiredWalletInputs,
+			int64(preflightUnrollMinUTXOSat), f.WalletUsableInputs)
+
+	default:
+		return status.Errorf(codes.FailedPrecondition, "unilateral "+
+			"exit infeasible: %s", f.Reason)
+	}
 }
 
 // GetUnrollStatus returns the current status of an unroll job for the
