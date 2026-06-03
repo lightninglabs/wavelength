@@ -80,11 +80,22 @@ check_negative() {
 check_green tcMailboxCorrelationKeyFIFO
 check_green tcMailboxLiveness
 
+# The Read/Commit consume step must apply a message's behavior effect exactly
+# once even when the row's lease expires mid-IO and the row is reclaimed and
+# reprocessed: the stale consumer's lease-fenced commit must be an ErrLeaseLost
+# no-op.
+check_green tcMailboxReadCommitFence
+
 # The legacy reorder must still be caught two independent ways: once by the
 # in-machine assertion, and once by the SameKeyFIFOClaimsRespectLiveHead monitor
 # with no in-machine assertion. A single schedule is enough to surface it.
 check_negative tcMailboxLegacyReorderCounterexample 1
 check_negative tcMailboxMonitorCatchesLegacyReorder 1
+
+# The unfenced-commit counterexample must be caught by the
+# LeaseFencedCommitAppliesEffectAtMostOnce monitor: a stale consumer that
+# applies its effect after the row was reclaimed double-applies it.
+check_negative tcMailboxUnfencedCommitCounterexample 1
 
 echo ""
 echo "=== Go Bridge Conformance ==="

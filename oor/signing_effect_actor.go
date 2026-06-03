@@ -269,7 +269,11 @@ func NewSigningEffectActor(cfg SigningEffectActorConfig) (*SigningEffectActor,
 	)
 	durableCfg.Log = cfg.Log
 
-	effect.durable = actor.NewDurableActor(durableCfg)
+	durable, err := actor.NewDurableActor(durableCfg).Unpack()
+	if err != nil {
+		return nil, err
+	}
+	effect.durable = durable
 	effect.durable.Start()
 
 	if cfg.ActorSystem != nil {

@@ -246,7 +246,7 @@ func TestSendClientEventRequestPlumbsCorrelationKeyToStore(t *testing.T) {
 	cfg.Store = store
 	cfg.Codec = NewServerConnCodec()
 
-	durable := newDurableConnectorForTest(cfg, 50*time.Millisecond)
+	durable := newDurableConnectorForTest(t, cfg, 50*time.Millisecond)
 	durable.Start()
 	defer durable.Stop()
 

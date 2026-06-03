@@ -6,6 +6,8 @@ import (
 	"log/slog"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // zeroRoundID is the zero value used to detect empty round IDs.
@@ -41,8 +43,14 @@ func sessionIDOrNil(id [32]byte) []byte {
 // during boarding or refresh are debited from fees_paid and
 // credited to vtxo_balance (the fee reduces the client's VTXO
 // balance).
-func (a *LedgerActor) handleFeePaid(ctx context.Context,
-	msg *FeePaidMsg) error {
+//
+// Validation and entry construction run before Commit, with no writer
+// lock held; only the single InsertLedgerEntry runs inside the
+// lease-fenced Commit transaction.
+func (a *LedgerActor) handleFeePaid(ctx context.Context, msg *FeePaidMsg,
+	ax actor.Exec[ledgerTx]) fn.Result[LedgerResp] {
+
+	const errMsg = "Failed to handle fee paid"
 
 	// Reject non-positive amounts up front so a malformed TLV
 	// (e.g. a zero payload or a uint64 that decoded past
@@ -50,8 +58,11 @@ func (a *LedgerActor) handleFeePaid(ctx context.Context,
 	// hitting the SQL CHECK constraint and driving a durable
 	// retry loop on a permanent failure.
 	if msg.AmountSat <= 0 {
-		return fmt.Errorf("%w: FeePaidMsg amount_sat must be positive "+
-			"(got %d)", ErrInvalidMessage, msg.AmountSat)
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: FeePaidMsg amount_sat "+
+				"must be positive (got %d)", ErrInvalidMessage,
+				msg.AmountSat),
+		)
 	}
 
 	roundID := roundIDOrNil(msg.RoundID)
@@ -99,8 +110,10 @@ func (a *LedgerActor) handleFeePaid(ctx context.Context,
 		description = "boarding-sweep on-chain miner fee"
 
 	default:
-		return fmt.Errorf("%w: unknown fee type %q", ErrInvalidMessage,
-			msg.FeeType)
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: unknown fee type %q",
+				ErrInvalidMessage, msg.FeeType),
+		)
 	}
 
 	a.log.InfoS(ctx, "Recording fee payment",
@@ -112,18 +125,22 @@ func (a *LedgerActor) handleFeePaid(ctx context.Context,
 			uint64(msg.BlockHeight)),
 	)
 
-	return a.cfg.LedgerStore.InsertLedgerEntry(
-		ctx, LedgerEntry{
-			DebitAccount:   debitAccount,
-			CreditAccount:  creditAccount,
-			AmountSat:      msg.AmountSat,
-			RoundID:        roundID,
-			IdempotencyKey: idempotency,
-			EventType:      eventType,
-			Description:    description,
-			CreatedAt:      a.clk.Now().Unix(),
-		},
-	)
+	entry := LedgerEntry{
+		DebitAccount:   debitAccount,
+		CreditAccount:  creditAccount,
+		AmountSat:      msg.AmountSat,
+		RoundID:        roundID,
+		IdempotencyKey: idempotency,
+		EventType:      eventType,
+		Description:    description,
+		CreatedAt:      a.clk.Now().Unix(),
+	}
+
+	return a.commit(ctx, ax, errMsg, func(ctx context.Context,
+		q ledgerTx) error {
+
+		return q.ledger.InsertLedgerEntry(ctx, entry)
+	})
 }
 
 // handleVTXOReceived records a VTXO received by the client.
@@ -132,13 +149,18 @@ func (a *LedgerActor) handleFeePaid(ctx context.Context,
 // round receipts, the balance moves from wallet_balance to
 // vtxo_balance.
 func (a *LedgerActor) handleVTXOReceived(ctx context.Context,
-	msg *VTXOReceivedMsg) error {
+	msg *VTXOReceivedMsg, ax actor.Exec[ledgerTx]) fn.Result[LedgerResp] {
+
+	const errMsg = "Failed to handle VTXO received"
 
 	// Reject non-positive amounts up front; see handleFeePaid
 	// for the rationale.
 	if msg.AmountSat <= 0 {
-		return fmt.Errorf("%w: VTXOReceivedMsg amount_sat must be "+
-			"positive (got %d)", ErrInvalidMessage, msg.AmountSat)
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: VTXOReceivedMsg "+
+				"amount_sat must be positive (got %d)",
+				ErrInvalidMessage, msg.AmountSat),
+		)
 	}
 
 	roundID := roundIDOrNil(msg.RoundID)
@@ -192,8 +214,10 @@ func (a *LedgerActor) handleVTXOReceived(ctx context.Context,
 		creditAccount = AccountTransfersOut
 
 	default:
-		return fmt.Errorf("%w: unknown vtxo source %q",
-			ErrInvalidMessage, msg.Source)
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: unknown vtxo source %q",
+				ErrInvalidMessage, msg.Source),
+		)
 	}
 
 	// Per-VTXO idempotency key so multiple owned receives in
@@ -213,24 +237,28 @@ func (a *LedgerActor) handleVTXOReceived(ctx context.Context,
 	// issue #504.
 	chainVout := int32(msg.OutpointIndex)
 
-	return a.cfg.LedgerStore.InsertLedgerEntry(
-		ctx, LedgerEntry{
-			DebitAccount:  debitAccount,
-			CreditAccount: creditAccount,
-			AmountSat:     msg.AmountSat,
-			RoundID:       roundID,
-			EventType:     EventVTXOReceived,
-			Description: fmt.Sprintf(
-				"VTXO received via %s: %x:%d",
-				msg.Source, msg.OutpointHash,
-				msg.OutpointIndex,
-			),
-			CreatedAt:      a.clk.Now().Unix(),
-			IdempotencyKey: idempotencyKey,
-			ChainTxid:      msg.OutpointHash[:],
-			ChainVout:      &chainVout,
-		},
-	)
+	entry := LedgerEntry{
+		DebitAccount:  debitAccount,
+		CreditAccount: creditAccount,
+		AmountSat:     msg.AmountSat,
+		RoundID:       roundID,
+		EventType:     EventVTXOReceived,
+		Description: fmt.Sprintf(
+			"VTXO received via %s: %x:%d",
+			msg.Source, msg.OutpointHash,
+			msg.OutpointIndex,
+		),
+		CreatedAt:      a.clk.Now().Unix(),
+		IdempotencyKey: idempotencyKey,
+		ChainTxid:      msg.OutpointHash[:],
+		ChainVout:      &chainVout,
+	}
+
+	return a.commit(ctx, ax, errMsg, func(ctx context.Context,
+		q ledgerTx) error {
+
+		return q.ledger.InsertLedgerEntry(ctx, entry)
+	})
 }
 
 // handleVTXOSent records a VTXO leaving the client's balance,
@@ -241,14 +269,19 @@ func (a *LedgerActor) handleVTXOReceived(ctx context.Context,
 // is contradictory ("cannot route to both"). The counterparty
 // side is debited to transfers_out so gross send flows are
 // tracked independently of received flows.
-func (a *LedgerActor) handleVTXOSent(ctx context.Context,
-	msg *VTXOSentMsg) error {
+func (a *LedgerActor) handleVTXOSent(ctx context.Context, msg *VTXOSentMsg,
+	ax actor.Exec[ledgerTx]) fn.Result[LedgerResp] {
+
+	const errMsg = "Failed to handle VTXO sent"
 
 	// Reject non-positive amounts up front; see handleFeePaid
 	// for the rationale.
 	if msg.AmountSat <= 0 {
-		return fmt.Errorf("%w: VTXOSentMsg amount_sat must be "+
-			"positive (got %d)", ErrInvalidMessage, msg.AmountSat)
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: VTXOSentMsg amount_sat "+
+				"must be positive (got %d)", ErrInvalidMessage,
+				msg.AmountSat),
+		)
 	}
 
 	sessionID := sessionIDOrNil(msg.SessionID)
@@ -256,12 +289,18 @@ func (a *LedgerActor) handleVTXOSent(ctx context.Context,
 
 	switch {
 	case sessionID == nil && roundID == nil:
-		return fmt.Errorf("%w: VTXOSentMsg requires one of SessionID "+
-			"or RoundID to be non-zero", ErrInvalidMessage)
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: VTXOSentMsg requires "+
+				"one of SessionID or RoundID to be non-zero",
+				ErrInvalidMessage),
+		)
 
 	case sessionID != nil && roundID != nil:
-		return fmt.Errorf("%w: VTXOSentMsg cannot set both SessionID "+
-			"and RoundID", ErrInvalidMessage)
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: VTXOSentMsg cannot set "+
+				"both SessionID and RoundID",
+				ErrInvalidMessage),
+		)
 	}
 
 	a.log.InfoS(ctx, "Recording VTXO sent",
@@ -294,19 +333,23 @@ func (a *LedgerActor) handleVTXOSent(ctx context.Context,
 		)
 	}
 
-	return a.cfg.LedgerStore.InsertLedgerEntry(
-		ctx, LedgerEntry{
-			DebitAccount:   AccountTransfersOut,
-			CreditAccount:  AccountVTXOBalance,
-			AmountSat:      msg.AmountSat,
-			SessionID:      sessionID,
-			RoundID:        roundID,
-			EventType:      EventVTXOSent,
-			Description:    description,
-			CreatedAt:      a.clk.Now().Unix(),
-			IdempotencyKey: idempotencyKey,
-		},
-	)
+	entry := LedgerEntry{
+		DebitAccount:   AccountTransfersOut,
+		CreditAccount:  AccountVTXOBalance,
+		AmountSat:      msg.AmountSat,
+		SessionID:      sessionID,
+		RoundID:        roundID,
+		EventType:      EventVTXOSent,
+		Description:    description,
+		CreatedAt:      a.clk.Now().Unix(),
+		IdempotencyKey: idempotencyKey,
+	}
+
+	return a.commit(ctx, ax, errMsg, func(ctx context.Context,
+		q ledgerTx) error {
+
+		return q.ledger.InsertLedgerEntry(ctx, entry)
+	})
 }
 
 // zeroHash is a convenience sentinel for detecting an absent
@@ -336,8 +379,10 @@ var zeroHash chainhash.Hash
 //
 // On-chain wallet side is intentionally not booked here: the
 // wallet_utxo_log audit trail covers wallet_balance changes.
-func (a *LedgerActor) handleExitCost(ctx context.Context,
-	msg *ExitCostMsg) error {
+func (a *LedgerActor) handleExitCost(ctx context.Context, msg *ExitCostMsg,
+	ax actor.Exec[ledgerTx]) fn.Result[LedgerResp] {
+
+	const errMsg = "Failed to handle exit cost"
 
 	a.log.InfoS(ctx, "Recording exit cost",
 		slog.String(
@@ -355,16 +400,22 @@ func (a *LedgerActor) handleExitCost(ctx context.Context,
 	// to record and the amount_sat > 0 CHECK would reject it
 	// anyway; fail fast with a clear error instead.
 	if msg.ExitCostSat <= 0 || msg.AmountSat <= 0 {
-		return fmt.Errorf("%w: exit cost requires positive amount_sat "+
-			"and exit_cost_sat (got %d, %d)", ErrInvalidMessage,
-			msg.AmountSat, msg.ExitCostSat)
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: exit cost requires "+
+				"positive amount_sat and exit_cost_sat "+
+				"(got %d, %d)", ErrInvalidMessage,
+				msg.AmountSat, msg.ExitCostSat),
+		)
 	}
 
 	if msg.ExitCostSat >= msg.AmountSat {
-		return fmt.Errorf("%w: exit cost %d exceeds or equals VTXO "+
-			"amount %d for %x:%d", ErrInvalidMessage,
-			msg.ExitCostSat, msg.AmountSat, msg.OutpointHash,
-			msg.OutpointIndex)
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: exit cost %d exceeds or "+
+				"equals VTXO amount %d for %x:%d",
+				ErrInvalidMessage, msg.ExitCostSat,
+				msg.AmountSat, msg.OutpointHash,
+				msg.OutpointIndex),
+		)
 	}
 
 	now := a.clk.Now().Unix()
@@ -403,29 +454,27 @@ func (a *LedgerActor) handleExitCost(ctx context.Context,
 		IdempotencyKey: idempotencyKey,
 	}
 
-	// Book the send leg and the fee leg via two separate
-	// InsertLedgerEntry calls. Both join the durable actor's
-	// outer delivery transaction (db.TransactionExecutor.ExecTx
-	// picks up the tx from ctx via actor.TxFromContext), so a
-	// crash or error between the two calls rolls back both
-	// writes and the mailbox ack together -- no partial-write
-	// window. The shared outpoint-derived IdempotencyKey makes
-	// an out-of-band replay resolve to a silent no-op via the
-	// partial unique index idx_client_ledger_idempotent_key and
-	// the ON CONFLICT DO NOTHING clause on the insert query.
-	if err := a.cfg.LedgerStore.InsertLedgerEntry(
-		ctx, sendLeg,
-	); err != nil {
-		return fmt.Errorf("exit send leg: %w", err)
-	}
+	// Book the send leg and the fee leg via two InsertLedgerEntry
+	// calls inside ONE Commit. Both join the same lease-fenced writer
+	// transaction, so a crash or error between them rolls back both
+	// writes and the mailbox ack together -- no partial-write window.
+	// The shared outpoint-derived IdempotencyKey makes an out-of-band
+	// replay resolve to a silent no-op via the partial unique index
+	// idx_client_ledger_idempotent_key and the ON CONFLICT DO NOTHING
+	// clause on the insert query.
+	return a.commit(ctx, ax, errMsg, func(ctx context.Context,
+		q ledgerTx) error {
 
-	if err := a.cfg.LedgerStore.InsertLedgerEntry(
-		ctx, feeLeg,
-	); err != nil {
-		return fmt.Errorf("exit fee leg: %w", err)
-	}
+		if err := q.ledger.InsertLedgerEntry(ctx, sendLeg); err != nil {
+			return fmt.Errorf("exit send leg: %w", err)
+		}
 
-	return nil
+		if err := q.ledger.InsertLedgerEntry(ctx, feeLeg); err != nil {
+			return fmt.Errorf("exit fee leg: %w", err)
+		}
+
+		return nil
+	})
 }
 
 // exitIdempotencyKey derives the outpoint-scoped dedup key used on
@@ -477,7 +526,9 @@ func exitIdempotencyKey(hash [32]byte, index uint32) []byte {
 // (wire enforces MaxSatoshi bounds on tx outputs) but the guard
 // closes the last corruption gap on the TLV decode path.
 func (a *LedgerActor) handleUTXOCreated(ctx context.Context,
-	msg *UTXOCreatedMsg) error {
+	msg *UTXOCreatedMsg, ax actor.Exec[ledgerTx]) fn.Result[LedgerResp] {
+
+	const errMsg = "Failed to handle UTXO created"
 
 	a.log.InfoS(ctx, "Recording UTXO created",
 		slog.String(
@@ -491,55 +542,65 @@ func (a *LedgerActor) handleUTXOCreated(ctx context.Context,
 			msg.Classification),
 	)
 
+	// UTXOAuditStore is optional: in log-only mode there is nothing to
+	// persist, so consume the message without opening a Commit.
 	if a.cfg.UTXOAuditStore == nil {
-		return nil
+		return fn.Ok[LedgerResp](nil)
 	}
 
 	if msg.AmountSat <= 0 {
-		return fmt.Errorf("%w: UTXOCreatedMsg amount_sat must be "+
-			"positive (got %d)", ErrInvalidMessage, msg.AmountSat)
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: UTXOCreatedMsg "+
+				"amount_sat must be positive (got %d)",
+				ErrInvalidMessage, msg.AmountSat),
+		)
 	}
 
 	now := a.clk.Now().Unix()
 	chainVout := int32(msg.OutpointIndex)
 	confirmationHeight := int32(msg.BlockHeight)
 
-	err := a.cfg.UTXOAuditStore.InsertUTXOAuditEntry(
-		ctx, UTXOAuditEntry{
-			OutpointHash:  msg.OutpointHash[:],
-			OutpointIndex: int32(msg.OutpointIndex),
-			AmountSat:     msg.AmountSat,
-			Event:         "created",
-			BlockHeight:   int32(msg.BlockHeight),
-			ClassifiedAs:  msg.Classification,
-			CreatedAt:     now,
-		},
-	)
-	if err != nil {
-		return err
+	audit := UTXOAuditEntry{
+		OutpointHash:  msg.OutpointHash[:],
+		OutpointIndex: int32(msg.OutpointIndex),
+		AmountSat:     msg.AmountSat,
+		Event:         "created",
+		BlockHeight:   int32(msg.BlockHeight),
+		ClassifiedAs:  msg.Classification,
+		CreatedAt:     now,
 	}
 
-	return a.cfg.LedgerStore.InsertLedgerEntry(
-		ctx, LedgerEntry{
-			DebitAccount:  AccountWalletBalance,
-			CreditAccount: AccountOpeningBalance,
-			AmountSat:     msg.AmountSat,
-			EventType:     EventWalletUTXOCreated,
-			Description: fmt.Sprintf(
-				"wallet UTXO confirmed at %x:%d "+
-					"(classification %s) at height %d",
-				msg.OutpointHash, msg.OutpointIndex,
-				msg.Classification, msg.BlockHeight,
-			),
-			CreatedAt: now,
-			IdempotencyKey: walletUTXOIdempotencyKey(
-				msg.OutpointHash, msg.OutpointIndex,
-			),
-			ChainTxid:          msg.OutpointHash[:],
-			ChainVout:          &chainVout,
-			ConfirmationHeight: &confirmationHeight,
-		},
-	)
+	entry := LedgerEntry{
+		DebitAccount:  AccountWalletBalance,
+		CreditAccount: AccountOpeningBalance,
+		AmountSat:     msg.AmountSat,
+		EventType:     EventWalletUTXOCreated,
+		Description: fmt.Sprintf(
+			"wallet UTXO confirmed at %x:%d "+
+				"(classification %s) at height %d",
+			msg.OutpointHash, msg.OutpointIndex,
+			msg.Classification, msg.BlockHeight,
+		),
+		CreatedAt: now,
+		IdempotencyKey: walletUTXOIdempotencyKey(
+			msg.OutpointHash, msg.OutpointIndex,
+		),
+		ChainTxid:          msg.OutpointHash[:],
+		ChainVout:          &chainVout,
+		ConfirmationHeight: &confirmationHeight,
+	}
+
+	// The audit row and the ledger deposit leg commit together in one
+	// lease-fenced transaction.
+	return a.commit(ctx, ax, errMsg, func(ctx context.Context,
+		q ledgerTx) error {
+
+		if err := q.audit.InsertUTXOAuditEntry(ctx, audit); err != nil {
+			return err
+		}
+
+		return q.ledger.InsertLedgerEntry(ctx, entry)
+	})
 }
 
 // walletUTXOIdempotencyKey derives the outpoint-scoped dedup key
@@ -561,8 +622,10 @@ func walletUTXOIdempotencyKey(hash [32]byte, index uint32) []byte {
 // handleUTXOSpent records a spent wallet UTXO in the audit log.
 // The classification is provided by the sending subsystem (e.g.
 // round actor classifies as "round_funding").
-func (a *LedgerActor) handleUTXOSpent(ctx context.Context,
-	msg *UTXOSpentMsg) error {
+func (a *LedgerActor) handleUTXOSpent(ctx context.Context, msg *UTXOSpentMsg,
+	ax actor.Exec[ledgerTx]) fn.Result[LedgerResp] {
+
+	const errMsg = "Failed to handle UTXO spent"
 
 	a.log.InfoS(ctx, "Recording UTXO spent",
 		slog.String(
@@ -576,19 +639,25 @@ func (a *LedgerActor) handleUTXOSpent(ctx context.Context,
 			msg.Classification),
 	)
 
+	// UTXOAuditStore is optional: in log-only mode there is nothing to
+	// persist, so consume the message without opening a Commit.
 	if a.cfg.UTXOAuditStore == nil {
-		return nil
+		return fn.Ok[LedgerResp](nil)
 	}
 
-	return a.cfg.UTXOAuditStore.InsertUTXOAuditEntry(
-		ctx, UTXOAuditEntry{
-			OutpointHash:  msg.OutpointHash[:],
-			OutpointIndex: int32(msg.OutpointIndex),
-			AmountSat:     msg.AmountSat,
-			Event:         "spent",
-			BlockHeight:   int32(msg.BlockHeight),
-			ClassifiedAs:  msg.Classification,
-			CreatedAt:     a.clk.Now().Unix(),
-		},
-	)
+	audit := UTXOAuditEntry{
+		OutpointHash:  msg.OutpointHash[:],
+		OutpointIndex: int32(msg.OutpointIndex),
+		AmountSat:     msg.AmountSat,
+		Event:         "spent",
+		BlockHeight:   int32(msg.BlockHeight),
+		ClassifiedAs:  msg.Classification,
+		CreatedAt:     a.clk.Now().Unix(),
+	}
+
+	return a.commit(ctx, ax, errMsg, func(ctx context.Context,
+		q ledgerTx) error {
+
+		return q.audit.InsertUTXOAuditEntry(ctx, audit)
+	})
 }

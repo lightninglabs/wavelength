@@ -68,6 +68,7 @@ func (e *failFirstSendEdge) Snapshot() (int, string, string) {
 // newDurableConnectorForTest creates a DurableActor wrapper around
 // ServerConnectionActor with an explicit Tell retry delay.
 func newDurableConnectorForTest(
+	t *testing.T,
 	cfg ConnectorConfig,
 	retryDelay time.Duration,
 ) *actor.DurableActor[ServerConnMsg, ServerConnResp] {
@@ -94,7 +95,7 @@ func newDurableConnectorForTest(
 		return true, retryDelay
 	}
 
-	return actor.NewDurableActor(durableCfg)
+	return actor.NewDurableActor(durableCfg).UnwrapOrFail(t)
 }
 
 // TestEgress_RestartReplayPreservesStableIDs verifies that a failed egress send
@@ -111,7 +112,7 @@ func TestEgress_RestartReplayPreservesStableIDs(t *testing.T) {
 	cfg.Codec = NewServerConnCodec()
 
 	// First actor instance fails once and nacks the message for retry.
-	durable1 := newDurableConnectorForTest(cfg, 500*time.Millisecond)
+	durable1 := newDurableConnectorForTest(t, cfg, 500*time.Millisecond)
 	durable1.Start()
 
 	err := durable1.TellRef().Tell(t.Context(), &SendClientEventRequest{
@@ -141,7 +142,7 @@ func TestEgress_RestartReplayPreservesStableIDs(t *testing.T) {
 
 	// Second actor instance replays from the same durable store and then
 	// succeeds.
-	durable2 := newDurableConnectorForTest(cfg, 20*time.Millisecond)
+	durable2 := newDurableConnectorForTest(t, cfg, 20*time.Millisecond)
 	durable2.Start()
 	defer durable2.Stop()
 
@@ -177,7 +178,7 @@ func TestDurableUnary_RestartReplayPreservesStableIDs(t *testing.T) {
 
 	// First actor instance fails once and leaves the durable unary
 	// send queued for replay.
-	durable1 := newDurableConnectorForTest(cfg, 500*time.Millisecond)
+	durable1 := newDurableConnectorForTest(t, cfg, 500*time.Millisecond)
 	durable1.Start()
 
 	err := durable1.TellRef().Tell(
@@ -214,7 +215,7 @@ func TestDurableUnary_RestartReplayPreservesStableIDs(t *testing.T) {
 
 	// Second actor instance replays from the same durable store and then
 	// succeeds.
-	durable2 := newDurableConnectorForTest(cfg, 20*time.Millisecond)
+	durable2 := newDurableConnectorForTest(t, cfg, 20*time.Millisecond)
 	durable2.Start()
 	defer durable2.Stop()
 

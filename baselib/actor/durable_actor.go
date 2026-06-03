@@ -43,9 +43,22 @@ type DurableActorConfig[M TLVMessage, R any] struct {
 	// When unset, the runtime falls back to btclog.Disabled.
 	Log fn.Option[btclog.Logger]
 
-	// Behavior defines how the actor responds to messages.
-	// The runtime handles ack/nack automatically based on the result.
-	Behavior ActorBehavior[M, R]
+	// Behavior defines how the actor responds to messages. It is one of two
+	// shapes:
+	//
+	//   - Left: a classic ActorBehavior. The runtime wraps the whole
+	//     Receive in one transaction (processInTransaction) when the store
+	//     is tx-aware, else runs the short-slice path. This is the safe
+	//     default.
+	//
+	//   - Right: a BoundTxBehavior built via NewTxBehavior. The runtime
+	//     drives the behavior through the Read/Commit execution path
+	//     (processWithExec) so it can do side-effect IO outside the writer
+	//     transaction. This requires a TxAwareDeliveryStore.
+	//
+	// DefaultDurableActorConfig populates the Left case from its behavior
+	// argument; tx-aware actors overwrite this field with fn.NewRight.
+	Behavior fn.Either[ActorBehavior[M, R], BoundTxBehavior[M, R]]
 
 	// Store is the persistence layer for mailbox operations. If the store
 	// implements TxAwareDeliveryStore, message processing will be wrapped
@@ -99,6 +112,30 @@ type DurableActorConfig[M TLVMessage, R any] struct {
 	DeduplicationTTL time.Duration
 }
 
+// NewClassicBehavior wraps a classic ActorBehavior as the Left case of the
+// DurableActorConfig.Behavior either. DefaultDurableActorConfig applies it for
+// you; use it directly only when assigning Behavior on a hand-built config.
+func NewClassicBehavior[M TLVMessage, R any](
+	behavior ActorBehavior[M, R],
+) fn.Either[ActorBehavior[M, R], BoundTxBehavior[M, R]] {
+
+	return fn.NewLeft[ActorBehavior[M, R], BoundTxBehavior[M, R]](behavior)
+}
+
+// NewTxBehaviorEither binds a TxBehavior and its StoreFactory and wraps the
+// result as the Right case of the DurableActorConfig.Behavior either.
+// DefaultDurableTxActorConfig applies it for you; use it directly only when
+// assigning Behavior on a hand-built config.
+func NewTxBehaviorEither[M TLVMessage, R any, S any](
+	behavior TxBehavior[M, R, S],
+	factory StoreFactory[S],
+) fn.Either[ActorBehavior[M, R], BoundTxBehavior[M, R]] {
+
+	return fn.NewRight[ActorBehavior[M, R]](
+		NewTxBehavior(behavior, factory),
+	)
+}
+
 // DefaultDurableActorConfig returns a config with sensible defaults.
 func DefaultDurableActorConfig[M TLVMessage, R any](
 	id string,
@@ -112,7 +149,7 @@ func DefaultDurableActorConfig[M TLVMessage, R any](
 	return DurableActorConfig[M, R]{
 		ID:                id,
 		Log:               fn.None[btclog.Logger](),
-		Behavior:          behavior,
+		Behavior:          NewClassicBehavior(behavior),
 		Store:             store,
 		Codec:             codec,
 		TellRetryPolicy:   DefaultTellRetryPolicy,
@@ -123,6 +160,26 @@ func DefaultDurableActorConfig[M TLVMessage, R any](
 		CleanupTimeout:    5 * time.Second,
 		DeduplicationTTL:  24 * time.Hour,
 	}
+}
+
+// DefaultDurableTxActorConfig returns a config wired for the Read/Commit
+// execution path. It is the tx-aware counterpart to DefaultDurableActorConfig:
+// rather than taking a classic ActorBehavior, it takes a TxBehavior and its
+// StoreFactory and binds them into the config's Right case, hiding the
+// NewTxBehavior / fn.NewRight boilerplate from callers. The store must be a
+// TxAwareDeliveryStore (enforced by NewDurableActor).
+func DefaultDurableTxActorConfig[M TLVMessage, R any, S any](
+	id string,
+	behavior TxBehavior[M, R, S],
+	factory StoreFactory[S],
+	store DeliveryStore,
+	codec *MessageCodec,
+) DurableActorConfig[M, R] {
+
+	cfg := DefaultDurableActorConfig[M, R](id, nil, store, codec)
+	cfg.Behavior = NewTxBehaviorEither[M, R, S](behavior, factory)
+
+	return cfg
 }
 
 // DurableActor is an actor implementation that provides crash-resilient message
@@ -144,8 +201,11 @@ type DurableActor[M TLVMessage, R any] struct {
 	// id is the unique identifier for the actor.
 	id string
 
-	// behavior defines how the actor responds to messages.
-	behavior ActorBehavior[M, R]
+	// behavior selects how the actor processes messages. The Left case is a
+	// classic ActorBehavior the runtime wraps in a transaction; the Right
+	// case is a BoundTxBehavior driven through the Read/Commit execution
+	// path. It mirrors DurableActorConfig.Behavior directly.
+	behavior fn.Either[ActorBehavior[M, R], BoundTxBehavior[M, R]]
 
 	// mailbox is the durable incoming message queue.
 	mailbox *DurableMailbox[M, R]
@@ -200,10 +260,37 @@ type DurableActor[M TLVMessage, R any] struct {
 	ref ActorRef[M, R]
 }
 
-// NewDurableActor creates a new durable actor instance.
+// ErrTxBehaviorNeedsTxStore indicates that a config requested the Read/Commit
+// execution path (a Right BoundTxBehavior) without a TxAwareDeliveryStore,
+// which that path requires to open its short transactions.
+var ErrTxBehaviorNeedsTxStore = fmt.Errorf("durable actor: TxBehavior " +
+	"requires a TxAwareDeliveryStore")
+
+// ErrNoBehavior indicates that a config carries no usable behavior: either a
+// nil classic ActorBehavior (the fn.Either zero value is a Left holding nil, so
+// a forgotten Behavior field lands here) or a zero-value BoundTxBehavior whose
+// run hook was never bound (e.g. fn.NewRight(BoundTxBehavior{}) instead of
+// NewTxBehavior/DefaultDurableTxActorConfig). Surfacing it at construction
+// keeps the misconfiguration from panicking at first dispatch.
+var ErrNoBehavior = fmt.Errorf("durable actor: a behavior must be set (use " +
+	"DefaultDurableActorConfig or DefaultDurableTxActorConfig)")
+
+// ErrDurableAskUnsupported indicates that a DurableAsk was delivered to an
+// actor running on the Read/Commit (TxBehavior) execution path. On that path
+// the message is acked inside the behavior's own Commit, so the framework
+// cannot fold the crash-safe callback response into the consuming transaction
+// (it does not have the behavior's result at Commit time). The request is
+// rejected with this error delivered to the caller as the response. Full
+// DurableAsk support is planned alongside the OOR effect-actor adopter.
+var ErrDurableAskUnsupported = fmt.Errorf("durable actor: DurableAsk is not " +
+	"supported on the Read/Commit execution path")
+
+// NewDurableActor creates a new durable actor instance. It returns an error
+// result when the configuration is invalid -- currently when a TxBehavior is
+// paired with a store that is not transaction-aware.
 func NewDurableActor[M TLVMessage, R any](
 	cfg DurableActorConfig[M, R],
-) *DurableActor[M, R] {
+) fn.Result[*DurableActor[M, R]] {
 
 	baseCtx := build.ContextWithLogger(
 		context.Background(), cfg.Log.UnwrapOr(btclog.Disabled),
@@ -236,6 +323,35 @@ func NewDurableActor[M TLVMessage, R any](
 		txAwareStore = txStore
 	}
 
+	// Validate the configured behavior up front so a misconfigured actor
+	// fails closed at construction rather than panicking at first dispatch.
+	// The fn.Either zero value is a Left holding a nil ActorBehavior, so a
+	// forgotten Behavior field is caught here too.
+	if cfg.Behavior.IsRight() {
+		txb := cfg.Behavior.RightToSome().UnsafeFromSome()
+		switch {
+		// A zero-value BoundTxBehavior has no run hook and would panic
+		// at dispatch.
+		case !txb.isSet():
+			cancel()
+
+			return fn.Err[*DurableActor[M, R]](ErrNoBehavior)
+
+		// The Read/Commit execution path opens its own short
+		// transactions, so it requires a transaction-aware store.
+		case txAwareStore == nil:
+			cancel()
+
+			return fn.Err[*DurableActor[M, R]](
+				ErrTxBehaviorNeedsTxStore,
+			)
+		}
+	} else if cfg.Behavior.LeftToSome().UnwrapOr(nil) == nil {
+		cancel()
+
+		return fn.Err[*DurableActor[M, R]](ErrNoBehavior)
+	}
+
 	actor := &DurableActor[M, R]{
 		id:                cfg.ID,
 		behavior:          cfg.Behavior,
@@ -259,7 +375,7 @@ func NewDurableActor[M TLVMessage, R any](
 		actor: actor,
 	}
 
-	return actor
+	return fn.Ok(actor)
 }
 
 // Start initiates the actor's message processing loop.
@@ -313,8 +429,15 @@ func (a *DurableActor[M, R]) process() {
 	// For durable mailboxes, we don't drain to DLO since messages persist
 	// in the database and will be picked up on restart.
 
-	// If the behavior implements Stoppable, call OnStop.
-	if stoppable, ok := a.behavior.(Stoppable); ok {
+	// If a classic behavior implements Stoppable, call OnStop. The
+	// Read/Commit (Right) path has no Stoppable hook of its own; its owner
+	// manages cleanup.
+	a.behavior.WhenLeft(func(b ActorBehavior[M, R]) {
+		stoppable, ok := b.(Stoppable)
+		if !ok {
+			return
+		}
+
 		cleanupCtx, cancel := context.WithTimeout(
 			context.Background(), a.cleanupTimeout,
 		)
@@ -324,7 +447,7 @@ func (a *DurableActor[M, R]) process() {
 			logger(a.ctx).WarnS(a.ctx, "Durable actor cleanup error",
 				err, "actor_id", a.id)
 		}
-	}
+	})
 
 	logger(a.ctx).DebugS(a.ctx, "Durable actor terminated",
 		"actor_id", a.id,
@@ -396,6 +519,18 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 				ErrLeaseExpired,
 				"delivery_id", delivery.ID)
 		}
+
+		return
+	}
+
+	// If the actor opted into the Read/Commit execution path (a Right
+	// behavior), drive it through the Exec handle. Construction guarantees
+	// a tx-aware store is present in this case.
+	if a.behavior.IsRight() {
+		a.processWithExec(
+			processCtx, delivery,
+			a.behavior.RightToSome().UnsafeFromSome(),
+		)
 
 		return
 	}
@@ -483,6 +618,18 @@ func (a *DurableActor[M, R]) processWithoutTransaction(ctx context.Context,
 	// Execute behavior with panic recovery.
 	result := a.executeBehaviorSafely(ctx, delivery)
 
+	// Hand the result to the shared non-transactional ack/nack bookkeeping.
+	a.finishNonTx(ctx, delivery, result)
+}
+
+// finishNonTx applies ack/nack/dead-letter bookkeeping for a result that was
+// produced outside a framework transaction (the processWithoutTransaction path
+// and the uncommitted tail of processWithExec). It runs the durable writes
+// under a detached, bounded context so they finish even if Stop cancels the
+// actor context mid-commit.
+func (a *DurableActor[M, R]) finishNonTx(ctx context.Context,
+	delivery *Delivery[M, R], result fn.Result[R]) {
+
 	// The message result is now known. Durable bookkeeping must be allowed
 	// to finish even if Stop cancels the actor context while ack/processed
 	// markers are being committed. In particular, SQLite's driver can race
@@ -552,6 +699,167 @@ func (a *DurableActor[M, R]) processWithoutTransaction(ctx context.Context,
 	a.handleResult(bookkeepingCtx, delivery, result)
 }
 
+// processWithExec drives a TxBehavior through its Read/Commit execution path.
+// The behavior does any slow side-effect IO without holding the writer, then
+// commits state plus the lease-fenced ack in one short transaction. A lease
+// heartbeat runs for the duration so a long IO middle does not let the lease
+// expire underneath an in-progress Commit.
+func (a *DurableActor[M, R]) processWithExec(ctx context.Context,
+	delivery *Delivery[M, R], tb BoundTxBehavior[M, R]) {
+
+	// The Read/Commit execution path does not yet support DurableAsk. On
+	// this path the message is acked inside the behavior's own Commit, so
+	// the framework cannot fold the crash-safe callback response into the
+	// consuming transaction (the behavior owns the tx and its result is not
+	// known until after Commit). Rather than silently consume the request
+	// and leave the caller hanging, reject it with an explicit error
+	// response. Full support is planned with the OOR effect-actor adopter.
+	if delivery.IsDurableAsk() {
+		a.rejectDurableAskOnExecPath(ctx, delivery)
+
+		return
+	}
+
+	// Extend the lease while the behavior does IO outside the writer tx.
+	heartbeatDone := make(chan struct{})
+	var stopHeartbeat sync.Once
+	stop := func() {
+		stopHeartbeat.Do(func() { close(heartbeatDone) })
+	}
+	go a.heartbeat(ctx, delivery, heartbeatDone)
+	defer stop()
+
+	core := &execCore{
+		store:      a.txAwareStore,
+		msgID:      delivery.ID,
+		leaseToken: delivery.LeaseToken,
+		actorID:    a.id,
+		dedupTTL:   a.deduplicationTTL,
+	}
+
+	result := a.runExecSafely(ctx, delivery, tb, core)
+
+	// Stop the heartbeat as soon as the behavior returns. On the committed
+	// path the message is already acked and deleted inside Commit, so a
+	// late heartbeat tick would try to extend a gone lease and log a
+	// spurious "Failed to extend lease" warning.
+	stop()
+
+	// If the behavior committed, the state write, dedup mark, and
+	// lease-fenced ack are already durable in a single transaction. Only
+	// the in-memory promise for an Ask caller remains.
+	if core.committed {
+		if delivery.IsAsk() && delivery.Promise != nil {
+			delivery.Promise.Complete(result)
+		}
+
+		return
+	}
+
+	// The behavior returned without committing: it either failed before
+	// Commit (e.g. the side-effect IO errored, so we nack for retry) or it
+	// intentionally consumed the message without persisting state (e.g. a
+	// RestartMessage). Either way, fall back to the framework's standard
+	// non-transactional ack/nack handling.
+	a.finishNonTx(ctx, delivery, result)
+}
+
+// rejectDurableAskOnExecPath fails a DurableAsk delivered to a Read/Commit
+// (TxBehavior) actor. It writes an error AskResponse to the outbox so the
+// caller receives a definitive failure instead of hanging, then consumes the
+// message under the lease fence -- the error response, dedup mark, and ack all
+// commit in one transaction. On any failure it nacks so the request is retried
+// (and re-rejected) rather than lost. See ErrDurableAskUnsupported.
+func (a *DurableActor[M, R]) rejectDurableAskOnExecPath(ctx context.Context,
+	delivery *Delivery[M, R]) {
+
+	// Use a detached, bounded context so the rejection bookkeeping finishes
+	// even if Stop cancels the actor context mid-commit.
+	bookkeepingCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), a.cleanupTimeout,
+	)
+	defer cancel()
+
+	errResult := fn.Err[R](ErrDurableAskUnsupported)
+
+	err := a.txAwareStore.ExecTx(bookkeepingCtx, false, func(
+		txCtx context.Context, store DeliveryStore) error {
+
+		if err := a.writeAskResponseToOutbox(
+			txCtx, delivery, errResult, store,
+		); err != nil {
+			return err
+		}
+
+		if err := store.MarkProcessed(
+			txCtx, delivery.ID, a.id, a.deduplicationTTL,
+		); err != nil {
+			return err
+		}
+
+		rows, err := store.AckMessage(
+			txCtx, delivery.ID, delivery.LeaseToken,
+		)
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return ErrLeaseLost
+		}
+
+		return nil
+	})
+	if err == nil {
+		logger(ctx).WarnS(ctx, "Rejected DurableAsk on Read/Commit "+
+			"path with error response",
+			ErrDurableAskUnsupported,
+			"actor_id", a.id,
+			"delivery_id", delivery.ID)
+
+		return
+	}
+
+	logger(ctx).WarnS(ctx, "Failed to reject DurableAsk on Read/Commit "+
+		"path, nacking for retry",
+		err,
+		"actor_id", a.id,
+		"delivery_id", delivery.ID)
+
+	if nackErr := delivery.Nack(
+		bookkeepingCtx, err, 10*time.Second,
+	); nackErr != nil {
+
+		logger(ctx).WarnS(ctx, "Failed to nack after DurableAsk "+
+			"reject failure",
+			nackErr,
+			"actor_id", a.id,
+			"delivery_id", delivery.ID)
+	}
+}
+
+// runExecSafely runs a TxBehavior with panic recovery, converting a panic into
+// an error result so the caller treats it as a non-committed failure.
+func (a *DurableActor[M, R]) runExecSafely(ctx context.Context,
+	delivery *Delivery[M, R], tb BoundTxBehavior[M, R], core *execCore) (
+	result fn.Result[R]) {
+
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("panic: %v", r)
+
+			logger(ctx).ErrorS(ctx, "Panic during tx message "+
+				"processing",
+				err,
+				"actor_id", a.id,
+				"delivery_id", delivery.ID)
+
+			result = fn.Err[R](err)
+		}
+	}()
+
+	return tb.run(ctx, core, delivery.Message)
+}
+
 // executeBehaviorSafely runs the behavior with panic recovery.
 func (a *DurableActor[M, R]) executeBehaviorSafely(ctx context.Context,
 	delivery *Delivery[M, R]) (result fn.Result[R]) {
@@ -570,7 +878,11 @@ func (a *DurableActor[M, R]) executeBehaviorSafely(ctx context.Context,
 		}
 	}()
 
-	return a.behavior.Receive(ctx, delivery.Message)
+	// This path only runs for a classic (Left) behavior; the Right path is
+	// handled by processWithExec.
+	classic := a.behavior.LeftToSome().UnwrapOr(nil)
+
+	return classic.Receive(ctx, delivery.Message)
 }
 
 // handleResultInTx handles the result within a transaction.

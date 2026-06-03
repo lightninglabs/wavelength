@@ -130,6 +130,38 @@ func newTestActorWithAudit(t *testing.T) (*LedgerActor, *mockLedgerStore,
 	return a, ledgerStore, auditStore
 }
 
+// fakeExec is a synchronous Exec[ledgerTx] for handler unit tests. It runs
+// Read/Commit closures immediately against the actor's stores, with no real
+// transaction or lease fence, so a handler's build-then-Commit flow can be
+// exercised without standing up a durable mailbox.
+type fakeExec struct {
+	store ledgerTx
+}
+
+// Read runs fn against the actor's stores.
+func (e fakeExec) Read(ctx context.Context,
+	fn func(context.Context, ledgerTx) error) error {
+
+	return fn(ctx, e.store)
+}
+
+// Commit runs fn against the actor's stores.
+func (e fakeExec) Commit(ctx context.Context,
+	fn func(context.Context, ledgerTx) error) error {
+
+	return fn(ctx, e.store)
+}
+
+// run drives a message through the actor's Receive with a synchronous fake
+// Exec and returns the handler error. The insert closures execute against the
+// actor's mock stores, so the existing store-based assertions still hold while
+// the validation/build work runs (as in production) outside any transaction.
+func run(ctx context.Context, a *LedgerActor, msg LedgerMsg) error {
+	ax := fakeExec{store: a.bindStores(ctx, nil)}
+
+	return a.Receive(ctx, msg, ax).Err()
+}
+
 // TestHandleFeePaidBoarding verifies that a boarding fee is
 // recorded with the correct accounts and event type.
 func TestHandleFeePaidBoarding(t *testing.T) {
@@ -149,7 +181,7 @@ func TestHandleFeePaidBoarding(t *testing.T) {
 		BlockHeight: 800_000,
 	}
 
-	err := a.handleFeePaid(ctx, msg)
+	err := run(ctx, a, msg)
 	require.NoError(t, err)
 
 	entries := store.getEntries()
@@ -181,7 +213,7 @@ func TestHandleFeePaidRefresh(t *testing.T) {
 		BlockHeight: 800_100,
 	}
 
-	err := a.handleFeePaid(ctx, msg)
+	err := run(ctx, a, msg)
 	require.NoError(t, err)
 
 	entries := store.getEntries()
@@ -213,7 +245,7 @@ func TestHandleFeePaidOnchainSweep(t *testing.T) {
 		IdempotencyKey: append([]byte(nil), sweepTxid[:]...),
 	}
 
-	err := a.handleFeePaid(ctx, msg)
+	err := run(ctx, a, msg)
 	require.NoError(t, err)
 
 	entries := store.getEntries()
@@ -249,7 +281,7 @@ func TestHandleFeePaidOnchainSweepRejectsZeroAmount(t *testing.T) {
 		BlockHeight: 800_700,
 	}
 
-	err := a.handleFeePaid(ctx, msg)
+	err := run(ctx, a, msg)
 	require.ErrorIs(t, err, ErrInvalidMessage)
 }
 
@@ -277,7 +309,7 @@ func TestHandleVTXOReceivedRoundBoarding(t *testing.T) {
 		},
 	}
 
-	err := a.handleVTXOReceived(ctx, msg)
+	err := run(ctx, a, msg)
 	require.NoError(t, err)
 
 	entries := store.getEntries()
@@ -329,7 +361,7 @@ func TestHandleVTXOReceivedRoundTransfer(t *testing.T) {
 		},
 	}
 
-	err := a.handleVTXOReceived(ctx, msg)
+	err := run(ctx, a, msg)
 	require.NoError(t, err)
 
 	entries := store.getEntries()
@@ -369,7 +401,7 @@ func TestHandleVTXOReceivedRoundRefresh(t *testing.T) {
 		},
 	}
 
-	err := a.handleVTXOReceived(ctx, msg)
+	err := run(ctx, a, msg)
 	require.NoError(t, err)
 
 	entries := store.getEntries()
@@ -411,8 +443,8 @@ func TestRefreshRoundNetsToFeeOnVTXOBalance(t *testing.T) {
 	// RoundID set.
 	require.NoError(
 		t,
-		a.handleVTXOSent(
-			ctx, &VTXOSentMsg{
+		run(
+			ctx, a, &VTXOSentMsg{
 				RoundID:   roundID,
 				AmountSat: gross,
 			},
@@ -422,8 +454,8 @@ func TestRefreshRoundNetsToFeeOnVTXOBalance(t *testing.T) {
 	// Leg 2: new VTXO materializes with Source=SourceRoundRefresh.
 	require.NoError(
 		t,
-		a.handleVTXOReceived(
-			ctx, &VTXOReceivedMsg{
+		run(
+			ctx, a, &VTXOReceivedMsg{
 				OutpointHash:  [32]byte{0x01},
 				OutpointIndex: 0,
 				AmountSat:     gross,
@@ -436,8 +468,8 @@ func TestRefreshRoundNetsToFeeOnVTXOBalance(t *testing.T) {
 	// Leg 3: the operator fee for the refresh round.
 	require.NoError(
 		t,
-		a.handleFeePaid(
-			ctx, &FeePaidMsg{
+		run(
+			ctx, a, &FeePaidMsg{
 				RoundID:     roundID,
 				AmountSat:   fee,
 				FeeType:     FeeTypeRefresh,
@@ -499,7 +531,7 @@ func TestHandleVTXOReceivedOOR(t *testing.T) {
 		},
 	}
 
-	err := a.handleVTXOReceived(ctx, msg)
+	err := run(ctx, a, msg)
 	require.NoError(t, err)
 
 	entries := store.getEntries()
@@ -527,7 +559,7 @@ func TestHandleVTXOSent(t *testing.T) {
 		AmountSat: 10_000,
 	}
 
-	err := a.handleVTXOSent(ctx, msg)
+	err := run(ctx, a, msg)
 	require.NoError(t, err)
 
 	entries := store.getEntries()
@@ -566,7 +598,7 @@ func TestHandleVTXOSentInRound(t *testing.T) {
 		AmountSat: 25_000,
 	}
 
-	err := a.handleVTXOSent(ctx, msg)
+	err := run(ctx, a, msg)
 	require.NoError(t, err)
 
 	entries := store.getEntries()
@@ -595,7 +627,7 @@ func TestHandleVTXOSentNeitherSet(t *testing.T) {
 		AmountSat: 1,
 	}
 
-	err := a.handleVTXOSent(ctx, msg)
+	err := run(ctx, a, msg)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrInvalidMessage)
 	require.Contains(t, err.Error(),
@@ -622,7 +654,7 @@ func TestHandleVTXOSentBothSet(t *testing.T) {
 		AmountSat: 1,
 	}
 
-	err := a.handleVTXOSent(ctx, msg)
+	err := run(ctx, a, msg)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrInvalidMessage)
 	require.Contains(
@@ -653,7 +685,12 @@ func TestHandleVTXOSendReceiveAreGross(t *testing.T) {
 			1,
 		},
 	}
-	require.NoError(t, a.handleVTXOReceived(ctx, recv))
+	require.NoError(
+		t,
+		run(
+			ctx, a, recv,
+		),
+	)
 
 	sent := &VTXOSentMsg{
 		SessionID: [32]byte{
@@ -661,7 +698,7 @@ func TestHandleVTXOSendReceiveAreGross(t *testing.T) {
 		},
 		AmountSat: 10_000,
 	}
-	require.NoError(t, a.handleVTXOSent(ctx, sent))
+	require.NoError(t, run(ctx, a, sent))
 
 	entries := store.getEntries()
 	require.Len(t, entries, 2)
@@ -694,7 +731,7 @@ func TestHandleExitCost(t *testing.T) {
 		BlockHeight:   800_500,
 	}
 
-	err := a.handleExitCost(ctx, msg)
+	err := run(ctx, a, msg)
 	require.NoError(t, err)
 
 	entries := store.getEntries()
@@ -744,7 +781,7 @@ func TestHandleExitCostFeeExceedsValue(t *testing.T) {
 		BlockHeight:   800_600,
 	}
 
-	err := a.handleExitCost(ctx, msg)
+	err := run(ctx, a, msg)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrInvalidMessage)
 	require.Contains(
@@ -828,7 +865,7 @@ func TestHandleExitCostWritesBothLegsWithSharedKey(t *testing.T) {
 		BlockHeight:   800_800,
 	}
 
-	err := a.handleExitCost(ctx, msg)
+	err := run(ctx, a, msg)
 	require.NoError(t, err)
 
 	entries := store.getEntries()
@@ -891,12 +928,12 @@ func TestHandleExitCostReplayIsIdempotent(t *testing.T) {
 	}
 
 	// First delivery persists both legs.
-	require.NoError(t, a.handleExitCost(ctx, msg))
+	require.NoError(t, run(ctx, a, msg))
 	require.Len(t, store.getEntries(), 2)
 
 	// Second delivery of the identical message is the
 	// at-least-once replay scenario. Row count must not grow.
-	require.NoError(t, a.handleExitCost(ctx, msg))
+	require.NoError(t, run(ctx, a, msg))
 	require.Len(
 		t, store.getEntries(), 2,
 		"replay must not double-book ledger entries",
@@ -908,7 +945,12 @@ func TestHandleExitCostReplayIsIdempotent(t *testing.T) {
 	// only on account pairs.
 	other := *msg
 	other.OutpointIndex = 8
-	require.NoError(t, a.handleExitCost(ctx, &other))
+	require.NoError(
+		t,
+		run(
+			ctx, a, &other,
+		),
+	)
 	require.Len(
 		t, store.getEntries(), 4,
 		"distinct outpoint must not be deduped",
@@ -983,7 +1025,9 @@ func TestHandleExitCostInvalidAmounts(t *testing.T) {
 				BlockHeight:   800_700,
 			}
 
-			err := a.handleExitCost(ctx, msg)
+			err := run(
+				ctx, a, msg,
+			)
 			require.Error(t, err)
 			require.ErrorIs(t, err, ErrInvalidMessage)
 			require.Contains(t, err.Error(), tc.contain)
@@ -1019,7 +1063,7 @@ func TestDBErrorDoesNotWrapErrInvalidMessage(t *testing.T) {
 		BlockHeight: 1,
 	}
 
-	err := a.handleFeePaid(t.Context(), msg)
+	err := run(t.Context(), a, msg)
 	require.Error(t, err)
 	require.ErrorIs(t, err, dbErr)
 	require.NotErrorIs(t, err, ErrInvalidMessage)
@@ -1061,11 +1105,13 @@ func TestHandleNonPositiveAmounts(t *testing.T) {
 			run: func(ctx context.Context, a *LedgerActor,
 				amt int64) error {
 
-				return a.handleFeePaid(ctx, &FeePaidMsg{
-					RoundID:   [16]byte{1},
-					AmountSat: amt,
-					FeeType:   FeeTypeBoarding,
-				})
+				return run(
+					ctx, a, &FeePaidMsg{
+						RoundID:   [16]byte{1},
+						AmountSat: amt,
+						FeeType:   FeeTypeBoarding,
+					},
+				)
 			},
 		},
 		{
@@ -1073,8 +1119,8 @@ func TestHandleNonPositiveAmounts(t *testing.T) {
 			run: func(ctx context.Context, a *LedgerActor,
 				amt int64) error {
 
-				return a.handleVTXOReceived(
-					ctx, &VTXOReceivedMsg{
+				return run(
+					ctx, a, &VTXOReceivedMsg{
 						OutpointHash: [32]byte{1},
 						AmountSat:    amt,
 						Source:       SourceOOR,
@@ -1087,8 +1133,8 @@ func TestHandleNonPositiveAmounts(t *testing.T) {
 			run: func(ctx context.Context, a *LedgerActor,
 				amt int64) error {
 
-				return a.handleVTXOSent(
-					ctx, &VTXOSentMsg{
+				return run(
+					ctx, a, &VTXOSentMsg{
 						SessionID: [32]byte{1},
 						AmountSat: amt,
 					},
@@ -1184,7 +1230,7 @@ func TestHandleFeePaidUnknownType(t *testing.T) {
 		BlockHeight: 800_000,
 	}
 
-	err := a.handleFeePaid(ctx, msg)
+	err := run(ctx, a, msg)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrInvalidMessage)
 	require.Contains(t, err.Error(), "unknown fee type")
@@ -1216,7 +1262,7 @@ func TestHandleVTXOReceivedUnknownSource(t *testing.T) {
 		},
 	}
 
-	err := a.handleVTXOReceived(ctx, msg)
+	err := run(ctx, a, msg)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrInvalidMessage)
 	require.Contains(t, err.Error(), "unknown vtxo source")
@@ -1248,7 +1294,7 @@ func TestHandleUTXOCreated(t *testing.T) {
 		Classification: ClassificationDeposit,
 	}
 
-	err := a.handleUTXOCreated(ctx, msg)
+	err := run(ctx, a, msg)
 	require.NoError(t, err)
 
 	// Audit-log side: the wallet_utxo_log row is still written.
@@ -1297,13 +1343,15 @@ func TestHandleUTXOCreatedRejectsNonPositive(t *testing.T) {
 	ctx := t.Context()
 
 	for _, amt := range []int64{0, -1, -50_000} {
-		err := a.handleUTXOCreated(ctx, &UTXOCreatedMsg{
-			OutpointHash:   [32]byte{0xde},
-			OutpointIndex:  0,
-			AmountSat:      amt,
-			BlockHeight:    800_000,
-			Classification: ClassificationDeposit,
-		})
+		err := run(
+			ctx, a, &UTXOCreatedMsg{
+				OutpointHash:   [32]byte{0xde},
+				OutpointIndex:  0,
+				AmountSat:      amt,
+				BlockHeight:    800_000,
+				Classification: ClassificationDeposit,
+			},
+		)
 		require.ErrorIs(t, err, ErrInvalidMessage)
 	}
 
@@ -1330,7 +1378,7 @@ func TestHandleUTXOSpent(t *testing.T) {
 		Classification: ClassificationRoundFunding,
 	}
 
-	err := a.handleUTXOSpent(ctx, msg)
+	err := run(ctx, a, msg)
 	require.NoError(t, err)
 
 	entries := auditStore.getEntries()
@@ -1372,8 +1420,8 @@ func TestBoardingRoundNetsToOpeningBalanceAndVTXO(t *testing.T) {
 	// Leg 1: wallet UTXO confirms.
 	require.NoError(
 		t,
-		a.handleUTXOCreated(
-			ctx, &UTXOCreatedMsg{
+		run(
+			ctx, a, &UTXOCreatedMsg{
 				OutpointHash:   outpoint,
 				OutpointIndex:  3,
 				AmountSat:      amount,
@@ -1387,8 +1435,8 @@ func TestBoardingRoundNetsToOpeningBalanceAndVTXO(t *testing.T) {
 	// VTXO with Source=SourceRoundBoarding.
 	require.NoError(
 		t,
-		a.handleVTXOReceived(
-			ctx, &VTXOReceivedMsg{
+		run(
+			ctx, a, &VTXOReceivedMsg{
 				OutpointHash:  [32]byte{0x22},
 				OutpointIndex: 0,
 				AmountSat:     amount,
@@ -1450,7 +1498,7 @@ func TestHandleUTXOCreatedNoAuditStore(t *testing.T) {
 	}
 
 	// Should not error even without UTXOAuditStore.
-	err := a.handleUTXOCreated(ctx, msg)
+	err := run(ctx, a, msg)
 	require.NoError(t, err)
 }
 

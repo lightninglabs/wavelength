@@ -253,7 +253,12 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 	)
 	durableCfg.Log = cfg.Log
 
-	durable := actor.NewDurableActor(durableCfg)
+	durable, err := actor.NewDurableActor(durableCfg).Unpack()
+	if err != nil {
+		actorRef.startupErr = err
+
+		return actorRef
+	}
 	actorRef.durable = durable
 	actorRef.ref = durable.Ref()
 

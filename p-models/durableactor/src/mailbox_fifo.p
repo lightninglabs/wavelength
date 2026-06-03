@@ -77,12 +77,36 @@ type DurableMailboxDeadLetterReq = (
     id: int
 );
 
+// DurableMailboxCommitReq models the durable actor's Read/Commit consume step.
+// A behavior does its side-effect IO outside the writer transaction (the gap
+// between leasing the row and committing here), then Commit folds the behavior
+// effect, the dedup mark, and the lease-fenced ack into one atomic unit.
+//
+// `fenced` distinguishes the two designs:
+//
+//   * LeaseFencedCommit (fenced = true): the production Read/Commit path. The
+//     effect is applied only when the lease token still matches, atomically
+//     with the ack. A consumer whose lease expired and whose row was reclaimed
+//     applies nothing (ErrLeaseLost is a no-op).
+//
+//   * Unfenced (fenced = false): the counterexample. The effect is applied
+//     regardless of the lease token -- modeling a behavior whose domain write
+//     is not bound to the fenced ack -- so a stale consumer double-applies the
+//     effect under reclaim.
+type DurableMailboxCommitReq = (
+    reply_to: machine,
+    id: int,
+    lease_token: int,
+    fenced: bool
+);
+
 event eDurableMailboxEnqueue: DurableMailboxEnqueueReq;
 event eDurableMailboxLeaseNext: DurableMailboxLeaseNextReq;
 event eDurableMailboxAck: DurableMailboxTokenReq;
 event eDurableMailboxNack: DurableMailboxNackReq;
 event eDurableMailboxExpireLeasesAt: int;
 event eDurableMailboxDeadLetter: DurableMailboxDeadLetterReq;
+event eDurableMailboxCommit: DurableMailboxCommitReq;
 
 event eDurableMailboxOpResp: (int, DurableMailboxOpResult);
 event eDurableMailboxLeaseResp: (int, DurableMailboxOpResult);
@@ -103,6 +127,14 @@ event eDurableMailboxLeaseResp: (int, DurableMailboxOpResult);
 event eDurableMailboxClaimed: (machine, int, int, int);
 event eDurableMailboxRowEnqueued: (machine, int, int, int, int, int);
 event eDurableMailboxRowRemoved: (machine, int);
+
+// eDurableMailboxEffectApplied is announced when a Read/Commit consumer's
+// behavior effect is durably applied during Commit. It carries the announcing
+// mailbox machine and the row id: (mbox, id). The
+// LeaseFencedCommitAppliesEffectAtMostOnce monitor uses it to assert the effect
+// for any one row is applied at most once across the run, even when the row's
+// lease expires mid-IO and the row is reclaimed and reprocessed.
+event eDurableMailboxEffectApplied: (machine, int);
 
 // eMailboxWorkArrived and eMailboxWorkDrained are emitted only by the liveness
 // driver to feed the non-starvation liveness monitor. Keeping them distinct
@@ -525,6 +557,59 @@ machine DurableMailboxSpec {
             send req.reply_to, eDurableMailboxOpResp,
                 (req.id, MailboxOpOk);
         }
+
+        // Commit models the durable actor's Read/Commit consume step: the
+        // behavior effect, the dedup mark, and the lease-fenced ack land as one
+        // atomic unit. The effect is announced (eDurableMailboxEffectApplied)
+        // and the row is consumed (removed) per the design selected by
+        // req.fenced.
+        //
+        // The ack itself ALWAYS validates the lease token, mirroring the
+        // production ack `DELETE ... WHERE id AND lease_token`: a stale owner
+        // can never consume the row. Under the fenced design the effect is gated
+        // on the same token check, so it commits atomically with the ack and a
+        // stale owner applies nothing. Under the unfenced (counterexample)
+        // design the effect is applied even when the token is stale, so a
+        // reclaimed-and-reprocessed row gets its effect applied twice -- the bug
+        // the lease fence exists to prevent.
+        on eDurableMailboxCommit do (req: DurableMailboxCommitReq) {
+            var row: MailboxRow;
+            var tokenOk: bool;
+
+            // A missing row means it was already consumed (e.g. a reclaimer
+            // committed first). The model deliberately reports this as
+            // MailboxOpNotFound rather than the MailboxOpTokenMismatch of the
+            // stale-but-present case below; the production ack collapses both
+            // into a single 0-row DELETE -> ErrLeaseLost. The distinction is
+            // cosmetic for safety: both are effect no-ops (neither reaches the
+            // effect announce), so the at-most-once contract holds identically.
+            if (!RowExists(rows, req.id)) {
+                send req.reply_to, eDurableMailboxOpResp,
+                    (req.id, MailboxOpNotFound);
+                return;
+            }
+
+            row = RowByID(rows, req.id);
+            tokenOk = TokenMatches(row, req.lease_token);
+
+            if (tokenOk || !req.fenced) {
+                announce eDurableMailboxEffectApplied, (this, req.id);
+            }
+
+            if (tokenOk) {
+                rows = RemoveMailboxRow(rows, req.id);
+                announce eDurableMailboxRowRemoved, (this, req.id);
+                send req.reply_to, eDurableMailboxOpResp,
+                    (req.id, MailboxOpOk);
+                return;
+            }
+
+            // Stale token: the ack fenced the consume out. Under the fenced
+            // design no effect was applied above; this is the ErrLeaseLost
+            // no-op.
+            send req.reply_to, eDurableMailboxOpResp,
+                (req.id, MailboxOpTokenMismatch);
+        }
     }
 }
 
@@ -634,6 +719,35 @@ spec MailboxKeyedWorkEventuallyDrains observes
             if (outstanding == 0) {
                 goto Idle;
             }
+        }
+    }
+}
+
+// LeaseFencedCommitAppliesEffectAtMostOnce is the safety contract for the
+// durable actor's Read/Commit consume step. The Read/Commit path lets a
+// behavior do side-effect IO outside the writer transaction, so the row's lease
+// can expire mid-IO and the row can be reclaimed and reprocessed by a second
+// consumer. The lease fence (the token-validated ack that the behavior effect
+// commits atomically with) must ensure the effect is applied at most once
+// across the whole run, regardless of how many consumers processed the row.
+//
+// The monitor namespaces state by (mbox, id) because one test case can spin up
+// several DurableMailboxSpec machines that reuse row ids. It catches the
+// unfenced design directly: a stale consumer that applies its effect after the
+// row was reclaimed announces a second eDurableMailboxEffectApplied for the same
+// (mbox, id), tripping the assertion with no in-machine check required.
+spec LeaseFencedCommitAppliesEffectAtMostOnce observes
+    eDurableMailboxEffectApplied {
+
+    var applied: map[(machine, int), bool];
+
+    start state Monitoring {
+        on eDurableMailboxEffectApplied do (effect: (machine, int)) {
+            assert !(effect in applied),
+                "lease-fenced commit applied a message effect more than "+
+                "once (a stale owner committed after the row was reclaimed)";
+
+            applied[effect] = true;
         }
     }
 }

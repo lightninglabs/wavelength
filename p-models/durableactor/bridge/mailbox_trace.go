@@ -1,8 +1,10 @@
 package bridge
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +18,15 @@ import (
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
 	_ "modernc.org/sqlite"
+)
+
+// commitActorID and commitDedupTTL are the dedup-mark identity and retention a
+// commit trace op writes via MarkProcessed inside the fenced commit
+// transaction. They live at package scope so any future trace op that also
+// records dedup state shares the same actor id and TTL as commit.
+const (
+	commitActorID  = "model.TraceActor"
+	commitDedupTTL = time.Hour
 )
 
 // MailboxTrace is a model trace that can be replayed against the real durable
@@ -53,6 +64,12 @@ type MailboxTraceEvent struct {
 	// assert that intent at the enqueue step itself, rather than relying
 	// solely on a downstream lease assertion to observe the no-op.
 	ExpectDuplicate bool `json:"expect_duplicate,omitempty"`
+
+	// ExpectProcessed asserts the dedup state of the row after a commit op.
+	// A fenced commit that consumes the row marks it processed; a stale
+	// (ErrLeaseLost) commit rolls the dedup mark back, leaving it
+	// unprocessed. Nil leaves the dedup state unchecked.
+	ExpectProcessed *bool `json:"expect_processed,omitempty"`
 }
 
 // ParseMailboxTrace parses one mailbox model trace from disk.
@@ -142,6 +159,9 @@ func ReplayMailboxTrace(t *testing.T, trace *MailboxTrace) {
 
 		case "ack":
 			replayAck(t, store, event)
+
+		case "commit":
+			replayCommit(t, store, event)
 
 		case "dead_letter":
 			replayDeadLetter(t, store, event)
@@ -264,6 +284,70 @@ func replayAck(t *testing.T, store actor.TxAwareDeliveryStore,
 	)
 	requireNoError(t, err)
 	requireExpectedRows(t, rows, event, "ack")
+}
+
+// replayCommit models the durable actor's Read/Commit consume step against the
+// real store, mirroring execCore.commit in baselib/actor: inside one writer
+// transaction it fence-acks the row (DELETE ... WHERE id AND lease_token) and,
+// only when that ack consumed a row, records the dedup mark. A zero-row ack
+// means the lease was reclaimed mid-IO, so the transaction is rolled back with
+// ErrLeaseLost and nothing (ack or dedup mark) is applied. This keeps the P
+// commit-fence model tied to the SQL exactly-once mechanism.
+func replayCommit(t *testing.T, store actor.TxAwareDeliveryStore,
+	event MailboxTraceEvent) {
+
+	t.Helper()
+
+	var rows int64
+	err := store.ExecTx(
+		t.Context(), false,
+		func(txCtx context.Context, s actor.DeliveryStore) error {
+			var ackErr error
+			rows, ackErr = s.AckMessage(
+				txCtx, event.ID, event.LeaseToken,
+			)
+			if ackErr != nil {
+				return ackErr
+			}
+
+			// Fence: a zero-row ack means the lease was lost. Abort
+			// so the dedup mark (and, in production, the behavior's
+			// domain writes) roll back atomically with the failed
+			// consume.
+			if rows == 0 {
+				return actor.ErrLeaseLost
+			}
+
+			return s.MarkProcessed(
+				txCtx, event.ID, commitActorID, commitDedupTTL,
+			)
+		},
+	)
+
+	// A fenced commit either consumes the row (rows == 1, no error) or is a
+	// lease-lost no-op (rows == 0, ErrLeaseLost, fully rolled back).
+	if rows == 0 {
+		if !errors.Is(err, actor.ErrLeaseLost) {
+			t.Fatalf("commit of %s with a stale lease expected "+
+				"ErrLeaseLost, got %v", event.ID, err)
+		}
+	} else {
+		requireNoError(t, err)
+	}
+
+	requireExpectedRows(t, rows, event, "commit")
+
+	// The dedup mark is the bridge's analog of the behavior effect: it is
+	// folded into the same transaction as the ack, so a stale commit leaves
+	// the row unprocessed while a successful commit marks it exactly once.
+	if event.ExpectProcessed != nil {
+		processed, perr := store.IsProcessed(t.Context(), event.ID)
+		requireNoError(t, perr)
+		if processed != *event.ExpectProcessed {
+			t.Fatalf("commit of %s: expected processed=%v, got %v",
+				event.ID, *event.ExpectProcessed, processed)
+		}
+	}
 }
 
 func replayDeadLetter(t *testing.T, store actor.TxAwareDeliveryStore,

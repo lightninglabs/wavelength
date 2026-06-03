@@ -855,6 +855,180 @@ machine MailboxLivenessDriver {
     state Done {}
 }
 
+// TestDurableMailboxSpec_LeaseFencedCommitExactlyOnce drives the durable
+// actor's Read/Commit consume step under lease expiry mid-IO. Consumer A leases
+// the row and begins its side-effect IO; while it is off doing IO the lease
+// expires and consumer B reclaims and reprocesses the same row. A's stale
+// fenced Commit must be an ErrLeaseLost no-op (token mismatch, no effect), and
+// only B's fenced Commit applies the effect and consumes the row. The
+// LeaseFencedCommitAppliesEffectAtMostOnce monitor confirms the effect is
+// applied exactly once across both consumers.
+machine TestDurableMailboxSpec_LeaseFencedCommitExactlyOnce {
+    var mailbox: DurableMailboxSpec;
+
+    start state Init {
+        entry {
+            var op_resp: (int, DurableMailboxOpResult);
+            var lease_resp: (int, DurableMailboxOpResult);
+
+            mailbox = new DurableMailboxSpec(PerCorrelationKeyFIFO);
+
+            send mailbox, eDurableMailboxEnqueue, (
+                reply_to = this,
+                row = NewMailboxRow(
+                    1, 10, 100, 0, 0, NoLease(), NoLeaseToken(), 0, 3, 0
+                )
+            );
+            receive { case eDurableMailboxOpResp:
+                (r0: (int, DurableMailboxOpResult)) { op_resp = r0; }
+            }
+            assert op_resp.1 == MailboxOpOk, "enqueue succeeds";
+
+            // Consumer A leases the row (token 11), then begins IO.
+            send mailbox, eDurableMailboxLeaseNext, (
+                reply_to = this, mailbox_id = 10, lease_token = 11,
+                now = 0, lease_duration = 5
+            );
+            receive { case eDurableMailboxLeaseResp:
+                (r1: (int, DurableMailboxOpResult)) { lease_resp = r1; }
+            }
+            assert lease_resp.0 == 1 && lease_resp.1 == MailboxOpOk,
+                "consumer A leases the row";
+
+            // A's lease expires mid-IO; consumer B reclaims the same durable
+            // row and reprocesses it.
+            send mailbox, eDurableMailboxExpireLeasesAt, 6;
+            send mailbox, eDurableMailboxLeaseNext, (
+                reply_to = this, mailbox_id = 10, lease_token = 22,
+                now = 6, lease_duration = 5
+            );
+            receive { case eDurableMailboxLeaseResp:
+                (r2: (int, DurableMailboxOpResult)) { lease_resp = r2; }
+            }
+            assert lease_resp.0 == 1 && lease_resp.1 == MailboxOpOk,
+                "consumer B reclaims the same row after lease expiry";
+
+            // A finishes its IO and commits with its now-stale token: the lease
+            // fence rejects it and no effect is applied.
+            send mailbox, eDurableMailboxCommit, (
+                reply_to = this, id = 1, lease_token = 11, fenced = true
+            );
+            receive { case eDurableMailboxOpResp:
+                (r3: (int, DurableMailboxOpResult)) { op_resp = r3; }
+            }
+            assert op_resp.1 == MailboxOpTokenMismatch,
+                "stale consumer A commit is an ErrLeaseLost no-op";
+
+            // B commits with the current token: effect applied, row consumed.
+            send mailbox, eDurableMailboxCommit, (
+                reply_to = this, id = 1, lease_token = 22, fenced = true
+            );
+            receive { case eDurableMailboxOpResp:
+                (r4: (int, DurableMailboxOpResult)) { op_resp = r4; }
+            }
+            assert op_resp.1 == MailboxOpOk,
+                "current owner B commits and consumes the row";
+
+            // The committed row is terminal: no further redelivery.
+            send mailbox, eDurableMailboxLeaseNext, (
+                reply_to = this, mailbox_id = 10, lease_token = 33,
+                now = 6, lease_duration = 5
+            );
+            receive { case eDurableMailboxLeaseResp:
+                (r5: (int, DurableMailboxOpResult)) { lease_resp = r5; }
+            }
+            assert lease_resp.1 == MailboxOpNotFound,
+                "committed row is terminal";
+
+            // A late commit for the already-consumed row hits the missing-row
+            // branch: it must be a no-op (no second effect). This exercises the
+            // MailboxOpNotFound path the reclaim-after-consume case takes, and
+            // the LeaseFencedCommitAppliesEffectAtMostOnce monitor confirms it
+            // applies no effect.
+            send mailbox, eDurableMailboxCommit, (
+                reply_to = this, id = 1, lease_token = 22, fenced = true
+            );
+            receive { case eDurableMailboxOpResp:
+                (r6: (int, DurableMailboxOpResult)) { op_resp = r6; }
+            }
+            assert op_resp.1 == MailboxOpNotFound,
+                "commit of an already-consumed row is a not-found no-op";
+
+            goto Done;
+        }
+    }
+
+    state Done {}
+}
+
+// TestDurableMailboxSpec_UnfencedCommitDoubleApplyCounterexample drives the same
+// reclaim scenario but with UNFENCED commits, modeling a behavior whose domain
+// write is not bound to the lease-fenced ack. Consumer A's stale commit applies
+// its effect even though its lease expired, then consumer B applies the effect
+// again -- a double-apply. There is no in-machine assertion for the
+// double-apply: it is raised solely by LeaseFencedCommitAppliesEffectAtMostOnce,
+// proving the monitor catches the exact bug the lease fence prevents.
+machine TestDurableMailboxSpec_UnfencedCommitDoubleApplyCounterexample {
+    var mailbox: DurableMailboxSpec;
+
+    start state Init {
+        entry {
+            var op_resp: (int, DurableMailboxOpResult);
+            var lease_resp: (int, DurableMailboxOpResult);
+
+            mailbox = new DurableMailboxSpec(PerCorrelationKeyFIFO);
+
+            send mailbox, eDurableMailboxEnqueue, (
+                reply_to = this,
+                row = NewMailboxRow(
+                    1, 10, 100, 0, 0, NoLease(), NoLeaseToken(), 0, 3, 0
+                )
+            );
+            receive { case eDurableMailboxOpResp:
+                (r0: (int, DurableMailboxOpResult)) { op_resp = r0; }
+            }
+
+            send mailbox, eDurableMailboxLeaseNext, (
+                reply_to = this, mailbox_id = 10, lease_token = 11,
+                now = 0, lease_duration = 5
+            );
+            receive { case eDurableMailboxLeaseResp:
+                (r1: (int, DurableMailboxOpResult)) { lease_resp = r1; }
+            }
+
+            send mailbox, eDurableMailboxExpireLeasesAt, 6;
+            send mailbox, eDurableMailboxLeaseNext, (
+                reply_to = this, mailbox_id = 10, lease_token = 22,
+                now = 6, lease_duration = 5
+            );
+            receive { case eDurableMailboxLeaseResp:
+                (r2: (int, DurableMailboxOpResult)) { lease_resp = r2; }
+            }
+
+            // Stale consumer A commits unfenced: the effect is applied despite
+            // the expired-and-reclaimed lease.
+            send mailbox, eDurableMailboxCommit, (
+                reply_to = this, id = 1, lease_token = 11, fenced = false
+            );
+            receive { case eDurableMailboxOpResp:
+                (r3: (int, DurableMailboxOpResult)) { op_resp = r3; }
+            }
+
+            // Consumer B commits unfenced: the effect is applied a second time.
+            send mailbox, eDurableMailboxCommit, (
+                reply_to = this, id = 1, lease_token = 22, fenced = false
+            );
+            receive { case eDurableMailboxOpResp:
+                (r4: (int, DurableMailboxOpResult)) { op_resp = r4; }
+            }
+
+            goto Done;
+        }
+    }
+
+    state Done {}
+}
+
 machine MailboxFIFOTestDriver {
     start state RunTests {
         entry {
@@ -916,3 +1090,21 @@ test tcMailboxMonitorCatchesLegacyReorder
     [main=TestMailboxFIFO_LegacyReorderNoInlineAssert]:
   assert SameKeyFIFOClaimsRespectLiveHead in
   { DurableMailboxSpec, TestMailboxFIFO_LegacyReorderNoInlineAssert };
+
+// tcMailboxReadCommitFence checks the durable actor Read/Commit exactly-once
+// effect contract: a row whose lease expires mid-IO is reclaimed and
+// reprocessed, the stale consumer's lease-fenced commit is an ErrLeaseLost
+// no-op, and the behavior effect is applied exactly once.
+test tcMailboxReadCommitFence
+    [main=TestDurableMailboxSpec_LeaseFencedCommitExactlyOnce]:
+  assert LeaseFencedCommitAppliesEffectAtMostOnce in
+  { DurableMailboxSpec, TestDurableMailboxSpec_LeaseFencedCommitExactlyOnce };
+
+// tcMailboxUnfencedCommitCounterexample runs the reclaim scenario with unfenced
+// commits and no in-machine assertion, so the double-apply is raised solely by
+// LeaseFencedCommitAppliesEffectAtMostOnce. It is expected to find a bug.
+test tcMailboxUnfencedCommitCounterexample
+    [main=TestDurableMailboxSpec_UnfencedCommitDoubleApplyCounterexample]:
+  assert LeaseFencedCommitAppliesEffectAtMostOnce in
+  { DurableMailboxSpec,
+    TestDurableMailboxSpec_UnfencedCommitDoubleApplyCounterexample };

@@ -236,7 +236,7 @@ func TestDurableActorCreation(t *testing.T) {
 	behavior := newMockBehavior(fn.Ok(42))
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	require.NotNil(t, actor)
 	require.Equal(t, "test-actor", actor.id)
@@ -255,7 +255,7 @@ func TestDurableActorStartStop(t *testing.T) {
 	behavior := newMockBehavior(fn.Ok(42))
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	// Start should be idempotent.
 	actor.Start()
@@ -282,7 +282,7 @@ func TestDurableActorTellProcessing(t *testing.T) {
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.PollInterval = 10 * time.Millisecond
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	defer actor.Stop()
@@ -328,7 +328,7 @@ func TestDurableActorTellIgnoresCallerContextAfterEnqueue(t *testing.T) {
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.PollInterval = 10 * time.Millisecond
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	msg := &actorTestMsg{
 		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
@@ -373,7 +373,7 @@ func TestDurableActorAskRespectsCallerContextAfterEnqueue(t *testing.T) {
 	}
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	askCtx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -421,7 +421,7 @@ func TestDurableActorAskProcessing(t *testing.T) {
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.PollInterval = 10 * time.Millisecond
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	defer actor.Stop()
@@ -456,7 +456,7 @@ func TestDurableActorAskWithError(t *testing.T) {
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.PollInterval = 10 * time.Millisecond
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	defer actor.Stop()
@@ -488,7 +488,7 @@ func TestDurableActorDeduplication(t *testing.T) {
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.PollInterval = 10 * time.Millisecond
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	defer actor.Stop()
@@ -560,7 +560,7 @@ func TestDurableActorPanicRecovery(t *testing.T) {
 		return false, 0
 	}
 
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	defer actor.Stop()
@@ -607,7 +607,7 @@ func TestDurableActorTellRetryPolicy(t *testing.T) {
 		return true, 10 * time.Millisecond
 	}
 
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	defer actor.Stop()
@@ -645,7 +645,7 @@ func TestDurableActorTransactionWrapping(t *testing.T) {
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.PollInterval = 10 * time.Millisecond
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	defer actor.Stop()
@@ -678,7 +678,7 @@ func TestDurableActorTransactionFailure(t *testing.T) {
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.PollInterval = 10 * time.Millisecond
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	msg := &actorTestMsg{
 		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
@@ -742,7 +742,7 @@ func TestDurableActorStoppableBehavior(t *testing.T) {
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.CleanupTimeout = 1 * time.Second
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	time.Sleep(10 * time.Millisecond)
@@ -763,7 +763,7 @@ func TestDurableActorRef(t *testing.T) {
 	behavior := newMockBehavior(fn.Ok(42))
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	ref := actor.Ref()
 	require.NotNil(t, ref)
@@ -783,7 +783,7 @@ func TestDurableActorTellToTerminatedActor(t *testing.T) {
 	behavior := newMockBehavior(fn.Ok(42))
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	actor.Stop()
@@ -812,7 +812,7 @@ func TestDurableActorTellPreservesMailboxError(t *testing.T) {
 	behavior := newMockBehavior(fn.Ok(42))
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	// Leave the actor stopped so Tell exercises only durable enqueue error
 	// propagation, not mailbox receive-loop processing.
@@ -839,7 +839,7 @@ func TestDurableActorAskToTerminatedActor(t *testing.T) {
 	behavior := newMockBehavior(fn.Ok(42))
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	actor.Stop()
@@ -871,7 +871,7 @@ func TestDurableActorWithWaitGroup(t *testing.T) {
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.Wg = &wg
 
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	actor.Stop()
@@ -978,7 +978,7 @@ func TestDurableActorRapid_DeduplicationIdempotent(t *testing.T) {
 			"test-actor", behavior, store, codec,
 		)
 		cfg.PollInterval = 1 * time.Millisecond
-		actor := NewDurableActor(cfg)
+		actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 		actor.Start()
 		defer actor.Stop()
@@ -990,23 +990,37 @@ func TestDurableActorRapid_DeduplicationIdempotent(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		err := actor.Ref().Tell(ctx, msg)
+		require.NoError(rt, actor.Ref().Tell(ctx, msg))
+
+		// Wait until the message is FULLY processed before reading the
+		// processed ID: the behavior ran (callCount==1), the dedup mark
+		// is recorded, and the original mailbox row is acked. Waiting
+		// on all three closes the race where the dedup mark is not yet
+		// written when we grab the ID -- reading too early yields an
+		// empty ID, re-enqueues a different message, and spuriously
+		// processes it twice (the source of the prior rapid flakiness).
+		var processedID string
+		require.Eventually(rt, func() bool {
+			store.mu.Lock()
+			defer store.mu.Unlock()
+
+			if callCount.Load() != 1 || len(store.processed) != 1 ||
+				len(store.messages) != 0 {
+				return false
+			}
+
+			for id := range store.processed {
+				processedID = id
+			}
+
+			return true
+		}, time.Second, 5*time.Millisecond)
+
+		// Re-enqueue a message reusing the already-processed ID.
+		payload, err := codec.Encode(msg)
 		require.NoError(rt, err)
 
-		// Wait for first processing.
-		require.Eventually(rt, func() bool {
-			return callCount.Load() == 1
-		}, 500*time.Millisecond, 5*time.Millisecond)
-
-		// Get processed ID.
 		store.mu.Lock()
-		var processedID string
-		for id := range store.processed {
-			processedID = id
-			break
-		}
-		payload, _ := codec.Encode(msg)
-		// Re-enqueue same ID.
 		store.messages[processedID] = &LeasedMessage{
 			ID:          processedID,
 			MailboxID:   "test-actor",
@@ -1024,12 +1038,11 @@ func TestDurableActorRapid_DeduplicationIdempotent(t *testing.T) {
 		default:
 		}
 
-		// Wait and verify still only 1 call.
-		time.Sleep(50 * time.Millisecond)
-		require.Equal(
-			rt, int32(1), callCount.Load(),
-			"duplicate message should be skipped",
-		)
+		// The duplicate must never be processed: dedup keeps callCount
+		// pinned at 1 across the whole window.
+		require.Never(rt, func() bool {
+			return callCount.Load() != 1
+		}, 200*time.Millisecond, 5*time.Millisecond)
 	})
 }
 
@@ -1047,7 +1060,7 @@ func TestDurableActorRapid_AckAfterSuccess(t *testing.T) {
 			"test-actor", behavior, store, codec,
 		)
 		cfg.PollInterval = 1 * time.Millisecond
-		actor := NewDurableActor(cfg)
+		actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 		actor.Start()
 		defer actor.Stop()
@@ -1110,7 +1123,7 @@ func TestDurableActorRapid_NackAfterFailure(t *testing.T) {
 			return true, 1 * time.Millisecond
 		}
 
-		actor := NewDurableActor(cfg)
+		actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 		actor.Start()
 		defer actor.Stop()
@@ -1164,7 +1177,7 @@ func TestDurableActorRapid_ConcurrentTellSafe(t *testing.T) {
 			"test-actor", behavior, store, codec,
 		)
 		cfg.PollInterval = 1 * time.Millisecond
-		actor := NewDurableActor(cfg)
+		actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 		actor.Start()
 		defer actor.Stop()
@@ -1214,7 +1227,7 @@ func TestDurableAskValidation(t *testing.T) {
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.PollInterval = 10 * time.Millisecond
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	defer actor.Stop()
@@ -1283,7 +1296,7 @@ func TestDurableAskToStoppedActor(t *testing.T) {
 	behavior := newMockBehavior(fn.Ok(42))
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	actor.Stop()
@@ -1322,7 +1335,7 @@ func TestDurableActorWithTxAwareStore(t *testing.T) {
 			"test-actor", behavior, store, codec,
 		)
 		cfg.PollInterval = 10 * time.Millisecond
-		actor := NewDurableActor(cfg)
+		actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 		actor.Start()
 		defer actor.Stop()
@@ -1357,7 +1370,7 @@ func TestDurableActorWithTxAwareStore(t *testing.T) {
 			"test-actor", behavior, store, codec,
 		)
 		cfg.PollInterval = 10 * time.Millisecond
-		actor := NewDurableActor(cfg)
+		actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 		actor.Start()
 		defer actor.Stop()
@@ -1396,7 +1409,7 @@ func TestDurableActorWithTxAwareStore(t *testing.T) {
 			"test-actor", behavior, store, codec,
 		)
 		cfg.PollInterval = 10 * time.Millisecond
-		actor := NewDurableActor(cfg)
+		actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 		actor.Start()
 		defer actor.Stop()
@@ -1471,7 +1484,7 @@ func TestDurableAskNacksOnOutboxWriteFailure(t *testing.T) {
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.PollInterval = 10 * time.Millisecond
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 
@@ -1629,7 +1642,7 @@ func TestPromiseCompletionDeferredInTxPath(t *testing.T) {
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.PollInterval = 10 * time.Millisecond
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	defer actor.Stop()
@@ -1667,7 +1680,7 @@ func TestPromiseNotCompletedOnTxFailure(t *testing.T) {
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.PollInterval = 10 * time.Millisecond
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	defer actor.Stop()
@@ -1854,7 +1867,7 @@ func TestDurableAskWithExpiredContext(t *testing.T) {
 	behavior.setDelay(5 * time.Second)
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	defer actor.Stop()
@@ -1939,7 +1952,7 @@ func TestTxPathDeferPromisePropagatedToTxDelivery(t *testing.T) {
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.PollInterval = 10 * time.Millisecond
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	defer actor.Stop()
@@ -1995,7 +2008,7 @@ func TestTxDurableAskDoesNotRetryAfterOutboxWrite(t *testing.T) {
 
 	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
 	cfg.PollInterval = 10 * time.Millisecond
-	actor := NewDurableActor(cfg)
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
 	defer actor.Stop()

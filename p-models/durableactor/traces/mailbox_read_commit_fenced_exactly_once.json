@@ -1,0 +1,45 @@
+{
+  "trace_id": "mailbox_read_commit_fenced_exactly_once",
+  "description": "Read/Commit consume under lease expiry mid-IO. Consumer A leases the row and begins IO; its lease expires and consumer B reclaims and reprocesses the same row. A's stale fenced commit is an ErrLeaseLost no-op (0 rows, dedup mark rolled back), and only B's fenced commit consumes the row and marks it processed, so the message is consumed exactly once.",
+  "events": [
+    {
+      "op": "enqueue",
+      "id": "1",
+      "mailbox_id": "mb-1",
+      "available_at": 0,
+      "max_attempts": 3
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "mb-1",
+      "lease_token": "tok-A",
+      "expect_id": "1",
+      "now": 0
+    },
+    {
+      "op": "expire_leases",
+      "now": 120
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "mb-1",
+      "lease_token": "tok-B",
+      "expect_id": "1",
+      "now": 120
+    },
+    {
+      "op": "commit",
+      "id": "1",
+      "lease_token": "tok-A",
+      "expect_rows": 0,
+      "expect_processed": false
+    },
+    {
+      "op": "commit",
+      "id": "1",
+      "lease_token": "tok-B",
+      "expect_rows": 1,
+      "expect_processed": true
+    }
+  ]
+}
