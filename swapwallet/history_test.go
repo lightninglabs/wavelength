@@ -530,6 +530,62 @@ func TestHistoryHidesPayFundingOORInput(t *testing.T) {
 	require.Equal(t, int64(-1_234), entries[0].GetAmountSat())
 }
 
+// TestHistoryHidesPayFundingOORInputWithoutChange confirms wallet activity
+// hides a pay-swap funding send even when the selected input exactly matches
+// the vHTLC amount and therefore produces no wallet change row.
+func TestHistoryHidesPayFundingOORInputWithoutChange(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+
+	sessionID := testBytes(32, 0x22)
+	sessionHex := testSessionString(t, sessionID)
+
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: "payment-hash",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_PAY,
+				State: swapclientrpc.
+					SwapState_SWAP_STATE_REFUNDED,
+				AmountSat:        42_000,
+				UpdatedAtUnix:    200,
+				FundingSessionId: sessionHex,
+			},
+		},
+	}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:           "oor",
+				Subtype:        ledger.EventVTXOSent,
+				AmountSat:      42_000,
+				DebitAccount:   ledger.AccountTransfersOut,
+				CreditAccount:  ledger.AccountVTXOBalance,
+				SessionId:      sessionID,
+				EntryId:        15,
+				CreatedAtUnixS: 100,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "payment-hash", entries[0].GetId())
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, entries[0].GetKind(),
+	)
+	require.Equal(t, int64(-42_000), entries[0].GetAmountSat())
+	require.Equal(
+		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDED,
+		entries[0].GetProgress().GetPhase(),
+	)
+}
+
 // TestHistoryHidesPayRefundOORSession confirms the cooperative refund OOR
 // created for a failed pay swap stays internal to the swap row. The wallet
 // activity entry should be the refunded payment hash, not a synthetic
