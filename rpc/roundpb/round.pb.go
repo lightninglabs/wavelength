@@ -368,12 +368,30 @@ func (x *VTXOTree) GetSweepTapscriptRoot() []byte {
 
 // ConnectorLeafInfo contains information about a connector leaf assigned to a
 // forfeit request. Used in server-to-client batch info messages.
+//
+// Fields 3-6 carry the connector-tree ancestry parameters the client needs to
+// prove the assigned leaf descends from this round's commitment transaction.
+// Connector trees have identical leaves and a deterministic BFS layout, so the
+// client reconstructs the exact tree from these scalars plus the commitment tx
+// output at root_output_index and the operator key — no tree transactions are
+// shipped. The client then asserts leaf_outpoint/leaf_output is the leaf at
+// leaf_index of that reconstructed tree before signing the forfeit.
 type ConnectorLeafInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// leaf_outpoint is the outpoint of the connector leaf.
 	LeafOutpoint *Outpoint `protobuf:"bytes,1,opt,name=leaf_outpoint,json=leafOutpoint,proto3" json:"leaf_outpoint,omitempty"`
 	// leaf_output is the connector leaf's transaction output.
-	LeafOutput    *TxOut `protobuf:"bytes,2,opt,name=leaf_output,json=leafOutput,proto3" json:"leaf_output,omitempty"`
+	LeafOutput *TxOut `protobuf:"bytes,2,opt,name=leaf_output,json=leafOutput,proto3" json:"leaf_output,omitempty"`
+	// root_output_index is the commitment-tx output index that this
+	// connector tree's root transaction spends (the tree's batch outpoint
+	// index). It binds the connector tree to the commitment tx.
+	RootOutputIndex uint32 `protobuf:"varint,3,opt,name=root_output_index,json=rootOutputIndex,proto3" json:"root_output_index,omitempty"`
+	// num_leaves is the total number of connector leaves in this tree.
+	NumLeaves uint32 `protobuf:"varint,4,opt,name=num_leaves,json=numLeaves,proto3" json:"num_leaves,omitempty"`
+	// radix is the connector tree branching factor used to build the tree.
+	Radix uint32 `protobuf:"varint,5,opt,name=radix,proto3" json:"radix,omitempty"`
+	// leaf_index is the position of this leaf within the connector tree.
+	LeafIndex     uint32 `protobuf:"varint,6,opt,name=leaf_index,json=leafIndex,proto3" json:"leaf_index,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -420,6 +438,34 @@ func (x *ConnectorLeafInfo) GetLeafOutput() *TxOut {
 		return x.LeafOutput
 	}
 	return nil
+}
+
+func (x *ConnectorLeafInfo) GetRootOutputIndex() uint32 {
+	if x != nil {
+		return x.RootOutputIndex
+	}
+	return 0
+}
+
+func (x *ConnectorLeafInfo) GetNumLeaves() uint32 {
+	if x != nil {
+		return x.NumLeaves
+	}
+	return 0
+}
+
+func (x *ConnectorLeafInfo) GetRadix() uint32 {
+	if x != nil {
+		return x.Radix
+	}
+	return 0
+}
+
+func (x *ConnectorLeafInfo) GetLeafIndex() uint32 {
+	if x != nil {
+		return x.LeafIndex
+	}
+	return 0
 }
 
 // ClientConnectorLeafInfo extends ConnectorLeafInfo with client-side fields
@@ -2354,11 +2400,17 @@ const file_round_proto_rawDesc = "" +
 	"\x05nodes\x18\x01 \x03(\v2\x12.round.v1.TreeNodeR\x05nodes\x129\n" +
 	"\x0ebatch_outpoint\x18\x02 \x01(\v2\x12.round.v1.OutpointR\rbatchOutpoint\x122\n" +
 	"\fbatch_output\x18\x03 \x01(\v2\x0f.round.v1.TxOutR\vbatchOutput\x120\n" +
-	"\x14sweep_tapscript_root\x18\x04 \x01(\fR\x12sweepTapscriptRoot\"~\n" +
+	"\x14sweep_tapscript_root\x18\x04 \x01(\fR\x12sweepTapscriptRoot\"\xfe\x01\n" +
 	"\x11ConnectorLeafInfo\x127\n" +
 	"\rleaf_outpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\fleafOutpoint\x120\n" +
 	"\vleaf_output\x18\x02 \x01(\v2\x0f.round.v1.TxOutR\n" +
-	"leafOutput\"\xf7\x01\n" +
+	"leafOutput\x12*\n" +
+	"\x11root_output_index\x18\x03 \x01(\rR\x0frootOutputIndex\x12\x1d\n" +
+	"\n" +
+	"num_leaves\x18\x04 \x01(\rR\tnumLeaves\x12\x14\n" +
+	"\x05radix\x18\x05 \x01(\rR\x05radix\x12\x1d\n" +
+	"\n" +
+	"leaf_index\x18\x06 \x01(\rR\tleafIndex\"\xf7\x01\n" +
 	"\x17ClientConnectorLeafInfo\x12\x1d\n" +
 	"\n" +
 	"leaf_index\x18\x01 \x01(\x05R\tleafIndex\x12A\n" +
