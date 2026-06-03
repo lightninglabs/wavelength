@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -79,6 +80,53 @@ func TestPrintCommandErrorAddsStatusWrapperDetails(t *testing.T) {
 		}
 	}`
 	require.JSONEq(t, expected, buf.String())
+}
+
+func TestPrintCommandErrorMapsWalletNotReadyToStateHint(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		state string
+		msg   string
+	}{
+		{
+			name:  "none",
+			state: daemonrpc.WalletNotReadyStateNone,
+			msg:   "wallet is not created; run `darepocli create`",
+		},
+		{
+			name:  "locked",
+			state: daemonrpc.WalletNotReadyStateLocked,
+			msg:   "wallet is locked; run `darepocli unlock`",
+		},
+		{
+			name:  "syncing",
+			state: daemonrpc.WalletNotReadyStateSyncing,
+			msg: "wallet is syncing; try again once sync " +
+				"completes",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := fmt.Errorf("recv invoice: %w",
+				daemonrpc.WalletNotReadyStateError(
+					"wallet is not ready", tc.state,
+				))
+
+			var buf bytes.Buffer
+			require.NoError(t, printCommandError(&buf, err))
+
+			const expectedTemplate = `{"error":{"code":` +
+				`"WALLET_LOCKED","message":%q}}`
+			expected := fmt.Sprintf(expectedTemplate, tc.msg)
+			require.JSONEq(t, expected, buf.String())
+		})
+	}
 }
 
 func TestPrintCommandErrorHandlesBareGRPCStatus(t *testing.T) {

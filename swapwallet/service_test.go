@@ -3,12 +3,15 @@
 package swapwallet
 
 import (
+	"context"
 	"testing"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // newServiceFixture builds a Service with fake deps so each gRPC handler
@@ -67,6 +70,110 @@ func TestServiceDepositReturnsAddress(t *testing.T) {
 		t, "address_issued",
 		resp.GetEntry().GetProgress().GetPhaseLabel(),
 	)
+}
+
+// TestServiceWalletVerbsRejectLockedWalletBeforeWork confirms wallet verbs
+// fail with an actionable wallet-readiness status before reaching swap or
+// address-generation work that requires unlocked key material.
+func TestServiceWalletVerbsRejectLockedWalletBeforeWork(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		call func(context.Context, *Service) error
+	}{
+		{
+			name: "prepare send",
+			call: func(ctx context.Context, svc *Service) error {
+				_, err := svc.PrepareSend(
+					ctx, &walletdkrpc.PrepareSendRequest{},
+				)
+
+				return err
+			},
+		},
+		{
+			name: "send",
+			call: func(ctx context.Context, svc *Service) error {
+				_, err := svc.Send(
+					ctx, &walletdkrpc.SendRequest{},
+				)
+
+				return err
+			},
+		},
+		{
+			name: "recv",
+			call: func(ctx context.Context, svc *Service) error {
+				_, err := svc.Recv(
+					ctx, &walletdkrpc.RecvRequest{
+						AmtSat: 50_000,
+					},
+				)
+
+				return err
+			},
+		},
+		{
+			name: "deposit",
+			call: func(ctx context.Context, svc *Service) error {
+				_, err := svc.Deposit(
+					ctx, &walletdkrpc.DepositRequest{},
+				)
+
+				return err
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc, swap, rpc := newServiceFixture(t)
+			rpc.getInfoResp = &daemonrpc.GetInfoResponse{
+				WalletState: daemonrpc.WalletState_WALLET_STATE_LOCKED,
+			}
+
+			err := tc.call(t.Context(), svc)
+			require.Error(t, err)
+			require.True(t, daemonrpc.IsWalletNotReadyError(err))
+			require.Equal(
+				t, codes.FailedPrecondition, status.Code(err),
+			)
+
+			state, ok := daemonrpc.WalletNotReadyState(err)
+			require.True(t, ok)
+			require.Equal(
+				t, daemonrpc.WalletNotReadyStateLocked, state,
+			)
+			require.Equal(t, 0, swap.startReceiveCalls)
+		})
+	}
+}
+
+// TestServiceRecvWithoutRPCServerReturnsUnavailable confirms the shared
+// readiness gate preserves a stable wire code for missing backend plumbing.
+func TestServiceRecvWithoutRPCServerReturnsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	swap := &fakeSwapService{}
+	deps := &Deps{
+		SwapService: swap,
+	}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+
+	svc := newService(deps, runtime)
+	_, err := svc.Recv(
+		t.Context(), &walletdkrpc.RecvRequest{
+			AmtSat: 50_000,
+		},
+	)
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, 0, swap.startReceiveCalls)
 }
 
 // TestServiceBalanceProjectsDaemonGetBalance confirms Balance pulls
