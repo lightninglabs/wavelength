@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"slices"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -1812,6 +1815,33 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			slog.Int("vtxo_tree_count", len(s.VTXOTreePaths)),
 		)
 
+		// Before carrying the forfeit mappings forward to signing,
+		// prove that each assigned connector leaf descends from this
+		// round's commitment tx. Without this an inconsistent or
+		// compromised operator could hand us a connector leaf that
+		// exists independently of the commitment tx; signing the
+		// forfeit over it would make the old VTXO claimable even if
+		// the replacement round never commits, breaking round
+		// atomicity (darepo-client#681).
+		//
+		//nolint:contextcheck // Connector-tree reconstruction is pure,
+		// deterministic CPU work (the lib/tree materializer ignores its
+		// context); there is no I/O to cancel, so no context to thread.
+		if err := validateConnectorAncestry(
+			s.CommitmentTx.UnsignedTx, env.OperatorTerms.PubKey,
+			evt.ForfeitMappings,
+		); err != nil {
+			// Error carried into failed state.
+			return &ClientStateTransition{ //nolint:nilerr
+				NextState: &ClientFailedState{
+					Reason: "connector ancestry " +
+						"validation failed",
+					Error:       err,
+					Recoverable: false,
+				},
+			}, nil
+		}
+
 		forfeitMappings, err := populateForfeitMappingAmounts(
 			evt.ForfeitMappings, s.Intents.Forfeits,
 		)
@@ -2819,6 +2849,231 @@ func populateForfeitMappingAmounts(
 	}
 
 	return populated, nil
+}
+
+const (
+	// maxConnectorTreeLeaves bounds the number of connector leaves the
+	// client will reconstruct from an operator-supplied NumLeaves. A
+	// connector tree carries one leaf per forfeited VTXO assigned to its
+	// connector output, so even very large rounds stay far below this.
+	// The cap exists only to bound reconstruction memory so a malformed or
+	// malicious leaf count cannot drive an out-of-memory DoS; 2^16 is far
+	// above any realistic round while keeping reconstruction cheap.
+	maxConnectorTreeLeaves = 1 << 16
+
+	// maxConnectorTreeRadix bounds the operator-supplied connector tree
+	// branching factor. Real connector trees use a small radix (binary by
+	// default); this generous ceiling rejects nonsensical values without
+	// constraining any plausible operator configuration.
+	maxConnectorTreeRadix = 1 << 10
+)
+
+// validateConnectorAncestry proves that every operator-supplied connector leaf
+// the client is about to forfeit against descends from an output of this
+// round's commitment tx. Connector trees have identical leaves and a
+// deterministic BFS layout, so the client reconstructs the exact tree from the
+// scalars the operator sent (root output index, leaf count, radix) plus the
+// committed connector output and the operator key — no tree transactions cross
+// the wire — and asserts the assigned leaf is the one at the claimed index.
+//
+// Binding the connector to the commitment tx is what preserves round
+// atomicity: a connector leaf is only ever spendable once the commitment tx
+// confirms, so the old VTXO cannot be forfeited unless the replacement round
+// also commits (darepo-client#681).
+func validateConnectorAncestry(commitmentTx *wire.MsgTx,
+	operatorKey *btcec.PublicKey,
+	mappings map[wire.OutPoint]*ConnectorLeafInfo) error {
+
+	if len(mappings) == 0 {
+		return nil
+	}
+
+	switch {
+	case commitmentTx == nil:
+		return fmt.Errorf("commitment tx is nil")
+
+	case operatorKey == nil:
+		return fmt.Errorf("operator key is nil")
+	}
+
+	commitmentTxID := commitmentTx.TxHash()
+
+	for vtxoOutpoint, info := range mappings {
+		if info == nil {
+			return fmt.Errorf("nil connector info for %s",
+				vtxoOutpoint)
+		}
+
+		if err := verifyConnectorLeaf(
+			commitmentTx, commitmentTxID, operatorKey, info,
+		); err != nil {
+			return fmt.Errorf("connector for forfeited VTXO %s: %w",
+				vtxoOutpoint, err)
+		}
+	}
+
+	return nil
+}
+
+// verifyConnectorLeaf reconstructs the connector tree rooted at the commitment
+// tx output named by info.RootOutputIndex and confirms that info's assigned
+// connector leaf (outpoint + output) is the leaf at info.LeafIndex of that
+// tree. Reconstruction uses the same deterministic builder as the operator, so
+// any divergence in the leaf data, root output, leaf count, radix, or operator
+// key is caught here, before the client signs the forfeit.
+func verifyConnectorLeaf(commitmentTx *wire.MsgTx,
+	commitmentTxID chainhash.Hash, operatorKey *btcec.PublicKey,
+	info *ConnectorLeafInfo) error {
+
+	// Compare as uint32 so a value that would overflow a signed 32-bit int
+	// cannot wrap past the bounds check on 32-bit architectures.
+	rootIdx := info.RootOutputIndex
+	if rootIdx >= uint32(len(commitmentTx.TxOut)) {
+		return fmt.Errorf("root output index %d out of range "+
+			"(commitment tx has %d outputs)", rootIdx,
+			len(commitmentTx.TxOut))
+	}
+
+	// NumLeaves and Radix are operator-supplied and drive tree
+	// reconstruction, so bound them before allocating anything: an
+	// unbounded leaf count is an out-of-memory DoS vector.
+	switch {
+	case info.NumLeaves == 0:
+		return fmt.Errorf("num leaves must be positive")
+
+	case info.NumLeaves > maxConnectorTreeLeaves:
+		return fmt.Errorf("num leaves %d exceeds maximum %d",
+			info.NumLeaves, maxConnectorTreeLeaves)
+
+	case info.Radix < 2:
+		return fmt.Errorf("radix must be at least 2, got %d",
+			info.Radix)
+
+	case info.Radix > maxConnectorTreeRadix:
+		return fmt.Errorf("radix %d exceeds maximum %d", info.Radix,
+			maxConnectorTreeRadix)
+	}
+	numLeaves := int(info.NumLeaves)
+	radix := int(info.Radix)
+
+	if info.LeafIndex < 0 || info.LeafIndex >= numLeaves {
+		return fmt.Errorf("leaf index %d out of range for %d leaves",
+			info.LeafIndex, numLeaves)
+	}
+
+	if info.ConnectorAmount <= 0 {
+		return fmt.Errorf("connector leaf amount must be "+
+			"positive, got %d", info.ConnectorAmount)
+	}
+
+	// The root output funds exactly numLeaves dust leaves; if its value
+	// does not divide cleanly the operator's parameters are inconsistent
+	// with the committed output and reconstruction would not match. Guard
+	// the multiplication against int64 overflow first so a huge leaf
+	// amount cannot wrap to a value that spuriously matches the output.
+	rootOutput := commitmentTx.TxOut[rootIdx]
+	if int64(numLeaves) > math.MaxInt64/info.ConnectorAmount {
+		return fmt.Errorf("num leaves %d and leaf amount %d "+
+			"overflow int64", numLeaves, info.ConnectorAmount)
+	}
+	if rootOutput.Value != int64(numLeaves)*info.ConnectorAmount {
+		return fmt.Errorf("root output value %d != num leaves %d * "+
+			"leaf amount %d", rootOutput.Value, numLeaves,
+			info.ConnectorAmount)
+	}
+
+	rootOutpoint := wire.OutPoint{
+		Hash:  commitmentTxID,
+		Index: rootIdx,
+	}
+
+	// Reconstruct the connector tree exactly as the operator built it.
+	connTree, err := tree.BuildConnectorTree(
+		rootOutpoint, rootOutput, tree.ConnectorDescriptor{
+			PkScript:  rootOutput.PkScript,
+			NumLeaves: numLeaves,
+			Amount:    btcutil.Amount(info.ConnectorAmount),
+		}, operatorKey, radix,
+	)
+	if err != nil {
+		return fmt.Errorf("reconstruct connector tree: %w", err)
+	}
+
+	// Verify the reconstructed structure: the root spends the commitment
+	// output and every child spends its parent at the claimed index.
+	if err := connTree.Verify(); err != nil {
+		return fmt.Errorf("connector tree structure invalid: %w", err)
+	}
+
+	leaves := connTree.Root.GetLeafNodes()
+	if len(leaves) != numLeaves {
+		return fmt.Errorf("reconstructed tree has %d leaves, "+
+			"expected %d", len(leaves), numLeaves)
+	}
+
+	// The assigned connector leaf must be the leaf at the claimed index.
+	// Matching the outpoint binds the entire leaf transaction (the
+	// outpoint hash is the leaf tx hash), proving it descends from the
+	// commitment tx.
+	leaf := leaves[info.LeafIndex]
+	if leaf == nil {
+		return fmt.Errorf("reconstructed leaf at index %d is nil",
+			info.LeafIndex)
+	}
+	gotOutpoint, err := leaf.GetNonAnchorOutpoint()
+	if err != nil {
+		return fmt.Errorf("connector leaf outpoint: %w", err)
+	}
+	if *gotOutpoint != info.ConnectorOutpoint {
+		return fmt.Errorf("assigned connector outpoint %s is not leaf "+
+			"%d of the reconstructed tree (%s)",
+			info.ConnectorOutpoint, info.LeafIndex, gotOutpoint)
+	}
+
+	// Cross-check the assigned connector output (the value and script the
+	// forfeit penalty is built against) against the reconstructed leaf so
+	// a leaf_output inconsistent with the proven outpoint cannot slip
+	// through.
+	gotOutput, err := connectorLeafOutput(leaf)
+	if err != nil {
+		return err
+	}
+	if gotOutput.Value != info.ConnectorAmount {
+		return fmt.Errorf("connector leaf value %d != assigned "+
+			"amount %d", gotOutput.Value, info.ConnectorAmount)
+	}
+	if !bytes.Equal(gotOutput.PkScript, info.ConnectorPkScript) {
+		return fmt.Errorf("connector leaf script does not match " +
+			"assigned connector script")
+	}
+
+	return nil
+}
+
+// connectorLeafOutput returns the single non-anchor output of a connector leaf
+// node.
+func connectorLeafOutput(leaf *tree.Node) (*wire.TxOut, error) {
+	if leaf == nil {
+		return nil, fmt.Errorf("connector leaf node is nil")
+	}
+
+	var found *wire.TxOut
+	for _, out := range leaf.Outputs {
+		if bytes.Equal(out.PkScript, arkscript.AnchorPkScript) {
+			continue
+		}
+		if found != nil {
+			return nil, fmt.Errorf("connector leaf has multiple " +
+				"non-anchor outputs")
+		}
+		found = out
+	}
+	if found == nil {
+		return nil, fmt.Errorf("connector leaf has no non-anchor " +
+			"output")
+	}
+
+	return found, nil
 }
 
 // expectedForfeitSequence returns the tx sequence expected for a forfeit input.

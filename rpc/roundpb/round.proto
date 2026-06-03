@@ -81,12 +81,34 @@ message VTXOTree {
 
 // ConnectorLeafInfo contains information about a connector leaf assigned to a
 // forfeit request. Used in server-to-client batch info messages.
+//
+// Fields 3-6 carry the connector-tree ancestry parameters the client needs to
+// prove the assigned leaf descends from this round's commitment transaction.
+// Connector trees have identical leaves and a deterministic BFS layout, so the
+// client reconstructs the exact tree from these scalars plus the commitment tx
+// output at root_output_index and the operator key — no tree transactions are
+// shipped. The client then asserts leaf_outpoint/leaf_output is the leaf at
+// leaf_index of that reconstructed tree before signing the forfeit.
 message ConnectorLeafInfo {
     // leaf_outpoint is the outpoint of the connector leaf.
     Outpoint leaf_outpoint = 1;
 
     // leaf_output is the connector leaf's transaction output.
     TxOut leaf_output = 2;
+
+    // root_output_index is the commitment-tx output index that this
+    // connector tree's root transaction spends (the tree's batch outpoint
+    // index). It binds the connector tree to the commitment tx.
+    uint32 root_output_index = 3;
+
+    // num_leaves is the total number of connector leaves in this tree.
+    uint32 num_leaves = 4;
+
+    // radix is the connector tree branching factor used to build the tree.
+    uint32 radix = 5;
+
+    // leaf_index is the position of this leaf within the connector tree.
+    uint32 leaf_index = 6;
 }
 
 // ClientConnectorLeafInfo extends ConnectorLeafInfo with client-side fields
