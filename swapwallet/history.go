@@ -568,10 +568,9 @@ type swapOORCorrelations struct {
 }
 
 // swapOORCorrelationsFromSwaps indexes swap session ids by the internal OOR leg
-// they explain. Pay swaps hide their funding input only when the same funding
-// session returns change and the delta equals the swap amount. Receive swaps
-// hide their claim input only when the same claim session materializes a wallet
-// VTXO.
+// they explain. Pay swaps hide their funding input when the session plus net
+// outgoing amount matches the swap amount. Receive swaps hide their claim input
+// only when the same claim session materializes a wallet VTXO.
 func swapOORCorrelationsFromSwaps(
 	swaps []*swapclientrpc.SwapSummary) swapOORCorrelations {
 
@@ -667,8 +666,13 @@ func projectOORLedgerActivity(rows []*daemonrpc.TransactionHistoryEntry,
 			continue
 		}
 
+		amounts := correlations.payAmountsByFundingSession[session]
 		received := receivedBySession[session]
 		if received == 0 {
+			if consumePayFundingAmount(amounts, row.GetAmountSat()) {
+				projection.hidden[row.GetEntryId()] = struct{}{}
+			}
+
 			continue
 		}
 
@@ -684,19 +688,30 @@ func projectOORLedgerActivity(rows []*daemonrpc.TransactionHistoryEntry,
 			projection.hidden[row.GetEntryId()] = struct{}{}
 
 		case delta > 0:
-			amounts := correlations.payAmountsByFundingSession[session]
-			if amounts == nil || amounts[delta] == 0 {
+			if !consumePayFundingAmount(amounts, delta) {
 				projection.displayAmountByEntryID[row.GetEntryId()] =
 					-delta
 
 				continue
 			}
 			projection.hidden[row.GetEntryId()] = struct{}{}
-			amounts[delta]--
 		}
 	}
 
 	return projection
+}
+
+// consumePayFundingAmount matches one pay-swap amount against an OOR send leg.
+// The amount can be either the net send delta after wallet change, or the full
+// send amount when the selected input produced no change.
+func consumePayFundingAmount(amounts map[int64]int, amount int64) bool {
+	if amounts[amount] == 0 {
+		return false
+	}
+
+	amounts[amount]--
+
+	return true
 }
 
 // internalZeroDeltaSession reports whether a balanced same-session OOR
