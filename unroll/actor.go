@@ -114,8 +114,9 @@ func NewVTXOUnrollActor(cfg Config) (*VTXOUnrollActor, error) {
 		return nil, err
 	}
 
-	durableCfg := actor.DefaultDurableActorConfig[Msg, Resp](
-		cfg.ActorID, behavior, cfg.DeliveryStore, newCodec(),
+	durableCfg := actor.DefaultDurableTxActorConfig[Msg, Resp, unrollTx](
+		cfg.ActorID, behavior, behavior.bindStores, cfg.DeliveryStore,
+		newCodec(),
 	)
 	durableCfg.Log = cfg.Log
 
@@ -152,6 +153,35 @@ type behavior struct {
 	terminalNotified  bool
 }
 
+// unrollTx is the transaction-scoped store handed to the unroll behavior inside
+// each Read/Stage/Commit phase. The unroll actor's only durable write is its
+// checkpoint, so the store is thin: it carries the actor ID plus the per-call
+// DeliveryStore whose SaveCheckpoint/LoadCheckpoint join the framework
+// transaction via the closure context.
+type unrollTx struct {
+	store   actor.DeliveryStore
+	actorID string
+}
+
+// bindStores is the StoreFactory for the unroll Read/Stage/Commit path. It must
+// thread the per-call DeliveryStore -- the handle SaveCheckpoint reads the
+// active *sql.Tx off of -- rather than a captured one, so every checkpoint
+// write lands in the transaction the framework opened for that phase.
+func (b *behavior) bindStores(_ context.Context,
+	ds actor.DeliveryStore) unrollTx {
+
+	return unrollTx{
+		store:   ds,
+		actorID: b.cfg.ActorID,
+	}
+}
+
+// behavior runs on the durable actor Read/Commit execution path: it persists
+// each checkpoint with a short, lock-releasing Stage ahead of the txconfirm IO
+// and consumes the message with one lease-fenced Commit, so the SQLite writer
+// is never held across a cross-actor Ask.
+var _ actor.TxBehavior[Msg, Resp, unrollTx] = (*behavior)(nil)
+
 // Receive processes one durable actor message. It is the single entry
 // point for every input that drives the unroll FSM: admission, restart,
 // chain events, txconfirm notifications, external spends, and status
@@ -177,10 +207,52 @@ type behavior struct {
 //
 // Unknown messages are rejected with a typed error rather than silently
 // dropped so codec/dispatch mismatches are loud.
-func (b *behavior) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
+func (b *behavior) Receive(ctx context.Context, msg Msg,
+	ax actor.Exec[unrollTx]) fn.Result[Resp] {
+
+	// GetStateRequest is a read-only status probe: it drives no FSM
+	// transition and writes nothing, so it returns directly without a Stage
+	// or a Commit. The framework's non-transactional tail acks the Ask once
+	// the behavior returns.
+	if _, ok := msg.(*GetStateRequest); ok {
+		return fn.Ok[Resp](b.stateResponse())
+	}
+
+	// Run the FSM pipeline. Every checkpoint write inside is a short,
+	// lock-releasing Stage and the slow txconfirm IO runs with no writer
+	// transaction held; dispatch never commits.
+	res := b.dispatch(ctx, ax, msg)
+	if res.IsErr() {
+
+		// The behavior did not commit, so the framework nacks the
+		// message; it is redelivered and replayed against the durably
+		// Staged state.
+		return res
+	}
+
+	// Single consume point: fold the lease-fenced ack, the dedup mark, and
+	// a final checkpoint re-persist into one short writer transaction. A
+	// lost lease surfaces here as actor.ErrLeaseLost and the Staged
+	// checkpoints survive for an idempotent replay.
+	if err := b.commitAck(ctx, ax); err != nil {
+		return fn.Err[Resp](err)
+	}
+
+	return res
+}
+
+// dispatch maps one durable message onto the FSM event surface and runs the
+// apply-stage-route pipeline (possibly recursively). It performs every Stage
+// write and all IO but never commits: Receive owns the single lease-fenced
+// Commit so the message is consumed exactly once after the whole pipeline
+// settles. Unknown messages are rejected with a typed error rather than
+// silently dropped so codec/dispatch mismatches are loud.
+func (b *behavior) dispatch(ctx context.Context, ax actor.Exec[unrollTx],
+	msg Msg) fn.Result[Resp] {
+
 	switch m := msg.(type) {
 	case *StartUnrollRequest:
-		return b.handleEvent(ctx, &StartEvent{
+		return b.handleEvent(ctx, ax, &StartEvent{
 			Height:         m.Height,
 			Trigger:        m.Trigger,
 			ExitPolicyKind: m.ExitPolicyKind,
@@ -188,32 +260,29 @@ func (b *behavior) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
 		})
 
 	case *ResumeUnrollRequest:
-		return b.handleEvent(ctx, &ResumeEvent{
+		return b.handleEvent(ctx, ax, &ResumeEvent{
 			Height: m.Height,
 		})
 
 	case *HeightObservedMsg:
-		return b.handleEvent(ctx, &HeightUpdatedEvent{
+		return b.handleEvent(ctx, ax, &HeightUpdatedEvent{
 			Height: m.Height,
 		})
 
 	case *TxConfirmedMsg:
-		return b.handleEvent(ctx, &TxConfirmedEvent{
+		return b.handleEvent(ctx, ax, &TxConfirmedEvent{
 			Txid:   m.Txid,
 			Height: m.Height,
 		})
 
 	case *TxFailedMsg:
-		return b.handleEvent(ctx, &TxFailedEvent{
+		return b.handleEvent(ctx, ax, &TxFailedEvent{
 			Txid:   m.Txid,
 			Reason: b.failureReasonForTx(m.Txid, m.Reason),
 		})
 
 	case *SpendObservedMsg:
-		return b.handleSpendObserved(ctx, m)
-
-	case *GetStateRequest:
-		return fn.Ok[Resp](b.stateResponse())
+		return b.handleSpendObserved(ctx, ax, m)
 
 	default:
 		return fn.Err[Resp](
@@ -240,7 +309,7 @@ func (b *behavior) OnStop(ctx context.Context) error {
 // load of proof / descriptor / planner / session / subscriptions happens
 // exactly once per actor lifetime regardless of which event kind arrives
 // first, and so the caller sees a uniform AckResp on success.
-func (b *behavior) handleEvent(ctx context.Context,
+func (b *behavior) handleEvent(ctx context.Context, ax actor.Exec[unrollTx],
 	event Event) fn.Result[Resp] {
 
 	if err := b.ensureLoaded(ctx); err != nil {
@@ -265,7 +334,7 @@ func (b *behavior) handleEvent(ctx context.Context,
 		return fn.Ok[Resp](&AckResp{})
 	}
 
-	if err := b.driveEvent(ctx, event); err != nil {
+	if err := b.driveEvent(ctx, ax, event); err != nil {
 		return fn.Err[Resp](err)
 	}
 
@@ -280,12 +349,16 @@ func (b *behavior) handleEvent(ctx context.Context,
 //     IO; this call returns synchronously with the new state persisted
 //     in the FSM session.
 //
-//  2. Persist: write the resulting checkpoint to the delivery store
-//     BEFORE doing any IO on the outbox. If the process crashes between
-//     the FSM transition and the outbox routing, restart restores the
-//     exact same state that was in memory and re-emits the outbox via
+//  2. Stage: write the resulting checkpoint to the delivery store in a
+//     short, non-fenced writer transaction (ax.Stage) BEFORE doing any IO
+//     on the outbox. The writer lock is released the moment Stage returns,
+//     so the txconfirm IO that follows never holds it. If the process
+//     crashes between the Stage and the outbox routing, restart restores
+//     the exact same state that was in memory and re-emits the outbox via
 //     the reissue path, so no work is lost and no work is duplicated
-//     beyond what txconfirm's txid-keyed dedup already collapses.
+//     beyond what txconfirm's txid-keyed dedup already collapses. The
+//     message itself is acked only once, by the single lease-fenced Commit
+//     in Receive after the whole (possibly recursive) pipeline settles.
 //
 //  3. Route: interpret each OutboxEvent as a real IO effect — submit
 //     ready proof nodes to txconfirm, re-arm in-flight subscriptions,
@@ -300,10 +373,13 @@ func (b *behavior) handleEvent(ctx context.Context,
 //     late TxConfirmed after we already failed) are suppressed by
 //     terminalNotified.
 //
-// Persist-before-route is the invariant that lets the actor lose its
+// Stage-before-route is the invariant that lets the actor lose its
 // process mid-operation without corrupting on-chain state — every side
-// effect is driven by a checkpoint that is already on disk.
-func (b *behavior) driveEvent(ctx context.Context, event Event) error {
+// effect is driven by a checkpoint that is already on disk, durably Staged
+// in its own short transaction ahead of the IO.
+func (b *behavior) driveEvent(ctx context.Context, ax actor.Exec[unrollTx],
+	event Event) error {
+
 	if b.session == nil || b.session.FSM == nil {
 		return fmt.Errorf("session not initialized")
 	}
@@ -313,11 +389,11 @@ func (b *behavior) driveEvent(ctx context.Context, event Event) error {
 		return err
 	}
 
-	if err := b.persistCheckpoint(ctx); err != nil {
+	if err := b.persistCheckpoint(ctx, ax); err != nil {
 		return err
 	}
 
-	if err := b.routeOutbox(ctx, outbox); err != nil {
+	if err := b.routeOutbox(ctx, ax, outbox); err != nil {
 		return err
 	}
 
@@ -358,14 +434,33 @@ func (b *behavior) driveEvent(ctx context.Context, event Event) error {
 // descriptor), we drive a SweepBuildFailedEvent through the FSM so the
 // retry budget is accounted for and we reach terminal Failed after
 // maxSweepAttempts.
-func (b *behavior) startSweep(ctx context.Context) error {
+func (b *behavior) startSweep(ctx context.Context,
+	ax actor.Exec[unrollTx]) error {
+
+	// Idempotency guard against a lost-in-memory sweep. Before deriving a
+	// fresh sweep -- which burns a new BIP32 wallet address and yields a
+	// new txid -- reconcile against the durably Staged checkpoint via a
+	// short read-only snapshot. If a previous processing attempt already
+	// Staged a sweepTx but crashed before its Commit acked, the message is
+	// being replayed; adopting the Staged sweepTx keeps us on a single
+	// sweep txid / pkScript instead of racing a freshly-derived sweep on
+	// chain. restoreCheckpoint repopulates b.sweepTx at boot, so this only
+	// fires on an in-memory/durable desync, but it makes the
+	// persist-before-broadcast guarantee robust to in-memory state loss
+	// rather than dependent on the boot path alone.
+	if b.sweepTx == nil {
+		if err := b.adoptStagedSweep(ctx, ax); err != nil {
+			return err
+		}
+	}
+
 	// Reuse the sweep tx restored from the checkpoint (or built on a
 	// prior attempt inside this actor lifetime) so we converge on a
 	// single sweep txid / wallet pkScript across retries.
 	if b.sweepTx == nil {
 		policy, err := b.resolveExitSpendPolicy(ctx)
 		if err != nil {
-			return b.driveEvent(ctx, &SweepBuildFailedEvent{
+			return b.driveEvent(ctx, ax, &SweepBuildFailedEvent{
 				Reason: err.Error(),
 			})
 		}
@@ -391,7 +486,7 @@ func (b *behavior) startSweep(ctx context.Context) error {
 		// invalid tx.
 		if b.proof != nil &&
 			policy.CSVDelay() > b.proof.CSVDelay() {
-			return b.driveEvent(ctx, &SweepBuildFailedEvent{
+			return b.driveEvent(ctx, ax, &SweepBuildFailedEvent{
 				Reason: fmt.Sprintf("policy csv delay %d "+
 					"exceeds proof csv delay %d",
 					policy.CSVDelay(),
@@ -458,7 +553,7 @@ func (b *behavior) startSweep(ctx context.Context) error {
 				return nil
 			}
 
-			return b.driveEvent(ctx, &SweepBuildFailedEvent{
+			return b.driveEvent(ctx, ax, &SweepBuildFailedEvent{
 				Reason: err.Error(),
 			})
 		}
@@ -478,10 +573,12 @@ func (b *behavior) startSweep(ctx context.Context) error {
 		)
 	}
 
-	// Persist the built sweep before asking txconfirm to broadcast, so
-	// on any retry the same sweepTx is restored and re-submitted under
-	// txconfirm's dedup rather than a freshly-derived sweep racing it.
-	if err := b.persistCheckpoint(ctx); err != nil {
+	// Stage the built sweep before asking txconfirm to broadcast, so on any
+	// retry the same sweepTx is restored and re-submitted under txconfirm's
+	// dedup rather than a freshly-derived sweep racing it. Stage commits
+	// this in its own short writer transaction and releases the lock, so
+	// the EnsureConfirmedReq Ask below runs with no writer held.
+	if err := b.persistCheckpoint(ctx, ax); err != nil {
 		return err
 	}
 
@@ -511,7 +608,7 @@ func (b *behavior) startSweep(ctx context.Context) error {
 		return err
 	}
 
-	return b.driveEvent(ctx, &SweepBroadcastedEvent{Txid: sweepTxid})
+	return b.driveEvent(ctx, ax, &SweepBroadcastedEvent{Txid: sweepTxid})
 }
 
 // exitPolicyKind returns the durable policy kind for the current job.
@@ -606,7 +703,8 @@ const proofNodeHeightHint uint32 = 1
 // FSM so the usual terminal path runs, rather than propagating the error
 // up and leaving the actor waiting on a subscription that will never
 // fire.
-func (b *behavior) ensureNodeConfirmed(ctx context.Context, txid chainhash.Hash,
+func (b *behavior) ensureNodeConfirmed(ctx context.Context,
+	ax actor.Exec[unrollTx], txid chainhash.Hash,
 	node *recovery.Node) error {
 
 	if node == nil {
@@ -639,7 +737,7 @@ func (b *behavior) ensureNodeConfirmed(ctx context.Context, txid chainhash.Hash,
 	}
 
 	if ensureResp.State == txconfirm.TxStateFailed {
-		return b.driveEvent(ctx, &TxFailedEvent{
+		return b.driveEvent(ctx, ax, &TxFailedEvent{
 			Txid: txid,
 			Reason: b.failureReasonForTx(
 				txid, "txconfirm returned failed state",
@@ -1189,7 +1287,7 @@ func (b *behavior) proofSpendCallerID(outpoint wire.OutPoint) string {
 //     with a reason that identifies the spending txid and height so
 //     operators can triage the cause off-line.
 func (b *behavior) handleSpendObserved(ctx context.Context,
-	msg *SpendObservedMsg) fn.Result[Resp] {
+	ax actor.Exec[unrollTx], msg *SpendObservedMsg) fn.Result[Resp] {
 
 	if err := b.ensureLoaded(ctx); err != nil {
 		return fn.Err[Resp](err)
@@ -1200,7 +1298,7 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 	}
 
 	if b.proof != nil {
-		acked, err := b.ackProofOutputSpend(ctx, msg)
+		acked, err := b.ackProofOutputSpend(ctx, ax, msg)
 		if err != nil {
 			return fn.Err[Resp](err)
 		}
@@ -1211,7 +1309,7 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 		// Case 2: the spender is a proof-graph node. That means an
 		// ancestor of our target just confirmed on chain.
 		if _, ok := b.proof.Node(msg.SpendingTxid); ok {
-			return b.handleEvent(ctx, &TxConfirmedEvent{
+			return b.handleEvent(ctx, ax, &TxConfirmedEvent{
 				Txid:   msg.SpendingTxid,
 				Height: msg.SpendingHeight,
 			})
@@ -1230,7 +1328,7 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 		if job.PlannerState.Sweep.Txid.IsSome() &&
 			job.PlannerState.Sweep.Txid.UnsafeFromSome() ==
 				msg.SpendingTxid {
-			return b.handleEvent(ctx, &HeightUpdatedEvent{
+			return b.handleEvent(ctx, ax, &HeightUpdatedEvent{
 				Height: msg.SpendingHeight,
 			})
 		}
@@ -1250,7 +1348,7 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 		"at height %d", spentOutpoint, msg.SpendingTxid,
 		msg.SpendingHeight)
 
-	return b.handleEvent(ctx, &FailEvent{Reason: reason})
+	return b.handleEvent(ctx, ax, &FailEvent{Reason: reason})
 }
 
 // ackProofOutputSpend records proof-output spend evidence and reports whether
@@ -1258,7 +1356,7 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 // transaction, the parent proof tx is still confirmed, but the caller must
 // continue into the external-spend failure path.
 func (b *behavior) ackProofOutputSpend(ctx context.Context,
-	msg *SpendObservedMsg) (bool, error) {
+	ax actor.Exec[unrollTx], msg *SpendObservedMsg) (bool, error) {
 
 	if msg.Outpoint == (wire.OutPoint{}) ||
 		msg.Outpoint == b.cfg.TargetOutpoint {
@@ -1269,7 +1367,7 @@ func (b *behavior) ackProofOutputSpend(ctx context.Context,
 		return false, nil
 	}
 
-	err := b.driveEvent(ctx, &TxConfirmedEvent{
+	err := b.driveEvent(ctx, ax, &TxConfirmedEvent{
 		Txid:   msg.Outpoint.Hash,
 		Height: msg.SpendingHeight,
 	})
@@ -1290,7 +1388,7 @@ func (b *behavior) ackProofOutputSpend(ctx context.Context,
 		Height: msg.SpendingHeight,
 	}
 
-	return true, b.driveEvent(ctx, event)
+	return true, b.driveEvent(ctx, ax, event)
 }
 
 // inTerminalState reports whether the FSM has already reached a terminal
@@ -1306,32 +1404,120 @@ func (b *behavior) inTerminalState() bool {
 	return state.IsTerminal()
 }
 
-// persistCheckpoint writes the current durable actor checkpoint.
-func (b *behavior) persistCheckpoint(ctx context.Context) error {
+// checkpointWrite snapshots the current FSM state into a durable checkpoint and
+// returns it alongside a closure that persists it through a transaction-scoped
+// store. The closure is shared verbatim by the Stage path (persistCheckpoint)
+// and the lease-fenced Commit path (commitAck) so both write identical bytes;
+// only the transaction they run in differs.
+func (b *behavior) checkpointWrite() (*actorCheckpoint,
+	func(context.Context, unrollTx) error, error) {
+
 	state, err := b.currentState()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	checkpoint := checkpointFromState(state, b.sweepTx)
 	raw, err := encodeCheckpoint(checkpoint)
 	if err != nil {
+		return nil, nil, err
+	}
+
+	write := func(txCtx context.Context, tx unrollTx) error {
+		return tx.store.SaveCheckpoint(txCtx, actor.CheckpointParams{
+			ActorID:   tx.actorID,
+			StateType: checkpointStateType,
+			StateData: raw,
+			Version:   checkpointVersion,
+		})
+	}
+
+	return checkpoint, write, nil
+}
+
+// persistCheckpoint durably advances the actor checkpoint with a short,
+// non-fenced Stage write ahead of the outbox IO. Stage runs the write in its
+// own writer transaction and releases the SQLite writer the moment it returns,
+// so the txconfirm round-trips that follow never hold the lock. The message is
+// not consumed here -- it is acked once, later, by commitAck.
+func (b *behavior) persistCheckpoint(ctx context.Context,
+	ax actor.Exec[unrollTx]) error {
+
+	checkpoint, write, err := b.checkpointWrite()
+	if err != nil {
 		return err
 	}
 
-	err = b.cfg.DeliveryStore.SaveCheckpoint(ctx, actor.CheckpointParams{
-		ActorID:   b.cfg.ActorID,
-		StateType: checkpointStateType,
-		StateData: raw,
-		Version:   checkpointVersion,
-	})
-	if err != nil {
+	if err := ax.Stage(ctx, write); err != nil {
 		return err
 	}
 
 	b.pending = checkpoint
 
 	return nil
+}
+
+// commitAck is the single consume point for a message. It folds the
+// lease-fenced ack and the dedup mark into one short writer transaction and
+// re-persists the final checkpoint so the last state advance is atomic with
+// consumption. Every intermediate checkpoint was already durably Staged ahead
+// of the IO, so this Commit is short and never wraps a txconfirm round-trip. A
+// lost lease surfaces here as actor.ErrLeaseLost: the ack rolls back, the
+// Staged checkpoints survive, and the framework redelivers the message for an
+// idempotent replay against the advanced state.
+func (b *behavior) commitAck(ctx context.Context,
+	ax actor.Exec[unrollTx]) error {
+
+	checkpoint, write, err := b.checkpointWrite()
+	if err != nil {
+		return err
+	}
+
+	if err := ax.Commit(ctx, write); err != nil {
+		return err
+	}
+
+	b.pending = checkpoint
+
+	return nil
+}
+
+// adoptStagedSweep reconciles the in-memory sweep cache with the durable
+// checkpoint through a short read-only snapshot (ax.Read). It exists so a
+// replay after a Staged-but-uncommitted sweep build reuses the persisted sweep
+// transaction instead of building -- and broadcasting -- a second one with a
+// fresh wallet address and a new txid. It only adopts the sweep transaction,
+// never b.pending, so it cannot regress the FSM-derived state; it is a no-op
+// when no sweep has been staged yet.
+func (b *behavior) adoptStagedSweep(ctx context.Context,
+	ax actor.Exec[unrollTx]) error {
+
+	return ax.Read(ctx, func(rCtx context.Context, tx unrollTx) error {
+		checkpoint, err := tx.store.LoadCheckpoint(rCtx, tx.actorID)
+		if err != nil {
+			return err
+		}
+
+		if checkpoint == nil {
+			return nil
+		}
+
+		decoded, err := decodeCheckpoint(checkpoint.StateData)
+		if err != nil {
+			return err
+		}
+
+		if decoded.Version != checkpointVersion {
+			return fmt.Errorf("unknown checkpoint version %d",
+				decoded.Version)
+		}
+
+		if decoded.SweepTx != nil {
+			b.sweepTx = copyTx(decoded.SweepTx)
+		}
+
+		return nil
+	})
 }
 
 // routeOutbox interprets each [OutboxEvent] emitted by the FSM as a real
@@ -1363,7 +1549,7 @@ func (b *behavior) persistCheckpoint(ctx context.Context) error {
 //     to re-attach the confirmation subscription. A nil sweepTx here
 //     means the checkpoint is corrupt and we fail loudly rather than
 //     silently losing the job.
-func (b *behavior) routeOutbox(ctx context.Context,
+func (b *behavior) routeOutbox(ctx context.Context, ax actor.Exec[unrollTx],
 	outbox []OutboxEvent) error {
 
 	for i := range outbox {
@@ -1387,7 +1573,9 @@ func (b *behavior) routeOutbox(ctx context.Context,
 						"%s missing", txid)
 				}
 
-				err := b.ensureNodeConfirmed(ctx, txid, node)
+				err := b.ensureNodeConfirmed(
+					ctx, ax, txid, node,
+				)
 				if err != nil {
 					return err
 				}
@@ -1410,7 +1598,9 @@ func (b *behavior) routeOutbox(ctx context.Context,
 						"missing on reissue", txid)
 				}
 
-				err := b.ensureNodeConfirmed(ctx, txid, node)
+				err := b.ensureNodeConfirmed(
+					ctx, ax, txid, node,
+				)
 				if err != nil {
 					return err
 				}
@@ -1434,7 +1624,7 @@ func (b *behavior) routeOutbox(ctx context.Context,
 			}
 
 		case *RequestSweepBuild:
-			if err := b.startSweep(ctx); err != nil {
+			if err := b.startSweep(ctx, ax); err != nil {
 				return err
 			}
 

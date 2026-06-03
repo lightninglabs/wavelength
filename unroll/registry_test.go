@@ -437,7 +437,7 @@ func newRegistryHarnessWithSpawn(t *testing.T,
 		//nolint:contextcheck // test child actor owns its own lifecycle
 		childActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
 			ID:          actorIDForTarget(target),
-			Behavior:    childBehavior,
+			Behavior:    adaptTx(childBehavior),
 			MailboxSize: 64,
 		})
 		childBehavior.selfRef = childActor.TellRef()
