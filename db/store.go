@@ -293,6 +293,28 @@ func (s *Store) NewOORArtifactStore(
 	return NewOORArtifactPersistenceStore(artifactDB, clk)
 }
 
+// NewSpendingReservationStore builds the spending-reservation persistence
+// store with transactional query execution.
+//
+// The reservation store maintains a durable index of VTXO outpoints reserved
+// by an active spend owner so a startup sweep can release orphaned Spending
+// VTXOs that have no live reservation.
+func (s *Store) NewSpendingReservationStore(
+	clk clock.Clock) *SpendingReservationPersistenceStore {
+
+	baseDB := s.BaseDB()
+
+	reservationDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) SpendingReservationStore {
+			return s.queries.WithTx(tx)
+		},
+		s.log,
+	)
+
+	return NewSpendingReservationPersistenceStore(reservationDB, clk)
+}
+
 // NewUnilateralExitStore builds the unilateral-exit persistence store with
 // transactional query execution.
 func (s *Store) NewUnilateralExitStore(

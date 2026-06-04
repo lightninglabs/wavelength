@@ -127,6 +127,12 @@ type RoundStore interface {
 		ctx context.Context, arg sqlc.UpdateVTXOStatusParams,
 	) error
 
+	// DeleteSpendingReservation removes a spending-reservation row so the
+	// VTXO store can atomically update a VTXO's status and drop its
+	// reservation in the same transaction when it leaves SpendingState.
+	DeleteSpendingReservation(ctx context.Context,
+		arg sqlc.DeleteSpendingReservationParams) error
+
 	MarkVTXOForfeiting(
 		ctx context.Context, arg sqlc.MarkVTXOForfeitingParams,
 	) error

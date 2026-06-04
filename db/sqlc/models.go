@@ -230,6 +230,14 @@ type RoundVtxoRequest struct {
 	SigningPubkey    []byte
 }
 
+type SpendingReservation struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+	OwnerKind     int32
+	OwnerID       []byte
+	CreatedAt     int64
+}
+
 type UnilateralExitJob struct {
 	TargetOutpointHash  []byte
 	TargetOutpointIndex int32

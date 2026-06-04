@@ -1135,10 +1135,6 @@ func TestSpendReleasedFromSpendingState(t *testing.T) {
 		LastCheckedHeight: 200,
 	})
 
-	h.store.On(
-		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusLive,
-	).Return(nil)
-
 	_, err := h.sendEvent(&round.SpendReleasedEvent{})
 	require.NoError(t, err)
 
@@ -1148,8 +1144,15 @@ func TestSpendReleasedFromSpendingState(t *testing.T) {
 	// LastCheckedHeight should be preserved through the release.
 	require.Equal(t, int32(200), state.LastCheckedHeight)
 
+	// Leaving SpendingState flags the status update so the actor routes
+	// persistence through the reservation-releasing store method, deleting
+	// the row atomically with the status change.
 	su := assertOutboxContains[*VTXOStatusUpdate](h)
 	require.Equal(t, VTXOStatusLive, su.NewStatus)
+	require.True(
+		t, su.ReleaseSpendReservation,
+		"release must drop the reservation row",
+	)
 }
 
 // TestSpendCompletedFromSpendingState verifies that SpendingState transitions
@@ -1165,10 +1168,6 @@ func TestSpendCompletedFromSpendingState(t *testing.T) {
 		LastCheckedHeight: 200,
 	})
 
-	h.store.On(
-		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusSpent,
-	).Return(nil)
-
 	_, err := h.sendEvent(&round.SpendCompletedEvent{})
 	require.NoError(t, err)
 
@@ -1176,9 +1175,14 @@ func TestSpendCompletedFromSpendingState(t *testing.T) {
 	require.Equal(t, vtxo, state.VTXO)
 	require.True(t, state.IsTerminal())
 
-	// Should emit status update and termination notification.
+	// Completing the spend leaves SpendingState, so the status update is
+	// flagged for atomic reservation-row deletion in the store layer.
 	su := assertOutboxContains[*VTXOStatusUpdate](h)
 	require.Equal(t, VTXOStatusSpent, su.NewStatus)
+	require.True(
+		t, su.ReleaseSpendReservation,
+		"completed spend must drop the reservation row",
+	)
 
 	tn := assertOutboxContains[*VTXOTerminatedNotification](h)
 	require.Equal(t, "Spent", tn.FinalState)
@@ -1208,11 +1212,6 @@ func TestSpendingStateCriticalExpiry(t *testing.T) {
 	// Block height within critical threshold.
 	evt := h.newBlockEpochEvent(970)
 
-	h.store.On(
-		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
-		VTXOStatusUnilateralExit,
-	).Return(nil)
-
 	_, err := h.sendEvent(evt)
 	require.NoError(t, err)
 
@@ -1220,6 +1219,14 @@ func TestSpendingStateCriticalExpiry(t *testing.T) {
 	require.Equal(t, int32(970), exit.LastCheckedHeight)
 	assertOutboxContains[*ExpiringNotification](h)
 	assertOutboxLacks[*VTXOTerminatedNotification](h)
+
+	// Escalating to unilateral exit also leaves SpendingState, so the row
+	// is released atomically with the status change.
+	su := assertOutboxContains[*VTXOStatusUpdate](h)
+	require.True(
+		t, su.ReleaseSpendReservation,
+		"critical-expiry exit must drop the reservation row",
+	)
 }
 
 // TestSpendingStateSafeBlockEpoch verifies that SpendingState stays in

@@ -768,6 +768,8 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 					&VTXOStatusUpdate{
 						Outpoint:  s.VTXO.Outpoint,
 						NewStatus: VTXOStatusSpent,
+
+						ReleaseSpendReservation: true,
 					},
 					&VTXOTerminatedNotification{
 						VTXOOutpoint: s.VTXO.Outpoint,
@@ -792,6 +794,8 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 					&VTXOStatusUpdate{
 						Outpoint:  s.VTXO.Outpoint,
 						NewStatus: VTXOStatusLive,
+
+						ReleaseSpendReservation: true,
 					},
 				},
 			}),
@@ -825,6 +829,8 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 				&VTXOStatusUpdate{
 					Outpoint:  s.VTXO.Outpoint,
 					NewStatus: VTXOStatusUnilateralExit,
+
+					ReleaseSpendReservation: true,
 				},
 			}
 

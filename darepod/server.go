@@ -3554,9 +3554,11 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	)
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 	ueStore := dbStore.NewUnilateralExitStore(s.clk)
+	reservationStore := dbStore.NewSpendingReservationStore(s.clk)
 
 	manager := vtxo.NewManager(&vtxo.ManagerConfig{
 		Store:            vtxoStore,
+		ReservationStore: reservationStore,
 		Wallet:           vtxoWallet,
 		ChainSource:      chainSourceRef,
 		ActorSystem:      s.actorSystem,
@@ -3637,6 +3639,12 @@ func resolveExitOutcome(ctx context.Context,
 	}
 }
 
+// Compile-time check that the db reservation store satisfies the OOR runtime's
+// reservation interface. The assertion lives here because db cannot import oor
+// (it would form an import cycle), so the structural match is pinned at the
+// wiring site instead.
+var _ oor.ReservationStore = (*db.SpendingReservationPersistenceStore)(nil)
+
 // initOORActor creates and starts the OOR (out-of-round) client actor.
 //
 // The OOR actor manages outgoing off-chain transfers: it drives the
@@ -3667,6 +3675,7 @@ func (s *Server) initOORActor(ctx context.Context,
 
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 	packageStore := dbStore.NewOORArtifactStore(s.clk)
+	reservationStore := dbStore.NewSpendingReservationStore(s.clk)
 
 	operatorTerms := s.loadOperatorTerms()
 	if operatorTerms == nil {
@@ -3782,19 +3791,20 @@ func (s *Server) initOORActor(ctx context.Context,
 	}
 
 	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
-		Log:             fn.Some(s.subLogger(oor.Subsystem)),
-		OutboxHandler:   outboxHandler,
-		Limits:          s.cfg.OORReceiveLimits(),
-		ServerConn:      s.runtime.TellRef(),
-		TransportOutbox: true,
-		SigningEffect:   s.oorSigningEffect.Ref(),
-		PackageStore:    packageStore,
-		DeliveryStore:   s.deliveryStore,
-		ActorSystem:     s.actorSystem,
-		ActorID:         oor.OORActorServiceKeyName,
-		VTXOManager:     vtxoManagerRef,
-		VTXOStore:       vtxoStore,
-		LedgerSink:      fn.Some(ledger.NewSink(s.actorSystem)),
+		Log:              fn.Some(s.subLogger(oor.Subsystem)),
+		OutboxHandler:    outboxHandler,
+		Limits:           s.cfg.OORReceiveLimits(),
+		ServerConn:       s.runtime.TellRef(),
+		TransportOutbox:  true,
+		SigningEffect:    s.oorSigningEffect.Ref(),
+		PackageStore:     packageStore,
+		ReservationStore: reservationStore,
+		DeliveryStore:    s.deliveryStore,
+		ActorSystem:      s.actorSystem,
+		ActorID:          oor.OORActorServiceKeyName,
+		VTXOManager:      vtxoManagerRef,
+		VTXOStore:        vtxoStore,
+		LedgerSink:       fn.Some(ledger.NewSink(s.actorSystem)),
 		IncomingVTXOObserver: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 

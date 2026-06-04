@@ -254,8 +254,11 @@ func TestReceiveStatusUpdateFailurePreservesStateForRetry(t *testing.T) {
 		env: h.env,
 	}
 
+	// Completing a spend leaves SpendingState, so persistence routes
+	// through the reservation-releasing store method.
 	h.store.On(
-		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusSpent,
+		"UpdateVTXOStatusReleasingReservation", h.ctx, vtxo.Outpoint,
+		VTXOStatusSpent,
 	).Return(errors.New("db down")).Once()
 
 	result := actor.Receive(h.ctx, &SpendCompletedEvent{})
@@ -268,7 +271,8 @@ func TestReceiveStatusUpdateFailurePreservesStateForRetry(t *testing.T) {
 	)
 
 	h.store.On(
-		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusSpent,
+		"UpdateVTXOStatusReleasingReservation", h.ctx, vtxo.Outpoint,
+		VTXOStatusSpent,
 	).Return(nil).Once()
 
 	result = actor.Receive(h.ctx, &SpendCompletedEvent{})

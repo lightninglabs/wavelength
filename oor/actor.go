@@ -78,6 +78,12 @@ type ClientActorCfg struct {
 	// bindings used by unroll/recovery tooling.
 	PackageStore PackagePersistence
 
+	// ReservationStore records a durable spending-reservation row per input
+	// of a new outgoing session once it is checkpointed. The VTXO manager's
+	// startup sweep uses these rows to distinguish in-flight spends from
+	// orphans. When nil (e.g. in tests), reservations are not recorded.
+	ReservationStore ReservationStore
+
 	// DeliveryStore backs the durable actor mailbox/checkpoint operations.
 	DeliveryStore actor.DeliveryStore
 
@@ -757,6 +763,17 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 
+	// Record a reservation row per input. Both this write and the
+	// checkpoint above join the same durable actor turn transaction (via
+	// actor.TxFromContext), so they commit or roll back together: the
+	// invariant the startup sweep relies on — a row exists IFF the session
+	// was checkpointed — holds even if the upsert fails, because the
+	// failure aborts the whole turn and the checkpoint never lands either.
+	err = b.recordReservations(ctx, session.ID, req.Inputs)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
 	err = b.driveOutbox(ctx, session.ID, handle, outbox)
 	if err != nil {
 		return fn.Err[ActorResp](err)
@@ -765,6 +782,33 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 	return fn.Ok[ActorResp](&StartTransferResponse{
 		SessionID: session.ID,
 	})
+}
+
+// recordReservations writes one durable spending-reservation row per outgoing
+// session input outpoint. The writes join the caller's durable actor turn
+// transaction, so an error here aborts the turn and rolls back the checkpoint
+// along with any rows already written, keeping the row-exists-IFF-checkpointed
+// invariant the startup sweep depends on. A nil store skips the work entirely.
+func (b *oorDurableBehavior) recordReservations(ctx context.Context,
+	sessionID SessionID, inputs []TransferInput) error {
+
+	if b.cfg.ReservationStore == nil {
+		return nil
+	}
+
+	ownerID := chainhash.Hash(sessionID)
+	for _, op := range InputOutpoints(inputs) {
+		err := b.cfg.ReservationStore.UpsertReservation(
+			ctx, op, ReservationOwnerKindOOROutgoing, ownerID,
+		)
+		if err != nil {
+			return fmt.Errorf("record spending reservation for "+
+				"session %s outpoint %s: %w", sessionID, op,
+				err)
+		}
+	}
+
+	return nil
 }
 
 // findOutgoingSessionByIdempotencyKey returns the existing outgoing session

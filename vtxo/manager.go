@@ -123,6 +123,13 @@ type ManagerConfig struct {
 	// manager startup. When set, Start uses it to re-converge VTXO status
 	// with the exit job's terminal result.
 	ExitOutcomeResolver ExitOutcomeResolver
+
+	// ReservationStore is the durable spending-reservation index. When set,
+	// the manager runs a startup sweep that releases orphaned Spending
+	// VTXOs (those with no reservation row) and deletes reservations as
+	// VTXOs leave SpendingState. When nil, the reservation index is not
+	// maintained and the startup sweep is skipped.
+	ReservationStore SpendingReservationStore
 }
 
 // Manager coordinates VTXO actor lifecycle - spawning new actors when VTXOs
@@ -264,6 +271,10 @@ func (m *Manager) Start(ctx context.Context,
 	)
 
 	m.reconcileUnilateralExits(ctx)
+
+	// With all actors recovered, release any Spending VTXOs whose owning
+	// spend died before its reservation was durably recorded (orphans).
+	m.sweepOrphanedReservations(ctx)
 
 	return nil
 }
@@ -1043,6 +1054,92 @@ func (m *Manager) rollbackSpend(ctx context.Context,
 	}
 }
 
+// sweepOrphanedReservations releases Spending VTXOs that have no live
+// reservation row. A reservation row exists IFF the owning spend session was
+// durably checkpointed, and a checkpointed session is always restored+resumed
+// on restart; so a Spending VTXO with no row is provably orphaned (its spend
+// died before checkpointing) and is safe to release back to LiveState.
+//
+// The sweep is conservative: if the reservation list cannot be read it aborts
+// without releasing anything, because releasing on incomplete information could
+// free a VTXO that an in-flight spend still owns.
+func (m *Manager) sweepOrphanedReservations(ctx context.Context) {
+	if m.cfg.ReservationStore == nil {
+		return
+	}
+
+	spending, err := m.cfg.Store.ListVTXOsByStatus(
+		ctx, VTXOStatusSpending,
+	)
+	if err != nil {
+		m.logger(ctx).ErrorS(
+			ctx,
+			"Reservation sweep: list Spending VTXOs failed",
+			err,
+		)
+
+		return
+	}
+
+	if len(spending) == 0 {
+		return
+	}
+
+	reserved, err := m.cfg.ReservationStore.ListReservedOutpoints(ctx)
+	if err != nil {
+		// Never release on incomplete info: an unreadable reservation
+		// list could otherwise free a VTXO an in-flight spend owns.
+		m.logger(ctx).ErrorS(
+			ctx,
+			"Reservation sweep aborted: list reservations failed",
+			err,
+		)
+
+		return
+	}
+
+	reservedSet := fn.NewSet(reserved...)
+
+	var released int
+	for _, desc := range spending {
+		op := desc.Outpoint
+		if reservedSet.Contains(op) {
+			continue
+		}
+
+		ref, ok := m.actors[op]
+		if !ok {
+			m.logger(ctx).WarnS(ctx,
+				"Reservation sweep: no actor for orphaned "+
+					"Spending VTXO", nil,
+				slog.String("outpoint", op.String()),
+			)
+
+			continue
+		}
+
+		result := m.askVTXOActor(ctx, ref, &SpendReleasedEvent{})
+		if _, err := result.Unpack(); err != nil {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Reservation sweep: release failed",
+				err,
+				slog.String("outpoint", op.String()),
+			)
+
+			continue
+		}
+
+		released++
+	}
+
+	m.logger(ctx).InfoS(ctx, "Reservation sweep complete",
+		slog.Int("spending", len(spending)),
+		slog.Int("reserved", len(reserved)),
+		slog.Int("released", released),
+	)
+}
+
 // handleReleaseSpend releases VTXOs from spend reservation back to
 // LiveState. Release is best-effort: all outpoints are attempted even
 // if some fail, and errors are aggregated. This prevents a single
@@ -1080,6 +1177,11 @@ func (m *Manager) handleReleaseSpend(ctx context.Context,
 			continue
 		}
 
+		// The SpendReleasedEvent above moved the VTXO out of
+		// SpendingState, which deletes its durable reservation row in
+		// the same transaction as the status change (see the VTXO
+		// actor's processStatusUpdate), so no separate delete is needed
+		// here.
 		released++
 	}
 
@@ -1129,6 +1231,11 @@ func (m *Manager) handleCompleteSpend(ctx context.Context,
 			)
 		}
 
+		// The SpendCompletedEvent above moved the VTXO out of
+		// SpendingState, which deletes its durable reservation row in
+		// the same transaction as the status change (see the VTXO
+		// actor's processStatusUpdate), so no separate delete is needed
+		// here.
 		completed++
 	}
 

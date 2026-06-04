@@ -22,6 +22,9 @@ type Querier interface {
 	CountWalletUTXOLog(ctx context.Context) (int64, error)
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
 	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
+	// DeleteSpendingReservation removes the reservation for one outpoint. Called
+	// when the VTXO leaves SpendingState (released or completed).
+	DeleteSpendingReservation(ctx context.Context, arg DeleteSpendingReservationParams) error
 	// DeleteVTXO removes a VTXO from storage. Used for cleanup after terminal
 	// states are reached and the VTXO is no longer needed.
 	DeleteVTXO(ctx context.Context, arg DeleteVTXOParams) error
@@ -167,6 +170,9 @@ type Querier interface {
 	// ListRoundsPaginated returns rounds ordered by round_id with cursor-
 	// based pagination. When cursor is empty, returns from the beginning.
 	ListRoundsPaginated(ctx context.Context, arg ListRoundsPaginatedParams) ([]Round, error)
+	// ListSpendingReservationOutpoints returns every reserved outpoint. Used by
+	// the startup sweep to build the set of live reservations.
+	ListSpendingReservationOutpoints(ctx context.Context) ([]ListSpendingReservationOutpointsRow, error)
 	// ListTransactionHistory returns a unified newest-first history from the
 	// client-side ledger and tracked boarding sweep transactions. Filters are
 	// applied before LIMIT/OFFSET so filtered pagination never skips over matching
@@ -241,6 +247,14 @@ type Querier interface {
 	// intent has already adopted, swept, or failed) are cleared so the next
 	// start is a no-op.
 	UpsertPendingBoardRequest(ctx context.Context, arg UpsertPendingBoardRequestParams) error
+	// Spending reservation queries.
+	// These queries maintain a durable index of VTXO outpoints reserved by an
+	// active spend owner (e.g. an outgoing OOR session) so a startup sweep can
+	// release orphaned Spending VTXOs that have no live reservation.
+	// UpsertSpendingReservation records (or refreshes) the reservation for one
+	// outpoint. The owner fields are updated on conflict so a re-checkpointed
+	// session re-binds the same outpoint to its current owner.
+	UpsertSpendingReservation(ctx context.Context, arg UpsertSpendingReservationParams) error
 	// Unilateral-exit job control-plane queries.
 	UpsertUnilateralExitJob(ctx context.Context, arg UpsertUnilateralExitJobParams) error
 }

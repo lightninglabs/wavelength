@@ -86,6 +86,12 @@ func (m *mockVTXOStore) UpdateVTXOStatus(context.Context, wire.OutPoint,
 	return nil
 }
 
+func (m *mockVTXOStore) UpdateVTXOStatusReleasingReservation(context.Context,
+	wire.OutPoint, vtxo.VTXOStatus) error {
+
+	return nil
+}
+
 // MarkForfeiting is unused in these tests.
 func (m *mockVTXOStore) MarkForfeiting(context.Context, wire.OutPoint, string,
 	*wire.MsgTx) error {

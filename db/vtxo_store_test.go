@@ -157,6 +157,87 @@ func testOddParityPubKey(t *testing.T) *btcec.PublicKey {
 	return nil
 }
 
+// TestUpdateVTXOStatusReleasingReservation verifies that the combined update
+// path changes a VTXO's status and deletes its spending-reservation row inside
+// one transaction, so a VTXO leaving SpendingState can never leave a stale
+// reservation row behind to mask a future orphan on the same outpoint.
+func TestUpdateVTXOStatusReleasingReservation(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, baseDB := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	// A spending-reservation store sharing the same database, so the delete
+	// the VTXO store performs and the rows this store reads hit one
+	// backend.
+	reservationDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) SpendingReservationStore {
+			return baseDB.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	reservationStore := NewSpendingReservationPersistenceStore(
+		reservationDB, clock.NewDefaultClock(),
+	)
+
+	// Persist a round + VTXO, move it into SpendingState, and reserve it.
+	roundID := testRoundIDDB("test-round-release-reservation")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, roundStore.CommitState(ctx, testRound, state))
+
+	desc := createTestVTXODescriptor(t, roundID, 7)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, desc.Outpoint, vtxo.VTXOStatusSpending,
+		),
+	)
+
+	ownerID := chainhash.Hash{0x99}
+	require.NoError(
+		t, reservationStore.UpsertReservation(
+			ctx, desc.Outpoint, 0, ownerID,
+		),
+	)
+
+	reserved, err := reservationStore.ListReservedOutpoints(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []wire.OutPoint{desc.Outpoint}, reserved)
+
+	// The combined update flips the status to Spent and drops the row in
+	// one transaction.
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatusReleasingReservation(
+			ctx, desc.Outpoint, vtxo.VTXOStatusSpent,
+		),
+	)
+
+	fetched, err := vtxoStore.GetVTXO(ctx, desc.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, vtxo.VTXOStatusSpent, fetched.Status)
+
+	reserved, err = reservationStore.ListReservedOutpoints(ctx)
+	require.NoError(t, err)
+	require.Empty(t, reserved)
+
+	// Releasing a reservation for an outpoint that has none is a no-op: the
+	// status still updates and no error surfaces.
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatusReleasingReservation(
+			ctx, desc.Outpoint, vtxo.VTXOStatusLive,
+		),
+	)
+
+	fetched, err = vtxoStore.GetVTXO(ctx, desc.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, vtxo.VTXOStatusLive, fetched.Status)
+}
+
 // TestVTXOPersistenceStoreSaveAndGet tests the basic save and get operations.
 func TestVTXOPersistenceStoreSaveAndGet(t *testing.T) {
 	t.Parallel()

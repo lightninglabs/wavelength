@@ -58,6 +58,24 @@ type PackagePersistence interface {
 		linkKind PackageLinkKind) error
 }
 
+// ReservationOwnerKindOOROutgoing is the owner_kind value recorded for
+// reservations held by an outgoing OOR session. It is the only kind for now.
+const ReservationOwnerKindOOROutgoing = 0
+
+// ReservationStore is the minimal storage contract the OOR runtime needs to
+// record durable spending reservations. A row is written once a new outgoing
+// session is checkpointed, so a startup sweep can tell an in-flight spend from
+// an orphaned one.
+//
+// It is intentionally small and defined here so the runtime is not coupled to
+// a specific database package.
+type ReservationStore interface {
+	// UpsertReservation records that the given outpoint is reserved by the
+	// owner identified by ownerKind/ownerID (the OOR session id).
+	UpsertReservation(ctx context.Context, outpoint wire.OutPoint,
+		ownerKind int, ownerID chainhash.Hash) error
+}
+
 // PackageArtifact carries the finalized package data for one OOR session.
 //
 // Incoming chained transfers use this to persist ancestor packages that are
