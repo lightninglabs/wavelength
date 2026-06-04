@@ -497,18 +497,16 @@ func (f *fakeDaemonService) WatchRounds(_ *daemonrpc.WatchRoundsRequest,
 	return nil
 }
 
-// TestDialRemoteGetInfo verifies the SDK can talk to a standalone daemon
-// endpoint and convert the protobuf GetInfo response into the typed SDK model.
-func TestDialRemoteGetInfo(t *testing.T) {
-	t.Parallel()
+// assertRemoteGetInfo dials a remote daemon with the supplied config and
+// verifies the SDK converts the protobuf GetInfo response into the typed SDK
+// model. It is shared by the plaintext and TLS transport tests.
+func assertRemoteGetInfo(t *testing.T, cfg RemoteConfig) {
+	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	client, err := DialRemote(ctx, RemoteConfig{
-		Address:       startFakeDaemonServer(t),
-		AllowInsecure: true,
-	})
+	client, err := DialRemote(ctx, cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, client.Close())
@@ -523,12 +521,19 @@ func TestDialRemoteGetInfo(t *testing.T) {
 		t, mustDecodeHex(testOperatorPubKeyHex),
 		info.ServerInfo.OperatorPubKey,
 	)
-	require.Equal(t, uint32(144),
-		info.ServerInfo.BoardingExitDelay,
-	)
-	require.Equal(t, uint64(20),
-		info.ServerInfo.MinOperatorFee,
-	)
+	require.Equal(t, uint32(144), info.ServerInfo.BoardingExitDelay)
+	require.Equal(t, uint64(20), info.ServerInfo.MinOperatorFee)
+}
+
+// TestDialRemoteGetInfo verifies the SDK can talk to a standalone daemon
+// endpoint over plaintext insecure transport.
+func TestDialRemoteGetInfo(t *testing.T) {
+	t.Parallel()
+
+	assertRemoteGetInfo(t, RemoteConfig{
+		Address:       startFakeDaemonServer(t),
+		AllowInsecure: true,
+	})
 }
 
 // TestDialRemoteCoversFacadeMethods verifies the thin SDK wrappers beyond
@@ -813,23 +818,10 @@ func TestDialRemoteTLSGetInfo(t *testing.T) {
 
 	serverCreds, clientCreds := newLoopbackTLSCreds(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	client, err := DialRemote(ctx, RemoteConfig{
-		Address: startFakeDaemonServer(
-			t, grpc.Creds(serverCreds),
-		),
+	assertRemoteGetInfo(t, RemoteConfig{
+		Address:     startFakeDaemonServer(t, grpc.Creds(serverCreds)),
 		Credentials: clientCreds,
 	})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, client.Close())
-	})
-
-	info, err := client.GetInfo(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, "1.2.3", info.Version)
 }
 
 // TestStartEmbeddedUsesBufconnTransport verifies the SDK can boot an embedded
