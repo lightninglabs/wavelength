@@ -281,49 +281,89 @@ func TestParseDestinationValueEmpty(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestConfirmLeaveAllIfNeededJSONStillPrompts is the C-1 regression
-// guard: a request whose `selection.all` was set via the --json input
-// path (i.e. without ever entering the flag callback) must still hit
-// the y/N prompt. Before the fix the prompt lived inside the flag
-// callback and the JSON path silently bypassed it.
-func TestConfirmLeaveAllIfNeededJSONStillPrompts(t *testing.T) {
-	t.Parallel()
-
-	cmd, _ := newLeaveTestCmd(t, "n\n")
-
-	req := &daemonrpc.LeaveVTXOsRequest{
+// allLeaveReq builds a LeaveVTXOsRequest with an --all selection and
+// the supplied dry-run flag.
+func allLeaveReq(dryRun bool) *daemonrpc.LeaveVTXOsRequest {
+	return &daemonrpc.LeaveVTXOsRequest{
 		Selection: &daemonrpc.LeaveVTXOsRequest_All{
 			All: true,
 		},
-		DefaultDestination: &daemonrpc.LeaveDestination{
-			Target: &daemonrpc.LeaveDestination_Address{
-				Address: "bcrt1pexample",
+		DryRun: dryRun,
+	}
+}
+
+// TestConfirmLeaveAllIfNeeded covers the TTY confirmation gate for an
+// --all leave: the prompt must trigger for an --all selection set via
+// any path (flag callback or --json), honor y/N/blank stdin, and be
+// short-circuited by --yes, --dry_run, or a non-all selection.
+func TestConfirmLeaveAllIfNeeded(t *testing.T) {
+	t.Parallel()
+
+	outpointReq := &daemonrpc.LeaveVTXOsRequest{
+		Selection: &daemonrpc.LeaveVTXOsRequest_Outpoints{
+			Outpoints: &daemonrpc.OutpointSelection{
+				Outpoints: []string{
+					"aa:0",
+				},
 			},
 		},
 	}
 
-	err := confirmLeaveAllIfNeeded(cmd, req)
-	require.Error(
-		t, err, "selection=all without --yes/--dry_run must abort "+
-			"when stdin says 'n'",
-	)
-	require.Contains(t, err.Error(), "aborted by user")
-}
+	cases := []struct {
+		name        string
+		stdin       string
+		yesFlag     bool
+		req         *daemonrpc.LeaveVTXOsRequest
+		errContains string
+	}{{
+		// C-1 regression: --all set via --json must still
+		// prompt and abort on "n".
+		name:        "json still prompts on n",
+		stdin:       "n\n",
+		req:         allLeaveReq(false),
+		errContains: "aborted by user",
+	}, {
+		name:  "accepts yes",
+		stdin: "y\n",
+		req:   allLeaveReq(false),
+	}, {
+		name:    "yes flag bypasses",
+		yesFlag: true,
+		req:     allLeaveReq(false),
+	}, {
+		name: "dry run bypasses",
+		req:  allLeaveReq(true),
+	}, {
+		name: "outpoint selection skips prompt",
+		req:  outpointReq,
+	}, {
+		name:        "blank input aborts",
+		stdin:       "\n",
+		req:         allLeaveReq(false),
+		errContains: "aborted by user",
+	}}
 
-// TestConfirmLeaveAllIfNeededAcceptsYes verifies the prompt accepts
-// "y" and proceeds.
-func TestConfirmLeaveAllIfNeededAcceptsYes(t *testing.T) {
-	t.Parallel()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	cmd, _ := newLeaveTestCmd(t, "y\n")
+			cmd, _ := newLeaveTestCmd(t, tc.stdin)
+			if tc.yesFlag {
+				require.NoError(
+					t, cmd.Flags().Set("yes", "true"),
+				)
+			}
 
-	req := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_All{
-			All: true,
-		},
+			err := confirmLeaveAllIfNeeded(cmd, tc.req)
+			if tc.errContains == "" {
+				require.NoError(t, err)
+
+				return
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.errContains)
+		})
 	}
-
-	require.NoError(t, confirmLeaveAllIfNeeded(cmd, req))
 }
 
 // TestConfirmLeaveAllIfNeededNonTTYRefusesPrompt is the agent-cli
@@ -360,78 +400,4 @@ func TestConfirmLeaveAllIfNeededNonTTYRefusesPrompt(t *testing.T) {
 		"expected a printedError so main.go can exit with the "+
 			"INVALID_ARGS code",
 	)
-}
-
-// TestConfirmLeaveAllIfNeededYesFlagBypasses verifies the --yes flag
-// short-circuits the prompt for scripted use.
-func TestConfirmLeaveAllIfNeededYesFlagBypasses(t *testing.T) {
-	t.Parallel()
-
-	cmd, _ := newLeaveTestCmd(t, "" /* no stdin */)
-	require.NoError(t, cmd.Flags().Set("yes", "true"))
-
-	req := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_All{
-			All: true,
-		},
-	}
-
-	require.NoError(t, confirmLeaveAllIfNeeded(cmd, req))
-}
-
-// TestConfirmLeaveAllIfNeededDryRunBypasses verifies that a dry-run
-// preview is not gated on the prompt — the user is just previewing,
-// not moving funds.
-func TestConfirmLeaveAllIfNeededDryRunBypasses(t *testing.T) {
-	t.Parallel()
-
-	cmd, _ := newLeaveTestCmd(t, "" /* no stdin */)
-
-	req := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_All{
-			All: true,
-		},
-		DryRun: true,
-	}
-
-	require.NoError(t, confirmLeaveAllIfNeeded(cmd, req))
-}
-
-// TestConfirmLeaveAllIfNeededOutpointSelectionSkipsPrompt verifies
-// that selection=outpoints is unaffected — only --all triggers the
-// gate.
-func TestConfirmLeaveAllIfNeededOutpointSelectionSkipsPrompt(t *testing.T) {
-	t.Parallel()
-
-	cmd, _ := newLeaveTestCmd(t, "" /* no stdin */)
-
-	req := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_Outpoints{
-			Outpoints: &daemonrpc.OutpointSelection{
-				Outpoints: []string{
-					"aa:0",
-				},
-			},
-		},
-	}
-
-	require.NoError(t, confirmLeaveAllIfNeeded(cmd, req))
-}
-
-// TestConfirmLeaveAllIfNeededRejectsBlankInput verifies that simply
-// pressing enter at the prompt aborts (default-N posture).
-func TestConfirmLeaveAllIfNeededRejectsBlankInput(t *testing.T) {
-	t.Parallel()
-
-	cmd, _ := newLeaveTestCmd(t, "\n")
-
-	req := &daemonrpc.LeaveVTXOsRequest{
-		Selection: &daemonrpc.LeaveVTXOsRequest_All{
-			All: true,
-		},
-	}
-
-	err := confirmLeaveAllIfNeeded(cmd, req)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "aborted by user")
 }
