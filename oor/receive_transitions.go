@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -72,6 +73,14 @@ func handleReceiveOutboxError(state ReceiveState,
 		}, nil
 	}
 
+	// The notified state retries the authoritative metadata resolution.
+	// Apply bounded exponential backoff and a terminal give-up so a
+	// session whose VTXO never lands in the indexer stops re-querying the
+	// mailbox forever instead of spinning at a flat cadence.
+	if notified, ok := state.(*ReceiveNotified); ok {
+		return handleNotifiedRetry(notified, evt), nil
+	}
+
 	after := evt.RetryAfter
 	if after == 0 {
 		after = defaultRetryDelay
@@ -88,6 +97,71 @@ func handleReceiveOutboxError(state ReceiveState,
 			},
 		}),
 	}, nil
+}
+
+// handleNotifiedRetry derives the backoff-or-give-up transition for a
+// retryable metadata resolution failure in the notified state. The attempt
+// counter rides on the returned state so it is persisted across restarts.
+func handleNotifiedRetry(state *ReceiveNotified,
+	evt *OutboxErrorEvent) *StateTransition {
+
+	// Give up once the bound is reached. The session can no longer make
+	// progress, so failing it terminally removes it from the retry
+	// population rather than re-querying indefinitely. The bound is
+	// checked against the persisted counter before incrementing so a
+	// corrupted snapshot at math.MaxUint32 cannot wrap past the limit and
+	// bypass the give-up.
+	if state.MetadataAttempts >= maxMetadataRetries {
+		return &StateTransition{
+			NextState: &Failed{
+				Reason: fmt.Sprintf("incoming metadata "+
+					"unresolved after %d retries: %s",
+					maxMetadataRetries, evt.ErrorReason),
+			},
+			NewEvents: fn.None[EmittedEvent](),
+		}
+	}
+
+	attempts := state.MetadataAttempts + 1
+
+	next := *state
+	next.MetadataAttempts = attempts
+
+	return &StateTransition{
+		NextState: &next,
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: []OutboxEvent{
+				&ScheduleRetryRequest{
+					After:  metadataRetryBackoff(attempts),
+					Reason: evt.ErrorReason,
+				},
+			},
+		}),
+	}
+}
+
+// metadataRetryBackoff returns the delay before the next metadata retry. It
+// grows exponentially with the attempt count, capped at metadataRetryMaxDelay.
+// It is deterministic (no jitter) so FSM replay and snapshot round-trips stay
+// reproducible.
+func metadataRetryBackoff(attempt uint32) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+
+	// Cap the shift well below the int64 overflow point; the delay is
+	// clamped to the max below long before this matters.
+	shift := attempt - 1
+	if shift > 30 {
+		shift = 30
+	}
+
+	delay := metadataRetryBaseDelay << shift
+	if delay <= 0 || delay > metadataRetryMaxDelay {
+		return metadataRetryMaxDelay
+	}
+
+	return delay
 }
 
 // retryReceiveState re-emits the outbox implied by the current receive state

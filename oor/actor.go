@@ -2432,6 +2432,26 @@ func (b *oorDurableBehavior) resumeOutboxForHandle(handle *sessionHandle,
 		return OutboxForState(outgoingState)
 
 	case sessionKindIncoming:
+		// An incoming session mid-backoff on metadata resolution must
+		// resume by re-scheduling the retry rather than firing the
+		// query immediately. Otherwise a restart during one of the
+		// capped backoff windows resets the wait to zero, and repeated
+		// restarts could burn through maxMetadataRetries far faster
+		// than the intended backoff schedule. The persisted attempt
+		// count reproduces the same deterministic delay.
+		if notified, ok := state.(*ReceiveNotified); ok &&
+			notified.MetadataAttempts > 0 {
+			return []OutboxEvent{
+				&ScheduleRetryRequest{
+					After: metadataRetryBackoff(
+						notified.MetadataAttempts,
+					),
+					Reason: "incoming metadata retry " +
+						"resumed after restart",
+				},
+			}, nil
+		}
+
 		return OutboxForIncomingState(state)
 
 	default:

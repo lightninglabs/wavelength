@@ -20,6 +20,7 @@ const (
 	incomingSnapshotRecipientPkScriptType     tlv.Type = 13
 	incomingSnapshotRecipientEventIDType      tlv.Type = 15
 	incomingSnapshotAncestorPackagesType      tlv.Type = 17
+	incomingSnapshotMetadataAttemptsType      tlv.Type = 19
 )
 
 // IncomingPhase identifies the coarse stage of an incoming OOR receive
@@ -84,6 +85,11 @@ type IncomingSnapshot struct {
 	// RecipientEventID is the per-script cursor hint paired with
 	// RecipientPkScript during resolve-pending restart.
 	RecipientEventID uint64
+
+	// MetadataAttempts is the persisted retry count for the authoritative
+	// metadata resolution, used to bound backoff and the terminal give-up
+	// across restarts. Only meaningful in the materialize-pending phase.
+	MetadataAttempts uint32
 }
 
 // NewIncomingSnapshot exports an incoming receive session state into a
@@ -131,6 +137,7 @@ func NewIncomingSnapshot(sessionID SessionID,
 		snap.AncestorPackages = append(
 			[]PackageArtifact(nil), s.AncestorPackages...,
 		)
+		snap.MetadataAttempts = s.MetadataAttempts
 
 	case *ReceiveAwaitingAck:
 		snap.Phase = IncomingPhaseAckPending
@@ -217,6 +224,7 @@ func IncomingStateFromSnapshot(snapshot *IncomingSnapshot) (SessionState,
 				[]PackageArtifact(nil),
 				snapshot.AncestorPackages...,
 			),
+			MetadataAttempts: snapshot.MetadataAttempts,
 		}, nil
 
 	case IncomingPhaseAckPending:
@@ -262,6 +270,7 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 		return nil, err
 	}
 
+	metadataAttempts := uint64(snapshot.MetadataAttempts)
 	version := uint64(snapshot.Version)
 
 	records := []tlv.Record{
@@ -293,6 +302,9 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			incomingSnapshotAncestorPackagesType, &ancestorPackages,
 		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotMetadataAttemptsType, &metadataAttempts,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -323,6 +335,7 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		recipientPkScript []byte
 		recipientEventID  uint64
 		ancestorPackages  []byte
+		metadataAttempts  uint64
 	)
 
 	records := []tlv.Record{
@@ -354,6 +367,9 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			incomingSnapshotAncestorPackagesType, &ancestorPackages,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotMetadataAttemptsType, &metadataAttempts,
 		),
 	}
 
@@ -414,6 +430,7 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 			[]byte(nil), recipientPkScript...,
 		),
 		RecipientEventID: recipientEventID,
+		MetadataAttempts: uint32(metadataAttempts),
 	}, nil
 }
 

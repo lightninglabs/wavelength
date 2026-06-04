@@ -18,6 +18,25 @@ import (
 // specify an explicit backoff.
 const defaultRetryDelay = 1 * time.Second
 
+const (
+	// metadataRetryBaseDelay is the initial backoff before re-issuing the
+	// authoritative incoming metadata query after a retryable failure.
+	metadataRetryBaseDelay = 1 * time.Second
+
+	// metadataRetryMaxDelay caps the exponential backoff between incoming
+	// metadata retries. Without a cap a long-lived stuck session would
+	// still re-query, just less often; the cap bounds the steady-state
+	// rate.
+	metadataRetryMaxDelay = 5 * time.Minute
+
+	// maxMetadataRetries bounds how many times the incoming receive FSM
+	// re-issues the metadata query before failing the session terminally.
+	// A VTXO that never lands in the indexer must stop being re-queried so
+	// one stuck session cannot spin the mailbox forever. With the base and
+	// cap above this is on the order of an hour of attempts.
+	maxMetadataRetries = 20
+)
+
 // unexpectedEvent returns a transition that stays in the current state and
 // emits no outbox work for an unexpected event.
 //

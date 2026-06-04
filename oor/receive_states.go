@@ -66,6 +66,12 @@ type ReceiveNotified struct {
 	FinalCheckpointPSBTs []*psbt.Packet
 
 	AncestorPackages []PackageArtifact
+
+	// MetadataAttempts counts how many times the authoritative metadata
+	// resolution has failed retryably for this session. It drives the
+	// exponential backoff and terminal give-up in handleReceiveOutboxError
+	// and is persisted in the snapshot so the bound survives restarts.
+	MetadataAttempts uint32
 }
 
 // String returns a human-readable representation of ReceiveNotified.
