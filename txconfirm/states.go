@@ -50,9 +50,12 @@ func (s *trackedTxStateNew) ProcessEvent(_ context.Context,
 }
 
 // trackedTxStateBroadcasting indicates the initial broadcast attempt is in
-// progress.
+// progress, or has failed to reach any mempool and is awaiting re-attempt.
+// The embedded progress carries the last attempt height and the consecutive
+// failure counter so the actor can pace retries and escalate to the operator.
 type trackedTxStateBroadcasting struct {
 	trackedTxData
+	trackedTxProgress
 }
 
 // String returns a human-readable representation of the broadcasting state.
@@ -74,6 +77,29 @@ func (s *trackedTxStateBroadcasting) ProcessEvent(_ context.Context,
 	*trackedTxStateTransition, error) {
 
 	switch e := event.(type) {
+	case *trackedTxBroadcastStarted:
+		// A re-attempt of the initial broadcast self-loops the
+		// Broadcasting state, preserving the accumulated progress
+		// (last attempt height and failure counter) until the attempt
+		// resolves to acceptance or another failure.
+		return &trackedTxStateTransition{
+			NextState: &trackedTxStateBroadcasting{
+				trackedTxData:     s.trackedTxData,
+				trackedTxProgress: s.trackedTxProgress,
+			},
+		}, nil
+
+	case *trackedTxBroadcastFailed:
+		// The attempt reached no mempool. Stay in Broadcasting with
+		// the updated progress so the next interval re-attempts rather
+		// than falsely reporting AwaitingConfirmation.
+		return &trackedTxStateTransition{
+			NextState: &trackedTxStateBroadcasting{
+				trackedTxData:     s.trackedTxData,
+				trackedTxProgress: e.Progress,
+			},
+		}, nil
+
 	case *trackedTxBroadcastAccepted:
 		return &trackedTxStateTransition{
 			NextState: &trackedTxStateAwaitingConfirmation{
@@ -85,16 +111,18 @@ func (s *trackedTxStateBroadcasting) ProcessEvent(_ context.Context,
 	case *trackedTxConfirmed:
 		return &trackedTxStateTransition{
 			NextState: &trackedTxStateConfirmed{
-				trackedTxData: s.trackedTxData,
-				ConfirmHeight: e.BlockHeight,
+				trackedTxData:     s.trackedTxData,
+				trackedTxProgress: s.trackedTxProgress,
+				ConfirmHeight:     e.BlockHeight,
 			},
 		}, nil
 
 	case *trackedTxFailed:
 		return &trackedTxStateTransition{
 			NextState: &trackedTxStateFailed{
-				trackedTxData: s.trackedTxData,
-				Reason:        e.Reason,
+				trackedTxData:     s.trackedTxData,
+				trackedTxProgress: s.trackedTxProgress,
+				Reason:            e.Reason,
 			},
 		}, nil
 

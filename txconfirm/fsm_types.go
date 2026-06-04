@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // trackedTxStateMachine is the protofsm instance used for one tracked txid.
@@ -75,8 +76,12 @@ type trackedTxData struct {
 // states after the transaction has been submitted at least once.
 type trackedTxProgress struct {
 	// LastBroadcastHeight is the chain height at which the last submission
-	// attempt completed.
-	LastBroadcastHeight int32
+	// attempt completed. It is None until the tx has been submitted at
+	// least once, so the retry/fee-bump interval check can distinguish "no
+	// attempt yet" from a genuine attempt at height zero (e.g. on a fresh
+	// chain or during early sync) rather than overloading a zero height as
+	// the sentinel.
+	LastBroadcastHeight fn.Option[int32]
 
 	// CurrentFeeRate is the fee rate used by the latest submission attempt.
 	CurrentFeeRate int64
@@ -84,6 +89,14 @@ type trackedTxProgress struct {
 	// BumpCount counts successful fee-bump rebroadcasts after the initial
 	// submission.
 	BumpCount int
+
+	// BroadcastFailures counts consecutive initial-broadcast attempts that
+	// reached no mempool at all (both the CPFP child sign and the
+	// direct-parent fallback failed). It is reset to zero once a broadcast
+	// succeeds and the tx advances to AwaitingConfirmation. The actor uses
+	// it to escalate to the operator after repeated deterministic failures
+	// without ever giving up on a tx that must still confirm.
+	BroadcastFailures int
 
 	// ChildTxid is the latest CPFP child txid when an anchor package was
 	// built.
@@ -106,6 +119,20 @@ type trackedTxBroadcastAccepted struct {
 
 // trackedTxEventSealed marks trackedTxBroadcastAccepted as a tracked-tx event.
 func (e *trackedTxBroadcastAccepted) trackedTxEventSealed() {}
+
+// trackedTxBroadcastFailed records that an initial broadcast attempt reached
+// no mempool at all. It keeps the tx in the Broadcasting state (rather than
+// falsely advancing to AwaitingConfirmation) so it is re-attempted on the
+// next interval, and carries the updated progress including the incremented
+// consecutive-failure counter.
+type trackedTxBroadcastFailed struct {
+	// Progress captures the broadcast metadata for the failed attempt,
+	// including the bumped BroadcastFailures counter.
+	Progress trackedTxProgress
+}
+
+// trackedTxEventSealed marks trackedTxBroadcastFailed as a tracked-tx event.
+func (e *trackedTxBroadcastFailed) trackedTxEventSealed() {}
 
 // trackedTxFeeBumpStarted records the start of a fee-bump rebroadcast
 // attempt.
@@ -227,9 +254,13 @@ func (t *trackedTx) currentFSMState() (trackedTxState, error) {
 	return state, nil
 }
 
-// trackedTxLastBroadcastHeight returns the state's latest broadcast height.
-func trackedTxLastBroadcastHeight(state trackedTxState) int32 {
+// trackedTxLastBroadcastHeight returns the state's latest broadcast height, or
+// None if the tx has not been submitted yet.
+func trackedTxLastBroadcastHeight(state trackedTxState) fn.Option[int32] {
 	switch s := state.(type) {
+	case *trackedTxStateBroadcasting:
+		return s.LastBroadcastHeight
+
 	case *trackedTxStateAwaitingConfirmation:
 		return s.LastBroadcastHeight
 
@@ -243,8 +274,20 @@ func trackedTxLastBroadcastHeight(state trackedTxState) int32 {
 		return s.LastBroadcastHeight
 
 	default:
-		return 0
+		return fn.None[int32]()
 	}
+}
+
+// trackedTxBroadcastFailures returns the state's consecutive failed-broadcast
+// count. Only the Broadcasting state tracks failures; every other state has
+// either not started broadcasting or already reached a mempool, so the count
+// is zero there.
+func trackedTxBroadcastFailures(state trackedTxState) int {
+	if s, ok := state.(*trackedTxStateBroadcasting); ok {
+		return s.BroadcastFailures
+	}
+
+	return 0
 }
 
 // trackedTxConfirmHeight returns the state's confirmation height if the

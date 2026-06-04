@@ -38,11 +38,18 @@ const (
 	TxStateNew TxState = iota
 
 	// TxStateBroadcasting indicates the initial broadcast attempt is in
-	// progress.
+	// progress, or that it failed to reach any mempool and is being
+	// re-attempted on each fee-bump interval. A tx in this state has NOT
+	// yet been accepted anywhere; it is distinct from
+	// TxStateAwaitingConfirmation, which is reported only once the tx (or a
+	// redundant parent on another path) has actually reached a mempool. A
+	// tx that cannot broadcast is never failed automatically — it retries
+	// until it lands and escalates to the operator after
+	// BroadcastFailureAlertThreshold consecutive failures.
 	TxStateBroadcasting
 
-	// TxStateAwaitingConfirmation indicates the transaction has been
-	// submitted and is waiting for chain confirmation.
+	// TxStateAwaitingConfirmation indicates the transaction has reached a
+	// mempool and is waiting for chain confirmation.
 	TxStateAwaitingConfirmation
 
 	// TxStateFeeBumping indicates a replacement or rebroadcast attempt is

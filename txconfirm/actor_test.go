@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,7 +16,9 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/walletcore"
@@ -571,6 +575,24 @@ func mustEnsure(t *testing.T, ref actor.ActorRef[Msg, Resp],
 	require.True(t, ok)
 
 	return typed
+}
+
+// mustTrackedState returns the current public state of a tracked tx by
+// re-issuing an idempotent ensure for the same subscriber. Re-ensuring an
+// existing txid attaches without re-broadcasting, so it is a side-effect-free
+// way to observe FSM state from the test goroutine.
+func mustTrackedState(t *testing.T, ref actor.ActorRef[Msg, Resp],
+	tx *wire.MsgTx, sub actor.TellOnlyRef[Notification]) TxState {
+
+	t.Helper()
+
+	resp := mustEnsure(t, ref, &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.False(t, resp.Created)
+
+	return resp.State
 }
 
 // mustCancel sends a CancelInterestReq and returns the typed response.
@@ -1188,8 +1210,9 @@ func TestFeeBumpOnNewBlocks(t *testing.T) {
 }
 
 // TestEnsureConfirmedWaitsForInitialCPFPInput verifies that an anchor parent
-// stays retryable when its first broadcast attempt lacks a confirmed fee
-// input.
+// whose first broadcast attempt reaches no mempool (no confirmed fee input)
+// stays in the Broadcasting state — not AwaitingConfirmation — and is
+// re-attempted on each interval without ever advancing to a terminal state.
 func TestEnsureConfirmedWaitsForInitialCPFPInput(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	walletRef := &fakeWallet{
@@ -1207,16 +1230,36 @@ func TestEnsureConfirmedWaitsForInitialCPFPInput(t *testing.T) {
 		Tx:         tx,
 		Subscriber: sub,
 	})
-	require.Equal(t, TxStateAwaitingConfirmation, resp.State)
+
+	// A tx that reached no mempool must report Broadcasting, not the
+	// misleading AwaitingConfirmation that #509 flagged.
+	require.Equal(t, TxStateBroadcasting, resp.State)
 	require.Equal(t, 0, chain.packageCallCount())
 	require.Equal(t, 0, chain.broadcastCallCount())
 	mustHaveNoNotification(t, sub)
 
+	// One block short of the interval: no re-attempt yet.
 	chain.emitBlock(t, 101)
 	require.Equal(t, 0, chain.packageCallCount())
+	require.Equal(
+		t, TxStateBroadcasting,
+		mustTrackedState(
+			t, ref.Ref(), tx, sub,
+		),
+	)
 
+	// Interval elapsed: a re-attempt fires but still fails (wallet broken),
+	// so the tx stays in Broadcasting and never reaches a mempool or a
+	// terminal state.
 	chain.emitBlock(t, 102)
 	require.Equal(t, 0, chain.packageCallCount())
+	require.Equal(
+		t, TxStateBroadcasting,
+		mustTrackedState(
+			t, ref.Ref(), tx, sub,
+		),
+	)
+	mustHaveNoNotification(t, sub)
 }
 
 // TestEnsureConfirmedRepeatedEnsureIsIdempotent verifies that repeating the
@@ -1460,4 +1503,305 @@ func TestTerminalEntryEvictedAfterFailure(t *testing.T) {
 		t, cancelResp.Removed,
 		"failed entry should have been evicted before cancel",
 	)
+}
+
+// flakyListWallet wraps a fakeWallet and makes ListUnspent fail a fixed number
+// of times before succeeding, simulating a wallet whose confirmed fee inputs
+// only become available after some delay.
+type flakyListWallet struct {
+	*fakeWallet
+
+	// remaining is the number of ListUnspent calls that still fail before
+	// the wallet starts returning its UTXOs.
+	remaining atomic.Int32
+}
+
+// ListUnspent fails while remaining calls are budgeted, then delegates to the
+// embedded fakeWallet.
+func (w *flakyListWallet) ListUnspent(ctx context.Context, minConfs,
+	maxConfs int32) ([]*walletcore.Utxo, error) {
+
+	if w.remaining.Add(-1) >= 0 {
+		return nil, fmt.Errorf("list temporarily unavailable")
+	}
+
+	return w.fakeWallet.ListUnspent(ctx, minConfs, maxConfs)
+}
+
+// TestEnsureConfirmedRetriesUntilBroadcastSucceeds verifies that a tx whose
+// initial broadcast reaches no mempool stays in Broadcasting, is re-attempted
+// on each interval, and finally advances to AwaitingConfirmation once the
+// broadcast succeeds — with the package submitted exactly once.
+func TestEnsureConfirmedRetriesUntilBroadcastSucceeds(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	walletRef := &flakyListWallet{
+		fakeWallet: &fakeWallet{
+			utxos: []*walletcore.Utxo{
+				makeWalletUTXO(t),
+			},
+		},
+	}
+
+	// Fail the initial attempt and the first retry; succeed on the second
+	// retry.
+	walletRef.remaining.Store(2)
+
+	ref, _ := newTestActor(t, Config{
+		ChainSource:           chain,
+		Wallet:                walletRef,
+		FeeBumpIntervalBlocks: 1,
+	})
+
+	tx := makeTestTx(true)
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.Equal(t, TxStateBroadcasting, resp.State)
+	require.Equal(t, 0, chain.packageCallCount())
+
+	// First retry still fails: tx stays in Broadcasting.
+	chain.emitBlock(t, 101)
+	require.Equal(
+		t, TxStateBroadcasting,
+		mustTrackedState(
+			t, ref.Ref(), tx, sub,
+		),
+	)
+	require.Equal(t, 0, chain.packageCallCount())
+
+	// Second retry succeeds: tx advances to AwaitingConfirmation and the
+	// package is submitted once.
+	chain.emitBlock(t, 102)
+	require.Equal(
+		t, TxStateAwaitingConfirmation,
+		mustTrackedState(
+			t, ref.Ref(), tx, sub,
+		),
+	)
+	require.Equal(t, 1, chain.packageCallCount())
+	mustHaveNoNotification(t, sub)
+}
+
+// TestEnsureConfirmedRetriesWhenFirstAttemptFailsAtHeightZero verifies that a
+// tx whose initial broadcast fails while the actor's best height is still zero
+// (a fresh chain or very early sync) is not wedged in Broadcasting forever. The
+// failed attempt records LastBroadcastHeight=Some(0), and because the retry
+// pacing keys on the recorded-height Option rather than overloading a zero
+// height as "never broadcast", the next interval re-attempts and the heal
+// advances the tx to AwaitingConfirmation. Before the fix this never re-armed.
+func TestEnsureConfirmedRetriesWhenFirstAttemptFailsAtHeightZero(t *testing.T) {
+	chain := newFakeChainSourceRef(0)
+	walletRef := &flakyListWallet{
+		fakeWallet: &fakeWallet{
+			utxos: []*walletcore.Utxo{
+				makeWalletUTXO(t),
+			},
+		},
+	}
+
+	// Fail only the initial attempt (recorded at height zero); the first
+	// retry succeeds.
+	walletRef.remaining.Store(1)
+
+	ref, _ := newTestActor(t, Config{
+		ChainSource:           chain,
+		Wallet:                walletRef,
+		FeeBumpIntervalBlocks: 1,
+	})
+
+	tx := makeTestTx(true)
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+
+	// The initial broadcast failed at best-height zero, so the tx stays in
+	// Broadcasting with a recorded height of zero.
+	require.Equal(t, TxStateBroadcasting, resp.State)
+	require.Equal(t, 0, chain.packageCallCount())
+
+	// One block elapses the interval (1 - 0 >= 1): the retry must fire and
+	// succeed, advancing the tx to AwaitingConfirmation rather than leaving
+	// it wedged at height zero.
+	chain.emitBlock(t, 1)
+	require.Equal(
+		t, TxStateAwaitingConfirmation,
+		mustTrackedState(
+			t, ref.Ref(), tx, sub,
+		),
+	)
+	require.Equal(t, 1, chain.packageCallCount())
+	mustHaveNoNotification(t, sub)
+}
+
+// TestEnsureConfirmedDefersToExistingParentBroadcast verifies that when the
+// package submission reports the parent is already known on another path (and
+// only the child failed), the tx advances to AwaitingConfirmation rather than
+// staying in Broadcasting — the conf watch rides the existing parent to
+// confirmation.
+func TestEnsureConfirmedDefersToExistingParentBroadcast(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+
+	tx := makeTestTx(true)
+	chain.packageErr = errors.Join(
+		chainbackends.NewPackageTxError(
+			"W1", tx.TxHash(),
+			"txn-already-known",
+		),
+		chainbackends.NewPackageTxError(
+			"W2", chainhash.Hash{0xab},
+			"bad-txns-inputs-missingorspent",
+		),
+	)
+
+	walletRef := &fakeWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXO(t),
+		},
+	}
+	ref, _ := newTestActor(t, Config{
+		ChainSource: chain,
+		Wallet:      walletRef,
+	})
+
+	tx2 := tx
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx2,
+		Subscriber: sub,
+	})
+
+	// A live parent exists on another path, so we await confirmation rather
+	// than retrying as a never-broadcast tx.
+	require.Equal(t, TxStateAwaitingConfirmation, resp.State)
+	require.Equal(t, 1, chain.packageCallCount())
+	mustHaveNoNotification(t, sub)
+}
+
+// TestEnsureConfirmedEscalatesAfterRepeatedFailures verifies that repeated
+// total broadcast failures escalate to an operator-visible warning once the
+// configured threshold is crossed, while the tx keeps retrying and never
+// advances to a terminal state.
+func TestEnsureConfirmedEscalatesAfterRepeatedFailures(t *testing.T) {
+	var buf bytes.Buffer
+	logger := btclog.NewSLogger(btclog.NewDefaultHandler(&buf))
+	logger.SetLevel(btclog.LevelTrace)
+
+	chain := newFakeChainSourceRef(100)
+	walletRef := &fakeWallet{
+		listErr: fmt.Errorf("list failed"),
+	}
+	ref, _ := newTestActor(t, Config{
+		ChainSource:                    chain,
+		Wallet:                         walletRef,
+		FeeBumpIntervalBlocks:          1,
+		BroadcastFailureAlertThreshold: 3,
+		Log:                            fn.Some[btclog.Logger](logger),
+	})
+
+	tx := makeTestTx(true)
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.Equal(t, TxStateBroadcasting, resp.State)
+
+	// Drive enough interval-paced retries to cross the alert threshold.
+	chain.emitBlock(t, 101)
+	chain.emitBlock(t, 102)
+	chain.emitBlock(t, 103)
+
+	// A synchronous round-trip flushes the actor mailbox, so all retry
+	// handling (and its logging) has completed before we inspect state and
+	// captured logs.
+	require.Equal(
+		t, TxStateBroadcasting,
+		mustTrackedState(
+			t, ref.Ref(), tx, sub,
+		),
+	)
+	require.Equal(t, 0, chain.packageCallCount())
+	mustHaveNoNotification(t, sub)
+
+	require.Contains(
+		t, buf.String(),
+		"operator intervention",
+		"repeated failures must escalate to the operator",
+	)
+}
+
+// TestEnsureConfirmedRetriesTransientPackageRejection verifies that an anchor
+// (CPFP) parent whose package submission is rejected for a transient reason
+// (e.g. min relay fee not met on the zero-fee anchor parent) stays in
+// Broadcasting and is re-attempted, rather than failing terminally. This is the
+// fund-risk retry contract: such a checkpoint must keep trying until it lands.
+func TestEnsureConfirmedRetriesTransientPackageRejection(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	chain.packageErr = fmt.Errorf("transaction rejected by the mempool " +
+		"because of low fees: min relay fee not met")
+	walletRef := &fakeWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXO(t),
+		},
+	}
+	ref, _ := newTestActor(t, Config{
+		ChainSource:           chain,
+		Wallet:                walletRef,
+		FeeBumpIntervalBlocks: 1,
+	})
+
+	tx := makeTestTx(true)
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+
+	// A transient package rejection must NOT fail the fund-risk tx; it
+	// stays in Broadcasting for re-attempt.
+	require.Equal(t, TxStateBroadcasting, resp.State)
+	require.Equal(t, 1, chain.packageCallCount())
+	mustHaveNoNotification(t, sub)
+
+	// The next interval re-attempts (hitting the same rejection) and the tx
+	// remains non-terminal.
+	chain.emitBlock(t, 101)
+	require.Equal(
+		t, TxStateBroadcasting,
+		mustTrackedState(
+			t, ref.Ref(), tx, sub,
+		),
+	)
+	require.Equal(t, 2, chain.packageCallCount())
+	mustHaveNoNotification(t, sub)
+}
+
+// TestEnsureConfirmedFailsPermanentBroadcastError verifies that a structurally
+// permanent broadcast error (a non-TRUC parent) fails terminally instead of
+// spinning in the Broadcasting retry loop.
+func TestEnsureConfirmedFailsPermanentBroadcastError(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	ref, _ := newTestActor(t, Config{
+		ChainSource: chain,
+		Wallet:      &fakeWallet{},
+	})
+
+	// A v2 (non-TRUC) parent is rejected by the broadcaster's version gate
+	// with ErrNonTRUCParent on every attempt.
+	tx := makeTestTx(true)
+	tx.Version = 2
+
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.Equal(t, TxStateFailed, resp.State)
+
+	failed := mustAwaitNotification(t, sub)
+	require.IsType(t, &TxFailed{}, failed)
 }
