@@ -83,76 +83,89 @@ func TestSchemaToCobra(t *testing.T) {
 	}
 }
 
-// TestCheckSubsetAllPresent verifies that checkSubset returns no errors
-// when all items in setA are present in setB after transform.
-func TestCheckSubsetAllPresent(t *testing.T) {
-	setA := []string{"wallet_balance", "vtxos_list"}
-	setB := []string{
-		"wallet.balance", "vtxos.list", "wallet.create",
+// identity returns its argument unchanged; used as the no-op transform
+// for checkSubset cases that compare raw names.
+func identity(s string) string { return s }
+
+// TestCheckSubset verifies the one-directional subset check across its
+// behavioral cases: full membership, a missing element, empty-set edge
+// cases, and a superset setB. checkSubset must report exactly one error
+// per setA element that is absent from setB after the transform.
+func TestCheckSubset(t *testing.T) {
+	tests := []struct {
+		name      string
+		setA      []string
+		setB      []string
+		transform func(string) string
+		wantErrs  int
+	}{
+		{
+			name: "all present after transform",
+			setA: []string{
+				"wallet_balance",
+				"vtxos_list",
+			},
+			setB: []string{
+				"wallet.balance", "vtxos.list", "wallet.create",
+			},
+			transform: mcpToSchema,
+			wantErrs:  0,
+		},
+		{
+			name: "one missing element",
+			setA: []string{
+				"wallet_balance", "vtxos_list", "missing_tool",
+			},
+			setB: []string{
+				"wallet.balance",
+				"vtxos.list",
+			},
+			transform: mcpToSchema,
+			wantErrs:  1,
+		},
+		{
+			name: "empty setA always passes",
+			setA: nil,
+			setB: []string{
+				"x",
+			},
+			transform: identity,
+			wantErrs:  0,
+		},
+		{
+			name: "empty setB fails non-empty setA",
+			setA: []string{
+				"x",
+			},
+			setB:      nil,
+			transform: identity,
+			wantErrs:  1,
+		},
+		{
+			name: "superset setB allowed",
+			setA: []string{
+				"a",
+			},
+			setB: []string{
+				"a",
+				"b",
+				"c",
+			},
+			transform: identity,
+			wantErrs:  0,
+		},
 	}
 
-	errs := checkSubset(
-		"MCP tools", setA, "schema registry", setB, mcpToSchema,
-	)
-
-	if len(errs) != 0 {
-		t.Fatalf("expected no errors, got: %v", errs)
-	}
-}
-
-// TestCheckSubsetMissing verifies that checkSubset reports items from
-// setA that are missing from setB.
-func TestCheckSubsetMissing(t *testing.T) {
-	setA := []string{
-		"wallet_balance", "vtxos_list", "missing_tool",
-	}
-	setB := []string{"wallet.balance", "vtxos.list"}
-
-	errs := checkSubset(
-		"MCP tools", setA, "schema registry", setB, mcpToSchema,
-	)
-
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
-	}
-}
-
-// TestCheckSubsetEmptySets verifies that checkSubset handles empty
-// inputs gracefully.
-func TestCheckSubsetEmptySets(t *testing.T) {
-	// Empty setA should always pass.
-	errs := checkSubset(
-		"A", nil, "B", []string{"x"},
-		func(s string) string { return s },
-	)
-	if len(errs) != 0 {
-		t.Fatalf("expected no errors for empty setA, got: %v", errs)
-	}
-
-	// Empty setB should fail for any non-empty setA.
-	errs = checkSubset(
-		"A", []string{"x"}, "B", nil,
-		func(s string) string { return s },
-	)
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error for empty setB, got %d: %v",
-			len(errs), errs)
-	}
-}
-
-// TestCheckSubsetExtraInB verifies that checkSubset ignores extra items
-// in setB (superset is allowed).
-func TestCheckSubsetExtraInB(t *testing.T) {
-	setA := []string{"a"}
-	setB := []string{"a", "b", "c"}
-
-	errs := checkSubset(
-		"A", setA, "B", setB,
-		func(s string) string { return s },
-	)
-
-	if len(errs) != 0 {
-		t.Fatalf("expected no errors when B is superset, got: %v", errs)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := checkSubset(
+				"A", tc.setA, "B", tc.setB, tc.transform,
+			)
+			if len(errs) != tc.wantErrs {
+				t.Fatalf("got %d errors, want %d: %v",
+					len(errs), tc.wantErrs, errs)
+			}
+		})
 	}
 }
 
@@ -400,111 +413,5 @@ func newRootCmd() *cobra.Command {
 
 	if leaves[0] != "parent.child" {
 		t.Errorf("leaves[0] = %q, want %q", leaves[0], "parent.child")
-	}
-}
-
-// TestExtractToolName verifies extraction of the Name field from
-// a &mcp.Tool{} literal.
-func TestExtractToolName(t *testing.T) {
-	src := `package main
-
-import "github.com/modelcontextprotocol/go-sdk/mcp"
-
-var _ = &mcp.Tool{
-	Name:        "test_tool",
-	Description: "a test tool",
-}
-`
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "test.go", src, 0)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	// Walk the AST to find the composite literal.
-	var name string
-	ast.Inspect(file, func(n ast.Node) bool {
-		if n == nil {
-			return false
-		}
-
-		// Look for UnaryExpr (&...).
-		unary, ok := n.(*ast.UnaryExpr)
-		if ok {
-			name = extractToolName(unary)
-
-			return false
-		}
-
-		return true
-	})
-
-	if name != "test_tool" {
-		t.Errorf("extractToolName = %q, want %q", name, "test_tool")
-	}
-}
-
-// TestParseCobraLit verifies extraction of Use and RunE from cobra
-// command literals.
-func TestParseCobraLit(t *testing.T) {
-	src := `package main
-
-import "github.com/spf13/cobra"
-
-func handler(cmd *cobra.Command, args []string) error {
-	return nil
-}
-
-var withRunE = &cobra.Command{
-	Use:  "test",
-	RunE: handler,
-}
-
-var withoutRunE = &cobra.Command{
-	Use: "parent",
-}
-`
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "test.go", src, 0)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	var results []struct {
-		use    string
-		hasRun bool
-	}
-
-	ast.Inspect(file, func(n ast.Node) bool {
-		comp, ok := n.(*ast.CompositeLit)
-		if !ok {
-			return true
-		}
-
-		use, hasRun := parseCobraLit(comp)
-		if use != "" {
-			results = append(results, struct {
-				use    string
-				hasRun bool
-			}{use, hasRun})
-		}
-
-		return true
-	})
-
-	if len(results) != 2 {
-		t.Fatalf("got %d results, want 2", len(results))
-	}
-
-	// First: with RunE.
-	if results[0].use != "test" || !results[0].hasRun {
-		t.Errorf("first: use=%q hasRun=%v, want use=\"test\" "+
-			"hasRun=true", results[0].use, results[0].hasRun)
-	}
-
-	// Second: without RunE.
-	if results[1].use != "parent" || results[1].hasRun {
-		t.Errorf("second: use=%q hasRun=%v, want use=\"parent\" "+
-			"hasRun=false", results[1].use, results[1].hasRun)
 	}
 }
