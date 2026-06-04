@@ -289,3 +289,202 @@ func TestRegistryFailedAdmissionNotifiesRecoverable(t *testing.T) {
 	require.Equal(t, PhaseFailed, record.Phase)
 	require.True(t, record.RecoverableFailure)
 }
+
+// TestRegistryReadmitsTargetAfterRecoverableFailure verifies that once a VTXO
+// has been rolled back to live by a recoverable (no-footprint) unroll failure,
+// a fresh exit for the same outpoint is admitted rather than deduped against
+// the dead recoverable record. Without this, the darepo-client#602 fix would
+// trade a guaranteed strand for a deferred one: the VTXO would recover to live
+// but could never be unrolled again, because the terminal record blocks every
+// subsequent admission. This exercises the in-memory pending-cache arm of the
+// dedup gate (the record lingers in r.pending after failAdmittedChild).
+func TestRegistryReadmitsTargetAfterRecoverableFailure(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	target := proof.TargetOutpoint()
+	store := newMemRegistryStore()
+
+	observer := &captureExitObserver{}
+	var observerRef actor.TellOnlyRef[vtxo.ManagerMsg] = observer
+
+	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
+		Store:            store,
+		DeliveryStore:    newMemCheckpointStore(),
+		ProofAssembler:   &mockProofAssembler{proof: proof},
+		VTXOStore:        &mockVTXOStore{desc: desc},
+		TxConfirmRef:     &fakeTxConfirmRef{},
+		ChainSource:      &fakeRegistryChainSourceRef{height: 200},
+		Wallet:           &fakeSweepWallet{},
+		VTXOExitObserver: fn.Some(observerRef),
+	})
+	t.Cleanup(registry.Stop)
+
+	// The first spawn fails its start (pre-broadcast admission failure,
+	// the #602 trigger); the second spawn is a healthy child. A counter
+	// distinguishes the two admissions deterministically.
+	var spawnCount int
+	registry.behavior.spawnFunc = func(_ context.Context,
+		spawnTarget wire.OutPoint) (*VTXOUnrollActor, error) {
+
+		spawnCount++
+		firstSpawn := spawnCount == 1
+		childBehavior := actor.NewFunctionBehavior(
+			func(_ context.Context, msg Msg) fn.Result[Resp] {
+				switch msg.(type) {
+				case *StartUnrollRequest:
+					if firstSpawn {
+						return fn.Err[Resp](
+							errors.New(
+								"start boom",
+							),
+						)
+					}
+
+					return fn.Ok[Resp](&AckResp{})
+
+				case *GetStateRequest:
+					return fn.Ok[Resp](&GetStateResp{
+						Started: !firstSpawn,
+						Phase:   PhasePending,
+					})
+
+				default:
+					return fn.Err[Resp](
+						fmt.Errorf("unexpected msg %T",
+							msg),
+					)
+				}
+			},
+		)
+
+		// Test children are owned by t.Cleanup after creation.
+		//nolint:contextcheck
+		return newTestUnrollChild(t, spawnTarget, childBehavior), nil
+	}
+
+	// First admission fails pre-broadcast: failAdmittedChild records a
+	// recoverable terminal row, leaves it in r.pending, and notifies the
+	// manager to roll the VTXO back to live.
+	_, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint: target,
+		Trigger:  TriggerManual,
+	}).Await(t.Context()).Unpack()
+	require.Error(t, err)
+
+	require.Eventually(t, func() bool {
+		return len(observer.notifications()) == 1
+	}, testTimeout, 10*time.Millisecond,
+		"failed admission should roll the VTXO back to live")
+
+	pre, err := store.GetRecord(t.Context(), target)
+	require.NoError(t, err)
+	require.NotNil(t, pre)
+	require.True(
+		t, pre.RecoverableFailure,
+		"the failed admission must leave a recoverable terminal record",
+	)
+
+	// Second admission for the SAME outpoint must re-admit (Created=true)
+	// rather than dedup against the recoverable record.
+	resp, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint: target,
+		Trigger:  TriggerManual,
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	ensureResp, ok := resp.(*EnsureUnrollResp)
+	require.True(t, ok)
+	require.True(
+		t, ensureResp.Created, "a recovered VTXO must be "+
+			"re-admittable, not deduped against the dead "+
+			"recoverable record",
+	)
+	require.Equal(
+		t, 2, spawnCount, "the second Ensure must spawn a fresh child",
+	)
+
+	// The stale recoverable record is overwritten by the fresh admission,
+	// so the VTXO can progress through a new exit.
+	post, err := store.GetRecord(t.Context(), target)
+	require.NoError(t, err)
+	require.NotNil(t, post)
+	require.False(
+		t, post.RecoverableFailure,
+		"re-admission must overwrite the stale recoverable record",
+	)
+	require.Equal(t, PhasePending, post.Phase)
+}
+
+// TestRegistryReadmitsTargetAfterRecoverableFailureAcrossRestart verifies the
+// durable arm of the re-admission path: after a restart, the in-memory pending
+// cache is empty, so the only surviving artifact of a recovered exit is the
+// FailedRecoverable row on disk. A fresh Ensure must re-admit through the
+// Store.GetRecord branch rather than dedup against that terminal record. This
+// is the boot-time companion to TestRegistryReadmitsTargetAfterRecoverable
+// Failure (which covers the same-process r.pending arm).
+func TestRegistryReadmitsTargetAfterRecoverableFailureAcrossRestart(
+	t *testing.T) {
+
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	target := proof.TargetOutpoint()
+	store := newMemRegistryStore()
+
+	// Seed the post-recovery durable state a restart would leave behind: a
+	// FailedRecoverable terminal record on disk, with no in-memory registry
+	// state (the process restarted). Boot reconciliation has already rolled
+	// the VTXO back to live; this stale record is the only artifact left.
+	err := store.MarkTerminal(
+		t.Context(), target, PhaseFailed, true, "min relay fee", nil,
+	)
+	require.NoError(t, err)
+
+	seeded, err := store.GetRecord(t.Context(), target)
+	require.NoError(t, err)
+	require.NotNil(t, seeded)
+	require.True(t, seeded.IsTerminal())
+	require.True(t, seeded.RecoverableFailure)
+
+	observer := &captureExitObserver{}
+	var observerRef actor.TellOnlyRef[vtxo.ManagerMsg] = observer
+
+	// A fresh registry over the seeded store models the post-restart
+	// process: r.active and r.pending start empty.
+	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
+		Store:            store,
+		DeliveryStore:    newMemCheckpointStore(),
+		ProofAssembler:   &mockProofAssembler{proof: proof},
+		VTXOStore:        &mockVTXOStore{desc: desc},
+		TxConfirmRef:     &fakeTxConfirmRef{},
+		ChainSource:      &fakeRegistryChainSourceRef{height: 200},
+		Wallet:           &fakeSweepWallet{},
+		VTXOExitObserver: fn.Some(observerRef),
+	})
+	t.Cleanup(registry.Stop)
+
+	// The Ensure must re-admit through the durable GetRecord path, spawning
+	// a new child rather than returning the historical ActorID with
+	// Created=false.
+	resp, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint: target,
+		Trigger:  TriggerManual,
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	ensureResp, ok := resp.(*EnsureUnrollResp)
+	require.True(t, ok)
+	require.True(
+		t, ensureResp.Created, "after restart, a recovered VTXO "+
+			"must re-admit via the durable record path",
+	)
+
+	// The terminal recoverable row is overwritten with a fresh pending
+	// record so the new exit can make progress.
+	post, err := store.GetRecord(t.Context(), target)
+	require.NoError(t, err)
+	require.NotNil(t, post)
+	require.False(
+		t, post.RecoverableFailure,
+		"re-admission must overwrite the stale recoverable record",
+	)
+}
