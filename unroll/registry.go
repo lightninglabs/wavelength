@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -33,6 +34,12 @@ const (
 	// terminalChildDrainTimeout bounds the cleanup probe used before
 	// stopping a terminal child actor.
 	terminalChildDrainTimeout = 30 * time.Second
+
+	// legacyProofTxConfirmFailure is the old terminal failure string used
+	// when txconfirm synchronously reported TxStateFailed for a proof tx.
+	// New txconfirm code keeps transient anchor-broadcast failures
+	// retryable, but legacy DBs can still carry this false-terminal latch.
+	legacyProofTxConfirmFailure = "txconfirm returned failed state"
 )
 
 // RegistryRecord stores the coarse control-plane view of one unroll target.
@@ -425,6 +432,15 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 	// the durable store. Re-spawning a fresh actor on top of an existing
 	// record would clobber the recorded sweep txid or fail reason.
 	if record, ok := r.pending[req.Outpoint]; ok {
+		if shouldRetryFailedCriticalRecord(record) {
+			resp, err := r.retryFailedCriticalRecord(ctx, record)
+			if err != nil {
+				return fn.Err[RegistryResp](err)
+			}
+
+			return fn.Ok[RegistryResp](resp)
+		}
+
 		return fn.Ok[RegistryResp](&EnsureUnrollResp{
 			ActorID: record.ActorID,
 			Created: false,
@@ -438,67 +454,12 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		)
 	}
 	if existing != nil {
-		// A durable record exists but no child is live for it. Two
-		// sub-cases:
-		//
-		//   1. Terminal record (Completed/Failed) — return the
-		//      historical ActorID so callers see a stable identity
-		//      and do not clobber the recorded sweep txid or
-		//      failure reason.
-		//
-		//   2. Non-terminal record — the actor was admitted in a
-		//      previous boot but never resumed (e.g. RestoreNonTerminal
-		//      hit a transient ChainSource error). Attempt an inline
-		//      restore so a fresh Ensure from the chain resolver or
-		//      RPC layer can recover from a transient failure on the
-		//      previous boot. If restore fails again, surface the
-		//      error so the caller can retry; the durable record
-		//      stays non-terminal and will be retried on the next
-		//      Ensure / next daemon restart.
-		if !existing.IsTerminal() {
-			if err := r.validateRestorableRecords(
-				[]RegistryRecord{*existing},
-			); err != nil {
-				return fn.Err[RegistryResp](
-					fmt.Errorf("validate existing record "+
-						"for restore: %w", err),
-				)
-			}
-
-			height, err := r.queryBestHeight(ctx)
-			if err != nil {
-				return fn.Err[RegistryResp](
-					fmt.Errorf("best height for "+
-						"restore: %w", err),
-				)
-			}
-
-			child, err := r.tryRestoreOne(ctx, *existing, height)
-			if err != nil {
-				return fn.Err[RegistryResp](
-					fmt.Errorf("restore existing "+
-						"record: %w", err),
-				)
-			}
-
-			r.active[req.Outpoint] = child
-
-			// Mirror the historical record into r.pending so
-			// handleTerminated can carry over Trigger / ActorID
-			// without an extra store lookup, and so handleGetStatus
-			// answers from cache while the child runs.
-			r.pending[req.Outpoint] = cloneRegistryRecord(*existing)
-
-			return fn.Ok[RegistryResp](&EnsureUnrollResp{
-				ActorID: child.Ref().ID(),
-				Created: false,
-			})
+		resp, err := r.handleStoredEnsureRecord(ctx, *existing)
+		if err != nil {
+			return fn.Err[RegistryResp](err)
 		}
 
-		return fn.Ok[RegistryResp](&EnsureUnrollResp{
-			ActorID: existing.ActorID,
-			Created: false,
-		})
+		return fn.Ok[RegistryResp](resp)
 	}
 
 	height, err := r.queryBestHeight(ctx)
@@ -644,6 +605,55 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		ActorID: child.Ref().ID(),
 		Created: true,
 	})
+}
+
+// handleStoredEnsureRecord handles a durable record found during EnsureUnroll
+// after the active/pending in-memory checks missed. Terminal records normally
+// dedup to historical status, while non-terminal records are restored inline so
+// a fresh Ensure can recover a failed boot restore. The only terminal exception
+// is the narrow critical-expiry false-failure repair path.
+func (r *registryBehavior) handleStoredEnsureRecord(ctx context.Context,
+	record RegistryRecord) (*EnsureUnrollResp, error) {
+
+	if shouldRetryFailedCriticalRecord(record) {
+		return r.retryFailedCriticalRecord(ctx, record)
+	}
+
+	if record.IsTerminal() {
+		return &EnsureUnrollResp{
+			ActorID: record.ActorID,
+			Created: false,
+		}, nil
+	}
+
+	if err := r.validateRestorableRecords(
+		[]RegistryRecord{record},
+	); err != nil {
+		return nil, fmt.Errorf("validate existing record for "+
+			"restore: %w", err)
+	}
+
+	height, err := r.queryBestHeight(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("best height for restore: %w", err)
+	}
+
+	child, err := r.tryRestoreOne(ctx, record, height)
+	if err != nil {
+		return nil, fmt.Errorf("restore existing record: %w", err)
+	}
+
+	r.active[record.TargetOutpoint] = child
+
+	// Mirror the historical record into r.pending so handleTerminated can
+	// carry over Trigger / ActorID without an extra store lookup, and so
+	// handleGetStatus answers from cache while the child runs.
+	r.pending[record.TargetOutpoint] = cloneRegistryRecord(record)
+
+	return &EnsureUnrollResp{
+		ActorID: child.Ref().ID(),
+		Created: false,
+	}, nil
 }
 
 // watchChildAdmissionResult waits for a previously enqueued child start to
@@ -897,6 +907,31 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 			record.ActorID = child.Ref().ID()
 		}
 
+		if shouldRetryFailedCriticalRecord(record) {
+			child.Stop()
+			delete(r.active, req.Outpoint)
+
+			resp, err := r.retryFailedCriticalRecord(ctx, record)
+			if err != nil {
+				r.log.WarnS(ctx, "Failed to retry critical "+
+					"unroll after terminal notification",
+					err,
+					slog.String(
+						"outpoint",
+						req.Outpoint.String(),
+					),
+					slog.String("actor_id", record.ActorID),
+				)
+
+				// Fall through to persist the terminal record
+				// so operators can see the failure instead of
+				// losing the only status signal for this
+				// target.
+			} else {
+				return fn.Ok[RegistryResp](resp)
+			}
+		}
+
 		// Terminal child drain uses its own bounded cleanup context.
 		//nolint:contextcheck
 		stopChildAfterDrain(child)
@@ -909,6 +944,179 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 	r.requestPersist(req.Outpoint, 0)
 
 	return fn.Ok[RegistryResp](&RegistryAckResp{})
+}
+
+// shouldRetryFailedCriticalRecord reports whether a failed terminal record is
+// safe to turn back into an active recovery job. The scope is deliberately
+// narrow: only critical/restart recovery jobs that failed before any sweep tx
+// existed, and only for the legacy proof-tx txconfirm failure that current
+// txconfirm no longer treats as terminal for transient anchor-broadcast cases.
+func shouldRetryFailedCriticalRecord(record RegistryRecord) bool {
+	if record.Phase != PhaseFailed {
+		return false
+	}
+
+	switch record.Trigger {
+	case TriggerCriticalExpiry, TriggerRestart:
+	default:
+		return false
+	}
+
+	if record.SweepTxid != nil {
+		return false
+	}
+
+	return strings.Contains(record.FailReason, "proof tx") &&
+		strings.Contains(record.FailReason, legacyProofTxConfirmFailure)
+}
+
+// retryFailedCriticalRecord clears a stale failed checkpoint and starts a fresh
+// recovery actor for a critical-expiry target. The VTXO remains
+// recovery-owned: the control-plane row goes back to a non-terminal phase, but
+// the target is never returned to the spendable Live set.
+func (r *registryBehavior) retryFailedCriticalRecord(ctx context.Context,
+	record RegistryRecord) (*EnsureUnrollResp, error) {
+
+	if err := validateExitPolicyIdentity(
+		record.ExitPolicyKind, record.ExitPolicyRef,
+	); err != nil {
+		return nil, fmt.Errorf("validate retry record: %w", err)
+	}
+
+	if err := r.validateResolverCoversRecords(
+		[]RegistryRecord{record},
+	); err != nil {
+		return nil, fmt.Errorf("validate retry policy resolver: %w",
+			err)
+	}
+
+	if r.cfg.DeliveryStore == nil {
+		return nil, fmt.Errorf("delivery store must be provided")
+	}
+
+	actorID := record.ActorID
+	if actorID == "" {
+		actorID = actorIDForTarget(record.TargetOutpoint)
+	}
+
+	if err := r.cfg.DeliveryStore.DeleteCheckpoint(
+		ctx, actorID,
+	); err != nil {
+		return nil, fmt.Errorf("delete failed unroll checkpoint: %w",
+			err)
+	}
+
+	height, err := r.queryBestHeight(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("best height for retry: %w", err)
+	}
+
+	child, err := r.spawn(ctx, record.TargetOutpoint)
+	if err != nil {
+		return nil, fmt.Errorf("spawn retry child: %w", err)
+	}
+
+	retryRecord := cloneRegistryRecord(record)
+	retryRecord.ActorID = child.Ref().ID()
+	retryRecord.Phase = PhasePending
+	retryRecord.FailReason = ""
+	retryRecord.SweepTxid = nil
+
+	if err := r.cfg.Store.UpsertRecord(ctx, retryRecord); err != nil {
+		child.Stop()
+
+		return nil, fmt.Errorf("persist retry record: %w", err)
+	}
+
+	r.active[record.TargetOutpoint] = child
+	r.pending[record.TargetOutpoint] = cloneRegistryRecord(retryRecord)
+
+	startReq := &StartUnrollRequest{
+		Height:         height,
+		Trigger:        record.Trigger,
+		ExitPolicyKind: record.ExitPolicyKind,
+		ExitPolicyRef:  record.ExitPolicyRef,
+	}
+	startCtx, cancelStart := context.WithTimeout(
+		context.WithoutCancel(ctx), childAdmissionTimeout,
+	)
+	defer cancelStart()
+
+	startFuture := child.Ref().Ask(context.WithoutCancel(ctx), startReq)
+	_, err = startFuture.Await(startCtx).Unpack()
+	if err != nil {
+		if isCancellationRace(err) {
+			r.watchChildAdmissionResult(
+				context.WithoutCancel(ctx),
+				record.TargetOutpoint, child, startFuture,
+			)
+			r.log.WarnS(ctx, "Retried unroll child start did not "+
+				"respond before admission timeout; trusting "+
+				"durable enqueue", err,
+				slog.String(
+					"outpoint",
+					record.TargetOutpoint.String(),
+				),
+				slog.String("actor_id", child.Ref().ID()),
+			)
+
+			return &EnsureUnrollResp{
+				ActorID: child.Ref().ID(),
+				Created: true,
+			}, nil
+		}
+
+		r.failAdmittedChild(
+			ctx, record.TargetOutpoint, child,
+			fmt.Errorf("start retry child: %w", err),
+		)
+
+		return nil, fmt.Errorf("start retry child: %w", err)
+	}
+
+	state, err := r.childState(startCtx, child)
+	if err != nil {
+		if !isCancellationRace(err) {
+			r.failAdmittedChild(
+				ctx, record.TargetOutpoint, child,
+				fmt.Errorf("read retry child state: %w", err),
+			)
+
+			return nil, fmt.Errorf("read retry child state: %w",
+				err)
+		}
+
+		r.log.WarnS(ctx, "Failed to read retried unroll state "+
+			"after durable admission", err,
+			slog.String("outpoint", record.TargetOutpoint.String()),
+			slog.String("actor_id", child.Ref().ID()),
+		)
+
+		return &EnsureUnrollResp{
+			ActorID: child.Ref().ID(),
+			Created: true,
+		}, nil
+	}
+
+	retryRecord = recordFromChildState(
+		record.TargetOutpoint, child.Ref().ID(), state,
+	)
+	r.pending[record.TargetOutpoint] = cloneRegistryRecord(retryRecord)
+	if err := r.cfg.Store.UpsertRecord(startCtx, retryRecord); err != nil {
+		r.log.WarnS(ctx, "Failed to refine retried unroll "+
+			"admission record", err,
+			slog.String("outpoint", record.TargetOutpoint.String()),
+			slog.String("actor_id", child.Ref().ID()),
+		)
+		// Registry persistence retries are actor-owned follow-up work.
+		//nolint:contextcheck
+		r.requestPersist(record.TargetOutpoint, 0)
+	}
+
+	return &EnsureUnrollResp{
+		ActorID: child.Ref().ID(),
+		Created: true,
+	}, nil
 }
 
 // stopChildAfterDrain stops a terminal child only after a queued status probe

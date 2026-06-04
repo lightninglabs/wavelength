@@ -656,6 +656,142 @@ func TestRegistryTerminalNotificationMarksStore(t *testing.T) {
 	require.Contains(t, after.FailReason, "proof tx")
 }
 
+// TestRegistryEnsureRepairsLegacyCriticalProofFailure verifies that a legacy
+// terminal critical-expiry row carrying the old txconfirm failed-state reason
+// is turned back into a running recovery job instead of staying stranded
+// forever.
+func TestRegistryEnsureRepairsLegacyCriticalProofFailure(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	registry, store, checkpoints, txconfirmRef := newRegistryHarness(
+		t, proof, desc,
+	)
+
+	target := proof.TargetOutpoint()
+	actorID := actorIDForTarget(target)
+	rootTxid := proof.RootTxids()[0]
+	failReason := "proof tx " + rootTxid.String() +
+		" failed: txconfirm returned failed state"
+
+	err := store.UpsertRecord(t.Context(), RegistryRecord{
+		TargetOutpoint: target,
+		ActorID:        actorID,
+		Trigger:        TriggerCriticalExpiry,
+		Phase:          PhaseFailed,
+		FailReason:     failReason,
+	})
+	require.NoError(t, err)
+
+	raw, err := encodeCheckpoint(&actorCheckpoint{
+		Version: checkpointVersion,
+		Height:  110,
+		Started: true,
+		Trigger: TriggerCriticalExpiry,
+		State: unrollplan.State{
+			InFlightTxids: []chainhash.Hash{rootTxid},
+		},
+		Fail: failReason,
+	})
+	require.NoError(t, err)
+	err = checkpoints.SaveCheckpoint(t.Context(), actor.CheckpointParams{
+		ActorID:   actorID,
+		StateType: checkpointStateType,
+		StateData: raw,
+		Version:   checkpointVersion,
+	})
+	require.NoError(t, err)
+
+	resp, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint: target,
+		Trigger:  TriggerRestart,
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	ensureResp, ok := resp.(*EnsureUnrollResp)
+	require.True(t, ok)
+	require.True(t, ensureResp.Created)
+	require.Equal(t, actorID, ensureResp.ActorID)
+
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(rootTxid) == 1
+	}, testTimeout, 10*time.Millisecond)
+
+	statusResp, err := registry.Ref().Ask(
+		t.Context(), &GetStatusRequest{
+			Outpoint: target,
+		},
+	).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	status, ok := statusResp.(*GetStatusResp)
+	require.True(t, ok)
+	require.True(t, status.Found)
+	require.True(t, status.Active)
+	require.Equal(t, PhaseMaterializing, status.Phase)
+	require.Empty(t, status.FailReason)
+
+	checkpoint := mustDecodeCheckpoint(t, checkpoints, actorID)
+	require.Empty(t, checkpoint.Fail)
+
+	record, err := store.GetRecord(t.Context(), target)
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	require.Equal(t, PhaseMaterializing, record.Phase)
+	require.Empty(t, record.FailReason)
+}
+
+// TestRegistryRetriesRuntimeCriticalProofFailure verifies the no-restart path:
+// when a critical-expiry child reaches the same old false-terminal proof
+// failure, the registry clears the failed checkpoint and re-drives recovery in
+// the same daemon process.
+func TestRegistryRetriesRuntimeCriticalProofFailure(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	registry, store, checkpoints, txconfirmRef := newRegistryHarness(
+		t, proof, desc,
+	)
+
+	target := proof.TargetOutpoint()
+	actorID := actorIDForTarget(target)
+	rootTxid := proof.RootTxids()[0]
+	txconfirmRef.setImmediateFailedOnce(rootTxid, "old failed state")
+
+	_, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+		Outpoint: target,
+		Trigger:  TriggerCriticalExpiry,
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(rootTxid) >= 2
+	}, testTimeout, 10*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		resp, err := registry.Ref().Ask(
+			t.Context(), &GetStatusRequest{
+				Outpoint: target,
+			},
+		).Await(t.Context()).Unpack()
+		require.NoError(t, err)
+
+		status, ok := resp.(*GetStatusResp)
+		require.True(t, ok)
+
+		return status.Found && status.Active &&
+			status.Phase == PhaseMaterializing &&
+			status.FailReason == ""
+	}, testTimeout, 10*time.Millisecond)
+
+	checkpoint := mustDecodeCheckpoint(t, checkpoints, actorID)
+	require.Empty(t, checkpoint.Fail)
+
+	record, err := store.GetRecord(t.Context(), target)
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	require.Equal(t, PhaseMaterializing, record.Phase)
+	require.Empty(t, record.FailReason)
+}
+
 // TestRegistryTerminalNotificationDrainsChildBeforeStop verifies that the
 // registry does not cancel a child synchronously from the terminal-notification
 // handler. A child notifies the registry from its own message transaction, so

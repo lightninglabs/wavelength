@@ -120,6 +120,7 @@ type fakeTxConfirmRef struct {
 	responseStates map[chainhash.Hash]txconfirm.TxState
 	confirmHeights map[chainhash.Hash]int32
 	failureReasons map[chainhash.Hash]string
+	failOnce       map[chainhash.Hash]bool
 }
 
 // ID returns the fake actor ID.
@@ -153,6 +154,13 @@ func (f *fakeTxConfirmRef) Ask(_ context.Context,
 	f.requests = append(f.requests, req)
 	state := f.responseStates[req.Tx.TxHash()]
 	height := f.confirmHeights[req.Tx.TxHash()]
+	if state == txconfirm.TxStateFailed &&
+		f.failOnce[req.Tx.TxHash()] {
+
+		delete(f.responseStates, req.Tx.TxHash())
+		delete(f.failureReasons, req.Tx.TxHash())
+		delete(f.failOnce, req.Tx.TxHash())
+	}
 	f.mu.Unlock()
 
 	if state == 0 {
@@ -298,6 +306,22 @@ func (f *fakeTxConfirmRef) setImmediateFailed(txid chainhash.Hash,
 
 	f.responseStates[txid] = txconfirm.TxStateFailed
 	f.failureReasons[txid] = reason
+}
+
+// setImmediateFailedOnce configures one txid to fail only on the next ensure.
+func (f *fakeTxConfirmRef) setImmediateFailedOnce(txid chainhash.Hash,
+	reason string) {
+
+	f.setImmediateFailed(txid, reason)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.failOnce == nil {
+		f.failOnce = make(map[chainhash.Hash]bool)
+	}
+
+	f.failOnce[txid] = true
 }
 
 // emitConfirmed delivers a txconfirm success notification to the subscriber.
