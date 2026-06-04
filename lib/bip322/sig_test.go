@@ -11,12 +11,13 @@ import (
 )
 
 // TestFullSigEncodeDecodeRoundTrip asserts full signatures round-trip through
-// raw and base64 encodings.
+// the raw (and, for the single-input case, base64) encodings while preserving
+// version, lock time, and every per-input field.
 func TestFullSigEncodeDecodeRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	tx := wire.NewMsgTx(2)
-	tx.AddTxIn(&wire.TxIn{
+	singleInput := wire.NewMsgTx(2)
+	singleInput.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: wire.OutPoint{
 			Index: 3,
 		},
@@ -25,58 +26,16 @@ func TestFullSigEncodeDecodeRoundTrip(t *testing.T) {
 			[]byte{0x01, 0x02},
 		},
 	})
-	tx.AddTxOut(&wire.TxOut{
+	singleInput.AddTxOut(&wire.TxOut{
 		Value:    0,
 		PkScript: []byte{txscript.OP_RETURN},
 	})
 
-	orig := &Sig{
-		ToSign: tx,
-	}
-
-	raw, err := orig.Encode()
-	require.NoError(t, err)
-	require.NotEmpty(t, raw)
-
-	decodedRaw, err := DecodeSig(raw)
-	require.NoError(t, err)
-	require.Equal(t, orig.ToSign.TxHash(), decodedRaw.ToSign.TxHash())
-	require.Equal(
-		t, orig.ToSign.TxIn[0].Witness,
-		decodedRaw.ToSign.TxIn[0].Witness,
-	)
-
-	b64, err := orig.EncodeBase64()
-	require.NoError(t, err)
-	require.NotEmpty(t, b64)
-
-	decodedB64, err := DecodeSigBase64(b64)
-	require.NoError(t, err)
-	require.Equal(t, orig.ToSign.TxHash(), decodedB64.ToSign.TxHash())
-	require.Equal(
-		t, orig.ToSign.TxIn[0].Witness,
-		decodedB64.ToSign.TxIn[0].Witness,
-	)
-}
-
-// TestFullSigEncodeDecodeRoundTripProofInputs asserts full signature
-// serialization preserves additional proof-of-funds inputs.
-func TestFullSigEncodeDecodeRoundTripProofInputs(t *testing.T) {
-	t.Parallel()
-
-	firstHash := chainhash.Hash{
-		0x01, 0x02, 0x03, 0x04,
-	}
-	secondHash := chainhash.Hash{
-		0xaa, 0xbb, 0xcc, 0xdd,
-	}
-
-	tx := wire.NewMsgTx(2)
-	tx.LockTime = 123
-
-	tx.AddTxIn(&wire.TxIn{
+	proofInputs := wire.NewMsgTx(2)
+	proofInputs.LockTime = 123
+	proofInputs.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: wire.OutPoint{
-			Hash:  firstHash,
+			Hash:  chainhash.Hash{0x01, 0x02, 0x03, 0x04},
 			Index: 0,
 		},
 		Sequence:        11,
@@ -85,10 +44,9 @@ func TestFullSigEncodeDecodeRoundTripProofInputs(t *testing.T) {
 			[]byte{0x01, 0x02},
 		},
 	})
-
-	tx.AddTxIn(&wire.TxIn{
+	proofInputs.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: wire.OutPoint{
-			Hash:  secondHash,
+			Hash:  chainhash.Hash{0xaa, 0xbb, 0xcc, 0xdd},
 			Index: 9,
 		},
 		Sequence:        22,
@@ -98,46 +56,76 @@ func TestFullSigEncodeDecodeRoundTripProofInputs(t *testing.T) {
 			[]byte{0xbb},
 		},
 	})
-
-	tx.AddTxOut(&wire.TxOut{
+	proofInputs.AddTxOut(&wire.TxOut{
 		Value:    0,
 		PkScript: []byte{txscript.OP_RETURN},
 	})
 
-	orig := &Sig{
-		ToSign: tx,
+	tests := []struct {
+		name        string
+		toSign      *wire.MsgTx
+		checkBase64 bool
+	}{
+		{
+			name:        "single input",
+			toSign:      singleInput,
+			checkBase64: true,
+		},
+		{
+			name:   "proof of funds inputs",
+			toSign: proofInputs,
+		},
 	}
 
-	raw, err := orig.Encode()
-	require.NoError(t, err)
+	for i := 0; i < len(tests); i++ {
+		tc := tests[i]
 
-	decoded, err := DecodeSig(raw)
-	require.NoError(t, err)
-	require.Equal(t, int32(2), decoded.ToSign.Version)
-	require.Equal(t, uint32(123), decoded.ToSign.LockTime)
-	require.Len(t, decoded.ToSign.TxIn, 2)
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	decodedFirst := decoded.ToSign.TxIn[0]
-	decodedSecond := decoded.ToSign.TxIn[1]
-	firstInput := tx.TxIn[0]
-	secondInput := tx.TxIn[1]
+			orig := &Sig{
+				ToSign: tc.toSign,
+			}
 
-	require.Equal(
-		t, firstInput.PreviousOutPoint, decodedFirst.PreviousOutPoint,
-	)
-	require.Equal(t, firstInput.Sequence, decodedFirst.Sequence)
-	require.Equal(
-		t, firstInput.SignatureScript, decodedFirst.SignatureScript,
-	)
-	require.Equal(t, firstInput.Witness, decodedFirst.Witness)
-	require.Equal(
-		t, secondInput.PreviousOutPoint, decodedSecond.PreviousOutPoint,
-	)
-	require.Equal(t, secondInput.Sequence, decodedSecond.Sequence)
-	require.Equal(
-		t, secondInput.SignatureScript, decodedSecond.SignatureScript,
-	)
-	require.Equal(t, secondInput.Witness, decodedSecond.Witness)
+			raw, err := orig.Encode()
+			require.NoError(t, err)
+			require.NotEmpty(t, raw)
+
+			decoded, err := DecodeSig(raw)
+			require.NoError(t, err)
+			requireSigEqual(t, orig, decoded)
+
+			if !tc.checkBase64 {
+				return
+			}
+
+			b64, err := orig.EncodeBase64()
+			require.NoError(t, err)
+			require.NotEmpty(t, b64)
+
+			decodedB64, err := DecodeSigBase64(b64)
+			require.NoError(t, err)
+			requireSigEqual(t, orig, decodedB64)
+		})
+	}
+}
+
+// requireSigEqual asserts a decoded full-format signature preserves the
+// original transaction. The non-witness txid commits to version, lock time,
+// outpoints, sequences, and signature scripts; witnesses (which the txid
+// excludes) are compared per input.
+func requireSigEqual(t *testing.T, orig, decoded *Sig) {
+	t.Helper()
+
+	require.Equal(t, orig.ToSign.TxHash(), decoded.ToSign.TxHash())
+	require.Len(t, decoded.ToSign.TxIn, len(orig.ToSign.TxIn))
+
+	for j := range orig.ToSign.TxIn {
+		require.Equal(
+			t, orig.ToSign.TxIn[j].Witness,
+			decoded.ToSign.TxIn[j].Witness,
+		)
+	}
 }
 
 // TestDecodeSigRejectsEmptyBytes asserts empty payloads are rejected.
