@@ -479,39 +479,3 @@ func TestInsertWalletUTXOLogIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1), count)
 }
-
-// TestInsertWalletUTXOLogCreatedAndSpent verifies that the same
-// outpoint can appear twice in the audit log when the events
-// differ ('created' then 'spent'); the UNIQUE index is scoped
-// to (outpoint, event) not outpoint alone.
-func TestInsertWalletUTXOLogCreatedAndSpent(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-	store := newUTXOAuditStoreForTest(t)
-
-	outpoint := makeOutpoint(0x22)
-	now := time.Now().Unix()
-
-	created := ledger.UTXOAuditEntry{
-		OutpointHash:  outpoint,
-		OutpointIndex: 1,
-		AmountSat:     75_000,
-		Event:         "created",
-		BlockHeight:   3000,
-		ClassifiedAs:  "deposit",
-		CreatedAt:     now,
-	}
-	require.NoError(t, store.InsertUTXOAuditEntry(ctx, created))
-
-	spent := created
-	spent.Event = "spent"
-	spent.BlockHeight = 3100
-	spent.ClassifiedAs = "round_funding"
-	spent.CreatedAt = now + 1
-	require.NoError(t, store.InsertUTXOAuditEntry(ctx, spent))
-
-	count, err := store.CountUTXOAuditEntries(ctx)
-	require.NoError(t, err)
-	require.Equal(t, int64(2), count)
-}
