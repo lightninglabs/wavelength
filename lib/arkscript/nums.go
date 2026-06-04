@@ -14,6 +14,21 @@ const (
 	// ARKNUMSSeedPhrase is the seed phrase used to generate
 	// the ARK NUMS key.
 	ARKNUMSSeedPhrase = "Ark Protocol NUMS"
+
+	// OperatorKeyPlaceholderHex is the hex-encoded operator-key
+	// placeholder sentinel. When a client builds a VTXO output policy
+	// template it puts this point wherever the operator key belongs
+	// instead of committing to a concrete operator key; the server
+	// substitutes its current operator key via
+	// PolicyTemplate.BindOperatorKey at round admission. It is an
+	// unspendable NUMS point (no known discrete log) derived as the
+	// even-Y lift of SHA256("Ark Operator Key Placeholder:1"), so an
+	// output that somehow retained the placeholder is unspendable
+	// rather than attacker-controlled. It is deliberately distinct from
+	// ARKNUMSKey (the taproot internal key) so the two roles never
+	// alias.
+	OperatorKeyPlaceholderHex = "02785dd2bc116725d8207cfc530cfe2f9602" +
+		"5d62874afa9e6aadb0ea84124d480d"
 )
 
 var (
@@ -22,6 +37,11 @@ var (
 	// https://github.com/lightninglabs/lightning-node-connect/tree/
 	// master/mailbox/numsgen, with the seed phrase "Ark Protocol NUMS".
 	ARKNUMSKey = mustParsePubKey(ARKNUMSHex)
+
+	// OperatorKeyPlaceholder is the parsed operator-key placeholder
+	// sentinel; see OperatorKeyPlaceholderHex for its role and
+	// derivation.
+	OperatorKeyPlaceholder = mustParsePubKey(OperatorKeyPlaceholderHex)
 )
 
 // mustParsePubKey parses a hex encoded public key string into a public key
