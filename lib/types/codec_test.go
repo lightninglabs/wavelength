@@ -140,37 +140,9 @@ func TestJoinRoundAuthMessageRequiresIdentifier(t *testing.T) {
 func TestDecodeJoinRoundAuthMessageRequiresIdentifierRecord(t *testing.T) {
 	t.Parallel()
 
-	version := joinRoundAuthMessageVersion
-	domain := []byte(joinRoundAuthDomainTag)
+	raw := buildJoinAuthEnvelope(t, false, 0)
 
-	boardingRaw := testJoinAuthBlobListCountOnly(t, 0)
-	vtxoRaw := testJoinAuthBlobListCountOnly(t, 0)
-	forfeitRaw := testJoinAuthBlobListCountOnly(t, 0)
-	leaveRaw := testJoinAuthBlobListCountOnly(t, 0)
-
-	raw, err := encodeJoinAuthTLV([]tlv.Record{
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthMessageVersionRecordType, &version,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthMessageDomainRecordType, &domain,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthMessageBoardRecordType, &boardingRaw,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthMessageVTXORecordType, &vtxoRaw,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthMessageForfeitRecordType, &forfeitRaw,
-		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthMessageLeaveRecordType, &leaveRaw,
-		),
-	})
-	require.NoError(t, err)
-
-	_, err = DecodeJoinRoundAuthMessage(raw)
+	_, err := DecodeJoinRoundAuthMessage(raw)
 	require.ErrorContains(
 		t, err, "join auth identifier record must be present",
 	)
@@ -181,45 +153,61 @@ func TestDecodeJoinRoundAuthMessageRequiresIdentifierRecord(t *testing.T) {
 func TestDecodeJoinRoundAuthMessageRequestCountLimit(t *testing.T) {
 	t.Parallel()
 
+	raw := buildJoinAuthEnvelope(t, true, joinRoundAuthMaxRequestCount+1)
+
+	_, err := DecodeJoinRoundAuthMessage(raw)
+	require.ErrorContains(t, err, "blob list count")
+	require.ErrorContains(t, err, "exceeds max")
+}
+
+// buildJoinAuthEnvelope assembles a canonical join-auth TLV envelope with the
+// standard records, optionally omitting the identifier record and overriding
+// the boarding list count, for decode-rejection tests.
+func buildJoinAuthEnvelope(t *testing.T, withID bool,
+	boardingCount uint64) []byte {
+
+	t.Helper()
+
 	version := joinRoundAuthMessageVersion
 	domain := []byte(joinRoundAuthDomainTag)
 	identifier := testJoinAuthPubKey(t).SerializeCompressed()
+	boardingRaw := testJoinAuthBlobListCountOnly(t, boardingCount)
+	zeroRaw := testJoinAuthBlobListCountOnly(t, 0)
 
-	boardingRaw := testJoinAuthBlobListCountOnly(
-		t, joinRoundAuthMaxRequestCount+1,
-	)
-	vtxoRaw := testJoinAuthBlobListCountOnly(t, 0)
-	forfeitRaw := testJoinAuthBlobListCountOnly(t, 0)
-	leaveRaw := testJoinAuthBlobListCountOnly(t, 0)
-
-	raw, err := encodeJoinAuthTLV([]tlv.Record{
+	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthMessageVersionRecordType, &version,
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthMessageDomainRecordType, &domain,
 		),
-		tlv.MakePrimitiveRecord(
-			joinRoundAuthMessageIDRecordType, &identifier,
-		),
-		tlv.MakePrimitiveRecord(
+	}
+	if withID {
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				joinRoundAuthMessageIDRecordType, &identifier,
+			),
+		)
+	}
+	records = append(
+		records, tlv.MakePrimitiveRecord(
 			joinRoundAuthMessageBoardRecordType, &boardingRaw,
 		),
 		tlv.MakePrimitiveRecord(
-			joinRoundAuthMessageVTXORecordType, &vtxoRaw,
+			joinRoundAuthMessageVTXORecordType, &zeroRaw,
 		),
 		tlv.MakePrimitiveRecord(
-			joinRoundAuthMessageForfeitRecordType, &forfeitRaw,
+			joinRoundAuthMessageForfeitRecordType, &zeroRaw,
 		),
 		tlv.MakePrimitiveRecord(
-			joinRoundAuthMessageLeaveRecordType, &leaveRaw,
+			joinRoundAuthMessageLeaveRecordType, &zeroRaw,
 		),
-	})
+	)
+
+	raw, err := encodeJoinAuthTLV(records)
 	require.NoError(t, err)
 
-	_, err = DecodeJoinRoundAuthMessage(raw)
-	require.ErrorContains(t, err, "blob list count")
-	require.ErrorContains(t, err, "exceeds max")
+	return raw
 }
 
 // TestDecodeJoinRoundAuthMessageScriptSizeLimit asserts decode rejects scripts
