@@ -230,180 +230,157 @@ func TestChainSourceActorBackendErrors(t *testing.T) {
 	)
 }
 
-// TestConfActorBackendError tests ConfActor backend error handling.
-func TestConfActorBackendError(t *testing.T) {
+// TestActorBackendError tests that each per-request actor surfaces a backend
+// registration failure synchronously from Receive. The actors' Receive methods
+// return distinct fn.Result generics, so each row wraps its typed Receive call
+// in a closure reporting whether it failed and the resulting error message.
+func TestActorBackendError(t *testing.T) {
 	t.Parallel()
 
-	testErr := errors.New("backend error")
-	backend := &errorBackend{err: testErr}
-	ctx := t.Context()
-	confActor := NewConfActor(ConfActorConfig{Backend: backend})
-	defer confActor.Stop()
+	backend := &errorBackend{err: errors.New("backend error")}
 
-	result := confActor.Receive(ctx, &RegisterConfRequest{
-		CallerID:    "test-backend-error",
-		Txid:        &chainhash.Hash{},
-		PkScript:    []byte{0x00, 0x14},
-		TargetConfs: 1,
-	})
+	testCases := []struct {
+		name        string
+		register    func(ctx context.Context) (bool, string)
+		expectedErr string
+	}{{
+		name: "conf",
+		register: func(ctx context.Context) (bool, string) {
+			a := NewConfActor(ConfActorConfig{Backend: backend})
+			defer a.Stop()
+			r := a.Receive(ctx, &RegisterConfRequest{
+				CallerID:    "backend-error",
+				Txid:        &chainhash.Hash{},
+				PkScript:    []byte{0x00, 0x14},
+				TargetConfs: 1,
+			})
 
-	// Backend error now happens synchronously during registration, so
-	// Receive should return an error immediately.
-	require.True(
-		t, result.IsErr(),
-		"Receive should fail with backend error",
-	)
-	require.Contains(
-		t, result.Err().Error(),
-		"failed to register for confirmations",
-	)
+			return r.IsErr(), r.Err().Error()
+		},
+		expectedErr: "failed to register for confirmations",
+	}, {
+		name: "spend",
+		register: func(ctx context.Context) (bool, string) {
+			a := NewSpendActor(SpendActorConfig{Backend: backend})
+			defer a.Stop()
+			r := a.Receive(ctx, &RegisterSpendRequest{
+				CallerID: "backend-error",
+				Outpoint: &wire.OutPoint{},
+				PkScript: []byte{0x00, 0x14},
+			})
+
+			return r.IsErr(), r.Err().Error()
+		},
+		expectedErr: "failed to register for spends",
+	}, {
+		name: "epoch",
+		register: func(ctx context.Context) (bool, string) {
+			a := NewBlockEpochActor(BlockEpochConfig{
+				Backend: backend,
+			})
+			defer a.Stop()
+			r := a.Receive(ctx, &SubscribeBlocksRequest{
+				CallerID: "backend-error",
+			})
+
+			return r.IsErr(), r.Err().Error()
+		},
+		expectedErr: "failed to register for blocks",
+	}}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Backend errors happen synchronously during
+			// registration, so Receive returns an error
+			// immediately.
+			isErr, msg := tc.register(t.Context())
+			require.True(t, isErr, "Receive should fail")
+			require.Contains(t, msg, tc.expectedErr)
+		})
+	}
 }
 
-// TestSpendActorBackendError tests SpendActor backend error handling.
-func TestSpendActorBackendError(t *testing.T) {
+// TestActorDuplicateSubscription tests that each per-request actor rejects a
+// second subscription on the same instance. Each actor serves exactly one
+// subscription for resource isolation and simpler lifecycle management. The
+// actors' Receive methods return distinct fn.Result generics, so each row
+// wraps its typed register-twice sequence in a closure that reports whether
+// the first call succeeded and the second call's error message.
+func TestActorDuplicateSubscription(t *testing.T) {
 	t.Parallel()
 
-	testErr := errors.New("backend error")
-	backend := &errorBackend{err: testErr}
-	ctx := t.Context()
-	spendActor := NewSpendActor(SpendActorConfig{Backend: backend})
-	defer spendActor.Stop()
+	const dupErr = "actor already has an active subscription"
 
-	result := spendActor.Receive(ctx, &RegisterSpendRequest{
-		CallerID: "test-spend-backend-error",
-		Outpoint: &wire.OutPoint{},
-		PkScript: []byte{0x00, 0x14},
-	})
+	testCases := []struct {
+		name      string
+		subscribe func(ctx context.Context) (bool, bool, string)
+	}{{
+		name: "conf",
+		subscribe: func(ctx context.Context) (bool, bool, string) {
+			a := NewConfActor(ConfActorConfig{
+				Backend: newMockBackend(),
+			})
+			defer a.Stop()
+			req := &RegisterConfRequest{
+				CallerID: "dup",
+				Txid:     &chainhash.Hash{},
+				PkScript: []byte{
+					0x00,
+					0x14,
+				},
+				TargetConfs: 1,
+			}
+			r1, r2 := a.Receive(ctx, req), a.Receive(ctx, req)
 
-	// Backend error now happens synchronously during registration, so
-	// Receive should return an error immediately.
-	require.True(
-		t, result.IsErr(),
-		"Receive should fail with backend error",
-	)
-	require.Contains(
-		t, result.Err().Error(),
-		"failed to register for spends",
-	)
-}
+			return r1.IsOk(), r2.IsErr(), r2.Err().Error()
+		},
+	}, {
+		name: "spend",
+		subscribe: func(ctx context.Context) (bool, bool, string) {
+			a := NewSpendActor(SpendActorConfig{
+				Backend: newMockBackend(),
+			})
+			defer a.Stop()
+			req := &RegisterSpendRequest{
+				CallerID: "dup",
+				Outpoint: &wire.OutPoint{},
+				PkScript: []byte{
+					0x00,
+					0x14,
+				},
+			}
+			r1, r2 := a.Receive(ctx, req), a.Receive(ctx, req)
 
-// TestBlockEpochActorBackendError tests BlockEpochActor backend error
-// handling.
-func TestBlockEpochActorBackendError(t *testing.T) {
-	t.Parallel()
+			return r1.IsOk(), r2.IsErr(), r2.Err().Error()
+		},
+	}, {
+		name: "epoch",
+		subscribe: func(ctx context.Context) (bool, bool, string) {
+			a := NewBlockEpochActor(BlockEpochConfig{
+				Backend: newMockBackend(),
+			})
+			defer a.Stop()
+			req := &SubscribeBlocksRequest{
+				CallerID: "dup",
+			}
+			r1, r2 := a.Receive(ctx, req), a.Receive(ctx, req)
 
-	testErr := errors.New("backend error")
-	backend := &errorBackend{err: testErr}
-	ctx := t.Context()
-	epochActor := NewBlockEpochActor(BlockEpochConfig{Backend: backend})
-	defer epochActor.Stop()
+			return r1.IsOk(), r2.IsErr(), r2.Err().Error()
+		},
+	}}
 
-	result := epochActor.Receive(ctx, &SubscribeBlocksRequest{
-		CallerID: "test-epoch-backend-error",
-	})
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	// Backend error now happens synchronously during registration, so
-	// Receive should return an error immediately.
-	require.True(
-		t, result.IsErr(),
-		"Receive should fail with backend error",
-	)
-	require.Contains(
-		t, result.Err().Error(),
-		"failed to register for blocks",
-	)
-}
-
-// TestConfActorDuplicateSubscription tests that ConfActor rejects duplicate
-// subscriptions on the same actor instance. Each actor is designed to handle
-// exactly one subscription for resource isolation and simpler lifecycle
-// management.
-func TestConfActorDuplicateSubscription(t *testing.T) {
-	t.Parallel()
-
-	backend := newMockBackend()
-	ctx := t.Context()
-	confActor := NewConfActor(ConfActorConfig{Backend: backend})
-	defer confActor.Stop()
-
-	result1 := confActor.Receive(ctx, &RegisterConfRequest{
-		CallerID:    "test-duplicate-1",
-		Txid:        &chainhash.Hash{},
-		PkScript:    []byte{0x00, 0x14},
-		TargetConfs: 1,
-	})
-	require.True(t, result1.IsOk(), "first subscription should succeed")
-
-	// Attempting a second subscription must fail to enforce single-use.
-	result2 := confActor.Receive(ctx, &RegisterConfRequest{
-		CallerID:    "test-duplicate-2",
-		Txid:        &chainhash.Hash{},
-		PkScript:    []byte{0x00, 0x14},
-		TargetConfs: 1,
-	})
-	require.True(t, result2.IsErr(), "second subscription should fail")
-	require.Contains(
-		t, result2.Err().Error(),
-		"actor already has an active subscription",
-	)
-}
-
-// TestSpendActorDuplicateSubscription tests that SpendActor rejects duplicate
-// subscriptions on the same actor instance. Each actor is designed to handle
-// exactly one subscription for resource isolation and simpler lifecycle
-// management.
-func TestSpendActorDuplicateSubscription(t *testing.T) {
-	t.Parallel()
-
-	backend := newMockBackend()
-	ctx := t.Context()
-	spendActor := NewSpendActor(SpendActorConfig{Backend: backend})
-	defer spendActor.Stop()
-
-	result1 := spendActor.Receive(ctx, &RegisterSpendRequest{
-		CallerID: "test-spend-duplicate-1",
-		Outpoint: &wire.OutPoint{},
-		PkScript: []byte{0x00, 0x14},
-	})
-	require.True(t, result1.IsOk(), "first subscription should succeed")
-
-	// Attempting a second subscription must fail to enforce single-use.
-	result2 := spendActor.Receive(ctx, &RegisterSpendRequest{
-		CallerID: "test-spend-duplicate-2",
-		Outpoint: &wire.OutPoint{},
-		PkScript: []byte{0x00, 0x14},
-	})
-	require.True(t, result2.IsErr(), "second subscription should fail")
-	require.Contains(
-		t, result2.Err().Error(),
-		"actor already has an active subscription",
-	)
-}
-
-// TestBlockEpochActorDuplicateSubscription tests that BlockEpochActor rejects
-// duplicate subscriptions on the same actor instance. Each actor is designed to
-// handle exactly one subscription for resource isolation and simpler lifecycle
-// management.
-func TestBlockEpochActorDuplicateSubscription(t *testing.T) {
-	t.Parallel()
-
-	backend := newMockBackend()
-	ctx := t.Context()
-	epochActor := NewBlockEpochActor(BlockEpochConfig{Backend: backend})
-	defer epochActor.Stop()
-
-	result1 := epochActor.Receive(ctx, &SubscribeBlocksRequest{
-		CallerID: "test-epoch-duplicate-1",
-	})
-	require.True(t, result1.IsOk(), "first subscription should succeed")
-
-	// Attempting a second subscription must fail to enforce single-use.
-	result2 := epochActor.Receive(ctx, &SubscribeBlocksRequest{
-		CallerID: "test-epoch-duplicate-2",
-	})
-	require.True(t, result2.IsErr(), "second subscription should fail")
-	require.Contains(
-		t, result2.Err().Error(),
-		"actor already has an active subscription",
-	)
+			firstOk, secondErr, msg := tc.subscribe(t.Context())
+			require.True(t, firstOk, "first subscription should ok")
+			require.True(t, secondErr, "second should fail")
+			require.Contains(t, msg, dupErr)
+		})
+	}
 }
