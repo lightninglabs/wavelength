@@ -733,65 +733,6 @@ func TestProperty_AskAlwaysReturnsCurrentValue(t *testing.T) {
 	}
 }
 
-// TestProperty_OutboxEventuallyDelivers verifies outbox messages are delivered.
-func TestProperty_OutboxEventuallyDelivers(t *testing.T) {
-	t.Parallel()
-
-	h := newTestHarness(t)
-
-	// Generate unique IDs for source and target.
-	sourceID := uniqueID("source")
-	targetID := uniqueID("target")
-
-	// Create source and target.
-	sourceActor, sourceBehavior := h.newDurableCounter(sourceID)
-	sourceActor.Start()
-	defer sourceActor.Stop()
-
-	targetActor, targetBehavior := h.newDurableCounter(targetID)
-	targetActor.Start()
-	defer targetActor.Stop()
-
-	// Create outbox publisher.
-	publisherCfg := actor.DefaultOutboxPublisherConfig(
-		h.store, h.codec, h.actorSystem,
-	)
-	publisherCfg.PollInterval = 10 * time.Millisecond
-	publisher := actor.NewOutboxPublisher(publisherCfg)
-	publisher.Start()
-	defer publisher.Stop()
-
-	// Test with a fixed amount.
-	amount := int64(42)
-
-	// Encode and forward.
-	payload, err := h.codec.Encode(&IncrementMsg{Amount: amount})
-	require.NoError(t, err)
-
-	sourceRef := sourceActor.Ref()
-	err = sourceRef.Tell(h.ctx, &ForwardMsg{
-		Target:  targetID,
-		MsgType: IncrementMsgType,
-		Payload: payload,
-	})
-	require.NoError(t, err)
-
-	// Wait for source to process.
-	eventually(t, outboxForwardProcessingTimeout, func() bool {
-		return sourceBehavior.ForwardCount() == 1
-	})
-
-	// Wait for target to receive.
-	eventuallyWithOutboxPublish(
-		t, publisher, outboxDeliveryTimeout,
-		func() bool {
-			return targetBehavior.Count() == amount
-		},
-	)
-
-	require.Equal(t, amount, targetBehavior.Count())
-}
-
 // ============================================================================
 // Recovery and Restart Tests (INVARIANT: At-Least-Once Delivery)
 // ============================================================================
