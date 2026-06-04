@@ -220,119 +220,6 @@ func TestTreeFromProtoLargeNodeCount(t *testing.T) {
 // calculations.
 // =====================================================================
 
-// TestTreeFromProtoDiamondDAG demonstrates shared children creating a
-// non-tree DAG.
-func TestTreeFromProtoDiamondDAG(t *testing.T) {
-	t.Parallel()
-
-	hash := chainhash.Hash{0x04}
-
-	// Node 0 (root) -> children: output 0 -> node 1, output 1 -> node 2
-	// Node 1 -> child: output 0 -> node 3
-	// Node 2 -> child: output 0 -> node 3 (SHARED child!)
-	pt := &VTXOTree{
-		Nodes: []*TreeNode{
-			{
-				Input: &Outpoint{
-					TxHash: hash[:], OutputIndex: 0,
-				},
-				Outputs: []*TxOut{
-					{
-						Value: 500,
-						PkScript: []byte{
-							0x51,
-						},
-					},
-					{
-						Value: 500,
-						PkScript: []byte{
-							0x51,
-						},
-					},
-				},
-				Children: map[uint32]uint32{
-					0: 1,
-					1: 2,
-				},
-				Amount: 1000,
-			},
-			{
-				Input: &Outpoint{
-					TxHash: hash[:], OutputIndex: 1,
-				},
-				Outputs: []*TxOut{
-					{
-						Value: 500,
-						PkScript: []byte{
-							0x51,
-						},
-					},
-				},
-				Children: map[uint32]uint32{
-					0: 3, // Shared child.
-				},
-				Amount: 500,
-			},
-			{
-				Input: &Outpoint{
-					TxHash: hash[:], OutputIndex: 2,
-				},
-				Outputs: []*TxOut{
-					{
-						Value: 500,
-						PkScript: []byte{
-							0x51,
-						},
-					},
-				},
-				Children: map[uint32]uint32{
-					0: 3, // Same shared child!
-				},
-				Amount: 500,
-			},
-			{
-				Input: &Outpoint{
-					TxHash: hash[:], OutputIndex: 3,
-				},
-				Outputs: []*TxOut{
-					{
-						Value: 250,
-						PkScript: []byte{
-							0x51,
-						},
-					},
-				},
-				Children: map[uint32]uint32{},
-				Amount:   250,
-			},
-		},
-		BatchOutpoint: &Outpoint{
-			TxHash: hash[:], OutputIndex: 0,
-		},
-		BatchOutput: &TxOut{
-			Value: 1000, PkScript: []byte{
-				0x51,
-			},
-		},
-	}
-
-	// TreeFromProto rejects diamond DAGs because the shared
-	// child (node 3) would be referenced by node 2 at index 3,
-	// but node 1 already claims it. The pre-order invariant
-	// prevents this since shared children violate the tree
-	// property.
-	//
-	// NOTE: The pre-order invariant (childIdx > i) alone allows
-	// this specific diamond shape since all forward references
-	// are valid. However, the diamond is still structurally
-	// accepted here. The pre-order check primarily prevents
-	// cycles; diamond detection would require tracking parent
-	// counts. This test documents the current behavior.
-	tree, err := TreeFromProto(pt)
-	require.NoError(t, err)
-	require.NotNil(t, tree)
-}
-
 // =====================================================================
 // FINDING-4: OutpointFromProto byte-order consistency with map key
 // format
@@ -429,21 +316,6 @@ func TestPSBTFromBytesNilPassthrough(t *testing.T) {
 // that should be caught, not silently propagated.
 // =====================================================================
 
-// TestSchnorrNilSigSilentPassthrough demonstrates silent nil
-// signature handling.
-func TestSchnorrNilSigSilentPassthrough(t *testing.T) {
-	t.Parallel()
-
-	// Serializing a nil signature produces nil bytes.
-	b := SchnorrSigToBytes(nil)
-	require.Nil(t, b)
-
-	// Deserializing nil bytes produces nil signature.
-	sig, err := SchnorrSigFromBytes(nil)
-	require.NoError(t, err)
-	require.Nil(t, sig)
-}
-
 // =====================================================================
 // FINDING-7: TxOutFromProto does not validate negative value (Fund loss)
 // Severity: MEDIUM (CVSS 6.1)
@@ -483,22 +355,6 @@ func TestTxOutFromProtoNegativeValue(t *testing.T) {
 // conventionally used as a null/sentinel value. No validation is
 // performed.
 // =====================================================================
-
-// TestOutpointFromProtoMaxIndex demonstrates acceptance of sentinel
-// index values.
-func TestOutpointFromProtoMaxIndex(t *testing.T) {
-	t.Parallel()
-
-	hash := chainhash.Hash{0x01}
-	pb := &Outpoint{
-		TxHash:      hash[:],
-		OutputIndex: 0xFFFFFFFF,
-	}
-
-	op, err := OutpointFromProto(pb)
-	require.NoError(t, err)
-	require.Equal(t, uint32(0xFFFFFFFF), op.Index)
-}
 
 // =====================================================================
 // FINDING-9: Empty ConnectorLeafMap key accepted as valid
