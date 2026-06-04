@@ -1036,7 +1036,11 @@ func TestActorLifecycle(t *testing.T) {
 			Recoverable: true,
 		})
 
-		h.assertFSMState("ClientFailedState")
+		// The failed round is reaped, leaving no rounds tracked.
+		require.Empty(
+			t, h.queryState(),
+			"failed round should be reaped",
+		)
 	})
 
 	t.Run("concurrent_rounds", func(t *testing.T) {
@@ -1277,6 +1281,10 @@ func TestActorServerMessageRouting(t *testing.T) {
 		expectedState string
 		expectOutbox  bool
 		outboxMsgType string
+
+		// expectReaped asserts the round is removed from tracking
+		// (e.g. it failed) rather than left in expectedState.
+		expectReaped bool
 	}{
 		{
 			name: "IntentRequested_from_PendingRoundAssembly",
@@ -1399,8 +1407,8 @@ func TestActorServerMessageRouting(t *testing.T) {
 					Recoverable: true,
 				}
 			},
-			expectedState: "ClientFailedState",
-			expectOutbox:  false,
+			expectOutbox: false,
+			expectReaped: true,
 		},
 	}
 
@@ -1415,7 +1423,14 @@ func TestActorServerMessageRouting(t *testing.T) {
 			event := tc.serverEvent(h)
 			h.sendServerMessage(event)
 
-			h.assertFSMState(tc.expectedState)
+			if tc.expectReaped {
+				require.Empty(
+					h.t, h.queryState(),
+					"failed round should be reaped",
+				)
+			} else {
+				h.assertFSMState(tc.expectedState)
+			}
 			if tc.expectOutbox {
 				h.assertServerMessageSent(tc.outboxMsgType)
 			}
@@ -2113,17 +2128,12 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 			"actor receive failed: %v", result.Err(),
 		)
 
+		// The failed round is reaped so it does not linger in the
+		// actor's map. The failure reason/recoverability is covered by
+		// the FSM-level forfeit-collection-timeout test.
 		states := h.queryState()
-		stateInfo, exists := states[string(keyStr)]
-		require.True(t, exists, "expected round state")
-		failedState, ok := stateInfo.State.(*ClientFailedState)
-		require.True(
-			t, ok, "expected ClientFailedState, got %T",
-			stateInfo.State,
-		)
-		require.Contains(t, failedState.Reason, "forfeit signature")
-		require.Contains(t, failedState.Reason, "timeout")
-		require.True(t, failedState.Recoverable)
+		_, exists := states[string(keyStr)]
+		require.False(t, exists, "failed round should be reaped")
 	})
 
 	t.Run("ignores_unknown_timeout_phase", func(t *testing.T) {
@@ -2218,17 +2228,11 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 			"timeout receive failed: %v", result.Err(),
 		)
 
-		// Confirm the first round is now failed.
+		// The first round failed on timeout and is reaped.
 		keyStr1 := RoundKeyStr(roundID1.KeyString())
 		states := h.queryState()
-		stateInfo, exists := states[string(keyStr1)]
-		require.True(t, exists)
-		failedState, ok := stateInfo.State.(*ClientFailedState)
-		require.True(
-			t, ok, "expected ClientFailedState, got %T",
-			stateInfo.State,
-		)
-		require.True(t, failedState.Recoverable)
+		_, exists := states[string(keyStr1)]
+		require.False(t, exists, "failed round should be reaped")
 
 		// Phase 2: Start a new round from a boarding confirmation,
 		// proving the actor is still healthy.
@@ -2242,6 +2246,49 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 		h.assertFSMState("IntentSentState")
 		h.assertServerMessageSent("SendClientEventRequest")
 	})
+}
+
+// TestActorReapsFailedRound verifies that a round driven into the terminal
+// failed state is removed from the actor's tracking rather than left to
+// accumulate. Here the round fails via a registration (admission) timeout
+// while parked in IntentSentState.
+func TestActorReapsFailedRound(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+	require.NoError(t, h.start())
+
+	// Drive a round to IntentSentState (join request sent, awaiting the
+	// server's admission watermark).
+	intent := h.newTestBoardingIntent()
+	h.sendWalletConfirmation(intent)
+	h.assertFSMState("PendingRoundAssembly")
+	h.sendVTXORequests(50000)
+	h.sendServerMessage(&IntentRequested{})
+	h.assertFSMState("IntentSentState")
+
+	// Grab the (temp) key of the in-flight round.
+	before := h.queryState()
+	require.Len(t, before, 1)
+	var keyStr string
+	for k := range before {
+		keyStr = k
+	}
+
+	// Fire the registration timeout for that round.
+	msg := &TimeoutMsg{
+		TimeoutID: makeTimeoutID(
+			RoundKeyStr(keyStr), TimeoutPhaseRegistration,
+		),
+	}
+	require.True(t, h.receive(msg).IsOk())
+
+	// The failed round is reaped, leaving no rounds tracked.
+	after := h.queryState()
+	_, exists := after[keyStr]
+	require.False(t, exists, "failed round should be reaped")
+	require.Empty(t, after, "no rounds should remain tracked")
 }
 
 // TestRealTimeoutActorForfeitExpiry exercises the full timeout flow with a
@@ -2305,18 +2352,11 @@ func TestRealTimeoutActorForfeitExpiry(t *testing.T) {
 	require.True(t, result.IsOk(), "actor receive failed: %v",
 		result.Err())
 
-	// Verify the round transitioned to failed.
+	// Verify the failed round is reaped after the real timeout fires.
 	keyStr := RoundKeyStr(roundID.KeyString())
 	states := h.queryState()
-	stateInfo, exists := states[string(keyStr)]
-	require.True(t, exists, "expected round state")
-	failedState, ok := stateInfo.State.(*ClientFailedState)
-	require.True(
-		t, ok, "expected ClientFailedState, got %T", stateInfo.State,
-	)
-	require.Contains(t, failedState.Reason, "forfeit signature")
-	require.Contains(t, failedState.Reason, "timeout")
-	require.True(t, failedState.Recoverable)
+	_, exists := states[string(keyStr)]
+	require.False(t, exists, "failed round should be reaped")
 
 	// Phase 2: Start a new round to prove actor recovery.
 	intent := h.newTestBoardingIntent()
