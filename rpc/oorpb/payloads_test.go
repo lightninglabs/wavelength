@@ -3,11 +3,7 @@ package oorpb
 import (
 	"testing"
 
-	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -61,35 +57,4 @@ func mustHash(t *testing.T, hash string) chainhash.Hash {
 	require.NoError(t, err)
 
 	return *parsed
-}
-
-// mustTestPSBT builds a minimal serializable PSBT packet for tests.
-func mustTestPSBT(t *testing.T, marker byte) *psbt.Packet {
-	t.Helper()
-
-	tx := wire.NewMsgTx(2)
-	tx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: wire.OutPoint{
-			Hash: chainhash.Hash{marker},
-		},
-	})
-	tx.AddTxOut(&wire.TxOut{
-		Value:    1000,
-		PkScript: []byte{txscript.OP_TRUE},
-	})
-
-	packet, err := psbt.NewFromUnsignedTx(tx)
-	require.NoError(t, err)
-
-	return packet
-}
-
-// mustSerializePSBT serializes a PSBT packet in tests.
-func mustSerializePSBT(t *testing.T, packet *psbt.Packet) []byte {
-	t.Helper()
-
-	raw, err := psbtutil.Serialize(packet)
-	require.NoError(t, err)
-
-	return raw
 }
