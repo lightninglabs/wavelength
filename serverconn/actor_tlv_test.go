@@ -51,6 +51,21 @@ func encodeTLVMessage(t *testing.T, msg actor.TLVMessage) []byte {
 	return buf.Bytes()
 }
 
+// tlvDecoder is satisfied by the *T pointer of any decodable TLV message.
+type tlvDecoder interface {
+	Decode(io.Reader) error
+}
+
+// roundTripTLV encodes msg, decodes the bytes into dst, and fails the test on
+// any error. It collapses the encode/Decode/NoError boilerplate shared by the
+// per-type round-trip tests.
+func roundTripTLV(t *testing.T, msg actor.TLVMessage, dst tlvDecoder) {
+	t.Helper()
+
+	encoded := encodeTLVMessage(t, msg)
+	require.NoError(t, dst.Decode(bytes.NewReader(encoded)))
+}
+
 // TestSendClientEventRequest_TLVRoundTrip_DeterministicIDs verifies that equal
 // payloads produce stable derived MsgID and IdempotencyKey across round trips.
 func TestSendClientEventRequest_TLVRoundTrip_DeterministicIDs(t *testing.T) {
@@ -68,24 +83,10 @@ func TestSendClientEventRequest_TLVRoundTrip_DeterministicIDs(t *testing.T) {
 	}
 
 	var decodedA SendClientEventRequest
-	require.NoError(
-		t,
-		decodedA.Decode(
-			bytes.NewReader(
-				encodeTLVMessage(t, reqA),
-			),
-		),
-	)
+	roundTripTLV(t, reqA, &decodedA)
 
 	var decodedB SendClientEventRequest
-	require.NoError(
-		t,
-		decodedB.Decode(
-			bytes.NewReader(
-				encodeTLVMessage(t, reqB),
-			),
-		),
-	)
+	roundTripTLV(t, reqB, &decodedB)
 
 	require.NotEmpty(t, decodedA.MsgID)
 	require.NotEmpty(t, decodedA.IdempotencyKey)
@@ -118,14 +119,7 @@ func TestSendClientEventRequest_TLVRoundTrip_ExplicitIDs(t *testing.T) {
 	}
 
 	var decoded SendClientEventRequest
-	require.NoError(
-		t,
-		decoded.Decode(
-			bytes.NewReader(
-				encodeTLVMessage(t, req),
-			),
-		),
-	)
+	roundTripTLV(t, req, &decoded)
 
 	require.Equal(t, "msg-explicit", decoded.MsgID)
 	require.Equal(t, "idem-explicit", decoded.IdempotencyKey)
@@ -156,11 +150,7 @@ func TestSendRPCRequest_TLVRoundTrip(t *testing.T) {
 	}
 
 	var decoded SendRPCRequest
-	encoded := encodeTLVMessage(t, original)
-
-	require.NoError(
-		t, decoded.Decode(bytes.NewReader(encoded)),
-	)
+	roundTripTLV(t, original, &decoded)
 
 	require.True(t, proto.Equal(original.Envelope, decoded.Envelope))
 }
@@ -181,11 +171,7 @@ func TestSendUnaryRequest_TLVRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	var decoded SendUnaryRequest
-	encoded := encodeTLVMessage(t, original)
-
-	require.NoError(
-		t, decoded.Decode(bytes.NewReader(encoded)),
-	)
+	roundTripTLV(t, original, &decoded)
 
 	require.NotNil(t, decoded.Body)
 	require.NotEmpty(t, decoded.MsgID)
@@ -216,11 +202,7 @@ func TestSendListOORRecipientEventsByScriptRequest_TLVRoundTrip(t *testing.T) {
 	}
 
 	var decoded SendListOORRecipientEventsByScriptRequest
-	encoded := encodeTLVMessage(t, original)
-
-	require.NoError(
-		t, decoded.Decode(bytes.NewReader(encoded)),
-	)
+	roundTripTLV(t, original, &decoded)
 
 	require.Equal(t, original.PkScript, decoded.PkScript)
 	require.Equal(t, original.AfterEventID, decoded.AfterEventID)
@@ -254,11 +236,7 @@ func TestSendListVTXOsByScriptsRequest_TLVRoundTrip(t *testing.T) {
 	}
 
 	var decoded SendListVTXOsByScriptsRequest
-	encoded := encodeTLVMessage(t, original)
-
-	require.NoError(
-		t, decoded.Decode(bytes.NewReader(encoded)),
-	)
+	roundTripTLV(t, original, &decoded)
 
 	require.Equal(t, original.PkScripts, decoded.PkScripts)
 	require.Equal(t, original.AfterCursor, decoded.AfterCursor)

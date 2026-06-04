@@ -25,6 +25,17 @@ func testTxHex(t *testing.T, tx *wire.MsgTx) string {
 	return hex.EncodeToString(buf.Bytes())
 }
 
+// newEsploraClient spins up an httptest server driven by the given handler,
+// registers its teardown, and returns an EsploraClient pointed at it.
+func newEsploraClient(t *testing.T, handler http.HandlerFunc) *EsploraClient {
+	t.Helper()
+
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	return NewEsploraClient(srv.URL, btclog.Disabled)
+}
+
 // TestScriptHashHex verifies the Esplora script hash computation matches
 // the expected Electrum-style reversed SHA256 hex encoding.
 func TestScriptHashHex(t *testing.T) {
@@ -52,17 +63,14 @@ func TestScriptHashHex(t *testing.T) {
 func TestEsploraGetTipHeight(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newEsploraClient(
+		t, func(w http.ResponseWriter, r *http.Request) {
 			require.Equal(t, "/blocks/tip/height", r.URL.Path)
 
 			_, err := w.Write([]byte("850123"))
 			require.NoError(t, err)
-		}),
+		},
 	)
-	defer srv.Close()
-
-	client := NewEsploraClient(srv.URL, btclog.Disabled)
 	height, err := client.GetTipHeight(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, int32(850123), height)
@@ -76,17 +84,14 @@ func TestEsploraGetTipHash(t *testing.T) {
 	hashStr := "000000000019d6689c085ae165831e934ff763ae46" +
 		"a2a6c172b3f1b60a8ce26f"
 
-	srv := httptest.NewServer(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newEsploraClient(
+		t, func(w http.ResponseWriter, r *http.Request) {
 			require.Equal(t, "/blocks/tip/hash", r.URL.Path)
 
 			_, err := w.Write([]byte(hashStr))
 			require.NoError(t, err)
-		}),
+		},
 	)
-	defer srv.Close()
-
-	client := NewEsploraClient(srv.URL, btclog.Disabled)
 	hash, err := client.GetTipHash(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, hashStr, hash.String())
@@ -99,17 +104,14 @@ func TestEsploraGetBlockHashByHeight(t *testing.T) {
 	hashStr := "000000000019d6689c085ae165831e934ff763ae46" +
 		"a2a6c172b3f1b60a8ce26f"
 
-	srv := httptest.NewServer(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newEsploraClient(
+		t, func(w http.ResponseWriter, r *http.Request) {
 			require.Equal(t, "/block-height/100", r.URL.Path)
 
 			_, err := w.Write([]byte(hashStr))
 			require.NoError(t, err)
-		}),
+		},
 	)
-	defer srv.Close()
-
-	client := NewEsploraClient(srv.URL, btclog.Disabled)
 	hash, err := client.GetBlockHashByHeight(t.Context(), 100)
 	require.NoError(t, err)
 	require.Equal(t, hashStr, hash.String())
@@ -125,8 +127,8 @@ func TestEsploraGetBlockHeader(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	srv := httptest.NewServer(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newEsploraClient(
+		t, func(w http.ResponseWriter, r *http.Request) {
 			resp := esploraBlock{
 				ID:        blockHash.String(),
 				Height:    100,
@@ -135,11 +137,8 @@ func TestEsploraGetBlockHeader(t *testing.T) {
 
 			err := json.NewEncoder(w).Encode(resp)
 			require.NoError(t, err)
-		}),
+		},
 	)
-	defer srv.Close()
-
-	client := NewEsploraClient(srv.URL, btclog.Disabled)
 	block, err := client.GetBlockHeader(t.Context(), *blockHash)
 	require.NoError(t, err)
 	require.Equal(t, int32(100), block.Height)
@@ -152,8 +151,8 @@ func TestEsploraGetScriptUtxos(t *testing.T) {
 
 	pkScript := []byte{0x51, 0x20, 0x01, 0x02, 0x03}
 
-	srv := httptest.NewServer(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newEsploraClient(
+		t, func(w http.ResponseWriter, r *http.Request) {
 			// Verify the path contains the correct script hash.
 			expectedHash := scriptHashHex(pkScript)
 			expectedPath := "/scripthash/" + expectedHash +
@@ -182,11 +181,8 @@ func TestEsploraGetScriptUtxos(t *testing.T) {
 
 			err := json.NewEncoder(w).Encode(utxos)
 			require.NoError(t, err)
-		}),
+		},
 	)
-	defer srv.Close()
-
-	client := NewEsploraClient(srv.URL, btclog.Disabled)
 	utxos, err := client.GetScriptUtxos(t.Context(), pkScript)
 	require.NoError(t, err)
 	require.Len(t, utxos, 2)
@@ -206,8 +202,8 @@ func TestEsploraGetTxStatus(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	srv := httptest.NewServer(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newEsploraClient(
+		t, func(w http.ResponseWriter, r *http.Request) {
 			status := esploraTxStatus{
 				Confirmed:   true,
 				BlockHeight: 750000,
@@ -216,11 +212,8 @@ func TestEsploraGetTxStatus(t *testing.T) {
 
 			err := json.NewEncoder(w).Encode(status)
 			require.NoError(t, err)
-		}),
+		},
 	)
-	defer srv.Close()
-
-	client := NewEsploraClient(srv.URL, btclog.Disabled)
 	status, err := client.GetTxStatus(t.Context(), *txid)
 	require.NoError(t, err)
 	require.True(t, status.Confirmed)
@@ -231,8 +224,8 @@ func TestEsploraGetTxStatus(t *testing.T) {
 func TestEsploraGetFeeEstimates(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newEsploraClient(
+		t, func(w http.ResponseWriter, r *http.Request) {
 			require.Equal(t, "/fee-estimates", r.URL.Path)
 
 			estimates := map[string]float64{
@@ -244,11 +237,8 @@ func TestEsploraGetFeeEstimates(t *testing.T) {
 
 			err := json.NewEncoder(w).Encode(estimates)
 			require.NoError(t, err)
-		}),
+		},
 	)
-	defer srv.Close()
-
-	client := NewEsploraClient(srv.URL, btclog.Disabled)
 	estimates, err := client.GetFeeEstimates(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, 25.0, estimates["1"])
@@ -265,8 +255,8 @@ func TestEsploraGetOutspend(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	srv := httptest.NewServer(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newEsploraClient(
+		t, func(w http.ResponseWriter, r *http.Request) {
 			outspend := esploraOutspend{
 				Spent: true,
 				Txid:  "abcd1234",
@@ -279,11 +269,8 @@ func TestEsploraGetOutspend(t *testing.T) {
 
 			err := json.NewEncoder(w).Encode(outspend)
 			require.NoError(t, err)
-		}),
+		},
 	)
-	defer srv.Close()
-
-	client := NewEsploraClient(srv.URL, btclog.Disabled)
 	outspend, err := client.GetOutspend(t.Context(), *txid, 0)
 	require.NoError(t, err)
 	require.True(t, outspend.Spent)
@@ -294,17 +281,16 @@ func TestEsploraGetOutspend(t *testing.T) {
 func TestEsploraBroadcastTx(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newEsploraClient(
+		t, func(w http.ResponseWriter, r *http.Request) {
 			require.Equal(t, http.MethodPost, r.Method)
 			require.Equal(t, "/tx", r.URL.Path)
 
 			// Return a fake txid.
 			_, err := w.Write([]byte("aabbccdd"))
 			require.NoError(t, err)
-		}),
+		},
 	)
-	defer srv.Close()
 
 	// Build a minimal valid transaction for serialization.
 	tx := wire.NewMsgTx(2)
@@ -319,7 +305,6 @@ func TestEsploraBroadcastTx(t *testing.T) {
 		PkScript: []byte{0x51, 0x20},
 	})
 
-	client := NewEsploraClient(srv.URL, btclog.Disabled)
 	txid, err := client.BroadcastTx(t.Context(), tx)
 	require.NoError(t, err)
 	require.Equal(t, "aabbccdd", txid)
@@ -336,8 +321,8 @@ func TestEsploraSubmitPackage(t *testing.T) {
 		testTxHex(t, child),
 	}
 
-	srv := httptest.NewServer(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newEsploraClient(
+		t, func(w http.ResponseWriter, r *http.Request) {
 			require.Equal(t, http.MethodPost, r.Method)
 			require.Equal(t, "/txs/package", r.URL.Path)
 			require.Equal(
@@ -353,11 +338,8 @@ func TestEsploraSubmitPackage(t *testing.T) {
 
 			_, err = w.Write([]byte(`{"package_msg":"success"}`))
 			require.NoError(t, err)
-		}),
+		},
 	)
-	defer srv.Close()
-
-	client := NewEsploraClient(srv.URL, btclog.Disabled)
 	err := client.SubmitPackage(t.Context(), expected)
 	require.NoError(t, err)
 }
@@ -367,8 +349,8 @@ func TestEsploraSubmitPackage(t *testing.T) {
 func TestEsploraSubmitPackageReject(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newEsploraClient(
+		t, func(w http.ResponseWriter, r *http.Request) {
 			require.Equal(t, http.MethodPost, r.Method)
 			require.Equal(t, "/txs/package", r.URL.Path)
 
@@ -384,11 +366,8 @@ func TestEsploraSubmitPackageReject(t *testing.T) {
 					`"error":"txn-already-known"}}}`,
 			))
 			require.NoError(t, err)
-		}),
+		},
 	)
-	defer srv.Close()
-
-	client := NewEsploraClient(srv.URL, btclog.Disabled)
 	err := client.SubmitPackage(t.Context(), []string{"aa", "bb"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "package not accepted")
@@ -400,14 +379,11 @@ func TestEsploraSubmitPackageReject(t *testing.T) {
 func TestEsploraHTTPError(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newEsploraClient(
+		t, func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not found", http.StatusNotFound)
-		}),
+		},
 	)
-	defer srv.Close()
-
-	client := NewEsploraClient(srv.URL, btclog.Disabled)
 	_, err := client.GetTipHeight(t.Context())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "404")
