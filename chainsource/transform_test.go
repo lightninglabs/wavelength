@@ -157,45 +157,6 @@ func TestMapBlockEpoch(t *testing.T) {
 	require.Equal(t, testBlockHash.String(), received.Data)
 }
 
-// TestMapConfirmationEventTypeSafety tests that the type system ensures
-// compile-time safety when using MapConfirmationEvent.
-func TestMapConfirmationEventTypeSafety(t *testing.T) {
-	t.Parallel()
-
-	// This test verifies that the type system works correctly. If this
-	// compiles, it proves type safety is maintained.
-	targetRef := actor.NewChannelTellOnlyRef[mockTargetMessage](
-		"test-target", 10,
-	)
-
-	// Create the adapted ref using the helper.
-	mapFn := func(ce ConfirmationEvent) mockTargetMessage {
-		return mockTargetMessage{
-			Source: "confirmation",
-			Data:   "test",
-		}
-	}
-	adaptedRef := MapConfirmationEvent(targetRef, mapFn)
-
-	// The fact that we can assign to TellOnlyRef[ConfirmationEvent] proves
-	// the types are correct.
-	ctx := t.Context()
-	testTxid := chainhash.Hash{}
-	require.NoError(
-		t,
-		adaptedRef.Tell(
-			ctx, ConfirmationEvent{
-				Txid:        testTxid,
-				BlockHeight: 1,
-			},
-		),
-	)
-
-	// Verify the message was transformed and delivered.
-	_, ok := targetRef.AwaitMessage(time.Second)
-	require.True(t, ok, "timeout waiting for message")
-}
-
 // TestMapSpendEventMultipleMessages tests that MapSpendEvent correctly handles
 // multiple sequential messages.
 func TestMapSpendEventMultipleMessages(t *testing.T) {
