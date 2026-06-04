@@ -595,9 +595,22 @@ func TestRegistryTerminalNotificationMarksStore(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	registry, store, _, txconfirmRef := newRegistryHarness(t, proof, desc)
-	txconfirmRef.setImmediateFailed(proof.RootTxids()[0], "rejected")
 
-	_, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
+	// Confirm the root proof node (a real on-chain footprint), then fail
+	// its child node. The job terminates Failed with a confirmed proof tx
+	// still on record, so HadOnChainFootprint is true and the failure is
+	// NON-recoverable: the exit has begun on-chain, so a repeat Ensure
+	// must still dedup against the terminal record rather than re-admit.
+	// The recoverable (no-footprint) re-admission case is covered by
+	// TestRegistryReadmitsTargetAfterRecoverableFailure.
+	rootTxid := proof.RootTxids()[0]
+	childTxids, err := proof.ChildTxids(rootTxid)
+	require.NoError(t, err)
+	require.NotEmpty(t, childTxids)
+	txconfirmRef.setImmediateConfirmed(rootTxid, 201)
+	txconfirmRef.setImmediateFailed(childTxids[0], "rejected")
+
+	_, err = registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{
 		Outpoint: proof.TargetOutpoint(),
 		Trigger:  TriggerManual,
 	}).Await(t.Context()).Unpack()
@@ -633,11 +646,16 @@ func TestRegistryTerminalNotificationMarksStore(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, record)
 	require.Contains(t, record.FailReason, "proof tx")
+	require.False(
+		t, record.RecoverableFailure, "a failure with a confirmed "+
+			"proof node has an on-chain footprint and must not "+
+			"be recoverable",
+	)
 
-	// A repeat EnsureUnroll for the same outpoint after termination
-	// must not spawn a fresh actor or clobber the stored failure
-	// reason; it should return Created=false pointing at the existing
-	// actor id so the caller can observe the terminal record.
+	// A repeat EnsureUnroll for the same outpoint after a NON-recoverable
+	// termination must not spawn a fresh actor or clobber the stored
+	// failure reason; it should return Created=false pointing at the
+	// existing actor id so the caller can observe the terminal record.
 	storedActorID := record.ActorID
 
 	resp, err := registry.Ref().Ask(t.Context(), &EnsureUnrollRequest{

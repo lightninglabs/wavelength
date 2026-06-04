@@ -444,7 +444,14 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 	// write completes, so fall back to the in-memory pending cache and
 	// the durable store. Re-spawning a fresh actor on top of an existing
 	// record would clobber the recorded sweep txid or fail reason.
-	if record, ok := r.pending[req.Outpoint]; ok {
+	//
+	// A recoverable failure is the exception: the prior exit failed
+	// cleanly with no on-chain footprint and the VTXO was rolled back to
+	// live (darepo-client#602), so a fresh exit must be admittable rather
+	// than deduped against the dead attempt. Fall through to the spawn
+	// path, whose UpsertRecord overwrites the stale recoverable row.
+	if record, ok := r.pending[req.Outpoint]; ok &&
+		!record.RecoverableFailure {
 		return fn.Ok[RegistryResp](&EnsureUnrollResp{
 			ActorID: record.ActorID,
 			Created: false,
@@ -461,10 +468,13 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		// A durable record exists but no child is live for it. Two
 		// sub-cases:
 		//
-		//   1. Terminal record (Completed/Failed) — return the
-		//      historical ActorID so callers see a stable identity
-		//      and do not clobber the recorded sweep txid or
-		//      failure reason.
+		//   1. Terminal record (Completed / non-recoverable Failed)
+		//      — return the historical ActorID so callers see a
+		//      stable identity and do not clobber the recorded sweep
+		//      txid or failure reason. A *recoverable* terminal
+		//      failure is the exception: the VTXO was rolled back to
+		//      live (darepo-client#602), so it falls through to a
+		//      fresh spawn (handled below).
 		//
 		//   2. Non-terminal record — the actor was admitted in a
 		//      previous boot but never resumed (e.g. RestoreNonTerminal
@@ -515,10 +525,20 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 			})
 		}
 
-		return fn.Ok[RegistryResp](&EnsureUnrollResp{
-			ActorID: existing.ActorID,
-			Created: false,
-		})
+		// Terminal record. A recoverable failure (clean, no on-chain
+		// footprint) means the VTXO was rolled back to live, so a new
+		// exit is allowed: fall through to the spawn path below, whose
+		// UpsertRecord overwrites the stale record. Any other terminal
+		// record (Completed, or a footprint-bearing Failed) is a real
+		// end state — dedup against it and return the historical
+		// ActorID so the recorded sweep txid / failure reason are
+		// never clobbered.
+		if !existing.RecoverableFailure {
+			return fn.Ok[RegistryResp](&EnsureUnrollResp{
+				ActorID: existing.ActorID,
+				Created: false,
+			})
+		}
 	}
 
 	height, err := r.queryBestHeight(ctx)
