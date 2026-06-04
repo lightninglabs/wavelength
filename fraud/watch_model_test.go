@@ -10,13 +10,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestBuildWatchPlanIncludesTreeInputsAndLeafSource verifies passive watches
-// cover both tree materialization and checkpoint spend of the source VTXO.
-func TestBuildWatchPlanIncludesTreeInputsAndLeafSource(t *testing.T) {
-	treePath, source := testBranchTree(t, 5)
-	target := testInput(9)
+// watchedSet builds a plan for the descriptor and returns the set of watched
+// ancestor outpoints, asserting the plan targets the expected outpoint.
+func watchedSet(t *testing.T, target wire.OutPoint,
+	desc *vtxo.Descriptor) map[wire.OutPoint]struct{} {
 
-	plan, err := BuildWatchPlan(testDescriptor(target, treePath))
+	t.Helper()
+
+	plan, err := BuildWatchPlan(desc)
 	require.NoError(t, err)
 	require.Equal(t, target, plan.TargetOutpoint)
 
@@ -25,6 +26,16 @@ func TestBuildWatchPlanIncludesTreeInputsAndLeafSource(t *testing.T) {
 		watched[watch.Outpoint] = struct{}{}
 	}
 
+	return watched
+}
+
+// TestBuildWatchPlanIncludesTreeInputsAndLeafSource verifies passive watches
+// cover both tree materialization and checkpoint spend of the source VTXO.
+func TestBuildWatchPlanIncludesTreeInputsAndLeafSource(t *testing.T) {
+	treePath, source := testBranchTree(t, 5)
+	target := testInput(9)
+
+	watched := watchedSet(t, target, testDescriptor(target, treePath))
 	require.Contains(t, watched, treePath.Root.Input)
 	require.Contains(t, watched, treePath.Root.Children[0].Input)
 	require.Contains(t, watched, source)
@@ -36,16 +47,9 @@ func TestBuildWatchPlanIncludesEveryAncestry(t *testing.T) {
 	treeOne, sourceOne := testLeafTree(t, 10)
 	treeTwo, sourceTwo := testLeafTree(t, 20)
 	target := testInput(30)
+	desc := testDescriptor(target, treeOne, treeTwo)
 
-	plan, err := BuildWatchPlan(testDescriptor(target, treeOne, treeTwo))
-	require.NoError(t, err)
-	require.Equal(t, target, plan.TargetOutpoint)
-
-	watched := make(map[wire.OutPoint]struct{}, len(plan.Watches))
-	for _, watch := range plan.Watches {
-		watched[watch.Outpoint] = struct{}{}
-	}
-
+	watched := watchedSet(t, target, desc)
 	require.Contains(t, watched, treeOne.Root.Input)
 	require.Contains(t, watched, sourceOne)
 	require.Contains(t, watched, treeTwo.Root.Input)
