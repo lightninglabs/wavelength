@@ -16,10 +16,20 @@ requires `swapruntime`): stub builds compile, but wallet methods return
 
 For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/walletdk.<Symbol>`.
 
-- `Client` — concurrency-safe wallet handle owning the embedded daemon
-  lifecycle, the private `bufconn` gRPC connection, and the
-  daemonrpc/walletdkrpc/swapclientrpc clients. `Stop`/`Close` are
-  idempotent aliases.
+- `Client` — concurrency-safe wallet handle. Used for both embedded-daemon
+  mode (via `Start`) and remote-daemon mode (via `Connect`). Owns the gRPC
+  connection, daemonrpc/walletdkrpc/swapclientrpc clients, and the daemon
+  lifecycle when embedded. `Stop`/`Close` are idempotent aliases.
+- `Connect(ctx, ConnectConfig)` — Returns a `*Client` connected to an
+  external daemon. Does not boot or own a daemon. Supports gRPC and REST
+  transports. Thin alternative to `Start` for host apps that run darepod
+  out-of-process.
+- `ConnectConfig` — Connection config for `Connect`: `Address` (target),
+  `Transport` (`TransportGRPC` or `TransportREST`), optional `DialOptions`
+  (gRPC only), optional `HTTPClient` (REST only).
+- `Transport` — String enum selecting the RPC transport for `Connect`.
+  `TransportGRPC` (default, native gRPC) and `TransportREST` (grpc-gateway
+  HTTP/JSON via `rpc/restclient`).
 - `Config` — embedded daemon + wallet facade config. Two usage modes:
   zero-value plus convenience fields (`DataDir`, `Network`,
   `ServerAddress`, …), or a caller-owned `DaemonConfig` plus only the
@@ -95,6 +105,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   (wallet, balance, info, address RPCs + direct paths for
   `CreateWallet`/`UnlockWallet`), `rpc/walletdkrpc` (unified wallet API
   the seven verbs target), `rpc/swapclientrpc` (raw-swap escape hatch),
+  `rpc/restclient` (HTTP/JSON gateway adapter for `TransportREST`),
   `swapclientserver` (registered as daemon-side swap subserver in
   `swapruntime` builds), `swapwallet` (daemon-side walletdkrpc subserver
   in `walletdkrpc` builds), `google.golang.org/grpc/test/bufconn`.

@@ -27,7 +27,7 @@ The CLI surface is split into three tiers:
 | `recv` | `walletdkrpc.Recv` / `walletdkrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
 | `activity` | `walletdkrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
 | `balance` | `walletdkrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
-| `exit --outpoint TXID:VOUT` | `walletdkrpc.Exit` | Trigger a unilateral exit (proxies Unroll) |
+| `exit --outpoint TXID:VOUT` | `walletdkrpc.Exit` | Queue cooperative leave by default. Unilateral unroll only when `--force-unroll-ack I_KNOW_WHAT_I_AM_DOING` is supplied. `--onchain-address` sets cooperative destination; omitted means a fresh wallet address. Mutually exclusive with `--force-unroll-ack`. |
 | `exit status --outpoint TXID:VOUT` | `walletdkrpc.ExitStatus` | Query an exit job's status (proxies GetUnrollStatus) |
 
 ### Daemon introspection
@@ -87,6 +87,20 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
   truth for `schema` and MCP tool definitions. Built from the
   `walletAdmin`/`walletPayment`/`walletQuery`/`arkBase`/`arkVTXO`/
   `arkSend` sub-registries.
+- `registerMCPWalletTools(s, client)` — registers all everyday wallet
+  verbs as MCP tools on the MCP server. `Create` and `Unlock` are
+  intentionally omitted (carry secrets that must not transit the MCP
+  protocol). Delegates to two sub-registrars:
+  - `registerMCPWalletQueryTools` — `balance`, `activity` (read-only,
+    no dry-run rail).
+  - `registerMCPWalletMutateTools` — `send`, `recv`, `exit`,
+    `exit.status` (fund-moving verbs; reuse the same input-hardening
+    helpers as the CLI — `validateDestination`, `validateOutpoint`,
+    `validateFreeText`).
+- `mapWalletRPCError(err)` — maps gRPC `codes.Unimplemented` to
+  `errWalletRPCDisabled` (with actionable build-tag hint) so MCP
+  consumers talking to a stub-build daemon see clear text rather than
+  a raw status code.
 - `readPassword()` — reads wallet password from
   `DAREPOD_WALLET_PASSWORD` → `--wallet_password_file` → stdin → TTY.
   **Never from CLI args.**
