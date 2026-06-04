@@ -76,59 +76,71 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 	}
 }
 
-// TestDecodeErrorHeaders_NilAndEmpty verifies that DecodeErrorHeaders returns
-// nil for nil maps, empty maps, and maps without the status header key.
-func TestDecodeErrorHeaders_NilAndEmpty(t *testing.T) {
+// TestDecodeErrorHeaders verifies that DecodeErrorHeaders treats nil, empty,
+// missing-key, and empty-value maps as absent (no error), and returns a
+// descriptive error for malformed base64 or garbage proto bytes.
+func TestDecodeErrorHeaders(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, DecodeErrorHeaders(nil))
-	require.NoError(t, DecodeErrorHeaders(map[string]string{}))
-	require.NoError(
-		t,
-		DecodeErrorHeaders(
-			map[string]string{
-				"other-key": "value",
+	hdr := func(v string) map[string]string {
+		return map[string]string{HeaderGRPCStatusB64: v}
+	}
+
+	tests := []struct {
+		name    string
+		headers map[string]string
+		wantErr string
+	}{
+		{
+			name:    "nil map",
+			headers: nil,
+		},
+		{
+			name:    "empty map",
+			headers: map[string]string{},
+		},
+		{
+			name: "missing key",
+			headers: map[string]string{
+				"x": "v",
 			},
-		),
-	)
-}
+		},
+		{
+			name:    "empty value",
+			headers: hdr(""),
+		},
 
-// TestDecodeErrorHeaders_EmptyValue verifies that an empty string value for
-// the status header key is treated as absent.
-func TestDecodeErrorHeaders_EmptyValue(t *testing.T) {
-	t.Parallel()
+		// Malformed base64 cannot be decoded at all.
+		{
+			name:    "invalid base64",
+			headers: hdr("not-valid-base64!@#$"),
+			wantErr: "decode grpc status header",
+		},
 
-	err := DecodeErrorHeaders(map[string]string{
-		HeaderGRPCStatusB64: "",
-	})
-	require.NoError(t, err)
-}
+		// Valid base64 that decodes to bytes which are not a valid
+		// protobuf Status message.
+		{
+			name:    "invalid proto",
+			headers: hdr("////"),
+			wantErr: "unmarshal grpc status proto",
+		},
+	}
 
-// TestDecodeErrorHeaders_InvalidBase64 verifies that malformed base64 in the
-// header produces a descriptive error rather than a panic.
-func TestDecodeErrorHeaders_InvalidBase64(t *testing.T) {
-	t.Parallel()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	err := DecodeErrorHeaders(map[string]string{
-		HeaderGRPCStatusB64: "not-valid-base64!@#$",
-	})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "decode grpc status header")
-}
+			err := DecodeErrorHeaders(tc.headers)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
 
-// TestDecodeErrorHeaders_InvalidProto verifies that valid base64 containing
-// garbage proto bytes produces a descriptive unmarshal error.
-func TestDecodeErrorHeaders_InvalidProto(t *testing.T) {
-	t.Parallel()
+				return
+			}
 
-	// Valid base64 but not a valid protobuf Status message. Use a byte
-	// sequence that base64-encodes cleanly but contains invalid proto
-	// field tags.
-	err := DecodeErrorHeaders(map[string]string{
-		HeaderGRPCStatusB64: "////",
-	})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "unmarshal grpc status proto")
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
 }
 
 // TestEncodeErrorHeaders_HeaderKeyPresent verifies the header map always uses
