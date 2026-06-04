@@ -29,171 +29,133 @@ func TestPartitionLeaves(t *testing.T) {
 		return leaves
 	}
 
-	t.Run("fewer leaves than radix", func(t *testing.T) {
-		t.Parallel()
-
-		// 3 leaves with radix 5 should create 3 groups of 1 leaf each.
-		leaves := createLeaves(3)
-		groups := partitionLeaves(leaves, 5, nil)
-
-		require.Len(t, groups, 3)
-		for i, group := range groups {
-			require.Len(
-				t, group, 1, "group %d should have 1 leaf", i,
-			)
-		}
-	})
-
-	t.Run("equal leaves and radix", func(t *testing.T) {
-		t.Parallel()
-
-		// 4 leaves with radix 4 should create 4 groups of 1 leaf each.
-		leaves := createLeaves(4)
-		groups := partitionLeaves(leaves, 4, nil)
-
-		require.Len(t, groups, 4)
-		for i, group := range groups {
-			require.Len(
-				t, group, 1, "group %d should have 1 leaf", i,
-			)
-		}
-	})
-
-	t.Run("more leaves than radix distributes evenly", func(t *testing.T) {
-		t.Parallel()
-
-		// 8 leaves with radix 4 should create 4 groups of 2 leaves
-		// each.
-		leaves := createLeaves(8)
-		groups := partitionLeaves(leaves, 4, nil)
-
-		require.Len(t, groups, 4)
-		for i, group := range groups {
-			require.Len(
-				t, group, 2, "group %d should have 2 leaves", i,
-			)
-		}
-	})
-
-	t.Run("uneven distribution", func(t *testing.T) {
-		t.Parallel()
-
-		// 10 leaves with radix 4 should create:
-		// - 2 groups with 3 leaves (10 % 4 = 2 extra).
-		// - 2 groups with 2 leaves (10 / 4 = 2 base).
-		leaves := createLeaves(10)
-		groups := partitionLeaves(leaves, 4, nil)
-
-		require.Len(t, groups, 4)
-
-		// Count leaves per group.
-		counts := make([]int, len(groups))
-		for i, group := range groups {
-			counts[i] = len(group)
+	// The round-robin partition (nil weightFn) is fully determined by the
+	// leaf count and radix, so collapse the count/radix cases into a
+	// data-only table whose expected per-group lengths also pin down the
+	// total leaf count.
+	rr := func(n int) []int {
+		l := make([]int, n)
+		for i := range l {
+			l[i] = 1
 		}
 
-		// Verify distribution: first 2 groups should have 3 leaves,
-		// last 2 should have 2 leaves.
-		require.Equal(t, 3, counts[0])
-		require.Equal(t, 3, counts[1])
-		require.Equal(t, 2, counts[2])
-		require.Equal(t, 2, counts[3])
+		return l
+	}
+	roundRobinCases := []struct {
+		name      string
+		count     int
+		radix     int
+		wantSizes []int
+	}{
+		// Fewer leaves than radix yields one leaf per group.
+		{
+			"fewer leaves than radix",
+			3,
+			5,
+			rr(3),
+		},
 
-		// Verify total leaf count.
-		totalLeaves := 0
-		for _, group := range groups {
-			totalLeaves += len(group)
-		}
-		require.Equal(t, 10, totalLeaves)
-	})
+		// Equal leaves and radix yields one leaf per group.
+		{
+			"equal leaves and radix",
+			4,
+			4,
+			rr(4),
+		},
 
-	t.Run("single leaf", func(t *testing.T) {
-		t.Parallel()
+		// More leaves than radix distributes evenly.
+		{
+			"more leaves than radix",
+			8,
+			4,
+			[]int{
+				2,
+				2,
+				2,
+				2,
+			},
+		},
 
-		leaves := createLeaves(1)
-		groups := partitionLeaves(leaves, 4, nil)
+		// Uneven: first 10%4=2 groups get the extra leaf.
+		{
+			"uneven distribution",
+			10,
+			4,
+			[]int{
+				3,
+				3,
+				2,
+				2,
+			},
+		},
 
-		require.Len(t, groups, 1)
-		require.Len(t, groups[0], 1)
-	})
+		// Single leaf yields a single group.
+		{
+			"single leaf",
+			1,
+			4,
+			rr(1),
+		},
 
-	t.Run("two leaves with radix 4", func(t *testing.T) {
-		t.Parallel()
+		// Two leaves with radix 4 yields two singleton groups.
+		{
+			"two leaves with radix 4",
+			2,
+			4,
+			rr(2),
+		},
 
-		leaves := createLeaves(2)
-		groups := partitionLeaves(leaves, 4, nil)
+		// Degenerate radix triggers the half-split fallback that
+		// guarantees at least 2 non-empty groups when M > 1.
+		{
+			"fallback for degenerate case",
+			2,
+			100,
+			rr(2),
+		},
 
-		// Should create 2 groups with 1 leaf each.
-		require.Len(t, groups, 2)
-		require.Len(t, groups[0], 1)
-		require.Len(t, groups[1], 1)
-	})
+		// Radix 2 binary tree: group 0 gets the 7%2=1 extra leaf.
+		{
+			"radix 2 binary tree",
+			7,
+			2,
+			[]int{
+				4,
+				3,
+			},
+		},
 
-	t.Run("fallback for degenerate case", func(t *testing.T) {
-		t.Parallel()
+		// Large radix evenly fills every group with 10 leaves.
+		{"large radix", 100, 10, []int{
+			10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+		}},
 
-		// This test verifies the safety fallback that ensures at least
-		// 2 non-empty groups when M > 1. While the normal round-robin
-		// algorithm should prevent this, the fallback provides defense
-		// in depth.
-		leaves := createLeaves(2)
-		groups := partitionLeaves(leaves, 100, nil)
+		// All leaves assigned: 17%5=2 groups get the extra leaf.
+		{"verifies all leaves are assigned", 17, 5,
+			[]int{
+				4,
+				4,
+				3,
+				3,
+				3,
+			}},
+	}
+	for _, tc := range roundRobinCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-		// Should have exactly 2 groups (fallback split in half).
-		require.Len(t, groups, 2)
-		require.Len(t, groups[0], 1)
-		require.Len(t, groups[1], 1)
-	})
+			leaves := createLeaves(tc.count)
+			groups := partitionLeaves(leaves, tc.radix, nil)
 
-	t.Run("radix 2 binary tree", func(t *testing.T) {
-		t.Parallel()
-
-		// 7 leaves with radix 2 should create 2 groups:
-		// - Group 0: 4 leaves (7 / 2 = 3 base + 1 extra).
-		// - Group 1: 3 leaves (7 / 2 = 3 base).
-		leaves := createLeaves(7)
-		groups := partitionLeaves(leaves, 2, nil)
-
-		require.Len(t, groups, 2)
-		require.Len(t, groups[0], 4)
-		require.Len(t, groups[1], 3)
-	})
-
-	t.Run("large radix", func(t *testing.T) {
-		t.Parallel()
-
-		// 100 leaves with radix 10.
-		leaves := createLeaves(100)
-		groups := partitionLeaves(leaves, 10, nil)
-
-		require.Len(t, groups, 10)
-
-		// Each group should have exactly 10 leaves.
-		for i, group := range groups {
-			require.Len(
-				t, group, 10, "group %d should have 10 leaves",
-				i,
-			)
-		}
-	})
-
-	t.Run("verifies all leaves are assigned", func(t *testing.T) {
-		t.Parallel()
-
-		leaves := createLeaves(17)
-		groups := partitionLeaves(leaves, 5, nil)
-
-		// Count total leaves across all groups.
-		totalLeaves := 0
-		for _, group := range groups {
-			totalLeaves += len(group)
-		}
-
-		require.Equal(
-			t, 17, totalLeaves,
-			"all leaves should be assigned to groups",
-		)
-	})
+			require.Len(t, groups, len(tc.wantSizes))
+			for i, group := range groups {
+				require.Len(
+					t, group, tc.wantSizes[i], "group "+
+						"%d size", i,
+				)
+			}
+		})
+	}
 
 	t.Run("weighted partition prefers heavy leaf alone", func(t *testing.T) { //nolint:ll
 		t.Parallel()
