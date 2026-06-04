@@ -192,6 +192,10 @@ func TestJoinRoundQuoteReceivedFromProto(t *testing.T) {
 		quoteID[i] = byte(i + 1)
 	}
 
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorKey := operatorPriv.PubKey()
+
 	pb := &roundpb.JoinRoundQuote{
 		RoundId:        roundID.String(),
 		QuoteId:        quoteID[:],
@@ -199,6 +203,13 @@ func TestJoinRoundQuoteReceivedFromProto(t *testing.T) {
 		OperatorFeeSat: 1_234,
 		QuoteExpiresAt: 1_700_000_000,
 		RejectReason:   roundpb.QuoteReason_QUOTE_OK,
+		OperatorPubkey: operatorKey.SerializeCompressed(),
+		ForfeitScript: []byte{
+			0x51,
+			0x20,
+			0xfe,
+		},
+		SweepDelay: 288,
 		VtxoQuotes: []*roundpb.VTXOQuote{
 			{
 				PkScript: []byte{
@@ -274,6 +285,39 @@ func TestJoinRoundQuoteReceivedFromProto(t *testing.T) {
 		},
 		got.Quote.LeaveQuotes,
 	)
+
+	// The server-delivered operator key, forfeit script, and sweep
+	// delay must parse onto the quote.
+	require.NotNil(t, got.Quote.OperatorKey)
+	require.True(t, got.Quote.OperatorKey.IsEqual(operatorKey))
+	require.Equal(t, []byte{0x51, 0x20, 0xfe}, got.Quote.ForfeitScript)
+	require.Equal(t, uint32(288), got.Quote.SweepDelay)
+}
+
+// TestJoinRoundQuoteReceivedFromProtoRequiresOperatorKey verifies that a
+// QUOTE_OK quote with an empty operator_pubkey is rejected: the client
+// cannot re-derive or byte-match the server-built tree leaves without it.
+func TestJoinRoundQuoteReceivedFromProtoRequiresOperatorKey(t *testing.T) {
+	t.Parallel()
+
+	roundID := testRoundIDForMsg("round-no-op-key")
+
+	var quoteID [32]byte
+	for i := range quoteID {
+		quoteID[i] = byte(i + 1)
+	}
+
+	pb := &roundpb.JoinRoundQuote{
+		RoundId:      roundID.String(),
+		QuoteId:      quoteID[:],
+		RejectReason: roundpb.QuoteReason_QUOTE_OK,
+		// OperatorPubkey deliberately omitted.
+	}
+
+	var got JoinRoundQuoteReceived
+	err := got.FromProto(pb)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "operator_pubkey")
 }
 
 // TestJoinRoundQuoteReceivedFromProtoRejectsBadQuoteID covers the

@@ -4,11 +4,26 @@ import (
 	"context"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/stretchr/testify/require"
 )
+
+// quoteTestOperatorKey is a fixed valid operator key used to populate the
+// admitted-quote operator key in QuoteReceivedState tests. Under the
+// server-injected-operator-key design an admitted quote always carries the
+// operator key, so the QuoteAccepted handler stamps it onto the FSM environment
+// unconditionally.
+var quoteTestOperatorKey = func() *btcec.PublicKey {
+	priv, err := btcec.NewPrivateKey()
+	if err != nil {
+		panic(err)
+	}
+
+	return priv.PubKey()
+}()
 
 // newQuoteReceivedTestState builds a QuoteReceivedState with a
 // ClientQuote parameterized on fee and reject reason. Tests drive
@@ -28,6 +43,7 @@ func newQuoteReceivedTestState(
 			QuoteID:        quoteID,
 			OperatorFeeSat: operatorFeeSat,
 			RejectReason:   rejectReason,
+			OperatorKey:    quoteTestOperatorKey,
 		},
 	}
 }

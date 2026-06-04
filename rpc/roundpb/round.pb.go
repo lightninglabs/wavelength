@@ -1684,7 +1684,25 @@ type JoinRoundQuote struct {
 	// reject_reason is populated when the server drops this
 	// client's intent at seal time (e.g. residual would be
 	// negative). QUOTE_OK indicates a valid quote.
-	RejectReason  QuoteReason `protobuf:"varint,9,opt,name=reject_reason,json=rejectReason,proto3,enum=round.v1.QuoteReason" json:"reject_reason,omitempty"`
+	RejectReason QuoteReason `protobuf:"varint,9,opt,name=reject_reason,json=rejectReason,proto3,enum=round.v1.QuoteReason" json:"reject_reason,omitempty"`
+	// operator_pubkey is the compressed public key (33 bytes) of the
+	// operator key the server bound into each VTXO output template at
+	// admission. The client expressed its round outputs with an
+	// unbound operator-key placeholder; this field tells the client
+	// which concrete operator key to bind in when it re-derives and
+	// byte-matches the server-built tree leaves at co-signing time,
+	// and which key to persist on the resulting VTXO records. Required
+	// on a QUOTE_OK quote.
+	OperatorPubkey []byte `protobuf:"bytes,10,opt,name=operator_pubkey,json=operatorPubkey,proto3" json:"operator_pubkey,omitempty"`
+	// forfeit_script is the operator's forfeit output script used when
+	// forfeiting VTXOs admitted into this round. Delivered with the
+	// quote so the client uses the exact script the server committed
+	// to for this round rather than a separately-fetched value.
+	ForfeitScript []byte `protobuf:"bytes,11,opt,name=forfeit_script,json=forfeitScript,proto3" json:"forfeit_script,omitempty"`
+	// sweep_delay is the operator's sweep CSV delay for this round,
+	// delivered with the quote so the client uses the round-current
+	// value rather than a separately-fetched one.
+	SweepDelay    uint32 `protobuf:"varint,12,opt,name=sweep_delay,json=sweepDelay,proto3" json:"sweep_delay,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1780,6 +1798,27 @@ func (x *JoinRoundQuote) GetRejectReason() QuoteReason {
 		return x.RejectReason
 	}
 	return QuoteReason_QUOTE_OK
+}
+
+func (x *JoinRoundQuote) GetOperatorPubkey() []byte {
+	if x != nil {
+		return x.OperatorPubkey
+	}
+	return nil
+}
+
+func (x *JoinRoundQuote) GetForfeitScript() []byte {
+	if x != nil {
+		return x.ForfeitScript
+	}
+	return nil
+}
+
+func (x *JoinRoundQuote) GetSweepDelay() uint32 {
+	if x != nil {
+		return x.SweepDelay
+	}
+	return 0
 }
 
 // JoinRoundAccept is sent from client to server to explicitly
@@ -2504,7 +2543,7 @@ const file_round_proto_rawDesc = "" +
 	"LeaveQuote\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12\x1d\n" +
 	"\n" +
-	"amount_sat\x18\x02 \x01(\x03R\tamountSat\"\xa5\x03\n" +
+	"amount_sat\x18\x02 \x01(\x03R\tamountSat\"\x96\x04\n" +
 	"\x0eJoinRoundQuote\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\tR\aroundId\x12\x19\n" +
 	"\bquote_id\x18\x02 \x01(\fR\aquoteId\x12(\n" +
@@ -2515,7 +2554,12 @@ const file_round_proto_rawDesc = "" +
 	"\x10operator_fee_sat\x18\x06 \x01(\x03R\x0eoperatorFeeSat\x124\n" +
 	"\tbreakdown\x18\a \x01(\v2\x16.round.v1.FeeBreakdownR\tbreakdown\x12(\n" +
 	"\x10quote_expires_at\x18\b \x01(\x03R\x0equoteExpiresAt\x12:\n" +
-	"\rreject_reason\x18\t \x01(\x0e2\x15.round.v1.QuoteReasonR\frejectReason\"G\n" +
+	"\rreject_reason\x18\t \x01(\x0e2\x15.round.v1.QuoteReasonR\frejectReason\x12'\n" +
+	"\x0foperator_pubkey\x18\n" +
+	" \x01(\fR\x0eoperatorPubkey\x12%\n" +
+	"\x0eforfeit_script\x18\v \x01(\fR\rforfeitScript\x12\x1f\n" +
+	"\vsweep_delay\x18\f \x01(\rR\n" +
+	"sweepDelay\"G\n" +
 	"\x0fJoinRoundAccept\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\tR\aroundId\x12\x19\n" +
 	"\bquote_id\x18\x02 \x01(\fR\aquoteId\"_\n" +

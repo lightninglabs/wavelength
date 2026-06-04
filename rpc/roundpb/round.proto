@@ -474,6 +474,27 @@ message JoinRoundQuote {
     // client's intent at seal time (e.g. residual would be
     // negative). QUOTE_OK indicates a valid quote.
     QuoteReason reject_reason = 9;
+
+    // operator_pubkey is the compressed public key (33 bytes) of the
+    // operator key the server bound into each VTXO output template at
+    // admission. The client expressed its round outputs with an
+    // unbound operator-key placeholder; this field tells the client
+    // which concrete operator key to bind in when it re-derives and
+    // byte-matches the server-built tree leaves at co-signing time,
+    // and which key to persist on the resulting VTXO records. Required
+    // on a QUOTE_OK quote.
+    bytes operator_pubkey = 10;
+
+    // forfeit_script is the operator's forfeit output script used when
+    // forfeiting VTXOs admitted into this round. Delivered with the
+    // quote so the client uses the exact script the server committed
+    // to for this round rather than a separately-fetched value.
+    bytes forfeit_script = 11;
+
+    // sweep_delay is the operator's sweep CSV delay for this round,
+    // delivered with the quote so the client uses the round-current
+    // value rather than a separately-fetched one.
+    uint32 sweep_delay = 12;
 }
 
 // JoinRoundAccept is sent from client to server to explicitly

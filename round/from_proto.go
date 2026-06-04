@@ -68,6 +68,26 @@ func (e *JoinRoundQuoteReceived) FromProto(p proto.Message) error {
 		RejectReason:   rawReason,
 	}
 
+	// On a successful quote the server tells the client which operator
+	// key it bound into the round's VTXO output templates, plus the
+	// round's forfeit script and sweep delay. operator_pubkey is
+	// REQUIRED on a QUOTE_OK quote: the client cannot re-derive or
+	// byte-match the server-built tree leaves without it, and signing
+	// against an unknown operator key would defeat the whole
+	// server-injected-key model. Reject quotes carry no binding fields,
+	// so parse these only for QUOTE_OK. btcec.ParsePubKey errors on an
+	// empty/invalid key, which gives us the required-presence check for
+	// free.
+	if rawReason == roundpb.QuoteReason_QUOTE_OK {
+		operatorKey, err := btcec.ParsePubKey(pb.GetOperatorPubkey())
+		if err != nil {
+			return fmt.Errorf("operator_pubkey: %w", err)
+		}
+		quote.OperatorKey = operatorKey
+		quote.ForfeitScript = pb.GetForfeitScript()
+		quote.SweepDelay = pb.GetSweepDelay()
+	}
+
 	vtxoQuotes := pb.GetVtxoQuotes()
 	if len(vtxoQuotes) > MaxQuoteEntriesPerClient {
 		return fmt.Errorf("vtxo_quotes length %d exceeds cap %d",

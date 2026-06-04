@@ -3,6 +3,7 @@ package round
 import (
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -230,6 +231,24 @@ type ClientQuote struct {
 	// field is guaranteed to hold a name the proto descriptor
 	// recognizes.
 	RejectReason roundpb.QuoteReason
+
+	// OperatorKey is the operator key the server bound into this
+	// round's VTXO output templates. The client builds its round
+	// outputs with the operator key left as an unbound placeholder;
+	// this is the concrete key the server stamped in, used to
+	// re-derive and byte-match the server-built tree leaves at
+	// co-signing time and to persist the concrete output. Required
+	// (non-nil) on a QUOTE_OK quote; FromProto rejects an empty
+	// operator_pubkey on a QUOTE_OK quote.
+	OperatorKey *btcec.PublicKey
+
+	// ForfeitScript is the operator's forfeit output script for this
+	// round, delivered with the quote so the client uses the exact
+	// script the server committed to.
+	ForfeitScript []byte
+
+	// SweepDelay is the operator's sweep CSV delay for this round.
+	SweepDelay uint32
 }
 
 // RoundJoinedState indicates the client has been accepted into a round and
