@@ -133,6 +133,46 @@ func (h *testHarness) newDurableCounter(id string) (
 	return durableActor, behavior
 }
 
+// startOutboxPublisher creates, starts, and registers cleanup for an
+// OutboxPublisher wired to the harness store/codec/actor system with the
+// fast test poll interval. Each call site previously repeated this six-line
+// setup verbatim.
+func (h *testHarness) startOutboxPublisher() *actor.OutboxPublisher {
+	h.t.Helper()
+
+	publisherCfg := actor.DefaultOutboxPublisherConfig(
+		h.store, h.codec, h.actorSystem,
+	)
+	publisherCfg.PollInterval = 10 * time.Millisecond
+
+	publisher := actor.NewOutboxPublisher(publisherCfg)
+	publisher.Start()
+	h.t.Cleanup(publisher.Stop)
+
+	return publisher
+}
+
+// newDurableCounterPair creates, starts, and registers stop cleanup for a
+// sender/target durable counter pair, returning their refs alongside the
+// sender behavior used to observe delivered AskResponses.
+func (h *testHarness) newDurableCounterPair(senderID, targetID string) (
+	*CounterBehavior, *CounterBehavior,
+	*actor.DurableActor[CounterMessage, CounterResult],
+	*actor.DurableActor[CounterMessage, CounterResult]) {
+
+	h.t.Helper()
+
+	senderActor, senderBehavior := h.newDurableCounter(senderID)
+	targetActor, targetBehavior := h.newDurableCounter(targetID)
+
+	senderActor.Start()
+	targetActor.Start()
+	h.t.Cleanup(senderActor.Stop)
+	h.t.Cleanup(targetActor.Stop)
+
+	return senderBehavior, targetBehavior, senderActor, targetActor
+}
+
 // eventually retries a condition until it succeeds or times out.
 func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
@@ -202,6 +242,22 @@ func requireDurableCounterRef(
 	require.True(t, ok, "expected DurableActorRef")
 
 	return durableRef
+}
+
+// requireAllCorrelationIDs asserts that every expected correlation ID was
+// observed by the sender behavior, regardless of arrival order.
+func requireAllCorrelationIDs(t *testing.T, behavior *CounterBehavior,
+	expectedIDs []string) {
+
+	t.Helper()
+
+	received := fn.NewSet(behavior.ReceivedCorrelationIDs()...)
+	for _, expected := range expectedIDs {
+		require.True(
+			t, received.Contains(expected),
+			"missing correlation ID: %s", expected,
+		)
+	}
 }
 
 // ============================================================================
@@ -379,13 +435,7 @@ func TestOutboxPublisher_DeliversToTarget(t *testing.T) {
 	defer targetActor.Stop()
 
 	// Create outbox publisher.
-	publisherCfg := actor.DefaultOutboxPublisherConfig(
-		h.store, h.codec, h.actorSystem,
-	)
-	publisherCfg.PollInterval = 10 * time.Millisecond
-	publisher := actor.NewOutboxPublisher(publisherCfg)
-	publisher.Start()
-	defer publisher.Stop()
+	publisher := h.startOutboxPublisher()
 
 	// Encode an increment message to forward.
 	payload, err := h.codec.Encode(&IncrementMsg{Amount: 25})
@@ -441,13 +491,7 @@ func TestOutboxPublisher_MultiHopForwarding(t *testing.T) {
 	defer actorC.Stop()
 
 	// Create outbox publisher.
-	publisherCfg := actor.DefaultOutboxPublisherConfig(
-		h.store, h.codec, h.actorSystem,
-	)
-	publisherCfg.PollInterval = 10 * time.Millisecond
-	publisher := actor.NewOutboxPublisher(publisherCfg)
-	publisher.Start()
-	defer publisher.Stop()
+	publisher := h.startOutboxPublisher()
 
 	// Encode increment message.
 	incrementPayload, err := h.codec.Encode(&IncrementMsg{Amount: 100})
@@ -1271,22 +1315,12 @@ func TestDurableAskResponseViaOutbox(t *testing.T) {
 	senderID := uniqueID("sender")
 	targetID := uniqueID("target")
 
-	senderActor, senderBehavior := h.newDurableCounter(senderID)
-	targetActor, targetBehavior := h.newDurableCounter(targetID)
-
-	senderActor.Start()
-	targetActor.Start()
-	defer senderActor.Stop()
-	defer targetActor.Stop()
+	senderBehavior, targetBehavior, _, targetActor := h.newDurableCounterPair( //nolint:ll
+		senderID, targetID,
+	)
 
 	// Create outbox publisher.
-	publisherCfg := actor.DefaultOutboxPublisherConfig(
-		h.store, h.codec, h.actorSystem,
-	)
-	publisherCfg.PollInterval = 10 * time.Millisecond
-	publisher := actor.NewOutboxPublisher(publisherCfg)
-	publisher.Start()
-	defer publisher.Stop()
+	publisher := h.startOutboxPublisher()
 
 	// Set target's count to a known value.
 	targetBehavior.SetCount(100)
@@ -1336,22 +1370,12 @@ func TestDurableAskErrorResponse(t *testing.T) {
 	senderID := uniqueID("sender")
 	targetID := uniqueID("target")
 
-	senderActor, senderBehavior := h.newDurableCounter(senderID)
-	targetActor, targetBehavior := h.newDurableCounter(targetID)
-
-	senderActor.Start()
-	targetActor.Start()
-	defer senderActor.Stop()
-	defer targetActor.Stop()
+	senderBehavior, targetBehavior, _, targetActor := h.newDurableCounterPair( //nolint:ll
+		senderID, targetID,
+	)
 
 	// Create outbox publisher.
-	publisherCfg := actor.DefaultOutboxPublisherConfig(
-		h.store, h.codec, h.actorSystem,
-	)
-	publisherCfg.PollInterval = 10 * time.Millisecond
-	publisher := actor.NewOutboxPublisher(publisherCfg)
-	publisher.Start()
-	defer publisher.Stop()
+	publisher := h.startOutboxPublisher()
 
 	// Configure target to return an error.
 	targetBehavior.SetForceError(fmt.Errorf("intentional error"))
@@ -1399,22 +1423,12 @@ func TestDurableAskConcurrentRequests(t *testing.T) {
 	senderID := uniqueID("sender")
 	targetID := uniqueID("target")
 
-	senderActor, senderBehavior := h.newDurableCounter(senderID)
-	targetActor, _ := h.newDurableCounter(targetID)
-
-	senderActor.Start()
-	targetActor.Start()
-	defer senderActor.Stop()
-	defer targetActor.Stop()
+	senderBehavior, _, _, targetActor := h.newDurableCounterPair(
+		senderID, targetID,
+	)
 
 	// Create outbox publisher.
-	publisherCfg := actor.DefaultOutboxPublisherConfig(
-		h.store, h.codec, h.actorSystem,
-	)
-	publisherCfg.PollInterval = 10 * time.Millisecond
-	publisher := actor.NewOutboxPublisher(publisherCfg)
-	publisher.Start()
-	defer publisher.Stop()
+	publisher := h.startOutboxPublisher()
 
 	// Send multiple DurableAsk requests concurrently.
 	numRequests := 5
@@ -1446,17 +1460,7 @@ func TestDurableAskConcurrentRequests(t *testing.T) {
 	)
 
 	// Verify all correlation IDs received.
-	receivedIDs := senderBehavior.ReceivedCorrelationIDs()
-	for _, expectedID := range correlationIDs {
-		found := false
-		for _, id := range receivedIDs {
-			if id == expectedID {
-				found = true
-				break
-			}
-		}
-		require.True(t, found, "missing correlation ID: %s", expectedID)
-	}
+	requireAllCorrelationIDs(t, senderBehavior, correlationIDs)
 }
 
 // ============================================================================
@@ -1475,21 +1479,11 @@ func TestDurableAskWithSpecialCorrelationIDs(t *testing.T) {
 	senderID := uniqueID("sender")
 	targetID := uniqueID("target")
 
-	senderActor, senderBehavior := h.newDurableCounter(senderID)
-	targetActor, _ := h.newDurableCounter(targetID)
-
-	senderActor.Start()
-	targetActor.Start()
-	defer senderActor.Stop()
-	defer targetActor.Stop()
-
-	publisherCfg := actor.DefaultOutboxPublisherConfig(
-		h.store, h.codec, h.actorSystem,
+	senderBehavior, _, _, targetActor := h.newDurableCounterPair(
+		senderID, targetID,
 	)
-	publisherCfg.PollInterval = 10 * time.Millisecond
-	publisher := actor.NewOutboxPublisher(publisherCfg)
-	publisher.Start()
-	defer publisher.Stop()
+
+	publisher := h.startOutboxPublisher()
 
 	// Test various correlation ID formats.
 	veryLongID := fmt.Sprintf("very-long-correlation-id-%s-%s",
@@ -1525,17 +1519,7 @@ func TestDurableAskWithSpecialCorrelationIDs(t *testing.T) {
 	)
 
 	// INVARIANT: All correlation IDs preserved.
-	receivedIDs := senderBehavior.ReceivedCorrelationIDs()
-	for _, expected := range testIDs {
-		found := false
-		for _, received := range receivedIDs {
-			if expected == received {
-				found = true
-				break
-			}
-		}
-		require.True(t, found, "missing correlation ID: %s", expected)
-	}
+	requireAllCorrelationIDs(t, senderBehavior, testIDs)
 }
 
 // TestDurableAskErrorMessagePreserved verifies various error message formats
@@ -1572,25 +1556,10 @@ func TestDurableAskErrorMessagePreserved(t *testing.T) {
 			senderID := uniqueID("sender")
 			targetID := uniqueID("target")
 
-			senderActor, senderBehavior := h.newDurableCounter(
-				senderID,
-			)
-			targetActor, targetBehavior := h.newDurableCounter(
-				targetID,
-			)
+			senderBehavior, targetBehavior, _, targetActor :=
+				h.newDurableCounterPair(senderID, targetID)
 
-			senderActor.Start()
-			targetActor.Start()
-			defer senderActor.Stop()
-			defer targetActor.Stop()
-
-			publisherCfg := actor.DefaultOutboxPublisherConfig(
-				h.store, h.codec, h.actorSystem,
-			)
-			publisherCfg.PollInterval = 10 * time.Millisecond
-			publisher := actor.NewOutboxPublisher(publisherCfg)
-			publisher.Start()
-			defer publisher.Stop()
+			publisher := h.startOutboxPublisher()
 
 			targetBehavior.SetForceError(
 				fmt.Errorf("%s", tc.errorMsg),
