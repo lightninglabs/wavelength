@@ -97,6 +97,21 @@ check_negative tcMailboxMonitorCatchesLegacyReorder 1
 # applies its effect after the row was reclaimed double-applies it.
 check_negative tcMailboxUnfencedCommitCounterexample 1
 
+# The early-durable-write (Stage) path must replay safely: a checkpoint Staged
+# and broadcast, then crashed before Commit, is reclaimed and replayed without
+# double-broadcasting or regressing the checkpoint, and consumed exactly once.
+check_green tcMailboxStageCommitExactlyOnce
+
+# The unstable-broadcast counterexample must be caught by the
+# StagedEffectAppliedAtMostOnceUnderReplay monitor: a behavior that re-derives a
+# fresh broadcast id on replay double-broadcasts.
+check_negative tcMailboxStagedDoubleBroadcastCounterexample 1
+
+# The unfenced-stage counterexample must be caught by the
+# CheckpointAdvancesMonotonically monitor: a stale consumer whose stage is not
+# lease-fenced overwrites a newer owner's checkpoint with an older level.
+check_negative tcMailboxStaleStageRegressesCounterexample 1
+
 echo ""
 echo "=== Go Bridge Conformance ==="
 go test ./p-models/durableactor/bridge

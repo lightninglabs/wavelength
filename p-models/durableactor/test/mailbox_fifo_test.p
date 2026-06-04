@@ -1029,6 +1029,281 @@ machine TestDurableMailboxSpec_UnfencedCommitDoubleApplyCounterexample {
     state Done {}
 }
 
+// TestDurableMailboxSpec_StageThenFencedCommitExactlyOnce drives the
+// early-durable-write path under a crash between the Stage and the Commit.
+// Consumer A leases the row, Stages its checkpoint and broadcasts a sweep, then
+// crashes before committing (its lease expires mid-IO). Consumer B reclaims the
+// same durable row, replays the Stage -- which must reuse the persisted sweep id
+// (a monotone no-op on the checkpoint) -- and commits under the fence. A's stale
+// commit is an ErrLeaseLost no-op. The StagedEffectAppliedAtMostOnceUnderReplay
+// and CheckpointAdvancesMonotonically monitors confirm the replay neither
+// double-broadcasts nor regresses the checkpoint, while
+// LeaseFencedCommitAppliesEffectAtMostOnce confirms the consume is exactly once.
+machine TestDurableMailboxSpec_StageThenFencedCommitExactlyOnce {
+    var mailbox: DurableMailboxSpec;
+
+    start state Init {
+        entry {
+            var op_resp: (int, DurableMailboxOpResult);
+            var lease_resp: (int, DurableMailboxOpResult);
+
+            mailbox = new DurableMailboxSpec(PerCorrelationKeyFIFO);
+
+            send mailbox, eDurableMailboxEnqueue, (
+                reply_to = this,
+                row = NewMailboxRow(
+                    1, 10, 100, 0, 0, NoLease(), NoLeaseToken(), 0, 3, 0
+                )
+            );
+            receive { case eDurableMailboxOpResp:
+                (r0: (int, DurableMailboxOpResult)) { op_resp = r0; }
+            }
+            assert op_resp.1 == MailboxOpOk, "enqueue succeeds";
+
+            // Consumer A leases the row (token 11) and begins its work.
+            send mailbox, eDurableMailboxLeaseNext, (
+                reply_to = this, mailbox_id = 10, lease_token = 11,
+                now = 0, lease_duration = 5
+            );
+            receive { case eDurableMailboxLeaseResp:
+                (r1: (int, DurableMailboxOpResult)) { lease_resp = r1; }
+            }
+            assert lease_resp.0 == 1 && lease_resp.1 == MailboxOpOk,
+                "consumer A leases the row";
+
+            // A stages its checkpoint (level 1) and the sweep id (7) it is
+            // about to broadcast, then would do its IO. stable = true: the sweep
+            // id is persisted with the checkpoint. fenced = true: the write is
+            // gated on A's lease token (which it holds here).
+            send mailbox, eDurableMailboxStage, (
+                reply_to = this, id = 1, lease_token = 11, effect_seq = 1,
+                sweep_seq = 7, stable = true, fenced = true
+            );
+            receive { case eDurableMailboxOpResp:
+                (r2: (int, DurableMailboxOpResult)) { op_resp = r2; }
+            }
+            assert op_resp.1 == MailboxOpOk, "consumer A stages its checkpoint";
+
+            // A crashes before committing: its lease expires and consumer B
+            // reclaims the same durable row (the staged checkpoint survives).
+            send mailbox, eDurableMailboxExpireLeasesAt, 6;
+            send mailbox, eDurableMailboxLeaseNext, (
+                reply_to = this, mailbox_id = 10, lease_token = 22,
+                now = 6, lease_duration = 5
+            );
+            receive { case eDurableMailboxLeaseResp:
+                (r3: (int, DurableMailboxOpResult)) { lease_resp = r3; }
+            }
+            assert lease_resp.0 == 1 && lease_resp.1 == MailboxOpOk,
+                "consumer B reclaims the row after lease expiry";
+
+            // B replays the same event under its own token. It re-stages level
+            // 1 and, because the design is stable, reuses the persisted sweep id
+            // 7 even though it offers a freshly-derived 9 -- so the re-broadcast
+            // is the same id and the receiver dedups it.
+            send mailbox, eDurableMailboxStage, (
+                reply_to = this, id = 1, lease_token = 22, effect_seq = 1,
+                sweep_seq = 9, stable = true, fenced = true
+            );
+            receive { case eDurableMailboxOpResp:
+                (r4: (int, DurableMailboxOpResult)) { op_resp = r4; }
+            }
+            assert op_resp.1 == MailboxOpOk, "consumer B replays the stage";
+
+            // A wakes up stale and tries to stage its older view with its
+            // now-reclaimed token. The Stage fence rejects it, so it cannot
+            // regress B's checkpoint -- the multi-consumer lost-update guard.
+            send mailbox, eDurableMailboxStage, (
+                reply_to = this, id = 1, lease_token = 11, effect_seq = 1,
+                sweep_seq = 7, stable = true, fenced = true
+            );
+            receive { case eDurableMailboxOpResp:
+                (rStale: (int, DurableMailboxOpResult)) { op_resp = rStale; }
+            }
+            assert op_resp.1 == MailboxOpTokenMismatch,
+                "stale consumer A stage is fenced out (no regression)";
+
+            // A finishes its IO and commits with its now-stale token: fenced
+            // out, no effect.
+            send mailbox, eDurableMailboxCommit, (
+                reply_to = this, id = 1, lease_token = 11, fenced = true
+            );
+            receive { case eDurableMailboxOpResp:
+                (r5: (int, DurableMailboxOpResult)) { op_resp = r5; }
+            }
+            assert op_resp.1 == MailboxOpTokenMismatch,
+                "stale consumer A commit is an ErrLeaseLost no-op";
+
+            // B commits under the current token: the message is consumed once.
+            send mailbox, eDurableMailboxCommit, (
+                reply_to = this, id = 1, lease_token = 22, fenced = true
+            );
+            receive { case eDurableMailboxOpResp:
+                (r6: (int, DurableMailboxOpResult)) { op_resp = r6; }
+            }
+            assert op_resp.1 == MailboxOpOk,
+                "current owner B commits and consumes the row";
+
+            goto Done;
+        }
+    }
+
+    state Done {}
+}
+
+// TestDurableMailboxSpec_StagedDoubleBroadcastCounterexample drives the same
+// crash-and-replay scenario with the UNSTABLE design: the behavior re-derives a
+// fresh broadcast id (a sweep rebuilt with a new wallet address) on the replay
+// instead of reusing the one persisted with the checkpoint. The replay therefore
+// emits a second, distinct broadcast for the same row -- a double-broadcast.
+// There is no in-machine assertion for it: it is raised solely by
+// StagedEffectAppliedAtMostOnceUnderReplay, proving the monitor catches the
+// exact failure the persist-before-broadcast / sweep-reuse rule prevents.
+machine TestDurableMailboxSpec_StagedDoubleBroadcastCounterexample {
+    var mailbox: DurableMailboxSpec;
+
+    start state Init {
+        entry {
+            var op_resp: (int, DurableMailboxOpResult);
+            var lease_resp: (int, DurableMailboxOpResult);
+
+            mailbox = new DurableMailboxSpec(PerCorrelationKeyFIFO);
+
+            send mailbox, eDurableMailboxEnqueue, (
+                reply_to = this,
+                row = NewMailboxRow(
+                    1, 10, 100, 0, 0, NoLease(), NoLeaseToken(), 0, 3, 0
+                )
+            );
+            receive { case eDurableMailboxOpResp:
+                (r0: (int, DurableMailboxOpResult)) { op_resp = r0; }
+            }
+
+            send mailbox, eDurableMailboxLeaseNext, (
+                reply_to = this, mailbox_id = 10, lease_token = 11,
+                now = 0, lease_duration = 5
+            );
+            receive { case eDurableMailboxLeaseResp:
+                (r1: (int, DurableMailboxOpResult)) { lease_resp = r1; }
+            }
+
+            // A stages and broadcasts sweep id 7 (unstable design). A holds the
+            // lease here, so the fence passes; the bug is the broadcast id.
+            send mailbox, eDurableMailboxStage, (
+                reply_to = this, id = 1, lease_token = 11, effect_seq = 1,
+                sweep_seq = 7, stable = false, fenced = true
+            );
+            receive { case eDurableMailboxOpResp:
+                (r2: (int, DurableMailboxOpResult)) { op_resp = r2; }
+            }
+
+            // A crashes; B reclaims the same row.
+            send mailbox, eDurableMailboxExpireLeasesAt, 6;
+            send mailbox, eDurableMailboxLeaseNext, (
+                reply_to = this, mailbox_id = 10, lease_token = 22,
+                now = 6, lease_duration = 5
+            );
+            receive { case eDurableMailboxLeaseResp:
+                (r3: (int, DurableMailboxOpResult)) { lease_resp = r3; }
+            }
+
+            // B replays under its own token, but the unstable design derives a
+            // FRESH sweep id 9 and broadcasts it -- a second, distinct broadcast
+            // for the same row.
+            send mailbox, eDurableMailboxStage, (
+                reply_to = this, id = 1, lease_token = 22, effect_seq = 1,
+                sweep_seq = 9, stable = false, fenced = true
+            );
+            receive { case eDurableMailboxOpResp:
+                (r4: (int, DurableMailboxOpResult)) { op_resp = r4; }
+            }
+
+            goto Done;
+        }
+    }
+
+    state Done {}
+}
+
+// TestDurableMailboxSpec_StaleStageRegressesCheckpointCounterexample drives the
+// multi-consumer lost-update scenario with an UNFENCED stage. Consumer A stages
+// level 2, its lease expires, consumer B reclaims and advances the checkpoint to
+// level 3, then stale A wakes up and stages its older level 2 with the fence
+// disabled. Because the unfenced write overwrites regardless of the token, it
+// regresses the checkpoint from 3 back to 2. There is no in-machine assertion
+// for it: the regression is raised solely by CheckpointAdvancesMonotonically,
+// proving the monitor catches the exact lost-update the Stage fence prevents.
+machine TestDurableMailboxSpec_StaleStageRegressesCheckpointCounterexample {
+    var mailbox: DurableMailboxSpec;
+
+    start state Init {
+        entry {
+            var op_resp: (int, DurableMailboxOpResult);
+            var lease_resp: (int, DurableMailboxOpResult);
+
+            mailbox = new DurableMailboxSpec(PerCorrelationKeyFIFO);
+
+            send mailbox, eDurableMailboxEnqueue, (
+                reply_to = this,
+                row = NewMailboxRow(
+                    1, 10, 100, 0, 0, NoLease(), NoLeaseToken(), 0, 3, 0
+                )
+            );
+            receive { case eDurableMailboxOpResp:
+                (r0: (int, DurableMailboxOpResult)) { op_resp = r0; }
+            }
+
+            send mailbox, eDurableMailboxLeaseNext, (
+                reply_to = this, mailbox_id = 10, lease_token = 11,
+                now = 0, lease_duration = 5
+            );
+            receive { case eDurableMailboxLeaseResp:
+                (r1: (int, DurableMailboxOpResult)) { lease_resp = r1; }
+            }
+
+            // A stages level 2 under its lease.
+            send mailbox, eDurableMailboxStage, (
+                reply_to = this, id = 1, lease_token = 11, effect_seq = 2,
+                sweep_seq = 7, stable = true, fenced = true
+            );
+            receive { case eDurableMailboxOpResp:
+                (r2: (int, DurableMailboxOpResult)) { op_resp = r2; }
+            }
+
+            // A's lease expires; B reclaims and advances the checkpoint to 3.
+            send mailbox, eDurableMailboxExpireLeasesAt, 6;
+            send mailbox, eDurableMailboxLeaseNext, (
+                reply_to = this, mailbox_id = 10, lease_token = 22,
+                now = 6, lease_duration = 5
+            );
+            receive { case eDurableMailboxLeaseResp:
+                (r3: (int, DurableMailboxOpResult)) { lease_resp = r3; }
+            }
+            send mailbox, eDurableMailboxStage, (
+                reply_to = this, id = 1, lease_token = 22, effect_seq = 3,
+                sweep_seq = 7, stable = true, fenced = true
+            );
+            receive { case eDurableMailboxOpResp:
+                (r4: (int, DurableMailboxOpResult)) { op_resp = r4; }
+            }
+
+            // Stale A wakes up and stages its older level 2 UNFENCED, so the
+            // overwrite regresses the checkpoint from 3 back to 2.
+            send mailbox, eDurableMailboxStage, (
+                reply_to = this, id = 1, lease_token = 11, effect_seq = 2,
+                sweep_seq = 7, stable = true, fenced = false
+            );
+            receive { case eDurableMailboxOpResp:
+                (r5: (int, DurableMailboxOpResult)) { op_resp = r5; }
+            }
+
+            goto Done;
+        }
+    }
+
+    state Done {}
+}
+
 machine MailboxFIFOTestDriver {
     start state RunTests {
         entry {
@@ -1108,3 +1383,35 @@ test tcMailboxUnfencedCommitCounterexample
   assert LeaseFencedCommitAppliesEffectAtMostOnce in
   { DurableMailboxSpec,
     TestDurableMailboxSpec_UnfencedCommitDoubleApplyCounterexample };
+
+// tcMailboxStageCommitExactlyOnce checks the early-durable-write contract: a
+// row whose checkpoint is Staged and broadcast, then crashes before the Commit,
+// is reclaimed and replayed without double-broadcasting or regressing the
+// checkpoint, and is consumed exactly once under the fence.
+test tcMailboxStageCommitExactlyOnce
+    [main=TestDurableMailboxSpec_StageThenFencedCommitExactlyOnce]:
+  assert StagedEffectAppliedAtMostOnceUnderReplay,
+         CheckpointAdvancesMonotonically,
+         LeaseFencedCommitAppliesEffectAtMostOnce in
+  { DurableMailboxSpec,
+    TestDurableMailboxSpec_StageThenFencedCommitExactlyOnce };
+
+// tcMailboxStagedDoubleBroadcastCounterexample runs the crash-and-replay
+// scenario with the unstable design (a fresh broadcast id on replay) and no
+// in-machine assertion, so the double-broadcast is raised solely by
+// StagedEffectAppliedAtMostOnceUnderReplay. It is expected to find a bug.
+test tcMailboxStagedDoubleBroadcastCounterexample
+    [main=TestDurableMailboxSpec_StagedDoubleBroadcastCounterexample]:
+  assert StagedEffectAppliedAtMostOnceUnderReplay in
+  { DurableMailboxSpec,
+    TestDurableMailboxSpec_StagedDoubleBroadcastCounterexample };
+
+// tcMailboxStaleStageRegressesCounterexample runs the multi-consumer lost-update
+// scenario with an unfenced stage and no in-machine assertion, so the checkpoint
+// regression is raised solely by CheckpointAdvancesMonotonically. It is expected
+// to find a bug.
+test tcMailboxStaleStageRegressesCounterexample
+    [main=TestDurableMailboxSpec_StaleStageRegressesCheckpointCounterexample]:
+  assert CheckpointAdvancesMonotonically in
+  { DurableMailboxSpec,
+    TestDurableMailboxSpec_StaleStageRegressesCheckpointCounterexample };

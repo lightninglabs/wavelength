@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -126,6 +127,12 @@ type fakeTxConfirmRef struct {
 	responseStates map[chainhash.Hash]txconfirm.TxState
 	confirmHeights map[chainhash.Hash]int32
 	failureReasons map[chainhash.Hash]string
+
+	// onAsk, when set, is invoked with each EnsureConfirmedReq as it is
+	// recorded (outside the store lock). Tests use it to assert ordering
+	// and locking invariants at the exact moment of the txconfirm broadcast
+	// IO.
+	onAsk func(*txconfirm.EnsureConfirmedReq)
 }
 
 // ID returns the fake actor ID.
@@ -159,7 +166,15 @@ func (f *fakeTxConfirmRef) Ask(_ context.Context,
 	f.requests = append(f.requests, req)
 	state := f.responseStates[req.Tx.TxHash()]
 	height := f.confirmHeights[req.Tx.TxHash()]
+	onAsk := f.onAsk
 	f.mu.Unlock()
+
+	// Fire the ordering hook outside the store lock, after recording the
+	// request but before the response resolves, so a test observes the
+	// exact moment the unroll actor is doing its txconfirm IO.
+	if onAsk != nil {
+		onAsk(req)
+	}
 
 	if state == 0 {
 		state = txconfirm.TxStateAwaitingConfirmation
@@ -895,11 +910,144 @@ func (s *memCheckpointStore) CleanupExpired(context.Context) error {
 	return nil
 }
 
+// memExec is an in-memory actor.Exec[unrollTx] for unroll tests. Read, Stage,
+// and Commit each run their closure directly against the shared checkpoint
+// store; there is no real lease fence, so Commit ordinarily "consumes" by just
+// running its write. Hooks let tests observe Stage/Commit ordering relative to
+// the txconfirm IO and inject a lost-lease failure.
+type memExec struct {
+	store   actor.DeliveryStore
+	actorID string
+
+	// inWriteTxn is set while a Stage or Commit closure runs and cleared
+	// once it returns, so a test can assert no writer transaction is held
+	// across an outbox Ask (the contention win this migration targets).
+	inWriteTxn atomic.Bool
+
+	// stageCount and commitCount record how many Stage/Commit transactions
+	// ran, for ordering and "exactly one consume" assertions.
+	stageCount  atomic.Int64
+	commitCount atomic.Int64
+
+	// commitLeaseLost, when set, makes Commit fail with actor.ErrLeaseLost
+	// without running its closure (and without acking), simulating a lost
+	// lease at the consume step. The Staged writes that already ran are
+	// unaffected. It is an atomic so a test can flip it between messages
+	// without racing the actor goroutine.
+	commitLeaseLost atomic.Bool
+}
+
+// newMemExec builds an in-memory Exec writing through the given store under the
+// given actor ID.
+func newMemExec(store actor.DeliveryStore, actorID string) *memExec {
+	return &memExec{store: store, actorID: actorID}
+}
+
+// newMemExecFor builds an in-memory Exec for a behavior from its own config, so
+// the test Exec writes through the same DeliveryStore and actor ID the behavior
+// would use in production.
+func newMemExecFor(b *behavior) *memExec {
+	return newMemExec(b.cfg.DeliveryStore, b.cfg.ActorID)
+}
+
+// tx returns the transaction-scoped store handed to each closure.
+func (e *memExec) tx() unrollTx {
+	return unrollTx{store: e.store, actorID: e.actorID}
+}
+
+// Read implements actor.Exec by running fn against the store with no writer.
+func (e *memExec) Read(ctx context.Context,
+	fn func(context.Context, unrollTx) error) error {
+
+	return fn(ctx, e.tx())
+}
+
+// Stage implements actor.Exec by running fn in a (simulated) short writer
+// transaction that neither acks nor dedups the message.
+func (e *memExec) Stage(ctx context.Context,
+	fn func(context.Context, unrollTx) error) error {
+
+	e.inWriteTxn.Store(true)
+	defer e.inWriteTxn.Store(false)
+
+	if err := fn(ctx, e.tx()); err != nil {
+		return err
+	}
+
+	e.stageCount.Add(1)
+
+	return nil
+}
+
+// Commit implements actor.Exec by folding the (simulated) lease-fenced ack into
+// fn's writer transaction. When commitLeaseLost is set it models a lost lease:
+// the closure never runs and nothing is consumed.
+func (e *memExec) Commit(ctx context.Context,
+	fn func(context.Context, unrollTx) error) error {
+
+	if e.commitLeaseLost.Load() {
+		return actor.ErrLeaseLost
+	}
+
+	e.inWriteTxn.Store(true)
+	defer e.inWriteTxn.Store(false)
+
+	if err := fn(ctx, e.tx()); err != nil {
+		return err
+	}
+
+	e.commitCount.Add(1)
+
+	return nil
+}
+
+// txExecAdapter drives a TxBehavior behind a plain in-memory actor for tests.
+// It implements the classic actor.ActorBehavior surface by handing the behavior
+// a memExec, so the existing ref-driven tests keep working while the behavior
+// exercises its real Read/Stage/Commit code paths.
+type txExecAdapter struct {
+	b  *behavior
+	ax *memExec
+}
+
+// Receive implements actor.ActorBehavior by delegating to the TxBehavior with
+// the in-memory Exec handle.
+func (a *txExecAdapter) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
+	return a.b.Receive(ctx, msg, a.ax)
+}
+
+// OnStop forwards to the behavior's cleanup so subscription teardown still runs
+// when the test actor stops.
+func (a *txExecAdapter) OnStop(ctx context.Context) error {
+	return a.b.OnStop(ctx)
+}
+
+// adaptTx wraps a TxBehavior behind the classic ActorBehavior surface for
+// tests, using an Exec derived from the behavior's own config.
+func adaptTx(b *behavior) *txExecAdapter {
+	return &txExecAdapter{b: b, ax: newMemExecFor(b)}
+}
+
 // newActorHarness creates a new unroll actor behavior behind a regular
 // in-memory actor while still persisting checkpoints to the fake store.
 func newActorHarness(t *testing.T, proof *recovery.Proof,
 	desc *vtxo.Descriptor) (*actor.Actor[Msg, Resp], *behavior,
 	*fakeTxConfirmRef, *memCheckpointStore) {
+
+	t.Helper()
+
+	inst, b, ref, store, _ := newActorHarnessExec(t, proof, desc)
+
+	return inst, b, ref, store
+}
+
+// newActorHarnessExec is newActorHarness plus the in-memory Exec the behavior
+// runs on, so a test can observe Stage/Commit ordering, assert no writer
+// transaction is held across the txconfirm IO, and inject a lost lease at the
+// consume step.
+func newActorHarnessExec(t *testing.T, proof *recovery.Proof,
+	desc *vtxo.Descriptor) (*actor.Actor[Msg, Resp], *behavior,
+	*fakeTxConfirmRef, *memCheckpointStore, *memExec) {
 
 	t.Helper()
 
@@ -927,16 +1075,17 @@ func newActorHarness(t *testing.T, proof *recovery.Proof,
 	err := behavior.restoreCheckpoint(t.Context())
 	require.NoError(t, err)
 
+	exec := newMemExecFor(behavior)
 	actorInstance := actor.NewActor(actor.ActorConfig[Msg, Resp]{
 		ID:          "unroll-test",
-		Behavior:    behavior,
+		Behavior:    &txExecAdapter{b: behavior, ax: exec},
 		MailboxSize: 64,
 	})
 	behavior.selfRef = actorInstance.TellRef()
 	actorInstance.Start()
 	t.Cleanup(actorInstance.Stop)
 
-	return actorInstance, behavior, txconfirmRef, store
+	return actorInstance, behavior, txconfirmRef, store, exec
 }
 
 // mustAsk asks the actor and unwraps the response.
@@ -1735,7 +1884,7 @@ func TestResumeReissuesDeferredCheckpointWatch(t *testing.T) {
 
 	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
 		ID:          "resume-deferred-test",
-		Behavior:    resumeBehavior,
+		Behavior:    adaptTx(resumeBehavior),
 		MailboxSize: 64,
 	})
 	resumeBehavior.selfRef = resumedActor.TellRef()
@@ -1820,7 +1969,7 @@ func TestResumeReissuesInFlightArk(t *testing.T) {
 
 	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
 		ID:          "resume-ark-test",
-		Behavior:    resumeBehavior,
+		Behavior:    adaptTx(resumeBehavior),
 		MailboxSize: 64,
 	})
 	resumeBehavior.selfRef = resumedActor.TellRef()
@@ -2142,7 +2291,7 @@ func TestResumeReissuesInflightWork(t *testing.T) {
 	require.NoError(t, err)
 	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
 		ID:          "resume-test",
-		Behavior:    resumeBehavior,
+		Behavior:    adaptTx(resumeBehavior),
 		MailboxSize: 64,
 	})
 	resumeBehavior.selfRef = resumedActor.TellRef()
@@ -2346,7 +2495,7 @@ func TestResumeReissuesSweepConfirmation(t *testing.T) {
 
 	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
 		ID:          "resume-sweep-test",
-		Behavior:    resumeBehavior,
+		Behavior:    adaptTx(resumeBehavior),
 		MailboxSize: 64,
 	})
 	resumeBehavior.selfRef = resumedActor.TellRef()
@@ -2681,7 +2830,7 @@ func TestResumeMultiParentPartialConfirmation(t *testing.T) {
 
 	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
 		ID:          "resume-partial-merge",
-		Behavior:    resumeBehavior,
+		Behavior:    adaptTx(resumeBehavior),
 		MailboxSize: 64,
 	})
 	resumeBehavior.selfRef = resumedActor.TellRef()
@@ -2762,7 +2911,7 @@ func TestResumeCSVWaitDoesNotSweepUntilMature(t *testing.T) {
 
 	resumedActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
 		ID:          "resume-csv-test",
-		Behavior:    resumeBehavior,
+		Behavior:    adaptTx(resumeBehavior),
 		MailboxSize: 64,
 	})
 	resumeBehavior.selfRef = resumedActor.TellRef()
@@ -2956,3 +3105,367 @@ var _ actor.ActorRef[
 var _ *waddrmgr.Tapscript
 var _ = btcutil.Amount(0)
 var _ = psbt.Packet{}
+
+// driveLinearToSweep drives a linear-proof unroll actor from admission through
+// the proof-graph confirmations and CSV maturation until the final sweep is
+// built and broadcast. It mirrors TestConfirmedNodesAdvanceToSweep and returns
+// the broadcast sweep txid (read back from the durable checkpoint).
+func driveLinearToSweep(t *testing.T, ref actor.ActorRef[Msg, Resp],
+	txconfirmRef *fakeTxConfirmRef, store *memCheckpointStore,
+	proof *recovery.Proof) chainhash.Hash {
+
+	t.Helper()
+
+	mustAsk(t, ref, &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+	require.Equal(t, 1, txconfirmRef.requestCount())
+
+	txconfirmRef.emitConfirmed(t, 0, proof.RootTxids()[0], 101)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() >= 2
+	}, testTimeout, 10*time.Millisecond)
+
+	txconfirmRef.emitConfirmed(t, 1, proof.TargetOutpoint().Hash, 102)
+
+	mustAsk(t, ref, &HeightObservedMsg{Height: 103})
+	mustAsk(t, ref, &HeightObservedMsg{Height: 104})
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() >= 3
+	}, testTimeout, 10*time.Millisecond)
+
+	cp, err := store.LoadCheckpoint(context.Background(), "unroll-test")
+	require.NoError(t, err)
+	require.NotNil(t, cp)
+	decoded, err := decodeCheckpoint(cp.StateData)
+	require.NoError(t, err)
+	require.NotNil(t, decoded.SweepTx)
+
+	return decoded.SweepTx.TxHash()
+}
+
+// TestUnrollStageBeforeBroadcast verifies the persist-before-broadcast
+// invariant survives the Read/Commit migration: the checkpoint carrying the
+// sweep transaction is durably Staged BEFORE txconfirm is asked to broadcast
+// it. The ordering is observed at the exact moment of the broadcast Ask.
+func TestUnrollStageBeforeBroadcast(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, _, txconfirmRef, store, _ := newActorHarnessExec(
+		t, proof, desc,
+	)
+
+	// At each broadcast Ask, record whether a checkpoint carrying that
+	// exact tx was already durably staged.
+	var mu sync.Mutex
+	stagedBeforeAsk := make(map[chainhash.Hash]bool)
+	txconfirmRef.onAsk = func(req *txconfirm.EnsureConfirmedReq) {
+		staged := false
+		cp, err := store.LoadCheckpoint(
+			context.Background(),
+			"unroll-test",
+		)
+		if err == nil && cp != nil {
+			decoded, derr := decodeCheckpoint(cp.StateData)
+			if derr == nil && decoded.SweepTx != nil &&
+				decoded.SweepTx.TxHash() == req.Tx.TxHash() {
+
+				staged = true
+			}
+		}
+
+		mu.Lock()
+		stagedBeforeAsk[req.Tx.TxHash()] = staged
+		mu.Unlock()
+	}
+
+	sweepTxid := driveLinearToSweep(
+		t, unrollActor.Ref(), txconfirmRef, store, proof,
+	)
+
+	// The sweep checkpoint was on disk before its broadcast crossed the
+	// actor boundary.
+	mu.Lock()
+	defer mu.Unlock()
+	require.True(
+		t, stagedBeforeAsk[sweepTxid], "sweep tx must be durably "+
+			"staged before the txconfirm broadcast",
+	)
+}
+
+// TestUnrollNoWriterTxnHeldAcrossTxConfirmAsk verifies the contention win the
+// migration targets: no SQLite writer transaction is ever held while the actor
+// performs a txconfirm Ask. Under the old classic path the entire Receive --
+// including this blocking cross-actor Ask -- ran inside one writer transaction.
+func TestUnrollNoWriterTxnHeldAcrossTxConfirmAsk(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, _, txconfirmRef, store, exec := newActorHarnessExec(
+		t, proof, desc,
+	)
+
+	var sawOpenWriteTxn atomic.Bool
+	txconfirmRef.onAsk = func(_ *txconfirm.EnsureConfirmedReq) {
+		if exec.inWriteTxn.Load() {
+			sawOpenWriteTxn.Store(true)
+		}
+	}
+
+	driveLinearToSweep(t, unrollActor.Ref(), txconfirmRef, store, proof)
+
+	require.False(
+		t, sawOpenWriteTxn.Load(),
+		"no writer transaction may be held across a txconfirm Ask",
+	)
+	require.GreaterOrEqual(t, txconfirmRef.requestCount(), 3)
+}
+
+// TestUnrollSweepStagedSurvivesLeaseLostReplay verifies the early-durable-write
+// guarantee end to end on the money path. A sweep is built, Staged, and
+// broadcast, but the consuming Commit loses its lease (a crash window between
+// the broadcast and the ack). The staged sweep must survive the rolled-back
+// Commit, and a fresh actor that restores from the same store must reuse the
+// SAME sweep txid -- never deriving a second sweep that would race the first on
+// chain.
+func TestUnrollSweepStagedSurvivesLeaseLostReplay(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, _, txconfirmRef, store, exec := newActorHarnessExec(
+		t, proof, desc,
+	)
+
+	// Drive up to the brink of the sweep: roots and target confirmed, one
+	// height tick shy of the build.
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+	txconfirmRef.emitConfirmed(t, 0, proof.RootTxids()[0], 101)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() >= 2
+	}, testTimeout, 10*time.Millisecond)
+	txconfirmRef.emitConfirmed(t, 1, proof.TargetOutpoint().Hash, 102)
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 103})
+	require.Equal(t, 2, txconfirmRef.requestCount())
+
+	// Lose the lease at Commit. The next height tick builds + Stages + and
+	// broadcasts the sweep, then the fenced consume fails: the message is
+	// not acked, but the Staged sweep is already durable.
+	exec.commitLeaseLost.Store(true)
+
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	defer cancel()
+	_, err := unrollActor.Ref().Ask(
+		ctx, &HeightObservedMsg{Height: 104},
+	).Await(ctx).Unpack()
+	require.ErrorIs(t, err, actor.ErrLeaseLost)
+
+	// The sweep was broadcast even though the Commit rolled back.
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() >= 3
+	}, testTimeout, 10*time.Millisecond)
+
+	// The staged sweep survived the lost-lease Commit.
+	cp, err := store.LoadCheckpoint(context.Background(), "unroll-test")
+	require.NoError(t, err)
+	require.NotNil(t, cp)
+	decoded, err := decodeCheckpoint(cp.StateData)
+	require.NoError(t, err)
+	require.NotNil(
+		t, decoded.SweepTx,
+		"staged sweep must survive the rolled-back Commit",
+	)
+	sweepTxid := decoded.SweepTx.TxHash()
+	require.Equal(t, 1, txconfirmRef.requestCountForTxid(sweepTxid))
+
+	// Simulate redelivery to a fresh process: a brand-new behavior restores
+	// from the same store (its in-memory sweep cache starts empty) and must
+	// reuse the persisted sweep rather than build a new one.
+	replayCfg := Config{
+		TargetOutpoint: proof.TargetOutpoint(),
+		ActorID:        "unroll-test",
+		DeliveryStore:  store,
+		ProofAssembler: &mockProofAssembler{
+			proof: proof,
+		},
+		VTXOStore: &mockVTXOStore{
+			desc: desc,
+		},
+		TxConfirmRef: txconfirmRef,
+		ChainSource:  &fakeChainSourceRef{},
+		Wallet:       &fakeSweepWallet{},
+		Log:          fn.Some(btclog.Disabled),
+	}
+	replayBehavior := &behavior{cfg: replayCfg, log: btclog.Disabled}
+	require.NoError(t, replayBehavior.restoreCheckpoint(t.Context()))
+	require.NotNil(
+		t, replayBehavior.sweepTx,
+		"sanity: fresh behavior loads the staged sweep from checkpoint",
+	)
+	require.Equal(t, sweepTxid, replayBehavior.sweepTx.TxHash())
+
+	replayActor := actor.NewActor(actor.ActorConfig[Msg, Resp]{
+		ID:          "unroll-test",
+		Behavior:    adaptTx(replayBehavior),
+		MailboxSize: 64,
+	})
+	replayBehavior.selfRef = replayActor.TellRef()
+	replayActor.Start()
+	t.Cleanup(replayActor.Stop)
+
+	mustAsk(t, replayActor.Ref(), &ResumeUnrollRequest{Height: 105})
+
+	// The reissued sweep is the SAME txid -- reused from the checkpoint --
+	// so txconfirm dedups it and no second distinct sweep is ever
+	// broadcast.
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(sweepTxid) == 2
+	}, testTimeout, 10*time.Millisecond)
+
+	sweepTxids := make(map[chainhash.Hash]struct{})
+	for _, txid := range txconfirmRef.requestedTxids() {
+		if _, ok := proof.Node(txid); ok {
+			continue
+		}
+		if txid == proof.TargetOutpoint().Hash {
+			continue
+		}
+		sweepTxids[txid] = struct{}{}
+	}
+	require.Len(
+		t, sweepTxids, 1,
+		"replay must not derive a second sweep transaction",
+	)
+}
+
+// TestUnrollAdoptStagedSweepReusesPersisted verifies the Read-based idempotency
+// guard in isolation: when a sweep was durably Staged but the in-memory cache
+// is empty (the desync window the guard exists for), adoptStagedSweep reads the
+// checkpoint snapshot and reuses the persisted sweep instead of leaving the
+// behavior to derive a fresh one.
+func TestUnrollAdoptStagedSweepReusesPersisted(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	sweepTx, err := buildSweepTx(
+		t.Context(), &fakeSweepWallet{}, &fakeChainSourceRef{}, proof,
+		desc, 0, 110, NewStandardVTXOExitSpendPolicy(desc),
+	)
+	require.NoError(t, err)
+	sweepTxid := sweepTx.TxHash()
+
+	store := newMemCheckpointStore()
+	raw, err := encodeCheckpoint(&actorCheckpoint{
+		Version: checkpointVersion,
+		Height:  110,
+		Started: true,
+		State: unrollplan.State{
+			Sweep: unrollplan.SweepState{
+				Status: unrollplan.SweepStatusBroadcasted,
+				Txid:   fn.Some(sweepTxid),
+			},
+		},
+		SweepTx: sweepTx,
+	})
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		store.SaveCheckpoint(
+			t.Context(), actor.CheckpointParams{
+				ActorID:   "unroll-test",
+				StateType: checkpointStateType,
+				StateData: raw,
+				Version:   checkpointVersion,
+			},
+		),
+	)
+
+	// A behavior with an empty in-memory sweep cache (no
+	// restoreCheckpoint).
+	b := &behavior{
+		cfg: Config{
+			ActorID:       "unroll-test",
+			DeliveryStore: store,
+			Log:           fn.Some(btclog.Disabled),
+		},
+		log: btclog.Disabled,
+	}
+	require.Nil(t, b.sweepTx)
+
+	exec := newMemExec(store, "unroll-test")
+	require.NoError(t, b.adoptStagedSweep(t.Context(), exec))
+
+	// The persisted sweep is now reused in memory: a subsequent build would
+	// take the reuse branch rather than derive a new address/txid.
+	require.NotNil(t, b.sweepTx)
+	require.Equal(t, sweepTxid, b.sweepTx.TxHash())
+	require.Equal(
+		t, int64(0), exec.stageCount.Load(),
+		"adoptStagedSweep must only Read, never Stage",
+	)
+	require.Equal(t, int64(0), exec.commitCount.Load())
+}
+
+// TestUnrollStartSweepReusesStagedSweepOnLiveDesync drives a live actor to a
+// broadcast sweep, then simulates the in-memory cache being lost WITHOUT a
+// reboot (b.sweepTx cleared) and re-enters startSweep. The adoptStagedSweep
+// Read guard inside startSweep must reload the persisted sweep so the reuse
+// branch fires and no second, freshly-derived sweep txid is ever broadcast.
+// This exercises the guard through startSweep on a loaded behavior,
+// complementing the isolated adoptStagedSweep unit test and the reboot-path
+// replay test.
+func TestUnrollStartSweepReusesStagedSweepOnLiveDesync(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, behavior, txconfirmRef, store, exec := newActorHarnessExec(
+		t, proof, desc,
+	)
+
+	sweepTxid := driveLinearToSweep(
+		t, unrollActor.Ref(), txconfirmRef, store, proof,
+	)
+	requestsBefore := txconfirmRef.requestCount()
+
+	// Simulate losing the in-memory sweep cache on a live instance (no
+	// reboot, so restoreCheckpoint does not run): the durable checkpoint
+	// still carries the sweep, but b.sweepTx is now nil.
+	behavior.sweepTx = nil
+
+	// Re-enter startSweep directly. With the cache empty, the only safe
+	// outcome is to adopt the persisted sweep via the Read guard; deriving
+	// a fresh sweep here would burn a new wallet address and a new txid.
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	defer cancel()
+	_ = behavior.startSweep(ctx, exec)
+
+	// The persisted sweep was reloaded into the in-memory cache.
+	require.NotNil(
+		t, behavior.sweepTx, "startSweep must adopt the staged "+
+			"sweep when the cache is empty",
+	)
+	require.Equal(t, sweepTxid, behavior.sweepTx.TxHash())
+
+	// Every txconfirm request that followed reused the SAME sweep txid; no
+	// second, freshly-derived sweep was broadcast.
+	for _, txid := range txconfirmRef.requestedTxids()[requestsBefore:] {
+		require.Equal(
+			t, sweepTxid, txid, "re-entered startSweep must "+
+				"reuse the staged sweep txid",
+		)
+	}
+
+	sweepTxids := make(map[chainhash.Hash]struct{})
+	for _, txid := range txconfirmRef.requestedTxids() {
+		if _, ok := proof.Node(txid); ok {
+			continue
+		}
+		if txid == proof.TargetOutpoint().Hash {
+			continue
+		}
+		sweepTxids[txid] = struct{}{}
+	}
+	require.Len(
+		t, sweepTxids, 1,
+		"a live-desync re-entry must not derive a second sweep",
+	)
+}

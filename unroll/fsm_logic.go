@@ -456,6 +456,24 @@ func applyFailedEvent(job *JobState, event *TxFailedEvent) {
 // failure cause is persistent (fee-rate too low, double-spend of the
 // input) the retry will simply rediscover the same rejection, and we
 // rely on maxSweepAttempts to bound the loop.
+//
+// Replay caveat (durable actor Read/Commit path): SweepAttempts++ is the
+// only non-monotone mutation in this FSM, so it is not idempotent under
+// message replay. On the Read/Commit path the failure event is Staged in
+// its own short transaction ahead of the lease-fenced Commit; if the
+// process crashes (or the lease is lost) in the window between that Stage
+// and the Commit, the un-acked failure message is redelivered and applied
+// again, incrementing the counter a second time for one logical failure.
+// The pre-migration whole-Receive-in-one-transaction path did not have this
+// edge because the increment and the ack rolled back together on a nack.
+// The impact is bounded and loses no funds: the sweep itself is never
+// double-broadcast (b.sweepTx is reused under a stable txid), only the retry
+// counter is inflated, so the worst case is a unilateral-exit job reaching
+// terminal Failed up to maxSweepAttempts retries early, which the client can
+// re-initiate. A fully idempotent retry accounting (deduping the failure per
+// build attempt rather than per event arrival) is tracked as a follow-up; it
+// is a standalone FSM change, not part of the Read/Commit migration that
+// merely exposed this latent non-idempotency.
 func applySweepBuildFailed(job *JobState, reason string) {
 	job.SweepAttempts++
 

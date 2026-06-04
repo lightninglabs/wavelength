@@ -104,11 +104,12 @@ func (h *execHarness) seedLeased(t require.TestingT, mailboxID, msgID,
 // coreFor builds an execCore bound to msgID and holding leaseToken.
 func (h *execHarness) coreFor(msgID, leaseToken string) *execCore {
 	return &execCore{
-		store:      h.store,
-		msgID:      msgID,
-		leaseToken: leaseToken,
-		actorID:    "actor-a",
-		dedupTTL:   time.Hour,
+		store:         h.store,
+		msgID:         msgID,
+		leaseToken:    leaseToken,
+		actorID:       "actor-a",
+		dedupTTL:      time.Hour,
+		leaseDuration: time.Minute,
 	}
 }
 
@@ -614,5 +615,199 @@ func TestExecCommitAtomicGroupingProperty(t *testing.T) {
 		for _, id := range ids {
 			require.True(rt, h.outboxHas(id))
 		}
+	})
+}
+
+// TestExecStageWritesIndependentOfAck verifies the core Stage contract: a Stage
+// commits its writes in their own transaction but does NOT ack or dedup the
+// message and does NOT mark the core committed. The write is durable while the
+// message remains claimable for a later Commit.
+func TestExecStageWritesIndependentOfAck(t *testing.T) {
+	t.Parallel()
+
+	h := newExecHarness()
+	h.seedLeased(t, "mb", "m1", "tok-1")
+
+	core := h.coreFor("m1", "tok-1")
+	err := core.stage(context.Background(), enqueueEffects("staged-1"))
+	require.NoError(t, err)
+
+	// The staged write is durable, but the message is neither consumed nor
+	// marked processed, and the core is not committed.
+	require.True(t, h.outboxHas("staged-1"))
+	require.False(t, core.committed)
+	h.requireRetained(t, "m1")
+}
+
+// TestExecStageFencesStaleToken verifies that Stage is lease-fenced: a Stage
+// attempted with a lease token that no longer matches the held lease (the
+// message was reclaimed by another consumer) returns ErrLeaseLost and applies
+// nothing, so a stale consumer cannot regress a newer owner's checkpoint.
+func TestExecStageFencesStaleToken(t *testing.T) {
+	t.Parallel()
+
+	h := newExecHarness()
+	h.seedLeased(t, "mb", "m1", "tok-1")
+
+	// A core holding a stale token: the lease fence rejects the staged
+	// write just as it would reject a commit.
+	core := h.coreFor("m1", "stale-token")
+
+	var stageWriteRan bool
+	err := core.stage(context.Background(), func(ctx context.Context,
+		ds DeliveryStore) error {
+
+		stageWriteRan = true
+
+		return enqueueEffects("staged-1")(ctx, ds)
+	})
+	require.ErrorIs(t, err, ErrLeaseLost)
+
+	require.False(
+		t, stageWriteRan,
+		"stage closure must not run when the fence rejects the stage",
+	)
+	require.False(t, h.outboxHas("staged-1"))
+	require.False(t, core.committed)
+	h.requireRetained(t, "m1")
+}
+
+// TestExecStageSurvivesLeaseLostCommit verifies the central early-durable-write
+// property: a Staged write persists even when a later Commit loses the fence.
+// The Commit's transaction (the ack + dedup) rolls back, but the earlier
+// Stage's transaction already committed, so the staged effect remains and the
+// message is retained for an idempotent replay.
+func TestExecStageSurvivesLeaseLostCommit(t *testing.T) {
+	t.Parallel()
+
+	h := newExecHarness()
+	h.seedLeased(t, "mb", "m1", "tok-1")
+
+	// Stage durably under the held lease.
+	staged := h.coreFor("m1", "tok-1")
+	require.NoError(
+		t,
+		staged.stage(
+			context.Background(), enqueueEffects("staged-1"),
+		),
+	)
+
+	// Now a Commit with a stale token loses the fence and rolls back.
+	stale := h.coreFor("m1", "stale-token")
+	var commitWriteRan bool
+	err := stale.commit(context.Background(), func(ctx context.Context,
+		ds DeliveryStore) error {
+
+		commitWriteRan = true
+
+		return enqueueEffects("commit-1")(ctx, ds)
+	})
+	require.ErrorIs(t, err, ErrLeaseLost)
+
+	// The staged write survived; the commit write never ran; the message is
+	// retained for redelivery.
+	require.True(t, h.outboxHas("staged-1"))
+	require.False(t, h.outboxHas("commit-1"))
+	require.False(t, commitWriteRan)
+	require.False(t, stale.committed)
+	h.requireRetained(t, "m1")
+}
+
+// TestExecStageThenCommitConsumesTogether verifies the normal sequence: one or
+// more Stage writes ahead of the IO, then a single fenced Commit that consumes
+// the message. After Commit every staged effect and the commit effect are
+// durable, and the message is consumed and marked processed.
+func TestExecStageThenCommitConsumesTogether(t *testing.T) {
+	t.Parallel()
+
+	h := newExecHarness()
+	h.seedLeased(t, "mb", "m1", "tok-1")
+
+	core := h.coreFor("m1", "tok-1")
+	require.NoError(
+		t,
+		core.stage(
+			context.Background(), enqueueEffects("staged-1"),
+		),
+	)
+	require.NoError(
+		t,
+		core.commit(
+			context.Background(), enqueueEffects("commit-1"),
+		),
+	)
+
+	require.True(t, core.committed)
+	require.True(t, h.outboxHas("staged-1"))
+	require.True(t, h.outboxHas("commit-1"))
+	h.requireConsumed(t, "m1")
+}
+
+// TestExecStageThenCommitAtomicGroupingProperty is the property form of the
+// staged-write durability invariant: across an arbitrary number of Stage writes
+// and a final Commit under a matching-or-stale lease, every staged effect is
+// always durable (each Stage is its own committed transaction), while the
+// consume step (ack + dedup + the commit effect) lands exactly when the lease
+// still matches and is otherwise a no-op that leaves the message for replay.
+func TestExecStageThenCommitAtomicGroupingProperty(t *testing.T) {
+	t.Parallel()
+
+	rapid.Check(t, func(rt *rapid.T) {
+		n := rapid.IntRange(0, 6).Draw(rt, "numStaged")
+		sameLease := rapid.Bool().Draw(rt, "sameLease")
+
+		held := "tok"
+		attempted := held
+		if !sameLease {
+			attempted = held + "-mismatch"
+		}
+
+		h := newExecHarness()
+		h.seedLeased(rt, "mb", "m1", held)
+
+		// Stage n effects, each in its own non-fenced transaction. The
+		// staging core always holds the real lease.
+		stager := h.coreFor("m1", held)
+		staged := make([]string, n)
+		for i := range staged {
+			staged[i] = fmt.Sprintf("staged-%d", i)
+			require.NoError(
+				rt,
+				stager.stage(
+					context.Background(),
+					enqueueEffects(staged[i]),
+				),
+			)
+		}
+
+		// Every staged effect is durable regardless of the fence below.
+		for _, id := range staged {
+			require.True(rt, h.outboxHas(id))
+		}
+
+		// The single Commit consumes the message iff the lease matches.
+		core := h.coreFor("m1", attempted)
+		err := core.commit(
+			context.Background(), enqueueEffects("commit"),
+		)
+
+		if sameLease {
+			require.NoError(rt, err)
+			require.True(rt, core.committed)
+			h.requireConsumed(rt, "m1")
+			require.True(rt, h.outboxHas("commit"))
+			require.Equal(rt, n+1, h.outboxCount())
+
+			return
+		}
+
+		// Stale lease: the consume step is a no-op, the commit effect
+		// is absent, and the staged effects remain -- the message is
+		// held for an idempotent replay.
+		require.ErrorIs(rt, err, ErrLeaseLost)
+		require.False(rt, core.committed)
+		require.False(rt, h.outboxHas("commit"))
+		require.Equal(rt, n, h.outboxCount())
+		h.requireRetained(rt, "m1")
 	})
 }

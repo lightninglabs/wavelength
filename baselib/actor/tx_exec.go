@@ -32,6 +32,26 @@ type Exec[S any] interface {
 	Read(ctx context.Context,
 		fn func(ctx context.Context, store S) error) error
 
+	// Stage runs fn inside one short, lease-fenced writer transaction with
+	// no dedup mark and no ack. Use it to durably advance behavior state
+	// (e.g. a checkpoint) BEFORE doing side-effect IO, when the behavior
+	// must preserve a persist-before-effect invariant but the message is
+	// only consumed once at the end via Commit. A Stage write is its own
+	// atomic unit; it is NOT atomic with the eventual Commit. Because the
+	// writer lock is released the moment Stage returns, the following IO
+	// never holds it -- that is the whole point of staging ahead of a slow
+	// side effect.
+	//
+	// Stage is fenced on the lease token: if this consumer's lease was
+	// reclaimed during the IO window, Stage returns ErrLeaseLost and
+	// applies nothing, so a stale consumer cannot regress a newer owner's
+	// checkpoint. Behaviors that Stage must still be replay-safe: a crash
+	// after a Stage but before Commit redelivers the message and re-applies
+	// it against the already-advanced state, so each staged advance must be
+	// idempotent (monotonic state, dedup'd downstream effects).
+	Stage(ctx context.Context,
+		fn func(ctx context.Context, store S) error) error
+
 	// Commit runs fn inside one short writer transaction. Every store call
 	// inside fn is atomic together. The framework folds the lease-fenced
 	// ack and the dedup mark into this same transaction, so the behavior's
@@ -111,6 +131,12 @@ type execCore struct {
 	// dedupTTL is how long the processed-message marker is retained.
 	dedupTTL time.Duration
 
+	// leaseDuration is how long Stage extends the lease by when it fences.
+	// Stage reuses ExtendLease as its token fence, so the fenced lease
+	// check and a heartbeat-style extension happen in the same transaction
+	// as the staged write.
+	leaseDuration time.Duration
+
 	// committed records whether a Commit transaction succeeded. When true,
 	// the state write, dedup mark, and fenced ack are already durable, so
 	// the actor must not ack again.
@@ -123,6 +149,64 @@ func (e *execCore) read(ctx context.Context,
 
 	return e.store.ExecTx(ctx, true, func(txCtx context.Context,
 		s DeliveryStore) error {
+
+		return fn(txCtx, s)
+	})
+}
+
+// stage runs fn inside one short writer transaction that is lease-fenced but
+// does NOT ack the message or write a dedup mark. It durably advances behavior
+// state ahead of side-effect IO without consuming the message and without
+// setting committed; the message is consumed later by commit. The staged write
+// commits in its own transaction, independent of that eventual commit, so it
+// survives even a commit that rolls back with ErrLeaseLost.
+//
+// The fence matters once an actor can have more than one consumer. If this
+// consumer's lease expired during the IO window and another consumer reclaimed
+// and advanced (or consumed) the same mailbox row, an unfenced stage would let
+// this now-stale consumer overwrite the newer owner's checkpoint -- a lost
+// update / checkpoint regression. So stage fences first by extending its own
+// lease (ExtendLease validates the token): zero rows means the lease was
+// reclaimed, so we return ErrLeaseLost and roll back without running fn,
+// applying nothing. The extension doubles as a heartbeat folded into the write.
+// In a single-consumer deployment the fence always passes; it is defense for
+// the multi-consumer case.
+//
+// stage still never acks, so how the message is finally consumed depends on
+// what the behavior returns:
+//
+//   - Behavior errors before/at commit: processWithExec finds committed unset
+//     and falls to finishNonTx, which nacks for redelivery. The redelivered
+//     message replays the staged advance against the already-persisted state,
+//     so the behavior MUST be idempotent under replay.
+//
+//   - Behavior returns success without ever calling commit: finishNonTx acks
+//     the message anyway (the same tail that consumes a RestartMessage), so it
+//     is NOT redelivered -- but it is consumed WITHOUT the lease-fenced,
+//     co-transactional dedup that commit folds in. A behavior that staged
+//     domain state and then needs exactly-once consumption must therefore call
+//     commit; returning success without it silently downgrades to an at-least-
+//     once consume.
+func (e *execCore) stage(ctx context.Context,
+	fn func(ctx context.Context, ds DeliveryStore) error) error {
+
+	return e.store.ExecTx(ctx, false, func(txCtx context.Context,
+		s DeliveryStore) error {
+
+		// Fence first: extending our lease validates the token. Zero
+		// rows means the lease was reclaimed while the behavior did IO,
+		// so a now-stale consumer must not advance durable state --
+		// abort and roll back without running fn, so it cannot regress
+		// a newer owner's checkpoint.
+		rows, err := s.ExtendLease(
+			txCtx, e.msgID, e.leaseToken, e.leaseDuration,
+		)
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return ErrLeaseLost
+		}
 
 		return fn(txCtx, s)
 	})
@@ -189,6 +273,18 @@ func (e execHandle[S]) Read(ctx context.Context,
 	fn func(ctx context.Context, store S) error) error {
 
 	return e.core.read(ctx, func(txCtx context.Context,
+		ds DeliveryStore) error {
+
+		return fn(txCtx, e.factory(txCtx, ds))
+	})
+}
+
+// Stage implements Exec by running the closure against a typed store inside an
+// unfenced writer transaction that neither acks nor dedups the message.
+func (e execHandle[S]) Stage(ctx context.Context,
+	fn func(ctx context.Context, store S) error) error {
+
+	return e.core.stage(ctx, func(txCtx context.Context,
 		ds DeliveryStore) error {
 
 		return fn(txCtx, e.factory(txCtx, ds))

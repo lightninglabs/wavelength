@@ -730,11 +730,12 @@ func (a *DurableActor[M, R]) processWithExec(ctx context.Context,
 	defer stop()
 
 	core := &execCore{
-		store:      a.txAwareStore,
-		msgID:      delivery.ID,
-		leaseToken: delivery.LeaseToken,
-		actorID:    a.id,
-		dedupTTL:   a.deduplicationTTL,
+		store:         a.txAwareStore,
+		msgID:         delivery.ID,
+		leaseToken:    delivery.LeaseToken,
+		actorID:       a.id,
+		dedupTTL:      a.deduplicationTTL,
+		leaseDuration: a.leaseDuration,
 	}
 
 	result := a.runExecSafely(ctx, delivery, tb, core)

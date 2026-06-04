@@ -38,11 +38,39 @@ request also selects an unfenced profile for the counterexample, where the
 effect is applied regardless of the lease token and a stale consumer
 double-applies it under reclaim.
 
+### Stage (early durable write)
+
+`eDurableMailboxStage` models the durable actor's Stage primitive
+(`baselib/actor` `Exec.Stage`): a short, **lease-fenced** writer transaction that
+advances behavior state *before* the side-effect IO, while the message is only
+consumed later by Commit. The unroll actor uses it to persist a sweep
+transaction before handing it to txconfirm (persist-before-broadcast). Because
+the staged write commits in its own transaction, it survives a later
+lease-lost Commit — in the model `checkpoint`/`sweepId` are spec-machine state
+that the fenced Commit (which only touches `rows`) never rolls back.
+
+The stage request carries two design knobs. `stable` selects how the broadcast
+id is chosen on replay (persisted-and-reused vs freshly-derived). `fenced`
+selects whether the checkpoint write validates the lease token first, mirroring
+the production Stage that fences on `ExtendLease`. A checkpoint write is an
+overwrite (`SaveCheckpoint` replaces the row), so under the fence only the live
+lease holder, which holds the newest state, writes, and the checkpoint stays
+monotone. An unfenced stale consumer would overwrite a newer checkpoint with an
+older level: the lost-update / checkpoint regression the fence prevents.
+
+The scenario the Stage path is checked against is a crash between the Stage and
+the Commit: a consumer leases a row, Stages its checkpoint and broadcasts, then
+crashes; a second consumer reclaims the same durable row and replays the same
+event. The green case also has the stale consumer wake up and try to Stage with
+its now-reclaimed token, which the fence rejects. Two counterexamples drive the
+two ways it can go wrong: the unstable profile re-derives a fresh broadcast id
+on replay (a second distinct broadcast), and the unfenced profile lets the stale
+consumer overwrite a newer checkpoint with an older level (a regression).
+
 ### Spec monitors
 
-The model carries two spec monitors. P does **not** activate spec monitors
-globally; each test case attaches the ones it wants with `assert <spec> in
-{ ... }`.
+P does **not** activate spec monitors globally; each test case attaches the
+ones it wants with `assert <spec> in { ... }`.
 
 - `SameKeyFIFOClaimsRespectLiveHead` is the global safety contract. It
   reconstructs the live per-lane row set from the enqueue/claim/removal stream
@@ -71,6 +99,21 @@ globally; each test case attaches the ones it wants with `assert <spec> in
   dedup that production also has as a downstream backstop. That omission is
   intentional (it proves the fence alone enforces exactly-once at the source);
   it is not a claim that the downstream dedup is unnecessary in every flow.
+- `StagedEffectAppliedAtMostOnceUnderReplay` is the safety contract for the
+  Stage path: across a Stage'd-but-unacked crash and replay, a row must never
+  broadcast two *distinct* downstream effects. `tcMailboxStageCommitExactlyOnce`
+  checks the stable design holds it; the negative
+  `tcMailboxStagedDoubleBroadcastCounterexample` runs the unstable profile with
+  no in-machine assertion, so the double-broadcast is raised solely by this
+  monitor — the exact failure the persist-before-broadcast / sweep-reuse rule
+  prevents.
+- `CheckpointAdvancesMonotonically` guards the other half of the Stage
+  contract: a staged checkpoint never moves backward. Because every stage write
+  is an overwrite, the fence is what keeps it monotone (only the live owner
+  writes). `tcMailboxStageCommitExactlyOnce` checks the fenced design holds it;
+  the negative `tcMailboxStaleStageRegressesCounterexample` runs the unfenced
+  profile with no in-machine assertion, so the checkpoint regression is raised
+  solely by this monitor — the lost-update the lease fence prevents.
 
 The Go bridge in `bridge/` replays JSON model traces from `traces/` against the real
 `db/actordelivery` SQLite store. This keeps the P model tied to the SQL claim

@@ -100,6 +100,50 @@ type DurableMailboxCommitReq = (
     fenced: bool
 );
 
+// DurableMailboxStageReq models the durable actor's early-durable-write (Stage)
+// primitive: a short, non-fenced writer transaction that advances behavior
+// state BEFORE the side-effect IO, while the message is only consumed later by
+// Commit. A behavior that must persist-before-broadcast (e.g. the unroll actor
+// persisting a sweep transaction before handing it to txconfirm) stages here.
+//
+//   * effect_seq is the monotone checkpoint level the stage advances to (the
+//     FSM transition index). A replay of an already-staged level is a no-op.
+//
+//   * sweep_seq identifies the downstream broadcast (e.g. the sweep txid) the
+//     behavior will emit after this stage. `stable` selects the two designs:
+//
+//       - stable = true (production): the broadcast id is derived from the
+//         staged checkpoint and persisted with it, so a replay reuses the same
+//         id and the downstream (txconfirm) dedups it. At most one distinct
+//         broadcast occurs per row.
+//
+//       - stable = false (counterexample): the behavior derives a fresh
+//         broadcast id on every attempt (e.g. a sweep rebuilt with a new wallet
+//         address), so a replay broadcasts a new distinct id -- the
+//         double-broadcast the persist-before-broadcast / sweep-reuse rule
+//         exists to prevent.
+//
+//   * lease_token / fenced select whether the stage validates the lease before
+//     writing, mirroring the production Stage that fences on ExtendLease:
+//
+//       - fenced = true (production): the checkpoint write happens only when the
+//         lease token still matches. A consumer whose lease was reclaimed
+//         applies nothing, so it cannot regress a newer owner's checkpoint.
+//
+//       - fenced = false (counterexample): the write happens regardless of the
+//         token, modeling the original unfenced Stage where a stale consumer
+//         overwrites the checkpoint with its older state -- the lost-update /
+//         checkpoint regression the fence prevents.
+type DurableMailboxStageReq = (
+    reply_to: machine,
+    id: int,
+    lease_token: int,
+    effect_seq: int,
+    sweep_seq: int,
+    stable: bool,
+    fenced: bool
+);
+
 event eDurableMailboxEnqueue: DurableMailboxEnqueueReq;
 event eDurableMailboxLeaseNext: DurableMailboxLeaseNextReq;
 event eDurableMailboxAck: DurableMailboxTokenReq;
@@ -107,6 +151,7 @@ event eDurableMailboxNack: DurableMailboxNackReq;
 event eDurableMailboxExpireLeasesAt: int;
 event eDurableMailboxDeadLetter: DurableMailboxDeadLetterReq;
 event eDurableMailboxCommit: DurableMailboxCommitReq;
+event eDurableMailboxStage: DurableMailboxStageReq;
 
 event eDurableMailboxOpResp: (int, DurableMailboxOpResult);
 event eDurableMailboxLeaseResp: (int, DurableMailboxOpResult);
@@ -135,6 +180,22 @@ event eDurableMailboxRowRemoved: (machine, int);
 // for any one row is applied at most once across the run, even when the row's
 // lease expires mid-IO and the row is reclaimed and reprocessed.
 event eDurableMailboxEffectApplied: (machine, int);
+
+// eDurableMailboxCheckpointStaged is announced whenever a Stage advances a
+// row's durable checkpoint to a strictly higher level. It carries
+// (mbox, id, effect_seq). CheckpointAdvancesMonotonically uses it to assert a
+// staged checkpoint never moves backward and a replay never re-stages a stale
+// level as if it were new.
+event eDurableMailboxCheckpointStaged: (machine, int, int);
+
+// eDurableMailboxBroadcast is announced when a behavior performs the downstream
+// broadcast IO that follows a Stage (e.g. handing the sweep tx to txconfirm).
+// It carries (mbox, id, sweep_id) where sweep_id is the broadcast identity
+// (e.g. the sweep txid). StagedEffectAppliedAtMostOnceUnderReplay asserts that
+// across a Stage'd-but-unacked crash and replay, a row never broadcasts two
+// DISTINCT ids -- the production design reuses the persisted id, so the replay
+// re-broadcasts the same id and the downstream dedups it.
+event eDurableMailboxBroadcast: (machine, int, int);
 
 // eMailboxWorkArrived and eMailboxWorkDrained are emitted only by the liveness
 // driver to feed the non-starvation liveness monitor. Keeping them distinct
@@ -445,6 +506,16 @@ machine DurableMailboxSpec {
     var rows: seq[MailboxRow];
     var mode: MailboxClaimMode;
 
+    // checkpoint and sweepId model the behavior's durable, non-fenced staged
+    // state, written by Stage ahead of the side-effect IO. checkpoint[id] is
+    // the monotone FSM level; sweepId[id] is the persisted broadcast identity.
+    // Both are spec-machine state, so a failed (lease-lost) Commit -- which only
+    // touches rows -- never rolls them back: a staged write survives the
+    // rolled-back ack, exactly as a Stage transaction commits independently of
+    // the later fenced Commit.
+    var checkpoint: map[int, int];
+    var sweepId: map[int, int];
+
     start state Active {
         entry (claim_mode: MailboxClaimMode) {
             mode = claim_mode;
@@ -539,6 +610,73 @@ machine DurableMailboxSpec {
 
         on eDurableMailboxExpireLeasesAt do (now: int) {
             rows = ExpireMailboxLeases(rows, now);
+        }
+
+        // Stage models the durable actor's early-durable-write: a short,
+        // lease-fenced writer transaction that advances the behavior checkpoint
+        // and records the upcoming broadcast identity BEFORE the side-effect IO,
+        // without acking the message. A staged row stays claimable until a later
+        // Commit consumes it.
+        //
+        // The fence (production: fenced = true) validates the lease token before
+        // writing, mirroring the production Stage that fences on ExtendLease. A
+        // checkpoint write is an OVERWRITE (SaveCheckpoint replaces the row), so
+        // a stale consumer that wrote its older state would regress the
+        // checkpoint. The fence is what keeps the write monotone: only the live
+        // lease holder, which holds the newest state, writes. The unfenced
+        // profile (fenced = false) writes regardless of the token, so a stale
+        // consumer overwrites a newer checkpoint with an older level -- the
+        // lost-update regression the fence prevents.
+        on eDurableMailboxStage do (req: DurableMailboxStageReq) {
+            var row: MailboxRow;
+            var bcast: int;
+
+            // Stage advances state only for a row that still exists. Once a
+            // fenced Commit has removed the row, a stale consumer cannot stage
+            // or broadcast against it.
+            if (!RowExists(rows, req.id)) {
+                send req.reply_to, eDurableMailboxOpResp,
+                    (req.id, MailboxOpNotFound);
+                return;
+            }
+
+            // Fence: under the production design the write happens only when the
+            // lease token still matches. A reclaimed consumer applies nothing,
+            // so it cannot regress the checkpoint. The unfenced profile skips
+            // this gate to expose the regression.
+            row = RowByID(rows, req.id);
+            if (req.fenced && !TokenMatches(row, req.lease_token)) {
+                send req.reply_to, eDurableMailboxOpResp,
+                    (req.id, MailboxOpTokenMismatch);
+                return;
+            }
+
+            // The checkpoint write is an overwrite. Under the fence only the
+            // live owner reaches here, so the level is non-decreasing; an
+            // unfenced stale writer can lower it, which the monotonicity monitor
+            // catches.
+            checkpoint[req.id] = req.effect_seq;
+            announce eDurableMailboxCheckpointStaged,
+                (this, req.id, req.effect_seq);
+
+            // Record the broadcast identity. The production design persists it
+            // with the checkpoint and reuses it on replay (stable); the
+            // counterexample re-derives a fresh id every attempt.
+            if (req.stable) {
+                if (!(req.id in sweepId)) {
+                    sweepId[req.id] = req.sweep_seq;
+                }
+            } else {
+                sweepId[req.id] = req.sweep_seq;
+            }
+
+            // Emit the downstream broadcast. The receiver dedups by id, so a
+            // replay that reuses the persisted id is collapsed; a replay that
+            // derives a fresh id is a distinct, second broadcast.
+            bcast = sweepId[req.id];
+            announce eDurableMailboxBroadcast, (this, req.id, bcast);
+            send req.reply_to, eDurableMailboxOpResp,
+                (req.id, MailboxOpOk);
         }
 
         // Dead-letter removes a row by id, with no lease-token check, matching
@@ -748,6 +886,72 @@ spec LeaseFencedCommitAppliesEffectAtMostOnce observes
                 "once (a stale owner committed after the row was reclaimed)";
 
             applied[effect] = true;
+        }
+    }
+}
+
+// StagedEffectAppliedAtMostOnceUnderReplay is the headline safety contract for
+// the early-durable-write (Stage) path. Because a Stage advances durable state
+// ahead of the IO but the message is acked only later by Commit, a crash
+// between the Stage and the Commit redelivers the message and replays the same
+// event against the already-advanced state. The contract is that this replay
+// must not produce a second DISTINCT downstream broadcast: the production design
+// reuses the broadcast id persisted with the checkpoint, so the replay
+// re-broadcasts the same id and the receiver (txconfirm) dedups it.
+//
+// The monitor namespaces state by (mbox, id). It catches the counterexample
+// design directly: a behavior that re-derives a fresh broadcast id on replay
+// announces a second, different eDurableMailboxBroadcast for the same (mbox,
+// id), tripping the assertion with no in-machine check -- the double-broadcast
+// the persist-before-broadcast / sweep-reuse rule prevents.
+spec StagedEffectAppliedAtMostOnceUnderReplay observes
+    eDurableMailboxBroadcast {
+
+    var seen: map[(machine, int), bool];
+    var broadcastId: map[(machine, int), int];
+
+    start state Monitoring {
+        on eDurableMailboxBroadcast do (b: (machine, int, int)) {
+            var key: (machine, int);
+
+            key = (b.0, b.1);
+
+            if (key in seen) {
+                assert broadcastId[key] == b.2,
+                    "a row broadcast two distinct downstream effects across "+
+                    "a Stage'd-but-unacked replay (double-broadcast)";
+            } else {
+                seen[key] = true;
+                broadcastId[key] = b.2;
+            }
+        }
+    }
+}
+
+// CheckpointAdvancesMonotonically guards the other half of the Stage contract:
+// a staged checkpoint never moves backward. Every Stage write is an overwrite
+// that announces its level, so a replayed (equal) level is fine but a lower
+// level is a regression. Under the fence only the live lease holder writes, so
+// the level is non-decreasing; an unfenced stale consumer that overwrites with
+// its older level trips this directly -- the lost-update the fence prevents.
+spec CheckpointAdvancesMonotonically observes
+    eDurableMailboxCheckpointStaged {
+
+    var high: map[(machine, int), int];
+
+    start state Monitoring {
+        on eDurableMailboxCheckpointStaged do (s: (machine, int, int)) {
+            var key: (machine, int);
+
+            key = (s.0, s.1);
+
+            if (key in high) {
+                assert s.2 >= high[key],
+                    "a staged checkpoint regressed (a stale consumer "+
+                    "overwrote a newer checkpoint with an older level)";
+            }
+
+            high[key] = s.2;
         }
     }
 }
