@@ -17,45 +17,6 @@ const (
 	oorCSVDelay        uint32 = 5
 )
 
-// TestPlanDeepOORChainAlternatesCheckpointAndArk verifies the concrete
-// depth-2 OOR recovery sequence. After the round-tree root confirms, each
-// checkpoint is ready only before its corresponding Ark child, and the next
-// checkpoint waits for that Ark transaction to confirm.
-func TestPlanDeepOORChainAlternatesCheckpointAndArk(t *testing.T) {
-	fixture := oorChainProofFixture(t, 2)
-	planner, proof := newPlannerFixture(t, fixture.proof)
-	state := &State{}
-
-	for index, txid := range fixture.broadcastOrder {
-		planHeight := oorPlanStartHeight + int32(index)
-		snapshot, err := planner.Plan(planHeight, state)
-		require.NoError(t, err)
-		require.Len(t, snapshot.Ready, 1)
-		require.Equal(t, txid, snapshot.Ready[0].Txid)
-		require.Equal(
-			t, fixture.kindByTxid[txid],
-			snapshot.Ready[0].Node.Kind,
-		)
-
-		assertOORChildBlockedWhileParentInFlight(
-			t, planner, fixture, state, index, planHeight,
-		)
-
-		state.ConfirmedTxids = append(state.ConfirmedTxids, txid)
-		if txid == proof.TargetOutpoint().Hash {
-			state.TargetConfirmHeight = fn.Some(planHeight)
-		}
-	}
-
-	maturityHeight := state.TargetConfirmHeight.UnwrapOrFail(t) +
-		int32(oorCSVDelay)
-	snapshot, err := planner.Plan(maturityHeight, state)
-	require.NoError(t, err)
-	require.True(t, snapshot.AllProofConfirmed)
-	require.True(t, snapshot.TargetConfirmed)
-	require.True(t, snapshot.NeedSweep)
-}
-
 // TestPlanOORChainOrderingRapid checks the same ordering invariant over
 // random OOR depths. Every unconfirmed child remains blocked while its parent
 // is merely in flight, then becomes ready only after the parent is confirmed.
