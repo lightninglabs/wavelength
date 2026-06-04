@@ -217,9 +217,14 @@ func TestActorStart(t *testing.T) {
 		)
 		require.Len(t, assembly.VTXOs, 1)
 
+		// The client builds the output template with the operator key
+		// left as an unbound placeholder; the server binds its current
+		// key at admission. So the expected pkScript and operator key
+		// come from the placeholder, not the concrete operator key.
 		_, expectedPkScript, err := arkscript.
 			EncodeStandardVTXOArtifacts(
-				ownerKey.PubKey, h.operatorPubKey,
+				ownerKey.PubKey,
+				&arkscript.OperatorKeyPlaceholder,
 				h.operatorTerms.VTXOExitDelay,
 			)
 		require.NoError(t, err)
@@ -240,11 +245,65 @@ func TestActorStart(t *testing.T) {
 			schnorr.SerializePubKey(params.OwnerKey),
 		)
 		require.Equal(
-			t, schnorr.SerializePubKey(h.operatorPubKey),
+			t, schnorr.SerializePubKey(
+				&arkscript.OperatorKeyPlaceholder,
+			),
 			schnorr.SerializePubKey(params.OperatorKey),
 		)
 		require.Equal(t, *ownerKey, req.OwnerKey)
 		require.Nil(t, req.SigningKey.PubKey)
+	})
+
+	t.Run("uses_snapshot_terms_for_new_vtxo_round", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		ownerKey := &keychain.KeyDescriptor{
+			PubKey: h.clientPubKey,
+		}
+		h.wallet.On(
+			"DeriveNextKey", mock.Anything,
+			types.VTXOOwnerKeyFamily,
+		).Return(ownerKey, nil).Once()
+
+		result := h.receive(&RegisterVTXORequestsRequest{
+			Amounts: []btcutil.Amount{50000},
+		})
+		require.True(
+			t, result.IsOk(),
+			"receive failed: %v", result.Err(),
+		)
+
+		states := h.queryState()
+		tempState, found := h.findTempState(states)
+		require.True(t, found)
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+		require.Len(t, assembly.VTXOs, 1)
+
+		// The output template carries the operator-key placeholder
+		// (the server binds its key at admission) and the exit delay
+		// from the client-committed startup snapshot.
+		params, err := assembly.VTXOs[0].DecodeStandardPolicyTemplate()
+		require.NoError(t, err)
+		require.Equal(
+			t, schnorr.SerializePubKey(
+				&arkscript.OperatorKeyPlaceholder,
+			),
+			schnorr.SerializePubKey(params.OperatorKey),
+		)
+		require.Equal(
+			t, h.operatorTerms.VTXOExitDelay, params.ExitDelay,
+		)
+
+		for _, roundFSM := range h.actor.rounds {
+			require.NotNil(t, roundFSM.FSM)
+		}
 	})
 }
 
@@ -1200,7 +1259,11 @@ func TestActorBuffersEarlyQuote(t *testing.T) {
 	const operatorFeeSat = int64(1_000)
 	vtxoQuotes := make([]VTXOQuoteEntry, len(vtxos))
 	for i, v := range vtxos {
-		script, err := v.EffectivePkScript()
+		// Echo the BOUND pkScript (placeholder -> operator key),
+		// which is what evaluateQuote derives from the quote's
+		// OperatorKey to compare against. The request itself only
+		// carries the placeholder template, so bind here.
+		script, err := v.BoundPkScript(h.operatorPubKey)
 		require.NoError(t, err)
 
 		amount := int64(v.Amount)
@@ -1223,6 +1286,7 @@ func TestActorBuffersEarlyQuote(t *testing.T) {
 	quote := &ClientQuote{
 		QuoteID:        quoteID,
 		OperatorFeeSat: operatorFeeSat,
+		OperatorKey:    h.operatorPubKey,
 		VTXOQuotes:     vtxoQuotes,
 	}
 

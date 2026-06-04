@@ -81,7 +81,7 @@ func buildEchoTestIntents(t *testing.T) (Intents, *btcec.PublicKey) {
 // quoteFromIntents builds a faithfully-echoed ClientQuote from the
 // supplied intents. Callers then mutate the returned quote to
 // simulate adversarial server behavior for rejection assertions.
-func quoteFromIntents(t *testing.T, intents Intents,
+func quoteFromIntents(t *testing.T, op *btcec.PublicKey, intents Intents,
 	operatorFeeSat int64) *ClientQuote {
 
 	t.Helper()
@@ -89,8 +89,9 @@ func quoteFromIntents(t *testing.T, intents Intents,
 	vtxoQuotes := make([]VTXOQuoteEntry, len(intents.VTXOs))
 	for i := range intents.VTXOs {
 		req := intents.VTXOs[i]
-		script, err := req.EffectivePkScript()
-		require.NoError(t, err)
+		// Echo the BOUND output pkScript (the server-stamped value),
+		// not the placeholder template's own script.
+		script := req.PkScript
 
 		recipientKey := req.SigningKey.PubKey.SerializeCompressed()
 		vtxoQuotes[i] = VTXOQuoteEntry{
@@ -118,6 +119,7 @@ func quoteFromIntents(t *testing.T, intents Intents,
 		OperatorFeeSat: operatorFeeSat,
 		VTXOQuotes:     vtxoQuotes,
 		LeaveQuotes:    leaveQuotes,
+		OperatorKey:    op,
 	}
 }
 
@@ -126,8 +128,8 @@ func quoteFromIntents(t *testing.T, intents Intents,
 func TestEvaluateQuoteEchoAcceptsFaithfulQuote(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 5_000)
 	env := quoteReceivedTestEnv(10_000)
 
 	decision := evaluateQuote(
@@ -144,8 +146,8 @@ func TestEvaluateQuoteEchoAcceptsFaithfulQuote(t *testing.T) {
 func TestEvaluateQuoteEchoAcceptsChangeDeviation(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 5_000)
 
 	// Change entry is intents.VTXOs[1]; server chooses a
 	// different residual. Σinputs=130_000, other outputs sum to
@@ -171,8 +173,8 @@ func TestEvaluateQuoteEchoAcceptsChangeDeviation(t *testing.T) {
 func TestEvaluateQuoteEchoRejectsVTXOLengthMismatch(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 5_000)
 	quote.VTXOQuotes = quote.VTXOQuotes[:1]
 
 	env := quoteReceivedTestEnv(10_000)
@@ -189,8 +191,8 @@ func TestEvaluateQuoteEchoRejectsVTXOLengthMismatch(t *testing.T) {
 func TestEvaluateQuoteEchoRejectsLeaveLengthMismatch(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 5_000)
 	quote.LeaveQuotes = nil
 
 	env := quoteReceivedTestEnv(10_000)
@@ -207,8 +209,8 @@ func TestEvaluateQuoteEchoRejectsLeaveLengthMismatch(t *testing.T) {
 func TestEvaluateQuoteEchoRejectsVTXOPkScriptMismatch(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 5_000)
 
 	quote.VTXOQuotes[0].PkScript = append(
 		[]byte(nil), quote.VTXOQuotes[0].PkScript...,
@@ -229,8 +231,8 @@ func TestEvaluateQuoteEchoRejectsVTXOPkScriptMismatch(t *testing.T) {
 func TestEvaluateQuoteEchoRejectsRecipientKeyMismatch(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 5_000)
 
 	quote.VTXOQuotes[0].RecipientKey = append(
 		[]byte(nil), quote.VTXOQuotes[0].RecipientKey...,
@@ -252,8 +254,8 @@ func TestEvaluateQuoteEchoRejectsRecipientKeyMismatch(t *testing.T) {
 func TestEvaluateQuoteEchoRejectsNonChangeVTXOAmountDrift(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 5_000)
 
 	// intents.VTXOs[0] is the non-change recipient. Server
 	// shaves it down, rebalancing into the change output to
@@ -275,8 +277,8 @@ func TestEvaluateQuoteEchoRejectsNonChangeVTXOAmountDrift(t *testing.T) {
 func TestEvaluateQuoteEchoRejectsNonChangeLeaveAmountDrift(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 5_000)
 
 	quote.LeaveQuotes[0].AmountSat = 24_999
 
@@ -351,8 +353,8 @@ func TestEvaluateQuoteRendersActionableRejectReason(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			intents, _ := buildEchoTestIntents(t)
-			quote := quoteFromIntents(t, intents, 5_000)
+			intents, op := buildEchoTestIntents(t)
+			quote := quoteFromIntents(t, op, intents, 5_000)
 			quote.RejectReason = test.reason
 
 			env := quoteReceivedTestEnv(10_000)
@@ -392,8 +394,8 @@ func TestEvaluateQuoteRendersActionableRejectReason(t *testing.T) {
 func TestEvaluateQuoteRejectsExpiredQuote(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 5_000)
 
 	// Inject a frozen clock five seconds after the quote expiry.
 	expiry := time.Unix(1_700_000_000, 0)
@@ -418,8 +420,8 @@ func TestEvaluateQuoteRejectsExpiredQuote(t *testing.T) {
 func TestEvaluateQuoteAcceptsFreshQuoteBeforeExpiry(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 5_000)
 
 	now := time.Unix(1_700_000_000, 0)
 	quote.QuoteExpiresAt = now.Add(10 * time.Second).Unix()
@@ -444,10 +446,10 @@ func TestEvaluateQuoteAcceptsFreshQuoteBeforeExpiry(t *testing.T) {
 func TestQuoteReceivedReplacesOnReseal(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
+	intents, op := buildEchoTestIntents(t)
 
 	// First pass: well-formed quote.
-	first := quoteFromIntents(t, intents, 5_000)
+	first := quoteFromIntents(t, op, intents, 5_000)
 	first.SealPass = 0
 
 	s := &QuoteReceivedState{
@@ -464,7 +466,7 @@ func TestQuoteReceivedReplacesOnReseal(t *testing.T) {
 	// 25_000 outputs the realised fee is 6_000 — matches the
 	// declared OperatorFeeSat and stays within the 10_000 cap
 	// (#379).
-	second := quoteFromIntents(t, intents, 6_000)
+	second := quoteFromIntents(t, op, intents, 6_000)
 	second.SealPass = 1
 	second.VTXOQuotes[1].AmountSat = 59_000 // Change leg shifted.
 
@@ -500,9 +502,9 @@ func TestQuoteReceivedReplacesOnReseal(t *testing.T) {
 func TestQuoteReceivedIgnoresStaleReseal(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
+	intents, op := buildEchoTestIntents(t)
 
-	first := quoteFromIntents(t, intents, 5_000)
+	first := quoteFromIntents(t, op, intents, 5_000)
 	first.SealPass = 3
 
 	s := &QuoteReceivedState{
@@ -513,7 +515,7 @@ func TestQuoteReceivedIgnoresStaleReseal(t *testing.T) {
 
 	env := quoteReceivedTestEnv(10_000)
 
-	stale := quoteFromIntents(t, intents, 5_000)
+	stale := quoteFromIntents(t, op, intents, 5_000)
 	stale.SealPass = 3 // Equal.
 
 	tr, err := s.ProcessEvent(
@@ -543,8 +545,8 @@ func TestQuoteReceivedIgnoresStaleReseal(t *testing.T) {
 func TestEvaluateQuoteRejectsZeroCap(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 1) // Small positive fee.
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 1) // Small positive fee.
 
 	env := quoteReceivedTestEnv(0) // Unset cap.
 	decision := evaluateQuote(
@@ -561,8 +563,8 @@ func TestEvaluateQuoteRejectsZeroCap(t *testing.T) {
 func TestEvaluateQuoteRejectsNegativeOperatorFee(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, -1)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, -1)
 
 	env := quoteReceivedTestEnv(10_000)
 	decision := evaluateQuote(
@@ -595,8 +597,8 @@ func TestEvaluateQuoteRejectsNegativeOperatorFee(t *testing.T) {
 func TestEvaluateQuoteRejectsChangeUnderpaymentBypass(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 1_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 1_000)
 
 	// Σinputs=130_000; honest outputs sum to 125_000 so the
 	// declared 1_000-sat fee is a lie unless the change output
@@ -638,8 +640,8 @@ func TestEvaluateQuoteRejectsChangeUnderpaymentBypass(t *testing.T) {
 func TestEvaluateQuoteRejectsChangeUnderpaymentBelowCap(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 5_000)
 
 	// Σinputs=130_000; declared fee=5_000. Shave the change leg
 	// from 60_000 to 57_000 so Σoutputs=122_000 and realised
@@ -696,8 +698,7 @@ func TestEvaluateQuoteRejectsSingleOutputUnderpayment(t *testing.T) {
 	// realised-fee check, echo validation passes (single-output
 	// intent is implicit change) and the client signs a round
 	// paying 20_000 in fees against a 10_000 cap.
-	script, err := req.req.EffectivePkScript()
-	require.NoError(t, err)
+	script := req.req.PkScript
 
 	var quoteID [32]byte
 	for i := range quoteID {
@@ -708,6 +709,7 @@ func TestEvaluateQuoteRejectsSingleOutputUnderpayment(t *testing.T) {
 	quote := &ClientQuote{
 		QuoteID:        quoteID,
 		OperatorFeeSat: 500,
+		OperatorKey:    op,
 		VTXOQuotes: []VTXOQuoteEntry{{
 			PkScript: script,
 			// 20_000 sat underpayment.
@@ -748,8 +750,8 @@ func TestEvaluateQuoteRejectsSingleOutputUnderpayment(t *testing.T) {
 func TestEvaluateQuoteRejectsRealisedFeeNegative(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 5_000)
 
 	// Σinputs=130_000; inflate the change leg from 60_000 to
 	// 200_000 so Σoutputs=265_000 and realised fee is −135_000.
@@ -770,8 +772,8 @@ func TestEvaluateQuoteRejectsRealisedFeeNegative(t *testing.T) {
 func TestEvaluateQuoteAcceptsExactlyAtCap(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 10_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 10_000)
 
 	// Σinputs=130_000; shave change from 60_000 to 55_000 so
 	// Σoutputs=120_000 and realised fee=10_000, exactly at cap.
@@ -823,10 +825,8 @@ func TestEvaluateQuoteRealisedFeeUsesForfeitStore(t *testing.T) {
 		},
 	}
 
-	scriptA, err := reqA.req.EffectivePkScript()
-	require.NoError(t, err)
-	scriptB, err := reqB.req.EffectivePkScript()
-	require.NoError(t, err)
+	scriptA := reqA.req.PkScript
+	scriptB := reqB.req.PkScript
 
 	var quoteID [32]byte
 	for i := range quoteID {
@@ -842,6 +842,7 @@ func TestEvaluateQuoteRealisedFeeUsesForfeitStore(t *testing.T) {
 	quote := &ClientQuote{
 		QuoteID:        quoteID,
 		OperatorFeeSat: 1_000,
+		OperatorKey:    op,
 		VTXOQuotes: []VTXOQuoteEntry{
 			{
 				PkScript:     scriptA,
@@ -891,7 +892,7 @@ func TestEvaluateQuoteRealisedFeeUsesForfeitStore(t *testing.T) {
 func TestRealisedFeeIncludesZeroValueOutputs(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
+	intents, op := buildEchoTestIntents(t)
 
 	// Replace the leave intent's value with zero so the echo and
 	// the realised sum both see a 0-sat output. Σinputs=130_000;
@@ -901,7 +902,7 @@ func TestRealisedFeeIncludesZeroValueOutputs(t *testing.T) {
 	// and bump the cap accordingly.
 	intents.Leaves[0].Output.Value = 0
 
-	quote := quoteFromIntents(t, intents, 30_000)
+	quote := quoteFromIntents(t, op, intents, 30_000)
 	env := quoteReceivedTestEnv(30_000)
 	decision := evaluateQuote(
 		context.Background(), env, RoundID{}, intents, quote,
@@ -922,8 +923,8 @@ func TestRealisedFeeIncludesZeroValueOutputs(t *testing.T) {
 func TestRealisedFeeRejectsNegativeOutput(t *testing.T) {
 	t.Parallel()
 
-	intents, _ := buildEchoTestIntents(t)
-	quote := quoteFromIntents(t, intents, 5_000)
+	intents, op := buildEchoTestIntents(t)
+	quote := quoteFromIntents(t, op, intents, 5_000)
 
 	// Inject a negative leave-output amount. The echo validator
 	// runs first; rebuild the intent's leave value to match so we
@@ -972,7 +973,7 @@ func containsAny(s string, subs []string) bool {
 // check added by #379 sees Σinputs = Σoutputs + fee for the honest
 // path. (Without an input source the realised-fee check would
 // reject every single-output intent built by this helper.)
-func buildSingleVTXOIntents(t *testing.T) Intents {
+func buildSingleVTXOIntents(t *testing.T) (Intents, *btcec.PublicKey) {
 	t.Helper()
 
 	opPriv, err := btcec.NewPrivateKey()
@@ -994,7 +995,7 @@ func buildSingleVTXOIntents(t *testing.T) Intents {
 		VTXOs: []types.VTXORequest{
 			req.req,
 		},
-	}
+	}, op
 }
 
 // buildSingleLeaveIntents returns a deterministic intent carrying a
@@ -1030,11 +1031,11 @@ func buildSingleLeaveIntents() Intents {
 // matches the honest server's behaviour for a single-output intent:
 // residual = Σin − Σ(fixed) − fee, stamped on the lone (implicit-
 // change) slot.
-func quoteFromSingleVTXOWithFee(t *testing.T, intents Intents,
-	operatorFeeSat int64) *ClientQuote {
+func quoteFromSingleVTXOWithFee(t *testing.T, op *btcec.PublicKey,
+	intents Intents, operatorFeeSat int64) *ClientQuote {
 
 	t.Helper()
-	quote := quoteFromIntents(t, intents, operatorFeeSat)
+	quote := quoteFromIntents(t, op, intents, operatorFeeSat)
 	quote.VTXOQuotes[0].AmountSat -= operatorFeeSat
 
 	return quote
@@ -1048,8 +1049,8 @@ func quoteFromSingleVTXOWithFee(t *testing.T, intents Intents,
 func TestEvaluateQuoteEchoAcceptsSingleVTXOImplicitChangeFee(t *testing.T) {
 	t.Parallel()
 
-	intents := buildSingleVTXOIntents(t)
-	quote := quoteFromSingleVTXOWithFee(t, intents, 2_500)
+	intents, op := buildSingleVTXOIntents(t)
+	quote := quoteFromSingleVTXOWithFee(t, op, intents, 2_500)
 
 	env := quoteReceivedTestEnv(10_000)
 	decision := evaluateQuote(
@@ -1072,8 +1073,8 @@ func TestEvaluateQuoteEchoAcceptsSingleVTXOImplicitChangeFee(t *testing.T) {
 func TestEvaluateQuoteEchoRejectsSingleVTXOUnderpayment(t *testing.T) {
 	t.Parallel()
 
-	intents := buildSingleVTXOIntents(t)
-	quote := quoteFromIntents(t, intents, 1_000)
+	intents, op := buildSingleVTXOIntents(t)
+	quote := quoteFromIntents(t, op, intents, 1_000)
 
 	// Adversarial: operator claims a 1_000 sat fee but shaves
 	// 50_000 sat off the lone recipient. With the implicitChange
@@ -1109,7 +1110,7 @@ func TestEvaluateQuoteEchoRejectsSingleLeaveUnderpayment(t *testing.T) {
 	t.Parallel()
 
 	intents := buildSingleLeaveIntents()
-	quote := quoteFromIntents(t, intents, 1_000)
+	quote := quoteFromIntents(t, quoteTestOperatorKey, intents, 1_000)
 	quote.LeaveQuotes[0].AmountSat = 50_000
 
 	env := quoteReceivedTestEnv(10_000)
@@ -1138,7 +1139,7 @@ func TestEvaluateQuoteEchoAcceptsSingleLeaveImplicitChangeFee(t *testing.T) {
 	t.Parallel()
 
 	intents := buildSingleLeaveIntents()
-	quote := quoteFromIntents(t, intents, 2_500)
+	quote := quoteFromIntents(t, quoteTestOperatorKey, intents, 2_500)
 	quote.LeaveQuotes[0].AmountSat -= quote.OperatorFeeSat
 
 	env := quoteReceivedTestEnv(10_000)
@@ -1158,10 +1159,10 @@ func TestEvaluateQuoteEchoAcceptsSingleLeaveImplicitChangeFee(t *testing.T) {
 func TestEvaluateQuoteEchoAcceptsSingleVTXOResidualAboveTarget(t *testing.T) {
 	t.Parallel()
 
-	intents := buildSingleVTXOIntents(t)
+	intents, op := buildSingleVTXOIntents(t)
 	intents.VTXOs[0].Amount = 95_000
 
-	quote := quoteFromIntents(t, intents, 1_000)
+	quote := quoteFromIntents(t, op, intents, 1_000)
 	quote.VTXOQuotes[0].AmountSat = 99_000
 
 	env := quoteReceivedTestEnv(10_000)
@@ -1198,7 +1199,7 @@ func TestEvaluateQuoteUsesDetachedContextForForfeitLookup(t *testing.T) {
 		},
 	}
 
-	quote := quoteFromSingleVTXOWithFee(t, intents, 1_000)
+	quote := quoteFromSingleVTXOWithFee(t, op, intents, 1_000)
 
 	store := &MockVTXOStore{}
 	store.On(
@@ -1227,8 +1228,8 @@ func TestEvaluateQuoteUsesDetachedContextForForfeitLookup(t *testing.T) {
 func TestEvaluateQuoteEchoRejectsSingleVTXOOverpayment(t *testing.T) {
 	t.Parallel()
 
-	intents := buildSingleVTXOIntents(t)
-	quote := quoteFromIntents(t, intents, 1_000)
+	intents, op := buildSingleVTXOIntents(t)
+	quote := quoteFromIntents(t, op, intents, 1_000)
 
 	// Operator inflates the lone slot above (Amount − fee).
 	quote.VTXOQuotes[0].AmountSat = int64(intents.VTXOs[0].Amount) +
@@ -1251,8 +1252,8 @@ func TestEvaluateQuoteEchoRejectsSingleVTXOOverpayment(t *testing.T) {
 func TestEvaluateQuoteEchoRejectsSingleVTXOMissingFeeDeduction(t *testing.T) {
 	t.Parallel()
 
-	intents := buildSingleVTXOIntents(t)
-	quote := quoteFromIntents(t, intents, 1_000)
+	intents, op := buildSingleVTXOIntents(t)
+	quote := quoteFromIntents(t, op, intents, 1_000)
 	// Intentionally do not subtract the fee: echo == Amount.
 
 	env := quoteReceivedTestEnv(10_000)

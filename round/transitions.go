@@ -32,6 +32,33 @@ func buildBoardingRequest(intent BoardingIntent) types.BoardingRequest {
 	return intent.Request
 }
 
+// boundLeafPkScript returns the concrete P2TR pkScript the client expects to
+// find at the server-built tree leaf for vtxoReq. The client builds round
+// outputs with the operator key left as an unbound placeholder; the expected
+// leaf is re-derived by binding operatorKey (the server-delivered key from
+// the quote) into the request's placeholder template. An admitted round
+// always carries the operator key on its quote, and every round output
+// commits to the placeholder, so binding must succeed — a failure here is a
+// malformed template, not an expected case.
+func boundLeafPkScript(vtxoReq types.VTXORequest,
+	operatorKey *btcec.PublicKey) ([]byte, error) {
+
+	return vtxoReq.BoundPkScript(operatorKey)
+}
+
+// vtxoExitDelay returns the committed CSV exit delay encoded in vtxoReq's
+// policy template. The operator-key placeholder does not participate in the
+// exit (CSV) leaf, so the exit delay is recoverable from the placeholder
+// template directly.
+func vtxoExitDelay(vtxoReq types.VTXORequest) (uint32, error) {
+	params, err := vtxoReq.DecodeStandardPolicyTemplate()
+	if err != nil {
+		return 0, err
+	}
+
+	return params.ExitDelay, nil
+}
+
 // failWithNotification creates a state transition to ClientFailedState and
 // emits a RoundFailedNotification. This is the standard pattern for handling
 // internal errors without returning an error to the FSM (which would halt it).
@@ -1149,7 +1176,16 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 		vtxoReq := intents.VTXOs[i]
 		entry := quote.VTXOQuotes[i]
 
-		intentScript, err := vtxoReq.EffectivePkScript()
+		// The client built this output with an unbound operator-key
+		// placeholder, so its own EffectivePkScript commits to the
+		// placeholder, not the real output. The server echoes the
+		// pkScript it built by binding its current operator key into
+		// the placeholder, so we must bind the quote-delivered operator
+		// key here too before comparing — otherwise every standard
+		// output would spuriously fail the echo check.
+		intentScript, err := boundLeafPkScript(
+			vtxoReq, quote.OperatorKey,
+		)
 		if err != nil {
 			return fmt.Sprintf("vtxo[%d] pkScript "+
 				"derivation: %v", i, err), false
@@ -1265,6 +1301,17 @@ func (s *QuoteReceivedState) ProcessEvent(ctx context.Context,
 			slog.String("round_id", evt.RoundID.String()),
 			slog.Int64("operator_fee_sat", s.Quote.OperatorFeeSat),
 		)
+
+		// Stamp the quote-delivered round policy fields directly onto
+		// the FSM environment. The client builds its round outputs with
+		// an unbound operator-key placeholder; the server binds its
+		// current key and tells us which one via the quote.
+		// Startup-only fields such as MinConfirmations are
+		// intentionally separate so later states cannot accidentally
+		// read stale values from a full operator-terms snapshot.
+		env.OperatorKey = s.Quote.OperatorKey
+		env.ForfeitScript = s.Quote.ForfeitScript
+		env.SweepDelay = s.Quote.SweepDelay
 
 		accept := &JoinRoundAcceptOutbox{
 			RoundID: evt.RoundID,
@@ -1702,11 +1749,28 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 
 		clientTrees := make(map[SignerKey]*tree.Tree)
 
+		// The operator key to validate against is the one the server
+		// bound into the round's VTXO templates, delivered on the
+		// quote. The client built every VTXO output with an unbound
+		// operator-key placeholder, so the expected leaf pkScript is
+		// re-derived by binding this key into the request's placeholder
+		// template. The quote always carries the operator key on an
+		// admitted round (enforced at decode), so it is the single
+		// source of truth here — there is no snapshot fallback.
+		operatorKey := s.Quote.OperatorKey
+
 		// Next, we'll make sure that each of the VTXO requests that we
 		// originally requested are actually present in the VTXT trees
 		// that the server sent us.
 		for i, vtxoReq := range s.Intents.VTXOs {
-			pkScript, err := vtxoReq.EffectivePkScript()
+			// Re-derive the expected leaf pkScript by binding the
+			// validation operator key into the request's
+			// placeholder template. This is the concrete output the
+			// server is expected to have built; byte-matching it
+			// against the tree leaf below is what binds the
+			// server's operator-key choice to what the client
+			// co-signs.
+			pkScript, err := boundLeafPkScript(vtxoReq, operatorKey)
 			if err != nil {
 				return &ClientStateTransition{
 					NextState: &ClientFailedState{
@@ -1714,6 +1778,35 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 						Error: fmt.Errorf("derive pkScript for "+
 							"VTXO request %d: %w", i, err),
 						Recoverable: true,
+					},
+				}, nil
+			}
+
+			// Sanity-guard the client's own committed exit delay
+			// before co-signing. A corrupted or mis-built template
+			// would otherwise produce an unspendable or absurdly
+			// locked unilateral-exit path; aborting here keeps the
+			// failure ahead of any forfeit release.
+			exitDelay, err := vtxoExitDelay(vtxoReq)
+			if err != nil {
+				return &ClientStateTransition{
+					NextState: &ClientFailedState{
+						Reason: "VTXT validation failed",
+						Error: fmt.Errorf("decode exit delay "+
+							"for VTXO request %d: %w", i, err),
+						Recoverable: true,
+					},
+				}, nil
+			}
+			if err := validateVTXOExitDelayBounds(
+				exitDelay,
+			); err != nil {
+				return &ClientStateTransition{
+					NextState: &ClientFailedState{
+						Reason: "VTXT validation failed",
+						Error: fmt.Errorf("VTXO request %d: "+
+							"%w", i, err),
+						Recoverable: false,
 					},
 				}, nil
 			}
@@ -1739,7 +1832,7 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			for _, vtxoTree := range s.VTXOTreePaths {
 				clientTree, validateErr = vtxoTree.ValidatePath(
 					vtxoReq.SigningKey.PubKey, expectedLeaf,
-					env.OperatorTerms.PubKey,
+					operatorKey,
 				)
 				if validateErr == nil {
 					// Found the VTXO in this tree.
@@ -1828,7 +1921,7 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 		// deterministic CPU work (the lib/tree materializer ignores its
 		// context); there is no I/O to cancel, so no context to thread.
 		if err := validateConnectorAncestry(
-			s.CommitmentTx.UnsignedTx, env.OperatorTerms.PubKey,
+			s.CommitmentTx.UnsignedTx, s.Quote.OperatorKey,
 			evt.ForfeitMappings,
 		); err != nil {
 			// Error carried into failed state.
@@ -1925,7 +2018,7 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 				connOut := info.ConnectorOutpoint
 				connScript := info.ConnectorPkScript
 				connAmt := info.ConnectorAmount
-				forfeitScript := env.OperatorTerms.ForfeitScript
+				forfeitScript := env.ForfeitScript
 				roundIDStr := s.RoundID.String()
 				req := forfeitReqs[vtxoOutpoint]
 
@@ -2089,7 +2182,7 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(ctx context.Context,
 		params := tx.ForfeitTxParams{
 			VTXOOutpoint:        evt.VTXOOutpoint,
 			ConnectorOutpoint:   connectorInfo.ConnectorOutpoint,
-			ServerForfeitScript: env.OperatorTerms.ForfeitScript,
+			ServerForfeitScript: env.ForfeitScript,
 			ExpectedAmount: btcutil.Amount(
 				int64(connectorInfo.VTXOAmount) +
 					connectorInfo.ConnectorAmount,
@@ -2286,7 +2379,7 @@ func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 			CallerID:    callerID,
 			Txid:        &txid,
 			PkScript:    pkScript,
-			TargetConfs: env.OperatorTerms.MinConfirmations,
+			TargetConfs: env.MinConfirmations,
 			HeightHint:  env.StartHeight,
 		},
 	}
@@ -2618,7 +2711,7 @@ func (s *PartialSigsSentState) ProcessEvent(ctx context.Context,
 			slog.Int("pkscript_len", len(pkScript)),
 			slog.Int(
 				"target_confs",
-				int(env.OperatorTerms.MinConfirmations),
+				int(env.MinConfirmations),
 			),
 		)
 
@@ -2628,7 +2721,7 @@ func (s *PartialSigsSentState) ProcessEvent(ctx context.Context,
 				CallerID:    callerID,
 				Txid:        &txid,
 				PkScript:    pkScript,
-				TargetConfs: env.OperatorTerms.MinConfirmations,
+				TargetConfs: env.MinConfirmations,
 				HeightHint:  env.StartHeight,
 			},
 		}
@@ -2722,7 +2815,7 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 	error) {
 
 	// Build forfeit request messages for each VTXO being refreshed. The
-	// forfeit script is a static operator property from OperatorTerms.
+	// forfeit script is delivered with the accepted quote.
 	forfeitReqs := forfeitRequestMap(s.Intents.Forfeits)
 	var outbox []ClientOutMsg
 	for vtxoOutpoint, info := range s.ForfeitMappings {
@@ -2733,7 +2826,7 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 			ConnectorOutpoint:     info.ConnectorOutpoint,
 			ConnectorPkScript:     info.ConnectorPkScript,
 			ConnectorAmount:       info.ConnectorAmount,
-			ServerForfeitPkScript: env.OperatorTerms.ForfeitScript,
+			ServerForfeitPkScript: env.ForfeitScript,
 			ForfeitSpend:          req.ForfeitSpend,
 		}
 		outbox = append(outbox, msg)
@@ -3211,11 +3304,19 @@ func leafNonAnchorAmount(leaf *tree.Node) (btcutil.Amount, error) {
 }
 
 // buildClientVTXOs constructs locally owned ClientVTXO instances from the
-// intents and client trees. Requests that do not resolve to locally owned
-// pkScripts are skipped: the client still co-signs their tree path, but it
-// must not persist them as spendable local balance.
-func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
-	intents Intents, trees map[SignerKey]*tree.Tree,
+// intents and client trees. Ownership is intent-driven: a request that
+// carries a local owner descriptor (HasLocalOwner) and whose operator-bound
+// pkScript matches the server-built tree leaf is persisted as local balance;
+// foreign-recipient requests (directed sends) carry no local owner and are
+// skipped. The client still co-signs every tree path either way.
+//
+// operatorKey is the server-delivered key the round's VTXO templates were
+// bound to. The client built each output with an unbound operator-key
+// placeholder, so the concrete output it persists — pkScript, policy template,
+// and operator key — is derived by binding operatorKey into the request's
+// placeholder template here.
+func buildClientVTXOs(operatorKey *btcec.PublicKey, intents Intents,
+	trees map[SignerKey]*tree.Tree,
 	roundID RoundID) ([]*ClientVTXO, error) {
 
 	vtxos := make([]*ClientVTXO, 0)
@@ -3224,27 +3325,42 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 			continue
 		}
 
-		pkScript, err := req.EffectivePkScript()
+		// Re-derive the concrete pkScript by binding the server's
+		// operator key into the request's placeholder template. This
+		// is the same derivation the co-sign validation byte-matched
+		// against the tree leaf, so the persisted pkScript is exactly
+		// the one the client verified and co-signed.
+		pkScript, err := boundLeafPkScript(req, operatorKey)
 		if err != nil {
 			return nil, fmt.Errorf("derive VTXO pkScript: %w", err)
 		}
 
-		if checker != nil {
-			owned, err := checker.IsOwnedScript(
-				ctx, pkScript,
-			).Unpack()
-			if err != nil {
-				return nil, fmt.Errorf("check owned script: %w",
-					err)
-			}
-
-			if !owned {
-				continue
-			}
+		// Persist the concrete bound template (operator key in place)
+		// rather than the placeholder, so the stored descriptor
+		// reproduces the on-chain output. Binding must succeed: every
+		// round output commits to the placeholder and the admitted
+		// quote carries the operator key. Decode the bound template for
+		// the standard-shape operator key + exit delay fields below; a
+		// custom (non-standard) policy legitimately fails that decode,
+		// leaving boundParams nil.
+		boundTmpl, err := req.BoundPolicyTemplate(operatorKey)
+		if err != nil {
+			return nil, fmt.Errorf("bind VTXO policy template: %w",
+				err)
+		}
+		policyTemplate, err := boundTmpl.Encode()
+		if err != nil {
+			return nil, fmt.Errorf("encode bound policy "+
+				"template: %w", err)
 		}
 
-		params, err := req.DecodeStandardPolicyTemplate()
-		isStandard := err == nil
+		var boundParams *arkscript.StandardVTXOParams
+		if params, decErr := arkscript.DecodeStandardVTXOParams(
+			boundTmpl,
+		); decErr == nil {
+
+			boundParams = params
+		}
 
 		signerKey := NewSignerKey(req.SigningKey.PubKey)
 		clientTree := trees[signerKey]
@@ -3278,8 +3394,6 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 			return nil, fmt.Errorf("derive leaf amount: %w", err)
 		}
 
-		policyTemplate, _ := req.EffectivePolicyTemplate()
-
 		// Stamp the round-direct ancestry fragment now. The
 		// CommitmentTxID is filled in later by the confirmation
 		// path once evt.TxID is known; persisting with a zero
@@ -3300,9 +3414,9 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 			RoundID:        fn.Some(roundID),
 			Origin:         req.Origin,
 		}
-		if isStandard {
-			vtxo.Expiry = params.ExitDelay
-			vtxo.OperatorKey = params.OperatorKey
+		if boundParams != nil {
+			vtxo.Expiry = boundParams.ExitDelay
+			vtxo.OperatorKey = boundParams.OperatorKey
 		}
 
 		vtxos = append(vtxos, vtxo)
@@ -3342,8 +3456,7 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		)
 
 		vtxos, err := buildClientVTXOs(
-			ctx, env.OwnedScriptChecker, s.Intents, s.ClientTrees,
-			s.RoundID,
+			env.OperatorKey, s.Intents, s.ClientTrees, s.RoundID,
 		)
 		if err != nil {
 
@@ -3366,7 +3479,7 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		)
 
 		// Compute batch expiry as absolute block height.
-		sweepDelay := int32(env.OperatorTerms.SweepDelay)
+		sweepDelay := int32(env.SweepDelay)
 		batchExpiry := evt.BlockHeight + sweepDelay
 
 		// Fill in round metadata so VTXOs are complete from the

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
@@ -27,9 +28,26 @@ type ClientEnvironment struct {
 	// Wallet provides signing capabilities for round participation.
 	Wallet ClientWallet
 
-	// OperatorTerms contains the operator's parameters including sweep
-	// keys, fee targets, confirmation thresholds, and amount limits.
-	OperatorTerms *types.OperatorTerms
+	// MinConfirmations is the startup operator-terms snapshot used for
+	// confirmation registration. It is not quote-delivered.
+	MinConfirmations uint32
+
+	// OperatorKey is the operator key for this round's VTXO outputs.
+	// It is initialized from the startup snapshot for harness paths and
+	// overwritten with the server-authoritative quote value on quote
+	// acceptance.
+	OperatorKey *btcec.PublicKey
+
+	// ForfeitScript is the operator forfeit output script for this
+	// round. It is initialized from the startup snapshot for harness
+	// paths and overwritten with the server-authoritative quote value on
+	// quote acceptance.
+	ForfeitScript []byte
+
+	// SweepDelay is the sweep CSV delay for this round. It is initialized
+	// from the startup snapshot for harness paths and overwritten with
+	// the server-authoritative quote value on quote acceptance.
+	SweepDelay uint32
 
 	// ChainParams are the Bitcoin network parameters.
 	ChainParams *chaincfg.Params
@@ -88,13 +106,6 @@ type ClientEnvironment struct {
 	// a server RoundID.
 	RoundKey RoundKeyStr
 
-	// OwnedScriptChecker determines whether a pkScript belongs to
-	// the local wallet. Used by buildOwnedClientVTXOs to filter
-	// VTXOs that should be persisted locally. This replaces the
-	// IsOwner flag with a data-driven ownership check backed by
-	// the owned receive scripts store.
-	OwnedScriptChecker OwnedScriptChecker
-
 	// Now returns the current wall-clock time. evaluateQuote
 	// uses this to enforce the server-advertised
 	// `quote_expires_at`; a nil value falls back to time.Now so
@@ -137,7 +148,10 @@ func NewClientEnvironment(roundStore RoundStore, vtxoStore VTXOStore,
 		RoundStore:               roundStore,
 		VTXOStore:                vtxoStore,
 		Wallet:                   wallet,
-		OperatorTerms:            terms,
+		MinConfirmations:         terms.MinConfirmations,
+		OperatorKey:              terms.PubKey,
+		ForfeitScript:            terms.ForfeitScript,
+		SweepDelay:               terms.SweepDelay,
 		ChainParams:              chainParams,
 		MaxOperatorFee:           maxOperatorFee,
 		Log:                      logger,

@@ -262,7 +262,12 @@ type RoundClientConfig struct {
 	// VTXOStore persists off-chain balance.
 	VTXOStore VTXOStore
 
-	// OperatorTerms contains the operator's parameters.
+	// OperatorTerms contains the operator's parameters. This is the
+	// client-committed startup snapshot used for every round the actor
+	// creates; the per-round operator key, forfeit script, and sweep
+	// delay are delivered authoritatively by the server in the
+	// JoinRoundQuote, while VTXOExitDelay and MinConfirmations stay
+	// from this snapshot.
 	OperatorTerms *types.OperatorTerms
 
 	// ServerConn is a reference to the ServerConnectionActor for sending
@@ -322,17 +327,6 @@ type RoundClientConfig struct {
 	// admission), which restores the pre-#653 behavior.
 	RegistrationTimeout time.Duration
 
-	// OwnedScriptChecker determines whether a VTXO pkScript belongs
-	// to the local wallet. When nil, all VTXOs pass the ownership
-	// check (backward-compatible default for tests).
-	OwnedScriptChecker OwnedScriptChecker
-
-	// OwnedScriptRegistrar registers pkScripts as locally owned.
-	// Called when building VTXO intents so the checker can
-	// recognize them at confirmation time. When nil, registration
-	// is skipped (tests).
-	OwnedScriptRegistrar OwnedScriptRegistrar
-
 	// LedgerSink is an optional reference to the client-side
 	// ledger accounting actor. When set, the round actor forwards
 	// VTXOReceivedMsg / VTXOSentMsg / FeePaidMsg events as round
@@ -355,6 +349,12 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		actorLog = btclog.Disabled
 	}
 
+	if cfg.OperatorTerms == nil {
+		return fn.Err[*RoundClientActor](
+			fmt.Errorf("operator terms are required"),
+		)
+	}
+
 	// Create base FSM environment template with direct interface
 	// assignments. The FSM will call lib functions directly when needed
 	// (e.g., lib.NewTreeSignerSession, signing helpers). StartHeight is set
@@ -363,12 +363,14 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		RoundStore:             cfg.RoundStore,
 		VTXOStore:              cfg.VTXOStore,
 		Wallet:                 cfg.Wallet,
-		OperatorTerms:          cfg.OperatorTerms,
+		MinConfirmations:       cfg.OperatorTerms.MinConfirmations,
+		OperatorKey:            cfg.OperatorTerms.PubKey,
+		ForfeitScript:          cfg.OperatorTerms.ForfeitScript,
+		SweepDelay:             cfg.OperatorTerms.SweepDelay,
 		ChainParams:            cfg.ChainParams,
 		MaxOperatorFee:         cfg.MaxOperatorFee,
 		Log:                    actorLog,
 		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
-		OwnedScriptChecker:     cfg.OwnedScriptChecker,
 	}
 
 	if err := ValidateDelayParameters(
@@ -670,7 +672,10 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		RoundStore:             a.cfg.RoundStore,
 		VTXOStore:              a.cfg.VTXOStore,
 		Wallet:                 a.cfg.Wallet,
-		OperatorTerms:          a.cfg.OperatorTerms,
+		MinConfirmations:       a.cfg.OperatorTerms.MinConfirmations,
+		OperatorKey:            a.cfg.OperatorTerms.PubKey,
+		ForfeitScript:          a.cfg.OperatorTerms.ForfeitScript,
+		SweepDelay:             a.cfg.OperatorTerms.SweepDelay,
 		ChainParams:            a.cfg.ChainParams,
 		MaxOperatorFee:         a.cfg.MaxOperatorFee,
 		Log:                    fsmLogger,
@@ -681,7 +686,6 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 			env.ForfeitCollectionTimeout,
 		RegistrationTimeout: a.env.RegistrationTimeout,
 		RoundKey:            RoundKeyStr(roundID.KeyString()),
-		OwnedScriptChecker:  a.cfg.OwnedScriptChecker,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -718,6 +722,8 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 	error) {
 
+	operatorTerms := a.cfg.OperatorTerms
+
 	tempKey, err := NewTempRoundKey()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate temp key: %w", err)
@@ -735,7 +741,10 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		RoundStore:             a.cfg.RoundStore,
 		VTXOStore:              a.cfg.VTXOStore,
 		Wallet:                 a.cfg.Wallet,
-		OperatorTerms:          a.cfg.OperatorTerms,
+		MinConfirmations:       operatorTerms.MinConfirmations,
+		OperatorKey:            operatorTerms.PubKey,
+		ForfeitScript:          operatorTerms.ForfeitScript,
+		SweepDelay:             operatorTerms.SweepDelay,
 		ChainParams:            a.cfg.ChainParams,
 		MaxOperatorFee:         a.cfg.MaxOperatorFee,
 		Log:                    fsmLogger,
@@ -746,7 +755,6 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 			env.ForfeitCollectionTimeout,
 		RegistrationTimeout: a.env.RegistrationTimeout,
 		RoundKey:            RoundKeyStr(tempKey.KeyString()),
-		OwnedScriptChecker:  a.cfg.OwnedScriptChecker,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -1303,6 +1311,7 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 	// accumulate in the same round.
 	roundFSM := a.findAssemblingRound()
 	if roundFSM == nil {
+		var err error
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](
@@ -1385,6 +1394,10 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		)
 	}
 
+	var err error
+	roundFSM := a.findAssemblingRound()
+	createRound := roundFSM == nil
+
 	requests := make([]types.VTXORequest, 0, len(msg.Amounts))
 	for i, amount := range msg.Amounts {
 		if amount <= 0 {
@@ -1425,13 +1438,7 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		slog.Int("count", len(requests)),
 	)
 
-	var err error
-
-	// Find an existing assembling round (Idle or PendingRoundAssembly) or
-	// create a new one. This allows VTXOs to join a round that already has
-	// boarding intents being assembled.
-	roundFSM := a.findAssemblingRound()
-	if roundFSM == nil {
+	if createRound {
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](
@@ -1519,39 +1526,27 @@ func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
 		return nil, fmt.Errorf("derive owner key: %w", err)
 	}
 
-	operatorKey := a.cfg.OperatorTerms.PubKey
+	// Build the output template with the operator key left as an
+	// unbound placeholder. The client neither knows nor commits to the
+	// operator key in its signed intent; the server binds its current
+	// operator key at admission and echoes it back via the quote. The
+	// exit delay is the client-committed value from the startup operator
+	// terms snapshot.
 	expiry := a.cfg.OperatorTerms.VTXOExitDelay
 	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
-		keyDesc.PubKey, operatorKey, expiry,
+		keyDesc.PubKey, &arkscript.OperatorKeyPlaceholder, expiry,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("encode vtxo policy template: %w", err)
 	}
 
-	req := &types.VTXORequest{
+	return &types.VTXORequest{
 		PolicyTemplate: policyTemplate,
 		Amount:         amount,
 		ClientKey:      keyDesc.PubKey,
 		OwnerKey:       *keyDesc,
 		Origin:         origin,
-	}
-
-	if a.cfg.OwnedScriptRegistrar != nil {
-		pkScript, err := req.EffectivePkScript()
-		if err != nil {
-			return nil, fmt.Errorf("derive vtxo pkScript: %w", err)
-		}
-
-		regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript(
-			ctx, pkScript, *keyDesc,
-		)
-		if regErr != nil {
-			return nil, fmt.Errorf("register owned script: %w",
-				regErr)
-		}
-	}
-
-	return req, nil
+	}, nil
 }
 
 // handleRoundJoined handles the RoundJoined event which requires special
@@ -2608,25 +2603,6 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	}
 
 	vtxoReq := buildVTXORequestFromRefresh(req)
-	if a.cfg.OwnedScriptRegistrar != nil && vtxoReq.HasLocalOwner() {
-		pkScript, err := vtxoReq.EffectivePkScript()
-		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("derive refresh vtxo pkScript: %w",
-					err),
-			)
-		}
-
-		regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript(
-			ctx, pkScript, vtxoReq.OwnerKey,
-		)
-		if regErr != nil {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("register refresh owned script: %w",
-					regErr),
-			)
-		}
-	}
 
 	// Bundle the forfeit input and new VTXO output atomically.
 	pkg := &IntentPackage{Intents: Intents{
@@ -2688,36 +2664,10 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 		}
 	}
 
-	// Register locally-owned VTXO pkScripts from the intent so
-	// the OwnedScriptChecker recognizes them at confirmation
-	// time. Local ownership is carried explicitly by the
-	// presence of an owner descriptor rather than inferred from
-	// a non-zero key locator.
-	if a.cfg.OwnedScriptRegistrar != nil {
-		for _, vtxo := range req.Package.VTXOs {
-			if !vtxo.HasLocalOwner() {
-				continue
-			}
-
-			pkScript, err := vtxo.EffectivePkScript()
-			if err != nil {
-				return fn.Err[actormsg.RoundActorResp](
-					fmt.Errorf("derive owned script "+
-						"pkScript: %w", err),
-				)
-			}
-
-			regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript( //nolint:ll
-				ctx, pkScript, vtxo.OwnerKey,
-			)
-			if regErr != nil {
-				return fn.Err[actormsg.RoundActorResp](
-					fmt.Errorf("register owned script: %w",
-						regErr),
-				)
-			}
-		}
-	}
+	// Ownership of round-produced VTXOs is determined at confirmation
+	// time by matching each leaf's pkScript against the local-owner
+	// intent requests (buildClientVTXOs), so there is no separate
+	// owned-script registration step here.
 
 	// Feed the pre-composed package to the FSM.
 	err := a.askEventAndProcessOutbox(ctx, roundFSM, req.Package)
@@ -2815,6 +2765,10 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 		)
 	}
 
+	var err error
+	roundFSM := a.findAssemblingRound()
+	createRound := roundFSM == nil
+
 	// Build VTXO requests from the provided amounts.
 	requests := make([]types.VTXORequest, 0, len(cmd.Amounts))
 	for i, amount := range cmd.Amounts {
@@ -2883,9 +2837,7 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 		boardingIntents = append(boardingIntents, intent)
 	}
 
-	// Find an existing assembling round or create a new one.
-	roundFSM := a.findAssemblingRound()
-	if roundFSM == nil {
+	if createRound {
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](

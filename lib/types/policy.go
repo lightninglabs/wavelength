@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
@@ -87,7 +88,11 @@ func (r *VTXORequest) DecodeStandardPolicyTemplate() (
 }
 
 // EffectivePkScript returns the requested output script derived from the
-// semantic policy.
+// semantic policy. Note that the client builds round-output templates with
+// the operator key left as an unbound placeholder, so this returns the
+// placeholder-derived script; use BoundPkScript when the concrete
+// operator-bound script is required (quote echo check, co-sign validation,
+// persistence).
 func (r *VTXORequest) EffectivePkScript() ([]byte, error) {
 	template, err := r.DecodePolicyTemplate()
 	if err != nil {
@@ -95,4 +100,38 @@ func (r *VTXORequest) EffectivePkScript() ([]byte, error) {
 	}
 
 	return template.PkScript()
+}
+
+// BoundPolicyTemplate decodes the request's placeholder policy template,
+// binds operatorKey into every operator-key placeholder, and returns the
+// resulting concrete template. The client builds round outputs with the
+// unbound operator-key placeholder; the server binds its current operator
+// key at admission and tells the client which key it used via the quote.
+// The client uses this to re-derive the concrete output it must match
+// against the server-built tree leaves and to persist the concrete bound
+// template on its VTXO records.
+func (r *VTXORequest) BoundPolicyTemplate(operatorKey *btcec.PublicKey) (
+	*arkscript.PolicyTemplate, error) {
+
+	template, err := r.DecodePolicyTemplate()
+	if err != nil {
+		return nil, err
+	}
+
+	return template.BindOperatorKey(operatorKey)
+}
+
+// BoundPkScript decodes the request's placeholder policy template, binds
+// operatorKey into it, and returns the resulting concrete P2TR output
+// script. This is the script the client byte-matches against the
+// server-built tree leaf for this VTXO at co-signing time.
+func (r *VTXORequest) BoundPkScript(operatorKey *btcec.PublicKey) ([]byte,
+	error) {
+
+	bound, err := r.BoundPolicyTemplate(operatorKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return bound.PkScript()
 }

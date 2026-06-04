@@ -22,7 +22,6 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
-	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -149,29 +148,6 @@ func (m *MockVTXOStore) MarkVTXOSpent(ctx context.Context,
 
 // Compile-time check that MockVTXOStore implements VTXOStore.
 var _ VTXOStore = (*MockVTXOStore)(nil)
-
-// mockOwnedScriptChecker is an OwnedScriptChecker backed by a set of
-// known owned pkScripts.
-type mockOwnedScriptChecker struct {
-	owned map[string]bool
-}
-
-func newMockOwnedScriptChecker(ownedScripts ...[]byte) *mockOwnedScriptChecker {
-	m := &mockOwnedScriptChecker{owned: make(map[string]bool)}
-	for _, s := range ownedScripts {
-		m.owned[string(s)] = true
-	}
-
-	return m
-}
-
-func (m *mockOwnedScriptChecker) IsOwnedScript(_ context.Context,
-	pkScript []byte) fn.Result[bool] {
-
-	return fn.Ok(m.owned[string(pkScript)])
-}
-
-var _ OwnedScriptChecker = (*mockOwnedScriptChecker)(nil)
 
 // MockClientWallet implements ClientWallet (input.MuSig2Signer + input.Signer)
 // using mock.Mock for testing.
@@ -585,15 +561,24 @@ func (h *boardingTestHarness) newTestVTXORequestForIntent(
 
 	h.t.Helper()
 
-	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
-		h.clientPubKey, h.operatorPubKey, testExitDelay,
+	// Mirror production: the intent commits to the operator-key
+	// placeholder (the client neither knows nor signs a concrete operator
+	// key); the server binds its current key at admission. The expected
+	// output pkScript is the BOUND one (placeholder -> h.operatorPubKey),
+	// which is what the server stamps and what the tree leaf carries.
+	sentinelTemplate, err := arkscript.StandardVTXOTemplate(
+		h.clientPubKey, &arkscript.OperatorKeyPlaceholder,
+		testExitDelay,
 	)
 	require.NoError(h.t, err)
 
-	template, err := arkscript.DecodePolicyTemplate(policyTemplate)
+	policyTemplate, err := sentinelTemplate.Encode()
 	require.NoError(h.t, err)
 
-	pkScript, err := template.PkScript()
+	boundTemplate, err := sentinelTemplate.BindOperatorKey(h.operatorPubKey)
+	require.NoError(h.t, err)
+
+	pkScript, err := boundTemplate.PkScript()
 	require.NoError(h.t, err)
 
 	signingKey := keychain.KeyDescriptor{
@@ -743,11 +728,15 @@ func (h *boardingTestHarness) newTestVTXOTreeForIntents(
 	var totalAmount btcutil.Amount
 	leaves := make([]tree.LeafDescriptor, len(vtxoReqs))
 	for i, vtxoReq := range vtxoReqs {
-		pkScript, err := vtxoReq.EffectivePkScript()
-		require.NoError(h.t, err)
-
+		// The tree leaf carries the BOUND output pkScript (the operator
+		// key bound into the placeholder), simulating what the server
+		// builds. vtxoReq.PkScript is that bound script; the intent's
+		// PolicyTemplate still holds the unbound placeholder, so
+		// co-sign validation re-binds the quote operator key and
+		// byte-matches this leaf — exercising the real
+		// placeholder->bind path.
 		leaves[i] = tree.LeafDescriptor{
-			PkScript:    pkScript,
+			PkScript:    vtxoReq.PkScript,
 			Amount:      vtxoReq.Amount,
 			CoSignerKey: h.clientPubKey,
 		}
@@ -939,6 +928,41 @@ func (h *boardingTestHarness) newCommitmentTxReceivedState(roundID RoundID,
 			VTXOs:    vtxoReqs,
 		},
 		ClientTrees: make(map[SignerKey]*tree.Tree),
+
+		// An admitted round always carries a quote whose operator key
+		// is the one the server bound into the VTXO outputs; co-sign
+		// validation re-derives the expected leaf pkScript from it.
+		Quote: h.newTestQuoteForVTXOs(vtxoReqs),
+	}
+}
+
+// newTestQuoteForVTXOs builds a ClientQuote that mirrors what an admitted
+// (QUOTE_OK) round always carries: the server-bound operator key plus a
+// positional VTXOQuote per request whose amount/pkScript/recipient echo the
+// intent. Co-sign validation indexes VTXOQuotes positionally
+// (quoteVTXOAmount), so any state that drives a CommitmentTxBuilt event into
+// co-sign needs a quote populated this way rather than an empty one.
+func (h *boardingTestHarness) newTestQuoteForVTXOs(
+	vtxoReqs []types.VTXORequest) *ClientQuote {
+
+	h.t.Helper()
+
+	vtxoQuotes := make([]VTXOQuoteEntry, len(vtxoReqs))
+	for i, req := range vtxoReqs {
+		// Echo the BOUND output pkScript (req.PkScript), as the server
+		// does — the client re-binds the quote operator key into its
+		// placeholder template and byte-matches against this.
+		vtxoQuotes[i] = VTXOQuoteEntry{
+			PkScript:  req.PkScript,
+			AmountSat: int64(req.Amount),
+			RecipientKey: req.SigningKey.PubKey.
+				SerializeCompressed(),
+		}
+	}
+
+	return &ClientQuote{
+		OperatorKey: h.operatorPubKey,
+		VTXOQuotes:  vtxoQuotes,
 	}
 }
 

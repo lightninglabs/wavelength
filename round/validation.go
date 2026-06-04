@@ -11,6 +11,46 @@ import (
 // MaxReasonableDelay is the maximum reasonable delay in blocks (~1 year).
 const MaxReasonableDelay = 52560
 
+const (
+	// MinVTXOExitDelay is the minimum CSV exit delay (in blocks) the
+	// client will accept on a VTXO output it co-signs. A zero exit
+	// delay would make the unilateral-exit path immediately spendable
+	// and is therefore never valid; 1 is the smallest meaningful CSV
+	// relative timelock. This is a sanity floor on the client's own
+	// committed value (the exit delay comes from the client's startup
+	// operator-terms snapshot, not the server), guarding against a
+	// mis-built or corrupted template before the client co-signs.
+	MinVTXOExitDelay = 1
+
+	// MaxVTXOExitDelay is the maximum CSV exit delay (in blocks) the
+	// client will accept on a VTXO output. It reuses MaxReasonableDelay
+	// (~1 year of blocks): a delay beyond this would lock the holder's
+	// unilateral-exit path for an unreasonable span and almost
+	// certainly signals a mis-built template rather than an intended
+	// policy.
+	MaxVTXOExitDelay = MaxReasonableDelay
+)
+
+// validateVTXOExitDelayBounds checks that a committed VTXO exit delay falls
+// within the client-accepted [MinVTXOExitDelay, MaxVTXOExitDelay] range. The
+// exit delay is the client's own committed value (from its startup snapshot,
+// carried in the placeholder template); this is a defensive sanity guard run
+// at co-signing time so a corrupted or mis-built template aborts the round
+// before any forfeit is released rather than producing an unspendable or
+// absurdly-locked VTXO.
+func validateVTXOExitDelayBounds(exitDelay uint32) error {
+	if exitDelay < MinVTXOExitDelay {
+		return fmt.Errorf("VTXO exit delay %d below minimum %d",
+			exitDelay, MinVTXOExitDelay)
+	}
+	if exitDelay > MaxVTXOExitDelay {
+		return fmt.Errorf("VTXO exit delay %d exceeds maximum %d",
+			exitDelay, MaxVTXOExitDelay)
+	}
+
+	return nil
+}
+
 // ValidateBoardingScript validates that a boarding tapscript has the
 // expected structure with collaborative and timeout paths.
 func ValidateBoardingScript(tapscript *waddrmgr.Tapscript,

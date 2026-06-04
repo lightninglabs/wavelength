@@ -496,28 +496,6 @@ type ClientVTXO struct {
 	CreatedHeight int32
 }
 
-// OwnedScriptChecker determines whether a pkScript belongs to the local
-// wallet. Implementations typically check against the persisted set of
-// registered receive scripts (the same store used for OOR receives).
-type OwnedScriptChecker interface {
-	// IsOwnedScript returns whether the pkScript is registered as
-	// an owned receive script in the local wallet. Returns an
-	// error if the store lookup fails for reasons other than the
-	// script not being found.
-	IsOwnedScript(ctx context.Context, pkScript []byte) fn.Result[bool]
-}
-
-// OwnedScriptRegistrar registers a pkScript as locally owned. The
-// round actor calls this when building VTXO intents (boarding,
-// refresh, change) so the OwnedScriptChecker can recognize them
-// when the round confirms.
-type OwnedScriptRegistrar interface {
-	// RegisterOwnedScript persists a pkScript + owner key as
-	// locally owned.
-	RegisterOwnedScript(ctx context.Context, pkScript []byte,
-		ownerKey keychain.KeyDescriptor) error
-}
-
 // VTXOStore defines the storage interface for off-chain balance management.
 // VTXOs (Virtual Transaction Outputs) are created when rounds complete
 // successfully and represent the client's off-chain balance.

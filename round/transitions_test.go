@@ -44,16 +44,22 @@ func mkReq(t *testing.T, op *btcec.PublicKey, seed byte, owned bool) reqTree {
 	signingPriv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
-		ownerPriv.PubKey(), op, testExitDelay,
+	// Mirror production: the intent commits to the operator-key
+	// placeholder; the expected output pkScript is the BOUND one
+	// (placeholder -> op), which is what the server stamps and the tree
+	// leaf carries. buildClientVTXOs re-binds op to reproduce it.
+	sentinelTemplate, err := arkscript.StandardVTXOTemplate(
+		ownerPriv.PubKey(), &arkscript.OperatorKeyPlaceholder,
+		testExitDelay,
 	)
 	require.NoError(t, err)
 
-	template, err := arkscript.DecodePolicyTemplate(
-		policyTemplate,
-	)
+	policyTemplate, err := sentinelTemplate.Encode()
 	require.NoError(t, err)
-	pkScript, err := template.PkScript()
+
+	boundTemplate, err := sentinelTemplate.BindOperatorKey(op)
+	require.NoError(t, err)
+	pkScript, err := boundTemplate.PkScript()
 	require.NoError(t, err)
 
 	req := types.VTXORequest{
@@ -868,9 +874,6 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 
 		h := newTestHarness(t)
 
-		// Set minimum operator fee to 5,000 sats.
-		h.env.OperatorTerms.MinOperatorFee = btcutil.Amount(5000)
-
 		// Create intent with 50,000 sats.
 		intent := h.newTestBoardingIntent()
 		require.Equal(t, btcutil.Amount(50000), intent.ChainInfo.Amount)
@@ -1126,6 +1129,12 @@ func TestRoundJoinedState(t *testing.T) {
 				Boarding: []BoardingIntent{intent},
 				VTXOs:    []types.VTXORequest{vtxoReq},
 			},
+
+			// An admitted round always carries a quote whose
+			// operator key is propagated into co-sign validation.
+			Quote: h.newTestQuoteForVTXOs(
+				[]types.VTXORequest{vtxoReq},
+			),
 		})
 
 		vtxtTree, _ := h.newTestVTXOTree(1)
@@ -1275,6 +1284,10 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 				VTXOs:    vtxos,
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
+
+			// An admitted round always carries a quote whose
+			// operator key is propagated into co-sign validation.
+			Quote: h.newTestQuoteForVTXOs(vtxos),
 		}
 		h.withState(state)
 
@@ -1333,6 +1346,12 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 				},
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
+
+			// An admitted round always carries a quote whose
+			// operator key is propagated into co-sign validation.
+			Quote: h.newTestQuoteForVTXOs(
+				[]types.VTXORequest{vtxoReq},
+			),
 		}
 		h.withState(state)
 
@@ -1402,6 +1421,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
 			Quote: &ClientQuote{
+				OperatorKey:    h.operatorPubKey,
 				OperatorFeeSat: 1500,
 				VTXOQuotes: []VTXOQuoteEntry{{
 					AmountSat: quotedAmount,
@@ -1479,6 +1499,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
 			Quote: &ClientQuote{
+				OperatorKey:    h.operatorPubKey,
 				OperatorFeeSat: 1500,
 				VTXOQuotes: []VTXOQuoteEntry{{
 					AmountSat: quotedAmount,
@@ -1570,6 +1591,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
 			Quote: &ClientQuote{
+				OperatorKey:    h.operatorPubKey,
 				OperatorFeeSat: 1500,
 				VTXOQuotes: []VTXOQuoteEntry{{
 					AmountSat: int64(vtxoReq.Amount),
@@ -2250,10 +2272,9 @@ func TestInputSigSentState(t *testing.T) {
 		)
 
 		// Simulate a foreign-owned VTXO: drop the local owner
-		// descriptor entirely, and install a checker that also
-		// rejects the pkScript.
+		// descriptor entirely. Ownership is now intent-driven, so a
+		// request with no local owner is never persisted.
 		state.Intents.VTXOs[0].OwnerKey = keychain.KeyDescriptor{}
-		h.env.OwnedScriptChecker = newMockOwnedScriptChecker()
 
 		h.withState(state)
 
@@ -2332,8 +2353,7 @@ func TestInputSigSentState(t *testing.T) {
 		ownedReq, ownedTree := owned.req, owned.tree
 
 		vtxos, err := buildClientVTXOs(
-			t.Context(), nil,
-			Intents{
+			h.operatorPubKey, Intents{
 				VTXOs: []types.VTXORequest{
 					foreignReq, ownedReq,
 				},
@@ -2373,7 +2393,7 @@ func TestInputSigSentState(t *testing.T) {
 		local.req.OwnerKey.KeyLocator = keychain.KeyLocator{}
 
 		vtxos, err := buildClientVTXOs(
-			t.Context(), nil,
+			h.operatorPubKey,
 			Intents{VTXOs: []types.VTXORequest{local.req}},
 			map[SignerKey]*tree.Tree{NewSignerKey(
 				local.req.SigningKey.PubKey,
@@ -2405,7 +2425,7 @@ func TestInputSigSentState(t *testing.T) {
 			)
 
 			vtxos, err := buildClientVTXOs(
-				t.Context(), nil,
+				h.operatorPubKey,
 				Intents{VTXOs: []types.VTXORequest{local.req}},
 				map[SignerKey]*tree.Tree{NewSignerKey(
 					local.req.SigningKey.PubKey,
@@ -2734,6 +2754,10 @@ func TestBoardingFlowRoundJoinedToPartialSigsSent(t *testing.T) {
 			Boarding: []BoardingIntent{intent},
 			VTXOs:    []types.VTXORequest{vtxoReq},
 		},
+
+		// An admitted round always carries a quote whose operator key
+		// is propagated into co-sign validation.
+		Quote: h.newTestQuoteForVTXOs([]types.VTXORequest{vtxoReq}),
 	})
 
 	// Step 1: RoundJoined → CommitmentTxReceived.
@@ -3518,6 +3542,9 @@ func TestRefreshOnlyRoundValidation(t *testing.T) {
 		},
 		Intents:     emptyIntents,
 		ClientTrees: make(map[SignerKey]*tree.Tree),
+		Quote: &ClientQuote{
+			OperatorKey: h.operatorPubKey,
+		},
 	}
 	h.withState(state)
 
