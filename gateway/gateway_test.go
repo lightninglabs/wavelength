@@ -8,95 +8,99 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBrowserHeadersRequiresAllowedOrigin(t *testing.T) {
+const metaHeader = "x-darepod-auth"
+
+// TestBrowserHeaders exercises the CORS middleware across browser preflight,
+// trusted/wildcard origins, non-browser passthrough, and allowed-origin
+// forwarding of real (non-OPTIONS) requests.
+func TestBrowserHeaders(t *testing.T) {
 	t.Parallel()
 
-	var called bool
-	handler := BrowserHeaders(
-		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-			called = true
-		}),
-		nil,
-	)
-
-	req := httptest.NewRequest(http.MethodOptions, "/", nil)
-	req.Header.Set("Origin", "https://wallet.example")
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusForbidden, rec.Code)
-	require.False(t, called)
-}
-
-func TestBrowserHeadersAllowsTrustedOrigin(t *testing.T) {
-	t.Parallel()
-
-	handler := BrowserHeaders(
-		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-			t.Fatalf("preflight must not reach wrapped handler")
-		}),
-		[]string{
+	cases := []struct {
+		name          string
+		origins       []string
+		method        string
+		origin        string
+		wantCalled    bool
+		wantCode      int
+		wantAllowOrig string
+	}{{
+		name:     "rejects unlisted origin",
+		method:   http.MethodOptions,
+		origin:   "https://wallet.example",
+		wantCode: http.StatusForbidden,
+	}, {
+		name: "allows trusted origin",
+		origins: []string{
 			"https://wallet.example",
-		}, "x-darepod-auth",
-	)
-
-	req := httptest.NewRequest(http.MethodOptions, "/", nil)
-	req.Header.Set("Origin", "https://wallet.example")
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusNoContent, rec.Code)
-	require.Equal(
-		t, "https://wallet.example",
-		rec.Header().Get("Access-Control-Allow-Origin"),
-	)
-	require.Contains(
-		t, rec.Header().Get("Access-Control-Allow-Headers"),
-		"x-darepod-auth",
-	)
-}
-
-func TestBrowserHeadersAllowsWildcardOrigin(t *testing.T) {
-	t.Parallel()
-
-	handler := BrowserHeaders(
-		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-			t.Fatalf("preflight must not reach wrapped handler")
-		}),
-		[]string{
+		},
+		method:        http.MethodOptions,
+		origin:        "https://wallet.example",
+		wantCode:      http.StatusNoContent,
+		wantAllowOrig: "https://wallet.example",
+	}, {
+		name: "allows wildcard origin",
+		origins: []string{
 			"*",
-		}, "x-darepod-auth",
-	)
+		},
+		method:        http.MethodOptions,
+		origin:        "https://any-wallet.example",
+		wantCode:      http.StatusNoContent,
+		wantAllowOrig: "*",
+	}, {
+		name:       "passes non-browser requests",
+		method:     http.MethodPost,
+		wantCalled: true,
+	}, {
+		name: "forwards allowed non-options request",
+		origins: []string{
+			"https://wallet.example",
+		},
+		method:        http.MethodPost,
+		origin:        "https://wallet.example",
+		wantCalled:    true,
+		wantAllowOrig: "https://wallet.example",
+	}}
 
-	req := httptest.NewRequest(http.MethodOptions, "/", nil)
-	req.Header.Set("Origin", "https://any-wallet.example")
-	rec := httptest.NewRecorder()
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	handler.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusNoContent, rec.Code)
-	require.Equal(
-		t, "*", rec.Header().Get("Access-Control-Allow-Origin"),
-	)
-	require.Contains(
-		t, rec.Header().Get("Access-Control-Allow-Headers"),
-		"x-darepod-auth",
-	)
-}
+			var called bool
+			h := BrowserHeaders(
+				http.HandlerFunc(func(http.ResponseWriter,
+					*http.Request) {
 
-func TestBrowserHeadersPassesNonBrowserRequests(t *testing.T) {
-	t.Parallel()
+					called = true
+				}),
+				tc.origins,
+				metaHeader,
+			)
 
-	var called bool
-	handler := BrowserHeaders(
-		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-			called = true
-		}),
-		nil,
-	)
+			req := httptest.NewRequest(tc.method, "/", nil)
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-	require.True(t, called)
+			require.Equal(t, tc.wantCalled, called)
+			if tc.wantCode != 0 {
+				require.Equal(t, tc.wantCode, rec.Code)
+			}
+			if tc.wantAllowOrig == "" {
+				return
+			}
+			hdr := rec.Header()
+			require.Equal(
+				t, tc.wantAllowOrig,
+				hdr.Get("Access-Control-Allow-Origin"),
+			)
+			require.Contains(
+				t, hdr.Get("Access-Control-Allow-Headers"),
+				metaHeader,
+			)
+		})
+	}
 }
