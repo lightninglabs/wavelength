@@ -246,92 +246,104 @@ func TestRegisterSpendSurvivesCallerContextCancellation(t *testing.T) {
 	reg.Cancel()
 }
 
-func TestSubmitPackageUnsupported(t *testing.T) {
-	t.Parallel()
-
-	backend := NewLNDBackend(
-		&stubNotifier{}, &stubFeeEstimator{}, &stubBroadcaster{},
-	)
-
-	err := backend.SubmitPackage(
-		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)}, wire.NewMsgTx(3),
-	)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "not supported")
-}
-
-func TestSubmitPackageSuccess(t *testing.T) {
-	t.Parallel()
-
-	backend := NewLNDBackend(
-		&stubNotifier{}, &stubFeeEstimator{}, &stubBroadcaster{},
-	)
-	backend.SetPackageSubmitter(&stubPackageSubmitter{
-		result: &btcjson.SubmitPackageResult{
-			PackageMsg: "success",
-			TxResults: map[string]btcjson.SubmitPackageTxResult{
-				"wtxid-1": {
-					TxID: chainhash.Hash{1},
+// pkgResult builds a SubmitPackageResult with one tx entry carrying the given
+// (optional) reject reason. A nil txErr yields a clean accepted entry.
+func pkgResult(msg string, txErr *string) *btcjson.SubmitPackageResult {
+	return &btcjson.SubmitPackageResult{
+		PackageMsg: msg,
+		TxResults: map[string]btcjson.SubmitPackageTxResult{
+			"wtxid-1": {
+				TxID: chainhash.Hash{
+					1,
 				},
+				Error: txErr,
 			},
 		},
-	})
-
-	err := backend.SubmitPackage(
-		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)}, wire.NewMsgTx(3),
-	)
-	require.NoError(t, err)
+	}
 }
 
-func TestSubmitPackageRejectsRejectedTransactions(t *testing.T) {
+// TestSubmitPackage exercises SubmitPackage across the absent submitter, clean
+// success, per-tx reject, and package-level reject (no per-tx errors) cases.
+// The last row guards against a "%!w(<nil>)" verb leak and a preserved
+// PackageMsg. wantErr substrings assert failure; an empty wantErr asserts
+// success; notErr substrings must be absent.
+func TestSubmitPackage(t *testing.T) {
 	t.Parallel()
 
-	rejectReason := "insufficient fee"
-	backend := NewLNDBackend(
-		&stubNotifier{}, &stubFeeEstimator{}, &stubBroadcaster{},
-	)
-	backend.SetPackageSubmitter(&stubPackageSubmitter{
-		result: &btcjson.SubmitPackageResult{
-			PackageMsg: "success",
-			TxResults: map[string]btcjson.SubmitPackageTxResult{
-				"wtxid-1": {
-					TxID:  chainhash.Hash{1},
-					Error: &rejectReason,
-				},
+	reject := "insufficient fee"
+
+	tests := []struct {
+		name      string
+		submitter *stubPackageSubmitter
+		wantErr   []string
+		notErr    []string
+	}{{
+		name: "unsupported without submitter",
+		wantErr: []string{
+			"not supported",
+		},
+	}, {
+		name: "success",
+		submitter: &stubPackageSubmitter{
+			result: pkgResult("success", nil),
+		},
+	}, {
+		name: "per-tx reject",
+		submitter: &stubPackageSubmitter{
+			result: pkgResult("success", &reject),
+		},
+		wantErr: []string{
+			"insufficient fee",
+		},
+	}, {
+		name: "package reject without tx errors",
+		submitter: &stubPackageSubmitter{
+			result: &btcjson.SubmitPackageResult{
+				PackageMsg: "package-mempool-limits",
+				TxResults:  map[string]btcjson.SubmitPackageTxResult{}, //nolint:ll
 			},
 		},
-	})
-
-	err := backend.SubmitPackage(
-		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)}, wire.NewMsgTx(3),
-	)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "insufficient fee")
-}
-
-// TestSubmitPackageRejectedWithoutTxErrors verifies that a package-level
-// rejection without any per-tx errors produces a clean error message (not
-// "%!w(<nil>)") and still preserves the PackageMsg for diagnostics.
-func TestSubmitPackageRejectedWithoutTxErrors(t *testing.T) {
-	t.Parallel()
-
-	backend := NewLNDBackend(
-		&stubNotifier{}, &stubFeeEstimator{}, &stubBroadcaster{},
-	)
-	backend.SetPackageSubmitter(&stubPackageSubmitter{
-		result: &btcjson.SubmitPackageResult{
-			PackageMsg: "package-mempool-limits",
-			TxResults:  map[string]btcjson.SubmitPackageTxResult{},
+		wantErr: []string{
+			"package not accepted",
+			"package-mempool-limits",
 		},
-	})
+		notErr: []string{
+			"%!w(<nil>)",
+		},
+	}}
 
-	err := backend.SubmitPackage(
-		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)}, wire.NewMsgTx(3),
-	)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "package not accepted")
-	require.Contains(t, err.Error(), "package-mempool-limits")
-	require.NotContains(t, err.Error(), "%!w(<nil>)")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := NewLNDBackend(
+				&stubNotifier{}, &stubFeeEstimator{},
+				&stubBroadcaster{},
+			)
+			if tc.submitter != nil {
+				backend.SetPackageSubmitter(tc.submitter)
+			}
+
+			err := backend.SubmitPackage(
+				t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)},
+				wire.NewMsgTx(3),
+			)
+
+			if len(tc.wantErr) == 0 {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.Error(t, err)
+			for _, want := range tc.wantErr {
+				require.Contains(t, err.Error(), want)
+			}
+			for _, not := range tc.notErr {
+				require.NotContains(t, err.Error(), not)
+			}
+		})
+	}
 }
 
 const (
