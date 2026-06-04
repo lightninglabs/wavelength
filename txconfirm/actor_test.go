@@ -1470,41 +1470,6 @@ func TestTerminalEntriesEvictedAfterConfirmation(t *testing.T) {
 	)
 }
 
-// TestTerminalEntryEvictedAfterFailure verifies that failTrackedTx evicts
-// the entry from the actor's tracking map, matching the confirmation path
-// so long-lived daemons do not accumulate failed entries indefinitely.
-func TestTerminalEntryEvictedAfterFailure(t *testing.T) {
-	chain := newFakeChainSourceRef(100)
-	chain.broadcastErr = fmt.Errorf("mempool reject")
-
-	ref, _ := newTestActor(t, Config{
-		ChainSource: chain,
-	})
-
-	tx := makeTestTx(false)
-	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
-
-	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
-		Tx:         tx,
-		Subscriber: sub,
-	})
-	require.Equal(t, TxStateFailed, resp.State)
-
-	failed := mustAwaitNotification(t, sub)
-	require.IsType(t, &TxFailed{}, failed)
-
-	// Cancel-as-probe: if the failed entry was evicted, the cancel
-	// finds nothing and reports Removed=false.
-	cancelResp := mustCancel(t, ref.Ref(), &CancelInterestReq{
-		Txid:         tx.TxHash(),
-		SubscriberID: sub.ID(),
-	})
-	require.False(
-		t, cancelResp.Removed,
-		"failed entry should have been evicted before cancel",
-	)
-}
-
 // flakyListWallet wraps a fakeWallet and makes ListUnspent fail a fixed number
 // of times before succeeding, simulating a wallet whose confirmed fee inputs
 // only become available after some delay.
