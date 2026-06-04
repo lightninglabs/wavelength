@@ -9,9 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestComposeWithSiblingRoot tests basic composition functionality.
-func TestComposeWithSiblingRoot(t *testing.T) {
-	t.Parallel()
+// newTestVTXOPolicy builds the standard owner/operator VTXO policy reused
+// across the composition tests.
+func newTestVTXOPolicy(t *testing.T) *VTXOPolicy {
+	t.Helper()
 
 	ownerKey, _ := testutils.CreateKey(1)
 	operatorKey, _ := testutils.CreateKey(2)
@@ -19,14 +20,43 @@ func TestComposeWithSiblingRoot(t *testing.T) {
 	policy, err := NewVTXOPolicy(ownerKey, operatorKey, 100)
 	require.NoError(t, err)
 
-	// Create a fake external root (e.g., from Taproot Assets).
-	var externalRoot chainhash.Hash
-	copy(externalRoot[:], []byte("external_commitment_root_hash123"))
+	return policy
+}
 
+// rootFromSeed packs a 32-byte external root from a string seed.
+func rootFromSeed(seed string) chainhash.Hash {
+	var externalRoot chainhash.Hash
+	copy(externalRoot[:], []byte(seed))
+
+	return externalRoot
+}
+
+// composeWithRoot composes the policy with an external root derived from the
+// given seed, asserting success.
+func composeWithRoot(t *testing.T, policy *VTXOPolicy,
+	seed string) (*ComposedPolicy, chainhash.Hash) {
+
+	t.Helper()
+
+	externalRoot := rootFromSeed(seed)
 	composed, err := ComposeWithSiblingRoot(
 		policy.CompiledPolicy, externalRoot,
 	)
 	require.NoError(t, err)
+
+	return composed, externalRoot
+}
+
+// TestComposeWithSiblingRoot tests basic composition functionality.
+func TestComposeWithSiblingRoot(t *testing.T) {
+	t.Parallel()
+
+	policy := newTestVTXOPolicy(t)
+
+	// Create a fake external root (e.g., from Taproot Assets).
+	composed, externalRoot := composeWithRoot(
+		t, policy, "external_commitment_root_hash123",
+	)
 	require.NotNil(t, composed)
 
 	// Verify the composed policy has the correct roots.
@@ -43,19 +73,10 @@ func TestComposeWithSiblingRoot(t *testing.T) {
 func TestComposeWithSiblingRootOutputKey(t *testing.T) {
 	t.Parallel()
 
-	ownerKey, _ := testutils.CreateKey(1)
-	operatorKey, _ := testutils.CreateKey(2)
-
-	policy, err := NewVTXOPolicy(ownerKey, operatorKey, 100)
-	require.NoError(t, err)
-
-	var externalRoot chainhash.Hash
-	copy(externalRoot[:], []byte("test_external_root_32_bytes_pad!"))
-
-	composed, err := ComposeWithSiblingRoot(
-		policy.CompiledPolicy, externalRoot,
+	policy := newTestVTXOPolicy(t)
+	composed, _ := composeWithRoot(
+		t, policy, "test_external_root_32_bytes_pad!",
 	)
-	require.NoError(t, err)
 
 	// Output keys should differ.
 	originalKey := policy.OutputKey()
@@ -72,19 +93,10 @@ func TestComposeWithSiblingRootOutputKey(t *testing.T) {
 func TestComposeWithSiblingRootSpendInfo(t *testing.T) {
 	t.Parallel()
 
-	ownerKey, _ := testutils.CreateKey(1)
-	operatorKey, _ := testutils.CreateKey(2)
-
-	policy, err := NewVTXOPolicy(ownerKey, operatorKey, 100)
-	require.NoError(t, err)
-
-	var externalRoot chainhash.Hash
-	copy(externalRoot[:], []byte("test_external_root_32_bytes_pad!"))
-
-	composed, err := ComposeWithSiblingRoot(
-		policy.CompiledPolicy, externalRoot,
+	policy := newTestVTXOPolicy(t)
+	composed, externalRoot := composeWithRoot(
+		t, policy, "test_external_root_32_bytes_pad!",
 	)
-	require.NoError(t, err)
 
 	// Get spend info for the collab leaf.
 	info, err := composed.SpendInfo(0)
@@ -114,24 +126,10 @@ func TestComposeWithSiblingRootSpendInfo(t *testing.T) {
 func TestComposeWithSiblingRootDeterministic(t *testing.T) {
 	t.Parallel()
 
-	ownerKey, _ := testutils.CreateKey(1)
-	operatorKey, _ := testutils.CreateKey(2)
-
-	policy, err := NewVTXOPolicy(ownerKey, operatorKey, 100)
-	require.NoError(t, err)
-
-	var externalRoot chainhash.Hash
-	copy(externalRoot[:], []byte("deterministic_test_root_32bytes!"))
-
-	composed1, err := ComposeWithSiblingRoot(
-		policy.CompiledPolicy, externalRoot,
-	)
-	require.NoError(t, err)
-
-	composed2, err := ComposeWithSiblingRoot(
-		policy.CompiledPolicy, externalRoot,
-	)
-	require.NoError(t, err)
+	policy := newTestVTXOPolicy(t)
+	seed := "deterministic_test_root_32bytes!"
+	composed1, _ := composeWithRoot(t, policy, seed)
+	composed2, _ := composeWithRoot(t, policy, seed)
 
 	// Both should produce identical results.
 	require.Equal(t, composed1.CombinedRoot, composed2.CombinedRoot)
@@ -156,26 +154,15 @@ func TestComposeWithSiblingRootNilPolicy(t *testing.T) {
 func TestComposedRootOrdering(t *testing.T) {
 	t.Parallel()
 
-	ownerKey, _ := testutils.CreateKey(1)
-	operatorKey, _ := testutils.CreateKey(2)
-
-	policy, err := NewVTXOPolicy(ownerKey, operatorKey, 100)
-	require.NoError(t, err)
+	policy := newTestVTXOPolicy(t)
 
 	// Create two different external roots.
-	var extRoot1, extRoot2 chainhash.Hash
-	copy(extRoot1[:], []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
-	copy(extRoot2[:], []byte("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"))
-
-	composed1, err := ComposeWithSiblingRoot(
-		policy.CompiledPolicy, extRoot1,
+	composed1, _ := composeWithRoot(
+		t, policy, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	)
-	require.NoError(t, err)
-
-	composed2, err := ComposeWithSiblingRoot(
-		policy.CompiledPolicy, extRoot2,
+	composed2, _ := composeWithRoot(
+		t, policy, "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
 	)
-	require.NoError(t, err)
 
 	// Different external roots should produce different combined roots.
 	require.NotEqual(t, composed1.CombinedRoot, composed2.CombinedRoot)
@@ -185,11 +172,7 @@ func TestComposedRootOrdering(t *testing.T) {
 func TestPolicyRootHelper(t *testing.T) {
 	t.Parallel()
 
-	ownerKey, _ := testutils.CreateKey(1)
-	operatorKey, _ := testutils.CreateKey(2)
-
-	policy, err := NewVTXOPolicy(ownerKey, operatorKey, 100)
-	require.NoError(t, err)
+	policy := newTestVTXOPolicy(t)
 
 	root := PolicyRoot(policy.CompiledPolicy)
 	require.Equal(t, policy.RootHash, root[:])
@@ -200,19 +183,10 @@ func TestPolicyRootHelper(t *testing.T) {
 func TestComposeWithSiblingRootPreservesWitnessScript(t *testing.T) {
 	t.Parallel()
 
-	ownerKey, _ := testutils.CreateKey(1)
-	operatorKey, _ := testutils.CreateKey(2)
-
-	policy, err := NewVTXOPolicy(ownerKey, operatorKey, 100)
-	require.NoError(t, err)
-
-	var externalRoot chainhash.Hash
-	copy(externalRoot[:], []byte("test_root_for_witness_script_tst"))
-
-	composed, err := ComposeWithSiblingRoot(
-		policy.CompiledPolicy, externalRoot,
+	policy := newTestVTXOPolicy(t)
+	composed, _ := composeWithRoot(
+		t, policy, "test_root_for_witness_script_tst",
 	)
-	require.NoError(t, err)
 
 	// Check both leaves.
 	for i := 0; i < len(policy.Leaves); i++ {
@@ -253,19 +227,10 @@ func TestTapBranchHashComposeCommutative(t *testing.T) {
 func TestComposedPolicyControlBlockValidation(t *testing.T) {
 	t.Parallel()
 
-	ownerKey, _ := testutils.CreateKey(1)
-	operatorKey, _ := testutils.CreateKey(2)
-
-	policy, err := NewVTXOPolicy(ownerKey, operatorKey, 100)
-	require.NoError(t, err)
-
-	var externalRoot chainhash.Hash
-	copy(externalRoot[:], []byte("validation_test_external_root!!!"))
-
-	composed, err := ComposeWithSiblingRoot(
-		policy.CompiledPolicy, externalRoot,
+	policy := newTestVTXOPolicy(t)
+	composed, _ := composeWithRoot(
+		t, policy, "validation_test_external_root!!!",
 	)
-	require.NoError(t, err)
 
 	// Get spend info.
 	info, err := composed.SpendInfo(0)
