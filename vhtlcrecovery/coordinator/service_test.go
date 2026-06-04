@@ -191,48 +191,38 @@ func TestServiceRestoreKeepsRecoveryActiveAfterTransientError(t *testing.T) {
 	require.Empty(t, stored.LastError)
 }
 
-// TestServiceStatusReconcilesTerminalUnroll verifies status polling folds a
-// terminal unroll result back into the durable recovery row.
-func TestServiceStatusReconcilesTerminalUnroll(t *testing.T) {
+// TestServiceStatusJoinsTerminalUnroll verifies status polling folds a
+// terminal unroll result into the durable recovery row regardless of whether
+// the row was still in flight or already marked completed by an earlier poll,
+// so RPC callers always observe the sweep txid deterministically.
+func TestServiceStatusJoinsTerminalUnroll(t *testing.T) {
 	t.Parallel()
 
-	job := testRecoveryJob(
-		"recovery-complete", vhtlcrecovery.StateUnrollStarted,
-	)
-	store := newFakeStore(job)
-	sweepTxid := chainhash.Hash{1, 2, 3}
-	registry := &fakeUnrollRegistry{
-		status: &unroll.GetStatusResp{
-			Found:     true,
-			Phase:     unroll.PhaseCompleted,
-			SweepTxid: &sweepTxid,
-			ExitPolicyKind: unroll.ExitPolicyKind(
-				job.ExitPolicyKind,
-			),
-			ExitPolicyRef: job.ID,
-		},
-	}
-	service := newTestService(t, store, registry)
-
-	status, err := service.GetRecoveryStatus(t.Context(), job.ID)
-	require.NoError(t, err)
-	require.Equal(t, vhtlcrecovery.StateCompleted, status.Job.State)
-	require.True(t, status.UnrollFound)
-	require.Equal(t, unroll.PhaseCompleted, status.UnrollPhase)
-	require.Equal(t, &sweepTxid, status.UnrollSweep)
+	// An in-flight row is reconciled to completed, and a row already
+	// marked completed by an earlier poll still joins the sweep snapshot.
+	t.Run("reconciles in-flight row", func(t *testing.T) {
+		t.Parallel()
+		assertTerminalSweep(
+			t, vhtlcrecovery.StateUnrollStarted,
+			chainhash.Hash{1, 2, 3},
+		)
+	})
+	t.Run("keeps sweep on completed row", func(t *testing.T) {
+		t.Parallel()
+		assertTerminalSweep(
+			t, vhtlcrecovery.StateCompleted,
+			chainhash.Hash{4, 5, 6},
+		)
+	})
 }
 
-// TestServiceCompletedStatusKeepsUnrollSweep verifies a recovery row that was
-// already marked completed by an earlier status poll still joins the terminal
-// unroll snapshot so RPC callers can observe the sweep txid deterministically.
-func TestServiceCompletedStatusKeepsUnrollSweep(t *testing.T) {
-	t.Parallel()
+// assertTerminalSweep escalates a recovery row in the given state against a
+// completed unroll snapshot and asserts the row joins the terminal sweep.
+func assertTerminalSweep(t *testing.T, state string, sweepTxid chainhash.Hash) {
+	t.Helper()
 
-	job := testRecoveryJob(
-		"recovery-already-complete", vhtlcrecovery.StateCompleted,
-	)
+	job := testRecoveryJob("recovery-terminal", state)
 	store := newFakeStore(job)
-	sweepTxid := chainhash.Hash{4, 5, 6}
 	registry := &fakeUnrollRegistry{
 		status: &unroll.GetStatusResp{
 			Found:     true,
