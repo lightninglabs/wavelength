@@ -1564,10 +1564,11 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 
 	job := stateJob(state)
 	msg := &UnrollTerminatedMsg{
-		Outpoint:   b.cfg.TargetOutpoint,
-		ActorID:    b.cfg.ActorID,
-		Phase:      phase,
-		FailReason: job.FailReason,
+		Outpoint:            b.cfg.TargetOutpoint,
+		ActorID:             b.cfg.ActorID,
+		Phase:               phase,
+		FailReason:          job.FailReason,
+		HadOnChainFootprint: jobHadOnChainFootprint(job),
 	}
 
 	if sweepTxid := effectiveSweepTxid(

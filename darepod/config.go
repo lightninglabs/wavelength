@@ -164,6 +164,16 @@ type Config struct {
 	// test harness; not serialized to config files.
 	PackageSubmitter chainbackends.PackageSubmitter
 
+	// FailUnrollBroadcastReason is a TEST-ONLY hook. When non-empty, the
+	// unroll subsystem's tx-confirmation requests are rejected with this
+	// reason before any broadcast, simulating a proof tx that cannot enter
+	// the mempool (e.g. "min relay fee not met" on a sub-dust exit). It
+	// lets integration tests reproduce the darepo-client#602 failure mode —
+	// a unilateral exit that fails terminally with no on-chain footprint —
+	// and verify the VTXO is recovered to live. Empty in production; not
+	// serialized to config files.
+	FailUnrollBroadcastReason string
+
 	// Lnd configures the connection to the backing lnd node.
 	Lnd *LndConfig `mapstructure:"lnd"`
 

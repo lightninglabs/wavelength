@@ -440,6 +440,19 @@ func assertOutboxContains[T VTXOOutMsg](h *vtxoTestHarness) T {
 	return zero
 }
 
+// assertOutboxLacks asserts the outbox contains no message of the given type.
+func assertOutboxLacks[T VTXOOutMsg](h *vtxoTestHarness) {
+	h.t.Helper()
+
+	for _, msg := range h.outboxMessages {
+		if _, ok := msg.(T); ok {
+			var zero T
+			h.t.Fatalf("outbox unexpectedly contains message "+
+				"of type %T", zero)
+		}
+	}
+}
+
 // setupMockWalletForSigning configures the wallet mock to return valid
 // signatures for forfeit tx signing.
 func (h *vtxoTestHarness) setupMockWalletForSigning() {

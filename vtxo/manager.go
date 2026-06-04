@@ -28,6 +28,23 @@ import (
 // actor turn without making healthy child work race an overly short deadline.
 const defaultForfeitVTXOActorAskTimeout = 5 * time.Second
 
+// ExitOutcomeResolution is the persisted terminal result for an exiting VTXO,
+// as resolved from the subsystem that owns unilateral-exit jobs.
+type ExitOutcomeResolution struct {
+	// Outcome classifies the terminal exit result to apply.
+	Outcome ExitOutcome
+
+	// Reason carries the terminal failure reason when Outcome is
+	// ExitOutcomeRecoverable.
+	Reason string
+}
+
+// ExitOutcomeResolver resolves the terminal unilateral-exit outcome, if any,
+// for a VTXO that is still persisted as VTXOStatusUnilateralExit.
+type ExitOutcomeResolver func(
+	context.Context, wire.OutPoint,
+) (fn.Option[ExitOutcomeResolution], error)
+
 // VTXOActorRef is the actor reference type for VTXO actors. Uses
 // actormsg.VTXOActorMsg as the message type to enable both round and vtxo
 // packages to use the same service key for registration and lookup.
@@ -100,6 +117,12 @@ type ManagerConfig struct {
 	// manager's active set so daemon-local observers can clean up related
 	// actor-owned work.
 	TerminalVTXOObserver func(context.Context, wire.OutPoint) error
+
+	// ExitOutcomeResolver resolves terminal unilateral-exit job outcomes
+	// for VTXOs that remain persisted in VTXOStatusUnilateralExit at
+	// manager startup. When set, Start uses it to re-converge VTXO status
+	// with the exit job's terminal result.
+	ExitOutcomeResolver ExitOutcomeResolver
 }
 
 // Manager coordinates VTXO actor lifecycle - spawning new actors when VTXOs
@@ -240,7 +263,71 @@ func (m *Manager) Start(ctx context.Context,
 		slog.Int("recovered", len(m.actors)),
 	)
 
+	m.reconcileUnilateralExits(ctx)
+
 	return nil
+}
+
+// reconcileUnilateralExits re-converges VTXOs still persisted in
+// unilateral-exit with their terminal exit job outcome. A recoverable
+// no-footprint failure rolls the VTXO back to live; a completed exit retires
+// it to spent. Non-terminal jobs and footprint-bearing failures are left in
+// unilateral-exit.
+func (m *Manager) reconcileUnilateralExits(ctx context.Context) {
+	if m.cfg.ExitOutcomeResolver == nil {
+		return
+	}
+
+	log := m.logger(ctx)
+	exiting, err := m.cfg.Store.ListVTXOsByStatus(
+		ctx, VTXOStatusUnilateralExit,
+	)
+	if err != nil {
+		log.WarnS(ctx, "List unilateral-exit VTXOs failed", err)
+
+		return
+	}
+
+	for _, desc := range exiting {
+		resolution, err := m.cfg.ExitOutcomeResolver(
+			ctx, desc.Outpoint,
+		)
+		if err != nil {
+			log.WarnS(ctx, "Resolve exit outcome failed",
+				err,
+				slog.String("outpoint", desc.Outpoint.String()),
+			)
+
+			continue
+		}
+		if resolution.IsNone() {
+			continue
+		}
+
+		outcome := resolution.UnsafeFromSome()
+		req := &ExitOutcomeNotification{
+			Outpoint: desc.Outpoint,
+			Outcome:  outcome.Outcome,
+			Reason:   outcome.Reason,
+		}
+
+		_, err = m.handleExitOutcome(ctx, req).Unpack()
+		if err != nil {
+			log.WarnS(ctx, "Reconcile exit VTXO failed",
+				err,
+				slog.String("outpoint", desc.Outpoint.String()),
+				slog.String("outcome",
+					outcome.Outcome.String()),
+			)
+
+			continue
+		}
+
+		log.InfoS(ctx, "Reconciled unilateral-exit VTXO",
+			slog.String("outpoint", desc.Outpoint.String()),
+			slog.String("outcome", outcome.Outcome.String()),
+		)
+	}
 }
 
 // Stop gracefully shuts down the manager.
@@ -298,6 +385,9 @@ func (m *Manager) Receive(ctx context.Context,
 
 	case *ForceUnrollRequest:
 		return m.handleForceUnroll(ctx, req)
+
+	case *ExitOutcomeNotification:
+		return m.handleExitOutcome(ctx, req)
 
 	default:
 		return fn.Err[ManagerResp](
@@ -484,6 +574,169 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 	return fn.Ok[ManagerResp](&ForceUnrollResponse{
 		Accepted: true,
 	})
+}
+
+// handleExitOutcome applies the terminal outcome of a unilateral-exit job
+// reported by the unroll subsystem. A recoverable failure (no on-chain
+// footprint) rolls the VTXO back to LiveState; a confirmed exit retires it
+// to the terminal SpentState. Both are driven through the VTXO actor's FSM
+// when the actor is still alive, with a store-level fallback when it is not
+// (e.g. the actor was never restored after a daemon restart, since exiting
+// VTXOs are excluded from the live-recovery set).
+func (m *Manager) handleExitOutcome(ctx context.Context,
+	req *ExitOutcomeNotification) fn.Result[ManagerResp] {
+
+	m.logger(ctx).InfoS(ctx, "Applying unroll exit outcome",
+		slog.String("outpoint", req.Outpoint.String()),
+		slog.String("outcome", req.Outcome.String()),
+		slog.String("reason", req.Reason),
+	)
+
+	switch req.Outcome {
+	case ExitOutcomeRecoverable:
+		return m.recoverExitedVTXO(ctx, req)
+
+	case ExitOutcomeConfirmed:
+		return m.confirmExitedVTXO(ctx, req)
+
+	default:
+		return fn.Err[ManagerResp](
+			fmt.Errorf("unknown exit outcome: %d", req.Outcome),
+		)
+	}
+}
+
+// recoverExitedVTXO rolls a VTXO back to LiveState after a failed unroll that
+// left no on-chain footprint. When the actor is still alive it drives the
+// ExitFailedEvent through the FSM; otherwise it re-materializes a live actor
+// from the persisted descriptor so a daemon that restarted mid-exit still
+// recovers the coin.
+func (m *Manager) recoverExitedVTXO(ctx context.Context,
+	req *ExitOutcomeNotification) fn.Result[ManagerResp] {
+
+	if actorRef, ok := m.actors[req.Outpoint]; ok {
+		_, err := m.askVTXOActor(ctx, actorRef, &ExitFailedEvent{
+			Reason: req.Reason,
+		}).Unpack()
+		if err != nil {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("ask exit-failed: %w", err),
+			)
+		}
+
+		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+	}
+
+	// No live actor: re-materialize one in LiveState from the persisted
+	// descriptor. This covers the restart case where an exiting VTXO was
+	// not part of the live-recovery set, so no actor was spawned at Start.
+	descriptor, err := m.cfg.Store.GetVTXO(ctx, req.Outpoint)
+	if err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("load vtxo for recovery: %w", err),
+		)
+	}
+	if descriptor == nil {
+		m.logger(ctx).WarnS(ctx, "No descriptor to recover exited VTXO",
+			nil,
+			slog.String("outpoint", req.Outpoint.String()),
+		)
+
+		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+	}
+
+	// Idempotency guard: only relive a VTXO that is still in the exit
+	// state. Boot reconciliation can re-deliver a recovery whose previous
+	// attempt already succeeded (status now Live) or whose VTXO has since
+	// moved on; reliving again would spawn a duplicate actor or clobber a
+	// later state.
+	if descriptor.Status != VTXOStatusUnilateralExit {
+		m.logger(ctx).DebugS(ctx, "Skipping exit recovery for "+
+			"non-exiting VTXO",
+			slog.String("outpoint", req.Outpoint.String()),
+			slog.String("status", descriptor.Status.String()),
+		)
+
+		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+	}
+
+	// Spawn the live actor BEFORE persisting the status flip. The actor is
+	// what monitors the coin (expiry, re-exit); if we persisted Live first
+	// and the spawn then failed, the VTXO would be live in the DB with
+	// nothing watching it until the next restart. Spawning first guarantees
+	// the coin is always monitored the moment its status is recoverable,
+	// and a failed status write is re-converged by boot reconciliation (the
+	// VTXO stays in unilateral-exit on disk, so the next boot re-drives
+	// recovery).
+	descriptor.Status = VTXOStatusLive
+
+	ref, err := m.spawnVTXOActor(ctx, descriptor)
+	if err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("respawn recovered vtxo actor: %w", err),
+		)
+	}
+	m.actors[req.Outpoint] = ref
+
+	if err := m.cfg.Store.UpdateVTXOStatus(
+		ctx, req.Outpoint, VTXOStatusLive,
+	); err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("restore vtxo status: %w", err),
+		)
+	}
+
+	m.logger(ctx).InfoS(ctx, "Recovered exited VTXO to live",
+		slog.String("outpoint", req.Outpoint.String()),
+	)
+
+	return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+}
+
+// confirmExitedVTXO retires a VTXO to the terminal SpentState after its
+// unilateral exit confirmed on-chain. When the actor is alive it drives the
+// ExitConfirmedEvent through the FSM (which emits the terminated
+// notification that reaps the actor); otherwise it persists the terminal
+// status directly.
+func (m *Manager) confirmExitedVTXO(ctx context.Context,
+	req *ExitOutcomeNotification) fn.Result[ManagerResp] {
+
+	if actorRef, ok := m.actors[req.Outpoint]; ok {
+		_, err := m.askVTXOActor(
+			ctx, actorRef, &ExitConfirmedEvent{},
+		).Unpack()
+		if err != nil {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("ask exit-confirmed: %w", err),
+			)
+		}
+
+		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+	}
+
+	// No live actor: persist the terminal spent status directly so a
+	// restarted daemon still records the on-chain spend. Only act on a VTXO
+	// still in the exit state so a re-delivered confirmation cannot stomp a
+	// VTXO that has since been reissued or recovered to live.
+	descriptor, err := m.cfg.Store.GetVTXO(ctx, req.Outpoint)
+	if err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("load vtxo for confirm: %w", err),
+		)
+	}
+	if descriptor == nil || descriptor.Status != VTXOStatusUnilateralExit {
+		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+	}
+
+	if err := m.cfg.Store.UpdateVTXOStatus(
+		ctx, req.Outpoint, VTXOStatusSpent,
+	); err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("persist spent status: %w", err),
+		)
+	}
+
+	return fn.Ok[ManagerResp](&ExitOutcomeResp{})
 }
 
 // handleVTXOTerminated removes a VTXO actor from tracking when it reaches

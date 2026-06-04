@@ -41,6 +41,17 @@ func (s *LiveState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	case *ForceUnrollEvent:
 		return s.handleForceUnroll(ctx, evt)
 
+	case *ExitFailedEvent, *ExitConfirmedEvent:
+		// A duplicate or stale exit-outcome event for a VTXO that is
+		// already live (e.g. boot reconciliation re-delivering a
+		// recovery that already landed). Idempotent no-op: the VTXO is
+		// live, which is the recovered state. ExitConfirmedEvent should
+		// never reach a live VTXO, but ignoring it is safer than
+		// retiring a live coin to spent on a stray signal.
+		return &VTXOStateTransition{
+			NextState: s,
+		}, nil
+
 	case *VTXOFailedEvent:
 		return &VTXOStateTransition{
 			NextState: &FailedState{
@@ -111,6 +122,11 @@ func (s *LiveState) handleForceUnroll(_ context.Context,
 		reason = "manual unroll"
 	}
 
+	// Hand the VTXO to the chain resolver and mark it exiting, but do NOT
+	// emit a VTXOTerminatedNotification: UnilateralExitState is
+	// non-terminal now, so the actor stays alive to observe the exit
+	// outcome and recover the VTXO if the unroll fails without an on-chain
+	// footprint (darepo-client#602).
 	outbox := []VTXOOutMsg{
 		&ExpiringNotification{
 			VTXO:            s.VTXO,
@@ -121,17 +137,13 @@ func (s *LiveState) handleForceUnroll(_ context.Context,
 			Outpoint:  s.VTXO.Outpoint,
 			NewStatus: VTXOStatusUnilateralExit,
 		},
-		&VTXOTerminatedNotification{
-			VTXOOutpoint: s.VTXO.Outpoint,
-			FinalState:   "UnilateralExit",
-			Reason:       reason,
-		},
 	}
 
 	return &VTXOStateTransition{
 		NextState: &UnilateralExitState{
-			VTXO:   s.VTXO,
-			Reason: reason,
+			VTXO:              s.VTXO,
+			Reason:            reason,
+			LastCheckedHeight: s.LastCheckedHeight,
 		},
 		NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
 	}, nil
@@ -185,6 +197,9 @@ func (s *LiveState) handleBlockEpoch(_ context.Context, evt *BlockEpochEvent,
 		reason := fmt.Sprintf("critical expiry: %d blocks remaining",
 			blocksRemaining)
 
+		// Keep the actor alive in the non-terminal exit state (no
+		// VTXOTerminatedNotification) so a failed unroll can be rolled
+		// back to live; see darepo-client#602.
 		outbox := []VTXOOutMsg{
 			&ExpiringNotification{
 				VTXO:            s.VTXO,
@@ -195,17 +210,13 @@ func (s *LiveState) handleBlockEpoch(_ context.Context, evt *BlockEpochEvent,
 				Outpoint:  s.VTXO.Outpoint,
 				NewStatus: VTXOStatusUnilateralExit,
 			},
-			&VTXOTerminatedNotification{
-				VTXOOutpoint: s.VTXO.Outpoint,
-				FinalState:   "UnilateralExit",
-				Reason:       "sent to chain resolver",
-			},
 		}
 
 		return &VTXOStateTransition{
 			NextState: &UnilateralExitState{
-				VTXO:   s.VTXO,
-				Reason: reason,
+				VTXO:              s.VTXO,
+				Reason:            reason,
+				LastCheckedHeight: evt.Height,
 			},
 			NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
 		}, nil
@@ -408,6 +419,9 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 
 			blocksRemaining := BlocksUntilExpiry(s.VTXO, evt.Height)
 
+			// Non-terminal exit: no VTXOTerminatedNotification, so
+			// a failed unroll can recover the VTXO
+			// (darepo-client#602).
 			outbox := []VTXOOutMsg{
 				&ExpiringNotification{
 					VTXO:            s.VTXO,
@@ -418,11 +432,6 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 					Outpoint:  s.VTXO.Outpoint,
 					NewStatus: VTXOStatusUnilateralExit,
 				},
-				&VTXOTerminatedNotification{
-					VTXOOutpoint: s.VTXO.Outpoint,
-					FinalState:   "UnilateralExit",
-					Reason:       "forfeit timeout",
-				},
 			}
 
 			return &VTXOStateTransition{
@@ -430,6 +439,7 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 					VTXO: s.VTXO,
 					Reason: "critical expiry pending " +
 						"forfeit",
+					LastCheckedHeight: evt.Height,
 				},
 				NewEvents: fn.Some(VTXOEmittedEvent{
 					Outbox: outbox,
@@ -451,6 +461,8 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 			reason = "manual unroll (pending forfeit)"
 		}
 
+		// Non-terminal exit: no VTXOTerminatedNotification, so a failed
+		// unroll can recover the VTXO (darepo-client#602).
 		outbox := []VTXOOutMsg{
 			&ExpiringNotification{
 				VTXO:            s.VTXO,
@@ -461,17 +473,13 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 				Outpoint:  s.VTXO.Outpoint,
 				NewStatus: VTXOStatusUnilateralExit,
 			},
-			&VTXOTerminatedNotification{
-				VTXOOutpoint: s.VTXO.Outpoint,
-				FinalState:   "UnilateralExit",
-				Reason:       reason,
-			},
 		}
 
 		return &VTXOStateTransition{
 			NextState: &UnilateralExitState{
-				VTXO:   s.VTXO,
-				Reason: reason,
+				VTXO:              s.VTXO,
+				Reason:            reason,
+				LastCheckedHeight: s.RequestedAtHeight,
 			},
 			NewEvents: fn.Some(VTXOEmittedEvent{
 				Outbox: outbox,
@@ -652,6 +660,9 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 
 			blocksRemaining := BlocksUntilExpiry(s.VTXO, evt.Height)
 
+			// Non-terminal exit: no VTXOTerminatedNotification, so
+			// a failed unroll can recover the VTXO
+			// (darepo-client#602).
 			outbox := []VTXOOutMsg{
 				&ExpiringNotification{
 					VTXO:            s.VTXO,
@@ -662,17 +673,13 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 					Outpoint:  s.VTXO.Outpoint,
 					NewStatus: VTXOStatusUnilateralExit,
 				},
-				&VTXOTerminatedNotification{
-					VTXOOutpoint: s.VTXO.Outpoint,
-					FinalState:   "UnilateralExit",
-					Reason:       "forfeit timeout",
-				},
 			}
 
 			return &VTXOStateTransition{
 				NextState: &UnilateralExitState{
-					VTXO:   s.VTXO,
-					Reason: "critical expiry in forfeit",
+					VTXO:              s.VTXO,
+					Reason:            "critical expiry",
+					LastCheckedHeight: evt.Height,
 				},
 				NewEvents: fn.Some(VTXOEmittedEvent{
 					Outbox: outbox,
@@ -702,6 +709,11 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 			reason = "manual unroll (forfeiting)"
 		}
 
+		// Non-terminal exit: no VTXOTerminatedNotification, so a failed
+		// unroll can recover the VTXO (darepo-client#602).
+		// ForfeitingState tracks no block height, so LastCheckedHeight
+		// stays zero and the next block epoch re-seeds it if the VTXO
+		// is rolled back.
 		outbox := []VTXOOutMsg{
 			&ExpiringNotification{
 				VTXO:            s.VTXO,
@@ -711,11 +723,6 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 			&VTXOStatusUpdate{
 				Outpoint:  s.VTXO.Outpoint,
 				NewStatus: VTXOStatusUnilateralExit,
-			},
-			&VTXOTerminatedNotification{
-				VTXOOutpoint: s.VTXO.Outpoint,
-				FinalState:   "UnilateralExit",
-				Reason:       reason,
 			},
 		}
 
@@ -806,6 +813,9 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 				s.VTXO, evt.Height,
 			)
 
+			// Non-terminal exit: no VTXOTerminatedNotification, so
+			// a failed unroll can recover the VTXO
+			// (darepo-client#602).
 			outbox := []VTXOOutMsg{
 				&ExpiringNotification{
 					VTXO:            s.VTXO,
@@ -816,11 +826,6 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 					Outpoint:  s.VTXO.Outpoint,
 					NewStatus: VTXOStatusUnilateralExit,
 				},
-				&VTXOTerminatedNotification{
-					VTXOOutpoint: s.VTXO.Outpoint,
-					FinalState:   "UnilateralExit",
-					Reason:       "spend timeout",
-				},
 			}
 
 			return &VTXOStateTransition{
@@ -828,6 +833,7 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 					VTXO: s.VTXO,
 					Reason: "critical expiry while " +
 						"spending",
+					LastCheckedHeight: evt.Height,
 				},
 				NewEvents: fn.Some(VTXOEmittedEvent{
 					Outbox: outbox,
@@ -871,6 +877,8 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 			reason = "manual unroll (spending)"
 		}
 
+		// Non-terminal exit: no VTXOTerminatedNotification, so a failed
+		// unroll can recover the VTXO (darepo-client#602).
 		outbox := []VTXOOutMsg{
 			&ExpiringNotification{
 				VTXO:            s.VTXO,
@@ -881,17 +889,13 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 				Outpoint:  s.VTXO.Outpoint,
 				NewStatus: VTXOStatusUnilateralExit,
 			},
-			&VTXOTerminatedNotification{
-				VTXOOutpoint: s.VTXO.Outpoint,
-				FinalState:   "UnilateralExit",
-				Reason:       reason,
-			},
 		}
 
 		return &VTXOStateTransition{
 			NextState: &UnilateralExitState{
-				VTXO:   s.VTXO,
-				Reason: reason,
+				VTXO:              s.VTXO,
+				Reason:            reason,
+				LastCheckedHeight: s.LastCheckedHeight,
 			},
 			NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
 		}, nil
@@ -933,15 +937,69 @@ func (s *ForfeitedState) ProcessEvent(_ context.Context, _ VTXOEvent,
 	}, nil
 }
 
-// ProcessEvent for UnilateralExitState. This is a terminal state, so all events
-// result in staying in the same state.
-func (s *UnilateralExitState) ProcessEvent(_ context.Context, _ VTXOEvent,
+// ProcessEvent handles events in UnilateralExitState. The VTXO has been
+// handed to the chain resolver for on-chain unroll, but the actor stays
+// alive to observe the outcome: a clean failure rolls the VTXO back to
+// LiveState, an on-chain confirmation retires it to the terminal
+// SpentState, and everything else self-loops while the exit is in flight.
+func (s *UnilateralExitState) ProcessEvent(_ context.Context, event VTXOEvent,
 	_ *VTXOEnvironment) (*VTXOStateTransition, error) {
 
-	// Terminal state: self-loop on all events.
-	return &VTXOStateTransition{
-		NextState: s,
-	}, nil
+	switch event.(type) {
+	case *ExitFailedEvent:
+		// The unroll job failed without any on-chain footprint, so the
+		// VTXO is still live from the operator's perspective. Roll back
+		// to LiveState and re-publish the live status so the wallet's
+		// view re-converges. Resume expiry monitoring from the height
+		// observed when we entered exit handling.
+		return &VTXOStateTransition{
+			NextState: &LiveState{
+				VTXO:              s.VTXO,
+				LastCheckedHeight: s.LastCheckedHeight,
+			},
+			NewEvents: fn.Some(VTXOEmittedEvent{
+				Outbox: []VTXOOutMsg{
+					&VTXOStatusUpdate{
+						Outpoint:  s.VTXO.Outpoint,
+						NewStatus: VTXOStatusLive,
+					},
+				},
+			}),
+		}, nil
+
+	case *ExitConfirmedEvent:
+		// The exit confirmed on-chain. Retire the VTXO to the terminal
+		// SpentState and notify the manager so the actor is reaped —
+		// now gated on a terminal on-chain event rather than the user's
+		// intent to exit.
+		return &VTXOStateTransition{
+			NextState: &SpentState{
+				VTXO: s.VTXO,
+			},
+			NewEvents: fn.Some(VTXOEmittedEvent{
+				Outbox: []VTXOOutMsg{
+					&VTXOStatusUpdate{
+						Outpoint:  s.VTXO.Outpoint,
+						NewStatus: VTXOStatusSpent,
+					},
+					&VTXOTerminatedNotification{
+						VTXOOutpoint: s.VTXO.Outpoint,
+						FinalState:   "Spent",
+						Reason:       "exit confirmed",
+					},
+				},
+			}),
+		}, nil
+
+	default:
+		// Still exiting (block epochs, a duplicate ForceUnroll, resume,
+		// stray admission requests): self-loop. The exit is already in
+		// flight at the chain resolver; we wait for its terminal
+		// outcome.
+		return &VTXOStateTransition{
+			NextState: s,
+		}, nil
+	}
 }
 
 // ProcessEvent for FailedState. This is a terminal state, so all events

@@ -77,3 +77,42 @@ func (e *ForceUnrollEvent) VTXOActorMsg() {}
 func (e *ForceUnrollEvent) MessageType() string {
 	return "ForceUnrollEvent"
 }
+
+// ExitFailedEvent is delivered to a VTXO actor in UnilateralExitState when
+// the downstream unroll job terminated as a clean failure that left no
+// on-chain footprint (no proof or sweep transaction was broadcast). The
+// VTXO is rolled back to LiveState so the wallet's view re-converges with
+// the operator's, which still considers the VTXO live. This is the
+// recovery half of the darepo-client#602 fix.
+type ExitFailedEvent struct {
+	actor.BaseMessage
+
+	// Reason explains why the unroll job failed, for logging and the
+	// restored VTXO's audit trail.
+	Reason string
+}
+
+// VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
+func (e *ExitFailedEvent) VTXOActorMsg() {}
+
+// MessageType returns the message type for logging.
+func (e *ExitFailedEvent) MessageType() string {
+	return "ExitFailedEvent"
+}
+
+// ExitConfirmedEvent is delivered to a VTXO actor in UnilateralExitState
+// when the unilateral exit has been swept and confirmed on-chain. The VTXO
+// is retired to the terminal SpentState and the actor is reaped. Unlike the
+// original terminal UnilateralExitState, reaping now happens on this
+// terminal on-chain event rather than on the user's intent to exit.
+type ExitConfirmedEvent struct {
+	actor.BaseMessage
+}
+
+// VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
+func (e *ExitConfirmedEvent) VTXOActorMsg() {}
+
+// MessageType returns the message type for logging.
+func (e *ExitConfirmedEvent) MessageType() string {
+	return "ExitConfirmedEvent"
+}

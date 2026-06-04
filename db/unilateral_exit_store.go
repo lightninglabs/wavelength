@@ -50,12 +50,22 @@ const (
 	// broadcast. Appended after the original enum so existing rows at
 	// status=3 continue to decode as "sweep broadcast, awaiting conf".
 	UnilateralExitJobStatusSweepBroadcasting
+
+	// UnilateralExitJobStatusFailedRecoverable means the job failed
+	// terminally WITHOUT leaving any on-chain footprint (no proof or
+	// sweep tx was broadcast), so the target VTXO is still live from the
+	// operator's perspective and is safe to roll back to live. It is a
+	// separate status from UnilateralExitJobStatusFailed (which implies
+	// the exit has begun on-chain) so boot-time reconciliation can decide
+	// whether to recover the VTXO (darepo-client#602).
+	UnilateralExitJobStatusFailedRecoverable
 )
 
 // IsTerminal reports whether the control-plane job status is terminal.
 func (s UnilateralExitJobStatus) IsTerminal() bool {
 	return s == UnilateralExitJobStatusCompleted ||
-		s == UnilateralExitJobStatusFailed
+		s == UnilateralExitJobStatusFailed ||
+		s == UnilateralExitJobStatusFailedRecoverable
 }
 
 // UnilateralExitJobTrigger records what started an exit job.

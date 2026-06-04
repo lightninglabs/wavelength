@@ -146,6 +146,14 @@ type UnrollTerminatedMsg struct {
 
 	// SweepTxid is populated when the actor built a sweep transaction.
 	SweepTxid *chainhash.Hash
+
+	// HadOnChainFootprint reports whether the job ever published anything
+	// on-chain (a confirmed or in-flight proof node, or a broadcast
+	// sweep). It is false only for a clean failure that never broadcast,
+	// which is the sole case where the target VTXO is safe to roll back
+	// to live (the operator still considers it live). See
+	// darepo-client#602.
+	HadOnChainFootprint bool
 }
 
 // MessageType returns the stable message type identifier.

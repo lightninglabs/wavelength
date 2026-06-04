@@ -1,6 +1,7 @@
 package vtxo
 
 import (
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/round"
@@ -113,6 +114,73 @@ type ListLiveDescriptorsResponse struct {
 
 // VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
 func (r *ListLiveDescriptorsResponse) VTXOManagerResp() {}
+
+// ExitOutcome classifies the terminal outcome of a unilateral-exit (unroll)
+// job, as reported by the unroll subsystem back to the VTXO manager.
+type ExitOutcome uint8
+
+const (
+	// ExitOutcomeRecoverable indicates the unroll job failed without any
+	// on-chain footprint (no proof or sweep transaction was broadcast),
+	// so the VTXO is still live from the operator's perspective and must
+	// be rolled back to LiveState.
+	ExitOutcomeRecoverable ExitOutcome = iota
+
+	// ExitOutcomeConfirmed indicates the unilateral exit was swept and
+	// confirmed on-chain, so the VTXO should be retired to the terminal
+	// SpentState.
+	ExitOutcomeConfirmed
+)
+
+// String returns a human-readable label for the exit outcome.
+func (o ExitOutcome) String() string {
+	switch o {
+	case ExitOutcomeRecoverable:
+		return "recoverable"
+
+	case ExitOutcomeConfirmed:
+		return "confirmed"
+
+	default:
+		return "unknown"
+	}
+}
+
+// ExitOutcomeNotification informs the VTXO manager of the terminal outcome
+// of a unilateral-exit job so it can either recover the VTXO back to
+// LiveState (ExitOutcomeRecoverable) or retire it to SpentState
+// (ExitOutcomeConfirmed). It is sent by the unroll subsystem when a child
+// unroll actor reaches a terminal phase. This is the feedback edge that
+// closes the soundness gap in darepo-client#602: VTXO lifecycle is gated on
+// the unroll job's terminal on-chain outcome rather than the user's intent
+// to exit.
+type ExitOutcomeNotification struct {
+	actor.BaseMessage
+
+	// Outpoint identifies the VTXO whose exit reached a terminal outcome.
+	Outpoint wire.OutPoint
+
+	// Outcome classifies the terminal outcome.
+	Outcome ExitOutcome
+
+	// Reason carries the unroll failure reason for ExitOutcomeRecoverable,
+	// used for logging and the restored VTXO's audit trail.
+	Reason string
+}
+
+// MessageType returns the message type identifier.
+func (m *ExitOutcomeNotification) MessageType() string {
+	return "ExitOutcomeNotification"
+}
+
+// VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
+func (m *ExitOutcomeNotification) VTXOManagerMsg() {}
+
+// ExitOutcomeResp is the response to ExitOutcomeNotification.
+type ExitOutcomeResp struct{}
+
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *ExitOutcomeResp) VTXOManagerResp() {}
 
 // =============================================================================
 // Relay messages: VTXO actor → Manager → external actor

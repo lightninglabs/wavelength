@@ -70,7 +70,50 @@ func TestPhaseDBRoundTrip(t *testing.T) {
 	}
 }
 
-// TestTriggerDBRoundTrip pins the StartTrigger<->UnilateralExitJobTrigger
+// TestRecoverableFailureDBRoundTrip pins the mapping that distinguishes a
+// recoverable (no-footprint) failure from a footprint-bearing one. A
+// recoverable failure persists as the dedicated FailedRecoverable status and
+// decodes back to RecoverableFailure=true, while a plain failure stays at the
+// Failed status. Boot-time reconciliation relies on this distinction to
+// decide whether to roll a VTXO back to live (darepo-client#602).
+func TestRecoverableFailureDBRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("recoverable", func(t *testing.T) {
+		t.Parallel()
+
+		rec := RegistryRecord{
+			Phase:              PhaseFailed,
+			RecoverableFailure: true,
+		}
+		status := statusForRecord(rec)
+		require.Equal(
+			t, db.UnilateralExitJobStatusFailedRecoverable, status,
+		)
+		require.True(t, status.IsTerminal())
+
+		got := recordFromDB(db.UnilateralExitJobRecord{Status: status})
+		require.Equal(t, PhaseFailed, got.Phase)
+		require.True(t, got.RecoverableFailure)
+	})
+
+	t.Run("footprint", func(t *testing.T) {
+		t.Parallel()
+
+		rec := RegistryRecord{
+			Phase:              PhaseFailed,
+			RecoverableFailure: false,
+		}
+		status := statusForRecord(rec)
+		require.Equal(t, db.UnilateralExitJobStatusFailed, status)
+
+		got := recordFromDB(db.UnilateralExitJobRecord{Status: status})
+		require.Equal(t, PhaseFailed, got.Phase)
+		require.False(t, got.RecoverableFailure)
+	})
+}
+
+// TestTriggerDBRoundTrip pins the StartTrigger↔UnilateralExitJobTrigger
 // mapping so FraudSpend rows round-trip through a dedicated constant
 // rather than silently decoding as TriggerManual.
 func TestTriggerDBRoundTrip(t *testing.T) {

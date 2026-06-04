@@ -178,15 +178,32 @@ func (s *ForfeitedState) IsTerminal() bool {
 
 func (s *ForfeitedState) vtxoStateSealed() {}
 
-// UnilateralExitState is a terminal state indicating the VTXO has reached
-// critical expiry and has been sent to the chain resolver for unilateral
-// on-chain exit handling. The chain resolver takes over from this point.
+// UnilateralExitState indicates the VTXO has been handed to the chain
+// resolver for unilateral on-chain exit handling. The chain resolver
+// drives the on-chain unroll from this point.
+//
+// This state is intentionally NON-terminal. The exit is gated on the
+// user's intent to unroll, not on a terminal on-chain event: the
+// downstream unroll job may still fail without ever broadcasting (e.g. a
+// sub-dust proof tx that cannot meet min relay fee). Keeping the actor
+// alive here lets the manager observe the VTXO and either recover it back
+// to LiveState on a clean failure (ExitFailedEvent) or retire it to the
+// terminal SpentState once the exit confirms on-chain (ExitConfirmedEvent).
+// Reaping the actor on intent — as the original terminal design did —
+// silently dropped the VTXO from the wallet's live set on a failed exit
+// while the operator still considered it live (darepo-client#602).
 type UnilateralExitState struct {
 	// VTXO is the descriptor for this VTXO.
 	VTXO *Descriptor
 
 	// Reason explains why the VTXO is being unilaterally exited.
 	Reason string
+
+	// LastCheckedHeight carries the block height observed when the VTXO
+	// entered exit handling. It seeds LiveState.LastCheckedHeight if the
+	// exit is later rolled back, so expiry monitoring resumes from where
+	// it left off rather than re-evaluating from zero.
+	LastCheckedHeight int32
 }
 
 // String returns a human-readable state name.
@@ -194,9 +211,11 @@ func (s *UnilateralExitState) String() string {
 	return "UnilateralExit"
 }
 
-// IsTerminal returns true since UnilateralExitState is a terminal state.
+// IsTerminal returns false: the exit is observed rather than fire-and-forget,
+// so the actor survives until the exit either confirms on-chain (SpentState)
+// or is rolled back to LiveState. See the type doc for the rationale.
 func (s *UnilateralExitState) IsTerminal() bool {
-	return true
+	return false
 }
 
 func (s *UnilateralExitState) vtxoStateSealed() {}

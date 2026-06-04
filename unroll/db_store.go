@@ -54,7 +54,7 @@ func (s *DBRegistryStore) UpsertRecord(ctx context.Context,
 	return s.UEStore.UpsertJob(ctx, db.UnilateralExitJobRecord{
 		TargetOutpoint: record.TargetOutpoint,
 		ActorID:        record.ActorID,
-		Status:         statusForPhase(record.Phase),
+		Status:         statusForRecord(record),
 		Trigger:        triggerToDB(record.Trigger),
 		ExitPolicyKind: string(policyKind),
 		ExitPolicyRef:  policyRef,
@@ -106,15 +106,21 @@ func (s *DBRegistryStore) ListNonTerminalRecords(ctx context.Context) (
 }
 
 // MarkTerminal marks one target terminal in the unilateral-exit job table.
+// recoverable selects UnilateralExitJobStatusFailedRecoverable over the
+// plain Failed status for a no-footprint failure so boot-time reconciliation
+// can roll the VTXO back to live (darepo-client#602).
 func (s *DBRegistryStore) MarkTerminal(ctx context.Context,
-	target wire.OutPoint, phase Phase, failReason string,
+	target wire.OutPoint, phase Phase, recoverable bool, failReason string,
 	sweepTxid *chainhash.Hash) error {
 
 	if s == nil || s.UEStore == nil {
 		return fmt.Errorf("unilateral-exit store must be provided")
 	}
 
-	status := statusForPhase(phase)
+	status := statusForRecord(RegistryRecord{
+		Phase:              phase,
+		RecoverableFailure: recoverable,
+	})
 	if !status.IsTerminal() {
 		return fmt.Errorf("phase %s is not terminal", phase)
 	}
@@ -137,6 +143,8 @@ func recordFromDB(job db.UnilateralExitJobRecord) RegistryRecord {
 		Phase:         phaseFromDB(job.Status),
 		FailReason:    job.LastError,
 		SweepTxid:     sweepTxidFromBytes(job.SweepTxid),
+		RecoverableFailure: job.Status ==
+			db.UnilateralExitJobStatusFailedRecoverable,
 	}
 }
 
@@ -184,6 +192,17 @@ func registryExitPolicy(record RegistryRecord,
 	}
 
 	return exitPolicyKind(record.ExitPolicyKind), record.ExitPolicyRef
+}
+
+// statusForRecord maps a registry record into the DB status enum, routing a
+// recoverable (no-footprint) failure to the distinct FailedRecoverable status
+// so it round-trips back to RecoverableFailure=true on the next read.
+func statusForRecord(record RegistryRecord) db.UnilateralExitJobStatus {
+	if record.Phase == PhaseFailed && record.RecoverableFailure {
+		return db.UnilateralExitJobStatusFailedRecoverable
+	}
+
+	return statusForPhase(record.Phase)
 }
 
 // statusForPhase maps a registry phase into the legacy job status enum.
@@ -234,7 +253,8 @@ func phaseFromDB(status db.UnilateralExitJobStatus) Phase {
 	case db.UnilateralExitJobStatusCompleted:
 		return PhaseCompleted
 
-	case db.UnilateralExitJobStatusFailed:
+	case db.UnilateralExitJobStatusFailed,
+		db.UnilateralExitJobStatusFailedRecoverable:
 		return PhaseFailed
 
 	default:

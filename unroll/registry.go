@@ -60,6 +60,13 @@ type RegistryRecord struct {
 
 	// SweepTxid stores the terminal sweep txid when known.
 	SweepTxid *chainhash.Hash
+
+	// RecoverableFailure is set on a terminal failure that left no
+	// on-chain footprint, so the target VTXO is safe to roll back to
+	// live. It is persisted (as a distinct DB status) so boot-time
+	// reconciliation can recover a VTXO whose recovery notification was
+	// lost before the manager applied it (darepo-client#602).
+	RecoverableFailure bool
 }
 
 // IsTerminal reports whether the record reached a terminal phase.
@@ -80,9 +87,12 @@ type RegistryStore interface {
 	// ListNonTerminalRecords returns all targets that still need restore.
 	ListNonTerminalRecords(ctx context.Context) ([]RegistryRecord, error)
 
-	// MarkTerminal persists one terminal target state.
+	// MarkTerminal persists one terminal target state. recoverable marks a
+	// no-footprint failure that boot-time reconciliation may roll back to
+	// live.
 	MarkTerminal(ctx context.Context, target wire.OutPoint, phase Phase,
-		failReason string, sweepTxid *chainhash.Hash) error
+		recoverable bool, failReason string,
+		sweepTxid *chainhash.Hash) error
 }
 
 // RegistryConfig configures the thin unroll registry actor.
@@ -135,6 +145,16 @@ type RegistryConfig struct {
 	// into every spawned VTXOUnrollActor and from there into the
 	// FSM Environment.
 	FraudCheckpointSafetyMargin int32
+
+	// VTXOExitObserver, when set, receives an ExitOutcomeNotification each
+	// time a child unroll job reaches a terminal phase: a clean failure
+	// (no on-chain footprint) asks the VTXO manager to roll the VTXO back
+	// to live, and a completed exit asks it to retire the VTXO to spent.
+	// This is the feedback edge that keeps VTXO lifecycle gated on the
+	// unroll job's terminal on-chain outcome rather than the user's intent
+	// to exit (darepo-client#602). When None, terminal outcomes are not
+	// forwarded (used by tests that don't exercise the manager).
+	VTXOExitObserver fn.Option[actor.TellOnlyRef[vtxo.ManagerMsg]]
 }
 
 // UnrollRegistryActor wraps the thin unroll registry actor.
@@ -424,7 +444,14 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 	// write completes, so fall back to the in-memory pending cache and
 	// the durable store. Re-spawning a fresh actor on top of an existing
 	// record would clobber the recorded sweep txid or fail reason.
-	if record, ok := r.pending[req.Outpoint]; ok {
+	//
+	// A recoverable failure is the exception: the prior exit failed
+	// cleanly with no on-chain footprint and the VTXO was rolled back to
+	// live (darepo-client#602), so a fresh exit must be admittable rather
+	// than deduped against the dead attempt. Fall through to the spawn
+	// path, whose UpsertRecord overwrites the stale recoverable row.
+	if record, ok := r.pending[req.Outpoint]; ok &&
+		!record.RecoverableFailure {
 		return fn.Ok[RegistryResp](&EnsureUnrollResp{
 			ActorID: record.ActorID,
 			Created: false,
@@ -441,10 +468,13 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		// A durable record exists but no child is live for it. Two
 		// sub-cases:
 		//
-		//   1. Terminal record (Completed/Failed) — return the
-		//      historical ActorID so callers see a stable identity
-		//      and do not clobber the recorded sweep txid or
-		//      failure reason.
+		//   1. Terminal record (Completed / non-recoverable Failed)
+		//      — return the historical ActorID so callers see a
+		//      stable identity and do not clobber the recorded sweep
+		//      txid or failure reason. A *recoverable* terminal
+		//      failure is the exception: the VTXO was rolled back to
+		//      live (darepo-client#602), so it falls through to a
+		//      fresh spawn (handled below).
 		//
 		//   2. Non-terminal record — the actor was admitted in a
 		//      previous boot but never resumed (e.g. RestoreNonTerminal
@@ -495,10 +525,20 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 			})
 		}
 
-		return fn.Ok[RegistryResp](&EnsureUnrollResp{
-			ActorID: existing.ActorID,
-			Created: false,
-		})
+		// Terminal record. A recoverable failure (clean, no on-chain
+		// footprint) means the VTXO was rolled back to live, so a new
+		// exit is allowed: fall through to the spawn path below, whose
+		// UpsertRecord overwrites the stale record. Any other terminal
+		// record (Completed, or a footprint-bearing Failed) is a real
+		// end state — dedup against it and return the historical
+		// ActorID so the recorded sweep txid / failure reason are
+		// never clobbered.
+		if !existing.RecoverableFailure {
+			return fn.Ok[RegistryResp](&EnsureUnrollResp{
+				ActorID: existing.ActorID,
+				Created: false,
+			})
+		}
 	}
 
 	height, err := r.queryBestHeight(ctx)
@@ -704,6 +744,12 @@ func (r *registryBehavior) handleChildAdmissionResult(ctx context.Context,
 // failAdmittedChild records a terminal failure for a child that already has
 // a durable pending row. This keeps GetUnrollStatus from falling back to
 // "not found" after VTXO ownership has moved to unilateral exit.
+//
+// These failures (start / proof-assembly / restore errors) all occur before
+// the child broadcasts anything, so the VTXO has no on-chain footprint and is
+// recoverable to live. The record is persisted as a recoverable failure and
+// the VTXO manager is notified so the VTXO is rolled back rather than
+// stranded in unilateral exit (darepo-client#602).
 func (r *registryBehavior) failAdmittedChild(ctx context.Context,
 	target wire.OutPoint, child *VTXOUnrollActor, err error) {
 
@@ -711,22 +757,34 @@ func (r *registryBehavior) failAdmittedChild(ctx context.Context,
 	delete(r.active, target)
 
 	record := RegistryRecord{
-		TargetOutpoint: target,
-		ActorID:        child.Ref().ID(),
-		Phase:          PhaseFailed,
-		FailReason:     err.Error(),
+		TargetOutpoint:     target,
+		ActorID:            child.Ref().ID(),
+		Phase:              PhaseFailed,
+		FailReason:         err.Error(),
+		RecoverableFailure: true,
 	}
 	if pending, ok := r.pending[target]; ok {
 		record = cloneRegistryRecord(pending)
 		record.Phase = PhaseFailed
 		record.FailReason = err.Error()
+		record.RecoverableFailure = true
 	}
 
 	r.pending[target] = cloneRegistryRecord(record)
 
+	// Roll the VTXO back to live. The terminal record below is the durable
+	// backstop if this best-effort notification is lost.
+	r.notifyVTXOExit(context.WithoutCancel(ctx), &UnrollTerminatedMsg{
+		Outpoint:            target,
+		ActorID:             record.ActorID,
+		Phase:               PhaseFailed,
+		FailReason:          err.Error(),
+		HadOnChainFootprint: false,
+	})
+
 	markErr := r.cfg.Store.MarkTerminal(
-		context.WithoutCancel(ctx), target, PhaseFailed, err.Error(),
-		nil,
+		context.WithoutCancel(ctx), target, PhaseFailed, true,
+		err.Error(), nil,
 	)
 	if markErr != nil {
 		r.log.WarnS(ctx, "Failed to mark admitted unroll child "+
@@ -874,12 +932,17 @@ func (r *registryBehavior) handleGetStatus(ctx context.Context,
 func (r *registryBehavior) handleTerminated(ctx context.Context,
 	req *UnrollTerminatedMsg) fn.Result[RegistryResp] {
 
+	// A terminal failure with no on-chain footprint is recoverable: the
+	// VTXO never left off-chain custody, so it can be rolled back to live.
+	recoverable := req.Phase == PhaseFailed && !req.HadOnChainFootprint
+
 	record := RegistryRecord{
-		TargetOutpoint: req.Outpoint,
-		ActorID:        req.ActorID,
-		Phase:          req.Phase,
-		FailReason:     req.FailReason,
-		SweepTxid:      copyHash(req.SweepTxid),
+		TargetOutpoint:     req.Outpoint,
+		ActorID:            req.ActorID,
+		Phase:              req.Phase,
+		FailReason:         req.FailReason,
+		SweepTxid:          copyHash(req.SweepTxid),
+		RecoverableFailure: recoverable,
 	}
 
 	if cached, ok := r.pending[req.Outpoint]; ok {
@@ -887,6 +950,7 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 		record.Phase = req.Phase
 		record.FailReason = req.FailReason
 		record.SweepTxid = copyHash(req.SweepTxid)
+		record.RecoverableFailure = recoverable
 		if record.ActorID == "" {
 			record.ActorID = req.ActorID
 		}
@@ -908,7 +972,63 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 	//nolint:contextcheck
 	r.requestPersist(req.Outpoint, 0)
 
+	// Forward the terminal outcome to the VTXO manager so the VTXO's
+	// lifecycle tracks the unroll job's terminal on-chain result rather
+	// than the user's intent to exit (darepo-client#602). The handoff must
+	// survive caller-context cancellation, so detach the context.
+	r.notifyVTXOExit(context.WithoutCancel(ctx), req)
+
 	return fn.Ok[RegistryResp](&RegistryAckResp{})
+}
+
+// notifyVTXOExit forwards a child's terminal outcome to the VTXO manager.
+//
+//   - PhaseFailed with no on-chain footprint: the unroll never broadcast,
+//     so the VTXO is still live from the operator's perspective. Ask the
+//     manager to roll it back to live (ExitOutcomeRecoverable).
+//   - PhaseCompleted: the exit was swept and confirmed on-chain, so ask the
+//     manager to retire the VTXO to spent (ExitOutcomeConfirmed).
+//   - PhaseFailed with an on-chain footprint: the exit has begun on-chain;
+//     leave the VTXO in unilateral-exit (no notification).
+//
+// Delivery is best-effort: a failed Tell is logged, not retried. This is the
+// fast runtime path; the durable backstop is the VTXO manager's startup
+// reconciliation, which re-derives the same outcome from the persisted unroll
+// record. The VTXO manager is in-process and the durable unroll record remains
+// terminal, so a dropped notification only delays re-convergence until the next
+// restart's reconciliation rather than losing funds.
+func (r *registryBehavior) notifyVTXOExit(ctx context.Context,
+	req *UnrollTerminatedMsg) {
+
+	if r.cfg.VTXOExitObserver.IsNone() {
+		return
+	}
+	observer := r.cfg.VTXOExitObserver.UnsafeFromSome()
+
+	var outcome vtxo.ExitOutcome
+	switch {
+	case req.Phase == PhaseCompleted:
+		outcome = vtxo.ExitOutcomeConfirmed
+
+	case req.Phase == PhaseFailed && !req.HadOnChainFootprint:
+		outcome = vtxo.ExitOutcomeRecoverable
+
+	default:
+		return
+	}
+
+	err := observer.Tell(ctx, &vtxo.ExitOutcomeNotification{
+		Outpoint: req.Outpoint,
+		Outcome:  outcome,
+		Reason:   req.FailReason,
+	})
+	if err != nil {
+		r.log.WarnS(ctx, "Failed to notify VTXO manager of exit "+
+			"outcome", err,
+			slog.String("outpoint", req.Outpoint.String()),
+			slog.String("outcome", outcome.String()),
+		)
+	}
 }
 
 // stopChildAfterDrain stops a terminal child only after a queued status probe
@@ -1501,7 +1621,8 @@ func sameRegistryRecord(a, b RegistryRecord) bool {
 		a.ExitPolicyKind != b.ExitPolicyKind ||
 		a.ExitPolicyRef != b.ExitPolicyRef ||
 		a.Phase != b.Phase ||
-		a.FailReason != b.FailReason {
+		a.FailReason != b.FailReason ||
+		a.RecoverableFailure != b.RecoverableFailure {
 		return false
 	}
 

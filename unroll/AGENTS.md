@@ -53,7 +53,17 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   `VTXOStore`, `TxConfirmRef`, `ChainSource`, `Wallet`,
   `MaxSweepFeeRateSatPerVByte`, `ExitSpendPolicyResolver` (optional;
   reconstructs the exit spend policy from `(ExitPolicyKind, ExitPolicyRef)`
-  after restart; nil means every child uses the standard VTXO timeout).
+  after restart; nil means every child uses the standard VTXO timeout), and
+  optional `VTXOExitObserver`
+  (`fn.Option[actor.TellOnlyRef[vtxo.ManagerMsg]]`). When set, each child's
+  terminal outcome is forwarded to the VTXO manager as a
+  `vtxo.ExitOutcomeNotification` so VTXO lifecycle tracks the unroll's
+  terminal on-chain result rather than the user's intent to exit
+  (darepo-client#602): a clean failure (`!HadOnChainFootprint`) →
+  `ExitOutcomeRecoverable` (roll back to live), a completed exit →
+  `ExitOutcomeConfirmed` (retire to spent). `UnrollTerminatedMsg` carries
+  `HadOnChainFootprint`, computed by `jobHadOnChainFootprint` (any
+  confirmed/in-flight proof node or a non-pending sweep).
 - `RegistryRecord` — control-plane row (`TargetOutpoint`, `ActorID`,
   `Phase`, `Trigger`, `FailReason`, `SweepTxid`, `ExitPolicyKind`,
   `ExitPolicyRef`).
@@ -135,6 +145,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   - → registry (Tell): `UnrollTerminatedMsg` from each child on
     terminal transition.
   - → `vtxo` (indirect via chain-resolver seam, #264).
+  - → `vtxo` manager (Tell, via `RegistryConfig.VTXOExitObserver`):
+    `ExitOutcomeNotification` on each child's terminal outcome — the
+    reverse feedback edge for darepo-client#602.
 - **Receives**:
   - ← API (registry): `EnsureUnrollRequest`, `GetStatusRequest`
     (from `darepod` RPC via chain resolver).
