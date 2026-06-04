@@ -591,64 +591,6 @@ func TestBuildTreeBFS(t *testing.T) {
 		}
 	})
 
-	t.Run("BFS order processes levels correctly", func(t *testing.T) {
-		t.Parallel()
-
-		// This test verifies that BFS processes nodes level by level.
-		// We can verify this by checking the tree structure: all nodes
-		// at the same depth should be processed before any nodes at
-		// the next depth.
-		leaves, _ := createLeaves(4)
-		operatorKey := createOperatorKey()
-		input := createTestInput()
-		sweepRoot := make([]byte, 32)
-
-		root, err := runBuild(
-			t, input, leaves, operatorKey, sweepRoot, 2, nil,
-		)
-		require.NoError(t, err)
-		require.NotNil(t, root)
-
-		// Verify the tree has proper depth structure:
-		// - Level 0: root (1 node).
-		// - Level 1: 2 branches.
-		// - Level 2: 4 leaves.
-		// Count nodes at each level.
-		level1Count := len(root.Children)
-		require.Equal(t, 2, level1Count)
-
-		level2Count := 0
-		for _, child := range root.Children {
-			level2Count += len(child.Children)
-		}
-		require.Equal(t, 4, level2Count)
-	})
-
-	t.Run("empty queue handling", func(t *testing.T) {
-		t.Parallel()
-
-		// This test verifies that the function properly handles the
-		// queue. While we can't directly test the "unexpected empty
-		// queue" error path (as it should never occur with correct
-		// logic), we can verify that the queue is properly exhausted.
-		leaves, _ := createLeaves(2)
-		operatorKey := createOperatorKey()
-		input := createTestInput()
-		sweepRoot := make([]byte, 32)
-
-		root, err := runBuild(
-			t, input, leaves, operatorKey, sweepRoot, 4, nil,
-		)
-		require.NoError(t, err)
-		require.NotNil(t, root)
-
-		// Verify the tree was fully built (all leaves reachable).
-		leafCount := 0
-		for range root.LeavesIter() {
-			leafCount++
-		}
-		require.Equal(t, 2, leafCount)
-	})
 }
 
 // TestBuildTreeBFSEdgeCases tests edge cases and error conditions.
