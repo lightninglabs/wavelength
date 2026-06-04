@@ -1096,9 +1096,9 @@ func TestLedgerStoreAccountBalance(t *testing.T) {
 	require.Equal(t, int64(2000), balance)
 }
 
-// TestLedgerStoreAccountBalanceEmpty verifies that querying the balance
-// of an account with no entries returns zero.
-func TestLedgerStoreAccountBalanceEmpty(t *testing.T) {
+// TestLedgerStoreEmptyAggregates verifies that the balance and total
+// operator fee aggregates return zero when no entries exist.
+func TestLedgerStoreEmptyAggregates(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -1107,6 +1107,10 @@ func TestLedgerStoreAccountBalanceEmpty(t *testing.T) {
 	balance, err := store.GetAccountBalance(ctx, "fees_paid")
 	require.NoError(t, err)
 	require.Equal(t, int64(0), balance)
+
+	total, err := store.GetTotalOperatorFeesPaid(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), total)
 }
 
 // TestLedgerStoreTotalOperatorFeesPaid verifies that
@@ -1143,19 +1147,6 @@ func TestLedgerStoreTotalOperatorFeesPaid(t *testing.T) {
 	total, err := store.GetTotalOperatorFeesPaid(ctx)
 	require.NoError(t, err)
 	require.Equal(t, int64(10000), total)
-}
-
-// TestLedgerStoreTotalOperatorFeesPaidEmpty verifies that
-// GetTotalOperatorFeesPaid returns zero when no entries exist.
-func TestLedgerStoreTotalOperatorFeesPaidEmpty(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-	store := newLedgerStoreForTest(t)
-
-	total, err := store.GetTotalOperatorFeesPaid(ctx)
-	require.NoError(t, err)
-	require.Equal(t, int64(0), total)
 }
 
 // TestLedgerStoreListEntriesPagination verifies that ListLedgerEntries
@@ -1465,82 +1456,72 @@ func TestLedgerStoreIdempotentInsertBySession(t *testing.T) {
 	require.Equal(t, int64(1), count)
 }
 
-// TestLedgerStoreCheckConstraintSameAccount verifies that the CHECK
-// constraint preventing debit_account == credit_account is enforced.
-func TestLedgerStoreCheckConstraintSameAccount(t *testing.T) {
+// TestLedgerStoreInsertRejections verifies that the CHECK and FK
+// constraints reject malformed ledger entries: a self-transfer, a
+// non-positive amount, an unknown event type, and an unknown account.
+func TestLedgerStoreInsertRejections(t *testing.T) {
 	t.Parallel()
-
-	ctx := t.Context()
-	store := newLedgerStoreForTest(t)
-
-	entry := makeLedgerEntry(
-		"fees_paid", "fees_paid", 1000, "boarding_fee_paid",
-		[]byte("round-x"), time.Now().Unix(),
-	)
-
-	err := store.InsertLedgerEntry(ctx, entry)
-	require.Error(t, err)
-}
-
-// TestLedgerStoreCheckConstraintPositiveAmount verifies that the CHECK
-// constraint enforcing amount_sat > 0 rejects zero and negative amounts.
-func TestLedgerStoreCheckConstraintPositiveAmount(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-	store := newLedgerStoreForTest(t)
 
 	now := time.Now().Unix()
 
-	// Zero amount should be rejected.
-	zeroEntry := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 0, "boarding_fee_paid",
-		[]byte("round-zero"), now,
-	)
-	err := store.InsertLedgerEntry(ctx, zeroEntry)
-	require.Error(t, err)
+	tests := []struct {
+		name   string
+		debit  string
+		credit string
+		amount int64
+		event  string
+	}{
+		{
+			name:   "same account",
+			debit:  "fees_paid",
+			credit: "fees_paid",
+			amount: 1000,
+			event:  "boarding_fee_paid",
+		},
+		{
+			name:   "zero amount",
+			debit:  "fees_paid",
+			credit: "wallet_balance",
+			amount: 0,
+			event:  "boarding_fee_paid",
+		},
+		{
+			name:   "negative amount",
+			debit:  "fees_paid",
+			credit: "wallet_balance",
+			amount: -100,
+			event:  "boarding_fee_paid",
+		},
+		{
+			name:   "invalid event type",
+			debit:  "fees_paid",
+			credit: "wallet_balance",
+			amount: 1000,
+			event:  "invalid_event_type",
+		},
+		{
+			name:   "invalid account",
+			debit:  "nonexistent_account",
+			credit: "wallet_balance",
+			amount: 1000,
+			event:  "boarding_fee_paid",
+		},
+	}
 
-	// Negative amount should also be rejected.
-	negEntry := makeLedgerEntry(
-		"fees_paid", "wallet_balance", -100, "boarding_fee_paid",
-		[]byte("round-neg"), now+1,
-	)
-	err = store.InsertLedgerEntry(ctx, negEntry)
-	require.Error(t, err)
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-// TestLedgerStoreForeignKeyEventType verifies that inserting an entry
-// with an invalid event type fails the FK constraint.
-func TestLedgerStoreForeignKeyEventType(t *testing.T) {
-	t.Parallel()
+			ctx := t.Context()
+			store := newLedgerStoreForTest(t)
 
-	ctx := t.Context()
-	store := newLedgerStoreForTest(t)
-
-	entry := makeLedgerEntry(
-		"fees_paid", "wallet_balance", 1000, "invalid_event_type",
-		[]byte("round-fk"), time.Now().Unix(),
-	)
-
-	err := store.InsertLedgerEntry(ctx, entry)
-	require.Error(t, err)
-}
-
-// TestLedgerStoreForeignKeyAccount verifies that inserting an entry
-// with an invalid account ID fails the FK constraint.
-func TestLedgerStoreForeignKeyAccount(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-	store := newLedgerStoreForTest(t)
-
-	entry := makeLedgerEntry(
-		"nonexistent_account", "wallet_balance", 1000,
-		"boarding_fee_paid", []byte("round-fk2"), time.Now().Unix(),
-	)
-
-	err := store.InsertLedgerEntry(ctx, entry)
-	require.Error(t, err)
+			entry := makeLedgerEntry(
+				tc.debit, tc.credit, tc.amount, tc.event,
+				[]byte(tc.name), now,
+			)
+			require.Error(t, store.InsertLedgerEntry(ctx, entry))
+		})
+	}
 }
 
 // TestLedgerStoreMultipleAccountBalances verifies balance computation
