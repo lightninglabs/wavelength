@@ -132,12 +132,6 @@ func (s *Service) Deposit(ctx context.Context,
 		return nil, err
 	}
 
-	if s.deps.RPCServer == nil {
-		return nil, status.Error(
-			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
-		)
-	}
-
 	addrResp, err := s.deps.RPCServer.NewAddress(
 		ctx, &daemonrpc.NewAddressRequest{},
 	)
