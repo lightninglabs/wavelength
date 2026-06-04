@@ -293,134 +293,128 @@ func TestHandleFeePaidOnchainSweepRejectsZeroAmount(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidMessage)
 }
 
-// TestHandleVTXOReceivedRoundBoarding verifies that a boarding
-// or refresh receive is recorded with wallet_balance ->
-// vtxo_balance (own on-chain funds converted to VTXO balance).
-func TestHandleVTXOReceivedRoundBoarding(t *testing.T) {
+// TestHandleVTXOReceivedBySource verifies that an incoming VTXO is
+// booked vtxo_balance <- {wallet_balance, transfers_in,
+// transfers_out} depending on its Source, and that the structured
+// chain_txid/chain_vout columns (issue #504) carry the outpoint so
+// downstream onchain views don't have to parse the description blob.
+func TestHandleVTXOReceivedBySource(t *testing.T) {
 	t.Parallel()
 
-	a, store := newTestActor(t)
-	ctx := t.Context()
-
-	msg := &VTXOReceivedMsg{
-		OutpointHash: [32]byte{
-			0xaa,
-			0xbb,
+	cases := []struct {
+		name   string
+		source string
+		amount int64
+		hash   [32]byte
+		index  uint32
+		credit string
+	}{
+		{
+			// Boarding: own on-chain funds converted to VTXO
+			// balance, so the counter-account is wallet_balance.
+			name:   "round boarding",
+			source: SourceRoundBoarding,
+			amount: 50_000,
+			hash: [32]byte{
+				0xaa,
+				0xbb,
+			},
+			index:  0,
+			credit: AccountWalletBalance,
 		},
-		OutpointIndex: 0,
-		AmountSat:     50_000,
-		Source:        SourceRoundBoarding,
-		RoundID: [16]byte{
-			7,
-			8,
-			9,
+		{
+			// In-round participant receive: booked like an OOR
+			// receive, transfers_in -> vtxo_balance.
+			name:   "round transfer",
+			source: SourceRoundTransfer,
+			amount: 30_000,
+			hash: [32]byte{
+				0xab,
+				0xcd,
+			},
+			index:  0,
+			credit: AccountTransfersIn,
+		},
+		{
+			// Refresh / directed-send self-change: booked
+			// vtxo_balance -> transfers_out so the paired
+			// VTXOSent (gross forfeit) cancels on transfers_out
+			// and only the separate FeePaidMsg moves
+			// vtxo_balance. Crediting transfers_out instead of
+			// wallet_balance keeps wallet_balance from drifting
+			// on a flow that never touches the on-chain wallet.
+			name:   "round refresh",
+			source: SourceRoundRefresh,
+			amount: 40_000,
+			hash: [32]byte{
+				0xef,
+				0x01,
+			},
+			index:  2,
+			credit: AccountTransfersOut,
+		},
+		{
+			// OOR receive: transfers_in -> vtxo_balance.
+			name:   "oor",
+			source: SourceOOR,
+			amount: 25_000,
+			hash: [32]byte{
+				0xcc,
+				0xdd,
+			},
+			index:  1,
+			credit: AccountTransfersIn,
 		},
 	}
 
-	err := run(ctx, a, msg)
-	require.NoError(t, err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	entries := store.getEntries()
-	require.Len(t, entries, 1)
-	require.Equal(t, AccountVTXOBalance,
-		entries[0].DebitAccount)
-	require.Equal(t, AccountWalletBalance,
-		entries[0].CreditAccount)
-	require.Equal(t, int64(50_000), entries[0].AmountSat)
-	require.Equal(t, EventVTXOReceived,
-		entries[0].EventType)
+			a, store := newTestActor(t)
 
-	// The VTXO outpoint must land on the row's structured chain
-	// fields too. Issue #504: without these the wallet's onchain
-	// view renders a "round"-kind row with an empty txid and the
-	// outpoint only available by parsing the description blob.
-	require.Equal(
-		t, msg.OutpointHash[:], entries[0].ChainTxid,
-		"chain_txid must carry the VTXO outpoint hash",
-	)
-	require.NotNil(t, entries[0].ChainVout)
-	require.Equal(
-		t, int32(msg.OutpointIndex), *entries[0].ChainVout,
-		"chain_vout must carry the VTXO outpoint index",
-	)
-}
+			msg := &VTXOReceivedMsg{
+				OutpointHash:  tc.hash,
+				OutpointIndex: tc.index,
+				AmountSat:     tc.amount,
+				Source:        tc.source,
+				RoundID: [16]byte{
+					7,
+					8,
+					9,
+				},
+			}
 
-// TestHandleVTXOReceivedRoundTransfer verifies that an in-round
-// participant-to-participant VTXO receive is recorded the same
-// way as an OOR receive: transfers_in -> vtxo_balance.
-func TestHandleVTXOReceivedRoundTransfer(t *testing.T) {
-	t.Parallel()
+			require.NoError(t, run(t.Context(), a, msg))
 
-	a, store := newTestActor(t)
-	ctx := t.Context()
+			entries := store.getEntries()
+			require.Len(t, entries, 1)
+			require.Equal(
+				t, AccountVTXOBalance, entries[0].DebitAccount,
+			)
+			require.Equal(t, tc.credit, entries[0].CreditAccount)
+			require.Equal(t, tc.amount, entries[0].AmountSat)
+			require.Equal(
+				t, EventVTXOReceived, entries[0].EventType,
+			)
 
-	msg := &VTXOReceivedMsg{
-		OutpointHash: [32]byte{
-			0xab,
-			0xcd,
-		},
-		OutpointIndex: 0,
-		AmountSat:     30_000,
-		Source:        SourceRoundTransfer,
-		RoundID: [16]byte{
-			13,
-			14,
-			15,
-		},
+			// The VTXO outpoint must land on the row's
+			// structured chain fields. Issue #504: without
+			// these the wallet's onchain view renders a
+			// "round"-kind row with an empty txid and the
+			// outpoint only available by parsing the
+			// description blob.
+			require.Equal(
+				t, tc.hash[:], entries[0].ChainTxid,
+				"chain_txid must carry the VTXO outpoint hash",
+			)
+			require.NotNil(t, entries[0].ChainVout)
+			require.Equal(
+				t, int32(tc.index), *entries[0].ChainVout,
+				"chain_vout must carry the outpoint index",
+			)
+		})
 	}
-
-	err := run(ctx, a, msg)
-	require.NoError(t, err)
-
-	entries := store.getEntries()
-	require.Len(t, entries, 1)
-	require.Equal(t, AccountVTXOBalance,
-		entries[0].DebitAccount)
-	require.Equal(t, AccountTransfersIn,
-		entries[0].CreditAccount)
-}
-
-// TestHandleVTXOReceivedRoundRefresh verifies that a refresh
-// (or directed-send self-change) receive is booked vtxo_balance
-// -> transfers_out, so the paired VTXOSentMsg (gross forfeit)
-// and this leg cancel on transfers_out and the net effect on
-// vtxo_balance is -fee once the FeePaidMsg lands separately.
-// Crediting transfers_out instead of wallet_balance prevents
-// wallet_balance from drifting on a flow that never touches the
-// on-chain wallet.
-func TestHandleVTXOReceivedRoundRefresh(t *testing.T) {
-	t.Parallel()
-
-	a, store := newTestActor(t)
-	ctx := t.Context()
-
-	msg := &VTXOReceivedMsg{
-		OutpointHash: [32]byte{
-			0xef,
-			0x01,
-		},
-		OutpointIndex: 2,
-		AmountSat:     40_000,
-		Source:        SourceRoundRefresh,
-		RoundID: [16]byte{
-			16,
-			17,
-			18,
-		},
-	}
-
-	err := run(ctx, a, msg)
-	require.NoError(t, err)
-
-	entries := store.getEntries()
-	require.Len(t, entries, 1)
-	require.Equal(t, AccountVTXOBalance,
-		entries[0].DebitAccount)
-	require.Equal(t, AccountTransfersOut,
-		entries[0].CreditAccount)
-	require.Equal(t, int64(40_000), entries[0].AmountSat)
-	require.Equal(t, EventVTXOReceived,
-		entries[0].EventType)
 }
 
 // TestRefreshRoundNetsToFeeOnVTXOBalance is a scenario-level test
@@ -516,40 +510,6 @@ func TestRefreshRoundNetsToFeeOnVTXOBalance(t *testing.T) {
 	)
 }
 
-// TestHandleVTXOReceivedOOR verifies that an OOR-sourced VTXO
-// received is recorded with vtxo_balance -> transfers_in.
-func TestHandleVTXOReceivedOOR(t *testing.T) {
-	t.Parallel()
-
-	a, store := newTestActor(t)
-	ctx := t.Context()
-
-	msg := &VTXOReceivedMsg{
-		OutpointHash: [32]byte{
-			0xcc,
-			0xdd,
-		},
-		OutpointIndex: 1,
-		AmountSat:     25_000,
-		Source:        SourceOOR,
-		RoundID: [16]byte{
-			10,
-			11,
-			12,
-		},
-	}
-
-	err := run(ctx, a, msg)
-	require.NoError(t, err)
-
-	entries := store.getEntries()
-	require.Len(t, entries, 1)
-	require.Equal(t, AccountVTXOBalance,
-		entries[0].DebitAccount)
-	require.Equal(t, AccountTransfersIn,
-		entries[0].CreditAccount)
-}
-
 // TestHandleVTXOSent verifies that sending VTXOs via OOR is
 // recorded as an expense on transfers_out crediting vtxo_balance
 // and that SessionID is stored in the dedicated session_id column
@@ -619,57 +579,54 @@ func TestHandleVTXOSentInRound(t *testing.T) {
 	require.Nil(t, entries[0].SessionID)
 }
 
-// TestHandleVTXOSentNeitherSet verifies that a send carrying
-// neither SessionID nor RoundID is rejected with a clear error.
-// Both zero is ambiguous: the actor cannot tell whether the send
-// was in-round or out-of-round.
-func TestHandleVTXOSentNeitherSet(t *testing.T) {
+// TestHandleVTXOSentExclusiveContext verifies that a send must
+// carry exactly one of SessionID (OOR) or RoundID (in-round): both
+// zero is ambiguous (the actor can't tell which context) and both
+// set is contradictory (the two contexts are mutually exclusive).
+// Either malformed shape is rejected and writes nothing.
+func TestHandleVTXOSentExclusiveContext(t *testing.T) {
 	t.Parallel()
 
-	a, store := newTestActor(t)
-	ctx := t.Context()
-
-	msg := &VTXOSentMsg{
-		SessionID: [32]byte{},
-		RoundID:   [16]byte{},
-		AmountSat: 1,
+	cases := []struct {
+		name      string
+		sessionID [32]byte
+		roundID   [16]byte
+		contain   string
+	}{
+		{
+			name:    "neither set",
+			contain: "requires one of SessionID or RoundID",
+		},
+		{
+			name: "both set",
+			sessionID: [32]byte{
+				0x11,
+			},
+			roundID: [16]byte{
+				0x22,
+			},
+			contain: "cannot set both SessionID and RoundID",
+		},
 	}
 
-	err := run(ctx, a, msg)
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrInvalidMessage)
-	require.Contains(t, err.Error(),
-		"requires one of SessionID or RoundID")
-	require.Empty(t, store.getEntries())
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-// TestHandleVTXOSentBothSet verifies that a send carrying both
-// SessionID and RoundID is rejected. An in-round send and an
-// OOR send are mutually exclusive contexts.
-func TestHandleVTXOSentBothSet(t *testing.T) {
-	t.Parallel()
+			a, store := newTestActor(t)
 
-	a, store := newTestActor(t)
-	ctx := t.Context()
+			msg := &VTXOSentMsg{
+				SessionID: tc.sessionID,
+				RoundID:   tc.roundID,
+				AmountSat: 1,
+			}
 
-	msg := &VTXOSentMsg{
-		SessionID: [32]byte{
-			0x11,
-		},
-		RoundID: [16]byte{
-			0x22,
-		},
-		AmountSat: 1,
+			err := run(t.Context(), a, msg)
+			require.ErrorIs(t, err, ErrInvalidMessage)
+			require.Contains(t, err.Error(), tc.contain)
+			require.Empty(t, store.getEntries())
+		})
 	}
-
-	err := run(ctx, a, msg)
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrInvalidMessage)
-	require.Contains(
-		t, err.Error(),
-		"cannot set both SessionID and RoundID",
-	)
-	require.Empty(t, store.getEntries())
 }
 
 // TestHandleVTXOSendReceiveAreGross verifies that a matched
@@ -721,53 +678,104 @@ func TestHandleVTXOSendReceiveAreGross(t *testing.T) {
 // ledger entries that together reduce vtxo_balance by the gross
 // AmountSat: a send leg for (AmountSat - ExitCostSat) debiting
 // transfers_out and a fee leg for ExitCostSat debiting
-// onchain_fees. Both legs credit vtxo_balance.
+// onchain_fees. Both legs credit vtxo_balance and carry the same
+// outpoint-scoped 36-byte IdempotencyKey so the durable actor's
+// outer tx provides crash atomicity while
+// idx_client_ledger_idempotent_key + ON CONFLICT DO NOTHING makes
+// an out-of-band replay safe.
 func TestHandleExitCost(t *testing.T) {
 	t.Parallel()
 
-	a, store := newTestActor(t)
-	ctx := t.Context()
-
-	msg := &ExitCostMsg{
-		OutpointHash: [32]byte{
-			0xee,
-			0xff,
+	cases := []struct {
+		name   string
+		hash   [32]byte
+		index  uint32
+		amount int64
+		fee    int64
+	}{
+		{
+			name: "fee well below value",
+			hash: [32]byte{
+				0xee,
+				0xff,
+			},
+			index:  2,
+			amount: 100_000,
+			fee:    5_000,
 		},
-		OutpointIndex: 2,
-		AmountSat:     100_000,
-		ExitCostSat:   5_000,
-		BlockHeight:   800_500,
+		{
+			name: "shared idempotency key",
+			hash: [32]byte{
+				0xab,
+			},
+			index:  7,
+			amount: 50_000,
+			fee:    3_500,
+		},
 	}
 
-	err := run(ctx, a, msg)
-	require.NoError(t, err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	entries := store.getEntries()
-	require.Len(t, entries, 2)
+			a, store := newTestActor(t)
 
-	// Send leg: debit transfers_out (net of fee), credit
-	// vtxo_balance.
-	require.Equal(t, AccountTransfersOut,
-		entries[0].DebitAccount)
-	require.Equal(t, AccountVTXOBalance,
-		entries[0].CreditAccount)
-	require.Equal(t, int64(95_000), entries[0].AmountSat)
-	require.Equal(t, EventVTXOSent, entries[0].EventType)
+			msg := &ExitCostMsg{
+				OutpointHash:  tc.hash,
+				OutpointIndex: tc.index,
+				AmountSat:     tc.amount,
+				ExitCostSat:   tc.fee,
+				BlockHeight:   800_500,
+			}
 
-	// Fee leg: debit onchain_fees, credit vtxo_balance.
-	require.Equal(t, AccountOnchainFees,
-		entries[1].DebitAccount)
-	require.Equal(t, AccountVTXOBalance,
-		entries[1].CreditAccount)
-	require.Equal(t, int64(5_000), entries[1].AmountSat)
-	require.Equal(t, EventOnchainFeePaid,
-		entries[1].EventType)
+			require.NoError(t, run(t.Context(), a, msg))
 
-	// Sanity: the two credit amounts sum to the gross VTXO
-	// value, so vtxo_balance drops by the full exited amount.
-	require.Equal(
-		t, msg.AmountSat, entries[0].AmountSat+entries[1].AmountSat,
-	)
+			entries := store.getEntries()
+			require.Len(t, entries, 2)
+
+			// Send leg: debit transfers_out (net of fee),
+			// credit vtxo_balance.
+			require.Equal(
+				t, AccountTransfersOut, entries[0].DebitAccount,
+			)
+			require.Equal(
+				t, AccountVTXOBalance, entries[0].CreditAccount,
+			)
+			require.Equal(t, tc.amount-tc.fee,
+				entries[0].AmountSat)
+			require.Equal(t, EventVTXOSent, entries[0].EventType)
+
+			// Fee leg: debit onchain_fees, credit vtxo_balance.
+			require.Equal(
+				t, AccountOnchainFees, entries[1].DebitAccount,
+			)
+			require.Equal(
+				t, AccountVTXOBalance, entries[1].CreditAccount,
+			)
+			require.Equal(t, tc.fee, entries[1].AmountSat)
+			require.Equal(
+				t, EventOnchainFeePaid, entries[1].EventType,
+			)
+
+			// The two credit amounts sum to the gross VTXO
+			// value, so vtxo_balance drops by the full exited
+			// amount.
+			require.Equal(
+				t, msg.AmountSat,
+				entries[0].AmountSat+entries[1].AmountSat,
+			)
+
+			// Both legs carry the same outpoint-scoped 36-byte
+			// IdempotencyKey so the partial unique index
+			// idx_client_ledger_idempotent_key dedups a replay.
+			key := exitIdempotencyKey(
+				msg.OutpointHash, msg.OutpointIndex,
+			)
+			require.Len(t, key, 36)
+			require.Equal(t, key, entries[0].IdempotencyKey)
+			require.Equal(t, key, entries[1].IdempotencyKey)
+		})
+	}
 }
 
 // TestHandleExitCostFeeExceedsValue verifies that an exit whose
@@ -848,60 +856,6 @@ func (d *dedupLedgerStore) getEntries() []LedgerEntry {
 	defer d.mu.Unlock()
 
 	return append([]LedgerEntry{}, d.entries...)
-}
-
-// TestHandleExitCostWritesBothLegsWithSharedKey verifies that
-// handleExitCost emits the send leg and the fee leg with the
-// correct account sides and that both carry the same
-// outpoint-derived IdempotencyKey. The durable actor's outer tx
-// provides crash atomicity for the two writes; the shared
-// idempotency key is what makes an out-of-band replay safe via
-// idx_client_ledger_idempotent_key + ON CONFLICT DO NOTHING.
-func TestHandleExitCostWritesBothLegsWithSharedKey(t *testing.T) {
-	t.Parallel()
-
-	a, store := newTestActor(t)
-	ctx := t.Context()
-
-	msg := &ExitCostMsg{
-		OutpointHash: [32]byte{
-			0xab,
-		},
-		OutpointIndex: 7,
-		AmountSat:     50_000,
-		ExitCostSat:   3_500,
-		BlockHeight:   800_800,
-	}
-
-	err := run(ctx, a, msg)
-	require.NoError(t, err)
-
-	entries := store.getEntries()
-	require.Len(t, entries, 2)
-
-	// Send leg: transfers_out <- vtxo_balance for net amount.
-	require.Equal(t, AccountTransfersOut, entries[0].DebitAccount)
-	require.Equal(
-		t, AccountVTXOBalance, entries[0].CreditAccount,
-	)
-	require.Equal(t, int64(46_500), entries[0].AmountSat)
-	require.Equal(t, EventVTXOSent, entries[0].EventType)
-
-	// Fee leg: onchain_fees <- vtxo_balance for the exit cost.
-	require.Equal(t, AccountOnchainFees, entries[1].DebitAccount)
-	require.Equal(
-		t, AccountVTXOBalance, entries[1].CreditAccount,
-	)
-	require.Equal(t, int64(3_500), entries[1].AmountSat)
-	require.Equal(t, EventOnchainFeePaid, entries[1].EventType)
-
-	// Both legs must carry the same outpoint-scoped
-	// IdempotencyKey so the partial unique index
-	// idx_client_ledger_idempotent_key dedups a replay.
-	key := exitIdempotencyKey(msg.OutpointHash, msg.OutpointIndex)
-	require.Equal(t, key, entries[0].IdempotencyKey)
-	require.Equal(t, key, entries[1].IdempotencyKey)
-	require.Len(t, key, 36)
 }
 
 // TestHandleExitCostReplayIsIdempotent simulates an at-least-once
