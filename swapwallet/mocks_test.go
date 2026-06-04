@@ -118,6 +118,12 @@ func (f *fakeRPCServer) ListTransactions(_ context.Context,
 func (f *fakeRPCServer) GetInfo(_ context.Context,
 	_ *daemonrpc.GetInfoRequest) (*daemonrpc.GetInfoResponse, error) {
 
+	if f.getInfoResp == nil && f.getInfoErr == nil {
+		return &daemonrpc.GetInfoResponse{
+			WalletState: daemonrpc.WalletState_WALLET_STATE_READY,
+		}, nil
+	}
+
 	return f.getInfoResp, f.getInfoErr
 }
 

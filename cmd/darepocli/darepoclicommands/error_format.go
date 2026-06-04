@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -12,6 +13,7 @@ import (
 const (
 	defaultErrorCode = "EXECUTION_FAILED"
 	invalidArgsCode  = "INVALID_ARGS"
+	walletLockedCode = "WALLET_LOCKED"
 )
 
 type commandError struct {
@@ -54,6 +56,10 @@ func formatCommandError(err error) commandError {
 		}
 	}
 
+	if daemonrpc.IsWalletNotReadyError(err) {
+		return formatWalletNotReadyError(err)
+	}
+
 	if rpcErr, ok := parseRPCErrorChain(err.Error()); ok {
 		return commandError{
 			code:    grpcCodeNameToCLI(rpcErr.code),
@@ -72,6 +78,28 @@ func formatCommandError(err error) commandError {
 	return commandError{
 		code:    defaultErrorCode,
 		message: err.Error(),
+	}
+}
+
+// formatWalletNotReadyError gives wallet lifecycle preconditions the
+// actionable CLI wording users need instead of a raw gRPC status string.
+func formatWalletNotReadyError(err error) commandError {
+	msg := "wallet is not ready; check `darepocli getinfo`"
+	state, _ := daemonrpc.WalletNotReadyState(err)
+	switch state {
+	case daemonrpc.WalletNotReadyStateNone:
+		msg = "wallet is not created; run `darepocli create`"
+
+	case daemonrpc.WalletNotReadyStateLocked:
+		msg = "wallet is locked; run `darepocli unlock`"
+
+	case daemonrpc.WalletNotReadyStateSyncing:
+		msg = "wallet is syncing; try again once sync completes"
+	}
+
+	return commandError{
+		code:    walletLockedCode,
+		message: msg,
 	}
 }
 

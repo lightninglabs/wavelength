@@ -13,11 +13,30 @@ import (
 func TestWalletNotReadyErrorMatchesStructuredReason(t *testing.T) {
 	t.Parallel()
 
-	err := WalletNotReadyError("custom readiness wording")
+	err := WalletNotReadyStateError(
+		"custom readiness wording", WalletNotReadyStateLocked,
+	)
 
 	require.True(t, IsWalletNotReadyError(err))
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 	require.Contains(t, err.Error(), "custom readiness wording")
+
+	state, ok := WalletNotReadyState(err)
+	require.True(t, ok)
+	require.Equal(t, WalletNotReadyStateLocked, state)
+}
+
+// TestWalletNotReadyErrorAllowsMissingState verifies older callers can still
+// emit the coarse wallet-not-ready reason without state metadata.
+func TestWalletNotReadyErrorAllowsMissingState(t *testing.T) {
+	t.Parallel()
+
+	err := WalletNotReadyError("custom readiness wording")
+
+	require.True(t, IsWalletNotReadyError(err))
+
+	_, ok := WalletNotReadyState(err)
+	require.False(t, ok)
 }
 
 // TestIsWalletNotReadyErrorRejectsPlainFailedPrecondition verifies unrelated

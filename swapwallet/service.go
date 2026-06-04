@@ -63,6 +63,10 @@ func (s *Service) PrepareSend(ctx context.Context,
 	req *walletdkrpc.PrepareSendRequest) (*walletdkrpc.PrepareSendResponse,
 	error) {
 
+	if err := s.requireWalletReady(ctx); err != nil {
+		return nil, err
+	}
+
 	return s.router.PrepareSend(ctx, req)
 }
 
@@ -71,6 +75,10 @@ func (s *Service) PrepareSend(ctx context.Context,
 // the existing LeaveVTXOs cooperative-exit RPC.
 func (s *Service) Send(ctx context.Context, req *walletdkrpc.SendRequest) (
 	*walletdkrpc.SendResponse, error) {
+
+	if err := s.requireWalletReady(ctx); err != nil {
+		return nil, err
+	}
 
 	return s.router.Send(ctx, req)
 }
@@ -99,6 +107,10 @@ func (s *Service) ExitStatus(ctx context.Context,
 func (s *Service) Recv(ctx context.Context, req *walletdkrpc.RecvRequest) (
 	*walletdkrpc.RecvResponse, error) {
 
+	if err := s.requireWalletReady(ctx); err != nil {
+		return nil, err
+	}
+
 	return s.recv.Recv(ctx, req)
 }
 
@@ -116,10 +128,8 @@ func (s *Service) List(ctx context.Context, req *walletdkrpc.ListRequest) (
 func (s *Service) Deposit(ctx context.Context,
 	req *walletdkrpc.DepositRequest) (*walletdkrpc.DepositResponse, error) {
 
-	if s.deps.RPCServer == nil {
-		return nil, status.Error(
-			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
-		)
+	if err := s.requireWalletReady(ctx); err != nil {
+		return nil, err
 	}
 
 	addrResp, err := s.deps.RPCServer.NewAddress(
@@ -158,6 +168,52 @@ func (s *Service) Deposit(ctx context.Context,
 		OnchainAddress: addrResp.GetAddress(),
 		Entry:          entry,
 	}, nil
+}
+
+// requireWalletReady rejects wallet verbs that need unlocked key material
+// before they can reach swap or address-generation code paths.
+func (s *Service) requireWalletReady(ctx context.Context) error {
+	if s == nil || s.deps == nil || s.deps.RPCServer == nil {
+		return status.Error(
+			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
+		)
+	}
+
+	info, err := s.deps.RPCServer.GetInfo(
+		ctx, &daemonrpc.GetInfoRequest{},
+	)
+	if err != nil {
+		return fmt.Errorf("get info: %w", err)
+	}
+
+	switch info.GetWalletState() {
+	case daemonrpc.WalletState_WALLET_STATE_READY:
+		return nil
+
+	case daemonrpc.WalletState_WALLET_STATE_NONE:
+		return daemonrpc.WalletNotReadyStateError(
+			"wallet is not ready",
+			daemonrpc.WalletNotReadyStateNone,
+		)
+
+	case daemonrpc.WalletState_WALLET_STATE_LOCKED:
+		return daemonrpc.WalletNotReadyStateError(
+			"wallet is not ready",
+			daemonrpc.WalletNotReadyStateLocked,
+		)
+
+	case daemonrpc.WalletState_WALLET_STATE_SYNCING:
+		return daemonrpc.WalletNotReadyStateError(
+			"wallet is not ready",
+			daemonrpc.WalletNotReadyStateSyncing,
+		)
+
+	default:
+		return daemonrpc.WalletNotReadyStateError(
+			"wallet is not ready",
+			daemonrpc.WalletNotReadyStateUnknown,
+		)
+	}
 }
 
 // Balance composes the unified balance summary by reading the daemon's
