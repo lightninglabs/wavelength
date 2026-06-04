@@ -23,18 +23,26 @@ func randomP2TRScript(t *testing.T) []byte {
 	return append([]byte{txscript.OP_1, 0x20}, key[:]...)
 }
 
+// testCheckpointPolicy returns a checkpoint policy backed by a fresh operator
+// key for use in BuildPSBT tests.
+func testCheckpointPolicy(t *testing.T) arkscript.CheckpointPolicy {
+	t.Helper()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	return arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+}
+
 // TestBuildPSBTHappyPath asserts BuildPSBT creates a signable checkpoint PSBT
 // and returns the corresponding tap tree encoding.
 func TestBuildPSBTHappyPath(t *testing.T) {
 	t.Parallel()
 
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	policy := arkscript.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
+	policy := testCheckpointPolicy(t)
 
 	witnessUtxo := &wire.TxOut{
 		Value:    5000,
@@ -47,16 +55,12 @@ func TestBuildPSBTHappyPath(t *testing.T) {
 				Hash: [32]byte{
 					1,
 				},
-				Index: 0,
 			},
 			Output: witnessUtxo,
 		},
 		OwnerLeafScript: []byte{
-			txscript.OP_1,
-			txscript.OP_1,
-			txscript.OP_ADD,
-			txscript.OP_2,
-			txscript.OP_EQUAL,
+			txscript.OP_1, txscript.OP_1, txscript.OP_ADD,
+			txscript.OP_2, txscript.OP_EQUAL,
 		},
 	}
 
@@ -103,14 +107,6 @@ func TestBuildPSBTHappyPath(t *testing.T) {
 func TestBuildPSBTRejectsMissingWitness(t *testing.T) {
 	t.Parallel()
 
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	policy := arkscript.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
-
-	_, err = BuildPSBT(policy, Input{})
+	_, err := BuildPSBT(testCheckpointPolicy(t), Input{})
 	require.Error(t, err)
 }
