@@ -152,12 +152,37 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 				ci.Outpoint, err)
 		}
 
-		var desc *vtxo.Descriptor
+		var (
+			desc           *vtxo.Descriptor
+			policyTemplate *arkscript.PolicyTemplate
+			policyOperator *btcec.PublicKey
+			policyDelay    uint32
+		)
+
+		if len(ci.VtxoPolicyTemplate) > 0 {
+			policyTemplate, policyOperator, policyDelay, err =
+				decodeCustomInputPolicy(
+					ci.VtxoPolicyTemplate,
+				)
+			if err != nil {
+				return nil, fmt.Errorf("decode policy for "+
+					"%s: %w", outpoint, err)
+			}
+		}
 
 		// If the caller provided amount and pkscript, build
 		// the descriptor directly (for VTXOs not in the local
 		// store, e.g., received via OOR).
 		if ci.AmountSat > 0 && len(ci.PkScript) > 0 {
+			descOperator := operatorKey
+			descExitDelay := exitDelay
+			if policyOperator != nil {
+				descOperator = policyOperator
+			}
+			if policyDelay != 0 {
+				descExitDelay = policyDelay
+			}
+
 			desc = &vtxo.Descriptor{
 				Outpoint: outpoint,
 				Amount:   btcutil.Amount(ci.AmountSat),
@@ -166,8 +191,8 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 				),
 				PkScript:       ci.PkScript,
 				ClientKey:      clientKey,
-				OperatorKey:    operatorKey,
-				RelativeExpiry: exitDelay,
+				OperatorKey:    descOperator,
+				RelativeExpiry: descExitDelay,
 			}
 		} else {
 			// Fall back to store lookup.
@@ -176,6 +201,17 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 				return nil, fmt.Errorf("look up VTXO %s: %w",
 					outpoint, err)
 			}
+		}
+
+		if desc == nil {
+			return nil, fmt.Errorf("missing descriptor for %s",
+				outpoint)
+		}
+		if policyOperator != nil {
+			desc.OperatorKey = policyOperator
+		}
+		if policyDelay != 0 {
+			desc.RelativeExpiry = policyDelay
 		}
 
 		var (
@@ -187,14 +223,6 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 		// when one is provided. This catches malformed policies
 		// before they reach the server.
 		if len(ci.VtxoPolicyTemplate) > 0 {
-			template, err := arkscript.DecodePolicyTemplate(
-				ci.VtxoPolicyTemplate,
-			)
-			if err != nil {
-				return nil, fmt.Errorf("decode policy for "+
-					"%s: %w", outpoint, err)
-			}
-
 			// When the caller also supplied a pkScript, verify
 			// the policy template compiles to that pkScript. This
 			// binds the semantic policy to the on-chain output
@@ -203,17 +231,25 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 			// one policy on the wire and produce signatures
 			// against an unrelated tap tree.
 			if len(ci.PkScript) > 0 &&
-				!template.MatchesPkScript(ci.PkScript) {
+				!policyTemplate.MatchesPkScript(ci.PkScript) {
 				return nil, fmt.Errorf("policy template for "+
 					"%s does not match supplied pkScript",
 					outpoint)
 			}
 
 			nodes := make(
-				[]arkscript.Node, len(template.Leaves),
+				[]arkscript.Node, len(policyTemplate.Leaves),
 			)
-			for i, leaf := range template.Leaves {
+			for i, leaf := range policyTemplate.Leaves {
 				nodes[i] = leaf.Node
+			}
+
+			validateOperator := policyOperator
+			if validateOperator == nil {
+				validateOperator = desc.OperatorKey
+			}
+			if validateOperator == nil {
+				validateOperator = operatorKey
 			}
 
 			// Custom OOR inputs (e.g. vHTLC claims) have
@@ -225,7 +261,7 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 			// minimum here.
 			err = arkscript.ValidatePolicy(
 				nodes, arkscript.PolicyValidationOpts{
-					OperatorKey: operatorKey,
+					OperatorKey: validateOperator,
 				},
 			)
 			if err != nil {
@@ -236,8 +272,9 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 			if len(ci.SpendPath) > 0 {
 				ownerLeaf, ownerLeafPolicy, err =
 					findSettlementOwnerLeaf(
-						template, clientKey.PubKey,
-						operatorKey, ci.SpendPath,
+						policyTemplate,
+						clientKey.PubKey,
+						validateOperator, ci.SpendPath,
 					)
 				if err != nil {
 					return nil, fmt.Errorf("derive "+
@@ -332,6 +369,26 @@ func customTaprootScriptSignatures(
 	}
 
 	return result, nil
+}
+
+// decodeCustomInputPolicy decodes caller-supplied semantic policy metadata and
+// extracts the historical operator key when the policy has standard VTXO
+// shape. Non-standard custom policies are validated against the stored
+// descriptor's operator key later.
+func decodeCustomInputPolicy(raw []byte) (*arkscript.PolicyTemplate,
+	*btcec.PublicKey, uint32, error) {
+
+	template, decodeErr := arkscript.DecodePolicyTemplate(raw)
+	if decodeErr != nil {
+		return nil, nil, 0, decodeErr
+	}
+
+	params, _ := arkscript.DecodeStandardVTXOParams(template)
+	if params == nil {
+		return template, nil, 0, nil
+	}
+
+	return template, params.OperatorKey, params.ExitDelay, nil
 }
 
 // findSettlementOwnerLeaf maps a custom auth spend path to the

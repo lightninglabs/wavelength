@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -187,6 +188,71 @@ func TestBuildCustomTransferInputsExternalVHTLCClaim(t *testing.T) {
 	effectiveRaw, err := effective.Encode()
 	require.NoError(t, err)
 	require.Equal(t, spendPath, effectiveRaw)
+}
+
+// TestBuildCustomTransferInputsExternalStandardUsesPolicyOperator verifies
+// that caller-supplied standard input policy metadata is treated as historical
+// input identity and is not overwritten by the fresh output-side operator key.
+func TestBuildCustomTransferInputsExternalStandardUsesPolicyOperator(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ownerPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	historicalOperator, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	freshOperator, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policyTemplate, pkScript, err := arkscript.EncodeStandardVTXOArtifacts(
+		ownerPriv.PubKey(), historicalOperator.PubKey(), 144,
+	)
+	require.NoError(t, err)
+
+	outpoint := testWalletOpsOutpoint(5)
+	clientKey := keychain.KeyDescriptor{
+		PubKey: ownerPriv.PubKey(),
+		KeyLocator: keychain.KeyLocator{
+			Family: 7,
+			Index:  8,
+		},
+	}
+
+	inputs, err := BuildCustomTransferInputs(
+		t.Context(), &testCustomInputStore{},
+		[]*daemonrpc.CustomOORInput{{
+			Outpoint:           outpoint.String(),
+			VtxoPolicyTemplate: policyTemplate,
+			AmountSat:          42_000,
+			PkScript:           pkScript,
+		}}, clientKey, freshOperator.PubKey(), 288,
+	)
+	require.NoError(t, err)
+	require.Len(t, inputs, 1)
+
+	// The operator key is round-tripped through schnorr (x-only)
+	// serialization in the policy template, so compare x-only bytes
+	// rather than the full point — Y parity is lost on encode and the
+	// decoded key always normalises to even-Y.
+	input := inputs[0]
+	require.Equal(
+		t,
+		schnorr.SerializePubKey(
+			historicalOperator.PubKey(),
+		),
+		schnorr.SerializePubKey(input.VTXO.OperatorKey),
+	)
+	require.NotEqual(
+		t,
+		schnorr.SerializePubKey(
+			freshOperator.PubKey(),
+		),
+		schnorr.SerializePubKey(input.VTXO.OperatorKey),
+	)
+	require.Equal(t, uint32(144), input.VTXO.RelativeExpiry)
 }
 
 // TestBuildCustomTransferInputsStoreLookupVHTLCClaim verifies that custom

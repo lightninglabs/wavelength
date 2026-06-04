@@ -2005,23 +2005,28 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		}
 	}
 
-	// Resolve the recipient's pkScript from the destination
-	// oneof. Pubkey destinations need operator terms to derive
-	// VTXO-compatible taproot outputs, so we pass a lazy fetcher.
+	// Fetch output-side operator terms once at the new OOR artifact
+	// boundary. The same snapshot must drive the recipient script,
+	// recipient policy template, checkpoint policy, and any change
+	// output so all newly-created artifacts commit to one exact key.
 	phaseStart := time.Now()
-	pkScript, err := r.resolveOutputPkScript(ctx, req.Recipient)
-	resolveScriptDuration = time.Since(phaseStart)
-	if err != nil {
-		return nil, err
-	}
-
-	// Fetch operator terms for the checkpoint policy.
-	phaseStart = time.Now()
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	operatorTermsDuration = time.Since(phaseStart)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "unable to fetch "+
 			"operator terms: %v", err)
+	}
+
+	// Resolve the recipient's pkScript from the destination oneof using
+	// the same output-side terms snapshot that will be persisted on the
+	// recipient policy below.
+	phaseStart = time.Now()
+	pkScript, err := r.resolveOutputPkScript(
+		ctx, req.Recipient, terms.PubKey, terms.VTXOExitDelay,
+	)
+	resolveScriptDuration = time.Since(phaseStart)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := validateOORRecipientDust(
@@ -2030,9 +2035,18 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		return nil, err
 	}
 
-	// For dry_run, return a preview before selecting wallet inputs or
-	// submitting to the actor. The operator is still queried above so the
-	// preview enforces the current dust limit.
+	phaseStart = time.Now()
+	recipientPolicyTemplate, err := r.resolveOutputPolicyTemplate(
+		ctx, req.Recipient, pkScript, terms.PubKey, terms.VTXOExitDelay,
+	)
+	policyResolveDuration = time.Since(phaseStart)
+	if err != nil {
+		return nil, err
+	}
+
+	// For dry_run, validate destination construction then return a preview
+	// without submitting anything to the actor. The operator terms fetched
+	// above still enforce the current dust limit on the preview.
 	if req.DryRun {
 		return &daemonrpc.SendOORResponse{
 			Status: "preview",
@@ -2057,15 +2071,6 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	policy := arkscript.CheckpointPolicy{
 		OperatorKey: terms.PubKey,
 		CSVDelay:    terms.VTXOExitDelay,
-	}
-
-	phaseStart = time.Now()
-	recipientPolicyTemplate, err := r.resolveOutputPolicyTemplate(
-		ctx, req.Recipient, pkScript, terms.PubKey, terms.VTXOExitDelay,
-	)
-	policyResolveDuration = time.Since(phaseStart)
-	if err != nil {
-		return nil, err
 	}
 
 	var (
@@ -2348,11 +2353,6 @@ func (r *RPCServer) PrepareOOR(ctx context.Context,
 			"initialized")
 	}
 
-	pkScript, err := r.resolveOutputPkScript(ctx, req.GetRecipient())
-	if err != nil {
-		return nil, err
-	}
-
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "unable to fetch "+
@@ -2362,6 +2362,13 @@ func (r *RPCServer) PrepareOOR(ctx context.Context,
 	if err := validateOORRecipientDust(
 		req.GetRecipient().GetAmountSat(), terms.DustLimit,
 	); err != nil {
+		return nil, err
+	}
+
+	pkScript, err := r.resolveOutputPkScript(
+		ctx, req.GetRecipient(), terms.PubKey, terms.VTXOExitDelay,
+	)
+	if err != nil {
 		return nil, err
 	}
 
@@ -3193,11 +3200,12 @@ func encodeStandardRecipientPolicy(ownerKey, operatorKey *btcec.PublicKey,
 }
 
 // resolveOutputPkScript derives a pkScript from the Output's destination
-// oneof. It supports address, pubkey, and semantic policy destinations. For
-// pubkey destinations, operator terms are fetched to derive a VTXO-compatible
-// taproot output.
+// oneof. It supports address, pubkey, and semantic policy destinations.
+// Pubkey destinations use the supplied operator policy snapshot to derive a
+// VTXO-compatible taproot output.
 func (r *RPCServer) resolveOutputPkScript(ctx context.Context,
-	out *daemonrpc.Output) ([]byte, error) {
+	out *daemonrpc.Output, operatorKey *btcec.PublicKey, exitDelay uint32) (
+	[]byte, error) {
 
 	switch d := out.Destination.(type) {
 	case *daemonrpc.Output_Address:
@@ -3230,20 +3238,11 @@ func (r *RPCServer) resolveOutputPkScript(ctx context.Context,
 		}
 
 		// For OOR sends, a pubkey destination creates a
-		// VTXO-compatible taproot output with the operator's
-		// collab key and exit delay (not a simple BIP-86
-		// key-path-only output). This ensures the recipient
-		// gets a standard Ark VTXO they can spend
-		// collaboratively or exit unilaterally.
-		terms, err := r.server.fetchOperatorTerms(ctx)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "fetch "+
-				"operator terms for pubkey destination: %v",
-				err)
-		}
-
+		// VTXO-compatible taproot output with the output-side
+		// operator collab key and exit delay (not a simple BIP-86
+		// key-path-only output).
 		pkScript, err := BuildPubKeyVTXOReceiveScript(
-			recipientKey, terms.PubKey, terms.VTXOExitDelay,
+			recipientKey, operatorKey, exitDelay,
 		)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "unable to "+
