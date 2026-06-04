@@ -614,31 +614,6 @@ func (s *Server) storeOperatorTerms(terms *types.OperatorTerms) {
 	s.operatorTerms.Store(terms)
 }
 
-// fetchCurrentOperatorPubKey issues a fresh GetInfo round-trip to the
-// operator and returns the operator's current long-term public key. The
-// daemon-startup OperatorTerms cache is also refreshed as a side effect so
-// other readers see the same snapshot. Used to plumb a live operator-key
-// lookup into the wallet and VTXO subsystems so refresh emissions build
-// the NEW VTXO output's policy template against the operator's join-time
-// key — VTXOs commit to their operator key for life, so the new output's
-// key is chosen at join time and stays stable on that VTXO forever.
-func (s *Server) fetchCurrentOperatorPubKey(ctx context.Context) (
-	*btcec.PublicKey, error) {
-
-	terms, err := s.fetchOperatorTerms(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("fetch operator terms: %w", err)
-	}
-
-	// Refresh the cache so unrelated readers (e.g. GetInfo) reflect the
-	// snapshot the refresh path used. The cache was previously only
-	// hydrated at daemon startup, which is what made it the wrong source
-	// of truth in the first place.
-	s.storeOperatorTerms(terms)
-
-	return terms.PubKey, nil
-}
-
 // isServerConnected returns the latest mailbox-ingress connectivity signal
 // reported by the daemon runtime.
 func (s *Server) isServerConnected() bool {
@@ -3358,7 +3333,6 @@ func (s *Server) initWalletActor(ctx context.Context,
 		),
 		wallet.WithClock(s.clk),
 		wallet.WithEagerRoundJoin(s.cfg.EagerRoundJoin),
-		wallet.WithFetchOperatorKey(s.fetchCurrentOperatorPubKey),
 	)
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,
@@ -3451,45 +3425,31 @@ func (s *Server) initRoundActor(ctx context.Context,
 		maxOperatorFee = btcutil.Amount(DefaultMaxOperatorFeeSat)
 	}
 
-	// Build the owned-script checker from the OOR artifact store.
-	// This allows the round FSM to determine which VTXOs belong
-	// to the local wallet by looking up registered receive scripts.
-	var scriptChecker round.OwnedScriptChecker
-	var scriptRegistrar round.OwnedScriptRegistrar
-	if s.db != nil {
-		oorStore := db.NewStore(
-			s.db.DB, s.db.Queries, s.db.Backend(),
-			s.log,
-		).NewOORArtifactStore(s.clk)
-
-		scriptChecker = &ownedScriptCheckerAdapter{
-			store: oorStore,
-		}
-		scriptRegistrar = &ownedScriptRegistrarAdapter{
-			store:       oorStore,
-			operatorKey: operatorTerms.PubKey,
-			exitDelay:   operatorTerms.VTXOExitDelay,
-		}
-	}
-
+	// Ownership of round-produced VTXOs is determined at confirmation
+	// time by matching each leaf's operator-bound pkScript against the
+	// local-owner intent requests (round.buildClientVTXOs), so the round
+	// actor no longer needs an owned-script checker/registrar. The
+	// operator key, forfeit script, and sweep delay for each round are
+	// delivered authoritatively by the server in the JoinRoundQuote, so
+	// there is no per-round operator-terms provider either; the round
+	// actor uses the client-committed startup snapshot for VTXOExitDelay
+	// and MinConfirmations.
 	roundCfg := &round.RoundClientConfig{
-		Name:                 "round-client",
-		Logger:               s.subLogger(round.Subsystem),
-		Wallet:               clientWallet,
-		RoundStore:           roundStore,
-		VTXOStore:            roundStore,
-		OperatorTerms:        operatorTerms,
-		ServerConn:           s.runtime.TellRef(),
-		ChainSource:          chainSourceRef,
-		WalletActor:          walletRef,
-		ChainParams:          s.chainParams,
-		ActorSystem:          s.actorSystem,
-		TimeoutActor:         timeoutRef,
-		MaxOperatorFee:       maxOperatorFee,
-		VTXOManager:          vtxoManager,
-		OwnedScriptChecker:   scriptChecker,
-		OwnedScriptRegistrar: scriptRegistrar,
-		LedgerSink:           fn.Some(ledger.NewSink(s.actorSystem)),
+		Name:           "round-client",
+		Logger:         s.subLogger(round.Subsystem),
+		Wallet:         clientWallet,
+		RoundStore:     roundStore,
+		VTXOStore:      roundStore,
+		OperatorTerms:  operatorTerms,
+		ServerConn:     s.runtime.TellRef(),
+		ChainSource:    chainSourceRef,
+		WalletActor:    walletRef,
+		ChainParams:    s.chainParams,
+		ActorSystem:    s.actorSystem,
+		TimeoutActor:   timeoutRef,
+		MaxOperatorFee: maxOperatorFee,
+		VTXOManager:    vtxoManager,
+		LedgerSink:     fn.Some(ledger.NewSink(s.actorSystem)),
 		ForfeitCollectionTimeout: s.cfg.
 			ForfeitCollectionTimeout,
 		RegistrationTimeout: s.cfg.RegistrationTimeout,
@@ -3565,7 +3525,6 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		LedgerSink:       fn.Some(ledger.NewSink(s.actorSystem)),
 		ChainResolver:    chainResolver,
 		RefreshFeeQuoter: s.autoRefreshFeeQuoter(),
-		FetchOperatorKey: s.fetchCurrentOperatorPubKey,
 		TerminalVTXOObserver: func(ctx context.Context,
 			outpoint wire.OutPoint) error {
 
@@ -3935,6 +3894,8 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 		MinConfirmations:    resp.MinConfirmations,
 		MaxOORLineageVBytes: resp.MaxOorLineageVbytes,
 	}
+
+	s.storeOperatorTerms(terms)
 
 	return terms, nil
 }

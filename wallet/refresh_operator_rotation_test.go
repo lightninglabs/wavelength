@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -10,20 +11,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestComposeRefreshTemplate is the wallet-side regression, parallel to
-// vtxo.TestRefreshEmissionUsesJoinTimeOperatorKey. handleRefreshVTXOs
-// hoists a single GetInfo fetch out of its per-outpoint loop and feeds
-// the resolved key into composeRefreshTemplate per VTXO; this test
-// exercises that helper directly.
+// TestComposeRefreshTemplate verifies that the wallet-side refresh helper
+// rebuilds the new VTXO output template with the operator-key placeholder
+// rather than any concrete operator key. The server binds its current key at
+// admission, which removes the refresh-after-rotation problem at the root —
+// the new output never commits to the old (or any) concrete operator key on
+// the client side. The owner key and exit delay are carried over from the
+// input descriptor.
 func TestComposeRefreshTemplate(t *testing.T) {
 	t.Parallel()
 
-	t.Run("rebuilds against resolved key", func(t *testing.T) {
+	t.Run("rebuilds with operator placeholder", func(t *testing.T) {
 		t.Parallel()
 
 		ownerKey := newTestPubKey(t)
 		k1 := newTestPubKey(t)
-		k2 := newTestPubKey(t)
 
 		const exitDelay = uint32(144)
 		storedTemplate, err := arkscript.EncodeStandardVTXOTemplate(
@@ -33,13 +35,17 @@ func TestComposeRefreshTemplate(t *testing.T) {
 
 		descriptor := &VTXODescriptor{PolicyTemplate: storedTemplate}
 
-		rebuilt, err := composeRefreshTemplate(descriptor, k2)
+		rebuilt, err := composeRefreshTemplate(descriptor)
 		require.NoError(t, err)
 
 		params := decodeWalletStandardParams(t, rebuilt)
 		require.True(
-			t, xOnlyPubKeyEqual(params.OperatorKey, k2),
-			"emitted template must commit to the resolved key K2",
+			t, xOnlyPubKeyEqual(
+				params.OperatorKey,
+				&arkscript.OperatorKeyPlaceholder,
+			),
+			"emitted template must commit to the operator "+
+				"placeholder, not a concrete key",
 		)
 		require.False(
 			t, xOnlyPubKeyEqual(params.OperatorKey, k1),
@@ -55,25 +61,21 @@ func TestComposeRefreshTemplate(t *testing.T) {
 		)
 	})
 
-	t.Run("returns stored bytes when key unresolved", func(t *testing.T) {
+	t.Run("rejects custom shape", func(t *testing.T) {
 		t.Parallel()
 
-		ownerKey := newTestPubKey(t)
-		k1 := newTestPubKey(t)
+		// A descriptor whose stored template is not the standard VTXO
+		// shape cannot be safely rewritten from a historical concrete
+		// operator key to the unbound placeholder.
+		descriptor := &VTXODescriptor{
+			PolicyTemplate: []byte{
+				0x00,
+			},
+		}
 
-		storedTemplate, err := arkscript.EncodeStandardVTXOTemplate(
-			ownerKey, k1, 144,
-		)
-		require.NoError(t, err)
-
-		descriptor := &VTXODescriptor{PolicyTemplate: storedTemplate}
-
-		out, err := composeRefreshTemplate(descriptor, nil)
-		require.NoError(t, err)
+		_, err := composeRefreshTemplate(descriptor)
 		require.True(
-			t, bytes.Equal(out, storedTemplate),
-			"with no resolved key the helper must return the "+
-				"stored template verbatim (harness path)",
+			t, errors.Is(err, ErrRefreshOperatorKeyUnsupported),
 		)
 	})
 }

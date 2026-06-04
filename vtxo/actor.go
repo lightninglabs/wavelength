@@ -2,11 +2,9 @@ package vtxo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
@@ -91,22 +89,6 @@ type VTXOActorConfig struct {
 	// emits RefreshVTXORequest with OperatorFee=0, which is fine:
 	// the seal-time quote is still the source of truth.
 	RefreshFeeQuoter RefreshFeeQuoter
-
-	// FetchOperatorKey, when set, returns the operator's current
-	// long-term public key by issuing a fresh GetInfo round-trip to
-	// the operator at the moment of an auto-refresh emission. The
-	// fetched key is used to build the NEW VTXO output's policy
-	// template; the input VTXO's stored operator key is intentionally
-	// not reused for the new output because VTXOs commit to their
-	// operator key for their entire lifetime, and the new output is a
-	// fresh VTXO whose operator key is chosen at join time.
-	//
-	// A nil callback causes refreshOutputTemplate to fall back to the
-	// descriptor's stored bytes (harness paths and pre-fix behavior).
-	// A non-nil callback that errors propagates the error so the
-	// refresh fails loudly rather than silently emitting against a
-	// stale key; the next expiry tick will retry.
-	FetchOperatorKey func(context.Context) (*btcec.PublicKey, error)
 }
 
 // VTXOActor manages the lifecycle of a single VTXO. It processes events using
@@ -148,42 +130,19 @@ func (a *VTXOActor) logger(ctx context.Context) btclog.Logger {
 // refreshOutputTemplate returns the policy template the auto-refresh emission
 // should attach to the relayed RefreshVTXORequest for the NEW VTXO output.
 //
-// The new output is a freshly-minted VTXO whose operator key is chosen at
-// join time — VTXOs commit to their operator key for life, so the input
-// VTXO's stored key must not leak into the new output. When the
-// FetchOperatorKey seam is wired, the actor issues a fresh GetInfo and uses
-// the returned key to rebuild the standard template. For non-standard shapes
-// (vHTLC etc.) the rebuild surface is unavailable and the actor falls back
-// to the descriptor's stored bytes, accepting that a key rotation across
-// those VTXOs will still be rejected by the rounds validator. When the seam
-// is unset the actor also falls back, which keeps harness paths working
-// unchanged.
+// The new output is a freshly-minted VTXO; under the
+// server-injected-operator-key design its template is built with the unbound
+// operator-key placeholder (arkscript.OperatorKeyPlaceholder) and the server
+// binds its current operator key at admission. The input VTXO's stored
+// operator key is intentionally not reused — VTXOs commit to their operator
+// key for life, and the new output gets the operator key the server chooses
+// at join time. Non-standard shapes (vHTLC etc.) return an explicit
+// unsupported error until refresh has a safe custom-policy placeholder rewrite.
 func (a *VTXOActor) refreshOutputTemplate(ctx context.Context,
 	vtxo *Descriptor) ([]byte, error) {
 
-	if a.cfg.FetchOperatorKey == nil {
-		return vtxo.EffectivePolicyTemplate()
-	}
-
-	currentKey, err := a.cfg.FetchOperatorKey(ctx)
+	rebuilt, err := vtxo.RefreshOutputTemplate()
 	if err != nil {
-		return nil, fmt.Errorf("fetch current operator key: %w", err)
-	}
-	if currentKey == nil {
-		return nil, fmt.Errorf("fetch current operator key: nil key " +
-			"returned")
-	}
-
-	rebuilt, err := vtxo.RefreshOutputTemplate(currentKey)
-	if err != nil {
-		// Non-standard policy: keep the stored bytes. The server may
-		// still accept the request if the operator key happens to
-		// match; if not, the rounds validator will reject it and the
-		// caller will see the same error surface as before the fix.
-		if errors.Is(err, ErrRefreshOperatorKeyUnsupported) {
-			return vtxo.EffectivePolicyTemplate()
-		}
-
 		return nil, err
 	}
 
@@ -414,13 +373,11 @@ func (a *VTXOActor) processOutbox(ctx context.Context,
 				ctx, vtxo,
 			)
 			if err != nil {
-				// WarnS, not ErrorS: this can fail because
-				// the FetchOperatorKey callback returned an
-				// error (operator unreachable, fresh GetInfo
-				// timed out) — an external trigger, not an
-				// internal bug. The next expiry tick will
-				// retry; skipping this emission is the right
-				// local behavior.
+				// WarnS, not ErrorS: unsupported custom
+				// refresh templates or malformed descriptors
+				// are external state, not internal bugs. The
+				// next expiry tick will retry; skipping this
+				// emission is the right local behavior.
 				a.logger(ctx).WarnS(
 					ctx,
 					"Failed to build refresh output "+

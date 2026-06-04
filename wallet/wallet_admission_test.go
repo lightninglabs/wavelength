@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -182,6 +183,35 @@ func testOutpoint(idx uint32) wire.OutPoint {
 			0xaa,
 		},
 		Index: idx,
+	}
+}
+
+// testRefreshVTXODescriptor builds a standard VTXO descriptor suitable for
+// refresh-path wallet tests.
+func testRefreshVTXODescriptor(t *testing.T, op wire.OutPoint) *VTXODescriptor {
+	t.Helper()
+
+	ownerPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const exitDelay = uint32(144)
+	policyTemplate, pkScript, err := arkscript.EncodeStandardVTXOArtifacts(
+		ownerPriv.PubKey(), operatorPriv.PubKey(), exitDelay,
+	)
+	require.NoError(t, err)
+
+	return &VTXODescriptor{
+		Outpoint:       op,
+		Amount:         50000,
+		PkScript:       pkScript,
+		PolicyTemplate: policyTemplate,
+		Expiry:         exitDelay,
+		ClientKey: keychain.KeyDescriptor{
+			PubKey: ownerPriv.PubKey(),
+		},
+		OperatorKey: operatorPriv.PubKey(),
 	}
 }
 
@@ -512,22 +542,7 @@ func TestRefreshReservesBeforeRoundRegistration(t *testing.T) {
 
 	op := testOutpoint(0)
 	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
-		op: {
-			Outpoint: op,
-			Amount:   50000,
-			PkScript: []byte{
-				0x51,
-				0x20,
-				0x01,
-			},
-			PolicyTemplate: []byte{
-				0xde,
-				0xad,
-				0xbe,
-				0xef,
-			},
-			Expiry: 100,
-		},
+		op: testRefreshVTXODescriptor(t, op),
 	}
 
 	mgr := &mockVTXOManagerBehavior{
@@ -559,22 +574,7 @@ func TestRefreshReleasesOnRoundRejection(t *testing.T) {
 
 	op := testOutpoint(0)
 	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
-		op: {
-			Outpoint: op,
-			Amount:   50000,
-			PkScript: []byte{
-				0x51,
-				0x20,
-				0x01,
-			},
-			PolicyTemplate: []byte{
-				0xde,
-				0xad,
-				0xbe,
-				0xef,
-			},
-			Expiry: 100,
-		},
+		op: testRefreshVTXODescriptor(t, op),
 	}
 
 	mgr := &mockVTXOManagerBehavior{
@@ -616,22 +616,7 @@ func TestRefreshFailsOnManagerRejection(t *testing.T) {
 
 	op := testOutpoint(0)
 	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
-		op: {
-			Outpoint: op,
-			Amount:   50000,
-			PkScript: []byte{
-				0x51,
-				0x20,
-				0x01,
-			},
-			PolicyTemplate: []byte{
-				0xde,
-				0xad,
-				0xbe,
-				0xef,
-			},
-			Expiry: 100,
-		},
+		op: testRefreshVTXODescriptor(t, op),
 	}
 
 	mgr := &mockVTXOManagerBehavior{

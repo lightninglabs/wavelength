@@ -2,7 +2,6 @@ package vtxo
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"testing"
 
@@ -28,156 +27,73 @@ func xOnlyEqual(a, b *btcec.PublicKey) bool {
 	)
 }
 
-// TestRefreshEmissionUsesJoinTimeOperatorKey pins the contract that the
-// auto-refresh emission must build the NEW VTXO output's policy template
-// against the operator key the client resolves at join time (via a fresh
-// GetInfo round-trip), not against the input VTXO's stored key. VTXOs
-// commit to their operator key for life; the new output is itself a fresh
-// VTXO, so its operator key is chosen at join time and is stable on that
-// new VTXO forever.
-//
-// The test exercises four behaviours through subtests:
-//
-//   - With a fetch callback that returns K2, the emitted template
-//     commits to K2 and not the descriptor's K1.
-//   - With no fetch callback wired, the emission falls back to the
-//     descriptor's stored bytes (harness path / non-standard policies).
-//   - When the fetch callback errors, refreshOutputTemplate propagates
-//     the error so the actor surfaces a failed refresh instead of
-//     silently emitting against a stale key.
-//   - When the fetch callback returns a nil key, the same propagation
-//     rule applies.
-func TestRefreshEmissionUsesJoinTimeOperatorKey(t *testing.T) {
+// TestRefreshEmissionUsesOperatorPlaceholder pins the contract that the
+// auto-refresh emission builds the NEW VTXO output's policy template with the
+// operator-key placeholder rather than any concrete operator key. The server
+// binds its current key at admission, which removes the refresh-after-rotation
+// problem at the root: the new output never commits to the input VTXO's stored
+// (or any) concrete operator key on the client side.
+func TestRefreshEmissionUsesOperatorPlaceholder(t *testing.T) {
 	t.Parallel()
 
-	t.Run("rebuilds against fetched key", func(t *testing.T) {
+	t.Run("rebuilds with operator placeholder", func(t *testing.T) {
 		t.Parallel()
 
 		h := newVTXOTestHarness(t)
 		vtxo := h.newTestDescriptor()
 
-		_, k2 := generateTestKeyPair(t)
-		require.False(
-			t, xOnlyEqual(vtxo.OperatorKey, k2),
-			"sanity: fetched key must differ from descriptor's "+
-				"stored key",
-		)
-
 		manager := newMockManagerRef(t)
-		actor := newRefreshTestActor(
-			h, vtxo, manager,
-			func(_ context.Context) (*btcec.PublicKey, error) {
-				return k2, nil
-			},
-		)
+		actor := newRefreshTestActor(h, vtxo, manager)
 
 		refreshReq := drainRefreshEmission(t, h, actor, manager, vtxo)
 		params := decodeStandardParams(t, refreshReq.PolicyTemplate)
 
 		require.True(
-			t, xOnlyEqual(params.OperatorKey, k2),
-			"emitted template must commit to the operator key "+
-				"fetched at join time",
+			t, xOnlyEqual(
+				params.OperatorKey,
+				&arkscript.OperatorKeyPlaceholder,
+			),
+			"emitted template must commit to the operator "+
+				"placeholder, not a concrete key",
 		)
 		require.False(
 			t, xOnlyEqual(params.OperatorKey, vtxo.OperatorKey),
 			"emitted template must no longer carry the "+
-				"descriptor's stale K1",
+				"descriptor's stored operator key",
 		)
 	})
 
-	t.Run("falls back to stored template when fetch unset",
-		func(t *testing.T) {
-			t.Parallel()
-
-			h := newVTXOTestHarness(t)
-			vtxo := h.newTestDescriptor()
-
-			manager := newMockManagerRef(t)
-			actor := newRefreshTestActor(h, vtxo, manager, nil)
-
-			refreshReq := drainRefreshEmission(
-				t, h, actor, manager, vtxo,
-			)
-			params := decodeStandardParams(
-				t, refreshReq.PolicyTemplate,
-			)
-
-			require.True(
-				t, xOnlyEqual(
-					params.OperatorKey, vtxo.OperatorKey,
-				),
-				"with no fetch wired the actor must keep "+
-					"the descriptor's stored template "+
-					"(legacy fallback)",
-			)
-		})
-
-	t.Run("propagates fetch error", func(t *testing.T) {
+	t.Run("rejects custom shape", func(t *testing.T) {
 		t.Parallel()
 
 		h := newVTXOTestHarness(t)
 		vtxo := h.newTestDescriptor()
-
-		fetchErr := errors.New("operator unreachable")
-		manager := newMockManagerRef(t)
-		actor := newRefreshTestActor(
-			h, vtxo, manager,
-			func(_ context.Context) (*btcec.PublicKey, error) {
-				return nil, fetchErr
-			},
-		)
-
-		_, err := actor.refreshOutputTemplate(h.ctx, vtxo)
-		require.ErrorIs(
-			t, err, fetchErr, "fetch error must propagate so "+
-				"the refresh fails instead of silently "+
-				"emitting against a stale key",
-		)
-	})
-
-	t.Run("rejects nil fetched key", func(t *testing.T) {
-		t.Parallel()
-
-		h := newVTXOTestHarness(t)
-		vtxo := h.newTestDescriptor()
+		vtxo.PolicyTemplate = []byte{
+			0x00,
+		}
 
 		manager := newMockManagerRef(t)
-		actor := newRefreshTestActor(
-			h, vtxo, manager,
-			func(_ context.Context) (*btcec.PublicKey, error) {
-				return nil, nil
-			},
-		)
+		actor := newRefreshTestActor(h, vtxo, manager)
 
 		_, err := actor.refreshOutputTemplate(h.ctx, vtxo)
-		require.Error(
-			t, err, "a fetch callback that returns a nil key "+
-				"must fail the refresh, not silently fall back",
+		require.True(
+			t, errors.Is(err, ErrRefreshOperatorKeyUnsupported),
 		)
 	})
 }
 
-// fetchOperatorKeyFn is the local alias for the FetchOperatorKey callback
-// signature; it keeps the newRefreshTestActor signature within the 80-col
-// line budget.
-type fetchOperatorKeyFn = func(context.Context) (*btcec.PublicKey, error)
-
 // newRefreshTestActor builds a minimal VTXOActor in LiveState wired to the
-// shared test harness. fetchOperatorKey may be nil to exercise the
-// legacy fallback path.
+// shared test harness.
 func newRefreshTestActor(h *vtxoTestHarness, vtxo *Descriptor,
-	manager *mockManagerRef,
-	fetchOperatorKey fetchOperatorKeyFn) *VTXOActor {
+	manager *mockManagerRef) *VTXOActor {
 
 	return &VTXOActor{
 		cfg: &VTXOActorConfig{
-			VTXO:             vtxo,
-			Store:            h.store,
-			Wallet:           h.wallet,
-			ChainParams:      &chaincfg.RegressionNetParams,
-			Manager:          manager,
-			FetchOperatorKey: fetchOperatorKey,
+			VTXO:        vtxo,
+			Store:       h.store,
+			Wallet:      h.wallet,
+			ChainParams: &chaincfg.RegressionNetParams,
+			Manager:     manager,
 		},
 		state: &LiveState{
 			VTXO: vtxo,

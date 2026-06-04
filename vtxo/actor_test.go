@@ -322,8 +322,12 @@ func TestProcessOutboxForfeitRequest(t *testing.T) {
 	require.True(
 		t, ok, "expected RefreshVTXORequest, got %T", relayMsg.Payload,
 	)
+	// The refresh emission builds the new output template with the
+	// operator-key placeholder; the server binds its current key at
+	// admission.
 	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
-		vtxo.ClientKey.PubKey, vtxo.OperatorKey, vtxo.RelativeExpiry,
+		vtxo.ClientKey.PubKey, &arkscript.OperatorKeyPlaceholder,
+		vtxo.RelativeExpiry,
 	)
 	require.NoError(t, err)
 

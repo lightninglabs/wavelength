@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
@@ -37,25 +36,23 @@ func (d *VTXODescriptor) EffectivePolicyTemplate() ([]byte, error) {
 // RefreshOutputTemplate returns the policy template that should be used for
 // the NEW VTXO output that a refresh round mints from this descriptor.
 //
-// See vtxo.(*Descriptor).RefreshOutputTemplate for the full rationale; the
-// wallet-level descriptor type carries the same fields and needs the same
-// rewrite so the explicit RefreshVTXOs RPC path emits a join request whose
-// new-output template commits to the operator's current key.
+// Under the server-injected-operator-key design the client no longer commits
+// to a concrete operator key in its round outputs: it builds the new output
+// template with the unbound operator-key placeholder
+// (arkscript.OperatorKeyPlaceholder) and the server binds its current
+// operator key at admission. This sidesteps the refresh-after-rotation
+// problem entirely — the refreshed output is never tied to the old (or any)
+// concrete operator key on the client side. The owner key and exit delay are
+// carried over from the input descriptor.
 //
 // Only the standard Ark VTXO shape is supported. Non-standard shapes
 // (vHTLC, custom) return ErrRefreshOperatorKeyUnsupported so callers can
 // surface the limitation rather than silently producing a misshaped
 // template.
-func (d *VTXODescriptor) RefreshOutputTemplate(
-	currentOperatorKey *btcec.PublicKey) ([]byte, error) {
-
+func (d *VTXODescriptor) RefreshOutputTemplate() ([]byte, error) {
 	if d == nil {
 		return nil, fmt.Errorf("wallet VTXO descriptor must be " +
 			"provided")
-	}
-
-	if currentOperatorKey == nil {
-		return nil, fmt.Errorf("current operator key must be provided")
 	}
 
 	if len(d.PolicyTemplate) == 0 {
@@ -63,13 +60,9 @@ func (d *VTXODescriptor) RefreshOutputTemplate(
 			"template must be provided")
 	}
 
-	// Wrap both decode failures with ErrRefreshOperatorKeyUnsupported so
-	// callers can branch with a single errors.Is check, mirroring
-	// vtxo.(*Descriptor).RefreshOutputTemplate. Without this, a
-	// DecodePolicyTemplate failure (malformed bytes or a future
-	// non-TLV shape) would propagate as a plain error and the caller's
-	// fallback path would diverge between the wallet and vtxo sides
-	// for the same input.
+	// Wrap decode failures with ErrRefreshOperatorKeyUnsupported so the
+	// wallet and vtxo refresh paths report the same explicit unsupported
+	// result for malformed or custom policy templates.
 	template, err := arkscript.DecodePolicyTemplate(d.PolicyTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("%w: decode stored policy template: %w",
@@ -83,6 +76,7 @@ func (d *VTXODescriptor) RefreshOutputTemplate(
 	}
 
 	return arkscript.EncodeStandardVTXOTemplate(
-		params.OwnerKey, currentOperatorKey, params.ExitDelay,
+		params.OwnerKey, &arkscript.OperatorKeyPlaceholder,
+		params.ExitDelay,
 	)
 }

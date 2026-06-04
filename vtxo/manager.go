@@ -9,7 +9,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
@@ -85,16 +84,6 @@ type ManagerConfig struct {
 	// OperatorFee=0, which is harmless because the server still
 	// fills in the residual via the JoinRoundQuote.
 	RefreshFeeQuoter RefreshFeeQuoter
-
-	// FetchOperatorKey is propagated to each spawned VTXOActor so
-	// the auto-refresh emission can fetch the operator's current
-	// long-term key at join time and rebuild the NEW VTXO output's
-	// policy template against it. A fresh fetch is used — rather
-	// than a daemon-startup cache — because VTXOs commit to their
-	// operator key for life and the new output's key is chosen at
-	// join time. Nil leaves the spawned actors falling back to the
-	// descriptor's stored bytes (the pre-fix behavior).
-	FetchOperatorKey func(context.Context) (*btcec.PublicKey, error)
 
 	// TerminalVTXOObserver receives the outpoint of VTXOs that leave the
 	// manager's active set so daemon-local observers can clean up related
@@ -571,7 +560,6 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 		Manager:          m.managerRef,
 		LedgerSink:       m.cfg.LedgerSink,
 		RefreshFeeQuoter: m.cfg.RefreshFeeQuoter,
-		FetchOperatorKey: m.cfg.FetchOperatorKey,
 	}
 
 	vtxoActor := NewVTXOActor(ctx, actorCfg)
