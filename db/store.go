@@ -338,3 +338,11 @@ func (s *Store) NewUnilateralExitStore(
 func (s *Store) NewVHTLCRecoveryStore(clk clock.Clock) *VHTLCRecoveryStoreDB {
 	return NewVHTLCRecoveryStore(s, clk)
 }
+
+// NewOORSessionRegistryStore builds the OOR session registry control-plane
+// store with transactional query execution.
+func (s *Store) NewOORSessionRegistryStore(
+	clk clock.Clock) *OORSessionRegistryStoreDB {
+
+	return NewOORSessionRegistryStore(s, clk)
+}

@@ -6,6 +6,7 @@ package sqlc
 
 import (
 	"context"
+	"database/sql"
 )
 
 type Querier interface {
@@ -48,6 +49,7 @@ type Querier interface {
 	GetOORPackageByOutpoint(ctx context.Context, arg GetOORPackageByOutpointParams) (GetOORPackageByOutpointRow, error)
 	GetOORPackageByOutpointAndKind(ctx context.Context, arg GetOORPackageByOutpointAndKindParams) (GetOORPackageByOutpointAndKindRow, error)
 	GetOORRecipientCursor(ctx context.Context, recipientPkScript []byte) (OorRecipientCursor, error)
+	GetOORSessionRegistry(ctx context.Context, sessionID []byte) (OorSessionRegistry, error)
 	GetOORVTXOBindingByOutpoint(ctx context.Context, arg GetOORVTXOBindingByOutpointParams) (OorVtxoBinding, error)
 	GetOORVTXOBindingByOutpointAndKind(ctx context.Context, arg GetOORVTXOBindingByOutpointAndKindParams) (OorVtxoBinding, error)
 	GetOwnedReceiveScript(ctx context.Context, pkScript []byte) (OwnedReceiveScript, error)
@@ -126,6 +128,7 @@ type Querier interface {
 	ListActiveRounds(ctx context.Context) ([]Round, error)
 	ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddress, error)
 	ListAllBoardingIntents(ctx context.Context) ([]BoardingIntent, error)
+	ListAllOORSessionRegistry(ctx context.Context) ([]OorSessionRegistry, error)
 	ListAllVTXOs(ctx context.Context) ([]Vtxo, error)
 	ListBoardingIntentOutpoints(ctx context.Context) ([]ListBoardingIntentOutpointsRow, error)
 	ListBoardingIntentsByConfHeight(ctx context.Context, confHeight int32) ([]BoardingIntent, error)
@@ -153,6 +156,9 @@ type Querier interface {
 	// Also filter on spent = FALSE to handle VTXOs marked spent via the earlier
 	// flag before the status field was introduced.
 	ListLiveVTXOs(ctx context.Context) ([]Vtxo, error)
+	// Status 1 = Completed, 2 = Failed (anchored to Go iota in
+	// db/oor_session_registry_store.go OORSessionStatus).
+	ListNonTerminalOORSessionRegistry(ctx context.Context) ([]OorSessionRegistry, error)
 	// Status 4 = Completed, 5 = Failed, 7 = FailedRecoverable (anchored to Go
 	// iota in db/unilateral_exit_store.go UnilateralExitJobStatus).
 	ListNonTerminalUnilateralExitJobs(ctx context.Context) ([]UnilateralExitJob, error)
@@ -201,6 +207,11 @@ type Querier interface {
 	ListWalletUTXOLog(ctx context.Context, arg ListWalletUTXOLogParams) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByBlock(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByClassification(ctx context.Context, arg ListWalletUTXOLogByClassificationParams) ([]WalletUtxoLog, error)
+	// Status 2 = Failed (anchored to Go iota in
+	// db/oor_session_registry_store.go OORSessionStatus). Failed sessions never
+	// dedup a keyed retry, so the lookup skips them: only a pending or completed
+	// session answers for an idempotency key.
+	LookupActiveOORSessionRegistryByIdempotencyKey(ctx context.Context, idempotencyKey sql.NullString) (OorSessionRegistry, error)
 	MarkBoardingSweepInputSpentByOutpoint(ctx context.Context, arg MarkBoardingSweepInputSpentByOutpointParams) (int64, error)
 	MarkBoardingSweepInputStatus(ctx context.Context, arg MarkBoardingSweepInputStatusParams) error
 	MarkBoardingSweepInputsStatus(ctx context.Context, arg MarkBoardingSweepInputsStatusParams) error
@@ -236,6 +247,8 @@ type Querier interface {
 	// OOR artifact store queries.
 	UpsertOORPackage(ctx context.Context, arg UpsertOORPackageParams) (int64, error)
 	UpsertOORRecipientCursor(ctx context.Context, arg UpsertOORRecipientCursorParams) error
+	// OOR session registry control-plane queries.
+	UpsertOORSessionRegistry(ctx context.Context, arg UpsertOORSessionRegistryParams) error
 	UpsertOORVTXOBinding(ctx context.Context, arg UpsertOORVTXOBindingParams) (int64, error)
 	UpsertOwnedReceiveScript(ctx context.Context, arg UpsertOwnedReceiveScriptParams) error
 	// Pending board request queries.

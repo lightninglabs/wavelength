@@ -138,6 +138,20 @@ type OorRecipientCursor struct {
 	LastSessionID     []byte
 }
 
+type OorSessionRegistry struct {
+	SessionID       []byte
+	ActorID         string
+	Direction       int32
+	Phase           string
+	IdempotencyKey  sql.NullString
+	Status          int32
+	LastError       sql.NullString
+	SnapshotData    []byte
+	SnapshotVersion int32
+	CreatedAt       int64
+	UpdatedAt       int64
+}
+
 type OorVtxoBinding struct {
 	OutpointHash  []byte
 	OutpointIndex int32
