@@ -39,6 +39,13 @@ type SessionActorConfig struct {
 	// Signer signs Ark and checkpoint PSBTs inline during the turn.
 	Signer input.Signer
 
+	// IncomingHandler executes the incoming local-persistence outbox events
+	// (metadata query filtering and VTXO materialization) inline. It is the
+	// shared LocalPersistenceOutboxHandler, reused so the materialization
+	// logic and its wallet resolvers are not reimplemented on this path.
+	// Its writes join the turn transaction via the request context.
+	IncomingHandler OutboxHandler
+
 	// RegistryStore is the single source of truth for this session's
 	// durable state. The actor writes its snapshot here inside Commit
 	// (joining the turn transaction) and the registry reads it for restore
@@ -71,7 +78,12 @@ type SessionActorConfig struct {
 	// VTXOStore reloads materialized incoming VTXOs by outpoint.
 	VTXOStore vtxo.VTXOStore
 
-	// LedgerSink optionally receives ledger accounting messages.
+	// LedgerSink optionally receives ledger accounting messages. The sink
+	// resolves the durable ledger actor, so a Tell issued inside this
+	// session's commit transaction persists the message into the ledger's
+	// durable mailbox atomically with the snapshot (DurableMailbox.Send
+	// joins the ambient transaction): a committed turn can never lose its
+	// accounting to a crash.
 	LedgerSink fn.Option[ledger.Sink]
 
 	// IncomingVTXOObserver receives incoming VTXO descriptors after
@@ -229,15 +241,32 @@ type sessionBehavior struct {
 	// in the same transaction as the snapshot and the ack.
 	pendingTransport []serverconn.ServerConnMsg
 
+	// pendingLedger accumulates accounting messages produced while
+	// draining the FSM in dispatch; commitAck Tells them to the durable
+	// ledger actor inside the same transaction as the snapshot, so a
+	// committed turn can never lose its ledger entries to a crash. The
+	// ledger actor's idempotent inserts absorb the at-least-once
+	// redelivery of a replayed turn.
+	pendingLedger []ledger.LedgerMsg
+
 	// commitWork accumulates extra durable writes (reservations, the
 	// finalized package, input-spend completion) that handlers stage during
 	// dispatch; commitAck runs them inside the same writer transaction as
 	// the snapshot and the ack so the turn is atomic.
 	commitWork []func(ctx context.Context, tx oorTx) error
 
-	// postCommit accumulates best-effort cross-actor notifications (ledger
-	// accounting, VTXO materialization) fired after the turn commits.
+	// postCommit accumulates best-effort cross-actor notifications (VTXO
+	// materialization, fraud-watch arming) fired after the turn commits.
+	// Both targets re-derive their state from the persisted VTXO rows at
+	// boot, so a crash inside this window loses only the in-process
+	// notification, never the underlying work.
 	postCommit []func(ctx context.Context)
+
+	// pendingRetries accumulates retry timers requested while draining the
+	// FSM; they are armed only after the turn commits, so a rolled-back
+	// turn never schedules a timer and the timeout-actor Tell never runs
+	// inside the commit closure.
+	pendingRetries []*ScheduleRetryRequest
 
 	// terminalCommitted reports whether the turn's committed snapshot
 	// reached a terminal status, set by commitAck and consumed by the
@@ -281,8 +310,10 @@ func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 	// every inline side effect, collects cross-actor messages, and stages
 	// extra commit work, but never commits.
 	b.pendingTransport = b.pendingTransport[:0]
+	b.pendingLedger = b.pendingLedger[:0]
 	b.commitWork = b.commitWork[:0]
 	b.postCommit = b.postCommit[:0]
+	b.pendingRetries = b.pendingRetries[:0]
 	b.terminalCommitted = false
 
 	res := b.dispatch(ctx, msg)
@@ -302,6 +333,11 @@ func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 	// durably committed.
 	for _, fn := range b.postCommit {
 		fn(ctx)
+	}
+
+	// Arm the retry timers requested by this turn now that it committed.
+	for _, retry := range b.pendingRetries {
+		b.scheduleRetry(ctx, retry)
 	}
 
 	// A terminal commit retires this session: tell the registry so it can
@@ -491,9 +527,25 @@ func (b *sessionBehavior) driveOutbox(ctx context.Context,
 				return err
 			}
 
-		// Retry scheduling: handled by the actor via the timeout actor.
+		// Incoming materialization: a DB write plus the follow-up FSM
+		// advance, so it is staged into the commit transaction. The
+		// materialize closure drives the IncomingHandledEvent it
+		// produces (queueing the post-commit VTXO notification and
+		// advancing toward the ack), which is why commitAck takes its
+		// snapshot after the commit work runs.
+		case *MaterializeIncomingVTXOsRequest:
+			materialize := m
+			b.commitWork = append(b.commitWork,
+				func(txCtx context.Context, _ oorTx) error {
+					return b.materializeIncoming(
+						txCtx, materialize,
+					)
+				},
+			)
+
+		// Retry scheduling: validated here, armed after the commit.
 		case *ScheduleRetryRequest:
-			if err := b.scheduleRetry(ctx, m); err != nil {
+			if err := b.queueRetry(m); err != nil {
 				return err
 			}
 
@@ -525,11 +577,10 @@ func (b *sessionBehavior) continueWith(ctx context.Context, event Event) error {
 	return b.driveOutbox(ctx, next)
 }
 
-// scheduleRetry schedules a retry timer via the timeout actor. The session id
-// is the timeout id so the expiry callback can rebuild a ResumeSessionRequest.
-func (b *sessionBehavior) scheduleRetry(ctx context.Context,
-	msg *ScheduleRetryRequest) error {
-
+// queueRetry validates the retry wiring and defers the timer arm to after the
+// turn commits. Validation runs here so a miswired daemon still fails the
+// turn, while the side-effecting Tell never runs inside the commit closure.
+func (b *sessionBehavior) queueRetry(msg *ScheduleRetryRequest) error {
 	if b.cfg.TimeoutActor == nil {
 		return nil
 	}
@@ -537,17 +588,35 @@ func (b *sessionBehavior) scheduleRetry(ctx context.Context,
 		return fmt.Errorf("timeout callback ref not wired")
 	}
 
+	b.pendingRetries = append(b.pendingRetries, msg)
+
+	return nil
+}
+
+// scheduleRetry arms one retry timer via the timeout actor after the turn
+// committed. The session id is the timeout id so the expiry callback can
+// rebuild a ResumeSessionRequest. Failures are logged: the timer is an
+// in-memory accelerant, and a lost one is re-derived by the boot-time resume.
+func (b *sessionBehavior) scheduleRetry(ctx context.Context,
+	msg *ScheduleRetryRequest) {
+
 	b.logger(ctx).InfoS(ctx, "Scheduling retry",
 		slog.String("session_id", b.sessionID.String()),
 		slog.String("reason", msg.Reason),
 		slog.Duration("after", msg.After),
 	)
 
-	return b.cfg.TimeoutActor.Tell(ctx, &timeout.ScheduleTimeoutRequest{
+	err := b.cfg.TimeoutActor.Tell(ctx, &timeout.ScheduleTimeoutRequest{
 		ID:       timeout.ID(b.sessionID.String()),
 		Duration: msg.After,
 		Callback: b.cfg.CallbackRef,
 	})
+	if err != nil {
+		b.logger(ctx).WarnS(ctx, "Failed to schedule retry timer",
+			err,
+			slog.String("session_id", b.sessionID.String()),
+		)
+	}
 }
 
 // commitAck persists the current registry snapshot, enqueues any collected
@@ -557,14 +626,26 @@ func (b *sessionBehavior) scheduleRetry(ctx context.Context,
 func (b *sessionBehavior) commitAck(ctx context.Context,
 	ax actor.Exec[oorTx]) error {
 
-	record, err := b.snapshotRecord()
-	if err != nil {
-		return err
-	}
-
 	return ax.Commit(ctx, func(txCtx context.Context, tx oorTx) error {
-		// Persist the session snapshot. The registry store joins txCtx
-		// (actor.TxFromContext), so this lands atomically with the ack.
+		// Run the staged commit work first (reservations, finalized
+		// package, input-spend completion, incoming materialization).
+		// Incoming materialization advances the FSM further inside its
+		// closure, so the snapshot below must be taken AFTER this loop
+		// so it reflects the final state. Each closure joins txCtx, so
+		// it is atomic with the snapshot and the ack.
+		for _, work := range b.commitWork {
+			if err := work(txCtx, tx); err != nil {
+				return err
+			}
+		}
+
+		// Capture and persist the snapshot for the final FSM state. The
+		// registry store joins txCtx (actor.TxFromContext), so this
+		// lands atomically with the ack.
+		record, err := b.snapshotRecord()
+		if err != nil {
+			return err
+		}
 		if err := b.cfg.RegistryStore.UpsertSession(
 			txCtx, record,
 		); err != nil {
@@ -572,24 +653,27 @@ func (b *sessionBehavior) commitAck(ctx context.Context,
 		}
 		b.terminalCommitted = record.Status.IsTerminal()
 
-		// Run the staged commit work (reservations, finalized package,
-		// input-spend completion). Each joins txCtx so it is atomic
-		// with the snapshot and the ack.
-		for _, work := range b.commitWork {
-			if err := work(txCtx, tx); err != nil {
-				return err
-			}
-		}
-
 		// Enqueue the collected cross-actor transport messages on the
 		// durable outbox in the same transaction (CDC): the outbox
-		// publisher delivers them to serverconn after commit.
+		// publisher delivers them to serverconn after commit. Transport
+		// collected during commit work (e.g. the incoming ack) is
+		// included because that work ran above.
 		for _, transport := range b.pendingTransport {
 			if err := b.enqueueTransport(
 				txCtx, tx, transport,
 			); err != nil {
 				return err
 			}
+		}
+
+		// Ledger accounting Tells join the same transaction: the
+		// ledger actor is durable, so each Tell persists the message
+		// into its mailbox via the ambient txCtx and the entry lands
+		// IFF the turn commits. Accounting collected during commit
+		// work (incoming materialization) is included because that
+		// work ran above.
+		if err := b.tellLedger(txCtx); err != nil {
+			return err
 		}
 
 		return nil

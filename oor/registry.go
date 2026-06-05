@@ -25,6 +25,7 @@ import (
 type OORRegistryConfig struct {
 	Log                  fn.Option[btclog.Logger]
 	Signer               input.Signer
+	IncomingHandler      OutboxHandler
 	RegistryStore        SessionRegistryStore
 	DeliveryStore        actor.DeliveryStore
 	ServerConn           actor.TellOnlyRef[serverconn.ServerConnMsg]
@@ -279,9 +280,16 @@ func (r *oorRegistryBehavior) handleDriveEvent(ctx context.Context,
 	return fn.Ok[ActorResp](&DriveEventResponse{})
 }
 
-// handleResolveIncoming admits or continues an incoming receive session.
+// handleResolveIncoming admits or continues an incoming receive session. The
+// session id and pk script arrive from the operator-controlled event stream,
+// so admission validates the recipient is wallet-owned before allocating a
+// durable per-session actor for it.
 func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 	req *ResolveIncomingTransferRequest) fn.Result[ActorResp] {
+
+	if err := r.validateIncomingAdmission(ctx, req); err != nil {
+		return fn.Err[ActorResp](err)
+	}
 
 	if err := r.resolveSelfTransfer(ctx, req.SessionID); err != nil {
 		return fn.Err[ActorResp](err)
@@ -306,6 +314,75 @@ func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 
 		return fn.Err[ActorResp](err)
 	}
+
+	return fn.Ok[ActorResp](&DriveEventResponse{})
+}
+
+// validateIncomingAdmission rejects incoming hints whose recipient pk script
+// the wallet does not own. Without this gate, a misbehaving operator could
+// spawn one durable child per fabricated session id; the recipient filter is
+// the same ownership check the metadata query applies later, hoisted to the
+// admission boundary. A nil or non-filtering IncomingHandler skips the check.
+func (r *oorRegistryBehavior) validateIncomingAdmission(ctx context.Context,
+	req *ResolveIncomingTransferRequest) error {
+
+	filter, ok := r.cfg.IncomingHandler.(incomingMetadataFilter)
+	if !ok {
+		return nil
+	}
+
+	owned, err := filter.FilterIncomingMetadataRecipients(
+		ctx, []ArkRecipientOutput{{
+			PkScript: req.RecipientPkScript,
+		}},
+	)
+	if err != nil {
+		return fmt.Errorf("validate incoming admission for session "+
+			"%s: %w", req.SessionID, err)
+	}
+	if len(owned) == 0 {
+		return fmt.Errorf("incoming recipient pk script not owned by "+
+			"wallet: session %s", req.SessionID)
+	}
+
+	return nil
+}
+
+// handleSessionTerminal reaps a child whose session committed a terminal
+// snapshot: the durable row is re-checked as the authority, then the child is
+// stopped and dropped from the active set. A stale or duplicate notification
+// is harmless: an unknown child or a non-terminal row is a no-op.
+func (r *oorRegistryBehavior) handleSessionTerminal(ctx context.Context,
+	msg *SessionTerminalNotification) fn.Result[ActorResp] {
+
+	child, ok := r.active[msg.SessionID]
+	if !ok {
+		return fn.Ok[ActorResp](&DriveEventResponse{})
+	}
+
+	record, err := r.cfg.RegistryStore.GetSession(
+		ctx, chainHashOf(msg.SessionID),
+	)
+	switch {
+	// No durable row means there is nothing left to drive; fall through
+	// and reap.
+	case errors.Is(err, clientdb.ErrOORSessionNotFound):
+	case err != nil:
+		return fn.Err[ActorResp](err)
+
+	// The row is authoritative: a notification that races a later
+	// non-terminal write (or a replaced session) must not reap a live
+	// child.
+	case !record.Status.IsTerminal():
+		return fn.Ok[ActorResp](&DriveEventResponse{})
+	}
+
+	child.Stop()
+	delete(r.active, msg.SessionID)
+
+	r.logger(ctx).DebugS(ctx, "Reaped terminal OOR session",
+		slog.String("session_id", msg.SessionID.String()),
+	)
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
 }
@@ -362,45 +439,6 @@ func (r *oorRegistryBehavior) resolveSelfTransfer(ctx context.Context,
 	)
 
 	return nil
-}
-
-// handleSessionTerminal reaps a child whose session committed a terminal
-// snapshot: the durable row is re-checked as the authority, then the child is
-// stopped and dropped from the active set. A stale or duplicate notification
-// is harmless: an unknown child or a non-terminal row is a no-op.
-func (r *oorRegistryBehavior) handleSessionTerminal(ctx context.Context,
-	msg *SessionTerminalNotification) fn.Result[ActorResp] {
-
-	child, ok := r.active[msg.SessionID]
-	if !ok {
-		return fn.Ok[ActorResp](&DriveEventResponse{})
-	}
-
-	record, err := r.cfg.RegistryStore.GetSession(
-		ctx, chainHashOf(msg.SessionID),
-	)
-	switch {
-	// No durable row means there is nothing left to drive; fall through
-	// and reap.
-	case errors.Is(err, clientdb.ErrOORSessionNotFound):
-	case err != nil:
-		return fn.Err[ActorResp](err)
-
-	// The row is authoritative: a notification that races a later
-	// non-terminal write (or a replaced session) must not reap a live
-	// child.
-	case !record.Status.IsTerminal():
-		return fn.Ok[ActorResp](&DriveEventResponse{})
-	}
-
-	child.Stop()
-	delete(r.active, msg.SessionID)
-
-	r.logger(ctx).DebugS(ctx, "Reaped terminal OOR session",
-		slog.String("session_id", msg.SessionID.String()),
-	)
-
-	return fn.Ok[ActorResp](&DriveEventResponse{})
 }
 
 // handleResumeSession routes a retry-timer expiry to its session's child so
@@ -610,6 +648,7 @@ func (r *oorRegistryBehavior) childConfig(sessionID SessionID,
 		Direction:            direction,
 		Log:                  r.cfg.Log,
 		Signer:               r.cfg.Signer,
+		IncomingHandler:      r.cfg.IncomingHandler,
 		RegistryStore:        r.cfg.RegistryStore,
 		DeliveryStore:        r.cfg.DeliveryStore,
 		ServerConn:           r.cfg.ServerConn,

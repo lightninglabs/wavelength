@@ -133,9 +133,7 @@ func (b *sessionBehavior) handleDriveEvent(ctx context.Context,
 				return b.persistOutgoingPackage(txCtx, state)
 			},
 		)
-		b.postCommit = append(b.postCommit, func(ctx context.Context) {
-			b.emitVTXOSent(ctx, state)
-		})
+		b.queueVTXOSent(state)
 	}
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
@@ -309,43 +307,94 @@ func (b *sessionBehavior) persistOutgoingPackage(ctx context.Context,
 	return nil
 }
 
-// emitVTXOSent posts the outgoing-transfer ledger entry after commit.
-func (b *sessionBehavior) emitVTXOSent(ctx context.Context,
-	state *AwaitingFinalizeAccepted) {
+// queueVTXOSent stages the outgoing-transfer ledger entry for the durable
+// outbox enqueue in commitAck, so the accounting message lands atomically
+// with the finalized snapshot.
+func (b *sessionBehavior) queueVTXOSent(state *AwaitingFinalizeAccepted) {
+	if !b.cfg.LedgerSink.IsSome() {
+		return
+	}
+	if state == nil || len(state.TransferInputs) == 0 {
+		return
+	}
 
-	b.cfg.LedgerSink.WhenSome(func(sink ledger.Sink) {
-		if state == nil || len(state.TransferInputs) == 0 {
-			return
-		}
+	var total int64
+	for i := range state.TransferInputs {
+		total += int64(state.TransferInputs[i].VTXO.Amount)
+	}
+	if total <= 0 {
+		return
+	}
 
-		var total int64
-		for i := range state.TransferInputs {
-			total += int64(state.TransferInputs[i].VTXO.Amount)
-		}
-		if total <= 0 {
-			return
-		}
-
-		msg := &ledger.VTXOSentMsg{
-			SessionID: b.sessionID,
-			AmountSat: total,
-		}
-		if err := sink.Tell(ctx, msg); err != nil {
-			b.logger(ctx).WarnS(
-				ctx,
-				"Failed to emit VTXOSentMsg to ledger",
-				err,
-				slog.String("session_id", b.sessionID.String()),
-				slog.Int64("amount_sat", total),
-			)
-		}
+	b.pendingLedger = append(b.pendingLedger, &ledger.VTXOSentMsg{
+		SessionID: b.sessionID,
+		AmountSat: total,
 	})
 }
 
 // buildTransportMessage wraps an outbox transport event into the serverconn
-// message that is durably delivered to the operator.
+// message that is durably delivered to the operator. The two incoming indexer
+// queries map to dedicated requests; every other transport event is a plain
+// ServerMessage wrapped into a client-event request.
 func (b *sessionBehavior) buildTransportMessage(ctx context.Context,
 	event OutboxEvent) (serverconn.ServerConnMsg, error) {
+
+	switch queryReq := event.(type) {
+	case *QueryIncomingTransferRequest:
+		afterEventID := uint64(0)
+		if queryReq.RecipientEventID > 0 {
+			afterEventID = queryReq.RecipientEventID - 1
+		}
+
+		return &serverconn.SendListOORRecipientEventsByScriptRequest{
+			PkScript: append(
+				[]byte(nil), queryReq.RecipientPkScript...,
+			),
+			AfterEventID: afterEventID,
+			Limit:        1,
+			CorrelationID: IncomingResolveCorrelationID(
+				queryReq.SessionID, queryReq.RecipientEventID,
+			),
+		}, nil
+
+	case *QueryIncomingMetadataRequest:
+		recipients := queryReq.Recipients
+		filter, ok := b.cfg.IncomingHandler.(incomingMetadataFilter)
+		if ok {
+			owned, err := filter.FilterIncomingMetadataRecipients(
+				ctx, queryReq.Recipients,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("filter incoming "+
+					"metadata recipients: %w", err)
+			}
+
+			recipients = owned
+		}
+
+		if len(recipients) == 0 {
+			return nil, fmt.Errorf("incoming metadata query " +
+				"contains no wallet-owned recipients")
+		}
+
+		pkScripts := make([][]byte, 0, len(recipients))
+		for i := range recipients {
+			pkScripts = append(
+				pkScripts,
+				append(
+					[]byte(nil), recipients[i].PkScript...,
+				),
+			)
+		}
+
+		return &serverconn.SendListVTXOsByScriptsRequest{
+			PkScripts: pkScripts,
+			Limit:     b.cfg.Limits.MaxVTXOMatches,
+			CorrelationID: IncomingMetadataCorrelationID(
+				queryReq.SessionID,
+			),
+		}, nil
+	}
 
 	serverMsg, ok := event.(serverconn.ServerMessage)
 	if !ok {
@@ -385,28 +434,227 @@ func (b *sessionBehavior) enqueueTransport(ctx context.Context, tx oorTx,
 	})
 }
 
-// handleResolveIncomingTransfer admits/continues an incoming receive session.
-//
-// TODO(oor): port the incoming receive flow (resolve -> metadata -> materialize
-// -> ack) to the direct per-session model. Tracked as part of the OOR
-// per-session refactor.
-func (b *sessionBehavior) handleResolveIncomingTransfer(_ context.Context,
-	_ *ResolveIncomingTransferRequest) fn.Result[ActorResp] {
+// tellLedger delivers the turn's staged accounting messages to the durable
+// ledger actor. Run inside the commit transaction: the ledger actor's
+// DurableMailbox.Send joins the ambient transaction from ctx, so each message
+// is persisted into the ledger's mailbox atomically with the snapshot and a
+// committed turn can never lose its accounting to a crash.
+func (b *sessionBehavior) tellLedger(ctx context.Context) error {
+	if len(b.pendingLedger) == 0 {
+		return nil
+	}
 
-	return fn.Err[ActorResp](
-		fmt.Errorf("incoming receive not yet wired on the " +
-			"per-session actor"),
+	sink, err := b.cfg.LedgerSink.UnwrapOrErr(
+		fmt.Errorf("ledger sink must be provided"),
 	)
+	if err != nil {
+		return err
+	}
+
+	for _, msg := range b.pendingLedger {
+		if err := sink.Tell(ctx, msg); err != nil {
+			return fmt.Errorf("tell ledger: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// handleResolveIncomingTransfer admits a new incoming receive session in the
+// ReceiveResolving state and drains its outbox (the phase-1 indexer query that
+// resolves the lightweight hint into the full Ark/checkpoint package).
+func (b *sessionBehavior) handleResolveIncomingTransfer(ctx context.Context,
+	req *ResolveIncomingTransferRequest) fn.Result[ActorResp] {
+
+	if req == nil || len(req.RecipientPkScript) == 0 {
+		return fn.Err[ActorResp](
+			fmt.Errorf("recipient pk script must be provided"),
+		)
+	}
+
+	// A duplicate hint for an already-admitted session is a no-op; the
+	// resolve query is already in flight or the session has progressed.
+	if b.loaded && b.fsm != nil {
+		return fn.Ok[ActorResp](&DriveEventResponse{})
+	}
+
+	session, err := newReceiveSessionWithState(
+		ctx, req.SessionID, &ReceiveResolving{
+			SessionID: req.SessionID,
+			RecipientPkScript: append(
+				[]byte(nil), req.RecipientPkScript...,
+			),
+			RecipientEventID: req.RecipientEventID,
+		},
+	)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	b.fsm = session.FSM
+	b.sessionID = req.SessionID
+	b.direction = clientdb.OORSessionDirectionIncoming
+	b.loaded = true
+
+	state, err := b.fsm.CurrentState()
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	outbox, err := OutboxForIncomingState(state)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	if err := b.driveOutbox(ctx, outbox); err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	return fn.Ok[ActorResp](&DriveEventResponse{})
 }
 
 // handleResumeSession re-drives the outbox implied by the current state after a
 // retry timer fires.
-//
-// TODO(oor): port resume/retry to the direct per-session model.
-func (b *sessionBehavior) handleResumeSession(_ context.Context,
+func (b *sessionBehavior) handleResumeSession(ctx context.Context,
 	_ *ResumeSessionRequest) fn.Result[ActorResp] {
 
-	return fn.Err[ActorResp](
-		fmt.Errorf("resume not yet wired on the per-session actor"),
-	)
+	if b.fsm == nil {
+		return fn.Err[ActorResp](
+			fmt.Errorf("unknown session: %s", b.sessionID),
+		)
+	}
+
+	state, err := b.fsm.CurrentState()
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	var outbox []OutboxEvent
+	switch b.direction {
+	case clientdb.OORSessionDirectionOutgoing:
+		outgoing, ok := state.(State)
+		if !ok {
+			return fn.Err[ActorResp](
+				fmt.Errorf("unexpected outgoing state "+
+					"type: %T", state),
+			)
+		}
+		outbox, err = OutboxForState(outgoing)
+
+	case clientdb.OORSessionDirectionIncoming:
+		outbox, err = resumeOutboxForIncomingState(state)
+
+	default:
+		return fn.Err[ActorResp](
+			fmt.Errorf("unknown session direction: %d",
+				b.direction),
+		)
+	}
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	if err := b.driveOutbox(ctx, outbox); err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	return fn.Ok[ActorResp](&DriveEventResponse{})
+}
+
+// materializeIncoming runs the incoming VTXO materialization through the shared
+// local-persistence handler (whose writes join the commit transaction via ctx),
+// then drives the resulting IncomingHandledEvent: it queues the VTXO-manager
+// notification for after commit and advances the FSM toward the ack.
+func (b *sessionBehavior) materializeIncoming(ctx context.Context,
+	msg *MaterializeIncomingVTXOsRequest) error {
+
+	if b.cfg.IncomingHandler == nil {
+		return fmt.Errorf("incoming handler must be provided")
+	}
+
+	followUps, err := b.cfg.IncomingHandler.Handle(ctx, b.sessionID, msg)
+	if err != nil {
+		return err
+	}
+
+	for _, event := range followUps {
+		b.notifyMaterialized(event)
+
+		next, err := b.apply(ctx, event)
+		if err != nil {
+			return err
+		}
+
+		if err := b.driveOutbox(ctx, next); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// notifyMaterialized stages the cross-actor notifications for newly
+// materialized incoming VTXOs. The ledger receive entries are collected for
+// the in-transaction durable outbox enqueue (a committed materialization can
+// never lose its accounting). The VTXO manager and fraud-observer Tells stay
+// post-commit best-effort: both targets re-derive their state at boot from
+// the VTXO rows this turn persists (Manager.Start respawns an actor per live
+// VTXO, and initFraudWatcher re-tracks the manager's live set), so a crash
+// inside the post-commit window is healed by the next restart.
+func (b *sessionBehavior) notifyMaterialized(event Event) {
+	handled, ok := event.(*IncomingHandledEvent)
+	if !ok || len(handled.MaterializedVTXOs) == 0 {
+		return
+	}
+
+	descs := handled.MaterializedVTXOs
+	b.queueVTXOsReceived(descs)
+
+	b.postCommit = append(b.postCommit, func(ctx context.Context) {
+		if b.cfg.VTXOManager != nil {
+			err := b.cfg.VTXOManager.Tell(
+				ctx, &vtxo.VTXOsMaterializedNotification{
+					VTXOs: descs,
+				},
+			)
+			if err != nil {
+				b.logger(ctx).WarnS(ctx, "Failed to notify "+
+					"VTXO manager of materialized VTXOs",
+					err)
+			}
+		}
+
+		if b.cfg.IncomingVTXOObserver != nil {
+			if err := b.cfg.IncomingVTXOObserver(
+				ctx, descs,
+			); err != nil {
+
+				b.logger(ctx).WarnS(ctx, "Incoming VTXO "+
+					"observer failed", err)
+			}
+		}
+	})
+}
+
+// queueVTXOsReceived stages one VTXOReceivedMsg per materialized incoming
+// VTXO for the durable outbox enqueue in commitAck.
+func (b *sessionBehavior) queueVTXOsReceived(descs []*vtxo.Descriptor) {
+	if !b.cfg.LedgerSink.IsSome() {
+		return
+	}
+
+	for _, desc := range descs {
+		if desc == nil {
+			continue
+		}
+
+		b.pendingLedger = append(
+			b.pendingLedger, &ledger.VTXOReceivedMsg{
+				OutpointHash:  desc.Outpoint.Hash,
+				OutpointIndex: desc.Outpoint.Index,
+				AmountSat:     int64(desc.Amount),
+				Source:        ledger.SourceOOR,
+			},
+		)
+	}
 }

@@ -2,6 +2,8 @@ package oor
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,9 +15,12 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	clientdb "github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/serverconn"
+	"github.com/lightninglabs/darepo-client/timeout"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/stretchr/testify/require"
 )
@@ -212,6 +217,44 @@ func TestSessionActorOutgoingFinalize(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, clientdb.OORSessionStatusCompleted, record.Status)
 	require.Equal(t, string(OutgoingPhaseCompleted), record.Phase)
+}
+
+// TestSessionActorIncomingResolve verifies admitting an incoming transfer hint
+// installs a ReceiveResolving session and collects the phase-1 indexer query as
+// cross-actor transport.
+func TestSessionActorIncomingResolve(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	b := &sessionBehavior{
+		cfg: SessionActorConfig{
+			RegistryStore: newFakeRegistryStore(),
+		},
+		log: btclog.Disabled,
+	}
+
+	sid := oorSessionID(0x60)
+	res := b.handleResolveIncomingTransfer(
+		ctx, &ResolveIncomingTransferRequest{
+			SessionID:         sid,
+			RecipientPkScript: []byte{0x51, 0x20, 0xaa, 0xbb},
+			RecipientEventID:  7,
+		},
+	)
+	require.True(t, res.IsOk(), res.Err())
+
+	require.True(t, b.loaded)
+	require.Equal(t, clientdb.OORSessionDirectionIncoming, b.direction)
+
+	state, err := b.fsm.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &ReceiveResolving{}, state)
+
+	require.Len(t, b.pendingTransport, 1)
+	query := b.pendingTransport[0]
+	_, ok := query.(*serverconn.SendListOORRecipientEventsByScriptRequest)
+	require.True(t, ok)
 }
 
 // TestSessionActorSnapshotRestoreRoundTrip verifies a behavior can persist its
@@ -566,4 +609,368 @@ func TestSessionActorTerminalCommitNotifiesRegistry(t *testing.T) {
 
 		return ok && notify.SessionID == sessionID
 	}, time.Second, 10*time.Millisecond)
+}
+
+// recordingLedgerSink records ledger Tells and whether each one arrived while
+// the turn's commit closure was executing.
+type recordingLedgerSink struct {
+	inCommit *bool
+	tellErr  error
+
+	msgs         []ledger.LedgerMsg
+	toldInCommit []bool
+}
+
+func (s *recordingLedgerSink) ID() string {
+	return "ledger-test-sink"
+}
+
+func (s *recordingLedgerSink) Tell(_ context.Context,
+	msg ledger.LedgerMsg) error {
+
+	if s.tellErr != nil {
+		return s.tellErr
+	}
+
+	s.msgs = append(s.msgs, msg)
+	s.toldInCommit = append(s.toldInCommit, *s.inCommit)
+
+	return nil
+}
+
+// commitTrackingExec flags when the commit closure is running so tests can
+// assert a side effect executes inside the commit transaction.
+type commitTrackingExec struct {
+	fakeExec
+
+	inCommit *bool
+}
+
+func (e commitTrackingExec) Commit(ctx context.Context,
+	fn func(context.Context, oorTx) error) error {
+
+	*e.inCommit = true
+	defer func() {
+		*e.inCommit = false
+	}()
+
+	return e.fakeExec.Commit(ctx, fn)
+}
+
+// TestSessionActorFinalizeLedgerTellInCommit verifies the outgoing-transfer
+// ledger entry is delivered to the durable ledger sink inside the commit
+// transaction (so a committed turn can never lose its accounting), and that a
+// sink failure fails the whole turn instead of silently dropping the entry.
+func TestSessionActorFinalizeLedgerTellInCommit(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store := newFakeRegistryStore()
+	b, sessionID, _ := finalizeBehavior(
+		t, store, &fakePackageStore{},
+		func(context.Context, []wire.OutPoint) error { return nil },
+	)
+	b.cfg.ServerConn = fakeServerConnRef{}
+
+	var inCommit bool
+	sink := &recordingLedgerSink{inCommit: &inCommit}
+	b.cfg.LedgerSink = fn.Some[ledger.Sink](sink)
+
+	ax := commitTrackingExec{
+		fakeExec: fakeExec{tx: oorTx{
+			store:   &fakeDeliveryStore{},
+			actorID: b.actorID,
+		}},
+		inCommit: &inCommit,
+	}
+
+	res := b.Receive(ctx, &DriveEventRequest{
+		SessionID: sessionID,
+		Event:     &FinalizeAcceptedEvent{},
+	}, ax)
+	require.True(t, res.IsOk(), res.Err())
+
+	// Exactly one VTXOSentMsg, told while the commit closure was running.
+	require.Len(t, sink.msgs, 1)
+	require.Equal(t, []bool{true}, sink.toldInCommit)
+
+	sent, ok := sink.msgs[0].(*ledger.VTXOSentMsg)
+	require.True(t, ok, "expected VTXOSentMsg, got %T", sink.msgs[0])
+	require.Equal(t, [32]byte(sessionID), sent.SessionID)
+	require.Positive(t, sent.AmountSat)
+}
+
+// TestSessionActorFinalizeLedgerTellFailureFailsTurn verifies a ledger sink
+// failure inside the commit aborts the turn so the durable framework retries
+// it, rather than committing the snapshot without its accounting.
+func TestSessionActorFinalizeLedgerTellFailureFailsTurn(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store := newFakeRegistryStore()
+	b, sessionID, _ := finalizeBehavior(
+		t, store, &fakePackageStore{},
+		func(context.Context, []wire.OutPoint) error { return nil },
+	)
+	b.cfg.ServerConn = fakeServerConnRef{}
+
+	var inCommit bool
+	sink := &recordingLedgerSink{
+		inCommit: &inCommit,
+		tellErr:  fmt.Errorf("ledger mailbox unavailable"),
+	}
+	b.cfg.LedgerSink = fn.Some[ledger.Sink](sink)
+
+	ax := commitTrackingExec{
+		fakeExec: fakeExec{tx: oorTx{
+			store:   &fakeDeliveryStore{},
+			actorID: b.actorID,
+		}},
+		inCommit: &inCommit,
+	}
+
+	res := b.Receive(ctx, &DriveEventRequest{
+		SessionID: sessionID,
+		Event:     &FinalizeAcceptedEvent{},
+	}, ax)
+	require.True(t, res.IsErr())
+	require.ErrorContains(t, res.Err(), "tell ledger")
+}
+
+// TestSessionActorRestoreDirectionMismatch verifies restore refuses to
+// silently adopt a row whose direction conflicts with the requested one,
+// except for the self-transfer replacement (incoming requested over a terminal
+// outgoing row), which leaves the behavior unloaded for a fresh admission.
+func TestSessionActorRestoreDirectionMismatch(t *testing.T) {
+	t.Parallel()
+
+	id := oorSessionID(0x71)
+
+	testCases := []struct {
+		name      string
+		requested clientdb.OORSessionDirection
+		rowDir    clientdb.OORSessionDirection
+		rowStatus clientdb.OORSessionStatus
+		wantErr   string
+
+		// wantLoaded reports whether restore must end with a live FSM.
+		wantLoaded bool
+	}{{
+		name:      "incoming over live outgoing row errors",
+		requested: clientdb.OORSessionDirectionIncoming,
+		rowDir:    clientdb.OORSessionDirectionOutgoing,
+		rowStatus: clientdb.OORSessionStatusPending,
+		wantErr:   "direction mismatch",
+	}, {
+		name:      "outgoing over incoming row errors",
+		requested: clientdb.OORSessionDirectionOutgoing,
+		rowDir:    clientdb.OORSessionDirectionIncoming,
+		rowStatus: clientdb.OORSessionStatusPending,
+		wantErr:   "direction mismatch",
+	}, {
+		// The self-transfer replacement: the behavior stays unloaded
+		// so the admission installs a fresh incoming session.
+		name:      "incoming over terminal outgoing row is fresh",
+		requested: clientdb.OORSessionDirectionIncoming,
+		rowDir:    clientdb.OORSessionDirectionOutgoing,
+		rowStatus: clientdb.OORSessionStatusCompleted,
+	}}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := newFakeRegistryStore()
+			upsertRegistryRow(
+				t, store, id, tc.rowDir, "submit_sent", "",
+				tc.rowStatus,
+			)
+
+			b := &sessionBehavior{
+				cfg: SessionActorConfig{
+					RegistryStore: store,
+				},
+				actorID:   ActorIDForSession(id),
+				log:       btclog.Disabled,
+				sessionID: id,
+				direction: tc.requested,
+			}
+
+			err := b.restore(t.Context())
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tc.wantLoaded, b.loaded)
+			require.Nil(t, b.fsm)
+		})
+	}
+}
+
+// recordingTimeoutRef records timeout-actor scheduling requests.
+type recordingTimeoutRef struct {
+	mu   sync.Mutex
+	msgs []timeout.Msg
+}
+
+func (r *recordingTimeoutRef) ID() string {
+	return "timeout"
+}
+
+func (r *recordingTimeoutRef) Tell(_ context.Context, msg timeout.Msg) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.msgs = append(r.msgs, msg)
+
+	return nil
+}
+
+// scheduled returns a copy of the recorded timeout messages.
+func (r *recordingTimeoutRef) scheduled() []timeout.Msg {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]timeout.Msg(nil), r.msgs...)
+}
+
+// fakeExpiredRef is a no-op timeout expiry callback target.
+type fakeExpiredRef struct{}
+
+func (fakeExpiredRef) ID() string {
+	return "oor-callback"
+}
+
+func (fakeExpiredRef) Tell(context.Context, *timeout.ExpiredMsg) error {
+	return nil
+}
+
+// TestSessionActorResumeMetadataBackoff verifies resuming an incoming session
+// parked in ReceiveNotified with persisted metadata attempts re-schedules the
+// deterministic backoff instead of firing the metadata query immediately, so
+// crash loops cannot burn through the retry budget or re-spin the operator
+// mailbox.
+func TestSessionActorResumeMetadataBackoff(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	timeoutRef := &recordingTimeoutRef{}
+
+	ark, checkpoints := testOutboxPSBTPair(t)
+	sid := oorSessionID(0x62)
+	session, err := newReceiveSessionWithState(
+		ctx, sid, &ReceiveNotified{
+			SessionID:            sid,
+			ArkPSBT:              ark,
+			FinalCheckpointPSBTs: checkpoints,
+			MetadataAttempts:     3,
+		},
+	)
+	require.NoError(t, err)
+
+	b := &sessionBehavior{
+		cfg: SessionActorConfig{
+			RegistryStore: newFakeRegistryStore(),
+			TimeoutActor:  timeoutRef,
+			CallbackRef:   fakeExpiredRef{},
+		},
+		log:       btclog.Disabled,
+		sessionID: sid,
+		direction: clientdb.OORSessionDirectionIncoming,
+		fsm:       session.FSM,
+		loaded:    true,
+	}
+
+	res := b.Receive(ctx, &ResumeSessionRequest{SessionID: sid}, fakeExec{})
+	require.True(t, res.IsOk(), res.Err())
+
+	// No metadata query may be re-collected: the resume re-arms the
+	// backoff timer with the attempt-derived delay instead.
+	require.Empty(t, b.pendingTransport)
+
+	scheduled := timeoutRef.scheduled()
+	require.Len(t, scheduled, 1)
+
+	schedule, ok := scheduled[0].(*timeout.ScheduleTimeoutRequest)
+	require.True(t, ok)
+	require.Equal(t, timeout.ID(sid.String()), schedule.ID)
+	require.Equal(t, metadataRetryBackoff(3), schedule.Duration)
+}
+
+// failingUpsertStore wraps the fake registry store with an UpsertSession that
+// always fails, so commitAck rolls the turn back.
+type failingUpsertStore struct {
+	*fakeRegistryStore
+}
+
+func (s *failingUpsertStore) UpsertSession(context.Context,
+	clientdb.OORSessionRegistryRecord) error {
+
+	return errFilterBroken
+}
+
+// TestSessionActorRetryArmsOnlyAfterCommit verifies a retry timer requested by
+// the FSM is armed only once the turn commits: the dispatch phase queues it,
+// and a rolled-back turn arms nothing.
+func TestSessionActorRetryArmsOnlyAfterCommit(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	newBehavior := func(store SessionRegistryStore,
+		timeoutRef *recordingTimeoutRef) *sessionBehavior {
+
+		ark, checkpoints := testOutboxPSBTPair(t)
+		sid := oorSessionID(0x63)
+		session, err := newReceiveSessionWithState(
+			ctx, sid, &ReceiveNotified{
+				SessionID:            sid,
+				ArkPSBT:              ark,
+				FinalCheckpointPSBTs: checkpoints,
+				MetadataAttempts:     2,
+			},
+		)
+		require.NoError(t, err)
+
+		return &sessionBehavior{
+			cfg: SessionActorConfig{
+				RegistryStore: store,
+				TimeoutActor:  timeoutRef,
+				CallbackRef:   fakeExpiredRef{},
+			},
+			log:       btclog.Disabled,
+			sessionID: sid,
+			direction: clientdb.OORSessionDirectionIncoming,
+			fsm:       session.FSM,
+			loaded:    true,
+		}
+	}
+
+	// A turn whose commit fails must not arm the timer.
+	rolledBack := &recordingTimeoutRef{}
+	b := newBehavior(
+		&failingUpsertStore{newFakeRegistryStore()}, rolledBack,
+	)
+
+	res := b.Receive(ctx, &ResumeSessionRequest{
+		SessionID: b.sessionID,
+	}, fakeExec{})
+	require.True(t, res.IsErr())
+	require.Empty(t, rolledBack.scheduled())
+
+	// The same turn against a healthy store arms exactly one timer.
+	committed := &recordingTimeoutRef{}
+	b = newBehavior(newFakeRegistryStore(), committed)
+
+	res = b.Receive(ctx, &ResumeSessionRequest{
+		SessionID: b.sessionID,
+	}, fakeExec{})
+	require.True(t, res.IsOk(), res.Err())
+	require.Len(t, committed.scheduled(), 1)
 }
