@@ -46,6 +46,11 @@ const (
 	ListSessionsRequestTLVType tlv.Type = 0x7017
 
 	FindOutgoingSessionByIdempotencyKeyTLVType tlv.Type = 0x7018
+
+	// SessionTerminalNotificationTLVType identifies
+	// SessionTerminalNotification messages sent from a per-session child
+	// to the registry coordinator after a terminal commit.
+	SessionTerminalNotificationTLVType tlv.Type = 0x7019
 )
 
 // OORDurableMsg is the message constraint for the OOR durable actor mailbox.
@@ -789,6 +794,59 @@ func (m *ResumeSessionResponse) MessageType() string {
 
 // actorRespSealed marks this as implementing the sealed ActorResp interface.
 func (m *ResumeSessionResponse) actorRespSealed() {}
+
+// SessionTerminalNotification tells the registry coordinator that a session
+// committed a terminal snapshot, so the registry can stop the per-session
+// child and drop it from the active set. The registry re-checks the durable
+// row before reaping, so a stale or duplicate notification is harmless.
+type SessionTerminalNotification struct {
+	actor.BaseMessage
+
+	// SessionID identifies the session that reached a terminal status.
+	SessionID SessionID
+}
+
+// MessageType returns the type of this message.
+func (m *SessionTerminalNotification) MessageType() string {
+	return "SessionTerminalNotification"
+}
+
+// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
+func (m *SessionTerminalNotification) actorMsgSealed() {}
+
+// TLVType returns the unique TLV type identifier for this message.
+func (m *SessionTerminalNotification) TLVType() tlv.Type {
+	return SessionTerminalNotificationTLVType
+}
+
+// Encode serializes the message to the provided writer.
+func (m *SessionTerminalNotification) Encode(w io.Writer) error {
+	raw, err := encodeSessionPayload(m.SessionID)
+	if err != nil {
+		return err
+	}
+
+	_, err = w.Write(raw)
+
+	return err
+}
+
+// Decode deserializes the message from the provided reader.
+func (m *SessionTerminalNotification) Decode(r io.Reader) error {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+
+	sessionID, err := decodeSessionPayload(raw)
+	if err != nil {
+		return err
+	}
+
+	m.SessionID = sessionID
+
+	return nil
+}
 
 // ExportSnapshotRequest asks the actor to export a snapshot for the requested
 // session.
