@@ -326,6 +326,15 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 			FixedAmount:     req.FixedAmount,
 			PolicyTemplate:  policyTemplate,
 		}
+		if req.VirtualChannel != nil {
+			vr.VirtualChannel = &roundpb.VirtualChannelIntent{
+				CapacitySat: int64(req.VirtualChannel.Capacity),
+				Private:     req.VirtualChannel.Private,
+				ZeroConf:    req.VirtualChannel.ZeroConf,
+				IdempotencyKey: req.VirtualChannel.
+					IdempotencyKey,
+			}
+		}
 		if req.SigningKey.PubKey != nil {
 			vr.SigningKey = req.SigningKey.PubKey.
 				SerializeCompressed()

@@ -239,6 +239,41 @@ func (m *RegisterVTXORequestsResponse) clientRespSealed() {}
 // RoundActorResp implements actormsg.RoundActorResp marker interface.
 func (m *RegisterVTXORequestsResponse) RoundActorResp() {}
 
+// RegisterVirtualChannelIntentRequest queues an operator-funded, channel-backed
+// VTXO request into the next round.
+type RegisterVirtualChannelIntentRequest struct {
+	actor.BaseMessage
+
+	BackingAmount  btcutil.Amount
+	Capacity       btcutil.Amount
+	Private        bool
+	ZeroConf       bool
+	IdempotencyKey string
+}
+
+// MessageType returns the message type name.
+func (m *RegisterVirtualChannelIntentRequest) MessageType() string {
+	return "RegisterVirtualChannelIntentRequest"
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *RegisterVirtualChannelIntentRequest) RoundReceivable() {}
+
+// RegisterVirtualChannelIntentResponse acknowledges the request.
+type RegisterVirtualChannelIntentResponse struct {
+	actor.BaseMessage
+
+	Success bool
+}
+
+// MessageType returns the message type name.
+func (m *RegisterVirtualChannelIntentResponse) MessageType() string {
+	return "RegisterVirtualChannelIntentResponse"
+}
+
+// RoundActorResp implements actormsg.RoundActorResp marker interface.
+func (m *RegisterVirtualChannelIntentResponse) RoundActorResp() {}
+
 // ConfirmationEvent wraps a chain confirmation event from ChainSource.
 // This allows the actor to receive confirmation notifications.
 type ConfirmationEvent struct {

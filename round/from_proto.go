@@ -557,6 +557,16 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 			FixedAmount:    vr.FixedAmount,
 			PolicyTemplate: bytes.Clone(vr.PolicyTemplate),
 		}
+		if vc := vr.GetVirtualChannel(); vc != nil {
+			req.VirtualChannel = &types.VirtualChannelIntent{
+				Capacity: btcutil.Amount(
+					vc.GetCapacitySat(),
+				),
+				Private:        vc.GetPrivate(),
+				ZeroConf:       vc.GetZeroConf(),
+				IdempotencyKey: vc.GetIdempotencyKey(),
+			}
+		}
 
 		if len(vr.SigningKey) > 0 {
 			key, err := btcec.ParsePubKey(vr.SigningKey)

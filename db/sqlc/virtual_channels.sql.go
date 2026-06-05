@@ -226,9 +226,10 @@ func (q *Queries) InsertVirtualChannelIntent(ctx context.Context, arg InsertVirt
 
 const InsertVirtualChannelIntentVTXO = `-- name: InsertVirtualChannelIntentVTXO :exec
 INSERT INTO virtual_channel_intent_vtxos (
-	pending_channel_id, outpoint_hash, outpoint_index, amount_sat
+	pending_channel_id, outpoint_hash, outpoint_index, amount_sat,
+	pk_script, policy_template
 ) VALUES (
-	$1, $2, $3, $4
+	$1, $2, $3, $4, $5, $6
 )
 `
 
@@ -237,6 +238,8 @@ type InsertVirtualChannelIntentVTXOParams struct {
 	OutpointHash     []byte
 	OutpointIndex    int32
 	AmountSat        int64
+	PkScript         []byte
+	PolicyTemplate   []byte
 }
 
 func (q *Queries) InsertVirtualChannelIntentVTXO(ctx context.Context, arg InsertVirtualChannelIntentVTXOParams) error {
@@ -245,15 +248,18 @@ func (q *Queries) InsertVirtualChannelIntentVTXO(ctx context.Context, arg Insert
 		arg.OutpointHash,
 		arg.OutpointIndex,
 		arg.AmountSat,
+		arg.PkScript,
+		arg.PolicyTemplate,
 	)
 	return err
 }
 
 const InsertVirtualChannelVTXO = `-- name: InsertVirtualChannelVTXO :exec
 INSERT INTO virtual_channel_vtxos (
-	virtual_channel_id, outpoint_hash, outpoint_index, amount_sat
+	virtual_channel_id, outpoint_hash, outpoint_index, amount_sat,
+	pk_script, policy_template
 ) VALUES (
-	$1, $2, $3, $4
+	$1, $2, $3, $4, $5, $6
 )
 `
 
@@ -262,6 +268,8 @@ type InsertVirtualChannelVTXOParams struct {
 	OutpointHash     []byte
 	OutpointIndex    int32
 	AmountSat        int64
+	PkScript         []byte
+	PolicyTemplate   []byte
 }
 
 func (q *Queries) InsertVirtualChannelVTXO(ctx context.Context, arg InsertVirtualChannelVTXOParams) error {
@@ -270,12 +278,14 @@ func (q *Queries) InsertVirtualChannelVTXO(ctx context.Context, arg InsertVirtua
 		arg.OutpointHash,
 		arg.OutpointIndex,
 		arg.AmountSat,
+		arg.PkScript,
+		arg.PolicyTemplate,
 	)
 	return err
 }
 
 const ListVirtualChannelIntentVTXOs = `-- name: ListVirtualChannelIntentVTXOs :many
-SELECT pending_channel_id, outpoint_hash, outpoint_index, amount_sat FROM virtual_channel_intent_vtxos
+SELECT pending_channel_id, outpoint_hash, outpoint_index, amount_sat, pk_script, policy_template FROM virtual_channel_intent_vtxos
 WHERE pending_channel_id = $1
 ORDER BY outpoint_hash, outpoint_index
 `
@@ -294,6 +304,8 @@ func (q *Queries) ListVirtualChannelIntentVTXOs(ctx context.Context, pendingChan
 			&i.OutpointHash,
 			&i.OutpointIndex,
 			&i.AmountSat,
+			&i.PkScript,
+			&i.PolicyTemplate,
 		); err != nil {
 			return nil, err
 		}
@@ -309,7 +321,7 @@ func (q *Queries) ListVirtualChannelIntentVTXOs(ctx context.Context, pendingChan
 }
 
 const ListVirtualChannelVTXOs = `-- name: ListVirtualChannelVTXOs :many
-SELECT virtual_channel_id, outpoint_hash, outpoint_index, amount_sat FROM virtual_channel_vtxos
+SELECT virtual_channel_id, outpoint_hash, outpoint_index, amount_sat, pk_script, policy_template FROM virtual_channel_vtxos
 WHERE virtual_channel_id = $1
 ORDER BY outpoint_hash, outpoint_index
 `
@@ -328,6 +340,8 @@ func (q *Queries) ListVirtualChannelVTXOs(ctx context.Context, virtualChannelID 
 			&i.OutpointHash,
 			&i.OutpointIndex,
 			&i.AmountSat,
+			&i.PkScript,
+			&i.PolicyTemplate,
 		); err != nil {
 			return nil, err
 		}

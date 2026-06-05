@@ -71,6 +71,46 @@ func TestRegisteredChannelAcceptorAcceptsRegisteredZeroConf(t *testing.T) {
 	require.True(t, resp.ZeroConf)
 }
 
+// TestRegisteredChannelAcceptorAcceptsOperatorLiquidityOpen verifies the
+// receive-channel invariant: an operator-opened channel with push amount zero
+// is accepted only when the persisted client-local balance is zero.
+func TestRegisteredChannelAcceptorAcceptsOperatorLiquidityOpen(t *testing.T) {
+	t.Parallel()
+
+	pendingID := fixedPendingID(9)
+	req := registeredOpenRequestWithPush(t, pendingID, 0)
+	status := StatusNegotiating
+	var remote NodePubKey
+	copy(remote[:], req.Node.SerializeCompressed())
+
+	acceptor, err := NewRegisteredChannelAcceptor(
+		RegisteredChannelAcceptorConfig{
+			Store: &fakeMaterializationStore{
+				byPending: map[PendingChannelID]*PendingOpen{
+					pendingID: {
+						PendingChannelID: pendingID,
+						RemoteNodePubKey: remote,
+						Status:           status,
+						Capacity: btcutil.Amount(
+							100_000,
+						),
+						LocalBalance:  0,
+						RemoteBalance: 100_000,
+						BackingVTXOs: []BackingVTXO{
+							testBackingVTXO(9),
+						},
+					},
+				},
+			},
+		},
+	)
+	require.NoError(t, err)
+
+	resp := acceptor.Accept(req)
+	require.False(t, resp.RejectChannel())
+	require.True(t, resp.ZeroConf)
+}
+
 // TestRegisteredChannelAcceptorRejectsMismatchedPeer verifies that a registered
 // pending id alone is not enough to accept an inbound zero-conf channel.
 func TestRegisteredChannelAcceptorRejectsMismatchedPeer(t *testing.T) {
@@ -107,6 +147,14 @@ func registeredOpenRequest(t *testing.T,
 
 	t.Helper()
 
+	return registeredOpenRequestWithPush(t, pendingID, 2_500_000)
+}
+
+func registeredOpenRequestWithPush(t *testing.T, pendingID PendingChannelID,
+	push lnwire.MilliSatoshi) *chanacceptor.ChannelAcceptRequest {
+
+	t.Helper()
+
 	priv, _ := btcec.PrivKeyFromBytes([]byte{
 		1, 2, 3, 4, 5, 6, 7, 8,
 		9, 10, 11, 12, 13, 14, 15, 16,
@@ -125,7 +173,7 @@ func registeredOpenRequest(t *testing.T,
 		OpenChanMsg: &lnwire.OpenChannel{
 			PendingChannelID: pendingID,
 			FundingAmount:    100_000,
-			PushAmount:       2_500_000,
+			PushAmount:       push,
 			ChannelType:      channelType,
 		},
 	}

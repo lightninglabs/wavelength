@@ -121,6 +121,19 @@ func (c *ArkServiceClient) CosignVirtualChannelBacking(ctx context.Context,
 	return out, err
 }
 
+// RequestVirtualChannelIntent negotiates an operator-liquidity virtual channel.
+func (c *ArkServiceClient) RequestVirtualChannelIntent(ctx context.Context,
+	in *arkrpc.RequestVirtualChannelIntentRequest, _ ...grpc.CallOption) (
+	*arkrpc.RequestVirtualChannelIntentResponse, error) {
+
+	out := new(arkrpc.RequestVirtualChannelIntentResponse)
+	err := c.client.Post(
+		ctx, "/v1/ark/request-virtual-channel-intent", in, out,
+	)
+
+	return out, err
+}
+
 // NewMailboxServiceClient creates a MailboxService REST client.
 func NewMailboxServiceClient(addr string,
 	opts ...Option) mailboxpb.MailboxServiceClient {
@@ -629,6 +642,19 @@ func (c *DaemonServiceClient) SubmitForfeitParticipantSignatures(
 	err := c.client.Post(
 		ctx, "/v1/daemon/submit-forfeit-participant-signatures", in,
 		out,
+	)
+
+	return out, err
+}
+
+// RequestVirtualChannelIntent negotiates an operator-liquidity virtual channel.
+func (c *DaemonServiceClient) RequestVirtualChannelIntent(ctx context.Context,
+	in *waverpc.RequestVirtualChannelIntentRequest, _ ...grpc.CallOption) (
+	*waverpc.RequestVirtualChannelIntentResponse, error) {
+
+	out := new(waverpc.RequestVirtualChannelIntentResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/request-virtual-channel-intent", in, out,
 	)
 
 	return out, err

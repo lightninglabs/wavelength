@@ -792,6 +792,36 @@ func TestBuildJoinRoundAuthRejectsNoInputs(t *testing.T) {
 	require.Contains(t, err.Error(), "at least one proof-of-funds")
 }
 
+// TestBuildJoinRoundAuthOperatorFundedVirtualChannelNoInputs verifies that a
+// receive-channel intent can authenticate with only the identifier signature:
+// the operator is funding the backing VTXO, so there are no client-owned
+// proof-of-funds inputs to include.
+func TestBuildJoinRoundAuthOperatorFundedVirtualChannelNoInputs(t *testing.T) {
+	t.Parallel()
+
+	f := newJoinAuthTestFixture(t)
+
+	req := f.newVTXORequest(t, 101000)
+	req.VirtualChannel = &types.VirtualChannelIntent{
+		Capacity: btcutil.Amount(100000),
+		Private:  true,
+		ZeroConf: true,
+	}
+
+	vtxoReqs := []types.VTXORequest{req}
+	intents := Intents{
+		VTXOs: vtxoReqs,
+	}
+
+	auth, err := buildJoinRoundAuth(
+		f.ctx, f.env, f.identifierKeyDesc(), intents, vtxoReqs, nil,
+		nil,
+	)
+	require.NoError(t, err)
+
+	f.verifyAuth(t, auth, nil)
+}
+
 // TestBuildJoinRoundAuthRejectsMissingValidFromQuery verifies that
 // buildJoinRoundAuth returns an error when the environment cannot query the
 // current height for intent validity metadata.

@@ -622,8 +622,17 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 			), nil
 		}
 
-		// Validate that outputs don't exceed inputs.
-		if totalOutput > totalInput {
+		operatorFundedVirtualChannel :=
+			isOperatorFundedVirtualChannelOnly(
+				s.VTXOs, s.Boarding, s.Forfeits, s.Leaves,
+			)
+
+		// Validate that outputs don't exceed inputs. Operator-funded
+		// receive-channel intents are the only exception: the operator
+		// funds the backing VTXO, while the client signs the exact
+		// VTXO-to-channel transaction before releasing final round
+		// input signatures.
+		if totalOutput > totalInput && !operatorFundedVirtualChannel {
 			return failWithNotification(
 				"outputs exceed inputs",
 				fmt.Errorf("total output (%d) exceeds total "+
@@ -641,6 +650,9 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		// balance invariant (outputs <= inputs) stays here as a
 		// sanity guard.
 		operatorFee := totalInput - totalOutput
+		if operatorFundedVirtualChannel {
+			operatorFee = 0
+		}
 
 		env.Log.InfoS(ctx, "Intent balance check passed",
 			btclog.Fmt("total_input", "%v", totalInput),
@@ -1264,6 +1276,9 @@ func evaluateQuote(ctx context.Context, env *ClientEnvironment, roundID RoundID,
 		}
 	}
 
+	operatorFundedVirtualChannel :=
+		isOperatorFundedVirtualChannelIntentOnly(intents)
+
 	// Realised-fee cap enforcement (#379). The
 	// quote.OperatorFeeSat field is an operator-supplied claim;
 	// the actual economic fee the client will pay is
@@ -1290,7 +1305,7 @@ func evaluateQuote(ctx context.Context, env *ClientEnvironment, roundID RoundID,
 			),
 		}
 	}
-	if realised < 0 {
+	if realised < 0 && !operatorFundedVirtualChannel {
 		return &QuoteRejected{
 			RoundID: roundID,
 			QuoteID: quote.QuoteID,
@@ -1310,6 +1325,21 @@ func evaluateQuote(ctx context.Context, env *ClientEnvironment, roundID RoundID,
 				realised, feeCap, quote.OperatorFeeSat,
 			),
 		}
+	}
+	if operatorFundedVirtualChannel {
+		if quote.OperatorFeeSat != 0 {
+			return &QuoteRejected{
+				RoundID: roundID,
+				QuoteID: quote.QuoteID,
+				Reason: fmt.Sprintf(
+					"operator-funded virtual channel "+
+						"quote has non-zero fee: %d",
+					quote.OperatorFeeSat,
+				),
+			}
+		}
+
+		realised = 0
 	}
 	if realised != quote.OperatorFeeSat {
 		return &QuoteRejected{
@@ -1385,6 +1415,14 @@ func realisedQuoteFee(ctx context.Context, env *ClientEnvironment,
 			return 0, fmt.Errorf("negative vtxo output amount at "+
 				"index %d: %d sat", i, amt)
 		}
+		if i < len(intents.VTXOs) &&
+			types.IsOperatorFundedVirtualChannelRequest(
+				&intents.VTXOs[i],
+			) {
+
+			continue
+		}
+
 		outputsSat += amt
 	}
 	for i := range quote.LeaveQuotes {
@@ -1481,7 +1519,15 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 				"cannot be change", i), false
 		}
 
-		if !implicitChange && !vtxoReq.IsChange {
+		if types.IsOperatorFundedVirtualChannelRequest(&vtxoReq) {
+			if entry.AmountSat != int64(vtxoReq.Amount) {
+				return fmt.Sprintf("vtxo[%d] "+
+					"virtual-channel amount %d != "+
+					"intent target %d", i,
+					entry.AmountSat,
+					int64(vtxoReq.Amount)), false
+			}
+		} else if !implicitChange && !vtxoReq.IsChange {
 			// Multi-output intent: only the explicit
 			// IsChange=true slot may deviate from its
 			// intent target.
@@ -1533,6 +1579,29 @@ func singleOutputFixed(intents Intents) bool {
 	}
 
 	return intents.VTXOs[0].FixedAmount
+}
+
+// isOperatorFundedVirtualChannelOnly reports whether the pending round
+// assembly contains the receive-channel form that the operator funds.
+func isOperatorFundedVirtualChannelOnly(vtxos []types.VTXORequest,
+	boarding []BoardingIntent, forfeits []types.ForfeitRequest,
+	leaves []*types.LeaveRequest) bool {
+
+	if len(vtxos) != 1 || len(boarding) != 0 ||
+		len(forfeits) != 0 || len(leaves) != 0 {
+		return false
+	}
+
+	return types.IsOperatorFundedVirtualChannelRequest(&vtxos[0])
+}
+
+// isOperatorFundedVirtualChannelIntentOnly reports whether a submitted intent
+// is a single receive-channel output funded by the operator.
+func isOperatorFundedVirtualChannelIntentOnly(intents Intents) bool {
+	return isOperatorFundedVirtualChannelOnly(
+		intents.VTXOs, intents.Boarding, intents.Forfeits,
+		intents.Leaves,
+	)
 }
 
 // ProcessEvent for QuoteReceivedState.
@@ -3291,6 +3360,16 @@ func (s *PartialSigsSentState) processEvent(ctx context.Context,
 			),
 		)
 
+		if err := activateRoundVirtualChannels(
+			ctx, env, s.RoundID, s.CommitmentTx, s.Intents,
+			s.ClientTrees,
+		); err != nil {
+			return failWithNotification(
+				"virtual channel activation failed", err, true,
+				fn.Some(s.RoundID),
+			), nil
+		}
+
 		// VTXO tree signatures validated. Now check if this round
 		// includes refresh requests. If so, we need to collect forfeit
 		// signatures from VTXO actors before signing boarding inputs.
@@ -3440,6 +3519,113 @@ func (s *PartialSigsSentState) processEvent(ctx context.Context,
 		// Self-loop on unknown events - do not halt the FSM.
 		return selfLoop(s), nil
 	}
+}
+
+func activateRoundVirtualChannels(ctx context.Context, env *ClientEnvironment,
+	roundID RoundID, commitmentTx *psbt.Packet, intents Intents,
+	clientTrees map[SignerKey]*tree.Tree) error {
+
+	if !hasRoundVirtualChannelIntents(intents.VTXOs) {
+		return nil
+	}
+	if env.VirtualChannelActivator == nil {
+		return fmt.Errorf("virtual channel activator is not configured")
+	}
+	if commitmentTx == nil || commitmentTx.UnsignedTx == nil {
+		return fmt.Errorf("commitment PSBT is not available")
+	}
+
+	commitmentBytes, err := roundpb.PSBTToBytes(commitmentTx)
+	if err != nil {
+		return fmt.Errorf("serialize commitment PSBT: %w", err)
+	}
+	commitmentTxID := commitmentTx.UnsignedTx.TxHash().String()
+
+	for i := range intents.VTXOs {
+		req := intents.VTXOs[i]
+		if req.VirtualChannel == nil {
+			continue
+		}
+
+		if req.SigningKey.PubKey == nil {
+			return fmt.Errorf("virtual channel vtxo[%d] missing "+
+				"signing key", i)
+		}
+		signerKey := NewSignerKey(req.SigningKey.PubKey)
+		clientTree := clientTrees[signerKey]
+		if clientTree == nil {
+			return fmt.Errorf("virtual channel vtxo[%d] missing "+
+				"client tree", i)
+		}
+		leaf := clientTree.Root.GetLeafForCoSigner(
+			req.SigningKey.PubKey,
+		)
+		if leaf == nil {
+			return fmt.Errorf("virtual channel vtxo[%d] "+
+				"missing leaf", i)
+		}
+		outpoint, err := leaf.GetNonAnchorOutpoint()
+		if err != nil {
+			return fmt.Errorf("virtual channel vtxo[%d] "+
+				"outpoint: %w", i, err)
+		}
+		if outpoint.Index >= uint32(len(leaf.Outputs)) {
+			return fmt.Errorf("virtual channel vtxo[%d] output "+
+				"index %d out of range", i, outpoint.Index)
+		}
+
+		pkScript, err := req.EffectivePkScript()
+		if err != nil {
+			return fmt.Errorf("virtual channel vtxo[%d] "+
+				"pkScript: %w", i, err)
+		}
+
+		output := leaf.Outputs[outpoint.Index]
+		if output.Value != int64(quoteVTXOAmount(nil, 0, req)) {
+			// The tree was already validated against the quote
+			// before reaching this point; use the concrete leaf
+			// value below.
+			env.Log.DebugS(ctx, "Virtual channel leaf uses "+
+				"server-stamped amount",
+				slog.Int("vtxo_index", i),
+				slog.Int64("leaf_value", output.Value))
+		}
+
+		err = env.VirtualChannelActivator.ActivateRoundVirtualChannel(
+			context.WithoutCancel(ctx),
+			RoundVirtualChannelActivationRequest{
+				RoundID:     roundID,
+				VTXOIndex:   i,
+				VTXORequest: req,
+				Outpoint:    *outpoint,
+				Amount:      btcutil.Amount(output.Value),
+				PkScript:    pkScript,
+				PolicyTemplate: append(
+					[]byte(nil), req.PolicyTemplate...,
+				),
+				ClientKey:      req.OwnerKey,
+				ClientTree:     clientTree,
+				CommitmentPSBT: commitmentBytes,
+				CommitmentTxID: commitmentTxID,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("activate virtual channel vtxo[%d] "+
+				"%s: %w", i, outpoint, err)
+		}
+	}
+
+	return nil
+}
+
+func hasRoundVirtualChannelIntents(reqs []types.VTXORequest) bool {
+	for i := range reqs {
+		if reqs[i].VirtualChannel != nil {
+			return true
+		}
+	}
+
+	return false
 }
 
 // transitionToForfeitCollection builds the transition to

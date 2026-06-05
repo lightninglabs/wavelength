@@ -459,6 +459,8 @@ type VirtualChannelIntentVtxo struct {
 	OutpointHash     []byte
 	OutpointIndex    int32
 	AmountSat        int64
+	PkScript         []byte
+	PolicyTemplate   []byte
 }
 
 type VirtualChannelRole struct {
@@ -474,6 +476,8 @@ type VirtualChannelVtxo struct {
 	OutpointHash     []byte
 	OutpointIndex    int32
 	AmountSat        int64
+	PkScript         []byte
+	PolicyTemplate   []byte
 }
 
 type Vtxo struct {

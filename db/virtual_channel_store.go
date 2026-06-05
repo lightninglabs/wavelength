@@ -78,7 +78,9 @@ func (s *VirtualChannelStoreDB) InsertVirtualChannelPendingOpen(
 					OutpointIndex: int32(
 						backing.OutPoint.Index,
 					),
-					AmountSat: int64(backing.Amount),
+					AmountSat:      int64(backing.Amount),
+					PkScript:       backing.PkScript,
+					PolicyTemplate: backing.PolicyTemplate,
 				},
 			)
 			if err != nil {
@@ -153,7 +155,9 @@ func (s *VirtualChannelStoreDB) InsertVirtualChannel(ctx context.Context,
 					OutpointIndex: int32(
 						backing.OutPoint.Index,
 					),
-					AmountSat: int64(backing.Amount),
+					AmountSat:      int64(backing.Amount),
+					PkScript:       backing.PkScript,
+					PolicyTemplate: backing.PolicyTemplate,
 				},
 			)
 			if err != nil {
@@ -660,6 +664,12 @@ func (s *VirtualChannelStoreDB) loadChannel(ctx context.Context,
 			backingVTXOs, virtualchannel.BackingVTXO{
 				OutPoint: op,
 				Amount:   btcutil.Amount(vtxoRow.AmountSat),
+				PkScript: bytes.Clone(
+					vtxoRow.PkScript,
+				),
+				PolicyTemplate: bytes.Clone(
+					vtxoRow.PolicyTemplate,
+				),
 			},
 		)
 	}
@@ -737,6 +747,12 @@ func (s *VirtualChannelStoreDB) loadPendingOpen(ctx context.Context,
 			backingVTXOs, virtualchannel.BackingVTXO{
 				OutPoint: op,
 				Amount:   btcutil.Amount(vtxoRow.AmountSat),
+				PkScript: bytes.Clone(
+					vtxoRow.PkScript,
+				),
+				PolicyTemplate: bytes.Clone(
+					vtxoRow.PolicyTemplate,
+				),
 			},
 		)
 	}

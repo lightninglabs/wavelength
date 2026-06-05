@@ -261,6 +261,12 @@ type VTXORequest struct {
 	// output is not eligible for the implicit-change exception.
 	FixedAmount bool
 
+	// VirtualChannel marks this VTXO as a channel-backed output. The
+	// client must negotiate and cosign the VTXO-to-channel backing
+	// transaction for the exact round leaf before it releases final
+	// round input signatures.
+	VirtualChannel *VirtualChannelIntent
+
 	// PolicyTemplate is the semantic arkscript policy for the requested
 	// output. This is the authoritative join-round representation.
 	PolicyTemplate []byte
@@ -299,6 +305,55 @@ type VTXORequest struct {
 	// typed VTXOReceivedMsg to the ledger actor. Local-only;
 	// never serialized over the wire.
 	Origin VTXOOrigin
+}
+
+// VirtualChannelIntent carries the round-scoped virtual-channel parameters
+// attached to a VTXORequest.
+type VirtualChannelIntent struct {
+	// Capacity is the LND channel capacity. It must be strictly less than
+	// the VTXO amount so the VTXO-to-channel transaction has a funding fee.
+	Capacity btcutil.Amount
+
+	// Private requests a private LND channel.
+	Private bool
+
+	// ZeroConf requires zero-conf activation for the virtual channel.
+	ZeroConf bool
+
+	// IdempotencyKey lets callers correlate or safely retry the request.
+	IdempotencyKey string
+}
+
+// IsOperatorFundedVirtualChannelRequest reports whether req is the narrow
+// receive-channel form where the operator funds the round VTXO and the client
+// only gets spendable balance by settling the later HTLC over lnd.
+func IsOperatorFundedVirtualChannelRequest(req *VTXORequest) bool {
+	if req == nil || req.VirtualChannel == nil {
+		return false
+	}
+
+	if req.Amount <= 0 || req.VirtualChannel.Capacity <= 0 {
+		return false
+	}
+
+	// The VTXO-to-channel backing transaction needs fee headroom; capacity
+	// must therefore be strictly below the backing VTXO amount.
+	return req.VirtualChannel.Capacity < req.Amount
+}
+
+// IsOperatorFundedVirtualChannelOnly reports whether a join request contains
+// exactly one operator-funded receive-channel VTXO and no client-funded inputs
+// or other outputs.
+func IsOperatorFundedVirtualChannelOnly(vtxos []*VTXORequest,
+	boarding []*BoardingRequest, forfeits []*ForfeitRequest,
+	leaves []*LeaveRequest) bool {
+
+	if len(vtxos) != 1 || len(boarding) != 0 ||
+		len(forfeits) != 0 || len(leaves) != 0 {
+		return false
+	}
+
+	return IsOperatorFundedVirtualChannelRequest(vtxos[0])
 }
 
 // HasLocalOwner reports whether the request carries a local owner descriptor

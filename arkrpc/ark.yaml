@@ -18,3 +18,6 @@ http:
     - selector: arkrpc.ArkService.CosignVirtualChannelBacking
       post: /v1/ark/cosign-virtual-channel-backing
       body: "*"
+    - selector: arkrpc.ArkService.RequestVirtualChannelIntent
+      post: /v1/ark/request-virtual-channel-intent
+      body: "*"

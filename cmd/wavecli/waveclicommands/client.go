@@ -16,6 +16,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+var newDaemonClientConn = grpc.NewClient
+
 // getDaemonConn establishes a gRPC connection to the daemon. The caller is
 // responsible for closing the returned connection.
 func getDaemonConn(cmd *cobra.Command) (*grpc.ClientConn, error) {
@@ -86,7 +88,7 @@ func getDaemonConn(cmd *cobra.Command) (*grpc.ClientConn, error) {
 		opts = append(opts, macaroonOpt)
 	}
 
-	conn, err := grpc.NewClient(rpcServer, opts...)
+	conn, err := newDaemonClientConn(rpcServer, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("unable to connect to daemon at %s: %w",
 			rpcServer, err)

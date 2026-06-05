@@ -44,6 +44,7 @@ const (
 	DaemonService_OpenVirtualChannel_FullMethodName                             = "/waverpc.DaemonService/OpenVirtualChannel"
 	DaemonService_ListPendingForfeitParticipantSignatureRequests_FullMethodName = "/waverpc.DaemonService/ListPendingForfeitParticipantSignatureRequests"
 	DaemonService_SubmitForfeitParticipantSignatures_FullMethodName             = "/waverpc.DaemonService/SubmitForfeitParticipantSignatures"
+	DaemonService_RequestVirtualChannelIntent_FullMethodName                    = "/waverpc.DaemonService/RequestVirtualChannelIntent"
 	DaemonService_LeaveVTXOs_FullMethodName                                     = "/waverpc.DaemonService/LeaveVTXOs"
 	DaemonService_SendOnChain_FullMethodName                                    = "/waverpc.DaemonService/SendOnChain"
 	DaemonService_Board_FullMethodName                                          = "/waverpc.DaemonService/Board"
@@ -178,6 +179,11 @@ type DaemonServiceClient interface {
 	// operator key, callers may submit an empty signature set to acknowledge
 	// and unblock the request.
 	SubmitForfeitParticipantSignatures(ctx context.Context, in *SubmitForfeitParticipantSignaturesRequest, opts ...grpc.CallOption) (*SubmitForfeitParticipantSignaturesResponse, error)
+	// RequestVirtualChannelIntent negotiates an operator-liquidity virtual
+	// channel backed by existing VTXO(s). The operator opens the lnd channel,
+	// the client starts with zero spendable channel balance, and the backing
+	// transaction stays unpublished on the happy path.
+	RequestVirtualChannelIntent(ctx context.Context, in *RequestVirtualChannelIntentRequest, opts ...grpc.CallOption) (*RequestVirtualChannelIntentResponse, error)
 	// LeaveVTXOs queues one or more VTXOs for cooperative leave
 	// (offboard) in the next round. Each VTXO is forfeited and the
 	// forfeited amount (minus the quoted per-input operator fee)
@@ -523,6 +529,16 @@ func (c *daemonServiceClient) SubmitForfeitParticipantSignatures(ctx context.Con
 	return out, nil
 }
 
+func (c *daemonServiceClient) RequestVirtualChannelIntent(ctx context.Context, in *RequestVirtualChannelIntentRequest, opts ...grpc.CallOption) (*RequestVirtualChannelIntentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestVirtualChannelIntentResponse)
+	err := c.cc.Invoke(ctx, DaemonService_RequestVirtualChannelIntent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) LeaveVTXOs(ctx context.Context, in *LeaveVTXOsRequest, opts ...grpc.CallOption) (*LeaveVTXOsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(LeaveVTXOsResponse)
@@ -853,6 +869,11 @@ type DaemonServiceServer interface {
 	// operator key, callers may submit an empty signature set to acknowledge
 	// and unblock the request.
 	SubmitForfeitParticipantSignatures(context.Context, *SubmitForfeitParticipantSignaturesRequest) (*SubmitForfeitParticipantSignaturesResponse, error)
+	// RequestVirtualChannelIntent negotiates an operator-liquidity virtual
+	// channel backed by existing VTXO(s). The operator opens the lnd channel,
+	// the client starts with zero spendable channel balance, and the backing
+	// transaction stays unpublished on the happy path.
+	RequestVirtualChannelIntent(context.Context, *RequestVirtualChannelIntentRequest) (*RequestVirtualChannelIntentResponse, error)
 	// LeaveVTXOs queues one or more VTXOs for cooperative leave
 	// (offboard) in the next round. Each VTXO is forfeited and the
 	// forfeited amount (minus the quoted per-input operator fee)
@@ -1022,6 +1043,9 @@ func (UnimplementedDaemonServiceServer) ListPendingForfeitParticipantSignatureRe
 }
 func (UnimplementedDaemonServiceServer) SubmitForfeitParticipantSignatures(context.Context, *SubmitForfeitParticipantSignaturesRequest) (*SubmitForfeitParticipantSignaturesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SubmitForfeitParticipantSignatures not implemented")
+}
+func (UnimplementedDaemonServiceServer) RequestVirtualChannelIntent(context.Context, *RequestVirtualChannelIntentRequest) (*RequestVirtualChannelIntentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequestVirtualChannelIntent not implemented")
 }
 func (UnimplementedDaemonServiceServer) LeaveVTXOs(context.Context, *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method LeaveVTXOs not implemented")
@@ -1557,6 +1581,24 @@ func _DaemonService_SubmitForfeitParticipantSignatures_Handler(srv interface{}, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_RequestVirtualChannelIntent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestVirtualChannelIntentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).RequestVirtualChannelIntent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_RequestVirtualChannelIntent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).RequestVirtualChannelIntent(ctx, req.(*RequestVirtualChannelIntentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_LeaveVTXOs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(LeaveVTXOsRequest)
 	if err := dec(in); err != nil {
@@ -2034,6 +2076,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SubmitForfeitParticipantSignatures",
 			Handler:    _DaemonService_SubmitForfeitParticipantSignatures_Handler,
+		},
+		{
+			MethodName: "RequestVirtualChannelIntent",
+			Handler:    _DaemonService_RequestVirtualChannelIntent_Handler,
 		},
 		{
 			MethodName: "LeaveVTXOs",

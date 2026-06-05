@@ -220,9 +220,18 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 		return nil, err
 	}
 
+	operatorFundedVirtualChannel :=
+		isOperatorFundedVirtualChannelIntentOnly(intents)
+
 	// Verify we have at least one provable input (boarding or
-	// forfeit) and that all signing keys are populated.
-	err = validateJoinAuthSigningInputs(signingInputs)
+	// forfeit) and that all signing keys are populated. Operator-funded
+	// receive-channel intents deliberately have no client-owned funding
+	// input; the identifier signature still binds the request, and the
+	// channel backing transaction is negotiated before final round input
+	// signatures are released.
+	err = validateJoinAuthSigningInputs(
+		signingInputs, operatorFundedVirtualChannel,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -446,8 +455,14 @@ func buildJoinRoundAuthRequest(ctx context.Context, env *ClientEnvironment,
 
 // validateJoinAuthSigningInputs checks that join-auth proof-of-funds
 // inputs are present and structurally complete.
-func validateJoinAuthSigningInputs(signingInputs []joinAuthInput) error {
+func validateJoinAuthSigningInputs(signingInputs []joinAuthInput,
+	allowEmpty bool) error {
+
 	if len(signingInputs) == 0 {
+		if allowEmpty {
+			return nil
+		}
+
 		return fmt.Errorf("join auth requires at least one " +
 			"proof-of-funds input")
 	}

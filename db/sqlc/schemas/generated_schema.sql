@@ -604,9 +604,6 @@ CREATE INDEX idx_vhtlc_recovery_jobs_unroll_target
     )
     WHERE unroll_target_outpoint_hash IS NOT NULL;
 
-CREATE INDEX idx_virtual_channel_intent_vtxos_outpoint
-	ON virtual_channel_intent_vtxos(outpoint_hash, outpoint_index);
-
 CREATE INDEX idx_virtual_channel_vtxos_outpoint
 	ON virtual_channel_vtxos(outpoint_hash, outpoint_index);
 
@@ -1549,11 +1546,13 @@ CREATE TABLE vhtlc_recovery_jobs (
     UNIQUE(swap_id, action, vtxo_txid, vtxo_vout)
 );
 
-CREATE TABLE virtual_channel_intent_vtxos (
+CREATE TABLE "virtual_channel_intent_vtxos" (
 	pending_channel_id BLOB NOT NULL,
 	outpoint_hash BLOB NOT NULL,
 	outpoint_index INTEGER NOT NULL,
 	amount_sat BIGINT NOT NULL CHECK (amount_sat > 0),
+	pk_script BLOB,
+	policy_template BLOB,
 
 	PRIMARY KEY (
 		pending_channel_id, outpoint_hash, outpoint_index
@@ -1561,8 +1560,6 @@ CREATE TABLE virtual_channel_intent_vtxos (
 	FOREIGN KEY (pending_channel_id)
 		REFERENCES virtual_channel_intents(pending_channel_id)
 		ON DELETE CASCADE,
-	FOREIGN KEY (outpoint_hash, outpoint_index)
-		REFERENCES vtxos(outpoint_hash, outpoint_index),
 	CHECK (length(pending_channel_id) = 32),
 	CHECK (length(outpoint_hash) = 32)
 );
@@ -1593,11 +1590,13 @@ CREATE TABLE virtual_channel_statuses (
 	status TEXT PRIMARY KEY
 );
 
-CREATE TABLE virtual_channel_vtxos (
+CREATE TABLE "virtual_channel_vtxos" (
 	virtual_channel_id BLOB NOT NULL,
 	outpoint_hash BLOB NOT NULL,
 	outpoint_index INTEGER NOT NULL,
 	amount_sat BIGINT NOT NULL CHECK (amount_sat > 0),
+	pk_script BLOB,
+	policy_template BLOB,
 
 	PRIMARY KEY (
 		virtual_channel_id, outpoint_hash, outpoint_index
@@ -1605,8 +1604,6 @@ CREATE TABLE virtual_channel_vtxos (
 	FOREIGN KEY (virtual_channel_id)
 		REFERENCES virtual_channels(virtual_channel_id)
 		ON DELETE CASCADE,
-	FOREIGN KEY (outpoint_hash, outpoint_index)
-		REFERENCES vtxos(outpoint_hash, outpoint_index),
 	CHECK (length(virtual_channel_id) = 32),
 	CHECK (length(outpoint_hash) = 32)
 );

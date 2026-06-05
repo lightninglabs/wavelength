@@ -28,6 +28,12 @@ service ArkService {
     // material, and returns the fully witnessed backing transaction.
     rpc CosignVirtualChannelBacking (CosignVirtualChannelBackingRequest)
         returns (CosignVirtualChannelBackingResponse);
+
+    // RequestVirtualChannelIntent starts an operator-funded lnd open that is
+    // backed by the supplied VTXO parent but is not broadcast on the happy
+    // path. The operator owns the full initial channel balance.
+    rpc RequestVirtualChannelIntent (RequestVirtualChannelIntentRequest)
+        returns (RequestVirtualChannelIntentResponse);
 }
 
 message GetInfoRequest {
@@ -151,6 +157,11 @@ message GetInfoResponse {
     // entries are the operator's enabled, selectable versions; DISABLED
     // entries are advertised only so clients learn a version was retired.
     repeated ArkVersionPolicy ark_version_policies = 22;
+
+    // lnd_node_pubkey is the compressed lnd node key used for integrated
+    // virtual Lightning channels. Empty when the operator has no integrated
+    // lnd runtime.
+    bytes lnd_node_pubkey = 23;
 }
 
 // EstimateFeeRequest asks the server to estimate the fee for a
@@ -204,6 +215,16 @@ message VirtualChannelBackingVTXO {
 
     // amount_sat is the value of the backing VTXO.
     int64 amount_sat = 2;
+
+    // pk_script is the backing VTXO script. It is required for
+    // round-created VTXOs that are not yet present in the operator's
+    // durable VTXO store.
+    bytes pk_script = 3;
+
+    // policy_template is the backing VTXO policy template. It is required
+    // for round-created VTXOs so the operator can cosign the cooperative
+    // VTXO-to-channel spend before the round is broadcast.
+    bytes policy_template = 4;
 }
 
 message RegisterVirtualChannelRequest {
@@ -279,4 +300,52 @@ message CosignVirtualChannelBackingResponse {
 
     // status is the persisted operator-side virtual channel status.
     string status = 2;
+}
+
+message RequestVirtualChannelIntentRequest {
+    // pending_channel_id is lnd's 32-byte PSBT funding identifier chosen by
+    // the client before the acceptor row is persisted.
+    bytes pending_channel_id = 1;
+
+    // client_node_pubkey is the compressed lnd node key of the client that
+    // will accept the operator-opened channel.
+    bytes client_node_pubkey = 2;
+
+    // capacity_sat is the lnd channel capacity.
+    int64 capacity_sat = 3;
+
+    // private marks the lnd channel private.
+    bool private = 4;
+
+    // zero_conf requests lnd zero-conf/scid-alias activation.
+    bool zero_conf = 5;
+
+    // backing_vtxos are the existing VTXOs consumed by backing_tx.
+    repeated VirtualChannelBackingVTXO backing_vtxos = 6;
+
+    // idempotency_key identifies this negotiation across retries.
+    string idempotency_key = 7;
+}
+
+message RequestVirtualChannelIntentResponse {
+    // status is the operator-side virtual channel status.
+    string status = 1;
+
+    // virtual_channel_id is the stable darepo virtual channel id.
+    bytes virtual_channel_id = 2;
+
+    // pending_channel_id is lnd's temporary channel id during funding.
+    bytes pending_channel_id = 3;
+
+    // channel_point is the lnd funding outpoint in "txid:vout" format.
+    string channel_point = 4;
+
+    // selected_vtxos is the set of VTXOs backing the channel.
+    repeated VirtualChannelBackingVTXO selected_vtxos = 5;
+
+    // backing_tx is the unsigned VTXO-to-channel-point transaction.
+    bytes backing_tx = 6;
+
+    // funding_psbt is the lnd funding PSBT retained for audit/recovery.
+    bytes funding_psbt = 7;
 }

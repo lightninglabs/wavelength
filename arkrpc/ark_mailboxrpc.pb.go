@@ -34,6 +34,8 @@ type ArkServiceMailboxServer interface {
 	ActivateVirtualChannel(ctx context.Context, req *ActivateVirtualChannelRequest) (*ActivateVirtualChannelResponse, error)
 	// CosignVirtualChannelBacking handles CosignVirtualChannelBacking.
 	CosignVirtualChannelBacking(ctx context.Context, req *CosignVirtualChannelBackingRequest) (*CosignVirtualChannelBackingResponse, error)
+	// RequestVirtualChannelIntent handles RequestVirtualChannelIntent.
+	RequestVirtualChannelIntent(ctx context.Context, req *RequestVirtualChannelIntentRequest) (*RequestVirtualChannelIntentResponse, error)
 }
 
 // RegisterArkServiceMailboxServer registers handlers for ArkService.
@@ -87,6 +89,16 @@ func RegisterArkServiceMailboxServer(r rpc.Router, impl ArkServiceMailboxServer)
 		}
 
 		return impl.CosignVirtualChannelBacking(ctx, req)
+	})
+	r.Handle("arkrpc.ArkService", "RequestVirtualChannelIntent", func() proto.Message {
+		return &RequestVirtualChannelIntentRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*RequestVirtualChannelIntentRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.RequestVirtualChannelIntent(ctx, req)
 	})
 }
 
@@ -198,6 +210,29 @@ func (c *ArkServiceMailboxClient) CosignVirtualChannelBacking(ctx context.Contex
 	}
 
 	resp := new(CosignVirtualChannelBackingResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// RequestVirtualChannelIntent calls the RequestVirtualChannelIntent RPC.
+func (c *ArkServiceMailboxClient) RequestVirtualChannelIntent(ctx context.Context, req *RequestVirtualChannelIntentRequest, opts ...rpc.RPCOptions) (*RequestVirtualChannelIntentResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkrpc.ArkService",
+		Method:  "RequestVirtualChannelIntent",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(RequestVirtualChannelIntentResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

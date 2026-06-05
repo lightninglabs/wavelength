@@ -6,8 +6,11 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // ClientEnvironment provides the client round interaction state machine with
@@ -30,6 +33,11 @@ type ClientEnvironment struct {
 	// SigningExecutor bounds independent VTXO MuSig2 work. A nil executor
 	// falls back to serial execution for focused FSM tests.
 	SigningExecutor SigningExecutor
+
+	// VirtualChannelActivator negotiates channel-backed VTXO requests
+	// after the VTXO tree is fully signed and before final round input
+	// signatures are released.
+	VirtualChannelActivator RoundVirtualChannelActivator
 
 	// OperatorTerms contains the operator's parameters including sweep
 	// keys, fee targets, confirmation thresholds, and amount limits.
@@ -106,6 +114,29 @@ type ClientEnvironment struct {
 	// working. Tests drive the FSM against a deterministic clock
 	// by supplying a closure.
 	Now func() time.Time
+}
+
+// RoundVirtualChannelActivationRequest describes the exact round-created VTXO
+// leaf that must be bound to a virtual LND channel before the client releases
+// final round input signatures.
+type RoundVirtualChannelActivationRequest struct {
+	RoundID        RoundID
+	VTXOIndex      int
+	VTXORequest    types.VTXORequest
+	Outpoint       wire.OutPoint
+	Amount         btcutil.Amount
+	PkScript       []byte
+	PolicyTemplate []byte
+	ClientKey      keychain.KeyDescriptor
+	ClientTree     *tree.Tree
+	CommitmentPSBT []byte
+	CommitmentTxID string
+}
+
+// RoundVirtualChannelActivator activates channel-backed round outputs.
+type RoundVirtualChannelActivator interface {
+	ActivateRoundVirtualChannel(context.Context,
+		RoundVirtualChannelActivationRequest) error
 }
 
 // now returns the environment's injected clock if set, otherwise

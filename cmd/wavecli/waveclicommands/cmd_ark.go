@@ -30,7 +30,7 @@ func newArkCmd() *cobra.Command {
 	cmd.AddCommand(
 		newVTXOsCmd(), newRoundsCmd(), newOORCmd(), newBoardCmd(),
 		newSweepCmd(), newFeesCmd(), newArkListTransactionsCmd(),
-		newArkSendCmd(),
+		newArkSendCmd(), newChannelCmd(),
 	)
 
 	return cmd

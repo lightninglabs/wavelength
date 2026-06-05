@@ -10,9 +10,10 @@ INSERT INTO virtual_channels (
 
 -- name: InsertVirtualChannelVTXO :exec
 INSERT INTO virtual_channel_vtxos (
-	virtual_channel_id, outpoint_hash, outpoint_index, amount_sat
+	virtual_channel_id, outpoint_hash, outpoint_index, amount_sat,
+	pk_script, policy_template
 ) VALUES (
-	$1, $2, $3, $4
+	$1, $2, $3, $4, $5, $6
 );
 
 -- name: InsertVirtualChannelIntent :exec
@@ -25,9 +26,10 @@ INSERT INTO virtual_channel_intents (
 
 -- name: InsertVirtualChannelIntentVTXO :exec
 INSERT INTO virtual_channel_intent_vtxos (
-	pending_channel_id, outpoint_hash, outpoint_index, amount_sat
+	pending_channel_id, outpoint_hash, outpoint_index, amount_sat,
+	pk_script, policy_template
 ) VALUES (
-	$1, $2, $3, $4
+	$1, $2, $3, $4, $5, $6
 );
 
 -- name: GetVirtualChannel :one

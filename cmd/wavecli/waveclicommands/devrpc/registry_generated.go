@@ -192,6 +192,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "SubmitForfeitParticipantSignatures supplies external participant\nsignatures for one pending connector-bound forfeit signing request. The\nrequest_id must be copied from the listed pending request; the daemon\nuses it to wake the blocked VTXO actor that is waiting for that exact\nround-assigned forfeit transaction. If the selected spend path requires\nno external participant keys after removing the local VTXO key and the\noperator key, callers may submit an empty signature set to acknowledge\nand unblock the request.",
 				},
 				{
+					Name:     "RequestVirtualChannelIntent",
+					Aliases:  []string{"request-virtual-channel-intent"},
+					Input:    "waverpc.RequestVirtualChannelIntentRequest",
+					Output:   "waverpc.RequestVirtualChannelIntentResponse",
+					Comments: "RequestVirtualChannelIntent negotiates an operator-liquidity virtual\nchannel backed by existing VTXO(s). The operator opens the lnd channel,\nthe client starts with zero spendable channel balance, and the backing\ntransaction stays unpublished on the happy path.",
+				},
+				{
 					Name:     "LeaveVTXOs",
 					Aliases:  []string{"leave-vtxos"},
 					Input:    "waverpc.LeaveVTXOsRequest",

@@ -54,8 +54,10 @@ const (
 
 // BackingVTXO records one existing VTXO consumed by the backing transaction.
 type BackingVTXO struct {
-	OutPoint wire.OutPoint
-	Amount   btcutil.Amount
+	OutPoint       wire.OutPoint
+	Amount         btcutil.Amount
+	PkScript       []byte
+	PolicyTemplate []byte
 }
 
 // Registration is the durable material required to activate or materialize a

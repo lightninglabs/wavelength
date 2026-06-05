@@ -151,6 +151,13 @@ service DaemonService {
         SubmitForfeitParticipantSignaturesRequest)
         returns (SubmitForfeitParticipantSignaturesResponse);
 
+    // RequestVirtualChannelIntent negotiates an operator-liquidity virtual
+    // channel backed by existing VTXO(s). The operator opens the lnd channel,
+    // the client starts with zero spendable channel balance, and the backing
+    // transaction stays unpublished on the happy path.
+    rpc RequestVirtualChannelIntent (RequestVirtualChannelIntentRequest)
+        returns (RequestVirtualChannelIntentResponse);
+
     // LeaveVTXOs queues one or more VTXOs for cooperative leave
     // (offboard) in the next round. Each VTXO is forfeited and the
     // forfeited amount (minus the quoted per-input operator fee)
@@ -1453,6 +1460,63 @@ message SubmitForfeitParticipantSignaturesRequest {
 }
 
 message SubmitForfeitParticipantSignaturesResponse {
+}
+
+message RequestVirtualChannelIntentRequest {
+    // capacity_sat is the lnd channel capacity.
+    int64 capacity_sat = 1;
+
+    // private marks the lnd channel private.
+    bool private = 2;
+
+    // zero_conf requests lnd zero-conf/scid-alias activation.
+    bool zero_conf = 3;
+
+    // backing_vtxos optionally pins the VTXOs to use. Empty means the daemon
+    // selects enough wallet VTXOs to cover capacity and fees.
+    repeated VirtualChannelVTXOInput backing_vtxos = 4;
+
+    // idempotency_key identifies this negotiation across retries.
+    string idempotency_key = 5;
+
+    // dry_run validates selection and returns a preview without activating lnd
+    // or persisting a virtual channel registration.
+    bool dry_run = 6;
+
+    // round_funded queues a channel-backed VTXO into the next round instead
+    // of selecting existing wallet VTXOs. The operator funds that round VTXO
+    // and the channel is activated before final round signatures are sent.
+    bool round_funded = 7;
+
+    // backing_amount_sat is the round VTXO amount for round_funded requests.
+    // If unset, the daemon uses capacity_sat plus a conservative funding fee
+    // headroom.
+    int64 backing_amount_sat = 8;
+}
+
+message RequestVirtualChannelIntentResponse {
+    // status is "preview", "negotiating", or "active".
+    string status = 1;
+
+    // virtual_channel_id is the stable darepo virtual channel id.
+    bytes virtual_channel_id = 2;
+
+    // pending_channel_id is lnd's temporary channel id during funding.
+    bytes pending_channel_id = 3;
+
+    // channel_point is the lnd funding outpoint in "txid:vout" format.
+    string channel_point = 4;
+
+    // selected_vtxos is the set of VTXOs backing the channel.
+    repeated VirtualChannelSelectedVTXO selected_vtxos = 5;
+
+    // backing_tx is the fully signed VTXO-to-channel-point transaction. It is
+    // empty for dry_run previews.
+    bytes backing_tx = 6;
+
+    // funding_psbt is the lnd funding PSBT retained for audit/recovery. It is
+    // empty for dry_run previews.
+    bytes funding_psbt = 7;
 }
 
 // LeaveDestination describes where a single leave output should land.

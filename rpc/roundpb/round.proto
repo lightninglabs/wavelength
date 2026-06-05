@@ -345,6 +345,28 @@ message VTXORequest {
     // implicit-change exception is disabled and the intent must include a
     // separate fee-bearing change output if fees need to be paid.
     bool fixed_amount = 5;
+
+    // virtual_channel, when set, marks this VTXO as unsafe to publish
+    // unless the operator has a fully signed VTXO-to-channel backing
+    // transaction for the exact leaf output produced by this round.
+    VirtualChannelIntent virtual_channel = 6;
+}
+
+// VirtualChannelIntent carries LND channel parameters for a VTXORequest whose
+// output must be immediately bound to an unpublished channel funding parent.
+message VirtualChannelIntent {
+    // capacity_sat is the LND channel capacity. It must be strictly less than
+    // the VTXO output amount so the backing transaction can pay fees.
+    int64 capacity_sat = 1;
+
+    // private requests a private LND channel.
+    bool private = 2;
+
+    // zero_conf requires zero-conf channel activation.
+    bool zero_conf = 3;
+
+    // idempotency_key is caller supplied retry/correlation metadata.
+    string idempotency_key = 4;
 }
 
 // ForfeitRequest specifies a VTXO the client wants to forfeit.

@@ -1590,6 +1590,24 @@ func (s *Server) startIntegratedLnd(ctx context.Context) error {
 			return fmt.Errorf("virtual channel store not " +
 				"initialized")
 		}
+		materializer := newVirtualChannelBackingMaterializer(
+			func() (
+
+				actor.ActorRef[
+					unroll.RegistryMsg,
+					unroll.RegistryResp,
+				],
+				bool) {
+
+				if s.unrollRegistry == nil {
+					return nil, false
+				}
+
+				registry := s.unrollRegistry.Ref()
+
+				return registry, true
+			},
+		)
 
 		materializer := newVirtualChannelBackingMaterializer(
 			func() (
@@ -4241,8 +4259,11 @@ func (s *Server) initRoundActor(ctx context.Context,
 			dropCustomForfeitSigningContexts,
 		OwnedScriptChecker:   scriptChecker,
 		OwnedScriptRegistrar: scriptRegistrar,
-		LedgerSink:           fn.Some(ledger.NewSink(s.actorSystem)),
-		MetricsSink:          s.metricsSink,
+		VirtualChannelActivator: &roundVirtualChannelActivator{
+			server: s,
+		},
+		LedgerSink:  fn.Some(ledger.NewSink(s.actorSystem)),
+		MetricsSink: s.metricsSink,
 		ForfeitCollectionTimeout: s.cfg.
 			ForfeitCollectionTimeout,
 		RegistrationTimeout: s.cfg.RegistrationTimeout,

@@ -72,6 +72,9 @@ http:
     - selector: waverpc.DaemonService.OpenVirtualChannel
       post: /v1/daemon/open-virtual-channel
       body: "*"
+    - selector: waverpc.DaemonService.RequestVirtualChannelIntent
+      post: /v1/daemon/request-virtual-channel-intent
+      body: "*"
     - selector: waverpc.DaemonService.ListPendingForfeitParticipantSignatureRequests
       post: /v1/daemon/list-pending-forfeit-participant-signature-requests
       body: "*"

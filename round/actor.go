@@ -275,6 +275,10 @@ type RoundClientConfig struct {
 	// VTXOStore persists off-chain balance.
 	VTXOStore VTXOStore
 
+	// VirtualChannelActivator negotiates channel-backed round VTXO outputs
+	// before the round releases final input signatures.
+	VirtualChannelActivator RoundVirtualChannelActivator
+
 	// OperatorTerms contains the operator's parameters.
 	OperatorTerms *types.OperatorTerms
 
@@ -390,16 +394,17 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	// (e.g., lib.NewTreeSignerSession, signing helpers). StartHeight is set
 	// to 0 here and will be set per-round when FSMs are created.
 	env := &ClientEnvironment{
-		RoundStore:             cfg.RoundStore,
-		VTXOStore:              cfg.VTXOStore,
-		Wallet:                 cfg.Wallet,
-		SigningExecutor:        cfg.SigningExecutor,
-		OperatorTerms:          cfg.OperatorTerms,
-		ChainParams:            cfg.ChainParams,
-		MaxOperatorFee:         cfg.MaxOperatorFee,
-		Log:                    actorLog,
-		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
-		OwnedScriptChecker:     cfg.OwnedScriptChecker,
+		RoundStore:              cfg.RoundStore,
+		VTXOStore:               cfg.VTXOStore,
+		Wallet:                  cfg.Wallet,
+		SigningExecutor:         cfg.SigningExecutor,
+		VirtualChannelActivator: cfg.VirtualChannelActivator,
+		OperatorTerms:           cfg.OperatorTerms,
+		ChainParams:             cfg.ChainParams,
+		MaxOperatorFee:          cfg.MaxOperatorFee,
+		Log:                     actorLog,
+		DisableJoinRequestAuth:  cfg.DisableJoinRequestAuth,
+		OwnedScriptChecker:      cfg.OwnedScriptChecker,
 	}
 	if env.SigningExecutor == nil {
 		env.SigningExecutor = NewSigningExecutor(1)
@@ -793,17 +798,18 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:             a.cfg.RoundStore,
-		VTXOStore:              a.cfg.VTXOStore,
-		Wallet:                 a.cfg.Wallet,
-		SigningExecutor:        a.env.SigningExecutor,
-		OperatorTerms:          a.cfg.OperatorTerms,
-		ChainParams:            a.cfg.ChainParams,
-		MaxOperatorFee:         a.cfg.MaxOperatorFee,
-		Log:                    fsmLogger,
-		StartHeight:            startHeight,
-		QueryBestHeight:        a.queryBestHeight,
-		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
+		RoundStore:              a.cfg.RoundStore,
+		VTXOStore:               a.cfg.VTXOStore,
+		Wallet:                  a.cfg.Wallet,
+		SigningExecutor:         a.env.SigningExecutor,
+		VirtualChannelActivator: a.cfg.VirtualChannelActivator,
+		OperatorTerms:           a.cfg.OperatorTerms,
+		ChainParams:             a.cfg.ChainParams,
+		MaxOperatorFee:          a.cfg.MaxOperatorFee,
+		Log:                     fsmLogger,
+		StartHeight:             startHeight,
+		QueryBestHeight:         a.queryBestHeight,
+		DisableJoinRequestAuth:  a.cfg.DisableJoinRequestAuth,
 		ForfeitCollectionTimeout: a.
 			env.ForfeitCollectionTimeout,
 		RegistrationTimeout: a.env.RegistrationTimeout,
@@ -866,17 +872,18 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:             a.cfg.RoundStore,
-		VTXOStore:              a.cfg.VTXOStore,
-		Wallet:                 a.cfg.Wallet,
-		SigningExecutor:        a.env.SigningExecutor,
-		OperatorTerms:          a.cfg.OperatorTerms,
-		ChainParams:            a.cfg.ChainParams,
-		MaxOperatorFee:         a.cfg.MaxOperatorFee,
-		Log:                    fsmLogger,
-		StartHeight:            startHeight,
-		QueryBestHeight:        a.queryBestHeight,
-		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
+		RoundStore:              a.cfg.RoundStore,
+		VTXOStore:               a.cfg.VTXOStore,
+		Wallet:                  a.cfg.Wallet,
+		SigningExecutor:         a.env.SigningExecutor,
+		VirtualChannelActivator: a.cfg.VirtualChannelActivator,
+		OperatorTerms:           a.cfg.OperatorTerms,
+		ChainParams:             a.cfg.ChainParams,
+		MaxOperatorFee:          a.cfg.MaxOperatorFee,
+		Log:                     fsmLogger,
+		StartHeight:             startHeight,
+		QueryBestHeight:         a.queryBestHeight,
+		DisableJoinRequestAuth:  a.cfg.DisableJoinRequestAuth,
 		ForfeitCollectionTimeout: a.
 			env.ForfeitCollectionTimeout,
 		RegistrationTimeout: a.env.RegistrationTimeout,
@@ -1416,6 +1423,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 
 	case *RegisterIntentRequest:
 		return a.handleRegisterIntent(ctx, m)
+
+	case *RegisterVirtualChannelIntentRequest:
+		return a.handleVirtualChannelIntent(ctx, m)
 
 	// NOTE: RegisterIntentMsg mirrors the fields of IntentPackage.
 	// If either type gains new fields, this adapter must be updated
@@ -3089,6 +3099,51 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 	)
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+func (a *RoundClientActor) handleVirtualChannelIntent(ctx context.Context,
+	req *RegisterVirtualChannelIntentRequest) fn.Result[actormsg.RoundActorResp] {
+
+	if req == nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("virtual channel intent request is nil"),
+		)
+	}
+	if req.Capacity <= 0 {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("virtual channel capacity must be positive"),
+		)
+	}
+	if req.BackingAmount <= req.Capacity {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("virtual channel backing amount %v must "+
+				"exceed capacity %v", req.BackingAmount,
+				req.Capacity),
+		)
+	}
+
+	vtxoReq, err := a.buildVTXORequest(
+		ctx, req.BackingAmount, types.VTXOOriginUnknown,
+	)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("build virtual channel VTXO request: %w",
+				err),
+		)
+	}
+	vtxoReq.VirtualChannel = &types.VirtualChannelIntent{
+		Capacity:       req.Capacity,
+		Private:        req.Private,
+		ZeroConf:       req.ZeroConf,
+		IdempotencyKey: req.IdempotencyKey,
+	}
+
+	return a.handleRegisterIntent(ctx, &RegisterIntentRequest{
+		Package: &IntentPackage{Intents: Intents{
+			VTXOs: []types.VTXORequest{*vtxoReq},
+		}},
+		TriggerRegistration: true,
+	})
 }
 
 // handleForfeitSignatureResponse processes a forfeit signature from a VTXO

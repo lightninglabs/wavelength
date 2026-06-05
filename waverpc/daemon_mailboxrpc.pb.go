@@ -74,6 +74,8 @@ type DaemonServiceMailboxServer interface {
 	ListPendingForfeitParticipantSignatureRequests(ctx context.Context, req *ListPendingForfeitParticipantSignatureRequestsRequest) (*ListPendingForfeitParticipantSignatureRequestsResponse, error)
 	// SubmitForfeitParticipantSignatures handles SubmitForfeitParticipantSignatures.
 	SubmitForfeitParticipantSignatures(ctx context.Context, req *SubmitForfeitParticipantSignaturesRequest) (*SubmitForfeitParticipantSignaturesResponse, error)
+	// RequestVirtualChannelIntent handles RequestVirtualChannelIntent.
+	RequestVirtualChannelIntent(ctx context.Context, req *RequestVirtualChannelIntentRequest) (*RequestVirtualChannelIntentResponse, error)
 	// LeaveVTXOs handles LeaveVTXOs.
 	LeaveVTXOs(ctx context.Context, req *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error)
 	// SendOnChain handles SendOnChain.
@@ -369,6 +371,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.SubmitForfeitParticipantSignatures(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "RequestVirtualChannelIntent", func() proto.Message {
+		return &RequestVirtualChannelIntentRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*RequestVirtualChannelIntentRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.RequestVirtualChannelIntent(ctx, req)
 	})
 	r.Handle("waverpc.DaemonService", "LeaveVTXOs", func() proto.Message {
 		return &LeaveVTXOsRequest{}
@@ -1150,6 +1162,29 @@ func (c *DaemonServiceMailboxClient) SubmitForfeitParticipantSignatures(ctx cont
 	}
 
 	resp := new(SubmitForfeitParticipantSignaturesResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// RequestVirtualChannelIntent calls the RequestVirtualChannelIntent RPC.
+func (c *DaemonServiceMailboxClient) RequestVirtualChannelIntent(ctx context.Context, req *RequestVirtualChannelIntentRequest, opts ...rpc.RPCOptions) (*RequestVirtualChannelIntentResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "RequestVirtualChannelIntent",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(RequestVirtualChannelIntentResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

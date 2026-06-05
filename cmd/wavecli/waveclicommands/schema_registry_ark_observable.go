@@ -49,6 +49,20 @@ func arkObservableMutateMethodRegistry() []schemaMethod {
 			ResponseType: "BoardResponse",
 			JSONInput:    true,
 		},
+		{
+			Method:      "ark.channel.request",
+			Description: "Request inbound virtual channel capacity",
+			Params: []schemaParam{
+				{
+					Name:        "amount",
+					Type:        "int64",
+					Required:    true,
+					Description: "channel capacity in sats",
+				},
+			},
+			RequestType:  "RequestVirtualChannelIntentRequest",
+			ResponseType: "RequestVirtualChannelIntentResponse",
+		},
 	}
 }
 

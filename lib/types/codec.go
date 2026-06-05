@@ -52,6 +52,10 @@ const (
 	joinRoundAuthVTXOSigningKeyRecordType  tlv.Type = 3
 	joinRoundAuthVTXOIsChangeRecordType    tlv.Type = 4
 	joinRoundAuthVTXOFixedAmountRecordType tlv.Type = 5
+	joinRoundAuthVTXOVCCapacityRecordType  tlv.Type = 6
+	joinRoundAuthVTXOVCPrivateRecordType   tlv.Type = 7
+	joinRoundAuthVTXOVCZeroConfRecordType  tlv.Type = 8
+	joinRoundAuthVTXOVCIdemKeyRecordType   tlv.Type = 9
 )
 
 const (
@@ -498,6 +502,10 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		signingKey []byte
 		isChange   uint8
 		fixedAmt   uint8
+		vcCapacity uint64
+		vcPrivate  uint8
+		vcZeroConf uint8
+		vcIdemKey  []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -515,6 +523,18 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthVTXOFixedAmountRecordType, &fixedAmt,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthVTXOVCCapacityRecordType, &vcCapacity,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthVTXOVCPrivateRecordType, &vcPrivate,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthVTXOVCZeroConfRecordType, &vcZeroConf,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthVTXOVCIdemKeyRecordType, &vcIdemKey,
 		),
 	)
 	if err != nil {
@@ -574,6 +594,43 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingPubKey,
 		},
+	}
+	_, hasVCCapacity := parsedTypes[joinRoundAuthVTXOVCCapacityRecordType]
+	_, hasVCPrivate := parsedTypes[joinRoundAuthVTXOVCPrivateRecordType]
+	_, hasVCZeroConf := parsedTypes[joinRoundAuthVTXOVCZeroConfRecordType]
+	_, hasVCIdemKey := parsedTypes[joinRoundAuthVTXOVCIdemKeyRecordType]
+	hasVC := hasVCCapacity || hasVCPrivate || hasVCZeroConf ||
+		hasVCIdemKey
+	if hasVC {
+		if !hasVCCapacity || !hasVCPrivate || !hasVCZeroConf ||
+			!hasVCIdemKey {
+			return nil, fmt.Errorf("virtual channel intent " +
+				"records must be provided together")
+		}
+
+		if vcCapacity > math.MaxInt64 {
+			return nil, fmt.Errorf("virtual channel capacity %d "+
+				"exceeds int64", vcCapacity)
+		}
+		if vcPrivate > 1 {
+			return nil, fmt.Errorf("virtual channel private flag " +
+				"must be 0 or 1")
+		}
+		if vcZeroConf > 1 {
+			return nil, fmt.Errorf("virtual channel zero-conf " +
+				"flag must be 0 or 1")
+		}
+
+		req.VirtualChannel = &VirtualChannelIntent{
+			Capacity:       btcutil.Amount(vcCapacity),
+			Private:        vcPrivate != 0,
+			ZeroConf:       vcZeroConf != 0,
+			IdempotencyKey: string(vcIdemKey),
+		}
+		if !IsOperatorFundedVirtualChannelRequest(req) {
+			return nil, fmt.Errorf("invalid operator-funded " +
+				"virtual channel request")
+		}
 	}
 
 	_, err = req.DecodePolicyTemplate()
@@ -971,6 +1028,41 @@ func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthVTXOFixedAmountRecordType, &fixedAmt,
 		),
+	}
+	if req.VirtualChannel != nil {
+		if req.VirtualChannel.Capacity < 0 {
+			return nil, fmt.Errorf("virtual channel capacity " +
+				"must be non-negative")
+		}
+		vcCapacity := uint64(req.VirtualChannel.Capacity)
+		vcPrivate := uint8(0)
+		if req.VirtualChannel.Private {
+			vcPrivate = 1
+		}
+		vcZeroConf := uint8(0)
+		if req.VirtualChannel.ZeroConf {
+			vcZeroConf = 1
+		}
+		vcIdemKey := []byte(req.VirtualChannel.IdempotencyKey)
+
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				joinRoundAuthVTXOVCCapacityRecordType,
+				&vcCapacity,
+			),
+			tlv.MakePrimitiveRecord(
+				joinRoundAuthVTXOVCPrivateRecordType,
+				&vcPrivate,
+			),
+			tlv.MakePrimitiveRecord(
+				joinRoundAuthVTXOVCZeroConfRecordType,
+				&vcZeroConf,
+			),
+			tlv.MakePrimitiveRecord(
+				joinRoundAuthVTXOVCIdemKeyRecordType,
+				&vcIdemKey,
+			),
+		)
 	}
 
 	return encodeJoinAuthTLV(records)
