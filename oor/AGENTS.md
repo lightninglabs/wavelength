@@ -53,8 +53,14 @@ State transitions and validation rules live under [Invariants](#invariants).
   `MaxMailboxItems=10000`, `MaxMailboxScriptBytes=10000`). Zero fields
   are normalized; codec factories capture limits so deserialization
   enforces them.
-- `emitVTXOSent` / `emitVTXOsReceived` — internal ledger emitters
-  (gated on `fn.Some(LedgerSink)`).
+- `queueVTXOSent` / `queueVTXOsReceived` — internal ledger emitters
+  (gated on `fn.Some(LedgerSink)`). Staged into `pendingLedger` during
+  dispatch; `commitAck` Tells them to the durable ledger actor inside
+  the commit transaction (the ledger's `DurableMailbox.Send` joins the
+  ambient tx), so a committed turn can never lose its accounting. The
+  VTXO-manager and fraud-observer notifications stay post-commit
+  best-effort because both re-derive from the persisted VTXO rows at
+  boot.
 - `NewRetryCallbackRef` — bridges timeout-actor expiry notifications
   into OOR `ResumeSessionRequest` for event-driven retry.
 
@@ -66,9 +72,6 @@ State transitions and validation rules live under [Invariants](#invariants).
 - `DriveEventRequest` — generic wrapper: `(Event, SessionID)`. Used by
   outbox callbacks and durable unary response routes to feed events
   back into a running FSM.
-- `FindOutgoingSessionByIdempotencyKeyRequest` /
-  `…Response` — TLV-durable (`0x7018`); idempotent outgoing-session
-  lookup. `Found=false` ⇒ no session matches yet.
 - `ListSessionsRequest` / `…Response` — TLV-durable (`0x7017`).
   Carries `SessionDirection` filter and `PendingOnly`. Response is
   `[]SessionSummary`.
@@ -179,7 +182,8 @@ State transitions and validation rules live under [Invariants](#invariants).
   - → `vtxo` manager: `VTXOsMaterializedNotification`.
   - → `ledger` (when `LedgerSink` is `fn.Some`): `VTXOSentMsg` on
     `FinalizeAcceptedEvent`; `VTXOReceivedMsg{Source=SourceOOR}` per
-    materialized descriptor.
+    materialized descriptor. Told inside the commit transaction so
+    the accounting lands atomically with the session snapshot.
 - **Receives**:
   - ← `serverconn` (`EventRouter`): `SubmitAcceptedEvent`,
     `FinalizeAcceptedEvent`, `ResolveIncomingTransferRequest`.
@@ -271,11 +275,14 @@ State transitions and validation rules live under [Invariants](#invariants).
   (`newOORActorCodec`, `NewSigningEffectCodec`) so every deserialized
   message enforces the same caps as the in-memory path. Codec
   instances are shared per actor.
-- `StartTransferRequest.IdempotencyKey`: when non-empty, the actor
-  checks `FindOutgoingSessionByIdempotencyKeyRequest` before creating
-  a new session, returning `StartTransferResponse{Existing: true}` on
-  hit. Empty key preserves the historical deterministic
-  (Ark txid) session.
+- `StartTransferRequest.IdempotencyKey`: when non-empty, the registry
+  dedups admission against the durable store via
+  `LookupActiveSessionByIdempotencyKey`, returning
+  `StartTransferResponse{Existing: true}` on hit. Failed sessions
+  never answer for a key (a partial UNIQUE index on
+  `oor_session_registry` enforces at most one live-or-completed row
+  per key), so a keyed retry after a failure admits a fresh session.
+  Empty key preserves the historical deterministic (Ark txid) session.
 
 ## Deep Docs
 
