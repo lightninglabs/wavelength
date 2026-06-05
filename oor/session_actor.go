@@ -1,0 +1,698 @@
+package oor
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/build"
+	clientdb "github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/ledger"
+	"github.com/lightninglabs/darepo-client/serverconn"
+	"github.com/lightninglabs/darepo-client/timeout"
+	"github.com/lightninglabs/darepo-client/vtxo"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
+)
+
+// terminalNotifyTimeout bounds the advisory reap notification a child sends
+// the registry after committing a terminal snapshot.
+const terminalNotifyTimeout = 10 * time.Second
+
+// SessionActorConfig configures one durable per-session OOR actor. The registry
+// builds one of these per session via its childConfig, so every field except
+// SessionID/Direction is shared across all sessions owned by the same daemon.
+type SessionActorConfig struct {
+	// SessionID is the session this actor owns.
+	SessionID SessionID
+
+	// Direction records whether the session is outgoing or incoming.
+	Direction clientdb.OORSessionDirection
+
+	// Log is an optional logger.
+	Log fn.Option[btclog.Logger]
+
+	// Signer signs Ark and checkpoint PSBTs inline during the turn.
+	Signer input.Signer
+
+	// RegistryStore is the single source of truth for this session's
+	// durable state. The actor writes its snapshot here inside Commit
+	// (joining the turn transaction) and the registry reads it for restore
+	// and listing.
+	RegistryStore SessionRegistryStore
+
+	// DeliveryStore backs the durable mailbox and the cross-actor outbox.
+	DeliveryStore actor.DeliveryStore
+
+	// ServerConn receives transport messages (submit, finalize, ack,
+	// indexer queries) for durable delivery to the operator.
+	ServerConn actor.TellOnlyRef[serverconn.ServerConnMsg]
+
+	// VTXOManager receives notifications after incoming VTXOs are
+	// materialized so it can spawn monitoring actors.
+	VTXOManager actor.TellOnlyRef[vtxo.ManagerMsg]
+
+	// SpendCompleter routes outgoing input-spend completion through the
+	// VTXO manager so the write joins this actor's turn transaction. When
+	// nil, the package store writes spends directly.
+	SpendCompleter SpendCompleter
+
+	// ReservationStore records one durable spending-reservation row per
+	// outgoing input. When nil, reservations are not recorded.
+	ReservationStore ReservationStore
+
+	// PackageStore persists finalized outgoing packages and bindings.
+	PackageStore PackagePersistence
+
+	// VTXOStore reloads materialized incoming VTXOs by outpoint.
+	VTXOStore vtxo.VTXOStore
+
+	// LedgerSink optionally receives ledger accounting messages.
+	LedgerSink fn.Option[ledger.Sink]
+
+	// IncomingVTXOObserver receives incoming VTXO descriptors after
+	// materialization.
+	IncomingVTXOObserver IncomingVTXONotifier
+
+	// Limits bounds incoming receive payloads.
+	Limits ReceiveLimits
+
+	// TimeoutActor schedules retry timers. When nil, retries are no-ops and
+	// callers must resume explicitly.
+	TimeoutActor actor.TellOnlyRef[timeout.Msg]
+
+	// CallbackRef receives timeout expiry notifications mapped into
+	// ResumeSessionRequest.
+	CallbackRef actor.TellOnlyRef[*timeout.ExpiredMsg]
+
+	// Registry receives a SessionTerminalNotification after this session
+	// commits a terminal snapshot, so the coordinator can reap the child.
+	// When nil, terminal sessions stay resident until shutdown.
+	Registry actor.TellOnlyRef[OORDurableMsg]
+}
+
+// OORSessionActor wraps one durable per-session OOR actor.
+type OORSessionActor struct {
+	ref     actor.ActorRef[OORDurableMsg, ActorResp]
+	tellRef actor.TellOnlyRef[OORDurableMsg]
+	durable *actor.DurableActor[OORDurableMsg, ActorResp]
+	stop    func()
+}
+
+// Ref returns the public actor reference.
+func (a *OORSessionActor) Ref() actor.ActorRef[OORDurableMsg, ActorResp] {
+	return a.ref
+}
+
+// TellRef returns a tell-only reference.
+func (a *OORSessionActor) TellRef() actor.TellOnlyRef[OORDurableMsg] {
+	return a.tellRef
+}
+
+// Stop stops the underlying durable actor.
+func (a *OORSessionActor) Stop() {
+	if a == nil {
+		return
+	}
+
+	if a.stop != nil {
+		a.stop()
+
+		return
+	}
+
+	if a.durable != nil {
+		a.durable.Stop()
+	}
+}
+
+// NewOORSessionActor creates and starts one durable per-session OOR actor,
+// restoring its FSM from the registry row before the mailbox starts draining.
+func NewOORSessionActor(cfg SessionActorConfig) (*OORSessionActor, error) {
+	if cfg.RegistryStore == nil {
+		return nil, fmt.Errorf("registry store must be provided")
+	}
+	if cfg.DeliveryStore == nil {
+		return nil, fmt.Errorf("delivery store must be provided")
+	}
+
+	// Normalize the receive limits once so every consumer -- the codec,
+	// the in-memory metadata query, and the restore decode -- enforces the
+	// same caps for a partially-zeroed config.
+	cfg.Limits = normalizeReceiveLimits(cfg.Limits)
+
+	actorID := ActorIDForSession(cfg.SessionID)
+
+	behavior := &sessionBehavior{
+		cfg:       cfg,
+		actorID:   actorID,
+		sessionID: cfg.SessionID,
+		direction: cfg.Direction,
+		log:       cfg.Log.UnwrapOr(btclog.Disabled),
+	}
+	if err := behavior.restore(context.Background()); err != nil {
+		return nil, err
+	}
+
+	durableCfg := actor.DefaultDurableTxActorConfig[
+		OORDurableMsg, ActorResp, oorTx,
+	](
+		actorID, behavior, behavior.bindStores, cfg.DeliveryStore,
+		newOORActorCodec(cfg.Limits),
+	)
+	durableCfg.Log = cfg.Log
+
+	durable, err := actor.NewDurableActor(durableCfg).Unpack()
+	if err != nil {
+		return nil, err
+	}
+	behavior.selfRef = durable.TellRef()
+	durable.Start()
+
+	return &OORSessionActor{
+		ref:     durable.Ref(),
+		tellRef: durable.TellRef(),
+		durable: durable,
+		stop:    durable.Stop,
+	}, nil
+}
+
+// oorTx is the transaction-scoped store handed to the session behavior inside
+// each Read/Stage/Commit phase. It carries the per-call DeliveryStore (whose
+// EnqueueOutbox joins the framework transaction via the closure context) plus
+// the actor id. The registry snapshot write joins the same transaction via the
+// behavior's RegistryStore, which reads the *sql.Tx off the closure context.
+type oorTx struct {
+	store   actor.DeliveryStore
+	actorID string
+}
+
+// bindStores is the StoreFactory for the session Read/Stage/Commit path.
+func (b *sessionBehavior) bindStores(_ context.Context,
+	ds actor.DeliveryStore) oorTx {
+
+	return oorTx{
+		store:   ds,
+		actorID: b.actorID,
+	}
+}
+
+// sessionBehavior runs on the durable actor Read/Stage/Commit execution path
+// for a single OOR session. The FSM emits outbox events as before, but this
+// behavior handles them itself in one shared switch (driveOutbox) right after
+// driving the FSM -- no separate OutboxHandler indirection -- so the control
+// flow reads straight from the code: sign inline, enqueue cross-actor transport
+// to serverconn, notify the VTXO manager, schedule retries. Local signing runs
+// in dispatch with no writer held; commitAck persists the registry snapshot and
+// folds the lease-fenced ack in one short transaction.
+type sessionBehavior struct {
+	cfg     SessionActorConfig
+	actorID string
+	log     btclog.Logger
+	selfRef actor.TellOnlyRef[OORDurableMsg]
+
+	sessionID SessionID
+	direction clientdb.OORSessionDirection
+
+	// fsm is the running session state machine, lazily restored.
+	fsm *StateMachine
+
+	// loaded reports whether the FSM has been restored/created.
+	loaded bool
+
+	// pendingTransport accumulates cross-actor transport messages produced
+	// while draining the FSM in dispatch; commitAck enqueues them durably
+	// in the same transaction as the snapshot and the ack.
+	pendingTransport []serverconn.ServerConnMsg
+
+	// commitWork accumulates extra durable writes (reservations, the
+	// finalized package, input-spend completion) that handlers stage during
+	// dispatch; commitAck runs them inside the same writer transaction as
+	// the snapshot and the ack so the turn is atomic.
+	commitWork []func(ctx context.Context, tx oorTx) error
+
+	// postCommit accumulates best-effort cross-actor notifications (ledger
+	// accounting, VTXO materialization) fired after the turn commits.
+	postCommit []func(ctx context.Context)
+
+	// terminalCommitted reports whether the turn's committed snapshot
+	// reached a terminal status, set by commitAck and consumed by the
+	// registry reap notification after the turn.
+	terminalCommitted bool
+}
+
+// Compile-time check that sessionBehavior runs on the Read/Stage/Commit path.
+var _ actor.TxBehavior[
+	OORDurableMsg, ActorResp, oorTx,
+] = (*sessionBehavior)(nil)
+
+// logger returns the behavior logger bound to ctx.
+func (b *sessionBehavior) logger(ctx context.Context) btclog.Logger {
+	if b.log != btclog.Disabled {
+		return b.log
+	}
+
+	return build.LoggerFromContext(ctx)
+}
+
+// Receive is the single entry point for every message that drives this
+// session's FSM. Read-only probes return directly; everything else drains the
+// FSM (with inline signing and cross-actor message collection) in dispatch and
+// is consumed by one lease-fenced commitAck.
+func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
+	ax actor.Exec[oorTx]) fn.Result[ActorResp] {
+
+	switch msg.(type) {
+	case *actor.RestartMessage:
+		// Restore already ran at construction; the restart message
+		// carries no state to persist, so the framework consumes it via
+		// the non-transactional ack path.
+		return fn.Ok[ActorResp](&DriveEventResponse{})
+
+	case *GetStateRequest:
+		return b.handleGetState()
+	}
+
+	// Reset the per-turn accumulators and drain the FSM. dispatch performs
+	// every inline side effect, collects cross-actor messages, and stages
+	// extra commit work, but never commits.
+	b.pendingTransport = b.pendingTransport[:0]
+	b.commitWork = b.commitWork[:0]
+	b.postCommit = b.postCommit[:0]
+	b.terminalCommitted = false
+
+	res := b.dispatch(ctx, msg)
+	if res.IsErr() {
+		return res
+	}
+
+	// Single consume point: persist the registry snapshot, run the staged
+	// commit work, enqueue the collected cross-actor transport messages,
+	// and fold the lease-fenced ack and dedup mark into one short writer
+	// transaction. A lost lease surfaces here as actor.ErrLeaseLost.
+	if err := b.commitAck(ctx, ax); err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	// Best-effort cross-actor notifications run only after the turn is
+	// durably committed.
+	for _, fn := range b.postCommit {
+		fn(ctx)
+	}
+
+	// A terminal commit retires this session: tell the registry so it can
+	// stop this child and drop it from the active set.
+	//
+	//nolint:contextcheck // reap notification is daemon-owned, not
+	// turn-scoped
+	if b.terminalCommitted {
+		b.notifyTerminal()
+	}
+
+	return res
+}
+
+// notifyTerminal tells the registry this session committed a terminal
+// snapshot. The Tell runs on its own goroutine with a daemon-owned context so
+// a full registry mailbox can never wedge this actor's turn: the registry may
+// be blocked on an admission Ask into this very actor, and the notification is
+// advisory (a missed reap only leaves the child resident until shutdown, and
+// the registry re-checks the durable row before reaping).
+func (b *sessionBehavior) notifyTerminal() {
+	if b.cfg.Registry == nil {
+		return
+	}
+
+	registry := b.cfg.Registry
+	sessionID := b.sessionID
+	log := b.log
+
+	go func() {
+		ctx, cancel := context.WithTimeout(
+			context.Background(), terminalNotifyTimeout,
+		)
+		defer cancel()
+
+		err := registry.Tell(ctx, &SessionTerminalNotification{
+			SessionID: sessionID,
+		})
+		if err != nil {
+			log.WarnS(ctx, "Failed to notify registry of "+
+				"terminal session", err,
+				slog.String(
+					"session_id", sessionID.String(),
+				),
+			)
+		}
+	}()
+}
+
+// dispatch maps one durable message onto the FSM event surface and drains the
+// resulting outbox via driveOutbox. It performs inline signing and accumulates
+// cross-actor transport but never commits.
+func (b *sessionBehavior) dispatch(ctx context.Context,
+	msg OORDurableMsg) fn.Result[ActorResp] {
+
+	switch m := msg.(type) {
+	case *StartTransferRequest:
+		return b.handleStartTransfer(ctx, m)
+
+	case *DriveEventRequest:
+		return b.handleDriveEvent(ctx, m)
+
+	case *ResolveIncomingTransferRequest:
+		return b.handleResolveIncomingTransfer(ctx, m)
+
+	case *ResumeSessionRequest:
+		return b.handleResumeSession(ctx, m)
+
+	default:
+		return fn.Err[ActorResp](
+			fmt.Errorf("unknown oor session message: %T", msg),
+		)
+	}
+}
+
+// apply drives one event into the FSM and returns the emitted outbox events.
+func (b *sessionBehavior) apply(ctx context.Context, event Event) (
+	[]OutboxEvent, error) {
+
+	if b.fsm == nil {
+		return nil, fmt.Errorf("session fsm not loaded")
+	}
+
+	fut := b.fsm.AskEvent(ctx, event)
+	result := fut.Await(ctx)
+	if result.IsErr() {
+		return nil, result.Err()
+	}
+
+	return result.UnwrapOr(nil), nil
+}
+
+// driveOutbox is the shared switch that handles every outbox event the FSM
+// emits. This is the heart of the liberalized control flow: instead of routing
+// events through a separate OutboxHandler, the actor executes each effect
+// directly here and feeds any follow-up event straight back into the FSM. Local
+// effects (signing) run inline with no writer held; cross-actor transport is
+// collected into pendingTransport and durably enqueued by commitAck.
+func (b *sessionBehavior) driveOutbox(ctx context.Context,
+	outbox []OutboxEvent) error {
+
+	for _, event := range outbox {
+		switch m := event.(type) {
+		// Signing: sign inline using the wallet signer, then feed the
+		// resulting signed event straight back into the FSM.
+		case *RequestArkSignatures:
+			if b.cfg.Signer == nil {
+				return fmt.Errorf("signer is required")
+			}
+
+			err := SignArkPSBT(
+				b.cfg.Signer, m.ArkPSBT, m.CheckpointPSBTs,
+				m.TransferInputs,
+			)
+			if err != nil {
+				return err
+			}
+
+			if err := b.continueWith(ctx, &ArkSignedEvent{
+				ArkPSBT: m.ArkPSBT,
+			}); err != nil {
+				return err
+			}
+
+		case *RequestCheckpointSignatures:
+			if b.cfg.Signer == nil {
+				return fmt.Errorf("signer is required")
+			}
+
+			err := SignCheckpointPSBTs(
+				b.cfg.Signer, m.TransferInputs,
+				m.CoSignedCheckpointPSBTs,
+			)
+			if err != nil {
+				return err
+			}
+
+			if err := b.continueWith(ctx, &CheckpointsSignedEvent{
+				FinalCheckpointPSBTs: m.CoSignedCheckpointPSBTs,
+			}); err != nil {
+				return err
+			}
+
+		// Transport: collect the cross-actor serverconn message. The
+		// FSM stays in its Awaiting state; the operator's response
+		// arrives as a fresh DriveEventRequest turn. commitAck enqueues
+		// these.
+		case *SendSubmitPackageRequest, *SendFinalizePackageRequest,
+			*SendIncomingAckRequest, *QueryIncomingTransferRequest,
+			*QueryIncomingMetadataRequest:
+
+			transport, err := b.buildTransportMessage(ctx, event)
+			if err != nil {
+				return err
+			}
+			b.pendingTransport = append(
+				b.pendingTransport, transport,
+			)
+
+			// SendIncomingAckRequest has no operator response;
+			// advance the receive FSM to completion in the same
+			// turn.
+			if _, ok := m.(*SendIncomingAckRequest); ok {
+				if err := b.continueWith(
+					ctx, &IncomingAckSentEvent{},
+				); err != nil {
+					return err
+				}
+			}
+
+		// Input-spend completion: stage the spend write so it joins the
+		// commit transaction (the VTXO manager's status write joins via
+		// ctx, so SQLite sees one writer), then advance the FSM to
+		// completion. Staged before the finalized package per the
+		// finalize ordering invariant.
+		case *MarkInputsSpentRequest:
+			outpoints := m.Outpoints
+			b.commitWork = append(b.commitWork,
+				func(txCtx context.Context, _ oorTx) error {
+					return b.completeSpend(txCtx, outpoints)
+				},
+			)
+
+			if err := b.continueWith(
+				ctx, &InputsMarkedSpentEvent{},
+			); err != nil {
+				return err
+			}
+
+		// Retry scheduling: handled by the actor via the timeout actor.
+		case *ScheduleRetryRequest:
+			if err := b.scheduleRetry(ctx, m); err != nil {
+				return err
+			}
+
+		// Informational notification: log only.
+		case *IncomingTransferNotification:
+			b.logger(ctx).InfoS(
+				ctx,
+				"Incoming transfer notification",
+				slog.String("session_id", b.sessionID.String()),
+				slog.Int("num_recipients", len(m.Recipients)),
+			)
+
+		default:
+			return fmt.Errorf("unhandled outbox event %T", event)
+		}
+	}
+
+	return nil
+}
+
+// continueWith drives a follow-up event into the FSM and recursively handles
+// the outbox it emits.
+func (b *sessionBehavior) continueWith(ctx context.Context, event Event) error {
+	next, err := b.apply(ctx, event)
+	if err != nil {
+		return err
+	}
+
+	return b.driveOutbox(ctx, next)
+}
+
+// scheduleRetry schedules a retry timer via the timeout actor. The session id
+// is the timeout id so the expiry callback can rebuild a ResumeSessionRequest.
+func (b *sessionBehavior) scheduleRetry(ctx context.Context,
+	msg *ScheduleRetryRequest) error {
+
+	if b.cfg.TimeoutActor == nil {
+		return nil
+	}
+	if b.cfg.CallbackRef == nil {
+		return fmt.Errorf("timeout callback ref not wired")
+	}
+
+	b.logger(ctx).InfoS(ctx, "Scheduling retry",
+		slog.String("session_id", b.sessionID.String()),
+		slog.String("reason", msg.Reason),
+		slog.Duration("after", msg.After),
+	)
+
+	return b.cfg.TimeoutActor.Tell(ctx, &timeout.ScheduleTimeoutRequest{
+		ID:       timeout.ID(b.sessionID.String()),
+		Duration: msg.After,
+		Callback: b.cfg.CallbackRef,
+	})
+}
+
+// commitAck persists the current registry snapshot, enqueues any collected
+// cross-actor transport, and folds the lease-fenced ack and dedup mark into one
+// short writer transaction so the session's state advance and the message's
+// consumption are exactly-once.
+func (b *sessionBehavior) commitAck(ctx context.Context,
+	ax actor.Exec[oorTx]) error {
+
+	record, err := b.snapshotRecord()
+	if err != nil {
+		return err
+	}
+
+	return ax.Commit(ctx, func(txCtx context.Context, tx oorTx) error {
+		// Persist the session snapshot. The registry store joins txCtx
+		// (actor.TxFromContext), so this lands atomically with the ack.
+		if err := b.cfg.RegistryStore.UpsertSession(
+			txCtx, record,
+		); err != nil {
+			return err
+		}
+		b.terminalCommitted = record.Status.IsTerminal()
+
+		// Run the staged commit work (reservations, finalized package,
+		// input-spend completion). Each joins txCtx so it is atomic
+		// with the snapshot and the ack.
+		for _, work := range b.commitWork {
+			if err := work(txCtx, tx); err != nil {
+				return err
+			}
+		}
+
+		// Enqueue the collected cross-actor transport messages on the
+		// durable outbox in the same transaction (CDC): the outbox
+		// publisher delivers them to serverconn after commit.
+		for _, transport := range b.pendingTransport {
+			if err := b.enqueueTransport(
+				txCtx, tx, transport,
+			); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
+// snapshotRecord builds the registry record for the current FSM state.
+func (b *sessionBehavior) snapshotRecord() (clientdb.OORSessionRegistryRecord,
+	error) {
+
+	state, err := b.fsm.CurrentState()
+	if err != nil {
+		return clientdb.OORSessionRegistryRecord{}, err
+	}
+
+	switch b.direction {
+	case clientdb.OORSessionDirectionOutgoing:
+		outgoing, ok := state.(State)
+		if !ok {
+			return clientdb.OORSessionRegistryRecord{}, fmt.Errorf(
+				"unexpected outgoing state "+
+					"type: %T", state)
+		}
+
+		return outgoingRegistryRecord(b.sessionID, outgoing)
+
+	case clientdb.OORSessionDirectionIncoming:
+		return incomingRegistryRecord(b.sessionID, state)
+
+	default:
+		return clientdb.OORSessionRegistryRecord{}, fmt.Errorf(
+			"unknown session direction: %d", b.direction)
+	}
+}
+
+// restore rebuilds the FSM from the session's registry row, if one exists. A
+// missing row means a brand-new session whose FSM is created on first
+// StartTransfer/IncomingTransfer.
+func (b *sessionBehavior) restore(ctx context.Context) error {
+	record, err := b.cfg.RegistryStore.GetSession(
+		ctx, chainHashOf(b.sessionID),
+	)
+	switch {
+	case errors.Is(err, clientdb.ErrOORSessionNotFound):
+		return nil
+
+	case err != nil:
+		return err
+	}
+
+	// A direction conflict is only legal for the self-transfer
+	// replacement: a fresh incoming session may be installed over a
+	// terminal outgoing row (the registry defers the hint until the
+	// outgoing session terminates). Anything else is a routing bug, not a
+	// row to silently adopt. A zero requested direction means the caller
+	// adopts whatever the row says.
+	if b.direction != 0 && record.Direction != b.direction {
+		selfTransfer := b.direction ==
+			clientdb.OORSessionDirectionIncoming &&
+			record.Direction ==
+				clientdb.OORSessionDirectionOutgoing &&
+			record.Status.IsTerminal()
+		if !selfTransfer {
+			return fmt.Errorf("session %s direction mismatch: "+
+				"requested %d, stored %d", b.sessionID,
+				b.direction, record.Direction)
+		}
+
+		// Leave the behavior unloaded: the incoming admission installs
+		// a fresh receive session whose first commit overwrites the
+		// terminal outgoing row.
+		return nil
+	}
+
+	if len(record.SnapshotData) == 0 {
+		return nil
+	}
+
+	switch record.Direction {
+	case clientdb.OORSessionDirectionOutgoing:
+		session, err := outgoingSessionFromRecord(ctx, *record)
+		if err != nil {
+			return err
+		}
+		b.fsm = session.FSM
+		b.direction = clientdb.OORSessionDirectionOutgoing
+		b.loaded = true
+
+	case clientdb.OORSessionDirectionIncoming:
+		session, err := incomingSessionFromRecord(
+			ctx, *record, b.cfg.Limits,
+		)
+		if err != nil {
+			return err
+		}
+		b.fsm = session.FSM
+		b.direction = clientdb.OORSessionDirectionIncoming
+		b.loaded = true
+
+	default:
+		return fmt.Errorf("unknown restored direction: %d",
+			record.Direction)
+	}
+
+	return nil
+}
