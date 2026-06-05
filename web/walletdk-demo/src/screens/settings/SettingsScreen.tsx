@@ -1,7 +1,6 @@
 import { ReactNode, useState } from "react";
 import {
   ChevronDown,
-  Fingerprint,
   Layers,
   type LucideIcon,
   Monitor,
@@ -12,7 +11,7 @@ import {
   Wallet,
   Zap,
 } from "lucide-react";
-import { WalletInfo } from "@lightninglabs/walletdk-core";
+import { WalletInfo, WalletKind } from "@lightninglabs/walletdk-core";
 import { GatewayFields } from "../../components/GatewayFields";
 import { PageHead } from "../../components/layout/PageHead";
 import { AppTab } from "../../components/layout/nav";
@@ -21,7 +20,6 @@ import { CopyButton } from "../../components/ui/CopyButton";
 import { Label } from "../../components/ui/Label";
 import { Segmented } from "../../components/ui/Segmented";
 import { SummaryRow } from "../../components/ui/SummaryRow";
-import { Toggle } from "../../components/ui/Toggle";
 import { cn } from "../../lib/cn";
 import { formatSats, shortKey } from "../../lib/format";
 import { RuntimeFieldSetter, RuntimeForm } from "../../lib/runtime-config";
@@ -38,7 +36,7 @@ function TwoCol({ left, right }: { left: ReactNode; right: ReactNode }) {
   );
 }
 
-// SettingsScreen surfaces identity, appearance, runtime status, passkey
+// SettingsScreen surfaces identity, appearance, runtime status, wallet-type
 // security, advanced gateway configuration, build version and the runtime stop
 // control, consolidated into full-bleed Zones bands.
 export function SettingsScreen({
@@ -46,9 +44,7 @@ export function SettingsScreen({
   phaseLabel,
   form,
   onField,
-  passkeySupported,
-  passkeyEnrolled,
-  onRemovePasskey,
+  walletKind,
   onStop,
   onNavigate,
 }: {
@@ -56,9 +52,7 @@ export function SettingsScreen({
   phaseLabel: string;
   form: RuntimeForm;
   onField: RuntimeFieldSetter;
-  passkeySupported: boolean;
-  passkeyEnrolled: boolean;
-  onRemovePasskey: () => void;
+  walletKind: WalletKind | null;
   onStop: () => void;
   onNavigate: (tab: AppTab) => void;
 }) {
@@ -73,8 +67,8 @@ export function SettingsScreen({
     good?: boolean;
   }> = [
     { icon: ShieldCheck, label: "Phase", value: phaseLabel, good: true },
-    { icon: Zap, label: "Network", value: info?.Network || "—" },
-    { icon: Wallet, label: "Wallet", value: info?.WalletType || "—" },
+    { icon: Zap, label: "Network", value: info?.Network || "-" },
+    { icon: Wallet, label: "Wallet", value: info?.WalletType || "-" },
     {
       icon: Server,
       label: "Server",
@@ -84,7 +78,7 @@ export function SettingsScreen({
     {
       icon: Layers,
       label: "Block height",
-      value: info?.BlockHeight ? formatSats(info.BlockHeight) : "—",
+      value: info?.BlockHeight ? formatSats(info.BlockHeight) : "-",
     },
   ];
 
@@ -128,7 +122,7 @@ export function SettingsScreen({
               <Label>Identity</Label>
               <div className="mt-3 flex items-center justify-between gap-3">
                 <span className="break-all font-mono text-sm text-fg">
-                  {identity ? shortKey(identity, 10, 8) : "—"}
+                  {identity ? shortKey(identity, 10, 8) : "-"}
                 </span>
                 {identity ? <CopyButton value={identity} /> : null}
               </div>
@@ -138,8 +132,8 @@ export function SettingsScreen({
             <>
               <Label>About</Label>
               <div className="mt-3 space-y-2.5 text-sm">
-                <SummaryRow label="Version" value={info?.Version || "—"} mono />
-                <SummaryRow label="Commit" value={info?.Commit || "—"} mono />
+                <SummaryRow label="Version" value={info?.Version || "-"} mono />
+                <SummaryRow label="Commit" value={info?.Commit || "-"} mono />
               </div>
             </>
           }
@@ -151,30 +145,16 @@ export function SettingsScreen({
           left={
             <>
               <Label>Security</Label>
-              <div className="mt-3 flex items-center justify-between gap-4">
-                <div className="flex items-center gap-2.5">
-                  <Fingerprint size={16} className="text-accent" />
-                  <div>
-                    <div className="text-sm font-medium text-fg">
-                      Passkey unlock
-                    </div>
-                    <div className="text-xs text-muted">
-                      {!passkeySupported
-                        ? "Not supported on this device"
-                        : passkeyEnrolled
-                          ? "Enabled · toggle off to remove"
-                          : "Set up when you create or unlock"}
-                    </div>
-                  </div>
-                </div>
-                <Toggle
-                  on={passkeySupported && passkeyEnrolled}
-                  onChange={(next) => {
-                    if (!next && passkeyEnrolled) {
-                      onRemovePasskey();
-                    }
-                  }}
-                  ariaLabel="Passkey unlock"
+              <div className="mt-3 space-y-2.5 text-sm">
+                <SummaryRow
+                  label="Wallet type"
+                  value={
+                    walletKind === "passkey"
+                      ? "Passkey"
+                      : walletKind === "password"
+                        ? "Password"
+                        : "Unknown"
+                  }
                 />
               </div>
             </>
@@ -248,7 +228,7 @@ export function SettingsScreen({
         {advanced ? (
           <div className="mt-6 border-t border-border pt-6">
             <p className="mb-4 text-xs text-muted">
-              Display only — the running configuration cannot be changed. Stop
+              Display only. The running configuration cannot be changed. Stop
               the runtime to reconnect with different gateways.
             </p>
             <GatewayFields form={form} onField={onField} disabled />

@@ -348,6 +348,9 @@ export function useWalletDK(): WalletDKReactState {
   return value;
 }
 
+export { usePasskeyWallet } from "./usePasskeyWallet";
+export type { UsePasskeyWallet, PasskeyWalletOutcome } from "./usePasskeyWallet";
+
 export function useWalletRuntime() {
   const {
     client,

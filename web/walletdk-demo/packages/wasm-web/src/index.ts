@@ -10,6 +10,8 @@ import {
   ExitStatusResult,
   ListRequest,
   ListResult,
+  OpenWalletFromPasskeyRequest,
+  OpenWalletFromPasskeyResult,
   ReceiveRequest,
   ReceiveResult,
   RuntimeConfig,
@@ -23,7 +25,7 @@ import {
   WalletDKListener,
   WalletInfo,
   WalletStatus,
-} from "@lightninglabs/walletdk-core";
+} from '@lightninglabs/walletdk-core';
 
 type PendingCall = {
   resolve: (value: unknown) => void;
@@ -45,12 +47,12 @@ export class MainThreadWalletDKClient implements WalletDKClient {
   private loadPromise: Promise<void> | null = null;
 
   constructor(_options: WasmWalletDKClientOptions = {}) {
-    globalThis.addEventListener("walletdk-ready", () => {
-      this.emit({ type: "runtimeReady" });
+    globalThis.addEventListener('walletdk-ready', () => {
+      this.emit({ type: 'runtimeReady' });
     });
-    globalThis.addEventListener("walletdk-activity", (event) => {
+    globalThis.addEventListener('walletdk-activity', (event) => {
       const detail = (event as CustomEvent).detail;
-      this.emit({ type: "activity", payload: detail });
+      this.emit({ type: 'activity', payload: detail });
     });
   }
 
@@ -59,20 +61,20 @@ export class MainThreadWalletDKClient implements WalletDKClient {
   }
 
   start(config: RuntimeConfig): Promise<WalletInfo> {
-    return this.callRaw<WalletInfo>("start", config);
+    return this.callRaw<WalletInfo>('start', config);
   }
 
   async stop(): Promise<void> {
-    await this.callRaw("stop");
-    this.emit({ type: "runtimeStopped" });
+    await this.callRaw('stop');
+    this.emit({ type: 'runtimeStopped' });
   }
 
   getInfo(): Promise<WalletInfo> {
-    return this.callRaw<WalletInfo>("getInfo");
+    return this.callRaw<WalletInfo>('getInfo');
   }
 
   status(): Promise<WalletStatus> {
-    return this.callRaw<WalletStatus>("status");
+    return this.callRaw<WalletStatus>('status');
   }
 
   balance(): Promise<Balance> {
@@ -80,67 +82,76 @@ export class MainThreadWalletDKClient implements WalletDKClient {
     // boarding confirmed/unconfirmed, on-chain). The flat "balance" verb
     // collapses everything into a single confirmed figure, which cannot
     // represent a pending boarding deposit or an honest composition.
-    return this.callRaw<Balance>("getRawBalance");
+    return this.callRaw<Balance>('getRawBalance');
   }
 
   createWallet(req: CreateWalletRequest): Promise<CreateWalletResult> {
-    return this.callRaw<CreateWalletResult>("createWallet", req);
+    return this.callRaw<CreateWalletResult>('createWallet', req);
   }
 
   unlockWallet(req: UnlockWalletRequest): Promise<UnlockWalletResult> {
-    return this.callRaw<UnlockWalletResult>("unlockWallet", req);
+    return this.callRaw<UnlockWalletResult>('unlockWallet', req);
+  }
+
+  openWalletFromPasskey(
+    req: OpenWalletFromPasskeyRequest,
+  ): Promise<OpenWalletFromPasskeyResult> {
+    return this.callRaw<OpenWalletFromPasskeyResult>(
+      'openWalletFromPasskey',
+      req,
+    );
   }
 
   deposit(req: DepositRequest = {}): Promise<DepositResult> {
-    return this.callRaw<DepositResult>("deposit", req);
+    return this.callRaw<DepositResult>('deposit', req);
   }
 
   receive(req: ReceiveRequest): Promise<ReceiveResult> {
-    return this.callRaw<ReceiveResult>("receive", req);
+    return this.callRaw<ReceiveResult>('receive', req);
   }
 
   send(req: SendRequest): Promise<SendResult> {
-    return this.callRaw<SendResult>("send", req);
+    return this.callRaw<SendResult>('send', req);
   }
 
   list(req: ListRequest = {}): Promise<ListResult> {
-    return this.callRaw<ListResult>("list", req);
+    return this.callRaw<ListResult>('list', req);
   }
 
   exit(req: ExitRequest): Promise<ExitResult> {
-    return this.callRaw<ExitResult>("exit", req);
+    return this.callRaw<ExitResult>('exit', req);
   }
 
   exitStatus(req: ExitStatusRequest): Promise<ExitStatusResult> {
-    return this.callRaw<ExitStatusResult>("exitStatus", req);
+    return this.callRaw<ExitStatusResult>('exitStatus', req);
   }
 
-  async callRaw<T = unknown>(
-    method: string,
-    params: unknown = {},
-  ): Promise<T> {
+  async callRaw<T = unknown>(method: string, params: unknown = {}): Promise<T> {
     await this.ensureLoaded();
 
     const globalWallet = globalThis as typeof globalThis & {
       walletdkCall?: (method: string, params?: unknown) => Promise<T>;
     };
 
-    if (typeof globalWallet.walletdkCall !== "function") {
-      throw new WalletDKError("walletdk wasm runtime is not ready");
+    if (typeof globalWallet.walletdkCall !== 'function') {
+      throw new WalletDKError('walletdk wasm runtime is not ready');
     }
 
     try {
       // Format the current timestamp as a string in the format "YYYY-MM-DD HH:MM:SS".
-      const ts = () => new Date().toISOString().split('T').join(' ').slice(0, -1);
+      const ts = () =>
+        new Date().toISOString().split('T').join(' ').slice(0, -1);
       // Log RPC call request/response payloads for debugging purposes.
       console.log(`${ts()} Executing ${method}:`, params);
       const result = await globalWallet.walletdkCall(method, params);
       console.log(`${ts()} Executed ${method} result:`, result);
       this.emit({
-        type: "sqliteOpenResults",
-        payload: (globalThis as typeof globalThis & {
-          sqliteBridgeOpenResults?: unknown;
-        }).sqliteBridgeOpenResults,
+        type: 'sqliteOpenResults',
+        payload: (
+          globalThis as typeof globalThis & {
+            sqliteBridgeOpenResults?: unknown;
+          }
+        ).sqliteBridgeOpenResults,
       });
 
       return result;
@@ -166,21 +177,23 @@ export class MainThreadWalletDKClient implements WalletDKClient {
   }
 
   private async loadRuntime() {
-    if (typeof walletdkCall() === "function") {
+    if (typeof walletdkCall() === 'function') {
       return;
     }
 
-    await loadScript("sqlite-bridge.js");
-    await loadScript("wasm_exec.js");
+    await loadScript('sqlite-bridge.js');
+    await loadScript('wasm_exec.js');
 
-    const goCtor = (globalThis as typeof globalThis & {
-      Go?: new () => {
-        importObject: WebAssembly.Imports;
-        run(instance: WebAssembly.Instance): Promise<void>;
-      };
-    }).Go;
+    const goCtor = (
+      globalThis as typeof globalThis & {
+        Go?: new () => {
+          importObject: WebAssembly.Imports;
+          run(instance: WebAssembly.Instance): Promise<void>;
+        };
+      }
+    ).Go;
     if (!goCtor) {
-      throw new WalletDKError("Go WASM runtime did not load");
+      throw new WalletDKError('Go WASM runtime did not load');
     }
 
     const go = new goCtor();
@@ -188,8 +201,8 @@ export class MainThreadWalletDKClient implements WalletDKClient {
     const runPromise = go.run(result.instance);
     runPromise.catch((err) => {
       this.emit({
-        type: "log",
-        payload: { level: "error", message: errorMessage(err) },
+        type: 'log',
+        payload: { level: 'error', message: errorMessage(err) },
       });
     });
 
@@ -210,39 +223,39 @@ export class WorkerWalletDKClient implements WalletDKClient {
   private nextRequestID = 1;
 
   constructor(options: WasmWalletDKClientOptions = {}) {
-    const workerURL = options.workerURL ?? new URL(
-      "walletdk-worker.js",
-      document.baseURI,
-    ).href;
+    const workerURL =
+      options.workerURL ?? new URL('walletdk-worker.js', document.baseURI).href;
 
     this.worker = new Worker(workerURL);
     this.worker.onmessage = (event) => this.handleMessage(event.data);
     this.worker.onerror = (event) => {
-      this.rejectAll(new WalletDKError(
-        event.message || "walletdk worker error",
-        "worker_error",
-      ));
+      this.rejectAll(
+        new WalletDKError(
+          event.message || 'walletdk worker error',
+          'worker_error',
+        ),
+      );
     };
   }
 
   ready(): Promise<void> {
-    return this.callRaw("$ready").then(() => undefined);
+    return this.callRaw('$ready').then(() => undefined);
   }
 
   start(config: RuntimeConfig): Promise<WalletInfo> {
-    return this.callRaw<WalletInfo>("start", config);
+    return this.callRaw<WalletInfo>('start', config);
   }
 
   async stop(): Promise<void> {
-    await this.callRaw("stop");
+    await this.callRaw('stop');
   }
 
   getInfo(): Promise<WalletInfo> {
-    return this.callRaw<WalletInfo>("getInfo");
+    return this.callRaw<WalletInfo>('getInfo');
   }
 
   status(): Promise<WalletStatus> {
-    return this.callRaw<WalletStatus>("status");
+    return this.callRaw<WalletStatus>('status');
   }
 
   balance(): Promise<Balance> {
@@ -250,39 +263,48 @@ export class WorkerWalletDKClient implements WalletDKClient {
     // boarding confirmed/unconfirmed, on-chain). The flat "balance" verb
     // collapses everything into a single confirmed figure, which cannot
     // represent a pending boarding deposit or an honest composition.
-    return this.callRaw<Balance>("getRawBalance");
+    return this.callRaw<Balance>('getRawBalance');
   }
 
   createWallet(req: CreateWalletRequest): Promise<CreateWalletResult> {
-    return this.callRaw<CreateWalletResult>("createWallet", req);
+    return this.callRaw<CreateWalletResult>('createWallet', req);
   }
 
   unlockWallet(req: UnlockWalletRequest): Promise<UnlockWalletResult> {
-    return this.callRaw<UnlockWalletResult>("unlockWallet", req);
+    return this.callRaw<UnlockWalletResult>('unlockWallet', req);
+  }
+
+  openWalletFromPasskey(
+    req: OpenWalletFromPasskeyRequest,
+  ): Promise<OpenWalletFromPasskeyResult> {
+    return this.callRaw<OpenWalletFromPasskeyResult>(
+      'openWalletFromPasskey',
+      req,
+    );
   }
 
   deposit(req: DepositRequest = {}): Promise<DepositResult> {
-    return this.callRaw<DepositResult>("deposit", req);
+    return this.callRaw<DepositResult>('deposit', req);
   }
 
   receive(req: ReceiveRequest): Promise<ReceiveResult> {
-    return this.callRaw<ReceiveResult>("receive", req);
+    return this.callRaw<ReceiveResult>('receive', req);
   }
 
   send(req: SendRequest): Promise<SendResult> {
-    return this.callRaw<SendResult>("send", req);
+    return this.callRaw<SendResult>('send', req);
   }
 
   list(req: ListRequest = {}): Promise<ListResult> {
-    return this.callRaw<ListResult>("list", req);
+    return this.callRaw<ListResult>('list', req);
   }
 
   exit(req: ExitRequest): Promise<ExitResult> {
-    return this.callRaw<ExitResult>("exit", req);
+    return this.callRaw<ExitResult>('exit', req);
   }
 
   exitStatus(req: ExitStatusRequest): Promise<ExitStatusResult> {
-    return this.callRaw<ExitStatusResult>("exitStatus", req);
+    return this.callRaw<ExitStatusResult>('exitStatus', req);
   }
 
   callRaw<T = unknown>(method: string, params: unknown = {}): Promise<T> {
@@ -309,7 +331,7 @@ export class WorkerWalletDKClient implements WalletDKClient {
   }
 
   private handleMessage(message: unknown) {
-    if (!message || typeof message !== "object") {
+    if (!message || typeof message !== 'object') {
       return;
     }
 
@@ -327,7 +349,7 @@ export class WorkerWalletDKClient implements WalletDKClient {
       return;
     }
 
-    if (typeof data.id !== "number") {
+    if (typeof data.id !== 'number') {
       return;
     }
 
@@ -343,13 +365,11 @@ export class WorkerWalletDKClient implements WalletDKClient {
       return;
     }
 
-    pending.reject(new WalletDKError(
-      data.error || "walletdk request failed",
-    ));
+    pending.reject(new WalletDKError(data.error || 'walletdk request failed'));
   }
 
   private emit(event: WalletDKEvent) {
-    if (event.type === "sqliteOpenResults") {
+    if (event.type === 'sqliteOpenResults') {
       const globalState = globalThis as typeof globalThis & {
         sqliteBridgeOpenResults?: unknown;
       };
@@ -376,38 +396,38 @@ function loadScript(src: string): Promise<void> {
   }
 
   return new Promise((resolve, reject) => {
-    const script = document.createElement("script");
+    const script = document.createElement('script');
     script.src = src;
     script.async = false;
     script.onload = () => resolve();
-    script.onerror = () => reject(new WalletDKError(
-      `failed to load ${src}`,
-      "asset_load_failed",
-    ));
+    script.onerror = () =>
+      reject(new WalletDKError(`failed to load ${src}`, 'asset_load_failed'));
     document.head.append(script);
   });
 }
 
 function waitForReadyEvent(): Promise<void> {
-  if (typeof walletdkCall() === "function") {
+  if (typeof walletdkCall() === 'function') {
     return Promise.resolve();
   }
 
   return new Promise((resolve) => {
-    globalThis.addEventListener("walletdk-ready", () => resolve(), {
+    globalThis.addEventListener('walletdk-ready', () => resolve(), {
       once: true,
     });
   });
 }
 
 function walletdkCall() {
-  return (globalThis as typeof globalThis & {
-    walletdkCall?: (method: string, params?: unknown) => Promise<unknown>;
-  }).walletdkCall;
+  return (
+    globalThis as typeof globalThis & {
+      walletdkCall?: (method: string, params?: unknown) => Promise<unknown>;
+    }
+  ).walletdkCall;
 }
 
 async function instantiateWasm(importObject: WebAssembly.Imports) {
-  if ("DecompressionStream" in globalThis) {
+  if ('DecompressionStream' in globalThis) {
     try {
       return await instantiateCompressedWasm(importObject);
     } catch (err) {
@@ -419,26 +439,26 @@ async function instantiateWasm(importObject: WebAssembly.Imports) {
 }
 
 async function instantiateCompressedWasm(importObject: WebAssembly.Imports) {
-  const response = await fetch("walletdk.wasm.gz");
+  const response = await fetch('walletdk.wasm.gz');
   if (!response.ok) {
-    throw new WalletDKError("walletdk compressed wasm artifact not found");
+    throw new WalletDKError('walletdk compressed wasm artifact not found');
   }
 
   const body = response.body;
   if (!body) {
-    throw new WalletDKError("walletdk compressed wasm response is empty");
+    throw new WalletDKError('walletdk compressed wasm response is empty');
   }
 
-  const stream = body.pipeThrough(new DecompressionStream("gzip"));
+  const stream = body.pipeThrough(new DecompressionStream('gzip'));
   const bytes = await new Response(stream).arrayBuffer();
 
   return WebAssembly.instantiate(bytes, importObject);
 }
 
 async function instantiateRawWasm(importObject: WebAssembly.Imports) {
-  const response = await fetch("walletdk.wasm");
+  const response = await fetch('walletdk.wasm');
   if (!response.ok) {
-    throw new WalletDKError("walletdk wasm artifact not found");
+    throw new WalletDKError('walletdk wasm artifact not found');
   }
 
   return WebAssembly.instantiateStreaming(response, importObject);
@@ -448,22 +468,26 @@ function errorMessage(err: unknown): string {
   if (err instanceof Error && err.message) {
     return err.message;
   }
-  if (typeof err === "string") {
+  if (typeof err === 'string') {
     return err;
   }
 
   return JSON.stringify(err);
 }
 
+// WasmOpenWalletResult is the PascalCase shape returned by the Go wasm
+// openWalletFromPasskey method, mirroring the Go SDK OpenWalletResult.
+type WasmOpenWalletResult = {
+  Imported: boolean;
+  // Mnemonic is nullable because Go marshals a nil slice as JSON null on the
+  // unlock / already-ready paths where no mnemonic is returned.
+  Mnemonic?: string[] | null;
+  IdentityPubKey?: string;
+};
+
 export {
-  clearPasskeyWrap,
-  createPasskeyWrap,
-  hasPasskeyWrap,
-  loadPasskeyWrap,
+  assertPasskeyPrf,
+  registerPasskeyWallet,
   supportsPasskeyPrf,
-  unwrapPasskeyPassword,
-} from "./passkey";
-export type {
-  PasskeyWrapOptions,
-  PasskeyWrapRecord,
-} from "./passkey";
+} from './passkey';
+export type { PasskeyAssertion } from './passkey';

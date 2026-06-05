@@ -1,91 +1,65 @@
-const wrapStoragePrefix = "walletdk:passkey-wrap:";
-const defaultAppName = "Wallet";
+const PRF_NAMESPACE = "walletdk-passkey:v1";
 
-export type PasskeyWrapRecord = {
-  credentialId: string;
-  wrappedPassword: string;
-};
-
-export type PasskeyWrapOptions = {
-  appName?: string;
-};
-
-type PublicKeyCredentialWithPrf = typeof PublicKeyCredential & {
-  getClientExtensionResults?: () => unknown;
-};
-
-// supportsPasskeyPrf reports whether this browser can use WebAuthn PRF for
-// passkey-backed password wrapping.
+// supportsPasskeyPrf reports whether a user-verifying platform authenticator is
+// available, which is a prerequisite for WebAuthn PRF but does not guarantee
+// that the authenticator will return a PRF result — there is no synchronous
+// PRF-detection API, so a browser may return true here yet fail the ceremony.
 export async function supportsPasskeyPrf(): Promise<boolean> {
   if (!globalThis.PublicKeyCredential || !globalThis.crypto?.subtle) {
     return false;
   }
 
   try {
-    const platformAvailable = await PublicKeyCredential
+    return await PublicKeyCredential
       .isUserVerifyingPlatformAuthenticatorAvailable();
-    if (!platformAvailable) {
-      return false;
-    }
-
-    const pkc = PublicKeyCredential as PublicKeyCredentialWithPrf;
-    pkc.getClientExtensionResults?.();
-
-    return true;
   } catch {
     return false;
   }
 }
 
-// hasPasskeyWrap returns true when a passkey wrap exists for the data dir.
-export function hasPasskeyWrap(dataDir: string): boolean {
-  return loadPasskeyWrap(dataDir) !== null;
+// prfSalt is SHA-256(PRF_NAMESPACE): the fixed PRF evaluation input shared with
+// the Go SDK (PasskeyPRFNamespace). The same salt on every device/platform is
+// what makes the derived wallet reproducible.
+async function prfSalt(): Promise<ArrayBuffer> {
+  return crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(PRF_NAMESPACE),
+  );
 }
 
-// loadPasskeyWrap reads the stored passkey wrap for a data dir, if any.
-export function loadPasskeyWrap(dataDir: string): PasskeyWrapRecord | null {
-  const raw = localStorage.getItem(wrapStorageKey(dataDir));
-  if (!raw) {
-    return null;
+// prfFirst extracts the first PRF evaluation output from client extension
+// results, throwing when the browser did not surface a PRF value.
+function prfFirst(results: unknown): ArrayBuffer {
+  const ext = results as { prf?: { results?: { first?: ArrayBuffer } } };
+  const first = ext?.prf?.results?.first;
+  if (!first) {
+    throw new Error(
+      "passkey PRF extension result was not returned by this authenticator",
+    );
   }
 
-  try {
-    const parsed = JSON.parse(raw) as PasskeyWrapRecord;
-    if (!parsed.credentialId || !parsed.wrappedPassword) {
-      return null;
-    }
-
-    return parsed;
-  } catch {
-    return null;
-  }
+  return first;
 }
 
-// createPasskeyWrap registers a passkey and stores the wallet password
-// encrypted with a PRF-derived AES key scoped to the data dir.
-export async function createPasskeyWrap(
-  dataDir: string,
-  password: string,
-  options: PasskeyWrapOptions = {},
-): Promise<void> {
-  const appName = options.appName || defaultAppName;
-  const namespace = wrapNamespace(dataDir);
-  const challenge = await deterministicChallenge(namespace);
+// PasskeyAssertion is the PRF output (hex) plus the credential id that produced
+// it, so callers can scope later assertions to the same passkey.
+export type PasskeyAssertion = { prfOutput: string; credentialId: string };
+
+// registerPasskeyWallet creates a new platform passkey and returns its PRF
+// output (hex) and credential id. Some browsers do not surface PRF from
+// create(), so we fall back to an assertion scoped to the just-created
+// credential to read it reliably without prompting a chooser.
+export async function registerPasskeyWallet(
+  appName: string,
+): Promise<PasskeyAssertion> {
+  const salt = await prfSalt();
   const userId = crypto.getRandomValues(new Uint8Array(16));
-  const displayName = `${appName} (${dataDir})`;
 
-  const credential = await navigator.credentials.create({
+  const created = (await navigator.credentials.create({
     publicKey: {
-      challenge: challenge.buffer as ArrayBuffer,
-      rp: {
-        name: appName,
-        id: window.location.hostname,
-      },
-      user: {
-        id: userId,
-        name: displayName,
-        displayName,
-      },
+      challenge: salt,
+      rp: { name: appName, id: window.location.hostname },
+      user: { id: userId, name: appName, displayName: appName },
       pubKeyCredParams: [
         { alg: -7, type: "public-key" },
         { alg: -257, type: "public-key" },
@@ -95,204 +69,77 @@ export async function createPasskeyWrap(
         userVerification: "required",
         residentKey: "required",
       },
-      extensions: {
-        prf: {
-          eval: {
-            first: challenge.buffer as ArrayBuffer,
-          },
-        },
-      },
+      extensions: { prf: { eval: { first: salt } } },
     },
-  }) as PublicKeyCredential | null;
-
-  if (!credential) {
+  })) as PublicKeyCredential | null;
+  if (!created) {
     throw new Error("passkey registration was cancelled");
   }
 
-  const encryptionKey = await deriveEncryptionKey(
-    credential,
-    challenge,
-    namespace,
-  );
-  const wrappedPassword = await encryptString(encryptionKey, password);
-
-  savePasskeyWrap(dataDir, {
-    credentialId: credential.id,
-    wrappedPassword,
-  });
-}
-
-// unwrapPasskeyPassword authenticates with the stored passkey and returns
-// the wrapped wallet password.
-export async function unwrapPasskeyPassword(
-  dataDir: string,
-): Promise<string> {
-  const record = loadPasskeyWrap(dataDir);
-  if (!record) {
-    throw new Error("no passkey unlock is configured for this wallet");
+  const createResults = created.getClientExtensionResults() as {
+    prf?: { results?: { first?: ArrayBuffer } };
+  };
+  if (createResults?.prf?.results?.first) {
+    return {
+      prfOutput: bufferToHex(createResults.prf.results.first),
+      credentialId: created.id,
+    };
   }
 
-  const namespace = wrapNamespace(dataDir);
-  const challenge = await deterministicChallenge(namespace);
+  return assertPasskeyPrf(created.id);
+}
 
-  const credential = await navigator.credentials.get({
+// assertPasskeyPrf authenticates with a passkey and returns its PRF output (hex)
+// plus the credential id used. With allowCredentialId set, the assertion is
+// scoped to that one credential so the OS unlocks it directly without a
+// chooser; without it, the assertion is discoverable (empty allowCredentials)
+// so a synced passkey can be offered on a device that has never seen this
+// wallet.
+export async function assertPasskeyPrf(
+  allowCredentialId?: string,
+): Promise<PasskeyAssertion> {
+  const salt = await prfSalt();
+  const allowCredentials = allowCredentialId
+    ? [{ type: "public-key" as const, id: base64UrlToBuffer(allowCredentialId) }]
+    : [];
+
+  const assertion = (await navigator.credentials.get({
     publicKey: {
-      challenge: challenge.buffer as ArrayBuffer,
-      allowCredentials: [{
-        type: "public-key",
-        id: base64ToArrayBuffer(record.credentialId),
-      }],
+      challenge: salt,
+      allowCredentials,
       userVerification: "required",
-      extensions: {
-        prf: {
-          eval: {
-            first: challenge.buffer as ArrayBuffer,
-          },
-        },
-      },
+      extensions: { prf: { eval: { first: salt } } },
     },
-  }) as PublicKeyCredential | null;
-
-  if (!credential) {
+  })) as PublicKeyCredential | null;
+  if (!assertion) {
     throw new Error("passkey authentication was cancelled");
   }
 
-  const encryptionKey = await deriveEncryptionKey(
-    credential,
-    challenge,
-    namespace,
-  );
-
-  return decryptString(encryptionKey, record.wrappedPassword);
+  return {
+    prfOutput: bufferToHex(prfFirst(assertion.getClientExtensionResults())),
+    credentialId: assertion.id,
+  };
 }
 
-// clearPasskeyWrap removes the stored passkey wrap for a data dir.
-export function clearPasskeyWrap(dataDir: string): void {
-  localStorage.removeItem(wrapStorageKey(dataDir));
-}
-
-function wrapStorageKey(dataDir: string): string {
-  return `${wrapStoragePrefix}${dataDir}`;
-}
-
-function wrapNamespace(dataDir: string): string {
-  return `walletdk-passkey:${dataDir}`;
-}
-
-function savePasskeyWrap(dataDir: string, record: PasskeyWrapRecord): void {
-  localStorage.setItem(
-    wrapStorageKey(dataDir),
-    JSON.stringify(record),
-  );
-}
-
-async function deterministicChallenge(namespace: string): Promise<Uint8Array> {
-  const hash = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(namespace),
-  );
-
-  return new Uint8Array(hash);
-}
-
-async function deriveEncryptionKey(
-  credential: PublicKeyCredential,
-  challenge: Uint8Array,
-  namespace: string,
-): Promise<CryptoKey> {
-  const extensions = credential.getClientExtensionResults?.() as {
-    prf?: {
-      results?: {
-        first?: ArrayBuffer;
-      };
-    };
-  } | undefined;
-
-  if (!extensions?.prf?.results?.first) {
-    throw new Error("passkey PRF is not supported in this browser");
-  }
-
-  const prfOutput = new Uint8Array(extensions.prf.results.first);
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    prfOutput,
-    "HKDF",
-    false,
-    ["deriveKey"],
-  );
-
-  return crypto.subtle.deriveKey(
-    {
-      name: "HKDF",
-      hash: "SHA-256",
-      salt: new Uint8Array(challenge),
-      info: new TextEncoder().encode(namespace),
-    },
-    keyMaterial,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt", "decrypt"],
-  );
-}
-
-async function encryptString(
-  encryptionKey: CryptoKey,
-  plaintext: string,
-): Promise<string> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv },
-    encryptionKey,
-    new TextEncoder().encode(plaintext),
-  );
-
-  const combined = new Uint8Array(iv.length + ciphertext.byteLength);
-  combined.set(iv);
-  combined.set(new Uint8Array(ciphertext), iv.length);
-
-  return arrayBufferToBase64(combined.buffer);
-}
-
-async function decryptString(
-  encryptionKey: CryptoKey,
-  payload: string,
-): Promise<string> {
-  const combined = new Uint8Array(base64ToArrayBuffer(payload));
-  const iv = combined.slice(0, 12);
-  const ciphertext = combined.slice(12);
-
-  const plaintext = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv },
-    encryptionKey,
-    ciphertext,
-  );
-
-  return new TextDecoder().decode(plaintext);
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-
-  return btoa(binary);
-}
-
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const base64Standard = base64.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = base64Standard.padEnd(
-    base64Standard.length + ((4 - (base64Standard.length % 4)) % 4),
+// base64UrlToBuffer decodes a base64url WebAuthn credential id into bytes.
+function base64UrlToBuffer(value: string): ArrayBuffer {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = base64.padEnd(
+    base64.length + ((4 - (base64.length % 4)) % 4),
     "=",
   );
   const binary = atob(padded);
   const bytes = new Uint8Array(binary.length);
-
   for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
   }
 
   return bytes.buffer;
+}
+
+// bufferToHex renders a binary buffer as a lower-case hex string.
+function bufferToHex(buffer: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }

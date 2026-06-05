@@ -1,19 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useWalletDK } from "@lightninglabs/walletdk-react";
+import { useWalletDK, usePasskeyWallet } from "@lightninglabs/walletdk-react";
 import { AppShell } from "./components/layout/AppShell";
 import { AppTab } from "./components/layout/nav";
-import { usePasskey } from "./hooks/usePasskey";
-import { errorMessage } from "./lib/errors";
 import { phaseConnected, statusLabel } from "./lib/phase";
 import {
   RuntimeForm,
   signetDefaults,
 } from "./lib/runtime-config";
+import {
+  readPasskeyCredentialId,
+  readWalletKind,
+  writePasskeyCredentialId,
+  writeWalletKind,
+} from "./lib/walletKind";
 import { HomeScreen } from "./screens/home";
+import { OnboardingFlow } from "./screens/onboarding/OnboardingFlow";
 import {
   BackupScreen,
   ConnectScreen,
-  CreateScreen,
   ErrorScreen,
   LoadingScreen,
   type LogRow,
@@ -26,22 +30,25 @@ import { SendScreen } from "./screens/send";
 import { ActivityScreen } from "./screens/activity";
 import { SettingsScreen } from "./screens/settings";
 
+const APP_NAME = "Dare Wallet";
 const MAX_LOGS = 8;
 
 // App is the wallet orchestrator: it owns cross-screen session state (runtime
 // form, recovery-phrase backup gating, passkey wiring, log tail, active tab) and
 // routes to the correct screen by runtime phase. The data layer lives in
 // WalletDKProvider; presentational screens receive values + handlers as props.
+// The underlying wasm client (wallet.client) is handed to the passkey hook so it
+// can run the WebAuthn ceremony and call openWalletFromPasskey directly.
 export function App() {
   const wallet = useWalletDK();
-  const passkey = usePasskey();
+  const passkey = usePasskeyWallet();
 
   const [form, setForm] = useState<RuntimeForm>(signetDefaults);
   const [mnemonic, setMnemonic] = useState<string[]>([]);
   const [backupAcknowledged, setBackupAcknowledged] = useState(false);
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [tab, setTab] = useState<AppTab>("home");
-  const [passkeyVersion, setPasskeyVersion] = useState(0);
+  const [kindVersion, setKindVersion] = useState(0);
   const [enrolling, setEnrolling] = useState(false);
   const [unlocking, setUnlocking] = useState(false);
 
@@ -97,10 +104,13 @@ export function App() {
     };
   }, [wallet.phase, wallet.refresh]);
 
-  const passkeyEnrolled = useMemo(
-    () => passkey.wrapExists(form.dataDir),
-    // passkeyVersion forces re-read after enroll/remove (storage is untracked).
-    [passkey, form.dataDir, passkeyVersion, wallet.phase],
+  // walletKind is the locally recorded unlock mode for the active data dir; it
+  // drives which unlock affordances the locked/settings screens show. kindVersion
+  // forces a re-read after a create or unlock writes the marker to localStorage,
+  // which is untracked by React.
+  const walletKind = useMemo(
+    () => readWalletKind(form.dataDir),
+    [form.dataDir, kindVersion],
   );
 
   const startRuntime = useCallback(async () => {
@@ -112,48 +122,69 @@ export function App() {
     }
   }, [wallet, form]);
 
-  const createWallet = useCallback(
-    async ({
-      password,
-      enablePasskey,
-    }: {
-      password: string;
-      enablePasskey: boolean;
-    }) => {
-      const withPasskey = enablePasskey && passkey.supported;
-
-      // A passkey enrollment shows an OS biometric prompt; keep the UI on a
-      // loading screen during create + enroll so the recovery phrase is never
-      // revealed behind that prompt.
-      if (withPasskey) {
-        setEnrolling(true);
-      }
-
+  // createPasswordWallet runs the classic password create path: it generates a
+  // fresh seed, records the wallet as a password wallet and reveals the recovery
+  // phrase on the backup screen.
+  const createPasswordWallet = useCallback(
+    async (password: string) => {
       const result = await wallet.createWallet({ password }).catch(() => null);
       if (!result) {
         // Surfaced via operations.createWallet.error.
-        setEnrolling(false);
+        return;
+      }
+
+      writeWalletKind(form.dataDir, "password");
+      setKindVersion((v) => v + 1);
+      setMnemonic(result.Mnemonic || []);
+      setBackupAcknowledged(false);
+    },
+    [wallet, form.dataDir],
+  );
+
+  // createPasskeyWallet derives the seed and DB password from a new passkey, so
+  // there is no password field. The biometric ceremony is held behind a loading
+  // screen so the freshly derived recovery phrase is never revealed underneath
+  // the OS prompt.
+  const createPasskeyWallet = useCallback(async () => {
+    setEnrolling(true);
+    try {
+      const outcome = await passkey.createPasskeyWallet(wallet.client, APP_NAME);
+      if (!outcome) {
+        // Surfaced via passkey.error.
+        return;
+      }
+
+      writeWalletKind(form.dataDir, "passkey");
+      writePasskeyCredentialId(form.dataDir, outcome.credentialId);
+      setKindVersion((v) => v + 1);
+
+      // Re-derive the provider phase: openWalletFromPasskey opens the wallet
+      // inside the Go SDK directly, bypassing the provider's createWallet.
+      await wallet.refresh().catch(() => undefined);
+
+      // A freshly created passkey wallet returns a mnemonic to back up; an
+      // imported one (opened from another device) does not, so skip the backup.
+      setMnemonic(outcome.result.Mnemonic);
+      setBackupAcknowledged(outcome.result.Mnemonic.length === 0);
+    } finally {
+      setEnrolling(false);
+    }
+  }, [passkey, wallet, form.dataDir]);
+
+  // createWallet dispatches the create flow by the mode chosen on the create
+  // screen: a passkey wallet (seed + DB password derived from a passkey) or a
+  // password wallet (classic user-chosen password).
+  const createWallet = useCallback(
+    ({ password, mode }: { password: string; mode: "passkey" | "password" }) => {
+      if (mode === "passkey") {
+        void createPasskeyWallet();
 
         return;
       }
 
-      if (withPasskey) {
-        try {
-          await passkey.enroll(form.dataDir, password);
-          setPasskeyVersion((v) => v + 1);
-        } catch {
-          // Enrollment failed/cancelled (surfaced via passkey.error); the wallet
-          // still exists, so fall through and reveal the recovery phrase.
-        } finally {
-          setEnrolling(false);
-        }
-      }
-
-      // Reveal the recovery phrase only after enrollment settles.
-      setMnemonic(result.Mnemonic || []);
-      setBackupAcknowledged(false);
+      void createPasswordWallet(password);
     },
-    [wallet, passkey, form.dataDir],
+    [createPasskeyWallet, createPasswordWallet],
   );
 
   const restoreWallet = useCallback(
@@ -172,41 +203,71 @@ export function App() {
           mnemonic: words,
           seedPassphrase: passphrase || undefined,
         });
+        writeWalletKind(form.dataDir, "password");
+        setKindVersion((v) => v + 1);
         setMnemonic([]);
         setBackupAcknowledged(true);
       } catch {
         // Surfaced via operations.createWallet.error.
       }
     },
-    [wallet],
+    [wallet, form.dataDir],
   );
 
   const unlockWithPassword = useCallback(
     async (password: string) => {
       try {
         await wallet.unlockWallet({ password });
+        writeWalletKind(form.dataDir, "password");
+        setKindVersion((v) => v + 1);
         setBackupAcknowledged(true);
       } catch {
         // Surfaced via operations.unlockWallet.error.
       }
     },
-    [wallet],
+    [wallet, form.dataDir],
   );
 
+  // unlockWithPasskey opens an existing passkey wallet from a discoverable
+  // passkey. It works on a fresh device (no local wrap). The seed and DB
+  // password are re-derived from the passkey, and it is gated only on PRF
+  // support. The ceremony + sync are held behind a loading screen.
   const unlockWithPasskey = useCallback(async () => {
-    // Mirror the create flow: hold on a loading screen during the biometric
-    // prompt and the decrypt/sync that follows, rather than leaving the unlock
-    // form sitting behind the OS prompt.
     setUnlocking(true);
     try {
-      const password = await passkey.unlock(form.dataDir);
-      await unlockWithPassword(password);
-    } catch {
-      // Surfaced via passkey.error.
+      const outcome = await passkey.openPasskeyWallet(
+        wallet.client,
+        readPasskeyCredentialId(form.dataDir) ?? undefined,
+      );
+      if (!outcome) {
+        // Surfaced via passkey.error.
+        return;
+      }
+
+      writeWalletKind(form.dataDir, "passkey");
+      writePasskeyCredentialId(form.dataDir, outcome.credentialId);
+      setKindVersion((v) => v + 1);
+      setBackupAcknowledged(true);
+
+      // Re-derive the provider phase from the now-open wallet.
+      await wallet.refresh().catch(() => undefined);
     } finally {
       setUnlocking(false);
     }
-  }, [passkey, form.dataDir, unlockWithPassword]);
+  }, [passkey, wallet, form.dataDir]);
+
+  // recoverWithPhrase tears the runtime down so the user can reconnect and
+  // rebuild the wallet from a recovery phrase on the create/restore screen.
+  const recoverWithPhrase = useCallback(async () => {
+    try {
+      await wallet.stop();
+      setMnemonic([]);
+      setBackupAcknowledged(false);
+      setTab("home");
+    } catch {
+      // Surfaced via operations.runtime.error.
+    }
+  }, [wallet]);
 
   const acknowledgeBackup = useCallback(async () => {
     setBackupAcknowledged(true);
@@ -223,11 +284,6 @@ export function App() {
       // Surfaced via operations.runtime.error.
     }
   }, [wallet]);
-
-  const removePasskey = useCallback(() => {
-    passkey.remove(form.dataDir);
-    setPasskeyVersion((v) => v + 1);
-  }, [passkey, form.dataDir]);
 
   const network = form.network;
 
@@ -250,7 +306,7 @@ export function App() {
       <LoadingScreen
         network={network}
         title="Unlocking wallet"
-        sub="Decrypting keys and syncing — this can take a few seconds."
+        sub="Decrypting keys and syncing. This can take a few seconds."
       />
     );
   }
@@ -296,13 +352,17 @@ export function App() {
 
   case "needsWallet":
     return (
-      <CreateScreen
+      <OnboardingFlow
         network={network}
+        dataDir={form.dataDir}
         passkeySupported={passkey.supported}
         onCreate={createWallet}
         onRestore={restoreWallet}
+        onUnlockPasskey={unlockWithPasskey}
         busy={wallet.operations.createWallet.busy}
-        error={wallet.operations.createWallet.error || passkey.error}
+        error={wallet.operations.createWallet.error}
+        passkeyBusy={passkey.busy}
+        passkeyError={passkey.error}
       />
     );
 
@@ -311,9 +371,10 @@ export function App() {
       <UnlockScreen
         network={network}
         passkeySupported={passkey.supported}
-        passkeyWrapAvailable={passkeyEnrolled}
+        walletKind={walletKind}
         onUnlock={unlockWithPassword}
         onUnlockPasskey={unlockWithPasskey}
+        onRecover={recoverWithPhrase}
         busy={wallet.operations.unlockWallet.busy}
         error={wallet.operations.unlockWallet.error}
         passkeyBusy={passkey.busy}
@@ -425,9 +486,7 @@ export function App() {
           phaseLabel={phaseLabel}
           form={form}
           onField={onField}
-          passkeySupported={passkey.supported}
-          passkeyEnrolled={passkeyEnrolled}
-          onRemovePasskey={removePasskey}
+          walletKind={walletKind}
           onStop={stopRuntime}
           onNavigate={setTab}
         />

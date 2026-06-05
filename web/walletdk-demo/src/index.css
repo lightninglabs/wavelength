@@ -29,14 +29,14 @@
   --bad: #d14343;
 }
 
-/* Dark palette — the original Onyx values. */
+/* Dark palette. These are the original Onyx values. */
 .dark {
   color-scheme: dark;
 
   --bg: #0a0a0b;
   --surface: #111113;
   --surface-alt: #161619;
-  /* Sunk below the page in dark too — see the light-palette note above. */
+  /* Sunk below the page in dark too. See the light-palette note above. */
   --well: #050506;
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.16);

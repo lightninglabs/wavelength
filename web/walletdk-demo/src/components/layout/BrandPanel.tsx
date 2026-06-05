@@ -11,7 +11,7 @@ const BULLETS: Array<{ icon: LucideIcon; title: string; sub: string }> = [
   {
     icon: ShieldCheck,
     title: "Keys on this device",
-    sub: "Generated and stored locally — never uploaded.",
+    sub: "They are generated and stored locally, and never uploaded.",
   },
   {
     icon: ArrowLeftRight,

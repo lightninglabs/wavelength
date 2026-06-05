@@ -3,6 +3,8 @@ package walletdk
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +17,8 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/restclient"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightningnetwork/lnd/aezeed"
+	"golang.org/x/crypto/hkdf"
 	"google.golang.org/grpc"
 )
 
@@ -201,7 +205,7 @@ func (c *Client) CreateWallet(ctx context.Context, req CreateWalletRequest) (
 		},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("initialize wallet: %w", err)
+		return nil, err
 	}
 
 	return &CreateWalletResult{
@@ -220,6 +224,25 @@ func (c *Client) CreateWallet(ctx context.Context, req CreateWalletRequest) (
 	}, nil
 }
 
+// initFromMnemonic runs the daemon InitWallet step shared by password wallets
+// and passkey wallets, returning the daemon identity pubkey.
+func (c *Client) initFromMnemonic(ctx context.Context, mnemonic []string,
+	seedPassphrase, walletPassword []byte) (string, error) {
+
+	initResp, err := c.daemon.InitWallet(ctx,
+		&daemonrpc.InitWalletRequest{
+			Mnemonic:       mnemonic,
+			SeedPassphrase: bytes.Clone(seedPassphrase),
+			WalletPassword: bytes.Clone(walletPassword),
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf("initialize wallet: %w", err)
+	}
+
+	return initResp.GetIdentityPubkey(), nil
+}
+
 // UnlockWallet unlocks an existing embedded daemon wallet.
 func (c *Client) UnlockWallet(ctx context.Context, req UnlockWalletRequest) (
 	*UnlockWalletResult, error) {
@@ -236,6 +259,135 @@ func (c *Client) UnlockWallet(ctx context.Context, req UnlockWalletRequest) (
 	return &UnlockWalletResult{
 		IdentityPubKey: resp.GetIdentityPubkey(),
 	}, nil
+}
+
+// PasskeyPRFNamespace is the shared input string both web and native hash to
+// produce the WebAuthn PRF salt. Keeping it identical everywhere is what makes
+// a passkey wallet reproducible across platforms. The web ceremony hardcodes
+// the same literal as PRF_NAMESPACE in
+// web/walletdk-demo/packages/wasm-web/src/passkey.ts; the two must change in
+// lockstep, since a drift would silently break cross-device derivation.
+const PasskeyPRFNamespace = "walletdk-passkey:v1"
+
+// hkdfSeedInfo and hkdfDBKeyInfo domain-separate the two secrets pulled from
+// one PRF output.
+const (
+	hkdfSeedInfo  = "walletdk:seed:v1"
+	hkdfDBKeyInfo = "walletdk:dbpw:v1"
+)
+
+// OpenWalletFromPasskey derives a reproducible wallet from a passkey's PRF
+// output and either imports it (fresh device) or unlocks it (wallet already
+// present locally). passkeyPRFOutput is the raw bytes from the platform's
+// WebAuthn PRF evaluation; the ceremony itself lives in the platform layer.
+func (c *Client) OpenWalletFromPasskey(ctx context.Context,
+	passkeyPRFOutput []byte) (*OpenWalletResult, error) {
+
+	entropy, dbPassword := deriveSeedAndPassword(passkeyPRFOutput)
+
+	// Read the current wallet lifecycle state so we can decide whether to
+	// import a fresh seed or unlock an existing local wallet.
+	info, err := c.GetInfo(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read wallet state: %w", err)
+	}
+
+	switch info.WalletState {
+	case WalletStateNone:
+		return c.createWalletFromEntropy(ctx, entropy, dbPassword)
+
+	case WalletStateLocked:
+		unlock, err := c.UnlockWallet(ctx, UnlockWalletRequest{
+			WalletPassword: dbPassword,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("unlock wallet: %w", err)
+		}
+
+		return &OpenWalletResult{
+			Imported:       false,
+			IdentityPubKey: unlock.IdentityPubKey,
+		}, nil
+
+	case WalletStateReady, WalletStateSyncing:
+		// Wallet is already unlocked; opening it again is a no-op.
+		return &OpenWalletResult{
+			Imported:       false,
+			IdentityPubKey: info.IdentityPubKey,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unexpected wallet state %v: cannot "+
+			"open wallet", info.WalletState)
+	}
+}
+
+// createWalletFromEntropy builds the deterministic aezeed and initializes a new
+// local wallet from it.
+func (c *Client) createWalletFromEntropy(ctx context.Context,
+	entropy [aezeed.EntropySize]byte, dbPassword []byte) (*OpenWalletResult,
+	error) {
+
+	mnemonic, err := entropyToMnemonic(entropy)
+	if err != nil {
+		return nil, fmt.Errorf("derive mnemonic: %w", err)
+	}
+
+	// The passkey seed is reproducible from entropy alone, so the seed
+	// passphrase must stay empty to match deriveSeedAndPassword's contract.
+	words := mnemonic[:]
+	identity, err := c.initFromMnemonic(ctx, words, nil, dbPassword)
+	if err != nil {
+		return nil, fmt.Errorf("init wallet from mnemonic: %w", err)
+	}
+
+	return &OpenWalletResult{
+		Imported:       true,
+		Mnemonic:       append([]string(nil), words...),
+		IdentityPubKey: identity,
+	}, nil
+}
+
+// deriveSeedAndPassword expands a passkey's PRF output into the 16-byte wallet
+// entropy and a local DB password. The DB password only protects the device's
+// local database, so it need not match across devices; deriving it here just
+// means a passkey wallet never prompts for a password.
+func deriveSeedAndPassword(passkeyPRFOutput []byte) ([aezeed.EntropySize]byte,
+	[]byte) {
+
+	var entropy [aezeed.EntropySize]byte
+	seedReader := hkdf.New(
+		sha256.New, passkeyPRFOutput, nil, []byte(hkdfSeedInfo),
+	)
+	_, _ = io.ReadFull(seedReader, entropy[:])
+
+	var raw [32]byte
+	pwReader := hkdf.New(
+		sha256.New, passkeyPRFOutput, nil, []byte(hkdfDBKeyInfo),
+	)
+	_, _ = io.ReadFull(pwReader, raw[:])
+	dbPassword := []byte(hex.EncodeToString(raw[:]))
+
+	return entropy, dbPassword
+}
+
+// entropyToMnemonic builds a reproducible aezeed mnemonic from fixed entropy.
+// Version and birthday are pinned so the wallet depends only on the entropy.
+// Note: each call returns a different 24-word string because aezeed draws a
+// fresh random KDF salt per encoding; every such string deciphers back to the
+// same entropy, and therefore the same HD wallet. Birthday sets rescan depth,
+// not derived keys; pinning it avoids leaking a real creation time. The
+// passphrase is empty so the seed is reproducible from entropy alone — callers
+// MUST pass the same empty passphrase to InitWallet.
+func entropyToMnemonic(entropy [aezeed.EntropySize]byte) (aezeed.Mnemonic,
+	error) {
+
+	cipherSeed, err := aezeed.New(0, &entropy, aezeed.BitcoinGenesisDate)
+	if err != nil {
+		return aezeed.Mnemonic{}, err
+	}
+
+	return cipherSeed.ToMnemonic(nil)
 }
 
 // Balance returns the wallet-level balance summary.

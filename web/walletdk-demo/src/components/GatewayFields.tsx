@@ -3,7 +3,7 @@ import { ToggleRow } from "./ui/ToggleRow";
 import { RuntimeFieldSetter, RuntimeForm } from "../lib/runtime-config";
 
 // GatewayFields renders the runtime gateway endpoints and security toggles
-// bound to a RuntimeForm. `disabled` makes them display-only — used by the
+// bound to a RuntimeForm. `disabled` makes them display-only, used by the
 // Settings advanced section, where the running config cannot be edited.
 export function GatewayFields({
   form,

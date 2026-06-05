@@ -93,7 +93,7 @@ export function SendScreen({
               <Check size={22} className="text-good" />
             </div>
             <div className="mt-4 font-mono text-3xl font-semibold tabular-nums text-fg">
-              {sentAmount > 0 ? formatSats(sentAmount) : "—"}
+              {sentAmount > 0 ? formatSats(sentAmount) : "-"}
               <span className="ml-1.5 text-sm font-medium text-muted">sats</span>
             </div>
             <div className="mt-5 w-full text-left">
@@ -174,7 +174,7 @@ export function SendScreen({
           <div className="mt-4 space-y-3 text-sm">
             <SummaryRow
               label="Destination"
-              value={dest.trim() ? shortKey(dest.trim(), 10, 8) : "—"}
+              value={dest.trim() ? shortKey(dest.trim(), 10, 8) : "-"}
               mono
             />
             <SummaryRow

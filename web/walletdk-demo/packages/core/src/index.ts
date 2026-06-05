@@ -1,10 +1,10 @@
 export type WalletDKEventType =
-  | "runtimeReady"
-  | "runtimeStopped"
-  | "walletState"
-  | "activity"
-  | "log"
-  | "sqliteOpenResults";
+  | 'runtimeReady'
+  | 'runtimeStopped'
+  | 'walletState'
+  | 'activity'
+  | 'log'
+  | 'sqliteOpenResults';
 
 export type WalletDKEvent = {
   type: WalletDKEventType;
@@ -34,8 +34,7 @@ export const WalletState = {
   Syncing: 4,
 } as const;
 
-export type WalletState =
-  typeof WalletState[keyof typeof WalletState];
+export type WalletState = (typeof WalletState)[keyof typeof WalletState];
 
 export type WalletInfo = {
   Version?: string;
@@ -88,6 +87,16 @@ export type UnlockWalletResult = {
   IdentityPubKey: string;
 };
 
+export type OpenWalletFromPasskeyRequest = {
+  prfOutput: string;
+};
+
+export type OpenWalletFromPasskeyResult = {
+  Imported: boolean;
+  Mnemonic: string[];
+  IdentityPubKey: string;
+};
+
 export type DepositRequest = {
   amountSatHint?: number;
 };
@@ -124,7 +133,7 @@ export type SendResult = {
 };
 
 export type ListRequest = {
-  view?: "activity" | "vtxos" | "onchain";
+  view?: 'activity' | 'vtxos' | 'onchain';
   pendingOnly?: boolean;
   limit?: number;
   offset?: number;
@@ -142,8 +151,8 @@ export type ListResult = {
 
 export type Entry = {
   ID: string;
-  Kind: "send" | "receive" | "deposit" | "exit" | string;
-  Status: "pending" | "complete" | "failed" | string;
+  Kind: 'send' | 'receive' | 'deposit' | 'exit' | string;
+  Status: 'pending' | 'complete' | 'failed' | string;
   AmountSat: number;
   FeeSat?: number;
   Counterparty?: string;
@@ -177,6 +186,9 @@ export interface WalletDKClient {
   balance(): Promise<Balance>;
   createWallet(req: CreateWalletRequest): Promise<CreateWalletResult>;
   unlockWallet(req: UnlockWalletRequest): Promise<UnlockWalletResult>;
+  openWalletFromPasskey(
+    req: OpenWalletFromPasskeyRequest,
+  ): Promise<OpenWalletFromPasskeyResult>;
   deposit(req?: DepositRequest): Promise<DepositResult>;
   receive(req: ReceiveRequest): Promise<ReceiveResult>;
   send(req: SendRequest): Promise<SendResult>;
@@ -190,9 +202,11 @@ export interface WalletDKClient {
 export class WalletDKError extends Error {
   constructor(
     message: string,
-    public readonly code = "walletdk_error",
+    public readonly code = 'walletdk_error',
   ) {
     super(message);
-    this.name = "WalletDKError";
+    this.name = 'WalletDKError';
   }
 }
+
+export type { WalletKind } from './passkey';

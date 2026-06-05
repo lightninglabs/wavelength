@@ -185,13 +185,13 @@ function RuntimeBand({
     good?: boolean;
   }> = [
     { icon: ShieldCheck, label: "Runtime", value: phaseLabel, good: true },
-    { icon: Zap, label: "Network", value: info?.Network || "—" },
+    { icon: Zap, label: "Network", value: info?.Network || "-" },
     {
       icon: Layers,
       label: "Block height",
-      value: info?.BlockHeight ? formatSats(info.BlockHeight) : "—",
+      value: info?.BlockHeight ? formatSats(info.BlockHeight) : "-",
     },
-    { icon: Wallet, label: "Wallet", value: info?.WalletType || "—" },
+    { icon: Wallet, label: "Wallet", value: info?.WalletType || "-" },
     { icon: Lock, label: "Keys", value: "On this device", good: true },
   ];
 

@@ -124,6 +124,28 @@ type UnlockWalletResult struct {
 	IdentityPubKey string
 }
 
+// WalletKind labels how a local wallet is unlocked.
+type WalletKind string
+
+const (
+	// WalletKindPasskey is a wallet whose seed and DB password derive from
+	// a passkey; it is portable across devices that share the passkey.
+	WalletKindPasskey WalletKind = "passkey"
+
+	// WalletKindPassword is a classic user-password wallet.
+	WalletKindPassword WalletKind = "password"
+)
+
+// OpenWalletResult reports the outcome of OpenWalletFromPasskey. Imported is
+// true when a new local wallet was created from the derived seed (fresh
+// device); false when an existing local wallet was unlocked. Mnemonic is set
+// only on import, for backup display.
+type OpenWalletResult struct {
+	Imported       bool
+	Mnemonic       []string
+	IdentityPubKey string
+}
+
 // Balance is the wallet-level balance view.
 type Balance struct {
 	ConfirmedSat  int64
