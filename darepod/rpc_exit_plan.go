@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/txconfirm"
+	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightningnetwork/lnd/input"
@@ -119,30 +120,28 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 			err)
 	}
 
-	recommended, err := recommendedUnrollUTXOAmount(
-		btcutil.Amount(feeRate),
+	verdict, err := r.assessExitFeasibility(
+		ctx, desc, btcutil.Amount(feeRate),
 	)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "estimate unroll "+
-			"package fee: %v", err)
-	}
-
-	required, err := exitPlanRequiredUTXOCount(outpoint, desc)
-	if err != nil {
-		return nil, err
-	}
-	usable, err := r.usableUnrollFeeUTXOCount(ctx, recommended)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list wallet "+
 			"unspent: %v", err)
 	}
+	if verdict.RequiredWalletInputs == 0 {
+		return nil, status.Errorf(codes.FailedPrecondition, "VTXO %s "+
+			"has no unilateral-exit ancestry", outpoint)
+	}
 
-	shortCount := required - minUint32(required, usable)
-	shortfall := btcutil.Amount(shortCount) * recommended
-	totalRecommended := btcutil.Amount(required) * recommended
+	recommended := exitPlanRecommendedUTXOAmount(verdict)
+	required := uint32(verdict.RequiredWalletInputs)
+	usable := uint32(verdict.WalletUsableInputs)
+	shortfall := exitPlanFundingShortfall(verdict, recommended)
+	totalRecommended := btcutil.Amount(
+		verdict.RequiredWalletInputs,
+	) * recommended
 
 	fundingAddress, err := r.server.exitPlanFundingAddress(
-		ctx, outpoint.String(), usable < required,
+		ctx, outpoint.String(), true,
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "exit plan funding "+
@@ -158,7 +157,7 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 		RecommendedUTXOAmountSat:   int64(recommended),
 		RecommendedTotalFundingSat: int64(totalRecommended),
 		FundingShortfallSat:        int64(shortfall),
-		CanStart:                   usable >= required,
+		CanStart:                   verdict.Feasible,
 	}
 
 	statusResp, err := r.GetUnrollStatus(
@@ -176,6 +175,106 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 	plan.LastError = statusResp.GetLastError()
 
 	return plan, nil
+}
+
+// assessExitFeasibility gathers the wallet snapshot and delegates the
+// unilateral-exit cost model to the unroll package.
+func (r *RPCServer) assessExitFeasibility(ctx context.Context,
+	desc *vtxo.Descriptor, feeRate btcutil.Amount) (unroll.ExitFeasibility,
+	error) {
+
+	numTxs, numPaths := unroll.RecoveryTxCount(desc)
+
+	confirmed, usable, err := r.walletExitFundingSnapshot(ctx)
+	if err != nil {
+		return unroll.ExitFeasibility{}, err
+	}
+
+	return unroll.AssessExitFeasibility(unroll.ExitFeasibilityInput{
+		NumRecoveryTxs:     numTxs,
+		NumAncestryPaths:   numPaths,
+		VTXOAmountSat:      desc.Amount,
+		FeeRateSatPerVByte: feeRate,
+		WalletConfirmedSat: confirmed,
+		WalletUsableInputs: usable,
+	}), nil
+}
+
+// walletExitFundingSnapshot returns the confirmed backing-wallet balance and
+// the count of confirmed UTXOs that satisfy the unroll preflight floor.
+func (r *RPCServer) walletExitFundingSnapshot(ctx context.Context) (
+	btcutil.Amount, int, error) {
+
+	utxos, err := r.server.ListWalletUnspent(
+		ctx, 1, wallet.MaxConfsForListUnspent,
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var confirmed btcutil.Amount
+	usable := 0
+	for _, utxo := range utxos {
+		if utxo == nil {
+			continue
+		}
+
+		confirmed += utxo.Amount
+		if utxo.Amount >= preflightUnrollMinUTXOSat {
+			usable++
+		}
+	}
+
+	return confirmed, usable, nil
+}
+
+// exitPlanRecommendedUTXOAmount derives the per-funding-output suggestion from
+// the full unroll feasibility cost breakdown.
+func exitPlanRecommendedUTXOAmount(
+	verdict unroll.ExitFeasibility) btcutil.Amount {
+
+	if verdict.RequiredWalletInputs <= 0 {
+		return 0
+	}
+
+	perInputFee := ceilDivAmount(
+		verdict.CPFPFeeTotalSat,
+		btcutil.Amount(verdict.RequiredWalletInputs),
+	)
+	recommended := perInputFee + txconfirm.DustLimit
+	if recommended < preflightUnrollMinUTXOSat {
+		return preflightUnrollMinUTXOSat
+	}
+
+	return recommended
+}
+
+// exitPlanFundingShortfall reports how much additional wallet funding should
+// clear both the total-balance and distinct-fee-input requirements.
+func exitPlanFundingShortfall(verdict unroll.ExitFeasibility,
+	recommended btcutil.Amount) btcutil.Amount {
+
+	required := verdict.RequiredWalletInputs
+	usable := verdict.WalletUsableInputs
+
+	missingInputs := 0
+	if usable < required {
+		missingInputs = required - usable
+	}
+
+	inputShortfall := btcutil.Amount(missingInputs) * recommended
+
+	var balanceShortfall btcutil.Amount
+	if verdict.WalletConfirmedSat < verdict.CPFPFeeTotalSat {
+		balanceShortfall = verdict.CPFPFeeTotalSat -
+			verdict.WalletConfirmedSat
+	}
+
+	if inputShortfall > balanceShortfall {
+		return inputShortfall
+	}
+
+	return balanceShortfall
 }
 
 // SweepWallet previews or broadcasts a normal backing-wallet sweep that
@@ -367,85 +466,6 @@ func (s *Server) exitPlanFundingAddress(ctx context.Context, outpoint string,
 	return address, nil
 }
 
-func exitPlanRequiredUTXOCount(outpoint wire.OutPoint,
-	desc *vtxo.Descriptor) (uint32, error) {
-
-	required := requiredUnrollFeeUTXOCount(desc)
-	if required == 0 {
-		return 0, status.Errorf(codes.FailedPrecondition, "VTXO %s "+
-			"has no unilateral-exit ancestry", outpoint)
-	}
-
-	return required, nil
-}
-
-func requiredUnrollFeeUTXOCount(desc *vtxo.Descriptor) uint32 {
-	if desc == nil {
-		return 0
-	}
-
-	return uint32(len(desc.Ancestry))
-}
-
-func recommendedUnrollUTXOAmount(feeRate btcutil.Amount) (btcutil.Amount,
-	error) {
-
-	fee, err := txconfirm.EstimatePackageFee(
-		estimatedUnrollParentTx(), feeRate,
-	)
-	if err != nil {
-		return 0, err
-	}
-
-	recommended := fee + txconfirm.DustLimit
-	if recommended < preflightUnrollMinUTXOSat {
-		return preflightUnrollMinUTXOSat, nil
-	}
-
-	return recommended, nil
-}
-
-func estimatedUnrollParentTx() *wire.MsgTx {
-	tx := wire.NewMsgTx(3)
-	tx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: wire.OutPoint{},
-		Sequence:         wire.MaxTxInSequenceNum - 2,
-	})
-	tx.AddTxOut(&wire.TxOut{
-		Value:    int64(txconfirm.DustLimit),
-		PkScript: make([]byte, 34),
-	})
-	tx.AddTxOut(&wire.TxOut{
-		Value:    0,
-		PkScript: []byte{txscript.OP_TRUE},
-	})
-
-	return tx
-}
-
-func (r *RPCServer) usableUnrollFeeUTXOCount(ctx context.Context,
-	minAmount btcutil.Amount) (uint32, error) {
-
-	utxos, err := r.server.ListWalletUnspent(
-		ctx, 1, wallet.MaxConfsForListUnspent,
-	)
-	if err != nil {
-		return 0, err
-	}
-
-	var usable uint32
-	for _, utxo := range utxos {
-		if utxo == nil {
-			continue
-		}
-		if utxo.Amount >= minAmount {
-			usable++
-		}
-	}
-
-	return usable, nil
-}
-
 func walletSweepPreview(utxos []*wallet.Utxo, destScript []byte,
 	feeRate int64) *SweepWalletResponse {
 
@@ -622,10 +642,11 @@ func verifySweepOutputsEqual(expected, actual *wire.MsgTx) error {
 	return nil
 }
 
-func minUint32(a, b uint32) uint32 {
-	if a < b {
-		return a
+// ceilDivAmount divides satoshi amounts and rounds partial results up.
+func ceilDivAmount(a, b btcutil.Amount) btcutil.Amount {
+	if b <= 0 {
+		return 0
 	}
 
-	return b
+	return (a + b - 1) / b
 }
