@@ -13,6 +13,39 @@ import (
 	"pgregory.net/rapid"
 )
 
+// noOpCommit is the empty Commit closure: it consumes the leased message via
+// the framework's lease-fenced ack without writing any domain state, mirroring
+// the serverconn egress sender on the Read/Commit path.
+func noOpCommit(context.Context, DeliveryStore) error { return nil }
+
+// newPoolTestBehavior builds a Read/Commit TxBehavior whose per-message work is
+// the given closure, followed by an empty lease-fenced Commit. A
+// competing-consumer pool (NumWorkers > 1) is only valid on the Read/Commit
+// path, so the worker-pool tests drive the mechanism through this rather than a
+// classic ActorBehavior. The underlying lease/claim path is the same
+// mockDeliveryStore the classic tests use, so exactly-once still comes from the
+// lease, not the behavior shape.
+func newPoolTestBehavior(
+	work func(ctx context.Context, msg *actorTestMsg),
+) *execTestBehavior {
+
+	return &execTestBehavior{
+		onReceive: func(ctx context.Context, msg *actorTestMsg,
+			ax Exec[DeliveryStore]) fn.Result[int] {
+
+			if work != nil {
+				work(ctx, msg)
+			}
+
+			if err := ax.Commit(ctx, noOpCommit); err != nil {
+				return fn.Err[int](err)
+			}
+
+			return fn.Ok(0)
+		},
+	}
+}
+
 // TestDurableActorWorkerCountClamped verifies the NumWorkers config is clamped
 // to at least one, so a zero or negative value preserves single-worker
 // semantics, while the default config requests exactly one worker and an
@@ -30,6 +63,8 @@ func TestDurableActorWorkerCountClamped(t *testing.T) {
 		).NumWorkers,
 	)
 
+	// A classic behavior is only valid at a single worker, so the lower
+	// bound clamp keeps every non-positive count at one.
 	for _, n := range []int{-3, 0, 1} {
 		cfg := DefaultDurableActorConfig("a", behavior, store, codec)
 		cfg.NumWorkers = n
@@ -37,10 +72,50 @@ func TestDurableActorWorkerCountClamped(t *testing.T) {
 		require.Equal(t, 1, actor.numWorkers)
 	}
 
-	cfg := DefaultDurableActorConfig("a", behavior, store, codec)
-	cfg.NumWorkers = 4
-	actor := NewDurableActor(cfg).UnwrapOrFail(t)
+	// A worker count above one is honored, but only on the Read/Commit
+	// path, so build a TxBehavior config to exercise it.
+	txStore := newMockTxAwareStore()
+	txCfg := DefaultDurableTxActorConfig[*actorTestMsg, int, DeliveryStore](
+		"a", newPoolTestBehavior(nil), identityStoreFactory, txStore,
+		codec,
+	)
+	txCfg.NumWorkers = 4
+	actor := NewDurableActor(txCfg).UnwrapOrFail(t)
 	require.Equal(t, 4, actor.numWorkers)
+}
+
+// TestDurableActorRejectsConcurrentClassicBehavior verifies the construction
+// guard: a competing-consumer pool (NumWorkers > 1) is only sound on the
+// Read/Commit path, so requesting one for a classic ActorBehavior fails closed
+// rather than silently fanning a stateful, sequentially-assumed actor out into
+// concurrent Receive calls.
+func TestDurableActorRejectsConcurrentClassicBehavior(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newActorTestCodec()
+	behavior := newMockBehavior(fn.Ok(0))
+
+	// A classic behavior at two or more workers is rejected.
+	for _, n := range []int{2, 4, 16} {
+		cfg := DefaultDurableActorConfig(
+			"classic", behavior, store, codec,
+		)
+		cfg.NumWorkers = n
+		_, err := NewDurableActor(cfg).Unpack()
+		require.ErrorIs(t, err, ErrConcurrentClassicBehavior)
+	}
+
+	// The same classic behavior at a single worker (or the clamped
+	// default) is still accepted.
+	for _, n := range []int{-1, 0, 1} {
+		cfg := DefaultDurableActorConfig(
+			"classic", behavior, store, codec,
+		)
+		cfg.NumWorkers = n
+		actor := NewDurableActor(cfg).UnwrapOrFail(t)
+		require.Equal(t, 1, actor.numWorkers)
+	}
 }
 
 // TestDurableActorNumWorkersProcessesEachMessageOnce verifies that a
@@ -62,8 +137,9 @@ func TestDurableActorNumWorkersProcessesEachMessageOnce(t *testing.T) {
 		seen        = make(map[uint64]int)
 	)
 
-	behavior := newMockBehavior(fn.Ok(0))
-	behavior.onReceive = func(_ context.Context, msg *actorTestMsg) {
+	behavior := newPoolTestBehavior(func(_ context.Context,
+		msg *actorTestMsg) {
+
 		// Bracket the handler so concurrent siblings are observable.
 		cur := inFlight.Add(1)
 		for {
@@ -80,11 +156,13 @@ func TestDurableActorNumWorkersProcessesEachMessageOnce(t *testing.T) {
 		seenMu.Unlock()
 
 		inFlight.Add(-1)
-	}
+	})
 
-	store := newMockDeliveryStore()
+	store := newMockTxAwareStore()
 	codec := newActorTestCodec()
-	cfg := DefaultDurableActorConfig("pool-actor", behavior, store, codec)
+	cfg := DefaultDurableTxActorConfig[*actorTestMsg, int, DeliveryStore](
+		"pool-actor", behavior, identityStoreFactory, store, codec,
+	)
 	cfg.NumWorkers = numWorkers
 	cfg.PollInterval = 5 * time.Millisecond
 
@@ -203,17 +281,23 @@ func TestDurableActorWorkerPoolExactlyOnceProperty(t *testing.T) {
 		var mu sync.Mutex
 		seen := make(map[uint64]int)
 
-		behavior := newMockBehavior(fn.Ok(0))
-		behavior.onReceive = func(_ context.Context, msg *actorTestMsg) {
+		behavior := newPoolTestBehavior(func(_ context.Context,
+			msg *actorTestMsg) {
+
 			mu.Lock()
 			seen[msg.Value.Val]++
 			mu.Unlock()
-		}
+		})
 
-		store := newMockDeliveryStore()
+		store := newMockTxAwareStore()
 		codec := newActorTestCodec()
-		cfg := DefaultDurableActorConfig(
-			"prop-actor", behavior, store, codec,
+		cfg := DefaultDurableTxActorConfig[
+			*actorTestMsg,
+			int,
+			DeliveryStore,
+		](
+			"prop-actor", behavior, identityStoreFactory, store,
+			codec,
 		)
 		cfg.NumWorkers = numWorkers
 		cfg.PollInterval = 2 * time.Millisecond

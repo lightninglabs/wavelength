@@ -123,6 +123,34 @@ type DurableActorConfig[M TLVMessage, R any] struct {
 	// egress sender, which holds no writer across its Edge.Send). The
 	// behavior must not assume sequential delivery across keys.
 	NumWorkers int
+
+	// allowConcurrentClassic disables the construction guard that rejects
+	// NumWorkers > 1 on a classic ActorBehavior. It is a test-only escape
+	// hatch with no exported struct access, flippable only via
+	// AllowConcurrentClassicBehavior, so production configs cannot set it
+	// even by accident. See that method for why production must never use
+	// it.
+	allowConcurrentClassic bool
+}
+
+// AllowConcurrentClassicBehavior is a TEST-ONLY escape hatch that disables the
+// construction guard which otherwise rejects NumWorkers > 1 on a classic
+// ActorBehavior. It exists solely so the egress benchmark can build the
+// production-forbidden classic-path-with-pool config in order to measure that
+// pooling the classic path gains nothing (the writer held across the side
+// effect serializes the workers regardless). Production code must NEVER call
+// this: a classic behavior wraps its entire Receive in one write transaction
+// and assumes strictly-sequential delivery, so fanning it out across workers
+// delivers concurrent Receive calls and can silently corrupt in-memory state.
+// The field it sets is unexported, so this method is the only way to flip it.
+func (c DurableActorConfig[
+	M,
+	R,
+]) AllowConcurrentClassicBehavior() DurableActorConfig[M, R] {
+
+	c.allowConcurrentClassic = true
+
+	return c
 }
 
 // NewClassicBehavior wraps a classic ActorBehavior as the Left case of the
@@ -294,6 +322,20 @@ var ErrTxBehaviorNeedsTxStore = fmt.Errorf("durable actor: TxBehavior " +
 var ErrNoBehavior = fmt.Errorf("durable actor: a behavior must be set (use " +
 	"DefaultDurableActorConfig or DefaultDurableTxActorConfig)")
 
+// ErrConcurrentClassicBehavior indicates that a config requested a
+// competing-consumer pool (NumWorkers > 1) for a classic ActorBehavior (the
+// Left case). The classic path wraps the entire Receive in one write
+// transaction and relies on strictly-sequential, one-message-at-a-time
+// processing; running it across N workers would deliver concurrent Receive
+// calls and silently corrupt any actor that keeps in-memory state or assumes
+// serial execution. Pools are only sound for the Read/Commit (TxBehavior) path,
+// whose handlers run their side effects outside the writer and are required to
+// be concurrency-safe, so we reject the combination at construction rather than
+// let a future caller trip over it at runtime.
+var ErrConcurrentClassicBehavior = fmt.Errorf("durable actor: NumWorkers > 1 " +
+	"requires a TxBehavior (Read/Commit) behavior; a classic " +
+	"ActorBehavior must be processed sequentially")
+
 // ErrDurableAskUnsupported indicates that a DurableAsk was delivered to an
 // actor running on the Read/Commit (TxBehavior) execution path. On that path
 // the message is acked inside the behavior's own Commit, so the framework
@@ -382,6 +424,20 @@ func NewDurableActor[M TLVMessage, R any](
 		cancel()
 
 		return fn.Err[*DurableActor[M, R]](ErrNoBehavior)
+	}
+
+	// A competing-consumer pool is only sound for the Read/Commit path,
+	// whose handlers run outside the writer and must be concurrency-safe.
+	// Reject NumWorkers > 1 on a classic ActorBehavior here so a stateful
+	// actor can never be silently fanned out into concurrent Receive calls.
+	// The test-only AllowConcurrentClassicBehavior escape hatch bypasses
+	// this so the egress benchmark can measure the forbidden config.
+	if numWorkers > 1 && cfg.Behavior.IsLeft() &&
+		!cfg.allowConcurrentClassic {
+
+		cancel()
+
+		return fn.Err[*DurableActor[M, R]](ErrConcurrentClassicBehavior)
 	}
 
 	actor := &DurableActor[M, R]{
@@ -823,6 +879,17 @@ func (a *DurableActor[M, R]) processWithExec(ctx context.Context,
 	// intentionally consumed the message without persisting state (e.g. a
 	// RestartMessage). Either way, fall back to the framework's standard
 	// non-transactional ack/nack handling.
+	//
+	// WARNING for TxBehavior authors: a handler that returns fn.Ok WITHOUT
+	// calling ax.Commit lands here too, and finishNonTx then acks the
+	// message via the non-lease-fenced path. On a single worker that is
+	// merely a loss of crash-safety, but under an EgressWorkers/NumWorkers
+	// pool it can double-process: if this worker's lease was reclaimed by a
+	// competing worker mid-handling, the non-fenced ack deletes the row
+	// that the other worker is now also processing. The framework cannot
+	// distinguish "forgot to commit" from "intentionally consumed", so on
+	// the success path you MUST call ax.Commit (even with an empty closure,
+	// as the serverconn egress sender does) to get the lease fence.
 	a.finishNonTx(ctx, delivery, result)
 }
 

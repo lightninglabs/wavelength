@@ -142,6 +142,12 @@ func benchmarkDrain(b *testing.B, numWorkers int, readCommit bool) {
 			store,
 			codec,
 		)
+
+		// Pooling the classic path is forbidden in production (the
+		// guard rejects NumWorkers > 1 on a classic behavior), but the
+		// benchmark deliberately measures it to show it gains nothing,
+		// so flip the test-only escape hatch.
+		cfg = cfg.AllowConcurrentClassicBehavior()
 	}
 	cfg.NumWorkers = numWorkers
 	cfg.PollInterval = 2 * time.Millisecond
