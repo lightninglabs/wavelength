@@ -45,8 +45,6 @@ const (
 	// in the durable OOR actor mailbox.
 	ListSessionsRequestTLVType tlv.Type = 0x7017
 
-	FindOutgoingSessionByIdempotencyKeyTLVType tlv.Type = 0x7018
-
 	// SessionTerminalNotificationTLVType identifies
 	// SessionTerminalNotification messages sent from a per-session child
 	// to the registry coordinator after a terminal commit.
@@ -235,79 +233,6 @@ func (m *StartTransferResponse) MessageType() string {
 
 // actorRespSealed marks this as implementing the sealed ActorResp interface.
 func (m *StartTransferResponse) actorRespSealed() {}
-
-// FindOutgoingSessionByIdempotencyKeyRequest asks the actor whether an
-// outgoing session already exists for a caller supplied idempotency key.
-type FindOutgoingSessionByIdempotencyKeyRequest struct {
-	actor.BaseMessage
-
-	// IdempotencyKey identifies the caller intent to query.
-	IdempotencyKey string
-}
-
-// MessageType returns the type of this message.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) MessageType() string {
-	return "FindOutgoingSessionByIdempotencyKeyRequest"
-}
-
-// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) actorMsgSealed() {}
-
-// TLVType returns the unique TLV type identifier for this message.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) TLVType() tlv.Type {
-	return FindOutgoingSessionByIdempotencyKeyTLVType
-}
-
-// Encode serializes the message to the provided writer.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) Encode(w io.Writer) error {
-	raw, err := encodeIdempotencyKeyPayload(m.IdempotencyKey)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(raw)
-
-	return err
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) Decode(r io.Reader) error {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-
-	idempotencyKey, err := decodeIdempotencyKeyPayload(raw)
-	if err != nil {
-		return err
-	}
-
-	m.IdempotencyKey = idempotencyKey
-
-	return nil
-}
-
-// FindOutgoingSessionByIdempotencyKeyResponse returns a keyed session lookup
-// result.
-type FindOutgoingSessionByIdempotencyKeyResponse struct {
-	actor.BaseMessage
-
-	// SessionID is the existing outgoing session identifier when Found is
-	// true.
-	SessionID SessionID
-
-	// Found is true when the actor already knows the keyed outgoing
-	// session.
-	Found bool
-}
-
-// MessageType returns the type of this message.
-func (m *FindOutgoingSessionByIdempotencyKeyResponse) MessageType() string {
-	return "FindOutgoingSessionByIdempotencyKeyResponse"
-}
-
-// actorRespSealed marks this as implementing the sealed ActorResp interface.
-func (m *FindOutgoingSessionByIdempotencyKeyResponse) actorRespSealed() {}
 
 // SessionDirection is a filter for listing locally known OOR sessions.
 type SessionDirection uint8

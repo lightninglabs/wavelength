@@ -3118,10 +3118,9 @@ func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
 	}
 
 	codec := serverconn.NewServerConnCodec()
-	// The shared publisher decodes serverconn outbox entries, signing
-	// effect entries, and durable ask responses. MustRegister panics if a
-	// future TLV type collides across those message sets.
-	oor.RegisterSigningEffectMessages(codec)
+	// The shared publisher decodes serverconn outbox entries and durable
+	// ask responses. MustRegister panics if a future TLV type collides
+	// across those message sets.
 	codec.MustRegister(actor.AskResponseMsgType, func() actor.TLVMessage {
 		return &actor.AskResponse{}
 	})
