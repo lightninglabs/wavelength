@@ -8,6 +8,7 @@ import {
   Server,
   Settings as SettingsIcon,
   ShieldCheck,
+  Trash2,
   Wallet,
   Zap,
 } from "lucide-react";
@@ -20,8 +21,10 @@ import { CopyButton } from "../../components/ui/CopyButton";
 import { Label } from "../../components/ui/Label";
 import { Segmented } from "../../components/ui/Segmented";
 import { SummaryRow } from "../../components/ui/SummaryRow";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { cn } from "../../lib/cn";
 import { formatSats, shortKey } from "../../lib/format";
+import { requestWipe } from "../../lib/wipeLocalData";
 import { RuntimeFieldSetter, RuntimeForm } from "../../lib/runtime-config";
 import { useTheme } from "../../theme/ThemeProvider";
 
@@ -58,6 +61,7 @@ export function SettingsScreen({
 }) {
   const { theme, setTheme } = useTheme();
   const [advanced, setAdvanced] = useState(false);
+  const [confirmWipe, setConfirmWipe] = useState(false);
   const identity = info?.IdentityPubKey || "";
 
   const runtime: Array<{
@@ -211,7 +215,7 @@ export function SettingsScreen({
           right={
             <>
               <Label>Danger zone</Label>
-              <div className="mt-3">
+              <div className="mt-3 flex flex-row items-start gap-3">
                 <button
                   type="button"
                   onClick={onStop}
@@ -220,6 +224,15 @@ export function SettingsScreen({
                     text-bad transition-opacity hover:opacity-90"
                 >
                   <Power size={16} /> Stop runtime
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmWipe(true)}
+                  className="inline-flex items-center justify-center gap-2 border
+                    border-bad bg-bad/10 px-4 py-2.5 text-sm font-semibold
+                    text-bad transition-opacity hover:opacity-90"
+                >
+                  <Trash2 size={16} /> Clear wallet data
                 </button>
               </div>
             </>
@@ -235,6 +248,15 @@ export function SettingsScreen({
           </div>
         ) : null}
       </Band>
+      <ConfirmDialog
+        open={confirmWipe}
+        title="Clear wallet data?"
+        description="This permanently deletes the wallet and all data stored in this browser. You can only get it back with your recovery phrase or passkey. This cannot be undone."
+        confirmLabel="Clear everything"
+        destructive
+        onConfirm={requestWipe}
+        onCancel={() => setConfirmWipe(false)}
+      />
     </div>
   );
 }

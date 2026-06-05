@@ -3,9 +3,11 @@ import { Fingerprint, KeyRound, RotateCcw } from "lucide-react";
 import type { WalletKind } from "@lightninglabs/walletdk-core";
 import { AuthHeader } from "../../components/layout/AuthHeader";
 import { AuthLayout } from "../../components/layout/AuthLayout";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { Field } from "../../components/ui/Field";
 import { InlineError } from "../../components/ui/InlineError";
 import { GhostButton, PrimaryButton, TextLink } from "../../components/ui/Button";
+import { requestWipe } from "../../lib/wipeLocalData";
 
 // UnlockScreen serves the `locked` phase: a wallet exists on this device and
 // must be unlocked. A passkey wallet is unlocked with a platform authenticator
@@ -36,6 +38,7 @@ export function UnlockScreen({
   passkeyError: string;
 }) {
   const [password, setPassword] = useState("");
+  const [confirmWipe, setConfirmWipe] = useState(false);
   const anyBusy = busy || passkeyBusy;
 
   // The passkey option does not depend on a locally stored wrap: it is offered
@@ -120,6 +123,27 @@ export function UnlockScreen({
         <span>Lost access?</span>
         <TextLink onClick={onRecover}>Recover with phrase</TextLink>
       </div>
+
+      <div className="mt-2 text-center text-xs">
+        <button
+          type="button"
+          onClick={() => setConfirmWipe(true)}
+          className="text-faint underline underline-offset-2 transition-colors
+            hover:text-muted"
+        >
+          Start over (clear all data)
+        </button>
+      </div>
+
+      <ConfirmDialog
+        open={confirmWipe}
+        title="Clear wallet data?"
+        description="This permanently deletes the wallet and all data stored in this browser. You will need your recovery phrase or passkey to restore your wallet. This cannot be undone."
+        confirmLabel="Clear everything"
+        destructive
+        onConfirm={requestWipe}
+        onCancel={() => setConfirmWipe(false)}
+      />
     </AuthLayout>
   );
 }

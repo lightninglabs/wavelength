@@ -13,3 +13,5 @@ export { InlineError } from "./InlineError";
 export { FauxQR } from "./FauxQR";
 export { Spinner } from "./Spinner";
 export { ThemeToggle } from "./ThemeToggle";
+export { Modal } from "./Modal";
+export { ConfirmDialog } from "./ConfirmDialog";

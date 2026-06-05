@@ -31,6 +31,19 @@ import { ActivityScreen } from "./screens/activity";
 import { SettingsScreen } from "./screens/settings";
 
 const APP_NAME = "Dare Wallet";
+
+// passkeyName labels a freshly created passkey with the app name plus a
+// timestamp, so multiple test passkeys stay distinguishable in the OS prompt.
+function passkeyName(): string {
+  const stamp = new Date().toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+
+  return `${APP_NAME} · ${stamp}`;
+}
 const MAX_LOGS = 8;
 
 // App is the wallet orchestrator: it owns cross-screen session state (runtime
@@ -148,7 +161,10 @@ export function App() {
   const createPasskeyWallet = useCallback(async () => {
     setEnrolling(true);
     try {
-      const outcome = await passkey.createPasskeyWallet(wallet.client, APP_NAME);
+      const outcome = await passkey.createPasskeyWallet(
+        wallet.client,
+        passkeyName(),
+      );
       if (!outcome) {
         // Surfaced via passkey.error.
         return;

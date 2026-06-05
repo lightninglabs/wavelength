@@ -73,6 +73,35 @@
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 }
 
+/* Modal entrance animations. `modal-backdrop-in` fades the dimmed overlay;
+   `modal-card-in` scales the card from 97 % and lifts it 4 px so it feels
+   grounded rather than floating in from far away. Both run once, fill-mode
+   forwards so the element rests at its final state. */
+@keyframes modal-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-card-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@theme inline {
+  --animate-modal-backdrop: modal-backdrop-in 160ms ease-out both;
+  --animate-modal-card: modal-card-in 200ms ease-out both;
+}
+
 @layer base {
   body {
     background-color: var(--bg);
