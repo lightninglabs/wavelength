@@ -62,6 +62,12 @@ const (
 	// pending futures; this ceiling prevents a pathological actor stall
 	// from retaining wallet/custom input reservations forever.
 	submittedOORCleanupTimeout = 10 * time.Minute
+
+	// maxOORRecipients mirrors the in-round send cap at the daemon
+	// boundary. The OOR actor has its own package-size limits, but the
+	// RPC handler resolves scripts and policy templates before handing
+	// work to that actor, so it needs its own cheap request-size guard.
+	maxOORRecipients = 256
 )
 
 // RPCServer implements the daemon's gRPC DaemonService interface.
@@ -321,6 +327,142 @@ func validateOORRecipientDust(amountSat int64, dustLimit btcutil.Amount) error {
 
 	return status.Errorf(codes.InvalidArgument, "amount %d below operator "+
 		"dust_limit %d", amount, dustLimit)
+}
+
+// sendOORRequestRecipients returns the caller-requested OOR recipients in
+// request order.
+func sendOORRequestRecipients(req *daemonrpc.SendOORRequest) (
+	[]*daemonrpc.Output, error) {
+
+	if req == nil || len(req.GetRecipients()) == 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "recipient "+
+			"is required")
+	}
+
+	if len(req.GetRecipients()) > maxOORRecipients {
+		return nil, status.Errorf(codes.InvalidArgument, "too many "+
+			"recipients: %d (max %d)", len(req.GetRecipients()),
+			maxOORRecipients)
+	}
+
+	return req.GetRecipients(), nil
+}
+
+// sumSendOORRecipientAmounts validates every requested recipient amount and
+// returns the aggregate wallet-selection target.
+func sumSendOORRecipientAmounts(recipients []*daemonrpc.Output) (btcutil.Amount,
+	error) {
+
+	var total int64
+	for i, recipient := range recipients {
+		if recipient == nil {
+			return 0, status.Errorf(codes.InvalidArgument,
+				"recipient %d is required", i)
+		}
+
+		if recipient.AmountSat <= 0 {
+			return 0, status.Errorf(codes.InvalidArgument,
+				"recipient %d amount must be positive", i)
+		}
+
+		if recipient.AmountSat > int64(btcutil.MaxSatoshi) {
+			return 0, status.Errorf(codes.InvalidArgument,
+				"recipient %d amount must be <= %d", i,
+				int64(btcutil.MaxSatoshi))
+		}
+
+		if total > int64(btcutil.MaxSatoshi)-recipient.AmountSat {
+			return 0, status.Errorf(codes.InvalidArgument, "total "+
+				"recipient amount must be <= %d",
+				int64(btcutil.MaxSatoshi))
+		}
+
+		total += recipient.AmountSat
+	}
+
+	return btcutil.Amount(total), nil
+}
+
+// indexedSendOORRecipientError keeps the original gRPC code while adding the
+// recipient index to the user-facing error.
+func indexedSendOORRecipientError(index int, err error) error {
+	st := status.Convert(err)
+
+	return status.Errorf(st.Code(), "recipient %d: %s", index, st.Message())
+}
+
+// buildSendOORRecipients resolves the daemon RPC recipient descriptors into
+// the OOR actor's package-level recipient outputs.
+func (r *RPCServer) buildSendOORRecipients(ctx context.Context,
+	requestRecipients []*daemonrpc.Output, terms *types.OperatorTerms) (
+	[]oortx.RecipientOutput, error) {
+
+	seen := make(map[string]int, len(requestRecipients))
+	recipients := make(
+		[]oortx.RecipientOutput, 0, len(requestRecipients),
+	)
+	for i, out := range requestRecipients {
+		pkScript, err := r.resolveOutputPkScript(ctx, out)
+		if err != nil {
+			return nil, indexedSendOORRecipientError(i, err)
+		}
+
+		if err := validateOORRecipientDust(
+			out.AmountSat, terms.DustLimit,
+		); err != nil {
+			return nil, indexedSendOORRecipientError(i, err)
+		}
+
+		policyTemplate, err := r.resolveOutputPolicyTemplate(
+			ctx, out, pkScript, terms.PubKey, terms.VTXOExitDelay,
+		)
+		if err != nil {
+			return nil, indexedSendOORRecipientError(i, err)
+		}
+
+		key := fmt.Sprintf("%d:%x", out.AmountSat, pkScript)
+		if first, ok := seen[key]; ok {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"recipient %d duplicates recipient %d", i,
+				first)
+		}
+		seen[key] = i
+
+		recipients = append(recipients, oortx.RecipientOutput{
+			PkScript:           pkScript,
+			Value:              btcutil.Amount(out.AmountSat),
+			VTXOPolicyTemplate: policyTemplate,
+		})
+	}
+
+	return recipients, nil
+}
+
+// resolveOORRecipientOutpoints maps each requested recipient to the outpoint it
+// occupies after the canonical OOR output ordering is applied.
+func (r *RPCServer) resolveOORRecipientOutpoints(ctx context.Context,
+	sessionID oor.SessionID,
+	allRecipients, requestRecipients []oortx.RecipientOutput) []string {
+
+	sessionHash := chainhash.Hash(sessionID)
+	outpoints := make([]string, len(requestRecipients))
+	for i, recipient := range requestRecipients {
+		outpoint, err := oortx.RecipientOutPoint(
+			sessionHash, allRecipients, recipient,
+		)
+		if err != nil {
+			r.server.log.WarnS(ctx, "Unable to resolve OOR "+
+				"recipient outpoint", err,
+				slog.String("session_id", sessionID.String()),
+				slog.Int("recipient_index", i))
+
+			continue
+		}
+
+		outpoints[i] = outpoint.String()
+	}
+
+	return outpoints
 }
 
 // walletStateToProto maps the daemon's in-process WalletState enum to
@@ -1956,7 +2098,6 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		idempotencyDuration   time.Duration
 		resolveScriptDuration time.Duration
 		operatorTermsDuration time.Duration
-		policyResolveDuration time.Duration
 		inputSelectDuration   time.Duration
 		buildInputsDuration   time.Duration
 		changeOutputDuration  time.Duration
@@ -1967,14 +2108,14 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		return nil, err
 	}
 
-	if req.Recipient == nil {
-		return nil, status.Errorf(codes.InvalidArgument, "recipient "+
-			"is required")
+	requestRecipients, err := sendOORRequestRecipients(req)
+	if err != nil {
+		return nil, err
 	}
 
-	if req.Recipient.AmountSat <= 0 {
-		return nil, status.Errorf(codes.InvalidArgument, "amount "+
-			"must be positive")
+	targetAmt, err := sumSendOORRecipientAmounts(requestRecipients)
+	if err != nil {
+		return nil, err
 	}
 
 	if req.GetIdempotencyKey() != "" && !req.DryRun {
@@ -2005,18 +2146,8 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		}
 	}
 
-	// Resolve the recipient's pkScript from the destination
-	// oneof. Pubkey destinations need operator terms to derive
-	// VTXO-compatible taproot outputs, so we pass a lazy fetcher.
-	phaseStart := time.Now()
-	pkScript, err := r.resolveOutputPkScript(ctx, req.Recipient)
-	resolveScriptDuration = time.Since(phaseStart)
-	if err != nil {
-		return nil, err
-	}
-
 	// Fetch operator terms for the checkpoint policy.
-	phaseStart = time.Now()
+	phaseStart := time.Now()
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	operatorTermsDuration = time.Since(phaseStart)
 	if err != nil {
@@ -2024,10 +2155,20 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			"operator terms: %v", err)
 	}
 
-	if err := validateOORRecipientDust(
-		req.Recipient.AmountSat, terms.DustLimit,
-	); err != nil {
+	// Resolve the recipients' pkScripts from the destination oneofs
+	// and bind any supplied semantic policy templates to those scripts.
+	phaseStart = time.Now()
+	oorRecipients, err := r.buildSendOORRecipients(
+		ctx, requestRecipients, terms,
+	)
+	resolveScriptDuration = time.Since(phaseStart)
+	if err != nil {
 		return nil, err
+	}
+
+	if len(req.CustomInputs) > 0 && len(oorRecipients) != 1 {
+		return nil, status.Errorf(codes.InvalidArgument, "custom "+
+			"inputs require exactly one recipient")
 	}
 
 	// For dry_run, return a preview before selecting wallet inputs or
@@ -2057,15 +2198,6 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	policy := arkscript.CheckpointPolicy{
 		OperatorKey: terms.PubKey,
 		CSVDelay:    terms.VTXOExitDelay,
-	}
-
-	phaseStart = time.Now()
-	recipientPolicyTemplate, err := r.resolveOutputPolicyTemplate(
-		ctx, req.Recipient, pkScript, terms.PubKey, terms.VTXOExitDelay,
-	)
-	policyResolveDuration = time.Since(phaseStart)
-	if err != nil {
-		return nil, err
 	}
 
 	var (
@@ -2136,7 +2268,6 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	} else {
 		// Standard path: select and lock VTXOs from wallet.
 		phaseStart = time.Now()
-		targetAmt := btcutil.Amount(req.Recipient.AmountSat)
 		wRef := r.server.walletRef.UnsafeFromSome()
 
 		selectReq := &wallet.SelectAndLockVTXOsRequest{
@@ -2182,15 +2313,12 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		}
 	}
 
-	targetAmt := btcutil.Amount(req.Recipient.AmountSat)
-
-	// Build the recipient output for the OOR transfer.
-	recipient := oortx.RecipientOutput{
-		PkScript:           pkScript,
-		Value:              targetAmt,
-		VTXOPolicyTemplate: recipientPolicyTemplate,
-	}
-	recipients := []oortx.RecipientOutput{recipient}
+	requestOORRecipients := append(
+		[]oortx.RecipientOutput(nil), oorRecipients...,
+	)
+	// Keep the request copy change-free so response outpoint resolution
+	// maps only caller-requested recipients back into the finalized Ark tx.
+	recipients := requestOORRecipients
 
 	phaseStart = time.Now()
 	inputTotal, err := sumOORInputAmounts(selectedInputs)
@@ -2275,35 +2403,24 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		r.unlockSelectedVTXOsBestEffort(ctx, locked)
 	}
 
-	sessionHash := chainhash.Hash(resp.SessionID)
-	recipientOutpoint, err := oortx.RecipientOutPoint(
-		sessionHash, recipients, recipient,
+	recipientOutpoints := r.resolveOORRecipientOutpoints(
+		ctx, resp.SessionID, recipients, requestOORRecipients,
 	)
-	recipientOutpointString := ""
-	if err != nil {
-		r.server.log.WarnS(ctx, "Unable to resolve OOR recipient "+
-			"outpoint", err,
-			slog.String("session_id", resp.SessionID.String()))
-	} else {
-		recipientOutpointString = recipientOutpoint.String()
-	}
-
 	r.server.log.InfoS(ctx, "OOR transfer submitted",
 		slog.String("session_id", resp.SessionID.String()),
 		slog.Bool("existing_session", resp.Existing),
-		slog.String("recipient_outpoint", recipientOutpointString),
-		slog.Int64("amount_sat", req.Recipient.AmountSat),
+		slog.Int("recipient_outpoint_count", len(recipientOutpoints)),
+		slog.Int64("amount_sat", int64(targetAmt)),
 		slog.Int64("input_total_sat", int64(inputTotal)),
 		slog.Int64("change_sat", int64(changeAmt)),
-		slog.Int("recipient_count", len(recipients)),
+		slog.Int("recipient_count", len(requestOORRecipients)),
+		slog.Int("output_count", len(recipients)),
 		slog.Duration("duration", time.Since(startTime)),
 		slog.Duration("idempotency_duration", idempotencyDuration),
 		slog.Duration("resolve_script_duration",
 			resolveScriptDuration),
 		slog.Duration("operator_terms_duration",
 			operatorTermsDuration),
-		slog.Duration("policy_resolve_duration",
-			policyResolveDuration),
 		slog.Duration("input_select_duration",
 			inputSelectDuration),
 		slog.Duration("build_inputs_duration",
@@ -2313,9 +2430,9 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		slog.Duration("oor_actor_duration", oorActorDuration))
 
 	return &daemonrpc.SendOORResponse{
-		Status:            "submitted",
-		SessionId:         resp.SessionID.String(),
-		RecipientOutpoint: recipientOutpointString,
+		Status:             "submitted",
+		SessionId:          resp.SessionID.String(),
+		RecipientOutpoints: recipientOutpoints,
 	}, nil
 }
 

@@ -210,7 +210,7 @@ func sendOOR(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 
-		req.Recipient = recipient
+		req.Recipients = []*daemonrpc.Output{recipient}
 		req.DryRun = dryRun
 		req.IdempotencyKey = idempotencyKey
 

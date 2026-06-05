@@ -395,7 +395,7 @@ func registerMCPSendTools(s *mcp.Server, client daemonrpc.DaemonServiceClient) {
 
 		resp, err := client.SendOOR(
 			ctx, &daemonrpc.SendOORRequest{
-				Recipient:      recipient,
+				Recipients:     []*daemonrpc.Output{recipient},
 				DryRun:         args.DryRun,
 				IdempotencyKey: args.IdempotencyKey,
 			},

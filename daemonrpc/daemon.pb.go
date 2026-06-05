@@ -2860,8 +2860,8 @@ func (x *SendVTXOResponse) GetSelectedCount() int32 {
 
 type SendOORRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// recipient is the output to create via the out-of-round transfer.
-	Recipient *Output `protobuf:"bytes,1,opt,name=recipient,proto3" json:"recipient,omitempty"`
+	// recipients are the outputs to create via one out-of-round transfer.
+	Recipients []*Output `protobuf:"bytes,1,rep,name=recipients,proto3" json:"recipients,omitempty"`
 	// dry_run validates the request without initiating the transfer.
 	DryRun bool `protobuf:"varint,2,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
 	// custom_inputs overrides wallet VTXO selection. When set, the
@@ -2908,9 +2908,9 @@ func (*SendOORRequest) Descriptor() ([]byte, []int) {
 	return file_daemon_proto_rawDescGZIP(), []int{33}
 }
 
-func (x *SendOORRequest) GetRecipient() *Output {
+func (x *SendOORRequest) GetRecipients() []*Output {
 	if x != nil {
-		return x.Recipient
+		return x.Recipients
 	}
 	return nil
 }
@@ -3117,12 +3117,15 @@ type SendOORResponse struct {
 	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
 	// session_id is the OOR session identifier. Empty on dry_run.
 	SessionId string `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	// recipient_outpoint is the Ark transaction outpoint created for the
-	// requested recipient. Empty on dry_run or when an older idempotent
-	// session is returned without enough local request context.
-	RecipientOutpoint string `protobuf:"bytes,3,opt,name=recipient_outpoint,json=recipientOutpoint,proto3" json:"recipient_outpoint,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// recipient_outpoints are the Ark transaction outpoints created for
+	// the requested recipients, in request-recipient order. The whole
+	// list is empty on dry_run or when an older idempotent session is
+	// returned without enough local request context. Individual entries
+	// may be empty when the daemon cannot resolve one recipient's
+	// outpoint from the finalized Ark transaction.
+	RecipientOutpoints []string `protobuf:"bytes,3,rep,name=recipient_outpoints,json=recipientOutpoints,proto3" json:"recipient_outpoints,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *SendOORResponse) Reset() {
@@ -3169,11 +3172,11 @@ func (x *SendOORResponse) GetSessionId() string {
 	return ""
 }
 
-func (x *SendOORResponse) GetRecipientOutpoint() string {
+func (x *SendOORResponse) GetRecipientOutpoints() []string {
 	if x != nil {
-		return x.RecipientOutpoint
+		return x.RecipientOutpoints
 	}
-	return ""
+	return nil
 }
 
 type PrepareOORRequest struct {
@@ -7971,9 +7974,11 @@ const file_daemon_proto_rawDesc = "" +
 	"\bround_id\x18\x02 \x01(\tR\aroundId\x12(\n" +
 	"\x10total_amount_sat\x18\x03 \x01(\x03R\x0etotalAmountSat\x12*\n" +
 	"\x11change_amount_sat\x18\x04 \x01(\x03R\x0fchangeAmountSat\x12%\n" +
-	"\x0eselected_count\x18\x05 \x01(\x05R\rselectedCount\"\xc3\x01\n" +
-	"\x0eSendOORRequest\x12/\n" +
-	"\trecipient\x18\x01 \x01(\v2\x11.daemonrpc.OutputR\trecipient\x12\x17\n" +
+	"\x0eselected_count\x18\x05 \x01(\x05R\rselectedCount\"\xc5\x01\n" +
+	"\x0eSendOORRequest\x121\n" +
+	"\n" +
+	"recipients\x18\x01 \x03(\v2\x11.daemonrpc.OutputR\n" +
+	"recipients\x12\x17\n" +
 	"\adry_run\x18\x02 \x01(\bR\x06dryRun\x12>\n" +
 	"\rcustom_inputs\x18\x03 \x03(\v2\x19.daemonrpc.CustomOORInputR\fcustomInputs\x12'\n" +
 	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\"\x8d\x02\n" +
@@ -7990,12 +7995,12 @@ const file_daemon_proto_rawDesc = "" +
 	"\x06pubkey\x18\x01 \x01(\fR\x06pubkey\x12%\n" +
 	"\x0ewitness_script\x18\x02 \x01(\fR\rwitnessScript\x12\x1c\n" +
 	"\tsignature\x18\x03 \x01(\fR\tsignature\x12\x18\n" +
-	"\asighash\x18\x04 \x01(\rR\asighash\"w\n" +
+	"\asighash\x18\x04 \x01(\rR\asighash\"y\n" +
 	"\x0fSendOORResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x02 \x01(\tR\tsessionId\x12-\n" +
-	"\x12recipient_outpoint\x18\x03 \x01(\tR\x11recipientOutpoint\"\x84\x01\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\x12/\n" +
+	"\x13recipient_outpoints\x18\x03 \x03(\tR\x12recipientOutpoints\"\x84\x01\n" +
 	"\x11PrepareOORRequest\x12/\n" +
 	"\trecipient\x18\x01 \x01(\v2\x11.daemonrpc.OutputR\trecipient\x12>\n" +
 	"\rcustom_inputs\x18\x02 \x03(\v2\x19.daemonrpc.CustomOORInputR\fcustomInputs\"\xad\x01\n" +
@@ -8603,7 +8608,7 @@ var file_daemon_proto_depIdxs = []int32{
 	1,   // 5: daemonrpc.GetIndexedVTXOByPkScriptRequest.status_filter:type_name -> daemonrpc.VTXOStatus
 	20,  // 6: daemonrpc.GetIndexedVTXOByPkScriptResponse.vtxo:type_name -> daemonrpc.VTXO
 	39,  // 7: daemonrpc.SendVTXORequest.recipients:type_name -> daemonrpc.Output
-	39,  // 8: daemonrpc.SendOORRequest.recipient:type_name -> daemonrpc.Output
+	39,  // 8: daemonrpc.SendOORRequest.recipients:type_name -> daemonrpc.Output
 	43,  // 9: daemonrpc.SendOORRequest.custom_inputs:type_name -> daemonrpc.CustomOORInput
 	44,  // 10: daemonrpc.CustomOORInput.external_signatures:type_name -> daemonrpc.TaprootScriptSignature
 	39,  // 11: daemonrpc.PrepareOORRequest.recipient:type_name -> daemonrpc.Output
