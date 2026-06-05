@@ -44,6 +44,16 @@ Boot restore runs as a registry message (`RestoreNonTerminalRequest`) so the
 active set is only ever touched on the registry goroutine, serialized with any
 backlog the durable inbox redelivers at startup.
 
+Live sessions also get a direct ingress fast path. Each spawned child is
+registered with the receptionist under its deterministic per-session key
+(`SessionServiceKey`), and the EventRouter's `ResolveKey` hook tells a
+session-addressed `DriveEventRequest` straight into the child's durable
+mailbox -- one persist instead of two. A miss (first contact, a reaped
+session, or a not-yet-restored session after a restart) falls back to the
+durable registry, which owns admission, the ownership gate, and the
+self-transfer invariant; incoming hints always take the registry path for the
+same reason.
+
 ## The session row is the single source of truth
 
 Every session has one row in `oor_session_registry`. The row carries two kinds

@@ -450,8 +450,7 @@ func (r *oorRegistryBehavior) resolveSelfTransfer(ctx context.Context,
 	// installs a fresh incoming session in its place. Terminal children
 	// are normally reaped already, so this is a belt-and-braces stop.
 	if child, ok := r.active[sessionID]; ok {
-		child.Stop()
-		delete(r.active, sessionID)
+		r.dropChild(sessionID, child)
 	}
 
 	r.logger(ctx).InfoS(ctx, "Replacing terminal outgoing session with "+
@@ -521,8 +520,7 @@ func (r *oorRegistryBehavior) handleSessionTerminal(ctx context.Context,
 		return fn.Ok[ActorResp](&DriveEventResponse{})
 	}
 
-	child.Stop()
-	delete(r.active, msg.SessionID)
+	r.dropChild(msg.SessionID, child)
 
 	r.logger(ctx).DebugS(ctx, "Reaped terminal OOR session",
 		slog.String("session_id", msg.SessionID.String()),
@@ -695,7 +693,8 @@ func (r *oorRegistryBehavior) lookupOrRestore(ctx context.Context,
 	return r.ensureChild(sessionID, record.Direction)
 }
 
-// ensureChild returns the active child for a session, spawning it when absent.
+// ensureChild returns the active child for a session, spawning and registering
+// it when absent.
 func (r *oorRegistryBehavior) ensureChild(sessionID SessionID,
 	direction clientdb.OORSessionDirection) (*OORSessionActor, error) {
 
@@ -708,14 +707,38 @@ func (r *oorRegistryBehavior) ensureChild(sessionID SessionID,
 		return nil, err
 	}
 
+	// Register the child under its deterministic per-session key so the
+	// ingress fast path can tell session-addressed server pushes straight
+	// into the child's durable mailbox, skipping the registry hop.
+	if r.cfg.ActorSystem != nil {
+		err := actor.RegisterWithReceptionist(
+			r.cfg.ActorSystem.Receptionist(),
+			SessionServiceKey(sessionID), child.Ref(),
+		)
+		if err != nil {
+			child.Stop()
+
+			return nil, fmt.Errorf("register session %s child: %w",
+				sessionID, err)
+		}
+	}
+
 	r.active[sessionID] = child
 
 	return child, nil
 }
 
-// dropChild stops a child actor and removes it from the active set.
+// dropChild deregisters a child's per-session service key, stops it, and
+// removes it from the active set. The deregistration runs first so the ingress
+// fast path falls back to the registry while the child winds down.
 func (r *oorRegistryBehavior) dropChild(sessionID SessionID,
 	child *OORSessionActor) {
+
+	if r.cfg.ActorSystem != nil {
+		SessionServiceKey(sessionID).Unregister(
+			r.cfg.ActorSystem, child.Ref(),
+		)
+	}
 
 	child.Stop()
 	delete(r.active, sessionID)
