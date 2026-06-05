@@ -57,6 +57,14 @@ type EventRouteConfig[M actor.Message, R any] struct {
 	// type M. Return an error to reject envelopes whose body cannot be
 	// converted.
 	Adapt func(proto.Message) (M, error)
+
+	// ResolveKey optionally maps an adapted message to a more specific
+	// service key (e.g. a per-session durable mailbox). When the resolved
+	// key has a live registration, the message is told straight to that
+	// actor, skipping the static Key hop; otherwise dispatch falls back to
+	// Key, which owns admission for actors that do not exist yet. Return
+	// false to always use Key for this message.
+	ResolveKey func(M) (actor.ServiceKey[M, R], bool)
 }
 
 // EventRouter maps inbound KIND_REQUEST and KIND_EVENT envelope routes to
@@ -105,6 +113,7 @@ func AddRoute[M actor.Message, R any](r *EventRouter,
 		Adapt: func(_ *mailboxpb.Envelope, p proto.Message) (M, error) {
 			return adapt(p)
 		},
+		ResolveKey: cfg.ResolveKey,
 	})
 }
 
@@ -154,6 +163,14 @@ type EnvelopeRouteConfig[M actor.Message, R any] struct {
 	// actor message type M. Return ErrEnvelopeHandled when the envelope was
 	// intentionally consumed without actor delivery.
 	Adapt func(*mailboxpb.Envelope, proto.Message) (M, error)
+
+	// ResolveKey optionally maps an adapted message to a more specific
+	// service key (e.g. a per-session durable mailbox). When the resolved
+	// key has a live registration, the message is told straight to that
+	// actor, skipping the static Key hop; otherwise dispatch falls back to
+	// Key, which owns admission for actors that do not exist yet. Return
+	// false to always use Key for this message.
+	ResolveKey func(M) (actor.ServiceKey[M, R], bool)
 }
 
 // AddEnvelopeRoute registers a typed event route that receives the full
@@ -177,6 +194,7 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 
 	system := r.system
 	actorKey := cfg.Key
+	resolveKey := cfg.ResolveKey
 
 	dispatcher := func(ctx context.Context, env *mailboxpb.Envelope) error {
 		if env == nil {
@@ -220,6 +238,22 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 
 			return fmt.Errorf("adapt %s/%s event: %w", cfg.Service,
 				cfg.Method, err)
+		}
+
+		// Fast path: when the message resolves to a more specific key
+		// with a live registration, tell it straight to that actor's
+		// durable mailbox, skipping the coordinator hop. A miss (the
+		// actor does not exist yet, or was reaped) falls back to the
+		// static route key.
+		if resolveKey != nil {
+			if key, ok := resolveKey(actorMsg); ok {
+				refs := actor.FindInReceptionist(
+					system.Receptionist(), key,
+				)
+				if len(refs) > 0 {
+					return refs[0].Tell(ctx, actorMsg)
+				}
+			}
 		}
 
 		return actorKey.Ref(system).Tell(ctx, actorMsg)

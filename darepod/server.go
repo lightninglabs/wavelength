@@ -2353,10 +2353,31 @@ func (s *Server) registerIncomingVTXOEventRoute(
 	})
 }
 
+// oorSessionResolveKey maps a session-addressed OOR drive event to its
+// per-session service key so the ingress fast path can tell it straight into
+// the live session actor's durable mailbox, skipping the registry hop. Only
+// DriveEventRequest fast-paths: admission messages (incoming hints) must
+// always route through the registry, which owns the ownership gate and the
+// self-transfer invariant; a fast-path miss (no live child) likewise falls
+// back to the registry.
+func oorSessionResolveKey(msg oor.OORDurableMsg) (
+	actor.ServiceKey[oor.OORDurableMsg, oor.ActorResp], bool) {
+
+	drive, ok := msg.(*oor.DriveEventRequest)
+	if !ok {
+		return actor.ServiceKey[oor.OORDurableMsg, oor.ActorResp]{},
+			false
+	}
+
+	return oor.SessionServiceKey(drive.SessionID), true
+}
+
 // registerOOREventRoutes registers OOR mailbox service event routes with the
 // EventRouter. When the server pushes SubmitPackage or FinalizePackage
 // response events, the router decodes the oorpb proto, adapts it into a
-// DriveEventRequest, and Tell's it to the OOR actor via service key.
+// DriveEventRequest, and Tell's it to the OOR actor via service key -- the
+// per-session fast path delivers straight to a live session's durable
+// mailbox, with the durable registry as the admission fallback.
 func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //nolint:funlen,ll
 	oorKey := oor.NewServiceKey()
 	limits := s.cfg.OORReceiveLimits()
@@ -2372,7 +2393,8 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 		NewEvent: func() proto.Message {
 			return &oorpb.SubmitPackageResponse{}
 		},
-		Key: oorKey,
+		Key:        oorKey,
+		ResolveKey: oorSessionResolveKey,
 		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
 			resp, ok := p.(*oorpb.SubmitPackageResponse)
 			if !ok {
@@ -2437,7 +2459,8 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 		NewEvent: func() proto.Message {
 			return &oorpb.FinalizePackageResponse{}
 		},
-		Key: oorKey,
+		Key:        oorKey,
+		ResolveKey: oorSessionResolveKey,
 		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
 			resp, ok := p.(*oorpb.FinalizePackageResponse)
 			if !ok {
@@ -2469,7 +2492,8 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 		NewEvent: func() proto.Message {
 			return &arkrpc.ListVTXOsByScriptsResponse{}
 		},
-		Key: oorKey,
+		Key:        oorKey,
+		ResolveKey: oorSessionResolveKey,
 		Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 			oor.OORDurableMsg, error) {
 
@@ -2557,7 +2581,8 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 		NewEvent: func() proto.Message {
 			return &arkrpc.ListOORRecipientEventsByScriptResponse{}
 		},
-		Key: oorKey,
+		Key:        oorKey,
+		ResolveKey: oorSessionResolveKey,
 		Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 			oor.OORDurableMsg, error) {
 

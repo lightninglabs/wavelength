@@ -804,12 +804,18 @@ func TestOORRegistryDurableEndToEnd(t *testing.T) {
 
 	ctx := t.Context()
 
+	system := actor.NewActorSystem()
+	defer func() {
+		require.NoError(t, system.Shutdown(context.Background()))
+	}()
+
 	store := newFakeRegistryStore()
 	registry, err := NewOORRegistryActor(OORRegistryConfig{
 		RegistryStore:   store,
 		DeliveryStore:   newTestDeliveryStore(t),
 		ServerConn:      fakeServerConnRef{},
 		IncomingHandler: &fakeRecipientFilter{owned: true},
+		ActorSystem:     system,
 	})
 	require.NoError(t, err)
 	defer registry.Stop()
@@ -851,6 +857,13 @@ func TestOORRegistryDurableEndToEnd(t *testing.T) {
 	stateResp, ok := res.UnwrapOr(nil).(*GetStateResponse)
 	require.True(t, ok)
 	require.IsType(t, &ReceiveResolving{}, stateResp.State)
+
+	// The live child is registered under its per-session service key so
+	// the ingress fast path can address its durable mailbox directly.
+	refs := actor.FindInReceptionist(
+		system.Receptionist(), SessionServiceKey(sid),
+	)
+	require.Len(t, refs, 1)
 }
 
 // TestOORRegistryFailedAdmissionDropsPhantomChild verifies a StartTransfer

@@ -35,10 +35,14 @@ actor. See [docs/oor_subsystem.md](../docs/oor_subsystem.md) for the full design
   (`RestoreNonTerminalRequest`) on the registry goroutine, and each restored
   child is told a `ResumeSessionRequest` so it re-drives the outbox implied by
   its restored state (retry timers are in-memory and do not survive restarts).
-- `ActorIDForSession` / `SessionRegistryStore` — deterministic per-session
-  mailbox id and the control-plane store. A session's full durable state lives
-  in one `oor_session_registry` row (queryable columns + an opaque resume
-  snapshot); OOR does not use the generic `fsm_checkpoints` blob.
+- `ActorIDForSession` / `SessionServiceKey` / `SessionRegistryStore` —
+  deterministic per-session mailbox id, the per-session receptionist key the
+  registry registers each live child under (the ingress fast path resolves it
+  to tell `DriveEventRequest`s straight into the child's durable mailbox,
+  falling back to the registry on a miss), and the control-plane store. A
+  session's full durable state lives in one `oor_session_registry` row
+  (queryable columns + an opaque resume snapshot); OOR does not use the
+  generic `fsm_checkpoints` blob.
 - `SessionActorConfig` / `OORRegistryConfig` — per-session and coordinator
   configuration. `IncomingHandler` reuses `LocalPersistenceOutboxHandler` so the
   materialization resolvers are not reimplemented.
