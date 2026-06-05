@@ -139,6 +139,17 @@ type ConnectorConfig struct {
 	// durable actor mailbox.
 	Codec *actor.MessageCodec
 
+	// EgressWorkers is how many concurrent worker loops drain the durable
+	// egress mailbox. Values <= 1 keep the historical single-sender
+	// behavior; values greater than 1 run a competing-consumer pool so
+	// independent outbound sends (e.g. from the round and out-of-round
+	// actors) proceed in parallel instead of serializing behind one
+	// in-flight Edge.Send. Per-session ordering is preserved because each
+	// SendClientEventRequest carries the inner message's CorrelationKey,
+	// which the durable mailbox claims in per-key FIFO order. The single
+	// ingress puller is unaffected -- only the egress sender fans out.
+	EgressWorkers int
+
 	// DurableUnaryBuilder constructs proof-gated unary request bodies for
 	// transport-native durable unary messages such as indexer script-scope
 	// queries. When nil, those message types are rejected.
@@ -272,6 +283,12 @@ func (c *ConnectorConfig) mergeAuthHeaders(
 	return merged
 }
 
+// DefaultEgressWorkers is the default size of the egress worker pool. It is
+// greater than one so the round and out-of-round actors can push outbound sends
+// concurrently out of the box; per-session ordering still holds via the
+// per-correlation-key FIFO claim.
+const DefaultEgressWorkers = 4
+
 // DefaultConnectorConfig returns a ConnectorConfig with sensible defaults for
 // polling and retry behavior. The caller must still set Edge, mailbox IDs,
 // and Store. Codec is optional — NewRuntime fills a default.
@@ -282,5 +299,6 @@ func DefaultConnectorConfig() ConnectorConfig {
 		RetryBaseDelay:    200 * time.Millisecond,
 		RetryMaxDelay:     30 * time.Second,
 		ResponseWaiterTTL: mailboxconn.DefaultResponseWaiterTTL,
+		EgressWorkers:     DefaultEgressWorkers,
 	}
 }

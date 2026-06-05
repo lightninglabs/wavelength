@@ -605,7 +605,9 @@ func TestServerConnectionActor_ReceiveUnknownMessage(t *testing.T) {
 	t.Parallel()
 
 	connector, _, _ := newTestConnector(t, nil)
-	result := connector.Receive(t.Context(), &unknownServerConnMsg{})
+	result := connector.Receive(
+		t.Context(), &unknownServerConnMsg{}, &fakeEgressExec{},
+	)
 	require.Error(t, result.Err())
 }
 
@@ -635,7 +637,7 @@ func TestServerConnectionActor_ReceiveSendRPCRequest(t *testing.T) {
 
 	result := connector.Receive(t.Context(), &SendRPCRequest{
 		Envelope: envelope,
-	})
+	}, &fakeEgressExec{})
 	require.NoError(t, result.Err())
 
 	mb.mu.Lock()
