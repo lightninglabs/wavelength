@@ -56,6 +56,18 @@ func newOORActorCodec(limits ReceiveLimits) *actor.MessageCodec {
 			return &ResumeSessionRequest{}
 		},
 	)
+	codec.MustRegister(
+		SessionTerminalNotificationTLVType,
+		func() actor.TLVMessage {
+			return &SessionTerminalNotification{}
+		},
+	)
+	codec.MustRegister(
+		RestoreNonTerminalRequestTLVType,
+		func() actor.TLVMessage {
+			return &RestoreNonTerminalRequest{}
+		},
+	)
 	codec.MustRegister(actor.RestartTLVType, func() actor.TLVMessage {
 		return &actor.RestartMessage{}
 	})

@@ -21,14 +21,20 @@ actor. See [docs/oor_subsystem.md](../docs/oor_subsystem.md) for the full design
   actor handles them itself in one shared `driveOutbox` switch (sign inline,
   enqueue cross-actor transport to serverconn, materialize incoming VTXOs,
   schedule retries) rather than routing them through an `OutboxHandler`.
-- `OORRegistryActor` — thin coordinator registered under the OOR service key.
+- `OORRegistryActor` — thin coordinator registered under the OOR service key,
+  with a **durable inbound mailbox** (Read/Stage/Commit path, mailbox id
+  `oor-client`): a server-push event is persisted before the ingress loop acks
+  the operator envelope, so a crash between ingress and the per-session child
+  replays the registry's idempotent spawn+forward instead of losing the event.
   It routes each message to the right session's child (hot-path `DriveEvent` via
   Tell), dedups outgoing transfers by idempotency key, lazily spawns children,
   routes retry-timer `ResumeSessionRequest` expiries to the owning child
-  (unknown/terminal sessions are benign no-ops), and `RestoreNonTerminal`
-  respawns **and resumes** in-flight sessions on boot: each restored child is
-  told a `ResumeSessionRequest` so it re-drives the outbox implied by its
-  restored state (retry timers are in-memory and do not survive restarts).
+  (unknown/terminal sessions are benign no-ops), reaps children on
+  `SessionTerminalNotification`, and `RestoreNonTerminal` respawns **and
+  resumes** in-flight sessions on boot: the restore runs as a registry message
+  (`RestoreNonTerminalRequest`) on the registry goroutine, and each restored
+  child is told a `ResumeSessionRequest` so it re-drives the outbox implied by
+  its restored state (retry timers are in-memory and do not survive restarts).
 - `ActorIDForSession` / `SessionRegistryStore` — deterministic per-session
   mailbox id and the control-plane store. A session's full durable state lives
   in one `oor_session_registry` row (queryable columns + an opaque resume
