@@ -183,6 +183,11 @@ type Server struct {
 	roundStore    *db.RoundPersistenceStore
 	ueStore       *db.UnilateralExitPersistenceStore
 
+	// oorSessionStore exposes the OOR session-registry control-plane rows
+	// for direct RPC reads (idempotency pre-flight); the OOR registry
+	// actor owns all writes.
+	oorSessionStore oor.SessionRegistryStore
+
 	// lnd holds the lndclient connection when wallet.type is "lnd".
 	// It is None in lwwallet mode.
 	lnd fn.Option[*lndclient.GrpcLndServices]
@@ -294,8 +299,7 @@ type Server struct {
 	walletRef    fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
-	oorActor           *oor.OORClientActor
-	oorSigningEffect   *oor.SigningEffectActor
+	oorRegistry        *oor.OORRegistryActor
 	vhtlcRecoveryStore *db.VHTLCRecoveryStoreDB
 	vhtlcRecovery      *coordinator.Service
 	vhtlcPreimages     *unrollpolicy.PreimageResolverRegistry
@@ -891,26 +895,8 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 			s.fraudWatcher.Stop()
 		}
 
-		if s.oorSigningEffect != nil {
-			//nolint:contextcheck // bounded shutdown
-			err := s.oorSigningEffect.StopAndWait(shutdownCtx)
-			if err != nil {
-				s.log.WarnS(
-					ctx,
-					"OOR signing effect shutdown failed",
-					err,
-				)
-			}
-		}
-
-		if s.oorActor != nil {
-			//nolint:contextcheck // bounded shutdown
-			err := s.oorActor.StopAndWait(shutdownCtx)
-			if err != nil {
-				s.log.WarnS(ctx, "OOR actor shutdown failed",
-					err,
-				)
-			}
+		if s.oorRegistry != nil {
+			s.oorRegistry.Stop()
 		}
 
 		if s.outboxPublisher != nil {
@@ -3708,19 +3694,9 @@ func (s *Server) initOORActor(ctx context.Context,
 	}
 	oorKey := oor.NewServiceKey()
 
-	s.oorSigningEffect, err = oor.NewSigningEffectActor(
-		oor.SigningEffectActorConfig{
-			ActorID:       oor.SigningEffectActorID,
-			DeliveryStore: s.deliveryStore,
-			Signer:        oorSigner,
-			OORRef:        oorKey.Ref(s.actorSystem),
-			ActorSystem:   s.actorSystem,
-			Log:           fn.Some(s.subLogger(oor.Subsystem)),
-		},
-	)
-	if err != nil {
-		return err
-	}
+	// The per-session OOR actors handle wallet signing inline, so there is
+	// no separate signing-effect actor. signingHandler remains the Next
+	// delegate of the local-persistence handler for retry scheduling.
 
 	// Wire spend completion through the VTXO manager so each consumed
 	// VTXO transitions to SpentState via its own FSM, rather than
@@ -3790,19 +3766,30 @@ func (s *Server) initOORActor(ctx context.Context,
 		},
 	}
 
-	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
+	// The retry callback resolves the OOR service key (now owned by the
+	// registry) lazily at Tell time, so it is safe to build before the
+	// registry registers. A timeout expiry maps to a DriveEventRequest with
+	// RetryDueEvent that the registry routes to the right session.
+	oorCallbackRef := oor.NewRetryCallbackRef(oorKey.Ref(s.actorSystem))
+	signingHandler.CallbackRef = oorCallbackRef
+
+	// Stash the session-registry store on the server so RPC handlers can
+	// run read-only control-plane lookups (idempotency pre-flight) without
+	// a registry-actor round trip.
+	registryStore := dbStore.NewOORSessionRegistryStore(s.clk)
+	s.oorSessionStore = registryStore
+
+	s.oorRegistry, err = oor.NewOORRegistryActor(oor.OORRegistryConfig{
 		Log:              fn.Some(s.subLogger(oor.Subsystem)),
-		OutboxHandler:    outboxHandler,
-		Limits:           s.cfg.OORReceiveLimits(),
-		ServerConn:       s.runtime.TellRef(),
-		TransportOutbox:  true,
-		SigningEffect:    s.oorSigningEffect.Ref(),
-		PackageStore:     packageStore,
-		ReservationStore: reservationStore,
+		Signer:           oorSigner,
+		IncomingHandler:  outboxHandler,
+		RegistryStore:    registryStore,
 		DeliveryStore:    s.deliveryStore,
-		ActorSystem:      s.actorSystem,
-		ActorID:          oor.OORActorServiceKeyName,
+		ServerConn:       s.runtime.TellRef(),
 		VTXOManager:      vtxoManagerRef,
+		SpendCompleter:   completeSpend,
+		ReservationStore: reservationStore,
+		PackageStore:     packageStore,
 		VTXOStore:        vtxoStore,
 		LedgerSink:       fn.Some(ledger.NewSink(s.actorSystem)),
 		IncomingVTXOObserver: func(ctx context.Context,
@@ -3810,20 +3797,22 @@ func (s *Server) initOORActor(ctx context.Context,
 
 			return s.trackIncomingFraudVTXOs(ctx, descs)
 		},
+		Limits:       s.cfg.OORReceiveLimits(),
+		TimeoutActor: oorTimeoutRef,
+		CallbackRef:  oorCallbackRef,
+		ActorSystem:  s.actorSystem,
 	})
+	if err != nil {
+		return err
+	}
 
-	// Wire the timeout callback ref using the registered service
-	// key. The OOR actor self-registers with the actor system
-	// during NewOORClientActor (via durable.Start and
-	// RegisterWithReceptionist). The service key resolves the
-	// OOR actor via the receptionist, and the MapInputRef
-	// transforms *timeout.ExpiredMsg into a DriveEventRequest
-	// with RetryDueEvent targeting the correct session.
-	signingHandler.CallbackRef = oor.NewRetryCallbackRef(
-		oorKey.Ref(s.actorSystem),
-	)
+	// Restore any in-flight per-session actors from the control-plane store
+	// so sessions interrupted by a restart resume.
+	if err := s.oorRegistry.RestoreNonTerminal(ctx); err != nil {
+		return err
+	}
 
-	s.log.InfoS(ctx, "OOR client actor started")
+	s.log.InfoS(ctx, "OOR registry started")
 
 	// Register the incoming VTXO handler actor. This handles
 	// IncomingVTXOEvent push notifications from the indexer and

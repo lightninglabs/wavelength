@@ -640,15 +640,36 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 				DustLimit:     1,
 			},
 		}),
-		actorSystem: system,
-		vtxoStore:   vtxoStore,
-		walletRef:   fn.Some(walletRef),
+		actorSystem:     system,
+		vtxoStore:       vtxoStore,
+		walletRef:       fn.Some(walletRef),
+		oorSessionStore: registryStore,
 	}
 
 	rpcServer := NewRPCServer(server)
 	recipient := sendOORPolicyRecipient(
 		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
 		amountSat,
+	)
+
+	// A failed session row carrying the same key must not dedup the send:
+	// the pre-flight lookup skips failed sessions, so the first call below
+	// still admits a fresh session.
+	failedSession := chainhash.HashH([]byte("send-oor-failed-session"))
+	require.NoError(
+		t,
+		registryStore.UpsertSession(
+			ctx, db.OORSessionRegistryRecord{
+				SessionID:       failedSession,
+				ActorID:         "actor-failed",
+				Direction:       db.OORSessionDirectionOutgoing,
+				Phase:           "failed",
+				IdempotencyKey:  idempotencyKey,
+				Status:          db.OORSessionStatusFailed,
+				SnapshotData:    []byte{0x01},
+				SnapshotVersion: 1,
+			},
+		),
 	)
 
 	firstResp, err := rpcServer.SendOOR(ctx, &daemonrpc.SendOORRequest{
