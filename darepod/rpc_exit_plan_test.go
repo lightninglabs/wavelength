@@ -8,7 +8,6 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/txconfirm"
-	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -65,69 +64,6 @@ func TestSweepWalletRejectsNegativeFeeRate(t *testing.T) {
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }
 
-func TestExitPlanRecommendedFundingUsesFeasibilityCosts(t *testing.T) {
-	t.Parallel()
-
-	verdict := unroll.ExitFeasibility{
-		CPFPFeeTotalSat:      50_000,
-		RequiredWalletInputs: 2,
-	}
-
-	require.EqualValues(
-		t, 25_000+txconfirm.DustLimit,
-		exitPlanRecommendedUTXOAmount(verdict),
-	)
-
-	verdict.CPFPFeeTotalSat = 1
-	require.Equal(
-		t, preflightUnrollMinUTXOSat,
-		exitPlanRecommendedUTXOAmount(verdict),
-	)
-}
-
-func TestExitPlanFundingShortfallCoversMissingInputs(t *testing.T) {
-	t.Parallel()
-
-	verdict := unroll.ExitFeasibility{
-		CPFPFeeTotalSat:      500,
-		RequiredWalletInputs: 2,
-		WalletConfirmedSat:   100_000,
-		WalletUsableInputs:   1,
-	}
-
-	require.Equal(
-		t, preflightUnrollMinUTXOSat,
-		exitPlanFundingShortfall(verdict, preflightUnrollMinUTXOSat),
-	)
-
-	verdict.WalletUsableInputs = 2
-	verdict.WalletConfirmedSat = 100
-	require.EqualValues(
-		t, 400,
-		exitPlanFundingShortfall(verdict, preflightUnrollMinUTXOSat),
-	)
-}
-
-func TestExitPlanFundingAddressReusesCachedAddress(t *testing.T) {
-	t.Parallel()
-
-	s := &Server{
-		exitPlanFundingAddresses: map[string]string{
-			"txid:0": "bcrt1preallocated",
-		},
-	}
-
-	address, err := s.exitPlanFundingAddress(
-		t.Context(), "txid:0", true,
-	)
-	require.NoError(t, err)
-	require.Equal(t, "bcrt1preallocated", address)
-
-	address, err = s.exitPlanFundingAddress(t.Context(), "txid:1", false)
-	require.NoError(t, err)
-	require.Empty(t, address)
-}
-
 func TestCapWalletFeeRate(t *testing.T) {
 	t.Parallel()
 
@@ -148,10 +84,10 @@ func TestCapWalletFeeRate(t *testing.T) {
 func TestWalletSweepPreviewNoInputsCannotBroadcast(t *testing.T) {
 	t.Parallel()
 
-	resp := walletSweepPreview(nil, []byte{txscript.OP_TRUE}, 2)
+	resp := walletSweepPreview(nil, testDestPkScript(t), 2)
 	require.False(t, resp.CanBroadcast)
 	require.Zero(t, resp.TotalInputSat)
-	require.Contains(t, resp.FailureReason, "no confirmed")
+	require.ErrorContains(t, resp.FailureReason, "no confirmed")
 }
 
 func TestWalletSweepPreviewDustNetMessage(t *testing.T) {
@@ -167,10 +103,10 @@ func TestWalletSweepPreviewDustNetMessage(t *testing.T) {
 		PkScript:      []byte{0x00, 0x14},
 		Amount:        txconfirm.DustLimit + 10,
 		Confirmations: 1,
-	}}, []byte{txscript.OP_TRUE}, 1)
+	}}, testDestPkScript(t), 1)
 
 	require.False(t, resp.CanBroadcast)
-	require.Contains(t, resp.FailureReason, "dust")
+	require.ErrorContains(t, resp.FailureReason, "dust")
 }
 
 func TestWalletSweepPreviewPositiveNetCanBroadcast(t *testing.T) {
@@ -186,7 +122,7 @@ func TestWalletSweepPreviewPositiveNetCanBroadcast(t *testing.T) {
 		PkScript:      []byte{0x00, 0x14},
 		Amount:        btcutil.Amount(50_000),
 		Confirmations: 1,
-	}}, []byte{txscript.OP_TRUE}, 2)
+	}}, testDestPkScript(t), 2)
 
 	require.True(t, resp.CanBroadcast, resp.FailureReason)
 	require.Equal(t, int64(50_000), resp.TotalInputSat)
@@ -196,17 +132,19 @@ func TestWalletSweepPreviewPositiveNetCanBroadcast(t *testing.T) {
 	)
 }
 
-func TestExitPlanRecommendedUTXOAmountUsesFloor(t *testing.T) {
-	t.Parallel()
+func testDestPkScript(t *testing.T) txscript.PkScript {
+	t.Helper()
 
-	recommended := exitPlanRecommendedUTXOAmount(unroll.ExitFeasibility{
-		CPFPFeeTotalSat:      1,
-		RequiredWalletInputs: 1,
-	})
-	require.GreaterOrEqual(
-		t, recommended, preflightUnrollMinUTXOSat,
+	addr, err := btcutil.NewAddressWitnessPubKeyHash(
+		make([]byte, 20), &chaincfg.RegressionNetParams,
 	)
-	require.GreaterOrEqual(
-		t, recommended, txconfirm.DustLimit,
-	)
+	require.NoError(t, err)
+
+	script, err := txscript.PayToAddrScript(addr)
+	require.NoError(t, err)
+
+	pkScript, err := txscript.ParsePkScript(script)
+	require.NoError(t, err)
+
+	return pkScript
 }

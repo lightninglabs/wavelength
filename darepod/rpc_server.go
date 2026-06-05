@@ -3599,18 +3599,6 @@ func (r *RPCServer) Unroll(ctx context.Context, req *daemonrpc.UnrollRequest) (
 	}, nil
 }
 
-// preflightUnrollMinUTXOSat is the soft floor that decides which
-// confirmed wallet UTXOs count as a "usable" CPFP fee input in the
-// unroll feasibility pre-flight. UTXOs below this threshold are too small
-// to plausibly cover a v3/TRUC CPFP child fee on their own, so they don't
-// count toward the one-input-per-ancestry-path requirement. The exact
-// required amount is determined per-package at broadcast time in
-// `txconfirm.CPFPBroadcaster`; this floor is intentionally conservative
-// so the pre-check rejects only obviously-dust wallets, not borderline
-// cases the run-time fee bumper might still handle. Empirical floor
-// observed during itest (BUGS_FOUND.md bug-8): ~32k sat per package.
-const preflightUnrollMinUTXOSat = btcutil.Amount(10_000)
-
 const (
 	// unrollFeeConfTarget is the confirmation target used to estimate
 	// the fee rate for the unroll feasibility pre-flight. Six blocks
@@ -3649,13 +3637,15 @@ func (r *RPCServer) preflightUnrollFeasibility(ctx context.Context,
 		return nil
 	}
 
-	verdict, err := r.assessExitFeasibility(
-		ctx, desc, r.estimateUnrollFeeRate(ctx),
-	)
+	walletSnapshot, err := r.walletExitFundingSnapshot(ctx)
 	if err != nil {
 		return status.Errorf(codes.Internal, "preflight wallet "+
 			"unspent: %v", err)
 	}
+	plan := unroll.PlanExitFunding(
+		desc, r.estimateUnrollFeeRate(ctx), walletSnapshot,
+	)
+	verdict := plan.Feasibility
 	if verdict.Feasible {
 		return nil
 	}
@@ -3726,7 +3716,8 @@ func unrollInfeasibleError(f unroll.ExitFeasibility) error {
 			"confirmed wallet UTXO(s) of >= %d sat each (one per "+
 			"ancestry path), have %d usable. Call GetExitPlan for "+
 			"funding details.", f.RequiredWalletInputs,
-			int64(preflightUnrollMinUTXOSat), f.WalletUsableInputs)
+			int64(unroll.DefaultFeeInputMinAmountSat),
+			f.WalletUsableInputs)
 
 	default:
 		return status.Errorf(codes.FailedPrecondition, "unilateral "+

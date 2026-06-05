@@ -4,6 +4,7 @@ package swapwallet
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
@@ -310,8 +311,8 @@ func (s *Service) getExitPlan(ctx context.Context,
 		ExitStatus: exitStatusFromDaemon(
 			resp.ExitStatus,
 		),
-		SweepTxid: resp.SweepTxid,
-		LastError: resp.LastError,
+		SweepTxid: hashString(resp.SweepTxid),
+		LastError: errorString(resp.LastError),
 	}, nil
 }
 
@@ -357,8 +358,8 @@ func (s *Service) sweepWallet(ctx context.Context,
 		NetAmountSat:       resp.NetAmountSat,
 		FeeRateSatPerVbyte: resp.FeeRateSatPerVByte,
 		CanBroadcast:       resp.CanBroadcast,
-		Txid:               resp.Txid,
-		FailureReason:      resp.FailureReason,
+		Txid:               hashString(resp.Txid),
+		FailureReason:      errorString(resp.FailureReason),
 	}, nil
 }
 
@@ -427,4 +428,20 @@ func exitStatusFromDaemon(
 	default:
 		return walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_UNSPECIFIED
 	}
+}
+
+func hashString(hash fmt.Stringer) string {
+	if hash == nil {
+		return ""
+	}
+
+	return hash.String()
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	return err.Error()
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
@@ -333,6 +334,7 @@ func TestGetExitPlanProxiesDaemonPlan(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
+	sweepTxid := testHash(1)
 	rpc.exitPlanResp = &darepod.ExitPlanResponse{
 		FundingAddress:             "bcrt1plan",
 		RequiredConfirmations:      1,
@@ -346,8 +348,8 @@ func TestGetExitPlanProxiesDaemonPlan(t *testing.T) {
 		ExitJobFound:               true,
 		ExitStatus: daemonrpc.
 			UnrollJobStatus_UNROLL_JOB_STATUS_PENDING,
-		SweepTxid: "sweep",
-		LastError: "last",
+		SweepTxid: &sweepTxid,
+		LastError: errors.New("last"),
 	}
 
 	resp, err := svc.GetExitPlan(
@@ -391,6 +393,7 @@ func TestSweepWalletProxiesDaemonSweep(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
+	txid := testHash(2)
 	rpc.sweepWalletResp = &darepod.SweepWalletResponse{
 		Inputs: []darepod.WalletSweepInput{{
 			Outpoint:  "abc:0",
@@ -401,7 +404,7 @@ func TestSweepWalletProxiesDaemonSweep(t *testing.T) {
 		NetAmountSat:       49_500,
 		FeeRateSatPerVByte: 2,
 		CanBroadcast:       true,
-		Txid:               "txid",
+		Txid:               &txid,
 	}
 
 	resp, err := svc.SweepWallet(
@@ -421,7 +424,14 @@ func TestSweepWalletProxiesDaemonSweep(t *testing.T) {
 	require.Equal(t, "abc:0", resp.GetInputs()[0].GetOutpoint())
 	require.Equal(t, int64(49_500), resp.GetNetAmountSat())
 	require.True(t, resp.GetCanBroadcast())
-	require.Equal(t, "txid", resp.GetTxid())
+	require.Equal(t, txid.String(), resp.GetTxid())
+}
+
+func testHash(tag byte) chainhash.Hash {
+	var hash chainhash.Hash
+	hash[0] = tag
+
+	return hash
 }
 
 // TestExitStatusMapsAllPhases sanity-checks that every daemon
