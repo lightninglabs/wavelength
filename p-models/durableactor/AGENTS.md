@@ -2,8 +2,9 @@
 
 This package models the durable actor mailbox from distributed-systems first
 principles: durable enqueue, lease ownership, retry scheduling, ack/nack token
-validation, dead-letter/removal, idempotent delivery identity, and
-per-correlation-key FIFO.
+validation, dead-letter/removal, idempotent delivery identity,
+per-correlation-key FIFO, and the Read/Commit consume step (lease-fenced
+exactly-once effect application under lease-expiry-during-IO).
 
 ## Files
 
@@ -22,7 +23,12 @@ per-correlation-key FIFO.
 | `./p-models/scripts/check.sh` | Full default check: P model plus Go bridge |
 | `p compile -pp p-models/durableactor/infra.pproj` | Compile this model |
 | `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxCorrelationKeyFIFO` | Run green durable mailbox tests |
+| `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxReadCommitFence` | Run the green Read/Commit exactly-once-effect test |
 | `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxLegacyReorderCounterexample` | Demonstrate the old ordering bug |
+| `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxUnfencedCommitCounterexample` | Demonstrate the unfenced-commit double-apply bug |
+| `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxStageCommitExactlyOnce` | Run the green Stage-then-Commit replay-safety test |
+| `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxStagedDoubleBroadcastCounterexample` | Demonstrate the unstable-broadcast double-broadcast bug |
+| `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxStaleStageRegressesCounterexample` | Demonstrate the unfenced-stage checkpoint regression bug |
 | `go test ./p-models/durableactor/bridge` | Replay traces against Go |
 
 ## Modeling Guidance

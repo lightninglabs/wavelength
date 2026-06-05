@@ -80,6 +80,7 @@ package may import from a higher layer.
 | [`harness`](harness/) | Docker-based Bitcoin/LND integration test environment |
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal/actortest`](internal/actortest/) | Durable actor integration tests with real DB backends |
+| [`p-models/durableactor/bridge`](p-models/durableactor/bridge/) | Conformance bridge: replays P formal-model traces against the production `db/actordelivery` SQLite mailbox to verify the implementation honours the specification |
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
 | [`internal/indexerlimits`](internal/indexerlimits/) | Client-side bounds for indexer pagination cursors (defense-in-depth against misbehaving remotes) |
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |

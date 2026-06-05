@@ -35,9 +35,19 @@ For per-flow walkthroughs see
 
 For field-level detail, use `go doc github.com/lightninglabs/darepo-client/ledger.<Symbol>`.
 
-- `LedgerActor` — durable actor processing accounting messages. Caches
-  the resolved `clock.Clock` at construction so handlers stamp
-  `CreatedAt` without re-optioning the field.
+- `LedgerActor` — durable actor processing accounting messages on the
+  Read/Commit execution path (`actor.TxBehavior[LedgerMsg, LedgerResp,
+  ledgerTx]`). Caches the resolved `clock.Clock` at construction so
+  handlers stamp `CreatedAt` without re-optioning the field. Handlers
+  validate inputs and build entry parameters in the `Read` phase (no
+  lock held), then call `commit(ctx, ax, ...)` which issues a single
+  lease-fenced `Commit` write — `InsertLedgerEntry` and
+  `InsertUTXOAuditEntry` land atomically with the mailbox ack and dedup
+  mark, without holding the writer transaction during upstream side
+  effects. The typed store `ledgerTx` (holding `ledger LedgerStore` and
+  `audit UTXOAuditStore`) is constructed per-turn by
+  `bindStores(ctx, DeliveryStore) ledgerTx`, which implements
+  `actor.StoreFactory[ledgerTx]`.
 - `ActorConfig` — logger, delivery store, ledger store, UTXO audit
   store, actor ID, optional `Clock` (`fn.Option[clock.Clock]`); None
   falls back to `clock.NewDefaultClock()`.
@@ -162,11 +172,10 @@ or balance reconciliation. Required emission pairs:
 - **Replay safety**: `InsertClientLedgerEntry` uses
   `ON CONFLICT DO NOTHING` against every partial unique index
   (`idx_client_ledger_idempotent_round`, `_session`, `_key`). Crash
-  atomicity for multi-leg events (ExitCost) comes from the durable
-  actor's outer tx: handlers run inside
-  `TxAwareDeliveryStore.ExecTx`; `db.TransactionExecutor.ExecTx`
-  joins via `actor.TxFromContext` so two `InsertLedgerEntry` calls
-  commit atomically with the mailbox ack.
+  atomicity for multi-leg events (ExitCost) comes from the Read/Commit
+  execution path: both `InsertLedgerEntry` calls within a single `commit`
+  closure execute in the same lease-fenced writer transaction and commit
+  atomically with the mailbox ack and dedup mark.
 - Handler-level errors (`ErrInvalidMessage` + DB failures) log at
   `WarnS`. Error-level is reserved for internal bugs; both handler
   failure classes are externally triggered.

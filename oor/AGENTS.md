@@ -28,7 +28,17 @@ State transitions and validation rules live under [Invariants](#invariants).
   IncomingVTXONotifier` (callback fired after incoming VTXOs are durably
   materialized — lets daemon subsystems arm work without depending on
   `oor`), `SigningEffect` (route signing through a separate actor),
-  `Limits *ReceiveLimits` (defaults via `DefaultReceiveLimits`).
+  `Limits *ReceiveLimits` (defaults via `DefaultReceiveLimits`), optional
+  `ReservationStore ReservationStore` (when set, `recordReservations` writes
+  one spending-reservation row per input outpoint on `StartTransferRequest`,
+  atomically with the checkpoint via `actor.TxFromContext`; nil in tests).
+- `ReservationStore` — Narrow interface
+  (`UpsertReservation(ctx, outpoint, ownerKind, ownerID) error`) for recording
+  durable VTXO spending-reservation rows. Backed by
+  `db.SpendingReservationPersistenceStore`. `ReservationOwnerKindOOROutgoing
+  = 0` is the only current owner kind. Row-exists-IFF-checkpointed: the
+  reservation row is written inside the same durable actor turn tx as the
+  session checkpoint, so a crash before commit leaves no orphan row.
 - `OORClientActor` — durable actor wrapping per-session state machines.
   Handles outgoing and incoming flows via three-phase async resolution;
   emits `VTXOSentMsg` / `VTXOReceivedMsg` to ledger at the two state
@@ -94,9 +104,16 @@ State transitions and validation rules live under [Invariants](#invariants).
   `IncomingHandledEvent`, `IncomingAckSentEvent`.
 - `ReceiveState`: `ReceiveIdle` → `ReceiveResolving` (durable hint
   persisted, waiting for phase-1 indexer outside the actor tx) →
-  `ReceiveNotified` (package received, awaiting materialization) →
+  `ReceiveNotified` (package received, awaiting materialization; holds
+  `MetadataAttempts uint32` counting failed metadata resolution attempts
+  to drive exponential backoff and terminal give-up) →
   `ReceiveAwaitingAck` (materialized, awaiting transport ack) →
-  `ReceiveCompleted`.
+  `ReceiveCompleted`. Metadata retry constants: `metadataRetryBaseDelay =
+  1s`, `metadataRetryMaxDelay = 5m`, `maxMetadataRetries = 20` (~1 hour).
+  `MetadataAttempts` is persisted in the TLV snapshot so attempt count
+  survives restarts and does not reset the backoff schedule; a resume
+  mid-backoff reschedules the retry at the same delay rather than firing
+  a query immediately.
 
 ### Outbox Handler Chain & Callbacks
 
@@ -256,6 +273,12 @@ State transitions and validation rules live under [Invariants](#invariants).
   and enqueues the request before signing runs. A restart-duplicate
   that reaches OOR after the FSM has advanced is silently discarded
   by `DriveEventRequest`.
+- `recordReservations` writes one spending-reservation row per
+  `StartTransferRequest` input outpoint inside the durable actor turn tx
+  (via `actor.TxFromContext`). If the write fails, the turn aborts and the
+  checkpoint is rolled back — no reservation row is created for an
+  uncheckpointed session, preserving the row-exists-IFF-checkpointed
+  invariant that the startup orphan sweep relies on.
 - `ReceiveLimits` are propagated through codec factories
   (`newOORActorCodec`, `NewSigningEffectCodec`) so every deserialized
   message enforces the same caps as the in-memory path. Codec

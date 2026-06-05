@@ -19,12 +19,35 @@ when the local wallet owns the receive script.
 - `ManagerConfig` — Configuration holding Store, Wallet, ChainSource,
   ActorSystem, ChainParams, ExpiryConfig, RoundActor ref, ChainResolver ref,
   optional `Log`, optional `LedgerSink fn.Option[ledger.Sink]`,
-  `ForfeitVTXOActorAskTimeout`, and `RefreshFeeQuoter`. The manager
-  propagates the sink into each spawned `VTXOActor` for `ExitCostMsg`
-  emissions. `ForfeitVTXOActorAskTimeout` (default 5 s) bounds forfeit
-  and refresh child asks so a blocked child actor cannot monopolize the
-  manager until the outer RPC deadline. Zero uses the default; negative
-  disables the timeout. Spend-path asks keep the caller's context.
+  `ForfeitVTXOActorAskTimeout`, `RefreshFeeQuoter`, optional
+  `ExitOutcomeResolver fn.Option[ExitOutcomeResolver]` (resolves terminal
+  exit outcomes on boot-time reconciliation — `Manager.reconcileUnilateralExits`
+  re-converges VTXOs persisted in `UnilateralExitState` with unroll job
+  outcomes), and optional `ReservationStore fn.Option[SpendingReservationStore]`
+  (used by `Manager.sweepOrphanedReservations` on startup to release `Spending`
+  VTXOs that have no live reservation row). The manager propagates the sink into
+  each spawned `VTXOActor` for `ExitCostMsg` emissions.
+  `ForfeitVTXOActorAskTimeout` (default 5 s) bounds forfeit and refresh child
+  asks so a blocked child actor cannot monopolize the manager until the outer RPC
+  deadline. Zero uses the default; negative disables the timeout. Spend-path asks
+  keep the caller's context.
+- `ExitOutcome` — Enum: `ExitOutcomeRecoverable` (exit failed with no
+  on-chain footprint; safe to roll VTXO back to live) or
+  `ExitOutcomeConfirmed` (exit confirmed on-chain; retire to spent).
+- `ExitOutcomeResolution` — Holds the terminal exit result (outcome + reason).
+- `ExitOutcomeResolver` — Function type
+  `func(ctx, actorID) (ExitOutcomeResolution, error)` used by boot-time
+  reconciliation to look up the unroll job result for a VTXO persisted in
+  `UnilateralExitState`.
+- `ExitOutcomeNotification` — Manager-facing Tell from the unroll registry
+  carrying the terminal `ExitOutcome` for a VTXO. `ExitOutcomeRecoverable`
+  drives `ExitFailedEvent` → `LiveState`; `ExitOutcomeConfirmed` drives
+  `ExitConfirmedEvent` → terminal `SpentState`.
+- `SpendingReservationStore` — Narrow interface
+  (`ListReservedOutpoints(ctx) ([]wire.OutPoint, error)`) used by the startup
+  orphan sweep to identify VTXOs in `SpendingState` that have an active
+  reservation row (thus should NOT be freed). Backed by
+  `db.SpendingReservationPersistenceStore`.
 - `VTXOActorConfig.LedgerSink` — Per-VTXO actor field plumbed from the manager. The `emitExitCost` helper is wired onto the unilateral-exit transition but is currently a no-op pending chain resolver integration: the actor cannot determine the on-chain miner fee until the chain resolver reports the confirmed exit-spend transaction. The emission site exists so a single future change in the chain resolver wiring enables it without touching the FSM transition logic.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).

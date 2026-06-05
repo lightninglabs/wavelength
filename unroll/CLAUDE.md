@@ -91,6 +91,30 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   policy by `(ExitPolicyKind, ExitPolicyRef)`. Implemented by
   `vhtlcrecovery/unrollpolicy.ExitSpendPolicyResolver`.
 
+### Feasibility assessment
+
+- `AssessExitFeasibility(in ExitFeasibilityInput) ExitFeasibility` — Pure
+  (no IO) admission pre-flight check. Runs four checks in priority order: dust
+  (swept output below dust limit is impossible regardless of cost), economics
+  (total recovery cost exceeds `MaxRecoveryCostFraction` of VTXO value),
+  wallet balance (wallet cannot cover CPFP fees), distinct inputs (wallet lacks
+  distinct fee inputs per ancestry path). Returns on first failure.
+- `ExitFeasibility` — Structured verdict: `Reason ExitInfeasibilityReason`,
+  `IsFeasible bool`, and full cost breakdown (`CPFPFeeTotalSat`,
+  `SweepFeeSat`, `TotalRecoveryCostSat`, `NetRecoveredSat`, etc.).
+- `ExitInfeasibilityReason` — Five-value enum: `ExitFeasible` (zero, passes
+  all checks), `ExitSweepBelowDust`, `ExitUneconomical`,
+  `ExitWalletUnderfunded`, `ExitWalletTooFewInputs`.
+- `ExitFeasibilityConfig` — Cost model: `CPFPChildVsize`, `SweepVsize`,
+  `DustLimit`, `MaxRecoveryCostFraction` (fraction of VTXO value; exit is
+  uneconomical above this threshold).
+- `ExitFeasibilityInput` — Input: `NumRecoveryTxs`, `NumAncestryPaths`,
+  `VTXOAmountSat`, `FeeRateSatPerVByte`, and wallet state (balance,
+  number of available fee inputs).
+- `RecoveryTxCount(desc *vtxo.Descriptor) (int, int)` — Derives ancestor
+  count and independent ancestry path count from a VTXO descriptor; feeds
+  `ExitFeasibilityInput`.
+
 ### Support
 
 - `LocalProofAssembler` — assembles a `recovery.Proof` from the VTXO

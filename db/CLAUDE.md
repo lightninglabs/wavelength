@@ -56,6 +56,18 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   and `5` (darepo-client#602).
 - `UnilateralExitJobTrigger` — `Manual(0)`, `CriticalExpiry(1)`,
   `Restart(2)`, `FraudSpend(3)`.
+- `SpendingReservationStore` / `BatchedSpendingReservationStore` —
+  Interface + batched-tx variant for managing durable VTXO spending-reservation
+  rows: `UpsertSpendingReservation(ctx, params)` and
+  `ListSpendingReservationOutpoints(ctx)`.
+- `SpendingReservationPersistenceStore` — Concrete implementation. Durable
+  index of VTXO outpoints reserved by active spend owners (e.g. outgoing OOR
+  sessions). Row existence signals a checkpointed reservation; the startup
+  orphan sweep (`vtxo.Manager`) uses `ListReservedOutpoints` to avoid freeing
+  live spend contexts. Rows are written atomically with the checkpoint via
+  `actor.TxFromContext` and deleted atomically with the VTXO status transition
+  that exits `SpendingState` (`RoundStore.DeleteSpendingReservation`).
+  Constructed via `NewSpendingReservationPersistenceStore(db, clk)`.
 - `VHTLCRecoveryStoreDB` — durable vHTLC recovery store. Persists
   armed and escalated recovery jobs with request-id idempotency,
   explicit vHTLC script parameters, fee cap, unroll target linkage,
@@ -71,7 +83,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 16` — current schema version.
+- `LatestMigrationVersion = 17` — current schema version.
 
 ## Relationships
 
@@ -115,6 +127,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
+- `000017_spending_reservations` — adds `spending_reservations` table
+  (`outpoint_hash`, `outpoint_index`, `owner_kind`, `owner_id`,
+  `created_at`; PK on `(outpoint_hash, outpoint_index)`). Durable index
+  tracking VTXO outpoints in `SpendingState`. Backfills existing rows at
+  status 7 (`SpendingState`) with a placeholder `owner_id` so the startup
+  orphan sweep does not free live in-flight OOR sessions across upgrades.
 - `000016_unilateral_exit_policy` — adds `exit_policy_kind`
   (NOT NULL, default `'standard_vtxo_timeout'`) and nullable
   `exit_policy_ref` to `unilateral_exit_jobs` via ALTER TABLE so

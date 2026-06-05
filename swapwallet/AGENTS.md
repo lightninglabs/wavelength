@@ -79,6 +79,12 @@ default builds avoid the swap executor's dependency graph.
   admin-shape: they reach daemonrpc via the injected `RPCServer` and
   DO NOT depend on `Runtime`, router, recv, or history. Create and
   Unlock must work before the swap subsystem is live.
+- `requireWalletReady(ctx)` guards `PrepareSend`, `Send`, `Recv`, and
+  `Deposit` by calling `GetInfo` and checking `WalletState_WALLET_STATE_READY`.
+  Returns `codes.Unavailable` when the RPCServer is nil, and propagates
+  non-ready wallet states as structured gRPC errors so callers receive
+  actionable messages (e.g. "wallet locked") rather than cryptic nil-pointer
+  panics or swap-backend errors.
 - Background goroutines (monitor loop, deadline watcher, resume
   sweep) are anchored to the daemon root context, NEVER to RPC-call
   contexts. An RPC client disconnect cannot cancel in-flight work.
