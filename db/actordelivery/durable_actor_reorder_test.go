@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -359,4 +360,221 @@ func TestDurableActorCrossKeyIndependence(t *testing.T) {
 		return false
 	}, 1*time.Second, 25*time.Millisecond,
 		"K2 must process well within K1's backoff window")
+}
+
+// fifoTx is the empty transaction-scoped store for orderRecordingTxBehavior.
+// Like the serverconn egress sender it persists no domain state; the Commit
+// only folds the framework's lease-fenced ack and dedup mark.
+type fifoTx struct{}
+
+// orderRecordingTxBehavior is a Read/Commit TxBehavior that records the
+// consumption order of messages and can sleep a per-message duration to widen
+// the window for cross-worker reordering. It mirrors the serverconn egress
+// sender: the slow side effect (here a sleep, there an Edge.Send) runs with no
+// writer transaction held, then a short Commit consumes the message. That is
+// what lets a competing-consumer pool actually run in parallel -- a classic
+// ActorBehavior would instead hold the SQLite writer across the side effect and
+// serialize every worker, which is precisely the contention this design
+// removes.
+type orderRecordingTxBehavior struct {
+	mu       sync.Mutex
+	observed []string
+	delays   map[string]time.Duration
+}
+
+// newOrderRecordingTxBehavior returns a behavior that sleeps the configured
+// per-message-ID duration outside the writer transaction before committing.
+func newOrderRecordingTxBehavior(
+	delays map[string]time.Duration) *orderRecordingTxBehavior {
+
+	return &orderRecordingTxBehavior{
+		delays: delays,
+	}
+}
+
+// bindStores is the StoreFactory: the behavior joins no domain stores, so it
+// returns the empty fifoTx.
+func (b *orderRecordingTxBehavior) bindStores(context.Context,
+	actor.DeliveryStore) fifoTx {
+
+	return fifoTx{}
+}
+
+// Receive sleeps the message's configured delay with no writer lock held, then
+// commits to consume the message and records the consumption order.
+func (b *orderRecordingTxBehavior) Receive(ctx context.Context,
+	msg *keyedTestMsg, ax actor.Exec[fifoTx]) fn.Result[int] {
+
+	b.mu.Lock()
+	d := b.delays[msg.msgID()]
+	b.mu.Unlock()
+
+	// The side effect runs outside any transaction -- no writer is held, so
+	// sibling workers stay free to claim and commit other keys in parallel.
+	if d > 0 {
+		time.Sleep(d)
+	}
+
+	commit := func(context.Context, fifoTx) error { return nil }
+	if err := ax.Commit(ctx, commit); err != nil {
+		return fn.Err[int](err)
+	}
+
+	// Record after the Commit, so the order reflects true consumption: a
+	// same-key successor cannot be claimed until this predecessor's Commit
+	// deletes its row.
+	b.mu.Lock()
+	b.observed = append(b.observed, msg.msgID())
+	b.mu.Unlock()
+
+	return fn.Ok(1)
+}
+
+// order returns a snapshot of the consumption order observed so far.
+func (b *orderRecordingTxBehavior) order() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	cp := make([]string, len(b.observed))
+	copy(cp, b.observed)
+
+	return cp
+}
+
+// TestDurableActorPerKeyFIFOUnderWorkerPool proves the per-key FIFO claim
+// composes with the competing-consumer worker pool: a chain of same-key
+// messages is processed in strict emission order even though four workers
+// compete for the mailbox and the chain head deliberately processes slowly,
+// while independent keys interleave in parallel. Without the FIFO claim a
+// second worker would grab a later same-key message and finish it first.
+func TestDurableActorPerKeyFIFOUnderWorkerPool(t *testing.T) {
+	t.Parallel()
+
+	// Use the production sqlite configuration (WAL + busy_timeout +
+	// _txlock=immediate, multi-connection pool) so the four workers
+	// exercise real concurrent write transactions exactly as the daemon
+	// does, rather than serializing through a single connection.
+	rawDB := newConcurrentSQLiteDB(t)
+	require.NoError(t, RunMigrations(rawDB, sqlc.BackendTypeSqlite))
+
+	store, err := NewTxAwareDeliveryStoreFromDB(
+		rawDB, sqlc.BackendTypeSqlite, clock.NewDefaultClock(),
+		btclog.Disabled,
+	)
+	require.NoError(t, err)
+
+	const (
+		mailbox = "pool-fifo-actor"
+		hotKey  = "alice/round-1"
+	)
+
+	// The hot key carries a chain of six messages. The head sleeps the
+	// longest so that, without the per-key FIFO claim, a second worker that
+	// grabbed a later same-key message would finish first and reorder the
+	// chain.
+	now := time.Now()
+	hotChain := []string{"s-1", "s-2", "s-3", "s-4", "s-5", "s-6"}
+	delays := map[string]time.Duration{
+		"s-1": 40 * time.Millisecond,
+		"s-4": 25 * time.Millisecond,
+	}
+	for i, id := range hotChain {
+		preEnqueueKeyed(
+			t, store, mailbox, id, id, hotKey,
+			now.Add(time.Duration(i)*time.Millisecond),
+		)
+	}
+
+	// Independent keys give the other workers parallel work while the hot
+	// chain drains serially.
+	crossKeys := map[string]string{
+		"b-1": "bob/round-2",
+		"b-2": "bob/round-2",
+		"c-1": "carol/round-3",
+		"d-1": "dave/round-4",
+	}
+	crossIDs := []string{"b-1", "b-2", "c-1", "d-1"}
+	for j, id := range crossIDs {
+		preEnqueueKeyed(
+			t, store, mailbox, id, id, crossKeys[id], now.Add(
+				time.Duration(len(hotChain)+j)*
+					time.Millisecond,
+			),
+		)
+	}
+
+	totalMsgs := len(hotChain) + len(crossIDs)
+
+	codec := newKeyedTestCodec()
+	behavior := newOrderRecordingTxBehavior(delays)
+
+	// The egress-style Read/Commit path: the slow side effect runs with no
+	// writer held, so the four workers genuinely run in parallel.
+	cfg := actor.DefaultDurableTxActorConfig[*keyedTestMsg, int, fifoTx](
+		mailbox, behavior, behavior.bindStores, store, codec,
+	)
+	cfg.NumWorkers = 4
+	cfg.PollInterval = 10 * time.Millisecond
+	cfg.LeaseDuration = 5 * time.Second
+	cfg.HeartbeatInterval = 2 * time.Second
+
+	a := actor.NewDurableActor(cfg).UnwrapOrFail(t)
+	a.Start()
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer stopCancel()
+		require.NoError(t, a.StopAndWait(stopCtx))
+	}()
+
+	require.Eventually(t, func() bool {
+		return len(behavior.order()) == totalMsgs
+	}, 10*time.Second, 10*time.Millisecond,
+		"all messages should be processed")
+
+	observed := behavior.order()
+
+	// Exactly-once: every message appears exactly once.
+	counts := make(map[string]int)
+	for _, id := range observed {
+		counts[id]++
+	}
+	require.Len(t, counts, totalMsgs)
+	for id, c := range counts {
+		require.Equalf(t, 1, c, "message %s processed %d times", id, c)
+	}
+
+	// The hot key's messages appear in strict emission order despite four
+	// competing workers and a deliberately slow head.
+	var hotOrder []string
+	for _, id := range observed {
+		if strings.HasPrefix(id, "s-") {
+			hotOrder = append(hotOrder, id)
+		}
+	}
+	require.Equal(
+		t, hotChain, hotOrder, "per-key FIFO must hold same-key "+
+			"messages in emission order under a "+
+			"competing-consumer worker pool",
+	)
+
+	// Sanity: at least one cross-key message completed before the hot chain
+	// finished, proving the pool ran keys in parallel rather than draining
+	// the hot key first.
+	var crossBeforeHotTail bool
+	for _, id := range observed {
+		if id == "s-6" {
+			break
+		}
+		if !strings.HasPrefix(id, "s-") {
+			crossBeforeHotTail = true
+
+			break
+		}
+	}
+	require.True(
+		t, crossBeforeHotTail,
+		"expected cross-key messages to interleave with the hot chain",
+	)
 }
