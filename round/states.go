@@ -3,6 +3,7 @@ package round
 import (
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -274,6 +275,18 @@ type CommitmentTxReceivedState struct {
 
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// TreeCosignKey is the operator's per-round VTXO-tree MuSig2 cosigner
+	// key delivered with the commitment tx. Used to validate the VTXO tree
+	// (and, via the extracted client trees, sign it) instead of the global
+	// operator key. Nil when the server predates the field; the FSM then
+	// falls back to the global operator key.
+	TreeCosignKey *btcec.PublicKey
+
+	// ConnectorOperatorKey is the operator key this round used to build its
+	// connector tree. Used to reconstruct/validate the connector ancestry
+	// instead of the global operator key. Nil for older servers (fallback).
+	ConnectorOperatorKey *btcec.PublicKey
 
 	// Intents contains all the client's intents for this round.
 	Intents Intents

@@ -272,6 +272,24 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 		}
 	}
 
+	// Parse this round's signing keys when present. A server that predates
+	// these fields leaves them empty; the FSM then falls back to the global
+	// operator key for tree validation and connector reconstruction.
+	if len(pb.TreeCosignKey) > 0 {
+		key, keyErr := btcec.ParsePubKey(pb.TreeCosignKey)
+		if keyErr != nil {
+			return fmt.Errorf("tree_cosign_key: %w", keyErr)
+		}
+		e.TreeCosignKey = key
+	}
+	if len(pb.ConnectorOperatorKey) > 0 {
+		key, keyErr := btcec.ParsePubKey(pb.ConnectorOperatorKey)
+		if keyErr != nil {
+			return fmt.Errorf("connector_operator_key: %w", keyErr)
+		}
+		e.ConnectorOperatorKey = key
+	}
+
 	return nil
 }
 

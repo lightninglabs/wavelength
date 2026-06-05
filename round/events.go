@@ -168,6 +168,21 @@ type CommitmentTxBuilt struct {
 	// (e.g., MaxTreeNodes limit) and passed through to
 	// roundpb.TreeFromProto during FromProto.
 	TreeOpts []roundpb.TreeFromProtoOption
+
+	// TreeCosignKey is the operator's MuSig2 cosigner key for this round's
+	// VTXO output tree, derived fresh per round by the server. The client
+	// aggregates and validates the tree against this key instead of the
+	// operator's global GetInfo key, so an operator key rotation does not
+	// change the tree key the client must agree on. Nil when talking to a
+	// server that predates this field; callers fall back to the global
+	// operator key.
+	TreeCosignKey *btcec.PublicKey
+
+	// ConnectorOperatorKey is the operator key this round used to build its
+	// connector tree. The client reconstructs the connector tree from it
+	// instead of the global operator key. Nil when talking to an older
+	// server; callers fall back to the global operator key.
+	ConnectorOperatorKey *btcec.PublicKey
 }
 
 func (e *CommitmentTxBuilt) clientEventSealed() {}

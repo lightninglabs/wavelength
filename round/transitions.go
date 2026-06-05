@@ -1370,13 +1370,17 @@ func (s *RoundJoinedState) ProcessEvent(ctx context.Context, event ClientEvent,
 
 		return &ClientStateTransition{
 			NextState: &CommitmentTxReceivedState{
-				RoundID:       evt.RoundID,
-				CommitmentTx:  evt.Tx,
-				TxID:          txid,
-				VTXOTreePaths: evt.VTXOTreePaths,
-				Intents:       s.Intents.Clone(),
-				ClientTrees:   make(map[SignerKey]*tree.Tree),
-				Quote:         s.Quote,
+				RoundID:              evt.RoundID,
+				CommitmentTx:         evt.Tx,
+				TxID:                 txid,
+				VTXOTreePaths:        evt.VTXOTreePaths,
+				TreeCosignKey:        evt.TreeCosignKey,
+				ConnectorOperatorKey: evt.ConnectorOperatorKey,
+				Intents:              s.Intents.Clone(),
+				ClientTrees: make(
+					map[SignerKey]*tree.Tree,
+				),
+				Quote: s.Quote,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				InternalEvent: []ClientEvent{evt},
@@ -1615,6 +1619,23 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			slog.Int("leave_intent_count", len(s.Intents.Leaves)),
 		)
 
+		// Resolve this round's operator signing keys, falling back to
+		// the global operator key when talking to a server that
+		// predates the per-round fields. treeCosignKey is the
+		// operator's MuSig2 cosigner for this round's VTXO tree
+		// (independent of the identity key); connectorOperatorKey is
+		// what the connector tree was built with. Using the
+		// round-delivered keys keeps a client on a previous
+		// operator-key epoch in agreement with the server.
+		treeCosignKey := s.TreeCosignKey
+		if treeCosignKey == nil {
+			treeCosignKey = env.OperatorTerms.PubKey
+		}
+		connectorOperatorKey := s.ConnectorOperatorKey
+		if connectorOperatorKey == nil {
+			connectorOperatorKey = env.OperatorTerms.PubKey
+		}
+
 		// Validate boarding inputs if we have any boarding intents.
 		// Refresh-only rounds have no boarding inputs to validate.
 		var boardingInputIndices map[wire.OutPoint]int
@@ -1739,7 +1760,7 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			for _, vtxoTree := range s.VTXOTreePaths {
 				clientTree, validateErr = vtxoTree.ValidatePath(
 					vtxoReq.SigningKey.PubKey, expectedLeaf,
-					env.OperatorTerms.PubKey,
+					treeCosignKey,
 				)
 				if validateErr == nil {
 					// Found the VTXO in this tree.
@@ -1828,7 +1849,7 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 		// deterministic CPU work (the lib/tree materializer ignores its
 		// context); there is no I/O to cancel, so no context to thread.
 		if err := validateConnectorAncestry(
-			s.CommitmentTx.UnsignedTx, env.OperatorTerms.PubKey,
+			s.CommitmentTx.UnsignedTx, connectorOperatorKey,
 			evt.ForfeitMappings,
 		); err != nil {
 			// Error carried into failed state.
