@@ -3541,9 +3541,8 @@ func unrollInfeasibleError(f unroll.ExitFeasibility) error {
 		return status.Errorf(codes.FailedPrecondition, "insufficient "+
 			"wallet UTXOs to fund unroll CPFP: need at least %d "+
 			"confirmed wallet UTXO(s) of >= %d sat each (one per "+
-			"ancestry path), have %d usable. Fund the wallet's "+
-			"onchain address with more inputs and retry.",
-			f.RequiredWalletInputs,
+			"ancestry path), have %d usable. Call GetExitPlan for "+
+			"funding details.", f.RequiredWalletInputs,
 			int64(preflightUnrollMinUTXOSat), f.WalletUsableInputs)
 
 	default:

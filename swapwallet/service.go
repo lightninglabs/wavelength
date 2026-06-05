@@ -91,6 +91,25 @@ func (s *Service) Exit(ctx context.Context, req *walletdkrpc.ExitRequest) (
 	return s.exit(ctx, req)
 }
 
+// GetExitPlan previews whether the backing wallet has enough confirmed fee
+// inputs for unilateral exit and returns a backing-wallet funding address when
+// more fee inputs are needed.
+func (s *Service) GetExitPlan(ctx context.Context,
+	req *walletdkrpc.GetExitPlanRequest) (*walletdkrpc.GetExitPlanResponse,
+	error) {
+
+	return s.getExitPlan(ctx, req)
+}
+
+// SweepWallet previews or broadcasts a normal backing-wallet sweep. Boarding
+// UTXOs remain owned by the dedicated boarding-sweep flow.
+func (s *Service) SweepWallet(ctx context.Context,
+	req *walletdkrpc.SweepWalletRequest) (*walletdkrpc.SweepWalletResponse,
+	error) {
+
+	return s.sweepWallet(ctx, req)
+}
+
 // ExitStatus reports the current phase of an exit (unroll) job for the
 // specified VTXO outpoint by proxying daemonrpc.GetUnrollStatus.
 func (s *Service) ExitStatus(ctx context.Context,

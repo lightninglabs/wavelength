@@ -85,6 +85,15 @@ type RPCServer interface {
 		req *daemonrpc.GetUnrollStatusRequest) (
 		*daemonrpc.GetUnrollStatusResponse, error)
 
+	GetExitPlan(ctx context.Context,
+		req *darepod.ExitPlanRequest) (*darepod.ExitPlanResponse, error)
+
+	SweepWallet(ctx context.Context,
+		req *darepod.SweepWalletRequest) (
+		*darepod.SweepWalletResponse,
+		error,
+	)
+
 	JoinNextRound(ctx context.Context,
 		req *daemonrpc.JoinNextRoundRequest) (
 		*daemonrpc.JoinNextRoundResponse, error)

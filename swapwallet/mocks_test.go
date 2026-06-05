@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/wallet"
 )
@@ -66,6 +67,16 @@ type fakeRPCServer struct {
 	unrollStatusErr   error
 	unrollStatusCalls int
 	unrollStatusLast  *daemonrpc.GetUnrollStatusRequest
+
+	exitPlanResp  *darepod.ExitPlanResponse
+	exitPlanErr   error
+	exitPlanCalls int
+	exitPlanLast  *darepod.ExitPlanRequest
+
+	sweepWalletResp  *darepod.SweepWalletResponse
+	sweepWalletErr   error
+	sweepWalletCalls int
+	sweepWalletLast  *darepod.SweepWalletRequest
 
 	joinNextRoundResp  *daemonrpc.JoinNextRoundResponse
 	joinNextRoundErr   error
@@ -210,6 +221,30 @@ func (f *fakeRPCServer) GetUnrollStatus(_ context.Context,
 	f.unrollStatusLast = req
 
 	return f.unrollStatusResp, f.unrollStatusErr
+}
+
+func (f *fakeRPCServer) GetExitPlan(_ context.Context,
+	req *darepod.ExitPlanRequest) (*darepod.ExitPlanResponse, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.exitPlanCalls++
+	f.exitPlanLast = req
+
+	return f.exitPlanResp, f.exitPlanErr
+}
+
+func (f *fakeRPCServer) SweepWallet(_ context.Context,
+	req *darepod.SweepWalletRequest) (*darepod.SweepWalletResponse, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.sweepWalletCalls++
+	f.sweepWalletLast = req
+
+	return f.sweepWalletResp, f.sweepWalletErr
 }
 
 func (f *fakeRPCServer) JoinNextRound(_ context.Context,

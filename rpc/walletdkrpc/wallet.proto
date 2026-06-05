@@ -66,6 +66,16 @@ service WalletService {
     // `getinfo` CLI verb covers the human-facing readiness view).
     rpc Status (StatusRequest) returns (StatusResponse);
 
+    // GetExitPlan previews unilateral-exit readiness for one VTXO. The
+    // response includes CPFP fee input requirements and, when funding is
+    // needed, a backing-wallet address callers can fund before forced unroll.
+    rpc GetExitPlan (GetExitPlanRequest) returns (GetExitPlanResponse);
+
+    // SweepWallet previews or broadcasts a normal backing-wallet sweep to a
+    // caller-supplied Bitcoin address. This sweeps wallet-managed funds left
+    // after CPFP/change/unroll proceeds and does not sweep boarding outputs.
+    rpc SweepWallet (SweepWalletRequest) returns (SweepWalletResponse);
+
     // Exit queues a cooperative leave for the specified VTXO outpoint by
     // default. When the caller supplies force_unroll_ack exactly, the daemon
     // starts a unilateral unroll instead after checking that the outpoint is
@@ -734,6 +744,97 @@ message StatusResponse {
     // pending_count is the number of WalletEntry rows in PENDING
     // status.
     uint32 pending_count = 5;
+}
+
+message GetExitPlanRequest {
+    // outpoint is the VTXO outpoint to unilaterally exit, formatted as
+    // "txid:index".
+    string outpoint = 1;
+
+    // conf_target selects the fee-estimation target in blocks. Zero uses the
+    // daemon's default unroll confirmation target.
+    uint32 conf_target = 2;
+}
+
+message GetExitPlanResponse {
+    // funding_address is a backing-wallet Bitcoin address for missing fee
+    // inputs. It is reused for the same outpoint while the daemon is running.
+    // Funds sent here are not boarded; they become wallet UTXOs available for
+    // unroll CPFP fee inputs.
+    string funding_address = 1;
+
+    // required_confirmations is the number of confirmations a funding UTXO
+    // must have before it can be used for unroll CPFP.
+    uint32 required_confirmations = 2;
+
+    // fee_rate_sat_per_vbyte is the chain fee estimate used for sizing.
+    int64 fee_rate_sat_per_vbyte = 3;
+
+    // required_fee_utxo_count is the number of independent confirmed wallet
+    // UTXOs needed: one per independent VTXO ancestry path.
+    uint32 required_fee_utxo_count = 4;
+
+    // usable_fee_utxo_count is the current number of confirmed non-boarding
+    // wallet UTXOs large enough to use as CPFP fee inputs.
+    uint32 usable_fee_utxo_count = 5;
+
+    // recommended_utxo_amount_sat is the recommended amount for each funding
+    // UTXO sent to funding_address.
+    int64 recommended_utxo_amount_sat = 6;
+
+    // recommended_total_funding_sat is the total recommended funding amount
+    // needed for the missing fee-input UTXOs.
+    int64 recommended_total_funding_sat = 7;
+
+    // funding_shortfall_sat is the currently missing recommended funding
+    // amount after accounting for usable fee UTXOs already in the wallet.
+    int64 funding_shortfall_sat = 8;
+
+    // can_start is true when the wallet currently has enough confirmed fee
+    // inputs to admit Exit without contaminating VTXO state.
+    bool can_start = 9;
+
+    // exit_job_found is true when a durable unroll job already exists for this
+    // outpoint. exit_status/sweep_txid/last_error then describe that job.
+    bool exit_job_found = 10;
+
+    ExitJobStatus exit_status = 11;
+    string sweep_txid = 12;
+    string last_error = 13;
+}
+
+message SweepWalletRequest {
+    // destination_address is the Bitcoin address that receives the backing
+    // wallet funds after fees.
+    string destination_address = 1;
+
+    // broadcast controls whether the sweep is only previewed or also signed
+    // and published.
+    bool broadcast = 2;
+
+    // fee_rate_sat_per_vbyte overrides chain fee estimation when positive.
+    int64 fee_rate_sat_per_vbyte = 3;
+
+    // conf_target selects the fee-estimation target in blocks when
+    // fee_rate_sat_per_vbyte is unset. Zero uses the daemon's default unroll
+    // confirmation target.
+    uint32 conf_target = 4;
+}
+
+message WalletSweepInput {
+    string outpoint = 1;
+    int64 amount_sat = 2;
+}
+
+message SweepWalletResponse {
+    repeated WalletSweepInput inputs = 1;
+    int64 total_input_sat = 2;
+    int64 estimated_fee_sat = 3;
+    int64 net_amount_sat = 4;
+    int64 fee_rate_sat_per_vbyte = 5;
+    bool can_broadcast = 6;
+    string txid = 7;
+    string failure_reason = 8;
 }
 
 message ExitRequest {

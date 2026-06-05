@@ -885,6 +885,28 @@ func (c *WalletServiceClient) Status(ctx context.Context,
 	return out, err
 }
 
+// GetExitPlan previews wallet unilateral-exit funding readiness.
+func (c *WalletServiceClient) GetExitPlan(ctx context.Context,
+	in *walletdkrpc.GetExitPlanRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.GetExitPlanResponse, error) {
+
+	out := new(walletdkrpc.GetExitPlanResponse)
+	err := c.client.Post(ctx, "/v1/wallet/exit-plan", in, out)
+
+	return out, err
+}
+
+// SweepWallet previews or broadcasts a backing-wallet sweep.
+func (c *WalletServiceClient) SweepWallet(ctx context.Context,
+	in *walletdkrpc.SweepWalletRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.SweepWalletResponse, error) {
+
+	out := new(walletdkrpc.SweepWalletResponse)
+	err := c.client.Post(ctx, "/v1/wallet/sweep-wallet", in, out)
+
+	return out, err
+}
+
 // Exit starts a wallet unilateral exit.
 func (c *WalletServiceClient) Exit(ctx context.Context,
 	in *walletdkrpc.ExitRequest, _ ...grpc.CallOption) (
