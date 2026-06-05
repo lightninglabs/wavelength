@@ -71,7 +71,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 17` — current schema version.
+- `LatestMigrationVersion = 18` — current schema version.
 - `SpendingReservationPersistenceStore` — Persists the durable index of VTXO
   outpoints reserved by an active spend owner (e.g. an outgoing OOR session).
   A row exists IFF the owning session was durably checkpointed, so a startup
