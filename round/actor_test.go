@@ -1036,11 +1036,16 @@ func TestActorLifecycle(t *testing.T) {
 			Recoverable: true,
 		})
 
-		// The failed round is reaped, leaving no rounds tracked.
-		require.Empty(
-			t, h.queryState(),
-			"failed round should be reaped",
+		// The failed round stays observable in ClientFailedState — it
+		// is reaped lazily at the next assembly, not on entry, so a
+		// consumer can still see the failure (darepo-client#602).
+		state := h.queryState()
+		require.Len(
+			t, state, 1, "failed round should remain observable",
 		)
+		for _, info := range state {
+			require.IsType(t, &ClientFailedState{}, info.State)
+		}
 	})
 
 	t.Run("concurrent_rounds", func(t *testing.T) {
@@ -1424,10 +1429,21 @@ func TestActorServerMessageRouting(t *testing.T) {
 			h.sendServerMessage(event)
 
 			if tc.expectReaped {
-				require.Empty(
-					h.t, h.queryState(),
-					"failed round should be reaped",
+				// Failed rounds are reaped lazily at the next
+				// assembly, not on entry, so the round remains
+				// observable in ClientFailedState here
+				// (darepo-client#602).
+				state := h.queryState()
+				require.Len(
+					h.t, state, 1,
+					"failed round should remain observable",
 				)
+				for _, info := range state {
+					require.IsType(
+						h.t, &ClientFailedState{},
+						info.State,
+					)
+				}
 			} else {
 				h.assertFSMState(tc.expectedState)
 			}
@@ -2128,12 +2144,14 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 			"actor receive failed: %v", result.Err(),
 		)
 
-		// The failed round is reaped so it does not linger in the
-		// actor's map. The failure reason/recoverability is covered by
-		// the FSM-level forfeit-collection-timeout test.
+		// The failed round stays observable in ClientFailedState; it is
+		// reaped lazily at the next assembly, not on entry
+		// (darepo-client#602). The failure reason/recoverability is
+		// covered by the FSM-level forfeit-collection-timeout test.
 		states := h.queryState()
-		_, exists := states[string(keyStr)]
-		require.False(t, exists, "failed round should be reaped")
+		info, exists := states[string(keyStr)]
+		require.True(t, exists, "failed round should remain observable")
+		require.IsType(t, &ClientFailedState{}, info.State)
 	})
 
 	t.Run("ignores_unknown_timeout_phase", func(t *testing.T) {
@@ -2228,17 +2246,28 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 			"timeout receive failed: %v", result.Err(),
 		)
 
-		// The first round failed on timeout and is reaped.
+		// The first round failed on timeout but stays observable in
+		// ClientFailedState — reaping is deferred to the next assembly
+		// (darepo-client#602).
 		keyStr1 := RoundKeyStr(roundID1.KeyString())
 		states := h.queryState()
-		_, exists := states[string(keyStr1)]
-		require.False(t, exists, "failed round should be reaped")
+		info, exists := states[string(keyStr1)]
+		require.True(t, exists, "failed round should remain observable")
+		require.IsType(t, &ClientFailedState{}, info.State)
 
 		// Phase 2: Start a new round from a boarding confirmation,
-		// proving the actor is still healthy.
+		// proving the actor is still healthy. Assembling the new round
+		// also sweeps the stale failed round.
 		intent := h.newTestBoardingIntent()
 		h.sendWalletConfirmation(intent)
 		h.assertFSMState("PendingRoundAssembly")
+
+		states = h.queryState()
+		_, stillThere := states[string(keyStr1)]
+		require.False(
+			t, stillThere,
+			"failed round should be reaped at next assembly",
+		)
 
 		h.sendVTXORequests(50000)
 		h.clearServerMessages()
@@ -2284,11 +2313,27 @@ func TestActorReapsFailedRound(t *testing.T) {
 	}
 	require.True(t, h.receive(msg).IsOk())
 
-	// The failed round is reaped, leaving no rounds tracked.
+	// The round settled in ClientFailedState but is NOT reaped on entry: it
+	// stays observable so a consumer can see the failure. Reaping is
+	// deferred to the next assembly (darepo-client#602).
+	failed := h.queryState()
+	failedFSM, exists := failed[keyStr]
+	require.True(t, exists, "failed round should remain observable")
+	require.IsType(
+		t, &ClientFailedState{}, failedFSM.State,
+		"round should be observable in ClientFailedState",
+	)
+
+	// Starting a fresh round sweeps the stale failed round.
+	intent2 := h.newTestBoardingIntent()
+	h.sendWalletConfirmation(intent2)
+	h.assertFSMState("PendingRoundAssembly")
+
 	after := h.queryState()
-	_, exists := after[keyStr]
-	require.False(t, exists, "failed round should be reaped")
-	require.Empty(t, after, "no rounds should remain tracked")
+	_, stillThere := after[keyStr]
+	require.False(
+		t, stillThere, "failed round should be reaped at next assembly",
+	)
 }
 
 // TestRealTimeoutActorForfeitExpiry exercises the full timeout flow with a
@@ -2352,16 +2397,26 @@ func TestRealTimeoutActorForfeitExpiry(t *testing.T) {
 	require.True(t, result.IsOk(), "actor receive failed: %v",
 		result.Err())
 
-	// Verify the failed round is reaped after the real timeout fires.
+	// The failed round stays observable after the timeout fires — reaping
+	// is deferred to the next assembly, not done on entry
+	// (darepo-client#602).
 	keyStr := RoundKeyStr(roundID.KeyString())
 	states := h.queryState()
-	_, exists := states[string(keyStr)]
-	require.False(t, exists, "failed round should be reaped")
+	failedInfo, exists := states[string(keyStr)]
+	require.True(t, exists, "failed round should remain observable")
+	require.IsType(t, &ClientFailedState{}, failedInfo.State)
 
-	// Phase 2: Start a new round to prove actor recovery.
+	// Phase 2: Start a new round to prove actor recovery. Assembling the
+	// new round also sweeps the stale failed round.
 	intent := h.newTestBoardingIntent()
 	h.sendWalletConfirmation(intent)
 	h.assertFSMState("PendingRoundAssembly")
+
+	states = h.queryState()
+	_, stillThere := states[string(keyStr)]
+	require.False(
+		t, stillThere, "failed round should be reaped at next assembly",
+	)
 }
 
 // TestVTXOCreatedNotificationForwarding verifies that VTXOCreatedNotification

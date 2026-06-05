@@ -584,10 +584,13 @@ func (a *Ark) Start(ctx context.Context,
 // tick: a tick handler that takes longer than the interval (a few
 // seconds is common when ListUnspent races against retries) would
 // otherwise let ticker.C events accumulate and drown out self-Tells
-// the handler makes for boarding-sweep resume kicks. Errors from the
-// Tell are debug-logged but never escalated: the next tick will
-// retry, and any backlog the actor is processing will catch up on
-// its own.
+// the handler makes for boarding-sweep resume kicks. Transient errors
+// from the Tell are debug-logged but never escalated: the next tick
+// will retry, and any backlog the actor is processing will catch up on
+// its own. A terminated-actor error is the one exception — the mailbox
+// is gone for good, so the loop returns instead of spinning, because
+// the actor system can terminate the actor without invoking Stop()
+// (which is what cancels a.ctx), and a dead ref will never recover.
 func (a *Ark) runTipTickLoop(interval time.Duration) {
 	defer a.wg.Done()
 
@@ -612,10 +615,18 @@ func (a *Ark) runTipTickLoop(interval time.Duration) {
 			)
 			if err != nil {
 				a.tickInflight.Store(false)
+
+				// A terminated actor never recovers, so stop
+				// the loop rather than respin and re-log every
+				// tick against a dead mailbox.
+				if errors.Is(err, actor.ErrActorTerminated) {
+					return
+				}
+
 				a.logger(a.ctx).DebugS(
 					a.ctx,
 					"Failed to schedule tip tick",
-					err,
+					slog.String("err", err.Error()),
 				)
 			}
 		}
