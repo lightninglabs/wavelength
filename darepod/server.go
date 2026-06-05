@@ -228,12 +228,10 @@ type Server struct {
 	// handlers that require wallet access select on this channel.
 	walletReady chan struct{}
 
-	// exitPlanFundingAddresses caches backing-wallet funding addresses
-	// returned by GetExitPlan. A plan preview must be safe to poll, so
-	// callers should see the same address for the same VTXO instead of
-	// advancing the wallet's address index on every request.
-	exitPlanFundingAddresses   map[string]string
-	exitPlanFundingAddressesMu sync.Mutex
+	// exitFundingAddresses caches backing-wallet funding addresses returned
+	// by GetExitPlan. The unroll package owns the address-book policy so
+	// RPC handlers only request an address for a target.
+	exitFundingAddresses unroll.ExitFundingAddressBook
 
 	// daemonReady is closed when all startup steps have
 	// completed: wallet initialized, mailbox transport
