@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -734,4 +735,132 @@ func notifyMaterialized(ctx context.Context,
 	return mgr.Tell(ctx, &vtxo.VTXOsMaterializedNotification{
 		VTXOs: handled.MaterializedVTXOs,
 	})
+}
+
+// incomingReceive bundles one prepared incoming OOR receive for the concurrent
+// materialization systest.
+type incomingReceive struct {
+	sessionID        oor.SessionID
+	arkPSBT          *psbt.Packet
+	finalCheckpoints []*psbt.Packet
+	handler          *oor.LocalPersistenceOutboxHandler
+	outpoint         wire.OutPoint
+}
+
+// driveOneIncoming drives a single prepared incoming receive to completion.
+func driveOneIncoming(ctx context.Context, r incomingReceive,
+	managerRef actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]) error {
+
+	session, outbox, err := oor.DriveIncomingTransferWithCheckpoints(
+		ctx, r.sessionID, r.arkPSBT, r.finalCheckpoints, nil,
+	)
+	if err != nil {
+		return err
+	}
+
+	return driveIncomingOutbox(
+		ctx, session, r.handler, r.sessionID, managerRef, outbox,
+	)
+}
+
+// TestOORConcurrentIncomingMaterialization drives several independent incoming
+// OOR receives at the same time and verifies they all materialize. This is the
+// concurrent-receive shape behind issue #605: under the per-session model each
+// receive runs on its own actor, so a burst of receives makes progress in
+// parallel rather than serializing behind one global actor.
+func TestOORConcurrentIncomingMaterialization(t *testing.T) {
+	ParallelN(t)
+
+	f := newOORVTXOManagerSystestFixture(t, "concurrent-incoming")
+	ctx := f.h.Context()
+
+	const numReceives = 5
+
+	receives := make([]incomingReceive, 0, numReceives)
+	for i := 0; i < numReceives; i++ {
+		arkPSBT, finalCheckpoints, recipients, metadata, recipientKey,
+			operatorKey := buildSystemTestIncomingMaterialization(t)
+		sessionID := oor.SessionID(arkPSBT.UnsignedTx.TxHash())
+		expectedIndex := recipients[0].OutputIndex
+
+		err := seedIncomingRound(
+			ctx, f.roundStore, metadata.RoundID, f.clk.Now().Unix(),
+		)
+		require.NoError(t, err)
+
+		recvMetadata := metadata
+		recvKey := recipientKey
+		handler := &oor.LocalPersistenceOutboxHandler{
+			Store:       f.vtxoStore,
+			OperatorKey: operatorKey,
+			ExitDelay:   10,
+			NotifyIncomingVTXOs: func(_ context.Context,
+				_ []*vtxo.Descriptor) error {
+
+				return nil
+			},
+			ResolveIncomingClientKey: func(_ context.Context,
+				_ oor.ArkRecipientOutput) (
+				keychain.KeyDescriptor, error) {
+
+				return keychain.KeyDescriptor{
+					PubKey: recvKey.PubKey(),
+				}, nil
+			},
+			ResolveIncomingMetadata: func(_ context.Context,
+				_ oor.SessionID, _ oor.ArkRecipientOutput,
+				_ *psbt.Packet, _ []*psbt.Packet) (
+				oor.IncomingVTXOMetadata, error) {
+
+				return recvMetadata, nil
+			},
+		}
+
+		receives = append(receives, incomingReceive{
+			sessionID:        sessionID,
+			arkPSBT:          arkPSBT,
+			finalCheckpoints: finalCheckpoints,
+			handler:          handler,
+			outpoint: wire.OutPoint{
+				Hash:  arkPSBT.UnsignedTx.TxHash(),
+				Index: expectedIndex,
+			},
+		})
+	}
+
+	// Drive every receive at once. Each runs on its own session, so the
+	// burst should not serialize behind a single actor.
+	var wg sync.WaitGroup
+	errs := make([]error, numReceives)
+	for i := range receives {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+
+			errs[idx] = driveOneIncoming(
+				ctx, receives[idx], f.managerRef,
+			)
+		}(i)
+	}
+	wg.Wait()
+
+	for i := range errs {
+		require.NoError(t, errs[i])
+	}
+
+	// Every receive's VTXO must materialize and spawn a live VTXO actor.
+	require.Eventually(t, func() bool {
+		count, countErr := activeVTXOCount(ctx, f.managerRef)
+		if countErr != nil {
+			return false
+		}
+
+		return count == numReceives
+	}, oorVTXOManagerEventuallyTimeout, oorVTXOManagerEventuallyPoll)
+
+	for i := range receives {
+		desc, err := f.vtxoStore.GetVTXO(ctx, receives[i].outpoint)
+		require.NoError(t, err)
+		require.Equal(t, vtxo.VTXOStatusLive, desc.Status)
+	}
 }
