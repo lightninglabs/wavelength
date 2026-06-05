@@ -233,6 +233,13 @@ type Server struct {
 	// handlers that require wallet access select on this channel.
 	walletReady chan struct{}
 
+	// exitPlanFundingAddresses caches backing-wallet funding addresses
+	// returned by GetExitPlan. A plan preview must be safe to poll, so
+	// callers should see the same address for the same VTXO instead of
+	// advancing the wallet's address index on every request.
+	exitPlanFundingAddresses   map[string]string
+	exitPlanFundingAddressesMu sync.Mutex
+
 	// daemonReady is closed when all startup steps have
 	// completed: wallet initialized, mailbox transport
 	// connected, and wallet-dependent actors started. Test
@@ -5064,7 +5071,7 @@ func (s *Server) untrackFraudVTXO(ctx context.Context,
 // unrollMaxFeeRate returns the configured max fee rate or zero to let
 // the executor use its own default.
 func (s *Server) unrollMaxFeeRate() int64 {
-	if s.cfg.Unroll != nil &&
+	if s.cfg != nil && s.cfg.Unroll != nil &&
 		s.cfg.Unroll.MaxFeeRateSatPerVByte > 0 {
 		return s.cfg.Unroll.MaxFeeRateSatPerVByte
 	}

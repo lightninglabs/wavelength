@@ -194,6 +194,61 @@ func exitJobStatusFromProto(s walletdkrpc.ExitJobStatus) ExitJobStatus {
 	}
 }
 
+func exitPlanFromProto(
+	resp *walletdkrpc.GetExitPlanResponse) *GetExitPlanResult {
+
+	if resp == nil {
+		return &GetExitPlanResult{}
+	}
+
+	totalFundingSat := resp.GetRecommendedTotalFundingSat()
+
+	return &GetExitPlanResult{
+		FundingAddress:             resp.GetFundingAddress(),
+		RequiredConfirmations:      resp.GetRequiredConfirmations(),
+		FeeRateSatPerVByte:         resp.GetFeeRateSatPerVbyte(),
+		RequiredFeeUTXOCount:       resp.GetRequiredFeeUtxoCount(),
+		UsableFeeUTXOCount:         resp.GetUsableFeeUtxoCount(),
+		RecommendedUTXOAmountSat:   resp.GetRecommendedUtxoAmountSat(),
+		RecommendedTotalFundingSat: totalFundingSat,
+		FundingShortfallSat:        resp.GetFundingShortfallSat(),
+		CanStart:                   resp.GetCanStart(),
+		ExitJobFound:               resp.GetExitJobFound(),
+		ExitStatus: exitJobStatusFromProto(
+			resp.GetExitStatus(),
+		),
+		SweepTxid: resp.GetSweepTxid(),
+		LastError: resp.GetLastError(),
+	}
+}
+
+func sweepWalletFromProto(
+	resp *walletdkrpc.SweepWalletResponse) *SweepWalletResult {
+
+	if resp == nil {
+		return &SweepWalletResult{}
+	}
+
+	inputs := make([]WalletSweepInput, 0, len(resp.GetInputs()))
+	for _, input := range resp.GetInputs() {
+		inputs = append(inputs, WalletSweepInput{
+			Outpoint:  input.GetOutpoint(),
+			AmountSat: input.GetAmountSat(),
+		})
+	}
+
+	return &SweepWalletResult{
+		Inputs:             inputs,
+		TotalInputSat:      resp.GetTotalInputSat(),
+		EstimatedFeeSat:    resp.GetEstimatedFeeSat(),
+		NetAmountSat:       resp.GetNetAmountSat(),
+		FeeRateSatPerVByte: resp.GetFeeRateSatPerVbyte(),
+		CanBroadcast:       resp.GetCanBroadcast(),
+		Txid:               resp.GetTxid(),
+		FailureReason:      resp.GetFailureReason(),
+	}
+}
+
 // entryFromProto copies one wallet RPC entry into wrapper-owned fields so UI
 // and bridge callers do not need protobuf types.
 func entryFromProto(entry *walletdkrpc.WalletEntry) Entry {

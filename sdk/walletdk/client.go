@@ -486,6 +486,60 @@ func (c *Client) ExitStatus(ctx context.Context, req ExitStatusRequest) (
 	}, nil
 }
 
+// GetExitPlan previews whether the backing wallet is ready to start a
+// unilateral exit for one VTXO.
+func (c *Client) GetExitPlan(ctx context.Context, req GetExitPlanRequest) (
+	*GetExitPlanResult, error) {
+
+	if err := c.requireWalletRPC(); err != nil {
+		return nil, err
+	}
+	if req.Outpoint == "" {
+		return nil, fmt.Errorf("outpoint is required")
+	}
+
+	resp, err := c.wallet.GetExitPlan(
+		ctx, &walletdkrpc.GetExitPlanRequest{
+			Outpoint:   req.Outpoint,
+			ConfTarget: req.ConfTarget,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get exit plan: %w", err)
+	}
+
+	return exitPlanFromProto(resp), nil
+}
+
+// SweepWallet previews or broadcasts a sweep of confirmed backing-wallet
+// funds to the caller-supplied address.
+func (c *Client) SweepWallet(ctx context.Context, req SweepWalletRequest) (
+	*SweepWalletResult, error) {
+
+	if err := c.requireWalletRPC(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.DestinationAddress) == "" {
+		return nil, fmt.Errorf("destination_address is required")
+	}
+
+	resp, err := c.wallet.SweepWallet(
+		ctx, &walletdkrpc.SweepWalletRequest{
+			DestinationAddress: strings.TrimSpace(
+				req.DestinationAddress,
+			),
+			Broadcast:          req.Broadcast,
+			FeeRateSatPerVbyte: req.FeeRateSatPerVByte,
+			ConfTarget:         req.ConfTarget,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sweep wallet: %w", err)
+	}
+
+	return sweepWalletFromProto(resp), nil
+}
+
 // Status returns wallet readiness, balance, and pending activity counts.
 func (c *Client) Status(ctx context.Context) (*Status, error) {
 	if err := c.requireWalletRPC(); err != nil {

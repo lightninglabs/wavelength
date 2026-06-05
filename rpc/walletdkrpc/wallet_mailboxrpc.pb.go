@@ -42,6 +42,10 @@ type WalletServiceMailboxServer interface {
 	Balance(ctx context.Context, req *BalanceRequest) (*BalanceResponse, error)
 	// Status handles Status.
 	Status(ctx context.Context, req *StatusRequest) (*StatusResponse, error)
+	// GetExitPlan handles GetExitPlan.
+	GetExitPlan(ctx context.Context, req *GetExitPlanRequest) (*GetExitPlanResponse, error)
+	// SweepWallet handles SweepWallet.
+	SweepWallet(ctx context.Context, req *SweepWalletRequest) (*SweepWalletResponse, error)
 	// Exit handles Exit.
 	Exit(ctx context.Context, req *ExitRequest) (*ExitResponse, error)
 	// ExitStatus handles ExitStatus.
@@ -141,6 +145,26 @@ func RegisterWalletServiceMailboxServer(r rpc.Router, impl WalletServiceMailboxS
 		}
 
 		return impl.Status(ctx, req)
+	})
+	r.Handle("walletdkrpc.WalletService", "GetExitPlan", func() proto.Message {
+		return &GetExitPlanRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetExitPlanRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetExitPlan(ctx, req)
+	})
+	r.Handle("walletdkrpc.WalletService", "SweepWallet", func() proto.Message {
+		return &SweepWalletRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SweepWalletRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SweepWallet(ctx, req)
 	})
 	r.Handle("walletdkrpc.WalletService", "Exit", func() proto.Message {
 		return &ExitRequest{}
@@ -374,6 +398,52 @@ func (c *WalletServiceMailboxClient) Status(ctx context.Context, req *StatusRequ
 	}
 
 	resp := new(StatusResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetExitPlan calls the GetExitPlan RPC.
+func (c *WalletServiceMailboxClient) GetExitPlan(ctx context.Context, req *GetExitPlanRequest, opts ...rpc.RPCOptions) (*GetExitPlanResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "walletdkrpc.WalletService",
+		Method:  "GetExitPlan",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetExitPlanResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SweepWallet calls the SweepWallet RPC.
+func (c *WalletServiceMailboxClient) SweepWallet(ctx context.Context, req *SweepWalletRequest, opts ...rpc.RPCOptions) (*SweepWalletResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "walletdkrpc.WalletService",
+		Method:  "SweepWallet",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SweepWalletResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

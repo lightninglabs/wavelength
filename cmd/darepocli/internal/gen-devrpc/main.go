@@ -12,6 +12,7 @@ import (
 	btcwalletrpc "github.com/btcsuite/btcwallet/rpc/walletrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -21,6 +22,8 @@ const outputPath = "cmd/darepocli/darepoclicommands/devrpc/" +
 var expectedServices = []protoreflect.FullName{
 	"daemonrpc.DaemonService",
 	"swapclientrpc.SwapClientService",
+	"walletdkrpc.WalletService",
+	"walletdkrpc.WalletInspectionService",
 	"walletrpc.VersionService",
 	"walletrpc.WalletService",
 }
@@ -60,6 +63,7 @@ func collectServices() ([]serviceData, error) {
 	files := []protoreflect.FileDescriptor{
 		daemonrpc.File_daemon_proto,
 		swapclientrpc.File_swap_client_proto,
+		walletdkrpc.File_wallet_proto,
 		btcwalletrpc.File_api_proto,
 	}
 
@@ -151,6 +155,12 @@ func serviceAliases(service protoreflect.ServiceDescriptor) []string {
 
 	case "swapclientrpc.SwapClientService":
 		return []string{"swapclient"}
+
+	case "walletdkrpc.WalletService":
+		return []string{"wallet"}
+
+	case "walletdkrpc.WalletInspectionService":
+		return []string{"wallet-inspection"}
 
 	case "walletrpc.VersionService":
 		return []string{"btcwallet-version"}
@@ -396,6 +406,11 @@ func render(services []serviceData) ([]byte, error) {
 		"	_ " +
 			"\"github.com/lightninglabs/darepo-client/rpc/swapcli" +
 			"entrpc\"\n",
+	)
+	buf.WriteString(
+		"	_ " +
+			"\"github.com/lightninglabs/darepo-client/rpc/walletd" +
+			"krpc\"\n",
 	)
 	buf.WriteString(")\n\n")
 
