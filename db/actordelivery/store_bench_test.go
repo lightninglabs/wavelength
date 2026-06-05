@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -108,5 +109,72 @@ func BenchmarkDeliveryMailboxRoundTrip(b *testing.B) {
 		rows, err := store.AckMessage(ctx, leased.ID, leaseToken)
 		require.NoError(b, err)
 		require.Equal(b, int64(1), rows)
+	}
+}
+
+// benchMailboxTrip runs one full durable mailbox trip (enqueue, lease, ack) on
+// the given mailbox. It is a free function to keep the concurrent benchmark's
+// worker body shallow.
+func benchMailboxTrip(ctx context.Context, store *Store, mailbox, id string,
+	payload []byte) {
+
+	token := "lease-" + id
+	_ = store.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          id,
+		MailboxID:   mailbox,
+		MessageType: "BenchMsg",
+		Payload:     payload,
+		AvailableAt: time.Now().Add(-time.Minute),
+		MaxAttempts: 3,
+	})
+
+	leased, err := store.LeaseNextMessage(
+		ctx, mailbox, token, 30*time.Second,
+	)
+	if err != nil || leased == nil {
+		return
+	}
+
+	_, _ = store.AckMessage(ctx, leased.ID, token)
+}
+
+// BenchmarkDeliveryConcurrentActors measures durable mailbox throughput as the
+// number of independent mailboxes processing in parallel grows. This is the
+// per-session sharding shape: the old global OOR actor funneled every session
+// through one mailbox, so unrelated sessions queued behind each other; the
+// per-session refactor gives each session its own mailbox. Each worker runs a
+// full enqueue/lease/ack trip on its own mailbox concurrently. The SQLite
+// writer is still a shared floor, but no session blocks behind its queue.
+func BenchmarkDeliveryConcurrentActors(b *testing.B) {
+	for _, mailboxes := range []int{1, 4, 16, 64} {
+		b.Run(fmt.Sprintf("mailboxes=%d",
+			mailboxes), func(b *testing.B) {
+			ctx := context.Background()
+			store := newBenchStore(b)
+			payload := make([]byte, 256)
+			perWorker := (b.N + mailboxes - 1) / mailboxes
+
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			var wg sync.WaitGroup
+			for w := 0; w < mailboxes; w++ {
+				wg.Add(1)
+				go func(worker int) {
+					defer wg.Done()
+
+					mailbox := fmt.Sprintf("mb-%d", worker)
+					for i := 0; i < perWorker; i++ {
+						id := fmt.Sprintf("m-%d-%d",
+							worker, i)
+						benchMailboxTrip(
+							ctx, store, mailbox, id,
+							payload,
+						)
+					}
+				}(w)
+			}
+			wg.Wait()
+		})
 	}
 }
