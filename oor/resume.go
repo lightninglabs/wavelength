@@ -4,6 +4,30 @@ import (
 	"fmt"
 )
 
+// resumeOutboxForIncomingState returns the outbox to re-drive for an incoming
+// state on resume. An incoming session mid-backoff on metadata resolution must
+// resume by re-scheduling the retry rather than firing the query immediately:
+// otherwise a restart during one of the capped backoff windows resets the wait
+// to zero, and repeated restarts burn through maxMetadataRetries far faster
+// than the intended schedule while re-spinning the operator mailbox. The
+// persisted attempt count reproduces the same deterministic delay.
+func resumeOutboxForIncomingState(state SessionState) ([]OutboxEvent, error) {
+	notified, ok := state.(*ReceiveNotified)
+	if ok && notified.MetadataAttempts > 0 {
+		return []OutboxEvent{
+			&ScheduleRetryRequest{
+				After: metadataRetryBackoff(
+					notified.MetadataAttempts,
+				),
+				Reason: "incoming metadata retry resumed " +
+					"after restart",
+			},
+		}, nil
+	}
+
+	return OutboxForIncomingState(state)
+}
+
 // OutboxForIncomingState returns the outbox implied by the current incoming
 // receive state.
 func OutboxForIncomingState(state SessionState) ([]OutboxEvent, error) {
