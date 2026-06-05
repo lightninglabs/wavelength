@@ -25,8 +25,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeRegistryStore is an in-memory SessionRegistryStore for unit tests.
+// fakeRegistryStore is an in-memory SessionRegistryStore for unit tests. The
+// mutex makes it safe for end-to-end tests where real child actors write
+// snapshots concurrently with registry-goroutine reads.
 type fakeRegistryStore struct {
+	mu   sync.Mutex
 	rows map[chainhash.Hash]clientdb.OORSessionRegistryRecord
 }
 
@@ -41,6 +44,9 @@ func newFakeRegistryStore() *fakeRegistryStore {
 func (s *fakeRegistryStore) UpsertSession(_ context.Context,
 	record clientdb.OORSessionRegistryRecord) error {
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.rows[record.SessionID] = record
 
 	return nil
@@ -48,6 +54,9 @@ func (s *fakeRegistryStore) UpsertSession(_ context.Context,
 
 func (s *fakeRegistryStore) GetSession(_ context.Context,
 	sessionID chainhash.Hash) (*clientdb.OORSessionRegistryRecord, error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	record, ok := s.rows[sessionID]
 	if !ok {
@@ -60,6 +69,9 @@ func (s *fakeRegistryStore) GetSession(_ context.Context,
 func (s *fakeRegistryStore) LookupActiveSessionByIdempotencyKey(
 	_ context.Context, key string) (*clientdb.OORSessionRegistryRecord,
 	error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	for i := range s.rows {
 		record := s.rows[i]
@@ -74,6 +86,9 @@ func (s *fakeRegistryStore) LookupActiveSessionByIdempotencyKey(
 
 func (s *fakeRegistryStore) ListNonTerminal(_ context.Context) (
 	[]clientdb.OORSessionRegistryRecord, error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	var out []clientdb.OORSessionRegistryRecord
 	for i := range s.rows {

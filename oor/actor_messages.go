@@ -49,6 +49,11 @@ const (
 	// SessionTerminalNotification messages sent from a per-session child
 	// to the registry coordinator after a terminal commit.
 	SessionTerminalNotificationTLVType tlv.Type = 0x7019
+
+	// RestoreNonTerminalRequestTLVType identifies the boot-time control
+	// message that runs the non-terminal session restore on the registry
+	// goroutine.
+	RestoreNonTerminalRequestTLVType tlv.Type = 0x701a
 )
 
 // OORDurableMsg is the message constraint for the OOR durable actor mailbox.
@@ -770,6 +775,38 @@ func (m *SessionTerminalNotification) Decode(r io.Reader) error {
 
 	m.SessionID = sessionID
 
+	return nil
+}
+
+// RestoreNonTerminalRequest asks the registry to respawn and resume every
+// non-terminal session from the control-plane store. Routing it through the
+// registry mailbox serializes the restore with any backlog the durable inbox
+// redelivers at boot, so the active set is only ever touched on the registry
+// goroutine.
+type RestoreNonTerminalRequest struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the type of this message.
+func (m *RestoreNonTerminalRequest) MessageType() string {
+	return "RestoreNonTerminalRequest"
+}
+
+// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
+func (m *RestoreNonTerminalRequest) actorMsgSealed() {}
+
+// TLVType returns the unique TLV type identifier for this message.
+func (m *RestoreNonTerminalRequest) TLVType() tlv.Type {
+	return RestoreNonTerminalRequestTLVType
+}
+
+// Encode serializes the message; it carries no payload.
+func (m *RestoreNonTerminalRequest) Encode(io.Writer) error {
+	return nil
+}
+
+// Decode deserializes the message; it carries no payload.
+func (m *RestoreNonTerminalRequest) Decode(io.Reader) error {
 	return nil
 }
 

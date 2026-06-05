@@ -7,11 +7,31 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
+
+// newTestDeliveryStore creates a tx-aware delivery store for durable actor
+// tests.
+func newTestDeliveryStore(t *testing.T) actor.DeliveryStore {
+	t.Helper()
+
+	sqlDB := db.NewTestDB(t)
+	store, err := actordelivery.NewTxAwareDeliveryStoreFromDB(
+		sqlDB.DB, sqlDB.Backend(), clock.NewDefaultClock(),
+		btclog.Disabled,
+	)
+	require.NoError(t, err)
+
+	return store
+}
 
 // newTestTransferInput creates a minimally valid transfer input for unit
 // tests.
