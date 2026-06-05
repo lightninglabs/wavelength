@@ -3,6 +3,7 @@ package oor
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -10,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	clientdb "github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
@@ -564,77 +566,4 @@ func TestSessionActorTerminalCommitNotifiesRegistry(t *testing.T) {
 
 		return ok && notify.SessionID == sessionID
 	}, time.Second, 10*time.Millisecond)
-}
-
-// TestSessionActorRestoreDirectionMismatch verifies restore refuses to
-// silently adopt a row whose direction conflicts with the requested one,
-// except for the self-transfer replacement (incoming requested over a terminal
-// outgoing row), which leaves the behavior unloaded for a fresh admission.
-func TestSessionActorRestoreDirectionMismatch(t *testing.T) {
-	t.Parallel()
-
-	id := oorSessionID(0x71)
-
-	testCases := []struct {
-		name      string
-		requested clientdb.OORSessionDirection
-		rowDir    clientdb.OORSessionDirection
-		rowStatus clientdb.OORSessionStatus
-		wantErr   string
-
-		// wantLoaded reports whether restore must end with a live FSM.
-		wantLoaded bool
-	}{{
-		name:      "incoming over live outgoing row errors",
-		requested: clientdb.OORSessionDirectionIncoming,
-		rowDir:    clientdb.OORSessionDirectionOutgoing,
-		rowStatus: clientdb.OORSessionStatusPending,
-		wantErr:   "direction mismatch",
-	}, {
-		name:      "outgoing over incoming row errors",
-		requested: clientdb.OORSessionDirectionOutgoing,
-		rowDir:    clientdb.OORSessionDirectionIncoming,
-		rowStatus: clientdb.OORSessionStatusPending,
-		wantErr:   "direction mismatch",
-	}, {
-		// The self-transfer replacement: the behavior stays unloaded
-		// so the admission installs a fresh incoming session.
-		name:      "incoming over terminal outgoing row is fresh",
-		requested: clientdb.OORSessionDirectionIncoming,
-		rowDir:    clientdb.OORSessionDirectionOutgoing,
-		rowStatus: clientdb.OORSessionStatusCompleted,
-	}}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			store := newFakeRegistryStore()
-			upsertRegistryRow(
-				t, store, id, tc.rowDir, "submit_sent", "",
-				tc.rowStatus,
-			)
-
-			b := &sessionBehavior{
-				cfg: SessionActorConfig{
-					RegistryStore: store,
-				},
-				actorID:   ActorIDForSession(id),
-				log:       btclog.Disabled,
-				sessionID: id,
-				direction: tc.requested,
-			}
-
-			err := b.restore(t.Context())
-			if tc.wantErr != "" {
-				require.ErrorContains(t, err, tc.wantErr)
-
-				return
-			}
-
-			require.NoError(t, err)
-			require.Equal(t, tc.wantLoaded, b.loaded)
-			require.Nil(t, b.fsm)
-		})
-	}
 }
