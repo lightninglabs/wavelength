@@ -2750,36 +2750,33 @@ func (r *RPCServer) oorSigner() (input.Signer, error) {
 	return r.server.oorSigner()
 }
 
-// findOutgoingOORSessionByIdempotencyKey asks the OOR actor whether the daemon
-// already knows a keyed outgoing session before acquiring wallet or custom
-// inputs for the retry.
+// findOutgoingOORSessionByIdempotencyKey checks the durable session registry
+// for a live keyed outgoing session before acquiring wallet or custom inputs
+// for the retry. The lookup is a direct store read: the registry actor owns
+// all writes, while failed sessions are excluded so a retry after a failure
+// proceeds to a fresh admission.
 func (r *RPCServer) findOutgoingOORSessionByIdempotencyKey(ctx context.Context,
 	idempotencyKey string) (oor.SessionID, bool, error) {
 
-	if r.server.actorSystem == nil {
+	store := r.server.oorSessionStore
+	if store == nil {
 		return oor.SessionID{}, false, status.Errorf(codes.Internal,
-			"actor system not initialized")
+			"OOR session store not initialized")
 	}
 
-	oorRef := oor.NewServiceKey().Ref(r.server.actorSystem)
-	findReq := &oor.FindOutgoingSessionByIdempotencyKeyRequest{
-		IdempotencyKey: idempotencyKey,
-	}
-	future := oorRef.Ask(ctx, findReq)
+	record, err := store.LookupActiveSessionByIdempotencyKey(
+		ctx, idempotencyKey,
+	)
+	switch {
+	case errors.Is(err, db.ErrOORSessionNotFound):
+		return oor.SessionID{}, false, nil
 
-	actorResp, err := future.Await(ctx).Unpack()
-	if err != nil {
+	case err != nil:
 		return oor.SessionID{}, false, status.Errorf(codes.Internal,
 			"OOR idempotency lookup failed: %v", err)
 	}
 
-	resp, ok := actorResp.(*oor.FindOutgoingSessionByIdempotencyKeyResponse)
-	if !ok {
-		return oor.SessionID{}, false, status.Errorf(codes.Internal,
-			"unexpected response type: %T", actorResp)
-	}
-
-	return resp.SessionID, resp.Found, nil
+	return oor.SessionID(record.SessionID), true, nil
 }
 
 // buildOORChangeRecipient allocates and registers a wallet-owned receive
