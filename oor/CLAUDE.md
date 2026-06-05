@@ -11,6 +11,35 @@ resume semantics.
 For field-level detail, use `go doc github.com/lightninglabs/darepo-client/oor.<Symbol>`.
 State transitions and validation rules live under [Invariants](#invariants).
 
+### Per-Session Actor Model (current)
+
+The daemon now runs **one durable actor per OOR session** instead of one global
+actor. See [docs/oor_subsystem.md](../docs/oor_subsystem.md) for the full design.
+
+- `OORSessionActor` / `sessionBehavior` — one durable actor per session on the
+  Read/Commit execution path. The FSM emits outbox events as before, but the
+  actor handles them itself in one shared `driveOutbox` switch (sign inline,
+  enqueue cross-actor transport to serverconn, materialize incoming VTXOs,
+  schedule retries) rather than routing them through an `OutboxHandler`.
+- `OORRegistryActor` — thin coordinator registered under the OOR service key.
+  It routes each message to the right session's child (hot-path `DriveEvent` via
+  Tell), dedups outgoing transfers by idempotency key, lazily spawns children,
+  routes retry-timer `ResumeSessionRequest` expiries to the owning child
+  (unknown/terminal sessions are benign no-ops), and `RestoreNonTerminal`
+  respawns **and resumes** in-flight sessions on boot: each restored child is
+  told a `ResumeSessionRequest` so it re-drives the outbox implied by its
+  restored state (retry timers are in-memory and do not survive restarts).
+- `ActorIDForSession` / `SessionRegistryStore` — deterministic per-session
+  mailbox id and the control-plane store. A session's full durable state lives
+  in one `oor_session_registry` row (queryable columns + an opaque resume
+  snapshot); OOR does not use the generic `fsm_checkpoints` blob.
+- `SessionActorConfig` / `OORRegistryConfig` — per-session and coordinator
+  configuration. `IncomingHandler` reuses `LocalPersistenceOutboxHandler` so the
+  materialization resolvers are not reimplemented.
+
+`OORClientActor` (the legacy single global actor) and `SigningEffectActor` are
+no longer wired into the daemon and are slated for deletion.
+
 ### Session, FSM & Actor Infrastructure
 
 - `SessionID` — stable session identifier (Ark txid hash in v0).
@@ -53,8 +82,14 @@ State transitions and validation rules live under [Invariants](#invariants).
   `MaxMailboxItems=10000`, `MaxMailboxScriptBytes=10000`). Zero fields
   are normalized; codec factories capture limits so deserialization
   enforces them.
-- `emitVTXOSent` / `emitVTXOsReceived` — internal ledger emitters
-  (gated on `fn.Some(LedgerSink)`).
+- `queueVTXOSent` / `queueVTXOsReceived` — internal ledger emitters
+  (gated on `fn.Some(LedgerSink)`). Staged into `pendingLedger` during
+  dispatch; `commitAck` Tells them to the durable ledger actor inside
+  the commit transaction (the ledger's `DurableMailbox.Send` joins the
+  ambient tx), so a committed turn can never lose its accounting. The
+  VTXO-manager and fraud-observer notifications stay post-commit
+  best-effort because both re-derive from the persisted VTXO rows at
+  boot.
 - `NewRetryCallbackRef` — bridges timeout-actor expiry notifications
   into OOR `ResumeSessionRequest` for event-driven retry.
 
@@ -66,9 +101,6 @@ State transitions and validation rules live under [Invariants](#invariants).
 - `DriveEventRequest` — generic wrapper: `(Event, SessionID)`. Used by
   outbox callbacks and durable unary response routes to feed events
   back into a running FSM.
-- `FindOutgoingSessionByIdempotencyKeyRequest` /
-  `…Response` — TLV-durable (`0x7018`); idempotent outgoing-session
-  lookup. `Found=false` ⇒ no session matches yet.
 - `ListSessionsRequest` / `…Response` — TLV-durable (`0x7017`).
   Carries `SessionDirection` filter and `PendingOnly`. Response is
   `[]SessionSummary`.
@@ -179,7 +211,8 @@ State transitions and validation rules live under [Invariants](#invariants).
   - → `vtxo` manager: `VTXOsMaterializedNotification`.
   - → `ledger` (when `LedgerSink` is `fn.Some`): `VTXOSentMsg` on
     `FinalizeAcceptedEvent`; `VTXOReceivedMsg{Source=SourceOOR}` per
-    materialized descriptor.
+    materialized descriptor. Told inside the commit transaction so
+    the accounting lands atomically with the session snapshot.
 - **Receives**:
   - ← `serverconn` (`EventRouter`): `SubmitAcceptedEvent`,
     `FinalizeAcceptedEvent`, `ResolveIncomingTransferRequest`.
@@ -271,11 +304,14 @@ State transitions and validation rules live under [Invariants](#invariants).
   (`newOORActorCodec`, `NewSigningEffectCodec`) so every deserialized
   message enforces the same caps as the in-memory path. Codec
   instances are shared per actor.
-- `StartTransferRequest.IdempotencyKey`: when non-empty, the actor
-  checks `FindOutgoingSessionByIdempotencyKeyRequest` before creating
-  a new session, returning `StartTransferResponse{Existing: true}` on
-  hit. Empty key preserves the historical deterministic
-  (Ark txid) session.
+- `StartTransferRequest.IdempotencyKey`: when non-empty, the registry
+  dedups admission against the durable store via
+  `LookupActiveSessionByIdempotencyKey`, returning
+  `StartTransferResponse{Existing: true}` on hit. Failed sessions
+  never answer for a key (a partial UNIQUE index on
+  `oor_session_registry` enforces at most one live-or-completed row
+  per key), so a keyed retry after a failure admits a fresh session.
+  Empty key preserves the historical deterministic (Ark txid) session.
 
 ## Deep Docs
 
