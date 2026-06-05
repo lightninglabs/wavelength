@@ -110,6 +110,19 @@ type DurableActorConfig[M TLVMessage, R any] struct {
 	// deduplication. Should exceed the maximum possible redelivery window.
 	// Default: 24 hours.
 	DeduplicationTTL time.Duration
+
+	// NumWorkers is how many concurrent worker loops drain the actor's
+	// mailbox. The default (and a value <= 0) is 1, which preserves the
+	// strictly-sequential per-actor processing other actors rely on. A
+	// value greater than 1 turns the actor into a competing-consumer pool:
+	// that many goroutines each lease distinct messages from the one shared
+	// mailbox via LeaseNextMailboxMessage, so independent messages are
+	// processed in parallel while the per-correlation-key FIFO claim still
+	// keeps same-key messages strictly ordered. Use it only for behaviors
+	// whose handlers are safe to run concurrently (e.g. the serverconn
+	// egress sender, which holds no writer across its Edge.Send). The
+	// behavior must not assume sequential delivery across keys.
+	NumWorkers int
 }
 
 // NewClassicBehavior wraps a classic ActorBehavior as the Left case of the
@@ -159,6 +172,7 @@ func DefaultDurableActorConfig[M TLVMessage, R any](
 		MaxAttempts:       10,
 		CleanupTimeout:    5 * time.Second,
 		DeduplicationTTL:  24 * time.Hour,
+		NumWorkers:        1,
 	}
 }
 
@@ -244,6 +258,11 @@ type DurableActor[M TLVMessage, R any] struct {
 	// deduplicationTTL is how long to keep processed message IDs.
 	deduplicationTTL time.Duration
 
+	// numWorkers is how many concurrent lease loops drain the shared
+	// mailbox. It is always >= 1; values <= 0 from the config are clamped
+	// at construction.
+	numWorkers int
+
 	// startOnce ensures the actor's processing loop starts only once.
 	startOnce sync.Once
 
@@ -297,6 +316,15 @@ func NewDurableActor[M TLVMessage, R any](
 	)
 	ctx, cancel := context.WithCancel(baseCtx)
 
+	// Clamp the worker count to at least one. A single worker preserves the
+	// strictly-sequential per-actor processing semantics; more than one
+	// turns the actor into a competing-consumer pool over its single
+	// mailbox.
+	numWorkers := cfg.NumWorkers
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
 	mailboxCfg := DurableMailboxConfig{
 		MailboxID:     cfg.ID,
 		Store:         cfg.Store,
@@ -305,6 +333,10 @@ func NewDurableActor[M TLVMessage, R any](
 		LeaseDuration: cfg.LeaseDuration,
 		PollInterval:  cfg.PollInterval,
 		MaxAttempts:   cfg.MaxAttempts,
+
+		// Size the wake channel to the worker count so a burst of
+		// enqueues can rouse every idle worker at once.
+		WakeBuffer: numWorkers,
 	}
 
 	tellPolicy := cfg.TellRetryPolicy
@@ -367,6 +399,7 @@ func NewDurableActor[M TLVMessage, R any](
 		heartbeatInterval: cfg.HeartbeatInterval,
 		cleanupTimeout:    cfg.CleanupTimeout,
 		deduplicationTTL:  deduplicationTTL,
+		numWorkers:        numWorkers,
 		done:              make(chan struct{}),
 	}
 
@@ -378,30 +411,52 @@ func NewDurableActor[M TLVMessage, R any](
 	return fn.Ok(actor)
 }
 
-// Start initiates the actor's message processing loop.
+// Start initiates the actor's message processing loops.
 func (a *DurableActor[M, R]) Start() {
 	a.startOnce.Do(func() {
 		a.started.Store(true)
 
 		logger(a.ctx).DebugS(a.ctx, "Starting durable actor",
 			"actor_id", a.id,
+			"num_workers", a.numWorkers,
 		)
 
 		if a.wg != nil {
 			a.wg.Add(1)
 		}
 
-		go a.process()
+		// Launch numWorkers competing lease loops over the one shared
+		// mailbox. With numWorkers == 1 this is the historical
+		// single-loop behavior. A supervisor goroutine joins them and
+		// runs teardown once, so the actor's done / Wg / Stoppable
+		// semantics are unchanged regardless of the worker count.
+		var workers sync.WaitGroup
+		for i := 0; i < a.numWorkers; i++ {
+			workers.Add(1)
+
+			go a.worker(&workers)
+		}
+
+		go func() {
+			workers.Wait()
+			a.teardown()
+
+			if a.wg != nil {
+				a.wg.Done()
+			}
+
+			close(a.done)
+		}()
 	})
 }
 
-// process is the main event loop for durable message processing.
-func (a *DurableActor[M, R]) process() {
-	defer close(a.done)
-
-	if a.wg != nil {
-		defer a.wg.Done()
-	}
+// worker runs a single lease loop, draining deliveries from the shared mailbox
+// until the actor context is cancelled. When the actor runs more than one
+// worker they compete for distinct messages via the store's lease, so
+// independent messages process in parallel; the per-correlation-key FIFO claim
+// keeps same-key messages ordered across workers.
+func (a *DurableActor[M, R]) worker(wg *sync.WaitGroup) {
+	defer wg.Done()
 
 	// Process messages from the durable mailbox.
 	for env := range a.mailbox.Receive(a.ctx) {
@@ -422,8 +477,14 @@ func (a *DurableActor[M, R]) process() {
 
 		a.processDelivery(delivery)
 	}
+}
 
-	// The actor's context has been cancelled. Close the mailbox.
+// teardown closes the mailbox and runs the Stoppable cleanup hook exactly once,
+// after every worker loop has exited. The supervisor goroutine started in Start
+// invokes it before signaling done.
+func (a *DurableActor[M, R]) teardown() {
+	// The actor's context has been cancelled and all workers have exited.
+	// Close the mailbox.
 	a.mailbox.Close()
 
 	// For durable mailboxes, we don't drain to DLO since messages persist
