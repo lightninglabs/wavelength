@@ -42,15 +42,19 @@ type OORRegistryConfig struct {
 	ActorSystem          actor.SystemContext
 }
 
-// OORRegistryActor is the thin coordinator over per-session OOR actors. It owns
-// admission, dedup, restore, and routing; it is registered under the OOR
+// OORRegistryActor is the thin coordinator over per-session OOR actors. It
+// owns admission, dedup, restore, and routing; it is registered under the OOR
 // service key so every OOR message lands here and is fanned out to the right
-// per-session child. The hot receive path (DriveEventRequest) is forwarded to a
-// child via Tell, so the registry's single goroutine never blocks on child
-// processing and independent sessions stay parallel.
+// per-session child. The registry's inbound mailbox is durable: a server-push
+// event is persisted before the ingress loop advances its ack watermark, so a
+// crash between ingress and the per-session child can never lose the event --
+// the registry turn (spawn + forward) is simply replayed. The hot receive path
+// (DriveEventRequest) is forwarded to a child via Tell, so the registry's
+// single goroutine never blocks on child processing and independent sessions
+// stay parallel.
 type OORRegistryActor struct {
 	ref      actor.ActorRef[OORDurableMsg, ActorResp]
-	registry *actor.Actor[OORDurableMsg, ActorResp]
+	registry *actor.DurableActor[OORDurableMsg, ActorResp]
 	behavior *oorRegistryBehavior
 }
 
@@ -59,13 +63,16 @@ func (a *OORRegistryActor) Ref() actor.ActorRef[OORDurableMsg, ActorResp] {
 	return a.ref
 }
 
-// Stop stops the registry and all active children.
+// Stop stops the registry and all active children. The Read/Stage/Commit
+// durable path has no Stoppable hook, so the children are stopped here, after
+// the registry goroutine has exited and can no longer touch the active set.
 func (a *OORRegistryActor) Stop() {
 	if a == nil || a.registry == nil {
 		return
 	}
 
 	a.registry.Stop()
+	a.behavior.stopChildren()
 }
 
 // NewOORRegistryActor creates and starts the OOR registry coordinator. Call
@@ -85,11 +92,21 @@ func NewOORRegistryActor(cfg OORRegistryConfig) (*OORRegistryActor, error) {
 	}
 	behavior.spawnFunc = behavior.spawn
 
-	registry := actor.NewActor(actor.ActorConfig[OORDurableMsg, ActorResp]{
-		ID:          OORActorServiceKeyName,
-		Behavior:    behavior,
-		MailboxSize: 64,
-	})
+	// The registry reuses the legacy global actor's mailbox id, so any
+	// unacked rows left by a pre-cutover deployment are drained through
+	// the same routing surface after an upgrade.
+	durableCfg := actor.DefaultDurableTxActorConfig[
+		OORDurableMsg, ActorResp, oorTx,
+	](
+		OORActorServiceKeyName, behavior, behavior.bindStores,
+		cfg.DeliveryStore, newOORActorCodec(cfg.Limits),
+	)
+	durableCfg.Log = cfg.Log
+
+	registry, err := actor.NewDurableActor(durableCfg).Unpack()
+	if err != nil {
+		return nil, fmt.Errorf("create oor registry actor: %w", err)
+	}
 	behavior.selfRef = registry.TellRef()
 	registry.Start()
 
@@ -114,14 +131,22 @@ func NewOORRegistryActor(cfg OORRegistryConfig) (*OORRegistryActor, error) {
 	return a, nil
 }
 
-// RestoreNonTerminal respawns a per-session actor for every non-terminal
-// registry row so in-flight sessions resume after a restart.
+// RestoreNonTerminal respawns and resumes a per-session actor for every
+// non-terminal registry row so in-flight sessions make progress after a
+// restart. The restore runs as a registry message so the active set is only
+// ever touched on the registry goroutine, serialized with any backlog the
+// durable inbox redelivers at boot.
 func (a *OORRegistryActor) RestoreNonTerminal(ctx context.Context) error {
 	if a == nil {
 		return fmt.Errorf("registry actor not initialized")
 	}
 
-	return a.behavior.restoreNonTerminal(ctx)
+	res := a.ref.Ask(ctx, &RestoreNonTerminalRequest{}).Await(ctx)
+	if res.IsErr() {
+		return res.Err()
+	}
+
+	return nil
 }
 
 // oorRegistryBehavior is the control-plane behavior around per-session actors.
@@ -148,17 +173,73 @@ func (r *oorRegistryBehavior) logger(ctx context.Context) btclog.Logger {
 	return build.LoggerFromContext(ctx)
 }
 
-// OnStop stops every active child actor when the registry shuts down.
-func (r *oorRegistryBehavior) OnStop(context.Context) error {
+// bindStores is the StoreFactory for the registry's Read/Stage/Commit path.
+func (r *oorRegistryBehavior) bindStores(_ context.Context,
+	ds actor.DeliveryStore) oorTx {
+
+	return oorTx{
+		store:   ds,
+		actorID: OORActorServiceKeyName,
+	}
+}
+
+// stopChildren stops every active child actor. Called by the registry wrapper
+// after the registry goroutine has exited.
+func (r *oorRegistryBehavior) stopChildren() {
 	for _, child := range r.active {
 		child.Stop()
 	}
-
-	return nil
 }
 
-// Receive fans one OOR message out to the right per-session child.
-func (r *oorRegistryBehavior) Receive(ctx context.Context,
+// Compile-time check that the registry runs on the Read/Stage/Commit path.
+var _ actor.TxBehavior[
+	OORDurableMsg, ActorResp, oorTx,
+] = (*oorRegistryBehavior)(nil)
+
+// Receive fans one OOR message out to the right per-session child. Read-only
+// probes return directly and are consumed via the framework's
+// non-transactional ack; routing and admission turns are consumed by one
+// lease-fenced empty Commit after the forward has been durably enqueued in
+// the target child's mailbox, so a crash mid-turn replays the spawn+forward
+// rather than losing the message.
+func (r *oorRegistryBehavior) Receive(ctx context.Context, msg OORDurableMsg,
+	ax actor.Exec[oorTx]) fn.Result[ActorResp] {
+
+	switch m := msg.(type) {
+	case *actor.RestartMessage:
+		// The active set is rebuilt by RestoreNonTerminal; the restart
+		// message carries no state to persist.
+		return fn.Ok[ActorResp](&DriveEventResponse{})
+
+	case *GetStateRequest:
+		return r.routeAsk(ctx, m.SessionID, m)
+
+	case *ListSessionsRequest:
+		return r.handleListSessions(ctx, m)
+	}
+
+	res := r.dispatch(ctx, msg)
+	if res.IsErr() {
+		return res
+	}
+
+	// Consume the routing turn: the forward (if any) is already persisted
+	// in the child's durable mailbox, so the empty Commit folds this
+	// message's lease-fenced ack and dedup mark into one short
+	// transaction. A crash before this point redelivers the message and
+	// replays the idempotent spawn+forward.
+	err := ax.Commit(ctx, func(context.Context, oorTx) error {
+		return nil
+	})
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	return res
+}
+
+// dispatch routes one state-bearing registry message to its handler.
+func (r *oorRegistryBehavior) dispatch(ctx context.Context,
 	msg OORDurableMsg) fn.Result[ActorResp] {
 
 	switch m := msg.(type) {
@@ -177,17 +258,26 @@ func (r *oorRegistryBehavior) Receive(ctx context.Context,
 	case *SessionTerminalNotification:
 		return r.handleSessionTerminal(ctx, m)
 
-	case *GetStateRequest:
-		return r.routeAsk(ctx, m.SessionID, m)
-
-	case *ListSessionsRequest:
-		return r.handleListSessions(ctx, m)
+	case *RestoreNonTerminalRequest:
+		return r.handleRestoreNonTerminal(ctx, m)
 
 	default:
 		return fn.Err[ActorResp](
 			fmt.Errorf("unknown oor registry message: %T", msg),
 		)
 	}
+}
+
+// handleRestoreNonTerminal runs the boot-time restore on the registry
+// goroutine.
+func (r *oorRegistryBehavior) handleRestoreNonTerminal(ctx context.Context,
+	_ *RestoreNonTerminalRequest) fn.Result[ActorResp] {
+
+	if err := r.restoreNonTerminal(ctx); err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	return fn.Ok[ActorResp](&DriveEventResponse{})
 }
 
 // handleStartTransfer admits a new outgoing session. The session id is the Ark
@@ -318,6 +408,60 @@ func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 	return fn.Ok[ActorResp](&DriveEventResponse{})
 }
 
+// resolveSelfTransfer applies the self-transfer invariant before an incoming
+// admission: a hint whose session id already exists as an outgoing session
+// (recipient == sender, so both sides share the Ark txid) errors until the
+// outgoing session reaches a terminal state; then the outgoing entry is
+// replaced by a fresh incoming session whose first commit overwrites the
+// terminal outgoing row.
+func (r *oorRegistryBehavior) resolveSelfTransfer(ctx context.Context,
+	sessionID SessionID) error {
+
+	record, err := r.cfg.RegistryStore.GetSession(
+		ctx, chainHashOf(sessionID),
+	)
+	switch {
+	case errors.Is(err, clientdb.ErrOORSessionNotFound):
+		return nil
+
+	case err != nil:
+		return err
+	}
+
+	if record.Direction != clientdb.OORSessionDirectionOutgoing {
+		return nil
+	}
+
+	// The hint is retried by the transport layer, so deferring is just an
+	// error until the outgoing session terminates.
+	if !record.Status.IsTerminal() {
+		r.logger(ctx).DebugS(ctx,
+			"Deferring incoming self-transfer hint until "+
+				"outgoing session reaches terminal state",
+			slog.String("session_id", sessionID.String()),
+			slog.String("phase", record.Phase),
+		)
+
+		return fmt.Errorf("outgoing session %s still active for "+
+			"incoming hint", sessionID)
+	}
+
+	// Replace: drop any resident outgoing child so the spawn below
+	// installs a fresh incoming session in its place. Terminal children
+	// are normally reaped already, so this is a belt-and-braces stop.
+	if child, ok := r.active[sessionID]; ok {
+		child.Stop()
+		delete(r.active, sessionID)
+	}
+
+	r.logger(ctx).InfoS(ctx, "Replacing terminal outgoing session with "+
+		"incoming self-transfer session",
+		slog.String("session_id", sessionID.String()),
+	)
+
+	return nil
+}
+
 // validateIncomingAdmission rejects incoming hints whose recipient pk script
 // the wallet does not own. Without this gate, a misbehaving operator could
 // spawn one durable child per fabricated session id; the recipient filter is
@@ -385,60 +529,6 @@ func (r *oorRegistryBehavior) handleSessionTerminal(ctx context.Context,
 	)
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
-}
-
-// resolveSelfTransfer applies the self-transfer invariant before an incoming
-// admission: a hint whose session id already exists as an outgoing session
-// (recipient == sender, so both sides share the Ark txid) errors until the
-// outgoing session reaches a terminal state; then the outgoing entry is
-// replaced by a fresh incoming session whose first commit overwrites the
-// terminal outgoing row.
-func (r *oorRegistryBehavior) resolveSelfTransfer(ctx context.Context,
-	sessionID SessionID) error {
-
-	record, err := r.cfg.RegistryStore.GetSession(
-		ctx, chainHashOf(sessionID),
-	)
-	switch {
-	case errors.Is(err, clientdb.ErrOORSessionNotFound):
-		return nil
-
-	case err != nil:
-		return err
-	}
-
-	if record.Direction != clientdb.OORSessionDirectionOutgoing {
-		return nil
-	}
-
-	// The hint is retried by the transport layer, so deferring is just an
-	// error until the outgoing session terminates.
-	if !record.Status.IsTerminal() {
-		r.logger(ctx).DebugS(ctx,
-			"Deferring incoming self-transfer hint until "+
-				"outgoing session reaches terminal state",
-			slog.String("session_id", sessionID.String()),
-			slog.String("phase", record.Phase),
-		)
-
-		return fmt.Errorf("outgoing session %s still active for "+
-			"incoming hint", sessionID)
-	}
-
-	// Replace: drop any resident outgoing child so the spawn below
-	// installs a fresh incoming session in its place. Terminal children
-	// are normally reaped already, so this is a belt-and-braces stop.
-	if child, ok := r.active[sessionID]; ok {
-		child.Stop()
-		delete(r.active, sessionID)
-	}
-
-	r.logger(ctx).InfoS(ctx, "Replacing terminal outgoing session with "+
-		"incoming self-transfer session",
-		slog.String("session_id", sessionID.String()),
-	)
-
-	return nil
 }
 
 // handleResumeSession routes a retry-timer expiry to its session's child so

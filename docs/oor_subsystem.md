@@ -32,6 +32,18 @@ admission of a new session, dedup of a repeated request, and restore on boot. It
 never sits on the hot path relaying every event, because that would re-serialize
 exactly what per-session actors exist to parallelize.
 
+The registry's own inbound mailbox is durable. The serverconn ingress loop
+acks (and deletes) the operator's envelope as soon as its dispatch Tell
+returns, so the first hop after ingress must persist the message before
+returning -- otherwise a crash between ingress and the per-session child loses
+a server push (a finalize acceptance, a submit acceptance, an incoming hint)
+that the operator will never re-send. With the durable inbox, a crash mid-turn
+just replays the registry's spawn-and-forward: the forward into the child's
+durable mailbox is idempotent, and a duplicate event is a no-op at the FSM.
+Boot restore runs as a registry message (`RestoreNonTerminalRequest`) so the
+active set is only ever touched on the registry goroutine, serialized with any
+backlog the durable inbox redelivers at startup.
+
 ## The session row is the single source of truth
 
 Every session has one row in `oor_session_registry`. The row carries two kinds

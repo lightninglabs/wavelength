@@ -3,14 +3,14 @@ package oor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
+	"time"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	clientdb "github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -452,7 +452,7 @@ func TestOORRegistryResumeRouting(t *testing.T) {
 
 			res := b.Receive(ctx, &ResumeSessionRequest{
 				SessionID: tc.sessionID,
-			})
+			}, fakeExec{})
 			require.True(t, res.IsOk(), res.Err())
 
 			require.Equal(t, tc.wantSpawns, rec.spawns)
@@ -485,13 +485,141 @@ func TestOORRegistryResumeRoutingActiveChild(t *testing.T) {
 
 	// First resume spawns the child; the second reuses it.
 	for range 2 {
-		res := b.Receive(ctx, &ResumeSessionRequest{SessionID: id})
+		res := b.Receive(
+			ctx, &ResumeSessionRequest{
+				SessionID: id,
+			},
+			fakeExec{},
+		)
 		require.True(t, res.IsOk(), res.Err())
 	}
 
 	require.Equal(t, 1, rec.spawns)
 	require.Len(t, rec.recorded(), 2)
 }
+
+// TestOORRegistrySessionTerminalReap verifies a terminal notification stops
+// the child and drops it from the active set, re-checking the durable row as
+// the authority so stale notifications cannot reap a live session.
+func TestOORRegistrySessionTerminalReap(t *testing.T) {
+	t.Parallel()
+
+	id := oorSessionID(0x40)
+
+	testCases := []struct {
+		name string
+
+		// rowStatus is the durable row status at notify time; nil means
+		// no row exists.
+		rowStatus *clientdb.OORSessionStatus
+
+		wantReaped bool
+	}{{
+		name:       "terminal row reaps the child",
+		rowStatus:  statusPtr(clientdb.OORSessionStatusCompleted),
+		wantReaped: true,
+	}, {
+		name:       "failed row reaps the child",
+		rowStatus:  statusPtr(clientdb.OORSessionStatusFailed),
+		wantReaped: true,
+	}, {
+		name:       "missing row reaps the child",
+		wantReaped: true,
+	}, {
+		name:      "stale notification keeps a live child",
+		rowStatus: statusPtr(clientdb.OORSessionStatusPending),
+	}}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			store := newFakeRegistryStore()
+			if tc.rowStatus != nil {
+				upsertRegistryRow(
+					t, store, id,
+					clientdb.OORSessionDirectionOutgoing,
+					"completed", "", *tc.rowStatus,
+				)
+			}
+
+			b, rec := newTestRegistryBehavior(store)
+
+			// Park a child in the active set directly.
+			child, err := b.ensureChild(
+				id, clientdb.OORSessionDirectionOutgoing,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, child)
+
+			res := b.Receive(ctx, &SessionTerminalNotification{
+				SessionID: id,
+			}, fakeExec{})
+			require.True(t, res.IsOk(), res.Err())
+
+			if tc.wantReaped {
+				require.NotContains(t, b.active, id)
+				require.Equal(t, 1, rec.stopCount())
+
+				return
+			}
+
+			require.Contains(t, b.active, id)
+			require.Equal(t, 0, rec.stopCount())
+		})
+	}
+}
+
+// TestOORRegistrySessionTerminalUnknownChild verifies a terminal notification
+// for a session with no resident child is a no-op.
+func TestOORRegistrySessionTerminalUnknownChild(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	b, rec := newTestRegistryBehavior(newFakeRegistryStore())
+
+	res := b.Receive(ctx, &SessionTerminalNotification{
+		SessionID: oorSessionID(0x41),
+	}, fakeExec{})
+	require.True(t, res.IsOk(), res.Err())
+	require.Equal(t, 0, rec.stopCount())
+}
+
+// statusPtr returns a pointer to the given session status for table tests.
+func statusPtr(status clientdb.OORSessionStatus) *clientdb.OORSessionStatus {
+	return &status
+}
+
+// fakeRecipientFilter is an OutboxHandler stub whose metadata recipient filter
+// either owns every recipient or none of them.
+type fakeRecipientFilter struct {
+	owned bool
+	err   error
+}
+
+// Handle satisfies OutboxHandler; admission validation never invokes it.
+func (f *fakeRecipientFilter) Handle(context.Context, SessionID, OutboxEvent) (
+	[]Event, error) {
+
+	return nil, nil
+}
+
+// FilterIncomingMetadataRecipients returns all or none of the recipients.
+func (f *fakeRecipientFilter) FilterIncomingMetadataRecipients(
+	_ context.Context, recipients []ArkRecipientOutput) (
+	[]ArkRecipientOutput, error) {
+
+	if f.err != nil {
+		return nil, f.err
+	}
+	if !f.owned {
+		return nil, nil
+	}
+
+	return recipients, nil
+}
+
 // TestOORRegistryIncomingAdmissionOwnership verifies the registry rejects
 // incoming hints whose recipient script the wallet does not own before
 // spawning a per-session child, and admits owned recipients.
@@ -542,7 +670,7 @@ func TestOORRegistryIncomingAdmissionOwnership(t *testing.T) {
 			res := b.Receive(ctx, &ResolveIncomingTransferRequest{
 				SessionID:         oorSessionID(0x50),
 				RecipientPkScript: []byte{0x51, 0x20, 0xaa},
-			})
+			}, fakeExec{})
 
 			if tc.wantErr != "" {
 				require.True(t, res.IsErr())
@@ -556,4 +684,617 @@ func TestOORRegistryIncomingAdmissionOwnership(t *testing.T) {
 			require.Equal(t, tc.wantSpawns, rec.spawns)
 		})
 	}
+}
+
+// errFilterBroken models a recipient filter infrastructure failure.
+var errFilterBroken = errors.New("filter broken")
+
+// TestOORRegistrySelfTransfer verifies the self-transfer invariant: an
+// incoming hint for a session that exists as an outgoing session is deferred
+// (errors) until the outgoing session reaches a terminal state, after which
+// the outgoing entry is replaced by a fresh incoming session.
+func TestOORRegistrySelfTransfer(t *testing.T) {
+	t.Parallel()
+
+	id := oorSessionID(0x70)
+
+	testCases := []struct {
+		name string
+
+		// rowStatus is the outgoing row's status; nil means no row.
+		rowStatus *clientdb.OORSessionStatus
+
+		// residentChild parks an outgoing child in the active set
+		// before delivering the hint.
+		residentChild bool
+
+		wantErr string
+
+		// wantSpawnDirs are the spawn directions expected across the
+		// whole test, including the optional resident child.
+		wantSpawnDirs []clientdb.OORSessionDirection
+
+		wantStops int
+		wantTells int
+	}{{
+		name:      "active outgoing session defers the hint",
+		rowStatus: statusPtr(clientdb.OORSessionStatusPending),
+		wantErr:   "still active",
+	}, {
+		name:      "terminal outgoing row is replaced",
+		rowStatus: statusPtr(clientdb.OORSessionStatusCompleted),
+		wantSpawnDirs: []clientdb.OORSessionDirection{
+			clientdb.OORSessionDirectionIncoming,
+		},
+		wantTells: 1,
+	}, {
+		name:          "resident terminal child stopped and replaced",
+		rowStatus:     statusPtr(clientdb.OORSessionStatusCompleted),
+		residentChild: true,
+		wantSpawnDirs: []clientdb.OORSessionDirection{
+			clientdb.OORSessionDirectionOutgoing,
+			clientdb.OORSessionDirectionIncoming,
+		},
+		wantStops: 1,
+		wantTells: 1,
+	}, {
+		name: "fresh session id admits normally",
+		wantSpawnDirs: []clientdb.OORSessionDirection{
+			clientdb.OORSessionDirectionIncoming,
+		},
+		wantTells: 1,
+	}}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			store := newFakeRegistryStore()
+			if tc.rowStatus != nil {
+				upsertRegistryRow(
+					t, store, id,
+					clientdb.OORSessionDirectionOutgoing,
+					"submit_sent", "", *tc.rowStatus,
+				)
+			}
+
+			b, rec := newTestRegistryBehavior(store)
+			if tc.residentChild {
+				_, err := b.ensureChild(
+					id,
+					clientdb.OORSessionDirectionOutgoing,
+				)
+				require.NoError(t, err)
+			}
+
+			res := b.Receive(ctx, &ResolveIncomingTransferRequest{
+				SessionID:         id,
+				RecipientPkScript: []byte{0x51, 0x20, 0xbb},
+			}, fakeExec{})
+
+			if tc.wantErr != "" {
+				require.True(t, res.IsErr())
+				require.ErrorContains(t, res.Err(), tc.wantErr)
+
+				// The resident-child count is unchanged and no
+				// hint was forwarded.
+				require.Empty(t, rec.recorded())
+
+				return
+			}
+
+			require.True(t, res.IsOk(), res.Err())
+			require.Equal(t, tc.wantSpawnDirs, rec.dirs)
+			require.Equal(t, tc.wantStops, rec.stopCount())
+			require.Len(t, rec.recorded(), tc.wantTells)
+		})
+	}
+}
+
+// TestOORRegistryDurableEndToEnd exercises the durable registry against a
+// real sqlite-backed delivery store. This is the H-1 boundary regression
+// test: a server-push Tell returns only after the message is persisted in the
+// registry's durable inbox (so ingress may safely ack the operator), the
+// registry turn spawns the per-session durable child and forwards the hint
+// into its mailbox, and the child's admission turn commits the control-plane
+// row.
+func TestOORRegistryDurableEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store := newFakeRegistryStore()
+	registry, err := NewOORRegistryActor(OORRegistryConfig{
+		RegistryStore:   store,
+		DeliveryStore:   newTestDeliveryStore(t),
+		ServerConn:      fakeServerConnRef{},
+		IncomingHandler: &fakeRecipientFilter{owned: true},
+	})
+	require.NoError(t, err)
+	defer registry.Stop()
+
+	// The boot-time restore runs as a registry message, serialized with
+	// any redelivered backlog on the registry goroutine.
+	require.NoError(t, registry.RestoreNonTerminal(ctx))
+
+	// Deliver an incoming hint exactly as the EventRouter would: a Tell
+	// that persists in the registry's durable inbox before returning.
+	sid := oorSessionID(0x80)
+	err = registry.Ref().Tell(ctx, &ResolveIncomingTransferRequest{
+		SessionID:         sid,
+		RecipientPkScript: []byte{0x51, 0x20, 0xaa, 0xbb},
+		RecipientEventID:  3,
+	})
+	require.NoError(t, err)
+
+	// The registry routes the hint to a freshly spawned child, whose
+	// admission turn commits the control-plane row.
+	require.Eventually(t, func() bool {
+		record, err := store.GetSession(ctx, chainHashOf(sid))
+		if err != nil {
+			return false
+		}
+
+		incoming := clientdb.OORSessionDirectionIncoming
+
+		return record.Direction == incoming &&
+			record.Phase == string(IncomingPhaseResolvePending)
+	}, 5*time.Second, 20*time.Millisecond)
+
+	// A state probe Asks through the registry into the resident child.
+	res := registry.Ref().Ask(ctx, &GetStateRequest{
+		SessionID: sid,
+	}).Await(ctx)
+	require.True(t, res.IsOk(), res.Err())
+
+	stateResp, ok := res.UnwrapOr(nil).(*GetStateResponse)
+	require.True(t, ok)
+	require.IsType(t, &ReceiveResolving{}, stateResp.State)
+}
+
+// TestOORRegistryFailedAdmissionDropsPhantomChild verifies a StartTransfer
+// whose admission turn fails does not leave a phantom child in the active
+// set: the failed child is dropped so a retry of the same transfer admits
+// cleanly instead of being deduped against a session with no durable backing.
+func TestOORRegistryFailedAdmissionDropsPhantomChild(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	inputs := testRetryTransferInputs(t)
+	req := &StartTransferRequest{
+		Policy: arkscript.CheckpointPolicy{
+			OperatorKey: operatorKey.PubKey(),
+			CSVDelay:    10,
+		},
+		Inputs: inputs,
+		Recipients: []oortx.RecipientOutput{{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputs[0].VTXO.Amount,
+		}},
+	}
+
+	b, rec := newTestRegistryBehavior(newFakeRegistryStore())
+
+	// First attempt: the child's admission turn fails. The child must be
+	// dropped, not retained as a phantom.
+	rec.askErr = errors.New("signer unavailable")
+
+	res := b.Receive(ctx, req, fakeExec{})
+	require.True(t, res.IsErr())
+	require.Empty(t, b.active)
+	require.Equal(t, 1, rec.spawns)
+	require.Equal(t, 1, rec.stopCount())
+
+	// Retry: with the failure cleared, the same transfer admits with a
+	// fresh child instead of a phantom Existing response.
+	rec.askErr = nil
+
+	res = b.Receive(ctx, req, fakeExec{})
+	require.True(t, res.IsOk(), res.Err())
+
+	resp, ok := res.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+	require.False(t, resp.Existing)
+	require.Equal(t, 2, rec.spawns)
+	require.Len(t, b.active, 1)
+}
+
+// TestOORRegistryFailedIncomingForwardDropsFreshChild verifies a failed hint
+// forward drops a freshly spawned incoming child while a pre-existing child
+// keeps its state.
+func TestOORRegistryFailedIncomingForwardDropsFreshChild(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	id := oorSessionID(0x90)
+	req := &ResolveIncomingTransferRequest{
+		SessionID: id,
+		RecipientPkScript: []byte{
+			0x51,
+			0x20,
+			0xcc,
+		},
+	}
+
+	b, rec := newTestRegistryBehavior(newFakeRegistryStore())
+
+	// Fresh spawn + failed forward: the child is dropped.
+	rec.tellErr = errors.New("delivery store down")
+
+	res := b.Receive(ctx, req, fakeExec{})
+	require.True(t, res.IsErr())
+	require.Empty(t, b.active)
+	require.Equal(t, 1, rec.stopCount())
+
+	// Admit the session for real, then fail a duplicate hint's forward:
+	// the pre-existing child must survive.
+	rec.tellErr = nil
+	res = b.Receive(ctx, req, fakeExec{})
+	require.True(t, res.IsOk(), res.Err())
+	require.Len(t, b.active, 1)
+
+	rec.tellErr = errors.New("delivery store down")
+	res = b.Receive(ctx, req, fakeExec{})
+	require.True(t, res.IsErr())
+	require.Len(t, b.active, 1)
+	require.Equal(t, 1, rec.stopCount())
+}
+
+// TestOORRegistryChildConfigNormalizesLimits verifies the per-session config
+// the registry hands each child carries fully normalized receive limits, so a
+// partially-zeroed daemon config cannot disable individual caps.
+func TestOORRegistryChildConfigNormalizesLimits(t *testing.T) {
+	t.Parallel()
+
+	b, _ := newTestRegistryBehavior(newFakeRegistryStore())
+	b.cfg.Limits = ReceiveLimits{MaxCheckpoints: 7}
+
+	cfg := b.childConfig(
+		oorSessionID(0xa0), clientdb.OORSessionDirectionIncoming,
+	)
+
+	defaults := DefaultReceiveLimits()
+	require.Equal(t, uint32(7), cfg.Limits.MaxCheckpoints)
+	require.Equal(t, defaults.MaxVTXOMatches, cfg.Limits.MaxVTXOMatches)
+	require.Equal(t, defaults.MaxMailboxItems, cfg.Limits.MaxMailboxItems)
+	require.Equal(
+		t, defaults.MaxMailboxScriptBytes,
+		cfg.Limits.MaxMailboxScriptBytes,
+	)
+}
+
+// TestOORRegistryAsyncAdmissionEndToEnd drives a full outgoing admission
+// through the durable registry: the registry's turn only spawns and forwards,
+// the child's admission turn (inline signing plus the snapshot commit)
+// settles the caller's detached promise, and the control-plane row lands with
+// the submit-sent phase.
+func TestOORRegistryAsyncAdmissionEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{clientKey}, nil,
+	)
+
+	system := actor.NewActorSystem()
+	defer func() {
+		require.NoError(t, system.Shutdown(context.Background()))
+	}()
+
+	store := newFakeRegistryStore()
+	registry, err := NewOORRegistryActor(OORRegistryConfig{
+		RegistryStore: store,
+		DeliveryStore: newTestDeliveryStore(t),
+		ServerConn:    fakeServerConnRef{},
+		Signer:        clientSigner,
+		ActorSystem:   system,
+	})
+	require.NoError(t, err)
+	defer registry.Stop()
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+				Hash:  [32]byte{0x07},
+				Index: 0,
+			},
+			btcutil.Amount(10_000),
+		),
+	}
+	askCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	res := registry.Ref().Ask(askCtx, &StartTransferRequest{
+		Policy: arkscript.CheckpointPolicy{
+			OperatorKey: operatorKey.PubKey(),
+			CSVDelay:    10,
+		},
+		Inputs: inputs,
+		Recipients: []oortx.RecipientOutput{{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputs[0].VTXO.Amount,
+		}},
+	}).Await(askCtx)
+	require.True(t, res.IsOk(), res.Err())
+
+	resp, ok := res.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+	require.False(t, resp.Existing)
+	require.NotEqual(t, SessionID{}, resp.SessionID)
+
+	// The child's admission turn committed the control-plane row with the
+	// submit transport collected.
+	record, err := store.GetSession(ctx, chainHashOf(resp.SessionID))
+	require.NoError(t, err)
+	require.Equal(
+		t, clientdb.OORSessionDirectionOutgoing, record.Direction,
+	)
+	require.Equal(t, string(OutgoingPhaseSubmitSent), record.Phase)
+}
+
+// TestOORRegistryDriveEventRouting verifies the registry's hot path: an
+// unknown session errors, a durable row restores the child and forwards the
+// event via Tell, and a failed forward surfaces to the caller.
+func TestOORRegistryDriveEventRouting(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	sid := oorSessionID(0x73)
+	drive := &DriveEventRequest{
+		SessionID: sid,
+		Event:     &FinalizeAcceptedEvent{},
+	}
+
+	// Unknown session with no durable row errors without spawning.
+	b, rec := newTestRegistryBehavior(newFakeRegistryStore())
+	res := b.handleDriveEvent(ctx, drive)
+	require.True(t, res.IsErr())
+	require.ErrorContains(t, res.Err(), "unknown session")
+	require.Equal(t, 0, rec.spawns)
+
+	// A durable non-terminal row restores the child and forwards the
+	// event.
+	store := newFakeRegistryStore()
+	upsertRegistryRow(
+		t, store, sid, clientdb.OORSessionDirectionOutgoing,
+		"finalize_sent", "", clientdb.OORSessionStatusPending,
+	)
+	b, rec = newTestRegistryBehavior(store)
+
+	res = b.handleDriveEvent(ctx, drive)
+	require.True(t, res.IsOk(), res.Err())
+	require.Equal(t, 1, rec.spawns)
+
+	tells := rec.recorded()
+	require.Len(t, tells, 1)
+	require.Same(t, drive, tells[0])
+
+	// A terminal row is not restored: the session is gone.
+	terminalStore := newFakeRegistryStore()
+	upsertRegistryRow(
+		t, terminalStore, sid, clientdb.OORSessionDirectionOutgoing,
+		"completed", "", clientdb.OORSessionStatusCompleted,
+	)
+	b, rec = newTestRegistryBehavior(terminalStore)
+
+	res = b.handleDriveEvent(ctx, drive)
+	require.True(t, res.IsErr())
+	require.ErrorContains(t, res.Err(), "unknown session")
+	require.Equal(t, 0, rec.spawns)
+
+	// A failed forward propagates the Tell error.
+	b, rec = newTestRegistryBehavior(store)
+	rec.tellErr = errFilterBroken
+
+	res = b.handleDriveEvent(ctx, drive)
+	require.True(t, res.IsErr())
+	require.ErrorIs(t, res.Err(), errFilterBroken)
+}
+
+// TestOORRegistryStartTransferNoKeyActiveDedup verifies the no-idempotency-key
+// dedup path: a StartTransfer whose deterministic session id is already active
+// returns Existing without spawning a second child.
+func TestOORRegistryStartTransferNoKeyActiveDedup(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+				Hash:  [32]byte{0x76},
+				Index: 0,
+			},
+			btcutil.Amount(10_000),
+		),
+	}
+	req := &StartTransferRequest{
+		Policy: arkscript.CheckpointPolicy{
+			OperatorKey: operatorKey.PubKey(),
+			CSVDelay:    10,
+		},
+		Inputs: inputs,
+		Recipients: []oortx.RecipientOutput{{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputs[0].VTXO.Amount,
+		}},
+	}
+
+	// Learn the deterministic session id the same way admission does.
+	session, _, err := NewSessionWithIdempotencyKey(
+		ctx, req.Policy, req.Inputs, req.Recipients, "",
+	)
+	require.NoError(t, err)
+
+	b, rec := newTestRegistryBehavior(newFakeRegistryStore())
+	b.active[session.ID] = &OORSessionActor{stop: func() {}}
+
+	res := b.handleStartTransfer(ctx, req)
+	require.True(t, res.IsOk(), res.Err())
+
+	resp, ok := res.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+	require.True(t, resp.Existing)
+	require.Equal(t, session.ID, resp.SessionID)
+	require.Equal(t, 0, rec.spawns)
+}
+
+// TestOORRegistryConcurrentTraffic exercises the live registry under
+// concurrent admissions and read probes: two distinct transfers admit in
+// parallel with list queries interleaved, every turn lands, and the race
+// detector sees the whole stack.
+func TestOORRegistryConcurrentTraffic(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{clientKey}, nil,
+	)
+
+	system := actor.NewActorSystem()
+	defer func() {
+		require.NoError(t, system.Shutdown(context.Background()))
+	}()
+
+	store := newFakeRegistryStore()
+	registry, err := NewOORRegistryActor(OORRegistryConfig{
+		RegistryStore: store,
+		DeliveryStore: newTestDeliveryStore(t),
+		ServerConn:    fakeServerConnRef{},
+		Signer:        clientSigner,
+		ActorSystem:   system,
+	})
+	require.NoError(t, err)
+	defer registry.Stop()
+
+	makeRequest := func(seed byte) *StartTransferRequest {
+		inputs := []TransferInput{
+			newTestTransferInput(
+				t, clientKey, operatorKey.PubKey(),
+				wire.OutPoint{
+					Hash:  [32]byte{seed},
+					Index: 0,
+				},
+				btcutil.Amount(10_000),
+			),
+		}
+
+		return &StartTransferRequest{
+			Policy: arkscript.CheckpointPolicy{
+				OperatorKey: operatorKey.PubKey(),
+				CSVDelay:    10,
+			},
+			Inputs: inputs,
+			Recipients: []oortx.RecipientOutput{{
+				PkScript: newTestTaprootPkScript(
+					t, clientKey.PubKey(),
+				),
+				Value: inputs[0].VTXO.Amount,
+			}},
+		}
+	}
+
+	askCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		admitted []SessionID
+		failures []error
+	)
+
+	for _, seed := range []byte{0x77, 0x78} {
+		wg.Add(1)
+		go func(seed byte) {
+			defer wg.Done()
+
+			res := registry.Ref().Ask(
+				askCtx, makeRequest(seed),
+			).Await(askCtx)
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if res.IsErr() {
+				failures = append(failures, res.Err())
+
+				return
+			}
+
+			resp, ok := res.UnwrapOr(nil).(*StartTransferResponse)
+			if !ok || resp.Existing {
+				failures = append(
+					failures,
+					fmt.Errorf(
+						"unexpected admission "+
+							"response: %v",
+						res.UnwrapOr(nil),
+					),
+				)
+
+				return
+			}
+
+			admitted = append(admitted, resp.SessionID)
+		}(seed)
+	}
+
+	// Interleave read probes with the admissions.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			res := registry.Ref().Ask(
+				askCtx, &ListSessionsRequest{},
+			).Await(askCtx)
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if res.IsErr() {
+				failures = append(failures, res.Err())
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	require.Empty(t, failures)
+	require.Len(t, admitted, 2)
+	require.NotEqual(t, admitted[0], admitted[1])
+
+	// Both admissions committed durable control-plane rows.
+	res := registry.Ref().Ask(askCtx, &ListSessionsRequest{}).Await(askCtx)
+	require.True(t, res.IsOk(), res.Err())
+
+	listResp, ok := res.UnwrapOr(nil).(*ListSessionsResponse)
+	require.True(t, ok)
+	require.Len(t, listResp.Sessions, 2)
 }
