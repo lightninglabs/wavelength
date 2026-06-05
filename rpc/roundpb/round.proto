@@ -168,6 +168,21 @@ message ClientBatchInfo {
     // wire.OutPoint.String() (byte-reversed hex hash, colon, decimal
     // index).
     map<string, ConnectorLeafInfo> connector_leaf_map = 4;
+
+    // tree_cosign_key is this round's VTXO-tree MuSig2 cosigner public key
+    // (33-byte compressed). It is derived fresh per round and is independent
+    // of the operator's persistent identity key, so rotating the operator
+    // key never changes the tree-signing key clients must agree on. The
+    // client uses this — not the global operator terms — as the server
+    // cosigner when validating and signing this round's VTXO output tree.
+    bytes tree_cosign_key = 5;
+
+    // connector_operator_key is the operator key (33-byte compressed) this
+    // round used to build its connector tree. The client reconstructs the
+    // connector tree from this key — not the global operator terms — so a
+    // client still on a previous operator-key epoch derives the same
+    // connector outpoints the server did.
+    bytes connector_operator_key = 6;
 }
 
 // ClientAwaitingInputSigsResp notifies a client that the server is ready
