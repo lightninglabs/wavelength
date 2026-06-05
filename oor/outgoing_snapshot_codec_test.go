@@ -76,35 +76,6 @@ func TestOutgoingSnapshotTLVRoundTrip(t *testing.T) {
 	require.Equal(t, snapshot, decoded)
 }
 
-func TestOutgoingCheckpointTLVRoundTrip(t *testing.T) {
-	t.Parallel()
-
-	checkpoint := outgoingSessionsCheckpoint{
-		Version: 1,
-		Snapshots: []*OutgoingSnapshot{
-			{
-				Version:        4,
-				SessionID:      SessionID(chainhash.Hash{1}),
-				Phase:          OutgoingPhaseCompleted,
-				IdempotencyKey: "funding-key-1",
-			},
-			{
-				Version:    3,
-				SessionID:  SessionID(chainhash.Hash{2}),
-				Phase:      OutgoingPhaseFailed,
-				FailReason: "boom",
-			},
-		},
-	}
-
-	raw, err := encodeOutgoingSessionsCheckpoint(checkpoint)
-	require.NoError(t, err)
-
-	decoded, err := decodeOutgoingSessionsCheckpoint(raw)
-	require.NoError(t, err)
-	require.Equal(t, checkpoint, decoded)
-}
-
 func TestRestoreSnapshotPayloadTLVRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -146,30 +117,6 @@ func TestDecodeOutgoingSnapshotRejectsRetryAfterOverflow(t *testing.T) {
 	require.ErrorContains(
 		t, err, "snapshot retry_after nanos overflows time.Duration",
 	)
-}
-
-func TestDecodeOutgoingCheckpointRejectsVersionOverflow(t *testing.T) {
-	t.Parallel()
-
-	snapshotsRaw, err := encodeLengthPrefixedBlobList(nil)
-	require.NoError(t, err)
-
-	version := uint64(^uint(0)>>1) + 1
-	records := []tlv.Record{
-		tlv.MakePrimitiveRecord(checkpointVersionRecordType, &version),
-		tlv.MakePrimitiveRecord(
-			checkpointSnapshotsRecordType, &snapshotsRaw,
-		),
-	}
-
-	stream, err := tlv.NewStream(records...)
-	require.NoError(t, err)
-
-	var raw bytes.Buffer
-	require.NoError(t, stream.Encode(&raw))
-
-	_, err = decodeOutgoingSessionsCheckpoint(raw.Bytes())
-	require.ErrorContains(t, err, "checkpoint version overflows int")
 }
 
 func encodeSnapshotRawForDecodeTest(version uint64,

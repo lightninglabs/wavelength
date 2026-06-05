@@ -23,10 +23,12 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/oor"
+	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -138,14 +140,6 @@ func (w *sendOORTestWallet) selectionRequests() []*selectionReq {
 	}
 
 	return requests
-}
-
-type sendOORNoopOutboxHandler struct{}
-
-func (h *sendOORNoopOutboxHandler) Handle(_ context.Context, _ oor.SessionID,
-	_ oor.OutboxEvent) ([]oor.Event, error) {
-
-	return nil, nil
 }
 
 type blockingSendOORActor struct {
@@ -579,9 +573,9 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 		idempotencyKey = "rpc-send-oor-idempotency-key"
 	)
 
-	vtxoStore, deliveryStore := newSendOORTestStores(t)
+	vtxoStore, deliveryStore, registryStore := newSendOORTestStores(t)
 
-	firstDesc := newSendOORTestVTXO(
+	firstDesc, clientKey := newSendOORTestVTXO(
 		t, operatorKey.PubKey(), 0x31, btcutil.Amount(amountSat),
 	)
 
@@ -614,14 +608,17 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 		system, "send-oor-test-wallet", testWallet,
 	)
 
-	oorActor := oor.NewOORClientActor(oor.ClientActorCfg{
+	signer := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	oorRegistry, err := oor.NewOORRegistryActor(oor.OORRegistryConfig{
 		Log:           fn.Some[btclog.Logger](btclog.Disabled),
-		OutboxHandler: &sendOORNoopOutboxHandler{},
+		Signer:        signer,
+		RegistryStore: registryStore,
 		DeliveryStore: deliveryStore,
+		ServerConn:    &fakeOORServerConn{},
 		ActorSystem:   system,
-		ActorID:       "send-oor-test-actor",
 	})
-	defer oorActor.Stop()
+	require.NoError(t, err)
+	defer oorRegistry.Stop()
 
 	walletReady := make(chan struct{})
 	close(walletReady)
@@ -721,9 +718,9 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 		exitDelay = uint32(10)
 	)
 
-	vtxoStore, deliveryStore := newSendOORTestStores(t)
+	vtxoStore, deliveryStore, registryStore := newSendOORTestStores(t)
 
-	desc := newSendOORTestVTXO(
+	desc, clientKey := newSendOORTestVTXO(
 		t, operatorKey.PubKey(), 0x31, btcutil.Amount(amountSat),
 	)
 
@@ -760,14 +757,17 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 		system, "send-oor-test-wallet", testWallet,
 	)
 
-	oorActor := oor.NewOORClientActor(oor.ClientActorCfg{
+	signer := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	oorRegistry, err := oor.NewOORRegistryActor(oor.OORRegistryConfig{
 		Log:           fn.Some[btclog.Logger](btclog.Disabled),
-		OutboxHandler: &sendOORNoopOutboxHandler{},
+		Signer:        signer,
+		RegistryStore: registryStore,
 		DeliveryStore: deliveryStore,
+		ServerConn:    &fakeOORServerConn{},
 		ActorSystem:   system,
-		ActorID:       "send-oor-test-actor",
 	})
-	defer oorActor.Stop()
+	require.NoError(t, err)
+	defer oorRegistry.Stop()
 
 	walletReady := make(chan struct{})
 	close(walletReady)
@@ -851,9 +851,9 @@ func TestSendOORWaitCancelDoesNotUnlockSubmittedInputs(t *testing.T) {
 		exitDelay = uint32(10)
 	)
 
-	vtxoStore, _ := newSendOORTestStores(t)
+	vtxoStore, _, _ := newSendOORTestStores(t)
 
-	desc := newSendOORTestVTXO(
+	desc, _ := newSendOORTestVTXO(
 		t, operatorKey.PubKey(), 0x31, btcutil.Amount(amountSat),
 	)
 	require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
@@ -1097,8 +1097,20 @@ func TestIsAwaitContextError(t *testing.T) {
 	)
 }
 
+// fakeOORServerConn is a no-op serverconn ref for OOR registry tests; the
+// per-session actor only needs its ID for the durable outbox target.
+type fakeOORServerConn struct{}
+
+func (f *fakeOORServerConn) ID() string { return "fake-oor-serverconn" }
+
+func (f *fakeOORServerConn) Tell(context.Context,
+	serverconn.ServerConnMsg) error {
+
+	return nil
+}
+
 func newSendOORTestStores(t *testing.T) (*db.VTXOPersistenceStore,
-	actor.DeliveryStore) {
+	actor.DeliveryStore, *db.OORSessionRegistryStoreDB) {
 
 	t.Helper()
 
@@ -1121,15 +1133,19 @@ func newSendOORTestStores(t *testing.T) (*db.VTXOPersistenceStore,
 	)
 	require.NoError(t, err)
 
-	type txAwareDeliveryStore = actordelivery.TxAwareActorDeliveryStore
-	txAwareStore, ok := deliveryStore.(*txAwareDeliveryStore)
-	require.True(t, ok)
+	dbStore := db.NewStore(
+		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), btclog.Disabled,
+	)
+	registryStore := dbStore.NewOORSessionRegistryStore(
+		clock.NewDefaultClock(),
+	)
 
-	return vtxoStore, txAwareStore.Store
+	return vtxoStore, deliveryStore, registryStore
 }
 
 func newSendOORTestVTXO(t *testing.T, operatorKey *btcec.PublicKey,
-	hashByte byte, amount btcutil.Amount) *vtxo.Descriptor {
+	hashByte byte,
+	amount btcutil.Amount) (*vtxo.Descriptor, *btcec.PrivateKey) {
 
 	t.Helper()
 
@@ -1183,7 +1199,7 @@ func newSendOORTestVTXO(t *testing.T, operatorKey *btcec.PublicKey,
 		RelativeExpiry: exitDelay,
 		CreatedHeight:  500,
 		Status:         vtxo.VTXOStatusLive,
-	}
+	}, clientKey
 }
 
 func selectedVTXOFromDescriptor(desc *vtxo.Descriptor) wallet.SelectedVTXO {
