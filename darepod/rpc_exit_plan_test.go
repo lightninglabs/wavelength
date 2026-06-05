@@ -8,7 +8,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/txconfirm"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -65,26 +65,47 @@ func TestSweepWalletRejectsNegativeFeeRate(t *testing.T) {
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }
 
-func TestExitPlanRejectsNoAncestry(t *testing.T) {
+func TestExitPlanRecommendedFundingUsesFeasibilityCosts(t *testing.T) {
 	t.Parallel()
 
-	var outpoint wire.OutPoint
-	outpoint.Index = 1
+	verdict := unroll.ExitFeasibility{
+		CPFPFeeTotalSat:      50_000,
+		RequiredWalletInputs: 2,
+	}
 
-	_, err := exitPlanRequiredUTXOCount(
-		outpoint, &vtxo.Descriptor{},
+	require.EqualValues(
+		t, 25_000+txconfirm.DustLimit,
+		exitPlanRecommendedUTXOAmount(verdict),
 	)
-	require.Error(t, err)
-	require.Equal(t, codes.FailedPrecondition, status.Code(err))
-	require.Contains(t, err.Error(), "no unilateral-exit ancestry")
 
-	required, err := exitPlanRequiredUTXOCount(
-		outpoint, &vtxo.Descriptor{
-			Ancestry: []vtxo.Ancestry{{}},
-		},
+	verdict.CPFPFeeTotalSat = 1
+	require.Equal(
+		t, preflightUnrollMinUTXOSat,
+		exitPlanRecommendedUTXOAmount(verdict),
 	)
-	require.NoError(t, err)
-	require.Equal(t, uint32(1), required)
+}
+
+func TestExitPlanFundingShortfallCoversMissingInputs(t *testing.T) {
+	t.Parallel()
+
+	verdict := unroll.ExitFeasibility{
+		CPFPFeeTotalSat:      500,
+		RequiredWalletInputs: 2,
+		WalletConfirmedSat:   100_000,
+		WalletUsableInputs:   1,
+	}
+
+	require.Equal(
+		t, preflightUnrollMinUTXOSat,
+		exitPlanFundingShortfall(verdict, preflightUnrollMinUTXOSat),
+	)
+
+	verdict.WalletUsableInputs = 2
+	verdict.WalletConfirmedSat = 100
+	require.EqualValues(
+		t, 400,
+		exitPlanFundingShortfall(verdict, preflightUnrollMinUTXOSat),
+	)
 }
 
 func TestExitPlanFundingAddressReusesCachedAddress(t *testing.T) {
@@ -175,11 +196,13 @@ func TestWalletSweepPreviewPositiveNetCanBroadcast(t *testing.T) {
 	)
 }
 
-func TestRecommendedUnrollUTXOAmountUsesFloor(t *testing.T) {
+func TestExitPlanRecommendedUTXOAmountUsesFloor(t *testing.T) {
 	t.Parallel()
 
-	recommended, err := recommendedUnrollUTXOAmount(1)
-	require.NoError(t, err)
+	recommended := exitPlanRecommendedUTXOAmount(unroll.ExitFeasibility{
+		CPFPFeeTotalSat:      1,
+		RequiredWalletInputs: 1,
+	})
 	require.GreaterOrEqual(
 		t, recommended, preflightUnrollMinUTXOSat,
 	)

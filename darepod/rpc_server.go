@@ -3444,35 +3444,13 @@ func (r *RPCServer) preflightUnrollFeasibility(ctx context.Context,
 		return nil
 	}
 
-	numTxs, numPaths := unroll.RecoveryTxCount(desc)
-
-	utxos, err := r.server.ListWalletUnspent(ctx, 1, 9999999)
+	verdict, err := r.assessExitFeasibility(
+		ctx, desc, r.estimateUnrollFeeRate(ctx),
+	)
 	if err != nil {
 		return status.Errorf(codes.Internal, "preflight wallet "+
 			"unspent: %v", err)
 	}
-
-	// Derive both wallet inputs the model needs from a single snapshot:
-	// the total confirmed balance (can it fund the CPFP fees at all?)
-	// and the count of UTXOs large enough to each fund a CPFP child (are
-	// there enough distinct fee inputs for the concurrent packages?).
-	var confirmed btcutil.Amount
-	usable := 0
-	for _, utxo := range utxos {
-		confirmed += utxo.Amount
-		if utxo.Amount >= preflightUnrollMinUTXOSat {
-			usable++
-		}
-	}
-
-	verdict := unroll.AssessExitFeasibility(unroll.ExitFeasibilityInput{
-		NumRecoveryTxs:     numTxs,
-		NumAncestryPaths:   numPaths,
-		VTXOAmountSat:      desc.Amount,
-		FeeRateSatPerVByte: r.estimateUnrollFeeRate(ctx),
-		WalletConfirmedSat: confirmed,
-		WalletUsableInputs: usable,
-	})
 	if verdict.Feasible {
 		return nil
 	}
