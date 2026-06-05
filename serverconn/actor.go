@@ -403,6 +403,18 @@ func (m *SendRPCResponse) serverConnRespSealed() {}
 // facade constructs the envelope with all metadata (correlation ID,
 // idempotency key, service/method) and hands it to the connector for
 // transport via Edge.Send.
+//
+// This type intentionally does not override CorrelationKey, so it is unkeyed
+// (the BaseMessage default of ""). Under an EgressWorkers > 1 pool, unkeyed
+// messages are not held in any per-key FIFO lane and may be sent in any order
+// relative to one another. That is safe here precisely because every
+// SendRPCRequest is an independent request/response RPC matched back to its
+// caller by an explicit correlation ID through the response registry, so there
+// is no ordered stream among them to violate. Do NOT add an order-sensitive
+// payload to this type without also giving it a CorrelationKey: an unkeyed
+// order-sensitive message would silently reorder across the worker pool with
+// no error. Only SendClientEventRequest (the FSM event stream) is keyed,
+// because it is the one egress path whose per-session order is load-bearing.
 type SendRPCRequest struct {
 	actor.BaseMessage
 
@@ -465,6 +477,15 @@ func (m *SendRPCRequest) serverConnMsgSealed() {}
 // SendUnaryRequest wraps a typed unary RPC request for durable delivery via
 // the mailbox edge. Unlike SendRPCRequest, the caller provides the request
 // body and routing metadata rather than a pre-built envelope.
+//
+// Like SendRPCRequest, this type is intentionally unkeyed (no CorrelationKey
+// override), so under an EgressWorkers > 1 pool distinct unary requests may be
+// sent out of order relative to one another. That is safe because each is an
+// independent request/response RPC correlated back to its waiter by an explicit
+// correlation ID, not a position in an ordered stream. Do NOT add an
+// order-sensitive payload here without also defining a CorrelationKey, or it
+// will silently reorder across workers. See SendRPCRequest for the full
+// rationale.
 type SendUnaryRequest struct {
 	actor.BaseMessage
 
