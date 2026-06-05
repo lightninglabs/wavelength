@@ -7,13 +7,8 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/vtxo"
-	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
@@ -83,21 +78,24 @@ func newTestTaprootPkScript(t *testing.T, key *btcec.PublicKey) []byte {
 	return pkScript
 }
 
-// newTestDeliveryStore creates a tx-aware delivery store for durable actor
-// tests.
-func newTestDeliveryStore(t *testing.T) actor.DeliveryStore {
+// testRetryTransferInputs builds a single minimally valid outgoing transfer
+// input with fresh keys for per-session actor tests.
+func testRetryTransferInputs(t *testing.T) []TransferInput {
 	t.Helper()
 
-	sqlDB := db.NewTestDB(t)
-	store, err := actordelivery.NewTxAwareDeliveryStoreFromDB(
-		sqlDB.DB, sqlDB.Backend(), clock.NewDefaultClock(),
-		btclog.Disabled,
-	)
+	clientKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	txAwareStore, ok := store.(*actordelivery.TxAwareActorDeliveryStore)
-	require.True(t, ok)
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
 
-	// Tests don't need the durable actor's outer transaction wrapper.
-	return txAwareStore.Store
+	return []TransferInput{
+		newTestTransferInput(
+			t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+				Hash:  [32]byte{0x01},
+				Index: 0,
+			},
+			btcutil.Amount(10_000),
+		),
+	}
 }

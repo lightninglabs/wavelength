@@ -150,16 +150,6 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 		},
 	}
 
-	oorActor := oor.NewOORClientActor(oor.ClientActorCfg{
-		Log:           fn.Some(f.h.SubLogger(oor.Subsystem)),
-		OutboxHandler: handler,
-		DeliveryStore: f.deliveryStore,
-		ActorSystem:   f.h.ActorSystem(),
-		ActorID:       "systest-oor-vtxo-manager",
-		VTXOManager:   f.managerRef,
-	})
-	defer oorActor.Stop()
-
 	session, outbox, err := oor.DriveIncomingTransferWithCheckpoints(
 		ctx, sessionID, arkPSBT, finalCheckpoints, nil,
 	)
@@ -269,16 +259,6 @@ func TestOORSelfChangeMaterializationSkipsExternalRecipient(t *testing.T) {
 			return metadata, nil
 		},
 	}
-
-	oorActor := oor.NewOORClientActor(oor.ClientActorCfg{
-		Log:           fn.Some(f.h.SubLogger(oor.Subsystem)),
-		OutboxHandler: handler,
-		DeliveryStore: f.deliveryStore,
-		ActorSystem:   f.h.ActorSystem(),
-		ActorID:       "systest-oor-change-vtxo-manager",
-		VTXOManager:   f.managerRef,
-	})
-	defer oorActor.Stop()
 
 	session, outbox, err := oor.DriveIncomingTransferWithCheckpoints(
 		ctx, sessionID, arkPSBT, finalCheckpoints, nil,
