@@ -12,6 +12,45 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// fakeEgressExec is a synchronous Exec[egressTx] for connector unit tests. It
+// runs Read/Commit closures immediately with no real transaction or lease
+// fence, so a handler's build-then-send-then-Commit flow can be exercised
+// without standing up a durable mailbox. When commitErr is set, Commit returns
+// it without running the closure, used to simulate a lost lease.
+type fakeEgressExec struct {
+	commitErr error
+	commits   int
+}
+
+// Read runs fn against the empty egress store.
+func (e *fakeEgressExec) Read(ctx context.Context,
+	fn func(context.Context, egressTx) error) error {
+
+	return fn(ctx, egressTx{})
+}
+
+// Stage runs fn against the empty egress store. The egress behavior never
+// stages -- it has no domain state to persist before its side effect -- but the
+// method is required to satisfy Exec[egressTx].
+func (e *fakeEgressExec) Stage(ctx context.Context,
+	fn func(context.Context, egressTx) error) error {
+
+	return fn(ctx, egressTx{})
+}
+
+// Commit counts the call and runs fn against the empty egress store unless a
+// commitErr was injected.
+func (e *fakeEgressExec) Commit(ctx context.Context,
+	fn func(context.Context, egressTx) error) error {
+
+	e.commits++
+	if e.commitErr != nil {
+		return e.commitErr
+	}
+
+	return fn(ctx, egressTx{})
+}
+
 // inMemoryMailbox is a minimal in-memory implementation of the MailboxService
 // semantics needed for connector unit tests.
 type inMemoryMailbox struct {
@@ -839,8 +878,23 @@ func (s *memCheckpointStore) CleanupExpired(
 	return nil
 }
 
-// Compile-time check.
-var _ actor.DeliveryStore = (*memCheckpointStore)(nil)
+// ExecTx satisfies actor.TxAwareDeliveryStore so the in-memory store can back
+// the Read/Commit execution path. The store has no real database transaction,
+// so it runs fn against itself directly; each store method takes the store's
+// own mutex, which is sufficient for the single-threaded handler unit tests and
+// the competing-consumer tests that exercise lease fencing through the real
+// method bodies.
+func (s *memCheckpointStore) ExecTx(ctx context.Context, _ bool,
+	fn actor.TxFunc) error {
+
+	return fn(ctx, s)
+}
+
+// Compile-time checks.
+var (
+	_ actor.DeliveryStore        = (*memCheckpointStore)(nil)
+	_ actor.TxAwareDeliveryStore = (*memCheckpointStore)(nil)
+)
 
 // newTestConnectorConfig returns a ConnectorConfig pre-populated with test
 // defaults: an in-memory mailbox edge, the given store, fixed mailbox IDs

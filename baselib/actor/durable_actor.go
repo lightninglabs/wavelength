@@ -110,6 +110,47 @@ type DurableActorConfig[M TLVMessage, R any] struct {
 	// deduplication. Should exceed the maximum possible redelivery window.
 	// Default: 24 hours.
 	DeduplicationTTL time.Duration
+
+	// NumWorkers is how many concurrent worker loops drain the actor's
+	// mailbox. The default (and a value <= 0) is 1, which preserves the
+	// strictly-sequential per-actor processing other actors rely on. A
+	// value greater than 1 turns the actor into a competing-consumer pool:
+	// that many goroutines each lease distinct messages from the one shared
+	// mailbox via LeaseNextMailboxMessage, so independent messages are
+	// processed in parallel while the per-correlation-key FIFO claim still
+	// keeps same-key messages strictly ordered. Use it only for behaviors
+	// whose handlers are safe to run concurrently (e.g. the serverconn
+	// egress sender, which holds no writer across its Edge.Send). The
+	// behavior must not assume sequential delivery across keys.
+	NumWorkers int
+
+	// allowConcurrentClassic disables the construction guard that rejects
+	// NumWorkers > 1 on a classic ActorBehavior. It is a test-only escape
+	// hatch with no exported struct access, flippable only via
+	// AllowConcurrentClassicBehavior, so production configs cannot set it
+	// even by accident. See that method for why production must never use
+	// it.
+	allowConcurrentClassic bool
+}
+
+// AllowConcurrentClassicBehavior is a TEST-ONLY escape hatch that disables the
+// construction guard which otherwise rejects NumWorkers > 1 on a classic
+// ActorBehavior. It exists solely so the egress benchmark can build the
+// production-forbidden classic-path-with-pool config in order to measure that
+// pooling the classic path gains nothing (the writer held across the side
+// effect serializes the workers regardless). Production code must NEVER call
+// this: a classic behavior wraps its entire Receive in one write transaction
+// and assumes strictly-sequential delivery, so fanning it out across workers
+// delivers concurrent Receive calls and can silently corrupt in-memory state.
+// The field it sets is unexported, so this method is the only way to flip it.
+func (c DurableActorConfig[
+	M,
+	R,
+]) AllowConcurrentClassicBehavior() DurableActorConfig[M, R] {
+
+	c.allowConcurrentClassic = true
+
+	return c
 }
 
 // NewClassicBehavior wraps a classic ActorBehavior as the Left case of the
@@ -159,6 +200,7 @@ func DefaultDurableActorConfig[M TLVMessage, R any](
 		MaxAttempts:       10,
 		CleanupTimeout:    5 * time.Second,
 		DeduplicationTTL:  24 * time.Hour,
+		NumWorkers:        1,
 	}
 }
 
@@ -244,6 +286,11 @@ type DurableActor[M TLVMessage, R any] struct {
 	// deduplicationTTL is how long to keep processed message IDs.
 	deduplicationTTL time.Duration
 
+	// numWorkers is how many concurrent lease loops drain the shared
+	// mailbox. It is always >= 1; values <= 0 from the config are clamped
+	// at construction.
+	numWorkers int
+
 	// startOnce ensures the actor's processing loop starts only once.
 	startOnce sync.Once
 
@@ -275,6 +322,20 @@ var ErrTxBehaviorNeedsTxStore = fmt.Errorf("durable actor: TxBehavior " +
 var ErrNoBehavior = fmt.Errorf("durable actor: a behavior must be set (use " +
 	"DefaultDurableActorConfig or DefaultDurableTxActorConfig)")
 
+// ErrConcurrentClassicBehavior indicates that a config requested a
+// competing-consumer pool (NumWorkers > 1) for a classic ActorBehavior (the
+// Left case). The classic path wraps the entire Receive in one write
+// transaction and relies on strictly-sequential, one-message-at-a-time
+// processing; running it across N workers would deliver concurrent Receive
+// calls and silently corrupt any actor that keeps in-memory state or assumes
+// serial execution. Pools are only sound for the Read/Commit (TxBehavior) path,
+// whose handlers run their side effects outside the writer and are required to
+// be concurrency-safe, so we reject the combination at construction rather than
+// let a future caller trip over it at runtime.
+var ErrConcurrentClassicBehavior = fmt.Errorf("durable actor: NumWorkers > 1 " +
+	"requires a TxBehavior (Read/Commit) behavior; a classic " +
+	"ActorBehavior must be processed sequentially")
+
 // ErrDurableAskUnsupported indicates that a DurableAsk was delivered to an
 // actor running on the Read/Commit (TxBehavior) execution path. On that path
 // the message is acked inside the behavior's own Commit, so the framework
@@ -297,6 +358,15 @@ func NewDurableActor[M TLVMessage, R any](
 	)
 	ctx, cancel := context.WithCancel(baseCtx)
 
+	// Clamp the worker count to at least one. A single worker preserves the
+	// strictly-sequential per-actor processing semantics; more than one
+	// turns the actor into a competing-consumer pool over its single
+	// mailbox.
+	numWorkers := cfg.NumWorkers
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
 	mailboxCfg := DurableMailboxConfig{
 		MailboxID:     cfg.ID,
 		Store:         cfg.Store,
@@ -305,6 +375,10 @@ func NewDurableActor[M TLVMessage, R any](
 		LeaseDuration: cfg.LeaseDuration,
 		PollInterval:  cfg.PollInterval,
 		MaxAttempts:   cfg.MaxAttempts,
+
+		// Size the wake channel to the worker count so a burst of
+		// enqueues can rouse every idle worker at once.
+		WakeBuffer: numWorkers,
 	}
 
 	tellPolicy := cfg.TellRetryPolicy
@@ -352,6 +426,20 @@ func NewDurableActor[M TLVMessage, R any](
 		return fn.Err[*DurableActor[M, R]](ErrNoBehavior)
 	}
 
+	// A competing-consumer pool is only sound for the Read/Commit path,
+	// whose handlers run outside the writer and must be concurrency-safe.
+	// Reject NumWorkers > 1 on a classic ActorBehavior here so a stateful
+	// actor can never be silently fanned out into concurrent Receive calls.
+	// The test-only AllowConcurrentClassicBehavior escape hatch bypasses
+	// this so the egress benchmark can measure the forbidden config.
+	if numWorkers > 1 && cfg.Behavior.IsLeft() &&
+		!cfg.allowConcurrentClassic {
+
+		cancel()
+
+		return fn.Err[*DurableActor[M, R]](ErrConcurrentClassicBehavior)
+	}
+
 	actor := &DurableActor[M, R]{
 		id:                cfg.ID,
 		behavior:          cfg.Behavior,
@@ -367,6 +455,7 @@ func NewDurableActor[M TLVMessage, R any](
 		heartbeatInterval: cfg.HeartbeatInterval,
 		cleanupTimeout:    cfg.CleanupTimeout,
 		deduplicationTTL:  deduplicationTTL,
+		numWorkers:        numWorkers,
 		done:              make(chan struct{}),
 	}
 
@@ -378,30 +467,52 @@ func NewDurableActor[M TLVMessage, R any](
 	return fn.Ok(actor)
 }
 
-// Start initiates the actor's message processing loop.
+// Start initiates the actor's message processing loops.
 func (a *DurableActor[M, R]) Start() {
 	a.startOnce.Do(func() {
 		a.started.Store(true)
 
 		logger(a.ctx).DebugS(a.ctx, "Starting durable actor",
 			"actor_id", a.id,
+			"num_workers", a.numWorkers,
 		)
 
 		if a.wg != nil {
 			a.wg.Add(1)
 		}
 
-		go a.process()
+		// Launch numWorkers competing lease loops over the one shared
+		// mailbox. With numWorkers == 1 this is the historical
+		// single-loop behavior. A supervisor goroutine joins them and
+		// runs teardown once, so the actor's done / Wg / Stoppable
+		// semantics are unchanged regardless of the worker count.
+		var workers sync.WaitGroup
+		for i := 0; i < a.numWorkers; i++ {
+			workers.Add(1)
+
+			go a.worker(&workers)
+		}
+
+		go func() {
+			workers.Wait()
+			a.teardown()
+
+			if a.wg != nil {
+				a.wg.Done()
+			}
+
+			close(a.done)
+		}()
 	})
 }
 
-// process is the main event loop for durable message processing.
-func (a *DurableActor[M, R]) process() {
-	defer close(a.done)
-
-	if a.wg != nil {
-		defer a.wg.Done()
-	}
+// worker runs a single lease loop, draining deliveries from the shared mailbox
+// until the actor context is cancelled. When the actor runs more than one
+// worker they compete for distinct messages via the store's lease, so
+// independent messages process in parallel; the per-correlation-key FIFO claim
+// keeps same-key messages ordered across workers.
+func (a *DurableActor[M, R]) worker(wg *sync.WaitGroup) {
+	defer wg.Done()
 
 	// Process messages from the durable mailbox.
 	for env := range a.mailbox.Receive(a.ctx) {
@@ -422,8 +533,14 @@ func (a *DurableActor[M, R]) process() {
 
 		a.processDelivery(delivery)
 	}
+}
 
-	// The actor's context has been cancelled. Close the mailbox.
+// teardown closes the mailbox and runs the Stoppable cleanup hook exactly once,
+// after every worker loop has exited. The supervisor goroutine started in Start
+// invokes it before signaling done.
+func (a *DurableActor[M, R]) teardown() {
+	// The actor's context has been cancelled and all workers have exited.
+	// Close the mailbox.
 	a.mailbox.Close()
 
 	// For durable mailboxes, we don't drain to DLO since messages persist
@@ -762,6 +879,17 @@ func (a *DurableActor[M, R]) processWithExec(ctx context.Context,
 	// intentionally consumed the message without persisting state (e.g. a
 	// RestartMessage). Either way, fall back to the framework's standard
 	// non-transactional ack/nack handling.
+	//
+	// WARNING for TxBehavior authors: a handler that returns fn.Ok WITHOUT
+	// calling ax.Commit lands here too, and finishNonTx then acks the
+	// message via the non-lease-fenced path. On a single worker that is
+	// merely a loss of crash-safety, but under an EgressWorkers/NumWorkers
+	// pool it can double-process: if this worker's lease was reclaimed by a
+	// competing worker mid-handling, the non-fenced ack deletes the row
+	// that the other worker is now also processing. The framework cannot
+	// distinguish "forgot to commit" from "intentionally consumed", so on
+	// the success path you MUST call ax.Commit (even with an empty closure,
+	// as the serverconn egress sender does) to get the lease fence.
 	a.finishNonTx(ctx, delivery, result)
 }
 

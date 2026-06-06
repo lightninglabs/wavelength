@@ -403,6 +403,18 @@ func (m *SendRPCResponse) serverConnRespSealed() {}
 // facade constructs the envelope with all metadata (correlation ID,
 // idempotency key, service/method) and hands it to the connector for
 // transport via Edge.Send.
+//
+// This type intentionally does not override CorrelationKey, so it is unkeyed
+// (the BaseMessage default of ""). Under an EgressWorkers > 1 pool, unkeyed
+// messages are not held in any per-key FIFO lane and may be sent in any order
+// relative to one another. That is safe here precisely because every
+// SendRPCRequest is an independent request/response RPC matched back to its
+// caller by an explicit correlation ID through the response registry, so there
+// is no ordered stream among them to violate. Do NOT add an order-sensitive
+// payload to this type without also giving it a CorrelationKey: an unkeyed
+// order-sensitive message would silently reorder across the worker pool with
+// no error. Only SendClientEventRequest (the FSM event stream) is keyed,
+// because it is the one egress path whose per-session order is load-bearing.
 type SendRPCRequest struct {
 	actor.BaseMessage
 
@@ -465,6 +477,15 @@ func (m *SendRPCRequest) serverConnMsgSealed() {}
 // SendUnaryRequest wraps a typed unary RPC request for durable delivery via
 // the mailbox edge. Unlike SendRPCRequest, the caller provides the request
 // body and routing metadata rather than a pre-built envelope.
+//
+// Like SendRPCRequest, this type is intentionally unkeyed (no CorrelationKey
+// override), so under an EgressWorkers > 1 pool distinct unary requests may be
+// sent out of order relative to one another. That is safe because each is an
+// independent request/response RPC correlated back to its waiter by an explicit
+// correlation ID, not a position in an ordered stream. Do NOT add an
+// order-sensitive payload here without also defining a CorrelationKey, or it
+// will silently reorder across workers. See SendRPCRequest for the full
+// rationale.
 type SendUnaryRequest struct {
 	actor.BaseMessage
 
@@ -680,17 +701,56 @@ func NewServerConnectionActor(
 	}
 }
 
+// egressTx is the transaction-scoped store for the serverconn egress behavior.
+// The egress path persists no domain state -- each handler builds an envelope
+// and sends it over the wire -- so the store is empty. It exists only to
+// satisfy the TxBehavior store type parameter; the sole work inside an egress
+// Commit transaction is the framework's lease-fenced ack and dedup mark.
+type egressTx struct{}
+
+// bindStores is the StoreFactory for the egress durable actor. Egress joins no
+// domain stores to the Commit transaction, so the factory ignores its arguments
+// and returns the empty egressTx.
+func (a *ServerConnectionActor) bindStores(context.Context,
+	actor.DeliveryStore) egressTx {
+
+	return egressTx{}
+}
+
+// commitSend consumes the in-flight egress message exactly once after a
+// successful Edge.Send. Because egress writes no domain state, the Commit
+// closure is empty: the framework folds the lease-fenced ack and the dedup mark
+// into one short writer transaction, advancing the mailbox now that the wire
+// send -- the actual side effect -- has completed. Crucially the writer lock is
+// held only for this sub-millisecond bookkeeping, never across the gRPC send,
+// which is the whole point of the Read/Commit migration.
+//
+// A lost lease (actor.ErrLeaseLost) means a concurrent worker reclaimed and
+// re-sent the message while this Send was in flight; the duplicate is absorbed
+// by the server's MsgId/IdempotencyKey dedup, and we surface the error so the
+// framework's retry path takes over.
+func (a *ServerConnectionActor) commitSend(ctx context.Context,
+	ax actor.Exec[egressTx]) error {
+
+	return ax.Commit(ctx, func(context.Context, egressTx) error {
+		return nil
+	})
+}
+
 // Receive processes incoming egress messages. This is called by the durable
-// actor runtime when messages arrive in the actor's mailbox.
-func (a *ServerConnectionActor) Receive(ctx context.Context,
-	msg ServerConnMsg) fn.Result[ServerConnResp] {
+// actor runtime when messages arrive in the actor's mailbox. The connector runs
+// on the Read/Commit execution path: each handler builds and sends its envelope
+// with no writer lock held, then folds the lease-fenced ack into one short
+// Commit via commitSend.
+func (a *ServerConnectionActor) Receive(ctx context.Context, msg ServerConnMsg,
+	ax actor.Exec[egressTx]) fn.Result[ServerConnResp] {
 
 	switch m := msg.(type) {
 	case *SendClientEventRequest:
-		return a.handleSendClientEvent(ctx, m)
+		return a.handleSendClientEvent(ctx, m, ax)
 
 	case *SendUnaryRequest:
-		return a.handleSendUnaryRequest(ctx, m)
+		return a.handleSendUnaryRequest(ctx, m, ax)
 
 	case DurableUnaryQuery:
 		unary, buildErr := a.buildDurableUnary(ctx, m)
@@ -698,10 +758,10 @@ func (a *ServerConnectionActor) Receive(ctx context.Context,
 			return fn.Err[ServerConnResp](buildErr)
 		}
 
-		return a.handleSendUnaryRequest(ctx, unary)
+		return a.handleSendUnaryRequest(ctx, unary, ax)
 
 	case *SendRPCRequest:
-		return a.handleSendRPCRequest(ctx, m)
+		return a.handleSendRPCRequest(ctx, m, ax)
 
 	default:
 		return fn.Err[ServerConnResp](
@@ -713,7 +773,8 @@ func (a *ServerConnectionActor) Receive(ctx context.Context,
 // handleSendClientEvent converts a client FSM outbox message to a proto
 // message and sends it to the server via the mailbox edge.
 func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
-	req *SendClientEventRequest) fn.Result[ServerConnResp] {
+	req *SendClientEventRequest,
+	ax actor.Exec[egressTx]) fn.Result[ServerConnResp] {
 
 	protoMsg, err := req.Message.ToProto().Unpack()
 	if err != nil {
@@ -805,6 +866,10 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 
 	a.lastSendNano.Store(time.Now().UnixNano())
 
+	if err := a.commitSend(ctx, ax); err != nil {
+		return fn.Err[ServerConnResp](err)
+	}
+
 	return fn.Ok[ServerConnResp](&SendClientEventResponse{
 		Success: true,
 	})
@@ -813,7 +878,8 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 // handleSendUnaryRequest sends a durable correlated unary request via the
 // mailbox edge.
 func (a *ServerConnectionActor) handleSendUnaryRequest(ctx context.Context,
-	req *SendUnaryRequest) fn.Result[ServerConnResp] {
+	req *SendUnaryRequest,
+	ax actor.Exec[egressTx]) fn.Result[ServerConnResp] {
 
 	if req == nil {
 		return fn.Err[ServerConnResp](
@@ -867,7 +933,7 @@ func (a *ServerConnectionActor) handleSendUnaryRequest(ctx context.Context,
 	}
 
 	return a.sendUnaryEnvelope(
-		ctx, req.Body, req.Service, req.Method, req.CorrelationID,
+		ctx, ax, req.Body, req.Service, req.Method, req.CorrelationID,
 		msgID, idempotencyKey,
 	)
 }
@@ -923,8 +989,9 @@ func (a *ServerConnectionActor) buildDurableUnary(ctx context.Context,
 // sendUnaryEnvelope sends one durable unary request envelope via the mailbox
 // edge using the given routing metadata and stable identifiers.
 func (a *ServerConnectionActor) sendUnaryEnvelope(ctx context.Context,
-	body *anypb.Any, service string, method string, correlationID string,
-	msgID string, idempotencyKey string) fn.Result[ServerConnResp] {
+	ax actor.Exec[egressTx], body *anypb.Any, service string, method string,
+	correlationID string, msgID string,
+	idempotencyKey string) fn.Result[ServerConnResp] {
 
 	envelope := &mailboxpb.Envelope{
 		ProtocolVersion: a.cfg.ProtocolVersion,
@@ -965,6 +1032,10 @@ func (a *ServerConnectionActor) sendUnaryEnvelope(ctx context.Context,
 		)
 	}
 
+	if err := a.commitSend(ctx, ax); err != nil {
+		return fn.Err[ServerConnResp](err)
+	}
+
 	return fn.Ok[ServerConnResp](&SendRPCResponse{
 		Success: true,
 	})
@@ -1003,7 +1074,8 @@ func eventRoutingMetadata(req *SendClientEventRequest) (string, string) {
 // handleSendRPCRequest sends a pre-built unary RPC envelope via the mailbox
 // edge.
 func (a *ServerConnectionActor) handleSendRPCRequest(ctx context.Context,
-	req *SendRPCRequest) fn.Result[ServerConnResp] {
+	req *SendRPCRequest,
+	ax actor.Exec[egressTx]) fn.Result[ServerConnResp] {
 
 	resp, err := a.cfg.Edge.Send(ctx, &mailboxpb.SendRequest{
 		Envelope: req.Envelope,
@@ -1022,6 +1094,10 @@ func (a *ServerConnectionActor) handleSendRPCRequest(ctx context.Context,
 	}
 
 	a.lastSendNano.Store(time.Now().UnixNano())
+
+	if err := a.commitSend(ctx, ax); err != nil {
+		return fn.Err[ServerConnResp](err)
+	}
 
 	return fn.Ok[ServerConnResp](&SendRPCResponse{
 		Success: true,
@@ -1154,5 +1230,5 @@ var (
 	_ ServerConnResp = (*SendRPCResponse)(nil)
 
 	//nolint:ll
-	_ actor.ActorBehavior[ServerConnMsg, ServerConnResp] = (*ServerConnectionActor)(nil)
+	_ actor.TxBehavior[ServerConnMsg, ServerConnResp, egressTx] = (*ServerConnectionActor)(nil)
 )

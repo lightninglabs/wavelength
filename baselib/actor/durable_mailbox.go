@@ -85,6 +85,15 @@ type DurableMailboxConfig struct {
 	// MaxAttempts is the default maximum delivery attempts.
 	// Default: 10.
 	MaxAttempts int
+
+	// WakeBuffer sizes the wake channel that same-process enqueues signal
+	// to rouse idle lease loops. A value <= 0 is treated as 1. When the
+	// owning DurableActor runs multiple worker loops, sizing this to the
+	// worker count lets a burst of enqueues rouse that many workers at once
+	// instead of only one, so the pool fans out without waiting for the
+	// poll interval. It is purely a latency optimization: correctness never
+	// depends on a wake because the poll ticker is the fallback.
+	WakeBuffer int
 }
 
 // DefaultDurableMailboxConfig returns a config with sensible defaults.
@@ -136,10 +145,15 @@ func NewDurableMailbox[M TLVMessage, R any](
 	cfg DurableMailboxConfig,
 ) *DurableMailbox[M, R] {
 
+	wakeBuffer := cfg.WakeBuffer
+	if wakeBuffer < 1 {
+		wakeBuffer = 1
+	}
+
 	return &DurableMailbox[M, R]{
 		cfg:             cfg,
 		clock:           cfg.Clock.UnwrapOr(clock.NewDefaultClock()),
-		wake:            make(chan struct{}, 1),
+		wake:            make(chan struct{}, wakeBuffer),
 		actorCtx:        actorCtx,
 		promiseRegistry: make(map[string]any),
 	}

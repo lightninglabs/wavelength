@@ -75,11 +75,11 @@ func newDurableConnectorForTest(
 
 	connector := NewServerConnectionActor(cfg)
 
-	durableCfg := actor.DefaultDurableActorConfig[
-		ServerConnMsg, ServerConnResp,
+	durableCfg := actor.DefaultDurableTxActorConfig[
+		ServerConnMsg, ServerConnResp, egressTx,
 	](
-		DurableActorID(cfg.LocalMailboxID), connector, cfg.Store,
-		cfg.Codec,
+		DurableActorID(cfg.LocalMailboxID), connector,
+		connector.bindStores, cfg.Store, cfg.Codec,
 	)
 
 	durableCfg.PollInterval = 10 * time.Millisecond

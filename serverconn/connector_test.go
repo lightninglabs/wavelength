@@ -223,6 +223,7 @@ func TestServerConnectionActor_SendListOORRecipientEventsByScriptRequest(
 			Limit:         1,
 			CorrelationID: "corr-recipient",
 		},
+		&fakeEgressExec{},
 	)
 	require.NoError(t, result.Err())
 
@@ -680,8 +681,16 @@ func TestEgress_EventRetriesPreserveIdempotencyKey(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, actor.Receive(t.Context(), req1).Err())
-	require.NoError(t, actor.Receive(t.Context(), req2).Err())
+	require.NoError(
+		t, actor.Receive(
+			t.Context(), req1, &fakeEgressExec{},
+		).Err(),
+	)
+	require.NoError(
+		t, actor.Receive(
+			t.Context(), req2, &fakeEgressExec{},
+		).Err(),
+	)
 
 	mb.mu.Lock()
 	envs := append(

@@ -2,6 +2,8 @@ package actordelivery
 
 import (
 	"database/sql"
+	"fmt"
+	"net/url"
 	"path/filepath"
 	"testing"
 
@@ -16,6 +18,46 @@ func newSQLiteDB(t *testing.T) *sql.DB {
 	dbPath := filepath.Join(t.TempDir(), "actor_delivery_test.db")
 	rawDB, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, rawDB.Close())
+	})
+
+	return rawDB
+}
+
+// newConcurrentSQLiteDB opens a sqlite test database configured exactly like
+// the production store (see db/sqlite.go): WAL journaling, a 30s busy_timeout,
+// synchronous=full, and _txlock=immediate, with the same multi-connection pool.
+// Tests that drive concurrent writers (e.g. a multi-worker durable actor) must
+// use this rather than the bare newSQLiteDB: _txlock=immediate plus
+// busy_timeout is what lets concurrent write transactions serialize by waiting
+// instead of colliding with SQLITE_BUSY, which is precisely how the daemon
+// runs. Modeling that here keeps the test faithful to production concurrency
+// instead of hiding it behind a single connection.
+func newConcurrentSQLiteDB(t testing.TB) *sql.DB {
+	t.Helper()
+
+	pragmas := []string{
+		"foreign_keys=on",
+		"journal_mode=WAL",
+		"busy_timeout=30000",
+		"synchronous=full",
+		"fullfsync=true",
+	}
+	opts := make(url.Values)
+	for _, p := range pragmas {
+		opts.Add("_pragma", p)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "actor_delivery_concurrent.db")
+	dsn := fmt.Sprintf("%s?%s&_txlock=immediate", dbPath, opts.Encode())
+
+	rawDB, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+
+	rawDB.SetMaxOpenConns(25)
+	rawDB.SetMaxIdleConns(25)
+
 	t.Cleanup(func() {
 		require.NoError(t, rawDB.Close())
 	})

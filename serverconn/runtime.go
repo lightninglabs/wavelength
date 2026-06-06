@@ -49,13 +49,18 @@ func NewRuntime(cfg ConnectorConfig) (*Runtime, error) {
 
 	connector := NewServerConnectionActor(cfg)
 
-	durableCfg := actor.DefaultDurableActorConfig[
-		ServerConnMsg, ServerConnResp,
+	durableCfg := actor.DefaultDurableTxActorConfig[
+		ServerConnMsg, ServerConnResp, egressTx,
 	](
-		DurableActorID(cfg.LocalMailboxID), connector, cfg.Store,
-		cfg.Codec,
+		DurableActorID(cfg.LocalMailboxID), connector,
+		connector.bindStores, cfg.Store, cfg.Codec,
 	)
 	durableCfg.Log = cfg.Log
+
+	// Run the egress sender as a competing-consumer pool. NewDurableActor
+	// clamps a zero or negative count up to a single worker, preserving the
+	// historical single-sender behavior for callers that leave it unset.
+	durableCfg.NumWorkers = cfg.EgressWorkers
 
 	durable, err := actor.NewDurableActor(durableCfg).Unpack()
 	if err != nil {
