@@ -8,7 +8,8 @@ ledger entries and UTXO audit log records. Provides a crash-safe
 financial audit trail for tax reporting and fee transparency.
 
 Event types: `wallet_utxo_created`, `boarding_fee_paid`,
-`refresh_fee_paid`, `onchain_fee_paid`, `vtxo_received`, `vtxo_sent`.
+`refresh_fee_paid`, `onchain_fee_paid`, `boarding_sweep_fee_paid`,
+`vtxo_received`, `vtxo_sent`.
 
 ## Chart of Accounts
 
@@ -59,7 +60,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/ledge
   (outpoint, amount, event, block height, classification). Implemented
   by `db.UTXOAuditStoreDB`.
 - `LedgerMsg` / `LedgerResp` — mailbox constraint types.
-- `FeePaidMsg` — boarding/refresh fee payments.
+- `FeePaidMsg` — boarding/refresh/sweep fee payments. `FeeType`
+  constants: `FeeTypeBoarding`, `FeeTypeRefresh`, `FeeTypeOnchainSweep`
+  (boarding-sweep L1 miner fee, keyed by sweep txid via `IdempotencyKey`
+  rather than `RoundID`). Registered in `000012_boarding_sweep_ledger_events`.
+- `ClassificationBoardingSweepInput` / `ClassificationBoardingSweepReturn`
+  — UTXO audit log classification constants for boarding-sweep inputs and
+  change outputs (used in `UTXOAuditStore` rows for boarding sweep events).
 - `VTXOReceivedMsg` — incoming VTXOs. `Source` must be one of
   `SourceRoundBoarding` (own wallet → VTXO; offsets wallet_balance),
   `SourceRoundRefresh` (refresh / directed-send self-change; offsets
@@ -129,6 +136,7 @@ or balance reconciliation. Required emission pairs:
 | OOR send | `VTXOSentMsg{SessionID}` net. No `FeePaidMsg`. |
 | In-round send | `VTXOSentMsg{RoundID}` net. `SessionID`/`RoundID` are mutually exclusive. |
 | Unilateral exit | `ExitCostMsg{AmountSat=gross, ExitCostSat=fee}`. Handler expands to send-leg + fee-leg internally. |
+| Boarding sweep fee | `FeePaidMsg{FeeType=FeeTypeOnchainSweep, IdempotencyKey=sweepTxid}`. One `FeePaidMsg` per boarding sweep tx. |
 
 ## Invariants
 

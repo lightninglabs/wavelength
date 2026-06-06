@@ -50,6 +50,7 @@ package may import from a higher layer.
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
+| [`serverconn/mailboxpull`](serverconn/mailboxpull/) | Shared retry-and-backoff primitives for mailbox pull loops (daemon ingress + SDK consumers) |
 
 ### Layer 3: Application & Orchestration
 
@@ -80,6 +81,7 @@ package may import from a higher layer.
 | [`harness`](harness/) | Docker-based Bitcoin/LND integration test environment |
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal/actortest`](internal/actortest/) | Durable actor integration tests with real DB backends |
+| [`p-models/durableactor/bridge`](p-models/durableactor/bridge/) | Go conformance harness replaying P model traces against the real `db/actordelivery` SQLite store |
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
 | [`internal/indexerlimits`](internal/indexerlimits/) | Client-side bounds for indexer pagination cursors (defense-in-depth against misbehaving remotes) |
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |

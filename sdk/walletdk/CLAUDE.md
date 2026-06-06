@@ -33,6 +33,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   waits for gRPC readiness, and returns a ready `*Client`. The daemon
   lifetime is owned by walletdk's `runCtx`, not the caller's `ctx`, so
   a tight startup deadline cancels dialing only.
+- `Connect(ctx, ConnectConfig)` — dials an **external** (already-running)
+  daemon over gRPC or REST and returns a `*Client`. No embedded daemon is
+  started; the caller is responsible for the external daemon's lifetime.
+- `ConnectConfig` — configuration for external daemon connections:
+  `Address` (host:port), `Transport` enum (`TransportGRPC` /
+  `TransportREST`), optional TLS config.
+- `Transport` — enum selecting the wire transport for `Connect`:
+  `TransportGRPC` (default gRPC/h2) or `TransportREST` (HTTP/JSON via
+  the gateway).
 - `Option` — functional option accepted as variadic trailing args.
   Options apply **after** the `Config`/`DaemonConfig` merge and after
   `configureSwapRuntime` / `configureWalletRPC`, so they can override
@@ -41,13 +50,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   `daemonCfg.EagerRoundJoin = false`.
 - DTOs (wrapper-owned, isolated from proto enums): `Info`, `Balance`,
   `CreateWalletResult`, `UnlockWalletResult`, `ReceiveRequest`/`Result`
-  (returns invoice + initial `Entry`), `SendRequest`/`Result` (returns
-  `Entry` + `ActualAmountSat`, which can exceed requested amount for
-  onchain whole-VTXO sweeps), `DepositRequest`/`Result` (boarding
-  address + initial `Entry`), `ListRequest`, `ListResult` (tagged union
-  on `View`, populates one of `Activity`/`VTXOs`/`Onchain`),
-  `ActivityList`, `VTXOInventory`, `OnchainHistory`, `Entry`,
-  `WalletVTXO`, `OnchainTx`.
+  (returns invoice + initial `Entry`), `PrepareSendRequest`/`Result` (quote
+  a payment without committing; returns fee estimate), `SendPreparedRequest`
+  (execute a previously prepared send), `SendRequest`/`Result` (returns
+  `Entry` + `ActualAmountSat`, which can exceed requested amount for onchain
+  whole-VTXO sweeps), `DepositRequest`/`Result` (boarding address + initial
+  `Entry`), `ListRequest`, `ListResult` (tagged union on `View`, populates
+  one of `Activity`/`VTXOs`/`Onchain`), `ActivityList`, `VTXOInventory`,
+  `OnchainHistory`, `Entry`, `WalletVTXO`, `OnchainTx`.
 - `ExitRequest` / `ExitResult` / `ExitStatusRequest` /
   `ExitStatusResult` / `ExitJobStatus` — exit DTOs. `ExitRequest`
   carries the target outpoint plus an optional on-chain `Destination`
@@ -79,7 +89,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 | `Balance` | Flat balance (`confirmed_sat`, `pending_in_sat`, `pending_out_sat`). |
 | `Deposit` | Allocate a fresh boarding address (`recv --onchain` from CLI). |
 | `Receive` | Open a Lightning invoice receive (`recv --offchain`). Returns `{Invoice, Entry}`. |
-| `Send` | Outbound payment by invoice or onchain address. Returns `{Entry, ActualAmountSat}`. |
+| `PrepareSend` | Quote a send without committing; returns fee estimate and quote token. |
+| `SendPrepared` | Execute a previously prepared send using the quote token from `PrepareSend`. |
+| `Send` | One-shot outbound payment by invoice or onchain address. Returns `{Entry, ActualAmountSat}`. |
+| `BtcwalletRPC` | Escape hatch to raw btcwallet gRPC client (btcwallet builds only). |
+| `BtcwalletVersionRPC` | Escape hatch to raw btcwallet versioner client (btcwallet builds only). |
 | `List` | Unified history view (Activity / VTXOs / Onchain) as a tagged-union `ListResult`. |
 | `Exit` | Trigger cooperative leave or unilateral unroll for a VTXO. |
 | `ExitStatus` | Query the phase of an exit job. |
