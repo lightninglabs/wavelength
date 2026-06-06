@@ -3,6 +3,7 @@ package unroll
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btclog/v2"
@@ -30,6 +31,12 @@ type Environment struct {
 
 	// Planner evaluates ready, blocked, CSV, and sweep progress.
 	Planner *unrollplan.Planner
+
+	// FeeInputPlanner decides whether the currently-ready proof frontier
+	// can be submitted with the wallet's existing distinct fee inputs, or
+	// whether the actor must first wait for a wallet fanout transaction to
+	// confirm. Nil means ready proof transactions are submitted directly.
+	FeeInputPlanner FeeInputPlanner
 
 	// FraudCheckpointSafetyMargin is the number of blocks subtracted
 	// from a checkpoint's relative-expiry window to compute the
@@ -232,6 +239,19 @@ type SweepBuildFailedEvent struct {
 // eventSealed marks SweepBuildFailedEvent as an FSM event.
 func (e *SweepBuildFailedEvent) eventSealed() {}
 
+// FeeInputsAvailableEvent records that a wallet fee-input fanout has
+// confirmed and the actor should re-run the normal materialization planner.
+type FeeInputsAvailableEvent struct {
+	// Txid is the confirmed fanout transaction.
+	Txid chainhash.Hash
+
+	// Height is the block height where the fanout transaction confirmed.
+	Height int32
+}
+
+// eventSealed marks FeeInputsAvailableEvent as an FSM event.
+func (e *FeeInputsAvailableEvent) eventSealed() {}
+
 // OutboxEvent is the sealed outbox side-effect surface emitted by the FSM.
 type OutboxEvent interface {
 	outboxEventSealed()
@@ -246,6 +266,21 @@ type EnsureReadyTransactions struct {
 
 // outboxEventSealed marks EnsureReadyTransactions as an outbox event.
 func (o *EnsureReadyTransactions) outboxEventSealed() {}
+
+// RequestFeeInputFanout asks the actor boundary to create or wait for a
+// backing-wallet fanout transaction before submitting the ready proof frontier.
+type RequestFeeInputFanout struct {
+	// Txids are the ready proof txids that remain blocked on distinct fee
+	// inputs. They are intentionally not recorded as in-flight yet.
+	Txids []chainhash.Hash
+
+	// Plan is the wallet fee-input demand snapshot that triggered the
+	// pause.
+	Plan FeeInputPlan
+}
+
+// outboxEventSealed marks RequestFeeInputFanout as an outbox event.
+func (o *RequestFeeInputFanout) outboxEventSealed() {}
 
 // ReissueInFlightTransactions asks the actor boundary to reattach to already
 // in-flight proof txids after a restart.
@@ -362,6 +397,115 @@ func (s *AwaitingMaterialization) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	return processEventWithJob(ctx, s.Job, event, env)
+}
+
+// AwaitingFeeInputFanout indicates proof transactions are ready, but the
+// backing wallet first needs enough distinct confirmed fee inputs for 1p1c
+// CPFP submission.
+type AwaitingFeeInputFanout struct {
+	// Job is the durable FSM state.
+	Job *JobState
+}
+
+// String returns a human-readable state label.
+func (s *AwaitingFeeInputFanout) String() string {
+	return "AwaitingFeeInputFanout"
+}
+
+// IsTerminal returns false because this state is not terminal.
+func (s *AwaitingFeeInputFanout) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingFeeInputFanout as implementing State.
+func (s *AwaitingFeeInputFanout) stateSealed() {}
+
+// ProcessEvent handles FSM events while waiting for wallet fee inputs.
+func (s *AwaitingFeeInputFanout) ProcessEvent(ctx context.Context, event Event,
+	env *Environment) (*StateTransition, error) {
+
+	switch e := event.(type) {
+	case *HeightUpdatedEvent:
+		job := s.Job.Copy()
+		if e.Height > job.Height {
+			job.Height = e.Height
+		}
+
+		// Height updates are delivered as durable tells, whose
+		// processing context may already be canceled before the fanout
+		// coordinator's short demand-coalescing delay completes. Use a
+		// bounded local context for this best-effort liveness recheck.
+		baseCtx := context.WithoutCancel(ctx)
+		recheckCtx, cancel := context.WithTimeout(
+			baseCtx, 15*time.Second,
+		)
+		defer cancel()
+
+		transition, err := deriveStateTransition(
+			recheckCtx, job, env, false, fn.None[int32](),
+		)
+		if err == nil {
+			_, isFanoutState :=
+				transition.NextState.(*AwaitingFeeInputFanout)
+			if isFanoutState {
+				if transitionAwaitsPendingFanout(transition) {
+					nextState := &AwaitingFeeInputFanout{
+						Job: job,
+					}
+
+					return &StateTransition{
+						NextState: nextState,
+					}, nil
+				}
+			}
+
+			return transition, nil
+		}
+
+		// A block notification is only a liveness hint while fee-input
+		// fanout is pending. Transient wallet or fee-estimation errors
+		// should not fail the durable unroll job here; the next block
+		// or explicit fanout confirmation will re-check the same
+		// frontier.
+		return &StateTransition{
+			NextState: &AwaitingFeeInputFanout{
+				Job: job,
+			},
+		}, nil
+
+	case *FeeInputsAvailableEvent:
+		job := s.Job.Copy()
+		job.Height = e.Height
+
+		return deriveStateTransition(
+			ctx, job, env, false, fn.None[int32](),
+		)
+
+	default:
+		return processEventWithJob(ctx, s.Job, event, env)
+	}
+}
+
+// transitionAwaitsPendingFanout reports whether a block-driven replan only
+// wants to wait for an already-broadcast fanout transaction. In that case the
+// actor must not re-register the same confirmation watch on every block.
+func transitionAwaitsPendingFanout(transition *StateTransition) bool {
+	if transition == nil || transition.NewEvents.IsNone() {
+		return false
+	}
+
+	for _, event := range transition.NewEvents.UnsafeFromSome().Outbox {
+		request, ok := event.(*RequestFeeInputFanout)
+		if !ok {
+			continue
+		}
+
+		if request.Plan.PendingFanoutTxid.IsSome() {
+			return true
+		}
+	}
+
+	return false
 }
 
 // AwaitingCSV indicates the target confirmed but its CSV delay has not matured

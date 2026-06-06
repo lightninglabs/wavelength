@@ -140,7 +140,7 @@ func phaseFromState(state State) Phase {
 	case *Idle:
 		return PhasePending
 
-	case *AwaitingMaterialization:
+	case *AwaitingMaterialization, *AwaitingFeeInputFanout:
 		return PhaseMaterializing
 
 	case *AwaitingCSV:
@@ -196,6 +196,9 @@ func stateJob(state State) *JobState {
 		return &JobState{}
 
 	case *AwaitingMaterialization:
+		return s.Job.Copy()
+
+	case *AwaitingFeeInputFanout:
 		return s.Job.Copy()
 
 	case *AwaitingCSV:

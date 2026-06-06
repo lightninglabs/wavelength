@@ -41,6 +41,7 @@ const (
 	txFailedMsgTLVType         tlv.Type = 0x7904
 	getStateRequestTLVType     tlv.Type = 0x7905
 	spendObservedMsgTLVType    tlv.Type = 0x7906
+	feeInputsAvailableTLVType  tlv.Type = 0x7907
 )
 
 // Durable mailbox priorities. Admission stays at the default priority so a
@@ -76,6 +77,9 @@ const (
 	spendObservedHeightRecType   tlv.Type = 3
 	spendObservedOutHashRecType  tlv.Type = 5
 	spendObservedOutIndexRecType tlv.Type = 7
+
+	feeInputsAvailableTxidRecType   tlv.Type = 1
+	feeInputsAvailableHeightRecType tlv.Type = 3
 )
 
 // StartTrigger identifies what caused the unroll actor to start.
@@ -612,6 +616,81 @@ func (m *SpendObservedMsg) Decode(r io.Reader) error {
 // unrollMsgSealed seals SpendObservedMsg into the message surface.
 func (m *SpendObservedMsg) unrollMsgSealed() {}
 
+// FeeInputsAvailableMsg reports that a wallet fee-input fanout transaction
+// confirmed and ready proof transactions should be planned again.
+type FeeInputsAvailableMsg struct {
+	actor.BaseMessage
+
+	// Txid is the confirmed fanout transaction.
+	Txid chainhash.Hash
+
+	// Height is the block height where the fanout transaction confirmed.
+	Height int32
+}
+
+// MessageType returns the stable message type identifier.
+func (m *FeeInputsAvailableMsg) MessageType() string {
+	return "FeeInputsAvailableMsg"
+}
+
+// TLVType returns the durable mailbox type ID.
+func (m *FeeInputsAvailableMsg) TLVType() tlv.Type {
+	return feeInputsAvailableTLVType
+}
+
+// Priority returns the durable mailbox priority for fanout progress.
+func (m *FeeInputsAvailableMsg) Priority() int {
+	return unrollProgressPriority
+}
+
+// Encode serializes the message as a TLV stream.
+func (m *FeeInputsAvailableMsg) Encode(w io.Writer) error {
+	txid := [32]byte(m.Txid)
+	height := uint32(m.Height)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(feeInputsAvailableTxidRecType, &txid),
+		tlv.MakePrimitiveRecord(
+			feeInputsAvailableHeightRecType, &height,
+		),
+	)
+	if err != nil {
+		return fmt.Errorf("create stream: %w", err)
+	}
+
+	return stream.Encode(w)
+}
+
+// Decode deserializes the message from a TLV stream.
+func (m *FeeInputsAvailableMsg) Decode(r io.Reader) error {
+	var (
+		txid   [32]byte
+		height uint32
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(feeInputsAvailableTxidRecType, &txid),
+		tlv.MakePrimitiveRecord(
+			feeInputsAvailableHeightRecType, &height,
+		),
+	)
+	if err != nil {
+		return fmt.Errorf("create stream: %w", err)
+	}
+
+	if err := stream.Decode(r); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+
+	m.Txid = chainhash.Hash(txid)
+	m.Height = int32(height)
+
+	return nil
+}
+
+// unrollMsgSealed seals FeeInputsAvailableMsg into the message surface.
+func (m *FeeInputsAvailableMsg) unrollMsgSealed() {}
+
 // GetStateRequest asks the actor for its current in-memory state summary.
 type GetStateRequest struct {
 	actor.BaseMessage
@@ -735,6 +814,10 @@ func newCodec() *actor.MessageCodec {
 	codec.MustRegister(
 		spendObservedMsgTLVType,
 		func() actor.TLVMessage { return &SpendObservedMsg{} },
+	)
+	codec.MustRegister(
+		feeInputsAvailableTLVType,
+		func() actor.TLVMessage { return &FeeInputsAvailableMsg{} },
 	)
 
 	return codec
