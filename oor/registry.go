@@ -332,19 +332,68 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 
-	res := child.Ref().Ask(ctx, req).Await(ctx)
-	if res.IsErr() {
-		// A failed admission turn commits no durable row, so keeping
-		// the child registered would turn the in-memory dedup into a
-		// phantom: a retry of the same transfer would be told
-		// Existing for a session with no durable backing. Drop the
-		// freshly spawned child so the retry admits cleanly. The
-		// active-map dedup above guarantees this child was spawned by
-		// this turn.
-		r.dropChild(sessionID, child)
+	// Hand the admission to the child without parking the registry
+	// goroutine on the child's signing and commit: the Ask persists the
+	// request in the child's durable mailbox, the caller's detached
+	// promise is settled by the child's result, and the registry's turn
+	// ends as soon as the forward is durable. Admission errors still reach
+	// the caller inline through the continuation.
+	future := child.Ref().Ask(ctx, req)
+
+	detachedAsk, ok := actor.DetachAskPromise[ActorResp](ctx)
+	if !ok {
+		// No detachable caller (a redelivered turn, or a test driving
+		// the behavior directly): preserve the synchronous semantics.
+		res := future.Await(ctx)
+		if res.IsErr() {
+			// A failed admission turn commits no durable row, so
+			// keeping the child registered would turn the
+			// in-memory dedup into a phantom: a retry of the same
+			// transfer would be told Existing for a session with
+			// no durable backing. Drop the freshly spawned child
+			// so the retry admits cleanly. The active-map dedup
+			// above guarantees this child was spawned by this
+			// turn.
+			r.dropChild(sessionID, child)
+		}
+
+		return res
 	}
 
-	return res
+	selfRef := r.selfRef
+
+	//nolint:contextcheck // the continuation outlives the turn context;
+	// the caller's context bounds the wait and the cleanup Tell is
+	// daemon-owned
+	future.OnComplete(
+		detachedAsk.CallerCtx, func(res fn.Result[ActorResp]) {
+			// A failed admission leaves a fresh child with no
+			// durable row. The continuation runs off the registry
+			// goroutine, so route the cleanup through the
+			// registry's own mailbox: the reaper treats a missing
+			// row as reap-eligible and drops the phantom there.
+			if res.IsErr() && selfRef != nil {
+				nctx, cancel := context.WithTimeout(
+					context.Background(),
+					terminalNotifyTimeout,
+				)
+				defer cancel()
+
+				// The cleanup Tell is best effort: a missed
+				// reap only leaves the phantom resident until
+				// shutdown.
+				_ = selfRef.Tell(
+					nctx, &SessionTerminalNotification{
+						SessionID: sessionID,
+					},
+				)
+			}
+
+			detachedAsk.Promise.Complete(res)
+		},
+	)
+
+	return fn.Ok[ActorResp](&StartTransferResponse{SessionID: sessionID})
 }
 
 // handleDriveEvent routes a follow-up event to its session's child. This is the
@@ -648,7 +697,9 @@ func (r *oorRegistryBehavior) fillOutgoingSummary(ctx context.Context,
 	}
 }
 
-// routeAsk forwards a request to a session's child and returns its response.
+// routeAsk forwards a request to a session's child. With a detachable caller
+// the child's result settles the promise directly so the registry goroutine
+// never parks on the child's turn; otherwise the response is awaited inline.
 func (r *oorRegistryBehavior) routeAsk(ctx context.Context, sessionID SessionID,
 	msg OORDurableMsg) fn.Result[ActorResp] {
 
@@ -662,7 +713,22 @@ func (r *oorRegistryBehavior) routeAsk(ctx context.Context, sessionID SessionID,
 		)
 	}
 
-	return child.Ref().Ask(ctx, msg).Await(ctx)
+	future := child.Ref().Ask(ctx, msg)
+
+	detachedAsk, ok := actor.DetachAskPromise[ActorResp](ctx)
+	if !ok {
+		return future.Await(ctx)
+	}
+
+	//nolint:contextcheck // the continuation outlives the turn context;
+	// the caller's context bounds the wait
+	future.OnComplete(
+		detachedAsk.CallerCtx, func(res fn.Result[ActorResp]) {
+			detachedAsk.Promise.Complete(res)
+		},
+	)
+
+	return fn.Ok[ActorResp](&DriveEventResponse{})
 }
 
 // lookupOrRestore returns the active child for a session, restoring it from the

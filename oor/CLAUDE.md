@@ -27,7 +27,11 @@ actor. See [docs/oor_subsystem.md](../docs/oor_subsystem.md) for the full design
   the operator envelope, so a crash between ingress and the per-session child
   replays the registry's idempotent spawn+forward instead of losing the event.
   It routes each message to the right session's child (hot-path `DriveEvent` via
-  Tell), dedups outgoing transfers by idempotency key, lazily spawns children,
+  Tell; `StartTransfer`/`GetState` via promise handoff — the registry detaches
+  the caller's promise with `actor.DetachAskPromise` and the child's result
+  settles it through `OnComplete`, so the registry goroutine never parks on a
+  child's signing turn and concurrent admissions sign in parallel), dedups
+  outgoing transfers by idempotency key, lazily spawns children,
   routes retry-timer `ResumeSessionRequest` expiries to the owning child
   (unknown/terminal sessions are benign no-ops), reaps children on
   `SessionTerminalNotification`, and `RestoreNonTerminal` respawns **and

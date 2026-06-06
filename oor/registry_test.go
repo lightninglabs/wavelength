@@ -8,10 +8,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	clientdb "github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/stretchr/testify/require"
 )
 
