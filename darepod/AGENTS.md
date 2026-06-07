@@ -30,7 +30,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   #270 seal-time fee handshake every server-issued `JoinRoundQuote`
   is compared against this cap; `Config.Validate()` fails closed when
   the value is non-positive. CLI flag `--maxoperatorfeesat`;
-  `DefaultMaxOperatorFeeSat` is a generous default.
+  `DefaultMaxOperatorFeeSat` is a generous default. `RegistrationTimeout
+  time.Duration` (mapstructure `registrationtimeout`) caps the wall-clock
+  wait for the server's `RoundJoined` admission ack after sending
+  `JoinRoundRequest`; zero uses the round package default, negative disables
+  the timeout.
 - `UnrollConfig` — `BumpAfterBlocks int32` (fee-bump cadence; zero →
   default 6), `MaxFeeRateSatPerVByte int64` (cap fed to both
   `txconfirm` and the unroll registry; zero → each subsystem's

@@ -48,8 +48,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   `Status`, `Trigger`, `LastError`, `SweepTxid`, `Created/UpdatedAt`.
 - `UnilateralExitJobStatus` — `Pending(0)`, `Materializing(1)`,
   `CSVPending(2)`, `Sweeping(3)`, `Completed(4)`, `Failed(5)`,
-  `SweepBroadcasting(6)`. **Append-only**: `SweepBroadcasting` is
-  last so existing rows at 3 keep decoding correctly.
+  `SweepBroadcasting(6)`, `FailedRecoverable(7)`. **Append-only**: new
+  values are added at the end so a row's numeric meaning never shifts.
+  `FailedRecoverable` is a terminal failure that left no on-chain
+  footprint, so boot-time reconciliation may roll the VTXO back to live;
+  it is excluded from `ListNonTerminalUnilateralExitJobs` alongside `4`
+  and `5` (darepo-client#602).
 - `UnilateralExitJobTrigger` — `Manual(0)`, `CriticalExpiry(1)`,
   `Restart(2)`, `FraudSpend(3)`.
 - `VHTLCRecoveryStoreDB` — durable vHTLC recovery store. Persists
@@ -67,7 +71,16 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 16` — current schema version.
+- `SpendingReservationStore` — interface grouping SQL methods for the durable
+  VTXO spending-reservation index: `UpsertSpendingReservation`,
+  `DeleteSpendingReservation`, `ListSpendingReservationOutpoints`. Used by
+  the VTXO manager to recover orphaned OOR spend sessions at startup.
+- `BatchedSpendingReservationStore` — combines `SpendingReservationStore`
+  with `BatchedTx[SpendingReservationStore]` for atomic multi-op workflows.
+- `SpendingReservationPersistenceStore` — concrete production store wrapping
+  `BatchedSpendingReservationStore`. Created via
+  `NewSpendingReservationPersistenceStore`.
+- `LatestMigrationVersion = 17` — current schema version.
 
 ## Relationships
 
@@ -111,6 +124,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
+- `000017_spending_reservations` — adds `spending_reservations` table
+  (`outpoint_hash`, `outpoint_index`, `session_id`) that tracks which VTXO
+  outpoints are held by an active OOR spend session. Enables the VTXO manager
+  to detect and recover orphaned spending-state VTXOs at startup via
+  `ListSpendingReservationOutpoints`. Reservation rows are deleted atomically
+  with VTXO status transitions that exit `SpendingState`.
 - `000016_unilateral_exit_policy` — adds `exit_policy_kind`
   (NOT NULL, default `'standard_vtxo_timeout'`) and nullable
   `exit_policy_ref` to `unilateral_exit_jobs` via ALTER TABLE so
