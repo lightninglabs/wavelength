@@ -325,12 +325,8 @@ message ServerInfo {
     // output clients must use in forfeit transactions.
     bytes forfeit_script = 4;
 
-    // sweep_key is the compressed SEC-encoded public key used in VTXO
-    // sweep paths when present.
-    bytes sweep_key = 5;
-
-    // sweep_delay is the batch-wide absolute timelock in blocks.
-    uint32 sweep_delay = 6;
+    // Field numbers 5 and 6 are unused: the sweep key and delay are
+    // delivered per-round in round.v1.ClientBatchInfo instead.
 
     // dust_limit is the minimum output value accepted by the operator.
     uint64 dust_limit = 7;

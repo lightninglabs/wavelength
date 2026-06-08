@@ -391,8 +391,7 @@ func newTestHarness(t *testing.T) *boardingTestHarness {
 
 	terms := &types.OperatorTerms{
 		PubKey:            operatorPubKey,
-		SweepKey:          operatorPubKey,
-		SweepDelay:        1008, // ~1 week in blocks.
+		VTXOExitDelay:     144, // 1 day in blocks.
 		DustLimit:         546,
 		MinBoardingAmount: 10000,
 		MaxBoardingAmount: 100000000, // 1 BTC.
@@ -831,6 +830,8 @@ func (h *boardingTestHarness) newCommitmentTxBuiltEvent(roundID RoundID,
 		VTXOTreePaths: map[int]*tree.Tree{
 			0: vtxtTree,
 		},
+		SweepKey:   h.operatorPubKey,
+		SweepDelay: 1008, // ~1 week in blocks, must exceed exit delay.
 	}
 }
 

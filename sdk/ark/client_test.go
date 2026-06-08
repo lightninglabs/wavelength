@@ -66,10 +66,6 @@ var (
 	// testOperatorPubKeyHex is the deterministic compressed pubkey used for
 	// the fake operator terms.
 	testOperatorPubKeyHex = compressedPubKeyHex(2)
-
-	// testSweepPubKeyHex is the deterministic compressed pubkey used for
-	// the fake sweep key.
-	testSweepPubKeyHex = compressedPubKeyHex(3)
 )
 
 // newFakeDaemonService creates a fake daemon service with deterministic
@@ -94,10 +90,6 @@ func newFakeDaemonService() *fakeDaemonService {
 				ForfeitScript: []byte{
 					0x51,
 				},
-				SweepKey: mustDecodeHex(
-					testSweepPubKeyHex,
-				),
-				SweepDelay:        432,
 				DustLimit:         546,
 				MinBoardingAmount: 10_000,
 				MaxBoardingAmount: 20_000,

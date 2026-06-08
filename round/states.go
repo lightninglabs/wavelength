@@ -288,6 +288,17 @@ type CommitmentTxReceivedState struct {
 	// instead of the global operator key. Nil for older servers (fallback).
 	ConnectorOperatorKey *btcec.PublicKey
 
+	// SweepKey is the operator sweep key for this round's VTXO-tree sweep
+	// leaf, delivered with the commitment tx. It replaces the global
+	// GetInfo sweep key for this round's tree reconstruction.
+	SweepKey *btcec.PublicKey
+
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks for
+	// the VTXO-tree sweep leaf, delivered with the commitment tx. It
+	// replaces the global GetInfo sweep delay and drives batch-expiry
+	// computation for VTXOs created in this round.
+	SweepDelay uint32
+
 	// Intents contains all the client's intents for this round.
 	Intents Intents
 
@@ -325,6 +336,12 @@ type CommitmentTxValidatedState struct {
 
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks
+	// for the VTXO-tree sweep leaf, carried through the signing ceremony
+	// so batch expiry can be computed on confirmation. Delivered per round
+	// (not a global operator term).
+	SweepDelay uint32
 
 	// Intents contains all the client's intents for this round.
 	Intents Intents
@@ -373,6 +390,12 @@ type ForfeitSignaturesCollectingState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks
+	// for the VTXO-tree sweep leaf, carried through the signing ceremony
+	// so batch expiry can be computed on confirmation. Delivered per round
+	// (not a global operator term).
+	SweepDelay uint32
+
 	// Intents contains all the client's intents for this round.
 	Intents Intents
 
@@ -414,6 +437,12 @@ type NoncesSentState struct {
 
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks
+	// for the VTXO-tree sweep leaf, carried through the signing ceremony
+	// so batch expiry can be computed on confirmation. Delivered per round
+	// (not a global operator term).
+	SweepDelay uint32
 
 	// Intents contains all the client's intents for this round.
 	Intents Intents
@@ -457,6 +486,12 @@ type NoncesAggregatedState struct {
 
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks
+	// for the VTXO-tree sweep leaf, carried through the signing ceremony
+	// so batch expiry can be computed on confirmation. Delivered per round
+	// (not a global operator term).
+	SweepDelay uint32
 
 	// Intents contains all the client's intents for this round.
 	Intents Intents
@@ -504,6 +539,12 @@ type PartialSigsSentState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks
+	// for the VTXO-tree sweep leaf, carried through the signing ceremony
+	// so batch expiry can be computed on confirmation. Delivered per round
+	// (not a global operator term).
+	SweepDelay uint32
+
 	// Intents contains all the client's intents for this round.
 	Intents Intents
 
@@ -546,6 +587,12 @@ type InputSigSentState struct {
 
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks
+	// for the VTXO-tree sweep leaf, carried through the signing ceremony
+	// so batch expiry can be computed on confirmation. Delivered per round
+	// (not a global operator term).
+	SweepDelay uint32
 
 	// Intents contains all the client's intents for this round.
 	Intents Intents

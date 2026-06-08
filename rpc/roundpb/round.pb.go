@@ -648,8 +648,20 @@ type ClientBatchInfo struct {
 	// client still on a previous operator-key epoch derives the same
 	// connector outpoints the server did.
 	ConnectorOperatorKey []byte `protobuf:"bytes,6,opt,name=connector_operator_key,json=connectorOperatorKey,proto3" json:"connector_operator_key,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// sweep_key is the operator sweep key (33-byte compressed) for this
+	// round's VTXO-tree sweep leaf. The client rebuilds the VTXO tree's
+	// sweep branch from this key — not the global operator terms — so an
+	// operator key rotation never changes the sweep key clients must agree
+	// on for the round they joined.
+	SweepKey []byte `protobuf:"bytes,7,opt,name=sweep_key,json=sweepKey,proto3" json:"sweep_key,omitempty"`
+	// sweep_delay is this round's batch-wide absolute-timelock in blocks for
+	// the VTXO-tree sweep leaf. The client uses it — not the global operator
+	// terms — to compute the batch expiry and reconstruct the sweep branch,
+	// keeping a client on a previous operator-key epoch in agreement with the
+	// server.
+	SweepDelay    uint32 `protobuf:"varint,8,opt,name=sweep_delay,json=sweepDelay,proto3" json:"sweep_delay,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ClientBatchInfo) Reset() {
@@ -722,6 +734,20 @@ func (x *ClientBatchInfo) GetConnectorOperatorKey() []byte {
 		return x.ConnectorOperatorKey
 	}
 	return nil
+}
+
+func (x *ClientBatchInfo) GetSweepKey() []byte {
+	if x != nil {
+		return x.SweepKey
+	}
+	return nil
+}
+
+func (x *ClientBatchInfo) GetSweepDelay() uint32 {
+	if x != nil {
+		return x.SweepDelay
+	}
+	return 0
 }
 
 // ClientAwaitingInputSigsResp notifies a client that the server is ready
@@ -2449,7 +2475,7 @@ const file_round_proto_rawDesc = "" +
 	"\x11ClientSuccessResp\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12R\n" +
 	"\x1baccepted_boarding_outpoints\x18\x02 \x03(\v2\x12.round.v1.OutpointR\x19acceptedBoardingOutpoints\x12J\n" +
-	"\x17accepted_vtxo_outpoints\x18\x03 \x03(\v2\x12.round.v1.OutpointR\x15acceptedVtxoOutpoints\"\x96\x04\n" +
+	"\x17accepted_vtxo_outpoints\x18\x03 \x03(\v2\x12.round.v1.OutpointR\x15acceptedVtxoOutpoints\"\xd4\x04\n" +
 	"\x0fClientBatchInfo\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12\x1d\n" +
 	"\n" +
@@ -2457,7 +2483,10 @@ const file_round_proto_rawDesc = "" +
 	"\x0fvtxo_tree_paths\x18\x03 \x03(\v2,.round.v1.ClientBatchInfo.VtxoTreePathsEntryR\rvtxoTreePaths\x12]\n" +
 	"\x12connector_leaf_map\x18\x04 \x03(\v2/.round.v1.ClientBatchInfo.ConnectorLeafMapEntryR\x10connectorLeafMap\x12&\n" +
 	"\x0ftree_cosign_key\x18\x05 \x01(\fR\rtreeCosignKey\x124\n" +
-	"\x16connector_operator_key\x18\x06 \x01(\fR\x14connectorOperatorKey\x1aT\n" +
+	"\x16connector_operator_key\x18\x06 \x01(\fR\x14connectorOperatorKey\x12\x1b\n" +
+	"\tsweep_key\x18\a \x01(\fR\bsweepKey\x12\x1f\n" +
+	"\vsweep_delay\x18\b \x01(\rR\n" +
+	"sweepDelay\x1aT\n" +
 	"\x12VtxoTreePathsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12(\n" +
 	"\x05value\x18\x02 \x01(\v2\x12.round.v1.VTXOTreeR\x05value:\x028\x01\x1a`\n" +

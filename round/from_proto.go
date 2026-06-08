@@ -290,6 +290,18 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 		e.ConnectorOperatorKey = key
 	}
 
+	// Parse this round's sweep key and delay. These are delivered per round
+	// (replacing the removed global GetInfo sweep terms), so the FSM uses
+	// them to validate the VTXO-tree sweep branch and compute batch expiry.
+	if len(pb.SweepKey) > 0 {
+		key, keyErr := btcec.ParsePubKey(pb.SweepKey)
+		if keyErr != nil {
+			return fmt.Errorf("sweep_key: %w", keyErr)
+		}
+		e.SweepKey = key
+	}
+	e.SweepDelay = pb.SweepDelay
+
 	return nil
 }
 

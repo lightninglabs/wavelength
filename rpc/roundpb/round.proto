@@ -183,6 +183,20 @@ message ClientBatchInfo {
     // client still on a previous operator-key epoch derives the same
     // connector outpoints the server did.
     bytes connector_operator_key = 6;
+
+    // sweep_key is the operator sweep key (33-byte compressed) for this
+    // round's VTXO-tree sweep leaf. The client rebuilds the VTXO tree's
+    // sweep branch from this key — not the global operator terms — so an
+    // operator key rotation never changes the sweep key clients must agree
+    // on for the round they joined.
+    bytes sweep_key = 7;
+
+    // sweep_delay is this round's batch-wide absolute-timelock in blocks for
+    // the VTXO-tree sweep leaf. The client uses it — not the global operator
+    // terms — to compute the batch expiry and reconstruct the sweep branch,
+    // keeping a client on a previous operator-key epoch in agreement with the
+    // server.
+    uint32 sweep_delay = 8;
 }
 
 // ClientAwaitingInputSigsResp notifies a client that the server is ready

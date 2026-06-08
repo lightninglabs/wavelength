@@ -1376,6 +1376,8 @@ func (s *RoundJoinedState) ProcessEvent(ctx context.Context, event ClientEvent,
 				VTXOTreePaths:        evt.VTXOTreePaths,
 				TreeCosignKey:        evt.TreeCosignKey,
 				ConnectorOperatorKey: evt.ConnectorOperatorKey,
+				SweepKey:             evt.SweepKey,
+				SweepDelay:           evt.SweepDelay,
 				Intents:              s.Intents.Clone(),
 				ClientTrees: make(
 					map[SignerKey]*tree.Tree,
@@ -1636,6 +1638,32 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			connectorOperatorKey = env.OperatorTerms.PubKey
 		}
 
+		// Validate this round's sweep delay against the VTXO exit
+		// delay. The sweep delay is now delivered per round (not a
+		// global operator term), so the security check that the
+		// operator has time to respond to unilateral exits before the
+		// batch expires moves here, where the round-specific value is
+		// known.
+		if err := ValidateDelayParameters(
+			s.SweepDelay, env.OperatorTerms.VTXOExitDelay,
+		); err != nil {
+
+			env.Log.WarnS(
+				ctx,
+				"Round sweep delay validation failed",
+				err,
+				slog.String("round_id", s.RoundID.String()),
+			)
+
+			return &ClientStateTransition{
+				NextState: &ClientFailedState{
+					Reason:      "invalid round sweep delay",
+					Error:       err,
+					Recoverable: false,
+				},
+			}, nil
+		}
+
 		// Validate boarding inputs if we have any boarding intents.
 		// Refresh-only rounds have no boarding inputs to validate.
 		var boardingInputIndices map[wire.OutPoint]int
@@ -1852,6 +1880,7 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			s.CommitmentTx.UnsignedTx, connectorOperatorKey,
 			evt.ForfeitMappings,
 		); err != nil {
+
 			// Error carried into failed state.
 			return &ClientStateTransition{ //nolint:nilerr
 				NextState: &ClientFailedState{
@@ -1881,6 +1910,7 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
+				SweepDelay:           s.SweepDelay,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          clientTrees,
 				BoardingInputIndices: boardingInputIndices,
@@ -1978,6 +2008,7 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 					RoundID:           s.RoundID,
 					CommitmentTx:      s.CommitmentTx,
 					VTXOTreePaths:     s.VTXOTreePaths,
+					SweepDelay:        s.SweepDelay,
 					Intents:           s.Intents.Clone(),
 					ClientTrees:       s.ClientTrees,
 					ExpectedForfeits:  s.ForfeitMappings,
@@ -2065,6 +2096,7 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
+				SweepDelay:           s.SweepDelay,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          s.ClientTrees,
 				Musig2Sessions:       musig2Sessions,
@@ -2208,6 +2240,7 @@ func (s *ForfeitSignaturesCollectingState) waitForMoreForfeitSignatures(
 			RoundID:              s.RoundID,
 			CommitmentTx:         s.CommitmentTx,
 			VTXOTreePaths:        s.VTXOTreePaths,
+			SweepDelay:           s.SweepDelay,
 			Intents:              s.Intents.Clone(),
 			ClientTrees:          s.ClientTrees,
 			BoardingInputIndices: s.BoardingInputIndices,
@@ -2353,6 +2386,7 @@ func (s *ForfeitSignaturesCollectingState) inputSigSentState(
 		RoundID:        s.RoundID,
 		CommitmentTx:   s.CommitmentTx,
 		VTXOTreePaths:  s.VTXOTreePaths,
+		SweepDelay:     s.SweepDelay,
 		Intents:        s.Intents.Clone(),
 		ClientTrees:    s.ClientTrees,
 		InputSigs:      boardingInputSigs,
@@ -2406,6 +2440,7 @@ func (s *NoncesSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
+				SweepDelay:           s.SweepDelay,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          s.ClientTrees,
 				Musig2Sessions:       s.Musig2Sessions,
@@ -2489,6 +2524,7 @@ func (s *NoncesAggregatedState) ProcessEvent(ctx context.Context,
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
+				SweepDelay:           s.SweepDelay,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          s.ClientTrees,
 				Musig2Sessions:       s.Musig2Sessions,
@@ -2688,6 +2724,7 @@ func (s *PartialSigsSentState) ProcessEvent(ctx context.Context,
 			RoundID:       s.RoundID,
 			CommitmentTx:  s.CommitmentTx,
 			VTXOTreePaths: s.VTXOTreePaths,
+			SweepDelay:    s.SweepDelay,
 			Intents:       s.Intents.Clone(),
 			ClientTrees:   s.ClientTrees,
 			InputSigs:     boardingInputSigs,
@@ -2782,6 +2819,7 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 			RoundID:              s.RoundID,
 			CommitmentTx:         s.CommitmentTx,
 			VTXOTreePaths:        s.VTXOTreePaths,
+			SweepDelay:           s.SweepDelay,
 			Intents:              s.Intents.Clone(),
 			ClientTrees:          s.ClientTrees,
 			ExpectedForfeits:     s.ForfeitMappings,
@@ -3386,8 +3424,9 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 			slog.Int("vtxo_count", len(vtxos)),
 		)
 
-		// Compute batch expiry as absolute block height.
-		sweepDelay := int32(env.OperatorTerms.SweepDelay)
+		// Compute batch expiry as absolute block height using this
+		// round's sweep delay (delivered per round, not a global term).
+		sweepDelay := int32(s.SweepDelay)
 		batchExpiry := evt.BlockHeight + sweepDelay
 
 		// Fill in round metadata so VTXOs are complete from the

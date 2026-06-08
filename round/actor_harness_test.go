@@ -565,8 +565,6 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		PubKey:            operatorPubKey,
 		BoardingExitDelay: 144,
 		VTXOExitDelay:     144,
-		SweepKey:          operatorPubKey,
-		SweepDelay:        1008,
 		MinConfirmations:  1,
 	}
 

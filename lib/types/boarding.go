@@ -47,12 +47,6 @@ type OperatorTerms struct {
 	// claim forfeited funds.
 	ForfeitScript []byte
 
-	// SweepKey is the operator key used in VTXT sweep paths.
-	SweepKey *btcec.PublicKey
-
-	// SweepDelay is the batch-wide absolute timelock (blocks).
-	SweepDelay uint32
-
 	// DustLimit enforces minimum output value for boarding/funding flows.
 	DustLimit btcutil.Amount
 
@@ -394,8 +388,8 @@ type BatchOutputInfo struct {
 	// signing sessions for this batch output.
 	SignerKey *btcec.PublicKey
 
-	// Tree is the VTXO tree for this batch output.
-	// Tree contains SweepKey, SweepDelay, and PrevOut.
+	// Tree is the VTXO tree for this batch output. The tree embeds the
+	// per-round sweep key, sweep delay, and PrevOut.
 	Tree *tree.Tree
 }
 

@@ -351,7 +351,6 @@ func newFakeOperatorResponse(t *testing.T,
 	return &arkrpc.GetInfoResponse{
 		Pubkey:         priv.PubKey().SerializeCompressed(),
 		VtxoExitDelay:  144,
-		SweepDelay:     1008,
 		MinOperatorFee: minOperatorFee,
 	}
 }

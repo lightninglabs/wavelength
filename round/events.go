@@ -183,6 +183,19 @@ type CommitmentTxBuilt struct {
 	// instead of the global operator key. Nil when talking to an older
 	// server; callers fall back to the global operator key.
 	ConnectorOperatorKey *btcec.PublicKey
+
+	// SweepKey is the operator sweep key for this round's VTXO-tree sweep
+	// leaf, delivered per round so the client agrees with the server on the
+	// sweep branch even across an operator key rotation. It replaces the
+	// global GetInfo sweep key entirely; a well-formed round always carries
+	// it.
+	SweepKey *btcec.PublicKey
+
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks for
+	// the VTXO-tree sweep leaf, delivered per round alongside SweepKey. It
+	// replaces the global GetInfo sweep delay and drives batch-expiry
+	// computation for VTXOs created in this round.
+	SweepDelay uint32
 }
 
 func (e *CommitmentTxBuilt) clientEventSealed() {}

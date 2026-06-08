@@ -445,14 +445,12 @@ func newDirectedSendFixture(t *testing.T,
 
 	operatorInfo := &arkrpc.GetInfoResponse{
 		Pubkey:            operatorPriv.PubKey().SerializeCompressed(),
-		SweepKey:          operatorPriv.PubKey().SerializeCompressed(),
 		BoardingExitDelay: 144,
 		VtxoExitDelay:     144,
 		ForfeitScript: []byte{
 			0x51,
 			0x20,
 		},
-		SweepDelay:       1008,
 		DustLimit:        testDustLimitSat,
 		MinOperatorFee:   testOperatorFeeSat,
 		MinConfirmations: 1,

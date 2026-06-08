@@ -135,13 +135,6 @@ type ServerInfo struct {
 	// forfeit transactions.
 	ForfeitScript []byte
 
-	// SweepKey is the compressed SEC-encoded operator public key used in
-	// VTXO sweep paths when present.
-	SweepKey []byte
-
-	// SweepDelay is the batch-wide absolute timelock in blocks.
-	SweepDelay uint32
-
 	// DustLimit is the minimum output value accepted by the operator.
 	DustLimit uint64
 
@@ -419,10 +412,6 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 			ForfeitScript: bytes.Clone(
 				resp.ServerInfo.ForfeitScript,
 			),
-			SweepKey: bytes.Clone(
-				resp.ServerInfo.SweepKey,
-			),
-			SweepDelay:        resp.ServerInfo.SweepDelay,
 			DustLimit:         resp.ServerInfo.DustLimit,
 			MinBoardingAmount: resp.ServerInfo.MinBoardingAmount,
 			MaxBoardingAmount: resp.ServerInfo.MaxBoardingAmount,

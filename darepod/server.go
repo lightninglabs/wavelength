@@ -3965,21 +3965,14 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 		return nil, fmt.Errorf("parse operator pubkey: %w", err)
 	}
 
-	var sweepKey *btcec.PublicKey
-	if len(resp.SweepKey) > 0 {
-		sweepKey, err = btcec.ParsePubKey(resp.SweepKey)
-		if err != nil {
-			return nil, fmt.Errorf("parse sweep key: %w", err)
-		}
-	}
-
+	// The sweep key and sweep delay are no longer global operator terms;
+	// they are delivered per round in the batch info, so GetInfo no longer
+	// carries them.
 	terms := &types.OperatorTerms{
 		PubKey:              pubKey,
 		BoardingExitDelay:   resp.BoardingExitDelay,
 		VTXOExitDelay:       resp.VtxoExitDelay,
 		ForfeitScript:       resp.ForfeitScript,
-		SweepKey:            sweepKey,
-		SweepDelay:          resp.SweepDelay,
 		DustLimit:           btcutil.Amount(resp.DustLimit),
 		MinBoardingAmount:   btcutil.Amount(resp.MinBoardingAmount),
 		MaxBoardingAmount:   btcutil.Amount(resp.MaxBoardingAmount),
