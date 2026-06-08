@@ -131,10 +131,6 @@ type ServerInfo struct {
 	// VTXOExitDelay is the minimum CSV delay required for VTXO outputs.
 	VTXOExitDelay uint32
 
-	// ForfeitScript is the raw serialized scriptPubKey required in
-	// forfeit transactions.
-	ForfeitScript []byte
-
 	// DustLimit is the minimum output value accepted by the operator.
 	DustLimit uint64
 
@@ -409,9 +405,6 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 			),
 			BoardingExitDelay: resp.ServerInfo.BoardingExitDelay,
 			VTXOExitDelay:     resp.ServerInfo.VtxoExitDelay,
-			ForfeitScript: bytes.Clone(
-				resp.ServerInfo.ForfeitScript,
-			),
 			DustLimit:         resp.ServerInfo.DustLimit,
 			MinBoardingAmount: resp.ServerInfo.MinBoardingAmount,
 			MaxBoardingAmount: resp.ServerInfo.MaxBoardingAmount,

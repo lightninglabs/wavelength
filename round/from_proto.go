@@ -302,6 +302,17 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 	}
 	e.SweepDelay = pb.SweepDelay
 
+	// Parse this round's forfeit penalty key. It is delivered per round
+	// (replacing the removed global GetInfo forfeit script), so the FSM
+	// derives the forfeit-tx penalty output script from it.
+	if len(pb.ForfeitKey) > 0 {
+		key, keyErr := btcec.ParsePubKey(pb.ForfeitKey)
+		if keyErr != nil {
+			return fmt.Errorf("forfeit_key: %w", keyErr)
+		}
+		e.ForfeitKey = key
+	}
+
 	return nil
 }
 

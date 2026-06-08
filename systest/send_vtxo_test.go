@@ -447,13 +447,9 @@ func newDirectedSendFixture(t *testing.T,
 		Pubkey:            operatorPriv.PubKey().SerializeCompressed(),
 		BoardingExitDelay: 144,
 		VtxoExitDelay:     144,
-		ForfeitScript: []byte{
-			0x51,
-			0x20,
-		},
-		DustLimit:        testDustLimitSat,
-		MinOperatorFee:   testOperatorFeeSat,
-		MinConfirmations: 1,
+		DustLimit:         testDustLimitSat,
+		MinOperatorFee:    testOperatorFeeSat,
+		MinConfirmations:  1,
 	}
 
 	operatorMailbox := serverconn.PubKeyMailboxID(

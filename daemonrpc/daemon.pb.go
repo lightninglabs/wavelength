@@ -889,9 +889,6 @@ type ServerInfo struct {
 	BoardingExitDelay uint32 `protobuf:"varint,2,opt,name=boarding_exit_delay,json=boardingExitDelay,proto3" json:"boarding_exit_delay,omitempty"`
 	// vtxo_exit_delay is the minimum CSV delay for VTXO outputs.
 	VtxoExitDelay uint32 `protobuf:"varint,3,opt,name=vtxo_exit_delay,json=vtxoExitDelay,proto3" json:"vtxo_exit_delay,omitempty"`
-	// forfeit_script is the raw serialized scriptPubKey for the penalty
-	// output clients must use in forfeit transactions.
-	ForfeitScript []byte `protobuf:"bytes,4,opt,name=forfeit_script,json=forfeitScript,proto3" json:"forfeit_script,omitempty"`
 	// dust_limit is the minimum output value accepted by the operator.
 	DustLimit uint64 `protobuf:"varint,7,opt,name=dust_limit,json=dustLimit,proto3" json:"dust_limit,omitempty"`
 	// min_boarding_amount is the smallest boarding amount the operator
@@ -960,13 +957,6 @@ func (x *ServerInfo) GetVtxoExitDelay() uint32 {
 		return x.VtxoExitDelay
 	}
 	return 0
-}
-
-func (x *ServerInfo) GetForfeitScript() []byte {
-	if x != nil {
-		return x.ForfeitScript
-	}
-	return nil
 }
 
 func (x *ServerInfo) GetDustLimit() uint64 {
@@ -7827,13 +7817,12 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fidentity_pubkey\x18\n" +
 	" \x01(\tR\x0eidentityPubkey\x126\n" +
 	"\vserver_info\x18\v \x01(\v2\x15.daemonrpc.ServerInfoR\n" +
-	"serverInfo\"\xa5\x03\n" +
+	"serverInfo\"\xfe\x02\n" +
 	"\n" +
 	"ServerInfo\x12'\n" +
 	"\x0foperator_pubkey\x18\x01 \x01(\fR\x0eoperatorPubkey\x12.\n" +
 	"\x13boarding_exit_delay\x18\x02 \x01(\rR\x11boardingExitDelay\x12&\n" +
-	"\x0fvtxo_exit_delay\x18\x03 \x01(\rR\rvtxoExitDelay\x12%\n" +
-	"\x0eforfeit_script\x18\x04 \x01(\fR\rforfeitScript\x12\x1d\n" +
+	"\x0fvtxo_exit_delay\x18\x03 \x01(\rR\rvtxoExitDelay\x12\x1d\n" +
 	"\n" +
 	"dust_limit\x18\a \x01(\x04R\tdustLimit\x12.\n" +
 	"\x13min_boarding_amount\x18\b \x01(\x04R\x11minBoardingAmount\x12.\n" +

@@ -945,7 +945,6 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 		PubKey:            operatorPriv.PubKey(),
 		BoardingExitDelay: 144,
 		VTXOExitDelay:     288,
-		ForfeitScript:     []byte{0x51, 0x20, 0x01},
 		DustLimit:         btcutil.Amount(546),
 		MinBoardingAmount: btcutil.Amount(10_000),
 		MaxBoardingAmount: btcutil.Amount(500_000),
@@ -967,9 +966,6 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 	)
 	require.Equal(t, uint32(144), resp.ServerInfo.BoardingExitDelay)
 	require.Equal(t, uint32(288), resp.ServerInfo.VtxoExitDelay)
-	require.Equal(
-		t, []byte{0x51, 0x20, 0x01}, resp.ServerInfo.ForfeitScript,
-	)
 	require.Equal(t, uint64(546), resp.ServerInfo.DustLimit)
 	require.Equal(t, uint64(10_000),
 		resp.ServerInfo.MinBoardingAmount,
@@ -1013,7 +1009,6 @@ func TestGetInfoConcurrentOperatorTermsAccess(t *testing.T) {
 				PubKey:            operatorPriv.PubKey(),
 				BoardingExitDelay: 100 + i,
 				VTXOExitDelay:     200 + i,
-				ForfeitScript:     []byte{0x51, byte(i)},
 				DustLimit:         btcutil.Amount(546),
 				MinBoardingAmount: btcutil.Amount(10_000),
 				MaxBoardingAmount: btcutil.Amount(500_000),

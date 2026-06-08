@@ -196,6 +196,13 @@ type CommitmentTxBuilt struct {
 	// replaces the global GetInfo sweep delay and drives batch-expiry
 	// computation for VTXOs created in this round.
 	SweepDelay uint32
+
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, delivered per round so the client builds the forfeit-tx
+	// penalty output (a BIP-86 key-spend to this key) the server expects
+	// even across an operator key rotation. It replaces the global GetInfo
+	// forfeit script entirely; a well-formed round always carries it.
+	ForfeitKey *btcec.PublicKey
 }
 
 func (e *CommitmentTxBuilt) clientEventSealed() {}

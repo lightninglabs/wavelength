@@ -299,6 +299,12 @@ type CommitmentTxReceivedState struct {
 	// computation for VTXOs created in this round.
 	SweepDelay uint32
 
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, delivered with the commitment tx. The forfeit-tx penalty
+	// output script is a BIP-86 key-spend to this key; it replaces the
+	// global GetInfo forfeit script for this round.
+	ForfeitKey *btcec.PublicKey
+
 	// Intents contains all the client's intents for this round.
 	Intents Intents
 
@@ -342,6 +348,12 @@ type CommitmentTxValidatedState struct {
 	// so batch expiry can be computed on confirmation. Delivered per round
 	// (not a global operator term).
 	SweepDelay uint32
+
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, carried through the signing ceremony so the forfeit-tx
+	// penalty output (a BIP-86 key-spend to this key) can be built and
+	// validated. Delivered per round (not a global operator term).
+	ForfeitKey *btcec.PublicKey
 
 	// Intents contains all the client's intents for this round.
 	Intents Intents
@@ -396,6 +408,12 @@ type ForfeitSignaturesCollectingState struct {
 	// (not a global operator term).
 	SweepDelay uint32
 
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, carried through the signing ceremony so the forfeit-tx
+	// penalty output (a BIP-86 key-spend to this key) can be built and
+	// validated. Delivered per round (not a global operator term).
+	ForfeitKey *btcec.PublicKey
+
 	// Intents contains all the client's intents for this round.
 	Intents Intents
 
@@ -443,6 +461,12 @@ type NoncesSentState struct {
 	// so batch expiry can be computed on confirmation. Delivered per round
 	// (not a global operator term).
 	SweepDelay uint32
+
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, carried through the signing ceremony so the forfeit-tx
+	// penalty output (a BIP-86 key-spend to this key) can be built and
+	// validated. Delivered per round (not a global operator term).
+	ForfeitKey *btcec.PublicKey
 
 	// Intents contains all the client's intents for this round.
 	Intents Intents
@@ -492,6 +516,12 @@ type NoncesAggregatedState struct {
 	// so batch expiry can be computed on confirmation. Delivered per round
 	// (not a global operator term).
 	SweepDelay uint32
+
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, carried through the signing ceremony so the forfeit-tx
+	// penalty output (a BIP-86 key-spend to this key) can be built and
+	// validated. Delivered per round (not a global operator term).
+	ForfeitKey *btcec.PublicKey
 
 	// Intents contains all the client's intents for this round.
 	Intents Intents
@@ -545,6 +575,12 @@ type PartialSigsSentState struct {
 	// (not a global operator term).
 	SweepDelay uint32
 
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, carried through the signing ceremony so the forfeit-tx
+	// penalty output (a BIP-86 key-spend to this key) can be built and
+	// validated. Delivered per round (not a global operator term).
+	ForfeitKey *btcec.PublicKey
+
 	// Intents contains all the client's intents for this round.
 	Intents Intents
 
@@ -593,6 +629,12 @@ type InputSigSentState struct {
 	// so batch expiry can be computed on confirmation. Delivered per round
 	// (not a global operator term).
 	SweepDelay uint32
+
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, carried through the signing ceremony so the forfeit-tx
+	// penalty output (a BIP-86 key-spend to this key) can be built and
+	// validated. Delivered per round (not a global operator term).
+	ForfeitKey *btcec.PublicKey
 
 	// Intents contains all the client's intents for this round.
 	Intents Intents

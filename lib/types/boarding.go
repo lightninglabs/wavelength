@@ -42,11 +42,6 @@ type OperatorTerms struct {
 	// a VTXO that has been forfeit or spent.
 	VTXOExitDelay uint32
 
-	// ForfeitScript is the output script that clients must use for the
-	// penalty output in forfeit transactions. This allows the server to
-	// claim forfeited funds.
-	ForfeitScript []byte
-
 	// DustLimit enforces minimum output value for boarding/funding flows.
 	DustLimit btcutil.Amount
 

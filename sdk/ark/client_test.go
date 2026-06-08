@@ -87,9 +87,6 @@ func newFakeDaemonService() *fakeDaemonService {
 				),
 				BoardingExitDelay: 144,
 				VtxoExitDelay:     288,
-				ForfeitScript: []byte{
-					0x51,
-				},
 				DustLimit:         546,
 				MinBoardingAmount: 10_000,
 				MaxBoardingAmount: 20_000,

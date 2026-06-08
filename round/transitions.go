@@ -1378,6 +1378,7 @@ func (s *RoundJoinedState) ProcessEvent(ctx context.Context, event ClientEvent,
 				ConnectorOperatorKey: evt.ConnectorOperatorKey,
 				SweepKey:             evt.SweepKey,
 				SweepDelay:           evt.SweepDelay,
+				ForfeitKey:           evt.ForfeitKey,
 				Intents:              s.Intents.Clone(),
 				ClientTrees: make(
 					map[SignerKey]*tree.Tree,
@@ -1880,7 +1881,6 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			s.CommitmentTx.UnsignedTx, connectorOperatorKey,
 			evt.ForfeitMappings,
 		); err != nil {
-
 			// Error carried into failed state.
 			return &ClientStateTransition{ //nolint:nilerr
 				NextState: &ClientFailedState{
@@ -1911,6 +1911,7 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
 				SweepDelay:           s.SweepDelay,
+				ForfeitKey:           s.ForfeitKey,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          clientTrees,
 				BoardingInputIndices: boardingInputIndices,
@@ -1966,6 +1967,23 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 				slog.String("round_id", s.RoundID.String()),
 				slog.Int("leave_count", len(s.Intents.Leaves)))
 
+			// Derive this round's forfeit penalty output script
+			// from the per-round forfeit key (replacing the removed
+			// global GetInfo forfeit script).
+			forfeitScript, err := forfeitPenaltyScript(s.ForfeitKey)
+			if err != nil {
+
+				// Error carried into failed state.
+				return &ClientStateTransition{ //nolint:nilerr
+					NextState: &ClientFailedState{
+						Reason: "invalid round " +
+							"forfeit key",
+						Error:       err,
+						Recoverable: false,
+					},
+				}, nil
+			}
+
 			// Build forfeit request messages for each VTXO being
 			// forfeited.
 			forfeitReqs := forfeitRequestMap(
@@ -1976,7 +1994,6 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 				connOut := info.ConnectorOutpoint
 				connScript := info.ConnectorPkScript
 				connAmt := info.ConnectorAmount
-				forfeitScript := env.OperatorTerms.ForfeitScript
 				roundIDStr := s.RoundID.String()
 				req := forfeitReqs[vtxoOutpoint]
 
@@ -2009,6 +2026,7 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 					CommitmentTx:      s.CommitmentTx,
 					VTXOTreePaths:     s.VTXOTreePaths,
 					SweepDelay:        s.SweepDelay,
+					ForfeitKey:        s.ForfeitKey,
 					Intents:           s.Intents.Clone(),
 					ClientTrees:       s.ClientTrees,
 					ExpectedForfeits:  s.ForfeitMappings,
@@ -2097,6 +2115,7 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
 				SweepDelay:           s.SweepDelay,
+				ForfeitKey:           s.ForfeitKey,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          s.ClientTrees,
 				Musig2Sessions:       musig2Sessions,
@@ -2136,13 +2155,22 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(ctx context.Context,
 		forfeitReqs := forfeitRequestMap(s.Intents.Forfeits)
 		req := forfeitReqs[evt.VTXOOutpoint]
 
+		// Derive this round's forfeit penalty output script from the
+		// per-round forfeit key (replacing the removed global GetInfo
+		// forfeit script).
+		forfeitScript, err := forfeitPenaltyScript(s.ForfeitKey)
+		if err != nil {
+			return nil, fmt.Errorf("forfeit penalty script for "+
+				"VTXO %s: %w", evt.VTXOOutpoint, err)
+		}
+
 		// Validate the forfeit transaction structure using lib/tx. The
 		// amount check ensures the zero-fee penalty output equals the
 		// forfeited VTXO plus connector value, preventing value theft.
 		params := tx.ForfeitTxParams{
 			VTXOOutpoint:        evt.VTXOOutpoint,
 			ConnectorOutpoint:   connectorInfo.ConnectorOutpoint,
-			ServerForfeitScript: env.OperatorTerms.ForfeitScript,
+			ServerForfeitScript: forfeitScript,
 			ExpectedAmount: btcutil.Amount(
 				int64(connectorInfo.VTXOAmount) +
 					connectorInfo.ConnectorAmount,
@@ -2150,7 +2178,7 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(ctx context.Context,
 			ExpectedSequence: expectedForfeitSequence(req),
 			ExpectedLockTime: expectedForfeitLockTime(req),
 		}
-		err := tx.ValidateForfeitTx(evt.ForfeitTx, params)
+		err = tx.ValidateForfeitTx(evt.ForfeitTx, params)
 		if err != nil {
 			return nil, fmt.Errorf("invalid forfeit tx for VTXO "+
 				"%s: %w", evt.VTXOOutpoint, err)
@@ -2241,6 +2269,7 @@ func (s *ForfeitSignaturesCollectingState) waitForMoreForfeitSignatures(
 			CommitmentTx:         s.CommitmentTx,
 			VTXOTreePaths:        s.VTXOTreePaths,
 			SweepDelay:           s.SweepDelay,
+			ForfeitKey:           s.ForfeitKey,
 			Intents:              s.Intents.Clone(),
 			ClientTrees:          s.ClientTrees,
 			BoardingInputIndices: s.BoardingInputIndices,
@@ -2387,6 +2416,7 @@ func (s *ForfeitSignaturesCollectingState) inputSigSentState(
 		CommitmentTx:   s.CommitmentTx,
 		VTXOTreePaths:  s.VTXOTreePaths,
 		SweepDelay:     s.SweepDelay,
+		ForfeitKey:     s.ForfeitKey,
 		Intents:        s.Intents.Clone(),
 		ClientTrees:    s.ClientTrees,
 		InputSigs:      boardingInputSigs,
@@ -2441,6 +2471,7 @@ func (s *NoncesSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
 				SweepDelay:           s.SweepDelay,
+				ForfeitKey:           s.ForfeitKey,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          s.ClientTrees,
 				Musig2Sessions:       s.Musig2Sessions,
@@ -2525,6 +2556,7 @@ func (s *NoncesAggregatedState) ProcessEvent(ctx context.Context,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
 				SweepDelay:           s.SweepDelay,
+				ForfeitKey:           s.ForfeitKey,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          s.ClientTrees,
 				Musig2Sessions:       s.Musig2Sessions,
@@ -2725,6 +2757,7 @@ func (s *PartialSigsSentState) ProcessEvent(ctx context.Context,
 			CommitmentTx:  s.CommitmentTx,
 			VTXOTreePaths: s.VTXOTreePaths,
 			SweepDelay:    s.SweepDelay,
+			ForfeitKey:    s.ForfeitKey,
 			Intents:       s.Intents.Clone(),
 			ClientTrees:   s.ClientTrees,
 			InputSigs:     boardingInputSigs,
@@ -2779,8 +2812,22 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 	ctx context.Context, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
-	// Build forfeit request messages for each VTXO being refreshed. The
-	// forfeit script is a static operator property from OperatorTerms.
+	// Derive this round's forfeit penalty output script from the per-round
+	// forfeit key (replacing the removed global GetInfo forfeit script).
+	forfeitScript, err := forfeitPenaltyScript(s.ForfeitKey)
+	if err != nil {
+
+		// Error carried into failed state.
+		return &ClientStateTransition{ //nolint:nilerr
+			NextState: &ClientFailedState{
+				Reason:      "invalid round forfeit key",
+				Error:       err,
+				Recoverable: false,
+			},
+		}, nil
+	}
+
+	// Build forfeit request messages for each VTXO being refreshed.
 	forfeitReqs := forfeitRequestMap(s.Intents.Forfeits)
 	var outbox []ClientOutMsg
 	for vtxoOutpoint, info := range s.ForfeitMappings {
@@ -2791,7 +2838,7 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 			ConnectorOutpoint:     info.ConnectorOutpoint,
 			ConnectorPkScript:     info.ConnectorPkScript,
 			ConnectorAmount:       info.ConnectorAmount,
-			ServerForfeitPkScript: env.OperatorTerms.ForfeitScript,
+			ServerForfeitPkScript: forfeitScript,
 			ForfeitSpend:          req.ForfeitSpend,
 		}
 		outbox = append(outbox, msg)
@@ -2820,6 +2867,7 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 			CommitmentTx:         s.CommitmentTx,
 			VTXOTreePaths:        s.VTXOTreePaths,
 			SweepDelay:           s.SweepDelay,
+			ForfeitKey:           s.ForfeitKey,
 			Intents:              s.Intents.Clone(),
 			ClientTrees:          s.ClientTrees,
 			ExpectedForfeits:     s.ForfeitMappings,
@@ -3151,6 +3199,22 @@ func expectedForfeitLockTime(req types.ForfeitRequest) uint32 {
 	}
 
 	return req.ForfeitSpend.RequiredLockTime
+}
+
+// forfeitPenaltyScript derives the forfeit-tx penalty output script for a
+// round from the operator's per-round forfeit key. The script is a BIP-86
+// key-spend (no script tree) to the forfeit key, so the server can claim the
+// penalty output with a single Schnorr signature. The forfeit key is
+// delivered per round in ClientBatchInfo and replaces the removed global
+// GetInfo forfeit script.
+func forfeitPenaltyScript(forfeitKey *btcec.PublicKey) ([]byte, error) {
+	if forfeitKey == nil {
+		return nil, fmt.Errorf("round forfeit key not set")
+	}
+
+	taprootKey := txscript.ComputeTaprootKeyNoScript(forfeitKey)
+
+	return txscript.PayToTaprootScript(taprootKey)
 }
 
 // ensureVTXOSigningKeys fills missing VTXO signing keys by deriving fresh

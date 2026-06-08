@@ -659,7 +659,14 @@ type ClientBatchInfo struct {
 	// terms — to compute the batch expiry and reconstruct the sweep branch,
 	// keeping a client on a previous operator-key epoch in agreement with the
 	// server.
-	SweepDelay    uint32 `protobuf:"varint,8,opt,name=sweep_delay,json=sweepDelay,proto3" json:"sweep_delay,omitempty"`
+	SweepDelay uint32 `protobuf:"varint,8,opt,name=sweep_delay,json=sweepDelay,proto3" json:"sweep_delay,omitempty"`
+	// forfeit_key is the operator's dedicated forfeit penalty key (33-byte
+	// compressed) for this round. The client derives the forfeit-tx penalty
+	// output script as a BIP-86 key-spend to this key — not the global
+	// operator terms — so an operator key rotation never changes the penalty
+	// script clients must agree on for the round they joined. It is a key
+	// family distinct from the operator identity/connector key.
+	ForfeitKey    []byte `protobuf:"bytes,9,opt,name=forfeit_key,json=forfeitKey,proto3" json:"forfeit_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -748,6 +755,13 @@ func (x *ClientBatchInfo) GetSweepDelay() uint32 {
 		return x.SweepDelay
 	}
 	return 0
+}
+
+func (x *ClientBatchInfo) GetForfeitKey() []byte {
+	if x != nil {
+		return x.ForfeitKey
+	}
+	return nil
 }
 
 // ClientAwaitingInputSigsResp notifies a client that the server is ready
@@ -2475,7 +2489,7 @@ const file_round_proto_rawDesc = "" +
 	"\x11ClientSuccessResp\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12R\n" +
 	"\x1baccepted_boarding_outpoints\x18\x02 \x03(\v2\x12.round.v1.OutpointR\x19acceptedBoardingOutpoints\x12J\n" +
-	"\x17accepted_vtxo_outpoints\x18\x03 \x03(\v2\x12.round.v1.OutpointR\x15acceptedVtxoOutpoints\"\xd4\x04\n" +
+	"\x17accepted_vtxo_outpoints\x18\x03 \x03(\v2\x12.round.v1.OutpointR\x15acceptedVtxoOutpoints\"\xf5\x04\n" +
 	"\x0fClientBatchInfo\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12\x1d\n" +
 	"\n" +
@@ -2486,7 +2500,9 @@ const file_round_proto_rawDesc = "" +
 	"\x16connector_operator_key\x18\x06 \x01(\fR\x14connectorOperatorKey\x12\x1b\n" +
 	"\tsweep_key\x18\a \x01(\fR\bsweepKey\x12\x1f\n" +
 	"\vsweep_delay\x18\b \x01(\rR\n" +
-	"sweepDelay\x1aT\n" +
+	"sweepDelay\x12\x1f\n" +
+	"\vforfeit_key\x18\t \x01(\fR\n" +
+	"forfeitKey\x1aT\n" +
 	"\x12VtxoTreePathsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12(\n" +
 	"\x05value\x18\x02 \x01(\v2\x12.round.v1.VTXOTreeR\x05value:\x028\x01\x1a`\n" +

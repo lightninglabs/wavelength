@@ -594,14 +594,14 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *daemonrpc.GetInfoRequest) (
 			return resp, nil
 		}
 
-		// The sweep key and delay are no longer global operator terms;
-		// they are delivered per round in the round batch info, so they
-		// are not surfaced on this daemon-level ServerInfo snapshot.
+		// The forfeit penalty key, sweep key and delay are no longer
+		// global operator terms; they are delivered per round in the
+		// round batch info, so they are not surfaced on this
+		// daemon-level ServerInfo snapshot.
 		resp.ServerInfo = &daemonrpc.ServerInfo{
 			OperatorPubkey:    terms.PubKey.SerializeCompressed(),
 			BoardingExitDelay: terms.BoardingExitDelay,
 			VtxoExitDelay:     terms.VTXOExitDelay,
-			ForfeitScript:     terms.ForfeitScript,
 			DustLimit:         uint64(terms.DustLimit),
 			MinBoardingAmount: uint64(terms.MinBoardingAmount),
 			MaxBoardingAmount: uint64(terms.MaxBoardingAmount),

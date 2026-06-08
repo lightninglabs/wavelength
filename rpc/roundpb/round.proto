@@ -197,6 +197,14 @@ message ClientBatchInfo {
     // keeping a client on a previous operator-key epoch in agreement with the
     // server.
     uint32 sweep_delay = 8;
+
+    // forfeit_key is the operator's dedicated forfeit penalty key (33-byte
+    // compressed) for this round. The client derives the forfeit-tx penalty
+    // output script as a BIP-86 key-spend to this key — not the global
+    // operator terms — so an operator key rotation never changes the penalty
+    // script clients must agree on for the round they joined. It is a key
+    // family distinct from the operator identity/connector key.
+    bytes forfeit_key = 9;
 }
 
 // ClientAwaitingInputSigsResp notifies a client that the server is ready

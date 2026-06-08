@@ -1655,6 +1655,7 @@ func TestCommitmentTxValidatedState(t *testing.T) {
 			RoundID:       roundID,
 			CommitmentTx:  commitmentTx,
 			VTXOTreePaths: map[int]*tree.Tree{},
+			ForfeitKey:    h.forfeitPubKey,
 			Intents: Intents{
 				Boarding: []BoardingIntent{
 					intent,
@@ -1951,6 +1952,7 @@ func TestPartialSigsSentState(t *testing.T) {
 			RoundID:       roundID,
 			CommitmentTx:  commitmentTx,
 			VTXOTreePaths: map[int]*tree.Tree{},
+			ForfeitKey:    h.forfeitPubKey,
 			Intents: Intents{
 				Boarding: []BoardingIntent{
 					intent,
@@ -2849,7 +2851,7 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		intent := h.newTestBoardingIntent()
 		vtxoOutpoint := h.newTestOutpoint()
 		connectorOutpoint := h.newTestOutpoint()
-		serverForfeitScript := []byte{0x51, 0x20}
+		serverForfeitScript := h.forfeitScript()
 
 		// Build a valid forfeit tx structure for validation.
 		forfeitTx := h.newTestForfeitTx(
@@ -2869,7 +2871,6 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 					VTXOAmount:        50000,
 				},
 			},
-			serverForfeitScript,
 		)
 		h.withState(state)
 
@@ -2912,7 +2913,7 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 
 			vtxoOutpoint := h.newTestOutpoint()
 			connectorOutpoint := h.newTestOutpoint()
-			serverForfeitScript := []byte{0x51, 0x20}
+			serverForfeitScript := h.forfeitScript()
 
 			forfeitTx := h.newTestForfeitTx(
 				vtxoOutpoint, connectorOutpoint,
@@ -2935,7 +2936,6 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 				map[wire.OutPoint]*ConnectorLeafInfo{
 					vtxoOutpoint: connectorInfo,
 				},
-				serverForfeitScript,
 			)
 			h.withState(state)
 
@@ -2984,7 +2984,7 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		vtxoOutpoint2 := h.newTestOutpoint()
 		connectorOutpoint1 := h.newTestOutpoint()
 		connectorOutpoint2 := h.newTestOutpoint()
-		serverForfeitScript := []byte{0x51, 0x20}
+		serverForfeitScript := h.forfeitScript()
 
 		roundID := testRoundIDTr("round-forfeit-002")
 		state := h.newForfeitCollectingState(
@@ -3006,7 +3006,6 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 					VTXOAmount:        50000,
 				},
 			},
-			serverForfeitScript,
 		)
 		h.withState(state)
 
@@ -3061,7 +3060,7 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		intent := h.newTestBoardingIntent()
 		vtxoOutpoint := h.newTestOutpoint()
 		connectorOutpoint := h.newTestOutpoint()
-		serverForfeitScript := []byte{0x51, 0x20}
+		serverForfeitScript := h.forfeitScript()
 
 		// We need 2 expected forfeits to stay in state after first.
 		vtxoOutpoint2 := h.newTestOutpoint()
@@ -3087,7 +3086,6 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 					VTXOAmount:        50000,
 				},
 			},
-			serverForfeitScript,
 		)
 		h.withState(state)
 
@@ -3131,7 +3129,6 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		intent := h.newTestBoardingIntent()
 		vtxoOutpoint := h.newTestOutpoint()
 		connectorOutpoint := h.newTestOutpoint()
-		serverForfeitScript := []byte{0x51, 0x20}
 
 		roundID := testRoundIDTr("round-forfeit-004")
 		state := h.newForfeitCollectingState(
@@ -3146,7 +3143,6 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 					VTXOAmount:        50000,
 				},
 			},
-			serverForfeitScript,
 		)
 		h.withState(state)
 
@@ -3186,7 +3182,6 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 					VTXOAmount:        50000,
 				},
 			},
-			[]byte{0x51, 0x20},
 		)
 		h.withState(state)
 
@@ -3227,7 +3222,6 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 					VTXOAmount:        50000,
 				},
 			},
-			[]byte{0x51, 0x20},
 		)
 		h.withState(state)
 
@@ -3254,7 +3248,7 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		intent := h.newTestBoardingIntent()
 		vtxoOutpoint := h.newTestOutpoint()
 		connectorOutpoint := h.newTestOutpoint()
-		serverForfeitScript := []byte{0x51, 0x20}
+		serverForfeitScript := h.forfeitScript()
 
 		// Create forfeit tx with 40000 sats (mismatch).
 		forfeitTx := wire.NewMsgTx(2)
@@ -3289,7 +3283,6 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 					VTXOAmount:        50000,
 				},
 			},
-			serverForfeitScript,
 		)
 		h.withState(state)
 
@@ -3433,7 +3426,7 @@ func TestForfeitCollectionStateImmutability(t *testing.T) {
 	vtxoOutpoint2 := h.newTestOutpoint()
 	connectorOutpoint1 := h.newTestOutpoint()
 	connectorOutpoint2 := h.newTestOutpoint()
-	serverForfeitScript := []byte{0x51, 0x20}
+	serverForfeitScript := h.forfeitScript()
 
 	roundID := testRoundIDTr("round-immut-001")
 	state := h.newForfeitCollectingState(
@@ -3455,7 +3448,6 @@ func TestForfeitCollectionStateImmutability(t *testing.T) {
 				VTXOAmount:        50000,
 			},
 		},
-		serverForfeitScript,
 	)
 
 	// Save original state's CollectedForfeits map reference.
