@@ -316,8 +316,35 @@ func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 	b.pendingRetries = b.pendingRetries[:0]
 	b.terminalCommitted = false
 
+	// Trace the turn entry so a session's progress can be reconstructed
+	// message by message from the log.
+	b.logger(ctx).TraceS(ctx, "Session turn dispatch",
+		slog.String("session_id", b.sessionID.String()),
+		btclog.Fmt("msg_type", "%T", msg),
+	)
+
 	res := b.dispatch(ctx, msg)
 	if res.IsErr() {
+		// A lost lease is a benign concurrency signal (another instance
+		// fenced this turn), not an internal bug; everything else is a
+		// genuine dispatch failure worth surfacing.
+		if errors.Is(res.Err(), actor.ErrLeaseLost) {
+			b.logger(ctx).WarnS(ctx, "Session turn lost lease "+
+				"during dispatch", res.Err(),
+				slog.String(
+					"session_id", b.sessionID.String(),
+				),
+			)
+		} else {
+			b.logger(ctx).WarnS(ctx, "Session turn dispatch failed",
+				res.Err(),
+				slog.String(
+					"session_id", b.sessionID.String(),
+				),
+				btclog.Fmt("msg_type", "%T", msg),
+			)
+		}
+
 		return res
 	}
 
@@ -326,8 +353,36 @@ func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 	// and fold the lease-fenced ack and dedup mark into one short writer
 	// transaction. A lost lease surfaces here as actor.ErrLeaseLost.
 	if err := b.commitAck(ctx, ax); err != nil {
+		// A lost lease means a concurrent instance fenced this commit;
+		// it is a normal lease-handoff outcome, not an internal bug.
+		if errors.Is(err, actor.ErrLeaseLost) {
+			b.logger(ctx).WarnS(ctx, "Session commit lost lease",
+				err,
+				slog.String(
+					"session_id", b.sessionID.String(),
+				),
+			)
+		} else {
+			b.logger(ctx).WarnS(ctx, "Session commit failed", err,
+				slog.String(
+					"session_id", b.sessionID.String(),
+				),
+			)
+		}
+
 		return fn.Err[ActorResp](err)
 	}
+
+	// The committed turn is durable: record what it persisted at debug
+	// granularity so a snapshot of every committed transition survives in
+	// the log.
+	b.logger(ctx).DebugS(ctx, "Session turn committed",
+		slog.String("session_id", b.sessionID.String()),
+		slog.Int("num_transport", len(b.pendingTransport)),
+		slog.Int("num_ledger", len(b.pendingLedger)),
+		slog.Int("num_retries", len(b.pendingRetries)),
+		slog.Bool("terminal", b.terminalCommitted),
+	)
 
 	// Best-effort cross-actor notifications run only after the turn is
 	// durably committed.
@@ -346,6 +401,11 @@ func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 	//nolint:contextcheck // reap notification is daemon-owned, not
 	// turn-scoped
 	if b.terminalCommitted {
+		b.logger(ctx).InfoS(ctx, "OOR session reached terminal state",
+			slog.String("session_id", b.sessionID.String()),
+			slog.Int("direction", int(b.direction)),
+		)
+
 		b.notifyTerminal()
 	}
 
@@ -440,6 +500,14 @@ func (b *sessionBehavior) driveOutbox(ctx context.Context,
 	outbox []OutboxEvent) error {
 
 	for _, event := range outbox {
+		// Trace every outbox effect as it is dispatched: this is the
+		// high-volume per-event detail that ties an FSM transition to
+		// the side effect the actor ran for it.
+		b.logger(ctx).TraceS(ctx, "Driving outbox event",
+			slog.String("session_id", b.sessionID.String()),
+			btclog.Fmt("event_type", "%T", event),
+		)
+
 		switch m := event.(type) {
 		// Signing: sign inline using the wallet signer, then feed the
 		// resulting signed event straight back into the FSM.
@@ -447,6 +515,19 @@ func (b *sessionBehavior) driveOutbox(ctx context.Context,
 			if b.cfg.Signer == nil {
 				return fmt.Errorf("signer is required")
 			}
+
+			b.logger(ctx).DebugS(ctx, "Signing Ark PSBT inline",
+				slog.String(
+					"session_id", b.sessionID.String(),
+				),
+				slog.Int(
+					"num_checkpoints",
+					len(m.CheckpointPSBTs),
+				),
+				slog.Int(
+					"num_inputs", len(m.TransferInputs),
+				),
+			)
 
 			err := SignArkPSBT(
 				b.cfg.Signer, m.ArkPSBT, m.CheckpointPSBTs,
@@ -466,6 +547,17 @@ func (b *sessionBehavior) driveOutbox(ctx context.Context,
 			if b.cfg.Signer == nil {
 				return fmt.Errorf("signer is required")
 			}
+
+			b.logger(ctx).DebugS(ctx,
+				"Signing checkpoint PSBTs inline",
+				slog.String(
+					"session_id", b.sessionID.String(),
+				),
+				slog.Int(
+					"num_checkpoints",
+					len(m.CoSignedCheckpointPSBTs),
+				),
+			)
 
 			err := SignCheckpointPSBTs(
 				b.cfg.Signer, m.TransferInputs,
@@ -497,6 +589,14 @@ func (b *sessionBehavior) driveOutbox(ctx context.Context,
 				b.pendingTransport, transport,
 			)
 
+			b.logger(ctx).DebugS(ctx, "Staged outbound transport "+
+				"for commit enqueue",
+				slog.String(
+					"session_id", b.sessionID.String(),
+				),
+				btclog.Fmt("transport_type", "%T", event),
+			)
+
 			// SendIncomingAckRequest has no operator response;
 			// advance the receive FSM to completion in the same
 			// turn.
@@ -515,6 +615,13 @@ func (b *sessionBehavior) driveOutbox(ctx context.Context,
 		// finalize ordering invariant.
 		case *MarkInputsSpentRequest:
 			outpoints := m.Outpoints
+			b.logger(ctx).DebugS(ctx, "Staging input-spend "+
+				"completion for commit",
+				slog.String(
+					"session_id", b.sessionID.String(),
+				),
+				slog.Int("num_outpoints", len(outpoints)),
+			)
 			b.commitWork = append(b.commitWork,
 				func(txCtx context.Context, _ oorTx) error {
 					return b.completeSpend(txCtx, outpoints)
@@ -535,6 +642,16 @@ func (b *sessionBehavior) driveOutbox(ctx context.Context,
 		// snapshot after the commit work runs.
 		case *MaterializeIncomingVTXOsRequest:
 			materialize := m
+			b.logger(ctx).DebugS(ctx, "Staging incoming VTXO "+
+				"materialization for commit",
+				slog.String(
+					"session_id", b.sessionID.String(),
+				),
+				slog.Int(
+					"num_recipients",
+					len(materialize.Recipients),
+				),
+			)
 			b.commitWork = append(b.commitWork,
 				func(txCtx context.Context, _ oorTx) error {
 					return b.materializeIncoming(
@@ -777,6 +894,12 @@ func (b *sessionBehavior) restore(ctx context.Context) error {
 		return fmt.Errorf("unknown restored direction: %d",
 			record.Direction)
 	}
+
+	b.logger(ctx).InfoS(ctx, "Restored OOR session FSM from registry row",
+		slog.String("session_id", b.sessionID.String()),
+		slog.Int("direction", int(record.Direction)),
+		slog.String("phase", record.Phase),
+	)
 
 	return nil
 }
