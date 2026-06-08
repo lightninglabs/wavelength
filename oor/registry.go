@@ -205,6 +205,13 @@ var _ actor.TxBehavior[
 func (r *oorRegistryBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 	ax actor.Exec[oorTx]) fn.Result[ActorResp] {
 
+	// Trace every message landing at the registry so a routing decision can
+	// be reconstructed from the log on the hot path.
+	r.logger(ctx).TraceS(ctx, "Registry received message",
+		btclog.Fmt("msg_type", "%T", msg),
+		slog.Int("active_children", len(r.active)),
+	)
+
 	switch m := msg.(type) {
 	case *actor.RestartMessage:
 		// The active set is rebuilt by RestoreNonTerminal; the restart
@@ -298,6 +305,17 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 		)
 		switch {
 		case err == nil:
+			r.logger(ctx).InfoS(ctx, "Idempotency-key dedup hit; "+
+				"returning existing OOR session",
+				slog.String(
+					"idempotency_key", req.IdempotencyKey,
+				),
+				slog.String(
+					"session_id",
+					SessionID(existing.SessionID).String(),
+				),
+			)
+
 			return fn.Ok[ActorResp](&StartTransferResponse{
 				SessionID: SessionID(existing.SessionID),
 				Existing:  true,
@@ -306,6 +324,11 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 		case !errors.Is(err, clientdb.ErrOORSessionNotFound):
 			return fn.Err[ActorResp](err)
 		}
+
+		r.logger(ctx).DebugS(ctx, "Idempotency-key dedup miss; "+
+			"admitting fresh OOR session",
+			slog.String("idempotency_key", req.IdempotencyKey),
+		)
 	}
 
 	// Build the deterministic session to learn its id. This FSM is
@@ -319,6 +342,11 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 	sessionID := session.ID
 
 	if _, ok := r.active[sessionID]; ok {
+		r.logger(ctx).DebugS(ctx, "Outgoing OOR session already "+
+			"resident; returning existing",
+			slog.String("session_id", sessionID.String()),
+		)
+
 		return fn.Ok[ActorResp](&StartTransferResponse{
 			SessionID: sessionID,
 			Existing:  true,
@@ -332,6 +360,12 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 
+	r.logger(ctx).InfoS(ctx, "Admitting outgoing OOR session",
+		slog.String("session_id", sessionID.String()),
+		slog.Int("num_inputs", len(req.Inputs)),
+		slog.Int("num_recipients", len(req.Recipients)),
+	)
+
 	// Hand the admission to the child without parking the registry
 	// goroutine on the child's signing and commit: the Ask persists the
 	// request in the child's durable mailbox, the caller's detached
@@ -344,6 +378,11 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 	if !ok {
 		// No detachable caller (a redelivered turn, or a test driving
 		// the behavior directly): preserve the synchronous semantics.
+		r.logger(ctx).DebugS(ctx, "Awaiting outgoing admission inline "+
+			"(no detachable caller)",
+			slog.String("session_id", sessionID.String()),
+		)
+
 		res := future.Await(ctx)
 		if res.IsErr() {
 			// A failed admission turn commits no durable row, so
@@ -362,6 +401,11 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 
 	selfRef := r.selfRef
 
+	r.logger(ctx).DebugS(ctx, "Detached admission promise to child; "+
+		"registry turn complete",
+		slog.String("session_id", sessionID.String()),
+	)
+
 	//nolint:contextcheck // the continuation outlives the turn context;
 	// the caller's context bounds the wait and the cleanup Tell is
 	// daemon-owned
@@ -373,6 +417,17 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 			// registry's own mailbox: the reaper treats a missing
 			// row as reap-eligible and drops the phantom there.
 			if res.IsErr() && selfRef != nil {
+				r.logger(detachedAsk.CallerCtx).WarnS(
+					detachedAsk.CallerCtx,
+					"Outgoing admission failed; reaping "+
+						"phantom child",
+					res.Err(),
+					slog.String(
+						"session_id",
+						sessionID.String(),
+					),
+				)
+
 				nctx, cancel := context.WithTimeout(
 					context.Background(),
 					terminalNotifyTimeout,
@@ -412,6 +467,11 @@ func (r *oorRegistryBehavior) handleDriveEvent(ctx context.Context,
 		)
 	}
 
+	r.logger(ctx).TraceS(ctx, "Routing drive-event to session child",
+		slog.String("session_id", req.SessionID.String()),
+		btclog.Fmt("event_type", "%T", req.Event),
+	)
+
 	if err := child.TellRef().Tell(ctx, req); err != nil {
 		return fn.Err[ActorResp](err)
 	}
@@ -440,6 +500,20 @@ func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
+	}
+
+	if !existed {
+		r.logger(ctx).InfoS(ctx, "Admitting incoming OOR session",
+			slog.String("session_id", req.SessionID.String()),
+			slog.Uint64(
+				"recipient_event_id", req.RecipientEventID,
+			),
+		)
+	} else {
+		r.logger(ctx).DebugS(ctx, "Forwarding incoming hint to "+
+			"resident session",
+			slog.String("session_id", req.SessionID.String()),
+		)
 	}
 
 	if err := child.TellRef().Tell(ctx, req); err != nil {
@@ -599,6 +673,10 @@ func (r *oorRegistryBehavior) handleResumeSession(ctx context.Context,
 		return fn.Ok[ActorResp](&DriveEventResponse{})
 	}
 
+	r.logger(ctx).DebugS(ctx, "Routing retry resume to session child",
+		slog.String("session_id", req.SessionID.String()),
+	)
+
 	if err := child.TellRef().Tell(ctx, req); err != nil {
 		return fn.Err[ActorResp](err)
 	}
@@ -756,6 +834,12 @@ func (r *oorRegistryBehavior) lookupOrRestore(ctx context.Context,
 		return nil, nil
 	}
 
+	r.logger(ctx).DebugS(ctx, "Lazily respawning non-resident OOR "+
+		"session child for routed message",
+		slog.String("session_id", sessionID.String()),
+		slog.String("phase", record.Phase),
+	)
+
 	return r.ensureChild(sessionID, record.Direction)
 }
 
@@ -855,6 +939,10 @@ func (r *oorRegistryBehavior) restoreNonTerminal(ctx context.Context) error {
 		return err
 	}
 
+	r.logger(ctx).InfoS(ctx, "Restoring non-terminal OOR sessions on boot",
+		slog.Int("num_sessions", len(rows)),
+	)
+
 	for i := range rows {
 		sessionID := SessionID(rows[i].SessionID)
 		if _, ok := r.active[sessionID]; ok {
@@ -880,6 +968,7 @@ func (r *oorRegistryBehavior) restoreNonTerminal(ctx context.Context) error {
 
 		r.logger(ctx).DebugS(ctx, "Restored OOR session",
 			slog.String("session_id", sessionID.String()),
+			slog.Int("direction", int(rows[i].Direction)),
 		)
 	}
 
