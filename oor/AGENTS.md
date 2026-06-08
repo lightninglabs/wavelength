@@ -11,48 +11,75 @@ resume semantics.
 For field-level detail, use `go doc github.com/lightninglabs/darepo-client/oor.<Symbol>`.
 State transitions and validation rules live under [Invariants](#invariants).
 
+### Per-Session Actor Model (current)
+
+The daemon now runs **one durable actor per OOR session** instead of one global
+actor. See [docs/oor_subsystem.md](../docs/oor_subsystem.md) for the full design.
+
+- `OORSessionActor` / `sessionBehavior` — one durable actor per session on the
+  Read/Commit execution path. The FSM emits outbox events as before, but the
+  actor handles them itself in one shared `driveOutbox` switch (sign inline,
+  enqueue cross-actor transport to serverconn, materialize incoming VTXOs,
+  schedule retries) rather than routing them through an `OutboxHandler`.
+- `OORRegistryActor` — thin coordinator registered under the OOR service key,
+  with a **durable inbound mailbox** (Read/Stage/Commit path, mailbox id
+  `oor-client`): a server-push event is persisted before the ingress loop acks
+  the operator envelope, so a crash between ingress and the per-session child
+  replays the registry's idempotent spawn+forward instead of losing the event.
+  It routes each message to the right session's child (hot-path `DriveEvent` via
+  Tell; `StartTransfer`/`GetState` via promise handoff — the registry detaches
+  the caller's promise with `actor.DetachAskPromise` and the child's result
+  settles it through `OnComplete`, so the registry goroutine never parks on a
+  child's signing turn and concurrent admissions sign in parallel), dedups
+  outgoing transfers by idempotency key, lazily spawns children,
+  routes retry-timer `ResumeSessionRequest` expiries to the owning child
+  (unknown/terminal sessions are benign no-ops), reaps children on
+  `SessionTerminalNotification`, and `RestoreNonTerminal` respawns **and
+  resumes** in-flight sessions on boot: the restore runs as a registry message
+  (`RestoreNonTerminalRequest`) on the registry goroutine, and each restored
+  child is told a `ResumeSessionRequest` so it re-drives the outbox implied by
+  its restored state (retry timers are in-memory and do not survive restarts).
+- `ActorIDForSession` / `SessionServiceKey` / `SessionRegistryStore` —
+  deterministic per-session mailbox id, the per-session receptionist key the
+  registry registers each live child under (the ingress fast path resolves it
+  to tell `DriveEventRequest`s straight into the child's durable mailbox,
+  falling back to the registry on a miss), and the control-plane store. A
+  session's full durable state lives in one `oor_session_registry` row
+  (queryable columns + an opaque resume snapshot); OOR does not use the
+  generic `fsm_checkpoints` blob.
+- `SessionActorConfig` / `OORRegistryConfig` — per-session and coordinator
+  configuration. `IncomingHandler` reuses `LocalPersistenceOutboxHandler` so the
+  materialization resolvers are not reimplemented; `Signer input.Signer` signs
+  Ark and checkpoint PSBTs inline during the turn; optional `LedgerSink
+  fn.Option[ledger.Sink]` resolves the durable ledger actor (Tells issued inside
+  Commit join the turn tx); optional `IncomingVTXOObserver IncomingVTXONotifier`
+  fires after incoming VTXOs are durably materialized (lets daemon subsystems arm
+  work without depending on `oor`); `Limits ReceiveLimits` bounds incoming
+  receive payloads.
+
+The legacy single global actor and the separate signing-effect actor have been
+deleted; all per-session state and all wallet signing now live on the
+per-session durable actor's turn.
+
 ### Session, FSM & Actor Infrastructure
 
 - `SessionID` — stable session identifier (Ark txid hash in v0).
 - `Environment` — FSM environment exposing SessionID and external system
   access.
-- `OutboxHandler` — interface executing FSM outbox requests (RPC,
-  signing, persistence).
+- `OutboxHandler` — interface executing local-persistence outbox requests
+  (incoming metadata query filtering, VTXO materialization). Wired as the
+  `IncomingHandler` on both the session actor and the registry; its writes
+  join the turn transaction via the request context. Every other outbox
+  event is handled inline by the session actor's own `driveOutbox` switch.
 - `SignArkPSBT` — signs Ark PSBT inputs on the checkpoint 2-of-2 collab
   leaf using `MultiPrevOutFetcher` for BIP-341 sighashes across
-  multi-input transfers.
-- `ClientActorCfg` — configuration for `OORClientActor`. Notable fields:
-  `OutboxHandler`, `ServerConn`, `PackageStore`, `DeliveryStore`,
-  `VTXOManager`, `VTXOStore`, optional `LedgerSink fn.Option[ledger.Sink]`
-  (fire-and-forget accounting), optional `IncomingVTXOObserver
-  IncomingVTXONotifier` (callback fired after incoming VTXOs are durably
-  materialized — lets daemon subsystems arm work without depending on
-  `oor`), `SigningEffect` (route signing through a separate actor),
-  `Limits *ReceiveLimits` (defaults via `DefaultReceiveLimits`).
-- `ReservationStore` — Minimal persistence contract for durable spending
-  reservations. `UpsertReservation(ctx, outpoint, ownerKind, ownerID)` is
-  called once a new outgoing OOR session is checkpointed, so the startup VTXO
-  sweep can tell in-flight spends from orphaned ones.
-  `ReservationOwnerKindOOROutgoing = 0` is the owner-kind value recorded for
-  outgoing OOR sessions.
-- `OORClientActor` — durable actor wrapping per-session state machines.
-  Handles outgoing and incoming flows via three-phase async resolution;
-  emits `VTXOSentMsg` / `VTXOReceivedMsg` to ledger at the two state
-  transitions it owns (`FinalizeAcceptedEvent` and
-  materialized-VTXO notification).
-- `SigningEffectActor` — separate durable actor performing wallet
-  signing outside the OOR turn. Receives `SigningEffectRequest`
-  messages (TLV type `0x7020`, kinds `signingEffectRequestArk` /
-  `signingEffectRequestCheckpoint`), delegates to `SigningOutboxHandler`,
-  and feeds results back via `DriveEventRequest`. Stale signing results
-  for an advanced FSM are silently discarded. Registered as
-  `SigningEffectActorID = "oor-signing-effect"`; lifecycle via
-  `NewSigningEffectActor` / `StopAndWait`.
+  multi-input transfers. Signing runs inline on the session actor's turn;
+  there is no separate signing actor.
 - `ReceiveLimits` / `DefaultReceiveLimits` — defense-in-depth bounds on
   incoming receive (`MaxCheckpoints=64`, `MaxVTXOMatches=128`,
   `MaxMailboxItems=10000`, `MaxMailboxScriptBytes=10000`). Zero fields
-  are normalized; codec factories capture limits so deserialization
-  enforces them.
+  are normalized; the `newOORActorCodec` factory captures limits so
+  deserialization enforces them.
 - `queueVTXOSent` / `queueVTXOsReceived` — internal ledger emitters
   (gated on `fn.Some(LedgerSink)`). Staged into `pendingLedger` during
   dispatch; `commitAck` Tells them to the durable ledger actor inside
@@ -166,8 +193,8 @@ State transitions and validation rules live under [Invariants](#invariants).
 
 - **Depends on**: `baselib/protofsm`, `baselib/actor`, `serverconn`,
   `lib/arkscript`, `ledger` (`Sink` + emission messages), `timeout`
-  (`TimeoutActor`), `lnd/input` (signer interface for
-  `SigningEffectActor`).
+  (`TimeoutActor`), `lnd/input` (signer interface for inline checkpoint /
+  Ark signing on the session actor's turn).
 - **Depended on by**: `darepod`.
 - **Sends**:
   - → `serverconn`: `SendSubmitPackageRequest`,
@@ -267,14 +294,14 @@ State transitions and validation rules live under [Invariants](#invariants).
   with an active outgoing session errors until the outgoing session
   terminates; then the outgoing entry is deleted and an incoming
   session is created in its place.
-- `SigningEffectActor` requests are durable: OOR persists FSM state
-  and enqueues the request before signing runs. A restart-duplicate
-  that reaches OOR after the FSM has advanced is silently discarded
-  by `DriveEventRequest`.
-- `ReceiveLimits` are propagated through codec factories
-  (`newOORActorCodec`, `NewSigningEffectCodec`) so every deserialized
-  message enforces the same caps as the in-memory path. Codec
-  instances are shared per actor.
+- Signing is inline and durable-by-construction: the session actor
+  signs Ark and checkpoint PSBTs within its Read/Commit turn, so the
+  signed transport outbox is persisted in the same transaction as the
+  FSM advance. A restart-duplicate event that reaches the actor after
+  the FSM has advanced is silently discarded by `DriveEventRequest`.
+- `ReceiveLimits` are propagated through the `newOORActorCodec` factory
+  so every deserialized message enforces the same caps as the in-memory
+  path. The codec instance is shared per actor.
 - `StartTransferRequest.IdempotencyKey`: when non-empty, the registry
   dedups admission against the durable store via
   `LookupActiveSessionByIdempotencyKey`, returning
