@@ -46,9 +46,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - `TxConfirmed` / `TxFailed` — terminal `Notification` types delivered
   to each subscriber.
 - `TxState` — `New`, `Broadcasting`, `AwaitingConfirmation`,
-  `FeeBumping`, `Confirmed`, `Failed`.
+  `FeeBumping`, `Confirmed`, `Failed`. `Broadcasting` covers BOTH the
+  initial attempt and the "reached no mempool, retrying" case;
+  `AwaitingConfirmation` is reported only once the tx (or a redundant
+  parent) is actually in a mempool.
 - Sentinels: `ErrNonTRUCParent`, `ErrCPFPFeeInputUnavailable`,
   `ErrEnsureParamsMismatch`, `ErrFeeInputProducesDust`.
+- `Config.BroadcastFailureAlertThreshold` — consecutive no-mempool
+  failures before the operator escalation fires (default 3). Time to
+  first alert ≈ threshold × `FeeBumpIntervalBlocks` blocks.
 
 ## Relationships
 
@@ -73,6 +79,19 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 
 ## Invariants
 
+- **Never give up on a no-mempool tx**: a tx whose broadcast reached no
+  mempool stays in `Broadcasting` and is re-attempted every
+  `FeeBumpIntervalBlocks`, never transitioning to terminal `Failed`. This
+  covers `ErrCPFPFeeInputUnavailable` and transient package-relay
+  rejections (min-relay-fee on the zero-fee anchor parent, mempool-full,
+  fee input spent mid-submit) — the conditions CPFP retry exists to
+  overcome. Only a structurally permanent error
+  (`isPermanentBroadcastError`, currently `ErrNonTRUCParent`) fails
+  terminally; `ErrParentAlreadyBroadcast` advances to
+  `AwaitingConfirmation` (a live parent exists on another path). Rationale:
+  a fraud-response checkpoint must land before the counterparty's
+  CSV-timeout path, so the actor escalates to operators rather than
+  silently aborting.
 - **Strict dedup check**: two `EnsureConfirmedReq` for the same txid
   must agree on `TargetConfs` and `ConfirmationPkScript`; mismatches
   return `ErrEnsureParamsMismatch` rather than silently reusing the

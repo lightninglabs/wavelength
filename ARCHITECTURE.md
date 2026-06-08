@@ -50,6 +50,7 @@ package may import from a higher layer.
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
+| [`serverconn/mailboxpull`](serverconn/mailboxpull/) | Shared exponential-backoff retry primitives for mailbox pull loops (used by serverconn ingress and SDK swap consumers) |
 
 ### Layer 3: Application & Orchestration
 
@@ -77,6 +78,8 @@ package may import from a higher layer.
 
 | Package | Purpose |
 |---------|---------|
+| [`p-models`](p-models/) | Executable P formal models and Go conformance bridge for distributed-systems properties (durable mailbox, Read/Commit fence) |
+| [`p-models/durableactor/bridge`](p-models/durableactor/bridge/) | Go conformance harness: replays P model mailbox traces against the real `db/actordelivery` store |
 | [`harness`](harness/) | Docker-based Bitcoin/LND integration test environment |
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal/actortest`](internal/actortest/) | Durable actor integration tests with real DB backends |

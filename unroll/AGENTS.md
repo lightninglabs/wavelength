@@ -17,17 +17,24 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
 ### Per-target actor
 
 - `VTXOUnrollActor` — one durable actor per target outpoint, wrapping
-  `baselib/actor.DurableActor[Msg, Resp]`. Owns the FSM session,
-  proof, planner, and cached sweep transaction for this VTXO.
+  `baselib/actor.DurableActor[Msg, Resp]`. Owns the FSM session, proof,
+  planner, and cached sweep transaction for this VTXO. Runs on the durable
+  Read/Commit (`TxBehavior`) path: each checkpoint write is a short,
+  lock-releasing Stage ahead of the `txconfirm` IO, and the message is
+  consumed in a single lease-fenced Commit so the SQLite writer is never held
+  across a cross-actor Ask.
 - `Config` — per-actor wiring. Notable: `TargetOutpoint`, `ActorID`,
   `DeliveryStore`, `ProofAssembler`, `VTXOStore`, `TxConfirmRef`,
   `ChainSource`, `Wallet` (`SweepWallet`),
   `MaxSweepFeeRateSatPerVByte`, `FraudCheckpointSafetyMargin int32`
   (overrides the fraud-triggered unroll backstop margin in blocks;
   zero falls back to the default), `RegistryRef`.
-- `behavior` — actor behavior. Holds `b.sweepTx` (restored from
-  checkpoint on boot) so retries and replays converge on a single
-  sweep txid / pkScript under `txconfirm`'s txid-keyed dedup.
+- `behavior` — actor behavior implementing `actor.TxBehavior[Msg, Resp,
+  unrollTx]`. Holds `b.sweepTx` (restored from checkpoint on boot) so
+  retries and replays converge on a single sweep txid / pkScript under
+  `txconfirm`'s txid-keyed dedup. The `dispatch` method runs the full
+  FSM pipeline including Stage writes; `Receive` owns the single
+  lease-fenced Commit.
 - `Msg` / `Resp` / `Event` / `OutboxEvent` — sealed durable-mailbox,
   response, FSM event, and FSM outbox interfaces.
 - Mailbox messages: `StartUnrollRequest`, `ResumeUnrollRequest`,
@@ -78,9 +85,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   `validateExitPolicyIdentity` checks consistency at admit time. Dedup
   runs against `r.active`, `r.pending`, AND `Store.GetRecord` so a
   repeat after termination returns `Created=false` with the historical
-  `ActorID`, never clobbering the sweep txid / failure reason. Any
-  existing unroll job for the same target must carry the same
-  `(ExitPolicyKind, ExitPolicyRef)`; mismatches fail closed.
+  `ActorID`, never clobbering the sweep txid / failure reason. The one
+  exception is a **recoverable** terminal failure
+  (`RecoverableFailure`): the prior exit failed cleanly with no on-chain
+  footprint and the VTXO was rolled back to live (darepo-client#602), so
+  a fresh `EnsureUnrollRequest` re-admits (spawns a new child,
+  overwriting the stale record) instead of deduping — otherwise a
+  recovered VTXO could never be unrolled again. Any existing unroll job
+  for the same target must carry the same `(ExitPolicyKind,
+  ExitPolicyRef)`; mismatches fail closed.
 - `ExitSpendPolicyResolver` — interface for looking up the final spend
   policy by `(ExitPolicyKind, ExitPolicyRef)`. Implemented by
   `vhtlcrecovery/unrollpolicy.ExitSpendPolicyResolver`.
@@ -195,6 +208,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   `r.active`, `r.pending`, AND `Store.GetRecord` before spawning so
   a repeat for an already-terminal outpoint returns the historical
   `ActorID` and never overwrites stored sweep txid / failure reason.
+  A **recoverable** terminal failure is the deliberate exception: the
+  VTXO was rolled back to live (darepo-client#602), so `handleEnsure`
+  falls through both the `r.pending` and `Store.GetRecord` arms to
+  re-admit a fresh exit rather than strand the recovered coin.
 - **Fail-closed on restore gaps.** `handleEnsure` validates restorable
   non-terminal records via `validateRestorableRecords` before re-admitting
   them; a record with an unrecognized `ExitPolicyKind` or missing ref fails

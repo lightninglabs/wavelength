@@ -29,6 +29,12 @@ State transitions and validation rules live under [Invariants](#invariants).
   materialized — lets daemon subsystems arm work without depending on
   `oor`), `SigningEffect` (route signing through a separate actor),
   `Limits *ReceiveLimits` (defaults via `DefaultReceiveLimits`).
+- `ReservationStore` — Minimal persistence contract for durable spending
+  reservations. `UpsertReservation(ctx, outpoint, ownerKind, ownerID)` is
+  called once a new outgoing OOR session is checkpointed, so the startup VTXO
+  sweep can tell in-flight spends from orphaned ones.
+  `ReservationOwnerKindOOROutgoing = 0` is the owner-kind value recorded for
+  outgoing OOR sessions.
 - `OORClientActor` — durable actor wrapping per-session state machines.
   Handles outgoing and incoming flows via three-phase async resolution;
   emits `VTXOSentMsg` / `VTXOReceivedMsg` to ledger at the two state
@@ -130,6 +136,11 @@ State transitions and validation rules live under [Invariants](#invariants).
   `completed`, `failed`).
 - `IncomingSnapshot`, `IncomingPhase` (`resolve_pending`,
   `materialize_pending`, `ack_pending`, `completed`, `failed`).
+  `IncomingSnapshot.MetadataAttempts uint32` — persisted retry count for
+  authoritative metadata resolution (phase-2 indexer query). Drives bounded
+  exponential backoff and terminal give-up in `handleReceiveOutboxError`
+  across restarts so a session whose VTXO never lands in the indexer stops
+  re-querying forever. Serialized as TLV record 19.
 - `TransferInputSnapshot` — portable encoding of client-side signing
   context required to finalize checkpoint PSBTs after restart.
 - `IncomingVTXOMetadata` — lineage metadata for incoming OOR VTXOs

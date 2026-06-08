@@ -71,7 +71,17 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 16` — current schema version.
+- `LatestMigrationVersion = 17` — current schema version.
+- `SpendingReservationPersistenceStore` — Persists the durable index of VTXO
+  outpoints reserved by an active spend owner (e.g. an outgoing OOR session).
+  A row exists IFF the owning session was durably checkpointed, so a startup
+  sweep can deterministically release orphaned Spending VTXOs with no row.
+  Methods: `UpsertReservation(ctx, outpoint, ownerKind, ownerID)` (upserts a
+  row), `ListReservedOutpoints(ctx)` (returns all reserved outpoints for the
+  startup sweep). Implements both `oor.ReservationStore` and
+  `vtxo.SpendingReservationStore`.
+- `SpendingReservationStore` / `BatchedSpendingReservationStore` — Internal
+  sqlc-backed query interfaces for the reservation table.
 
 ## Relationships
 
@@ -115,6 +125,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
+- `000017_spending_reservations` — adds `spending_reservations` table with
+  `(outpoint_hash, outpoint_index)` PK, `owner_kind`, `owner_id`, and
+  `created_at`. A row exists IFF the owning spend session was durably
+  checkpointed. The table supports the startup orphan sweep in the VTXO
+  manager (`vtxo.Manager.sweepOrphanedReservations`).
 - `000016_unilateral_exit_policy` — adds `exit_policy_kind`
   (NOT NULL, default `'standard_vtxo_timeout'`) and nullable
   `exit_policy_ref` to `unilateral_exit_jobs` via ALTER TABLE so

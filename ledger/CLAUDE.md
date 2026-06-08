@@ -35,9 +35,13 @@ For per-flow walkthroughs see
 
 For field-level detail, use `go doc github.com/lightninglabs/darepo-client/ledger.<Symbol>`.
 
-- `LedgerActor` — durable actor processing accounting messages. Caches
-  the resolved `clock.Clock` at construction so handlers stamp
-  `CreatedAt` without re-optioning the field.
+- `LedgerActor` — durable actor processing accounting messages. Runs on the
+  durable Read/Commit (`TxBehavior`) path: each handler books its ledger legs
+  inside one short, lease-fenced Commit transaction rather than holding a
+  writer tx across the whole `Receive`. The `bindStores` factory injects a
+  `ledgerTx` (typed store pair) bound to each Commit transaction. Caches the
+  resolved `clock.Clock` at construction so handlers stamp `CreatedAt` without
+  re-optioning the field.
 - `ActorConfig` — logger, delivery store, ledger store, UTXO audit
   store, actor ID, optional `Clock` (`fn.Option[clock.Clock]`); None
   falls back to `clock.NewDefaultClock()`.

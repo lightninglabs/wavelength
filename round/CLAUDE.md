@@ -109,6 +109,11 @@ state transitions and validation rules live under [Invariants](#invariants).
 - `RoundClientConfig.LedgerSink` — optional `fn.Option[ledger.Sink]`
   plumbed onto the round actor; `emitVTXOsReceived` and `emitRoundFee`
   fire-and-forget messages when `fn.Some`.
+- `RoundClientConfig.RegistrationTimeout` — max wall-clock duration to wait in
+  `IntentSentState` for the server's `RoundJoined` admission watermark. Zero
+  selects `defaultRegistrationTimeout` (60 s); negative disables the timeout
+  (round waits indefinitely). Bounds how long forfeit-reserved inputs sit
+  stranded when the server never responds (darepo-client#653).
 - `computeClientOperatorFee(intents, ownedVTXOs) int64` —
   Σ(boarding inputs) + Σ(forfeited VTXOs) − Σ(owned output VTXOs) −
   Σ(cooperative leave outputs), clamped to zero. Carried on
