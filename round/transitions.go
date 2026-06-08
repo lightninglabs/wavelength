@@ -2374,6 +2374,42 @@ func (s *ForfeitSignaturesCollectingState) finishForfeitCollection(
 	}, nil
 }
 
+// confirmationWatchScript returns the commitment-tx output script the client
+// asks the chain backend to watch for round confirmation. It prefers the
+// lowest VTXO batch-output index: every VTXOTreePaths key has been proven by
+// validateVTXOTreeBinding to equal its tree's BatchOutpoint.Index and to be in
+// range, so watching that output tracks the output that actually receives the
+// client's funds rather than assuming output 0. It falls back to the first
+// output when the round carries no VTXO trees (refresh-less / harness paths),
+// and returns nil only when the tx has no outputs. Confirmation detection is
+// by txid; the script matters for script-filtering backends (e.g. Neutrino).
+func confirmationWatchScript(commitmentTx *wire.MsgTx,
+	vtxoTrees map[int]*tree.Tree) []byte {
+
+	if commitmentTx == nil || len(commitmentTx.TxOut) == 0 {
+		return nil
+	}
+
+	idx := 0
+	if len(vtxoTrees) > 0 {
+		idx = -1
+		for k := range vtxoTrees {
+			if idx == -1 || k < idx {
+				idx = k
+			}
+		}
+	}
+
+	// Guard the index even though binding already proved it in range, so a
+	// future caller that reaches here on an unvalidated path degrades to
+	// watching output 0 rather than panicking.
+	if idx < 0 || idx >= len(commitmentTx.TxOut) {
+		return commitmentTx.TxOut[0].PkScript
+	}
+
+	return commitmentTx.TxOut[idx].PkScript
+}
+
 func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 	env *ClientEnvironment,
 	forfeitTxs map[wire.OutPoint]*types.ForfeitTxSig,
@@ -2383,10 +2419,9 @@ func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 	txid := s.CommitmentTx.UnsignedTx.TxHash()
 	callerID := fmt.Sprintf("commitment-%s", txid.String())
 
-	var pkScript []byte
-	if len(s.CommitmentTx.UnsignedTx.TxOut) > 0 {
-		pkScript = s.CommitmentTx.UnsignedTx.TxOut[0].PkScript
-	}
+	pkScript := confirmationWatchScript(
+		s.CommitmentTx.UnsignedTx, s.VTXOTreePaths,
+	)
 
 	outboxMsgs := []ClientOutMsg{
 		&CancelTimeoutReq{
@@ -2724,13 +2759,11 @@ func (s *PartialSigsSentState) ProcessEvent(ctx context.Context,
 		txid := s.CommitmentTx.UnsignedTx.TxHash()
 		callerID := fmt.Sprintf("commitment-%s", txid.String())
 
-		// Get pkScript from the first output for LND confirmation
-		// tracking.
+		// Watch the validated batch output (the output that receives
+		// this client's funds) for confirmation tracking, falling back
+		// to output 0 for rounds with no VTXO trees.
 		commitTx := s.CommitmentTx.UnsignedTx
-		var pkScript []byte
-		if len(commitTx.TxOut) > 0 {
-			pkScript = commitTx.TxOut[0].PkScript
-		}
+		pkScript := confirmationWatchScript(commitTx, s.VTXOTreePaths)
 
 		env.Log.InfoS(ctx, "Building RegisterConfirmationRequest",
 			slog.String("round_id", s.RoundID.String()),

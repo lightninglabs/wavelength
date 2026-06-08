@@ -190,6 +190,72 @@ func TestValidateVTXOTreeBindingRejects(t *testing.T) {
 	}
 }
 
+// TestConfirmationWatchScriptUsesBatchOutput builds a multi-output round whose
+// batch output is NOT at index 0 and confirms two things: the tree still binds
+// to the commitment tx, and the confirmation watch script tracks the validated
+// batch output rather than blindly watching output 0.
+func TestConfirmationWatchScriptUsesBatchOutput(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+	intent := h.newTestBoardingIntent()
+	vtxoReq := h.newTestVTXORequestForIntent(intent)
+	vtxtTree := h.newTestVTXOTreeForIntents([]types.VTXORequest{vtxoReq})
+
+	// Canonical batch output: the taproot script of the tree's cosigner
+	// set tweaked by the sweep root, valued at the summed leaf amount.
+	finalKey, err := tree.ComputeFinalKey(
+		vtxtTree.Root.CoSigners, vtxtTree.SweepTapscriptRoot,
+	)
+	require.NoError(t, err)
+	batchScript, err := txscript.PayToTaprootScript(finalKey)
+	require.NoError(t, err)
+
+	// A distinct, non-batch output to sit at index 0 (e.g. a leave
+	// output), so the batch output lands at index 1.
+	fillerScript, err := txscript.PayToTaprootScript(h.operatorPubKey)
+	require.NoError(t, err)
+	require.NotEqual(t, fillerScript, batchScript)
+
+	const batchIdx = 1
+	tx := wire.NewMsgTx(3)
+	tx.AddTxIn(&wire.TxIn{PreviousOutPoint: intent.Outpoint})
+	tx.AddTxOut(&wire.TxOut{Value: 12345, PkScript: fillerScript})
+	tx.AddTxOut(&wire.TxOut{
+		Value:    vtxtTree.BatchOutput.Value,
+		PkScript: batchScript,
+	})
+	tx.AddTxOut(&wire.TxOut{
+		Value:    0,
+		PkScript: []byte{txscript.OP_TRUE, txscript.OP_RETURN},
+	})
+
+	// Rebuild the tree rooted at the real batch output (index 1).
+	txid := tx.TxHash()
+	rebuilt, err := tree.NewTree(
+		wire.OutPoint{
+			Hash:  txid,
+			Index: batchIdx,
+		},
+		tx.TxOut[batchIdx],
+		h.leafDescriptorsFromTree(vtxtTree),
+		h.operatorPubKey,
+		vtxtTree.SweepTapscriptRoot,
+		2,
+	)
+	require.NoError(t, err)
+
+	trees := map[int]*tree.Tree{batchIdx: rebuilt}
+
+	// The non-index-0 tree must still bind.
+	require.NoError(t, validateVTXOTreeBinding(tx, trees))
+
+	// The watch script must be the batch output, not output 0.
+	watch := confirmationWatchScript(tx, trees)
+	require.Equal(t, batchScript, watch)
+	require.NotEqual(t, fillerScript, watch)
+}
+
 // TestCommitmentTxReceivedRejectsUnboundTree confirms the binding is wired into
 // the round FSM: a commitment-tx event carrying a tree that is not rooted in
 // the commitment tx fails the round into ClientFailedState before any nonce is

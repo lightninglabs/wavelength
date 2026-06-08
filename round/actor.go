@@ -24,6 +24,7 @@ import (
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
@@ -911,9 +912,11 @@ func forfeitsMatch(forfeits []types.ForfeitRequest,
 
 // registerCommitmentConfirmation registers for confirmation monitoring of a
 // commitment transaction with the chainsource actor. The commitmentTx is used
-// to extract the pkScript for LND's confirmation tracking.
+// to extract the pkScript for LND's confirmation tracking, and vtxoTrees (the
+// round's validated VTXO trees, possibly nil) selects which output to watch.
 func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
-	txid chainhash.Hash, commitmentTx fn.Option[*psbt.Packet]) {
+	txid chainhash.Hash, commitmentTx fn.Option[*psbt.Packet],
+	vtxoTrees map[int]*tree.Tree) {
 
 	callerID := fmt.Sprintf("commitment-tx-%s", txid.String())
 
@@ -929,12 +932,16 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 		},
 	)
 
-	// Extract pkScript from the commitment transaction's first output.
-	// LND requires a pkScript for confirmation tracking.
+	// Extract the pkScript LND needs for confirmation tracking. Watch the
+	// validated batch output (the output that receives this client's
+	// funds) rather than assuming output 0; confirmationWatchScript falls
+	// back to output 0 when the round carries no VTXO trees.
 	var pkScript []byte
 	commitmentTx.WhenSome(func(packet *psbt.Packet) {
-		if packet.UnsignedTx != nil && len(packet.UnsignedTx.TxOut) > 0 {
-			pkScript = packet.UnsignedTx.TxOut[0].PkScript
+		if packet.UnsignedTx != nil {
+			pkScript = confirmationWatchScript(
+				packet.UnsignedTx, vtxoTrees,
+			)
 		}
 	})
 
@@ -1164,6 +1171,7 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 			a.commitmentTxIndex[roundFSM.TxID] = keyStr
 			a.registerCommitmentConfirmation(
 				ctx, roundFSM.TxID, round.CommitmentTx,
+				round.VTXOTreePaths.UnwrapOr(nil),
 			)
 
 			a.log.InfoS(ctx, "Resumed round awaiting confirmation",
@@ -2331,6 +2339,7 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			a.commitmentTxIndex[txid] = keyStr
 			a.registerCommitmentConfirmation(
 				ctx, txid, roundFSM.CommitmentTx,
+				inputSigState.VTXOTreePaths,
 			)
 
 			a.log.InfoS(ctx, "Round checkpoint processed",
