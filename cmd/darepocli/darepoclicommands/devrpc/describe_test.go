@@ -64,7 +64,7 @@ func TestDevDescribeRespectsOneofGroup(t *testing.T) {
 	stdout, restore := captureStdout(t)
 	defer restore()
 
-	cmd.SetArgs([]string{"daemon", "send-oor", "--describe"})
+	cmd.SetArgs([]string{"daemon", "prepare-oor", "--describe"})
 	require.NoError(t, cmd.Execute())
 
 	var desc methodDescription

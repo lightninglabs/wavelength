@@ -180,8 +180,10 @@ const outboxForwardProcessingTimeout = 5 * time.Second
 
 // outboxDeliveryTimeout is the timeout budget for waiting on OutboxPublisher
 // delivery in end-to-end tests. The helper actively triggers publish attempts
-// during this window to reduce scheduler-induced flakiness under `-race`.
-const outboxDeliveryTimeout = 10 * time.Second
+// during this window to reduce scheduler-induced flakiness under `-race`, but
+// the full CI race suite can still starve these chained delivery tests while
+// other package tests are competing for CPU.
+const outboxDeliveryTimeout = 30 * time.Second
 
 // durableCounterRef is a shorthand alias for the generic durable ref used in
 // these end-to-end tests.

@@ -163,8 +163,10 @@ func newFakeDaemonService() *fakeDaemonService {
 			},
 		},
 		sendOORResp: &daemonrpc.SendOORResponse{
-			SessionId:         "session-123",
-			RecipientOutpoint: "session-123:0",
+			SessionId: "session-123",
+			RecipientOutpoints: []string{
+				"session-123:0",
+			},
 		},
 	}
 }
@@ -656,10 +658,13 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	service.mu.Unlock()
 
 	require.NotNil(t, policyReq)
-	require.Equal(t, int64(42_000), policyReq.GetRecipient().GetAmountSat())
+	require.Len(t, policyReq.GetRecipients(), 1)
+	require.Equal(
+		t, int64(42_000), policyReq.GetRecipients()[0].GetAmountSat(),
+	)
 	require.Equal(
 		t, []byte{0xaa, 0xbb},
-		policyReq.GetRecipient().GetPolicyTemplate(),
+		policyReq.GetRecipients()[0].GetPolicyTemplate(),
 	)
 
 	sessionID, err = client.SendOORWithCustomInputs(
@@ -682,8 +687,9 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	service.mu.Unlock()
 
 	require.NotNil(t, customReq)
+	require.Len(t, customReq.GetRecipients(), 1)
 	require.Equal(
-		t, []byte{0x11, 0x22}, customReq.GetRecipient().GetPubkey(),
+		t, []byte{0x11, 0x22}, customReq.GetRecipients()[0].GetPubkey(),
 	)
 	require.Len(t, customReq.GetCustomInputs(), 1)
 	require.Equal(

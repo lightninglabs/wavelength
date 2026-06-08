@@ -25,10 +25,12 @@ import (
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -74,6 +76,8 @@ type fakeMailboxServer struct {
 	nextEventSeq    map[string]uint64
 	joinRoundReqs   []*roundpb.JoinRoundRequest
 	joinRoundEnvs   []*mailboxpb.Envelope
+	oorSubmitReqs   []*oorpb.SubmitPackageRequest
+	oorSubmitEnvs   []*mailboxpb.Envelope
 	inboxSignalChan chan struct{}
 }
 
@@ -247,6 +251,10 @@ func (s *fakeMailboxServer) handleOperatorEnvelope(ctx context.Context,
 		env.Rpc.Method == roundpb.MethodJoinRound:
 		return s.recordJoinRound(env)
 
+	case env.Rpc.Service == oorpb.ServiceName &&
+		env.Rpc.Method == oorpb.MethodSubmitPackage:
+		return s.recordOORSubmitPackage(env)
+
 	default:
 		return nil
 	}
@@ -277,6 +285,35 @@ func (s *fakeMailboxServer) replyWithOperatorInfo(ctx context.Context,
 	}
 
 	s.enqueueEnvelope(responseEnv)
+
+	return nil
+}
+
+// recordOORSubmitPackage decodes and stores an OOR submit-package envelope so
+// systests can assert on the real mailbox payload emitted by darepod.
+func (s *fakeMailboxServer) recordOORSubmitPackage(
+	env *mailboxpb.Envelope) error {
+
+	if env.Body == nil {
+		return fmt.Errorf("OOR submit envelope missing body")
+	}
+
+	var req oorpb.SubmitPackageRequest
+	if err := env.Body.UnmarshalTo(&req); err != nil {
+		return fmt.Errorf("decode OOR submit body: %w", err)
+	}
+
+	cloned, ok := proto.Clone(&req).(*oorpb.SubmitPackageRequest)
+	if !ok {
+		return fmt.Errorf("clone OOR submit body: unexpected type %T",
+			&req)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.oorSubmitReqs = append(s.oorSubmitReqs, cloned)
+	s.oorSubmitEnvs = append(s.oorSubmitEnvs, env)
 
 	return nil
 }
@@ -359,6 +396,24 @@ func (s *fakeMailboxServer) pullBatch(mailboxID string, cursor uint64,
 	return batch, nextCursor
 }
 
+// oorSubmitPackages returns a cloned snapshot of recorded OOR submit requests.
+func (s *fakeMailboxServer) oorSubmitPackages() []*oorpb.SubmitPackageRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	reqs := make([]*oorpb.SubmitPackageRequest, 0, len(s.oorSubmitReqs))
+	for _, req := range s.oorSubmitReqs {
+		cloned, ok := proto.Clone(req).(*oorpb.SubmitPackageRequest)
+		if !ok {
+			continue
+		}
+
+		reqs = append(reqs, cloned)
+	}
+
+	return reqs
+}
+
 // directedSendFixture owns the daemon under test, its fake operator edge, and
 // the gRPC client used by the systest.
 type directedSendFixture struct {
@@ -367,6 +422,7 @@ type directedSendFixture struct {
 	client         daemonrpc.DaemonServiceClient
 	conn           *grpc.ClientConn
 	mailboxServer  *fakeMailboxServer
+	operatorKey    *btcec.PublicKey
 	seededOutpoint wire.OutPoint
 }
 
@@ -483,6 +539,7 @@ func newDirectedSendFixture(t *testing.T,
 		client:         client,
 		conn:           conn,
 		mailboxServer:  mailboxServer,
+		operatorKey:    operatorPriv.PubKey(),
 		seededOutpoint: seededOutpoint,
 	}
 }
@@ -606,6 +663,11 @@ func seedLiveVTXO(t *testing.T, cfg *darepod.Config,
 	)
 	require.NoError(t, err)
 
+	tapScript, err := arkscript.VTXOTapScript(
+		clientPriv.PubKey(), operatorKey, 144,
+	)
+	require.NoError(t, err)
+
 	outpoint := wire.OutPoint{
 		Hash:  chainhash.HashH([]byte(t.Name() + "-seeded-vtxo")),
 		Index: 0,
@@ -659,9 +721,10 @@ func seedLiveVTXO(t *testing.T, cfg *darepod.Config,
 	require.NoError(t, err)
 
 	err = vtxoStore.SaveVTXO(t.Context(), &vtxo.Descriptor{
-		Outpoint: outpoint,
-		Amount:   amount,
-		PkScript: descriptor.PkScript,
+		Outpoint:       outpoint,
+		Amount:         amount,
+		PolicyTemplate: descriptor.PolicyTemplate,
+		PkScript:       descriptor.PkScript,
 		ClientKey: keychain.KeyDescriptor{
 			PubKey: clientPriv.PubKey(),
 			KeyLocator: keychain.KeyLocator{
@@ -670,6 +733,7 @@ func seedLiveVTXO(t *testing.T, cfg *darepod.Config,
 			},
 		},
 		OperatorKey: operatorKey,
+		TapScript:   tapScript,
 		Ancestry: []types.Ancestry{{
 			TreePath:       treePath,
 			CommitmentTxID: commitmentTxID,
@@ -733,6 +797,27 @@ func findVTXOByOutpoint(vtxos []*daemonrpc.VTXO,
 	}
 
 	return nil
+}
+
+// oorPolicyRecipient returns a policy-backed OOR recipient for systests that
+// need a standard Ark output shape without relying on address parsing.
+func oorPolicyRecipient(t *testing.T, ownerKey, operatorKey *btcec.PublicKey,
+	amountSat int64) *daemonrpc.Output {
+
+	t.Helper()
+
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		ownerKey, operatorKey, 144,
+	)
+	require.NoError(t, err)
+
+	return &daemonrpc.Output{
+		Destination: &daemonrpc.Output_PolicyTemplate{
+			PolicyTemplate: policyTemplate,
+		},
+		AmountSat:          amountSat,
+		VtxoPolicyTemplate: policyTemplate,
+	}
 }
 
 // TestSendVTXOEndToEnd exercises directed send through the full daemon stack:
@@ -826,4 +911,76 @@ func TestSendVTXOEndToEnd(t *testing.T) {
 		200*time.Millisecond,
 		"round did not reach pending-assembly state",
 	)
+}
+
+// TestSendOORMultipleRecipientsEndToEnd exercises the public SendOOR RPC
+// through the full daemon stack with more than one requested recipient. The
+// assertion is intentionally made at the fake operator mailbox boundary: the
+// RPC handler must aggregate the requested amount, the wallet must lock one
+// input, the OOR actor must build one session, and the serialized
+// SubmitPackage request must carry both recipient outputs in the single OOR
+// package that future swap batching will rely on.
+func TestSendOORMultipleRecipientsEndToEnd(t *testing.T) {
+	ParallelN(t)
+
+	fixture := newDirectedSendFixture(t)
+
+	recipientPrivA, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientPrivB, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const (
+		amountA = int64(40_000)
+		amountB = int64(60_000)
+	)
+
+	ctx, cancel := context.WithTimeout(
+		t.Context(), 10*time.Second,
+	)
+	defer cancel()
+
+	resp, err := fixture.client.SendOOR(
+		ctx, &daemonrpc.SendOORRequest{
+			Recipients: []*daemonrpc.Output{
+				oorPolicyRecipient(
+					t, recipientPrivA.PubKey(),
+					fixture.operatorKey, amountA,
+				),
+				oorPolicyRecipient(
+					t, recipientPrivB.PubKey(),
+					fixture.operatorKey, amountB,
+				),
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", resp.GetStatus())
+	require.NotEmpty(t, resp.GetSessionId())
+	require.Len(t, resp.GetRecipientOutpoints(), 2)
+
+	require.Eventually(t, func() bool {
+		reqs := fixture.mailboxServer.oorSubmitPackages()
+		if len(reqs) != 1 {
+			return false
+		}
+
+		return len(reqs[0].GetRecipientOutputs()) == 2
+	}, 20*time.Second, 200*time.Millisecond)
+
+	reqs := fixture.mailboxServer.oorSubmitPackages()
+	require.Len(t, reqs, 1)
+
+	recipientAmounts := make(map[int64]int)
+	for _, recipient := range reqs[0].GetRecipientOutputs() {
+		recipientAmounts[recipient.GetValueSat()]++
+		require.NotEmpty(t, recipient.GetPkScript())
+		require.NotEmpty(t, recipient.GetVtxoPolicyTemplate())
+	}
+
+	require.Equal(t, map[int64]int{
+		amountA: 1,
+		amountB: 1,
+	}, recipientAmounts)
 }

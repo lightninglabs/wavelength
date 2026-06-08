@@ -255,7 +255,7 @@ func TestDevCmdParsesHexBytesWithSpaces(t *testing.T) {
 	}
 }
 
-func TestDevCmdFlattensSingularNestedMessages(t *testing.T) {
+func TestDevCmdParsesSendOORRecipients(t *testing.T) {
 	server := &testDaemonServer{}
 	var out bytes.Buffer
 	cmd, cleanup := newTestDevCmd(t, server, &out)
@@ -263,8 +263,7 @@ func TestDevCmdFlattensSingularNestedMessages(t *testing.T) {
 
 	cmd.SetArgs([]string{
 		"daemon", "send-oor",
-		"--recipient.address", "bcrt1dest",
-		"--recipient.amount_sat", "7",
+		"--recipients-json", `[{"address":"bcrt1dest","amount_sat":7}]`,
 		"--dry_run",
 	})
 	if err := cmd.Execute(); err != nil {
@@ -277,14 +276,17 @@ func TestDevCmdFlattensSingularNestedMessages(t *testing.T) {
 	if !server.oorReq.DryRun {
 		t.Fatalf("expected dry_run to be set")
 	}
-	if server.oorReq.Recipient.AmountSat != 7 {
-		t.Fatalf("amount = %v", server.oorReq.Recipient.AmountSat)
+	if len(server.oorReq.Recipients) != 1 {
+		t.Fatalf("recipient count = %v", len(server.oorReq.Recipients))
+	}
+	if server.oorReq.Recipients[0].AmountSat != 7 {
+		t.Fatalf("amount = %v", server.oorReq.Recipients[0].AmountSat)
 	}
 
-	dest, ok := server.oorReq.Recipient.
+	dest, ok := server.oorReq.Recipients[0].
 		Destination.(*daemonrpc.Output_Address)
 	if !ok {
-		t.Fatalf("destination = %T", server.oorReq.Recipient.
+		t.Fatalf("destination = %T", server.oorReq.Recipients[0].
 			Destination)
 	}
 	if dest.Address != "bcrt1dest" {
@@ -299,7 +301,7 @@ func TestDevCmdRejectsNestedOneofConflicts(t *testing.T) {
 	defer cleanup()
 
 	cmd.SetArgs([]string{
-		"daemon", "send-oor",
+		"daemon", "prepare-oor",
 		"--recipient.address", "bcrt1dest",
 		"--recipient.pubkey", "00",
 	})

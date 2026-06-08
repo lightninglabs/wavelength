@@ -918,13 +918,16 @@ func (c *Client) SendOORWithPolicyAndKeyDetails(ctx context.Context,
 	idempotencyKey string) (*OORSendResult, error) {
 
 	resp, err := c.SendOOR(ctx, &daemonrpc.SendOORRequest{
-		Recipient: &daemonrpc.Output{
-			Destination: &daemonrpc.Output_PolicyTemplate{
-				PolicyTemplate: append(
-					[]byte(nil), recipientPolicyTemplate...,
-				),
+		Recipients: []*daemonrpc.Output{
+			{
+				Destination: &daemonrpc.Output_PolicyTemplate{
+					PolicyTemplate: append(
+						[]byte(nil),
+						recipientPolicyTemplate...,
+					),
+				},
+				AmountSat: amountSat,
 			},
-			AmountSat: amountSat,
 		},
 		IdempotencyKey: idempotencyKey,
 	})
@@ -932,9 +935,15 @@ func (c *Client) SendOORWithPolicyAndKeyDetails(ctx context.Context,
 		return nil, err
 	}
 
+	recipientOutpoints := resp.GetRecipientOutpoints()
+	recipientOutpoint := ""
+	if len(recipientOutpoints) > 0 {
+		recipientOutpoint = recipientOutpoints[0]
+	}
+
 	return &OORSendResult{
 		SessionID:         resp.GetSessionId(),
-		RecipientOutpoint: resp.GetRecipientOutpoint(),
+		RecipientOutpoint: recipientOutpoint,
 	}, nil
 }
 
@@ -945,11 +954,15 @@ func (c *Client) SendOORWithCustomInputs(ctx context.Context,
 	string, error) {
 
 	resp, err := c.SendOOR(ctx, &daemonrpc.SendOORRequest{
-		Recipient: &daemonrpc.Output{
-			Destination: &daemonrpc.Output_Pubkey{
-				Pubkey: append([]byte(nil), recipientPubKey...),
+		Recipients: []*daemonrpc.Output{
+			{
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: append(
+						[]byte(nil), recipientPubKey...,
+					),
+				},
+				AmountSat: amountSat,
 			},
-			AmountSat: amountSat,
 		},
 		CustomInputs: customOORInputsToRPC(inputs),
 	})

@@ -21,6 +21,7 @@ import (
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -178,6 +179,53 @@ func (a *blockingSendOORActor) Receive(ctx context.Context,
 	}
 }
 
+type capturingSendOORActor struct {
+	mu       sync.Mutex
+	requests []*oor.StartTransferRequest
+	response *oor.StartTransferResponse
+}
+
+func (a *capturingSendOORActor) Receive(_ context.Context,
+	msg oor.OORDurableMsg) fn.Result[oor.ActorResp] {
+
+	req, ok := msg.(*oor.StartTransferRequest)
+	if !ok {
+		return fn.Err[oor.ActorResp](
+			fmt.Errorf("unexpected OOR message %T", msg),
+		)
+	}
+
+	reqCopy := *req
+	reqCopy.Inputs = append([]oor.TransferInput(nil), req.Inputs...)
+	reqCopy.Recipients = append(
+		[]oortx.RecipientOutput(nil), req.Recipients...,
+	)
+
+	a.mu.Lock()
+	a.requests = append(a.requests, &reqCopy)
+	resp := a.response
+	a.mu.Unlock()
+
+	return fn.Ok[oor.ActorResp](resp)
+}
+
+func (a *capturingSendOORActor) capturedRequests() []*oor.StartTransferRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	requests := make([]*oor.StartTransferRequest, 0, len(a.requests))
+	for _, req := range a.requests {
+		reqCopy := *req
+		reqCopy.Inputs = append([]oor.TransferInput(nil), req.Inputs...)
+		reqCopy.Recipients = append(
+			[]oortx.RecipientOutput(nil), req.Recipients...,
+		)
+		requests = append(requests, &reqCopy)
+	}
+
+	return requests
+}
+
 // TestSendOORRejectsRecipientBelowDustBeforeWalletSelection verifies the
 // daemon enforces the operator's advertised dust limit before it selects wallet
 // inputs or submits work to the OOR actor. This is the daemon-side guard behind
@@ -225,11 +273,287 @@ func TestSendOORRejectsRecipientBelowDustBeforeWalletSelection(t *testing.T) {
 	)
 
 	_, err = rpcServer.SendOOR(t.Context(), &daemonrpc.SendOORRequest{
-		Recipient: recipient,
+		Recipients: []*daemonrpc.Output{recipient},
 	})
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 	require.ErrorContains(
 		t, err, "amount 999 below operator dust_limit 1000",
+	)
+}
+
+// TestSendOORSubmitsMultipleRecipients verifies the daemon maps one
+// multi-recipient RPC request into one OOR actor request. This pins the public
+// RPC surface that later batching code uses: wallet selection targets the sum
+// of all requested outputs, the actor receives every requested recipient in one
+// package, and the response reports outpoints in request-recipient order even
+// though the underlying Ark transaction uses canonical output ordering.
+func TestSendOORSubmitsMultipleRecipients(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientKeyA, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientKeyB, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const (
+		amountA   = int64(11_000)
+		amountB   = int64(13_000)
+		exitDelay = uint32(10)
+	)
+	totalAmount := btcutil.Amount(amountA + amountB)
+
+	vtxoStore, _ := newSendOORTestStores(t)
+	desc := newSendOORTestVTXO(
+		t, operatorKey.PubKey(), 0x51, totalAmount,
+	)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+
+	testWallet := &sendOORTestWallet{
+		selections: [][]wallet.SelectedVTXO{{
+			selectedVTXOFromDescriptor(desc),
+		}},
+	}
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cancel()
+
+		require.NoError(t, system.Shutdown(shutdownCtx))
+	})
+
+	walletKey := actor.NewServiceKey[
+		wallet.WalletMsg, wallet.WalletResp,
+	](
+		"send-oor-many-test-wallet",
+	)
+	walletRef := walletKey.Spawn(
+		system, "send-oor-many-test-wallet", testWallet,
+	)
+
+	sessionHash := chainhash.HashH([]byte("send-oor-many-session"))
+	oorActor := &capturingSendOORActor{
+		response: &oor.StartTransferResponse{
+			SessionID: oor.SessionID(sessionHash),
+		},
+	}
+	oorKey := oor.NewServiceKey()
+	oorKey.Spawn(system, "send-oor-many-test-actor", oorActor)
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+
+	server := &Server{
+		cfg:         &Config{},
+		log:         btclog.Disabled,
+		walletReady: walletReady,
+		chainParams: &chaincfg.RegressionNetParams,
+		serverConn: newBufconnClient(t, &fakeArkService{
+			getInfoResponse: &arkrpc.GetInfoResponse{
+				Pubkey: operatorKey.
+					PubKey().
+					SerializeCompressed(),
+				VtxoExitDelay: exitDelay,
+				DustLimit:     1,
+			},
+		}),
+		actorSystem: system,
+		vtxoStore:   vtxoStore,
+		walletRef:   fn.Some(walletRef),
+	}
+
+	rpcServer := NewRPCServer(server)
+	recipientA := sendOORPolicyRecipient(
+		t, recipientKeyA.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountA,
+	)
+	recipientB := sendOORPolicyRecipient(
+		t, recipientKeyB.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountB,
+	)
+
+	resp, err := rpcServer.SendOOR(ctx, &daemonrpc.SendOORRequest{
+		Recipients: []*daemonrpc.Output{
+			recipientA,
+			recipientB,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "submitted", resp.GetStatus())
+	require.Equal(t, sessionHash.String(), resp.GetSessionId())
+	require.Len(t, resp.GetRecipientOutpoints(), 2)
+
+	requests := oorActor.capturedRequests()
+	require.Len(t, requests, 1)
+	require.Len(t, requests[0].Recipients, 2)
+	require.Empty(t, requests[0].IdempotencyKey)
+	require.Len(t, requests[0].Inputs, 1)
+	require.Equal(t, desc.Outpoint, requests[0].Inputs[0].VTXO.Outpoint)
+
+	for i, recipient := range requests[0].Recipients {
+		outpoint, err := oortx.RecipientOutPoint(
+			sessionHash, requests[0].Recipients, recipient,
+		)
+		require.NoError(t, err)
+		require.Equal(t, outpoint.String(), resp.RecipientOutpoints[i])
+	}
+
+	selectReqs := testWallet.selectionRequests()
+	require.Len(t, selectReqs, 1)
+	require.Equal(t, totalAmount, selectReqs[0].TargetAmount)
+	require.Equal(t, btcutil.Amount(1), selectReqs[0].MinChangeAmount)
+	require.Empty(t, testWallet.unlockBatches())
+}
+
+// TestSendOORRejectsTooManyRecipients verifies the daemon rejects oversized
+// OOR fanout before resolving scripts or selecting wallet inputs. The OOR
+// actor also has request-size limits, but the RPC layer does enough per
+// recipient work that it needs its own cheap boundary guard.
+func TestSendOORRejectsTooManyRecipients(t *testing.T) {
+	t.Parallel()
+
+	recipients := make([]*daemonrpc.Output, maxOORRecipients+1)
+	for i := range recipients {
+		recipients[i] = &daemonrpc.Output{
+			AmountSat: 1,
+		}
+	}
+
+	_, err := sendOORRequestRecipients(&daemonrpc.SendOORRequest{
+		Recipients: recipients,
+	})
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.ErrorContains(t, err, "too many recipients")
+}
+
+// TestSendOORRejectsDuplicateRecipientOutputs verifies the daemon rejects
+// request entries that would map to the same canonical OOR output. Without
+// this guard the transaction builder cannot map request-order recipients back
+// to distinct outpoints after canonical output sorting.
+func TestSendOORRejectsDuplicateRecipientOutputs(t *testing.T) {
+	t.Parallel()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const (
+		amountSat = int64(10_000)
+		exitDelay = uint32(10)
+	)
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+
+	server := &Server{
+		cfg:         &Config{},
+		log:         btclog.Disabled,
+		walletReady: walletReady,
+		chainParams: &chaincfg.RegressionNetParams,
+		serverConn: newBufconnClient(t, &fakeArkService{
+			getInfoResponse: &arkrpc.GetInfoResponse{
+				Pubkey: operatorKey.
+					PubKey().
+					SerializeCompressed(),
+				VtxoExitDelay: exitDelay,
+				DustLimit:     1,
+			},
+		}),
+	}
+
+	recipient := sendOORPolicyRecipient(
+		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountSat,
+	)
+
+	_, err = NewRPCServer(server).SendOOR(
+		t.Context(), &daemonrpc.SendOORRequest{
+			Recipients: []*daemonrpc.Output{
+				recipient,
+				recipient,
+			},
+			DryRun: true,
+		},
+	)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.ErrorContains(t, err, "recipient 1 duplicates recipient 0")
+}
+
+// TestSendOORRejectsCustomInputsWithMultipleRecipients verifies the daemon
+// keeps custom-input sends single-recipient. Custom inputs carry per-input
+// signing material for specialized spend paths, so widening them should happen
+// as a separate protocol change rather than accidentally piggybacking on
+// wallet-selected fanout.
+func TestSendOORRejectsCustomInputsWithMultipleRecipients(t *testing.T) {
+	t.Parallel()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientKeyA, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientKeyB, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const (
+		amountSat = int64(10_000)
+		exitDelay = uint32(10)
+	)
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+
+	server := &Server{
+		cfg:         &Config{},
+		log:         btclog.Disabled,
+		walletReady: walletReady,
+		chainParams: &chaincfg.RegressionNetParams,
+		serverConn: newBufconnClient(t, &fakeArkService{
+			getInfoResponse: &arkrpc.GetInfoResponse{
+				Pubkey: operatorKey.
+					PubKey().
+					SerializeCompressed(),
+				VtxoExitDelay: exitDelay,
+				DustLimit:     1,
+			},
+		}),
+	}
+
+	recipientA := sendOORPolicyRecipient(
+		t, recipientKeyA.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountSat,
+	)
+	recipientB := sendOORPolicyRecipient(
+		t, recipientKeyB.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountSat,
+	)
+
+	_, err = NewRPCServer(server).SendOOR(
+		t.Context(), &daemonrpc.SendOORRequest{
+			Recipients: []*daemonrpc.Output{
+				recipientA,
+				recipientB,
+			},
+			DryRun: true,
+			CustomInputs: []*daemonrpc.CustomOORInput{{
+				Outpoint: "00:0",
+			}},
+		},
+	)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.ErrorContains(
+		t, err, "custom inputs require exactly one recipient",
 	)
 }
 
@@ -328,13 +652,18 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	)
 
 	firstResp, err := rpcServer.SendOOR(ctx, &daemonrpc.SendOORRequest{
-		Recipient:      recipient,
+		Recipients:     []*daemonrpc.Output{recipient},
 		IdempotencyKey: idempotencyKey,
 	})
 	require.NoError(t, err)
 	require.Equal(t, "submitted", firstResp.Status)
 	require.NotEmpty(t, firstResp.SessionId)
-	require.Equal(t, firstResp.SessionId+":0", firstResp.RecipientOutpoint)
+	require.Equal(
+		t, []string{
+			firstResp.SessionId + ":0",
+		},
+		firstResp.RecipientOutpoints,
+	)
 	require.Empty(t, testWallet.unlockBatches())
 	selectReqs := testWallet.selectionRequests()
 	require.Len(t, selectReqs, 1)
@@ -342,12 +671,12 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	require.Equal(t, btcutil.Amount(1), selectReqs[0].MinChangeAmount)
 
 	secondResp, err := rpcServer.SendOOR(ctx, &daemonrpc.SendOORRequest{
-		Recipient:      recipient,
+		Recipients:     []*daemonrpc.Output{recipient},
 		IdempotencyKey: idempotencyKey,
 	})
 	require.NoError(t, err)
 	require.Equal(t, firstResp.SessionId, secondResp.SessionId)
-	require.Empty(t, secondResp.RecipientOutpoint)
+	require.Empty(t, secondResp.RecipientOutpoints)
 	require.Equal(t, 1, testWallet.selectCount())
 	require.Empty(t, testWallet.unlockBatches())
 }
@@ -448,21 +777,26 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 	)
 
 	firstResp, err := rpcServer.SendOOR(ctx, &daemonrpc.SendOORRequest{
-		Recipient: recipient,
+		Recipients: []*daemonrpc.Output{recipient},
 	})
 	require.NoError(t, err)
 	require.Equal(t, "submitted", firstResp.Status)
 	require.NotEmpty(t, firstResp.SessionId)
-	require.Equal(t, firstResp.SessionId+":0", firstResp.RecipientOutpoint)
+	require.Equal(
+		t, []string{
+			firstResp.SessionId + ":0",
+		},
+		firstResp.RecipientOutpoints,
+	)
 	require.Empty(t, testWallet.unlockBatches())
 
 	secondResp, err := rpcServer.SendOOR(ctx, &daemonrpc.SendOORRequest{
-		Recipient: recipient,
+		Recipients: []*daemonrpc.Output{recipient},
 	})
 	require.NoError(t, err)
 	require.Equal(t, firstResp.SessionId, secondResp.SessionId)
 	require.Equal(
-		t, firstResp.RecipientOutpoint, secondResp.RecipientOutpoint,
+		t, firstResp.RecipientOutpoints, secondResp.RecipientOutpoints,
 	)
 	require.Equal(t, 2, testWallet.selectCount())
 
@@ -477,10 +811,10 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond)
 }
 
-// TestSendOORWaitDeadlineDoesNotUnlockSubmittedInputs verifies that once a
-// detached OOR actor Ask has been submitted, a caller wait deadline does not
+// TestSendOORWaitCancelDoesNotUnlockSubmittedInputs verifies that once a
+// detached OOR actor Ask has been submitted, caller cancellation does not
 // release wallet-selected inputs while that actor work is still in flight.
-func TestSendOORWaitDeadlineDoesNotUnlockSubmittedInputs(t *testing.T) {
+func TestSendOORWaitCancelDoesNotUnlockSubmittedInputs(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -570,25 +904,37 @@ func TestSendOORWaitDeadlineDoesNotUnlockSubmittedInputs(t *testing.T) {
 		amountSat,
 	)
 
-	waitCtx, cancel := context.WithTimeout(
-		context.Background(), 50*time.Millisecond,
-	)
+	waitCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	_, err = rpcServer.SendOOR(waitCtx, &daemonrpc.SendOORRequest{
-		Recipient: recipient,
-	})
-	require.Equal(t, codes.DeadlineExceeded, status.Code(err))
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := rpcServer.SendOOR(
+			waitCtx, &daemonrpc.SendOORRequest{
+				Recipients: []*daemonrpc.Output{recipient},
+			},
+		)
+		errChan <- err
+	}()
 
-	require.Eventually(t, func() bool {
-		select {
-		case <-blockingActor.started:
-			return true
+	select {
+	case <-blockingActor.started:
+	case err := <-errChan:
+		require.NoError(t, err)
+		require.FailNow(t, "SendOOR returned before actor start")
 
-		default:
-			return false
-		}
-	}, time.Second, 10*time.Millisecond)
+	case <-time.After(time.Second):
+		require.FailNow(t, "OOR actor did not start")
+	}
+
+	cancel()
+	select {
+	case err = <-errChan:
+		require.Equal(t, codes.Canceled, status.Code(err))
+
+	case <-time.After(time.Second):
+		require.FailNow(t, "SendOOR did not observe caller cancel")
+	}
 	require.Empty(t, testWallet.unlockBatches())
 
 	close(blockingActor.release)

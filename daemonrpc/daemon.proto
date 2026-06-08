@@ -749,8 +749,8 @@ message SendVTXOResponse {
 }
 
 message SendOORRequest {
-    // recipient is the output to create via the out-of-round transfer.
-    Output recipient = 1;
+    // recipients are the outputs to create via one out-of-round transfer.
+    repeated Output recipients = 1;
 
     // dry_run validates the request without initiating the transfer.
     bool dry_run = 2;
@@ -822,10 +822,13 @@ message SendOORResponse {
     // session_id is the OOR session identifier. Empty on dry_run.
     string session_id = 2;
 
-    // recipient_outpoint is the Ark transaction outpoint created for the
-    // requested recipient. Empty on dry_run or when an older idempotent
-    // session is returned without enough local request context.
-    string recipient_outpoint = 3;
+    // recipient_outpoints are the Ark transaction outpoints created for
+    // the requested recipients, in request-recipient order. The whole
+    // list is empty on dry_run or when an older idempotent session is
+    // returned without enough local request context. Individual entries
+    // may be empty when the daemon cannot resolve one recipient's
+    // outpoint from the finalized Ark transaction.
+    repeated string recipient_outpoints = 3;
 }
 
 message PrepareOORRequest {
