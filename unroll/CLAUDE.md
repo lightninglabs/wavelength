@@ -17,17 +17,24 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
 ### Per-target actor
 
 - `VTXOUnrollActor` — one durable actor per target outpoint, wrapping
-  `baselib/actor.DurableActor[Msg, Resp]`. Owns the FSM session,
-  proof, planner, and cached sweep transaction for this VTXO.
+  `baselib/actor.DurableActor[Msg, Resp]`. Owns the FSM session, proof,
+  planner, and cached sweep transaction for this VTXO. Runs on the durable
+  Read/Commit (`TxBehavior`) path: each checkpoint write is a short,
+  lock-releasing Stage ahead of the `txconfirm` IO, and the message is
+  consumed in a single lease-fenced Commit so the SQLite writer is never held
+  across a cross-actor Ask.
 - `Config` — per-actor wiring. Notable: `TargetOutpoint`, `ActorID`,
   `DeliveryStore`, `ProofAssembler`, `VTXOStore`, `TxConfirmRef`,
   `ChainSource`, `Wallet` (`SweepWallet`),
   `MaxSweepFeeRateSatPerVByte`, `FraudCheckpointSafetyMargin int32`
   (overrides the fraud-triggered unroll backstop margin in blocks;
   zero falls back to the default), `RegistryRef`.
-- `behavior` — actor behavior. Holds `b.sweepTx` (restored from
-  checkpoint on boot) so retries and replays converge on a single
-  sweep txid / pkScript under `txconfirm`'s txid-keyed dedup.
+- `behavior` — actor behavior implementing `actor.TxBehavior[Msg, Resp,
+  unrollTx]`. Holds `b.sweepTx` (restored from checkpoint on boot) so
+  retries and replays converge on a single sweep txid / pkScript under
+  `txconfirm`'s txid-keyed dedup. The `dispatch` method runs the full
+  FSM pipeline including Stage writes; `Receive` owns the single
+  lease-fenced Commit.
 - `Msg` / `Resp` / `Event` / `OutboxEvent` — sealed durable-mailbox,
   response, FSM event, and FSM outbox interfaces.
 - Mailbox messages: `StartUnrollRequest`, `ResumeUnrollRequest`,
