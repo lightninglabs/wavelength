@@ -133,7 +133,7 @@ func (b *sessionBehavior) handleDriveEvent(ctx context.Context,
 				return b.persistOutgoingPackage(txCtx, state)
 			},
 		)
-		b.queueVTXOSent(state)
+		b.queueVTXOSent(ctx, state)
 	}
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
@@ -310,7 +310,9 @@ func (b *sessionBehavior) persistOutgoingPackage(ctx context.Context,
 // queueVTXOSent stages the outgoing-transfer ledger entry for the durable
 // outbox enqueue in commitAck, so the accounting message lands atomically
 // with the finalized snapshot.
-func (b *sessionBehavior) queueVTXOSent(state *AwaitingFinalizeAccepted) {
+func (b *sessionBehavior) queueVTXOSent(ctx context.Context,
+	state *AwaitingFinalizeAccepted) {
+
 	if !b.cfg.LedgerSink.IsSome() {
 		return
 	}
@@ -325,6 +327,11 @@ func (b *sessionBehavior) queueVTXOSent(state *AwaitingFinalizeAccepted) {
 	if total <= 0 {
 		return
 	}
+
+	b.logger(ctx).DebugS(ctx, "Queueing VTXO-sent ledger entry for commit",
+		slog.String("session_id", b.sessionID.String()),
+		slog.Int64("amount_sat", total),
+	)
 
 	b.pendingLedger = append(b.pendingLedger, &ledger.VTXOSentMsg{
 		SessionID: b.sessionID,
@@ -578,7 +585,7 @@ func (b *sessionBehavior) materializeIncoming(ctx context.Context,
 	}
 
 	for _, event := range followUps {
-		b.notifyMaterialized(event)
+		b.notifyMaterialized(ctx, event)
 
 		next, err := b.apply(ctx, event)
 		if err != nil {
@@ -601,14 +608,14 @@ func (b *sessionBehavior) materializeIncoming(ctx context.Context,
 // the VTXO rows this turn persists (Manager.Start respawns an actor per live
 // VTXO, and initFraudWatcher re-tracks the manager's live set), so a crash
 // inside the post-commit window is healed by the next restart.
-func (b *sessionBehavior) notifyMaterialized(event Event) {
+func (b *sessionBehavior) notifyMaterialized(ctx context.Context, event Event) {
 	handled, ok := event.(*IncomingHandledEvent)
 	if !ok || len(handled.MaterializedVTXOs) == 0 {
 		return
 	}
 
 	descs := handled.MaterializedVTXOs
-	b.queueVTXOsReceived(descs)
+	b.queueVTXOsReceived(ctx, descs)
 
 	b.postCommit = append(b.postCommit, func(ctx context.Context) {
 		if b.cfg.VTXOManager != nil {
@@ -638,10 +645,19 @@ func (b *sessionBehavior) notifyMaterialized(event Event) {
 
 // queueVTXOsReceived stages one VTXOReceivedMsg per materialized incoming
 // VTXO for the durable outbox enqueue in commitAck.
-func (b *sessionBehavior) queueVTXOsReceived(descs []*vtxo.Descriptor) {
+func (b *sessionBehavior) queueVTXOsReceived(ctx context.Context,
+	descs []*vtxo.Descriptor) {
+
 	if !b.cfg.LedgerSink.IsSome() {
 		return
 	}
+
+	b.logger(ctx).DebugS(
+		ctx,
+		"Queueing VTXO-received ledger entries for commit",
+		slog.String("session_id", b.sessionID.String()),
+		slog.Int("num_vtxos", len(descs)),
+	)
 
 	for _, desc := range descs {
 		if desc == nil {
