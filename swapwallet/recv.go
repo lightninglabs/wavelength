@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 )
@@ -47,6 +48,18 @@ func (r *receiver) Recv(ctx context.Context, req *walletdkrpc.RecvRequest) (
 	if amt > (1<<63)-1 {
 		return nil, fmt.Errorf("%w: amt_sat exceeds int64 range",
 			ErrAmountInvalid)
+	}
+
+	// Enforce the operator's per-VTXO and total-balance limits before a
+	// swap session (and invoice) is created, so the user gets a clean
+	// rejection instead of a stuck swap.
+	if r.deps.RPCServer != nil {
+		err := checkReceiveLimits(
+			ctx, r.deps.RPCServer, btcutil.Amount(amt),
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	startResp, err := r.deps.SwapService.StartReceive(

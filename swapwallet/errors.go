@@ -45,4 +45,17 @@ var (
 	// attempted before the daemon's backing wallet is unlocked and ready
 	// to sign.
 	ErrWalletNotReady = errors.New("wallet is not ready")
+
+	// ErrAmountExceedsVTXOLimit is returned when a Recv amount exceeds
+	// the operator's advertised maximum VTXO size. The wrapped message
+	// carries the offending and maximum amounts.
+	ErrAmountExceedsVTXOLimit = errors.New("amount exceeds the " +
+		"operator's maximum VTXO size")
+
+	// ErrBalanceLimitExceeded is returned when an inflow would push the
+	// wallet's total balance above the operator's advertised maximum
+	// user balance. The wrapped message carries the current balance and
+	// the cap.
+	ErrBalanceLimitExceeded = errors.New("amount would exceed the " +
+		"maximum allowed wallet balance")
 )
