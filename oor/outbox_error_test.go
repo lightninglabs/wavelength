@@ -69,8 +69,12 @@ func TestHandleOutboxError(t *testing.T) {
 	_, err = handleOutboxError(nil, current, nil)
 	require.Error(t, err)
 
-	// Non-retryable error causes terminal failure. The state machine does
-	// not attempt to guess whether retry is safe.
+	// Non-retryable error causes terminal failure. The state machine
+	// does not attempt to guess whether retry is safe. Because the
+	// failure lands before the point of no return (the server never
+	// co-signed), the transition releases the reserved inputs so they
+	// return to the spendable set instead of waiting for a restart
+	// sweep.
 	transition, err := handleOutboxError(nil, current, &OutboxErrorEvent{
 		OutboxType:  "x",
 		Retryable:   false,
@@ -78,7 +82,16 @@ func TestHandleOutboxError(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.IsType(t, &Failed{}, transition.NextState)
-	require.True(t, transition.NewEvents.IsNone())
+
+	require.True(t, transition.NewEvents.IsSome())
+	failEmitted := transition.NewEvents.UnwrapOr(EmittedEvent{})
+	require.Len(t, failEmitted.Outbox, 1)
+
+	release, ok := failEmitted.Outbox[0].(*ReleaseInputsRequest)
+	require.True(t, ok)
+	require.Equal(
+		t, []wire.OutPoint{inputs[0].VTXO.Outpoint}, release.Outpoints,
+	)
 
 	// Retryable error keeps the FSM in the current state and emits retry
 	// scheduling. The actor persists retry metadata alongside the real

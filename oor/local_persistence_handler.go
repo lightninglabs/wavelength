@@ -63,6 +63,14 @@ type IncomingMetadataRecipientFilter interface {
 type SpendCompleter func(ctx context.Context,
 	outpoints []wire.OutPoint) error
 
+// SpendReleaser releases the spend reservation on input VTXOs through
+// the VTXO manager, returning each from SpendingState to LiveState.
+// Invoked when an outgoing session fails terminally before the point of
+// no return (the server never locked the inputs), so the funds become
+// spendable again without waiting for a restart sweep.
+type SpendReleaser func(ctx context.Context,
+	outpoints []wire.OutPoint) error
+
 // IncomingVTXONotifier is called after incoming VTXOs are durably
 // materialized, allowing callers to spawn/manage VTXO actors for expiry and
 // spend monitoring.
@@ -117,6 +125,12 @@ type LocalPersistenceOutboxHandler struct {
 	// own FSM. When nil, the handler falls back to direct store writes
 	// for backwards compatibility during migration.
 	CompleteSpend SpendCompleter
+
+	// ReleaseSpend releases the spend reservation on input VTXOs when
+	// an outgoing session fails terminally before the point of no
+	// return. When nil, the release is skipped and the inputs stay
+	// reserved until the startup VTXO sweep reconciles them.
+	ReleaseSpend SpendReleaser
 }
 
 // Handle executes one outbox request and emits follow-up FSM events.
@@ -136,6 +150,9 @@ func (h *LocalPersistenceOutboxHandler) Handle(ctx context.Context,
 	case *MarkInputsSpentRequest:
 		return h.handleMarkInputsSpent(ctx, msg)
 
+	case *ReleaseInputsRequest:
+		return h.handleReleaseInputs(ctx, msg)
+
 	case *QueryIncomingMetadataRequest:
 		return h.handleQueryIncomingMetadata(ctx, msg)
 
@@ -152,6 +169,43 @@ func (h *LocalPersistenceOutboxHandler) Handle(ctx context.Context,
 
 		return h.Next.Handle(ctx, sessionID, outbox)
 	}
+}
+
+// handleReleaseInputs releases the spend reservation on the session's
+// input VTXOs after a pre-point-of-no-return terminal failure. The
+// release is deliberately best-effort: the session FSM is already in
+// terminal Failed, so feeding a retryable error event back into it
+// would be rejected, and the startup VTXO sweep remains the backstop
+// that reconciles any reservation this path fails to clear.
+func (h *LocalPersistenceOutboxHandler) handleReleaseInputs(ctx context.Context,
+	msg *ReleaseInputsRequest) ([]Event, error) {
+
+	if len(msg.Outpoints) == 0 {
+		return nil, nil
+	}
+
+	if h.ReleaseSpend == nil {
+		logger(ctx).WarnS(ctx, "No spend releaser configured, "+
+			"inputs stay reserved until the startup sweep", nil,
+			slog.Int("num_outpoints", len(msg.Outpoints)),
+		)
+
+		return nil, nil
+	}
+
+	logger(ctx).InfoS(ctx, "Releasing reserved inputs after terminal "+
+		"session failure",
+		slog.Int("num_outpoints", len(msg.Outpoints)),
+	)
+
+	if err := h.ReleaseSpend(ctx, msg.Outpoints); err != nil {
+		logger(ctx).WarnS(ctx, "Failed to release reserved inputs, "+
+			"startup sweep will reconcile", err,
+			slog.Int("num_outpoints", len(msg.Outpoints)),
+		)
+	}
+
+	return nil, nil
 }
 
 // handleMarkInputsSpent completes the OOR spend for consumed VTXO inputs.

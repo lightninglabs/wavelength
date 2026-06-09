@@ -287,6 +287,29 @@ func (m *MarkInputsSpentRequest) outboxType() string {
 // outboxSealed marks this as implementing the sealed OutboxEvent interface.
 func (m *MarkInputsSpentRequest) outboxSealed() {}
 
+// ReleaseInputsRequest asks the persistence layer to release the spend
+// reservation on the session's input VTXOs, returning them from
+// SpendingState to LiveState. Emitted when an outgoing session fails
+// terminally BEFORE the point of no return (the server co-signing the
+// checkpoints), e.g. on a typed submit rejection: the server never
+// locked the inputs, so holding the local reservation until a restart
+// sweep would strand spendable funds for no reason.
+type ReleaseInputsRequest struct {
+	actor.BaseMessage
+
+	// Outpoints are the reserved input VTXO outpoints to release.
+	Outpoints []wire.OutPoint
+}
+
+// outboxType returns a stable identifier for this outbox message.
+func (m *ReleaseInputsRequest) outboxType() string {
+	return "ReleaseInputsRequest"
+}
+
+// outboxSealed marks this as implementing the sealed OutboxEvent
+// interface.
+func (m *ReleaseInputsRequest) outboxSealed() {}
+
 // ToProto converts MarkInputsSpentRequest to a protobuf message.
 func (m *MarkInputsSpentRequest) ToProto() fn.Result[proto.Message] {
 	payload, err := encodeOutpoints(m.Outpoints)
