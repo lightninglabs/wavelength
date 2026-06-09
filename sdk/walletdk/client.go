@@ -196,6 +196,8 @@ func (c *Client) CreateWallet(ctx context.Context, req CreateWalletRequest) (
 			Mnemonic:       mnemonic,
 			SeedPassphrase: bytes.Clone(req.SeedPassphrase),
 			WalletPassword: bytes.Clone(req.WalletPassword),
+			RecoverState:   req.RecoverState,
+			RecoveryWindow: req.RecoveryWindow,
 		},
 	)
 	if err != nil {
@@ -206,6 +208,15 @@ func (c *Client) CreateWallet(ctx context.Context, req CreateWalletRequest) (
 		Mnemonic:       mnemonic,
 		EncipheredSeed: encipheredSeed,
 		IdentityPubKey: initResp.GetIdentityPubkey(),
+		RecoveryRan:    initResp.GetRecoveryRan(),
+		RecoveredBoardingAddresses: initResp.
+			GetRecoveredBoardingAddresses(),
+		RecoveredBoardingUTXOs: initResp.
+			GetRecoveredBoardingUtxos(),
+		RecoveredVTXOs: initResp.GetRecoveredVtxos(),
+		RecoveredOORReceiveScripts: initResp.
+			GetRecoveredOorReceiveScripts(),
+		RecoveredOORRecipientEvents: initResp.GetRecoveredOorEvents(),
 	}, nil
 }
 

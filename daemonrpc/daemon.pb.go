@@ -1116,6 +1116,13 @@ type InitWalletRequest struct {
 	// generating the aezeed mnemonic. Must match the value passed to
 	// GenSeed.
 	SeedPassphrase []byte `protobuf:"bytes,3,opt,name=seed_passphrase,json=seedPassphrase,proto3" json:"seed_passphrase,omitempty"`
+	// recover_state asks the daemon to scan deterministic Ark wallet keys
+	// after the seed is restored and rebuild local Ark state from chain and
+	// indexer data.
+	RecoverState bool `protobuf:"varint,4,opt,name=recover_state,json=recoverState,proto3" json:"recover_state,omitempty"`
+	// recovery_window is the number of key indexes to scan per recovery key
+	// family. Zero uses the daemon wallet.recoverywindow config value.
+	RecoveryWindow uint32 `protobuf:"varint,5,opt,name=recovery_window,json=recoveryWindow,proto3" json:"recovery_window,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -1171,6 +1178,20 @@ func (x *InitWalletRequest) GetSeedPassphrase() []byte {
 	return nil
 }
 
+func (x *InitWalletRequest) GetRecoverState() bool {
+	if x != nil {
+		return x.RecoverState
+	}
+	return false
+}
+
+func (x *InitWalletRequest) GetRecoveryWindow() uint32 {
+	if x != nil {
+		return x.RecoveryWindow
+	}
+	return 0
+}
+
 type InitWalletResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// identity_pubkey is the hex-encoded daemon wallet identity public key
@@ -1178,8 +1199,25 @@ type InitWalletResponse struct {
 	// reported by GetInfoResponse.identity_pubkey and used for Ark/OOR
 	// signing flows.
 	IdentityPubkey string `protobuf:"bytes,1,opt,name=identity_pubkey,json=identityPubkey,proto3" json:"identity_pubkey,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// recovery_ran is true when InitWallet attempted Ark-state recovery.
+	RecoveryRan bool `protobuf:"varint,2,opt,name=recovery_ran,json=recoveryRan,proto3" json:"recovery_ran,omitempty"`
+	// recovered_boarding_addresses is the number of boarding addresses
+	// rebuilt and persisted from deterministic keys.
+	RecoveredBoardingAddresses uint32 `protobuf:"varint,3,opt,name=recovered_boarding_addresses,json=recoveredBoardingAddresses,proto3" json:"recovered_boarding_addresses,omitempty"`
+	// recovered_boarding_utxos is the number of confirmed wallet UTXOs found
+	// at recovered boarding addresses during the recovery scan.
+	RecoveredBoardingUtxos uint32 `protobuf:"varint,4,opt,name=recovered_boarding_utxos,json=recoveredBoardingUtxos,proto3" json:"recovered_boarding_utxos,omitempty"`
+	// recovered_vtxos is the number of indexed VTXOs restored into local
+	// wallet state.
+	RecoveredVtxos uint32 `protobuf:"varint,5,opt,name=recovered_vtxos,json=recoveredVtxos,proto3" json:"recovered_vtxos,omitempty"`
+	// recovered_oor_receive_scripts is the number of registered OOR receive
+	// scripts matched and restored into local ownership metadata.
+	RecoveredOorReceiveScripts uint32 `protobuf:"varint,6,opt,name=recovered_oor_receive_scripts,json=recoveredOorReceiveScripts,proto3" json:"recovered_oor_receive_scripts,omitempty"`
+	// recovered_oor_events is the number of OOR recipient events processed
+	// during recovery.
+	RecoveredOorEvents uint32 `protobuf:"varint,7,opt,name=recovered_oor_events,json=recoveredOorEvents,proto3" json:"recovered_oor_events,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *InitWalletResponse) Reset() {
@@ -1217,6 +1255,48 @@ func (x *InitWalletResponse) GetIdentityPubkey() string {
 		return x.IdentityPubkey
 	}
 	return ""
+}
+
+func (x *InitWalletResponse) GetRecoveryRan() bool {
+	if x != nil {
+		return x.RecoveryRan
+	}
+	return false
+}
+
+func (x *InitWalletResponse) GetRecoveredBoardingAddresses() uint32 {
+	if x != nil {
+		return x.RecoveredBoardingAddresses
+	}
+	return 0
+}
+
+func (x *InitWalletResponse) GetRecoveredBoardingUtxos() uint32 {
+	if x != nil {
+		return x.RecoveredBoardingUtxos
+	}
+	return 0
+}
+
+func (x *InitWalletResponse) GetRecoveredVtxos() uint32 {
+	if x != nil {
+		return x.RecoveredVtxos
+	}
+	return 0
+}
+
+func (x *InitWalletResponse) GetRecoveredOorReceiveScripts() uint32 {
+	if x != nil {
+		return x.RecoveredOorReceiveScripts
+	}
+	return 0
+}
+
+func (x *InitWalletResponse) GetRecoveredOorEvents() uint32 {
+	if x != nil {
+		return x.RecoveredOorEvents
+	}
+	return 0
 }
 
 type UnlockWalletRequest struct {
@@ -7848,13 +7928,21 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fseed_passphrase\x18\x01 \x01(\fR\x0eseedPassphrase\"V\n" +
 	"\x0fGenSeedResponse\x12\x1a\n" +
 	"\bmnemonic\x18\x01 \x03(\tR\bmnemonic\x12'\n" +
-	"\x0fenciphered_seed\x18\x02 \x01(\fR\x0eencipheredSeed\"\x81\x01\n" +
+	"\x0fenciphered_seed\x18\x02 \x01(\fR\x0eencipheredSeed\"\xcf\x01\n" +
 	"\x11InitWalletRequest\x12\x1a\n" +
 	"\bmnemonic\x18\x01 \x03(\tR\bmnemonic\x12'\n" +
 	"\x0fwallet_password\x18\x02 \x01(\fR\x0ewalletPassword\x12'\n" +
-	"\x0fseed_passphrase\x18\x03 \x01(\fR\x0eseedPassphrase\"=\n" +
+	"\x0fseed_passphrase\x18\x03 \x01(\fR\x0eseedPassphrase\x12#\n" +
+	"\rrecover_state\x18\x04 \x01(\bR\frecoverState\x12'\n" +
+	"\x0frecovery_window\x18\x05 \x01(\rR\x0erecoveryWindow\"\xfa\x02\n" +
 	"\x12InitWalletResponse\x12'\n" +
-	"\x0fidentity_pubkey\x18\x01 \x01(\tR\x0eidentityPubkey\">\n" +
+	"\x0fidentity_pubkey\x18\x01 \x01(\tR\x0eidentityPubkey\x12!\n" +
+	"\frecovery_ran\x18\x02 \x01(\bR\vrecoveryRan\x12@\n" +
+	"\x1crecovered_boarding_addresses\x18\x03 \x01(\rR\x1arecoveredBoardingAddresses\x128\n" +
+	"\x18recovered_boarding_utxos\x18\x04 \x01(\rR\x16recoveredBoardingUtxos\x12'\n" +
+	"\x0frecovered_vtxos\x18\x05 \x01(\rR\x0erecoveredVtxos\x12A\n" +
+	"\x1drecovered_oor_receive_scripts\x18\x06 \x01(\rR\x1arecoveredOorReceiveScripts\x120\n" +
+	"\x14recovered_oor_events\x18\a \x01(\rR\x12recoveredOorEvents\">\n" +
 	"\x13UnlockWalletRequest\x12'\n" +
 	"\x0fwallet_password\x18\x01 \x01(\fR\x0ewalletPassword\"?\n" +
 	"\x14UnlockWalletResponse\x12'\n" +

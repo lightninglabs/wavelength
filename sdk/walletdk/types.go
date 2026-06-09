@@ -96,13 +96,21 @@ type CreateWalletRequest struct {
 	Mnemonic       []string
 	SeedPassphrase []byte
 	WalletPassword []byte
+	RecoverState   bool
+	RecoveryWindow uint32
 }
 
 // CreateWalletResult returns the seed words and daemon identity.
 type CreateWalletResult struct {
-	Mnemonic       []string
-	EncipheredSeed []byte
-	IdentityPubKey string
+	Mnemonic                    []string
+	EncipheredSeed              []byte
+	IdentityPubKey              string
+	RecoveryRan                 bool
+	RecoveredBoardingAddresses  uint32
+	RecoveredBoardingUTXOs      uint32
+	RecoveredVTXOs              uint32
+	RecoveredOORReceiveScripts  uint32
+	RecoveredOORRecipientEvents uint32
 }
 
 // UnlockWalletRequest unlocks an existing embedded daemon wallet.
