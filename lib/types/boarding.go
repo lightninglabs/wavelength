@@ -52,8 +52,16 @@ type OperatorTerms struct {
 	// MinBoardingAmount is the minimum amount clients must contribute.
 	MinBoardingAmount btcutil.Amount
 
-	// MaxBoardingAmount caps the amount accepted per request (optional).
+	// MaxBoardingAmount caps the amount accepted per VTXO (optional).
+	// The operator applies the same cap to boarding requests, round
+	// outputs and OOR recipient outputs.
 	MaxBoardingAmount btcutil.Amount
+
+	// MaxUserBalance caps the total balance a single user should hold
+	// in the system (optional). The cap is enforced client-side on
+	// receive and boarding flows before funds enter the system. Zero
+	// means no cap.
+	MaxUserBalance btcutil.Amount
 
 	// FeeRate reflects the operator's target package feerate (sat/vByte).
 	FeeRate btcutil.Amount

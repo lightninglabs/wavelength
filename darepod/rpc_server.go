@@ -657,6 +657,7 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *daemonrpc.GetInfoRequest) (
 			MinOperatorFee:    uint64(terms.MinOperatorFee),
 			MinConfirmations:  terms.MinConfirmations,
 			MinVtxoAmountSat:  uint64(minVTXOAmount),
+			MaxUserBalance:    uint64(terms.MaxUserBalance),
 		}
 	}
 

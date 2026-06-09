@@ -156,6 +156,10 @@ type ServerInfo struct {
 	// MinConfirmations is the minimum confirmations required on boarding
 	// inputs.
 	MinConfirmations uint32
+
+	// MaxUserBalance is the maximum total balance in satoshis a single
+	// user should hold in the system. A value of zero means no cap.
+	MaxUserBalance uint64
 }
 
 // Seed contains the mnemonic and enciphered seed bytes returned by GenSeed.
@@ -456,6 +460,7 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 			FeeRate:           resp.ServerInfo.FeeRate,
 			MinOperatorFee:    resp.ServerInfo.MinOperatorFee,
 			MinConfirmations:  resp.ServerInfo.MinConfirmations,
+			MaxUserBalance:    resp.ServerInfo.MaxUserBalance,
 		}
 	}
 

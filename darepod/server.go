@@ -4249,6 +4249,7 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 		MinOperatorFee:      btcutil.Amount(resp.MinOperatorFee),
 		MinConfirmations:    resp.MinConfirmations,
 		MaxOORLineageVBytes: resp.MaxOorLineageVbytes,
+		MaxUserBalance:      btcutil.Amount(resp.MaxUserBalance),
 	}
 
 	return terms, nil
