@@ -301,6 +301,89 @@ func (s *VTXOPersistenceStore) ListVTXOsByStatus(ctx context.Context,
 	return result, err
 }
 
+// ListLiveVTXOsLight returns the same descriptors as ListLiveVTXOs with a
+// nil Ancestry on every entry. The ancestry side table's TLV tree fragments
+// grow with OOR chain depth, and the batched join sorts those blobs through
+// SQLite's external sorter on every call, so consumers that never walk the
+// lineage (the ListVTXOs RPC response carries no ancestry) skip the side
+// table entirely.
+func (s *VTXOPersistenceStore) ListLiveVTXOsLight(ctx context.Context) (
+	[]*vtxo.Descriptor, error) {
+
+	readTxOpts := ReadTxOption()
+
+	var result []*vtxo.Descriptor
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
+		rows, err := q.ListLiveVTXOs(ctx)
+		if err != nil {
+			return fmt.Errorf("list live VTXOs: %w", err)
+		}
+
+		descs, err := s.rowsToDescriptorsNoAncestry(ctx, q, rows)
+		if err != nil {
+			return err
+		}
+
+		result = descs
+
+		return nil
+	})
+
+	return result, err
+}
+
+// ListVTXOsByStatusLight returns the same descriptors as ListVTXOsByStatus
+// with a nil Ancestry on every entry. See ListLiveVTXOsLight for why
+// listing-only consumers skip the ancestry side table.
+func (s *VTXOPersistenceStore) ListVTXOsByStatusLight(ctx context.Context,
+	status vtxo.VTXOStatus) ([]*vtxo.Descriptor, error) {
+
+	readTxOpts := ReadTxOption()
+
+	var result []*vtxo.Descriptor
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
+		rows, err := q.ListVTXOsByStatus(ctx, int32(status))
+		if err != nil {
+			return fmt.Errorf("list VTXOs by status: %w", err)
+		}
+
+		descs, err := s.rowsToDescriptorsNoAncestry(ctx, q, rows)
+		if err != nil {
+			return err
+		}
+
+		result = descs
+
+		return nil
+	})
+
+	return result, err
+}
+
+// rowsToDescriptorsNoAncestry converts VTXO rows to descriptors without
+// touching the ancestry side table. The non-nil empty index keeps
+// rowToDescriptor on the preloaded path (zero ancestry) instead of falling
+// back to the per-row singleton ancestry query.
+func (s *VTXOPersistenceStore) rowsToDescriptorsNoAncestry(ctx context.Context,
+	q RoundStore, rows []VTXORow) ([]*vtxo.Descriptor, error) {
+
+	noAncestry := map[wire.OutPoint][]vtxo.Ancestry{}
+
+	descs := make([]*vtxo.Descriptor, 0, len(rows))
+	for _, row := range rows {
+		desc, err := s.rowToDescriptor(ctx, q, row, noAncestry)
+		if err != nil {
+			return nil, fmt.Errorf("convert VTXO: %w", err)
+		}
+
+		descs = append(descs, desc)
+	}
+
+	return descs, nil
+}
+
 // ListSelectionCandidatesByStatus returns the lightweight projection coin
 // selection runs on: outpoint, amount, and pkScript per VTXO in the given
 // status. Selection happens on every payment and needs only these fields, so

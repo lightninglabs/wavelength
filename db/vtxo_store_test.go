@@ -402,6 +402,74 @@ func TestListSelectionCandidatesByStatus(t *testing.T) {
 	require.Equal(t, descB.Outpoint, candidates[0].Outpoint)
 }
 
+// TestListVTXOsLightSkipsAncestry exercises the light listing variants the
+// ListVTXOs RPC runs on: the descriptors must match the full listing in
+// every field except Ancestry, which the light path never loads.
+func TestListVTXOsLightSkipsAncestry(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-light-list")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, roundStore.CommitState(ctx, testRound, state))
+
+	descA := createTestVTXODescriptor(t, roundID, 21)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, descA))
+
+	descB := createTestVTXODescriptor(t, roundID, 22)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, descB))
+
+	full, err := vtxoStore.ListVTXOsByStatus(ctx, vtxo.VTXOStatusLive)
+	require.NoError(t, err)
+	require.Len(t, full, 2)
+
+	byOutpoint := make(map[wire.OutPoint]*vtxo.Descriptor)
+	for _, desc := range full {
+		// The full listing carries the persisted ancestry; the light
+		// assertions below lean on this contrast.
+		require.NotEmpty(t, desc.Ancestry)
+		byOutpoint[desc.Outpoint] = desc
+	}
+
+	assertLight := func(light []*vtxo.Descriptor) {
+		t.Helper()
+
+		require.Len(t, light, len(full))
+		for _, desc := range light {
+			fullDesc, ok := byOutpoint[desc.Outpoint]
+			require.True(t, ok)
+
+			require.Empty(t, desc.Ancestry)
+			require.Equal(t, fullDesc.Amount, desc.Amount)
+			require.Equal(t, fullDesc.PkScript, desc.PkScript)
+			require.Equal(t, fullDesc.Status, desc.Status)
+			require.Equal(t, fullDesc.RoundID, desc.RoundID)
+			require.Equal(
+				t, fullDesc.ChainDepth, desc.ChainDepth,
+			)
+			require.Equal(
+				t, fullDesc.RelativeExpiry, desc.RelativeExpiry,
+			)
+		}
+	}
+
+	light, err := vtxoStore.ListVTXOsByStatusLight(
+		ctx, vtxo.VTXOStatusLive,
+	)
+	require.NoError(t, err)
+	assertLight(light)
+
+	liveLight, err := vtxoStore.ListLiveVTXOsLight(ctx)
+	require.NoError(t, err)
+	assertLight(liveLight)
+}
+
 // addAncestryFragment appends a synthetic ancestry fragment to a
 // Descriptor under construction so multi-tree round-trip tests can
 // build N>1 ancestry layouts without re-implementing the per-fragment
