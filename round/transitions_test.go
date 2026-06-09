@@ -1696,6 +1696,13 @@ func TestCommitmentTxValidatedState(t *testing.T) {
 
 		h.assertOutboxContainsType("*round.ForfeitRequestToVTXO")
 		h.assertOutboxContainsType("*round.StartTimeoutReq")
+
+		// The collection timeout must be armed BEFORE any forfeit
+		// request is dispatched. processOutbox aborts on the first
+		// send error, so a trailing timeout would be skipped if a
+		// per-VTXO forfeit Tell fails, stranding the round with no
+		// timeout. See issue #386.
+		h.assertOutboxFirstType("*round.StartTimeoutReq")
 	})
 }
 
@@ -1991,6 +1998,13 @@ func TestPartialSigsSentState(t *testing.T) {
 
 		h.assertOutboxContainsType("*round.ForfeitRequestToVTXO")
 		h.assertOutboxContainsType("*round.StartTimeoutReq")
+
+		// The collection timeout must be armed BEFORE any forfeit
+		// request is dispatched. processOutbox aborts on the first
+		// send error, so a trailing timeout would be skipped if a
+		// per-VTXO forfeit Tell fails, stranding the round with no
+		// timeout. See issue #386.
+		h.assertOutboxFirstType("*round.StartTimeoutReq")
 	})
 
 	t.Run("empty_signatures_error", func(t *testing.T) {

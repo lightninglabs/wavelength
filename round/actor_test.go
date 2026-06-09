@@ -892,6 +892,69 @@ func TestActorProcessOutbox(t *testing.T) {
 
 		h.assertServerMessageSent("SendClientEventRequest")
 	})
+
+	// This is the regression test for issue #386. The forfeit-collection
+	// transitions emit StartTimeoutReq BEFORE the per-VTXO
+	// ForfeitRequestToVTXO messages so that a failed forfeit Tell cannot
+	// strand the round without a timeout. processOutbox aborts on the
+	// first send error, so if the timeout were emitted last it would be
+	// skipped when a forfeit Tell fails, and the round would wait forever
+	// for signatures with no timeout armed.
+	t.Run("forfeit_send_failure_still_arms_timeout", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		// Wire up a real but empty actor system so the forfeit
+		// request fails its service-key lookup (no VTXO actor is
+		// registered), mirroring the ErrNoActorsAvailable trigger.
+		system := actor.NewActorSystem()
+		t.Cleanup(func() {
+			_ = system.Shutdown(t.Context())
+		})
+		h.actor.cfg.ActorSystem = system
+
+		err := h.start()
+		require.NoError(t, err)
+
+		roundID := testRoundID("forfeit-send-failure")
+		duration := 30 * time.Second
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("vtxo-386")),
+			Index: 0,
+		}
+
+		// The outbox mirrors what the forfeit-collection transitions
+		// now emit: the timeout first, then the per-VTXO forfeit
+		// request whose Tell will fail.
+		outbox := []ClientOutMsg{
+			&StartTimeoutReq{
+				RoundKey: RoundKeyStr(roundID.KeyString()),
+				Phase:    TimeoutPhaseForfeitCollection,
+				Duration: duration,
+			},
+			&ForfeitRequestToVTXO{
+				VTXOOutpoint: vtxoOutpoint,
+				RoundID:      roundID.String(),
+			},
+		}
+
+		// The forfeit Tell fails, so processOutbox returns an error.
+		err = h.actor.processOutbox(h.ctx, outbox)
+		require.Error(t, err)
+
+		// Despite the forfeit failure, the timeout must already be
+		// armed because it was emitted first. This is the property
+		// that keeps the round recoverable.
+		timeoutID := makeTimeoutID(
+			RoundKeyStr(
+				roundID.KeyString(),
+			),
+			TimeoutPhaseForfeitCollection,
+		)
+		h.timeoutActor.assertTimeoutScheduled(t, timeoutID, duration)
+	})
 }
 
 // TestActorGetStateWithActiveRounds validates that the actor correctly reports

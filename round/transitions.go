@@ -2016,12 +2016,30 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 				}, nil
 			}
 
+			// Arm the forfeit-collection timeout FIRST, before
+			// dispatching any per-VTXO forfeit requests. This
+			// transition advances the in-memory FSM to
+			// ForfeitSignaturesCollectingState without
+			// checkpointing, so a restart cannot recover it. If a
+			// later ForfeitRequestToVTXO Tell fails, processOutbox
+			// aborts on that error and never reaches a trailing
+			// timeout, leaving the round wedged waiting for forfeit
+			// signatures forever. Emitting StartTimeoutReq first
+			// guarantees the timeout is scheduled regardless of any
+			// subsequent per-VTXO send failure, so the round can
+			// still time out into a recoverable failed state.
+			var outbox []ClientOutMsg
+			outbox = append(outbox, &StartTimeoutReq{
+				RoundKey: RoundKeyStr(s.RoundID.KeyString()),
+				Phase:    TimeoutPhaseForfeitCollection,
+				Duration: env.ForfeitCollectionTimeout,
+			})
+
 			// Build forfeit request messages for each VTXO being
 			// forfeited.
 			forfeitReqs := forfeitRequestMap(
 				s.Intents.Forfeits,
 			)
-			var outbox []ClientOutMsg
 			for vtxoOutpoint, info := range s.ForfeitMappings {
 				connOut := info.ConnectorOutpoint
 				connScript := info.ConnectorPkScript
@@ -2040,12 +2058,6 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 				}
 				outbox = append(outbox, msg)
 			}
-
-			outbox = append(outbox, &StartTimeoutReq{
-				RoundKey: RoundKeyStr(s.RoundID.KeyString()),
-				Phase:    TimeoutPhaseForfeitCollection,
-				Duration: env.ForfeitCollectionTimeout,
-			})
 
 			// Transition directly to forfeit collection.
 			collectedForfeits := make(
@@ -2892,9 +2904,25 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 		}, nil
 	}
 
+	// Arm the forfeit-collection timeout FIRST, before dispatching any
+	// per-VTXO forfeit requests. This transition advances the in-memory
+	// FSM to ForfeitSignaturesCollectingState without checkpointing, so a
+	// restart cannot recover it. If a later ForfeitRequestToVTXO Tell
+	// fails, processOutbox aborts on that error and never reaches a
+	// trailing timeout, leaving the round wedged waiting for forfeit
+	// signatures forever. Emitting StartTimeoutReq first guarantees the
+	// timeout is scheduled regardless of any subsequent per-VTXO send
+	// failure, so the round can still time out into a recoverable failed
+	// state.
+	var outbox []ClientOutMsg
+	outbox = append(outbox, &StartTimeoutReq{
+		RoundKey: RoundKeyStr(s.RoundID.KeyString()),
+		Phase:    TimeoutPhaseForfeitCollection,
+		Duration: env.ForfeitCollectionTimeout,
+	})
+
 	// Build forfeit request messages for each VTXO being refreshed.
 	forfeitReqs := forfeitRequestMap(s.Intents.Forfeits)
-	var outbox []ClientOutMsg
 	for vtxoOutpoint, info := range s.ForfeitMappings {
 		req := forfeitReqs[vtxoOutpoint]
 		msg := &ForfeitRequestToVTXO{
@@ -2908,12 +2936,6 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 		}
 		outbox = append(outbox, msg)
 	}
-
-	outbox = append(outbox, &StartTimeoutReq{
-		RoundKey: RoundKeyStr(s.RoundID.KeyString()),
-		Phase:    TimeoutPhaseForfeitCollection,
-		Duration: env.ForfeitCollectionTimeout,
-	})
 
 	env.Log.InfoS(ctx, "Transitioning to forfeit collection",
 		slog.String("round_id", s.RoundID.String()),

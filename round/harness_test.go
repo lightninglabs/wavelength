@@ -1490,6 +1490,22 @@ func (h *boardingTestHarness) assertOutboxLen(expected int) {
 	)
 }
 
+// assertOutboxFirstType asserts that the first outbox message has the given
+// concrete type. This is used to pin ordering invariants where a message must
+// be emitted before any others (e.g. arming a timeout before dispatching
+// forfeit requests).
+func (h *boardingTestHarness) assertOutboxFirstType(msgType string) {
+	h.t.Helper()
+
+	require.NotEmpty(h.t, h.outboxMessages, "outbox is empty")
+
+	typeName := fmt.Sprintf("%T", h.outboxMessages[0])
+	require.Truef(
+		h.t, typeName == msgType || typeName == "*round."+msgType,
+		"first outbox message is %s, expected %s", typeName, msgType,
+	)
+}
+
 func (h *boardingTestHarness) clearOutbox() {
 	h.outboxMessages = nil
 }
