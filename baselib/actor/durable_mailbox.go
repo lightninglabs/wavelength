@@ -157,6 +157,11 @@ type DurableMailbox[M TLVMessage, R any] struct {
 	// wake signals the receive loop to poll immediately.
 	wake chan struct{}
 
+	// cancelWake deregisters this mailbox's post-commit wake from a
+	// MailboxWakeRegistrar store. It is nil when the store does not support
+	// wakes. Close calls it so a stopped mailbox leaves no closure behind.
+	cancelWake func()
+
 	// actorCtx is the actor's lifecycle context.
 	actorCtx context.Context
 
@@ -178,12 +183,46 @@ func NewDurableMailbox[M TLVMessage, R any](
 		wakeBuffer = 1
 	}
 
-	return &DurableMailbox[M, R]{
+	m := &DurableMailbox[M, R]{
 		cfg:             cfg,
 		clock:           cfg.Clock.UnwrapOr(clock.NewDefaultClock()),
 		wake:            make(chan struct{}, wakeBuffer),
 		actorCtx:        actorCtx,
 		promiseRegistry: make(map[string]any),
+	}
+
+	// Register a post-commit wake for this mailbox when the store supports
+	// it. The folded outbox-delivery path enqueues into this mailbox inside
+	// the publisher's write transaction, so the pre-commit wake fired by
+	// Send races ahead of the row becoming visible. The store fires the
+	// registered wakes only after the tx commits, restoring same-process
+	// delivery latency that would otherwise wait out a full poll interval.
+	// The wake is coarse (every registered mailbox is roused), so an idle
+	// mailbox may do one empty re-poll per unrelated folded enqueue.
+	if registrar, ok := cfg.Store.(MailboxWakeRegistrar); ok {
+		m.cancelWake = registrar.RegisterMailboxWake(m.Wake)
+	}
+
+	return m
+}
+
+// Wake nudges the receive loop to poll immediately. The signal is best-effort
+// because the poll ticker remains the durability fallback; a dropped wake (the
+// channel already holds a pending signal) only defers delivery to the next
+// loop iteration, never loses it.
+func (m *DurableMailbox[M, R]) Wake() {
+	// Hold the close lock so we never send on a closed wake channel: Close
+	// takes the write lock before closing it.
+	m.closeMu.RLock()
+	defer m.closeMu.RUnlock()
+
+	if m.closed.Load() {
+		return
+	}
+
+	select {
+	case m.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -287,7 +326,13 @@ func (m *DurableMailbox[M, R]) Send(ctx context.Context,
 		return fmt.Errorf("enqueue mailbox message: %w", err)
 	}
 
-	// Signal the receive loop to wake up.
+	// Signal the receive loop to wake up. This is the immediate-visibility
+	// path for non-transactional enqueues. When Send runs inside an ambient
+	// tx (the folded outbox-delivery path), the row is not yet visible, so
+	// this wake is a harmless empty poll and the store's post-commit
+	// RegisterMailboxWake callback is what actually rouses the consumer.
+	// We already hold closeMu.RLock here, so signal the channel directly
+	// rather than re-entering Wake and its RLock.
 	select {
 	case m.wake <- struct{}{}:
 	default:
@@ -617,6 +662,14 @@ func (m *DurableMailbox[M, R]) Close() {
 
 	if m.closed.CompareAndSwap(false, true) {
 		close(m.wake)
+
+		// Remove our post-commit wake from the store so a stopped
+		// mailbox leaves no closure behind. A stable durable ID reused
+		// across restarts would otherwise leave an inert closure that
+		// notifyMailboxWake walks on each folded enqueue commit.
+		if m.cancelWake != nil {
+			m.cancelWake()
+		}
 	}
 }
 

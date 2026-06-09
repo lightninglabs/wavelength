@@ -39,6 +39,13 @@ type mockDeliveryStore struct {
 	// outboxWakes stores callbacks invoked after outbox enqueue.
 	outboxWakes []func()
 
+	// mailboxWakes stores the live post-commit wakes registered via
+	// RegisterMailboxWake, keyed by an opaque handle. The real store fires
+	// every one of them after a folded enqueue commits (a coarse
+	// broadcast), and the returned cancel removes exactly its own entry.
+	mailboxWakes      map[uint64]func()
+	mailboxWakeNextID uint64
+
 	// Error injection for testing.
 	injectError error
 
@@ -61,12 +68,13 @@ type mockDeliveryStore struct {
 
 func newMockDeliveryStore() *mockDeliveryStore {
 	return &mockDeliveryStore{
-		messages:    make(map[string]*LeasedMessage),
-		askResults:  make(map[string]*AskResult),
-		processed:   make(map[string]bool),
-		checkpoints: make(map[string]*Checkpoint),
-		deadLetters: make(map[string]*DeadLetter),
-		outbox:      make(map[string]*OutboxMessage),
+		messages:     make(map[string]*LeasedMessage),
+		askResults:   make(map[string]*AskResult),
+		processed:    make(map[string]bool),
+		checkpoints:  make(map[string]*Checkpoint),
+		deadLetters:  make(map[string]*DeadLetter),
+		outbox:       make(map[string]*OutboxMessage),
+		mailboxWakes: make(map[uint64]func()),
 	}
 }
 
@@ -447,6 +455,41 @@ func (m *mockDeliveryStore) RegisterOutboxWake(wake func()) {
 	defer m.mu.Unlock()
 
 	m.outboxWakes = append(m.outboxWakes, wake)
+}
+
+func (m *mockDeliveryStore) RegisterMailboxWake(wake func()) func() {
+	if wake == nil {
+		return func() {}
+	}
+
+	m.mu.Lock()
+	id := m.mailboxWakeNextID
+	m.mailboxWakeNextID++
+	m.mailboxWakes[id] = wake
+	m.mu.Unlock()
+
+	// The cancel removes exactly this registration, mirroring the
+	// production store so a closed mailbox leaves no closure behind.
+	return func() {
+		m.mu.Lock()
+		delete(m.mailboxWakes, id)
+		m.mu.Unlock()
+	}
+}
+
+// fireMailboxWakes invokes every registered post-commit wake, standing in for
+// the real store firing the coarse broadcast after a folded enqueue commits.
+func (m *mockDeliveryStore) fireMailboxWakes() {
+	m.mu.Lock()
+	wakes := make([]func(), 0, len(m.mailboxWakes))
+	for _, wake := range m.mailboxWakes {
+		wakes = append(wakes, wake)
+	}
+	m.mu.Unlock()
+
+	for _, wake := range wakes {
+		wake()
+	}
 }
 
 func (m *mockDeliveryStore) ClaimOutboxBatch(ctx context.Context,

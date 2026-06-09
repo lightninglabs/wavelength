@@ -74,6 +74,12 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   attempt is counted before a nack can raise the row to `max_attempts`.
 - `Tell` with a `DurableActor` persists the message before returning (crash-safe enqueue).
 - Outbox messages are dispatched only after state is persisted (outbox pattern).
+- **Outbox fold p-model.** For tx-aware stores, outbox delivery is
+  `claim -> (target mailbox enqueue + CompleteOutbox) in one write tx`. If the
+  transaction fails before commit, both the enqueue and completion roll back and
+  the claim expiry is the retry mechanism; the publisher must log the
+  transaction failure even when the inner Tell/Complete operations returned nil,
+  because begin/commit failures happen outside those operation-level logs.
 - `ServiceKey` lookup via `Receptionist` is type-safe: mismatched types return `ErrServiceKeyTypeMismatch`.
 - `RestartMessage` has `RestartPriority` (MaxInt32) ensuring it is processed before all other messages on recovery.
 - Transaction context (`WithTx`/`RequireTx`) enables same-DB-transaction joining between actors and their callers.

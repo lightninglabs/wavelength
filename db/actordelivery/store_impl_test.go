@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -678,6 +679,213 @@ func TestTxAwareActorDeliveryStoreOutboxWake(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("commit did not wake outbox publisher")
 	}
+}
+
+// TestTxAwareActorDeliveryStoreMailboxWake verifies that an enqueue folded into
+// a write transaction wakes registered mailbox receive loops after the
+// transaction commits, and that a rolled-back enqueue wakes nobody. The wake is
+// coarse: every registered mailbox is roused (a non-target does one empty
+// re-poll), so the test asserts that two independent registered wakes BOTH fire
+// on commit, via both the join path and the tx-scoped store. This pins the
+// folded outbox-delivery path: the enqueued row is invisible to the consumer
+// until commit, so without a post-commit wake the target would idle until its
+// poll interval fired.
+func TestTxAwareActorDeliveryStoreMailboxWake(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newTxAwareActorDeliveryStoreForTest(t)
+
+	wakeA := make(chan struct{}, 1)
+	cancelA := store.RegisterMailboxWake(func() {
+		select {
+		case wakeA <- struct{}{}:
+		default:
+		}
+	})
+	defer cancelA()
+
+	wakeB := make(chan struct{}, 1)
+	cancelB := store.RegisterMailboxWake(func() {
+		select {
+		case wakeB <- struct{}{}:
+		default:
+		}
+	})
+	defer cancelB()
+
+	enqueueParams := func(id string) actor.EnqueueParams {
+		return actor.EnqueueParams{
+			ID:          id,
+			MailboxID:   "target-actor",
+			MessageType: "test.Message",
+			Payload: []byte{
+				1,
+			},
+			AvailableAt: time.Now().Add(-time.Minute),
+			MaxAttempts: 3,
+		}
+	}
+
+	// Drive the enqueue through the outer store's EnqueueMessage with the
+	// ambient tx in context, exactly as the folded outbox-delivery path
+	// does: DurableMailbox.Send calls EnqueueMessage on the target actor's
+	// (*Store)-backed store, which joins the ambient tx via
+	// TransactionExecutor.ExecTx rather than the tx-scoped store. The wake
+	// must fire even though the tx-scoped TxActorDeliveryStore is never
+	// touched.
+
+	// A rolled-back enqueue must not wake the target: the row never became
+	// visible.
+	rollbackErr := errors.New("rollback")
+	err := store.ExecTx(ctx, false, func(
+		txCtx context.Context, _ actor.DeliveryStore,
+	) error {
+
+		require.NoError(
+			t,
+			store.EnqueueMessage(
+				txCtx,
+				enqueueParams(
+					generateTestID(),
+				),
+			),
+		)
+
+		return rollbackErr
+	})
+	require.ErrorIs(t, err, rollbackErr)
+
+	// A rolled-back enqueue wakes nobody: the row never became visible.
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-wakeA:
+		t.Fatal("rollback should not wake a mailbox")
+
+	default:
+	}
+	select {
+	case <-wakeB:
+		t.Fatal("rollback should not wake a mailbox")
+
+	default:
+	}
+
+	// A committed enqueue through the join path wakes every registered
+	// mailbox (coarse broadcast), so both wakes must fire.
+	err = store.ExecTx(ctx, false, func(
+		txCtx context.Context, _ actor.DeliveryStore,
+	) error {
+
+		return store.EnqueueMessage(
+			txCtx,
+			enqueueParams(
+				generateTestID(),
+			),
+		)
+	})
+	require.NoError(t, err)
+
+	select {
+	case <-wakeA:
+	case <-time.After(time.Second):
+		t.Fatal("commit did not wake registered mailbox A")
+	}
+	select {
+	case <-wakeB:
+	case <-time.After(time.Second):
+		t.Fatal("commit did not wake registered mailbox B")
+	}
+
+	// An enqueue through the tx-scoped store must also fire the coarse
+	// post-commit wake, so callers that hold the TxActorDeliveryStore
+	// directly are covered too.
+	err = store.ExecTx(ctx, false, func(
+		txCtx context.Context, txStore actor.DeliveryStore,
+	) error {
+
+		return txStore.EnqueueMessage(
+			txCtx,
+			enqueueParams(
+				generateTestID(),
+			),
+		)
+	})
+	require.NoError(t, err)
+
+	select {
+	case <-wakeA:
+	case <-time.After(time.Second):
+		t.Fatal("tx-scoped enqueue did not wake registered mailbox A")
+	}
+	select {
+	case <-wakeB:
+	case <-time.After(time.Second):
+		t.Fatal("tx-scoped enqueue did not wake registered mailbox B")
+	}
+}
+
+// TestStoreMailboxWakeCancelRemovesEntry verifies the coarse mailbox-wake
+// registry: each RegisterMailboxWake adds an independent entry keyed by an
+// opaque handle (so a restart reusing a durable mailbox ID never clobbers a
+// still-live registration), notifyMailboxWake fires every registered closure,
+// and the cancel returned by RegisterMailboxWake removes exactly its own entry.
+// The cancel-on-Close contract is what bounds map growth to the set of live
+// mailboxes rather than the lifetime count of mailbox constructions.
+func TestStoreMailboxWakeCancelRemovesEntry(t *testing.T) {
+	t.Parallel()
+
+	store := newActorDeliveryStoreForTest(t)
+
+	// Register many wakes, mirroring repeated actor restarts that each
+	// construct a fresh mailbox against the shared store.
+	var fired atomic.Int64
+	const registrations = 25
+	cancels := make([]func(), 0, registrations)
+	for i := 0; i < registrations; i++ {
+		cancels = append(
+			cancels, store.RegisterMailboxWake(func() {
+				fired.Add(1)
+			}),
+		)
+	}
+
+	// Each registration is an independent live entry: the coarse broadcast
+	// does no ID-keyed dedup, so all of them land.
+	store.mailboxWakeMu.Lock()
+	count := len(store.mailboxWakes)
+	store.mailboxWakeMu.Unlock()
+	require.Equal(
+		t, registrations, count, "registrations did not all land",
+	)
+
+	// notifyMailboxWake fires every registered closure.
+	store.notifyMailboxWake()
+	require.Equal(
+		t, int64(registrations), fired.Load(),
+		"notifyMailboxWake did not fire every registration",
+	)
+
+	// Cancelling every registration drains the registry, so stopped
+	// mailboxes leave nothing behind.
+	for _, cancel := range cancels {
+		cancel()
+	}
+
+	store.mailboxWakeMu.Lock()
+	count = len(store.mailboxWakes)
+	store.mailboxWakeMu.Unlock()
+	require.Equal(
+		t, 0, count, "cancel left stale closures behind",
+	)
+
+	// A wake after cancel fires nothing.
+	fired.Store(0)
+	store.notifyMailboxWake()
+	require.Equal(
+		t, int64(0), fired.Load(),
+		"notifyMailboxWake fired after cancel",
+	)
 }
 
 // TestActorDeliveryStoreDeduplication tests deduplication operations.

@@ -185,6 +185,34 @@ type OutboxWakeRegistrar interface {
 	RegisterOutboxWake(func())
 }
 
+// MailboxWakeRegistrar is optionally implemented by stores that can notify a
+// same-process mailbox receive loop after an enqueue commits. It exists for the
+// folded outbox-delivery path: when EnqueueMessage runs inside an ambient
+// transaction (the OutboxPublisher folds the target enqueue and CompleteOutbox
+// into one write tx), the enqueued row is invisible to the target consumer
+// until the outer tx commits, so the pre-commit in-process wake fired by
+// DurableMailbox.Send races ahead of visibility and finds nothing. The store
+// fires the registered wakes only after the tx commits, so consumers re-poll
+// against a now-visible row instead of waiting out a full poll interval.
+// Polling remains the cross-process and restart fallback.
+type MailboxWakeRegistrar interface {
+	// RegisterMailboxWake registers a callback fired after any enqueue
+	// commits inside an ExecTx, and returns a cancel function that
+	// deregisters it. A DurableMailbox registers its Wake on construction
+	// and calls the returned cancel on Close, so a stopped mailbox leaves
+	// no closure behind.
+	//
+	// The wake is COARSE: after a folded enqueue commits, every registered
+	// mailbox is woken, so a non-target mailbox does one empty re-poll.
+	// This deliberately trades a precise per-mailbox wake for not tracking
+	// which mailbox received the message -- the store keeps a flat list of
+	// wakes rather than a per-mailbox registry plus a per-transaction
+	// target set, which removes the registry's restart-clobber races. The
+	// empty re-poll is cheap and bounded; the poll ticker remains the
+	// durable fallback.
+	RegisterMailboxWake(wake func()) (cancel func())
+}
+
 // EnqueueParams contains parameters for enqueueing a mailbox message.
 type EnqueueParams struct {
 	// ID is the unique message identifier (ULID recommended).
