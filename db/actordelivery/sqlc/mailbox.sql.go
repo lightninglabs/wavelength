@@ -30,6 +30,25 @@ func (q *Queries) AckMailboxMessage(ctx context.Context, arg AckMailboxMessagePa
 	return result.RowsAffected()
 }
 
+const AckMailboxMessageByID = `-- name: AckMailboxMessageByID :execrows
+DELETE FROM mailbox_messages
+WHERE id = $1
+`
+
+// Unfenced acknowledgment used by the leaseless single-worker consume path.
+// Deletes the message by ID without validating a lease_token, because a
+// single-worker actor has no competing consumer to fence against. Folded into
+// the behavior's Commit transaction, so a crash before commit leaves the row
+// intact for re-peek. MUST NOT be used by the multi-worker (NumWorkers > 1)
+// path, which relies on lease_token fencing via AckMailboxMessage.
+func (q *Queries) AckMailboxMessageByID(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, AckMailboxMessageByID, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const ClaimOutboxBatch = `-- name: ClaimOutboxBatch :many
 UPDATE outbox_messages
 SET delivery_attempts = delivery_attempts + 1,
@@ -955,6 +974,101 @@ func (q *Queries) NackMailboxMessage(ctx context.Context, arg NackMailboxMessage
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const NackMailboxMessageByID = `-- name: NackMailboxMessageByID :execrows
+UPDATE mailbox_messages
+SET
+    available_at = $2,
+    attempts = attempts + 1
+WHERE id = $1
+`
+
+type NackMailboxMessageByIDParams struct {
+	ID          string
+	AvailableAt int64
+}
+
+// Unfenced redelivery release for the leaseless single-worker consume path.
+// Sets a new available_at and increments attempts. The attempts bump is
+// essential: the leaseless peek does not increment attempts (unlike a lease),
+// so the failure path must do it here, otherwise a repeatedly-failing message
+// would never climb to max_attempts and dead-letter. No lease_token clause,
+// because a single-worker actor has no competing consumer to fence against.
+func (q *Queries) NackMailboxMessageByID(ctx context.Context, arg NackMailboxMessageByIDParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, NackMailboxMessageByID, arg.ID, arg.AvailableAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const PeekNextMailboxMessage = `-- name: PeekNextMailboxMessage :one
+SELECT m.id, m.mailbox_id, m.message_type, m.payload, m.promise_id, m.callback_actor_id, m.correlation_id, m.priority, m.lease_token, m.lease_until, m.available_at, m.attempts, m.max_attempts, m.created_at, m.correlation_key FROM mailbox_messages m
+WHERE m.mailbox_id = $1
+  AND m.available_at <= $2
+  AND (m.lease_until IS NULL OR m.lease_until < $2)
+  AND m.attempts < m.max_attempts
+  AND (
+      m.correlation_key IS NULL
+      OR NOT EXISTS (
+          SELECT 1 FROM mailbox_messages m2
+          WHERE m2.mailbox_id = m.mailbox_id
+            AND m2.correlation_key = m.correlation_key
+            AND m2.id < m.id
+            AND m2.attempts < m2.max_attempts
+      )
+  )
+ORDER BY m.priority DESC, m.available_at ASC, m.created_at ASC
+LIMIT 1
+`
+
+type PeekNextMailboxMessageParams struct {
+	MailboxID   string
+	AvailableAt int64
+}
+
+// Read-only claim of the next available message WITHOUT taking a lease.
+// This is the leaseless fast path for single-worker (NumWorkers == 1) actors:
+// with no competing consumer, the lease_token's only purpose -- fencing the
+// ack against another worker -- is unnecessary, so the extra write transaction
+// that LeaseNextMailboxMessage performs (set lease_token/lease_until, bump
+// attempts) is pure overhead. Peek runs as a pure SELECT, so a crash between
+// peek and the consuming Commit leaves the message untouched and it is simply
+// re-peeked on restart (at-least-once preserved, identical to today's
+// lease-expiry redelivery).
+//
+// The eligibility predicate and ORDER BY mirror LeaseNextMailboxMessage's inner
+// SELECT EXACTLY so the leaseless path observes the same per-correlation-key
+// FIFO and priority/available_at/created_at ordering. See that query for the
+// full rationale on the correlation-key anti-join and the m2.attempts <
+// m2.max_attempts predicate.
+//
+// Because peek takes no lease, attempts is NOT incremented here. The
+// single-worker consume path therefore increments attempts on its failure
+// (nack) path via NackMailboxMessageByID so a repeatedly-failing message still
+// climbs to max_attempts and dead-letters.
+func (q *Queries) PeekNextMailboxMessage(ctx context.Context, arg PeekNextMailboxMessageParams) (MailboxMessage, error) {
+	row := q.db.QueryRowContext(ctx, PeekNextMailboxMessage, arg.MailboxID, arg.AvailableAt)
+	var i MailboxMessage
+	err := row.Scan(
+		&i.ID,
+		&i.MailboxID,
+		&i.MessageType,
+		&i.Payload,
+		&i.PromiseID,
+		&i.CallbackActorID,
+		&i.CorrelationID,
+		&i.Priority,
+		&i.LeaseToken,
+		&i.LeaseUntil,
+		&i.AvailableAt,
+		&i.Attempts,
+		&i.MaxAttempts,
+		&i.CreatedAt,
+		&i.CorrelationKey,
+	)
+	return i, err
 }
 
 const SaveFSMCheckpoint = `-- name: SaveFSMCheckpoint :exec
