@@ -27,21 +27,31 @@ type feeInputDemand struct {
 }
 
 type pendingFeeInputFanout struct {
-	txid        chainhash.Hash
-	watchScript []byte
-	assignments map[chainhash.Hash][]wire.OutPoint
+	txid                chainhash.Hash
+	tx                  *wire.MsgTx
+	watchScript         []byte
+	assignments         map[chainhash.Hash][]wire.OutPoint
+	lastBroadcastHeight int32
 }
 
 func (b *CPFPBroadcaster) ensureFeeInputSupply(ctx context.Context,
-	demands []feeInputDemand, feeRate int64) (*pendingFeeInputFanout,
-	error) {
+	demands []feeInputDemand, feeRate int64, height, retryInterval int32) (
+	*pendingFeeInputFanout, error) {
 
 	if b == nil || b.cfg.Wallet == nil || len(demands) == 0 {
 		return nil, nil
 	}
 
 	if b.pendingFanout != nil {
-		return b.pendingFanout, nil
+		pending, err := b.ensurePendingFanoutLive(
+			ctx, height, retryInterval,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if pending != nil {
+			return pending, nil
+		}
 	}
 
 	blocked := b.blockedFeeInputDemands(demands)
@@ -142,12 +152,70 @@ func (b *CPFPBroadcaster) ensureFeeInputSupply(ctx context.Context,
 	}
 
 	pending := &pendingFeeInputFanout{
-		txid:        broadcastResp.Txid,
-		watchScript: watchScript,
-		assignments: assignments,
+		txid:                broadcastResp.Txid,
+		tx:                  fundedTx.Copy(),
+		watchScript:         watchScript,
+		assignments:         assignments,
+		lastBroadcastHeight: height,
 	}
 	b.consumeFanoutInputs(fundedTx.TxIn)
 	b.pendingFanout = pending
+
+	return pending, nil
+}
+
+func (b *CPFPBroadcaster) ensurePendingFanoutLive(ctx context.Context, height,
+	retryInterval int32) (*pendingFeeInputFanout, error) {
+
+	pending := b.pendingFanout
+	if pending == nil {
+		return nil, nil
+	}
+	if retryInterval <= 0 {
+		retryInterval = DefaultFeeBumpIntervalBlocks
+	}
+
+	if pending.tx == nil || height-pending.lastBroadcastHeight <
+		retryInterval {
+		return pending, nil
+	}
+
+	resp, err := b.cfg.ChainSource.Ask(
+		ctx, &chainsource.BroadcastTxRequest{
+			Tx:    pending.tx.Copy(),
+			Label: "txconfirm-fee-input-fanout",
+		},
+	).Await(ctx).Unpack()
+	if err != nil {
+		if IsIgnorableBroadcastError(err) {
+			pending.lastBroadcastHeight = height
+
+			return pending, nil
+		}
+
+		b.log.WarnS(ctx, "Pending fee-input fanout rejected; "+
+			"rebuilding", err, "txid", pending.txid)
+		b.clearPendingFanout(ctx)
+
+		return nil, nil
+	}
+
+	broadcastResp, ok := resp.(*chainsource.BroadcastTxResponse)
+	if !ok {
+		err := fmt.Errorf("unexpected fanout response %T", resp)
+		b.clearPendingFanout(ctx)
+
+		return nil, err
+	}
+
+	if broadcastResp.Txid != pending.txid {
+		err := fmt.Errorf("fanout rebroadcast txid changed")
+		b.clearPendingFanout(ctx)
+
+		return nil, err
+	}
+
+	pending.lastBroadcastHeight = height
 
 	return pending, nil
 }
@@ -325,6 +393,11 @@ func (b *CPFPBroadcaster) fanoutOutputs(ctx context.Context,
 func (b *CPFPBroadcaster) reservedFeeInputsForFanout(
 	demands []feeInputDemand) []*FeeInput {
 
+	// This fallback intentionally replaces a parent's prior CPFP child when
+	// the only usable wallet value is already reserved in this ledger. The
+	// fanout immediately consumes that reservation and replaces it with
+	// predicted outputs assigned through the same parentStates map, so the
+	// cross-parent ownership boundary stays inside txconfirm.
 	var inputs []*FeeInput
 	seen := make(map[wire.OutPoint]struct{})
 	for _, demand := range demands {
@@ -454,6 +527,19 @@ func (b *CPFPBroadcaster) consumeFanoutInputs(inputs []*wire.TxIn) {
 	}
 }
 
+func (b *CPFPBroadcaster) prunePendingFanoutParent(ctx context.Context,
+	parent chainhash.Hash) {
+
+	if b.pendingFanout == nil {
+		return
+	}
+
+	delete(b.pendingFanout.assignments, parent)
+	if len(b.pendingFanout.assignments) == 0 {
+		b.clearPendingFanout(ctx)
+	}
+}
+
 func (b *CPFPBroadcaster) reservePredictedFanoutOutputs(txid chainhash.Hash,
 	tx *wire.MsgTx, demands []feeInputDemand) (
 	map[chainhash.Hash][]wire.OutPoint, error) {
@@ -519,13 +605,31 @@ func (b *CPFPBroadcaster) releasePredictedFanoutOutputs(
 	}
 }
 
+func (b *CPFPBroadcaster) clearPendingFanout(ctx context.Context) {
+	if b.pendingFanout == nil {
+		return
+	}
+
+	b.releasePredictedFanoutOutputs(b.pendingFanout.assignments)
+	if b.pendingFanout.tx != nil {
+		for _, txIn := range b.pendingFanout.tx.TxIn {
+			b.releaseWalletLease(ctx, txIn.PreviousOutPoint)
+		}
+	}
+	b.pendingFanout = nil
+}
+
 func (b *CPFPBroadcaster) PromoteConfirmedFanout(txid chainhash.Hash) {
 	if b.pendingFanout == nil || b.pendingFanout.txid != txid {
 		return
 	}
 
 	for parent, outpoints := range b.pendingFanout.assignments {
-		state := b.parentState(parent)
+		state := b.parentStates[parent]
+		if state == nil {
+			continue
+		}
+
 		for _, op := range outpoints {
 			feeInput := state.PredictedFeeInputs[op]
 			if feeInput == nil {
@@ -578,16 +682,12 @@ func estimateFanoutVSize(inputs []*walletcore.Utxo, outputs int,
 	changeScript []byte) int64 {
 
 	var est input.TxWeightEstimator
-	if len(inputs) == 0 {
-		est.AddTaprootKeySpendInput(txscript.SigHashDefault)
-	} else {
-		for _, utxo := range inputs {
-			if utxo == nil {
-				continue
-			}
-
-			addFanoutInput(&est, utxo.PkScript)
+	for _, utxo := range inputs {
+		if utxo == nil {
+			continue
 		}
+
+		addFanoutInput(&est, utxo.PkScript)
 	}
 	for i := 0; i < outputs; i++ {
 		est.AddP2TROutput()

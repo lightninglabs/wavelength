@@ -30,7 +30,8 @@ func (a *TxBroadcasterActor) maybeEnsureFeeInputSupply(ctx context.Context,
 	}
 
 	pending, err := a.broadcaster.ensureFeeInputSupply(
-		ctx, demands, feeRate,
+		ctx, demands, feeRate, a.bestHeight,
+		a.cfg.FeeBumpIntervalBlocks,
 	)
 	if err != nil {
 		a.log.WarnS(ctx, "Unable to fan out fee inputs", err)

@@ -2574,7 +2574,7 @@ func TestFeeInputFanoutNoopWhenSupplyAvailable(t *testing.T) {
 		t.Context(), []feeInputDemand{
 			{parentTxid: chainhash.Hash{1}, minAmount: 10_000},
 			{parentTxid: chainhash.Hash{2}, minAmount: 10_000},
-		}, 5,
+		}, 5, 100, 1,
 	)
 	require.NoError(t, err)
 	require.Nil(t, pending)
@@ -2616,7 +2616,7 @@ func TestFeeInputFanoutReservesPredictedOutputs(t *testing.T) {
 		t.Context(), []feeInputDemand{
 			{parentTxid: parentA, minAmount: 10_000},
 			{parentTxid: parentB, minAmount: 20_000},
-		}, 5,
+		}, 5, 100, 1,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, pending)
@@ -2673,7 +2673,7 @@ func TestFeeInputFanoutCanReplaceReservedInput(t *testing.T) {
 		t.Context(), []feeInputDemand{
 			{parentTxid: parentA, minAmount: 10_000},
 			{parentTxid: parentB, minAmount: 10_000},
-		}, 5,
+		}, 5, 100, 1,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, pending)
@@ -2715,9 +2715,210 @@ func TestFeeInputFanoutRejectsRewrittenOutputs(t *testing.T) {
 		t.Context(), []feeInputDemand{
 			{parentTxid: chainhash.Hash{1}, minAmount: 10_000},
 			{parentTxid: chainhash.Hash{2}, minAmount: 10_000},
-		}, 5,
+		}, 5, 100, 1,
 	)
 	require.ErrorContains(t, err, "fanout output 0 changed")
+}
+
+func TestFeeInputFanoutRebroadcastsPendingFanout(t *testing.T) {
+	t.Parallel()
+
+	var broadcasts []*wire.MsgTx
+	chain := &staticChainSourceRef{
+		handler: func(_ context.Context,
+			msg chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			req, ok := msg.(*chainsource.BroadcastTxRequest)
+			require.True(t, ok)
+			broadcasts = append(broadcasts, req.Tx.Copy())
+
+			return &chainsource.BroadcastTxResponse{
+				Txid: req.Tx.TxHash(),
+			}, nil
+		},
+	}
+	wallet := &rewritingWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXOWithAmount(50_000, 3),
+		},
+		changeScript: p2trTestPkScript(t),
+	}
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wallet,
+	})
+
+	demands := []feeInputDemand{
+		{
+			parentTxid: chainhash.Hash{
+				1,
+			},
+			minAmount: 10_000,
+		},
+		{
+			parentTxid: chainhash.Hash{
+				2,
+			},
+			minAmount: 10_000,
+		},
+	}
+	pending, err := b.ensureFeeInputSupply(t.Context(), demands, 5, 100, 2)
+	require.NoError(t, err)
+	require.NotNil(t, pending)
+	require.Len(t, broadcasts, 1)
+
+	_, err = b.ensureFeeInputSupply(t.Context(), demands, 5, 101, 2)
+	require.NoError(t, err)
+	require.Len(t, broadcasts, 1)
+
+	_, err = b.ensureFeeInputSupply(t.Context(), demands, 5, 102, 2)
+	require.NoError(t, err)
+	require.Len(t, broadcasts, 2)
+	require.Equal(t, broadcasts[0].TxHash(), broadcasts[1].TxHash())
+	require.NotNil(t, b.pendingFanout)
+}
+
+func TestFeeInputFanoutClearsRejectedPendingFanout(t *testing.T) {
+	t.Parallel()
+
+	broadcasts := 0
+	chain := &staticChainSourceRef{
+		handler: func(_ context.Context,
+			msg chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			req, ok := msg.(*chainsource.BroadcastTxRequest)
+			require.True(t, ok)
+			broadcasts++
+			if broadcasts == 2 {
+				return nil, fmt.Errorf("fanout rejected")
+			}
+
+			return &chainsource.BroadcastTxResponse{
+				Txid: req.Tx.TxHash(),
+			}, nil
+		},
+	}
+	wallet := &rewritingWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXOWithAmount(50_000, 4),
+		},
+		changeScript: p2trTestPkScript(t),
+	}
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wallet,
+	})
+
+	parentA := chainhash.Hash{1}
+	parentB := chainhash.Hash{2}
+	demands := []feeInputDemand{
+		{
+			parentTxid: parentA,
+			minAmount:  10_000,
+		},
+		{
+			parentTxid: parentB,
+			minAmount:  10_000,
+		},
+	}
+	_, err := b.ensureFeeInputSupply(t.Context(), demands, 5, 100, 1)
+	require.NoError(t, err)
+	require.NotNil(t, b.pendingFanout)
+
+	_, err = b.ensureFeeInputSupply(t.Context(), demands, 5, 101, 1)
+	require.NoError(t, err)
+	require.NotNil(t, b.pendingFanout)
+	require.NotEmpty(t, b.pendingFanout.assignments)
+	require.NotNil(t, b.parentStates[parentB])
+	require.Equal(t, 3, broadcasts)
+}
+
+func TestFeeInputFanoutEvictPrunesPendingAssignments(t *testing.T) {
+	t.Parallel()
+
+	chain := &staticChainSourceRef{
+		handler: func(_ context.Context,
+			msg chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			req, ok := msg.(*chainsource.BroadcastTxRequest)
+			require.True(t, ok)
+
+			return &chainsource.BroadcastTxResponse{
+				Txid: req.Tx.TxHash(),
+			}, nil
+		},
+	}
+	wallet := &rewritingWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXOWithAmount(50_000, 5),
+		},
+		changeScript: p2trTestPkScript(t),
+	}
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wallet,
+	})
+
+	parent := chainhash.Hash{2}
+	_, err := b.ensureFeeInputSupply(
+		t.Context(), []feeInputDemand{
+			{parentTxid: chainhash.Hash{1}, minAmount: 10_000},
+			{parentTxid: parent, minAmount: 10_000},
+		}, 5, 100, 1,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, b.pendingFanout)
+	require.Contains(t, b.pendingFanout.assignments, parent)
+
+	b.Evict(t.Context(), parent)
+	require.Nil(t, b.pendingFanout)
+	require.Nil(t, b.parentStates[parent])
+}
+
+func TestFeeInputFanoutPromotionSkipsEvictedParents(t *testing.T) {
+	t.Parallel()
+
+	chain := &staticChainSourceRef{
+		handler: func(_ context.Context,
+			msg chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			req, ok := msg.(*chainsource.BroadcastTxRequest)
+			require.True(t, ok)
+
+			return &chainsource.BroadcastTxResponse{
+				Txid: req.Tx.TxHash(),
+			}, nil
+		},
+	}
+	wallet := &rewritingWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXOWithAmount(50_000, 6),
+		},
+		changeScript: p2trTestPkScript(t),
+	}
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wallet,
+	})
+
+	parent := chainhash.Hash{2}
+	pending, err := b.ensureFeeInputSupply(
+		t.Context(), []feeInputDemand{
+			{parentTxid: chainhash.Hash{1}, minAmount: 10_000},
+			{parentTxid: parent, minAmount: 10_000},
+		}, 5, 100, 1,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, pending)
+
+	delete(b.parentStates, parent)
+	b.PromoteConfirmedFanout(pending.txid)
+	require.Nil(t, b.parentStates[parent])
+	require.Nil(t, b.pendingFanout)
 }
 
 func makeWalletUTXOWithAmount(amount btcutil.Amount,

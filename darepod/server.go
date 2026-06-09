@@ -4406,7 +4406,7 @@ func (w *lndUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
 	feeRateSatPerVByte int64, lockID wallet.LockID,
 	lockExpiry time.Duration) (*wire.MsgTx, error) {
 
-	packet, changeIndex, _, err := w.boardingBackend.WalletKit().FundPsbt(
+	packet, _, _, err := w.boardingBackend.WalletKit().FundPsbt(
 		ctx, &walletrpc.FundPsbtRequest{
 			Template: &walletrpc.FundPsbtRequest_Psbt{
 				Psbt: packetBytes,
@@ -4427,7 +4427,6 @@ func (w *lndUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
 	if err != nil {
 		return nil, fmt.Errorf("LND FundPsbt: %w", err)
 	}
-	_ = changeIndex
 
 	var buf bytes.Buffer
 	if err := packet.Serialize(&buf); err != nil {
@@ -4576,6 +4575,9 @@ func (w *lwUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
 		return nil, fmt.Errorf("btcwallet FundPsbt: %w", err)
 	}
 
+	// BtcWallet.FundPsbt may also install wallet-internal locks. The
+	// txconfirm lease below is the cross-subsystem ownership record; any
+	// wallet-internal lock is left to btcwallet's own expiry.
 	for _, txIn := range packet.UnsignedTx.TxIn {
 		_, err := w.LeaseOutput(
 			ctx, lockID, txIn.PreviousOutPoint, lockExpiry,
@@ -4709,6 +4711,9 @@ func (w *btcwUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
 		return nil, fmt.Errorf("btcwallet FundPsbt: %w", err)
 	}
 
+	// BtcWallet.FundPsbt may also install wallet-internal locks. The
+	// txconfirm lease below is the cross-subsystem ownership record; any
+	// wallet-internal lock is left to btcwallet's own expiry.
 	for _, txIn := range packet.UnsignedTx.TxIn {
 		_, err := w.LeaseOutput(
 			ctx, lockID, txIn.PreviousOutPoint, lockExpiry,

@@ -348,6 +348,7 @@ func (b *CPFPBroadcaster) Evict(ctx context.Context, txid chainhash.Hash) {
 	}
 
 	delete(b.parentStates, txid)
+	b.prunePendingFanoutParent(ctx, txid)
 	b.releaseWalletLeasesAsync(ctx, outpoints)
 }
 
