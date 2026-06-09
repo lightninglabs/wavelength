@@ -99,43 +99,98 @@ func handleReceiveOutboxError(state ReceiveState,
 	}, nil
 }
 
-// handleNotifiedRetry derives the backoff-or-give-up transition for a
-// retryable metadata resolution failure in the notified state. The attempt
-// counter rides on the returned state so it is persisted across restarts.
-func handleNotifiedRetry(state *ReceiveNotified,
-	evt *OutboxErrorEvent) *StateTransition {
+// notifiedGiveUp advances the persisted attempt counter and fails the notified
+// session terminally once the give-up bound is reached. It returns the
+// incremented state and whether the session gave up; callers re-query (and
+// re-arm the give-up timer) only while still under the bound. The bound is
+// checked against the persisted counter before incrementing so a corrupted
+// snapshot at math.MaxUint32 cannot wrap past the limit and bypass the give-up.
+func notifiedGiveUp(state *ReceiveNotified,
+	reason string) (*ReceiveNotified, *StateTransition) {
 
-	// Give up once the bound is reached. The session can no longer make
-	// progress, so failing it terminally removes it from the retry
-	// population rather than re-querying indefinitely. The bound is
-	// checked against the persisted counter before incrementing so a
-	// corrupted snapshot at math.MaxUint32 cannot wrap past the limit and
-	// bypass the give-up.
 	if state.MetadataAttempts >= maxMetadataRetries {
-		return &StateTransition{
+		return nil, &StateTransition{
 			NextState: &Failed{
 				Reason: fmt.Sprintf("incoming metadata "+
 					"unresolved after %d retries: %s",
-					maxMetadataRetries, evt.ErrorReason),
+					maxMetadataRetries, reason),
 			},
 			NewEvents: fn.None[EmittedEvent](),
 		}
 	}
 
-	attempts := state.MetadataAttempts + 1
-
 	next := *state
-	next.MetadataAttempts = attempts
+	next.MetadataAttempts = state.MetadataAttempts + 1
+
+	return &next, nil
+}
+
+// handleNotifiedRetry derives the backoff-or-give-up transition for a retryable
+// outbox failure in the notified state (a failed metadata query or a retryable
+// materialization failure). It increments the persisted attempt counter and
+// arms a single backoff timer; the timer's RetryDueEvent re-drives the metadata
+// query via handleNotifiedTimerRetry. Failing terminally at the bound removes a
+// stuck session from the retry population rather than re-querying indefinitely.
+func handleNotifiedRetry(state *ReceiveNotified,
+	evt *OutboxErrorEvent) *StateTransition {
+
+	next, giveUp := notifiedGiveUp(state, evt.ErrorReason)
+	if giveUp != nil {
+		return giveUp
+	}
 
 	return &StateTransition{
-		NextState: &next,
+		NextState: next,
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: []OutboxEvent{
 				&ScheduleRetryRequest{
-					After:  metadataRetryBackoff(attempts),
+					After: metadataRetryBackoff(
+						next.MetadataAttempts,
+					),
 					Reason: evt.ErrorReason,
 				},
 			},
+		}),
+	}
+}
+
+// handleNotifiedTimerRetry derives the give-up-or-re-query transition when the
+// metadata give-up timer fires. It mirrors handleResolveRetry: it advances the
+// persisted attempt counter, re-queries with backoff, and fails terminally at
+// the bound so an unanswered metadata lookup frees the session's concurrency
+// slot rather than re-querying forever. The attempt counter rides on the
+// returned state so it is persisted across restarts.
+func handleNotifiedTimerRetry(state *ReceiveNotified) *StateTransition {
+	next, giveUp := notifiedGiveUp(state, notifiedGiveUpReason)
+	if giveUp != nil {
+		return giveUp
+	}
+
+	// Re-extract recipients to rebuild the query. The Ark PSBT was already
+	// validated on entry to ReceiveNotified, so this cannot fail here; on
+	// the off chance it does, still re-arm the give-up timer so the session
+	// keeps moving toward the terminal give-up.
+	recipients, err := ExtractArkRecipients(state.ArkPSBT)
+	if err != nil {
+		return &StateTransition{
+			NextState: next,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&ScheduleRetryRequest{
+						After: metadataRetryBackoff(
+							next.MetadataAttempts,
+						),
+						Reason: notifiedGiveUpReason,
+					},
+				},
+			}),
+		}
+	}
+
+	return &StateTransition{
+		NextState: next,
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: notifiedOutbox(next, recipients),
 		}),
 	}
 }
@@ -164,20 +219,22 @@ func metadataRetryBackoff(attempt uint32) time.Duration {
 	return delay
 }
 
-// retryReceiveState re-emits the outbox implied by the current receive state
-// when a retry timer fires.
-func retryReceiveState(state ReceiveState) (*StateTransition, error) {
-	outbox, err := OutboxForIncomingState(state)
-	if err != nil {
-		return nil, err
-	}
+// waitsOnGiveUpTimer reports whether the receive state arms a give-up timer
+// while it waits for an operator response that has no failure path. Only these
+// states advance their attempt counter on a timer expiry; both also fail
+// terminally at their bound so an unanswered operator frees the session's
+// concurrency slot.
+func waitsOnGiveUpTimer(state SessionState) bool {
+	switch state.(type) {
+	case *ReceiveResolving:
+		return true
 
-	return &StateTransition{
-		NextState: state,
-		NewEvents: fn.Some(EmittedEvent{
-			Outbox: outbox,
-		}),
-	}, nil
+	case *ReceiveNotified:
+		return true
+
+	default:
+		return false
+	}
 }
 
 // transitionIncomingTransfer validates and applies a fully resolved incoming
@@ -212,28 +269,33 @@ func transitionIncomingTransfer(evt *IncomingTransferEvent) (*StateTransition,
 		return nil, err
 	}
 
-	return &StateTransition{
-		NextState: &ReceiveNotified{
-			SessionID:            evt.SessionID,
-			ArkPSBT:              evt.ArkPSBT,
-			FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
-			AncestorPackages:     evt.AncestorPackages,
-		},
-		NewEvents: fn.Some(EmittedEvent{
-			Outbox: []OutboxEvent{
-				&IncomingTransferNotification{
-					SessionID:  evt.SessionID,
-					ArkPSBT:    evt.ArkPSBT,
-					Recipients: recipients,
-				},
-				&QueryIncomingMetadataRequest{
-					SessionID: evt.SessionID,
-					ArkPSBT:   evt.ArkPSBT,
-					FinalCheckpointPSBTs: evt.
-						FinalCheckpointPSBTs, //nolint:ll
-					Recipients: recipients,
-				},
+	notified := &ReceiveNotified{
+		SessionID:            evt.SessionID,
+		ArkPSBT:              evt.ArkPSBT,
+		FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
+		AncestorPackages:     evt.AncestorPackages,
+	}
+
+	// The metadata query (like the phase-1 hint query) has no failure
+	// response on operator silence, so arm a give-up timer alongside it.
+	// Without it an operator that answers phase-1 but goes silent on the
+	// metadata lookup would pin this child in ReceiveNotified forever,
+	// holding an r.incoming concurrency slot.
+	outbox := append(
+		[]OutboxEvent{
+			&IncomingTransferNotification{
+				SessionID:  evt.SessionID,
+				ArkPSBT:    evt.ArkPSBT,
+				Recipients: recipients,
 			},
+		},
+		notifiedOutbox(notified, recipients)...,
+	)
+
+	return &StateTransition{
+		NextState: notified,
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: outbox,
 		}),
 	}, nil
 }
@@ -277,6 +339,9 @@ func (s *ReceiveResolving) ProcessEvent(ctx context.Context, event Event,
 	case *IncomingTransferEvent:
 		return transitionIncomingTransfer(evt)
 
+	case *RetryDueEvent:
+		return handleResolveRetry(s), nil
+
 	case *FailEvent:
 		return &StateTransition{
 			NextState: &Failed{
@@ -293,6 +358,95 @@ func (s *ReceiveResolving) ProcessEvent(ctx context.Context, event Event,
 		)
 
 		return unexpectedReceiveEvent(s, event), nil
+	}
+}
+
+// handleResolveRetry derives the backoff-or-give-up transition when the
+// phase-1 hint resolution give-up timer fires. The attempt counter rides on
+// the returned state so it is persisted across restarts. At the bound the
+// session fails terminally so it becomes reap-eligible and frees its
+// concurrency slot, rather than re-querying an unanswered resolve forever.
+func handleResolveRetry(state *ReceiveResolving) *StateTransition {
+	// Give up once the bound is reached. The bound is checked against the
+	// persisted counter before incrementing so a corrupted snapshot at
+	// math.MaxUint32 cannot wrap past the limit and bypass the give-up.
+	if state.ResolveAttempts >= maxResolveRetries {
+		return &StateTransition{
+			NextState: &Failed{
+				Reason: fmt.Sprintf("incoming transfer hint "+
+					"unresolved after %d retries",
+					maxResolveRetries),
+			},
+			NewEvents: fn.None[EmittedEvent](),
+		}
+	}
+
+	attempts := state.ResolveAttempts + 1
+
+	next := *state
+	next.RecipientPkScript = append(
+		[]byte(nil), state.RecipientPkScript...,
+	)
+	next.ResolveAttempts = attempts
+
+	return &StateTransition{
+		NextState: &next,
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: resolvingOutbox(&next),
+		}),
+	}
+}
+
+// resolveGiveUpReason labels the resolve give-up timer's ScheduleRetryRequest.
+const resolveGiveUpReason = "incoming resolve give-up timer"
+
+// notifiedGiveUpReason labels the metadata give-up timer's
+// ScheduleRetryRequest and the terminal failure when the timer fires after the
+// metadata query has gone unanswered.
+const notifiedGiveUpReason = "incoming metadata give-up timer"
+
+// resolvingOutbox builds the phase-1 hint query and the give-up timer armed
+// alongside it for a resolving session. The give-up backoff is keyed off the
+// state's persisted ResolveAttempts so it grows across restarts, and the same
+// pair is emitted on admission, resume, and each retry.
+func resolvingOutbox(state *ReceiveResolving) []OutboxEvent {
+	return []OutboxEvent{
+		&QueryIncomingTransferRequest{
+			SessionID: state.SessionID,
+			RecipientPkScript: append(
+				[]byte(nil), state.RecipientPkScript...,
+			),
+			RecipientEventID: state.RecipientEventID,
+		},
+		&ScheduleRetryRequest{
+			After:  metadataRetryBackoff(state.ResolveAttempts + 1),
+			Reason: resolveGiveUpReason,
+		},
+	}
+}
+
+// notifiedOutbox builds the phase-2 authoritative metadata query and the
+// give-up timer armed alongside it for a notified session. The give-up backoff
+// is keyed off the state's persisted MetadataAttempts so it grows across
+// restarts, and the same pair is emitted on transition, resume, and each
+// retry. Recipients are passed in because callers extract them from the Ark
+// PSBT (which can fail) before building the outbox.
+func notifiedOutbox(state *ReceiveNotified,
+	recipients []ArkRecipientOutput) []OutboxEvent {
+
+	return []OutboxEvent{
+		&QueryIncomingMetadataRequest{
+			SessionID:            state.SessionID,
+			ArkPSBT:              state.ArkPSBT,
+			FinalCheckpointPSBTs: state.FinalCheckpointPSBTs,
+			Recipients:           recipients,
+		},
+		&ScheduleRetryRequest{
+			After: metadataRetryBackoff(
+				state.MetadataAttempts + 1,
+			),
+			Reason: notifiedGiveUpReason,
+		},
 	}
 }
 
@@ -351,7 +505,11 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 		return handleReceiveOutboxError(s, evt)
 
 	case *RetryDueEvent:
-		return retryReceiveState(s)
+		// The metadata give-up timer fired. Advance the persisted
+		// attempt counter, re-query with backoff, and fail terminally
+		// at maxMetadataRetries so sustained operator silence frees the
+		// session's concurrency slot rather than re-querying forever.
+		return handleNotifiedTimerRetry(s), nil
 
 	case *FailEvent:
 		return &StateTransition{

@@ -16,9 +16,38 @@ type DetachedAsk[R any] struct {
 	// behavior's continuation is harmless.
 	Promise Promise[R]
 
-	// CallerCtx is the original caller's context. Continuations must use
-	// it (not the turn context, which is cancelled when the turn returns)
-	// so the caller's deadline still bounds the wait.
+	// CallerCtx is the context attached to the Ask delivery. Continuations
+	// must use it (not the turn context, which is cancelled when the turn
+	// returns).
+	//
+	// IMPORTANT: what CallerCtx actually is depends on the actor's
+	// execution path, and it is NOT a reliable carrier of the caller's
+	// deadline:
+	//
+	//   - Non-durable (channel-mailbox) actors set CallerCtx to the
+	//     originating Ask's send context, so a caller deadline does
+	//     propagate into the continuation.
+	//
+	//   - Durable (Read/Stage/Commit) actors are the path that adopts
+	//     detaching in practice. There the originating caller's context is
+	//     never persisted with the durable Ask; the durable mailbox claim
+	//     loop builds every delivery with the actor's OWN lifetime context
+	//     (see durable_mailbox.go). So on the durable path CallerCtx is the
+	//     actor's lifetime context, NOT the caller's, and a real caller
+	//     deadline does not flow into the detached continuation at all. The
+	//     caller's deadline is observed only by the caller's own
+	//     future.Await(ctx); the continuation is bounded solely by the
+	//     behavior's own context.WithTimeout wrap (below) or by the actor
+	//     shutting down.
+	//
+	// Because a caller deadline cannot be relied on here, a continuation
+	// that parks on CallerCtx via future.OnComplete and never sees the
+	// downstream future resolve would leak for the actor's lifetime (the
+	// actor lifetime context, like a caller's context.WithoutCancel, does
+	// not cancel on its own). A detaching behavior MUST wrap CallerCtx in
+	// context.WithTimeout before handing it to OnComplete so the
+	// continuation always terminates; do not depend on CallerCtx carrying a
+	// caller deadline for that bound.
 	CallerCtx context.Context
 }
 

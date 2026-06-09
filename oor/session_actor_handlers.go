@@ -159,8 +159,17 @@ func (b *sessionBehavior) enrichSubmitAccepted(event Event) error {
 
 	awaitingSubmit, ok := state.(*AwaitingSubmitAccepted)
 	if !ok {
-		return fmt.Errorf("expected AwaitingSubmitAccepted state for "+
-			"ark psbt enrichment, got %T", state)
+
+		// The canonical ArkPSBT only exists in AwaitingSubmitAccepted.
+		// Any other state means the FSM has already advanced past
+		// submit, so this nil-ArkPSBT event is a stale duplicate (an
+		// at-least-once operator redelivering its push after a
+		// reconnect, with the dedup TTL missed). Leave the event
+		// unenriched and let apply() discard it as an unexpected event
+		// (a clean no-op ack) rather than erroring, which would Nack
+		// and retry to the dead-letter against the deterministic,
+		// durable FSM.
+		return nil
 	}
 
 	submitAccepted.ArkPSBT = awaitingSubmit.ArkPSBT
@@ -219,8 +228,10 @@ func (b *sessionBehavior) recordReservations(ctx context.Context,
 
 // completeSpend marks the session's consumed VTXO inputs as spent. It filters
 // to locally-known outpoints, then routes completion through the VTXO manager
-// (SpendCompleter, which joins this turn's transaction) or, as a fallback,
-// writes the spent status directly to the VTXO store.
+// (SpendCompleter) or, as a fallback, writes the spent status directly to the
+// VTXO store. It must be called inline in dispatch with no OOR writer
+// transaction held: the SpendCompleter Ask drives a write in the VTXO actor's
+// own transaction, which would deadlock against a held OOR writer lock.
 func (b *sessionBehavior) completeSpend(ctx context.Context,
 	outpoints []wire.OutPoint) error {
 
@@ -523,7 +534,7 @@ func (b *sessionBehavior) handleResolveIncomingTransfer(ctx context.Context,
 // handleResumeSession re-drives the outbox implied by the current state after a
 // retry timer fires.
 func (b *sessionBehavior) handleResumeSession(ctx context.Context,
-	_ *ResumeSessionRequest) fn.Result[ActorResp] {
+	req *ResumeSessionRequest) fn.Result[ActorResp] {
 
 	if b.fsm == nil {
 		return fn.Err[ActorResp](
@@ -534,6 +545,28 @@ func (b *sessionBehavior) handleResumeSession(ctx context.Context,
 	state, err := b.fsm.CurrentState()
 	if err != nil {
 		return fn.Err[ActorResp](err)
+	}
+
+	// A give-up timer expiry drives RetryDueEvent through the FSM so the
+	// persisted attempt counter advances and the session fails terminally
+	// at the bound, instead of merely re-emitting the query forever. This
+	// applies to both wait states that arm a give-up timer:
+	// ReceiveResolving (phase-1 hint) and ReceiveNotified (phase-2
+	// metadata). A boot restore (FromRetryTimer false) must NOT drive
+	// RetryDueEvent: it only re-arms the timer from the persisted count, so
+	// repeated restarts cannot burn through the give-up budget faster than
+	// the time-based schedule.
+	if req.FromRetryTimer && waitsOnGiveUpTimer(state) {
+		next, err := b.apply(ctx, &RetryDueEvent{})
+		if err != nil {
+			return fn.Err[ActorResp](err)
+		}
+
+		if err := b.driveOutbox(ctx, next); err != nil {
+			return fn.Err[ActorResp](err)
+		}
+
+		return fn.Ok[ActorResp](&DriveEventResponse{})
 	}
 
 	var outbox []OutboxEvent

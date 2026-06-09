@@ -221,9 +221,11 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 	// When a SpendCompleter is configured, route completion through the
 	// VTXO manager so each actor processes SpendCompletedEvent and
 	// persists VTXOStatusSpent through its own outbox path. This is a
-	// synchronous Ask: if the caller is a durable actor, the manager's
-	// status write should join the caller transaction so SQLite sees one
-	// writer instead of two contending transactions.
+	// synchronous Ask whose status write commits in the VTXO actor's own
+	// transaction: it is a SECOND writer that does not join the caller's
+	// transaction, so callers must run it with no DB writer held (the
+	// session actor calls it inline in dispatch) to avoid deadlocking
+	// against the single SQLite/Postgres writer lock.
 	if h.CompleteSpend != nil {
 		err := h.CompleteSpend(ctx, knownOutpoints)
 		if err != nil {

@@ -68,6 +68,24 @@ func (r *recordingActorRef) Ask(_ context.Context,
 	return promise.Future()
 }
 
+// neverResolvingActorRef is an ActorRef stub whose Ask returns a future that
+// never completes, modeling a wedged child admission turn. It lets a test
+// assert the registry's detached-continuation wait is bounded rather than
+// leaking the OnComplete goroutine forever under an uncancellable caller
+// context.
+type neverResolvingActorRef struct {
+	recordingTellRef
+}
+
+// Ask returns a future that never resolves.
+func (r *neverResolvingActorRef) Ask(_ context.Context,
+	_ OORDurableMsg) actor.Future[ActorResp] {
+
+	// The promise is never completed, so the only unblock for a
+	// continuation parked on this future is its wait context being done.
+	return actor.NewPromise[ActorResp]().Future()
+}
+
 // registrySpawnRecorder captures the children spawned by a registry behavior
 // under test, every message the registry told them, and every child stop. The
 // mutex makes the recorder safe for the asynchronous terminal notification
@@ -120,9 +138,11 @@ func newTestRegistryBehavior(store SessionRegistryStore) (*oorRegistryBehavior,
 	b := &oorRegistryBehavior{
 		cfg: OORRegistryConfig{
 			RegistryStore: store,
+			Limits:        DefaultReceiveLimits(),
 		},
-		log:    btclog.Disabled,
-		active: make(map[SessionID]*OORSessionActor),
+		log:      btclog.Disabled,
+		active:   make(map[SessionID]*OORSessionActor),
+		incoming: make(map[SessionID]struct{}),
 	}
 	b.spawnFunc = func(id SessionID, dir clientdb.OORSessionDirection) (
 		*OORSessionActor, error) {
@@ -577,6 +597,84 @@ func TestOORRegistrySessionTerminalReap(t *testing.T) {
 	}
 }
 
+// TestOORRegistryStopSkipsChildrenOnDrainTimeout verifies the shutdown race
+// fix: stopChildren runs only when the registry drain succeeds (process() has
+// provably exited). On a drain timeout the registry goroutine may still be
+// running a wedged turn that mutates r.active, so stopChildren must be skipped
+// to avoid a fatal concurrent map iteration and write; the children are left to
+// actor-system shutdown.
+func TestOORRegistryStopSkipsChildrenOnDrainTimeout(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	// A drain timeout must skip stopChildren.
+	b, rec := newTestRegistryBehavior(newFakeRegistryStore())
+	child, err := b.ensureChild(
+		oorSessionID(0x01), clientdb.OORSessionDirectionOutgoing,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, child)
+
+	a := &OORRegistryActor{behavior: b}
+	a.stopWithDrain(ctx, func(context.Context) error {
+		return context.DeadlineExceeded
+	})
+	require.Equal(t, 0, rec.stopCount())
+
+	// A clean drain stops every child.
+	b2, rec2 := newTestRegistryBehavior(newFakeRegistryStore())
+	child, err = b2.ensureChild(
+		oorSessionID(0x02), clientdb.OORSessionDirectionOutgoing,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, child)
+
+	a2 := &OORRegistryActor{behavior: b2}
+	a2.stopWithDrain(ctx, func(context.Context) error {
+		return nil
+	})
+	require.Equal(t, 1, rec2.stopCount())
+}
+
+// TestOORRegistryDriveEventTerminalSessionIsNoOp verifies a late-redelivered
+// duplicate drive-event for a session that has reached a terminal snapshot and
+// been reaped is absorbed as an idempotent no-op (acks cleanly), while a
+// genuinely-unknown session still errors. Without this, a normal at-least-once
+// duplicate would Nack, retry to the cap, and dead-letter.
+func TestOORRegistryDriveEventTerminalSessionIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store := newFakeRegistryStore()
+	b, rec := newTestRegistryBehavior(store)
+
+	// A terminal row with no resident child: a duplicate push must ack
+	// cleanly without spawning a child.
+	terminalID := oorSessionID(0x55)
+	upsertRegistryRow(
+		t, store, terminalID, clientdb.OORSessionDirectionIncoming,
+		"completed", "", clientdb.OORSessionStatusCompleted,
+	)
+
+	res := b.handleDriveEvent(ctx, &DriveEventRequest{
+		SessionID: terminalID,
+		Event:     &FinalizeAcceptedEvent{},
+	})
+	require.True(t, res.IsOk(), res.Err())
+	require.NotContains(t, b.active, terminalID)
+	require.Equal(t, 0, rec.spawns)
+
+	// A genuinely-unknown session is still an error.
+	res = b.handleDriveEvent(ctx, &DriveEventRequest{
+		SessionID: oorSessionID(0x56),
+		Event:     &FinalizeAcceptedEvent{},
+	})
+	require.True(t, res.IsErr())
+	require.Contains(t, res.Err().Error(), "unknown session")
+}
+
 // TestOORRegistrySessionTerminalUnknownChild verifies a terminal notification
 // for a session with no resident child is a no-op.
 func TestOORRegistrySessionTerminalUnknownChild(t *testing.T) {
@@ -690,6 +788,106 @@ func TestOORRegistryIncomingAdmissionOwnership(t *testing.T) {
 			require.Equal(t, tc.wantSpawns, rec.spawns)
 		})
 	}
+}
+
+// TestOORRegistryIncomingAdmissionCap verifies the registry bounds the number
+// of resident incoming children: an operator streaming distinct fabricated
+// session ids over one owned receive script cannot pin unbounded children.
+// Admissions up to the cap succeed; the next new session is rejected before a
+// child is spawned, a resident session forwarding a follow-up hint is exempt,
+// and reaping a session frees a slot for a fresh admission.
+func TestOORRegistryIncomingAdmissionCap(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	const maxIncoming = 3
+
+	b, rec := newTestRegistryBehavior(newFakeRegistryStore())
+	b.cfg.IncomingHandler = &fakeRecipientFilter{owned: true}
+	b.cfg.Limits.MaxConcurrentIncomingSessions = maxIncoming
+
+	ownedScript := []byte{0x51, 0x20, 0xaa, 0xbb}
+	admit := func(seed byte) fn.Result[ActorResp] {
+		return b.Receive(ctx, &ResolveIncomingTransferRequest{
+			SessionID:         oorSessionID(seed),
+			RecipientPkScript: ownedScript,
+		}, fakeExec{})
+	}
+
+	// The first maxIncoming admissions all spawn a child over the same
+	// owned script.
+	for i := 0; i < maxIncoming; i++ {
+		res := admit(byte(i))
+		require.True(t, res.IsOk(), res.Err())
+	}
+	require.Equal(t, maxIncoming, rec.spawns)
+	require.Len(t, b.incoming, maxIncoming)
+
+	// The next distinct session is rejected at the cap before any spawn.
+	res := admit(byte(maxIncoming))
+	require.True(t, res.IsErr())
+	require.ErrorIs(t, res.Err(), errIncomingAdmissionCapped)
+	require.Equal(t, maxIncoming, rec.spawns)
+
+	// A resident session forwarding a follow-up hint is exempt: it already
+	// counts against the cap, so it must not be rejected.
+	res = admit(0x00)
+	require.True(t, res.IsOk(), res.Err())
+	require.Equal(t, maxIncoming, rec.spawns)
+
+	// Reaping one session frees a slot, so a fresh admission succeeds.
+	reaped := oorSessionID(0x00)
+	b.dropChild(reaped, b.active[reaped])
+	require.Len(t, b.incoming, maxIncoming-1)
+
+	res = admit(byte(maxIncoming + 1))
+	require.True(t, res.IsOk(), res.Err())
+	require.Equal(t, maxIncoming+1, rec.spawns)
+	require.Len(t, b.incoming, maxIncoming)
+}
+
+// TestOORRegistryEnsureChildEnforcesIncomingCap verifies the concurrency cap is
+// enforced in ensureChild itself, the choke point every resident-making path
+// funnels through (admission, lazy restore on a routed message, boot restore),
+// so the bound holds even on the paths that skip handleResolveIncoming's
+// pre-spawn check. Outgoing sessions carry no cap and are unaffected.
+func TestOORRegistryEnsureChildEnforcesIncomingCap(t *testing.T) {
+	t.Parallel()
+
+	const maxIncoming = 2
+
+	b, rec := newTestRegistryBehavior(newFakeRegistryStore())
+	b.cfg.Limits.MaxConcurrentIncomingSessions = maxIncoming
+
+	// Fill the incoming slots straight through ensureChild.
+	for i := 0; i < maxIncoming; i++ {
+		_, err := b.ensureChild(
+			oorSessionID(
+				byte(i),
+			),
+			clientdb.OORSessionDirectionIncoming,
+		)
+		require.NoError(t, err)
+	}
+	require.Len(t, b.incoming, maxIncoming)
+
+	// A further new incoming child is rejected at the cap, with no spawn.
+	spawnsAtCap := rec.spawns
+	_, err := b.ensureChild(
+		oorSessionID(
+			byte(maxIncoming),
+		),
+		clientdb.OORSessionDirectionIncoming,
+	)
+	require.ErrorIs(t, err, errIncomingAdmissionCapped)
+	require.Equal(t, spawnsAtCap, rec.spawns)
+
+	// An outgoing child is exempt from the incoming cap.
+	_, err = b.ensureChild(
+		oorSessionID(0xf0), clientdb.OORSessionDirectionOutgoing,
+	)
+	require.NoError(t, err)
 }
 
 // errFilterBroken models a recipient filter infrastructure failure.
@@ -925,6 +1123,62 @@ func TestOORRegistryFailedAdmissionDropsPhantomChild(t *testing.T) {
 	require.Len(t, b.active, 1)
 }
 
+// TestOORRegistryAdmissionHandoffDeferredUntilCommit verifies the
+// caller-promise handoff is wired only after the registry's consuming Commit
+// succeeds: a lease-lost consume-commit surfaces the error, runs no inline
+// admission, and leaves no orphaned handoff. Wiring the handoff before the
+// Commit would race the framework's own promise completion when that Commit
+// fails and the routing message redelivers.
+func TestOORRegistryAdmissionHandoffDeferredUntilCommit(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	inputs := testRetryTransferInputs(t)
+	req := &StartTransferRequest{
+		Policy: arkscript.CheckpointPolicy{
+			OperatorKey: operatorKey.PubKey(),
+			CSVDelay:    10,
+		},
+		Inputs: inputs,
+		Recipients: []oortx.RecipientOutput{{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputs[0].VTXO.Amount,
+		}},
+	}
+
+	b, rec := newTestRegistryBehavior(newFakeRegistryStore())
+
+	// The child's admission would fail, but the consuming Commit loses the
+	// lease first. Because the handoff is wired only after a successful
+	// Commit, the admission is never completed inline on this turn: the
+	// child is left resident for the redelivered turn to re-drive, and the
+	// framework owns the single caller completion with the lease-lost
+	// error. With the buggy ordering (handoff completed before the Commit),
+	// the inline await would observe the admission failure and reap the
+	// child here, which must not happen for a turn that did not commit.
+	rec.askErr = errors.New("signer unavailable")
+
+	res := b.Receive(ctx, req, leaseLostExec{})
+	require.True(t, res.IsErr())
+	require.ErrorIs(t, res.Err(), actor.ErrLeaseLost)
+
+	// The forward was staged (the child was spawned) ...
+	require.Equal(t, 1, rec.spawns)
+
+	// ... but no inline admission completion ran on the failed-commit path:
+	// the child was neither awaited-and-dropped nor reaped, and no handoff
+	// is left dangling for a later turn to pick up.
+	require.Equal(t, 0, rec.stopCount())
+	require.Nil(t, b.pendingHandoff)
+	require.Len(t, b.active, 1)
+}
+
 // TestOORRegistryFailedIncomingForwardDropsFreshChild verifies a failed hint
 // forward drops a freshly spawned incoming child while a pre-existing child
 // keeps its state.
@@ -1065,9 +1319,123 @@ func TestOORRegistryAsyncAdmissionEndToEnd(t *testing.T) {
 	require.Equal(t, string(OutgoingPhaseSubmitSent), record.Phase)
 }
 
+// TestOORRegistryDetachedAdmissionWaitBounded verifies the
+// detached-continuation wait is bounded: a child whose admission future never
+// resolves, addressed under an uncancellable caller context
+// (context.WithoutCancel, as the production StartTransfer call site derives
+// it), must not leak the OnComplete goroutine forever. The registry wraps the
+// caller context in detachedWaitTimeout, so the caller's promise completes with
+// a deadline error and the continuation goroutine exits.
+func TestOORRegistryDetachedAdmissionWaitBounded(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{clientKey}, nil,
+	)
+
+	system := actor.NewActorSystem()
+	defer func() {
+		require.NoError(t, system.Shutdown(context.Background()))
+	}()
+
+	store := newFakeRegistryStore()
+	registry, err := NewOORRegistryActor(OORRegistryConfig{
+		RegistryStore: store,
+		DeliveryStore: newTestDeliveryStore(t),
+		ServerConn:    fakeServerConnRef{},
+		Signer:        clientSigner,
+		ActorSystem:   system,
+	})
+	require.NoError(t, err)
+	defer registry.Stop()
+
+	// Shrink the bound so the test does not wait the production default,
+	// and replace the spawn with a stub child whose admission Ask never
+	// resolves, modeling a wedged child turn.
+	registry.behavior.detachedWaitTimeout = 200 * time.Millisecond
+	registry.behavior.spawnFunc = func(id SessionID,
+		dir clientdb.OORSessionDirection) (*OORSessionActor, error) {
+
+		tellRef := &recordingTellRef{
+			id:  ActorIDForSession(id),
+			rec: &registrySpawnRecorder{},
+		}
+
+		return &OORSessionActor{
+			ref: &neverResolvingActorRef{
+				recordingTellRef: *tellRef,
+			},
+			tellRef: tellRef,
+			stop:    func() {},
+		}, nil
+	}
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+				Hash:  [32]byte{0x08},
+				Index: 0,
+			},
+			btcutil.Amount(10_000),
+		),
+	}
+
+	// The caller's context is uncancellable, exactly as the production
+	// StartTransfer call site derives it via context.WithoutCancel; only
+	// the registry's detachedWaitTimeout wrap can unblock the continuation.
+	askCtx := actor.WithoutTx(context.WithoutCancel(ctx))
+
+	future := registry.Ref().Ask(askCtx, &StartTransferRequest{
+		Policy: arkscript.CheckpointPolicy{
+			OperatorKey: operatorKey.PubKey(),
+			CSVDelay:    10,
+		},
+		Inputs: inputs,
+		Recipients: []oortx.RecipientOutput{{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputs[0].VTXO.Amount,
+		}},
+	})
+
+	// The continuation must settle the caller's promise off the bound, not
+	// off the Await context: a regression that drops the registry's
+	// detachedWaitTimeout wrap would leave the promise forever uncompleted
+	// (the child future never resolves and the caller context never
+	// cancels). Await under an uncancellable context in a goroutine so only
+	// a genuine promise completion can unblock it, then assert that
+	// completion arrives shortly after the 200ms bound rather than never.
+	type awaitResult struct {
+		res fn.Result[ActorResp]
+	}
+	done := make(chan awaitResult, 1)
+	go func() {
+		done <- awaitResult{res: future.Await(askCtx)}
+	}()
+
+	select {
+	case got := <-done:
+		require.True(t, got.res.IsErr())
+		require.ErrorIs(t, got.res.Err(), context.DeadlineExceeded)
+
+	case <-time.After(5 * time.Second):
+		t.Fatal(
+			"detached admission continuation leaked: caller " +
+				"promise never completed",
+		)
+	}
+}
+
 // TestOORRegistryDriveEventRouting verifies the registry's hot path: an
-// unknown session errors, a durable row restores the child and forwards the
-// event via Tell, and a failed forward surfaces to the caller.
+// unknown session errors, a durable non-terminal row restores the child and
+// forwards the event via Tell, a terminal row absorbs a late duplicate as a
+// no-op, and a failed forward surfaces to the caller.
 func TestOORRegistryDriveEventRouting(t *testing.T) {
 	t.Parallel()
 
@@ -1102,7 +1470,9 @@ func TestOORRegistryDriveEventRouting(t *testing.T) {
 	require.Len(t, tells, 1)
 	require.Same(t, drive, tells[0])
 
-	// A terminal row is not restored: the session is gone.
+	// A terminal row is not restored, but a late duplicate for it is a
+	// benign idempotent no-op (acks cleanly) rather than an error, so a
+	// normal at-least-once redelivery does not Nack into a dead-letter.
 	terminalStore := newFakeRegistryStore()
 	upsertRegistryRow(
 		t, terminalStore, sid, clientdb.OORSessionDirectionOutgoing,
@@ -1111,8 +1481,7 @@ func TestOORRegistryDriveEventRouting(t *testing.T) {
 	b, rec = newTestRegistryBehavior(terminalStore)
 
 	res = b.handleDriveEvent(ctx, drive)
-	require.True(t, res.IsErr())
-	require.ErrorContains(t, res.Err(), "unknown session")
+	require.True(t, res.IsOk(), res.Err())
 	require.Equal(t, 0, rec.spawns)
 
 	// A failed forward propagates the Tell error.
@@ -1126,7 +1495,7 @@ func TestOORRegistryDriveEventRouting(t *testing.T) {
 
 // TestOORRegistryStartTransferNoKeyActiveDedup verifies the no-idempotency-key
 // dedup path: a StartTransfer whose deterministic session id is already active
-// returns Existing without spawning a second child.
+// AND backed by a durable row returns Existing without spawning a second child.
 func TestOORRegistryStartTransferNoKeyActiveDedup(t *testing.T) {
 	t.Parallel()
 
@@ -1164,8 +1533,15 @@ func TestOORRegistryStartTransferNoKeyActiveDedup(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	b, rec := newTestRegistryBehavior(newFakeRegistryStore())
+	store := newFakeRegistryStore()
+	b, rec := newTestRegistryBehavior(store)
 	b.active[session.ID] = &OORSessionActor{stop: func() {}}
+
+	// A resident child only dedups as Existing when a durable row backs it.
+	upsertRegistryRow(
+		t, store, session.ID, clientdb.OORSessionDirectionOutgoing,
+		"submit_sent", "", clientdb.OORSessionStatusPending,
+	)
 
 	res := b.handleStartTransfer(ctx, req)
 	require.True(t, res.IsOk(), res.Err())
@@ -1175,6 +1551,71 @@ func TestOORRegistryStartTransferNoKeyActiveDedup(t *testing.T) {
 	require.True(t, resp.Existing)
 	require.Equal(t, session.ID, resp.SessionID)
 	require.Equal(t, 0, rec.spawns)
+}
+
+// TestOORRegistryStartTransferDropsPhantomResident verifies the phantom-child
+// race fix: a resident child with NO durable row (a failed admission reaped
+// asynchronously by a not-yet-processed SessionTerminalNotification) must not
+// answer Existing. The registry drops the phantom synchronously and re-admits a
+// fresh child whose request is forwarded, so the retry can make progress
+// instead of wedging on an unknown-session DriveEvent later.
+func TestOORRegistryStartTransferDropsPhantomResident(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, operatorKey.PubKey(), wire.OutPoint{
+				Hash:  [32]byte{0x79},
+				Index: 0,
+			},
+			btcutil.Amount(10_000),
+		),
+	}
+	req := &StartTransferRequest{
+		Policy: arkscript.CheckpointPolicy{
+			OperatorKey: operatorKey.PubKey(),
+			CSVDelay:    10,
+		},
+		Inputs: inputs,
+		Recipients: []oortx.RecipientOutput{{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputs[0].VTXO.Amount,
+		}},
+	}
+
+	session, _, err := NewSessionWithIdempotencyKey(
+		ctx, req.Policy, req.Inputs, req.Recipients, "",
+	)
+	require.NoError(t, err)
+
+	// Install a resident child with NO durable row: the phantom left behind
+	// by a failed admission whose async reap has not run yet.
+	store := newFakeRegistryStore()
+	b, rec := newTestRegistryBehavior(store)
+	var phantomStops int
+	b.active[session.ID] = &OORSessionActor{stop: func() {
+		phantomStops++
+	}}
+
+	res := b.handleStartTransfer(ctx, req)
+	require.True(t, res.IsOk(), res.Err())
+
+	resp, ok := res.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+
+	// The phantom is not echoed as Existing: it is dropped and a fresh
+	// child admits, signing the forwarded request.
+	require.False(t, resp.Existing)
+	require.Equal(t, session.ID, resp.SessionID)
+	require.Equal(t, 1, phantomStops)
+	require.Equal(t, 1, rec.spawns)
 }
 
 // TestOORRegistryConcurrentTraffic exercises the live registry under
@@ -1316,4 +1757,79 @@ func TestOORRegistryConcurrentTraffic(t *testing.T) {
 	listResp, ok := res.UnwrapOr(nil).(*ListSessionsResponse)
 	require.True(t, ok)
 	require.Len(t, listResp.Sessions, 2)
+}
+
+// TestOORRegistryStopDuringInFlightAdmission verifies Stop() drains the
+// registry goroutine before reaping children, so a backlog turn mutating the
+// (unsynchronized) active map cannot race stopChildren's iteration. The
+// admission traffic is deliberately NOT drained before Stop() -- a stream of
+// incoming hints is still being routed (spawning children, writing the active
+// map on the registry goroutine) when Stop() fires. Run under -race: without
+// the StopAndWait drain this trips "concurrent map iteration and map write".
+func TestOORRegistryStopDuringInFlightAdmission(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	system := actor.NewActorSystem()
+	defer func() {
+		require.NoError(t, system.Shutdown(context.Background()))
+	}()
+
+	registry, err := NewOORRegistryActor(OORRegistryConfig{
+		RegistryStore:   newFakeRegistryStore(),
+		DeliveryStore:   newTestDeliveryStore(t),
+		ServerConn:      fakeServerConnRef{},
+		IncomingHandler: &fakeRecipientFilter{owned: true},
+		ActorSystem:     system,
+	})
+	require.NoError(t, err)
+
+	// Keep a stream of distinct incoming hints flowing into the registry's
+	// durable inbox. Each admission spawns a child and writes the active
+	// map on the registry goroutine; the sender runs concurrently with
+	// Stop() so a backlog turn is still mutating the map when stopChildren
+	// iterates it.
+	stopSending := make(chan struct{})
+	var sender sync.WaitGroup
+	sender.Add(1)
+	go func() {
+		defer sender.Done()
+
+		for i := 0; ; i++ {
+			select {
+			case <-stopSending:
+				return
+
+			default:
+			}
+
+			// A cancelled registry context makes Tell fail once
+			// Stop fires; that is expected and ends the stream.
+			err := registry.Ref().Tell(
+				ctx, &ResolveIncomingTransferRequest{
+					SessionID: oorSessionID(byte(i)),
+					RecipientPkScript: []byte{
+						0x51, 0x20, byte(i >> 8), byte(
+							i,
+						),
+					},
+					RecipientEventID: uint64(i),
+				},
+			)
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Let the backlog build so children are actively being spawned, then
+	// Stop while the registry goroutine is still draining. The drain must
+	// establish happens-before so stopChildren iterates the active map only
+	// after the registry goroutine has exited.
+	time.Sleep(20 * time.Millisecond)
+	registry.Stop()
+
+	close(stopSending)
+	sender.Wait()
 }

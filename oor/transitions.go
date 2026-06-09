@@ -35,6 +35,18 @@ const (
 	// one stuck session cannot spin the mailbox forever. With the base and
 	// cap above this is on the order of an hour of attempts.
 	maxMetadataRetries = 20
+
+	// maxResolveRetries bounds how many times the incoming receive FSM
+	// re-issues the phase-1 hint resolution query before failing the
+	// session terminally. The phase-1 query has no failure response on
+	// operator silence (only success or an explicit error advances the
+	// state), so without this give-up a fabricated session id whose
+	// resolution is never answered would pin a child in ReceiveResolving
+	// forever, holding an r.incoming admission slot against the concurrency
+	// cap. Reusing the metadata backoff schedule, this bounds an unanswered
+	// resolve to roughly the same hour-scale window before the session
+	// fails and frees its slot.
+	maxResolveRetries = 20
 )
 
 // unexpectedEvent returns a transition that stays in the current state and
@@ -213,25 +225,24 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 			return nil, err
 		}
 
-		submitReq := &SendSubmitPackageRequest{
-			ArkPSBT:         evt.ArkPSBT,
-			CheckpointPSBTs: s.CheckpointPSBTs,
-			TransferInputs:  s.TransferInputs,
-			Recipients:      s.RecipientOutputs,
+		// Arm a re-drive timer alongside the submit request (see
+		// submitOutbox): the cross-actor submit transport has no
+		// failure path on operator silence (and must not give up: the
+		// peer may just be offline), so without it a dead-lettered
+		// submit would pin the session in AwaitingSubmitAccepted until
+		// restart.
+		next := &AwaitingSubmitAccepted{
+			ArkPSBT:          evt.ArkPSBT,
+			CheckpointPSBTs:  s.CheckpointPSBTs,
+			TransferInputs:   s.TransferInputs,
+			RecipientOutputs: s.RecipientOutputs,
+			IdempotencyKey:   s.IdempotencyKey,
 		}
 
 		return &StateTransition{
-			NextState: &AwaitingSubmitAccepted{
-				ArkPSBT:          evt.ArkPSBT,
-				CheckpointPSBTs:  s.CheckpointPSBTs,
-				TransferInputs:   s.TransferInputs,
-				RecipientOutputs: s.RecipientOutputs,
-				IdempotencyKey:   s.IdempotencyKey,
-			},
+			NextState: next,
 			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					submitReq,
-				},
+				Outbox: submitOutbox(next),
 			}),
 		}, nil
 
@@ -353,30 +364,24 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 			return nil, err
 		}
 
+		// Finalize is a pure "ack" boundary in v0. Retry and resume
+		// after crash is safe because the package is deterministic and
+		// the server handles duplicates idempotently. Arm a re-drive
+		// timer alongside the request (see finalizeOutbox) so a
+		// dead-lettered finalize re-drives instead of wedging the
+		// session until restart.
+		next := &AwaitingFinalizeAccepted{
+			SessionID:            s.SessionID,
+			ArkPSBT:              s.ArkPSBT,
+			FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
+			TransferInputs:       s.TransferInputs,
+			IdempotencyKey:       s.IdempotencyKey,
+		}
+
 		return &StateTransition{
-			NextState: &AwaitingFinalizeAccepted{
-				SessionID:            s.SessionID,
-				ArkPSBT:              s.ArkPSBT,
-				FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
-				TransferInputs:       s.TransferInputs,
-				IdempotencyKey:       s.IdempotencyKey,
-			},
+			NextState: next,
 			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					// Finalize is a pure "ack" boundary
-					// in v0.
-					//
-					// Retry and resume after crash is safe
-					// because the package is deterministic.
-					//
-					// The server should handle duplicates
-					// idempotently.
-					&SendFinalizePackageRequest{
-						ArkPSBT: s.ArkPSBT,
-						FinalCheckpointPSBTs: evt.
-							FinalCheckpointPSBTs,
-					},
-				},
+				Outbox: finalizeOutbox(next),
 			}),
 		}, nil
 
