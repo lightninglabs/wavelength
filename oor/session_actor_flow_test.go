@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -115,7 +116,14 @@ func TestSessionActorIncomingMaterializeFullFlow(t *testing.T) {
 	}
 
 	manager := &recordingManagerRef{}
-	var observed []*vtxo.Descriptor
+
+	// The post-commit notifications run on their own goroutine with a
+	// daemon-owned context, so the observer must be safe for concurrent
+	// append and the assertions below poll for delivery.
+	var (
+		observedMu sync.Mutex
+		observed   []*vtxo.Descriptor
+	)
 	var inCommit bool
 	sink := &recordingLedgerSink{inCommit: &inCommit}
 	delivery := &fakeDeliveryStore{}
@@ -130,6 +138,8 @@ func TestSessionActorIncomingMaterializeFullFlow(t *testing.T) {
 			IncomingVTXOObserver: func(_ context.Context,
 				d []*vtxo.Descriptor) error {
 
+				observedMu.Lock()
+				defer observedMu.Unlock()
 				observed = append(observed, d...)
 
 				return nil
@@ -181,14 +191,22 @@ func TestSessionActorIncomingMaterializeFullFlow(t *testing.T) {
 		)
 	}
 
-	// The post-commit best-effort notifications fired for the VTXO manager
-	// and the fraud observer with the full descriptor set.
+	// The post-commit best-effort notifications fire for the VTXO manager
+	// and the fraud observer with the full descriptor set. They are
+	// delivered asynchronously on a daemon-owned context (so a terminal
+	// turn's cancellation cannot drop them), hence the poll.
+	require.Eventually(t, func() bool {
+		observedMu.Lock()
+		defer observedMu.Unlock()
+
+		return len(manager.recorded()) == 1 &&
+			len(observed) == len(descs)
+	}, 5*time.Second, 10*time.Millisecond)
+
 	mgrMsgs := manager.recorded()
-	require.Len(t, mgrMsgs, 1)
 	notify, ok := mgrMsgs[0].(*vtxo.VTXOsMaterializedNotification)
 	require.True(t, ok)
 	require.Len(t, notify.VTXOs, len(descs))
-	require.Len(t, observed, len(descs))
 }
 
 // countingIncomingHandler is a fakeIncomingHandler that records how many times

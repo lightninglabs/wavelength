@@ -641,6 +641,16 @@ func (b *sessionBehavior) materializeIncoming(ctx context.Context,
 // the VTXO rows this turn persists (Manager.Start respawns an actor per live
 // VTXO, and initFraudWatcher re-tracks the manager's live set), so a crash
 // inside the post-commit window is healed by the next restart.
+//
+// The notifications run on their own goroutine with a daemon-owned context,
+// mirroring notifyTerminal: the turn context is on its way out when the
+// materializing turn is also the terminal one (the registry reaps the child
+// right after commit), and a notification dropped to that cancellation is NOT
+// healed until the next restart. In a long-running daemon that strands the
+// materialized VTXO as live-but-actorless, so every coin selection that picks
+// it fails with "no actor for outpoint" until the operator restarts. The
+// daemon-owned context keeps delivery independent of this child's lifetime,
+// and the goroutine keeps a busy VTXO manager mailbox from wedging the turn.
 func (b *sessionBehavior) notifyMaterialized(ctx context.Context, event Event) {
 	handled, ok := event.(*IncomingHandledEvent)
 	if !ok || len(handled.MaterializedVTXOs) == 0 {
@@ -650,29 +660,41 @@ func (b *sessionBehavior) notifyMaterialized(ctx context.Context, event Event) {
 	descs := handled.MaterializedVTXOs
 	b.queueVTXOsReceived(ctx, descs)
 
-	b.postCommit = append(b.postCommit, func(ctx context.Context) {
-		if b.cfg.VTXOManager != nil {
-			err := b.cfg.VTXOManager.Tell(
-				ctx, &vtxo.VTXOsMaterializedNotification{
-					VTXOs: descs,
-				},
+	vtxoManager := b.cfg.VTXOManager
+	observer := b.cfg.IncomingVTXOObserver
+	log := b.log
+
+	b.postCommit = append(b.postCommit, func(_ context.Context) {
+		//nolint:contextcheck // The notification is daemon-owned, not
+		// turn-scoped: the materializing turn may also be the terminal
+		// one, whose context dies as the registry reaps this child.
+		go func() {
+			ctx, cancel := context.WithTimeout(
+				context.Background(), terminalNotifyTimeout,
 			)
-			if err != nil {
-				b.logger(ctx).WarnS(ctx, "Failed to notify "+
-					"VTXO manager of materialized VTXOs",
-					err)
-			}
-		}
+			defer cancel()
 
-		if b.cfg.IncomingVTXOObserver != nil {
-			if err := b.cfg.IncomingVTXOObserver(
-				ctx, descs,
-			); err != nil {
-
-				b.logger(ctx).WarnS(ctx, "Incoming VTXO "+
-					"observer failed", err)
+			if vtxoManager != nil {
+				err := vtxoManager.Tell(
+					ctx,
+					&vtxo.VTXOsMaterializedNotification{
+						VTXOs: descs,
+					},
+				)
+				if err != nil {
+					log.WarnS(ctx, "Failed to notify "+
+						"VTXO manager of "+
+						"materialized VTXOs", err)
+				}
 			}
-		}
+
+			if observer != nil {
+				if err := observer(ctx, descs); err != nil {
+					log.WarnS(ctx, "Incoming VTXO "+
+						"observer failed", err)
+				}
+			}
+		}()
 	})
 }
 
