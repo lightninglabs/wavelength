@@ -446,6 +446,57 @@ func (s *memCheckpointStore) LeaseNextMessage(ctx context.Context,
 	return &leasedCopy, nil
 }
 
+// PeekNextMessage claims the next available message without taking a lease,
+// mirroring LeaseNextMessage's eligibility/ordering but without mutating the
+// lease token, lease expiry, or attempts. The returned message carries an
+// empty lease token.
+func (s *memCheckpointStore) PeekNextMessage(ctx context.Context,
+	mailboxID string) (*actor.LeasedMessage, error) {
+
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+
+	var selected *storeMessage
+	for _, msg := range s.messages {
+		if msg.leased.MailboxID != mailboxID {
+			continue
+		}
+
+		if msg.availableAt.After(now) {
+			continue
+		}
+
+		if msg.leased.LeaseToken != "" &&
+			msg.leased.LeaseUntil.After(now) {
+
+			continue
+		}
+
+		if selected == nil ||
+			msg.availableAt.Before(selected.availableAt) {
+
+			selected = msg
+		}
+	}
+
+	if selected == nil {
+		return nil, nil
+	}
+
+	leasedCopy := selected.leased
+	leasedCopy.LeaseToken = ""
+	leasedCopy.LeaseUntil = time.Time{}
+	leasedCopy.Payload = append(
+		[]byte(nil), selected.leased.Payload...,
+	)
+
+	return &leasedCopy, nil
+}
+
 // AckMessage acknowledges a leased message by ID and lease token.
 func (s *memCheckpointStore) AckMessage(ctx context.Context, id,
 	leaseToken string) (int64, error) {
@@ -461,6 +512,25 @@ func (s *memCheckpointStore) AckMessage(ctx context.Context, id,
 	}
 
 	if msg.leased.LeaseToken != leaseToken {
+		return 0, nil
+	}
+
+	delete(s.messages, id)
+
+	return 1, nil
+}
+
+// AckMessageByID acknowledges a message by ID without lease-token validation,
+// mirroring the unfenced leaseless ack.
+func (s *memCheckpointStore) AckMessageByID(ctx context.Context, id string) (
+	int64, error) {
+
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.messages[id]; !ok {
 		return 0, nil
 	}
 
@@ -489,6 +559,29 @@ func (s *memCheckpointStore) NackMessage(ctx context.Context, id,
 
 	msg.leased.LeaseToken = ""
 	msg.leased.LeaseUntil = time.Time{}
+	msg.availableAt = time.Now().Add(retryAfter)
+
+	return 1, nil
+}
+
+// NackMessageByID releases a message by ID without lease-token validation and
+// increments attempts, mirroring the unfenced leaseless nack.
+func (s *memCheckpointStore) NackMessageByID(ctx context.Context, id string,
+	retryAfter time.Duration) (int64, error) {
+
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msg, ok := s.messages[id]
+	if !ok {
+		return 0, nil
+	}
+
+	msg.leased.LeaseToken = ""
+	msg.leased.LeaseUntil = time.Time{}
+	msg.leased.Attempts++
 	msg.availableAt = time.Now().Add(retryAfter)
 
 	return 1, nil

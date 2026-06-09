@@ -193,6 +193,15 @@ func (e *execCore) stage(ctx context.Context,
 	return e.store.ExecTx(ctx, false, func(txCtx context.Context,
 		s DeliveryStore) error {
 
+		// On the leaseless (single-worker) path there is no lease token
+		// to fence and no competing consumer that could reclaim the
+		// message, so skip the ExtendLease fence (which would
+		// spuriously return zero rows for an empty token) and stage
+		// directly.
+		if e.leaseToken == "" {
+			return fn(txCtx, s)
+		}
+
 		// Fence first: extending our lease validates the token. Zero
 		// rows means the lease was reclaimed while the behavior did IO,
 		// so a now-stale consumer must not advance durable state --
@@ -230,7 +239,15 @@ func (e *execCore) commit(ctx context.Context,
 		// closure would make below. Fencing up front keeps the
 		// stale-lease path a true no-op rather than relying on rollback
 		// alone.
-		rows, err := s.AckMessage(txCtx, e.msgID, e.leaseToken)
+		//
+		// On the leaseless (single-worker) path the token is empty, so
+		// ackMessage deletes by ID without a fence: there is no
+		// competing consumer, and a crash before this commit leaves the
+		// peeked row untouched for re-peek. A zero-row by-ID ack means
+		// the row is already gone (e.g. a redelivery of an
+		// already-consumed message racing dedup), which is likewise a
+		// no-op to roll back.
+		rows, err := ackMessage(txCtx, s, e.msgID, e.leaseToken)
 		if err != nil {
 			return err
 		}
