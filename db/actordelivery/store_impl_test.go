@@ -121,6 +121,141 @@ func TestActorDeliveryStoreEnqueueAndLease(t *testing.T) {
 	require.Nil(t, leased2)
 }
 
+// TestActorDeliveryStorePeekIsPureRead verifies that PeekNextMessage claims
+// the next message without taking a lease: it sets no lease token, no lease
+// expiry, and does NOT increment attempts, so the same message is returned on a
+// repeated peek. This is the at-least-once invariant of the leaseless path: a
+// crash between peek and commit leaves the row untouched for re-peek.
+func TestActorDeliveryStorePeekIsPureRead(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          "msg-peek",
+		MailboxID:   "actor-1",
+		MessageType: "test.Message",
+		Payload:     []byte{1, 2, 3},
+		Priority:    5,
+		AvailableAt: time.Now().Add(-time.Minute),
+		MaxAttempts: 3,
+	})
+	require.NoError(t, err)
+
+	peeked, err := store.PeekNextMessage(ctx, "actor-1")
+	require.NoError(t, err)
+	require.NotNil(t, peeked)
+
+	require.Equal(t, "msg-peek", peeked.ID)
+	require.Equal(t, []byte{1, 2, 3}, peeked.Payload)
+
+	// No lease was taken and attempts was not incremented.
+	require.Empty(t, peeked.LeaseToken)
+	require.Equal(t, 0, peeked.Attempts)
+
+	// A second peek returns the same message: peek is a pure read, so the
+	// message stays claimable (unlike a lease, which would hide it).
+	peeked2, err := store.PeekNextMessage(ctx, "actor-1")
+	require.NoError(t, err)
+	require.NotNil(t, peeked2)
+	require.Equal(t, "msg-peek", peeked2.ID)
+	require.Equal(t, 0, peeked2.Attempts)
+}
+
+// TestActorDeliveryStoreAckByID verifies the unfenced by-ID ack deletes the
+// message regardless of any lease token, then becomes a no-op.
+func TestActorDeliveryStoreAckByID(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          "msg-ackid",
+		MailboxID:   "actor-1",
+		MessageType: "test.Message",
+		Payload:     []byte{1},
+		AvailableAt: time.Now().Add(-time.Minute),
+		MaxAttempts: 3,
+	})
+	require.NoError(t, err)
+
+	// Peek (no lease), then ack by ID without any token.
+	peeked, err := store.PeekNextMessage(ctx, "actor-1")
+	require.NoError(t, err)
+	require.NotNil(t, peeked)
+	require.Empty(t, peeked.LeaseToken)
+
+	rows, err := store.AckMessageByID(ctx, "msg-ackid")
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rows)
+
+	// The message is gone; a repeat ack is a no-op.
+	rows, err = store.AckMessageByID(ctx, "msg-ackid")
+	require.NoError(t, err)
+	require.Equal(t, int64(0), rows)
+
+	peeked2, err := store.PeekNextMessage(ctx, "actor-1")
+	require.NoError(t, err)
+	require.Nil(t, peeked2)
+}
+
+// TestActorDeliveryStoreNackByIDIncrementsAttempts verifies the unfenced by-ID
+// nack increments attempts (the peek did not) and applies the retry backoff.
+// The attempts bump is what preserves dead-lettering on the leaseless path: the
+// message climbs to max_attempts and then becomes peek-ineligible.
+func TestActorDeliveryStoreNackByIDIncrementsAttempts(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	ts := newActorDeliveryStoreForTest(t)
+
+	err := ts.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          "msg-nackid",
+		MailboxID:   "actor-1",
+		MessageType: "test.Message",
+		Payload:     []byte{1},
+		AvailableAt: ts.clock.Now().Add(-time.Minute),
+		MaxAttempts: 2,
+	})
+	require.NoError(t, err)
+
+	// First peek: attempts is still 0 (peek does not bump).
+	peeked, err := ts.PeekNextMessage(ctx, "actor-1")
+	require.NoError(t, err)
+	require.NotNil(t, peeked)
+	require.Equal(t, 0, peeked.Attempts)
+
+	// Nack by ID: attempts -> 1, available_at pushed into the future.
+	rows, err := ts.NackMessageByID(ctx, "msg-nackid", 5*time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rows)
+
+	// Still in backoff, so not yet peekable.
+	peeked, err = ts.PeekNextMessage(ctx, "actor-1")
+	require.NoError(t, err)
+	require.Nil(t, peeked)
+
+	// Advance past the backoff; the message is peekable with attempts == 1.
+	ts.clock.SetTime(ts.clock.Now().Add(6 * time.Minute))
+	peeked, err = ts.PeekNextMessage(ctx, "actor-1")
+	require.NoError(t, err)
+	require.NotNil(t, peeked)
+	require.Equal(t, 1, peeked.Attempts)
+
+	// Nack again with no backoff: attempts -> 2 == max_attempts, so the
+	// message is no longer peek-eligible and would be dead-lettered by the
+	// consume path's ShouldDeadLetter check.
+	rows, err = ts.NackMessageByID(ctx, "msg-nackid", 0)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rows)
+
+	peeked, err = ts.PeekNextMessage(ctx, "actor-1")
+	require.NoError(t, err)
+	require.Nil(t, peeked)
+}
+
 // TestActorDeliveryStoreAck tests message acknowledgement.
 func TestActorDeliveryStoreAck(t *testing.T) {
 	t.Parallel()

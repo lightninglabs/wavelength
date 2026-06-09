@@ -30,9 +30,20 @@ other services can reuse durable actor storage without pulling unrelated tables.
   a `TxActorDeliveryStore` scoped to that transaction, and on successful commit
   fires outbox-wake callbacks when outbox messages were enqueued inside the tx.
 - `ActorDeliveryQueries` — Interface for all actor delivery SQL operations:
-  mailbox enqueue/lease/ack/nack/extend/expire, ask results, outbox
+  mailbox enqueue/lease/peek/ack/nack/extend/expire, ask results, outbox
   claim/complete/fail, deduplication, FSM checkpoints, dead letters, and
   cleanup. Implemented by the SQLC-generated query set.
+- **Leaseless single-worker consume path** — `PeekNextMailboxMessage` (a
+  READ-only claim that mirrors `LeaseNextMailboxMessage`'s eligibility and
+  ordering but takes no lease and does NOT bump attempts),
+  `AckMailboxMessageByID` (unfenced delete by id), and
+  `NackMailboxMessageByID` (unfenced release that increments attempts).
+  Exposed on both `Store` and `TxActorDeliveryStore` as `PeekNextMessage`
+  (read tx), `AckMessageByID`, and `NackMessageByID`. Used only by
+  `NumWorkers == 1` Read/Commit actors, which have no competing consumer to
+  fence; the multi-worker pool keeps lease + fenced ack. The by-ID nack
+  increments attempts because the peek does not, preserving dead-lettering
+  on max attempts.
 - `BatchedActorDeliveryQueries` — Batched transaction wrapper for
   `ActorDeliveryQueries`.
 - `MigrationOption` — Functional options for migration configuration

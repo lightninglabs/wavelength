@@ -174,7 +174,8 @@ type mockTxAwareStore struct {
 	// txShouldFail causes ExecTx to fail.
 	txShouldFail bool
 
-	// nackCalled tracks whether NackMessage was called after tx failure.
+	// nackCalled tracks whether a nack (fenced NackMessage or the leaseless
+	// unfenced NackMessageByID) was called after a failure.
 	nackCalled atomic.Bool
 
 	// txPostCallbackHook runs after fn() succeeds but before ExecTx
@@ -225,6 +226,17 @@ func (m *mockTxAwareStore) NackMessage(ctx context.Context, id,
 	m.nackCalled.Store(true)
 
 	return m.mockDeliveryStore.NackMessage(ctx, id, leaseToken, retryAfter)
+}
+
+// Override NackMessageByID to track calls. The leaseless single-worker
+// Read/Commit path nacks via the unfenced by-ID variant, so the test's
+// nackCalled flag must observe it too.
+func (m *mockTxAwareStore) NackMessageByID(ctx context.Context, id string,
+	retryAfter time.Duration) (int64, error) {
+
+	m.nackCalled.Store(true)
+
+	return m.mockDeliveryStore.NackMessageByID(ctx, id, retryAfter)
 }
 
 // TestDurableActorCreation tests actor creation with various configs.

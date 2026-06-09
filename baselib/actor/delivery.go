@@ -64,6 +64,14 @@ type Delivery[M TLVMessage, R any] struct {
 	// store is the backing store for persisting ack/nack operations.
 	store DeliveryStore
 
+	// leaseless reports that this delivery was peeked, not leased: it holds
+	// no lease token and its attempts count was NOT pre-incremented at
+	// claim time. The nack path increments attempts by ID, so the
+	// dead-letter boundary must count this in-flight attempt (Attempts + 1)
+	// to match the leased path, where attempts was already bumped at lease.
+	// See ShouldDeadLetter.
+	leaseless bool
+
 	// mu guards mutable fields (acked, LeaseUntil) that may be accessed
 	// concurrently by the heartbeat goroutine (Extend) and the main
 	// processing goroutine (Ack/Nack).
@@ -113,8 +121,20 @@ func (d *Delivery[M, R]) IsLeaseExpired() bool {
 
 // ShouldDeadLetter returns true if this message should be moved to the dead
 // letter queue (max attempts reached).
+//
+// The leased path pre-increments attempts at claim time, so Attempts already
+// counts the in-flight delivery and the boundary is Attempts >= MaxAttempts.
+// The leaseless (peeked) path does NOT pre-increment -- the nack increments by
+// ID -- so the in-flight attempt is counted as Attempts + 1, matching the
+// leased boundary and ensuring a message still dead-letters before it becomes
+// peek-ineligible (attempts == max_attempts).
 func (d *Delivery[M, R]) ShouldDeadLetter() bool {
-	return d.Attempts >= d.MaxAttempts
+	effectiveAttempts := d.Attempts
+	if d.leaseless {
+		effectiveAttempts++
+	}
+
+	return effectiveAttempts >= d.MaxAttempts
 }
 
 // Ack marks the message as successfully processed.
@@ -141,8 +161,9 @@ func (d *Delivery[M, R]) Ack(ctx context.Context, result fn.Result[R]) error {
 	// This must happen before SaveAskResult to prevent stale lease
 	// holders from persisting results: ask_results uses ON CONFLICT
 	// DO NOTHING, so a stale write would silently block the valid
-	// worker's result.
-	rowsAffected, err := d.store.AckMessage(ctx, d.ID, d.LeaseToken)
+	// worker's result. A leaseless (peeked) delivery has an empty lease
+	// token and acks by ID; ackMessage routes to the unfenced op then.
+	rowsAffected, err := ackMessage(ctx, d.store, d.ID, d.LeaseToken)
 	if err != nil {
 		return fmt.Errorf("ack message: %w", err)
 	}
@@ -238,9 +259,11 @@ func (d *Delivery[M, R]) Nack(
 		return nil
 	}
 
-	// Release the message for redelivery.
-	rowsAffected, nackErr := d.store.NackMessage(
-		ctx, d.ID, d.LeaseToken, retryAfter,
+	// Release the message for redelivery. A leaseless (peeked) delivery has
+	// an empty lease token and nacks by ID, which also increments attempts
+	// (the peek did not), preserving dead-lettering on max attempts.
+	rowsAffected, nackErr := nackMessage(
+		ctx, d.store, d.ID, d.LeaseToken, retryAfter,
 	)
 	if nackErr != nil {
 		return fmt.Errorf("nack message: %w", nackErr)
@@ -313,5 +336,9 @@ func newDelivery[M TLVMessage, R any](
 		MaxAttempts:     msg.MaxAttempts,
 		store:           store,
 		acked:           false,
+
+		// A peeked (leaseless) message carries an empty lease token and
+		// its attempts were not pre-incremented at claim time.
+		leaseless: msg.LeaseToken == "",
 	}
 }

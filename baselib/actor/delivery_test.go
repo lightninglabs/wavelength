@@ -131,6 +131,48 @@ func (m *mockDeliveryStore) LeaseNextMessage(ctx context.Context,
 	return nil, nil
 }
 
+// PeekNextMessage claims the next available message without taking a lease.
+// It mirrors LeaseNextMessage's eligibility but does not set a lease token,
+// does not set lease_until, and does NOT increment attempts. The returned
+// message carries an empty lease token.
+func (m *mockDeliveryStore) PeekNextMessage(ctx context.Context,
+	mailboxID string) (*LeasedMessage, error) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.injectError != nil {
+		return nil, m.injectError
+	}
+
+	now := time.Now()
+
+	for _, msg := range m.messages {
+		if msg.MailboxID != mailboxID {
+			continue
+		}
+
+		// Skip if leased and not expired.
+		if msg.LeaseToken != "" && msg.LeaseUntil.After(now) {
+			continue
+		}
+
+		// Skip if attempts exhausted, matching the SQL eligibility.
+		if msg.Attempts >= msg.MaxAttempts {
+			continue
+		}
+
+		// Return without mutating: no lease, no attempts bump.
+		peeked := *msg
+		peeked.LeaseToken = ""
+		peeked.LeaseUntil = time.Time{}
+
+		return &peeked, nil
+	}
+
+	return nil, nil
+}
+
 func (m *mockDeliveryStore) AckMessage(ctx context.Context, id,
 	leaseToken string) (int64, error) {
 
@@ -147,6 +189,27 @@ func (m *mockDeliveryStore) AckMessage(ctx context.Context, id,
 	}
 
 	if msg.LeaseToken != leaseToken {
+		return 0, nil
+	}
+
+	delete(m.messages, id)
+
+	return 1, nil
+}
+
+// AckMessageByID acknowledges a message by ID without lease-token validation,
+// mirroring the unfenced leaseless SQL ack.
+func (m *mockDeliveryStore) AckMessageByID(ctx context.Context, id string) (
+	int64, error) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.injectError != nil {
+		return 0, m.injectError
+	}
+
+	if _, ok := m.messages[id]; !ok {
 		return 0, nil
 	}
 
@@ -177,6 +240,32 @@ func (m *mockDeliveryStore) NackMessage(ctx context.Context, id,
 	// Release the lease.
 	msg.LeaseToken = ""
 	msg.LeaseUntil = time.Time{}
+
+	return 1, nil
+}
+
+// NackMessageByID releases a message by ID without lease-token validation and
+// increments attempts, mirroring the unfenced leaseless SQL nack.
+func (m *mockDeliveryStore) NackMessageByID(ctx context.Context, id string,
+	retryAfter time.Duration) (int64, error) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.injectError != nil {
+		return 0, m.injectError
+	}
+
+	msg, ok := m.messages[id]
+	if !ok {
+		return 0, nil
+	}
+
+	// Release any lease and increment attempts. The attempts bump is the
+	// behavior the leaseless path relies on for dead-lettering.
+	msg.LeaseToken = ""
+	msg.LeaseUntil = time.Time{}
+	msg.Attempts++
 
 	return 1, nil
 }
