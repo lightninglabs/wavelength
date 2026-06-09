@@ -53,16 +53,33 @@ type DurableMailboxLeaseNextReq = (
     lease_duration: int
 );
 
+type DurableMailboxPeekNextReq = (
+    reply_to: machine,
+    mailbox_id: int,
+    now: int
+);
+
 type DurableMailboxTokenReq = (
     reply_to: machine,
     id: int,
     lease_token: int
 );
 
+type DurableMailboxByIDReq = (
+    reply_to: machine,
+    id: int
+);
+
 type DurableMailboxNackReq = (
     reply_to: machine,
     id: int,
     lease_token: int,
+    available_at: int
+);
+
+type DurableMailboxNackByIDReq = (
+    reply_to: machine,
+    id: int,
     available_at: int
 );
 
@@ -146,8 +163,11 @@ type DurableMailboxStageReq = (
 
 event eDurableMailboxEnqueue: DurableMailboxEnqueueReq;
 event eDurableMailboxLeaseNext: DurableMailboxLeaseNextReq;
+event eDurableMailboxPeekNext: DurableMailboxPeekNextReq;
 event eDurableMailboxAck: DurableMailboxTokenReq;
+event eDurableMailboxAckByID: DurableMailboxByIDReq;
 event eDurableMailboxNack: DurableMailboxNackReq;
+event eDurableMailboxNackByID: DurableMailboxNackByIDReq;
 event eDurableMailboxExpireLeasesAt: int;
 event eDurableMailboxDeadLetter: DurableMailboxDeadLetterReq;
 event eDurableMailboxCommit: DurableMailboxCommitReq;
@@ -155,6 +175,7 @@ event eDurableMailboxStage: DurableMailboxStageReq;
 
 event eDurableMailboxOpResp: (int, DurableMailboxOpResult);
 event eDurableMailboxLeaseResp: (int, DurableMailboxOpResult);
+event eDurableMailboxPeekResp: (int, int, int, DurableMailboxOpResult);
 
 // eDurableMailboxClaimed is announced on every successful lease.
 // eDurableMailboxRowEnqueued and eDurableMailboxRowRemoved let the FIFO monitor
@@ -470,6 +491,26 @@ fun NackMailboxRow(rows: seq[MailboxRow], id: int, available_at: int):
     return ReplaceMailboxRow(rows, row);
 }
 
+// NackMailboxRowByID is the leaseless failure path. Peek does not write a
+// lease or pre-increment attempts, so the by-ID nack increments attempts here.
+// It also clears any stale expired lease metadata left by an older leased
+// claim; otherwise the persisted row no longer matches the empty-token
+// leaseless state machine the actor layer observed.
+fun NackMailboxRowByID(rows: seq[MailboxRow], id: int, available_at: int):
+    seq[MailboxRow] {
+
+    var row: MailboxRow;
+
+    row = RowByID(rows, id);
+    row = NewMailboxRow(
+        row.id, row.mailbox_id, row.correlation_key, row.priority,
+        available_at, NoLease(), NoLeaseToken(), row.attempts + 1,
+        row.max_attempts, row.created_at
+    );
+
+    return ReplaceMailboxRow(rows, row);
+}
+
 fun ExpireMailboxLeases(rows: seq[MailboxRow], now: int): seq[MailboxRow] {
     var result: seq[MailboxRow];
     var i: int;
@@ -565,6 +606,34 @@ machine DurableMailboxSpec {
                 (id, MailboxOpOk);
         }
 
+        on eDurableMailboxPeekNext do (
+            req: DurableMailboxPeekNextReq
+        ) {
+            var id: int;
+            var row: MailboxRow;
+
+            id = ClaimNextMailboxRow(
+                rows, req.mailbox_id, req.now, mode
+            );
+            if (id == NoMailboxRow()) {
+                send req.reply_to, eDurableMailboxPeekResp,
+                    (
+                        NoMailboxRow(), NoLeaseToken(), 0,
+                        MailboxOpNotFound
+                    );
+                return;
+            }
+
+            // Peek is read-only: it selects the same eligible row as LeaseNext
+            // but does not mutate lease metadata or attempts. The actor-layer
+            // contract is nevertheless an empty token, even if the persisted
+            // row still has stale expired lease metadata from an older leased
+            // claim.
+            row = RowByID(rows, id);
+            send req.reply_to, eDurableMailboxPeekResp,
+                (id, NoLeaseToken(), row.attempts, MailboxOpOk);
+        }
+
         on eDurableMailboxAck do (req: DurableMailboxTokenReq) {
             var row: MailboxRow;
 
@@ -578,6 +647,19 @@ machine DurableMailboxSpec {
             if (!TokenMatches(row, req.lease_token)) {
                 send req.reply_to, eDurableMailboxOpResp,
                     (req.id, MailboxOpTokenMismatch);
+                return;
+            }
+
+            rows = RemoveMailboxRow(rows, req.id);
+            announce eDurableMailboxRowRemoved, (this, req.id);
+            send req.reply_to, eDurableMailboxOpResp,
+                (req.id, MailboxOpOk);
+        }
+
+        on eDurableMailboxAckByID do (req: DurableMailboxByIDReq) {
+            if (!RowExists(rows, req.id)) {
+                send req.reply_to, eDurableMailboxOpResp,
+                    (req.id, MailboxOpNotFound);
                 return;
             }
 
@@ -604,6 +686,18 @@ machine DurableMailboxSpec {
             }
 
             rows = NackMailboxRow(rows, req.id, req.available_at);
+            send req.reply_to, eDurableMailboxOpResp,
+                (req.id, MailboxOpOk);
+        }
+
+        on eDurableMailboxNackByID do (req: DurableMailboxNackByIDReq) {
+            if (!RowExists(rows, req.id)) {
+                send req.reply_to, eDurableMailboxOpResp,
+                    (req.id, MailboxOpNotFound);
+                return;
+            }
+
+            rows = NackMailboxRowByID(rows, req.id, req.available_at);
             send req.reply_to, eDurableMailboxOpResp,
                 (req.id, MailboxOpOk);
         }

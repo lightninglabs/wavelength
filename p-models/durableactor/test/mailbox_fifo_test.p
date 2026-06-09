@@ -681,6 +681,103 @@ machine TestDurableMailboxSpec_DeadLetterByIdRemovesExhaustedRow {
     state Done {}
 }
 
+// TestDurableMailboxSpec_LeaselessPeekMasksStaleLease exercises the
+// SingleWorkerLeaseless mailbox edge: a row that was previously leased can
+// become peek-eligible after the lease deadline passes, even if no maintenance
+// worker has cleared the stale lease metadata. Peek must surface an empty token
+// and leave attempts untouched; the by-ID nack then increments attempts and
+// clears the stale metadata.
+machine TestDurableMailboxSpec_LeaselessPeekMasksStaleLease {
+    var mailbox: DurableMailboxSpec;
+
+    start state Init {
+        entry {
+            var op_resp: (int, DurableMailboxOpResult);
+            var lease_resp: (int, DurableMailboxOpResult);
+            var peek_resp: (int, int, int, DurableMailboxOpResult);
+
+            mailbox = new DurableMailboxSpec(PerCorrelationKeyFIFO);
+
+            send mailbox, eDurableMailboxEnqueue, (
+                reply_to = this,
+                row = NewMailboxRow(
+                    1, 10, 100, 0, 0, NoLease(), NoLeaseToken(),
+                    0, 3, 0
+                )
+            );
+            receive { case eDurableMailboxOpResp:
+                (resp0: (int, DurableMailboxOpResult)) { op_resp = resp0; }
+            }
+            assert op_resp.1 == MailboxOpOk, "enqueue succeeds";
+
+            send mailbox, eDurableMailboxLeaseNext, (
+                reply_to = this, mailbox_id = 10, lease_token = 11,
+                now = 0, lease_duration = 5
+            );
+            receive { case eDurableMailboxLeaseResp:
+                (resp1: (int, DurableMailboxOpResult)) {
+                    lease_resp = resp1;
+                }
+            }
+            assert lease_resp.0 == 1 && lease_resp.1 == MailboxOpOk,
+                "leased path sets stale metadata and increments attempts";
+
+            // No eDurableMailboxExpireLeasesAt here: production PeekNextMessage
+            // treats lease_until < now as eligible even when the persisted row
+            // still carries the old token/deadline.
+            send mailbox, eDurableMailboxPeekNext, (
+                reply_to = this, mailbox_id = 10, now = 6
+            );
+            receive { case eDurableMailboxPeekResp:
+                (resp2: (int, int, int, DurableMailboxOpResult)) {
+                    peek_resp = resp2;
+                }
+            }
+            assert peek_resp.0 == 1 && peek_resp.3 == MailboxOpOk,
+                "peek selects the expired-lease row";
+            assert peek_resp.1 == NoLeaseToken(),
+                "peek surfaces an empty actor-layer token";
+            assert peek_resp.2 == 1,
+                "peek is read-only and does not increment attempts";
+
+            send mailbox, eDurableMailboxNackByID, (
+                reply_to = this, id = 1, available_at = 7
+            );
+            receive { case eDurableMailboxOpResp:
+                (resp3: (int, DurableMailboxOpResult)) { op_resp = resp3; }
+            }
+            assert op_resp.1 == MailboxOpOk,
+                "by-ID nack succeeds without validating the stale token";
+
+            send mailbox, eDurableMailboxPeekNext, (
+                reply_to = this, mailbox_id = 10, now = 7
+            );
+            receive { case eDurableMailboxPeekResp:
+                (resp4: (int, int, int, DurableMailboxOpResult)) {
+                    peek_resp = resp4;
+                }
+            }
+            assert peek_resp.0 == 1 && peek_resp.1 == NoLeaseToken(),
+                "row remains on the empty-token leaseless path";
+            assert peek_resp.2 == 2,
+                "by-ID nack increments attempts for retry accounting";
+
+            send mailbox, eDurableMailboxAckByID, (
+                reply_to = this, id = 1
+            );
+            receive { case eDurableMailboxOpResp:
+                (resp5: (int, DurableMailboxOpResult)) { op_resp = resp5; }
+            }
+            assert op_resp.1 == MailboxOpOk,
+                "by-ID ack consumes the peeked row";
+
+            goto Done;
+        }
+    }
+
+    state Done {}
+}
+
 // TestMailboxFIFO_LegacyReorderNoInlineAssert replays the production reorder
 // against the legacy claim mode but, unlike
 // TestMailboxFIFO_LegacyCounterexampleToIdealFIFO, contains NO in-machine
@@ -1319,6 +1416,7 @@ machine MailboxFIFOTestDriver {
             new TestDurableMailboxSpec_DuplicateEnqueuePreservesFirstRow();
             new TestDurableMailboxSpec_PriorityDoesNotPierceSameKeyFIFO();
             new TestDurableMailboxSpec_DeadLetterByIdRemovesExhaustedRow();
+            new TestDurableMailboxSpec_LeaselessPeekMasksStaleLease();
 
             goto Done;
         }
@@ -1345,6 +1443,7 @@ test tcMailboxCorrelationKeyFIFO [main=MailboxFIFOTestDriver]:
     TestDurableMailboxSpec_DuplicateEnqueuePreservesFirstRow,
     TestDurableMailboxSpec_PriorityDoesNotPierceSameKeyFIFO,
     TestDurableMailboxSpec_DeadLetterByIdRemovesExhaustedRow,
+    TestDurableMailboxSpec_LeaselessPeekMasksStaleLease,
     MailboxFIFOTestDriver };
 
 // tcMailboxLiveness checks the non-starvation liveness property: every enqueued

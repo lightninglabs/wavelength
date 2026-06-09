@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,6 +47,16 @@ type mockDeliveryStore struct {
 
 	// injectEnqueueError causes only EnqueueMessage to fail.
 	injectEnqueueError error
+
+	// injectNackError causes the by-ID nack to fail without affecting the
+	// peek/claim path. It models a wedged write txn on the leaseless nack
+	// edge while leaving the message peek-eligible.
+	injectNackError error
+
+	// peekCount counts PeekNextMessage calls. Used to assert that the
+	// receive loop backs off after a failed leaseless nack instead of
+	// tight-spinning re-peeks of the same eligible row.
+	peekCount atomic.Int64
 }
 
 func newMockDeliveryStore() *mockDeliveryStore {
@@ -131,6 +142,50 @@ func (m *mockDeliveryStore) LeaseNextMessage(ctx context.Context,
 	return nil, nil
 }
 
+// PeekNextMessage claims the next available message without taking a lease.
+// It mirrors LeaseNextMessage's eligibility but does not set a lease token,
+// does not set lease_until, and does NOT increment attempts. The returned
+// message carries an empty lease token.
+func (m *mockDeliveryStore) PeekNextMessage(ctx context.Context,
+	mailboxID string) (*LeasedMessage, error) {
+
+	m.peekCount.Add(1)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.injectError != nil {
+		return nil, m.injectError
+	}
+
+	now := time.Now()
+
+	for _, msg := range m.messages {
+		if msg.MailboxID != mailboxID {
+			continue
+		}
+
+		// Skip if leased and not expired.
+		if msg.LeaseToken != "" && msg.LeaseUntil.After(now) {
+			continue
+		}
+
+		// Skip if attempts exhausted, matching the SQL eligibility.
+		if msg.Attempts >= msg.MaxAttempts {
+			continue
+		}
+
+		// Return without mutating: no lease, no attempts bump.
+		peeked := *msg
+		peeked.LeaseToken = ""
+		peeked.LeaseUntil = time.Time{}
+
+		return &peeked, nil
+	}
+
+	return nil, nil
+}
+
 func (m *mockDeliveryStore) AckMessage(ctx context.Context, id,
 	leaseToken string) (int64, error) {
 
@@ -147,6 +202,27 @@ func (m *mockDeliveryStore) AckMessage(ctx context.Context, id,
 	}
 
 	if msg.LeaseToken != leaseToken {
+		return 0, nil
+	}
+
+	delete(m.messages, id)
+
+	return 1, nil
+}
+
+// AckMessageByID acknowledges a message by ID without lease-token validation,
+// mirroring the unfenced leaseless SQL ack.
+func (m *mockDeliveryStore) AckMessageByID(ctx context.Context, id string) (
+	int64, error) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.injectError != nil {
+		return 0, m.injectError
+	}
+
+	if _, ok := m.messages[id]; !ok {
 		return 0, nil
 	}
 
@@ -177,6 +253,36 @@ func (m *mockDeliveryStore) NackMessage(ctx context.Context, id,
 	// Release the lease.
 	msg.LeaseToken = ""
 	msg.LeaseUntil = time.Time{}
+
+	return 1, nil
+}
+
+// NackMessageByID releases a message by ID without lease-token validation and
+// increments attempts, mirroring the unfenced leaseless SQL nack.
+func (m *mockDeliveryStore) NackMessageByID(ctx context.Context, id string,
+	retryAfter time.Duration) (int64, error) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.injectError != nil {
+		return 0, m.injectError
+	}
+
+	if m.injectNackError != nil {
+		return 0, m.injectNackError
+	}
+
+	msg, ok := m.messages[id]
+	if !ok {
+		return 0, nil
+	}
+
+	// Release any lease and increment attempts. The attempts bump is the
+	// behavior the leaseless path relies on for dead-lettering.
+	msg.LeaseToken = ""
+	msg.LeaseUntil = time.Time{}
+	msg.Attempts++
 
 	return 1, nil
 }
@@ -707,6 +813,73 @@ func TestDeliveryNackPoisonPill(t *testing.T) {
 	require.Contains(t, dl.FailureReason, "max attempts reached")
 }
 
+// TestDeliveryNackMutationFailed verifies that a failed leaseless nack store
+// write sets the mutationFailed flag so the worker loop can back off, while a
+// successful nack leaves the flag clear. Without the flag, a leaseless row
+// whose nack write fails stays physically unchanged and immediately
+// re-eligible, and the receive loop would tight-spin re-peeking it against a
+// wedged DB.
+func TestDeliveryNackMutationFailed(t *testing.T) {
+	t.Parallel()
+
+	msgID := "test-msg-1"
+
+	newLeaselessDelivery := func(
+		store *mockDeliveryStore) *Delivery[*testTLVMsg, string] {
+
+		return &Delivery[*testTLVMsg, string]{
+			ID: msgID,
+			Message: &testTLVMsg{
+				Value: tlv.NewPrimitiveRecord[tlv.TlvType1](
+					uint64(42),
+				),
+			},
+			// Empty lease token routes nack through the unfenced
+			// by-ID op and marks this delivery leaseless.
+			LeaseToken:  "",
+			Attempts:    1,
+			MaxAttempts: 10,
+			leaseless:   true,
+		}
+	}
+
+	// A successful nack must not flag the delivery.
+	okStore := newMockDeliveryStore()
+	okStore.messages[msgID] = &LeasedMessage{
+		ID:          msgID,
+		MailboxID:   "test-actor",
+		Attempts:    1,
+		MaxAttempts: 10,
+	}
+	okDelivery := newLeaselessDelivery(okStore)
+	okDelivery.store = okStore
+
+	err := okDelivery.Nack(
+		context.Background(), errors.New("transient"), 5*time.Second,
+	)
+	require.NoError(t, err)
+	require.False(t, okDelivery.MutationFailed())
+
+	// A failed nack store write must flag the delivery so the receive loop
+	// throttles its re-peek.
+	failStore := newMockDeliveryStore()
+	failStore.messages[msgID] = &LeasedMessage{
+		ID:          msgID,
+		MailboxID:   "test-actor",
+		Attempts:    1,
+		MaxAttempts: 10,
+	}
+	failStore.injectNackError = errors.New("database is locked")
+	failDelivery := newLeaselessDelivery(failStore)
+	failDelivery.store = failStore
+
+	err = failDelivery.Nack(
+		context.Background(), errors.New("transient"), 5*time.Second,
+	)
+	require.Error(t, err)
+	require.True(t, failDelivery.MutationFailed())
+}
+
 // TestDeliveryExtend tests lease extension.
 func TestDeliveryExtend(t *testing.T) {
 	t.Parallel()
@@ -838,6 +1011,28 @@ func TestDeliveryHelperMethods(t *testing.T) {
 	require.True(t, askDelivery.IsLeaseExpired())
 	require.True(t, askDelivery.ShouldDeadLetter())
 	require.True(t, askDelivery.LeaseRemaining() < 0)
+}
+
+// TestDeliveryEffectiveAttempts verifies that retry policy accounting counts
+// the current in-flight delivery on the leaseless path, where peek did not
+// increment attempts at claim time.
+func TestDeliveryEffectiveAttempts(t *testing.T) {
+	t.Parallel()
+
+	leased := &Delivery[*testTLVMsg, string]{
+		Attempts:    4,
+		MaxAttempts: 5,
+	}
+	require.Equal(t, 4, leased.EffectiveAttempts())
+	require.False(t, leased.ShouldDeadLetter())
+
+	leaseless := &Delivery[*testTLVMsg, string]{
+		Attempts:    4,
+		MaxAttempts: 5,
+		leaseless:   true,
+	}
+	require.Equal(t, 5, leaseless.EffectiveAttempts())
+	require.True(t, leaseless.ShouldDeadLetter())
 }
 
 // TestDeliveryRapidAckNack is a property-based test for Ack/Nack behavior.

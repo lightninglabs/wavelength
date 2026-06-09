@@ -23,8 +23,10 @@ type (
 	EnqueueMailboxParams   = adsqlc.EnqueueMailboxMessageParams
 	EnqueueOutboxParams    = adsqlc.EnqueueOutboxMessageParams
 	LeaseMailboxParams     = adsqlc.LeaseNextMailboxMessageParams
+	PeekMailboxParams      = adsqlc.PeekNextMailboxMessageParams
 	AckMailboxParams       = adsqlc.AckMailboxMessageParams
 	NackMailboxParams      = adsqlc.NackMailboxMessageParams
+	NackMailboxByIDParams  = adsqlc.NackMailboxMessageByIDParams
 	ExtendMailboxParams    = adsqlc.ExtendMailboxLeaseParams
 	InsertAskResultParams  = adsqlc.InsertAskResultParams
 	ClaimOutboxBatchParams = adsqlc.ClaimOutboxBatchParams
@@ -52,11 +54,19 @@ type ActorDeliveryQueries interface {
 	LeaseNextMailboxMessage(ctx context.Context,
 		arg LeaseMailboxParams) (MailboxMsgRow, error)
 
+	PeekNextMailboxMessage(ctx context.Context,
+		arg PeekMailboxParams) (MailboxMsgRow, error)
+
 	AckMailboxMessage(ctx context.Context,
 		arg AckMailboxParams) (int64, error)
 
+	AckMailboxMessageByID(ctx context.Context, id string) (int64, error)
+
 	NackMailboxMessage(ctx context.Context,
 		arg NackMailboxParams) (int64, error)
+
+	NackMailboxMessageByID(ctx context.Context,
+		arg NackMailboxByIDParams) (int64, error)
 
 	ExtendMailboxLease(ctx context.Context,
 		arg ExtendMailboxParams) (int64, error)
@@ -246,6 +256,76 @@ func (s *Store) LeaseNextMessage(ctx context.Context, mailboxID string,
 	return result, err
 }
 
+// leasedMessageFromRow maps a SQLC mailbox row to an actor.LeasedMessage.
+func leasedMessageFromRow(msg MailboxMsgRow) *actor.LeasedMessage {
+	return &actor.LeasedMessage{
+		ID:              msg.ID,
+		MailboxID:       msg.MailboxID,
+		MessageType:     msg.MessageType,
+		Payload:         msg.Payload,
+		PromiseID:       fromNullString(msg.PromiseID),
+		CallbackActorID: fromNullString(msg.CallbackActorID),
+		CorrelationID:   fromNullString(msg.CorrelationID),
+		Priority:        int(msg.Priority),
+		LeaseToken:      fromNullString(msg.LeaseToken),
+		LeaseUntil:      fromNullInt64Time(msg.LeaseUntil),
+		Attempts:        int(msg.Attempts),
+		MaxAttempts:     int(msg.MaxAttempts),
+		CreatedAt:       time.Unix(msg.CreatedAt, 0),
+	}
+}
+
+// leaselessMessageFromRow maps a SQLC mailbox row to a peeked delivery. A
+// peeked row may still carry stale, expired lease metadata from an older leased
+// claim; the actor-layer contract for PeekNextMessage is always an empty token,
+// which routes ack/nack to the by-ID leaseless operations.
+func leaselessMessageFromRow(msg MailboxMsgRow) *actor.LeasedMessage {
+	leased := leasedMessageFromRow(msg)
+	leased.LeaseToken = ""
+	leased.LeaseUntil = time.Time{}
+
+	return leased
+}
+
+// PeekNextMessage claims the next available message with a read-only query and
+// takes no lease. The returned LeasedMessage carries an empty LeaseToken, which
+// signals the single-worker consume path to ack/nack via the unfenced by-ID
+// operations. It runs under a read transaction (no fsync), eliminating the
+// write transaction that LeaseNextMessage performs.
+func (s *Store) PeekNextMessage(ctx context.Context, mailboxID string) (
+	*actor.LeasedMessage, error) {
+
+	readTxOpts := db.ReadTxOption()
+
+	var result *actor.LeasedMessage
+
+	err := s.db.ExecTx(ctx, readTxOpts,
+		func(q ActorDeliveryQueries) error {
+			now := s.clock.Now()
+
+			msg, err := q.PeekNextMailboxMessage(
+				ctx,
+				PeekMailboxParams{
+					MailboxID:   mailboxID,
+					AvailableAt: now.Unix(),
+				},
+			)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil
+				}
+
+				return err
+			}
+
+			result = leaselessMessageFromRow(msg)
+
+			return nil
+		})
+
+	return result, err
+}
+
 // AckMessage acknowledges successful processing of a message.
 func (s *Store) AckMessage(ctx context.Context, id, leaseToken string) (int64,
 	error) {
@@ -263,6 +343,28 @@ func (s *Store) AckMessage(ctx context.Context, id, leaseToken string) (int64,
 				ID:         id,
 				LeaseToken: toNullString(leaseToken),
 			})
+
+			return err
+		},
+	)
+
+	return rows, err
+}
+
+// AckMessageByID acknowledges successful processing of a message by ID without
+// validating a lease token. It is the leaseless single-worker counterpart to
+// AckMessage.
+func (s *Store) AckMessageByID(ctx context.Context, id string) (int64, error) {
+	writeTxOpts := db.WriteTxOption()
+
+	var rows int64
+
+	err := s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			var err error
+			rows, err = q.AckMailboxMessageByID(ctx, id)
 
 			return err
 		},
@@ -291,6 +393,39 @@ func (s *Store) NackMessage(ctx context.Context, id, leaseToken string,
 				LeaseToken:  toNullString(leaseToken),
 				AvailableAt: availableAt.Unix(),
 			})
+
+			return err
+		},
+	)
+
+	return rows, err
+}
+
+// NackMessageByID releases a message for redelivery by ID without validating a
+// lease token, and increments attempts. It is the leaseless single-worker
+// counterpart to NackMessage. The attempts bump preserves dead-lettering on
+// max attempts because the leaseless peek does not increment attempts.
+func (s *Store) NackMessageByID(ctx context.Context, id string,
+	retryAfter time.Duration) (int64, error) {
+
+	writeTxOpts := db.WriteTxOption()
+
+	var rows int64
+
+	err := s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			availableAt := s.clock.Now().Add(retryAfter)
+
+			var err error
+			rows, err = q.NackMailboxMessageByID(
+				ctx,
+				NackMailboxByIDParams{
+					ID:          id,
+					AvailableAt: availableAt.Unix(),
+				},
+			)
 
 			return err
 		},
@@ -991,6 +1126,29 @@ func (s *TxActorDeliveryStore) LeaseNextMessage(ctx context.Context,
 	}, nil
 }
 
+// PeekNextMessage claims the next available message with a read-only query and
+// takes no lease, within the current transaction. The returned LeasedMessage
+// carries an empty LeaseToken, signalling the unfenced by-ID ack/nack path.
+func (s *TxActorDeliveryStore) PeekNextMessage(ctx context.Context,
+	mailboxID string) (*actor.LeasedMessage, error) {
+
+	now := s.clock.Now()
+
+	msg, err := s.querier.PeekNextMailboxMessage(ctx, PeekMailboxParams{
+		MailboxID:   mailboxID,
+		AvailableAt: now.Unix(),
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return leaselessMessageFromRow(msg), nil
+}
+
 // AckMessage acknowledges successful processing of a message.
 func (s *TxActorDeliveryStore) AckMessage(ctx context.Context, id,
 	leaseToken string) (int64, error) {
@@ -999,6 +1157,15 @@ func (s *TxActorDeliveryStore) AckMessage(ctx context.Context, id,
 		ID:         id,
 		LeaseToken: toNullString(leaseToken),
 	})
+}
+
+// AckMessageByID acknowledges successful processing of a message by ID without
+// validating a lease token, within the current transaction. It is the leaseless
+// single-worker counterpart to AckMessage.
+func (s *TxActorDeliveryStore) AckMessageByID(ctx context.Context, id string) (
+	int64, error) {
+
+	return s.querier.AckMailboxMessageByID(ctx, id)
 }
 
 // NackMessage releases a message for redelivery after the specified delay.
@@ -1010,6 +1177,20 @@ func (s *TxActorDeliveryStore) NackMessage(ctx context.Context, id,
 	return s.querier.NackMailboxMessage(ctx, NackMailboxParams{
 		ID:          id,
 		LeaseToken:  toNullString(leaseToken),
+		AvailableAt: availableAt.Unix(),
+	})
+}
+
+// NackMessageByID releases a message for redelivery by ID without validating a
+// lease token, and increments attempts, within the current transaction. It is
+// the leaseless single-worker counterpart to NackMessage.
+func (s *TxActorDeliveryStore) NackMessageByID(ctx context.Context, id string,
+	retryAfter time.Duration) (int64, error) {
+
+	availableAt := s.clock.Now().Add(retryAfter)
+
+	return s.querier.NackMailboxMessageByID(ctx, NackMailboxByIDParams{
+		ID:          id,
 		AvailableAt: availableAt.Unix(),
 	})
 }

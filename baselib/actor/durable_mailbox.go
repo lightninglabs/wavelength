@@ -94,6 +94,34 @@ type DurableMailboxConfig struct {
 	// poll interval. It is purely a latency optimization: correctness never
 	// depends on a wake because the poll ticker is the fallback.
 	WakeBuffer int
+
+	// SingleWorkerLeaseless enables the leaseless peek consume path. When
+	// set, Receive claims the next message with a READ-only PeekNextMessage
+	// instead of the write-transaction LeaseNextMessage, and yields a
+	// delivery with an EMPTY lease token. The empty token routes ack/nack
+	// through the unfenced by-ID store operations. This eliminates one
+	// write transaction per consumed message. It is sound ONLY when the
+	// actor runs exactly one worker (no competing consumer to fence
+	// against), so the owning DurableActor sets it strictly when NumWorkers
+	// == 1. A crash between peek and the consuming commit leaves the
+	// message untouched (it was never written), so it is simply re-peeked
+	// on restart -- identical at-least-once behavior to a lease that
+	// expires.
+	//
+	// Because the peek is a pure READ, attempts is bumped only on the nack
+	// (failure) path, never at claim. A message that returns an error nacks
+	// and climbs toward dead-lettering normally; but a message that crashes
+	// the worker PROCESS on every attempt skips the nack each time and so
+	// re-peeks indefinitely without ever dead-lettering. This is a
+	// deliberate tradeoff, NOT a gap to "fix" by bumping attempts at claim:
+	// bumping at claim turns every poll -- including the empty polls that
+	// dominate under contention -- back into a writer-lock-grabbing write
+	// transaction, which is the exact cross-actor serialization the
+	// leaseless read exists to avoid. The single-worker actors that use
+	// this path carry their own higher-level retry/backoff and treat the
+	// dead-letter table as a manual sink, so indefinite redelivery of a
+	// process-poisoning message is preferable to silently dropping it.
+	SingleWorkerLeaseless bool
 }
 
 // DefaultDurableMailboxConfig returns a config with sensible defaults.
@@ -318,12 +346,27 @@ func (m *DurableMailbox[M, R]) Receive(
 				return
 			}
 
-			// Try to lease a message.
-			leaseToken := generateID()
-			leased, err := m.cfg.Store.LeaseNextMessage(
-				ctx, m.cfg.MailboxID, leaseToken,
-				m.cfg.LeaseDuration,
+			// Claim the next message. The single-worker leaseless
+			// path peeks with a read-only query and takes no lease
+			// (the yielded delivery carries an empty lease token,
+			// which routes ack/nack through the unfenced by-ID
+			// store ops). The default path leases under a write
+			// transaction so a competing consumer is fenced out.
+			var (
+				leased *LeasedMessage
+				err    error
 			)
+			if m.cfg.SingleWorkerLeaseless {
+				leased, err = m.cfg.Store.PeekNextMessage(
+					ctx, m.cfg.MailboxID,
+				)
+			} else {
+				leaseToken := generateID()
+				leased, err = m.cfg.Store.LeaseNextMessage(
+					ctx, m.cfg.MailboxID, leaseToken,
+					m.cfg.LeaseDuration,
+				)
+			}
 
 			if err != nil {
 				// During teardown, the durable store is closed
@@ -468,6 +511,30 @@ func (m *DurableMailbox[M, R]) Receive(
 			if !yield(env) {
 				return
 			}
+
+			// A leaseless delivery whose nack write failed left
+			// its row physically unchanged and immediately
+			// re-eligible. Unlike the leased path, there is no
+			// lease fence whose expiry throttles the next claim,
+			// so re-peeking right away would tight-spin against a
+			// wedged DB. Back off for a poll interval (or until a
+			// wake) before the next claim, matching the implicit
+			// lease-expiry backoff of the fenced path.
+			if delivery.MutationFailed() {
+				select {
+				case <-ticker.C:
+					continue
+
+				case <-m.wake:
+					continue
+
+				case <-ctx.Done():
+					return
+
+				case <-m.actorCtx.Done():
+					return
+				}
+			}
 		}
 	}
 }
@@ -480,7 +547,19 @@ func (m *DurableMailbox[M, R]) Receive(
 func (m *DurableMailbox[M, R]) handlePoisonMessage(ctx context.Context,
 	leased *LeasedMessage, reason string) {
 
-	if leased.Attempts >= leased.MaxAttempts {
+	// A peeked (leaseless) message carries an empty lease token and was not
+	// attempts-bumped at claim time, so the in-flight attempt is counted as
+	// Attempts + 1 to match the leased dead-letter boundary. Otherwise a
+	// poison message would reach attempts == max_attempts via the by-ID
+	// nack below and become peek-ineligible before it could be
+	// dead-lettered.
+	leaseless := leased.LeaseToken == ""
+	effectiveAttempts := leased.Attempts
+	if leaseless {
+		effectiveAttempts++
+	}
+
+	if effectiveAttempts >= leased.MaxAttempts {
 		// Exhausted attempts -- dead-letter the message so it
 		// doesn't stay stranded in the mailbox forever.
 		dlReason := fmt.Sprintf("poison message (attempts %d/%d): %s",
@@ -522,9 +601,11 @@ func (m *DurableMailbox[M, R]) handlePoisonMessage(ctx context.Context,
 		return
 	}
 
-	// Not yet exhausted -- nack for retry with backoff.
-	_, _ = m.cfg.Store.NackMessage(
-		ctx, leased.ID, leased.LeaseToken, 60*time.Second,
+	// Not yet exhausted -- nack for retry with backoff. nackMessage routes
+	// the leaseless (empty-token) case to the by-ID nack, which increments
+	// attempts so the poison message still climbs toward dead-lettering.
+	_, _ = nackMessage(
+		ctx, m.cfg.Store, leased.ID, leased.LeaseToken, 60*time.Second,
 	)
 }
 

@@ -343,6 +343,83 @@ func TestDurableMailboxReceive(t *testing.T) {
 	require.Equal(t, []byte("test"), received.Payload.Val)
 }
 
+// TestDurableMailboxReceiveLeaselessNackBackoff verifies that when a leaseless
+// delivery's nack store write fails, the receive loop backs off for a poll
+// interval before re-peeking instead of tight-spinning. The failed nack leaves
+// the row physically unchanged and immediately re-eligible, and without the
+// backoff the loop would re-peek the same row in an unbounded CPU-bound tight
+// loop. We assert that the number of peeks over a fixed window stays bounded by
+// the poll cadence rather than growing without bound.
+func TestDurableMailboxReceiveLeaselessNackBackoff(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newDurableTestCodec()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const pollInterval = 25 * time.Millisecond
+
+	cfg := DefaultDurableMailboxConfig("test-mailbox", store, codec)
+	cfg.PollInterval = pollInterval
+	cfg.SingleWorkerLeaseless = true
+	mailbox := NewDurableMailbox[*durableTestMsg, int](ctx, cfg)
+
+	// Seed one eligible message directly so the peek path returns it.
+	msg := &durableTestMsg{
+		Value:   tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(7)),
+		Payload: tlv.NewPrimitiveRecord[tlv.TlvType2]([]byte("x")),
+	}
+	payload, err := codec.Encode(msg)
+	require.NoError(t, err)
+
+	store.messages["leaseless-msg"] = &LeasedMessage{
+		ID:          "leaseless-msg",
+		MailboxID:   "test-mailbox",
+		MessageType: msg.MessageType(),
+		Payload:     payload,
+		Attempts:    0,
+		MaxAttempts: 10,
+	}
+
+	// Make every leaseless nack store write fail while leaving the message
+	// peek-eligible, so each delivery is flagged mutationFailed and the
+	// loop must throttle before re-peeking the same unchanged row.
+	store.injectNackError = errors.New("database is locked")
+
+	receiveCtx, receiveCancel := context.WithTimeout(
+		ctx, 5*pollInterval,
+	)
+	defer receiveCancel()
+
+	deliveries := 0
+	for receivedEnv := range mailbox.Receive(receiveCtx) {
+		deliveries++
+
+		delivery, ok :=
+			receivedEnv.delivery.(*Delivery[*durableTestMsg, int])
+		require.True(t, ok)
+
+		// Nack fails against the wedged store, setting mutationFailed.
+		nackErr := delivery.Nack(
+			receiveCtx, errors.New("transient"), pollInterval,
+		)
+		require.Error(t, nackErr)
+		require.True(t, delivery.MutationFailed())
+	}
+
+	// Over a ~5 poll-interval window, a throttled loop peeks on the order
+	// of the poll count, not thousands of times. A generous ceiling still
+	// distinguishes bounded backoff from an unbounded tight spin.
+	peeks := store.peekCount.Load()
+	require.Less(
+		t, peeks, int64(50),
+		"receive loop tight-spun instead of backing off: %d peeks",
+		peeks,
+	)
+	require.Positive(t, deliveries)
+}
+
 // TestDurableMailboxReceiveContextCancelled tests that Receive respects
 // context.
 func TestDurableMailboxReceiveContextCancelled(t *testing.T) {

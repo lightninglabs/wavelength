@@ -18,11 +18,29 @@ that matter for the bug:
 `src/mailbox_fifo.p` keeps both the old available-at ordering profile and the
 new per-correlation-key FIFO profile. It also includes a stateful
 `DurableMailboxSpec` machine with token ownership, lease expiry, nack retry,
-idempotent enqueue, ack deletion, dead-letter removal, and the durable actor's
-Read/Commit consume step (`eDurableMailboxCommit`). The test suite proves that
-the legacy profile permits a same-key overtake after a nack/backoff, while the
-new profile blocks same-key overtakes without blocking other keys, other
-mailboxes, or unkeyed rows.
+idempotent enqueue, ack deletion, dead-letter removal, the leaseless
+single-worker peek path, and the durable actor's Read/Commit consume step
+(`eDurableMailboxCommit`). The test suite proves that the legacy profile
+permits a same-key overtake after a nack/backoff, while the new profile blocks
+same-key overtakes without blocking other keys, other mailboxes, or unkeyed
+rows.
+
+### Leaseless peek consume
+
+`eDurableMailboxPeekNext`, `eDurableMailboxAckByID`, and
+`eDurableMailboxNackByID` model `SingleWorkerLeaseless`: one runtime owner
+drains a mailbox with a read-only peek instead of a lease-grant write. Peek
+uses the same eligibility and ordering rule as `LeaseNext`, but it does not
+write a lease token, deadline, or attempt increment. The actor-layer delivery
+must therefore carry `NoLeaseToken()` even if the persisted row still has stale
+expired lease metadata from an older leased claim.
+
+The by-ID nack is the matching failure edge: because peek did not pre-increment
+attempts, nack increments attempts while clearing any stale lease metadata. The
+green `TestDurableMailboxSpec_LeaselessPeekMasksStaleLease` scenario exercises
+the case that caught the review bug: a row is leased once, its lease deadline
+passes without a maintenance cleanup, then the leaseless path peeks it as an
+empty-token delivery and nacks it by ID.
 
 ### Read/Commit consume step
 
@@ -129,6 +147,10 @@ Two representational details matter when writing P scenarios or bridge traces:
   clock). The two express the same backoff; they are not interchangeable field
   values, so port a scenario by recomputing the delay, not by copying the
   number.
+- **Peek always expects an empty token.** Bridge `peek` events assert the
+  production `PeekNextMessage` adapter surface, not the raw DB row. Omitting
+  `expect_token` means the expected token is empty, matching the actor-layer
+  contract even when the row still has stale expired lease metadata.
 - **Keep `created_at` unique within a lane.** The claim order mirrors the SQL
   `ORDER BY m.priority DESC, m.available_at ASC, m.created_at ASC`. The model
   adds a final `id` tie-breaker only for determinism (the SQL leaves

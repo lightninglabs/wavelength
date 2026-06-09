@@ -440,6 +440,21 @@ func NewDurableActor[M TLVMessage, R any](
 		return fn.Err[*DurableActor[M, R]](ErrConcurrentClassicBehavior)
 	}
 
+	// Enable the leaseless peek consume path strictly for a single-worker
+	// Read/Commit (Right / TxBehavior) actor. A single worker has no
+	// competing consumer, so the lease token's only purpose -- fencing the
+	// ack -- is unnecessary, and peeking with a read-only query eliminates
+	// one write transaction per consumed message. We additionally require
+	// the Read/Commit path because that is where the consume ack is folded
+	// into the behavior's own short transaction (where the by-ID ack
+	// belongs atomically); the classic path keeps the lease so its
+	// lease-bound attempts and retry-budget semantics are unchanged. With
+	// numWorkers > 1 the flag stays false, so the multi-worker
+	// competing-consumer path keeps LeaseNextMessage and the lease-fenced
+	// ack byte-for-byte.
+	mailboxCfg.SingleWorkerLeaseless = numWorkers == 1 &&
+		cfg.Behavior.IsRight()
+
 	actor := &DurableActor[M, R]{
 		id:                cfg.ID,
 		behavior:          cfg.Behavior,
@@ -620,8 +635,11 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 
 		// Already processed - attempt to ack the mailbox message
 		// without re-running behavior or re-persisting any Ask results.
-		rows, err := delivery.store.AckMessage(
-			processCtx, delivery.ID, delivery.LeaseToken,
+		// ackMessage routes a leaseless (empty-token) delivery to the
+		// unfenced by-ID ack.
+		rows, err := ackMessage(
+			processCtx, delivery.store, delivery.ID,
+			delivery.LeaseToken,
 		)
 		if err != nil {
 			logger(processCtx).WarnS(processCtx, "Failed to ack "+
@@ -631,10 +649,25 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 			return
 		}
 		if rows == 0 {
-			logger(processCtx).WarnS(processCtx, "Duplicate ack "+
-				"failed (lease expired)",
-				ErrLeaseExpired,
-				"delivery_id", delivery.ID)
+			// A zero-row ack means the row was not deleted. On the
+			// leased path that signals the lease expired or was
+			// claimed by another consumer. On the leaseless
+			// (empty-token) path there is no fence: the row is
+			// simply already gone (the original processing consumed
+			// it and this is a benign duplicate redelivery), so it
+			// is not a lease failure and warrants no warning.
+			if delivery.LeaseToken == "" {
+				logger(processCtx).DebugS(
+					processCtx,
+					"Duplicate ack found row already gone",
+					"delivery_id", delivery.ID,
+				)
+			} else {
+				logger(processCtx).WarnS(processCtx,
+					"Duplicate ack failed (lease expired)",
+					ErrLeaseExpired,
+					"delivery_id", delivery.ID)
+			}
 		}
 
 		return
@@ -794,7 +827,9 @@ func (a *DurableActor[M, R]) finishNonTx(ctx context.Context,
 		// handleResult.
 		shouldMarkProcessed = false
 	} else if delivery.IsTell() && result.Err() != nil {
-		retry, _ := a.tellRetryPolicy(result.Err(), delivery.Attempts)
+		retry, _ := a.tellRetryPolicy(
+			result.Err(), delivery.EffectiveAttempts(),
+		)
 		if retry {
 			shouldMarkProcessed = false
 		}
@@ -838,12 +873,17 @@ func (a *DurableActor[M, R]) processWithExec(ctx context.Context,
 	}
 
 	// Extend the lease while the behavior does IO outside the writer tx.
+	// A leaseless (peeked) delivery holds no lease, so there is nothing to
+	// heartbeat -- skip it to avoid a spurious "Failed to extend lease"
+	// warning loop against an empty token. stop stays a safe no-op then.
 	heartbeatDone := make(chan struct{})
 	var stopHeartbeat sync.Once
 	stop := func() {
 		stopHeartbeat.Do(func() { close(heartbeatDone) })
 	}
-	go a.heartbeat(ctx, delivery, heartbeatDone)
+	if !delivery.leaseless {
+		go a.heartbeat(ctx, delivery, heartbeatDone)
+	}
 	defer stop()
 
 	core := &execCore{
@@ -926,8 +966,8 @@ func (a *DurableActor[M, R]) rejectDurableAskOnExecPath(ctx context.Context,
 			return err
 		}
 
-		rows, err := store.AckMessage(
-			txCtx, delivery.ID, delivery.LeaseToken,
+		rows, err := ackMessage(
+			txCtx, store, delivery.ID, delivery.LeaseToken,
 		)
 		if err != nil {
 			return err
@@ -1079,6 +1119,7 @@ func (a *DurableActor[M, R]) handleResultInTx(
 
 	// For Tell messages, handle based on success/error.
 	if err := result.Err(); err != nil {
+		effectiveAttempts := delivery.EffectiveAttempts()
 		logger(ctx).WarnS(ctx,
 			"Durable actor Tell message failed",
 			err,
@@ -1086,14 +1127,18 @@ func (a *DurableActor[M, R]) handleResultInTx(
 			"delivery_id", delivery.ID,
 			"msg_type", delivery.Message.MessageType(),
 			"attempts", delivery.Attempts,
+			"effective_attempts", effectiveAttempts,
 		)
 
 		// Apply Tell retry policy.
-		retry, delay := a.tellRetryPolicy(err, delivery.Attempts)
+		retry, delay := a.tellRetryPolicy(err, effectiveAttempts)
 		if retry {
 			// Don't mark as processed - we want retry to work.
-			_, nackErr := store.NackMessage(
-				ctx, delivery.ID, delivery.LeaseToken, delay,
+			// nackMessage routes a leaseless (empty-token) delivery
+			// to the by-ID nack, which increments attempts.
+			_, nackErr := nackMessage(
+				ctx, store, delivery.ID, delivery.LeaseToken,
+				delay,
 			)
 
 			return nackErr
@@ -1192,6 +1237,7 @@ func (a *DurableActor[M, R]) handleResult(ctx context.Context,
 
 	// For Tell messages, handle based on success/error.
 	if err := result.Err(); err != nil {
+		effectiveAttempts := delivery.EffectiveAttempts()
 		logger(ctx).WarnS(ctx,
 			"Durable actor Tell message failed",
 			err,
@@ -1199,10 +1245,11 @@ func (a *DurableActor[M, R]) handleResult(ctx context.Context,
 			"delivery_id", delivery.ID,
 			"msg_type", delivery.Message.MessageType(),
 			"attempts", delivery.Attempts,
+			"effective_attempts", effectiveAttempts,
 		)
 
 		// Apply Tell retry policy.
-		retry, delay := a.tellRetryPolicy(err, delivery.Attempts)
+		retry, delay := a.tellRetryPolicy(err, effectiveAttempts)
 		if retry {
 			if nackErr := delivery.Nack(
 				ctx, err, delay,

@@ -38,6 +38,7 @@ correlation-key ordering fix:
 - per-correlation-key FIFO blocking
 - ack, nack, lease expiry, and dead-letter removal
 - lease token ownership
+- leaseless single-worker peek with by-ID ack/nack
 - retry exhaustion
 - independence between different mailboxes and different correlation keys
 
