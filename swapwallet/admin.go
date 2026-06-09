@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
@@ -432,6 +433,10 @@ func exitStatusFromDaemon(
 
 func hashString(hash fmt.Stringer) string {
 	if hash == nil {
+		return ""
+	}
+
+	if h, ok := hash.(*chainhash.Hash); ok && h == nil {
 		return ""
 	}
 

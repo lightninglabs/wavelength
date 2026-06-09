@@ -121,12 +121,6 @@ type RegistryConfig struct {
 	// Wallet provides sweep destination derivation and signing.
 	Wallet SweepWallet
 
-	// FeeInputFanoutCoordinator serializes internal backing-wallet fanout
-	// across child unroll actors. When nil and Wallet implements the
-	// txconfirm wallet surface, NewUnrollRegistryActor installs the default
-	// coordinator.
-	FeeInputFanoutCoordinator *FeeInputFanoutCoordinator
-
 	// Log is an optional logger.
 	Log fn.Option[btclog.Logger]
 
@@ -217,16 +211,6 @@ func (a *UnrollRegistryActor) Stop() {
 
 // NewUnrollRegistryActor creates and starts the thin unroll registry actor.
 func NewUnrollRegistryActor(cfg RegistryConfig) *UnrollRegistryActor {
-	if cfg.FeeInputFanoutCoordinator == nil {
-		if wallet, ok := cfg.Wallet.(txconfirm.Wallet); ok {
-			cfg.FeeInputFanoutCoordinator =
-				NewFeeInputFanoutCoordinator(
-					wallet, cfg.ChainSource,
-					cfg.MaxSweepFeeRateSatPerVByte,
-				)
-		}
-	}
-
 	behavior := &registryBehavior{
 		cfg:        cfg,
 		log:        cfg.Log.UnwrapOr(btclog.Disabled),
@@ -1451,7 +1435,6 @@ func (r *registryBehavior) childConfig(target wire.OutPoint) Config {
 		TxConfirmRef:                r.cfg.TxConfirmRef,
 		ChainSource:                 r.cfg.ChainSource,
 		Wallet:                      r.cfg.Wallet,
-		FeeInputFanoutCoordinator:   r.cfg.FeeInputFanoutCoordinator,
 		Log:                         r.cfg.Log,
 		MaxSweepFeeRateSatPerVByte:  r.cfg.MaxSweepFeeRateSatPerVByte,
 		ExitSpendPolicyResolver:     r.cfg.ExitSpendPolicyResolver,

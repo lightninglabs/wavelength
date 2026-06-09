@@ -500,6 +500,8 @@ func (a *TxBroadcasterActor) handleEnsure(ctx context.Context,
 func (a *TxBroadcasterActor) recordInitialBroadcastOutcome(ctx context.Context,
 	entry *trackedTx, err error) {
 
+	a.maybeEnsureFeeInputSupply(ctx, err)
+
 	switch {
 	case err == nil:
 		return
@@ -682,6 +684,10 @@ func (a *TxBroadcasterActor) handleCancel(ctx context.Context,
 func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 	msg *confirmationObservedMsg) {
 
+	if a.handleFanoutConfirmed(ctx, msg) {
+		return
+	}
+
 	entry, ok := a.tracked[msg.txid]
 	if !ok {
 		return
@@ -778,6 +784,8 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 			if err := a.broadcastTrackedTx(
 				ctx, entry, TxStateFeeBumping,
 			); err != nil {
+
+				a.maybeEnsureFeeInputSupply(ctx, err)
 
 				// Fee-bump failures are non-terminal. The
 				// original broadcast is still live and the

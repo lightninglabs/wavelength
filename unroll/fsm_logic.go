@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/unrollplan"
@@ -311,51 +310,6 @@ func deriveStateTransition(ctx context.Context, job *JobState, env *Environment,
 			})
 		}
 		if len(readyTxids) > 0 {
-			ready := readyFrontierForTxids(
-				snapshot.Ready, readyTxids,
-			)
-			feePlanner := env.FeeInputPlanner
-			if feePlanner != nil {
-				feePlan, err := feePlanner.PlanFeeInputs(
-					ctx, ready,
-				)
-				if err != nil {
-					return nil, err
-				}
-
-				shortfall := feePlan.FanoutFundingShortfallSat
-				if shortfall > 0 {
-					failed := job.Copy()
-					failed.FailReason =
-						feeInputFanoutShortfallReason(
-							shortfall,
-						)
-
-					return transitionWithOutbox(
-						&Failed{
-							Job: failed,
-						},
-						outbox,
-					), nil
-				}
-
-				if feePlan.NeedsFanout() {
-					outbox = append(
-						outbox, &RequestFeeInputFanout{
-							Txids: readyTxids,
-							Plan:  feePlan,
-						},
-					)
-
-					return transitionWithOutbox(
-						&AwaitingFeeInputFanout{
-							Job: job.Copy(),
-						},
-						outbox,
-					), nil
-				}
-			}
-
 			job.PlannerState.InFlightTxids = appendUniqueSorted(
 				job.PlannerState.InFlightTxids, readyTxids...,
 			)
@@ -371,38 +325,6 @@ func deriveStateTransition(ctx context.Context, job *JobState, env *Environment,
 			outbox,
 		), nil
 	}
-}
-
-// feeInputFanoutShortfallReason returns the terminal failure reason for a
-// wallet that cannot fund the required fanout outputs.
-func feeInputFanoutShortfallReason(shortfall btcutil.Amount) string {
-	return fmt.Sprintf("insufficient wallet balance for fee-input fanout: "+
-		"short %d sat", shortfall)
-}
-
-// readyFrontierForTxids returns the ready frontier entries selected for
-// submission after fraud-trigger deferral filtering has removed txids that
-// should only be watched for now.
-func readyFrontierForTxids(ready []unrollplan.TxFrontier,
-	txids []chainhash.Hash) []unrollplan.TxFrontier {
-
-	if len(ready) == 0 || len(txids) == 0 {
-		return nil
-	}
-
-	include := make(map[chainhash.Hash]struct{}, len(txids))
-	for _, txid := range txids {
-		include[txid] = struct{}{}
-	}
-
-	filtered := make([]unrollplan.TxFrontier, 0, len(txids))
-	for _, frontier := range ready {
-		if _, ok := include[frontier.Txid]; ok {
-			filtered = append(filtered, frontier)
-		}
-	}
-
-	return filtered
 }
 
 // transitionWithOutbox wraps the next state and optional outbox into one state

@@ -373,6 +373,28 @@ func TestGetExitPlanProxiesDaemonPlan(t *testing.T) {
 	)
 }
 
+// TestGetExitPlanAllowsMissingSweepTxid confirms an in-progress exit plan can
+// omit the sweep txid without crashing the wallet-facing projection.
+func TestGetExitPlanAllowsMissingSweepTxid(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	rpc.exitPlanResp = &darepod.ExitPlanResponse{
+		FundingAddress:           "bcrt1plan",
+		FeeRateSatPerVByte:       3,
+		RequiredFeeUTXOCount:     1,
+		RecommendedUTXOAmountSat: 10_000,
+	}
+
+	resp, err := svc.GetExitPlan(
+		t.Context(), &walletdkrpc.GetExitPlanRequest{
+			Outpoint: "abc:0",
+		},
+	)
+	require.NoError(t, err)
+	require.Empty(t, resp.GetSweepTxid())
+}
+
 // TestGetExitPlanRejectsEmptyOutpoint confirms an empty request does not reach
 // the daemon.
 func TestGetExitPlanRejectsEmptyOutpoint(t *testing.T) {

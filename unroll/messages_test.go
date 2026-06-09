@@ -127,23 +127,6 @@ func TestDurableMessageTLVRoundTrip(t *testing.T) {
 		require.Equal(t, orig.SpendingHeight, got.SpendingHeight)
 	})
 
-	t.Run("FeeInputsAvailableMsg", func(t *testing.T) {
-		t.Parallel()
-
-		orig := &FeeInputsAvailableMsg{
-			Txid:   txid,
-			Height: 888,
-		}
-
-		var buf bytes.Buffer
-		require.NoError(t, orig.Encode(&buf))
-
-		got := &FeeInputsAvailableMsg{}
-		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
-		require.Equal(t, orig.Txid, got.Txid)
-		require.Equal(t, orig.Height, got.Height)
-	})
-
 	t.Run("GetStateRequest", func(t *testing.T) {
 		t.Parallel()
 
@@ -173,10 +156,6 @@ func TestDurableMessagePriorityOrdering(t *testing.T) {
 	)
 	require.Greater(
 		t, (&SpendObservedMsg{}).Priority(),
-		(&HeightObservedMsg{}).Priority(),
-	)
-	require.Greater(
-		t, (&FeeInputsAvailableMsg{}).Priority(),
 		(&HeightObservedMsg{}).Priority(),
 	)
 	require.Greater(

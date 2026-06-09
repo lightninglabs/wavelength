@@ -25,14 +25,6 @@ type Session struct {
 // SessionOption customizes one unroll FSM session.
 type SessionOption func(*Environment)
 
-// WithFeeInputPlanner installs the wallet fee-input planner used to pause ready
-// proof submissions until sufficient distinct CPFP fee inputs exist.
-func WithFeeInputPlanner(planner FeeInputPlanner) SessionOption {
-	return func(env *Environment) {
-		env.FeeInputPlanner = planner
-	}
-}
-
 // NewSession creates a new unroll FSM session with the provided initial state.
 // fraudCheckpointSafetyMargin overrides the recipient backstop margin (in
 // blocks) baked into the FSM Environment; zero falls back to

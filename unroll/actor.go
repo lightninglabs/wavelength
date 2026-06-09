@@ -55,11 +55,6 @@ type Config struct {
 	// timeout-path signing.
 	Wallet SweepWallet
 
-	// FeeInputFanoutCoordinator serializes backing-wallet fanout across
-	// child unroll actors. When nil, ready proof transactions are handed to
-	// txconfirm directly and no pre-submission fanout is attempted.
-	FeeInputFanoutCoordinator *FeeInputFanoutCoordinator
-
 	// Log is an optional logger.
 	Log fn.Option[btclog.Logger]
 
@@ -288,16 +283,6 @@ func (b *behavior) dispatch(ctx context.Context, ax actor.Exec[unrollTx],
 
 	case *SpendObservedMsg:
 		return b.handleSpendObserved(ctx, ax, m)
-
-	case *FeeInputsAvailableMsg:
-		if b.cfg.FeeInputFanoutCoordinator != nil {
-			b.cfg.FeeInputFanoutCoordinator.MarkConfirmed(m.Txid)
-		}
-
-		return b.handleEvent(ctx, ax, &FeeInputsAvailableEvent{
-			Txid:   m.Txid,
-			Height: m.Height,
-		})
 
 	default:
 		return fn.Err[Resp](
@@ -902,7 +887,6 @@ func (b *behavior) ensureLoaded(ctx context.Context) error {
 		session, err := NewSession(
 			ctx, b.proof, b.planner, initialState, b.log,
 			b.cfg.FraudCheckpointSafetyMargin,
-			WithFeeInputPlanner(b),
 		)
 		if err != nil {
 			return err
@@ -1641,11 +1625,6 @@ func (b *behavior) routeOutbox(ctx context.Context, ax actor.Exec[unrollTx],
 
 		case *RequestSweepBuild:
 			if err := b.startSweep(ctx, ax); err != nil {
-				return err
-			}
-
-		case *RequestFeeInputFanout:
-			if err := b.startFeeInputFanout(ctx, evt); err != nil {
 				return err
 			}
 

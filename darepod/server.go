@@ -24,6 +24,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	btcwalletpkg "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -64,9 +65,11 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/signal"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -4398,6 +4401,42 @@ func (w *lndUnrollWallet) FinalizePsbt(ctx context.Context,
 	return finalTx, nil
 }
 
+// FundPsbt funds and finalizes a fanout transaction through LND WalletKit.
+func (w *lndUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
+	feeRateSatPerVByte int64, lockID wallet.LockID,
+	lockExpiry time.Duration) (*wire.MsgTx, error) {
+
+	packet, changeIndex, _, err := w.boardingBackend.WalletKit().FundPsbt(
+		ctx, &walletrpc.FundPsbtRequest{
+			Template: &walletrpc.FundPsbtRequest_Psbt{
+				Psbt: packetBytes,
+			},
+			Fees: &walletrpc.FundPsbtRequest_SatPerVbyte{
+				SatPerVbyte: uint64(feeRateSatPerVByte),
+			},
+			Account:  lnwallet.DefaultAccountName,
+			MinConfs: 1,
+			ChangeType: walletrpc.
+				ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR,
+			CoinSelectionStrategy: lnrpc.
+				CoinSelectionStrategy_STRATEGY_LARGEST,
+			CustomLockId:          lockID[:],
+			LockExpirationSeconds: uint64(lockExpiry.Seconds()),
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("LND FundPsbt: %w", err)
+	}
+	_ = changeIndex
+
+	var buf bytes.Buffer
+	if err := packet.Serialize(&buf); err != nil {
+		return nil, fmt.Errorf("serialize funded PSBT: %w", err)
+	}
+
+	return w.FinalizePsbt(ctx, buf.Bytes())
+}
+
 // LeaseOutput forwards the CPFP fee-input lease to the LND boarding backend,
 // so txconfirm's cross-subsystem UTXO coordination uses the same WalletKit
 // lock that boarding and other subsystems already honor.
@@ -4516,6 +4555,44 @@ func (w *lwUnrollWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
 	return finalTx, nil
 }
 
+// FundPsbt funds and finalizes a fanout transaction through btcwallet.
+func (w *lwUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
+	feeRateSatPerVByte int64, lockID wallet.LockID,
+	lockExpiry time.Duration) (*wire.MsgTx, error) {
+
+	packet, err := psbt.NewFromRawBytes(
+		bytes.NewReader(packetBytes), false,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("parse PSBT: %w", err)
+	}
+
+	_, err = w.Wallet.BtcWallet.FundPsbt(
+		packet, 1, chainfee.SatPerKWeight(feeRateSatPerVByte*250),
+		lnwallet.DefaultAccountName, nil,
+		btcwalletpkg.CoinSelectionLargest, nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("btcwallet FundPsbt: %w", err)
+	}
+
+	for _, txIn := range packet.UnsignedTx.TxIn {
+		_, err := w.LeaseOutput(
+			ctx, lockID, txIn.PreviousOutPoint, lockExpiry,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("lease funded input: %w", err)
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := packet.Serialize(&buf); err != nil {
+		return nil, fmt.Errorf("serialize funded PSBT: %w", err)
+	}
+
+	return w.FinalizePsbt(ctx, buf.Bytes())
+}
+
 // LeaseOutput forwards the CPFP fee-input lease down to btcwallet. The
 // darepo-local wallet.LockID is reinterpreted as wtxmgr.LockID (both are
 // [32]byte) so the same lock survives restart and release.
@@ -4609,6 +4686,44 @@ func (w *btcwUnrollWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
 	}
 
 	return finalTx, nil
+}
+
+// FundPsbt funds and finalizes a fanout transaction through btcwallet.
+func (w *btcwUnrollWallet) FundPsbt(ctx context.Context, packetBytes []byte,
+	feeRateSatPerVByte int64, lockID wallet.LockID,
+	lockExpiry time.Duration) (*wire.MsgTx, error) {
+
+	packet, err := psbt.NewFromRawBytes(
+		bytes.NewReader(packetBytes), false,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("parse PSBT: %w", err)
+	}
+
+	_, err = w.Wallet.BtcWallet.FundPsbt(
+		packet, 1, chainfee.SatPerKWeight(feeRateSatPerVByte*250),
+		lnwallet.DefaultAccountName, nil,
+		btcwalletpkg.CoinSelectionLargest, nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("btcwallet FundPsbt: %w", err)
+	}
+
+	for _, txIn := range packet.UnsignedTx.TxIn {
+		_, err := w.LeaseOutput(
+			ctx, lockID, txIn.PreviousOutPoint, lockExpiry,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("lease funded input: %w", err)
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := packet.Serialize(&buf); err != nil {
+		return nil, fmt.Errorf("serialize funded PSBT: %w", err)
+	}
+
+	return w.FinalizePsbt(ctx, buf.Bytes())
 }
 
 // LeaseOutput forwards the CPFP fee-input lease down to the neutrino-backed

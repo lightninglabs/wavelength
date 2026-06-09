@@ -487,6 +487,52 @@ func (w *fakeWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
 	return tx, nil
 }
 
+// FundPsbt funds the PSBT template by adding the first configured UTXO and
+// then finalizes it with dummy witnesses.
+func (w *fakeWallet) FundPsbt(ctx context.Context, packetBytes []byte, _ int64,
+	_ walletcore.LockID, _ time.Duration) (*wire.MsgTx, error) {
+
+	packet, err := psbt.NewFromRawBytes(bytes.NewReader(packetBytes), false)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(w.utxos) == 0 {
+		return nil, fmt.Errorf("insufficient funds")
+	}
+
+	utxo := w.utxos[0]
+	packet.UnsignedTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: utxo.Outpoint,
+	})
+	packet.Inputs = append(packet.Inputs, psbt.PInput{
+		WitnessUtxo: &wire.TxOut{
+			Value:    int64(utxo.Amount),
+			PkScript: append([]byte(nil), utxo.PkScript...),
+		},
+	})
+
+	var outputTotal btcutil.Amount
+	for _, txOut := range packet.UnsignedTx.TxOut {
+		outputTotal += btcutil.Amount(txOut.Value)
+	}
+	change := utxo.Amount - outputTotal - 1_000
+	if change > DustLimit {
+		packet.UnsignedTx.AddTxOut(&wire.TxOut{
+			Value:    int64(change),
+			PkScript: []byte{txscript.OP_TRUE},
+		})
+		packet.Outputs = append(packet.Outputs, psbt.POutput{})
+	}
+
+	var buf bytes.Buffer
+	if err := packet.Serialize(&buf); err != nil {
+		return nil, err
+	}
+
+	return w.FinalizePsbt(ctx, buf.Bytes())
+}
+
 // LeaseOutput records the lease call and returns a fixed expiry plus
 // the configured error (if any). Tests that care about lease behaviour
 // can inspect leaseCalls and leaseLockID.
@@ -648,10 +694,16 @@ func mustEventually(t *testing.T, predicate func() bool, msgAndArgs ...any) {
 
 // makeTestTx constructs a simple signed transaction for tests.
 func makeTestTx(withAnchor bool) *wire.MsgTx {
+	return makeTestTxWithPrevoutSeed(1, withAnchor)
+}
+
+// makeTestTxWithPrevoutSeed constructs a test transaction with a stable unique
+// previous outpoint seed.
+func makeTestTxWithPrevoutSeed(seed byte, withAnchor bool) *wire.MsgTx {
 	tx := wire.NewMsgTx(3)
 	tx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: wire.OutPoint{
-			Hash:  chainhash.Hash{1},
+			Hash:  chainhash.Hash{seed},
 			Index: 0,
 		},
 	})
@@ -1260,6 +1312,56 @@ func TestEnsureConfirmedWaitsForInitialCPFPInput(t *testing.T) {
 		),
 	)
 	mustHaveNoNotification(t, sub)
+}
+
+// TestEnsureConfirmedFansOutWhenActiveParentsNeedInputs verifies that txconfirm
+// reacts to a fee-input shortfall by provisioning an internal wallet fanout
+// instead of surfacing a terminal unroll-side failure.
+func TestEnsureConfirmedFansOutWhenActiveParentsNeedInputs(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	walletRef := &fakeWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXO(t),
+		},
+	}
+	ref, behavior := newTestActor(t, Config{
+		ChainSource:           chain,
+		Wallet:                walletRef,
+		FeeBumpIntervalBlocks: 1,
+	})
+
+	txA := makeTestTxWithPrevoutSeed(10, true)
+	subA := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	respA := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         txA,
+		Subscriber: subA,
+	})
+	require.Equal(t, TxStateAwaitingConfirmation, respA.State)
+	require.Equal(t, 1, chain.packageCallCount())
+
+	txB := makeTestTxWithPrevoutSeed(11, true)
+	subB := actor.NewChannelTellOnlyRef[Notification]("sub-b", 4)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	rawRespB, err := ref.Ref().Ask(ctx, &EnsureConfirmedReq{
+		Tx:         txB,
+		Subscriber: subB,
+	}).Await(ctx).Unpack()
+	require.NoError(t, err)
+	respB, ok := rawRespB.(*EnsureConfirmedResp)
+	require.True(t, ok)
+	require.Equal(t, TxStateBroadcasting, respB.State)
+	require.Equal(t, 1, chain.packageCallCount())
+	require.Equal(t, 1, chain.broadcastCallCount())
+
+	pending := behavior.broadcaster.pendingFanout
+	require.NotNil(t, pending)
+	require.Len(t, pending.assignments[txB.TxHash()], 1)
+	require.Len(
+		t, behavior.broadcaster.parentStates[txB.TxHash()].
+			PredictedFeeInputs,
+		1,
+	)
 }
 
 // TestEnsureConfirmedRepeatedEnsureIsIdempotent verifies that repeating the
