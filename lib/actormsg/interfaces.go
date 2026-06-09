@@ -105,6 +105,15 @@ type TriggerBoardMsg struct {
 	// round. Typically a single amount equal to the confirmed boarding
 	// balance minus the operator fee.
 	Amounts []btcutil.Amount
+
+	// Change optionally carries an on-chain leave output for the
+	// portion of the confirmed boarding balance that exceeds the
+	// operator's per-VTXO or total-balance limits. The output pays
+	// back to a fresh boarding script owned by the wallet, so the
+	// clipped remainder re-confirms as a new boarding intent that can
+	// board later once headroom frees up. Nil when the full balance
+	// boards.
+	Change *types.LeaveRequest
 }
 
 // RoundReceivable implements the RoundReceivable marker interface.

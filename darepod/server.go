@@ -667,6 +667,55 @@ func (s *Server) fetchCurrentOperatorPubKey(ctx context.Context) (
 	return terms.PubKey, nil
 }
 
+// fetchCachedOperatorTerms returns the cached operator terms snapshot,
+// falling back to a fresh GetInfo round-trip when the daemon-startup
+// cache has not been hydrated yet. The boarding limit clamp consumes
+// this: terms change rarely enough that the cache is an acceptable
+// source, and the operator re-validates every limit server-side
+// regardless.
+func (s *Server) fetchCachedOperatorTerms(ctx context.Context) (
+	*types.OperatorTerms, error) {
+
+	if terms := s.loadOperatorTerms(); terms != nil {
+		return terms, nil
+	}
+
+	terms, err := s.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.storeOperatorTerms(terms)
+
+	return terms, nil
+}
+
+// fetchLiveVTXOBalance sums the wallet's non-terminal VTXO holdings for
+// the boarding headroom computation. The full non-terminal set (Live,
+// PendingForfeit, Forfeiting, Spending) is deliberately counted rather
+// than just the spendable subset: in-flight outbound value still
+// occupies the user's balance until it terminally leaves, so counting
+// it keeps back-to-back boards from overshooting the operator's cap.
+//
+// We use the "light" variant: balance summing only reads each
+// descriptor's amount, so we skip the ancestry side-table join whose
+// TLV tree fragments grow with OOR chain depth and sort through SQLite's
+// external sorter on every call. The underlying row set is identical to
+// ListLiveVTXOs.
+func (s *Server) fetchLiveVTXOBalance(ctx context.Context) (btcutil.Amount,
+	error) {
+
+	if s.vtxoStore == nil {
+		return 0, fmt.Errorf("vtxo store is not initialized")
+	}
+
+	descs, err := s.vtxoStore.ListLiveVTXOsLight(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	return vtxo.SumBalance(descs), nil
+}
+
 // isServerConnected returns the latest mailbox-ingress connectivity signal
 // reported by the daemon runtime.
 func (s *Server) isServerConnected() bool {
@@ -3597,6 +3646,8 @@ func (s *Server) initWalletActor(ctx context.Context,
 		wallet.WithEagerRoundJoin(s.cfg.EagerRoundJoin),
 		wallet.WithFetchOperatorKey(s.fetchCurrentOperatorPubKey),
 		wallet.WithMetricsSink(s.metricsSink),
+		wallet.WithFetchOperatorTerms(s.fetchCachedOperatorTerms),
+		wallet.WithFetchLiveBalance(s.fetchLiveVTXOBalance),
 	)
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,

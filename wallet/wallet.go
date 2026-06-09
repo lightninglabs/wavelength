@@ -254,6 +254,19 @@ type Ark struct {
 	// descriptor's stored bytes for harness paths and for non-standard
 	// policy shapes where the rebuild surface is unavailable.
 	fetchOperatorKey func(context.Context) (*btcec.PublicKey, error)
+
+	// fetchOperatorTerms, when set, returns the operator's current
+	// terms snapshot so boarding can enforce the advertised per-VTXO
+	// maximum and total user balance cap. Nil disables limit clamping
+	// entirely (harness paths and operators that advertise no caps).
+	fetchOperatorTerms func(context.Context) (*types.OperatorTerms, error)
+
+	// fetchLiveBalance, when set, returns the wallet's current live
+	// VTXO balance. Boarding uses it (together with adopted boarding
+	// intents) to compute the remaining headroom under the operator's
+	// maximum user balance. Nil skips the balance term, so only the
+	// per-VTXO maximum applies.
+	fetchLiveBalance func(context.Context) (btcutil.Amount, error)
 }
 
 // NewArk creates a new Ark wallet actor. The logger is optional and falls back
@@ -424,6 +437,32 @@ func WithFetchOperatorKey(
 
 	return func(a *Ark) {
 		a.fetchOperatorKey = fetch
+	}
+}
+
+// WithFetchOperatorTerms wires a closure that fetches the operator's
+// current terms snapshot into the wallet actor. Boarding uses the terms
+// to clamp board requests to the advertised per-VTXO maximum and total
+// user balance cap, clipping any excess back on-chain via a change
+// leave output. Tests and harnesses can omit the option to board
+// without limits.
+func WithFetchOperatorTerms(
+	fetch func(context.Context) (*types.OperatorTerms, error)) ArkOption {
+
+	return func(a *Ark) {
+		a.fetchOperatorTerms = fetch
+	}
+}
+
+// WithFetchLiveBalance wires a closure that returns the wallet's
+// current live VTXO balance into the wallet actor. Boarding combines
+// the balance with adopted boarding intents to compute the remaining
+// headroom under the operator's maximum user balance.
+func WithFetchLiveBalance(
+	fetch func(context.Context) (btcutil.Amount, error)) ArkOption {
+
+	return func(a *Ark) {
+		a.fetchLiveBalance = fetch
 	}
 }
 
@@ -2153,9 +2192,39 @@ func (a *Ark) handleBoard(ctx context.Context,
 		)
 	}
 
+	// Apply the operator's advertised limits before composing the
+	// VTXO targets: the per-VTXO maximum bounds each output, and the
+	// total user balance cap bounds how much of the confirmed balance
+	// may board at all. Any clipped excess returns on-chain through a
+	// change leave output paying a fresh boarding script, so the
+	// remainder re-confirms as a new boarding intent that can board
+	// later once headroom frees up.
+	boardAmount := totalBalance
+	targetCount := req.TargetVTXOCount
+	var changeLeave *types.LeaveRequest
+
+	terms, err := a.boardingTerms(ctx)
+	if err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("fetch operator terms: %w", err),
+		)
+	}
+	if terms != nil {
+		clamp, leave, err := a.applyBoardingLimits(
+			ctx, totalBalance, targetCount, terms,
+		)
+		if err != nil {
+			return fn.Err[WalletResp](err)
+		}
+
+		boardAmount = clamp.BoardAmount
+		targetCount = clamp.VTXOCount
+		changeLeave = leave
+	}
+
 	// Under the #270 seal-time fee handshake the server decides
 	// the operator fee when the round seals, not at submit time.
-	// The wallet therefore ships the full confirmed balance as
+	// The wallet therefore ships the full boardable balance as
 	// one or more VTXO intent targets. For multi-output boarding,
 	// the common change-marker logic marks one output as the
 	// residual output the server can stamp at seal time. We skip
@@ -2163,9 +2232,7 @@ func (a *Ark) handleBoard(ctx context.Context,
 	// driven by an advisory submit-time fee estimate and would
 	// spuriously reject boards that the seal-time quote would
 	// have accepted.
-	vtxoAmounts, err := splitBoardingAmount(
-		totalBalance, req.TargetVTXOCount,
-	)
+	vtxoAmounts, err := splitBoardingAmount(boardAmount, targetCount)
 	if err != nil {
 		return fn.Err[WalletResp](err)
 	}
@@ -2175,7 +2242,9 @@ func (a *Ark) handleBoard(ctx context.Context,
 		slog.Int64("boarding_balance",
 			int64(totalBalance)),
 		slog.Int64("vtxo_amount", int64(vtxoAmount)),
-		slog.Int("vtxo_count", len(vtxoAmounts)))
+		slog.Int("vtxo_count", len(vtxoAmounts)),
+		slog.Int64("change_amount",
+			int64(totalBalance-boardAmount)))
 
 	// Persist the user's explicit Board intent BEFORE handing the
 	// request to the round actor. The ordering matters for restart
@@ -2238,6 +2307,7 @@ func (a *Ark) handleBoard(ctx context.Context,
 	if err := roundRef.Tell(
 		ctx, &actormsg.TriggerBoardMsg{
 			Amounts: vtxoAmounts,
+			Change:  changeLeave,
 		},
 	); err != nil {
 		// The persisted row stays in place so the next daemon
