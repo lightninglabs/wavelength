@@ -147,6 +147,53 @@ func (q *Queries) ListLiveVTXOs(ctx context.Context) ([]Vtxo, error) {
 	return items, nil
 }
 
+const ListVTXOSelectionCandidatesByStatus = `-- name: ListVTXOSelectionCandidatesByStatus :many
+SELECT outpoint_hash, outpoint_index, amount, pk_script
+FROM vtxos
+WHERE status = $1
+ORDER BY creation_time DESC
+`
+
+type ListVTXOSelectionCandidatesByStatusRow struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+	Amount        int64
+	PkScript      []byte
+}
+
+// ListVTXOSelectionCandidatesByStatus returns the lightweight projection coin
+// selection runs on: outpoint, amount, and pkScript. Selection happens on
+// every payment and only needs these three fields, so this avoids decoding
+// full descriptors (pubkey parsing, taproot script reconstruction, policy
+// template decode) and the batched ancestry-path query on the hot path.
+func (q *Queries) ListVTXOSelectionCandidatesByStatus(ctx context.Context, status int32) ([]ListVTXOSelectionCandidatesByStatusRow, error) {
+	rows, err := q.db.QueryContext(ctx, ListVTXOSelectionCandidatesByStatus, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVTXOSelectionCandidatesByStatusRow
+	for rows.Next() {
+		var i ListVTXOSelectionCandidatesByStatusRow
+		if err := rows.Scan(
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.Amount,
+			&i.PkScript,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListVTXOsByStatus = `-- name: ListVTXOsByStatus :many
 
 SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos

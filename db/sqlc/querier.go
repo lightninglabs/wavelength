@@ -199,6 +199,12 @@ type Querier interface {
 	// ListVTXOAncestryPathsByStatus returns every ancestry row whose parent
 	// VTXO matches the given status code. Companion to ListVTXOsByStatus.
 	ListVTXOAncestryPathsByStatus(ctx context.Context, status int32) ([]VtxoAncestryPath, error)
+	// ListVTXOSelectionCandidatesByStatus returns the lightweight projection coin
+	// selection runs on: outpoint, amount, and pkScript. Selection happens on
+	// every payment and only needs these three fields, so this avoids decoding
+	// full descriptors (pubkey parsing, taproot script reconstruction, policy
+	// template decode) and the batched ancestry-path query on the hot path.
+	ListVTXOSelectionCandidatesByStatus(ctx context.Context, status int32) ([]ListVTXOSelectionCandidatesByStatusRow, error)
 	ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error)
 	// VTXO status and lifecycle queries.
 	// These queries support the vtxo.VTXOStore interface for VTXO lifecycle
