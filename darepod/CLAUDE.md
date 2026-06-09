@@ -58,6 +58,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   cap, positive and `MaxSatoshi`-bounded amounts, overflow-safe sum),
   resolves destinations via `resolveRecipientOutput`, delegates to
   the wallet actor.
+- `SendOOR` — out-of-round transfer. Accepts one or more recipients
+  in one atomic session (up to `maxOORRecipients = 256`). Validates
+  recipient count, then calls `sendOORRequestRecipients` +
+  `sumSendOORRecipientAmounts` for early rejection before touching
+  the wallet. Resolves all recipient pkScripts and policy templates
+  via `buildSendOORRecipients` (deduplication guard included). Wallet
+  selection targets the aggregate amount. Returns per-recipient
+  outpoints via `resolveOORRecipientOutpoints` in request order.
 - `resolveRecipientOutput` — extracts pkScript and client pubkey from
   an `Output` proto oneof (pubkey or address). Taproot-only.
 - `ListVTXOs` — paginated VTXO inventory. When called with
@@ -158,6 +166,16 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `BoardingBackend`; lwwallet/btcwallet paths reach into `BtcWallet`
   directly, reinterpreting `wallet.LockID` as `wtxmgr.LockID` via
   direct `[32]byte` cast so leases round-trip across restart.
+- `sendOORRequestRecipients` — validates the `Recipients` slice in a
+  `SendOORRequest` (non-nil, within `maxOORRecipients`).
+- `sumSendOORRecipientAmounts` — per-recipient dust/overflow validation,
+  returns the aggregate wallet-selection target.
+- `buildSendOORRecipients` — resolves pkScripts + policy templates for
+  every requested recipient and rejects duplicate `(amount, pkScript)`
+  pairs that would map to the same canonical OOR output.
+- `resolveOORRecipientOutpoints` — maps each requested recipient back
+  to the outpoint it occupies after canonical OOR output sorting,
+  returning results in request-recipient order.
 - `reserveCustomInputs` (on `RPCServer`) — atomically claims every
   custom OOR outpoint for a `SendOOR` call. Returns a release
   function (typically deferred).
@@ -265,6 +283,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   per-recipient amounts outside `(0, MaxSatoshi]`, uses
   overflow-safe accumulation. Wallet-side `handleSendVTXOs` repeats
   these checks as defense-in-depth.
+- `SendOOR` supports multiple recipients in one atomic OOR session.
+  `maxOORRecipients = 256` mirrors the in-round cap and is enforced
+  before any script resolution. Custom inputs require exactly one
+  recipient (reject at RPC layer, not in the OOR actor).
 - `SendOOR` with custom inputs serializes concurrent calls on the
   same outpoints via `reserveCustomInputs`. Custom inputs lock for
   the RPC lifetime; release is deferred on both success and failure.
