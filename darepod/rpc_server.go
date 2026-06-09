@@ -63,6 +63,13 @@ const (
 	// from retaining wallet/custom input reservations forever.
 	submittedOORCleanupTimeout = 10 * time.Minute
 
+	// submittedOORUnlockTimeout bounds the fresh context used to unlock
+	// wallet-selected VTXOs when the detached OOR cleanup waiter itself
+	// timed out. The cleanupCtx is deliberately expired in that branch, so
+	// the unlock must run on a new bounded context to avoid the wallet
+	// mailbox rejecting an already-expired Tell.
+	submittedOORUnlockTimeout = 30 * time.Second
+
 	// maxOORRecipients mirrors the in-round send cap at the daemon
 	// boundary. The OOR actor has its own package-size limits, but the
 	// RPC handler resolves scripts and policy templates before handing
@@ -2815,6 +2822,15 @@ func (r *RPCServer) cleanupSubmittedOORStartWithTimeout(ctx context.Context,
 		oorResult := future.Await(cleanupCtx)
 		oorResp, err := oorResult.Unpack()
 		if err != nil {
+			// The unlock context defaults to cleanupCtx, which is
+			// still live on a real actor failure. If the await
+			// instead ended because cleanupCtx hit its deadline,
+			// that same context is now expired and the wallet
+			// actor's mailbox would reject the unlock Tell before
+			// enqueue, silently pinning the wallet-selected VTXOs.
+			// Derive a fresh bounded context from the detached base
+			// in that case so the unlock still lands.
+			unlockCtx := cleanupCtx
 			if cleanupCtx.Err() != nil {
 				r.server.log.ErrorS(
 					cleanupCtx,
@@ -2823,9 +2839,17 @@ func (r *RPCServer) cleanupSubmittedOORStartWithTimeout(ctx context.Context,
 					err,
 					slog.Duration("timeout", timeout),
 				)
+
+				freshCtx, freshCancel := context.WithTimeout(
+					context.WithoutCancel(ctx),
+					submittedOORUnlockTimeout,
+				)
+				defer freshCancel()
+
+				unlockCtx = freshCtx
 			}
 
-			r.unlockSelectedVTXOsBestEffort(cleanupCtx, locked)
+			r.unlockSelectedVTXOsBestEffort(unlockCtx, locked)
 			if releaseCustomInputs != nil {
 				releaseCustomInputs()
 			}
