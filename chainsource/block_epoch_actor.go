@@ -5,11 +5,25 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+)
+
+const (
+	// defaultBlockEpochReconnectBackoff is the initial delay before a
+	// long-lived block subscription tries to re-register after its backend
+	// stream closes. LND can close all chain notifier streams during
+	// restart or internal notifier churn; callers such as the boarding
+	// wallet need the subscription to heal without a daemon restart.
+	defaultBlockEpochReconnectBackoff = time.Second
+
+	// defaultBlockEpochMaxReconnectBackoff caps reconnect backoff so a
+	// backend outage does not spin, but recovery still happens promptly.
+	defaultBlockEpochMaxReconnectBackoff = 30 * time.Second
 )
 
 // BlockEpochConfig holds configuration for BlockEpochActor.
@@ -21,6 +35,15 @@ type BlockEpochConfig struct {
 	// falls back to extracting a logger from context via LoggerFromContext,
 	// or uses btclog.Disabled if no logger is found.
 	Log fn.Option[btclog.Logger]
+
+	// ReconnectBackoff is the initial delay before reconnecting a block
+	// epoch subscription whose backend stream closed after the initial
+	// registration succeeded. Zero uses defaultBlockEpochReconnectBackoff.
+	ReconnectBackoff time.Duration
+
+	// MaxReconnectBackoff caps the exponential reconnect delay. Zero uses
+	// defaultBlockEpochMaxReconnectBackoff.
+	MaxReconnectBackoff time.Duration
 }
 
 // WithLogger returns a new config with the given logger set.
@@ -177,6 +200,57 @@ func (a *BlockEpochActor) handleSubscribeBlocks(actorCtx context.Context,
 	return fn.Ok[EpochResp](resp)
 }
 
+// blockEpochReconnectBackoff returns the normalized reconnect delay bounds for
+// this actor. Tests can lower both values; production uses conservative
+// defaults that avoid log spam while still healing notifier restarts promptly.
+func (a *BlockEpochActor) blockEpochReconnectBackoff() (time.Duration,
+	time.Duration) {
+
+	initial := a.cfg.ReconnectBackoff
+	if initial <= 0 {
+		initial = defaultBlockEpochReconnectBackoff
+	}
+
+	maxBackoff := a.cfg.MaxReconnectBackoff
+	if maxBackoff <= 0 {
+		maxBackoff = defaultBlockEpochMaxReconnectBackoff
+	}
+	if maxBackoff < initial {
+		maxBackoff = initial
+	}
+
+	return initial, maxBackoff
+}
+
+// waitForReconnect sleeps for the current backoff unless the actor is
+// stopping. It returns false when shutdown won the race.
+func (a *BlockEpochActor) waitForReconnect(backoff time.Duration) bool {
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return true
+
+	case <-a.ctx.Done():
+		return false
+	}
+}
+
+// nextReconnectBackoff doubles the reconnect delay and caps it at maxBackoff.
+func nextReconnectBackoff(backoff, maxBackoff time.Duration) time.Duration {
+	if backoff >= maxBackoff {
+		return maxBackoff
+	}
+
+	next := backoff * 2
+	if next > maxBackoff {
+		return maxBackoff
+	}
+
+	return next
+}
+
 // monitorBlocks runs in a background goroutine and forwards block events to
 // the subscriber (either channel or actor reference).
 func (a *BlockEpochActor) monitorBlocks() {
@@ -184,6 +258,11 @@ func (a *BlockEpochActor) monitorBlocks() {
 
 	log := a.logger(a.ctx)
 	log.InfoS(a.ctx, "BlockEpochActor monitoring started")
+
+	reconnectBackoff, maxReconnectBackoff :=
+		a.blockEpochReconnectBackoff()
+	currentBackoff := reconnectBackoff
+	registration := a.registration
 
 	// In iterator mode, the sender (this goroutine) is responsible for
 	// closing the channel to signal the receiver that no more values will
@@ -197,18 +276,50 @@ func (a *BlockEpochActor) monitorBlocks() {
 	// Make sure we clean up the registration on exit.
 	defer func() {
 		log.InfoS(a.ctx, "BlockEpochActor monitoring stopped")
-		if a.registration != nil {
-			a.registration.Cancel()
+		if registration != nil {
+			registration.Cancel()
 		}
 	}()
 
 	for {
-		select {
-		case epoch, ok := <-a.registration.Epochs:
-			if !ok {
-				log.InfoS(a.ctx, "Block epoch channel closed")
-
+		if registration == nil {
+			if !a.waitForReconnect(currentBackoff) {
 				return
+			}
+
+			var err error
+			registration, err = a.cfg.Backend.RegisterBlocks(a.ctx)
+			if err != nil {
+				log.WarnS(a.ctx, "Block epoch reconnect failed",
+					err,
+					slog.Duration("backoff",
+						currentBackoff),
+				)
+				currentBackoff = nextReconnectBackoff(
+					currentBackoff, maxReconnectBackoff,
+				)
+
+				continue
+			}
+
+			log.InfoS(a.ctx, "Block epoch subscription reconnected")
+			currentBackoff = reconnectBackoff
+		}
+
+		select {
+		case epoch, ok := <-registration.Epochs:
+			if !ok {
+				log.InfoS(
+					a.ctx,
+					"Block epoch channel closed, "+
+						"reconnecting",
+					slog.Duration("backoff",
+						currentBackoff),
+				)
+				registration.Cancel()
+				registration = nil
+
+				continue
 			}
 
 			log.InfoS(a.ctx, "Received block from backend",

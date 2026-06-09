@@ -28,6 +28,17 @@ type mockBackend struct {
 	bestHash   chainhash.Hash
 }
 
+type blockEpochRegistration struct {
+	epochs chan *BlockEpoch
+	cancel chan struct{}
+}
+
+type reconnectBlockBackend struct {
+	*mockBackend
+
+	registrations chan *blockEpochRegistration
+}
+
 // newMockBackend creates a new mock backend for testing.
 func newMockBackend() *mockBackend {
 	return &mockBackend{
@@ -37,6 +48,78 @@ func newMockBackend() *mockBackend {
 		epochCancel: make(chan struct{}, 10),
 		feeRate:     1000,
 		bestHeight:  100,
+	}
+}
+
+func newReconnectBlockBackend() *reconnectBlockBackend {
+	return &reconnectBlockBackend{
+		mockBackend:   newMockBackend(),
+		registrations: make(chan *blockEpochRegistration, 10),
+	}
+}
+
+func (m *reconnectBlockBackend) RegisterBlocks(ctx context.Context) (
+	*BlockRegistration, error) {
+
+	reg := &blockEpochRegistration{
+		epochs: make(chan *BlockEpoch, 10),
+		cancel: make(chan struct{}, 1),
+	}
+
+	select {
+	case m.registrations <- reg:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	return &BlockRegistration{
+		Epochs: reg.epochs,
+		Cancel: func() {
+			select {
+			case reg.cancel <- struct{}{}:
+			default:
+			}
+		},
+	}, nil
+}
+
+func (m *reconnectBlockBackend) nextRegistration(
+	t *testing.T) *blockEpochRegistration {
+
+	t.Helper()
+
+	select {
+	case reg := <-m.registrations:
+		return reg
+
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for block registration")
+	}
+
+	return nil
+}
+
+func (r *blockEpochRegistration) send(height int32) chainhash.Hash {
+	hash := chainhash.Hash{}
+	hash[0] = byte(height)
+	hash[1] = byte(height >> 8)
+
+	r.epochs <- &BlockEpoch{
+		Height:    height,
+		Hash:      hash,
+		Timestamp: 0,
+	}
+
+	return hash
+}
+
+func (r *blockEpochRegistration) assertCanceled(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-r.cancel:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for registration cancel")
 	}
 }
 
@@ -1175,6 +1258,65 @@ func TestBlockEpochActorNotifyMode(t *testing.T) {
 	require.True(t, ok, "timeout waiting for notification")
 	require.Equal(t, int32(150), event.Height)
 	require.Equal(t, hash, event.Hash)
+}
+
+// TestBlockEpochActorReconnectsAfterBackendStreamCloses reproduces the
+// production failure mode where LND closes the long-lived block epoch stream
+// after the subscription was already established. The wallet relies on this
+// stream to process new tips, scan confirmed backing-wallet outputs, and
+// promote confirmed boarding UTXOs into boarding intents. If the actor treats
+// a closed backend stream as terminal, the daemon can keep serving RPCs while
+// silently missing later confirmations until it is restarted. This test closes
+// the first backend registration, verifies the actor cancels it, then asserts
+// the same subscriber receives a block from a fresh registration.
+func TestBlockEpochActorReconnectsAfterBackendStreamCloses(t *testing.T) {
+	t.Parallel()
+
+	backend := newReconnectBlockBackend()
+	ctx := t.Context()
+	epochActor := NewBlockEpochActor(BlockEpochConfig{
+		Backend:             backend,
+		ReconnectBackoff:    5 * time.Millisecond,
+		MaxReconnectBackoff: 5 * time.Millisecond,
+	})
+	defer epochActor.Stop()
+
+	notifier := actor.NewChannelTellOnlyRef[BlockEpoch](
+		"test-reconnect-notify", 10,
+	)
+
+	result := epochActor.Receive(ctx, &SubscribeBlocksRequest{
+		CallerID: "test-epoch-reconnect",
+		NotifyActor: fn.Some(
+			actor.TellOnlyRef[BlockEpoch](notifier),
+		),
+	})
+	require.True(t, result.IsOk())
+
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+	epochResp, ok := resp.(*SubscribeBlocksResponse)
+	require.True(t, ok)
+	require.NotNil(t, epochResp.Cancel)
+
+	firstReg := backend.nextRegistration(t)
+	firstHash := firstReg.send(150)
+
+	firstEvent, ok := notifier.AwaitMessage(time.Second)
+	require.True(t, ok, "timeout waiting for first block epoch")
+	require.Equal(t, int32(150), firstEvent.Height)
+	require.Equal(t, firstHash, firstEvent.Hash)
+
+	close(firstReg.epochs)
+	firstReg.assertCanceled(t)
+
+	secondReg := backend.nextRegistration(t)
+	secondHash := secondReg.send(151)
+
+	secondEvent, ok := notifier.AwaitMessage(time.Second)
+	require.True(t, ok, "timeout waiting for reconnected block epoch")
+	require.Equal(t, int32(151), secondEvent.Height)
+	require.Equal(t, secondHash, secondEvent.Hash)
 }
 
 // TestBlockEpochActorIteratorMode tests block subscription in Iterator mode.
