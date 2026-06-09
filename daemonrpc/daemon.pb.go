@@ -1635,9 +1635,15 @@ type ListVTXOsRequest struct {
 	// If VTXO_STATUS_UNSPECIFIED (default), all statuses are returned.
 	StatusFilter VTXOStatus `protobuf:"varint,1,opt,name=status_filter,json=statusFilter,proto3,enum=daemonrpc.VTXOStatus" json:"status_filter,omitempty"`
 	// min_amount_sat excludes VTXOs below this value.
-	MinAmountSat  int64 `protobuf:"varint,2,opt,name=min_amount_sat,json=minAmountSat,proto3" json:"min_amount_sat,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	MinAmountSat int64 `protobuf:"varint,2,opt,name=min_amount_sat,json=minAmountSat,proto3" json:"min_amount_sat,omitempty"`
+	// exclude_checkpoint_psbts skips attaching the finalized OOR checkpoint
+	// PSBTs to each returned VTXO. Loading those packages costs one artifact
+	// store read per VTXO, which dominates the call for listing-only
+	// consumers (balance views, coin selection) that never inspect the
+	// PSBTs. The default keeps the full response for compatibility.
+	ExcludeCheckpointPsbts bool `protobuf:"varint,3,opt,name=exclude_checkpoint_psbts,json=excludeCheckpointPsbts,proto3" json:"exclude_checkpoint_psbts,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *ListVTXOsRequest) Reset() {
@@ -1682,6 +1688,13 @@ func (x *ListVTXOsRequest) GetMinAmountSat() int64 {
 		return x.MinAmountSat
 	}
 	return 0
+}
+
+func (x *ListVTXOsRequest) GetExcludeCheckpointPsbts() bool {
+	if x != nil {
+		return x.ExcludeCheckpointPsbts
+	}
+	return false
 }
 
 type ListVTXOsResponse struct {
@@ -7871,10 +7884,11 @@ const file_daemon_proto_rawDesc = "" +
 	" \x01(\rR\n" +
 	"chainDepth\x12;\n" +
 	"\x1aoor_final_checkpoint_psbts\x18\v \x03(\fR\x17oorFinalCheckpointPsbts\x12\"\n" +
-	"\rspent_by_txid\x18\f \x01(\tR\vspentByTxid\"t\n" +
+	"\rspent_by_txid\x18\f \x01(\tR\vspentByTxid\"\xae\x01\n" +
 	"\x10ListVTXOsRequest\x12:\n" +
 	"\rstatus_filter\x18\x01 \x01(\x0e2\x15.daemonrpc.VTXOStatusR\fstatusFilter\x12$\n" +
-	"\x0emin_amount_sat\x18\x02 \x01(\x03R\fminAmountSat\":\n" +
+	"\x0emin_amount_sat\x18\x02 \x01(\x03R\fminAmountSat\x128\n" +
+	"\x18exclude_checkpoint_psbts\x18\x03 \x01(\bR\x16excludeCheckpointPsbts\":\n" +
 	"\x11ListVTXOsResponse\x12%\n" +
 	"\x05vtxos\x18\x01 \x03(\v2\x0f.daemonrpc.VTXOR\x05vtxos\"\x13\n" +
 	"\x11NewAddressRequest\".\n" +
