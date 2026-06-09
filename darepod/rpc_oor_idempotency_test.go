@@ -1045,6 +1045,76 @@ func TestSubmittedOORCleanupTimeoutReleasesCustomInput(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
+// TestSubmittedOORCleanupTimeoutReleasesSelectedVTXOs verifies that when the
+// detached OOR cleanup waiter times out, the wallet-selected VTXOs are still
+// unlocked. The cleanupCtx is expired by the timeout, so the unlock must run on
+// a fresh context or the wallet mailbox would reject the already-expired Tell
+// and leave the VTXOs pinned.
+func TestSubmittedOORCleanupTimeoutReleasesSelectedVTXOs(t *testing.T) {
+	t.Parallel()
+
+	testWallet := &sendOORTestWallet{}
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cancel()
+
+		require.NoError(t, system.Shutdown(shutdownCtx))
+	})
+
+	walletKey := actor.NewServiceKey[
+		wallet.WalletMsg, wallet.WalletResp,
+	](
+		"send-oor-vtxo-unlock-test-wallet",
+	)
+	walletRef := walletKey.Spawn(
+		system, "send-oor-vtxo-unlock-test-wallet", testWallet,
+	)
+
+	rpcServer := &RPCServer{
+		server: &Server{
+			log:       btclog.Disabled,
+			walletRef: fn.Some(walletRef),
+		},
+		customInputLocks: make(map[wire.OutPoint]struct{}),
+	}
+
+	locked := &wallet.SelectAndLockVTXOsResponse{
+		SelectedVTXOs: []wallet.SelectedVTXO{
+			{
+				Outpoint: wire.OutPoint{
+					Hash: chainhash.HashH(
+						[]byte("send-oor-vtxo-unlock"),
+					),
+					Index: 0,
+				},
+				Amount: 1000,
+			},
+		},
+	}
+
+	// The promise is never completed, forcing the cleanup waiter down the
+	// timeout branch where cleanupCtx expires.
+	promise := actor.NewPromise[oor.ActorResp]()
+	rpcServer.cleanupSubmittedOORStartWithTimeout(
+		context.Background(), promise.Future(), locked, nil,
+		10*time.Millisecond,
+	)
+
+	require.Eventually(t, func() bool {
+		return len(testWallet.unlockBatches()) == 1
+	}, time.Second, 10*time.Millisecond)
+
+	batches := testWallet.unlockBatches()
+	require.Len(t, batches, 1)
+	require.Equal(
+		t, locked.SelectedVTXOs[0].Outpoint, batches[0][0],
+	)
+}
+
 func TestIsAwaitContextError(t *testing.T) {
 	t.Parallel()
 
