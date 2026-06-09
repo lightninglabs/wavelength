@@ -549,6 +549,13 @@ message ListVTXOsRequest {
 
     // min_amount_sat excludes VTXOs below this value.
     int64 min_amount_sat = 2;
+
+    // exclude_checkpoint_psbts skips attaching the finalized OOR checkpoint
+    // PSBTs to each returned VTXO. Loading those packages costs one artifact
+    // store read per VTXO, which dominates the call for listing-only
+    // consumers (balance views, coin selection) that never inspect the
+    // PSBTs. The default keeps the full response for compatibility.
+    bool exclude_checkpoint_psbts = 3;
 }
 
 message ListVTXOsResponse {
