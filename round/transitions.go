@@ -1750,6 +1750,38 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			)
 		}
 
+		// Before trusting any tree's contents, prove that each
+		// operator-supplied VTXO tree is rooted in this round's
+		// commitment tx. The per-VTXO ValidatePath check below only
+		// proves internal self-consistency; without this binding a
+		// self-consistent tree rooted at the wrong commitment output
+		// would be co-signed, after which the client's new VTXOs are
+		// unrecoverable (darepo-client#680).
+		if err := validateVTXOTreeBinding(
+			s.CommitmentTx.UnsignedTx, s.VTXOTreePaths,
+		); err != nil {
+
+			env.Log.WarnS(
+				ctx,
+				"VTXO tree commitment binding failed",
+				err,
+				slog.String("round_id", s.RoundID.String()),
+			)
+
+			// The binding error is surfaced through the failed
+			// state, not raised as a Go error. A mis-rooted tree
+			// is a structural defect of the round, not a transient
+			// condition, so the failure is non-recoverable.
+			return &ClientStateTransition{
+				NextState: &ClientFailedState{
+					Reason: "VTXO tree commitment " +
+						"binding failed",
+					Error:       err,
+					Recoverable: false,
+				},
+			}, nil
+		}
+
 		clientTrees := make(map[SignerKey]*tree.Tree)
 
 		// Next, we'll make sure that each of the VTXO requests that we
@@ -2342,6 +2374,42 @@ func (s *ForfeitSignaturesCollectingState) finishForfeitCollection(
 	}, nil
 }
 
+// confirmationWatchScript returns the commitment-tx output script the client
+// asks the chain backend to watch for round confirmation. It prefers the
+// lowest VTXO batch-output index: every VTXOTreePaths key has been proven by
+// validateVTXOTreeBinding to equal its tree's BatchOutpoint.Index and to be in
+// range, so watching that output tracks the output that actually receives the
+// client's funds rather than assuming output 0. It falls back to the first
+// output when the round carries no VTXO trees (refresh-less / harness paths),
+// and returns nil only when the tx has no outputs. Confirmation detection is
+// by txid; the script matters for script-filtering backends (e.g. Neutrino).
+func confirmationWatchScript(commitmentTx *wire.MsgTx,
+	vtxoTrees map[int]*tree.Tree) []byte {
+
+	if commitmentTx == nil || len(commitmentTx.TxOut) == 0 {
+		return nil
+	}
+
+	idx := 0
+	if len(vtxoTrees) > 0 {
+		idx = -1
+		for k := range vtxoTrees {
+			if idx == -1 || k < idx {
+				idx = k
+			}
+		}
+	}
+
+	// Guard the index even though binding already proved it in range, so a
+	// future caller that reaches here on an unvalidated path degrades to
+	// watching output 0 rather than panicking.
+	if idx < 0 || idx >= len(commitmentTx.TxOut) {
+		return commitmentTx.TxOut[0].PkScript
+	}
+
+	return commitmentTx.TxOut[idx].PkScript
+}
+
 func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 	env *ClientEnvironment,
 	forfeitTxs map[wire.OutPoint]*types.ForfeitTxSig,
@@ -2351,10 +2419,9 @@ func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 	txid := s.CommitmentTx.UnsignedTx.TxHash()
 	callerID := fmt.Sprintf("commitment-%s", txid.String())
 
-	var pkScript []byte
-	if len(s.CommitmentTx.UnsignedTx.TxOut) > 0 {
-		pkScript = s.CommitmentTx.UnsignedTx.TxOut[0].PkScript
-	}
+	pkScript := confirmationWatchScript(
+		s.CommitmentTx.UnsignedTx, s.VTXOTreePaths,
+	)
 
 	outboxMsgs := []ClientOutMsg{
 		&CancelTimeoutReq{
@@ -2692,13 +2759,11 @@ func (s *PartialSigsSentState) ProcessEvent(ctx context.Context,
 		txid := s.CommitmentTx.UnsignedTx.TxHash()
 		callerID := fmt.Sprintf("commitment-%s", txid.String())
 
-		// Get pkScript from the first output for LND confirmation
-		// tracking.
+		// Watch the validated batch output (the output that receives
+		// this client's funds) for confirmation tracking, falling back
+		// to output 0 for rounds with no VTXO trees.
 		commitTx := s.CommitmentTx.UnsignedTx
-		var pkScript []byte
-		if len(commitTx.TxOut) > 0 {
-			pkScript = commitTx.TxOut[0].PkScript
-		}
+		pkScript := confirmationWatchScript(commitTx, s.VTXOTreePaths)
 
 		env.Log.InfoS(ctx, "Building RegisterConfirmationRequest",
 			slog.String("round_id", s.RoundID.String()),
@@ -3181,6 +3246,137 @@ func connectorLeafOutput(leaf *tree.Node) (*wire.TxOut, error) {
 	}
 
 	return found, nil
+}
+
+// validateVTXOTreeBinding proves that every operator-supplied VTXO tree is
+// rooted in this round's commitment tx. Internal tree self-consistency is not
+// enough: a tree's BatchOutpoint and BatchOutput come from the same untrusted
+// source as the rest of the tree, so a self-consistent tree rooted at the
+// wrong commitment output can pass ValidatePath/ValidateAnchors and still be
+// co-signed. Once the commitment tx confirms, such a tree does not spend the
+// real batch output, so the client's new VTXOs (whose outpoints are derived
+// from the tree root) are unrecoverable. This is the VTXO-tree counterpart to
+// validateConnectorAncestry; together they restore round atomicity
+// (darepo-client#680, companion to #681).
+//
+// For each (outputIdx, tree) pair it asserts that the tree's BatchOutpoint
+// names this commitment tx, that outputIdx agrees with BatchOutpoint.Index,
+// that the index is in range, that the committed output byte-matches the
+// tree's BatchOutput, and that the committed script equals the taproot script
+// recomputed from the tree root's cosigner set and sweep tapscript root (so a
+// substituted-but-self-consistent script is rejected).
+func validateVTXOTreeBinding(commitmentTx *wire.MsgTx,
+	vtxoTrees map[int]*tree.Tree) error {
+
+	if len(vtxoTrees) == 0 {
+		return nil
+	}
+
+	if commitmentTx == nil {
+		return fmt.Errorf("commitment tx is nil")
+	}
+
+	commitmentTxID := commitmentTx.TxHash()
+
+	for outputIdx, vtxoTree := range vtxoTrees {
+		if err := verifyVTXOTreeRoot(
+			commitmentTx, commitmentTxID, outputIdx, vtxoTree,
+		); err != nil {
+			return fmt.Errorf("vtxo tree at output %d: %w",
+				outputIdx, err)
+		}
+	}
+
+	return nil
+}
+
+// verifyVTXOTreeRoot checks that a single VTXO tree's root spends the
+// commitment output named by outputIdx and that the committed output matches
+// both the tree's claimed BatchOutput and the taproot script recomputed from
+// the tree's declared cosigner set and sweep tapscript root.
+func verifyVTXOTreeRoot(commitmentTx *wire.MsgTx, commitmentTxID chainhash.Hash,
+	outputIdx int, vtxoTree *tree.Tree) error {
+
+	switch {
+	case vtxoTree == nil:
+		return fmt.Errorf("nil tree")
+
+	case vtxoTree.Root == nil:
+		return fmt.Errorf("nil tree root")
+
+	case vtxoTree.BatchOutput == nil:
+		return fmt.Errorf("nil batch output")
+
+	case len(vtxoTree.Root.CoSigners) == 0:
+		return fmt.Errorf("tree root has no cosigners")
+	}
+
+	// The map is keyed by commitment-tx output index, so a tree filed under
+	// a key that disagrees with its own BatchOutpoint.Index is internally
+	// inconsistent about which output it spends. Reject before trusting
+	// either value. Compare as int64 so the check is lossless for any int
+	// outputIdx (no uint32 truncation) and naturally rejects negative keys.
+	if int64(outputIdx) != int64(vtxoTree.BatchOutpoint.Index) {
+		return fmt.Errorf("map key %d does not match batch outpoint "+
+			"index %d", outputIdx, vtxoTree.BatchOutpoint.Index)
+	}
+
+	// Bind the tree to this commitment tx: the root must spend an output of
+	// the tx we are about to sign into, not some other transaction.
+	if vtxoTree.BatchOutpoint.Hash != commitmentTxID {
+		return fmt.Errorf("batch outpoint hash %s does not match "+
+			"commitment txid %s", vtxoTree.BatchOutpoint.Hash,
+			commitmentTxID)
+	}
+
+	// Compare as uint32 so a value that would overflow a signed int cannot
+	// wrap past the bounds check on 32-bit architectures.
+	idx := vtxoTree.BatchOutpoint.Index
+	if idx >= uint32(len(commitmentTx.TxOut)) {
+		return fmt.Errorf("batch outpoint index %d out of range "+
+			"(commitment tx has %d outputs)", idx,
+			len(commitmentTx.TxOut))
+	}
+	committed := commitmentTx.TxOut[idx]
+
+	// The trusted BatchOutput (used as the MuSig2 prevout when signing the
+	// tree) must byte-match the real on-chain output, so the signature the
+	// client contributes binds to the output that actually receives its
+	// funds.
+	if committed.Value != vtxoTree.BatchOutput.Value {
+		return fmt.Errorf("committed output value %d != batch output "+
+			"value %d", committed.Value, vtxoTree.BatchOutput.Value)
+	}
+	if !bytes.Equal(committed.PkScript, vtxoTree.BatchOutput.PkScript) {
+		return fmt.Errorf("committed output script does not match " +
+			"batch output script")
+	}
+
+	// Finally, recompute the root taproot script from the tree's declared
+	// cosigner set and sweep tapscript root and require it to equal the
+	// committed script. BatchOutput.PkScript is operator-supplied, so the
+	// byte-match above only proves the operator put the same bytes on-chain
+	// and in the tree; without this an operator could commit a taproot
+	// output whose key is not the aggregate of the declared cosigners,
+	// leaving the co-signed tree unable to ever spend it. We recompute from
+	// the declared parameters rather than trusting Root.FinalKey, which is
+	// itself operator-supplied.
+	finalKey, err := tree.ComputeFinalKey(
+		vtxoTree.Root.CoSigners, vtxoTree.SweepTapscriptRoot,
+	)
+	if err != nil {
+		return fmt.Errorf("recompute tree root key: %w", err)
+	}
+	rootScript, err := txscript.PayToTaprootScript(finalKey)
+	if err != nil {
+		return fmt.Errorf("recompute tree root script: %w", err)
+	}
+	if !bytes.Equal(rootScript, committed.PkScript) {
+		return fmt.Errorf("committed output script does not match " +
+			"script recomputed from tree cosigners and sweep root")
+	}
+
+	return nil
 }
 
 // expectedForfeitSequence returns the tx sequence expected for a forfeit input.

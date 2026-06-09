@@ -8,7 +8,6 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -1261,7 +1260,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 		intents := []BoardingIntent{intent}
 		vtxos := []types.VTXORequest{vtxoReq}
 		vtxtTree := h.newTestVTXOTreeForIntents(vtxos)
-		commitmentTx := h.newTestCommitmentTx(intents)
+		commitmentTx := h.bindTreeToCommitment(intents, vtxtTree)
 
 		state := &CommitmentTxReceivedState{
 			RoundID:      testRoundIDTr("round-001"),
@@ -1316,7 +1315,9 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 		// with a different outpoint for the commitment tx.
 		differentIntent := h.newTestBoardingIntent()
 		differentIntents := []BoardingIntent{differentIntent}
-		commitmentTx := h.newTestCommitmentTx(differentIntents)
+		commitmentTx := h.bindTreeToCommitment(
+			differentIntents, vtxtTree,
+		)
 
 		state := &CommitmentTxReceivedState{
 			RoundID:      testRoundIDTr("round-001"),
@@ -1386,7 +1387,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 
 		intents := []BoardingIntent{intent}
 		vtxos := []types.VTXORequest{vtxoReq}
-		commitmentTx := h.newTestCommitmentTx(intents)
+		commitmentTx := h.bindTreeToCommitment(intents, vtxtTree)
 
 		intentScript, err := vtxoReq.EffectivePkScript()
 		require.NoError(t, err)
@@ -1464,7 +1465,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 
 		intents := []BoardingIntent{intent}
 		vtxos := []types.VTXORequest{vtxoReq}
-		commitmentTx := h.newTestCommitmentTx(intents)
+		commitmentTx := h.bindTreeToCommitment(intents, vtxtTree)
 
 		intentScript, err := vtxoReq.EffectivePkScript()
 		require.NoError(t, err)
@@ -1543,13 +1544,11 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 		// quoted (post-fee) amount, not the intent target. The
 		// stock helper hard-codes a single 100k output so we
 		// stitch the leave output in by hand below.
-		commitmentTx := h.newTestCommitmentTx(intents)
-		commitmentTx.UnsignedTx.AddTxOut(&wire.TxOut{
-			Value:    quotedLeaveValue,
-			PkScript: leavePkScript,
-		})
-		commitmentTx.Outputs = append(
-			commitmentTx.Outputs, psbt.POutput{},
+		commitmentTx := h.bindTreeToCommitment(
+			intents, vtxtTree, &wire.TxOut{
+				Value:    quotedLeaveValue,
+				PkScript: leavePkScript,
+			},
 		)
 
 		leaves := []*types.LeaveRequest{{
@@ -3499,12 +3498,12 @@ func TestRefreshOnlyRoundValidation(t *testing.T) {
 	emptyIntents := Intents{Boarding: []BoardingIntent{}}
 	roundID := testRoundIDTr("round-refresh-001")
 
-	// Create a minimal commitment tx with no boarding inputs.
-	commitmentTx := h.newTestCommitmentTxWithInputs(0)
-
 	// Create a VTXT tree. For refresh-only rounds, this would contain
 	// VTXOs for the refreshed amounts, but we need a minimal valid tree.
 	vtxtTree := h.newMinimalVTXOTree()
+
+	// Bind the tree to a commitment tx with no boarding inputs.
+	commitmentTx := h.bindTreeToCommitment(nil, vtxtTree)
 
 	state := &CommitmentTxReceivedState{
 		RoundID:      roundID,

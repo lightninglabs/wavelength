@@ -781,55 +781,144 @@ func (h *boardingTestHarness) newTestVTXOTreeForIntents(
 	return vtxtTree
 }
 
-// newCommitmentTxBuiltEvent creates a CommitmentTxBuilt event simulating what
-// the server sends after building the commitment transaction with all boarding
-// inputs and the batch VTXT tree output. The transaction is returned as a PSBT
-// with WitnessUtxo populated for all inputs, which is required for correct
-// Taproot sighash computation.
-func (h *boardingTestHarness) newCommitmentTxBuiltEvent(roundID RoundID,
-	intents []BoardingIntent, vtxtTree *tree.Tree) *CommitmentTxBuilt {
+// leafDescriptorsFromTree reconstructs the leaf descriptors of a VTXO tree
+// from its leaf nodes. bindTreeToCommitment uses it to rebuild a tree rooted
+// at a different batch outpoint: each leaf's non-anchor output supplies the
+// script and amount, and the single non-operator cosigner is the leaf owner
+// (signing) key.
+func (h *boardingTestHarness) leafDescriptorsFromTree(
+	t *tree.Tree) []tree.LeafDescriptor {
 
 	h.t.Helper()
 
-	// Build the unsigned transaction.
+	leafNodes := t.Root.GetLeafNodes()
+	leaves := make([]tree.LeafDescriptor, 0, len(leafNodes))
+	for _, leaf := range leafNodes {
+		require.GreaterOrEqual(h.t, len(leaf.Outputs), 1)
+		out := leaf.Outputs[0]
+
+		var coSigner *btcec.PublicKey
+		for _, cs := range leaf.CoSigners {
+			if !cs.IsEqual(h.operatorPubKey) {
+				coSigner = cs
+
+				break
+			}
+		}
+		require.NotNil(
+			h.t, coSigner, "leaf has no non-operator cosigner",
+		)
+
+		leaves = append(leaves, tree.LeafDescriptor{
+			PkScript:    out.PkScript,
+			Amount:      btcutil.Amount(out.Value),
+			CoSignerKey: coSigner,
+		})
+	}
+
+	return leaves
+}
+
+// bindTreeToCommitment makes vtxtTree commitment-bound, mirroring how the
+// honest operator constructs a round: it builds a commitment tx over the given
+// boarding intents whose first output is the tree's batch output (the canonical
+// tree-root taproot script plus the summed leaf value), then rebuilds vtxtTree
+// in place so its root spends that exact output. After it returns, the returned
+// PSBT and the (now bound) vtxtTree satisfy validateVTXOTreeBinding. The
+// returned PSBT carries WitnessUtxo for every input, which is required for
+// correct Taproot sighash computation in downstream signing fixtures.
+//
+// Replacing the batch outpoint changes the root tx hash and cascades to every
+// child input, so the tree is rebuilt from its leaves rather than patched in
+// place — the caller's *tree.Tree pointer is updated via assignment so events
+// generated afterwards (nonces, signatures) use the bound tree.
+//
+// extraOutputs are appended after the batch output and the anchor (e.g. leave
+// outputs). They must be supplied here rather than appended to the returned
+// PSBT, because appending after the fact would change the commitment txid and
+// break the binding the tree was just rebuilt against.
+func (h *boardingTestHarness) bindTreeToCommitment(intents []BoardingIntent,
+	vtxtTree *tree.Tree, extraOutputs ...*wire.TxOut) *psbt.Packet {
+
+	h.t.Helper()
+
+	// The batch output script depends only on the tree's cosigner set and
+	// sweep root, not on the outpoint, so it can be computed before the
+	// commitment txid is known. Recompute it exactly as the binding
+	// validation does.
+	finalKey, err := tree.ComputeFinalKey(
+		vtxtTree.Root.CoSigners, vtxtTree.SweepTapscriptRoot,
+	)
+	require.NoError(h.t, err)
+	rootScript, err := txscript.PayToTaprootScript(finalKey)
+	require.NoError(h.t, err)
+	batchOutput := &wire.TxOut{
+		Value:    vtxtTree.BatchOutput.Value,
+		PkScript: rootScript,
+	}
+
+	// Build the unsigned commitment tx: boarding inputs, the batch output
+	// at index 0, and the ephemeral anchor.
 	tx := wire.NewMsgTx(3)
 	for _, intent := range intents {
 		tx.AddTxIn(&wire.TxIn{
 			PreviousOutPoint: intent.Outpoint,
 		})
 	}
-
-	tx.AddTxOut(vtxtTree.BatchOutput)
-
+	tx.AddTxOut(batchOutput)
 	tx.AddTxOut(&wire.TxOut{
 		Value:    0,
 		PkScript: []byte{txscript.OP_TRUE, txscript.OP_RETURN},
 	})
+	for _, out := range extraOutputs {
+		tx.AddTxOut(out)
+	}
 
-	// Create PSBT inputs with WitnessUtxo for each boarding input.
-	pInputs := make([]psbt.PInput, len(intents))
+	packet, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(h.t, err)
 	for i, intent := range intents {
 		addr := intent.Address.Address
-		pkScript := addr.ScriptAddress()
-		amt := intent.ChainInfo.Amount
-
-		pInputs[i] = psbt.PInput{
+		packet.Inputs[i] = psbt.PInput{
 			WitnessUtxo: &wire.TxOut{
-				Value:    int64(amt),
-				PkScript: pkScript,
+				Value:    int64(intent.ChainInfo.Amount),
+				PkScript: addr.ScriptAddress(),
 			},
 		}
 	}
 
-	// Create PSBT outputs (empty for now).
-	pOutputs := make([]psbt.POutput, len(tx.TxOut))
-
-	packet, err := psbt.NewFromUnsignedTx(tx)
+	// Rebuild the tree rooted at the real commitment output and adopt it
+	// into the caller's pointer.
+	txid := tx.TxHash()
+	leaves := h.leafDescriptorsFromTree(vtxtTree)
+	rebuilt, err := tree.NewTree(
+		wire.OutPoint{
+			Hash:  txid,
+			Index: 0,
+		},
+		batchOutput,
+		leaves,
+		h.operatorPubKey,
+		vtxtTree.SweepTapscriptRoot,
+		2,
+	)
 	require.NoError(h.t, err)
+	*vtxtTree = *rebuilt
 
-	// Populate the inputs with WitnessUtxo.
-	packet.Inputs = pInputs
-	packet.Outputs = pOutputs
+	return packet
+}
+
+// newCommitmentTxBuiltEvent creates a CommitmentTxBuilt event simulating what
+// the server sends after building the commitment transaction with all boarding
+// inputs and the batch VTXT tree output. The transaction is returned as a PSBT
+// with WitnessUtxo populated for all inputs, which is required for correct
+// Taproot sighash computation. The tree is bound to the commitment tx so it
+// passes the round's VTXO-tree commitment-binding validation.
+func (h *boardingTestHarness) newCommitmentTxBuiltEvent(roundID RoundID,
+	intents []BoardingIntent, vtxtTree *tree.Tree) *CommitmentTxBuilt {
+
+	h.t.Helper()
+
+	packet := h.bindTreeToCommitment(intents, vtxtTree)
 
 	return &CommitmentTxBuilt{
 		RoundID: roundID,
@@ -2108,41 +2197,6 @@ func (h *boardingTestHarness) forfeitScript() []byte {
 	require.NoError(h.t, err)
 
 	return script
-}
-
-// newTestCommitmentTxWithInputs creates a test commitment tx with the
-// specified number of inputs. Used for testing refresh-only rounds where there
-// are no boarding inputs.
-func (h *boardingTestHarness) newTestCommitmentTxWithInputs(
-	numInputs int) *psbt.Packet {
-
-	h.t.Helper()
-
-	tx := wire.NewMsgTx(3)
-
-	// Add the specified number of inputs.
-	for i := 0; i < numInputs; i++ {
-		tx.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: h.newTestOutpoint(),
-		})
-	}
-
-	// Add a standard output.
-	tx.AddTxOut(&wire.TxOut{
-		Value:    100000,
-		PkScript: make([]byte, 34),
-	})
-
-	// Add OP_RETURN output.
-	tx.AddTxOut(&wire.TxOut{
-		Value:    0,
-		PkScript: []byte{txscript.OP_TRUE, txscript.OP_RETURN},
-	})
-
-	packet, err := psbt.NewFromUnsignedTx(tx)
-	require.NoError(h.t, err)
-
-	return packet
 }
 
 // newMinimalVTXOTree creates a minimal valid VTXO tree for testing. This is
