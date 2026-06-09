@@ -137,6 +137,25 @@ func (s *testVTXOStore) ListVTXOsByStatus(_ context.Context,
 	return out, nil
 }
 
+// ListSelectionCandidatesByStatus projects stored descriptors matching the
+// given status down to the selection fields.
+func (s *testVTXOStore) ListSelectionCandidatesByStatus(_ context.Context,
+	status vtxo.VTXOStatus) ([]vtxo.SelectedVTXO, error) {
+
+	var out []vtxo.SelectedVTXO
+	for _, desc := range s.records {
+		if desc.Status == status {
+			out = append(out, vtxo.SelectedVTXO{
+				Outpoint: desc.Outpoint,
+				Amount:   desc.Amount,
+				PkScript: desc.PkScript,
+			})
+		}
+	}
+
+	return out, nil
+}
+
 // UpdateVTXOStatus updates status for the given outpoint.
 func (s *testVTXOStore) UpdateVTXOStatus(_ context.Context,
 	outpoint wire.OutPoint, status vtxo.VTXOStatus) error {

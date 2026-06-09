@@ -128,6 +128,15 @@ type RoundStore interface {
 
 	ListVTXOsByStatus(ctx context.Context, status int32) ([]VTXORow, error)
 
+	// ListVTXOSelectionCandidatesByStatus returns the lightweight
+	// (outpoint, amount, pkScript) projection coin selection runs on,
+	// avoiding the full descriptor decode on the per-payment hot path.
+	ListVTXOSelectionCandidatesByStatus(ctx context.Context,
+		status int32) (
+		[]sqlc.ListVTXOSelectionCandidatesByStatusRow,
+		error,
+	)
+
 	UpdateVTXOStatus(
 		ctx context.Context, arg sqlc.UpdateVTXOStatusParams,
 	) error

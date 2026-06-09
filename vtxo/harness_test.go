@@ -74,6 +74,29 @@ func (m *MockVTXOStore) ListVTXOsByStatus(ctx context.Context,
 	return vtxos, args.Error(1)
 }
 
+// ListSelectionCandidatesByStatus derives the selection projection from the
+// mocked ListVTXOsByStatus expectation, so existing tests keep stubbing a
+// single listing surface for both the full and the projected reads.
+func (m *MockVTXOStore) ListSelectionCandidatesByStatus(ctx context.Context,
+	status VTXOStatus) ([]SelectedVTXO, error) {
+
+	descs, err := m.ListVTXOsByStatus(ctx, status)
+	if err != nil {
+		return nil, err
+	}
+
+	candidates := make([]SelectedVTXO, 0, len(descs))
+	for _, desc := range descs {
+		candidates = append(candidates, SelectedVTXO{
+			Outpoint: desc.Outpoint,
+			Amount:   desc.Amount,
+			PkScript: desc.PkScript,
+		})
+	}
+
+	return candidates, nil
+}
+
 func (m *MockVTXOStore) UpdateVTXOStatus(ctx context.Context,
 	outpoint wire.OutPoint, status VTXOStatus) error {
 

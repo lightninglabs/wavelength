@@ -288,6 +288,65 @@ func TestVTXOPersistenceStoreSaveAndGet(t *testing.T) {
 	)
 }
 
+// TestListSelectionCandidatesByStatus verifies the lightweight selection
+// projection agrees with the full descriptor listing on outpoint, amount,
+// and pkScript.
+func TestListSelectionCandidatesByStatus(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-sel-proj")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, roundStore.CommitState(ctx, testRound, state))
+
+	descA := createTestVTXODescriptor(t, roundID, 11)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, descA))
+
+	descB := createTestVTXODescriptor(t, roundID, 12)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, descB))
+
+	full, err := vtxoStore.ListVTXOsByStatus(ctx, vtxo.VTXOStatusLive)
+	require.NoError(t, err)
+	require.Len(t, full, 2)
+
+	candidates, err := vtxoStore.ListSelectionCandidatesByStatus(
+		ctx, vtxo.VTXOStatusLive,
+	)
+	require.NoError(t, err)
+	require.Len(t, candidates, len(full))
+
+	byOutpoint := make(map[wire.OutPoint]*vtxo.Descriptor)
+	for _, desc := range full {
+		byOutpoint[desc.Outpoint] = desc
+	}
+
+	for _, candidate := range candidates {
+		desc, ok := byOutpoint[candidate.Outpoint]
+		require.True(t, ok)
+		require.Equal(t, desc.Amount, candidate.Amount)
+		require.Equal(t, desc.PkScript, candidate.PkScript)
+	}
+
+	// A status the projection was not asked for stays invisible.
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, descA.Outpoint, vtxo.VTXOStatusSpent,
+		),
+	)
+
+	candidates, err = vtxoStore.ListSelectionCandidatesByStatus(
+		ctx, vtxo.VTXOStatusLive,
+	)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	require.Equal(t, descB.Outpoint, candidates[0].Outpoint)
+}
 // addAncestryFragment appends a synthetic ancestry fragment to a
 // Descriptor under construction so multi-tree round-trip tests can
 // build N>1 ancestry layouts without re-implementing the per-fragment
