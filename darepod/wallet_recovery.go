@@ -67,6 +67,9 @@ func (r *RPCServer) recoverWalletState(ctx context.Context, window uint32) (
 		return nil, fmt.Errorf("wallet backend not initialized")
 	}
 
+	// InitWallet stores the seed before this point, which lets the daemon
+	// start wallet-backed services on a separate goroutine. Recovery needs
+	// those services, so wait for that async startup before scanning.
 	select {
 	case <-r.server.DaemonReady():
 	case <-ctx.Done():
@@ -502,31 +505,48 @@ func (r *RPCServer) recoverOORReceiveScripts(ctx context.Context,
 			return fmt.Errorf("build OOR script %d: %w", i, err)
 		}
 
-		if _, ok := registeredScripts[string(pkScript)]; !ok {
-			continue
+		scriptPersisted := false
+		persistScript := func() error {
+			if scriptPersisted {
+				return nil
+			}
+
+			source := db.OwnedReceiveScriptSourceSync
+			err := packageStore.UpsertOwnedReceiveScript(
+				ctx, db.OwnedReceiveScriptRecord{
+					PkScript:       pkScript,
+					ClientKey:      *keyDesc,
+					OperatorPubKey: terms.PubKey,
+					ExitDelay: int64(
+						terms.VTXOExitDelay,
+					),
+					Source:     source,
+					CreatedAt:  r.server.clk.Now(),
+					LastUsedAt: fn.None[time.Time](),
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("persist OOR script %d: %w",
+					i, err)
+			}
+
+			scriptPersisted = true
+			result.OORReceiveScripts++
+
+			return nil
 		}
 
-		err = packageStore.UpsertOwnedReceiveScript(
-			ctx, db.OwnedReceiveScriptRecord{
-				PkScript:       pkScript,
-				ClientKey:      *keyDesc,
-				OperatorPubKey: terms.PubKey,
-				ExitDelay:      int64(terms.VTXOExitDelay),
-				Source:         db.OwnedReceiveScriptSourceSync,
-				CreatedAt:      r.server.clk.Now(),
-				LastUsedAt:     fn.None[time.Time](),
-			},
-		)
-		if err != nil {
-			return fmt.Errorf("persist OOR script %d: %w", i, err)
+		if _, ok := registeredScripts[string(pkScript)]; ok {
+			if err := persistScript(); err != nil {
+				return err
+			}
 		}
-		result.OORReceiveScripts++
 
 		idx := r.server.indexer.WithSigner(
 			r.server.proofKeyBackend.ProofSigner(*keyDesc),
 		)
 		if err := r.recoverOOREventsForScript(
-			ctx, idx, pkScript, handler, result,
+			ctx, idx, pkScript, persistScript, handler, result,
 		); err != nil {
 			return fmt.Errorf("recover OOR events for key %d: %w",
 				i, err)
@@ -578,7 +598,7 @@ func (r *RPCServer) recoveryOORHandler(
 }
 
 func (r *RPCServer) recoverOOREventsForScript(ctx context.Context,
-	idx *indexer.Client, pkScript []byte,
+	idx *indexer.Client, pkScript []byte, ensureScript func() error,
 	handler *oor.LocalPersistenceOutboxHandler,
 	result *walletRecoveryResult) error {
 
@@ -594,6 +614,10 @@ func (r *RPCServer) recoverOOREventsForScript(ctx context.Context,
 		for _, event := range resp.GetEvents() {
 			if event == nil {
 				continue
+			}
+
+			if err := ensureScript(); err != nil {
+				return err
 			}
 
 			err := r.materializeRecoveredOOREvent(
@@ -647,7 +671,8 @@ func (r *RPCServer) materializeRecoveredOOREvent(ctx context.Context,
 	for _, recipient := range recipients {
 		if !bytes.Equal(
 			recipient.PkScript, event.GetRecipientPkScript(),
-		) {
+		) ||
+			recipient.OutputIndex != event.GetOutputIndex() {
 
 			continue
 		}

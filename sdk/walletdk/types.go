@@ -100,7 +100,8 @@ type CreateWalletRequest struct {
 	RecoveryWindow uint32
 }
 
-// CreateWalletResult returns the seed words and daemon identity.
+// CreateWalletResult returns the seed words, daemon identity, and optional
+// recovery counters.
 type CreateWalletResult struct {
 	Mnemonic                    []string
 	EncipheredSeed              []byte

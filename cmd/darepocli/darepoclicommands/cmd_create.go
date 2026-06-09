@@ -68,15 +68,16 @@ func newCreateCmd() *cobra.Command {
 // walletCreate implements the top-level `create` verb.
 func walletCreate(cmd *cobra.Command, _ []string) error {
 	recoverWallet, _ := cmd.Flags().GetBool("recover")
-	mnemonicFile, err := aliasedStringFlag(
-		cmd, "mnemonic-file", "mnemonic_file",
+	mnemonicFile, err := aliasedFlag(
+		cmd, "mnemonic-file", "mnemonic_file", cmd.Flags().GetString,
 	)
 	if err != nil {
 		return err
 	}
 
-	recoveryWindow, err := aliasedUint32Flag(
+	recoveryWindow, err := aliasedFlag(
 		cmd, "recovery-window", "recovery_window",
+		cmd.Flags().GetUint32,
 	)
 	if err != nil {
 		return err
@@ -178,40 +179,22 @@ func readMnemonicFile(path string) ([]string, error) {
 	return words, nil
 }
 
-// aliasedStringFlag reads a string flag with a hidden compatibility alias.
-func aliasedStringFlag(cmd *cobra.Command, primary,
-	alias string) (string, error) {
+// aliasedFlag reads a flag with a hidden compatibility alias.
+func aliasedFlag[T any](cmd *cobra.Command, primary, alias string,
+	get func(string) (T, error)) (T, error) {
 
 	primaryChanged := cmd.Flags().Changed(primary)
 	aliasChanged := cmd.Flags().Changed(alias)
+	var zero T
 	switch {
 	case primaryChanged && aliasChanged:
-		return "", fmt.Errorf("--%s and --%s cannot both be set",
+		return zero, fmt.Errorf("--%s and --%s cannot both be set",
 			primary, alias)
 
 	case aliasChanged:
-		return cmd.Flags().GetString(alias)
+		return get(alias)
 
 	default:
-		return cmd.Flags().GetString(primary)
-	}
-}
-
-// aliasedUint32Flag reads a uint32 flag with a hidden compatibility alias.
-func aliasedUint32Flag(cmd *cobra.Command, primary,
-	alias string) (uint32, error) {
-
-	primaryChanged := cmd.Flags().Changed(primary)
-	aliasChanged := cmd.Flags().Changed(alias)
-	switch {
-	case primaryChanged && aliasChanged:
-		return 0, fmt.Errorf("--%s and --%s cannot both be set",
-			primary, alias)
-
-	case aliasChanged:
-		return cmd.Flags().GetUint32(alias)
-
-	default:
-		return cmd.Flags().GetUint32(primary)
+		return get(primary)
 	}
 }
