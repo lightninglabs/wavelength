@@ -95,6 +95,18 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *StartTransferEvent:
+		// Bind each standard checkpoint output's owner leaf to the
+		// session operator key before building. A VTXO created under a
+		// pre-rotation operator key would otherwise produce a
+		// checkpoint output the rotated operator cannot co-sign and the
+		// server rejects at submit. See normalizeCheckpointOwnerLeaves.
+		err := normalizeCheckpointOwnerLeaves(
+			evt.Policy, evt.VTXOInputs,
+		)
+		if err != nil {
+			return nil, err
+		}
+
 		canonicalRecipients := oortx.CanonicalRecipientOutputs(
 			evt.RecipientOutputs,
 		)
@@ -529,6 +541,63 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 	[]*psbt.Packet, error) {
 
 	return BuildSubmitPackage(policy, inputs, outputs)
+}
+
+// normalizeCheckpointOwnerLeaves rebuilds each standard input's checkpoint
+// OUTPUT owner collaborative leaf so it commits to the session operator key
+// rather than the spent input VTXO's operator key.
+//
+// The checkpoint output -- and the Ark tx that spends it cooperatively -- is
+// governed by the session checkpoint policy, whose operator key is the
+// operator's current key at session-creation time. The spent input VTXO may
+// instead have been created under an older operator key, after the operator
+// rotated. Deriving the output owner leaf from the input's operator key would
+// make the server's submit-rebuild reject the checkpoint ("owner leaf policy
+// does not contain operator key") and make the operator's Ark co-signature,
+// produced with the session key, fail the leaf's key-membership check.
+//
+// The input SPEND path is untouched: spending the VTXO still uses its own
+// tapscript, committed to the historical operator key (resolved server-side
+// per input). Custom spends (e.g. vHTLC) carry their own owner leaf and are
+// left untouched. Before any rotation the input and session keys are equal, so
+// this is a no-op then.
+func normalizeCheckpointOwnerLeaves(policy arkscript.CheckpointPolicy,
+	inputs []TransferInput) error {
+
+	if policy.OperatorKey == nil {
+		return fmt.Errorf("checkpoint policy operator key required")
+	}
+
+	for i := range inputs {
+		input := &inputs[i]
+
+		if input.IsCustomSpend() {
+			continue
+		}
+
+		if input.VTXO == nil || input.VTXO.ClientKey.PubKey == nil {
+			continue
+		}
+
+		leaf, leafPolicy, err := defaultOwnerLeaf(
+			input.VTXO.ClientKey.PubKey, policy.OperatorKey,
+		)
+		if err != nil {
+			return err
+		}
+
+		// defaultOwnerLeaf only returns an empty leaf when one of its
+		// key args is nil; both are non-nil here, so this is a
+		// belt-and-suspenders guard rather than a reachable branch.
+		if len(leaf) == 0 {
+			continue
+		}
+
+		input.OwnerLeafScript = leaf
+		input.OwnerLeafPolicy = leafPolicy
+	}
+
+	return nil
 }
 
 // BuildSubmitPackage constructs a v0 OOR submit package using the shared
