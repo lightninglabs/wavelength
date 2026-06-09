@@ -38,6 +38,13 @@ const (
 	// and may be retried after the client restructures the input set
 	// (e.g. fewer inputs, same-commitment cluster, or in-round fallback).
 	OORRejectCode_OOR_REJECT_LINEAGE_TOO_LARGE OORRejectCode = 1
+	// OOR_REJECT_OUTPUT_POLICY indicates one of the Ark recipient
+	// outputs violates the operator's output policy, e.g. an amount
+	// above the advertised per-VTXO maximum. The submit was not locked;
+	// retrying the same output shape will fail again, so the client
+	// must restructure the outputs (smaller amounts, more outputs)
+	// before resubmitting.
+	OORRejectCode_OOR_REJECT_OUTPUT_POLICY OORRejectCode = 2
 )
 
 // Enum value maps for OORRejectCode.
@@ -45,10 +52,12 @@ var (
 	OORRejectCode_name = map[int32]string{
 		0: "OOR_REJECT_UNSPECIFIED",
 		1: "OOR_REJECT_LINEAGE_TOO_LARGE",
+		2: "OOR_REJECT_OUTPUT_POLICY",
 	}
 	OORRejectCode_value = map[string]int32{
 		"OOR_REJECT_UNSPECIFIED":       0,
 		"OOR_REJECT_LINEAGE_TOO_LARGE": 1,
+		"OOR_REJECT_OUTPUT_POLICY":     2,
 	}
 )
 
@@ -716,10 +725,11 @@ const file_oorwire_proto_rawDesc = "" +
 	"\x16final_checkpoint_psbts\x18\x02 \x03(\fR\x14finalCheckpointPsbts\"8\n" +
 	"\x17FinalizePackageResponse\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\fR\tsessionId*M\n" +
+	"session_id\x18\x01 \x01(\fR\tsessionId*k\n" +
 	"\rOORRejectCode\x12\x1a\n" +
 	"\x16OOR_REJECT_UNSPECIFIED\x10\x00\x12 \n" +
-	"\x1cOOR_REJECT_LINEAGE_TOO_LARGE\x10\x012\xb1\x01\n" +
+	"\x1cOOR_REJECT_LINEAGE_TOO_LARGE\x10\x01\x12\x1c\n" +
+	"\x18OOR_REJECT_OUTPUT_POLICY\x10\x022\xb1\x01\n" +
 	"\x11OORMailboxService\x12J\n" +
 	"\rSubmitPackage\x12\x1b.oorpb.SubmitPackageRequest\x1a\x1c.oorpb.SubmitPackageResponse\x12P\n" +
 	"\x0fFinalizePackage\x12\x1d.oorpb.FinalizePackageRequest\x1a\x1e.oorpb.FinalizePackageResponseB2Z0github.com/lightninglabs/darepo-client/rpc/oorpbb\x06proto3"
