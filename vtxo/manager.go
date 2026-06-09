@@ -146,6 +146,18 @@ type Manager struct {
 	// actors tracks active VTXO actors by outpoint.
 	actors map[wire.OutPoint]VTXOActorRef
 
+	// reserved is the manager-goroutine-owned admission gate for spend
+	// reservations. An entry means the outpoint was handed to a spend
+	// session this process lifetime and must not be selected again, even
+	// though the VTXO actor's durable Spending status write may still be
+	// in flight: the spend reserve is delivered tell-style (an Ask whose
+	// future is observed via OnComplete rather than awaited), so the
+	// manager turn no longer blocks on the per-input FSM write
+	// transaction. Entries are dropped on release, completion, terminal
+	// notification, or an asynchronous reservation failure. Only the
+	// manager goroutine touches the map.
+	reserved map[wire.OutPoint]struct{}
+
 	// liveDescriptors snapshots the live VTXO descriptors recovered
 	// from the store during Start. The list is the source of truth for
 	// daemon-local subsystems that need to re-arm per-VTXO state on
@@ -162,9 +174,33 @@ func NewManager(cfg *ManagerConfig) *Manager {
 	}
 
 	return &Manager{
-		cfg:    cfg,
-		actors: make(map[wire.OutPoint]VTXOActorRef),
+		cfg:      cfg,
+		actors:   make(map[wire.OutPoint]VTXOActorRef),
+		reserved: make(map[wire.OutPoint]struct{}),
 	}
+}
+
+// markReserved records an in-memory spend reservation. Nil-safe so test
+// fixtures that build a Manager literal without NewManager keep working.
+func (m *Manager) markReserved(op wire.OutPoint) {
+	if m.reserved == nil {
+		m.reserved = make(map[wire.OutPoint]struct{})
+	}
+
+	m.reserved[op] = struct{}{}
+}
+
+// dropReserved clears an in-memory spend reservation, if present.
+func (m *Manager) dropReserved(op wire.OutPoint) {
+	delete(m.reserved, op)
+}
+
+// isReserved reports whether the outpoint holds an in-memory spend
+// reservation.
+func (m *Manager) isReserved(op wire.OutPoint) bool {
+	_, ok := m.reserved[op]
+
+	return ok
 }
 
 // logger returns the configured logger or falls back to extracting from
@@ -195,6 +231,63 @@ func (m *Manager) askVTXOActor(ctx context.Context, ref VTXOActorRef,
 	msg actormsg.VTXOActorMsg) fn.Result[actormsg.VTXOActorResp] {
 
 	return ref.Ask(ctx, msg).Await(ctx)
+}
+
+// detachedReserveTimeout bounds the asynchronous observation of a detached
+// spend reservation's outcome. Generous on purpose: it only has to outlive a
+// loaded child actor's FSM turn plus its write transaction.
+const detachedReserveTimeout = 30 * time.Second
+
+// detachedReserve hands a spend reservation to a child VTXO actor without
+// blocking the manager turn on the child's FSM write transaction. The Ask
+// enqueues and returns a future immediately; the outcome is observed on a
+// detached goroutine via OnComplete. A failure (the candidate raced out of
+// LiveState, or the child died) hops back to the manager goroutine as a
+// spendReservationFailedMsg so the in-memory reservation mark is dropped
+// where the map is owned. The observation context is daemon-owned: the turn
+// context must not cancel the outcome watch.
+func (m *Manager) detachedReserve(ctx context.Context, ref VTXOActorRef,
+	op wire.OutPoint, event actormsg.VTXOActorMsg, label string) {
+
+	log := m.logger(ctx)
+	managerRef := m.managerRef
+
+	askCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), detachedReserveTimeout,
+	)
+
+	future := ref.Ask(askCtx, event)
+	future.OnComplete(
+		askCtx, func(res fn.Result[actormsg.VTXOActorResp]) {
+			defer cancel()
+
+			_, err := res.Unpack()
+			if err == nil {
+				return
+			}
+
+			log.WarnS(askCtx, label+" detached reserve failed",
+				err,
+				slog.String("outpoint", op.String()),
+			)
+
+			if managerRef == nil {
+				return
+			}
+
+			tellErr := managerRef.Tell(
+				askCtx, &spendReservationFailedMsg{
+					Outpoint: op,
+				},
+			)
+			if tellErr != nil {
+				log.WarnS(askCtx, "Failed to report detached "+
+					"reserve failure", tellErr,
+					slog.String("outpoint", op.String()),
+				)
+			}
+		},
+	)
 }
 
 // askForfeitVTXOActor asks a child VTXO actor with the manager's bounded
@@ -359,6 +452,18 @@ func (m *Manager) Receive(ctx context.Context,
 
 	case *round.VTXOTerminatedMsg:
 		return m.handleVTXOTerminated(ctx, req)
+
+	case *spendReservationFailedMsg:
+		// The detached reserve's outcome watcher reports a failed
+		// reservation; drop the in-memory mark on the goroutine that
+		// owns the map so the liquidity becomes selectable again.
+		m.dropReserved(req.Outpoint)
+
+		m.logger(ctx).InfoS(ctx, "Released failed spend reservation",
+			slog.String("outpoint", req.Outpoint.String()),
+		)
+
+		return fn.Ok[ManagerResp](&ReleaseSpendResponse{})
 
 	case *RelayToRoundMsg:
 		return m.handleRelayToRound(ctx, req)
@@ -756,6 +861,7 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 	msg *round.VTXOTerminatedMsg) fn.Result[ManagerResp] {
 
 	delete(m.actors, msg.Outpoint)
+	m.dropReserved(msg.Outpoint)
 
 	m.logger(ctx).InfoS(ctx, "VTXO actor terminated",
 		slog.String("outpoint", msg.Outpoint.String()),
@@ -909,6 +1015,15 @@ type reserveParams struct {
 	ask             func(context.Context, VTXOActorRef,
 		actormsg.VTXOActorMsg) fn.Result[actormsg.VTXOActorResp]
 	label string
+
+	// detached delivers the reservation tell-style: the manager marks
+	// the outpoint in its in-memory reservation map, issues the Ask, and
+	// observes the child's future via OnComplete instead of awaiting it,
+	// so the manager turn never blocks on the per-input FSM write
+	// transaction. The spend path enables this; the forfeit path keeps
+	// the synchronous ask because round participation wants the durable
+	// state settled before it proceeds.
+	detached bool
 }
 
 // selectAndReserveVTXOs performs largest-first coin selection and
@@ -938,8 +1053,17 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 		return nil, 0, fmt.Errorf("list live vtxos: %w", err)
 	}
 
+	// The in-memory reservation map gates admission ahead of the durable
+	// status: a detached spend reservation's Spending write may still be
+	// in flight, so a row can read Live here while the outpoint is
+	// already owned by a spend session. Both the spend and the forfeit
+	// selection paths funnel through this filter.
 	candidates := make([]*Descriptor, 0, len(rows))
 	for _, row := range rows {
+		if m.isReserved(row.Outpoint) {
+			continue
+		}
+
 		candidates = append(candidates, &Descriptor{
 			Outpoint: row.Outpoint,
 			Amount:   row.Amount,
@@ -990,6 +1114,24 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 			}
 
 			ref = lazyRef
+		}
+
+		// Detached (spend) path: mark the in-memory reservation and
+		// hand the FSM event to the child without awaiting its write
+		// transaction. The outcome is observed asynchronously; a
+		// failed reservation hops back as a manager message that
+		// drops the mark, and the owning session's spend then fails
+		// at signing/submit and retries through the normal machinery.
+		if p.detached {
+			m.markReserved(vtxo.Outpoint)
+			m.detachedReserve(
+				ctx, ref, vtxo.Outpoint, p.reserveEvent,
+				p.label,
+			)
+
+			reserved = append(reserved, vtxo.Outpoint)
+
+			continue
 		}
 
 		result := p.ask(ctx, ref, p.reserveEvent)
@@ -1089,6 +1231,7 @@ func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
 		rollback:        m.rollbackSpend,
 		ask:             m.askVTXOActor,
 		label:           "spend",
+		detached:        true,
 	})
 	if err != nil {
 		return fn.Err[ManagerResp](err)
@@ -1109,6 +1252,12 @@ func (m *Manager) rollbackSpend(ctx context.Context,
 	defer cancel()
 
 	for _, op := range outpoints {
+		// Per-actor mailbox FIFO guarantees the release lands after
+		// any detached reserve already queued for the same actor, so
+		// dropping the in-memory mark here cannot resurrect a
+		// half-reserved outpoint.
+		m.dropReserved(op)
+
 		ref, ok := m.actors[op]
 		if !ok {
 			continue
@@ -1205,10 +1354,50 @@ func (m *Manager) sweepOrphanedReservations(ctx context.Context) {
 		released++
 	}
 
+	// Reverse direction: a reservation row whose VTXO row is NOT in
+	// SpendingState means the owning session checkpointed but the
+	// detached Spending status write never landed before the shutdown.
+	// The session resumes on this boot and still owns the input, so
+	// re-mark the in-memory reservation and re-drive the reserve event
+	// to converge the durable status. Without this, a restarted daemon
+	// could select an input an in-flight session owns.
+	spendingSet := fn.NewSet[wire.OutPoint]()
+	for _, desc := range spending {
+		spendingSet.Add(desc.Outpoint)
+	}
+
+	var redriven int
+	for _, op := range reserved {
+		if spendingSet.Contains(op) {
+			continue
+		}
+
+		ref, ok := m.actors[op]
+		if !ok {
+			// Terminal row (the spend completed) or unknown; the
+			// owning session's completion path reconciles it.
+			continue
+		}
+
+		m.markReserved(op)
+
+		if err := ref.Tell(ctx, &SpendReserveEvent{}); err != nil {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Reservation sweep: re-drive reserve failed",
+				err,
+				slog.String("outpoint", op.String()),
+			)
+		}
+
+		redriven++
+	}
+
 	m.logger(ctx).InfoS(ctx, "Reservation sweep complete",
 		slog.Int("spending", len(spending)),
 		slog.Int("reserved", len(reserved)),
 		slog.Int("released", released),
+		slog.Int("redriven", redriven),
 	)
 }
 
@@ -1254,6 +1443,7 @@ func (m *Manager) handleReleaseSpend(ctx context.Context,
 		// the same transaction as the status change (see the VTXO
 		// actor's processStatusUpdate), so no separate delete is needed
 		// here.
+		m.dropReserved(op)
 		released++
 	}
 
@@ -1286,6 +1476,7 @@ func (m *Manager) handleCompleteSpend(ctx context.Context,
 				return fn.Err[ManagerResp](err)
 			}
 			if spent {
+				m.dropReserved(op)
 				completed++
 
 				continue
@@ -1308,6 +1499,7 @@ func (m *Manager) handleCompleteSpend(ctx context.Context,
 		// the same transaction as the status change (see the VTXO
 		// actor's processStatusUpdate), so no separate delete is needed
 		// here.
+		m.dropReserved(op)
 		completed++
 	}
 
@@ -1363,11 +1555,22 @@ func (m *Manager) handleReserveForfeit(ctx context.Context,
 
 	outpoints := dedupOutpoints(req.Outpoints)
 
-	// Validate all outpoints are known before attempting reservation.
+	// Validate all outpoints are known before attempting reservation,
+	// and refuse outpoints holding an in-memory spend reservation whose
+	// durable Spending write may still be in flight: the child's FSM
+	// would otherwise still read LiveState and accept a conflicting
+	// forfeit reservation.
 	for _, op := range outpoints {
 		if _, ok := m.actors[op]; !ok {
 			return fn.Err[ManagerResp](
 				fmt.Errorf("no actor for outpoint %s", op),
+			)
+		}
+
+		if m.isReserved(op) {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("%w: outpoint %s is spend-reserved",
+					ErrVTXOLiquidityLocked, op),
 			)
 		}
 	}

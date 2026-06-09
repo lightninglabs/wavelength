@@ -63,6 +63,27 @@ func (m *VTXOsMaterializedNotification) MessageType() string {
 // VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
 func (m *VTXOsMaterializedNotification) VTXOManagerMsg() {}
 
+// spendReservationFailedMsg is the manager-internal hop-back for an
+// asynchronously delivered spend reservation whose FSM turn failed. The
+// detached reserve path observes each child's future via OnComplete on a
+// separate goroutine; mutating the manager's in-memory reservation map from
+// there would race the manager turn, so the failure is delivered as a
+// message and the map entry is dropped on the manager goroutine.
+type spendReservationFailedMsg struct {
+	actor.BaseMessage
+
+	// Outpoint is the VTXO whose reservation failed.
+	Outpoint wire.OutPoint
+}
+
+// MessageType returns the message type identifier.
+func (m *spendReservationFailedMsg) MessageType() string {
+	return "SpendReservationFailedMsg"
+}
+
+// VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
+func (m *spendReservationFailedMsg) VTXOManagerMsg() {}
+
 // GetActiveVTXOCountRequest requests the number of active VTXO actors managed
 // by the VTXO Manager. This goes through the actor message path to avoid
 // requiring synchronization.
