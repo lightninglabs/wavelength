@@ -80,6 +80,13 @@ func (m *mockVTXOStore) ListVTXOsByStatus(context.Context, vtxo.VTXOStatus) (
 	return nil, nil
 }
 
+// ListSelectionCandidatesByStatus is unused in these tests.
+func (m *mockVTXOStore) ListSelectionCandidatesByStatus(context.Context,
+	vtxo.VTXOStatus) ([]vtxo.SelectedVTXO, error) {
+
+	return nil, nil
+}
+
 // UpdateVTXOStatus is unused in these tests.
 func (m *mockVTXOStore) UpdateVTXOStatus(context.Context, wire.OutPoint,
 	vtxo.VTXOStatus) error {

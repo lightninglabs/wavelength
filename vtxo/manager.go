@@ -883,12 +883,32 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 		return nil, 0, fmt.Errorf("target amount must be positive")
 	}
 
-	// List live candidates from the store.
-	candidates, err := m.cfg.Store.ListVTXOsByStatus(
+	// List live candidates from the store via the lightweight selection
+	// projection: selection only consumes outpoint, amount, and pkScript,
+	// so there is no reason to decode full descriptors (taproot script
+	// reconstruction, policy decode, ancestry load) on this per-payment
+	// path. The projection rows are wrapped as minimal descriptors so the
+	// shared largest-first machinery below stays unchanged; these partial
+	// descriptors never escape this function (the response carries
+	// SelectedVTXO projections built from the same three fields).
+	rows, err := m.cfg.Store.ListSelectionCandidatesByStatus(
 		ctx, VTXOStatusLive,
 	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list live vtxos: %w", err)
+	}
+
+	// Wrap the lightweight projection rows as minimal descriptors so the
+	// shared largest-first selector can consume them without decoding full
+	// descriptors. These partial descriptors never escape this function.
+	candidates := make([]*Descriptor, 0, len(rows))
+	for _, row := range rows {
+		candidates = append(candidates, &Descriptor{
+			Outpoint: row.Outpoint,
+			Amount:   row.Amount,
+			PkScript: row.PkScript,
+			Status:   VTXOStatusLive,
+		})
 	}
 
 	// Run largest-first selection through the shared selector. Map its

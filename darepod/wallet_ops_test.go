@@ -55,6 +55,13 @@ func (s *testCustomInputStore) ListVTXOsByStatus(context.Context,
 	return nil, fmt.Errorf("unexpected ListVTXOsByStatus call")
 }
 
+func (s *testCustomInputStore) ListSelectionCandidatesByStatus(context.Context,
+	vtxo.VTXOStatus) ([]vtxo.SelectedVTXO, error) {
+
+	return nil, fmt.Errorf("unexpected ListSelectionCandidatesByStatus " +
+		"call")
+}
+
 func (s *testCustomInputStore) UpdateVTXOStatus(context.Context, wire.OutPoint,
 	vtxo.VTXOStatus) error {
 

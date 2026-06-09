@@ -293,6 +293,51 @@ func (s *VTXOPersistenceStore) ListVTXOsByStatus(ctx context.Context,
 	return result, err
 }
 
+// ListSelectionCandidatesByStatus returns the lightweight projection coin
+// selection runs on: outpoint, amount, and pkScript per VTXO in the given
+// status. Selection happens on every payment and needs only these fields, so
+// this path skips the full descriptor decode (pubkey parsing, taproot script
+// reconstruction, policy template decode) and the batched ancestry query
+// entirely.
+func (s *VTXOPersistenceStore) ListSelectionCandidatesByStatus(
+	ctx context.Context, status vtxo.VTXOStatus) ([]vtxo.SelectedVTXO,
+	error) {
+
+	readTxOpts := ReadTxOption()
+
+	var result []vtxo.SelectedVTXO
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
+		rows, err := q.ListVTXOSelectionCandidatesByStatus(
+			ctx, int32(status),
+		)
+		if err != nil {
+			return fmt.Errorf("list selection candidates: %w", err)
+		}
+
+		candidates := make([]vtxo.SelectedVTXO, 0, len(rows))
+		for _, row := range rows {
+			var outpointHash chainhash.Hash
+			copy(outpointHash[:], row.OutpointHash)
+
+			candidates = append(candidates, vtxo.SelectedVTXO{
+				Outpoint: wire.OutPoint{
+					Hash:  outpointHash,
+					Index: uint32(row.OutpointIndex),
+				},
+				Amount:   btcutil.Amount(row.Amount),
+				PkScript: row.PkScript,
+			})
+		}
+
+		result = candidates
+
+		return nil
+	})
+
+	return result, err
+}
+
 // UpdateVTXOStatus atomically updates a VTXO's status. This is the primary
 // method for state transitions that don't require additional data.
 func (s *VTXOPersistenceStore) UpdateVTXOStatus(
