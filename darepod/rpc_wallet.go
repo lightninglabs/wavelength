@@ -317,6 +317,17 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 			"wallet: %v", err)
 	}
 
+	var recoveryResult *walletRecoveryResult
+	if req.GetRecoverState() {
+		recoveryResult, err = r.recoverWalletState(
+			ctx, req.GetRecoveryWindow(),
+		)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "unable to "+
+				"recover wallet state: %v", err)
+		}
+	}
+
 	// Derive identity pubkey for the response.
 	identityPubkey, err := r.deriveIdentityPubkey(ctx)
 	if err != nil {
@@ -324,9 +335,14 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 			"identity pubkey: %v", err)
 	}
 
-	return &daemonrpc.InitWalletResponse{
+	resp := &daemonrpc.InitWalletResponse{
 		IdentityPubkey: identityPubkey,
-	}, nil
+	}
+	if recoveryResult != nil {
+		recoveryResult.apply(resp)
+	}
+
+	return resp, nil
 }
 
 // UnlockWallet decrypts an existing wallet seed using the provided
