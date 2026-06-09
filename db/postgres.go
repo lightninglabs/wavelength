@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"testing"
 	"time"
 
@@ -27,6 +28,14 @@ const (
 	// defaultConnMaxIdleTime is the amount of time a connection can be
 	// idle before it is closed.
 	defaultConnMaxIdleTime = 5 * time.Minute
+
+	// defaultPostgresSynchronous is the default durability level for the
+	// Postgres backend, expressed in the shared SQLite vocabulary
+	// ("full"/"normal"/"off"). It maps to the synchronous_commit session
+	// setting. We default to "normal" to match the SQLite default; on a
+	// single-node deployment this still flushes the WAL locally on commit
+	// while avoiding the strictest sync, mirroring SQLite's WAL "normal".
+	defaultPostgresSynchronous = SqliteSynchronousNormal
 )
 
 var (
@@ -59,9 +68,48 @@ type PostgresConfig struct {
 	ConnMaxIdleTime    time.Duration `long:"connmaxidletime" description:"Max amount of time a connection can be idle for before it is closed. Valid time units are {s, m, h}."`
 	RequireSSL         bool          `long:"requiressl" description:"Whether to require using SSL (mode: require) when connecting to the server."`
 
+	// Synchronous controls commit durability via the Postgres
+	// synchronous_commit session setting. To keep one knob across
+	// backends it accepts the same vocabulary as the SQLite synchronous
+	// pragma ("full", "normal", "off") and maps it onto the equivalent
+	// Postgres value. When empty it defaults to "normal".
+	Synchronous string `long:"synchronous" description:"The commit durability level. One of: full, normal, off. Mapped onto the Postgres synchronous_commit setting."`
+
 	// Log is an optional logger for the Postgres store. When None, the
 	// store falls back to the explicit constructor logger.
 	Log fn.Option[btclog.Logger]
+}
+
+// resolvePostgresSynchronousCommit normalizes and validates the configured
+// durability level (in the shared SQLite vocabulary) and maps it onto the
+// Postgres synchronous_commit session value. The mapping is: "full" -> "on"
+// (wait for local flush; on a primary with no sync standbys this is the
+// strongest setting), "normal" -> "local" (flush the local WAL but never wait
+// on replicas, the closest analog to SQLite's WAL "normal"), and "off" ->
+// "off" (the most aggressive level). An empty value resolves to the default,
+// and unknown values are rejected so a typo surfaces at startup.
+func resolvePostgresSynchronousCommit(value string) (string, error) {
+	level := value
+	if level == "" {
+		level = defaultPostgresSynchronous
+	}
+
+	switch level {
+	case SqliteSynchronousFull:
+		return "on", nil
+
+	case SqliteSynchronousNormal:
+		return "local", nil
+
+	case SqliteSynchronousOff:
+		return "off", nil
+
+	default:
+		return "", fmt.Errorf("invalid postgres synchronous level %q: "+
+			"must be one of %q, %q, or %q", value,
+			SqliteSynchronousFull, SqliteSynchronousNormal,
+			SqliteSynchronousOff)
+	}
 }
 
 // DSN returns the dns to connect to the database.
@@ -103,11 +151,26 @@ func NewPostgresStore(cfg *PostgresConfig,
 
 	ctx := context.Background()
 
+	// Resolve and validate the configured durability level, mapping it onto
+	// the Postgres synchronous_commit session value before we build the
+	// DSN. We pass it as a libpq "options" startup parameter so the setting
+	// applies to every connection in the pool without a post-connect SET.
+	syncCommit, err := resolvePostgresSynchronousCommit(cfg.Synchronous)
+	if err != nil {
+		return nil, err
+	}
+
+	syncOption := fmt.Sprintf("-c synchronous_commit=%s", syncCommit)
+
 	storeLog.InfoS(ctx, "Opening Postgres database",
 		slog.String("dsn", cfg.DSN(true)),
+		slog.String("synchronous_commit", syncCommit),
 	)
 
-	rawDB, err := sql.Open("pgx", cfg.DSN(false))
+	connStr := fmt.Sprintf("%s&options=%s", cfg.DSN(false),
+		url.QueryEscape(syncOption))
+
+	rawDB, err := sql.Open("pgx", connStr)
 	if err != nil {
 		return nil, MapSQLError(err)
 	}
