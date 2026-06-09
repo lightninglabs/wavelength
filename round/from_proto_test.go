@@ -273,3 +273,67 @@ func TestFromProtoInvalidRoundID(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid round_id length")
 }
+
+// testRoundKey returns a deterministic valid public key for the given seed
+// byte, used to exercise the round-delivered signing-key fields.
+func testRoundKey(t *testing.T, seed byte) *btcec.PublicKey {
+	t.Helper()
+
+	var buf [32]byte
+	buf[31] = seed
+	_, pub := btcec.PrivKeyFromBytes(buf[:])
+
+	return pub
+}
+
+// TestCommitmentTxBuiltFromProtoSigningKeys verifies that FromProto parses
+// the per-round tree-cosign and connector operator keys, leaves them nil when
+// the server omits them (older-server fallback path), and rejects a malformed
+// key.
+func TestCommitmentTxBuiltFromProtoSigningKeys(t *testing.T) {
+	t.Parallel()
+
+	roundID := [16]byte{
+		1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+	}
+	treeKey := testRoundKey(t, 0x02)
+	connKey := testRoundKey(t, 0x03)
+
+	// Both keys present: parsed onto the event.
+	pb := &roundpb.ClientBatchInfo{
+		RoundId:              roundID[:],
+		BatchPsbt:            validPSBTBytes(t),
+		TreeCosignKey:        treeKey.SerializeCompressed(),
+		ConnectorOperatorKey: connKey.SerializeCompressed(),
+	}
+	var got CommitmentTxBuilt
+	require.NoError(t, got.FromProto(pb))
+	require.NotNil(t, got.TreeCosignKey)
+	require.True(t, treeKey.IsEqual(got.TreeCosignKey))
+	require.NotNil(t, got.ConnectorOperatorKey)
+	require.True(t, connKey.IsEqual(got.ConnectorOperatorKey))
+
+	// Keys absent: left nil so the FSM falls back to the global operator
+	// key (wire compatibility with a server that predates the fields).
+	pbEmpty := &roundpb.ClientBatchInfo{
+		RoundId:   roundID[:],
+		BatchPsbt: validPSBTBytes(t),
+	}
+	var gotEmpty CommitmentTxBuilt
+	require.NoError(t, gotEmpty.FromProto(pbEmpty))
+	require.Nil(t, gotEmpty.TreeCosignKey)
+	require.Nil(t, gotEmpty.ConnectorOperatorKey)
+
+	// Malformed key: rejected rather than silently dropped.
+	pbBad := &roundpb.ClientBatchInfo{
+		RoundId:   roundID[:],
+		BatchPsbt: validPSBTBytes(t),
+		TreeCosignKey: []byte{
+			0x00,
+			0x01,
+			0x02,
+		},
+	}
+	var gotBad CommitmentTxBuilt
+	require.Error(t, gotBad.FromProto(pbBad))
+}

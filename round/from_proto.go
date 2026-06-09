@@ -272,6 +272,47 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 		}
 	}
 
+	// Parse this round's signing keys when present. A server that predates
+	// these fields leaves them empty; the FSM then falls back to the global
+	// operator key for tree validation and connector reconstruction.
+	if len(pb.TreeCosignKey) > 0 {
+		key, keyErr := btcec.ParsePubKey(pb.TreeCosignKey)
+		if keyErr != nil {
+			return fmt.Errorf("tree_cosign_key: %w", keyErr)
+		}
+		e.TreeCosignKey = key
+	}
+	if len(pb.ConnectorOperatorKey) > 0 {
+		key, keyErr := btcec.ParsePubKey(pb.ConnectorOperatorKey)
+		if keyErr != nil {
+			return fmt.Errorf("connector_operator_key: %w", keyErr)
+		}
+		e.ConnectorOperatorKey = key
+	}
+
+	// Parse this round's sweep key and delay. These are delivered per round
+	// (replacing the removed global GetInfo sweep terms), so the FSM uses
+	// them to validate the VTXO-tree sweep branch and compute batch expiry.
+	if len(pb.SweepKey) > 0 {
+		key, keyErr := btcec.ParsePubKey(pb.SweepKey)
+		if keyErr != nil {
+			return fmt.Errorf("sweep_key: %w", keyErr)
+		}
+		e.SweepKey = key
+	}
+	e.SweepDelay = pb.SweepDelay
+
+	// Parse this round's forfeit penalty key. It is delivered per round
+	// (replacing the removed global GetInfo forfeit script), so the FSM
+	// derives the forfeit-tx penalty output script from it.
+	if len(pb.ForfeitKey) > 0 {
+		key, keyErr := btcec.ParsePubKey(pb.ForfeitKey)
+		if keyErr != nil {
+			return fmt.Errorf("forfeit_key: %w", keyErr)
+		}
+		e.ForfeitKey = key
+	}
+
 	return nil
 }
 

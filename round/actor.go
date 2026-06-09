@@ -371,11 +371,10 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		OwnedScriptChecker:     cfg.OwnedScriptChecker,
 	}
 
-	if err := ValidateDelayParameters(
-		cfg.OperatorTerms.SweepDelay, cfg.OperatorTerms.VTXOExitDelay,
-	); err != nil {
-		return fn.Err[*RoundClientActor](err)
-	}
+	// The sweep delay is no longer a global operator term: it is delivered
+	// per round in the batch info, so the sweep-vs-exit-delay security
+	// check runs per round in CommitmentTxReceivedState rather than once at
+	// actor construction.
 
 	if cfg.TimeoutActor == nil {
 		return fn.Err[*RoundClientActor](

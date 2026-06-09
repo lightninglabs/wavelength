@@ -168,6 +168,43 @@ message ClientBatchInfo {
     // wire.OutPoint.String() (byte-reversed hex hash, colon, decimal
     // index).
     map<string, ConnectorLeafInfo> connector_leaf_map = 4;
+
+    // tree_cosign_key is this round's VTXO-tree MuSig2 cosigner public key
+    // (33-byte compressed). It is derived fresh per round and is independent
+    // of the operator's persistent identity key, so rotating the operator
+    // key never changes the tree-signing key clients must agree on. The
+    // client uses this — not the global operator terms — as the server
+    // cosigner when validating and signing this round's VTXO output tree.
+    bytes tree_cosign_key = 5;
+
+    // connector_operator_key is the operator key (33-byte compressed) this
+    // round used to build its connector tree. The client reconstructs the
+    // connector tree from this key — not the global operator terms — so a
+    // client still on a previous operator-key epoch derives the same
+    // connector outpoints the server did.
+    bytes connector_operator_key = 6;
+
+    // sweep_key is the operator sweep key (33-byte compressed) for this
+    // round's VTXO-tree sweep leaf. The client rebuilds the VTXO tree's
+    // sweep branch from this key — not the global operator terms — so an
+    // operator key rotation never changes the sweep key clients must agree
+    // on for the round they joined.
+    bytes sweep_key = 7;
+
+    // sweep_delay is this round's batch-wide absolute-timelock in blocks for
+    // the VTXO-tree sweep leaf. The client uses it — not the global operator
+    // terms — to compute the batch expiry and reconstruct the sweep branch,
+    // keeping a client on a previous operator-key epoch in agreement with the
+    // server.
+    uint32 sweep_delay = 8;
+
+    // forfeit_key is the operator's dedicated forfeit penalty key (33-byte
+    // compressed) for this round. The client derives the forfeit-tx penalty
+    // output script as a BIP-86 key-spend to this key — not the global
+    // operator terms — so an operator key rotation never changes the penalty
+    // script clients must agree on for the round they joined. It is a key
+    // family distinct from the operator identity/connector key.
+    bytes forfeit_key = 9;
 }
 
 // ClientAwaitingInputSigsResp notifies a client that the server is ready

@@ -931,9 +931,6 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 	operatorPriv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	sweepPriv, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
 	server := &Server{
 		cfg: &Config{
 			Network: "regtest",
@@ -948,9 +945,6 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 		PubKey:            operatorPriv.PubKey(),
 		BoardingExitDelay: 144,
 		VTXOExitDelay:     288,
-		ForfeitScript:     []byte{0x51, 0x20, 0x01},
-		SweepKey:          sweepPriv.PubKey(),
-		SweepDelay:        432,
 		DustLimit:         btcutil.Amount(546),
 		MinBoardingAmount: btcutil.Amount(10_000),
 		MaxBoardingAmount: btcutil.Amount(500_000),
@@ -972,14 +966,6 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 	)
 	require.Equal(t, uint32(144), resp.ServerInfo.BoardingExitDelay)
 	require.Equal(t, uint32(288), resp.ServerInfo.VtxoExitDelay)
-	require.Equal(
-		t, []byte{0x51, 0x20, 0x01}, resp.ServerInfo.ForfeitScript,
-	)
-	require.Equal(
-		t, sweepPriv.PubKey().SerializeCompressed(),
-		resp.ServerInfo.SweepKey,
-	)
-	require.Equal(t, uint32(432), resp.ServerInfo.SweepDelay)
 	require.Equal(t, uint64(546), resp.ServerInfo.DustLimit)
 	require.Equal(t, uint64(10_000),
 		resp.ServerInfo.MinBoardingAmount,
@@ -1023,8 +1009,6 @@ func TestGetInfoConcurrentOperatorTermsAccess(t *testing.T) {
 				PubKey:            operatorPriv.PubKey(),
 				BoardingExitDelay: 100 + i,
 				VTXOExitDelay:     200 + i,
-				ForfeitScript:     []byte{0x51, byte(i)},
-				SweepDelay:        300 + i,
 				DustLimit:         btcutil.Amount(546),
 				MinBoardingAmount: btcutil.Amount(10_000),
 				MaxBoardingAmount: btcutil.Amount(500_000),

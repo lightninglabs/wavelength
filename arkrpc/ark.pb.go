@@ -72,13 +72,6 @@ type GetInfoResponse struct {
 	BoardingExitDelay uint32 `protobuf:"varint,5,opt,name=boarding_exit_delay,json=boardingExitDelay,proto3" json:"boarding_exit_delay,omitempty"`
 	// The minimum CSV delay (blocks) for VTXO unilateral exit paths.
 	VtxoExitDelay uint32 `protobuf:"varint,6,opt,name=vtxo_exit_delay,json=vtxoExitDelay,proto3" json:"vtxo_exit_delay,omitempty"`
-	// The output script that clients must use for the penalty output in
-	// forfeit transactions.
-	ForfeitScript []byte `protobuf:"bytes,7,opt,name=forfeit_script,json=forfeitScript,proto3" json:"forfeit_script,omitempty"`
-	// The operator key used in VTXO sweep paths.
-	SweepKey []byte `protobuf:"bytes,8,opt,name=sweep_key,json=sweepKey,proto3" json:"sweep_key,omitempty"`
-	// The batch-wide absolute timelock (blocks) for sweep transactions.
-	SweepDelay uint32 `protobuf:"varint,9,opt,name=sweep_delay,json=sweepDelay,proto3" json:"sweep_delay,omitempty"`
 	// The minimum output value (satoshis) enforced for boarding/funding
 	// flows.
 	DustLimit int64 `protobuf:"varint,10,opt,name=dust_limit,json=dustLimit,proto3" json:"dust_limit,omitempty"`
@@ -183,27 +176,6 @@ func (x *GetInfoResponse) GetBoardingExitDelay() uint32 {
 func (x *GetInfoResponse) GetVtxoExitDelay() uint32 {
 	if x != nil {
 		return x.VtxoExitDelay
-	}
-	return 0
-}
-
-func (x *GetInfoResponse) GetForfeitScript() []byte {
-	if x != nil {
-		return x.ForfeitScript
-	}
-	return nil
-}
-
-func (x *GetInfoResponse) GetSweepKey() []byte {
-	if x != nil {
-		return x.SweepKey
-	}
-	return nil
-}
-
-func (x *GetInfoResponse) GetSweepDelay() uint32 {
-	if x != nil {
-		return x.SweepDelay
 	}
 	return 0
 }
@@ -449,18 +421,14 @@ var File_ark_proto protoreflect.FileDescriptor
 const file_ark_proto_rawDesc = "" +
 	"\n" +
 	"\tark.proto\x12\x06arkrpc\"\x10\n" +
-	"\x0eGetInfoRequest\"\xac\x05\n" +
+	"\x0eGetInfoRequest\"\xc7\x04\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x01(\fR\x06pubkey\x12\x18\n" +
 	"\anetwork\x18\x03 \x01(\tR\anetwork\x12!\n" +
 	"\fblock_height\x18\x04 \x01(\rR\vblockHeight\x12.\n" +
 	"\x13boarding_exit_delay\x18\x05 \x01(\rR\x11boardingExitDelay\x12&\n" +
-	"\x0fvtxo_exit_delay\x18\x06 \x01(\rR\rvtxoExitDelay\x12%\n" +
-	"\x0eforfeit_script\x18\a \x01(\fR\rforfeitScript\x12\x1b\n" +
-	"\tsweep_key\x18\b \x01(\fR\bsweepKey\x12\x1f\n" +
-	"\vsweep_delay\x18\t \x01(\rR\n" +
-	"sweepDelay\x12\x1d\n" +
+	"\x0fvtxo_exit_delay\x18\x06 \x01(\rR\rvtxoExitDelay\x12\x1d\n" +
 	"\n" +
 	"dust_limit\x18\n" +
 	" \x01(\x03R\tdustLimit\x12.\n" +

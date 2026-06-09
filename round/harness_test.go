@@ -367,6 +367,11 @@ type boardingTestHarness struct {
 	operatorPrivKey *btcec.PrivateKey
 	operatorPubKey  *btcec.PublicKey
 
+	// forfeitPubKey is the operator's dedicated per-round forfeit penalty
+	// key, distinct from the operator identity key. The forfeit-tx penalty
+	// output is a BIP-86 key-spend to this key.
+	forfeitPubKey *btcec.PublicKey
+
 	// Runtime state tracking for assertions.
 	currentState   ClientState
 	lastTransition *ClientStateTransition
@@ -386,19 +391,19 @@ func newTestHarness(t *testing.T) *boardingTestHarness {
 	vtxoStore := &MockVTXOStore{}
 	wallet := &MockClientWallet{}
 
-	// Create a test forfeit script (a valid P2TR script).
-	testForfeitScript := []byte{0x51, 0x20}
+	// The forfeit penalty key is delivered per round (no longer a global
+	// operator term); derive a dedicated key distinct from the operator
+	// identity key.
+	_, forfeitPubKey := generateTestKeyPair(t)
 
 	terms := &types.OperatorTerms{
 		PubKey:            operatorPubKey,
-		SweepKey:          operatorPubKey,
-		SweepDelay:        1008, // ~1 week in blocks.
+		VTXOExitDelay:     144, // 1 day in blocks.
 		DustLimit:         546,
 		MinBoardingAmount: 10000,
 		MaxBoardingAmount: 100000000, // 1 BTC.
 		FeeRate:           10,
 		MinConfirmations:  3,
-		ForfeitScript:     testForfeitScript,
 	}
 
 	// Use a mock start height for testing.
@@ -440,6 +445,7 @@ func newTestHarness(t *testing.T) *boardingTestHarness {
 		clientPubKey:    clientPubKey,
 		operatorPrivKey: operatorPrivKey,
 		operatorPubKey:  operatorPubKey,
+		forfeitPubKey:   forfeitPubKey,
 		currentState:    &Idle{},
 		outboxMessages:  make([]ClientOutMsg, 0),
 	}
@@ -831,6 +837,9 @@ func (h *boardingTestHarness) newCommitmentTxBuiltEvent(roundID RoundID,
 		VTXOTreePaths: map[int]*tree.Tree{
 			0: vtxtTree,
 		},
+		SweepKey:   h.operatorPubKey,
+		SweepDelay: 1008, // ~1 week in blocks, must exceed exit delay.
+		ForfeitKey: h.forfeitPubKey,
 	}
 }
 
@@ -2058,8 +2067,9 @@ func (h *boardingTestHarness) newTestForfeitTx(
 // newForfeitCollectingState creates a ForfeitSignaturesCollectingState with
 // the given parameters for testing forfeit signature collection.
 func (h *boardingTestHarness) newForfeitCollectingState(roundID RoundID,
-	intents Intents, expectedForfeits map[wire.OutPoint]*ConnectorLeafInfo,
-	serverForfeitScript []byte) *ForfeitSignaturesCollectingState {
+	intents Intents,
+	expectedForfeits map[wire.OutPoint]*ConnectorLeafInfo,
+) *ForfeitSignaturesCollectingState {
 
 	h.t.Helper()
 
@@ -2078,6 +2088,7 @@ func (h *boardingTestHarness) newForfeitCollectingState(roundID RoundID,
 			0: vtxtTree,
 		},
 		Intents:              intents,
+		ForfeitKey:           h.forfeitPubKey,
 		ClientTrees:          make(map[SignerKey]*tree.Tree),
 		BoardingInputIndices: boardingInputIndices,
 		ExpectedForfeits:     expectedForfeits,
@@ -2085,6 +2096,18 @@ func (h *boardingTestHarness) newForfeitCollectingState(roundID RoundID,
 			map[wire.OutPoint]*ForfeitSignatureResponse,
 		),
 	}
+}
+
+// forfeitScript returns the BIP-86 key-spend penalty output script for the
+// harness's per-round forfeit key, matching what the FSM derives from
+// ForfeitKey when validating and building forfeit transactions.
+func (h *boardingTestHarness) forfeitScript() []byte {
+	h.t.Helper()
+
+	script, err := forfeitPenaltyScript(h.forfeitPubKey)
+	require.NoError(h.t, err)
+
+	return script
 }
 
 // newTestCommitmentTxWithInputs creates a test commitment tx with the

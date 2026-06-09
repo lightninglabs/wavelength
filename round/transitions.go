@@ -1370,13 +1370,20 @@ func (s *RoundJoinedState) ProcessEvent(ctx context.Context, event ClientEvent,
 
 		return &ClientStateTransition{
 			NextState: &CommitmentTxReceivedState{
-				RoundID:       evt.RoundID,
-				CommitmentTx:  evt.Tx,
-				TxID:          txid,
-				VTXOTreePaths: evt.VTXOTreePaths,
-				Intents:       s.Intents.Clone(),
-				ClientTrees:   make(map[SignerKey]*tree.Tree),
-				Quote:         s.Quote,
+				RoundID:              evt.RoundID,
+				CommitmentTx:         evt.Tx,
+				TxID:                 txid,
+				VTXOTreePaths:        evt.VTXOTreePaths,
+				TreeCosignKey:        evt.TreeCosignKey,
+				ConnectorOperatorKey: evt.ConnectorOperatorKey,
+				SweepKey:             evt.SweepKey,
+				SweepDelay:           evt.SweepDelay,
+				ForfeitKey:           evt.ForfeitKey,
+				Intents:              s.Intents.Clone(),
+				ClientTrees: make(
+					map[SignerKey]*tree.Tree,
+				),
+				Quote: s.Quote,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				InternalEvent: []ClientEvent{evt},
@@ -1615,6 +1622,49 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			slog.Int("leave_intent_count", len(s.Intents.Leaves)),
 		)
 
+		// Resolve this round's operator signing keys, falling back to
+		// the global operator key when talking to a server that
+		// predates the per-round fields. treeCosignKey is the
+		// operator's MuSig2 cosigner for this round's VTXO tree
+		// (independent of the identity key); connectorOperatorKey is
+		// what the connector tree was built with. Using the
+		// round-delivered keys keeps a client on a previous
+		// operator-key epoch in agreement with the server.
+		treeCosignKey := s.TreeCosignKey
+		if treeCosignKey == nil {
+			treeCosignKey = env.OperatorTerms.PubKey
+		}
+		connectorOperatorKey := s.ConnectorOperatorKey
+		if connectorOperatorKey == nil {
+			connectorOperatorKey = env.OperatorTerms.PubKey
+		}
+
+		// Validate this round's sweep delay against the VTXO exit
+		// delay. The sweep delay is now delivered per round (not a
+		// global operator term), so the security check that the
+		// operator has time to respond to unilateral exits before the
+		// batch expires moves here, where the round-specific value is
+		// known.
+		if err := ValidateDelayParameters(
+			s.SweepDelay, env.OperatorTerms.VTXOExitDelay,
+		); err != nil {
+
+			env.Log.WarnS(
+				ctx,
+				"Round sweep delay validation failed",
+				err,
+				slog.String("round_id", s.RoundID.String()),
+			)
+
+			return &ClientStateTransition{
+				NextState: &ClientFailedState{
+					Reason:      "invalid round sweep delay",
+					Error:       err,
+					Recoverable: false,
+				},
+			}, nil
+		}
+
 		// Validate boarding inputs if we have any boarding intents.
 		// Refresh-only rounds have no boarding inputs to validate.
 		var boardingInputIndices map[wire.OutPoint]int
@@ -1739,7 +1789,7 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			for _, vtxoTree := range s.VTXOTreePaths {
 				clientTree, validateErr = vtxoTree.ValidatePath(
 					vtxoReq.SigningKey.PubKey, expectedLeaf,
-					env.OperatorTerms.PubKey,
+					treeCosignKey,
 				)
 				if validateErr == nil {
 					// Found the VTXO in this tree.
@@ -1828,7 +1878,7 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 		// deterministic CPU work (the lib/tree materializer ignores its
 		// context); there is no I/O to cancel, so no context to thread.
 		if err := validateConnectorAncestry(
-			s.CommitmentTx.UnsignedTx, env.OperatorTerms.PubKey,
+			s.CommitmentTx.UnsignedTx, connectorOperatorKey,
 			evt.ForfeitMappings,
 		); err != nil {
 			// Error carried into failed state.
@@ -1860,6 +1910,8 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
+				SweepDelay:           s.SweepDelay,
+				ForfeitKey:           s.ForfeitKey,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          clientTrees,
 				BoardingInputIndices: boardingInputIndices,
@@ -1915,6 +1967,23 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 				slog.String("round_id", s.RoundID.String()),
 				slog.Int("leave_count", len(s.Intents.Leaves)))
 
+			// Derive this round's forfeit penalty output script
+			// from the per-round forfeit key (replacing the removed
+			// global GetInfo forfeit script).
+			forfeitScript, err := forfeitPenaltyScript(s.ForfeitKey)
+			if err != nil {
+
+				// Error carried into failed state.
+				return &ClientStateTransition{ //nolint:nilerr
+					NextState: &ClientFailedState{
+						Reason: "invalid round " +
+							"forfeit key",
+						Error:       err,
+						Recoverable: false,
+					},
+				}, nil
+			}
+
 			// Build forfeit request messages for each VTXO being
 			// forfeited.
 			forfeitReqs := forfeitRequestMap(
@@ -1925,7 +1994,6 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 				connOut := info.ConnectorOutpoint
 				connScript := info.ConnectorPkScript
 				connAmt := info.ConnectorAmount
-				forfeitScript := env.OperatorTerms.ForfeitScript
 				roundIDStr := s.RoundID.String()
 				req := forfeitReqs[vtxoOutpoint]
 
@@ -1957,6 +2025,8 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 					RoundID:           s.RoundID,
 					CommitmentTx:      s.CommitmentTx,
 					VTXOTreePaths:     s.VTXOTreePaths,
+					SweepDelay:        s.SweepDelay,
+					ForfeitKey:        s.ForfeitKey,
 					Intents:           s.Intents.Clone(),
 					ClientTrees:       s.ClientTrees,
 					ExpectedForfeits:  s.ForfeitMappings,
@@ -2044,6 +2114,8 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
+				SweepDelay:           s.SweepDelay,
+				ForfeitKey:           s.ForfeitKey,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          s.ClientTrees,
 				Musig2Sessions:       musig2Sessions,
@@ -2083,13 +2155,22 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(ctx context.Context,
 		forfeitReqs := forfeitRequestMap(s.Intents.Forfeits)
 		req := forfeitReqs[evt.VTXOOutpoint]
 
+		// Derive this round's forfeit penalty output script from the
+		// per-round forfeit key (replacing the removed global GetInfo
+		// forfeit script).
+		forfeitScript, err := forfeitPenaltyScript(s.ForfeitKey)
+		if err != nil {
+			return nil, fmt.Errorf("forfeit penalty script for "+
+				"VTXO %s: %w", evt.VTXOOutpoint, err)
+		}
+
 		// Validate the forfeit transaction structure using lib/tx. The
 		// amount check ensures the zero-fee penalty output equals the
 		// forfeited VTXO plus connector value, preventing value theft.
 		params := tx.ForfeitTxParams{
 			VTXOOutpoint:        evt.VTXOOutpoint,
 			ConnectorOutpoint:   connectorInfo.ConnectorOutpoint,
-			ServerForfeitScript: env.OperatorTerms.ForfeitScript,
+			ServerForfeitScript: forfeitScript,
 			ExpectedAmount: btcutil.Amount(
 				int64(connectorInfo.VTXOAmount) +
 					connectorInfo.ConnectorAmount,
@@ -2097,7 +2178,7 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(ctx context.Context,
 			ExpectedSequence: expectedForfeitSequence(req),
 			ExpectedLockTime: expectedForfeitLockTime(req),
 		}
-		err := tx.ValidateForfeitTx(evt.ForfeitTx, params)
+		err = tx.ValidateForfeitTx(evt.ForfeitTx, params)
 		if err != nil {
 			return nil, fmt.Errorf("invalid forfeit tx for VTXO "+
 				"%s: %w", evt.VTXOOutpoint, err)
@@ -2187,6 +2268,8 @@ func (s *ForfeitSignaturesCollectingState) waitForMoreForfeitSignatures(
 			RoundID:              s.RoundID,
 			CommitmentTx:         s.CommitmentTx,
 			VTXOTreePaths:        s.VTXOTreePaths,
+			SweepDelay:           s.SweepDelay,
+			ForfeitKey:           s.ForfeitKey,
 			Intents:              s.Intents.Clone(),
 			ClientTrees:          s.ClientTrees,
 			BoardingInputIndices: s.BoardingInputIndices,
@@ -2332,6 +2415,8 @@ func (s *ForfeitSignaturesCollectingState) inputSigSentState(
 		RoundID:        s.RoundID,
 		CommitmentTx:   s.CommitmentTx,
 		VTXOTreePaths:  s.VTXOTreePaths,
+		SweepDelay:     s.SweepDelay,
+		ForfeitKey:     s.ForfeitKey,
 		Intents:        s.Intents.Clone(),
 		ClientTrees:    s.ClientTrees,
 		InputSigs:      boardingInputSigs,
@@ -2385,6 +2470,8 @@ func (s *NoncesSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
+				SweepDelay:           s.SweepDelay,
+				ForfeitKey:           s.ForfeitKey,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          s.ClientTrees,
 				Musig2Sessions:       s.Musig2Sessions,
@@ -2468,6 +2555,8 @@ func (s *NoncesAggregatedState) ProcessEvent(ctx context.Context,
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
+				SweepDelay:           s.SweepDelay,
+				ForfeitKey:           s.ForfeitKey,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          s.ClientTrees,
 				Musig2Sessions:       s.Musig2Sessions,
@@ -2667,6 +2756,8 @@ func (s *PartialSigsSentState) ProcessEvent(ctx context.Context,
 			RoundID:       s.RoundID,
 			CommitmentTx:  s.CommitmentTx,
 			VTXOTreePaths: s.VTXOTreePaths,
+			SweepDelay:    s.SweepDelay,
+			ForfeitKey:    s.ForfeitKey,
 			Intents:       s.Intents.Clone(),
 			ClientTrees:   s.ClientTrees,
 			InputSigs:     boardingInputSigs,
@@ -2721,8 +2812,22 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 	ctx context.Context, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
-	// Build forfeit request messages for each VTXO being refreshed. The
-	// forfeit script is a static operator property from OperatorTerms.
+	// Derive this round's forfeit penalty output script from the per-round
+	// forfeit key (replacing the removed global GetInfo forfeit script).
+	forfeitScript, err := forfeitPenaltyScript(s.ForfeitKey)
+	if err != nil {
+
+		// Error carried into failed state.
+		return &ClientStateTransition{ //nolint:nilerr
+			NextState: &ClientFailedState{
+				Reason:      "invalid round forfeit key",
+				Error:       err,
+				Recoverable: false,
+			},
+		}, nil
+	}
+
+	// Build forfeit request messages for each VTXO being refreshed.
 	forfeitReqs := forfeitRequestMap(s.Intents.Forfeits)
 	var outbox []ClientOutMsg
 	for vtxoOutpoint, info := range s.ForfeitMappings {
@@ -2733,7 +2838,7 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 			ConnectorOutpoint:     info.ConnectorOutpoint,
 			ConnectorPkScript:     info.ConnectorPkScript,
 			ConnectorAmount:       info.ConnectorAmount,
-			ServerForfeitPkScript: env.OperatorTerms.ForfeitScript,
+			ServerForfeitPkScript: forfeitScript,
 			ForfeitSpend:          req.ForfeitSpend,
 		}
 		outbox = append(outbox, msg)
@@ -2761,6 +2866,8 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 			RoundID:              s.RoundID,
 			CommitmentTx:         s.CommitmentTx,
 			VTXOTreePaths:        s.VTXOTreePaths,
+			SweepDelay:           s.SweepDelay,
+			ForfeitKey:           s.ForfeitKey,
 			Intents:              s.Intents.Clone(),
 			ClientTrees:          s.ClientTrees,
 			ExpectedForfeits:     s.ForfeitMappings,
@@ -3094,6 +3201,22 @@ func expectedForfeitLockTime(req types.ForfeitRequest) uint32 {
 	return req.ForfeitSpend.RequiredLockTime
 }
 
+// forfeitPenaltyScript derives the forfeit-tx penalty output script for a
+// round from the operator's per-round forfeit key. The script is a BIP-86
+// key-spend (no script tree) to the forfeit key, so the server can claim the
+// penalty output with a single Schnorr signature. The forfeit key is
+// delivered per round in ClientBatchInfo and replaces the removed global
+// GetInfo forfeit script.
+func forfeitPenaltyScript(forfeitKey *btcec.PublicKey) ([]byte, error) {
+	if forfeitKey == nil {
+		return nil, fmt.Errorf("round forfeit key not set")
+	}
+
+	taprootKey := txscript.ComputeTaprootKeyNoScript(forfeitKey)
+
+	return txscript.PayToTaprootScript(taprootKey)
+}
+
 // ensureVTXOSigningKeys fills missing VTXO signing keys by deriving fresh
 // keys from the wallet. Existing signing keys are preserved.
 func ensureVTXOSigningKeys(ctx context.Context, wallet ClientWallet,
@@ -3365,8 +3488,9 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 			slog.Int("vtxo_count", len(vtxos)),
 		)
 
-		// Compute batch expiry as absolute block height.
-		sweepDelay := int32(env.OperatorTerms.SweepDelay)
+		// Compute batch expiry as absolute block height using this
+		// round's sweep delay (delivered per round, not a global term).
+		sweepDelay := int32(s.SweepDelay)
 		batchExpiry := evt.BlockHeight + sweepDelay
 
 		// Fill in round metadata so VTXOs are complete from the

@@ -168,6 +168,41 @@ type CommitmentTxBuilt struct {
 	// (e.g., MaxTreeNodes limit) and passed through to
 	// roundpb.TreeFromProto during FromProto.
 	TreeOpts []roundpb.TreeFromProtoOption
+
+	// TreeCosignKey is the operator's MuSig2 cosigner key for this round's
+	// VTXO output tree, derived fresh per round by the server. The client
+	// aggregates and validates the tree against this key instead of the
+	// operator's global GetInfo key, so an operator key rotation does not
+	// change the tree key the client must agree on. Nil when talking to a
+	// server that predates this field; callers fall back to the global
+	// operator key.
+	TreeCosignKey *btcec.PublicKey
+
+	// ConnectorOperatorKey is the operator key this round used to build its
+	// connector tree. The client reconstructs the connector tree from it
+	// instead of the global operator key. Nil when talking to an older
+	// server; callers fall back to the global operator key.
+	ConnectorOperatorKey *btcec.PublicKey
+
+	// SweepKey is the operator sweep key for this round's VTXO-tree sweep
+	// leaf, delivered per round so the client agrees with the server on the
+	// sweep branch even across an operator key rotation. It replaces the
+	// global GetInfo sweep key entirely; a well-formed round always carries
+	// it.
+	SweepKey *btcec.PublicKey
+
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks for
+	// the VTXO-tree sweep leaf, delivered per round alongside SweepKey. It
+	// replaces the global GetInfo sweep delay and drives batch-expiry
+	// computation for VTXOs created in this round.
+	SweepDelay uint32
+
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, delivered per round so the client builds the forfeit-tx
+	// penalty output (a BIP-86 key-spend to this key) the server expects
+	// even across an operator key rotation. It replaces the global GetInfo
+	// forfeit script entirely; a well-formed round always carries it.
+	ForfeitKey *btcec.PublicKey
 }
 
 func (e *CommitmentTxBuilt) clientEventSealed() {}

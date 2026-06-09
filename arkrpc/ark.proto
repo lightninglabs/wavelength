@@ -37,15 +37,9 @@ message GetInfoResponse {
     // The minimum CSV delay (blocks) for VTXO unilateral exit paths.
     uint32 vtxo_exit_delay = 6;
 
-    // The output script that clients must use for the penalty output in
-    // forfeit transactions.
-    bytes forfeit_script = 7;
-
-    // The operator key used in VTXO sweep paths.
-    bytes sweep_key = 8;
-
-    // The batch-wide absolute timelock (blocks) for sweep transactions.
-    uint32 sweep_delay = 9;
+    // Field numbers 7, 8 and 9 are unused: the forfeit penalty key, sweep
+    // key and delay are delivered per-round in round.v1.ClientBatchInfo
+    // instead.
 
     // The minimum output value (satoshis) enforced for boarding/funding
     // flows.

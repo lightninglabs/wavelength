@@ -3,6 +3,7 @@ package round
 import (
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -275,6 +276,35 @@ type CommitmentTxReceivedState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
+	// TreeCosignKey is the operator's per-round VTXO-tree MuSig2 cosigner
+	// key delivered with the commitment tx. Used to validate the VTXO tree
+	// (and, via the extracted client trees, sign it) instead of the global
+	// operator key. Nil when the server predates the field; the FSM then
+	// falls back to the global operator key.
+	TreeCosignKey *btcec.PublicKey
+
+	// ConnectorOperatorKey is the operator key this round used to build its
+	// connector tree. Used to reconstruct/validate the connector ancestry
+	// instead of the global operator key. Nil for older servers (fallback).
+	ConnectorOperatorKey *btcec.PublicKey
+
+	// SweepKey is the operator sweep key for this round's VTXO-tree sweep
+	// leaf, delivered with the commitment tx. It replaces the global
+	// GetInfo sweep key for this round's tree reconstruction.
+	SweepKey *btcec.PublicKey
+
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks for
+	// the VTXO-tree sweep leaf, delivered with the commitment tx. It
+	// replaces the global GetInfo sweep delay and drives batch-expiry
+	// computation for VTXOs created in this round.
+	SweepDelay uint32
+
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, delivered with the commitment tx. The forfeit-tx penalty
+	// output script is a BIP-86 key-spend to this key; it replaces the
+	// global GetInfo forfeit script for this round.
+	ForfeitKey *btcec.PublicKey
+
 	// Intents contains all the client's intents for this round.
 	Intents Intents
 
@@ -312,6 +342,18 @@ type CommitmentTxValidatedState struct {
 
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks
+	// for the VTXO-tree sweep leaf, carried through the signing ceremony
+	// so batch expiry can be computed on confirmation. Delivered per round
+	// (not a global operator term).
+	SweepDelay uint32
+
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, carried through the signing ceremony so the forfeit-tx
+	// penalty output (a BIP-86 key-spend to this key) can be built and
+	// validated. Delivered per round (not a global operator term).
+	ForfeitKey *btcec.PublicKey
 
 	// Intents contains all the client's intents for this round.
 	Intents Intents
@@ -360,6 +402,18 @@ type ForfeitSignaturesCollectingState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks
+	// for the VTXO-tree sweep leaf, carried through the signing ceremony
+	// so batch expiry can be computed on confirmation. Delivered per round
+	// (not a global operator term).
+	SweepDelay uint32
+
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, carried through the signing ceremony so the forfeit-tx
+	// penalty output (a BIP-86 key-spend to this key) can be built and
+	// validated. Delivered per round (not a global operator term).
+	ForfeitKey *btcec.PublicKey
+
 	// Intents contains all the client's intents for this round.
 	Intents Intents
 
@@ -401,6 +455,18 @@ type NoncesSentState struct {
 
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks
+	// for the VTXO-tree sweep leaf, carried through the signing ceremony
+	// so batch expiry can be computed on confirmation. Delivered per round
+	// (not a global operator term).
+	SweepDelay uint32
+
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, carried through the signing ceremony so the forfeit-tx
+	// penalty output (a BIP-86 key-spend to this key) can be built and
+	// validated. Delivered per round (not a global operator term).
+	ForfeitKey *btcec.PublicKey
 
 	// Intents contains all the client's intents for this round.
 	Intents Intents
@@ -444,6 +510,18 @@ type NoncesAggregatedState struct {
 
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks
+	// for the VTXO-tree sweep leaf, carried through the signing ceremony
+	// so batch expiry can be computed on confirmation. Delivered per round
+	// (not a global operator term).
+	SweepDelay uint32
+
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, carried through the signing ceremony so the forfeit-tx
+	// penalty output (a BIP-86 key-spend to this key) can be built and
+	// validated. Delivered per round (not a global operator term).
+	ForfeitKey *btcec.PublicKey
 
 	// Intents contains all the client's intents for this round.
 	Intents Intents
@@ -491,6 +569,18 @@ type PartialSigsSentState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks
+	// for the VTXO-tree sweep leaf, carried through the signing ceremony
+	// so batch expiry can be computed on confirmation. Delivered per round
+	// (not a global operator term).
+	SweepDelay uint32
+
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, carried through the signing ceremony so the forfeit-tx
+	// penalty output (a BIP-86 key-spend to this key) can be built and
+	// validated. Delivered per round (not a global operator term).
+	ForfeitKey *btcec.PublicKey
+
 	// Intents contains all the client's intents for this round.
 	Intents Intents
 
@@ -533,6 +623,18 @@ type InputSigSentState struct {
 
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// SweepDelay is this round's batch-wide absolute-timelock in blocks
+	// for the VTXO-tree sweep leaf, carried through the signing ceremony
+	// so batch expiry can be computed on confirmation. Delivered per round
+	// (not a global operator term).
+	SweepDelay uint32
+
+	// ForfeitKey is the operator's dedicated forfeit penalty key for this
+	// round, carried through the signing ceremony so the forfeit-tx
+	// penalty output (a BIP-86 key-spend to this key) can be built and
+	// validated. Delivered per round (not a global operator term).
+	ForfeitKey *btcec.PublicKey
 
 	// Intents contains all the client's intents for this round.
 	Intents Intents
