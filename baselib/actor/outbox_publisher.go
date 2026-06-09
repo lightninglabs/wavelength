@@ -258,27 +258,59 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 	// ON CONFLICT clause makes it a no-op.
 	deliverCtx := WithOutboxID(p.ctx, msg.ID)
 
-	// Deliver the message. Tell now returns an error if the message could
-	// not be durably enqueued to the target's mailbox.
-	if err := ref.Tell(deliverCtx, decoded); err != nil {
-		logger(p.ctx).WarnS(p.ctx, "Failed to deliver outbox message", err,
-			"message_id", msg.ID,
-			"target", msg.TargetActorID,
-			"attempts", msg.DeliveryAttempts)
+	// deliver performs the durable handoff: Tell enqueues into the
+	// target's mailbox (returning an error if the message could not be
+	// durably enqueued), then the outbox row is marked complete.
+	deliver := func(ctx context.Context, store DeliveryStore) error {
+		if err := ref.Tell(ctx, decoded); err != nil {
+			logger(p.ctx).WarnS(p.ctx,
+				"Failed to deliver outbox message", err,
+				"message_id", msg.ID,
+				"target", msg.TargetActorID,
+				"attempts", msg.DeliveryAttempts)
 
-		// Don't mark as complete - leave for retry on next poll. The
-		// message will be dead-lettered when DeliveryAttempts exceeds
-		// MaxDeliveryAttempts (checked at the start of this function).
-		return
+			// Don't mark as complete - leave for retry on next
+			// poll. The message will be dead-lettered when
+			// DeliveryAttempts exceeds MaxDeliveryAttempts
+			// (checked at the start of this function).
+			return err
+		}
+
+		// Mark as complete after successful durable send.
+		completeErr := store.CompleteOutbox(
+			ctx, msg.ID, msg.ClaimToken,
+		)
+		if completeErr != nil {
+			logger(p.ctx).WarnS(p.ctx,
+				"Failed to complete outbox message",
+				completeErr, "message_id", msg.ID)
+
+			return completeErr
+		}
+
+		return nil
 	}
 
-	// Mark as complete after successful durable send.
-	completeErr := p.cfg.Store.CompleteOutbox(
-		p.ctx, msg.ID, msg.ClaimToken,
-	)
-	if completeErr != nil {
-		logger(p.ctx).WarnS(p.ctx, "Failed to complete outbox message",
-			completeErr, "message_id", msg.ID)
+	// When the store supports transactions, fold the target enqueue and
+	// the outbox completion into ONE write transaction: the Tell joins
+	// the ambient tx via the context (DurableMailbox.Send preserves it
+	// into EnqueueMessage), and CompleteOutbox runs on the tx-scoped
+	// store. This halves the per-delivery commit count (enqueue+complete
+	// were two write txs) and closes the enqueue-without-complete
+	// redelivery window. Outbox targets are durable same-DB actors by
+	// design (the CDC premise), so the enqueue always shares our DB.
+	// On any error the tx rolls back and the claimed row is retried
+	// after claim expiry, exactly like the non-transactional path.
+	if txStore, ok := p.cfg.Store.(TxAwareDeliveryStore); ok {
+		// Errors are already logged inside deliver; the rollback
+		// restores the pre-delivery state.
+		if err := txStore.ExecTx(
+			deliverCtx, false, deliver,
+		); err != nil {
+			return
+		}
+	} else if err := deliver(deliverCtx, p.cfg.Store); err != nil {
+		return
 	}
 
 	logger(p.ctx).TraceS(p.ctx, "Delivered outbox message",
