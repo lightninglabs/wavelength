@@ -16,6 +16,13 @@ const (
 	// DefaultMaxMailboxScriptBytes caps persisted incoming-recipient
 	// script hints decoded from the mailbox.
 	DefaultMaxMailboxScriptBytes uint32 = 10_000
+
+	// DefaultMaxConcurrentIncomingSessions caps the number of resident,
+	// non-terminal incoming receive sessions one daemon admits at once. It
+	// bounds the per-session children (goroutines, durable mailboxes, and
+	// control-plane rows) an operator can pin by streaming unanswered
+	// incoming hints against an owned receive script.
+	DefaultMaxConcurrentIncomingSessions uint32 = 1_024
 )
 
 // ReceiveLimits groups bounds for the incoming OOR receive path. Zero fields
@@ -38,16 +45,27 @@ type ReceiveLimits struct {
 	// MaxMailboxScriptBytes caps persisted incoming-recipient script hints
 	// decoded from the mailbox.
 	MaxMailboxScriptBytes uint32
+
+	// MaxConcurrentIncomingSessions caps the number of resident,
+	// non-terminal incoming receive children the registry admits at once.
+	// Admission past the cap is rejected; the hint is retried by transport,
+	// so a transient over-cap rejection is recoverable once earlier
+	// sessions terminate and are reaped.
+	MaxConcurrentIncomingSessions uint32
 }
 
 // DefaultReceiveLimits returns the default OOR incoming receive limits.
 func DefaultReceiveLimits() ReceiveLimits {
-	return ReceiveLimits{
+	limits := ReceiveLimits{
 		MaxCheckpoints:        DefaultMaxCheckpoints,
 		MaxVTXOMatches:        DefaultMaxVTXOMatches,
 		MaxMailboxItems:       DefaultMaxMailboxItems,
 		MaxMailboxScriptBytes: DefaultMaxMailboxScriptBytes,
 	}
+	limits.MaxConcurrentIncomingSessions =
+		DefaultMaxConcurrentIncomingSessions
+
+	return limits
 }
 
 // normalizeReceiveLimits fills zero-valued fields with package defaults so
@@ -69,6 +87,11 @@ func normalizeReceiveLimits(limits ReceiveLimits) ReceiveLimits {
 
 	if limits.MaxMailboxScriptBytes == 0 {
 		limits.MaxMailboxScriptBytes = defaults.MaxMailboxScriptBytes
+	}
+
+	if limits.MaxConcurrentIncomingSessions == 0 {
+		limits.MaxConcurrentIncomingSessions =
+			defaults.MaxConcurrentIncomingSessions
 	}
 
 	return limits

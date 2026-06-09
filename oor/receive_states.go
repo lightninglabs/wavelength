@@ -25,6 +25,12 @@ type ReceiveResolving struct {
 	RecipientPkScript []byte
 
 	RecipientEventID uint64
+
+	// ResolveAttempts counts how many times the phase-1 hint resolution has
+	// been re-issued for this session without a response. It drives the
+	// exponential backoff and the terminal give-up in handleResolveRetry,
+	// and is persisted in the snapshot so the bound survives restarts.
+	ResolveAttempts uint32
 }
 
 // String returns a human-readable representation of ReceiveResolving.

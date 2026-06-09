@@ -1,6 +1,7 @@
 package serverconn
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -207,5 +208,123 @@ func TestEventRouteResolveKeyFastPath(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("session actor never received the message")
 	}
+	require.Empty(t, fallback.received)
+}
+
+// stoppedRef is a fake ActorRef whose Tell always fails, modeling a per-session
+// child that was reaped/stopped but whose receptionist registration has not yet
+// been cleared. Its Tell returns ErrActorTerminated like a durable mailbox that
+// has been closed.
+type stoppedRef struct {
+	id      string
+	tellErr error
+
+	tells int
+}
+
+func (r *stoppedRef) ID() string {
+	return r.id
+}
+
+func (r *stoppedRef) Tell(context.Context, *helloStartedMsg) error {
+	r.tells++
+
+	return r.tellErr
+}
+
+func (r *stoppedRef) Ask(context.Context,
+	*helloStartedMsg) actor.Future[struct{}] {
+
+	panic("stoppedRef.Ask must not be called")
+}
+
+// TestEventRouteResolveKeyReapedChildReturnsError pins that a resolved per-
+// session key whose registered ref errors on Tell (a reaped/stopped child)
+// surfaces that error from the dispatcher instead of swallowing it and falling
+// back to the static route key. Returning the error stalls the ingress cursor
+// so the server redelivers the envelope; falling back would mis-route the event
+// to the coordinator and silently lose the per-session ordering guarantee.
+func TestEventRouteResolveKeyReapedChildReturnsError(t *testing.T) {
+	t.Parallel()
+
+	system := actor.NewActorSystem()
+	defer func() {
+		require.NoError(t, system.Shutdown(t.Context()))
+	}()
+
+	fallbackKey := actor.NewServiceKey[*helloStartedMsg, struct{}](
+		"fallback-route",
+	)
+	sessionKey := actor.NewServiceKey[*helloStartedMsg, struct{}](
+		"session-route",
+	)
+
+	// The static fallback key has a live actor that must stay quiet: the
+	// reaped-child error must NOT fall back to it.
+	fallback := &greetingBehavior{
+		received: make(chan *helloStartedMsg, 1),
+	}
+	fallbackKey.Spawn(system, "fallback-actor", fallback)
+
+	// Register a stopped child under the resolved per-session key whose
+	// Tell fails like a closed durable mailbox.
+	reaped := &stoppedRef{
+		id:      "reaped-session-actor",
+		tellErr: actor.ErrActorTerminated,
+	}
+	require.NoError(
+		t,
+		actor.RegisterWithReceptionist(
+			system.Receptionist(), sessionKey, reaped,
+		),
+	)
+
+	router := NewEventRouter(system)
+	AddRoute(router, EventRouteConfig[*helloStartedMsg, struct{}]{
+		Service: "test.Svc",
+		Method:  "Started",
+		NewEvent: func() proto.Message {
+			return &hellotestpb.HelloStartedEvent{}
+		},
+		Key: fallbackKey,
+		Adapt: func(p proto.Message) (*helloStartedMsg, error) {
+			m := &helloStartedMsg{}
+
+			return m, m.FromProto(p)
+		},
+		ResolveKey: func(_ *helloStartedMsg) (
+			actor.ServiceKey[*helloStartedMsg, struct{}], bool) {
+
+			return sessionKey, true
+		},
+	})
+
+	dispatcher := router.AsDispatcherMap()[mailboxrpc.ServiceMethod{
+		Service: "test.Svc",
+		Method:  "Started",
+	}]
+
+	body, err := anypb.New(&hellotestpb.HelloStartedEvent{
+		SessionId: "session-1",
+	})
+	require.NoError(t, err)
+
+	// The dispatch resolves to the reaped child, whose Tell fails. The
+	// dispatcher must surface that error so the ingress cursor stalls and
+	// the server redelivers.
+	err = dispatcher(t.Context(), &mailboxpb.Envelope{
+		Body: body,
+		Rpc: &mailboxpb.RpcMeta{
+			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
+			Service: "test.Svc",
+			Method:  "Started",
+		},
+	})
+	require.Error(t, err)
+	require.ErrorIs(t, err, actor.ErrActorTerminated)
+
+	// The reaped child was told exactly once, and the error was NOT
+	// swallowed into a fallback Tell on the static key.
+	require.Equal(t, 1, reaped.tells)
 	require.Empty(t, fallback.received)
 }

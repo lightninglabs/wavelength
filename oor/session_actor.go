@@ -64,8 +64,12 @@ type SessionActorConfig struct {
 	VTXOManager actor.TellOnlyRef[vtxo.ManagerMsg]
 
 	// SpendCompleter routes outgoing input-spend completion through the
-	// VTXO manager so the write joins this actor's turn transaction. When
-	// nil, the package store writes spends directly.
+	// VTXO manager. The manager's status write commits in the VTXO actor's
+	// own transaction, so it does NOT join this actor's turn: the spend is
+	// run inline in dispatch (no OOR writer held) before the FSM advances
+	// to Completed, and is re-driven idempotently on boot if the turn
+	// crashes before committing. When nil, the package store writes spends
+	// directly.
 	SpendCompleter SpendCompleter
 
 	// ReservationStore records one durable spending-reservation row per
@@ -272,6 +276,27 @@ type sessionBehavior struct {
 	// reached a terminal status, set by commitAck and consumed by the
 	// registry reap notification after the turn.
 	terminalCommitted bool
+
+	// dedupKeyWinner is the session id of the surviving keyed session when
+	// this child's commit lost an idempotency-key race: a concurrent
+	// same-key admission selected different inputs (hence a different
+	// session id) and committed its row first. commitAck sets it after the
+	// in-commit lookup so Receive answers the caller StartTransferResponse{
+	// Existing: true} for the surviving session instead of failing the turn
+	// with a raw unique-constraint error. Set per turn; consumed by
+	// Receive.
+	dedupKeyWinner *SessionID
+
+	// commitFailed reports that the previous turn advanced b.fsm in memory
+	// but its Commit rolled back (a non-lease-loss error), leaving the
+	// in-memory FSM observably ahead of the last durably-committed
+	// snapshot. When set, the next driving turn re-runs restore() before
+	// dispatch so the redelivered event re-applies against the
+	// last-committed state instead of being discarded as already-applied
+	// against an uncommitted advance. A lease-loss commit failure does not
+	// set this: another instance fenced the turn and owns the state going
+	// forward.
+	commitFailed bool
 }
 
 // Compile-time check that sessionBehavior runs on the Read/Stage/Commit path.
@@ -306,6 +331,59 @@ func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 		return b.handleGetState()
 	}
 
+	// If the previous turn's Commit rolled back after advancing b.fsm in
+	// memory, the in-memory FSM is ahead of the last durably-committed
+	// snapshot. Rebuild it from the registry row before dispatch so the
+	// redelivered driving event re-applies the full transition (re-staging
+	// materialization and transport) against the last-committed state,
+	// rather than being no-op'd by an FSM that already advanced on an
+	// uncommitted turn. restore() rebuilds b.fsm from the durable row; on
+	// success the flag is cleared and the redelivered event drives the
+	// rebuilt FSM.
+	if b.commitFailed {
+		b.
+			logger(ctx).
+			WarnS(
+				ctx,
+				"Reloading session FSM after a failed "+
+					"commit before redelivered turn",
+				fmt.Errorf("commit rolled back"),
+				slog.String("session_id", b.sessionID.String()),
+			)
+
+		// Drop the stale in-memory FSM so restore rebuilds it from the
+		// last-committed row. A fresh session whose first commit never
+		// landed has no row, leaving the behavior unloaded so its
+		// admission event re-creates the FSM from scratch.
+		//
+		// restore() starts a fresh FSM goroutine bound to the context
+		// it is given. An Ask-delivered turn runs under a context that
+		// is cancelled the instant the turn returns, which would tear
+		// down the rebuilt FSM before the next turn could drive it.
+		// Strip the cancellation so the reloaded FSM is tied to the
+		// actor's lifetime, matching the constructor's
+		// restore(context.Background).
+		b.fsm = nil
+		b.loaded = false
+		if err := b.restore(context.WithoutCancel(ctx)); err != nil {
+			b.
+				logger(ctx).
+				WarnS(
+					ctx,
+					"Failed to reload session FSM "+
+						"after commit failure",
+					err,
+					slog.String(
+						"session_id",
+						b.sessionID.String(),
+					),
+				)
+
+			return fn.Err[ActorResp](err)
+		}
+		b.commitFailed = false
+	}
+
 	// Reset the per-turn accumulators and drain the FSM. dispatch performs
 	// every inline side effect, collects cross-actor messages, and stages
 	// extra commit work, but never commits.
@@ -315,6 +393,7 @@ func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 	b.postCommit = b.postCommit[:0]
 	b.pendingRetries = b.pendingRetries[:0]
 	b.terminalCommitted = false
+	b.dedupKeyWinner = nil
 
 	// Trace the turn entry so a session's progress can be reconstructed
 	// message by message from the log.
@@ -343,6 +422,24 @@ func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 				),
 				btclog.Fmt("msg_type", "%T", msg),
 			)
+
+			// dispatch drives b.fsm in memory before its inline
+			// side effects run (e.g. a FinalizeAcceptedEvent
+			// advances past AwaitingFinalizeAccepted before
+			// completeSpend executes). protofsm does not roll that
+			// advance back on error, so an inline-effect failure
+			// leaves the in-memory FSM ahead of the last-committed
+			// snapshot exactly like a rolled-back Commit does. Mark
+			// the FSM dirty so the redelivered turn reloads from
+			// the durable row and re-applies the full transition --
+			// otherwise the advanced-but-uncommitted FSM would
+			// no-op the redelivered event, and the
+			// snapshot/package/ ledger work gated on that
+			// transition (e.g. captureFinalizeState) would be
+			// silently skipped. A lease-loss error is handled above
+			// and never sets this: the fencing instance owns the
+			// state.
+			b.commitFailed = true
 		}
 
 		return res
@@ -368,9 +465,56 @@ func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 					"session_id", b.sessionID.String(),
 				),
 			)
+
+			// The Commit rolled back but dispatch already advanced
+			// b.fsm in memory (and, for an incoming receive, ran
+			// the staged materialization that drove the FSM to its
+			// terminal state inside the closure). Mark the FSM
+			// dirty so the next redelivered turn reloads it from
+			// the last-committed row before dispatch; otherwise the
+			// advanced-but-uncommitted FSM would no-op the
+			// redelivered driving event and a later turn would
+			// persist a terminal snapshot whose effects (e.g.
+			// materialized VTXOs) never committed. A lease-loss
+			// failure is handled above and never sets this: the
+			// fencing instance owns the state.
+			b.commitFailed = true
 		}
 
 		return fn.Err[ActorResp](err)
+	}
+
+	// The turn consumed cleanly but lost an idempotency-key race: a
+	// concurrent same-key admission committed the surviving session first.
+	// Answer the caller with that session as Existing instead of the raw
+	// unique-constraint failure. No transport, ledger, retry, or snapshot
+	// work ran for this no-op turn (commitAck returned early before writing
+	// a row).
+	if b.dedupKeyWinner != nil {
+		winner := *b.dedupKeyWinner
+
+		b.logger(ctx).InfoS(ctx, "Outgoing admission deduped to "+
+			"surviving keyed session",
+			slog.String("session_id", b.sessionID.String()),
+			slog.String("winner_session_id", winner.String()),
+		)
+
+		// This child wrote no durable row, so it is an orphan: a live
+		// actor goroutine, mailbox, and receptionist key for a session
+		// id with no backing row. Tell the registry to reap it. The
+		// reaper re-checks the durable row and treats a no-row session
+		// as reap-eligible, so routing the dedup loser through the
+		// terminal notification drops it cleanly instead of leaving it
+		// resident until shutdown.
+		//
+		//nolint:contextcheck // reap notification is daemon-owned, not
+		// turn-scoped
+		b.notifyTerminal()
+
+		return fn.Ok[ActorResp](&StartTransferResponse{
+			SessionID: winner,
+			Existing:  true,
+		})
 	}
 
 	// The committed turn is durable: record what it persisted at debug
@@ -608,25 +752,33 @@ func (b *sessionBehavior) driveOutbox(ctx context.Context,
 				}
 			}
 
-		// Input-spend completion: stage the spend write so it joins the
-		// commit transaction (the VTXO manager's status write joins via
-		// ctx, so SQLite sees one writer), then advance the FSM to
-		// completion. Staged before the finalized package per the
-		// finalize ordering invariant.
+		// Input-spend completion: run the spend inline in dispatch,
+		// with no OOR writer transaction held, then advance the FSM to
+		// completion only after the spend lands. completeSpend routes
+		// through the VTXO manager, whose status write commits in the
+		// VTXO actor's own transaction; that cross-actor write does NOT
+		// join this turn's tx, so it must not run inside commitAck's
+		// held writer transaction (a second writer awaited under the
+		// single SQLite/Postgres writer lock would deadlock until
+		// busy_timeout). The completion is therefore non-atomic with
+		// the OOR snapshot: the FSM stays in AwaitingLocalVTXOUpdate
+		// until this turn commits Completed, so a crash after the VTXO
+		// is durably Spent but before that commit re-emits
+		// MarkInputsSpentRequest on boot
+		// (resumeOutboxForOutgoingState), and the manager's
+		// isPersistedSpent check makes the replay an idempotent no-op.
 		case *MarkInputsSpentRequest:
 			outpoints := m.Outpoints
-			b.logger(ctx).DebugS(ctx, "Staging input-spend "+
-				"completion for commit",
+			b.logger(ctx).DebugS(ctx, "Completing input spend "+
+				"inline",
 				slog.String(
 					"session_id", b.sessionID.String(),
 				),
 				slog.Int("num_outpoints", len(outpoints)),
 			)
-			b.commitWork = append(b.commitWork,
-				func(txCtx context.Context, _ oorTx) error {
-					return b.completeSpend(txCtx, outpoints)
-				},
-			)
+			if err := b.completeSpend(ctx, outpoints); err != nil {
+				return err
+			}
 
 			if err := b.continueWith(
 				ctx, &InputsMarkedSpentEvent{},
@@ -744,6 +896,40 @@ func (b *sessionBehavior) commitAck(ctx context.Context,
 	ax actor.Exec[oorTx]) error {
 
 	return ax.Commit(ctx, func(txCtx context.Context, tx oorTx) error {
+		// Resolve an idempotency-key race BEFORE running any commit
+		// work so a deduped loser writes nothing (no reservations, no
+		// snapshot, no transport). The session id is the Ark txid,
+		// derived from the selected inputs, so two concurrent same-key
+		// admissions that picked different wallet inputs produce
+		// different session ids and both miss the registry's
+		// read-then-spawn dedup, then collide on the partial UNIQUE
+		// index over idempotency_key. On SQLite the single writer
+		// lock serializes the racing children, so the loser's lookup
+		// here runs after the winner commits, sees the surviving row,
+		// and consumes its turn cleanly (returning Existing). On
+		// Postgres the children do not serialize on this table, so
+		// both lookups can miss and the loser's snapshot upsert below
+		// collides on the index; that collision is handled there as a
+		// benign redelivery, and the redelivered turn dedups cleanly
+		// here once the winner's row is visible. The gate only fires
+		// for an outgoing admission carrying a key (resolveKeyDedup
+		// short- circuits otherwise), where commit work does not
+		// advance the FSM, so this pre-work snapshot is the final
+		// state.
+		gateRecord, err := b.snapshotRecord()
+		if err != nil {
+			return err
+		}
+		winner, deduped, err := b.resolveKeyDedup(txCtx, gateRecord)
+		if err != nil {
+			return err
+		}
+		if deduped {
+			b.dedupKeyWinner = &winner
+
+			return nil
+		}
+
 		// Run the staged commit work first (reservations, finalized
 		// package, input-spend completion, incoming materialization).
 		// Incoming materialization advances the FSM further inside its
@@ -766,6 +952,19 @@ func (b *sessionBehavior) commitAck(ctx context.Context,
 		if err := b.cfg.RegistryStore.UpsertSession(
 			txCtx, record,
 		); err != nil {
+			// On Postgres the resolveKeyDedup SELECT above can miss
+			// a concurrent same-key winner (the racing children do
+			// not serialize on oor_session_registry the way
+			// SQLite's single writer does), so the loser's snapshot
+			// collides on the partial UNIQUE index over
+			// idempotency_key. Returning the error rolls the turn
+			// back so it redelivers; the redelivered
+			// resolveKeyDedup -- running in a fresh tx where the
+			// winner's row is now committed and visible -- consumes
+			// the turn cleanly as Existing. No special
+			// classification is needed here: any commit error
+			// redelivers, and the partial UNIQUE index is the
+			// actual safety net against a duplicate row.
 			return err
 		}
 		b.terminalCommitted = record.Status.IsTerminal()
@@ -795,6 +994,52 @@ func (b *sessionBehavior) commitAck(ctx context.Context,
 
 		return nil
 	})
+}
+
+// resolveKeyDedup detects, inside the commit's writer transaction, whether a
+// concurrent same-idempotency-key admission already committed a surviving
+// session with a different session id. It returns (winner, true, nil) when this
+// child lost the race and should consume its turn as a dedup no-op, or
+// (_, false, nil) when there is no conflict and the snapshot should be written.
+// It only applies to a fresh outgoing admission carrying a non-empty key (the
+// session id is the Ark txid, so a same-key session with a matching id is just
+// this child's own row and never a conflict). The writer lock serializes racing
+// children, so this read is race-free with respect to their commits.
+func (b *sessionBehavior) resolveKeyDedup(ctx context.Context,
+	record clientdb.OORSessionRegistryRecord) (SessionID, bool, error) {
+
+	if record.Direction != clientdb.OORSessionDirectionOutgoing ||
+		record.IdempotencyKey == "" {
+		return SessionID{}, false, nil
+	}
+
+	store := b.cfg.RegistryStore
+	existing, err := store.LookupActiveSessionByIdempotencyKey(
+		ctx, record.IdempotencyKey,
+	)
+	switch {
+	case errors.Is(err, clientdb.ErrOORSessionNotFound):
+		return SessionID{}, false, nil
+
+	case err != nil:
+		return SessionID{}, false, err
+	}
+
+	// A surviving row with this child's own session id is not a conflict:
+	// it is this session's prior committed snapshot being updated.
+	winner := SessionID(existing.SessionID)
+	if winner == b.sessionID {
+		return SessionID{}, false, nil
+	}
+
+	b.logger(ctx).InfoS(ctx, "Idempotency-key race lost; deduping to "+
+		"surviving session",
+		slog.String("session_id", b.sessionID.String()),
+		slog.String("winner_session_id", winner.String()),
+		slog.String("idempotency_key", record.IdempotencyKey),
+	)
+
+	return winner, true, nil
 }
 
 // snapshotRecord builds the registry record for the current FSM state.

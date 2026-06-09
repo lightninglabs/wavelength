@@ -191,6 +191,157 @@ func TestSessionActorIncomingMaterializeFullFlow(t *testing.T) {
 	require.Len(t, observed, len(descs))
 }
 
+// countingIncomingHandler is a fakeIncomingHandler that records how many times
+// Handle was invoked, so a test can assert materialization re-ran after a
+// rolled-back commit.
+type countingIncomingHandler struct {
+	fakeIncomingHandler
+
+	calls int
+}
+
+func (h *countingIncomingHandler) Handle(ctx context.Context, sid SessionID,
+	outbox OutboxEvent) ([]Event, error) {
+
+	h.calls++
+
+	return h.fakeIncomingHandler.Handle(ctx, sid, outbox)
+}
+
+// failFirstUpsertStore seeds a last-committed row and fails the first
+// UpsertSession so the first commit rolls back, then succeeds afterwards. It
+// models the durable store across a turn whose Commit aborts after the
+// in-memory FSM already advanced.
+type failFirstUpsertStore struct {
+	*fakeRegistryStore
+
+	failsLeft int
+}
+
+func (s *failFirstUpsertStore) UpsertSession(ctx context.Context,
+	record clientdb.OORSessionRegistryRecord) error {
+
+	if s.failsLeft > 0 {
+		s.failsLeft--
+
+		return errFilterBroken
+	}
+
+	return s.fakeRegistryStore.UpsertSession(ctx, record)
+}
+
+// TestSessionActorIncomingReloadsAfterFailedCommit verifies the critical
+// invariant that the in-memory FSM is never observably ahead of the
+// last-committed snapshot. An incoming materialization turn advances the FSM to
+// ReceiveCompleted inside its commit closure; when that commit rolls back, the
+// redelivered driving event must re-run materialization against the
+// last-committed ReceiveNotified state instead of being discarded by a
+// terminal in-memory FSM (which would persist a Completed session whose VTXOs
+// were never materialized).
+func TestSessionActorIncomingReloadsAfterFailedCommit(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	ark, checkpoints := testOutboxPSBTPair(t)
+
+	// Restore re-validates that the session id matches the Ark txid, so the
+	// session id is derived from the Ark rather than a synthetic byte.
+	sid, err := sessionIDFromArk(ark)
+	require.NoError(t, err)
+
+	// Seed the last durably-committed row at ReceiveNotified: this is the
+	// state restore must rebuild the FSM to after the failed commit.
+	notified := &ReceiveNotified{
+		SessionID:            sid,
+		ArkPSBT:              ark,
+		FinalCheckpointPSBTs: checkpoints,
+	}
+	notifiedRecord, err := incomingRegistryRecord(sid, notified)
+	require.NoError(t, err)
+
+	base := newFakeRegistryStore()
+	require.NoError(t, base.UpsertSession(ctx, notifiedRecord))
+	store := &failFirstUpsertStore{
+		fakeRegistryStore: base,
+		failsLeft:         1,
+	}
+
+	descs := []*vtxo.Descriptor{{
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0x74,
+			},
+			Index: 1,
+		},
+		Amount: btcutil.Amount(9_000),
+	}}
+	handler := &countingIncomingHandler{
+		fakeIncomingHandler: fakeIncomingHandler{
+			descs: descs,
+		},
+	}
+
+	session, err := newReceiveSessionWithState(ctx, sid, notified)
+	require.NoError(t, err)
+
+	b := &sessionBehavior{
+		cfg: SessionActorConfig{
+			RegistryStore:   store,
+			IncomingHandler: handler,
+			ServerConn:      fakeServerConnRef{},
+		},
+		actorID:   ActorIDForSession(sid),
+		log:       btclog.Disabled,
+		sessionID: sid,
+		direction: clientdb.OORSessionDirectionIncoming,
+		fsm:       session.FSM,
+		loaded:    true,
+	}
+
+	ax := fakeExec{tx: oorTx{
+		store:   &fakeDeliveryStore{},
+		actorID: b.actorID,
+	}}
+
+	// First turn: materialization runs and drives the in-memory FSM to
+	// ReceiveCompleted, but the snapshot upsert fails so the commit rolls
+	// back. The behavior must mark itself dirty rather than leave a
+	// terminal FSM standing on an uncommitted advance.
+	drive := &DriveEventRequest{
+		SessionID: sid,
+		Event:     &IncomingMetadataResolvedEvent{},
+	}
+	res := b.Receive(ctx, drive, ax)
+	require.True(t, res.IsErr())
+	require.ErrorIs(t, res.Err(), errFilterBroken)
+	require.Equal(t, 1, handler.calls)
+	require.True(t, b.commitFailed)
+
+	// The durable row is still the last-committed ReceiveNotified, not a
+	// Completed snapshot.
+	stored, err := store.GetSession(ctx, chainHashOf(sid))
+	require.NoError(t, err)
+	require.False(t, stored.Status.IsTerminal())
+
+	// Redelivery: the reload guard rebuilds the FSM from the
+	// ReceiveNotified row, so the same event re-runs materialization and
+	// this time the commit lands a terminal Completed snapshot.
+	res = b.Receive(ctx, drive, ax)
+	require.True(t, res.IsOk(), res.Err())
+	require.False(t, b.commitFailed)
+	require.Equal(t, 2, handler.calls)
+
+	state, err := b.fsm.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &ReceiveCompleted{}, state)
+	require.True(t, b.terminalCommitted)
+
+	stored, err = store.GetSession(ctx, chainHashOf(sid))
+	require.NoError(t, err)
+	require.True(t, stored.Status.IsTerminal())
+}
+
 // TestSessionActorStaleDuplicateEventDiscarded verifies a duplicate event
 // re-delivered after the FSM advanced past it (the restart-duplicate shape)
 // is treated as a benign no-op: the turn commits, the state is unchanged, and
@@ -461,10 +612,11 @@ func (e leaseLostExec) Commit(context.Context,
 	return actor.ErrLeaseLost
 }
 
-// TestSessionActorCommitAckOrdering verifies the commit phase runs the staged
-// work strictly before the snapshot upsert (the materialize closure advances
-// the FSM, so the snapshot must observe the final state), and that a lost
-// lease rolls the whole turn back with nothing observable.
+// TestSessionActorCommitAckOrdering verifies the turn completes the input
+// spend (inline in dispatch, no writer held) before the commit phase persists
+// the finalized package and the snapshot upsert (the materialize closure
+// advances the FSM, so the snapshot must observe the final state), and that a
+// lost lease rolls the whole turn back with nothing observable.
 func TestSessionActorCommitAckOrdering(t *testing.T) {
 	t.Parallel()
 
@@ -572,6 +724,13 @@ func TestOutboxForStateTable(t *testing.T) {
 		name  string
 		state State
 		want  OutboxEvent
+
+		// wantSchedule asserts the state also arms a
+		// ScheduleRetryRequest re-drive timer alongside its primary
+		// transport. The outgoing wait states that have no operator
+		// failure path arm one so a dead-lettered transport re-drives
+		// instead of wedging the session until restart.
+		wantSchedule bool
 	}{
 		{
 			name:  "ark signatures",
@@ -579,9 +738,10 @@ func TestOutboxForStateTable(t *testing.T) {
 			want:  &RequestArkSignatures{},
 		},
 		{
-			name:  "submit accepted",
-			state: &AwaitingSubmitAccepted{},
-			want:  &SendSubmitPackageRequest{},
+			name:         "submit accepted",
+			state:        &AwaitingSubmitAccepted{},
+			want:         &SendSubmitPackageRequest{},
+			wantSchedule: true,
 		},
 		{
 			name:  "checkpoint signatures",
@@ -589,14 +749,16 @@ func TestOutboxForStateTable(t *testing.T) {
 			want:  &RequestCheckpointSignatures{},
 		},
 		{
-			name:  "finalize accepted",
-			state: &AwaitingFinalizeAccepted{},
-			want:  &SendFinalizePackageRequest{},
+			name:         "finalize accepted",
+			state:        &AwaitingFinalizeAccepted{},
+			want:         &SendFinalizePackageRequest{},
+			wantSchedule: true,
 		},
 		{
-			name:  "local vtxo update",
-			state: &AwaitingLocalVTXOUpdate{},
-			want:  &MarkInputsSpentRequest{},
+			name:         "local vtxo update",
+			state:        &AwaitingLocalVTXOUpdate{},
+			want:         &MarkInputsSpentRequest{},
+			wantSchedule: true,
 		},
 		{
 			name:  "completed",
@@ -621,13 +783,53 @@ func TestOutboxForStateTable(t *testing.T) {
 				return
 			}
 
-			require.Len(t, outbox, 1)
 			require.IsType(t, tc.want, outbox[0])
+
+			if tc.wantSchedule {
+				require.Len(t, outbox, 2)
+				require.IsType(
+					t, &ScheduleRetryRequest{}, outbox[1],
+				)
+
+				return
+			}
+
+			require.Len(t, outbox, 1)
 		})
 	}
 
 	_, err := OutboxForState(nil)
 	require.Error(t, err)
+}
+
+// TestOutboxForStateLocalVTXOUpdateArmsRedriveTimer pins that a session resumed
+// in AwaitingLocalVTXOUpdate re-emits BOTH the input-spend completion request
+// and a re-drive timer. Unlike the operator-driven waits, nothing answers this
+// state except completeSpend succeeding, so a resume whose spend fails would
+// wedge until the next daemon restart without the timer. The timer re-drives
+// the idempotent spend on the bounded outgoing-transport cadence.
+func TestOutboxForStateLocalVTXOUpdateArmsRedriveTimer(t *testing.T) {
+	t.Parallel()
+
+	inputs := testRetryTransferInputs(t)
+	outbox, err := OutboxForState(&AwaitingLocalVTXOUpdate{
+		TransferInputs: inputs,
+	})
+	require.NoError(t, err)
+
+	// The outbox carries the spend request followed by the re-drive timer.
+	require.Len(t, outbox, 2)
+
+	spend, ok := outbox[0].(*MarkInputsSpentRequest)
+	require.True(
+		t, ok, "expected MarkInputsSpentRequest, got %T", outbox[0],
+	)
+	require.ElementsMatch(t, InputOutpoints(inputs), spend.Outpoints)
+
+	retry, ok := outbox[1].(*ScheduleRetryRequest)
+	require.True(t, ok, "expected ScheduleRetryRequest, got %T", outbox[1])
+	require.Equal(t, outgoingTransportRedriveInterval, retry.After)
+	require.Equal(t, localVTXOUpdateRedriveReason, retry.Reason)
 }
 
 // TestOutboxForIncomingStateTable verifies every incoming state maps to the
@@ -642,6 +844,11 @@ func TestOutboxForIncomingStateTable(t *testing.T) {
 		name  string
 		state SessionState
 		want  OutboxEvent
+
+		// wantSchedule asserts the state also arms a
+		// ScheduleRetryRequest give-up timer alongside its primary
+		// query.
+		wantSchedule bool
 	}{
 		{
 			name: "resolving",
@@ -651,7 +858,8 @@ func TestOutboxForIncomingStateTable(t *testing.T) {
 					0x51,
 				},
 			},
-			want: &QueryIncomingTransferRequest{},
+			want:         &QueryIncomingTransferRequest{},
+			wantSchedule: true,
 		},
 		{
 			name: "notified",
@@ -660,7 +868,8 @@ func TestOutboxForIncomingStateTable(t *testing.T) {
 				ArkPSBT:              ark,
 				FinalCheckpointPSBTs: checkpoints,
 			},
-			want: &QueryIncomingMetadataRequest{},
+			want:         &QueryIncomingMetadataRequest{},
+			wantSchedule: true,
 		},
 		{
 			name: "awaiting ack",
@@ -692,8 +901,18 @@ func TestOutboxForIncomingStateTable(t *testing.T) {
 				return
 			}
 
-			require.Len(t, outbox, 1)
 			require.IsType(t, tc.want, outbox[0])
+
+			if tc.wantSchedule {
+				require.Len(t, outbox, 2)
+				require.IsType(
+					t, &ScheduleRetryRequest{}, outbox[1],
+				)
+
+				return
+			}
+
+			require.Len(t, outbox, 1)
 		})
 	}
 
