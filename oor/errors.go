@@ -35,6 +35,35 @@ func (e *ErrLineageTooLarge) Is(target error) bool {
 	return ok
 }
 
+// ErrOutputPolicyViolation is the client-facing typed error returned
+// when the operator rejects an OOR submit because one of the Ark
+// recipient outputs violates the operator's output policy, e.g. an
+// amount above the advertised per-VTXO maximum. Retrying the same
+// output shape will fail again, so wallet callers should treat this as
+// terminal for the session and restructure the outputs before trying
+// again.
+//
+// The wrapped Reason carries the operator's human-readable explanation
+// (e.g. "output 0 of 0.6 BTC exceeds the operator's per-VTXO maximum
+// of 0.0003 BTC") and is suitable for surfacing directly in UX.
+type ErrOutputPolicyViolation struct {
+	Reason string
+}
+
+// Error returns a human-readable description of the rejection cause.
+func (e *ErrOutputPolicyViolation) Error() string {
+	return fmt.Sprintf("oor output policy violation: %s", e.Reason)
+}
+
+// Is reports whether target is also an *ErrOutputPolicyViolation,
+// supporting the standard errors.Is comparison without forcing callers
+// to compare reasons.
+func (e *ErrOutputPolicyViolation) Is(target error) bool {
+	_, ok := target.(*ErrOutputPolicyViolation)
+
+	return ok
+}
+
 // ErrInvalidAncestry is the typed error returned by the receive-side
 // ancestry cross-check when an operator-supplied IncomingVTXOMetadata
 // fails one of the structural invariants required to bind the produced
@@ -83,6 +112,11 @@ func ClassifySubmitError(err error) error {
 		switch rejected.Code {
 		case oorpb.OORRejectCode_OOR_REJECT_LINEAGE_TOO_LARGE:
 			return &ErrLineageTooLarge{Reason: rejected.Reason}
+
+		case oorpb.OORRejectCode_OOR_REJECT_OUTPUT_POLICY:
+			return &ErrOutputPolicyViolation{
+				Reason: rejected.Reason,
+			}
 
 		case oorpb.OORRejectCode_OOR_REJECT_UNSPECIFIED:
 			// Unspecified rejection codes have no typed
