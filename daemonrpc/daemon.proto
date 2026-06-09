@@ -380,8 +380,9 @@ message ServerInfo {
     // accepts.
     uint64 min_boarding_amount = 8;
 
-    // max_boarding_amount is the largest boarding amount the operator
-    // accepts. A value of zero means no cap.
+    // max_boarding_amount is the largest amount the operator accepts
+    // per VTXO, applied to boarding requests, round outputs and OOR
+    // recipient outputs alike. A value of zero means no cap.
     uint64 max_boarding_amount = 9;
 
     // fee_rate is the operator's target package feerate in sat/vbyte.
@@ -399,6 +400,12 @@ message ServerInfo {
     // floor to decide whether an amount can materialize as a VTXO or
     // must use a different rail.
     uint64 min_vtxo_amount_sat = 13;
+
+    // max_user_balance is the maximum total balance in satoshis a
+    // single user should hold in the system. The daemon enforces the
+    // cap locally on receive and boarding flows. A value of zero means
+    // no cap.
+    uint64 max_user_balance = 14;
 }
 
 message GenSeedRequest {
