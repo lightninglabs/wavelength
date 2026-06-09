@@ -319,6 +319,13 @@ func driveIncomingOutbox(ctx context.Context, session *oor.ReceiveSession,
 		case *oor.IncomingTransferNotification:
 			continue
 
+		case *oor.ScheduleRetryRequest:
+			// The incoming metadata path arms a give-up/backoff
+			// retry timer alongside its query (see fab1754c). This
+			// synchronous driver resolves metadata immediately, so
+			// the timer never needs to fire; ignore it.
+			continue
+
 		case *oor.MaterializeIncomingVTXOsRequest:
 			followUps, err := handler.Handle(
 				ctx, sessionID, typedMsg,
