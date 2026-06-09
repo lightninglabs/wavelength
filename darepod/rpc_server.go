@@ -959,11 +959,14 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 				"invalid status filter: %v", sErr)
 		}
 
-		dbVTXOs, err = r.server.vtxoStore.ListVTXOsByStatus(
+		// The listing response never carries ancestry, so the light
+		// variants skip the ancestry side-table join (whose TLV tree
+		// fragments grow with OOR chain depth) entirely.
+		dbVTXOs, err = r.server.vtxoStore.ListVTXOsByStatusLight(
 			ctx, domainStatus,
 		)
 	} else {
-		dbVTXOs, err = r.server.vtxoStore.ListLiveVTXOs(ctx)
+		dbVTXOs, err = r.server.vtxoStore.ListLiveVTXOsLight(ctx)
 	}
 
 	if err != nil {
