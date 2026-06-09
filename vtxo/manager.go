@@ -817,6 +817,46 @@ func (m *Manager) handleRelayToRound(ctx context.Context,
 }
 
 // spawnVTXOActor creates a new VTXO FSM actor.
+// respawnActorFromStore self-heals a live-in-DB but actorless VTXO by
+// spawning its actor from the persisted descriptor. The materialized-VTXO
+// notification that normally spawns the actor is delivered asynchronously
+// after the producing session's commit, so a coin selection racing that
+// window (or a notification lost to a crash before the next restart) can
+// observe the committed row before the actor exists. The row is the source
+// of truth; a missing actor must never make the liquidity unusable. Runs on
+// the manager goroutine, so the actors map mutation is safe.
+func (m *Manager) respawnActorFromStore(ctx context.Context,
+	outpoint wire.OutPoint) (VTXOActorRef, error) {
+
+	desc, err := m.cfg.Store.GetVTXO(ctx, outpoint)
+	if err != nil {
+		return nil, fmt.Errorf("load descriptor: %w", err)
+	}
+
+	// Only a Live row is a valid selection candidate; anything else means
+	// the candidate list went stale between the listing and this reserve,
+	// which the caller handles as a normal reservation failure.
+	if desc.Status != VTXOStatusLive {
+		return nil, fmt.Errorf("descriptor status %v is not live",
+			desc.Status)
+	}
+
+	ref, err := m.spawnVTXOActor(ctx, desc)
+	if err != nil {
+		return nil, fmt.Errorf("respawn actor: %w", err)
+	}
+
+	m.actors[outpoint] = ref
+
+	m.logger(ctx).InfoS(ctx, "Respawned VTXO actor from store during "+
+		"selection",
+		slog.String("outpoint", outpoint.String()),
+		slog.Int64("amount", int64(desc.Amount)),
+	)
+
+	return ref, nil
+}
+
 func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 	VTXOActorRef, error) {
 
@@ -946,10 +986,25 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	for _, vtxo := range selected {
 		ref, ok := m.actors[vtxo.Outpoint]
 		if !ok {
-			p.rollback(ctx, reserved)
+			// The row is committed Live but the actor is not
+			// resident yet: the materialized-VTXO notification is
+			// delivered asynchronously after the OOR session's
+			// commit, so a selection racing that window (or a
+			// notification lost to a crash) sees the row before
+			// the actor. The store row is the source of truth, so
+			// self-heal by spawning the actor from it instead of
+			// failing the payment.
+			lazyRef, err := m.respawnActorFromStore(
+				ctx, vtxo.Outpoint,
+			)
+			if err != nil {
+				p.rollback(ctx, reserved)
 
-			return nil, 0, fmt.Errorf("no actor for outpoint %s",
-				vtxo.Outpoint)
+				return nil, 0, fmt.Errorf("no actor for "+
+					"outpoint %s: %w", vtxo.Outpoint, err)
+			}
+
+			ref = lazyRef
 		}
 
 		result := p.ask(ctx, ref, p.reserveEvent)

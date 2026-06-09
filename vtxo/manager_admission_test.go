@@ -212,6 +212,52 @@ func TestSelectAndReserveSpendSuccess(t *testing.T) {
 	require.True(t, ok, "expected SpendingState, got %T", ref.state)
 }
 
+// TestSelectAndReserveRespawnGuards verifies the self-heal path for a
+// live-in-DB but actorless selection candidate fails closed: a store miss
+// and a non-live row both surface as reservation errors instead of spawning
+// an actor for liquidity that is not actually spendable.
+func TestSelectAndReserveRespawnGuards(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 50000, 0)
+
+	// The manager has NO resident actor for the candidate.
+	mgr, store := newTestManager(t, nil)
+
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{vtxo1}, nil)
+
+	// First attempt: the row vanished between listing and reserve.
+	store.On("GetVTXO", t.Context(), vtxo1.Outpoint).Return(
+		nil, fmt.Errorf("not found"),
+	).Once()
+
+	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount: 40000,
+	})
+	_, err := result.Unpack()
+	require.ErrorContains(t, err, "no actor for outpoint")
+	require.ErrorContains(t, err, "not found")
+
+	// Second attempt: the row exists but is no longer live, so the
+	// candidate list was stale; the respawn must refuse to spawn.
+	spent := *vtxo1
+	spent.Status = VTXOStatusSpent
+	store.On("GetVTXO", t.Context(), vtxo1.Outpoint).Return(
+		&spent, nil,
+	).Once()
+
+	result = mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount: 40000,
+	})
+	_, err = result.Unpack()
+	require.ErrorContains(t, err, "is not live")
+
+	// No actor may have been registered by either failed attempt.
+	require.Empty(t, mgr.actors)
+}
+
 // TestSelectAndReserveSpendMultipleVTXOs verifies that coin selection picks
 // multiple VTXOs when no single VTXO covers the target.
 func TestSelectAndReserveSpendMultipleVTXOs(t *testing.T) {
