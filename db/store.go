@@ -111,6 +111,7 @@ func DefaultConfig(dataDir string) *Config {
 func DefaultSqliteConfig(dataDir string) *SqliteConfig {
 	return &SqliteConfig{
 		DatabaseFileName: fmt.Sprintf("%s/arkd.db", dataDir),
+		Synchronous:      defaultSqliteSynchronous,
 	}
 }
 
@@ -131,6 +132,7 @@ func DefaultPostgresConfig() *PostgresConfig {
 		// Use the default value for max idle connections.
 		MaxIdleConnections: 0,
 		RequireSSL:         false,
+		Synchronous:        defaultPostgresSynchronous,
 	}
 }
 
