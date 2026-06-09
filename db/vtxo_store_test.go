@@ -288,6 +288,60 @@ func TestVTXOPersistenceStoreSaveAndGet(t *testing.T) {
 	)
 }
 
+// TestVTXODescriptorDecodeMemoization verifies the per-outpoint descriptor
+// decode cache: repeated listings return equal descriptors whose immutable
+// derived parts (taproot script and parsed operator key) are the SAME shared
+// objects, while mutable row state (status) is read fresh on every call.
+func TestVTXODescriptorDecodeMemoization(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-decode-memo")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, roundStore.CommitState(ctx, testRound, state))
+
+	desc := createTestVTXODescriptor(t, roundID, 7)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+
+	first, err := vtxoStore.ListVTXOsByStatus(ctx, vtxo.VTXOStatusLive)
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+
+	second, err := vtxoStore.ListVTXOsByStatus(ctx, vtxo.VTXOStatusLive)
+	require.NoError(t, err)
+	require.Len(t, second, 1)
+
+	// Equal contents across calls.
+	require.Equal(t, first[0], second[0])
+
+	// The derived parts must be memoized: pointer identity proves the
+	// second listing skipped the re-derivation. Client keys are hydrated
+	// through the internal key registry, so equality above covers them.
+	require.Same(t, first[0].TapScript, second[0].TapScript)
+	require.Same(t, first[0].OperatorKey, second[0].OperatorKey)
+
+	// Mutable row state is read fresh: a status flip shows up on the next
+	// listing while the derived parts stay the same shared objects.
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, desc.Outpoint, vtxo.VTXOStatusSpent,
+		),
+	)
+
+	spent, err := vtxoStore.ListVTXOsByStatus(ctx, vtxo.VTXOStatusSpent)
+	require.NoError(t, err)
+	require.Len(t, spent, 1)
+	require.Equal(t, vtxo.VTXOStatusSpent, spent[0].Status)
+	require.Same(t, first[0].TapScript, spent[0].TapScript)
+	require.Same(t, first[0].OperatorKey, spent[0].OperatorKey)
+}
+
 // TestListSelectionCandidatesByStatus verifies the lightweight selection
 // projection agrees with the full descriptor listing on outpoint, amount,
 // and pkScript.
@@ -347,6 +401,7 @@ func TestListSelectionCandidatesByStatus(t *testing.T) {
 	require.Len(t, candidates, 1)
 	require.Equal(t, descB.Outpoint, candidates[0].Outpoint)
 }
+
 // addAncestryFragment appends a synthetic ancestry fragment to a
 // Descriptor under construction so multi-tree round-trip tests can
 // build N>1 ancestry layouts without re-implementing the per-fragment

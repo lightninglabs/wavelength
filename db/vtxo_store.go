@@ -36,6 +36,12 @@ type VTXOPersistenceStore struct {
 	// across repeated list and selection queries.
 	ancestryCache *ancestryTreeCache
 
+	// descriptorCache memoizes the immutable derived parts of VTXO rows
+	// (parsed keys, reconstructed taproot script, policy-resolved expiry)
+	// by outpoint, so repeated listings skip the per-row secp256k1 and
+	// policy-decode work.
+	descriptorCache *vtxoDescriptorCache
+
 	// Log is an optional logger for this persistence store. If None,
 	// the store falls back to extracting a logger from context via
 	// build.LoggerFromContext, or uses btclog.Disabled if no logger
@@ -54,9 +60,10 @@ func NewVTXOPersistenceStore(
 ) *VTXOPersistenceStore {
 
 	return &VTXOPersistenceStore{
-		db:            db,
-		clock:         c,
-		ancestryCache: newAncestryTreeCache(),
+		db:              db,
+		clock:           c,
+		ancestryCache:   newAncestryTreeCache(),
+		descriptorCache: newVTXODescriptorCache(),
 	}
 }
 
@@ -66,10 +73,11 @@ func NewVTXOPersistenceStoreWithLogger(db BatchedRoundStore, c clock.Clock,
 	log fn.Option[btclog.Logger]) *VTXOPersistenceStore {
 
 	return &VTXOPersistenceStore{
-		db:            db,
-		clock:         c,
-		ancestryCache: newAncestryTreeCache(),
-		Log:           log,
+		db:              db,
+		clock:           c,
+		ancestryCache:   newAncestryTreeCache(),
+		descriptorCache: newVTXODescriptorCache(),
+		Log:             log,
 	}
 }
 
@@ -603,17 +611,28 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		clientKey = desc
 	}
 
-	policyTemplate := bytes.Clone(row.PolicyTemplate)
-
-	// Parse operator public key.
-	var operatorPubkey *btcec.PublicKey
-	if len(row.OperatorPubkey) > 0 {
-		key, err := btcec.ParsePubKey(row.OperatorPubkey)
+	// Resolve the expensive derived parts (parsed keys, taproot script,
+	// policy-resolved expiry) through the per-outpoint cache. The script
+	// material is bound to the on-chain output, so an outpoint can never
+	// map to different derived values; only the mutable row state below
+	// is read fresh on every call.
+	derived, ok := s.descriptorCache.get(outpoint)
+	if !ok {
+		var err error
+		derived, err = s.deriveDescriptorParts(ctx, row, outpoint)
 		if err != nil {
-			return nil, fmt.Errorf("parse operator pubkey: %w", err)
+			return nil, err
 		}
 
-		operatorPubkey = key
+		if err := s.descriptorCache.put(outpoint, derived); err != nil {
+			// A put failure only costs a future re-derivation.
+			s.logger(ctx).WarnS(
+				ctx,
+				"Failed to cache VTXO descriptor parts",
+				err,
+				slog.String("outpoint", outpoint.String()),
+			)
+		}
 	}
 
 	// Load ancestry tree fragments from the side table. Round-direct
@@ -637,6 +656,58 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		if err != nil {
 			return nil, fmt.Errorf("load ancestry paths: %w", err)
 		}
+	}
+
+	// Parse commitment txid.
+	var commitmentTxID chainhash.Hash
+	if len(row.CommitmentTxid) == chainhash.HashSize {
+		copy(commitmentTxID[:], row.CommitmentTxid)
+	}
+
+	if clientKey.PubKey == nil {
+		clientKey.PubKey = derived.clientPubkey
+	}
+
+	return &vtxo.Descriptor{
+		Outpoint:       outpoint,
+		Amount:         btcutil.Amount(row.Amount),
+		PolicyTemplate: derived.policyTemplate,
+		PkScript:       row.PkScript,
+		ClientKey:      clientKey,
+		OperatorKey:    derived.operatorPubkey,
+		TapScript:      derived.tapscript,
+		Ancestry:       ancestry,
+		RoundID:        row.RoundID,
+		CommitmentTxID: commitmentTxID,
+		BatchExpiry:    row.BatchExpiry,
+		RelativeExpiry: derived.relativeExpiry,
+		ChainDepth:     int(row.ChainDepth),
+		CreatedHeight:  row.CreatedHeight,
+		Status:         vtxo.VTXOStatus(row.Status),
+	}, nil
+}
+
+// deriveDescriptorParts computes the immutable derived parts of one VTXO row:
+// the parsed public keys, the reconstructed taproot script, and the
+// policy-resolved relative expiry. This is the expensive slice of descriptor
+// decoding (secp256k1 point math, policy template decode), pulled out so
+// rowToDescriptor can memoize it per outpoint.
+func (s *VTXOPersistenceStore) deriveDescriptorParts(ctx context.Context,
+	row VTXORow, outpoint wire.OutPoint) (*vtxoDescriptorCacheValue,
+	error) {
+
+	var clientPubkey *btcec.PublicKey
+	policyTemplate := bytes.Clone(row.PolicyTemplate)
+
+	// Parse operator public key.
+	var operatorPubkey *btcec.PublicKey
+	if len(row.OperatorPubkey) > 0 {
+		key, err := btcec.ParsePubKey(row.OperatorPubkey)
+		if err != nil {
+			return nil, fmt.Errorf("parse operator pubkey: %w", err)
+		}
+
+		operatorPubkey = key
 	}
 
 	// Reconstruct the TapScript from the semantic policy when
@@ -671,8 +742,8 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 				operatorPubkey = params.OperatorKey
 			}
 
-			if clientKey.PubKey == nil {
-				clientKey.PubKey = params.OwnerKey
+			if clientPubkey == nil {
+				clientPubkey = params.OwnerKey
 			}
 
 			// Warn on expiry drift between the stored column
@@ -708,28 +779,12 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		}
 	}
 
-	// Parse commitment txid.
-	var commitmentTxID chainhash.Hash
-	if len(row.CommitmentTxid) == chainhash.HashSize {
-		copy(commitmentTxID[:], row.CommitmentTxid)
-	}
-
-	return &vtxo.Descriptor{
-		Outpoint:       outpoint,
-		Amount:         btcutil.Amount(row.Amount),
-		PolicyTemplate: policyTemplate,
-		PkScript:       row.PkScript,
-		ClientKey:      clientKey,
-		OperatorKey:    operatorPubkey,
-		TapScript:      tapscript,
-		Ancestry:       ancestry,
-		RoundID:        row.RoundID,
-		CommitmentTxID: commitmentTxID,
-		BatchExpiry:    row.BatchExpiry,
-		RelativeExpiry: relativeExpiry,
-		ChainDepth:     int(row.ChainDepth),
-		CreatedHeight:  row.CreatedHeight,
-		Status:         vtxo.VTXOStatus(row.Status),
+	return &vtxoDescriptorCacheValue{
+		clientPubkey:   clientPubkey,
+		operatorPubkey: operatorPubkey,
+		policyTemplate: policyTemplate,
+		tapscript:      tapscript,
+		relativeExpiry: relativeExpiry,
 	}, nil
 }
 
