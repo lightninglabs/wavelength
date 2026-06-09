@@ -200,6 +200,100 @@ func TestReceiveNotifiedMetadataRetryGivesUp(t *testing.T) {
 	require.True(t, transition.NewEvents.IsNone())
 }
 
+// TestReceiveResolvingRetryReschedules asserts a resolving session below the
+// give-up bound re-emits the phase-1 query and re-arms the give-up timer,
+// advancing the persisted attempt counter.
+func TestReceiveResolvingRetryReschedules(t *testing.T) {
+	t.Parallel()
+
+	state := &ReceiveResolving{
+		SessionID: SessionID{
+			0x04,
+		},
+		RecipientPkScript: []byte{
+			0x51,
+			0x20,
+			0xaa,
+		},
+		RecipientEventID: 9,
+		ResolveAttempts:  3,
+	}
+
+	transition := handleResolveRetry(state)
+
+	next, ok := transition.NextState.(*ReceiveResolving)
+	require.True(t, ok)
+	require.Equal(t, uint32(4), next.ResolveAttempts)
+	require.Equal(t, state.RecipientEventID, next.RecipientEventID)
+
+	// The source state must not be mutated in place.
+	require.Equal(t, uint32(3), state.ResolveAttempts)
+
+	require.True(t, transition.NewEvents.IsSome())
+	emitted := transition.NewEvents.UnwrapOr(EmittedEvent{})
+	require.Len(t, emitted.Outbox, 2)
+	require.IsType(t, &QueryIncomingTransferRequest{}, emitted.Outbox[0])
+	require.IsType(t, &ScheduleRetryRequest{}, emitted.Outbox[1])
+}
+
+// TestReceiveResolvingRetryGivesUp asserts that once the resolve bound is
+// reached the resolving state fails terminally so it becomes reap-eligible and
+// frees its concurrency slot, instead of re-querying an unanswered resolve
+// forever.
+func TestReceiveResolvingRetryGivesUp(t *testing.T) {
+	t.Parallel()
+
+	state := &ReceiveResolving{
+		SessionID: SessionID{
+			0x05,
+		},
+		RecipientPkScript: []byte{
+			0x51,
+			0x20,
+			0xbb,
+		},
+		ResolveAttempts: maxResolveRetries,
+	}
+
+	transition := handleResolveRetry(state)
+
+	failed, ok := transition.NextState.(*Failed)
+	require.True(t, ok)
+	require.Contains(t, failed.Reason, "unresolved")
+	require.True(t, transition.NewEvents.IsNone())
+}
+
+// TestIncomingSnapshotResolveAttemptsRoundTrip asserts the persisted resolve
+// retry counter survives a snapshot encode/decode cycle so the give-up bound
+// holds across restarts.
+func TestIncomingSnapshotResolveAttemptsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	snap := &IncomingSnapshot{
+		Version: 1,
+		SessionID: SessionID{
+			0x06,
+		},
+		Phase: IncomingPhaseResolvePending,
+		RecipientPkScript: []byte{
+			0x51,
+			0x20,
+			0xcc,
+		},
+		RecipientEventID: 11,
+		ResolveAttempts:  5,
+	}
+
+	raw, err := encodeIncomingSnapshot(snap)
+	require.NoError(t, err)
+
+	decoded, err := decodeIncomingSnapshotWithLimits(
+		raw, DefaultReceiveLimits(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, uint32(5), decoded.ResolveAttempts)
+}
+
 // TestMetadataRetryBackoff covers the backoff helper bounds directly.
 func TestMetadataRetryBackoff(t *testing.T) {
 	t.Parallel()

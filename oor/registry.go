@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -18,6 +19,30 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 )
+
+// errIncomingAdmissionCapped is returned when an incoming OOR admission is
+// rejected because the daemon already holds the maximum number of resident
+// incoming sessions. The hint is retried by transport, so the rejection is
+// recoverable once an earlier session terminates and is reaped.
+var errIncomingAdmissionCapped = errors.New("incoming OOR admission " +
+	"rejected: concurrency cap reached")
+
+// detachedWaitTimeout bounds the registry's detached-continuation wait on a
+// child's response. OnComplete spawns a goroutine that parks on
+// DetachedAsk.CallerCtx. On the registry's durable (Read/Stage/Commit) path
+// that context is the registry actor's own lifetime context, NOT the
+// originating caller's: the durable mailbox does not persist the caller's
+// context with the Ask (see DetachedAsk.CallerCtx). It therefore does not
+// cancel on a CLI disconnect (the production StartTransfer call site also
+// derives its own context from context.WithoutCancel, so even the caller side
+// never cancels). Without an upper bound a wedged or never-resolving child turn
+// would leak the continuation goroutine for the daemon's lifetime, so this wrap
+// is the SOLE bound on the continuation: the registry always wraps CallerCtx in
+// this timeout before handing it to OnComplete, and the continuation eventually
+// fires (with a deadline error if the child never answered) so the goroutine
+// exits. A real caller deadline is observed only by the caller's own
+// future.Await, never by this detached continuation.
+const detachedWaitTimeout = 5 * time.Minute
 
 // OORRegistryConfig configures the OOR registry coordinator. Every field except
 // the registry's own wiring is a per-session dependency forwarded verbatim into
@@ -64,14 +89,50 @@ func (a *OORRegistryActor) Ref() actor.ActorRef[OORDurableMsg, ActorResp] {
 }
 
 // Stop stops the registry and all active children. The Read/Stage/Commit
-// durable path has no Stoppable hook, so the children are stopped here, after
-// the registry goroutine has exited and can no longer touch the active set.
+// durable path has no Stoppable hook, so the children are stopped here. The
+// registry goroutine is drained first via StopAndWait: a redelivered backlog
+// turn can mutate the (unsynchronized) active map while it runs, so stopping
+// the children before the process loop has exited would race a concurrent
+// ensureChild/dropChild against stopChildren's iteration. StopAndWait blocks
+// on the actor's done channel, which is closed only after process() returns,
+// establishing the happens-before stopChildren relies on.
 func (a *OORRegistryActor) Stop() {
 	if a == nil || a.registry == nil {
 		return
 	}
 
-	a.registry.Stop()
+	// Bound the drain so a wedged turn cannot hang shutdown indefinitely.
+	ctx, cancel := context.WithTimeout(
+		context.Background(), terminalNotifyTimeout,
+	)
+	defer cancel()
+
+	a.stopWithDrain(ctx, a.registry.StopAndWait)
+}
+
+// stopWithDrain drains the registry goroutine via the supplied drain function,
+// then stops the children only if the drain succeeded. It is factored out of
+// Stop so the drain-timeout branch can be tested without a real durable actor.
+//
+// The happens-before stopChildren relies on holds ONLY when the drain returns
+// nil: that is the path where process() has provably exited, so no concurrent
+// ensureChild/dropChild can race stopChildren's unsynchronized iteration of
+// r.active. On a drain timeout process() may still be running a wedged turn
+// that mutates the map, so iterating it here would be a fatal concurrent map
+// iteration and write. Skip stopChildren in that case: the children are durable
+// actors registered with the actor system and are torn down by the system
+// shutdown / process exit that follows.
+func (a *OORRegistryActor) stopWithDrain(ctx context.Context,
+	drain func(context.Context) error) {
+
+	if err := drain(ctx); err != nil {
+		a.behavior.log.WarnS(ctx, "Registry drain timed out; leaving "+
+			"children to actor-system shutdown to avoid racing a "+
+			"still-running turn", err)
+
+		return
+	}
+
 	a.behavior.stopChildren()
 }
 
@@ -85,10 +146,17 @@ func NewOORRegistryActor(cfg OORRegistryConfig) (*OORRegistryActor, error) {
 		return nil, fmt.Errorf("delivery store must be provided")
 	}
 
+	// Normalize the receive limits once so the registry's own admission cap
+	// (and the codec) enforce the package defaults for a partially-zeroed
+	// config; otherwise a zero MaxConcurrentIncomingSessions would reject
+	// every incoming admission.
+	cfg.Limits = normalizeReceiveLimits(cfg.Limits)
+
 	behavior := &oorRegistryBehavior{
-		cfg:    cfg,
-		log:    cfg.Log.UnwrapOr(btclog.Disabled),
-		active: make(map[SessionID]*OORSessionActor),
+		cfg:      cfg,
+		log:      cfg.Log.UnwrapOr(btclog.Disabled),
+		active:   make(map[SessionID]*OORSessionActor),
+		incoming: make(map[SessionID]struct{}),
 	}
 	behavior.spawnFunc = behavior.spawn
 
@@ -155,6 +223,14 @@ type oorRegistryBehavior struct {
 	log    btclog.Logger
 	active map[SessionID]*OORSessionActor
 
+	// incoming tracks the session ids of resident incoming receive children
+	// so admission can bound their count. It is a subset of active,
+	// maintained alongside it on the registry goroutine: ensureChild adds
+	// an incoming session, dropChild removes any session unconditionally (a
+	// non-incoming delete is a no-op). The cap defends against an operator
+	// pinning unbounded children by streaming unanswered incoming hints.
+	incoming map[SessionID]struct{}
+
 	// selfRef is the registry's own tell-only reference, handed to each
 	// child so it can report a terminal commit for reaping.
 	selfRef actor.TellOnlyRef[OORDurableMsg]
@@ -162,6 +238,41 @@ type oorRegistryBehavior struct {
 	// spawnFunc creates one per-session child actor. Overridable in tests.
 	spawnFunc func(SessionID, clientdb.OORSessionDirection) (
 		*OORSessionActor, error)
+
+	// pendingHandoff carries an outgoing admission's child future from
+	// dispatch to Receive, so the caller's promise is detached and the
+	// continuation wired only AFTER the consuming Commit succeeds. Wiring
+	// it during dispatch (before the empty Commit) would leave an orphaned
+	// continuation racing the framework's own promise completion when that
+	// Commit fails (e.g. lease lost). It is set on the registry goroutine
+	// in handleStartTransfer and consumed in Receive in the same turn.
+	pendingHandoff *admissionHandoff
+
+	// detachedWaitTimeout bounds the detached-continuation wait on a
+	// child's response. Zero means detachedWaitTimeout (the package
+	// default); tests shrink it to assert the goroutine exits without
+	// leaking when a child future never resolves under an uncancellable
+	// caller context.
+	detachedWaitTimeout time.Duration
+}
+
+// detachWaitTimeout returns the configured detached-continuation wait bound,
+// falling back to the package default when unset.
+func (r *oorRegistryBehavior) detachWaitTimeout() time.Duration {
+	if r.detachedWaitTimeout > 0 {
+		return r.detachedWaitTimeout
+	}
+
+	return detachedWaitTimeout
+}
+
+// admissionHandoff records an outgoing admission whose caller promise must be
+// detached onto the child's future after the registry's consuming Commit
+// succeeds.
+type admissionHandoff struct {
+	sessionID SessionID
+	child     *OORSessionActor
+	future    actor.Future[ActorResp]
 }
 
 // logger returns the behavior logger bound to ctx.
@@ -225,6 +336,10 @@ func (r *oorRegistryBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 		return r.handleListSessions(ctx, m)
 	}
 
+	// Clear any handoff staged by a prior turn so a dispatch that stages a
+	// new one is the only source consumed below.
+	r.pendingHandoff = nil
+
 	res := r.dispatch(ctx, msg)
 	if res.IsErr() {
 		return res
@@ -239,7 +354,32 @@ func (r *oorRegistryBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 		return nil
 	})
 	if err != nil {
+		// The consuming Commit failed (e.g. lease lost), so the routing
+		// message redelivers. Do NOT wire the caller-promise handoff:
+		// the framework completes the caller with this error, and a
+		// continuation wired here would race that completion and
+		// outlive a turn whose forward will be replayed. The
+		// redelivered turn (or boot resume) re-runs admission cleanly.
+		r.pendingHandoff = nil
+
 		return fn.Err[ActorResp](err)
+	}
+
+	// The routing turn committed: only now is it safe to detach the
+	// caller's promise onto the child's admission future. Detaching before
+	// this point would orphan the continuation if the Commit above failed.
+	// With a detachable caller the child's result settles the promise
+	// asynchronously and the routing turn returns its OK; without one (a
+	// redelivered turn or a test) the admission is awaited inline and that
+	// result becomes the turn's result.
+	if r.pendingHandoff != nil {
+		handoff := r.pendingHandoff
+		r.pendingHandoff = nil
+
+		inlineRes := r.completeAdmissionHandoff(ctx, handoff)
+		if inlineRes.IsSome() {
+			return inlineRes.UnwrapOr(res)
+		}
 	}
 
 	return res
@@ -341,16 +481,50 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 	}
 	sessionID := session.ID
 
-	if _, ok := r.active[sessionID]; ok {
-		r.logger(ctx).DebugS(ctx, "Outgoing OOR session already "+
-			"resident; returning existing",
-			slog.String("session_id", sessionID.String()),
+	// A resident child only answers Existing when a durable row backs it. A
+	// failed admission on the production (detachable) path is reaped
+	// asynchronously via a SessionTerminalNotification, so during the
+	// window before that notification is processed the freshly spawned
+	// child is still in r.active even though its admission committed no
+	// row. Returning Existing for that phantom would wedge the transfer: a
+	// follow-up DriveEvent restores nothing (GetSession is not-found) and
+	// errors as an unknown session. Confirm the durable row before
+	// deduping; on a missing row drop the phantom synchronously here on the
+	// registry goroutine and fall through to a fresh admission.
+	if child, ok := r.active[sessionID]; ok {
+		_, err := r.cfg.RegistryStore.GetSession(
+			ctx, chainHashOf(sessionID),
 		)
+		switch {
+		case err == nil:
+			r.
+				logger(ctx).
+				DebugS(
+					ctx,
+					"Outgoing OOR session already "+
+						"resident; returning existing",
+					slog.String(
+						"session_id",
+						sessionID.String(),
+					),
+				)
 
-		return fn.Ok[ActorResp](&StartTransferResponse{
-			SessionID: sessionID,
-			Existing:  true,
-		})
+			return fn.Ok[ActorResp](&StartTransferResponse{
+				SessionID: sessionID,
+				Existing:  true,
+			})
+
+		case errors.Is(err, clientdb.ErrOORSessionNotFound):
+			r.logger(ctx).DebugS(ctx, "Dropping row-less phantom "+
+				"outgoing child before re-admitting",
+				slog.String("session_id", sessionID.String()),
+			)
+
+			r.dropChild(sessionID, child)
+
+		case err != nil:
+			return fn.Err[ActorResp](err)
+		}
 	}
 
 	child, err := r.ensureChild(
@@ -366,13 +540,44 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 		slog.Int("num_recipients", len(req.Recipients)),
 	)
 
-	// Hand the admission to the child without parking the registry
-	// goroutine on the child's signing and commit: the Ask persists the
-	// request in the child's durable mailbox, the caller's detached
-	// promise is settled by the child's result, and the registry's turn
-	// ends as soon as the forward is durable. Admission errors still reach
-	// the caller inline through the continuation.
+	// Forward the admission to the child: the Ask persists the request in
+	// the child's durable mailbox so the forward survives a crash. The
+	// caller-promise handoff (detach + continuation wiring, or the inline
+	// await) is deferred to Receive AFTER the registry's consuming Commit
+	// succeeds -- wiring it here, before that Commit, would orphan a
+	// continuation racing the framework's own promise completion if the
+	// Commit fails (e.g. lease lost) and the routing message redelivers.
 	future := child.Ref().Ask(ctx, req)
+	r.pendingHandoff = &admissionHandoff{
+		sessionID: sessionID,
+		child:     child,
+		future:    future,
+	}
+
+	return fn.Ok[ActorResp](&StartTransferResponse{SessionID: sessionID})
+}
+
+// completeAdmissionHandoff settles the caller's promise for an outgoing
+// admission after the registry's consuming Commit has succeeded. With a
+// detachable caller it detaches the promise and wires the child's admission
+// future so the registry goroutine never parks on the child's signing turn,
+// returning fn.None (the routing turn keeps its own OK result); without one (a
+// redelivered turn or a test driving the behavior directly) it awaits inline,
+// dropping a phantom child on failure, and returns fn.Some(result) so the
+// caller observes the admission outcome. It must run on the registry goroutine
+// while the turn context is still live.
+//
+// wait and cleanup contexts are intentionally rooted in CallerCtx /
+// context.Background, not the turn ctx, which is cancelled when the turn
+// returns.
+//
+//nolint:contextcheck // the detached continuation outlives the turn ctx; its
+func (r *oorRegistryBehavior) completeAdmissionHandoff(ctx context.Context,
+	handoff *admissionHandoff) fn.Option[fn.Result[ActorResp]] {
+
+	sessionID := handoff.sessionID
+	child := handoff.child
+	future := handoff.future
 
 	detachedAsk, ok := actor.DetachAskPromise[ActorResp](ctx)
 	if !ok {
@@ -386,17 +591,15 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 		res := future.Await(ctx)
 		if res.IsErr() {
 			// A failed admission turn commits no durable row, so
-			// keeping the child registered would turn the
-			// in-memory dedup into a phantom: a retry of the same
-			// transfer would be told Existing for a session with
-			// no durable backing. Drop the freshly spawned child
-			// so the retry admits cleanly. The active-map dedup
-			// above guarantees this child was spawned by this
-			// turn.
+			// keeping the child registered would turn the in-memory
+			// dedup into a phantom: a retry of the same transfer
+			// would be told Existing for a session with no durable
+			// backing. Drop the freshly spawned child so the retry
+			// admits cleanly.
 			r.dropChild(sessionID, child)
 		}
 
-		return res
+		return fn.Some(res)
 	}
 
 	selfRef := r.selfRef
@@ -406,17 +609,44 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 		slog.String("session_id", sessionID.String()),
 	)
 
-	//nolint:contextcheck // the continuation outlives the turn context;
-	// the caller's context bounds the wait and the cleanup Tell is
-	// daemon-owned
+	// Bound the continuation wait. On this durable path CallerCtx is the
+	// registry actor's lifetime context, not the originating caller's (the
+	// durable mailbox does not persist the caller's context with the Ask),
+	// so it does not cancel on a caller hang-up; a wedged child turn would
+	// otherwise leak this goroutine until the actor stops. This timeout is
+	// therefore the only non-child unblock that always fires, so the
+	// goroutine eventually exits even if the child never answers. The wait
+	// is intentionally rooted in CallerCtx, not the turn ctx, which is
+	// cancelled the instant this turn returns. The caller's own deadline is
+	// observed only by its future.Await, never by this continuation.
+	waitCtx, waitCancel := context.WithTimeout(
+		detachedAsk.CallerCtx, r.detachWaitTimeout(),
+	)
+
 	future.OnComplete(
-		detachedAsk.CallerCtx, func(res fn.Result[ActorResp]) {
+		waitCtx, func(res fn.Result[ActorResp]) {
+			defer waitCancel()
+
+			// OnComplete resolves the instant waitCtx is done, even
+			// while the child is still signing its admission turn:
+			// either the caller hung up or the detachedWaitTimeout
+			// fired. Neither is a genuine admission failure -- the
+			// child's turn keeps running under its own receive-loop
+			// context, and reaping it here would stop a
+			// legitimately admitting session out from under its
+			// in-flight signing turn. Only reap when the error is a
+			// real admission failure, i.e. the wait context is
+			// still live.
+			waitDone := waitCtx.Err() != nil
+
 			// A failed admission leaves a fresh child with no
 			// durable row. The continuation runs off the registry
 			// goroutine, so route the cleanup through the
 			// registry's own mailbox: the reaper treats a missing
-			// row as reap-eligible and drops the phantom there.
-			if res.IsErr() && selfRef != nil {
+			// row as reap-eligible and drops the phantom there. The
+			// reaper re-checks the durable row, so a child that has
+			// since committed a non-terminal row is left alone.
+			if res.IsErr() && !waitDone && selfRef != nil {
 				r.logger(detachedAsk.CallerCtx).WarnS(
 					detachedAsk.CallerCtx,
 					"Outgoing admission failed; reaping "+
@@ -436,7 +666,13 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 
 				// The cleanup Tell is best effort: a missed
 				// reap only leaves the phantom resident until
-				// shutdown.
+				// shutdown. It is enqueued before the caller's
+				// promise completes (below), so a retry the
+				// caller issues on the failure can only land
+				// after this reap in the registry's ordered
+				// mailbox: handleSessionTerminal drops this
+				// phantom before any re-admission under the
+				// deterministic session id exists.
 				_ = selfRef.Tell(
 					nctx, &SessionTerminalNotification{
 						SessionID: sessionID,
@@ -448,7 +684,7 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 		},
 	)
 
-	return fn.Ok[ActorResp](&StartTransferResponse{SessionID: sessionID})
+	return fn.None[fn.Result[ActorResp]]()
 }
 
 // handleDriveEvent routes a follow-up event to its session's child. This is the
@@ -462,6 +698,30 @@ func (r *oorRegistryBehavior) handleDriveEvent(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 	if child == nil {
+		// lookupOrRestore returns a nil child for both a truly-unknown
+		// session and a present-but-terminal one. A redelivered
+		// duplicate server push (the operator mailbox is at-least-once)
+		// for a session that has since reached a terminal snapshot and
+		// been reaped is normal traffic: absorb it as an idempotent
+		// no-op so it acks cleanly, rather than erroring into a
+		// Nack/retry/dead-letter loop. Only a genuinely-unknown session
+		// is an error.
+		terminal, terr := r.sessionIsTerminal(ctx, req.SessionID)
+		if terr != nil {
+			return fn.Err[ActorResp](terr)
+		}
+		if terminal {
+			r.logger(ctx).DebugS(ctx, "Dropping duplicate "+
+				"drive-event for terminal session",
+				slog.String(
+					"session_id", req.SessionID.String(),
+				),
+				btclog.Fmt("event_type", "%T", req.Event),
+			)
+
+			return fn.Ok[ActorResp](&DriveEventResponse{})
+		}
+
 		return fn.Err[ActorResp](
 			fmt.Errorf("unknown session: %s", req.SessionID),
 		)
@@ -495,6 +755,40 @@ func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 	}
 
 	_, existed := r.active[req.SessionID]
+
+	// Bound the number of resident incoming children one daemon admits at
+	// once. A new admission past the cap is rejected before any child is
+	// spawned or any control-plane row is written, so an operator streaming
+	// unanswered hints (each a distinct fabricated session id over an owned
+	// receive script) cannot pin unbounded goroutines, mailboxes, and rows.
+	// A resident session forwarding a follow-up hint is exempt: it already
+	// counts against the cap. The hint is retried by transport, so an
+	// over-cap rejection is recoverable once earlier sessions terminate and
+	// are reaped.
+	if !existed {
+		maxIncoming := r.cfg.Limits.MaxConcurrentIncomingSessions
+		if _, counted := r.incoming[req.SessionID]; !counted &&
+			uint32(len(r.incoming)) >= maxIncoming {
+
+			r.logger(ctx).WarnS(ctx, "Rejecting incoming OOR "+
+				"admission at concurrency cap",
+				errIncomingAdmissionCapped,
+				slog.String(
+					"session_id", req.SessionID.String(),
+				),
+				slog.Uint64(
+					"active_incoming",
+					uint64(
+						len(r.incoming),
+					),
+				),
+				slog.Uint64("cap", uint64(maxIncoming)),
+			)
+
+			return fn.Err[ActorResp](errIncomingAdmissionCapped)
+		}
+	}
+
 	child, err := r.ensureChild(
 		req.SessionID, clientdb.OORSessionDirectionIncoming,
 	)
@@ -649,6 +943,11 @@ func (r *oorRegistryBehavior) handleSessionTerminal(ctx context.Context,
 		slog.String("session_id", msg.SessionID.String()),
 	)
 
+	// Terminal rows are retained on disk (all directions, completed and
+	// failed alike) so failed sessions stay visible to status RPCs and for
+	// diagnostics; only the in-memory child is reaped here. A bounded
+	// retention sweep, if ever needed, should age out all terminal rows
+	// uniformly rather than deleting one class at reap time.
 	return fn.Ok[ActorResp](&DriveEventResponse{})
 }
 
@@ -778,6 +1077,11 @@ func (r *oorRegistryBehavior) fillOutgoingSummary(ctx context.Context,
 // routeAsk forwards a request to a session's child. With a detachable caller
 // the child's result settles the promise directly so the registry goroutine
 // never parks on the child's turn; otherwise the response is awaited inline.
+//
+// wait context is intentionally rooted in CallerCtx, not the turn ctx, which is
+// cancelled when the turn returns.
+//
+//nolint:contextcheck // the detached continuation outlives the turn ctx; its
 func (r *oorRegistryBehavior) routeAsk(ctx context.Context, sessionID SessionID,
 	msg OORDurableMsg) fn.Result[ActorResp] {
 
@@ -798,15 +1102,47 @@ func (r *oorRegistryBehavior) routeAsk(ctx context.Context, sessionID SessionID,
 		return future.Await(ctx)
 	}
 
-	//nolint:contextcheck // the continuation outlives the turn context;
-	// the caller's context bounds the wait
+	// Bound the continuation wait so a wedged child turn cannot leak this
+	// goroutine: the caller may pass an uncancellable context (the read
+	// probe shares the StartTransfer call site's context.WithoutCancel
+	// derivation), so the detachedWaitTimeout cancellation is the only
+	// non-child unblock that always fires. The wait is intentionally rooted
+	// in CallerCtx, not the turn ctx, which is cancelled the instant this
+	// turn returns.
+	waitCtx, waitCancel := context.WithTimeout(
+		detachedAsk.CallerCtx, r.detachWaitTimeout(),
+	)
+
 	future.OnComplete(
-		detachedAsk.CallerCtx, func(res fn.Result[ActorResp]) {
+		waitCtx, func(res fn.Result[ActorResp]) {
+			defer waitCancel()
+
 			detachedAsk.Promise.Complete(res)
 		},
 	)
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
+}
+
+// sessionIsTerminal reports whether the durable row for a session exists and
+// has reached a terminal status. A missing row reports (false, nil): it is
+// genuinely unknown, not terminal. Used by handleDriveEvent to distinguish a
+// benign duplicate for a reaped terminal session from a truly-unknown one.
+func (r *oorRegistryBehavior) sessionIsTerminal(ctx context.Context,
+	sessionID SessionID) (bool, error) {
+
+	record, err := r.cfg.RegistryStore.GetSession(
+		ctx, chainHashOf(sessionID),
+	)
+	switch {
+	case errors.Is(err, clientdb.ErrOORSessionNotFound):
+		return false, nil
+
+	case err != nil:
+		return false, err
+	}
+
+	return record.Status.IsTerminal(), nil
 }
 
 // lookupOrRestore returns the active child for a session, restoring it from the
@@ -844,12 +1180,23 @@ func (r *oorRegistryBehavior) lookupOrRestore(ctx context.Context,
 }
 
 // ensureChild returns the active child for a session, spawning and registering
-// it when absent.
+// it when absent. For an incoming session it enforces the concurrency cap as a
+// last line of defense: every resident-making path (admission, lazy restore on
+// a routed message, boot restore) funnels through here, so the bound holds even
+// if a caller forgets the pre-spawn check in handleResolveIncoming.
 func (r *oorRegistryBehavior) ensureChild(sessionID SessionID,
 	direction clientdb.OORSessionDirection) (*OORSessionActor, error) {
 
 	if child, ok := r.active[sessionID]; ok {
 		return child, nil
+	}
+
+	if direction == clientdb.OORSessionDirectionIncoming {
+		maxIncoming := r.cfg.Limits.MaxConcurrentIncomingSessions
+		if _, counted := r.incoming[sessionID]; !counted &&
+			uint32(len(r.incoming)) >= maxIncoming {
+			return nil, errIncomingAdmissionCapped
+		}
 	}
 
 	child, err := r.spawnFunc(sessionID, direction)
@@ -874,6 +1221,9 @@ func (r *oorRegistryBehavior) ensureChild(sessionID SessionID,
 	}
 
 	r.active[sessionID] = child
+	if direction == clientdb.OORSessionDirectionIncoming {
+		r.incoming[sessionID] = struct{}{}
+	}
 
 	return child, nil
 }
@@ -892,6 +1242,7 @@ func (r *oorRegistryBehavior) dropChild(sessionID SessionID,
 
 	child.Stop()
 	delete(r.active, sessionID)
+	delete(r.incoming, sessionID)
 }
 
 // spawn creates one durable per-session actor from the shared child config.
@@ -932,17 +1283,30 @@ func (r *oorRegistryBehavior) childConfig(sessionID SessionID,
 // restoreNonTerminal spawns a child for every non-terminal control-plane row
 // and re-drives each restored session so it makes forward progress instead of
 // waiting for an operator response that may never arrive (retry timers are
-// in-memory and do not survive a restart).
+// in-memory and do not survive a restart). Incoming restores are bounded by the
+// concurrency cap so a corrupted backlog of more than the cap of non-terminal
+// incoming rows cannot wedge the subsystem on every boot: rows are restored
+// oldest-first (the oldest sessions are the closest to their resolve give-up),
+// and over-cap incoming rows are skipped rather than aborting the whole
+// restore. Outgoing sessions carry no concurrency cap and are always restored.
 func (r *oorRegistryBehavior) restoreNonTerminal(ctx context.Context) error {
 	rows, err := r.cfg.RegistryStore.ListNonTerminal(ctx)
 	if err != nil {
 		return err
 	}
 
+	// Restore oldest-first so a backlog larger than the cap admits the
+	// oldest incoming sessions (nearest their give-up) and skips the
+	// newest, which transport will redeliver once slots free up.
+	sort.SliceStable(rows, func(i, j int) bool {
+		return rows[i].CreatedAt.Before(rows[j].CreatedAt)
+	})
+
 	r.logger(ctx).InfoS(ctx, "Restoring non-terminal OOR sessions on boot",
 		slog.Int("num_sessions", len(rows)),
 	)
 
+	var skippedIncoming int
 	for i := range rows {
 		sessionID := SessionID(rows[i].SessionID)
 		if _, ok := r.active[sessionID]; ok {
@@ -950,6 +1314,17 @@ func (r *oorRegistryBehavior) restoreNonTerminal(ctx context.Context) error {
 		}
 
 		child, err := r.ensureChild(sessionID, rows[i].Direction)
+
+		// An incoming row over the concurrency cap is skipped, not
+		// fatal: the durable row survives, and a slot freed by an
+		// earlier session terminating lets a redelivered hint restore
+		// it later. This keeps a corrupted over-cap backlog from
+		// aborting every boot.
+		if errors.Is(err, errIncomingAdmissionCapped) {
+			skippedIncoming++
+
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("restore session %s: %w", sessionID,
 				err)
@@ -969,6 +1344,19 @@ func (r *oorRegistryBehavior) restoreNonTerminal(ctx context.Context) error {
 		r.logger(ctx).DebugS(ctx, "Restored OOR session",
 			slog.String("session_id", sessionID.String()),
 			slog.Int("direction", int(rows[i].Direction)),
+		)
+	}
+
+	if skippedIncoming > 0 {
+		r.logger(ctx).WarnS(ctx, "Skipped over-cap incoming OOR "+
+			"sessions during boot restore",
+			errIncomingAdmissionCapped,
+			slog.Int("skipped_incoming", skippedIncoming),
+			slog.Uint64(
+				"cap", uint64(
+					r.cfg.Limits.MaxConcurrentIncomingSessions,
+				),
+			),
 		)
 	}
 

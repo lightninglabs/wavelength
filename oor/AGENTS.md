@@ -132,7 +132,14 @@ per-session durable actor's turn.
   persisted, waiting for phase-1 indexer outside the actor tx) →
   `ReceiveNotified` (package received, awaiting materialization) →
   `ReceiveAwaitingAck` (materialized, awaiting transport ack) →
-  `ReceiveCompleted`.
+  `ReceiveCompleted`. `ReceiveResolving` arms a give-up timer
+  alongside its phase-1 query (`ResolveAttempts`, persisted): the
+  phase-1 query has no failure response on operator silence, so each
+  timer expiry (a `ResumeSessionRequest` driving a `RetryDueEvent`)
+  re-queries with backoff and, at `maxResolveRetries`, fails the
+  session terminally so it becomes reap-eligible and frees its
+  `r.incoming` concurrency slot. Without this an unanswered resolve
+  would pin a child forever.
 
 ### Outbox Handler Chain & Callbacks
 
@@ -264,13 +271,19 @@ per-session durable actor's turn.
 - Point-of-no-return: server co-signing the checkpoint
   transaction(s). After that, client must resume with byte-identical
   co-signed PSBTs (deterministic construction).
-- Transport events (submit / finalize / ack) are durably enqueued
-  directly into `serverconn` during the actor transition. The
-  serverconn durable mailbox joins the OOR actor DB tx, while the
-  network send runs later outside that tx and is retried by serverconn.
-- Outgoing finalize ordering: local input-spend completion is driven
-  **before** the package write so the VTXO manager joins the durable
-  OOR actor tx instead of racing a second SQLite writer.
+- Transport outbox events (submit / finalize / ack) are durably
+  enqueued in the actor transition; transport side effects run
+  outside the actor DB tx and are retried via the actor delivery
+  store.
+- Outgoing finalize ordering: local input-spend completion runs inline
+  in dispatch with **no OOR writer tx held**, before the FSM advances to
+  `Completed` and before the package write is staged. The VTXO manager's
+  status write commits in the VTXO actor's own transaction (a second
+  writer), so it does **not** join the OOR turn tx; awaiting it under a
+  held OOR writer lock would deadlock on the single SQLite/Postgres
+  writer. Completion is non-atomic with the OOR snapshot but re-driven
+  idempotently on boot (resume re-emits `MarkInputsSpentRequest`;
+  `isPersistedSpent` absorbs the replay).
 - Incoming receive never performs synchronous unary RPCs inside the
   durable actor DB tx. Both phase-1 hint resolution and phase-2
   authoritative metadata lookup are durable `serverconn` query
@@ -310,6 +323,75 @@ per-session durable actor's turn.
   `oor_session_registry` enforces at most one live-or-completed row
   per key), so a keyed retry after a failure admits a fresh session.
   Empty key preserves the historical deterministic (Ark txid) session.
+- Phantom-resident dedup guard: `handleStartTransfer` answers
+  `Existing: true` for a resident outgoing child ONLY after confirming a
+  durable row backs it via `GetSession`. On the production (detachable)
+  path a failed admission is reaped asynchronously by a
+  `SessionTerminalNotification`, so the row-less child lingers in
+  `r.active` until that notification is processed. Deduping against it
+  would wedge a same-input retry (sessionID = Ark txid): the follow-up
+  `DriveEvent` restores nothing and errors as an unknown session. On a
+  not-found row the registry drops the phantom synchronously on its own
+  goroutine and falls through to a fresh admission.
+- Bounded detached-continuation wait: the promise handoff parks an
+  `OnComplete` goroutine on the caller's context, which unblocks only on
+  the child future resolving or the caller context being done. The
+  production StartTransfer call site derives its context from
+  `context.WithoutCancel`, so that caller context never cancels; a wedged
+  or never-resolving child turn would leak the continuation for the
+  daemon's lifetime. `completeAdmissionHandoff` and `routeAsk` therefore
+  wrap `detachedAsk.CallerCtx` in `context.WithTimeout(detachedWaitTimeout)`
+  (5m; a behavior field shrinks it in tests) before handing it to
+  `OnComplete`, so the goroutine always exits. The phantom-reap guard in
+  `completeAdmissionHandoff` keys off the wrapped wait context's error,
+  not the raw CallerCtx, so a deadline-exceeded wait (a wedged child) is
+  treated like a benign caller hang-up and does NOT reap a session that
+  may still be signing under its own receive-loop context. The
+  `DetachedAsk.CallerCtx` doc states callers MUST supply a
+  cancellable/deadlined context (or the behavior must bound it) for the
+  wait to terminate.
+- Incoming concurrency cap (`MaxConcurrentIncomingSessions`) is
+  enforced in `ensureChild`, the choke point every resident-making
+  path funnels through (admission, lazy restore on a routed message,
+  boot restore), so the bound holds even on paths that skip
+  `handleResolveIncoming`'s pre-spawn check. `restoreNonTerminal`
+  restores oldest-first and treats an over-cap incoming row as a
+  non-fatal skip, so a corrupted backlog of more than the cap of
+  non-terminal incoming rows cannot wedge the subsystem on every boot;
+  outgoing sessions carry no cap.
+- Terminal row retention: terminal rows (completed and failed, all
+  directions) are retained in `oor_session_registry` so failed sessions
+  stay visible to status RPCs and for diagnostics; `handleSessionTerminal`
+  only reaps the in-memory child, it does not delete the row.
+  `MaxConcurrentIncomingSessions` bounds the resident children an operator
+  can pin; a future bounded-retention sweep, if needed, should age out all
+  terminal rows uniformly rather than deleting one class at reap time.
+- Idempotency-key dedup race: on Postgres the racing children do not
+  serialize on `oor_session_registry`, so the loser's snapshot upsert
+  collides on the partial UNIQUE index. `commitAck` returns that error so
+  the turn rolls back and redelivers; the redelivered `resolveKeyDedup` --
+  running in a fresh tx where the winner's row is now committed -- sees the
+  winner and consumes cleanly as `Existing` (no special error
+  classification: any commit error redelivers, and the partial UNIQUE
+  index is the safety net against a duplicate row). The dedup loser wrote
+  no durable row, so the clean-dedup turn fires a
+  `SessionTerminalNotification`: the registry's reaper treats a no-row
+  session as reap-eligible and drops the orphaned child (goroutine,
+  mailbox, receptionist key) instead of leaking it until shutdown.
+- Duplicate drive-event after reap: a late at-least-once duplicate
+  server push for a session that has reached a terminal snapshot and
+  been reaped misses the ingress fast path (key unregistered) and
+  routes through the registry. `handleDriveEvent` distinguishes a
+  present-but-terminal row (`sessionIsTerminal`) from a truly-unknown
+  one: the terminal case acks cleanly as an idempotent no-op, only a
+  genuinely-unknown session errors. Without this a normal duplicate
+  would Nack, retry to the cap, and dead-letter.
+- Registry `Stop` runs `stopChildren` (which iterates the
+  unsynchronized `r.active` map) ONLY when the bounded `StopAndWait`
+  drain returns nil -- the path where `process()` has provably exited.
+  On a drain timeout the registry turn may still be mutating the map,
+  so `stopChildren` is skipped (children are torn down by actor-system
+  shutdown) to avoid a fatal concurrent map iteration and write.
 
 ## Deep Docs
 

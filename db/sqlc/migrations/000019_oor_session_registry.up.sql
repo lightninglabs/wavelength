@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS oor_session_registry (
     PRIMARY KEY (session_id)
 );
 
+-- The (status, created_at) index serves the boot-time non-terminal restore
+-- scan and any future bounded-retention sweep of terminal rows. Terminal rows
+-- (completed and failed, all directions) are retained for status RPCs and
+-- diagnostics; they are not pruned at reap time.
 CREATE INDEX IF NOT EXISTS idx_oor_session_registry_status_created
     ON oor_session_registry(status, created_at ASC);
 

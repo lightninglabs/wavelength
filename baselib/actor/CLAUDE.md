@@ -43,8 +43,18 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   framework still completes a *failed* turn's promise with the error (the
   continuation may never have been wired); completion is first-wins.
   Continuations must use `DetachedAsk.CallerCtx`, not the turn context,
-  which is cancelled when the turn returns. Returns false for Tells,
-  DurableAsks, and redelivered asks whose caller is gone.
+  which is cancelled when the turn returns. `CallerCtx` is NOT a reliable
+  carrier of the caller's deadline: on the durable (Read/Stage/Commit)
+  path — the path that actually adopts detaching — the caller's context is
+  never persisted with the durable Ask, so `CallerCtx` is the actor's own
+  lifetime context, not the caller's, and a real caller deadline never
+  flows into the continuation (it is observed only by the caller's own
+  `future.Await`). On the non-durable channel-mailbox path `CallerCtx` is
+  the originating send context. Because the durable path's `CallerCtx`
+  does not cancel on a caller hang-up, a detaching behavior MUST wrap
+  `CallerCtx` in `context.WithTimeout` itself before handing it to
+  `OnComplete` — that wrap is the sole bound on the continuation. Returns
+  false for Tells, DurableAsks, and redelivered asks whose caller is gone.
 - `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors).
 - `Mailbox[M, R]` — Interface for actor message queues: `Send(ctx, env) error` (blocking; returns `ErrMailboxClosed`, `ErrActorTerminated`, or a context error on failure), `TrySend(env) error` (non-blocking), `Receive(ctx) iter.Seq[envelope]`, `Close()`, `IsClosed() bool`, `Drain() iter.Seq[envelope]`.
 - `isExpectedShutdownErr(err) bool` — Internal helper that classifies errors as expected during teardown: context cancellation/deadline, closed DB handle ("sql: database is closed", "sql: connection is already closed", "use of closed network connection"). Used by the lease loop to demote shutdown-path failures to debug instead of warn-flooding test artifacts at itest tail.

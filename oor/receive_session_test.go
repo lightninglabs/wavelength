@@ -106,7 +106,11 @@ func TestReceiveSessionNotifiesThenQueriesMetadata(t *testing.T) {
 
 	_, outbox, err := DriveIncomingTransfer(ctx, sessionID, arkPSBT)
 	require.NoError(t, err)
-	require.Len(t, outbox, 2)
+
+	// The transition emits the UI notification, the metadata query, and a
+	// give-up timer armed alongside the query (no failure response on
+	// operator silence).
+	require.Len(t, outbox, 3)
 
 	_, ok := outbox[0].(*IncomingTransferNotification)
 	require.True(t, ok)
@@ -114,6 +118,9 @@ func TestReceiveSessionNotifiesThenQueriesMetadata(t *testing.T) {
 	queryMsg, ok := outbox[1].(*QueryIncomingMetadataRequest)
 	require.True(t, ok)
 	require.NotEmpty(t, queryMsg.Recipients)
+
+	_, ok = outbox[2].(*ScheduleRetryRequest)
+	require.True(t, ok)
 	parentCommitment := inputs[0].SpentVTXO.Outpoint.Hash
 
 	desc, err := BuildIncomingVTXODescriptor(queryMsg.ArkPSBT,
@@ -153,7 +160,10 @@ func TestReceiveSessionAcksAfterHandled(t *testing.T) {
 
 	sess, outbox, err := DriveIncomingTransfer(ctx, sessionID, arkPSBT)
 	require.NoError(t, err)
-	require.Len(t, outbox, 2)
+
+	// Notification, metadata query, and the give-up timer armed alongside
+	// the query.
+	require.Len(t, outbox, 3)
 
 	fut := sess.FSM.AskEvent(ctx, &IncomingMetadataResolvedEvent{
 		Matches: []IncomingMetadataMatch{{
@@ -233,7 +243,10 @@ func TestReceiveSessionRetriesMetadataAfterRetryableMaterializationFailure(
 	result = fut.Await(ctx)
 	require.False(t, result.IsErr())
 
+	// The give-up timer's RetryDueEvent re-queries metadata and re-arms the
+	// timer keyed off the advanced attempt count.
 	outbox = result.UnwrapOr(nil)
-	require.Len(t, outbox, 1)
+	require.Len(t, outbox, 2)
 	require.IsType(t, &QueryIncomingMetadataRequest{}, outbox[0])
+	require.IsType(t, &ScheduleRetryRequest{}, outbox[1])
 }

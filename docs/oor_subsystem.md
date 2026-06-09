@@ -76,6 +76,21 @@ this behavior writes its own row instead. One row per session, written in the
 same transaction that consumes the message, with no second source of truth that
 could drift from it.
 
+### Upgrade precondition: no in-flight legacy sessions
+
+The deleted global OOR actor persisted **all** session state in the
+`fsm_checkpoints` blob under the `oor-client` actor id (state type
+`oor.sessions`). The per-session registry reads session state only from
+`oor_session_registry` and never reads that blob, so an upgrade performed while
+a legacy session is still in flight would silently abandon it -- including a
+session past the point of no return whose operator-co-signed checkpoint PSBTs
+live only in the unread blob. To make this impossible to miss, the daemon fails
+boot loudly when it finds a non-empty `oor.sessions` checkpoint
+(`assertNoLegacyOORCheckpoint` in `darepod/server.go`). **Operators must drain
+or complete all OOR sessions on the prior release before upgrading.** A clean
+install or an already-cut-over daemon has no such checkpoint, so the guard is a
+no-op there.
+
 ## The turn: read, do the work, commit
 
 The session actor runs on the durable actor's Read/Commit execution path. A turn

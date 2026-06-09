@@ -2644,19 +2644,9 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 					"se, got %T", p)
 			}
 
-			incomingEvent, err :=
-				oor.IncomingTransferEventFromResponseWithLimits( //nolint:ll
-					sessionID, recipientEventID, resp,
-					limits,
-				)
-			if err != nil {
-				return nil, err
-			}
-
-			return &oor.DriveEventRequest{
-				SessionID: sessionID,
-				Event:     incomingEvent,
-			}, nil
+			return adaptResolveIncomingResult(
+				sessionID, recipientEventID, resp, limits,
+			), nil
 		},
 	})
 
@@ -2690,6 +2680,41 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 	// oorpb proto defines an ack RPC. SendIncomingAckRequest is
 	// classified as a transport event but currently has no
 	// server-push response route.
+}
+
+// adaptResolveIncomingResult converts a phase-1 resolve response body into the
+// durable event that drives the incoming session. A body that parses but is
+// semantically invalid (empty events, recipient/session mismatch, unparseable
+// PSBT, over-cap checkpoints/ancestors) is an operator-attributable failure for
+// a known session, not an un-routable envelope: it is mapped to a FailEvent
+// that drives the session to terminal Failed (making the child reap-eligible)
+// instead of bubbling an Adapt error. An Adapt error here would replay the
+// offending envelope indefinitely, wedging all subsequent OOR mailbox ingress
+// and leaving the session stuck in ReceiveResolving. This mirrors the submit
+// path's OutboxErrorEvent treatment, which exists for the same cursor-stall
+// reason.
+func adaptResolveIncomingResult(sessionID oor.SessionID,
+	recipientEventID uint64,
+	resp *arkrpc.ListOORRecipientEventsByScriptResponse,
+	limits oor.ReceiveLimits) *oor.DriveEventRequest {
+
+	incomingEvent, err := oor.IncomingTransferEventFromResponseWithLimits(
+		sessionID, recipientEventID, resp, limits,
+	)
+	if err != nil {
+		return &oor.DriveEventRequest{
+			SessionID: sessionID,
+			Event: &oor.FailEvent{
+				Reason: fmt.Sprintf("resolve incoming "+
+					"transfer: %v", err),
+			},
+		}
+	}
+
+	return &oor.DriveEventRequest{
+		SessionID: sessionID,
+		Event:     incomingEvent,
+	}
 }
 
 // incomingMetadataMatchesFromResponse keeps registerOOREventRoutes below the
@@ -3733,10 +3758,13 @@ func (s *Server) initOORActor(ctx context.Context,
 	// Wire spend completion through the VTXO manager so each consumed
 	// VTXO transitions to SpentState via its own FSM, rather than
 	// writing VTXOStatusSpent directly to the store. This synchronous
-	// Ask intentionally keeps the OOR transaction in scope: the manager
-	// and VTXO actor complete before the durable OOR turn can commit or
-	// roll back, avoiding a second SQLite writer inside the same local
-	// completion step.
+	// Ask drives a write in the VTXO actor's own transaction, a SECOND
+	// writer that does not join the OOR turn tx. The OOR session actor
+	// therefore runs it inline in dispatch with no OOR writer held (see
+	// oor.completeSpend); awaiting it inside a held OOR writer tx would
+	// deadlock under the single SQLite/Postgres writer lock. The
+	// completion is non-atomic with the OOR snapshot but re-driven
+	// idempotently on boot.
 	mgrKey := actormsg.VTXOManagerServiceKey()
 	completeSpend := func(ctx context.Context,
 		outpoints []wire.OutPoint) error {

@@ -668,6 +668,14 @@ type ResumeSessionRequest struct {
 
 	// SessionID identifies the session to resume.
 	SessionID SessionID
+
+	// FromRetryTimer is true when this resume was driven by a fired
+	// give-up/retry timer, and false when it was driven by a boot restore.
+	// Only a timer expiry advances the give-up attempt counter; a boot
+	// resume re-arms the timer from the persisted count so repeated
+	// restarts cannot amplify the attempt count past the time-based
+	// schedule.
+	FromRetryTimer bool
 }
 
 // MessageType returns the type of this message.
@@ -685,7 +693,7 @@ func (m *ResumeSessionRequest) TLVType() tlv.Type {
 
 // Encode serializes the message to the provided writer.
 func (m *ResumeSessionRequest) Encode(w io.Writer) error {
-	raw, err := encodeSessionPayload(m.SessionID)
+	raw, err := encodeResumePayload(m.SessionID, m.FromRetryTimer)
 	if err != nil {
 		return err
 	}
@@ -702,12 +710,13 @@ func (m *ResumeSessionRequest) Decode(r io.Reader) error {
 		return err
 	}
 
-	sessionID, err := decodeSessionPayload(raw)
+	sessionID, fromRetryTimer, err := decodeResumePayload(raw)
 	if err != nil {
 		return err
 	}
 
 	m.SessionID = sessionID
+	m.FromRetryTimer = fromRetryTimer
 
 	return nil
 }
