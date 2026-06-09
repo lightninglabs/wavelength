@@ -230,3 +230,58 @@ func TestCompleteSpendTransitionsToSpent(t *testing.T) {
 	_, ok = actorState(t, mgr, vtxo1.Outpoint).(*SpentState)
 	require.True(t, ok, "expected SpentState after complete")
 }
+
+// TestSpendReservationFailedEpochGuard verifies that a stale reservation
+// failure does not drop a newer reservation's in-memory mark. An outpoint can
+// be reserved, released, and re-reserved by a different session before the
+// first session's detached failure watcher reports back; without the epoch
+// guard that stale failure would un-gate the input the new session owns (ABA).
+func TestSpendReservationFailedEpochGuard(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 50000, 0)
+	op := vtxo1.Outpoint
+
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			Store: &MockVTXOStore{},
+		},
+		actors:   make(map[wire.OutPoint]VTXOActorRef),
+		reserved: make(map[wire.OutPoint]uint64),
+	}
+
+	// Session A reserves the outpoint and then releases it.
+	epochA := mgr.markReserved(op)
+	require.True(t, mgr.isReserved(op))
+	mgr.dropReserved(op)
+	require.False(t, mgr.isReserved(op))
+
+	// Session B re-reserves the same outpoint; it gets a strictly newer
+	// epoch.
+	epochB := mgr.markReserved(op)
+	require.Greater(t, epochB, epochA)
+	require.True(t, mgr.isReserved(op))
+
+	// Session A's detached failure finally lands, carrying the stale epoch.
+	// It must NOT drop B's mark.
+	res := mgr.Receive(context.Background(), &spendReservationFailedMsg{
+		Outpoint: op,
+		Epoch:    epochA,
+	})
+	require.True(t, res.IsOk())
+	require.True(
+		t, mgr.isReserved(op),
+		"stale failure must not un-gate the newer reservation",
+	)
+
+	// Session B's own failure, carrying the current epoch, drops the mark.
+	res = mgr.Receive(context.Background(), &spendReservationFailedMsg{
+		Outpoint: op,
+		Epoch:    epochB,
+	})
+	require.True(t, res.IsOk())
+	require.False(
+		t, mgr.isReserved(op),
+		"matching-epoch failure must drop the reservation",
+	)
+}
