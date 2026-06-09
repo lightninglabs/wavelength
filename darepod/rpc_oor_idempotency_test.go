@@ -302,8 +302,8 @@ func TestSendOORSubmitsMultipleRecipients(t *testing.T) {
 	)
 	totalAmount := btcutil.Amount(amountA + amountB)
 
-	vtxoStore, _ := newSendOORTestStores(t)
-	desc := newSendOORTestVTXO(
+	vtxoStore, _, _ := newSendOORTestStores(t)
+	desc, _ := newSendOORTestVTXO(
 		t, operatorKey.PubKey(), 0x51, totalAmount,
 	)
 	require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
