@@ -45,16 +45,17 @@
 // separate confirmed ledger row later, but the two rows do NOT share an
 // id in v1 because there is no daemon-side notification hook that links
 // (a) an exit's queued outpoints to its eventual sweep txid, or (b) a
-// deposit's boarding address to its eventual boarding txid. The earlier
-// in-process intent index was removed once it became clear it was an
-// identity-mapping ceremony for the SEND-invoice and RECV paths (the
-// swap subsystem already keys those by payment_hash). A v2 canonical-id
-// projection lands when the daemon exposes the missing hooks; the
-// right home for that link is the daemon-side persistence (leave job,
-// deposit address record), not a process-local map. Callers that need
-// to correlate EXIT/DEPOSIT pending → confirmed in v1 should track the
-// WalletEntry.Counterparty (truncated bech32 address or txid) and the
-// persisted ledger txid via separate queries.
+// deposit's boarding address to its eventual boarding txid. Cooperative
+// leave rows can still complete while the original runtime-local row is
+// alive: once the source VTXO is terminally forfeited, the pending EXIT
+// row is shown as COMPLETE. After restart, however, the daemon cannot
+// recreate the original counterparty/note from durable state alone. A v2
+// canonical-id projection lands when the daemon exposes the missing
+// hooks; the right home for that link is the daemon-side persistence
+// (leave job, deposit address record), not a process-local map. Callers
+// that need to correlate EXIT/DEPOSIT pending → confirmed across restart
+// in v1 should track the WalletEntry.Counterparty (truncated bech32
+// address or txid) and the persisted ledger txid via separate queries.
 //
 // Onchain SEND sweep semantics: the cooperative-leave path sweeps WHOLE
 // selected VTXOs to the destination, so the recipient may receive more

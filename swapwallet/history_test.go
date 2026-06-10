@@ -1200,6 +1200,202 @@ func TestHistoryIncludesWalletLocalPendingExit(t *testing.T) {
 	require.Equal(t, "user note", entries[0].GetNote())
 }
 
+// TestHistoryCompletesWalletLocalExitWhenVTXOForfeited confirms a
+// cooperative-leave activity row stops showing as pending once the source VTXO
+// has been terminally forfeited in the confirmed leave round. This is the
+// issue #568 balance/activity edge: the VTXO state is authoritative for the
+// in-process pending row even though v1 does not yet persist a durable leave
+// job that links the original entry id to the commitment transaction.
+func TestHistoryCompletesWalletLocalExitWhenVTXOForfeited(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+		Found: false,
+	}
+	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.
+		ListVTXOsResponse{
+
+		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
+		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*daemonrpc.VTXO{
+				{
+					Outpoint: "leave-outpoint:1",
+					Status: daemonrpc.
+						VTXOStatus_VTXO_STATUS_FORFEITED,
+				},
+			},
+		},
+	}
+
+	pending := leaveEntryStub(
+		[]string{
+			"leave-outpoint:1",
+		}, "bcrt1qdest",
+		50_000, "user note",
+	)
+	h.runtime.trackPendingEntryWithoutTimeout(pending)
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "leave-outpoint:1", entries[0].GetId())
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, entries[0].GetKind(),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entries[0].GetStatus(),
+	)
+	require.Equal(
+		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+		entries[0].GetProgress().GetPhase(),
+	)
+	require.Equal(t, "confirmed", entries[0].GetProgress().GetPhaseLabel())
+	require.Equal(
+		t, "leave-outpoint:1",
+		entries[0].GetProgress().GetVtxoOutpoint(),
+	)
+	require.Equal(t, int64(-50_000), entries[0].GetAmountSat())
+	require.Equal(t, "user note", entries[0].GetNote())
+
+	pendingResp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
+		PendingOnly: true,
+	})
+	require.NoError(t, err)
+	require.Empty(t, pendingResp.GetActivity().GetEntries())
+}
+
+// TestHistoryKeepsWalletLocalExitPendingForUnmatchedForfeitedVTXO confirms the
+// cooperative-leave fallback only completes the wallet-local row when the
+// forfeited VTXO is the same source outpoint tracked by the row. This protects
+// the v1 heuristic from treating any terminal VTXO as proof that this specific
+// leave completed.
+func TestHistoryKeepsWalletLocalExitPendingForUnmatchedForfeitedVTXO(
+	t *testing.T) {
+
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+		Found: false,
+	}
+	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.
+		ListVTXOsResponse{
+
+		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
+		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*daemonrpc.VTXO{
+				{
+					Outpoint: "other-leave-outpoint:0",
+					Status: daemonrpc.
+						VTXOStatus_VTXO_STATUS_FORFEITED,
+				},
+			},
+		},
+	}
+
+	pending := leaveEntryStub(
+		[]string{
+			"leave-outpoint:1",
+		}, "bcrt1qdest",
+		50_000, "user note",
+	)
+	h.runtime.trackPendingEntryWithoutTimeout(pending)
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "leave-outpoint:1", entries[0].GetId())
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		entries[0].GetStatus(),
+	)
+	require.Equal(
+		t,
+		walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
+		entries[0].GetProgress().GetPhase(),
+	)
+	require.Equal(
+		t, "request_created", entries[0].GetProgress().GetPhaseLabel(),
+	)
+}
+
+// TestHistoryScansForfeitedVTXOsOnceForWalletLocalExits confirms activity list
+// batches the cooperative-leave terminal lookup. A wallet process can retain
+// multiple runtime-local EXIT rows until restart; history should not scan the
+// full forfeited VTXO set once per row.
+func TestHistoryScansForfeitedVTXOsOnceForWalletLocalExits(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+		Found: false,
+	}
+	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.
+		ListVTXOsResponse{
+
+		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
+		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*daemonrpc.VTXO{
+				{
+					Outpoint: "leave-outpoint:1",
+					Status: daemonrpc.
+						VTXOStatus_VTXO_STATUS_FORFEITED,
+				},
+			},
+		},
+	}
+
+	h.runtime.trackPendingEntryWithoutTimeout(
+		leaveEntryStub(
+			[]string{
+				"leave-outpoint:1",
+			}, "bcrt1qdest",
+			50_000, "first note",
+		),
+	)
+	h.runtime.trackPendingEntryWithoutTimeout(
+		leaveEntryStub(
+			[]string{
+				"other-leave-outpoint:0",
+			}, "bcrt1qdest",
+			25_000, "second note",
+		),
+	)
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+
+	byID := make(map[string]*walletdkrpc.WalletEntry)
+	for _, entry := range resp.GetActivity().GetEntries() {
+		byID[entry.GetId()] = entry
+	}
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		byID["leave-outpoint:1"].GetStatus(),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		byID["other-leave-outpoint:0"].GetStatus(),
+	)
+	require.Equal(t, 2, rpc.listVTXOsCalls)
+	require.Equal(
+		t, daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+		rpc.listVTXOsLastReq.GetStatusFilter(),
+	)
+}
+
 // TestHistoryKeepsCSVPendingUnilateralExitPendingAfterDeadline confirms the
 // wallet-local timeout overlay cannot clobber the unroll subsystem's
 // authoritative non-terminal status. Unilateral exits normally wait through a
