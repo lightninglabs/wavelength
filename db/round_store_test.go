@@ -575,9 +575,9 @@ func TestVTXOStoreGetVTXOPreservesStoredPubKeyParity(t *testing.T) {
 }
 
 // TestVTXOStoreSaveVTXOsHealsZeroLocatorOwner ensures that a healed VTXO can
-// update placeholder -1/-1 owner locator metadata to a valid local 0/0
-// derivation path. Derivation path 0/0 is legitimate and must not be treated
-// as "missing" during the conflict update.
+// update a placeholder NULL client_key_id to a valid local 0/0 derivation
+// path. Derivation path 0/0 is legitimate and must not be treated as
+// "missing" during the conflict update.
 func TestVTXOStoreSaveVTXOsHealsZeroLocatorOwner(t *testing.T) {
 	t.Parallel()
 
@@ -596,12 +596,14 @@ func TestVTXOStoreSaveVTXOsHealsZeroLocatorOwner(t *testing.T) {
 	vtxo := createTestClientVTXO(t, roundID, 123)
 	vtxo.OwnerKey.KeyLocator = keychain.KeyLocator{}
 
-	params, err := store.domainVTXOToInsertParams(vtxo)
+	params, err := store.domainVTXOToInsertParams(ctx, baseDB.Queries, vtxo)
 	require.NoError(t, err)
 
+	// Simulate a minimal round-created row that has not yet had its owner
+	// key registered: the client_key_id FK is NULL until SaveVTXOs heals
+	// it.
 	placeholder := params
-	placeholder.ClientKeyFamily = -1
-	placeholder.ClientKeyIndex = -1
+	placeholder.ClientKeyID = sql.NullInt64{}
 
 	err = baseDB.Queries.InsertVTXO(ctx, placeholder)
 	require.NoError(t, err)

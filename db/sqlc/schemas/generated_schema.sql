@@ -37,15 +37,12 @@ CREATE TABLE boarding_addresses (
     -- address_string is the bech32m-encoded address for user display.
     address_string TEXT NOT NULL,
 
-    -- client_pubkey is the serialized public key (33 bytes compressed) of the
-    -- client used in the tapscript.
-    client_pubkey BLOB NOT NULL,
-
-    -- client_key_family is the BIP32 key family for the client key.
-    client_key_family INTEGER NOT NULL,
-
-    -- client_key_index is the BIP32 key index within the family.
-    client_key_index INTEGER NOT NULL,
+    -- client_key_id references the internal_keys registry row for the client
+    -- wallet key used in the tapscript. The registry row carries the
+    -- compressed pubkey plus the lnd KeyLocator needed to reconstruct the
+    -- signing descriptor. Nullable so a row can be written before the key is
+    -- registered, though the write path always registers first.
+    client_key_id BIGINT REFERENCES internal_keys(id),
 
     -- operator_pubkey is the serialized public key (33 bytes compressed) of
     -- the operator used in the collaborative spend path.
@@ -398,6 +395,34 @@ CREATE INDEX idx_vtxos_spent
 CREATE INDEX idx_vtxos_status
     ON vtxos(status);
 
+CREATE TABLE internal_keys (
+    -- id is the monotonically increasing surrogate key referenced by
+    -- consumer tables' *_key_id foreign keys.
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- pubkey is the 33-byte compressed public key.
+    pubkey BLOB NOT NULL,
+
+    -- key_family and key_index are the lnd KeyLocator that lets the wallet
+    -- reconstruct the signing descriptor for this key.
+    key_family BIGINT NOT NULL,
+    key_index BIGINT NOT NULL,
+
+    -- created_at is the Unix timestamp when the key was first registered.
+    created_at BIGINT NOT NULL,
+
+    -- A given (pubkey, key_family, key_index) triple maps to exactly one
+    -- canonical row. Registering the same triple again is idempotent and
+    -- returns the existing id; this guard turns an inconsistent
+    -- re-registration into a hard error rather than a silently divergent
+    -- second row.
+    UNIQUE (pubkey, key_family, key_index),
+
+    -- Compressed secp256k1 public keys are exactly 33 bytes. length()
+    -- returns the byte count for BLOB (SQLite) and BYTEA (Postgres).
+    CHECK (length(pubkey) = 33)
+);
+
 CREATE TABLE ledger_entries (
     entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
@@ -687,14 +712,11 @@ CREATE TABLE owned_receive_scripts (
     -- pk_script is the owned receive script primary key.
     pk_script BLOB PRIMARY KEY NOT NULL,
 
-    -- client_key_family is the wallet key family for this script.
-    client_key_family BIGINT NOT NULL,
-
-    -- client_key_index is the wallet key index for this script.
-    client_key_index BIGINT NOT NULL,
-
-    -- client_pubkey is the client key used in the checkpoint taptree.
-    client_pubkey BLOB NOT NULL,
+    -- client_key_id references the internal_keys registry row for the client
+    -- wallet key used in the checkpoint taptree. The registry row carries the
+    -- compressed pubkey plus the lnd KeyLocator. Nullable, though the write
+    -- path always registers the key first.
+    client_key_id BIGINT REFERENCES internal_keys(id),
 
     -- operator_pubkey is the operator key used in the checkpoint taptree.
     operator_pubkey BLOB NOT NULL,
@@ -834,23 +856,16 @@ CREATE TABLE round_vtxo_requests (
     -- VTXORequest.OperatorKey - 33-byte compressed public key.
     operator_pubkey BLOB NOT NULL,
 
-    -- VTXORequest.OwnerKey.KeyLocator.Family. A value of -1 means the
-    -- request is foreign-owned and should not be persisted as local balance
-    -- when the round confirms.
-    owner_key_family INTEGER NOT NULL DEFAULT -1,
+    -- owner_key_id references the internal_keys registry row for the local
+    -- owner descriptor (the client_pubkey paired with its lnd KeyLocator).
+    -- NULL means the request is foreign-owned: it has no local owner
+    -- descriptor and must not be persisted as local balance when the round
+    -- confirms. This replaces the old -1/-1 sentinel locator.
+    owner_key_id BIGINT REFERENCES internal_keys(id),
 
-    -- VTXORequest.OwnerKey.KeyLocator.Index. A value of -1 means the request
-    -- is foreign-owned and has no local owner descriptor.
-    owner_key_index INTEGER NOT NULL DEFAULT -1,
-
-    -- VTXORequest.SigningKey.KeyLocator.Family
-    signing_key_family INTEGER NOT NULL,
-
-    -- VTXORequest.SigningKey.KeyLocator.Index
-    signing_key_index INTEGER NOT NULL,
-
-    -- VTXORequest.SigningKey.PubKey - 33-byte compressed public key.
-    signing_pubkey BLOB NOT NULL,
+    -- signing_key_id references the internal_keys registry row for the
+    -- signing descriptor (signing_pubkey paired with its lnd KeyLocator).
+    signing_key_id BIGINT REFERENCES internal_keys(id),
 
     PRIMARY KEY (round_id, request_index),
     FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE
@@ -1212,14 +1227,12 @@ CREATE TABLE vtxos (
     -- columns remain as denormalized standard-policy helpers.
     policy_template BLOB,
 
-    -- client_key_family is the BIP32 key family.
-    client_key_family INTEGER NOT NULL,
-
-    -- client_key_index is the BIP32 key index.
-    client_key_index INTEGER NOT NULL,
-
-    -- client_pubkey is the 33-byte compressed client public key.
-    client_pubkey BLOB NOT NULL,
+    -- client_key_id references the internal_keys registry row for the local
+    -- ownership (client) wallet key. The registry row carries the compressed
+    -- pubkey plus the lnd KeyLocator needed to reconstruct the signing
+    -- descriptor. Nullable because the round store can create a minimal VTXO
+    -- row before the VTXO manager heals it with the full descriptor.
+    client_key_id BIGINT REFERENCES internal_keys(id),
 
     -- operator_pubkey is the 33-byte compressed operator public key.
     operator_pubkey BLOB NOT NULL,

@@ -1,6 +1,55 @@
 -- Boarding tables migration.
 -- This migration creates tables for boarding address and boarding intent management.
 
+-- Durable internal key registry.
+--
+-- Several client tables inline the same key-locator triple: a 33-byte
+-- compressed pubkey BLOB plus a key_family / key_index pair (an lnd
+-- keychain.KeyLocator). The triple lets us reconstruct the signing descriptor
+-- for a wallet key, so it rides along with anything we have to re-sign or
+-- re-derive after the fact. internal_keys is a normalized registry of every
+-- such wallet key: each row is the full KeyDescriptor (pubkey + locator) and
+-- consumer tables reference a row by a *_key_id foreign key instead of
+-- re-spelling the three columns. Unlike the server registry, client keys have
+-- no role concept, so the table is keyed purely by (pubkey, key_family,
+-- key_index).
+--
+-- This table is created first in this migration (before boarding_addresses,
+-- its earliest referencer) because Postgres requires the FK target table to
+-- exist when a referencing constraint is declared.
+--
+-- BIGINT (not INTEGER) for key_family/key_index because keychain.KeyLocator
+-- fields are uint32; Postgres INTEGER is signed 32-bit, so locator values above
+-- MaxInt32 would not round-trip without sign-extension corruption. BIGINT
+-- (signed 64-bit) safely covers the entire uint32 range.
+CREATE TABLE IF NOT EXISTS internal_keys (
+    -- id is the monotonically increasing surrogate key referenced by
+    -- consumer tables' *_key_id foreign keys.
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- pubkey is the 33-byte compressed public key.
+    pubkey BLOB NOT NULL,
+
+    -- key_family and key_index are the lnd KeyLocator that lets the wallet
+    -- reconstruct the signing descriptor for this key.
+    key_family BIGINT NOT NULL,
+    key_index BIGINT NOT NULL,
+
+    -- created_at is the Unix timestamp when the key was first registered.
+    created_at BIGINT NOT NULL,
+
+    -- A given (pubkey, key_family, key_index) triple maps to exactly one
+    -- canonical row. Registering the same triple again is idempotent and
+    -- returns the existing id; this guard turns an inconsistent
+    -- re-registration into a hard error rather than a silently divergent
+    -- second row.
+    UNIQUE (pubkey, key_family, key_index),
+
+    -- Compressed secp256k1 public keys are exactly 33 bytes. length()
+    -- returns the byte count for BLOB (SQLite) and BYTEA (Postgres).
+    CHECK (length(pubkey) = 33)
+);
+
 -- Enum-like table for boarding intent lifecycle states.
 -- From the wallet's perspective, intents start in 'confirmed' state since they
 -- are only created after a UTXO has been confirmed on-chain.
@@ -31,15 +80,14 @@ CREATE TABLE IF NOT EXISTS boarding_addresses (
     -- address_string is the bech32m-encoded address for user display.
     address_string TEXT NOT NULL,
 
-    -- client_pubkey is the serialized public key (33 bytes compressed) of the
-    -- client used in the tapscript.
-    client_pubkey BLOB NOT NULL,
-
-    -- client_key_family is the BIP32 key family for the client key.
-    client_key_family INTEGER NOT NULL,
-
-    -- client_key_index is the BIP32 key index within the family.
-    client_key_index INTEGER NOT NULL,
+    -- client_key_id references the internal_keys registry row for the client
+    -- wallet key used in the tapscript. The registry row carries the
+    -- compressed pubkey plus the lnd KeyLocator needed to reconstruct the
+    -- signing descriptor. Declared nullable only for uniformity with the
+    -- genuinely-optional internal_keys FKs (vtxos, round_vtxo_requests); in
+    -- practice every boarding address has a client key, so the write path
+    -- always registers it first and the read path treats a NULL as an error.
+    client_key_id BIGINT REFERENCES internal_keys(id),
 
     -- operator_pubkey is the serialized public key (33 bytes compressed) of
     -- the operator used in the collaborative spend path.

@@ -21,9 +21,7 @@ type AccountType struct {
 type BoardingAddress struct {
 	PkScript            []byte
 	AddressString       string
-	ClientPubkey        []byte
-	ClientKeyFamily     int32
-	ClientKeyIndex      int32
+	ClientKeyID         sql.NullInt64
 	OperatorPubkey      []byte
 	ExitDelay           int32
 	LastConfirmedHeight int32
@@ -91,6 +89,14 @@ type ClientTreeTxid struct {
 	OutputIndex int32
 }
 
+type InternalKey struct {
+	ID        int64
+	Pubkey    []byte
+	KeyFamily int64
+	KeyIndex  int64
+	CreatedAt int64
+}
+
 type LedgerEntry struct {
 	EntryID            int64
 	DebitAccount       string
@@ -154,15 +160,13 @@ type OorVtxoBindingLinkKind struct {
 }
 
 type OwnedReceiveScript struct {
-	PkScript        []byte
-	ClientKeyFamily int64
-	ClientKeyIndex  int64
-	ClientPubkey    []byte
-	OperatorPubkey  []byte
-	ExitDelay       int64
-	Source          int32
-	CreatedAt       int64
-	LastUsedAt      sql.NullInt64
+	PkScript       []byte
+	ClientKeyID    sql.NullInt64
+	OperatorPubkey []byte
+	ExitDelay      int64
+	Source         int32
+	CreatedAt      int64
+	LastUsedAt     sql.NullInt64
 }
 
 type OwnedReceiveScriptSource struct {
@@ -215,19 +219,16 @@ type RoundStatus struct {
 }
 
 type RoundVtxoRequest struct {
-	RoundID          string
-	RequestIndex     int32
-	Amount           int64
-	PkScript         []byte
-	Expiry           int32
-	PolicyTemplate   []byte
-	ClientPubkey     []byte
-	OperatorPubkey   []byte
-	OwnerKeyFamily   int32
-	OwnerKeyIndex    int32
-	SigningKeyFamily int32
-	SigningKeyIndex  int32
-	SigningPubkey    []byte
+	RoundID        string
+	RequestIndex   int32
+	Amount         int64
+	PkScript       []byte
+	Expiry         int32
+	PolicyTemplate []byte
+	ClientPubkey   []byte
+	OperatorPubkey []byte
+	OwnerKeyID     sql.NullInt64
+	SigningKeyID   sql.NullInt64
 }
 
 type SpendingReservation struct {
@@ -309,9 +310,7 @@ type Vtxo struct {
 	PkScript        []byte
 	Expiry          int32
 	PolicyTemplate  []byte
-	ClientKeyFamily int32
-	ClientKeyIndex  int32
-	ClientPubkey    []byte
+	ClientKeyID     sql.NullInt64
 	OperatorPubkey  []byte
 	BatchExpiry     int32
 	CreatedHeight   int32

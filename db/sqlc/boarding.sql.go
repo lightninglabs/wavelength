@@ -60,7 +60,7 @@ func (q *Queries) CountUnresolvedBoardingSweepInputs(ctx context.Context, txid [
 }
 
 const GetBoardingAddress = `-- name: GetBoardingAddress :one
-SELECT pk_script, address_string, client_pubkey, client_key_family, client_key_index, operator_pubkey, exit_delay, last_confirmed_height, creation_time FROM boarding_addresses WHERE pk_script = $1
+SELECT pk_script, address_string, client_key_id, operator_pubkey, exit_delay, last_confirmed_height, creation_time FROM boarding_addresses WHERE pk_script = $1
 `
 
 func (q *Queries) GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error) {
@@ -69,9 +69,7 @@ func (q *Queries) GetBoardingAddress(ctx context.Context, pkScript []byte) (Boar
 	err := row.Scan(
 		&i.PkScript,
 		&i.AddressString,
-		&i.ClientPubkey,
-		&i.ClientKeyFamily,
-		&i.ClientKeyIndex,
+		&i.ClientKeyID,
 		&i.OperatorPubkey,
 		&i.ExitDelay,
 		&i.LastConfirmedHeight,
@@ -175,25 +173,21 @@ const InsertBoardingAddress = `-- name: InsertBoardingAddress :exec
 INSERT INTO boarding_addresses (
     pk_script,
     address_string,
-    client_pubkey,
-    client_key_family,
-    client_key_index,
+    client_key_id,
     operator_pubkey,
     exit_delay,
     creation_time
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+) VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (pk_script) DO NOTHING
 `
 
 type InsertBoardingAddressParams struct {
-	PkScript        []byte
-	AddressString   string
-	ClientPubkey    []byte
-	ClientKeyFamily int32
-	ClientKeyIndex  int32
-	OperatorPubkey  []byte
-	ExitDelay       int32
-	CreationTime    int64
+	PkScript       []byte
+	AddressString  string
+	ClientKeyID    sql.NullInt64
+	OperatorPubkey []byte
+	ExitDelay      int32
+	CreationTime   int64
 }
 
 // Boarding address queries.
@@ -201,9 +195,7 @@ func (q *Queries) InsertBoardingAddress(ctx context.Context, arg InsertBoardingA
 	_, err := q.db.ExecContext(ctx, InsertBoardingAddress,
 		arg.PkScript,
 		arg.AddressString,
-		arg.ClientPubkey,
-		arg.ClientKeyFamily,
-		arg.ClientKeyIndex,
+		arg.ClientKeyID,
 		arg.OperatorPubkey,
 		arg.ExitDelay,
 		arg.CreationTime,
@@ -402,7 +394,7 @@ func (q *Queries) InsertBoardingSweepInput(ctx context.Context, arg InsertBoardi
 }
 
 const ListAllBoardingAddresses = `-- name: ListAllBoardingAddresses :many
-SELECT pk_script, address_string, client_pubkey, client_key_family, client_key_index, operator_pubkey, exit_delay, last_confirmed_height, creation_time FROM boarding_addresses ORDER BY creation_time DESC
+SELECT pk_script, address_string, client_key_id, operator_pubkey, exit_delay, last_confirmed_height, creation_time FROM boarding_addresses ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddress, error) {
@@ -417,9 +409,7 @@ func (q *Queries) ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddre
 		if err := rows.Scan(
 			&i.PkScript,
 			&i.AddressString,
-			&i.ClientPubkey,
-			&i.ClientKeyFamily,
-			&i.ClientKeyIndex,
+			&i.ClientKeyID,
 			&i.OperatorPubkey,
 			&i.ExitDelay,
 			&i.LastConfirmedHeight,

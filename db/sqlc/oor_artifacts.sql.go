@@ -244,7 +244,7 @@ func (q *Queries) GetOORVTXOBindingByOutpointAndKind(ctx context.Context, arg Ge
 }
 
 const GetOwnedReceiveScript = `-- name: GetOwnedReceiveScript :one
-SELECT pk_script, client_key_family, client_key_index, client_pubkey, operator_pubkey, exit_delay, source, created_at, last_used_at FROM owned_receive_scripts
+SELECT pk_script, client_key_id, operator_pubkey, exit_delay, source, created_at, last_used_at FROM owned_receive_scripts
 WHERE pk_script = $1
 `
 
@@ -253,9 +253,7 @@ func (q *Queries) GetOwnedReceiveScript(ctx context.Context, pkScript []byte) (O
 	var i OwnedReceiveScript
 	err := row.Scan(
 		&i.PkScript,
-		&i.ClientKeyFamily,
-		&i.ClientKeyIndex,
-		&i.ClientPubkey,
+		&i.ClientKeyID,
 		&i.OperatorPubkey,
 		&i.ExitDelay,
 		&i.Source,
@@ -492,7 +490,7 @@ func (q *Queries) ListOORVTXOBindingsBySession(ctx context.Context, sessionID []
 }
 
 const ListOwnedReceiveScripts = `-- name: ListOwnedReceiveScripts :many
-SELECT pk_script, client_key_family, client_key_index, client_pubkey, operator_pubkey, exit_delay, source, created_at, last_used_at FROM owned_receive_scripts
+SELECT pk_script, client_key_id, operator_pubkey, exit_delay, source, created_at, last_used_at FROM owned_receive_scripts
 ORDER BY created_at DESC
 `
 
@@ -507,9 +505,7 @@ func (q *Queries) ListOwnedReceiveScripts(ctx context.Context) ([]OwnedReceiveSc
 		var i OwnedReceiveScript
 		if err := rows.Scan(
 			&i.PkScript,
-			&i.ClientKeyFamily,
-			&i.ClientKeyIndex,
-			&i.ClientPubkey,
+			&i.ClientKeyID,
 			&i.OperatorPubkey,
 			&i.ExitDelay,
 			&i.Source,
@@ -635,15 +631,13 @@ func (q *Queries) UpsertOORVTXOBinding(ctx context.Context, arg UpsertOORVTXOBin
 
 const UpsertOwnedReceiveScript = `-- name: UpsertOwnedReceiveScript :exec
 INSERT INTO owned_receive_scripts (
-    pk_script, client_key_family, client_key_index, client_pubkey,
-    operator_pubkey, exit_delay, source, created_at, last_used_at
+    pk_script, client_key_id, operator_pubkey, exit_delay, source,
+    created_at, last_used_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9
+    $1, $2, $3, $4, $5, $6, $7
 )
 ON CONFLICT (pk_script) DO UPDATE SET
-    client_key_family = EXCLUDED.client_key_family,
-    client_key_index = EXCLUDED.client_key_index,
-    client_pubkey = EXCLUDED.client_pubkey,
+    client_key_id = EXCLUDED.client_key_id,
     operator_pubkey = EXCLUDED.operator_pubkey,
     exit_delay = EXCLUDED.exit_delay,
     source = EXCLUDED.source,
@@ -651,23 +645,19 @@ ON CONFLICT (pk_script) DO UPDATE SET
 `
 
 type UpsertOwnedReceiveScriptParams struct {
-	PkScript        []byte
-	ClientKeyFamily int64
-	ClientKeyIndex  int64
-	ClientPubkey    []byte
-	OperatorPubkey  []byte
-	ExitDelay       int64
-	Source          int32
-	CreatedAt       int64
-	LastUsedAt      sql.NullInt64
+	PkScript       []byte
+	ClientKeyID    sql.NullInt64
+	OperatorPubkey []byte
+	ExitDelay      int64
+	Source         int32
+	CreatedAt      int64
+	LastUsedAt     sql.NullInt64
 }
 
 func (q *Queries) UpsertOwnedReceiveScript(ctx context.Context, arg UpsertOwnedReceiveScriptParams) error {
 	_, err := q.db.ExecContext(ctx, UpsertOwnedReceiveScript,
 		arg.PkScript,
-		arg.ClientKeyFamily,
-		arg.ClientKeyIndex,
-		arg.ClientPubkey,
+		arg.ClientKeyID,
 		arg.OperatorPubkey,
 		arg.ExitDelay,
 		arg.Source,

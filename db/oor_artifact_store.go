@@ -90,6 +90,11 @@ func (s OwnedReceiveScriptSource) String() string {
 //
 //nolint:interfacebloat
 type OORArtifactStore interface {
+	// InternalKeyQuerier lets the store register and hydrate the owned
+	// receive-script client key via the shared internal_keys registry
+	// within its own transaction.
+	InternalKeyQuerier
+
 	UpsertOORPackage(ctx context.Context,
 		arg sqlc.UpsertOORPackageParams) (int64, error)
 
@@ -852,13 +857,6 @@ func (s *OORArtifactPersistenceStore) UpsertOwnedReceiveScript(
 		return err
 	}
 
-	clientKeyFamily, clientKeyIndex, clientPubkey, err := marshalClientKey(
-		rec.ClientKey,
-	)
-	if err != nil {
-		return err
-	}
-
 	writeTx := WriteTxOption()
 	now := s.clock.Now().Unix()
 
@@ -872,17 +870,27 @@ func (s *OORArtifactPersistenceStore) UpsertOwnedReceiveScript(
 		operatorPubkey := rec.OperatorPubKey.
 			SerializeCompressed()
 
+		// Register the client wallet key in the shared internal_keys
+		// registry and reference it by id.
+		clientKeyID, err := RegisterInternalKeyTx(
+			ctx, q, now, rec.ClientKey,
+		)
+		if err != nil {
+			return fmt.Errorf("register client key: %w", err)
+		}
+
 		return q.UpsertOwnedReceiveScript(ctx,
 			sqlc.UpsertOwnedReceiveScriptParams{
-				PkScript:        rec.PkScript,
-				ClientKeyFamily: clientKeyFamily,
-				ClientKeyIndex:  clientKeyIndex,
-				ClientPubkey:    clientPubkey,
-				OperatorPubkey:  operatorPubkey,
-				ExitDelay:       rec.ExitDelay,
-				Source:          sourceCode,
-				CreatedAt:       createdAtUnix,
-				LastUsedAt:      lastUsedAt,
+				PkScript: rec.PkScript,
+				ClientKeyID: sql.NullInt64{
+					Int64: clientKeyID,
+					Valid: true,
+				},
+				OperatorPubkey: operatorPubkey,
+				ExitDelay:      rec.ExitDelay,
+				Source:         sourceCode,
+				CreatedAt:      createdAtUnix,
+				LastUsedAt:     lastUsedAt,
 			},
 		)
 	})
@@ -902,19 +910,37 @@ func (s *OORArtifactPersistenceStore) LookupOwnedReceiveScript(
 
 	readTx := ReadTxOption()
 
-	var row sqlc.OwnedReceiveScript
+	var result *OwnedReceiveScriptRecord
 
 	err := s.db.ExecTx(ctx, readTx, func(q OORArtifactStore) error {
-		var err error
-		row, err = q.GetOwnedReceiveScript(ctx, pkScript)
+		row, err := q.GetOwnedReceiveScript(ctx, pkScript)
+		if err != nil {
+			return err
+		}
 
-		return err
+		rec, err := ownedReceiveScriptRowToRecord(ctx, q, row)
+		if err != nil {
+			return err
+		}
+
+		result = rec
+
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	clientKey, err := unmarshalClientKey(row)
+	return result, nil
+}
+
+// ownedReceiveScriptRowToRecord converts a stored owned receive-script row to
+// its domain record, hydrating the client key descriptor from the
+// internal_keys registry within the caller's query context.
+func ownedReceiveScriptRowToRecord(ctx context.Context, q OORArtifactStore,
+	row sqlc.OwnedReceiveScript) (*OwnedReceiveScriptRecord, error) {
+
+	clientKey, err := unmarshalClientKey(ctx, q, row)
 	if err != nil {
 		return nil, err
 	}
@@ -953,46 +979,30 @@ func (s *OORArtifactPersistenceStore) ListOwnedReceiveScripts(
 
 	readTx := ReadTxOption()
 
-	var rows []sqlc.OwnedReceiveScript
+	var records []OwnedReceiveScriptRecord
 
 	err := s.db.ExecTx(ctx, readTx, func(q OORArtifactStore) error {
-		var err error
-		rows, err = q.ListOwnedReceiveScripts(ctx)
+		rows, err := q.ListOwnedReceiveScripts(ctx)
+		if err != nil {
+			return err
+		}
 
-		return err
+		records = make([]OwnedReceiveScriptRecord, 0, len(rows))
+		for i := range rows {
+			rec, err := ownedReceiveScriptRowToRecord(
+				ctx, q, rows[i],
+			)
+			if err != nil {
+				return err
+			}
+
+			records = append(records, *rec)
+		}
+
+		return nil
 	})
 	if err != nil {
 		return nil, err
-	}
-
-	records := make([]OwnedReceiveScriptRecord, 0, len(rows))
-	for i := range rows {
-		clientKey, err := unmarshalClientKey(rows[i])
-		if err != nil {
-			return nil, err
-		}
-
-		operatorPubKey, err := btcec.ParsePubKey(rows[i].OperatorPubkey)
-		if err != nil {
-			return nil, fmt.Errorf("parse operator pubkey: %w", err)
-		}
-
-		source, err := ownedReceiveScriptSourceFromCode(rows[i].Source)
-		if err != nil {
-			return nil, err
-		}
-
-		records = append(records, OwnedReceiveScriptRecord{
-			PkScript:       rows[i].PkScript,
-			ClientKey:      clientKey,
-			OperatorPubKey: operatorPubKey,
-			ExitDelay:      rows[i].ExitDelay,
-			Source:         source,
-			CreatedAt:      unixTimeUTC(rows[i].CreatedAt),
-			LastUsedAt: optionTimeFromNullUnix(
-				rows[i].LastUsedAt,
-			),
-		})
 	}
 
 	return records, nil
@@ -1228,44 +1238,17 @@ func optionTimeFromNullUnix(v sql.NullInt64) fn.Option[time.Time] {
 	return fn.Some(unixTimeUTC(v.Int64))
 }
 
-func marshalClientKey(desc keychain.KeyDescriptor) (int64, int64, []byte,
-	error) {
+// unmarshalClientKey hydrates the owned receive-script client key descriptor
+// from the internal_keys registry via the row's client_key_id FK.
+func unmarshalClientKey(ctx context.Context, q OORArtifactStore,
+	row sqlc.OwnedReceiveScript) (keychain.KeyDescriptor, error) {
 
-	if desc.PubKey == nil {
-		return 0, 0, nil,
-			fmt.Errorf("client key pubkey must be provided")
+	if !row.ClientKeyID.Valid {
+		return keychain.KeyDescriptor{}, fmt.Errorf("owned receive "+
+			"script %x missing client key id", row.PkScript)
 	}
 
-	return int64(desc.Family), int64(desc.Index),
-		desc.PubKey.SerializeCompressed(), nil
-}
-
-func unmarshalClientKey(row sqlc.OwnedReceiveScript) (keychain.KeyDescriptor,
-	error) {
-
-	pubKey, err := btcec.ParsePubKey(row.ClientPubkey)
-	if err != nil {
-		return keychain.KeyDescriptor{},
-			fmt.Errorf("parse client pubkey: %w", err)
-	}
-
-	if row.ClientKeyFamily < 0 {
-		return keychain.KeyDescriptor{}, fmt.Errorf("client key "+
-			"family must be >= 0: %d", row.ClientKeyFamily)
-	}
-
-	if row.ClientKeyIndex < 0 {
-		return keychain.KeyDescriptor{}, fmt.Errorf("client key index "+
-			"must be >= 0: %d", row.ClientKeyIndex)
-	}
-
-	return keychain.KeyDescriptor{
-		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamily(row.ClientKeyFamily),
-			Index:  uint32(row.ClientKeyIndex),
-		},
-		PubKey: pubKey,
-	}, nil
+	return InternalKeyDescByIDTx(ctx, q, row.ClientKeyID.Int64)
 }
 
 // parseHash32 converts a 32-byte hash payload to chainhash.Hash.

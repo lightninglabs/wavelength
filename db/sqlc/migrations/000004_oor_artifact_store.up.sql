@@ -167,14 +167,14 @@ CREATE TABLE IF NOT EXISTS owned_receive_scripts (
     -- pk_script is the owned receive script primary key.
     pk_script BLOB PRIMARY KEY NOT NULL,
 
-    -- client_key_family is the wallet key family for this script.
-    client_key_family BIGINT NOT NULL,
-
-    -- client_key_index is the wallet key index for this script.
-    client_key_index BIGINT NOT NULL,
-
-    -- client_pubkey is the client key used in the checkpoint taptree.
-    client_pubkey BLOB NOT NULL,
+    -- client_key_id references the internal_keys registry row for the client
+    -- wallet key used in the checkpoint taptree. The registry row carries the
+    -- compressed pubkey plus the lnd KeyLocator. Declared nullable only for
+    -- uniformity with the genuinely-optional internal_keys FKs (vtxos,
+    -- round_vtxo_requests); in practice every owned receive script has a
+    -- client key, so the write path always registers it first and the read
+    -- path treats a NULL as an error.
+    client_key_id BIGINT REFERENCES internal_keys(id),
 
     -- operator_pubkey is the operator key used in the checkpoint taptree.
     operator_pubkey BLOB NOT NULL,

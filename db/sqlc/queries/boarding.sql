@@ -4,13 +4,11 @@
 INSERT INTO boarding_addresses (
     pk_script,
     address_string,
-    client_pubkey,
-    client_key_family,
-    client_key_index,
+    client_key_id,
     operator_pubkey,
     exit_delay,
     creation_time
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+) VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (pk_script) DO NOTHING;
 
 -- name: GetBoardingAddress :one
