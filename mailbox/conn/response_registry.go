@@ -147,6 +147,21 @@ func (r *ResponseRegistry) RemoveWaiter(id CorrelationID) {
 	}
 }
 
+// FailAll completes every registered waiter's promise with err and clears the
+// waiter set. It is used to fail all in-flight unary callers at once when the
+// connector transitions to a terminal incompatible state, so no caller blocks
+// on a response that will never arrive.
+func (r *ResponseRegistry) FailAll(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for id, waiter := range r.waiters {
+		waiter.Promise.Complete(fn.Err[*mailboxpb.Envelope](err))
+
+		delete(r.waiters, id)
+	}
+}
+
 // RemovePending drops any buffered early response for the correlation ID.
 func (r *ResponseRegistry) RemovePending(id CorrelationID) {
 	r.mu.Lock()
