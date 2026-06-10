@@ -275,6 +275,15 @@ type Config struct {
 	// sdk/walletdk embedded path).
 	EagerRoundJoin bool `mapstructure:"eagerroundjoin"`
 
+	// DBNoFullfsync disables the SQLite fullfsync pragma. The pragma only
+	// matters on macOS, where it makes flushes wait on a full hardware
+	// cache flush; with the default synchronous=normal level it governs
+	// the WAL checkpoint sync, which recurs continuously under sustained
+	// write load. Write-heavy macOS deployments that accept the weaker
+	// flush guarantee can disable it for substantially higher throughput.
+	// No effect on other platforms. See db.SqliteConfig.NoFullfsync.
+	DBNoFullfsync bool `mapstructure:"db-nofullfsync"`
+
 	// Pprof configures the optional net/http/pprof debug server. It is
 	// disabled by default and must be explicitly opted into via a
 	// non-empty listen address. A value type so a zero-value Config can

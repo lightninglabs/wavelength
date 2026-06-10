@@ -214,6 +214,15 @@ func newRootCmd() *cobra.Command {
 			"otherwise",
 	)
 
+	// Database durability knob for write-heavy macOS deployments; a
+	// no-op on other platforms.
+	f.Bool(
+		"db-nofullfsync", cfg.DBNoFullfsync, "disable the SQLite "+
+			"fullfsync pragma (macOS only); trades power-loss "+
+			"flush guarantees for higher sustained write "+
+			"throughput",
+	)
+
 	// OOR safety limits. These are advanced knobs; most operators
 	// should keep the defaults unless a limit-exceeded error says
 	// otherwise after a protocol upgrade or operator/indexer change.

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -92,6 +93,16 @@ type SqliteConfig struct {
 	// fsync of "full".
 	Synchronous string `long:"synchronous" description:"The SQLite synchronous (commit durability) level. One of: full, normal, off."`
 
+	// NoFullfsync disables the SQLite fullfsync pragma. The pragma only
+	// matters on macOS, where a regular fsync does not guarantee the data
+	// reached stable storage; with synchronous=normal it governs the WAL
+	// checkpoint sync. Checkpoints fire continuously under a sustained
+	// write load and F_FULLFSYNC waits on a full hardware cache flush, so
+	// write-heavy deployments that accept the weaker flush guarantee can
+	// disable it for substantially better throughput. The default keeps
+	// fullfsync enabled.
+	NoFullfsync bool `long:"nofullfsync" description:"Disable the macOS fullfsync pragma; trades power-loss flush guarantees on macOS for higher sustained write throughput. No effect on other platforms."`
+
 	// Log is an optional logger for the SQLite store. When None, the store
 	// falls back to the explicit constructor logger.
 	Log fn.Option[btclog.Logger]
@@ -168,14 +179,15 @@ func NewSqliteStore(cfg *SqliteConfig,
 		},
 		{
 			// fullfsync uses the correct fsync system call on macOS
-			// so that flushed data is genuinely durable. We leave
-			// this enabled regardless of the synchronous level:
-			// under "normal" it only governs the rare WAL
-			// checkpoint sync rather than a per-commit fsync, so it
-			// is essentially free while still giving correct flush
-			// semantics on macOS.
+			// so that flushed data is genuinely durable. Under
+			// "normal" it governs the WAL checkpoint sync rather
+			// than a per-commit fsync, but checkpoints recur
+			// continuously under sustained write load and each
+			// F_FULLFSYNC waits on a full hardware cache flush, so
+			// the config exposes an opt-out for write-heavy
+			// deployments. Enabled by default.
 			name:  "fullfsync",
-			value: "true",
+			value: strconv.FormatBool(!cfg.NoFullfsync),
 		},
 	}
 	sqliteOptions := make(url.Values)

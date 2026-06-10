@@ -2979,6 +2979,7 @@ func (s *Server) initDatabase(ctx context.Context) error {
 	}
 
 	sqliteCfg := db.DefaultSqliteConfig(networkDir)
+	sqliteCfg.NoFullfsync = s.cfg.DBNoFullfsync
 
 	var err error
 	s.db, err = db.NewSqliteStore(
