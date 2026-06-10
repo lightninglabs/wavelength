@@ -160,15 +160,13 @@ type OorVtxoBindingLinkKind struct {
 }
 
 type OwnedReceiveScript struct {
-	PkScript        []byte
-	ClientKeyFamily int64
-	ClientKeyIndex  int64
-	ClientPubkey    []byte
-	OperatorPubkey  []byte
-	ExitDelay       int64
-	Source          int32
-	CreatedAt       int64
-	LastUsedAt      sql.NullInt64
+	PkScript       []byte
+	ClientKeyID    sql.NullInt64
+	OperatorPubkey []byte
+	ExitDelay      int64
+	Source         int32
+	CreatedAt      int64
+	LastUsedAt     sql.NullInt64
 }
 
 type OwnedReceiveScriptSource struct {

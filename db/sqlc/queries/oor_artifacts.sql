@@ -150,15 +150,13 @@ ORDER BY updated_at DESC;
 
 -- name: UpsertOwnedReceiveScript :exec
 INSERT INTO owned_receive_scripts (
-    pk_script, client_key_family, client_key_index, client_pubkey,
-    operator_pubkey, exit_delay, source, created_at, last_used_at
+    pk_script, client_key_id, operator_pubkey, exit_delay, source,
+    created_at, last_used_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9
+    $1, $2, $3, $4, $5, $6, $7
 )
 ON CONFLICT (pk_script) DO UPDATE SET
-    client_key_family = EXCLUDED.client_key_family,
-    client_key_index = EXCLUDED.client_key_index,
-    client_pubkey = EXCLUDED.client_pubkey,
+    client_key_id = EXCLUDED.client_key_id,
     operator_pubkey = EXCLUDED.operator_pubkey,
     exit_delay = EXCLUDED.exit_delay,
     source = EXCLUDED.source,
