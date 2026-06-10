@@ -10,3 +10,5 @@ DROP INDEX IF EXISTS idx_boarding_addresses_last_confirmed;
 DROP TABLE IF EXISTS boarding_addresses;
 
 DROP TABLE IF EXISTS boarding_statuses;
+
+DROP TABLE IF EXISTS internal_keys;

@@ -91,6 +91,14 @@ type ClientTreeTxid struct {
 	OutputIndex int32
 }
 
+type InternalKey struct {
+	ID        int64
+	Pubkey    []byte
+	KeyFamily int64
+	KeyIndex  int64
+	CreatedAt int64
+}
+
 type LedgerEntry struct {
 	EntryID            int64
 	DebitAccount       string

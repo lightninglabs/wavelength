@@ -398,6 +398,34 @@ CREATE INDEX idx_vtxos_spent
 CREATE INDEX idx_vtxos_status
     ON vtxos(status);
 
+CREATE TABLE internal_keys (
+    -- id is the monotonically increasing surrogate key referenced by
+    -- consumer tables' *_key_id foreign keys.
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- pubkey is the 33-byte compressed public key.
+    pubkey BLOB NOT NULL,
+
+    -- key_family and key_index are the lnd KeyLocator that lets the wallet
+    -- reconstruct the signing descriptor for this key.
+    key_family BIGINT NOT NULL,
+    key_index BIGINT NOT NULL,
+
+    -- created_at is the Unix timestamp when the key was first registered.
+    created_at BIGINT NOT NULL,
+
+    -- A given (pubkey, key_family, key_index) triple maps to exactly one
+    -- canonical row. Registering the same triple again is idempotent and
+    -- returns the existing id; this guard turns an inconsistent
+    -- re-registration into a hard error rather than a silently divergent
+    -- second row.
+    UNIQUE (pubkey, key_family, key_index),
+
+    -- Compressed secp256k1 public keys are exactly 33 bytes. length()
+    -- returns the byte count for BLOB (SQLite) and BYTEA (Postgres).
+    CHECK (length(pubkey) = 33)
+);
+
 CREATE TABLE ledger_entries (
     entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
 

@@ -44,6 +44,7 @@ type Querier interface {
 	GetClientTreeByTxid(ctx context.Context, txid []byte) (RoundClientTree, error)
 	GetClientTreeTxidInfo(ctx context.Context, txid []byte) (ClientTreeTxid, error)
 	GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxidsParams) ([]GetClientTreeTxidsRow, error)
+	GetInternalKeyByID(ctx context.Context, id int64) (InternalKey, error)
 	GetOORPackage(ctx context.Context, sessionID []byte) (OorPackage, error)
 	GetOORPackageByOutpoint(ctx context.Context, arg GetOORPackageByOutpointParams) (GetOORPackageByOutpointRow, error)
 	GetOORPackageByOutpointAndKind(ctx context.Context, arg GetOORPackageByOutpointAndKindParams) (GetOORPackageByOutpointAndKindRow, error)
@@ -233,6 +234,14 @@ type Querier interface {
 	// method for state transitions that don't require additional data.
 	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
+	// Internal key registry queries.
+	// Register an internal key and return the stored row's id in a single
+	// round-trip on both backends. ON CONFLICT (pubkey, key_family, key_index)
+	// makes re-registration of an already-known triple idempotent; the no-op DO
+	// UPDATE (rather than DO NOTHING) is required so RETURNING still fires on
+	// conflict and the caller gets the existing id, closing the read-then-insert
+	// race a separate re-select would leave open.
+	UpsertInternalKey(ctx context.Context, arg UpsertInternalKeyParams) (int64, error)
 	// OOR artifact store queries.
 	UpsertOORPackage(ctx context.Context, arg UpsertOORPackageParams) (int64, error)
 	UpsertOORRecipientCursor(ctx context.Context, arg UpsertOORRecipientCursorParams) error
