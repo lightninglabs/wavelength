@@ -6,6 +6,9 @@ import (
 	"errors"
 	"math"
 	prand "math/rand"
+	"runtime"
+	"runtime/trace"
+	"strings"
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
@@ -35,6 +38,14 @@ const (
 
 	// DefaultMaxRetryDelay is the default maximum delay between retries.
 	DefaultMaxRetryDelay = time.Second * 3
+
+	// slowTxnThreshold is the duration past which ExecTx flags a
+	// transaction as suspiciously long: a held write transaction starves
+	// every other writer on the single-writer lock, and a stalled begin
+	// marks the corresponding victim. One second is far above any
+	// healthy transaction on this schema and far below the 30s
+	// busy_timeout that converts a stuck writer into payment failures.
+	slowTxnThreshold = time.Second
 )
 
 // TxOptions represents a set of options one can use to control what type of
@@ -229,6 +240,27 @@ func NewTransactionExecutor[Querier any](db BatchedQuerier,
 	}
 }
 
+// execTxCallerHint returns the function name of the first caller frame
+// outside the db packages, identifying which store or domain call site owns
+// a flagged transaction. Only invoked on the slow path.
+func execTxCallerHint() string {
+	pcs := make([]uintptr, 16)
+	n := runtime.Callers(3, pcs)
+	frames := runtime.CallersFrames(pcs[:n])
+	for {
+		frame, more := frames.Next()
+		if frame.Function != "" && !strings.Contains(
+			frame.Function, "darepo-client/db",
+		) {
+
+			return frame.Function
+		}
+		if !more {
+			return "unknown"
+		}
+	}
+}
+
 // ExecTx is a wrapper for txBody to abstract the creation and commit of a db
 // transaction. The db transaction is embedded in a `*Queries` that txBody
 // needs to use when executing each one of the queries that need to be applied
@@ -248,6 +280,17 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 		return txBody(t.createQuery(tx))
 	}
 
+	// Under an active runtime trace (e.g. an arktest --trace run), mark
+	// the whole transaction as a region and tag it with the owning call
+	// site so `go tool trace` shows exactly which goroutine sat inside a
+	// transaction during a stall. StartRegion is a few nanoseconds when
+	// tracing is off, and the caller walk is gated behind IsEnabled.
+	if trace.IsEnabled() {
+		region := trace.StartRegion(ctx, "db.ExecTx")
+		trace.Log(ctx, "db.execTxCaller", execTxCallerHint())
+		defer region.End()
+	}
+
 	waitBeforeRetry := func(attemptNumber int) {
 		retryDelay := t.opts.randRetryDelay(attemptNumber)
 
@@ -263,8 +306,19 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 	}
 
 	for i := 0; i < t.opts.numRetries; i++ {
-		// Create the db transaction.
+		// Create the db transaction. A slow begin means this
+		// transaction was the victim of whoever held the writer; a
+		// slow body/commit (below) identifies the holder itself.
+		beginStart := time.Now()
 		tx, err := t.BatchedQuerier.BeginTx(ctx, txOptions)
+		if wait := time.Since(beginStart); wait >= slowTxnThreshold {
+			t.log.WarnS(ctx, "Transaction begin stalled on the "+
+				"database lock", nil,
+				"wait", wait,
+				"readonly", txOptions.ReadOnly(),
+				"caller", execTxCallerHint(),
+			)
+		}
 		if err != nil {
 			dbErr := MapSQLError(err)
 			if IsSerializationOrDeadlockError(dbErr) {
@@ -300,7 +354,26 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 			_ = tx.Rollback()
 		}()
 
+		// A long-held write transaction starves every other writer on
+		// the connection's single-writer lock, so flag the holder with
+		// its call site. The check is two clock reads on the fast
+		// path; the caller walk runs only when the threshold trips.
+		holdStart := time.Now()
+		warnIfHeldLong := func() {
+			held := time.Since(holdStart)
+			if held < slowTxnThreshold {
+				return
+			}
+
+			t.log.WarnS(ctx, "Transaction held long", nil,
+				"held", held,
+				"readonly", txOptions.ReadOnly(),
+				"caller", execTxCallerHint(),
+			)
+		}
+
 		if err := txBody(t.createQuery(tx)); err != nil {
+			warnIfHeldLong()
 			dbErr := MapSQLError(err)
 			if IsSerializationOrDeadlockError(dbErr) {
 				// Roll back the transaction, then pop back up
@@ -327,7 +400,9 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 		}
 
 		// Commit transaction.
-		if err = tx.Commit(); err != nil {
+		err = tx.Commit()
+		warnIfHeldLong()
+		if err != nil {
 			dbErr := MapSQLError(err)
 			if IsSerializationOrDeadlockError(dbErr) {
 				// Roll back the transaction, then pop back up
