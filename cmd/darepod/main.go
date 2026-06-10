@@ -691,7 +691,9 @@ func configurePackageRelayFallback(v *viper.Viper, cfg *darepod.Config) error {
 		esploraURL = v.GetString("wallet.esploraurl")
 	}
 	if esploraURL == "" {
-		warnIfNoPackagePath(cfg)
+		if w := packageRelayWarning(cfg); w != "" {
+			fmt.Fprintf(os.Stderr, "WARNING: %s\n", w)
+		}
 
 		return nil
 	}
@@ -707,25 +709,42 @@ func configurePackageRelayFallback(v *viper.Viper, cfg *darepod.Config) error {
 	return nil
 }
 
-// warnIfNoPackagePath prints a startup warning when the configured wallet
-// backend cannot relay v3 ephemeral-anchor packages on its own and no package
-// submitter was wired. Without a package path, unilateral exit and fraud
-// response cannot broadcast their zero-fee parents (darepo-client#590). The
-// lwwallet backend is exempt: it relays packages through its own Esplora
-// chain backend.
-func warnIfNoPackagePath(cfg *darepod.Config) {
-	switch cfg.Wallet.Type {
-	case darepod.WalletTypeLnd, darepod.WalletTypeBtcwallet:
-		fmt.Fprintf(
-			os.Stderr, "WARNING: wallet.type %q has no v3 "+
-				"package relay path configured: set "+
-				"bitcoind.host for direct submitpackage, or "+
-				"package.esploraurl for Esplora relay. "+
-				"Without one, unilateral exit (darepocli "+
-				"exit) cannot broadcast and will fail.\n",
-			cfg.Wallet.Type,
-		)
+// packageRelayWarning returns a startup warning when the configured wallet
+// backend may be unable to relay v3 ephemeral-anchor packages and no package
+// submitter was wired, or the empty string when no warning is warranted.
+// Without a package path, unilateral exit and fraud response cannot broadcast
+// their zero-fee parents (darepo-client#590).
+//
+// The scope is deliberately narrow (darepo-client#678): only the lnd backend
+// can warrant a warning, because the other backends relay natively —
+//
+//   - lwwallet relays packages through its own Esplora chain backend, so it
+//     never needs a submitter.
+//   - btcwallet (neutrino SPV) relays the zero-fee parent + CPFP child over
+//     P2P 1p1c package relay with no submitter, confirmed by the
+//     neutrino_p2p_1p1c case of TestUnilateralExitPackageRelayMatrix. Warning
+//     it would be a false alarm, so it is exempt.
+//   - lnd relays natively only when backed by neutrino (the same P2P 1p1c
+//     path, confirmed by lnd_neutrino_1p1c); when backed by bitcoind it
+//     submits the zero-fee parent standalone and bitcoind rejects it ("min
+//     relay fee not met"), so the exit fails (the darepo-client#590 bug).
+//     lnd's RPC does not expose its chain backend, so darepod cannot tell the
+//     two apart at startup — hence a conditional warning that names the
+//     bitcoind-backed case rather than a blanket claim that every lnd exit
+//     fails.
+func packageRelayWarning(cfg *darepod.Config) string {
+	if cfg.Wallet.Type != darepod.WalletTypeLnd {
+		return ""
 	}
+
+	return fmt.Sprintf("wallet.type %q has no v3 package relay submitter "+
+		"configured. If this lnd is backed by bitcoind, unilateral "+
+		"exit (darepocli exit) cannot broadcast its zero-fee package "+
+		"and will fail; set bitcoind.host for direct submitpackage "+
+		"(pointing at the same bitcoind your lnd uses) or "+
+		"package.esploraurl for Esplora relay. If this lnd is backed "+
+		"by neutrino, relay works via P2P 1p1c and no submitter "+
+		"is needed.", cfg.Wallet.Type)
 }
 
 // isLoopbackHost reports whether the given bitcoind RPC address points

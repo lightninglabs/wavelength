@@ -411,3 +411,56 @@ func TestResolveBitcoindAuth(t *testing.T) {
 		})
 	}
 }
+
+// TestPackageRelayWarning checks that the startup package-relay warning is
+// scoped to the lnd backend. lwwallet relays via its own Esplora chain
+// backend and btcwallet (neutrino) relays via P2P 1p1c, so warning either
+// would be a false alarm (darepo-client#678).
+func TestPackageRelayWarning(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		walletType string
+		wantWarn   bool
+	}{
+		{
+			name:       "lnd warns (may be bitcoind-backed)",
+			walletType: darepod.WalletTypeLnd,
+			wantWarn:   true,
+		},
+		{
+			name:       "btcwallet exempt (neutrino 1p1c)",
+			walletType: darepod.WalletTypeBtcwallet,
+			wantWarn:   false,
+		},
+		{
+			name:       "lwwallet exempt (native esplora)",
+			walletType: darepod.WalletTypeLwwallet,
+			wantWarn:   false,
+		},
+		{
+			name:       "unset wallet type does not warn",
+			walletType: "",
+			wantWarn:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &darepod.Config{
+				Wallet: &darepod.WalletConfig{
+					Type: tc.walletType,
+				},
+			}
+
+			warn := packageRelayWarning(cfg)
+			if (warn != "") != tc.wantWarn {
+				t.Fatalf("walletType %q: wantWarn=%v, got %q",
+					tc.walletType, tc.wantWarn, warn)
+			}
+		})
+	}
+}
