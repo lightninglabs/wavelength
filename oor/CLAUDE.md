@@ -205,6 +205,13 @@ State transitions and validation rules live under [Invariants](#invariants).
 
 ## Invariants
 
+- Before dispatching a standard `StartTransferEvent`, `Idle.ProcessEvent`
+  calls `normalizeCheckpointOwnerLeaves` to rebind each input's checkpoint
+  OUTPUT owner leaf to the session operator key (not the spent VTXO's
+  historical operator key). A VTXO created before an operator key rotation
+  would otherwise produce a checkpoint output the current operator cannot
+  co-sign, causing a server-side submit rejection. Custom-spend inputs (e.g.
+  vHTLC) carry their own explicit owner leaf and are left untouched.
 - Checkpoint output collab path is 2-of-2
   `MultiSigCollabTapLeaf(clientKey, operatorKey)`, not single-sig.
 - `signCustomCheckpointPSBT` re-verifies that the custom spend path

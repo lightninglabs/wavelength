@@ -30,6 +30,10 @@ communication alongside the raw registration API.
 - `RegisterSpendRequest/Response`, `UnregisterSpendRequest/Response` — Spend
   monitoring lifecycle.
 - `EpochMsg` / `EpochResp` — Sealed interfaces for block-epoch sub-actor.
+- `BlockEpochConfig` — Config for `BlockEpochActor`. `ReconnectBackoff` and
+  `MaxReconnectBackoff` control exponential reconnect delay when the backend
+  stream closes mid-subscription (defaults: 1 s initial, 30 s cap). Zero
+  values use the defaults; tests lower both to speed up reconnect assertions.
 - `SubscribeBlocksRequest/Response`, `UnsubscribeBlocksRequest/Response` —
   Block subscription lifecycle.
 - `ConfRegistration` / `SpendRegistration` / `BlockRegistration` — Structs with
@@ -56,6 +60,13 @@ communication alongside the raw registration API.
 - Confirmation sub-actors support two notification modes: Future-based (blocking
   await) and actor-based (async `Tell` via `NotifyActor`). Callers use the actor
   mode when blocking inside a durable actor transaction is unsafe.
+- `BlockEpochActor` auto-reconnects with exponential backoff when the backend
+  stream closes mid-subscription. LND can close all chain-notifier streams
+  during restart; callers such as the boarding wallet need healing without a
+  full daemon restart. The actor does NOT return on a closed epoch channel;
+  instead it cancels the old registration, waits for the current backoff, and
+  re-calls `RegisterBlocks`. Backoff resets to initial on a successful
+  reconnection.
 
 ## Deep Docs
 

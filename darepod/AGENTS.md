@@ -253,6 +253,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `serverconn.PubKeyMailboxID`), not config strings. The operator's
   remote mailbox ID is fetched via direct gRPC before the mailbox
   runtime starts.
+- `OperatorTerms` no longer carries `ForfeitScript`, `SweepKey`, or
+  `SweepDelay`; these are delivered per round in the batch info and are not
+  surfaced in the daemon-level `ServerInfo` RPC response.
 - Auth headers (Schnorr signature) are injected into all outbound
   envelopes including response envelopes in `handleInboundRPC`.
 - TLS client cert generation is skipped in insecure mode.
@@ -265,9 +268,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   per-recipient amounts outside `(0, MaxSatoshi]`, uses
   overflow-safe accumulation. Wallet-side `handleSendVTXOs` repeats
   these checks as defense-in-depth.
+- `SendOOR` supports multiple recipients (up to `maxOORRecipients = 256`).
+  Request validation (`sendOORRequestRecipients`, `sumSendOORRecipientAmounts`)
+  runs before operator terms are fetched; per-recipient script resolution and
+  dust validation run in `buildSendOORRecipients`. Custom inputs still require
+  exactly one recipient. The response now carries `RecipientOutpoints` (plural)
+  instead of a single `RecipientOutpoint`.
 - `SendOOR` with custom inputs serializes concurrent calls on the
   same outpoints via `reserveCustomInputs`. Custom inputs lock for
   the RPC lifetime; release is deferred on both success and failure.
+- `cleanupSubmittedOORStartWithTimeout`: when the cleanup context deadline
+  expires before the OOR actor responds, the wallet-unlock call runs on a
+  fresh `submittedOORUnlockTimeout`-bounded context (derived from the
+  request's cancel-free base), not the already-expired cleanup context.
+  Without this, the wallet actor's mailbox rejects the expired Tell and
+  wallet-selected VTXOs are silently pinned.
 - `BuildCustomTransferInputs` validates (a) the caller-supplied
   policy template compiles to the provided pkScript
   (`PolicyTemplate.MatchesPkScript`), and (b) the spend path's

@@ -24,8 +24,14 @@ state transitions and validation rules live under [Invariants](#invariants).
 - `ClientEvent` — sealed inbound event interface. Notable members:
   `JoinRoundQuoteReceived` (carries reseal `SealPass`), `QuoteAccepted`,
   `QuoteRejected`, `ForfeitCollectionTimedOut`, `ForfeitSignatureResponse`,
-  `ConnectorLeafInfo`, `IntentPackage` (atomic delivery of all intent
-  types).
+  `ConnectorLeafInfo`, `IntentPackage` (atomic delivery of all intent types).
+  `CommitmentTxBuilt` carries five per-round operator keys in addition to the
+  VTXO tree: `TreeCosignKey` (MuSig2 cosigner for VTXO output tree),
+  `ConnectorOperatorKey` (connector tree operator key), `SweepKey` (sweep-leaf
+  key), `SweepDelay` (batch-wide absolute timelock), and `ForfeitKey` (forfeit
+  penalty output key). All are per-round deliveries replacing the removed
+  global `OperatorTerms` sweep/forfeit fields; nil values fall back to the
+  global operator key for older servers.
 - `ClientOutMsg` — sealed outbox interface. Members:
   `JoinRoundAcceptOutbox`, `JoinRoundRejectOutbox`,
   `SubmitForfeitSigRequest`, `StartTimeoutReq`, `CancelTimeoutReq`,
@@ -161,6 +167,15 @@ state transitions and validation rules live under [Invariants](#invariants).
 - Aggregated signatures validated on `VTXOTreePaths` are propagated to
   extracted `ClientTrees` via `SubmitTreeSigs` + `VerifySigned`, so
   persisted client trees carry valid signatures for unilateral exit.
+- Sweep key, sweep delay, and forfeit key are now delivered per round in
+  `CommitmentTxBuilt` (not from global `OperatorTerms`). The
+  sweep-vs-exit-delay security check runs in `CommitmentTxReceivedState` rather
+  than at actor construction, because the delay is not known until the round's
+  batch info arrives.
+- `registerCommitmentConfirmation` watches the validated batch output (the
+  output that receives this client's funds) via `confirmationWatchScript`,
+  rather than always assuming output 0. Falls back to output 0 when the round
+  carries no VTXO trees.
 - Round state is checkpointed atomically after tree validation — a
   crash before checkpoint means the client has no record of sent
   signatures.
