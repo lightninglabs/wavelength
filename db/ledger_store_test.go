@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"testing"
@@ -67,6 +68,26 @@ func testBytes(length int, seed byte) []byte {
 	}
 
 	return out
+}
+
+// insertTestInternalKey registers an internal_keys row with a deterministic
+// 33-byte pubkey and returns the FK id boarding rows reference.
+func insertTestInternalKey(ctx context.Context, t *testing.T, db *BaseDB,
+	seed byte) sql.NullInt64 {
+
+	t.Helper()
+
+	id, err := db.UpsertInternalKey(
+		ctx, sqlc.UpsertInternalKeyParams{
+			Pubkey:    testBytes(33, seed),
+			KeyFamily: 0,
+			KeyIndex:  int64(seed),
+			CreatedAt: 0,
+		},
+	)
+	require.NoError(t, err)
+
+	return sql.NullInt64{Int64: id, Valid: true}
 }
 
 // testHash32 returns a deterministic 32-byte hash for tests.
@@ -462,9 +483,11 @@ func TestLedgerStoreTransactionHistoryWalletUTXOCreatedChainFields(
 		t,
 		db.InsertBoardingAddress(
 			ctx, sqlc.InsertBoardingAddressParams{
-				PkScript:       pkScript,
-				AddressString:  "bcrt1ptest",
-				ClientPubkey:   testBytes(33, 0x11),
+				PkScript:      pkScript,
+				AddressString: "bcrt1ptest",
+				ClientKeyID: insertTestInternalKey(
+					ctx, t, db, 0x11,
+				),
 				OperatorPubkey: testBytes(33, 0x22),
 				ExitDelay:      144,
 				CreationTime:   createdAt,
@@ -592,9 +615,11 @@ func TestLedgerStoreTransactionHistoryWalletUTXOCreatedBoardingStatus(
 		t,
 		db.InsertBoardingAddress(
 			ctx, sqlc.InsertBoardingAddressParams{
-				PkScript:       pkScript,
-				AddressString:  "bcrt1pboarding",
-				ClientPubkey:   testBytes(33, 0x12),
+				PkScript:      pkScript,
+				AddressString: "bcrt1pboarding",
+				ClientKeyID: insertTestInternalKey(
+					ctx, t, db, 0x12,
+				),
 				OperatorPubkey: testBytes(33, 0x23),
 				ExitDelay:      144,
 				CreationTime:   createdAt,
@@ -725,9 +750,11 @@ func TestLedgerStoreTransactionHistoryWalletUTXOCreatedMultiInputFee(
 			t,
 			db.InsertBoardingAddress(
 				ctx, sqlc.InsertBoardingAddressParams{
-					PkScript:       pkScript,
-					AddressString:  "bcrt1ptest",
-					ClientPubkey:   testBytes(33, 0x11),
+					PkScript:      pkScript,
+					AddressString: "bcrt1ptest",
+					ClientKeyID: insertTestInternalKey(
+					ctx, t, db, pkScriptSeed,
+				),
 					OperatorPubkey: testBytes(33, 0x22),
 					ExitDelay:      144,
 					CreationTime:   createdAt,

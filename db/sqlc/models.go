@@ -21,9 +21,7 @@ type AccountType struct {
 type BoardingAddress struct {
 	PkScript            []byte
 	AddressString       string
-	ClientPubkey        []byte
-	ClientKeyFamily     int32
-	ClientKeyIndex      int32
+	ClientKeyID         sql.NullInt64
 	OperatorPubkey      []byte
 	ExitDelay           int32
 	LastConfirmedHeight int32

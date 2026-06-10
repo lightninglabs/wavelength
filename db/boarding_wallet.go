@@ -22,7 +22,6 @@ import (
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
-	"github.com/lightningnetwork/lnd/keychain"
 )
 
 type (
@@ -50,6 +49,11 @@ type BoardingSweepInputRow = sqlc.BoardingSweepInput
 //
 //nolint:interfacebloat // Grouping all boarding queries keeps ExecTx closures
 type BoardingStore interface {
+	// InternalKeyQuerier lets the boarding store register and hydrate the
+	// client wallet key via the shared internal_keys registry within its
+	// own transaction.
+	InternalKeyQuerier
+
 	InsertBoardingAddress(ctx context.Context, arg NewAddrParams) error
 
 	GetBoardingAddress(ctx context.Context,
@@ -197,7 +201,6 @@ func (b *BoardingWalletStore) InsertBoardingAddress(ctx context.Context,
 	writeTxOpts := WriteTxOption()
 
 	return b.db.ExecTx(ctx, writeTxOpts, func(q BoardingStore) error {
-		clientPubkeyBytes := addr.KeyDesc.PubKey.SerializeCompressed()
 		operatorPubkeyBytes := addr.OperatorKey.SerializeCompressed()
 
 		pkScript, err := txscript.PayToAddrScript(addr.Address)
@@ -205,15 +208,26 @@ func (b *BoardingWalletStore) InsertBoardingAddress(ctx context.Context,
 			return fmt.Errorf("create pk script: %w", err)
 		}
 
+		// Register the client wallet key in the shared internal_keys
+		// registry and reference it by id, rather than inlining the
+		// (pubkey, family, index) triple on the row.
+		clientKeyID, err := RegisterInternalKeyTx(
+			ctx, q, b.clock.Now().Unix(), addr.KeyDesc,
+		)
+		if err != nil {
+			return fmt.Errorf("register client key: %w", err)
+		}
+
 		params := NewAddrParams{
-			PkScript:        pkScript,
-			AddressString:   addr.Address.String(),
-			ClientPubkey:    clientPubkeyBytes,
-			ClientKeyFamily: int32(addr.KeyDesc.Family),
-			ClientKeyIndex:  int32(addr.KeyDesc.Index),
-			OperatorPubkey:  operatorPubkeyBytes,
-			ExitDelay:       int32(addr.ExitDelay),
-			CreationTime:    b.clock.Now().Unix(),
+			PkScript:      pkScript,
+			AddressString: addr.Address.String(),
+			ClientKeyID: sql.NullInt64{
+				Int64: clientKeyID,
+				Valid: true,
+			},
+			OperatorPubkey: operatorPubkeyBytes,
+			ExitDelay:      int32(addr.ExitDelay),
+			CreationTime:   b.clock.Now().Unix(),
 		}
 
 		return q.InsertBoardingAddress(ctx, params)
@@ -235,7 +249,7 @@ func (b *BoardingWalletStore) LookupBoardingAddress(ctx context.Context,
 			return fmt.Errorf("get boarding address: %w", err)
 		}
 
-		addr, err := dbAddrToDomainAddr(b.chainParams, dbAddr)
+		addr, err := dbAddrToDomainAddr(ctx, q, b.chainParams, dbAddr)
 		if err != nil {
 			return err
 		}
@@ -267,7 +281,9 @@ func (b *BoardingWalletStore) ListAllBoardingAddresses(ctx context.Context) (
 
 		addrs := make([]*wallet.BoardingAddress, 0, len(dbAddrs))
 		for _, dbAddr := range dbAddrs {
-			addr, err := dbAddrToDomainAddr(b.chainParams, dbAddr)
+			addr, err := dbAddrToDomainAddr(
+				ctx, q, b.chainParams, dbAddr,
+			)
 			if err != nil {
 				return fmt.Errorf("convert address: %w", err)
 			}
@@ -643,22 +659,32 @@ func (b *BoardingWalletStore) LookupIntentByScript(ctx context.Context,
 }
 
 // dbAddrToDomainAddr converts a sqlc BoardingAddress to a
-// wallet.BoardingAddress. The tapscript is reconstructed from the stored
-// component fields (client pubkey, operator pubkey, exit delay) using
+// wallet.BoardingAddress. The client KeyDescriptor is hydrated from the
+// internal_keys registry via the client_key_id FK; the tapscript is
+// reconstructed from the client pubkey, operator pubkey, and exit delay using
 // scripts.VTXOTapScript().
-func dbAddrToDomainAddr(chainParams *chaincfg.Params,
+func dbAddrToDomainAddr(ctx context.Context, q InternalKeyQuerier,
+	chainParams *chaincfg.Params,
 	dbAddr BoardingAddrRow) (*wallet.BoardingAddress, error) {
 
-	clientPubkey, err := btcec.ParsePubKey(dbAddr.ClientPubkey)
-	if err != nil {
-		return nil, fmt.Errorf("parse client pubkey: %w", err)
+	if !dbAddr.ClientKeyID.Valid {
+		return nil, fmt.Errorf("boarding address %x missing "+
+			"client key id", dbAddr.PkScript)
 	}
+
+	clientKeyDesc, err := InternalKeyDescByIDTx(
+		ctx, q, dbAddr.ClientKeyID.Int64,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("hydrate client key: %w", err)
+	}
+
 	operatorPubkey, err := btcec.ParsePubKey(dbAddr.OperatorPubkey)
 	if err != nil {
 		return nil, fmt.Errorf("parse operator pubkey: %w", err)
 	}
 	tapscript, err := arkscript.VTXOTapScript(
-		clientPubkey, operatorPubkey, uint32(dbAddr.ExitDelay),
+		clientKeyDesc.PubKey, operatorPubkey, uint32(dbAddr.ExitDelay),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("reconstruct tapscript: %w", err)
@@ -672,17 +698,9 @@ func dbAddrToDomainAddr(chainParams *chaincfg.Params,
 	}
 
 	return &wallet.BoardingAddress{
-		Address:   address,
-		Tapscript: tapscript,
-		KeyDesc: keychain.KeyDescriptor{
-			PubKey: clientPubkey,
-			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamily(
-					dbAddr.ClientKeyFamily,
-				),
-				Index: uint32(dbAddr.ClientKeyIndex),
-			},
-		},
+		Address:     address,
+		Tapscript:   tapscript,
+		KeyDesc:     clientKeyDesc,
 		OperatorKey: operatorPubkey,
 		ExitDelay:   uint32(dbAddr.ExitDelay),
 	}, nil
@@ -700,7 +718,7 @@ func (b *BoardingWalletStore) dbIntentToDomainIntent(ctx context.Context,
 	if err != nil {
 		return nil, fmt.Errorf("lookup boarding address: %w", err)
 	}
-	addr, err := dbAddrToDomainAddr(b.chainParams, dbAddr)
+	addr, err := dbAddrToDomainAddr(ctx, q, b.chainParams, dbAddr)
 	if err != nil {
 		return nil, fmt.Errorf("convert address: %w", err)
 	}

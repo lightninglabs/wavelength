@@ -68,6 +68,11 @@ type ListRoundsQuery struct {
 //
 //nolint:interfacebloat
 type RoundStore interface {
+	// InternalKeyQuerier lets the round and VTXO stores register and
+	// hydrate wallet keys via the shared internal_keys registry within
+	// their own transactions.
+	InternalKeyQuerier
+
 	InsertRound(ctx context.Context, arg InsertRoundParams) error
 
 	GetRound(ctx context.Context, roundID string) (RoundRow, error)
@@ -850,7 +855,7 @@ func (s *RoundPersistenceStore) dbRoundIntentToDomainIntent(ctx context.Context,
 	}
 
 	// Convert the base boarding intent.
-	baseAddr, err := dbAddrToDomainAddr(s.chainParams, dbAddr)
+	baseAddr, err := dbAddrToDomainAddr(ctx, q, s.chainParams, dbAddr)
 	if err != nil {
 		return nil, fmt.Errorf("convert address: %w", err)
 	}

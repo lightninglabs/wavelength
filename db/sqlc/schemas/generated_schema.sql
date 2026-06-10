@@ -37,15 +37,12 @@ CREATE TABLE boarding_addresses (
     -- address_string is the bech32m-encoded address for user display.
     address_string TEXT NOT NULL,
 
-    -- client_pubkey is the serialized public key (33 bytes compressed) of the
-    -- client used in the tapscript.
-    client_pubkey BLOB NOT NULL,
-
-    -- client_key_family is the BIP32 key family for the client key.
-    client_key_family INTEGER NOT NULL,
-
-    -- client_key_index is the BIP32 key index within the family.
-    client_key_index INTEGER NOT NULL,
+    -- client_key_id references the internal_keys registry row for the client
+    -- wallet key used in the tapscript. The registry row carries the
+    -- compressed pubkey plus the lnd KeyLocator needed to reconstruct the
+    -- signing descriptor. Nullable so a row can be written before the key is
+    -- registered, though the write path always registers first.
+    client_key_id BIGINT REFERENCES internal_keys(id),
 
     -- operator_pubkey is the serialized public key (33 bytes compressed) of
     -- the operator used in the collaborative spend path.
