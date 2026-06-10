@@ -21,10 +21,75 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// State is the lifecycle state of an Ark protocol version.
+type ArkVersionPolicy_State int32
+
+const (
+	// STATE_UNSPECIFIED is the zero value and must not be used as a real
+	// policy state.
+	ArkVersionPolicy_STATE_UNSPECIFIED ArkVersionPolicy_State = 0
+	// STATE_ACTIVE means the version may be selected without warning.
+	ArkVersionPolicy_STATE_ACTIVE ArkVersionPolicy_State = 1
+	// STATE_DEPRECATING means the version may still be selected, but the
+	// client must surface the disable deadline and upgrade URL.
+	ArkVersionPolicy_STATE_DEPRECATING ArkVersionPolicy_State = 2
+	// STATE_DISABLED means the version must never be selected or accepted.
+	ArkVersionPolicy_STATE_DISABLED ArkVersionPolicy_State = 3
+)
+
+// Enum value maps for ArkVersionPolicy_State.
+var (
+	ArkVersionPolicy_State_name = map[int32]string{
+		0: "STATE_UNSPECIFIED",
+		1: "STATE_ACTIVE",
+		2: "STATE_DEPRECATING",
+		3: "STATE_DISABLED",
+	}
+	ArkVersionPolicy_State_value = map[string]int32{
+		"STATE_UNSPECIFIED": 0,
+		"STATE_ACTIVE":      1,
+		"STATE_DEPRECATING": 2,
+		"STATE_DISABLED":    3,
+	}
+)
+
+func (x ArkVersionPolicy_State) Enum() *ArkVersionPolicy_State {
+	p := new(ArkVersionPolicy_State)
+	*p = x
+	return p
+}
+
+func (x ArkVersionPolicy_State) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ArkVersionPolicy_State) Descriptor() protoreflect.EnumDescriptor {
+	return file_ark_proto_enumTypes[0].Descriptor()
+}
+
+func (ArkVersionPolicy_State) Type() protoreflect.EnumType {
+	return &file_ark_proto_enumTypes[0]
+}
+
+func (x ArkVersionPolicy_State) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ArkVersionPolicy_State.Descriptor instead.
+func (ArkVersionPolicy_State) EnumDescriptor() ([]byte, []int) {
+	return file_ark_proto_rawDescGZIP(), []int{1, 0}
+}
+
 type GetInfoRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// supported_ark_versions lists the Ark protocol versions this client can
+	// use, ordered by client preference (most preferred first). The operator
+	// selects the first operator-preferred version present in this list. An
+	// empty list is interpreted as support for Ark v1 only during the
+	// documented legacy rollout window.
+	SupportedArkVersions []uint32 `protobuf:"varint,1,rep,packed,name=supported_ark_versions,json=supportedArkVersions,proto3" json:"supported_ark_versions,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *GetInfoRequest) Reset() {
@@ -55,6 +120,90 @@ func (x *GetInfoRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use GetInfoRequest.ProtoReflect.Descriptor instead.
 func (*GetInfoRequest) Descriptor() ([]byte, []int) {
 	return file_ark_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *GetInfoRequest) GetSupportedArkVersions() []uint32 {
+	if x != nil {
+		return x.SupportedArkVersions
+	}
+	return nil
+}
+
+// ArkVersionPolicy advertises the operator's deprecation policy for a single
+// Ark protocol version. It lets a client surface upgrade deadlines and URLs
+// for the version it negotiates.
+type ArkVersionPolicy struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// version is the Ark protocol version this policy describes.
+	Version uint32 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	// state is the lifecycle state of the version.
+	State ArkVersionPolicy_State `protobuf:"varint,2,opt,name=state,proto3,enum=arkrpc.ArkVersionPolicy_State" json:"state,omitempty"`
+	// disable_after_unix_s is the advertised planned cutoff (wall-clock unix
+	// seconds) after which the operator intends to disable this version. It is
+	// an advertised deadline, not an automatic timer.
+	DisableAfterUnixS int64 `protobuf:"varint,3,opt,name=disable_after_unix_s,json=disableAfterUnixS,proto3" json:"disable_after_unix_s,omitempty"`
+	// upgrade_url points the client at upgrade instructions for this version.
+	UpgradeUrl    string `protobuf:"bytes,4,opt,name=upgrade_url,json=upgradeUrl,proto3" json:"upgrade_url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ArkVersionPolicy) Reset() {
+	*x = ArkVersionPolicy{}
+	mi := &file_ark_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ArkVersionPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ArkVersionPolicy) ProtoMessage() {}
+
+func (x *ArkVersionPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ArkVersionPolicy.ProtoReflect.Descriptor instead.
+func (*ArkVersionPolicy) Descriptor() ([]byte, []int) {
+	return file_ark_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ArkVersionPolicy) GetVersion() uint32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *ArkVersionPolicy) GetState() ArkVersionPolicy_State {
+	if x != nil {
+		return x.State
+	}
+	return ArkVersionPolicy_STATE_UNSPECIFIED
+}
+
+func (x *ArkVersionPolicy) GetDisableAfterUnixS() int64 {
+	if x != nil {
+		return x.DisableAfterUnixS
+	}
+	return 0
+}
+
+func (x *ArkVersionPolicy) GetUpgradeUrl() string {
+	if x != nil {
+		return x.UpgradeUrl
+	}
+	return ""
 }
 
 type GetInfoResponse struct {
@@ -111,13 +260,23 @@ type GetInfoResponse struct {
 	// cap pre-submit to avoid round-trip rejections; a value of 0 means
 	// the operator does not enforce a cap.
 	MaxOorLineageVbytes uint32 `protobuf:"varint,18,opt,name=max_oor_lineage_vbytes,json=maxOorLineageVbytes,proto3" json:"max_oor_lineage_vbytes,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// selected_ark_version is the Ark protocol version the operator selected
+	// for this client from its supported_ark_versions request. Zero means no
+	// common version exists; the client must not start its mailbox runtime.
+	SelectedArkVersion uint32 `protobuf:"varint,19,opt,name=selected_ark_version,json=selectedArkVersion,proto3" json:"selected_ark_version,omitempty"`
+	// supported_ark_versions lists the Ark protocol versions the operator
+	// currently has enabled, in operator-preference order.
+	SupportedArkVersions []uint32 `protobuf:"varint,20,rep,packed,name=supported_ark_versions,json=supportedArkVersions,proto3" json:"supported_ark_versions,omitempty"`
+	// ark_version_policies carries upgrade and deprecation information for the
+	// operator's known Ark protocol versions.
+	ArkVersionPolicies []*ArkVersionPolicy `protobuf:"bytes,21,rep,name=ark_version_policies,json=arkVersionPolicies,proto3" json:"ark_version_policies,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *GetInfoResponse) Reset() {
 	*x = GetInfoResponse{}
-	mi := &file_ark_proto_msgTypes[1]
+	mi := &file_ark_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -129,7 +288,7 @@ func (x *GetInfoResponse) String() string {
 func (*GetInfoResponse) ProtoMessage() {}
 
 func (x *GetInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[1]
+	mi := &file_ark_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -142,7 +301,7 @@ func (x *GetInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetInfoResponse.ProtoReflect.Descriptor instead.
 func (*GetInfoResponse) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{1}
+	return file_ark_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *GetInfoResponse) GetVersion() string {
@@ -271,6 +430,27 @@ func (x *GetInfoResponse) GetMaxOorLineageVbytes() uint32 {
 	return 0
 }
 
+func (x *GetInfoResponse) GetSelectedArkVersion() uint32 {
+	if x != nil {
+		return x.SelectedArkVersion
+	}
+	return 0
+}
+
+func (x *GetInfoResponse) GetSupportedArkVersions() []uint32 {
+	if x != nil {
+		return x.SupportedArkVersions
+	}
+	return nil
+}
+
+func (x *GetInfoResponse) GetArkVersionPolicies() []*ArkVersionPolicy {
+	if x != nil {
+		return x.ArkVersionPolicies
+	}
+	return nil
+}
+
 // EstimateFeeRequest asks the server to estimate the fee for a
 // VTXO operation at current rates and utilization.
 type EstimateFeeRequest struct {
@@ -289,7 +469,7 @@ type EstimateFeeRequest struct {
 
 func (x *EstimateFeeRequest) Reset() {
 	*x = EstimateFeeRequest{}
-	mi := &file_ark_proto_msgTypes[2]
+	mi := &file_ark_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -301,7 +481,7 @@ func (x *EstimateFeeRequest) String() string {
 func (*EstimateFeeRequest) ProtoMessage() {}
 
 func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[2]
+	mi := &file_ark_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -314,7 +494,7 @@ func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateFeeRequest.ProtoReflect.Descriptor instead.
 func (*EstimateFeeRequest) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{2}
+	return file_ark_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *EstimateFeeRequest) GetAmountSat() int64 {
@@ -367,7 +547,7 @@ type EstimateFeeResponse struct {
 
 func (x *EstimateFeeResponse) Reset() {
 	*x = EstimateFeeResponse{}
-	mi := &file_ark_proto_msgTypes[3]
+	mi := &file_ark_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -379,7 +559,7 @@ func (x *EstimateFeeResponse) String() string {
 func (*EstimateFeeResponse) ProtoMessage() {}
 
 func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[3]
+	mi := &file_ark_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -392,7 +572,7 @@ func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateFeeResponse.ProtoReflect.Descriptor instead.
 func (*EstimateFeeResponse) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{3}
+	return file_ark_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *EstimateFeeResponse) GetLiquidityFeeSat() int64 {
@@ -448,8 +628,20 @@ var File_ark_proto protoreflect.FileDescriptor
 
 const file_ark_proto_rawDesc = "" +
 	"\n" +
-	"\tark.proto\x12\x06arkrpc\"\x10\n" +
-	"\x0eGetInfoRequest\"\xac\x05\n" +
+	"\tark.proto\x12\x06arkrpc\"F\n" +
+	"\x0eGetInfoRequest\x124\n" +
+	"\x16supported_ark_versions\x18\x01 \x03(\rR\x14supportedArkVersions\"\x91\x02\n" +
+	"\x10ArkVersionPolicy\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\rR\aversion\x124\n" +
+	"\x05state\x18\x02 \x01(\x0e2\x1e.arkrpc.ArkVersionPolicy.StateR\x05state\x12/\n" +
+	"\x14disable_after_unix_s\x18\x03 \x01(\x03R\x11disableAfterUnixS\x12\x1f\n" +
+	"\vupgrade_url\x18\x04 \x01(\tR\n" +
+	"upgradeUrl\"[\n" +
+	"\x05State\x12\x15\n" +
+	"\x11STATE_UNSPECIFIED\x10\x00\x12\x10\n" +
+	"\fSTATE_ACTIVE\x10\x01\x12\x15\n" +
+	"\x11STATE_DEPRECATING\x10\x02\x12\x12\n" +
+	"\x0eSTATE_DISABLED\x10\x03\"\xe0\x06\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x01(\fR\x06pubkey\x12\x18\n" +
@@ -472,7 +664,10 @@ const file_ark_proto_rawDesc = "" +
 	"\vannual_rate\x18\x10 \x01(\x01R\n" +
 	"annualRate\x12&\n" +
 	"\x0fbase_margin_sat\x18\x11 \x01(\x03R\rbaseMarginSat\x123\n" +
-	"\x16max_oor_lineage_vbytes\x18\x12 \x01(\rR\x13maxOorLineageVbytes\"\x7f\n" +
+	"\x16max_oor_lineage_vbytes\x18\x12 \x01(\rR\x13maxOorLineageVbytes\x120\n" +
+	"\x14selected_ark_version\x18\x13 \x01(\rR\x12selectedArkVersion\x124\n" +
+	"\x16supported_ark_versions\x18\x14 \x03(\rR\x14supportedArkVersions\x12J\n" +
+	"\x14ark_version_policies\x18\x15 \x03(\v2\x18.arkrpc.ArkVersionPolicyR\x12arkVersionPolicies\"\x7f\n" +
 	"\x12EstimateFeeRequest\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x12\x1f\n" +
@@ -505,23 +700,28 @@ func file_ark_proto_rawDescGZIP() []byte {
 	return file_ark_proto_rawDescData
 }
 
-var file_ark_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_ark_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_ark_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_ark_proto_goTypes = []any{
-	(*GetInfoRequest)(nil),      // 0: arkrpc.GetInfoRequest
-	(*GetInfoResponse)(nil),     // 1: arkrpc.GetInfoResponse
-	(*EstimateFeeRequest)(nil),  // 2: arkrpc.EstimateFeeRequest
-	(*EstimateFeeResponse)(nil), // 3: arkrpc.EstimateFeeResponse
+	(ArkVersionPolicy_State)(0), // 0: arkrpc.ArkVersionPolicy.State
+	(*GetInfoRequest)(nil),      // 1: arkrpc.GetInfoRequest
+	(*ArkVersionPolicy)(nil),    // 2: arkrpc.ArkVersionPolicy
+	(*GetInfoResponse)(nil),     // 3: arkrpc.GetInfoResponse
+	(*EstimateFeeRequest)(nil),  // 4: arkrpc.EstimateFeeRequest
+	(*EstimateFeeResponse)(nil), // 5: arkrpc.EstimateFeeResponse
 }
 var file_ark_proto_depIdxs = []int32{
-	0, // 0: arkrpc.ArkService.GetInfo:input_type -> arkrpc.GetInfoRequest
-	2, // 1: arkrpc.ArkService.EstimateFee:input_type -> arkrpc.EstimateFeeRequest
-	1, // 2: arkrpc.ArkService.GetInfo:output_type -> arkrpc.GetInfoResponse
-	3, // 3: arkrpc.ArkService.EstimateFee:output_type -> arkrpc.EstimateFeeResponse
-	2, // [2:4] is the sub-list for method output_type
-	0, // [0:2] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	0, // 0: arkrpc.ArkVersionPolicy.state:type_name -> arkrpc.ArkVersionPolicy.State
+	2, // 1: arkrpc.GetInfoResponse.ark_version_policies:type_name -> arkrpc.ArkVersionPolicy
+	1, // 2: arkrpc.ArkService.GetInfo:input_type -> arkrpc.GetInfoRequest
+	4, // 3: arkrpc.ArkService.EstimateFee:input_type -> arkrpc.EstimateFeeRequest
+	3, // 4: arkrpc.ArkService.GetInfo:output_type -> arkrpc.GetInfoResponse
+	5, // 5: arkrpc.ArkService.EstimateFee:output_type -> arkrpc.EstimateFeeResponse
+	4, // [4:6] is the sub-list for method output_type
+	2, // [2:4] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_ark_proto_init() }
@@ -534,13 +734,14 @@ func file_ark_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ark_proto_rawDesc), len(file_ark_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   4,
+			NumEnums:      1,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_ark_proto_goTypes,
 		DependencyIndexes: file_ark_proto_depIdxs,
+		EnumInfos:         file_ark_proto_enumTypes,
 		MessageInfos:      file_ark_proto_msgTypes,
 	}.Build()
 	File_ark_proto = out.File

@@ -15,6 +15,48 @@ service ArkService {
 }
 
 message GetInfoRequest {
+    // supported_ark_versions lists the Ark protocol versions this client can
+    // use, ordered by client preference (most preferred first). The operator
+    // selects the first operator-preferred version present in this list. An
+    // empty list is interpreted as support for Ark v1 only during the
+    // documented legacy rollout window.
+    repeated uint32 supported_ark_versions = 1;
+}
+
+// ArkVersionPolicy advertises the operator's deprecation policy for a single
+// Ark protocol version. It lets a client surface upgrade deadlines and URLs
+// for the version it negotiates.
+message ArkVersionPolicy {
+    // State is the lifecycle state of an Ark protocol version.
+    enum State {
+        // STATE_UNSPECIFIED is the zero value and must not be used as a real
+        // policy state.
+        STATE_UNSPECIFIED = 0;
+
+        // STATE_ACTIVE means the version may be selected without warning.
+        STATE_ACTIVE = 1;
+
+        // STATE_DEPRECATING means the version may still be selected, but the
+        // client must surface the disable deadline and upgrade URL.
+        STATE_DEPRECATING = 2;
+
+        // STATE_DISABLED means the version must never be selected or accepted.
+        STATE_DISABLED = 3;
+    }
+
+    // version is the Ark protocol version this policy describes.
+    uint32 version = 1;
+
+    // state is the lifecycle state of the version.
+    State state = 2;
+
+    // disable_after_unix_s is the advertised planned cutoff (wall-clock unix
+    // seconds) after which the operator intends to disable this version. It is
+    // an advertised deadline, not an automatic timer.
+    int64 disable_after_unix_s = 3;
+
+    // upgrade_url points the client at upgrade instructions for this version.
+    string upgrade_url = 4;
 }
 
 message GetInfoResponse {
@@ -87,6 +129,19 @@ message GetInfoResponse {
     // cap pre-submit to avoid round-trip rejections; a value of 0 means
     // the operator does not enforce a cap.
     uint32 max_oor_lineage_vbytes = 18;
+
+    // selected_ark_version is the Ark protocol version the operator selected
+    // for this client from its supported_ark_versions request. Zero means no
+    // common version exists; the client must not start its mailbox runtime.
+    uint32 selected_ark_version = 19;
+
+    // supported_ark_versions lists the Ark protocol versions the operator
+    // currently has enabled, in operator-preference order.
+    repeated uint32 supported_ark_versions = 20;
+
+    // ark_version_policies carries upgrade and deprecation information for the
+    // operator's known Ark protocol versions.
+    repeated ArkVersionPolicy ark_version_policies = 21;
 }
 
 // EstimateFeeRequest asks the server to estimate the fee for a
