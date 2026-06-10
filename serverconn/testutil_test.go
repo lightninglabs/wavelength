@@ -857,7 +857,7 @@ func newTestConnectorConfig(
 	cfg.Store = store
 	cfg.LocalMailboxID = "client-1"
 	cfg.RemoteMailboxID = "server-1"
-	cfg.ProtocolVersion = 1
+	cfg.ArkProtocolVersion = 1
 	cfg.PullWaitTimeout = 50 * time.Millisecond
 
 	return cfg

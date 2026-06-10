@@ -202,11 +202,12 @@ func (s *testServer) handleRequest(ctx context.Context,
 	}
 
 	responseEnv := &mailboxpb.Envelope{
-		ProtocolVersion: 1,
-		Sender:          s.serverMailboxID,
-		Recipient:       env.Rpc.ReplyTo,
-		Headers:         headers,
-		Body:            body,
+		ProtocolVersion:    1,
+		ArkProtocolVersion: 1,
+		Sender:             s.serverMailboxID,
+		Recipient:          env.Rpc.ReplyTo,
+		Headers:            headers,
+		Body:               body,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:          mailboxpb.RpcMeta_KIND_RESPONSE,
 			CorrelationId: env.Rpc.CorrelationId,
@@ -228,10 +229,11 @@ func (s *testServer) pushEvent(t *testing.T, recipientID, service,
 	require.NoError(t, err)
 
 	env := &mailboxpb.Envelope{
-		ProtocolVersion: 1,
-		Sender:          s.serverMailboxID,
-		Recipient:       recipientID,
-		Body:            body,
+		ProtocolVersion:    1,
+		ArkProtocolVersion: 1,
+		Sender:             s.serverMailboxID,
+		Recipient:          recipientID,
+		Body:               body,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
 			Service: service,

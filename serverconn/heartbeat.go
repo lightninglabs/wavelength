@@ -77,6 +77,13 @@ func (a *ServerConnectionActor) startHeartbeat(ctx context.Context) {
 // envelope has no body — the service/method metadata is sufficient for
 // the server to recognise it as a liveness signal.
 func (a *ServerConnectionActor) sendHeartbeat(ctx context.Context) {
+	// Skip heartbeats once the connector is incompatible: the transition
+	// already cancelled this goroutine's context, but guard defensively so
+	// we never contact the edge after the terminal state.
+	if a.compatibilityError() != nil {
+		return
+	}
+
 	now := time.Now()
 
 	// Each heartbeat needs a unique MsgId to avoid deduplication
@@ -91,7 +98,6 @@ func (a *ServerConnectionActor) sendHeartbeat(ctx context.Context) {
 	)
 
 	envelope := &mailboxpb.Envelope{
-		ProtocolVersion: a.cfg.ProtocolVersion,
 		MsgId:           msgID,
 		Sender:          a.cfg.LocalMailboxID,
 		Recipient:       a.cfg.RemoteMailboxID,
@@ -105,13 +111,28 @@ func (a *ServerConnectionActor) sendHeartbeat(ctx context.Context) {
 		},
 	}
 
+	// Stamp the immutable version pair so heartbeats carry both versions
+	// like every other outbound envelope.
+	a.cfg.stampEnvelope(envelope)
+
 	// Best-effort: log but don't fail. The server will mark us
 	// offline after the staleness threshold if heartbeats stop
 	// arriving.
-	_, err := a.cfg.Edge.Send(ctx, &mailboxpb.SendRequest{
+	resp, err := a.cfg.Edge.Send(ctx, &mailboxpb.SendRequest{
 		Envelope: envelope,
 	})
 	if err != nil {
 		a.log.WarnS(ctx, "Heartbeat send failed", err)
+
+		return
+	}
+
+	// A permanent version status on a heartbeat is terminal, just like on
+	// any other send path: drive the incompatibility transition.
+	if resp.Status != nil && !resp.Status.Ok {
+		a.checkPermanentStatus(
+			ctx,
+			mailboxconn.NewStatusError("heartbeat", resp.Status),
+		)
 	}
 }

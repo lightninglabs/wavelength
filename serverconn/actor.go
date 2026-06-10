@@ -661,6 +661,23 @@ type ServerConnectionActor struct {
 	// checks this to skip sending when real traffic already
 	// proves liveness.
 	lastSendNano atomic.Int64
+
+	// compatErr caches the first permanent version error that moved the
+	// connector to the terminal INCOMPATIBLE state. A nil pointer means the
+	// connector is still COMPATIBLE. Once set, new sends return this error
+	// without contacting the edge.
+	compatErr atomic.Pointer[mailboxconn.StatusError]
+
+	// compatOnce guarantees the incompatibility transition (cache, cancel,
+	// fail waiters, callback) runs exactly once even under concurrent
+	// permanent failures.
+	compatOnce sync.Once
+
+	// ingressCancel holds the ingress/heartbeat context cancel function so
+	// the incompatibility transition can stop them asynchronously without
+	// joining its own goroutine. CancelFunc is idempotent, so StopIngress
+	// may also invoke it.
+	ingressCancel atomic.Pointer[context.CancelFunc]
 }
 
 // NewServerConnectionActor creates a new server connection actor with the
@@ -715,6 +732,10 @@ func (a *ServerConnectionActor) Receive(ctx context.Context,
 func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	req *SendClientEventRequest) fn.Result[ServerConnResp] {
 
+	if ce := a.compatibilityError(); ce != nil {
+		return fn.Err[ServerConnResp](ce)
+	}
+
 	protoMsg, err := req.Message.ToProto().Unpack()
 	if err != nil {
 		a.log.WarnS(ctx, "Failed to convert to proto", err)
@@ -763,7 +784,6 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	service, method := eventRoutingMetadata(req)
 
 	envelope := &mailboxpb.Envelope{
-		ProtocolVersion: a.cfg.ProtocolVersion,
 		MsgId:           msgID,
 		IdempotencyKey:  idempotencyKey,
 		Sender:          a.cfg.LocalMailboxID,
@@ -778,6 +798,10 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 			ReplyTo: a.cfg.LocalMailboxID,
 		},
 	}
+
+	// Stamp the immutable version pair immediately before sending so the
+	// outbound envelope never relies on a caller-provided Ark version.
+	a.cfg.stampEnvelope(envelope)
 
 	// Use a detached context for the gRPC call so that parent
 	// cancellation does not abort the outbound send, while
@@ -797,10 +821,12 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	}
 
 	if resp.Status != nil && !resp.Status.Ok {
-		return fn.Err[ServerConnResp](
-			fmt.Errorf("send client event: %s (%s)",
-				resp.Status.Message, resp.Status.Code),
+		sErr := mailboxconn.NewStatusError(
+			"send client event", resp.Status,
 		)
+		a.checkPermanentStatus(ctx, sErr)
+
+		return fn.Err[ServerConnResp](sErr)
 	}
 
 	a.lastSendNano.Store(time.Now().UnixNano())
@@ -926,8 +952,11 @@ func (a *ServerConnectionActor) sendUnaryEnvelope(ctx context.Context,
 	body *anypb.Any, service string, method string, correlationID string,
 	msgID string, idempotencyKey string) fn.Result[ServerConnResp] {
 
+	if ce := a.compatibilityError(); ce != nil {
+		return fn.Err[ServerConnResp](ce)
+	}
+
 	envelope := &mailboxpb.Envelope{
-		ProtocolVersion: a.cfg.ProtocolVersion,
 		MsgId:           msgID,
 		IdempotencyKey:  idempotencyKey,
 		Sender:          a.cfg.LocalMailboxID,
@@ -944,6 +973,10 @@ func (a *ServerConnectionActor) sendUnaryEnvelope(ctx context.Context,
 		},
 	}
 
+	// Stamp the immutable version pair immediately before sending so the
+	// outbound envelope never relies on a caller-provided Ark version.
+	a.cfg.stampEnvelope(envelope)
+
 	sendCtx, sendCancel := context.WithTimeout(
 		context.WithoutCancel(ctx), defaultSendEventTimeout,
 	)
@@ -959,10 +992,12 @@ func (a *ServerConnectionActor) sendUnaryEnvelope(ctx context.Context,
 	}
 
 	if resp.Status != nil && !resp.Status.Ok {
-		return fn.Err[ServerConnResp](
-			fmt.Errorf("send unary request: %s (%s)",
-				resp.Status.Message, resp.Status.Code),
+		sErr := mailboxconn.NewStatusError(
+			"send unary request", resp.Status,
 		)
+		a.checkPermanentStatus(ctx, sErr)
+
+		return fn.Err[ServerConnResp](sErr)
 	}
 
 	return fn.Ok[ServerConnResp](&SendRPCResponse{
@@ -1005,6 +1040,17 @@ func eventRoutingMetadata(req *SendClientEventRequest) (string, string) {
 func (a *ServerConnectionActor) handleSendRPCRequest(ctx context.Context,
 	req *SendRPCRequest) fn.Result[ServerConnResp] {
 
+	if ce := a.compatibilityError(); ce != nil {
+		return fn.Err[ServerConnResp](ce)
+	}
+
+	// Re-stamp the pre-built (and possibly replayed) envelope with the
+	// runtime-bound version pair so a persisted caller-provided Ark version
+	// can never be sent. The bound pair is immutable, so re-stamping a
+	// replayed envelope reproduces the value it was originally stamped
+	// with.
+	a.cfg.stampEnvelope(req.Envelope)
+
 	resp, err := a.cfg.Edge.Send(ctx, &mailboxpb.SendRequest{
 		Envelope: req.Envelope,
 	})
@@ -1015,10 +1061,12 @@ func (a *ServerConnectionActor) handleSendRPCRequest(ctx context.Context,
 	}
 
 	if resp.Status != nil && !resp.Status.Ok {
-		return fn.Err[ServerConnResp](
-			fmt.Errorf("send rpc request: %s (%s)",
-				resp.Status.Message, resp.Status.Code),
+		sErr := mailboxconn.NewStatusError(
+			"send rpc request", resp.Status,
 		)
+		a.checkPermanentStatus(ctx, sErr)
+
+		return fn.Err[ServerConnResp](sErr)
 	}
 
 	a.lastSendNano.Store(time.Now().UnixNano())
@@ -1070,12 +1118,39 @@ func (a *ServerConnectionActor) StartIngress(
 	ctx context.Context,
 ) error {
 
+	// Fast path: if the connector already transitioned to the terminal
+	// incompatible state (e.g. a durable egress replay hit a permanent
+	// version error before ingress started), refuse to start polling or
+	// load checkpoints. Returning the cached error keeps the caller from
+	// marking the connection healthy.
+	if ce := a.compatibilityError(); ce != nil {
+		return ce
+	}
+
 	state, err := a.loadCheckpoint(ctx)
 	if err != nil {
 		return fmt.Errorf("load ingress checkpoint: %w", err)
 	}
 
 	ingressCtx, cancel := context.WithCancel(ctx)
+
+	// Publish the cancel func so the incompatibility transition can stop
+	// ingress and heartbeat asynchronously. CancelFunc is idempotent, so
+	// StopIngress invoking it again via cancelCh is harmless.
+	a.ingressCancel.Store(&cancel)
+
+	// Recheck after publishing the cancel func to close the race with a
+	// concurrent markIncompatible. The two transitions touch the compat
+	// error and the cancel pointer in opposite orders: markIncompatible
+	// stores the compat error then loads the cancel; we store the cancel
+	// then load the compat error. So at least one of us observes the
+	// other — either we see the incompatible state here and abort, or
+	// markIncompatible sees our published cancel and stops the goroutines.
+	if ce := a.compatibilityError(); ce != nil {
+		cancel()
+
+		return ce
+	}
 
 	a.wg.Add(2)
 	a.cancelCh <- cancel

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"google.golang.org/protobuf/proto"
@@ -50,6 +51,12 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 	method mailboxrpc.ServiceMethod, req proto.Message,
 	opts mailboxrpc.RPCOptions) (mailboxrpc.SendResult, error) {
 
+	// Once the connector is incompatible, fail new unary sends with the
+	// cached error without contacting the edge.
+	if ce := f.connector.compatibilityError(); ce != nil {
+		return mailboxrpc.SendResult{}, ce
+	}
+
 	cfg := f.connector.cfg
 
 	msgID, err := randomID(16)
@@ -88,7 +95,6 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 	}
 
 	envelope := &mailboxpb.Envelope{
-		ProtocolVersion: cfg.ProtocolVersion,
 		MsgId:           msgID,
 		IdempotencyKey:  idempotencyKey,
 		Sender:          cfg.LocalMailboxID,
@@ -104,6 +110,10 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 			ReplyTo:       cfg.LocalMailboxID,
 		},
 	}
+
+	// Stamp the immutable version pair immediately before sending so the
+	// outbound envelope never relies on a caller-provided Ark version.
+	cfg.stampEnvelope(envelope)
 
 	resp, err := cfg.Edge.Send(ctx, &mailboxpb.SendRequest{
 		Envelope: envelope,
@@ -124,10 +134,8 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 	if resp.Status != nil && !resp.Status.Ok {
 		f.connector.removeWaiter(corrID)
 
-		sendErr := &statusError{
-			Op:     "Send",
-			Status: resp.Status,
-		}
+		sendErr := mailboxconn.NewStatusError("Send", resp.Status)
+		f.connector.checkPermanentStatus(ctx, sendErr)
 
 		f.connector.log.WarnS(ctx, "Unary send returned non-OK status",
 			sendErr,
@@ -164,6 +172,16 @@ func (f *UnaryFacade) AwaitRPC(ctx context.Context, correlationID string,
 	// ID, we get back the same (possibly already completed) Future.
 	future := f.connector.RegisterWaiter(corrID)
 	defer f.connector.removeWaiter(corrID)
+
+	// Recheck after registering to close the race with a concurrent
+	// markIncompatible: if incompatibility was cached before this register,
+	// we observe it here and return without blocking; if it lands after,
+	// the waiter is already in the registry and FailAll completes it.
+	// Either ordering returns the cached error rather than blocking
+	// forever.
+	if ce := f.connector.compatibilityError(); ce != nil {
+		return ce
+	}
 
 	result := future.Await(ctx)
 	if result.IsErr() {

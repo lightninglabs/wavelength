@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -100,10 +101,11 @@ func sendResponseToMailbox(t *testing.T, mb *inMemoryMailbox, recipientID,
 	}
 
 	env := &mailboxpb.Envelope{
-		ProtocolVersion: 1,
-		Sender:          "server-1",
-		Recipient:       recipientID,
-		Body:            body,
+		ProtocolVersion:    1,
+		ArkProtocolVersion: 1,
+		Sender:             "server-1",
+		Recipient:          recipientID,
+		Body:               body,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:          mailboxpb.RpcMeta_KIND_RESPONSE,
 			CorrelationId: correlationID,
@@ -129,10 +131,11 @@ func sendRoutedResponseToMailbox(t *testing.T, mb *inMemoryMailbox, recipientID,
 	}
 
 	env := &mailboxpb.Envelope{
-		ProtocolVersion: 1,
-		Sender:          "server-1",
-		Recipient:       recipientID,
-		Body:            body,
+		ProtocolVersion:    1,
+		ArkProtocolVersion: 1,
+		Sender:             "server-1",
+		Recipient:          recipientID,
+		Body:               body,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:          mailboxpb.RpcMeta_KIND_RESPONSE,
 			CorrelationId: correlationID,
@@ -157,10 +160,11 @@ func sendRoutedErrorResponseToMailbox(t *testing.T, mb *inMemoryMailbox,
 	t.Helper()
 
 	env := &mailboxpb.Envelope{
-		ProtocolVersion: 1,
-		Sender:          "server-1",
-		Recipient:       recipientID,
-		Headers:         mailboxrpc.EncodeErrorHeaders(err),
+		ProtocolVersion:    1,
+		ArkProtocolVersion: 1,
+		Sender:             "server-1",
+		Recipient:          recipientID,
+		Headers:            mailboxrpc.EncodeErrorHeaders(err),
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:          mailboxpb.RpcMeta_KIND_RESPONSE,
 			CorrelationId: correlationID,
@@ -188,10 +192,11 @@ func sendEventToMailbox(t *testing.T, mb *inMemoryMailbox, recipientID, service,
 	require.NoError(t, err)
 
 	env := &mailboxpb.Envelope{
-		ProtocolVersion: 1,
-		Sender:          "server-1",
-		Recipient:       recipientID,
-		Body:            body,
+		ProtocolVersion:    1,
+		ArkProtocolVersion: 1,
+		Sender:             "server-1",
+		Recipient:          recipientID,
+		Body:               body,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
 			Service: service,
@@ -549,7 +554,7 @@ func TestIngress_NoAckOnDispatchFailure(t *testing.T) {
 
 			// Fail the first attempt, succeed thereafter.
 			if count == 1 {
-				return &statusError{
+				return &mailboxconn.StatusError{
 					Op: "dispatch",
 					Status: &mailboxpb.Status{
 						Ok:      false,
@@ -785,7 +790,7 @@ func TestIngress_PartialDispatch_NoDuplicateRedelivery(t *testing.T) {
 			// second to be dispatched (count==3) but NOT the
 			// first again.
 			if count == 2 {
-				return &statusError{
+				return &mailboxconn.StatusError{
 					Op: "dispatch",
 					Status: &mailboxpb.Status{
 						Ok:      false,

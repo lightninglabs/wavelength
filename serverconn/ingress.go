@@ -60,6 +60,12 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 					return
 				}
 
+				// A permanent version error is terminal: stop
+				// the loop rather than retrying forever.
+				if a.checkPermanentStatus(ctx, err) {
+					return
+				}
+
 				a.log.WarnS(ctx, "AckUpTo failed, retrying",
 					err,
 					slog.Uint64(
@@ -103,6 +109,12 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 				return
 			}
 
+			// A permanent version error is terminal: stop the loop
+			// rather than retrying forever.
+			if a.checkPermanentStatus(ctx, err) {
+				return
+			}
+
 			a.log.WarnS(ctx, "Pull failed, retrying",
 				err,
 				slog.Uint64("cursor", state.PullCursor),
@@ -136,6 +148,14 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 			ctx, envelopes, nextCursor,
 		)
 		if dispatchErr != nil {
+			// A permanent inbound version mismatch is terminal:
+			// stop the loop WITHOUT advancing the cursor so the
+			// offending envelope is preserved for a future
+			// compatible restart, and never acknowledged.
+			if a.checkPermanentStatus(ctx, dispatchErr) {
+				return
+			}
+
 			a.log.WarnS(ctx, "Dispatch failed",
 				dispatchErr,
 				slog.Uint64("committed_to", committedCursor),
@@ -227,10 +247,7 @@ func (a *ServerConnectionActor) pullBatch(ctx context.Context, cursor uint64) (
 	}
 
 	if resp.Status != nil && !resp.Status.Ok {
-		return nil, 0, &statusError{
-			Op:     "Pull",
-			Status: resp.Status,
-		}
+		return nil, 0, mailboxconn.NewStatusError("Pull", resp.Status)
 	}
 
 	return resp.Envelopes, resp.NextCursor, nil
@@ -258,6 +275,16 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 	lastCommitted := uint64(0)
 
 	for _, env := range envelopes {
+		// Validate the envelope's version pair against the runtime
+		// binding before delivering it to any waiter or dispatcher. A
+		// mismatch is a permanent compatibility failure: stop the batch
+		// without advancing the ack cursor so the envelope is preserved
+		// for a future compatible restart, and never acknowledge or
+		// dispatch it.
+		if err := a.validateInboundEnvelope(env); err != nil {
+			return lastCommitted, err
+		}
+
 		if env.Rpc == nil {
 			a.log.WarnS(
 				ctx,
@@ -406,10 +433,7 @@ func (a *ServerConnectionActor) ackRemote(
 	}
 
 	if resp.Status != nil && !resp.Status.Ok {
-		return &statusError{
-			Op:     "AckUpTo",
-			Status: resp.Status,
-		}
+		return mailboxconn.NewStatusError("AckUpTo", resp.Status)
 	}
 
 	return nil
@@ -484,22 +508,4 @@ func (a *ServerConnectionActor) backoffConfig() mailboxpull.BackoffConfig {
 		BaseDelay: a.cfg.RetryBaseDelay,
 		MaxDelay:  a.cfg.RetryMaxDelay,
 	}
-}
-
-// statusError wraps a mailbox status failure for error reporting.
-type statusError struct {
-	// Op is the operation that failed (e.g., "Pull", "AckUpTo").
-	Op string
-
-	// Status is the status returned by the mailbox edge.
-	Status *mailboxpb.Status
-}
-
-// Error returns a human-readable error string.
-func (e *statusError) Error() string {
-	if e.Status == nil {
-		return e.Op + ": nil status"
-	}
-
-	return e.Op + ": " + e.Status.Message + " (" + e.Status.Code + ")"
 }

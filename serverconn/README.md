@@ -263,7 +263,8 @@ watermark.
 | `Edge` | `MailboxServiceClient` | *required* | gRPC client for the remote mailbox edge. |
 | `LocalMailboxID` | `string` | *required* | This client's mailbox identifier. |
 | `RemoteMailboxID` | `string` | *required* | Remote server's mailbox identifier. |
-| `ProtocolVersion` | `uint32` | `0` | Protocol version stamped on outbound envelopes. |
+| `MailboxProtocolVersion` | `uint32` | `MailboxProtocolVersionV1` | Immutable mailbox transport version stamped on outbound envelopes. Defaults to the v1 code constant. |
+| `ArkProtocolVersion` | `uint32` | `0` | Immutable negotiated Ark protocol version stamped on outbound envelopes and validated on inbound ones. Must be non-zero; `NewRuntime` rejects zero. |
 | `Dispatchers` | `map[ServiceMethod]EnvelopeDispatcher` | `nil` | Inbound envelope routing table. |
 | `Store` | `actor.DeliveryStore` | *required* | Durability store for inbox, outbox, and checkpoints. |
 | `Codec` | `*actor.MessageCodec` | `NewServerConnCodec()` | TLV codec for ServerConnMsg serialization. |

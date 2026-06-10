@@ -3,8 +3,11 @@ package serverconn
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 )
 
 // DurableActorID returns the durable actor mailbox ID used for serverconn
@@ -43,6 +46,22 @@ func NewRuntime(cfg ConnectorConfig) (*Runtime, error) {
 		return nil, fmt.Errorf("remote mailbox id is required")
 	}
 
+	// Mailbox transport v1 is the stable bootstrap endpoint represented by
+	// a code constant. Default it when unset so callers cannot accidentally
+	// start a runtime with a zero transport version.
+	if cfg.MailboxProtocolVersion == 0 {
+		cfg.MailboxProtocolVersion = mailboxpb.MailboxProtocolVersionV1
+	}
+
+	// The Ark protocol version is negotiated before the runtime exists and
+	// is bound here for the runtime's lifetime. A zero value means no
+	// version was selected, so refuse to construct the runtime. Legacy
+	// server mode still binds an explicit Ark v1; it only changes how an
+	// inbound zero is interpreted, not the bound version.
+	if cfg.ArkProtocolVersion == 0 {
+		return nil, fmt.Errorf("ark protocol version must be non-zero")
+	}
+
 	if cfg.Codec == nil {
 		cfg.Codec = NewServerConnCodec()
 	}
@@ -57,6 +76,11 @@ func NewRuntime(cfg ConnectorConfig) (*Runtime, error) {
 	)
 	durableCfg.Log = cfg.Log
 
+	// A permanent version error is not retryable: dead-letter the failing
+	// durable message immediately instead of retrying it forever. All other
+	// (transient) failures keep the default exponential-backoff policy.
+	durableCfg.TellRetryPolicy = permanentAwareTellRetryPolicy
+
 	durable, err := actor.NewDurableActor(durableCfg).Unpack()
 	if err != nil {
 		return nil, err
@@ -68,6 +92,21 @@ func NewRuntime(cfg ConnectorConfig) (*Runtime, error) {
 		connector:    connector,
 		unary:        unary,
 	}, nil
+}
+
+// permanentAwareTellRetryPolicy is the durable actor's retry policy for
+// serverconn egress. A permanent version error is non-retryable, so the
+// failing durable message is dead-lettered immediately rather than retried
+// forever; every other (transient) failure keeps the default
+// exponential-backoff schedule.
+func permanentAwareTellRetryPolicy(err error,
+	attempts int) (bool, time.Duration) {
+
+	if mailboxconn.IsPermanentVersionError(err) {
+		return false, 0
+	}
+
+	return actor.DefaultTellRetryPolicy(err, attempts)
 }
 
 // Start launches durable egress processing and ingress pulling. Returns an
@@ -119,4 +158,24 @@ func (r *Runtime) Unary() *UnaryFacade {
 // Connector returns the underlying connector behavior.
 func (r *Runtime) Connector() *ServerConnectionActor {
 	return r.connector
+}
+
+// MarkIncompatible drives the runtime to its terminal incompatible state. It
+// is the exported entry point for callers outside the connector (such as a
+// refresh-only GetInfo that observes a changed selection) that detect a
+// permanent version failure on a side channel rather than on the mailbox edge.
+func (r *Runtime) MarkIncompatible(ctx context.Context,
+	statusErr *mailboxconn.StatusError) {
+
+	r.connector.markIncompatible(ctx, statusErr)
+}
+
+// StampEnvelope stamps the runtime's immutable mailbox transport and Ark
+// protocol versions onto a locally constructed envelope immediately before it
+// is sent. It is the shared stamping entry point for callers outside the
+// connector (such as the darepod mailbox response path) so every client send
+// path carries the runtime-bound version pair rather than copying a
+// caller-controlled value.
+func (r *Runtime) StampEnvelope(env *mailboxpb.Envelope) {
+	r.connector.cfg.stampEnvelope(env)
 }
