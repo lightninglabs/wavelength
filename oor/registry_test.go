@@ -996,6 +996,77 @@ func TestOORRegistrySelfTransfer(t *testing.T) {
 	}
 }
 
+// TestOORRegistrySelfTransferParkAndRedrive verifies the event-driven defer
+// path: a hint deferred by an active outgoing session is parked, the outgoing
+// session's terminal notification redrives it as a self-Tell, and the
+// redriven admission both succeeds and clears the parked entry.
+func TestOORRegistrySelfTransferParkAndRedrive(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	id := oorSessionID(0x71)
+
+	store := newFakeRegistryStore()
+	upsertRegistryRow(
+		t, store, id, clientdb.OORSessionDirectionOutgoing,
+		"submit_sent", "", clientdb.OORSessionStatusPending,
+	)
+
+	b, rec := newTestRegistryBehavior(store)
+	selfRec := &registrySpawnRecorder{}
+	b.selfRef = &recordingTellRef{id: "registry-self", rec: selfRec}
+
+	hint := &ResolveIncomingTransferRequest{
+		SessionID: id,
+		RecipientPkScript: []byte{
+			0x51,
+			0x20,
+			0xbb,
+		},
+	}
+
+	// While the outgoing session is active, the hint defers and parks.
+	res := b.Receive(ctx, hint, fakeExec{})
+	require.True(t, res.IsErr())
+	require.ErrorIs(t, res.Err(), errSelfTransferDeferred)
+	require.Len(t, b.parkedSelfHints, 1)
+	require.Empty(t, rec.recorded())
+
+	// A terminal notification before the row flips is a no-op for the
+	// park: admission re-checks the row on the redriven copy, so the
+	// premature redrive simply re-parks. Flip the row terminal first to
+	// exercise the real sequence.
+	upsertRegistryRow(
+		t, store, id, clientdb.OORSessionDirectionOutgoing, "completed",
+		"", clientdb.OORSessionStatusCompleted,
+	)
+
+	res = b.Receive(ctx, &SessionTerminalNotification{
+		SessionID: id,
+	}, fakeExec{})
+	require.True(t, res.IsOk(), res.Err())
+
+	// The reap redrove the parked hint into the registry's own mailbox
+	// and cleared the park.
+	require.Empty(t, b.parkedSelfHints)
+	redriven := selfRec.recorded()
+	require.Len(t, redriven, 1)
+	require.Same(t, hint, redriven[0])
+
+	// The redriven copy now admits an incoming session in place of the
+	// terminal outgoing row.
+	res = b.Receive(ctx, hint, fakeExec{})
+	require.True(t, res.IsOk(), res.Err())
+	require.Equal(
+		t,
+		[]clientdb.OORSessionDirection{
+			clientdb.OORSessionDirectionIncoming,
+		},
+		rec.dirs,
+	)
+	require.Empty(t, b.parkedSelfHints)
+}
+
 // TestOORRegistryDurableEndToEnd exercises the durable registry against a
 // real sqlite-backed delivery store. This is the H-1 boundary regression
 // test: a server-push Tell returns only after the message is persisted in the
