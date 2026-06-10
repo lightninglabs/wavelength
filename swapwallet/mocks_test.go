@@ -38,6 +38,9 @@ type fakeRPCServer struct {
 	newAddressResp   *daemonrpc.NewAddressResponse
 	newAddressErr    error
 
+	listVTXOsByStatus map[daemonrpc.VTXOStatus]*daemonrpc.
+				ListVTXOsResponse
+
 	newWalletAddressResp string
 	newWalletAddressErr  error
 	listWalletUnspent    []*wallet.Utxo
@@ -98,6 +101,12 @@ func (f *fakeRPCServer) ListVTXOs(_ context.Context,
 
 	f.listVTXOsCalls++
 	f.listVTXOsLastReq = req
+
+	if f.listVTXOsByStatus != nil {
+		if resp, ok := f.listVTXOsByStatus[req.GetStatusFilter()]; ok {
+			return resp, f.listVTXOsErr
+		}
+	}
 
 	return f.listVTXOsResp, f.listVTXOsErr
 }

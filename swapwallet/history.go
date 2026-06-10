@@ -168,8 +168,17 @@ func (h *history) listActivity(ctx context.Context,
 		}
 		entries = append(entries, exitEntries...)
 
+		var forfeitedOutpoints map[string]struct{}
+		if h.hasWalletLocalExitEntries() {
+			forfeitedOutpoints, _ = h.collectForfeitedVTXOOutpoints(
+				ctx,
+			)
+		}
+
 		entries = append(
-			entries, h.collectWalletLocalPendingEntries(ctx)...,
+			entries, h.collectWalletLocalPendingEntries(
+				ctx, forfeitedOutpoints,
+			)...,
 		)
 	}
 
@@ -402,7 +411,7 @@ func (h *history) collectUnilateralExitEntries(ctx context.Context) (
 			}
 		}
 
-		if err := h.decorateExitEntry(ctx, entry); err != nil {
+		if err := h.decorateExitEntry(ctx, entry, nil); err != nil {
 			return nil, err
 		}
 
@@ -416,8 +425,8 @@ func (h *history) collectUnilateralExitEntries(ctx context.Context) (
 // calls before their durable terminal source is available. Cooperative leave
 // uses this path immediately after Send returns; unilateral exit uses it until
 // the unroll status/VTXO projection catches up.
-func (h *history) collectWalletLocalPendingEntries(
-	ctx context.Context) []*walletdkrpc.WalletEntry {
+func (h *history) collectWalletLocalPendingEntries(ctx context.Context,
+	forfeitedOutpoints map[string]struct{}) []*walletdkrpc.WalletEntry {
 
 	if h.runtime == nil {
 		return nil
@@ -432,10 +441,59 @@ func (h *history) collectWalletLocalPendingEntries(
 		// Status lookup is best-effort for wallet-local entries. A
 		// missing unroll job usually means this is a cooperative
 		// leave pending row, not a unilateral exit.
-		_ = h.decorateExitEntry(ctx, entry)
+		_ = h.decorateExitEntry(ctx, entry, forfeitedOutpoints)
 	}
 
 	return entries
+}
+
+// hasWalletLocalExitEntries returns true when the runtime has any local EXIT
+// row to decorate. It lets the activity list avoid querying terminal VTXOs when
+// no cooperative-leave row could use them.
+func (h *history) hasWalletLocalExitEntries() bool {
+	if h.runtime == nil {
+		return false
+	}
+
+	for _, entry := range h.runtime.pendingSnapshot() {
+		if entry.GetKind() == walletdkrpc.EntryKind_ENTRY_KIND_EXIT {
+			return true
+		}
+	}
+
+	return false
+}
+
+// collectForfeitedVTXOOutpoints returns the terminal VTXO outpoints used to
+// complete cooperative-leave rows. This remains a v1 best-effort scan until the
+// daemon exposes a direct VTXO-by-outpoint lookup.
+func (h *history) collectForfeitedVTXOOutpoints(
+	ctx context.Context) (map[string]struct{}, error) {
+
+	if h.deps.RPCServer == nil {
+		return nil, nil
+	}
+
+	resp, err := h.deps.RPCServer.ListVTXOs(
+		ctx, &daemonrpc.ListVTXOsRequest{
+			StatusFilter: daemonrpc.
+				VTXOStatus_VTXO_STATUS_FORFEITED,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list forfeited vtxos: %w", err)
+	}
+
+	outpoints := make(map[string]struct{}, len(resp.GetVtxos()))
+	for _, vtxo := range resp.GetVtxos() {
+		if vtxo.GetOutpoint() == "" {
+			continue
+		}
+
+		outpoints[vtxo.GetOutpoint()] = struct{}{}
+	}
+
+	return outpoints, nil
 }
 
 // unilateralExitEntryFromVTXO projects a VTXO in UNILATERAL_EXIT into a
@@ -465,11 +523,14 @@ func unilateralExitEntryFromVTXO(v *daemonrpc.VTXO) *walletdkrpc.WalletEntry {
 	}
 }
 
-// decorateExitEntry applies unroll status to an EXIT entry when the daemon has
-// a unilateral-exit job for the entry id. Cooperative leave entries do not have
-// unroll jobs, so Found=false leaves the original pending row untouched.
+// decorateExitEntry applies the best daemon-backed status available for an EXIT
+// entry. Unilateral exits are owned by the unroll job store. Cooperative leaves
+// have no unroll job, so when Found=false we fall back to the VTXO terminal
+// state for the entry id: a forfeited source VTXO means the leave round
+// confirmed and the wallet-local pending row can be shown as complete.
 func (h *history) decorateExitEntry(ctx context.Context,
-	entry *walletdkrpc.WalletEntry) error {
+	entry *walletdkrpc.WalletEntry,
+	forfeitedOutpoints map[string]struct{}) error {
 
 	if h.deps.RPCServer == nil || entry == nil || entry.GetId() == "" {
 		return nil
@@ -485,12 +546,63 @@ func (h *history) decorateExitEntry(ctx context.Context,
 			err)
 	}
 	if !resp.GetFound() {
+		decorateCooperativeLeaveEntry(entry, forfeitedOutpoints)
+
 		return nil
 	}
 
 	applyUnrollStatus(entry, resp)
 
 	return nil
+}
+
+// decorateCooperativeLeaveEntry completes a wallet-local cooperative leave row
+// once the source VTXO is terminally forfeited. This is intentionally
+// best-effort: until the daemon persists a leave job that links queued
+// outpoints to the commitment tx, a restarted daemon cannot recreate the
+// original counterparty/note from the runtime-local row.
+func decorateCooperativeLeaveEntry(entry *walletdkrpc.WalletEntry,
+	forfeitedOutpoints map[string]struct{}) {
+
+	if entry.GetStatus() != walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING {
+		return
+	}
+
+	if forfeitedOutpoints == nil {
+		return
+	}
+	if _, ok := forfeitedOutpoints[entry.GetId()]; !ok {
+		return
+	}
+
+	// Cooperative leave rows are process-local in v1, so the source
+	// outpoint is the only stable link to daemon state. A matching
+	// forfeited VTXO means the round that consumed the queued leave
+	// input confirmed.
+	applyCooperativeLeaveForfeited(entry)
+}
+
+// applyCooperativeLeaveForfeited projects a forfeited cooperative-leave source
+// VTXO onto the original wallet-local EXIT row.
+func applyCooperativeLeaveForfeited(entry *walletdkrpc.WalletEntry) {
+	if entry == nil {
+		return
+	}
+
+	entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE
+	entry.FailureReason = ""
+
+	progress := entry.GetProgress()
+	if progress == nil {
+		progress = &walletdkrpc.WalletEntryProgress{}
+		entry.Progress = progress
+	}
+	if progress.GetVtxoOutpoint() == "" {
+		progress.VtxoOutpoint = entry.GetId()
+	}
+	progress.Phase = walletdkrpc.
+		WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED
+	progress.PhaseLabel = "confirmed"
 }
 
 // collectLedgerEntries reads the daemon's unified ledger+sweep page and
