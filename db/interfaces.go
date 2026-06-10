@@ -252,7 +252,6 @@ func execTxCallerHint() string {
 		if frame.Function != "" && !strings.Contains(
 			frame.Function, "darepo-client/db",
 		) {
-
 			return frame.Function
 		}
 		if !more {
@@ -417,6 +416,12 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 			t.log.WarnS(ctx, "Transaction commit failed", dbErr)
 
 			return dbErr
+		}
+
+		// Attribute the committed transaction to its owning call site
+		// when the accounting ledger is armed.
+		if txnAccountingEnabled.Load() {
+			recordTxnCommit(txOptions.ReadOnly())
 		}
 
 		return nil
