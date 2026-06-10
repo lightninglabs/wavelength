@@ -356,6 +356,7 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 		// Insert VTXO requests for this round.
 		for i, vtxoReq := range r.Intents.VTXOs {
 			reqParams, err := vtxoRequestToRoundParams(
+				ctx, q, s.clock.Now().Unix(),
 				r.RoundID.String(), i, &vtxoReq,
 			)
 			if err != nil {
@@ -1046,7 +1047,7 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 
 	vtxos := make([]types.VTXORequest, 0, len(dbVtxoReqs))
 	for _, dbReq := range dbVtxoReqs {
-		req, err := dbVtxoRequestRowToVTXORequest(dbReq)
+		req, err := dbVtxoRequestRowToVTXORequest(ctx, q, dbReq)
 		if err != nil {
 			return nil, fmt.Errorf("convert round vtxo request: %w",
 				err)
@@ -1191,7 +1192,8 @@ func (s *RoundPersistenceStore) domainIntentToRoundParams(roundID string,
 
 // vtxoRequestToRoundParams converts a types.VTXORequest to sqlc insert
 // parameters for the round_vtxo_requests table.
-func vtxoRequestToRoundParams(roundID string, requestIndex int,
+func vtxoRequestToRoundParams(ctx context.Context, q RoundStore, now int64,
+	roundID string, requestIndex int,
 	req *types.VTXORequest) (sqlc.InsertRoundVtxoRequestParams, error) {
 
 	params, err := req.DecodeStandardPolicyTemplate()
@@ -1206,16 +1208,40 @@ func vtxoRequestToRoundParams(roundID string, requestIndex int,
 			"derive VTXO pkScript: %w", err)
 	}
 
-	var signingPubkey []byte
+	// Register the signing descriptor in the shared internal_keys registry
+	// and reference it by id. A request always carries a signing key.
+	var signingKeyID sql.NullInt64
 	if req.SigningKey.PubKey != nil {
-		signingPubkey = req.SigningKey.PubKey.SerializeCompressed()
+		id, err := RegisterInternalKeyTx(ctx, q, now, req.SigningKey)
+		if err != nil {
+			return sqlc.InsertRoundVtxoRequestParams{}, fmt.Errorf(
+				"register "+
+					"signing key: %w", err)
+		}
+
+		signingKeyID = sql.NullInt64{Int64: id, Valid: true}
 	}
 
-	ownerKeyFamily := int32(-1)
-	ownerKeyIndex := int32(-1)
+	// Register the local owner descriptor when present. A foreign-owned
+	// request has no local owner descriptor, so owner_key_id stays NULL --
+	// the replacement for the old -1/-1 sentinel locator. The owner pubkey
+	// is the policy owner key (formerly the client_pubkey column) paired
+	// with the request's owner locator, matching the descriptor the old
+	// read path reconstructed.
+	var ownerKeyID sql.NullInt64
 	if req.OwnerKey.PubKey != nil {
-		ownerKeyFamily = int32(req.OwnerKey.KeyLocator.Family)
-		ownerKeyIndex = int32(req.OwnerKey.KeyLocator.Index)
+		ownerDesc := keychain.KeyDescriptor{
+			PubKey:     params.OwnerKey,
+			KeyLocator: req.OwnerKey.KeyLocator,
+		}
+		id, err := RegisterInternalKeyTx(ctx, q, now, ownerDesc)
+		if err != nil {
+			return sqlc.InsertRoundVtxoRequestParams{}, fmt.Errorf(
+				"register "+
+					"owner key: %w", err)
+		}
+
+		ownerKeyID = sql.NullInt64{Int64: id, Valid: true}
 	}
 
 	policyTemplate, err := req.EffectivePolicyTemplate()
@@ -1225,25 +1251,24 @@ func vtxoRequestToRoundParams(roundID string, requestIndex int,
 	}
 
 	return sqlc.InsertRoundVtxoRequestParams{
-		RoundID:          roundID,
-		RequestIndex:     int32(requestIndex),
-		Amount:           int64(req.Amount),
-		PkScript:         pkScript,
-		Expiry:           int32(params.ExitDelay),
-		PolicyTemplate:   policyTemplate,
-		ClientPubkey:     params.OwnerKey.SerializeCompressed(),
-		OperatorPubkey:   params.OperatorKey.SerializeCompressed(),
-		OwnerKeyFamily:   ownerKeyFamily,
-		OwnerKeyIndex:    ownerKeyIndex,
-		SigningKeyFamily: int32(req.SigningKey.KeyLocator.Family),
-		SigningKeyIndex:  int32(req.SigningKey.KeyLocator.Index),
-		SigningPubkey:    signingPubkey,
+		RoundID:        roundID,
+		RequestIndex:   int32(requestIndex),
+		Amount:         int64(req.Amount),
+		PkScript:       pkScript,
+		Expiry:         int32(params.ExitDelay),
+		PolicyTemplate: policyTemplate,
+		ClientPubkey:   params.OwnerKey.SerializeCompressed(),
+		OperatorPubkey: params.OperatorKey.SerializeCompressed(),
+		OwnerKeyID:     ownerKeyID,
+		SigningKeyID:   signingKeyID,
 	}, nil
 }
 
-// dbVtxoRequestRowToVTXORequest converts a database row to a VTXORequest.
-func dbVtxoRequestRowToVTXORequest(t RoundVtxoRequestRow) (*types.VTXORequest,
-	error) {
+// dbVtxoRequestRowToVTXORequest converts a database row to a VTXORequest. The
+// query handle hydrates the owner and signing descriptors from the
+// internal_keys registry via their FKs.
+func dbVtxoRequestRowToVTXORequest(ctx context.Context, q RoundStore,
+	t RoundVtxoRequestRow) (*types.VTXORequest, error) {
 
 	var clientPubkey *btcec.PublicKey
 	if len(t.ClientPubkey) > 0 {
@@ -1263,24 +1288,28 @@ func dbVtxoRequestRowToVTXORequest(t RoundVtxoRequestRow) (*types.VTXORequest,
 		}
 	}
 
-	var signingPubkey *btcec.PublicKey
-	if len(t.SigningPubkey) > 0 {
-		var err error
-		signingPubkey, err = btcec.ParsePubKey(t.SigningPubkey)
+	// Hydrate the signing descriptor from the registry. The pubkey carried
+	// by the registry row is authoritative over the inline client_pubkey.
+	var signingKey keychain.KeyDescriptor
+	if t.SigningKeyID.Valid {
+		desc, err := InternalKeyDescByIDTx(ctx, q, t.SigningKeyID.Int64)
 		if err != nil {
-			return nil, fmt.Errorf("parse signing pubkey: %w", err)
+			return nil, fmt.Errorf("hydrate signing key: %w", err)
 		}
+
+		signingKey = desc
 	}
 
+	// Hydrate the owner descriptor when present. A NULL owner_key_id marks
+	// a foreign-owned request with no local owner descriptor.
 	var ownerKey keychain.KeyDescriptor
-	if t.OwnerKeyFamily >= 0 && t.OwnerKeyIndex >= 0 {
-		ownerKey = keychain.KeyDescriptor{
-			PubKey: clientPubkey,
-			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamily(t.OwnerKeyFamily),
-				Index:  uint32(t.OwnerKeyIndex),
-			},
+	if t.OwnerKeyID.Valid {
+		desc, err := InternalKeyDescByIDTx(ctx, q, t.OwnerKeyID.Int64)
+		if err != nil {
+			return nil, fmt.Errorf("hydrate owner key: %w", err)
 		}
+
+		ownerKey = desc
 	}
 
 	return &types.VTXORequest{
@@ -1291,13 +1320,7 @@ func dbVtxoRequestRowToVTXORequest(t RoundVtxoRequestRow) (*types.VTXORequest,
 		OwnerKey:       ownerKey,
 		Expiry:         uint32(t.Expiry),
 		OperatorKey:    operatorPubkey,
-		SigningKey: keychain.KeyDescriptor{
-			PubKey: signingPubkey,
-			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamily(t.SigningKeyFamily),
-				Index:  uint32(t.SigningKeyIndex),
-			},
-		},
+		SigningKey:     signingKey,
 	}, nil
 }
 

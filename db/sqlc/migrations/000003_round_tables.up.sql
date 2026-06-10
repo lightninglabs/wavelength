@@ -151,23 +151,16 @@ CREATE TABLE IF NOT EXISTS round_vtxo_requests (
     -- VTXORequest.OperatorKey - 33-byte compressed public key.
     operator_pubkey BLOB NOT NULL,
 
-    -- VTXORequest.OwnerKey.KeyLocator.Family. A value of -1 means the
-    -- request is foreign-owned and should not be persisted as local balance
-    -- when the round confirms.
-    owner_key_family INTEGER NOT NULL DEFAULT -1,
+    -- owner_key_id references the internal_keys registry row for the local
+    -- owner descriptor (the client_pubkey paired with its lnd KeyLocator).
+    -- NULL means the request is foreign-owned: it has no local owner
+    -- descriptor and must not be persisted as local balance when the round
+    -- confirms. This replaces the old -1/-1 sentinel locator.
+    owner_key_id BIGINT REFERENCES internal_keys(id),
 
-    -- VTXORequest.OwnerKey.KeyLocator.Index. A value of -1 means the request
-    -- is foreign-owned and has no local owner descriptor.
-    owner_key_index INTEGER NOT NULL DEFAULT -1,
-
-    -- VTXORequest.SigningKey.KeyLocator.Family
-    signing_key_family INTEGER NOT NULL,
-
-    -- VTXORequest.SigningKey.KeyLocator.Index
-    signing_key_index INTEGER NOT NULL,
-
-    -- VTXORequest.SigningKey.PubKey - 33-byte compressed public key.
-    signing_pubkey BLOB NOT NULL,
+    -- signing_key_id references the internal_keys registry row for the
+    -- signing descriptor (signing_pubkey paired with its lnd KeyLocator).
+    signing_key_id BIGINT REFERENCES internal_keys(id),
 
     PRIMARY KEY (round_id, request_index),
     FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE

@@ -221,19 +221,16 @@ type RoundStatus struct {
 }
 
 type RoundVtxoRequest struct {
-	RoundID          string
-	RequestIndex     int32
-	Amount           int64
-	PkScript         []byte
-	Expiry           int32
-	PolicyTemplate   []byte
-	ClientPubkey     []byte
-	OperatorPubkey   []byte
-	OwnerKeyFamily   int32
-	OwnerKeyIndex    int32
-	SigningKeyFamily int32
-	SigningKeyIndex  int32
-	SigningPubkey    []byte
+	RoundID        string
+	RequestIndex   int32
+	Amount         int64
+	PkScript       []byte
+	Expiry         int32
+	PolicyTemplate []byte
+	ClientPubkey   []byte
+	OperatorPubkey []byte
+	OwnerKeyID     sql.NullInt64
+	SigningKeyID   sql.NullInt64
 }
 
 type SpendingReservation struct {

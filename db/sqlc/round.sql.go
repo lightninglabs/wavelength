@@ -281,7 +281,7 @@ func (q *Queries) GetRoundClientTrees(ctx context.Context, roundID string) ([]Ro
 }
 
 const GetRoundVtxoRequests = `-- name: GetRoundVtxoRequests :many
-SELECT round_id, request_index, amount, pk_script, expiry, policy_template, client_pubkey, operator_pubkey, owner_key_family, owner_key_index, signing_key_family, signing_key_index, signing_pubkey FROM round_vtxo_requests
+SELECT round_id, request_index, amount, pk_script, expiry, policy_template, client_pubkey, operator_pubkey, owner_key_id, signing_key_id FROM round_vtxo_requests
 WHERE round_id = $1
 ORDER BY request_index ASC
 `
@@ -304,11 +304,8 @@ func (q *Queries) GetRoundVtxoRequests(ctx context.Context, roundID string) ([]R
 			&i.PolicyTemplate,
 			&i.ClientPubkey,
 			&i.OperatorPubkey,
-			&i.OwnerKeyFamily,
-			&i.OwnerKeyIndex,
-			&i.SigningKeyFamily,
-			&i.SigningKeyIndex,
-			&i.SigningPubkey,
+			&i.OwnerKeyID,
+			&i.SigningKeyID,
 		); err != nil {
 			return nil, err
 		}
@@ -502,26 +499,22 @@ const InsertRoundVtxoRequest = `-- name: InsertRoundVtxoRequest :exec
 
 INSERT INTO round_vtxo_requests (
     round_id, request_index, amount, pk_script, expiry, policy_template,
-    client_pubkey, operator_pubkey, owner_key_family, owner_key_index,
-    signing_key_family, signing_key_index, signing_pubkey
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    client_pubkey, operator_pubkey, owner_key_id, signing_key_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     ON CONFLICT (round_id, request_index) DO NOTHING
 `
 
 type InsertRoundVtxoRequestParams struct {
-	RoundID          string
-	RequestIndex     int32
-	Amount           int64
-	PkScript         []byte
-	Expiry           int32
-	PolicyTemplate   []byte
-	ClientPubkey     []byte
-	OperatorPubkey   []byte
-	OwnerKeyFamily   int32
-	OwnerKeyIndex    int32
-	SigningKeyFamily int32
-	SigningKeyIndex  int32
-	SigningPubkey    []byte
+	RoundID        string
+	RequestIndex   int32
+	Amount         int64
+	PkScript       []byte
+	Expiry         int32
+	PolicyTemplate []byte
+	ClientPubkey   []byte
+	OperatorPubkey []byte
+	OwnerKeyID     sql.NullInt64
+	SigningKeyID   sql.NullInt64
 }
 
 // Round VTXO request queries.
@@ -535,11 +528,8 @@ func (q *Queries) InsertRoundVtxoRequest(ctx context.Context, arg InsertRoundVtx
 		arg.PolicyTemplate,
 		arg.ClientPubkey,
 		arg.OperatorPubkey,
-		arg.OwnerKeyFamily,
-		arg.OwnerKeyIndex,
-		arg.SigningKeyFamily,
-		arg.SigningKeyIndex,
-		arg.SigningPubkey,
+		arg.OwnerKeyID,
+		arg.SigningKeyID,
 	)
 	return err
 }

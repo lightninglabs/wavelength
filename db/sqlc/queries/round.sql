@@ -76,9 +76,8 @@ WHERE round_id = $1 AND outpoint_hash = $2 AND outpoint_index = $3;
 -- name: InsertRoundVtxoRequest :exec
 INSERT INTO round_vtxo_requests (
     round_id, request_index, amount, pk_script, expiry, policy_template,
-    client_pubkey, operator_pubkey, owner_key_family, owner_key_index,
-    signing_key_family, signing_key_index, signing_pubkey
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    client_pubkey, operator_pubkey, owner_key_id, signing_key_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     ON CONFLICT (round_id, request_index) DO NOTHING;
 
 -- name: GetRoundVtxoRequests :many
