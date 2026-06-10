@@ -27,6 +27,25 @@ import (
 var errIncomingAdmissionCapped = errors.New("incoming OOR admission " +
 	"rejected: concurrency cap reached")
 
+// errSelfTransferDeferred is returned when an incoming hint names a session
+// that is still active as an outgoing session on this daemon (every payment
+// with a change output produces one: the operator pushes the recipient event
+// for the sender's own change script under the same Ark-txid session id).
+// The registry parks the hint and redrives it when the outgoing session
+// reaches a terminal state; the durable delivery is also nacked on a long
+// flat backoff as the crash-safety fallback, so this error must stay cheap
+// and must never dead-letter while the outgoing session lives.
+var errSelfTransferDeferred = errors.New("outgoing session still active for " +
+	"incoming hint")
+
+// selfHintRedeliveryBackoff is the flat redelivery backoff for a deferred
+// self-transfer hint's durable delivery. The terminal-reap redrive is the
+// fast path, so the durable copy only needs to cover a crash or a missed
+// redrive; a long flat delay keeps the per-payment defer from amplifying
+// write load when the DB writer is already saturated (the feedback loop
+// behind the SQLITE_BUSY bursts observed at high payment rates).
+const selfHintRedeliveryBackoff = 30 * time.Second
+
 // detachedWaitTimeout bounds the registry's detached-continuation wait on a
 // child's response. OnComplete spawns a goroutine that parks on
 // DetachedAsk.CallerCtx. On the registry's durable (Read/Stage/Commit) path
@@ -157,6 +176,9 @@ func NewOORRegistryActor(cfg OORRegistryConfig) (*OORRegistryActor, error) {
 		log:      cfg.Log.UnwrapOr(btclog.Disabled),
 		active:   make(map[SessionID]*OORSessionActor),
 		incoming: make(map[SessionID]struct{}),
+		parkedSelfHints: make(
+			map[SessionID]*ResolveIncomingTransferRequest,
+		),
 	}
 	behavior.spawnFunc = behavior.spawn
 
@@ -170,6 +192,22 @@ func NewOORRegistryActor(cfg OORRegistryConfig) (*OORRegistryActor, error) {
 		cfg.DeliveryStore, newOORActorCodec(cfg.Limits),
 	)
 	durableCfg.Log = cfg.Log
+
+	// A deferred self-transfer hint redelivers on a long flat backoff and
+	// never dead-letters: the terminal-reap redrive is the fast path, so
+	// the durable copy is purely the crash-safety net, and the default
+	// exponential policy would both amplify write load while the writer
+	// is saturated and dead-letter the hint after five attempts if the
+	// outgoing session outlives the backoff schedule.
+	durableCfg.TellRetryPolicy = func(err error, attempts int) (bool,
+		time.Duration) {
+
+		if errors.Is(err, errSelfTransferDeferred) {
+			return true, selfHintRedeliveryBackoff
+		}
+
+		return actor.DefaultTellRetryPolicy(err, attempts)
+	}
 
 	registry, err := actor.NewDurableActor(durableCfg).Unpack()
 	if err != nil {
@@ -238,6 +276,17 @@ type oorRegistryBehavior struct {
 	// spawnFunc creates one per-session child actor. Overridable in tests.
 	spawnFunc func(SessionID, clientdb.OORSessionDirection) (
 		*OORSessionActor, error)
+
+	// parkedSelfHints holds incoming self-transfer hints deferred because
+	// their session is still active as outgoing, keyed by session id so a
+	// repeated hint overwrites rather than accumulates. Entries are
+	// redriven (self-Tell) when the outgoing session's terminal
+	// notification reaps the child, and dropped when an admission for the
+	// session succeeds. The map is bounded by the number of live outgoing
+	// sessions: parking requires a non-terminal outgoing row in the
+	// durable store, so fabricated hints cannot grow it. Registry-
+	// goroutine-owned like active and incoming.
+	parkedSelfHints map[SessionID]*ResolveIncomingTransferRequest
 
 	// pendingHandoff carries an outgoing admission's child future from
 	// dispatch to Receive, so the caller's promise is detached and the
@@ -751,8 +800,21 @@ func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 	}
 
 	if err := r.resolveSelfTransfer(ctx, req.SessionID); err != nil {
+		// Park a deferred self-transfer hint so the outgoing
+		// session's terminal reap can redrive it immediately; the
+		// erroring delivery stays in the durable mailbox on a long
+		// backoff as the crash-safety fallback.
+		if errors.Is(err, errSelfTransferDeferred) {
+			r.parkSelfHint(req)
+		}
+
 		return fn.Err[ActorResp](err)
 	}
+
+	// Any parked copy of this hint is now superseded by the admission
+	// below (a redriven or redelivered duplicate forwards idempotently to
+	// the resident session).
+	delete(r.parkedSelfHints, req.SessionID)
 
 	_, existed := r.active[req.SessionID]
 
@@ -849,8 +911,9 @@ func (r *oorRegistryBehavior) resolveSelfTransfer(ctx context.Context,
 		return nil
 	}
 
-	// The hint is retried by the transport layer, so deferring is just an
-	// error until the outgoing session terminates.
+	// Deferring is an error so the durable delivery is retained (nacked on
+	// the long self-transfer backoff); the caller parks the hint for the
+	// event-driven redrive at the outgoing session's terminal reap.
 	if !record.Status.IsTerminal() {
 		r.logger(ctx).DebugS(ctx,
 			"Deferring incoming self-transfer hint until "+
@@ -859,8 +922,8 @@ func (r *oorRegistryBehavior) resolveSelfTransfer(ctx context.Context,
 			slog.String("phase", record.Phase),
 		)
 
-		return fmt.Errorf("outgoing session %s still active for "+
-			"incoming hint", sessionID)
+		return fmt.Errorf("%w: session %s", errSelfTransferDeferred,
+			sessionID)
 	}
 
 	// Replace: drop any resident outgoing child so the spawn below
@@ -876,6 +939,54 @@ func (r *oorRegistryBehavior) resolveSelfTransfer(ctx context.Context,
 	)
 
 	return nil
+}
+
+// parkSelfHint records a deferred self-transfer hint for the event-driven
+// redrive at the outgoing session's terminal reap. Lazily initializes the map
+// so directly constructed test behaviors stay valid.
+func (r *oorRegistryBehavior) parkSelfHint(
+	req *ResolveIncomingTransferRequest) {
+
+	if r.parkedSelfHints == nil {
+		r.parkedSelfHints = make(
+			map[SessionID]*ResolveIncomingTransferRequest,
+		)
+	}
+
+	r.parkedSelfHints[req.SessionID] = req
+}
+
+// redriveParkedSelfHint re-tells a parked self-transfer hint into the
+// registry's own mailbox once its outgoing session has gone terminal. The
+// hint's original durable delivery is still pending on the long self-transfer
+// backoff, so a failed (or rolled-back) re-tell only costs latency, never the
+// hint itself.
+func (r *oorRegistryBehavior) redriveParkedSelfHint(ctx context.Context,
+	sessionID SessionID) {
+
+	req, ok := r.parkedSelfHints[sessionID]
+	if !ok {
+		return
+	}
+	delete(r.parkedSelfHints, sessionID)
+
+	if r.selfRef == nil {
+		return
+	}
+
+	if err := r.selfRef.Tell(ctx, req); err != nil {
+		r.logger(ctx).WarnS(ctx, "Failed to redrive parked "+
+			"self-transfer hint; durable redelivery will retry",
+			err,
+			slog.String("session_id", sessionID.String()),
+		)
+
+		return
+	}
+
+	r.logger(ctx).DebugS(ctx, "Redrove parked self-transfer hint",
+		slog.String("session_id", sessionID.String()),
+	)
 }
 
 // validateIncomingAdmission rejects incoming hints whose recipient pk script
@@ -917,6 +1028,13 @@ func (r *oorRegistryBehavior) handleSessionTerminal(ctx context.Context,
 
 	child, ok := r.active[msg.SessionID]
 	if !ok {
+		// The child may already be gone (duplicate notification or a
+		// reap that raced the hint), but a parked self-transfer hint
+		// still wants its event-driven wakeup. A premature redrive is
+		// harmless: admission re-checks the durable row and re-parks
+		// if the session is somehow still active.
+		r.redriveParkedSelfHint(ctx, msg.SessionID)
+
 		return fn.Ok[ActorResp](&DriveEventResponse{})
 	}
 
@@ -942,6 +1060,10 @@ func (r *oorRegistryBehavior) handleSessionTerminal(ctx context.Context,
 	r.logger(ctx).DebugS(ctx, "Reaped terminal OOR session",
 		slog.String("session_id", msg.SessionID.String()),
 	)
+
+	// The reap is the event-driven wakeup for a change-output hint that
+	// arrived while this session was still active as outgoing.
+	r.redriveParkedSelfHint(ctx, msg.SessionID)
 
 	// Terminal rows are retained on disk (all directions, completed and
 	// failed alike) so failed sessions stay visible to status RPCs and for
