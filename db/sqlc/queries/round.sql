@@ -133,20 +133,17 @@ DELETE FROM client_tree_txids WHERE round_id = $1 AND client_key = $2;
 -- the finalized descriptor (policy template, key material, batch metadata).
 INSERT INTO vtxos (
     outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry,
-    policy_template, client_key_family, client_key_index, client_pubkey,
+    policy_template, client_key_id,
     operator_pubkey, batch_expiry, chain_depth,
     created_height, commitment_txid, spent, creation_time, last_update_time
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-    $16, $17, $18
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 )
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     pk_script = CASE WHEN excluded.pk_script IS NOT NULL AND length(excluded.pk_script) > 0 THEN excluded.pk_script ELSE vtxos.pk_script END,
     expiry = CASE WHEN excluded.expiry != 0 THEN excluded.expiry ELSE vtxos.expiry END,
     policy_template = CASE WHEN excluded.policy_template IS NOT NULL AND length(excluded.policy_template) > 0 THEN excluded.policy_template ELSE vtxos.policy_template END,
-    client_pubkey = CASE WHEN excluded.client_pubkey IS NOT NULL AND length(excluded.client_pubkey) > 0 THEN excluded.client_pubkey ELSE vtxos.client_pubkey END,
-    client_key_family = CASE WHEN excluded.client_pubkey IS NOT NULL AND length(excluded.client_pubkey) > 0 THEN excluded.client_key_family ELSE vtxos.client_key_family END,
-    client_key_index = CASE WHEN excluded.client_pubkey IS NOT NULL AND length(excluded.client_pubkey) > 0 THEN excluded.client_key_index ELSE vtxos.client_key_index END,
+    client_key_id = CASE WHEN excluded.client_key_id IS NOT NULL THEN excluded.client_key_id ELSE vtxos.client_key_id END,
     operator_pubkey = CASE WHEN excluded.operator_pubkey IS NOT NULL AND length(excluded.operator_pubkey) > 0 THEN excluded.operator_pubkey ELSE vtxos.operator_pubkey END,
     batch_expiry = CASE WHEN excluded.batch_expiry != 0 THEN excluded.batch_expiry ELSE vtxos.batch_expiry END,
     chain_depth = CASE WHEN excluded.chain_depth != 0 THEN excluded.chain_depth ELSE vtxos.chain_depth END,

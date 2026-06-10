@@ -315,9 +315,7 @@ type Vtxo struct {
 	PkScript        []byte
 	Expiry          int32
 	PolicyTemplate  []byte
-	ClientKeyFamily int32
-	ClientKeyIndex  int32
-	ClientPubkey    []byte
+	ClientKeyID     sql.NullInt64
 	OperatorPubkey  []byte
 	BatchExpiry     int32
 	CreatedHeight   int32

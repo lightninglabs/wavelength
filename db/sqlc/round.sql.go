@@ -324,7 +324,7 @@ func (q *Queries) GetRoundVtxoRequests(ctx context.Context, roundID string) ([]R
 }
 
 const GetVTXO = `-- name: GetVTXO :one
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_family, client_key_index, client_pubkey, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
 
@@ -344,9 +344,7 @@ func (q *Queries) GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error) 
 		&i.PkScript,
 		&i.Expiry,
 		&i.PolicyTemplate,
-		&i.ClientKeyFamily,
-		&i.ClientKeyIndex,
-		&i.ClientPubkey,
+		&i.ClientKeyID,
 		&i.OperatorPubkey,
 		&i.BatchExpiry,
 		&i.CreatedHeight,
@@ -550,20 +548,17 @@ const InsertVTXO = `-- name: InsertVTXO :exec
 
 INSERT INTO vtxos (
     outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry,
-    policy_template, client_key_family, client_key_index, client_pubkey,
+    policy_template, client_key_id,
     operator_pubkey, batch_expiry, chain_depth,
     created_height, commitment_txid, spent, creation_time, last_update_time
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-    $16, $17, $18
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 )
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     pk_script = CASE WHEN excluded.pk_script IS NOT NULL AND length(excluded.pk_script) > 0 THEN excluded.pk_script ELSE vtxos.pk_script END,
     expiry = CASE WHEN excluded.expiry != 0 THEN excluded.expiry ELSE vtxos.expiry END,
     policy_template = CASE WHEN excluded.policy_template IS NOT NULL AND length(excluded.policy_template) > 0 THEN excluded.policy_template ELSE vtxos.policy_template END,
-    client_pubkey = CASE WHEN excluded.client_pubkey IS NOT NULL AND length(excluded.client_pubkey) > 0 THEN excluded.client_pubkey ELSE vtxos.client_pubkey END,
-    client_key_family = CASE WHEN excluded.client_pubkey IS NOT NULL AND length(excluded.client_pubkey) > 0 THEN excluded.client_key_family ELSE vtxos.client_key_family END,
-    client_key_index = CASE WHEN excluded.client_pubkey IS NOT NULL AND length(excluded.client_pubkey) > 0 THEN excluded.client_key_index ELSE vtxos.client_key_index END,
+    client_key_id = CASE WHEN excluded.client_key_id IS NOT NULL THEN excluded.client_key_id ELSE vtxos.client_key_id END,
     operator_pubkey = CASE WHEN excluded.operator_pubkey IS NOT NULL AND length(excluded.operator_pubkey) > 0 THEN excluded.operator_pubkey ELSE vtxos.operator_pubkey END,
     batch_expiry = CASE WHEN excluded.batch_expiry != 0 THEN excluded.batch_expiry ELSE vtxos.batch_expiry END,
     chain_depth = CASE WHEN excluded.chain_depth != 0 THEN excluded.chain_depth ELSE vtxos.chain_depth END,
@@ -573,24 +568,22 @@ ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
 `
 
 type InsertVTXOParams struct {
-	OutpointHash    []byte
-	OutpointIndex   int32
-	RoundID         string
-	Amount          int64
-	PkScript        []byte
-	Expiry          int32
-	PolicyTemplate  []byte
-	ClientKeyFamily int32
-	ClientKeyIndex  int32
-	ClientPubkey    []byte
-	OperatorPubkey  []byte
-	BatchExpiry     int32
-	ChainDepth      int32
-	CreatedHeight   int32
-	CommitmentTxid  []byte
-	Spent           bool
-	CreationTime    int64
-	LastUpdateTime  int64
+	OutpointHash   []byte
+	OutpointIndex  int32
+	RoundID        string
+	Amount         int64
+	PkScript       []byte
+	Expiry         int32
+	PolicyTemplate []byte
+	ClientKeyID    sql.NullInt64
+	OperatorPubkey []byte
+	BatchExpiry    int32
+	ChainDepth     int32
+	CreatedHeight  int32
+	CommitmentTxid []byte
+	Spent          bool
+	CreationTime   int64
+	LastUpdateTime int64
 }
 
 // VTXO queries.
@@ -607,9 +600,7 @@ func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 		arg.PkScript,
 		arg.Expiry,
 		arg.PolicyTemplate,
-		arg.ClientKeyFamily,
-		arg.ClientKeyIndex,
-		arg.ClientPubkey,
+		arg.ClientKeyID,
 		arg.OperatorPubkey,
 		arg.BatchExpiry,
 		arg.ChainDepth,
@@ -696,7 +687,7 @@ func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
 }
 
 const ListAllVTXOs = `-- name: ListAllVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_family, client_key_index, client_pubkey, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
@@ -716,9 +707,7 @@ func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.PkScript,
 			&i.Expiry,
 			&i.PolicyTemplate,
-			&i.ClientKeyFamily,
-			&i.ClientKeyIndex,
-			&i.ClientPubkey,
+			&i.ClientKeyID,
 			&i.OperatorPubkey,
 			&i.BatchExpiry,
 			&i.CreatedHeight,
@@ -937,7 +926,7 @@ func (q *Queries) ListUnspentVTXOAncestryPaths(ctx context.Context) ([]VtxoAnces
 }
 
 const ListUnspentVTXOs = `-- name: ListUnspentVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_family, client_key_index, client_pubkey, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos
 WHERE spent = FALSE
     AND status != 4
 ORDER BY creation_time DESC
@@ -961,9 +950,7 @@ func (q *Queries) ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.PkScript,
 			&i.Expiry,
 			&i.PolicyTemplate,
-			&i.ClientKeyFamily,
-			&i.ClientKeyIndex,
-			&i.ClientPubkey,
+			&i.ClientKeyID,
 			&i.OperatorPubkey,
 			&i.BatchExpiry,
 			&i.CreatedHeight,
@@ -1082,7 +1069,7 @@ func (q *Queries) ListVTXOAncestryPathsByStatus(ctx context.Context, status int3
 }
 
 const ListVTXOsByRound = `-- name: ListVTXOsByRound :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_family, client_key_index, client_pubkey, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error) {
@@ -1102,9 +1089,7 @@ func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo,
 			&i.PkScript,
 			&i.Expiry,
 			&i.PolicyTemplate,
-			&i.ClientKeyFamily,
-			&i.ClientKeyIndex,
-			&i.ClientPubkey,
+			&i.ClientKeyID,
 			&i.OperatorPubkey,
 			&i.BatchExpiry,
 			&i.CreatedHeight,

@@ -93,7 +93,7 @@ func (s *VTXOPersistenceStore) SaveVTXO(
 			return fmt.Errorf("ensure round: %w", err)
 		}
 
-		params, err := s.descriptorToInsertParams(desc)
+		params, err := s.descriptorToInsertParams(ctx, q, desc)
 		if err != nil {
 			return fmt.Errorf("convert descriptor: %w", err)
 		}
@@ -471,40 +471,50 @@ func (s *VTXOPersistenceStore) DeleteVTXO(
 // parameters. Ancestry paths are persisted separately in the
 // vtxo_ancestry_paths side table by upsertAncestryPaths; this function
 // only writes scalar columns that live on the vtxos row itself.
-func (s *VTXOPersistenceStore) descriptorToInsertParams(desc *vtxo.Descriptor) (
-	InsertVTXOParams, error) {
+func (s *VTXOPersistenceStore) descriptorToInsertParams(ctx context.Context,
+	q RoundStore, desc *vtxo.Descriptor) (InsertVTXOParams, error) {
 
 	var operatorPubkey []byte
 	if desc.OperatorKey != nil {
 		operatorPubkey = desc.OperatorKey.SerializeCompressed()
 	}
 
-	var clientPubkey []byte
-	if desc.ClientKey.PubKey != nil {
-		clientPubkey = desc.ClientKey.PubKey.SerializeCompressed()
-	}
-
 	nowUnix := s.clock.Now().Unix()
 
+	// Register the local-ownership (client) key in the shared internal_keys
+	// registry and reference it by id. The key is absent on the minimal row
+	// the round store may create first; in that case the FK stays NULL and
+	// is healed by a later full-descriptor insert.
+	var clientKeyID sql.NullInt64
+	if desc.ClientKey.PubKey != nil {
+		id, err := RegisterInternalKeyTx(
+			ctx, q, nowUnix, desc.ClientKey,
+		)
+		if err != nil {
+			return InsertVTXOParams{}, fmt.Errorf("register "+
+				"client key: %w", err)
+		}
+
+		clientKeyID = sql.NullInt64{Int64: id, Valid: true}
+	}
+
 	return InsertVTXOParams{
-		OutpointHash:    desc.Outpoint.Hash[:],
-		OutpointIndex:   int32(desc.Outpoint.Index),
-		RoundID:         desc.RoundID,
-		Amount:          int64(desc.Amount),
-		PkScript:        desc.PkScript,
-		Expiry:          int32(desc.RelativeExpiry),
-		PolicyTemplate:  bytes.Clone(desc.PolicyTemplate),
-		ClientKeyFamily: int32(desc.ClientKey.Family),
-		ClientKeyIndex:  int32(desc.ClientKey.Index),
-		ClientPubkey:    clientPubkey,
-		OperatorPubkey:  operatorPubkey,
-		BatchExpiry:     desc.BatchExpiry,
-		ChainDepth:      int32(desc.ChainDepth),
-		CreatedHeight:   desc.CreatedHeight,
-		CommitmentTxid:  desc.CommitmentTxID[:],
-		Spent:           false,
-		CreationTime:    nowUnix,
-		LastUpdateTime:  nowUnix,
+		OutpointHash:   desc.Outpoint.Hash[:],
+		OutpointIndex:  int32(desc.Outpoint.Index),
+		RoundID:        desc.RoundID,
+		Amount:         int64(desc.Amount),
+		PkScript:       desc.PkScript,
+		Expiry:         int32(desc.RelativeExpiry),
+		PolicyTemplate: bytes.Clone(desc.PolicyTemplate),
+		ClientKeyID:    clientKeyID,
+		OperatorPubkey: operatorPubkey,
+		BatchExpiry:    desc.BatchExpiry,
+		ChainDepth:     int32(desc.ChainDepth),
+		CreatedHeight:  desc.CreatedHeight,
+		CommitmentTxid: desc.CommitmentTxID[:],
+		Spent:          false,
+		CreationTime:   nowUnix,
+		LastUpdateTime: nowUnix,
 	}, nil
 }
 
@@ -531,15 +541,21 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		Index: uint32(row.OutpointIndex),
 	}
 
-	// Parse client public key.
-	var clientPubkey *btcec.PublicKey
-	if len(row.ClientPubkey) > 0 {
-		key, err := btcec.ParsePubKey(row.ClientPubkey)
+	// Hydrate the client key descriptor (pubkey + locator) from the
+	// internal_keys registry via the client_key_id FK. The FK is NULL on a
+	// minimal round-created row the VTXO manager has not yet healed; in
+	// that case the descriptor key is left empty and the policy-template
+	// fallback below may lift the owner pubkey instead.
+	var clientKey keychain.KeyDescriptor
+	if row.ClientKeyID.Valid {
+		desc, err := InternalKeyDescByIDTx(
+			ctx, q, row.ClientKeyID.Int64,
+		)
 		if err != nil {
-			return nil, fmt.Errorf("parse client pubkey: %w", err)
+			return nil, fmt.Errorf("hydrate client key: %w", err)
 		}
 
-		clientPubkey = key
+		clientKey = desc
 	}
 
 	policyTemplate := bytes.Clone(row.PolicyTemplate)
@@ -578,8 +594,6 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		}
 	}
 
-	keyFamily := keychain.KeyFamily(row.ClientKeyFamily)
-
 	// Reconstruct the TapScript from the semantic policy when
 	// the descriptor uses the standard Ark VTXO shape. Custom
 	// policies keep TapScript nil and rely on explicit spend
@@ -612,8 +626,8 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 				operatorPubkey = params.OperatorKey
 			}
 
-			if clientPubkey == nil {
-				clientPubkey = params.OwnerKey
+			if clientKey.PubKey == nil {
+				clientKey.PubKey = params.OwnerKey
 			}
 
 			// Warn on expiry drift between the stored column
@@ -660,13 +674,7 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		Amount:         btcutil.Amount(row.Amount),
 		PolicyTemplate: policyTemplate,
 		PkScript:       row.PkScript,
-		ClientKey: keychain.KeyDescriptor{
-			PubKey: clientPubkey,
-			KeyLocator: keychain.KeyLocator{
-				Family: keyFamily,
-				Index:  uint32(row.ClientKeyIndex),
-			},
-		},
+		ClientKey:      clientKey,
 		OperatorKey:    operatorPubkey,
 		TapScript:      tapscript,
 		Ancestry:       ancestry,

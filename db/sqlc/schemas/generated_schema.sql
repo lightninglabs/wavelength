@@ -1237,14 +1237,12 @@ CREATE TABLE vtxos (
     -- columns remain as denormalized standard-policy helpers.
     policy_template BLOB,
 
-    -- client_key_family is the BIP32 key family.
-    client_key_family INTEGER NOT NULL,
-
-    -- client_key_index is the BIP32 key index.
-    client_key_index INTEGER NOT NULL,
-
-    -- client_pubkey is the 33-byte compressed client public key.
-    client_pubkey BLOB NOT NULL,
+    -- client_key_id references the internal_keys registry row for the local
+    -- ownership (client) wallet key. The registry row carries the compressed
+    -- pubkey plus the lnd KeyLocator needed to reconstruct the signing
+    -- descriptor. Nullable because the round store can create a minimal VTXO
+    -- row before the VTXO manager heals it with the full descriptor.
+    client_key_id BIGINT REFERENCES internal_keys(id),
 
     -- operator_pubkey is the 33-byte compressed operator public key.
     operator_pubkey BLOB NOT NULL,
