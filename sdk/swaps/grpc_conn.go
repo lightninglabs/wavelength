@@ -79,6 +79,30 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 	}, nil
 }
 
+// AcknowledgeOutSwapHTLC tells the swap server this receiver validated and
+// durably accepted the out-swap HTLC event.
+func (g *GRPCSwapServerConn) AcknowledgeOutSwapHTLC(ctx context.Context,
+	paymentHash lntypes.Hash, vhtlcPubkey *btcec.PublicKey) error {
+
+	if vhtlcPubkey == nil {
+		return fmt.Errorf("vHTLC pubkey must be provided")
+	}
+
+	_, err := g.client.AcknowledgeOutSwapHtlc(
+		ctx, &swaprpc.AcknowledgeOutSwapHtlcRequest{
+			PaymentHash: append(
+				[]byte(nil), paymentHash[:]...,
+			),
+			ClientVhtlcPubkey: vhtlcPubkey.SerializeCompressed(),
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("AcknowledgeOutSwapHtlc RPC: %w", err)
+	}
+
+	return nil
+}
+
 // CreateInSwap initiates one Ark-to-Lightning swap on the swap server.
 func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context, invoice string,
 	maxFeeSat uint64, clientVhtlcPubkey *btcec.PublicKey) (*InSwapConfig,

@@ -18,6 +18,8 @@ import (
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -1013,11 +1015,60 @@ func (s *ReceiveSession) ackAcceptedHTLCEvent(ctx context.Context,
 		)
 	}
 
+	if err := s.acknowledgeOutSwapHTLC(ctx); err != nil {
+		return err
+	}
+
 	if err := s.clearPendingHTLCAck(ctx); err != nil {
 		return newRetryableActionError(err)
 	}
 
 	return nil
+}
+
+// acknowledgeOutSwapHTLC records the receiver's durable event acceptance with
+// the swap server before clearing the local pending ACK marker.
+func (s *ReceiveSession) acknowledgeOutSwapHTLC(ctx context.Context) error {
+	if s.settlementType != "" &&
+		s.settlementType != SettlementTypeLightning {
+		return nil
+	}
+	if s.client == nil || s.client.server == nil {
+		return fmt.Errorf("swap server connection is not configured")
+	}
+	if s.clientPubKey == nil {
+		return fmt.Errorf("client vHTLC pubkey is not configured")
+	}
+
+	if err := s.client.server.AcknowledgeOutSwapHTLC(
+		ctx, s.PaymentHash, s.clientPubKey,
+	); err != nil {
+
+		err = fmt.Errorf("acknowledge out-swap HTLC: %w", err)
+		if isTerminalOutSwapHTLCAckError(err) {
+			return newFailureError(
+				"swap server rejected out-swap HTLC ack", err,
+			)
+		}
+
+		return newRetryableActionError(err)
+	}
+
+	return nil
+}
+
+// isTerminalOutSwapHTLCAckError reports authoritative server ACK rejections
+// that cannot be fixed by retrying the durable pending cursor. The server uses
+// FailedPrecondition for the transient "not published yet" state, so that code
+// deliberately remains retryable.
+func isTerminalOutSwapHTLCAckError(err error) bool {
+	switch status.Code(err) {
+	case codes.InvalidArgument, codes.NotFound, codes.PermissionDenied:
+		return true
+
+	default:
+		return false
+	}
 }
 
 // clearPendingHTLCAck records that the accepted HTLC event's mailbox cursor

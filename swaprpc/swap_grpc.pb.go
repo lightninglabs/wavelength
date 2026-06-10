@@ -19,9 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SwapService_RequestChannelId_FullMethodName      = "/swaprpc.SwapService/RequestChannelId"
-	SwapService_CreateInSwap_FullMethodName          = "/swaprpc.SwapService/CreateInSwap"
-	SwapService_AuthorizeInSwapRefund_FullMethodName = "/swaprpc.SwapService/AuthorizeInSwapRefund"
+	SwapService_RequestChannelId_FullMethodName       = "/swaprpc.SwapService/RequestChannelId"
+	SwapService_CreateInSwap_FullMethodName           = "/swaprpc.SwapService/CreateInSwap"
+	SwapService_AuthorizeInSwapRefund_FullMethodName  = "/swaprpc.SwapService/AuthorizeInSwapRefund"
+	SwapService_AcknowledgeOutSwapHtlc_FullMethodName = "/swaprpc.SwapService/AcknowledgeOutSwapHtlc"
 )
 
 // SwapServiceClient is the client API for SwapService service.
@@ -40,6 +41,10 @@ type SwapServiceClient interface {
 	// AuthorizeInSwapRefund signs a prepared cooperative refund spend for a
 	// funded in-swap whose Lightning payment attempt has terminally failed.
 	AuthorizeInSwapRefund(ctx context.Context, in *AuthorizeInSwapRefundRequest, opts ...grpc.CallOption) (*AuthorizeInSwapRefundResponse, error)
+	// AcknowledgeOutSwapHtlc records that the receiver validated and durably
+	// accepted the out-swap HTLC mailbox event. The swap server waits for this
+	// acknowledgement before funding the Ark vHTLC.
+	AcknowledgeOutSwapHtlc(ctx context.Context, in *AcknowledgeOutSwapHtlcRequest, opts ...grpc.CallOption) (*AcknowledgeOutSwapHtlcResponse, error)
 }
 
 type swapServiceClient struct {
@@ -80,6 +85,16 @@ func (c *swapServiceClient) AuthorizeInSwapRefund(ctx context.Context, in *Autho
 	return out, nil
 }
 
+func (c *swapServiceClient) AcknowledgeOutSwapHtlc(ctx context.Context, in *AcknowledgeOutSwapHtlcRequest, opts ...grpc.CallOption) (*AcknowledgeOutSwapHtlcResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AcknowledgeOutSwapHtlcResponse)
+	err := c.cc.Invoke(ctx, SwapService_AcknowledgeOutSwapHtlc_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SwapServiceServer is the server API for SwapService service.
 // All implementations must embed UnimplementedSwapServiceServer
 // for forward compatibility.
@@ -96,6 +111,10 @@ type SwapServiceServer interface {
 	// AuthorizeInSwapRefund signs a prepared cooperative refund spend for a
 	// funded in-swap whose Lightning payment attempt has terminally failed.
 	AuthorizeInSwapRefund(context.Context, *AuthorizeInSwapRefundRequest) (*AuthorizeInSwapRefundResponse, error)
+	// AcknowledgeOutSwapHtlc records that the receiver validated and durably
+	// accepted the out-swap HTLC mailbox event. The swap server waits for this
+	// acknowledgement before funding the Ark vHTLC.
+	AcknowledgeOutSwapHtlc(context.Context, *AcknowledgeOutSwapHtlcRequest) (*AcknowledgeOutSwapHtlcResponse, error)
 	mustEmbedUnimplementedSwapServiceServer()
 }
 
@@ -114,6 +133,9 @@ func (UnimplementedSwapServiceServer) CreateInSwap(context.Context, *CreateInSwa
 }
 func (UnimplementedSwapServiceServer) AuthorizeInSwapRefund(context.Context, *AuthorizeInSwapRefundRequest) (*AuthorizeInSwapRefundResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AuthorizeInSwapRefund not implemented")
+}
+func (UnimplementedSwapServiceServer) AcknowledgeOutSwapHtlc(context.Context, *AcknowledgeOutSwapHtlcRequest) (*AcknowledgeOutSwapHtlcResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AcknowledgeOutSwapHtlc not implemented")
 }
 func (UnimplementedSwapServiceServer) mustEmbedUnimplementedSwapServiceServer() {}
 func (UnimplementedSwapServiceServer) testEmbeddedByValue()                     {}
@@ -190,6 +212,24 @@ func _SwapService_AuthorizeInSwapRefund_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SwapService_AcknowledgeOutSwapHtlc_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AcknowledgeOutSwapHtlcRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapServiceServer).AcknowledgeOutSwapHtlc(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapService_AcknowledgeOutSwapHtlc_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapServiceServer).AcknowledgeOutSwapHtlc(ctx, req.(*AcknowledgeOutSwapHtlcRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SwapService_ServiceDesc is the grpc.ServiceDesc for SwapService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -208,6 +248,10 @@ var SwapService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AuthorizeInSwapRefund",
 			Handler:    _SwapService_AuthorizeInSwapRefund_Handler,
+		},
+		{
+			MethodName: "AcknowledgeOutSwapHtlc",
+			Handler:    _SwapService_AcknowledgeOutSwapHtlc_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

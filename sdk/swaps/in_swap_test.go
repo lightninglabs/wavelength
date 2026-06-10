@@ -98,6 +98,13 @@ func (c *testInSwapServerConn) RequestChannelID(_ context.Context,
 	return nil, nil
 }
 
+// AcknowledgeOutSwapHTLC is unused in these tests.
+func (c *testInSwapServerConn) AcknowledgeOutSwapHTLC(context.Context,
+	lntypes.Hash, *btcec.PublicKey) error {
+
+	return nil
+}
+
 // CreateInSwap returns the preconfigured in-swap config.
 func (c *testInSwapServerConn) CreateInSwap(context.Context, string, uint64,
 	*btcec.PublicKey) (*InSwapConfig, error) {
