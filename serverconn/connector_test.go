@@ -1,6 +1,7 @@
 package serverconn
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -757,12 +758,21 @@ func TestEventRoutingMetadata(t *testing.T) {
 	require.Equal(t, "", method)
 }
 
-// TestIngress_PartialDispatch_NoDuplicateRedelivery verifies that when
-// a batch dispatch fails mid-way, the already-dispatched envelopes are
-// not re-dispatched on the next loop iteration. This is a regression test
-// for the off-by-one where the inclusive event_seq returned on the error
-// path was used directly as PullCursor, causing the last committed
-// envelope to be re-pulled and re-dispatched.
+// TestIngress_PartialDispatch_NoDuplicateRedelivery verifies the cursor
+// half of the transactional dispatch contract for a batch that fails
+// mid-way: the PullCursor does not advance on the failed commit, so the
+// whole batch is re-dispatched on retry, and once a batch commits none of
+// its envelopes are ever dispatched again. The post-commit stability check
+// is the regression guard for the original off-by-one where the inclusive
+// event_seq returned on the error path was used directly as PullCursor,
+// re-pulling the last committed envelope.
+//
+// Scope note: the in-memory store's ExecTx has no real savepoint (it runs
+// the closure against itself), and these dispatchers are counters that
+// never call EnqueueMessage, so this test asserts cursor non-advancement
+// only — NOT that a rolled-back batch's enqueues are physically erased.
+// The enqueue/cursor atomicity itself is proven by the ingress_fold.p
+// P-model (tcIngressFoldNoLoss and the two counterexample cases).
 func TestIngress_PartialDispatch_NoDuplicateRedelivery(t *testing.T) {
 	t.Parallel()
 
@@ -789,10 +799,10 @@ func TestIngress_PartialDispatch_NoDuplicateRedelivery(t *testing.T) {
 			dispatchCountsMu.Unlock()
 
 			// Fail on the second envelope in the first batch.
-			// The first envelope (count==1) succeeds, and the
-			// second (count==2) fails. On retry, we expect the
-			// second to be dispatched (count==3) but NOT the
-			// first again.
+			// The first envelope (count==1) succeeds and the
+			// second (count==2) fails, rolling back the whole
+			// batch. The retry re-dispatches both envelopes
+			// (counts 3 and 4) and commits.
 			if count == 2 {
 				return &statusError{
 					Op: "dispatch",
@@ -829,22 +839,89 @@ func TestIngress_PartialDispatch_NoDuplicateRedelivery(t *testing.T) {
 		return dispatchCounts[2] >= 2
 	}, 5*time.Second, 10*time.Millisecond)
 
+	// Give the loop room to misbehave: a cursor bug would re-pull and
+	// re-dispatch committed envelopes on subsequent iterations.
+	time.Sleep(200 * time.Millisecond)
+
 	dispatchCountsMu.Lock()
 	defer dispatchCountsMu.Unlock()
 
-	// The first envelope (event_seq=1) must have been dispatched
-	// exactly once — not re-dispatched after the partial failure.
+	// Both envelopes dispatch exactly twice: once in the first batch
+	// whose commit failed (so the cursor did not advance) and once in
+	// the committed retry. Anything beyond two means the loop re-pulled
+	// past a committed checkpoint.
 	require.Equal(
-		t, 1, dispatchCounts[1],
-		"first envelope should be dispatched exactly once",
+		t, 2, dispatchCounts[1], "first envelope should be "+
+			"dispatched exactly twice (rolled-back batch + retry)",
 	)
-
-	// The second envelope (event_seq=2) should be dispatched
-	// exactly twice: once failed, once succeeded on retry.
 	require.Equal(
 		t, 2, dispatchCounts[2], "second envelope should be "+
 			"dispatched exactly twice (1 fail + 1 retry)",
 	)
+}
+
+// TestIngress_IdleFlushPersistsAckWatermark exercises the ackDirty
+// idle-flush convergence path on the transactional store. After an event
+// dispatches and the loop acks the remote, the advanced ack watermark is
+// NOT checkpointed inline (it rides the next dispatch checkpoint); on a
+// connection that then goes quiet the empty long-poll branch must flush it.
+// This guards against a regression that dropped the idle flush or never
+// cleared ackDirty, which would leave the loop re-acking from a stale
+// AckCommittedTo on every restart.
+func TestIngress_IdleFlushPersistsAckWatermark(t *testing.T) {
+	t.Parallel()
+
+	dispatchers := map[mailboxrpc.ServiceMethod]EnvelopeDispatcher{
+		{
+			Service: "test.Svc",
+			Method:  "DoThing",
+		}: func(
+			ctx context.Context,
+			env *mailboxpb.Envelope,
+		) error {
+
+			return nil
+		},
+	}
+
+	actor, mb, store := newTestConnector(t, dispatchers)
+
+	// Inject a single event. Once it dispatches and the loop acks the
+	// remote, the advanced watermark stays in memory (ackDirty) until the
+	// next empty long-poll flushes it durably.
+	sendEventToMailbox(t, mb, "client-1", "test.Svc", "DoThing")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	require.NoError(t, actor.StartIngress(ctx))
+	defer actor.StopIngress()
+
+	// Wait for the remote ack, which advances AckCommittedTo in memory and
+	// sets ackDirty without an inline checkpoint on the transactional path.
+	require.Eventually(t, func() bool {
+		return mb.getAckedUpTo("client-1") > 0
+	}, 5*time.Second, 10*time.Millisecond)
+
+	// The idle flush runs on a subsequent empty poll. Wait until the
+	// persisted checkpoint decodes to the acked watermark, proving the
+	// flush converged the durable state.
+	actorID := DurableActorID("client-1")
+	require.Eventually(t, func() bool {
+		cp, err := store.LoadCheckpoint(t.Context(), actorID)
+		if err != nil || cp == nil {
+			return false
+		}
+
+		var persisted AckState
+		if err := persisted.Decode(
+			bytes.NewReader(cp.StateData),
+		); err != nil {
+			return false
+		}
+
+		return persisted.AckCommittedTo >= 1
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 // Backoff formula tests now live in serverconn/mailboxpull/pull_test.go

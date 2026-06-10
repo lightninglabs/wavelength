@@ -124,3 +124,48 @@ func TestResponseRegistry_DeliverNilReturnsFalse(t *testing.T) {
 	require.Equal(t, DeliveryDropped, registry.DeliverResponse("any",
 		nil))
 }
+
+// TestResponseRegistryHasWaiterTracksRegistration verifies HasWaiter reflects
+// the live-waiter state the ingress split path relies on: false before
+// registration, true while a waiter is registered, and false again once the
+// waiter is removed or a buffered (waiterless) response is delivered.
+func TestResponseRegistryHasWaiterTracksRegistration(t *testing.T) {
+	t.Parallel()
+
+	registry := NewResponseRegistry(time.Minute)
+	id := CorrelationID("corr-has-waiter")
+
+	// No waiter registered yet.
+	require.False(t, registry.HasWaiter(id))
+
+	// A buffered early response does not count as a live waiter, so the
+	// ingress loop folds it into the durable transaction.
+	registry.DeliverResponse(id, &mailboxpb.Envelope{EventSeq: 1})
+	require.False(t, registry.HasWaiter(id))
+
+	// Registering a waiter flips it true; this drains the buffered
+	// response into the promise.
+	registry.RegisterWaiter(id)
+	require.True(t, registry.HasWaiter(id))
+
+	// Removing the waiter flips it back to false.
+	registry.RemoveWaiter(id)
+	require.False(t, registry.HasWaiter(id))
+}
+
+// TestResponseRegistryHasWaiterPrunesStale verifies HasWaiter prunes an expired
+// waiter before answering, so a TTL-lapsed entry never masquerades as live and
+// misroutes a response onto the fast path.
+func TestResponseRegistryHasWaiterPrunesStale(t *testing.T) {
+	t.Parallel()
+
+	registry := NewResponseRegistry(5 * time.Millisecond)
+	id := CorrelationID("corr-stale")
+
+	registry.RegisterWaiter(id)
+	require.True(t, registry.HasWaiter(id))
+
+	time.Sleep(10 * time.Millisecond)
+
+	require.False(t, registry.HasWaiter(id))
+}

@@ -1128,6 +1128,15 @@ func (a *ServerConnectionActor) removePendingResponse(id CorrelationID) {
 	a.responseRegistry.RemovePending(id)
 }
 
+// hasResponseWaiter reports whether an active in-memory waiter is registered
+// for the correlation ID. The ingress loop uses this to classify a
+// KIND_RESPONSE at split time: only responses with a live waiter take the fast
+// pre-transaction delivery path; everything else folds into the durable
+// dispatch transaction.
+func (a *ServerConnectionActor) hasResponseWaiter(id CorrelationID) bool {
+	return a.responseRegistry.HasWaiter(id)
+}
+
 // deliverResponse looks up a waiter by correlation ID and delivers the
 // envelope. If no waiter exists yet, the response is buffered so a later
 // AwaitRPC call can still observe it.
