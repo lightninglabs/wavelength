@@ -74,6 +74,12 @@ type lndConfig struct {
 	group        string
 	image        string
 	tag          string
+
+	// chainBackend selects lnd's chain backend: LNDChainBackendBitcoind
+	// (default) or LNDChainBackendNeutrino. Neutrino backs lnd via SPV over
+	// the regtest bitcoind's P2P + compact filters, exercising lnd's native
+	// 1p1c broadcast path instead of bitcoind's synchronous mempool checks.
+	chainBackend string
 }
 
 // tapdConfig holds the configuration for starting a tapd container.
@@ -151,14 +157,6 @@ func (h *Harness) startLNDContainer(cfg lndConfig) *dockertest.Resource {
 		fmt.Sprintf("--lnddir=%s", lndDirInContainer),
 		"--bitcoin.active",
 		"--bitcoin.regtest",
-		"--bitcoin.node=bitcoind",
-		fmt.Sprintf("--bitcoind.rpchost=%s:18443", cfg.bitcoindName),
-		fmt.Sprintf("--bitcoind.rpcuser=%s", BitcoindRPCUser),
-		fmt.Sprintf("--bitcoind.rpcpass=%s", BitcoindRPCPass),
-		fmt.Sprintf("--bitcoind.zmqpubrawblock=tcp://%s:28332",
-			cfg.bitcoindName),
-		fmt.Sprintf("--bitcoind.zmqpubrawtx=tcp://%s:28333",
-			cfg.bitcoindName),
 		"--rpclisten=0.0.0.0:10009",
 		"--restlisten=0.0.0.0:8080",
 		"--listen=0.0.0.0:9735",
@@ -169,6 +167,33 @@ func (h *Harness) startLNDContainer(cfg lndConfig) *dockertest.Resource {
 		"--accept-keysend",
 		"--protocol.option-scid-alias",
 		"--protocol.zero-conf",
+	}
+
+	// Append the chain-backend-specific flags. Neutrino syncs and
+	// broadcasts over the regtest bitcoind's P2P interface (which serves
+	// compact block filters), so lnd uses its SPV broadcast path; this is
+	// what lets us observe whether an lnd-backed daemon can relay zero-fee
+	// v3 anchor packages via 1p1c instead of a direct bitcoind submitter.
+	switch cfg.chainBackend {
+	case LNDChainBackendNeutrino:
+		cmd = append(
+			cmd, "--bitcoin.node=neutrino",
+			fmt.Sprintf("--neutrino.connect=%s:18444",
+				cfg.bitcoindName),
+		)
+
+	default:
+		cmd = append(
+			cmd, "--bitcoin.node=bitcoind",
+			fmt.Sprintf("--bitcoind.rpchost=%s:18443",
+				cfg.bitcoindName),
+			fmt.Sprintf("--bitcoind.rpcuser=%s", BitcoindRPCUser),
+			fmt.Sprintf("--bitcoind.rpcpass=%s", BitcoindRPCPass),
+			fmt.Sprintf("--bitcoind.zmqpubrawblock=tcp://%s:28332",
+				cfg.bitcoindName),
+			fmt.Sprintf("--bitcoind.zmqpubrawtx=tcp://%s:28333",
+				cfg.bitcoindName),
+		)
 	}
 
 	lndHostDir, err := filepath.Abs(cfg.dataDir)

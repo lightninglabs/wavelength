@@ -76,6 +76,16 @@ const (
 	// for each harness instance to ensure isolation between test runs.
 	networkPrefix = "ark-harness-"
 
+	// LNDChainBackendBitcoind backs a harness lnd node with the regtest
+	// bitcoind over RPC + ZMQ. This is the default.
+	LNDChainBackendBitcoind = "bitcoind"
+
+	// LNDChainBackendNeutrino backs a harness lnd node with neutrino,
+	// syncing and broadcasting over the regtest bitcoind's P2P interface
+	// (which serves compact block filters). Used to exercise lnd's native
+	// SPV / 1p1c broadcast path.
+	LNDChainBackendNeutrino = "neutrino"
+
 	// BitcoindRPCUser is the RPC username for bitcoind in regtest mode.
 	BitcoindRPCUser = "admin1"
 
@@ -2155,7 +2165,7 @@ func (h *Harness) bitcoindSendToAddress(address string, amount float64) string {
 // startLND launches an lnd container and waits until its gRPC is responsive
 // and TLS cert and admin macaroon are available.
 func (h *Harness) startLND() *LndInstance {
-	inst := h.startLNDInstance("lnd", h.lndDataDir)
+	inst := h.startLNDInstance("lnd", h.lndDataDir, LNDChainBackendBitcoind)
 	h.lnd = inst.Resource
 	h.LNDGRPCPort = inst.GRPCPort
 	h.LNDRestPort = inst.RESTPort
@@ -2165,7 +2175,9 @@ func (h *Harness) startLND() *LndInstance {
 	return inst
 }
 
-func (h *Harness) startLNDInstance(name, dataDir string) *LndInstance {
+func (h *Harness) startLNDInstance(name, dataDir,
+	chainBackend string) *LndInstance {
+
 	h.T.Helper()
 
 	require.NoError(h.T, os.MkdirAll(dataDir, 0o755))
@@ -2178,6 +2190,7 @@ func (h *Harness) startLNDInstance(name, dataDir string) *LndInstance {
 		group:        h.group,
 		image:        imageRepo(h.opts.LNDImage),
 		tag:          imageTag(h.opts.LNDImage),
+		chainBackend: chainBackend,
 	})
 
 	inst := &LndInstance{
@@ -2325,6 +2338,15 @@ func loadClientTLSCredentials(tlsPath string) (credentials.TransportCredentials,
 // StartAdditionalLND launches an extra LND instance with the given name and
 // returns its handle.
 func (h *Harness) StartAdditionalLND(name string) *LndInstance {
+	return h.StartAdditionalLNDWithBackend(name, LNDChainBackendBitcoind)
+}
+
+// StartAdditionalLNDWithBackend launches an extra LND instance with the given
+// name and chain backend (LNDChainBackendBitcoind or LNDChainBackendNeutrino)
+// and returns its handle.
+func (h *Harness) StartAdditionalLNDWithBackend(name,
+	chainBackend string) *LndInstance {
+
 	h.T.Helper()
 
 	if name == "" {
@@ -2336,7 +2358,7 @@ func (h *Harness) StartAdditionalLND(name string) *LndInstance {
 	}
 
 	dataDir := filepath.Join(h.artifactsDir, name)
-	inst := h.startLNDInstance(name, dataDir)
+	inst := h.startLNDInstance(name, dataDir, chainBackend)
 	h.initAndWaitLNDInstance(inst)
 	h.extraLNDs[name] = inst
 
