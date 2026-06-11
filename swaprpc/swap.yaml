@@ -12,3 +12,6 @@ http:
     - selector: swaprpc.SwapService.AuthorizeInSwapRefund
       post: /v1/swap/authorize-in-swap-refund
       body: "*"
+    - selector: swaprpc.SwapService.AcknowledgeOutSwapHtlc
+      post: /v1/swap/acknowledge-out-swap-htlc
+      body: "*"

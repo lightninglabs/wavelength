@@ -371,6 +371,11 @@ type SwapServerConn interface {
 		paymentHash lntypes.Hash, amountSat btcutil.Amount,
 		expirySeconds uint32) (*OutSwapQuote, error)
 
+	// AcknowledgeOutSwapHTLC tells the server this receiver validated and
+	// durably accepted the out-swap HTLC event.
+	AcknowledgeOutSwapHTLC(ctx context.Context, paymentHash lntypes.Hash,
+		vhtlcPubkey *btcec.PublicKey) error
+
 	// CreateInSwap initiates an Ark->LN swap on the server.
 	CreateInSwap(ctx context.Context, invoice string, maxFeeSat uint64,
 		clientVhtlcPubkey *btcec.PublicKey) (*InSwapConfig, error)

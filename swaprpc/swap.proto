@@ -36,6 +36,12 @@ service SwapService {
     // funded in-swap whose Lightning payment attempt has terminally failed.
     rpc AuthorizeInSwapRefund (AuthorizeInSwapRefundRequest)
         returns (AuthorizeInSwapRefundResponse);
+
+    // AcknowledgeOutSwapHtlc records that the receiver validated and durably
+    // accepted the out-swap HTLC mailbox event. The swap server waits for this
+    // acknowledgement before funding the Ark vHTLC.
+    rpc AcknowledgeOutSwapHtlc (AcknowledgeOutSwapHtlcRequest)
+        returns (AcknowledgeOutSwapHtlcResponse);
 }
 
 // RequestChannelIdRequest starts one Lightning-to-Ark receive negotiation.
@@ -71,9 +77,27 @@ message RequestChannelIdResponse {
     uint64 payer_fee_msat = 2;
 }
 
-// OutSwapHtlcEvent describes one server-funded intercepted HTLC. The event is
-// intentionally raw from the Lightning side: the client must decode onion_blob
-// with the invoice/auth private key before it claims the Ark vHTLC.
+// AcknowledgeOutSwapHtlcRequest confirms that the receiver has validated and
+// durably accepted the out-swap HTLC notification for one receive invoice.
+message AcknowledgeOutSwapHtlcRequest {
+    // payment_hash identifies the intercepted HTLC.
+    bytes payment_hash = 1;
+
+    // client_vhtlc_pubkey is the receiver key used when the route was
+    // registered. The server checks it against the persisted out-swap before
+    // treating the acknowledgement as valid.
+    bytes client_vhtlc_pubkey = 2;
+}
+
+// AcknowledgeOutSwapHtlcResponse is empty on success.
+message AcknowledgeOutSwapHtlcResponse {
+}
+
+// OutSwapHtlcEvent describes one intercepted HTLC and the vHTLC terms the swap
+// server will fund after the receiver acknowledges durable event acceptance.
+// The event is intentionally raw from the Lightning side: the client must
+// decode onion_blob with the invoice/auth private key before it claims the Ark
+// vHTLC.
 message OutSwapHtlcEvent {
     // payment_hash is the intercepted HTLC hash.
     bytes payment_hash = 1;
@@ -93,8 +117,8 @@ message OutSwapHtlcEvent {
 // envelopes.
 message SwapMailboxEvent {
     oneof event {
-        // out_swap_htlc is emitted when the server has funded or accepted
-        // funding for an out-swap HTLC.
+        // out_swap_htlc is emitted when the server has accepted funding
+        // responsibility for an out-swap HTLC.
         OutSwapHtlcEvent out_swap_htlc = 1;
 
         // in_ark_htlc is emitted when a same-Ark sender has funded or

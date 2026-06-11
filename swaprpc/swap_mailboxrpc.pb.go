@@ -30,6 +30,8 @@ type SwapServiceMailboxServer interface {
 	CreateInSwap(ctx context.Context, req *CreateInSwapRequest) (*CreateInSwapResponse, error)
 	// AuthorizeInSwapRefund handles AuthorizeInSwapRefund.
 	AuthorizeInSwapRefund(ctx context.Context, req *AuthorizeInSwapRefundRequest) (*AuthorizeInSwapRefundResponse, error)
+	// AcknowledgeOutSwapHtlc handles AcknowledgeOutSwapHtlc.
+	AcknowledgeOutSwapHtlc(ctx context.Context, req *AcknowledgeOutSwapHtlcRequest) (*AcknowledgeOutSwapHtlcResponse, error)
 }
 
 // RegisterSwapServiceMailboxServer registers handlers for SwapService.
@@ -63,6 +65,16 @@ func RegisterSwapServiceMailboxServer(r rpc.Router, impl SwapServiceMailboxServe
 		}
 
 		return impl.AuthorizeInSwapRefund(ctx, req)
+	})
+	r.Handle("swaprpc.SwapService", "AcknowledgeOutSwapHtlc", func() proto.Message {
+		return &AcknowledgeOutSwapHtlcRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*AcknowledgeOutSwapHtlcRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.AcknowledgeOutSwapHtlc(ctx, req)
 	})
 }
 
@@ -128,6 +140,29 @@ func (c *SwapServiceMailboxClient) AuthorizeInSwapRefund(ctx context.Context, re
 	}
 
 	resp := new(AuthorizeInSwapRefundResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// AcknowledgeOutSwapHtlc calls the AcknowledgeOutSwapHtlc RPC.
+func (c *SwapServiceMailboxClient) AcknowledgeOutSwapHtlc(ctx context.Context, req *AcknowledgeOutSwapHtlcRequest, opts ...rpc.RPCOptions) (*AcknowledgeOutSwapHtlcResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "swaprpc.SwapService",
+		Method:  "AcknowledgeOutSwapHtlc",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(AcknowledgeOutSwapHtlcResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

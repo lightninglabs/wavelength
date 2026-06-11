@@ -244,21 +244,106 @@ func TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy(t *testing.T) {
 	require.True(t, session.swapServerPubKey.IsEqual(senderPriv.PubKey()))
 }
 
-type testSwapServerConn struct {
-	hint          *RouteHint
-	payerFeeMsat  uint64
-	cfg           *VHTLCConfig
-	htlcAmountSat uint64
-	waitErr       error
-	ackErr        error
-	ackErrs       []error
-	ackCursor     uint64
-	waitCalls     int
-	ackCalls      int
-	lastAckCursor uint64
+// TestReceiveSessionSkipsServerAckForSameArkHTLCEvent verifies the server ACK
+// is only sent for Lightning-backed out-swaps. Same-Ark receives use the same
+// durable mailbox cursor machinery, but the swap server does not fund those
+// vHTLCs and must not receive an out-swap funding ACK.
+func TestReceiveSessionSkipsServerAckForSameArkHTLCEvent(t *testing.T) {
+	t.Parallel()
 
-	lastVhtlcPubkey *btcec.PublicKey
-	lastAmountSat   btcutil.Amount
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	senderPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := &testInvoiceCreator{
+		invoice: &invoices.Invoice{
+			PaymentRequest: []byte("lnrtest1swap"),
+		},
+	}
+	serverPubKey := senderPriv.PubKey().SerializeCompressed()
+	serverConn := &testSwapServerConn{
+		hint: &RouteHint{
+			NodeID:          serverPubKey,
+			ChannelID:       99,
+			FeeBaseMsat:     1,
+			FeePropPpm:      2,
+			CltvExpiryDelta: 40,
+		},
+		cfg: &VHTLCConfig{
+			RefundLocktime:                       144,
+			UnilateralClaimDelay:                 12,
+			UnilateralRefundDelay:                24,
+			UnilateralRefundWithoutReceiverDelay: 36,
+			SwapServerPubkey:                     serverPubKey,
+		},
+	}
+
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+		blockHeight: 100,
+	}
+
+	client := NewSwapClient(serverConn, daemonConn, nil, creator)
+	useTestOnionDecoder(client, 42_000)
+
+	session, err := client.StartReceiveViaLightning(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.NoError(t, err)
+
+	ackCalls := 0
+	client.outEvents = &testIncomingEventReceiver{
+		notification: &IncomingVHTLCNotification{
+			InArk: &InArkHtlcEvent{
+				PaymentHash:  session.PaymentHash,
+				AmountSat:    42_000,
+				SenderPubkey: senderPriv.PubKey(),
+				VHTLCConfig:  *serverConn.cfg,
+			},
+			AckCursor: 23,
+			Ack: func(context.Context) error {
+				ackCalls++
+
+				return nil
+			},
+		},
+	}
+
+	err = session.waitForHTLCEvent(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateHTLCEventAccepted, session.State())
+	require.Equal(t, SettlementTypeInArk, session.settlementType)
+	require.Equal(t, 1, ackCalls)
+	require.Zero(t, serverConn.serverAckCalls)
+	require.Zero(t, session.pendingHTLCAckCursor)
+}
+
+type testSwapServerConn struct {
+	hint           *RouteHint
+	payerFeeMsat   uint64
+	cfg            *VHTLCConfig
+	htlcAmountSat  uint64
+	waitErr        error
+	ackErr         error
+	ackErrs        []error
+	serverAckErr   error
+	serverAckErrs  []error
+	ackCursor      uint64
+	waitCalls      int
+	ackCalls       int
+	serverAckCalls int
+	lastAckCursor  uint64
+
+	lastVhtlcPubkey     *btcec.PublicKey
+	lastAmountSat       btcutil.Amount
+	lastServerAckHash   lntypes.Hash
+	lastServerAckPubkey *btcec.PublicKey
 }
 
 type testIncomingEventReceiver struct {
@@ -365,6 +450,23 @@ func (c *testSwapServerConn) AckOutSwapHtlc(_ context.Context, _ lntypes.Hash,
 	}
 
 	return c.ackErr
+}
+
+// AcknowledgeOutSwapHTLC records the server-side durable acceptance ACK.
+func (c *testSwapServerConn) AcknowledgeOutSwapHTLC(_ context.Context,
+	paymentHash lntypes.Hash, vhtlcPubkey *btcec.PublicKey) error {
+
+	c.serverAckCalls++
+	c.lastServerAckHash = paymentHash
+	c.lastServerAckPubkey = vhtlcPubkey
+	if len(c.serverAckErrs) > 0 {
+		err := c.serverAckErrs[0]
+		c.serverAckErrs = c.serverAckErrs[1:]
+
+		return err
+	}
+
+	return c.serverAckErr
 }
 
 // CreateInSwap is unused in these tests.
@@ -1546,6 +1648,11 @@ func TestReceiveSessionResumesAfterAckedHTLCEvent(t *testing.T) {
 	require.Equal(t, 1, serverConn.waitCalls)
 	require.Equal(t, 1, serverConn.ackCalls)
 	require.Equal(t, uint64(8), serverConn.lastAckCursor)
+	require.Equal(t, 1, serverConn.serverAckCalls)
+	require.Equal(t, session.PaymentHash, serverConn.lastServerAckHash)
+	require.True(
+		t, session.clientPubKey.IsEqual(serverConn.lastServerAckPubkey),
+	)
 	require.Zero(t, session.pendingHTLCAckCursor)
 
 	resumeServer := &testSwapServerConn{
@@ -1572,6 +1679,8 @@ func TestReceiveSessionResumesAfterAckedHTLCEvent(t *testing.T) {
 	require.Equal(t, "resume-txid:1", outpoint)
 	require.EqualValues(t, 42_000, amount)
 	require.Zero(t, resumeServer.waitCalls)
+	require.Zero(t, resumeServer.ackCalls)
+	require.Zero(t, resumeServer.serverAckCalls)
 }
 
 // TestReceiveSessionWaitForFundingSurvivesIndexerRowLag is the end-to-end #538
@@ -1725,6 +1834,7 @@ func TestReceiveSessionRetriesAcceptedHTLCAckOnResume(t *testing.T) {
 	require.Equal(t, 1, serverConn.waitCalls)
 	require.Equal(t, 1, serverConn.ackCalls)
 	require.Equal(t, uint64(12), serverConn.lastAckCursor)
+	require.Zero(t, serverConn.serverAckCalls)
 
 	resumeServer := &testSwapServerConn{
 		waitErr: errors.New("unexpected mailbox wait"),
@@ -1753,6 +1863,12 @@ func TestReceiveSessionRetriesAcceptedHTLCAckOnResume(t *testing.T) {
 	require.Zero(t, resumeServer.waitCalls)
 	require.Equal(t, 1, resumeServer.ackCalls)
 	require.Equal(t, uint64(12), resumeServer.lastAckCursor)
+	require.Equal(t, 1, resumeServer.serverAckCalls)
+	require.Equal(t, session.PaymentHash, resumeServer.lastServerAckHash)
+	require.True(
+		t,
+		resumed.clientPubKey.IsEqual(resumeServer.lastServerAckPubkey),
+	)
 	require.Zero(t, resumed.pendingHTLCAckCursor)
 
 	reloaded, err := resumedClient.ResumeReceiveViaLightning(
@@ -1760,6 +1876,207 @@ func TestReceiveSessionRetriesAcceptedHTLCAckOnResume(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Zero(t, reloaded.pendingHTLCAckCursor)
+}
+
+// TestReceiveSessionRetriesAcceptedHTLCServerAckOnResume asserts server-side
+// ACK errors after mailbox cursor ACK are retried from the durable accepted
+// event state. This is the client's crash-safe boundary for telling the swap
+// server it can now fund the vHTLC.
+func TestReceiveSessionRetriesAcceptedHTLCServerAckOnResume(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := &testInvoiceCreator{
+		invoice: &invoices.Invoice{
+			PaymentRequest: []byte("lnrtest1swap"),
+		},
+	}
+	serverPubKey := serverPriv.PubKey().SerializeCompressed()
+	cfg := &VHTLCConfig{
+		RefundLocktime:                       144,
+		UnilateralClaimDelay:                 12,
+		UnilateralRefundDelay:                24,
+		UnilateralRefundWithoutReceiverDelay: 36,
+		SwapServerPubkey:                     serverPubKey,
+	}
+	serverAckErr := errors.New("temporary server ack failure")
+	serverConn := &testSwapServerConn{
+		hint: &RouteHint{
+			NodeID:          serverPubKey,
+			ChannelID:       99,
+			FeeBaseMsat:     1,
+			FeePropPpm:      2,
+			CltvExpiryDelta: 40,
+		},
+		cfg: cfg,
+		serverAckErrs: []error{
+			serverAckErr,
+		},
+		ackCursor: 12,
+	}
+
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+		blockHeight: 100,
+	}
+
+	client := NewSwapClientWithStore(
+		serverConn, daemonConn, nil, creator, store,
+	)
+	useTestOnionDecoder(client, 42_000)
+	client.waitPollInterval = time.Millisecond
+
+	session, err := client.StartReceiveViaLightning(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.NoError(t, err)
+
+	err = session.waitForHTLCEvent(t.Context())
+	require.ErrorIs(t, err, serverAckErr)
+	require.Equal(t, ReceiveStateHTLCEventAccepted, session.State())
+	require.EqualValues(t, 12, session.pendingHTLCAckCursor)
+	require.Equal(t, 1, serverConn.waitCalls)
+	require.Equal(t, 1, serverConn.ackCalls)
+	require.Equal(t, 1, serverConn.serverAckCalls)
+	require.Equal(t, session.PaymentHash, serverConn.lastServerAckHash)
+	require.True(
+		t, session.clientPubKey.IsEqual(serverConn.lastServerAckPubkey),
+	)
+
+	resumeServer := &testSwapServerConn{
+		waitErr: errors.New("unexpected mailbox wait"),
+	}
+	resumedClient := NewSwapClientWithStore(
+		resumeServer, daemonConn, nil, creator, store,
+	)
+	resumedClient.waitPollInterval = time.Millisecond
+
+	resumed, err := resumedClient.ResumeReceiveViaLightning(
+		t.Context(), session.PaymentHash,
+	)
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateHTLCEventAccepted, resumed.State())
+	require.EqualValues(t, 12, resumed.pendingHTLCAckCursor)
+
+	daemonConn.vhtlc = &VTXOInfo{
+		Outpoint:  "resume-txid:1",
+		AmountSat: 42_000,
+	}
+
+	outpoint, amount, err := resumed.WaitForFunding(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, "resume-txid:1", outpoint)
+	require.EqualValues(t, 42_000, amount)
+	require.Zero(t, resumeServer.waitCalls)
+	require.Equal(t, 1, resumeServer.ackCalls)
+	require.Equal(t, 1, resumeServer.serverAckCalls)
+	require.Zero(t, resumed.pendingHTLCAckCursor)
+}
+
+// TestReceiveSessionClassifiesOutSwapServerAckStatus verifies the receiver
+// keeps retrying server ACK statuses that mean "not ready yet", but stops when
+// the swap server authoritatively rejects the ACK for a permanent reason.
+func TestReceiveSessionClassifiesOutSwapServerAckStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		code      codes.Code
+		wantState ReceiveState
+	}{
+		{
+			name:      "not published retryable",
+			code:      codes.FailedPrecondition,
+			wantState: ReceiveStateHTLCEventAccepted,
+		},
+		{
+			name:      "missing swap terminal",
+			code:      codes.NotFound,
+			wantState: ReceiveStateFailed,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := newTestSwapStore(t)
+
+			clientPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			operatorPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			serverPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			creator := &testInvoiceCreator{
+				invoice: &invoices.Invoice{
+					PaymentRequest: []byte("lnrtest1swap"),
+				},
+			}
+			serverPubKey := serverPriv.
+				PubKey().
+				SerializeCompressed()
+			cfg := &VHTLCConfig{
+				RefundLocktime:        144,
+				UnilateralClaimDelay:  12,
+				UnilateralRefundDelay: 24,
+			}
+			cfg.UnilateralRefundWithoutReceiverDelay = 36
+			cfg.SwapServerPubkey = serverPubKey
+			serverConn := &testSwapServerConn{
+				hint: &RouteHint{
+					NodeID:          serverPubKey,
+					ChannelID:       99,
+					FeeBaseMsat:     1,
+					FeePropPpm:      2,
+					CltvExpiryDelta: 40,
+				},
+				cfg: cfg,
+				serverAckErr: status.Error(
+					test.code, "ack rejected",
+				),
+				ackCursor: 12,
+			}
+			daemonConn := &testDaemonConn{
+				identityKey: clientPriv.PubKey(),
+				operatorKey: operatorPriv.PubKey(),
+				blockHeight: 100,
+			}
+
+			client := NewSwapClientWithStore(
+				serverConn, daemonConn, nil, creator, store,
+			)
+			useTestOnionDecoder(client, 42_000)
+			client.waitPollInterval = time.Millisecond
+
+			session, err := client.StartReceiveViaLightning(
+				t.Context(), btcutil.Amount(42_000),
+			)
+			require.NoError(t, err)
+
+			_, _, err = session.WaitForFunding(t.Context())
+			require.Error(t, err)
+			require.ErrorContains(t, err, "ack rejected")
+			require.Equal(t, test.wantState, session.State())
+			require.Equal(t, 1, serverConn.serverAckCalls)
+		})
+	}
 }
 
 // TestReceiveSessionExpiresAtRefundLocktimeWithoutFunding asserts a resumed

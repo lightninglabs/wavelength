@@ -188,6 +188,20 @@ func (c *SwapServiceClient) AuthorizeInSwapRefund(ctx context.Context,
 	return out, err
 }
 
+// AcknowledgeOutSwapHtlc tells the swap server an out-swap receiver durably
+// accepted the HTLC event.
+func (c *SwapServiceClient) AcknowledgeOutSwapHtlc(ctx context.Context,
+	in *swaprpc.AcknowledgeOutSwapHtlcRequest, _ ...grpc.CallOption) (
+	*swaprpc.AcknowledgeOutSwapHtlcResponse, error) {
+
+	out := new(swaprpc.AcknowledgeOutSwapHtlcResponse)
+	err := c.client.Post(
+		ctx, "/v1/swap/acknowledge-out-swap-htlc", in, out,
+	)
+
+	return out, err
+}
+
 // NewDaemonServiceClient creates a DaemonService REST client.
 func NewDaemonServiceClient(addr string,
 	opts ...Option) daemonrpc.DaemonServiceClient {
