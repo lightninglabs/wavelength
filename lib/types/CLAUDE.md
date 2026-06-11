@@ -26,7 +26,7 @@ server during round participation. These types are used across `round`, `vtxo`,
   `TxProof fn.Option[proof.TxProof]` carries an optional SPV merkle
   inclusion proof for server-side verification of boarding UTXOs without
   requiring the server's own chain source.
-- `OperatorTerms` — Server-published round parameters (fee rates, expiry config, connector dust amount). `MaxOORLineageVBytes uint32` carries the operator-published cap on the cumulative on-chain vbytes a recipient must publish to claim a VTXO produced by an OOR submit unilaterally. Zero means no cap enforced server-side (clients fall back to a conservative local default).
+- `OperatorTerms` — Server-published round parameters: `PubKey`, `BoardingExitDelay`, `VTXOExitDelay`, `DustLimit`, `MinBoardingAmount`, `MaxBoardingAmount`, `MaxOORLineageVBytes`. Note: `ForfeitScript`, `SweepKey`, and `SweepDelay` were removed — these are now delivered per-round via `round.CommitmentTxBuilt` (`ForfeitKey`, `SweepKey`, `SweepDelay`) so clients agree with the server across operator key rotations. `MaxOORLineageVBytes uint32` carries the operator-published cap on cumulative on-chain vbytes a recipient must publish to claim a VTXO from an OOR submit unilaterally; zero means no cap enforced server-side.
 - `Ancestry` — One rooted commitment-tree fragment contributing ancestry to a VTXO (defined in `lib/types/ancestry.go`). Fields: `TreePath *tree.Tree` (extracted root-to-leaf path), `CommitmentTxID chainhash.Hash`, `InputIndices []uint32` (Ark tx input indices this fragment serves; empty for round-direct VTXOs), `TreeDepth uint32`. Round-direct VTXOs carry a single-element slice; cross-round multi-input OOR VTXOs carry one entry per distinct commitment tx.
 - `MaxAncestryTreeDepth([]Ancestry) int` — Returns the largest `TreeDepth` across a slice; drives worst-case unilateral-exit timing calculations.
 - `ClientBatchInfo` — Client's view of batch output info after tree construction.
@@ -50,6 +50,7 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `VTXOOwnerKeyFamily` (44) is the HD key family used for deriving VTXO owner signing keys.
 - `VTXOSigningKeyFamily` (45) is the HD key family used for per-round VTXO MuSig2 signing keys.
 - `JoinRoundAuthMessage` produces a deterministic byte encoding for Schnorr signature verification.
+- `OperatorTerms` does NOT carry `ForfeitScript`, `SweepKey`, or `SweepDelay` — those are per-round values delivered in `round.CommitmentTxBuilt`. Any code constructing VTXOs or forfeit transactions must use the round-delivered keys, not `OperatorTerms`.
 
 ## Deep Docs
 

@@ -11,19 +11,31 @@ PostgreSQL backends.
 
 For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<Symbol>`.
 
+- `InternalKeyQuerier` — Minimal interface over the shared `internal_keys`
+  registry: `UpsertInternalKey` + `GetInternalKeyByID`. Embedded by
+  `BoardingStore`, `RoundStore`, and `OORArtifactStore` so each store can
+  register-then-reference a client wallet key within the same transaction.
+- `RegisterInternalKeyTx(ctx, q, now, keychain.KeyDescriptor) (int64, error)` —
+  Idempotently records a key descriptor in `internal_keys` and returns its
+  surrogate id. Safe to call multiple times for the same triple.
+- `InternalKeyDescByIDTx(ctx, q, id) (keychain.KeyDescriptor, error)` —
+  Hydrates a full `KeyDescriptor` (pubkey + locator) from the registry by id.
 - `BatchedTx[Q]` — generic interface for atomic transactions (`ExecTx`,
   `Backend`).
-- `BoardingStore` / `BoardingWalletStore` — interface + concrete
-  sqlc-backed store for boarding addresses, intents, and the aggregate
-  sweep lifecycle (consumed by `wallet.BoardingStore`). Sweep ops:
+- `BoardingStore` / `BoardingWalletStore` — interface (embeds
+  `InternalKeyQuerier`) + concrete sqlc-backed store for boarding
+  addresses, intents, and the aggregate sweep lifecycle (consumed by
+  `wallet.BoardingStore`). Client wallet keys are stored by `client_key_id`
+  FK referencing `internal_keys` rather than inlined columns. Sweep ops:
   `Create/MarkPublished/MarkFailed/List/ListPending/MarkInputSpent`.
 - `NewBoardingSweep` / `BoardingSweepRecord` /
   `BoardingSweepInputRecord` — control-plane domain types. Sweep
   statuses: `pending`, `published`, `confirmed`, `external_resolved`,
   `failed`. Input statuses: `pending`, `published`, `spent`,
   `external_spent`, `failed`.
-- `RoundStore` / `RoundPersistenceStore` — round-state interface +
-  concrete `BatchedTx[RoundStore]`-backed store
+- `RoundStore` / `RoundPersistenceStore` — round-state interface
+  (embeds `InternalKeyQuerier`) + concrete `BatchedTx[RoundStore]`-backed
+  store
   (`InsertRound`/`Get`/`GetByCommitmentTxid`/`ListActive`/`ListByStatus`/
   `UpdateStatus`/`Finalize` plus boarding-intent / VTXO-request /
   client-tree queries).
@@ -31,8 +43,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   paginated listing (avoids deserializing full trees).
 - `VTXOPersistenceStore` — VTXO descriptor store
   (`InsertClientVTXO`, `FetchByOutpoint`). Persists `ChainDepth`.
-- `OORArtifactStore`, `OwnedReceiveScriptStore` — OOR session state
-  and locally owned receive-script metadata.
+- `OORArtifactStore` (embeds `InternalKeyQuerier`), `OwnedReceiveScriptStore`
+  — OOR session state and locally owned receive-script metadata. Client
+  keys stored via `client_key_id` FK in `owned_receive_scripts`.
 - `LedgerStoreDB` — implements `ledger.LedgerStore`. Wraps
   `sqlc.InsertClientLedgerEntry` (ON CONFLICT DO NOTHING for replay
   idempotency). Joins the outer actor transaction via
@@ -125,6 +138,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
+- `000002_boarding_tables` — now also creates the `internal_keys` table
+  (surrogate key, 33-byte pubkey BLOB, key_family BIGINT, key_index BIGINT,
+  created_at; UNIQUE on `(pubkey, key_family, key_index)`) before the
+  boarding tables it introduced, so FKs declared in those tables have a
+  target. `boarding_addresses`, `round_vtxo_requests`, `vtxos`, and
+  `owned_receive_scripts` reference `internal_keys.id` via a `*_key_id`
+  nullable FK instead of inlining the (pubkey, family, index) triple.
 - `000017_spending_reservations` — adds `spending_reservations` table with
   `(outpoint_hash, outpoint_index)` PK, `owner_kind`, `owner_id`, and
   `created_at`. A row exists IFF the owning spend session was durably

@@ -54,7 +54,7 @@ who want direct access.
 | `ark sweep [list]` | `SweepBoardingUTXOs` / `ListBoardingSweeps` | Boarding-timeout sweeps |
 | `ark fees {estimate,history}` | `EstimateFee` / `GetFeeHistory` | Fee estimation and history |
 | `ark listtransactions` | `ListTransactions` | Raw paginated transaction history |
-| `ark send {inround,oor}` | `SendVTXO` / `SendOOR` | Raw in-round / OOR send (superseded by `send` for the wallet shape) |
+| `ark send {inround,oor}` | `SendVTXO` / `SendOOR` | Raw in-round / OOR send (superseded by `send` for the wallet shape). OOR send uses `--recipients-json '[{"address":"...","amount_sat":N}]'` (plural) |
 
 ### `swap.*` advanced commands (swapruntime build tag)
 
@@ -115,6 +115,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
   mutually exclusive; if neither is set, offchain is the default. The
   CLI does NOT sniff the destination string — the daemon performs
   the authoritative parse.
+- `ark send oor` populates `SendOORRequest.Recipients` (a repeated field)
+  with one element built from the `--recipient.*` flags. The MCP tool also
+  uses `Recipients` (plural). The proto dropped `Recipient` (singular).
 - The wallet password is NEVER read from argv. The supported sources
   are `DAREPOD_WALLET_PASSWORD` (highest priority), then
   `--wallet_password_file`, then piped stdin, then interactive prompt.

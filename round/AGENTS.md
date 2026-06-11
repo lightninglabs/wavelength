@@ -25,7 +25,9 @@ state transitions and validation rules live under [Invariants](#invariants).
   `JoinRoundQuoteReceived` (carries reseal `SealPass`), `QuoteAccepted`,
   `QuoteRejected`, `ForfeitCollectionTimedOut`, `ForfeitSignatureResponse`,
   `ConnectorLeafInfo`, `IntentPackage` (atomic delivery of all intent
-  types).
+  types), `CommitmentTxBuilt` (carries per-round operator signing keys
+  `TreeCosignKey`, `ConnectorOperatorKey`, `SweepKey`, `SweepDelay`,
+  `ForfeitKey` that replace global `OperatorTerms` fields).
 - `ClientOutMsg` — sealed outbox interface. Members:
   `JoinRoundAcceptOutbox`, `JoinRoundRejectOutbox`,
   `SubmitForfeitSigRequest`, `StartTimeoutReq`, `CancelTimeoutReq`,
@@ -92,6 +94,15 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 ### Misc
 
+- `validateVTXOTreeBinding(unsignedTx, vtxoTrees)` — proves that each
+  operator-supplied VTXO tree is rooted in the round's commitment tx outputs
+  BEFORE any path validation or co-signing (darepo-client#680). A
+  self-consistent but mis-rooted tree transitions to `ClientFailedState`
+  (non-recoverable).
+- `confirmationWatchScript(tx, vtxoTrees)` — selects the commitment tx
+  output pkScript to watch for confirmation: uses the validated batch output
+  that carries this client's funds, falling back to output 0 when no VTXO
+  trees exist.
 - `TimeoutPhase` (`fsm_timeouts.go`) — `TimeoutPhaseForfeitCollection`
   (forfeit-signature collection window) and `TimeoutPhaseRegistration`
   (IntentSentState admission window; on expiry the FSM fails the round
@@ -153,6 +164,20 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 ## Invariants
 
+- Per-round operator keys: `CommitmentTxBuilt` delivers `TreeCosignKey`
+  (VTXO tree MuSig2 cosigner), `ConnectorOperatorKey` (connector tree
+  builder), `SweepKey` (VTXO tree sweep leaf), `SweepDelay`
+  (batch-wide timelock), and `ForfeitKey` (forfeit penalty output BIP-86
+  key-spend target) alongside the commitment tx. These replace the
+  corresponding global `OperatorTerms` fields and ensure agreement across
+  operator key rotations. Nil fields fall back to the global operator key
+  for backwards compatibility with older servers.
+- `ValidateDelayParameters` (sweep delay vs VTXO exit delay security check)
+  runs per round in `CommitmentTxReceivedState.ProcessEvent` using the
+  round's `SweepDelay`, not at actor construction.
+- VTXO tree path validation uses `TreeCosignKey` (round-local) not the
+  global operator pubkey. Connector ancestry validation uses
+  `ConnectorOperatorKey`.
 - Tree signatures are validated **before** boarding input signatures
   are released (security checkpoint at `InputSigSent`).
 - Forfeit signatures are collected **after** VTXO tree signing

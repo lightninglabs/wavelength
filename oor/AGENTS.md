@@ -53,6 +53,13 @@ State transitions and validation rules live under [Invariants](#invariants).
   `MaxMailboxItems=10000`, `MaxMailboxScriptBytes=10000`). Zero fields
   are normalized; codec factories capture limits so deserialization
   enforces them.
+- `normalizeCheckpointOwnerLeaves(policy, inputs)` — rewrites each
+  standard input's checkpoint output owner collaborative leaf to commit to
+  the session checkpoint policy's operator key rather than the spent input
+  VTXO's (potentially older) operator key. Required when the operator
+  rotated keys between VTXO creation and OOR session start; custom-spend
+  inputs are left untouched. Called before building a submit package in
+  `Idle.ProcessEvent`.
 - `emitVTXOSent` / `emitVTXOsReceived` — internal ledger emitters
   (gated on `fn.Some(LedgerSink)`).
 - `NewRetryCallbackRef` — bridges timeout-actor expiry notifications
@@ -263,6 +270,12 @@ State transitions and validation rules live under [Invariants](#invariants).
   with an active outgoing session errors until the outgoing session
   terminates; then the outgoing entry is deleted and an incoming
   session is created in its place.
+- Checkpoint output owner leaf is normalized to the **session** operator
+  key at submit time via `normalizeCheckpointOwnerLeaves`. The spent VTXO
+  may have been created under an older operator key; the checkpoint output
+  and the Ark co-signature are both governed by the session (current)
+  operator key. Custom spend inputs carry their own owner leaf and are
+  untouched.
 - `SigningEffectActor` requests are durable: OOR persists FSM state
   and enqueues the request before signing runs. A restart-duplicate
   that reaches OOR after the FSM has advanced is silently discarded

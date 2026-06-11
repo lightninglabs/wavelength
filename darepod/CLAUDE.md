@@ -19,7 +19,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - `RPCServer` — implements gRPC `DaemonService`. Holds an in-memory
   `customInputLocks` map (guarded by `customInputLocksMu`) that
   reserves custom OOR input outpoints for the duration of a `SendOOR`
-  call.
+  call. `SendOOR` now accepts multiple recipients via `req.Recipients`
+  (up to `maxOORRecipients = 256`); `sendOORRequestRecipients`,
+  `sumSendOORRecipientAmounts`, and `buildSendOORRecipients` helpers
+  validate and resolve the list before handing it to the OOR actor.
 - `Config` — daemon configuration. Notable fields:
   `MailboxEdgeFactory` (test transport interception),
   `PackageSubmitter chainbackends.PackageSubmitter` (v3 CPFP submitter
@@ -265,6 +268,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   per-recipient amounts outside `(0, MaxSatoshi]`, uses
   overflow-safe accumulation. Wallet-side `handleSendVTXOs` repeats
   these checks as defense-in-depth.
+- `SendOOR` accepts multiple recipients via `req.Recipients` (replaces
+  the singular `req.Recipient`). The RPC boundary enforces
+  `maxOORRecipients = 256` before script resolution. `buildSendOORRecipients`
+  resolves scripts, validates per-recipient dust, and resolves policy templates.
+  When the cleanup waiter times out (`submittedOORCleanupTimeout = 10 min`),
+  unlocks run on a fresh 30s context (`submittedOORUnlockTimeout`) because the
+  cleanup context is already cancelled.
 - `SendOOR` with custom inputs serializes concurrent calls on the
   same outpoints via `reserveCustomInputs`. Custom inputs lock for
   the RPC lifetime; release is deferred on both success and failure.

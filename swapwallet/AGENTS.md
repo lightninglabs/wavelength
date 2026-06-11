@@ -85,7 +85,10 @@ default builds avoid the swap executor's dependency graph.
 - `WalletEntry.id` is the stable canonical id for SEND-invoice and
   RECV (Lightning payment_hash) across the entire pending → terminal
   lifecycle. EXIT and DEPOSIT rows do not yet share an id between
-  pending and confirmed in v1; see `doc.go`.
+  pending and confirmed in v1; see `doc.go`. Cooperative leave EXIT rows
+  are shown as COMPLETE once the source VTXO is terminally forfeited —
+  detected via `collectForfeitedVTXOOutpoints` during `listActivity`. After
+  daemon restart the counterparty/note field cannot be reconstructed.
 - Onchain SEND is routed through `RPCServer.SendOnChain` which delegates to
   `wallet.SendOnChainRequest`. Two modes: **sweep-all** (non-empty
   `SweepOutpoints` — drains those VTXOs exactly, no change, leave output

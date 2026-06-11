@@ -32,7 +32,11 @@ transport, without duplicating Ark runtime behavior.
   already-connected `daemonrpc.DaemonServiceClient` and a caller-supplied
   `closeFn`.
 - `Info` / `ServerInfo` / `Seed` / `WalletInitResult` — SDK-owned typed
-  models for daemon status and wallet bootstrap flows.
+  models for daemon status and wallet bootstrap flows. `ServerInfo` carries
+  `PubKey`, `BoardingExitDelay`, `VTXOExitDelay`, `DustLimit`,
+  `MinBoardingAmount`, `MaxBoardingAmount`; `ForfeitScript`, `SweepKey`,
+  and `SweepDelay` were removed — those are now per-round values delivered
+  via `CommitmentTxBuilt`.
 - `VTXOInfo` — Typed VTXO view (Outpoint, AmountSat, Status, BatchExpiry,
   RoundID, CreatedHeight, etc.) returned by `ListLiveVTXOs` /
   `ListSpentVTXOs`.
@@ -89,7 +93,13 @@ transport, without duplicating Ark runtime behavior.
   it does not own the caller's `DaemonServer` runtime. `Close()` tears down
   only the private transport.
 - `ServerInfo` is a bootstrap-time operator-terms snapshot; refresh after
-  reconnect is not wired through yet.
+  reconnect is not wired through yet. It does NOT carry `ForfeitScript`,
+  `SweepKey`, or `SweepDelay` — callers must not assume those are global
+  constants; they arrive per-round from the daemon.
+- `SendOORWithPolicyAndKeyDetails` and `SendOORWithCustomInputs` use
+  `req.Recipients` (a list with one element) rather than the former
+  singular `req.Recipient`. `OORSendResult.RecipientOutpoint` is taken
+  from `resp.RecipientOutpoints[0]`.
 - Pre-1.0, some methods intentionally return `daemonrpc` protobuf types
   directly. Those passthrough APIs are not yet treated as stable SDK-owned
   models.
