@@ -2284,6 +2284,10 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			return nil, status.Errorf(codes.Internal, "build "+
 				"custom inputs: %v", err)
 		}
+		err = r.requireCustomSpendsMature(ctx, selectedInputs)
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		// Standard path: select and lock VTXOs from wallet.
 		phaseStart = time.Now()
@@ -2453,6 +2457,49 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		SessionId:          resp.SessionID.String(),
 		RecipientOutpoints: recipientOutpoints,
 	}, nil
+}
+
+// requireCustomSpendsMature rejects custom OOR inputs whose absolute
+// block-height locktime is still in the future. Timestamp locktimes are not
+// currently supported at this RPC boundary because the daemon only has the
+// current best height in this path.
+func (r *RPCServer) requireCustomSpendsMature(ctx context.Context,
+	inputs []oor.TransferInput) error {
+
+	var requiredLockTime uint32
+	for _, input := range inputs {
+		if input.CustomSpend == nil {
+			continue
+		}
+
+		if input.CustomSpend.RequiredLockTime > requiredLockTime {
+			requiredLockTime = input.CustomSpend.RequiredLockTime
+		}
+	}
+
+	if requiredLockTime == 0 || r.server.chainBackend == nil {
+		return nil
+	}
+
+	if requiredLockTime >= txscript.LockTimeThreshold {
+		return status.Errorf(codes.InvalidArgument, "custom input "+
+			"timestamp locktime %d is not supported",
+			requiredLockTime)
+	}
+
+	height, _, err := r.server.chainBackend.BestBlock(ctx)
+	if err != nil {
+		return status.Errorf(codes.Unavailable, "fetch block "+
+			"height: %v", err)
+	}
+
+	if uint32(height) < requiredLockTime {
+		return status.Errorf(codes.FailedPrecondition, "custom input "+
+			"spend locktime %d is not mature at height %d",
+			requiredLockTime, height)
+	}
+
+	return nil
 }
 
 // PrepareOOR builds a deterministic OOR package without submitting it.

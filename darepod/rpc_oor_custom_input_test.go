@@ -2,18 +2,23 @@ package darepod
 
 import (
 	"bytes"
+	"context"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -106,6 +111,96 @@ func newCustomOORRPCFixture(t *testing.T) *customOORRPCFixture {
 		claimPath:  claimPath,
 		clientPriv: receiverPriv,
 		outpoint:   outpoint,
+	}
+}
+
+type heightOnlyChainBackend struct {
+	chainsource.ChainBackend
+
+	height int32
+}
+
+func (b *heightOnlyChainBackend) BestBlock(ctx context.Context) (int32,
+	chainhash.Hash, error) {
+
+	return b.height, chainhash.Hash{}, nil
+}
+
+func (b *heightOnlyChainBackend) EstimateFee(ctx context.Context,
+	targetConf uint32) (btcutil.Amount, error) {
+
+	return 0, nil
+}
+
+// TestRequireCustomSpendsMature verifies the custom-input maturity preflight
+// admits height-locked spends at or past their absolute locktime, rejects
+// height-locked spends before that point with a retryable precondition error,
+// and fails closed for timestamp locktimes because this RPC path only compares
+// against the current block height.
+func TestRequireCustomSpendsMature(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		height       int32
+		lockTime     uint32
+		wantCode     codes.Code
+		wantContains string
+	}{{
+		name:     "mature height locktime",
+		height:   144,
+		lockTime: 144,
+		wantCode: codes.OK,
+	}, {
+		name:         "immature height locktime",
+		height:       143,
+		lockTime:     144,
+		wantCode:     codes.FailedPrecondition,
+		wantContains: "not mature",
+	}, {
+		name:   "timestamp locktime unsupported",
+		height: 144,
+		lockTime: uint32(
+			txscript.LockTimeThreshold,
+		),
+		wantCode:     codes.InvalidArgument,
+		wantContains: "timestamp locktime",
+	}}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			rpcServer := &RPCServer{
+				server: &Server{
+					chainBackend: &heightOnlyChainBackend{
+						height: test.height,
+					},
+				},
+			}
+			inputs := []oor.TransferInput{{
+				CustomSpend: &arkscript.SpendPath{
+					RequiredLockTime: test.lockTime,
+				},
+			}}
+
+			err := rpcServer.requireCustomSpendsMature(
+				t.Context(), inputs,
+			)
+
+			if test.wantCode == codes.OK {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.Equal(t, test.wantCode, status.Code(err))
+			require.Contains(
+				t, status.Convert(err).Message(),
+				test.wantContains,
+			)
+		})
 	}
 }
 
