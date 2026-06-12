@@ -99,6 +99,12 @@ default builds avoid the swap executor's dependency graph.
   to the next round without a separate CLI step. If the implicit join fails,
   the error carries the explicit recovery hint (`ark rounds join`) so the
   leave intent — already queued in the round actor — is not stranded silently.
+- Wallet-local EXIT rows are decorated as COMPLETE when their source VTXO
+  appears in the terminally forfeited VTXO list
+  (`decorateCooperativeLeaveEntry`). This is a best-effort v1 heuristic that
+  lets cooperative-leave rows complete without durable leave-job linkage.
+  Forfeited VTXO outpoints are fetched once per `listActivity` call (not per
+  row) when any EXIT row exists (`hasWalletLocalExitEntries`).
 - `ListView` defaults to Activity. Only Activity honors
   `pending_only` and `kinds`; those filters are ignored for VTXOs
   and Onchain.

@@ -21,6 +21,14 @@ State transitions and validation rules live under [Invariants](#invariants).
 - `SignArkPSBT` — signs Ark PSBT inputs on the checkpoint 2-of-2 collab
   leaf using `MultiPrevOutFetcher` for BIP-341 sighashes across
   multi-input transfers.
+- `normalizeCheckpointOwnerLeaves(policy, inputs)` — rebuilds each
+  standard transfer input's checkpoint OUTPUT owner leaf to commit to
+  the current session operator key. Resolves the operator-key-rotation
+  bug where a VTXO created under an old operator key would produce a
+  checkpoint output whose owner leaf referenced that stale key and be
+  rejected by the server. Called inside the `StartTransferEvent` handler
+  before building the submit package. Custom-spend inputs (vHTLC) and
+  inputs without a VTXO policy are left untouched.
 - `ClientActorCfg` — configuration for `OORClientActor`. Notable fields:
   `OutboxHandler`, `ServerConn`, `PackageStore`, `DeliveryStore`,
   `VTXOManager`, `VTXOStore`, optional `LedgerSink fn.Option[ledger.Sink]`
@@ -207,6 +215,10 @@ State transitions and validation rules live under [Invariants](#invariants).
 
 - Checkpoint output collab path is 2-of-2
   `MultiSigCollabTapLeaf(clientKey, operatorKey)`, not single-sig.
+- Checkpoint OUTPUT owner leaf is always bound to the current session
+  operator key (via `normalizeCheckpointOwnerLeaves`) regardless of which
+  operator key epoch the source VTXO was created under. The checkpoint INPUT
+  spend path retains the VTXO's original historical operator key unchanged.
 - `signCustomCheckpointPSBT` re-verifies that the custom spend path
   binds to the VTXO pkScript via `SpendPath.VerifyBindsToPkScript`
   before signing — covers persisted `TransferInputSnapshot`s resumed

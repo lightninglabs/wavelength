@@ -73,6 +73,7 @@ package may import from a higher layer.
 | [`rpc/walletdkrpc`](rpc/walletdkrpc/) | Highest-level gRPC surface: `WalletService` with the seven core wallet verbs. Composes `daemonrpc` and `rpc/swapclientrpc` server-side via `swapwallet` |
 | [`rpc/restclient`](rpc/restclient/) | HTTP/protoJSON transport adapter: `Client`, `StreamClient[T]`, and per-service factory functions implementing the same gRPC stub interfaces over REST |
 | [`daemonrpc`](daemonrpc/) | Daemon gRPC API definitions |
+| [`swaprpc`](swaprpc/) | External swap-server gRPC API definitions (`SwapService`): channel allocation, in-swap creation, refund authorization, and out-swap HTLC acknowledgement |
 
 ### Layer 4: Testing & Tooling
 

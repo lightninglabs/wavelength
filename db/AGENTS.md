@@ -15,7 +15,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   `Backend`).
 - `BoardingStore` / `BoardingWalletStore` — interface + concrete
   sqlc-backed store for boarding addresses, intents, and the aggregate
-  sweep lifecycle (consumed by `wallet.BoardingStore`). Sweep ops:
+  sweep lifecycle (consumed by `wallet.BoardingStore`). Embeds
+  `InternalKeyQuerier` so boarding address inserts register the client
+  wallet key in the shared `internal_keys` registry within the same
+  transaction. Sweep ops:
   `Create/MarkPublished/MarkFailed/List/ListPending/MarkInputSpent`.
 - `NewBoardingSweep` / `BoardingSweepRecord` /
   `BoardingSweepInputRecord` — control-plane domain types. Sweep

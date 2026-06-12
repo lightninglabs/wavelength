@@ -32,6 +32,9 @@ communication alongside the raw registration API.
 - `EpochMsg` / `EpochResp` — Sealed interfaces for block-epoch sub-actor.
 - `SubscribeBlocksRequest/Response`, `UnsubscribeBlocksRequest/Response` —
   Block subscription lifecycle.
+- `BlockEpochConfig` — Config for block epoch monitoring. `ReconnectBackoff`
+  and `MaxReconnectBackoff` control exponential backoff delays when the
+  backend stream closes unexpectedly (e.g., after an LND restart).
 - `ConfRegistration` / `SpendRegistration` / `BlockRegistration` — Structs with
   buffered notification channels and a `Cancel()` function.
 - `ConfirmationEvent`, `SpendEvent`, `BlockEpoch` — Notification payload types.
@@ -56,6 +59,10 @@ communication alongside the raw registration API.
 - Confirmation sub-actors support two notification modes: Future-based (blocking
   await) and actor-based (async `Tell` via `NotifyActor`). Callers use the actor
   mode when blocking inside a durable actor transaction is unsafe.
+- Block epoch sub-actors reconnect automatically when the backend stream closes
+  (e.g., after a remote node restart). Reconnection uses exponential backoff
+  configured via `BlockEpochConfig.ReconnectBackoff` and `MaxReconnectBackoff`
+  so the daemon never silently misses confirmations after a stream drop.
 
 ## Deep Docs
 

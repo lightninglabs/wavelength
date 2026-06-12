@@ -36,3 +36,6 @@ Proto source: `arkrpc/ark.proto`, `arkrpc/indexer.proto`.
   reproduce the original tree (excluding derived `FinalKey` fields).
 - Child iteration during flattening is sorted by output index for
   deterministic serialization.
+- `GetInfoResponse.ServerInfo` no longer carries `ForfeitScript`,
+  `SweepKey`, or `SweepDelay` (field numbers 4-6 are unused). These
+  values are now delivered per-round in `round.v1.ClientBatchInfo`.

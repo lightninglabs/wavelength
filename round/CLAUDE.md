@@ -201,6 +201,11 @@ state transitions and validation rules live under [Invariants](#invariants).
 - Each client sub-tree in the commitment tree must contain exactly one
   non-anchor leaf; `buildOwnedClientVTXOs` fails the transition
   otherwise.
+- **Sweep delay is validated per-round** in `CommitmentTxReceivedState`
+  (against `ClientBatchInfo.SweepDelay`), not once at actor construction.
+  The sweep delay is now a per-batch parameter delivered in
+  `ClientBatchInfo` rather than a global `OperatorTerms` field; this
+  enables per-round sweep-delay configuration and operator key rotation.
 - **Seal-time fee handshake (#270)**: the server is the amount
   authority. When `QuoteReceivedState.Quote` is non-nil, it threads
   through `RoundJoinedState` → `CommitmentTxReceivedState`, which

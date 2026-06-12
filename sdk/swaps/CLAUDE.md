@@ -56,7 +56,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 - `Store` — isolated SQLite persistence. Runs its own migration table
   (`swap_client_schema_migrations`) separate from the main daemon DB.
 - `SwapServerConn` / `GRPCSwapServerConn` — remote swap-server gRPC
-  (`RequestChannelID`, `CreateInSwap`).
+  (`RequestChannelID`, `CreateInSwap`, `AcknowledgeOutSwapHTLC`).
+  `AcknowledgeOutSwapHTLC` notifies the server that the receiver has
+  durably accepted the out-swap HTLC mailbox event; the server waits for
+  this acknowledgement before funding the Ark vHTLC, ensuring
+  crash-safe receive semantics.
 - `DaemonConn` — wallet operations (OOR sends, VTXO lookups, key
   queries, receive-auth signing/ECDH) provided by the Ark daemon.
   Includes `ReceiveAuthKey`, `SignReceiveAuthMessage[Compact]`, and
