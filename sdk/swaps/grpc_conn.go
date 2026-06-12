@@ -10,6 +10,7 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/restclient"
 	"github.com/lightninglabs/darepo-client/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"google.golang.org/grpc"
 )
 
@@ -271,6 +272,25 @@ func outSwapHtlcEventFromProto(event *swaprpc.OutSwapHtlcEvent) (
 		return nil, err
 	}
 
+	var parts []OutSwapHtlcPart
+	for _, part := range event.GetParts() {
+		if part == nil {
+			return nil, fmt.Errorf("out-swap event part must be " +
+				"provided")
+		}
+		if len(part.GetOnionBlob()) == 0 {
+			return nil, fmt.Errorf("out-swap event part missing " +
+				"onion blob")
+		}
+
+		parts = append(parts, OutSwapHtlcPart{
+			AmountMsat: lnwire.MilliSatoshi(part.GetAmountMsat()),
+			OnionBlob: append(
+				[]byte(nil), part.GetOnionBlob()...,
+			),
+		})
+	}
+
 	return &OutSwapHtlcEvent{
 		PaymentHash: paymentHash,
 		AmountSat:   int64(event.GetAmountSat()),
@@ -278,6 +298,7 @@ func outSwapHtlcEventFromProto(event *swaprpc.OutSwapHtlcEvent) (
 			[]byte(nil), event.GetOnionBlob()...,
 		),
 		VHTLCConfig: *cfg,
+		Parts:       parts,
 	}, nil
 }
 

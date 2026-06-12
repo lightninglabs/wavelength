@@ -146,6 +146,7 @@ func genInvoiceCfg(nodeSigner *netann.NodeSigner,
 				lnwire.NewRawFeatureVector(
 					lnwire.TLVOnionPayloadRequired,
 					lnwire.PaymentAddrRequired,
+					lnwire.MPPOptional,
 				),
 				lnwire.Features,
 			)
