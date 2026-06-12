@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
@@ -976,6 +977,65 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 	require.Equal(t, uint64(12), resp.ServerInfo.FeeRate)
 	require.Equal(t, uint64(34), resp.ServerInfo.MinOperatorFee)
 	require.Equal(t, uint32(2), resp.ServerInfo.MinConfirmations)
+}
+
+// TestOperatorPubKeyFetchesFreshTerms verifies callers that construct new
+// policy scripts can bypass GetInfo's cached server-info snapshot and refresh
+// it after a successful direct operator fetch.
+func TestOperatorPubKeyFetchesFreshTerms(t *testing.T) {
+	t.Parallel()
+
+	stalePriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	freshPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	server := &Server{
+		cfg: &Config{
+			Network: "regtest",
+			Wallet: &WalletConfig{
+				Type: WalletTypeBtcwallet,
+			},
+		},
+		log: btclog.Disabled,
+		serverConn: newBufconnClient(t, &fakeArkService{
+			getInfoResponse: &arkrpc.GetInfoResponse{
+				Pubkey: freshPriv.
+					PubKey().
+					SerializeCompressed(),
+				BoardingExitDelay:   144,
+				VtxoExitDelay:       288,
+				DustLimit:           546,
+				MinBoardingAmount:   10_000,
+				MaxBoardingAmount:   500_000,
+				FeeRate:             12,
+				MinOperatorFee:      34,
+				MinConfirmations:    2,
+				MaxOorLineageVbytes: 99,
+			},
+		}),
+	}
+	server.storeOperatorTerms(&types.OperatorTerms{
+		PubKey: stalePriv.PubKey(),
+	})
+	r := &RPCServer{server: server}
+
+	key, err := r.OperatorPubKey(context.Background())
+	require.NoError(t, err)
+	require.True(t, key.IsEqual(freshPriv.PubKey()))
+
+	info, err := r.GetInfo(
+		context.Background(), &daemonrpc.GetInfoRequest{},
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, freshPriv.PubKey().SerializeCompressed(),
+		info.GetServerInfo().GetOperatorPubkey(),
+	)
+	require.Equal(
+		t, uint32(99), server.loadOperatorTerms().MaxOORLineageVBytes,
+	)
 }
 
 // TestGetInfoConcurrentOperatorTermsAccess verifies that GetInfo can read the

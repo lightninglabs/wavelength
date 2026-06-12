@@ -112,8 +112,9 @@ type Info struct {
 
 	// ServerInfo contains cached operator terms when the daemon has
 	// already connected to the Ark server and fetched them. It remains
-	// nil until the daemon reaches the operator-bootstrap stage, and is
-	// currently refreshed only during bootstrap.
+	// nil until the daemon reaches the operator-bootstrap stage, and can
+	// be refreshed by daemon paths that fetch the live operator key before
+	// building new policy scripts.
 	ServerInfo *ServerInfo
 }
 

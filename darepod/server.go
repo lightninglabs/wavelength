@@ -607,9 +607,9 @@ func (s *Server) loadOperatorTerms() *types.OperatorTerms {
 	return s.operatorTerms.Load()
 }
 
-// storeOperatorTerms replaces the cached operator terms snapshot. The terms
-// are only refreshed during bootstrap today; future reconnect handling should
-// update this when server policy changes are observed.
+// storeOperatorTerms replaces the cached operator terms snapshot. Bootstrap
+// and live operator-key lookups both use this cache so ordinary status readers
+// observe the same operator policy used by policy-building paths.
 func (s *Server) storeOperatorTerms(terms *types.OperatorTerms) {
 	s.operatorTerms.Store(terms)
 }

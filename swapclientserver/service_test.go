@@ -639,6 +639,49 @@ func TestNewSwapClientServiceRequiresRecoveryPreimageRegistry(t *testing.T) {
 	require.Nil(t, cleanup)
 }
 
+// TestDaemonWithLiveOperatorKeyUsesLiveFetcher verifies the daemon-hosted swap
+// runtime bypasses the Ark SDK facade's cached operator key.
+func TestDaemonWithLiveOperatorKeyUsesLiveFetcher(t *testing.T) {
+	t.Parallel()
+
+	stalePriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	stale := &staleOperatorDaemonConn{
+		operatorKey: stalePriv.PubKey(),
+	}
+	daemon := daemonWithLiveOperatorKey(
+		stale,
+		func(context.Context) (*btcec.PublicKey, error) {
+			return operatorPriv.PubKey(), nil
+		},
+	)
+
+	key, err := daemon.OperatorPubKey(t.Context())
+	require.NoError(t, err)
+	require.True(t, key.IsEqual(operatorPriv.PubKey()))
+	require.False(t, stale.called)
+}
+
+type staleOperatorDaemonConn struct {
+	swaps.DaemonConn
+
+	operatorKey *btcec.PublicKey
+	called      bool
+}
+
+// OperatorPubKey returns the stale key that the live wrapper must bypass.
+func (s *staleOperatorDaemonConn) OperatorPubKey(context.Context) (
+	*btcec.PublicKey, error) {
+
+	s.called = true
+
+	return s.operatorKey, nil
+}
+
 func TestNewSwapServerClientsREST(t *testing.T) {
 	t.Parallel()
 
