@@ -568,9 +568,7 @@ func TestReceiveSessionValidateOnionPayloadAcceptsMPPParts(t *testing.T) {
 
 // TestReceiveSessionValidateOnionPayloadKeepsLegacySinglePart verifies an
 // event without explicit parts still validates the legacy single-onion field.
-func TestReceiveSessionValidateOnionPayloadKeepsLegacySinglePart(
-	t *testing.T) {
-
+func TestReceiveSessionValidateOnionPayloadKeepsLegacySinglePart(t *testing.T) {
 	t.Parallel()
 
 	var paymentAddr [32]byte
@@ -597,6 +595,38 @@ func TestReceiveSessionValidateOnionPayloadKeepsLegacySinglePart(
 
 	err := session.validateOnionPayload(event, &daemonReceiveAuthKey{})
 	require.NoError(t, err)
+}
+
+// TestReceiveSessionValidateOnionPayloadRejectsLegacyUnderpay verifies a
+// legacy single-onion event must still forward the full invoice amount on
+// its own.
+func TestReceiveSessionValidateOnionPayloadRejectsLegacyUnderpay(t *testing.T) {
+	t.Parallel()
+
+	var paymentAddr [32]byte
+	copy(paymentAddr[:], bytes.Repeat([]byte{8}, 32))
+
+	client := &SwapClient{}
+	useMappedOnionDecoder(client, map[string]*decodedOutSwapOnion{
+		"legacy": {
+			amountToForward: 41_000_000,
+			totalAmount:     42_000_000,
+			paymentAddr:     paymentAddr,
+			hasMPP:          true,
+		},
+	})
+
+	session := &ReceiveSession{
+		client:      client,
+		amountSat:   42_000,
+		paymentAddr: paymentAddr,
+	}
+	event := &OutSwapHtlcEvent{
+		OnionBlob: []byte("legacy"),
+	}
+
+	err := session.validateOnionPayload(event, &daemonReceiveAuthKey{})
+	require.ErrorContains(t, err, "does not match part amount")
 }
 
 // TestReceiveSessionValidateOnionPayloadRejectsBadMPPParts verifies malformed
@@ -684,6 +714,50 @@ func TestReceiveSessionValidateOnionPayloadRejectsBadMPPParts(t *testing.T) {
 			OnionBlob:  []byte("a"),
 		}},
 		wantErr: "does not match part amount",
+	}, {
+		name: "missing MPP record",
+		payloads: map[string]*decodedOutSwapOnion{
+			"a": {
+				amountToForward: 42_000_000,
+				totalAmount:     42_000_000,
+				paymentAddr:     paymentAddr,
+			},
+		},
+		parts: []OutSwapHtlcPart{{
+			AmountMsat: 42_000_000,
+			OnionBlob:  []byte("a"),
+		}},
+		wantErr: "missing MPP payment address",
+	}, {
+		name: "zero amount part",
+		payloads: map[string]*decodedOutSwapOnion{
+			"a": {
+				amountToForward: 0,
+				totalAmount:     42_000_000,
+				paymentAddr:     paymentAddr,
+				hasMPP:          true,
+			},
+		},
+		parts: []OutSwapHtlcPart{{
+			AmountMsat: 0,
+			OnionBlob:  []byte("a"),
+		}},
+		wantErr: "forwards zero amount",
+	}, {
+		name: "part amount above invoice",
+		payloads: map[string]*decodedOutSwapOnion{
+			"a": {
+				amountToForward: 43_000_000,
+				totalAmount:     42_000_000,
+				paymentAddr:     paymentAddr,
+				hasMPP:          true,
+			},
+		},
+		parts: []OutSwapHtlcPart{{
+			AmountMsat: 43_000_000,
+			OnionBlob:  []byte("a"),
+		}},
+		wantErr: "exceeds invoice amount",
 	}}
 
 	for _, test := range tests {

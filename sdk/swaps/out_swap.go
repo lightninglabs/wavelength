@@ -1191,8 +1191,8 @@ func (s *ReceiveSession) validateOnionPayload(event *OutSwapHtlcEvent,
 		}
 
 		if payload.amountToForward == 0 {
-			return fmt.Errorf("part %d: onion forwards zero "+
-				"amount", idx)
+			return fmt.Errorf("part %d: onion forwards zero amount",
+				idx)
 		}
 		if payload.amountToForward > expectedMsat {
 			return fmt.Errorf("part %d: onion amount %d msat "+
@@ -1200,8 +1200,8 @@ func (s *ReceiveSession) validateOnionPayload(event *OutSwapHtlcEvent,
 				payload.amountToForward, expectedMsat)
 		}
 		if payload.amountToForward != part.AmountMsat {
-			return fmt.Errorf("part %d: onion amount %d msat "+
-				"does not match part amount %d msat", idx,
+			return fmt.Errorf("part %d: onion amount %d msat does "+
+				"not match part amount %d msat", idx,
 				payload.amountToForward, part.AmountMsat)
 		}
 		if !payload.hasMPP {
