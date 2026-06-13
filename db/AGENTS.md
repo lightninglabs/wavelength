@@ -13,9 +13,32 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 - `BatchedTx[Q]` — generic interface for atomic transactions (`ExecTx`,
   `Backend`).
+- `InternalKeyQuerier` — minimal interface over the `internal_keys`
+  registry: `UpsertInternalKey(ctx, UpsertInternalKeyParams) (int64,
+  error)` and `GetInternalKeyByID(ctx, int64) (InternalKey, error)`.
+  The sqlc-generated `*Queries` satisfies it; every consumer store
+  interface (`RoundStore`, `BoardingStore`, ...) that embeds these two
+  methods also satisfies it, so a store can register-then-reference an
+  internal key inside the same transaction that writes the referencing
+  row.
+- `RegisterInternalKeyTx(ctx, InternalKeyQuerier, now int64,
+  keychain.KeyDescriptor) (int64, error)` — idempotently records a key
+  descriptor within the caller's transaction using UPSERT (closes the
+  read-then-insert race); returns the registry id. Re-registering an
+  identical (pubkey, key_family, key_index) triple returns the existing
+  id.
+- `InternalKeyDescByIDTx(ctx, InternalKeyQuerier, id int64)
+  (keychain.KeyDescriptor, error)` — reconstructs a `KeyDescriptor`
+  from a registry id; returns `ErrInternalKeyNotFound` when not found.
+- `ErrInternalKeyPubKeyMissing` — returned when a `KeyDescriptor` with
+  a nil public key is passed to `RegisterInternalKeyTx`.
+- `ErrInternalKeyNotFound` — returned by `InternalKeyDescByIDTx` when
+  the registry has no row for the requested id.
 - `BoardingStore` / `BoardingWalletStore` — interface + concrete
   sqlc-backed store for boarding addresses, intents, and the aggregate
-  sweep lifecycle (consumed by `wallet.BoardingStore`). Sweep ops:
+  sweep lifecycle (consumed by `wallet.BoardingStore`). Embeds
+  `InternalKeyQuerier` so boarding operations can register/hydrate
+  internal keys within the same transaction. Sweep ops:
   `Create/MarkPublished/MarkFailed/List/ListPending/MarkInputSpent`.
 - `NewBoardingSweep` / `BoardingSweepRecord` /
   `BoardingSweepInputRecord` — control-plane domain types. Sweep
@@ -26,7 +49,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   concrete `BatchedTx[RoundStore]`-backed store
   (`InsertRound`/`Get`/`GetByCommitmentTxid`/`ListActive`/`ListByStatus`/
   `UpdateStatus`/`Finalize` plus boarding-intent / VTXO-request /
-  client-tree queries).
+  client-tree queries). Embeds `InternalKeyQuerier` so round and VTXO
+  stores can register/hydrate internal keys within their own
+  transactions.
 - `RoundSummary` / `VTXOSummary` — lightweight projections for
   paginated listing (avoids deserializing full trees).
 - `VTXOPersistenceStore` — VTXO descriptor store

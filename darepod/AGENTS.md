@@ -187,6 +187,16 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `serverconn.SignMailboxAuth`.
 - `fetchOperatorPubKeyDirect` — fetches operator pubkey via direct
   gRPC `GetInfo` before the mailbox runtime starts.
+- `OperatorPubKey(ctx) (*btcec.PublicKey, error)` (on `RPCServer`) —
+  public method that fetches the live Ark operator pubkey and refreshes
+  the cached operator terms snapshot. Optional subservers that build
+  new policy scripts (e.g. `swapclientserver`) use this rather than
+  `DaemonService.GetInfo` so operator-key rotations are observed before
+  a vHTLC policy is handed to the wallet or OOR layer.
+- `maxOORRecipients = 256` — request-size guard at the RPC handler
+  boundary: the OOR actor has its own per-package size limits, but the
+  handler resolves scripts and policy templates before handing work to
+  the actor, so it needs its own cheap guard.
 - `initLedgerActor` — constructs `ledger.LedgerActor` with both
   `LedgerStoreDB` and `UTXOAuditStoreDB`, registers under
   `ledger.ServiceKeyName`, stashes `LedgerStoreDB` on the `Server`

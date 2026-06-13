@@ -32,7 +32,11 @@ transport, without duplicating Ark runtime behavior.
   already-connected `daemonrpc.DaemonServiceClient` and a caller-supplied
   `closeFn`.
 - `Info` / `ServerInfo` / `Seed` / `WalletInitResult` — SDK-owned typed
-  models for daemon status and wallet bootstrap flows.
+  models for daemon status and wallet bootstrap flows. `ServerInfo` no longer
+  carries `ForfeitScript`, `SweepKey`, or `SweepDelay` — those fields were
+  removed and are now delivered per-round in `CommitmentTxBuilt` events rather
+  than as global operator terms. `Info.ServerInfo` can be refreshed by daemon
+  paths that fetch the live operator key before building new policy scripts.
 - `VTXOInfo` — Typed VTXO view (Outpoint, AmountSat, Status, BatchExpiry,
   RoundID, CreatedHeight, etc.) returned by `ListLiveVTXOs` /
   `ListSpentVTXOs`.
@@ -45,6 +49,10 @@ transport, without duplicating Ark runtime behavior.
 - Policy/OOR helpers such as `SendOORWithPolicy`, `SendOORWithCustomInputs`,
   typed indexed VTXO lookups, and typed receive-script decoding belong here
   so higher-level packages do not rebuild daemonrpc adapters.
+  `SendOORWithPolicyAndKeyDetails` and `SendOORWithCustomInputs` now send
+  `Recipients: []*daemonrpc.Output{...}` (plural) instead of a single
+  `Recipient`. `OORSendResult.RecipientOutpoint` is populated from
+  `GetRecipientOutpoints()[0]`.
 - Receive-auth helpers: `ReceiveAuthKey`, `SignReceiveAuthMessage`,
   `SignReceiveAuthMessageCompact`, `ReceiveAuthECDH` — delegate payment-scoped
   signing and Sphinx ECDH operations to the daemon wallet without exposing the
@@ -88,8 +96,9 @@ transport, without duplicating Ark runtime behavior.
 - `WrapDaemonServer` owns only the private bufconn transport and gRPC server;
   it does not own the caller's `DaemonServer` runtime. `Close()` tears down
   only the private transport.
-- `ServerInfo` is a bootstrap-time operator-terms snapshot; refresh after
-  reconnect is not wired through yet.
+- `ServerInfo` is a bootstrap-time operator-terms snapshot; `ForfeitScript`,
+  `SweepKey`, and `SweepDelay` have been removed from it — those values are now
+  delivered per-round.
 - Pre-1.0, some methods intentionally return `daemonrpc` protobuf types
   directly. Those passthrough APIs are not yet treated as stable SDK-owned
   models.

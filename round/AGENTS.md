@@ -20,12 +20,21 @@ state transitions and validation rules live under [Invariants](#invariants).
   `CommitmentTxValidatedState`, `NoncesSentState`, `NoncesAggregatedState`,
   `PartialSigsSentState`, `ForfeitSignaturesCollectingState`,
   `InputSigSentState`, `ConfirmedState`, `ClientFailedState`,
-  `RecoveryInitiatedState`.
+  `RecoveryInitiatedState`. Per-round key fields are threaded through
+  the signing ceremony as follows:
+  - `CommitmentTxReceivedState` (`states.go`) — carries all four:
+    `TreeCosignKey`, `ConnectorOperatorKey`, `SweepDelay`, `ForfeitKey`.
+  - `CommitmentTxValidatedState`, `ForfeitSignaturesCollectingState`,
+    `NoncesSentState`, `NoncesAggregatedState`, `PartialSigsSentState`,
+    `InputSigSentState` — each carries `SweepDelay uint32` and
+    `ForfeitKey *btcec.PublicKey` for batch-expiry and forfeit penalty
+    output building throughout the signing ceremony.
 - `ClientEvent` — sealed inbound event interface. Notable members:
   `JoinRoundQuoteReceived` (carries reseal `SealPass`), `QuoteAccepted`,
   `QuoteRejected`, `ForfeitCollectionTimedOut`, `ForfeitSignatureResponse`,
   `ConnectorLeafInfo`, `IntentPackage` (atomic delivery of all intent
-  types).
+  types). `CommitmentTxBuilt` carries five per-round operator key fields
+  (see below).
 - `ClientOutMsg` — sealed outbox interface. Members:
   `JoinRoundAcceptOutbox`, `JoinRoundRejectOutbox`,
   `SubmitForfeitSigRequest`, `StartTimeoutReq`, `CancelTimeoutReq`,
@@ -101,6 +110,22 @@ state transitions and validation rules live under [Invariants](#invariants).
   rounds (pre-admission) can be timed.
 - `MaxQuoteEntriesPerClient = 1024` (`from_proto.go`) — bounds quote
   entry decoding to reject malformed envelopes before allocating slices.
+- `CommitmentTxBuilt` (`events.go`) — carries five per-round operator
+  key fields alongside the commitment packet:
+  - `TreeCosignKey *btcec.PublicKey` — operator's per-round MuSig2
+    cosigner key for the VTXO tree; `nil` for older servers (fall back
+    to the global key from `GetInfo`).
+  - `ConnectorOperatorKey *btcec.PublicKey` — per-round operator key
+    for connector-tree reconstruction; `nil` for older servers (fall
+    back to global key).
+  - `SweepKey *btcec.PublicKey` — per-round sweep leaf key, replaces
+    the global `GetInfo` sweep key.
+  - `SweepDelay uint32` — per-round batch-wide absolute-timelock
+    (blocks) for the VTXO-tree sweep leaf; replaces the global
+    `GetInfo` sweep delay.
+  - `ForfeitKey *btcec.PublicKey` — per-round forfeit penalty key
+    (BIP-86 key-spend output); replaces the global `GetInfo` forfeit
+    script.
 - `FromProto` methods on `JoinRoundQuoteReceived`, `RoundJoined`,
   `CommitmentTxBuilt`, `AwaitingBoardingSigs`, `NoncesAggregated`,
   `OperatorSigned`, `BoardingFailed`, `JoinRoundRequest` — all
@@ -225,6 +250,12 @@ state transitions and validation rules live under [Invariants](#invariants).
 - `ConnectorLeafInfo.VTXOAmount` is populated from local VTXO state
   (not from the server's proto), so the forfeit penalty output equals
   the canonical local value rather than a server-supplied one.
+- **Per-round sweep parameters**: `SweepDelay` and `SweepKey` are
+  per-round (not global operator terms). The sweep-vs-exit-delay
+  security check moved from actor construction (the `ValidateDelayParameters`
+  call was removed) to the `CommitmentTxReceivedState` transition, so
+  every round independently validates that its own sweep delay is safe
+  relative to the exit delay.
 - **Connector ancestry is proven before any forfeit is signed**
   (`validateConnectorAncestry`, darepo-client#681). In
   `CommitmentTxReceivedState`, after VTXO-tree validation, each assigned
@@ -236,6 +267,11 @@ state transitions and validation rules live under [Invariants](#invariants).
   rebuilt on top of a real commitment output, the connector is only
   spendable once the commitment tx confirms, preserving round atomicity.
   No connector transactions cross the wire — only the four scalars.
+- `registerCommitmentConfirmation` (`actor.go`) takes an additional
+  `vtxoTrees map[int]*tree.Tree` parameter and watches the validated
+  batch output (via `confirmationWatchScript`) rather than always
+  output 0. This ensures confirmation tracking targets the correct
+  output when the commitment tx layout differs from the default.
 - `MaxQuoteEntriesPerClient = 1024` is enforced in `FromProto` before
   allocating quote slices to prevent resource exhaustion.
 - `SubmitForfeitSigRequest` (boarding input signatures) is distinct

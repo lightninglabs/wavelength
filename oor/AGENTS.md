@@ -276,6 +276,14 @@ State transitions and validation rules live under [Invariants](#invariants).
   a new session, returning `StartTransferResponse{Existing: true}` on
   hit. Empty key preserves the historical deterministic
   (Ark txid) session.
+- `normalizeCheckpointOwnerLeaves` is called at the start of
+  `Idle.ProcessEvent` for `StartTransferEvent`. It rebinds each
+  standard checkpoint **output** owner leaf to the session operator
+  key before building. This ensures the checkpoint output uses the
+  current operator key rather than the spent VTXO's potentially-
+  rotated-away operator key, preventing submit rejection and
+  co-signature failures after an operator key rotation. Custom-spend
+  inputs are left untouched.
 
 ## Deep Docs
 

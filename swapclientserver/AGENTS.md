@@ -29,15 +29,25 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `receiveSessionAdapter` — Adds method accessors over
   `sdk/swaps.ReceiveSession` so both production code and tests share the same
   interface without exposing struct fields.
+- `operatorPubKeyFetcher` — Type alias `func(context.Context) (*btcec.PublicKey,
+  error)`. Callback that returns the current Ark operator pubkey live,
+  bypassing the cached `GetInfo` snapshot.
+- `liveOperatorDaemonConn` — Embeds `swaps.DaemonConn`; overrides
+  `OperatorPubKey` with the live fetcher so swap policy construction observes
+  operator key rotations before OOR funding is submitted.
+- `daemonWithLiveOperatorKey(daemon swaps.DaemonConn, fetch operatorPubKeyFetcher) swaps.DaemonConn`
+  — Wraps daemon with a live operator key fetch. Returns the original daemon
+  unchanged when fetch is nil.
 - `Register(ctx, grpcServer, rpcServer, cfg)` — Top-level entry point called
   by a `swapruntime`-tagged `darepod` binary. Opens the daemon-owned SQLite
   swap store, dials `swapdk-server`, creates an in-process Ark SDK facade over
-  `darepod.RPCServer`, wires `swaps.NewSwapClientWithStore`, installs a
-  `MailboxOutSwapEventReceiver` (empty mailbox ID — receiver derives the
-  per-swap mailbox from client identity + payment hash) on the
-  `SwapClient` so out-swap HTLC events flow over the mailbox transport,
-  registers the gRPC subserver, calls `resumePending`, and returns a cleanup
-  function.
+  `darepod.RPCServer`, wraps the Ark SDK client with
+  `daemonWithLiveOperatorKey(arkClient, rpcServer.OperatorPubKey)`, wires
+  `swaps.NewSwapClientWithStore`, installs a `MailboxOutSwapEventReceiver`
+  (empty mailbox ID — receiver derives the per-swap mailbox from client
+  identity + payment hash) on the `SwapClient` so out-swap HTLC events flow
+  over the mailbox transport, registers the gRPC subserver, calls
+  `resumePending`, and returns a cleanup function.
 
 ## RPC Methods
 
@@ -92,6 +102,10 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   receiver was previously installed. `Register` therefore installs the
   mailbox receiver immediately after `NewSwapClientWithStore`, before
   `resumePending` revives persisted sessions.
+- Swap vHTLC policy construction uses a live operator key fetch (via
+  `liveOperatorDaemonConn`) rather than the cached `GetInfo` snapshot, so
+  newly-created policies see operator key rotations before OOR funding is
+  submitted.
 
 ## Deep Docs
 

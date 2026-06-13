@@ -56,7 +56,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 - `Store` — isolated SQLite persistence. Runs its own migration table
   (`swap_client_schema_migrations`) separate from the main daemon DB.
 - `SwapServerConn` / `GRPCSwapServerConn` — remote swap-server gRPC
-  (`RequestChannelID`, `CreateInSwap`).
+  (`RequestChannelID`, `CreateInSwap`,
+  `AcknowledgeOutSwapHTLC(ctx, paymentHash lntypes.Hash, vhtlcPubkey *btcec.PublicKey) error`).
+  `GRPCSwapServerConn` implements `AcknowledgeOutSwapHTLC` by calling
+  `swaprpc.AcknowledgeOutSwapHtlc` — tells the server the receiver validated
+  and durably accepted the out-swap HTLC event.
 - `DaemonConn` — wallet operations (OOR sends, VTXO lookups, key
   queries, receive-auth signing/ECDH) provided by the Ark daemon.
   Includes `ReceiveAuthKey`, `SignReceiveAuthMessage[Compact]`, and
@@ -121,6 +125,11 @@ result into an `IncomingVHTLCNotification`.
   `SHA256(preimage) == paymentHash`.
 - Mailbox `Ack` must be called only after the caller has validated
   and durably persisted the event. `AckCursor` is `eventSeq + 1`.
+- `ackAcceptedHTLCEvent` calls the server-side `AcknowledgeOutSwapHTLC`
+  **before** clearing the local pending HTLC ack cursor (`clearPendingHTLCAck`).
+  Terminal server errors (`InvalidArgument`, `NotFound`, `PermissionDenied`)
+  fail the swap immediately; `FailedPrecondition` is retryable (the server has
+  not yet published the vHTLC and the receiver should wait and retry).
 - `ReceiveAuthKey` signing/ECDH is always delegated to the daemon;
   the SDK never holds the raw private key for receive-auth.
 - Error sentinels (`ErrSwapExpired`, `ErrSwapRefunded`,
