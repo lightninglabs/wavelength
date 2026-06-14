@@ -101,6 +101,33 @@ state transitions and validation rules live under [Invariants](#invariants).
   rounds (pre-admission) can be timed.
 - `MaxQuoteEntriesPerClient = 1024` (`from_proto.go`) — bounds quote
   entry decoding to reject malformed envelopes before allocating slices.
+
+### Per-round operator key fields
+
+`CommitmentTxBuilt` and the FSM states that carry it
+(`CommitmentTxReceivedState`, `CommitmentTxValidatedState`,
+`ForfeitSignaturesCollectingState`, `NoncesSentState`,
+`NoncesAggregatedState`, `PartialSigsSentState`) each carry a set of
+**per-round operator key fields** delivered by the server with the
+commitment tx. These replace the global `GetInfo` operator keys for that
+round so an operator key rotation does not invalidate the client's tree
+view:
+
+- `TreeCosignKey *btcec.PublicKey` — server's per-round MuSig2 cosigner
+  key for the VTXO output tree. Used to validate and sign the tree. Nil
+  for servers that predate this field; callers fall back to the global
+  operator key.
+- `ConnectorOperatorKey *btcec.PublicKey` — operator key used to build
+  the connector tree for this round. Nil for older servers (fallback).
+- `SweepKey *btcec.PublicKey` — operator sweep key for this round's
+  VTXO-tree sweep leaf. Replaces the global `GetInfo` sweep key entirely.
+- `SweepDelay uint32` — batch-wide absolute-timelock in blocks for the
+  VTXO-tree sweep leaf; replaces the global `GetInfo` sweep delay. Used
+  to compute batch expiry for VTXOs created in this round.
+- `ForfeitKey *btcec.PublicKey` — operator's dedicated forfeit penalty
+  key for this round; the forfeit-tx penalty output is a BIP-86 key-spend
+  to this key. Replaces the global `GetInfo` forfeit script entirely.
+
 - `FromProto` methods on `JoinRoundQuoteReceived`, `RoundJoined`,
   `CommitmentTxBuilt`, `AwaitingBoardingSigs`, `NoncesAggregated`,
   `OperatorSigned`, `BoardingFailed`, `JoinRoundRequest` — all
@@ -225,6 +252,12 @@ state transitions and validation rules live under [Invariants](#invariants).
 - `ConnectorLeafInfo.VTXOAmount` is populated from local VTXO state
   (not from the server's proto), so the forfeit penalty output equals
   the canonical local value rather than a server-supplied one.
+- Per-round operator keys (`TreeCosignKey`, `ConnectorOperatorKey`,
+  `SweepKey`, `SweepDelay`, `ForfeitKey`) delivered in `CommitmentTxBuilt`
+  always take precedence over the global `GetInfo` operator terms for the
+  duration of that round. A well-formed server always provides them. Nil
+  means the server predates this feature; callers fall back to global terms
+  only in that case.
 - **Connector ancestry is proven before any forfeit is signed**
   (`validateConnectorAncestry`, darepo-client#681). In
   `CommitmentTxReceivedState`, after VTXO-tree validation, each assigned

@@ -15,7 +15,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   `Backend`).
 - `BoardingStore` / `BoardingWalletStore` — interface + concrete
   sqlc-backed store for boarding addresses, intents, and the aggregate
-  sweep lifecycle (consumed by `wallet.BoardingStore`). Sweep ops:
+  sweep lifecycle (consumed by `wallet.BoardingStore`). `BoardingStore` embeds
+  `InternalKeyQuerier` so boarding-address writes can register the client wallet
+  key in the shared `internal_keys` registry within the same transaction. Sweep ops:
   `Create/MarkPublished/MarkFailed/List/ListPending/MarkInputSpent`.
 - `NewBoardingSweep` / `BoardingSweepRecord` /
   `BoardingSweepInputRecord` — control-plane domain types. Sweep
@@ -82,6 +84,18 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   `vtxo.SpendingReservationStore`.
 - `SpendingReservationStore` / `BatchedSpendingReservationStore` — Internal
   sqlc-backed query interfaces for the reservation table.
+- `InternalKeyQuerier` — Minimal interface for the internal-key registry helpers
+  (`UpsertInternalKey`, `GetInternalKeyByID`). Satisfied by `*sqlc.Queries` and
+  by every consumer store interface that embeds these two methods, allowing
+  register-then-reference of an internal key inside the same transaction.
+- `RegisterInternalKeyTx(ctx, qtx, now, desc)` — Idempotently records a
+  `keychain.KeyDescriptor` in the `internal_keys` table and returns its surrogate
+  id. Re-registering an identical (pubkey, key_family, key_index) triple returns
+  the existing id.
+- `InternalKeyDescByIDTx(ctx, qtx, id)` — Hydrates a `keychain.KeyDescriptor`
+  from its registry id within the caller's transaction context.
+- `ErrInternalKeyPubKeyMissing` / `ErrInternalKeyNotFound` — Sentinel errors for
+  missing public key on registration or unknown id on lookup.
 
 ## Relationships
 
@@ -125,6 +139,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
+- `000002_boarding_tables` (amended) — adds `internal_keys` table: surrogate-id
+  registry of client wallet `KeyDescriptor` values (pubkey + key_family +
+  key_index). Consumer tables reference keys by a `*_key_id` FK instead of
+  inlining the three-column triple. `boarding_addresses.client_key_id` was the
+  first consumer; it replaces the previously inlined
+  `client_pubkey`/`client_key_family`/`client_key_index` columns. Keyed by
+  `(pubkey, key_family, key_index)` unique constraint; upsert is idempotent.
 - `000017_spending_reservations` — adds `spending_reservations` table with
   `(outpoint_hash, outpoint_index)` PK, `owner_kind`, `owner_id`, and
   `created_at`. A row exists IFF the owning spend session was durably

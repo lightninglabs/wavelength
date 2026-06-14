@@ -32,7 +32,10 @@ transport, without duplicating Ark runtime behavior.
   already-connected `daemonrpc.DaemonServiceClient` and a caller-supplied
   `closeFn`.
 - `Info` / `ServerInfo` / `Seed` / `WalletInitResult` — SDK-owned typed
-  models for daemon status and wallet bootstrap flows.
+  models for daemon status and wallet bootstrap flows. `ServerInfo` no longer
+  carries `ForfeitScript`, `SweepKey`, or `SweepDelay`; those fields are now
+  delivered per-round via `round.CommitmentTxBuilt` and the live operator key
+  fetch path.
 - `VTXOInfo` — Typed VTXO view (Outpoint, AmountSat, Status, BatchExpiry,
   RoundID, CreatedHeight, etc.) returned by `ListLiveVTXOs` /
   `ListSpentVTXOs`.
@@ -44,7 +47,10 @@ transport, without duplicating Ark runtime behavior.
   spend path, and UTXO info for `SendOORWithCustomInputs`.
 - Policy/OOR helpers such as `SendOORWithPolicy`, `SendOORWithCustomInputs`,
   typed indexed VTXO lookups, and typed receive-script decoding belong here
-  so higher-level packages do not rebuild daemonrpc adapters.
+  so higher-level packages do not rebuild daemonrpc adapters. `SendOORWithPolicy`
+  and `SendOnChainWithPolicy` now use `Recipients []*daemonrpc.Output` (plural)
+  rather than a single `Recipient`; `RecipientOutpoints []string` replaces
+  `RecipientOutpoint` in the response.
 - Receive-auth helpers: `ReceiveAuthKey`, `SignReceiveAuthMessage`,
   `SignReceiveAuthMessageCompact`, `ReceiveAuthECDH` — delegate payment-scoped
   signing and Sphinx ECDH operations to the daemon wallet without exposing the

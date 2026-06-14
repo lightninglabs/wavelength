@@ -47,6 +47,8 @@ interface, and per-service factory functions so callers are channel-agnostic
   (`-bin`-suffixed) keys are skipped.
 - `WatchRounds`, `SubscribeSwaps`, and `SubscribeWallet` are the only
   server-streaming methods; all other methods are unary.
+- `SwapServiceClient.AcknowledgeOutSwapHtlc` is implemented as a REST POST to
+  `/v1/swap/acknowledge-out-swap-htlc`, mirroring the gRPC stub interface.
 - Generated service clients implement the same gRPC-generated interfaces
   as the generated gRPC stubs, so callers do not branch on transport type.
 

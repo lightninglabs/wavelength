@@ -29,6 +29,12 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `receiveSessionAdapter` — Adds method accessors over
   `sdk/swaps.ReceiveSession` so both production code and tests share the same
   interface without exposing struct fields.
+- `operatorPubKeyFetcher` — `func(context.Context) (*btcec.PublicKey, error)`;
+  function type for fetching the live operator public key from the daemon.
+- `liveOperatorDaemonConn` — wraps a `swaps.DaemonConn` and replaces the static
+  `OperatorPubKey` with a live fetcher so vHTLC policy scripts use the current
+  operator key even after a key rotation. Constructed via
+  `daemonWithLiveOperatorKey(daemon, fetcher)`.
 - `Register(ctx, grpcServer, rpcServer, cfg)` — Top-level entry point called
   by a `swapruntime`-tagged `darepod` binary. Opens the daemon-owned SQLite
   swap store, dials `swapdk-server`, creates an in-process Ark SDK facade over
@@ -86,6 +92,9 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `idempotency_key` on `StartPay` / `StartReceive` is explicitly reserved and
   returns `Unimplemented` to guard against accidental duplicate-start
   assumptions.
+- The `DaemonConn` passed to `sdk/swaps` is wrapped with
+  `daemonWithLiveOperatorKey` so every vHTLC policy build fetches the live
+  operator key via `RPCServer.OperatorPubKey` rather than a stale cached value.
 - `SetOutSwapEventReceiver` must run before any receive worker is started:
   `SwapClient` captures the receiver into the per-swap worker at start time,
   so a late install would leave already-running workers using whatever

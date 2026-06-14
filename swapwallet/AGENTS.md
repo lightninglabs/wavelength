@@ -108,6 +108,12 @@ default builds avoid the swap executor's dependency graph.
   FAILED with `failure_reason="timed_out"` BEFORE filtering, so a
   stuck row appears as FAILED even when the caller asks for
   `pending_only=false`.
+- **Cooperative-leave FORFEITED decoration**: `collectForfeitedVTXOOutpoints`
+  gathers forfeited VTXO outpoints from the ledger for the current wallet
+  session. `decorateCooperativeLeaveEntry` annotates pending wallet-local
+  cooperative-leave entries whose matched VTXO was forfeited, promoting them
+  from PENDING to a FORFEITED-decorated state so the wallet history correctly
+  reflects leave outcomes.
 - **DEPOSIT rows backed by the `wallet_utxo_created` ledger event**
   mirror the ledger confirmation status. Confirmed on-chain boarding
   deposits surface as `ENTRY_STATUS_COMPLETE`, while unconfirmed

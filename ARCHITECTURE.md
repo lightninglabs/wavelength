@@ -70,6 +70,7 @@ package may import from a higher layer.
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
 | [`arkrpc/treeconv`](arkrpc/treeconv/) | Narrow re-export of tree-path conversion helpers without the full gRPC surface |
 | [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb, swapclientrpc, walletdkrpc) and HTTP transport (`rpc/restclient`) |
+| [`swaprpc`](swaprpc/) | Generated gRPC stubs for the swap server protocol: `SwapService` (out-swap HTLC events, in-swap creation, refund auth, HTLC acknowledgement) |
 | [`rpc/walletdkrpc`](rpc/walletdkrpc/) | Highest-level gRPC surface: `WalletService` with the seven core wallet verbs. Composes `daemonrpc` and `rpc/swapclientrpc` server-side via `swapwallet` |
 | [`rpc/restclient`](rpc/restclient/) | HTTP/protoJSON transport adapter: `Client`, `StreamClient[T]`, and per-service factory functions implementing the same gRPC stub interfaces over REST |
 | [`daemonrpc`](daemonrpc/) | Daemon gRPC API definitions |

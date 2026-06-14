@@ -30,7 +30,10 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `Ancestry` — One rooted commitment-tree fragment contributing ancestry to a VTXO (defined in `lib/types/ancestry.go`). Fields: `TreePath *tree.Tree` (extracted root-to-leaf path), `CommitmentTxID chainhash.Hash`, `InputIndices []uint32` (Ark tx input indices this fragment serves; empty for round-direct VTXOs), `TreeDepth uint32`. Round-direct VTXOs carry a single-element slice; cross-round multi-input OOR VTXOs carry one entry per distinct commitment tx.
 - `MaxAncestryTreeDepth([]Ancestry) int` — Returns the largest `TreeDepth` across a slice; drives worst-case unilateral-exit timing calculations.
 - `ClientBatchInfo` — Client's view of batch output info after tree construction.
-- `BatchOutputInfo` — Batch output metadata (outpoint, value, tree root).
+- `BatchOutputInfo` — Batch output metadata: outpoint, value, and the VTXO tree
+  (`Tree`). The tree embeds the per-round sweep key, sweep delay, and PrevOut.
+  `ForfeitScript`, `SweepKey`, and `SweepDelay` were removed from this type;
+  they are now delivered per-round in `round.CommitmentTxBuilt`.
 - `ConnectorLeafInfo` — Assigned connector leaf (outpoint + output) plus the connector-tree ancestry params (`RootOutputIndex`, `NumLeaves`, `Radix`, `LeafIndex`) the client uses to reconstruct the tree and prove the leaf descends from the commitment tx before signing the forfeit (darepo-client#681).
 - `BoardingInputSignature` — Signed boarding input for round commitment.
 - `ForfeitTxSig` — Forfeit transaction signature.

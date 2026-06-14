@@ -58,8 +58,18 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   cap, positive and `MaxSatoshi`-bounded amounts, overflow-safe sum),
   resolves destinations via `resolveRecipientOutput`, delegates to
   the wallet actor.
+- `OperatorPubKey(ctx) (*btcec.PublicKey, error)` on `RPCServer` — fetches
+  the live operator public key by calling `GetInfo` via the server connection.
+  Used by `swapclientserver` to provide vHTLC policy scripts with a fresh
+  key after an operator key rotation rather than a stale cached value.
 - `resolveRecipientOutput` — extracts pkScript and client pubkey from
   an `Output` proto oneof (pubkey or address). Taproot-only.
+- `SendOOR` now accepts `daemonrpc.SendOORRequest.Recipients` (plural) in
+  addition to the legacy single-recipient path. `sendOORRequestRecipients`
+  normalises the request, `buildSendOORRecipients` resolves them, and
+  `resolveOORRecipientOutpoints` maps indexed outpoints back to caller.
+  Limit: same count cap as `SendVTXO`; custom inputs require exactly one
+  recipient.
 - `ListVTXOs` — paginated VTXO inventory. When called with
   `VTXO_STATUS_PENDING_ROUND`, branches to `listPendingRoundVTXOs`
   which bypasses `s.vtxoStore` and projects synthetic VTXOs (amount
