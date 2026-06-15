@@ -462,10 +462,11 @@ func TestIngressAckHandledResponseWithoutActorDelivery(t *testing.T) {
 	require.NoError(t, err)
 
 	status := mb.send(&mailboxpb.Envelope{
-		ProtocolVersion: 1,
-		Sender:          "server-1",
-		Recipient:       "client-1",
-		Body:            body,
+		ProtocolVersion:    1,
+		ArkProtocolVersion: 1,
+		Sender:             "server-1",
+		Recipient:          "client-1",
+		Body:               body,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:          mailboxpb.RpcMeta_KIND_RESPONSE,
 			CorrelationId: "stale-corr",

@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -4043,6 +4044,22 @@ func (s *Server) validateRefreshSelection(
 	boundVersion := s.arkProtocolVersion
 
 	if resp.SelectedArkVersion == boundVersion {
+		// The operator re-selected the bound version, which is normally
+		// a successful refresh. But a contradictory response also
+		// advertises that same selected version as DISABLED. Fail
+		// closed: this is a terminal, mandatory-upgrade condition, so
+		// return a permanent UPGRADE_REQUIRED error carrying the
+		// advertised upgrade URL. An absent policy is allowed (no
+		// contradiction), preserving compatibility with operators that
+		// advertise no policy for the bound version.
+		policy := selectedArkPolicy(resp, boundVersion)
+		if policy != nil &&
+			policy.State == arkrpc.ArkVersionPolicy_STATE_DISABLED {
+			return disabledSelectionStatus(
+				"refresh", boundVersion, resp, policy,
+			)
+		}
+
 		return nil
 	}
 

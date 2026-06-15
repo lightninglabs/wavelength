@@ -398,3 +398,137 @@ func TestFetchOperatorTermsRefreshProcessesDeprecation(t *testing.T) {
 	)
 	require.Equal(t, "https://up.example", cached.UpgradeUrl)
 }
+
+// TestNegotiateArkBootstrapSelectedButDisabled proves the client refuses to
+// bootstrap a runtime when the operator selects the client's supported version
+// but simultaneously advertises that version as DISABLED. The refusal is a
+// permanent UPGRADE_REQUIRED status error carrying the advertised upgrade URL.
+func TestNegotiateArkBootstrapSelectedButDisabled(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubArkServiceClient{
+		resp: &arkrpc.GetInfoResponse{
+			Pubkey:             testOperatorPubKeyBytes(t),
+			SelectedArkVersion: 1,
+			ArkVersionPolicies: []*arkrpc.ArkVersionPolicy{
+				{
+					Version: 1,
+					State: arkrpc.
+						ArkVersionPolicy_STATE_DISABLED,
+					UpgradeUrl: "https://up.example",
+				},
+			},
+		},
+	}
+	srv := &Server{arkClient: stub}
+
+	neg, err := srv.negotiateArkBootstrap(t.Context(), []uint32{1})
+	require.Error(t, err)
+	require.Nil(t, neg)
+
+	require.True(t, mailboxconn.IsPermanentVersionError(err))
+
+	var statusErr *mailboxconn.StatusError
+	require.ErrorAs(t, err, &statusErr)
+	require.Equal(
+		t, mailboxconn.StatusUpgradeRequired, statusErr.Code(),
+	)
+	require.Equal(t, "https://up.example", statusErr.UpgradeURL())
+}
+
+// TestValidateRefreshSelectionSelectedButDisabled proves a refresh that
+// re-selects the bound version but advertises it as DISABLED is a terminal,
+// mandatory-upgrade failure: a permanent UPGRADE_REQUIRED status error carrying
+// the advertised upgrade URL, distinct from the renegotiation mismatch path.
+func TestValidateRefreshSelectionSelectedButDisabled(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{arkProtocolVersion: 1}
+
+	resp := &arkrpc.GetInfoResponse{
+		SelectedArkVersion: 1,
+		ArkVersionPolicies: []*arkrpc.ArkVersionPolicy{
+			{
+				Version: 1,
+				State: arkrpc.
+					ArkVersionPolicy_STATE_DISABLED,
+				UpgradeUrl: "https://up.example",
+			},
+		},
+	}
+
+	statusErr := srv.validateRefreshSelection(resp)
+	require.NotNil(t, statusErr)
+	require.Equal(
+		t, mailboxconn.StatusUpgradeRequired, statusErr.Code(),
+	)
+	require.Equal(t, "https://up.example", statusErr.UpgradeURL())
+}
+
+// TestValidateRefreshSelectionActivePolicyOk proves a matching selection with a
+// non-disabled (here ACTIVE) policy for the bound version is a normal, accepted
+// refresh — an advertised policy alone does not make a refresh fail.
+func TestValidateRefreshSelectionActivePolicyOk(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{arkProtocolVersion: 1}
+
+	resp := &arkrpc.GetInfoResponse{
+		SelectedArkVersion: 1,
+		ArkVersionPolicies: []*arkrpc.ArkVersionPolicy{
+			{
+				Version: 1,
+				State: arkrpc.
+					ArkVersionPolicy_STATE_ACTIVE,
+			},
+		},
+	}
+
+	require.Nil(t, srv.validateRefreshSelection(resp))
+}
+
+// TestFetchOperatorTermsRefreshSelectedButDisabledMarksIncompatible proves the
+// refresh path drives an existing runtime to INCOMPATIBLE when the operator
+// re-selects the bound version but advertises it as DISABLED.
+// fetchOperatorTerms returns the permanent UPGRADE_REQUIRED error and calls
+// MarkIncompatible, whose OnIncompatible callback clears server_connected.
+func TestFetchOperatorTermsRefreshSelectedButDisabledMarksIncompatible(
+	t *testing.T) {
+
+	t.Parallel()
+
+	s := newCompatTestServer(t, okPullEdge{})
+
+	// Model a healthy, connected client bound to v1 before the refresh.
+	s.serverConnected.Store(true)
+	s.arkProtocolVersion = 1
+	s.arkClient = &stubArkServiceClient{
+		resp: &arkrpc.GetInfoResponse{
+			Pubkey:             testOperatorPubKeyBytes(t),
+			SelectedArkVersion: 1,
+			ArkVersionPolicies: []*arkrpc.ArkVersionPolicy{
+				{
+					Version: 1,
+					State: arkrpc.
+						ArkVersionPolicy_STATE_DISABLED,
+					UpgradeUrl: "https://up.example",
+				},
+			},
+		},
+	}
+
+	_, err := s.fetchOperatorTerms(t.Context())
+	require.Error(t, err)
+	require.True(t, mailboxconn.IsPermanentVersionError(err))
+
+	var statusErr *mailboxconn.StatusError
+	require.ErrorAs(t, err, &statusErr)
+	require.Equal(
+		t, mailboxconn.StatusUpgradeRequired, statusErr.Code(),
+	)
+	require.Equal(t, "https://up.example", statusErr.UpgradeURL())
+
+	// The refresh transitioned the runtime to INCOMPATIBLE, firing the
+	// OnIncompatible callback that clears server_connected.
+	require.False(t, s.isServerConnected())
+}

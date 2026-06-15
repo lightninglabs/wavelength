@@ -10,6 +10,7 @@ import (
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 )
 
 // arkVersionNegotiation is the outcome of the bootstrap GetInfo negotiation.
@@ -79,7 +80,41 @@ func resolveArkVersionSelection(resp *arkrpc.GetInfoResponse,
 			resp.SelectedArkVersion, clientSupported)
 	}
 
+	// A contradictory operator response selects a version it simultaneously
+	// advertises as DISABLED. Fail closed: refuse to bind a runtime to a
+	// version the operator says is retired. Surface it as a permanent
+	// UPGRADE_REQUIRED status error carrying the advertised upgrade URL so
+	// the daemon can point the user at the upgrade. An absent policy for
+	// the selected version is allowed (no contradiction), preserving
+	// compatibility with operators that advertise no policy for it.
+	policy := selectedArkPolicy(resp, resp.SelectedArkVersion)
+	if policy != nil &&
+		policy.State == arkrpc.ArkVersionPolicy_STATE_DISABLED {
+		return 0, disabledSelectionStatus(
+			"bootstrap", resp.SelectedArkVersion, resp, policy,
+		)
+	}
+
 	return resp.SelectedArkVersion, nil
+}
+
+// disabledSelectionStatus builds the permanent UPGRADE_REQUIRED status error
+// returned when the operator selects an Ark protocol version it simultaneously
+// advertises as DISABLED. op names the originating path ("bootstrap" or
+// "refresh"); the advertised upgrade URL and the operator's enabled versions
+// are preserved so the daemon can surface actionable upgrade guidance.
+func disabledSelectionStatus(op string, version uint32,
+	resp *arkrpc.GetInfoResponse,
+	policy *arkrpc.ArkVersionPolicy) *mailboxconn.StatusError {
+
+	return mailboxconn.NewStatusError(op, &mailboxpb.Status{
+		Ok:   false,
+		Code: mailboxconn.StatusUpgradeRequired,
+		Message: fmt.Sprintf("operator selected ark protocol version "+
+			"%d but advertises it as disabled", version),
+		SupportedArkVersions: resp.SupportedArkVersions,
+		UpgradeUrl:           policy.UpgradeUrl,
+	})
 }
 
 // selectedArkPolicy returns the policy advertised for the given version, or
