@@ -44,6 +44,7 @@ import (
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -1428,6 +1429,308 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	}, nil
 }
 
+// RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for refresh in
+// the next round. The inputs are not looked up from the wallet-managed VTXO set
+// and are not selected from wallet live balance; callers must own the
+// higher-level protocol state that prevents double-use.
+func (r *RPCServer) RefreshCustomVTXOs(ctx context.Context,
+	req *daemonrpc.RefreshCustomVTXOsRequest) (
+	*daemonrpc.RefreshCustomVTXOsResponse, error) {
+
+	inputs, outputs, queued, err := buildCustomRefreshRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if req.GetDryRun() {
+		return &daemonrpc.RefreshCustomVTXOsResponse{
+			QueuedOutpoints: queued,
+			Status:          "preview",
+		}, nil
+	}
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	terms, err := r.server.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "fetch operator "+
+			"terms: %v", err)
+	}
+	enrichCustomRefreshInputs(
+		inputs, r.server.clientKeyDesc, terms.PubKey,
+	)
+
+	if !r.server.walletRef.IsSome() {
+		return nil, status.Errorf(codes.Internal, "wallet actor not "+
+			"initialized")
+	}
+
+	wRef := r.server.walletRef.UnsafeFromSome()
+	future := wRef.Ask(ctx, &wallet.RefreshCustomVTXOsRequest{
+		Inputs:  inputs,
+		Outputs: outputs,
+	})
+	result := future.Await(ctx)
+
+	refreshResp, err := result.Unpack()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "custom refresh "+
+			"request failed: %v", err)
+	}
+
+	resp, ok := refreshResp.(*wallet.RefreshCustomVTXOsResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal, "unexpected "+
+			"response type: %T", refreshResp)
+	}
+	if resp.RefreshingCount != len(queued) {
+		return nil, status.Errorf(codes.Internal, "custom refresh "+
+			"queued %d VTXOs, expected %d", resp.RefreshingCount,
+			len(queued))
+	}
+
+	r.server.log.InfoS(ctx, "Custom VTXOs queued for refresh",
+		slog.Int("queued_count", len(queued)),
+	)
+
+	return &daemonrpc.RefreshCustomVTXOsResponse{
+		QueuedOutpoints: queued,
+		Status:          "queued",
+	}, nil
+}
+
+func buildCustomRefreshRequest(req *daemonrpc.RefreshCustomVTXOsRequest) (
+	[]wallet.CustomRefreshInput, []wallet.CustomRefreshOutput, []string,
+	error) {
+
+	if req == nil {
+		return nil, nil, nil, status.Errorf(codes.InvalidArgument,
+			"request is required")
+	}
+
+	rpcInputs := req.GetInputs()
+	rpcOutputs := req.GetOutputs()
+	if len(rpcInputs) == 0 {
+		return nil, nil, nil, status.Errorf(codes.InvalidArgument,
+			"custom refresh inputs are empty")
+	}
+	if len(rpcInputs) != len(rpcOutputs) {
+		return nil, nil, nil, status.Errorf(codes.InvalidArgument,
+			"custom refresh inputs/output count mismatch: %d "+
+				"inputs, %d outputs", len(rpcInputs), len(
+				rpcOutputs,
+			))
+	}
+
+	inputs := make([]wallet.CustomRefreshInput, 0, len(rpcInputs))
+	outputs := make([]wallet.CustomRefreshOutput, 0, len(rpcOutputs))
+	queued := make([]string, 0, len(rpcInputs))
+	seen := make(map[wire.OutPoint]struct{}, len(rpcInputs))
+
+	for i := range rpcInputs {
+		input, err := parseCustomRefreshInput(i, rpcInputs[i])
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if _, ok := seen[input.Outpoint]; ok {
+			return nil, nil, nil, status.Errorf(
+				codes.InvalidArgument, "custom refresh input "+
+					"%d duplicate outpoint %s", i, input.Outpoint)
+		}
+		seen[input.Outpoint] = struct{}{}
+
+		output, err := parseCustomRefreshOutput(i, rpcOutputs[i])
+		if err != nil {
+			return nil, nil, nil, err
+		}
+
+		inputs = append(inputs, input)
+		outputs = append(outputs, output)
+		queued = append(queued, input.Outpoint.String())
+	}
+
+	return inputs, outputs, queued, nil
+}
+
+func parseCustomRefreshInput(index int,
+	input *daemonrpc.CustomRefreshVTXOInput) (wallet.CustomRefreshInput,
+	error) {
+
+	if input == nil {
+		return wallet.CustomRefreshInput{}, status.Errorf(
+			codes.InvalidArgument, "custom refresh input %d is nil",
+			index)
+	}
+	if input.GetAmountSat() <= 0 {
+		return wallet.CustomRefreshInput{}, status.Errorf(
+			codes.InvalidArgument, "custom refresh input %d "+
+				"amount_sat must be positive", index)
+	}
+	if len(input.GetPkScript()) == 0 {
+		return wallet.CustomRefreshInput{}, status.Errorf(
+			codes.InvalidArgument, "custom refresh input %d "+
+				"pk_script is required", index)
+	}
+	if len(input.GetVtxoPolicyTemplate()) == 0 {
+		return wallet.CustomRefreshInput{}, status.Errorf(
+			codes.InvalidArgument, "custom refresh input %d "+
+				"vtxo_policy_template is required", index)
+	}
+	if len(input.GetAuthSpendPath()) == 0 {
+		return wallet.CustomRefreshInput{}, status.Errorf(
+			codes.InvalidArgument, "custom refresh input %d "+
+				"auth_spend_path is required", index)
+	}
+	if len(input.GetForfeitSpendPath()) == 0 {
+		return wallet.CustomRefreshInput{}, status.Errorf(
+			codes.InvalidArgument, "custom refresh input %d "+
+				"forfeit_spend_path is required", index)
+	}
+
+	outpoint, err := parseOutpointString(input.GetOutpoint())
+	if err != nil {
+		return wallet.CustomRefreshInput{}, status.Errorf(
+			codes.InvalidArgument, "parse custom refresh input %d "+
+				"outpoint %q: %v", index, input.GetOutpoint(), err)
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(
+		input.GetVtxoPolicyTemplate(),
+	)
+	if err != nil {
+		return wallet.CustomRefreshInput{}, status.Errorf(
+			codes.InvalidArgument, "decode custom refresh input "+
+				"%d policy template: %v", index, err)
+	}
+	if !template.MatchesPkScript(input.GetPkScript()) {
+		return wallet.CustomRefreshInput{}, status.Errorf(
+			codes.InvalidArgument, "custom refresh input %d "+
+				"policy template does not match pk_script", index)
+	}
+
+	authSpend, err := decodeBoundCustomRefreshSpend(
+		index, "auth_spend_path", input.GetAuthSpendPath(),
+		input.GetPkScript(),
+	)
+	if err != nil {
+		return wallet.CustomRefreshInput{}, err
+	}
+	forfeitSpend, err := decodeBoundCustomRefreshSpend(
+		index, "forfeit_spend_path", input.GetForfeitSpendPath(),
+		input.GetPkScript(),
+	)
+	if err != nil {
+		return wallet.CustomRefreshInput{}, err
+	}
+
+	return wallet.CustomRefreshInput{
+		Outpoint: outpoint,
+		Amount:   btcutil.Amount(input.GetAmountSat()),
+		PkScript: append([]byte(nil), input.GetPkScript()...),
+		PolicyTemplate: append(
+			[]byte(nil), input.GetVtxoPolicyTemplate()...,
+		),
+		RelativeExpiry: maxCustomRefreshSequence(
+			authSpend, forfeitSpend,
+		),
+		AuthSpend:    authSpend,
+		ForfeitSpend: forfeitSpend,
+	}, nil
+}
+
+func enrichCustomRefreshInputs(inputs []wallet.CustomRefreshInput,
+	clientKey keychain.KeyDescriptor, operatorKey *btcec.PublicKey) {
+
+	for i := range inputs {
+		inputs[i].ClientKey = clientKey
+		inputs[i].OperatorKey = operatorKey
+	}
+}
+
+func maxCustomRefreshSequence(paths ...*arkscript.SpendPath) uint32 {
+	var max uint32
+	for _, path := range paths {
+		if path == nil {
+			continue
+		}
+		if path.RequiredSequence > max {
+			max = path.RequiredSequence
+		}
+	}
+
+	return max
+}
+
+func parseCustomRefreshOutput(index int,
+	output *daemonrpc.CustomRefreshVTXOOutput) (wallet.CustomRefreshOutput,
+	error) {
+
+	if output == nil {
+		return wallet.CustomRefreshOutput{}, status.Errorf(
+			codes.InvalidArgument, "custom refresh output "+
+				"%d is nil", index)
+	}
+	if output.GetAmountSat() <= 0 {
+		return wallet.CustomRefreshOutput{}, status.Errorf(
+			codes.InvalidArgument, "custom refresh output %d "+
+				"amount_sat must be positive", index)
+	}
+	if len(output.GetVtxoPolicyTemplate()) == 0 {
+		return wallet.CustomRefreshOutput{}, status.Errorf(
+			codes.InvalidArgument, "custom refresh output %d "+
+				"vtxo_policy_template is required", index)
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(
+		output.GetVtxoPolicyTemplate(),
+	)
+	if err != nil {
+		return wallet.CustomRefreshOutput{}, status.Errorf(
+			codes.InvalidArgument, "decode custom refresh output "+
+				"%d policy template: %v", index, err)
+	}
+
+	pkScript := output.GetPkScript()
+	if len(pkScript) == 0 {
+		pkScript, err = template.PkScript()
+		if err != nil {
+			return wallet.CustomRefreshOutput{}, status.Errorf(
+				codes.InvalidArgument, "derive custom refresh "+
+					"output %d pk_script: %v", index, err)
+		}
+	} else if !template.MatchesPkScript(pkScript) {
+		return wallet.CustomRefreshOutput{}, status.Errorf(
+			codes.InvalidArgument, "custom refresh output %d "+
+				"policy template does not match pk_script", index)
+	}
+
+	return wallet.CustomRefreshOutput{
+		Amount: btcutil.Amount(output.GetAmountSat()),
+		PolicyTemplate: append(
+			[]byte(nil), output.GetVtxoPolicyTemplate()...,
+		),
+		PkScript: append([]byte(nil), pkScript...),
+	}, nil
+}
+
+func decodeBoundCustomRefreshSpend(index int, field string, raw,
+	pkScript []byte) (*arkscript.SpendPath, error) {
+
+	spendPath, err := arkscript.DecodeSpendPath(raw)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "decode "+
+			"custom refresh input %d %s: %v", index, field, err)
+	}
+	if err := spendPath.VerifyBindsToPkScript(pkScript); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "custom "+
+			"refresh input %d %s does not bind to pk_script: %v",
+			index, field, err)
+	}
+
+	return spendPath, nil
+}
 // LeaveVTXOs queues one or more VTXOs for cooperative leave
 // (offboard) in the next round. Each VTXO is forfeited and the
 // forfeited amount lands on-chain at the caller's destination —

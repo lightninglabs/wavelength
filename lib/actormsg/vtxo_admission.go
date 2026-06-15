@@ -1,9 +1,11 @@
 package actormsg
 
 import (
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // =============================================================================
@@ -171,6 +173,88 @@ type ReleaseForfeitResponse struct {
 
 // VTXOManagerResp implements the VTXOManagerResp marker interface.
 func (r *ReleaseForfeitResponse) VTXOManagerResp() {}
+
+// CustomForfeitInput describes a caller-supplied VTXO that is not part of the
+// wallet's live coin set but still needs a local VTXO actor to sign the exact
+// round forfeit transaction once connector details are known.
+type CustomForfeitInput struct {
+	// Outpoint identifies the custom VTXO.
+	Outpoint wire.OutPoint
+
+	// Amount is the custom VTXO value in satoshis.
+	Amount btcutil.Amount
+
+	// PkScript is the script committed to by the custom VTXO.
+	PkScript []byte
+
+	// PolicyTemplate is the semantic custom VTXO policy template.
+	PolicyTemplate []byte
+
+	// ClientKey is the local key used by this daemon to sign its share of
+	// the custom policy.
+	ClientKey keychain.KeyDescriptor
+
+	// OperatorKey is the Ark operator key committed to by the policy.
+	OperatorKey *btcec.PublicKey
+
+	// RelativeExpiry records the policy's CSV delay for local descriptor
+	// accounting. Custom paths supplied by the round request still drive
+	// the exact forfeit transaction sequence.
+	RelativeExpiry uint32
+}
+
+// ActivateCustomForfeitInputsRequest persists and spawns PendingForfeit VTXO
+// actors for custom inputs before registering a round intent.
+type ActivateCustomForfeitInputsRequest struct {
+	actor.BaseMessage
+
+	// Inputs are the custom VTXOs that need temporary forfeit-signing
+	// actors.
+	Inputs []CustomForfeitInput
+}
+
+// VTXOManagerMsg implements VTXOManagerMsg marker interface.
+func (m *ActivateCustomForfeitInputsRequest) VTXOManagerMsg() {}
+
+// MessageType returns the message type for logging.
+func (m *ActivateCustomForfeitInputsRequest) MessageType() string {
+	return "ActivateCustomForfeitInputsRequest"
+}
+
+// ActivateCustomForfeitInputsResponse confirms custom actor activation.
+type ActivateCustomForfeitInputsResponse struct {
+	// ActivatedCount is the number of custom input actors activated.
+	ActivatedCount int
+}
+
+// VTXOManagerResp implements the VTXOManagerResp marker interface.
+func (r *ActivateCustomForfeitInputsResponse) VTXOManagerResp() {}
+
+// DropCustomForfeitInputsRequest deletes custom PendingForfeit actors that
+// were activated for a round intent that was rejected before signing started.
+type DropCustomForfeitInputsRequest struct {
+	actor.BaseMessage
+
+	// Outpoints identifies the custom forfeit inputs to drop.
+	Outpoints []wire.OutPoint
+}
+
+// VTXOManagerMsg implements VTXOManagerMsg marker interface.
+func (m *DropCustomForfeitInputsRequest) VTXOManagerMsg() {}
+
+// MessageType returns the message type for logging.
+func (m *DropCustomForfeitInputsRequest) MessageType() string {
+	return "DropCustomForfeitInputsRequest"
+}
+
+// DropCustomForfeitInputsResponse confirms custom actor cleanup.
+type DropCustomForfeitInputsResponse struct {
+	// DroppedCount is the number of custom input actors and rows dropped.
+	DroppedCount int
+}
+
+// VTXOManagerResp implements the VTXOManagerResp marker interface.
+func (r *DropCustomForfeitInputsResponse) VTXOManagerResp() {}
 
 // =============================================================================
 // Atomic cooperative select-and-reserve: wallet → Manager → VTXO actors

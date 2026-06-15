@@ -1667,6 +1667,152 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 	return fn.Ok[WalletResp](resp)
 }
 
+// handleRefreshCustomVTXOs registers a caller-composed custom refresh package
+// without selecting wallet-managed live VTXOs. This path exists for swap
+// vHTLCs and similar custom-policy VTXOs that are tracked by their owning
+// protocol state machine rather than by the wallet balance manager. The wallet
+// still activates temporary PendingForfeit VTXO actors so the round can deliver
+// the connector-bound forfeit signing request to a local signer.
+func (a *Ark) handleRefreshCustomVTXOs(ctx context.Context,
+	req *RefreshCustomVTXOsRequest) fn.Result[WalletResp] {
+
+	a.logger(ctx).InfoS(ctx, "Received custom VTXO refresh request",
+		slog.Int("input_count", len(req.Inputs)),
+		slog.Int("output_count", len(req.Outputs)),
+	)
+
+	if a.actorSystem == nil {
+		err := fmt.Errorf("actor system not configured")
+		a.logger(ctx).WarnS(ctx, "No actor system for custom refresh",
+			err,
+		)
+
+		return fn.Err[WalletResp](err)
+	}
+
+	if len(req.Inputs) == 0 {
+		return fn.Err[WalletResp](
+			fmt.Errorf("custom refresh inputs are empty"),
+		)
+	}
+	if len(req.Inputs) != len(req.Outputs) {
+		return fn.Err[WalletResp](
+			fmt.Errorf(
+				"custom refresh inputs/output count "+
+					"mismatch: %d inputs, %d outputs",
+				len(req.Inputs), len(req.Outputs),
+			),
+		)
+	}
+
+	forfeits := make([]types.ForfeitRequest, 0, len(req.Inputs))
+	vtxos := make([]types.VTXORequest, 0, len(req.Outputs))
+	customInputs := make(
+		[]actormsg.CustomForfeitInput, 0, len(req.Inputs),
+	)
+	customOutpoints := make([]wire.OutPoint, 0, len(req.Inputs))
+
+	for i := range req.Inputs {
+		input := req.Inputs[i]
+		output := req.Outputs[i]
+
+		customInputs = append(customInputs, actormsg.CustomForfeitInput{
+			Outpoint:       input.Outpoint,
+			Amount:         input.Amount,
+			PkScript:       append([]byte(nil), input.PkScript...),
+			PolicyTemplate: append([]byte(nil), input.PolicyTemplate...),
+			ClientKey:      input.ClientKey,
+			OperatorKey:    input.OperatorKey,
+			RelativeExpiry: input.RelativeExpiry,
+		})
+		customOutpoints = append(customOutpoints, input.Outpoint)
+
+		op := input.Outpoint
+		forfeits = append(forfeits, types.ForfeitRequest{
+			VTXOOutpoint: &op,
+			Amount:       input.Amount,
+			AuthSpend:    input.AuthSpend,
+			ForfeitSpend: input.ForfeitSpend,
+		})
+		vtxos = append(vtxos, types.VTXORequest{
+			PolicyTemplate: append(
+				[]byte(nil), output.PolicyTemplate...,
+			),
+			PkScript: append([]byte(nil), output.PkScript...),
+			Amount:   output.Amount,
+			Origin:   types.VTXOOriginRoundRefresh,
+		})
+	}
+
+	_, err := a.askManager(
+		ctx, &actormsg.ActivateCustomForfeitInputsRequest{
+			Inputs: customInputs,
+		},
+	)
+	if err != nil {
+		a.logger(ctx).WarnS(
+			ctx,
+			"Manager rejected custom forfeit activation",
+			err,
+		)
+
+		return fn.Err[WalletResp](
+			fmt.Errorf("activate custom refresh inputs: %w", err),
+		)
+	}
+
+	serviceKey := actormsg.RoundActorServiceKey()
+	roundRef := serviceKey.Ref(a.actorSystem)
+
+	future := roundRef.Ask(ctx, &actormsg.RegisterIntentMsg{
+		Forfeits: forfeits,
+		VTXOs:    vtxos,
+	})
+	result := future.Await(ctx)
+	if result.IsErr() {
+		a.logger(ctx).WarnS(ctx, "Round rejected custom refresh intent",
+			result.Err(),
+		)
+
+		a.dropManagerCustomForfeits(ctx, customOutpoints)
+
+		return fn.Err[WalletResp](
+			fmt.Errorf(
+				"round rejected custom refresh intent: %w",
+				result.Err(),
+			),
+		)
+	}
+
+	a.logger(ctx).InfoS(ctx, "Registered custom refresh intent package",
+		slog.Int("forfeits", len(forfeits)),
+		slog.Int("vtxos", len(vtxos)),
+	)
+
+	return fn.Ok[WalletResp](&RefreshCustomVTXOsResponse{
+		RefreshingCount: len(forfeits),
+	})
+}
+
+func (a *Ark) dropManagerCustomForfeits(ctx context.Context,
+	outpoints []wire.OutPoint) {
+
+	if len(outpoints) == 0 {
+		return
+	}
+
+	_, err := a.askManager(
+		ctx, &actormsg.DropCustomForfeitInputsRequest{
+			Outpoints: outpoints,
+		},
+	)
+	if err != nil {
+		a.logger(ctx).WarnS(ctx, "Failed to drop custom forfeit inputs",
+			err,
+			slog.Int("count", len(outpoints)),
+		)
+	}
+}
 // handleLeaveVTXOs processes a leave (offboard) request. The wallet loads each
 // VTXO descriptor, builds a forfeit + leave request pair, and sends the
 // composed intent package to the round actor via RegisterIntentMsg. The round

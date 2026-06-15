@@ -282,6 +282,25 @@ type ReleaseForfeitRequest = actormsg.ReleaseForfeitRequest
 // ReleaseForfeitResponse is an alias for the canonical type in actormsg.
 type ReleaseForfeitResponse = actormsg.ReleaseForfeitResponse
 
+// CustomForfeitInput is an alias for the canonical type in actormsg.
+type CustomForfeitInput = actormsg.CustomForfeitInput
+
+// ActivateCustomForfeitInputsRequest is an alias for the canonical type in
+// actormsg.
+type ActivateCustomForfeitInputsRequest = actormsg.ActivateCustomForfeitInputsRequest
+
+// ActivateCustomForfeitInputsResponse is an alias for the canonical type in
+// actormsg.
+type ActivateCustomForfeitInputsResponse = actormsg.ActivateCustomForfeitInputsResponse
+
+// DropCustomForfeitInputsRequest is an alias for the canonical type in
+// actormsg.
+type DropCustomForfeitInputsRequest = actormsg.DropCustomForfeitInputsRequest
+
+// DropCustomForfeitInputsResponse is an alias for the canonical type in
+// actormsg.
+type DropCustomForfeitInputsResponse = actormsg.DropCustomForfeitInputsResponse
+
 // SelectAndReserveForfeitRequest is an alias for the canonical type in
 // actormsg.
 type SelectAndReserveForfeitRequest = actormsg.SelectAndReserveForfeitRequest

@@ -1,6 +1,7 @@
 package vtxo
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -579,6 +580,12 @@ func (m *Manager) Receive(ctx context.Context,
 
 	case *ReleaseForfeitRequest:
 		return m.handleReleaseForfeit(ctx, req)
+
+	case *ActivateCustomForfeitInputsRequest:
+		return m.handleActivateCustomForfeitInputs(ctx, req)
+
+	case *DropCustomForfeitInputsRequest:
+		return m.handleDropCustomForfeitInputs(ctx, req)
 
 	case *SelectAndReserveForfeitRequest:
 		return m.handleSelectAndReserveForfeit(ctx, req)
@@ -1801,6 +1808,179 @@ func (m *Manager) handleReleaseForfeit(ctx context.Context,
 
 	return fn.Ok[ManagerResp](&ReleaseForfeitResponse{
 		ReleasedCount: released,
+	})
+}
+
+// handleActivateCustomForfeitInputs persists and starts PendingForfeit actors
+// for custom-policy VTXOs. These descriptors are intentionally not added to
+// liveDescriptors: they exist only so a later round ForfeitRequest can reach a
+// signer for the exact connector-bound transaction.
+func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
+	req *ActivateCustomForfeitInputsRequest) fn.Result[ManagerResp] {
+
+	if len(req.Inputs) == 0 {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("custom forfeit inputs are empty"),
+		)
+	}
+
+	var activated int
+	for _, input := range req.Inputs {
+		if input.OperatorKey == nil {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("custom forfeit input %s missing "+
+					"operator key", input.Outpoint),
+			)
+		}
+		if input.ClientKey.PubKey == nil {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("custom forfeit input %s missing "+
+					"client key", input.Outpoint),
+			)
+		}
+
+		if _, exists := m.actors[input.Outpoint]; exists {
+			ok, err := m.customForfeitInputAlreadyActive(ctx, input)
+			if err != nil {
+				return fn.Err[ManagerResp](err)
+			}
+			if !ok {
+				return fn.Err[ManagerResp](
+					fmt.Errorf("custom forfeit input %s "+
+						"conflicts with existing VTXO actor",
+						input.Outpoint),
+				)
+			}
+
+			activated++
+
+			continue
+		}
+
+		descriptor := &Descriptor{
+			Outpoint:       input.Outpoint,
+			Amount:         input.Amount,
+			PkScript:       append([]byte(nil), input.PkScript...),
+			PolicyTemplate: append([]byte(nil), input.PolicyTemplate...),
+			ClientKey:      input.ClientKey,
+			OperatorKey:    input.OperatorKey,
+			RelativeExpiry: input.RelativeExpiry,
+			Status:         VTXOStatusPendingForfeit,
+		}
+
+		if err := m.cfg.Store.SaveVTXO(ctx, descriptor); err != nil {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("save custom forfeit input %s: %w",
+					input.Outpoint, err),
+			)
+		}
+
+		ref, err := m.spawnVTXOActor(ctx, descriptor)
+		if err != nil {
+			_ = m.cfg.Store.DeleteVTXO(ctx, input.Outpoint)
+
+			return fn.Err[ManagerResp](
+				fmt.Errorf("spawn custom forfeit input %s: %w",
+					input.Outpoint, err),
+			)
+		}
+
+		m.actors[input.Outpoint] = ref
+		activated++
+	}
+
+	m.logger(ctx).InfoS(ctx, "Activated custom forfeit inputs",
+		slog.Int("count", activated),
+	)
+
+	return fn.Ok[ManagerResp](&ActivateCustomForfeitInputsResponse{
+		ActivatedCount: activated,
+	})
+}
+
+func (m *Manager) customForfeitInputAlreadyActive(ctx context.Context,
+	input CustomForfeitInput) (bool, error) {
+
+	desc, err := m.cfg.Store.GetVTXO(ctx, input.Outpoint)
+	if err != nil {
+		return false, fmt.Errorf("load existing custom forfeit input %s: %w",
+			input.Outpoint, err)
+	}
+	if desc == nil {
+		return false, fmt.Errorf("load existing custom forfeit input %s: "+
+			"nil descriptor", input.Outpoint)
+	}
+	if desc.Status != VTXOStatusPendingForfeit {
+		return false, nil
+	}
+	if desc.Amount != input.Amount {
+		return false, nil
+	}
+	if !bytes.Equal(desc.PkScript, input.PkScript) {
+		return false, nil
+	}
+	if !bytes.Equal(desc.PolicyTemplate, input.PolicyTemplate) {
+		return false, nil
+	}
+	if desc.ClientKey.PubKey == nil || !desc.ClientKey.PubKey.IsEqual(
+		input.ClientKey.PubKey,
+	) {
+		return false, nil
+	}
+	if desc.OperatorKey == nil || !desc.OperatorKey.IsEqual(input.OperatorKey) {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// handleDropCustomForfeitInputs removes custom PendingForfeit actors created
+// for a round intent that did not register. Unlike ReleaseForfeitRequest, this
+// must not return the descriptors to LiveState because custom swap vHTLCs are
+// not normal wallet coins.
+func (m *Manager) handleDropCustomForfeitInputs(ctx context.Context,
+	req *DropCustomForfeitInputsRequest) fn.Result[ManagerResp] {
+
+	outpoints := dedupOutpoints(req.Outpoints)
+
+	var (
+		dropped int
+		errs    []error
+	)
+	for _, op := range outpoints {
+		if _, ok := m.actors[op]; ok {
+			actorID := fmt.Sprintf("vtxo.%s", op.String())
+			m.cfg.ActorSystem.StopAndRemoveActor(actorID)
+			delete(m.actors, op)
+		}
+
+		if err := m.cfg.Store.DeleteVTXO(ctx, op); err != nil {
+			errs = append(
+				errs, fmt.Errorf("delete custom forfeit "+
+					"input %s: %w", op, err),
+			)
+
+			continue
+		}
+
+		dropped++
+	}
+
+	if len(errs) > 0 {
+		return fn.Err[ManagerResp](
+			fmt.Errorf(
+				"drop custom forfeit inputs: %w",
+				errors.Join(errs...),
+			),
+		)
+	}
+
+	m.logger(ctx).InfoS(ctx, "Dropped custom forfeit inputs",
+		slog.Int("count", dropped),
+	)
+
+	return fn.Ok[ManagerResp](&DropCustomForfeitInputsResponse{
+		DroppedCount: dropped,
 	})
 }
 
