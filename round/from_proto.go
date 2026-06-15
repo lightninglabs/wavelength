@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
@@ -545,6 +546,28 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 					"forfeit[%d].vtxo_outpoint: %w", i, err)
 			}
 			req.VTXOOutpoint = &op
+		}
+		if len(fr.AuthSpendPath) > 0 {
+			spend, err := arkscript.DecodeSpendPath(
+				fr.AuthSpendPath,
+			)
+			if err != nil {
+				return fmt.Errorf(
+					"forfeit[%d].auth_spend_path: %w", i,
+					err)
+			}
+			req.AuthSpend = spend
+		}
+		if len(fr.ForfeitSpendPath) > 0 {
+			spend, err := arkscript.DecodeSpendPath(
+				fr.ForfeitSpendPath,
+			)
+			if err != nil {
+				return fmt.Errorf(
+					"forfeit[%d].forfeit_spend_path: %w", i,
+					err)
+			}
+			req.ForfeitSpend = spend
 		}
 
 		m.ForfeitRequests[i] = req

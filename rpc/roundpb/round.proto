@@ -313,6 +313,19 @@ message VTXORequest {
 message ForfeitRequest {
     // vtxo_outpoint is the outpoint of the VTXO to forfeit.
     Outpoint vtxo_outpoint = 1;
+
+    // auth_spend_path is the serialized custom spend path used to prove
+    // control of non-wallet-managed VTXOs when joining a round. Standard
+    // wallet VTXOs omit this field and let the operator load their canonical
+    // spend path from the VTXO registry.
+    bytes auth_spend_path = 2;
+
+    // forfeit_spend_path is the serialized custom spend path the operator
+    // should use when constructing the exact forfeit transaction after
+    // connector assignment. This is required for swap vHTLC refreshes because
+    // the operator cannot infer their custom three-party branch from a
+    // standard wallet descriptor.
+    bytes forfeit_spend_path = 3;
 }
 
 // LeaveRequest specifies an on-chain output for leaving the Ark.

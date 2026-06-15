@@ -1294,6 +1294,25 @@ func (c *Client) RefreshVTXOs(ctx context.Context,
 	return resp, nil
 }
 
+// RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for refresh in
+// the next round. Passing nil uses an empty request and lets the daemon return
+// the validation error.
+func (c *Client) RefreshCustomVTXOs(ctx context.Context,
+	req *daemonrpc.RefreshCustomVTXOsRequest) (
+	*daemonrpc.RefreshCustomVTXOsResponse, error) {
+
+	if req == nil {
+		req = &daemonrpc.RefreshCustomVTXOsRequest{}
+	}
+
+	resp, err := c.daemon.RefreshCustomVTXOs(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("refresh custom vtxos: %w", err)
+	}
+
+	return resp, nil
+}
+
 // Board tells the daemon to register any confirmed boarding UTXOs in the next
 // round. Passing no request preserves the legacy single-VTXO board behavior.
 func (c *Client) Board(ctx context.Context, reqs ...*daemonrpc.BoardRequest) (

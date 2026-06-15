@@ -110,6 +110,13 @@ service DaemonService {
     // round. This extends their expiry without changing ownership.
     rpc RefreshVTXOs (RefreshVTXOsRequest) returns (RefreshVTXOsResponse);
 
+    // RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for
+    // refresh in the next round. Unlike RefreshVTXOs, this does not require
+    // the inputs to be wallet-managed live VTXOs; callers provide the policy,
+    // proof/auth spend path, and forfeit spend path explicitly.
+    rpc RefreshCustomVTXOs (RefreshCustomVTXOsRequest)
+        returns (RefreshCustomVTXOsResponse);
+
     // LeaveVTXOs queues one or more VTXOs for cooperative leave
     // (offboard) in the next round. Each VTXO is forfeited and the
     // forfeited amount (minus the quoted per-input operator fee)
@@ -1097,6 +1104,67 @@ message RefreshVTXOsRequest {
 message RefreshVTXOsResponse {
     // queued_outpoints lists the outpoints that were successfully queued
     // for refresh.
+    repeated string queued_outpoints = 1;
+
+    // status is the result: "queued" on success, "preview" on dry_run.
+    string status = 2;
+}
+
+// CustomRefreshVTXOInput specifies one custom-policy VTXO input to refresh in
+// a round. The input can be outside the wallet-managed live VTXO set.
+message CustomRefreshVTXOInput {
+    // outpoint identifies the VTXO to refresh in "txid:vout" format.
+    string outpoint = 1;
+
+    // amount_sat is the VTXO value in satoshis.
+    int64 amount_sat = 2;
+
+    // pk_script is the taproot output script of the VTXO being refreshed.
+    bytes pk_script = 3;
+
+    // vtxo_policy_template is the semantic policy template that produced the
+    // input VTXO.
+    bytes vtxo_policy_template = 4;
+
+    // auth_spend_path is the encoded spend path used for local join
+    // authorization/proof of control.
+    bytes auth_spend_path = 5;
+
+    // forfeit_spend_path is the encoded operator-backed spend path used for
+    // the actual round forfeit transaction once the connector is assigned.
+    bytes forfeit_spend_path = 6;
+}
+
+// CustomRefreshVTXOOutput specifies the replacement VTXO output created by a
+// custom refresh input.
+message CustomRefreshVTXOOutput {
+    // amount_sat is the requested replacement VTXO value in satoshis.
+    int64 amount_sat = 1;
+
+    // vtxo_policy_template is the semantic policy template for the
+    // replacement VTXO.
+    bytes vtxo_policy_template = 2;
+
+    // pk_script optionally pins the replacement output script. When supplied,
+    // it must match vtxo_policy_template.
+    bytes pk_script = 3;
+}
+
+message RefreshCustomVTXOsRequest {
+    // inputs are the custom VTXOs to forfeit into the next round.
+    repeated CustomRefreshVTXOInput inputs = 1;
+
+    // outputs are the replacement VTXOs. The current API requires one output
+    // per input so swap sessions can map old outpoints to replacement outputs.
+    repeated CustomRefreshVTXOOutput outputs = 2;
+
+    // dry_run validates the request and returns the target outpoints without
+    // touching wallet or round actors.
+    bool dry_run = 3;
+}
+
+message RefreshCustomVTXOsResponse {
+    // queued_outpoints lists the custom input outpoints queued for refresh.
     repeated string queued_outpoints = 1;
 
     // status is the result: "queued" on success, "preview" on dry_run.

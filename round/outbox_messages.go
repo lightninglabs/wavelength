@@ -343,6 +343,26 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 				*req.VTXOOutpoint,
 			)
 		}
+		if req.AuthSpend != nil {
+			raw, err := req.AuthSpend.Encode()
+			if err != nil {
+				return fn.Err[proto.Message](
+					fmt.Errorf("forfeit request %d auth "+
+						"spend path: %w", i, err),
+				)
+			}
+			fr.AuthSpendPath = raw
+		}
+		if req.ForfeitSpend != nil {
+			raw, err := req.ForfeitSpend.Encode()
+			if err != nil {
+				return fn.Err[proto.Message](
+					fmt.Errorf("forfeit request %d forfeit "+
+						"spend path: %w", i, err),
+				)
+			}
+			fr.ForfeitSpendPath = raw
+		}
 		forfeitReqs[i] = fr
 	}
 

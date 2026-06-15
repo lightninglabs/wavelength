@@ -127,15 +127,19 @@ type ForfeitRequest struct {
 	// remains the source of truth.
 	Amount btcutil.Amount
 
-	// AuthSpend is the unilateral proof/auth spend path used locally for
-	// join-auth when settling a custom-script output into a round. This is
-	// local-only metadata and is not serialized onto the join-round wire.
+	// AuthSpend is the unilateral proof/auth spend path used for join-auth
+	// when settling a custom-script output into a round. Standard wallet
+	// VTXOs leave this nil and let the operator load the canonical path from
+	// the VTXO registry. Custom VTXOs serialize it onto the join-round wire so
+	// the operator can validate the caller-provided path.
 	AuthSpend *arkscript.SpendPath
 
 	// ForfeitSpend is the operator-backed spend path used locally
 	// to build the actual round forfeit transaction for a
-	// custom-script output. This is local-only metadata and is
-	// not serialized onto the join-round wire.
+	// custom-script output. Standard wallet VTXOs leave this nil and let the
+	// operator derive the path from the registered VTXO descriptor. Custom
+	// VTXOs serialize it onto the join-round wire so the operator can build
+	// the exact connector-bound forfeit request later.
 	ForfeitSpend *arkscript.SpendPath
 }
 

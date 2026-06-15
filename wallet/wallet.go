@@ -714,6 +714,9 @@ func (a *Ark) Receive(ctx context.Context,
 	case *RefreshVTXOsRequest:
 		return a.handleRefreshVTXOs(ctx, m)
 
+	case *RefreshCustomVTXOsRequest:
+		return a.handleRefreshCustomVTXOs(ctx, m)
+
 	case *LeaveVTXOsRequest:
 		return a.handleLeaveVTXOs(ctx, m)
 

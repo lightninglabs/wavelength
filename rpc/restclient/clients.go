@@ -474,6 +474,17 @@ func (c *DaemonServiceClient) RefreshVTXOs(ctx context.Context,
 	return out, err
 }
 
+// RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for refresh.
+func (c *DaemonServiceClient) RefreshCustomVTXOs(ctx context.Context,
+	in *daemonrpc.RefreshCustomVTXOsRequest, _ ...grpc.CallOption) (
+	*daemonrpc.RefreshCustomVTXOsResponse, error) {
+
+	out := new(daemonrpc.RefreshCustomVTXOsResponse)
+	err := c.client.Post(ctx, "/v1/daemon/refresh-custom-vtxos", in, out)
+
+	return out, err
+}
+
 // LeaveVTXOs queues VTXOs for cooperative exit.
 func (c *DaemonServiceClient) LeaveVTXOs(ctx context.Context,
 	in *daemonrpc.LeaveVTXOsRequest, _ ...grpc.CallOption) (

@@ -190,6 +190,35 @@ func TestOutboxMessagesToProto(t *testing.T) {
 		require.NotNil(t, result)
 	})
 
+	t.Run("JoinRoundRequest_ToProto custom forfeit spend paths", func(t *testing.T) {
+		t.Parallel()
+
+		authSpend := testMessageSpendPath(1)
+		forfeitSpend := testMessageSpendPath(2)
+		outpoint := wire.OutPoint{Index: 11}
+
+		msg := &JoinRoundRequest{
+			ForfeitRequests: []*types.ForfeitRequest{{
+				VTXOOutpoint: &outpoint,
+				AuthSpend:    authSpend,
+				ForfeitSpend: forfeitSpend,
+			}},
+		}
+
+		result := msg.ToProto().UnwrapOrFail(t)
+		pb, ok := result.(*roundpb.JoinRoundRequest)
+		require.True(t, ok)
+		require.Len(t, pb.GetForfeitRequests(), 1)
+		require.Equal(
+			t, mustEncodeMessageSpendPath(t, authSpend),
+			pb.GetForfeitRequests()[0].GetAuthSpendPath(),
+		)
+		require.Equal(
+			t, mustEncodeMessageSpendPath(t, forfeitSpend),
+			pb.GetForfeitRequests()[0].GetForfeitSpendPath(),
+		)
+	})
+
 	t.Run("SubmitNoncesRequest_ToProto", func(t *testing.T) {
 		t.Parallel()
 
@@ -310,6 +339,32 @@ func TestOutboxMessagesToProto(t *testing.T) {
 		require.Equal(t, roundpb.ServiceName, sm.Service)
 		require.Equal(t, roundpb.MethodRejectQuote, sm.Method)
 	})
+}
+
+func testMessageSpendPath(sequence uint32) *arkscript.SpendPath {
+	return &arkscript.SpendPath{
+		RequiredSequence: sequence,
+		SpendInfo: &arkscript.SpendInfo{
+			WitnessScript: []byte{
+				0x51,
+				byte(sequence),
+			},
+			ControlBlock: []byte{
+				0xc0,
+			},
+		},
+	}
+}
+
+func mustEncodeMessageSpendPath(t *testing.T,
+	spend *arkscript.SpendPath) []byte {
+
+	t.Helper()
+
+	raw, err := spend.Encode()
+	require.NoError(t, err)
+
+	return raw
 }
 
 // TestJoinRoundQuoteReceivedFromProto covers the inbound wire

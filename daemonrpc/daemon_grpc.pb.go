@@ -40,6 +40,7 @@ const (
 	DaemonService_SignOORCustomInput_FullMethodName            = "/daemonrpc.DaemonService/SignOORCustomInput"
 	DaemonService_SignVTXOForfeit_FullMethodName               = "/daemonrpc.DaemonService/SignVTXOForfeit"
 	DaemonService_RefreshVTXOs_FullMethodName                  = "/daemonrpc.DaemonService/RefreshVTXOs"
+	DaemonService_RefreshCustomVTXOs_FullMethodName            = "/daemonrpc.DaemonService/RefreshCustomVTXOs"
 	DaemonService_LeaveVTXOs_FullMethodName                    = "/daemonrpc.DaemonService/LeaveVTXOs"
 	DaemonService_SendOnChain_FullMethodName                   = "/daemonrpc.DaemonService/SendOnChain"
 	DaemonService_Board_FullMethodName                         = "/daemonrpc.DaemonService/Board"
@@ -143,6 +144,11 @@ type DaemonServiceClient interface {
 	// RefreshVTXOs queues one or more VTXOs for refresh in the next
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(ctx context.Context, in *RefreshVTXOsRequest, opts ...grpc.CallOption) (*RefreshVTXOsResponse, error)
+	// RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for
+	// refresh in the next round. Unlike RefreshVTXOs, this does not require
+	// the inputs to be wallet-managed live VTXOs; callers provide the policy,
+	// proof/auth spend path, and forfeit spend path explicitly.
+	RefreshCustomVTXOs(ctx context.Context, in *RefreshCustomVTXOsRequest, opts ...grpc.CallOption) (*RefreshCustomVTXOsResponse, error)
 	// LeaveVTXOs queues one or more VTXOs for cooperative leave
 	// (offboard) in the next round. Each VTXO is forfeited and the
 	// forfeited amount (minus the quoted per-input operator fee)
@@ -448,6 +454,16 @@ func (c *daemonServiceClient) RefreshVTXOs(ctx context.Context, in *RefreshVTXOs
 	return out, nil
 }
 
+func (c *daemonServiceClient) RefreshCustomVTXOs(ctx context.Context, in *RefreshCustomVTXOsRequest, opts ...grpc.CallOption) (*RefreshCustomVTXOsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RefreshCustomVTXOsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_RefreshCustomVTXOs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) LeaveVTXOs(ctx context.Context, in *LeaveVTXOsRequest, opts ...grpc.CallOption) (*LeaveVTXOsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(LeaveVTXOsResponse)
@@ -747,6 +763,11 @@ type DaemonServiceServer interface {
 	// RefreshVTXOs queues one or more VTXOs for refresh in the next
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
+	// RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for
+	// refresh in the next round. Unlike RefreshVTXOs, this does not require
+	// the inputs to be wallet-managed live VTXOs; callers provide the policy,
+	// proof/auth spend path, and forfeit spend path explicitly.
+	RefreshCustomVTXOs(context.Context, *RefreshCustomVTXOsRequest) (*RefreshCustomVTXOsResponse, error)
 	// LeaveVTXOs queues one or more VTXOs for cooperative leave
 	// (offboard) in the next round. Each VTXO is forfeited and the
 	// forfeited amount (minus the quoted per-input operator fee)
@@ -904,6 +925,9 @@ func (UnimplementedDaemonServiceServer) SignVTXOForfeit(context.Context, *SignVT
 }
 func (UnimplementedDaemonServiceServer) RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RefreshVTXOs not implemented")
+}
+func (UnimplementedDaemonServiceServer) RefreshCustomVTXOs(context.Context, *RefreshCustomVTXOsRequest) (*RefreshCustomVTXOsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RefreshCustomVTXOs not implemented")
 }
 func (UnimplementedDaemonServiceServer) LeaveVTXOs(context.Context, *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method LeaveVTXOs not implemented")
@@ -1363,6 +1387,24 @@ func _DaemonService_RefreshVTXOs_Handler(srv interface{}, ctx context.Context, d
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).RefreshVTXOs(ctx, req.(*RefreshVTXOsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_RefreshCustomVTXOs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefreshCustomVTXOsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).RefreshCustomVTXOs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_RefreshCustomVTXOs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).RefreshCustomVTXOs(ctx, req.(*RefreshCustomVTXOsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1828,6 +1870,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RefreshVTXOs",
 			Handler:    _DaemonService_RefreshVTXOs_Handler,
+		},
+		{
+			MethodName: "RefreshCustomVTXOs",
+			Handler:    _DaemonService_RefreshCustomVTXOs_Handler,
 		},
 		{
 			MethodName: "LeaveVTXOs",

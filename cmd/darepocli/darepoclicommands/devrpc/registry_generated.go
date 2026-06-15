@@ -163,6 +163,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "RefreshVTXOs queues one or more VTXOs for refresh in the next\nround. This extends their expiry without changing ownership.",
 				},
 				{
+					Name:     "RefreshCustomVTXOs",
+					Aliases:  []string{"refresh-custom-vtxos"},
+					Input:    "daemonrpc.RefreshCustomVTXOsRequest",
+					Output:   "daemonrpc.RefreshCustomVTXOsResponse",
+					Comments: "RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for\nrefresh in the next round. Unlike RefreshVTXOs, this does not require\nthe inputs to be wallet-managed live VTXOs; callers provide the policy,\nproof/auth spend path, and forfeit spend path explicitly.",
+				},
+				{
 					Name:     "LeaveVTXOs",
 					Aliases:  []string{"leave-vtxos"},
 					Input:    "daemonrpc.LeaveVTXOsRequest",

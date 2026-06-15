@@ -1194,9 +1194,20 @@ func (x *VTXORequest) GetIsChange() bool {
 type ForfeitRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// vtxo_outpoint is the outpoint of the VTXO to forfeit.
-	VtxoOutpoint  *Outpoint `protobuf:"bytes,1,opt,name=vtxo_outpoint,json=vtxoOutpoint,proto3" json:"vtxo_outpoint,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	VtxoOutpoint *Outpoint `protobuf:"bytes,1,opt,name=vtxo_outpoint,json=vtxoOutpoint,proto3" json:"vtxo_outpoint,omitempty"`
+	// auth_spend_path is the serialized custom spend path used to prove
+	// control of non-wallet-managed VTXOs when joining a round. Standard
+	// wallet VTXOs omit this field and let the operator load their canonical
+	// spend path from the VTXO registry.
+	AuthSpendPath []byte `protobuf:"bytes,2,opt,name=auth_spend_path,json=authSpendPath,proto3" json:"auth_spend_path,omitempty"`
+	// forfeit_spend_path is the serialized custom spend path the operator
+	// should use when constructing the exact forfeit transaction after
+	// connector assignment. This is required for swap vHTLC refreshes because
+	// the operator cannot infer their custom three-party branch from a
+	// standard wallet descriptor.
+	ForfeitSpendPath []byte `protobuf:"bytes,3,opt,name=forfeit_spend_path,json=forfeitSpendPath,proto3" json:"forfeit_spend_path,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ForfeitRequest) Reset() {
@@ -1232,6 +1243,20 @@ func (*ForfeitRequest) Descriptor() ([]byte, []int) {
 func (x *ForfeitRequest) GetVtxoOutpoint() *Outpoint {
 	if x != nil {
 		return x.VtxoOutpoint
+	}
+	return nil
+}
+
+func (x *ForfeitRequest) GetAuthSpendPath() []byte {
+	if x != nil {
+		return x.AuthSpendPath
+	}
+	return nil
+}
+
+func (x *ForfeitRequest) GetForfeitSpendPath() []byte {
+	if x != nil {
+		return x.ForfeitSpendPath
 	}
 	return nil
 }
@@ -2607,9 +2632,11 @@ const file_round_proto_rawDesc = "" +
 	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x1f\n" +
 	"\vsigning_key\x18\x03 \x01(\fR\n" +
 	"signingKey\x12\x1b\n" +
-	"\tis_change\x18\x04 \x01(\bR\bisChange\"I\n" +
+	"\tis_change\x18\x04 \x01(\bR\bisChange\"\x9f\x01\n" +
 	"\x0eForfeitRequest\x127\n" +
-	"\rvtxo_outpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\fvtxoOutpoint\"t\n" +
+	"\rvtxo_outpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\fvtxoOutpoint\x12&\n" +
+	"\x0fauth_spend_path\x18\x02 \x01(\fR\rauthSpendPath\x12,\n" +
+	"\x12forfeit_spend_path\x18\x03 \x01(\fR\x10forfeitSpendPath\"t\n" +
 	"\fLeaveRequest\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12*\n" +
 	"\x11target_amount_sat\x18\x02 \x01(\x03R\x0ftargetAmountSat\x12\x1b\n" +
