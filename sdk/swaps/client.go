@@ -14,6 +14,7 @@ import (
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwire"
 )
 
 // SwapDirection identifies which Lightning/Ark direction one persisted swap
@@ -264,6 +265,23 @@ type OutSwapHtlcEvent struct {
 
 	// VHTLCConfig contains the script parameters for the funded vHTLC.
 	VHTLCConfig VHTLCConfig
+
+	// Parts lists the individual HTLC shards of a multi-part payment set.
+	// When empty the event is a legacy single-part payment carried by
+	// OnionBlob.
+	Parts []OutSwapHtlcPart
+}
+
+// OutSwapHtlcPart carries one HTLC shard of a multi-part out-swap payment
+// set. Each shard has its own final-hop onion that the client validates
+// before acknowledging the event.
+type OutSwapHtlcPart struct {
+	// AmountMsat is the millisatoshi amount forwarded by this shard.
+	AmountMsat lnwire.MilliSatoshi
+
+	// OnionBlob is the raw final-hop onion blob forwarded by the server
+	// for this shard.
+	OnionBlob []byte
 }
 
 // OutSwapHtlcNotification carries one mailbox-delivered out-swap HTLC event

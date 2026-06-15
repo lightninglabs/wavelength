@@ -103,7 +103,8 @@ func TestInvoiceGeneratorIncludesPaymentAddress(t *testing.T) {
 }
 
 // TestInvoiceGeneratorPreservesPayerFeeRouteHint verifies receive invoices
-// encode the payer-paid route fee and keep multi-part payments disabled.
+// encode the payer-paid route fee and advertise optional multi-part
+// payments.
 func TestInvoiceGeneratorPreservesPayerFeeRouteHint(t *testing.T) {
 	t.Parallel()
 
@@ -141,6 +142,6 @@ func TestInvoiceGeneratorPreservesPayerFeeRouteHint(t *testing.T) {
 	hop := decoded.RouteHints[0][0]
 	require.Equal(t, uint32(0), hop.FeeBaseMSat)
 	require.Equal(t, uint32(10_000), hop.FeeProportionalMillionths)
-	require.False(t, decoded.Features.HasFeature(lnwire.MPPOptional))
-	require.False(t, decoded.Features.HasFeature(lnwire.MPPRequired))
+	require.True(t, decoded.Features.IsSet(lnwire.MPPOptional))
+	require.False(t, decoded.Features.IsSet(lnwire.MPPRequired))
 }

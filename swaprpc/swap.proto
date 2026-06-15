@@ -111,6 +111,26 @@ message OutSwapHtlcEvent {
     // vhtlc_config contains the virtual HTLC parameters the client should use
     // when constructing the expected output.
     VHTLCConfig vhtlc_config = 4;
+
+    // parts lists the individual HTLC shards that make up a multi-part
+    // payment set. When empty the event describes a legacy single-part
+    // payment carried by onion_blob. When populated, amount_sat is still
+    // the whole-satoshi total funded in the vHTLC and onion_blob mirrors
+    // the first part for backwards compatibility.
+    repeated OutSwapHtlcPart parts = 5;
+}
+
+// OutSwapHtlcPart describes one HTLC shard of a multi-part out-swap payment
+// set. Each part carries its own onion blob that the client must decode and
+// validate before acknowledging the event.
+message OutSwapHtlcPart {
+    // amount_msat is the millisatoshi amount forwarded to the receiver by
+    // this shard.
+    uint64 amount_msat = 1;
+
+    // onion_blob is the raw next-hop onion blob delivered by LND for this
+    // shard.
+    bytes onion_blob = 2;
 }
 
 // SwapMailboxEvent is the explicit event wrapper carried by swap mailbox

@@ -1156,8 +1156,10 @@ func (s *ReceiveSession) acceptInArkHtlcEvent(ctx context.Context,
 	})
 }
 
-// validateOnionPayload decodes the final-hop onion with the invoice auth key
-// and checks that it matches the prepared invoice fields.
+// validateOnionPayload decodes the final-hop onion of every payment part with
+// the invoice auth key and checks that each matches the prepared invoice
+// fields. Events without parts carry one legacy single-part onion that must
+// forward the full invoice amount on its own.
 func (s *ReceiveSession) validateOnionPayload(event *OutSwapHtlcEvent,
 	authKey ReceiveAuthKey) error {
 
@@ -1165,30 +1167,63 @@ func (s *ReceiveSession) validateOnionPayload(event *OutSwapHtlcEvent,
 		return fmt.Errorf("receive auth key must be provided")
 	}
 
-	decoder := s.client.decodeOutSwapOnion
-	payload, err := decoder(
-		authKey, s.PaymentHash, event.OnionBlob,
-	)
-	if err != nil {
-		return err
+	expectedMsat := lnwire.NewMSatFromSatoshis(s.amountSat)
+
+	// Legacy single-part events carry the lone onion in the event body and
+	// the shard must forward the full invoice amount.
+	parts := event.Parts
+	if len(parts) == 0 {
+		parts = []OutSwapHtlcPart{{
+			AmountMsat: expectedMsat,
+			OnionBlob:  event.OnionBlob,
+		}}
 	}
 
-	expectedMsat := lnwire.NewMSatFromSatoshis(s.amountSat)
-	if payload.amountToForward != expectedMsat {
-		return fmt.Errorf("onion amount %d msat does not match "+
-			"invoice amount %d msat", payload.amountToForward,
-			expectedMsat)
+	// Every shard must commit to the invoice payment address and total,
+	// while individual forwarded amounts only need to sum to the total.
+	var sumMsat lnwire.MilliSatoshi
+	for idx, part := range parts {
+		payload, err := s.client.decodeOutSwapOnion(
+			authKey, s.PaymentHash, part.OnionBlob,
+		)
+		if err != nil {
+			return fmt.Errorf("part %d: %w", idx, err)
+		}
+
+		if payload.amountToForward == 0 {
+			return fmt.Errorf("part %d: onion forwards zero amount",
+				idx)
+		}
+		if payload.amountToForward > expectedMsat {
+			return fmt.Errorf("part %d: onion amount %d msat "+
+				"exceeds invoice amount %d msat", idx,
+				payload.amountToForward, expectedMsat)
+		}
+		if payload.amountToForward != part.AmountMsat {
+			return fmt.Errorf("part %d: onion amount %d msat does "+
+				"not match part amount %d msat", idx,
+				payload.amountToForward, part.AmountMsat)
+		}
+		if !payload.hasMPP {
+			return fmt.Errorf("part %d: onion missing MPP "+
+				"payment address", idx)
+		}
+		if payload.paymentAddr != s.paymentAddr {
+			return fmt.Errorf("part %d: onion payment address "+
+				"mismatch", idx)
+		}
+		if payload.totalAmount != expectedMsat {
+			return fmt.Errorf("part %d: onion total amount %d "+
+				"msat does not match invoice amount %d msat",
+				idx, payload.totalAmount, expectedMsat)
+		}
+
+		sumMsat += payload.amountToForward
 	}
-	if !payload.hasMPP {
-		return fmt.Errorf("onion missing MPP payment address")
-	}
-	if payload.paymentAddr != s.paymentAddr {
-		return fmt.Errorf("onion payment address mismatch")
-	}
-	if payload.totalAmount != expectedMsat {
-		return fmt.Errorf("onion total amount %d msat does not match "+
-			"invoice amount %d msat", payload.totalAmount,
-			expectedMsat)
+
+	if sumMsat != expectedMsat {
+		return fmt.Errorf("onion amounts sum to %d msat, invoice "+
+			"amount is %d msat", sumMsat, expectedMsat)
 	}
 
 	return nil
