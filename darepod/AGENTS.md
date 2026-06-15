@@ -92,6 +92,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   (cap 1000), `offset` (clamped to `math.MaxInt32`). Delegates to
   `ledgerStore.ListTransactionHistory` and projects via
   `transactionHistoryRowToProto`.
+- `OperatorPubKey(ctx)` — `RPCServer` method that fetches the current
+  Ark operator pubkey directly from the server and refreshes the
+  daemon's cached operator terms snapshot. Subservers that construct
+  new vHTLC policy scripts call this instead of `GetInfo` so
+  operator-key rotations are observed before the policy reaches the
+  wallet or OOR layer.
 - `proxyUpstreamError(err, msg)` — gRPC-safety helper preserving
   upstream codes while stripping operator-side text. Errors without a
   status map to `codes.Unavailable`.
@@ -265,6 +271,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   per-recipient amounts outside `(0, MaxSatoshi]`, uses
   overflow-safe accumulation. Wallet-side `handleSendVTXOs` repeats
   these checks as defense-in-depth.
+- `SendOOR` enforces `maxOORRecipients = 256` at the RPC handler
+  boundary via `sendOORRequestRecipients`. Mirrors the in-round send
+  cap and provides a cheap request-size guard before script resolution
+  and policy template compilation run.
 - `SendOOR` with custom inputs serializes concurrent calls on the
   same outpoints via `reserveCustomInputs`. Custom inputs lock for
   the RPC lifetime; release is deferred on both success and failure.

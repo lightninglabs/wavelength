@@ -13,9 +13,26 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 - `BatchedTx[Q]` — generic interface for atomic transactions (`ExecTx`,
   `Backend`).
+- `InternalKeyQuerier` — two-method interface (`UpsertInternalKey`,
+  `GetInternalKeyByID`) for the shared internal-key registry. Embedded
+  by `BoardingStore`, `RoundStore`, and `OORArtifactPersistenceStore`
+  so consumer stores can register-then-reference a key within the same
+  transaction that writes the referencing row.
+- `RegisterInternalKeyTx(ctx, qtx, now, desc)` — idempotently records
+  a `keychain.KeyDescriptor` in the registry and returns its surrogate
+  id; re-registering the same `(pubkey, family, index)` triple returns
+  the existing id. Entry point for all consumer stores.
+- `InternalKeyDescByIDTx(ctx, qtx, id)` — reconstructs a
+  `keychain.KeyDescriptor` from a registry id; used on load to hydrate
+  key fields from the referencing row's FK.
+- `ErrInternalKeyPubKeyMissing` / `ErrInternalKeyNotFound` — error
+  sentinels returned by the two helpers above.
 - `BoardingStore` / `BoardingWalletStore` — interface + concrete
   sqlc-backed store for boarding addresses, intents, and the aggregate
-  sweep lifecycle (consumed by `wallet.BoardingStore`). Sweep ops:
+  sweep lifecycle (consumed by `wallet.BoardingStore`). `BoardingStore`
+  embeds `InternalKeyQuerier` so the boarding store can register the
+  client wallet key via the shared internal_keys registry within its
+  own transaction. Sweep ops:
   `Create/MarkPublished/MarkFailed/List/ListPending/MarkInputSpent`.
 - `NewBoardingSweep` / `BoardingSweepRecord` /
   `BoardingSweepInputRecord` — control-plane domain types. Sweep
@@ -125,6 +142,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
+- `internal_keys` shared registry — adds an `internal_keys` table with a
+  `(pubkey, key_family, key_index)` unique triple and a surrogate
+  integer PK. The boarding, round vtxo request, and OOR artifact store
+  rows that previously inlined `(client_pubkey, client_key_family,
+  client_key_index)` columns now carry a `*_key_id` FK referencing this
+  table. Existing SQL migration files (000002, 000003, 000004) were
+  updated; `LatestMigrationVersion` remains 17.
 - `000017_spending_reservations` — adds `spending_reservations` table with
   `(outpoint_hash, outpoint_index)` PK, `owner_kind`, `owner_id`, and
   `created_at`. A row exists IFF the owning spend session was durably

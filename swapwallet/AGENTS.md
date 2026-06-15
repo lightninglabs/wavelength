@@ -86,6 +86,15 @@ default builds avoid the swap executor's dependency graph.
   RECV (Lightning payment_hash) across the entire pending → terminal
   lifecycle. EXIT and DEPOSIT rows do not yet share an id between
   pending and confirmed in v1; see `doc.go`.
+- **Cooperative leave completion**: a wallet-local EXIT row transitions
+  to COMPLETE when its source VTXO is terminally forfeited. The
+  activity list collects forfeited VTXO outpoints via
+  `collectForfeitedVTXOOutpoints` (only when local EXIT entries exist)
+  and passes them to `collectWalletLocalPendingEntries` so the
+  decorator can mark the EXIT as complete without waiting for a durable
+  ledger row. After daemon restart, the pending EXIT row cannot be
+  recreated from durable state alone; callers should use the ledger
+  history to correlate.
 - Onchain SEND is routed through `RPCServer.SendOnChain` which delegates to
   `wallet.SendOnChainRequest`. Two modes: **sweep-all** (non-empty
   `SweepOutpoints` — drains those VTXOs exactly, no change, leave output

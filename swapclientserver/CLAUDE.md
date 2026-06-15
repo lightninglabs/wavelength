@@ -22,6 +22,15 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   the subserver unit-testable without running real swap FSMs.
 - `swapClientAdapter` — Thin production adapter that forwards calls to
   `*swaps.SwapClient`.
+- `operatorPubKeyFetcher` — `func(context.Context) (*btcec.PublicKey, error)`;
+  fetches the current Ark operator pubkey live (bypassing GetInfo cache).
+- `liveOperatorDaemonConn` — wraps a `swaps.DaemonConn`, overriding
+  `OperatorPubKey` to call the live fetcher. All other methods delegate
+  to the embedded connection.
+- `daemonWithLiveOperatorKey(daemon, fetch)` — factory returning a
+  `liveOperatorDaemonConn` when `fetch` is non-nil, or the original
+  `daemon` otherwise. Used so swap vHTLC policies see operator-key
+  rotations before OOR funding is submitted.
 - `paySwapSession` / `receiveSwapSession` — Minimal session interfaces
   (`PaymentHash`, `Wait`, and `Invoice` for receive) that the daemon
   goroutines drive. Production implementations are `sdk/swaps.PaySession` and
@@ -86,6 +95,12 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `idempotency_key` on `StartPay` / `StartReceive` is explicitly reserved and
   returns `Unimplemented` to guard against accidental duplicate-start
   assumptions.
+- **Live operator key**: `Register` wraps `arkClient` with
+  `daemonWithLiveOperatorKey` so `SwapClient` calls
+  `RPCServer.OperatorPubKey` (direct Ark transport) rather than the
+  cached GetInfo snapshot when constructing new vHTLC policies. This
+  ensures operator-key rotations are observed before OOR funding is
+  submitted.
 - `SetOutSwapEventReceiver` must run before any receive worker is started:
   `SwapClient` captures the receiver into the per-swap worker at start time,
   so a late install would leave already-running workers using whatever

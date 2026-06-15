@@ -15,6 +15,12 @@ communication alongside the raw registration API.
   request. Registered under `ChainSourceKey`.
 - `ChainSourceConfig` — Config struct: `Backend ChainBackend`, `System
   *actor.ActorSystem`, `Log fn.Option[btclog.Logger]`.
+- `BlockEpochConfig` — Config for `BlockEpochActor`. Fields:
+  `Backend ChainBackend`, `Log fn.Option[btclog.Logger]`,
+  `ReconnectBackoff time.Duration` (initial reconnect delay when the
+  backend stream closes; zero → 1s default),
+  `MaxReconnectBackoff time.Duration` (exponential cap; zero → 30s
+  default). Tests may lower both to speed up reconnect cycles.
 - `ChainSourceMsg` / `ChainSourceResp` — Sealed actor message interfaces for
   requests and responses sent to the `ChainSourceActor`.
 - `FeeEstimateRequest/Response`, `BestHeightRequest/Response`,
@@ -56,6 +62,12 @@ communication alongside the raw registration API.
 - Confirmation sub-actors support two notification modes: Future-based (blocking
   await) and actor-based (async `Tell` via `NotifyActor`). Callers use the actor
   mode when blocking inside a durable actor transaction is unsafe.
+- `BlockEpochActor.monitorBlocks()` auto-reconnects when the backend
+  stream closes (e.g. LND notifier restart). On channel close it
+  cancels the old registration, waits for `currentBackoff`, then calls
+  `RegisterBlocks` again. Backoff doubles on each failed re-registration
+  and resets to `ReconnectBackoff` on success. The actor stops cleanly
+  when its context is cancelled during a reconnect wait.
 
 ## Deep Docs
 

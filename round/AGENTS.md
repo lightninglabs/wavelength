@@ -101,6 +101,16 @@ state transitions and validation rules live under [Invariants](#invariants).
   rounds (pre-admission) can be timed.
 - `MaxQuoteEntriesPerClient = 1024` (`from_proto.go`) — bounds quote
   entry decoding to reject malformed envelopes before allocating slices.
+- `CommitmentTxBuilt` per-round operator keys (added alongside the base
+  fields): `TreeCosignKey` (operator MuSig2 cosigner key for VTXO tree,
+  derived fresh per round so tree validation is independent of global
+  GetInfo key), `ConnectorOperatorKey` (operator key used to build the
+  connector tree for this round), `SweepKey` (operator sweep key for the
+  VTXO-tree sweep leaf), `SweepDelay` (batch-wide absolute-timelock in
+  blocks for the sweep leaf), `ForfeitKey` (dedicated forfeit penalty
+  key; forfeit-tx penalty output is BIP-86 key-spend to this key). All
+  four keys replace the global GetInfo equivalents on well-formed
+  rounds; nil means server predates the field (fallback to global key).
 - `FromProto` methods on `JoinRoundQuoteReceived`, `RoundJoined`,
   `CommitmentTxBuilt`, `AwaitingBoardingSigs`, `NoncesAggregated`,
   `OperatorSigned`, `BoardingFailed`, `JoinRoundRequest` — all
@@ -153,14 +163,30 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 ## Invariants
 
+- **Per-round operator keys** (`SweepKey`, `SweepDelay`, `ForfeitKey`,
+  `TreeCosignKey`, `ConnectorOperatorKey`) are captured in
+  `CommitmentTxReceivedState` and carried through all subsequent signing
+  states. Sweep-vs-exit-delay security validation runs per-round in
+  `CommitmentTxReceivedState`; it was removed from actor construction
+  (`ValidateDelayParameters`) so a single round's parameters do not
+  block unrelated rounds.
 - Tree signatures are validated **before** boarding input signatures
   are released (security checkpoint at `InputSigSent`).
+- Forfeit timeout is **armed before** forfeit-signature requests are
+  dispatched to individual VTXO actors. This ensures the
+  `ForfeitSignaturesCollecting` window starts before any request is in
+  flight, so a late or stalled response is bounded by the timer rather
+  than accumulating unbounded.
 - Forfeit signatures are collected **after** VTXO tree signing
   completes — clients only forfeit old VTXOs after verifying the new
   VTXOs are properly signed.
 - Aggregated signatures validated on `VTXOTreePaths` are propagated to
   extracted `ClientTrees` via `SubmitTreeSigs` + `VerifySigned`, so
   persisted client trees carry valid signatures for unilateral exit.
+- Commitment-tx confirmation monitoring watches the **validated batch
+  output** (the output that receives this client's funds), selected by
+  `confirmationWatchScript` from the VTXO tree paths. Falls back to
+  output 0 when no trees are available (pre-checkpoint restarts).
 - Round state is checkpointed atomically after tree validation — a
   crash before checkpoint means the client has no record of sent
   signatures.

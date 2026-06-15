@@ -205,6 +205,14 @@ State transitions and validation rules live under [Invariants](#invariants).
 
 ## Invariants
 
+- **Checkpoint owner-leaf normalization**: before building an outgoing
+  package, `normalizeCheckpointOwnerLeaves` rebuilds each standard
+  input's checkpoint output owner collaborative leaf to commit to the
+  *session* operator key (from `CheckpointPolicy.OperatorKey`) rather
+  than the spent input VTXO's operator key. A VTXO created under a
+  pre-rotation operator key would otherwise produce a checkpoint output
+  that the rotated operator cannot co-sign. Custom-spend inputs (e.g.
+  vHTLC) carry their own owner leaf and are left untouched.
 - Checkpoint output collab path is 2-of-2
   `MultiSigCollabTapLeaf(clientKey, operatorKey)`, not single-sig.
 - `signCustomCheckpointPSBT` re-verifies that the custom spend path
