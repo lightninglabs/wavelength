@@ -323,6 +323,63 @@ type IncomingVHTLCNotification struct {
 	Ack       func(context.Context) error
 }
 
+// ForfeitSignaturePayload is the exact transcript that one vHTLC refresh
+// participant signs. The unsigned forfeit transaction and connector metadata
+// are included so the signer can bind its signature to one concrete round
+// assignment instead of a reusable high-level refresh intent.
+type ForfeitSignaturePayload struct {
+	// RequestID uniquely identifies this signing request.
+	RequestID []byte
+
+	// PaymentHash identifies the swap whose vHTLC is being refreshed.
+	PaymentHash lntypes.Hash
+
+	// VHTLCOutpoint is the vHTLC input being forfeited into the refresh.
+	VHTLCOutpoint string
+
+	// VHTLCAmountSat is the value of VHTLCOutpoint in satoshis.
+	VHTLCAmountSat int64
+
+	// VHTLCPkScript is the scriptPubKey of the vHTLC input.
+	VHTLCPkScript []byte
+
+	// VHTLCPolicyTemplate is the semantic vHTLC policy template.
+	VHTLCPolicyTemplate []byte
+
+	// ForfeitSpendPath is the tapscript path used for the forfeit input.
+	ForfeitSpendPath []byte
+
+	// UnsignedForfeitTx is the exact unsigned forfeit transaction to sign.
+	UnsignedForfeitTx []byte
+
+	// ConnectorOutpoint is the connector input assigned by the round.
+	ConnectorOutpoint string
+
+	// ConnectorAmountSat is the value of ConnectorOutpoint in satoshis.
+	ConnectorAmountSat int64
+
+	// ConnectorPkScript is the scriptPubKey of the connector input.
+	ConnectorPkScript []byte
+
+	// ServerForfeitPkScript is the output script paid by the forfeit tx.
+	ServerForfeitPkScript []byte
+}
+
+// ForfeitParticipantSignature carries one participant signature for the exact
+// forfeit transaction described by ForfeitSignaturePayload.
+type ForfeitParticipantSignature struct {
+	PubKey    []byte
+	Signature []byte
+}
+
+// OutSwapForfeitSignatureNotification carries a mailbox-delivered request for
+// the receiver's participant signature on one out-swap vHTLC refresh.
+type OutSwapForfeitSignatureNotification struct {
+	Payload   *ForfeitSignaturePayload
+	AckCursor uint64
+	Ack       func(context.Context) error
+}
+
 // OutSwapEventReceiver waits for server-pushed out-swap mailbox events.
 type OutSwapEventReceiver interface {
 	WaitOutSwapHtlc(ctx context.Context, paymentHash lntypes.Hash,
@@ -337,6 +394,15 @@ type OutSwapEventReceiver interface {
 		mailboxPubkey *btcec.PublicKey,
 		cursor uint64,
 	) error
+}
+
+// OutSwapForfeitSignatureReceiver waits for server-pushed out-swap refresh
+// signing requests.
+type OutSwapForfeitSignatureReceiver interface {
+	WaitOutSwapForfeitSignature(ctx context.Context,
+		paymentHash lntypes.Hash,
+		mailboxPubkey *btcec.PublicKey) (
+		*OutSwapForfeitSignatureNotification, error)
 }
 
 // IncomingVHTLCEventReceiver waits for any incoming vHTLC event type that can
@@ -440,6 +506,20 @@ type SwapServerConn interface {
 		vhtlcOutpoint string, vhtlcAmountSat int64, vhtlcPolicyTemplate,
 		refundSpendPath,
 		checkpointPSBT []byte) (*InSwapRefundAuthorization, error)
+
+	// SignInSwapForfeit asks the swap server to sign its participant share
+	// for one exact in-swap vHTLC refresh forfeit transaction.
+	SignInSwapForfeit(ctx context.Context,
+		payload *ForfeitSignaturePayload) (
+		*ForfeitParticipantSignature,
+		error,
+	)
+
+	// SubmitOutSwapForfeitSignature submits this receiver's participant
+	// signature for one mailbox-delivered out-swap vHTLC refresh request.
+	SubmitOutSwapForfeitSignature(ctx context.Context,
+		payload *ForfeitSignaturePayload,
+		signature *ForfeitParticipantSignature) error
 
 	// Close closes the connection.
 	Close() error

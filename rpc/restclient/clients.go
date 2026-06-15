@@ -213,6 +213,31 @@ func (c *SwapServiceClient) AcknowledgeOutSwapHtlc(ctx context.Context,
 	return out, err
 }
 
+// SignInSwapForfeit asks the swap server to sign an in-swap refresh forfeit.
+func (c *SwapServiceClient) SignInSwapForfeit(ctx context.Context,
+	in *swaprpc.SignInSwapForfeitRequest, _ ...grpc.CallOption) (
+	*swaprpc.SignInSwapForfeitResponse, error) {
+
+	out := new(swaprpc.SignInSwapForfeitResponse)
+	err := c.client.Post(ctx, "/v1/swap/sign-in-swap-forfeit", in, out)
+
+	return out, err
+}
+
+// SubmitOutSwapForfeitSignature submits an out-swap refresh participant
+// signature to the swap server.
+func (c *SwapServiceClient) SubmitOutSwapForfeitSignature(ctx context.Context,
+	in *swaprpc.SubmitOutSwapForfeitSignatureRequest, _ ...grpc.CallOption) (
+	*swaprpc.SubmitOutSwapForfeitSignatureResponse, error) {
+
+	out := new(swaprpc.SubmitOutSwapForfeitSignatureResponse)
+	err := c.client.Post(
+		ctx, "/v1/swap/submit-out-swap-forfeit-signature", in, out,
+	)
+
+	return out, err
+}
+
 // NewDaemonServiceClient creates a DaemonService REST client.
 func NewDaemonServiceClient(addr string,
 	opts ...Option) daemonrpc.DaemonServiceClient {

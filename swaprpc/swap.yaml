@@ -18,3 +18,9 @@ http:
     - selector: swaprpc.SwapService.AcknowledgeOutSwapHtlc
       post: /v1/swap/acknowledge-out-swap-htlc
       body: "*"
+    - selector: swaprpc.SwapService.SignInSwapForfeit
+      post: /v1/swap/sign-in-swap-forfeit
+      body: "*"
+    - selector: swaprpc.SwapService.SubmitOutSwapForfeitSignature
+      post: /v1/swap/submit-out-swap-forfeit-signature
+      body: "*"

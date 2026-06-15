@@ -491,6 +491,20 @@ func (c *testSwapServerConn) AuthorizeInSwapRefund(context.Context,
 	return nil, fmt.Errorf("unexpected in-swap refund authorization")
 }
 
+// SignInSwapForfeit is unused in these tests.
+func (c *testSwapServerConn) SignInSwapForfeit(context.Context,
+	*ForfeitSignaturePayload) (*ForfeitParticipantSignature, error) {
+
+	return nil, fmt.Errorf("unexpected in-swap forfeit signature request")
+}
+
+// SubmitOutSwapForfeitSignature is unused in these tests.
+func (c *testSwapServerConn) SubmitOutSwapForfeitSignature(context.Context,
+	*ForfeitSignaturePayload, *ForfeitParticipantSignature) error {
+
+	return fmt.Errorf("unexpected out-swap forfeit signature submission")
+}
+
 // Close closes the server connection.
 func (c *testSwapServerConn) Close() error {
 	return nil

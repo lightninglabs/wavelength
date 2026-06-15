@@ -159,6 +159,20 @@ func (c *testInSwapServerConn) AuthorizeInSwapRefund(_ context.Context,
 	return nil, status.Error(codes.FailedPrecondition, "refund unavailable")
 }
 
+// SignInSwapForfeit is unused in these tests.
+func (c *testInSwapServerConn) SignInSwapForfeit(context.Context,
+	*ForfeitSignaturePayload) (*ForfeitParticipantSignature, error) {
+
+	return nil, errors.New("unexpected in-swap forfeit signature request")
+}
+
+// SubmitOutSwapForfeitSignature is unused in these tests.
+func (c *testInSwapServerConn) SubmitOutSwapForfeitSignature(context.Context,
+	*ForfeitSignaturePayload, *ForfeitParticipantSignature) error {
+
+	return errors.New("unexpected out-swap forfeit signature submission")
+}
+
 // Close closes the server connection.
 func (c *testInSwapServerConn) Close() error {
 	return nil
