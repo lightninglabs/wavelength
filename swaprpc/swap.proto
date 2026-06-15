@@ -111,6 +111,23 @@ message OutSwapHtlcEvent {
     // vhtlc_config contains the virtual HTLC parameters the client should use
     // when constructing the expected output.
     VHTLCConfig vhtlc_config = 4;
+
+    // vhtlc_outpoint is the funded vHTLC outpoint in "txid:vout" format, when
+    // the swap server knows it at notification time. It lets the receiver
+    // cross-check the output it later observes against the one the server
+    // actually funded. Empty when the server has not recorded the outpoint.
+    string vhtlc_outpoint = 5;
+
+    // vhtlc_amount_sat is the funded vHTLC amount in satoshis, when known.
+    uint64 vhtlc_amount_sat = 6;
+
+    // vhtlc_pk_script is the P2TR script of the funded vHTLC as computed by
+    // the swap server from the same parameters in vhtlc_config. The receiver
+    // compares it against the script it derives locally; a mismatch means the
+    // two sides disagree on the vHTLC script (for example a lib/arkscript
+    // version skew) and the funded output lives at a different address than the
+    // receiver would ever query. Empty for older servers that do not set it.
+    bytes vhtlc_pk_script = 7;
 }
 
 // SwapMailboxEvent is the explicit event wrapper carried by swap mailbox

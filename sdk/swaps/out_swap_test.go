@@ -324,6 +324,125 @@ func TestReceiveSessionSkipsServerAckForSameArkHTLCEvent(t *testing.T) {
 	require.Zero(t, session.pendingHTLCAckCursor)
 }
 
+// newOutSwapSkewTestSession builds a receive session at the invoice-created
+// state plus the matching out-swap HTLC event config, wired so
+// acceptOutSwapHtlcEvent can run its onion and script checks. It returns the
+// session, the event config, and the receive auth key the caller passes to
+// acceptOutSwapHtlcEvent.
+func newOutSwapSkewTestSession(t *testing.T) (*ReceiveSession, VHTLCConfig,
+	ReceiveAuthKey) {
+
+	t.Helper()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	authPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage := lntypes.Preimage{4, 5, 6}
+	hash := preimage.Hash()
+
+	daemonConn := &testDaemonConn{
+		identityKey:    clientPriv.PubKey(),
+		operatorKey:    operatorPriv.PubKey(),
+		receiveAuthKey: authPriv.Serialize(),
+	}
+	client := NewSwapClient(nil, daemonConn, nil, nil)
+	useTestOnionDecoder(client, 42_000)
+
+	session := &ReceiveSession{
+		client:         client,
+		amountSat:      btcutil.Amount(42_000),
+		state:          ReceiveStateInvoiceCreated,
+		PaymentHash:    hash,
+		clientPubKey:   clientPriv.PubKey(),
+		operatorPubKey: operatorPriv.PubKey(),
+	}
+
+	cfg := VHTLCConfig{
+		RefundLocktime:                       900,
+		UnilateralClaimDelay:                 5,
+		UnilateralRefundDelay:                6,
+		UnilateralRefundWithoutReceiverDelay: 7,
+		SwapServerPubkey: serverPriv.PubKey().
+			SerializeCompressed(),
+	}
+
+	authKey, err := client.receiveAuthKey(t.Context(), hash)
+	require.NoError(t, err)
+
+	return session, cfg, authKey
+}
+
+// TestAcceptOutSwapHtlcEventDetectsScriptSkew verifies that when the swap
+// server reports a funded vHTLC script that disagrees with the one the receiver
+// derives, the receive fails fast with a clear skew error instead of accepting
+// the event and polling an address that will never be funded.
+func TestAcceptOutSwapHtlcEventDetectsScriptSkew(t *testing.T) {
+	t.Parallel()
+
+	session, cfg, authKey := newOutSwapSkewTestSession(t)
+
+	// A non-empty script that cannot match the locally derived one forces
+	// the skew branch.
+	wrongScript := bytes.Repeat([]byte{0xab}, 34)
+
+	err := session.acceptOutSwapHtlcEvent(t.Context(), &OutSwapHtlcEvent{
+		PaymentHash:   session.PaymentHash,
+		AmountSat:     int64(session.amountSat),
+		VHTLCConfig:   cfg,
+		VHTLCPkScript: wrongScript,
+	}, authKey, 0)
+	require.Error(t, err)
+	require.Contains(t, failureReason(err), "disagree on the vHTLC script")
+	require.Equal(t, ReceiveStateFailed, session.State())
+}
+
+// TestAcceptOutSwapHtlcEventAcceptsMatchingScript verifies that a server-
+// reported funded script matching the locally derived script is accepted
+// normally, so the new skew guard never rejects a healthy receive.
+func TestAcceptOutSwapHtlcEventAcceptsMatchingScript(t *testing.T) {
+	t.Parallel()
+
+	session, cfg, authKey := newOutSwapSkewTestSession(t)
+
+	serverKey, err := btcec.ParsePubKey(cfg.SwapServerPubkey)
+	require.NoError(t, err)
+
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:                               serverKey,
+		Receiver:                             session.clientPubKey,
+		Server:                               session.operatorPubKey,
+		PreimageHash:                         session.PaymentHash,
+		RefundLocktime:                       cfg.RefundLocktime,
+		UnilateralClaimDelay:                 cfg.UnilateralClaimDelay,
+		UnilateralRefundDelay:                cfg.UnilateralRefundDelay,
+		UnilateralRefundWithoutReceiverDelay: cfg.UnilateralRefundWithoutReceiverDelay, //nolint:ll
+	})
+	require.NoError(t, err)
+
+	matchingScript, err := policy.PkScript()
+	require.NoError(t, err)
+
+	err = session.acceptOutSwapHtlcEvent(t.Context(), &OutSwapHtlcEvent{
+		PaymentHash:   session.PaymentHash,
+		AmountSat:     int64(session.amountSat),
+		VHTLCConfig:   cfg,
+		VHTLCOutpoint: "funded-txid:0",
+		VHTLCPkScript: matchingScript,
+	}, authKey, 0)
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateHTLCEventAccepted, session.State())
+	require.Equal(t, matchingScript, session.vhtlcPkScript)
+}
+
 type testSwapServerConn struct {
 	hint           *RouteHint
 	payerFeeMsat   uint64

@@ -264,6 +264,19 @@ type OutSwapHtlcEvent struct {
 
 	// VHTLCConfig contains the script parameters for the funded vHTLC.
 	VHTLCConfig VHTLCConfig
+
+	// VHTLCOutpoint is the funded vHTLC outpoint when the swap server knows
+	// it at notification time, in "txid:vout" format. Empty otherwise.
+	VHTLCOutpoint string
+
+	// VHTLCAmountSat is the funded vHTLC amount when known by the server.
+	VHTLCAmountSat int64
+
+	// VHTLCPkScript is the funded vHTLC P2TR script as computed by the swap
+	// server. The receiver compares it against the script it derives
+	// locally to detect a client/server vHTLC script disagreement. Empty
+	// for older servers that do not populate it.
+	VHTLCPkScript []byte
 }
 
 // OutSwapHtlcNotification carries one mailbox-delivered out-swap HTLC event

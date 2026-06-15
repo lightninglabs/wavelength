@@ -262,6 +262,10 @@ func outSwapHtlcEventFromProto(event *swaprpc.OutSwapHtlcEvent) (
 	if event.GetAmountSat() > math.MaxInt64 {
 		return nil, fmt.Errorf("out-swap event amount exceeds int64")
 	}
+	if event.GetVhtlcAmountSat() > math.MaxInt64 {
+		return nil, fmt.Errorf("out-swap event vHTLC amount exceeds " +
+			"int64")
+	}
 
 	var paymentHash lntypes.Hash
 	copy(paymentHash[:], event.GetPaymentHash())
@@ -277,7 +281,12 @@ func outSwapHtlcEventFromProto(event *swaprpc.OutSwapHtlcEvent) (
 		OnionBlob: append(
 			[]byte(nil), event.GetOnionBlob()...,
 		),
-		VHTLCConfig: *cfg,
+		VHTLCConfig:    *cfg,
+		VHTLCOutpoint:  event.GetVhtlcOutpoint(),
+		VHTLCAmountSat: int64(event.GetVhtlcAmountSat()),
+		VHTLCPkScript: append(
+			[]byte(nil), event.GetVhtlcPkScript()...,
+		),
 	}, nil
 }
 

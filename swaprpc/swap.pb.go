@@ -324,7 +324,21 @@ type OutSwapHtlcEvent struct {
 	OnionBlob []byte `protobuf:"bytes,3,opt,name=onion_blob,json=onionBlob,proto3" json:"onion_blob,omitempty"`
 	// vhtlc_config contains the virtual HTLC parameters the client should use
 	// when constructing the expected output.
-	VhtlcConfig   *VHTLCConfig `protobuf:"bytes,4,opt,name=vhtlc_config,json=vhtlcConfig,proto3" json:"vhtlc_config,omitempty"`
+	VhtlcConfig *VHTLCConfig `protobuf:"bytes,4,opt,name=vhtlc_config,json=vhtlcConfig,proto3" json:"vhtlc_config,omitempty"`
+	// vhtlc_outpoint is the funded vHTLC outpoint in "txid:vout" format, when
+	// the swap server knows it at notification time. It lets the receiver
+	// cross-check the output it later observes against the one the server
+	// actually funded. Empty when the server has not recorded the outpoint.
+	VhtlcOutpoint string `protobuf:"bytes,5,opt,name=vhtlc_outpoint,json=vhtlcOutpoint,proto3" json:"vhtlc_outpoint,omitempty"`
+	// vhtlc_amount_sat is the funded vHTLC amount in satoshis, when known.
+	VhtlcAmountSat uint64 `protobuf:"varint,6,opt,name=vhtlc_amount_sat,json=vhtlcAmountSat,proto3" json:"vhtlc_amount_sat,omitempty"`
+	// vhtlc_pk_script is the P2TR script of the funded vHTLC as computed by
+	// the swap server from the same parameters in vhtlc_config. The receiver
+	// compares it against the script it derives locally; a mismatch means the
+	// two sides disagree on the vHTLC script (for example a lib/arkscript
+	// version skew) and the funded output lives at a different address than the
+	// receiver would ever query. Empty for older servers that do not set it.
+	VhtlcPkScript []byte `protobuf:"bytes,7,opt,name=vhtlc_pk_script,json=vhtlcPkScript,proto3" json:"vhtlc_pk_script,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -383,6 +397,27 @@ func (x *OutSwapHtlcEvent) GetOnionBlob() []byte {
 func (x *OutSwapHtlcEvent) GetVhtlcConfig() *VHTLCConfig {
 	if x != nil {
 		return x.VhtlcConfig
+	}
+	return nil
+}
+
+func (x *OutSwapHtlcEvent) GetVhtlcOutpoint() string {
+	if x != nil {
+		return x.VhtlcOutpoint
+	}
+	return ""
+}
+
+func (x *OutSwapHtlcEvent) GetVhtlcAmountSat() uint64 {
+	if x != nil {
+		return x.VhtlcAmountSat
+	}
+	return 0
+}
+
+func (x *OutSwapHtlcEvent) GetVhtlcPkScript() []byte {
+	if x != nil {
+		return x.VhtlcPkScript
 	}
 	return nil
 }
@@ -1145,14 +1180,17 @@ const file_swap_proto_rawDesc = "" +
 	"\x1dAcknowledgeOutSwapHtlcRequest\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12.\n" +
 	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\" \n" +
-	"\x1eAcknowledgeOutSwapHtlcResponse\"\xac\x01\n" +
+	"\x1eAcknowledgeOutSwapHtlcResponse\"\xa5\x02\n" +
 	"\x10OutSwapHtlcEvent\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x02 \x01(\x04R\tamountSat\x12\x1d\n" +
 	"\n" +
 	"onion_blob\x18\x03 \x01(\fR\tonionBlob\x127\n" +
-	"\fvhtlc_config\x18\x04 \x01(\v2\x14.swaprpc.VHTLCConfigR\vvhtlcConfig\"\x97\x01\n" +
+	"\fvhtlc_config\x18\x04 \x01(\v2\x14.swaprpc.VHTLCConfigR\vvhtlcConfig\x12%\n" +
+	"\x0evhtlc_outpoint\x18\x05 \x01(\tR\rvhtlcOutpoint\x12(\n" +
+	"\x10vhtlc_amount_sat\x18\x06 \x01(\x04R\x0evhtlcAmountSat\x12&\n" +
+	"\x0fvhtlc_pk_script\x18\a \x01(\fR\rvhtlcPkScript\"\x97\x01\n" +
 	"\x10SwapMailboxEvent\x12?\n" +
 	"\rout_swap_htlc\x18\x01 \x01(\v2\x19.swaprpc.OutSwapHtlcEventH\x00R\voutSwapHtlc\x129\n" +
 	"\vin_ark_htlc\x18\x02 \x01(\v2\x17.swaprpc.InArkHtlcEventH\x00R\tinArkHtlcB\a\n" +
