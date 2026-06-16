@@ -286,6 +286,16 @@ func (p *VHTLCPolicy) RefundWithoutReceiverPath() (*SpendPath, error) {
 	)
 }
 
+// UnilateralRefundWithoutReceiverPath returns a SpendPath for the sender-only
+// CSV+CLTV refund leaf.
+func (p *VHTLCPolicy) UnilateralRefundWithoutReceiverPath() (*SpendPath,
+	error) {
+
+	return p.CompiledPolicy.SpendPathForNode(
+		p.UnilateralRefundWithoutReceiverClosure, nil,
+	)
+}
+
 // PkScript returns the P2TR pkScript for the vHTLC output.
 func (p *VHTLCPolicy) PkScript() ([]byte, error) {
 	return txscript.PayToTaprootScript(p.OutputKey())
