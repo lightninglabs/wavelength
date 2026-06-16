@@ -1,7 +1,6 @@
 package ledger
 
 import (
-	"encoding/binary"
 	"fmt"
 	"io"
 	"math"
@@ -11,78 +10,6 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/tlvutil"
 	"github.com/lightningnetwork/lnd/tlv"
 )
-
-// outpointRecord wraps a wire.OutPoint so it can be encoded /
-// decoded as a fixed 36-byte TLV payload (32-byte hash followed
-// by 4-byte little-endian index). Mirrors the pattern used in
-// db/tree_codec.go so callers can thread wire.OutPoint directly
-// through TLV messages instead of splitting the two halves into
-// separate primitive records.
-type outpointRecord struct {
-	wire.OutPoint
-}
-
-// outpointEncoder serializes an outpoint as 32 hash bytes plus
-// 4 little-endian index bytes.
-func outpointEncoder(w io.Writer, val interface{}, _ *[8]byte) error {
-	o, ok := val.(*outpointRecord)
-	if !ok {
-		return tlv.NewTypeForEncodingErr(val, "outpointRecord")
-	}
-
-	if _, err := w.Write(o.Hash[:]); err != nil {
-		return err
-	}
-
-	var buf [4]byte
-	binary.LittleEndian.PutUint32(buf[:], o.Index)
-
-	_, err := w.Write(buf[:])
-
-	return err
-}
-
-// outpointDecoder reverses outpointEncoder. Rejects any payload
-// that is not exactly 36 bytes so a corrupt TLV stream surfaces
-// at the decode boundary rather than producing a truncated or
-// zero-padded outpoint.
-func outpointDecoder(r io.Reader, val interface{}, _ *[8]byte, l uint64) error {
-	if l != 36 {
-		return fmt.Errorf("%w: outpoint TLV payload must be 36 "+
-			"bytes, got %d", ErrInvalidMessage, l)
-	}
-
-	o, ok := val.(*outpointRecord)
-	if !ok {
-		return tlv.NewTypeForDecodingErr(
-			val, "outpointRecord", l, 36,
-		)
-	}
-
-	if _, err := io.ReadFull(r, o.Hash[:]); err != nil {
-		return err
-	}
-
-	var buf [4]byte
-	if _, err := io.ReadFull(r, buf[:]); err != nil {
-		return err
-	}
-
-	o.Index = binary.LittleEndian.Uint32(buf[:])
-
-	return nil
-}
-
-// makeOutpointRecord builds a single-field TLV record of type
-// fieldType backed by outpointEncoder / outpointDecoder. Used by
-// the ledger messages that carry an outpoint (VTXOSentMsg etc.)
-// so the Go field type stays wire.OutPoint instead of split
-// hash / index primitives.
-func makeOutpointRecord(fieldType tlv.Type, rec *outpointRecord) tlv.Record {
-	return tlv.MakeStaticRecord(
-		fieldType, rec, 36, outpointEncoder, outpointDecoder,
-	)
-}
 
 // decodeAmountSat narrows a TLV-decoded uint64 satoshi field to
 // the int64 domain used everywhere downstream. A TLV stream is
@@ -526,7 +453,6 @@ func (m *VTXOSentMsg) Encode(w io.Writer) error {
 	sessionID := m.SessionID[:]
 	amountSat := uint64(m.AmountSat)
 	roundID := m.RoundID[:]
-	outpoint := &outpointRecord{OutPoint: m.Outpoint}
 
 	return tlvutil.EncodeRecords(
 		w, tlv.MakePrimitiveRecord(
@@ -538,7 +464,7 @@ func (m *VTXOSentMsg) Encode(w io.Writer) error {
 		tlv.MakePrimitiveRecord(
 			vtxoSentRoundIDType, &roundID,
 		),
-		makeOutpointRecord(vtxoSentOutpointType, outpoint),
+		tlvutil.OutPointRecord(vtxoSentOutpointType, &m.Outpoint),
 	)
 }
 
@@ -548,7 +474,7 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 		sessionID []byte
 		amountSat uint64
 		roundID   []byte
-		outpoint  outpointRecord
+		outpoint  wire.OutPoint
 	)
 
 	if _, err := tlvutil.DecodeRecords(
@@ -561,7 +487,7 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 		tlv.MakePrimitiveRecord(
 			vtxoSentRoundIDType, &roundID,
 		),
-		makeOutpointRecord(vtxoSentOutpointType, &outpoint),
+		tlvutil.OutPointRecord(vtxoSentOutpointType, &outpoint),
 	); err != nil {
 		return fmt.Errorf("decode VTXOSentMsg: %w", err)
 	}
@@ -586,7 +512,7 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 	copy(m.SessionID[:], sessionID)
 	copy(m.RoundID[:], roundID)
 	m.AmountSat = amt
-	m.Outpoint = outpoint.OutPoint
+	m.Outpoint = outpoint
 
 	return nil
 }
