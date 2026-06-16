@@ -337,59 +337,16 @@ type BoardingIntent struct {
 	Status BoardingStatus
 }
 
-// PendingBoardRequestStore is the persistence surface for restart-safe Board
-// RPC replay. Rows are keyed by the confirmed boarding outpoint the original
-// Board call admitted, so a replay binds the persisted target_vtxo_count to
-// the specific UTXOs the user pointed at — never to an unrelated future
-// deposit. The wallet writes rows from handleBoard, the round-state
-// checkpoint clears them when the intent transitions to Adopted, and the
-// wallet's startup hook reads them to decide whether to self-Tell a Board
-// replay.
-//
-// Split out from BoardingStore so the parent interface stays under the
-// interfacebloat cap.
-type PendingBoardRequestStore interface {
-	// UpsertPendingBoardRequests records the user's explicit Board RPC
-	// intent. One row is persisted per confirmed boarding outpoint the
-	// Board call admitted. All rows are written under a single
-	// transaction so the persist is atomic; an empty slice is a benign
-	// no-op.
-	UpsertPendingBoardRequests(ctx context.Context,
-		reqs []PendingBoardRequest) error
-
-	// ListPendingBoardRequests returns every persisted Board RPC intent
-	// keyed by the outpoint it was admitted against. Rows are ordered
-	// by requested_at_unix ascending so callers can group by Board
-	// call. An empty slice is returned when nothing is pending.
-	ListPendingBoardRequests(ctx context.Context) (
-		[]PendingBoardRequest,
-		error,
-	)
-
-	// ClearPendingBoardRequestByOutpoint removes a single pending row.
-	// Called from the round persistence transaction when the matching
-	// boarding intent transitions out of Confirmed (Adopted, Swept,
-	// etc.) so the cleanup runs atomically with the state change.
-	ClearPendingBoardRequestByOutpoint(ctx context.Context,
-		outpoint wire.OutPoint) error
-
-	// ClearAllPendingBoardRequests removes every persisted Board RPC
-	// intent. Used by the wallet's startup sweep when no confirmed
-	// intent remains for any persisted row so the next start is a
-	// no-op.
-	ClearAllPendingBoardRequests(ctx context.Context) error
-}
-
 // BoardingStore defines the storage interface for boarding addresses and
-// intents used by the wallet actor. Embeds PendingBoardRequestStore so the
-// pending-Board-replay surface is part of the same contract. One logical
-// store covers boarding addresses, intents, and pending-Board replay rows
-// — splitting further would fragment transaction boundaries across the
-// same SQL table family.
+// intents used by the wallet actor. Embeds PendingIntentStore so the
+// restart-safe intent-outbox surface is part of the same contract. One
+// logical store covers boarding addresses, intents, and pending-intent
+// replay rows — splitting further would fragment transaction boundaries
+// across the same SQL table family.
 //
 //nolint:interfacebloat
 type BoardingStore interface {
-	PendingBoardRequestStore
+	PendingIntentStore
 
 	// InsertBoardingAddress persists a boarding address when it is first
 	// created. This method is idempotent.
@@ -441,30 +398,4 @@ type BoardingStore interface {
 	// boarding pkScript.
 	LookupIntentByScript(ctx context.Context,
 		pkScript []byte) (*BoardingIntent, error)
-}
-
-// PendingBoardRequest captures one persisted row of a user-issued Board RPC.
-// The wallet writes one row per confirmed boarding outpoint the Board call
-// admitted and re-reads them on startup so the request survives daemon
-// restart between Board admission and round seal. The Outpoint binds the
-// row to a specific UTXO so a stale row cannot rebind to an unrelated
-// future deposit.
-type PendingBoardRequest struct {
-	// Outpoint identifies the confirmed boarding intent this row is
-	// bound to. Replay only re-issues TriggerBoardMsg for a row whose
-	// Outpoint still resolves to a BoardingStatusConfirmed intent at
-	// startup time.
-	Outpoint wire.OutPoint
-
-	// TargetVTXOCount mirrors BoardRequest.TargetVTXOCount: zero means
-	// "collapse the confirmed boarding balance into one VTXO", non-zero
-	// fans the balance into that many VTXOs. Denormalised onto every
-	// row in the same Board call.
-	TargetVTXOCount uint32
-
-	// RequestedAt is the unix-second timestamp at which the Board RPC
-	// was originally admitted. Denormalised onto every row in the same
-	// Board call; replay uses the smallest value across all rows as the
-	// "earliest still-pending Board call" for logging.
-	RequestedAt int64
 }

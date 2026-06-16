@@ -2007,8 +2007,8 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	//      drop. Driving the replay from wallet.Ark.Start would race
 	//      the registration and leave the recovered Board orphaned.
 	// -------------------------------------------------------
-	if err := s.replayPendingBoardRequest(ctx, walletRef); err != nil {
-		s.log.WarnS(ctx, "Failed to replay pending Board request",
+	if err := s.replayPendingIntents(ctx, walletRef); err != nil {
+		s.log.WarnS(ctx, "Failed to replay pending intents",
 			err,
 		)
 	}
@@ -2025,23 +2025,24 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	return nil
 }
 
-// replayPendingBoardRequest Asks the wallet actor to replay any
-// persisted Board RPC across daemon restart. Called once during
-// startup, after the round-client actor has registered with the
-// receptionist, so the wallet's handleBoard can resolve the round
-// actor via the service-key router without racing.
+// replayPendingIntents Asks the wallet actor to replay any persisted
+// user intent (Board, SendOnChain, ...) across daemon restart. Called
+// once during startup, after the round-client actor has registered
+// with the receptionist, so the wallet's replayers can resolve the
+// round actor via the service-key router without racing.
 //
-// A failure here does not block daemon startup: a fresh Board RPC by
-// the user overwrites the pending rows, and a future restart re-tries
+// A failure here does not block daemon startup: a fresh RPC by the
+// user overwrites the pending intents, and a future restart re-tries
 // the replay. Returning the error lets the caller decide whether to
 // surface it.
-func (s *Server) replayPendingBoardRequest(ctx context.Context,
+func (s *Server) replayPendingIntents(ctx context.Context,
 	walletRef actor.ActorRef[wallet.WalletMsg, wallet.WalletResp]) error {
 
-	future := walletRef.Ask(ctx, &wallet.ReplayPendingBoardRequest{})
+	future := walletRef.Ask(ctx, &wallet.ReplayPendingIntentsRequest{})
 	result := future.Await(ctx)
 	if result.IsErr() {
-		return fmt.Errorf("ask replay pending board: %w", result.Err())
+		return fmt.Errorf("ask replay pending intents: %w",
+			result.Err())
 	}
 
 	return nil

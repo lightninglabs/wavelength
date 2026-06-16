@@ -206,38 +206,38 @@ func (m *MockBoardingStore) LookupIntentByScript(ctx context.Context,
 	return args.Get(0).(*BoardingIntent), args.Error(1)
 }
 
-func (m *MockBoardingStore) UpsertPendingBoardRequests(ctx context.Context,
-	reqs []PendingBoardRequest) error {
+func (m *MockBoardingStore) UpsertPendingIntent(ctx context.Context,
+	intent PendingIntent) error {
 
-	args := m.Called(ctx, reqs)
+	args := m.Called(ctx, intent)
 
 	return args.Error(0)
 }
 
-func (m *MockBoardingStore) ListPendingBoardRequests(ctx context.Context) (
-	[]PendingBoardRequest, error) {
+func (m *MockBoardingStore) ListPendingIntents(ctx context.Context,
+	kind PendingIntentKind) ([]PendingIntent, error) {
 
-	args := m.Called(ctx)
+	args := m.Called(ctx, kind)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 
 	//nolint:forcetypeassert
-	return args.Get(0).([]PendingBoardRequest), args.Error(1)
+	return args.Get(0).([]PendingIntent), args.Error(1)
 }
 
-func (m *MockBoardingStore) ClearPendingBoardRequestByOutpoint(
-	ctx context.Context, outpoint wire.OutPoint) error {
+func (m *MockBoardingStore) DeletePendingIntent(ctx context.Context,
+	id PendingIntentID) error {
 
-	args := m.Called(ctx, outpoint)
+	args := m.Called(ctx, id)
 
 	return args.Error(0)
 }
 
-func (m *MockBoardingStore) ClearAllPendingBoardRequests(
-	ctx context.Context) error {
+func (m *MockBoardingStore) ClearPendingIntentsByKind(ctx context.Context,
+	kind PendingIntentKind) error {
 
-	args := m.Called(ctx)
+	args := m.Called(ctx, kind)
 
 	return args.Error(0)
 }

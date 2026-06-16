@@ -49,6 +49,10 @@ type mockVTXOManagerBehavior struct {
 	// forfeitReserveResp is returned for ReserveForfeitRequest.
 	forfeitReserveResp *actormsg.ReserveForfeitResponse
 
+	// forfeitReserveCalls tracks how many ReserveForfeitRequest were
+	// received.
+	forfeitReserveCalls int
+
 	// forfeitReserveErr when set causes ReserveForfeitRequest to fail.
 	forfeitReserveErr error
 
@@ -106,6 +110,8 @@ func (m *mockVTXOManagerBehavior) Receive(_ context.Context,
 		return fn.Ok[actormsg.VTXOManagerResp](m.completeResp)
 
 	case *actormsg.ReserveForfeitRequest:
+		m.forfeitReserveCalls++
+
 		if m.forfeitReserveErr != nil {
 			return fn.Err[actormsg.VTXOManagerResp](
 				m.forfeitReserveErr,
