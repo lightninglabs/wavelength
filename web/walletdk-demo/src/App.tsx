@@ -5,6 +5,7 @@ import { AppTab } from "./components/layout/nav";
 import { phaseConnected, statusLabel } from "./lib/phase";
 import {
   RuntimeForm,
+  defaultsForNetwork,
   signetDefaults,
 } from "./lib/runtime-config";
 import {
@@ -71,6 +72,13 @@ export function App() {
   const onField = useCallback(
     <K extends keyof RuntimeForm>(key: K, value: RuntimeForm[K]) => {
       setForm((current) => ({ ...current, [key]: value }));
+    },
+    [],
+  );
+
+  const onNetworkChange = useCallback(
+    (network: RuntimeForm["network"]) => {
+      setForm(defaultsForNetwork(network));
     },
     [],
   );
@@ -360,6 +368,7 @@ export function App() {
       <ConnectScreen
         form={form}
         onField={onField}
+        onNetworkChange={onNetworkChange}
         onStart={startRuntime}
         busy={wallet.operations.runtime.busy}
         error={wallet.operations.runtime.error || wallet.error}

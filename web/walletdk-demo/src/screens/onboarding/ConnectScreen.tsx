@@ -12,6 +12,7 @@ import {
   NETWORKS,
   RuntimeFieldSetter,
   RuntimeForm,
+  RuntimeNetwork,
 } from "../../lib/runtime-config";
 
 // ConnectScreen is the "Start runtime" screen (phase runtimeReady): pick a
@@ -20,12 +21,14 @@ import {
 export function ConnectScreen({
   form,
   onField,
+  onNetworkChange,
   onStart,
   busy,
   error,
 }: {
   form: RuntimeForm;
   onField: RuntimeFieldSetter;
+  onNetworkChange: (network: RuntimeNetwork) => void;
   onStart: () => void;
   busy: boolean;
   error: string;
@@ -51,7 +54,7 @@ export function ConnectScreen({
           </span>
           <Segmented
             value={form.network}
-            onChange={(v) => onField("network", v)}
+            onChange={(v) => onNetworkChange(v)}
             options={NETWORKS.map((n) => ({ value: n, label: n }))}
           />
         </div>
