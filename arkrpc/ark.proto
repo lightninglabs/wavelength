@@ -15,6 +15,37 @@ service ArkService {
 }
 
 message GetInfoRequest {
+    // supported_ark_versions lists the Ark protocol versions this client can
+    // use, ordered by client preference (most preferred first). The operator
+    // selects the first operator-preferred version present in this list. An
+    // empty list means the client advertises no Ark version support, so it
+    // overlaps with nothing and the operator selects zero.
+    repeated uint32 supported_ark_versions = 1;
+}
+
+// ArkVersionPolicy advertises the operator's lifecycle policy for a single Ark
+// protocol version: whether it is ACTIVE (selectable) or DISABLED (advertised
+// so clients learn it was retired, but never selected or accepted).
+message ArkVersionPolicy {
+    // State is the lifecycle state of an Ark protocol version.
+    enum State {
+        // STATE_UNSPECIFIED is the zero value and must not be used as a real
+        // policy state.
+        STATE_UNSPECIFIED = 0;
+
+        // STATE_ACTIVE means the version may be selected and admitted.
+        STATE_ACTIVE = 1;
+
+        // STATE_DISABLED means the version must never be selected or accepted;
+        // it is advertised only so clients learn the version was retired.
+        STATE_DISABLED = 2;
+    }
+
+    // version is the Ark protocol version this policy describes.
+    uint32 version = 1;
+
+    // state is the lifecycle state of the version.
+    State state = 2;
 }
 
 message GetInfoResponse {
@@ -93,6 +124,17 @@ message GetInfoResponse {
     // receive and boarding flows before funds enter the system. Zero
     // means no cap.
     int64 max_user_balance = 20;
+
+    // selected_ark_version is the Ark protocol version the operator selected
+    // for this client from its supported_ark_versions request. Zero means no
+    // common version exists; the client must not start its mailbox runtime.
+    uint32 selected_ark_version = 21;
+
+    // ark_version_policies carries the lifecycle policy (ACTIVE or DISABLED)
+    // for each of the operator's known Ark protocol versions. The ACTIVE
+    // entries are the operator's enabled, selectable versions; DISABLED
+    // entries are advertised only so clients learn a version was retired.
+    repeated ArkVersionPolicy ark_version_policies = 22;
 }
 
 // EstimateFeeRequest asks the server to estimate the fee for a

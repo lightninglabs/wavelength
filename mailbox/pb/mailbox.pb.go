@@ -184,9 +184,14 @@ type Envelope struct {
 	// rpc carries optional RPC overlay metadata.
 	Rpc *RpcMeta `protobuf:"bytes,11,opt,name=rpc,proto3" json:"rpc,omitempty"`
 	// event_seq is assigned by the mailbox edge to define per-mailbox ordering.
-	EventSeq      uint64 `protobuf:"varint,12,opt,name=event_seq,json=eventSeq,proto3" json:"event_seq,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	EventSeq uint64 `protobuf:"varint,12,opt,name=event_seq,json=eventSeq,proto3" json:"event_seq,omitempty"`
+	// ark_protocol_version is the negotiated Ark protocol version selected
+	// through the direct GetInfo bootstrap RPC. It is distinct from
+	// protocol_version, which is the mailbox transport version. Every envelope
+	// sent after negotiation carries the runtime-bound Ark protocol version.
+	ArkProtocolVersion uint32 `protobuf:"varint,13,opt,name=ark_protocol_version,json=arkProtocolVersion,proto3" json:"ark_protocol_version,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *Envelope) Reset() {
@@ -303,6 +308,13 @@ func (x *Envelope) GetEventSeq() uint64 {
 	return 0
 }
 
+func (x *Envelope) GetArkProtocolVersion() uint32 {
+	if x != nil {
+		return x.ArkProtocolVersion
+	}
+	return 0
+}
+
 // Status describes the result of a mailbox edge operation.
 type Status struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -316,10 +328,17 @@ type Status struct {
 	MinSupportedProtocolVersion uint32 `protobuf:"varint,4,opt,name=min_supported_protocol_version,json=minSupportedProtocolVersion,proto3" json:"min_supported_protocol_version,omitempty"`
 	// server_protocol_version is populated for upgrade-required errors.
 	ServerProtocolVersion uint32 `protobuf:"varint,5,opt,name=server_protocol_version,json=serverProtocolVersion,proto3" json:"server_protocol_version,omitempty"`
-	// upgrade_url is populated for upgrade-required errors.
-	UpgradeUrl    string `protobuf:"bytes,6,opt,name=upgrade_url,json=upgradeUrl,proto3" json:"upgrade_url,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// supported_mailbox_versions lists the mailbox transport versions the
+	// responder supports. It is populated for permanent version errors so the
+	// sender can surface actionable guidance without parsing gRPC status
+	// details.
+	SupportedMailboxVersions []uint32 `protobuf:"varint,7,rep,packed,name=supported_mailbox_versions,json=supportedMailboxVersions,proto3" json:"supported_mailbox_versions,omitempty"`
+	// supported_ark_versions lists the Ark protocol versions the responder has
+	// enabled. It is populated for permanent version errors so the sender can
+	// surface actionable guidance without parsing gRPC status details.
+	SupportedArkVersions []uint32 `protobuf:"varint,8,rep,packed,name=supported_ark_versions,json=supportedArkVersions,proto3" json:"supported_ark_versions,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *Status) Reset() {
@@ -387,11 +406,18 @@ func (x *Status) GetServerProtocolVersion() uint32 {
 	return 0
 }
 
-func (x *Status) GetUpgradeUrl() string {
+func (x *Status) GetSupportedMailboxVersions() []uint32 {
 	if x != nil {
-		return x.UpgradeUrl
+		return x.SupportedMailboxVersions
 	}
-	return ""
+	return nil
+}
+
+func (x *Status) GetSupportedArkVersions() []uint32 {
+	if x != nil {
+		return x.SupportedArkVersions
+	}
+	return nil
 }
 
 // SendRequest sends a single envelope.
@@ -733,7 +759,7 @@ const file_mailbox_proto_rawDesc = "" +
 	"\fKIND_REQUEST\x10\x01\x12\x11\n" +
 	"\rKIND_RESPONSE\x10\x02\x12\x0e\n" +
 	"\n" +
-	"KIND_EVENT\x10\x03\"\x80\x04\n" +
+	"KIND_EVENT\x10\x03\"\xb2\x04\n" +
 	"\bEnvelope\x12)\n" +
 	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12\x15\n" +
 	"\x06msg_id\x18\x02 \x01(\tR\x05msgId\x12'\n" +
@@ -747,18 +773,19 @@ const file_mailbox_proto_rawDesc = "" +
 	"\x04body\x18\n" +
 	" \x01(\v2\x14.google.protobuf.AnyR\x04body\x12%\n" +
 	"\x03rpc\x18\v \x01(\v2\x13.mailbox.v1.RpcMetaR\x03rpc\x12\x1b\n" +
-	"\tevent_seq\x18\f \x01(\x04R\beventSeq\x1a:\n" +
+	"\tevent_seq\x18\f \x01(\x04R\beventSeq\x120\n" +
+	"\x14ark_protocol_version\x18\r \x01(\rR\x12arkProtocolVersion\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe4\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xca\x02\n" +
 	"\x06Status\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x12\n" +
 	"\x04code\x18\x02 \x01(\tR\x04code\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12C\n" +
 	"\x1emin_supported_protocol_version\x18\x04 \x01(\rR\x1bminSupportedProtocolVersion\x126\n" +
-	"\x17server_protocol_version\x18\x05 \x01(\rR\x15serverProtocolVersion\x12\x1f\n" +
-	"\vupgrade_url\x18\x06 \x01(\tR\n" +
-	"upgradeUrl\"?\n" +
+	"\x17server_protocol_version\x18\x05 \x01(\rR\x15serverProtocolVersion\x12<\n" +
+	"\x1asupported_mailbox_versions\x18\a \x03(\rR\x18supportedMailboxVersions\x124\n" +
+	"\x16supported_ark_versions\x18\b \x03(\rR\x14supportedArkVersionsJ\x04\b\x06\x10\aR\vupgrade_url\"?\n" +
 	"\vSendRequest\x120\n" +
 	"\benvelope\x18\x01 \x01(\v2\x14.mailbox.v1.EnvelopeR\benvelope\":\n" +
 	"\fSendResponse\x12*\n" +
