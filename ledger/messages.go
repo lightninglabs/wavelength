@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/baselib/tlvutil"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -272,8 +273,8 @@ func (m *FeePaidMsg) Encode(w io.Writer) error {
 	blockHeight := m.BlockHeight
 	idempotency := m.IdempotencyKey
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(
+	return tlvutil.EncodeRecords(
+		w, tlv.MakePrimitiveRecord(
 			feePaidRoundIDType, &roundID,
 		),
 		tlv.MakePrimitiveRecord(
@@ -289,11 +290,6 @@ func (m *FeePaidMsg) Encode(w io.Writer) error {
 			feePaidIdempotencyKeyType, &idempotency,
 		),
 	)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
 }
 
 // Decode deserializes a TLV stream into the message.
@@ -306,8 +302,8 @@ func (m *FeePaidMsg) Decode(r io.Reader) error {
 		idempotency []byte
 	)
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(
+	if _, err := tlvutil.DecodeRecords(
+		r, tlv.MakePrimitiveRecord(
 			feePaidRoundIDType, &roundID,
 		),
 		tlv.MakePrimitiveRecord(
@@ -322,12 +318,7 @@ func (m *FeePaidMsg) Decode(r io.Reader) error {
 		tlv.MakePrimitiveRecord(
 			feePaidIdempotencyKeyType, &idempotency,
 		),
-	)
-	if err != nil {
-		return err
-	}
-
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	); err != nil {
 		return fmt.Errorf("decode FeePaidMsg: %w", err)
 	}
 
@@ -412,8 +403,8 @@ func (m *VTXOReceivedMsg) Encode(w io.Writer) error {
 	source := []byte(m.Source)
 	roundID := m.RoundID[:]
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(
+	return tlvutil.EncodeRecords(
+		w, tlv.MakePrimitiveRecord(
 			vtxoRecvOutpointHashType, &outpointHash,
 		),
 		tlv.MakePrimitiveRecord(
@@ -429,11 +420,6 @@ func (m *VTXOReceivedMsg) Encode(w io.Writer) error {
 			vtxoRecvRoundIDType, &roundID,
 		),
 	)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
 }
 
 // Decode deserializes a TLV stream into the message.
@@ -446,8 +432,8 @@ func (m *VTXOReceivedMsg) Decode(r io.Reader) error {
 		roundID       []byte
 	)
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(
+	if _, err := tlvutil.DecodeRecords(
+		r, tlv.MakePrimitiveRecord(
 			vtxoRecvOutpointHashType, &outpointHash,
 		),
 		tlv.MakePrimitiveRecord(
@@ -462,12 +448,7 @@ func (m *VTXOReceivedMsg) Decode(r io.Reader) error {
 		tlv.MakePrimitiveRecord(
 			vtxoRecvRoundIDType, &roundID,
 		),
-	)
-	if err != nil {
-		return err
-	}
-
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	); err != nil {
 		return fmt.Errorf("decode VTXOReceivedMsg: %w", err)
 	}
 
@@ -547,8 +528,8 @@ func (m *VTXOSentMsg) Encode(w io.Writer) error {
 	roundID := m.RoundID[:]
 	outpoint := &outpointRecord{OutPoint: m.Outpoint}
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(
+	return tlvutil.EncodeRecords(
+		w, tlv.MakePrimitiveRecord(
 			vtxoSentSessionIDType, &sessionID,
 		),
 		tlv.MakePrimitiveRecord(
@@ -559,11 +540,6 @@ func (m *VTXOSentMsg) Encode(w io.Writer) error {
 		),
 		makeOutpointRecord(vtxoSentOutpointType, outpoint),
 	)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
 }
 
 // Decode deserializes a TLV stream into the message.
@@ -575,8 +551,8 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 		outpoint  outpointRecord
 	)
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(
+	if _, err := tlvutil.DecodeRecords(
+		r, tlv.MakePrimitiveRecord(
 			vtxoSentSessionIDType, &sessionID,
 		),
 		tlv.MakePrimitiveRecord(
@@ -586,12 +562,7 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 			vtxoSentRoundIDType, &roundID,
 		),
 		makeOutpointRecord(vtxoSentOutpointType, &outpoint),
-	)
-	if err != nil {
-		return err
-	}
-
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	); err != nil {
 		return fmt.Errorf("decode VTXOSentMsg: %w", err)
 	}
 
@@ -663,8 +634,8 @@ func (m *ExitCostMsg) Encode(w io.Writer) error {
 	exitCostSat := uint64(m.ExitCostSat)
 	blockHeight := m.BlockHeight
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(
+	return tlvutil.EncodeRecords(
+		w, tlv.MakePrimitiveRecord(
 			exitCostOutpointHashType, &outpointHash,
 		),
 		tlv.MakePrimitiveRecord(
@@ -680,11 +651,6 @@ func (m *ExitCostMsg) Encode(w io.Writer) error {
 			exitCostBlockHeightType, &blockHeight,
 		),
 	)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
 }
 
 // Decode deserializes a TLV stream into the message.
@@ -697,8 +663,8 @@ func (m *ExitCostMsg) Decode(r io.Reader) error {
 		blockHeight   uint32
 	)
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(
+	if _, err := tlvutil.DecodeRecords(
+		r, tlv.MakePrimitiveRecord(
 			exitCostOutpointHashType, &outpointHash,
 		),
 		tlv.MakePrimitiveRecord(
@@ -713,12 +679,7 @@ func (m *ExitCostMsg) Decode(r io.Reader) error {
 		tlv.MakePrimitiveRecord(
 			exitCostBlockHeightType, &blockHeight,
 		),
-	)
-	if err != nil {
-		return err
-	}
-
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	); err != nil {
 		return fmt.Errorf("decode ExitCostMsg: %w", err)
 	}
 
@@ -791,8 +752,8 @@ func (m *UTXOCreatedMsg) Encode(w io.Writer) error {
 	blockHeight := m.BlockHeight
 	classification := []byte(m.Classification)
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(
+	return tlvutil.EncodeRecords(
+		w, tlv.MakePrimitiveRecord(
 			utxoOutpointHashType, &outpointHash,
 		),
 		tlv.MakePrimitiveRecord(
@@ -808,11 +769,6 @@ func (m *UTXOCreatedMsg) Encode(w io.Writer) error {
 			utxoClassificationType, &classification,
 		),
 	)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
 }
 
 // Decode deserializes a TLV stream into the message.
@@ -825,8 +781,8 @@ func (m *UTXOCreatedMsg) Decode(r io.Reader) error {
 		classification []byte
 	)
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(
+	if _, err := tlvutil.DecodeRecords(
+		r, tlv.MakePrimitiveRecord(
 			utxoOutpointHashType, &outpointHash,
 		),
 		tlv.MakePrimitiveRecord(
@@ -841,12 +797,7 @@ func (m *UTXOCreatedMsg) Decode(r io.Reader) error {
 		tlv.MakePrimitiveRecord(
 			utxoClassificationType, &classification,
 		),
-	)
-	if err != nil {
-		return err
-	}
-
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	); err != nil {
 		return fmt.Errorf("decode UTXOCreatedMsg: %w", err)
 	}
 
@@ -917,8 +868,8 @@ func (m *UTXOSpentMsg) Encode(w io.Writer) error {
 	blockHeight := m.BlockHeight
 	classification := []byte(m.Classification)
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(
+	return tlvutil.EncodeRecords(
+		w, tlv.MakePrimitiveRecord(
 			utxoOutpointHashType, &outpointHash,
 		),
 		tlv.MakePrimitiveRecord(
@@ -934,11 +885,6 @@ func (m *UTXOSpentMsg) Encode(w io.Writer) error {
 			utxoClassificationType, &classification,
 		),
 	)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
 }
 
 // Decode deserializes a TLV stream into the message.
@@ -951,8 +897,8 @@ func (m *UTXOSpentMsg) Decode(r io.Reader) error {
 		classification []byte
 	)
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(
+	if _, err := tlvutil.DecodeRecords(
+		r, tlv.MakePrimitiveRecord(
 			utxoOutpointHashType, &outpointHash,
 		),
 		tlv.MakePrimitiveRecord(
@@ -967,12 +913,7 @@ func (m *UTXOSpentMsg) Decode(r io.Reader) error {
 		tlv.MakePrimitiveRecord(
 			utxoClassificationType, &classification,
 		),
-	)
-	if err != nil {
-		return err
-	}
-
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	); err != nil {
 		return fmt.Errorf("decode UTXOSpentMsg: %w", err)
 	}
 
