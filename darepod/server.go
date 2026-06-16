@@ -3654,6 +3654,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 		OwnedScriptChecker:   scriptChecker,
 		OwnedScriptRegistrar: scriptRegistrar,
 		LedgerSink:           fn.Some(ledger.NewSink(s.actorSystem)),
+		MetricsSink:          s.metricsSink,
 		ForfeitCollectionTimeout: s.cfg.
 			ForfeitCollectionTimeout,
 		RegistrationTimeout: s.cfg.RegistrationTimeout,

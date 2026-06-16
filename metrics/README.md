@@ -69,18 +69,19 @@ settlement confirmation.
 | Metric | Type | Labels | Source | Description |
 |--------|------|--------|--------|-------------|
 | `darepod_rounds_joined_total` | counter | — | event (`JoinNextRound` RPC) | Rounds the client attempted to join. |
-| `darepod_rounds_completed_total` | counter | `status` | event | Settlement rounds completed by outcome. `status`: `confirmed`, `failed`. |
+| `darepod_rounds_completed_total` | counter | `status` | event (round actor) | Settlement rounds completed by outcome. `status`: `confirmed`, `failed`. |
 | `darepod_oor_transfers_sent_total` | counter | `status` | event (`SendOOR` RPC) | Outgoing out-of-round transfers by outcome. `status`: `submitted`, `failed`. |
 | `darepod_oor_transfers_received_total` | counter | `status` | event (incoming VTXO route) | Incoming out-of-round transfers by outcome. `status`: `materialized`, `failed`. |
 | `darepod_boarding_events_total` | counter | `status` | event (`Board` RPC) | Boarding (on-chain → VTXO) events by outcome. `status`: `submitted`, `skipped`, `failed`. |
 | `darepod_background_task_errors_total` | counter | `task` | event | Background-task errors by task name. |
 
-> Note on `rounds_completed_total`: the `RoundCompletedMsg` message type and
-> counter exist and are driven through the actor, but the client currently has
-> no darepod-local seam observing terminal round confirmation/failure (that
-> lives in the `round` subsystem FSM). Wiring it requires threading the
-> `metrics.Sink` into the `round` package, the same way the arkd server plumbs
-> its sink into subsystem actors. Until then this counter stays at zero.
+> Emission seams: `rounds_completed_total` is emitted by the `round` actor as
+> each round reaches `ConfirmedState` (`confirmed`) or `ClientFailedState`
+> (`failed`) — terminal outcomes surface in the actor's
+> `RoundCompletedNotification` / `RoundFailedNotification` handlers, with no RPC
+> boundary to observe them. Both the `round` actor and the `wallet` actor hold
+> an optional `metrics.Sink` threaded in the same way `ledger.Sink` already is;
+> when metrics are disabled the sink is `None` and emission is a no-op.
 
 ## Sync / Liveness Gauges
 

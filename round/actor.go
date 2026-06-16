@@ -26,6 +26,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/metrics"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -341,6 +342,16 @@ type RoundClientConfig struct {
 	// with on-chain reality. When None (tests, or rounds without
 	// accounting wired), ledger emission is silently skipped.
 	LedgerSink fn.Option[ledger.Sink]
+
+	// MetricsSink is an optional reference to the client-side metrics
+	// actor. When set, the round actor emits a RoundCompletedMsg as
+	// each round reaches a terminal outcome so the
+	// darepod_rounds_completed_total counter reflects reality. When
+	// None (metrics disabled, or tests), metric emission is silently
+	// skipped. Mirrors LedgerSink: the round actor is the natural seam
+	// because terminal round outcomes are observed here, not at any
+	// RPC boundary.
+	MetricsSink fn.Option[metrics.Sink]
 }
 
 // NewRoundClientActor creates a new client actor with the provided
@@ -474,6 +485,32 @@ func (a *RoundClientActor) emitVTXOsReceived(ctx context.Context,
 		}
 
 		a.emitRoundFee(ctx, sink, roundID, n, sawRefreshOrigin)
+	})
+}
+
+// emitRoundCompleted reports a terminal round outcome to the metrics
+// actor so the darepod_rounds_completed_total counter advances. The
+// round actor is the natural seam: terminal outcomes surface here as
+// RoundCompletedNotification / RoundFailedNotification, with no RPC
+// boundary that could observe them. Like ledger emission, this is
+// best-effort and fire-and-forget — a Tell failure is logged at debug
+// level and never fails the enclosing notification dispatch. Status is
+// "confirmed" or "failed", matching the counter's label set.
+func (a *RoundClientActor) emitRoundCompleted(ctx context.Context, roundID,
+	status string) {
+
+	a.cfg.MetricsSink.WhenSome(func(sink metrics.Sink) {
+		msg := &metrics.RoundCompletedMsg{
+			RoundID: roundID,
+			Status:  status,
+		}
+		if err := sink.Tell(ctx, msg); err != nil {
+			a.log.DebugS(ctx, "Failed to emit round metric",
+				err,
+				slog.String("round_id", roundID),
+				slog.String("status", status),
+			)
+		}
 	})
 }
 
@@ -2331,6 +2368,12 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 					"%s: %w", m.RoundID, err)
 			}
 
+			// Count the confirmed round for observability.
+			a.emitRoundCompleted(
+				ctx, m.RoundID.String(),
+				"confirmed",
+			)
+
 		case *RoundCheckpointedNotification:
 			a.log.InfoS(
 				ctx,
@@ -2391,6 +2434,11 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				slog.String("reason", m.Reason),
 				slog.Bool("recoverable", m.Recoverable),
 			)
+
+			// Count the failed round for observability. The
+			// counter pairs with the confirmed branch above so an
+			// operator can track the join-to-completion ratio.
+			a.emitRoundCompleted(ctx, roundIDStr, "failed")
 
 		case *ForfeitRequestToVTXO:
 			// Route forfeit request to VTXO actor via service key.
