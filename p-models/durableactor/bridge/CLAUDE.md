@@ -23,9 +23,34 @@ than the P checker.
   sorted by `TraceID`.
 - `ReplayMailboxTrace(t, trace)` — Replays a trace against a fresh SQLite
   `actordelivery` store in a temp dir. The `commit` op models the Read/Commit
-  fenced-ack pattern exactly: it runs `AckMessage` + `MarkProcessed` inside one
-  writer transaction, rolling back with `actor.ErrLeaseLost` when the ack row
-  count is zero.
+  consume step exactly: it runs the ack + `MarkProcessed` inside one writer
+  transaction, rolling back with `actor.ErrLeaseLost` when the ack row count is
+  zero. The ack op is chosen by lease token exactly as production `ackMessage`
+  routes it: a leased commit (`lease_token` set) acks under the lease fence via
+  `AckMessage`, while a leaseless commit (empty `lease_token`, the single-worker
+  peek path) acks via `AckMessageByID`. Both halves are trace-covered
+  (`mailbox_read_commit_fenced_exactly_once` and
+  `mailbox_leaseless_commit_fold`).
+
+## Direct bridge tests (not JSON-trace driven)
+
+Some contracts span a transaction boundary or a process restart and do not fit
+the per-op JSON replay model, so they are written as direct Go tests that drive
+the real store:
+
+- `outbox_fold_test.go` — the Go analog of the `tcOutboxFold` P scenario. It
+  runs `deliverMessage`'s fold (`EnqueueMessage` + `CompleteOutbox` inside one
+  `ExecTx`) against the real store and asserts the SQL-level contract: a fold
+  that fails after the enqueue rolls back with no orphan in the target mailbox
+  and the outbox row stays pending until claim expiry; a redelivery lands
+  exactly once; and a stale-token completion is a fenced 0-row no-op while the
+  idempotent (`ON CONFLICT id`) enqueue collapses a concurrent reclaim's
+  duplicate.
+- `crash_restart_test.go` — reopens a fresh `*sql.DB` and store against the same
+  on-disk SQLite file to model a process restart. It asserts a peeked-but-unacked
+  message survives a crash with attempts unchanged (peek is read-only), and a
+  leased-but-unacked message survives with its attempt bump durable and becomes
+  re-leasable after `ExpireLeases`.
 
 ## Relationships
 
@@ -38,9 +63,12 @@ than the P checker.
 
 - Every trace op that can fail hard uses `t.Fatal`; partial replays are not
   allowed to proceed silently.
-- The `commit` op is the sole site where `ExecTx`/`AckMessage`/`MarkProcessed`
-  are combined — it deliberately mirrors `execCore.commit` in `baselib/actor`
-  so the P model's commit-fence scenario stays tied to the real SQL path.
+- The `commit` op is the sole site where `ExecTx`/ack/`MarkProcessed` are
+  combined — it deliberately mirrors `execCore.commit` in `baselib/actor`,
+  routing the ack to `AckMessage` (leased) or `AckMessageByID` (leaseless,
+  empty token) exactly as production `ackMessage` does, so the P model's
+  commit-fence scenario stays tied to the real SQL path on both the leased and
+  leaseless single-worker consume.
 - Duplicate enqueue ops (`ExpectDuplicate: true`) must complete without error;
   a future rejection would fail here explicitly rather than at a later lease
   step.
