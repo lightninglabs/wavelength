@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/baselib/tlvutil"
 	"github.com/lightninglabs/darepo-client/internal/indexerlimits"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
@@ -180,16 +181,11 @@ func (m *SendListOORRecipientEventsByScriptRequest) Encode(w io.Writer) error {
 		[]byte(idempotencyKey),
 	)
 
-	stream, err := tlv.NewStream(
-		pkScriptRec.Record(), afterEventRec.Record(), limitRec.Record(),
-		correlationRec.Record(), msgIDRec.Record(),
+	return tlvutil.EncodeRecords(
+		w, pkScriptRec.Record(), afterEventRec.Record(),
+		limitRec.Record(), correlationRec.Record(), msgIDRec.Record(),
 		idempotencyRec.Record(),
 	)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
 }
 
 // Decode deserializes the message from the provided reader.
@@ -210,16 +206,11 @@ func (m *SendListOORRecipientEventsByScriptRequest) Decode(r io.Reader) error {
 		[]byte,
 	]()
 
-	stream, err := tlv.NewStream(
-		pkScriptRec.Record(), afterEventRec.Record(), limitRec.Record(),
-		correlationRec.Record(), msgIDRec.Record(),
+	if _, err := tlvutil.DecodeRecords(
+		r, pkScriptRec.Record(), afterEventRec.Record(),
+		limitRec.Record(), correlationRec.Record(), msgIDRec.Record(),
 		idempotencyRec.Record(),
-	)
-	if err != nil {
-		return err
-	}
-
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	); err != nil {
 		return err
 	}
 
@@ -382,16 +373,11 @@ func (m *SendListVTXOsByScriptsRequest) Encode(w io.Writer) error {
 		),
 	)
 
-	stream, err := tlv.NewStream(
-		pkScriptsRec.Record(), limitRec.Record(),
+	return tlvutil.EncodeRecords(
+		w, pkScriptsRec.Record(), limitRec.Record(),
 		correlationRec.Record(), msgIDRec.Record(),
 		idempotencyRec.Record(), afterCursorRec.Record(),
 	)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
 }
 
 // Decode deserializes the message from the provided reader.
@@ -416,16 +402,11 @@ func (m *SendListVTXOsByScriptsRequest) Decode(r io.Reader) error {
 		[]byte,
 	]()
 
-	stream, err := tlv.NewStream(
-		pkScriptsRec.Record(), legacyCursorRec.Record(),
+	parsed, err := tlvutil.DecodeRecords(
+		r, pkScriptsRec.Record(), legacyCursorRec.Record(),
 		limitRec.Record(), correlationRec.Record(), msgIDRec.Record(),
 		idempotencyRec.Record(), afterCursorRec.Record(),
 	)
-	if err != nil {
-		return err
-	}
-
-	parsed, err := stream.DecodeWithParsedTypes(r)
 	if err != nil {
 		return err
 	}
