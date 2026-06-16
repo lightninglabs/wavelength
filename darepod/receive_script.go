@@ -21,9 +21,20 @@ const (
 	defaultOORReceiveScriptRegistrationTTL = 30 * 24 * time.Hour
 
 	// oorReceiveKeyFamily is the key family used for OOR receive
-	// keys. Uses a custom family distinct from the identity key
-	// family to keep receive keys in their own derivation path.
-	oorReceiveKeyFamily = keychain.KeyFamily(987_200)
+	// keys. It is distinct from the identity key family (and the
+	// boarding/VTXO families) so receive keys live in their own
+	// derivation path.
+	//
+	// The value must stay within the range of key family accounts that
+	// lnd pre-provisions on a wallet (families 0..255, created via
+	// InitAccounts when the wallet is set up or converted to
+	// watch-only). Deriving from a family outside that range forces
+	// lnd to create the account on demand, which needs the master key
+	// and therefore fails on a watch-only + remote-signer wallet with
+	// "address manager is watching-only". 202 keeps us inside the
+	// pre-provisioned range and continues the ark operator block
+	// (sweep=200, operator=201) used on the server side.
+	oorReceiveKeyFamily = keychain.KeyFamily(202)
 )
 
 // DefaultOORReceiveKeyFamily returns the key family used for
