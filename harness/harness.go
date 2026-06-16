@@ -61,6 +61,11 @@ const (
 	// readiness, not logic under test.
 	electrsReadyTimeout = 2 * time.Minute
 
+	// lndStartupTimeout is a longer timeout for LND bootstrap and chain
+	// synchronization operations that can take meaningfully longer than the
+	// generic harness timeout under serialized systest load.
+	lndStartupTimeout = 90 * time.Second
+
 	// pollInterval is the interval for polling in require.Eventually
 	// calls. Set to 200ms to balance responsiveness with CPU usage during
 	// test execution. This is used for most polling operations including
@@ -2211,7 +2216,7 @@ func (h *Harness) startLNDInstance(name, dataDir string) *LndInstance {
 
 			return true
 		},
-		defaultTimeout, time.Second,
+		lndStartupTimeout, time.Second,
 		fmt.Sprintf("%s TLS/gRPC not ready", name),
 	)
 
@@ -2271,7 +2276,9 @@ func (h *Harness) initAndWaitLNDInstance(
 		}
 
 		return resp.State == lnrpc.WalletState_SERVER_ACTIVE
-	}, defaultTimeout, time.Second, fmt.Sprintf("%s not active", inst.Name))
+	}, lndStartupTimeout, time.Second,
+		fmt.Sprintf("%s not active", inst.Name),
+	)
 
 	err = h.pool.Retry(func() error {
 		if _, err := os.Stat(inst.Macaroon); err != nil {
@@ -2358,7 +2365,7 @@ func (h *Harness) waitForLNDChainSyncInstance(inst *LndInstance) {
 
 			return sync.SyncedToChain
 		},
-		defaultTimeout, pollInterval,
+		lndStartupTimeout, pollInterval,
 		fmt.Sprintf("%s not synced", inst.Name),
 	)
 }
