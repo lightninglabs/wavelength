@@ -21,6 +21,17 @@ state transitions and validation rules live under [Invariants](#invariants).
   `PartialSigsSentState`, `ForfeitSignaturesCollectingState`,
   `InputSigSentState`, `ConfirmedState`, `ClientFailedState`,
   `RecoveryInitiatedState`.
+- `CommitmentTxReceivedState` — carries five per-round operator keys
+  delivered alongside the commitment tx (nil means old server; FSM
+  falls back to global `OperatorTerms` values):
+  `TreeCosignKey *btcec.PublicKey` (per-round MuSig2 tree cosigner),
+  `ConnectorOperatorKey *btcec.PublicKey` (connector tree rebuild key),
+  `SweepKey *btcec.PublicKey` (VTXO-tree sweep leaf key),
+  `SweepDelay uint32` (batch-wide absolute timelock in blocks),
+  `ForfeitKey *btcec.PublicKey` (BIP-86 forfeit penalty output key).
+  `CommitmentTxValidatedState` and `ForfeitSignaturesCollectingState`
+  carry `SweepDelay` and `ForfeitKey` forward through the signing
+  ceremony.
 - `ClientEvent` — sealed inbound event interface. Notable members:
   `JoinRoundQuoteReceived` (carries reseal `SealPass`), `QuoteAccepted`,
   `QuoteRejected`, `ForfeitCollectionTimedOut`, `ForfeitSignatureResponse`,
@@ -245,6 +256,14 @@ state transitions and validation rules live under [Invariants](#invariants).
   collaborative leaf when the live output uses a custom script policy;
   without it the VTXO actor would build a forfeit against the wrong
   tapscript branch.
+- **Per-round operator keys**: `TreeCosignKey`, `ConnectorOperatorKey`,
+  `SweepKey`, `SweepDelay`, and `ForfeitKey` are delivered per-round in
+  `CommitmentTxReceivedState` (not from global `OperatorTerms`). When
+  nil/zero, the FSM falls back to the corresponding global value so
+  pre-upgrade servers continue to work. Code that rebuilds VTXO trees,
+  connector trees, sweep branches, or forfeit penalty outputs MUST use
+  the per-round value from the state rather than reading from
+  `OperatorTerms` directly.
 
 ## Deep Docs
 

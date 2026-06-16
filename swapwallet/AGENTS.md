@@ -73,6 +73,14 @@ default builds avoid the swap executor's dependency graph.
   - ← API: `walletdkrpc.{Create,Unlock,Send,Recv,List,Balance,Deposit,
     Status,Exit,ExitStatus,SubscribeWallet}Request`
 
+### History internals
+
+- `collectForfeitedVTXOOutpoints` — queries `RPCServer.ListVTXOs` with
+  `VTXO_STATUS_FORFEITED` and returns a set of outpoint strings. Called
+  lazily by `List` when pending EXIT entries exist so that VTXO entries
+  already forfeited in the daemon are decorated as forfeited in the
+  wallet history view rather than appearing as pending.
+
 ## Invariants
 
 - Admin handlers (`Create`/`Unlock`/`Exit`/`ExitStatus`) are

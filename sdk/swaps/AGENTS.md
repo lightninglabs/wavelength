@@ -40,6 +40,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
   to sign receive invoices and decode the forwarded final-hop onion.
   Backed by `daemonReceiveAuthKey`, which delegates to `DaemonConn`
   RPCs rather than holding a raw private key in the SDK.
+- `OutSwapHtlcPart` — single MPP (multi-path payment) shard:
+  `AmountMsat lnwire.MilliSatoshi` and `OnionBlob []byte`. An
+  `OutSwapHtlcEvent` now carries a `Parts []OutSwapHtlcPart` slice so
+  the server can aggregate multi-part Lightning payments into one
+  out-swap event instead of one event per shard.
 - `IncomingVHTLCNotification` — unified type carrying either a
   Lightning-backed `OutSwapHtlcEvent` or a same-Ark `InArkHtlcEvent`,
   plus `AckCursor` and an `Ack` hook.
@@ -56,7 +61,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 - `Store` — isolated SQLite persistence. Runs its own migration table
   (`swap_client_schema_migrations`) separate from the main daemon DB.
 - `SwapServerConn` / `GRPCSwapServerConn` — remote swap-server gRPC
-  (`RequestChannelID`, `CreateInSwap`).
+  interface; adds `AcknowledgeOutSwapHTLC(ctx, paymentHash, vhtlcPubkey)`
+  so the client can ack receipt of an out-swap HTLC event to the server
+  after durably persisting it.
 - `DaemonConn` — wallet operations (OOR sends, VTXO lookups, key
   queries, receive-auth signing/ECDH) provided by the Ark daemon.
   Includes `ReceiveAuthKey`, `SignReceiveAuthMessage[Compact]`, and

@@ -7,7 +7,7 @@ Client-side RPC message definitions and HTTP transport in sub-packages:
 | Sub-package | Kind | Purpose |
 |-------------|------|---------|
 | `rpc/roundpb` | generated | Round protocol messages |
-| `rpc/oorpb` | generated | OOR transfer messages |
+| `rpc/oorpb` | mixed | OOR transfer messages (generated proto + handwritten payload helpers) |
 | `rpc/swapclientrpc` | generated | Swap client service stubs |
 | `rpc/walletdkrpc` | generated | Highest-level wallet service stubs |
 | `rpc/restclient` | hand-written | HTTP/protoJSON transport adapter |
@@ -24,5 +24,5 @@ Client-side RPC message definitions and HTTP transport in sub-packages:
 ## Invariants
 
 - **Never edit generated code** — regenerate via `make rpc`.
-- `rpc/restclient` is the only hand-written sub-package here; all others
-  are generated protobuf stubs.
+- `rpc/restclient` and `rpc/oorpb` are the only sub-packages with
+  hand-written Go; all other sub-packages are pure generated protobuf stubs.

@@ -29,6 +29,12 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `receiveSessionAdapter` — Adds method accessors over
   `sdk/swaps.ReceiveSession` so both production code and tests share the same
   interface without exposing struct fields.
+- `liveOperatorDaemonConn` / `daemonWithLiveOperatorKey` — Thin wrapper
+  that overrides `DaemonConn.OperatorPubKey` with a live RPC fetcher
+  (`RPCServer.OperatorPubKey`) instead of the cached value held by the
+  Ark SDK facade. Applied in `Register` so vHTLC workflows that derive
+  keys from the operator pubkey always use the current value, not a
+  stale one captured at startup.
 - `Register(ctx, grpcServer, rpcServer, cfg)` — Top-level entry point called
   by a `swapruntime`-tagged `darepod` binary. Opens the daemon-owned SQLite
   swap store, dials `swapdk-server`, creates an in-process Ark SDK facade over

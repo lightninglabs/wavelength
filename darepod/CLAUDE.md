@@ -158,6 +158,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `BoardingBackend`; lwwallet/btcwallet paths reach into `BtcWallet`
   directly, reinterpreting `wallet.LockID` as `wtxmgr.LockID` via
   direct `[32]byte` cast so leases round-trip across restart.
+- `OperatorPubKey(ctx) (*btcec.PublicKey, error)` (on `RPCServer`) —
+  Fetches the current operator public key via a live `GetInfo` RPC to
+  the server. Used by `swapclientserver` to provide the swap SDK with a
+  fresh key rather than the cached startup value.
 - `reserveCustomInputs` (on `RPCServer`) — atomically claims every
   custom OOR outpoint for a `SendOOR` call. Returns a release
   function (typically deferred).
@@ -285,11 +289,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `vtxo.ManagerMsg` via `MapInputRef`. Compile-time assertions
   enforce that all `round.VTXOManagerMsg` implementors satisfy
   `vtxo.ManagerMsg`.
-- OOR receive-key is derived once at startup via
-  `EnsureDefaultOORReceiveScript` and persisted for restart-safe
-  re-registration. The `DurableUnaryBuilder` is wired through
-  `serverconn.ConnectorConfig` so all indexer queries flow through
-  the durable transport.
+- OOR receive-key uses `oorReceiveKeyFamily = 202` (within lnd's
+  pre-provisioned 0–255 account range). Values outside that range
+  require the master key to create the account on demand, which fails
+  on watch-only + remote-signer wallets with "address manager is
+  watching-only". Derived once at startup via `EnsureDefaultOORReceiveScript`
+  and persisted for restart-safe re-registration. The `DurableUnaryBuilder`
+  is wired through `serverconn.ConnectorConfig` so all indexer queries
+  flow through the durable transport.
 - The OOR artifact store backs three round/vtxo abstractions
   (`OwnedScriptChecker`, `OwnedScriptRegistrar`, `OwnedScriptLookup`).
   One logical "owned receive scripts" table; all ownership questions

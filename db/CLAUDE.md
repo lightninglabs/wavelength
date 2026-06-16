@@ -72,6 +72,19 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
 - `LatestMigrationVersion = 17` — current schema version.
+- `InternalKeyQuerier` — Minimal sqlc interface (`UpsertInternalKey` +
+  `GetInternalKeyByID`) required by the internal-key registry helpers.
+  The sqlc-generated `*Queries` satisfies it, as does every consumer
+  store interface that embeds these two methods.
+- `RegisterInternalKeyTx(ctx, qtx, now, desc) int64` — Idempotently
+  upserts a `(pubkey, key_family, key_index)` triple into the shared
+  `internal_keys` table and returns its surrogate id. Called inside the
+  same transaction that writes the referencing row.
+- `InternalKeyDescByIDTx(ctx, qtx, id) keychain.KeyDescriptor` —
+  Hydrates a `KeyDescriptor` from a stored `internal_keys` id on load.
+  Returns `ErrInternalKeyNotFound` when no row matches.
+- `ErrInternalKeyPubKeyMissing` / `ErrInternalKeyNotFound` — Sentinels
+  for nil-pubkey registration and missing-id hydration errors.
 - `SpendingReservationPersistenceStore` — Persists the durable index of VTXO
   outpoints reserved by an active spend owner (e.g. an outgoing OOR session).
   A row exists IFF the owning session was durably checkpointed, so a startup
@@ -125,6 +138,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
+- `internal_keys` registry — A shared `internal_keys(id, pubkey,
+  key_family, key_index, created_at)` table was added to the existing
+  migrations 000002 (`boarding_tables`), 000003 (`round_tables`), and
+  000004 (`oor_artifact_store`). Each of those tables now carries a
+  `*_key_id BIGINT REFERENCES internal_keys(id)` FK in place of the
+  old inline `pubkey/key_family/key_index` columns. This avoids
+  duplicating key material and lets the daemon resolve `KeyDescriptor`
+  instances by id instead of re-deriving them from stored raw bytes.
 - `000017_spending_reservations` — adds `spending_reservations` table with
   `(outpoint_hash, outpoint_index)` PK, `owner_kind`, `owner_id`, and
   `created_at`. A row exists IFF the owning spend session was durably
