@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -18,6 +17,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/coinselect"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/round"
@@ -891,22 +891,34 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 		return nil, 0, fmt.Errorf("list live vtxos: %w", err)
 	}
 
-	// Run largest-first selection.
-	selected, selectedTotal := selectLargestFirstWithMinChange(
-		candidates, p.targetAmount, p.minChangeAmount,
+	// Run largest-first selection through the shared selector. Map its
+	// typed outcomes back onto the manager's liquidity diagnostics: a
+	// dust-change rejection is reported verbatim, while any shortfall
+	// (including an empty candidate set) is refined into the
+	// locked-vs-absent distinction.
+	res, err := coinselect.LargestFirst(
+		candidates, func(d *Descriptor) btcutil.Amount {
+			return d.Amount
+		}, coinselect.Request{
+			Target:    p.targetAmount,
+			MinChange: p.minChangeAmount,
+		},
 	)
-	if selected == nil {
-		if selectedTotal >= p.targetAmount && p.minChangeAmount > 0 {
-			change := selectedTotal - p.targetAmount
+	switch {
+	case errors.Is(err, coinselect.ErrChangeBelowMin):
+		change := res.Total - p.targetAmount
 
-			return nil, 0, fmt.Errorf("change %d is below minimum "+
-				"change amount %d", change, p.minChangeAmount)
-		}
+		return nil, 0, fmt.Errorf("change %d is below minimum change "+
+			"amount %d", change, p.minChangeAmount)
 
-		err := m.insufficientLiquidityError(ctx, candidates, p)
+	case errors.Is(err, coinselect.ErrSelectionShortfall),
+		errors.Is(err, coinselect.ErrNoCandidates):
+		return nil, 0, m.insufficientLiquidityError(ctx, candidates, p)
 
+	case err != nil:
 		return nil, 0, err
 	}
+	selected := res.Selected
 
 	// Reserve each selected VTXO via its actor. Track successfully
 	// reserved outpoints so we can roll back on partial failure.
@@ -1438,66 +1450,6 @@ func (m *Manager) handleSelectAndReserveForfeit(ctx context.Context,
 			TotalSelected: total,
 		},
 	)
-}
-
-// =============================================================================
-// Coin selection
-// =============================================================================
-
-// selectLargestFirst implements largest-first coin selection. It sorts
-// candidates by amount descending and picks VTXOs until the target is met.
-// Returns nil if the candidates cannot cover the target.
-func selectLargestFirst(candidates []*Descriptor,
-	target btcutil.Amount) []*Descriptor {
-
-	selected, _ := selectLargestFirstWithMinChange(candidates, target, 0)
-
-	return selected
-}
-
-// selectLargestFirstWithMinChange implements largest-first coin selection
-// while avoiding non-zero change below minChange. Exact spends remain valid,
-// because no change output is produced in that case.
-func selectLargestFirstWithMinChange(candidates []*Descriptor,
-	target, minChange btcutil.Amount) ([]*Descriptor, btcutil.Amount) {
-
-	// Sort by amount descending.
-	sorted := make([]*Descriptor, len(candidates))
-	copy(sorted, candidates)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Amount > sorted[j].Amount
-	})
-
-	var (
-		selected        []*Descriptor
-		total           btcutil.Amount
-		rejectedTotal   btcutil.Amount
-		rejectedForDust bool
-	)
-	for _, vtxo := range sorted {
-		selected = append(selected, vtxo)
-		total += vtxo.Amount
-
-		if total < target {
-			continue
-		}
-
-		change := total - target
-		if change == 0 || minChange == 0 || change >= minChange {
-			return selected, total
-		}
-
-		if !rejectedForDust {
-			rejectedTotal = total
-			rejectedForDust = true
-		}
-	}
-
-	if rejectedForDust {
-		return nil, rejectedTotal
-	}
-
-	return nil, total
 }
 
 // dedupOutpoints returns a copy of the slice with duplicate outpoints
