@@ -73,6 +73,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/signal"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
@@ -673,6 +674,55 @@ func (s *Server) isServerConnected() bool {
 // GetInfo.
 func (s *Server) setServerConnected(connected bool) {
 	s.serverConnected.Store(connected)
+}
+
+// operatorConnPollInterval is how often monitorOperatorConnection samples
+// the direct gRPC connection's transport state to keep the
+// ServerConnectionUp gauge and ServerSyncTimestamp live. It is a balance
+// between detecting an operator outage promptly and not busy-polling the
+// gRPC connectivity API.
+const operatorConnPollInterval = 15 * time.Second
+
+// monitorOperatorConnection keeps the ServerConnectionUp gauge and the
+// ServerSyncTimestamp in step with the live health of the direct gRPC
+// connection to the ark operator. The bootstrap stamp in
+// connectAndBootstrapMailbox only proves the link came up once; this
+// watcher is what lets the gauge fall back to 0 when the operator
+// becomes unreachable and refreshes the sync timestamp while the link
+// stays Ready, so "connection down" and "no recent contact" alerts can
+// fire. It runs until the daemon context is cancelled, at which point it
+// marks the connection down so a clean shutdown does not leave a stale 1.
+func (s *Server) monitorOperatorConnection(ctx context.Context) {
+	// Without a direct gRPC connection (e.g. REST transport) there is
+	// no connectivity state to observe; leave the bootstrap stamp as-is.
+	if s.serverConn == nil {
+		return
+	}
+
+	ticker := time.NewTicker(operatorConnPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// The daemon is shutting down: the operator connection
+			// is no longer up.
+			metrics.ServerConnectionUp.Set(0)
+
+			return
+
+		case <-ticker.C:
+			// A Ready transport is the live proof the operator is
+			// reachable; any other state (connecting, transient
+			// failure, idle, shutdown) means we have lost contact.
+			if s.serverConn.GetState() == connectivity.Ready {
+				metrics.ServerConnectionUp.Set(1)
+				metrics.ServerSyncTimestamp.SetToCurrentTime()
+			} else {
+				metrics.ServerConnectionUp.Set(0)
+			}
+		}
+	}
 }
 
 // openRPCListener returns the daemon RPC listener. Embedders can inject a
@@ -3338,6 +3388,18 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	// gauge that nobody scrapes is harmless.
 	metrics.ServerConnectionUp.Set(1)
 	metrics.ServerSyncTimestamp.SetToCurrentTime()
+
+	// Keep those gauges honest for the rest of the daemon's life: the
+	// one-shot stamp above only proves the link came up once. The
+	// watcher drives the gauge back to 0 when the operator becomes
+	// unreachable and refreshes the sync timestamp while the link is
+	// healthy, so "connection down" and "no recent contact" alerts
+	// actually fire. Gated on metrics being enabled to avoid a needless
+	// goroutine on the disabled path. It runs on runCtx so it lives for
+	// the daemon's lifetime and unwinds on shutdown.
+	if s.metricsSink.IsSome() {
+		go s.monitorOperatorConnection(s.runCtx)
+	}
 
 	// Build the mailbox transport runtime.
 	edge := s.newMailboxEdge()

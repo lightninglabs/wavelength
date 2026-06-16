@@ -85,12 +85,15 @@ settlement confirmation.
 
 ## Sync / Liveness Gauges
 
-Set directly by the daemon (not the actor) at the operator-connection point.
+Set directly by the daemon (not the actor). The bootstrap point stamps both on
+the first successful direct `GetInfo`; a connection watcher
+(`monitorOperatorConnection`) then keeps them live for the daemon's lifetime by
+polling the direct gRPC connection's transport state every 15s.
 
 | Metric | Type | Labels | Source | Description |
 |--------|------|--------|--------|-------------|
-| `darepod_server_connection_up` | gauge | — | daemon | `1` when the direct gRPC connection to the ark operator is up, `0` otherwise. |
-| `darepod_server_sync_timestamp_seconds` | gauge | — | daemon | Unix timestamp of the last successful sync (direct `GetInfo`) with the operator. |
+| `darepod_server_connection_up` | gauge | — | daemon (connection watcher) | `1` when the direct gRPC connection to the ark operator is `Ready`, `0` otherwise (transient failure, idle, shutdown). |
+| `darepod_server_sync_timestamp_seconds` | gauge | — | daemon (connection watcher) | Unix timestamp of the last poll that found the operator connection `Ready`. A stale value signals lost contact. |
 
 ## gRPC Client Metrics
 
