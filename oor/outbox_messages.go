@@ -1,7 +1,6 @@
 package oor
 
 import (
-	"bytes"
 	"fmt"
 	"time"
 
@@ -9,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/baselib/tlvutil"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
@@ -519,15 +519,5 @@ func encodeRetryPayload(after time.Duration, reason string) ([]byte, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
