@@ -1082,6 +1082,10 @@ func (a *Ark) handleSweepTxNotification(ctx context.Context,
 			slog.String("txid", notif.Txid.String()),
 		)
 
+		// Count the terminal failure of this daemon-owned sweep so
+		// operators can alert on a stuck boarding-sweep watcher.
+		a.emitBackgroundTaskError(ctx, "boarding_sweep_watcher")
+
 		err := a.sweepStore.MarkBoardingSweepFailed(
 			ctx, notif.Txid, errors.New(notif.Reason),
 		)

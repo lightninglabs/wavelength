@@ -1139,6 +1139,14 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 
 		if err := s.grpcServer.Serve(lis); err != nil {
 			s.log.ErrorS(ctx, "gRPC server error", err)
+
+			// Serve returning a non-nil error means the daemon
+			// lost its inbound RPC listener (a clean shutdown
+			// returns nil); count it as a background-task failure
+			// so an operator can alert on it.
+			s.emitMetric(ctx, &metrics.BackgroundTaskErrorMsg{
+				Task: "server_grpc_listen",
+			})
 		}
 	}()
 	defer func() {
@@ -3523,6 +3531,7 @@ func (s *Server) initWalletActor(ctx context.Context,
 		wallet.WithClock(s.clk),
 		wallet.WithEagerRoundJoin(s.cfg.EagerRoundJoin),
 		wallet.WithFetchOperatorKey(s.fetchCurrentOperatorPubKey),
+		wallet.WithMetricsSink(s.metricsSink),
 	)
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,

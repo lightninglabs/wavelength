@@ -73,7 +73,7 @@ settlement confirmation.
 | `darepod_oor_transfers_sent_total` | counter | `status` | event (`SendOOR` RPC) | Outgoing out-of-round transfers by outcome. `status`: `submitted`, `failed`. |
 | `darepod_oor_transfers_received_total` | counter | `status` | event (incoming VTXO route) | Incoming out-of-round transfers by outcome. `status`: `materialized`, `failed`. |
 | `darepod_boarding_events_total` | counter | `status` | event (`Board` RPC) | Boarding (on-chain → VTXO) events by outcome. `status`: `submitted`, `skipped`, `failed`. |
-| `darepod_background_task_errors_total` | counter | `task` | event | Background-task errors by task name. |
+| `darepod_background_task_errors_total` | counter | `task` | event (subsystem actors) | Background-task errors by task name. Current tasks: `boarding_sweep_watcher`, `server_grpc_listen`. |
 
 > Emission seams: `rounds_completed_total` is emitted by the `round` actor as
 > each round reaches `ConfirmedState` (`confirmed`) or `ClientFailedState`

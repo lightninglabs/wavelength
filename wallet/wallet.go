@@ -23,6 +23,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/metrics"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -130,6 +131,14 @@ type Ark struct {
 	// the off-chain double-entry ledger. When None, audit emission
 	// is silently skipped (tests, lightweight harnesses).
 	ledgerSink fn.Option[ledger.Sink]
+
+	// metricsSink is an optional reference to the client-side metrics
+	// actor. When set, the boarding-sweep watcher emits a
+	// BackgroundTaskErrorMsg as managed sweeps fail terminally so the
+	// darepod_background_task_errors_total counter carries signal for
+	// this daemon-owned background task. When None (metrics disabled,
+	// or tests), emission is silently skipped.
+	metricsSink fn.Option[metrics.Sink]
 
 	// selfRef is the actor's own ref, captured at Start time so the
 	// boarding-sweep handlers can hand it to chainsource.MapSpendEvent
@@ -353,6 +362,18 @@ func WithWalletSweep(backing WalletBackingSweeper,
 	}
 }
 
+// WithMetricsSink wires the client-side metrics actor into the wallet so
+// the boarding-sweep watcher can report terminal sweep failures as a
+// background-task error. When omitted (the default), the metrics sink
+// stays None and emission is a silent no-op, matching the opt-in metrics
+// design. Production passes fn.Some(metrics.NewSink(actorSystem)) only
+// when metrics are enabled.
+func WithMetricsSink(sink fn.Option[metrics.Sink]) ArkOption {
+	return func(a *Ark) {
+		a.metricsSink = sink
+	}
+}
+
 // WithClock overrides the wallet's clock with a caller-supplied instance.
 // Production wires this with the daemon-wide clock so persist timestamps
 // share one source of truth; tests use this to freeze time. When omitted,
@@ -443,6 +464,29 @@ func composeRefreshTemplate(vtxo *VTXODescriptor,
 	}
 
 	return rebuilt, nil
+}
+
+// emitBackgroundTaskError reports a failure in a daemon-owned
+// background task to the metrics actor so the
+// darepod_background_task_errors_total counter advances, labelled by
+// task. The boarding-sweep watcher is such a task: it runs
+// independently of any RPC, so a terminal sweep failure has no caller
+// to surface it. Emission is best-effort and fire-and-forget — a Tell
+// failure is logged at debug level and never blocks the path that
+// observed the error. A None sink (metrics disabled, tests) is a silent
+// no-op.
+func (a *Ark) emitBackgroundTaskError(ctx context.Context, task string) {
+	a.metricsSink.WhenSome(func(sink metrics.Sink) {
+		msg := &metrics.BackgroundTaskErrorMsg{Task: task}
+		if err := sink.Tell(ctx, msg); err != nil {
+			a.logger(ctx).DebugS(
+				ctx,
+				"Failed to emit background task error metric",
+				err,
+				slog.String("task", task),
+			)
+		}
+	})
 }
 
 // emitUTXOCreated posts a UTXOCreatedMsg to the client ledger
