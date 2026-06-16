@@ -78,6 +78,11 @@ type fakeRPCServer struct {
 	sendOnChainErr     error
 	sendOnChainCalls   int
 	sendOnChainLastReq *daemonrpc.SendOnChainRequest
+
+	estimateFeeResp    *daemonrpc.EstimateFeeResponse
+	estimateFeeErr     error
+	estimateFeeCalls   int
+	estimateFeeLastReq *daemonrpc.EstimateFeeRequest
 }
 
 func (f *fakeRPCServer) LeaveVTXOs(_ context.Context,
@@ -134,6 +139,19 @@ func (f *fakeRPCServer) GetInfo(_ context.Context,
 	}
 
 	return f.getInfoResp, f.getInfoErr
+}
+
+func (f *fakeRPCServer) EstimateFee(_ context.Context,
+	req *daemonrpc.EstimateFeeRequest) (*daemonrpc.EstimateFeeResponse,
+	error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.estimateFeeCalls++
+	f.estimateFeeLastReq = req
+
+	return f.estimateFeeResp, f.estimateFeeErr
 }
 
 func (f *fakeRPCServer) GetBalance(_ context.Context,

@@ -51,6 +51,10 @@ type RPCServer interface {
 		error,
 	)
 
+	EstimateFee(ctx context.Context,
+		req *daemonrpc.EstimateFeeRequest) (
+		*daemonrpc.EstimateFeeResponse, error)
+
 	GetBalance(ctx context.Context,
 		req *daemonrpc.GetBalanceRequest) (
 		*daemonrpc.GetBalanceResponse, error)

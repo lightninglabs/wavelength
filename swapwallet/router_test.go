@@ -248,6 +248,13 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 		Status: "submitted",
 	}
 
+	// The operator returns a dynamic fee quote, so the preview is a
+	// COMPLETE quote: net outflow is the amount delivered plus the fee,
+	// not the gross VTXO bundle selected to cover it.
+	rpc.estimateFeeResp = &daemonrpc.EstimateFeeResponse{
+		TotalFeeSat: 500,
+	}
+
 	prepareResp, err := r.PrepareSend(
 		t.Context(), &walletdkrpc.PrepareSendRequest{
 			Destination: &walletdkrpc.
@@ -263,16 +270,27 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 		prepareResp.GetRail(),
 	)
 	require.Equal(
-		t, walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
+		t, walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
 		prepareResp.GetQuoteStatus(),
 	)
+	require.True(t, prepareResp.GetFeeKnown())
 	require.Equal(
-		t, int64(12_000), prepareResp.GetExpectedTotalOutflowSat(),
+		t, int64(500), prepareResp.GetExpectedFeeSat(),
 	)
+
+	// Net outflow is amount + fee (10000 + 500); the ~2000 sat residual
+	// over the 12000 sat selected bundle returns as a change VTXO and is
+	// NOT part of the outflow.
+	require.Equal(
+		t, int64(10_500), prepareResp.GetExpectedTotalOutflowSat(),
+	)
+
+	// The preview selects largest-first (7000, then 5000), mirroring the
+	// daemon's selection rather than the daemon's response order.
 	require.Equal(
 		t, []string{
-			"tx1:0",
 			"tx2:1",
+			"tx1:0",
 		},
 		prepareResp.GetSelectedOutpoints(),
 	)
@@ -334,6 +352,102 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 		t, 1, rpc.sendOnChainCalls,
 		"prepared send intents must be consume-once",
 	)
+}
+
+// TestRouterSendOnchainFeeFallsBackToLocalFloor verifies that when the
+// operator's EstimateFee quote is unavailable, the preview falls back to a
+// local batch-size-1 fee floor derived from the daemon's cached operator
+// terms, marks the quote LOCAL_ONLY, and surfaces a warning.
+func TestRouterSendOnchainFeeFallsBackToLocalFloor(t *testing.T) {
+	t.Parallel()
+
+	r, _, rpc := newRouterFixture(t)
+	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
+		Vtxos: []*daemonrpc.VTXO{
+			{
+				Outpoint:  "tx1:0",
+				AmountSat: 10000,
+			},
+		},
+	}
+
+	// Operator quote unavailable forces the local floor.
+	rpc.estimateFeeErr = errors.New("operator unreachable")
+
+	// Cached operator terms drive the floor: at 10 sat/vByte a bounded
+	// leave with one input and two outputs is
+	// 60 + 58 + 2*43 = 204 vBytes, i.e. 2040 sats on-chain, which
+	// exceeds the 300 sat minimum operator fee.
+	rpc.getInfoResp = &daemonrpc.GetInfoResponse{
+		WalletState: daemonrpc.WalletState_WALLET_STATE_READY,
+		ServerInfo: &daemonrpc.ServerInfo{
+			FeeRate:        10,
+			MinOperatorFee: 300,
+		},
+	}
+
+	prepareResp, err := r.PrepareSend(
+		t.Context(), &walletdkrpc.PrepareSendRequest{
+			Destination: &walletdkrpc.
+				PrepareSendRequest_OnchainAddress{
+				OnchainAddress: "bcrt1qaddr",
+			},
+			AmtSat: 5000,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
+		prepareResp.GetQuoteStatus(),
+	)
+	require.False(t, prepareResp.GetFeeKnown())
+	require.Equal(t, int64(2040), prepareResp.GetExpectedFeeSat())
+	require.Equal(
+		t, int64(7040), prepareResp.GetExpectedTotalOutflowSat(),
+	)
+	require.NotEmpty(t, prepareResp.GetWarning())
+}
+
+// TestRouterSendOnchainRejectsWhenFundsCannotCoverFee verifies that a
+// bounded preview is rejected when the selected live VTXOs cover the
+// principal but not the principal plus the quoted fee, rather than
+// confirming an unaffordable outflow the real send would later fail.
+func TestRouterSendOnchainRejectsWhenFundsCannotCoverFee(t *testing.T) {
+	t.Parallel()
+
+	r, _, rpc := newRouterFixture(t)
+
+	// A single 6000 sat VTXO covers the 5000 sat principal (plus the
+	// 300 sat selection headroom) but not the 5000 + 2040 sat amount +
+	// fee, so the preview must reject rather than report a 7040 sat
+	// outflow it cannot fund.
+	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
+		Vtxos: []*daemonrpc.VTXO{
+			{
+				Outpoint:  "tx1:0",
+				AmountSat: 6000,
+			},
+		},
+	}
+	rpc.estimateFeeErr = errors.New("operator unreachable")
+	rpc.getInfoResp = &daemonrpc.GetInfoResponse{
+		WalletState: daemonrpc.WalletState_WALLET_STATE_READY,
+		ServerInfo: &daemonrpc.ServerInfo{
+			FeeRate:        10,
+			MinOperatorFee: 300,
+		},
+	}
+
+	_, err := r.PrepareSend(
+		t.Context(), &walletdkrpc.PrepareSendRequest{
+			Destination: &walletdkrpc.
+				PrepareSendRequest_OnchainAddress{
+				OnchainAddress: "bcrt1qaddr",
+			},
+			AmtSat: 5000,
+		},
+	)
+	require.ErrorIs(t, err, ErrAmountRequired)
 }
 
 // TestRouterSendOnchainSweepAllRoutesToSendOnChain confirms that the
