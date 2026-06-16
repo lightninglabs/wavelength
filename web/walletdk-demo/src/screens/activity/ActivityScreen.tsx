@@ -1,10 +1,11 @@
 import { RefreshCw } from "lucide-react";
-import { Entry } from "@lightninglabs/walletdk-core";
+import { Balance, Entry } from "@lightninglabs/walletdk-core";
 import { ActivityRow } from "../../components/ActivityRow";
 import { PageHead } from "../../components/layout/PageHead";
 import { AppTab } from "../../components/layout/nav";
 import { Band } from "../../components/ui/Band";
 import { Label } from "../../components/ui/Label";
+import { normalizeActivity } from "../../lib/balance";
 import { cn } from "../../lib/cn";
 import { dayLabel } from "../../lib/format";
 
@@ -30,16 +31,18 @@ function groupByDay(entries: Entry[]): Array<{ day: string; items: Entry[] }> {
 // day with the rows divided by hairlines.
 export function ActivityScreen({
   activity,
+  balance,
   onNavigate,
   onRefresh,
   busy,
 }: {
   activity: Entry[];
+  balance: Balance | null;
   onNavigate: (tab: AppTab) => void;
   onRefresh: () => void;
   busy: boolean;
 }) {
-  const groups = groupByDay(activity);
+  const groups = groupByDay(normalizeActivity(activity, balance));
 
   return (
     <div>

@@ -500,6 +500,7 @@ export function App() {
       {tab === "activity" ? (
         <ActivityScreen
           activity={wallet.activity}
+          balance={wallet.balance}
           onNavigate={setTab}
           onRefresh={() => wallet.refresh().catch(() => undefined)}
           busy={wallet.operations.refresh.busy}

@@ -22,7 +22,7 @@ import { FauxQR } from "../../components/ui/FauxQR";
 import { InlineError } from "../../components/ui/InlineError";
 import { Label } from "../../components/ui/Label";
 import { cn } from "../../lib/cn";
-import { hasAnyValue, pendingInBalance, totalBalance } from "../../lib/balance";
+import { hasAnyValue, normalizeActivity, pendingInBalance, totalBalance } from "../../lib/balance";
 import { errorMessage } from "../../lib/errors";
 import { formatBtc, formatSats } from "../../lib/format";
 import { Composition } from "./Composition";
@@ -69,7 +69,11 @@ export function HomeScreen({
               <Composition balance={balance} />
             </div>
           </Band>
-          <RecentActivityBand activity={activity} onNavigate={onNavigate} />
+          <RecentActivityBand
+            activity={activity}
+            balance={balance}
+            onNavigate={onNavigate}
+          />
           <RuntimeBand info={info} phaseLabel={phaseLabel} />
         </>
       ) : (
@@ -342,11 +346,15 @@ function EmptyWallet({
 // RecentActivityBand lists the latest entries with a link to full history.
 function RecentActivityBand({
   activity,
+  balance,
   onNavigate,
 }: {
   activity: Entry[];
+  balance: Balance | null;
   onNavigate: (t: AppTab) => void;
 }) {
+  const rows = normalizeActivity(activity, balance);
+
   return (
     <Band tinted>
       <div className="flex items-center justify-between">
@@ -359,13 +367,13 @@ function RecentActivityBand({
           View all <ChevronRight size={13} />
         </button>
       </div>
-      {activity.length === 0 ? (
+      {rows.length === 0 ? (
         <div className="mt-2 border-t border-border py-8 text-center text-sm text-muted">
           No activity yet.
         </div>
       ) : (
         <div className="mt-2 divide-y divide-border border-t border-border">
-          {activity.slice(0, 4).map((entry) => (
+          {rows.slice(0, 4).map((entry) => (
             <ActivityRow key={entry.ID} entry={entry} />
           ))}
         </div>
