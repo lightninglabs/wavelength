@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -130,7 +131,7 @@ func newErrorPathActor(
 	cfg.Store = store
 	cfg.LocalMailboxID = "client-1"
 	cfg.RemoteMailboxID = "server-1"
-	cfg.ProtocolVersion = 1
+	cfg.ArkProtocolVersion = 1
 
 	return NewServerConnectionActor(cfg)
 }
@@ -159,7 +160,7 @@ func TestPullBatch_StatusFailure(t *testing.T) {
 	_, _, err := actor.pullBatch(t.Context(), 0)
 	require.Error(t, err)
 
-	var stErr *statusError
+	var stErr *mailboxconn.StatusError
 	require.ErrorAs(t, err, &stErr)
 	require.Equal(t, "Pull", stErr.Op)
 	require.Contains(t, stErr.Error(), "TEMPORARY")
@@ -189,7 +190,7 @@ func TestAckRemote_StatusFailure(t *testing.T) {
 	err := actor.ackRemote(t.Context(), 1)
 	require.Error(t, err)
 
-	var stErr *statusError
+	var stErr *mailboxconn.StatusError
 	require.ErrorAs(t, err, &stErr)
 	require.Equal(t, "AckUpTo", stErr.Op)
 	require.Contains(t, stErr.Error(), "ack failed")
@@ -307,12 +308,12 @@ func TestSaveCheckpoint_Error(t *testing.T) {
 func TestStatusError_ErrorString(t *testing.T) {
 	t.Parallel()
 
-	errNil := (&statusError{
+	errNil := (&mailboxconn.StatusError{
 		Op: "AckUpTo",
 	}).Error()
 	require.Contains(t, errNil, "nil status")
 
-	errStatus := (&statusError{
+	errStatus := (&mailboxconn.StatusError{
 		Op: "Pull",
 		Status: &mailboxpb.Status{
 			Ok:      false,

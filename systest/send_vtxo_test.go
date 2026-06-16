@@ -450,6 +450,18 @@ func newDirectedSendFixture(t *testing.T,
 		DustLimit:         testDustLimitSat,
 		MinOperatorFee:    testOperatorFeeSat,
 		MinConfirmations:  1,
+
+		// The operator must advertise and select an Ark protocol
+		// version, otherwise the client's bootstrap negotiation fails
+		// closed with "no compatible ark protocol version". The enabled
+		// versions are carried as ACTIVE policies.
+		SelectedArkVersion: arkrpc.ArkProtocolVersionV1,
+		ArkVersionPolicies: []*arkrpc.ArkVersionPolicy{
+			{
+				Version: arkrpc.ArkProtocolVersionV1,
+				State:   arkrpc.ArkVersionPolicy_STATE_ACTIVE,
+			},
+		},
 	}
 
 	operatorMailbox := serverconn.PubKeyMailboxID(

@@ -54,61 +54,14 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 		default:
 		}
 
-		// Step 1: Ack pending dispatches before pulling more. This
-		// allows the remote mailbox to garbage-collect already
-		// committed envelopes.
-		if state.NeedsAck() {
-			if err := a.ackRemote(
-				ctx, state.AckTarget,
-			); err != nil {
-
-				if isIngressShutdownErr(ctx, err) {
-					a.logIngressExit(ctx)
-
-					return
-				}
-
-				a.log.WarnS(ctx, "AckUpTo failed, retrying",
-					err,
-					slog.Uint64(
-						"ack_target", state.AckTarget,
-					))
-
-				a.sleepBackoff(ctx, &failCount)
-
-				continue
-			}
-
-			state.AdvanceAck()
-
-			// On the transactional path the advanced watermark is
-			// persisted by the next dispatch checkpoint (or the
-			// idle flush below); losing it to a crash only costs
-			// one redundant idempotent AckUpTo on restart. The
-			// legacy path keeps the immediate checkpoint.
-			if txOK {
-				ackDirty = true
-				failCount = 0
-			} else if err := a.saveCheckpoint(
-				ctx, state,
-			); err != nil {
-
-				a.log.WarnS(
-					ctx,
-					"Failed to save checkpoint after ack",
-					err,
-				)
-
-				// Don't reset failCount — if the checkpoint
-				// store is persistently down, we want backoff
-				// to apply on subsequent iterations rather
-				// than spinning at full speed.
-				a.sleepBackoff(ctx, &failCount)
-
-				continue
-			} else {
-				failCount = 0
-			}
+		// Step 1: Ack pending dispatches before pulling more so the
+		// remote mailbox can garbage-collect committed envelopes.
+		if exit, retry := a.ackPhase(
+			ctx, &state, &ackDirty, &failCount, txOK,
+		); exit {
+			return
+		} else if retry {
+			continue
 		}
 
 		// Step 2: Pull a batch of envelopes from the remote mailbox.
@@ -119,6 +72,12 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 			if isIngressShutdownErr(ctx, err) {
 				a.logIngressExit(ctx)
 
+				return
+			}
+
+			// A permanent version error is terminal: stop the loop
+			// rather than retrying forever.
+			if a.checkPermanentStatus(ctx, err) {
 				return
 			}
 
@@ -181,6 +140,17 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 				ctx, txStore, envelopes, nextCursor, state,
 			)
 			if foldErr != nil {
+				// A permanent inbound version mismatch is
+				// terminal: stop the loop WITHOUT advancing the
+				// cursor so the offending envelope is preserved
+				// and never acknowledged, matching the legacy
+				// dispatch path below. The production store is
+				// transactional, so this is the path a real
+				// daemon takes.
+				if a.checkPermanentStatus(ctx, foldErr) {
+					return
+				}
+
 				a.log.WarnS(ctx,
 					"Transactional dispatch failed",
 					foldErr,
@@ -209,6 +179,14 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 			ctx, envelopes, nextCursor,
 		)
 		if dispatchErr != nil {
+			// A permanent inbound version mismatch is terminal:
+			// stop the loop WITHOUT advancing the cursor so the
+			// offending envelope is preserved for a future
+			// compatible restart, and never acknowledged.
+			if a.checkPermanentStatus(ctx, dispatchErr) {
+				return
+			}
+
 			a.log.WarnS(ctx, "Dispatch failed",
 				dispatchErr,
 				slog.Uint64("committed_to", committedCursor),
@@ -265,6 +243,75 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 	}
 }
 
+// ackPhase acks any pending dispatches before the next pull so the remote
+// mailbox can garbage-collect committed envelopes. It mutates state, ackDirty,
+// and failCount in place and returns two loop-control booleans, (exit, retry):
+// exit is true when the loop must stop (local shutdown or a permanent version
+// error), and retry is true when the caller should back off and continue. On
+// the transactional path the advanced watermark is left dirty for the next
+// dispatch checkpoint (or idle flush) to persist; the legacy path checkpoints
+// inline.
+func (a *ServerConnectionActor) ackPhase(ctx context.Context, state *AckState,
+	ackDirty *bool, failCount *int, txOK bool) (bool, bool) {
+
+	if !state.NeedsAck() {
+		return false, false
+	}
+
+	if err := a.ackRemote(ctx, state.AckTarget); err != nil {
+		if isIngressShutdownErr(ctx, err) {
+			a.logIngressExit(ctx)
+
+			return true, false
+		}
+
+		// A permanent version error is terminal: stop the loop rather
+		// than retrying forever.
+		if a.checkPermanentStatus(ctx, err) {
+			return true, false
+		}
+
+		a.log.WarnS(ctx, "AckUpTo failed, retrying",
+			err,
+			slog.Uint64("ack_target", state.AckTarget),
+		)
+
+		a.sleepBackoff(ctx, failCount)
+
+		return false, true
+	}
+
+	state.AdvanceAck()
+
+	// On the transactional path the advanced watermark is persisted by the
+	// next dispatch checkpoint (or the idle flush); losing it to a crash
+	// only costs one redundant idempotent AckUpTo on restart. The legacy
+	// path keeps the immediate checkpoint.
+	if txOK {
+		*ackDirty = true
+		*failCount = 0
+
+		return false, false
+	}
+
+	if err := a.saveCheckpoint(ctx, *state); err != nil {
+		a.log.WarnS(
+			ctx, "Failed to save checkpoint after ack", err,
+		)
+
+		// Don't reset failCount — if the checkpoint store is
+		// persistently down, we want backoff to apply on subsequent
+		// iterations rather than spinning at full speed.
+		a.sleepBackoff(ctx, failCount)
+
+		return false, true
+	}
+
+	*failCount = 0
+
+	return false, false
+}
+
 // logIngressExit emits the common ingress shutdown log line.
 func (a *ServerConnectionActor) logIngressExit(ctx context.Context) {
 	a.log.InfoS(ctx, "Ingress loop exiting",
@@ -295,15 +342,8 @@ func (a *ServerConnectionActor) pullBatch(ctx context.Context, cursor uint64) (
 		WaitTimeoutMs: waitMs,
 		Cursor:        cursor,
 	})
-	if err != nil {
-		return nil, 0, err
-	}
-
-	if resp.Status != nil && !resp.Status.Ok {
-		return nil, 0, &statusError{
-			Op:     "Pull",
-			Status: resp.Status,
-		}
+	if sErr := edgeResponseError("Pull", resp, err); sErr != nil {
+		return nil, 0, sErr
 	}
 
 	return resp.Envelopes, resp.NextCursor, nil
@@ -331,6 +371,16 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 	lastCommitted := uint64(0)
 
 	for _, env := range envelopes {
+		// Validate the envelope's version pair against the runtime
+		// binding before delivering it to any waiter or dispatcher. A
+		// mismatch is a permanent compatibility failure: stop the batch
+		// without advancing the ack cursor so the envelope is preserved
+		// for a future compatible restart, and never acknowledge or
+		// dispatch it.
+		if err := a.validateInboundEnvelope(env); err != nil {
+			return lastCommitted, err
+		}
+
 		if env.Rpc == nil {
 			a.log.WarnS(
 				ctx,
@@ -474,18 +524,8 @@ func (a *ServerConnectionActor) ackRemote(
 		MailboxId: a.cfg.LocalMailboxID,
 		Cursor:    cursor,
 	})
-	if err != nil {
-		return err
-	}
 
-	if resp.Status != nil && !resp.Status.Ok {
-		return &statusError{
-			Op:     "AckUpTo",
-			Status: resp.Status,
-		}
-	}
-
-	return nil
+	return edgeResponseError("AckUpTo", resp, err)
 }
 
 // loadCheckpoint restores the AckState from the checkpoint store on startup.
@@ -546,6 +586,18 @@ func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
 	responses, durables := splitIngressEnvelopes(
 		envelopes, a.hasResponseWaiter,
 	)
+
+	// Waiter-backed responses deliver in-memory BEFORE the transaction and
+	// so bypass dispatchBatch, which is where the durable partition is
+	// validated. Validate them against the bound version pair here so every
+	// inbound envelope is checked before dispatch, just like the legacy
+	// path. A mismatch is permanent and surfaces to the caller, which
+	// drives the terminal incompatibility transition.
+	for _, resp := range responses {
+		if err := a.validateInboundEnvelope(resp); err != nil {
+			return state, err
+		}
+	}
 
 	// Deliver the waiter-backed responses to their live waiters outside
 	// the transaction. Any whose waiter vanished since the split peek come
@@ -733,22 +785,4 @@ func (a *ServerConnectionActor) backoffConfig() mailboxpull.BackoffConfig {
 		BaseDelay: a.cfg.RetryBaseDelay,
 		MaxDelay:  a.cfg.RetryMaxDelay,
 	}
-}
-
-// statusError wraps a mailbox status failure for error reporting.
-type statusError struct {
-	// Op is the operation that failed (e.g., "Pull", "AckUpTo").
-	Op string
-
-	// Status is the status returned by the mailbox edge.
-	Status *mailboxpb.Status
-}
-
-// Error returns a human-readable error string.
-func (e *statusError) Error() string {
-	if e.Status == nil {
-		return e.Op + ": nil status"
-	}
-
-	return e.Op + ": " + e.Status.Message + " (" + e.Status.Code + ")"
 }
