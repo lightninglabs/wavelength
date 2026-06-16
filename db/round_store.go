@@ -35,11 +35,11 @@ type (
 	InsertVTXOParams          = sqlc.InsertVTXOParams
 	ListRoundsPaginatedParams = sqlc.ListRoundsPaginatedParams
 
-	// ClearPendingBoardParams aliases the sqlc-generated
-	// clear-by-outpoint params so call sites can spell the type
-	// concisely (the generated name exceeds the line-length cap
-	// when nested inside the CommitState transaction body).
-	ClearPendingBoardParams = sqlc.ClearPendingBoardRequestByOutpointParams
+	// ClearAnchorParams aliases the sqlc-generated clear-by-outpoint
+	// params so call sites can spell the type concisely (the generated
+	// name exceeds the line-length cap when nested inside the
+	// CommitState transaction body).
+	ClearAnchorParams = sqlc.ClearPendingIntentAnchorByOutpointParams
 )
 
 // ListRoundsQuery controls persisted round pagination and filtering.
@@ -190,13 +190,28 @@ type RoundStore interface {
 	UpdateBoardingIntentStatus(ctx context.Context,
 		arg sqlc.UpdateBoardingIntentStatusParams) error
 
-	// ClearPendingBoardRequestByOutpoint deletes the pending Board RPC
-	// row bound to one outpoint. Called from CommitState in the same
-	// transaction that marks the matching intent Adopted, so a stale
-	// pending row can never rebind to an unrelated future boarding
-	// deposit.
-	ClearPendingBoardRequestByOutpoint(ctx context.Context,
-		arg sqlc.ClearPendingBoardRequestByOutpointParams) error
+	// ClearPendingIntentAnchorByOutpoint deletes the pending-intent
+	// anchor row bound to one outpoint. Called from CommitState in the
+	// same transaction that records the round adopting the anchored
+	// intent (boarding outpoints for Board, forfeit VTXO outpoints for
+	// SendOnChain), so a persisted intent can never be replayed after
+	// the round it landed in has durably checkpointed.
+	ClearPendingIntentAnchorByOutpoint(ctx context.Context,
+		arg sqlc.ClearPendingIntentAnchorByOutpointParams) error
+
+	// DeleteOrphanedPendingBoardIntents / DeleteOrphanedPendingSendIntents
+	// sweep per-kind detail rows whose anchors have all been cleared.
+	// Detail rows foreign-key the header, so they must be deleted before
+	// DeleteOrphanedPendingIntents removes the now-anchorless headers.
+	DeleteOrphanedPendingBoardIntents(ctx context.Context) error
+
+	DeleteOrphanedPendingSendIntents(ctx context.Context) error
+
+	// DeleteOrphanedPendingIntents sweeps pending-intent header rows
+	// whose anchors have all been cleared. Called from CommitState after
+	// the anchor clears (and detail sweeps) above so fully-adopted
+	// intents vanish in the same transaction.
+	DeleteOrphanedPendingIntents(ctx context.Context) error
 
 	ListRoundsPaginated(ctx context.Context,
 		arg ListRoundsPaginatedParams) ([]RoundRow, error)
@@ -328,29 +343,37 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 						"intent adopted: %w", err)
 				}
 
-				// Clear the pending Board RPC row bound to
+				// Clear the pending-intent anchor bound to
 				// this outpoint in the same transaction.
 				// Once the intent is Adopted, the user's
 				// Board call is durably checkpointed in the
-				// round itself; the pending row is no longer
+				// round itself; the anchor is no longer
 				// load-bearing and a stale row would
 				// otherwise rebind a future Board replay to
 				// an unrelated boarding deposit.
-				clearParams := ClearPendingBoardParams{
-					OutpointHash: intent.Outpoint.Hash[:],
-					OutpointIndex: int32(
-						intent.Outpoint.Index,
-					),
-				}
-				err = q.ClearPendingBoardRequestByOutpoint(
-					ctx, clearParams,
+				err = q.ClearPendingIntentAnchorByOutpoint(
+					ctx, ClearAnchorParams{
+						OutpointHash: intent.Outpoint.
+							Hash[:],
+						OutpointIndex: int32(
+							intent.Outpoint.Index,
+						),
+					},
 				)
 				if err != nil {
 					return fmt.Errorf("clear pending "+
-						"board request for adopted "+
-						"intent: %w", err)
+						"intent anchor for adopted "+
+						"boarding intent: %w", err)
 				}
 			}
+		}
+
+		// Clear the pending-intent anchors bound to this round's
+		// forfeited VTXO outpoints, then sweep any intent left without
+		// anchors, so a fully-adopted intent disappears atomically
+		// with the checkpoint that adopted it.
+		if err := clearForfeitIntentAnchors(ctx, q, r); err != nil {
+			return err
 		}
 
 		// Insert VTXO requests for this round.
@@ -424,6 +447,50 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 
 		return nil
 	})
+}
+
+// clearForfeitIntentAnchors clears the pending-intent anchors bound to the
+// forfeited VTXO outpoints this round consumes (e.g. a SendOnChain intent's
+// reserved forfeit set), then sweeps any intent left without anchors. Once
+// the round is durably checkpointed at the point of no return, the user's
+// intent is carried by the round itself; the outbox row must not outlive it
+// or a restart would replay an already-adopted send. Per-kind detail rows
+// foreign-key the header, so they are swept before the headers.
+func clearForfeitIntentAnchors(ctx context.Context, q RoundStore,
+	r *round.Round) error {
+
+	for _, forfeit := range r.Intents.Forfeits {
+		if forfeit.VTXOOutpoint == nil {
+			continue
+		}
+
+		err := q.ClearPendingIntentAnchorByOutpoint(
+			ctx, ClearAnchorParams{
+				OutpointHash: forfeit.VTXOOutpoint.Hash[:],
+				OutpointIndex: int32(
+					forfeit.VTXOOutpoint.Index,
+				),
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("clear pending intent anchor for "+
+				"forfeited vtxo: %w", err)
+		}
+	}
+
+	if err := q.DeleteOrphanedPendingBoardIntents(ctx); err != nil {
+		return fmt.Errorf("sweep orphaned board intents: %w", err)
+	}
+
+	if err := q.DeleteOrphanedPendingSendIntents(ctx); err != nil {
+		return fmt.Errorf("sweep orphaned send intents: %w", err)
+	}
+
+	if err := q.DeleteOrphanedPendingIntents(ctx); err != nil {
+		return fmt.Errorf("sweep orphaned pending intents: %w", err)
+	}
+
+	return nil
 }
 
 // FetchState retrieves a round and its FSM state by round ID. Returns

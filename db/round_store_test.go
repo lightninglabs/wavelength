@@ -896,8 +896,15 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 		},
 		btclog.Disabled,
 	)
+	intentDB := NewTransactionExecutor(
+		db,
+		func(tx *sql.Tx) PendingIntentStore {
+			return db.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
 	boardingStore := NewBoardingWalletStore(
-		boardingDB, &chaincfg.RegressionNetParams,
+		boardingDB, intentDB, &chaincfg.RegressionNetParams,
 		clock.NewDefaultClock(),
 	)
 
@@ -1295,8 +1302,15 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 		},
 		btclog.Disabled,
 	)
+	intentDB := NewTransactionExecutor(
+		db,
+		func(tx *sql.Tx) PendingIntentStore {
+			return db.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
 	boardingStore := NewBoardingWalletStore(
-		boardingDB, &chaincfg.RegressionNetParams,
+		boardingDB, intentDB, &chaincfg.RegressionNetParams,
 		clock.NewDefaultClock(),
 	)
 
@@ -1524,4 +1538,103 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 			)
 		}
 	}
+}
+
+// TestCommitStateClearsSendIntentAnchors verifies the adoption-side half of
+// the pending-intents outbox contract for onchain sends: committing a round
+// whose forfeit set covers a persisted send_onchain intent's anchors deletes
+// those anchors — and the orphaned parent row — inside the same transaction,
+// while an unrelated intent's anchors survive untouched.
+func TestCommitStateClearsSendIntentAnchors(t *testing.T) {
+	t.Parallel()
+
+	store, baseDB := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	// Build a pending-intent store over the same database so the test
+	// observes exactly what the wallet's replay pass would see.
+	intentDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) PendingIntentStore {
+			return baseDB.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	intentStore := NewPendingIntentPersistenceStore(intentDB)
+
+	opA := wire.OutPoint{Hash: chainhash.Hash{0xa1}, Index: 0}
+	opB := wire.OutPoint{Hash: chainhash.Hash{0xa2}, Index: 1}
+	opOther := wire.OutPoint{Hash: chainhash.Hash{0xa3}, Index: 0}
+
+	adoptedPayload := &wallet.SendOnChainIntentPayload{
+		DestinationPkScript: append(
+			[]byte{0x51, 0x20}, make([]byte, 32)...,
+		),
+		TargetAmountSat: 30_000,
+	}
+	adopted := wallet.PendingIntent{
+		ID: wallet.NewPendingIntentID(
+			adoptedPayload, []wire.OutPoint{opA, opB},
+		),
+		Payload:     adoptedPayload,
+		RequestedAt: 1_700_000_000,
+		Anchors: []wire.OutPoint{
+			opA,
+			opB,
+		},
+	}
+	survivorPayload := &wallet.SendOnChainIntentPayload{
+		DestinationPkScript: append(
+			[]byte{0x51, 0x20}, make([]byte, 32)...,
+		),
+		TargetAmountSat: 45_000,
+	}
+	survivor := wallet.PendingIntent{
+		ID: wallet.NewPendingIntentID(
+			survivorPayload, []wire.OutPoint{opOther},
+		),
+		Payload:     survivorPayload,
+		RequestedAt: 1_700_000_001,
+		Anchors: []wire.OutPoint{
+			opOther,
+		},
+	}
+	require.NoError(t, intentStore.UpsertPendingIntent(ctx, adopted))
+	require.NoError(t, intentStore.UpsertPendingIntent(ctx, survivor))
+
+	// Commit a round whose forfeit set consumes exactly the adopted
+	// intent's anchors.
+	testRound := createTestRound(
+		t, testRoundIDDB("send-anchor-clear-round"),
+	)
+	testRound.Intents.Forfeits = []types.ForfeitRequest{
+		{
+			VTXOOutpoint: &opA,
+		},
+		{
+			VTXOOutpoint: &opB,
+		},
+	}
+
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	testRound.CommitmentTx.WhenSome(func(packet *psbt.Packet) {
+		state.CommitmentTx = packet
+	})
+
+	require.NoError(t, store.CommitState(ctx, testRound, state))
+
+	// The adopted intent must be gone (anchors cleared, orphaned parent
+	// swept); the unrelated intent must survive with its anchor intact.
+	remaining, err := intentStore.ListPendingIntents(
+		ctx, wallet.PendingIntentKindSendOnChain,
+	)
+	require.NoError(t, err)
+	require.Len(t, remaining, 1)
+	require.Equal(t, survivor.ID, remaining[0].ID)
+	require.ElementsMatch(
+		t, []wire.OutPoint{opOther}, remaining[0].Anchors,
+	)
 }
