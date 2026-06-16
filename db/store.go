@@ -111,6 +111,7 @@ func DefaultConfig(dataDir string) *Config {
 func DefaultSqliteConfig(dataDir string) *SqliteConfig {
 	return &SqliteConfig{
 		DatabaseFileName: fmt.Sprintf("%s/arkd.db", dataDir),
+		Synchronous:      defaultSqliteSynchronous,
 	}
 }
 

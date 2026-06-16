@@ -2943,6 +2943,13 @@ func (s *Server) initDatabase(ctx context.Context) error {
 	}
 
 	sqliteCfg := db.DefaultSqliteConfig(networkDir)
+	sqliteCfg.NoFullfsync = s.cfg.DB.Sqlite.NoFullfsync
+
+	// An empty level keeps the DefaultSqliteConfig default ("normal"); a
+	// non-empty operator override is validated in NewSqliteStore.
+	if s.cfg.DB.Sqlite.Synchronous != "" {
+		sqliteCfg.Synchronous = s.cfg.DB.Sqlite.Synchronous
+	}
 
 	var err error
 	s.db, err = db.NewSqliteStore(

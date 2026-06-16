@@ -27,7 +27,8 @@ func newSQLiteDB(t *testing.T) *sql.DB {
 
 // newConcurrentSQLiteDB opens a sqlite test database configured exactly like
 // the production store (see db/sqlite.go): WAL journaling, a 30s busy_timeout,
-// synchronous=full, and _txlock=immediate, with the same multi-connection pool.
+// synchronous=normal, and _txlock=immediate, with the same multi-connection
+// pool.
 // Tests that drive concurrent writers (e.g. a multi-worker durable actor) must
 // use this rather than the bare newSQLiteDB: _txlock=immediate plus
 // busy_timeout is what lets concurrent write transactions serialize by waiting
@@ -41,7 +42,7 @@ func newConcurrentSQLiteDB(t testing.TB) *sql.DB {
 		"foreign_keys=on",
 		"journal_mode=WAL",
 		"busy_timeout=30000",
-		"synchronous=full",
+		"synchronous=normal",
 		"fullfsync=true",
 	}
 	opts := make(url.Values)
