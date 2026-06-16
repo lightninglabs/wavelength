@@ -12,6 +12,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// metricsActorWorkers is the size of the metrics actor pool spawned by
+// startMetricsServer. The metrics actor is stateless (it only increments
+// Prometheus counters, which are concurrency-safe), so multiple workers
+// drain metric events in parallel behind the round-robin sink router.
+const metricsActorWorkers = 4
+
 // startMetricsServer registers the daemon's Prometheus collectors and
 // starts the optional /metrics HTTP server. It is a no-op when no metrics
 // listen address is configured: RegisterAll and the SystemCollector are
@@ -41,19 +47,32 @@ func (s *Server) startMetricsServer(ctx context.Context) error {
 	// on the registry that the /metrics handler serves.
 	metrics.RegisterAll(reg)
 
-	// Spawn the metrics actor that owns all event-driven counters and
-	// register it under its service key, mirroring the arkd server's
-	// design. Lifecycle emission sites Tell this actor through the sink
-	// rather than touching Prometheus directly. The actor is in-memory
-	// (no durable mailbox): a dropped metric event is acceptable, and
-	// the actor system shutdown registered during startup drains it.
-	metricsActor := metrics.NewMetricsActor(metrics.ActorConfig{
-		Log: fn.Some(log),
-	})
-	actor.RegisterWithSystem(
-		s.actorSystem, metrics.ActorName, metrics.ActorKey,
-		metricsActor,
-	)
+	// Spawn a small pool of metrics actors that own all event-driven
+	// counters and register them under one service key, mirroring the
+	// arkd server's design. Lifecycle emission sites Tell through the
+	// sink rather than touching Prometheus directly. The actors are
+	// in-memory (no durable mailbox): a dropped metric event is
+	// acceptable, and the actor system shutdown registered during
+	// startup drains them.
+	//
+	// The actor is stateless — it only increments Prometheus counters,
+	// which are internally synchronized — so several workers can drain
+	// metric events concurrently without any locking. NewSink resolves
+	// the service key to a round-robin router (the framework default),
+	// so a producer's Tells fan out across the pool with no change at
+	// the call sites. A small pool keeps a burst of lifecycle events
+	// from queueing behind a single mailbox while adding negligible
+	// overhead when idle.
+	for i := 0; i < metricsActorWorkers; i++ {
+		metricsActor := metrics.NewMetricsActor(metrics.ActorConfig{
+			Log: fn.Some(log),
+		})
+		actor.RegisterWithSystem(
+			s.actorSystem,
+			fmt.Sprintf("%s-%d", metrics.ActorName, i),
+			metrics.ActorKey, metricsActor,
+		)
+	}
 	s.metricsSink = fn.Some(metrics.NewSink(s.actorSystem))
 
 	// Register the scrape-driven VTXO inventory collector, backed by the

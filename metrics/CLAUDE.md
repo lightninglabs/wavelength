@@ -22,10 +22,15 @@ Also provides the opt-in HTTP `/metrics` server and the shared
 
 Use `go doc metrics.<Symbol>` for signatures.
 
-- **`MetricsActor`** / **`ActorConfig`** — event-driven counters. Registered
-  under `ActorKey`; producers hold a `Sink` (`actor.TellOnlyRef[Msg]`).
+- **`MetricsActor`** / **`ActorConfig`** — event-driven counters. The daemon
+  spawns a small **pool** of these (`metricsActorWorkers`, currently 4) all
+  registered under `ActorKey`. The actor is stateless (it only `Inc()`s
+  concurrency-safe Prometheus counters), so workers drain events in parallel.
 - **`Sink`** / **`NewSink`** — fire-and-forget reference, resolved from the
-  actor system via the service key. Mirrors `ledger.Sink`.
+  actor system via the service key. `ActorKey.Ref` returns a **round-robin
+  router** over every actor registered under the key, so a single `Sink` fans
+  Tells across the worker pool with no change at producer call sites. Mirrors
+  `ledger.Sink`.
 - **`SystemCollector`** + **`VTXOStatsQuerier`** — scrape-driven VTXO gauges.
   The `darepod` `vtxoStatsAdapter` implements the querier (lists per status,
   aggregates count + value).
@@ -43,11 +48,17 @@ Use `go doc metrics.<Symbol>` for signatures.
   `lnd/fn/v2`, `client_golang/prometheus`,
   `go-grpc-middleware/providers/prometheus`.
 - **Depended on by**: `darepod` (config field, server start/stop, collector
-  adapter, actor spawn, emission sites, gRPC interceptors).
+  adapter, actor-pool spawn, emission sites, connection watcher, gRPC
+  interceptors), `round` (`RoundClientConfig.MetricsSink`, emits
+  `RoundCompletedMsg` at terminal round outcomes), `wallet`
+  (`WithMetricsSink`, emits `BackgroundTaskErrorMsg` from the boarding-sweep
+  watcher).
 
 ## Invariants
 
-- All event-driven updates go through `MetricsActor.Receive`.
+- All event-driven updates go through `MetricsActor.Receive`. The actor holds
+  no mutable state (counters live in package-level Prometheus vectors), so the
+  worker pool is safe: any worker may handle any message.
 - Scrape-driven (VTXO) gauges are collected by `SystemCollector` at scrape
   time, not the actor.
 - The metrics server is **opt-in**: empty `ServerConfig.ListenAddr` disables
