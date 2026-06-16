@@ -112,6 +112,16 @@ check_negative tcMailboxStagedDoubleBroadcastCounterexample 1
 # lease-fenced overwrites a newer owner's checkpoint with an older level.
 check_negative tcMailboxStaleStageRegressesCounterexample 1
 
+# The CDC outbox fold must commit the target enqueue and the outbox completion
+# atomically: a failed fold rolls back with no orphan and redelivers after claim
+# expiry, completion is token-fenced, and the target is delivered exactly once.
+check_green tcOutboxFold
+
+# The split-write counterexample must be caught by the
+# OutboxCompletionImpliesDelivery monitor: a non-transactional two-step that
+# completes the outbox without a durable enqueue loses the message.
+check_negative tcOutboxSplitWriteCounterexample 1
+
 echo ""
 echo "=== Go Bridge Conformance ==="
 go test ./p-models/durableactor/bridge

@@ -1401,6 +1401,210 @@ machine TestDurableMailboxSpec_StaleStageRegressesCheckpointCounterexample {
     state Done {}
 }
 
+// TestOutboxFold_AtomicRollbackThenRedeliver drives the production AtomicFold
+// path of the CDC delivery step. A folded delivery fails after the target
+// enqueue, so the whole transaction rolls back: no delivery is announced and
+// the outbox row stays pending. The publisher reclaims the row under a new
+// token and redelivers successfully -- the enqueue and the completion land
+// together -- after which the completed row is terminal and no longer
+// claimable. The OutboxCompletionImpliesDelivery and
+// OutboxTargetDeliveredAtMostOnce monitors confirm no lost message and exactly
+// one delivery.
+machine TestOutboxFold_AtomicRollbackThenRedeliver {
+    var outbox: OutboxFoldSpec;
+
+    start state Init {
+        entry {
+            var resp: (int, DurableMailboxOpResult);
+
+            outbox = new OutboxFoldSpec(AtomicFold);
+
+            send outbox, eOutboxFoldEnqueue, (reply_to = this, id = 1);
+            receive { case eOutboxFoldResp:
+                (r0: (int, DurableMailboxOpResult)) { resp = r0; }
+            }
+            assert resp.1 == MailboxOpOk, "outbox enqueue succeeds";
+
+            send outbox, eOutboxFoldClaim, (
+                reply_to = this, id = 1, token = 11
+            );
+            receive { case eOutboxFoldResp:
+                (r1: (int, DurableMailboxOpResult)) { resp = r1; }
+            }
+            assert resp.1 == MailboxOpOk, "first claim sets the owner token";
+
+            // The fold fails after the enqueue step: AtomicFold rolls the whole
+            // transaction back, so nothing is delivered and the row is pending.
+            send outbox, eOutboxFoldDeliver, (
+                reply_to = this, id = 1, token = 11, enqueue_ok = false
+            );
+            receive { case eOutboxFoldResp:
+                (r2: (int, DurableMailboxOpResult)) { resp = r2; }
+            }
+            assert resp.1 == MailboxOpOk, "failed fold rolls back cleanly";
+
+            // Reclaim after the prior claim expires (new owner token), then
+            // redeliver successfully: the enqueue and the completion commit
+            // together.
+            send outbox, eOutboxFoldClaim, (
+                reply_to = this, id = 1, token = 22
+            );
+            receive { case eOutboxFoldResp:
+                (r3: (int, DurableMailboxOpResult)) { resp = r3; }
+            }
+            assert resp.1 == MailboxOpOk, "reclaim assigns a new owner token";
+
+            send outbox, eOutboxFoldDeliver, (
+                reply_to = this, id = 1, token = 22, enqueue_ok = true
+            );
+            receive { case eOutboxFoldResp:
+                (r4: (int, DurableMailboxOpResult)) { resp = r4; }
+            }
+            assert resp.1 == MailboxOpOk, "redelivery commits the fold";
+
+            // A completed row is terminal: no further claim returns it.
+            send outbox, eOutboxFoldClaim, (
+                reply_to = this, id = 1, token = 33
+            );
+            receive { case eOutboxFoldResp:
+                (r5: (int, DurableMailboxOpResult)) { resp = r5; }
+            }
+            assert resp.1 == MailboxOpNotFound,
+                "completed outbox row is terminal";
+
+            goto Done;
+        }
+    }
+
+    state Done {}
+}
+
+// TestOutboxFold_StaleClaimCannotComplete drives the cross-publisher reclaim
+// race. A slow publisher's claim expires and a second publisher reclaims the
+// row; the stale publisher then folds with its OLD token. Its enqueue commits
+// (idempotent by id) but its completion is fenced out (token mismatch), so the
+// row stays pending. The current owner then folds: the enqueue is an idempotent
+// no-op and the completion lands. The target is delivered exactly once
+// (OutboxTargetDeliveredAtMostOnce) and never completed without a delivery
+// (OutboxCompletionImpliesDelivery).
+machine TestOutboxFold_StaleClaimCannotComplete {
+    var outbox: OutboxFoldSpec;
+
+    start state Init {
+        entry {
+            var resp: (int, DurableMailboxOpResult);
+
+            outbox = new OutboxFoldSpec(AtomicFold);
+
+            send outbox, eOutboxFoldEnqueue, (reply_to = this, id = 1);
+            receive { case eOutboxFoldResp:
+                (r0: (int, DurableMailboxOpResult)) { resp = r0; }
+            }
+            assert resp.1 == MailboxOpOk, "outbox enqueue succeeds";
+
+            // Publisher P1 claims (token 11); then P1 stalls and P2 reclaims
+            // the same row (token 22) after the claim expires.
+            send outbox, eOutboxFoldClaim, (
+                reply_to = this, id = 1, token = 11
+            );
+            receive { case eOutboxFoldResp:
+                (r1: (int, DurableMailboxOpResult)) { resp = r1; }
+            }
+            assert resp.1 == MailboxOpOk, "P1 claims the row";
+
+            send outbox, eOutboxFoldClaim, (
+                reply_to = this, id = 1, token = 22
+            );
+            receive { case eOutboxFoldResp:
+                (r2: (int, DurableMailboxOpResult)) { resp = r2; }
+            }
+            assert resp.1 == MailboxOpOk, "P2 reclaims the row";
+
+            // Stale P1 folds with its now-superseded token: the enqueue
+            // commits, but the completion matches no row and is a no-op.
+            send outbox, eOutboxFoldDeliver, (
+                reply_to = this, id = 1, token = 11, enqueue_ok = true
+            );
+            receive { case eOutboxFoldResp:
+                (r3: (int, DurableMailboxOpResult)) { resp = r3; }
+            }
+            assert resp.1 == MailboxOpOk, "stale P1 fold commits its enqueue";
+
+            // Current owner P2 folds: the enqueue is an idempotent no-op and
+            // the completion lands under the matching token.
+            send outbox, eOutboxFoldDeliver, (
+                reply_to = this, id = 1, token = 22, enqueue_ok = true
+            );
+            receive { case eOutboxFoldResp:
+                (r4: (int, DurableMailboxOpResult)) { resp = r4; }
+            }
+            assert resp.1 == MailboxOpOk, "current P2 fold completes the row";
+
+            goto Done;
+        }
+    }
+
+    state Done {}
+}
+
+// TestOutboxFold_SplitWriteLosesMessageCounterexample drives the same delivery
+// with the SplitWrite (non-transactional two-step) design and NO in-machine
+// assertion. The completion write lands even though the enqueue did not durably
+// happen, so the outbox row is completed with the message never delivered. The
+// lost message is raised solely by OutboxCompletionImpliesDelivery, proving the
+// monitor catches the exact failure the single fold transaction prevents.
+machine TestOutboxFold_SplitWriteLosesMessageCounterexample {
+    var outbox: OutboxFoldSpec;
+
+    start state Init {
+        entry {
+            var resp: (int, DurableMailboxOpResult);
+
+            outbox = new OutboxFoldSpec(SplitWrite);
+
+            send outbox, eOutboxFoldEnqueue, (reply_to = this, id = 1);
+            receive { case eOutboxFoldResp:
+                (r0: (int, DurableMailboxOpResult)) { resp = r0; }
+            }
+
+            send outbox, eOutboxFoldClaim, (
+                reply_to = this, id = 1, token = 11
+            );
+            receive { case eOutboxFoldResp:
+                (r1: (int, DurableMailboxOpResult)) { resp = r1; }
+            }
+
+            // The completion lands but the enqueue did not durably happen: a
+            // lost message under the split-write design.
+            send outbox, eOutboxFoldDeliver, (
+                reply_to = this, id = 1, token = 11, enqueue_ok = false
+            );
+            receive { case eOutboxFoldResp:
+                (r2: (int, DurableMailboxOpResult)) { resp = r2; }
+            }
+
+            goto Done;
+        }
+    }
+
+    state Done {}
+}
+
+// OutboxFoldGreenDriver spawns the green outbox-fold scenarios under the
+// no-lost-message and exactly-once monitors.
+machine OutboxFoldGreenDriver {
+    start state RunTests {
+        entry {
+            new TestOutboxFold_AtomicRollbackThenRedeliver();
+            new TestOutboxFold_StaleClaimCannotComplete();
+
+            goto Done;
+        }
+    }
+
+    state Done {}
+}
+
 machine MailboxFIFOTestDriver {
     start state RunTests {
         entry {
@@ -1514,3 +1718,26 @@ test tcMailboxStaleStageRegressesCounterexample
   assert CheckpointAdvancesMonotonically in
   { DurableMailboxSpec,
     TestDurableMailboxSpec_StaleStageRegressesCheckpointCounterexample };
+
+// tcOutboxFold checks the transactional outbox fold contract: a folded delivery
+// commits the target enqueue and the outbox completion together or not at all,
+// a failed fold rolls back with no orphan and redelivers after claim expiry,
+// completion is token-fenced against stale publishers, and the target is
+// delivered exactly once. No outbox row is ever completed without a durable
+// delivery.
+test tcOutboxFold [main=OutboxFoldGreenDriver]:
+  assert OutboxCompletionImpliesDelivery,
+         OutboxTargetDeliveredAtMostOnce in
+  { OutboxFoldSpec,
+    TestOutboxFold_AtomicRollbackThenRedeliver,
+    TestOutboxFold_StaleClaimCannotComplete,
+    OutboxFoldGreenDriver };
+
+// tcOutboxSplitWriteCounterexample runs the delivery with the non-transactional
+// split-write design and no in-machine assertion, so the lost message is raised
+// solely by OutboxCompletionImpliesDelivery. It is expected to find a bug.
+test tcOutboxSplitWriteCounterexample
+    [main=TestOutboxFold_SplitWriteLosesMessageCounterexample]:
+  assert OutboxCompletionImpliesDelivery in
+  { OutboxFoldSpec,
+    TestOutboxFold_SplitWriteLosesMessageCounterexample };
