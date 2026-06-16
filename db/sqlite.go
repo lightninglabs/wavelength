@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/url"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +42,36 @@ const (
 	// defaultConnMaxLifetime is the maximum amount of time a connection can
 	// be reused for before it is closed.
 	defaultConnMaxLifetime = 10 * time.Minute
+
+	// defaultSqliteSynchronous is the default value for the SQLite
+	// synchronous pragma. We default to "normal" rather than "full"
+	// because, under WAL mode, "normal" omits the per-commit WAL fsync
+	// entirely (the WAL is synced only before a checkpoint), which is
+	// exactly what makes it faster than "full". A committed transaction is
+	// still durable across an application/process crash, but a power loss
+	// or OS crash can roll back the recently committed tail still sitting
+	// in the un-synced WAL. The at-least-once, idempotent, deterministic
+	// OOR/outbox/serverconn stack recovers from a process crash with zero
+	// loss and replays that dropped tail after power loss, so the
+	// per-commit fsync of "full" is an unneeded throughput ceiling.
+	// "normal" never corrupts the database ("off" is not corruption-safe).
+	defaultSqliteSynchronous = SqliteSynchronousNormal
+
+	// SqliteSynchronousFull is the strictest SQLite synchronous level. It
+	// fsyncs on every commit, trading throughput for the strongest
+	// per-commit durability guarantee.
+	SqliteSynchronousFull = "full"
+
+	// SqliteSynchronousNormal relaxes the synchronous pragma to "normal".
+	// Under WAL mode this omits the per-commit WAL fsync (syncing the WAL
+	// only before a checkpoint), which is safe given our recoverable,
+	// idempotent persistence stack.
+	SqliteSynchronousNormal = "normal"
+
+	// SqliteSynchronousOff disables synchronous flushing entirely. This is
+	// the most aggressive (and least durable) level; a power loss may lose
+	// recently committed transactions, but it never corrupts the database.
+	SqliteSynchronousOff = "off"
 )
 
 // SqliteConfig holds all the config arguments needed to interact with our
@@ -58,6 +90,23 @@ type SqliteConfig struct {
 	// DatabaseFileName is the full file path where the database file can be
 	// found.
 	DatabaseFileName string `long:"dbfile" description:"The full path to the database."`
+
+	// Synchronous controls the SQLite synchronous pragma, which governs
+	// commit durability. Valid values are "full", "normal", and "off".
+	// When empty it defaults to "normal", which under WAL mode omits the
+	// per-commit WAL fsync of "full" (the WAL is synced only before a
+	// checkpoint).
+	Synchronous string `long:"synchronous" description:"The SQLite synchronous (commit durability) level. One of: full, normal, off."`
+
+	// NoFullfsync disables the SQLite fullfsync pragma. The pragma only
+	// matters on macOS, where a regular fsync does not guarantee the data
+	// reached stable storage; with synchronous=normal it governs the WAL
+	// checkpoint sync. Checkpoints fire continuously under a sustained
+	// write load and F_FULLFSYNC waits on a full hardware cache flush, so
+	// write-heavy deployments that accept the weaker flush guarantee can
+	// disable it for substantially better throughput. The default keeps
+	// fullfsync enabled.
+	NoFullfsync bool `long:"nofullfsync" description:"Disable the macOS fullfsync pragma; trades power-loss flush guarantees on macOS for higher sustained write throughput. No effect on other platforms."`
 
 	// Log is an optional logger for the SQLite store. When None, the store
 	// falls back to the explicit constructor logger.
@@ -82,6 +131,13 @@ func NewSqliteStore(cfg *SqliteConfig,
 	// Resolve the effective logger: prefer the config option, then fall
 	// back to the explicitly provided logger parameter.
 	storeLog := cfg.Log.UnwrapOr(explicitLog)
+
+	// Resolve and validate the configured synchronous level before we build
+	// the DSN, normalizing an empty value to the safe default.
+	synchronous, err := resolveSqliteSynchronous(cfg.Synchronous)
+	if err != nil {
+		return nil, err
+	}
 
 	// The set of pragma options are accepted using query options. For now
 	// we only want to ensure that foreign key constraints are properly
@@ -115,19 +171,29 @@ func NewSqliteStore(cfg *SqliteConfig,
 			value: "30000",
 		},
 		{
-			// With the WAL mode, this ensures that we also do an
-			// extra WAL sync after each transaction. The normal
-			// sync mode skips this and gives better performance,
-			// but risks durability.
+			// The synchronous pragma governs commit durability.
+			// Under WAL mode, "full" fsyncs the WAL on every
+			// commit; "normal" (our default) omits that per-commit
+			// fsync and syncs the WAL only before a checkpoint, for
+			// substantially better throughput at the cost of the
+			// recently committed tail on power loss. The value is
+			// configurable so operators can trade durability for
+			// performance. See resolveSqliteSynchronous for the
+			// accepted values.
 			name:  "synchronous",
-			value: "full",
+			value: synchronous,
 		},
 		{
-			// This is used to ensure proper durability for users
-			// running on Mac OS. It uses the correct fsync system
-			// call to ensure items are fully flushed to disk.
+			// fullfsync uses the correct fsync system call on macOS
+			// so that flushed data is genuinely durable. Under
+			// "normal" it governs the WAL checkpoint sync rather
+			// than a per-commit fsync, but checkpoints recur
+			// continuously under sustained write load and each
+			// F_FULLFSYNC waits on a full hardware cache flush, so
+			// the config exposes an opt-out for write-heavy
+			// deployments. Enabled by default.
 			name:  "fullfsync",
-			value: "true",
+			value: strconv.FormatBool(!cfg.NoFullfsync),
 		},
 	}
 	sqliteOptions := make(url.Values)
@@ -148,6 +214,8 @@ func NewSqliteStore(cfg *SqliteConfig,
 
 	storeLog.InfoS(ctx, "Opening SQLite database",
 		slog.String("db_file", cfg.DatabaseFileName),
+		slog.String("synchronous", synchronous),
+		slog.Bool("fullfsync", !cfg.NoFullfsync),
 		slog.Int("max_conns", defaultMaxConns),
 		slog.Duration("conn_max_lifetime", defaultConnMaxLifetime),
 	)
@@ -211,6 +279,35 @@ func NewSqliteStore(cfg *SqliteConfig,
 	}
 
 	return s, nil
+}
+
+// resolveSqliteSynchronous normalizes and validates a configured SQLite
+// synchronous level. An empty value resolves to the package default
+// (defaultSqliteSynchronous); any other value must be one of "full",
+// "normal", or "off". Unknown values are rejected with a descriptive error so
+// a typo surfaces at startup rather than silently weakening durability.
+func resolveSqliteSynchronous(value string) (string, error) {
+	if value == "" {
+		return defaultSqliteSynchronous, nil
+	}
+
+	// Normalize case before validating so an operator can spell the level
+	// in any case (e.g. "NORMAL"), matching the uppercase form used in the
+	// durability docs and prose. The resolved value is returned lowercased
+	// so it feeds the pragma as SQLite expects.
+	level := strings.ToLower(value)
+
+	switch level {
+	case SqliteSynchronousFull, SqliteSynchronousNormal,
+		SqliteSynchronousOff:
+		return level, nil
+
+	default:
+		return "", fmt.Errorf("invalid sqlite synchronous level %q: "+
+			"must be one of %q, %q, or %q", value,
+			SqliteSynchronousFull, SqliteSynchronousNormal,
+			SqliteSynchronousOff)
+	}
 }
 
 // backupSqliteDatabase creates a backup of the given SQLite database. The

@@ -275,12 +275,57 @@ type Config struct {
 	// sdk/walletdk embedded path).
 	EagerRoundJoin bool `mapstructure:"eagerroundjoin"`
 
+	// DB groups the per-backend database tuning knobs under the db.sqlite.*
+	// and db.postgres.* namespaces. A value type so a zero-value Config can
+	// never carry a nil sub-config into the start path.
+	DB DBConfig `mapstructure:"db"`
+
 	// Pprof configures the optional net/http/pprof debug server. It is
 	// disabled by default and must be explicitly opted into via a
 	// non-empty listen address. A value type so a zero-value Config can
 	// never carry a nil pprof config into the start path.
 	Pprof PprofConfig `mapstructure:"pprof"`
 }
+
+// DBConfig groups the per-backend database tuning knobs. Only the SQLite
+// knobs are wired today; the daemon always opens SQLite, so the Postgres
+// namespace is reserved for a future Postgres-tuning change.
+type DBConfig struct {
+	// Sqlite holds the SQLite-backend durability knobs, exposed on the
+	// daemon under the db.sqlite.* namespace.
+	Sqlite DBSqliteConfig `mapstructure:"sqlite"`
+
+	// Postgres is reserved for future Postgres-backend tuning knobs. It is
+	// intentionally empty today: the daemon always opens SQLite, and
+	// Postgres durability tuning is deferred to a separate change.
+	Postgres DBPostgresConfig `mapstructure:"postgres"`
+}
+
+// DBSqliteConfig holds the SQLite-backend durability knobs exposed on the
+// daemon under the db.sqlite.* namespace.
+type DBSqliteConfig struct {
+	// Synchronous selects the SQLite synchronous (commit durability)
+	// level. One of "full", "normal", or "off"; an empty value resolves to
+	// the safe default ("normal"). Under WAL mode "normal" omits the
+	// per-commit WAL fsync of "full" for substantially higher write
+	// throughput, replaying any tail dropped on power loss via the
+	// idempotent persistence stack. See db.SqliteConfig.Synchronous.
+	Synchronous string `mapstructure:"synchronous"`
+
+	// NoFullfsync disables the SQLite fullfsync pragma. The pragma only
+	// matters on macOS, where it makes flushes wait on a full hardware
+	// cache flush; with the default synchronous=normal level it governs
+	// the WAL checkpoint sync, which recurs continuously under sustained
+	// write load. Write-heavy macOS deployments that accept the weaker
+	// flush guarantee can disable it for substantially higher throughput.
+	// No effect on other platforms. See db.SqliteConfig.NoFullfsync.
+	NoFullfsync bool `mapstructure:"nofullfsync"`
+}
+
+// DBPostgresConfig is reserved for future Postgres-backend tuning knobs. It
+// is intentionally empty: the daemon always opens SQLite, and Postgres
+// durability tuning is deferred to a separate change.
+type DBPostgresConfig struct{}
 
 // RPCServiceRegistrar registers one optional daemon gRPC subserver on the
 // daemon's existing listener.

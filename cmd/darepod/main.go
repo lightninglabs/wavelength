@@ -214,6 +214,23 @@ func newRootCmd() *cobra.Command {
 			"otherwise",
 	)
 
+	// SQLite database durability knobs (db.sqlite.* namespace). The
+	// db.postgres.* namespace is reserved for a future Postgres-tuning
+	// change; the daemon always opens SQLite.
+	f.String(
+		"db.sqlite.synchronous", cfg.DB.Sqlite.Synchronous, "the "+
+			"SQLite synchronous (commit durability) level: one "+
+			"of full, normal, off; empty defaults to normal, "+
+			"which under WAL mode omits the per-commit fsync "+
+			"of full for higher write throughput",
+	)
+	f.Bool(
+		"db.sqlite.nofullfsync", cfg.DB.Sqlite.NoFullfsync, "disable"+
+			" the SQLite fullfsync pragma (macOS only); trades "+
+			"power-loss flush guarantees for higher sustained "+
+			"write throughput",
+	)
+
 	// OOR safety limits. These are advanced knobs; most operators
 	// should keep the defaults unless a limit-exceeded error says
 	// otherwise after a protocol upgrade or operator/indexer change.
