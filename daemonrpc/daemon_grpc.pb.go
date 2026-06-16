@@ -150,13 +150,26 @@ type DaemonServiceClient interface {
 	// refresh in the next round. Unlike RefreshVTXOs, this does not require
 	// the inputs to be wallet-managed live VTXOs; callers provide the policy,
 	// proof/auth spend path, and forfeit spend path explicitly.
+	//
+	// This RPC only queues the old VTXO and the replacement output. It cannot
+	// collect every participant signature yet because the round has not
+	// assigned the connector output, so the final forfeit transaction does not
+	// exist. If a queued input needs a non-daemon participant signature, the
+	// daemon exposes that exact connector-bound transcript later through
+	// ListPendingForfeitParticipantSignatureRequests.
 	RefreshCustomVTXOs(ctx context.Context, in *RefreshCustomVTXOsRequest, opts ...grpc.CallOption) (*RefreshCustomVTXOsResponse, error)
 	// ListPendingForfeitParticipantSignatureRequests returns exact
 	// connector-bound forfeit signing requests emitted by custom refresh
 	// inputs whose policies require signatures from external participants.
+	// Callers poll this endpoint, validate the full transcript, sign the VTXO
+	// input with the participant key they control, and submit the result with
+	// SubmitForfeitParticipantSignatures.
 	ListPendingForfeitParticipantSignatureRequests(ctx context.Context, in *ListPendingForfeitParticipantSignatureRequestsRequest, opts ...grpc.CallOption) (*ListPendingForfeitParticipantSignatureRequestsResponse, error)
 	// SubmitForfeitParticipantSignatures supplies external participant
-	// signatures for one pending connector-bound forfeit signing request.
+	// signatures for one pending connector-bound forfeit signing request. The
+	// request_id must be copied from the listed pending request; the daemon
+	// uses it to wake the blocked VTXO actor that is waiting for that exact
+	// round-assigned forfeit transaction.
 	SubmitForfeitParticipantSignatures(ctx context.Context, in *SubmitForfeitParticipantSignaturesRequest, opts ...grpc.CallOption) (*SubmitForfeitParticipantSignaturesResponse, error)
 	// LeaveVTXOs queues one or more VTXOs for cooperative leave
 	// (offboard) in the next round. Each VTXO is forfeited and the
@@ -796,13 +809,26 @@ type DaemonServiceServer interface {
 	// refresh in the next round. Unlike RefreshVTXOs, this does not require
 	// the inputs to be wallet-managed live VTXOs; callers provide the policy,
 	// proof/auth spend path, and forfeit spend path explicitly.
+	//
+	// This RPC only queues the old VTXO and the replacement output. It cannot
+	// collect every participant signature yet because the round has not
+	// assigned the connector output, so the final forfeit transaction does not
+	// exist. If a queued input needs a non-daemon participant signature, the
+	// daemon exposes that exact connector-bound transcript later through
+	// ListPendingForfeitParticipantSignatureRequests.
 	RefreshCustomVTXOs(context.Context, *RefreshCustomVTXOsRequest) (*RefreshCustomVTXOsResponse, error)
 	// ListPendingForfeitParticipantSignatureRequests returns exact
 	// connector-bound forfeit signing requests emitted by custom refresh
 	// inputs whose policies require signatures from external participants.
+	// Callers poll this endpoint, validate the full transcript, sign the VTXO
+	// input with the participant key they control, and submit the result with
+	// SubmitForfeitParticipantSignatures.
 	ListPendingForfeitParticipantSignatureRequests(context.Context, *ListPendingForfeitParticipantSignatureRequestsRequest) (*ListPendingForfeitParticipantSignatureRequestsResponse, error)
 	// SubmitForfeitParticipantSignatures supplies external participant
-	// signatures for one pending connector-bound forfeit signing request.
+	// signatures for one pending connector-bound forfeit signing request. The
+	// request_id must be copied from the listed pending request; the daemon
+	// uses it to wake the blocked VTXO actor that is waiting for that exact
+	// round-assigned forfeit transaction.
 	SubmitForfeitParticipantSignatures(context.Context, *SubmitForfeitParticipantSignaturesRequest) (*SubmitForfeitParticipantSignaturesResponse, error)
 	// LeaveVTXOs queues one or more VTXOs for cooperative leave
 	// (offboard) in the next round. Each VTXO is forfeited and the

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"time"
@@ -27,16 +28,16 @@ const (
 		"request-v1"
 )
 
-func unspecifiedForfeitSigningDirection() daemonrpc.ForfeitSigningDirection {
+func unspecifiedForfeitSigningRoute() daemonrpc.ForfeitSigningRoute {
 	return daemonrpc.
-		ForfeitSigningDirection_FORFEIT_SIGNING_DIRECTION_UNSPECIFIED
+		ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_UNSPECIFIED
 }
 
 // forfeitSigningContext is the daemon-local correlation metadata supplied
 // when a caller queues a custom refresh input.
 type forfeitSigningContext struct {
 	paymentHash []byte
-	direction   daemonrpc.ForfeitSigningDirection
+	route       daemonrpc.ForfeitSigningRoute
 }
 
 type forfeitSignatureRequest struct {
@@ -56,7 +57,7 @@ type forfeitSignatureBroker struct {
 	requests     map[string]*forfeitSignatureRequest
 	order        []string
 
-	inSwapSigner vtxo.ForfeitParticipantSigner
+	localSigner vtxo.ForfeitParticipantSigner
 	waitTimeout time.Duration
 }
 
@@ -68,7 +69,7 @@ func newForfeitSignatureBroker() *forfeitSignatureBroker {
 	}
 }
 
-func (b *forfeitSignatureBroker) setInSwapSigner(
+func (b *forfeitSignatureBroker) setLocalSigner(
 	signer vtxo.ForfeitParticipantSigner) {
 
 	if b == nil {
@@ -76,7 +77,7 @@ func (b *forfeitSignatureBroker) setInSwapSigner(
 	}
 
 	b.mu.Lock()
-	b.inSwapSigner = signer
+	b.localSigner = signer
 	b.mu.Unlock()
 }
 
@@ -84,7 +85,7 @@ func (b *forfeitSignatureBroker) registerContext(outpoint string,
 	ctx forfeitSigningContext) func() {
 
 	if b == nil || outpoint == "" || len(ctx.paymentHash) == 0 ||
-		ctx.direction == unspecifiedForfeitSigningDirection() {
+		ctx.route == unspecifiedForfeitSigningRoute() {
 		return func() {}
 	}
 
@@ -114,24 +115,32 @@ func (b *forfeitSignatureBroker) sign(ctx context.Context,
 		return nil, nil
 	}
 
-	if correlation.direction == daemonrpc.
-		ForfeitSigningDirection_FORFEIT_SIGNING_DIRECTION_IN_SWAP {
+	switch correlation.route {
+	case daemonrpc.ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER:
+		b.mu.Lock()
+		signer := b.localSigner
+		b.mu.Unlock()
+		if signer == nil {
+			return nil, fmt.Errorf("local forfeit participant " +
+				"signer is not configured")
+		}
+
+		sigs, err := signer(ctx, req)
+		if err != nil {
+			return nil, err
+		}
 
 		b.mu.Lock()
-		signer := b.inSwapSigner
+		delete(b.contexts, outpoint)
 		b.mu.Unlock()
-		if signer != nil {
-			sigs, err := signer(ctx, req)
-			if err != nil {
-				return nil, err
-			}
 
-			b.mu.Lock()
-			delete(b.contexts, outpoint)
-			b.mu.Unlock()
+		return sigs, nil
 
-			return sigs, nil
-		}
+	case daemonrpc.
+		ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_PENDING_REQUEST:
+	default:
+		return nil, fmt.Errorf("unsupported forfeit signing route: %v",
+			correlation.route)
 	}
 
 	pending, err := pendingForfeitSignatureRequest(correlation, req)
@@ -226,6 +235,7 @@ func (b *forfeitSignatureBroker) removeWaiter(requestID string,
 		return
 	}
 }
+
 func (b *forfeitSignatureBroker) list(after uint64, limit uint32) (
 	[]*daemonrpc.PendingForfeitParticipantSignatureRequest, uint64) {
 
@@ -250,7 +260,6 @@ func (b *forfeitSignatureBroker) list(after uint64, limit uint32) (
 			continue
 		}
 		if len(req.signatures) != 0 {
-			next = req.proto.GetSequence()
 			continue
 		}
 
@@ -368,7 +377,7 @@ func pendingForfeitSignatureRequest(correlation forfeitSigningContext,
 
 	pending := &daemonrpc.PendingForfeitParticipantSignatureRequest{
 		PaymentHash:  append([]byte(nil), correlation.paymentHash...),
-		Direction:    correlation.direction,
+		SigningRoute: correlation.route,
 		VtxoOutpoint: req.VTXO.Outpoint.String(),
 		VtxoAmountSat: uint64(
 			req.VTXO.Amount,
@@ -398,13 +407,18 @@ func forfeitSignatureRequestID(
 	h.Write([]byte(forfeitSignatureRequestDomain))
 	h.Write([]byte{0})
 	h.Write(req.GetPaymentHash())
-	h.Write([]byte{byte(req.GetDirection())})
+	h.Write([]byte{byte(req.GetSigningRoute())})
 	h.Write([]byte(req.GetVtxoOutpoint()))
 	h.Write(req.GetVtxoPkScript())
 	h.Write(req.GetVtxoPolicyTemplate())
 	h.Write(req.GetForfeitSpendPath())
 	h.Write(req.GetUnsignedForfeitTx())
 	h.Write([]byte(req.GetConnectorOutpoint()))
+	var connectorAmount [8]byte
+	binary.BigEndian.PutUint64(
+		connectorAmount[:], req.GetConnectorAmountSat(),
+	)
+	h.Write(connectorAmount[:])
 	h.Write(req.GetConnectorPkScript())
 	h.Write(req.GetServerForfeitPkScript())
 	sum := h.Sum(nil)
@@ -578,7 +592,7 @@ func clonePendingForfeitSignatureRequest(
 		RequestId:          bytes.Clone(req.GetRequestId()),
 		Sequence:           req.GetSequence(),
 		PaymentHash:        bytes.Clone(req.GetPaymentHash()),
-		Direction:          req.GetDirection(),
+		SigningRoute:       req.GetSigningRoute(),
 		VtxoOutpoint:       req.GetVtxoOutpoint(),
 		VtxoAmountSat:      req.GetVtxoAmountSat(),
 		VtxoPkScript:       bytes.Clone(req.GetVtxoPkScript()),
@@ -599,7 +613,7 @@ func samePendingForfeitSignatureRequest(
 
 	return bytes.Equal(a.GetRequestId(), b.GetRequestId()) &&
 		bytes.Equal(a.GetPaymentHash(), b.GetPaymentHash()) &&
-		a.GetDirection() == b.GetDirection() &&
+		a.GetSigningRoute() == b.GetSigningRoute() &&
 		a.GetVtxoOutpoint() == b.GetVtxoOutpoint() &&
 		a.GetVtxoAmountSat() == b.GetVtxoAmountSat() &&
 		bytes.Equal(a.GetVtxoPkScript(), b.GetVtxoPkScript()) &&

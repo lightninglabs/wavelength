@@ -717,6 +717,9 @@ func (a *Ark) Receive(ctx context.Context,
 	case *RefreshCustomVTXOsRequest:
 		return a.handleRefreshCustomVTXOs(ctx, m)
 
+	case *DropCustomRefreshVTXOsRequest:
+		return a.handleDropCustomRefreshVTXOs(ctx, m)
+
 	case *LeaveVTXOsRequest:
 		return a.handleLeaveVTXOs(ctx, m)
 
@@ -1729,6 +1732,12 @@ func (a *Ark) handleRefreshCustomVTXOs(ctx context.Context,
 			ClientKey:      input.ClientKey,
 			OperatorKey:    input.OperatorKey,
 			RelativeExpiry: input.RelativeExpiry,
+			RoundID:        input.RoundID,
+			CommitmentTxID: input.CommitmentTxID,
+			BatchExpiry:    input.BatchExpiry,
+			ChainDepth:     input.ChainDepth,
+			CreatedHeight:  input.CreatedHeight,
+			Ancestry:       input.Ancestry,
 		})
 		customOutpoints = append(customOutpoints, input.Outpoint)
 
@@ -1800,13 +1809,13 @@ func (a *Ark) handleRefreshCustomVTXOs(ctx context.Context,
 }
 
 func (a *Ark) dropManagerCustomForfeits(ctx context.Context,
-	outpoints []wire.OutPoint) {
+	outpoints []wire.OutPoint) int {
 
 	if len(outpoints) == 0 {
-		return
+		return 0
 	}
 
-	_, err := a.askManager(
+	resp, err := a.askManager(
 		ctx, &actormsg.DropCustomForfeitInputsRequest{
 			Outpoints: outpoints,
 		},
@@ -1816,8 +1825,31 @@ func (a *Ark) dropManagerCustomForfeits(ctx context.Context,
 			err,
 			slog.Int("count", len(outpoints)),
 		)
+
+		return 0
 	}
+
+	dropResp, ok := resp.(*actormsg.DropCustomForfeitInputsResponse)
+	if !ok {
+		a.logger(ctx).WarnS(ctx, "Unexpected custom forfeit drop "+
+			"response type", fmt.Errorf("got %T", resp))
+
+		return 0
+	}
+
+	return dropResp.DroppedCount
 }
+
+func (a *Ark) handleDropCustomRefreshVTXOs(ctx context.Context,
+	req *DropCustomRefreshVTXOsRequest) fn.Result[WalletResp] {
+
+	dropped := a.dropManagerCustomForfeits(ctx, req.Outpoints)
+
+	return fn.Ok[WalletResp](&DropCustomRefreshVTXOsResponse{
+		DroppedCount: dropped,
+	})
+}
+
 // handleLeaveVTXOs processes a leave (offboard) request. The wallet loads each
 // VTXO descriptor, builds a forfeit + leave request pair, and sends the
 // composed intent package to the round actor via RegisterIntentMsg. The round

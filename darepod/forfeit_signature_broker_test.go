@@ -23,11 +23,18 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func inSwapForfeitSigningDirection() daemonrpc.ForfeitSigningDirection {
-	direction := daemonrpc.
-		ForfeitSigningDirection_FORFEIT_SIGNING_DIRECTION_IN_SWAP
+func localForfeitSigningRoute() daemonrpc.ForfeitSigningRoute {
+	route := daemonrpc.
+		ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER
 
-	return direction
+	return route
+}
+
+func pendingForfeitSigningRoute() daemonrpc.ForfeitSigningRoute {
+	route := daemonrpc.
+		ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_PENDING_REQUEST
+
+	return route
 }
 
 // TestForfeitSignatureBrokerSurfacesAndCompletesRequest verifies the daemon
@@ -35,7 +42,7 @@ func inSwapForfeitSigningDirection() daemonrpc.ForfeitSigningDirection {
 // externally visible pending-request RPC shape. A custom refresh cannot know
 // the exact forfeit transaction until the round assigns a connector, so the
 // callback must block, publish the full transcript, and resume only after the
-// swap-level protocol submits the remote participant signature.
+// external protocol submits the remote participant signature.
 func TestForfeitSignatureBrokerSurfacesAndCompletesRequest(t *testing.T) {
 	t.Parallel()
 
@@ -45,7 +52,7 @@ func TestForfeitSignatureBrokerSurfacesAndCompletesRequest(t *testing.T) {
 	unregister := broker.registerContext(req.VTXO.Outpoint.String(),
 		forfeitSigningContext{
 			paymentHash: paymentHash[:],
-			direction:   inSwapForfeitSigningDirection(),
+			route:       pendingForfeitSigningRoute(),
 		},
 	)
 	defer unregister()
@@ -112,9 +119,9 @@ func TestForfeitSignatureBrokerSurfacesAndCompletesRequest(t *testing.T) {
 }
 
 // TestForfeitSignatureBrokerDelegatesInSwapRequests verifies the daemon's
-// custom-refresh broker can answer in-swap requests synchronously through the
-// swap runtime while preserving the broker callback as the VTXO-manager hook.
-func TestForfeitSignatureBrokerDelegatesInSwapRequests(t *testing.T) {
+// custom-refresh broker can answer local-signer requests synchronously while
+// preserving the broker callback as the VTXO-manager hook.
+func TestForfeitSignatureBrokerDelegatesLocalSignerRequests(t *testing.T) {
 	t.Parallel()
 
 	broker := newForfeitSignatureBroker()
@@ -122,14 +129,14 @@ func TestForfeitSignatureBrokerDelegatesInSwapRequests(t *testing.T) {
 	unregister := broker.registerContext(req.VTXO.Outpoint.String(),
 		forfeitSigningContext{
 			paymentHash: paymentHash[:],
-			direction:   inSwapForfeitSigningDirection(),
+			route:       localForfeitSigningRoute(),
 		},
 	)
 	defer unregister()
 
 	expected := []*types.ForfeitParticipantSig{{}}
 	calls := 0
-	broker.setInSwapSigner(func(_ context.Context,
+	broker.setLocalSigner(func(_ context.Context,
 		gotReq *vtxo.ForfeitParticipantSignRequest) (
 		[]*types.ForfeitParticipantSig, error) {
 
@@ -150,6 +157,84 @@ func TestForfeitSignatureBrokerDelegatesInSwapRequests(t *testing.T) {
 	broker.mu.Unlock()
 	require.False(t, ok)
 }
+
+// TestForfeitSignatureBrokerRejectsMissingLocalSigner verifies that a request
+// explicitly routed to the daemon-local signer fails closed when no local
+// signer is installed. Without this guard, the daemon could accidentally turn
+// a locally owned participant-signature request into a pending external
+// request that no peer is expected to answer.
+func TestForfeitSignatureBrokerRejectsMissingLocalSigner(t *testing.T) {
+	t.Parallel()
+
+	broker := newForfeitSignatureBroker()
+	req, paymentHash := testForfeitParticipantSignRequest(t)
+	unregister := broker.registerContext(req.VTXO.Outpoint.String(),
+		forfeitSigningContext{
+			paymentHash: paymentHash[:],
+			route:       localForfeitSigningRoute(),
+		},
+	)
+	defer unregister()
+
+	signatures, err := broker.sign(t.Context(), req)
+	require.ErrorContains(t, err, "local forfeit participant signer")
+	require.Nil(t, signatures)
+	require.Empty(t, broker.requests)
+}
+
+// TestForfeitSignatureBrokerRemovesCancelledWaiter verifies that a cancelled
+// external-signature request does not leave a dead waiter channel retained in
+// the broker. The pending request itself remains listable so the coordinator
+// can still observe and complete it for a later retry.
+func TestForfeitSignatureBrokerRemovesCancelledWaiter(t *testing.T) {
+	t.Parallel()
+
+	broker := newForfeitSignatureBroker()
+	req, paymentHash := testForfeitParticipantSignRequest(t)
+	unregister := broker.registerContext(req.VTXO.Outpoint.String(),
+		forfeitSigningContext{
+			paymentHash: paymentHash[:],
+			route:       pendingForfeitSigningRoute(),
+		},
+	)
+	defer unregister()
+
+	signCtx, cancel := context.WithCancel(t.Context())
+	results := make(chan error, 1)
+	go func() {
+		_, err := broker.sign(signCtx, req)
+		results <- err
+	}()
+
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		broker.mu.Lock()
+		defer broker.mu.Unlock()
+
+		require.Len(c, broker.requests, 1)
+		for _, pending := range broker.requests {
+			require.Len(c, pending.waiters, 1)
+		}
+	}, time.Second, 10*time.Millisecond)
+
+	cancel()
+
+	select {
+	case err := <-results:
+		require.ErrorIs(t, err, context.Canceled)
+
+	case <-time.After(time.Second):
+		t.Fatal("signer callback did not observe cancellation")
+	}
+
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+
+	require.Len(t, broker.requests, 1)
+	for _, pending := range broker.requests {
+		require.Empty(t, pending.waiters)
+	}
+}
+
 // TestForfeitSignatureBrokerTimesOutPendingRequest verifies an unanswered
 // external-signature request cannot block the VTXO actor indefinitely. The
 // broker removes the dead waiter and drops the outpoint correlation, leaving
@@ -164,7 +249,7 @@ func TestForfeitSignatureBrokerTimesOutPendingRequest(t *testing.T) {
 	unregister := broker.registerContext(req.VTXO.Outpoint.String(),
 		forfeitSigningContext{
 			paymentHash: paymentHash[:],
-			direction:   inSwapForfeitSigningDirection(),
+			route:       pendingForfeitSigningRoute(),
 		},
 	)
 	defer unregister()
@@ -197,7 +282,7 @@ func TestForfeitSignatureBrokerClearsContextOnTranscriptError(t *testing.T) {
 	unregister := broker.registerContext(req.VTXO.Outpoint.String(),
 		forfeitSigningContext{
 			paymentHash: paymentHash[:],
-			direction:   inSwapForfeitSigningDirection(),
+			route:       pendingForfeitSigningRoute(),
 		},
 	)
 	defer unregister()
@@ -213,6 +298,79 @@ func TestForfeitSignatureBrokerClearsContextOnTranscriptError(t *testing.T) {
 	require.False(t, ok)
 }
 
+// TestForfeitSignatureBrokerListDoesNotAdvancePastEarlierPendingRequest
+// verifies answered requests do not move the polling cursor past an earlier
+// unanswered request. Callers use next_sequence as their next after_sequence;
+// if the broker advanced over answered later entries, an earlier pending
+// transcript could become invisible forever.
+func TestForfeitSignatureBrokerListDoesNotAdvancePastEarlierPendingRequest(
+	t *testing.T) {
+
+	t.Parallel()
+
+	broker := newForfeitSignatureBroker()
+	req, paymentHash := testForfeitParticipantSignRequest(t)
+	correlation := forfeitSigningContext{
+		paymentHash: paymentHash[:],
+		route:       pendingForfeitSigningRoute(),
+	}
+
+	first, err := pendingForfeitSignatureRequest(correlation, req)
+	require.NoError(t, err)
+	first.Sequence = 1
+
+	secondReq := *req
+	secondOutpoint := testWalletOpsOutpoint(32)
+	secondReq.VTXO = &vtxo.Descriptor{}
+	*secondReq.VTXO = *req.VTXO
+	secondReq.VTXO.Outpoint = secondOutpoint
+
+	second, err := pendingForfeitSignatureRequest(
+		correlation, &secondReq,
+	)
+	require.NoError(t, err)
+	second.Sequence = 2
+
+	firstID := string(first.GetRequestId())
+	secondID := string(second.GetRequestId())
+	broker.requests[firstID] = &forfeitSignatureRequest{proto: first}
+	broker.requests[secondID] = &forfeitSignatureRequest{
+		proto: second,
+		signatures: []*types.ForfeitParticipantSig{{
+			PubKey: req.VTXO.ClientKey.PubKey,
+		}},
+	}
+	broker.order = []string{firstID, secondID}
+
+	requests, next := broker.list(0, 10)
+	require.Len(t, requests, 1)
+	require.Equal(t, first.GetRequestId(), requests[0].GetRequestId())
+	require.Equal(t, first.GetSequence(), next)
+}
+
+// TestForfeitSignatureRequestIDIncludesConnectorAmount verifies the pending
+// request id commits to the assigned connector value. The connector amount is
+// part of the exact forfeit transaction's prevout value, so two otherwise
+// identical requests with different connector amounts must not share a wake-up
+// id.
+func TestForfeitSignatureRequestIDIncludesConnectorAmount(t *testing.T) {
+	t.Parallel()
+
+	req, paymentHash := testForfeitParticipantSignRequest(t)
+	correlation := forfeitSigningContext{
+		paymentHash: paymentHash[:],
+		route:       pendingForfeitSigningRoute(),
+	}
+
+	first, err := pendingForfeitSignatureRequest(correlation, req)
+	require.NoError(t, err)
+
+	req.ConnectorAmount++
+	second, err := pendingForfeitSignatureRequest(correlation, req)
+	require.NoError(t, err)
+
+	require.NotEqual(t, first.GetRequestId(), second.GetRequestId())
+}
 
 // TestForfeitSignatureBrokerSubmitRejectsUnknownRequest verifies signatures
 // cannot be submitted for an arbitrary request id. The swap protocol above the
@@ -247,7 +405,7 @@ func TestForfeitSignatureBrokerSubmitRejectsInvalidSignature(t *testing.T) {
 		testForfeitParticipantSignRequestWithSigners(t)
 	correlation := forfeitSigningContext{
 		paymentHash: paymentHash[:],
-		direction:   inSwapForfeitSigningDirection(),
+		route:       pendingForfeitSigningRoute(),
 	}
 	pending, err := pendingForfeitSignatureRequest(correlation, req)
 	require.NoError(t, err)
@@ -286,7 +444,7 @@ func TestForfeitSignatureBrokerSubmitIsIdempotent(t *testing.T) {
 		testForfeitParticipantSignRequestWithSigners(t)
 	correlation := forfeitSigningContext{
 		paymentHash: paymentHash[:],
-		direction:   inSwapForfeitSigningDirection(),
+		route:       pendingForfeitSigningRoute(),
 	}
 	pending, err := pendingForfeitSignatureRequest(correlation, req)
 	require.NoError(t, err)

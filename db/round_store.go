@@ -1297,6 +1297,11 @@ func vtxoRequestToRoundParams(ctx context.Context, q RoundStore, now int64,
 		operatorPubkey = standardParams.OperatorKey.
 			SerializeCompressed()
 	}
+	// A decode error here is expected for caller-supplied custom policy
+	// outputs such as vHTLC refresh replacements. The policy template and
+	// pkScript above remain the authoritative persisted script data; these
+	// legacy client/operator/expiry columns are populated only for the
+	// standard VTXO shape.
 
 	// Register the signing descriptor in the shared internal_keys
 	// registry and reference it by id. A request always carries a

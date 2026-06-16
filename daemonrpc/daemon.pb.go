@@ -253,59 +253,89 @@ func (VTXOExpiryStatus) EnumDescriptor() ([]byte, []int) {
 	return file_daemon_proto_rawDescGZIP(), []int{2}
 }
 
-// ForfeitSigningDirection lets an external swap coordinator route a pending
-// custom-refresh signature request to the right swap-level protocol.
-type ForfeitSigningDirection int32
+// ForfeitSigningRoute tells the daemon how to resolve a later
+// connector-bound participant signature request for a custom VTXO refresh.
+//
+// RefreshCustomVTXOs validates and queues caller-supplied VTXOs before the
+// round assigns connector outputs. The exact forfeit transaction is therefore
+// not known at queue time. When the VTXO actor later receives the round's
+// connector-bound ForfeitRequest, it calls back into the daemon with the full
+// transcript. This enum controls where that callback is routed.
+//
+// End-to-end, the flow is:
+//
+//  1. A coordinator calls RefreshCustomVTXOs with a custom input, output, and
+//     ForfeitSigningContext.
+//  2. The wallet creates a temporary PendingForfeit actor for the old custom
+//     VTXO and joins the next round.
+//  3. The round assigns a connector output and sends the actor a concrete
+//     ForfeitRequest.
+//  4. The actor builds the exact forfeit transaction and asks the daemon for
+//     the participant signature selected by signing_route.
+//  5. LOCAL_SIGNER answers inside the daemon. PENDING_REQUEST publishes the
+//     transcript through ListPendingForfeitParticipantSignatureRequests and
+//     waits until SubmitForfeitParticipantSignatures supplies the signature.
+//
+// The values intentionally describe signature routing rather than swap
+// direction. Swap-in and swap-out are current users of this mechanism, but the
+// underlying object is just a custom-policy vHTLC that may have multiple
+// participants.
+type ForfeitSigningRoute int32
 
 const (
-	ForfeitSigningDirection_FORFEIT_SIGNING_DIRECTION_UNSPECIFIED ForfeitSigningDirection = 0
-	// FORFEIT_SIGNING_DIRECTION_IN_SWAP means the local daemon owns the
-	// in-swap vHTLC and needs the remote swap server participant signature.
-	ForfeitSigningDirection_FORFEIT_SIGNING_DIRECTION_IN_SWAP ForfeitSigningDirection = 1
-	// FORFEIT_SIGNING_DIRECTION_OUT_SWAP means the local daemon owns the
-	// swap server's out-swap vHTLC and needs the receiver participant
-	// signature.
-	ForfeitSigningDirection_FORFEIT_SIGNING_DIRECTION_OUT_SWAP ForfeitSigningDirection = 2
+	ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_UNSPECIFIED ForfeitSigningRoute = 0
+	// FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER means the daemon must answer the
+	// request synchronously with its configured local participant signer. This
+	// is used when the daemon hosts the participant that can sign the custom
+	// policy path locally. If no local signer is configured, signing fails
+	// instead of silently publishing an external pending request.
+	ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER ForfeitSigningRoute = 1
+	// FORFEIT_SIGNING_ROUTE_PENDING_REQUEST means the daemon must publish a
+	// PendingForfeitParticipantSignatureRequest and block the VTXO actor until
+	// an external participant submits signatures through
+	// SubmitForfeitParticipantSignatures. This is used when another process or
+	// peer owns one of the custom policy participant keys.
+	ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_PENDING_REQUEST ForfeitSigningRoute = 2
 )
 
-// Enum value maps for ForfeitSigningDirection.
+// Enum value maps for ForfeitSigningRoute.
 var (
-	ForfeitSigningDirection_name = map[int32]string{
-		0: "FORFEIT_SIGNING_DIRECTION_UNSPECIFIED",
-		1: "FORFEIT_SIGNING_DIRECTION_IN_SWAP",
-		2: "FORFEIT_SIGNING_DIRECTION_OUT_SWAP",
+	ForfeitSigningRoute_name = map[int32]string{
+		0: "FORFEIT_SIGNING_ROUTE_UNSPECIFIED",
+		1: "FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER",
+		2: "FORFEIT_SIGNING_ROUTE_PENDING_REQUEST",
 	}
-	ForfeitSigningDirection_value = map[string]int32{
-		"FORFEIT_SIGNING_DIRECTION_UNSPECIFIED": 0,
-		"FORFEIT_SIGNING_DIRECTION_IN_SWAP":     1,
-		"FORFEIT_SIGNING_DIRECTION_OUT_SWAP":    2,
+	ForfeitSigningRoute_value = map[string]int32{
+		"FORFEIT_SIGNING_ROUTE_UNSPECIFIED":     0,
+		"FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER":    1,
+		"FORFEIT_SIGNING_ROUTE_PENDING_REQUEST": 2,
 	}
 )
 
-func (x ForfeitSigningDirection) Enum() *ForfeitSigningDirection {
-	p := new(ForfeitSigningDirection)
+func (x ForfeitSigningRoute) Enum() *ForfeitSigningRoute {
+	p := new(ForfeitSigningRoute)
 	*p = x
 	return p
 }
 
-func (x ForfeitSigningDirection) String() string {
+func (x ForfeitSigningRoute) String() string {
 	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
 }
 
-func (ForfeitSigningDirection) Descriptor() protoreflect.EnumDescriptor {
+func (ForfeitSigningRoute) Descriptor() protoreflect.EnumDescriptor {
 	return file_daemon_proto_enumTypes[3].Descriptor()
 }
 
-func (ForfeitSigningDirection) Type() protoreflect.EnumType {
+func (ForfeitSigningRoute) Type() protoreflect.EnumType {
 	return &file_daemon_proto_enumTypes[3]
 }
 
-func (x ForfeitSigningDirection) Number() protoreflect.EnumNumber {
+func (x ForfeitSigningRoute) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Deprecated: Use ForfeitSigningDirection.Descriptor instead.
-func (ForfeitSigningDirection) EnumDescriptor() ([]byte, []int) {
+// Deprecated: Use ForfeitSigningRoute.Descriptor instead.
+func (ForfeitSigningRoute) EnumDescriptor() ([]byte, []int) {
 	return file_daemon_proto_rawDescGZIP(), []int{3}
 }
 
@@ -4161,13 +4191,20 @@ func (x *SignVTXOForfeitResponse) GetSignature() []byte {
 }
 
 // ForfeitSigningContext links a caller-supplied custom refresh input back to
-// the swap session that should answer later connector-bound signing requests.
+// the protocol object that should answer later connector-bound signing
+// requests.
 type ForfeitSigningContext struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// payment_hash identifies the swap whose custom VTXO is being refreshed.
+	// payment_hash is an opaque 32-byte correlation id for the higher-level
+	// protocol object that owns the custom VTXO. Swap users set this to the
+	// swap payment hash, but the daemon does not interpret it as a payment.
+	// It is copied into PendingForfeitParticipantSignatureRequest so an
+	// external coordinator can map the request back to its own state machine.
 	PaymentHash []byte `protobuf:"bytes,1,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
-	// direction identifies which swap protocol should answer the request.
-	Direction     ForfeitSigningDirection `protobuf:"varint,2,opt,name=direction,proto3,enum=daemonrpc.ForfeitSigningDirection" json:"direction,omitempty"`
+	// signing_route tells the daemon whether the later connector-bound
+	// signature request should be answered by the daemon's local signer or by
+	// publishing a pending request for an external participant.
+	SigningRoute  ForfeitSigningRoute `protobuf:"varint,2,opt,name=signing_route,json=signingRoute,proto3,enum=daemonrpc.ForfeitSigningRoute" json:"signing_route,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4209,11 +4246,11 @@ func (x *ForfeitSigningContext) GetPaymentHash() []byte {
 	return nil
 }
 
-func (x *ForfeitSigningContext) GetDirection() ForfeitSigningDirection {
+func (x *ForfeitSigningContext) GetSigningRoute() ForfeitSigningRoute {
 	if x != nil {
-		return x.Direction
+		return x.SigningRoute
 	}
-	return ForfeitSigningDirection_FORFEIT_SIGNING_DIRECTION_UNSPECIFIED
+	return ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_UNSPECIFIED
 }
 
 // OutpointSelection wraps a list of outpoint strings for use inside a
@@ -4432,8 +4469,14 @@ type CustomRefreshVTXOInput struct {
 	// forfeit_spend_path is the encoded operator-backed spend path used for
 	// the actual round forfeit transaction once the connector is assigned.
 	ForfeitSpendPath []byte `protobuf:"bytes,6,opt,name=forfeit_spend_path,json=forfeitSpendPath,proto3" json:"forfeit_spend_path,omitempty"`
-	// forfeit_signing_context, when set, asks the daemon to surface the later
-	// connector-bound signing request to external swap coordination RPCs.
+	// forfeit_signing_context, when set, tells the daemon how to route the
+	// later connector-bound participant signature request for this custom
+	// input. The route is only evaluated after the round assigns a connector
+	// and the exact forfeit transaction is known. Inputs whose forfeit path is
+	// fully signable by the daemon can use LOCAL_SIGNER. Inputs whose forfeit
+	// path needs another participant use PENDING_REQUEST and require an
+	// external SubmitForfeitParticipantSignatures call before the round can
+	// finish collecting forfeit transactions.
 	ForfeitSigningContext *ForfeitSigningContext `protobuf:"bytes,7,opt,name=forfeit_signing_context,json=forfeitSigningContext,proto3" json:"forfeit_signing_context,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
@@ -4707,21 +4750,45 @@ func (x *RefreshCustomVTXOsResponse) GetStatus() string {
 // PendingForfeitParticipantSignatureRequest is the exact transcript an
 // external participant must validate and sign for a custom refresh forfeit.
 type PendingForfeitParticipantSignatureRequest struct {
-	state                 protoimpl.MessageState  `protogen:"open.v1"`
-	RequestId             []byte                  `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Sequence              uint64                  `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	PaymentHash           []byte                  `protobuf:"bytes,3,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
-	Direction             ForfeitSigningDirection `protobuf:"varint,4,opt,name=direction,proto3,enum=daemonrpc.ForfeitSigningDirection" json:"direction,omitempty"`
-	VtxoOutpoint          string                  `protobuf:"bytes,5,opt,name=vtxo_outpoint,json=vtxoOutpoint,proto3" json:"vtxo_outpoint,omitempty"`
-	VtxoAmountSat         uint64                  `protobuf:"varint,6,opt,name=vtxo_amount_sat,json=vtxoAmountSat,proto3" json:"vtxo_amount_sat,omitempty"`
-	VtxoPkScript          []byte                  `protobuf:"bytes,7,opt,name=vtxo_pk_script,json=vtxoPkScript,proto3" json:"vtxo_pk_script,omitempty"`
-	VtxoPolicyTemplate    []byte                  `protobuf:"bytes,8,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
-	ForfeitSpendPath      []byte                  `protobuf:"bytes,9,opt,name=forfeit_spend_path,json=forfeitSpendPath,proto3" json:"forfeit_spend_path,omitempty"`
-	UnsignedForfeitTx     []byte                  `protobuf:"bytes,10,opt,name=unsigned_forfeit_tx,json=unsignedForfeitTx,proto3" json:"unsigned_forfeit_tx,omitempty"`
-	ConnectorOutpoint     string                  `protobuf:"bytes,11,opt,name=connector_outpoint,json=connectorOutpoint,proto3" json:"connector_outpoint,omitempty"`
-	ConnectorAmountSat    uint64                  `protobuf:"varint,12,opt,name=connector_amount_sat,json=connectorAmountSat,proto3" json:"connector_amount_sat,omitempty"`
-	ConnectorPkScript     []byte                  `protobuf:"bytes,13,opt,name=connector_pk_script,json=connectorPkScript,proto3" json:"connector_pk_script,omitempty"`
-	ServerForfeitPkScript []byte                  `protobuf:"bytes,14,opt,name=server_forfeit_pk_script,json=serverForfeitPkScript,proto3" json:"server_forfeit_pk_script,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// request_id is a stable digest over this transcript. Submitters must echo
+	// it in SubmitForfeitParticipantSignatures so the daemon can wake the
+	// blocked VTXO actor waiting on this exact forfeit transaction.
+	RequestId []byte `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// sequence is a monotonically increasing in-memory cursor used by
+	// ListPendingForfeitParticipantSignatureRequests.
+	Sequence uint64 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	// payment_hash is copied from ForfeitSigningContext.payment_hash and lets
+	// the external coordinator find the protocol object that owns this custom
+	// VTXO.
+	PaymentHash []byte `protobuf:"bytes,3,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// signing_route is always FORFEIT_SIGNING_ROUTE_PENDING_REQUEST for
+	// requests returned by ListPendingForfeitParticipantSignatureRequests. It
+	// is included in the transcript and request id so external coordinators
+	// can reject requests that were routed through an unexpected path.
+	SigningRoute ForfeitSigningRoute `protobuf:"varint,4,opt,name=signing_route,json=signingRoute,proto3,enum=daemonrpc.ForfeitSigningRoute" json:"signing_route,omitempty"`
+	// vtxo_outpoint and the vtxo_* fields describe the old custom VTXO being
+	// forfeited.
+	VtxoOutpoint       string `protobuf:"bytes,5,opt,name=vtxo_outpoint,json=vtxoOutpoint,proto3" json:"vtxo_outpoint,omitempty"`
+	VtxoAmountSat      uint64 `protobuf:"varint,6,opt,name=vtxo_amount_sat,json=vtxoAmountSat,proto3" json:"vtxo_amount_sat,omitempty"`
+	VtxoPkScript       []byte `protobuf:"bytes,7,opt,name=vtxo_pk_script,json=vtxoPkScript,proto3" json:"vtxo_pk_script,omitempty"`
+	VtxoPolicyTemplate []byte `protobuf:"bytes,8,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
+	// forfeit_spend_path is the encoded custom policy path that must be used
+	// for the VTXO input of unsigned_forfeit_tx.
+	ForfeitSpendPath []byte `protobuf:"bytes,9,opt,name=forfeit_spend_path,json=forfeitSpendPath,proto3" json:"forfeit_spend_path,omitempty"`
+	// unsigned_forfeit_tx is the exact transaction the external participant
+	// signs. It spends the custom VTXO and the assigned connector into the
+	// server forfeit output. The participant must sign the VTXO input, not the
+	// connector input; the operator/server signs the connector side.
+	UnsignedForfeitTx []byte `protobuf:"bytes,10,opt,name=unsigned_forfeit_tx,json=unsignedForfeitTx,proto3" json:"unsigned_forfeit_tx,omitempty"`
+	// connector_* fields describe the round-assigned connector input that
+	// makes this forfeit transaction valid.
+	ConnectorOutpoint  string `protobuf:"bytes,11,opt,name=connector_outpoint,json=connectorOutpoint,proto3" json:"connector_outpoint,omitempty"`
+	ConnectorAmountSat uint64 `protobuf:"varint,12,opt,name=connector_amount_sat,json=connectorAmountSat,proto3" json:"connector_amount_sat,omitempty"`
+	ConnectorPkScript  []byte `protobuf:"bytes,13,opt,name=connector_pk_script,json=connectorPkScript,proto3" json:"connector_pk_script,omitempty"`
+	// server_forfeit_pk_script is the output script receiving the forfeited
+	// value in unsigned_forfeit_tx.
+	ServerForfeitPkScript []byte `protobuf:"bytes,14,opt,name=server_forfeit_pk_script,json=serverForfeitPkScript,proto3" json:"server_forfeit_pk_script,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -4777,11 +4844,11 @@ func (x *PendingForfeitParticipantSignatureRequest) GetPaymentHash() []byte {
 	return nil
 }
 
-func (x *PendingForfeitParticipantSignatureRequest) GetDirection() ForfeitSigningDirection {
+func (x *PendingForfeitParticipantSignatureRequest) GetSigningRoute() ForfeitSigningRoute {
 	if x != nil {
-		return x.Direction
+		return x.SigningRoute
 	}
-	return ForfeitSigningDirection_FORFEIT_SIGNING_DIRECTION_UNSPECIFIED
+	return ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_UNSPECIFIED
 }
 
 func (x *PendingForfeitParticipantSignatureRequest) GetVtxoOutpoint() string {
@@ -4962,9 +5029,14 @@ func (x *ListPendingForfeitParticipantSignatureRequestsResponse) GetNextSequence
 }
 
 type ForfeitParticipantSignature struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Pubkey        []byte                 `protobuf:"bytes,1,opt,name=pubkey,proto3" json:"pubkey,omitempty"`
-	Signature     []byte                 `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// pubkey is the participant public key used in the selected forfeit spend
+	// path. The daemon matches signatures by public key when completing the
+	// VTXO input witness.
+	Pubkey []byte `protobuf:"bytes,1,opt,name=pubkey,proto3" json:"pubkey,omitempty"`
+	// signature is the raw Schnorr signature over unsigned_forfeit_tx's VTXO
+	// input under the request's forfeit spend path.
+	Signature     []byte `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5014,8 +5086,15 @@ func (x *ForfeitParticipantSignature) GetSignature() []byte {
 }
 
 type SubmitForfeitParticipantSignaturesRequest struct {
-	state         protoimpl.MessageState         `protogen:"open.v1"`
-	RequestId     []byte                         `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// request_id identifies the pending connector-bound transcript being
+	// answered. It must match a request_id previously returned by
+	// ListPendingForfeitParticipantSignatureRequests.
+	RequestId []byte `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// signatures contains one or more participant signatures needed by the
+	// custom policy path. Supplying extra signatures is harmless only if they
+	// match keys in the selected spend path; unknown keys are ignored by the
+	// witness assembler.
 	Signatures    []*ForfeitParticipantSignature `protobuf:"bytes,2,rep,name=signatures,proto3" json:"signatures,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -9487,10 +9566,10 @@ const file_daemon_proto_rawDesc = "" +
 	" \x01(\fR\x15serverForfeitPkScript\"O\n" +
 	"\x17SignVTXOForfeitResponse\x12\x16\n" +
 	"\x06pubkey\x18\x01 \x01(\fR\x06pubkey\x12\x1c\n" +
-	"\tsignature\x18\x02 \x01(\fR\tsignature\"|\n" +
+	"\tsignature\x18\x02 \x01(\fR\tsignature\"\x7f\n" +
 	"\x15ForfeitSigningContext\x12!\n" +
-	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12@\n" +
-	"\tdirection\x18\x02 \x01(\x0e2\".daemonrpc.ForfeitSigningDirectionR\tdirection\"1\n" +
+	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12C\n" +
+	"\rsigning_route\x18\x02 \x01(\x0e2\x1e.daemonrpc.ForfeitSigningRouteR\fsigningRoute\"1\n" +
 	"\x11OutpointSelection\x12\x1c\n" +
 	"\toutpoints\x18\x01 \x03(\tR\toutpoints\"\x8d\x01\n" +
 	"\x13RefreshVTXOsRequest\x12<\n" +
@@ -9521,13 +9600,13 @@ const file_daemon_proto_rawDesc = "" +
 	"\adry_run\x18\x03 \x01(\bR\x06dryRun\"_\n" +
 	"\x1aRefreshCustomVTXOsResponse\x12)\n" +
 	"\x10queued_outpoints\x18\x01 \x03(\tR\x0fqueuedOutpoints\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"\x98\x05\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\x9b\x05\n" +
 	")PendingForfeitParticipantSignatureRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\fR\trequestId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12!\n" +
-	"\fpayment_hash\x18\x03 \x01(\fR\vpaymentHash\x12@\n" +
-	"\tdirection\x18\x04 \x01(\x0e2\".daemonrpc.ForfeitSigningDirectionR\tdirection\x12#\n" +
+	"\fpayment_hash\x18\x03 \x01(\fR\vpaymentHash\x12C\n" +
+	"\rsigning_route\x18\x04 \x01(\x0e2\x1e.daemonrpc.ForfeitSigningRouteR\fsigningRoute\x12#\n" +
 	"\rvtxo_outpoint\x18\x05 \x01(\tR\fvtxoOutpoint\x12&\n" +
 	"\x0fvtxo_amount_sat\x18\x06 \x01(\x04R\rvtxoAmountSat\x12$\n" +
 	"\x0evtxo_pk_script\x18\a \x01(\fR\fvtxoPkScript\x120\n" +
@@ -9898,11 +9977,11 @@ const file_daemon_proto_rawDesc = "" +
 	"\x17VTXO_EXPIRY_STATUS_SAFE\x10\x01\x12$\n" +
 	" VTXO_EXPIRY_STATUS_NEEDS_REFRESH\x10\x02\x12\x1f\n" +
 	"\x1bVTXO_EXPIRY_STATUS_CRITICAL\x10\x03\x12\x1e\n" +
-	"\x1aVTXO_EXPIRY_STATUS_EXPIRED\x10\x04*\x93\x01\n" +
-	"\x17ForfeitSigningDirection\x12)\n" +
-	"%FORFEIT_SIGNING_DIRECTION_UNSPECIFIED\x10\x00\x12%\n" +
-	"!FORFEIT_SIGNING_DIRECTION_IN_SWAP\x10\x01\x12&\n" +
-	"\"FORFEIT_SIGNING_DIRECTION_OUT_SWAP\x10\x02*\xf7\x03\n" +
+	"\x1aVTXO_EXPIRY_STATUS_EXPIRED\x10\x04*\x8f\x01\n" +
+	"\x13ForfeitSigningRoute\x12%\n" +
+	"!FORFEIT_SIGNING_ROUTE_UNSPECIFIED\x10\x00\x12&\n" +
+	"\"FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER\x10\x01\x12)\n" +
+	"%FORFEIT_SIGNING_ROUTE_PENDING_REQUEST\x10\x02*\xf7\x03\n" +
 	"\n" +
 	"RoundState\x12\x17\n" +
 	"\x13ROUND_STATE_UNKNOWN\x10\x00\x12\x14\n" +
@@ -10034,7 +10113,7 @@ var file_daemon_proto_goTypes = []any{
 	(WalletState)(0),                                               // 0: daemonrpc.WalletState
 	(VTXOStatus)(0),                                                // 1: daemonrpc.VTXOStatus
 	(VTXOExpiryStatus)(0),                                          // 2: daemonrpc.VTXOExpiryStatus
-	(ForfeitSigningDirection)(0),                                   // 3: daemonrpc.ForfeitSigningDirection
+	(ForfeitSigningRoute)(0),                                       // 3: daemonrpc.ForfeitSigningRoute
 	(RoundState)(0),                                                // 4: daemonrpc.RoundState
 	(OORSessionDirection)(0),                                       // 5: daemonrpc.OORSessionDirection
 	(OORSessionStatus)(0),                                          // 6: daemonrpc.OORSessionStatus
@@ -10179,12 +10258,12 @@ var file_daemon_proto_depIdxs = []int32{
 	52,  // 18: daemonrpc.PrepareOORResponse.custom_inputs:type_name -> daemonrpc.PreparedOORCustomInput
 	48,  // 19: daemonrpc.SignOORCustomInputRequest.custom_input:type_name -> daemonrpc.CustomOORInput
 	49,  // 20: daemonrpc.SignOORCustomInputResponse.signature:type_name -> daemonrpc.TaprootScriptSignature
-	3,   // 21: daemonrpc.ForfeitSigningContext.direction:type_name -> daemonrpc.ForfeitSigningDirection
+	3,   // 21: daemonrpc.ForfeitSigningContext.signing_route:type_name -> daemonrpc.ForfeitSigningRoute
 	59,  // 22: daemonrpc.RefreshVTXOsRequest.outpoints:type_name -> daemonrpc.OutpointSelection
 	58,  // 23: daemonrpc.CustomRefreshVTXOInput.forfeit_signing_context:type_name -> daemonrpc.ForfeitSigningContext
 	62,  // 24: daemonrpc.RefreshCustomVTXOsRequest.inputs:type_name -> daemonrpc.CustomRefreshVTXOInput
 	63,  // 25: daemonrpc.RefreshCustomVTXOsRequest.outputs:type_name -> daemonrpc.CustomRefreshVTXOOutput
-	3,   // 26: daemonrpc.PendingForfeitParticipantSignatureRequest.direction:type_name -> daemonrpc.ForfeitSigningDirection
+	3,   // 26: daemonrpc.PendingForfeitParticipantSignatureRequest.signing_route:type_name -> daemonrpc.ForfeitSigningRoute
 	66,  // 27: daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse.requests:type_name -> daemonrpc.PendingForfeitParticipantSignatureRequest
 	69,  // 28: daemonrpc.SubmitForfeitParticipantSignaturesRequest.signatures:type_name -> daemonrpc.ForfeitParticipantSignature
 	59,  // 29: daemonrpc.LeaveVTXOsRequest.outpoints:type_name -> daemonrpc.OutpointSelection

@@ -114,18 +114,31 @@ service DaemonService {
     // refresh in the next round. Unlike RefreshVTXOs, this does not require
     // the inputs to be wallet-managed live VTXOs; callers provide the policy,
     // proof/auth spend path, and forfeit spend path explicitly.
+    //
+    // This RPC only queues the old VTXO and the replacement output. It cannot
+    // collect every participant signature yet because the round has not
+    // assigned the connector output, so the final forfeit transaction does not
+    // exist. If a queued input needs a non-daemon participant signature, the
+    // daemon exposes that exact connector-bound transcript later through
+    // ListPendingForfeitParticipantSignatureRequests.
     rpc RefreshCustomVTXOs (RefreshCustomVTXOsRequest)
         returns (RefreshCustomVTXOsResponse);
 
     // ListPendingForfeitParticipantSignatureRequests returns exact
     // connector-bound forfeit signing requests emitted by custom refresh
     // inputs whose policies require signatures from external participants.
+    // Callers poll this endpoint, validate the full transcript, sign the VTXO
+    // input with the participant key they control, and submit the result with
+    // SubmitForfeitParticipantSignatures.
     rpc ListPendingForfeitParticipantSignatureRequests (
         ListPendingForfeitParticipantSignatureRequestsRequest)
         returns (ListPendingForfeitParticipantSignatureRequestsResponse);
 
     // SubmitForfeitParticipantSignatures supplies external participant
-    // signatures for one pending connector-bound forfeit signing request.
+    // signatures for one pending connector-bound forfeit signing request. The
+    // request_id must be copied from the listed pending request; the daemon
+    // uses it to wake the blocked VTXO actor that is waiting for that exact
+    // round-assigned forfeit transaction.
     rpc SubmitForfeitParticipantSignatures (
         SubmitForfeitParticipantSignaturesRequest)
         returns (SubmitForfeitParticipantSignaturesResponse);
@@ -1092,29 +1105,66 @@ message SignVTXOForfeitResponse {
     bytes signature = 2;
 }
 
-// ForfeitSigningDirection lets an external swap coordinator route a pending
-// custom-refresh signature request to the right swap-level protocol.
-enum ForfeitSigningDirection {
-    FORFEIT_SIGNING_DIRECTION_UNSPECIFIED = 0;
+// ForfeitSigningRoute tells the daemon how to resolve a later
+// connector-bound participant signature request for a custom VTXO refresh.
+//
+// RefreshCustomVTXOs validates and queues caller-supplied VTXOs before the
+// round assigns connector outputs. The exact forfeit transaction is therefore
+// not known at queue time. When the VTXO actor later receives the round's
+// connector-bound ForfeitRequest, it calls back into the daemon with the full
+// transcript. This enum controls where that callback is routed.
+//
+// End-to-end, the flow is:
+//
+//   1. A coordinator calls RefreshCustomVTXOs with a custom input, output, and
+//      ForfeitSigningContext.
+//   2. The wallet creates a temporary PendingForfeit actor for the old custom
+//      VTXO and joins the next round.
+//   3. The round assigns a connector output and sends the actor a concrete
+//      ForfeitRequest.
+//   4. The actor builds the exact forfeit transaction and asks the daemon for
+//      the participant signature selected by signing_route.
+//   5. LOCAL_SIGNER answers inside the daemon. PENDING_REQUEST publishes the
+//      transcript through ListPendingForfeitParticipantSignatureRequests and
+//      waits until SubmitForfeitParticipantSignatures supplies the signature.
+//
+// The values intentionally describe signature routing rather than swap
+// direction. Swap-in and swap-out are current users of this mechanism, but the
+// underlying object is just a custom-policy vHTLC that may have multiple
+// participants.
+enum ForfeitSigningRoute {
+    FORFEIT_SIGNING_ROUTE_UNSPECIFIED = 0;
 
-    // FORFEIT_SIGNING_DIRECTION_IN_SWAP means the local daemon owns the
-    // in-swap vHTLC and needs the remote swap server participant signature.
-    FORFEIT_SIGNING_DIRECTION_IN_SWAP = 1;
+    // FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER means the daemon must answer the
+    // request synchronously with its configured local participant signer. This
+    // is used when the daemon hosts the participant that can sign the custom
+    // policy path locally. If no local signer is configured, signing fails
+    // instead of silently publishing an external pending request.
+    FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER = 1;
 
-    // FORFEIT_SIGNING_DIRECTION_OUT_SWAP means the local daemon owns the
-    // swap server's out-swap vHTLC and needs the receiver participant
-    // signature.
-    FORFEIT_SIGNING_DIRECTION_OUT_SWAP = 2;
+    // FORFEIT_SIGNING_ROUTE_PENDING_REQUEST means the daemon must publish a
+    // PendingForfeitParticipantSignatureRequest and block the VTXO actor until
+    // an external participant submits signatures through
+    // SubmitForfeitParticipantSignatures. This is used when another process or
+    // peer owns one of the custom policy participant keys.
+    FORFEIT_SIGNING_ROUTE_PENDING_REQUEST = 2;
 }
 
 // ForfeitSigningContext links a caller-supplied custom refresh input back to
-// the swap session that should answer later connector-bound signing requests.
+// the protocol object that should answer later connector-bound signing
+// requests.
 message ForfeitSigningContext {
-    // payment_hash identifies the swap whose custom VTXO is being refreshed.
+    // payment_hash is an opaque 32-byte correlation id for the higher-level
+    // protocol object that owns the custom VTXO. Swap users set this to the
+    // swap payment hash, but the daemon does not interpret it as a payment.
+    // It is copied into PendingForfeitParticipantSignatureRequest so an
+    // external coordinator can map the request back to its own state machine.
     bytes payment_hash = 1;
 
-    // direction identifies which swap protocol should answer the request.
-    ForfeitSigningDirection direction = 2;
+    // signing_route tells the daemon whether the later connector-bound
+    // signature request should be answered by the daemon's local signer or by
+    // publishing a pending request for an external participant.
+    ForfeitSigningRoute signing_route = 2;
 }
 
 // OutpointSelection wraps a list of outpoint strings for use inside a
@@ -1172,8 +1222,14 @@ message CustomRefreshVTXOInput {
     // the actual round forfeit transaction once the connector is assigned.
     bytes forfeit_spend_path = 6;
 
-    // forfeit_signing_context, when set, asks the daemon to surface the later
-    // connector-bound signing request to external swap coordination RPCs.
+    // forfeit_signing_context, when set, tells the daemon how to route the
+    // later connector-bound participant signature request for this custom
+    // input. The route is only evaluated after the round assigns a connector
+    // and the exact forfeit transaction is known. Inputs whose forfeit path is
+    // fully signable by the daemon can use LOCAL_SIGNER. Inputs whose forfeit
+    // path needs another participant use PENDING_REQUEST and require an
+    // external SubmitForfeitParticipantSignatures call before the round can
+    // finish collecting forfeit transactions.
     ForfeitSigningContext forfeit_signing_context = 7;
 }
 
@@ -1216,21 +1272,51 @@ message RefreshCustomVTXOsResponse {
 // PendingForfeitParticipantSignatureRequest is the exact transcript an
 // external participant must validate and sign for a custom refresh forfeit.
 message PendingForfeitParticipantSignatureRequest {
+    // request_id is a stable digest over this transcript. Submitters must echo
+    // it in SubmitForfeitParticipantSignatures so the daemon can wake the
+    // blocked VTXO actor waiting on this exact forfeit transaction.
     bytes request_id = 1;
-    uint64 sequence = 2;
-    bytes payment_hash = 3;
-    ForfeitSigningDirection direction = 4;
 
+    // sequence is a monotonically increasing in-memory cursor used by
+    // ListPendingForfeitParticipantSignatureRequests.
+    uint64 sequence = 2;
+
+    // payment_hash is copied from ForfeitSigningContext.payment_hash and lets
+    // the external coordinator find the protocol object that owns this custom
+    // VTXO.
+    bytes payment_hash = 3;
+
+    // signing_route is always FORFEIT_SIGNING_ROUTE_PENDING_REQUEST for
+    // requests returned by ListPendingForfeitParticipantSignatureRequests. It
+    // is included in the transcript and request id so external coordinators
+    // can reject requests that were routed through an unexpected path.
+    ForfeitSigningRoute signing_route = 4;
+
+    // vtxo_outpoint and the vtxo_* fields describe the old custom VTXO being
+    // forfeited.
     string vtxo_outpoint = 5;
     uint64 vtxo_amount_sat = 6;
     bytes vtxo_pk_script = 7;
     bytes vtxo_policy_template = 8;
+
+    // forfeit_spend_path is the encoded custom policy path that must be used
+    // for the VTXO input of unsigned_forfeit_tx.
     bytes forfeit_spend_path = 9;
+
+    // unsigned_forfeit_tx is the exact transaction the external participant
+    // signs. It spends the custom VTXO and the assigned connector into the
+    // server forfeit output. The participant must sign the VTXO input, not the
+    // connector input; the operator/server signs the connector side.
     bytes unsigned_forfeit_tx = 10;
 
+    // connector_* fields describe the round-assigned connector input that
+    // makes this forfeit transaction valid.
     string connector_outpoint = 11;
     uint64 connector_amount_sat = 12;
     bytes connector_pk_script = 13;
+
+    // server_forfeit_pk_script is the output script receiving the forfeited
+    // value in unsigned_forfeit_tx.
     bytes server_forfeit_pk_script = 14;
 }
 
@@ -1249,12 +1335,26 @@ message ListPendingForfeitParticipantSignatureRequestsResponse {
 }
 
 message ForfeitParticipantSignature {
+    // pubkey is the participant public key used in the selected forfeit spend
+    // path. The daemon matches signatures by public key when completing the
+    // VTXO input witness.
     bytes pubkey = 1;
+
+    // signature is the raw Schnorr signature over unsigned_forfeit_tx's VTXO
+    // input under the request's forfeit spend path.
     bytes signature = 2;
 }
 
 message SubmitForfeitParticipantSignaturesRequest {
+    // request_id identifies the pending connector-bound transcript being
+    // answered. It must match a request_id previously returned by
+    // ListPendingForfeitParticipantSignatureRequests.
     bytes request_id = 1;
+
+    // signatures contains one or more participant signatures needed by the
+    // custom policy path. Supplying extra signatures is harmless only if they
+    // match keys in the selected spend path; unknown keys are ignored by the
+    // witness assembler.
     repeated ForfeitParticipantSignature signatures = 2;
 }
 

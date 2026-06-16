@@ -162,8 +162,9 @@ func (r *RPCServer) OperatorPubKey(ctx context.Context) (*btcec.PublicKey,
 	return r.server.fetchCurrentOperatorPubKey(ctx)
 }
 
-// SetVTXOForfeitParticipantSigner installs the optional signer used by custom
-// in-swap refreshes to collect the swap server participant signature.
+// SetVTXOForfeitParticipantSigner installs the optional local signer used by
+// custom VTXO refreshes whose ForfeitSigningContext selects
+// FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER.
 func (r *RPCServer) SetVTXOForfeitParticipantSigner(
 	signer vtxo.ForfeitParticipantSigner) error {
 
@@ -174,7 +175,7 @@ func (r *RPCServer) SetVTXOForfeitParticipantSigner(
 		return fmt.Errorf("forfeit signature broker is not initialized")
 	}
 
-	r.server.forfeitSignatures.setInSwapSigner(signer)
+	r.server.forfeitSignatures.setLocalSigner(signer)
 
 	return nil
 }
@@ -1531,6 +1532,7 @@ func (r *RPCServer) RefreshCustomVTXOs(ctx context.Context,
 		for _, fn := range unregister {
 			fn()
 		}
+		r.dropCustomRefreshVTXOs(ctx, wRef, inputs)
 
 		return nil, status.Errorf(codes.Internal, "custom refresh "+
 			"queued %d VTXOs, expected %d", resp.RefreshingCount,
@@ -1541,10 +1543,60 @@ func (r *RPCServer) RefreshCustomVTXOs(ctx context.Context,
 		slog.Int("queued_count", len(queued)),
 	)
 
+	if err := r.server.TriggerRoundRegistration(ctx); err != nil {
+		for _, fn := range unregister {
+			fn()
+		}
+		r.dropCustomRefreshVTXOs(ctx, wRef, inputs)
+
+		return nil, status.Errorf(codes.Internal, "trigger custom "+
+			"refresh round registration: %v", err)
+	}
 	return &daemonrpc.RefreshCustomVTXOsResponse{
 		QueuedOutpoints: queued,
 		Status:          "queued",
 	}, nil
+}
+
+func (r *RPCServer) dropCustomRefreshVTXOs(ctx context.Context,
+	wRef actor.ActorRef[wallet.WalletMsg, wallet.WalletResp],
+	inputs []wallet.CustomRefreshInput) {
+
+	outpoints := make([]wire.OutPoint, 0, len(inputs))
+	for _, input := range inputs {
+		outpoints = append(outpoints, input.Outpoint)
+	}
+
+	cleanupCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), 10*time.Second,
+	)
+	defer cancel()
+
+	future := wRef.Ask(cleanupCtx, &wallet.DropCustomRefreshVTXOsRequest{
+		Outpoints: outpoints,
+	})
+	result := future.Await(cleanupCtx)
+	resp, err := result.Unpack()
+	if err != nil {
+		r.server.log.WarnS(ctx, "Failed to drop custom refresh VTXOs",
+			err,
+			slog.Int("count", len(outpoints)),
+		)
+
+		return
+	}
+
+	dropResp, ok := resp.(*wallet.DropCustomRefreshVTXOsResponse)
+	if !ok {
+		r.server.log.WarnS(ctx, "Unexpected custom refresh drop "+
+			"response type", fmt.Errorf("got %T", resp))
+
+		return
+	}
+
+	r.server.log.InfoS(ctx, "Dropped custom refresh VTXOs",
+		slog.Int("dropped_count", dropResp.DroppedCount),
+	)
 }
 
 func (r *RPCServer) ListPendingForfeitParticipantSignatureRequests(
@@ -1677,15 +1729,15 @@ func parseCustomRefreshSigningContexts(
 				"custom refresh input %d signing context "+
 					"payment_hash must be 32 bytes", i)
 		}
-		if ctx.GetDirection() == unspecifiedForfeitSigningDirection() {
+		if ctx.GetSigningRoute() == unspecifiedForfeitSigningRoute() {
 			return nil, status.Errorf(codes.InvalidArgument,
 				"custom refresh input %d signing context "+
-					"direction is required", i)
+					"signing_route is required", i)
 		}
 
 		contexts[outpoint.String()] = forfeitSigningContext{
 			paymentHash: append([]byte(nil), hash...),
-			direction:   ctx.GetDirection(),
+			route:       ctx.GetSigningRoute(),
 		}
 	}
 

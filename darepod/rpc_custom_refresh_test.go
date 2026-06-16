@@ -131,6 +131,17 @@ func TestRefreshCustomVTXOsRejectsMismatchedMetadata(t *testing.T) {
 			req.Inputs[0].ForfeitSpendPath = encoded
 		},
 		wantContains: "forfeit_spend_path does not bind",
+	}, {
+		name: "signing route missing",
+		mutate: func(t *testing.T, req *refreshCustomReq) {
+			t.Helper()
+
+			req.Inputs[0].ForfeitSigningContext =
+				&daemonrpc.ForfeitSigningContext{
+					PaymentHash: make([]byte, 32),
+				}
+		},
+		wantContains: "signing_route is required",
 	}}
 
 	for _, test := range tests {
