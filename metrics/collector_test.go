@@ -13,8 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mockVTXOQuerier is a test double for VTXOStatsQuerier returning a
-// fixed result or error.
+// mockVTXOQuerier is a test double for SystemStatsQuerier. It returns a
+// fixed VTXO result or error and reports the other data sources as
+// unavailable so the VTXO-focused tests see only the VTXO gauges.
 type mockVTXOQuerier struct {
 	rows []VTXOStatRow
 	err  error
@@ -25,6 +26,33 @@ func (m *mockVTXOQuerier) GetVTXOStatsByStatus(_ context.Context) (
 	[]VTXOStatRow, error) {
 
 	return m.rows, m.err
+}
+
+// GetWalletBalance implements SystemStatsQuerier; unavailable in this
+// VTXO-focused double.
+func (m *mockVTXOQuerier) GetWalletBalance(_ context.Context) (WalletBalance,
+	error) {
+
+	return WalletBalance{}, errors.New("not supported")
+}
+
+// GetBlockHeight implements SystemStatsQuerier; unavailable here.
+func (m *mockVTXOQuerier) GetBlockHeight(_ context.Context) (int64, error) {
+	return 0, errors.New("not supported")
+}
+
+// GetOORSessionStatsByState implements SystemStatsQuerier; empty here.
+func (m *mockVTXOQuerier) GetOORSessionStatsByState(_ context.Context) (
+	map[string]int64, error) {
+
+	return nil, nil
+}
+
+// GetRoundStatsByStatus implements SystemStatsQuerier; empty here.
+func (m *mockVTXOQuerier) GetRoundStatsByStatus(_ context.Context) (
+	map[string]int64, error) {
+
+	return nil, nil
 }
 
 // TestSystemCollectorCollect verifies the scrape-driven collector emits
@@ -153,6 +181,137 @@ darepod_vtxos_value_satoshis{status="spent"} 9000
 			require.NoError(t, err)
 		})
 	}
+}
+
+// fullMockQuerier is a SystemStatsQuerier double that returns fixed
+// values for every data source, used to exercise the extended scrape
+// gauges (wallet balance, block height, OOR sessions, rounds).
+type fullMockQuerier struct {
+	balance    WalletBalance
+	height     int64
+	oor        map[string]int64
+	rounds     map[string]int64
+	balanceErr error
+	heightErr  error
+}
+
+func (m *fullMockQuerier) GetVTXOStatsByStatus(_ context.Context) (
+	[]VTXOStatRow, error) {
+
+	return nil, nil
+}
+
+func (m *fullMockQuerier) GetWalletBalance(_ context.Context) (WalletBalance,
+	error) {
+
+	return m.balance, m.balanceErr
+}
+
+func (m *fullMockQuerier) GetBlockHeight(_ context.Context) (int64, error) {
+	return m.height, m.heightErr
+}
+
+func (m *fullMockQuerier) GetOORSessionStatsByState(_ context.Context) (
+	map[string]int64, error) {
+
+	return m.oor, nil
+}
+
+func (m *fullMockQuerier) GetRoundStatsByStatus(_ context.Context) (
+	map[string]int64, error) {
+
+	return m.rounds, nil
+}
+
+// TestSystemCollectorExtendedGauges verifies the wallet-balance,
+// block-height, OOR-sessions, and rounds-by-status gauges are emitted
+// from the querier, and that a wallet/height query error suppresses only
+// its own gauges (not the others).
+func TestSystemCollectorExtendedGauges(t *testing.T) {
+	t.Parallel()
+
+	t.Run("all present", func(t *testing.T) {
+		t.Parallel()
+
+		q := &fullMockQuerier{
+			balance: WalletBalance{
+				ConfirmedSat:   120000,
+				UnconfirmedSat: 3000,
+			},
+			height: 850000,
+			oor: map[string]int64{
+				"pending": 2,
+			},
+			rounds: map[string]int64{
+				"joined": 1,
+			},
+		}
+		c := NewSystemCollector(q, fn.None[btclog.Logger]())
+
+		const want = `
+# HELP darepod_wallet_confirmed_satoshis Confirmed on-chain wallet ` +
+			`balance in satoshis.
+# TYPE darepod_wallet_confirmed_satoshis gauge
+darepod_wallet_confirmed_satoshis 120000
+# HELP darepod_wallet_unconfirmed_satoshis Unconfirmed on-chain wallet ` +
+			`balance in satoshis.
+# TYPE darepod_wallet_unconfirmed_satoshis gauge
+darepod_wallet_unconfirmed_satoshis 3000
+# HELP darepod_block_height Best block height seen by the client's ` +
+			`chain backend.
+# TYPE darepod_block_height gauge
+darepod_block_height 850000
+# HELP darepod_oor_sessions_by_state Number of currently-tracked OOR ` +
+			`sessions by state.
+# TYPE darepod_oor_sessions_by_state gauge
+darepod_oor_sessions_by_state{state="pending"} 2
+# HELP darepod_rounds_by_status Number of currently-live rounds by ` +
+			`status.
+# TYPE darepod_rounds_by_status gauge
+darepod_rounds_by_status{status="joined"} 1
+`
+		err := testutil.CollectAndCompare(
+			c, strings.NewReader(want),
+			"darepod_wallet_confirmed_satoshis",
+			"darepod_wallet_unconfirmed_satoshis",
+			"darepod_block_height", "darepod_oor_sessions_by_state",
+			"darepod_rounds_by_status",
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("balance and height errors skip only their gauges", func(
+		t *testing.T) {
+
+		t.Parallel()
+
+		q := &fullMockQuerier{
+			balanceErr: errors.New("wallet not ready"),
+			heightErr:  errors.New("no chain backend"),
+			oor: map[string]int64{
+				"failed": 1,
+			},
+			rounds: map[string]int64{
+				"confirmed": 3,
+			},
+		}
+		c := NewSystemCollector(q, fn.None[btclog.Logger]())
+
+		// The wallet and height gauges must be absent; the OOR and
+		// round gauges must still be present.
+		require.Zero(
+			t, testutil.CollectAndCount(
+				c, "darepod_wallet_confirmed_satoshis",
+				"darepod_block_height",
+			),
+		)
+		require.Equal(
+			t, 2, testutil.CollectAndCount(
+				c, "darepod_oor_sessions_by_state",
+				"darepod_rounds_by_status",
+			),
+		)
+	})
 }
 
 // TestRegisterAllIdempotent verifies RegisterAll tolerates duplicate

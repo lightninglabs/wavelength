@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/metrics"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -75,11 +74,12 @@ func (s *Server) startMetricsServer(ctx context.Context) error {
 	}
 	s.metricsSink = fn.Some(metrics.NewSink(s.actorSystem))
 
-	// Register the scrape-driven VTXO inventory collector, backed by the
-	// daemon's VTXO store via the adapter.
+	// Register the scrape-driven system collector, backed by the daemon
+	// via the adapter (VTXO inventory, wallet balance, chain tip, and
+	// live OOR/round state).
 	collector := metrics.NewSystemCollector(
-		&vtxoStatsAdapter{
-			store: s.vtxoStore,
+		&systemStatsAdapter{
+			srv: s,
 		},
 		fn.Some(log),
 	)
@@ -118,13 +118,15 @@ func (s *Server) emitMetric(ctx context.Context, msg metrics.Msg) {
 	})
 }
 
-// vtxoStatsAdapter implements metrics.VTXOStatsQuerier on top of the
-// daemon's VTXO persistence store. The metrics package stays free of any
-// database dependency; this adapter is the single seam translating the
-// store's per-status listing into the aggregate rows the scrape-driven
-// collector expects.
-type vtxoStatsAdapter struct {
-	store *db.VTXOPersistenceStore
+// systemStatsAdapter implements metrics.SystemStatsQuerier on top of the
+// running daemon. The metrics package stays free of any database, wallet,
+// or chain dependency; this adapter is the single seam translating the
+// daemon's stores and live actors into the aggregate rows the
+// scrape-driven collector expects. Each method is queried independently
+// on every scrape, so a not-yet-ready source returns an error and the
+// collector simply skips that gauge group.
+type systemStatsAdapter struct {
+	srv *Server
 }
 
 // allVTXOStatuses is the set of VTXO statuses the metrics collector
@@ -147,12 +149,12 @@ var allVTXOStatuses = []vtxo.VTXOStatus{
 // listing into a single row. The store has no aggregate query, so this
 // adapter does the grouping in Go; the per-status VTXO set is small
 // enough for a client wallet that this stays cheap at scrape time.
-func (a *vtxoStatsAdapter) GetVTXOStatsByStatus(ctx context.Context) (
+func (a *systemStatsAdapter) GetVTXOStatsByStatus(ctx context.Context) (
 	[]metrics.VTXOStatRow, error) {
 
 	rows := make([]metrics.VTXOStatRow, 0, len(allVTXOStatuses))
 	for _, status := range allVTXOStatuses {
-		descs, err := a.store.ListVTXOsByStatus(ctx, status)
+		descs, err := a.srv.vtxoStore.ListVTXOsByStatus(ctx, status)
 		if err != nil {
 			return nil, fmt.Errorf("list VTXOs by status %s: %w",
 				status, err)
@@ -178,4 +180,63 @@ func (a *vtxoStatsAdapter) GetVTXOStatsByStatus(ctx context.Context) (
 	}
 
 	return rows, nil
+}
+
+// GetWalletBalance returns the client's on-chain confirmed and
+// unconfirmed wallet balance. It delegates to the RPC server's
+// backend-aware helper, which returns an error when the wallet is not
+// ready so the collector skips the gauges for that scrape.
+func (a *systemStatsAdapter) GetWalletBalance(ctx context.Context) (
+	metrics.WalletBalance, error) {
+
+	if a.srv.rpcServer == nil {
+		return metrics.WalletBalance{}, fmt.Errorf("rpc server not " +
+			"ready")
+	}
+
+	confirmed, unconfirmed, err := a.srv.rpcServer.metricsWalletBalance(ctx)
+	if err != nil {
+		return metrics.WalletBalance{}, err
+	}
+
+	return metrics.WalletBalance{
+		ConfirmedSat:   confirmed,
+		UnconfirmedSat: unconfirmed,
+	}, nil
+}
+
+// GetBlockHeight returns the best block height seen by the client's
+// chain backend.
+func (a *systemStatsAdapter) GetBlockHeight(ctx context.Context) (int64,
+	error) {
+
+	if a.srv.rpcServer == nil {
+		return 0, fmt.Errorf("rpc server not ready")
+	}
+
+	return a.srv.rpcServer.metricsBlockHeight(ctx)
+}
+
+// GetOORSessionStatsByState returns the count of currently-tracked OOR
+// sessions grouped by state.
+func (a *systemStatsAdapter) GetOORSessionStatsByState(ctx context.Context) (
+	map[string]int64, error) {
+
+	if a.srv.rpcServer == nil {
+		return nil, fmt.Errorf("rpc server not ready")
+	}
+
+	return a.srv.rpcServer.liveOORSessionsByState(ctx)
+}
+
+// GetRoundStatsByStatus returns the count of currently-live rounds
+// grouped by status.
+func (a *systemStatsAdapter) GetRoundStatsByStatus(ctx context.Context) (
+	map[string]int64, error) {
+
+	if a.srv.rpcServer == nil {
+		return nil, fmt.Errorf("rpc server not ready")
+	}
+
+	return a.srv.rpcServer.liveRoundsByStatus(ctx)
 }

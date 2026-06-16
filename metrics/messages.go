@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"time"
+
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 )
 
@@ -69,6 +71,13 @@ type OORTransferSentMsg struct {
 
 	// Status is the transfer outcome: "submitted" or "failed".
 	Status string
+
+	// Duration is the wall-clock time from the SendOOR call entry to
+	// this terminal outcome, measured at the call site and observed
+	// into OORTransferDurationSeconds. Carrying it on the message keeps
+	// the metrics actor stateless (no per-session start-time tracking).
+	// A zero value is not observed.
+	Duration time.Duration
 }
 
 // MessageType implements actor.Message.

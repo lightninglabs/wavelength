@@ -75,6 +75,16 @@ func (a *MetricsActor) Receive(_ context.Context, msg Msg) fn.Result[Resp] {
 	case *OORTransferSentMsg:
 		OORTransfersSentTotal.WithLabelValues(m.Status).Inc()
 
+		// Observe the transfer duration when the call site measured
+		// one. A zero duration means the producer did not time the
+		// call, so it is left unobserved rather than skewing the
+		// histogram toward zero.
+		if m.Duration > 0 {
+			OORTransferDurationSeconds.WithLabelValues(
+				m.Status,
+			).Observe(m.Duration.Seconds())
+		}
+
 	case *OORTransferReceivedMsg:
 		OORTransfersReceivedTotal.WithLabelValues(m.Status).Inc()
 

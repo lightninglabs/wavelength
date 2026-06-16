@@ -110,6 +110,23 @@ var (
 		[]string{"task"},
 	)
 
+	// OORTransferDurationSeconds observes the wall-clock duration of
+	// outgoing OOR (async) transfers from the SendOOR call entry to its
+	// terminal outcome, labelled by status. The duration is measured at
+	// the call site and carried on the metric message so the metrics
+	// actor stays stateless. Buckets mirror the arkd server's OOR
+	// transfer histogram for dashboard consistency.
+	OORTransferDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "oor_transfer_duration_seconds",
+			Help: "Duration of outgoing OOR transfers in " +
+				"seconds by outcome.",
+			Buckets: prometheus.ExponentialBuckets(0.05, 2, 11),
+		},
+		[]string{"status"},
+	)
+
 	// GRPCClientMetrics provides per-method client-side gRPC metrics
 	// (request count, error rate, handling-time histograms) for calls
 	// the client makes to the ark operator. Wired as unary and stream
@@ -138,6 +155,7 @@ func allCollectors() []prometheus.Collector {
 		RoundsCompletedTotal,
 		OORTransfersSentTotal,
 		OORTransfersReceivedTotal,
+		OORTransferDurationSeconds,
 		BoardingEventsTotal,
 		ServerSyncTimestamp,
 		ServerConnectionUp,

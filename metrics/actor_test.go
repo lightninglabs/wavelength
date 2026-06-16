@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -114,6 +116,53 @@ func TestMetricsActorReceive(t *testing.T) {
 			require.Equal(t, before+1, tc.counter())
 		})
 	}
+}
+
+// oorDurationSampleCount returns the number of observations recorded in
+// the OOR transfer-duration histogram for the given status label.
+func oorDurationSampleCount(t *testing.T, status string) uint64 {
+	t.Helper()
+
+	obs, err := OORTransferDurationSeconds.GetMetricWithLabelValues(status)
+	require.NoError(t, err)
+
+	metric, ok := obs.(prometheus.Metric)
+	require.True(t, ok)
+
+	var m dto.Metric
+	require.NoError(t, metric.Write(&m))
+
+	return m.GetHistogram().GetSampleCount()
+}
+
+// TestMetricsActorOORDuration verifies the actor observes the OOR
+// transfer duration into the histogram when the message carries a
+// positive Duration, and leaves the histogram untouched when Duration is
+// zero (the producer did not time the call).
+func TestMetricsActorOORDuration(t *testing.T) {
+	// Not parallel: the histogram is package-global, so the test reads
+	// its own before/after delta serially. A status label unique to
+	// this test isolates the series from other cases.
+	const status = "duration_test"
+
+	a := NewMetricsActor(ActorConfig{})
+
+	before := oorDurationSampleCount(t, status)
+
+	// A positive duration is observed.
+	res := a.Receive(context.Background(), &OORTransferSentMsg{
+		Status:   status,
+		Duration: 250 * time.Millisecond,
+	})
+	require.NoError(t, res.Err())
+	require.Equal(t, before+1, oorDurationSampleCount(t, status))
+
+	// A zero duration is not observed (no skew toward zero).
+	res = a.Receive(context.Background(), &OORTransferSentMsg{
+		Status: status,
+	})
+	require.NoError(t, res.Err())
+	require.Equal(t, before+1, oorDurationSampleCount(t, status))
 }
 
 // TestMetricsActorPoolRoundRobin verifies that registering several
