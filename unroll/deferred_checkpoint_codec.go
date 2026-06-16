@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightninglabs/darepo-client/baselib/tlvutil"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -73,7 +74,7 @@ func encodeDeferredCheckpointEntry(c *DeferredCheckpoint) ([]byte, error) {
 	txidBytes := c.Txid[:]
 	deadline := uint32(c.DeadlineHeight)
 
-	stream, err := tlv.NewStream(
+	return tlvutil.EncodeRecordsToBytes(
 		tlv.MakePrimitiveRecord(
 			deferredCheckpointTxidRecordType, &txidBytes,
 		),
@@ -81,16 +82,6 @@ func encodeDeferredCheckpointEntry(c *DeferredCheckpoint) ([]byte, error) {
 			deferredCheckpointDeadlineRecordType, &deadline,
 		),
 	)
-	if err != nil {
-		return nil, fmt.Errorf("new entry stream: %w", err)
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, fmt.Errorf("encode entry stream: %w", err)
-	}
-
-	return buf.Bytes(), nil
 }
 
 // decodeDeferredCheckpoints parses deferred checkpoint state encoded by
@@ -147,20 +138,14 @@ func decodeDeferredCheckpointEntry(raw []byte) (DeferredCheckpoint, error) {
 		deadline  uint32
 	)
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(
+	if _, err := tlvutil.DecodeRecords(
+		bytes.NewReader(raw), tlv.MakePrimitiveRecord(
 			deferredCheckpointTxidRecordType, &txidBytes,
 		),
 		tlv.MakePrimitiveRecord(
 			deferredCheckpointDeadlineRecordType, &deadline,
 		),
-	)
-	if err != nil {
-		return DeferredCheckpoint{}, fmt.Errorf("new entry stream: %w",
-			err)
-	}
-
-	if err := stream.Decode(bytes.NewReader(raw)); err != nil {
+	); err != nil {
 		return DeferredCheckpoint{}, fmt.Errorf("decode entry "+
 			"stream: %w", err)
 	}

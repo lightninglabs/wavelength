@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/baselib/tlvutil"
 	"github.com/lightninglabs/darepo-client/unrollplan"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -201,12 +202,7 @@ func (m *StartUnrollRequest) Encode(w io.Writer) error {
 		)
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return fmt.Errorf("create stream: %w", err)
-	}
-
-	return stream.Encode(w)
+	return tlvutil.EncodeRecords(w, records...)
 }
 
 // Decode deserializes the message from a TLV stream.
@@ -214,8 +210,8 @@ func (m *StartUnrollRequest) Decode(r io.Reader) error {
 	var height, trigger uint32
 	var policyKind, policyRef []byte
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(startUnrollHeightRecType, &height),
+	parsed, err := tlvutil.DecodeRecords(
+		r, tlv.MakePrimitiveRecord(startUnrollHeightRecType, &height),
 		tlv.MakePrimitiveRecord(startUnrollTriggerRecType, &trigger),
 		tlv.MakePrimitiveRecord(
 			startUnrollExitPolicyKindRecType, &policyKind,
@@ -224,11 +220,6 @@ func (m *StartUnrollRequest) Decode(r io.Reader) error {
 			startUnrollExitPolicyRefRecType, &policyRef,
 		),
 	)
-	if err != nil {
-		return fmt.Errorf("create stream: %w", err)
-	}
-
-	parsed, err := stream.DecodeWithParsedTypes(r)
 	if err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
@@ -278,28 +269,18 @@ func (m *ResumeUnrollRequest) TLVType() tlv.Type {
 func (m *ResumeUnrollRequest) Encode(w io.Writer) error {
 	height := uint32(m.Height)
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(resumeUnrollHeightRecType, &height),
+	return tlvutil.EncodeRecords(
+		w, tlv.MakePrimitiveRecord(resumeUnrollHeightRecType, &height),
 	)
-	if err != nil {
-		return fmt.Errorf("create stream: %w", err)
-	}
-
-	return stream.Encode(w)
 }
 
 // Decode deserializes the message from a TLV stream.
 func (m *ResumeUnrollRequest) Decode(r io.Reader) error {
 	var height uint32
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(resumeUnrollHeightRecType, &height),
-	)
-	if err != nil {
-		return fmt.Errorf("create stream: %w", err)
-	}
-
-	if err := stream.Decode(r); err != nil {
+	if _, err := tlvutil.DecodeRecords(
+		r, tlv.MakePrimitiveRecord(resumeUnrollHeightRecType, &height),
+	); err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
 
@@ -338,28 +319,20 @@ func (m *HeightObservedMsg) Priority() int {
 func (m *HeightObservedMsg) Encode(w io.Writer) error {
 	height := uint32(m.Height)
 
-	stream, err := tlv.NewStream(
+	return tlvutil.EncodeRecords(
+		w,
 		tlv.MakePrimitiveRecord(heightObservedHeightRecType, &height),
 	)
-	if err != nil {
-		return fmt.Errorf("create stream: %w", err)
-	}
-
-	return stream.Encode(w)
 }
 
 // Decode deserializes the message from a TLV stream.
 func (m *HeightObservedMsg) Decode(r io.Reader) error {
 	var height uint32
 
-	stream, err := tlv.NewStream(
+	if _, err := tlvutil.DecodeRecords(
+		r,
 		tlv.MakePrimitiveRecord(heightObservedHeightRecType, &height),
-	)
-	if err != nil {
-		return fmt.Errorf("create stream: %w", err)
-	}
-
-	if err := stream.Decode(r); err != nil {
+	); err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
 
@@ -406,18 +379,13 @@ func (m *TxConfirmedMsg) Encode(w io.Writer) error {
 	height := uint32(m.Height)
 	numConfs := m.NumConfs
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(txConfirmedTxidRecType, &txid),
+	return tlvutil.EncodeRecords(
+		w, tlv.MakePrimitiveRecord(txConfirmedTxidRecType, &txid),
 		tlv.MakePrimitiveRecord(txConfirmedHeightRecType, &height),
 		tlv.MakePrimitiveRecord(
 			txConfirmedNumConfsRecType, &numConfs,
 		),
 	)
-	if err != nil {
-		return fmt.Errorf("create stream: %w", err)
-	}
-
-	return stream.Encode(w)
 }
 
 // Decode deserializes the message from a TLV stream.
@@ -428,18 +396,13 @@ func (m *TxConfirmedMsg) Decode(r io.Reader) error {
 		numConfs uint32
 	)
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(txConfirmedTxidRecType, &txid),
+	if _, err := tlvutil.DecodeRecords(
+		r, tlv.MakePrimitiveRecord(txConfirmedTxidRecType, &txid),
 		tlv.MakePrimitiveRecord(txConfirmedHeightRecType, &height),
 		tlv.MakePrimitiveRecord(
 			txConfirmedNumConfsRecType, &numConfs,
 		),
-	)
-	if err != nil {
-		return fmt.Errorf("create stream: %w", err)
-	}
-
-	if err := stream.Decode(r); err != nil {
+	); err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
 
@@ -484,15 +447,10 @@ func (m *TxFailedMsg) Encode(w io.Writer) error {
 	txid := [32]byte(m.Txid)
 	reason := []byte(m.Reason)
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(txFailedTxidRecType, &txid),
+	return tlvutil.EncodeRecords(
+		w, tlv.MakePrimitiveRecord(txFailedTxidRecType, &txid),
 		tlv.MakePrimitiveRecord(txFailedReasonRecType, &reason),
 	)
-	if err != nil {
-		return fmt.Errorf("create stream: %w", err)
-	}
-
-	return stream.Encode(w)
 }
 
 // Decode deserializes the message from a TLV stream.
@@ -502,15 +460,10 @@ func (m *TxFailedMsg) Decode(r io.Reader) error {
 		reason []byte
 	)
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(txFailedTxidRecType, &txid),
+	if _, err := tlvutil.DecodeRecords(
+		r, tlv.MakePrimitiveRecord(txFailedTxidRecType, &txid),
 		tlv.MakePrimitiveRecord(txFailedReasonRecType, &reason),
-	)
-	if err != nil {
-		return fmt.Errorf("create stream: %w", err)
-	}
-
-	if err := stream.Decode(r); err != nil {
+	); err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
 
@@ -559,19 +512,14 @@ func (m *SpendObservedMsg) Encode(w io.Writer) error {
 	outHash := [32]byte(m.Outpoint.Hash)
 	outIndex := m.Outpoint.Index
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(spendObservedTxidRecType, &txid),
+	return tlvutil.EncodeRecords(
+		w, tlv.MakePrimitiveRecord(spendObservedTxidRecType, &txid),
 		tlv.MakePrimitiveRecord(spendObservedHeightRecType, &height),
 		tlv.MakePrimitiveRecord(spendObservedOutHashRecType, &outHash),
 		tlv.MakePrimitiveRecord(
 			spendObservedOutIndexRecType, &outIndex,
 		),
 	)
-	if err != nil {
-		return fmt.Errorf("create stream: %w", err)
-	}
-
-	return stream.Encode(w)
 }
 
 // Decode deserializes the message from a TLV stream.
@@ -583,19 +531,14 @@ func (m *SpendObservedMsg) Decode(r io.Reader) error {
 		outIndex uint32
 	)
 
-	stream, err := tlv.NewStream(
-		tlv.MakePrimitiveRecord(spendObservedTxidRecType, &txid),
+	if _, err := tlvutil.DecodeRecords(
+		r, tlv.MakePrimitiveRecord(spendObservedTxidRecType, &txid),
 		tlv.MakePrimitiveRecord(spendObservedHeightRecType, &height),
 		tlv.MakePrimitiveRecord(spendObservedOutHashRecType, &outHash),
 		tlv.MakePrimitiveRecord(
 			spendObservedOutIndexRecType, &outIndex,
 		),
-	)
-	if err != nil {
-		return fmt.Errorf("create stream: %w", err)
-	}
-
-	if err := stream.Decode(r); err != nil {
+	); err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
 
