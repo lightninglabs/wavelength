@@ -48,6 +48,12 @@ func isExpectedShutdownErr(err error) bool {
 	return false
 }
 
+const (
+	defaultDurableLeaseDuration = 30 * time.Second
+	defaultDurablePollInterval  = 100 * time.Millisecond
+	defaultDurableMaxAttempts   = 10
+)
+
 // generateID generates a UUIDv7 which provides both uniqueness and
 // time-ordering. UUIDv7 embeds a Unix timestamp in milliseconds in the most
 // significant bits, ensuring that IDs generated later sort after IDs generated
@@ -104,9 +110,9 @@ func DefaultDurableMailboxConfig(mailboxID string, store DeliveryStore,
 		MailboxID:     mailboxID,
 		Store:         store,
 		Codec:         codec,
-		LeaseDuration: 30 * time.Second,
-		PollInterval:  time.Second,
-		MaxAttempts:   10,
+		LeaseDuration: defaultDurableLeaseDuration,
+		PollInterval:  defaultDurablePollInterval,
+		MaxAttempts:   defaultDurableMaxAttempts,
 	}
 }
 
@@ -139,11 +145,28 @@ type DurableMailbox[M TLVMessage, R any] struct {
 	promiseRegistryMu sync.RWMutex
 }
 
+// pendingAskState keeps the in-memory pieces of a durable Ask that cannot be
+// reconstructed from the persisted mailbox row alone.
+type pendingAskState struct {
+	promise   any
+	callerCtx context.Context
+}
+
 // NewDurableMailbox creates a new durable mailbox with the given configuration.
 func NewDurableMailbox[M TLVMessage, R any](
 	actorCtx context.Context,
 	cfg DurableMailboxConfig,
 ) *DurableMailbox[M, R] {
+
+	if cfg.LeaseDuration <= 0 {
+		cfg.LeaseDuration = defaultDurableLeaseDuration
+	}
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = defaultDurablePollInterval
+	}
+	if cfg.MaxAttempts <= 0 {
+		cfg.MaxAttempts = defaultDurableMaxAttempts
+	}
 
 	wakeBuffer := cfg.WakeBuffer
 	if wakeBuffer < 1 {
@@ -213,9 +236,14 @@ func (m *DurableMailbox[M, R]) Send(ctx context.Context,
 		promiseID = id
 
 		// Register the promise for later retrieval when the message is
-		// received from the database.
+		// received from the database. The original caller context is
+		// also kept in-memory so Ask messages retain deadline
+		// propagation while the process is alive.
 		m.promiseRegistryMu.Lock()
-		m.promiseRegistry[id] = env.promise
+		m.promiseRegistry[id] = pendingAskState{
+			promise:   env.promise,
+			callerCtx: env.callerCtx,
+		}
 		m.promiseRegistryMu.Unlock()
 	}
 
@@ -431,26 +459,38 @@ func (m *DurableMailbox[M, R]) Receive(
 			// Retrieve the promise from the registry if this is an
 			// Ask.
 			var promise Promise[R]
+			var callerCtx context.Context
+			var onAskSettled func()
 			if leased.PromiseID != "" {
 				m.promiseRegistryMu.Lock()
-				if p, ok := m.promiseRegistry[leased.PromiseID]; ok {
-					if typedPromise, ok := p.(Promise[R]); ok {
+				if raw, ok := m.promiseRegistry[leased.PromiseID]; ok {
+					if state, ok := raw.(pendingAskState); ok {
+						if typedPromise, ok := state.promise.(Promise[R]); ok {
+							promise = typedPromise
+							callerCtx = state.callerCtx
+						}
+					} else if typedPromise, ok := raw.(Promise[R]); ok {
 						promise = typedPromise
+						callerCtx = ctx
 					}
+				}
+				m.promiseRegistryMu.Unlock()
 
-					// Remove from registry - each promise
-					// is used once.
+				onAskSettled = func() {
+					m.promiseRegistryMu.Lock()
 					delete(
 						m.promiseRegistry,
 						leased.PromiseID,
 					)
+					m.promiseRegistryMu.Unlock()
 				}
-				m.promiseRegistryMu.Unlock()
 			}
 
 			// Create the delivery with the promise attached.
 			delivery := newDelivery[M, R](
-				leased, msg, promise, ctx, m.cfg.Store,
+				leased, msg, promise, callerCtx,
+				leased.PromiseID, m.cfg.Store, m.clock.Now,
+				onAskSettled,
 			)
 
 			// Wrap in envelope for compatibility with the Mailbox
@@ -461,7 +501,7 @@ func (m *DurableMailbox[M, R]) Receive(
 			env := envelope[M, R]{
 				message:   msg,
 				promise:   promise,
-				callerCtx: ctx,
+				callerCtx: callerCtx,
 				delivery:  delivery,
 			}
 
@@ -486,10 +526,10 @@ func (m *DurableMailbox[M, R]) handlePoisonMessage(ctx context.Context,
 		dlReason := fmt.Sprintf("poison message (attempts %d/%d): %s",
 			leased.Attempts, leased.MaxAttempts, reason)
 
-		if dlErr := m.cfg.Store.MoveToDeadLetter(
-			ctx, leased.ID, dlReason,
-		); dlErr != nil {
-
+		rowsAffected, dlErr := m.cfg.Store.MoveToDeadLetter(
+			ctx, leased.ID, leased.LeaseToken, dlReason,
+		)
+		if dlErr != nil {
 			logger(ctx).WarnS(ctx,
 				"Failed to dead-letter poison message",
 				dlErr,
@@ -499,16 +539,15 @@ func (m *DurableMailbox[M, R]) handlePoisonMessage(ctx context.Context,
 			return
 		}
 
-		if delErr := m.cfg.Store.DeleteMessage(
-			ctx, leased.ID,
-		); delErr != nil {
-
+		if rowsAffected == 0 {
 			logger(ctx).WarnS(ctx,
-				"Failed to delete dead-lettered poison "+
-					"message",
-				delErr,
+				"Skipped dead-lettering poison message after "+
+					"lease loss",
+				nil,
 				"mailbox_id", m.cfg.MailboxID,
 				"message_id", leased.ID)
+
+			return
 		}
 
 		logger(ctx).InfoS(
@@ -536,6 +575,27 @@ func (m *DurableMailbox[M, R]) Close() {
 
 	if m.closed.CompareAndSwap(false, true) {
 		close(m.wake)
+	}
+}
+
+// failPendingAsks completes any still-registered in-memory Ask promises with
+// the supplied terminal result and clears the registry.
+func (m *DurableMailbox[M, R]) failPendingAsks(result fn.Result[R]) {
+	m.promiseRegistryMu.Lock()
+	pending := m.promiseRegistry
+	m.promiseRegistry = make(map[string]any)
+	m.promiseRegistryMu.Unlock()
+
+	for _, raw := range pending {
+		switch state := raw.(type) {
+		case pendingAskState:
+			if promise, ok := state.promise.(Promise[R]); ok {
+				promise.Complete(result)
+			}
+
+		case Promise[R]:
+			state.Complete(result)
+		}
 	}
 }
 

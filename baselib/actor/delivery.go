@@ -27,6 +27,10 @@ type Delivery[M TLVMessage, R any] struct {
 	// ID is the unique identifier for this delivery.
 	ID string
 
+	// PromiseID identifies the Ask result row for Ask messages.
+	// Empty for Tell messages.
+	PromiseID string
+
 	// Message is the delivered message.
 	Message M
 
@@ -64,6 +68,14 @@ type Delivery[M TLVMessage, R any] struct {
 	// store is the backing store for persisting ack/nack operations.
 	store DeliveryStore
 
+	// nowFn provides the current time for lease bookkeeping and Ask-result
+	// expiry. When nil, wall clock time is used.
+	nowFn func() time.Time
+
+	// onAskSettled releases any in-memory Ask bookkeeping once the Ask has
+	// durably reached a terminal state.
+	onAskSettled func()
+
 	// mu guards mutable fields (acked, LeaseUntil) that may be accessed
 	// concurrently by the heartbeat goroutine (Extend) and the main
 	// processing goroutine (Ack/Nack).
@@ -100,7 +112,7 @@ func (d *Delivery[M, R]) LeaseRemaining() time.Duration {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	return time.Until(d.LeaseUntil)
+	return d.LeaseUntil.Sub(d.now())
 }
 
 // IsLeaseExpired returns true if the lease has expired.
@@ -108,7 +120,7 @@ func (d *Delivery[M, R]) IsLeaseExpired() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	return time.Now().After(d.LeaseUntil)
+	return d.now().After(d.LeaseUntil)
 }
 
 // ShouldDeadLetter returns true if this message should be moved to the dead
@@ -137,23 +149,6 @@ func (d *Delivery[M, R]) Ack(ctx context.Context, result fn.Result[R]) error {
 	}
 	d.mu.Unlock()
 
-	// Validate lease ownership by acking the mailbox message first.
-	// This must happen before SaveAskResult to prevent stale lease
-	// holders from persisting results: ask_results uses ON CONFLICT
-	// DO NOTHING, so a stale write would silently block the valid
-	// worker's result.
-	rowsAffected, err := d.store.AckMessage(ctx, d.ID, d.LeaseToken)
-	if err != nil {
-		return fmt.Errorf("ack message: %w", err)
-	}
-
-	if rowsAffected == 0 {
-		return ErrLeaseExpired
-	}
-
-	// For Ask messages, persist the result for crash recovery. This
-	// runs after AckMessage so only the valid lease holder writes the
-	// result.
 	if d.IsAsk() && d.Promise != nil {
 		var resultBlob []byte
 		var errorText string
@@ -167,14 +162,31 @@ func (d *Delivery[M, R]) Ack(ctx context.Context, result fn.Result[R]) error {
 			resultBlob = nil
 		}
 
-		saveErr := d.store.SaveAskResult(ctx, AskResultParams{
-			PromiseID:  d.ID,
-			ResultBlob: resultBlob,
-			ErrorText:  errorText,
-			ExpiresAt:  time.Now().Add(24 * time.Hour),
-		})
-		if saveErr != nil {
-			return fmt.Errorf("save ask result: %w", saveErr)
+		rowsAffected, err := d.store.AckMessageWithAskResult(
+			ctx, d.ID, d.LeaseToken, AskResultParams{
+				PromiseID:  d.askPromiseID(),
+				ResultBlob: resultBlob,
+				ErrorText:  errorText,
+				ExpiresAt:  d.now().Add(24 * time.Hour),
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("ack ask message: %w", err)
+		}
+
+		if rowsAffected == 0 {
+			return ErrLeaseExpired
+		}
+	} else {
+		rowsAffected, err := d.store.AckMessage(
+			ctx, d.ID, d.LeaseToken,
+		)
+		if err != nil {
+			return fmt.Errorf("ack message: %w", err)
+		}
+
+		if rowsAffected == 0 {
+			return ErrLeaseExpired
 		}
 	}
 
@@ -187,7 +199,7 @@ func (d *Delivery[M, R]) Ack(ctx context.Context, result fn.Result[R]) error {
 	// operation that was not durably committed. When deferPromise is
 	// set, the caller (tx path) handles completion after commit.
 	if d.IsAsk() && d.Promise != nil && !d.deferPromise {
-		d.Promise.Complete(result)
+		d.settleAsk(result)
 	}
 
 	return nil
@@ -220,15 +232,15 @@ func (d *Delivery[M, R]) Nack(
 			reason = fmt.Sprintf("max attempts reached: %v", err)
 		}
 
-		if dlErr := d.store.MoveToDeadLetter(
-			ctx, d.ID, reason,
-		); dlErr != nil {
+		rowsAffected, dlErr := d.store.MoveToDeadLetter(
+			ctx, d.ID, d.LeaseToken, reason,
+		)
+		if dlErr != nil {
 			return fmt.Errorf("move to dead letter: %w", dlErr)
 		}
 
-		if delErr := d.store.DeleteMessage(ctx, d.ID); delErr != nil {
-			return fmt.Errorf("delete message after dead "+
-				"letter: %w", delErr)
+		if rowsAffected == 0 {
+			return ErrLeaseExpired
 		}
 
 		d.mu.Lock()
@@ -285,7 +297,7 @@ func (d *Delivery[M, R]) Extend(ctx context.Context,
 	// Update local state under the lock since the heartbeat goroutine
 	// may read LeaseUntil concurrently.
 	d.mu.Lock()
-	d.LeaseUntil = time.Now().Add(extension)
+	d.LeaseUntil = d.now().Add(extension)
 	d.mu.Unlock()
 
 	return nil
@@ -297,11 +309,15 @@ func newDelivery[M TLVMessage, R any](
 	decoded M,
 	promise Promise[R],
 	callerCtx context.Context,
+	promiseID string,
 	store DeliveryStore,
+	nowFn func() time.Time,
+	onAskSettled func(),
 ) *Delivery[M, R] {
 
 	return &Delivery[M, R]{
 		ID:              msg.ID,
+		PromiseID:       promiseID,
 		Message:         decoded,
 		Promise:         promise,
 		CallerCtx:       callerCtx,
@@ -312,6 +328,38 @@ func newDelivery[M TLVMessage, R any](
 		Attempts:        msg.Attempts,
 		MaxAttempts:     msg.MaxAttempts,
 		store:           store,
+		nowFn:           nowFn,
+		onAskSettled:    onAskSettled,
 		acked:           false,
 	}
+}
+
+// askPromiseID returns the durable Ask-result key for this delivery.
+func (d *Delivery[M, R]) askPromiseID() string {
+	if d.PromiseID != "" {
+		return d.PromiseID
+	}
+
+	return d.ID
+}
+
+// settleAsk completes the in-memory promise and releases any Ask bookkeeping
+// once the Ask has durably reached a terminal state.
+func (d *Delivery[M, R]) settleAsk(result fn.Result[R]) {
+	d.Promise.Complete(result)
+
+	if d.onAskSettled != nil {
+		d.onAskSettled()
+		d.onAskSettled = nil
+	}
+}
+
+// now returns the delivery's configured clock reading or wall clock time when
+// no custom clock was supplied.
+func (d *Delivery[M, R]) now() time.Time {
+	if d.nowFn != nil {
+		return d.nowFn()
+	}
+
+	return time.Now()
 }

@@ -30,6 +30,7 @@
     {
       "op": "dead_letter",
       "id": "00000000-0000-7000-8000-000000000701",
+      "lease_token": "lease-1",
       "now": 0,
       "failure_reason": "model trace poison message"
     },

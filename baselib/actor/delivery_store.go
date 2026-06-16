@@ -27,6 +27,13 @@ type DeliveryStore interface {
 	// of rows affected (0 if token mismatch, 1 if success).
 	AckMessage(ctx context.Context, id, leaseToken string) (int64, error)
 
+	// AckMessageWithAskResult atomically validates lease ownership, removes
+	// the mailbox message, and persists the Ask result marker. This avoids
+	// a non-transactional loss window where AckMessage succeeds but the Ask
+	// result write fails afterward.
+	AckMessageWithAskResult(ctx context.Context, id, leaseToken string,
+		params AskResultParams) (int64, error)
+
 	// NackMessage releases a message for redelivery after the specified
 	// delay. Clears the lease and sets a new available_at time.
 	// Validates the lease token to prevent stale nacks.
@@ -39,7 +46,11 @@ type DeliveryStore interface {
 		extension time.Duration) (int64, error)
 
 	// MoveToDeadLetter moves a failed message to the dead letter queue.
-	MoveToDeadLetter(ctx context.Context, id, reason string) error
+	// Validates the lease token to prevent stale consumers from
+	// dead-lettering a message they no longer own. Returns the number
+	// of rows affected (0 if the lease was lost, 1 if success).
+	MoveToDeadLetter(ctx context.Context, id, leaseToken,
+		reason string) (int64, error)
 
 	// DeleteMessage removes a message from the mailbox (cleanup).
 	DeleteMessage(ctx context.Context, id string) error
@@ -70,11 +81,18 @@ type DeliveryStore interface {
 
 	// CompleteOutbox marks an outbox message as successfully delivered.
 	// The claim token must match the token set during ClaimOutboxBatch.
-	CompleteOutbox(ctx context.Context, id, claimToken string) error
+	// Returns the number of rows affected (0 if the claim was lost, 1 if
+	// success).
+	CompleteOutbox(ctx context.Context, id,
+		claimToken string) (int64, error)
 
 	// FailOutbox marks an outbox message as failed (dead letter).
 	// The claim token must match the token set during ClaimOutboxBatch.
-	FailOutbox(ctx context.Context, id, claimToken string) error
+	// The failure reason is persisted for operational debugging.
+	// Returns the number of rows affected (0 if the claim was lost, 1 if
+	// success).
+	FailOutbox(ctx context.Context, id, claimToken,
+		reason string) (int64, error)
 
 	// ===== Deduplication Operations =====
 
@@ -102,14 +120,15 @@ type DeliveryStore interface {
 	// ===== Dead Letter Operations =====
 
 	// GetDeadLetter retrieves a specific dead letter message.
-	GetDeadLetter(ctx context.Context, id string) (*DeadLetter, error)
+	GetDeadLetter(ctx context.Context, source,
+		id string) (*DeadLetter, error)
 
 	// ListDeadLetters lists dead letters for an actor with pagination.
 	ListDeadLetters(ctx context.Context, actorID string,
 		limit int) ([]DeadLetter, error)
 
 	// DeleteDeadLetter removes a dead letter after manual processing.
-	DeleteDeadLetter(ctx context.Context, id string) error
+	DeleteDeadLetter(ctx context.Context, source, id string) error
 
 	// ===== Maintenance Operations =====
 
@@ -357,7 +376,8 @@ type Checkpoint struct {
 
 // DeadLetter represents a failed message in the dead letter queue.
 type DeadLetter struct {
-	// ID is the original message identifier.
+	// ID is the original message identifier. Dead-letter identity is the
+	// pair `(Source, ID)`, not `ID` alone.
 	ID string
 
 	// Source indicates where the message originated: 'mailbox' or 'outbox'.

@@ -101,9 +101,30 @@ func TestDurableMailboxNewMailbox(t *testing.T) {
 	require.NotNil(t, mailbox)
 	require.False(t, mailbox.IsClosed())
 	require.Equal(t, "test-mailbox", mailbox.cfg.MailboxID)
-	require.Equal(t, 30*time.Second, mailbox.cfg.LeaseDuration)
-	require.Equal(t, time.Second, mailbox.cfg.PollInterval)
-	require.Equal(t, 10, mailbox.cfg.MaxAttempts)
+	require.Equal(t, defaultDurableLeaseDuration, mailbox.cfg.LeaseDuration)
+	require.Equal(t, defaultDurablePollInterval, mailbox.cfg.PollInterval)
+	require.Equal(t, defaultDurableMaxAttempts, mailbox.cfg.MaxAttempts)
+}
+
+// TestDurableMailboxAppliesZeroValueDefaults tests that constructing a durable
+// mailbox directly still applies the documented defaults.
+func TestDurableMailboxAppliesZeroValueDefaults(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newDurableTestCodec()
+	ctx := context.Background()
+
+	cfg := DurableMailboxConfig{
+		MailboxID: "test-mailbox",
+		Store:     store,
+		Codec:     codec,
+	}
+	mailbox := NewDurableMailbox[*durableTestMsg, int](ctx, cfg)
+
+	require.Equal(t, defaultDurableLeaseDuration, mailbox.cfg.LeaseDuration)
+	require.Equal(t, defaultDurablePollInterval, mailbox.cfg.PollInterval)
+	require.Equal(t, defaultDurableMaxAttempts, mailbox.cfg.MaxAttempts)
 }
 
 // TestDurableMailboxSend tests that Send persists messages to the store.

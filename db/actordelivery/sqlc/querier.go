@@ -16,6 +16,8 @@ type Querier interface {
 	// Claim a batch of pending outbox messages for delivery. Sets a claim token
 	// and expiry to prevent concurrent publishers from processing the same messages.
 	// Only selects rows that are unclaimed or whose claim has expired.
+	// Ordering uses created_at ASC and then id ASC so UUIDv7 remains the final
+	// deterministic tiebreaker when rows land in the same created_at second.
 	ClaimOutboxBatch(ctx context.Context, arg ClaimOutboxBatchParams) ([]OutboxMessage, error)
 	// Delete Ask results that have expired.
 	CleanupExpiredAskResults(ctx context.Context, expiresAt int64) error
@@ -25,7 +27,7 @@ type Querier interface {
 	CleanupOldDeadLetters(ctx context.Context, createdAt int64) error
 	// Mark an outbox message as successfully delivered. The claim token must match
 	// to prevent stale publishers from completing messages they no longer own.
-	CompleteOutboxMessage(ctx context.Context, arg CompleteOutboxMessageParams) error
+	CompleteOutboxMessage(ctx context.Context, arg CompleteOutboxMessageParams) (int64, error)
 	// Count total dead letters.
 	CountDeadLetters(ctx context.Context) (int64, error)
 	// Count pending messages for an actor's mailbox.
@@ -35,7 +37,7 @@ type Querier interface {
 	// Delete an Ask result after retrieval.
 	DeleteAskResult(ctx context.Context, promiseID string) error
 	// Delete a dead letter after manual processing.
-	DeleteDeadLetter(ctx context.Context, id string) error
+	DeleteDeadLetter(ctx context.Context, arg DeleteDeadLetterParams) error
 	// Delete an FSM checkpoint (e.g., when actor terminates normally).
 	DeleteFSMCheckpoint(ctx context.Context, actorID string) error
 	// Delete a mailbox message by ID (used after moving to dead letter).
@@ -69,14 +71,14 @@ type Querier interface {
 	ExtendMailboxLease(ctx context.Context, arg ExtendMailboxLeaseParams) (int64, error)
 	// Mark an outbox message as failed (dead letter). The claim token must match
 	// to prevent stale publishers from failing messages they no longer own.
-	FailOutboxMessage(ctx context.Context, arg FailOutboxMessageParams) error
+	FailOutboxMessage(ctx context.Context, arg FailOutboxMessageParams) (int64, error)
 	// Retrieve the result of an Ask message.
 	GetAskResult(ctx context.Context, promiseID string) (AskResult, error)
 	// =============================================================================
 	// Dead Letter Operations
 	// =============================================================================
 	// Get a specific dead letter by ID.
-	GetDeadLetter(ctx context.Context, id string) (DeadLetter, error)
+	GetDeadLetter(ctx context.Context, arg GetDeadLetterParams) (DeadLetter, error)
 	// Load an FSM checkpoint for an actor.
 	GetFSMCheckpoint(ctx context.Context, actorID string) (FsmCheckpoint, error)
 	// Get a specific mailbox message by ID.
@@ -96,8 +98,8 @@ type Querier interface {
 	//
 	// Ordering: priority DESC ensures high-priority (e.g., restart) messages
 	// first, then available_at ASC for delivery order, then created_at ASC as
-	// a tiebreaker to ensure deterministic ordering when priority and
-	// available_at are equal.
+	// a tiebreaker, then id ASC so UUIDv7 time-ordering remains the final
+	// deterministic tiebreaker when rows land in the same created_at second.
 	//
 	// Per-correlation-key FIFO: when a row carries a non-NULL correlation_key,
 	// it is eligible only if no earlier same-key row exists in this mailbox.
@@ -141,7 +143,7 @@ type Querier interface {
 	// Record that a message has been processed for deduplication.
 	MarkMessageProcessed(ctx context.Context, arg MarkMessageProcessedParams) error
 	// Move a failed message to the dead letter queue.
-	MoveMailboxToDeadLetter(ctx context.Context, arg MoveMailboxToDeadLetterParams) error
+	MoveMailboxToDeadLetter(ctx context.Context, arg MoveMailboxToDeadLetterParams) (int64, error)
 	// Move a failed outbox message to the dead letter queue.
 	MoveOutboxToDeadLetter(ctx context.Context, arg MoveOutboxToDeadLetterParams) error
 	// Release message for redelivery after retry delay.

@@ -1104,8 +1104,10 @@ func TestDeadLetter_BoundedRetries(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Simulate multiple failed attempts via lease/nack cycles.
-	for i := 0; i < maxAttempts; i++ {
+	// Simulate repeated transient failures via lease/nack cycles, then keep
+	// the final lease live so dead-lettering still validates current
+	// ownership.
+	for i := 0; i < maxAttempts-1; i++ {
 		token := fmt.Sprintf("token-%c", rune('A'+i))
 
 		leased, err := h.store.LeaseNextMessage(
@@ -1126,14 +1128,22 @@ func TestDeadLetter_BoundedRetries(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// After max attempts, move to dead letter.
-	err = h.store.MoveToDeadLetter(
-		h.ctx, messageID, "max attempts exceeded",
+	// Final attempt reaches max_attempts and is dead-lettered instead of
+	// being nacked again.
+	leased, err := h.store.LeaseNextMessage(
+		h.ctx, mailboxID, "token-final", 5*time.Second,
 	)
 	require.NoError(t, err)
+	require.NotNil(t, leased)
+
+	rowsAffected, err := h.store.MoveToDeadLetter(
+		h.ctx, messageID, leased.LeaseToken, "max attempts exceeded",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rowsAffected)
 
 	// Verify it's in dead letters.
-	dl, err := h.store.GetDeadLetter(h.ctx, messageID)
+	dl, err := h.store.GetDeadLetter(h.ctx, "mailbox", messageID)
 	require.NoError(t, err)
 	require.NotNil(t, dl)
 	require.Equal(t, messageID, dl.ID)
@@ -1163,12 +1173,21 @@ func TestDeadLetter_PayloadPreserved(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Move to dead letter.
-	err = h.store.MoveToDeadLetter(h.ctx, messageID, "test failure")
+	leased, err := h.store.LeaseNextMessage(
+		h.ctx, "preserve-test", "token-preserve", 5*time.Second,
+	)
 	require.NoError(t, err)
+	require.NotNil(t, leased)
+
+	// Move to dead letter.
+	rowsAffected, err := h.store.MoveToDeadLetter(
+		h.ctx, messageID, leased.LeaseToken, "test failure",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rowsAffected)
 
 	// Retrieve dead letter and verify payload is preserved.
-	dl, err := h.store.GetDeadLetter(h.ctx, messageID)
+	dl, err := h.store.GetDeadLetter(h.ctx, "mailbox", messageID)
 	require.NoError(t, err)
 	require.NotNil(t, dl)
 

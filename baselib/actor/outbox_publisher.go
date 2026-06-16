@@ -8,6 +8,13 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	defaultOutboxPublisherPollInterval        = 100 * time.Millisecond
+	defaultOutboxPublisherBatchSize           = 100
+	defaultOutboxPublisherMaxDeliveryAttempts = 10
+	defaultOutboxPublisherClaimDuration       = 30 * time.Second
+)
+
 // OutboxPublisherConfig holds configuration for the OutboxPublisher.
 type OutboxPublisherConfig struct {
 	// Store is the persistence layer for outbox operations.
@@ -50,10 +57,10 @@ func DefaultOutboxPublisherConfig(
 		Store:               store,
 		Codec:               codec,
 		System:              system,
-		PollInterval:        time.Second,
-		BatchSize:           100,
-		MaxDeliveryAttempts: 10,
-		ClaimDuration:       30 * time.Second,
+		PollInterval:        defaultOutboxPublisherPollInterval,
+		BatchSize:           defaultOutboxPublisherBatchSize,
+		MaxDeliveryAttempts: defaultOutboxPublisherMaxDeliveryAttempts,
+		ClaimDuration:       defaultOutboxPublisherClaimDuration,
 	}
 }
 
@@ -94,17 +101,18 @@ type OutboxPublisher struct {
 func NewOutboxPublisher(cfg OutboxPublisherConfig) *OutboxPublisher {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	if cfg.PollInterval == 0 {
-		cfg.PollInterval = time.Second
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = defaultOutboxPublisherPollInterval
 	}
-	if cfg.BatchSize == 0 {
-		cfg.BatchSize = 100
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = defaultOutboxPublisherBatchSize
 	}
-	if cfg.MaxDeliveryAttempts == 0 {
-		cfg.MaxDeliveryAttempts = 10
+	if cfg.MaxDeliveryAttempts <= 0 {
+		cfg.MaxDeliveryAttempts =
+			defaultOutboxPublisherMaxDeliveryAttempts
 	}
-	if cfg.ClaimDuration == 0 {
-		cfg.ClaimDuration = 30 * time.Second
+	if cfg.ClaimDuration <= 0 {
+		cfg.ClaimDuration = defaultOutboxPublisherClaimDuration
 	}
 
 	p := &OutboxPublisher{
@@ -211,13 +219,19 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 			"attempts", msg.DeliveryAttempts,
 			"max_attempts", p.cfg.MaxDeliveryAttempts)
 
-		dlErr := p.cfg.Store.FailOutbox(
-			p.ctx, msg.ID, msg.ClaimToken,
+		reason := "max delivery attempts exceeded"
+		rowsAffected, dlErr := p.cfg.Store.FailOutbox(
+			p.ctx, msg.ID, msg.ClaimToken, reason,
 		)
 		if dlErr != nil {
 			logger(p.ctx).WarnS(p.ctx,
 				"Failed to dead-letter outbox message",
 				dlErr, "message_id", msg.ID)
+		} else if rowsAffected == 0 {
+			logger(p.ctx).WarnS(p.ctx,
+				"Skipped dead-lettering outbox message after "+
+					"claim loss",
+				nil, "message_id", msg.ID)
 		}
 
 		return
@@ -231,13 +245,19 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 			"message_type", msg.MessageType)
 
 		// Poison pill - mark as failed (dead letter).
-		dlErr := p.cfg.Store.FailOutbox(
-			p.ctx, msg.ID, msg.ClaimToken,
+		reason := "failed to decode outbox payload: " + err.Error()
+		rowsAffected, dlErr := p.cfg.Store.FailOutbox(
+			p.ctx, msg.ID, msg.ClaimToken, reason,
 		)
 		if dlErr != nil {
 			logger(p.ctx).WarnS(p.ctx,
 				"Failed to dead-letter outbox message",
 				dlErr, "message_id", msg.ID)
+		} else if rowsAffected == 0 {
+			logger(p.ctx).WarnS(p.ctx,
+				"Skipped dead-lettering outbox message after "+
+					"claim loss",
+				nil, "message_id", msg.ID)
 		}
 
 		return
@@ -273,12 +293,22 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 	}
 
 	// Mark as complete after successful durable send.
-	completeErr := p.cfg.Store.CompleteOutbox(
+	rowsAffected, completeErr := p.cfg.Store.CompleteOutbox(
 		p.ctx, msg.ID, msg.ClaimToken,
 	)
 	if completeErr != nil {
 		logger(p.ctx).WarnS(p.ctx, "Failed to complete outbox message",
 			completeErr, "message_id", msg.ID)
+
+		return
+	}
+
+	if rowsAffected == 0 {
+		logger(p.ctx).WarnS(p.ctx,
+			"Skipped completing outbox message after claim loss",
+			nil, "message_id", msg.ID)
+
+		return
 	}
 
 	logger(p.ctx).TraceS(p.ctx, "Delivered outbox message",

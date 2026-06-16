@@ -174,6 +174,9 @@ type mockTxAwareStore struct {
 	// txShouldFail causes ExecTx to fail.
 	txShouldFail bool
 
+	// txFailuresRemaining causes the next N ExecTx calls to fail.
+	txFailuresRemaining int
+
 	// nackCalled tracks whether NackMessage was called after tx failure.
 	nackCalled atomic.Bool
 
@@ -199,7 +202,16 @@ func (m *mockTxAwareStore) ExecTx(
 	m.txExecuted.Store(true)
 	m.txCount.Add(1)
 
-	if m.txShouldFail {
+	m.mu.Lock()
+	shouldFail := m.txShouldFail
+	if m.txFailuresRemaining > 0 {
+		shouldFail = true
+		m.txFailuresRemaining--
+	}
+	postCallbackHook := m.txPostCallbackHook
+	m.mu.Unlock()
+
+	if shouldFail {
 		return errors.New("simulated tx failure")
 	}
 
@@ -211,8 +223,8 @@ func (m *mockTxAwareStore) ExecTx(
 	// Run the post-callback hook if set. This simulates the window
 	// between the callback completing and commit returning, which is
 	// where premature promise completion would be observable.
-	if m.txPostCallbackHook != nil {
-		m.txPostCallbackHook()
+	if postCallbackHook != nil {
+		postCallbackHook()
 	}
 
 	return nil
@@ -244,6 +256,89 @@ func TestDurableActorCreation(t *testing.T) {
 	require.Equal(t, 10*time.Second, actor.heartbeatInterval)
 	require.Equal(t, 5*time.Second, actor.cleanupTimeout)
 	require.Equal(t, 24*time.Hour, actor.deduplicationTTL)
+}
+
+// TestDurableActorAppliesZeroValueDefaults tests that constructing a durable
+// actor directly still applies the documented defaults.
+func TestDurableActorAppliesZeroValueDefaults(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newActorTestCodec()
+	behavior := newMockBehavior(fn.Ok(42))
+
+	cfg := DurableActorConfig[*actorTestMsg, int]{
+		ID:       "test-actor",
+		Behavior: NewClassicBehavior[*actorTestMsg, int](behavior),
+		Store:    store,
+		Codec:    codec,
+	}
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
+
+	require.Equal(t, defaultDurableLeaseDuration, actor.leaseDuration)
+	require.Equal(t, defaultDurableLeaseDuration/3, actor.heartbeatInterval)
+	require.Equal(
+		t, defaultDurablePollInterval, actor.mailbox.cfg.PollInterval,
+	)
+	require.Equal(
+		t, defaultDurableMaxAttempts, actor.mailbox.cfg.MaxAttempts,
+	)
+	require.Equal(t, defaultDurableCleanupTimeout, actor.cleanupTimeout)
+	require.Equal(t, defaultDeduplicationTTL, actor.deduplicationTTL)
+}
+
+// TestDurableActorNormalizesUnsafeHeartbeat tests that heartbeat settings that
+// would let leases expire before renewal are reset to the safe default.
+func TestDurableActorNormalizesUnsafeHeartbeat(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newActorTestCodec()
+	behavior := newMockBehavior(fn.Ok(42))
+
+	cfg := DurableActorConfig[*actorTestMsg, int]{
+		ID: "test-actor",
+		Behavior: NewClassicBehavior[*actorTestMsg, int](
+			behavior,
+		),
+		Store:             store,
+		Codec:             codec,
+		LeaseDuration:     30 * time.Second,
+		HeartbeatInterval: 20 * time.Second,
+		PollInterval:      10 * time.Millisecond,
+		MaxAttempts:       3,
+		CleanupTimeout:    time.Second,
+		DeduplicationTTL:  time.Hour,
+	}
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
+
+	require.Equal(t, 30*time.Second, actor.leaseDuration)
+	require.Equal(t, 10*time.Second, actor.heartbeatInterval)
+}
+
+// TestDurableActorTinyLeaseKeepsHeartbeatPositive tests that even very small
+// lease durations still normalize to a positive heartbeat interval.
+func TestDurableActorTinyLeaseKeepsHeartbeatPositive(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newActorTestCodec()
+	behavior := newMockBehavior(fn.Ok(42))
+
+	cfg := DurableActorConfig[*actorTestMsg, int]{
+		ID: "test-actor",
+		Behavior: NewClassicBehavior[*actorTestMsg, int](
+			behavior,
+		),
+		Store:             store,
+		Codec:             codec,
+		LeaseDuration:     time.Nanosecond,
+		HeartbeatInterval: 0,
+	}
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
+
+	require.Equal(t, time.Nanosecond, actor.leaseDuration)
+	require.Positive(t, actor.heartbeatInterval)
 }
 
 // TestDurableActorStartStop tests basic lifecycle.
@@ -580,6 +675,43 @@ func TestDurableActorPanicRecovery(t *testing.T) {
 	require.NoError(t, actor.ctx.Err())
 }
 
+// TestDurableActorAskRespectsCallerDeadline tests that durable Ask preserves
+// the original caller context so behavior can observe deadline cancellation.
+func TestDurableActorAskRespectsCallerDeadline(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newActorTestCodec()
+	behavior := newMockBehavior(fn.Ok(42))
+	behavior.setDelay(500 * time.Millisecond)
+
+	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+	cfg.PollInterval = 10 * time.Millisecond
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
+
+	actor.Start()
+	defer actor.Stop()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+	}
+
+	askCtx, cancel := context.WithTimeout(
+		context.Background(), 50*time.Millisecond,
+	)
+	defer cancel()
+
+	start := time.Now()
+	result := actor.Ref().Ask(askCtx, msg).Await(context.Background())
+	elapsed := time.Since(start)
+
+	require.True(
+		t, result.IsErr(),
+		"durable Ask should fail on caller deadline",
+	)
+	require.Less(t, elapsed, 300*time.Millisecond)
+}
+
 // TestDurableActorTellRetryPolicy tests that Tell respects retry policy.
 func TestDurableActorTellRetryPolicy(t *testing.T) {
 	t.Parallel()
@@ -857,6 +989,60 @@ func TestDurableActorAskToTerminatedActor(t *testing.T) {
 	result := future.Await(ctx)
 	require.Error(t, result.Err())
 	require.Equal(t, ErrActorTerminated, result.Err())
+}
+
+// TestDurableActorStopFailsQueuedAsk verifies that queued live Ask promises are
+// failed on durable actor shutdown instead of hanging indefinitely.
+func TestDurableActorStopFailsQueuedAsk(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newActorTestCodec()
+	behavior := newMockBehavior(fn.Ok(42))
+	firstStarted := make(chan struct{}, 1)
+	behavior.onReceive = func(ctx context.Context, msg *actorTestMsg) {
+		select {
+		case firstStarted <- struct{}{}:
+		default:
+		}
+
+		<-ctx.Done()
+	}
+
+	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+	cfg.PollInterval = 10 * time.Millisecond
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
+
+	actor.Start()
+	defer actor.Stop()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+	}
+
+	ctx := context.Background()
+	firstFuture := actor.Ref().Ask(ctx, msg)
+
+	select {
+	case <-firstStarted:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("first ask never started processing")
+	}
+
+	secondFuture := actor.Ref().Ask(ctx, msg)
+
+	actor.Stop()
+
+	secondCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+
+	secondResult := secondFuture.Await(secondCtx)
+	require.ErrorIs(t, secondResult.Err(), ErrActorTerminated)
+
+	firstCtx, cancelFirst := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancelFirst()
+
+	_ = firstFuture.Await(firstCtx)
 }
 
 // TestDurableActorWithWaitGroup tests lifecycle tracking with WaitGroup.
@@ -1709,6 +1895,50 @@ func TestPromiseNotCompletedOnTxFailure(t *testing.T) {
 
 	// Should time out or get context error - not a real result.
 	require.Error(t, result.Err())
+}
+
+// TestPromiseSurvivesTxRetry verifies that a durable Ask keeps its original
+// in-memory promise across transaction retries instead of dropping the future
+// after the first lease attempt.
+func TestPromiseSurvivesTxRetry(t *testing.T) {
+	t.Parallel()
+
+	store := newMockTxAwareStore()
+	store.txFailuresRemaining = 1
+	codec := newActorTestCodec()
+	behavior := newMockBehavior(fn.Ok(42))
+
+	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+	cfg.PollInterval = 10 * time.Millisecond
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
+
+	actor.Start()
+	defer actor.Stop()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(99)),
+	}
+
+	ctx := context.Background()
+	future := actor.Ref().Ask(ctx, msg)
+
+	// Force the first attempt through the tx-failure path.
+	require.Eventually(t, func() bool {
+		return store.txExecuted.Load()
+	}, 500*time.Millisecond, 10*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		return store.nackCalled.Load()
+	}, 500*time.Millisecond, 10*time.Millisecond)
+
+	resultCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	result := future.Await(resultCtx)
+	val, err := result.Unpack()
+	require.NoError(t, err)
+	require.Equal(t, 42, val)
+	require.Equal(t, 1, behavior.callCount())
 }
 
 // TestDeliveryConcurrentExtendAndAck verifies that concurrent Extend and Ack

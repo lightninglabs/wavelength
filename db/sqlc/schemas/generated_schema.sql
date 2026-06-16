@@ -40,8 +40,10 @@ CREATE TABLE boarding_addresses (
     -- client_key_id references the internal_keys registry row for the client
     -- wallet key used in the tapscript. The registry row carries the
     -- compressed pubkey plus the lnd KeyLocator needed to reconstruct the
-    -- signing descriptor. Nullable so a row can be written before the key is
-    -- registered, though the write path always registers first.
+    -- signing descriptor. Declared nullable only for uniformity with the
+    -- genuinely-optional internal_keys FKs (vtxos, round_vtxo_requests); in
+    -- practice every boarding address has a client key, so the write path
+    -- always registers it first and the read path treats a NULL as an error.
     client_key_id BIGINT REFERENCES internal_keys(id),
 
     -- operator_pubkey is the serialized public key (33 bytes compressed) of
@@ -182,30 +184,16 @@ CREATE TABLE client_tree_txids (
         ON DELETE CASCADE
 );
 
-CREATE TABLE dead_letters (
-    -- id is the original message ID.
-    id TEXT PRIMARY KEY,
-
-    -- source indicates where the message originated: 'mailbox' or 'outbox'.
+CREATE TABLE "dead_letters" (
+    id TEXT NOT NULL,
     source TEXT NOT NULL,
-
-    -- actor_id identifies the target actor (for mailbox) or source (for outbox).
     actor_id TEXT NOT NULL,
-
-    -- message_type is the type name for the failed message.
     message_type TEXT NOT NULL,
-
-    -- payload contains the original TLV-encoded message data.
     payload BLOB NOT NULL,
-
-    -- failure_reason describes why the message was dead-lettered.
     failure_reason TEXT NOT NULL,
-
-    -- attempts is the number of delivery attempts before dead-lettering.
     attempts INTEGER NOT NULL,
-
-    -- created_at is the unix timestamp when the message was dead-lettered.
-    created_at BIGINT NOT NULL
+    created_at BIGINT NOT NULL,
+    PRIMARY KEY (source, id)
 );
 
 CREATE TABLE fsm_checkpoints (
@@ -714,8 +702,11 @@ CREATE TABLE owned_receive_scripts (
 
     -- client_key_id references the internal_keys registry row for the client
     -- wallet key used in the checkpoint taptree. The registry row carries the
-    -- compressed pubkey plus the lnd KeyLocator. Nullable, though the write
-    -- path always registers the key first.
+    -- compressed pubkey plus the lnd KeyLocator. Declared nullable only for
+    -- uniformity with the genuinely-optional internal_keys FKs (vtxos,
+    -- round_vtxo_requests); in practice every owned receive script has a
+    -- client key, so the write path always registers it first and the read
+    -- path treats a NULL as an error.
     client_key_id BIGINT REFERENCES internal_keys(id),
 
     -- operator_pubkey is the operator key used in the checkpoint taptree.

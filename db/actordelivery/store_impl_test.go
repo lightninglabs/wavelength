@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/db"
 	adsqlc "github.com/lightninglabs/darepo-client/db/actordelivery/sqlc"
@@ -75,6 +76,29 @@ func generateTestID() string {
 	_, _ = rand.Read(b)
 
 	return hex.EncodeToString(b)
+}
+
+// orderedUUIDv7Pair returns two UUIDv7 strings that sort in generation order.
+// The helper waits for a later millisecond so the ordering is not left to the
+// random suffix inside a single timestamp bucket.
+func orderedUUIDv7Pair(t *testing.T) (string, string) {
+	t.Helper()
+
+	earlierID := uuid.Must(uuid.NewV7()).String()
+
+	var laterID string
+	for i := 0; i < 10; i++ {
+		time.Sleep(2 * time.Millisecond)
+
+		laterID = uuid.Must(uuid.NewV7()).String()
+		if earlierID < laterID {
+			return earlierID, laterID
+		}
+	}
+
+	require.FailNow(t, "expected UUIDv7 ids to sort by generation time")
+
+	return "", ""
 }
 
 // TestActorDeliveryStoreEnqueueAndLease tests basic enqueue and lease
@@ -251,12 +275,21 @@ func TestActorDeliveryStoreMoveToDeadLetter(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Move to dead letter.
-	err = store.MoveToDeadLetter(ctx, "msg-dead", "max attempts exceeded")
+	leased, err := store.LeaseNextMessage(
+		ctx, "actor-1", "token-dead", 30*time.Second,
+	)
 	require.NoError(t, err)
+	require.NotNil(t, leased)
+
+	// Move to dead letter.
+	rowsAffected, err := store.MoveToDeadLetter(
+		ctx, "msg-dead", leased.LeaseToken, "max attempts exceeded",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rowsAffected)
 
 	// Verify it's in dead letters.
-	dl, err := store.GetDeadLetter(ctx, "msg-dead")
+	dl, err := store.GetDeadLetter(ctx, "mailbox", "msg-dead")
 	require.NoError(t, err)
 	require.NotNil(t, dl)
 
@@ -266,11 +299,63 @@ func TestActorDeliveryStoreMoveToDeadLetter(t *testing.T) {
 	require.Equal(t, "max attempts exceeded", dl.FailureReason)
 
 	// Original message should be deleted.
-	leased, err := store.LeaseNextMessage(
+	leased, err = store.LeaseNextMessage(
 		ctx, "actor-1", "token", 30*time.Second,
 	)
 	require.NoError(t, err)
 	require.Nil(t, leased)
+}
+
+// TestActorDeliveryStoreMoveToDeadLetterClaimMismatch surfaces stale lease
+// loss instead of silently dead-lettering a message after ownership moved.
+func TestActorDeliveryStoreMoveToDeadLetterClaimMismatch(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          "msg-dead-stale",
+		MailboxID:   "actor-1",
+		MessageType: "test.Message",
+		Payload:     []byte{1, 2, 3},
+		AvailableAt: store.clock.Now().Add(-time.Minute),
+		MaxAttempts: 2,
+	})
+	require.NoError(t, err)
+
+	firstLease, err := store.LeaseNextMessage(
+		ctx, "actor-1", "token-old", 5*time.Second,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, firstLease)
+
+	store.clock.SetTime(store.clock.Now().Add(6 * time.Second))
+	err = store.ExpireLeases(ctx)
+	require.NoError(t, err)
+
+	secondLease, err := store.LeaseNextMessage(
+		ctx, "actor-1", "token-new", 5*time.Second,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, secondLease)
+	require.Equal(t, firstLease.ID, secondLease.ID)
+
+	rowsAffected, err := store.MoveToDeadLetter(
+		ctx, firstLease.ID, firstLease.LeaseToken, "stale failure",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), rowsAffected)
+
+	dl, err := store.GetDeadLetter(ctx, "mailbox", firstLease.ID)
+	require.NoError(t, err)
+	require.Nil(t, dl)
+
+	rowsAffected, err = store.MoveToDeadLetter(
+		ctx, secondLease.ID, secondLease.LeaseToken, "fresh failure",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rowsAffected)
 }
 
 // TestActorDeliveryStorePriorityOrdering tests message priority ordering.
@@ -328,6 +413,108 @@ func TestActorDeliveryStorePriorityOrdering(t *testing.T) {
 		_, err = store.AckMessage(ctx, leased.ID, "token-"+exp)
 		require.NoError(t, err)
 	}
+}
+
+// TestActorDeliveryStoreSameSecondTieBreak uses UUIDv7 ordering when two rows
+// land in the same created_at second. This pins the durable store contract to
+// priority, available_at, created_at, and finally id.
+func TestActorDeliveryStoreSameSecondTieBreak(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	// Freeze the durable store clock so both rows persist with the same
+	// created_at second while still using real UUIDv7 values.
+	now := time.Unix(1_700_000_000, 0)
+	store.clock.SetTime(now)
+
+	earlierID, laterID := orderedUUIDv7Pair(t)
+
+	availableAt := now.Add(-time.Minute)
+
+	// Insert the later UUID first so the store must choose between UUID
+	// order and the SQL tie behavior when created_at is identical.
+	err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          laterID,
+		MailboxID:   "actor-1",
+		MessageType: "test.Message",
+		Payload:     []byte{2},
+		Priority:    5,
+		AvailableAt: availableAt,
+		MaxAttempts: 3,
+	})
+	require.NoError(t, err)
+
+	err = store.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          earlierID,
+		MailboxID:   "actor-1",
+		MessageType: "test.Message",
+		Payload:     []byte{1},
+		Priority:    5,
+		AvailableAt: availableAt,
+		MaxAttempts: 3,
+	})
+	require.NoError(t, err)
+
+	leased, err := store.LeaseNextMessage(
+		ctx, "actor-1", "token-first", 30*time.Second,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, leased)
+
+	require.Equal(
+		t, earlierID, leased.ID,
+		"same-second created_at ties must break by UUIDv7 order",
+	)
+}
+
+// TestActorDeliveryStoreOutboxSameSecondTieBreak uses UUIDv7 ordering when two
+// outbox rows land in the same created_at second. This pins the CDC contract
+// to created_at and then id.
+func TestActorDeliveryStoreOutboxSameSecondTieBreak(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	now := time.Unix(1_700_000_100, 0)
+	store.clock.SetTime(now)
+
+	earlierID, laterID := orderedUUIDv7Pair(t)
+
+	err := store.EnqueueOutbox(ctx, actor.OutboxParams{
+		ID:            laterID,
+		SourceActorID: "round-actor",
+		TargetActorID: "wallet-actor",
+		MessageType:   "round.SignRequest",
+		Payload:       []byte{2},
+		Version:       2,
+	})
+	require.NoError(t, err)
+
+	err = store.EnqueueOutbox(ctx, actor.OutboxParams{
+		ID:            earlierID,
+		SourceActorID: "round-actor",
+		TargetActorID: "wallet-actor",
+		MessageType:   "round.SignRequest",
+		Payload:       []byte{1},
+		Version:       1,
+	})
+	require.NoError(t, err)
+
+	batch, err := store.ClaimOutboxBatch(ctx, actor.OutboxClaimParams{
+		Limit:         1,
+		ClaimToken:    "claim-token",
+		ClaimDuration: 30 * time.Second,
+	})
+	require.NoError(t, err)
+	require.Len(t, batch, 1)
+
+	require.Equal(
+		t, earlierID, batch[0].ID,
+		"same-second created_at ties must break by UUIDv7 order",
+	)
 }
 
 // TestActorDeliveryStoreAskResult tests Ask result persistence.
@@ -388,6 +575,53 @@ func TestActorDeliveryStoreAskResultError(t *testing.T) {
 	require.Nil(t, result.ResultBlob)
 }
 
+// TestActorDeliveryStoreAckMessageWithAskResult tests atomic Ask ack/result
+// persistence at the store boundary.
+func TestActorDeliveryStoreAckMessageWithAskResult(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          "msg-ask-ack",
+		MailboxID:   "actor-1",
+		MessageType: "test.Message",
+		Payload:     []byte{9, 9, 9},
+		PromiseID:   "promise-ask-ack",
+		AvailableAt: time.Now().Add(-time.Minute),
+		MaxAttempts: 3,
+	})
+	require.NoError(t, err)
+
+	leased, err := store.LeaseNextMessage(
+		ctx, "actor-1", "token-ask-ack", 30*time.Second,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, leased)
+
+	rows, err := store.AckMessageWithAskResult(
+		ctx, "msg-ask-ack", "token-ask-ack", actor.AskResultParams{
+			PromiseID: "promise-ask-ack",
+			ErrorText: "boom",
+			ExpiresAt: time.Now().Add(time.Hour),
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rows)
+
+	leased, err = store.LeaseNextMessage(
+		ctx, "actor-1", "token-again", 30*time.Second,
+	)
+	require.NoError(t, err)
+	require.Nil(t, leased)
+
+	result, err := store.GetAskResult(ctx, "promise-ask-ack")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "boom", result.ErrorText)
+}
+
 // TestActorDeliveryStoreOutbox tests outbox operations.
 func TestActorDeliveryStoreOutbox(t *testing.T) {
 	t.Parallel()
@@ -424,12 +658,245 @@ func TestActorDeliveryStoreOutbox(t *testing.T) {
 	}
 
 	// Complete one with matching claim token.
-	err = store.CompleteOutbox(ctx, batch[0].ID, claimToken)
+	rowsAffected, err := store.CompleteOutbox(
+		ctx, batch[0].ID, claimToken,
+	)
 	require.NoError(t, err)
+	require.Equal(t, int64(1), rowsAffected)
 
 	// Fail another with matching claim token.
-	err = store.FailOutbox(ctx, batch[1].ID, claimToken)
+	rowsAffected, err = store.FailOutbox(
+		ctx, batch[1].ID, claimToken, "test outbox failure",
+	)
 	require.NoError(t, err)
+	require.Equal(t, int64(1), rowsAffected)
+
+	dl, err := store.GetDeadLetter(ctx, "outbox", batch[1].ID)
+	require.NoError(t, err)
+	require.NotNil(t, dl)
+	require.Equal(t, "outbox", dl.Source)
+	require.Equal(t, "round-actor", dl.ActorID)
+	require.Equal(t, "test outbox failure", dl.FailureReason)
+}
+
+// TestActorDeliveryStoreOutboxCompleteClaimMismatch surfaces stale claim loss
+// at the store boundary instead of silently reporting success.
+func TestActorDeliveryStoreOutboxCompleteClaimMismatch(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	err := store.EnqueueOutbox(ctx, actor.OutboxParams{
+		ID:            "outbox-complete-stale",
+		SourceActorID: "source-actor",
+		TargetActorID: "target-actor",
+		MessageType:   "test.Message",
+		Payload:       []byte{1},
+		Version:       1,
+	})
+	require.NoError(t, err)
+
+	firstBatch, err := store.ClaimOutboxBatch(ctx, actor.OutboxClaimParams{
+		Limit:         1,
+		ClaimToken:    "claim-old",
+		ClaimDuration: 30 * time.Second,
+	})
+	require.NoError(t, err)
+	require.Len(t, firstBatch, 1)
+
+	store.clock.SetTime(store.clock.Now().Add(31 * time.Second))
+
+	secondBatch, err := store.ClaimOutboxBatch(ctx, actor.OutboxClaimParams{
+		Limit:         1,
+		ClaimToken:    "claim-new",
+		ClaimDuration: 30 * time.Second,
+	})
+	require.NoError(t, err)
+	require.Len(t, secondBatch, 1)
+	require.Equal(t, firstBatch[0].ID, secondBatch[0].ID)
+
+	rowsAffected, err := store.CompleteOutbox(
+		ctx, firstBatch[0].ID, "claim-old",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), rowsAffected)
+
+	rowsAffected, err = store.CompleteOutbox(
+		ctx, firstBatch[0].ID, "claim-new",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rowsAffected)
+}
+
+// TestActorDeliveryStoreOutboxFailClaimMismatch surfaces stale claim loss at
+// the dead-letter boundary instead of silently reporting success.
+func TestActorDeliveryStoreOutboxFailClaimMismatch(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	err := store.EnqueueOutbox(ctx, actor.OutboxParams{
+		ID:            "outbox-fail-stale",
+		SourceActorID: "source-actor",
+		TargetActorID: "target-actor",
+		MessageType:   "test.Message",
+		Payload:       []byte{1},
+		Version:       1,
+	})
+	require.NoError(t, err)
+
+	firstBatch, err := store.ClaimOutboxBatch(ctx, actor.OutboxClaimParams{
+		Limit:         1,
+		ClaimToken:    "claim-old",
+		ClaimDuration: 30 * time.Second,
+	})
+	require.NoError(t, err)
+	require.Len(t, firstBatch, 1)
+
+	store.clock.SetTime(store.clock.Now().Add(31 * time.Second))
+
+	secondBatch, err := store.ClaimOutboxBatch(ctx, actor.OutboxClaimParams{
+		Limit:         1,
+		ClaimToken:    "claim-new",
+		ClaimDuration: 30 * time.Second,
+	})
+	require.NoError(t, err)
+	require.Len(t, secondBatch, 1)
+	require.Equal(t, firstBatch[0].ID, secondBatch[0].ID)
+
+	rowsAffected, err := store.FailOutbox(
+		ctx, firstBatch[0].ID, "claim-old", "stale failure",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), rowsAffected)
+
+	rowsAffected, err = store.FailOutbox(
+		ctx, firstBatch[0].ID, "claim-new", "fresh failure",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rowsAffected)
+}
+
+// TestActorDeliveryStoreOutboxCompleteIsTerminal pins completion as a terminal
+// outbox transition under the active claim token.
+func TestActorDeliveryStoreOutboxCompleteIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	err := store.EnqueueOutbox(ctx, actor.OutboxParams{
+		ID:            "outbox-complete-terminal",
+		SourceActorID: "source-actor",
+		TargetActorID: "target-actor",
+		MessageType:   "test.Message",
+		Payload:       []byte{1},
+		Version:       1,
+	})
+	require.NoError(t, err)
+
+	batch, err := store.ClaimOutboxBatch(ctx, actor.OutboxClaimParams{
+		Limit:         1,
+		ClaimToken:    "claim-token",
+		ClaimDuration: 30 * time.Second,
+	})
+	require.NoError(t, err)
+	require.Len(t, batch, 1)
+
+	rowsAffected, err := store.CompleteOutbox(
+		ctx, batch[0].ID, "claim-token",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rowsAffected)
+
+	rowsAffected, err = store.FailOutbox(
+		ctx, batch[0].ID, "claim-token", "terminal failure",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), rowsAffected)
+}
+
+// TestActorDeliveryStoreOutboxDeadLetterIsTerminal pins dead-lettering as a
+// terminal outbox transition under the active claim token.
+func TestActorDeliveryStoreOutboxDeadLetterIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	err := store.EnqueueOutbox(ctx, actor.OutboxParams{
+		ID:            "outbox-dead-terminal",
+		SourceActorID: "source-actor",
+		TargetActorID: "target-actor",
+		MessageType:   "test.Message",
+		Payload:       []byte{1},
+		Version:       1,
+	})
+	require.NoError(t, err)
+
+	batch, err := store.ClaimOutboxBatch(ctx, actor.OutboxClaimParams{
+		Limit:         1,
+		ClaimToken:    "claim-token",
+		ClaimDuration: 30 * time.Second,
+	})
+	require.NoError(t, err)
+	require.Len(t, batch, 1)
+
+	rowsAffected, err := store.FailOutbox(
+		ctx, batch[0].ID, "claim-token", "terminal failure",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rowsAffected)
+
+	rowsAffected, err = store.CompleteOutbox(
+		ctx, batch[0].ID, "claim-token",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), rowsAffected)
+}
+
+// TestActorDeliveryStoreOutboxFailCreatesDeadLetter verifies that failing an
+// outbox row also populates the durable dead-letter store.
+func TestActorDeliveryStoreOutboxFailCreatesDeadLetter(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	err := store.EnqueueOutbox(ctx, actor.OutboxParams{
+		ID:            "outbox-dl-visible",
+		SourceActorID: "source-actor",
+		TargetActorID: "target-actor",
+		MessageType:   "test.Message",
+		Payload:       []byte{7, 8, 9},
+		Version:       1,
+	})
+	require.NoError(t, err)
+
+	batch, err := store.ClaimOutboxBatch(ctx, actor.OutboxClaimParams{
+		Limit:         1,
+		ClaimToken:    "claim-token",
+		ClaimDuration: 30 * time.Second,
+	})
+	require.NoError(t, err)
+	require.Len(t, batch, 1)
+
+	rowsAffected, err := store.FailOutbox(
+		ctx, batch[0].ID, "claim-token", "decode failure",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rowsAffected)
+
+	dl, err := store.GetDeadLetter(ctx, "outbox", batch[0].ID)
+	require.NoError(t, err)
+	require.NotNil(t, dl)
+	require.Equal(t, "outbox", dl.Source)
+	require.Equal(t, "source-actor", dl.ActorID)
+	require.Equal(t, "test.Message", dl.MessageType)
+	require.Equal(t, []byte{7, 8, 9}, dl.Payload)
+	require.Equal(t, "decode failure", dl.FailureReason)
 }
 
 // TestTxAwareActorDeliveryStoreOutboxWake verifies that transaction-scoped
@@ -596,8 +1063,17 @@ func TestActorDeliveryStoreDeadLetterList(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		err = store.MoveToDeadLetter(ctx, id, "test failure")
+		leased, err := store.LeaseNextMessage(
+			ctx, "actor-1", "token-"+id, 30*time.Second,
+		)
 		require.NoError(t, err)
+		require.NotNil(t, leased)
+
+		rowsAffected, err := store.MoveToDeadLetter(
+			ctx, id, leased.LeaseToken, "test failure",
+		)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), rowsAffected)
 	}
 
 	// List dead letters.
@@ -606,13 +1082,80 @@ func TestActorDeliveryStoreDeadLetterList(t *testing.T) {
 	require.Len(t, dls, 3)
 
 	// Delete one.
-	err = store.DeleteDeadLetter(ctx, dls[0].ID)
+	err = store.DeleteDeadLetter(ctx, dls[0].Source, dls[0].ID)
 	require.NoError(t, err)
 
 	// Should have 2 left.
 	dls, err = store.ListDeadLetters(ctx, "actor-1", 10)
 	require.NoError(t, err)
 	require.Len(t, dls, 2)
+}
+
+// TestActorDeliveryStoreDeadLetterSourceScopesIdentity verifies mailbox and
+// outbox dead letters can coexist under the same propagated message ID.
+func TestActorDeliveryStoreDeadLetterSourceScopesIdentity(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	const sharedID = "shared-dead-letter-id"
+
+	err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          sharedID,
+		MailboxID:   "actor-1",
+		MessageType: "test.Message",
+		Payload:     []byte{1, 2, 3},
+		AvailableAt: time.Now().Add(-time.Minute),
+		MaxAttempts: 1,
+	})
+	require.NoError(t, err)
+
+	leased, err := store.LeaseNextMessage(
+		ctx, "actor-1", "mailbox-token", 30*time.Second,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, leased)
+
+	rowsAffected, err := store.MoveToDeadLetter(
+		ctx, sharedID, leased.LeaseToken, "mailbox failure",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rowsAffected)
+
+	err = store.EnqueueOutbox(ctx, actor.OutboxParams{
+		ID:            sharedID,
+		SourceActorID: "source-actor",
+		TargetActorID: "target-actor",
+		MessageType:   "test.Message",
+		Payload:       []byte{9, 8, 7},
+		Version:       1,
+	})
+	require.NoError(t, err)
+
+	batch, err := store.ClaimOutboxBatch(ctx, actor.OutboxClaimParams{
+		Limit:         1,
+		ClaimToken:    "outbox-token",
+		ClaimDuration: 30 * time.Second,
+	})
+	require.NoError(t, err)
+	require.Len(t, batch, 1)
+
+	rowsAffected, err = store.FailOutbox(
+		ctx, sharedID, "outbox-token", "outbox failure",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rowsAffected)
+
+	mailboxDL, err := store.GetDeadLetter(ctx, "mailbox", sharedID)
+	require.NoError(t, err)
+	require.NotNil(t, mailboxDL)
+	require.Equal(t, "mailbox failure", mailboxDL.FailureReason)
+
+	outboxDL, err := store.GetDeadLetter(ctx, "outbox", sharedID)
+	require.NoError(t, err)
+	require.NotNil(t, outboxDL)
+	require.Equal(t, "outbox failure", outboxDL.FailureReason)
 }
 
 // TestActorDeliveryStoreExpireLeases tests lease expiration.
