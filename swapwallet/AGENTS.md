@@ -30,11 +30,12 @@ default builds avoid the swap executor's dependency graph.
   deadline, list-limit, and subscribe-buffer knobs.
 - `RPCServer` interface — Narrow contract over `*darepod.RPCServer`
   covering every daemonrpc method swapwallet composes against:
-  LeaveVTXOs, SendOnChain, ListVTXOs, ListTransactions, NewAddress, GetInfo,
-  GetBalance, GenSeed, InitWallet, UnlockWallet, Unroll,
-  GetUnrollStatus, JoinNextRound. The admin-shape methods (GenSeed/InitWallet/
-  UnlockWallet/Unroll/GetUnrollStatus) are reachable BEFORE the swap
-  runtime is live.
+  LeaveVTXOs, SendOnChain, EstimateFee, ListVTXOs, ListTransactions,
+  NewAddress, GetInfo, GetBalance, GenSeed, InitWallet, UnlockWallet,
+  Unroll, GetUnrollStatus, JoinNextRound. The admin-shape methods
+  (GenSeed/InitWallet/UnlockWallet/Unroll/GetUnrollStatus) are reachable
+  BEFORE the swap runtime is live. `EstimateFee` is called by
+  `prepareOnchain` to obtain the operator's fee quote for the send preview.
 - `WalletEntry` (re-exported from walletdkrpc) — Flat row type the entire
   history/streaming surface returns. Every internal correlator
   (session_id, round_id, settlement_type, mailbox subtype) is dropped
@@ -53,6 +54,9 @@ default builds avoid the swap executor's dependency graph.
   - `rpc/swapclientrpc` (swap-subsystem gRPC shape; ListSwaps,
     StartPay, StartReceive)
   - `swapclientserver` (typed `Backend` handle and runtime resume)
+  - `coinselect` (largest-first VTXO selection for `prepareOnchain`
+    preview — mirrors the daemon's own selection so the preview does not
+    under-select relative to the real send)
   - `darepod` (`SwapBackend` interface)
   - `ledger` (account name constants for OOR ledger projection)
   - `btclog/v2` (subsystem logger)
@@ -94,6 +98,12 @@ default builds avoid the swap executor's dependency graph.
   calls `listLiveVTXOsForLeave` for sweep-all enumeration.
 - `SendResponse.actual_amount_sat` carries the true outflow for sweep-all
   sends and SHOULD be echoed back before the send is treated as confirmed.
+- `prepareOnchain` (the send preview) uses `coinselect.LargestFirst` over
+  the daemon's live-VTXO view, selecting against `TargetAmountSat + minOperatorFee
+  + dustLimit` so the preview mirrors the headroom the daemon will use for the
+  real send. The operator fee is obtained via `RPCServer.EstimateFee`; a
+  failed quote degrades gracefully to a zero-fee local floor rather than
+  rejecting the preview outright.
 - **Onchain SEND is a one-shot**: after the intent is accepted the router
   immediately calls `JoinNextRound` so the queued leave intent is committed
   to the next round without a separate CLI step. If the implicit join fails,
