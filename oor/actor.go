@@ -54,19 +54,11 @@ type ClientActorCfg struct {
 	Limits ReceiveLimits
 
 	// ServerConn is a reference to the ServerConnectionActor for sending
-	// transport events (submit, finalize, ack) to the server. When set,
-	// transport outbox events bypass the OutboxHandler and are Tell'd to
-	// the connection actor for durable delivery. When nil, all outbox
-	// events are routed through OutboxHandler for backward compatibility.
+	// transport events (submit, finalize, ack, and durable queries) to the
+	// server. In darepod's production wiring this ref is backed by the same
+	// tx-aware delivery store as OOR, so a nil Tell error means the OOR
+	// state transition and remote-send obligation committed atomically.
 	ServerConn actor.TellOnlyRef[serverconn.ServerConnMsg]
-
-	// TransportOutbox writes server transport events to the actor
-	// transactional outbox instead of Tell'ing ServerConn directly. This
-	// lets the OOR actor commit its FSM/checkpoint transaction before the
-	// serverconn mailbox enqueue happens. A daemon using this mode must run
-	// an actor.OutboxPublisher and register ServerConn under its target
-	// actor ID.
-	TransportOutbox bool
 
 	// SigningEffect receives durable signing requests when configured. This
 	// lets OOR persist the FSM state and queue wallet signing work without
@@ -134,7 +126,6 @@ type OORClientActor struct {
 	startupErr error
 }
 
-var serverConnOutboxCodec = serverconn.NewServerConnCodec()
 var signingEffectOutboxCodec = NewSigningEffectCodec()
 
 // newOORActorCodec creates a MessageCodec with all OOR actor message types
@@ -1865,8 +1856,7 @@ func (b *oorDurableBehavior) buildTransportMessage(ctx context.Context,
 }
 
 // sendTransportEvent wraps the outbox message in a serverconn request and
-// either writes it to the transactional outbox or Tell's it directly to the
-// serverconn actor for durable delivery to the server.
+// Tell's it to the serverconn actor for durable delivery to the server.
 func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 	msg OutboxEvent) error {
 
@@ -1875,52 +1865,13 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 		return err
 	}
 
-	if b.cfg.TransportOutbox {
-		return b.enqueueTransportOutbox(ctx, sendReq)
+	if b.cfg.ServerConn == nil {
+		return fmt.Errorf("serverconn ref must be provided")
 	}
 
 	if err := b.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
 		return fmt.Errorf("send transport event to server: %w", err)
 	}
-
-	return nil
-}
-
-// enqueueTransportOutbox writes the serverconn transport request to the actor
-// outbox so delivery happens after the OOR actor transaction commits.
-func (b *oorDurableBehavior) enqueueTransportOutbox(ctx context.Context,
-	msg serverconn.ServerConnMsg) error {
-
-	if b.cfg.DeliveryStore == nil {
-		return fmt.Errorf("delivery store must be provided")
-	}
-
-	if b.cfg.ServerConn == nil {
-		return fmt.Errorf("serverconn ref must be provided")
-	}
-
-	payload, err := serverConnOutboxCodec.Encode(msg)
-	if err != nil {
-		return fmt.Errorf("encode serverconn message: %w", err)
-	}
-
-	id := uuid.Must(uuid.NewV7()).String()
-	params := actor.OutboxParams{
-		ID:            id,
-		SourceActorID: b.cfg.ActorID,
-		TargetActorID: b.cfg.ServerConn.ID(),
-		MessageType:   msg.MessageType(),
-		Payload:       payload,
-	}
-
-	if err := b.cfg.DeliveryStore.EnqueueOutbox(ctx, params); err != nil {
-		return fmt.Errorf("enqueue transport outbox: %w", err)
-	}
-
-	b.logger(ctx).DebugS(ctx, "Queued transport event in outbox",
-		slog.String("target_actor_id", params.TargetActorID),
-		slog.String("message_type", params.MessageType),
-	)
 
 	return nil
 }

@@ -1210,10 +1210,9 @@ func TestOORActorCodecUsesConfiguredIncomingDecodeLimits(t *testing.T) {
 	)
 }
 
-// TestOORClientActorTransportViaServerConn verifies that transport outbox
-// events (submit, finalize, ack) are Tell'd to the serverconn actor when
-// configured, while local events (signing, persistence) continue through
-// the OutboxHandler.
+// TestOORClientActorTransportViaServerConn verifies that transport events
+// (submit, finalize, ack) are Tell'd to the serverconn actor while local events
+// (signing, persistence) continue through the OutboxHandler.
 func TestOORClientActorTransportViaServerConn(t *testing.T) {
 	t.Parallel()
 
@@ -1592,10 +1591,10 @@ func TestOORClientActorSkipsMissingConsumedInputBinding(t *testing.T) {
 	require.Equal(t, 1, packageStore.bindingCalls)
 }
 
-// TestOORClientActorTransportViaTransactionalOutbox verifies that production
-// wiring can persist transport events into the actor outbox instead of
-// enqueueing them directly into serverconn from the OOR actor turn.
-func TestOORClientActorTransportViaTransactionalOutbox(t *testing.T) {
+// TestOORClientActorTransportUsesDirectServerConn verifies that production
+// transport events are enqueued straight into serverconn's durable mailbox
+// rather than copied through the actor transactional outbox first.
+func TestOORClientActorTransportUsesDirectServerConn(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -1644,11 +1643,10 @@ func TestOORClientActorTransportViaTransactionalOutbox(t *testing.T) {
 			t:            t,
 			clientSigner: clientSigner,
 		},
-		ServerConn:      mockConn,
-		TransportOutbox: true,
-		PackageStore:    &testOutgoingPackageStore{},
-		DeliveryStore:   store,
-		ActorID:         "oor-actor-transport-outbox-test",
+		ServerConn:    mockConn,
+		PackageStore:  &testOutgoingPackageStore{},
+		DeliveryStore: store,
+		ActorID:       "oor-actor-transport-outbox-test",
 	})
 	defer actorInstance.Stop()
 
@@ -1659,9 +1657,13 @@ func TestOORClientActorTransportViaTransactionalOutbox(t *testing.T) {
 	})
 	require.True(t, startResp.IsOk())
 
-	mockConn.mu.Lock()
-	require.Empty(t, mockConn.messages)
-	mockConn.mu.Unlock()
+	submitReq := mockConn.lastSent()
+	require.Equal(t, oorpb.ServiceName, submitReq.Service)
+	require.Equal(t, oorpb.MethodSubmitPackage, submitReq.Method)
+
+	protoMsg, err := submitReq.Message.ToProto().Unpack()
+	require.NoError(t, err)
+	require.IsType(t, &oorpb.SubmitPackageRequest{}, protoMsg)
 
 	outbox, err := store.ClaimOutboxBatch(ctx, actor.OutboxClaimParams{
 		Limit:         10,
@@ -1669,24 +1671,7 @@ func TestOORClientActorTransportViaTransactionalOutbox(t *testing.T) {
 		ClaimDuration: time.Minute,
 	})
 	require.NoError(t, err)
-	require.Len(t, outbox, 1)
-
-	require.Equal(t, mockConn.ID(), outbox[0].TargetActorID)
-	require.Equal(t, "SendClientEventRequest", outbox[0].MessageType)
-
-	decoded, err := serverconn.NewServerConnCodec().Decode(
-		outbox[0].Payload,
-	)
-	require.NoError(t, err)
-
-	sendReq, ok := decoded.(*serverconn.SendClientEventRequest)
-	require.True(t, ok)
-	require.Equal(t, oorpb.ServiceName, sendReq.Service)
-	require.Equal(t, oorpb.MethodSubmitPackage, sendReq.Method)
-
-	protoMsg, err := sendReq.Message.ToProto().Unpack()
-	require.NoError(t, err)
-	require.IsType(t, &oorpb.SubmitPackageRequest{}, protoMsg)
+	require.Empty(t, outbox)
 }
 
 // TestOORClientActorSigningViaEffectActor verifies that OOR can commit the
