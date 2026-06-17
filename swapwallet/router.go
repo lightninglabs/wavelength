@@ -5,11 +5,14 @@ package swapwallet
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/lightninglabs/darepo-client/coinselect"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
@@ -189,18 +192,18 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 	}, nil
 }
 
-// prepareOnchain validates an onchain destination through local VTXO
-// selection. The router selects VTXOs covering the
-// requested amount using the existing wallet listing surface — no new
-// coin-selection primitive is introduced here.
+// prepareOnchain validates an onchain destination and builds a fee-aware
+// preview. The router selects live VTXOs through the shared coinselect
+// package (the same largest-first algorithm the daemon runs), so it does
+// not grow a parallel coin-selection primitive.
 //
-// v1 semantics: LeaveVTXOs sweeps WHOLE VTXOs to the destination, so the
-// caller's onchain wallet may receive more than amt_sat (the sum of the
-// selected VTXOs is what actually leaves the wallet). The router returns
-// that sum on SendResponse.actual_amount_sat so the CLI / UI can echo it
-// before the user treats the send as confirmed. A future enhancement can
-// pre-split a VTXO via OOR for exact amounts; that work is intentionally
-// out of scope here.
+// A bounded send delivers exactly amt_sat to the destination and pays the
+// fee on top; the residual returns as a change VTXO under the #270
+// seal-time handshake, so the net outflow reported is amt_sat plus the
+// estimated fee, not the gross sum of the selected VTXOs. Selection uses
+// the same amount + operator-fee + dust headroom the daemon applies, and
+// the preview is rejected if the selected funds cannot cover amt_sat plus
+// the fee, so a confirmed preview is always fundable.
 //
 // Sweep semantics are gated on the explicit PrepareSendRequest.sweep_all flag:
 // amt_sat = 0 with sweep_all = false is rejected (the most common typo)
@@ -238,36 +241,87 @@ func (r *router) prepareOnchain(ctx context.Context, addr string,
 			ErrAmountInvalid)
 	}
 
-	var (
-		actualSat int64
-		selected  []string
+	// Fetch the operator terms once: they size the coin-selection
+	// headroom here and the local fee floor in the quote below.
+	liveVTXOs, err := r.listLiveVTXOsForLeave(ctx)
+	if err != nil {
+		return nil, err
+	}
+	terms := r.fetchOnchainTerms(ctx)
+
+	// Select live VTXOs through the shared selector so the preview
+	// mirrors the largest-first selection the daemon will run for the
+	// real send, rather than a parallel greedy walk. For a bounded send
+	// we select against the same amount + operator-fee + dust headroom
+	// the daemon uses (wallet.handleSendOnChain), so the preview does not
+	// under-select relative to what the real send needs. Selection stays
+	// local (over the daemon's live-VTXO view) so a preview is still
+	// produced when the operator is offline; only the fee quote below
+	// reaches out to the operator.
+	selectTarget := btcutil.Amount(amtSat)
+	if !sweepAll {
+		selectTarget += terms.minOperatorFee + terms.dustLimit
+	}
+
+	vtxoAmount := func(v *daemonrpc.VTXO) btcutil.Amount {
+		return btcutil.Amount(v.GetAmountSat())
+	}
+	res, err := coinselect.LargestFirst(
+		liveVTXOs, vtxoAmount, coinselect.Request{
+			Target:   selectTarget,
+			SweepAll: sweepAll,
+		},
 	)
 	switch {
-	case sweepAll:
-		vtxos, err := r.listLiveVTXOsForLeave(ctx)
-		if err != nil {
-			return nil, err
-		}
-		selected, actualSat = outpointsAndSum(vtxos)
-		if actualSat == 0 {
+	case errors.Is(err, coinselect.ErrNoCandidates):
+		if sweepAll {
 			return nil, fmt.Errorf("%w: no live VTXOs to sweep",
 				ErrAmountRequired)
 		}
 
-	default:
-		// Caller-bounded send: select live VTXOs whose total covers
-		// the requested amount, then sweep them. The selected set
-		// is the input to LeaveVTXOs; per-outpoint destinations are
-		// omitted so DefaultDestination applies to every selected
-		// outpoint.
-		selectedSet, selectedSum, err := r.selectVTXOsForAmount(
-			ctx, int64(amtSat),
-		)
-		if err != nil {
-			return nil, err
+		return nil, fmt.Errorf("%w: no live VTXOs to cover %d sat",
+			ErrAmountRequired, amtSat)
+
+	case errors.Is(err, coinselect.ErrSelectionShortfall):
+		return nil, fmt.Errorf("%w: live VTXOs cover %d of %d sat",
+			ErrAmountRequired, int64(res.Total),
+			int64(selectTarget))
+
+	case err != nil:
+		return nil, err
+	}
+
+	selectedTotal := int64(res.Total)
+	selected := make([]string, 0, len(res.Selected))
+	for _, v := range res.Selected {
+		selected = append(selected, v.GetOutpoint())
+	}
+
+	// previewAmount is the amount delivered to the destination: the
+	// requested amount for a bounded send, or the entire swept balance
+	// for a sweep.
+	previewAmount := int64(amtSat)
+	if sweepAll {
+		previewAmount = selectedTotal
+	}
+
+	feeQuote := r.estimateOnchainFee(
+		ctx, previewAmount, len(res.Selected), sweepAll, terms,
+	)
+
+	// Guard the preview's coherence: a bounded send must not report an
+	// outflow its own selected funds cannot cover. The daemon re-selects
+	// for the real send, but the preview should reject an unaffordable
+	// amount + fee here rather than confirm a stale, unfundable quote
+	// that the SendOnChain path will later fail. A sweep moves the whole
+	// balance, so it is affordable by construction.
+	if !sweepAll {
+		needed := int64(amtSat) + feeQuote.feeSat
+		if selectedTotal < needed {
+			return nil, fmt.Errorf("%w: live VTXOs cover %d sat, "+
+				"need %d sat (amount plus fee)",
+				ErrAmountRequired, selectedTotal, needed)
 		}
-		selected = selectedSet
-		actualSat = selectedSum
 	}
 
 	intent := &preparedSendIntent{
@@ -278,32 +332,34 @@ func (r *router) prepareOnchain(ctx context.Context, addr string,
 		maxFeeSat:         req.GetMaxFeeSat(),
 		sweepAll:          sweepAll,
 		selectedOutpoints: append([]string(nil), selected...),
-		actualAmountSat:   actualSat,
+		actualAmountSat:   selectedTotal,
 	}
 
 	if _, err := r.intents.put(intent); err != nil {
 		return nil, err
 	}
 
-	warning := "operator cooperative-leave quote support is not " +
-		"available yet"
-
-	previewAmount := int64(amtSat)
-	if sweepAll {
-		previewAmount = actualSat
+	// Net outflow is what actually leaves the wallet. A bounded send
+	// delivers exactly amtSat and pays the fee on top; the residual
+	// returns as a change VTXO, so the gross selected total is NOT the
+	// outflow. A sweep moves the entire selected balance (the fee is
+	// absorbed out of the single leave output).
+	expectedOutflow := selectedTotal
+	if !sweepAll {
+		expectedOutflow = int64(amtSat) + feeQuote.feeSat
 	}
 
 	return prepareResponseFromIntent(
 		intent, prepareSendPreview{
-			rail: walletdkrpc.SendRail_SEND_RAIL_ONCHAIN,
-			quoteStatus: walletdkrpc.
-				SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
+			rail:                    walletdkrpc.SendRail_SEND_RAIL_ONCHAIN,
+			quoteStatus:             feeQuote.quoteStatus,
 			amountSat:               previewAmount,
-			feeKnown:                false,
-			expectedTotalOutflowSat: actualSat,
+			expectedFeeSat:          feeQuote.feeSat,
+			feeKnown:                feeQuote.feeKnown,
+			expectedTotalOutflowSat: expectedOutflow,
 			totalOutflowKnown:       true,
 			destinationSummary:      addr,
-			warning:                 warning,
+			warning:                 feeQuote.warning,
 		},
 	), nil
 }
@@ -408,63 +464,6 @@ func (r *router) listLiveVTXOsForLeave(ctx context.Context) ([]*daemonrpc.VTXO,
 	}
 
 	return listResp.GetVtxos(), nil
-}
-
-// selectVTXOsForAmount returns the smallest-sufficient set of live VTXO
-// outpoints whose summed amount covers target, plus the actual sum of
-// the selection. The selection is greedy by VTXO order returned from the
-// daemon; v1 does not optimize for change minimization because
-// LeaveVTXOs already sweeps WHOLE VTXOs, so any remainder above target
-// lands at the destination. Callers surface that sum back to the user
-// via SendResponse.actual_amount_sat.
-//
-// Returns ErrAmountInvalid when target is non-positive, and
-// ErrAmountRequired when no combination of live VTXOs covers target.
-func (r *router) selectVTXOsForAmount(ctx context.Context, target int64) (
-	[]string, int64, error) {
-
-	if target <= 0 {
-		return nil, 0, ErrAmountInvalid
-	}
-
-	vtxos, err := r.listLiveVTXOsForLeave(ctx)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	var (
-		selected []string
-		covered  int64
-	)
-	for _, v := range vtxos {
-		if v.GetAmountSat() <= 0 {
-			continue
-		}
-		selected = append(selected, v.GetOutpoint())
-		covered += v.GetAmountSat()
-		if covered >= target {
-			return selected, covered, nil
-		}
-	}
-
-	return nil, 0, fmt.Errorf("%w: insufficient live VTXOs cover %d sat "+
-		"(covered=%d)", ErrAmountRequired, target, covered)
-}
-
-func outpointsAndSum(vtxos []*daemonrpc.VTXO) ([]string, int64) {
-	var (
-		outpoints []string
-		total     int64
-	)
-	for _, v := range vtxos {
-		if v.GetAmountSat() <= 0 {
-			continue
-		}
-		outpoints = append(outpoints, v.GetOutpoint())
-		total += v.GetAmountSat()
-	}
-
-	return outpoints, total
 }
 
 func decodePreparedInvoice(invoice string,

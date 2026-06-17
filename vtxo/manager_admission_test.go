@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/coinselect"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
@@ -1055,21 +1056,27 @@ func TestSelectLargestFirst(t *testing.T) {
 				})
 			}
 
-			selected := selectLargestFirst(
-				candidates, tc.target,
+			res, err := coinselect.LargestFirst(
+				candidates, func(d *Descriptor) btcutil.Amount {
+					return d.Amount
+				}, coinselect.Request{
+					Target: tc.target,
+				},
 			)
 
 			if tc.wantNil {
-				require.Nil(t, selected)
+				require.Error(t, err)
+				require.Nil(t, res.Selected)
 
 				return
 			}
 
-			require.Len(t, selected, tc.wantCount)
+			require.NoError(t, err)
+			require.Len(t, res.Selected, tc.wantCount)
 
 			// Verify total covers target.
 			var total btcutil.Amount
-			for _, v := range selected {
+			for _, v := range res.Selected {
 				total += v.Amount
 			}
 			require.GreaterOrEqual(
