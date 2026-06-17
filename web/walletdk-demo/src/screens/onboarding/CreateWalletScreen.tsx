@@ -5,12 +5,10 @@ import { AuthLayout } from "../../components/layout/AuthLayout";
 import { Field } from "../../components/ui/Field";
 import { InlineError } from "../../components/ui/InlineError";
 import { GhostButton, PrimaryButton, TextLink } from "../../components/ui/Button";
-import { Segmented } from "../../components/ui/Segmented";
-
-// WalletMode selects how a freshly created wallet is unlocked: a passkey derives
-// both the seed and the DB password, while a password wallet uses a classic
-// user-chosen password.
-type WalletMode = "passkey" | "password";
+import {
+  WalletMode,
+  WalletTypePicker,
+} from "../../components/ui/WalletTypePicker";
 
 // CreateWalletScreen creates a fresh wallet (a passkey wallet or a password
 // wallet) and surfaces the secondary "already have a wallet?" affordances
@@ -109,18 +107,16 @@ export function CreateWalletScreen({
       ) : null}
 
       {passkeySupported ? (
-        <div className="mb-5">
-          <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted">
-            Wallet type
+        <div className="mb-6">
+          <div className="mb-3">
+            <div className="text-sm font-semibold text-fg">
+              How do you want to secure this wallet?
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-muted">
+              Pick one — you can always restore from your recovery phrase later.
+            </p>
           </div>
-          <Segmented
-            value={walletMode}
-            onChange={(m) => setWalletMode(m)}
-            options={[
-              { value: "passkey", label: "Passkey wallet" },
-              { value: "password", label: "Password wallet" },
-            ]}
-          />
+          <WalletTypePicker value={walletMode} onChange={setWalletMode} />
         </div>
       ) : null}
 
@@ -131,21 +127,7 @@ export function CreateWalletScreen({
           submit();
         }}
       >
-        {passkeyCreate ? (
-          <div
-            className="flex items-center gap-3 border border-border
-              bg-surface-alt px-4 py-3"
-          >
-            <Fingerprint size={18} className="text-accent" />
-            <div className="min-w-0">
-              <div className="text-sm font-medium text-fg">Passkey wallet</div>
-              <div className="text-xs text-muted">
-                Your seed is derived from a passkey. There is no password to
-                remember, and it works across your devices.
-              </div>
-            </div>
-          </div>
-        ) : (
+        {!passkeyCreate ? (
           <>
             <Field
               label="Password"
@@ -162,7 +144,7 @@ export function CreateWalletScreen({
               onChange={setConfirm}
             />
           </>
-        )}
+        ) : null}
 
         <PrimaryButton
           type="submit"

@@ -31,7 +31,7 @@ import { SendScreen } from "./screens/send";
 import { ActivityScreen } from "./screens/activity";
 import { SettingsScreen } from "./screens/settings";
 
-const APP_NAME = "Dare Wallet";
+const APP_NAME = "WalletDK Demo";
 
 // passkeyName labels a freshly created passkey with the app name plus a
 // timestamp, so multiple test passkeys stay distinguishable in the OS prompt.
@@ -474,6 +474,8 @@ export function App() {
           phaseLabel={phaseLabel}
           onNavigate={setTab}
           onDeposit={wallet.deposit}
+          onRefresh={() => wallet.refresh().catch(() => undefined)}
+          refreshBusy={wallet.operations.refresh.busy}
           depositBusy={wallet.operations.deposit.busy}
           depositError={wallet.operations.deposit.error}
         />

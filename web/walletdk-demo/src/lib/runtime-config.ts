@@ -21,6 +21,24 @@ export type RuntimeFieldSetter = <K extends keyof RuntimeForm>(
   value: RuntimeForm[K],
 ) => void;
 
+// testnetDefaults are the default runtime gateways for Bitcoin testnet3, from
+// lightning-infra docs/userguide/walletdk-guide.md. REST hostnames follow the
+// same -rest suffix pattern as signet; Esplora uses mempool.space per the guide.
+export const testnetDefaults: RuntimeForm = {
+  network: "testnet",
+  dataDir: "/walletdk-demo",
+  arkGatewayURL: "https://arkd-rest.testnet.lightningcluster.com",
+  mailboxGatewayURL: "https://arkd-rest.testnet.lightningcluster.com",
+  walletEsploraURL: "https://mempool.space/testnet/api",
+  swapServerGatewayURL: "https://swapd-rest.testnet.lightningcluster.com",
+  swapMailboxGatewayURL: "https://swapd-rest.testnet.lightningcluster.com",
+  swapDatabaseFileName: "/walletdk-swaps.db",
+  serverInsecure: false,
+  swapServerInsecure: false,
+  disableSwaps: false,
+  debugLevel: "info",
+};
+
 // signetDefaults are the default runtime gateways for the signet test network,
 // preserved from the original demo.
 export const signetDefaults: RuntimeForm = {
@@ -53,16 +71,19 @@ export const regtestDefaults: RuntimeForm = {
   serverInsecure: true,
   swapServerInsecure: true,
   disableSwaps: false,
-  debugLevel: "info",
+  debugLevel: "debug",
 };
 
 // defaultsForNetwork returns the preset runtime form for a network selection.
 export function defaultsForNetwork(network: RuntimeNetwork): RuntimeForm {
-  if (network === "regtest") {
+  switch (network) {
+  case "regtest":
     return regtestDefaults;
+  case "testnet":
+    return testnetDefaults;
+  default:
+    return signetDefaults;
   }
-
-  return { ...signetDefaults, network };
 }
 
 // hostname extracts the host from a URL for compact display, falling back to

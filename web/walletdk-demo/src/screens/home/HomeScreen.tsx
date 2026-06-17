@@ -7,6 +7,7 @@ import {
   Layers,
   Lock,
   type LucideIcon,
+  RefreshCw,
   ShieldCheck,
   Wallet,
   Zap,
@@ -38,6 +39,8 @@ export function HomeScreen({
   phaseLabel,
   onNavigate,
   onDeposit,
+  onRefresh,
+  refreshBusy,
   depositBusy,
   depositError,
 }: {
@@ -47,6 +50,8 @@ export function HomeScreen({
   phaseLabel: string;
   onNavigate: (tab: AppTab) => void;
   onDeposit: () => Promise<string>;
+  onRefresh: () => void;
+  refreshBusy: boolean;
   depositBusy: boolean;
   depositError: string;
 }) {
@@ -62,7 +67,12 @@ export function HomeScreen({
       />
       {funded ? (
         <>
-          <BalanceBand balance={balance} onNavigate={onNavigate} />
+          <BalanceBand
+            balance={balance}
+            onNavigate={onNavigate}
+            onRefresh={onRefresh}
+            refreshBusy={refreshBusy}
+          />
           <Band>
             <Label>Balance composition</Label>
             <div className="mt-4">
@@ -95,9 +105,13 @@ export function HomeScreen({
 function BalanceBand({
   balance,
   onNavigate,
+  onRefresh,
+  refreshBusy,
 }: {
   balance: Balance | null;
   onNavigate: (t: AppTab) => void;
+  onRefresh: () => void;
+  refreshBusy: boolean;
 }) {
   const total = totalBalance(balance);
   const pendingIn = pendingInBalance(balance);
@@ -148,7 +162,20 @@ function BalanceBand({
             ) : null}
           </div>
         </div>
-        <div className="flex gap-3">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={refreshBusy}
+            aria-label="Refresh"
+            className="inline-flex items-center justify-center p-2.5 text-muted
+              transition-colors hover:text-fg disabled:opacity-50"
+          >
+            <RefreshCw
+              size={16}
+              className={cn(refreshBusy && "animate-spin")}
+            />
+          </button>
           <button
             type="button"
             onClick={() => onNavigate("send")}
