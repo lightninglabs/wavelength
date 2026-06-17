@@ -452,6 +452,17 @@ func (c *DaemonServiceClient) SignOORCustomInput(ctx context.Context,
 	return out, err
 }
 
+// SignVTXOForfeit signs one exact round forfeit transaction input.
+func (c *DaemonServiceClient) SignVTXOForfeit(ctx context.Context,
+	in *daemonrpc.SignVTXOForfeitRequest, _ ...grpc.CallOption) (
+	*daemonrpc.SignVTXOForfeitResponse, error) {
+
+	out := new(daemonrpc.SignVTXOForfeitResponse)
+	err := c.client.Post(ctx, "/v1/daemon/sign-vtxo-forfeit", in, out)
+
+	return out, err
+}
+
 // RefreshVTXOs queues VTXOs for refresh.
 func (c *DaemonServiceClient) RefreshVTXOs(ctx context.Context,
 	in *daemonrpc.RefreshVTXOsRequest, _ ...grpc.CallOption) (

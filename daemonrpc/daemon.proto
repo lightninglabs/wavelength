@@ -99,6 +99,13 @@ service DaemonService {
     rpc SignOORCustomInput (SignOORCustomInputRequest)
         returns (SignOORCustomInputResponse);
 
+    // SignVTXOForfeit signs the VTXO input of an exact forfeit transaction
+    // with the daemon identity key after a round has assigned the connector
+    // input. This is a low-level signing primitive; callers must enforce any
+    // swap-specific authorization before invoking it.
+    rpc SignVTXOForfeit (SignVTXOForfeitRequest)
+        returns (SignVTXOForfeitResponse);
+
     // RefreshVTXOs queues one or more VTXOs for refresh in the next
     // round. This extends their expiry without changing ownership.
     rpc RefreshVTXOs (RefreshVTXOsRequest) returns (RefreshVTXOsResponse);
@@ -1020,6 +1027,49 @@ message SignOORCustomInputRequest {
 message SignOORCustomInputResponse {
     // signature is the daemon identity key's tapscript signature.
     TaprootScriptSignature signature = 1;
+}
+
+message SignVTXOForfeitRequest {
+    // vtxo_outpoint identifies the VTXO input at forfeit tx input index 0.
+    string vtxo_outpoint = 1;
+
+    // vtxo_amount_sat is the value of the VTXO output being spent.
+    int64 vtxo_amount_sat = 2;
+
+    // vtxo_pk_script is the taproot output script of the VTXO being spent.
+    bytes vtxo_pk_script = 3;
+
+    // vtxo_policy_template is the semantic policy template that produced the
+    // VTXO taproot output.
+    bytes vtxo_policy_template = 4;
+
+    // spend_path is the encoded tapscript path selected for the VTXO input.
+    bytes spend_path = 5;
+
+    // unsigned_forfeit_tx is the exact serialized forfeit transaction to sign.
+    bytes unsigned_forfeit_tx = 6;
+
+    // connector_outpoint identifies the connector input at forfeit tx input
+    // index 1.
+    string connector_outpoint = 7;
+
+    // connector_amount_sat is the value of the connector output being spent.
+    int64 connector_amount_sat = 8;
+
+    // connector_pk_script is the connector output script being spent.
+    bytes connector_pk_script = 9;
+
+    // server_forfeit_pk_script is the expected penalty output script at output
+    // index 0.
+    bytes server_forfeit_pk_script = 10;
+}
+
+message SignVTXOForfeitResponse {
+    // pubkey is the daemon identity public key that produced signature.
+    bytes pubkey = 1;
+
+    // signature is the raw 64-byte Schnorr signature for the VTXO input.
+    bytes signature = 2;
 }
 
 // OutpointSelection wraps a list of outpoint strings for use inside a

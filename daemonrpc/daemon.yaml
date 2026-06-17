@@ -60,6 +60,9 @@ http:
     - selector: daemonrpc.DaemonService.SignOORCustomInput
       post: /v1/daemon/sign-oor-custom-input
       body: "*"
+    - selector: daemonrpc.DaemonService.SignVTXOForfeit
+      post: /v1/daemon/sign-vtxo-forfeit
+      body: "*"
     - selector: daemonrpc.DaemonService.RefreshVTXOs
       post: /v1/daemon/refresh-vtxos
       body: "*"

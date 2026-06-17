@@ -38,6 +38,7 @@ const (
 	DaemonService_SendOOR_FullMethodName                       = "/daemonrpc.DaemonService/SendOOR"
 	DaemonService_PrepareOOR_FullMethodName                    = "/daemonrpc.DaemonService/PrepareOOR"
 	DaemonService_SignOORCustomInput_FullMethodName            = "/daemonrpc.DaemonService/SignOORCustomInput"
+	DaemonService_SignVTXOForfeit_FullMethodName               = "/daemonrpc.DaemonService/SignVTXOForfeit"
 	DaemonService_RefreshVTXOs_FullMethodName                  = "/daemonrpc.DaemonService/RefreshVTXOs"
 	DaemonService_LeaveVTXOs_FullMethodName                    = "/daemonrpc.DaemonService/LeaveVTXOs"
 	DaemonService_SendOnChain_FullMethodName                   = "/daemonrpc.DaemonService/SendOnChain"
@@ -134,6 +135,11 @@ type DaemonServiceClient interface {
 	// SignOORCustomInput signs one prepared custom OOR checkpoint input with
 	// the daemon identity key.
 	SignOORCustomInput(ctx context.Context, in *SignOORCustomInputRequest, opts ...grpc.CallOption) (*SignOORCustomInputResponse, error)
+	// SignVTXOForfeit signs the VTXO input of an exact forfeit transaction
+	// with the daemon identity key after a round has assigned the connector
+	// input. This is a low-level signing primitive; callers must enforce any
+	// swap-specific authorization before invoking it.
+	SignVTXOForfeit(ctx context.Context, in *SignVTXOForfeitRequest, opts ...grpc.CallOption) (*SignVTXOForfeitResponse, error)
 	// RefreshVTXOs queues one or more VTXOs for refresh in the next
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(ctx context.Context, in *RefreshVTXOsRequest, opts ...grpc.CallOption) (*RefreshVTXOsResponse, error)
@@ -416,6 +422,16 @@ func (c *daemonServiceClient) SignOORCustomInput(ctx context.Context, in *SignOO
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SignOORCustomInputResponse)
 	err := c.cc.Invoke(ctx, DaemonService_SignOORCustomInput_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SignVTXOForfeit(ctx context.Context, in *SignVTXOForfeitRequest, opts ...grpc.CallOption) (*SignVTXOForfeitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SignVTXOForfeitResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SignVTXOForfeit_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -723,6 +739,11 @@ type DaemonServiceServer interface {
 	// SignOORCustomInput signs one prepared custom OOR checkpoint input with
 	// the daemon identity key.
 	SignOORCustomInput(context.Context, *SignOORCustomInputRequest) (*SignOORCustomInputResponse, error)
+	// SignVTXOForfeit signs the VTXO input of an exact forfeit transaction
+	// with the daemon identity key after a round has assigned the connector
+	// input. This is a low-level signing primitive; callers must enforce any
+	// swap-specific authorization before invoking it.
+	SignVTXOForfeit(context.Context, *SignVTXOForfeitRequest) (*SignVTXOForfeitResponse, error)
 	// RefreshVTXOs queues one or more VTXOs for refresh in the next
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
@@ -877,6 +898,9 @@ func (UnimplementedDaemonServiceServer) PrepareOOR(context.Context, *PrepareOORR
 }
 func (UnimplementedDaemonServiceServer) SignOORCustomInput(context.Context, *SignOORCustomInputRequest) (*SignOORCustomInputResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SignOORCustomInput not implemented")
+}
+func (UnimplementedDaemonServiceServer) SignVTXOForfeit(context.Context, *SignVTXOForfeitRequest) (*SignVTXOForfeitResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SignVTXOForfeit not implemented")
 }
 func (UnimplementedDaemonServiceServer) RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RefreshVTXOs not implemented")
@@ -1303,6 +1327,24 @@ func _DaemonService_SignOORCustomInput_Handler(srv interface{}, ctx context.Cont
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).SignOORCustomInput(ctx, req.(*SignOORCustomInputRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SignVTXOForfeit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignVTXOForfeitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SignVTXOForfeit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SignVTXOForfeit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SignVTXOForfeit(ctx, req.(*SignVTXOForfeitRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1778,6 +1820,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SignOORCustomInput",
 			Handler:    _DaemonService_SignOORCustomInput_Handler,
+		},
+		{
+			MethodName: "SignVTXOForfeit",
+			Handler:    _DaemonService_SignVTXOForfeit_Handler,
 		},
 		{
 			MethodName: "RefreshVTXOs",

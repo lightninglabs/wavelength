@@ -30,6 +30,7 @@ import (
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	arktx "github.com/lightninglabs/darepo-client/lib/tx"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -3042,6 +3043,268 @@ func (r *RPCServer) SignOORCustomInput(ctx context.Context,
 			Sighash:       uint32(sig.SigHash),
 		},
 	}, nil
+}
+
+// SignVTXOForfeit signs the VTXO input of an exact round forfeit transaction.
+func (r *RPCServer) SignVTXOForfeit(ctx context.Context,
+	req *daemonrpc.SignVTXOForfeitRequest) (
+	*daemonrpc.SignVTXOForfeitResponse, error) {
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	vtxoOutpoint, err := parseOutpointString(req.GetVtxoOutpoint())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "parse "+
+			"outpoint: %v", err)
+	}
+
+	connectorOutpoint, err := parseOutpointString(
+		req.GetConnectorOutpoint(),
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "parse "+
+			"connector outpoint: %v", err)
+	}
+
+	if req.GetVtxoAmountSat() <= 0 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"vtxo_amount_sat must be positive")
+	}
+	if req.GetConnectorAmountSat() < 0 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"connector_amount_sat must be non-negative")
+	}
+	if req.GetConnectorAmountSat() > 0 &&
+		req.GetVtxoAmountSat() >
+			(1<<63-1)-req.GetConnectorAmountSat() {
+		return nil, status.Errorf(codes.InvalidArgument, "forfeit "+
+			"amount overflow")
+	}
+	if len(req.GetVtxoPkScript()) == 0 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"vtxo_pk_script is required")
+	}
+	if len(req.GetConnectorPkScript()) == 0 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"connector_pk_script is required")
+	}
+	if len(req.GetServerForfeitPkScript()) == 0 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"server_forfeit_pk_script is required")
+	}
+	if len(req.GetVtxoPolicyTemplate()) == 0 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"vtxo_policy_template is required")
+	}
+	if len(req.GetSpendPath()) == 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "spend_path "+
+			"is required")
+	}
+	if len(req.GetUnsignedForfeitTx()) == 0 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"unsigned_forfeit_tx is required")
+	}
+
+	if err := r.validateSignVTXOForfeitLocalVTXO(
+		ctx, vtxoOutpoint, req,
+	); err != nil {
+		return nil, err
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(
+		req.GetVtxoPolicyTemplate(),
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "decode "+
+			"policy template: %v", err)
+	}
+
+	terms, err := r.server.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "unable to fetch "+
+			"operator terms: %v", err)
+	}
+	// vHTLC policies have swap-specific CSV delays that can be lower than
+	// the operator's standard VTXO exit delay. This RPC validates the
+	// structural Ark policy invariants and the operator key, but leaves the
+	// delay policy to the swap-specific authorization layer.
+	if err := template.ValidateArkPolicy(arkscript.PolicyValidationOpts{
+		OperatorKey: terms.PubKey,
+	}); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "validate "+
+			"policy template: %v", err)
+	}
+	if !template.MatchesPkScript(req.GetVtxoPkScript()) {
+		return nil, status.Errorf(codes.InvalidArgument, "policy "+
+			"template does not match vtxo_pk_script")
+	}
+
+	spendPath, err := arkscript.DecodeSpendPath(req.GetSpendPath())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "decode "+
+			"spend path: %v", err)
+	}
+	if err := spendPath.VerifyBindsToPkScript(req.GetVtxoPkScript()); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"spend path does not bind to vtxo_pk_script: %v", err)
+	}
+
+	signingKeys, err := arkscript.SigningKeysForSpendPath(
+		template, spendPath,
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "resolve "+
+			"signing keys: %v", err)
+	}
+	if !containsSigningKey(signingKeys, r.server.clientKeyDesc.PubKey) {
+		return nil, status.Errorf(codes.InvalidArgument, "daemon "+
+			"identity key is not required by spend path")
+	}
+
+	forfeitTx, err := parseUnsignedForfeitTx(req.GetUnsignedForfeitTx())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "parse "+
+			"forfeit tx: %v", err)
+	}
+	if err := arktx.ValidateForfeitTx(forfeitTx, arktx.ForfeitTxParams{
+		VTXOOutpoint:        vtxoOutpoint,
+		ConnectorOutpoint:   connectorOutpoint,
+		ServerForfeitScript: req.GetServerForfeitPkScript(),
+		ExpectedAmount: btcutil.Amount(
+			req.GetVtxoAmountSat() + req.GetConnectorAmountSat(),
+		),
+		ExpectedSequence: spendPath.RequiredSequence,
+		ExpectedLockTime: spendPath.RequiredLockTime,
+	}); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "validate "+
+			"forfeit tx: %v", err)
+	}
+
+	vtxoOutput := &wire.TxOut{
+		Value:    req.GetVtxoAmountSat(),
+		PkScript: bytes.Clone(req.GetVtxoPkScript()),
+	}
+	connectorOutput := &wire.TxOut{
+		Value:    req.GetConnectorAmountSat(),
+		PkScript: bytes.Clone(req.GetConnectorPkScript()),
+	}
+	prevFetcher, err := arktx.NewForfeitPrevOutFetcher(
+		&arktx.VTXOSpendContext{
+			Outpoint: vtxoOutpoint,
+			Output:   vtxoOutput,
+		},
+		&arktx.ConnectorSpendContext{
+			Outpoint: connectorOutpoint,
+			Output:   connectorOutput,
+		},
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "prevout "+
+			"fetcher: %v", err)
+	}
+
+	signer, err := r.oorSigner()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "resolve signer: %v",
+			err)
+	}
+
+	sigHashes := txscript.NewTxSigHashes(forfeitTx, prevFetcher)
+	signDesc := spendPath.SpendInfo.BuildSignDescriptor(
+		r.server.clientKeyDesc, vtxoOutput, sigHashes, prevFetcher,
+		arktx.ForfeitVTXOInputIndex,
+	)
+	sig, err := signer.SignOutputRaw(forfeitTx, signDesc)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "sign forfeit tx: %v",
+			err)
+	}
+	if sig == nil {
+		return nil, status.Errorf(codes.Internal, "sign forfeit tx: "+
+			"empty signature")
+	}
+
+	return &daemonrpc.SignVTXOForfeitResponse{
+		Pubkey:    r.server.clientKeyDesc.PubKey.SerializeCompressed(),
+		Signature: sig.Serialize(),
+	}, nil
+}
+
+// validateSignVTXOForfeitLocalVTXO authorizes the low-level signing request
+// against the daemon's locally persisted VTXO state.
+func (r *RPCServer) validateSignVTXOForfeitLocalVTXO(ctx context.Context,
+	outpoint wire.OutPoint, req *daemonrpc.SignVTXOForfeitRequest) error {
+
+	if r.server.vtxoStore == nil {
+		return status.Errorf(codes.Internal, "vtxo store not "+
+			"initialized")
+	}
+
+	desc, err := r.server.vtxoStore.GetVTXO(ctx, outpoint)
+	if err != nil {
+		return status.Errorf(codes.NotFound, "local vtxo %s: %v",
+			outpoint, err)
+	}
+	if desc == nil {
+		return status.Errorf(codes.NotFound, "local vtxo %s not found",
+			outpoint)
+	}
+
+	if int64(desc.Amount) != req.GetVtxoAmountSat() {
+		return status.Errorf(codes.InvalidArgument, "vtxo_amount_sat "+
+			"does not match local vtxo")
+	}
+	if !bytes.Equal(desc.PkScript, req.GetVtxoPkScript()) {
+		return status.Errorf(codes.InvalidArgument, "vtxo_pk_script "+
+			"does not match local vtxo")
+	}
+	if !bytes.Equal(
+		desc.PolicyTemplate, req.GetVtxoPolicyTemplate(),
+	) {
+		return status.Errorf(codes.InvalidArgument,
+			"vtxo_policy_template does not match local vtxo")
+	}
+
+	return nil
+}
+
+func parseUnsignedForfeitTx(raw []byte) (*wire.MsgTx, error) {
+	tx := wire.NewMsgTx(wire.TxVersion)
+	if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
+		return nil, err
+	}
+
+	for i, txIn := range tx.TxIn {
+		if len(txIn.SignatureScript) > 0 {
+			return nil, fmt.Errorf("input %d has signature script", i)
+		}
+		if len(txIn.Witness) > 0 {
+			return nil, fmt.Errorf("input %d has witness", i)
+		}
+	}
+
+	return tx, nil
+}
+
+func containsSigningKey(keys []*btcec.PublicKey, target *btcec.PublicKey) bool {
+	if target == nil {
+		return false
+	}
+
+	targetX := schnorr.SerializePubKey(target)
+	for _, key := range keys {
+		if key == nil {
+			continue
+		}
+
+		if bytes.Equal(schnorr.SerializePubKey(key), targetX) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // oorSigner returns the wallet signer used for OOR checkpoint inputs.

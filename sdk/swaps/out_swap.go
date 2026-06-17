@@ -566,10 +566,17 @@ func (s *ReceiveSession) runUntil(ctx context.Context,
 	responderCtx, stopResponder := context.WithCancel(ctx)
 	defer stopResponder()
 
-	if s.client != nil && s.client.outEvents != nil &&
-		receiveTargetNeedsForfeitResponder(target) {
-
-		go s.respondToOutSwapForfeitSignatureRequests(responderCtx)
+	if s.client != nil && receiveTargetNeedsForfeitResponder(target) {
+		receiver, _ :=
+			s.client.outEvents.(OutSwapForfeitSignatureReceiver)
+		paymentHash := s.PaymentHash
+		clientPubKey := s.clientPubKey
+		if receiver != nil && clientPubKey != nil {
+			go s.respondToOutSwapForfeitSignatureRequests(
+				responderCtx, receiver, paymentHash,
+				clientPubKey,
+			)
+		}
 	}
 	machine := newReceiveLoopFSM(s, target)
 

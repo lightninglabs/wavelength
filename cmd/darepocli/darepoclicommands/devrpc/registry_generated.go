@@ -149,6 +149,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "SignOORCustomInput signs one prepared custom OOR checkpoint input with\nthe daemon identity key.",
 				},
 				{
+					Name:     "SignVTXOForfeit",
+					Aliases:  []string{"sign-vtxo-forfeit"},
+					Input:    "daemonrpc.SignVTXOForfeitRequest",
+					Output:   "daemonrpc.SignVTXOForfeitResponse",
+					Comments: "SignVTXOForfeit signs the VTXO input of an exact forfeit transaction\nwith the daemon identity key after a round has assigned the connector\ninput. This is a low-level signing primitive; callers must enforce any\nswap-specific authorization before invoking it.",
+				},
+				{
 					Name:     "RefreshVTXOs",
 					Aliases:  []string{"refresh-vtxos"},
 					Input:    "daemonrpc.RefreshVTXOsRequest",

@@ -62,6 +62,8 @@ type DaemonServiceMailboxServer interface {
 	PrepareOOR(ctx context.Context, req *PrepareOORRequest) (*PrepareOORResponse, error)
 	// SignOORCustomInput handles SignOORCustomInput.
 	SignOORCustomInput(ctx context.Context, req *SignOORCustomInputRequest) (*SignOORCustomInputResponse, error)
+	// SignVTXOForfeit handles SignVTXOForfeit.
+	SignVTXOForfeit(ctx context.Context, req *SignVTXOForfeitRequest) (*SignVTXOForfeitResponse, error)
 	// RefreshVTXOs handles RefreshVTXOs.
 	RefreshVTXOs(ctx context.Context, req *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
 	// LeaveVTXOs handles LeaveVTXOs.
@@ -299,6 +301,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.SignOORCustomInput(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "SignVTXOForfeit", func() proto.Message {
+		return &SignVTXOForfeitRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SignVTXOForfeitRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SignVTXOForfeit(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "RefreshVTXOs", func() proto.Message {
 		return &RefreshVTXOsRequest{}
@@ -952,6 +964,29 @@ func (c *DaemonServiceMailboxClient) SignOORCustomInput(ctx context.Context, req
 	}
 
 	resp := new(SignOORCustomInputResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SignVTXOForfeit calls the SignVTXOForfeit RPC.
+func (c *DaemonServiceMailboxClient) SignVTXOForfeit(ctx context.Context, req *SignVTXOForfeitRequest, opts ...rpc.RPCOptions) (*SignVTXOForfeitResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SignVTXOForfeit",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SignVTXOForfeitResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
