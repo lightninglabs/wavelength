@@ -227,13 +227,20 @@ func TestNodeMaxDepthRejectsOverCap(t *testing.T) {
 // or edge condition: zero claim, over-cap claim, mismatched claim,
 // at-cap claim, and a valid leaf claim. The validator is the trust
 // boundary that prevents an untrusted indexer from stranding an OOR
-// VTXO via tree_depth, so coverage here is load-bearing.
+// VTXO via tree_depth, so coverage here is load-bearing. The
+// "reconstructed walk exceeds cap" case additionally proves the
+// validator uses the bounded local walker (treeMaxDepth) rather than the
+// unbounded tree.Tree.Depth() on an indexer-supplied chain: the claimed
+// scalar is in-range so the early range check passes and we reach the
+// actual-depth comparison, which only terminates safely via the bounded
+// walker.
 func TestValidateAncestryPathDepth(t *testing.T) {
 	t.Parallel()
 
 	leafTree := makeChainTree(1)
 	pairTree := makeChainTree(2)
 	atCapTree := makeChainTree(MaxAncestryTreeWalkDepth)
+	overCapTree := makeChainTree(MaxAncestryTreeWalkDepth + 10)
 
 	cases := []struct {
 		name    string
@@ -276,6 +283,19 @@ func TestValidateAncestryPathDepth(t *testing.T) {
 			claimed: 3,
 			tree:    nil,
 		},
+		{
+			// In-range claim, but the reconstructed chain is
+			// deeper than the cap. A hostile indexer can produce
+			// this from a valid-looking proto TreePath (children
+			// must have a strictly higher index, but the overall
+			// chain length is not capped at the proto layer). The
+			// bounded walker must reject it without overflowing
+			// the stack.
+			name:    "reconstructed walk exceeds cap",
+			claimed: MaxAncestryTreeWalkDepth,
+			tree:    overCapTree,
+			wantErr: "exceeds max",
+		},
 	}
 
 	for _, tc := range cases {
@@ -299,32 +319,5 @@ func TestValidateAncestryPathDepth(t *testing.T) {
 					err.Error(), tc.wantErr)
 			}
 		})
-	}
-}
-
-// TestValidateAncestryPathDepthBoundsReconstructedWalk ensures the
-// validator does not invoke the unbounded tree.Tree.Depth() on an
-// indexer-supplied reconstructed tree. A linear chain of nodes that
-// would otherwise recurse deeply must be rejected via the local
-// bounded walker (treeMaxDepth) without overflowing the stack. The
-// claimed scalar is in-range so the early range check passes and we
-// reach the actual-depth comparison; only the bounded walker
-// terminates this case safely.
-func TestValidateAncestryPathDepthBoundsReconstructedWalk(t *testing.T) {
-	t.Parallel()
-
-	// Build a chain deeper than the walk cap. A hostile indexer can
-	// produce this from a valid-looking proto TreePath (children
-	// must have a strictly higher index, but the overall chain
-	// length is not capped at the proto layer).
-	overCap := makeChainTree(MaxAncestryTreeWalkDepth + 10)
-
-	err := ValidateAncestryPathDepth(MaxAncestryTreeWalkDepth, overCap)
-	if err == nil {
-		t.Fatalf("expected error for over-cap reconstructed tree")
-	}
-
-	if !strings.Contains(err.Error(), "exceeds max") {
-		t.Fatalf("err %q does not mention bounded walker", err.Error())
 	}
 }

@@ -48,169 +48,170 @@ func newExitTestClient(wallet walletdkrpc.WalletServiceClient) *Client {
 	}
 }
 
-// TestExitDefaultUsesWalletRPCCooperative verifies that an empty destination
-// still calls walletdkrpc.Exit and reports the daemon's cooperative mode.
-func TestExitDefaultUsesWalletRPCCooperative(t *testing.T) {
+// errExitWalletRPC is the sentinel a stub returns to verify wallet RPC
+// failures propagate without client-side fallback.
+var errExitWalletRPC = errors.New("wallet rpc failed")
+
+// TestExit exercises the SDK's Exit decision tree: cooperative leave,
+// forced unilateral unroll, local validation rejections, and wallet RPC
+// error propagation. Rows are data-only; the shared runner builds a stub
+// that either returns the row's response or fails loudly when the row
+// expects no RPC at all.
+func TestExit(t *testing.T) {
 	t.Parallel()
 
-	wallet := &stubWalletClient{
-		exit: func(_ context.Context, _ *walletdkrpc.ExitRequest) (
-			*walletdkrpc.ExitResponse, error) {
+	coop := walletdkrpc.ExitMode_EXIT_MODE_COOPERATIVE
+	unilateral := walletdkrpc.ExitMode_EXIT_MODE_UNILATERAL
 
-			mode := walletdkrpc.ExitMode_EXIT_MODE_COOPERATIVE
-
-			return &walletdkrpc.ExitResponse{
-				Mode: mode,
+	// resp/respErr drive the stub: a nil resp with no respErr means the
+	// RPC must not be invoked. wantErr/wantErrIs imply a nil result; the
+	// want* result fields and wantOnchain/wantForceAck assert the success
+	// projection and the request echoed onto the wallet RPC.
+	tests := []struct {
+		name         string
+		req          ExitRequest
+		resp         *walletdkrpc.ExitResponse
+		respErr      error
+		wantErr      string
+		wantErrIs    error
+		wantPath     ExitPath
+		wantCoop     bool
+		wantQueued   []string
+		wantCreated  bool
+		wantActorID  string
+		wantOnchain  string
+		wantForceAck string
+		wantCalls    int
+	}{
+		{
+			name: "default cooperative",
+			req: ExitRequest{
+				Outpoint: testExitOutpoint,
+			},
+			resp: &walletdkrpc.ExitResponse{
+				Mode: coop,
 				QueuedOutpoints: []string{
 					testExitOutpoint,
 				},
-			}, nil
+			},
+			wantPath: ExitPathCooperative,
+			wantCoop: true,
+			wantQueued: []string{
+				testExitOutpoint,
+			},
+			wantCalls: 1,
 		},
-	}
-	client := newExitTestClient(wallet)
-
-	res, err := client.Exit(t.Context(), ExitRequest{
-		Outpoint: testExitOutpoint,
-	})
-	require.NoError(t, err)
-	require.Equal(t, ExitPathCooperative, res.Path)
-	require.True(t, res.Cooperative)
-	require.Equal(t, []string{testExitOutpoint}, res.QueuedOutpoints)
-	require.Equal(t, 1, wallet.exitCalls)
-	require.Equal(t, testExitOutpoint, wallet.lastExit.GetOutpoint())
-	require.Empty(t, wallet.lastExit.GetOnchainAddress())
-	require.Empty(t, wallet.lastExit.GetForceUnrollAck())
-}
-
-// TestExitCooperativeDestinationPassesThrough confirms a caller-supplied
-// destination is forwarded to the wallet RPC surface.
-func TestExitCooperativeDestinationPassesThrough(t *testing.T) {
-	t.Parallel()
-
-	wallet := &stubWalletClient{
-		exit: func(_ context.Context, _ *walletdkrpc.ExitRequest) (
-			*walletdkrpc.ExitResponse, error) {
-
-			mode := walletdkrpc.ExitMode_EXIT_MODE_COOPERATIVE
-
-			return &walletdkrpc.ExitResponse{
-				Mode: mode,
-			}, nil
+		{
+			name: "cooperative destination",
+			req: ExitRequest{
+				Outpoint:    testExitOutpoint,
+				Destination: testExitDestination,
+			},
+			resp: &walletdkrpc.ExitResponse{
+				Mode: coop,
+			},
+			wantPath:    ExitPathCooperative,
+			wantCoop:    true,
+			wantOnchain: testExitDestination,
+			wantCalls:   1,
 		},
-	}
-	client := newExitTestClient(wallet)
-
-	res, err := client.Exit(t.Context(), ExitRequest{
-		Outpoint:    testExitOutpoint,
-		Destination: testExitDestination,
-	})
-	require.NoError(t, err)
-	require.Equal(t, ExitPathCooperative, res.Path)
-	require.Equal(
-		t, testExitDestination, wallet.lastExit.GetOnchainAddress(),
-	)
-	require.Empty(t, wallet.lastExit.GetForceUnrollAck())
-}
-
-// TestExitForcedUnrollPassesAck confirms the SDK does not hide forced unroll:
-// the acknowledgement is forwarded and unilateral mode is projected.
-func TestExitForcedUnrollPassesAck(t *testing.T) {
-	t.Parallel()
-
-	wallet := &stubWalletClient{
-		exit: func(_ context.Context, _ *walletdkrpc.ExitRequest) (
-			*walletdkrpc.ExitResponse, error) {
-
-			mode := walletdkrpc.ExitMode_EXIT_MODE_UNILATERAL
-
-			return &walletdkrpc.ExitResponse{
-				Mode:    mode,
+		{
+			name: "forced unroll",
+			req: ExitRequest{
+				Outpoint:       testExitOutpoint,
+				ForceUnrollAck: testForceUnrollAck,
+			},
+			resp: &walletdkrpc.ExitResponse{
+				Mode:    unilateral,
 				Created: true,
 				ActorId: testActorID,
-			}, nil
+			},
+			wantPath:     ExitPathUnilateral,
+			wantCreated:  true,
+			wantActorID:  testActorID,
+			wantForceAck: testForceUnrollAck,
+			wantCalls:    1,
+		},
+		{
+			name: "destination with forced unroll",
+			req: ExitRequest{
+				Outpoint:       testExitOutpoint,
+				Destination:    testExitDestination,
+				ForceUnrollAck: testForceUnrollAck,
+			},
+			wantErr: "destination cannot be combined",
+		},
+		{
+			name:    "empty outpoint",
+			req:     ExitRequest{},
+			wantErr: "outpoint is required",
+		},
+		{
+			name: "wallet rpc error",
+			req: ExitRequest{
+				Outpoint: testExitOutpoint,
+			},
+			respErr:   errExitWalletRPC,
+			wantErrIs: errExitWalletRPC,
+			wantCalls: 1,
 		},
 	}
-	client := newExitTestClient(wallet)
 
-	res, err := client.Exit(t.Context(), ExitRequest{
-		Outpoint:       testExitOutpoint,
-		ForceUnrollAck: testForceUnrollAck,
-	})
-	require.NoError(t, err)
-	require.Equal(t, ExitPathUnilateral, res.Path)
-	require.True(t, res.Created)
-	require.Equal(t, testActorID, res.ActorID)
-	require.Equal(
-		t, testForceUnrollAck, wallet.lastExit.GetForceUnrollAck(),
-	)
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-// TestExitRejectsDestinationWithForcedUnroll mirrors the wallet RPC's
-// mutual-exclusion rule before spending a round trip.
-func TestExitRejectsDestinationWithForcedUnroll(t *testing.T) {
-	t.Parallel()
+			noRPC := tc.resp == nil && tc.respErr == nil
+			wallet := &stubWalletClient{
+				exit: func(context.Context,
+					*walletdkrpc.ExitRequest) (
+					*walletdkrpc.ExitResponse, error) {
 
-	wallet := &stubWalletClient{
-		exit: func(context.Context, *walletdkrpc.ExitRequest) (
-			*walletdkrpc.ExitResponse, error) {
+					if noRPC {
+						t.Fatal("wallet RPC must " + //nolint:ll
+							"not be called")
+					}
 
-			t.Fatal("wallet RPC must not be called")
+					return tc.resp, tc.respErr
+				},
+			}
+			client := newExitTestClient(wallet)
 
-			return nil, nil
-		},
+			res, err := client.Exit(t.Context(), tc.req)
+
+			switch {
+			case tc.wantErr != "":
+				require.ErrorContains(t, err, tc.wantErr)
+				require.Nil(t, res)
+
+			case tc.wantErrIs != nil:
+				require.ErrorIs(t, err, tc.wantErrIs)
+				require.Nil(t, res)
+
+			default:
+				require.NoError(t, err)
+				require.Equal(t, tc.wantPath, res.Path)
+				require.Equal(t, tc.wantCoop, res.Cooperative)
+				require.Equal(
+					t, tc.wantQueued, res.QueuedOutpoints,
+				)
+				require.Equal(t, tc.wantCreated, res.Created)
+				require.Equal(t, tc.wantActorID, res.ActorID)
+				require.Equal(
+					t, testExitOutpoint,
+					wallet.lastExit.GetOutpoint(),
+				)
+				require.Equal(
+					t, tc.wantOnchain,
+					wallet.lastExit.GetOnchainAddress(),
+				)
+				require.Equal(
+					t, tc.wantForceAck,
+					wallet.lastExit.GetForceUnrollAck(),
+				)
+			}
+
+			require.Equal(t, tc.wantCalls, wallet.exitCalls)
+		})
 	}
-	client := newExitTestClient(wallet)
-
-	res, err := client.Exit(t.Context(), ExitRequest{
-		Outpoint:       testExitOutpoint,
-		Destination:    testExitDestination,
-		ForceUnrollAck: testForceUnrollAck,
-	})
-	require.ErrorContains(t, err, "destination cannot be combined")
-	require.Nil(t, res)
-	require.Zero(t, wallet.exitCalls)
-}
-
-// TestExitSurfacesWalletRPCError verifies wallet RPC failures are returned
-// without client-side fallback.
-func TestExitSurfacesWalletRPCError(t *testing.T) {
-	t.Parallel()
-
-	sentinel := errors.New("wallet rpc failed")
-	wallet := &stubWalletClient{
-		exit: func(_ context.Context, _ *walletdkrpc.ExitRequest) (
-			*walletdkrpc.ExitResponse, error) {
-
-			return nil, sentinel
-		},
-	}
-	client := newExitTestClient(wallet)
-
-	res, err := client.Exit(t.Context(), ExitRequest{
-		Outpoint: testExitOutpoint,
-	})
-	require.ErrorIs(t, err, sentinel)
-	require.Nil(t, res)
-}
-
-// TestExitRejectsEmptyOutpoint confirms local validation still rejects an
-// unusable request before any RPC is attempted.
-func TestExitRejectsEmptyOutpoint(t *testing.T) {
-	t.Parallel()
-
-	wallet := &stubWalletClient{
-		exit: func(context.Context, *walletdkrpc.ExitRequest) (
-			*walletdkrpc.ExitResponse, error) {
-
-			t.Fatal("wallet RPC must not be called")
-
-			return nil, nil
-		},
-	}
-	client := newExitTestClient(wallet)
-
-	res, err := client.Exit(t.Context(), ExitRequest{})
-	require.ErrorContains(t, err, "outpoint is required")
-	require.Nil(t, res)
-	require.Zero(t, wallet.exitCalls)
 }

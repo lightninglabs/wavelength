@@ -57,6 +57,51 @@ func enqueue(t *testing.T, store actor.TxAwareDeliveryStore,
 	)
 }
 
+// leaseExpect leases the next message for the mailbox under the given token
+// and asserts it is the message with the wanted ID. It returns the leased
+// message so callers can chain further assertions.
+func leaseExpect(t *testing.T, store actor.TxAwareDeliveryStore, mailbox, token,
+	wantID string) *actor.LeasedMessage {
+
+	t.Helper()
+
+	leased, err := store.LeaseNextMessage(
+		t.Context(), mailbox, token, time.Minute,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, leased)
+	require.Equal(t, wantID, leased.ID)
+
+	return leased
+}
+
+// leaseExpectNone leases the next message for the mailbox under the given
+// token and asserts that nothing is claimable, surfacing msg on failure.
+func leaseExpectNone(t *testing.T, store actor.TxAwareDeliveryStore, mailbox,
+	token, msg string) {
+
+	t.Helper()
+
+	leased, err := store.LeaseNextMessage(
+		t.Context(), mailbox, token, time.Minute,
+	)
+	require.NoError(t, err)
+	require.Nil(t, leased, msg)
+}
+
+// nackBackoff leases the wanted message and immediately nacks it with the
+// given delay, forcing the row into a future-dated backoff. It models a
+// transient send failure on the head of a key.
+func nackBackoff(t *testing.T, store actor.TxAwareDeliveryStore, mailbox, token,
+	wantID string, delay time.Duration) {
+
+	t.Helper()
+
+	leaseExpect(t, store, mailbox, token, wantID)
+	_, err := store.NackMessage(t.Context(), wantID, token, delay)
+	require.NoError(t, err)
+}
+
 // TestPerKeyFIFOBlocksOvertakeOnNack is the canonical reproduction of the
 // reorder bug the migration fixes. It enqueues two keyed messages, nacks
 // the first with a delay that pushes its available_at into the future,
@@ -72,21 +117,11 @@ func TestPerKeyFIFOBlocksOvertakeOnNack(t *testing.T) {
 	const mailbox = "actor-A"
 	const key = "alice/round-1"
 
-	// msg1 enqueued at T=0, immediately eligible.
+	// msg1 enqueued at T=0, immediately eligible. Lease it and simulate a
+	// transient send failure: nack with a 5s delay so msg1's available_at
+	// is now strictly in the future.
 	enqueue(t, store, clk, "msg-1", mailbox, key)
-
-	// Lease msg1, simulate transient send failure: nack with a long delay
-	// so msg1's available_at is now strictly in the future.
-	leased, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-1", time.Minute,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, leased)
-	require.Equal(t, "msg-1", leased.ID)
-
-	rows, err := store.NackMessage(ctx, "msg-1", "lease-1", 5*time.Second)
-	require.NoError(t, err)
-	require.EqualValues(t, 1, rows)
+	nackBackoff(t, store, mailbox, "lease-1", "msg-1", 5*time.Second)
 
 	// Advance to T+1s and enqueue msg2 (same key). Its available_at is
 	// now smaller than msg1's pushed-out available_at — under the old
@@ -97,39 +132,22 @@ func TestPerKeyFIFOBlocksOvertakeOnNack(t *testing.T) {
 	// Claim at T+1s. msg1 is still in backoff (available_at=T+5s),
 	// msg2 has available_at=T+1s. With per-key FIFO, msg2 cannot
 	// overtake msg1 — the claim must return nothing.
-	leased2, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-2", time.Minute,
-	)
-	require.NoError(t, err)
-	require.Nil(
-		t, leased2,
+	leaseExpectNone(
+		t, store, mailbox, "lease-2",
 		"per-key FIFO must hold msg-2 behind in-backoff msg-1",
 	)
 
 	// Advance to T+5s. msg1 is now available; claim must return msg1
 	// first.
 	clk.SetTime(clk.Now().Add(4 * time.Second))
-	leased3, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-3", time.Minute,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, leased3)
-	require.Equal(
-		t, "msg-1", leased3.ID,
-		"head-of-key must drain before any later same-key message",
-	)
+	leaseExpect(t, store, mailbox, "lease-3", "msg-1")
 
 	// Ack msg1; now msg2 becomes the head of the key and is claimable.
 	ackRows, err := store.AckMessage(ctx, "msg-1", "lease-3")
 	require.NoError(t, err)
 	require.EqualValues(t, 1, ackRows)
 
-	leased4, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-4", time.Minute,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, leased4)
-	require.Equal(t, "msg-2", leased4.ID)
+	leaseExpect(t, store, mailbox, "lease-4", "msg-2")
 }
 
 // TestPerKeyFIFOCrossKeyIndependence confirms that a message in backoff
@@ -139,34 +157,19 @@ func TestPerKeyFIFOCrossKeyIndependence(t *testing.T) {
 	t.Parallel()
 
 	store, clk := newTestStore(t)
-	ctx := t.Context()
 
 	const mailbox = "actor-A"
 
 	// K1 message that we'll force into backoff.
 	enqueue(t, store, clk, "k1-msg-1", mailbox, "alice/round-1")
-	leased, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-1", time.Minute,
-	)
-	require.NoError(t, err)
-	require.Equal(t, "k1-msg-1", leased.ID)
-	_, err = store.NackMessage(ctx, "k1-msg-1", "lease-1", 10*time.Second)
-	require.NoError(t, err)
+	nackBackoff(t, store, mailbox, "lease-1", "k1-msg-1", 10*time.Second)
 
 	// K2 message enqueued while K1 is in backoff.
 	clk.SetTime(clk.Now().Add(1 * time.Second))
 	enqueue(t, store, clk, "k2-msg-1", mailbox, "bob/round-2")
 
 	// K2 must be claimable independently of K1's backoff.
-	leased2, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-2", time.Minute,
-	)
-	require.NoError(t, err)
-	require.NotNil(
-		t, leased2,
-		"different correlation keys must not block each other",
-	)
-	require.Equal(t, "k2-msg-1", leased2.ID)
+	leaseExpect(t, store, mailbox, "lease-2", "k2-msg-1")
 }
 
 // TestPerKeyFIFOUnkeyedUnaffected confirms that unkeyed messages (empty
@@ -176,19 +179,12 @@ func TestPerKeyFIFOUnkeyedUnaffected(t *testing.T) {
 	t.Parallel()
 
 	store, clk := newTestStore(t)
-	ctx := t.Context()
 
 	const mailbox = "actor-A"
 
 	// Keyed msg in backoff.
 	enqueue(t, store, clk, "k-msg-1", mailbox, "alice/round-1")
-	leased, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-1", time.Minute,
-	)
-	require.NoError(t, err)
-	require.Equal(t, "k-msg-1", leased.ID)
-	_, err = store.NackMessage(ctx, "k-msg-1", "lease-1", 10*time.Second)
-	require.NoError(t, err)
+	nackBackoff(t, store, mailbox, "lease-1", "k-msg-1", 10*time.Second)
 
 	// Unkeyed msg enqueued while keyed msg is in backoff.
 	clk.SetTime(clk.Now().Add(1 * time.Second))
@@ -196,15 +192,7 @@ func TestPerKeyFIFOUnkeyedUnaffected(t *testing.T) {
 
 	// Unkeyed message uses global available_at order, unaffected by the
 	// keyed lane.
-	leased2, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-2", time.Minute,
-	)
-	require.NoError(t, err)
-	require.NotNil(
-		t, leased2,
-		"unkeyed message must not be blocked by an unrelated key",
-	)
-	require.Equal(t, "unkeyed-1", leased2.ID)
+	leaseExpect(t, store, mailbox, "lease-2", "unkeyed-1")
 }
 
 // TestPerKeyFIFOAckUnblocksKey confirms that once the head-of-line
@@ -224,33 +212,20 @@ func TestPerKeyFIFOAckUnblocksKey(t *testing.T) {
 	enqueue(t, store, clk, "msg-2", mailbox, key)
 
 	// First claim returns msg-1.
-	leased, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-1", time.Minute,
-	)
-	require.NoError(t, err)
-	require.Equal(t, "msg-1", leased.ID)
+	leaseExpect(t, store, mailbox, "lease-1", "msg-1")
 
 	// While msg-1 is leased, msg-2 must NOT be claimable because
 	// msg-1 is still head of the key.
-	leased2, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-2", time.Minute,
-	)
-	require.NoError(t, err)
-	require.Nil(
-		t, leased2,
+	leaseExpectNone(
+		t, store, mailbox, "lease-2",
 		"msg-2 must wait while msg-1 holds the head of the key",
 	)
 
 	// Ack msg-1; the key is now drained, msg-2 becomes head.
-	_, err = store.AckMessage(ctx, "msg-1", "lease-1")
+	_, err := store.AckMessage(ctx, "msg-1", "lease-1")
 	require.NoError(t, err)
 
-	leased3, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-3", time.Minute,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, leased3)
-	require.Equal(t, "msg-2", leased3.ID)
+	leaseExpect(t, store, mailbox, "lease-3", "msg-2")
 }
 
 // enqueueWithMaxAttempts is a variant of enqueue that lets the caller
@@ -293,7 +268,6 @@ func TestPerKeyFIFOExhaustedPredecessorDoesNotBlockSuccessor(t *testing.T) {
 	t.Parallel()
 
 	store, clk := newTestStore(t)
-	ctx := t.Context()
 
 	const mailbox = "actor-A"
 	const key = "alice/round-1"
@@ -305,37 +279,18 @@ func TestPerKeyFIFOExhaustedPredecessorDoesNotBlockSuccessor(t *testing.T) {
 	// re-lease it.
 	enqueueWithMaxAttempts(t, store, clk, "msg-1", mailbox, key, 2)
 
-	leased1, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-1", time.Minute,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, leased1)
-	require.Equal(t, "msg-1", leased1.ID)
-	_, err = store.NackMessage(ctx, "msg-1", "lease-1", 1*time.Second)
-	require.NoError(t, err)
-
+	nackBackoff(t, store, mailbox, "lease-1", "msg-1", 1*time.Second)
 	clk.SetTime(clk.Now().Add(2 * time.Second))
 
-	leased2, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-2", time.Minute,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, leased2)
-	require.Equal(t, "msg-1", leased2.ID)
-	_, err = store.NackMessage(ctx, "msg-1", "lease-2", 1*time.Second)
-	require.NoError(t, err)
-
+	nackBackoff(t, store, mailbox, "lease-2", "msg-1", 1*time.Second)
 	clk.SetTime(clk.Now().Add(2 * time.Second))
 
 	// Sanity check: msg-1 is exhausted (attempts == max_attempts) and the
 	// outer eligibility predicate keeps it out of the candidate set, so
 	// claiming it as the head-of-key returns nothing.
-	exhausted, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-sanity", time.Minute,
-	)
-	require.NoError(t, err)
-	require.Nil(
-		t, exhausted, "exhausted predecessor must not be claimable",
+	leaseExpectNone(
+		t, store, mailbox, "lease-sanity",
+		"exhausted predecessor must not be claimable",
 	)
 
 	// Enqueue msg-2 with the same key. msg-1 is still physically present
@@ -346,15 +301,7 @@ func TestPerKeyFIFOExhaustedPredecessorDoesNotBlockSuccessor(t *testing.T) {
 	// exhausted rows and msg-2 becomes the new head of the key.
 	enqueueWithMaxAttempts(t, store, clk, "msg-2", mailbox, key, 3)
 
-	leased3, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-3", time.Minute,
-	)
-	require.NoError(t, err)
-	require.NotNil(
-		t, leased3, "exhausted same-key predecessor must not "+
-			"permanently block successor",
-	)
-	require.Equal(t, "msg-2", leased3.ID)
+	leaseExpect(t, store, mailbox, "lease-3", "msg-2")
 }
 
 // TestPerKeyFIFOActiveLeasedPredecessorBlocksSuccessor pins the invariant
@@ -381,13 +328,7 @@ func TestPerKeyFIFOActiveLeasedPredecessorBlocksSuccessor(t *testing.T) {
 	// incremented, modelling a worker that is actively processing the
 	// message.
 	enqueue(t, store, clk, "msg-1", mailbox, key)
-
-	leased, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-1", time.Minute,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, leased)
-	require.Equal(t, "msg-1", leased.ID)
+	leaseExpect(t, store, mailbox, "lease-1", "msg-1")
 
 	// Enqueue msg-2 for the same key while msg-1's lease is still
 	// live. msg-2 is fully eligible by itself (available_at = now,
@@ -395,12 +336,8 @@ func TestPerKeyFIFOActiveLeasedPredecessorBlocksSuccessor(t *testing.T) {
 	clk.SetTime(clk.Now().Add(100 * time.Millisecond))
 	enqueue(t, store, clk, "msg-2", mailbox, key)
 
-	leased2, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-2", time.Minute,
-	)
-	require.NoError(t, err)
-	require.Nil(
-		t, leased2,
+	leaseExpectNone(
+		t, store, mailbox, "lease-2",
 		"actively leased same-key predecessor must block successor",
 	)
 
@@ -411,12 +348,7 @@ func TestPerKeyFIFOActiveLeasedPredecessorBlocksSuccessor(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, ackRows)
 
-	leased3, err := store.LeaseNextMessage(
-		ctx, mailbox, "lease-3", time.Minute,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, leased3)
-	require.Equal(t, "msg-2", leased3.ID)
+	leaseExpect(t, store, mailbox, "lease-3", "msg-2")
 }
 
 // TestPerKeyFIFOMailboxIsolation confirms that the per-key FIFO scope is
@@ -426,29 +358,14 @@ func TestPerKeyFIFOMailboxIsolation(t *testing.T) {
 	t.Parallel()
 
 	store, clk := newTestStore(t)
-	ctx := t.Context()
 
 	// Same key in two different mailboxes.
 	enqueue(t, store, clk, "a-msg-1", "mailbox-A", "shared-key")
 	enqueue(t, store, clk, "b-msg-1", "mailbox-B", "shared-key")
 
 	// Force mailbox-A's message into backoff.
-	leasedA, err := store.LeaseNextMessage(
-		ctx, "mailbox-A", "lease-1", time.Minute,
-	)
-	require.NoError(t, err)
-	require.Equal(t, "a-msg-1", leasedA.ID)
-	_, err = store.NackMessage(ctx, "a-msg-1", "lease-1", 10*time.Second)
-	require.NoError(t, err)
+	nackBackoff(t, store, "mailbox-A", "lease-1", "a-msg-1", 10*time.Second)
 
 	// Mailbox-B's message must be claimable independent of mailbox-A.
-	leasedB, err := store.LeaseNextMessage(
-		ctx, "mailbox-B", "lease-2", time.Minute,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, leasedB)
-	require.Equal(
-		t, "b-msg-1", leasedB.ID,
-		"per-key FIFO must be scoped per mailbox_id",
-	)
+	leaseExpect(t, store, "mailbox-B", "lease-2", "b-msg-1")
 }

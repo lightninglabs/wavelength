@@ -10,96 +10,103 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestReadMaskedPasswordMasksInput confirms each entered byte is
-// echoed as a single asterisk and the raw password is never written
-// to the masked output stream.
-func TestReadMaskedPasswordMasksInput(t *testing.T) {
+// TestReadMaskedPassword exercises the masked-entry state machine:
+// asterisk echoing, ASCII/UTF-8 backspace erase, Ctrl-C interrupt,
+// Ctrl-D submit/empty, and underlying read-error wrapping.
+func TestReadMaskedPassword(t *testing.T) {
 	t.Parallel()
 
-	var output bytes.Buffer
-	password, err := readMaskedPassword(
-		strings.NewReader("supersecret\n"), &output,
-	)
-	require.NoError(t, err)
-	require.Equal(t, []byte("supersecret"), password)
-	require.Equal(
-		t,
-		strings.Repeat(
-			"*", len("supersecret"),
-		),
-		output.String(),
-	)
-	require.NotContains(t, output.String(), "supersecret")
-}
+	syntheticErr := errors.New("synthetic read failure")
 
-// TestReadMaskedPasswordBackspace confirms backspace removes the last
-// byte and erases one mask character.
-func TestReadMaskedPasswordBackspace(t *testing.T) {
-	t.Parallel()
+	cases := []struct {
+		name        string
+		input       string
+		reader      io.Reader
+		wantPass    []byte
+		wantOutput  string
+		checkOutput bool
+		errContains string
+		errIs       error
+	}{
+		{
+			name:        "masks input",
+			input:       "supersecret\n",
+			wantPass:    []byte("supersecret"),
+			wantOutput:  strings.Repeat("*", len("supersecret")),
+			checkOutput: true,
+		},
+		{
+			name:        "ascii backspace",
+			input:       "secx\x7fret\r",
+			wantPass:    []byte("secret"),
+			wantOutput:  "****\b \b***",
+			checkOutput: true,
+		},
+		{
+			name:        "utf8 backspace",
+			input:       "caf\xc3\xa9\x7feteria\n",
+			wantPass:    []byte("cafeteria"),
+			wantOutput:  "*****\b \b\b \b******",
+			checkOutput: true,
+		},
+		{
+			name:        "ctrl-c interrupt",
+			input:       "sec\x03ret\n",
+			wantOutput:  "***",
+			checkOutput: true,
+			errContains: "password entry interrupted",
+		},
+		{
+			name:     "ctrl-d submit",
+			input:    "secret\x04",
+			wantPass: []byte("secret"),
+		},
+		{
+			name:        "ctrl-d empty",
+			input:       "\x04",
+			errContains: "unable to read password",
+		},
+		{
+			name: "wraps read error",
+			reader: errReader{
+				err: syntheticErr,
+			},
+			errContains: "unable to read password",
+			errIs:       syntheticErr,
+			wantOutput:  "",
+			checkOutput: true,
+		},
+	}
 
-	var output bytes.Buffer
-	password, err := readMaskedPassword(
-		strings.NewReader("secx\x7fret\r"), &output,
-	)
-	require.NoError(t, err)
-	require.Equal(t, []byte("secret"), password)
-	require.Equal(t, "****\b \b***", output.String())
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-// TestReadMaskedPasswordUTF8Backspace confirms backspace removes the
-// full last rune (multi-byte sequence) and erases as many masks as
-// the rune had bytes.
-func TestReadMaskedPasswordUTF8Backspace(t *testing.T) {
-	t.Parallel()
+			reader := tc.reader
+			if reader == nil {
+				reader = strings.NewReader(tc.input)
+			}
 
-	var output bytes.Buffer
-	password, err := readMaskedPassword(
-		strings.NewReader("caf\xc3\xa9\x7feteria\n"), &output,
-	)
-	require.NoError(t, err)
-	require.Equal(t, []byte("cafeteria"), password)
-	require.Equal(t, "*****\b \b\b \b******", output.String())
-}
+			var output bytes.Buffer
+			password, err := readMaskedPassword(reader, &output)
 
-// TestReadMaskedPasswordInterrupt confirms Ctrl-C terminates entry
-// with an explicit error and the password bytes already typed are
-// discarded.
-func TestReadMaskedPasswordInterrupt(t *testing.T) {
-	t.Parallel()
-
-	var output bytes.Buffer
-	password, err := readMaskedPassword(
-		strings.NewReader("sec\x03ret\n"), &output,
-	)
-	require.Nil(t, password)
-	require.ErrorContains(t, err, "password entry interrupted")
-	require.Equal(t, "***", output.String())
-}
-
-// TestReadMaskedPasswordCtrlD confirms Ctrl-D (EOF byte) submits the
-// already-typed password when non-empty.
-func TestReadMaskedPasswordCtrlD(t *testing.T) {
-	t.Parallel()
-
-	var output bytes.Buffer
-	password, err := readMaskedPassword(
-		strings.NewReader("secret\x04"), &output,
-	)
-	require.NoError(t, err)
-	require.Equal(t, []byte("secret"), password)
-}
-
-// TestReadMaskedPasswordCtrlDEmpty confirms Ctrl-D on an empty buffer
-// surfaces an explicit error rather than returning an empty password.
-func TestReadMaskedPasswordCtrlDEmpty(t *testing.T) {
-	t.Parallel()
-
-	var output bytes.Buffer
-	password, err := readMaskedPassword(
-		strings.NewReader("\x04"), &output,
-	)
-	require.Nil(t, password)
-	require.ErrorContains(t, err, "unable to read password")
+			if tc.errContains != "" || tc.errIs != nil {
+				require.Nil(t, password)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tc.wantPass, password)
+			}
+			if tc.errContains != "" {
+				require.ErrorContains(t, err, tc.errContains)
+			}
+			if tc.errIs != nil {
+				require.ErrorIs(t, err, tc.errIs)
+			}
+			if tc.checkOutput {
+				require.Equal(t, tc.wantOutput, output.String())
+			}
+		})
+	}
 }
 
 // TestReadConfirmedPasswordAcceptsMatch confirms the interactive
@@ -179,23 +186,6 @@ func TestReadConfirmedPasswordZerosOnConfirmError(t *testing.T) {
 	require.Nil(t, password)
 	require.ErrorIs(t, err, confirmErr)
 	require.Equal(t, []byte{0, 0, 0, 0, 0, 0}, passwordBytes)
-}
-
-// TestReadMaskedPasswordWrapsReadError confirms an underlying read
-// error is wrapped (not swallowed) and surfaces with the
-// "unable to read password" prefix.
-func TestReadMaskedPasswordWrapsReadError(t *testing.T) {
-	t.Parallel()
-
-	readErr := errors.New("synthetic read failure")
-	var output bytes.Buffer
-	password, err := readMaskedPassword(
-		errReader{err: readErr}, &output,
-	)
-	require.Nil(t, password)
-	require.ErrorIs(t, err, readErr)
-	require.ErrorContains(t, err, "unable to read password")
-	require.Empty(t, output.String())
 }
 
 // TestZeroBytes confirms zeroBytes overwrites every byte of the

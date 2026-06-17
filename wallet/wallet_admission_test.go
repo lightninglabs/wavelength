@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -1116,347 +1117,278 @@ func testOperatorKey() *btcec.PublicKey {
 	return priv.PubKey()
 }
 
-// TestSendVTXOsSuccess verifies the happy path: select VTXOs, build
-// intent with forfeits + recipient + change, register with round.
-func TestSendVTXOsSuccess(t *testing.T) {
-	t.Parallel()
+// selectForfeitResp builds a SelectAndReserveForfeitResponse holding
+// one reserved VTXO per supplied amount, with deterministic outpoints.
+func selectForfeitResp(
+	amounts ...btcutil.Amount) *actormsg.SelectAndReserveForfeitResponse {
 
-	mgr := &mockVTXOManagerBehavior{
-		selectForfeitResp: &actormsg.SelectAndReserveForfeitResponse{
-			SelectedVTXOs: []actormsg.SelectedVTXO{
-				{
-					Outpoint: testOutpoint(0),
-					Amount:   50000,
-					PkScript: []byte{
-						0x51,
-						0x20,
-						0x01,
-					},
-				},
+	resp := &actormsg.SelectAndReserveForfeitResponse{}
+	for i, amt := range amounts {
+		resp.SelectedVTXOs = append(
+			resp.SelectedVTXOs, actormsg.SelectedVTXO{
+				Outpoint: testOutpoint(uint32(i)),
+				Amount:   amt,
+				PkScript: []byte{0x51, 0x20, 0x01},
 			},
-			TotalSelected: 50000,
-		},
-		forfeitReleaseResp: &actormsg.ReleaseForfeitResponse{
-			ReleasedCount: 1,
-		},
+		)
+		resp.TotalSelected += amt
 	}
-	roundActor := &mockRoundActorBehavior{}
 
-	w := newTestWalletForSend(t, mgr, roundActor)
-
-	result := w.Receive(t.Context(), &SendVTXOsRequest{
-		Recipients:    []SendRecipient{testSendRecipient(40000)},
-		OperatorFee:   1000,
-		DustLimit:     546,
-		OperatorKey:   testOperatorKey(),
-		VTXOExitDelay: 144,
-	})
-	resp, err := result.Unpack()
-	require.NoError(t, err)
-
-	sendResp, ok := resp.(*SendVTXOsResponse)
-	require.True(t, ok)
-	require.Equal(t, "submitted", sendResp.Status)
-	require.Equal(t, 1, sendResp.SelectedCount)
-	require.Equal(t, btcutil.Amount(50000), sendResp.TotalSelected)
-	require.Equal(t, btcutil.Amount(9000), sendResp.ChangeAmount)
-	require.Equal(t, 1, roundActor.registerCalls)
+	return resp
 }
 
-// TestSendVTXOsNoChange verifies that exact-amount sends produce no
-// change output.
-func TestSendVTXOsNoChange(t *testing.T) {
+// TestSendVTXOs exercises the directed-send admission flow across its
+// data-only outcomes: happy path, exact-change, the #270 multi-recipient
+// zero-change guard, dust-change rejection, dry-run preview (with and
+// without a failing best-effort release), round rejection releasing the
+// reservation, and selection failure. All rows share one fixture and
+// runner; only the inputs and expected scalars differ.
+func TestSendVTXOs(t *testing.T) {
 	t.Parallel()
 
-	mgr := &mockVTXOManagerBehavior{
-		selectForfeitResp: &actormsg.SelectAndReserveForfeitResponse{
-			SelectedVTXOs: []actormsg.SelectedVTXO{
-				{
-					Outpoint: testOutpoint(0),
-					Amount:   41000,
-					PkScript: []byte{
-						0x51,
-						0x20,
-						0x01,
-					},
-				},
+	type want struct {
+		errSubstr     string
+		status        string
+		change        btcutil.Amount
+		selectedCount int
+		totalSelected btcutil.Amount
+		registerCalls int
+		releaseCalls  int
+	}
+	tests := []struct {
+		name string
+
+		// selected are the reserved VTXO amounts the manager returns;
+		// nil leaves selectForfeitResp unset (selection fails).
+		selected []btcutil.Amount
+
+		// recipients are the per-recipient send amounts.
+		recipients []btcutil.Amount
+
+		dryRun      bool
+		selectErr   string
+		releaseErr  string
+		registerErr string
+		want        want
+	}{
+		{
+			name: "success",
+			selected: []btcutil.Amount{
+				50000,
 			},
-			TotalSelected: 41000,
-		},
-	}
-	roundActor := &mockRoundActorBehavior{}
-
-	w := newTestWalletForSend(t, mgr, roundActor)
-
-	result := w.Receive(t.Context(), &SendVTXOsRequest{
-		Recipients:    []SendRecipient{testSendRecipient(40000)},
-		OperatorFee:   1000,
-		DustLimit:     546,
-		OperatorKey:   testOperatorKey(),
-		VTXOExitDelay: 144,
-	})
-	resp, err := result.Unpack()
-	require.NoError(t, err)
-
-	sendResp, ok := resp.(*SendVTXOsResponse)
-	require.True(t, ok, "expected *SendVTXOsResponse")
-	require.Equal(t, btcutil.Amount(0), sendResp.ChangeAmount)
-	require.Equal(t, 1, roundActor.registerCalls)
-}
-
-// TestSendVTXOsMultiRecipientZeroChangeRejects verifies the #270
-// pre-flight guard: a multi-recipient directed send whose coin
-// selection covers the target exactly (change == 0) must be
-// rejected locally. Without this, the intent ships with zero
-// IsChange=true markers across 2+ outputs; the server rejects with
-// INVALID_CHANGE_DESIGNATION after a round slot is already
-// consumed. Single-recipient exact-match sends are still allowed
-// (the proto's single-output change marker exception applies).
-func TestSendVTXOsMultiRecipientZeroChangeRejects(t *testing.T) {
-	t.Parallel()
-
-	mgr := &mockVTXOManagerBehavior{
-		selectForfeitResp: &actormsg.SelectAndReserveForfeitResponse{
-			SelectedVTXOs: []actormsg.SelectedVTXO{
-				{
-					Outpoint: testOutpoint(0),
-					Amount:   41000,
-					PkScript: []byte{
-						0x51,
-						0x20,
-						0x01,
-					},
-				},
+			recipients: []btcutil.Amount{
+				40000,
 			},
-			TotalSelected: 41000,
-		},
-	}
-	roundActor := &mockRoundActorBehavior{}
-
-	w := newTestWalletForSend(t, mgr, roundActor)
-
-	// Two recipients summing to 40000, operator fee 1000 → total
-	// 41000 == selected → change 0. Must reject, and the round
-	// actor must not see any register call.
-	result := w.Receive(t.Context(), &SendVTXOsRequest{
-		Recipients: []SendRecipient{
-			testSendRecipient(25000),
-			testSendRecipient(15000),
-		},
-		OperatorFee:   1000,
-		DustLimit:     546,
-		OperatorKey:   testOperatorKey(),
-		VTXOExitDelay: 144,
-	})
-	_, err := result.Unpack()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "multi-recipient")
-	require.Zero(t, roundActor.registerCalls)
-}
-
-// TestSendVTXOsDustChange verifies that change below the dust limit
-// is rejected.
-func TestSendVTXOsDustChange(t *testing.T) {
-	t.Parallel()
-
-	mgr := &mockVTXOManagerBehavior{
-		selectForfeitResp: &actormsg.SelectAndReserveForfeitResponse{
-			SelectedVTXOs: []actormsg.SelectedVTXO{
-				{
-					Outpoint: testOutpoint(0),
-					Amount:   41500,
-					PkScript: []byte{
-						0x51,
-						0x20,
-						0x01,
-					},
-				},
+			want: want{
+				status:        "submitted",
+				change:        9000,
+				selectedCount: 1,
+				totalSelected: 50000,
+				registerCalls: 1,
 			},
-			TotalSelected: 41500,
 		},
-		forfeitReleaseResp: &actormsg.ReleaseForfeitResponse{
-			ReleasedCount: 1,
-		},
-	}
-	roundActor := &mockRoundActorBehavior{}
-
-	w := newTestWalletForSend(t, mgr, roundActor)
-
-	result := w.Receive(t.Context(), &SendVTXOsRequest{
-		Recipients:    []SendRecipient{testSendRecipient(40000)},
-		OperatorFee:   1000,
-		DustLimit:     546,
-		OperatorKey:   testOperatorKey(),
-		VTXOExitDelay: 144,
-	})
-	_, err := result.Unpack()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "below dust limit")
-
-	// Round should not have been called.
-	require.Equal(t, 0, roundActor.registerCalls)
-}
-
-// TestSendVTXOsDryRun verifies that dry-run validates selection then
-// immediately releases the reservation.
-func TestSendVTXOsDryRun(t *testing.T) {
-	t.Parallel()
-
-	mgr := &mockVTXOManagerBehavior{
-		selectForfeitResp: &actormsg.SelectAndReserveForfeitResponse{
-			SelectedVTXOs: []actormsg.SelectedVTXO{
-				{
-					Outpoint: testOutpoint(0),
-					Amount:   50000,
-					PkScript: []byte{
-						0x51,
-						0x20,
-						0x01,
-					},
-				},
+		{
+			name: "exact change produces no change output",
+			selected: []btcutil.Amount{
+				41000,
 			},
-			TotalSelected: 50000,
-		},
-		forfeitReleaseResp: &actormsg.ReleaseForfeitResponse{
-			ReleasedCount: 1,
-		},
-	}
-	roundActor := &mockRoundActorBehavior{}
-
-	w := newTestWalletForSend(t, mgr, roundActor)
-
-	result := w.Receive(t.Context(), &SendVTXOsRequest{
-		Recipients:    []SendRecipient{testSendRecipient(40000)},
-		OperatorFee:   1000,
-		DustLimit:     546,
-		OperatorKey:   testOperatorKey(),
-		VTXOExitDelay: 144,
-		DryRun:        true,
-	})
-	resp, err := result.Unpack()
-	require.NoError(t, err)
-
-	sendResp, ok := resp.(*SendVTXOsResponse)
-	require.True(t, ok, "expected *SendVTXOsResponse")
-	require.Equal(t, "preview", sendResp.Status)
-	require.Equal(t, btcutil.Amount(9000), sendResp.ChangeAmount)
-
-	// Round should NOT have been called.
-	require.Equal(t, 0, roundActor.registerCalls)
-
-	// Release should have been called.
-	require.Equal(t, 1, mgr.forfeitReleaseCalls)
-}
-
-// TestSendVTXOsDryRunReleaseFails verifies that a dry-run succeeds
-// even when the deferred forfeit release fails. The release is
-// best-effort — errors are logged but don't propagate.
-func TestSendVTXOsDryRunReleaseFails(t *testing.T) {
-	t.Parallel()
-
-	mgr := &mockVTXOManagerBehavior{
-		selectForfeitResp: &actormsg.SelectAndReserveForfeitResponse{
-			SelectedVTXOs: []actormsg.SelectedVTXO{
-				{
-					Outpoint: testOutpoint(0),
-					Amount:   50000,
-					PkScript: []byte{
-						0x51,
-						0x20,
-						0x01,
-					},
-				},
+			recipients: []btcutil.Amount{
+				40000,
 			},
-			TotalSelected: 50000,
-		},
-		forfeitReleaseErr: fmt.Errorf("release timeout"),
-	}
-	roundActor := &mockRoundActorBehavior{}
-
-	w := newTestWalletForSend(t, mgr, roundActor)
-
-	result := w.Receive(t.Context(), &SendVTXOsRequest{
-		Recipients:    []SendRecipient{testSendRecipient(40000)},
-		OperatorFee:   1000,
-		DustLimit:     546,
-		OperatorKey:   testOperatorKey(),
-		VTXOExitDelay: 144,
-		DryRun:        true,
-	})
-	resp, err := result.Unpack()
-	require.NoError(t, err)
-
-	sendResp, ok := resp.(*SendVTXOsResponse)
-	require.True(t, ok)
-	require.Equal(t, "preview", sendResp.Status)
-}
-
-// TestSendVTXOsRoundRejectsAndReleases verifies that when the round
-// rejects the intent, the forfeit reservation is released.
-func TestSendVTXOsRoundRejectsAndReleases(t *testing.T) {
-	t.Parallel()
-
-	mgr := &mockVTXOManagerBehavior{
-		selectForfeitResp: &actormsg.SelectAndReserveForfeitResponse{
-			SelectedVTXOs: []actormsg.SelectedVTXO{
-				{
-					Outpoint: testOutpoint(0),
-					Amount:   50000,
-					PkScript: []byte{
-						0x51,
-						0x20,
-						0x01,
-					},
-				},
+			want: want{
+				status:        "submitted",
+				change:        0,
+				registerCalls: 1,
 			},
-			TotalSelected: 50000,
 		},
-		forfeitReleaseResp: &actormsg.ReleaseForfeitResponse{
-			ReleasedCount: 1,
+		{
+			// #270 guard: a multi-recipient send whose selection
+			// covers the target exactly (change == 0) must be
+			// rejected locally before a round slot is consumed.
+			name: "multi-recipient zero change rejects",
+			selected: []btcutil.Amount{
+				41000,
+			},
+			recipients: []btcutil.Amount{
+				25000,
+				15000,
+			},
+			want: want{
+				errSubstr:     "multi-recipient",
+				registerCalls: 0,
+				releaseCalls:  1,
+			},
+		},
+		{
+			name: "dust change rejects",
+			selected: []btcutil.Amount{
+				41500,
+			},
+			recipients: []btcutil.Amount{
+				40000,
+			},
+			want: want{
+				errSubstr:     "below dust limit",
+				registerCalls: 0,
+				releaseCalls:  1,
+			},
+		},
+		{
+			name: "dry run previews and releases",
+			selected: []btcutil.Amount{
+				50000,
+			},
+			recipients: []btcutil.Amount{
+				40000,
+			},
+			dryRun: true,
+			want: want{
+				status:        "preview",
+				change:        9000,
+				registerCalls: 0,
+				releaseCalls:  1,
+			},
+		},
+		{
+			// Dry-run succeeds even when the deferred best-effort
+			// release fails; the error is logged, not propagated.
+			name: "dry run survives release failure",
+			selected: []btcutil.Amount{
+				50000,
+			},
+			recipients: []btcutil.Amount{
+				40000,
+			},
+			dryRun:     true,
+			releaseErr: "release timeout",
+			want: want{
+				status:       "preview",
+				change:       9000,
+				releaseCalls: 1,
+			},
+		},
+		{
+			// Round rejection releases the forfeit reservation.
+			name: "round rejects and releases",
+			selected: []btcutil.Amount{
+				50000,
+			},
+			recipients: []btcutil.Amount{
+				40000,
+			},
+			registerErr: "round full",
+			want: want{
+				errSubstr:     "round full",
+				registerCalls: 1,
+				releaseCalls:  1,
+			},
+		},
+		{
+			name: "selection fails",
+			recipients: []btcutil.Amount{
+				100000,
+			},
+			selectErr: "insufficient funds",
+			want: want{
+				errSubstr:     "insufficient funds",
+				registerCalls: 0,
+			},
 		},
 	}
-	roundActor := &mockRoundActorBehavior{
-		registerErr: fmt.Errorf("round full"),
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			mgr := &mockVTXOManagerBehavior{}
+			if tc.selected != nil {
+				mgr.selectForfeitResp = selectForfeitResp(
+					tc.selected...,
+				)
+				mgr.forfeitReleaseResp =
+					&actormsg.ReleaseForfeitResponse{
+						ReleasedCount: 1,
+					}
+			}
+			if tc.selectErr != "" {
+				mgr.selectForfeitErr = errors.New(tc.selectErr)
+			}
+			if tc.releaseErr != "" {
+				mgr.forfeitReleaseResp = nil
+				mgr.forfeitReleaseErr = errors.New(tc.releaseErr) //nolint:ll
+			}
+
+			roundActor := &mockRoundActorBehavior{}
+			if tc.registerErr != "" {
+				roundActor.registerErr = errors.New(
+					tc.registerErr)
+			}
+
+			w := newTestWalletForSend(t, mgr, roundActor)
+
+			recipients := make(
+				[]SendRecipient, len(tc.recipients),
+			)
+			for i, amt := range tc.recipients {
+				recipients[i] = testSendRecipient(amt)
+			}
+
+			result := w.Receive(t.Context(), &SendVTXOsRequest{
+				Recipients:    recipients,
+				OperatorFee:   1000,
+				DustLimit:     546,
+				OperatorKey:   testOperatorKey(),
+				VTXOExitDelay: 144,
+				DryRun:        tc.dryRun,
+			})
+			resp, err := result.Unpack()
+
+			if tc.want.errSubstr != "" {
+				require.Error(t, err)
+				require.Contains(
+					t, err.Error(), tc.want.errSubstr,
+				)
+				require.Equal(
+					t, tc.want.registerCalls,
+					roundActor.registerCalls,
+				)
+				require.Equal(
+					t, tc.want.releaseCalls,
+					mgr.forfeitReleaseCalls,
+				)
+
+				return
+			}
+
+			require.NoError(t, err)
+
+			sendResp, ok := resp.(*SendVTXOsResponse)
+			require.True(t, ok, "expected *SendVTXOsResponse")
+			require.Equal(t, tc.want.status, sendResp.Status)
+			require.Equal(t, tc.want.change, sendResp.ChangeAmount)
+			if tc.want.selectedCount != 0 {
+				require.Equal(
+					t, tc.want.selectedCount,
+					sendResp.SelectedCount,
+				)
+			}
+			if tc.want.totalSelected != 0 {
+				require.Equal(
+					t, tc.want.totalSelected,
+					sendResp.TotalSelected,
+				)
+			}
+			require.Equal(
+				t, tc.want.registerCalls,
+				roundActor.registerCalls,
+			)
+			require.Equal(
+				t, tc.want.releaseCalls,
+				mgr.forfeitReleaseCalls,
+			)
+		})
 	}
-
-	w := newTestWalletForSend(t, mgr, roundActor)
-
-	result := w.Receive(t.Context(), &SendVTXOsRequest{
-		Recipients:    []SendRecipient{testSendRecipient(40000)},
-		OperatorFee:   1000,
-		DustLimit:     546,
-		OperatorKey:   testOperatorKey(),
-		VTXOExitDelay: 144,
-	})
-	_, err := result.Unpack()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "round full")
-	require.Equal(t, 1, mgr.forfeitReleaseCalls)
-}
-
-// TestSendVTXOsSelectionFails verifies that the send fails gracefully
-// when the manager reports insufficient funds.
-func TestSendVTXOsSelectionFails(t *testing.T) {
-	t.Parallel()
-
-	mgr := &mockVTXOManagerBehavior{
-		selectForfeitErr: fmt.Errorf("insufficient funds"),
-	}
-	roundActor := &mockRoundActorBehavior{}
-
-	w := newTestWalletForSend(t, mgr, roundActor)
-
-	result := w.Receive(t.Context(), &SendVTXOsRequest{
-		Recipients:    []SendRecipient{testSendRecipient(100000)},
-		OperatorFee:   1000,
-		DustLimit:     546,
-		OperatorKey:   testOperatorKey(),
-		VTXOExitDelay: 144,
-	})
-	_, err := result.Unpack()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "insufficient funds")
-	require.Equal(t, 0, roundActor.registerCalls)
 }
 
 // TestSendVTXOsIntentPackageContents verifies the full intent package

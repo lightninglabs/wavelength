@@ -9,25 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestValidateDelayParametersValid tests that valid delay parameters pass
-// validation.
-func TestValidateDelayParametersValid(t *testing.T) {
-	t.Parallel()
-
-	err := ValidateDelayParameters(1008, 144)
-	require.NoError(t, err)
-}
-
-// TestValidateDelayParametersZeroSweepDelay tests that zero sweep delay is
-// rejected.
-func TestValidateDelayParametersZeroSweepDelay(t *testing.T) {
-	t.Parallel()
-
-	err := ValidateDelayParameters(0, 144)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "sweep delay is zero")
-}
-
 // TestValidateDelayParametersZeroExitDelay tests that zero exit delay is
 // rejected.
 func TestValidateDelayParametersZeroExitDelay(t *testing.T) {
@@ -38,38 +19,12 @@ func TestValidateDelayParametersZeroExitDelay(t *testing.T) {
 	require.Contains(t, err.Error(), "VTXO exit delay is zero")
 }
 
-// TestValidateDelayParametersSweepNotGreaterThanExit tests that sweep delay
-// must strictly exceed exit delay.
-func TestValidateDelayParametersSweepNotGreaterThanExit(t *testing.T) {
-	t.Parallel()
-
-	// Sweep delay must strictly exceed exit delay to ensure users have time
-	// to respond after the exit path becomes available.
-	err := ValidateDelayParameters(144, 144)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "must be greater than")
-
-	err = ValidateDelayParameters(100, 144)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "must be greater than")
-}
-
 // TestValidateDelayParametersSweepDelayTooLarge tests that sweep delay
 // exceeding the maximum is rejected.
 func TestValidateDelayParametersSweepDelayTooLarge(t *testing.T) {
 	t.Parallel()
 
 	err := ValidateDelayParameters(60000, 144)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "exceeds maximum reasonable")
-}
-
-// TestValidateDelayParametersExitDelayTooLarge tests that exit delay exceeding
-// the maximum is rejected.
-func TestValidateDelayParametersExitDelayTooLarge(t *testing.T) {
-	t.Parallel()
-
-	err := ValidateDelayParameters(100000, 60000)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "exceeds maximum reasonable")
 }
@@ -301,7 +256,7 @@ func TestValidateDelayParametersTableDriven(t *testing.T) {
 			sweepDelay:    100000,
 			vtxoExitDelay: 60000,
 			expectError:   true,
-			errorMsg:      "exceeds maximum",
+			errorMsg:      "exceeds maximum reasonable",
 		},
 	}
 

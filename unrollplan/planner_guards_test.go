@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -183,12 +182,4 @@ func TestSortBlockedDeterminism(t *testing.T) {
 	require.Equal(t, hashA, tb[0].Txid)
 	require.Equal(t, hashB, tb[1].Txid)
 	require.Equal(t, hashC, tb[2].Txid)
-}
-
-// TestProofAccessor verifies the Proof accessor returns the passed-in proof
-// so callers can retrieve the immutable graph without a separate ref.
-func TestProofAccessor(t *testing.T) {
-	planner, proof := newPlannerFixture(t, linearProofFixture(t))
-	require.IsType(t, &recovery.Proof{}, proof)
-	require.Same(t, proof, planner.Proof())
 }

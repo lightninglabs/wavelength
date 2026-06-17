@@ -195,6 +195,41 @@ func (f *fakeUnrollRef) requestCount() int {
 	return len(f.requests)
 }
 
+// newTestWatcher wires a WatcherActor against the given fakes, registers
+// shutdown cleanup, and returns the actor.
+func newTestWatcher(t *testing.T, chainRef *fakeChainSourceRef,
+	unrollRef *fakeUnrollRef) *WatcherActor {
+
+	t.Helper()
+
+	watcher := NewWatcherActor(WatcherConfig{
+		ChainSource: chainRef,
+		UnrollRef:   unrollRef,
+		Log:         fn.None[btclog.Logger](),
+	})
+	t.Cleanup(watcher.Stop)
+
+	return watcher
+}
+
+// trackVTXOs admits the given descriptors and returns the typed track
+// response, asserting the request succeeded.
+func trackVTXOs(t *testing.T, watcher *WatcherActor,
+	vtxos ...*vtxo.Descriptor) *TrackVTXOsResp {
+
+	t.Helper()
+
+	resp, err := watcher.Ref().Ask(t.Context(), &TrackVTXOsRequest{
+		VTXOs: vtxos,
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	trackResp, ok := resp.(*TrackVTXOsResp)
+	require.True(t, ok)
+
+	return trackResp
+}
+
 // TestWatcherTriggersUnrollOnAncestorSpend verifies the passive watcher calls
 // into unroll only after a watched ancestor materializes.
 func TestWatcherTriggersUnrollOnAncestorSpend(t *testing.T) {
@@ -204,19 +239,9 @@ func TestWatcherTriggersUnrollOnAncestorSpend(t *testing.T) {
 
 	chainRef := &fakeChainSourceRef{}
 	unrollRef := &fakeUnrollRef{}
-	watcher := NewWatcherActor(WatcherConfig{
-		ChainSource: chainRef,
-		UnrollRef:   unrollRef,
-		Log:         fn.None[btclog.Logger](),
-	})
-	t.Cleanup(watcher.Stop)
+	watcher := newTestWatcher(t, chainRef, unrollRef)
 
-	resp, err := watcher.Ref().Ask(t.Context(), &TrackVTXOsRequest{
-		VTXOs: []*vtxo.Descriptor{desc},
-	}).Await(t.Context()).Unpack()
-	require.NoError(t, err)
-	trackResp, ok := resp.(*TrackVTXOsResp)
-	require.True(t, ok)
+	trackResp := trackVTXOs(t, watcher, desc)
 	require.Equal(t, 1, trackResp.Tracked)
 	require.Equal(t, 2, chainRef.spendWatchCount())
 
@@ -256,25 +281,11 @@ func TestWatcherTracksOnlyLiveOORVTXOs(t *testing.T) {
 	spentOOR.Status = vtxo.VTXOStatusSpent
 
 	chainRef := &fakeChainSourceRef{}
-	watcher := NewWatcherActor(WatcherConfig{
-		ChainSource: chainRef,
-		UnrollRef:   &fakeUnrollRef{},
-		Log:         fn.None[btclog.Logger](),
-	})
-	t.Cleanup(watcher.Stop)
+	watcher := newTestWatcher(t, chainRef, &fakeUnrollRef{})
 
-	resp, err := watcher.Ref().Ask(t.Context(), &TrackVTXOsRequest{
-		VTXOs: []*vtxo.Descriptor{
-			liveRound,
-			spentOOR,
-			liveOOR,
-			nil,
-		},
-	}).Await(t.Context()).Unpack()
-	require.NoError(t, err)
-
-	trackResp, ok := resp.(*TrackVTXOsResp)
-	require.True(t, ok)
+	trackResp := trackVTXOs(
+		t, watcher, liveRound, spentOOR, liveOOR, nil,
+	)
 	require.Equal(t, 1, trackResp.Tracked)
 	require.Equal(t, 2, chainRef.spendWatchCount())
 }
@@ -288,27 +299,16 @@ func TestWatcherRefcountsSharedWatchOutpoints(t *testing.T) {
 	targetTwo := testInput(32)
 
 	chainRef := &fakeChainSourceRef{}
-	watcher := NewWatcherActor(WatcherConfig{
-		ChainSource: chainRef,
-		UnrollRef:   &fakeUnrollRef{},
-		Log:         fn.None[btclog.Logger](),
-	})
-	t.Cleanup(watcher.Stop)
+	watcher := newTestWatcher(t, chainRef, &fakeUnrollRef{})
 
-	resp, err := watcher.Ref().Ask(t.Context(), &TrackVTXOsRequest{
-		VTXOs: []*vtxo.Descriptor{
-			testDescriptor(targetOne, treePath),
-			testDescriptor(targetTwo, treePath),
-		},
-	}).Await(t.Context()).Unpack()
-	require.NoError(t, err)
-
-	trackResp, ok := resp.(*TrackVTXOsResp)
-	require.True(t, ok)
+	trackResp := trackVTXOs(
+		t, watcher, testDescriptor(targetOne, treePath),
+		testDescriptor(targetTwo, treePath),
+	)
 	require.Equal(t, 2, trackResp.Tracked)
 	require.Equal(t, 2, chainRef.spendWatchCount())
 
-	_, err = watcher.Ref().Ask(
+	_, err := watcher.Ref().Ask(
 		t.Context(), &UntrackRequest{TargetOutpoint: targetOne},
 	).Await(t.Context()).Unpack()
 	require.NoError(t, err)
@@ -334,12 +334,7 @@ func TestWatcherBestEffortTrackKeepsValidDescriptors(t *testing.T) {
 	bad.Ancestry[0].TreePath = nil
 
 	chainRef := &fakeChainSourceRef{}
-	watcher := NewWatcherActor(WatcherConfig{
-		ChainSource: chainRef,
-		UnrollRef:   &fakeUnrollRef{},
-		Log:         fn.None[btclog.Logger](),
-	})
-	t.Cleanup(watcher.Stop)
+	watcher := newTestWatcher(t, chainRef, &fakeUnrollRef{})
 
 	_, err := watcher.Ref().Ask(t.Context(), &TrackVTXOsRequest{
 		VTXOs: []*vtxo.Descriptor{bad, good},
@@ -355,22 +350,19 @@ func TestWatcherSpendFanoutBestEffort(t *testing.T) {
 	treePath, source := testLeafTree(t, 50)
 	unrollRef := &fakeUnrollRef{err: fmt.Errorf("admission failed")}
 	chainRef := &fakeChainSourceRef{}
-	watcher := NewWatcherActor(WatcherConfig{
-		ChainSource: chainRef,
-		UnrollRef:   unrollRef,
-		Log:         fn.None[btclog.Logger](),
-	})
-	t.Cleanup(watcher.Stop)
+	watcher := newTestWatcher(t, chainRef, unrollRef)
 
-	_, err := watcher.Ref().Ask(t.Context(), &TrackVTXOsRequest{
-		VTXOs: []*vtxo.Descriptor{
-			testDescriptor(testInput(51), treePath),
-			testDescriptor(testInput(52), treePath),
-		},
-	}).Await(t.Context()).Unpack()
-	require.NoError(t, err)
+	trackVTXOs(
+		t, watcher,
+		testDescriptor(
+			testInput(51), treePath,
+		),
+		testDescriptor(
+			testInput(52), treePath,
+		),
+	)
 
-	_, err = watcher.Ref().Ask(t.Context(), &SpendObservedMsg{
+	_, err := watcher.Ref().Ask(t.Context(), &SpendObservedMsg{
 		Outpoint:     source,
 		SpendingTxid: testInput(53).Hash,
 		Height:       33,

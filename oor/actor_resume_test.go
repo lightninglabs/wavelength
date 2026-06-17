@@ -408,16 +408,115 @@ func (h *cosignedButDroppedHandler) Handle(_ context.Context,
 
 var _ OutboxHandler = (*cosignedButDroppedHandler)(nil)
 
+// resumeViaSnapshotCase describes one export/restore/resume scenario. Each row
+// drives a fresh transfer to an intermediate paused phase, exports a snapshot,
+// restores it into a new actor, and asserts the resumed workflow completes.
+type resumeViaSnapshotCase struct {
+	// name is the subtest name.
+	name string
+
+	// actorID is the base actor ID; "-1" / "-2" suffixes distinguish the
+	// original and restored actors.
+	actorID string
+
+	// newHandler builds the outbox handler that pauses at the phase under
+	// test the first time, then completes on resume.
+	newHandler func(t *testing.T, client, operator input.Signer) OutboxHandler //nolint:ll
+
+	// wantIntermediate is the FSM state expected before export (a
+	// zero-value pointer used only for require.IsType).
+	wantIntermediate State
+
+	// wantPhase is the snapshot phase expected at export time.
+	wantPhase OutgoingPhase
+}
+
 // TestOORClientActorResumeFromSnapshot verifies the client actor can export a
-// snapshot, restore it into a new actor, and resume the workflow to completion.
+// snapshot at each interruptible phase, restore it into a new actor, and resume
+// the workflow to completion. The snapshot must carry enough information to
+// re-emit the implied outbox work idempotently, including the
+// point-of-no-return case where the server already co-signed but the client
+// missed the response (it must re-send byte-identical submit bytes).
 func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 	t.Parallel()
 
+	cases := []resumeViaSnapshotCase{
+		{
+			name:    "paused finalize",
+			actorID: "oor-resume-snapshot-actor",
+			newHandler: func(t *testing.T,
+				client, operator input.Signer) OutboxHandler {
+
+				return &pausedFinalizeHandler{
+					t:              t,
+					clientSigner:   client,
+					operatorSigner: operator,
+				}
+			},
+			wantIntermediate: &AwaitingFinalizeAccepted{},
+			wantPhase:        OutgoingPhaseFinalizeSent,
+		},
+		{
+			name:    "cosigned but dropped",
+			actorID: "oor-resume-cosigned-actor",
+			newHandler: func(t *testing.T,
+				client, operator input.Signer) OutboxHandler {
+
+				return &cosignedButDroppedHandler{
+					t:              t,
+					clientSigner:   client,
+					operatorSigner: operator,
+				}
+			},
+			wantIntermediate: &AwaitingSubmitAccepted{},
+			wantPhase:        OutgoingPhaseSubmitSent,
+		},
+		{
+			name:    "paused submit",
+			actorID: "oor-resume-submit-actor",
+			newHandler: func(t *testing.T,
+				client, operator input.Signer) OutboxHandler {
+
+				return &pausedSubmitHandler{
+					t:              t,
+					clientSigner:   client,
+					operatorSigner: operator,
+				}
+			},
+			wantIntermediate: &AwaitingSubmitAccepted{},
+			wantPhase:        OutgoingPhaseSubmitSent,
+		},
+		{
+			name:    "paused checkpoint cosign",
+			actorID: "oor-resume-cosigned-phase-actor",
+			newHandler: func(t *testing.T,
+				client, operator input.Signer) OutboxHandler {
+
+				return &pausedCoSignedHandler{
+					t:              t,
+					clientSigner:   client,
+					operatorSigner: operator,
+				}
+			},
+			wantIntermediate: &AwaitingCheckpointSignatures{},
+			wantPhase:        OutgoingPhaseCoSigned,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			runResumeViaSnapshotCase(t, tc)
+		})
+	}
+}
+
+// runResumeViaSnapshotCase exercises one export/restore/resume scenario.
+func runResumeViaSnapshotCase(t *testing.T, tc resumeViaSnapshotCase) {
 	ctx := t.Context()
 
-	// Build a deterministic transfer with a mocked client signer. The
-	// outbox handler will pause on finalize to simulate a transport/UI
-	// interruption that requires an explicit resume.
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
@@ -455,19 +554,14 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 	}
 
 	deliveryStore := newTestDeliveryStore(t)
+	handler := tc.newHandler(t, clientSigner, operatorSigner)
 
-	handler := &pausedFinalizeHandler{
-		t:              t,
-		clientSigner:   clientSigner,
-		operatorSigner: operatorSigner,
-	}
-
-	// Start a session and drive it until finalize is sent (but "dropped"
-	// by the outbox handler).
+	// Start a session and drive it until the handler pauses at the phase
+	// under test.
 	actor1 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
 		DeliveryStore: deliveryStore,
-		ActorID:       "oor-resume-snapshot-actor-1",
+		ActorID:       tc.actorID + "-1",
 	})
 	defer actor1.Stop()
 
@@ -488,14 +582,10 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 
 	stateMsg, ok := stateResp.UnwrapOr(nil).(*GetStateResponse)
 	require.True(t, ok)
+	require.IsType(t, tc.wantIntermediate, stateMsg.State)
 
-	require.IsType(t, &AwaitingFinalizeAccepted{}, stateMsg.State)
-
-	// Export a portable snapshot, then create a new actor and restore from
-	// it to simulate an app restart.
-	//
-	// The key property is that the snapshot contains enough information to
-	// re-emit the outbox work implied by the state (idempotently).
+	// Export a portable snapshot and restore it into a new actor to
+	// simulate an app restart.
 	exportResp := actor1.Receive(ctx, &ExportSnapshotRequest{
 		SessionID: startMsg.SessionID,
 	})
@@ -504,13 +594,12 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 	exportMsg, ok := exportResp.UnwrapOr(nil).(*ExportSnapshotResponse)
 	require.True(t, ok)
 	require.NotNil(t, exportMsg.Snapshot)
-	require.Equal(t, OutgoingPhaseFinalizeSent, exportMsg.Snapshot.Phase)
+	require.Equal(t, tc.wantPhase, exportMsg.Snapshot.Phase)
 
-	// Restore into a new actor and resume.
 	actor2 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
 		DeliveryStore: deliveryStore,
-		ActorID:       "oor-resume-snapshot-actor-2",
+		ActorID:       tc.actorID + "-2",
 	})
 	defer actor2.Stop()
 
@@ -522,135 +611,6 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 	restoreMsg, ok := restoreResp.UnwrapOr(nil).(*RestoreSessionResponse)
 	require.True(t, ok)
 	require.Equal(t, startMsg.SessionID, restoreMsg.SessionID)
-
-	resumeResp := actor2.Receive(ctx, &ResumeSessionRequest{
-		SessionID: restoreMsg.SessionID,
-	})
-	require.True(t, resumeResp.IsOk())
-
-	finalStateResp := actor2.Receive(ctx, &GetStateRequest{
-		SessionID: restoreMsg.SessionID,
-	})
-	require.True(t, finalStateResp.IsOk())
-
-	finalStateMsg, ok := finalStateResp.UnwrapOr(nil).(*GetStateResponse)
-	require.True(t, ok)
-	require.IsType(t, &Completed{}, finalStateMsg.State)
-}
-
-// TestOORClientActorResumeAfterServerCoSigned verifies the client can resume
-// safely if the server reached point-of-no-return (co-signed) but the client
-// missed the submit response.
-func TestOORClientActorResumeAfterServerCoSigned(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-
-	// This test covers the "point of no return" edge:
-	//
-	// - The server has accepted the submit package and co-signed it.
-	// - The client did not receive SubmitAcceptedEvent.
-	//
-	// On resume, the client must send the exact same submit bytes and the
-	// server must return the same co-signed artifacts.
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	policy := arkscript.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
-
-	inputValue := btcutil.Amount(10000)
-
-	clientKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
-	operatorSigner := input.NewMockSigner(
-		[]*btcec.PrivateKey{operatorKey}, nil,
-	)
-
-	inputs := []TransferInput{
-		newTestTransferInput(
-			t, clientKey, policy.OperatorKey,
-			wire.OutPoint{
-				Hash:  [32]byte{0x01},
-				Index: 0,
-			},
-			inputValue,
-		),
-	}
-
-	recipients := []oortx.RecipientOutput{
-		{
-			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
-			Value:    inputValue,
-		},
-	}
-
-	deliveryStore := newTestDeliveryStore(t)
-	handler := &cosignedButDroppedHandler{
-		t:              t,
-		clientSigner:   clientSigner,
-		operatorSigner: operatorSigner,
-	}
-
-	actor1 := NewOORClientActor(ClientActorCfg{
-		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
-		ActorID:       "oor-resume-cosigned-actor-1",
-	})
-	defer actor1.Stop()
-
-	startResp := actor1.Receive(ctx, &StartTransferRequest{
-		Policy:     policy,
-		Inputs:     inputs,
-		Recipients: recipients,
-	})
-	require.True(t, startResp.IsOk())
-
-	startMsg, ok := startResp.UnwrapOr(nil).(*StartTransferResponse)
-	require.True(t, ok)
-
-	// At this point, the handler simulated the server already co-signing
-	// but the client did not receive the response, so we should still be
-	// waiting for submit acceptance.
-	stateResp := actor1.Receive(ctx, &GetStateRequest{
-		SessionID: startMsg.SessionID,
-	})
-	require.True(t, stateResp.IsOk())
-
-	stateMsg, ok := stateResp.UnwrapOr(nil).(*GetStateResponse)
-	require.True(t, ok)
-	require.IsType(t, &AwaitingSubmitAccepted{}, stateMsg.State)
-
-	exportResp := actor1.Receive(ctx, &ExportSnapshotRequest{
-		SessionID: startMsg.SessionID,
-	})
-	require.True(t, exportResp.IsOk())
-
-	exportMsg, ok := exportResp.UnwrapOr(nil).(*ExportSnapshotResponse)
-	require.True(t, ok)
-	require.NotNil(t, exportMsg.Snapshot)
-	require.Equal(t, OutgoingPhaseSubmitSent, exportMsg.Snapshot.Phase)
-
-	// Restore into a new actor and resume (which should re-send submit and
-	// receive the already-co-signed artifacts).
-	actor2 := NewOORClientActor(ClientActorCfg{
-		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
-		ActorID:       "oor-resume-cosigned-actor-2",
-	})
-	defer actor2.Stop()
-
-	restoreResp := actor2.Receive(ctx, &RestoreSessionRequest{
-		Snapshot: exportMsg.Snapshot,
-	})
-	require.True(t, restoreResp.IsOk())
-
-	restoreMsg, ok := restoreResp.UnwrapOr(nil).(*RestoreSessionResponse)
-	require.True(t, ok)
 
 	resumeResp := actor2.Receive(ctx, &ResumeSessionRequest{
 		SessionID: restoreMsg.SessionID,
@@ -775,239 +735,6 @@ func TestOORClientActorResumeAfterServerCoSignedFromStore(t *testing.T) {
 
 		return ok
 	}, signingChainEventuallyTimeout, 50*time.Millisecond)
-}
-
-// TestOORClientActorResumeFromSnapshotSubmitSent verifies the client can resume
-// after submit was sent but the response was dropped.
-func TestOORClientActorResumeFromSnapshotSubmitSent(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	policy := arkscript.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
-
-	inputValue := btcutil.Amount(10000)
-
-	clientKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
-	operatorSigner := input.NewMockSigner(
-		[]*btcec.PrivateKey{operatorKey}, nil,
-	)
-
-	inputs := []TransferInput{
-		newTestTransferInput(
-			t, clientKey, policy.OperatorKey,
-			wire.OutPoint{
-				Hash:  [32]byte{0x01},
-				Index: 0,
-			},
-			inputValue,
-		),
-	}
-
-	recipients := []oortx.RecipientOutput{
-		{
-			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
-			Value:    inputValue,
-		},
-	}
-
-	deliveryStore := newTestDeliveryStore(t)
-	handler := &pausedSubmitHandler{
-		t:              t,
-		clientSigner:   clientSigner,
-		operatorSigner: operatorSigner,
-	}
-
-	actor1 := NewOORClientActor(ClientActorCfg{
-		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
-		ActorID:       "oor-resume-submit-actor-1",
-	})
-	defer actor1.Stop()
-
-	startResp := actor1.Receive(ctx, &StartTransferRequest{
-		Policy:     policy,
-		Inputs:     inputs,
-		Recipients: recipients,
-	})
-	require.True(t, startResp.IsOk())
-
-	startMsg, ok := startResp.UnwrapOr(nil).(*StartTransferResponse)
-	require.True(t, ok)
-
-	stateResp := actor1.Receive(ctx, &GetStateRequest{
-		SessionID: startMsg.SessionID,
-	})
-	require.True(t, stateResp.IsOk())
-
-	stateMsg, ok := stateResp.UnwrapOr(nil).(*GetStateResponse)
-	require.True(t, ok)
-	require.IsType(t, &AwaitingSubmitAccepted{}, stateMsg.State)
-
-	exportResp := actor1.Receive(ctx, &ExportSnapshotRequest{
-		SessionID: startMsg.SessionID,
-	})
-	require.True(t, exportResp.IsOk())
-
-	exportMsg, ok := exportResp.UnwrapOr(nil).(*ExportSnapshotResponse)
-	require.True(t, ok)
-	require.NotNil(t, exportMsg.Snapshot)
-	require.Equal(t, OutgoingPhaseSubmitSent, exportMsg.Snapshot.Phase)
-
-	actor2 := NewOORClientActor(ClientActorCfg{
-		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
-		ActorID:       "oor-resume-submit-actor-2",
-	})
-	defer actor2.Stop()
-
-	restoreResp := actor2.Receive(ctx, &RestoreSessionRequest{
-		Snapshot: exportMsg.Snapshot,
-	})
-	require.True(t, restoreResp.IsOk())
-
-	restoreMsg, ok := restoreResp.UnwrapOr(nil).(*RestoreSessionResponse)
-	require.True(t, ok)
-
-	resumeResp := actor2.Receive(ctx, &ResumeSessionRequest{
-		SessionID: restoreMsg.SessionID,
-	})
-	require.True(t, resumeResp.IsOk())
-
-	finalStateResp := actor2.Receive(ctx, &GetStateRequest{
-		SessionID: restoreMsg.SessionID,
-	})
-	require.True(t, finalStateResp.IsOk())
-
-	finalStateMsg, ok := finalStateResp.UnwrapOr(nil).(*GetStateResponse)
-	require.True(t, ok)
-	require.IsType(t, &Completed{}, finalStateMsg.State)
-}
-
-// TestOORClientActorResumeFromSnapshotCoSigned verifies the client can resume
-// after the server accepted/co-signed but the client did not complete signing
-// checkpoints yet.
-func TestOORClientActorResumeFromSnapshotCoSigned(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	policy := arkscript.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
-
-	inputValue := btcutil.Amount(10000)
-
-	clientKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
-	operatorSigner := input.NewMockSigner(
-		[]*btcec.PrivateKey{operatorKey}, nil,
-	)
-
-	inputs := []TransferInput{
-		newTestTransferInput(
-			t, clientKey, policy.OperatorKey,
-			wire.OutPoint{
-				Hash:  [32]byte{0x01},
-				Index: 0,
-			},
-			inputValue,
-		),
-	}
-
-	recipients := []oortx.RecipientOutput{
-		{
-			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
-			Value:    inputValue,
-		},
-	}
-
-	deliveryStore := newTestDeliveryStore(t)
-	handler := &pausedCoSignedHandler{
-		t:              t,
-		clientSigner:   clientSigner,
-		operatorSigner: operatorSigner,
-	}
-
-	actor1 := NewOORClientActor(ClientActorCfg{
-		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
-		ActorID:       "oor-resume-cosigned-phase-actor-1",
-	})
-	defer actor1.Stop()
-
-	startResp := actor1.Receive(ctx, &StartTransferRequest{
-		Policy:     policy,
-		Inputs:     inputs,
-		Recipients: recipients,
-	})
-	require.True(t, startResp.IsOk())
-
-	startMsg, ok := startResp.UnwrapOr(nil).(*StartTransferResponse)
-	require.True(t, ok)
-
-	stateResp := actor1.Receive(ctx, &GetStateRequest{
-		SessionID: startMsg.SessionID,
-	})
-	require.True(t, stateResp.IsOk())
-
-	stateMsg, ok := stateResp.UnwrapOr(nil).(*GetStateResponse)
-	require.True(t, ok)
-	require.IsType(t, &AwaitingCheckpointSignatures{}, stateMsg.State)
-
-	exportResp := actor1.Receive(ctx, &ExportSnapshotRequest{
-		SessionID: startMsg.SessionID,
-	})
-	require.True(t, exportResp.IsOk())
-
-	exportMsg, ok := exportResp.UnwrapOr(nil).(*ExportSnapshotResponse)
-	require.True(t, ok)
-	require.NotNil(t, exportMsg.Snapshot)
-	require.Equal(t, OutgoingPhaseCoSigned, exportMsg.Snapshot.Phase)
-
-	actor2 := NewOORClientActor(ClientActorCfg{
-		OutboxHandler: handler,
-		DeliveryStore: deliveryStore,
-		ActorID:       "oor-resume-cosigned-phase-actor-2",
-	})
-	defer actor2.Stop()
-
-	restoreResp := actor2.Receive(ctx, &RestoreSessionRequest{
-		Snapshot: exportMsg.Snapshot,
-	})
-	require.True(t, restoreResp.IsOk())
-
-	restoreMsg, ok := restoreResp.UnwrapOr(nil).(*RestoreSessionResponse)
-	require.True(t, ok)
-
-	resumeResp := actor2.Receive(ctx, &ResumeSessionRequest{
-		SessionID: restoreMsg.SessionID,
-	})
-	require.True(t, resumeResp.IsOk())
-
-	finalStateResp := actor2.Receive(ctx, &GetStateRequest{
-		SessionID: restoreMsg.SessionID,
-	})
-	require.True(t, finalStateResp.IsOk())
-
-	finalStateMsg, ok := finalStateResp.UnwrapOr(nil).(*GetStateResponse)
-	require.True(t, ok)
-	require.IsType(t, &Completed{}, finalStateMsg.State)
 }
 
 // TestOORClientActorDurableRestartAutoResume verifies the durable actor can

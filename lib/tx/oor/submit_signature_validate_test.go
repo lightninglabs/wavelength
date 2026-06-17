@@ -15,10 +15,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestValidateSubmitPackageSignedHappyPath asserts a signed submit package
-// with valid tapscript data passes full validation.
-func TestValidateSubmitPackageSignedHappyPath(t *testing.T) {
-	t.Parallel()
+// newSignedPackage builds a checkpoint + Ark PSBT pair for signed-validation
+// tests. It spends a single VTXO with the given pkScript and owner leaf script
+// under a fresh operator policy, mirroring the production builders. The owner
+// leaf is attached to the Ark input only when attachLeaf is set, allowing
+// callers to exercise the missing-leaf rejection path.
+func newSignedPackage(t *testing.T, prevByte byte, vtxoScript []byte,
+	ownerLeafScript []byte, attachLeaf bool) (*psbt.Packet, *psbt.Packet) {
+
+	t.Helper()
 
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
@@ -28,16 +33,15 @@ func TestValidateSubmitPackageSignedHappyPath(t *testing.T) {
 		CSVDelay:    10,
 	}
 
-	ownerLeafScript := []byte{txscript.OP_TRUE}
 	checkpointRes, err := BuildCheckpointPSBT(policy, CheckpointInput{
 		SpentVTXO: SpentVTXORef{
 			Outpoint: wire.OutPoint{
-				Hash:  [32]byte{1},
+				Hash:  [32]byte{prevByte},
 				Index: 0,
 			},
 			Output: &wire.TxOut{
 				Value:    5000,
-				PkScript: randomP2TRScript(t),
+				PkScript: vtxoScript,
 			},
 		},
 		OwnerLeafScript: ownerLeafScript,
@@ -54,15 +58,29 @@ func TestValidateSubmitPackageSignedHappyPath(t *testing.T) {
 	}})
 	require.NoError(t, err)
 
-	leaf, err := BuildTaprootTapLeafScript(
-		checkpointRes.TapTreeEncoded, ownerLeafScript,
-	)
-	require.NoError(t, err)
-	arkPSBT.Inputs[0].TaprootLeafScript =
-		[]*psbt.TaprootTapLeafScript{leaf}
+	if attachLeaf {
+		leaf, err := BuildTaprootTapLeafScript(
+			checkpointRes.TapTreeEncoded, ownerLeafScript,
+		)
+		require.NoError(t, err)
+		arkPSBT.Inputs[0].TaprootLeafScript =
+			[]*psbt.TaprootTapLeafScript{leaf}
+	}
 
-	_, err = ValidateSubmitPackageSigned(
-		arkPSBT, []*psbt.Packet{checkpointRes.PSBT},
+	return checkpointRes.PSBT, arkPSBT
+}
+
+// TestValidateSubmitPackageSignedHappyPath asserts a signed submit package
+// with valid tapscript data passes full validation.
+func TestValidateSubmitPackageSignedHappyPath(t *testing.T) {
+	t.Parallel()
+
+	checkpoint, arkPSBT := newSignedPackage(
+		t, 1, randomP2TRScript(t), []byte{txscript.OP_TRUE}, true,
+	)
+
+	_, err := ValidateSubmitPackageSigned(
+		arkPSBT, []*psbt.Packet{checkpoint},
 	)
 	require.NoError(t, err)
 }
@@ -72,50 +90,13 @@ func TestValidateSubmitPackageSignedHappyPath(t *testing.T) {
 func TestValidateSubmitPackageSignedRejectsBadControlBlock(t *testing.T) {
 	t.Parallel()
 
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	policy := arkscript.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
-
-	ownerLeafScript := []byte{txscript.OP_TRUE}
-	checkpointRes, err := BuildCheckpointPSBT(policy, CheckpointInput{
-		SpentVTXO: SpentVTXORef{
-			Outpoint: wire.OutPoint{
-				Hash:  [32]byte{2},
-				Index: 0,
-			},
-			Output: &wire.TxOut{
-				Value:    5000,
-				PkScript: randomP2TRScript(t),
-			},
-		},
-		OwnerLeafScript: ownerLeafScript,
-	})
-	require.NoError(t, err)
-
-	arkPSBT, err := BuildArkPSBT([]CheckpointOutput{{
-		Txid:           checkpointRes.PSBT.UnsignedTx.TxHash(),
-		Output:         checkpointRes.PSBT.UnsignedTx.TxOut[0],
-		TapTreeEncoded: checkpointRes.TapTreeEncoded,
-	}}, []RecipientOutput{{
-		PkScript: randomP2TRScript(t),
-		Value:    btcutil.Amount(5000),
-	}})
-	require.NoError(t, err)
-
-	leaf, err := BuildTaprootTapLeafScript(
-		checkpointRes.TapTreeEncoded, ownerLeafScript,
+	checkpoint, arkPSBT := newSignedPackage(
+		t, 2, randomP2TRScript(t), []byte{txscript.OP_TRUE}, true,
 	)
-	require.NoError(t, err)
-	leaf.ControlBlock[0] ^= 0x01
-	arkPSBT.Inputs[0].TaprootLeafScript =
-		[]*psbt.TaprootTapLeafScript{leaf}
+	arkPSBT.Inputs[0].TaprootLeafScript[0].ControlBlock[0] ^= 0x01
 
-	_, err = ValidateSubmitPackageSigned(
-		arkPSBT, []*psbt.Packet{checkpointRes.PSBT},
+	_, err := ValidateSubmitPackageSigned(
+		arkPSBT, []*psbt.Packet{checkpoint},
 	)
 	require.Error(t, err)
 }
@@ -126,48 +107,19 @@ func TestValidateSubmitPackageSignedRejectsBadControlBlock(t *testing.T) {
 func TestValidateFinalizePackageSignedWithFinalWitness(t *testing.T) {
 	t.Parallel()
 
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	policy := arkscript.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
-
-	checkpointRes, err := BuildCheckpointPSBT(policy, CheckpointInput{
-		SpentVTXO: SpentVTXORef{
-			Outpoint: wire.OutPoint{
-				Hash:  [32]byte{3},
-				Index: 0,
-			},
-			Output: &wire.TxOut{
-				Value:    5000,
-				PkScript: p2WSHTrueScript(),
-			},
-		},
-		OwnerLeafScript: []byte{txscript.OP_TRUE},
-	})
-	require.NoError(t, err)
+	checkpoint, arkPSBT := newSignedPackage(
+		t, 3, p2WSHTrueScript(), []byte{txscript.OP_TRUE}, false,
+	)
 
 	finalWitness, err := encodeFinalWitness(
 		wire.TxWitness{[]byte{txscript.OP_TRUE}},
 	)
 	require.NoError(t, err)
-	checkpointRes.PSBT.Inputs[0].FinalScriptWitness = finalWitness
-	checkpointRes.PSBT.Inputs[0].Unknowns = nil
-
-	arkPSBT, err := BuildArkPSBT([]CheckpointOutput{{
-		Txid:           checkpointRes.PSBT.UnsignedTx.TxHash(),
-		Output:         checkpointRes.PSBT.UnsignedTx.TxOut[0],
-		TapTreeEncoded: checkpointRes.TapTreeEncoded,
-	}}, []RecipientOutput{{
-		PkScript: randomP2TRScript(t),
-		Value:    btcutil.Amount(5000),
-	}})
-	require.NoError(t, err)
+	checkpoint.Inputs[0].FinalScriptWitness = finalWitness
+	checkpoint.Inputs[0].Unknowns = nil
 
 	err = ValidateFinalizePackageSigned(
-		arkPSBT, []*psbt.Packet{checkpointRes.PSBT},
+		arkPSBT, []*psbt.Packet{checkpoint},
 	)
 	require.NoError(t, err)
 }
@@ -178,41 +130,12 @@ func TestValidateFinalizePackageSignedWithFinalWitness(t *testing.T) {
 func TestValidateSubmitSignedRejectsMissingArkInputLeafScript(t *testing.T) {
 	t.Parallel()
 
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
+	checkpoint, arkPSBT := newSignedPackage(
+		t, 5, randomP2TRScript(t), []byte{txscript.OP_TRUE}, false,
+	)
 
-	policy := arkscript.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
-
-	checkpointRes, err := BuildCheckpointPSBT(policy, CheckpointInput{
-		SpentVTXO: SpentVTXORef{
-			Outpoint: wire.OutPoint{
-				Hash:  [32]byte{5},
-				Index: 0,
-			},
-			Output: &wire.TxOut{
-				Value:    5000,
-				PkScript: randomP2TRScript(t),
-			},
-		},
-		OwnerLeafScript: []byte{txscript.OP_TRUE},
-	})
-	require.NoError(t, err)
-
-	arkPSBT, err := BuildArkPSBT([]CheckpointOutput{{
-		Txid:           checkpointRes.PSBT.UnsignedTx.TxHash(),
-		Output:         checkpointRes.PSBT.UnsignedTx.TxOut[0],
-		TapTreeEncoded: checkpointRes.TapTreeEncoded,
-	}}, []RecipientOutput{{
-		PkScript: randomP2TRScript(t),
-		Value:    btcutil.Amount(5000),
-	}})
-	require.NoError(t, err)
-
-	_, err = ValidateSubmitPackageSigned(
-		arkPSBT, []*psbt.Packet{checkpointRes.PSBT},
+	_, err := ValidateSubmitPackageSigned(
+		arkPSBT, []*psbt.Packet{checkpoint},
 	)
 	require.ErrorContains(
 		t, err, "missing taproot signature or leaf script",

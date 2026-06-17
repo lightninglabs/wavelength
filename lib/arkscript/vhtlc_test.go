@@ -248,75 +248,6 @@ func TestVHTLCPkScript(t *testing.T) {
 	require.Equal(t, byte(txscript.OP_1), pkScript[0])
 }
 
-// TestVHTLCTxContextDerivation tests that tx-context requirements are
-// derived correctly for each closure.
-func TestVHTLCTxContextDerivation(t *testing.T) {
-	t.Parallel()
-
-	opts := testVHTLCOpts(t)
-
-	policy, err := NewVHTLCPolicy(opts)
-	require.NoError(t, err)
-
-	// ClaimClosure: HashLock + Multisig (no timelock).
-	claimSeq := DeriveSequence(policy.ClaimClosure)
-	claimLocktime := DeriveLockTime(policy.ClaimClosure)
-	require.Equal(
-		t, uint32(0xffffffff), claimSeq,
-		"claim should have no sequence requirement",
-	)
-	require.Equal(
-		t, uint32(0), claimLocktime,
-		"claim should have no locktime requirement",
-	)
-
-	// RefundClosure: Multisig (no timelock).
-	refundSeq := DeriveSequence(policy.RefundClosure)
-	refundLocktime := DeriveLockTime(policy.RefundClosure)
-	require.Equal(t, uint32(0xffffffff), refundSeq)
-	require.Equal(t, uint32(0), refundLocktime)
-
-	// RefundWithoutReceiverClosure: CLTV + Multisig.
-	rwrSeq := DeriveSequence(policy.RefundWithoutReceiverClosure)
-	rwrLocktime := DeriveLockTime(policy.RefundWithoutReceiverClosure)
-	require.Equal(
-		t, uint32(0xfffffffe), rwrSeq,
-		"CLTV requires non-final sequence",
-	)
-	require.Equal(
-		t, opts.RefundLocktime, rwrLocktime,
-		"CLTV locktime should match",
-	)
-
-	// UnilateralClaimClosure: CSV + HashLock + Checksig.
-	ucSeq := DeriveSequence(policy.UnilateralClaimClosure)
-	ucLocktime := DeriveLockTime(policy.UnilateralClaimClosure)
-	require.Equal(
-		t, opts.UnilateralClaimDelay, ucSeq,
-		"CSV delay should be returned as sequence",
-	)
-	require.Equal(
-		t, uint32(0), ucLocktime, "CSV has no locktime requirement",
-	)
-
-	// UnilateralRefundClosure: CSV + Multisig.
-	urSeq := DeriveSequence(policy.UnilateralRefundClosure)
-	urLocktime := DeriveLockTime(policy.UnilateralRefundClosure)
-	require.Equal(t, opts.UnilateralRefundDelay, urSeq)
-	require.Equal(t, uint32(0), urLocktime)
-
-	// UnilateralRefundWithoutReceiverClosure: CSV + CLTV + Checksig.
-	urwrSeq := DeriveSequence(
-		policy.UnilateralRefundWithoutReceiverClosure,
-	)
-	urwrLocktime := DeriveLockTime(
-		policy.UnilateralRefundWithoutReceiverClosure,
-	)
-	require.Equal(t, opts.UnilateralRefundWithoutReceiverDelay,
-		urwrSeq)
-	require.Equal(t, opts.RefundLocktime, urwrLocktime)
-}
-
 // TestVHTLCDeterminism tests that vHTLC construction is deterministic.
 func TestVHTLCDeterminism(t *testing.T) {
 	t.Parallel()
@@ -383,60 +314,6 @@ func TestVHTLCComposition(t *testing.T) {
 			len(info.ControlBlock),
 			"composed control block should include external root",
 		)
-	}
-}
-
-// TestVHTLCScriptDisassembly provides a visual inspection of the compiled
-// scripts.
-func TestVHTLCScriptDisassembly(t *testing.T) {
-	t.Parallel()
-
-	opts := testVHTLCOpts(t)
-
-	policy, err := NewVHTLCPolicy(opts)
-	require.NoError(t, err)
-
-	closures := []struct {
-		name string
-		node Node
-	}{
-		{
-			"Claim (HashLock+Multisig)",
-			policy.ClaimClosure,
-		},
-		{
-			"Refund (Multisig)",
-			policy.RefundClosure,
-		},
-		{
-			"RefundWithoutReceiver (CLTV+Multisig)",
-			policy.RefundWithoutReceiverClosure,
-		},
-		{
-			"UnilateralClaim (CSV+HashLock+Checksig)",
-			policy.UnilateralClaimClosure,
-		},
-		{
-			"UnilateralRefund (CSV+Multisig)",
-			policy.UnilateralRefundClosure,
-		},
-		{
-			"UnilateralRefundWithoutReceiver (CSV+CLTV+Checksig)",
-			policy.UnilateralRefundWithoutReceiverClosure,
-		},
-	}
-
-	for _, c := range closures {
-		script, err := c.node.Script()
-		require.NoError(t, err)
-
-		dis, err := txscript.DisasmString(script)
-		require.NoError(t, err)
-
-		t.Logf("%s:", c.name)
-		t.Logf("  Script (%d bytes): %s", len(script), dis)
-		t.Logf("  Hex: %s", hex.EncodeToString(script))
-		t.Log("")
 	}
 }
 

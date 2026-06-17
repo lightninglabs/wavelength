@@ -2415,101 +2415,91 @@ func TestFindInSwapClaimObservationPropagatesListSpentError(t *testing.T) {
 	require.ErrorContains(t, err, "spent lookup failed")
 }
 
-// TestWaitForSpentVTXOPreimageUsesSpendingSession asserts the SDK fetches the
-// checkpoints of the OOR session that spent the funded vHTLC when the spent
-// vHTLC's own package does not carry the preimage.
-func TestWaitForSpentVTXOPreimageUsesSpendingSession(t *testing.T) {
+// TestWaitForSpentVTXOPreimage asserts the SDK recovers the claim preimage
+// from each daemon-side checkpoint source: the spending OOR session, the local
+// spent-VTXO packages, and the received live VTXO packages.
+func TestWaitForSpentVTXOPreimage(t *testing.T) {
 	t.Parallel()
 
-	preimage, err := NewPreimage()
-	require.NoError(t, err)
-
-	daemonConn := &testDaemonConn{
-		spentVTXO: &VTXOInfo{
-			SpentByTxID: "0123456789abcdef0123456789abcdef" +
-				"0123456789abcdef0123456789abcdef",
+	// Each case wires the same claim preimage into a different
+	// daemon-side source so the scan must locate it via the spending
+	// session, the local spent-VTXO packages, or the live packages.
+	tests := []struct {
+		name  string
+		setup func(c *testDaemonConn, pkg []byte)
+	}{
+		{
+			// Recover the preimage from the spending session's
+			// indexed checkpoint package.
+			name: "spending session",
+			setup: func(c *testDaemonConn, pkg []byte) {
+				c.spentVTXO = &VTXOInfo{
+					SpentByTxID: "0123456789abcdef" +
+						"0123456789abcdef" +
+						"0123456789abcdef" +
+						"0123456789abcdef",
+				}
+				c.indexedPackage = &OORPackageInfo{
+					CheckpointPSBTs: [][]byte{
+						pkg,
+					},
+				}
+			},
 		},
-		indexedPackage: &OORPackageInfo{
-			CheckpointPSBTs: [][]byte{
-				testCheckpointPSBTWithPreimage(
-					t, preimage[:],
-				),
+		{
+			// Prefer locally persisted spent-VTXO checkpoints
+			// when they already carry the claim preimage.
+			name: "local spent packages",
+			setup: func(c *testDaemonConn, pkg []byte) {
+				c.spentVTXOs = []VTXOInfo{{
+					PkScript: []byte{
+						0x51,
+					},
+					FinalCheckpointPSBTs: [][]byte{
+						pkg,
+					},
+				}}
+			},
+		},
+		{
+			// Fall back to a received live VTXO package when the
+			// spent vHTLC is not exposed as a local spent VTXO.
+			name: "live packages",
+			setup: func(c *testDaemonConn, pkg []byte) {
+				c.liveVTXOs = []VTXOInfo{{
+					FinalCheckpointPSBTs: [][]byte{
+						pkg,
+					},
+				}}
 			},
 		},
 	}
 
-	client := NewSwapClient(nil, daemonConn, nil, nil)
-	client.waitPollInterval = time.Millisecond
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	result, err := client.waitForSpentVTXOPreimage(
-		t.Context(), preimage.Hash(), []byte{0x51},
-		time.Now().Add(time.Second),
-	)
-	require.NoError(t, err)
-	require.Equal(t, preimage, *result)
-}
+			preimage, err := NewPreimage()
+			require.NoError(t, err)
 
-// TestWaitForSpentVTXOPreimageUsesLocalSpentPackages asserts the SDK prefers
-// locally persisted spent-VTXO checkpoints when they already carry the claim
-// preimage.
-func TestWaitForSpentVTXOPreimageUsesLocalSpentPackages(t *testing.T) {
-	t.Parallel()
-
-	preimage, err := NewPreimage()
-	require.NoError(t, err)
-
-	daemonConn := &testDaemonConn{
-		spentVTXOs: []VTXOInfo{{
-			PkScript: []byte{
-				0x51,
-			},
-			FinalCheckpointPSBTs: [][]byte{
-				testCheckpointPSBTWithPreimage(
+			daemonConn := &testDaemonConn{}
+			tc.setup(
+				daemonConn, testCheckpointPSBTWithPreimage(
 					t, preimage[:],
 				),
-			},
-		}},
+			)
+
+			client := NewSwapClient(nil, daemonConn, nil, nil)
+			client.waitPollInterval = time.Millisecond
+
+			result, err := client.waitForSpentVTXOPreimage(
+				t.Context(), preimage.Hash(), []byte{0x51},
+				time.Now().Add(time.Second),
+			)
+			require.NoError(t, err)
+			require.Equal(t, preimage, *result)
+		})
 	}
-
-	client := NewSwapClient(nil, daemonConn, nil, nil)
-	client.waitPollInterval = time.Millisecond
-
-	result, err := client.waitForSpentVTXOPreimage(
-		t.Context(), preimage.Hash(), []byte{0x51},
-		time.Now().Add(time.Second),
-	)
-	require.NoError(t, err)
-	require.Equal(t, preimage, *result)
-}
-
-// TestWaitForSpentVTXOPreimageFallsBackToLivePackages asserts the SDK can
-// recover the claim preimage from a received live VTXO package when the spent
-// vHTLC itself is not exposed as a local spent VTXO.
-func TestWaitForSpentVTXOPreimageFallsBackToLivePackages(t *testing.T) {
-	t.Parallel()
-
-	preimage, err := NewPreimage()
-	require.NoError(t, err)
-
-	daemonConn := &testDaemonConn{
-		liveVTXOs: []VTXOInfo{{
-			FinalCheckpointPSBTs: [][]byte{
-				testCheckpointPSBTWithPreimage(
-					t, preimage[:],
-				),
-			},
-		}},
-	}
-
-	client := NewSwapClient(nil, daemonConn, nil, nil)
-	client.waitPollInterval = time.Millisecond
-
-	result, err := client.waitForSpentVTXOPreimage(
-		t.Context(), preimage.Hash(), []byte{0x51},
-		time.Now().Add(time.Second),
-	)
-	require.NoError(t, err)
-	require.Equal(t, preimage, *result)
 }
 
 // testCheckpointPSBTWithPreimage encodes one finalized checkpoint PSBT that

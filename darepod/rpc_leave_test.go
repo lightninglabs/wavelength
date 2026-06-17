@@ -13,224 +13,158 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// TestResolveLeaveDestinationInvalidAddress verifies a malformed
-// address string surfaces a clean "invalid leave address" error
-// (the shape any caller would see on a typo) rather than a raw
-// bech32 decode message bubbling up to gRPC.
-func TestResolveLeaveDestinationInvalidAddress(t *testing.T) {
+// TestResolveLeaveDestination exercises resolveLeaveDestination across
+// its address and pk_script branches: clean errors for malformed,
+// empty, oversized, and disallowed-class inputs (funds-moving, so each
+// guard matters), and verbatim / canonical script output on the happy
+// paths. Address rows are built programmatically so the test stays
+// valid across bech32m checksum changes.
+func TestResolveLeaveDestination(t *testing.T) {
 	t.Parallel()
 
-	r := newTestRPCServer()
-
-	_, err := r.resolveLeaveDestination(&daemonrpc.LeaveDestination{
-		Target: &daemonrpc.LeaveDestination_Address{
-			Address: "not-a-valid-address",
-		},
-	})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid leave address")
-}
-
-// TestResolveLeaveDestinationValidTaproot verifies the happy path
-// on a real regtest taproot address. We construct the address
-// programmatically so the test stays valid across bech32m checksum
-// changes in the library.
-func TestResolveLeaveDestinationValidTaproot(t *testing.T) {
-	t.Parallel()
-
-	r := newTestRPCServer()
-
-	// Build a regtest P2TR address from a deterministic 32-byte
-	// x-only key. The choice of key is irrelevant — we only want
-	// a structurally valid taproot address to feed DecodeAddress.
-	xOnly := make([]byte, 32)
-	xOnly[0] = 0xab
-	addr, err := btcutil.NewAddressTaproot(
-		xOnly, &chaincfg.RegressionNetParams,
+	// Build a regtest P2TR address; the key choice is irrelevant, we
+	// only need a structurally valid taproot address to decode.
+	regKey := make([]byte, 32)
+	regKey[0] = 0xab
+	regAddr, err := btcutil.NewAddressTaproot(
+		regKey, &chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)
-
-	wantScript, err := txscript.PayToAddrScript(addr)
+	regScript, err := txscript.PayToAddrScript(regAddr)
 	require.NoError(t, err)
 
-	pkScript, err := r.resolveLeaveDestination(
-		&daemonrpc.LeaveDestination{
-			Target: &daemonrpc.LeaveDestination_Address{
-				Address: addr.String(),
-			},
-		},
-	)
-	require.NoError(t, err)
-	require.Equal(
-		t, wantScript, pkScript, "resolveLeaveDestination matches "+
-			"btcutil's canonical PayToAddrScript output",
-	)
-}
-
-// TestResolveLeaveDestinationPkScript verifies that the pk_script
-// branch returns the bytes verbatim once the class-whitelist guard
-// has accepted them (a structurally-valid P2TR script in this case).
-func TestResolveLeaveDestinationPkScript(t *testing.T) {
-	t.Parallel()
-
-	r := newTestRPCServer()
-
-	want := validP2TRPkScript(0xaa)
-	got, err := r.resolveLeaveDestination(&daemonrpc.LeaveDestination{
-		Target: &daemonrpc.LeaveDestination_PkScript{
-			PkScript: want,
-		},
-	})
-	require.NoError(t, err)
-	require.Equal(t, want, got,
-		"pk_script is returned verbatim")
-}
-
-// TestResolveLeaveDestinationNil surfaces a clean error when the
-// caller passes a nil destination. Protects against a future
-// handler change that would nil-deref here instead of surfacing
-// an InvalidArgument to the caller.
-func TestResolveLeaveDestinationNil(t *testing.T) {
-	t.Parallel()
-
-	r := newTestRPCServer()
-	_, err := r.resolveLeaveDestination(nil)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "destination is required")
-}
-
-// TestResolveLeaveDestinationEmptyAddress verifies that an empty
-// address string is rejected before DecodeAddress is called.
-func TestResolveLeaveDestinationEmptyAddress(t *testing.T) {
-	t.Parallel()
-
-	r := newTestRPCServer()
-	_, err := r.resolveLeaveDestination(&daemonrpc.LeaveDestination{
-		Target: &daemonrpc.LeaveDestination_Address{},
-	})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "address is empty")
-}
-
-// TestResolveLeaveDestinationEmptyPkScript verifies that an empty
-// pk_script is rejected with a clear error rather than being
-// silently shipped to the wallet as a zero-byte script.
-func TestResolveLeaveDestinationEmptyPkScript(t *testing.T) {
-	t.Parallel()
-
-	r := newTestRPCServer()
-	_, err := r.resolveLeaveDestination(&daemonrpc.LeaveDestination{
-		Target: &daemonrpc.LeaveDestination_PkScript{},
-	})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "pk_script is empty")
-}
-
-// TestResolveLeaveDestinationPkScriptOversized locks in the
-// MaxScriptSize cap so a hostile or buggy caller cannot ship a
-// multi-kilobyte pkScript through the leave path.
-func TestResolveLeaveDestinationPkScriptOversized(t *testing.T) {
-	t.Parallel()
-
-	r := newTestRPCServer()
-	tooLarge := make([]byte, txscript.MaxScriptSize+1)
-
-	_, err := r.resolveLeaveDestination(&daemonrpc.LeaveDestination{
-		Target: &daemonrpc.LeaveDestination_PkScript{
-			PkScript: tooLarge,
-		},
-	})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "too large")
-}
-
-// TestResolveLeaveDestinationPkScriptRejectsP2A locks in the BIP 431
-// P2A anchor rejection: a P2A pkScript is anyone-can-spend and
-// landing leave funds on it would effectively burn them, so the RPC
-// rejects this exact byte pattern.
-func TestResolveLeaveDestinationPkScriptRejectsP2A(t *testing.T) {
-	t.Parallel()
-
-	r := newTestRPCServer()
-	p2a := []byte{txscript.OP_1, txscript.OP_DATA_2, 0x4e, 0x73}
-
-	_, err := r.resolveLeaveDestination(&daemonrpc.LeaveDestination{
-		Target: &daemonrpc.LeaveDestination_PkScript{
-			PkScript: p2a,
-		},
-	})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "P2A")
-}
-
-// TestResolveLeaveDestinationPkScriptRejectsNonStandard verifies
-// that a pkScript GetScriptClass classifies as NonStandardTy (e.g.
-// a truncated push that fails to parse) is rejected before dispatch.
-func TestResolveLeaveDestinationPkScriptRejectsNonStandard(t *testing.T) {
-	t.Parallel()
-
-	r := newTestRPCServer()
-
-	// Truncated taproot push: OP_1 OP_DATA_32 followed by only 2
-	// bytes of payload — fails to parse, classifies NonStandardTy.
-	truncated := []byte{0x51, 0x20, 0xaa, 0xbb}
-
-	_, err := r.resolveLeaveDestination(&daemonrpc.LeaveDestination{
-		Target: &daemonrpc.LeaveDestination_PkScript{
-			PkScript: truncated,
-		},
-	})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "not supported")
-}
-
-// TestResolveLeaveDestinationPkScriptAcceptsOPRETURN verifies that
-// OP_RETURN scripts (NullDataTy) remain a supported power-user
-// destination — burns / data-carrier exits are explicit caller
-// intent.
-func TestResolveLeaveDestinationPkScriptAcceptsOPRETURN(t *testing.T) {
-	t.Parallel()
-
-	r := newTestRPCServer()
-
-	// OP_RETURN <empty>: the canonical data-carrier shape.
-	opReturn := []byte{txscript.OP_RETURN}
-
-	got, err := r.resolveLeaveDestination(&daemonrpc.LeaveDestination{
-		Target: &daemonrpc.LeaveDestination_PkScript{
-			PkScript: opReturn,
-		},
-	})
-	require.NoError(t, err)
-	require.Equal(t, opReturn, got)
-}
-
-// TestResolveLeaveDestinationCrossNetwork verifies that a mainnet
-// address under regtest chain params is rejected by
-// btcutil.DecodeAddress rather than silently yielding a pkScript.
-// Leave is funds-moving, so a cross-network address would send
-// real funds to an unintended script — this guard matters.
-func TestResolveLeaveDestinationCrossNetwork(t *testing.T) {
-	t.Parallel()
-
-	// Build a mainnet P2TR address programmatically so the test
-	// doesn't depend on a hand-encoded bech32m string.
-	xOnly := make([]byte, 32)
-	xOnly[0] = 0xcd
+	// A mainnet address under regtest params must be rejected by
+	// DecodeAddress rather than silently yielding a pkScript.
+	mainnetKey := make([]byte, 32)
+	mainnetKey[0] = 0xcd
 	mainnetAddr, err := btcutil.NewAddressTaproot(
-		xOnly, &chaincfg.MainNetParams,
+		mainnetKey, &chaincfg.MainNetParams,
 	)
 	require.NoError(t, err)
 
-	// newTestRPCServer uses RegressionNetParams, so decoding a
-	// mainnet address must fail.
-	r := newTestRPCServer()
-	_, err = r.resolveLeaveDestination(&daemonrpc.LeaveDestination{
-		Target: &daemonrpc.LeaveDestination_Address{
-			Address: mainnetAddr.String(),
+	addrDest := func(a string) *daemonrpc.LeaveDestination {
+		return &daemonrpc.LeaveDestination{
+			Target: &daemonrpc.LeaveDestination_Address{
+				Address: a,
+			},
+		}
+	}
+	scriptDest := func(s []byte) *daemonrpc.LeaveDestination {
+		return &daemonrpc.LeaveDestination{
+			Target: &daemonrpc.LeaveDestination_PkScript{
+				PkScript: s,
+			},
+		}
+	}
+
+	opReturn := []byte{txscript.OP_RETURN}
+	verbatim := validP2TRPkScript(0xaa)
+
+	tests := []struct {
+		name string
+
+		// dest is the destination fed to resolveLeaveDestination.
+		dest *daemonrpc.LeaveDestination
+
+		// wantErr, when non-empty, is a substring the returned error
+		// must contain. An empty wantErr means the call must succeed
+		// and return wantScript.
+		wantErr string
+
+		// wantScript is the expected pkScript on the success path.
+		wantScript []byte
+	}{
+		{
+			name:    "invalid address",
+			dest:    addrDest("not-a-valid-address"),
+			wantErr: "invalid leave address",
 		},
-	})
-	require.Error(t, err)
+		{
+			name:    "empty address",
+			dest:    addrDest(""),
+			wantErr: "address is empty",
+		},
+		{
+			// Mainnet address decodes to an error under regtest.
+			name:    "cross network",
+			dest:    addrDest(mainnetAddr.String()),
+			wantErr: "invalid leave address",
+		},
+		{
+			name:    "nil destination",
+			dest:    nil,
+			wantErr: "destination is required",
+		},
+		{
+			name:    "empty pk_script",
+			dest:    scriptDest(nil),
+			wantErr: "pk_script is empty",
+		},
+		{
+			// MaxScriptSize cap: a hostile / buggy caller cannot
+			// ship a multi-kilobyte pkScript through the leave
+			// path.
+			name: "oversized pk_script",
+			dest: scriptDest(
+				make([]byte, txscript.MaxScriptSize+1),
+			),
+			wantErr: "too large",
+		},
+		{
+			// BIP 431 P2A anchor is anyone-can-spend; landing leave
+			// funds there would effectively burn them.
+			name: "rejects p2a",
+			dest: scriptDest([]byte{
+				txscript.OP_1, txscript.OP_DATA_2, 0x4e, 0x73,
+			}),
+			wantErr: "P2A",
+		},
+		{
+			// Truncated taproot push classifies NonStandardTy.
+			name:    "rejects non-standard",
+			dest:    scriptDest([]byte{0x51, 0x20, 0xaa, 0xbb}),
+			wantErr: "not supported",
+		},
+		{
+			// Real regtest taproot address resolves to btcutil's
+			// canonical PayToAddrScript output.
+			name:       "valid taproot",
+			dest:       addrDest(regAddr.String()),
+			wantScript: regScript,
+		},
+		{
+			// pk_script is returned verbatim once the class guard
+			// accepts a structurally valid P2TR script.
+			name:       "valid pk_script",
+			dest:       scriptDest(verbatim),
+			wantScript: verbatim,
+		},
+		{
+			// OP_RETURN (NullDataTy) stays a supported power-user
+			// data-carrier / burn destination.
+			name:       "accepts op_return",
+			dest:       scriptDest(opReturn),
+			wantScript: opReturn,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := newTestRPCServer()
+			got, err := r.resolveLeaveDestination(tc.dest)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.wantErr)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tc.wantScript, got)
+		})
+	}
 }
 
 // TestLeaveVTXOsRejectsAllWithPerOutpointOverrides verifies the

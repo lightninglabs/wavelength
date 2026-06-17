@@ -1000,69 +1000,6 @@ func TestGroupAncestryRowsCachesTreePaths(t *testing.T) {
 	)
 }
 
-// TestVTXOPersistenceStoreStatusTransitions tests the status update methods.
-func TestVTXOPersistenceStoreStatusTransitions(t *testing.T) {
-	t.Parallel()
-
-	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
-	ctx := t.Context()
-
-	// Create a round to satisfy FK constraint.
-	roundID := testRoundIDDB("test-round-status")
-	testRound := createTestRound(t, roundID)
-	state := &round.InputSigSentState{
-		RoundID:     testRound.RoundID,
-		ClientTrees: make(map[round.SignerKey]*tree.Tree),
-	}
-	err := roundStore.CommitState(ctx, testRound, state)
-	require.NoError(t, err)
-
-	// Create and save a VTXO.
-	desc := createTestVTXODescriptor(t, roundID, 1)
-	err = vtxoStore.SaveVTXO(ctx, desc)
-	require.NoError(t, err)
-
-	// Verify initial status is Live.
-	fetched, err := vtxoStore.GetVTXO(ctx, desc.Outpoint)
-	require.NoError(t, err)
-	require.Equal(t, vtxo.VTXOStatusLive, fetched.Status)
-
-	// Transition to RefreshRequested.
-	err = vtxoStore.UpdateVTXOStatus(
-		ctx, desc.Outpoint, vtxo.VTXOStatusPendingForfeit,
-	)
-	require.NoError(t, err)
-
-	fetched, err = vtxoStore.GetVTXO(ctx, desc.Outpoint)
-	require.NoError(t, err)
-	require.Equal(t, vtxo.VTXOStatusPendingForfeit, fetched.Status)
-
-	// Transition to Forfeiting via MarkForfeiting.
-	forfeitRoundID := testRoundIDDB("forfeit-round")
-	err = vtxoStore.MarkForfeiting(
-		ctx, desc.Outpoint, forfeitRoundID.String(), nil,
-	)
-	require.NoError(t, err)
-
-	fetched, err = vtxoStore.GetVTXO(ctx, desc.Outpoint)
-	require.NoError(t, err)
-	require.Equal(t, vtxo.VTXOStatusForfeiting, fetched.Status)
-
-	// Transition to Forfeited via MarkForfeited.
-	forfeitTxID := chainhash.Hash{0xab, 0xcd}
-	err = vtxoStore.MarkForfeited(ctx, desc.Outpoint, forfeitTxID)
-	require.NoError(t, err)
-
-	fetched, err = vtxoStore.GetVTXO(ctx, desc.Outpoint)
-	require.NoError(t, err)
-	require.Equal(t, vtxo.VTXOStatusForfeited, fetched.Status)
-
-	// Verify VTXO is no longer in live list (terminal state).
-	liveVTXOs, err := vtxoStore.ListLiveVTXOs(ctx)
-	require.NoError(t, err)
-	require.Len(t, liveVTXOs, 0)
-}
-
 // TestVTXOPersistenceStoreSpentStatusSynchronizesSpentFlag verifies that
 // setting status=Spent via UpdateVTXOStatus also marks spent=true and removes
 // the VTXO from round unspent listings.

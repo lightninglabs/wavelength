@@ -10,22 +10,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestValidateFinalizePackageHappyPath asserts a structurally valid finalize
-// package is accepted.
-func TestValidateFinalizePackageHappyPath(t *testing.T) {
-	t.Parallel()
+// newStructuralCheckpoint builds a minimal checkpoint PSBT with an anchor
+// output, spending the given prevout hash. If finalWitness is set, a synthetic
+// final script witness is attached so the checkpoint counts as signed.
+func newStructuralCheckpoint(t *testing.T, prevHash chainhash.Hash,
+	prevIndex uint32, finalWitness bool) *psbt.Packet {
 
-	// Finalize validation is intentionally shallow:
-	// - We only require that every checkpoint has some final witness.
-	// - Signature correctness is out of scope for v0 structural checks.
-	//
-	// This keeps the server-side validation lightweight and allows tests
-	// to use synthetic signatures.
+	t.Helper()
+
 	checkpointTx := wire.NewMsgTx(3)
 	checkpointTx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: wire.OutPoint{
-			Hash:  chainhash.Hash{1},
-			Index: 7,
+			Hash:  prevHash,
+			Index: prevIndex,
 		},
 	})
 	checkpointTx.AddTxOut(&wire.TxOut{
@@ -38,12 +35,24 @@ func TestValidateFinalizePackageHappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	// For structural validation, a non-empty final witness is sufficient.
-	checkpointPsbt.Inputs[0].FinalScriptWitness = []byte{0x01}
+	if finalWitness {
+		checkpointPsbt.Inputs[0].FinalScriptWitness = []byte{0x01}
+	}
+
+	return checkpointPsbt
+}
+
+// newStructuralArkPSBT builds a minimal Ark PSBT spending checkpoint output 0
+// of the given checkpoint transaction.
+func newStructuralArkPSBT(t *testing.T,
+	checkpointPsbt *psbt.Packet) *psbt.Packet {
+
+	t.Helper()
 
 	arkTx := wire.NewMsgTx(3)
 	arkTx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: wire.OutPoint{
-			Hash:  checkpointTx.TxHash(),
+			Hash:  checkpointPsbt.UnsignedTx.TxHash(),
 			Index: 0,
 		},
 	})
@@ -56,7 +65,26 @@ func TestValidateFinalizePackageHappyPath(t *testing.T) {
 	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)
 
-	err = ValidateFinalizePackage(arkPsbt, []*psbt.Packet{checkpointPsbt})
+	return arkPsbt
+}
+
+// TestValidateFinalizePackageHappyPath asserts a structurally valid finalize
+// package is accepted.
+func TestValidateFinalizePackageHappyPath(t *testing.T) {
+	t.Parallel()
+
+	// Finalize validation is intentionally shallow:
+	// - We only require that every checkpoint has some final witness.
+	// - Signature correctness is out of scope for v0 structural checks.
+	//
+	// This keeps the server-side validation lightweight and allows tests
+	// to use synthetic signatures.
+	checkpointPsbt := newStructuralCheckpoint(
+		t, chainhash.Hash{1}, 7, true,
+	)
+	arkPsbt := newStructuralArkPSBT(t, checkpointPsbt)
+
+	err := ValidateFinalizePackage(arkPsbt, []*psbt.Packet{checkpointPsbt})
 	require.NoError(t, err)
 }
 
@@ -65,39 +93,12 @@ func TestValidateFinalizePackageHappyPath(t *testing.T) {
 func TestValidateFinalizePackageMissingSig(t *testing.T) {
 	t.Parallel()
 
-	checkpointTx := wire.NewMsgTx(3)
-	checkpointTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: wire.OutPoint{
-			Hash:  chainhash.Hash{1},
-			Index: 7,
-		},
-	})
-	checkpointTx.AddTxOut(&wire.TxOut{
-		Value:    1234,
-		PkScript: []byte{0x51},
-	})
-	checkpointTx.AddTxOut(arkscript.AnchorOutput())
+	checkpointPsbt := newStructuralCheckpoint(
+		t, chainhash.Hash{1}, 7, false,
+	)
+	arkPsbt := newStructuralArkPSBT(t, checkpointPsbt)
 
-	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
-	require.NoError(t, err)
-
-	arkTx := wire.NewMsgTx(3)
-	arkTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: wire.OutPoint{
-			Hash:  checkpointTx.TxHash(),
-			Index: 0,
-		},
-	})
-	arkTx.AddTxOut(&wire.TxOut{
-		Value:    1234,
-		PkScript: []byte{0x6a, 0x01, 0x01},
-	})
-	arkTx.AddTxOut(arkscript.AnchorOutput())
-
-	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
-	require.NoError(t, err)
-
-	err = ValidateFinalizePackage(arkPsbt, []*psbt.Packet{checkpointPsbt})
+	err := ValidateFinalizePackage(arkPsbt, []*psbt.Packet{checkpointPsbt})
 	require.Error(t, err)
 }
 
@@ -106,57 +107,15 @@ func TestValidateFinalizePackageMissingSig(t *testing.T) {
 func TestValidateFinalizePackageExtraCheckpoint(t *testing.T) {
 	t.Parallel()
 
-	checkpointTxA := wire.NewMsgTx(3)
-	checkpointTxA.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: wire.OutPoint{
-			Hash:  chainhash.Hash{1},
-			Index: 7,
-		},
-	})
-	checkpointTxA.AddTxOut(&wire.TxOut{
-		Value:    1234,
-		PkScript: []byte{0x51},
-	})
-	checkpointTxA.AddTxOut(arkscript.AnchorOutput())
+	checkpointPsbtA := newStructuralCheckpoint(
+		t, chainhash.Hash{1}, 7, true,
+	)
+	checkpointPsbtB := newStructuralCheckpoint(
+		t, chainhash.Hash{2}, 9, true,
+	)
+	arkPsbt := newStructuralArkPSBT(t, checkpointPsbtA)
 
-	checkpointPsbtA, err := psbt.NewFromUnsignedTx(checkpointTxA)
-	require.NoError(t, err)
-	checkpointPsbtA.Inputs[0].FinalScriptWitness = []byte{0x01}
-
-	checkpointTxB := wire.NewMsgTx(3)
-	checkpointTxB.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: wire.OutPoint{
-			Hash:  chainhash.Hash{2},
-			Index: 9,
-		},
-	})
-	checkpointTxB.AddTxOut(&wire.TxOut{
-		Value:    1234,
-		PkScript: []byte{0x51},
-	})
-	checkpointTxB.AddTxOut(arkscript.AnchorOutput())
-
-	checkpointPsbtB, err := psbt.NewFromUnsignedTx(checkpointTxB)
-	require.NoError(t, err)
-	checkpointPsbtB.Inputs[0].FinalScriptWitness = []byte{0x01}
-
-	arkTx := wire.NewMsgTx(3)
-	arkTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: wire.OutPoint{
-			Hash:  checkpointTxA.TxHash(),
-			Index: 0,
-		},
-	})
-	arkTx.AddTxOut(&wire.TxOut{
-		Value:    1234,
-		PkScript: []byte{0x6a, 0x01, 0x01},
-	})
-	arkTx.AddTxOut(arkscript.AnchorOutput())
-
-	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
-	require.NoError(t, err)
-
-	err = ValidateFinalizePackage(arkPsbt, []*psbt.Packet{
+	err := ValidateFinalizePackage(arkPsbt, []*psbt.Packet{
 		checkpointPsbtA,
 		checkpointPsbtB,
 	})

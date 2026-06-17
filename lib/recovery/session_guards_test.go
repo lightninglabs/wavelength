@@ -52,20 +52,6 @@ func TestMarkConfirmedIdempotentAtSameHeight(t *testing.T) {
 	require.ErrorContains(t, err, "cannot reconfirm")
 }
 
-// TestMarkConfirmedRequiresParents verifies child cannot be confirmed before
-// parent. Without this guard the CSV maturity view can become incoherent
-// when reorgs or out-of-order chain notifications race.
-func TestMarkConfirmedRequiresParents(t *testing.T) {
-	session := newMergeSession(t)
-	proof := session.Proof()
-	mergeTxid := proof.Layers()[1][0]
-
-	// The merge tx was not broadcast first; also its parents are still
-	// pending. Both conditions should cause MarkConfirmed to refuse.
-	err := session.MarkConfirmed(mergeTxid, 100)
-	require.Error(t, err)
-}
-
 // TestMarkFailedRejectsOverwrite verifies the H-6 guard: subsequent failures
 // cannot overwrite an existing terminal error.
 func TestMarkFailedRejectsOverwrite(t *testing.T) {

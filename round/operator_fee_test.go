@@ -24,232 +24,174 @@ func newBoardingIntent(amount btcutil.Amount) BoardingIntent {
 	}
 }
 
-// TestComputeClientOperatorFeePureBoarding confirms a round with
-// a single boarding input and a single owned output VTXO yields
-// fee = inputs - outputs. This is the canonical "client pays
-// operator for ark admission" case.
-func TestComputeClientOperatorFeePureBoarding(t *testing.T) {
+// TestComputeClientOperatorFee exercises the operator-fee calculator across
+// its full set of accounting paths. Every case is data-only: a set of intents
+// plus owned output VTXOs in, the expected fee out. The named cases pin,
+// respectively, the canonical boarding admission fee, the refresh
+// forfeit-for-new-VTXO difference, the additive boarding+forfeit input side,
+// the cooperative leave output (counted like an owned VTXO), the
+// directed-send-with-change contract (the recipient VTXO is filtered out by
+// buildClientVTXOs before the calculator sees it, so the fee absorbs the
+// recipient value plus the operator cut), the zero-contribution recipient-only
+// slot, the negative clamp guarding against an outputs-exceed-inputs
+// accounting bug, and the defensive nil-entry tolerance for a partially
+// serialized round state.
+func TestComputeClientOperatorFee(t *testing.T) {
 	t.Parallel()
 
-	intents := Intents{
-		Boarding: []BoardingIntent{
-			newBoardingIntent(100_000),
-		},
-	}
-	vtxos := []*ClientVTXO{
+	testCases := []struct {
+		name     string
+		intents  Intents
+		vtxos    []*ClientVTXO
+		expected int64
+	}{
 		{
-			Amount: btcutil.Amount(99_500),
-		},
-	}
-
-	require.Equal(
-		t, int64(500), computeClientOperatorFee(intents, vtxos),
-	)
-}
-
-// TestComputeClientOperatorFeePureRefresh covers the refresh
-// path: the client forfeits one VTXO, receives a new VTXO at
-// slightly lower value (difference = operator fee). No boarding
-// inputs, no leave outputs.
-func TestComputeClientOperatorFeePureRefresh(t *testing.T) {
-	t.Parallel()
-
-	intents := Intents{
-		Forfeits: []types.ForfeitRequest{
-			{
-				VTXOOutpoint: &wire.OutPoint{},
-				Amount:       btcutil.Amount(50_000),
-			},
-		},
-	}
-	vtxos := []*ClientVTXO{
-		{
-			Amount: btcutil.Amount(49_800),
-		},
-	}
-
-	require.Equal(
-		t, int64(200), computeClientOperatorFee(intents, vtxos),
-	)
-}
-
-// TestComputeClientOperatorFeeMixedBoardingAndRefresh locks in
-// the additive input side: a round with both boarding and
-// forfeit inputs sums them before subtracting outputs.
-func TestComputeClientOperatorFeeMixedBoardingAndRefresh(t *testing.T) {
-	t.Parallel()
-
-	intents := Intents{
-		Boarding: []BoardingIntent{
-			newBoardingIntent(80_000),
-		},
-		Forfeits: []types.ForfeitRequest{
-			{
-				Amount: btcutil.Amount(20_000),
-			},
-		},
-	}
-	vtxos := []*ClientVTXO{
-		{
-			Amount: btcutil.Amount(50_000),
-		},
-		{
-			Amount: btcutil.Amount(49_200),
-		},
-	}
-
-	// 80_000 + 20_000 = 100_000 contributed, 50_000 + 49_200 =
-	// 99_200 received back as owned VTXOs, fee = 800.
-	require.Equal(
-		t, int64(800), computeClientOperatorFee(intents, vtxos),
-	)
-}
-
-// TestComputeClientOperatorFeeLeave covers the cooperative leave
-// path: forfeit feeds an on-chain leave output rather than a new
-// VTXO. The leave output value counts against inputs exactly
-// the same way as an owned VTXO output, so the fee surfaces
-// the same way.
-func TestComputeClientOperatorFeeLeave(t *testing.T) {
-	t.Parallel()
-
-	intents := Intents{
-		Forfeits: []types.ForfeitRequest{
-			{
-				Amount: btcutil.Amount(60_000),
-			},
-		},
-		Leaves: []*types.LeaveRequest{
-			{
-				Output: &wire.TxOut{
-					Value: 59_400,
+			name: "pure boarding",
+			intents: Intents{
+				Boarding: []BoardingIntent{
+					newBoardingIntent(100_000),
 				},
 			},
-		},
-	}
-
-	require.Equal(
-		t, int64(600),
-		computeClientOperatorFee(intents, nil),
-	)
-}
-
-// TestComputeClientOperatorFeeDirectedSendWithChange covers the
-// directed-send-with-change case: the client forfeits one VTXO,
-// produces a recipient VTXO (foreign, skipped by
-// buildClientVTXOs), and keeps the change. From this client's
-// view the only owned output is the change VTXO, so the fee
-// absorbs the recipient value plus the operator cut. The
-// calculator does not know about the recipient VTXO because
-// buildClientVTXOs filtered it out before passing ownedVTXOs
-// to us -- this test pins that contract.
-func TestComputeClientOperatorFeeDirectedSendWithChange(t *testing.T) {
-	t.Parallel()
-
-	intents := Intents{
-		Forfeits: []types.ForfeitRequest{
-			{
-				Amount: btcutil.Amount(100_000),
-			},
-		},
-	}
-	// Only the client's own change VTXO: recipient's 40_000 is
-	// foreign and was filtered out by HasLocalOwner before the
-	// fee calculator sees it.
-	vtxos := []*ClientVTXO{
-		{
-			Amount: btcutil.Amount(59_500),
-		},
-	}
-
-	// 100_000 - 59_500 = 40_500 "flowed out" of this client's
-	// side -- 40_000 to the recipient + 500 to the operator.
-	// The fee math can't distinguish the recipient portion; it
-	// surfaces the total client outflow. Caller responsibility
-	// (tracked in task follow-ups) is to emit a VTXOSentMsg for
-	// the recipient portion before reading this number.
-	require.Equal(
-		t, int64(40_500), computeClientOperatorFee(intents, vtxos),
-	)
-}
-
-// TestComputeClientOperatorFeeZeroWhenNoContribution covers the
-// degenerate case of a round where this client contributed
-// nothing: a remote recipient-only slot. Fee is zero.
-func TestComputeClientOperatorFeeZeroWhenNoContribution(t *testing.T) {
-	t.Parallel()
-
-	require.Equal(
-		t, int64(0),
-		computeClientOperatorFee(Intents{}, nil),
-	)
-}
-
-// TestComputeClientOperatorFeeClampsNegative guards against a
-// pathological state where outputs exceed inputs (wallet was
-// already paid but no input was booked, accounting bug
-// upstream). Returning a negative number would generate a
-// nonsensical FeePaidMsg that the ledger handler would reject,
-// silently dropping the whole notification. Clamping to zero is
-// strictly safer and surfaces the upstream bug via a missing
-// fee row rather than a broken ledger.
-func TestComputeClientOperatorFeeClampsNegative(t *testing.T) {
-	t.Parallel()
-
-	intents := Intents{
-		Forfeits: []types.ForfeitRequest{
-			{
-				Amount: btcutil.Amount(100),
-			},
-		},
-	}
-	vtxos := []*ClientVTXO{
-		{
-			Amount: btcutil.Amount(200),
-		},
-	}
-
-	require.Equal(
-		t, int64(0),
-		computeClientOperatorFee(intents, vtxos),
-	)
-}
-
-// TestComputeClientOperatorFeeIgnoresNilEntries is a defensive
-// test: the calculator must survive nil entries in the input
-// slices without panicking. The wallet should never produce
-// those, but a future persistence layer resuming a partially-
-// serialized round state could surface nils. Ignoring them is
-// safer than crashing.
-func TestComputeClientOperatorFeeIgnoresNilEntries(t *testing.T) {
-	t.Parallel()
-
-	intents := Intents{
-		Boarding: []BoardingIntent{
-			newBoardingIntent(10_000),
-		},
-		Leaves: []*types.LeaveRequest{
-			nil,
-			{
-				Output: nil,
-			},
-			{
-				Output: &wire.TxOut{
-					Value: 5_000,
+			vtxos: []*ClientVTXO{
+				{
+					Amount: btcutil.Amount(99_500),
 				},
 			},
+			expected: 500,
 		},
-	}
-	vtxos := []*ClientVTXO{
-		nil,
 		{
-			Amount: btcutil.Amount(4_500),
+			name: "pure refresh",
+			intents: Intents{
+				Forfeits: []types.ForfeitRequest{
+					{
+						VTXOOutpoint: &wire.OutPoint{},
+						Amount: btcutil.Amount(
+							50_000,
+						),
+					},
+				},
+			},
+			vtxos: []*ClientVTXO{
+				{
+					Amount: btcutil.Amount(49_800),
+				},
+			},
+			expected: 200,
+		},
+		{
+			name: "mixed boarding and refresh",
+			intents: Intents{
+				Boarding: []BoardingIntent{
+					newBoardingIntent(80_000),
+				},
+				Forfeits: []types.ForfeitRequest{
+					{
+						Amount: btcutil.Amount(20_000),
+					},
+				},
+			},
+			vtxos: []*ClientVTXO{
+				{
+					Amount: btcutil.Amount(50_000),
+				},
+				{
+					Amount: btcutil.Amount(49_200),
+				},
+			},
+			expected: 800,
+		},
+		{
+			name: "cooperative leave",
+			intents: Intents{
+				Forfeits: []types.ForfeitRequest{
+					{
+						Amount: btcutil.Amount(60_000),
+					},
+				},
+				Leaves: []*types.LeaveRequest{
+					{
+						Output: &wire.TxOut{
+							Value: 59_400,
+						},
+					},
+				},
+			},
+			expected: 600,
+		},
+		{
+			name: "directed send with change",
+			intents: Intents{
+				Forfeits: []types.ForfeitRequest{
+					{
+						Amount: btcutil.Amount(100_000),
+					},
+				},
+			},
+			vtxos: []*ClientVTXO{
+				{
+					Amount: btcutil.Amount(59_500),
+				},
+			},
+			expected: 40_500,
+		},
+		{
+			name:     "zero when no contribution",
+			intents:  Intents{},
+			expected: 0,
+		},
+		{
+			name: "clamps negative",
+			intents: Intents{
+				Forfeits: []types.ForfeitRequest{
+					{
+						Amount: btcutil.Amount(100),
+					},
+				},
+			},
+			vtxos: []*ClientVTXO{
+				{
+					Amount: btcutil.Amount(200),
+				},
+			},
+			expected: 0,
+		},
+		{
+			name: "ignores nil entries",
+			intents: Intents{
+				Boarding: []BoardingIntent{
+					newBoardingIntent(10_000),
+				},
+				Leaves: []*types.LeaveRequest{
+					nil,
+					{
+						Output: nil,
+					},
+					{
+						Output: &wire.TxOut{
+							Value: 5_000,
+						},
+					},
+				},
+			},
+			vtxos: []*ClientVTXO{
+				nil,
+				{
+					Amount: btcutil.Amount(4_500),
+				},
+			},
+			expected: 500,
 		},
 	}
 
-	// Inputs: 10_000. Outputs: 5_000 (leave) + 4_500 (vtxo)
-	// = 9_500. Fee: 500.
-	require.Equal(
-		t, int64(500), computeClientOperatorFee(intents, vtxos),
-	)
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(
+				t, tc.expected,
+				computeClientOperatorFee(tc.intents, tc.vtxos),
+			)
+		})
+	}
 }

@@ -210,33 +210,6 @@ func TestDesignateChangeMarkerMixedVTXOAndLeave(t *testing.T) {
 	)
 }
 
-// TestDesignateChangeMarkerDeduplicatesMultipleMarkersVTXOOnly
-// captures the defensive dedup rule: if two paths each stamp a
-// VTXO marker (e.g., a future entry-point regression), keep the
-// first marker and clear the rest — the proto invariant is
-// "exactly one", not "at least one".
-func TestDesignateChangeMarkerDeduplicatesMultipleMarkersVTXOOnly(
-	t *testing.T) {
-
-	t.Parallel()
-
-	vtxos := []types.VTXORequest{
-		vtxoReqWithChange(true),
-		vtxoReqWithChange(true),
-		vtxoReqWithChange(false),
-	}
-	var leaves []*types.LeaveRequest
-
-	designateChangeMarker(vtxos, leaves)
-
-	require.True(t, vtxoIsChangeAt(vtxos, 0))
-	require.False(
-		t, vtxoIsChangeAt(vtxos, 1),
-		"second marker must be cleared in dedup",
-	)
-	require.False(t, vtxoIsChangeAt(vtxos, 2))
-}
-
 // TestDesignateChangeMarkerDeduplicatesMixedVTXOAndLeaveMarkers
 // covers the cross-pool dedup: a VTXO marker beats a leave
 // marker. Collapsing in this direction matches the

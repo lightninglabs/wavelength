@@ -78,140 +78,150 @@ func (e *scriptedEdge) AckUpTo(context.Context, *mailboxpb.AckUpToRequest,
 	return nil, nil
 }
 
-// TestPullWithRetrySucceedsFirstTry verifies the happy path: a single
-// successful Pull is forwarded verbatim with no retry.
-func TestPullWithRetrySucceedsFirstTry(t *testing.T) {
+// TestPullWithRetry exercises the retry helper across its happy path,
+// transient-error retry, and the two ctx-cancellation precedence paths
+// (cancel before the first call vs. cancel mid-flight after a transport
+// error). Cancellation must always win over an in-flight transport error.
+func TestPullWithRetry(t *testing.T) {
 	t.Parallel()
 
-	want := &mailboxpb.PullResponse{NextCursor: 42}
-	edge := &scriptedEdge{script: []pullStep{{resp: want}}}
-
-	resp, err := PullWithRetry(
-		t.Context(), edge, &mailboxpb.PullRequest{
-			Cursor: 7,
-		},
-		fastBackoff(),
-		nil,
-	)
-	require.NoError(t, err)
-	require.Same(t, want, resp)
-	require.Equal(t, 1, edge.calls)
-	require.Equal(t, []uint64{7}, edge.cursors)
-}
-
-// TestPullWithRetryRetriesTransientErrors verifies that a transient
-// Unavailable error is retried until success, and the cursor is preserved
-// across attempts.
-func TestPullWithRetryRetriesTransientErrors(t *testing.T) {
-	t.Parallel()
-
+	transientErr := status.Error(codes.Unavailable, "rst")
 	want := &mailboxpb.PullResponse{NextCursor: 99}
-	edge := &scriptedEdge{
-		script: []pullStep{
-			{
-				err: status.Error(codes.Unavailable, "rst1"),
+
+	// cancelMode controls how (if at all) the ctx is cancelled relative to
+	// the Pull attempts.
+	type cancelMode int
+	const (
+		// noCancel leaves the ctx live for the whole call.
+		noCancel cancelMode = iota
+
+		// cancelBefore cancels prior to the first Pull, tripping the
+		// opening ctx.Err() guard.
+		cancelBefore
+
+		// cancelMidFlight cancels from inside the first Pull so the
+		// helper observes a transport error and then finds ctx done on
+		// its post-Pull re-check.
+		cancelMidFlight
+	)
+
+	tests := []struct {
+		name        string
+		script      []pullStep
+		cursor      uint64
+		cancel      cancelMode
+		wantResp    *mailboxpb.PullResponse
+		wantErr     error
+		wantCalls   int
+		wantCursors []uint64
+	}{
+		{
+			name: "succeeds first try",
+			script: []pullStep{
+				{
+					resp: want,
+				},
 			},
-			{
-				err: status.Error(codes.Unavailable, "rst2"),
+			cursor:    7,
+			wantResp:  want,
+			wantCalls: 1,
+			wantCursors: []uint64{
+				7,
 			},
-			{
-				err: status.Error(codes.Unavailable, "rst3"),
+		},
+		{
+			name: "retries transient errors preserving cursor",
+			script: []pullStep{
+				{
+					err: transientErr,
+				},
+				{
+					err: transientErr,
+				},
+				{
+					err: transientErr,
+				},
+				{
+					resp: want,
+				},
 			},
-			{
-				resp: want,
+			cursor:    17,
+			wantResp:  want,
+			wantCalls: 4,
+			wantCursors: []uint64{
+				17,
+				17,
+				17,
+				17,
 			},
+		},
+		{
+			name: "ctx cancelled before first call",
+			script: []pullStep{
+				{
+					err: transientErr,
+				},
+			},
+			cursor:    1,
+			cancel:    cancelBefore,
+			wantErr:   context.Canceled,
+			wantCalls: 0,
+		},
+		{
+			name: "ctx cancel wins over transport error",
+			script: []pullStep{
+				{
+					err: errors.New("transport boom"),
+				},
+			},
+			cursor:    1,
+			cancel:    cancelMidFlight,
+			wantErr:   context.Canceled,
+			wantCalls: 1,
 		},
 	}
 
-	resp, err := PullWithRetry(
-		t.Context(), edge, &mailboxpb.PullRequest{
-			Cursor: 17,
-		},
-		fastBackoff(),
-		nil,
-	)
-	require.NoError(t, err)
-	require.Same(t, want, resp)
-	require.Equal(t, 4, edge.calls)
-	require.Equal(
-		t, []uint64{17, 17, 17, 17}, edge.cursors,
-		"cursor must be preserved across retries",
-	)
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-// TestPullWithRetryRespectsCtxCancel verifies that a cancelled ctx causes the
-// helper to return ctx.Err() promptly even while the endpoint keeps failing.
-func TestPullWithRetryRespectsCtxCancel(t *testing.T) {
-	t.Parallel()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
 
-	edge := &scriptedEdge{
-		script: []pullStep{
-			{
-				err: status.Error(codes.Unavailable, "rst"),
-			},
-		},
+			edge := &scriptedEdge{script: tc.script}
+			switch tc.cancel {
+			case noCancel:
+				// ctx stays live for the whole call.
+
+			case cancelBefore:
+				cancel()
+
+			case cancelMidFlight:
+				edge.onPull = cancel
+			}
+
+			resp, err := PullWithRetry(
+				ctx, edge, &mailboxpb.PullRequest{
+					Cursor: tc.cursor,
+				},
+				fastBackoff(),
+				nil,
+			)
+
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+				require.Same(t, tc.wantResp, resp)
+			}
+			if tc.wantCalls > 0 {
+				require.Equal(t, tc.wantCalls, edge.calls)
+			}
+			if tc.wantCursors != nil {
+				require.Equal(t, tc.wantCursors, edge.cursors)
+			}
+		})
 	}
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	_, err := PullWithRetry(
-		ctx, edge, &mailboxpb.PullRequest{
-			Cursor: 1,
-		},
-		fastBackoff(),
-		nil,
-	)
-	require.ErrorIs(t, err, context.Canceled)
-}
-
-// TestPullWithRetryReturnsCtxErrAfterCancel verifies that if the ctx is
-// cancelled between Pull attempts (i.e. after edge.Pull has returned a
-// transport error but before the helper schedules its backoff sleep), the
-// helper returns ctx.Err() rather than the underlying transport error. This
-// pins the asymmetry where ctx cancellation must take precedence: callers
-// further up the stack treat ctx.Canceled as a normal early exit, while a
-// transport error would be wrapped and surfaced as a swap failure.
-func TestPullWithRetryReturnsCtxErrAfterCancel(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithCancel(t.Context())
-	transportErr := errors.New("transport boom")
-
-	// Drive cancellation from inside the mock Pull callback so the helper
-	// actually executes Pull, observes the transport error, and *then*
-	// finds ctx done on its post-Pull re-check. Cancelling before the
-	// call would just trip the opening ctx.Err() guard, which is the
-	// same code path as TestPullWithRetryRespectsCtxCancel.
-	edge := &scriptedEdge{
-		script: []pullStep{
-			{
-				err: transportErr,
-			},
-		},
-		onPull: func() {
-			cancel()
-		},
-	}
-
-	_, err := PullWithRetry(
-		ctx, edge, &mailboxpb.PullRequest{
-			Cursor: 1,
-		},
-		fastBackoff(),
-		nil,
-	)
-	require.ErrorIs(
-		t, err, context.Canceled,
-		"ctx error must take precedence over transport error",
-	)
-
-	// The helper must have invoked Pull exactly once: the post-Pull
-	// ctx.Err() check should bail before a retry attempt fires.
-	require.Equal(
-		t, 1, edge.calls,
-		"helper must reach the post-Pull ctx re-check, not retry",
-	)
 }
 
 // TestRetryDelayClampsToMax verifies the exponential backoff is capped at

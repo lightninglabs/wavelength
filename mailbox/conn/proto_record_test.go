@@ -9,69 +9,72 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
-// TestWrappedProto_RoundTrip verifies that a proto message survives TLV
-// encode → decode and retains its field values.
-func TestWrappedProto_RoundTrip(t *testing.T) {
+// TestWrappedProtoRoundTrip verifies that a proto message survives TLV
+// encode → decode and retains its field values across input shapes. The
+// "stale decode target" row also exercises decoding into a WrappedProto
+// that already holds data, replacing the old content.
+func TestWrappedProtoRoundTrip(t *testing.T) {
 	t.Parallel()
-
-	original := &wrapperspb.StringValue{Value: "hello-proto"}
 
 	type testTLV = tlv.TlvType1
 
-	encRecord := tlv.NewRecordT[testTLV](
-		WrappedProto[*wrapperspb.StringValue]{
-			Val: original,
+	tests := []struct {
+		name     string
+		encVal   string
+		decStale string
+		want     string
+	}{
+		{
+			name:   "non-empty payload",
+			encVal: "hello-proto",
+			want:   "hello-proto",
 		},
-	)
-
-	var buf bytes.Buffer
-	stream, err := tlv.NewStream(encRecord.Record())
-	require.NoError(t, err)
-	require.NoError(t, stream.Encode(&buf))
-
-	// Decode into a fresh WrappedProto with a pre-allocated zero
-	// value for the concrete proto type.
-	decRecord := tlv.ZeroRecordT[testTLV,
-		WrappedProto[*wrapperspb.StringValue],
-	]()
-	decRecord.Val.Val = &wrapperspb.StringValue{}
-
-	decStream, err := tlv.NewStream(decRecord.Record())
-	require.NoError(t, err)
-	require.NoError(t, decStream.Decode(&buf))
-
-	require.Equal(t, "hello-proto", decRecord.Val.Val.Value)
-}
-
-// TestWrappedProto_EmptyPayload verifies that encoding an empty proto
-// produces a decodable payload that round-trips cleanly.
-func TestWrappedProto_EmptyPayload(t *testing.T) {
-	t.Parallel()
-
-	type testTLV = tlv.TlvType2
-
-	original := &wrapperspb.StringValue{}
-	encRecord := tlv.NewRecordT[testTLV](
-		WrappedProto[*wrapperspb.StringValue]{
-			Val: original,
+		{
+			name:   "empty payload",
+			encVal: "",
+			want:   "",
 		},
-	)
+		{
+			name:     "overwrites stale decode target",
+			encVal:   "new-value",
+			decStale: "stale",
+			want:     "new-value",
+		},
+	}
 
-	var buf bytes.Buffer
-	stream, err := tlv.NewStream(encRecord.Record())
-	require.NoError(t, err)
-	require.NoError(t, stream.Encode(&buf))
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	decRecord := tlv.ZeroRecordT[testTLV,
-		WrappedProto[*wrapperspb.StringValue],
-	]()
-	decRecord.Val.Val = &wrapperspb.StringValue{}
+			encRecord := tlv.NewRecordT[testTLV](
+				WrappedProto[*wrapperspb.StringValue]{
+					Val: &wrapperspb.StringValue{
+						Value: tc.encVal,
+					},
+				},
+			)
 
-	decStream, err := tlv.NewStream(decRecord.Record())
-	require.NoError(t, err)
-	require.NoError(t, decStream.Decode(&buf))
+			var buf bytes.Buffer
+			stream, err := tlv.NewStream(encRecord.Record())
+			require.NoError(t, err)
+			require.NoError(t, stream.Encode(&buf))
 
-	require.Equal(t, "", decRecord.Val.Val.Value)
+			// Decode into a WrappedProto pre-populated with the
+			// (possibly stale) concrete proto value.
+			decRecord := tlv.ZeroRecordT[testTLV,
+				WrappedProto[*wrapperspb.StringValue],
+			]()
+			decRecord.Val.Val = &wrapperspb.StringValue{
+				Value: tc.decStale,
+			}
+
+			decStream, err := tlv.NewStream(decRecord.Record())
+			require.NoError(t, err)
+			require.NoError(t, decStream.Decode(&buf))
+
+			require.Equal(t, tc.want, decRecord.Val.Val.Value)
+		})
+	}
 }
 
 // TestWrappedProto_NilValue verifies that isNil correctly detects a nil
@@ -104,36 +107,4 @@ func TestWrappedProto_NilEncodes(t *testing.T) {
 
 	// Should produce a valid but minimal TLV encoding.
 	require.Greater(t, buf.Len(), 0)
-}
-
-// TestWrappedProto_DecodeOverwritesPreviousState verifies that decoding
-// into a WrappedProto that already holds data replaces the old content.
-func TestWrappedProto_DecodeOverwritesPreviousState(t *testing.T) {
-	t.Parallel()
-
-	type testTLV = tlv.TlvType3
-
-	// Encode "new-value".
-	encRecord := tlv.NewRecordT[testTLV](
-		WrappedProto[*wrapperspb.StringValue]{
-			Val: &wrapperspb.StringValue{Value: "new-value"},
-		},
-	)
-
-	var buf bytes.Buffer
-	stream, err := tlv.NewStream(encRecord.Record())
-	require.NoError(t, err)
-	require.NoError(t, stream.Encode(&buf))
-
-	// Pre-populate the decode target with stale data.
-	decRecord := tlv.ZeroRecordT[testTLV,
-		WrappedProto[*wrapperspb.StringValue],
-	]()
-	decRecord.Val.Val = &wrapperspb.StringValue{Value: "stale"}
-
-	decStream, err := tlv.NewStream(decRecord.Record())
-	require.NoError(t, err)
-	require.NoError(t, decStream.Decode(&buf))
-
-	require.Equal(t, "new-value", decRecord.Val.Val.Value)
 }

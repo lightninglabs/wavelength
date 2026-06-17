@@ -132,63 +132,80 @@ func TestValidateAuthPkgProofOfFundsNeedsPrevOuts(t *testing.T) {
 	require.Equal(t, VerificationStateInconclusive, result.State)
 }
 
-// TestValidateAuthPkgRejectsTooManyProofInputs asserts validation rejects
-// full-format signatures that exceed the maximum allowed proof input count.
-func TestValidateAuthPkgRejectsTooManyProofInputs(t *testing.T) {
+// TestValidateAuthPkgProofInputLimit asserts the proof-input limit is enforced
+// at its default and that callers can raise it via validation options.
+func TestValidateAuthPkgProofInputLimit(t *testing.T) {
 	t.Parallel()
 
-	message := []byte("too many proof inputs")
-	messageHash := MessageHash(message)
-
-	challengeScript := []byte{txscript.OP_TRUE}
-	toSpend, err := BuildToSpend(messageHash, challengeScript)
-	require.NoError(t, err)
-
-	additionalInputs := make([]AdditionalInput, defaultMaxProofInputs+1)
-	for i := 0; i < len(additionalInputs); i++ {
-		additionalInputs[i] = AdditionalInput{
-			PreviousOutPoint: wire.OutPoint{
-				Hash: chainhash.Hash{
-					byte(i),
-				},
-				Index: uint32(i),
+	tests := []struct {
+		name        string
+		opts        []ValidateAuthOption
+		wantState   VerificationState
+		wantReasons []string
+	}{
+		{
+			name:      "default limit rejects",
+			wantState: VerificationStateInvalid,
+			wantReasons: []string{
+				"proof input count",
+				"exceeds max",
 			},
-		}
+		},
+		{
+			name: "raised limit allows past count",
+			opts: []ValidateAuthOption{
+				WithMaxProofInputs(defaultMaxProofInputs + 1),
+			},
+			wantState: VerificationStateInconclusive,
+			wantReasons: []string{
+				"missing proof prevout",
+			},
+		},
 	}
 
-	toSign, err := BuildToSignTx(
-		toSpend, WithToSignAdditionalInputs(additionalInputs...),
-	)
-	require.NoError(t, err)
+	for i := 0; i < len(tests); i++ {
+		tc := tests[i]
 
-	result := ValidateAuthPkg(&AuthPkg{
-		Message:          message,
-		MessageChallenge: challengeScript,
-		Sig: &Sig{
-			ToSign: toSign,
-		},
-	})
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.Equal(t, VerificationStateInvalid, result.State)
-	require.Contains(t, result.Reason, "proof input count")
-	require.Contains(t, result.Reason, "exceeds max")
+			message := []byte(tc.name)
+			challengeScript := []byte{txscript.OP_TRUE}
+			toSpend, err := BuildToSpend(
+				MessageHash(message), challengeScript,
+			)
+			require.NoError(t, err)
+
+			toSign, err := BuildToSignTx(
+				toSpend,
+				WithToSignAdditionalInputs(
+					proofInputs(defaultMaxProofInputs+1)...,
+				),
+			)
+			require.NoError(t, err)
+
+			result := ValidateAuthPkg(&AuthPkg{
+				Message:          message,
+				MessageChallenge: challengeScript,
+				Sig: &Sig{
+					ToSign: toSign,
+				},
+			}, tc.opts...)
+
+			require.Equal(t, tc.wantState, result.State)
+			for _, reason := range tc.wantReasons {
+				require.Contains(t, result.Reason, reason)
+			}
+		})
+	}
 }
 
-// TestValidateAuthPkgAllowsConfiguredProofInputLimit asserts callers can raise
-// the proof-input limit via validation options.
-func TestValidateAuthPkgAllowsConfiguredProofInputLimit(t *testing.T) {
-	t.Parallel()
-
-	message := []byte("configured proof input limit")
-	messageHash := MessageHash(message)
-
-	challengeScript := []byte{txscript.OP_TRUE}
-	toSpend, err := BuildToSpend(messageHash, challengeScript)
-	require.NoError(t, err)
-
-	additionalInputs := make([]AdditionalInput, defaultMaxProofInputs+1)
-	for i := 0; i < len(additionalInputs); i++ {
-		additionalInputs[i] = AdditionalInput{
+// proofInputs builds n placeholder additional proof inputs with distinct
+// outpoints derived from the index.
+func proofInputs(n int) []AdditionalInput {
+	inputs := make([]AdditionalInput, n)
+	for i := 0; i < n; i++ {
+		inputs[i] = AdditionalInput{
 			PreviousOutPoint: wire.OutPoint{
 				Hash: chainhash.Hash{
 					byte(i),
@@ -198,24 +215,7 @@ func TestValidateAuthPkgAllowsConfiguredProofInputLimit(t *testing.T) {
 		}
 	}
 
-	toSign, err := BuildToSignTx(
-		toSpend, WithToSignAdditionalInputs(additionalInputs...),
-	)
-	require.NoError(t, err)
-
-	result := ValidateAuthPkg(
-		&AuthPkg{
-			Message:          message,
-			MessageChallenge: challengeScript,
-			Sig: &Sig{
-				ToSign: toSign,
-			},
-		},
-		WithMaxProofInputs(defaultMaxProofInputs+1),
-	)
-
-	require.Equal(t, VerificationStateInconclusive, result.State)
-	require.Contains(t, result.Reason, "missing proof prevout")
+	return inputs
 }
 
 // TestValidateAuthPkgRejectsNegativeMaxProofInputs asserts invalid max proof
