@@ -60,6 +60,39 @@ func TestPromptSendConfirmationAcceptsYes(t *testing.T) {
 	require.Contains(t, stderr.String(), "Proceed? [y/N]:")
 }
 
+func TestPromptSendConfirmationDisplaysQuoteDetails(t *testing.T) {
+	cmd := newSendCmd()
+	cmd.SetIn(strings.NewReader("yes\n"))
+
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+
+	err := promptSendConfirmation(cmd, &walletdkrpc.PrepareSendResponse{
+		AmountSat:               50_000,
+		ExpectedFeeSat:          123,
+		FeeKnown:                true,
+		ExpectedTotalOutflowSat: 50_123,
+		TotalOutflowKnown:       true,
+		Rail: walletdkrpc.
+			SendRail_SEND_RAIL_LIGHTNING,
+		DestinationSummary: "lnbcrt...",
+		InvoiceDescription: "coffee",
+		PaymentHash:        "abcd",
+		Warning:            "quoted fee exceeds max_fee_sat",
+	})
+	require.NoError(t, err)
+
+	output := stderr.String()
+	require.Contains(t, output, "Send 50000 sats")
+	require.Contains(t, output, "Rail: Lightning")
+	require.Contains(t, output, "Expected fee: 123 sats")
+	require.Contains(t, output, "Expected total outflow: 50123 sats")
+	require.Contains(t, output, "Destination: lnbcrt...")
+	require.Contains(t, output, "Invoice: coffee")
+	require.Contains(t, output, "Payment hash: abcd")
+	require.Contains(t, output, "Warning: quoted fee exceeds max_fee_sat")
+}
+
 func TestPromptSendConfirmationUsesSweepOutflow(t *testing.T) {
 	cmd := newSendCmd()
 	cmd.SetIn(strings.NewReader("yes\n"))

@@ -24,6 +24,8 @@ func NewSwapClientServiceMailboxClient(c rpc.RPCClient) *SwapClientServiceMailbo
 
 // SwapClientServiceMailboxServer is the mailbox server interface for SwapClientService.
 type SwapClientServiceMailboxServer interface {
+	// QuotePay handles QuotePay.
+	QuotePay(ctx context.Context, req *QuotePayRequest) (*QuotePayResponse, error)
 	// StartPay handles StartPay.
 	StartPay(ctx context.Context, req *StartPayRequest) (*StartPayResponse, error)
 	// StartReceive handles StartReceive.
@@ -40,6 +42,16 @@ type SwapClientServiceMailboxServer interface {
 
 // RegisterSwapClientServiceMailboxServer registers handlers for SwapClientService.
 func RegisterSwapClientServiceMailboxServer(r rpc.Router, impl SwapClientServiceMailboxServer) {
+	r.Handle("swapclientrpc.SwapClientService", "QuotePay", func() proto.Message {
+		return &QuotePayRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*QuotePayRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.QuotePay(ctx, req)
+	})
 	r.Handle("swapclientrpc.SwapClientService", "StartPay", func() proto.Message {
 		return &StartPayRequest{}
 	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
@@ -100,6 +112,29 @@ func RegisterSwapClientServiceMailboxServer(r rpc.Router, impl SwapClientService
 
 		return impl.SubscribeSwaps(ctx, req)
 	})
+}
+
+// QuotePay calls the QuotePay RPC.
+func (c *SwapClientServiceMailboxClient) QuotePay(ctx context.Context, req *QuotePayRequest, opts ...rpc.RPCOptions) (*QuotePayResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "swapclientrpc.SwapClientService",
+		Method:  "QuotePay",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(QuotePayResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
 }
 
 // StartPay calls the StartPay RPC.

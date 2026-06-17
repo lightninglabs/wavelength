@@ -165,6 +165,11 @@ func daemonWithLiveOperatorKey(daemon swaps.DaemonConn,
 // Wait. Summary methods expose durable state to RPC handlers without requiring
 // the daemon layer to know the SDK store layout.
 type swapRuntimeClient interface {
+	// QuotePayViaLightning previews a pay swap without creating durable
+	// state or scheduling a worker.
+	QuotePayViaLightning(context.Context, string,
+		uint64) (*swaps.InSwapQuote, error)
+
 	// StartPayViaLightning creates a new pay swap for a Lightning invoice
 	// and persists enough state for a background worker to resume it by
 	// payment hash.
@@ -577,6 +582,13 @@ func (a *swapClientAdapter) StartPayViaLightning(ctx context.Context,
 	invoice string, maxFeeSat uint64) (paySwapSession, error) {
 
 	return a.client.StartPayViaLightning(ctx, invoice, maxFeeSat)
+}
+
+// QuotePayViaLightning previews a pay swap without creating durable state.
+func (a *swapClientAdapter) QuotePayViaLightning(ctx context.Context,
+	invoice string, maxFeeSat uint64) (*swaps.InSwapQuote, error) {
+
+	return a.client.QuotePayViaLightning(ctx, invoice, maxFeeSat)
 }
 
 // StartReceiveViaLightning starts a real sdk/swaps receive session and wraps
@@ -1033,6 +1045,33 @@ func (s *swapClientService) validatePayInvoiceAmount(ctx context.Context,
 	return status.Errorf(codes.InvalidArgument, "invoice amount_sat %d is "+
 		"below the %d sat minimum for pay swaps (operator dust limit)",
 		amountSat, minAmountSat)
+}
+
+// QuotePay previews a pay swap through sdk/swaps without starting a daemon
+// worker or creating durable swap state.
+func (s *swapClientService) QuotePay(ctx context.Context,
+	req *swapclientrpc.QuotePayRequest) (*swapclientrpc.QuotePayResponse,
+	error) {
+
+	if req.GetInvoice() == "" {
+		return nil, status.Error(
+			codes.InvalidArgument, "invoice is required",
+		)
+	}
+	if err := s.validatePayInvoiceAmount(
+		ctx, req.GetInvoice(),
+	); err != nil {
+		return nil, err
+	}
+
+	quote, err := s.client.QuotePayViaLightning(
+		ctx, req.GetInvoice(), req.GetMaxFeeSat(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("quote pay swap: %w", err)
+	}
+
+	return quotePayToProto(quote)
 }
 
 // StartPay persists a pay swap through sdk/swaps, starts or reuses the daemon
@@ -1541,6 +1580,28 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 		),
 		SenderPubkey: senderPubKey,
 	}
+}
+
+func quotePayToProto(quote *swaps.InSwapQuote) (*swapclientrpc.QuotePayResponse,
+	error) {
+
+	if quote == nil {
+		return nil, status.Error(
+			codes.Internal, "quote pay response is empty",
+		)
+	}
+
+	return &swapclientrpc.QuotePayResponse{
+		PaymentHash:      hex.EncodeToString(quote.PaymentHash[:]),
+		InvoiceAmountSat: quote.InvoiceAmountSat,
+		AmountSat:        quote.AmountSat,
+		FeeSat:           quote.FeeSat,
+		SettlementType: swapSettlementTypeToProto(
+			quote.SettlementType,
+		),
+		ExpiresAtUnix: quote.Expiry.Unix(),
+		ExceedsMaxFee: quote.ExceedsMaxFee,
+	}, nil
 }
 
 // swapStateToProto maps sdk/swaps persisted state names into the stable public

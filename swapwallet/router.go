@@ -17,6 +17,8 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/lightningnetwork/lnd/zpay32"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // router dispatches outbound Send requests to the appropriate daemon
@@ -130,6 +132,22 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 		description = strings.TrimSpace(*decoded.Description)
 	}
 
+	if r.deps.SwapService == nil {
+		return nil, ErrSwapBackendUnavailable
+	}
+
+	quote, err := r.deps.SwapService.QuotePay(
+		ctx, &swapclientrpc.QuotePayRequest{
+			Invoice:   invoice,
+			MaxFeeSat: req.GetMaxFeeSat(),
+		},
+	)
+	if err != nil {
+		if !quotePayUnavailable(err) {
+			return nil, fmt.Errorf("quote pay: %w", err)
+		}
+	}
+
 	intent := &preparedSendIntent{
 		kind:      preparedSendInvoice,
 		invoice:   invoice,
@@ -138,25 +156,18 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 		maxFeeSat: req.GetMaxFeeSat(),
 	}
 
+	preview, err := prepareInvoicePreview(
+		invoice, description, paymentHash, amountSat, quote, err,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	if _, err := r.intents.put(intent); err != nil {
 		return nil, err
 	}
 
-	return prepareResponseFromIntent(
-		intent, prepareSendPreview{
-			rail: walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN,
-			quoteStatus: walletdkrpc.
-				SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
-			amountSat:          int64(amountSat),
-			feeKnown:           false,
-			totalOutflowKnown:  false,
-			destinationSummary: truncate(invoice, 32),
-			invoiceDescription: description,
-			paymentHash:        paymentHash,
-			warning: "swapserver quote support is not available " +
-				"yet",
-		},
-	), nil
+	return prepareResponseFromIntent(intent, preview), nil
 }
 
 // sendInvoiceIntent routes a prepared BOLT-11 invoice through the
@@ -500,4 +511,118 @@ func extractPreparedInvoiceAmountSat(decoded *zpay32.Invoice) (uint64, error) {
 	}
 
 	return amountMSat / 1000, nil
+}
+
+// quotePayUnavailable reports whether a quote failure means the configured
+// daemon or swap server is older than the quote RPC.
+func quotePayUnavailable(err error) bool {
+	switch status.Code(err) {
+	case codes.Unimplemented, codes.NotFound:
+		return true
+
+	default:
+		return false
+	}
+}
+
+// prepareInvoicePreview builds a remote quote preview when available and keeps
+// mixed-version deployments usable with a local-only fallback otherwise.
+func prepareInvoicePreview(invoice, description, paymentHash string,
+	amountSat uint64, quote *swapclientrpc.QuotePayResponse,
+	quoteErr error) (prepareSendPreview, error) {
+
+	if quoteErr != nil {
+		return prepareInvoiceLocalPreview(
+			invoice, description, paymentHash, amountSat,
+		), nil
+	}
+
+	return prepareInvoicePreviewFromQuote(
+		invoice, description, paymentHash, quote,
+	)
+}
+
+// prepareInvoiceLocalPreview records only invoice facts the wallet can verify
+// locally. The fee and exact off-chain rail remain unknown until Send starts.
+func prepareInvoiceLocalPreview(invoice, description, paymentHash string,
+	amountSat uint64) prepareSendPreview {
+
+	return prepareSendPreview{
+		rail:                    walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN,
+		quoteStatus:             walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
+		amountSat:               int64(amountSat),
+		expectedFeeSat:          0,
+		feeKnown:                false,
+		expectedTotalOutflowSat: int64(amountSat),
+		totalOutflowKnown:       false,
+		destinationSummary:      truncate(invoice, 32),
+		invoiceDescription:      description,
+		paymentHash:             paymentHash,
+		warning: "server quote unavailable; fee and rail will be " +
+			"resolved when Send starts",
+	}
+}
+
+func prepareInvoicePreviewFromQuote(invoice, description, paymentHash string,
+	quote *swapclientrpc.QuotePayResponse) (prepareSendPreview, error) {
+
+	if quote == nil {
+		return prepareSendPreview{}, fmt.Errorf("quote pay response " +
+			"is required")
+	}
+
+	if quote.GetInvoiceAmountSat() > math.MaxInt64 ||
+		quote.GetAmountSat() > math.MaxInt64 ||
+		quote.GetFeeSat() > math.MaxInt64 {
+		return prepareSendPreview{}, fmt.Errorf("%w: quote amount "+
+			"exceeds int64 range", ErrAmountInvalid)
+	}
+
+	if paymentHash != "" && quote.GetPaymentHash() != paymentHash {
+		return prepareSendPreview{}, fmt.Errorf("%w: quote payment "+
+			"hash does not match invoice", ErrInvalidDestination)
+	}
+
+	rail, err := sendRailFromQuoteSettlement(quote.GetSettlementType())
+	if err != nil {
+		return prepareSendPreview{}, err
+	}
+
+	warning := ""
+	if quote.GetExceedsMaxFee() {
+		warning = "quoted fee exceeds max_fee_sat; Send will fail " +
+			"unless prepared with a higher fee cap"
+	}
+
+	return prepareSendPreview{
+		rail: rail,
+		quoteStatus: walletdkrpc.
+			SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
+		amountSat:               int64(quote.GetInvoiceAmountSat()),
+		expectedFeeSat:          int64(quote.GetFeeSat()),
+		feeKnown:                true,
+		expectedTotalOutflowSat: int64(quote.GetAmountSat()),
+		totalOutflowKnown:       true,
+		destinationSummary:      truncate(invoice, 32),
+		invoiceDescription:      description,
+		paymentHash:             quote.GetPaymentHash(),
+		warning:                 warning,
+	}, nil
+}
+
+func sendRailFromQuoteSettlement(
+	settlementType swapclientrpc.SwapSettlementType) (walletdkrpc.SendRail,
+	error) {
+
+	switch settlementType {
+	case swapclientrpc.
+		SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING:
+		return walletdkrpc.SendRail_SEND_RAIL_LIGHTNING, nil
+
+	case swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK:
+		return walletdkrpc.SendRail_SEND_RAIL_IN_ARK, nil
+
+	default:
+		return walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN, nil
+	}
 }

@@ -380,6 +380,36 @@ type InSwapConfig struct {
 	SettlementType SettlementType
 }
 
+// InSwapQuote previews an Ark-to-Lightning payment without creating durable
+// swap state on either side.
+type InSwapQuote struct {
+	// PaymentHash is the SHA-256 payment hash extracted from the
+	// submitted invoice.
+	PaymentHash lntypes.Hash
+
+	// InvoiceAmountSat is the BOLT-11 destination amount.
+	InvoiceAmountSat uint64
+
+	// AmountSat is the total amount in satoshis the wallet would lock in
+	// the vHTLC.
+	AmountSat uint64
+
+	// FeeSat is the fee in satoshis charged by the swap server.
+	FeeSat uint64
+
+	// Expiry is the wall-clock deadline by which the quoted swap must
+	// complete before it is considered stale.
+	Expiry time.Time
+
+	// SettlementType identifies whether the payment would bridge through
+	// Lightning or settle directly inside Ark.
+	SettlementType SettlementType
+
+	// ExceedsMaxFee is true when the caller supplied a max fee and the
+	// quoted fee is larger than that cap.
+	ExceedsMaxFee bool
+}
+
 // SwapServerConn abstracts the connection to the swap server's
 // gRPC service. This allows the client to talk to the swap server
 // without importing the server module.
@@ -397,6 +427,11 @@ type SwapServerConn interface {
 	// CreateInSwap initiates an Ark->LN swap on the server.
 	CreateInSwap(ctx context.Context, invoice string, maxFeeSat uint64,
 		clientVhtlcPubkey *btcec.PublicKey) (*InSwapConfig, error)
+
+	// QuoteInSwap previews an Ark->LN swap without creating server or
+	// client state.
+	QuoteInSwap(ctx context.Context, invoice string,
+		maxFeeSat uint64) (*InSwapQuote, error)
 
 	// AuthorizeInSwapRefund asks the swap server to sign one exact
 	// cooperative refund spend after it has safely failed the Lightning

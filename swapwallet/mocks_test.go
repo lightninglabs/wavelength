@@ -272,6 +272,11 @@ func (f *fakeRPCServer) SendOnChain(_ context.Context,
 type fakeSwapService struct {
 	swapclientrpc.UnimplementedSwapClientServiceServer
 
+	quotePayResp    *swapclientrpc.QuotePayResponse
+	quotePayErr     error
+	quotePayCalls   int
+	quotePayLastReq *swapclientrpc.QuotePayRequest
+
 	startPayResp    *swapclientrpc.StartPayResponse
 	startPayErr     error
 	startPayCalls   int
@@ -286,6 +291,16 @@ type fakeSwapService struct {
 	listSwapsErr   error
 	listSwapsCalls int
 	listSwapsLast  *swapclientrpc.ListSwapsRequest
+}
+
+func (f *fakeSwapService) QuotePay(_ context.Context,
+	req *swapclientrpc.QuotePayRequest) (*swapclientrpc.QuotePayResponse,
+	error) {
+
+	f.quotePayCalls++
+	f.quotePayLastReq = req
+
+	return f.quotePayResp, f.quotePayErr
 }
 
 func (f *fakeSwapService) StartPay(_ context.Context,

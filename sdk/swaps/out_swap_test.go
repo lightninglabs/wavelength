@@ -476,6 +476,13 @@ func (c *testSwapServerConn) CreateInSwap(context.Context, string, uint64,
 	return nil, nil
 }
 
+// QuoteInSwap is unused in these tests.
+func (c *testSwapServerConn) QuoteInSwap(context.Context, string, uint64) (
+	*InSwapQuote, error) {
+
+	return nil, nil
+}
+
 // AuthorizeInSwapRefund is unused in these tests.
 func (c *testSwapServerConn) AuthorizeInSwapRefund(context.Context,
 	lntypes.Hash, string, int64, []byte, []byte, []byte) (

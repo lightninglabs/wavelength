@@ -128,6 +128,24 @@ func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context, invoice string,
 	return inSwapConfigFromProto(resp)
 }
 
+// QuoteInSwap previews one Ark-to-Lightning swap on the swap server without
+// creating durable state.
+func (g *GRPCSwapServerConn) QuoteInSwap(ctx context.Context, invoice string,
+	maxFeeSat uint64) (*InSwapQuote, error) {
+
+	resp, err := g.client.QuoteInSwap(
+		ctx, &swaprpc.QuoteInSwapRequest{
+			Invoice:   invoice,
+			MaxFeeSat: maxFeeSat,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("QuoteInSwap RPC: %w", err)
+	}
+
+	return inSwapQuoteFromProto(resp)
+}
+
 // AuthorizeInSwapRefund asks the swap server to sign one prepared cooperative
 // in-swap refund.
 func (g *GRPCSwapServerConn) AuthorizeInSwapRefund(ctx context.Context,
@@ -408,6 +426,77 @@ func inSwapConfigFromProto(resp *swaprpc.CreateInSwapResponse) (*InSwapConfig,
 		VHTLCConfig:    *cfg,
 		Expiry:         expiryTime,
 		SettlementType: settlementType,
+	}, nil
+}
+
+// inSwapQuoteFromProto converts one generated in-swap quote into the local SDK
+// shape.
+func inSwapQuoteFromProto(resp *swaprpc.QuoteInSwapResponse) (*InSwapQuote,
+	error) {
+
+	if resp == nil {
+		return nil, fmt.Errorf("in-swap quote response must be " +
+			"provided")
+	}
+
+	if len(resp.GetPaymentHash()) != lntypes.HashSize {
+		return nil, fmt.Errorf("in-swap quote payment hash must be "+
+			"%d bytes", lntypes.HashSize)
+	}
+
+	if resp.GetInvoiceAmountSat() == 0 {
+		return nil, fmt.Errorf("in-swap quote invoice amount must be " +
+			"positive")
+	}
+
+	if resp.GetAmountSat() == 0 {
+		return nil, fmt.Errorf("in-swap quote amount must be positive")
+	}
+
+	if resp.GetFeeSat() > maxInt64Uint {
+		return nil, fmt.Errorf("in-swap quote fee exceeds int64 range")
+	}
+
+	if resp.GetInvoiceAmountSat() > maxInt64Uint-resp.GetFeeSat() {
+		return nil, fmt.Errorf("in-swap quote amount exceeds int64 " +
+			"range")
+	}
+
+	expectedAmount := resp.GetInvoiceAmountSat() + resp.GetFeeSat()
+	if resp.GetAmountSat() != expectedAmount {
+		return nil, fmt.Errorf("in-swap quote amount %d does not "+
+			"equal invoice amount %d plus fee %d",
+			resp.GetAmountSat(), resp.GetInvoiceAmountSat(),
+			resp.GetFeeSat())
+	}
+
+	if resp.GetExpiry() == nil {
+		return nil, fmt.Errorf("in-swap quote missing expiry")
+	}
+
+	expiryTime := resp.GetExpiry().AsTime()
+	if expiryTime.IsZero() {
+		return nil, fmt.Errorf("in-swap quote expiry must be non-zero")
+	}
+
+	settlementType, err := settlementTypeFromProto(
+		resp.GetSettlementType(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var paymentHash lntypes.Hash
+	copy(paymentHash[:], resp.GetPaymentHash())
+
+	return &InSwapQuote{
+		PaymentHash:      paymentHash,
+		InvoiceAmountSat: resp.GetInvoiceAmountSat(),
+		AmountSat:        resp.GetAmountSat(),
+		FeeSat:           resp.GetFeeSat(),
+		Expiry:           expiryTime,
+		SettlementType:   settlementType,
+		ExceedsMaxFee:    resp.GetExceedsMaxFee(),
 	}, nil
 }
 

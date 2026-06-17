@@ -239,6 +239,50 @@ func TestStartPayReturnsSummaryAndStartsWorker(t *testing.T) {
 	require.Equal(t, 1, fakeClient.payResumeCount(payHash))
 }
 
+// TestQuotePayReturnsRemotePreview verifies the local swap client RPC exposes
+// the SDK's non-mutating pay quote without starting a background worker.
+func TestQuotePayReturnsRemotePreview(t *testing.T) {
+	t.Parallel()
+
+	payHash := testHash(23)
+	expiresAt := time.Unix(1_700_200_000, 0)
+	fakeClient := newFakeSwapRuntime()
+	fakeClient.quotePayResp = &swaps.InSwapQuote{
+		PaymentHash:      payHash,
+		InvoiceAmountSat: 10_000,
+		AmountSat:        10_210,
+		FeeSat:           210,
+		Expiry:           expiresAt,
+		SettlementType:   swaps.SettlementTypeLightning,
+		ExceedsMaxFee:    true,
+	}
+	service := newTestSwapClientService(fakeClient)
+	defer service.cancel()
+
+	resp, err := service.QuotePay(
+		t.Context(), &swapclientrpc.QuotePayRequest{
+			Invoice:   "lnbc1test",
+			MaxFeeSat: 1,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, hex.EncodeToString(payHash[:]), resp.GetPaymentHash())
+	require.Equal(t, uint64(10_000), resp.GetInvoiceAmountSat())
+	require.Equal(t, uint64(10_210), resp.GetAmountSat())
+	require.Equal(t, uint64(210), resp.GetFeeSat())
+	require.Equal(
+		t, swapclientrpc.
+			SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING,
+		resp.GetSettlementType(),
+	)
+	require.Equal(t, expiresAt.Unix(), resp.GetExpiresAtUnix())
+	require.True(t, resp.GetExceedsMaxFee())
+	require.Equal(t, 1, fakeClient.quotePayCalls)
+	require.Equal(t, "lnbc1test", fakeClient.quotePayInvoice)
+	require.Equal(t, uint64(1), fakeClient.quotePayMaxFeeSat)
+	require.Equal(t, 0, fakeClient.startPayCount())
+}
+
 // TestStartPayReturnsPendingDuplicateInvoice verifies a repeated StartPay for
 // an invoice with a pending local swap returns that durable swap summary before
 // it can create another server-side in-swap.
@@ -951,8 +995,13 @@ type fakeSwapRuntime struct {
 
 	startPaySession     paySwapSession
 	startReceiveSession receiveSwapSession
+	quotePayResp        *swaps.InSwapQuote
+	quotePayErr         error
 	startPayErr         error
 
+	quotePayCalls      int
+	quotePayInvoice    string
+	quotePayMaxFeeSat  uint64
 	startPayCalls      int
 	startReceiveCalls  int
 	startReceiveMemo   string
@@ -973,6 +1022,25 @@ func newFakeSwapRuntime(summaries ...swaps.SwapSummary) *fakeSwapRuntime {
 		payResumeCh:        make(chan lntypes.Hash, 8),
 		receiveResumeCh:    make(chan lntypes.Hash, 8),
 	}
+}
+
+func (f *fakeSwapRuntime) QuotePayViaLightning(_ context.Context,
+	invoice string, maxFeeSat uint64) (*swaps.InSwapQuote, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.quotePayCalls++
+	f.quotePayInvoice = invoice
+	f.quotePayMaxFeeSat = maxFeeSat
+	if f.quotePayErr != nil {
+		return nil, f.quotePayErr
+	}
+	if f.quotePayResp == nil {
+		return nil, errors.New("quote pay response not configured")
+	}
+
+	return f.quotePayResp, nil
 }
 
 func (f *fakeSwapRuntime) StartPayViaLightning(context.Context, string,

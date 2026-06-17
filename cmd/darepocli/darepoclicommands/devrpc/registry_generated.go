@@ -304,6 +304,13 @@ func generatedRegistry() []serviceSpec {
 			Comments: "SwapClientService exposes daemon-owned Lightning/Ark swap execution to local\nclients. The service is registered only in swapruntime builds.",
 			Methods: []methodSpec{
 				{
+					Name:     "QuotePay",
+					Aliases:  []string{"quote-pay"},
+					Input:    "swapclientrpc.QuotePayRequest",
+					Output:   "swapclientrpc.QuotePayResponse",
+					Comments: "QuotePay previews an Ark-to-Lightning payment without creating durable\nswap state or starting a background worker.",
+				},
+				{
 					Name:     "StartPay",
 					Aliases:  []string{"start-pay"},
 					Input:    "swapclientrpc.StartPayRequest",

@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	SwapService_RequestChannelId_FullMethodName       = "/swaprpc.SwapService/RequestChannelId"
 	SwapService_CreateInSwap_FullMethodName           = "/swaprpc.SwapService/CreateInSwap"
+	SwapService_QuoteInSwap_FullMethodName            = "/swaprpc.SwapService/QuoteInSwap"
 	SwapService_AuthorizeInSwapRefund_FullMethodName  = "/swaprpc.SwapService/AuthorizeInSwapRefund"
 	SwapService_AcknowledgeOutSwapHtlc_FullMethodName = "/swaprpc.SwapService/AcknowledgeOutSwapHtlc"
 )
@@ -38,6 +39,9 @@ type SwapServiceClient interface {
 	// CreateInSwap initiates an Ark-to-Lightning swap for the given invoice and
 	// returns the negotiated vHTLC parameters.
 	CreateInSwap(ctx context.Context, in *CreateInSwapRequest, opts ...grpc.CallOption) (*CreateInSwapResponse, error)
+	// QuoteInSwap previews how an invoice send would settle without creating
+	// durable swap state or notifying a same-Ark receiver.
+	QuoteInSwap(ctx context.Context, in *QuoteInSwapRequest, opts ...grpc.CallOption) (*QuoteInSwapResponse, error)
 	// AuthorizeInSwapRefund signs a prepared cooperative refund spend for a
 	// funded in-swap whose Lightning payment attempt has terminally failed.
 	AuthorizeInSwapRefund(ctx context.Context, in *AuthorizeInSwapRefundRequest, opts ...grpc.CallOption) (*AuthorizeInSwapRefundResponse, error)
@@ -69,6 +73,16 @@ func (c *swapServiceClient) CreateInSwap(ctx context.Context, in *CreateInSwapRe
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateInSwapResponse)
 	err := c.cc.Invoke(ctx, SwapService_CreateInSwap_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *swapServiceClient) QuoteInSwap(ctx context.Context, in *QuoteInSwapRequest, opts ...grpc.CallOption) (*QuoteInSwapResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(QuoteInSwapResponse)
+	err := c.cc.Invoke(ctx, SwapService_QuoteInSwap_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -108,6 +122,9 @@ type SwapServiceServer interface {
 	// CreateInSwap initiates an Ark-to-Lightning swap for the given invoice and
 	// returns the negotiated vHTLC parameters.
 	CreateInSwap(context.Context, *CreateInSwapRequest) (*CreateInSwapResponse, error)
+	// QuoteInSwap previews how an invoice send would settle without creating
+	// durable swap state or notifying a same-Ark receiver.
+	QuoteInSwap(context.Context, *QuoteInSwapRequest) (*QuoteInSwapResponse, error)
 	// AuthorizeInSwapRefund signs a prepared cooperative refund spend for a
 	// funded in-swap whose Lightning payment attempt has terminally failed.
 	AuthorizeInSwapRefund(context.Context, *AuthorizeInSwapRefundRequest) (*AuthorizeInSwapRefundResponse, error)
@@ -130,6 +147,9 @@ func (UnimplementedSwapServiceServer) RequestChannelId(context.Context, *Request
 }
 func (UnimplementedSwapServiceServer) CreateInSwap(context.Context, *CreateInSwapRequest) (*CreateInSwapResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateInSwap not implemented")
+}
+func (UnimplementedSwapServiceServer) QuoteInSwap(context.Context, *QuoteInSwapRequest) (*QuoteInSwapResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method QuoteInSwap not implemented")
 }
 func (UnimplementedSwapServiceServer) AuthorizeInSwapRefund(context.Context, *AuthorizeInSwapRefundRequest) (*AuthorizeInSwapRefundResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AuthorizeInSwapRefund not implemented")
@@ -194,6 +214,24 @@ func _SwapService_CreateInSwap_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SwapService_QuoteInSwap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(QuoteInSwapRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapServiceServer).QuoteInSwap(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapService_QuoteInSwap_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapServiceServer).QuoteInSwap(ctx, req.(*QuoteInSwapRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SwapService_AuthorizeInSwapRefund_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(AuthorizeInSwapRefundRequest)
 	if err := dec(in); err != nil {
@@ -244,6 +282,10 @@ var SwapService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateInSwap",
 			Handler:    _SwapService_CreateInSwap_Handler,
+		},
+		{
+			MethodName: "QuoteInSwap",
+			Handler:    _SwapService_QuoteInSwap_Handler,
 		},
 		{
 			MethodName: "AuthorizeInSwapRefund",
