@@ -3299,7 +3299,7 @@ func (r *RPCServer) SignVTXOForfeit(ctx context.Context,
 			"unsigned_forfeit_tx is required")
 	}
 
-	if err := r.validateSignVTXOForfeitLocalVTXO(
+	if err := r.validateSignVTXOForfeitLocalVTXOIfPresent(
 		ctx, vtxoOutpoint, req,
 	); err != nil {
 		return nil, err
@@ -3425,10 +3425,14 @@ func (r *RPCServer) SignVTXOForfeit(ctx context.Context,
 	}, nil
 }
 
-// validateSignVTXOForfeitLocalVTXO authorizes the low-level signing request
-// against the daemon's locally persisted VTXO state.
-func (r *RPCServer) validateSignVTXOForfeitLocalVTXO(ctx context.Context,
-	outpoint wire.OutPoint, req *daemonrpc.SignVTXOForfeitRequest) error {
+// validateSignVTXOForfeitLocalVTXOIfPresent checks the request transcript
+// against local VTXO state when this daemon owns the VTXO. A missing local row
+// is allowed because this RPC is also used for external participants in a
+// multi-sig spend path; those calls are still bound by the policy template,
+// spend path, exact forfeit transaction, and local-key requirement below.
+func (r *RPCServer) validateSignVTXOForfeitLocalVTXOIfPresent(
+	ctx context.Context, outpoint wire.OutPoint,
+	req *daemonrpc.SignVTXOForfeitRequest) error {
 
 	if r.server.vtxoStore == nil {
 		return status.Errorf(codes.Internal, "vtxo store not "+
@@ -3436,13 +3440,16 @@ func (r *RPCServer) validateSignVTXOForfeitLocalVTXO(ctx context.Context,
 	}
 
 	desc, err := r.server.vtxoStore.GetVTXO(ctx, outpoint)
-	if err != nil {
-		return status.Errorf(codes.NotFound, "local vtxo %s: %v",
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+
+	case err != nil:
+		return status.Errorf(codes.Internal, "load local vtxo %s: %v",
 			outpoint, err)
-	}
-	if desc == nil {
-		return status.Errorf(codes.NotFound, "local vtxo %s not found",
-			outpoint)
+
+	case desc == nil:
+		return nil
 	}
 
 	if int64(desc.Amount) != req.GetVtxoAmountSat() {

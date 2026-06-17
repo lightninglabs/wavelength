@@ -329,7 +329,7 @@ func (b *forfeitSignatureBroker) submit(requestID []byte,
 		)
 	}
 
-	if err := verifyForfeitParticipantSignatures(
+	if err := verifyExternalForfeitParticipantSignatures(
 		req.signReq, participantSigs,
 	); err != nil {
 		return status.Errorf(codes.InvalidArgument, "verify "+
@@ -426,9 +426,13 @@ func forfeitSignatureRequestID(
 	return sum
 }
 
-// verifyForfeitParticipantSignatures verifies that the submitted signatures
-// satisfy the exact connector-bound participant signing request.
-func verifyForfeitParticipantSignatures(req *vtxo.ForfeitParticipantSignRequest,
+// verifyExternalForfeitParticipantSignatures verifies that the submitted
+// signatures satisfy the external participants in the exact connector-bound
+// signing request. The VTXO actor signs req.VTXO.ClientKey locally before it
+// calls the broker, then appends these externally submitted signatures before
+// handing the complete participant set to the round.
+func verifyExternalForfeitParticipantSignatures(
+	req *vtxo.ForfeitParticipantSignRequest,
 	sigs []*types.ForfeitParticipantSig) error {
 
 	if req == nil {
@@ -440,6 +444,10 @@ func verifyForfeitParticipantSignatures(req *vtxo.ForfeitParticipantSignRequest,
 	if req.VTXO.OperatorKey == nil {
 		return fmt.Errorf("pending signing request operator key is " +
 			"missing")
+	}
+	if req.VTXO.ClientKey.PubKey == nil {
+		return fmt.Errorf("pending signing request local client key " +
+			"is missing")
 	}
 	if req.SpendPath == nil {
 		return fmt.Errorf("pending signing request spend path is " +
@@ -464,16 +472,18 @@ func verifyForfeitParticipantSignatures(req *vtxo.ForfeitParticipantSignRequest,
 	}
 
 	operatorKeyID := participantKeyID(req.VTXO.OperatorKey)
+	localKeyID := participantKeyID(req.VTXO.ClientKey.PubKey)
 	required := make(map[string]*btcec.PublicKey, len(signingKeys))
 	for _, key := range signingKeys {
-		if key == nil || participantKeyID(key) == operatorKeyID {
+		keyID := participantKeyID(key)
+		if key == nil || keyID == operatorKeyID || keyID == localKeyID {
 			continue
 		}
 
-		required[participantKeyID(key)] = key
+		required[keyID] = key
 	}
 	if len(required) == 0 {
-		return fmt.Errorf("no non-operator participant keys required")
+		return fmt.Errorf("no external participant keys required")
 	}
 
 	seen := make(map[string]struct{}, len(sigs))

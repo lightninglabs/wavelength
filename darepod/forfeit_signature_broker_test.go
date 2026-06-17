@@ -93,7 +93,7 @@ func TestForfeitSignatureBrokerSurfacesAndCompletesRequest(t *testing.T) {
 	)
 
 	participantSigs := testDaemonForfeitParticipantSignaturesForRequest(
-		t, req, signerPrivs...,
+		t, req, signerPrivs[1:]...,
 	)
 	err := broker.submit(pending.GetRequestId(), participantSigs)
 	require.NoError(t, err)
@@ -101,7 +101,7 @@ func TestForfeitSignatureBrokerSurfacesAndCompletesRequest(t *testing.T) {
 	select {
 	case result := <-results:
 		require.NoError(t, result.err)
-		require.Len(t, result.sigs, len(participantSigs))
+		require.Len(t, result.sigs, 1)
 		require.True(
 			t, sameSubmittedParticipantSet(
 				result.sigs, participantSigs,
@@ -418,7 +418,7 @@ func TestForfeitSignatureBrokerSubmitRejectsInvalidSignature(t *testing.T) {
 	broker.order = []string{requestID}
 
 	invalid := testDaemonForfeitParticipantSignaturesForRequest(
-		t, req, signerPrivs...,
+		t, req, signerPrivs[1:]...,
 	)
 	invalid[0].Signature[len(invalid[0].Signature)-1] ^= 0x01
 
@@ -427,6 +427,46 @@ func TestForfeitSignatureBrokerSubmitRejectsInvalidSignature(t *testing.T) {
 	require.Contains(
 		t, status.Convert(err).Message(),
 		"invalid participant signature",
+	)
+
+	broker.mu.Lock()
+	require.Empty(t, broker.requests[requestID].signatures)
+	broker.mu.Unlock()
+}
+
+// TestForfeitSignatureBrokerSubmitRequiresRemoteParticipant verifies the
+// broker only waits for signatures that the local VTXO actor cannot produce on
+// its own. The actor signs req.VTXO.ClientKey locally before it calls the
+// broker, so submitting that local signature through the RPC must not satisfy a
+// custom VHTLC path that still needs the remote participant.
+func TestForfeitSignatureBrokerSubmitRequiresRemoteParticipant(t *testing.T) {
+	t.Parallel()
+
+	broker := newForfeitSignatureBroker()
+	req, paymentHash, signerPrivs :=
+		testForfeitParticipantSignRequestWithSigners(t)
+	correlation := forfeitSigningContext{
+		paymentHash: paymentHash[:],
+		route:       pendingForfeitSigningRoute(),
+	}
+	pending, err := pendingForfeitSignatureRequest(correlation, req)
+	require.NoError(t, err)
+
+	requestID := string(pending.GetRequestId())
+	broker.requests[requestID] = &forfeitSignatureRequest{
+		proto:   pending,
+		signReq: req,
+	}
+	broker.order = []string{requestID}
+
+	localSig := testDaemonForfeitParticipantSignaturesForRequest(
+		t, req, signerPrivs[0],
+	)
+	err = broker.submit(pending.GetRequestId(), localSig)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Contains(
+		t, status.Convert(err).Message(),
+		"unexpected participant key",
 	)
 
 	broker.mu.Lock()
@@ -457,7 +497,7 @@ func TestForfeitSignatureBrokerSubmitIsIdempotent(t *testing.T) {
 	broker.order = []string{requestID}
 
 	sigs := testDaemonForfeitParticipantSignaturesForRequest(
-		t, req, signerPrivs...,
+		t, req, signerPrivs[1:]...,
 	)
 
 	err = broker.submit(pending.GetRequestId(), sigs)

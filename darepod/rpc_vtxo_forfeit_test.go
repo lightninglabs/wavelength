@@ -39,6 +39,12 @@ type signVTXOForfeitFixture struct {
 }
 
 func newSignVTXOForfeitFixture(t *testing.T) *signVTXOForfeitFixture {
+	return newSignVTXOForfeitFixtureWithLocalVTXO(t, true)
+}
+
+func newSignVTXOForfeitFixtureWithLocalVTXO(t *testing.T,
+	saveLocalVTXO bool) *signVTXOForfeitFixture {
+
 	t.Helper()
 
 	policy, preimage, senderPriv, receiverPriv, serverPriv :=
@@ -57,6 +63,7 @@ func newSignVTXOForfeitFixture(t *testing.T) *signVTXOForfeitFixture {
 
 	vtxoOutpoint := testWalletOpsOutpoint(11)
 	connectorOutpoint := testWalletOpsOutpoint(12)
+	roundID := "sign-vtxo-forfeit-round"
 	connectorPkScript, err := txscript.PayToTaprootScript(
 		serverPriv.PubKey(),
 	)
@@ -144,22 +151,24 @@ func newSignVTXOForfeitFixture(t *testing.T) *signVTXOForfeitFixture {
 		),
 	}
 	server.vtxoStore = vtxoStore
-	require.NoError(
-		t,
-		vtxoStore.SaveVTXO(
-			t.Context(), &vtxo.Descriptor{
-				Outpoint:       vtxoOutpoint,
-				Amount:         vtxoAmount,
-				PkScript:       pkScript,
-				PolicyTemplate: policyTemplate,
-				ClientKey:      server.clientKeyDesc,
-				OperatorKey:    serverPriv.PubKey(),
-				RoundID:        "sign-vtxo-forfeit-round",
-				BatchExpiry:    1000,
-				RelativeExpiry: 144,
-			},
-		),
-	)
+	if saveLocalVTXO {
+		require.NoError(
+			t,
+			vtxoStore.SaveVTXO(
+				t.Context(), &vtxo.Descriptor{
+					Outpoint:       vtxoOutpoint,
+					Amount:         vtxoAmount,
+					PkScript:       pkScript,
+					PolicyTemplate: policyTemplate,
+					ClientKey:      server.clientKeyDesc,
+					OperatorKey:    serverPriv.PubKey(),
+					RoundID:        roundID,
+					BatchExpiry:    1000,
+					RelativeExpiry: 144,
+				},
+			),
+		)
+	}
 
 	req := &daemonrpc.SignVTXOForfeitRequest{
 		VtxoOutpoint:          vtxoOutpoint.String(),
@@ -244,12 +253,60 @@ func TestSignVTXOForfeitSignsExactForfeitTx(t *testing.T) {
 	)
 }
 
+// TestSignVTXOForfeitSignsExternalParticipantTranscript covers the custom
+// refresh case where this daemon is a required participant in the VTXO policy
+// but does not own the VTXO row locally. The RPC must not require local
+// ownership, but it must still validate the caller-supplied transcript before
+// signing with the daemon identity key.
+func TestSignVTXOForfeitSignsExternalParticipantTranscript(t *testing.T) {
+	t.Parallel()
+
+	fixture := newSignVTXOForfeitFixtureWithLocalVTXO(t, false)
+
+	signer := &input.MockInputSigner{}
+	signer.On(
+		"SignOutputRaw", mock.Anything,
+		mock.MatchedBy(func(desc *input.SignDescriptor) bool {
+			matchesInput := desc.InputIndex ==
+				forfeittx.ForfeitVTXOInputIndex
+
+			return matchesInput &&
+				desc.SignMethod ==
+					input.TaprootScriptSpendSignMethod &&
+				bytes.Equal(
+					desc.Output.PkScript,
+					fixture.req.GetVtxoPkScript(),
+				)
+		}),
+	).Return(mustParseSchnorrSig(t, fixture.localSigBytes), nil).Once()
+	fixture.rpcServer.oorSignerOverride = signer
+
+	resp, err := fixture.rpcServer.SignVTXOForfeit(
+		t.Context(), fixture.req,
+	)
+	require.NoError(t, err)
+	signer.AssertExpectations(t)
+
+	gotSig := mustParseSchnorrSig(t, resp.GetSignature())
+	require.True(
+		t,
+		forfeitSignatureVerifies(
+			t, gotSig, fixture.forfeitTx, fixture.vtxoOut,
+			fixture.vtxoOutput, fixture.connectorOut,
+			fixture.connectorOutput,
+			fixture.rpcServer.server.clientKeyDesc.PubKey,
+			fixture.req.GetSpendPath(),
+		),
+	)
+}
+
 // TestSignVTXOForfeitRejectsMalformedRequests pins the signing oracle's
 // fail-closed boundary. Each case gets far enough to build the same exact
 // request shape used by swapd, then mutates one critical field: local VTXO
-// state, a penalty output that does not match the server script, a spend path
-// that does not require this daemon's key, or transaction bytes that already
-// contain a witness. All must be caller errors and must not invoke the signer.
+// state when available, a penalty output that does not match the server
+// script, a spend path that does not require this daemon's key, or transaction
+// bytes that already contain a witness. All must be caller errors and must not
+// invoke the signer.
 func TestSignVTXOForfeitRejectsMalformedRequests(t *testing.T) {
 	t.Parallel()
 
