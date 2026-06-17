@@ -141,15 +141,23 @@ func TestRouterPrepareSendInvoiceRejectsWrongNetwork(t *testing.T) {
 	require.Zero(t, intentCount, "wrong-network invoices create no intent")
 }
 
-// TestRouterPrepareSendInvoiceReturnsLocalPreview confirms the invoice
-// prepare path decodes the BOLT-11 metadata locally, produces a short-lived
-// intent, and honestly marks fee/rail details as local-only until remote quote
-// APIs exist.
-func TestRouterPrepareSendInvoiceReturnsLocalPreview(t *testing.T) {
+// TestRouterPrepareSendInvoiceReturnsRemoteQuote confirms the invoice prepare
+// path asks the swap client service for the non-mutating quote exposed by the
+// remote swap server.
+func TestRouterPrepareSendInvoiceReturnsRemoteQuote(t *testing.T) {
 	t.Parallel()
 
 	r, swap, rpc := newRouterFixture(t)
 	invoice, paymentHash := testPreparedInvoice(t, 12_345, "coffee")
+	swap.quotePayResp = &swapclientrpc.QuotePayResponse{
+		PaymentHash:      paymentHash,
+		InvoiceAmountSat: 12_345,
+		AmountSat:        12_555,
+		FeeSat:           210,
+		SettlementType: swapclientrpc.
+			SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING,
+		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
+	}
 
 	resp, err := r.PrepareSend(
 		t.Context(), &walletdkrpc.PrepareSendRequest{
@@ -164,23 +172,92 @@ func TestRouterPrepareSendInvoiceReturnsLocalPreview(t *testing.T) {
 	require.NotEmpty(t, resp.GetSendIntentId())
 	require.Equal(t, int64(12_345), resp.GetAmountSat())
 	require.Equal(
-		t, walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN,
+		t, walletdkrpc.SendRail_SEND_RAIL_LIGHTNING,
 		resp.GetRail(),
 	)
 	require.Equal(
-		t, walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
+		t, walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
 		resp.GetQuoteStatus(),
 	)
-	require.False(t, resp.GetFeeKnown())
-	require.False(t, resp.GetTotalOutflowKnown())
-	require.Equal(t, int64(0), resp.GetExpectedFeeSat())
-	require.Equal(t, int64(0), resp.GetExpectedTotalOutflowSat())
+	require.True(t, resp.GetFeeKnown())
+	require.True(t, resp.GetTotalOutflowKnown())
+	require.Equal(t, int64(210), resp.GetExpectedFeeSat())
+	require.Equal(t, int64(12_555), resp.GetExpectedTotalOutflowSat())
 	require.Equal(t, "coffee", resp.GetInvoiceDescription())
 	require.Equal(t, paymentHash, resp.GetPaymentHash())
 	require.Contains(t, resp.GetDestinationSummary(), "lnbcrt")
-	require.Contains(t, resp.GetWarning(), "swapserver quote support")
+	require.Empty(t, resp.GetWarning())
+	require.Equal(t, 1, swap.quotePayCalls)
+	require.Equal(t, invoice, swap.quotePayLastReq.GetInvoice())
+	require.Equal(t, uint64(25), swap.quotePayLastReq.GetMaxFeeSat())
 	require.Equal(t, 0, swap.startPayCalls)
 	require.Equal(t, 0, rpc.leaveCalls)
+}
+
+// TestRouterPrepareSendInvoiceQuotesInArk confirms same-Ark previews surface
+// as a concrete in-Ark rail with zero fee.
+func TestRouterPrepareSendInvoiceQuotesInArk(t *testing.T) {
+	t.Parallel()
+
+	r, swap, rpc := newRouterFixture(t)
+	invoice, paymentHash := testPreparedInvoice(t, 12_345, "ark")
+	swap.quotePayResp = &swapclientrpc.QuotePayResponse{
+		PaymentHash:      paymentHash,
+		InvoiceAmountSat: 12_345,
+		AmountSat:        12_345,
+		FeeSat:           0,
+		SettlementType: swapclientrpc.
+			SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK,
+		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
+	}
+
+	resp, err := r.PrepareSend(
+		t.Context(), &walletdkrpc.PrepareSendRequest{
+			Destination: &walletdkrpc.PrepareSendRequest_Invoice{
+				Invoice: invoice,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, walletdkrpc.SendRail_SEND_RAIL_IN_ARK,
+		resp.GetRail())
+	require.Equal(t, int64(0), resp.GetExpectedFeeSat())
+	require.Equal(t, int64(12_345),
+		resp.GetExpectedTotalOutflowSat())
+	require.Equal(t, 1, swap.quotePayCalls)
+	require.Equal(t, 0, swap.startPayCalls)
+	require.Equal(t, 0, rpc.leaveCalls)
+}
+
+// TestRouterPrepareSendInvoiceWarnsWhenQuoteExceedsMaxFee confirms PrepareSend
+// keeps the non-mutating quote renderable when the caller's cap is too low.
+func TestRouterPrepareSendInvoiceWarnsWhenQuoteExceedsMaxFee(t *testing.T) {
+	t.Parallel()
+
+	r, swap, _ := newRouterFixture(t)
+	invoice, paymentHash := testPreparedInvoice(t, 12_345, "fee cap")
+	swap.quotePayResp = &swapclientrpc.QuotePayResponse{
+		PaymentHash:      paymentHash,
+		InvoiceAmountSat: 12_345,
+		AmountSat:        12_765,
+		FeeSat:           420,
+		SettlementType: swapclientrpc.
+			SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING,
+		ExceedsMaxFee: true,
+		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
+	}
+
+	resp, err := r.PrepareSend(
+		t.Context(), &walletdkrpc.PrepareSendRequest{
+			Destination: &walletdkrpc.PrepareSendRequest_Invoice{
+				Invoice: invoice,
+			},
+			MaxFeeSat: 1,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(420), resp.GetExpectedFeeSat())
+	require.Contains(t, resp.GetWarning(), "exceeds max_fee_sat")
 }
 
 // TestRouterSendInvoiceDispatchesStartPay confirms an invoice destination
