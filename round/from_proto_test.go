@@ -171,8 +171,12 @@ func TestJoinRoundRequestFromProtoPreservesCustomForfeitSpendPaths(
 				TxHash:      make([]byte, 32),
 				OutputIndex: 3,
 			},
-			AuthSpendPath:    mustEncodeFromProtoSpendPath(t, authSpend),
-			ForfeitSpendPath: mustEncodeFromProtoSpendPath(t, forfeitSpend),
+			AuthSpendPath: mustEncodeFromProtoSpendPath(
+				t, authSpend,
+			),
+			ForfeitSpendPath: mustEncodeFromProtoSpendPath(
+				t, forfeitSpend,
+			),
 		}},
 	}
 

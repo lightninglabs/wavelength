@@ -629,6 +629,60 @@ func local_request_DaemonService_RefreshCustomVTXOs_0(ctx context.Context, marsh
 	return msg, metadata, err
 }
 
+func request_DaemonService_ListPendingForfeitParticipantSignatureRequests_0(ctx context.Context, marshaler runtime.Marshaler, client DaemonServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq ListPendingForfeitParticipantSignatureRequestsRequest
+		metadata runtime.ServerMetadata
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.ListPendingForfeitParticipantSignatureRequests(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_DaemonService_ListPendingForfeitParticipantSignatureRequests_0(ctx context.Context, marshaler runtime.Marshaler, server DaemonServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq ListPendingForfeitParticipantSignatureRequestsRequest
+		metadata runtime.ServerMetadata
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	msg, err := server.ListPendingForfeitParticipantSignatureRequests(ctx, &protoReq)
+	return msg, metadata, err
+}
+
+func request_DaemonService_SubmitForfeitParticipantSignatures_0(ctx context.Context, marshaler runtime.Marshaler, client DaemonServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq SubmitForfeitParticipantSignaturesRequest
+		metadata runtime.ServerMetadata
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.SubmitForfeitParticipantSignatures(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_DaemonService_SubmitForfeitParticipantSignatures_0(ctx context.Context, marshaler runtime.Marshaler, server DaemonServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq SubmitForfeitParticipantSignaturesRequest
+		metadata runtime.ServerMetadata
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	msg, err := server.SubmitForfeitParticipantSignatures(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_DaemonService_LeaveVTXOs_0(ctx context.Context, marshaler runtime.Marshaler, client DaemonServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq LeaveVTXOsRequest
@@ -1638,6 +1692,46 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		}
 		forward_DaemonService_RefreshCustomVTXOs_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_DaemonService_ListPendingForfeitParticipantSignatureRequests_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/ListPendingForfeitParticipantSignatureRequests", runtime.WithHTTPPathPattern("/v1/daemon/list-pending-forfeit-participant-signature-requests"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_DaemonService_ListPendingForfeitParticipantSignatureRequests_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_DaemonService_ListPendingForfeitParticipantSignatureRequests_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodPost, pattern_DaemonService_SubmitForfeitParticipantSignatures_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/SubmitForfeitParticipantSignatures", runtime.WithHTTPPathPattern("/v1/daemon/submit-forfeit-participant-signatures"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_DaemonService_SubmitForfeitParticipantSignatures_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_DaemonService_SubmitForfeitParticipantSignatures_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_DaemonService_LeaveVTXOs_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -2459,6 +2553,40 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		}
 		forward_DaemonService_RefreshCustomVTXOs_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_DaemonService_ListPendingForfeitParticipantSignatureRequests_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/ListPendingForfeitParticipantSignatureRequests", runtime.WithHTTPPathPattern("/v1/daemon/list-pending-forfeit-participant-signature-requests"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_DaemonService_ListPendingForfeitParticipantSignatureRequests_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_DaemonService_ListPendingForfeitParticipantSignatureRequests_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodPost, pattern_DaemonService_SubmitForfeitParticipantSignatures_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/SubmitForfeitParticipantSignatures", runtime.WithHTTPPathPattern("/v1/daemon/submit-forfeit-participant-signatures"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_DaemonService_SubmitForfeitParticipantSignatures_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_DaemonService_SubmitForfeitParticipantSignatures_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_DaemonService_LeaveVTXOs_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -2820,93 +2948,97 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 }
 
 var (
-	pattern_DaemonService_GetInfo_0                       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-info"}, ""))
-	pattern_DaemonService_GenSeed_0                       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "gen-seed"}, ""))
-	pattern_DaemonService_InitWallet_0                    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "init-wallet"}, ""))
-	pattern_DaemonService_UnlockWallet_0                  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "unlock-wallet"}, ""))
-	pattern_DaemonService_GetBalance_0                    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-balance"}, ""))
-	pattern_DaemonService_ListVTXOs_0                     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "list-vtxos"}, ""))
-	pattern_DaemonService_NewAddress_0                    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "new-address"}, ""))
-	pattern_DaemonService_NewReceiveScript_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "new-receive-script"}, ""))
-	pattern_DaemonService_ReceiveAuthKey_0                = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "receive-auth-key"}, ""))
-	pattern_DaemonService_SignReceiveAuthMessage_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "sign-receive-auth-message"}, ""))
-	pattern_DaemonService_SignReceiveAuthMessageCompact_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "sign-receive-auth-message-compact"}, ""))
-	pattern_DaemonService_ReceiveAuthECDH_0               = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "receive-auth-ecdh"}, ""))
-	pattern_DaemonService_GetIndexedVTXOByPkScript_0      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-indexed-vtxo-by-pk-script"}, ""))
-	pattern_DaemonService_GetVTXOExpiryInfo_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-vtxo-expiry-info"}, ""))
-	pattern_DaemonService_GetIndexedOORSessionByTxid_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-indexed-oor-session-by-txid"}, ""))
-	pattern_DaemonService_SendVTXO_0                      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "send-vtxo"}, ""))
-	pattern_DaemonService_SendOOR_0                       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "send-oor"}, ""))
-	pattern_DaemonService_PrepareOOR_0                    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "prepare-oor"}, ""))
-	pattern_DaemonService_SignOORCustomInput_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "sign-oor-custom-input"}, ""))
-	pattern_DaemonService_SignVTXOForfeit_0               = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "sign-vtxo-forfeit"}, ""))
-	pattern_DaemonService_RefreshVTXOs_0                  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "refresh-vtxos"}, ""))
-	pattern_DaemonService_RefreshCustomVTXOs_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "refresh-custom-vtxos"}, ""))
-	pattern_DaemonService_LeaveVTXOs_0                    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "leave-vtxos"}, ""))
-	pattern_DaemonService_SendOnChain_0                   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "send-onchain"}, ""))
-	pattern_DaemonService_Board_0                         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "board"}, ""))
-	pattern_DaemonService_JoinNextRound_0                 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "join-next-round"}, ""))
-	pattern_DaemonService_SweepBoardingUTXOs_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "sweep-boarding-utxos"}, ""))
-	pattern_DaemonService_ListBoardingSweeps_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "list-boarding-sweeps"}, ""))
-	pattern_DaemonService_ListRounds_0                    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "list-rounds"}, ""))
-	pattern_DaemonService_GetRound_0                      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-round"}, ""))
-	pattern_DaemonService_WatchRounds_0                   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "watch-rounds"}, ""))
-	pattern_DaemonService_ListOORSessions_0               = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "list-oor-sessions"}, ""))
-	pattern_DaemonService_GetOORSession_0                 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-oor-session"}, ""))
-	pattern_DaemonService_EstimateFee_0                   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "estimate-fee"}, ""))
-	pattern_DaemonService_GetFeeHistory_0                 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-fee-history"}, ""))
-	pattern_DaemonService_ListTransactions_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "list-transactions"}, ""))
-	pattern_DaemonService_Unroll_0                        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "unroll"}, ""))
-	pattern_DaemonService_GetUnrollStatus_0               = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-unroll-status"}, ""))
-	pattern_DaemonService_ArmVHTLCRecovery_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "arm-vhtlc-recovery"}, ""))
-	pattern_DaemonService_EscalateVHTLCRecovery_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "escalate-vhtlc-recovery"}, ""))
-	pattern_DaemonService_CancelVHTLCRecovery_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "cancel-vhtlc-recovery"}, ""))
-	pattern_DaemonService_GetVHTLCRecoveryStatus_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-vhtlc-recovery-status"}, ""))
-	pattern_DaemonService_ListVHTLCRecoveries_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "list-vhtlc-recoveries"}, ""))
+	pattern_DaemonService_GetInfo_0                                        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-info"}, ""))
+	pattern_DaemonService_GenSeed_0                                        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "gen-seed"}, ""))
+	pattern_DaemonService_InitWallet_0                                     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "init-wallet"}, ""))
+	pattern_DaemonService_UnlockWallet_0                                   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "unlock-wallet"}, ""))
+	pattern_DaemonService_GetBalance_0                                     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-balance"}, ""))
+	pattern_DaemonService_ListVTXOs_0                                      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "list-vtxos"}, ""))
+	pattern_DaemonService_NewAddress_0                                     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "new-address"}, ""))
+	pattern_DaemonService_NewReceiveScript_0                               = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "new-receive-script"}, ""))
+	pattern_DaemonService_ReceiveAuthKey_0                                 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "receive-auth-key"}, ""))
+	pattern_DaemonService_SignReceiveAuthMessage_0                         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "sign-receive-auth-message"}, ""))
+	pattern_DaemonService_SignReceiveAuthMessageCompact_0                  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "sign-receive-auth-message-compact"}, ""))
+	pattern_DaemonService_ReceiveAuthECDH_0                                = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "receive-auth-ecdh"}, ""))
+	pattern_DaemonService_GetIndexedVTXOByPkScript_0                       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-indexed-vtxo-by-pk-script"}, ""))
+	pattern_DaemonService_GetVTXOExpiryInfo_0                              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-vtxo-expiry-info"}, ""))
+	pattern_DaemonService_GetIndexedOORSessionByTxid_0                     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-indexed-oor-session-by-txid"}, ""))
+	pattern_DaemonService_SendVTXO_0                                       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "send-vtxo"}, ""))
+	pattern_DaemonService_SendOOR_0                                        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "send-oor"}, ""))
+	pattern_DaemonService_PrepareOOR_0                                     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "prepare-oor"}, ""))
+	pattern_DaemonService_SignOORCustomInput_0                             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "sign-oor-custom-input"}, ""))
+	pattern_DaemonService_SignVTXOForfeit_0                                = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "sign-vtxo-forfeit"}, ""))
+	pattern_DaemonService_RefreshVTXOs_0                                   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "refresh-vtxos"}, ""))
+	pattern_DaemonService_RefreshCustomVTXOs_0                             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "refresh-custom-vtxos"}, ""))
+	pattern_DaemonService_ListPendingForfeitParticipantSignatureRequests_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "list-pending-forfeit-participant-signature-requests"}, ""))
+	pattern_DaemonService_SubmitForfeitParticipantSignatures_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "submit-forfeit-participant-signatures"}, ""))
+	pattern_DaemonService_LeaveVTXOs_0                                     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "leave-vtxos"}, ""))
+	pattern_DaemonService_SendOnChain_0                                    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "send-onchain"}, ""))
+	pattern_DaemonService_Board_0                                          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "board"}, ""))
+	pattern_DaemonService_JoinNextRound_0                                  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "join-next-round"}, ""))
+	pattern_DaemonService_SweepBoardingUTXOs_0                             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "sweep-boarding-utxos"}, ""))
+	pattern_DaemonService_ListBoardingSweeps_0                             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "list-boarding-sweeps"}, ""))
+	pattern_DaemonService_ListRounds_0                                     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "list-rounds"}, ""))
+	pattern_DaemonService_GetRound_0                                       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-round"}, ""))
+	pattern_DaemonService_WatchRounds_0                                    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "watch-rounds"}, ""))
+	pattern_DaemonService_ListOORSessions_0                                = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "list-oor-sessions"}, ""))
+	pattern_DaemonService_GetOORSession_0                                  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-oor-session"}, ""))
+	pattern_DaemonService_EstimateFee_0                                    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "estimate-fee"}, ""))
+	pattern_DaemonService_GetFeeHistory_0                                  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-fee-history"}, ""))
+	pattern_DaemonService_ListTransactions_0                               = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "list-transactions"}, ""))
+	pattern_DaemonService_Unroll_0                                         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "unroll"}, ""))
+	pattern_DaemonService_GetUnrollStatus_0                                = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-unroll-status"}, ""))
+	pattern_DaemonService_ArmVHTLCRecovery_0                               = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "arm-vhtlc-recovery"}, ""))
+	pattern_DaemonService_EscalateVHTLCRecovery_0                          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "escalate-vhtlc-recovery"}, ""))
+	pattern_DaemonService_CancelVHTLCRecovery_0                            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "cancel-vhtlc-recovery"}, ""))
+	pattern_DaemonService_GetVHTLCRecoveryStatus_0                         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "get-vhtlc-recovery-status"}, ""))
+	pattern_DaemonService_ListVHTLCRecoveries_0                            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "daemon", "list-vhtlc-recoveries"}, ""))
 )
 
 var (
-	forward_DaemonService_GetInfo_0                       = runtime.ForwardResponseMessage
-	forward_DaemonService_GenSeed_0                       = runtime.ForwardResponseMessage
-	forward_DaemonService_InitWallet_0                    = runtime.ForwardResponseMessage
-	forward_DaemonService_UnlockWallet_0                  = runtime.ForwardResponseMessage
-	forward_DaemonService_GetBalance_0                    = runtime.ForwardResponseMessage
-	forward_DaemonService_ListVTXOs_0                     = runtime.ForwardResponseMessage
-	forward_DaemonService_NewAddress_0                    = runtime.ForwardResponseMessage
-	forward_DaemonService_NewReceiveScript_0              = runtime.ForwardResponseMessage
-	forward_DaemonService_ReceiveAuthKey_0                = runtime.ForwardResponseMessage
-	forward_DaemonService_SignReceiveAuthMessage_0        = runtime.ForwardResponseMessage
-	forward_DaemonService_SignReceiveAuthMessageCompact_0 = runtime.ForwardResponseMessage
-	forward_DaemonService_ReceiveAuthECDH_0               = runtime.ForwardResponseMessage
-	forward_DaemonService_GetIndexedVTXOByPkScript_0      = runtime.ForwardResponseMessage
-	forward_DaemonService_GetVTXOExpiryInfo_0             = runtime.ForwardResponseMessage
-	forward_DaemonService_GetIndexedOORSessionByTxid_0    = runtime.ForwardResponseMessage
-	forward_DaemonService_SendVTXO_0                      = runtime.ForwardResponseMessage
-	forward_DaemonService_SendOOR_0                       = runtime.ForwardResponseMessage
-	forward_DaemonService_PrepareOOR_0                    = runtime.ForwardResponseMessage
-	forward_DaemonService_SignOORCustomInput_0            = runtime.ForwardResponseMessage
-	forward_DaemonService_SignVTXOForfeit_0               = runtime.ForwardResponseMessage
-	forward_DaemonService_RefreshVTXOs_0                  = runtime.ForwardResponseMessage
-	forward_DaemonService_RefreshCustomVTXOs_0            = runtime.ForwardResponseMessage
-	forward_DaemonService_LeaveVTXOs_0                    = runtime.ForwardResponseMessage
-	forward_DaemonService_SendOnChain_0                   = runtime.ForwardResponseMessage
-	forward_DaemonService_Board_0                         = runtime.ForwardResponseMessage
-	forward_DaemonService_JoinNextRound_0                 = runtime.ForwardResponseMessage
-	forward_DaemonService_SweepBoardingUTXOs_0            = runtime.ForwardResponseMessage
-	forward_DaemonService_ListBoardingSweeps_0            = runtime.ForwardResponseMessage
-	forward_DaemonService_ListRounds_0                    = runtime.ForwardResponseMessage
-	forward_DaemonService_GetRound_0                      = runtime.ForwardResponseMessage
-	forward_DaemonService_WatchRounds_0                   = runtime.ForwardResponseStream
-	forward_DaemonService_ListOORSessions_0               = runtime.ForwardResponseMessage
-	forward_DaemonService_GetOORSession_0                 = runtime.ForwardResponseMessage
-	forward_DaemonService_EstimateFee_0                   = runtime.ForwardResponseMessage
-	forward_DaemonService_GetFeeHistory_0                 = runtime.ForwardResponseMessage
-	forward_DaemonService_ListTransactions_0              = runtime.ForwardResponseMessage
-	forward_DaemonService_Unroll_0                        = runtime.ForwardResponseMessage
-	forward_DaemonService_GetUnrollStatus_0               = runtime.ForwardResponseMessage
-	forward_DaemonService_ArmVHTLCRecovery_0              = runtime.ForwardResponseMessage
-	forward_DaemonService_EscalateVHTLCRecovery_0         = runtime.ForwardResponseMessage
-	forward_DaemonService_CancelVHTLCRecovery_0           = runtime.ForwardResponseMessage
-	forward_DaemonService_GetVHTLCRecoveryStatus_0        = runtime.ForwardResponseMessage
-	forward_DaemonService_ListVHTLCRecoveries_0           = runtime.ForwardResponseMessage
+	forward_DaemonService_GetInfo_0                                        = runtime.ForwardResponseMessage
+	forward_DaemonService_GenSeed_0                                        = runtime.ForwardResponseMessage
+	forward_DaemonService_InitWallet_0                                     = runtime.ForwardResponseMessage
+	forward_DaemonService_UnlockWallet_0                                   = runtime.ForwardResponseMessage
+	forward_DaemonService_GetBalance_0                                     = runtime.ForwardResponseMessage
+	forward_DaemonService_ListVTXOs_0                                      = runtime.ForwardResponseMessage
+	forward_DaemonService_NewAddress_0                                     = runtime.ForwardResponseMessage
+	forward_DaemonService_NewReceiveScript_0                               = runtime.ForwardResponseMessage
+	forward_DaemonService_ReceiveAuthKey_0                                 = runtime.ForwardResponseMessage
+	forward_DaemonService_SignReceiveAuthMessage_0                         = runtime.ForwardResponseMessage
+	forward_DaemonService_SignReceiveAuthMessageCompact_0                  = runtime.ForwardResponseMessage
+	forward_DaemonService_ReceiveAuthECDH_0                                = runtime.ForwardResponseMessage
+	forward_DaemonService_GetIndexedVTXOByPkScript_0                       = runtime.ForwardResponseMessage
+	forward_DaemonService_GetVTXOExpiryInfo_0                              = runtime.ForwardResponseMessage
+	forward_DaemonService_GetIndexedOORSessionByTxid_0                     = runtime.ForwardResponseMessage
+	forward_DaemonService_SendVTXO_0                                       = runtime.ForwardResponseMessage
+	forward_DaemonService_SendOOR_0                                        = runtime.ForwardResponseMessage
+	forward_DaemonService_PrepareOOR_0                                     = runtime.ForwardResponseMessage
+	forward_DaemonService_SignOORCustomInput_0                             = runtime.ForwardResponseMessage
+	forward_DaemonService_SignVTXOForfeit_0                                = runtime.ForwardResponseMessage
+	forward_DaemonService_RefreshVTXOs_0                                   = runtime.ForwardResponseMessage
+	forward_DaemonService_RefreshCustomVTXOs_0                             = runtime.ForwardResponseMessage
+	forward_DaemonService_ListPendingForfeitParticipantSignatureRequests_0 = runtime.ForwardResponseMessage
+	forward_DaemonService_SubmitForfeitParticipantSignatures_0             = runtime.ForwardResponseMessage
+	forward_DaemonService_LeaveVTXOs_0                                     = runtime.ForwardResponseMessage
+	forward_DaemonService_SendOnChain_0                                    = runtime.ForwardResponseMessage
+	forward_DaemonService_Board_0                                          = runtime.ForwardResponseMessage
+	forward_DaemonService_JoinNextRound_0                                  = runtime.ForwardResponseMessage
+	forward_DaemonService_SweepBoardingUTXOs_0                             = runtime.ForwardResponseMessage
+	forward_DaemonService_ListBoardingSweeps_0                             = runtime.ForwardResponseMessage
+	forward_DaemonService_ListRounds_0                                     = runtime.ForwardResponseMessage
+	forward_DaemonService_GetRound_0                                       = runtime.ForwardResponseMessage
+	forward_DaemonService_WatchRounds_0                                    = runtime.ForwardResponseStream
+	forward_DaemonService_ListOORSessions_0                                = runtime.ForwardResponseMessage
+	forward_DaemonService_GetOORSession_0                                  = runtime.ForwardResponseMessage
+	forward_DaemonService_EstimateFee_0                                    = runtime.ForwardResponseMessage
+	forward_DaemonService_GetFeeHistory_0                                  = runtime.ForwardResponseMessage
+	forward_DaemonService_ListTransactions_0                               = runtime.ForwardResponseMessage
+	forward_DaemonService_Unroll_0                                         = runtime.ForwardResponseMessage
+	forward_DaemonService_GetUnrollStatus_0                                = runtime.ForwardResponseMessage
+	forward_DaemonService_ArmVHTLCRecovery_0                               = runtime.ForwardResponseMessage
+	forward_DaemonService_EscalateVHTLCRecovery_0                          = runtime.ForwardResponseMessage
+	forward_DaemonService_CancelVHTLCRecovery_0                            = runtime.ForwardResponseMessage
+	forward_DaemonService_GetVHTLCRecoveryStatus_0                         = runtime.ForwardResponseMessage
+	forward_DaemonService_ListVHTLCRecoveries_0                            = runtime.ForwardResponseMessage
 )

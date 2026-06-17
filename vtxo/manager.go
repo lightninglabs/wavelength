@@ -1845,10 +1845,12 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 				return fn.Err[ManagerResp](err)
 			}
 			if !ok {
+				err := fmt.Errorf("custom forfeit input %s "+
+					"conflicts with existing VTXO actor",
+					input.Outpoint)
+
 				return fn.Err[ManagerResp](
-					fmt.Errorf("custom forfeit input %s "+
-						"conflicts with existing VTXO actor",
-						input.Outpoint),
+					err,
 				)
 			}
 
@@ -1861,7 +1863,7 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 			Outpoint:       input.Outpoint,
 			Amount:         input.Amount,
 			PkScript:       append([]byte(nil), input.PkScript...),
-			PolicyTemplate: append([]byte(nil), input.PolicyTemplate...),
+			PolicyTemplate: bytes.Clone(input.PolicyTemplate),
 			ClientKey:      input.ClientKey,
 			OperatorKey:    input.OperatorKey,
 			RelativeExpiry: input.RelativeExpiry,
@@ -1903,12 +1905,12 @@ func (m *Manager) customForfeitInputAlreadyActive(ctx context.Context,
 
 	desc, err := m.cfg.Store.GetVTXO(ctx, input.Outpoint)
 	if err != nil {
-		return false, fmt.Errorf("load existing custom forfeit input %s: %w",
-			input.Outpoint, err)
+		return false, fmt.Errorf("load existing custom forfeit input "+
+			"%s: %w", input.Outpoint, err)
 	}
 	if desc == nil {
-		return false, fmt.Errorf("load existing custom forfeit input %s: "+
-			"nil descriptor", input.Outpoint)
+		return false, fmt.Errorf("load existing custom forfeit input "+
+			"%s: nil descriptor", input.Outpoint)
 	}
 	if desc.Status != VTXOStatusPendingForfeit {
 		return false, nil
@@ -1927,7 +1929,8 @@ func (m *Manager) customForfeitInputAlreadyActive(ctx context.Context,
 	) {
 		return false, nil
 	}
-	if desc.OperatorKey == nil || !desc.OperatorKey.IsEqual(input.OperatorKey) {
+	if desc.OperatorKey == nil ||
+		!desc.OperatorKey.IsEqual(input.OperatorKey) {
 		return false, nil
 	}
 

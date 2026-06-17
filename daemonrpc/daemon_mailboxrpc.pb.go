@@ -68,6 +68,10 @@ type DaemonServiceMailboxServer interface {
 	RefreshVTXOs(ctx context.Context, req *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
 	// RefreshCustomVTXOs handles RefreshCustomVTXOs.
 	RefreshCustomVTXOs(ctx context.Context, req *RefreshCustomVTXOsRequest) (*RefreshCustomVTXOsResponse, error)
+	// ListPendingForfeitParticipantSignatureRequests handles ListPendingForfeitParticipantSignatureRequests.
+	ListPendingForfeitParticipantSignatureRequests(ctx context.Context, req *ListPendingForfeitParticipantSignatureRequestsRequest) (*ListPendingForfeitParticipantSignatureRequestsResponse, error)
+	// SubmitForfeitParticipantSignatures handles SubmitForfeitParticipantSignatures.
+	SubmitForfeitParticipantSignatures(ctx context.Context, req *SubmitForfeitParticipantSignaturesRequest) (*SubmitForfeitParticipantSignaturesResponse, error)
 	// LeaveVTXOs handles LeaveVTXOs.
 	LeaveVTXOs(ctx context.Context, req *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error)
 	// SendOnChain handles SendOnChain.
@@ -333,6 +337,26 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.RefreshCustomVTXOs(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ListPendingForfeitParticipantSignatureRequests", func() proto.Message {
+		return &ListPendingForfeitParticipantSignatureRequestsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListPendingForfeitParticipantSignatureRequestsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListPendingForfeitParticipantSignatureRequests(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "SubmitForfeitParticipantSignatures", func() proto.Message {
+		return &SubmitForfeitParticipantSignaturesRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SubmitForfeitParticipantSignaturesRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SubmitForfeitParticipantSignatures(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "LeaveVTXOs", func() proto.Message {
 		return &LeaveVTXOsRequest{}
@@ -1045,6 +1069,52 @@ func (c *DaemonServiceMailboxClient) RefreshCustomVTXOs(ctx context.Context, req
 	}
 
 	resp := new(RefreshCustomVTXOsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListPendingForfeitParticipantSignatureRequests calls the ListPendingForfeitParticipantSignatureRequests RPC.
+func (c *DaemonServiceMailboxClient) ListPendingForfeitParticipantSignatureRequests(ctx context.Context, req *ListPendingForfeitParticipantSignatureRequestsRequest, opts ...rpc.RPCOptions) (*ListPendingForfeitParticipantSignatureRequestsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ListPendingForfeitParticipantSignatureRequests",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListPendingForfeitParticipantSignatureRequestsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SubmitForfeitParticipantSignatures calls the SubmitForfeitParticipantSignatures RPC.
+func (c *DaemonServiceMailboxClient) SubmitForfeitParticipantSignatures(ctx context.Context, req *SubmitForfeitParticipantSignaturesRequest, opts ...rpc.RPCOptions) (*SubmitForfeitParticipantSignaturesResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SubmitForfeitParticipantSignatures",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SubmitForfeitParticipantSignaturesResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

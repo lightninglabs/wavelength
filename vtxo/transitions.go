@@ -290,10 +290,19 @@ func (s *LiveState) handleForfeitRequest(ctx context.Context,
 		externalSigs,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("participant forfeit signatures: %w", err)
+		return nil, fmt.Errorf("participant forfeit signatures: %w",
+			err)
 	}
 
 	forfeitTxID := forfeitTx.TxHash()
+	submission := &ForfeitSignatureSubmission{
+		VTXOOutpoint:        s.VTXO.Outpoint,
+		RoundID:             evt.RoundID,
+		ForfeitTx:           forfeitTx,
+		Signature:           sig,
+		ParticipantVTXOSigs: participantSigs,
+		SpendPath:           forfeitSpend,
+	}
 
 	return &VTXOStateTransition{
 		NextState: &ForfeitingState{
@@ -305,14 +314,7 @@ func (s *LiveState) handleForfeitRequest(ctx context.Context,
 		},
 		NewEvents: fn.Some(VTXOEmittedEvent{
 			Outbox: []VTXOOutMsg{
-				&ForfeitSignatureSubmission{
-					VTXOOutpoint:        s.VTXO.Outpoint,
-					RoundID:             evt.RoundID,
-					ForfeitTx:           forfeitTx,
-					Signature:           sig,
-					ParticipantVTXOSigs: participantSigs,
-					SpendPath:           forfeitSpend,
-				},
+				submission,
 				&VTXOStatusUpdate{
 					Outpoint:  s.VTXO.Outpoint,
 					NewStatus: VTXOStatusForfeiting,
@@ -453,7 +455,8 @@ func participantForfeitSigs(localPubKey *btcec.PublicKey,
 		return nil, fmt.Errorf("local participant pubkey is required")
 	}
 	if localSig == nil {
-		return nil, fmt.Errorf("local participant signature is required")
+		return nil, fmt.Errorf("local participant signature is " +
+			"required")
 	}
 
 	participantSigs := make(
@@ -463,21 +466,25 @@ func participantForfeitSigs(localPubKey *btcec.PublicKey,
 
 	for _, sig := range externalSigs {
 		if sig == nil {
-			return nil, fmt.Errorf("participant signature is required")
+			return nil, fmt.Errorf("participant signature is " +
+				"required")
 		}
 		if sig.PubKey == nil {
 			return nil, fmt.Errorf("participant pubkey is required")
 		}
 		if sig.Signature == nil {
-			return nil, fmt.Errorf("participant schnorr signature is required")
+			return nil, fmt.Errorf("participant schnorr " +
+				"signature is required")
 		}
 
 		keyID := participantForfeitKeyID(sig.PubKey)
 		if _, ok := seen[keyID]; ok {
-			return nil, fmt.Errorf("duplicate participant signature")
+			return nil, fmt.Errorf("duplicate participant " +
+				"signature")
 		}
 		if sameParticipantForfeitKey(sig.PubKey, localPubKey) {
-			return nil, fmt.Errorf("external signature uses local pubkey")
+			return nil, fmt.Errorf("external signature uses " +
+				"local pubkey")
 		}
 
 		seen[keyID] = struct{}{}
@@ -624,19 +631,27 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 			ctx, s.VTXO, forfeitSpend, evt, forfeitTx, env,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("external participant signatures: %w",
-				err)
+			return nil, fmt.Errorf("external participant "+
+				"signatures: %w", err)
 		}
 		participantSigs, err := participantForfeitSigs(
 			s.VTXO.ClientKey.PubKey, sig, evt.ForfeitSpend != nil,
 			externalSigs,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("participant forfeit signatures: %w",
-				err)
+			return nil, fmt.Errorf("participant forfeit "+
+				"signatures: %w", err)
 		}
 
 		forfeitTxID := forfeitTx.TxHash()
+		submission := &ForfeitSignatureSubmission{
+			VTXOOutpoint:        s.VTXO.Outpoint,
+			RoundID:             evt.RoundID,
+			ForfeitTx:           forfeitTx,
+			Signature:           sig,
+			ParticipantVTXOSigs: participantSigs,
+			SpendPath:           forfeitSpend,
+		}
 
 		return &VTXOStateTransition{
 			NextState: &ForfeitingState{
@@ -648,14 +663,7 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 			},
 			NewEvents: fn.Some(VTXOEmittedEvent{
 				Outbox: []VTXOOutMsg{
-					&ForfeitSignatureSubmission{
-						VTXOOutpoint:        s.VTXO.Outpoint,
-						RoundID:             evt.RoundID,
-						ForfeitTx:           forfeitTx,
-						Signature:           sig,
-						ParticipantVTXOSigs: participantSigs,
-						SpendPath:           forfeitSpend,
-					},
+					submission,
 					&VTXOStatusUpdate{
 						Outpoint:  s.VTXO.Outpoint,
 						NewStatus: VTXOStatusForfeiting,

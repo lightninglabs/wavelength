@@ -9,7 +9,9 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func newCustomRefreshRPCRequest(t *testing.T) *daemonrpc.RefreshCustomVTXOsRequest {
+type refreshCustomReq = daemonrpc.RefreshCustomVTXOsRequest
+
+func newCustomRefreshRPCRequest(t *testing.T) *refreshCustomReq {
 	t.Helper()
 
 	policy, preimage, _, _, _ := testVHTLCPolicyFixture(t)
@@ -74,13 +76,11 @@ func TestRefreshCustomVTXOsRejectsMismatchedMetadata(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		mutate       func(*testing.T, *daemonrpc.RefreshCustomVTXOsRequest)
+		mutate       func(*testing.T, *refreshCustomReq)
 		wantContains string
 	}{{
 		name: "input policy mismatches pkScript",
-		mutate: func(t *testing.T,
-			req *daemonrpc.RefreshCustomVTXOsRequest) {
-
+		mutate: func(t *testing.T, req *refreshCustomReq) {
 			t.Helper()
 
 			req.Inputs[0].PkScript = append(
@@ -100,15 +100,13 @@ func TestRefreshCustomVTXOsRejectsMismatchedMetadata(t *testing.T) {
 			req.Outputs[0].PkScript = append(
 				[]byte(nil), req.Inputs[0].PkScript...,
 			)
-			req.Outputs[0].PkScript[len(req.Outputs[0].PkScript)-1] ^=
-				0x01
+			last := len(req.Outputs[0].PkScript) - 1
+			req.Outputs[0].PkScript[last] ^= 0x01
 		},
 		wantContains: "output 0 policy template does not match",
 	}, {
 		name: "auth spend path mismatches pkScript",
-		mutate: func(t *testing.T,
-			req *daemonrpc.RefreshCustomVTXOsRequest) {
-
+		mutate: func(t *testing.T, req *refreshCustomReq) {
 			t.Helper()
 
 			otherPolicy, otherPreimage, _, _, _ :=
@@ -121,17 +119,16 @@ func TestRefreshCustomVTXOsRejectsMismatchedMetadata(t *testing.T) {
 		wantContains: "auth_spend_path does not bind",
 	}, {
 		name: "forfeit spend path mismatches pkScript",
-		mutate: func(t *testing.T,
-			req *daemonrpc.RefreshCustomVTXOsRequest) {
-
+		mutate: func(t *testing.T, req *refreshCustomReq) {
 			t.Helper()
 
 			otherPolicy, otherPreimage, _, _, _ :=
 				testVHTLCPolicyFixture(t)
 			otherClaim, err := otherPolicy.ClaimPath(otherPreimage)
 			require.NoError(t, err)
-			req.Inputs[0].ForfeitSpendPath, err = otherClaim.Encode()
+			encoded, err := otherClaim.Encode()
 			require.NoError(t, err)
+			req.Inputs[0].ForfeitSpendPath = encoded
 		},
 		wantContains: "forfeit_spend_path does not bind",
 	}}
@@ -147,10 +144,16 @@ func TestRefreshCustomVTXOsRejectsMismatchedMetadata(t *testing.T) {
 
 			_, err := (&RPCServer{
 				server: &Server{},
-			}).RefreshCustomVTXOs(t.Context(), req)
-			require.Equal(t, codes.InvalidArgument, status.Code(err))
-			require.Contains(t, status.Convert(err).Message(),
-				test.wantContains)
+			}).RefreshCustomVTXOs(t.Context(),
+				req,
+			)
+			require.Equal(
+				t, codes.InvalidArgument, status.Code(err),
+			)
+			require.Contains(
+				t, status.Convert(err).Message(),
+				test.wantContains,
+			)
 		})
 	}
 }

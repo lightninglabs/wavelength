@@ -305,7 +305,9 @@ func TestActivateCustomForfeitInputsRejectsLiveActorCollision(t *testing.T) {
 	desc.Status = VTXOStatusLive
 
 	store := &MockVTXOStore{}
-	store.On("GetVTXO", mock.Anything, desc.Outpoint).Return(desc, nil).Once()
+	store.On(
+		"GetVTXO", mock.Anything, desc.Outpoint,
+	).Return(desc, nil).Once()
 
 	mgr := &Manager{
 		cfg: &ManagerConfig{

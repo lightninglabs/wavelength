@@ -287,10 +287,14 @@ type CustomForfeitInput = actormsg.CustomForfeitInput
 
 // ActivateCustomForfeitInputsRequest is an alias for the canonical type in
 // actormsg.
+//
+//nolint:ll // Actor message names intentionally mirror the protocol command.
 type ActivateCustomForfeitInputsRequest = actormsg.ActivateCustomForfeitInputsRequest
 
 // ActivateCustomForfeitInputsResponse is an alias for the canonical type in
 // actormsg.
+//
+//nolint:ll // Actor message names intentionally mirror the protocol command.
 type ActivateCustomForfeitInputsResponse = actormsg.ActivateCustomForfeitInputsResponse
 
 // DropCustomForfeitInputsRequest is an alias for the canonical type in

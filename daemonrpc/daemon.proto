@@ -117,6 +117,19 @@ service DaemonService {
     rpc RefreshCustomVTXOs (RefreshCustomVTXOsRequest)
         returns (RefreshCustomVTXOsResponse);
 
+    // ListPendingForfeitParticipantSignatureRequests returns exact
+    // connector-bound forfeit signing requests emitted by custom refresh
+    // inputs whose policies require signatures from external participants.
+    rpc ListPendingForfeitParticipantSignatureRequests (
+        ListPendingForfeitParticipantSignatureRequestsRequest)
+        returns (ListPendingForfeitParticipantSignatureRequestsResponse);
+
+    // SubmitForfeitParticipantSignatures supplies external participant
+    // signatures for one pending connector-bound forfeit signing request.
+    rpc SubmitForfeitParticipantSignatures (
+        SubmitForfeitParticipantSignaturesRequest)
+        returns (SubmitForfeitParticipantSignaturesResponse);
+
     // LeaveVTXOs queues one or more VTXOs for cooperative leave
     // (offboard) in the next round. Each VTXO is forfeited and the
     // forfeited amount (minus the quoted per-input operator fee)
@@ -1079,6 +1092,31 @@ message SignVTXOForfeitResponse {
     bytes signature = 2;
 }
 
+// ForfeitSigningDirection lets an external swap coordinator route a pending
+// custom-refresh signature request to the right swap-level protocol.
+enum ForfeitSigningDirection {
+    FORFEIT_SIGNING_DIRECTION_UNSPECIFIED = 0;
+
+    // FORFEIT_SIGNING_DIRECTION_IN_SWAP means the local daemon owns the
+    // in-swap vHTLC and needs the remote swap server participant signature.
+    FORFEIT_SIGNING_DIRECTION_IN_SWAP = 1;
+
+    // FORFEIT_SIGNING_DIRECTION_OUT_SWAP means the local daemon owns the
+    // swap server's out-swap vHTLC and needs the receiver participant
+    // signature.
+    FORFEIT_SIGNING_DIRECTION_OUT_SWAP = 2;
+}
+
+// ForfeitSigningContext links a caller-supplied custom refresh input back to
+// the swap session that should answer later connector-bound signing requests.
+message ForfeitSigningContext {
+    // payment_hash identifies the swap whose custom VTXO is being refreshed.
+    bytes payment_hash = 1;
+
+    // direction identifies which swap protocol should answer the request.
+    ForfeitSigningDirection direction = 2;
+}
+
 // OutpointSelection wraps a list of outpoint strings for use inside a
 // oneof field, since proto3 does not allow repeated fields directly in
 // a oneof.
@@ -1133,6 +1171,10 @@ message CustomRefreshVTXOInput {
     // forfeit_spend_path is the encoded operator-backed spend path used for
     // the actual round forfeit transaction once the connector is assigned.
     bytes forfeit_spend_path = 6;
+
+    // forfeit_signing_context, when set, asks the daemon to surface the later
+    // connector-bound signing request to external swap coordination RPCs.
+    ForfeitSigningContext forfeit_signing_context = 7;
 }
 
 // CustomRefreshVTXOOutput specifies the replacement VTXO output created by a
@@ -1169,6 +1211,54 @@ message RefreshCustomVTXOsResponse {
 
     // status is the result: "queued" on success, "preview" on dry_run.
     string status = 2;
+}
+
+// PendingForfeitParticipantSignatureRequest is the exact transcript an
+// external participant must validate and sign for a custom refresh forfeit.
+message PendingForfeitParticipantSignatureRequest {
+    bytes request_id = 1;
+    uint64 sequence = 2;
+    bytes payment_hash = 3;
+    ForfeitSigningDirection direction = 4;
+
+    string vtxo_outpoint = 5;
+    uint64 vtxo_amount_sat = 6;
+    bytes vtxo_pk_script = 7;
+    bytes vtxo_policy_template = 8;
+    bytes forfeit_spend_path = 9;
+    bytes unsigned_forfeit_tx = 10;
+
+    string connector_outpoint = 11;
+    uint64 connector_amount_sat = 12;
+    bytes connector_pk_script = 13;
+    bytes server_forfeit_pk_script = 14;
+}
+
+message ListPendingForfeitParticipantSignatureRequestsRequest {
+    // after_sequence returns requests with a larger sequence. Zero starts at
+    // the beginning of the daemon-local pending request stream.
+    uint64 after_sequence = 1;
+
+    // limit caps the number of returned requests. Zero uses a daemon default.
+    uint32 limit = 2;
+}
+
+message ListPendingForfeitParticipantSignatureRequestsResponse {
+    repeated PendingForfeitParticipantSignatureRequest requests = 1;
+    uint64 next_sequence = 2;
+}
+
+message ForfeitParticipantSignature {
+    bytes pubkey = 1;
+    bytes signature = 2;
+}
+
+message SubmitForfeitParticipantSignaturesRequest {
+    bytes request_id = 1;
+    repeated ForfeitParticipantSignature signatures = 2;
+}
+
+message SubmitForfeitParticipantSignaturesResponse {
 }
 
 // LeaveDestination describes where a single leave output should land.

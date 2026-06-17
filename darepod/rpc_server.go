@@ -162,6 +162,23 @@ func (r *RPCServer) OperatorPubKey(ctx context.Context) (*btcec.PublicKey,
 	return r.server.fetchCurrentOperatorPubKey(ctx)
 }
 
+// SetVTXOForfeitParticipantSigner installs the optional signer used by custom
+// in-swap refreshes to collect the swap server participant signature.
+func (r *RPCServer) SetVTXOForfeitParticipantSigner(
+	signer vtxo.ForfeitParticipantSigner) error {
+
+	if r == nil || r.server == nil {
+		return fmt.Errorf("daemon server unavailable")
+	}
+	if r.server.forfeitSignatures == nil {
+		return fmt.Errorf("forfeit signature broker is not initialized")
+	}
+
+	r.server.forfeitSignatures.setInSwapSigner(signer)
+
+	return nil
+}
+
 // vtxoAdmissionCode maps typed VTXO admission failures to caller-actionable
 // gRPC codes while preserving Internal for unexpected selection failures.
 func vtxoAdmissionCode(err error) codes.Code {
@@ -1442,6 +1459,10 @@ func (r *RPCServer) RefreshCustomVTXOs(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	signingContexts, err := parseCustomRefreshSigningContexts(req)
+	if err != nil {
+		return nil, err
+	}
 
 	if req.GetDryRun() {
 		return &daemonrpc.RefreshCustomVTXOsResponse{
@@ -1462,8 +1483,20 @@ func (r *RPCServer) RefreshCustomVTXOs(ctx context.Context,
 	enrichCustomRefreshInputs(
 		inputs, r.server.clientKeyDesc, terms.PubKey,
 	)
+	var unregister []func()
+	for outpoint, signingCtx := range signingContexts {
+		unregister = append(
+			unregister, r.server.forfeitSignatures.registerContext(
+				outpoint, signingCtx,
+			),
+		)
+	}
 
 	if !r.server.walletRef.IsSome() {
+		for _, fn := range unregister {
+			fn()
+		}
+
 		return nil, status.Errorf(codes.Internal, "wallet actor not "+
 			"initialized")
 	}
@@ -1477,16 +1510,28 @@ func (r *RPCServer) RefreshCustomVTXOs(ctx context.Context,
 
 	refreshResp, err := result.Unpack()
 	if err != nil {
+		for _, fn := range unregister {
+			fn()
+		}
+
 		return nil, status.Errorf(codes.Internal, "custom refresh "+
 			"request failed: %v", err)
 	}
 
 	resp, ok := refreshResp.(*wallet.RefreshCustomVTXOsResponse)
 	if !ok {
+		for _, fn := range unregister {
+			fn()
+		}
+
 		return nil, status.Errorf(codes.Internal, "unexpected "+
 			"response type: %T", refreshResp)
 	}
 	if resp.RefreshingCount != len(queued) {
+		for _, fn := range unregister {
+			fn()
+		}
+
 		return nil, status.Errorf(codes.Internal, "custom refresh "+
 			"queued %d VTXOs, expected %d", resp.RefreshingCount,
 			len(queued))
@@ -1500,6 +1545,55 @@ func (r *RPCServer) RefreshCustomVTXOs(ctx context.Context,
 		QueuedOutpoints: queued,
 		Status:          "queued",
 	}, nil
+}
+
+func (r *RPCServer) ListPendingForfeitParticipantSignatureRequests(
+	_ context.Context,
+	req *daemonrpc.ListPendingForfeitParticipantSignatureRequestsRequest) (
+	*daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse,
+	error) {
+
+	after := uint64(0)
+	limit := uint32(0)
+	if req != nil {
+		after = req.GetAfterSequence()
+		limit = req.GetLimit()
+	}
+
+	requests, next := r.server.forfeitSignatures.list(after, limit)
+
+	resp := new(
+		daemonrpc.
+			ListPendingForfeitParticipantSignatureRequestsResponse,
+	)
+	resp.Requests = requests
+	resp.NextSequence = next
+
+	return resp, nil
+}
+
+func (r *RPCServer) SubmitForfeitParticipantSignatures(ctx context.Context,
+	req *daemonrpc.SubmitForfeitParticipantSignaturesRequest) (
+	*daemonrpc.SubmitForfeitParticipantSignaturesResponse, error) {
+
+	if req == nil {
+		return nil, status.Error(
+			codes.InvalidArgument, "request is required",
+		)
+	}
+
+	err := r.server.forfeitSignatures.submit(
+		req.GetRequestId(), req.GetSignatures(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	r.server.log.DebugS(ctx, "Accepted forfeit participant signatures",
+		slog.Int("signature_count", len(req.GetSignatures())),
+	)
+
+	return &daemonrpc.SubmitForfeitParticipantSignaturesResponse{}, nil
 }
 
 func buildCustomRefreshRequest(req *daemonrpc.RefreshCustomVTXOsRequest) (
@@ -1553,6 +1647,49 @@ func buildCustomRefreshRequest(req *daemonrpc.RefreshCustomVTXOsRequest) (
 	}
 
 	return inputs, outputs, queued, nil
+}
+
+func parseCustomRefreshSigningContexts(
+	req *daemonrpc.RefreshCustomVTXOsRequest) (
+	map[string]forfeitSigningContext, error) {
+
+	contexts := make(map[string]forfeitSigningContext)
+	if req == nil {
+		return contexts, nil
+	}
+
+	for i, input := range req.GetInputs() {
+		if input == nil || input.GetForfeitSigningContext() == nil {
+			continue
+		}
+
+		outpoint, err := parseOutpointString(input.GetOutpoint())
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"parse custom refresh input %d outpoint %q: %v",
+				i, input.GetOutpoint(), err)
+		}
+
+		ctx := input.GetForfeitSigningContext()
+		hash := ctx.GetPaymentHash()
+		if len(hash) != 32 {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"custom refresh input %d signing context "+
+					"payment_hash must be 32 bytes", i)
+		}
+		if ctx.GetDirection() == unspecifiedForfeitSigningDirection() {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"custom refresh input %d signing context "+
+					"direction is required", i)
+		}
+
+		contexts[outpoint.String()] = forfeitSigningContext{
+			paymentHash: append([]byte(nil), hash...),
+			direction:   ctx.GetDirection(),
+		}
+	}
+
+	return contexts, nil
 }
 
 func parseCustomRefreshInput(index int,
@@ -1651,17 +1788,17 @@ func enrichCustomRefreshInputs(inputs []wallet.CustomRefreshInput,
 }
 
 func maxCustomRefreshSequence(paths ...*arkscript.SpendPath) uint32 {
-	var max uint32
+	var maxSequence uint32
 	for _, path := range paths {
 		if path == nil {
 			continue
 		}
-		if path.RequiredSequence > max {
-			max = path.RequiredSequence
+		if path.RequiredSequence > maxSequence {
+			maxSequence = path.RequiredSequence
 		}
 	}
 
-	return max
+	return maxSequence
 }
 
 func parseCustomRefreshOutput(index int,
@@ -3146,9 +3283,10 @@ func (r *RPCServer) SignVTXOForfeit(ctx context.Context,
 		return nil, status.Errorf(codes.InvalidArgument, "decode "+
 			"spend path: %v", err)
 	}
-	if err := spendPath.VerifyBindsToPkScript(req.GetVtxoPkScript()); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"spend path does not bind to vtxo_pk_script: %v", err)
+	err = spendPath.VerifyBindsToPkScript(req.GetVtxoPkScript())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "spend path "+
+			"does not bind to vtxo_pk_script: %v", err)
 	}
 
 	signingKeys, err := arkscript.SigningKeysForSpendPath(
@@ -3278,7 +3416,8 @@ func parseUnsignedForfeitTx(raw []byte) (*wire.MsgTx, error) {
 
 	for i, txIn := range tx.TxIn {
 		if len(txIn.SignatureScript) > 0 {
-			return nil, fmt.Errorf("input %d has signature script", i)
+			return nil, fmt.Errorf("input %d has signature script",
+				i)
 		}
 		if len(txIn.Witness) > 0 {
 			return nil, fmt.Errorf("input %d has witness", i)

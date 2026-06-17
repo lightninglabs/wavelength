@@ -629,12 +629,13 @@ func TestCustomRefreshActivatesSignerWithoutLiveReservation(t *testing.T) {
 	op := testOutpoint(42)
 	policyTemplate := []byte{0xde, 0xad, 0xbe, 0xef}
 	pkScript := []byte{0x51, 0x20, 0x01}
+	activateResp := &actormsg.ActivateCustomForfeitInputsResponse{
+		ActivatedCount: 1,
+	}
 
 	mgr := &mockVTXOManagerBehavior{
-		forfeitReserveErr: fmt.Errorf("should not reserve"),
-		customActivateResp: &actormsg.ActivateCustomForfeitInputsResponse{
-			ActivatedCount: 1,
-		},
+		forfeitReserveErr:  fmt.Errorf("should not reserve"),
+		customActivateResp: activateResp,
 	}
 	roundActor := &mockRoundActorBehavior{}
 	w := newTestWalletWithManagerAndRound(
@@ -725,10 +726,11 @@ func TestCustomRefreshDropsSignerOnRoundRejection(t *testing.T) {
 	require.NoError(t, err)
 
 	op := testOutpoint(43)
+	activateResp := &actormsg.ActivateCustomForfeitInputsResponse{
+		ActivatedCount: 1,
+	}
 	mgr := &mockVTXOManagerBehavior{
-		customActivateResp: &actormsg.ActivateCustomForfeitInputsResponse{
-			ActivatedCount: 1,
-		},
+		customActivateResp: activateResp,
 		customDropResp: &actormsg.DropCustomForfeitInputsResponse{
 			DroppedCount: 1,
 		},

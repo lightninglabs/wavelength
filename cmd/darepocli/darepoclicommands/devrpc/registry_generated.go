@@ -170,6 +170,20 @@ func generatedRegistry() []serviceSpec {
 					Comments: "RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for\nrefresh in the next round. Unlike RefreshVTXOs, this does not require\nthe inputs to be wallet-managed live VTXOs; callers provide the policy,\nproof/auth spend path, and forfeit spend path explicitly.",
 				},
 				{
+					Name:     "ListPendingForfeitParticipantSignatureRequests",
+					Aliases:  []string{"list-pending-forfeit-participant-signature-requests"},
+					Input:    "daemonrpc.ListPendingForfeitParticipantSignatureRequestsRequest",
+					Output:   "daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse",
+					Comments: "ListPendingForfeitParticipantSignatureRequests returns exact\nconnector-bound forfeit signing requests emitted by custom refresh\ninputs whose policies require signatures from external participants.",
+				},
+				{
+					Name:     "SubmitForfeitParticipantSignatures",
+					Aliases:  []string{"submit-forfeit-participant-signatures"},
+					Input:    "daemonrpc.SubmitForfeitParticipantSignaturesRequest",
+					Output:   "daemonrpc.SubmitForfeitParticipantSignaturesResponse",
+					Comments: "SubmitForfeitParticipantSignatures supplies external participant\nsignatures for one pending connector-bound forfeit signing request.",
+				},
+				{
 					Name:     "LeaveVTXOs",
 					Aliases:  []string{"leave-vtxos"},
 					Input:    "daemonrpc.LeaveVTXOsRequest",

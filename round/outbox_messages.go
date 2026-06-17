@@ -356,9 +356,11 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		if req.ForfeitSpend != nil {
 			raw, err := req.ForfeitSpend.Encode()
 			if err != nil {
+				err := fmt.Errorf("forfeit request %d forfeit "+
+					"spend path: %w", i, err)
+
 				return fn.Err[proto.Message](
-					fmt.Errorf("forfeit request %d forfeit "+
-						"spend path: %w", i, err),
+					err,
 				)
 			}
 			fr.ForfeitSpendPath = raw
@@ -666,29 +668,36 @@ func (m *SubmitVTXOForfeitSigsToServer) ToProto() fn.Result[proto.Message] {
 		)
 		for _, sig := range forfeitTx.ParticipantVTXOSigs {
 			if sig == nil {
+				err := fmt.Errorf("participant signature "+
+					"missing for outpoint %v", outpoint)
+
 				return fn.Err[proto.Message](
-					fmt.Errorf("participant signature missing "+
-						"for outpoint %v", outpoint),
+					err,
 				)
 			}
 			if sig.PubKey == nil {
+				err := fmt.Errorf("participant pubkey missing "+
+					"for outpoint %v", outpoint)
+
 				return fn.Err[proto.Message](
-					fmt.Errorf("participant pubkey missing "+
-						"for outpoint %v", outpoint),
+					err,
 				)
 			}
 			if sig.Signature == nil {
+				err := fmt.Errorf("participant schnorr "+
+					"signature missing for outpoint %v",
+					outpoint)
+
 				return fn.Err[proto.Message](
-					fmt.Errorf("participant schnorr "+
-						"signature missing for outpoint %v",
-						outpoint),
+					err,
 				)
 			}
 
 			participantSigs = append(
 				participantSigs,
 				&roundpb.ForfeitParticipantSig{
-					Pubkey: sig.PubKey.SerializeCompressed(),
+					Pubkey: sig.PubKey.
+						SerializeCompressed(),
 					Signature: roundpb.SchnorrSigToBytes(
 						sig.Signature,
 					),
@@ -696,13 +705,14 @@ func (m *SubmitVTXOForfeitSigsToServer) ToProto() fn.Result[proto.Message] {
 			)
 		}
 
+		legacySig := legacyForfeitSigBytes(forfeitTx)
 		forfeitTxs = append(
 			forfeitTxs, &roundpb.ForfeitTxSig{
 				VtxoOutpoint: roundpb.OutpointToProto(
 					outpoint,
 				),
 				UnsignedTx:      txBytes,
-				ClientVtxoSig:   legacyForfeitSigBytes(forfeitTx),
+				ClientVtxoSig:   legacySig,
 				SpendPath:       spendPath,
 				ParticipantSigs: participantSigs,
 			},

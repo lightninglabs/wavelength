@@ -1313,6 +1313,24 @@ func (c *Client) RefreshCustomVTXOs(ctx context.Context,
 	return resp, nil
 }
 
+// SignVTXOForfeit asks the daemon wallet to sign one exact connector-bound
+// forfeit transaction input.
+func (c *Client) SignVTXOForfeit(ctx context.Context,
+	req *daemonrpc.SignVTXOForfeitRequest) (
+	*daemonrpc.SignVTXOForfeitResponse, error) {
+
+	if req == nil {
+		req = &daemonrpc.SignVTXOForfeitRequest{}
+	}
+
+	resp, err := c.daemon.SignVTXOForfeit(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("sign vtxo forfeit: %w", err)
+	}
+
+	return resp, nil
+}
+
 // Board tells the daemon to register any confirmed boarding UTXOs in the next
 // round. Passing no request preserves the legacy single-VTXO board behavior.
 func (c *Client) Board(ctx context.Context, reqs ...*daemonrpc.BoardRequest) (

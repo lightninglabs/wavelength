@@ -19,49 +19,51 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DaemonService_GetInfo_FullMethodName                       = "/daemonrpc.DaemonService/GetInfo"
-	DaemonService_GenSeed_FullMethodName                       = "/daemonrpc.DaemonService/GenSeed"
-	DaemonService_InitWallet_FullMethodName                    = "/daemonrpc.DaemonService/InitWallet"
-	DaemonService_UnlockWallet_FullMethodName                  = "/daemonrpc.DaemonService/UnlockWallet"
-	DaemonService_GetBalance_FullMethodName                    = "/daemonrpc.DaemonService/GetBalance"
-	DaemonService_ListVTXOs_FullMethodName                     = "/daemonrpc.DaemonService/ListVTXOs"
-	DaemonService_NewAddress_FullMethodName                    = "/daemonrpc.DaemonService/NewAddress"
-	DaemonService_NewReceiveScript_FullMethodName              = "/daemonrpc.DaemonService/NewReceiveScript"
-	DaemonService_ReceiveAuthKey_FullMethodName                = "/daemonrpc.DaemonService/ReceiveAuthKey"
-	DaemonService_SignReceiveAuthMessage_FullMethodName        = "/daemonrpc.DaemonService/SignReceiveAuthMessage"
-	DaemonService_SignReceiveAuthMessageCompact_FullMethodName = "/daemonrpc.DaemonService/SignReceiveAuthMessageCompact"
-	DaemonService_ReceiveAuthECDH_FullMethodName               = "/daemonrpc.DaemonService/ReceiveAuthECDH"
-	DaemonService_GetIndexedVTXOByPkScript_FullMethodName      = "/daemonrpc.DaemonService/GetIndexedVTXOByPkScript"
-	DaemonService_GetVTXOExpiryInfo_FullMethodName             = "/daemonrpc.DaemonService/GetVTXOExpiryInfo"
-	DaemonService_GetIndexedOORSessionByTxid_FullMethodName    = "/daemonrpc.DaemonService/GetIndexedOORSessionByTxid"
-	DaemonService_SendVTXO_FullMethodName                      = "/daemonrpc.DaemonService/SendVTXO"
-	DaemonService_SendOOR_FullMethodName                       = "/daemonrpc.DaemonService/SendOOR"
-	DaemonService_PrepareOOR_FullMethodName                    = "/daemonrpc.DaemonService/PrepareOOR"
-	DaemonService_SignOORCustomInput_FullMethodName            = "/daemonrpc.DaemonService/SignOORCustomInput"
-	DaemonService_SignVTXOForfeit_FullMethodName               = "/daemonrpc.DaemonService/SignVTXOForfeit"
-	DaemonService_RefreshVTXOs_FullMethodName                  = "/daemonrpc.DaemonService/RefreshVTXOs"
-	DaemonService_RefreshCustomVTXOs_FullMethodName            = "/daemonrpc.DaemonService/RefreshCustomVTXOs"
-	DaemonService_LeaveVTXOs_FullMethodName                    = "/daemonrpc.DaemonService/LeaveVTXOs"
-	DaemonService_SendOnChain_FullMethodName                   = "/daemonrpc.DaemonService/SendOnChain"
-	DaemonService_Board_FullMethodName                         = "/daemonrpc.DaemonService/Board"
-	DaemonService_JoinNextRound_FullMethodName                 = "/daemonrpc.DaemonService/JoinNextRound"
-	DaemonService_SweepBoardingUTXOs_FullMethodName            = "/daemonrpc.DaemonService/SweepBoardingUTXOs"
-	DaemonService_ListBoardingSweeps_FullMethodName            = "/daemonrpc.DaemonService/ListBoardingSweeps"
-	DaemonService_ListRounds_FullMethodName                    = "/daemonrpc.DaemonService/ListRounds"
-	DaemonService_GetRound_FullMethodName                      = "/daemonrpc.DaemonService/GetRound"
-	DaemonService_WatchRounds_FullMethodName                   = "/daemonrpc.DaemonService/WatchRounds"
-	DaemonService_ListOORSessions_FullMethodName               = "/daemonrpc.DaemonService/ListOORSessions"
-	DaemonService_GetOORSession_FullMethodName                 = "/daemonrpc.DaemonService/GetOORSession"
-	DaemonService_EstimateFee_FullMethodName                   = "/daemonrpc.DaemonService/EstimateFee"
-	DaemonService_GetFeeHistory_FullMethodName                 = "/daemonrpc.DaemonService/GetFeeHistory"
-	DaemonService_ListTransactions_FullMethodName              = "/daemonrpc.DaemonService/ListTransactions"
-	DaemonService_Unroll_FullMethodName                        = "/daemonrpc.DaemonService/Unroll"
-	DaemonService_GetUnrollStatus_FullMethodName               = "/daemonrpc.DaemonService/GetUnrollStatus"
-	DaemonService_ArmVHTLCRecovery_FullMethodName              = "/daemonrpc.DaemonService/ArmVHTLCRecovery"
-	DaemonService_EscalateVHTLCRecovery_FullMethodName         = "/daemonrpc.DaemonService/EscalateVHTLCRecovery"
-	DaemonService_CancelVHTLCRecovery_FullMethodName           = "/daemonrpc.DaemonService/CancelVHTLCRecovery"
-	DaemonService_GetVHTLCRecoveryStatus_FullMethodName        = "/daemonrpc.DaemonService/GetVHTLCRecoveryStatus"
-	DaemonService_ListVHTLCRecoveries_FullMethodName           = "/daemonrpc.DaemonService/ListVHTLCRecoveries"
+	DaemonService_GetInfo_FullMethodName                                        = "/daemonrpc.DaemonService/GetInfo"
+	DaemonService_GenSeed_FullMethodName                                        = "/daemonrpc.DaemonService/GenSeed"
+	DaemonService_InitWallet_FullMethodName                                     = "/daemonrpc.DaemonService/InitWallet"
+	DaemonService_UnlockWallet_FullMethodName                                   = "/daemonrpc.DaemonService/UnlockWallet"
+	DaemonService_GetBalance_FullMethodName                                     = "/daemonrpc.DaemonService/GetBalance"
+	DaemonService_ListVTXOs_FullMethodName                                      = "/daemonrpc.DaemonService/ListVTXOs"
+	DaemonService_NewAddress_FullMethodName                                     = "/daemonrpc.DaemonService/NewAddress"
+	DaemonService_NewReceiveScript_FullMethodName                               = "/daemonrpc.DaemonService/NewReceiveScript"
+	DaemonService_ReceiveAuthKey_FullMethodName                                 = "/daemonrpc.DaemonService/ReceiveAuthKey"
+	DaemonService_SignReceiveAuthMessage_FullMethodName                         = "/daemonrpc.DaemonService/SignReceiveAuthMessage"
+	DaemonService_SignReceiveAuthMessageCompact_FullMethodName                  = "/daemonrpc.DaemonService/SignReceiveAuthMessageCompact"
+	DaemonService_ReceiveAuthECDH_FullMethodName                                = "/daemonrpc.DaemonService/ReceiveAuthECDH"
+	DaemonService_GetIndexedVTXOByPkScript_FullMethodName                       = "/daemonrpc.DaemonService/GetIndexedVTXOByPkScript"
+	DaemonService_GetVTXOExpiryInfo_FullMethodName                              = "/daemonrpc.DaemonService/GetVTXOExpiryInfo"
+	DaemonService_GetIndexedOORSessionByTxid_FullMethodName                     = "/daemonrpc.DaemonService/GetIndexedOORSessionByTxid"
+	DaemonService_SendVTXO_FullMethodName                                       = "/daemonrpc.DaemonService/SendVTXO"
+	DaemonService_SendOOR_FullMethodName                                        = "/daemonrpc.DaemonService/SendOOR"
+	DaemonService_PrepareOOR_FullMethodName                                     = "/daemonrpc.DaemonService/PrepareOOR"
+	DaemonService_SignOORCustomInput_FullMethodName                             = "/daemonrpc.DaemonService/SignOORCustomInput"
+	DaemonService_SignVTXOForfeit_FullMethodName                                = "/daemonrpc.DaemonService/SignVTXOForfeit"
+	DaemonService_RefreshVTXOs_FullMethodName                                   = "/daemonrpc.DaemonService/RefreshVTXOs"
+	DaemonService_RefreshCustomVTXOs_FullMethodName                             = "/daemonrpc.DaemonService/RefreshCustomVTXOs"
+	DaemonService_ListPendingForfeitParticipantSignatureRequests_FullMethodName = "/daemonrpc.DaemonService/ListPendingForfeitParticipantSignatureRequests"
+	DaemonService_SubmitForfeitParticipantSignatures_FullMethodName             = "/daemonrpc.DaemonService/SubmitForfeitParticipantSignatures"
+	DaemonService_LeaveVTXOs_FullMethodName                                     = "/daemonrpc.DaemonService/LeaveVTXOs"
+	DaemonService_SendOnChain_FullMethodName                                    = "/daemonrpc.DaemonService/SendOnChain"
+	DaemonService_Board_FullMethodName                                          = "/daemonrpc.DaemonService/Board"
+	DaemonService_JoinNextRound_FullMethodName                                  = "/daemonrpc.DaemonService/JoinNextRound"
+	DaemonService_SweepBoardingUTXOs_FullMethodName                             = "/daemonrpc.DaemonService/SweepBoardingUTXOs"
+	DaemonService_ListBoardingSweeps_FullMethodName                             = "/daemonrpc.DaemonService/ListBoardingSweeps"
+	DaemonService_ListRounds_FullMethodName                                     = "/daemonrpc.DaemonService/ListRounds"
+	DaemonService_GetRound_FullMethodName                                       = "/daemonrpc.DaemonService/GetRound"
+	DaemonService_WatchRounds_FullMethodName                                    = "/daemonrpc.DaemonService/WatchRounds"
+	DaemonService_ListOORSessions_FullMethodName                                = "/daemonrpc.DaemonService/ListOORSessions"
+	DaemonService_GetOORSession_FullMethodName                                  = "/daemonrpc.DaemonService/GetOORSession"
+	DaemonService_EstimateFee_FullMethodName                                    = "/daemonrpc.DaemonService/EstimateFee"
+	DaemonService_GetFeeHistory_FullMethodName                                  = "/daemonrpc.DaemonService/GetFeeHistory"
+	DaemonService_ListTransactions_FullMethodName                               = "/daemonrpc.DaemonService/ListTransactions"
+	DaemonService_Unroll_FullMethodName                                         = "/daemonrpc.DaemonService/Unroll"
+	DaemonService_GetUnrollStatus_FullMethodName                                = "/daemonrpc.DaemonService/GetUnrollStatus"
+	DaemonService_ArmVHTLCRecovery_FullMethodName                               = "/daemonrpc.DaemonService/ArmVHTLCRecovery"
+	DaemonService_EscalateVHTLCRecovery_FullMethodName                          = "/daemonrpc.DaemonService/EscalateVHTLCRecovery"
+	DaemonService_CancelVHTLCRecovery_FullMethodName                            = "/daemonrpc.DaemonService/CancelVHTLCRecovery"
+	DaemonService_GetVHTLCRecoveryStatus_FullMethodName                         = "/daemonrpc.DaemonService/GetVHTLCRecoveryStatus"
+	DaemonService_ListVHTLCRecoveries_FullMethodName                            = "/daemonrpc.DaemonService/ListVHTLCRecoveries"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -149,6 +151,13 @@ type DaemonServiceClient interface {
 	// the inputs to be wallet-managed live VTXOs; callers provide the policy,
 	// proof/auth spend path, and forfeit spend path explicitly.
 	RefreshCustomVTXOs(ctx context.Context, in *RefreshCustomVTXOsRequest, opts ...grpc.CallOption) (*RefreshCustomVTXOsResponse, error)
+	// ListPendingForfeitParticipantSignatureRequests returns exact
+	// connector-bound forfeit signing requests emitted by custom refresh
+	// inputs whose policies require signatures from external participants.
+	ListPendingForfeitParticipantSignatureRequests(ctx context.Context, in *ListPendingForfeitParticipantSignatureRequestsRequest, opts ...grpc.CallOption) (*ListPendingForfeitParticipantSignatureRequestsResponse, error)
+	// SubmitForfeitParticipantSignatures supplies external participant
+	// signatures for one pending connector-bound forfeit signing request.
+	SubmitForfeitParticipantSignatures(ctx context.Context, in *SubmitForfeitParticipantSignaturesRequest, opts ...grpc.CallOption) (*SubmitForfeitParticipantSignaturesResponse, error)
 	// LeaveVTXOs queues one or more VTXOs for cooperative leave
 	// (offboard) in the next round. Each VTXO is forfeited and the
 	// forfeited amount (minus the quoted per-input operator fee)
@@ -464,6 +473,26 @@ func (c *daemonServiceClient) RefreshCustomVTXOs(ctx context.Context, in *Refres
 	return out, nil
 }
 
+func (c *daemonServiceClient) ListPendingForfeitParticipantSignatureRequests(ctx context.Context, in *ListPendingForfeitParticipantSignatureRequestsRequest, opts ...grpc.CallOption) (*ListPendingForfeitParticipantSignatureRequestsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPendingForfeitParticipantSignatureRequestsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListPendingForfeitParticipantSignatureRequests_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SubmitForfeitParticipantSignatures(ctx context.Context, in *SubmitForfeitParticipantSignaturesRequest, opts ...grpc.CallOption) (*SubmitForfeitParticipantSignaturesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubmitForfeitParticipantSignaturesResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SubmitForfeitParticipantSignatures_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) LeaveVTXOs(ctx context.Context, in *LeaveVTXOsRequest, opts ...grpc.CallOption) (*LeaveVTXOsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(LeaveVTXOsResponse)
@@ -768,6 +797,13 @@ type DaemonServiceServer interface {
 	// the inputs to be wallet-managed live VTXOs; callers provide the policy,
 	// proof/auth spend path, and forfeit spend path explicitly.
 	RefreshCustomVTXOs(context.Context, *RefreshCustomVTXOsRequest) (*RefreshCustomVTXOsResponse, error)
+	// ListPendingForfeitParticipantSignatureRequests returns exact
+	// connector-bound forfeit signing requests emitted by custom refresh
+	// inputs whose policies require signatures from external participants.
+	ListPendingForfeitParticipantSignatureRequests(context.Context, *ListPendingForfeitParticipantSignatureRequestsRequest) (*ListPendingForfeitParticipantSignatureRequestsResponse, error)
+	// SubmitForfeitParticipantSignatures supplies external participant
+	// signatures for one pending connector-bound forfeit signing request.
+	SubmitForfeitParticipantSignatures(context.Context, *SubmitForfeitParticipantSignaturesRequest) (*SubmitForfeitParticipantSignaturesResponse, error)
 	// LeaveVTXOs queues one or more VTXOs for cooperative leave
 	// (offboard) in the next round. Each VTXO is forfeited and the
 	// forfeited amount (minus the quoted per-input operator fee)
@@ -928,6 +964,12 @@ func (UnimplementedDaemonServiceServer) RefreshVTXOs(context.Context, *RefreshVT
 }
 func (UnimplementedDaemonServiceServer) RefreshCustomVTXOs(context.Context, *RefreshCustomVTXOsRequest) (*RefreshCustomVTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RefreshCustomVTXOs not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListPendingForfeitParticipantSignatureRequests(context.Context, *ListPendingForfeitParticipantSignatureRequestsRequest) (*ListPendingForfeitParticipantSignatureRequestsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListPendingForfeitParticipantSignatureRequests not implemented")
+}
+func (UnimplementedDaemonServiceServer) SubmitForfeitParticipantSignatures(context.Context, *SubmitForfeitParticipantSignaturesRequest) (*SubmitForfeitParticipantSignaturesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SubmitForfeitParticipantSignatures not implemented")
 }
 func (UnimplementedDaemonServiceServer) LeaveVTXOs(context.Context, *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method LeaveVTXOs not implemented")
@@ -1409,6 +1451,42 @@ func _DaemonService_RefreshCustomVTXOs_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_ListPendingForfeitParticipantSignatureRequests_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPendingForfeitParticipantSignatureRequestsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListPendingForfeitParticipantSignatureRequests(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListPendingForfeitParticipantSignatureRequests_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListPendingForfeitParticipantSignatureRequests(ctx, req.(*ListPendingForfeitParticipantSignatureRequestsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SubmitForfeitParticipantSignatures_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubmitForfeitParticipantSignaturesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SubmitForfeitParticipantSignatures(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SubmitForfeitParticipantSignatures_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SubmitForfeitParticipantSignatures(ctx, req.(*SubmitForfeitParticipantSignaturesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_LeaveVTXOs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(LeaveVTXOsRequest)
 	if err := dec(in); err != nil {
@@ -1874,6 +1952,14 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RefreshCustomVTXOs",
 			Handler:    _DaemonService_RefreshCustomVTXOs_Handler,
+		},
+		{
+			MethodName: "ListPendingForfeitParticipantSignatureRequests",
+			Handler:    _DaemonService_ListPendingForfeitParticipantSignatureRequests_Handler,
+		},
+		{
+			MethodName: "SubmitForfeitParticipantSignatures",
+			Handler:    _DaemonService_SubmitForfeitParticipantSignatures_Handler,
 		},
 		{
 			MethodName: "LeaveVTXOs",

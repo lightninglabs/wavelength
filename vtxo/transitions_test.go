@@ -847,7 +847,9 @@ func TestForfeitRequestCarriesParticipantSignature(t *testing.T) {
 		require.Equal(t, vtxo.Outpoint, req.VTXO.Outpoint)
 		require.Equal(t, connectorOutpoint, req.ConnectorOutpoint)
 		require.Equal(t, connectorOutput.Value, req.ConnectorAmount)
-		require.Equal(t, connectorOutput.PkScript, req.ConnectorPkScript)
+		require.Equal(
+			t, connectorOutput.PkScript, req.ConnectorPkScript,
+		)
 		require.Equal(t, serverForfeitScript, req.ServerForfeitPkScript)
 		require.NotNil(t, req.ForfeitTx)
 

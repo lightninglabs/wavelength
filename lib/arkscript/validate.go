@@ -232,7 +232,8 @@ func SigningKeys(node Node) ([]*btcec.PublicKey, error) {
 		keys := make([]*btcec.PublicKey, 0, len(n.Keys))
 		for i, key := range n.Keys {
 			if key == nil {
-				return nil, fmt.Errorf("multisig key %d is nil", i)
+				return nil, fmt.Errorf("multisig key %d is nil",
+					i)
 			}
 
 			keys = append(keys, key)
@@ -275,8 +276,8 @@ func SigningKeysForSpendPath(template *PolicyTemplate,
 	for i := range template.Leaves {
 		leafScript, err := template.Leaves[i].Script()
 		if err != nil {
-			return nil, fmt.Errorf("compile template leaf %d: %w", i,
-				err)
+			return nil, fmt.Errorf("compile template leaf %d: %w",
+				i, err)
 		}
 
 		if !bytes.Equal(leafScript, spendPath.WitnessScript) {

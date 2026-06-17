@@ -41,22 +41,21 @@ func TestSubmitVTXOForfeitSigsToProtoCarriesParticipantSigs(t *testing.T) {
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{Index: 7}
+	participantSigs := []*types.ForfeitParticipantSig{{
+		PubKey:    localPub,
+		Signature: localSig,
+	}, {
+		PubKey:    otherPub,
+		Signature: otherSig,
+	}}
+
 	msg := &SubmitVTXOForfeitSigsToServer{
 		RoundID: testRoundIDForMsg("multi-sig-forfeit"),
 		ForfeitTxs: map[wire.OutPoint]*types.ForfeitTxSig{
 			outpoint: {
-				UnsignedTx:    wire.NewMsgTx(2),
-				ClientVTXOSig: localSig,
-				ParticipantVTXOSigs: []*types.ForfeitParticipantSig{
-					{
-						PubKey:    localPub,
-						Signature: localSig,
-					},
-					{
-						PubKey:    otherPub,
-						Signature: otherSig,
-					},
-				},
+				UnsignedTx:          wire.NewMsgTx(2),
+				ClientVTXOSig:       localSig,
+				ParticipantVTXOSigs: participantSigs,
 				SpendPath: &arkscript.SpendPath{
 					SpendInfo: &arkscript.SpendInfo{
 						WitnessScript: []byte{
@@ -112,21 +111,20 @@ func TestSubmitVTXOForfeitSigsToProtoAcceptsParticipantOnly(t *testing.T) {
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{Index: 11}
+	participantSigs := []*types.ForfeitParticipantSig{{
+		PubKey:    localPub,
+		Signature: localSig,
+	}, {
+		PubKey:    otherPub,
+		Signature: otherSig,
+	}}
+
 	msg := &SubmitVTXOForfeitSigsToServer{
 		RoundID: testRoundIDForMsg("participant-only-forfeit"),
 		ForfeitTxs: map[wire.OutPoint]*types.ForfeitTxSig{
 			outpoint: {
-				UnsignedTx: wire.NewMsgTx(2),
-				ParticipantVTXOSigs: []*types.ForfeitParticipantSig{
-					{
-						PubKey:    localPub,
-						Signature: localSig,
-					},
-					{
-						PubKey:    otherPub,
-						Signature: otherSig,
-					},
-				},
+				UnsignedTx:          wire.NewMsgTx(2),
+				ParticipantVTXOSigs: participantSigs,
 				SpendPath: &arkscript.SpendPath{
 					SpendInfo: &arkscript.SpendInfo{
 						WitnessScript: []byte{
@@ -190,7 +188,7 @@ func TestOutboxMessagesToProto(t *testing.T) {
 		require.NotNil(t, result)
 	})
 
-	t.Run("JoinRoundRequest_ToProto custom forfeit spend paths", func(t *testing.T) {
+	t.Run("JoinRoundRequest_ToProto custom paths", func(t *testing.T) {
 		t.Parallel()
 
 		authSpend := testMessageSpendPath(1)

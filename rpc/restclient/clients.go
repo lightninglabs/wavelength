@@ -227,8 +227,9 @@ func (c *SwapServiceClient) SignInSwapForfeit(ctx context.Context,
 // SubmitOutSwapForfeitSignature submits an out-swap refresh participant
 // signature to the swap server.
 func (c *SwapServiceClient) SubmitOutSwapForfeitSignature(ctx context.Context,
-	in *swaprpc.SubmitOutSwapForfeitSignatureRequest, _ ...grpc.CallOption) (
-	*swaprpc.SubmitOutSwapForfeitSignatureResponse, error) {
+	in *swaprpc.SubmitOutSwapForfeitSignatureRequest,
+	_ ...grpc.CallOption) (*swaprpc.SubmitOutSwapForfeitSignatureResponse,
+	error) {
 
 	out := new(swaprpc.SubmitOutSwapForfeitSignatureResponse)
 	err := c.client.Post(
@@ -506,6 +507,45 @@ func (c *DaemonServiceClient) RefreshCustomVTXOs(ctx context.Context,
 
 	out := new(daemonrpc.RefreshCustomVTXOsResponse)
 	err := c.client.Post(ctx, "/v1/daemon/refresh-custom-vtxos", in, out)
+
+	return out, err
+}
+
+// ListPendingForfeitParticipantSignatureRequests lists pending custom-refresh
+// participant signature requests.
+func (c *DaemonServiceClient) ListPendingForfeitParticipantSignatureRequests(
+	ctx context.Context,
+	in *daemonrpc.ListPendingForfeitParticipantSignatureRequestsRequest,
+	_ ...grpc.CallOption) (
+	*daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse,
+	error) {
+
+	out := new(
+		daemonrpc.
+			ListPendingForfeitParticipantSignatureRequestsResponse,
+	)
+	path := "/v1/daemon/list-pending-forfeit-participant-" +
+		"signature-requests"
+	err := c.client.Post(
+		ctx, path, in, out,
+	)
+
+	return out, err
+}
+
+// SubmitForfeitParticipantSignatures supplies participant signatures for one
+// pending custom-refresh forfeit signature request.
+func (c *DaemonServiceClient) SubmitForfeitParticipantSignatures(
+	ctx context.Context,
+	in *daemonrpc.SubmitForfeitParticipantSignaturesRequest,
+	_ ...grpc.CallOption) (
+	*daemonrpc.SubmitForfeitParticipantSignaturesResponse, error) {
+
+	out := new(daemonrpc.SubmitForfeitParticipantSignaturesResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/submit-forfeit-participant-signatures", in,
+		out,
+	)
 
 	return out, err
 }

@@ -205,7 +205,10 @@ func TestSignVTXOForfeitSignsExactForfeitTx(t *testing.T) {
 	signer.On(
 		"SignOutputRaw", mock.Anything,
 		mock.MatchedBy(func(desc *input.SignDescriptor) bool {
-			return desc.InputIndex == forfeittx.ForfeitVTXOInputIndex &&
+			matchesInput := desc.InputIndex ==
+				forfeittx.ForfeitVTXOInputIndex
+
+			return matchesInput &&
 				desc.SignMethod ==
 					input.TaprootScriptSpendSignMethod &&
 				bytes.Equal(
@@ -268,7 +271,9 @@ func TestSignVTXOForfeitRejectsMalformedRequests(t *testing.T) {
 			t.Helper()
 
 			_, otherPub := btcecPrivKey(t)
-			wrongScript, err := txscript.PayToTaprootScript(otherPub)
+			wrongScript, err := txscript.PayToTaprootScript(
+				otherPub,
+			)
 			require.NoError(t, err)
 			f.req.ServerForfeitPkScript = wrongScript
 		},
@@ -309,7 +314,9 @@ func TestSignVTXOForfeitRejectsMalformedRequests(t *testing.T) {
 			_, err := fixture.rpcServer.SignVTXOForfeit(
 				t.Context(), fixture.req,
 			)
-			require.Equal(t, codes.InvalidArgument, status.Code(err))
+			require.Equal(
+				t, codes.InvalidArgument, status.Code(err),
+			)
 			require.Contains(
 				t, status.Convert(err).Message(),
 				test.wantContains,

@@ -1720,10 +1720,12 @@ func (a *Ark) handleRefreshCustomVTXOs(ctx context.Context,
 		output := req.Outputs[i]
 
 		customInputs = append(customInputs, actormsg.CustomForfeitInput{
-			Outpoint:       input.Outpoint,
-			Amount:         input.Amount,
-			PkScript:       append([]byte(nil), input.PkScript...),
-			PolicyTemplate: append([]byte(nil), input.PolicyTemplate...),
+			Outpoint: input.Outpoint,
+			Amount:   input.Amount,
+			PkScript: append([]byte(nil), input.PkScript...),
+			PolicyTemplate: append(
+				[]byte(nil), input.PolicyTemplate...,
+			),
 			ClientKey:      input.ClientKey,
 			OperatorKey:    input.OperatorKey,
 			RelativeExpiry: input.RelativeExpiry,

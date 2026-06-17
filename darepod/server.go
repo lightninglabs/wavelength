@@ -367,6 +367,8 @@ type Server struct {
 	gateway    *gatewayServer
 	rpcServer  *RPCServer
 	mailboxMux *mailboxrpc.ServeMux
+
+	forfeitSignatures *forfeitSignatureBroker
 }
 
 // NewServer allocates a Server from a validated Config. The server is
@@ -375,11 +377,12 @@ type Server struct {
 // them immediately.
 func NewServer(cfg *Config) (*Server, error) {
 	return &Server{
-		cfg:            cfg,
-		clk:            clock.NewDefaultClock(),
-		walletReady:    make(chan struct{}),
-		daemonReady:    make(chan struct{}),
-		vhtlcPreimages: &unrollpolicy.PreimageResolverRegistry{},
+		cfg:               cfg,
+		clk:               clock.NewDefaultClock(),
+		walletReady:       make(chan struct{}),
+		daemonReady:       make(chan struct{}),
+		vhtlcPreimages:    &unrollpolicy.PreimageResolverRegistry{},
+		forfeitSignatures: newForfeitSignatureBroker(),
 	}, nil
 }
 
@@ -3563,20 +3566,23 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 	ueStore := dbStore.NewUnilateralExitStore(s.clk)
 	reservationStore := dbStore.NewSpendingReservationStore(s.clk)
+	roundActor := round.NewServiceKey().Ref(s.actorSystem)
+	ledgerSink := ledger.NewSink(s.actorSystem)
 
 	manager := vtxo.NewManager(&vtxo.ManagerConfig{
-		Store:            vtxoStore,
-		ReservationStore: reservationStore,
-		Wallet:           vtxoWallet,
-		ChainSource:      chainSourceRef,
-		ActorSystem:      s.actorSystem,
-		ChainParams:      s.chainParams,
-		Log:              fn.Some(s.subLogger(vtxo.Subsystem)),
-		RoundActor:       round.NewServiceKey().Ref(s.actorSystem),
-		LedgerSink:       fn.Some(ledger.NewSink(s.actorSystem)),
-		ChainResolver:    chainResolver,
-		RefreshFeeQuoter: s.autoRefreshFeeQuoter(),
-		FetchOperatorKey: s.fetchCurrentOperatorPubKey,
+		Store:                    vtxoStore,
+		ReservationStore:         reservationStore,
+		Wallet:                   vtxoWallet,
+		ChainSource:              chainSourceRef,
+		ActorSystem:              s.actorSystem,
+		ChainParams:              s.chainParams,
+		Log:                      fn.Some(s.subLogger(vtxo.Subsystem)),
+		RoundActor:               roundActor,
+		LedgerSink:               fn.Some(ledgerSink),
+		ChainResolver:            chainResolver,
+		RefreshFeeQuoter:         s.autoRefreshFeeQuoter(),
+		FetchOperatorKey:         s.fetchCurrentOperatorPubKey,
+		ForfeitParticipantSigner: s.forfeitSignatures.sign,
 		TerminalVTXOObserver: func(ctx context.Context,
 			outpoint wire.OutPoint) error {
 
@@ -3589,7 +3595,6 @@ func (s *Server) initVTXOManager(ctx context.Context,
 			return resolveExitOutcome(ctx, ueStore, outpoint)
 		},
 	})
-
 	managerKey := actor.NewServiceKey[vtxo.ManagerMsg, vtxo.ManagerResp](
 		"vtxo-manager",
 	)
