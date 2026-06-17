@@ -514,6 +514,26 @@ func (a *RoundClientActor) emitRoundCompleted(ctx context.Context, roundID,
 	})
 }
 
+// emitRoundJoined reports a round-join attempt to the metrics actor so
+// darepod_rounds_joined_total advances. It is emitted from createNewRound
+// so it counts every round the client assembles — manual and eager alike
+// — keeping it symmetric with emitRoundCompleted. Best-effort and
+// fire-and-forget: a Tell failure is logged at debug level and never
+// fails round assembly.
+func (a *RoundClientActor) emitRoundJoined(ctx context.Context,
+	roundID string) {
+
+	a.cfg.MetricsSink.WhenSome(func(sink metrics.Sink) {
+		msg := &metrics.RoundJoinedMsg{RoundID: roundID}
+		if err := sink.Tell(ctx, msg); err != nil {
+			a.log.DebugS(ctx, "Failed to emit round joined metric",
+				err,
+				slog.String("round_id", roundID),
+			)
+		}
+	})
+}
+
 // emitRoundFee sends a single FeePaidMsg to the ledger actor per
 // round when the client actually paid an operator fee. Scope is
 // deliberately narrow for now:
@@ -811,6 +831,16 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		slog.String("temp_key", tempKey.String()),
 		slog.Int("start_height", int(startHeight)),
 	)
+
+	// Count the join attempt here, at the one seam every round passes
+	// through exactly once. This keeps darepod_rounds_joined_total
+	// symmetric with rounds_completed_total (also actor-emitted): both
+	// manual JoinNextRound and eager/automatic joins assemble their
+	// round through createNewRound, so counting at the RPC boundary
+	// would miss eager joins and let the completed/joined ratio exceed
+	// 100%. The round has only a temporary key at this point; the
+	// counter is unlabelled, so the id is informational.
+	a.emitRoundJoined(ctx, tempKey.String())
 
 	return roundFSM, nil
 }

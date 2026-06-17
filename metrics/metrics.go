@@ -75,15 +75,19 @@ var (
 		[]string{"status"},
 	)
 
-	// ServerSyncTimestamp records the Unix time of the last successful
-	// sync with the ark operator. A stale value relative to wall-clock
-	// time signals the client has lost contact with the server.
+	// ServerSyncTimestamp records the Unix time of the last poll that
+	// observed the direct gRPC connection to the ark operator in the
+	// Ready transport state. It is a transport-liveness signal, not a
+	// completed application round-trip: a stale value relative to
+	// wall-clock time signals the client has lost transport contact
+	// with the server.
 	ServerSyncTimestamp = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "server_sync_timestamp_seconds",
-			Help: "Unix timestamp of the last successful sync " +
-				"with the ark operator.",
+			Help: "Unix timestamp of the last poll that observed " +
+				"the ark operator connection in the Ready " +
+				"transport state.",
 		},
 	)
 

@@ -2152,7 +2152,10 @@ func (r *RPCServer) JoinNextRound(ctx context.Context,
 
 	r.server.log.InfoS(ctx, "JoinNextRound accepted")
 
-	r.server.emitMetric(ctx, &metrics.RoundJoinedMsg{})
+	// rounds_joined_total is emitted by the round actor in
+	// createNewRound (symmetric with rounds_completed_total), which
+	// covers both this manual trigger and eager/automatic joins.
+	// Emitting here too would double-count manual joins.
 
 	return &daemonrpc.JoinNextRoundResponse{
 		Status: "joined",

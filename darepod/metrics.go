@@ -9,6 +9,7 @@ import (
 	"github.com/lightninglabs/darepo-client/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 )
 
 // metricsActorWorkers is the size of the metrics actor pool spawned by
@@ -41,6 +42,20 @@ func (s *Server) startMetricsServer(ctx context.Context) error {
 	// would leave /metrics querying the prior daemon's (possibly closed)
 	// store.
 	reg := prometheus.NewRegistry()
+
+	// Re-register the default Go runtime and process collectors on the
+	// per-instance registry. The client_golang init() installs these on
+	// the global DefaultRegisterer, which we deliberately no longer use,
+	// so without this the standard go_* / process_* series (goroutines,
+	// GC, RSS, open FDs) would silently vanish from /metrics. The
+	// registry is freshly created per daemon, so MustRegister cannot
+	// collide here even with several daemons in one test process.
+	reg.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(
+			collectors.ProcessCollectorOpts{},
+		),
+	)
 
 	// Register the event-driven collectors and the gRPC client metrics
 	// on the registry that the /metrics handler serves.

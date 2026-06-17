@@ -81,7 +81,7 @@ settlement confirmation.
 
 | Metric | Type | Labels | Source | Description |
 |--------|------|--------|--------|-------------|
-| `darepod_rounds_joined_total` | counter | — | event (`JoinNextRound` RPC) | Rounds the client attempted to join. |
+| `darepod_rounds_joined_total` | counter | — | event (round actor) | Rounds the client attempted to join. Emitted from the round actor's `createNewRound`, so it counts both manual `JoinNextRound` and eager/automatic joins — symmetric with `rounds_completed_total`. |
 | `darepod_rounds_completed_total` | counter | `status` | event (round actor) | Settlement rounds completed by outcome. `status`: `confirmed`, `failed`. |
 | `darepod_oor_transfers_sent_total` | counter | `status` | event (`SendOOR` RPC) | Outgoing out-of-round transfers by outcome. `status`: `submitted`, `failed`. |
 | `darepod_oor_transfer_duration_seconds` | histogram | `status` | event (`SendOOR` RPC) | Wall-clock duration of outgoing OOR transfers from `SendOOR` entry to terminal outcome, by `status`. Measured at the call site; idempotent replays are not observed. |
@@ -107,7 +107,7 @@ polling the direct gRPC connection's transport state every 15s.
 | Metric | Type | Labels | Source | Description |
 |--------|------|--------|--------|-------------|
 | `darepod_server_connection_up` | gauge | — | daemon (connection watcher) | `1` when the direct gRPC connection to the ark operator is `Ready`, `0` otherwise (transient failure, idle, shutdown). |
-| `darepod_server_sync_timestamp_seconds` | gauge | — | daemon (connection watcher) | Unix timestamp of the last poll that found the operator connection `Ready`. A stale value signals lost contact. |
+| `darepod_server_sync_timestamp_seconds` | gauge | — | daemon (connection watcher) | Unix timestamp of the last poll that observed the operator connection in the `Ready` **transport** state. This is transport liveness, not a completed application round-trip — an idle-but-`Ready` link keeps the stamp fresh. A stale value signals lost transport contact. |
 
 ## gRPC Client Metrics
 
@@ -126,6 +126,15 @@ installed as unary + stream interceptors on the operator connection
 
 (The exact `grpc_client_*` metric names are produced by the middleware; the
 `darepod_` namespace prefix is applied.)
+
+## Go Runtime / Process Metrics
+
+The daemon serves metrics from a per-instance registry (not the global
+`DefaultRegisterer`), so the standard `client_golang` Go runtime and process
+collectors are explicitly re-registered on it in `startMetricsServer`. The
+endpoint therefore still exposes the usual `go_*` (goroutines, GC, heap) and
+`process_*` (CPU, resident memory, open FDs) series alongside the `darepod_*`
+metrics.
 
 ## Adding New Metrics
 
