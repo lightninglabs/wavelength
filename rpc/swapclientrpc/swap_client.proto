@@ -7,6 +7,10 @@ option go_package = "github.com/lightninglabs/darepo-client/rpc/swapclientrpc";
 // SwapClientService exposes daemon-owned Lightning/Ark swap execution to local
 // clients. The service is registered only in swapruntime builds.
 service SwapClientService {
+    // QuotePay previews an Ark-to-Lightning payment without creating durable
+    // swap state or starting a background worker.
+    rpc QuotePay (QuotePayRequest) returns (QuotePayResponse);
+
     // StartPay starts an Ark-to-Lightning payment and lets the daemon continue
     // the swap in the background.
     rpc StartPay (StartPayRequest) returns (StartPayResponse);
@@ -59,6 +63,40 @@ enum SwapState {
     SWAP_STATE_FAILED = 11;
     SWAP_STATE_INVOICE_CREATED = 12;
     SWAP_STATE_CLAIM_INITIATED = 13;
+}
+
+message QuotePayRequest {
+    // invoice is the BOLT-11 Lightning invoice to preview.
+    string invoice = 1;
+
+    // max_fee_sat is the maximum Lightning routing fee the caller accepts.
+    // Zero means no explicit caller cap. Quotes still return when the
+    // estimated fee exceeds this cap so callers can render the fee.
+    uint64 max_fee_sat = 2;
+}
+
+message QuotePayResponse {
+    // payment_hash is the hex Lightning payment hash that identifies the
+    // invoice and eventual swap.
+    string payment_hash = 1;
+
+    // invoice_amount_sat is the whole-satoshi invoice amount.
+    uint64 invoice_amount_sat = 2;
+
+    // amount_sat is the total amount that would leave the wallet.
+    uint64 amount_sat = 3;
+
+    // fee_sat is the swap-server fee in satoshis.
+    uint64 fee_sat = 4;
+
+    SwapSettlementType settlement_type = 5;
+
+    // expires_at_unix is the unix timestamp after which the quote is stale.
+    int64 expires_at_unix = 6;
+
+    // exceeds_max_fee is true when max_fee_sat is non-zero and fee_sat is
+    // larger than that cap.
+    bool exceeds_max_fee = 7;
 }
 
 message StartPayRequest {

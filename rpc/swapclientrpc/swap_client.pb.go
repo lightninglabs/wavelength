@@ -201,6 +201,162 @@ func (SwapState) EnumDescriptor() ([]byte, []int) {
 	return file_swap_client_proto_rawDescGZIP(), []int{2}
 }
 
+type QuotePayRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// invoice is the BOLT-11 Lightning invoice to preview.
+	Invoice string `protobuf:"bytes,1,opt,name=invoice,proto3" json:"invoice,omitempty"`
+	// max_fee_sat is the maximum Lightning routing fee the caller accepts.
+	// Zero means no explicit caller cap. Quotes still return when the
+	// estimated fee exceeds this cap so callers can render the fee.
+	MaxFeeSat     uint64 `protobuf:"varint,2,opt,name=max_fee_sat,json=maxFeeSat,proto3" json:"max_fee_sat,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QuotePayRequest) Reset() {
+	*x = QuotePayRequest{}
+	mi := &file_swap_client_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QuotePayRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QuotePayRequest) ProtoMessage() {}
+
+func (x *QuotePayRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_swap_client_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QuotePayRequest.ProtoReflect.Descriptor instead.
+func (*QuotePayRequest) Descriptor() ([]byte, []int) {
+	return file_swap_client_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *QuotePayRequest) GetInvoice() string {
+	if x != nil {
+		return x.Invoice
+	}
+	return ""
+}
+
+func (x *QuotePayRequest) GetMaxFeeSat() uint64 {
+	if x != nil {
+		return x.MaxFeeSat
+	}
+	return 0
+}
+
+type QuotePayResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// payment_hash is the hex Lightning payment hash that identifies the
+	// invoice and eventual swap.
+	PaymentHash string `protobuf:"bytes,1,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// invoice_amount_sat is the whole-satoshi invoice amount.
+	InvoiceAmountSat uint64 `protobuf:"varint,2,opt,name=invoice_amount_sat,json=invoiceAmountSat,proto3" json:"invoice_amount_sat,omitempty"`
+	// amount_sat is the total amount that would leave the wallet.
+	AmountSat uint64 `protobuf:"varint,3,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// fee_sat is the swap-server fee in satoshis.
+	FeeSat         uint64             `protobuf:"varint,4,opt,name=fee_sat,json=feeSat,proto3" json:"fee_sat,omitempty"`
+	SettlementType SwapSettlementType `protobuf:"varint,5,opt,name=settlement_type,json=settlementType,proto3,enum=swapclientrpc.SwapSettlementType" json:"settlement_type,omitempty"`
+	// expires_at_unix is the unix timestamp after which the quote is stale.
+	ExpiresAtUnix int64 `protobuf:"varint,6,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
+	// exceeds_max_fee is true when max_fee_sat is non-zero and fee_sat is
+	// larger than that cap.
+	ExceedsMaxFee bool `protobuf:"varint,7,opt,name=exceeds_max_fee,json=exceedsMaxFee,proto3" json:"exceeds_max_fee,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QuotePayResponse) Reset() {
+	*x = QuotePayResponse{}
+	mi := &file_swap_client_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QuotePayResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QuotePayResponse) ProtoMessage() {}
+
+func (x *QuotePayResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_swap_client_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QuotePayResponse.ProtoReflect.Descriptor instead.
+func (*QuotePayResponse) Descriptor() ([]byte, []int) {
+	return file_swap_client_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *QuotePayResponse) GetPaymentHash() string {
+	if x != nil {
+		return x.PaymentHash
+	}
+	return ""
+}
+
+func (x *QuotePayResponse) GetInvoiceAmountSat() uint64 {
+	if x != nil {
+		return x.InvoiceAmountSat
+	}
+	return 0
+}
+
+func (x *QuotePayResponse) GetAmountSat() uint64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *QuotePayResponse) GetFeeSat() uint64 {
+	if x != nil {
+		return x.FeeSat
+	}
+	return 0
+}
+
+func (x *QuotePayResponse) GetSettlementType() SwapSettlementType {
+	if x != nil {
+		return x.SettlementType
+	}
+	return SwapSettlementType_SWAP_SETTLEMENT_TYPE_UNSPECIFIED
+}
+
+func (x *QuotePayResponse) GetExpiresAtUnix() int64 {
+	if x != nil {
+		return x.ExpiresAtUnix
+	}
+	return 0
+}
+
+func (x *QuotePayResponse) GetExceedsMaxFee() bool {
+	if x != nil {
+		return x.ExceedsMaxFee
+	}
+	return false
+}
+
 type StartPayRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// invoice is the BOLT-11 Lightning invoice to pay.
@@ -218,7 +374,7 @@ type StartPayRequest struct {
 
 func (x *StartPayRequest) Reset() {
 	*x = StartPayRequest{}
-	mi := &file_swap_client_proto_msgTypes[0]
+	mi := &file_swap_client_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -230,7 +386,7 @@ func (x *StartPayRequest) String() string {
 func (*StartPayRequest) ProtoMessage() {}
 
 func (x *StartPayRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_client_proto_msgTypes[0]
+	mi := &file_swap_client_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -243,7 +399,7 @@ func (x *StartPayRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartPayRequest.ProtoReflect.Descriptor instead.
 func (*StartPayRequest) Descriptor() ([]byte, []int) {
-	return file_swap_client_proto_rawDescGZIP(), []int{0}
+	return file_swap_client_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *StartPayRequest) GetInvoice() string {
@@ -281,7 +437,7 @@ type StartPayResponse struct {
 
 func (x *StartPayResponse) Reset() {
 	*x = StartPayResponse{}
-	mi := &file_swap_client_proto_msgTypes[1]
+	mi := &file_swap_client_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -293,7 +449,7 @@ func (x *StartPayResponse) String() string {
 func (*StartPayResponse) ProtoMessage() {}
 
 func (x *StartPayResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_client_proto_msgTypes[1]
+	mi := &file_swap_client_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -306,7 +462,7 @@ func (x *StartPayResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartPayResponse.ProtoReflect.Descriptor instead.
 func (*StartPayResponse) Descriptor() ([]byte, []int) {
-	return file_swap_client_proto_rawDescGZIP(), []int{1}
+	return file_swap_client_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *StartPayResponse) GetPaymentHash() string {
@@ -339,7 +495,7 @@ type StartReceiveRequest struct {
 
 func (x *StartReceiveRequest) Reset() {
 	*x = StartReceiveRequest{}
-	mi := &file_swap_client_proto_msgTypes[2]
+	mi := &file_swap_client_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -351,7 +507,7 @@ func (x *StartReceiveRequest) String() string {
 func (*StartReceiveRequest) ProtoMessage() {}
 
 func (x *StartReceiveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_client_proto_msgTypes[2]
+	mi := &file_swap_client_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -364,7 +520,7 @@ func (x *StartReceiveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartReceiveRequest.ProtoReflect.Descriptor instead.
 func (*StartReceiveRequest) Descriptor() ([]byte, []int) {
-	return file_swap_client_proto_rawDescGZIP(), []int{2}
+	return file_swap_client_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *StartReceiveRequest) GetAmountSat() int64 {
@@ -404,7 +560,7 @@ type StartReceiveResponse struct {
 
 func (x *StartReceiveResponse) Reset() {
 	*x = StartReceiveResponse{}
-	mi := &file_swap_client_proto_msgTypes[3]
+	mi := &file_swap_client_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -416,7 +572,7 @@ func (x *StartReceiveResponse) String() string {
 func (*StartReceiveResponse) ProtoMessage() {}
 
 func (x *StartReceiveResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_client_proto_msgTypes[3]
+	mi := &file_swap_client_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -429,7 +585,7 @@ func (x *StartReceiveResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartReceiveResponse.ProtoReflect.Descriptor instead.
 func (*StartReceiveResponse) Descriptor() ([]byte, []int) {
-	return file_swap_client_proto_rawDescGZIP(), []int{3}
+	return file_swap_client_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *StartReceiveResponse) GetPaymentHash() string {
@@ -465,7 +621,7 @@ type ResumeSwapRequest struct {
 
 func (x *ResumeSwapRequest) Reset() {
 	*x = ResumeSwapRequest{}
-	mi := &file_swap_client_proto_msgTypes[4]
+	mi := &file_swap_client_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -477,7 +633,7 @@ func (x *ResumeSwapRequest) String() string {
 func (*ResumeSwapRequest) ProtoMessage() {}
 
 func (x *ResumeSwapRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_client_proto_msgTypes[4]
+	mi := &file_swap_client_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -490,7 +646,7 @@ func (x *ResumeSwapRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeSwapRequest.ProtoReflect.Descriptor instead.
 func (*ResumeSwapRequest) Descriptor() ([]byte, []int) {
-	return file_swap_client_proto_rawDescGZIP(), []int{4}
+	return file_swap_client_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ResumeSwapRequest) GetPaymentHash() string {
@@ -517,7 +673,7 @@ type ResumeSwapResponse struct {
 
 func (x *ResumeSwapResponse) Reset() {
 	*x = ResumeSwapResponse{}
-	mi := &file_swap_client_proto_msgTypes[5]
+	mi := &file_swap_client_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -529,7 +685,7 @@ func (x *ResumeSwapResponse) String() string {
 func (*ResumeSwapResponse) ProtoMessage() {}
 
 func (x *ResumeSwapResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_client_proto_msgTypes[5]
+	mi := &file_swap_client_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -542,7 +698,7 @@ func (x *ResumeSwapResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeSwapResponse.ProtoReflect.Descriptor instead.
 func (*ResumeSwapResponse) Descriptor() ([]byte, []int) {
-	return file_swap_client_proto_rawDescGZIP(), []int{5}
+	return file_swap_client_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ResumeSwapResponse) GetSwap() *SwapSummary {
@@ -561,7 +717,7 @@ type ListSwapsRequest struct {
 
 func (x *ListSwapsRequest) Reset() {
 	*x = ListSwapsRequest{}
-	mi := &file_swap_client_proto_msgTypes[6]
+	mi := &file_swap_client_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -573,7 +729,7 @@ func (x *ListSwapsRequest) String() string {
 func (*ListSwapsRequest) ProtoMessage() {}
 
 func (x *ListSwapsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_client_proto_msgTypes[6]
+	mi := &file_swap_client_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -586,7 +742,7 @@ func (x *ListSwapsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSwapsRequest.ProtoReflect.Descriptor instead.
 func (*ListSwapsRequest) Descriptor() ([]byte, []int) {
-	return file_swap_client_proto_rawDescGZIP(), []int{6}
+	return file_swap_client_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ListSwapsRequest) GetPendingOnly() bool {
@@ -606,7 +762,7 @@ type ListSwapsResponse struct {
 
 func (x *ListSwapsResponse) Reset() {
 	*x = ListSwapsResponse{}
-	mi := &file_swap_client_proto_msgTypes[7]
+	mi := &file_swap_client_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -618,7 +774,7 @@ func (x *ListSwapsResponse) String() string {
 func (*ListSwapsResponse) ProtoMessage() {}
 
 func (x *ListSwapsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_client_proto_msgTypes[7]
+	mi := &file_swap_client_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -631,7 +787,7 @@ func (x *ListSwapsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSwapsResponse.ProtoReflect.Descriptor instead.
 func (*ListSwapsResponse) Descriptor() ([]byte, []int) {
-	return file_swap_client_proto_rawDescGZIP(), []int{7}
+	return file_swap_client_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ListSwapsResponse) GetSwaps() []*SwapSummary {
@@ -651,7 +807,7 @@ type GetSwapRequest struct {
 
 func (x *GetSwapRequest) Reset() {
 	*x = GetSwapRequest{}
-	mi := &file_swap_client_proto_msgTypes[8]
+	mi := &file_swap_client_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -663,7 +819,7 @@ func (x *GetSwapRequest) String() string {
 func (*GetSwapRequest) ProtoMessage() {}
 
 func (x *GetSwapRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_client_proto_msgTypes[8]
+	mi := &file_swap_client_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -676,7 +832,7 @@ func (x *GetSwapRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSwapRequest.ProtoReflect.Descriptor instead.
 func (*GetSwapRequest) Descriptor() ([]byte, []int) {
-	return file_swap_client_proto_rawDescGZIP(), []int{8}
+	return file_swap_client_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *GetSwapRequest) GetPaymentHash() string {
@@ -696,7 +852,7 @@ type GetSwapResponse struct {
 
 func (x *GetSwapResponse) Reset() {
 	*x = GetSwapResponse{}
-	mi := &file_swap_client_proto_msgTypes[9]
+	mi := &file_swap_client_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -708,7 +864,7 @@ func (x *GetSwapResponse) String() string {
 func (*GetSwapResponse) ProtoMessage() {}
 
 func (x *GetSwapResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_client_proto_msgTypes[9]
+	mi := &file_swap_client_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -721,7 +877,7 @@ func (x *GetSwapResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSwapResponse.ProtoReflect.Descriptor instead.
 func (*GetSwapResponse) Descriptor() ([]byte, []int) {
-	return file_swap_client_proto_rawDescGZIP(), []int{9}
+	return file_swap_client_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetSwapResponse) GetSwap() *SwapSummary {
@@ -741,7 +897,7 @@ type SubscribeSwapsRequest struct {
 
 func (x *SubscribeSwapsRequest) Reset() {
 	*x = SubscribeSwapsRequest{}
-	mi := &file_swap_client_proto_msgTypes[10]
+	mi := &file_swap_client_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -753,7 +909,7 @@ func (x *SubscribeSwapsRequest) String() string {
 func (*SubscribeSwapsRequest) ProtoMessage() {}
 
 func (x *SubscribeSwapsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_client_proto_msgTypes[10]
+	mi := &file_swap_client_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -766,7 +922,7 @@ func (x *SubscribeSwapsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeSwapsRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeSwapsRequest) Descriptor() ([]byte, []int) {
-	return file_swap_client_proto_rawDescGZIP(), []int{10}
+	return file_swap_client_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SubscribeSwapsRequest) GetIncludeExisting() bool {
@@ -793,7 +949,7 @@ type SubscribeSwapsResponse struct {
 
 func (x *SubscribeSwapsResponse) Reset() {
 	*x = SubscribeSwapsResponse{}
-	mi := &file_swap_client_proto_msgTypes[11]
+	mi := &file_swap_client_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -805,7 +961,7 @@ func (x *SubscribeSwapsResponse) String() string {
 func (*SubscribeSwapsResponse) ProtoMessage() {}
 
 func (x *SubscribeSwapsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_client_proto_msgTypes[11]
+	mi := &file_swap_client_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -818,7 +974,7 @@ func (x *SubscribeSwapsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeSwapsResponse.ProtoReflect.Descriptor instead.
 func (*SubscribeSwapsResponse) Descriptor() ([]byte, []int) {
-	return file_swap_client_proto_rawDescGZIP(), []int{11}
+	return file_swap_client_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *SubscribeSwapsResponse) GetSwap() *SwapSummary {
@@ -884,7 +1040,7 @@ type SwapSummary struct {
 
 func (x *SwapSummary) Reset() {
 	*x = SwapSummary{}
-	mi := &file_swap_client_proto_msgTypes[12]
+	mi := &file_swap_client_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -896,7 +1052,7 @@ func (x *SwapSummary) String() string {
 func (*SwapSummary) ProtoMessage() {}
 
 func (x *SwapSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_swap_client_proto_msgTypes[12]
+	mi := &file_swap_client_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -909,7 +1065,7 @@ func (x *SwapSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwapSummary.ProtoReflect.Descriptor instead.
 func (*SwapSummary) Descriptor() ([]byte, []int) {
-	return file_swap_client_proto_rawDescGZIP(), []int{12}
+	return file_swap_client_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *SwapSummary) GetDirection() SwapDirection {
@@ -1056,7 +1212,19 @@ var File_swap_client_proto protoreflect.FileDescriptor
 
 const file_swap_client_proto_rawDesc = "" +
 	"\n" +
-	"\x11swap_client.proto\x12\rswapclientrpc\"t\n" +
+	"\x11swap_client.proto\x12\rswapclientrpc\"K\n" +
+	"\x0fQuotePayRequest\x12\x18\n" +
+	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12\x1e\n" +
+	"\vmax_fee_sat\x18\x02 \x01(\x04R\tmaxFeeSat\"\xb7\x02\n" +
+	"\x10QuotePayResponse\x12!\n" +
+	"\fpayment_hash\x18\x01 \x01(\tR\vpaymentHash\x12,\n" +
+	"\x12invoice_amount_sat\x18\x02 \x01(\x04R\x10invoiceAmountSat\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x03 \x01(\x04R\tamountSat\x12\x17\n" +
+	"\afee_sat\x18\x04 \x01(\x04R\x06feeSat\x12J\n" +
+	"\x0fsettlement_type\x18\x05 \x01(\x0e2!.swapclientrpc.SwapSettlementTypeR\x0esettlementType\x12&\n" +
+	"\x0fexpires_at_unix\x18\x06 \x01(\x03R\rexpiresAtUnix\x12&\n" +
+	"\x0fexceeds_max_fee\x18\a \x01(\bR\rexceedsMaxFee\"t\n" +
 	"\x0fStartPayRequest\x12\x18\n" +
 	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12\x1e\n" +
 	"\vmax_fee_sat\x18\x02 \x01(\x04R\tmaxFeeSat\x12'\n" +
@@ -1137,8 +1305,9 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x12\x15\n" +
 	"\x11SWAP_STATE_FAILED\x10\v\x12\x1e\n" +
 	"\x1aSWAP_STATE_INVOICE_CREATED\x10\f\x12\x1e\n" +
-	"\x1aSWAP_STATE_CLAIM_INITIATED\x10\r2\x87\x04\n" +
+	"\x1aSWAP_STATE_CLAIM_INITIATED\x10\r2\xd4\x04\n" +
 	"\x11SwapClientService\x12K\n" +
+	"\bQuotePay\x12\x1e.swapclientrpc.QuotePayRequest\x1a\x1f.swapclientrpc.QuotePayResponse\x12K\n" +
 	"\bStartPay\x12\x1e.swapclientrpc.StartPayRequest\x1a\x1f.swapclientrpc.StartPayResponse\x12W\n" +
 	"\fStartReceive\x12\".swapclientrpc.StartReceiveRequest\x1a#.swapclientrpc.StartReceiveResponse\x12Q\n" +
 	"\n" +
@@ -1160,53 +1329,58 @@ func file_swap_client_proto_rawDescGZIP() []byte {
 }
 
 var file_swap_client_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_swap_client_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_swap_client_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_swap_client_proto_goTypes = []any{
 	(SwapDirection)(0),             // 0: swapclientrpc.SwapDirection
 	(SwapSettlementType)(0),        // 1: swapclientrpc.SwapSettlementType
 	(SwapState)(0),                 // 2: swapclientrpc.SwapState
-	(*StartPayRequest)(nil),        // 3: swapclientrpc.StartPayRequest
-	(*StartPayResponse)(nil),       // 4: swapclientrpc.StartPayResponse
-	(*StartReceiveRequest)(nil),    // 5: swapclientrpc.StartReceiveRequest
-	(*StartReceiveResponse)(nil),   // 6: swapclientrpc.StartReceiveResponse
-	(*ResumeSwapRequest)(nil),      // 7: swapclientrpc.ResumeSwapRequest
-	(*ResumeSwapResponse)(nil),     // 8: swapclientrpc.ResumeSwapResponse
-	(*ListSwapsRequest)(nil),       // 9: swapclientrpc.ListSwapsRequest
-	(*ListSwapsResponse)(nil),      // 10: swapclientrpc.ListSwapsResponse
-	(*GetSwapRequest)(nil),         // 11: swapclientrpc.GetSwapRequest
-	(*GetSwapResponse)(nil),        // 12: swapclientrpc.GetSwapResponse
-	(*SubscribeSwapsRequest)(nil),  // 13: swapclientrpc.SubscribeSwapsRequest
-	(*SubscribeSwapsResponse)(nil), // 14: swapclientrpc.SubscribeSwapsResponse
-	(*SwapSummary)(nil),            // 15: swapclientrpc.SwapSummary
+	(*QuotePayRequest)(nil),        // 3: swapclientrpc.QuotePayRequest
+	(*QuotePayResponse)(nil),       // 4: swapclientrpc.QuotePayResponse
+	(*StartPayRequest)(nil),        // 5: swapclientrpc.StartPayRequest
+	(*StartPayResponse)(nil),       // 6: swapclientrpc.StartPayResponse
+	(*StartReceiveRequest)(nil),    // 7: swapclientrpc.StartReceiveRequest
+	(*StartReceiveResponse)(nil),   // 8: swapclientrpc.StartReceiveResponse
+	(*ResumeSwapRequest)(nil),      // 9: swapclientrpc.ResumeSwapRequest
+	(*ResumeSwapResponse)(nil),     // 10: swapclientrpc.ResumeSwapResponse
+	(*ListSwapsRequest)(nil),       // 11: swapclientrpc.ListSwapsRequest
+	(*ListSwapsResponse)(nil),      // 12: swapclientrpc.ListSwapsResponse
+	(*GetSwapRequest)(nil),         // 13: swapclientrpc.GetSwapRequest
+	(*GetSwapResponse)(nil),        // 14: swapclientrpc.GetSwapResponse
+	(*SubscribeSwapsRequest)(nil),  // 15: swapclientrpc.SubscribeSwapsRequest
+	(*SubscribeSwapsResponse)(nil), // 16: swapclientrpc.SubscribeSwapsResponse
+	(*SwapSummary)(nil),            // 17: swapclientrpc.SwapSummary
 }
 var file_swap_client_proto_depIdxs = []int32{
-	15, // 0: swapclientrpc.StartPayResponse.swap:type_name -> swapclientrpc.SwapSummary
-	15, // 1: swapclientrpc.StartReceiveResponse.swap:type_name -> swapclientrpc.SwapSummary
-	0,  // 2: swapclientrpc.ResumeSwapRequest.direction:type_name -> swapclientrpc.SwapDirection
-	15, // 3: swapclientrpc.ResumeSwapResponse.swap:type_name -> swapclientrpc.SwapSummary
-	15, // 4: swapclientrpc.ListSwapsResponse.swaps:type_name -> swapclientrpc.SwapSummary
-	15, // 5: swapclientrpc.GetSwapResponse.swap:type_name -> swapclientrpc.SwapSummary
-	15, // 6: swapclientrpc.SubscribeSwapsResponse.swap:type_name -> swapclientrpc.SwapSummary
-	0,  // 7: swapclientrpc.SwapSummary.direction:type_name -> swapclientrpc.SwapDirection
-	2,  // 8: swapclientrpc.SwapSummary.state:type_name -> swapclientrpc.SwapState
-	1,  // 9: swapclientrpc.SwapSummary.settlement_type:type_name -> swapclientrpc.SwapSettlementType
-	3,  // 10: swapclientrpc.SwapClientService.StartPay:input_type -> swapclientrpc.StartPayRequest
-	5,  // 11: swapclientrpc.SwapClientService.StartReceive:input_type -> swapclientrpc.StartReceiveRequest
-	7,  // 12: swapclientrpc.SwapClientService.ResumeSwap:input_type -> swapclientrpc.ResumeSwapRequest
-	9,  // 13: swapclientrpc.SwapClientService.ListSwaps:input_type -> swapclientrpc.ListSwapsRequest
-	11, // 14: swapclientrpc.SwapClientService.GetSwap:input_type -> swapclientrpc.GetSwapRequest
-	13, // 15: swapclientrpc.SwapClientService.SubscribeSwaps:input_type -> swapclientrpc.SubscribeSwapsRequest
-	4,  // 16: swapclientrpc.SwapClientService.StartPay:output_type -> swapclientrpc.StartPayResponse
-	6,  // 17: swapclientrpc.SwapClientService.StartReceive:output_type -> swapclientrpc.StartReceiveResponse
-	8,  // 18: swapclientrpc.SwapClientService.ResumeSwap:output_type -> swapclientrpc.ResumeSwapResponse
-	10, // 19: swapclientrpc.SwapClientService.ListSwaps:output_type -> swapclientrpc.ListSwapsResponse
-	12, // 20: swapclientrpc.SwapClientService.GetSwap:output_type -> swapclientrpc.GetSwapResponse
-	14, // 21: swapclientrpc.SwapClientService.SubscribeSwaps:output_type -> swapclientrpc.SubscribeSwapsResponse
-	16, // [16:22] is the sub-list for method output_type
-	10, // [10:16] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	1,  // 0: swapclientrpc.QuotePayResponse.settlement_type:type_name -> swapclientrpc.SwapSettlementType
+	17, // 1: swapclientrpc.StartPayResponse.swap:type_name -> swapclientrpc.SwapSummary
+	17, // 2: swapclientrpc.StartReceiveResponse.swap:type_name -> swapclientrpc.SwapSummary
+	0,  // 3: swapclientrpc.ResumeSwapRequest.direction:type_name -> swapclientrpc.SwapDirection
+	17, // 4: swapclientrpc.ResumeSwapResponse.swap:type_name -> swapclientrpc.SwapSummary
+	17, // 5: swapclientrpc.ListSwapsResponse.swaps:type_name -> swapclientrpc.SwapSummary
+	17, // 6: swapclientrpc.GetSwapResponse.swap:type_name -> swapclientrpc.SwapSummary
+	17, // 7: swapclientrpc.SubscribeSwapsResponse.swap:type_name -> swapclientrpc.SwapSummary
+	0,  // 8: swapclientrpc.SwapSummary.direction:type_name -> swapclientrpc.SwapDirection
+	2,  // 9: swapclientrpc.SwapSummary.state:type_name -> swapclientrpc.SwapState
+	1,  // 10: swapclientrpc.SwapSummary.settlement_type:type_name -> swapclientrpc.SwapSettlementType
+	3,  // 11: swapclientrpc.SwapClientService.QuotePay:input_type -> swapclientrpc.QuotePayRequest
+	5,  // 12: swapclientrpc.SwapClientService.StartPay:input_type -> swapclientrpc.StartPayRequest
+	7,  // 13: swapclientrpc.SwapClientService.StartReceive:input_type -> swapclientrpc.StartReceiveRequest
+	9,  // 14: swapclientrpc.SwapClientService.ResumeSwap:input_type -> swapclientrpc.ResumeSwapRequest
+	11, // 15: swapclientrpc.SwapClientService.ListSwaps:input_type -> swapclientrpc.ListSwapsRequest
+	13, // 16: swapclientrpc.SwapClientService.GetSwap:input_type -> swapclientrpc.GetSwapRequest
+	15, // 17: swapclientrpc.SwapClientService.SubscribeSwaps:input_type -> swapclientrpc.SubscribeSwapsRequest
+	4,  // 18: swapclientrpc.SwapClientService.QuotePay:output_type -> swapclientrpc.QuotePayResponse
+	6,  // 19: swapclientrpc.SwapClientService.StartPay:output_type -> swapclientrpc.StartPayResponse
+	8,  // 20: swapclientrpc.SwapClientService.StartReceive:output_type -> swapclientrpc.StartReceiveResponse
+	10, // 21: swapclientrpc.SwapClientService.ResumeSwap:output_type -> swapclientrpc.ResumeSwapResponse
+	12, // 22: swapclientrpc.SwapClientService.ListSwaps:output_type -> swapclientrpc.ListSwapsResponse
+	14, // 23: swapclientrpc.SwapClientService.GetSwap:output_type -> swapclientrpc.GetSwapResponse
+	16, // 24: swapclientrpc.SwapClientService.SubscribeSwaps:output_type -> swapclientrpc.SubscribeSwapsResponse
+	18, // [18:25] is the sub-list for method output_type
+	11, // [11:18] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_swap_client_proto_init() }
@@ -1220,7 +1394,7 @@ func file_swap_client_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_swap_client_proto_rawDesc), len(file_swap_client_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

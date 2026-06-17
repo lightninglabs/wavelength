@@ -175,6 +175,17 @@ func (c *SwapServiceClient) CreateInSwap(ctx context.Context,
 	return out, err
 }
 
+// QuoteInSwap previews one Ark-to-Lightning swap with the swap server.
+func (c *SwapServiceClient) QuoteInSwap(ctx context.Context,
+	in *swaprpc.QuoteInSwapRequest, _ ...grpc.CallOption) (
+	*swaprpc.QuoteInSwapResponse, error) {
+
+	out := new(swaprpc.QuoteInSwapResponse)
+	err := c.client.Post(ctx, "/v1/swap/quote-in-swap", in, out)
+
+	return out, err
+}
+
 // AuthorizeInSwapRefund asks the swap server to sign a failed in-swap refund.
 func (c *SwapServiceClient) AuthorizeInSwapRefund(ctx context.Context,
 	in *swaprpc.AuthorizeInSwapRefundRequest, _ ...grpc.CallOption) (
@@ -701,6 +712,17 @@ func NewSwapClientServiceClientFromClient(
 // grpc-gateway.
 type SwapClientServiceClient struct {
 	client *Client
+}
+
+// QuotePay previews a daemon-owned pay swap.
+func (c *SwapClientServiceClient) QuotePay(ctx context.Context,
+	in *swapclientrpc.QuotePayRequest, _ ...grpc.CallOption) (
+	*swapclientrpc.QuotePayResponse, error) {
+
+	out := new(swapclientrpc.QuotePayResponse)
+	err := c.client.Post(ctx, "/v1/swapclient/quote-pay", in, out)
+
+	return out, err
 }
 
 // StartPay starts a daemon-owned pay swap.

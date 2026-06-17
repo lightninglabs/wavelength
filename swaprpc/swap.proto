@@ -32,6 +32,10 @@ service SwapService {
     // returns the negotiated vHTLC parameters.
     rpc CreateInSwap (CreateInSwapRequest) returns (CreateInSwapResponse);
 
+    // QuoteInSwap previews how an invoice send would settle without creating
+    // durable swap state or notifying a same-Ark receiver.
+    rpc QuoteInSwap (QuoteInSwapRequest) returns (QuoteInSwapResponse);
+
     // AuthorizeInSwapRefund signs a prepared cooperative refund spend for a
     // funded in-swap whose Lightning payment attempt has terminally failed.
     rpc AuthorizeInSwapRefund (AuthorizeInSwapRefundRequest)
@@ -250,6 +254,42 @@ message CreateInSwapResponse {
     // settlement_type identifies whether this negotiation should be completed
     // through Lightning or directly inside the Ark instance.
     SettlementType settlement_type = 7;
+}
+
+// QuoteInSwapRequest previews one Ark-to-Lightning invoice send.
+message QuoteInSwapRequest {
+    // invoice is the BOLT-11 invoice the swap server should inspect.
+    string invoice = 1;
+
+    // max_fee_sat is the caller's fee cap. Quotes still return when the
+    // computed server fee exceeds this cap so callers can render the fee.
+    uint64 max_fee_sat = 2;
+}
+
+// QuoteInSwapResponse returns the non-binding preview for one invoice send.
+message QuoteInSwapResponse {
+    // payment_hash is the SHA-256 payment hash extracted from the invoice.
+    bytes payment_hash = 1;
+
+    // invoice_amount_sat is the whole-satoshi amount requested by the invoice.
+    uint64 invoice_amount_sat = 2;
+
+    // amount_sat is the total amount that would be locked in the vHTLC.
+    uint64 amount_sat = 3;
+
+    // fee_sat is the fee in satoshis charged by the swap server.
+    uint64 fee_sat = 4;
+
+    // settlement_type identifies whether the invoice would settle through
+    // Lightning or directly inside the Ark instance.
+    SettlementType settlement_type = 5;
+
+    // expiry is the wall-clock deadline after which the quote is stale.
+    google.protobuf.Timestamp expiry = 6;
+
+    // exceeds_max_fee is true when max_fee_sat is non-zero and fee_sat is
+    // larger than that cap.
+    bool exceeds_max_fee = 7;
 }
 
 message AuthorizeInSwapRefundRequest {

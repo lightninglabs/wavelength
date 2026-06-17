@@ -19,6 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	SwapClientService_QuotePay_FullMethodName       = "/swapclientrpc.SwapClientService/QuotePay"
 	SwapClientService_StartPay_FullMethodName       = "/swapclientrpc.SwapClientService/StartPay"
 	SwapClientService_StartReceive_FullMethodName   = "/swapclientrpc.SwapClientService/StartReceive"
 	SwapClientService_ResumeSwap_FullMethodName     = "/swapclientrpc.SwapClientService/ResumeSwap"
@@ -34,6 +35,9 @@ const (
 // SwapClientService exposes daemon-owned Lightning/Ark swap execution to local
 // clients. The service is registered only in swapruntime builds.
 type SwapClientServiceClient interface {
+	// QuotePay previews an Ark-to-Lightning payment without creating durable
+	// swap state or starting a background worker.
+	QuotePay(ctx context.Context, in *QuotePayRequest, opts ...grpc.CallOption) (*QuotePayResponse, error)
 	// StartPay starts an Ark-to-Lightning payment and lets the daemon continue
 	// the swap in the background.
 	StartPay(ctx context.Context, in *StartPayRequest, opts ...grpc.CallOption) (*StartPayResponse, error)
@@ -59,6 +63,16 @@ type swapClientServiceClient struct {
 
 func NewSwapClientServiceClient(cc grpc.ClientConnInterface) SwapClientServiceClient {
 	return &swapClientServiceClient{cc}
+}
+
+func (c *swapClientServiceClient) QuotePay(ctx context.Context, in *QuotePayRequest, opts ...grpc.CallOption) (*QuotePayResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(QuotePayResponse)
+	err := c.cc.Invoke(ctx, SwapClientService_QuotePay_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *swapClientServiceClient) StartPay(ctx context.Context, in *StartPayRequest, opts ...grpc.CallOption) (*StartPayResponse, error) {
@@ -137,6 +151,9 @@ type SwapClientService_SubscribeSwapsClient = grpc.ServerStreamingClient[Subscri
 // SwapClientService exposes daemon-owned Lightning/Ark swap execution to local
 // clients. The service is registered only in swapruntime builds.
 type SwapClientServiceServer interface {
+	// QuotePay previews an Ark-to-Lightning payment without creating durable
+	// swap state or starting a background worker.
+	QuotePay(context.Context, *QuotePayRequest) (*QuotePayResponse, error)
 	// StartPay starts an Ark-to-Lightning payment and lets the daemon continue
 	// the swap in the background.
 	StartPay(context.Context, *StartPayRequest) (*StartPayResponse, error)
@@ -164,6 +181,9 @@ type SwapClientServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedSwapClientServiceServer struct{}
 
+func (UnimplementedSwapClientServiceServer) QuotePay(context.Context, *QuotePayRequest) (*QuotePayResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method QuotePay not implemented")
+}
 func (UnimplementedSwapClientServiceServer) StartPay(context.Context, *StartPayRequest) (*StartPayResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method StartPay not implemented")
 }
@@ -201,6 +221,24 @@ func RegisterSwapClientServiceServer(s grpc.ServiceRegistrar, srv SwapClientServ
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&SwapClientService_ServiceDesc, srv)
+}
+
+func _SwapClientService_QuotePay_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(QuotePayRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapClientServiceServer).QuotePay(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapClientService_QuotePay_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapClientServiceServer).QuotePay(ctx, req.(*QuotePayRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _SwapClientService_StartPay_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -311,6 +349,10 @@ var SwapClientService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "swapclientrpc.SwapClientService",
 	HandlerType: (*SwapClientServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "QuotePay",
+			Handler:    _SwapClientService_QuotePay_Handler,
+		},
 		{
 			MethodName: "StartPay",
 			Handler:    _SwapClientService_StartPay_Handler,
