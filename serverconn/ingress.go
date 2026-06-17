@@ -36,6 +36,14 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 
 	var failCount int
 
+	// When the delivery store supports transactions, each pulled batch is
+	// dispatched and checkpointed in ONE write transaction below. The
+	// ack watermark then rides along with the next dispatch checkpoint
+	// instead of paying its own commit; ackDirty tracks the in-memory
+	// advance until some checkpoint persists it.
+	txStore, txOK := a.cfg.Store.(actor.TxAwareDeliveryStore)
+	var ackDirty bool
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -73,7 +81,18 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 
 			state.AdvanceAck()
 
-			if err := a.saveCheckpoint(ctx, state); err != nil {
+			// On the transactional path the advanced watermark is
+			// persisted by the next dispatch checkpoint (or the
+			// idle flush below); losing it to a crash only costs
+			// one redundant idempotent AckUpTo on restart. The
+			// legacy path keeps the immediate checkpoint.
+			if txOK {
+				ackDirty = true
+				failCount = 0
+			} else if err := a.saveCheckpoint(
+				ctx, state,
+			); err != nil {
+
 				a.log.WarnS(
 					ctx,
 					"Failed to save checkpoint after ack",
@@ -87,9 +106,9 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 				a.sleepBackoff(ctx, &failCount)
 
 				continue
+			} else {
+				failCount = 0
 			}
-
-			failCount = 0
 		}
 
 		// Step 2: Pull a batch of envelopes from the remote mailbox.
@@ -114,9 +133,34 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 		}
 
 		if len(envelopes) == 0 {
-			// Long-poll returned empty. Reset fail count and loop
-			// again immediately — the long-poll timeout already
-			// provides the delay.
+			// Long-poll returned empty. Flush a dirty ack
+			// watermark while the connection is idle so a
+			// restart does not re-ack forever.
+			if ackDirty {
+				if err := a.saveCheckpoint(
+					ctx, state,
+				); err != nil {
+
+					// Back off on a failing checkpoint
+					// store rather than retrying at the
+					// bare long-poll cadence, mirroring the
+					// ack-path policy above. ackDirty stays
+					// set so the next attempt re-flushes.
+					a.log.WarnS(ctx,
+						"Failed to flush ack "+
+							"checkpoint while idle",
+						err)
+
+					a.sleepBackoff(ctx, &failCount)
+
+					continue
+				}
+
+				ackDirty = false
+			}
+
+			// Reset fail count and loop again immediately — the
+			// long-poll timeout already provides the delay.
 			failCount = 0
 
 			continue
@@ -129,9 +173,38 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 			slog.Uint64("next_cursor", nextCursor),
 		)
 
-		// Step 3: Dispatch the batch. On partial failure, the
-		// committed cursor reflects only the successfully dispatched
-		// portion.
+		// Step 3 (transactional path): deliver in-memory responses
+		// outside the transaction, then fold the durable dispatches
+		// and the advanced watermark into one commit.
+		if txOK {
+			newState, foldErr := a.runFoldedDispatch(
+				ctx, txStore, envelopes, nextCursor, state,
+			)
+			if foldErr != nil {
+				a.log.WarnS(ctx,
+					"Transactional dispatch failed",
+					foldErr,
+					slog.Uint64(
+						"cursor", state.PullCursor,
+					))
+
+				a.sleepBackoff(ctx, &failCount)
+
+				continue
+			}
+
+			// The commit covered the dispatch watermark and any
+			// pending ack advance together.
+			state = newState
+			ackDirty = false
+			failCount = 0
+
+			continue
+		}
+
+		// Step 3 (legacy path): dispatch the batch. On partial
+		// failure, the committed cursor reflects only the
+		// successfully dispatched portion.
 		committedCursor, dispatchErr := a.dispatchBatch(
 			ctx, envelopes, nextCursor,
 		)
@@ -447,10 +520,186 @@ func (a *ServerConnectionActor) loadCheckpoint(ctx context.Context) (AckState,
 	return state, nil
 }
 
+// runFoldedDispatch delivers a pulled batch's waiter-backed response
+// envelopes BEFORE the write transaction, then folds the durable dispatches
+// and the advanced AckState checkpoint into ONE commit. Waiter delivery is
+// in-memory and at-most-once, cannot be rolled back, and must never wait in
+// the single-writer queue: unary callers sit blocked on these with RPC
+// deadlines, so gating them on the writer lock turns write contention into
+// payment-wide timeout collapse. Every durable dispatcher Tell joins the
+// ambient transaction via the context (DurableMailbox.Send flows it into
+// EnqueueMessage), so a batch of k durable envelopes costs one commit
+// instead of k+1 and the cursor can never run ahead of the enqueues: any
+// failure rolls back both, leaves the returned state untouched, and the
+// batch is re-pulled intact.
+//
+// The split-time waiter peek is only a hint: a waiter can vanish (RPC
+// deadline cancel or TTL prune) between the peek and the actual delivery
+// below. The pre-transaction step therefore delivers to LIVE waiters only
+// and folds any straggler whose waiter disappeared back into the durable
+// transaction, so a durable response enqueue never commits outside the
+// cursor fold even if the peek was stale.
+func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
+	txStore actor.TxAwareDeliveryStore, envelopes []*mailboxpb.Envelope,
+	nextCursor uint64, state AckState) (AckState, error) {
+
+	responses, durables := splitIngressEnvelopes(
+		envelopes, a.hasResponseWaiter,
+	)
+
+	// Deliver the waiter-backed responses to their live waiters outside
+	// the transaction. Any whose waiter vanished since the split peek come
+	// back as stragglers and fold into the durable batch in event_seq
+	// order, so their enqueue commits inside the cursor fold, never ahead
+	// of it.
+	if stragglers := a.deliverWaiterResponses(
+		responses,
+	); len(stragglers) > 0 {
+
+		durables = mergeEnvelopesByEventSeq(durables, stragglers)
+	}
+
+	newState := state
+	err := txStore.ExecTx(ctx, false, func(txCtx context.Context,
+		store actor.DeliveryStore) error {
+
+		if len(durables) > 0 {
+			_, dispatchErr := a.dispatchBatch(
+				txCtx, durables, nextCursor,
+			)
+			if dispatchErr != nil {
+				return dispatchErr
+			}
+		}
+
+		newState.AdvanceDispatch(nextCursor)
+		newState.PullCursor = nextCursor
+
+		return a.saveCheckpointTo(txCtx, store, newState)
+	})
+	if err != nil {
+		return state, err
+	}
+
+	return newState, nil
+}
+
+// splitIngressEnvelopes partitions a pulled batch into in-memory response
+// envelopes and durable dispatch envelopes. A KIND_RESPONSE only takes the
+// pre-transaction path when an active in-memory waiter is registered for its
+// correlation ID, as reported by hasWaiter: those callers sit blocked on an
+// RPC deadline and must never queue behind the database writer lock. A
+// KIND_RESPONSE with no live waiter would otherwise fall through to the durable
+// dispatch table; folding it into the transaction alongside requests and events
+// keeps event_seq order on the target actor lane and ties its enqueue to the
+// cursor commit, so a rolled-back batch never re-delivers it. Everything else
+// (requests, events, and malformed or correlation-less envelopes, which the
+// dispatch loop skip-warns) folds into the transaction too.
+func splitIngressEnvelopes(envelopes []*mailboxpb.Envelope,
+	hasWaiter func(CorrelationID) bool) ([]*mailboxpb.Envelope,
+	[]*mailboxpb.Envelope) {
+
+	var responses, durables []*mailboxpb.Envelope
+	for _, env := range envelopes {
+		isResponse := env.Rpc != nil &&
+			env.Rpc.Kind == mailboxpb.RpcMeta_KIND_RESPONSE
+
+		// Route a response to the fast pre-transaction path only when a
+		// live waiter is registered for its correlation ID; otherwise
+		// it folds into the durable transaction with the rest of the
+		// batch.
+		corrID := CorrelationID("")
+		if isResponse {
+			corrID = CorrelationID(env.Rpc.CorrelationId)
+		}
+		if isResponse && corrID != "" && hasWaiter(corrID) {
+			responses = append(responses, env)
+		} else {
+			durables = append(durables, env)
+		}
+	}
+
+	return responses, durables
+}
+
+// deliverWaiterResponses delivers each split-time waiter-backed response to
+// its live in-memory waiter, outside the dispatch transaction. It returns the
+// stragglers: responses whose waiter vanished (RPC deadline cancel or TTL
+// prune) between the split peek and this delivery. Those must NOT be durably
+// dispatched here — that would commit a durable enqueue ahead of the cursor
+// fold — so the caller folds them into the transactional durable batch
+// instead. A miss may have buffered an early response copy, which is dropped
+// so the durable fold remains the single source of truth.
+func (a *ServerConnectionActor) deliverWaiterResponses(
+	responses []*mailboxpb.Envelope) []*mailboxpb.Envelope {
+
+	var stragglers []*mailboxpb.Envelope
+	for _, env := range responses {
+		corrID := CorrelationID(env.Rpc.CorrelationId)
+
+		// A correlation-less response cannot match a waiter; defer it
+		// to the durable fold like any other non-waiter envelope.
+		if corrID == "" {
+			stragglers = append(stragglers, env)
+
+			continue
+		}
+
+		delivery := a.deliverResponse(corrID, env)
+		if delivery == mailboxconn.DeliveryWaiter {
+			continue
+		}
+
+		// The waiter disappeared after the split peek. Drop any
+		// buffered copy and defer the envelope into the durable
+		// transaction.
+		a.removePendingResponse(corrID)
+		stragglers = append(stragglers, env)
+	}
+
+	return stragglers
+}
+
+// mergeEnvelopesByEventSeq merges two event_seq-ascending envelope slices
+// into one ascending slice. Both the durable partition and the straggler set
+// derive from a single ordered pass over the pulled batch, so each input is
+// already sorted; the merge preserves per-lane FIFO order when stragglers
+// fold back into the durable batch.
+func mergeEnvelopesByEventSeq(
+	a, b []*mailboxpb.Envelope) []*mailboxpb.Envelope {
+
+	merged := make([]*mailboxpb.Envelope, 0, len(a)+len(b))
+
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		if a[i].EventSeq <= b[j].EventSeq {
+			merged = append(merged, a[i])
+			i++
+		} else {
+			merged = append(merged, b[j])
+			j++
+		}
+	}
+
+	merged = append(merged, a[i:]...)
+	merged = append(merged, b[j:]...)
+
+	return merged
+}
+
 // saveCheckpoint persists the AckState to the checkpoint store.
 func (a *ServerConnectionActor) saveCheckpoint(
 	ctx context.Context, state AckState,
 ) error {
+
+	return a.saveCheckpointTo(ctx, a.cfg.Store, state)
+}
+
+// saveCheckpointTo persists the AckState through the given store, which may
+// be a transaction-scoped store so the checkpoint joins an ambient dispatch
+// transaction instead of paying its own commit.
+func (a *ServerConnectionActor) saveCheckpointTo(ctx context.Context,
+	store actor.DeliveryStore, state AckState) error {
 
 	var buf bytes.Buffer
 	if err := state.Encode(&buf); err != nil {
@@ -459,7 +708,7 @@ func (a *ServerConnectionActor) saveCheckpoint(
 
 	actorID := DurableActorID(a.cfg.LocalMailboxID)
 
-	return a.cfg.Store.SaveCheckpoint(ctx, actor.CheckpointParams{
+	return store.SaveCheckpoint(ctx, actor.CheckpointParams{
 		ActorID:   actorID,
 		StateType: ackStateType,
 		StateData: buf.Bytes(),

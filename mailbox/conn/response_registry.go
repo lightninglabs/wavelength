@@ -147,6 +147,24 @@ func (r *ResponseRegistry) RemoveWaiter(id CorrelationID) {
 	}
 }
 
+// HasWaiter reports whether an active in-memory waiter is currently registered
+// for correlation ID id. It lets the ingress loop classify a KIND_RESPONSE at
+// split time: a response with a live waiter can be delivered on the fast
+// pre-transaction path, while a response without one must fold into the durable
+// dispatch transaction so its enqueue commits atomically with the cursor. Stale
+// waiters are pruned before the check so an expired entry never masquerades as
+// a live one.
+func (r *ResponseRegistry) HasWaiter(id CorrelationID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.pruneStaleLocked(time.Now())
+
+	_, ok := r.waiters[id]
+
+	return ok
+}
+
 // RemovePending drops any buffered early response for the correlation ID.
 func (r *ResponseRegistry) RemovePending(id CorrelationID) {
 	r.mu.Lock()
