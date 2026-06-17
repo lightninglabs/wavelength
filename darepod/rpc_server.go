@@ -45,7 +45,6 @@ import (
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -630,8 +629,10 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *daemonrpc.GetInfoRequest) (
 		// PubKey is mandatory in the server's GetInfo response, so a
 		// cached operator-terms snapshot should always carry it here.
 		if terms.PubKey == nil {
-			r.server.log.WarnS(ctx, "Cached operator terms missing "+
-				"operator pubkey", nil)
+			r.server.log.WarnS(
+				ctx, "Cached operator terms missing "+
+					"operator pubkey", nil,
+			)
 
 			return resp, nil
 		}
@@ -1481,9 +1482,11 @@ func (r *RPCServer) RefreshCustomVTXOs(ctx context.Context,
 		return nil, status.Errorf(codes.Unavailable, "fetch operator "+
 			"terms: %v", err)
 	}
-	enrichCustomRefreshInputs(
-		inputs, r.server.clientKeyDesc, terms.PubKey,
-	)
+	if err := r.enrichCustomRefreshInputs(
+		ctx, inputs, r.server.clientKeyDesc, terms.PubKey,
+	); err != nil {
+		return nil, err
+	}
 	var unregister []func()
 	for outpoint, signingCtx := range signingContexts {
 		unregister = append(
@@ -1552,6 +1555,7 @@ func (r *RPCServer) RefreshCustomVTXOs(ctx context.Context,
 		return nil, status.Errorf(codes.Internal, "trigger custom "+
 			"refresh round registration: %v", err)
 	}
+
 	return &daemonrpc.RefreshCustomVTXOsResponse{
 		QueuedOutpoints: queued,
 		Status:          "queued",
@@ -1682,9 +1686,10 @@ func buildCustomRefreshRequest(req *daemonrpc.RefreshCustomVTXOsRequest) (
 			return nil, nil, nil, err
 		}
 		if _, ok := seen[input.Outpoint]; ok {
+			msg := "custom refresh input %d duplicate outpoint %s"
+
 			return nil, nil, nil, status.Errorf(
-				codes.InvalidArgument, "custom refresh input "+
-					"%d duplicate outpoint %s", i, input.Outpoint)
+				codes.InvalidArgument, msg, i, input.Outpoint)
 		}
 		seen[input.Outpoint] = struct{}{}
 
@@ -1781,9 +1786,11 @@ func parseCustomRefreshInput(index int,
 
 	outpoint, err := parseOutpointString(input.GetOutpoint())
 	if err != nil {
+		msg := "parse custom refresh input %d outpoint %q: %v"
+
 		return wallet.CustomRefreshInput{}, status.Errorf(
-			codes.InvalidArgument, "parse custom refresh input %d "+
-				"outpoint %q: %v", index, input.GetOutpoint(), err)
+			codes.InvalidArgument, msg, index, input.GetOutpoint(),
+			err)
 	}
 
 	template, err := arkscript.DecodePolicyTemplate(
@@ -1795,9 +1802,11 @@ func parseCustomRefreshInput(index int,
 				"%d policy template: %v", index, err)
 	}
 	if !template.MatchesPkScript(input.GetPkScript()) {
+		msg := "custom refresh input %d policy template does not " +
+			"match pk_script"
+
 		return wallet.CustomRefreshInput{}, status.Errorf(
-			codes.InvalidArgument, "custom refresh input %d "+
-				"policy template does not match pk_script", index)
+			codes.InvalidArgument, msg, index)
 	}
 
 	authSpend, err := decodeBoundCustomRefreshSpend(
@@ -1828,15 +1837,6 @@ func parseCustomRefreshInput(index int,
 		AuthSpend:    authSpend,
 		ForfeitSpend: forfeitSpend,
 	}, nil
-}
-
-func enrichCustomRefreshInputs(inputs []wallet.CustomRefreshInput,
-	clientKey keychain.KeyDescriptor, operatorKey *btcec.PublicKey) {
-
-	for i := range inputs {
-		inputs[i].ClientKey = clientKey
-		inputs[i].OperatorKey = operatorKey
-	}
 }
 
 func maxCustomRefreshSequence(paths ...*arkscript.SpendPath) uint32 {
@@ -1891,9 +1891,11 @@ func parseCustomRefreshOutput(index int,
 					"output %d pk_script: %v", index, err)
 		}
 	} else if !template.MatchesPkScript(pkScript) {
+		msg := "custom refresh output %d policy template does not " +
+			"match pk_script"
+
 		return wallet.CustomRefreshOutput{}, status.Errorf(
-			codes.InvalidArgument, "custom refresh output %d "+
-				"policy template does not match pk_script", index)
+			codes.InvalidArgument, msg, index)
 	}
 
 	return wallet.CustomRefreshOutput{
@@ -1921,6 +1923,7 @@ func decodeBoundCustomRefreshSpend(index int, field string, raw,
 
 	return spendPath, nil
 }
+
 // LeaveVTXOs queues one or more VTXOs for cooperative leave
 // (offboard) in the next round. Each VTXO is forfeited and the
 // forfeited amount lands on-chain at the caller's destination —

@@ -5,16 +5,19 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/coinselect"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -234,12 +237,23 @@ func TestActivateCustomForfeitInputsPersistsPendingSigner(t *testing.T) {
 	}
 
 	op := makeDescriptor(t, 42_000, 91).Outpoint
+	commitmentTxID := chainhash.HashH([]byte("custom-forfeit-commitment"))
+	ancestry := []types.Ancestry{{
+		CommitmentTxID: commitmentTxID,
+		TreeDepth:      2,
+	}}
 	store.On(
 		"SaveVTXO", mock.Anything,
 		mock.MatchedBy(func(desc *Descriptor) bool {
 			return desc.Outpoint == op &&
 				desc.Amount == btcutil.Amount(42_000) &&
 				desc.Status == VTXOStatusPendingForfeit &&
+				desc.RoundID == "custom-round" &&
+				desc.CommitmentTxID == commitmentTxID &&
+				desc.BatchExpiry == 900 &&
+				desc.ChainDepth == 1 &&
+				desc.CreatedHeight == 123 &&
+				reflect.DeepEqual(ancestry, desc.Ancestry) &&
 				desc.ClientKey.PubKey.IsEqual(
 					clientPriv.PubKey(),
 				) &&
@@ -259,6 +273,12 @@ func TestActivateCustomForfeitInputsPersistsPendingSigner(t *testing.T) {
 				},
 				OperatorKey:    operatorPriv.PubKey(),
 				RelativeExpiry: 144,
+				RoundID:        "custom-round",
+				CommitmentTxID: commitmentTxID,
+				BatchExpiry:    900,
+				ChainDepth:     1,
+				CreatedHeight:  123,
+				Ancestry:       ancestry,
 			}},
 		},
 	)

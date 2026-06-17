@@ -3,8 +3,10 @@ package actormsg
 import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
@@ -201,6 +203,30 @@ type CustomForfeitInput struct {
 	// accounting. Custom paths supplied by the round request still drive
 	// the exact forfeit transaction sequence.
 	RelativeExpiry uint32
+
+	// RoundID identifies the round lineage that created this custom
+	// VTXO. It lets the temporary PendingForfeit descriptor share the
+	// same persistence invariants as ordinary indexed VTXOs.
+	RoundID string
+
+	// CommitmentTxID is the commitment tx anchoring this custom VTXO.
+	CommitmentTxID chainhash.Hash
+
+	// BatchExpiry is the absolute batch expiry height for the custom
+	// VTXO lineage.
+	BatchExpiry int32
+
+	// ChainDepth records how many OOR checkpoint hops separate this
+	// custom VTXO from its commitment tx.
+	ChainDepth int
+
+	// CreatedHeight records the block height where the commitment tx was
+	// confirmed.
+	CreatedHeight int32
+
+	// Ancestry carries the commitment-tree fragments needed for any later
+	// unilateral path.
+	Ancestry []types.Ancestry
 }
 
 // ActivateCustomForfeitInputsRequest persists and spawns PendingForfeit VTXO

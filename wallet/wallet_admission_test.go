@@ -627,8 +627,13 @@ func TestCustomRefreshActivatesSignerWithoutLiveReservation(t *testing.T) {
 		RequiredSequence: 2,
 	}
 	op := testOutpoint(42)
+	commitmentTxID := chainhash.HashH([]byte("custom-refresh-commitment"))
 	policyTemplate := []byte{0xde, 0xad, 0xbe, 0xef}
 	pkScript := []byte{0x51, 0x20, 0x01}
+	ancestry := []types.Ancestry{{
+		CommitmentTxID: commitmentTxID,
+		TreeDepth:      3,
+	}}
 	activateResp := &actormsg.ActivateCustomForfeitInputsResponse{
 		ActivatedCount: 1,
 	}
@@ -653,6 +658,12 @@ func TestCustomRefreshActivatesSignerWithoutLiveReservation(t *testing.T) {
 			},
 			OperatorKey:    operatorPriv.PubKey(),
 			RelativeExpiry: 2,
+			RoundID:        "round-custom-refresh",
+			CommitmentTxID: commitmentTxID,
+			BatchExpiry:    1234,
+			ChainDepth:     1,
+			CreatedHeight:  99,
+			Ancestry:       ancestry,
 			AuthSpend:      authSpend,
 			ForfeitSpend:   forfeitSpend,
 		}},
@@ -696,6 +707,22 @@ func TestCustomRefreshActivatesSignerWithoutLiveReservation(t *testing.T) {
 	require.Equal(
 		t, uint32(2), mgr.customActivateReq.Inputs[0].RelativeExpiry,
 	)
+	require.Equal(
+		t, "round-custom-refresh",
+		mgr.customActivateReq.Inputs[0].RoundID,
+	)
+	require.Equal(
+		t, commitmentTxID,
+		mgr.customActivateReq.Inputs[0].CommitmentTxID,
+	)
+	require.EqualValues(
+		t, 1234, mgr.customActivateReq.Inputs[0].BatchExpiry,
+	)
+	require.Equal(t, 1, mgr.customActivateReq.Inputs[0].ChainDepth)
+	require.EqualValues(
+		t, 99, mgr.customActivateReq.Inputs[0].CreatedHeight,
+	)
+	require.Equal(t, ancestry, mgr.customActivateReq.Inputs[0].Ancestry)
 	require.Equal(t, 1, roundActor.registerCalls)
 	intent := roundActor.capturedIntent
 	require.NotNil(t, intent)
@@ -775,6 +802,7 @@ func TestCustomRefreshDropsSignerOnRoundRejection(t *testing.T) {
 	require.NotNil(t, mgr.customDropReq)
 	require.Equal(t, []wire.OutPoint{op}, mgr.customDropReq.Outpoints)
 }
+
 // TestRefreshReleasesOnRoundRejection verifies that the wallet releases
 // forfeit reservations when the round actor rejects the intent.
 func TestRefreshReleasesOnRoundRejection(t *testing.T) {

@@ -1867,6 +1867,12 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 			ClientKey:      input.ClientKey,
 			OperatorKey:    input.OperatorKey,
 			RelativeExpiry: input.RelativeExpiry,
+			RoundID:        input.RoundID,
+			CommitmentTxID: input.CommitmentTxID,
+			BatchExpiry:    input.BatchExpiry,
+			ChainDepth:     input.ChainDepth,
+			CreatedHeight:  input.CreatedHeight,
+			Ancestry:       input.Ancestry,
 			Status:         VTXOStatusPendingForfeit,
 		}
 
@@ -1931,6 +1937,21 @@ func (m *Manager) customForfeitInputAlreadyActive(ctx context.Context,
 	}
 	if desc.OperatorKey == nil ||
 		!desc.OperatorKey.IsEqual(input.OperatorKey) {
+		return false, nil
+	}
+	if desc.RoundID != input.RoundID {
+		return false, nil
+	}
+	if desc.CommitmentTxID != input.CommitmentTxID {
+		return false, nil
+	}
+	if desc.BatchExpiry != input.BatchExpiry {
+		return false, nil
+	}
+	if desc.ChainDepth != input.ChainDepth {
+		return false, nil
+	}
+	if desc.CreatedHeight != input.CreatedHeight {
 		return false, nil
 	}
 
