@@ -64,6 +64,14 @@ type Delivery[M TLVMessage, R any] struct {
 	// store is the backing store for persisting ack/nack operations.
 	store DeliveryStore
 
+	// leaseless reports that this delivery was peeked, not leased: it holds
+	// no lease token and its attempts count was NOT pre-incremented at
+	// claim time. The nack path increments attempts by ID, so the
+	// dead-letter boundary must count this in-flight attempt (Attempts + 1)
+	// to match the leased path, where attempts was already bumped at lease.
+	// See ShouldDeadLetter.
+	leaseless bool
+
 	// mu guards mutable fields (acked, LeaseUntil) that may be accessed
 	// concurrently by the heartbeat goroutine (Extend) and the main
 	// processing goroutine (Ack/Nack).
@@ -76,6 +84,35 @@ type Delivery[M TLVMessage, R any] struct {
 	// is used by the transaction path to defer promise completion until
 	// after the transaction commits successfully.
 	deferPromise bool
+
+	// mutationFailed records that a Nack store write (release, attempts
+	// bump, or dead-letter) returned an error, leaving the underlying row
+	// physically unchanged. The leaseless (peeked) path has no lease fence
+	// to throttle a re-peek of the same eligible row, so the worker loop
+	// inspects this flag after processing and backs off for a poll interval
+	// before the next claim, matching the implicit lease-expiry backoff of
+	// the fenced path instead of tight-spinning against a wedged DB.
+	mutationFailed bool
+}
+
+// MutationFailed reports whether the last Nack on this delivery failed to
+// persist its row mutation. The worker loop uses this to back off before
+// re-claiming, since a failed leaseless nack leaves the row unchanged and
+// immediately re-eligible.
+func (d *Delivery[M, R]) MutationFailed() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.mutationFailed
+}
+
+// setMutationFailed marks that a Nack store write failed to persist its row
+// mutation, so the worker loop should back off before re-claiming.
+func (d *Delivery[M, R]) setMutationFailed() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.mutationFailed = true
 }
 
 // IsAsk returns true if this delivery is for an Ask message (has a promise).
@@ -113,8 +150,27 @@ func (d *Delivery[M, R]) IsLeaseExpired() bool {
 
 // ShouldDeadLetter returns true if this message should be moved to the dead
 // letter queue (max attempts reached).
+//
+// The leased path pre-increments attempts at claim time, so Attempts already
+// counts the in-flight delivery and the boundary is Attempts >= MaxAttempts.
+// The leaseless (peeked) path does NOT pre-increment -- the nack increments by
+// ID -- so the in-flight attempt is counted as Attempts + 1, matching the
+// leased boundary and ensuring a message still dead-letters before it becomes
+// peek-ineligible (attempts == max_attempts).
 func (d *Delivery[M, R]) ShouldDeadLetter() bool {
-	return d.Attempts >= d.MaxAttempts
+	return d.EffectiveAttempts() >= d.MaxAttempts
+}
+
+// EffectiveAttempts returns the retry-policy attempt count for this delivery.
+// Leased deliveries are pre-incremented at claim time; leaseless peeked
+// deliveries are not, so the current in-flight attempt is counted here.
+func (d *Delivery[M, R]) EffectiveAttempts() int {
+	effectiveAttempts := d.Attempts
+	if d.leaseless {
+		effectiveAttempts++
+	}
+
+	return effectiveAttempts
 }
 
 // Ack marks the message as successfully processed.
@@ -141,8 +197,9 @@ func (d *Delivery[M, R]) Ack(ctx context.Context, result fn.Result[R]) error {
 	// This must happen before SaveAskResult to prevent stale lease
 	// holders from persisting results: ask_results uses ON CONFLICT
 	// DO NOTHING, so a stale write would silently block the valid
-	// worker's result.
-	rowsAffected, err := d.store.AckMessage(ctx, d.ID, d.LeaseToken)
+	// worker's result. A leaseless (peeked) delivery has an empty lease
+	// token and acks by ID; ackMessage routes to the unfenced op then.
+	rowsAffected, err := ackMessage(ctx, d.store, d.ID, d.LeaseToken)
 	if err != nil {
 		return fmt.Errorf("ack message: %w", err)
 	}
@@ -223,10 +280,15 @@ func (d *Delivery[M, R]) Nack(
 		if dlErr := d.store.MoveToDeadLetter(
 			ctx, d.ID, reason,
 		); dlErr != nil {
+
+			d.setMutationFailed()
+
 			return fmt.Errorf("move to dead letter: %w", dlErr)
 		}
 
 		if delErr := d.store.DeleteMessage(ctx, d.ID); delErr != nil {
+			d.setMutationFailed()
+
 			return fmt.Errorf("delete message after dead "+
 				"letter: %w", delErr)
 		}
@@ -238,11 +300,15 @@ func (d *Delivery[M, R]) Nack(
 		return nil
 	}
 
-	// Release the message for redelivery.
-	rowsAffected, nackErr := d.store.NackMessage(
-		ctx, d.ID, d.LeaseToken, retryAfter,
+	// Release the message for redelivery. A leaseless (peeked) delivery has
+	// an empty lease token and nacks by ID, which also increments attempts
+	// (the peek did not), preserving dead-lettering on max attempts.
+	rowsAffected, nackErr := nackMessage(
+		ctx, d.store, d.ID, d.LeaseToken, retryAfter,
 	)
 	if nackErr != nil {
+		d.setMutationFailed()
+
 		return fmt.Errorf("nack message: %w", nackErr)
 	}
 
@@ -313,5 +379,9 @@ func newDelivery[M TLVMessage, R any](
 		MaxAttempts:     msg.MaxAttempts,
 		store:           store,
 		acked:           false,
+
+		// A peeked (leaseless) message carries an empty lease token and
+		// its attempts were not pre-incremented at claim time.
+		leaseless: msg.LeaseToken == "",
 	}
 }

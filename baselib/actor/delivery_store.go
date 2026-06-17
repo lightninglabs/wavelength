@@ -22,15 +22,42 @@ type DeliveryStore interface {
 		leaseToken string,
 		leaseDuration time.Duration) (*LeasedMessage, error)
 
+	// PeekNextMessage claims the next available message with a READ-only
+	// query and takes NO lease: it does not set a lease token or expiry and
+	// does not increment attempts. It is the leaseless fast path for
+	// single-worker (NumWorkers == 1) actors, which have no competing
+	// consumer to fence the ack against. The returned LeasedMessage carries
+	// an EMPTY LeaseToken, which signals the consume path to ack/nack via
+	// the unfenced by-ID operations. Eligibility and ordering match
+	// LeaseNextMessage exactly. Returns nil if no messages are available.
+	PeekNextMessage(ctx context.Context,
+		mailboxID string) (*LeasedMessage, error)
+
 	// AckMessage acknowledges successful processing of a message.
 	// Validates the lease token to prevent stale acks. Returns the number
 	// of rows affected (0 if token mismatch, 1 if success).
 	AckMessage(ctx context.Context, id, leaseToken string) (int64, error)
 
+	// AckMessageByID acknowledges successful processing of a message by ID
+	// WITHOUT validating a lease token. It is the leaseless single-worker
+	// counterpart to AckMessage. Returns the number of rows affected (1 on
+	// success, 0 if the row was already gone). MUST NOT be used by the
+	// multi-worker path, which relies on lease-token fencing.
+	AckMessageByID(ctx context.Context, id string) (int64, error)
+
 	// NackMessage releases a message for redelivery after the specified
 	// delay. Clears the lease and sets a new available_at time.
 	// Validates the lease token to prevent stale nacks.
 	NackMessage(ctx context.Context, id, leaseToken string,
+		retryAfter time.Duration) (int64, error)
+
+	// NackMessageByID releases a message for redelivery by ID WITHOUT
+	// validating a lease token, and increments attempts. It is the
+	// leaseless single-worker counterpart to NackMessage. The attempts bump
+	// is required because the leaseless peek does not increment attempts,
+	// so the failure path must, to preserve dead-lettering on max attempts.
+	// Returns the number of rows affected.
+	NackMessageByID(ctx context.Context, id string,
 		retryAfter time.Duration) (int64, error)
 
 	// ExtendLease extends the lease for long-running message processing.
@@ -121,11 +148,69 @@ type DeliveryStore interface {
 	CleanupExpired(ctx context.Context) error
 }
 
+// ackMessage acknowledges a delivery, picking the fenced or unfenced store
+// operation by whether a lease token is present. A leaseless (peeked) delivery
+// carries an empty token and acks by ID; a leased delivery acks under its lease
+// fence. Centralizing the choice here keeps every ack call site -- the commit
+// fold, the non-tx tail, the classic tx path, and the duplicate-skip path --
+// consistent without each branching on the token.
+func ackMessage(ctx context.Context, store DeliveryStore, id,
+	leaseToken string) (int64, error) {
+
+	if leaseToken == "" {
+		return store.AckMessageByID(ctx, id)
+	}
+
+	return store.AckMessage(ctx, id, leaseToken)
+}
+
+// nackMessage releases a delivery for redelivery, picking the fenced or
+// unfenced store operation by whether a lease token is present. The unfenced
+// by-ID path additionally increments attempts, which the leaseless peek does
+// not do, so dead-lettering on max attempts is preserved.
+func nackMessage(ctx context.Context, store DeliveryStore, id,
+	leaseToken string, retryAfter time.Duration) (int64, error) {
+
+	if leaseToken == "" {
+		return store.NackMessageByID(ctx, id, retryAfter)
+	}
+
+	return store.NackMessage(ctx, id, leaseToken, retryAfter)
+}
+
 // OutboxWakeRegistrar is optionally implemented by stores that can notify a
 // same-process publisher after new outbox work commits. Polling remains the
 // cross-process and restart fallback.
 type OutboxWakeRegistrar interface {
 	RegisterOutboxWake(func())
+}
+
+// MailboxWakeRegistrar is optionally implemented by stores that can notify a
+// same-process mailbox receive loop after an enqueue commits. It exists for the
+// folded outbox-delivery path: when EnqueueMessage runs inside an ambient
+// transaction (the OutboxPublisher folds the target enqueue and CompleteOutbox
+// into one write tx), the enqueued row is invisible to the target consumer
+// until the outer tx commits, so the pre-commit in-process wake fired by
+// DurableMailbox.Send races ahead of visibility and finds nothing. The store
+// fires the registered wakes only after the tx commits, so consumers re-poll
+// against a now-visible row instead of waiting out a full poll interval.
+// Polling remains the cross-process and restart fallback.
+type MailboxWakeRegistrar interface {
+	// RegisterMailboxWake registers a callback fired after any enqueue
+	// commits inside an ExecTx, and returns a cancel function that
+	// deregisters it. A DurableMailbox registers its Wake on construction
+	// and calls the returned cancel on Close, so a stopped mailbox leaves
+	// no closure behind.
+	//
+	// The wake is COARSE: after a folded enqueue commits, every registered
+	// mailbox is woken, so a non-target mailbox does one empty re-poll.
+	// This deliberately trades a precise per-mailbox wake for not tracking
+	// which mailbox received the message -- the store keeps a flat list of
+	// wakes rather than a per-mailbox registry plus a per-transaction
+	// target set, which removes the registry's restart-clobber races. The
+	// empty re-poll is cheap and bounded; the poll ticker remains the
+	// durable fallback.
+	RegisterMailboxWake(wake func()) (cancel func())
 }
 
 // EnqueueParams contains parameters for enqueueing a mailbox message.

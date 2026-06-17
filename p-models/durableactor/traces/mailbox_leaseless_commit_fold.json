@@ -1,0 +1,37 @@
+{
+  "trace_id": "mailbox_leaseless_commit_fold",
+  "description": "Leaseless single-worker Read/Commit consume. The row is peeked as an empty-token delivery and committed via the by-ID fold (AckMessageByID + MarkProcessed in one tx), consuming it exactly once and marking it processed. A second by-ID commit of the same id is a fenced 0-row no-op (ErrLeaseLost, dedup mark untouched), so the leaseless path consumes exactly once just like the leased fence.",
+  "events": [
+    {
+      "op": "enqueue",
+      "id": "1",
+      "mailbox_id": "mb-1",
+      "available_at": 0,
+      "max_attempts": 3
+    },
+    {
+      "op": "peek",
+      "mailbox_id": "mb-1",
+      "expect_id": "1"
+    },
+    {
+      "op": "commit",
+      "id": "1",
+      "lease_token": "",
+      "expect_rows": 1,
+      "expect_processed": true
+    },
+    {
+      "op": "peek",
+      "mailbox_id": "mb-1",
+      "expect_id": ""
+    },
+    {
+      "op": "commit",
+      "id": "1",
+      "lease_token": "",
+      "expect_rows": 0,
+      "expect_processed": true
+    }
+  ]
+}

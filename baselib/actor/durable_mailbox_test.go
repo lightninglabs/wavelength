@@ -343,6 +343,83 @@ func TestDurableMailboxReceive(t *testing.T) {
 	require.Equal(t, []byte("test"), received.Payload.Val)
 }
 
+// TestDurableMailboxReceiveLeaselessNackBackoff verifies that when a leaseless
+// delivery's nack store write fails, the receive loop backs off for a poll
+// interval before re-peeking instead of tight-spinning. The failed nack leaves
+// the row physically unchanged and immediately re-eligible, and without the
+// backoff the loop would re-peek the same row in an unbounded CPU-bound tight
+// loop. We assert that the number of peeks over a fixed window stays bounded by
+// the poll cadence rather than growing without bound.
+func TestDurableMailboxReceiveLeaselessNackBackoff(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newDurableTestCodec()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const pollInterval = 25 * time.Millisecond
+
+	cfg := DefaultDurableMailboxConfig("test-mailbox", store, codec)
+	cfg.PollInterval = pollInterval
+	cfg.SingleWorkerLeaseless = true
+	mailbox := NewDurableMailbox[*durableTestMsg, int](ctx, cfg)
+
+	// Seed one eligible message directly so the peek path returns it.
+	msg := &durableTestMsg{
+		Value:   tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(7)),
+		Payload: tlv.NewPrimitiveRecord[tlv.TlvType2]([]byte("x")),
+	}
+	payload, err := codec.Encode(msg)
+	require.NoError(t, err)
+
+	store.messages["leaseless-msg"] = &LeasedMessage{
+		ID:          "leaseless-msg",
+		MailboxID:   "test-mailbox",
+		MessageType: msg.MessageType(),
+		Payload:     payload,
+		Attempts:    0,
+		MaxAttempts: 10,
+	}
+
+	// Make every leaseless nack store write fail while leaving the message
+	// peek-eligible, so each delivery is flagged mutationFailed and the
+	// loop must throttle before re-peeking the same unchanged row.
+	store.injectNackError = errors.New("database is locked")
+
+	receiveCtx, receiveCancel := context.WithTimeout(
+		ctx, 5*pollInterval,
+	)
+	defer receiveCancel()
+
+	deliveries := 0
+	for receivedEnv := range mailbox.Receive(receiveCtx) {
+		deliveries++
+
+		delivery, ok :=
+			receivedEnv.delivery.(*Delivery[*durableTestMsg, int])
+		require.True(t, ok)
+
+		// Nack fails against the wedged store, setting mutationFailed.
+		nackErr := delivery.Nack(
+			receiveCtx, errors.New("transient"), pollInterval,
+		)
+		require.Error(t, nackErr)
+		require.True(t, delivery.MutationFailed())
+	}
+
+	// Over a ~5 poll-interval window, a throttled loop peeks on the order
+	// of the poll count, not thousands of times. A generous ceiling still
+	// distinguishes bounded backoff from an unbounded tight spin.
+	peeks := store.peekCount.Load()
+	require.Less(
+		t, peeks, int64(50),
+		"receive loop tight-spun instead of backing off: %d peeks",
+		peeks,
+	)
+	require.Positive(t, deliveries)
+}
+
 // TestDurableMailboxReceiveContextCancelled tests that Receive respects
 // context.
 func TestDurableMailboxReceiveContextCancelled(t *testing.T) {
@@ -504,6 +581,139 @@ func TestDurableMailboxWakeSignal(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Did not receive message after wake signal")
 	}
+}
+
+// TestDurableMailboxRegistersMailboxWake verifies that NewDurableMailbox
+// registers its Wake with a store that implements MailboxWakeRegistrar, and
+// that firing the registered wake rouses the receive loop. This stands in for
+// the folded outbox-delivery path: the publisher's ExecTx enqueues into this
+// mailbox inside its write tx (so Send's pre-commit wake races ahead of the
+// row becoming visible), then fires the registered wake after commit. Without
+// it the consumer would idle until its poll interval.
+func TestDurableMailboxRegistersMailboxWake(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newDurableTestCodec()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// A long poll interval ensures only the registered wake can deliver in
+	// time, isolating the post-commit wake path from the poll fallback.
+	cfg := DefaultDurableMailboxConfig("wake-mailbox", store, codec)
+	cfg.PollInterval = time.Hour
+	mailbox := NewDurableMailbox[*durableTestMsg, int](ctx, cfg)
+
+	// The mailbox must have registered exactly one post-commit wake.
+	store.mu.Lock()
+	registered := len(store.mailboxWakes)
+	store.mu.Unlock()
+	require.Equal(
+		t, 1, registered, "mailbox did not register a wake callback",
+	)
+
+	received := make(chan *durableTestMsg, 1)
+	go func() {
+		for env := range mailbox.Receive(ctx) {
+			received <- env.message
+
+			return
+		}
+	}()
+
+	// Let the receive loop settle into its long poll wait.
+	time.Sleep(50 * time.Millisecond)
+
+	// Enqueue the row directly (bypassing Send's pre-commit wake) to model
+	// a row that only becomes visible at commit, then fire the registered
+	// post-commit wake the way the store does after ExecTx commits.
+	msg := &durableTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(7)),
+	}
+	payload, err := codec.Encode(msg)
+	require.NoError(t, err)
+
+	require.NoError(
+		t,
+		store.EnqueueMessage(
+			ctx, EnqueueParams{
+				ID:          "wake-msg",
+				MailboxID:   "wake-mailbox",
+				MessageType: msg.MessageType(),
+				Payload:     payload,
+				AvailableAt: time.Now().Add(-time.Minute),
+				MaxAttempts: 3,
+			},
+		),
+	)
+
+	store.fireMailboxWakes()
+
+	select {
+	case m := <-received:
+		require.Equal(t, uint64(7), m.Value.Val)
+
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal(
+			"registered mailbox wake did not rouse the receive " +
+				"loop",
+		)
+	}
+}
+
+// TestDurableMailboxWakeRestartNoAccumulation verifies that constructing a
+// fresh DurableMailbox for the same durable ID against a shared store (the
+// actor-restart pattern) does not accumulate stale wake closures: each
+// construction registers one wake and Close cancels it, so at any time the
+// store holds only the live mailboxes' wakes. Without the cancel-on-Close
+// contract, every restart would leave another inert closure that
+// notifyMailboxWake walks on each folded enqueue commit, an unbounded leak on
+// the feature's primary execution path.
+func TestDurableMailboxWakeRestartNoAccumulation(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newDurableTestCodec()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const mailboxID = "restart-mailbox"
+
+	// Simulate many actor restarts that each reuse the same durable ID and
+	// the same store. Each constructed mailbox registers, then Close
+	// cancels it, leaving the store with no live wake between restarts.
+	const restarts = 50
+	for i := 0; i < restarts; i++ {
+		cfg := DefaultDurableMailboxConfig(mailboxID, store, codec)
+		mailbox := NewDurableMailbox[*durableTestMsg, int](ctx, cfg)
+
+		// While live, exactly one wake is registered.
+		store.mu.Lock()
+		liveCount := len(store.mailboxWakes)
+		store.mu.Unlock()
+		require.Equal(
+			t, 1, liveCount,
+			"wake map grew beyond the single live mailbox",
+		)
+
+		mailbox.Close()
+
+		// After Close, the entry is gone entirely.
+		store.mu.Lock()
+		afterClose := len(store.mailboxWakes)
+		store.mu.Unlock()
+		require.Equal(
+			t, 0, afterClose,
+			"Close left a stale wake closure behind",
+		)
+	}
+
+	// The map must not have grown with the restart count.
+	store.mu.Lock()
+	final := len(store.mailboxWakes)
+	store.mu.Unlock()
+	require.Equal(t, 0, final,
+		"wake closures accumulated across restarts")
 }
 
 // TestDurableMailboxConcurrentSends tests concurrent send operations.

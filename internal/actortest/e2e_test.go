@@ -3,6 +3,7 @@ package actortest
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -31,7 +32,7 @@ type testHarness struct {
 	ctx context.Context //nolint:containedctx
 
 	cancel      context.CancelFunc
-	store       *actordelivery.Store
+	store       *actordelivery.TxAwareActorDeliveryStore
 	codec       *actor.MessageCodec
 	clock       *clock.TestClock
 	actorSystem *actor.ActorSystem
@@ -59,8 +60,13 @@ func newTestHarness(t *testing.T) *testHarness {
 	// Create a test clock for time manipulation.
 	testClock := clock.NewTestClock(time.Now())
 
-	// Create the actor delivery store.
-	store := actordelivery.NewStore(actorDB, testClock)
+	// Create the actor delivery store. The transaction-aware variant
+	// matches production wiring (darepod hands the OutboxPublisher a
+	// TxAwareDeliveryStore), so the publisher e2e tests exercise the
+	// folded Tell+CompleteOutbox single-transaction delivery path.
+	store := actordelivery.NewTxAwareActorDeliveryStore(
+		actorDB, sqlDB.BaseDB, testClock,
+	)
 
 	// Create the message codec with counter messages registered.
 	codec := NewCounterCodec()
@@ -406,6 +412,136 @@ func TestOutboxPublisher_DeliversToTarget(t *testing.T) {
 	})
 
 	// Wait for target to receive the increment via OutboxPublisher.
+	eventuallyWithOutboxPublish(
+		t, publisher, outboxDeliveryTimeout,
+		func() bool {
+			return targetBehavior.Count() == 25
+		},
+	)
+
+	require.Equal(t, int64(25), targetBehavior.Count())
+}
+
+// completeFailDeliveryStore wraps a transaction-scoped DeliveryStore and fails
+// CompleteOutbox on demand. It lets the rollback test force the folded
+// Tell+CompleteOutbox delivery transaction to fail AFTER the target enqueue
+// succeeded, which is the interesting atomicity window.
+type completeFailDeliveryStore struct {
+	actor.DeliveryStore
+
+	fail *atomic.Bool
+}
+
+// CompleteOutbox fails with an injected error while the flag is set, and
+// otherwise delegates to the wrapped transaction-scoped store.
+func (s *completeFailDeliveryStore) CompleteOutbox(ctx context.Context, id,
+	claimToken string) error {
+
+	if s.fail.Load() {
+		return errInjectedCompleteFailure
+	}
+
+	return s.DeliveryStore.CompleteOutbox(ctx, id, claimToken)
+}
+
+// errInjectedCompleteFailure is the sentinel injected by
+// completeFailDeliveryStore.
+var errInjectedCompleteFailure = errors.New("injected complete failure")
+
+// completeFailTxStore wraps the real TxAwareActorDeliveryStore so the
+// OutboxPublisher still detects transaction support, while the TxFunc receives
+// a transaction-scoped store whose CompleteOutbox can be forced to fail.
+type completeFailTxStore struct {
+	*actordelivery.TxAwareActorDeliveryStore
+
+	fail atomic.Bool
+}
+
+// ExecTx delegates to the real transactional executor but interposes the
+// failure-injecting store in front of the transaction-scoped DeliveryStore.
+func (s *completeFailTxStore) ExecTx(ctx context.Context, readOnly bool,
+	fn actor.TxFunc) error {
+
+	return s.TxAwareActorDeliveryStore.ExecTx(
+		ctx, readOnly,
+		func(txCtx context.Context, store actor.DeliveryStore) error {
+			return fn(txCtx, &completeFailDeliveryStore{
+				DeliveryStore: store,
+				fail:          &s.fail,
+			})
+		},
+	)
+}
+
+// TestOutboxPublisherAtomicDeliveryRollback verifies the folded delivery
+// transaction is atomic: when CompleteOutbox fails after a successful Tell,
+// the rollback must also undo the target mailbox enqueue, leaving the outbox
+// row claimed-but-pending so a later cycle redelivers exactly once.
+func TestOutboxPublisherAtomicDeliveryRollback(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+
+	sourceID := uniqueID("counter-src")
+	targetID := uniqueID("counter-tgt")
+
+	sourceActor, sourceBehavior := h.newDurableCounter(sourceID)
+	sourceActor.Start()
+	defer sourceActor.Stop()
+
+	targetActor, targetBehavior := h.newDurableCounter(targetID)
+	targetActor.Start()
+	defer targetActor.Stop()
+
+	// The publisher sees the failure-injecting wrapper, which still
+	// satisfies TxAwareDeliveryStore, so deliveries run on the folded
+	// single-transaction path.
+	failStore := &completeFailTxStore{
+		TxAwareActorDeliveryStore: h.store,
+	}
+	failStore.fail.Store(true)
+
+	publisherCfg := actor.DefaultOutboxPublisherConfig(
+		failStore, h.codec, h.actorSystem,
+	)
+
+	// Manual publish cycles only: a long poll interval plus never calling
+	// Start keeps every claim attempt under test control.
+	publisherCfg.PollInterval = time.Hour
+	publisher := actor.NewOutboxPublisher(publisherCfg)
+
+	// Source forwards to target, parking one message in the outbox.
+	payload, err := h.codec.Encode(&IncrementMsg{Amount: 25})
+	require.NoError(t, err)
+
+	err = sourceActor.Ref().Tell(h.ctx, &ForwardMsg{
+		Target:  targetID,
+		MsgType: IncrementMsgType,
+		Payload: payload,
+	})
+	require.NoError(t, err)
+
+	eventually(t, outboxForwardProcessingTimeout, func() bool {
+		return sourceBehavior.ForwardCount() == 1
+	})
+
+	// First publish cycle: the Tell enqueues into the target mailbox
+	// inside the delivery transaction, then the injected CompleteOutbox
+	// failure rolls the whole transaction back.
+	publisher.PublishPending()
+
+	// The rollback must have erased the target enqueue: a leaked row
+	// would be drained by the running target actor and bump its counter.
+	peeked, err := h.store.PeekNextMessage(h.ctx, targetID)
+	require.NoError(t, err)
+	require.Nil(t, peeked, "enqueue leaked from rolled-back delivery tx")
+	require.Equal(t, int64(0), targetBehavior.Count())
+
+	// Heal the store and expire the claim so the row is reclaimable.
+	failStore.fail.Store(false)
+	h.clock.SetTime(h.clock.Now().Add(time.Minute))
+
+	// The retry cycle must deliver exactly once.
 	eventuallyWithOutboxPublish(
 		t, publisher, outboxDeliveryTimeout,
 		func() bool {

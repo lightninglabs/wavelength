@@ -789,6 +789,13 @@ func (s *memCheckpointStore) LeaseNextMessage(context.Context, string, string,
 	return nil, nil
 }
 
+// PeekNextMessage is unused in these tests.
+func (s *memCheckpointStore) PeekNextMessage(context.Context, string) (
+	*actor.LeasedMessage, error) {
+
+	return nil, nil
+}
+
 // AckMessage is unused in these tests.
 func (s *memCheckpointStore) AckMessage(context.Context, string, string) (int64,
 	error) {
@@ -796,8 +803,22 @@ func (s *memCheckpointStore) AckMessage(context.Context, string, string) (int64,
 	return 1, nil
 }
 
+// AckMessageByID is unused in these tests.
+func (s *memCheckpointStore) AckMessageByID(context.Context, string) (int64,
+	error) {
+
+	return 1, nil
+}
+
 // NackMessage is unused in these tests.
 func (s *memCheckpointStore) NackMessage(context.Context, string, string,
+	time.Duration) (int64, error) {
+
+	return 1, nil
+}
+
+// NackMessageByID is unused in these tests.
+func (s *memCheckpointStore) NackMessageByID(context.Context, string,
 	time.Duration) (int64, error) {
 
 	return 1, nil

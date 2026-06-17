@@ -1,6 +1,7 @@
 package actor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -9,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
@@ -236,6 +239,86 @@ func TestOutboxPublisherDelivery(t *testing.T) {
 
 		return ok && msg.Status == "completed"
 	}, 500*time.Millisecond, 10*time.Millisecond)
+}
+
+var errPostDeliveryTxFailure = errors.New("post-delivery tx failure")
+
+type postDeliveryFailTxStore struct {
+	*mockDeliveryStore
+
+	execCalled atomic.Bool
+}
+
+func (s *postDeliveryFailTxStore) ExecTx(ctx context.Context, readOnly bool,
+	fn TxFunc) error {
+
+	s.execCalled.Store(true)
+
+	if err := fn(ctx, s.mockDeliveryStore); err != nil {
+		return err
+	}
+
+	return errPostDeliveryTxFailure
+}
+
+// TestOutboxPublisherLogsExecTxFailure verifies commit-level transaction
+// failures are visible even when the inner delivery closure completed
+// successfully and therefore emitted no delivery-specific warning.
+func TestOutboxPublisherLogsExecTxFailure(t *testing.T) {
+	t.Parallel()
+
+	baseStore := newMockDeliveryStore()
+	store := &postDeliveryFailTxStore{
+		mockDeliveryStore: baseStore,
+	}
+	codec := newOutboxTestCodec()
+	system := newMockSystem()
+
+	msg := &outboxTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+	}
+	payload, err := codec.Encode(msg)
+	require.NoError(t, err)
+
+	baseStore.mu.Lock()
+	baseStore.outbox["outbox-tx-fail"] = &OutboxMessage{
+		ID:            "outbox-tx-fail",
+		SourceActorID: "source-actor",
+		TargetActorID: "target-actor",
+		MessageType:   msg.MessageType(),
+		Payload:       payload,
+		Status:        "pending",
+	}
+	baseStore.mu.Unlock()
+
+	cfg := DefaultOutboxPublisherConfig(store, codec, system)
+	cfg.PollInterval = time.Hour
+	publisher := NewOutboxPublisher(cfg)
+
+	var logBuf bytes.Buffer
+	handler := btclog.NewDefaultHandler(&logBuf)
+	log := btclog.NewSLogger(handler.SubSystem("TEST"))
+	log.SetLevel(btclog.LevelWarn)
+	publisher.ctx = build.ContextWithLogger(publisher.ctx, log)
+
+	publisher.PublishPending()
+
+	require.True(t, store.execCalled.Load())
+	require.Contains(
+		t, logBuf.String(),
+		"Failed to execute outbox delivery transaction",
+	)
+	require.Contains(t, logBuf.String(), errPostDeliveryTxFailure.Error())
+	require.Contains(t, logBuf.String(), "outbox-tx-fail")
+
+	system.mu.Lock()
+	require.Len(t, system.tellCalls, 1)
+	system.mu.Unlock()
+
+	baseStore.mu.Lock()
+	status := baseStore.outbox["outbox-tx-fail"].Status
+	baseStore.mu.Unlock()
+	require.Equal(t, "completed", status)
 }
 
 // TestOutboxPublisherDecodeError tests poison pill handling.

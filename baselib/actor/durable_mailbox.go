@@ -94,6 +94,34 @@ type DurableMailboxConfig struct {
 	// poll interval. It is purely a latency optimization: correctness never
 	// depends on a wake because the poll ticker is the fallback.
 	WakeBuffer int
+
+	// SingleWorkerLeaseless enables the leaseless peek consume path. When
+	// set, Receive claims the next message with a READ-only PeekNextMessage
+	// instead of the write-transaction LeaseNextMessage, and yields a
+	// delivery with an EMPTY lease token. The empty token routes ack/nack
+	// through the unfenced by-ID store operations. This eliminates one
+	// write transaction per consumed message. It is sound ONLY when the
+	// actor runs exactly one worker (no competing consumer to fence
+	// against), so the owning DurableActor sets it strictly when NumWorkers
+	// == 1. A crash between peek and the consuming commit leaves the
+	// message untouched (it was never written), so it is simply re-peeked
+	// on restart -- identical at-least-once behavior to a lease that
+	// expires.
+	//
+	// Because the peek is a pure READ, attempts is bumped only on the nack
+	// (failure) path, never at claim. A message that returns an error nacks
+	// and climbs toward dead-lettering normally; but a message that crashes
+	// the worker PROCESS on every attempt skips the nack each time and so
+	// re-peeks indefinitely without ever dead-lettering. This is a
+	// deliberate tradeoff, NOT a gap to "fix" by bumping attempts at claim:
+	// bumping at claim turns every poll -- including the empty polls that
+	// dominate under contention -- back into a writer-lock-grabbing write
+	// transaction, which is the exact cross-actor serialization the
+	// leaseless read exists to avoid. The single-worker actors that use
+	// this path carry their own higher-level retry/backoff and treat the
+	// dead-letter table as a manual sink, so indefinite redelivery of a
+	// process-poisoning message is preferable to silently dropping it.
+	SingleWorkerLeaseless bool
 }
 
 // DefaultDurableMailboxConfig returns a config with sensible defaults.
@@ -129,6 +157,11 @@ type DurableMailbox[M TLVMessage, R any] struct {
 	// wake signals the receive loop to poll immediately.
 	wake chan struct{}
 
+	// cancelWake deregisters this mailbox's post-commit wake from a
+	// MailboxWakeRegistrar store. It is nil when the store does not support
+	// wakes. Close calls it so a stopped mailbox leaves no closure behind.
+	cancelWake func()
+
 	// actorCtx is the actor's lifecycle context.
 	actorCtx context.Context
 
@@ -150,12 +183,46 @@ func NewDurableMailbox[M TLVMessage, R any](
 		wakeBuffer = 1
 	}
 
-	return &DurableMailbox[M, R]{
+	m := &DurableMailbox[M, R]{
 		cfg:             cfg,
 		clock:           cfg.Clock.UnwrapOr(clock.NewDefaultClock()),
 		wake:            make(chan struct{}, wakeBuffer),
 		actorCtx:        actorCtx,
 		promiseRegistry: make(map[string]any),
+	}
+
+	// Register a post-commit wake for this mailbox when the store supports
+	// it. The folded outbox-delivery path enqueues into this mailbox inside
+	// the publisher's write transaction, so the pre-commit wake fired by
+	// Send races ahead of the row becoming visible. The store fires the
+	// registered wakes only after the tx commits, restoring same-process
+	// delivery latency that would otherwise wait out a full poll interval.
+	// The wake is coarse (every registered mailbox is roused), so an idle
+	// mailbox may do one empty re-poll per unrelated folded enqueue.
+	if registrar, ok := cfg.Store.(MailboxWakeRegistrar); ok {
+		m.cancelWake = registrar.RegisterMailboxWake(m.Wake)
+	}
+
+	return m
+}
+
+// Wake nudges the receive loop to poll immediately. The signal is best-effort
+// because the poll ticker remains the durability fallback; a dropped wake (the
+// channel already holds a pending signal) only defers delivery to the next
+// loop iteration, never loses it.
+func (m *DurableMailbox[M, R]) Wake() {
+	// Hold the close lock so we never send on a closed wake channel: Close
+	// takes the write lock before closing it.
+	m.closeMu.RLock()
+	defer m.closeMu.RUnlock()
+
+	if m.closed.Load() {
+		return
+	}
+
+	select {
+	case m.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -259,7 +326,13 @@ func (m *DurableMailbox[M, R]) Send(ctx context.Context,
 		return fmt.Errorf("enqueue mailbox message: %w", err)
 	}
 
-	// Signal the receive loop to wake up.
+	// Signal the receive loop to wake up. This is the immediate-visibility
+	// path for non-transactional enqueues. When Send runs inside an ambient
+	// tx (the folded outbox-delivery path), the row is not yet visible, so
+	// this wake is a harmless empty poll and the store's post-commit
+	// RegisterMailboxWake callback is what actually rouses the consumer.
+	// We already hold closeMu.RLock here, so signal the channel directly
+	// rather than re-entering Wake and its RLock.
 	select {
 	case m.wake <- struct{}{}:
 	default:
@@ -318,12 +391,27 @@ func (m *DurableMailbox[M, R]) Receive(
 				return
 			}
 
-			// Try to lease a message.
-			leaseToken := generateID()
-			leased, err := m.cfg.Store.LeaseNextMessage(
-				ctx, m.cfg.MailboxID, leaseToken,
-				m.cfg.LeaseDuration,
+			// Claim the next message. The single-worker leaseless
+			// path peeks with a read-only query and takes no lease
+			// (the yielded delivery carries an empty lease token,
+			// which routes ack/nack through the unfenced by-ID
+			// store ops). The default path leases under a write
+			// transaction so a competing consumer is fenced out.
+			var (
+				leased *LeasedMessage
+				err    error
 			)
+			if m.cfg.SingleWorkerLeaseless {
+				leased, err = m.cfg.Store.PeekNextMessage(
+					ctx, m.cfg.MailboxID,
+				)
+			} else {
+				leaseToken := generateID()
+				leased, err = m.cfg.Store.LeaseNextMessage(
+					ctx, m.cfg.MailboxID, leaseToken,
+					m.cfg.LeaseDuration,
+				)
+			}
 
 			if err != nil {
 				// During teardown, the durable store is closed
@@ -468,6 +556,30 @@ func (m *DurableMailbox[M, R]) Receive(
 			if !yield(env) {
 				return
 			}
+
+			// A leaseless delivery whose nack write failed left
+			// its row physically unchanged and immediately
+			// re-eligible. Unlike the leased path, there is no
+			// lease fence whose expiry throttles the next claim,
+			// so re-peeking right away would tight-spin against a
+			// wedged DB. Back off for a poll interval (or until a
+			// wake) before the next claim, matching the implicit
+			// lease-expiry backoff of the fenced path.
+			if delivery.MutationFailed() {
+				select {
+				case <-ticker.C:
+					continue
+
+				case <-m.wake:
+					continue
+
+				case <-ctx.Done():
+					return
+
+				case <-m.actorCtx.Done():
+					return
+				}
+			}
 		}
 	}
 }
@@ -480,7 +592,19 @@ func (m *DurableMailbox[M, R]) Receive(
 func (m *DurableMailbox[M, R]) handlePoisonMessage(ctx context.Context,
 	leased *LeasedMessage, reason string) {
 
-	if leased.Attempts >= leased.MaxAttempts {
+	// A peeked (leaseless) message carries an empty lease token and was not
+	// attempts-bumped at claim time, so the in-flight attempt is counted as
+	// Attempts + 1 to match the leased dead-letter boundary. Otherwise a
+	// poison message would reach attempts == max_attempts via the by-ID
+	// nack below and become peek-ineligible before it could be
+	// dead-lettered.
+	leaseless := leased.LeaseToken == ""
+	effectiveAttempts := leased.Attempts
+	if leaseless {
+		effectiveAttempts++
+	}
+
+	if effectiveAttempts >= leased.MaxAttempts {
 		// Exhausted attempts -- dead-letter the message so it
 		// doesn't stay stranded in the mailbox forever.
 		dlReason := fmt.Sprintf("poison message (attempts %d/%d): %s",
@@ -522,9 +646,11 @@ func (m *DurableMailbox[M, R]) handlePoisonMessage(ctx context.Context,
 		return
 	}
 
-	// Not yet exhausted -- nack for retry with backoff.
-	_, _ = m.cfg.Store.NackMessage(
-		ctx, leased.ID, leased.LeaseToken, 60*time.Second,
+	// Not yet exhausted -- nack for retry with backoff. nackMessage routes
+	// the leaseless (empty-token) case to the by-ID nack, which increments
+	// attempts so the poison message still climbs toward dead-lettering.
+	_, _ = nackMessage(
+		ctx, m.cfg.Store, leased.ID, leased.LeaseToken, 60*time.Second,
 	)
 }
 
@@ -536,6 +662,14 @@ func (m *DurableMailbox[M, R]) Close() {
 
 	if m.closed.CompareAndSwap(false, true) {
 		close(m.wake)
+
+		// Remove our post-commit wake from the store so a stopped
+		// mailbox leaves no closure behind. A stable durable ID reused
+		// across restarts would otherwise leave an inert closure that
+		// notifyMailboxWake walks on each folded enqueue commit.
+		if m.cancelWake != nil {
+			m.cancelWake()
+		}
 	}
 }
 

@@ -1,0 +1,54 @@
+{
+  "trace_id": "mailbox_leaseless_peek_stale_lease",
+  "description": "A row with stale expired lease metadata is peeked as an empty-token leaseless delivery; by-ID nack clears metadata and increments attempts.",
+  "events": [
+    {
+      "op": "enqueue",
+      "id": "msg-1",
+      "mailbox_id": "actor-A",
+      "correlation_key": "session-1",
+      "payload": "payload-1",
+      "max_attempts": 3
+    },
+    {
+      "op": "lease",
+      "mailbox_id": "actor-A",
+      "lease_token": "stale-lease",
+      "lease_duration": 5,
+      "expect_id": "msg-1",
+      "expect_payload": "payload-1",
+      "expect_attempts": 1,
+      "expect_token": "stale-lease"
+    },
+    {
+      "op": "peek",
+      "mailbox_id": "actor-A",
+      "now": 6,
+      "expect_id": "msg-1",
+      "expect_payload": "payload-1",
+      "expect_attempts": 1
+    },
+    {
+      "op": "nack_by_id",
+      "id": "msg-1",
+      "retry_after": 1
+    },
+    {
+      "op": "peek",
+      "mailbox_id": "actor-A",
+      "now": 7,
+      "expect_id": "msg-1",
+      "expect_payload": "payload-1",
+      "expect_attempts": 2
+    },
+    {
+      "op": "ack_by_id",
+      "id": "msg-1"
+    },
+    {
+      "op": "peek",
+      "mailbox_id": "actor-A",
+      "expect_id": ""
+    }
+  ]
+}

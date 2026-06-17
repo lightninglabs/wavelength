@@ -57,6 +57,8 @@ type MailboxTraceEvent struct {
 	MaxAttempts    int    `json:"max_attempts,omitempty"`
 	Priority       int    `json:"priority,omitempty"`
 	ExpectRows     *int64 `json:"expect_rows,omitempty"`
+	ExpectAttempts *int   `json:"expect_attempts,omitempty"`
+	ExpectToken    string `json:"expect_token,omitempty"`
 
 	// ExpectDuplicate marks an enqueue op whose id already exists.
 	// Production EnqueueMessage is idempotent by durable id, so a duplicate
@@ -154,11 +156,20 @@ func ReplayMailboxTrace(t *testing.T, trace *MailboxTrace) {
 		case "lease":
 			replayLease(t, store, event)
 
+		case "peek":
+			replayPeek(t, store, event)
+
 		case "nack":
 			replayNack(t, store, event)
 
+		case "nack_by_id":
+			replayNackByID(t, store, event)
+
 		case "ack":
 			replayAck(t, store, event)
+
+		case "ack_by_id":
+			replayAckByID(t, store, event)
 
 		case "commit":
 			replayCommit(t, store, event)
@@ -259,6 +270,63 @@ func replayLease(t *testing.T, store actor.TxAwareDeliveryStore,
 		t.Fatalf("expected leased payload %q, got %q",
 			event.ExpectPayload, string(leased.Payload))
 	}
+
+	if event.ExpectAttempts != nil &&
+		leased.Attempts != *event.ExpectAttempts {
+
+		t.Fatalf("expected leased attempts %d, got %d",
+			*event.ExpectAttempts, leased.Attempts)
+	}
+
+	if event.ExpectToken != "" && leased.LeaseToken != event.ExpectToken {
+		t.Fatalf("expected lease token %q, got %q", event.ExpectToken,
+			leased.LeaseToken)
+	}
+}
+
+func replayPeek(t *testing.T, store actor.TxAwareDeliveryStore,
+	event MailboxTraceEvent) {
+
+	t.Helper()
+
+	peeked, err := store.PeekNextMessage(t.Context(), event.MailboxID)
+	requireNoError(t, err)
+
+	if event.ExpectID == "" {
+		if peeked != nil {
+			t.Fatalf("expected no peeked row, got %s", peeked.ID)
+		}
+
+		return
+	}
+
+	if peeked == nil {
+		t.Fatalf("expected peeked row %s, got nil", event.ExpectID)
+	}
+
+	if peeked.ID != event.ExpectID {
+		t.Fatalf("expected peeked row %s, got %s", event.ExpectID,
+			peeked.ID)
+	}
+
+	if event.ExpectPayload != "" &&
+		string(peeked.Payload) != event.ExpectPayload {
+
+		t.Fatalf("expected peeked payload %q, got %q",
+			event.ExpectPayload, string(peeked.Payload))
+	}
+
+	if event.ExpectAttempts != nil &&
+		peeked.Attempts != *event.ExpectAttempts {
+
+		t.Fatalf("expected peeked attempts %d, got %d",
+			*event.ExpectAttempts, peeked.Attempts)
+	}
+
+	if peeked.LeaseToken != event.ExpectToken {
+		t.Fatalf("expected peek token %q, got %q", event.ExpectToken,
+			peeked.LeaseToken)
+	}
 }
 
 func replayNack(t *testing.T, store actor.TxAwareDeliveryStore,
@@ -274,6 +342,19 @@ func replayNack(t *testing.T, store actor.TxAwareDeliveryStore,
 	requireExpectedRows(t, rows, event, "nack")
 }
 
+func replayNackByID(t *testing.T, store actor.TxAwareDeliveryStore,
+	event MailboxTraceEvent) {
+
+	t.Helper()
+
+	rows, err := store.NackMessageByID(
+		t.Context(), event.ID,
+		time.Duration(event.RetryAfter)*time.Second,
+	)
+	requireNoError(t, err)
+	requireExpectedRows(t, rows, event, "nack_by_id")
+}
+
 func replayAck(t *testing.T, store actor.TxAwareDeliveryStore,
 	event MailboxTraceEvent) {
 
@@ -286,11 +367,26 @@ func replayAck(t *testing.T, store actor.TxAwareDeliveryStore,
 	requireExpectedRows(t, rows, event, "ack")
 }
 
+func replayAckByID(t *testing.T, store actor.TxAwareDeliveryStore,
+	event MailboxTraceEvent) {
+
+	t.Helper()
+
+	rows, err := store.AckMessageByID(t.Context(), event.ID)
+	requireNoError(t, err)
+	requireExpectedRows(t, rows, event, "ack_by_id")
+}
+
 // replayCommit models the durable actor's Read/Commit consume step against the
 // real store, mirroring execCore.commit in baselib/actor: inside one writer
-// transaction it fence-acks the row (DELETE ... WHERE id AND lease_token) and,
-// only when that ack consumed a row, records the dedup mark. A zero-row ack
-// means the lease was reclaimed mid-IO, so the transaction is rolled back with
+// transaction it acks the row and, only when that ack consumed a row, records
+// the dedup mark. The ack op is chosen by lease token exactly as production
+// ackMessage routes it -- a leased delivery acks under its lease fence
+// (DELETE ... WHERE id AND lease_token) while a leaseless (empty-token,
+// single-worker peek) delivery acks by ID (DELETE ... WHERE id) -- so the
+// bridge exercises both halves of the fold. A zero-row ack means the row is
+// already gone (the lease was reclaimed mid-IO, or, on the leaseless path, the
+// row was already consumed), so the transaction is rolled back with
 // ErrLeaseLost and nothing (ack or dedup mark) is applied. This keeps the P
 // commit-fence model tied to the SQL exactly-once mechanism.
 func replayCommit(t *testing.T, store actor.TxAwareDeliveryStore,
@@ -303,9 +399,15 @@ func replayCommit(t *testing.T, store actor.TxAwareDeliveryStore,
 		t.Context(), false,
 		func(txCtx context.Context, s actor.DeliveryStore) error {
 			var ackErr error
-			rows, ackErr = s.AckMessage(
-				txCtx, event.ID, event.LeaseToken,
-			)
+			if event.LeaseToken == "" {
+				rows, ackErr = s.AckMessageByID(
+					txCtx, event.ID,
+				)
+			} else {
+				rows, ackErr = s.AckMessage(
+					txCtx, event.ID, event.LeaseToken,
+				)
+			}
 			if ackErr != nil {
 				return ackErr
 			}

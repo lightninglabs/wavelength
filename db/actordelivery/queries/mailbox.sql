@@ -88,11 +88,80 @@ WHERE mailbox_messages.id = (
 )
 RETURNING *;
 
+-- name: PeekNextMailboxMessage :one
+-- Read-only claim of the next available message WITHOUT taking a lease.
+-- This is the leaseless fast path for single-worker (NumWorkers == 1) actors:
+-- with no competing consumer, the lease_token's only purpose -- fencing the
+-- ack against another worker -- is unnecessary, so the extra write transaction
+-- that LeaseNextMailboxMessage performs (set lease_token/lease_until, bump
+-- attempts) is pure overhead. Peek runs as a pure SELECT, so a crash between
+-- peek and the consuming Commit leaves the message untouched and it is simply
+-- re-peeked on restart (at-least-once preserved, identical to today's
+-- lease-expiry redelivery).
+--
+-- The eligibility predicate and ORDER BY mirror LeaseNextMailboxMessage's inner
+-- SELECT EXACTLY so the leaseless path observes the same per-correlation-key
+-- FIFO and priority/available_at/created_at ordering. See that query for the
+-- full rationale on the correlation-key anti-join and the m2.attempts <
+-- m2.max_attempts predicate.
+--
+-- Because peek takes no lease, attempts is NOT incremented here. The store
+-- adapter maps the returned row to an empty-token delivery even if the
+-- persisted row has stale metadata from an expired lease. That empty token is
+-- part of the framework contract: it routes the actor layer to the by-ID
+-- ack/nack path. The single-worker consume path increments attempts on its
+-- failure (nack) path via NackMailboxMessageByID so a repeatedly-failing
+-- message still climbs to max_attempts and dead-letters.
+SELECT m.* FROM mailbox_messages m
+WHERE m.mailbox_id = $1
+  AND m.available_at <= $2
+  AND (m.lease_until IS NULL OR m.lease_until < $2)
+  AND m.attempts < m.max_attempts
+  AND (
+      m.correlation_key IS NULL
+      OR NOT EXISTS (
+          SELECT 1 FROM mailbox_messages m2
+          WHERE m2.mailbox_id = m.mailbox_id
+            AND m2.correlation_key = m.correlation_key
+            AND m2.id < m.id
+            AND m2.attempts < m2.max_attempts
+      )
+  )
+ORDER BY m.priority DESC, m.available_at ASC, m.created_at ASC
+LIMIT 1;
+
 -- name: AckMailboxMessage :execrows
 -- Acknowledge successful processing. Deletes the message.
 -- Validates lease_token to prevent stale acks.
 DELETE FROM mailbox_messages
 WHERE id = $1 AND lease_token = $2;
+
+-- name: AckMailboxMessageByID :execrows
+-- Unfenced acknowledgment used by the leaseless single-worker consume path.
+-- Deletes the message by ID without validating a lease_token, because a
+-- single-worker actor has no competing consumer to fence against. Folded into
+-- the behavior's Commit transaction, so a crash before commit leaves the row
+-- intact for re-peek. MUST NOT be used by the multi-worker (NumWorkers > 1)
+-- path, which relies on lease_token fencing via AckMailboxMessage.
+DELETE FROM mailbox_messages
+WHERE id = $1;
+
+-- name: NackMailboxMessageByID :execrows
+-- Unfenced redelivery release for the leaseless single-worker consume path.
+-- Sets a new available_at and increments attempts. The attempts bump is
+-- essential: the leaseless peek does not increment attempts (unlike a lease),
+-- so the failure path must do it here, otherwise a repeatedly-failing message
+-- would never climb to max_attempts and dead-letter. No lease_token clause,
+-- because a single-worker actor has no competing consumer to fence against.
+-- Any stale expired lease metadata is cleared so the persisted row matches the
+-- leaseless state machine after a retry decision.
+UPDATE mailbox_messages
+SET
+    lease_token = NULL,
+    lease_until = NULL,
+    available_at = $2,
+    attempts = attempts + 1
+WHERE id = $1;
 
 -- name: NackMailboxMessage :execrows
 -- Release message for redelivery after retry delay.

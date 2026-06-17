@@ -23,8 +23,10 @@ type (
 	EnqueueMailboxParams   = adsqlc.EnqueueMailboxMessageParams
 	EnqueueOutboxParams    = adsqlc.EnqueueOutboxMessageParams
 	LeaseMailboxParams     = adsqlc.LeaseNextMailboxMessageParams
+	PeekMailboxParams      = adsqlc.PeekNextMailboxMessageParams
 	AckMailboxParams       = adsqlc.AckMailboxMessageParams
 	NackMailboxParams      = adsqlc.NackMailboxMessageParams
+	NackMailboxByIDParams  = adsqlc.NackMailboxMessageByIDParams
 	ExtendMailboxParams    = adsqlc.ExtendMailboxLeaseParams
 	InsertAskResultParams  = adsqlc.InsertAskResultParams
 	ClaimOutboxBatchParams = adsqlc.ClaimOutboxBatchParams
@@ -52,11 +54,19 @@ type ActorDeliveryQueries interface {
 	LeaseNextMailboxMessage(ctx context.Context,
 		arg LeaseMailboxParams) (MailboxMsgRow, error)
 
+	PeekNextMailboxMessage(ctx context.Context,
+		arg PeekMailboxParams) (MailboxMsgRow, error)
+
 	AckMailboxMessage(ctx context.Context,
 		arg AckMailboxParams) (int64, error)
 
+	AckMailboxMessageByID(ctx context.Context, id string) (int64, error)
+
 	NackMailboxMessage(ctx context.Context,
 		arg NackMailboxParams) (int64, error)
+
+	NackMailboxMessageByID(ctx context.Context,
+		arg NackMailboxByIDParams) (int64, error)
 
 	ExtendMailboxLease(ctx context.Context,
 		arg ExtendMailboxParams) (int64, error)
@@ -131,6 +141,20 @@ type Store struct {
 
 	outboxWakeMu sync.Mutex
 	outboxWakes  []func()
+
+	mailboxWakeMu     sync.Mutex
+	mailboxWakeNextID uint64
+
+	// mailboxWakes holds the live post-commit mailbox wakes, keyed by a
+	// unique registration handle (NOT a mailbox ID). The wake is coarse:
+	// notifyMailboxWake fires every entry after any folded enqueue commits,
+	// so the store never needs to know which mailbox received the message.
+	// Keying by an opaque handle (rather than mailbox ID) means a restart
+	// that reuses a durable mailbox ID gets a fresh entry instead of
+	// clobbering a still-live one, and the cancel returned by
+	// RegisterMailboxWake deletes exactly that entry, so a stopped mailbox
+	// leaves nothing behind.
+	mailboxWakes map[uint64]func()
 }
 
 // NewStore creates a new actor delivery store using the
@@ -140,8 +164,9 @@ func NewStore(
 ) *Store {
 
 	return &Store{
-		db:    db,
-		clock: clock,
+		db:           db,
+		clock:        clock,
+		mailboxWakes: make(map[uint64]func()),
 	}
 }
 
@@ -152,7 +177,7 @@ func (s *Store) EnqueueMessage(
 
 	writeTxOpts := db.WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts,
+	err := s.db.ExecTx(ctx, writeTxOpts,
 		func(q ActorDeliveryQueries) error {
 			createdAt := s.clock.Now().Unix()
 
@@ -182,6 +207,20 @@ func (s *Store) EnqueueMessage(
 				},
 			)
 		})
+	if err != nil {
+		return err
+	}
+
+	// When this enqueue joined an ambient ExecTx transaction (the folded
+	// outbox-delivery path, where the target actor's store enqueues through
+	// the shared tx via TransactionExecutor.ExecTx), mark the transaction's
+	// enqueue flag so ExecTx fires its post-commit coarse mailbox wake. The
+	// tx-scoped TxActorDeliveryStore marks the same flag directly; this
+	// covers the join path that bypasses it. Outside an ExecTx this is a
+	// no-op.
+	noteMailboxEnqueued(ctx)
+
+	return nil
 }
 
 // LeaseNextMessage atomically claims the next available message for processing.
@@ -246,6 +285,76 @@ func (s *Store) LeaseNextMessage(ctx context.Context, mailboxID string,
 	return result, err
 }
 
+// leasedMessageFromRow maps a SQLC mailbox row to an actor.LeasedMessage.
+func leasedMessageFromRow(msg MailboxMsgRow) *actor.LeasedMessage {
+	return &actor.LeasedMessage{
+		ID:              msg.ID,
+		MailboxID:       msg.MailboxID,
+		MessageType:     msg.MessageType,
+		Payload:         msg.Payload,
+		PromiseID:       fromNullString(msg.PromiseID),
+		CallbackActorID: fromNullString(msg.CallbackActorID),
+		CorrelationID:   fromNullString(msg.CorrelationID),
+		Priority:        int(msg.Priority),
+		LeaseToken:      fromNullString(msg.LeaseToken),
+		LeaseUntil:      fromNullInt64Time(msg.LeaseUntil),
+		Attempts:        int(msg.Attempts),
+		MaxAttempts:     int(msg.MaxAttempts),
+		CreatedAt:       time.Unix(msg.CreatedAt, 0),
+	}
+}
+
+// leaselessMessageFromRow maps a SQLC mailbox row to a peeked delivery. A
+// peeked row may still carry stale, expired lease metadata from an older leased
+// claim; the actor-layer contract for PeekNextMessage is always an empty token,
+// which routes ack/nack to the by-ID leaseless operations.
+func leaselessMessageFromRow(msg MailboxMsgRow) *actor.LeasedMessage {
+	leased := leasedMessageFromRow(msg)
+	leased.LeaseToken = ""
+	leased.LeaseUntil = time.Time{}
+
+	return leased
+}
+
+// PeekNextMessage claims the next available message with a read-only query and
+// takes no lease. The returned LeasedMessage carries an empty LeaseToken, which
+// signals the single-worker consume path to ack/nack via the unfenced by-ID
+// operations. It runs under a read transaction (no fsync), eliminating the
+// write transaction that LeaseNextMessage performs.
+func (s *Store) PeekNextMessage(ctx context.Context, mailboxID string) (
+	*actor.LeasedMessage, error) {
+
+	readTxOpts := db.ReadTxOption()
+
+	var result *actor.LeasedMessage
+
+	err := s.db.ExecTx(ctx, readTxOpts,
+		func(q ActorDeliveryQueries) error {
+			now := s.clock.Now()
+
+			msg, err := q.PeekNextMailboxMessage(
+				ctx,
+				PeekMailboxParams{
+					MailboxID:   mailboxID,
+					AvailableAt: now.Unix(),
+				},
+			)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil
+				}
+
+				return err
+			}
+
+			result = leaselessMessageFromRow(msg)
+
+			return nil
+		})
+
+	return result, err
+}
+
 // AckMessage acknowledges successful processing of a message.
 func (s *Store) AckMessage(ctx context.Context, id, leaseToken string) (int64,
 	error) {
@@ -263,6 +372,28 @@ func (s *Store) AckMessage(ctx context.Context, id, leaseToken string) (int64,
 				ID:         id,
 				LeaseToken: toNullString(leaseToken),
 			})
+
+			return err
+		},
+	)
+
+	return rows, err
+}
+
+// AckMessageByID acknowledges successful processing of a message by ID without
+// validating a lease token. It is the leaseless single-worker counterpart to
+// AckMessage.
+func (s *Store) AckMessageByID(ctx context.Context, id string) (int64, error) {
+	writeTxOpts := db.WriteTxOption()
+
+	var rows int64
+
+	err := s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			var err error
+			rows, err = q.AckMailboxMessageByID(ctx, id)
 
 			return err
 		},
@@ -291,6 +422,39 @@ func (s *Store) NackMessage(ctx context.Context, id, leaseToken string,
 				LeaseToken:  toNullString(leaseToken),
 				AvailableAt: availableAt.Unix(),
 			})
+
+			return err
+		},
+	)
+
+	return rows, err
+}
+
+// NackMessageByID releases a message for redelivery by ID without validating a
+// lease token, and increments attempts. It is the leaseless single-worker
+// counterpart to NackMessage. The attempts bump preserves dead-lettering on
+// max attempts because the leaseless peek does not increment attempts.
+func (s *Store) NackMessageByID(ctx context.Context, id string,
+	retryAfter time.Duration) (int64, error) {
+
+	writeTxOpts := db.WriteTxOption()
+
+	var rows int64
+
+	err := s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			availableAt := s.clock.Now().Add(retryAfter)
+
+			var err error
+			rows, err = q.NackMailboxMessageByID(
+				ctx,
+				NackMailboxByIDParams{
+					ID:          id,
+					AvailableAt: availableAt.Unix(),
+				},
+			)
 
 			return err
 		},
@@ -499,6 +663,47 @@ func (s *Store) notifyOutboxWake() {
 	s.outboxWakeMu.Lock()
 	wakes := append([]func(){}, s.outboxWakes...)
 	s.outboxWakeMu.Unlock()
+
+	for _, wake := range wakes {
+		wake()
+	}
+}
+
+// RegisterMailboxWake registers a same-process callback that runs after any
+// enqueue commits inside an ExecTx, and returns a cancel function that
+// deregisters it. It restores immediate delivery for the folded outbox path,
+// where the enqueued row is invisible to a consumer until the publisher's
+// transaction commits. The wake is coarse -- every registered mailbox is woken,
+// so a non-target re-polls once and finds nothing -- and the mailbox still
+// polls as the durable fallback.
+func (s *Store) RegisterMailboxWake(wake func()) func() {
+	if wake == nil {
+		return func() {}
+	}
+
+	s.mailboxWakeMu.Lock()
+	id := s.mailboxWakeNextID
+	s.mailboxWakeNextID++
+	s.mailboxWakes[id] = wake
+	s.mailboxWakeMu.Unlock()
+
+	// The cancel deletes exactly this registration's entry, so a stopped
+	// mailbox (DurableMailbox.Close) leaves no closure behind even when a
+	// later mailbox reuses the same durable ID.
+	return func() {
+		s.mailboxWakeMu.Lock()
+		delete(s.mailboxWakes, id)
+		s.mailboxWakeMu.Unlock()
+	}
+}
+
+func (s *Store) notifyMailboxWake() {
+	s.mailboxWakeMu.Lock()
+	wakes := make([]func(), 0, len(s.mailboxWakes))
+	for _, wake := range s.mailboxWakes {
+		wakes = append(wakes, wake)
+	}
+	s.mailboxWakeMu.Unlock()
 
 	for _, wake := range wakes {
 		wake()
@@ -936,7 +1141,7 @@ func (s *TxActorDeliveryStore) EnqueueMessage(
 	ctx context.Context, params actor.EnqueueParams,
 ) error {
 
-	return s.querier.EnqueueMailboxMessage(ctx, EnqueueMailboxParams{
+	if err := s.querier.EnqueueMailboxMessage(ctx, EnqueueMailboxParams{
 		ID:              params.ID,
 		MailboxID:       params.MailboxID,
 		MessageType:     params.MessageType,
@@ -949,7 +1154,18 @@ func (s *TxActorDeliveryStore) EnqueueMessage(
 		MaxAttempts:     int32(params.MaxAttempts),
 		CreatedAt:       s.clock.Now().Unix(),
 		CorrelationKey:  toNullString(params.CorrelationKey),
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Mark the transaction's enqueue flag so ExecTx fires its post-commit
+	// coarse mailbox wake. The enqueued row is invisible to the consumer
+	// until commit, so the in-process wake from DurableMailbox.Send cannot
+	// rouse it; this is the signal that restores immediate same-process
+	// delivery.
+	noteMailboxEnqueued(ctx)
+
+	return nil
 }
 
 // LeaseNextMessage atomically claims the next available message for processing.
@@ -991,6 +1207,29 @@ func (s *TxActorDeliveryStore) LeaseNextMessage(ctx context.Context,
 	}, nil
 }
 
+// PeekNextMessage claims the next available message with a read-only query and
+// takes no lease, within the current transaction. The returned LeasedMessage
+// carries an empty LeaseToken, signalling the unfenced by-ID ack/nack path.
+func (s *TxActorDeliveryStore) PeekNextMessage(ctx context.Context,
+	mailboxID string) (*actor.LeasedMessage, error) {
+
+	now := s.clock.Now()
+
+	msg, err := s.querier.PeekNextMailboxMessage(ctx, PeekMailboxParams{
+		MailboxID:   mailboxID,
+		AvailableAt: now.Unix(),
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return leaselessMessageFromRow(msg), nil
+}
+
 // AckMessage acknowledges successful processing of a message.
 func (s *TxActorDeliveryStore) AckMessage(ctx context.Context, id,
 	leaseToken string) (int64, error) {
@@ -999,6 +1238,15 @@ func (s *TxActorDeliveryStore) AckMessage(ctx context.Context, id,
 		ID:         id,
 		LeaseToken: toNullString(leaseToken),
 	})
+}
+
+// AckMessageByID acknowledges successful processing of a message by ID without
+// validating a lease token, within the current transaction. It is the leaseless
+// single-worker counterpart to AckMessage.
+func (s *TxActorDeliveryStore) AckMessageByID(ctx context.Context, id string) (
+	int64, error) {
+
+	return s.querier.AckMailboxMessageByID(ctx, id)
 }
 
 // NackMessage releases a message for redelivery after the specified delay.
@@ -1010,6 +1258,20 @@ func (s *TxActorDeliveryStore) NackMessage(ctx context.Context, id,
 	return s.querier.NackMailboxMessage(ctx, NackMailboxParams{
 		ID:          id,
 		LeaseToken:  toNullString(leaseToken),
+		AvailableAt: availableAt.Unix(),
+	})
+}
+
+// NackMessageByID releases a message for redelivery by ID without validating a
+// lease token, and increments attempts, within the current transaction. It is
+// the leaseless single-worker counterpart to NackMessage.
+func (s *TxActorDeliveryStore) NackMessageByID(ctx context.Context, id string,
+	retryAfter time.Duration) (int64, error) {
+
+	availableAt := s.clock.Now().Add(retryAfter)
+
+	return s.querier.NackMailboxMessageByID(ctx, NackMailboxByIDParams{
+		ID:          id,
 		AvailableAt: availableAt.Unix(),
 	})
 }
@@ -1396,8 +1658,14 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 		txQuerier, s.clock, tx, &outboxEnqueued,
 	)
 
-	// Attach transaction to context.
+	// Attach the transaction and a fresh mailbox-enqueue flag to the
+	// context. The flag captures enqueues regardless of store path,
+	// including those that join the ambient tx via
+	// TransactionExecutor.ExecTx (the folded outbox-delivery path, where
+	// the target actor's store enqueues through (*Store).EnqueueMessage
+	// rather than the tx-scoped TxActorDeliveryStore).
 	txCtx := actor.WithTx(ctx, tx)
+	txCtx, mailboxEnqueued := withMailboxEnqueueFlag(txCtx)
 
 	// Execute the function with the transaction-scoped store.
 	if err := fn(txCtx, txStore); err != nil {
@@ -1412,6 +1680,18 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 		s.notifyOutboxWake()
 	}
 
+	// Fire the coarse post-commit mailbox wake if any mailbox received a
+	// message in this transaction. The enqueued rows only became visible at
+	// commit, so this rouses local consumers immediately instead of leaving
+	// them to wait out a poll interval. It is coarse -- every registered
+	// mailbox re-polls, and a non-target does one empty poll -- which is
+	// why the transaction only tracks whether an enqueue happened, not
+	// which mailbox. This restores the same-process delivery latency that
+	// the folded outbox path otherwise regresses.
+	if *mailboxEnqueued {
+		s.notifyMailboxWake()
+	}
+
 	return nil
 }
 
@@ -1420,6 +1700,10 @@ var _ actor.DeliveryStore = (*Store)(nil)
 
 // Compile-time check that Store can wake same-process outbox publishers.
 var _ actor.OutboxWakeRegistrar = (*Store)(nil)
+
+// Compile-time check that Store can wake same-process mailbox receive loops
+// after a folded outbox enqueue commits.
+var _ actor.MailboxWakeRegistrar = (*Store)(nil)
 
 // Compile-time check that TxAwareActorDeliveryStore implements
 // actor.TxAwareDeliveryStore.

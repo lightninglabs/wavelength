@@ -53,16 +53,33 @@ type DurableMailboxLeaseNextReq = (
     lease_duration: int
 );
 
+type DurableMailboxPeekNextReq = (
+    reply_to: machine,
+    mailbox_id: int,
+    now: int
+);
+
 type DurableMailboxTokenReq = (
     reply_to: machine,
     id: int,
     lease_token: int
 );
 
+type DurableMailboxByIDReq = (
+    reply_to: machine,
+    id: int
+);
+
 type DurableMailboxNackReq = (
     reply_to: machine,
     id: int,
     lease_token: int,
+    available_at: int
+);
+
+type DurableMailboxNackByIDReq = (
+    reply_to: machine,
+    id: int,
     available_at: int
 );
 
@@ -146,8 +163,11 @@ type DurableMailboxStageReq = (
 
 event eDurableMailboxEnqueue: DurableMailboxEnqueueReq;
 event eDurableMailboxLeaseNext: DurableMailboxLeaseNextReq;
+event eDurableMailboxPeekNext: DurableMailboxPeekNextReq;
 event eDurableMailboxAck: DurableMailboxTokenReq;
+event eDurableMailboxAckByID: DurableMailboxByIDReq;
 event eDurableMailboxNack: DurableMailboxNackReq;
+event eDurableMailboxNackByID: DurableMailboxNackByIDReq;
 event eDurableMailboxExpireLeasesAt: int;
 event eDurableMailboxDeadLetter: DurableMailboxDeadLetterReq;
 event eDurableMailboxCommit: DurableMailboxCommitReq;
@@ -155,6 +175,7 @@ event eDurableMailboxStage: DurableMailboxStageReq;
 
 event eDurableMailboxOpResp: (int, DurableMailboxOpResult);
 event eDurableMailboxLeaseResp: (int, DurableMailboxOpResult);
+event eDurableMailboxPeekResp: (int, int, int, DurableMailboxOpResult);
 
 // eDurableMailboxClaimed is announced on every successful lease.
 // eDurableMailboxRowEnqueued and eDurableMailboxRowRemoved let the FIFO monitor
@@ -470,6 +491,26 @@ fun NackMailboxRow(rows: seq[MailboxRow], id: int, available_at: int):
     return ReplaceMailboxRow(rows, row);
 }
 
+// NackMailboxRowByID is the leaseless failure path. Peek does not write a
+// lease or pre-increment attempts, so the by-ID nack increments attempts here.
+// It also clears any stale expired lease metadata left by an older leased
+// claim; otherwise the persisted row no longer matches the empty-token
+// leaseless state machine the actor layer observed.
+fun NackMailboxRowByID(rows: seq[MailboxRow], id: int, available_at: int):
+    seq[MailboxRow] {
+
+    var row: MailboxRow;
+
+    row = RowByID(rows, id);
+    row = NewMailboxRow(
+        row.id, row.mailbox_id, row.correlation_key, row.priority,
+        available_at, NoLease(), NoLeaseToken(), row.attempts + 1,
+        row.max_attempts, row.created_at
+    );
+
+    return ReplaceMailboxRow(rows, row);
+}
+
 fun ExpireMailboxLeases(rows: seq[MailboxRow], now: int): seq[MailboxRow] {
     var result: seq[MailboxRow];
     var i: int;
@@ -565,6 +606,34 @@ machine DurableMailboxSpec {
                 (id, MailboxOpOk);
         }
 
+        on eDurableMailboxPeekNext do (
+            req: DurableMailboxPeekNextReq
+        ) {
+            var id: int;
+            var row: MailboxRow;
+
+            id = ClaimNextMailboxRow(
+                rows, req.mailbox_id, req.now, mode
+            );
+            if (id == NoMailboxRow()) {
+                send req.reply_to, eDurableMailboxPeekResp,
+                    (
+                        NoMailboxRow(), NoLeaseToken(), 0,
+                        MailboxOpNotFound
+                    );
+                return;
+            }
+
+            // Peek is read-only: it selects the same eligible row as LeaseNext
+            // but does not mutate lease metadata or attempts. The actor-layer
+            // contract is nevertheless an empty token, even if the persisted
+            // row still has stale expired lease metadata from an older leased
+            // claim.
+            row = RowByID(rows, id);
+            send req.reply_to, eDurableMailboxPeekResp,
+                (id, NoLeaseToken(), row.attempts, MailboxOpOk);
+        }
+
         on eDurableMailboxAck do (req: DurableMailboxTokenReq) {
             var row: MailboxRow;
 
@@ -578,6 +647,19 @@ machine DurableMailboxSpec {
             if (!TokenMatches(row, req.lease_token)) {
                 send req.reply_to, eDurableMailboxOpResp,
                     (req.id, MailboxOpTokenMismatch);
+                return;
+            }
+
+            rows = RemoveMailboxRow(rows, req.id);
+            announce eDurableMailboxRowRemoved, (this, req.id);
+            send req.reply_to, eDurableMailboxOpResp,
+                (req.id, MailboxOpOk);
+        }
+
+        on eDurableMailboxAckByID do (req: DurableMailboxByIDReq) {
+            if (!RowExists(rows, req.id)) {
+                send req.reply_to, eDurableMailboxOpResp,
+                    (req.id, MailboxOpNotFound);
                 return;
             }
 
@@ -604,6 +686,18 @@ machine DurableMailboxSpec {
             }
 
             rows = NackMailboxRow(rows, req.id, req.available_at);
+            send req.reply_to, eDurableMailboxOpResp,
+                (req.id, MailboxOpOk);
+        }
+
+        on eDurableMailboxNackByID do (req: DurableMailboxNackByIDReq) {
+            if (!RowExists(rows, req.id)) {
+                send req.reply_to, eDurableMailboxOpResp,
+                    (req.id, MailboxOpNotFound);
+                return;
+            }
+
+            rows = NackMailboxRowByID(rows, req.id, req.available_at);
             send req.reply_to, eDurableMailboxOpResp,
                 (req.id, MailboxOpOk);
         }
@@ -952,6 +1046,237 @@ spec CheckpointAdvancesMonotonically observes
             }
 
             high[key] = s.2;
+        }
+    }
+}
+
+// =============================================================================
+// Outbox fold model
+// =============================================================================
+//
+// The CDC outbox publisher's per-message delivery step folds two writes -- the
+// target-mailbox enqueue (the "Tell") and the outbox-row completion -- into a
+// single write transaction (deliverMessage's ExecTx in baselib/actor). The
+// contract this model pins down:
+//
+//   * Atomicity: the enqueue and the completion commit together or not at all.
+//     A failure mid-fold rolls BOTH back, so the outbox row stays pending and
+//     no orphan is left in the target mailbox; the row is redelivered after the
+//     claim expires.
+//
+//   * Idempotent delivery: the target enqueue is keyed by the outbox id
+//     (WithOutboxID -> ON CONFLICT (id) DO NOTHING), so a redelivery or a
+//     concurrent-publisher reclaim never produces a second distinct delivery.
+//
+//   * Token-fenced completion: only the current claim owner completes the row.
+//     A stale publisher's completion matches zero rows (it is a no-op, not a
+//     failure), so the row stays pending for the live owner.
+//
+// The headline safety property is no lost messages: an outbox row must never be
+// marked completed unless the target enqueue is durable. The two profiles:
+//
+//   * AtomicFold (production): one transaction. The completion can only be
+//     observed together with a durable enqueue.
+//
+//   * SplitWrite (counterexample): the completion and the enqueue are
+//     independent writes. A crash after the completion lands but before the
+//     enqueue is durable leaves the outbox completed with the message never
+//     delivered -- the lost message the fold's single transaction prevents.
+
+enum OutboxFoldMode {
+    AtomicFold,
+    SplitWrite
+}
+
+type OutboxFoldIDReq = (
+    reply_to: machine,
+    id: int
+);
+
+type OutboxFoldClaimReq = (
+    reply_to: machine,
+    id: int,
+    token: int
+);
+
+// OutboxFoldDeliverReq models the folded delivery transaction for one row.
+// `token` is the publisher's claim token; completion is gated on it matching
+// the row's current owner. `enqueue_ok` models whether the target enqueue step
+// succeeds: false is the failure/crash that, under AtomicFold, must roll the
+// whole transaction back.
+type OutboxFoldDeliverReq = (
+    reply_to: machine,
+    id: int,
+    token: int,
+    enqueue_ok: bool
+);
+
+event eOutboxFoldEnqueue: OutboxFoldIDReq;
+event eOutboxFoldClaim: OutboxFoldClaimReq;
+event eOutboxFoldDeliver: OutboxFoldDeliverReq;
+event eOutboxFoldResp: (int, DurableMailboxOpResult);
+
+// eOutboxTargetEnqueued is announced when a delivery durably enqueues the
+// message into the target mailbox; eOutboxCompleted when the outbox row is
+// marked completed. Both carry (mbox, id). The monitors reconstruct the
+// completed-implies-delivered and delivered-at-most-once contracts from this
+// stream, namespaced by the announcing OutboxFoldSpec instance.
+event eOutboxTargetEnqueued: (machine, int);
+event eOutboxCompleted: (machine, int);
+
+// OutboxFoldSpec is the idealized transactional outbox + target mailbox for the
+// CDC delivery step. It is single-table per (outbox row, target enqueue) and
+// scoped by id; the safety contract is independent of how many rows coexist.
+machine OutboxFoldSpec {
+    var mode: OutboxFoldMode;
+    var present: map[int, bool];
+    var completed: map[int, bool];
+    var enqueued: map[int, bool];
+    var token: map[int, int];
+
+    start state Active {
+        entry (fold_mode: OutboxFoldMode) {
+            mode = fold_mode;
+        }
+
+        on eOutboxFoldEnqueue do (req: OutboxFoldIDReq) {
+            if (req.id in present && present[req.id]) {
+                send req.reply_to, eOutboxFoldResp,
+                    (req.id, MailboxOpDuplicate);
+                return;
+            }
+
+            present[req.id] = true;
+            completed[req.id] = false;
+            enqueued[req.id] = false;
+            token[req.id] = NoLeaseToken();
+            send req.reply_to, eOutboxFoldResp, (req.id, MailboxOpOk);
+        }
+
+        // Claim assigns the row's current owner token, mirroring
+        // ClaimOutboxBatch. Only a pending row is claimable; a completed row is
+        // terminal. A reclaim (after the prior claim expires) simply overwrites
+        // the owner token, which is what fences a stale publisher out.
+        on eOutboxFoldClaim do (req: OutboxFoldClaimReq) {
+            if (!(req.id in present) || !present[req.id]) {
+                send req.reply_to, eOutboxFoldResp,
+                    (req.id, MailboxOpNotFound);
+                return;
+            }
+
+            if (completed[req.id]) {
+                send req.reply_to, eOutboxFoldResp,
+                    (req.id, MailboxOpNotFound);
+                return;
+            }
+
+            token[req.id] = req.token;
+            send req.reply_to, eOutboxFoldResp, (req.id, MailboxOpOk);
+        }
+
+        on eOutboxFoldDeliver do (req: OutboxFoldDeliverReq) {
+            var tokenOk: bool;
+
+            if (!(req.id in present) || !present[req.id]) {
+                send req.reply_to, eOutboxFoldResp,
+                    (req.id, MailboxOpNotFound);
+                return;
+            }
+
+            // Completion is token-fenced: it lands only for the current owner.
+            tokenOk = token[req.id] == req.token &&
+                req.token != NoLeaseToken();
+
+            if (mode == AtomicFold) {
+                // One transaction. If the enqueue step fails the whole tx
+                // rolls back: nothing is applied and the row stays pending for
+                // redelivery after the claim expires.
+                if (!req.enqueue_ok) {
+                    send req.reply_to, eOutboxFoldResp,
+                        (req.id, MailboxOpOk);
+                    return;
+                }
+
+                // The enqueue committed: durable and idempotent by id, so a
+                // redelivery or reclaim re-run announces no second delivery.
+                if (!enqueued[req.id]) {
+                    enqueued[req.id] = true;
+                    announce eOutboxTargetEnqueued, (this, req.id);
+                }
+
+                // The completion is folded into the same commit. A stale token
+                // matches zero rows -- a no-op, not a failure -- so the row
+                // stays pending, exactly like CompleteOutbox's token-gated
+                // UPDATE.
+                if (tokenOk && !completed[req.id]) {
+                    completed[req.id] = true;
+                    announce eOutboxCompleted, (this, req.id);
+                }
+
+                send req.reply_to, eOutboxFoldResp, (req.id, MailboxOpOk);
+                return;
+            }
+
+            // SplitWrite (counterexample): the completion and the enqueue are
+            // independent, unsynchronized writes. The dangerous interleaving
+            // commits the completion even though the enqueue did not durably
+            // land (enqueue_ok = false), leaving the row completed with the
+            // message never delivered -- a lost message.
+            if (tokenOk && !completed[req.id]) {
+                completed[req.id] = true;
+                announce eOutboxCompleted, (this, req.id);
+            }
+
+            if (req.enqueue_ok && !enqueued[req.id]) {
+                enqueued[req.id] = true;
+                announce eOutboxTargetEnqueued, (this, req.id);
+            }
+
+            send req.reply_to, eOutboxFoldResp, (req.id, MailboxOpOk);
+        }
+    }
+}
+
+// OutboxCompletionImpliesDelivery is the no-lost-messages safety contract for
+// the outbox fold: an outbox row may be marked completed only if the target
+// enqueue is already durable. It reconstructs the durable-enqueue set from the
+// announcement stream and, on every completion, asserts the row was delivered.
+// The AtomicFold profile upholds it by construction (a completion is only
+// observable together with the same transaction's durable enqueue); the
+// SplitWrite counterexample trips it directly when a completion lands without a
+// delivery, with no in-machine assertion required.
+spec OutboxCompletionImpliesDelivery observes
+    eOutboxTargetEnqueued, eOutboxCompleted {
+
+    var enqueued: map[(machine, int), bool];
+
+    start state Monitoring {
+        on eOutboxTargetEnqueued do (e: (machine, int)) {
+            enqueued[e] = true;
+        }
+
+        on eOutboxCompleted do (c: (machine, int)) {
+            assert c in enqueued && enqueued[c],
+                "outbox row marked completed without a durable target "+
+                "enqueue (lost message)";
+        }
+    }
+}
+
+// OutboxTargetDeliveredAtMostOnce is the exactly-once half of the contract: the
+// idempotent (ON CONFLICT id) target enqueue means a row is delivered to the
+// target mailbox at most once, no matter how many times it is redelivered or
+// reclaimed by concurrent publishers. A second distinct delivery for the same
+// (mbox, id) trips the assertion.
+spec OutboxTargetDeliveredAtMostOnce observes eOutboxTargetEnqueued {
+    var seen: map[(machine, int), bool];
+
+    start state Monitoring {
+        on eOutboxTargetEnqueued do (e: (machine, int)) {
+            assert !(e in seen),
+                "outbox fold delivered two distinct copies to the target "+
+                "mailbox for one row";
+            seen[e] = true;
         }
     }
 }

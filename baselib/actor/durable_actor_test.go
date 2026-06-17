@@ -174,7 +174,8 @@ type mockTxAwareStore struct {
 	// txShouldFail causes ExecTx to fail.
 	txShouldFail bool
 
-	// nackCalled tracks whether NackMessage was called after tx failure.
+	// nackCalled tracks whether a nack (fenced NackMessage or the leaseless
+	// unfenced NackMessageByID) was called after a failure.
 	nackCalled atomic.Bool
 
 	// txPostCallbackHook runs after fn() succeeds but before ExecTx
@@ -225,6 +226,17 @@ func (m *mockTxAwareStore) NackMessage(ctx context.Context, id,
 	m.nackCalled.Store(true)
 
 	return m.mockDeliveryStore.NackMessage(ctx, id, leaseToken, retryAfter)
+}
+
+// Override NackMessageByID to track calls. The leaseless single-worker
+// Read/Commit path nacks via the unfenced by-ID variant, so the test's
+// nackCalled flag must observe it too.
+func (m *mockTxAwareStore) NackMessageByID(ctx context.Context, id string,
+	retryAfter time.Duration) (int64, error) {
+
+	m.nackCalled.Store(true)
+
+	return m.mockDeliveryStore.NackMessageByID(ctx, id, retryAfter)
 }
 
 // TestDurableActorCreation tests actor creation with various configs.
@@ -2058,4 +2070,58 @@ func TestTxDurableAskDoesNotRetryAfterOutboxWrite(t *testing.T) {
 		t, 1, outboxCount,
 		"exactly one outbox response should be written",
 	)
+}
+
+// TestFinishNonTxLeaselessTerminalTellMarksProcessed verifies that the
+// uncommitted TxBehavior tail counts the current leaseless attempt before
+// consulting the retry policy. Without that effective-attempt accounting, the
+// fifth failure would be treated as retryable, then Delivery.Nack would
+// dead-letter/delete the row without a processed marker.
+func TestFinishNonTxLeaselessTerminalTellMarksProcessed(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	msgID := "leaseless-terminal-tell"
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+	}
+
+	store.messages[msgID] = &LeasedMessage{
+		ID:          msgID,
+		MailboxID:   "test-actor",
+		MessageType: msg.MessageType(),
+		Attempts:    4,
+		MaxAttempts: 5,
+	}
+
+	delivery := &Delivery[*actorTestMsg, int]{
+		ID:          msgID,
+		Message:     msg,
+		Attempts:    4,
+		MaxAttempts: 5,
+		store:       store,
+		leaseless:   true,
+	}
+
+	actor := &DurableActor[*actorTestMsg, int]{
+		id:               "test-actor",
+		store:            store,
+		tellRetryPolicy:  DefaultTellRetryPolicy,
+		cleanupTimeout:   time.Second,
+		deduplicationTTL: time.Hour,
+	}
+
+	actor.finishNonTx(
+		context.Background(), delivery,
+		fn.Err[int](
+			errors.New("terminal failure"),
+		),
+	)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	require.True(t, store.processed[msgID])
+	require.Contains(t, store.deadLetters, msgID)
+	require.NotContains(t, store.messages, msgID)
 }
