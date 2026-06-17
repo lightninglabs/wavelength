@@ -169,7 +169,7 @@ State transitions and validation rules live under [Invariants](#invariants).
 - **Sends**:
   - → `serverconn`: `SendSubmitPackageRequest`,
     `SendFinalizePackageRequest`, `SendIncomingAckRequest`.
-  - → `serverconn` (durable unary, via outbox):
+  - → `serverconn` durable mailbox:
     `QueryIncomingTransferRequest` →
     `SendListOORRecipientEventsByScriptRequest`;
     `QueryIncomingMetadataRequest` →
@@ -233,10 +233,10 @@ State transitions and validation rules live under [Invariants](#invariants).
 - Point-of-no-return: server co-signing the checkpoint
   transaction(s). After that, client must resume with byte-identical
   co-signed PSBTs (deterministic construction).
-- Transport outbox events (submit / finalize / ack) are durably
-  enqueued in the actor transition; transport side effects run
-  outside the actor DB tx and are retried via the actor delivery
-  store.
+- Transport events (submit / finalize / ack) are durably enqueued
+  directly into `serverconn` during the actor transition. The
+  serverconn durable mailbox joins the OOR actor DB tx, while the
+  network send runs later outside that tx and is retried by serverconn.
 - Outgoing finalize ordering: local input-spend completion is driven
   **before** the package write so the VTXO manager joins the durable
   OOR actor tx instead of racing a second SQLite writer.

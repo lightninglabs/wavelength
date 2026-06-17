@@ -55,10 +55,10 @@ type OutboxHandlerConfig struct {
 	ResolveIncomingMetadata IncomingMetadataResolver
 }
 
-// NewOutboxHandler constructs the standard two-layer outbox handler
-// chain from the given configuration. The returned handler processes
-// all outbox events: signing, persistence, transport, and incoming
-// materialization.
+// NewOutboxHandler constructs the standard two-layer outbox handler chain from
+// the given configuration. The returned handler processes local signing,
+// persistence, and incoming materialization effects. Durable actor transport
+// events are intercepted by OOR before this handler and sent via serverconn.
 //
 // Both the production darepod and systest should call this function
 // to ensure identical outbox handling.
