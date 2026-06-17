@@ -450,8 +450,7 @@ func inSwapQuoteFromProto(resp *swaprpc.QuoteInSwapResponse) (*InSwapQuote,
 	}
 
 	if resp.GetAmountSat() == 0 {
-		return nil, fmt.Errorf("in-swap quote amount must be " +
-			"positive")
+		return nil, fmt.Errorf("in-swap quote amount must be positive")
 	}
 
 	if resp.GetFeeSat() > maxInt64Uint {

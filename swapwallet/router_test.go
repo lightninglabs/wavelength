@@ -172,8 +172,7 @@ func TestRouterPrepareSendInvoiceReturnsRemoteQuote(t *testing.T) {
 	require.NotEmpty(t, resp.GetSendIntentId())
 	require.Equal(t, int64(12_345), resp.GetAmountSat())
 	require.Equal(
-		t, walletdkrpc.SendRail_SEND_RAIL_LIGHTNING,
-		resp.GetRail(),
+		t, walletdkrpc.SendRail_SEND_RAIL_LIGHTNING, resp.GetRail(),
 	)
 	require.Equal(
 		t, walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
@@ -192,6 +191,125 @@ func TestRouterPrepareSendInvoiceReturnsRemoteQuote(t *testing.T) {
 	require.Equal(t, uint64(25), swap.quotePayLastReq.GetMaxFeeSat())
 	require.Equal(t, 0, swap.startPayCalls)
 	require.Equal(t, 0, rpc.leaveCalls)
+}
+
+// TestRouterPrepareSendInvoiceFallsBackWhenQuoteUnavailable confirms mixed
+// deployments can still prepare invoice sends when the quote RPC is missing.
+func TestRouterPrepareSendInvoiceFallsBackWhenQuoteUnavailable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		code codes.Code
+	}{{
+		name: "grpc-unimplemented",
+		code: codes.Unimplemented,
+	}, {
+		name: "rest-not-found",
+		code: codes.NotFound,
+	}}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			r, swap, rpc := newRouterFixture(t)
+			invoice, paymentHash := testPreparedInvoice(
+				t, 12_345, "mixed version",
+			)
+			swap.quotePayErr = status.Error(
+				test.code, "missing quote",
+			)
+
+			resp, err := r.PrepareSend(
+				t.Context(), &walletdkrpc.PrepareSendRequest{
+					Destination: &walletdkrpc.
+						PrepareSendRequest_Invoice{
+						Invoice: invoice,
+					},
+					MaxFeeSat: 25,
+				},
+			)
+			require.NoError(t, err)
+			require.NotEmpty(t, resp.GetSendIntentId())
+			require.Equal(t, int64(12_345), resp.GetAmountSat())
+			require.Equal(
+				t, walletdkrpc.
+					SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN,
+				resp.GetRail(),
+			)
+			require.Equal(
+				t, walletdkrpc.
+					SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
+				resp.GetQuoteStatus(),
+			)
+			require.False(t, resp.GetFeeKnown())
+			require.False(t, resp.GetTotalOutflowKnown())
+			require.Equal(t, int64(0), resp.GetExpectedFeeSat())
+			require.Equal(
+				t, int64(12_345),
+				resp.GetExpectedTotalOutflowSat(),
+			)
+			require.Equal(
+				t, "mixed version",
+				resp.GetInvoiceDescription(),
+			)
+			require.Equal(t, paymentHash, resp.GetPaymentHash())
+			require.Contains(
+				t, resp.GetWarning(),
+				"server quote unavailable",
+			)
+			require.Equal(t, 1, swap.quotePayCalls)
+			require.Equal(
+				t, invoice, swap.quotePayLastReq.GetInvoice(),
+			)
+			require.Equal(
+				t, uint64(25),
+				swap.quotePayLastReq.GetMaxFeeSat(),
+			)
+			require.Equal(t, 0, swap.startPayCalls)
+			require.Equal(t, 0, rpc.leaveCalls)
+		})
+	}
+}
+
+// TestRouterPrepareSendInvoiceMapsUnknownQuoteRail confirms future quote rails
+// still render the quoted amounts even before the wallet knows their names.
+func TestRouterPrepareSendInvoiceMapsUnknownQuoteRail(t *testing.T) {
+	t.Parallel()
+
+	r, swap, _ := newRouterFixture(t)
+	invoice, paymentHash := testPreparedInvoice(t, 12_345, "future rail")
+	swap.quotePayResp = &swapclientrpc.QuotePayResponse{
+		PaymentHash:      paymentHash,
+		InvoiceAmountSat: 12_345,
+		AmountSat:        12_555,
+		FeeSat:           210,
+		SettlementType: swapclientrpc.
+			SwapSettlementType_SWAP_SETTLEMENT_TYPE_UNSPECIFIED,
+		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
+	}
+
+	resp, err := r.PrepareSend(
+		t.Context(), &walletdkrpc.PrepareSendRequest{
+			Destination: &walletdkrpc.PrepareSendRequest_Invoice{
+				Invoice: invoice,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN,
+		resp.GetRail(),
+	)
+	require.Equal(
+		t, walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
+		resp.GetQuoteStatus(),
+	)
+	require.True(t, resp.GetFeeKnown())
+	require.Equal(t, int64(210), resp.GetExpectedFeeSat())
+	require.Equal(t, int64(12_555), resp.GetExpectedTotalOutflowSat())
 }
 
 // TestRouterPrepareSendInvoiceQuotesInArk confirms same-Ark previews surface

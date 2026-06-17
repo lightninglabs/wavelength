@@ -430,8 +430,8 @@ type SwapServerConn interface {
 
 	// QuoteInSwap previews an Ark->LN swap without creating server or
 	// client state.
-	QuoteInSwap(ctx context.Context, invoice string, maxFeeSat uint64) (
-		*InSwapQuote, error)
+	QuoteInSwap(ctx context.Context, invoice string,
+		maxFeeSat uint64) (*InSwapQuote, error)
 
 	// AuthorizeInSwapRefund asks the swap server to sign one exact
 	// cooperative refund spend after it has safely failed the Lightning

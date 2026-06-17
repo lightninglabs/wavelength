@@ -1582,8 +1582,8 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 	}
 }
 
-func quotePayToProto(quote *swaps.InSwapQuote) (
-	*swapclientrpc.QuotePayResponse, error) {
+func quotePayToProto(quote *swaps.InSwapQuote) (*swapclientrpc.QuotePayResponse,
+	error) {
 
 	if quote == nil {
 		return nil, status.Error(

@@ -50,8 +50,8 @@ func extractInvoiceAmountSat(msat *lnwire.MilliSatoshi) (uint64, error) {
 
 // QuotePayViaLightning previews a pay-side in-swap without creating durable
 // swap state or starting the pay FSM.
-func (c *SwapClient) QuotePayViaLightning(ctx context.Context,
-	invoice string, maxFeeSat uint64) (*InSwapQuote, error) {
+func (c *SwapClient) QuotePayViaLightning(ctx context.Context, invoice string,
+	maxFeeSat uint64) (*InSwapQuote, error) {
 
 	if c == nil || c.server == nil {
 		return nil, fmt.Errorf("swap server is required")

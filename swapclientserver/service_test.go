@@ -271,8 +271,7 @@ func TestQuotePayReturnsRemotePreview(t *testing.T) {
 	require.Equal(t, uint64(10_210), resp.GetAmountSat())
 	require.Equal(t, uint64(210), resp.GetFeeSat())
 	require.Equal(
-		t,
-		swapclientrpc.
+		t, swapclientrpc.
 			SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING,
 		resp.GetSettlementType(),
 	)
