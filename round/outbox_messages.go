@@ -609,7 +609,8 @@ func (m *SubmitVTXOForfeitSigsToServer) ToProto() fn.Result[proto.Message] {
 			)
 		}
 
-		if forfeitTx.ClientVTXOSig == nil {
+		if forfeitTx.ClientVTXOSig == nil &&
+			len(forfeitTx.ParticipantVTXOSigs) == 0 {
 			return fn.Err[proto.Message](
 				fmt.Errorf("forfeit signature missing for "+
 					"outpoint %v", outpoint),
@@ -639,16 +640,51 @@ func (m *SubmitVTXOForfeitSigsToServer) ToProto() fn.Result[proto.Message] {
 			)
 		}
 
+		participantSigs := make(
+			[]*roundpb.ForfeitParticipantSig, 0,
+			len(forfeitTx.ParticipantVTXOSigs),
+		)
+		for _, sig := range forfeitTx.ParticipantVTXOSigs {
+			if sig == nil {
+				return fn.Err[proto.Message](
+					fmt.Errorf("participant signature missing "+
+						"for outpoint %v", outpoint),
+				)
+			}
+			if sig.PubKey == nil {
+				return fn.Err[proto.Message](
+					fmt.Errorf("participant pubkey missing "+
+						"for outpoint %v", outpoint),
+				)
+			}
+			if sig.Signature == nil {
+				return fn.Err[proto.Message](
+					fmt.Errorf("participant schnorr "+
+						"signature missing for outpoint %v",
+						outpoint),
+				)
+			}
+
+			participantSigs = append(
+				participantSigs,
+				&roundpb.ForfeitParticipantSig{
+					Pubkey: sig.PubKey.SerializeCompressed(),
+					Signature: roundpb.SchnorrSigToBytes(
+						sig.Signature,
+					),
+				},
+			)
+		}
+
 		forfeitTxs = append(
 			forfeitTxs, &roundpb.ForfeitTxSig{
 				VtxoOutpoint: roundpb.OutpointToProto(
 					outpoint,
 				),
-				UnsignedTx: txBytes,
-				ClientVtxoSig: roundpb.SchnorrSigToBytes(
-					forfeitTx.ClientVTXOSig,
-				),
-				SpendPath: spendPath,
+				UnsignedTx:      txBytes,
+				ClientVtxoSig:   legacyForfeitSigBytes(forfeitTx),
+				SpendPath:       spendPath,
+				ParticipantSigs: participantSigs,
 			},
 		)
 	}
@@ -659,6 +695,14 @@ func (m *SubmitVTXOForfeitSigsToServer) ToProto() fn.Result[proto.Message] {
 			ForfeitTxs: forfeitTxs,
 		},
 	)
+}
+
+func legacyForfeitSigBytes(forfeitTx *types.ForfeitTxSig) []byte {
+	if forfeitTx.ClientVTXOSig == nil {
+		return nil
+	}
+
+	return roundpb.SchnorrSigToBytes(forfeitTx.ClientVTXOSig)
 }
 
 // RegisterConfirmationRequest is emitted by the FSM to request chain monitoring

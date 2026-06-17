@@ -2332,9 +2332,10 @@ func (s *ForfeitSignaturesCollectingState) finishForfeitCollection(
 	forfeitedVTXOs := make([]wire.OutPoint, 0, len(collectedForfeits))
 	for outpoint, resp := range collectedForfeits {
 		forfeitTxs[outpoint] = &types.ForfeitTxSig{
-			UnsignedTx:    resp.ForfeitTx,
-			ClientVTXOSig: resp.Signature,
-			SpendPath:     resp.SpendPath,
+			UnsignedTx:          resp.ForfeitTx,
+			ClientVTXOSig:       resp.Signature,
+			ParticipantVTXOSigs: resp.ParticipantVTXOSigs,
+			SpendPath:           resp.SpendPath,
 		}
 		forfeitedVTXOs = append(forfeitedVTXOs, outpoint)
 	}

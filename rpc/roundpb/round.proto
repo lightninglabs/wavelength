@@ -607,6 +607,14 @@ message SubmitForfeitSigRequest {
 
 // ForfeitTxSig pairs an unsigned forfeit transaction with the client's VTXO
 // signature.
+message ForfeitParticipantSig {
+    // pubkey is the x-only public key that produced the tapscript signature.
+    bytes pubkey = 1;
+
+    // signature is the schnorr signature for the forfeited VTXO input.
+    bytes signature = 2;
+}
+
 message ForfeitTxSig {
     // vtxo_outpoint is the VTXO outpoint being forfeited.
     Outpoint vtxo_outpoint = 1;
@@ -621,6 +629,15 @@ message ForfeitTxSig {
     // spend_path is the canonical arkscript spend-path encoding for the
     // forfeited VTXO input.
     bytes spend_path = 4;
+
+    // participant_sigs carries additional non-operator signatures for
+    // policy leaves that require more than one client-side participant.
+    //
+    // Legacy standard VTXO forfeits continue to use client_vtxo_sig above.
+    // When participant_sigs is non-empty, receivers should treat
+    // client_vtxo_sig as an optional backwards-compatible duplicate and use
+    // participant_sigs as the authoritative signature set.
+    repeated ForfeitParticipantSig participant_sigs = 5;
 }
 
 // SubmitVTXOForfeitSigsRequest submits VTXO forfeit signatures from client

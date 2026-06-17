@@ -2311,6 +2311,60 @@ func (x *SubmitForfeitSigRequest) GetSignatures() []*BoardingInputSignature {
 
 // ForfeitTxSig pairs an unsigned forfeit transaction with the client's VTXO
 // signature.
+type ForfeitParticipantSig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// pubkey is the x-only public key that produced the tapscript signature.
+	Pubkey []byte `protobuf:"bytes,1,opt,name=pubkey,proto3" json:"pubkey,omitempty"`
+	// signature is the schnorr signature for the forfeited VTXO input.
+	Signature     []byte `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ForfeitParticipantSig) Reset() {
+	*x = ForfeitParticipantSig{}
+	mi := &file_round_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ForfeitParticipantSig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ForfeitParticipantSig) ProtoMessage() {}
+
+func (x *ForfeitParticipantSig) ProtoReflect() protoreflect.Message {
+	mi := &file_round_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ForfeitParticipantSig.ProtoReflect.Descriptor instead.
+func (*ForfeitParticipantSig) Descriptor() ([]byte, []int) {
+	return file_round_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *ForfeitParticipantSig) GetPubkey() []byte {
+	if x != nil {
+		return x.Pubkey
+	}
+	return nil
+}
+
+func (x *ForfeitParticipantSig) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
 type ForfeitTxSig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// vtxo_outpoint is the VTXO outpoint being forfeited.
@@ -2322,14 +2376,22 @@ type ForfeitTxSig struct {
 	ClientVtxoSig []byte `protobuf:"bytes,3,opt,name=client_vtxo_sig,json=clientVtxoSig,proto3" json:"client_vtxo_sig,omitempty"`
 	// spend_path is the canonical arkscript spend-path encoding for the
 	// forfeited VTXO input.
-	SpendPath     []byte `protobuf:"bytes,4,opt,name=spend_path,json=spendPath,proto3" json:"spend_path,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SpendPath []byte `protobuf:"bytes,4,opt,name=spend_path,json=spendPath,proto3" json:"spend_path,omitempty"`
+	// participant_sigs carries additional non-operator signatures for
+	// policy leaves that require more than one client-side participant.
+	//
+	// Legacy standard VTXO forfeits continue to use client_vtxo_sig above.
+	// When participant_sigs is non-empty, receivers should treat
+	// client_vtxo_sig as an optional backwards-compatible duplicate and use
+	// participant_sigs as the authoritative signature set.
+	ParticipantSigs []*ForfeitParticipantSig `protobuf:"bytes,5,rep,name=participant_sigs,json=participantSigs,proto3" json:"participant_sigs,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ForfeitTxSig) Reset() {
 	*x = ForfeitTxSig{}
-	mi := &file_round_proto_msgTypes[31]
+	mi := &file_round_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2341,7 +2403,7 @@ func (x *ForfeitTxSig) String() string {
 func (*ForfeitTxSig) ProtoMessage() {}
 
 func (x *ForfeitTxSig) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[31]
+	mi := &file_round_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2354,7 +2416,7 @@ func (x *ForfeitTxSig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForfeitTxSig.ProtoReflect.Descriptor instead.
 func (*ForfeitTxSig) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{31}
+	return file_round_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ForfeitTxSig) GetVtxoOutpoint() *Outpoint {
@@ -2385,6 +2447,13 @@ func (x *ForfeitTxSig) GetSpendPath() []byte {
 	return nil
 }
 
+func (x *ForfeitTxSig) GetParticipantSigs() []*ForfeitParticipantSig {
+	if x != nil {
+		return x.ParticipantSigs
+	}
+	return nil
+}
+
 // SubmitVTXOForfeitSigsRequest submits VTXO forfeit signatures from client
 // to server.
 type SubmitVTXOForfeitSigsRequest struct {
@@ -2399,7 +2468,7 @@ type SubmitVTXOForfeitSigsRequest struct {
 
 func (x *SubmitVTXOForfeitSigsRequest) Reset() {
 	*x = SubmitVTXOForfeitSigsRequest{}
-	mi := &file_round_proto_msgTypes[32]
+	mi := &file_round_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2411,7 +2480,7 @@ func (x *SubmitVTXOForfeitSigsRequest) String() string {
 func (*SubmitVTXOForfeitSigsRequest) ProtoMessage() {}
 
 func (x *SubmitVTXOForfeitSigsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[32]
+	mi := &file_round_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2424,7 +2493,7 @@ func (x *SubmitVTXOForfeitSigsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitVTXOForfeitSigsRequest.ProtoReflect.Descriptor instead.
 func (*SubmitVTXOForfeitSigsRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{32}
+	return file_round_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *SubmitVTXOForfeitSigsRequest) GetRoundId() []byte {
@@ -2630,14 +2699,18 @@ const file_round_proto_rawDesc = "" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12@\n" +
 	"\n" +
 	"signatures\x18\x02 \x03(\v2 .round.v1.BoardingInputSignatureR\n" +
-	"signatures\"\xaf\x01\n" +
+	"signatures\"M\n" +
+	"\x15ForfeitParticipantSig\x12\x16\n" +
+	"\x06pubkey\x18\x01 \x01(\fR\x06pubkey\x12\x1c\n" +
+	"\tsignature\x18\x02 \x01(\fR\tsignature\"\xfb\x01\n" +
 	"\fForfeitTxSig\x127\n" +
 	"\rvtxo_outpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\fvtxoOutpoint\x12\x1f\n" +
 	"\vunsigned_tx\x18\x02 \x01(\fR\n" +
 	"unsignedTx\x12&\n" +
 	"\x0fclient_vtxo_sig\x18\x03 \x01(\fR\rclientVtxoSig\x12\x1d\n" +
 	"\n" +
-	"spend_path\x18\x04 \x01(\fR\tspendPath\"r\n" +
+	"spend_path\x18\x04 \x01(\fR\tspendPath\x12J\n" +
+	"\x10participant_sigs\x18\x05 \x03(\v2\x1f.round.v1.ForfeitParticipantSigR\x0fparticipantSigs\"r\n" +
 	"\x1cSubmitVTXOForfeitSigsRequest\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x127\n" +
 	"\vforfeit_txs\x18\x02 \x03(\v2\x16.round.v1.ForfeitTxSigR\n" +
@@ -2668,7 +2741,7 @@ func file_round_proto_rawDescGZIP() []byte {
 }
 
 var file_round_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_round_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
+var file_round_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
 var file_round_proto_goTypes = []any{
 	(QuoteReason)(0),                     // 0: round.v1.QuoteReason
 	(*Outpoint)(nil),                     // 1: round.v1.Outpoint
@@ -2702,22 +2775,23 @@ var file_round_proto_goTypes = []any{
 	(*SignerPartialSigs)(nil),            // 29: round.v1.SignerPartialSigs
 	(*BoardingInputSignature)(nil),       // 30: round.v1.BoardingInputSignature
 	(*SubmitForfeitSigRequest)(nil),      // 31: round.v1.SubmitForfeitSigRequest
-	(*ForfeitTxSig)(nil),                 // 32: round.v1.ForfeitTxSig
-	(*SubmitVTXOForfeitSigsRequest)(nil), // 33: round.v1.SubmitVTXOForfeitSigsRequest
-	nil,                                  // 34: round.v1.TreeNode.ChildrenEntry
-	nil,                                  // 35: round.v1.ClientBatchInfo.VtxoTreePathsEntry
-	nil,                                  // 36: round.v1.ClientBatchInfo.ConnectorLeafMapEntry
-	nil,                                  // 37: round.v1.ClientVTXOAggNonces.AggNoncesEntry
-	nil,                                  // 38: round.v1.ClientVTXOAggSigs.AggSigsEntry
-	nil,                                  // 39: round.v1.SubmitNoncesRequest.NoncesEntry
-	nil,                                  // 40: round.v1.SignerNonces.TxNoncesEntry
-	nil,                                  // 41: round.v1.SubmitPartialSigRequest.SignaturesEntry
-	nil,                                  // 42: round.v1.SignerPartialSigs.TxSigsEntry
+	(*ForfeitParticipantSig)(nil),        // 32: round.v1.ForfeitParticipantSig
+	(*ForfeitTxSig)(nil),                 // 33: round.v1.ForfeitTxSig
+	(*SubmitVTXOForfeitSigsRequest)(nil), // 34: round.v1.SubmitVTXOForfeitSigsRequest
+	nil,                                  // 35: round.v1.TreeNode.ChildrenEntry
+	nil,                                  // 36: round.v1.ClientBatchInfo.VtxoTreePathsEntry
+	nil,                                  // 37: round.v1.ClientBatchInfo.ConnectorLeafMapEntry
+	nil,                                  // 38: round.v1.ClientVTXOAggNonces.AggNoncesEntry
+	nil,                                  // 39: round.v1.ClientVTXOAggSigs.AggSigsEntry
+	nil,                                  // 40: round.v1.SubmitNoncesRequest.NoncesEntry
+	nil,                                  // 41: round.v1.SignerNonces.TxNoncesEntry
+	nil,                                  // 42: round.v1.SubmitPartialSigRequest.SignaturesEntry
+	nil,                                  // 43: round.v1.SignerPartialSigs.TxSigsEntry
 }
 var file_round_proto_depIdxs = []int32{
 	1,  // 0: round.v1.TreeNode.input:type_name -> round.v1.Outpoint
 	2,  // 1: round.v1.TreeNode.outputs:type_name -> round.v1.TxOut
-	34, // 2: round.v1.TreeNode.children:type_name -> round.v1.TreeNode.ChildrenEntry
+	35, // 2: round.v1.TreeNode.children:type_name -> round.v1.TreeNode.ChildrenEntry
 	3,  // 3: round.v1.VTXOTree.nodes:type_name -> round.v1.TreeNode
 	1,  // 4: round.v1.VTXOTree.batch_outpoint:type_name -> round.v1.Outpoint
 	2,  // 5: round.v1.VTXOTree.batch_output:type_name -> round.v1.TxOut
@@ -2726,10 +2800,10 @@ var file_round_proto_depIdxs = []int32{
 	1,  // 8: round.v1.ClientConnectorLeafInfo.connector_outpoint:type_name -> round.v1.Outpoint
 	1,  // 9: round.v1.ClientSuccessResp.accepted_boarding_outpoints:type_name -> round.v1.Outpoint
 	1,  // 10: round.v1.ClientSuccessResp.accepted_vtxo_outpoints:type_name -> round.v1.Outpoint
-	35, // 11: round.v1.ClientBatchInfo.vtxo_tree_paths:type_name -> round.v1.ClientBatchInfo.VtxoTreePathsEntry
-	36, // 12: round.v1.ClientBatchInfo.connector_leaf_map:type_name -> round.v1.ClientBatchInfo.ConnectorLeafMapEntry
-	37, // 13: round.v1.ClientVTXOAggNonces.agg_nonces:type_name -> round.v1.ClientVTXOAggNonces.AggNoncesEntry
-	38, // 14: round.v1.ClientVTXOAggSigs.agg_sigs:type_name -> round.v1.ClientVTXOAggSigs.AggSigsEntry
+	36, // 11: round.v1.ClientBatchInfo.vtxo_tree_paths:type_name -> round.v1.ClientBatchInfo.VtxoTreePathsEntry
+	37, // 12: round.v1.ClientBatchInfo.connector_leaf_map:type_name -> round.v1.ClientBatchInfo.ConnectorLeafMapEntry
+	38, // 13: round.v1.ClientVTXOAggNonces.agg_nonces:type_name -> round.v1.ClientVTXOAggNonces.AggNoncesEntry
+	39, // 14: round.v1.ClientVTXOAggSigs.agg_sigs:type_name -> round.v1.ClientVTXOAggSigs.AggSigsEntry
 	1,  // 15: round.v1.BoardingRequest.outpoint:type_name -> round.v1.Outpoint
 	1,  // 16: round.v1.ForfeitRequest.vtxo_outpoint:type_name -> round.v1.Outpoint
 	14, // 17: round.v1.JoinRoundRequest.boarding_requests:type_name -> round.v1.BoardingRequest
@@ -2741,37 +2815,38 @@ var file_round_proto_depIdxs = []int32{
 	22, // 23: round.v1.JoinRoundQuote.leave_quotes:type_name -> round.v1.LeaveQuote
 	20, // 24: round.v1.JoinRoundQuote.breakdown:type_name -> round.v1.FeeBreakdown
 	0,  // 25: round.v1.JoinRoundQuote.reject_reason:type_name -> round.v1.QuoteReason
-	39, // 26: round.v1.SubmitNoncesRequest.nonces:type_name -> round.v1.SubmitNoncesRequest.NoncesEntry
-	40, // 27: round.v1.SignerNonces.tx_nonces:type_name -> round.v1.SignerNonces.TxNoncesEntry
-	41, // 28: round.v1.SubmitPartialSigRequest.signatures:type_name -> round.v1.SubmitPartialSigRequest.SignaturesEntry
-	42, // 29: round.v1.SignerPartialSigs.tx_sigs:type_name -> round.v1.SignerPartialSigs.TxSigsEntry
+	40, // 26: round.v1.SubmitNoncesRequest.nonces:type_name -> round.v1.SubmitNoncesRequest.NoncesEntry
+	41, // 27: round.v1.SignerNonces.tx_nonces:type_name -> round.v1.SignerNonces.TxNoncesEntry
+	42, // 28: round.v1.SubmitPartialSigRequest.signatures:type_name -> round.v1.SubmitPartialSigRequest.SignaturesEntry
+	43, // 29: round.v1.SignerPartialSigs.tx_sigs:type_name -> round.v1.SignerPartialSigs.TxSigsEntry
 	1,  // 30: round.v1.BoardingInputSignature.outpoint:type_name -> round.v1.Outpoint
 	30, // 31: round.v1.SubmitForfeitSigRequest.signatures:type_name -> round.v1.BoardingInputSignature
 	1,  // 32: round.v1.ForfeitTxSig.vtxo_outpoint:type_name -> round.v1.Outpoint
-	32, // 33: round.v1.SubmitVTXOForfeitSigsRequest.forfeit_txs:type_name -> round.v1.ForfeitTxSig
-	4,  // 34: round.v1.ClientBatchInfo.VtxoTreePathsEntry.value:type_name -> round.v1.VTXOTree
-	5,  // 35: round.v1.ClientBatchInfo.ConnectorLeafMapEntry.value:type_name -> round.v1.ConnectorLeafInfo
-	27, // 36: round.v1.SubmitNoncesRequest.NoncesEntry.value:type_name -> round.v1.SignerNonces
-	29, // 37: round.v1.SubmitPartialSigRequest.SignaturesEntry.value:type_name -> round.v1.SignerPartialSigs
-	19, // 38: round.v1.RoundService.JoinRound:input_type -> round.v1.JoinRoundRequest
-	24, // 39: round.v1.RoundService.AcceptQuote:input_type -> round.v1.JoinRoundAccept
-	25, // 40: round.v1.RoundService.RejectQuote:input_type -> round.v1.JoinRoundReject
-	26, // 41: round.v1.RoundService.SubmitNonces:input_type -> round.v1.SubmitNoncesRequest
-	28, // 42: round.v1.RoundService.SubmitPartialSigs:input_type -> round.v1.SubmitPartialSigRequest
-	31, // 43: round.v1.RoundService.SubmitForfeitSigs:input_type -> round.v1.SubmitForfeitSigRequest
-	33, // 44: round.v1.RoundService.SubmitVTXOForfeitSigs:input_type -> round.v1.SubmitVTXOForfeitSigsRequest
-	7,  // 45: round.v1.RoundService.JoinRound:output_type -> round.v1.ClientSuccessResp
-	7,  // 46: round.v1.RoundService.AcceptQuote:output_type -> round.v1.ClientSuccessResp
-	7,  // 47: round.v1.RoundService.RejectQuote:output_type -> round.v1.ClientSuccessResp
-	10, // 48: round.v1.RoundService.SubmitNonces:output_type -> round.v1.ClientVTXOAggNonces
-	11, // 49: round.v1.RoundService.SubmitPartialSigs:output_type -> round.v1.ClientVTXOAggSigs
-	9,  // 50: round.v1.RoundService.SubmitForfeitSigs:output_type -> round.v1.ClientAwaitingInputSigsResp
-	7,  // 51: round.v1.RoundService.SubmitVTXOForfeitSigs:output_type -> round.v1.ClientSuccessResp
-	45, // [45:52] is the sub-list for method output_type
-	38, // [38:45] is the sub-list for method input_type
-	38, // [38:38] is the sub-list for extension type_name
-	38, // [38:38] is the sub-list for extension extendee
-	0,  // [0:38] is the sub-list for field type_name
+	32, // 33: round.v1.ForfeitTxSig.participant_sigs:type_name -> round.v1.ForfeitParticipantSig
+	33, // 34: round.v1.SubmitVTXOForfeitSigsRequest.forfeit_txs:type_name -> round.v1.ForfeitTxSig
+	4,  // 35: round.v1.ClientBatchInfo.VtxoTreePathsEntry.value:type_name -> round.v1.VTXOTree
+	5,  // 36: round.v1.ClientBatchInfo.ConnectorLeafMapEntry.value:type_name -> round.v1.ConnectorLeafInfo
+	27, // 37: round.v1.SubmitNoncesRequest.NoncesEntry.value:type_name -> round.v1.SignerNonces
+	29, // 38: round.v1.SubmitPartialSigRequest.SignaturesEntry.value:type_name -> round.v1.SignerPartialSigs
+	19, // 39: round.v1.RoundService.JoinRound:input_type -> round.v1.JoinRoundRequest
+	24, // 40: round.v1.RoundService.AcceptQuote:input_type -> round.v1.JoinRoundAccept
+	25, // 41: round.v1.RoundService.RejectQuote:input_type -> round.v1.JoinRoundReject
+	26, // 42: round.v1.RoundService.SubmitNonces:input_type -> round.v1.SubmitNoncesRequest
+	28, // 43: round.v1.RoundService.SubmitPartialSigs:input_type -> round.v1.SubmitPartialSigRequest
+	31, // 44: round.v1.RoundService.SubmitForfeitSigs:input_type -> round.v1.SubmitForfeitSigRequest
+	34, // 45: round.v1.RoundService.SubmitVTXOForfeitSigs:input_type -> round.v1.SubmitVTXOForfeitSigsRequest
+	7,  // 46: round.v1.RoundService.JoinRound:output_type -> round.v1.ClientSuccessResp
+	7,  // 47: round.v1.RoundService.AcceptQuote:output_type -> round.v1.ClientSuccessResp
+	7,  // 48: round.v1.RoundService.RejectQuote:output_type -> round.v1.ClientSuccessResp
+	10, // 49: round.v1.RoundService.SubmitNonces:output_type -> round.v1.ClientVTXOAggNonces
+	11, // 50: round.v1.RoundService.SubmitPartialSigs:output_type -> round.v1.ClientVTXOAggSigs
+	9,  // 51: round.v1.RoundService.SubmitForfeitSigs:output_type -> round.v1.ClientAwaitingInputSigsResp
+	7,  // 52: round.v1.RoundService.SubmitVTXOForfeitSigs:output_type -> round.v1.ClientSuccessResp
+	46, // [46:53] is the sub-list for method output_type
+	39, // [39:46] is the sub-list for method input_type
+	39, // [39:39] is the sub-list for extension type_name
+	39, // [39:39] is the sub-list for extension extendee
+	0,  // [0:39] is the sub-list for field type_name
 }
 
 func init() { file_round_proto_init() }
@@ -2785,7 +2860,7 @@ func file_round_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_round_proto_rawDesc), len(file_round_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   42,
+			NumMessages:   43,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

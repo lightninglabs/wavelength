@@ -218,6 +218,78 @@ func ContainsKey(node Node, key *btcec.PublicKey) bool {
 	return containsKeyBytes(node, target)
 }
 
+// SigningKeys returns the tapscript CHECKSIG public keys committed to by node
+// in witness-stack order. Today Ark policy leaves are built from a single
+// Multisig, optionally wrapped by CSV/Condition gates. Returning the concrete
+// script order lets callers assemble or validate witnesses without parsing
+// compiled script bytes.
+func SigningKeys(node Node) ([]*btcec.PublicKey, error) {
+	switch n := node.(type) {
+	case nil:
+		return nil, fmt.Errorf("node is nil")
+
+	case *Multisig:
+		keys := make([]*btcec.PublicKey, 0, len(n.Keys))
+		for i, key := range n.Keys {
+			if key == nil {
+				return nil, fmt.Errorf("multisig key %d is nil", i)
+			}
+
+			keys = append(keys, key)
+		}
+
+		return keys, nil
+
+	case *CSV:
+		if n.Inner == nil {
+			return nil, fmt.Errorf("csv inner node is nil")
+		}
+
+		return SigningKeys(n.Inner)
+
+	case *Condition:
+		if n.Inner == nil {
+			return nil, fmt.Errorf("condition inner node is nil")
+		}
+
+		return SigningKeys(n.Inner)
+
+	default:
+		return nil, fmt.Errorf("unsupported signing node %T", node)
+	}
+}
+
+// SigningKeysForSpendPath locates the semantic template leaf selected by
+// spendPath and returns the leaf's required signing keys in witness-stack
+// order.
+func SigningKeysForSpendPath(template *PolicyTemplate,
+	spendPath *SpendPath) ([]*btcec.PublicKey, error) {
+
+	if template == nil {
+		return nil, fmt.Errorf("policy template is required")
+	}
+	if err := spendPath.Validate(); err != nil {
+		return nil, err
+	}
+
+	for i := range template.Leaves {
+		leafScript, err := template.Leaves[i].Script()
+		if err != nil {
+			return nil, fmt.Errorf("compile template leaf %d: %w", i,
+				err)
+		}
+
+		if !bytes.Equal(leafScript, spendPath.WitnessScript) {
+			continue
+		}
+
+		return SigningKeys(template.Leaves[i].Node)
+	}
+
+	return nil, fmt.Errorf("spend path witness script not found in " +
+		"policy template")
+}
+
 // containsKeyBytes recursively walks the AST looking for the target
 // x-only public key.
 func containsKeyBytes(node Node, target []byte) bool {

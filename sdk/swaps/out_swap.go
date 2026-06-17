@@ -563,6 +563,14 @@ func (s *ReceiveSession) VHTLCInfo() (*ReceiveVHTLCInfo, error) {
 func (s *ReceiveSession) runUntil(ctx context.Context,
 	target ReceiveState) error {
 
+	responderCtx, stopResponder := context.WithCancel(ctx)
+	defer stopResponder()
+
+	if s.client != nil && s.client.outEvents != nil &&
+		receiveTargetNeedsForfeitResponder(target) {
+
+		go s.respondToOutSwapForfeitSignatureRequests(responderCtx)
+	}
 	machine := newReceiveLoopFSM(s, target)
 
 	for s.state != target {
@@ -576,6 +584,12 @@ func (s *ReceiveSession) runUntil(ctx context.Context,
 	}
 
 	return nil
+}
+
+func receiveTargetNeedsForfeitResponder(target ReceiveState) bool {
+	return target == ReceiveStateVHTLCFunded ||
+		target == ReceiveStateClaimInitiated ||
+		target == ReceiveStateCompleted
 }
 
 // transition applies one receive FSM event to the current state.

@@ -1272,20 +1272,35 @@ func vtxoRequestToRoundParams(ctx context.Context, q RoundStore, now int64,
 	roundID string, requestIndex int,
 	req *types.VTXORequest) (sqlc.InsertRoundVtxoRequestParams, error) {
 
-	params, err := req.DecodeStandardPolicyTemplate()
-	if err != nil {
-		return sqlc.InsertRoundVtxoRequestParams{}, fmt.Errorf(
-			"decode VTXO policy template: %w", err)
-	}
-
 	pkScript, err := req.EffectivePkScript()
 	if err != nil {
 		return sqlc.InsertRoundVtxoRequestParams{}, fmt.Errorf(
 			"derive VTXO pkScript: %w", err)
 	}
 
-	// Register the signing descriptor in the shared internal_keys registry
-	// and reference it by id. A request always carries a signing key.
+	var (
+		expiry         = int32(req.Expiry)
+		clientPubkey   = []byte{}
+		operatorPubkey = []byte{}
+	)
+	if req.ClientKey != nil {
+		clientPubkey = req.ClientKey.SerializeCompressed()
+	}
+	if req.OperatorKey != nil {
+		operatorPubkey = req.OperatorKey.SerializeCompressed()
+	}
+
+	standardParams, err := req.DecodeStandardPolicyTemplate()
+	if err == nil {
+		expiry = int32(standardParams.ExitDelay)
+		clientPubkey = standardParams.OwnerKey.SerializeCompressed()
+		operatorPubkey = standardParams.OperatorKey.
+			SerializeCompressed()
+	}
+
+	// Register the signing descriptor in the shared internal_keys
+	// registry and reference it by id. A request always carries a
+	// signing key.
 	var signingKeyID sql.NullInt64
 	if req.SigningKey.PubKey != nil {
 		id, err := RegisterInternalKeyTx(ctx, q, now, req.SigningKey)
@@ -1306,10 +1321,11 @@ func vtxoRequestToRoundParams(ctx context.Context, q RoundStore, now int64,
 	// read path reconstructed.
 	var ownerKeyID sql.NullInt64
 	if req.OwnerKey.PubKey != nil {
-		ownerDesc := keychain.KeyDescriptor{
-			PubKey:     params.OwnerKey,
-			KeyLocator: req.OwnerKey.KeyLocator,
+		ownerDesc := req.OwnerKey
+		if standardParams != nil {
+			ownerDesc.PubKey = standardParams.OwnerKey
 		}
+
 		id, err := RegisterInternalKeyTx(ctx, q, now, ownerDesc)
 		if err != nil {
 			return sqlc.InsertRoundVtxoRequestParams{}, fmt.Errorf(
@@ -1331,10 +1347,10 @@ func vtxoRequestToRoundParams(ctx context.Context, q RoundStore, now int64,
 		RequestIndex:   int32(requestIndex),
 		Amount:         int64(req.Amount),
 		PkScript:       pkScript,
-		Expiry:         int32(params.ExitDelay),
+		Expiry:         expiry,
 		PolicyTemplate: policyTemplate,
-		ClientPubkey:   params.OwnerKey.SerializeCompressed(),
-		OperatorPubkey: params.OperatorKey.SerializeCompressed(),
+		ClientPubkey:   clientPubkey,
+		OperatorPubkey: operatorPubkey,
 		OwnerKeyID:     ownerKeyID,
 		SigningKeyID:   signingKeyID,
 	}, nil

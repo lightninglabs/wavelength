@@ -332,11 +332,28 @@ type ForfeitTxSig struct {
 	// ClientVTXOSig is the client's schnorr signature for the VTXO input
 	ClientVTXOSig *schnorr.Signature
 
+	// ParticipantVTXOSigs carries tapscript signatures from all
+	// non-operator participants that must authorize the selected
+	// spend path. Standard VTXO forfeits need only ClientVTXOSig;
+	// custom policies such as vHTLC refund-style paths may require
+	// multiple client-side signatures for one forfeited VTXO.
+	ParticipantVTXOSigs []*ForfeitParticipantSig
+
 	// SpendPath is the canonical arkscript spend path for the
 	// forfeited VTXO input. This makes the custom or standard
 	// tapscript leaf an explicit part of round messaging instead
 	// of implicit witness metadata.
 	SpendPath *arkscript.SpendPath
+}
+
+// ForfeitParticipantSig is one non-operator participant's tapscript
+// signature for a forfeited VTXO input.
+type ForfeitParticipantSig struct {
+	// PubKey is the x-only key that produced Signature.
+	PubKey *btcec.PublicKey
+
+	// Signature authorizes the forfeit transaction under PubKey.
+	Signature *schnorr.Signature
 }
 
 // ConnectorLeafInfo contains information about a connector leaf assigned to a

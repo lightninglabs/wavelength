@@ -113,6 +113,11 @@ type ManagerConfig struct {
 	// descriptor's stored bytes (the pre-fix behavior).
 	FetchOperatorKey func(context.Context) (*btcec.PublicKey, error)
 
+	// ForfeitParticipantSigner is propagated to each spawned VTXOActor
+	// so custom VTXO policies can collect non-local participant
+	// signatures after the round assigns connector outputs.
+	ForfeitParticipantSigner ForfeitParticipantSigner
+
 	// TerminalVTXOObserver receives the outpoint of VTXOs that leave the
 	// manager's active set so daemon-local observers can clean up related
 	// actor-owned work.
@@ -1062,18 +1067,19 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 	serviceKey := VTXOActorServiceKey(vtxo.Outpoint)
 
 	actorCfg := &VTXOActorConfig{
-		VTXO:             vtxo,
-		Store:            m.cfg.Store,
-		Wallet:           m.cfg.Wallet,
-		ChainSource:      m.cfg.ChainSource,
-		ChainParams:      m.cfg.ChainParams,
-		ExpiryConfig:     m.cfg.ExpiryConfig,
-		Log:              m.cfg.Log,
-		ChainResolver:    m.cfg.ChainResolver,
-		Manager:          m.managerRef,
-		LedgerSink:       m.cfg.LedgerSink,
-		RefreshFeeQuoter: m.cfg.RefreshFeeQuoter,
-		FetchOperatorKey: m.cfg.FetchOperatorKey,
+		VTXO:                     vtxo,
+		Store:                    m.cfg.Store,
+		Wallet:                   m.cfg.Wallet,
+		ChainSource:              m.cfg.ChainSource,
+		ChainParams:              m.cfg.ChainParams,
+		ExpiryConfig:             m.cfg.ExpiryConfig,
+		Log:                      m.cfg.Log,
+		ChainResolver:            m.cfg.ChainResolver,
+		Manager:                  m.managerRef,
+		LedgerSink:               m.cfg.LedgerSink,
+		RefreshFeeQuoter:         m.cfg.RefreshFeeQuoter,
+		FetchOperatorKey:         m.cfg.FetchOperatorKey,
+		ForfeitParticipantSigner: m.cfg.ForfeitParticipantSigner,
 	}
 
 	vtxoActor := NewVTXOActor(ctx, actorCfg)

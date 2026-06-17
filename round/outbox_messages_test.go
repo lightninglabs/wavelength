@@ -4,10 +4,12 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
@@ -21,6 +23,140 @@ func testRoundIDForMsg(seed string) RoundID {
 	id, _ := uuid.FromBytes(h[:16])
 
 	return RoundID(id)
+}
+
+// TestSubmitVTXOForfeitSigsToProtoCarriesParticipantSigs verifies that a
+// custom-policy forfeit can carry additional non-operator participant
+// signatures for the same forfeited VTXO. Standard VTXOs still use the legacy
+// ClientVtxoSig field, while vHTLC refresh/refund-style leaves need this
+// repeated set so the operator can assemble an N-of-N tapscript witness.
+func TestSubmitVTXOForfeitSigsToProtoCarriesParticipantSigs(t *testing.T) {
+	t.Parallel()
+
+	localPriv, localPub := btcec.PrivKeyFromBytes([]byte{1})
+	otherPriv, otherPub := btcec.PrivKeyFromBytes([]byte{2})
+	localSig, err := schnorr.Sign(localPriv, make([]byte, 32))
+	require.NoError(t, err)
+	otherSig, err := schnorr.Sign(otherPriv, make([]byte, 32))
+	require.NoError(t, err)
+
+	outpoint := wire.OutPoint{Index: 7}
+	msg := &SubmitVTXOForfeitSigsToServer{
+		RoundID: testRoundIDForMsg("multi-sig-forfeit"),
+		ForfeitTxs: map[wire.OutPoint]*types.ForfeitTxSig{
+			outpoint: {
+				UnsignedTx:    wire.NewMsgTx(2),
+				ClientVTXOSig: localSig,
+				ParticipantVTXOSigs: []*types.ForfeitParticipantSig{
+					{
+						PubKey:    localPub,
+						Signature: localSig,
+					},
+					{
+						PubKey:    otherPub,
+						Signature: otherSig,
+					},
+				},
+				SpendPath: &arkscript.SpendPath{
+					SpendInfo: &arkscript.SpendInfo{
+						WitnessScript: []byte{
+							0x51,
+						},
+						ControlBlock: []byte{
+							0xc0,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	protoMsg := msg.ToProto().UnwrapOrFail(t)
+	req, ok := protoMsg.(*roundpb.SubmitVTXOForfeitSigsRequest)
+	require.True(t, ok)
+	require.Len(t, req.GetForfeitTxs(), 1)
+
+	forfeit := req.GetForfeitTxs()[0]
+	require.NotEmpty(t, forfeit.GetClientVtxoSig())
+	require.Len(t, forfeit.GetParticipantSigs(), 2)
+	require.Equal(
+		t, localPub.SerializeCompressed(),
+		forfeit.GetParticipantSigs()[0].GetPubkey(),
+	)
+	require.Equal(
+		t, otherPub.SerializeCompressed(),
+		forfeit.GetParticipantSigs()[1].GetPubkey(),
+	)
+	require.Equal(
+		t, localSig.Serialize(),
+		forfeit.GetParticipantSigs()[0].GetSignature(),
+	)
+	require.Equal(
+		t, otherSig.Serialize(),
+		forfeit.GetParticipantSigs()[1].GetSignature(),
+	)
+}
+
+// TestSubmitVTXOForfeitSigsToProtoAcceptsParticipantOnly verifies that a
+// custom-policy forfeit is not forced through the legacy single-signature
+// field. vHTLC refresh leaves identify each required signer by key, so the
+// participant signature list is the authoritative signature carrier.
+func TestSubmitVTXOForfeitSigsToProtoAcceptsParticipantOnly(t *testing.T) {
+	t.Parallel()
+
+	localPriv, localPub := btcec.PrivKeyFromBytes([]byte{3})
+	otherPriv, otherPub := btcec.PrivKeyFromBytes([]byte{4})
+	localSig, err := schnorr.Sign(localPriv, make([]byte, 32))
+	require.NoError(t, err)
+	otherSig, err := schnorr.Sign(otherPriv, make([]byte, 32))
+	require.NoError(t, err)
+
+	outpoint := wire.OutPoint{Index: 11}
+	msg := &SubmitVTXOForfeitSigsToServer{
+		RoundID: testRoundIDForMsg("participant-only-forfeit"),
+		ForfeitTxs: map[wire.OutPoint]*types.ForfeitTxSig{
+			outpoint: {
+				UnsignedTx: wire.NewMsgTx(2),
+				ParticipantVTXOSigs: []*types.ForfeitParticipantSig{
+					{
+						PubKey:    localPub,
+						Signature: localSig,
+					},
+					{
+						PubKey:    otherPub,
+						Signature: otherSig,
+					},
+				},
+				SpendPath: &arkscript.SpendPath{
+					SpendInfo: &arkscript.SpendInfo{
+						WitnessScript: []byte{
+							0x51,
+						},
+						ControlBlock: []byte{
+							0xc0,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	protoMsg := msg.ToProto().UnwrapOrFail(t)
+	req, ok := protoMsg.(*roundpb.SubmitVTXOForfeitSigsRequest)
+	require.True(t, ok)
+	require.Len(t, req.GetForfeitTxs(), 1)
+
+	forfeit := req.GetForfeitTxs()[0]
+	require.Empty(t, forfeit.GetClientVtxoSig())
+	require.Len(t, forfeit.GetParticipantSigs(), 2)
+	require.Equal(
+		t, localPub.SerializeCompressed(),
+		forfeit.GetParticipantSigs()[0].GetPubkey(),
+	)
+	require.Equal(
+		t, otherPub.SerializeCompressed(),
+		forfeit.GetParticipantSigs()[1].GetPubkey(),
+	)
 }
 
 // TestOutboxMessagesToProto ensures that ToProto() methods compile and return
