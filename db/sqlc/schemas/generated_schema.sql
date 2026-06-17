@@ -40,8 +40,10 @@ CREATE TABLE boarding_addresses (
     -- client_key_id references the internal_keys registry row for the client
     -- wallet key used in the tapscript. The registry row carries the
     -- compressed pubkey plus the lnd KeyLocator needed to reconstruct the
-    -- signing descriptor. Nullable so a row can be written before the key is
-    -- registered, though the write path always registers first.
+    -- signing descriptor. Declared nullable only for uniformity with the
+    -- genuinely-optional internal_keys FKs (vtxos, round_vtxo_requests); in
+    -- practice every boarding address has a client key, so the write path
+    -- always registers it first and the read path treats a NULL as an error.
     client_key_id BIGINT REFERENCES internal_keys(id),
 
     -- operator_pubkey is the serialized public key (33 bytes compressed) of
@@ -336,6 +338,12 @@ CREATE INDEX idx_outbox_messages_domain_key
 CREATE INDEX idx_outbox_messages_pending
     ON outbox_messages(status, created_at)
     WHERE status = 'pending';
+
+CREATE INDEX idx_pending_intent_anchors_intent_id
+ON pending_intent_anchors (intent_id);
+
+CREATE INDEX idx_pending_intents_kind
+ON pending_intents (kind);
 
 CREATE INDEX idx_processed_messages_expires
     ON processed_messages(expires_at);
@@ -714,8 +722,11 @@ CREATE TABLE owned_receive_scripts (
 
     -- client_key_id references the internal_keys registry row for the client
     -- wallet key used in the checkpoint taptree. The registry row carries the
-    -- compressed pubkey plus the lnd KeyLocator. Nullable, though the write
-    -- path always registers the key first.
+    -- compressed pubkey plus the lnd KeyLocator. Declared nullable only for
+    -- uniformity with the genuinely-optional internal_keys FKs (vtxos,
+    -- round_vtxo_requests); in practice every owned receive script has a
+    -- client key, so the write path always registers it first and the read
+    -- path treats a NULL as an error.
     client_key_id BIGINT REFERENCES internal_keys(id),
 
     -- operator_pubkey is the operator key used in the checkpoint taptree.
@@ -740,18 +751,83 @@ CREATE TABLE owned_receive_scripts (
     FOREIGN KEY (source) REFERENCES owned_receive_script_sources(source)
 );
 
-CREATE TABLE pending_board_requests (
-    outpoint_hash BLOB NOT NULL,
-    outpoint_index INTEGER NOT NULL,
+CREATE TABLE pending_board_intents (
+    intent_id BLOB PRIMARY KEY
+        REFERENCES pending_intents(intent_id),
 
-    target_vtxo_count INTEGER NOT NULL DEFAULT 0,
+    -- target_vtxo_count mirrors BoardRequest.TargetVTXOCount: zero collapses
+    -- the confirmed boarding balance into one VTXO, non-zero fans it out.
+    target_vtxo_count INTEGER NOT NULL DEFAULT 0
+        CHECK (target_vtxo_count >= 0)
+);
 
-    requested_at_unix BIGINT NOT NULL,
+CREATE TABLE pending_intent_anchors (
+    -- The anchored outpoint. For kind='board' this is a confirmed boarding
+    -- outpoint; for kind='send_onchain' a reserved forfeit VTXO outpoint.
+    outpoint_hash BLOB NOT NULL CHECK (length(outpoint_hash) = 32),
+    outpoint_index INTEGER NOT NULL CHECK (outpoint_index >= 0),
 
-    PRIMARY KEY (outpoint_hash, outpoint_index),
+    -- The owning intent header. Deleting an intent requires deleting its
+    -- anchors and detail row in the same transaction (the store does this
+    -- explicitly rather than relying on cascade semantics differing across
+    -- backends).
+    intent_id BLOB NOT NULL REFERENCES pending_intents(intent_id),
 
-    CHECK (target_vtxo_count >= 0),
-    CHECK (requested_at_unix > 0)
+    -- One anchor row per outpoint across ALL intents: a newer intent that
+    -- claims an already-anchored outpoint rebinds it (upsert), preserving
+    -- the pending_board_requests semantics where a fresh Board call took
+    -- over the rows of a prior one.
+    PRIMARY KEY (outpoint_hash, outpoint_index)
+);
+
+CREATE TABLE pending_intent_kinds (
+    kind TEXT PRIMARY KEY
+);
+
+CREATE TABLE pending_intents (
+    -- intent_id is a 32-byte identifier derived in Go by hashing the intent
+    -- kind, the sorted anchor outpoints, and the payload's canonical field
+    -- encoding. Re-persisting the same logical intent upserts; a tampered
+    -- detail row no longer hashes to its id and is dropped on replay.
+    intent_id BLOB PRIMARY KEY CHECK (length(intent_id) = 32),
+
+    -- kind discriminates which detail table holds this intent's parameters.
+    kind TEXT NOT NULL REFERENCES pending_intent_kinds(kind),
+
+    -- requested_at_unix is when the user issued the intent. Replay
+    -- diagnostics surface it; newer intents win when reconciling.
+    requested_at_unix BIGINT NOT NULL CHECK (requested_at_unix > 0)
+);
+
+CREATE TABLE pending_send_intents (
+    intent_id BLOB PRIMARY KEY
+        REFERENCES pending_intents(intent_id),
+
+    -- dest_pkscript is the on-chain destination script of the leave output.
+    dest_pkscript BLOB NOT NULL CHECK (length(dest_pkscript) > 0),
+
+    -- target_amount_sat is the exact amount to land at the destination in
+    -- bounded mode; zero in sweep-all mode.
+    target_amount_sat BIGINT NOT NULL CHECK (target_amount_sat >= 0),
+
+    -- sweep_all marks the sweep-all mode where the single leave output
+    -- absorbs the seal-time residual instead of a fixed amount plus change.
+    sweep_all INTEGER NOT NULL CHECK (sweep_all IN (0, 1)),
+
+    -- operator_key is the operator pubkey for the change-VTXO policy
+    -- template. NULL in sweep-all mode (no change VTXO is built).
+    operator_key BLOB
+        CHECK (operator_key IS NULL OR length(operator_key) = 33),
+
+    -- vtxo_exit_delay is the CSV delay of the change VTXO's exit path.
+    -- Unused (zero) in sweep-all mode.
+    vtxo_exit_delay INTEGER NOT NULL DEFAULT 0
+        CHECK (vtxo_exit_delay >= 0),
+
+    -- dust_limit_sat is the change-VTXO dust floor used for the defensive
+    -- re-validation on replay. Unused (zero) in sweep-all mode.
+    dust_limit_sat BIGINT NOT NULL DEFAULT 0
+        CHECK (dust_limit_sat >= 0)
 );
 
 CREATE TABLE processed_messages (

@@ -101,9 +101,20 @@ func NewSysTestHarness(t *testing.T) *SysTestHarness {
 		rootLog,
 	)
 
+	// The pending-intent outbox shares the same database; the second
+	// executor exists only because the generic transaction executor is
+	// typed per query-interface.
+	intentDB := db.NewTransactionExecutor(
+		sqlDB,
+		func(tx *sql.Tx) db.PendingIntentStore {
+			return sqlDB.WithTx(tx)
+		},
+		rootLog,
+	)
+
 	// Create the boarding wallet store with the transaction executor.
 	store := db.NewBoardingWalletStore(
-		boardingDB, &chaincfg.RegressionNetParams,
+		boardingDB, intentDB, &chaincfg.RegressionNetParams,
 		clock.NewDefaultClock(),
 	)
 

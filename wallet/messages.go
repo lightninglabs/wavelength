@@ -571,12 +571,13 @@ type BoardRequest struct {
 	TargetVTXOCount uint32
 
 	// NoPersist opts out of restart-safe Board replay. When true, the
-	// wallet skips the UpsertPendingBoardRequests write entirely so a
-	// crash between admission and round seal silently drops the request.
-	// Default false is the safe behavior: the wallet persists one row
-	// per admitted confirmed outpoint and replays via its own startup
-	// self-Tell. The startup replay path always sets this to false so
-	// a replay re-persists with a fresh timestamp.
+	// wallet skips the pending-intent outbox write entirely so a crash
+	// between admission and round seal silently drops the request.
+	// Default false is the safe behavior: the wallet persists one
+	// intent anchored to every admitted confirmed outpoint and replays
+	// via its own startup self-Tell. The startup replay path always
+	// sets this to false so a replay re-persists with a fresh
+	// timestamp.
 	NoPersist bool
 }
 
@@ -793,6 +794,27 @@ func (m *SendOnChainRequest) MessageType() string {
 
 // walletMsgSealed implements the sealed WalletMsg interface.
 func (m *SendOnChainRequest) walletMsgSealed() {}
+
+// ReplaySendOnChainIntent is an internal self-Tell carrying one persisted
+// SendOnChain intent from the startup replay pass into the wallet's own
+// mailbox. The handler re-reserves the intent's exact anchor outpoints,
+// rebuilds the intent package from the TLV payload, and re-registers it
+// with the round actor. Not part of the public RPC surface; only the
+// sendOnChainIntentReplayer emits it.
+type ReplaySendOnChainIntent struct {
+	actor.BaseMessage
+
+	// Intent is the persisted outbox row to re-issue.
+	Intent PendingIntent
+}
+
+// MessageType returns the message type identifier for logging.
+func (m *ReplaySendOnChainIntent) MessageType() string {
+	return "ReplaySendOnChainIntent"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *ReplaySendOnChainIntent) walletMsgSealed() {}
 
 // SendOnChainStatus enumerates the terminal outcomes of a
 // SendOnChainRequest as surfaced to the caller.

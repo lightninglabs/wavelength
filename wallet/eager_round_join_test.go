@@ -40,7 +40,7 @@ type eagerBoardFixture struct {
 // with WithEagerRoundJoin. The store is configured for the full
 // processUtxo → handleBoard chain when eager is true; when eager is false,
 // only the processUtxo expectations are set so an unwanted Fetch /
-// UpsertPendingBoardRequests call would fail the test.
+// UpsertPendingIntent call would fail the test.
 func newEagerBoardFixture(t *testing.T, eager bool) *eagerBoardFixture {
 	t.Helper()
 
@@ -142,7 +142,7 @@ func newEagerBoardFixture(t *testing.T, eager bool) *eagerBoardFixture {
 			BoardingStatusConfirmed,
 		).Return([]BoardingIntent{confirmedIntent}, nil)
 		store.On(
-			"UpsertPendingBoardRequests", mock.Anything,
+			"UpsertPendingIntent", mock.Anything,
 			mock.Anything,
 		).Return(nil)
 	}
@@ -299,7 +299,7 @@ func newMultiUTXOEagerBoardFixture(t *testing.T) *eagerBoardFixture {
 		BoardingStatusConfirmed,
 	).Return(confirmedIntents, nil)
 	store.On(
-		"UpsertPendingBoardRequests", mock.Anything, mock.Anything,
+		"UpsertPendingIntent", mock.Anything, mock.Anything,
 	).Return(nil)
 
 	system := actor.NewActorSystem()

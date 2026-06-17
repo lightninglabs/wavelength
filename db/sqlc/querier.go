@@ -10,8 +10,7 @@ import (
 
 type Querier interface {
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
-	ClearAllPendingBoardRequests(ctx context.Context) error
-	ClearPendingBoardRequestByOutpoint(ctx context.Context, arg ClearPendingBoardRequestByOutpointParams) error
+	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)
 	CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error)
 	CountClientLedgerEntries(ctx context.Context) (int64, error)
@@ -22,6 +21,17 @@ type Querier interface {
 	CountWalletUTXOLog(ctx context.Context) (int64, error)
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
 	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
+	DeleteOrphanedPendingBoardIntents(ctx context.Context) error
+	DeleteOrphanedPendingIntents(ctx context.Context) error
+	DeleteOrphanedPendingSendIntents(ctx context.Context) error
+	DeletePendingBoardIntentByID(ctx context.Context, intentID []byte) error
+	DeletePendingBoardIntentsAll(ctx context.Context) error
+	DeletePendingIntentAnchorsByIntentID(ctx context.Context, intentID []byte) error
+	DeletePendingIntentAnchorsByKind(ctx context.Context, kind string) error
+	DeletePendingIntentByID(ctx context.Context, intentID []byte) error
+	DeletePendingIntentsByKind(ctx context.Context, kind string) error
+	DeletePendingSendIntentByID(ctx context.Context, intentID []byte) error
+	DeletePendingSendIntentsAll(ctx context.Context) error
 	// DeleteSpendingReservation removes the reservation for one outpoint. Called
 	// when the VTXO leaves SpendingState (released or completed).
 	DeleteSpendingReservation(ctx context.Context, arg DeleteSpendingReservationParams) error
@@ -164,9 +174,11 @@ type Querier interface {
 	ListOORRecipientCursors(ctx context.Context) ([]OorRecipientCursor, error)
 	ListOORVTXOBindingsBySession(ctx context.Context, sessionID []byte) ([]ListOORVTXOBindingsBySessionRow, error)
 	ListOwnedReceiveScripts(ctx context.Context) ([]OwnedReceiveScript, error)
-	ListPendingBoardRequests(ctx context.Context) ([]PendingBoardRequest, error)
+	ListPendingBoardIntents(ctx context.Context) ([]ListPendingBoardIntentsRow, error)
 	ListPendingBoardingSweepInputs(ctx context.Context) ([]BoardingSweepInput, error)
 	ListPendingBoardingSweeps(ctx context.Context) ([]BoardingSweep, error)
+	ListPendingIntentAnchorsByKind(ctx context.Context, kind string) ([]PendingIntentAnchor, error)
+	ListPendingSendIntents(ctx context.Context) ([]ListPendingSendIntentsRow, error)
 	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
 	// ListRoundsPaginated returns rounds ordered by round_id with cursor-
 	// based pagination. When cursor is empty, returns from the beginning.
@@ -247,15 +259,10 @@ type Querier interface {
 	UpsertOORRecipientCursor(ctx context.Context, arg UpsertOORRecipientCursorParams) error
 	UpsertOORVTXOBinding(ctx context.Context, arg UpsertOORVTXOBindingParams) (int64, error)
 	UpsertOwnedReceiveScript(ctx context.Context, arg UpsertOwnedReceiveScriptParams) error
-	// Pending board request queries.
-	//
-	// Each row binds the user's explicit Board RPC target_vtxo_count to one
-	// confirmed boarding outpoint that the call admitted. On daemon restart the
-	// wallet lists every row and replays a single Board through the same actor
-	// path the live RPC uses; rows whose outpoints are no longer Confirmed (the
-	// intent has already adopted, swept, or failed) are cleared so the next
-	// start is a no-op.
-	UpsertPendingBoardRequest(ctx context.Context, arg UpsertPendingBoardRequestParams) error
+	UpsertPendingBoardIntent(ctx context.Context, arg UpsertPendingBoardIntentParams) error
+	UpsertPendingIntentAnchor(ctx context.Context, arg UpsertPendingIntentAnchorParams) error
+	UpsertPendingIntentHeader(ctx context.Context, arg UpsertPendingIntentHeaderParams) error
+	UpsertPendingSendIntent(ctx context.Context, arg UpsertPendingSendIntentParams) error
 	// Spending reservation queries.
 	// These queries maintain a durable index of VTXO outpoints reserved by an
 	// active spend owner (e.g. an outgoing OOR session) so a startup sweep can

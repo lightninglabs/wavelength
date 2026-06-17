@@ -76,6 +76,12 @@ type Ark struct {
 	// store persists boarding addresses and intents to the database.
 	store BoardingStore
 
+	// intentReplayers is the registry of pending-intent replayers,
+	// one per PendingIntentKind. handleReplayPendingIntents walks this
+	// set on the daemon's startup replay Ask to re-issue user intents
+	// persisted before the last shutdown.
+	intentReplayers []PendingIntentReplayer
+
 	// vtxoReader provides read-only access to VTXO descriptors. The wallet
 	// uses this to load VTXO data when building intent packages for round
 	// registration (refresh and leave flows).
@@ -268,6 +274,19 @@ func NewArk(backend BoardingBackend, store BoardingStore, vtxoReader VTXOReader,
 		),
 		clk: clock.NewDefaultClock(),
 	}
+
+	// Register the pending-intent replayers. Each kind persisted in the
+	// intent outbox needs exactly one replayer here, or persisted rows
+	// of that kind would silently never be replayed after a restart.
+	a.intentReplayers = []PendingIntentReplayer{
+		&boardIntentReplayer{
+			ark: a,
+		},
+		&sendOnChainIntentReplayer{
+			ark: a,
+		},
+	}
+
 	for _, opt := range opts {
 		opt(a)
 	}
@@ -549,14 +568,14 @@ func (a *Ark) Start(ctx context.Context,
 	// "not found", silently orphaning every persisted pending sweep.
 	// The daemon explicitly Asks the wallet to resume after step 12.
 
-	// Replay of any persisted Board RPC is intentionally NOT dispatched
-	// here. The wallet starts before the round-client actor registers
-	// with the receptionist, so a self-Tell from Start would land
-	// handleBoard's downstream TriggerBoardMsg against an unresolved
-	// service key and silently drop the replay. The daemon explicitly
-	// Asks the wallet to replay (ReplayPendingBoardRequest) once the
-	// round-client actor is up, mirroring the resumeBoardingSweeps
-	// startup-ordering fix.
+	// Replay of any persisted pending intent is intentionally NOT
+	// dispatched here. The wallet starts before the round-client actor
+	// registers with the receptionist, so a self-Tell from Start would
+	// land the replayed intent's downstream round dispatch against an
+	// unresolved service key and silently drop the replay. The daemon
+	// explicitly Asks the wallet to replay (ReplayPendingIntentsRequest)
+	// once the round-client actor is up, mirroring the
+	// resumeBoardingSweeps startup-ordering fix.
 
 	// Start the tip-tick loop that drives per-tip work off the
 	// block-epoch hot path. handleBlockEpoch only records the latest
@@ -716,14 +735,17 @@ func (a *Ark) Receive(ctx context.Context,
 	case *SendOnChainRequest:
 		return a.handleSendOnChain(ctx, m)
 
+	case *ReplaySendOnChainIntent:
+		return a.handleReplaySendOnChainIntent(ctx, m)
+
 	case *SweepBoardingUTXOsRequest:
 		return a.handleSweepBoardingUTXOs(ctx, m)
 
 	case *ResumeBoardingSweepsRequest:
 		return a.handleResumeBoardingSweeps(ctx, m)
 
-	case *ReplayPendingBoardRequest:
-		return a.handleReplayPendingBoard(ctx, m)
+	case *ReplayPendingIntentsRequest:
+		return a.handleReplayPendingIntents(ctx, m)
 
 	case BoardingSweepSpendNotification:
 		return a.handleSweepSpendNotification(ctx, m)
@@ -1898,36 +1920,38 @@ func (a *Ark) handleBoard(ctx context.Context,
 	//   - pre-persist: no row, no Tell — the user sees an error and
 	//     retries (idempotent).
 	//   - post-persist, pre-Tell: rows exist, no Tell. On restart the
-	//     wallet's Start re-issues TriggerBoardMsg via a self-Tell of
-	//     the same BoardRequest.
+	//     wallet's replay hook re-issues TriggerBoardMsg via a
+	//     self-Tell of the same BoardRequest.
 	//   - post-Tell: rows exist, round actor has the request. On
 	//     restart the round actor is empty but the wallet re-issues
 	//     and we converge on the same state.
 	//
-	// One row is written per confirmed boarding outpoint that the call
-	// admitted. Rows are cleared in the same SQL transaction as the
-	// round-state checkpoint that flips each intent to Adopted (see
+	// The intent is anchored to every confirmed boarding outpoint the
+	// call admitted. Anchors are cleared in the same SQL transaction as
+	// the round-state checkpoint that flips each intent to Adopted (see
 	// db.RoundPersistenceStore.CommitState), so the row can never
 	// outlive the intent it was admitted against.
 	if !req.NoPersist {
-		now := a.clk.Now().Unix()
-		pendingRows := make(
-			[]PendingBoardRequest, 0, len(intents),
-		)
+		anchors := make([]wire.OutPoint, 0, len(intents))
 		for _, intent := range intents {
-			pendingRows = append(
-				pendingRows, PendingBoardRequest{
-					Outpoint:        intent.Outpoint,
-					TargetVTXOCount: req.TargetVTXOCount,
-					RequestedAt:     now,
-				},
-			)
+			anchors = append(anchors, intent.Outpoint)
 		}
-		if err := a.store.UpsertPendingBoardRequests(
-			ctx, pendingRows,
+
+		payload := &BoardIntentPayload{
+			TargetVTXOCount: req.TargetVTXOCount,
+		}
+
+		pendingIntent := PendingIntent{
+			ID:          NewPendingIntentID(payload, anchors),
+			Payload:     payload,
+			RequestedAt: a.clk.Now().Unix(),
+			Anchors:     anchors,
+		}
+		if err := a.store.UpsertPendingIntent(
+			ctx, pendingIntent,
 		); err != nil {
 			return fn.Err[WalletResp](
-				fmt.Errorf("persist pending board request: %w",
+				fmt.Errorf("persist pending board intent: %w",
 					err),
 			)
 		}
@@ -1967,143 +1991,52 @@ func (a *Ark) handleBoard(ctx context.Context,
 	return fn.Ok[WalletResp](resp)
 }
 
-// replayPendingBoardOnStart is invoked from handleReplayPendingBoard
-// (driven by the daemon's startWalletDependentActors hook) to recover
-// a user's Board RPC across daemon restart. The replay self-Tells a
-// BoardRequest into the wallet's own mailbox so handleBoard runs
-// against a real BoardingStore read and re-persists with a fresh
-// timestamp; FIFO ordering of the mailbox guarantees that any
-// user-issued Board RPC arriving over gRPC after the daemon's
-// ReplayPendingBoardRequest Ask returns will be processed AFTER the
-// replay, eliminating the gRPC-admission-vs-replay startup race.
-// Running from a Receive-time handler rather than Start also closes
-// the round-actor-registration race: by the time the daemon Asks us
-// to replay, the round-client actor is already on the receptionist
-// so the downstream TriggerBoardMsg dispatch resolves cleanly.
+// handleReplayPendingIntents is the Ask handler for
+// ReplayPendingIntentsRequest. The daemon issues this Ask once every
+// dependent actor (round-client, vtxo-manager, txconfirm, etc.) is
+// registered, which is the earliest moment a replayed intent's downstream
+// round-actor dispatch can be delivered through the actor receptionist.
 //
-// Per-row semantics: every pending row is bound to one specific boarding
-// outpoint. Rows whose outpoint is no longer Confirmed are stale: they
-// belong to a Board call whose round has already adopted/swept/failed.
-// Those rows are deleted in bulk via ClearAllPendingBoardRequests when
-// none of the persisted outpoints have a live Confirmed intent. When at
-// least one outpoint is still Confirmed, the wallet self-Tells a single
-// BoardRequest carrying the original target_vtxo_count.
-func (a *Ark) replayPendingBoardOnStart(ctx context.Context,
-	selfRef actor.TellOnlyRef[WalletMsg]) error {
+// The handler walks the registered PendingIntentReplayer set: for each
+// kind it lists the persisted intents and hands them to the kind's
+// replayer, which reconciles them against live state and either re-issues
+// the original command via self-Tell or clears the stale rows. Running
+// from a Receive-time handler rather than Start closes the
+// round-actor-registration race, and the self-Tell pattern preserves FIFO
+// ordering against user RPCs admitted after the replay Ask returns.
+func (a *Ark) handleReplayPendingIntents(ctx context.Context,
+	_ *ReplayPendingIntentsRequest) fn.Result[WalletResp] {
 
-	pending, err := a.store.ListPendingBoardRequests(ctx)
-	if err != nil {
-		return fmt.Errorf("list pending board requests: %w", err)
-	}
+	var replayedAny bool
+	for _, replayer := range a.intentReplayers {
+		kind := replayer.Kind()
 
-	if len(pending) == 0 {
-		return nil
-	}
+		intents, err := a.store.ListPendingIntents(ctx, kind)
+		if err != nil {
+			return fn.Err[WalletResp](
+				fmt.Errorf("list pending intents for kind "+
+					"%v: %w", kind, err),
+			)
+		}
 
-	// Reconcile the persisted rows against the current set of confirmed
-	// boarding intents. A pending row is "live" only if its outpoint
-	// still has a BoardingStatusConfirmed intent — otherwise the round
-	// it was admitted into has already moved on and the row is stale.
-	confirmed, err := a.store.FetchBoardingIntentsByStatus(
-		ctx, BoardingStatusConfirmed,
-	)
-	if err != nil {
-		return fmt.Errorf("fetch confirmed boarding intents: %w", err)
-	}
-
-	confirmedSet := make(map[wire.OutPoint]struct{}, len(confirmed))
-	for _, intent := range confirmed {
-		confirmedSet[intent.Outpoint] = struct{}{}
-	}
-
-	var liveTarget uint32
-	var earliestRequestedAt int64
-	var liveOutpoints int
-	for _, row := range pending {
-		if _, ok := confirmedSet[row.Outpoint]; !ok {
+		if len(intents) == 0 {
 			continue
 		}
 
-		liveOutpoints++
-
-		// All rows in the same Board call carry the same
-		// target_vtxo_count; if multiple Board calls left rows behind,
-		// the most recent target wins (rows are ordered ASC by
-		// requested_at_unix, so the last live row wins).
-		liveTarget = row.TargetVTXOCount
-
-		if earliestRequestedAt == 0 ||
-			row.RequestedAt < earliestRequestedAt {
-
-			earliestRequestedAt = row.RequestedAt
-		}
-	}
-
-	if liveOutpoints == 0 {
-		// Every pending row references an outpoint that is no longer
-		// Confirmed. The Board these rows belonged to has already
-		// completed; sweep them so the next start is a no-op.
-		if err := a.store.ClearAllPendingBoardRequests(
-			ctx,
-		); err != nil {
-			return fmt.Errorf("clear stale pending board "+
-				"requests: %w", err)
+		replayed, err := replayer.Replay(ctx, intents)
+		if err != nil {
+			return fn.Err[WalletResp](
+				fmt.Errorf("replay pending intents for kind "+
+					"%v: %w", kind, err),
+			)
 		}
 
-		a.logger(ctx).InfoS(
-			ctx,
-			"Cleared stale pending Board rows on startup",
-			slog.Int("stale_row_count", len(pending)),
-		)
-
-		return nil
+		replayedAny = replayedAny || replayed
 	}
 
-	a.logger(ctx).InfoS(
-		ctx,
-		"Replaying persisted Board request after restart",
-		slog.Int("target_vtxo_count", int(liveTarget)),
-		slog.Int("live_outpoint_count", liveOutpoints),
-		slog.Int("stale_row_count", len(pending)-liveOutpoints),
-		slog.Int64("earliest_requested_at_unix", earliestRequestedAt),
-	)
-
-	// Self-Tell the BoardRequest. handleBoard will re-walk the confirmed
-	// set, re-persist rows with a fresh timestamp, and Tell the round
-	// actor. The daemon Asks this method from
-	// startWalletDependentActors only after the round-client actor has
-	// registered with the receptionist, so the downstream
-	// TriggerBoardMsg dispatch from handleBoard sees a live round-actor
-	// ref rather than a "not found" lookup that would silently drop the
-	// replay.
-	err = selfRef.Tell(ctx, &BoardRequest{
-		TargetVTXOCount: liveTarget,
+	return fn.Ok[WalletResp](&ReplayPendingIntentsResponse{
+		Replayed: replayedAny,
 	})
-	if err != nil {
-		return fmt.Errorf("self-tell pending board request: %w", err)
-	}
-
-	return nil
-}
-
-// handleReplayPendingBoard is the Ask handler for
-// ReplayPendingBoardRequest. The daemon issues this Ask once every
-// dependent actor (round-client, vtxo-manager, txconfirm, etc.) is
-// registered, which is the earliest moment the replayed Board's
-// downstream TriggerBoardMsg can be delivered through the actor
-// receptionist. The handler is a thin wrapper around
-// replayPendingBoardOnStart so the existing logic (and its test
-// coverage) is reused without duplication.
-func (a *Ark) handleReplayPendingBoard(ctx context.Context,
-	_ *ReplayPendingBoardRequest) fn.Result[WalletResp] {
-
-	if err := a.replayPendingBoardOnStart(ctx, a.selfRef); err != nil {
-		return fn.Err[WalletResp](
-			fmt.Errorf("replay pending board: %w", err),
-		)
-	}
-
-	return fn.Ok[WalletResp](&ReplayPendingBoardResponse{})
 }
 
 // splitBoardingAmount fans a confirmed boarding balance into count VTXO
@@ -2896,93 +2829,74 @@ func (a *Ark) handleSendOnChain(ctx context.Context,
 	// Build the round intent. Forfeit inputs come from the
 	// reservation; the leave output is the user's onchain payment;
 	// the change VTXO (bounded mode only) absorbs the seal-time fee
-	// residual.
-	forfeits := make(
-		[]types.ForfeitRequest, 0, len(selectedOutpoints),
-	)
-	for i, op := range selectedOutpoints {
-		forfeits = append(forfeits, types.ForfeitRequest{
-			VTXOOutpoint: &op,
-			Amount:       selectedAmounts[i],
-		})
+	// residual. The package builder is shared with the restart replay
+	// path so both produce the identical intent shape.
+	intentPayload := &SendOnChainIntentPayload{
+		DestinationPkScript: req.DestinationPkScript,
+		TargetAmountSat:     req.TargetAmountSat,
+		SweepAll:            sweepAll,
+		OperatorKey:         req.OperatorKey,
+		VTXOExitDelay:       req.VTXOExitDelay,
+		DustLimit:           req.DustLimit,
 	}
 
-	var (
-		leaves []*types.LeaveRequest
-		vtxos  []types.VTXORequest
+	forfeits, leaves, vtxos, err := a.buildSendOnChainIntentPackage(
+		ctx, *intentPayload, selectedOutpoints, selectedAmounts, change,
 	)
-
-	if sweepAll {
-		// One leave output, IsChange=true: server stamps the
-		// residual (Σinputs − fee) onto it at seal time.
-		leaves = []*types.LeaveRequest{
-			{
-				Output: &wire.TxOut{
-					PkScript: req.DestinationPkScript,
-				},
-				IsChange: true,
-			},
-		}
-	} else {
-		// One fixed leave + one change VTXO. The change VTXO uses
-		// the same arkscript pattern as the directed-send self-
-		// change at buildSendVTXORequests so confirmation-time
-		// ownership persistence works through the standard
-		// OwnedScriptRegistrar path.
-		leaves = []*types.LeaveRequest{
-			{
-				Output: &wire.TxOut{
-					PkScript: req.DestinationPkScript,
-					Value:    int64(req.TargetAmountSat),
-				},
-				IsChange: false,
-			},
-		}
-
-		changeClientKey, err := a.backend.DeriveNextKey(
-			ctx, types.VTXOOwnerKeyFamily,
+	if err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("build onchain send intent: %w", err),
 		)
-		if err != nil {
-			return fn.Err[WalletResp](
-				fmt.Errorf("derive change client key: %w", err),
-			)
-		}
-
-		policyTemplate, pkScript, err := arkscript.
-			EncodeStandardVTXOArtifacts(
-				changeClientKey.PubKey, req.OperatorKey,
-				req.VTXOExitDelay,
-			)
-		if err != nil {
-			return fn.Err[WalletResp](
-				fmt.Errorf("build change descriptor: %w", err),
-			)
-		}
-
-		vtxos = []types.VTXORequest{
-			{
-				// Amount is the caller's projected change
-				// (totalSelected − TargetAmountSat). The
-				// seal-time quote rewrites this slot with
-				// the residual (Σin − Σfixed − fee) because
-				// IsChange=true, but the value must already
-				// be above the operator's dust floor at
-				// admission time — the join-request
-				// validation runs before the seal-time
-				// builder, and a zero or sub-dust placeholder
-				// is rejected with ErrVTXOAmountBelowMinimum.
-				Amount:         change,
-				PolicyTemplate: policyTemplate,
-				PkScript:       pkScript,
-				Expiry:         req.VTXOExitDelay,
-				ClientKey:      changeClientKey.PubKey,
-				OwnerKey:       *changeClientKey,
-				OperatorKey:    req.OperatorKey,
-				Origin:         types.VTXOOriginRoundRefresh,
-				IsChange:       true,
-			},
-		}
 	}
+
+	// Persist the send intent to the pending-intents outbox BEFORE
+	// publishing it to the round actor (persist-before-publish). The
+	// anchors are the reserved forfeit outpoints — the round consumes
+	// exactly these when it adopts the intent, and the round-state
+	// checkpoint clears them in the same transaction (see
+	// db.RoundPersistenceStore.CommitState), so a replay after adoption
+	// is structurally impossible. A crash in any window before the user
+	// sees "submitted" either leaves no row (clean retry) or a row whose
+	// startup replay re-reserves these exact outpoints and re-registers.
+	pendingIntent := PendingIntent{
+		ID: NewPendingIntentID(
+			intentPayload, selectedOutpoints,
+		),
+		Payload:     intentPayload,
+		RequestedAt: a.clk.Now().Unix(),
+		Anchors:     selectedOutpoints,
+	}
+	if err := a.store.UpsertPendingIntent(ctx, pendingIntent); err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("persist pending onchain send intent: %w",
+				err),
+		)
+	}
+
+	// If registration fails below, delete the outbox row alongside the
+	// deferred reservation release: the caller receives an error, so a
+	// silent resurrection of the "failed" send on the next start would
+	// contradict what the user was told. This mirrors the !committed
+	// release defer above and shares its crash semantics — a crash
+	// between persist and the round Ask leaves the row in place, which
+	// is exactly the window replay exists to cover.
+	defer func() {
+		if committed {
+			return
+		}
+
+		deleteCtx := context.WithoutCancel(ctx)
+		if delErr := a.store.DeletePendingIntent(
+			deleteCtx, pendingIntent.ID,
+		); delErr != nil {
+			a.logger(deleteCtx).WarnS(
+				deleteCtx,
+				"Failed to delete pending onchain send "+
+					"intent after registration failure",
+				delErr,
+			)
+		}
+	}()
 
 	// Register the intent with the round actor. TriggerRegistration is
 	// left false here so the wallet handler stops at the "intent
@@ -3011,6 +2925,35 @@ func (a *Ark) handleSendOnChain(ctx context.Context,
 	})
 	result := future.Await(ctx)
 	if result.IsErr() {
+		// Distinguish a caller-await cancellation from a genuine round
+		// rejection. The Ask runs on askCtx (WithoutCancel), so it
+		// keeps being delivered and processed regardless of the
+		// caller; Await(ctx) returns ctx.Err() the moment the caller's
+		// ctx ends, independently of the round outcome. On
+		// caller-cancel the round may still accept the intent RAM-only,
+		// so deleting the outbox row + releasing the reservation here
+		// would reopen the #660 window (no row to replay, yet the
+		// round may adopt). Retain both — set committed so neither
+		// defer fires — and let startup replay (or the round
+		// checkpoint) reconcile the in-flight outcome.
+		if ctx.Err() != nil {
+			committed = true
+
+			a.logger(ctx).WarnS(ctx, "Caller await canceled "+
+				"before onchain send registered; keeping "+
+				"outbox intent for replay", ctx.Err())
+
+			return fn.Err[WalletResp](
+				fmt.Errorf(
+					"onchain send await canceled: %w",
+					ctx.Err(),
+				),
+			)
+		}
+
+		// Genuine synchronous round rejection: the caller is told the
+		// send failed, so the deferred cleanup drops the row and
+		// releases the reservation (committed stays false).
 		a.logger(ctx).WarnS(ctx, "Round rejected onchain send intent",
 			result.Err(),
 		)

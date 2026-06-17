@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"math"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -137,17 +136,6 @@ type BoardingStore interface {
 
 	CountUnresolvedBoardingSweepInputs(ctx context.Context,
 		txid []byte) (int64, error)
-
-	UpsertPendingBoardRequest(ctx context.Context,
-		arg sqlc.UpsertPendingBoardRequestParams) error
-
-	ListPendingBoardRequests(ctx context.Context) (
-		[]sqlc.PendingBoardRequest, error)
-
-	ClearPendingBoardRequestByOutpoint(ctx context.Context,
-		arg sqlc.ClearPendingBoardRequestByOutpointParams) error
-
-	ClearAllPendingBoardRequests(ctx context.Context) error
 }
 
 // BatchedBoardingStore combines BoardingStore with transaction support via the
@@ -161,7 +149,13 @@ type BatchedBoardingStore interface {
 // BoardingWalletStore implements the wallet.BoardingStore interface using the
 // BatchedTx pattern for transaction-safe operations. All methods execute within
 // database transactions with automatic retry on serialization errors.
+//
+// The embedded PendingIntentPersistenceStore contributes the generic
+// pending-intent outbox surface (UpsertPendingIntent and friends) that
+// wallet.BoardingStore embeds via wallet.PendingIntentStore.
 type BoardingWalletStore struct {
+	*PendingIntentPersistenceStore
+
 	db          BatchedBoardingStore
 	chainParams *chaincfg.Params
 	clock       clock.Clock
@@ -175,11 +169,17 @@ type BoardingWalletStore struct {
 }
 
 // NewBoardingWalletStore creates a new boarding wallet store using the
-// transaction executor pattern.
+// transaction executor pattern. The pending-intent executor shares the same
+// underlying database; it is a separate argument only because the generic
+// transaction executor is typed per query-interface.
 func NewBoardingWalletStore(db BatchedBoardingStore,
-	chainParams *chaincfg.Params, clock clock.Clock) *BoardingWalletStore {
+	intentDB BatchedPendingIntentStore, chainParams *chaincfg.Params,
+	clock clock.Clock) *BoardingWalletStore {
 
 	return &BoardingWalletStore{
+		PendingIntentPersistenceStore: NewPendingIntentPersistenceStore(
+			intentDB,
+		),
 		db:          db,
 		chainParams: chainParams,
 		clock:       clock,
@@ -921,142 +921,6 @@ func stringToStatus(status string) (wallet.BoardingStatus, error) {
 	default:
 		return 0, fmt.Errorf("unknown boarding status: %q", status)
 	}
-}
-
-// UpsertPendingBoardRequests persists one row per confirmed boarding outpoint
-// that the original Board RPC admitted. All rows share the same
-// target_vtxo_count and requested_at_unix, so the table records both "what
-// the user asked for" and "which specific UTXOs the call was bound to".
-// Rows are inserted under a single transaction so the persist is atomic from
-// the wallet's perspective.
-func (b *BoardingWalletStore) UpsertPendingBoardRequests(ctx context.Context,
-	reqs []wallet.PendingBoardRequest) error {
-
-	if len(reqs) == 0 {
-		return nil
-	}
-
-	writeTxOpts := WriteTxOption()
-
-	return b.db.ExecTx(ctx, writeTxOpts, func(q BoardingStore) error {
-		for _, req := range reqs {
-			// Reject values that would overflow the int32
-			// column. A caller-supplied target_vtxo_count
-			// outside this range indicates a programming
-			// error upstream, not user data.
-			if req.TargetVTXOCount > math.MaxInt32 {
-				return fmt.Errorf("target_vtxo_count %d "+
-					"exceeds int32 max",
-					req.TargetVTXOCount)
-			}
-
-			err := q.UpsertPendingBoardRequest(
-				ctx, sqlc.UpsertPendingBoardRequestParams{
-					OutpointHash: req.Outpoint.Hash[:],
-					OutpointIndex: int32(
-						req.Outpoint.Index,
-					),
-					TargetVtxoCount: int32(
-						req.TargetVTXOCount,
-					),
-					RequestedAtUnix: req.RequestedAt,
-				},
-			)
-			if err != nil {
-				return fmt.Errorf("upsert pending board "+
-					"request: %w", err)
-			}
-		}
-
-		return nil
-	})
-}
-
-// ListPendingBoardRequests returns every persisted Board RPC intent ordered
-// by request time. Each row is keyed by the confirmed boarding outpoint it
-// was admitted against; replay decides per-row whether the underlying intent
-// is still Confirmed.
-func (b *BoardingWalletStore) ListPendingBoardRequests(ctx context.Context) (
-	[]wallet.PendingBoardRequest, error) {
-
-	readTxOpts := ReadTxOption()
-
-	var result []wallet.PendingBoardRequest
-
-	err := b.db.ExecTx(ctx, readTxOpts, func(q BoardingStore) error {
-		rows, err := q.ListPendingBoardRequests(ctx)
-		if err != nil {
-			return fmt.Errorf("list pending board requests: %w",
-				err)
-		}
-
-		result = make([]wallet.PendingBoardRequest, 0, len(rows))
-		for _, row := range rows {
-			// Defensive: the column is INTEGER, so negative
-			// values should never appear, but clamp at zero
-			// rather than truncating into a bogus uint32 if
-			// they ever do.
-			count := uint32(0)
-			if row.TargetVtxoCount > 0 {
-				count = uint32(row.TargetVtxoCount)
-			}
-
-			hash, err := chainhash.NewHash(row.OutpointHash)
-			if err != nil {
-				return fmt.Errorf("parse outpoint hash: %w",
-					err)
-			}
-
-			result = append(
-				result, wallet.PendingBoardRequest{
-					Outpoint: wire.OutPoint{
-						Hash: *hash,
-						Index: uint32(
-							row.OutpointIndex,
-						),
-					},
-					TargetVTXOCount: count,
-					RequestedAt:     row.RequestedAtUnix,
-				},
-			)
-		}
-
-		return nil
-	})
-
-	return result, err
-}
-
-// ClearPendingBoardRequestByOutpoint removes a single pending row. Called
-// from the round persistence transaction once the matching boarding intent
-// transitions Confirmed → Adopted so the row cannot rebind to an unrelated
-// future deposit.
-func (b *BoardingWalletStore) ClearPendingBoardRequestByOutpoint(
-	ctx context.Context, outpoint wire.OutPoint) error {
-
-	writeTxOpts := WriteTxOption()
-
-	return b.db.ExecTx(ctx, writeTxOpts, func(q BoardingStore) error {
-		return q.ClearPendingBoardRequestByOutpoint(
-			ctx, sqlc.ClearPendingBoardRequestByOutpointParams{
-				OutpointHash:  outpoint.Hash[:],
-				OutpointIndex: int32(outpoint.Index),
-			},
-		)
-	})
-}
-
-// ClearAllPendingBoardRequests removes every persisted Board RPC intent.
-// Used by the wallet's startup sweep when no confirmed intent remains for
-// any persisted row so the next start does not re-walk stale rows.
-func (b *BoardingWalletStore) ClearAllPendingBoardRequests(
-	ctx context.Context) error {
-
-	writeTxOpts := WriteTxOption()
-
-	return b.db.ExecTx(ctx, writeTxOpts, func(q BoardingStore) error {
-		return q.ClearAllPendingBoardRequests(ctx)
-	})
 }
 
 // Compile-time check that BoardingWalletStore implements BoardingStore.

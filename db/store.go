@@ -246,7 +246,18 @@ func (s *Store) NewBoardingStore(chainParams *chaincfg.Params,
 		s.log,
 	)
 
-	return NewBoardingWalletStore(boardingDB, chainParams, clk)
+	// The pending-intent outbox shares the same database; a second
+	// executor is needed only because the generic transaction executor
+	// is typed per query-interface.
+	intentDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) PendingIntentStore {
+			return s.queries.WithTx(tx)
+		},
+		s.log,
+	)
+
+	return NewBoardingWalletStore(boardingDB, intentDB, chainParams, clk)
 }
 
 // NewVTXOStore builds a VTXO persistence store with transactional query

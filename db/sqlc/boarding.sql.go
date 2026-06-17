@@ -10,30 +10,6 @@ import (
 	"database/sql"
 )
 
-const ClearAllPendingBoardRequests = `-- name: ClearAllPendingBoardRequests :exec
-DELETE FROM pending_board_requests
-`
-
-func (q *Queries) ClearAllPendingBoardRequests(ctx context.Context) error {
-	_, err := q.db.ExecContext(ctx, ClearAllPendingBoardRequests)
-	return err
-}
-
-const ClearPendingBoardRequestByOutpoint = `-- name: ClearPendingBoardRequestByOutpoint :exec
-DELETE FROM pending_board_requests
-WHERE outpoint_hash = $1 AND outpoint_index = $2
-`
-
-type ClearPendingBoardRequestByOutpointParams struct {
-	OutpointHash  []byte
-	OutpointIndex int32
-}
-
-func (q *Queries) ClearPendingBoardRequestByOutpoint(ctx context.Context, arg ClearPendingBoardRequestByOutpointParams) error {
-	_, err := q.db.ExecContext(ctx, ClearPendingBoardRequestByOutpoint, arg.OutpointHash, arg.OutpointIndex)
-	return err
-}
-
 const CountBoardingIntentsByStatus = `-- name: CountBoardingIntentsByStatus :one
 SELECT COUNT(*) FROM boarding_intents
 WHERE status = $1
@@ -850,40 +826,6 @@ func (q *Queries) ListBoardingSweeps(ctx context.Context, arg ListBoardingSweeps
 	return items, nil
 }
 
-const ListPendingBoardRequests = `-- name: ListPendingBoardRequests :many
-SELECT outpoint_hash, outpoint_index, target_vtxo_count, requested_at_unix
-FROM pending_board_requests
-ORDER BY requested_at_unix ASC, outpoint_hash ASC, outpoint_index ASC
-`
-
-func (q *Queries) ListPendingBoardRequests(ctx context.Context) ([]PendingBoardRequest, error) {
-	rows, err := q.db.QueryContext(ctx, ListPendingBoardRequests)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []PendingBoardRequest
-	for rows.Next() {
-		var i PendingBoardRequest
-		if err := rows.Scan(
-			&i.OutpointHash,
-			&i.OutpointIndex,
-			&i.TargetVtxoCount,
-			&i.RequestedAtUnix,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const ListPendingBoardingSweepInputs = `-- name: ListPendingBoardingSweepInputs :many
 SELECT txid, outpoint_hash, outpoint_index, amount, previous_status, status, spent_by_txid, spent_height, last_update_time FROM boarding_sweep_inputs
 WHERE status IN ('pending', 'published')
@@ -1113,44 +1055,6 @@ func (q *Queries) UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoar
 		arg.OutpointIndex,
 		arg.Status,
 		arg.LastUpdateTime,
-	)
-	return err
-}
-
-const UpsertPendingBoardRequest = `-- name: UpsertPendingBoardRequest :exec
-
-INSERT INTO pending_board_requests (
-    outpoint_hash,
-    outpoint_index,
-    target_vtxo_count,
-    requested_at_unix
-) VALUES ($1, $2, $3, $4)
-ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE
-SET target_vtxo_count = excluded.target_vtxo_count,
-    requested_at_unix = excluded.requested_at_unix
-`
-
-type UpsertPendingBoardRequestParams struct {
-	OutpointHash    []byte
-	OutpointIndex   int32
-	TargetVtxoCount int32
-	RequestedAtUnix int64
-}
-
-// Pending board request queries.
-//
-// Each row binds the user's explicit Board RPC target_vtxo_count to one
-// confirmed boarding outpoint that the call admitted. On daemon restart the
-// wallet lists every row and replays a single Board through the same actor
-// path the live RPC uses; rows whose outpoints are no longer Confirmed (the
-// intent has already adopted, swept, or failed) are cleared so the next
-// start is a no-op.
-func (q *Queries) UpsertPendingBoardRequest(ctx context.Context, arg UpsertPendingBoardRequestParams) error {
-	_, err := q.db.ExecContext(ctx, UpsertPendingBoardRequest,
-		arg.OutpointHash,
-		arg.OutpointIndex,
-		arg.TargetVtxoCount,
-		arg.RequestedAtUnix,
 	)
 	return err
 }

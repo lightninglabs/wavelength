@@ -173,41 +173,42 @@ func (m *ResumeBoardingSweepsResponse) MessageType() string {
 
 func (m *ResumeBoardingSweepsResponse) walletRespSealed() {}
 
-// ReplayPendingBoardRequest is an Ask the daemon sends to the wallet
+// ReplayPendingIntentsRequest is an Ask the daemon sends to the wallet
 // once every dependent actor (in particular the round-client actor)
-// is registered, asking it to replay any persisted Board RPC the user
-// issued before the last shutdown. The wallet's self-Tell pattern
-// inside Start would otherwise process the replay BEFORE the round
-// actor is reachable through the receptionist, silently dropping the
-// downstream TriggerBoardMsg.
-type ReplayPendingBoardRequest struct {
+// is registered, asking it to replay any persisted user intent (Board,
+// SendOnChain, ...) issued before the last shutdown. The wallet's
+// self-Tell pattern inside Start would otherwise process the replay
+// BEFORE the round actor is reachable through the receptionist,
+// silently dropping the downstream round-actor dispatch.
+type ReplayPendingIntentsRequest struct {
 	actor.BaseMessage
 }
 
 // MessageType returns the message type identifier.
-func (m *ReplayPendingBoardRequest) MessageType() string {
-	return "ReplayPendingBoardRequest"
+func (m *ReplayPendingIntentsRequest) MessageType() string {
+	return "ReplayPendingIntentsRequest"
 }
 
-func (m *ReplayPendingBoardRequest) walletMsgSealed() {}
+func (m *ReplayPendingIntentsRequest) walletMsgSealed() {}
 
-// ReplayPendingBoardResponse acknowledges that the wallet has either
-// re-issued a BoardRequest into its own mailbox or determined there is
-// nothing live to replay.
-type ReplayPendingBoardResponse struct {
+// ReplayPendingIntentsResponse acknowledges that the wallet has either
+// re-issued at least one persisted intent into its own mailbox or
+// determined there is nothing live to replay.
+type ReplayPendingIntentsResponse struct {
 	actor.BaseMessage
 
-	// Replayed is true when the wallet self-Telled a BoardRequest as
-	// part of replay; false when no live pending row was found.
+	// Replayed is true when the wallet self-Telled at least one
+	// re-issued command as part of replay; false when no live pending
+	// intent was found.
 	Replayed bool
 }
 
 // MessageType returns the message type identifier.
-func (m *ReplayPendingBoardResponse) MessageType() string {
-	return "ReplayPendingBoardResponse"
+func (m *ReplayPendingIntentsResponse) MessageType() string {
+	return "ReplayPendingIntentsResponse"
 }
 
-func (m *ReplayPendingBoardResponse) walletRespSealed() {}
+func (m *ReplayPendingIntentsResponse) walletRespSealed() {}
 
 // BoardingSweepSpendNotification is a Tell carrying a chainsource spend
 // event for a boarding-sweep input. Emitted by the chainsource subscription

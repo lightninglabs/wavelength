@@ -174,11 +174,35 @@ type OwnedReceiveScriptSource struct {
 	Name   string
 }
 
-type PendingBoardRequest struct {
-	OutpointHash    []byte
-	OutpointIndex   int32
+type PendingBoardIntent struct {
+	IntentID        []byte
 	TargetVtxoCount int32
+}
+
+type PendingIntent struct {
+	IntentID        []byte
+	Kind            string
 	RequestedAtUnix int64
+}
+
+type PendingIntentAnchor struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+	IntentID      []byte
+}
+
+type PendingIntentKind struct {
+	Kind string
+}
+
+type PendingSendIntent struct {
+	IntentID        []byte
+	DestPkscript    []byte
+	TargetAmountSat int64
+	SweepAll        int32
+	OperatorKey     []byte
+	VtxoExitDelay   int32
+	DustLimitSat    int64
 }
 
 type Round struct {
