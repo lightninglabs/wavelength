@@ -578,6 +578,7 @@ func (s *ReceiveSession) runUntil(ctx context.Context,
 			)
 		}
 	}
+
 	machine := newReceiveLoopFSM(s, target)
 
 	for s.state != target {

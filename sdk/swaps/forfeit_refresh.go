@@ -130,6 +130,10 @@ func (s *ReceiveSession) handleOutSwapForfeitSignatureRequest(
 	if err != nil {
 		return fmt.Errorf("sign out-swap forfeit payload: %w", err)
 	}
+	if resp == nil {
+		return fmt.Errorf("sign out-swap forfeit payload: empty " +
+			"daemon response")
+	}
 
 	signature := &ForfeitParticipantSignature{
 		PubKey:    append([]byte(nil), resp.GetPubkey()...),

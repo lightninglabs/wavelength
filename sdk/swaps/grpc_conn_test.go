@@ -55,8 +55,9 @@ func (c *testSwapServiceClient) SignInSwapForfeit(_ context.Context,
 }
 
 func (c *testSwapServiceClient) SubmitOutSwapForfeitSignature(_ context.Context,
-	req *swaprpc.SubmitOutSwapForfeitSignatureRequest, _ ...grpc.CallOption) (
-	*swaprpc.SubmitOutSwapForfeitSignatureResponse, error) {
+	req *swaprpc.SubmitOutSwapForfeitSignatureRequest,
+	_ ...grpc.CallOption) (*swaprpc.SubmitOutSwapForfeitSignatureResponse,
+	error) {
 
 	c.lastSubmitSigReq = req
 	if c.submitForfeitErr != nil {

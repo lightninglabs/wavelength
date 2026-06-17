@@ -294,7 +294,7 @@ func (r *MailboxOutSwapEventReceiver) WaitOutSwapForfeitSignature(
 		}
 
 		for _, env := range resp.GetEnvelopes() {
-			payload, ok, err := outSwapForfeitSignatureFromMailboxEnvelope(
+			payload, ok, err := outSwapForfeitSignatureFromMailbox(
 				env,
 			)
 			if err != nil {
@@ -361,9 +361,9 @@ func (r *MailboxOutSwapEventReceiver) ack(ctx context.Context, mailboxID string,
 	return nil
 }
 
-// outSwapForfeitSignatureFromMailboxEnvelope unwraps one mailbox event envelope
-// when it matches the out-swap forfeit signature request route.
-func outSwapForfeitSignatureFromMailboxEnvelope(env *mailboxpb.Envelope) (
+// outSwapForfeitSignatureFromMailbox unwraps one mailbox event envelope when it
+// matches the out-swap forfeit signature request route.
+func outSwapForfeitSignatureFromMailbox(env *mailboxpb.Envelope) (
 	*ForfeitSignaturePayload, bool, error) {
 
 	wrapped, ok, err := swapMailboxEventFromEnvelope(env)

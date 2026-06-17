@@ -15,9 +15,12 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -324,6 +327,264 @@ func TestReceiveSessionSkipsServerAckForSameArkHTLCEvent(t *testing.T) {
 	require.Zero(t, session.pendingHTLCAckCursor)
 }
 
+// TestReceiveSessionHandlesOutSwapForfeitSignatureRequest verifies the
+// receive side signs a mailbox forfeit-signature request locally, submits the
+// signature to the swap server, then acknowledges the mailbox event.
+func TestReceiveSessionHandlesOutSwapForfeitSignatureRequest(t *testing.T) {
+	t.Parallel()
+
+	paymentHash := lntypes.Hash{0x01, 0x02, 0x03}
+	payload := testReceiveForfeitSignaturePayload(paymentHash)
+	daemonConn := &testDaemonConn{
+		signForfeitResp: &daemonrpc.SignVTXOForfeitResponse{
+			Pubkey:    []byte("participant-pubkey"),
+			Signature: []byte("participant-signature"),
+		},
+	}
+	serverConn := &testSwapServerConn{}
+	session := &ReceiveSession{
+		client: NewSwapClient(serverConn, daemonConn, nil, nil),
+
+		PaymentHash:         paymentHash,
+		vhtlcOutpoint:       payload.VHTLCOutpoint,
+		vhtlcAmount:         payload.VHTLCAmountSat,
+		vhtlcPkScript:       payload.VHTLCPkScript,
+		vhtlcPolicyTemplate: payload.VHTLCPolicyTemplate,
+	}
+
+	acked := false
+	err := session.handleOutSwapForfeitSignatureRequest(
+		t.Context(), &OutSwapForfeitSignatureNotification{
+			Payload: payload,
+			Ack: func(context.Context) error {
+				acked = true
+
+				return nil
+			},
+		},
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, daemonConn.signForfeitCalls)
+	require.Equal(
+		t, payload.VHTLCOutpoint,
+		daemonConn.lastSignForfeit.GetVtxoOutpoint(),
+	)
+	require.Equal(
+		t, payload.VHTLCAmountSat,
+		daemonConn.lastSignForfeit.GetVtxoAmountSat(),
+	)
+	require.Equal(
+		t, payload.ForfeitSpendPath,
+		daemonConn.lastSignForfeit.GetSpendPath(),
+	)
+	require.Equal(
+		t, payload.UnsignedForfeitTx,
+		daemonConn.lastSignForfeit.GetUnsignedForfeitTx(),
+	)
+
+	require.Equal(t, 1, serverConn.submitForfeitCalls)
+	require.Same(t, payload, serverConn.lastSubmitForfeitPayload)
+	require.Equal(
+		t, []byte("participant-pubkey"),
+		serverConn.lastSubmitForfeitSig.PubKey,
+	)
+	require.Equal(
+		t, []byte("participant-signature"),
+		serverConn.lastSubmitForfeitSig.Signature,
+	)
+	require.True(t, acked)
+}
+
+// TestReceiveSessionKeepsOutSwapForfeitRequestUnackedOnSubmitFailure verifies
+// retry safety: if the server submission fails, the mailbox event is left
+// unacknowledged so the receiver can retry it.
+func TestReceiveSessionKeepsOutSwapForfeitRequestUnackedOnSubmitFailure(
+	t *testing.T) {
+
+	t.Parallel()
+
+	paymentHash := lntypes.Hash{0x04, 0x05, 0x06}
+	payload := testReceiveForfeitSignaturePayload(paymentHash)
+	daemonConn := &testDaemonConn{
+		signForfeitResp: &daemonrpc.SignVTXOForfeitResponse{
+			Pubkey:    []byte("participant-pubkey"),
+			Signature: []byte("participant-signature"),
+		},
+	}
+	serverConn := &testSwapServerConn{
+		submitForfeitErr: errors.New("submit unavailable"),
+	}
+	session := &ReceiveSession{
+		client: NewSwapClient(serverConn, daemonConn, nil, nil),
+
+		PaymentHash:         paymentHash,
+		vhtlcOutpoint:       payload.VHTLCOutpoint,
+		vhtlcAmount:         payload.VHTLCAmountSat,
+		vhtlcPkScript:       payload.VHTLCPkScript,
+		vhtlcPolicyTemplate: payload.VHTLCPolicyTemplate,
+	}
+
+	acked := false
+	err := session.handleOutSwapForfeitSignatureRequest(
+		t.Context(), &OutSwapForfeitSignatureNotification{
+			Payload: payload,
+			Ack: func(context.Context) error {
+				acked = true
+
+				return nil
+			},
+		},
+	)
+	require.ErrorContains(t, err, "submit out-swap forfeit signature")
+	require.Equal(t, 1, daemonConn.signForfeitCalls)
+	require.Equal(t, 1, serverConn.submitForfeitCalls)
+	require.False(t, acked)
+}
+
+// TestForfeitSignaturePayloadFromVTXORequest verifies the pay-side signer
+// callback converts the vtxo manager's request into the exact swap-server
+// payload shape, including the payment hash embedded in the vHTLC template.
+func TestForfeitSignaturePayloadFromVTXORequest(t *testing.T) {
+	t.Parallel()
+
+	sender, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	receiver, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operator, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage := lntypes.Preimage{0x09, 0x08, 0x07}
+	paymentHash := preimage.Hash()
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:                               sender.PubKey(),
+		Receiver:                             receiver.PubKey(),
+		Server:                               operator.PubKey(),
+		PreimageHash:                         paymentHash,
+		RefundLocktime:                       144,
+		UnilateralClaimDelay:                 10,
+		UnilateralRefundDelay:                11,
+		UnilateralRefundWithoutReceiverDelay: 12,
+	})
+	require.NoError(t, err)
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
+	template, err := policy.Template.Encode()
+	require.NoError(t, err)
+	spendPath, err := policy.RefundPath()
+	require.NoError(t, err)
+	encodedSpendPath, err := spendPath.Encode()
+	require.NoError(t, err)
+
+	vtxoHash := chainhash.Hash{0xaa}
+	connectorHash := chainhash.Hash{0xbb}
+	forfeitTx := wire.NewMsgTx(2)
+	forfeitTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  vtxoHash,
+			Index: 2,
+		},
+	})
+	forfeitTx.AddTxOut(&wire.TxOut{
+		Value:    40_000,
+		PkScript: []byte{0x51},
+	})
+	serializedTx, err := serializeForfeitTx(forfeitTx)
+	require.NoError(t, err)
+
+	req := &vtxo.ForfeitParticipantSignRequest{
+		VTXO: &vtxo.Descriptor{
+			Outpoint: wire.OutPoint{
+				Hash:  vtxoHash,
+				Index: 2,
+			},
+			Amount:         42_000,
+			PkScript:       pkScript,
+			PolicyTemplate: template,
+		},
+		SpendPath: spendPath,
+		ForfeitTx: forfeitTx,
+		ConnectorOutpoint: wire.OutPoint{
+			Hash:  connectorHash,
+			Index: 1,
+		},
+		ConnectorAmount: 1_000,
+		ConnectorPkScript: []byte{
+			0x20,
+			0x01,
+		},
+		ServerForfeitPkScript: []byte{
+			0x20,
+			0x02,
+		},
+	}
+
+	payload, err := ForfeitSignaturePayloadFromVTXORequest(req)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, payload.RequestID)
+	require.Equal(t, paymentHash, payload.PaymentHash)
+	require.Equal(t, req.VTXO.Outpoint.String(), payload.VHTLCOutpoint)
+	require.Equal(t, int64(req.VTXO.Amount), payload.VHTLCAmountSat)
+	require.Equal(t, pkScript, payload.VHTLCPkScript)
+	require.Equal(t, template, payload.VHTLCPolicyTemplate)
+	require.Equal(t, encodedSpendPath, payload.ForfeitSpendPath)
+	require.Equal(t, serializedTx, payload.UnsignedForfeitTx)
+	require.Equal(
+		t, req.ConnectorOutpoint.String(), payload.ConnectorOutpoint,
+	)
+	require.Equal(t, req.ConnectorAmount, payload.ConnectorAmountSat)
+	require.Equal(t, req.ConnectorPkScript, payload.ConnectorPkScript)
+	require.Equal(
+		t, req.ServerForfeitPkScript, payload.ServerForfeitPkScript,
+	)
+
+	payloadAgain, err := ForfeitSignaturePayloadFromVTXORequest(req)
+	require.NoError(t, err)
+	require.Equal(t, payload.RequestID, payloadAgain.RequestID)
+}
+
+func testReceiveForfeitSignaturePayload(
+	paymentHash lntypes.Hash) *ForfeitSignaturePayload {
+
+	return &ForfeitSignaturePayload{
+		RequestID:   []byte("request-id"),
+		PaymentHash: paymentHash,
+		VHTLCOutpoint: chainhash.Hash{
+			0xaa,
+		}.String() + ":0",
+		VHTLCAmountSat: 42_000,
+		VHTLCPkScript: []byte{
+			0x51,
+		},
+		VHTLCPolicyTemplate: []byte{
+			0x01,
+			0x02,
+		},
+		ForfeitSpendPath: []byte{
+			0x03,
+			0x04,
+		},
+		UnsignedForfeitTx: []byte{
+			0x05,
+			0x06,
+		},
+		ConnectorOutpoint: chainhash.Hash{
+			0xbb,
+		}.String() + ":1",
+		ConnectorAmountSat: 1_000,
+		ConnectorPkScript: []byte{
+			0x07,
+			0x08,
+		},
+		ServerForfeitPkScript: []byte{
+			0x09,
+			0x0a,
+		},
+	}
+}
+
 type testSwapServerConn struct {
 	hint           *RouteHint
 	payerFeeMsat   uint64
@@ -344,6 +605,11 @@ type testSwapServerConn struct {
 	lastAmountSat       btcutil.Amount
 	lastServerAckHash   lntypes.Hash
 	lastServerAckPubkey *btcec.PublicKey
+
+	submitForfeitErr         error
+	submitForfeitCalls       int
+	lastSubmitForfeitPayload *ForfeitSignaturePayload
+	lastSubmitForfeitSig     *ForfeitParticipantSignature
 }
 
 type testIncomingEventReceiver struct {
@@ -498,11 +764,18 @@ func (c *testSwapServerConn) SignInSwapForfeit(context.Context,
 	return nil, fmt.Errorf("unexpected in-swap forfeit signature request")
 }
 
-// SubmitOutSwapForfeitSignature is unused in these tests.
-func (c *testSwapServerConn) SubmitOutSwapForfeitSignature(context.Context,
-	*ForfeitSignaturePayload, *ForfeitParticipantSignature) error {
+// SubmitOutSwapForfeitSignature records the submitted forfeit signature.
+func (c *testSwapServerConn) SubmitOutSwapForfeitSignature(
+	_ context.Context,
+	payload *ForfeitSignaturePayload,
+	sig *ForfeitParticipantSignature,
+) error {
 
-	return fmt.Errorf("unexpected out-swap forfeit signature submission")
+	c.submitForfeitCalls++
+	c.lastSubmitForfeitPayload = payload
+	c.lastSubmitForfeitSig = sig
+
+	return c.submitForfeitErr
 }
 
 // Close closes the server connection.
@@ -1059,6 +1332,10 @@ type testDaemonConn struct {
 	lastEscalate      *daemonrpc.EscalateVHTLCRecoveryRequest
 	lastCancel        *daemonrpc.CancelVHTLCRecoveryRequest
 	lastStatus        *daemonrpc.GetVHTLCRecoveryStatusRequest
+	signForfeitResp   *daemonrpc.SignVTXOForfeitResponse
+	signForfeitErr    error
+	signForfeitCalls  int
+	lastSignForfeit   *daemonrpc.SignVTXOForfeitRequest
 }
 
 // BlockHeight returns the configured best block height.
@@ -1237,6 +1514,39 @@ func (d *testDaemonConn) GetVHTLCRecoveryStatus(_ context.Context,
 
 	return &daemonrpc.GetVHTLCRecoveryStatusResponse{
 		Found: false,
+	}, nil
+}
+
+// SignVTXOForfeit records the daemon forfeit-signature request.
+func (d *testDaemonConn) SignVTXOForfeit(_ context.Context,
+	req *daemonrpc.SignVTXOForfeitRequest) (
+	*daemonrpc.SignVTXOForfeitResponse, error) {
+
+	d.signForfeitCalls++
+	d.lastSignForfeit = &daemonrpc.SignVTXOForfeitRequest{
+		VtxoOutpoint:       req.GetVtxoOutpoint(),
+		VtxoAmountSat:      req.GetVtxoAmountSat(),
+		VtxoPkScript:       bytes.Clone(req.GetVtxoPkScript()),
+		VtxoPolicyTemplate: bytes.Clone(req.GetVtxoPolicyTemplate()),
+		SpendPath:          bytes.Clone(req.GetSpendPath()),
+		UnsignedForfeitTx:  bytes.Clone(req.GetUnsignedForfeitTx()),
+		ConnectorOutpoint:  req.GetConnectorOutpoint(),
+		ConnectorAmountSat: req.GetConnectorAmountSat(),
+		ConnectorPkScript:  bytes.Clone(req.GetConnectorPkScript()),
+		ServerForfeitPkScript: bytes.Clone(
+			req.GetServerForfeitPkScript(),
+		),
+	}
+	if d.signForfeitErr != nil {
+		return nil, d.signForfeitErr
+	}
+	if d.signForfeitResp != nil {
+		return d.signForfeitResp, nil
+	}
+
+	return &daemonrpc.SignVTXOForfeitResponse{
+		Pubkey:    []byte("participant-pubkey"),
+		Signature: []byte("participant-signature"),
 	}, nil
 }
 

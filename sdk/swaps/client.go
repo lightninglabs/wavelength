@@ -630,6 +630,12 @@ type DaemonConn interface {
 	// payment-scoped receive-auth key.
 	ReceiveAuthECDH(ctx context.Context, paymentHash lntypes.Hash,
 		pubKey *btcec.PublicKey) ([32]byte, error)
+
+	// SignVTXOForfeit signs one exact connector-bound forfeit transaction
+	// with the daemon identity key.
+	SignVTXOForfeit(ctx context.Context,
+		req *daemonrpc.SignVTXOForfeitRequest) (
+		*daemonrpc.SignVTXOForfeitResponse, error)
 }
 
 // CustomInput aliases the Ark SDK's typed custom OOR input.

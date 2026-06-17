@@ -1,6 +1,7 @@
 package swaps
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
@@ -200,7 +201,8 @@ func (g *GRPCSwapServerConn) AuthorizeInSwapRefund(ctx context.Context,
 // SignInSwapForfeit asks the swap server to sign its participant share for one
 // exact in-swap refresh forfeit transaction.
 func (g *GRPCSwapServerConn) SignInSwapForfeit(ctx context.Context,
-	payload *ForfeitSignaturePayload) (*ForfeitParticipantSignature, error) {
+	payload *ForfeitSignaturePayload) (*ForfeitParticipantSignature,
+	error) {
 
 	protoPayload, err := forfeitSignaturePayloadToProto(payload)
 	if err != nil {
@@ -449,8 +451,8 @@ func forfeitSignaturePayloadToProto(payload *ForfeitSignaturePayload) (
 		),
 		VhtlcOutpoint:       payload.VHTLCOutpoint,
 		VhtlcAmountSat:      uint64(payload.VHTLCAmountSat),
-		VhtlcPkScript:       append([]byte(nil), payload.VHTLCPkScript...),
-		VhtlcPolicyTemplate: append([]byte(nil), payload.VHTLCPolicyTemplate...),
+		VhtlcPkScript:       bytes.Clone(payload.VHTLCPkScript),
+		VhtlcPolicyTemplate: bytes.Clone(payload.VHTLCPolicyTemplate),
 		ForfeitSpendPath: append(
 			[]byte(nil), payload.ForfeitSpendPath...,
 		),
@@ -483,8 +485,8 @@ func forfeitSignaturePayloadFromProto(
 			"provided")
 	}
 	if len(payload.GetPaymentHash()) != lntypes.HashSize {
-		return nil, fmt.Errorf("forfeit signature payment hash must be "+
-			"%d bytes", lntypes.HashSize)
+		return nil, fmt.Errorf("forfeit signature payment hash must "+
+			"be %d bytes", lntypes.HashSize)
 	}
 	if payload.GetVhtlcOutpoint() == "" {
 		return nil, fmt.Errorf("vHTLC outpoint must be provided")
@@ -498,8 +500,8 @@ func forfeitSignaturePayloadFromProto(
 	}
 	if payload.GetConnectorAmountSat() == 0 ||
 		payload.GetConnectorAmountSat() > math.MaxInt64 {
-
-		return nil, fmt.Errorf("connector amount must fit positive int64")
+		return nil, fmt.Errorf("connector amount must fit positive " +
+			"int64")
 	}
 
 	var paymentHash lntypes.Hash
@@ -510,7 +512,7 @@ func forfeitSignaturePayloadFromProto(
 		PaymentHash:    paymentHash,
 		VHTLCOutpoint:  payload.GetVhtlcOutpoint(),
 		VHTLCAmountSat: int64(payload.GetVhtlcAmountSat()),
-		VHTLCPkScript:  append([]byte(nil), payload.GetVhtlcPkScript()...),
+		VHTLCPkScript:  bytes.Clone(payload.GetVhtlcPkScript()),
 		VHTLCPolicyTemplate: append(
 			[]byte(nil), payload.GetVhtlcPolicyTemplate()...,
 		),
@@ -537,8 +539,8 @@ func forfeitParticipantSignatureToProto(sig *ForfeitParticipantSignature) (
 	*swaprpc.ForfeitParticipantSignature, error) {
 
 	if sig == nil {
-		return nil, fmt.Errorf("forfeit participant signature must be " +
-			"provided")
+		return nil, fmt.Errorf("forfeit participant signature must " +
+			"be provided")
 	}
 	if len(sig.PubKey) == 0 {
 		return nil, fmt.Errorf("forfeit participant pubkey must be " +
@@ -562,8 +564,8 @@ func forfeitParticipantSignatureFromProto(
 	error) {
 
 	if sig == nil {
-		return nil, fmt.Errorf("forfeit participant signature must be " +
-			"provided")
+		return nil, fmt.Errorf("forfeit participant signature must " +
+			"be provided")
 	}
 	if len(sig.GetPubkey()) == 0 {
 		return nil, fmt.Errorf("forfeit participant pubkey must be " +
