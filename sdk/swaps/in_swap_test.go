@@ -40,6 +40,12 @@ const (
 
 type testInSwapServerConn struct {
 	cfg                 *InSwapConfig
+	quote               *InSwapQuote
+	quoteErr            error
+	quoteCalls          int
+	quoteInvoice        string
+	quoteMaxFeeSat      uint64
+	createCalls         int
 	refundAuthorization *InSwapRefundAuthorization
 	refundAuthorizeErr  error
 	refundAuthorizeReq  *testRefundAuthorizeReq
@@ -109,7 +115,23 @@ func (c *testInSwapServerConn) AcknowledgeOutSwapHTLC(context.Context,
 func (c *testInSwapServerConn) CreateInSwap(context.Context, string, uint64,
 	*btcec.PublicKey) (*InSwapConfig, error) {
 
+	c.createCalls++
+
 	return c.cfg, nil
+}
+
+// QuoteInSwap returns the preconfigured in-swap quote.
+func (c *testInSwapServerConn) QuoteInSwap(_ context.Context, invoice string,
+	maxFeeSat uint64) (*InSwapQuote, error) {
+
+	c.quoteCalls++
+	c.quoteInvoice = invoice
+	c.quoteMaxFeeSat = maxFeeSat
+	if c.quoteErr != nil {
+		return nil, c.quoteErr
+	}
+
+	return c.quote, nil
 }
 
 // AuthorizeInSwapRefund records and returns the preconfigured refund
@@ -238,6 +260,49 @@ func cloneInSwapConfig(cfg *InSwapConfig) *InSwapConfig {
 	clone := *cfg
 
 	return &clone
+}
+
+// TestQuotePayViaLightningReturnsBoundPreview verifies the non-mutating quote
+// path validates the server preview without creating an in-swap.
+func TestQuotePayViaLightningReturnsBoundPreview(t *testing.T) {
+	t.Parallel()
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	expiry := time.Now().Add(time.Minute)
+	serverConn := &testInSwapServerConn{
+		quote: &InSwapQuote{
+			PaymentHash:      preimage.Hash(),
+			InvoiceAmountSat: testInSwapInvoiceSat,
+			AmountSat:        testInSwapAmountSat,
+			FeeSat:           testInSwapFeeSat,
+			Expiry:           expiry,
+			SettlementType:   SettlementTypeLightning,
+			ExceedsMaxFee:    true,
+		},
+	}
+	client := configureTestPayClient(
+		NewSwapClient(serverConn, nil, nil, nil),
+	)
+
+	quote, err := client.QuotePayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat-1,
+	)
+	require.NoError(t, err)
+	require.Equal(t, preimage.Hash(), quote.PaymentHash)
+	require.Equal(t, uint64(testInSwapInvoiceSat),
+		quote.InvoiceAmountSat)
+	require.Equal(t, uint64(testInSwapAmountSat), quote.AmountSat)
+	require.Equal(t, uint64(testInSwapFeeSat), quote.FeeSat)
+	require.True(t, quote.ExceedsMaxFee)
+	require.Equal(t, SettlementTypeLightning, quote.SettlementType)
+	require.Equal(t, 1, serverConn.quoteCalls)
+	require.Equal(t, invoice, serverConn.quoteInvoice)
+	require.Equal(t, uint64(testInSwapFeeSat-1),
+		serverConn.quoteMaxFeeSat)
+	require.Zero(t, serverConn.createCalls)
 }
 
 // TestValidateInSwapQuoteRejectsServerMismatches verifies the client treats
