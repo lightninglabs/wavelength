@@ -23,7 +23,13 @@ import { FauxQR } from "../../components/ui/FauxQR";
 import { InlineError } from "../../components/ui/InlineError";
 import { Label } from "../../components/ui/Label";
 import { cn } from "../../lib/cn";
-import { hasAnyValue, normalizeActivity, pendingInBalance, totalBalance } from "../../lib/balance";
+import {
+  balanceSat,
+  effectivePendingIn,
+  effectivePendingOut,
+  hasAnyValue,
+  normalizeActivity,
+} from "../../lib/balance";
 import { errorMessage } from "../../lib/errors";
 import { formatBtc, formatSats } from "../../lib/format";
 import { Composition } from "./Composition";
@@ -57,18 +63,19 @@ export function HomeScreen({
 }) {
   // Treat the wallet as funded when it holds or is receiving any value
   // (including a pending boarding deposit) or has any activity.
-  const funded = hasAnyValue(balance) || activity.length > 0;
+  const funded = hasAnyValue(balance, activity) || activity.length > 0;
 
   return (
     <div>
       <PageHead
         title="Overview"
-        subtitle="Your self-custodial balance across Ark, Lightning and on-chain."
+        subtitle="Your self-custodial Ark wallet balance and pending flows."
       />
       {funded ? (
         <>
           <BalanceBand
             balance={balance}
+            activity={activity}
             onNavigate={onNavigate}
             onRefresh={onRefresh}
             refreshBusy={refreshBusy}
@@ -76,7 +83,7 @@ export function HomeScreen({
           <Band>
             <Label>Balance composition</Label>
             <div className="mt-4">
-              <Composition balance={balance} />
+              <Composition balance={balance} activity={activity} />
             </div>
           </Band>
           <RecentActivityBand
@@ -100,29 +107,31 @@ export function HomeScreen({
   );
 }
 
-// BalanceBand is the Home hero: total balance, derived BTC, pending flow and the
-// primary Send / Receive actions.
+// BalanceBand is the Home hero: spendable balance, derived BTC, pending flow
+// and the primary Send / Receive actions.
 function BalanceBand({
   balance,
+  activity,
   onNavigate,
   onRefresh,
   refreshBusy,
 }: {
   balance: Balance | null;
+  activity: Entry[];
   onNavigate: (t: AppTab) => void;
   onRefresh: () => void;
   refreshBusy: boolean;
 }) {
-  const total = totalBalance(balance);
-  const pendingIn = pendingInBalance(balance);
-  const pendingOut = balance?.PendingOutSat ?? 0;
+  const amount = balanceSat(balance);
+  const incoming = effectivePendingIn(balance, activity);
+  const outgoing = effectivePendingOut(balance, activity);
 
   return (
     <Band tinted>
       <div className="flex flex-wrap items-start justify-between gap-6">
         <div>
           <div className="flex items-center gap-3">
-            <Label>Total balance</Label>
+            <Label>Balance</Label>
             <span
               className="inline-flex items-center gap-1.5 border border-border
                 px-2 py-0.5 text-xs font-medium text-muted"
@@ -136,27 +145,27 @@ function BalanceBand({
               className="font-mono text-5xl font-semibold tracking-tight
                 tabular-nums text-fg lg:text-6xl"
             >
-              {formatSats(total)}
+              {formatSats(amount)}
             </span>
             <span className="text-sm font-medium text-muted">sats</span>
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 text-sm">
             <span className="font-mono tabular-nums text-muted">
-              {formatBtc(total)} BTC
+              {formatBtc(amount)} BTC
             </span>
-            {pendingIn > 0 ? (
+            {incoming > 0 ? (
               <>
                 <span className="text-faint">·</span>
-                <span className="font-mono tabular-nums text-warn">
-                  +{formatSats(pendingIn)} pending in
+                <span className="font-mono tabular-nums text-good">
+                  +{formatSats(incoming)} incoming
                 </span>
               </>
             ) : null}
-            {pendingOut > 0 ? (
+            {outgoing > 0 ? (
               <>
                 <span className="text-faint">·</span>
-                <span className="font-mono tabular-nums text-muted">
-                  -{formatSats(pendingOut)} pending out
+                <span className="font-mono tabular-nums text-warn">
+                  -{formatSats(outgoing)} outgoing
                 </span>
               </>
             ) : null}

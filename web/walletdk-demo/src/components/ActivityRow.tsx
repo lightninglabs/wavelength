@@ -25,9 +25,9 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 const STATUS_CLASS: Record<string, string> = {
-  complete: "text-good",
-  pending: "text-warn",
-  failed: "text-bad",
+  complete: "border-border text-good",
+  pending: "border-warn/40 bg-warn/10 text-warn",
+  failed: "border-bad/40 bg-bad/10 text-bad",
 };
 
 // ActivityRow renders a single dense transaction line from an SDK Entry. The
@@ -70,9 +70,9 @@ export function ActivityRow({ entry }: { entry: Entry }) {
       <div className="hidden sm:block">
         <span
           className={cn(
-            `border border-border px-2 py-0.5 text-[10px] font-medium
-            uppercase tracking-wide`,
-            STATUS_CLASS[entry.Status] ?? "text-muted",
+            `border px-2 py-0.5 text-[10px] font-medium uppercase
+            tracking-wide`,
+            STATUS_CLASS[entry.Status] ?? "border-border text-muted",
           )}
         >
           {entry.Status}

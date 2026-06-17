@@ -60,11 +60,6 @@ export type Balance = {
   ConfirmedSat?: number;
   PendingInSat?: number;
   PendingOutSat?: number;
-  BoardingConfirmedSat?: number;
-  BoardingUnconfirmedSat?: number;
-  VTXOBalanceSat?: number;
-  TotalConfirmedSat?: number;
-  OnchainWalletConfirmedSat?: number;
 };
 
 export type CreateWalletRequest = {

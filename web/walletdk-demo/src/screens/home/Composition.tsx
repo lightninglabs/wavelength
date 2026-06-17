@@ -1,12 +1,18 @@
-import { Balance } from "@lightninglabs/walletdk-core";
+import { Balance, Entry } from "@lightninglabs/walletdk-core";
 import { BUCKET_TONE, compositionBuckets } from "../../lib/balance";
 import { formatSats, pct } from "../../lib/format";
 
 // Composition is the balance-composition graph: a hairline segmented meter over
-// a set of per-bucket bars, all sourced from the live balance breakdown. This
-// replaces any (fake) time-series chart - WalletDK exposes no balance history.
-export function Composition({ balance }: { balance: Balance | null }) {
-  const buckets = compositionBuckets(balance);
+// a three-column grid (Ark VTXO, incoming, outgoing) sourced from walletdkrpc
+// Balance with a pending-activity fallback when RPC inbound/outbound is zero.
+export function Composition({
+  balance,
+  activity,
+}: {
+  balance: Balance | null;
+  activity: Entry[];
+}) {
+  const buckets = compositionBuckets(balance, activity);
   const total = buckets.reduce((sum, b) => sum + b.sat, 0) || 1;
 
   return (
@@ -24,7 +30,7 @@ export function Composition({ balance }: { balance: Balance | null }) {
           ) : null,
         )}
       </div>
-      <div className="mt-5 grid gap-x-6 gap-y-4 sm:grid-cols-2">
+      <div className="mt-5 grid grid-cols-3 gap-x-6 gap-y-4">
         {buckets.map((b) => (
           <div key={b.key}>
             <div className="flex items-center justify-between text-sm">
