@@ -104,16 +104,27 @@ func GenerateSeed(passphrase []byte) (aezeed.Mnemonic, error) {
 func MnemonicToSeed(mnemonic aezeed.Mnemonic,
 	passphrase []byte) ([rawSeedLen]byte, error) {
 
+	seed, _, err := MnemonicToSeedWithBirthday(mnemonic, passphrase)
+
+	return seed, err
+}
+
+// MnemonicToSeedWithBirthday decodes an aezeed mnemonic and returns both the
+// raw HD seed entropy and the aezeed birthday. The birthday bounds btcwallet
+// recovery scans so freshly created wallets do not rescan from genesis.
+func MnemonicToSeedWithBirthday(mnemonic aezeed.Mnemonic, passphrase []byte) (
+	[rawSeedLen]byte, time.Time, error) {
+
 	cipherSeed, err := mnemonic.ToCipherSeed(passphrase)
 	if err != nil {
-		return [rawSeedLen]byte{}, fmt.Errorf("deciphering "+
-			"mnemonic: %w", err)
+		return [rawSeedLen]byte{}, time.Time{}, fmt.Errorf(
+			"deciphering mnemonic: %w", err)
 	}
 
 	var seed [rawSeedLen]byte
 	copy(seed[:], cipherSeed.Entropy[:])
 
-	return seed, nil
+	return seed, cipherSeed.BirthdayTime(), nil
 }
 
 // EncryptSeed encrypts a raw seed using scrypt for key derivation and
