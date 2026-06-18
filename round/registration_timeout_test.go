@@ -282,8 +282,10 @@ func TestCommitmentValidationFailureRollsBackCustomForfeits(t *testing.T) {
 	customOp := regTimeoutOutpoint(0x0a, 1)
 	_, operatorKey := generateTestKeyPair(t)
 	s := &CommitmentTxReceivedState{
-		RoundID:      testRoundIDTr("commitment-validation-failed"),
-		CommitmentTx: &psbt.Packet{UnsignedTx: &wire.MsgTx{}},
+		RoundID: testRoundIDTr("commitment-validation-failed"),
+		CommitmentTx: &psbt.Packet{
+			UnsignedTx: &wire.MsgTx{},
+		},
 		VTXOTreePaths: map[int]*tree.Tree{
 			0: nil,
 		},

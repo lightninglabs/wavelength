@@ -2279,10 +2279,12 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 
 					a.log.WarnS(
 						ctx,
-						"Failed to drop custom forfeit inputs",
+						"Failed to drop custom "+
+							"forfeit inputs",
 						err,
 						slog.Int(
-							"outpoints", len(m.Outpoints),
+							"outpoints",
+							len(m.Outpoints),
 						),
 					)
 				}
@@ -2298,7 +2300,8 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 							"signing contexts",
 						err,
 						slog.Int(
-							"outpoints", len(m.Outpoints),
+							"outpoints",
+							len(m.Outpoints),
 						),
 					)
 				}

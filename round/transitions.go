@@ -91,7 +91,8 @@ func failureOutbox(reason string, err error, recoverable bool,
 // every forfeit input that was reserved before connector-bound forfeit
 // signatures were requested.
 func failBeforeForfeitSigning(reason string, err error, recoverable bool,
-	roundID RoundID, forfeits []types.ForfeitRequest) *ClientStateTransition {
+	roundID RoundID,
+	forfeits []types.ForfeitRequest) *ClientStateTransition {
 
 	return &ClientStateTransition{
 		NextState: &ClientFailedState{
@@ -1766,8 +1767,8 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			)
 
 			return failBeforeForfeitSigning(
-				"invalid round sweep delay", err, false, s.RoundID,
-				s.Intents.Forfeits,
+				"invalid round sweep delay", err, false,
+				s.RoundID, s.Intents.Forfeits,
 			), nil
 		}
 
@@ -1790,8 +1791,8 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 				)
 
 				return failBeforeForfeitSigning(
-					"commitment tx validation failed", err, true,
-					s.RoundID, s.Intents.Forfeits,
+					"commitment tx validation failed", err,
+					true, s.RoundID, s.Intents.Forfeits,
 				), nil
 			}
 		} else {
@@ -1833,8 +1834,8 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 				)
 
 				return failBeforeForfeitSigning(
-					"leave output validation failed", err, true,
-					s.RoundID, s.Intents.Forfeits,
+					"leave output validation failed", err,
+					true, s.RoundID, s.Intents.Forfeits,
 				), nil
 			}
 
@@ -1871,8 +1872,8 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			// is a structural defect of the round, not a transient
 			// condition, so the failure is non-recoverable.
 			return failBeforeForfeitSigning(
-				"VTXO tree commitment binding failed", err, false,
-				s.RoundID, s.Intents.Forfeits,
+				"VTXO tree commitment binding failed", err,
+				false, s.RoundID, s.Intents.Forfeits,
 			), nil
 		}
 
@@ -1888,8 +1889,8 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 					"VTXO request %d: %w", i, err)
 
 				return failBeforeForfeitSigning(
-					"VTXT validation failed", derivedErr, true,
-					s.RoundID, s.Intents.Forfeits,
+					"VTXT validation failed", derivedErr,
+					true, s.RoundID, s.Intents.Forfeits,
 				), nil
 			}
 
@@ -1925,10 +1926,8 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 
 				// The error is carried into the failed state;
 				// the FSM does not raise it as a Go error.
-				reason := fmt.Sprintf(
-					"VTXT validation failed for VTXO request %d",
-					i,
-				)
+				reason := fmt.Sprintf("VTXT validation failed "+
+					"for VTXO request %d", i)
 
 				return failBeforeForfeitSigning(
 					reason, validateErr, false, s.RoundID,
@@ -1939,13 +1938,15 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			// Ensure we actually found a client tree. This handles
 			// the edge case where VTXOTreePaths is empty.
 			if clientTree == nil {
-				reason := fmt.Sprintf(
-					"no client tree found for VTXO request %d", i,
-				)
+				reason := fmt.Sprintf("no client tree found "+
+					"for VTXO request %d", i)
 
 				return failBeforeForfeitSigning(
-					reason, fmt.Errorf("VTXO tree not found"),
-					false, s.RoundID, s.Intents.Forfeits,
+					reason, fmt.Errorf("VTXO tree not "+
+						"found"),
+					false,
+					s.RoundID,
+					s.Intents.Forfeits,
 				), nil
 			}
 
@@ -1962,10 +1963,9 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			if err := vtxoTree.ValidateAnchors(); err != nil {
 
 				// Error carried into failed state.
-				reason := fmt.Sprintf(
-					"anchor output validation failed for output %d",
-					outputIdx,
-				)
+				reason := fmt.Sprintf("anchor output "+
+					"validation failed for output %d",
+					outputIdx)
 
 				return failBeforeForfeitSigning(
 					reason, err, false, s.RoundID,
@@ -2000,8 +2000,8 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 		); err != nil {
 			// Error carried into failed state.
 			return failBeforeForfeitSigning(
-				"connector ancestry validation failed", err, false,
-				s.RoundID, s.Intents.Forfeits,
+				"connector ancestry validation failed", err,
+				false, s.RoundID, s.Intents.Forfeits,
 			), nil
 		}
 

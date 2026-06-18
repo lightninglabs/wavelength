@@ -2581,42 +2581,48 @@ func TestVTXOCreatedNotificationForwarding(t *testing.T) {
 		require.Empty(t, h.vtxoManager.messages)
 	})
 
-	t.Run("drop_custom_forfeit_cleans_signing_contexts", func(t *testing.T) {
-		t.Parallel()
+	t.Run(
+		"drop_custom_forfeit_cleans_signing_contexts",
+		func(t *testing.T) {
+			t.Parallel()
 
-		h := newActorTestHarness(t)
-		h.setupMockRoundStoreForStart()
-		h.actor.cfg.VTXOManager = nil
+			h := newActorTestHarness(t)
+			h.setupMockRoundStoreForStart()
+			h.actor.cfg.VTXOManager = nil
 
-		var cleaned []wire.OutPoint
-		h.actor.cfg.DropCustomForfeitSigningContexts = func(
-			_ context.Context, outpoints []wire.OutPoint) error {
+			var cleaned []wire.OutPoint
+			h.actor.cfg.DropCustomForfeitSigningContexts = func(
+				_ context.Context,
+				outpoints []wire.OutPoint) error {
 
-			cleaned = append(cleaned, outpoints...)
+				cleaned = append(cleaned, outpoints...)
 
-			return nil
-		}
+				return nil
+			}
 
-		err := h.start()
-		require.NoError(t, err)
+			err := h.start()
+			require.NoError(t, err)
 
-		outpoints := []wire.OutPoint{
-			{
-				Hash:  chainhash.HashH([]byte("custom-drop")),
-				Index: 7,
-			},
-		}
-		err = h.actor.processOutbox(
-			h.ctx, []ClientOutMsg{
-				&DropCustomForfeitReservation{
-					Outpoints: outpoints,
+			outpoints := []wire.OutPoint{
+				{
+					Hash: chainhash.HashH(
+						[]byte("custom-drop"),
+					),
+					Index: 7,
 				},
-			},
-		)
-		require.NoError(t, err)
-		require.Equal(t, outpoints, cleaned)
-		require.Empty(t, h.vtxoManager.messages)
-	})
+			}
+			err = h.actor.processOutbox(
+				h.ctx, []ClientOutMsg{
+					&DropCustomForfeitReservation{
+						Outpoints: outpoints,
+					},
+				},
+			)
+			require.NoError(t, err)
+			require.Equal(t, outpoints, cleaned)
+			require.Empty(t, h.vtxoManager.messages)
+		},
+	)
 }
 
 // TestActorIntentMapping verifies that the actor correctly maps external

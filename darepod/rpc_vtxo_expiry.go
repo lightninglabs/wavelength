@@ -123,8 +123,8 @@ func (r *RPCServer) getIndexedVTXOExpiryInfo(ctx context.Context,
 
 	statusFilter, err := indexedExpiryStatusFilter(filters)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"invalid status filter: %v", err)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
+			"status filter: %v", err)
 	}
 
 	resp, err := r.server.indexer.ListVTXOsByScriptsTaproot(
