@@ -107,7 +107,18 @@ func NewPostgresStore(cfg *PostgresConfig,
 		slog.String("dsn", cfg.DSN(true)),
 	)
 
-	rawDB, err := sql.Open("pgx", cfg.DSN(false))
+	// Open with the version-qualified "pgx/v5" driver name rather than the
+	// bare "pgx" alias. The pgx v4 and v5 stdlib packages each register a
+	// "pgx" database/sql driver, but only if no other major version grabbed
+	// that unqualified name first (see pgx stdlib init), so the bare name
+	// resolves to whichever package's init() happened to run first -- an
+	// init-order coin flip that differs between builds. A v4 vs v5 connection
+	// also surfaces unique-violation errors as two distinct,
+	// non-interchangeable *pgconn.PgError types. Pinning the exact major
+	// version keeps the backend deterministic -- so MapSQLError can reliably
+	// classify the errors it returns -- regardless of which pgx stdlib
+	// drivers the dependency graph happens to link in.
+	rawDB, err := sql.Open("pgx/v5", cfg.DSN(false))
 	if err != nil {
 		return nil, MapSQLError(err)
 	}
