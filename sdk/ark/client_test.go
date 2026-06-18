@@ -58,15 +58,25 @@ const (
 	// testSafeExpStatus keeps fake expiry info fixtures readable while
 	// staying within the repository's line-length limit.
 	testSafeExpStatus = daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_SAFE
-
-	// testRefExpStatus keeps fake expiry info fixtures readable
-	// while staying within the repository's line-length limit.
-	testRefExpStatus = daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_NEEDS_REFRESH
-
-	// testCriticalExpStatus keeps fake expiry info fixtures readable
-	// while staying within the repository's line-length limit.
-	testCriticalExpStatus = daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_CRITICAL
 )
+
+var (
+	// testRefExpStatus keeps fake expiry info fixtures readable while
+	// staying within the repository's line-length limit.
+	testRefExpStatus = testExpiryStatus(
+		"VTXO_EXPIRY_STATUS_NEEDS_REFRESH")
+
+	// testCriticalExpStatus keeps fake expiry info fixtures readable while
+	// staying within the repository's line-length limit.
+	testCriticalExpStatus = testExpiryStatus(
+		"VTXO_EXPIRY_STATUS_CRITICAL")
+)
+
+// testExpiryStatus returns a generated VTXO expiry status by name.
+func testExpiryStatus(name string) daemonrpc.VTXOExpiryStatus {
+	return daemonrpc.VTXOExpiryStatus(
+		daemonrpc.VTXOExpiryStatus_value[name])
+}
 
 // watchRoundsResponse shortens the generic stream signature used by the fake
 // daemon service.

@@ -758,9 +758,11 @@ func TestActivateCustomForfeitInputsRollsBackPartialActivation(t *testing.T) {
 					Ancestry:       first.Ancestry,
 				},
 				{
-					Outpoint:       second.Outpoint,
-					Amount:         42_000,
-					PkScript:       []byte{0x51, 0x20, 0xff},
+					Outpoint: second.Outpoint,
+					Amount:   42_000,
+					PkScript: []byte{
+						0x51, 0x20, 0xff,
+					},
 					PolicyTemplate: []byte{0xde, 0xad},
 					ClientKey:      first.ClientKey,
 					OperatorKey:    first.OperatorKey,
