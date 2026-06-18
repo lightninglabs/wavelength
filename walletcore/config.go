@@ -1,6 +1,8 @@
 package walletcore
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -35,6 +37,10 @@ type Config struct {
 	// rest, and BIP39 mnemonic handling. The wallet only uses the
 	// raw seed bytes.
 	Seed [32]byte
+
+	// Birthday is the time the wallet seed was created. When set, btcwallet
+	// uses it to bound recovery rescans instead of starting from genesis.
+	Birthday time.Time
 
 	// ChainParams identifies the Bitcoin network (mainnet, testnet,
 	// regtest). Used for address encoding and HD derivation paths.

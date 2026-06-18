@@ -1330,7 +1330,10 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 	if seed != nil {
 		s.log.InfoS(ctx, "Loaded seed from environment variable")
 
-		if err := s.startLwwallet(ctx, *seed); err != nil {
+		if err := s.startLwwallet(
+			ctx, *seed, time.Time{},
+		); err != nil {
+
 			s.log.ErrorS(
 				ctx,
 				"Failed to start lwwallet from env seed",
@@ -1405,7 +1408,10 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 
 	s.log.InfoS(ctx, "Auto-unlocking lwwallet from encrypted seed")
 
-	if err := s.startLwwallet(ctx, decryptedSeed); err != nil {
+	if err := s.startLwwallet(
+		ctx, decryptedSeed, time.Time{},
+	); err != nil {
+
 		s.log.ErrorS(ctx, "Failed to start lwwallet", err)
 
 		return
@@ -1417,8 +1423,8 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 // wallet as ready.
 //
 //nolint:contextcheck // wallet backend owns lifecycle after daemon startup
-func (s *Server) startLwwallet(ctx context.Context,
-	seed [rawSeedLen]byte) error {
+func (s *Server) startLwwallet(ctx context.Context, seed [rawSeedLen]byte,
+	birthday time.Time) error {
 
 	networkDir := s.cfg.NetworkDir()
 
@@ -1434,6 +1440,7 @@ func (s *Server) startLwwallet(ctx context.Context,
 
 	w, err := lwwallet.New(lwwallet.Config{
 		Seed:           seed,
+		Birthday:       birthday,
 		EsploraURL:     s.cfg.Wallet.EsploraURL,
 		ChainParams:    s.chainParams,
 		PollInterval:   pollInterval,
@@ -1514,7 +1521,10 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 		s.log.InfoS(ctx,
 			"Loaded seed from environment variable")
 
-		if err := s.startBtcwallet(ctx, *seed); err != nil {
+		if err := s.startBtcwallet(
+			ctx, *seed, time.Time{},
+		); err != nil {
+
 			s.log.ErrorS(
 				ctx,
 				"Failed to start btcwallet from env seed",
@@ -1591,7 +1601,10 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 	s.log.InfoS(ctx,
 		"Auto-unlocking btcwallet from encrypted seed")
 
-	if err := s.startBtcwallet(ctx, decryptedSeed); err != nil {
+	if err := s.startBtcwallet(
+		ctx, decryptedSeed, time.Time{},
+	); err != nil {
+
 		s.log.ErrorS(ctx,
 			"Failed to start btcwallet", err)
 
@@ -1647,8 +1660,8 @@ func (s *Server) preStartNeutrino(ctx context.Context) error {
 // ready.
 //
 //nolint:contextcheck // wallet backend owns lifecycle after daemon startup
-func (s *Server) startBtcwallet(ctx context.Context,
-	seed [rawSeedLen]byte) error {
+func (s *Server) startBtcwallet(ctx context.Context, seed [rawSeedLen]byte,
+	birthday time.Time) error {
 
 	networkDir := s.cfg.NetworkDir()
 
@@ -1660,6 +1673,7 @@ func (s *Server) startBtcwallet(ctx context.Context,
 	cfg := btcwbackend.Config{
 		Config: walletcore.Config{
 			Seed:           seed,
+			Birthday:       birthday,
 			ChainParams:    s.chainParams,
 			RecoveryWindow: recoveryWindow,
 			DBDir:          networkDir,

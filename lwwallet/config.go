@@ -18,6 +18,10 @@ type Config struct {
 	// BIP39 mnemonic handling. The wallet only uses the raw seed bytes.
 	Seed [32]byte
 
+	// Birthday is the time the wallet seed was created. When set, btcwallet
+	// uses it to bound recovery rescans instead of starting from genesis.
+	Birthday time.Time
+
 	// EsploraURL is the base URL of the Esplora/mempool.space REST API
 	// (e.g. "https://mempool.space/api" or "http://localhost:3000"). The
 	// wallet uses this for all chain data: blocks, transactions, UTXOs,

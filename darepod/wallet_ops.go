@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -26,45 +27,60 @@ import (
 func InitWalletFromMnemonic(mnemonic []string, seedPassphrase,
 	walletPassword []byte, networkDir string) ([rawSeedLen]byte, error) {
 
+	seed, _, err := InitWalletFromMnemonicWithBirthday(
+		mnemonic, seedPassphrase, walletPassword, networkDir,
+	)
+
+	return seed, err
+}
+
+// InitWalletFromMnemonicWithBirthday validates a mnemonic, derives the raw
+// seed and aezeed birthday, encrypts the seed with the given password, and
+// saves the ciphertext to disk.
+func InitWalletFromMnemonicWithBirthday(mnemonic []string, seedPassphrase,
+	walletPassword []byte, networkDir string) ([rawSeedLen]byte, time.Time,
+	error) {
+
 	// Validate the mnemonic length.
 	if len(mnemonic) != aezeed.NumMnemonicWords {
-		return [rawSeedLen]byte{}, fmt.Errorf("mnemonic must be %d "+
-			"words, got %d", aezeed.NumMnemonicWords, len(mnemonic))
+		return [rawSeedLen]byte{}, time.Time{}, fmt.Errorf("mnemonic "+
+			"must be %d words, got %d", aezeed.NumMnemonicWords,
+			len(mnemonic))
 	}
 
 	// Validate password length.
 	if len(walletPassword) < minPasswordLen {
-		return [rawSeedLen]byte{}, fmt.Errorf("wallet password must "+
-			"be at least %d bytes", minPasswordLen)
+		return [rawSeedLen]byte{}, time.Time{}, fmt.Errorf("wallet "+
+			"password must be at least %d bytes", minPasswordLen)
 	}
 
 	// Convert the string slice to an aezeed.Mnemonic array.
 	var m aezeed.Mnemonic
 	copy(m[:], mnemonic)
 
-	// Derive the raw seed from the mnemonic.
-	seed, err := MnemonicToSeed(m, seedPassphrase)
+	// Derive the raw seed and birthday from the mnemonic.
+	seed, birthday, err := MnemonicToSeedWithBirthday(m, seedPassphrase)
 	if err != nil {
-		return [rawSeedLen]byte{}, fmt.Errorf("invalid mnemonic: %w",
-			err)
+		return [rawSeedLen]byte{}, time.Time{}, fmt.Errorf("invalid "+
+			"mnemonic: %w", err)
 	}
 
 	// Encrypt the seed at rest.
 	ciphertext, err := EncryptSeed(seed, walletPassword)
 	if err != nil {
-		return [rawSeedLen]byte{}, fmt.Errorf("encrypting seed: %w",
-			err)
+		return [rawSeedLen]byte{}, time.Time{}, fmt.Errorf(
+			"encrypting seed: %w", err)
 	}
 
 	// Save the encrypted seed to disk.
 	seedPath := SeedFilePath(networkDir)
 
 	if err := SaveEncryptedSeed(seedPath, ciphertext); err != nil {
-		return [rawSeedLen]byte{}, fmt.Errorf("saving encrypted "+
-			"seed: %w", err)
+		return [rawSeedLen]byte{}, time.Time{}, fmt.Errorf("saving "+
+			"encrypted seed: %w", err)
 	}
 
-	return seed, nil
+	return seed, birthday, nil
 }
 
 // UnlockWalletFromDisk loads the encrypted seed from the network

@@ -101,6 +101,7 @@ func New(cfg Config) (*Wallet, error) {
 		PrivatePass:    walletcore.WalletPassphrase,
 		PublicPass:     walletcore.WalletPassphrase,
 		HdSeed:         cfg.Seed[:],
+		Birthday:       cfg.Birthday,
 		ChainSource:    chainSvc,
 		NetParams:      cfg.ChainParams,
 		CoinType:       coinType,

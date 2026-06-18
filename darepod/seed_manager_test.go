@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/lightningnetwork/lnd/aezeed"
 	"github.com/stretchr/testify/require"
@@ -36,6 +37,30 @@ func TestMnemonicToSeedRoundtrip(t *testing.T) {
 	seed2, err := MnemonicToSeed(mnemonic, passphrase)
 	require.NoError(t, err)
 	require.Equal(t, seed, seed2)
+}
+
+// TestMnemonicToSeedWithBirthdayRoundtrip verifies that aezeed birthday
+// metadata is preserved when deriving the raw btcwallet seed.
+func TestMnemonicToSeedWithBirthdayRoundtrip(t *testing.T) {
+	passphrase := []byte("test-passphrase")
+
+	mnemonic, err := GenerateSeed(passphrase)
+	require.NoError(t, err)
+
+	seed, birthday, err := MnemonicToSeedWithBirthday(
+		mnemonic, passphrase,
+	)
+	require.NoError(t, err)
+	require.NotEqual(t, [rawSeedLen]byte{}, seed)
+	require.False(t, birthday.IsZero())
+	require.WithinDuration(t, time.Now(), birthday, 48*time.Hour)
+
+	seed2, birthday2, err := MnemonicToSeedWithBirthday(
+		mnemonic, passphrase,
+	)
+	require.NoError(t, err)
+	require.Equal(t, seed, seed2)
+	require.Equal(t, birthday, birthday2)
 }
 
 // TestMnemonicToSeedWrongPassphrase verifies that decoding with the
@@ -217,4 +242,31 @@ func TestFullWorkflow(t *testing.T) {
 	mnemonicSeed, err := MnemonicToSeed(recoveredMnemonic, passphrase)
 	require.NoError(t, err)
 	require.Equal(t, seed, mnemonicSeed)
+}
+
+// TestInitWalletFromMnemonicWithBirthdayReturnsBirthday verifies the
+// InitWallet path keeps the aezeed birthday that btcwallet uses to bound
+// recovery rescans for fresh wallets.
+func TestInitWalletFromMnemonicWithBirthdayReturnsBirthday(t *testing.T) {
+	dir := t.TempDir()
+	password := []byte("workflow-password")
+	passphrase := []byte("optional-passphrase")
+
+	mnemonic, err := GenerateSeed(passphrase)
+	require.NoError(t, err)
+
+	seed, birthday, err := InitWalletFromMnemonicWithBirthday(
+		mnemonic[:], passphrase, password, dir,
+	)
+	require.NoError(t, err)
+	require.NotEqual(t, [rawSeedLen]byte{}, seed)
+	require.False(t, birthday.IsZero())
+	require.WithinDuration(t, time.Now(), birthday, 48*time.Hour)
+
+	loaded, err := LoadEncryptedSeed(SeedFilePath(dir))
+	require.NoError(t, err)
+
+	recovered, err := DecryptSeed(loaded, password)
+	require.NoError(t, err)
+	require.Equal(t, seed, recovered)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
@@ -294,7 +295,7 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 	// mnemonic, derives the seed, encrypts it, and saves it to
 	// disk. This logic is extracted so a future SDK can call it
 	// directly without going through gRPC.
-	seed, err := InitWalletFromMnemonic(
+	seed, birthday, err := InitWalletFromMnemonicWithBirthday(
 		req.Mnemonic, req.SeedPassphrase, req.WalletPassword,
 		networkDir,
 	)
@@ -310,7 +311,10 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 	)
 
 	// Start the wallet with the derived seed.
-	if err := r.server.startSelfManagedWallet(ctx, seed); err != nil {
+	if err := r.server.startSelfManagedWallet(
+		ctx, seed, birthday,
+	); err != nil {
+
 		rollbackState()
 
 		return nil, status.Errorf(codes.Internal, "unable to start "+
@@ -395,7 +399,10 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 	r.server.log.InfoS(ctx, "Wallet seed decrypted via UnlockWallet RPC")
 
 	// Start the wallet with the decrypted seed.
-	if err := r.server.startSelfManagedWallet(ctx, seed); err != nil {
+	if err := r.server.startSelfManagedWallet(
+		ctx, seed, time.Time{},
+	); err != nil {
+
 		rollbackState()
 
 		return nil, status.Errorf(codes.Internal, "unable to start "+
@@ -481,14 +488,14 @@ func (s *Server) isSelfManagedWallet() bool {
 // startSelfManagedWallet starts the appropriate self-managed wallet
 // based on the configured wallet type.
 func (s *Server) startSelfManagedWallet(ctx context.Context,
-	seed [rawSeedLen]byte) error {
+	seed [rawSeedLen]byte, birthday time.Time) error {
 
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLwwallet:
-		return s.startLwwallet(ctx, seed)
+		return s.startLwwallet(ctx, seed, birthday)
 
 	case WalletTypeBtcwallet:
-		return s.startBtcwallet(ctx, seed)
+		return s.startBtcwallet(ctx, seed, birthday)
 
 	default:
 		return fmt.Errorf("unsupported wallet type %q",
