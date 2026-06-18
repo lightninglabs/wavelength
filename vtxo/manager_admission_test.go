@@ -174,8 +174,9 @@ func (f failingChainSourceRef) Tell(_ context.Context,
 }
 
 // Ask returns a failed future for every chain-source request.
-func (f failingChainSourceRef) Ask(_ context.Context,
-	_ chainsource.ChainSourceMsg) actor.Future[chainsource.ChainSourceResp] {
+func (f failingChainSourceRef) Ask(
+	_ context.Context, _ chainsource.ChainSourceMsg,
+) actor.Future[chainsource.ChainSourceResp] {
 
 	promise := actor.NewPromise[chainsource.ChainSourceResp]()
 	promise.Complete(

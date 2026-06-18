@@ -2204,6 +2204,7 @@ func (m *Manager) handleDropCustomForfeitInputs(ctx context.Context,
 			}
 
 			dropped++
+
 			continue
 		}
 
