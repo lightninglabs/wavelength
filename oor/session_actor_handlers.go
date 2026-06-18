@@ -381,6 +381,10 @@ func (b *sessionBehavior) buildTransportMessage(ctx context.Context,
 				ctx, queryReq.Recipients,
 			)
 			if err != nil {
+
+				// Transient: the filter hit a store/wallet
+				// error that may clear on retry, so propagate
+				// it plainly to redeliver.
 				return nil, fmt.Errorf("filter incoming "+
 					"metadata recipients: %w", err)
 			}
@@ -389,8 +393,15 @@ func (b *sessionBehavior) buildTransportMessage(ctx context.Context,
 		}
 
 		if len(recipients) == 0 {
-			return nil, fmt.Errorf("incoming metadata query " +
-				"contains no wallet-owned recipients")
+
+			// Deterministic: the operator-supplied recipient set
+			// contains nothing this wallet owns. Re-running the
+			// identical turn never changes that, so mark it
+			// terminal rather than redeliver forever.
+			return nil, terminalOutboxErrorf(
+				"incoming metadata query contains no " +
+					"wallet-owned recipients",
+			)
 		}
 
 		pkScripts := make([][]byte, 0, len(recipients))
@@ -414,8 +425,14 @@ func (b *sessionBehavior) buildTransportMessage(ctx context.Context,
 
 	serverMsg, ok := event.(serverconn.ServerMessage)
 	if !ok {
-		return nil, fmt.Errorf("transport event %T does not implement "+
-			"ServerMessage", event)
+
+		// Deterministic: the FSM emitted a transport event that is not
+		// a ServerMessage. This is a fixed property of the event type,
+		// so fail terminally instead of redelivering.
+		return nil, terminalOutboxErrorf(
+			"transport event %T does not implement ServerMessage",
+			event,
+		)
 	}
 
 	sm := serverMsg.ServiceMethod()
@@ -626,7 +643,10 @@ func (b *sessionBehavior) materializeIncoming(ctx context.Context,
 			return err
 		}
 
-		if err := b.driveOutbox(ctx, next); err != nil {
+		// Raw drive: this runs inside the commit transaction, so a
+		// deterministic error must roll the commit back (retry) rather
+		// than fail the FSM mid-commit.
+		if err := b.driveOutboxEvents(ctx, next); err != nil {
 			return err
 		}
 	}

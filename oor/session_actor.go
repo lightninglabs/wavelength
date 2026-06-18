@@ -664,13 +664,65 @@ func (b *sessionBehavior) apply(ctx context.Context, event Event) (
 	return result.UnwrapOr(nil), nil
 }
 
-// driveOutbox is the shared switch that handles every outbox event the FSM
-// emits. This is the heart of the liberalized control flow: instead of routing
-// events through a separate OutboxHandler, the actor executes each effect
-// directly here and feeds any follow-up event straight back into the FSM. Local
-// effects (signing) run inline with no writer held; cross-actor transport is
-// collected into pendingTransport and durably enqueued by commitAck.
+// driveOutbox runs the FSM's emitted outbox effects and classifies any failure:
+// a deterministic *terminalOutboxError (operator data or persisted state that
+// will fail identically on every redelivery) is converted into a terminal
+// FailEvent so the turn commits and acks the message instead of rolling back
+// into a doomed retry loop that ends in dead-letter; any other (transient)
+// error is returned so the framework redelivers and the effect can succeed
+// later.
+//
+// This is the top-level entry for a dispatch turn. continueWith and the
+// commit-path materialization use the raw driveOutboxEvents directly so a
+// deterministic error propagates up to this single classification point (and a
+// commit-path failure rolls the transaction back rather than failing the FSM
+// mid-commit).
 func (b *sessionBehavior) driveOutbox(ctx context.Context,
+	outbox []OutboxEvent) error {
+
+	err := b.driveOutboxEvents(ctx, outbox)
+	if err == nil {
+		return nil
+	}
+
+	var terminal *terminalOutboxError
+	if errors.As(err, &terminal) {
+		b.
+			logger(ctx).
+			WarnS(
+				ctx,
+				"Failing OOR session on deterministic "+
+					"outbox error",
+				err,
+				slog.String("session_id", b.sessionID.String()),
+			)
+
+		return b.failTerminal(ctx, terminal)
+	}
+
+	return err
+}
+
+// failTerminal drives the session FSM to its terminal Failed state for a
+// deterministic outbox error, so the current turn commits a Failed snapshot and
+// acks the message. The Failed transition emits no further outbox, so this does
+// not recurse, and every non-terminal state that emits a transport effect
+// handles FailEvent, so it always advances. A genuine apply error (should not
+// happen) propagates and rolls the turn back.
+func (b *sessionBehavior) failTerminal(ctx context.Context, cause error) error {
+	return b.continueWith(ctx, &FailEvent{Reason: cause.Error()})
+}
+
+// driveOutboxEvents is the shared switch that handles every outbox event the
+// FSM emits. This is the heart of the liberalized control flow: instead of
+// routing events through a separate OutboxHandler, the actor executes each
+// effect directly here and feeds any follow-up event straight back into the
+// FSM. Local effects (signing) run inline with no writer held; cross-actor
+// transport is collected into pendingTransport and durably enqueued by
+// commitAck. It returns errors raw -- a deterministic effect wraps a
+// *terminalOutboxError -- and the caller (driveOutbox) decides whether to fail
+// the session or retry.
+func (b *sessionBehavior) driveOutboxEvents(ctx context.Context,
 	outbox []OutboxEvent) error {
 
 	for _, event := range outbox {
@@ -866,14 +918,16 @@ func (b *sessionBehavior) driveOutbox(ctx context.Context,
 }
 
 // continueWith drives a follow-up event into the FSM and recursively handles
-// the outbox it emits.
+// the outbox it emits. It uses the raw driveOutboxEvents so a deterministic
+// error propagates up to the single top-level driveOutbox classifier rather
+// than failing the session from inside the recursion.
 func (b *sessionBehavior) continueWith(ctx context.Context, event Event) error {
 	next, err := b.apply(ctx, event)
 	if err != nil {
 		return err
 	}
 
-	return b.driveOutbox(ctx, next)
+	return b.driveOutboxEvents(ctx, next)
 }
 
 // queueRetry validates the retry wiring and defers the timer arm to after the

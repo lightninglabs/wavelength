@@ -2,6 +2,7 @@ package oor
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 )
@@ -13,6 +14,35 @@ import (
 type OutboxHandler interface {
 	Handle(ctx context.Context, sessionID SessionID,
 		outbox OutboxEvent) ([]Event, error)
+}
+
+// terminalOutboxError marks a DETERMINISTIC failure while driving an FSM outbox
+// effect -- one that depends only on persisted state or operator-supplied
+// input, so it fails identically on every redelivery. driveOutbox converts it
+// into a terminal FailEvent so the turn commits and acks the message, instead
+// of returning it (which rolls the turn back and makes the durable mailbox
+// redeliver a doomed retry until it dead-letters, wedging the session). A
+// TRANSIENT failure -- a busy DB writer, a momentarily unavailable peer -- must
+// be returned plain so the framework redelivers and the effect can succeed
+// later. Only wrap an error here when re-running the identical turn could never
+// succeed.
+type terminalOutboxError struct {
+	cause error
+}
+
+// Error returns the underlying cause's message.
+func (e *terminalOutboxError) Error() string {
+	return e.cause.Error()
+}
+
+// Unwrap exposes the cause so errors.As/Is see through the marker.
+func (e *terminalOutboxError) Unwrap() error {
+	return e.cause
+}
+
+// terminalOutboxErrorf builds a terminalOutboxError with a formatted message.
+func terminalOutboxErrorf(format string, args ...any) error {
+	return &terminalOutboxError{cause: fmt.Errorf(format, args...)}
 }
 
 // incomingMetadataFilter is the recipient-filter view the per-session actor

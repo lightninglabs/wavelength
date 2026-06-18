@@ -1001,3 +1001,119 @@ func TestSessionActorBuildTransportMessage(t *testing.T) {
 	_, err = b.buildTransportMessage(ctx, &ScheduleRetryRequest{})
 	require.ErrorContains(t, err, "does not implement ServerMessage")
 }
+
+// TestSessionActorMetadataQueryEmptyRecipientsFailsTerminally verifies that a
+// deterministic transport-build error (operator-supplied metadata query whose
+// recipient set contains nothing this wallet owns) fails the session terminally
+// instead of returning an error that would roll the turn back and make the
+// durable mailbox redeliver the doomed turn forever. The turn must succeed (so
+// the message acks) and the FSM must land in Failed.
+func TestSessionActorMetadataQueryEmptyRecipientsFailsTerminally(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	sid := oorSessionID(0x51)
+
+	session, err := newReceiveSessionWithState(
+		ctx, sid, &ReceiveNotified{
+			SessionID: sid,
+		},
+	)
+	require.NoError(t, err)
+
+	b := &sessionBehavior{
+		cfg: SessionActorConfig{
+			// owned:false => the filter returns no owned
+			// recipients, so buildTransportMessage reports the
+			// deterministic terminal error.
+			IncomingHandler: &fakeRecipientFilter{
+				owned: false,
+			},
+			ServerConn: fakeServerConnRef{},
+		},
+		actorID:   ActorIDForSession(sid),
+		log:       btclog.Disabled,
+		sessionID: sid,
+		direction: clientdb.OORSessionDirectionIncoming,
+		fsm:       session.FSM,
+		loaded:    true,
+	}
+	t.Cleanup(b.stopFSM)
+
+	query := &QueryIncomingMetadataRequest{
+		SessionID: sid,
+		Recipients: []ArkRecipientOutput{
+			{
+				OutputIndex: 0,
+				PkScript: []byte{
+					0x51,
+					0x20,
+				},
+			},
+		},
+	}
+
+	// The deterministic error is converted into a terminal FailEvent, so
+	// driveOutbox returns no error: the turn commits and acks.
+	require.NoError(t, b.driveOutbox(ctx, []OutboxEvent{query}))
+
+	state, err := b.fsm.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &Failed{}, state)
+}
+
+// TestSessionActorMetadataQueryTransientErrorRetries verifies that a TRANSIENT
+// transport-build error (the recipient filter itself erroring, e.g. a busy
+// store) is propagated rather than converted to a terminal failure, so the
+// framework redelivers the turn and the session stays alive.
+func TestSessionActorMetadataQueryTransientErrorRetries(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	sid := oorSessionID(0x52)
+
+	session, err := newReceiveSessionWithState(
+		ctx, sid, &ReceiveNotified{
+			SessionID: sid,
+		},
+	)
+	require.NoError(t, err)
+
+	b := &sessionBehavior{
+		cfg: SessionActorConfig{
+			IncomingHandler: &fakeRecipientFilter{
+				err: errFilterBroken,
+			},
+			ServerConn: fakeServerConnRef{},
+		},
+		actorID:   ActorIDForSession(sid),
+		log:       btclog.Disabled,
+		sessionID: sid,
+		direction: clientdb.OORSessionDirectionIncoming,
+		fsm:       session.FSM,
+		loaded:    true,
+	}
+	t.Cleanup(b.stopFSM)
+
+	query := &QueryIncomingMetadataRequest{
+		SessionID: sid,
+		Recipients: []ArkRecipientOutput{
+			{
+				OutputIndex: 0,
+				PkScript: []byte{
+					0x51,
+					0x20,
+				},
+			},
+		},
+	}
+
+	// The transient error propagates (turn rolls back, redelivers); the
+	// session is NOT failed.
+	err = b.driveOutbox(ctx, []OutboxEvent{query})
+	require.ErrorIs(t, err, errFilterBroken)
+
+	state, err := b.fsm.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &ReceiveNotified{}, state)
+}
