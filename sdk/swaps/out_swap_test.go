@@ -3318,6 +3318,95 @@ func TestReceiveSessionFreshClaimBoundsSpentLookup(t *testing.T) {
 	require.Equal(t, 1, daemonConn.cancelCalls)
 }
 
+// TestReceiveSessionClaimFollowsRefreshedLiveVHTLC verifies a delayed receive
+// claim does not keep spending the original vHTLC outpoint after a cooperative
+// refresh. Refresh preserves the vHTLC script and amount but creates a new live
+// output, so the claim path must re-resolve the live script before submitting
+// the custom-input spend.
+func TestReceiveSessionClaimFollowsRefreshedLiveVHTLC(t *testing.T) {
+	t.Parallel()
+
+	senderPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	receiverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:   senderPriv.PubKey(),
+		Receiver: receiverPriv.PubKey(),
+		Server:   operatorPriv.PubKey(),
+		PreimageHash: lntypes.Hash(
+			sha256.Sum256(preimage[:]),
+		),
+		RefundLocktime:                       144,
+		UnilateralClaimDelay:                 12,
+		UnilateralRefundDelay:                24,
+		UnilateralRefundWithoutReceiverDelay: 36,
+	})
+	require.NoError(t, err)
+
+	policyTemplate, err := encodeVHTLCPolicyTemplate(policy)
+	require.NoError(t, err)
+
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
+
+	refreshed := &VTXOInfo{
+		Outpoint:  "refreshed:0",
+		AmountSat: 42_000,
+		PkScript:  pkScript,
+	}
+	daemonConn := &testDaemonConn{
+		blockHeight: 100,
+		receiveInfo: &ReceiveInfo{
+			PkScript: []byte{
+				0x51,
+			},
+			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
+		},
+		sendSessionID: "claim-session",
+		liveByPkScript: map[string]*VTXOInfo{
+			hex.EncodeToString(pkScript): refreshed,
+		},
+	}
+
+	client := NewSwapClient(nil, daemonConn, nil, nil)
+	session := &ReceiveSession{
+		client:              client,
+		state:               ReceiveStateVHTLCFunded,
+		Preimage:            preimage,
+		PaymentHash:         preimage.Hash(),
+		clientPubKey:        receiverPriv.PubKey(),
+		swapServerPubKey:    senderPriv.PubKey(),
+		operatorPubKey:      operatorPriv.PubKey(),
+		vhtlcPolicy:         policy,
+		vhtlcPolicyTemplate: policyTemplate,
+		vhtlcPkScript:       pkScript,
+		vhtlcConfig: VHTLCConfig{
+			RefundLocktime: 144,
+		},
+		vhtlcOutpoint: "original:0",
+		vhtlcAmount:   43_000,
+	}
+
+	result, err := session.Claim(t.Context(), "original:0", 42_000)
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateCompleted, session.State())
+	require.Equal(t, refreshed.Outpoint, result.VTXOOutpoint)
+	require.Equal(t, refreshed.Outpoint, session.vhtlcOutpoint)
+	require.Equal(t, 1, daemonConn.sendCustomCalls)
+	require.Len(t, daemonConn.lastClaimInput, 1)
+	require.Equal(t, refreshed.Outpoint, daemonConn.lastClaimInput[0].Outpoint)
+	require.Equal(t, refreshed.AmountSat, daemonConn.lastClaimInput[0].AmountSat)
+}
+
 // TestReceiveSessionFreshClaimBoundsSpentLookupGRPCDeadline mirrors
 // TestReceiveSessionFreshClaimBoundsSpentLookup but the daemon returns the
 // gRPC status form of DeadlineExceeded rather than context.DeadlineExceeded.
