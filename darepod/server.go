@@ -209,6 +209,12 @@ type Server struct {
 	// select on runCtx.Done().
 	runCtx context.Context //nolint:containedctx
 
+	// fatalCancel cancels runCtx with a cause when a subsystem reports an
+	// unrecoverable failure. run() returns that cause so the process exits
+	// non-zero and the orchestrator restarts it with fresh state. It is set
+	// once at the start of run() before any subsystem starts.
+	fatalCancel context.CancelCauseFunc
+
 	// walletState tracks the lifecycle state of the wallet
 	// subsystem. In lnd mode this is always WalletStateReady
 	// after successful lnd connection. In lwwallet mode it
@@ -729,7 +735,15 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 // subsystem so critical log events can trigger daemon shutdown.
 //
 //nolint:funlen
-func (s *Server) run(ctx context.Context, shutdownFn func()) error {
+func (s *Server) run(parentCtx context.Context, shutdownFn func()) error {
+	// Wrap the caller's context so a fatal subsystem failure can cancel the
+	// daemon with a cause. Normal signal-driven shutdown cancels parentCtx
+	// and run() returns nil; only a fatal cause is returned as an error,
+	// yielding a non-zero process exit for the orchestrator to restart.
+	ctx, cancelCause := context.WithCancelCause(parentCtx)
+	defer cancelCause(nil)
+	s.fatalCancel = cancelCause
+
 	// Store the run context so background goroutines (like the
 	// btcwallet sync poller) can outlive individual RPC
 	// handlers but still shut down with the daemon.
@@ -1201,7 +1215,29 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 
 	s.log.InfoS(ctx, "Shutting down darepod")
 
+	// A non-cancel cause means a subsystem escalated an unrecoverable
+	// failure (e.g. a block epoch subscription that could not be
+	// re-established). Surface it so the process exits non-zero and is
+	// restarted with fresh state rather than running on as a zombie.
+	if cause := context.Cause(ctx); cause != nil &&
+		!errors.Is(cause, context.Canceled) {
+
+		s.log.ErrorS(ctx, "darepod exiting on fatal subsystem error",
+			cause)
+
+		return cause
+	}
+
 	return nil
+}
+
+// signalFatal cancels the run context with an unrecoverable-failure cause so
+// run() returns it and the process exits non-zero. It is safe to call from any
+// subsystem goroutine and is a no-op before run() has wired fatalCancel.
+func (s *Server) signalFatal(err error) {
+	if s.fatalCancel != nil {
+		s.fatalCancel(err)
+	}
 }
 
 // startWalletReadyServices starts the services that need wallet-derived keys
@@ -1813,6 +1849,7 @@ func (s *Server) registerChainSourceActor(
 		chainsource.ChainSourceConfig{
 			Backend: s.chainBackend,
 			System:  s.actorSystem,
+			OnFatal: fn.Some(s.signalFatal),
 		},
 	)
 

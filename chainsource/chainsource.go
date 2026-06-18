@@ -32,6 +32,12 @@ type ChainSourceConfig struct {
 	// falls back to extracting a logger from context via LoggerFromContext,
 	// or uses btclog.Disabled if no logger is found.
 	Log fn.Option[btclog.Logger]
+
+	// OnFatal, when set, is propagated to spawned block epoch subscriptions
+	// so that an unrecoverable backend (a stream that cannot be
+	// re-established within the fatal timeout) escalates to the daemon's
+	// shutdown path instead of spinning forever.
+	OnFatal fn.Option[func(error)]
 }
 
 // WithLogger returns a new config with the given logger set.
@@ -375,10 +381,12 @@ func (a *ChainSourceActor) handleSubscribeBlocks(ctx context.Context,
 	actorID := fmt.Sprintf("epoch.%s", req.CallerID)
 	serviceKey := epochActorServiceKey(req.CallerID)
 
-	// Pass the backend and logger to the sub-actor via config.
+	// Pass the backend and logger to the sub-actor via config. The fatal
+	// hook is forwarded so a wedged backend escalates to daemon shutdown.
 	epochCfg := BlockEpochConfig{
 		Backend: a.cfg.Backend,
 		Log:     fn.Some(a.logger(ctx)),
+		OnFatal: a.cfg.OnFatal,
 	}
 	epochActor := NewBlockEpochActor(epochCfg)
 	actorRef := serviceKey.Spawn(a.cfg.System, actorID, epochActor)
