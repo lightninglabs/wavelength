@@ -288,6 +288,188 @@ func TestVTXOPersistenceStoreSaveAndGet(t *testing.T) {
 	)
 }
 
+// TestVTXODescriptorDecodeMemoization verifies the per-outpoint descriptor
+// decode cache: repeated listings return equal descriptors whose immutable
+// derived parts (taproot script and parsed operator key) are the SAME shared
+// objects, while mutable row state (status) is read fresh on every call.
+func TestVTXODescriptorDecodeMemoization(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-decode-memo")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, roundStore.CommitState(ctx, testRound, state))
+
+	desc := createTestVTXODescriptor(t, roundID, 7)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+
+	first, err := vtxoStore.ListVTXOsByStatus(ctx, vtxo.VTXOStatusLive)
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+
+	second, err := vtxoStore.ListVTXOsByStatus(ctx, vtxo.VTXOStatusLive)
+	require.NoError(t, err)
+	require.Len(t, second, 1)
+
+	// Equal contents across calls.
+	require.Equal(t, first[0], second[0])
+
+	// The derived parts must be memoized: pointer identity proves the
+	// second listing skipped the re-derivation. Client keys are hydrated
+	// through the internal key registry, so equality above covers them.
+	require.Same(t, first[0].TapScript, second[0].TapScript)
+	require.Same(t, first[0].OperatorKey, second[0].OperatorKey)
+
+	// Mutable row state is read fresh: a status flip shows up on the next
+	// listing while the derived parts stay the same shared objects.
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, desc.Outpoint, vtxo.VTXOStatusSpent,
+		),
+	)
+
+	spent, err := vtxoStore.ListVTXOsByStatus(ctx, vtxo.VTXOStatusSpent)
+	require.NoError(t, err)
+	require.Len(t, spent, 1)
+	require.Equal(t, vtxo.VTXOStatusSpent, spent[0].Status)
+	require.Same(t, first[0].TapScript, spent[0].TapScript)
+	require.Same(t, first[0].OperatorKey, spent[0].OperatorKey)
+}
+
+// TestListSelectionCandidatesByStatus verifies the lightweight selection
+// projection agrees with the full descriptor listing on outpoint, amount,
+// and pkScript.
+func TestListSelectionCandidatesByStatus(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-sel-proj")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, roundStore.CommitState(ctx, testRound, state))
+
+	descA := createTestVTXODescriptor(t, roundID, 11)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, descA))
+
+	descB := createTestVTXODescriptor(t, roundID, 12)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, descB))
+
+	full, err := vtxoStore.ListVTXOsByStatus(ctx, vtxo.VTXOStatusLive)
+	require.NoError(t, err)
+	require.Len(t, full, 2)
+
+	candidates, err := vtxoStore.ListSelectionCandidatesByStatus(
+		ctx, vtxo.VTXOStatusLive,
+	)
+	require.NoError(t, err)
+	require.Len(t, candidates, len(full))
+
+	byOutpoint := make(map[wire.OutPoint]*vtxo.Descriptor)
+	for _, desc := range full {
+		byOutpoint[desc.Outpoint] = desc
+	}
+
+	for _, candidate := range candidates {
+		desc, ok := byOutpoint[candidate.Outpoint]
+		require.True(t, ok)
+		require.Equal(t, desc.Amount, candidate.Amount)
+		require.Equal(t, desc.PkScript, candidate.PkScript)
+	}
+
+	// A status the projection was not asked for stays invisible.
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, descA.Outpoint, vtxo.VTXOStatusSpent,
+		),
+	)
+
+	candidates, err = vtxoStore.ListSelectionCandidatesByStatus(
+		ctx, vtxo.VTXOStatusLive,
+	)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	require.Equal(t, descB.Outpoint, candidates[0].Outpoint)
+}
+
+// TestListVTXOsLightSkipsAncestry exercises the light listing variants the
+// ListVTXOs RPC runs on: the descriptors must match the full listing in
+// every field except Ancestry, which the light path never loads.
+func TestListVTXOsLightSkipsAncestry(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-light-list")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, roundStore.CommitState(ctx, testRound, state))
+
+	descA := createTestVTXODescriptor(t, roundID, 21)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, descA))
+
+	descB := createTestVTXODescriptor(t, roundID, 22)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, descB))
+
+	full, err := vtxoStore.ListVTXOsByStatus(ctx, vtxo.VTXOStatusLive)
+	require.NoError(t, err)
+	require.Len(t, full, 2)
+
+	byOutpoint := make(map[wire.OutPoint]*vtxo.Descriptor)
+	for _, desc := range full {
+		// The full listing carries the persisted ancestry; the light
+		// assertions below lean on this contrast.
+		require.NotEmpty(t, desc.Ancestry)
+		byOutpoint[desc.Outpoint] = desc
+	}
+
+	assertLight := func(light []*vtxo.Descriptor) {
+		t.Helper()
+
+		require.Len(t, light, len(full))
+		for _, desc := range light {
+			fullDesc, ok := byOutpoint[desc.Outpoint]
+			require.True(t, ok)
+
+			require.Empty(t, desc.Ancestry)
+			require.Equal(t, fullDesc.Amount, desc.Amount)
+			require.Equal(t, fullDesc.PkScript, desc.PkScript)
+			require.Equal(t, fullDesc.Status, desc.Status)
+			require.Equal(t, fullDesc.RoundID, desc.RoundID)
+			require.Equal(
+				t, fullDesc.ChainDepth, desc.ChainDepth,
+			)
+			require.Equal(
+				t, fullDesc.RelativeExpiry, desc.RelativeExpiry,
+			)
+		}
+	}
+
+	light, err := vtxoStore.ListVTXOsByStatusLight(
+		ctx, vtxo.VTXOStatusLive,
+	)
+	require.NoError(t, err)
+	assertLight(light)
+
+	liveLight, err := vtxoStore.ListLiveVTXOsLight(ctx)
+	require.NoError(t, err)
+	assertLight(liveLight)
+}
+
 // addAncestryFragment appends a synthetic ancestry fragment to a
 // Descriptor under construction so multi-tree round-trip tests can
 // build N>1 ancestry layouts without re-implementing the per-fragment

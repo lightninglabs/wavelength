@@ -8,6 +8,17 @@ SELECT * FROM vtxos
 WHERE status = $1
 ORDER BY creation_time DESC;
 
+-- name: ListVTXOSelectionCandidatesByStatus :many
+-- ListVTXOSelectionCandidatesByStatus returns the lightweight projection coin
+-- selection runs on: outpoint, amount, and pkScript. Selection happens on
+-- every payment and only needs these three fields, so this avoids decoding
+-- full descriptors (pubkey parsing, taproot script reconstruction, policy
+-- template decode) and the batched ancestry-path query on the hot path.
+SELECT outpoint_hash, outpoint_index, amount, pk_script
+FROM vtxos
+WHERE status = $1
+ORDER BY creation_time DESC;
+
 -- name: ListLiveVTXOs :many
 -- ListLiveVTXOs returns all VTXOs that are not in a terminal state.
 -- Terminal states are: Forfeited (3), Spent (4), UnilateralExit (5),

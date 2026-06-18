@@ -884,7 +884,13 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 		}
 
 		// Non-terminal exit: no VTXOTerminatedNotification, so a failed
-		// unroll can recover the VTXO (darepo-client#602).
+		// unroll can recover the VTXO (darepo-client#602). Leaving
+		// SpendingState drops the durable reservation row in the same
+		// transaction as the status change (ReleaseSpendReservation),
+		// matching the critical-expiry branch above; otherwise the
+		// stale row outlives the spend and the startup reservation
+		// sweep would re-reserve a recovered-to-Live VTXO that no
+		// session owns.
 		outbox := []VTXOOutMsg{
 			&ExpiringNotification{
 				VTXO:            s.VTXO,
@@ -894,6 +900,8 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 			&VTXOStatusUpdate{
 				Outpoint:  s.VTXO.Outpoint,
 				NewStatus: VTXOStatusUnilateralExit,
+
+				ReleaseSpendReservation: true,
 			},
 		}
 

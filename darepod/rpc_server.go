@@ -959,11 +959,14 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 				"invalid status filter: %v", sErr)
 		}
 
-		dbVTXOs, err = r.server.vtxoStore.ListVTXOsByStatus(
+		// The listing response never carries ancestry, so the light
+		// variants skip the ancestry side-table join (whose TLV tree
+		// fragments grow with OOR chain depth) entirely.
+		dbVTXOs, err = r.server.vtxoStore.ListVTXOsByStatusLight(
 			ctx, domainStatus,
 		)
 	} else {
-		dbVTXOs, err = r.server.vtxoStore.ListLiveVTXOs(ctx)
+		dbVTXOs, err = r.server.vtxoStore.ListLiveVTXOsLight(ctx)
 	}
 
 	if err != nil {
@@ -980,14 +983,19 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 
 	filtered := vtxo.FilterDescriptors(dbVTXOs, filterOpts)
 
+	// Resolving the OOR package for an outpoint costs one artifact-store
+	// read per VTXO, so listing-only callers can opt out of checkpoint
+	// PSBT population entirely.
 	var packageStore *db.OORArtifactPersistenceStore
-	for i := range filtered {
-		if filtered[i].Status == vtxo.VTXOStatusSpent ||
-			filtered[i].ChainDepth > 0 {
+	if !req.ExcludeCheckpointPsbts {
+		for i := range filtered {
+			if filtered[i].Status == vtxo.VTXOStatusSpent ||
+				filtered[i].ChainDepth > 0 {
 
-			packageStore = r.newLocalOORArtifactStore()
+				packageStore = r.newLocalOORArtifactStore()
 
-			break
+				break
+			}
 		}
 	}
 

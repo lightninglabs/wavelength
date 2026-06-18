@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,6 +91,37 @@ func (m *mockVTXOActorRef) Ask(ctx context.Context,
 
 // Compile-time check that mockVTXOActorRef implements VTXOActorRef.
 var _ VTXOActorRef = (*mockVTXOActorRef)(nil)
+
+// capturingManagerRef records manager-bound Tells so admission tests can
+// observe the detached reserve failure hop-back and replay it into Receive
+// deterministically (the real manager would consume it on its own goroutine).
+type capturingManagerRef struct {
+	mu   sync.Mutex
+	msgs []ManagerMsg
+}
+
+// ID returns the capture stub's identifier.
+func (c *capturingManagerRef) ID() string { return "manager-capture" }
+
+// Tell records the message.
+func (c *capturingManagerRef) Tell(_ context.Context, msg ManagerMsg) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.msgs = append(c.msgs, msg)
+
+	return nil
+}
+
+// captured returns a snapshot of the recorded messages.
+func (c *capturingManagerRef) captured() []ManagerMsg {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]ManagerMsg(nil), c.msgs...)
+}
+
+// Compile-time check that capturingManagerRef is a manager TellOnlyRef.
+var _ actor.TellOnlyRef[ManagerMsg] = (*capturingManagerRef)(nil)
 
 // blockingVTXOActorRef returns asks that never complete on their own. Awaiters
 // are unblocked only by their context, which lets admission tests verify that
@@ -210,6 +242,52 @@ func TestSelectAndReserveSpendSuccess(t *testing.T) {
 
 	_, ok = ref.state.(*SpendingState)
 	require.True(t, ok, "expected SpendingState, got %T", ref.state)
+}
+
+// TestSelectAndReserveRespawnGuards verifies the self-heal path for a
+// live-in-DB but actorless selection candidate fails closed: a store miss
+// and a non-live row both surface as reservation errors instead of spawning
+// an actor for liquidity that is not actually spendable.
+func TestSelectAndReserveRespawnGuards(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 50000, 0)
+
+	// The manager has NO resident actor for the candidate.
+	mgr, store := newTestManager(t, nil)
+
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{vtxo1}, nil)
+
+	// First attempt: the row vanished between listing and reserve.
+	store.On("GetVTXO", t.Context(), vtxo1.Outpoint).Return(
+		nil, fmt.Errorf("not found"),
+	).Once()
+
+	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount: 40000,
+	})
+	_, err := result.Unpack()
+	require.ErrorContains(t, err, "no actor for outpoint")
+	require.ErrorContains(t, err, "not found")
+
+	// Second attempt: the row exists but is no longer live, so the
+	// candidate list was stale; the respawn must refuse to spawn.
+	spent := *vtxo1
+	spent.Status = VTXOStatusSpent
+	store.On("GetVTXO", t.Context(), vtxo1.Outpoint).Return(
+		&spent, nil,
+	).Once()
+
+	result = mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount: 40000,
+	})
+	_, err = result.Unpack()
+	require.ErrorContains(t, err, "is not live")
+
+	// No actor may have been registered by either failed attempt.
+	require.Empty(t, mgr.actors)
 }
 
 // TestSelectAndReserveSpendMultipleVTXOs verifies that coin selection picks
@@ -663,8 +741,35 @@ func TestReserveForfeitRejectedWhenSpending(t *testing.T) {
 	_, err := result.Unpack()
 	require.NoError(t, err)
 
-	// Now try to reserve both for forfeit — vtxo1 succeeds, vtxo2
-	// fails because it's Spending. vtxo1 should be rolled back.
+	// While the in-memory spend reservation is held, a forfeit reserve
+	// is rejected up front, before any child actor is touched: the
+	// detached Spending write may still be in flight, so the durable
+	// state cannot be trusted for this admission decision.
+	result = mgr.Receive(t.Context(), &ReserveForfeitRequest{
+		Outpoints: []wire.OutPoint{
+			vtxo1.Outpoint, vtxo2.Outpoint,
+		},
+	})
+	_, err = result.Unpack()
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrVTXOLiquidityLocked)
+	require.Contains(t, err.Error(), "spend-reserved")
+
+	// vtxo1 was never reserved, so its actor is untouched LiveState.
+	refAny, ok := mgr.actors[vtxo1.Outpoint]
+	require.True(t, ok, "actor not found for vtxo1")
+
+	ref1, ok := refAny.(*mockVTXOActorRef)
+	require.True(t, ok, "expected *mockVTXOActorRef, got %T", refAny)
+
+	_, ok = ref1.state.(*LiveState)
+	require.True(t, ok, "expected LiveState, got %T", ref1.state)
+
+	// Post-restart shape: the in-memory mark is gone but the child's
+	// durable Spending state survived. The actor-level rejection then
+	// guards the same invariant, and vtxo1 is rolled back to Live.
+	mgr.dropReserved(vtxo2.Outpoint)
+
 	result = mgr.Receive(t.Context(), &ReserveForfeitRequest{
 		Outpoints: []wire.OutPoint{
 			vtxo1.Outpoint, vtxo2.Outpoint,
@@ -673,13 +778,6 @@ func TestReserveForfeitRejectedWhenSpending(t *testing.T) {
 	_, err = result.Unpack()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "cannot accept pending forfeit")
-
-	// vtxo1 should be rolled back to LiveState.
-	refAny, ok := mgr.actors[vtxo1.Outpoint]
-	require.True(t, ok, "actor not found for vtxo1")
-
-	ref1, ok := refAny.(*mockVTXOActorRef)
-	require.True(t, ok, "expected *mockVTXOActorRef, got %T", refAny)
 
 	_, ok = ref1.state.(*LiveState)
 	require.True(
@@ -768,6 +866,9 @@ func TestSpendReserveRejectedWhenPendingForfeit(t *testing.T) {
 	vtxo1 := makeDescriptor(t, 50000, 0)
 	mgr, store := newTestManager(t, []*Descriptor{vtxo1})
 
+	capture := &capturingManagerRef{}
+	mgr.managerRef = capture
+
 	// Reserve for forfeit first.
 	result := mgr.Receive(t.Context(), &ReserveForfeitRequest{
 		Outpoints: []wire.OutPoint{vtxo1.Outpoint},
@@ -776,7 +877,9 @@ func TestSpendReserveRejectedWhenPendingForfeit(t *testing.T) {
 	require.NoError(t, err)
 
 	// Now try to select for spend — store still lists it as Live
-	// (store is a mock), but the actor will reject.
+	// (store is a mock). The detached reserve admits optimistically,
+	// the FSM rejects the reservation, and the failure hops back to
+	// the manager asynchronously instead of failing the selection.
 	store.On(
 		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
 	).Return([]*Descriptor{vtxo1}, nil)
@@ -785,9 +888,29 @@ func TestSpendReserveRejectedWhenPendingForfeit(t *testing.T) {
 		TargetAmount: 40000,
 	})
 	_, err = result.Unpack()
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrVTXOLiquidityLocked)
-	require.Contains(t, err.Error(), "cannot reserve for spend")
+	require.NoError(t, err)
+
+	// The FSM rejected the reserve, so the actor stays pending-forfeit.
+	refAny := mgr.actors[vtxo1.Outpoint]
+	ref, ok := refAny.(*mockVTXOActorRef)
+	require.True(t, ok)
+	_, ok = ref.state.(*PendingForfeitState)
+	require.True(t, ok, "expected PendingForfeitState, got %T", ref.state)
+
+	// The failure report arrives on the capture; replaying it into the
+	// manager drops the optimistic in-memory mark.
+	require.True(t, mgr.isReserved(vtxo1.Outpoint))
+	require.Eventually(t, func() bool {
+		return len(capture.captured()) == 1
+	}, 5*time.Second, 10*time.Millisecond)
+
+	failed, ok := capture.captured()[0].(*spendReservationFailedMsg)
+	require.True(t, ok)
+	require.Equal(t, vtxo1.Outpoint, failed.Outpoint)
+
+	result = mgr.Receive(t.Context(), failed)
+	require.True(t, result.IsOk())
+	require.False(t, mgr.isReserved(vtxo1.Outpoint))
 }
 
 // TestReleaseForfeit verifies that releasing a forfeit reservation returns
@@ -1108,29 +1231,61 @@ func TestRollbackOnPartialSpendFailure(t *testing.T) {
 		RequestedAtHeight: 0,
 	}
 
+	capture := &capturingManagerRef{}
+	mgr.managerRef = capture
+
 	// Selection returns both (store doesn't know about FSM state).
 	store.On(
 		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
 	).Return([]*Descriptor{vtxo1, vtxo2}, nil)
 
+	// The detached reserve admits both optimistically: vtxo1's FSM
+	// accepts and moves to Spending; vtxo2's FSM rejects, and the
+	// failure hops back asynchronously rather than aborting selection.
 	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
 		TargetAmount: 50000,
 	})
 	_, err := result.Unpack()
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrVTXOLiquidityLocked)
+	require.NoError(t, err)
 
-	// vtxo1 should be rolled back to LiveState.
 	refAny1, ok := mgr.actors[vtxo1.Outpoint]
 	require.True(t, ok, "actor not found for vtxo1")
 
 	ref1, ok := refAny1.(*mockVTXOActorRef)
 	require.True(t, ok, "expected *mockVTXOActorRef, got %T", refAny1)
 
+	_, ok = ref1.state.(*SpendingState)
+	require.True(t, ok, "expected SpendingState, got %T", ref1.state)
+
+	// vtxo2's failure report arrives and releases only its mark.
+	require.Eventually(t, func() bool {
+		return len(capture.captured()) == 1
+	}, 5*time.Second, 10*time.Millisecond)
+
+	failed, ok := capture.captured()[0].(*spendReservationFailedMsg)
+	require.True(t, ok)
+	require.Equal(t, vtxo2.Outpoint, failed.Outpoint)
+
+	result = mgr.Receive(t.Context(), failed)
+	require.True(t, result.IsOk())
+	require.False(t, mgr.isReserved(vtxo2.Outpoint))
+	require.True(t, mgr.isReserved(vtxo1.Outpoint))
+
+	// The owning session's failure path performs the rollback: releasing
+	// the batch returns vtxo1 to LiveState (vtxo2's release errors
+	// benignly since its FSM never left PendingForfeit) and drops the
+	// remaining mark.
+	result = mgr.Receive(t.Context(), &ReleaseSpendRequest{
+		Outpoints: []wire.OutPoint{vtxo1.Outpoint, vtxo2.Outpoint},
+	})
+	_, err = result.Unpack()
+	require.Error(t, err)
+
 	_, ok = ref1.state.(*LiveState)
 	require.True(
 		t, ok, "expected LiveState after rollback, got %T", ref1.state,
 	)
+	require.False(t, mgr.isReserved(vtxo1.Outpoint))
 }
 
 // =============================================================================
@@ -1303,20 +1458,43 @@ func TestRecoveredPendingForfeitRejectsSpend(t *testing.T) {
 		},
 	)
 
+	capture := &capturingManagerRef{}
+	mgr.managerRef = capture
+
 	// Store returns the VTXO as a live candidate (the store
 	// doesn't filter by FSM state, only by persisted status).
 	store.On(
 		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
 	).Return([]*Descriptor{vtxo}, nil)
 
-	// Spend selection should fail because the actor rejects it.
+	// The detached reserve admits optimistically; the recovered
+	// pending-forfeit FSM rejects it and the failure hops back
+	// asynchronously, releasing the optimistic mark.
 	result := mgr.Receive(
 		t.Context(), &SelectAndReserveSpendRequest{
 			TargetAmount: 40000,
 		},
 	)
 	_, err := result.Unpack()
-	require.Error(t, err)
+	require.NoError(t, err)
+
+	refAny := mgr.actors[vtxo.Outpoint]
+	ref, ok := refAny.(*mockVTXOActorRef)
+	require.True(t, ok)
+	_, ok = ref.state.(*PendingForfeitState)
+	require.True(t, ok, "expected PendingForfeitState, got %T", ref.state)
+
+	require.Eventually(t, func() bool {
+		return len(capture.captured()) == 1
+	}, 5*time.Second, 10*time.Millisecond)
+
+	failed, ok := capture.captured()[0].(*spendReservationFailedMsg)
+	require.True(t, ok)
+	require.Equal(t, vtxo.Outpoint, failed.Outpoint)
+
+	result = mgr.Receive(t.Context(), failed)
+	require.True(t, result.IsOk())
+	require.False(t, mgr.isReserved(vtxo.Outpoint))
 }
 
 // TestRecoveredPendingForfeitAllowsRelease verifies that a VTXO

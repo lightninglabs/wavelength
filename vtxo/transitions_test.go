@@ -1371,8 +1371,19 @@ func TestSpendingStateForceUnroll(t *testing.T) {
 	exit := assertState[*UnilateralExitState](h)
 	require.Equal(t, int32(200), exit.LastCheckedHeight)
 	assertOutboxContains[*ExpiringNotification](h)
-	assertOutboxContains[*VTXOStatusUpdate](h)
 	assertOutboxLacks[*VTXOTerminatedNotification](h)
+
+	// Escalating out of SpendingState must flag the status update for
+	// atomic reservation-row deletion, exactly like SpendReleased and
+	// SpendCompleted; otherwise the row outlives the spend and the startup
+	// reservation sweep re-reserves a recovered-to-Live VTXO no session
+	// owns.
+	su := assertOutboxContains[*VTXOStatusUpdate](h)
+	require.Equal(t, VTXOStatusUnilateralExit, su.NewStatus)
+	require.True(
+		t, su.ReleaseSpendReservation,
+		"unroll while spending must drop the reservation row",
+	)
 }
 
 // TestForfeitingStateForceUnroll verifies that ForfeitingState escalates to

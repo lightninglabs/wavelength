@@ -430,6 +430,8 @@ func (d *Descriptor) PrimaryAncestry() *Ancestry {
 // VTXOStore defines the persistence interface for VTXO lifecycle management.
 // The store provides per-VTXO operations since each VTXO has its own actor.
 // The VTXO manager (parent actor) tracks active VTXOs and routes block epochs.
+//
+//nolint:interfacebloat
 type VTXOStore interface {
 	// SaveVTXO persists a new VTXO to storage. Called when a VTXO actor is
 	// created. Returns error if a VTXO with the same outpoint already
@@ -450,6 +452,13 @@ type VTXOStore interface {
 	// ListLiveVTXOs excludes.
 	ListVTXOsByStatus(ctx context.Context,
 		status VTXOStatus) ([]*Descriptor, error)
+
+	// ListSelectionCandidatesByStatus returns the lightweight
+	// (outpoint, amount, pkScript) projection coin selection runs on.
+	// Selection happens on every payment and needs only these fields,
+	// so this avoids decoding full descriptors on the hot path.
+	ListSelectionCandidatesByStatus(ctx context.Context,
+		status VTXOStatus) ([]SelectedVTXO, error)
 
 	// UpdateVTXOStatus atomically updates a VTXO's status. This is the
 	// primary method for state transitions.
