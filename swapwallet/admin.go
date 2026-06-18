@@ -65,6 +65,8 @@ func (s *Service) create(ctx context.Context, req *walletdkrpc.CreateRequest) (
 			Mnemonic:       mnemonic,
 			WalletPassword: req.GetWalletPassword(),
 			SeedPassphrase: req.GetSeedPassphrase(),
+			RecoverState:   req.GetRecoverState(),
+			RecoveryWindow: req.GetRecoveryWindow(),
 		},
 	)
 	if err != nil {
@@ -73,8 +75,14 @@ func (s *Service) create(ctx context.Context, req *walletdkrpc.CreateRequest) (
 	}
 
 	return &walletdkrpc.CreateResponse{
-		Mnemonic:       mnemonic,
-		IdentityPubkey: initResp.GetIdentityPubkey(),
+		Mnemonic:                   mnemonic,
+		IdentityPubkey:             initResp.GetIdentityPubkey(),
+		RecoveryRan:                initResp.GetRecoveryRan(),
+		RecoveredBoardingAddresses: initResp.GetRecoveredBoardingAddresses(),
+		RecoveredBoardingUtxos:     initResp.GetRecoveredBoardingUtxos(),
+		RecoveredVtxos:             initResp.GetRecoveredVtxos(),
+		RecoveredOorReceiveScripts: initResp.GetRecoveredOorReceiveScripts(),
+		RecoveredOorEvents:         initResp.GetRecoveredOorEvents(),
 	}, nil
 }
 

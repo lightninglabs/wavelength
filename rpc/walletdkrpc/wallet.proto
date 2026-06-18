@@ -186,6 +186,15 @@ message CreateRequest {
     // mnemonic". When non-empty the response echoes the same mnemonic
     // back unchanged.
     repeated string mnemonic = 3;
+
+    // recover_state asks the daemon to scan deterministic Ark wallet keys
+    // after importing mnemonic and rebuild local Ark state from chain and
+    // indexer data.
+    bool recover_state = 4;
+
+    // recovery_window is the number of key indexes to scan per recovery key
+    // family. Zero uses the daemon wallet.recoverywindow config value.
+    uint32 recovery_window = 5;
 }
 
 message CreateResponse {
@@ -200,6 +209,29 @@ message CreateResponse {
     // identity_pubkey is the hex-encoded daemon wallet identity public
     // key derived from the newly created wallet.
     string identity_pubkey = 2;
+
+    // recovery_ran is true when Create attempted Ark-state recovery.
+    bool recovery_ran = 3;
+
+    // recovered_boarding_addresses is the number of boarding addresses
+    // rebuilt and persisted from deterministic keys.
+    uint32 recovered_boarding_addresses = 4;
+
+    // recovered_boarding_utxos is the number of confirmed wallet UTXOs found
+    // at recovered boarding addresses during the recovery scan.
+    uint32 recovered_boarding_utxos = 5;
+
+    // recovered_vtxos is the number of indexed VTXOs restored into local
+    // wallet state.
+    uint32 recovered_vtxos = 6;
+
+    // recovered_oor_receive_scripts is the number of registered OOR receive
+    // scripts matched and restored into local ownership metadata.
+    uint32 recovered_oor_receive_scripts = 7;
+
+    // recovered_oor_events is the number of OOR recipient events processed
+    // during recovery.
+    uint32 recovered_oor_events = 8;
 }
 
 message UnlockRequest {
