@@ -87,6 +87,27 @@ func failureOutbox(reason string, err error, recoverable bool,
 	return outbox
 }
 
+// failBeforeForfeitSigning fails the round and emits rollback messages for
+// every forfeit input that was reserved before connector-bound forfeit
+// signatures were requested.
+func failBeforeForfeitSigning(reason string, err error, recoverable bool,
+	roundID RoundID, forfeits []types.ForfeitRequest) *ClientStateTransition {
+
+	return &ClientStateTransition{
+		NextState: &ClientFailedState{
+			Reason:      reason,
+			Error:       err,
+			Recoverable: recoverable,
+		},
+		NewEvents: fn.Some(ClientEmittedEvent{
+			Outbox: failureOutbox(
+				reason, err, recoverable, fn.Some(roundID),
+				forfeits,
+			),
+		}),
+	}
+}
+
 // selfLoop creates a self-loop transition that stays in the current state
 // without emitting any events. Used for unknown events in non-terminal states
 // to avoid halting the FSM.
@@ -1704,13 +1725,10 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 				slog.String("round_id", s.RoundID.String()),
 			)
 
-			return &ClientStateTransition{
-				NextState: &ClientFailedState{
-					Reason:      "invalid round sweep delay",
-					Error:       err,
-					Recoverable: false,
-				},
-			}, nil
+			return failBeforeForfeitSigning(
+				"invalid round sweep delay", err, false, s.RoundID,
+				s.Intents.Forfeits,
+			), nil
 		}
 
 		// Validate boarding inputs if we have any boarding intents.
@@ -1731,14 +1749,10 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 					),
 				)
 
-				return &ClientStateTransition{
-					NextState: &ClientFailedState{
-						Reason: "commitment tx " +
-							"validation failed",
-						Error:       err,
-						Recoverable: true,
-					},
-				}, nil
+				return failBeforeForfeitSigning(
+					"commitment tx validation failed", err, true,
+					s.RoundID, s.Intents.Forfeits,
+				), nil
 			}
 		} else {
 			boardingInputIndices = make(map[wire.OutPoint]int)
@@ -1778,14 +1792,10 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 					),
 				)
 
-				return &ClientStateTransition{
-					NextState: &ClientFailedState{
-						Reason: "leave output " +
-							"validation failed",
-						Error:       err,
-						Recoverable: true,
-					},
-				}, nil
+				return failBeforeForfeitSigning(
+					"leave output validation failed", err, true,
+					s.RoundID, s.Intents.Forfeits,
+				), nil
 			}
 
 			env.Log.DebugS(
@@ -1820,14 +1830,10 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			// state, not raised as a Go error. A mis-rooted tree
 			// is a structural defect of the round, not a transient
 			// condition, so the failure is non-recoverable.
-			return &ClientStateTransition{
-				NextState: &ClientFailedState{
-					Reason: "VTXO tree commitment " +
-						"binding failed",
-					Error:       err,
-					Recoverable: false,
-				},
-			}, nil
+			return failBeforeForfeitSigning(
+				"VTXO tree commitment binding failed", err, false,
+				s.RoundID, s.Intents.Forfeits,
+			), nil
 		}
 
 		clientTrees := make(map[SignerKey]*tree.Tree)
@@ -1838,14 +1844,13 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 		for i, vtxoReq := range s.Intents.VTXOs {
 			pkScript, err := vtxoReq.EffectivePkScript()
 			if err != nil {
-				return &ClientStateTransition{
-					NextState: &ClientFailedState{
-						Reason: "VTXT validation failed",
-						Error: fmt.Errorf("derive pkScript for "+
-							"VTXO request %d: %w", i, err),
-						Recoverable: true,
-					},
-				}, nil
+				derivedErr := fmt.Errorf("derive pkScript for "+
+					"VTXO request %d: %w", i, err)
+
+				return failBeforeForfeitSigning(
+					"VTXT validation failed", derivedErr, true,
+					s.RoundID, s.Intents.Forfeits,
+				), nil
 			}
 
 			// The quote (when present) is the authoritative source
@@ -1880,34 +1885,28 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 
 				// The error is carried into the failed state;
 				// the FSM does not raise it as a Go error.
-				return &ClientStateTransition{ //nolint:nilerr
-					NextState: &ClientFailedState{
-						Reason: fmt.Sprintf(
-							"VTXT validation "+
-								"failed for VTXO "+
-								"request %d", i,
-						),
-						Error:       validateErr,
-						Recoverable: false,
-					},
-				}, nil
+				reason := fmt.Sprintf(
+					"VTXT validation failed for VTXO request %d",
+					i,
+				)
+
+				return failBeforeForfeitSigning(
+					reason, validateErr, false, s.RoundID,
+					s.Intents.Forfeits,
+				), nil
 			}
 
 			// Ensure we actually found a client tree. This handles
 			// the edge case where VTXOTreePaths is empty.
 			if clientTree == nil {
-				return &ClientStateTransition{
-					NextState: &ClientFailedState{
-						Reason: fmt.Sprintf(
-							"no client tree found "+
-								"for VTXO request %d", i,
-						),
-						Error: fmt.Errorf(
-							"VTXO tree not found",
-						),
-						Recoverable: false,
-					},
-				}, nil
+				reason := fmt.Sprintf(
+					"no client tree found for VTXO request %d", i,
+				)
+
+				return failBeforeForfeitSigning(
+					reason, fmt.Errorf("VTXO tree not found"),
+					false, s.RoundID, s.Intents.Forfeits,
+				), nil
 			}
 
 			// Now that we know this VTXO request was properly
@@ -1923,17 +1922,15 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			if err := vtxoTree.ValidateAnchors(); err != nil {
 
 				// Error carried into failed state.
-				return &ClientStateTransition{ //nolint:nilerr
-					NextState: &ClientFailedState{
-						Reason: fmt.Sprintf(
-							"anchor output validation "+
-								"failed for output %d",
-							outputIdx,
-						),
-						Error:       err,
-						Recoverable: false,
-					},
-				}, nil
+				reason := fmt.Sprintf(
+					"anchor output validation failed for output %d",
+					outputIdx,
+				)
+
+				return failBeforeForfeitSigning(
+					reason, err, false, s.RoundID,
+					s.Intents.Forfeits,
+				), nil
 			}
 		}
 
@@ -1962,14 +1959,10 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 			evt.ForfeitMappings,
 		); err != nil {
 			// Error carried into failed state.
-			return &ClientStateTransition{ //nolint:nilerr
-				NextState: &ClientFailedState{
-					Reason: "connector ancestry " +
-						"validation failed",
-					Error:       err,
-					Recoverable: false,
-				},
-			}, nil
+			return failBeforeForfeitSigning(
+				"connector ancestry validation failed", err, false,
+				s.RoundID, s.Intents.Forfeits,
+			), nil
 		}
 
 		forfeitMappings, err := populateForfeitMappingAmounts(
@@ -2003,13 +1996,10 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 		}, nil
 
 	case *BoardingFailed:
-		return &ClientStateTransition{
-			NextState: &ClientFailedState{
-				Reason:      evt.Reason,
-				Error:       evt.Error,
-				Recoverable: evt.Recoverable,
-			},
-		}, nil
+		return failBeforeForfeitSigning(
+			evt.Reason, evt.Error, evt.Recoverable, s.RoundID,
+			s.Intents.Forfeits,
+		), nil
 
 	default:
 		// Self-loop on unknown events - do not halt the FSM.
@@ -2054,14 +2044,10 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 			if err != nil {
 
 				// Error carried into failed state.
-				return &ClientStateTransition{ //nolint:nilerr
-					NextState: &ClientFailedState{
-						Reason: "invalid round " +
-							"forfeit key",
-						Error:       err,
-						Recoverable: false,
-					},
-				}, nil
+				return failBeforeForfeitSigning(
+					"invalid round forfeit key", err, false,
+					s.RoundID, s.Intents.Forfeits,
+				), nil
 			}
 
 			// Arm the forfeit-collection timeout FIRST, before

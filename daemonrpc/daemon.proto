@@ -828,7 +828,9 @@ message GetVTXOExpiryInfoRequest {
     }
 
     // status_filter restricts pk_script lookups to matching lifecycle states.
-    // It is ignored for outpoint lookups.
+    // Empty pk_script filters default to VTXO_STATUS_LIVE so refreshed VTXOs
+    // are resolved from the active replacement instead of older spent or
+    // forfeited generations. The field is ignored for outpoint lookups.
     repeated VTXOStatus status_filter = 3;
 
     // current_height overrides the chain height used for classification. If

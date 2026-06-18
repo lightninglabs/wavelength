@@ -131,3 +131,31 @@ func TestExpiryInfoFromIndexedVTXOUsesMaxAncestryPathDepth(t *testing.T) {
 	require.Equal(t, uint32(9), info.GetMaxTreeDepth())
 	require.Equal(t, uint32(5), info.GetChainDepth())
 }
+
+// TestIndexedExpiryStatusFilterDefaultsToLive verifies pkScript expiry lookups
+// prefer the active generation when callers do not request historical statuses.
+func TestIndexedExpiryStatusFilterDefaultsToLive(t *testing.T) {
+	t.Parallel()
+
+	statusFilter, err := indexedExpiryStatusFilter(nil)
+	require.NoError(t, err)
+	require.Equal(
+		t,
+		[]arkrpc.VTXOStatus{
+			arkrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		},
+		statusFilter,
+	)
+
+	statusFilter, err = indexedExpiryStatusFilter([]daemonrpc.VTXOStatus{
+		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+	})
+	require.NoError(t, err)
+	require.Equal(
+		t,
+		[]arkrpc.VTXOStatus{
+			arkrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+		},
+		statusFilter,
+	)
+}

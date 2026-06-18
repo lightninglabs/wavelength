@@ -118,6 +118,41 @@ func TestForfeitSignatureBrokerSurfacesAndCompletesRequest(t *testing.T) {
 	require.False(t, ok)
 }
 
+// TestForfeitSignatureBrokerDeleteContextsClearsOutpoints verifies that round
+// rollback can remove queued custom-refresh signing metadata before any
+// connector-bound signing request is created.
+func TestForfeitSignatureBrokerDeleteContextsClearsOutpoints(t *testing.T) {
+	t.Parallel()
+
+	broker := newForfeitSignatureBroker()
+	req, paymentHash, _ := testForfeitParticipantSignRequestWithSigners(t)
+	keep := wire.OutPoint{
+		Hash:  req.VTXO.Outpoint.Hash,
+		Index: req.VTXO.Outpoint.Index + 1,
+	}
+
+	broker.registerContext(req.VTXO.Outpoint.String(),
+		forfeitSigningContext{
+			paymentHash: paymentHash[:],
+			route:       pendingForfeitSigningRoute(),
+		},
+	)
+	broker.registerContext(keep.String(), forfeitSigningContext{
+		paymentHash: paymentHash[:],
+		route:       pendingForfeitSigningRoute(),
+	})
+
+	broker.deleteContexts([]wire.OutPoint{req.VTXO.Outpoint})
+
+	broker.mu.Lock()
+	_, dropped := broker.contexts[req.VTXO.Outpoint.String()]
+	_, retained := broker.contexts[keep.String()]
+	broker.mu.Unlock()
+
+	require.False(t, dropped)
+	require.True(t, retained)
+}
+
 // TestForfeitSignatureBrokerDelegatesInSwapRequests verifies the daemon's
 // custom-refresh broker can answer local-signer requests synchronously while
 // preserving the broker callback as the VTXO-manager hook.

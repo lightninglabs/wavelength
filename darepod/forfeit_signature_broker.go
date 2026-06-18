@@ -213,6 +213,22 @@ func (b *forfeitSignatureBroker) deleteContext(outpoint string) {
 	b.mu.Unlock()
 }
 
+// deleteContexts removes queued signing metadata for each outpoint. It is used
+// when the owning round rolls back before connector-bound forfeit signing, so
+// a later refresh of the same vHTLC cannot reuse stale routing metadata.
+func (b *forfeitSignatureBroker) deleteContexts(outpoints []wire.OutPoint) {
+	if b == nil || len(outpoints) == 0 {
+		return
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for _, outpoint := range outpoints {
+		delete(b.contexts, outpoint.String())
+	}
+}
+
 func (b *forfeitSignatureBroker) removeWaiter(requestID string,
 	waiter chan []*types.ForfeitParticipantSig) {
 

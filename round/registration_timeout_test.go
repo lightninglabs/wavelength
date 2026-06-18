@@ -5,10 +5,12 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/stretchr/testify/require"
 )
@@ -261,6 +263,64 @@ func TestQuoteRejectedRollsBackForfeitReservations(t *testing.T) {
 	_, ok = findOutbox[*JoinRoundRejectOutbox](outbox)
 	require.True(t, ok, "expected JoinRoundRejectOutbox in outbox")
 
+	release, ok := findOutbox[*ReleaseForfeitReservation](outbox)
+	require.True(t, ok, "expected ReleaseForfeitReservation in outbox")
+	require.Equal(t, []wire.OutPoint{standardOp}, release.Outpoints)
+
+	drop, ok := findOutbox[*DropCustomForfeitReservation](outbox)
+	require.True(t, ok, "expected DropCustomForfeitReservation in outbox")
+	require.Equal(t, []wire.OutPoint{customOp}, drop.Outpoints)
+}
+
+// TestCommitmentValidationFailureRollsBackCustomForfeits verifies that
+// post-quote failures before connector-bound forfeit signing still release
+// standard reservations and drop custom refresh signer actors.
+func TestCommitmentValidationFailureRollsBackCustomForfeits(t *testing.T) {
+	t.Parallel()
+
+	standardOp := regTimeoutOutpoint(0x09, 0)
+	customOp := regTimeoutOutpoint(0x0a, 1)
+	_, operatorKey := generateTestKeyPair(t)
+	s := &CommitmentTxReceivedState{
+		RoundID:      testRoundIDTr("commitment-validation-failed"),
+		CommitmentTx: &psbt.Packet{UnsignedTx: &wire.MsgTx{}},
+		VTXOTreePaths: map[int]*tree.Tree{
+			0: nil,
+		},
+		SweepDelay: testExitDelay + 1,
+		Intents: Intents{
+			Forfeits: []types.ForfeitRequest{
+				mkForfeit(standardOp, 10_000),
+				{
+					VTXOOutpoint: &customOp,
+					Amount:       20_000,
+					AuthSpend: &arkscript.SpendPath{
+						RequiredSequence: 1,
+					},
+					ForfeitSpend: &arkscript.SpendPath{
+						RequiredSequence: 2,
+					},
+				},
+			},
+		},
+	}
+	env := &ClientEnvironment{
+		Log: btclog.Disabled,
+		OperatorTerms: &types.OperatorTerms{
+			PubKey:        operatorKey,
+			VTXOExitDelay: testExitDelay,
+		},
+	}
+
+	tr, err := s.ProcessEvent(
+		context.Background(), &CommitmentTxBuilt{}, env,
+	)
+	require.NoError(t, err)
+
+	_, ok := tr.NextState.(*ClientFailedState)
+	require.True(t, ok, "expected ClientFailedState, got %T", tr.NextState)
+
+	outbox := tr.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
 	release, ok := findOutbox[*ReleaseForfeitReservation](outbox)
 	require.True(t, ok, "expected ReleaseForfeitReservation in outbox")
 	require.Equal(t, []wire.OutPoint{standardOp}, release.Outpoints)

@@ -121,15 +121,10 @@ func (r *RPCServer) getIndexedVTXOExpiryInfo(ctx context.Context,
 		)
 	}
 
-	statusFilter := make([]arkrpc.VTXOStatus, 0, len(filters))
-	for i := range filters {
-		st, err := daemonStatusToIndexerStatus(filters[i])
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"invalid status filter: %v", err)
-		}
-
-		statusFilter = append(statusFilter, st)
+	statusFilter, err := indexedExpiryStatusFilter(filters)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"invalid status filter: %v", err)
 	}
 
 	resp, err := r.server.indexer.ListVTXOsByScriptsTaproot(
@@ -160,6 +155,32 @@ func (r *RPCServer) getIndexedVTXOExpiryInfo(ctx context.Context,
 		ExpiryInfo: protoVTXO.GetExpiryInfo(),
 		Vtxo:       protoVTXO,
 	}, nil
+}
+
+// indexedExpiryStatusFilter converts caller-provided daemon statuses into the
+// indexer status filter used for pkScript expiry lookups. Empty caller filters
+// default to live VTXOs because refreshed vHTLCs intentionally keep the same
+// pkScript while older generations remain indexed as spent or forfeited rows.
+func indexedExpiryStatusFilter(filters []daemonrpc.VTXOStatus) (
+	[]arkrpc.VTXOStatus, error) {
+
+	if len(filters) == 0 {
+		return []arkrpc.VTXOStatus{
+			arkrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		}, nil
+	}
+
+	statusFilter := make([]arkrpc.VTXOStatus, 0, len(filters))
+	for i := range filters {
+		st, err := daemonStatusToIndexerStatus(filters[i])
+		if err != nil {
+			return nil, err
+		}
+
+		statusFilter = append(statusFilter, st)
+	}
+
+	return statusFilter, nil
 }
 
 // currentBlockHeight returns the daemon's best chain height from the active

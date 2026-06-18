@@ -3484,20 +3484,22 @@ func (s *Server) initRoundActor(ctx context.Context,
 	}
 
 	roundCfg := &round.RoundClientConfig{
-		Name:                 "round-client",
-		Logger:               s.subLogger(round.Subsystem),
-		Wallet:               clientWallet,
-		RoundStore:           roundStore,
-		VTXOStore:            roundStore,
-		OperatorTerms:        operatorTerms,
-		ServerConn:           s.runtime.TellRef(),
-		ChainSource:          chainSourceRef,
-		WalletActor:          walletRef,
-		ChainParams:          s.chainParams,
-		ActorSystem:          s.actorSystem,
-		TimeoutActor:         timeoutRef,
-		MaxOperatorFee:       maxOperatorFee,
-		VTXOManager:          vtxoManager,
+		Name:           "round-client",
+		Logger:         s.subLogger(round.Subsystem),
+		Wallet:         clientWallet,
+		RoundStore:     roundStore,
+		VTXOStore:      roundStore,
+		OperatorTerms:  operatorTerms,
+		ServerConn:     s.runtime.TellRef(),
+		ChainSource:    chainSourceRef,
+		WalletActor:    walletRef,
+		ChainParams:    s.chainParams,
+		ActorSystem:    s.actorSystem,
+		TimeoutActor:   timeoutRef,
+		MaxOperatorFee: maxOperatorFee,
+		VTXOManager:    vtxoManager,
+		DropCustomForfeitSigningContexts: s.
+			dropCustomForfeitSigningContexts,
 		OwnedScriptChecker:   scriptChecker,
 		OwnedScriptRegistrar: scriptRegistrar,
 		LedgerSink:           fn.Some(ledger.NewSink(s.actorSystem)),
@@ -3530,6 +3532,20 @@ func (s *Server) initRoundActor(ctx context.Context,
 	s.log.InfoS(ctx, "Round actor registered and started")
 
 	return roundActor, nil
+}
+
+// dropCustomForfeitSigningContexts clears queued custom-refresh signing
+// metadata after the round actor rolls back a custom forfeit reservation.
+func (s *Server) dropCustomForfeitSigningContexts(_ context.Context,
+	outpoints []wire.OutPoint) error {
+
+	if s.forfeitSignatures == nil {
+		return nil
+	}
+
+	s.forfeitSignatures.deleteContexts(outpoints)
+
+	return nil
 }
 
 // initVTXOManager creates, registers, and starts the VTXO manager actor.
