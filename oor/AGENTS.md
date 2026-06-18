@@ -306,7 +306,9 @@ per-session durable actor's turn.
   materialization exactly once.
 - `ListSessionsRequest` sorts results deterministically by SessionID
   string; direction / pending filters apply after projection.
-- `oorCheckpointVersion = 2`. Restore accepts versions 1 and 2.
+- Snapshots version per direction: `OutgoingSnapshot.Version = 4`,
+  `IncomingSnapshot.Version = 1` (each serialized as TLV record type 1).
+  Restore requires a non-zero version (`snapshot version must be provided`).
 - Self-transfer: a `ResolveIncomingTransferRequest` for a session
   with an active outgoing session errors until the outgoing session
   terminates; then the outgoing entry is deleted and an incoming
@@ -350,10 +352,14 @@ per-session durable actor's turn.
   `completeAdmissionHandoff` keys off the wrapped wait context's error,
   not the raw CallerCtx, so a deadline-exceeded wait (a wedged child) is
   treated like a benign caller hang-up and does NOT reap a session that
-  may still be signing under its own receive-loop context. The
-  `DetachedAsk.CallerCtx` doc states callers MUST supply a
-  cancellable/deadlined context (or the behavior must bound it) for the
-  wait to terminate.
+  may still be signing under its own receive-loop context. On the
+  registry's durable (Read/Stage/Commit) path `DetachedAsk.CallerCtx` is
+  the registry ACTOR's lifetime context, not the originating caller's (the
+  durable mailbox does not persist the caller's context with the Ask), so a
+  caller deadline never propagates into the detached continuation — it is
+  observed only by the caller's own `future.Await`. The
+  `context.WithTimeout(detachedWaitTimeout)` wrap is therefore the SOLE
+  bound on the continuation.
 - Incoming concurrency cap (`MaxConcurrentIncomingSessions`) is
   enforced in `ensureChild`, the choke point every resident-making
   path funnels through (admission, lazy restore on a routed message,

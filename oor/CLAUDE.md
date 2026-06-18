@@ -306,7 +306,9 @@ per-session durable actor's turn.
   materialization exactly once.
 - `ListSessionsRequest` sorts results deterministically by SessionID
   string; direction / pending filters apply after projection.
-- `oorCheckpointVersion = 2`. Restore accepts versions 1 and 2.
+- Snapshots version per direction: `OutgoingSnapshot.Version = 4`,
+  `IncomingSnapshot.Version = 1` (each serialized as TLV record type 1).
+  Restore requires a non-zero version (`snapshot version must be provided`).
 - Self-transfer: a `ResolveIncomingTransferRequest` for a session
   with an active outgoing session errors until the outgoing session
   terminates; then the outgoing entry is deleted and an incoming

@@ -76,20 +76,16 @@ this behavior writes its own row instead. One row per session, written in the
 same transaction that consumes the message, with no second source of truth that
 could drift from it.
 
-### Upgrade precondition: no in-flight legacy sessions
+### No legacy migration
 
-The deleted global OOR actor persisted **all** session state in the
+The deleted global OOR actor persisted its session state in the
 `fsm_checkpoints` blob under the `oor-client` actor id (state type
-`oor.sessions`). The per-session registry reads session state only from
-`oor_session_registry` and never reads that blob, so an upgrade performed while
-a legacy session is still in flight would silently abandon it -- including a
-session past the point of no return whose operator-co-signed checkpoint PSBTs
-live only in the unread blob. To make this impossible to miss, the daemon fails
-boot loudly when it finds a non-empty `oor.sessions` checkpoint
-(`assertNoLegacyOORCheckpoint` in `darepod/server.go`). **Operators must drain
-or complete all OOR sessions on the prior release before upgrading.** A clean
-install or an already-cut-over daemon has no such checkpoint, so the guard is a
-no-op there.
+`oor.sessions`); the per-session registry reads session state only from
+`oor_session_registry` and never reads that blob. OOR has not shipped in any
+production release, so the cutover is a clean break: there is no on-disk legacy
+state to migrate and no upgrade path to guard. A daemon simply starts on the new
+registry. (If OOR ever does ship before a future state-format change, a boot
+guard or migration would need to be added then — there is none today.)
 
 ## The turn: read, do the work, commit
 
@@ -111,10 +107,16 @@ switch is short and you can follow the control flow by reading it:
   transaction and a round-trip through its own mailbox to do the same work.
 - **Transport** (submit, finalize, indexer queries, the receive ack) is the one
   thing that genuinely crosses to another actor: the `serverconn` actor that
-  talks to the operator. The actor collects these and enqueues them on the
-  durable outbox inside the commit, so the state advance and the intent to send
-  are one atomic unit. The outbox publisher delivers them after the commit, and
-  the operator's response arrives later as a fresh message — a fresh turn.
+  talks to the operator. `serverconn` is itself a durable actor, so the session
+  `Tell`s these messages straight into its durable mailbox inside the commit
+  transaction: the enqueue joins the turn's tx via the ambient context, so the
+  state advance and the transport obligation are one atomic unit and the message
+  lands IFF the turn commits. The wire send runs later on `serverconn`'s own
+  egress turn (retried by `serverconn`), and the operator's response arrives
+  later as a fresh message — a fresh turn. There is no separate outbox-publisher
+  hop on this path. (The generic outbox publisher remains wired only for the
+  framework's durable ask-response handoff used by the registry's detached
+  promise, not for transport.)
 - **Local persistence** (mark the inputs spent, persist the finalized package,
   record the spending reservations) joins the same commit transaction. The VTXO
   manager's spend completion joins through the request context, so SQLite sees
@@ -122,9 +124,9 @@ switch is short and you can follow the control flow by reading it:
 - **Retries** schedule a timer through the timeout actor, handled in the same
   switch.
 
-So the outbox is reserved for what it is good at — durable, exactly-once
-delivery to other actors — and everything the session can do itself, it does
-itself, in line, where you can see it.
+So everything the session can do itself, it does itself, in line, where you can
+see it; the one genuine cross-actor hop (transport) is a direct durable `Tell`
+into `serverconn` that commits atomically with the turn.
 
 ## Outgoing transfer
 
@@ -183,12 +185,13 @@ parallelizes.
 
 ## Status
 
-Landed: the `oor_session_registry` store, the per-session `OORSessionActor` with
-the complete outgoing flow, and the snapshot/restore bridge, all with tests; the
-drip-box benchmarks. In progress: the incoming receive flow on the per-session
-actor, the registry coordinator, the daemon cutover that re-points the OOR
-service key and deletes the old global actor and the signing-effect actor, the
-concurrent-receive systest, and the receive-throughput benchmark.
+Landed: the `oor_session_registry` store; the per-session `OORSessionActor` with
+both the outgoing and incoming receive flows; the snapshot/restore bridge; the
+registry coordinator (idempotency-key dedup, detached-promise admission handoff,
+lazy spawn, boot restore, terminal reap); the daemon cutover that re-points the
+OOR service key and deletes the old global actor and the signing-effect actor;
+direct durable transport delivery into `serverconn`; the concurrent-receive
+systest; and the drip-box / receive-throughput benchmarks — all with tests.
 
 ## See also
 
