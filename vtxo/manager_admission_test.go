@@ -670,6 +670,113 @@ func TestActivateCustomForfeitInputsRejectsLiveActorCollision(t *testing.T) {
 	store.AssertExpectations(t)
 }
 
+// TestActivateCustomForfeitInputsRollsBackPartialActivation verifies a failed
+// multi-input activation does not leave earlier synthetic signers pending.
+func TestActivateCustomForfeitInputsRollsBackPartialActivation(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		require.NoError(t, system.Shutdown(context.Background()))
+	})
+
+	first := makeDescriptor(t, 42_000, 95)
+	first.PkScript = []byte{0x51, 0x20, 0x04}
+	first.PolicyTemplate = []byte{0xde, 0xb0}
+	first.RelativeExpiry = 144
+	first.RoundID = "custom-round"
+	first.BatchExpiry = 903
+	first.ChainDepth = 1
+	first.CreatedHeight = 126
+	first.ClientKey = keychain.KeyDescriptor{
+		PubKey: clientPriv.PubKey(),
+	}
+	first.OperatorKey = operatorPriv.PubKey()
+
+	second := makeDescriptor(t, 99_000, 96)
+	second.Status = VTXOStatusLive
+
+	store := &MockVTXOStore{}
+	store.On("GetVTXO", mock.Anything, first.Outpoint).Return(
+		nil, sql.ErrNoRows,
+	).Once()
+	store.On(
+		"SaveVTXO", mock.Anything,
+		mock.MatchedBy(func(desc *Descriptor) bool {
+			return desc.Outpoint == first.Outpoint &&
+				desc.Status == VTXOStatusPendingForfeit
+		}),
+	).Return(nil).Once()
+	store.On(
+		"UpdateVTXOStatus", mock.Anything, first.Outpoint,
+		VTXOStatusPendingForfeit,
+	).Return(nil).Once()
+	store.On("GetVTXO", mock.Anything, second.Outpoint).Return(
+		second, nil,
+	).Once()
+	store.On("DeleteVTXO", mock.Anything, first.Outpoint).Return(
+		nil,
+	).Once()
+
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			Store:       store,
+			ActorSystem: system,
+			ChainSource: noopChainSourceRef{},
+			RoundActor:  newMockRoundActorRef(t),
+		},
+		actors: map[wire.OutPoint]VTXOActorRef{
+			second.Outpoint: newMockVTXOActorRef(
+				second.Outpoint.String(), &LiveState{
+					VTXO: second,
+				},
+			),
+		},
+	}
+
+	result := mgr.Receive(
+		t.Context(), &ActivateCustomForfeitInputsRequest{
+			Inputs: []CustomForfeitInput{
+				{
+					Outpoint:       first.Outpoint,
+					Amount:         first.Amount,
+					PkScript:       first.PkScript,
+					PolicyTemplate: first.PolicyTemplate,
+					ClientKey:      first.ClientKey,
+					OperatorKey:    first.OperatorKey,
+					RelativeExpiry: first.RelativeExpiry,
+					RoundID:        first.RoundID,
+					CommitmentTxID: first.CommitmentTxID,
+					BatchExpiry:    first.BatchExpiry,
+					ChainDepth:     first.ChainDepth,
+					CreatedHeight:  first.CreatedHeight,
+					Ancestry:       first.Ancestry,
+				},
+				{
+					Outpoint:       second.Outpoint,
+					Amount:         42_000,
+					PkScript:       []byte{0x51, 0x20, 0xff},
+					PolicyTemplate: []byte{0xde, 0xad},
+					ClientKey:      first.ClientKey,
+					OperatorKey:    first.OperatorKey,
+					RelativeExpiry: first.RelativeExpiry,
+				},
+			},
+		},
+	)
+	_, err = result.Unpack()
+	require.ErrorContains(t, err, "conflicts with existing VTXO actor")
+	require.NotContains(t, mgr.actors, first.Outpoint)
+	require.Contains(t, mgr.actors, second.Outpoint)
+
+	store.AssertExpectations(t)
+}
+
 // =============================================================================
 // Spend selection tests
 // =============================================================================

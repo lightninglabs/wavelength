@@ -1832,17 +1832,34 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 		)
 	}
 
-	var activated int
+	var (
+		activated          int
+		activatedOutpoints []wire.OutPoint
+	)
+	fail := func(err error) fn.Result[ManagerResp] {
+		rollbackErr := m.rollbackActivatedCustomForfeitInputs(
+			ctx, activatedOutpoints,
+		)
+		if rollbackErr != nil {
+			err = errors.Join(
+				err, fmt.Errorf("rollback activated custom "+
+					"forfeit inputs: %w", rollbackErr),
+			)
+		}
+
+		return fn.Err[ManagerResp](err)
+	}
+
 	storedMatch := m.customForfeitInputStoredMatch
 	for _, input := range req.Inputs {
 		if input.OperatorKey == nil {
-			return fn.Err[ManagerResp](
+			return fail(
 				fmt.Errorf("custom forfeit input %s missing "+
 					"operator key", input.Outpoint),
 			)
 		}
 		if input.ClientKey.PubKey == nil {
-			return fn.Err[ManagerResp](
+			return fail(
 				fmt.Errorf("custom forfeit input %s missing "+
 					"client key", input.Outpoint),
 			)
@@ -1859,7 +1876,7 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 					ctx, input,
 				)
 				if err != nil {
-					return fn.Err[ManagerResp](err)
+					return fail(err)
 				}
 				if !ok {
 					err := fmt.Errorf("custom forfeit "+
@@ -1867,7 +1884,7 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 						"active custom signer",
 						input.Outpoint)
 
-					return fn.Err[ManagerResp](err)
+					return fail(err)
 				}
 
 				activated++
@@ -1877,16 +1894,14 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 
 			ok, storedSynthetic, err := storedMatch(ctx, input)
 			if err != nil {
-				return fn.Err[ManagerResp](err)
+				return fail(err)
 			}
 			if !ok {
 				err := fmt.Errorf("custom forfeit input %s "+
 					"conflicts with existing VTXO actor",
 					input.Outpoint)
 
-				return fn.Err[ManagerResp](
-					err,
-				)
+				return fail(err)
 			}
 
 			actorID := fmt.Sprintf("vtxo.%s",
@@ -1903,20 +1918,20 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 				ctx, input.Outpoint,
 			)
 			if err != nil {
-				return fn.Err[ManagerResp](err)
+				return fail(err)
 			}
 		}
 		if !synthetic {
 			ok, storedSynthetic, err := storedMatch(ctx, input)
 			if err != nil {
-				return fn.Err[ManagerResp](err)
+				return fail(err)
 			}
 			if !ok {
 				err := fmt.Errorf("custom forfeit input %s "+
 					"does not match existing VTXO row",
 					input.Outpoint)
 
-				return fn.Err[ManagerResp](err)
+				return fail(err)
 			}
 			synthetic = storedSynthetic
 		}
@@ -1927,7 +1942,7 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 			if err := m.cfg.Store.SaveVTXO(
 				ctx, descriptor,
 			); err != nil {
-				return fn.Err[ManagerResp](
+				return fail(
 					fmt.Errorf("save custom forfeit "+
 						"input %s: %w", input.Outpoint,
 						err),
@@ -1939,7 +1954,7 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 
 				_ = m.cfg.Store.DeleteVTXO(ctx, input.Outpoint)
 
-				return fn.Err[ManagerResp](
+				return fail(
 					fmt.Errorf("mark custom forfeit "+
 						"input %s pending: %w",
 						input.Outpoint, err),
@@ -1957,7 +1972,7 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 				)
 			}
 
-			return fn.Err[ManagerResp](
+			return fail(
 				fmt.Errorf("spawn custom forfeit input %s: %w",
 					input.Outpoint, err),
 			)
@@ -1965,6 +1980,7 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 
 		m.actors[input.Outpoint] = ref
 		m.markCustomForfeitSynthetic(input.Outpoint, synthetic)
+		activatedOutpoints = append(activatedOutpoints, input.Outpoint)
 		activated++
 	}
 
@@ -2164,6 +2180,28 @@ func (m *Manager) dropCustomForfeitSynthetic(op wire.OutPoint) bool {
 	}
 
 	return synthetic
+}
+
+// rollbackActivatedCustomForfeitInputs drops custom signer overlays created by
+// a failed activation request.
+func (m *Manager) rollbackActivatedCustomForfeitInputs(ctx context.Context,
+	outpoints []wire.OutPoint) error {
+
+	if len(outpoints) == 0 {
+		return nil
+	}
+
+	result := m.handleDropCustomForfeitInputs(
+		ctx, &DropCustomForfeitInputsRequest{
+			Outpoints: outpoints,
+		},
+	)
+	_, err := result.Unpack()
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // handleDropCustomForfeitInputs removes custom PendingForfeit signer overlays
