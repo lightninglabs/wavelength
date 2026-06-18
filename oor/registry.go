@@ -521,7 +521,9 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 	}
 
 	// Build the deterministic session to learn its id. This FSM is
-	// discarded; the spawned child rebuilds the identical one.
+	// discarded; the spawned child rebuilds the identical one. Stop it
+	// immediately so its driveMachine goroutine does not linger for the
+	// daemon's lifetime (one leak per outgoing admission otherwise).
 	session, _, err := NewSessionWithIdempotencyKey(
 		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
 	)
@@ -529,6 +531,7 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 	sessionID := session.ID
+	session.FSM.Stop()
 
 	// A resident child only answers Existing when a durable row backs it. A
 	// failed admission on the production (detachable) path is reaped

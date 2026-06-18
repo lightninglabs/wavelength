@@ -59,7 +59,7 @@ func (b *sessionBehavior) handleStartTransfer(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 
-	b.fsm = session.FSM
+	b.setFSM(session.FSM)
 	b.sessionID = session.ID
 	b.direction = clientdb.OORSessionDirectionOutgoing
 	b.loaded = true
@@ -510,7 +510,7 @@ func (b *sessionBehavior) handleResolveIncomingTransfer(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 
-	b.fsm = session.FSM
+	b.setFSM(session.FSM)
 	b.sessionID = req.SessionID
 	b.direction = clientdb.OORSessionDirectionIncoming
 	b.loaded = true

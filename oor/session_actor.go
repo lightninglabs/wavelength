@@ -193,7 +193,14 @@ func NewOORSessionActor(cfg SessionActorConfig) (*OORSessionActor, error) {
 		ref:     durable.Ref(),
 		tellRef: durable.TellRef(),
 		durable: durable,
-		stop:    durable.Stop,
+		// Stop the durable actor first so the mailbox loop drains and
+		// no turn can touch the FSM, then stop the FSM goroutine
+		// itself: it is started on a non-cancelling context, so
+		// durable.Stop alone would leak its driveMachine goroutine.
+		stop: func() {
+			durable.Stop()
+			behavior.stopFSM()
+		},
 	}, nil
 }
 
@@ -214,6 +221,28 @@ func (b *sessionBehavior) bindStores(_ context.Context,
 	return oorTx{
 		store:   ds,
 		actorID: b.actorID,
+	}
+}
+
+// setFSM installs a new session FSM, stopping any previously running one first.
+// The FSM is started on a non-cancelling context so it survives across turns
+// (see the reload path), which means it is NOT reaped when its turn context is
+// cancelled. Without an explicit Stop on every replacement, a reloaded FSM's
+// driveMachine goroutine would linger for the daemon's lifetime.
+func (b *sessionBehavior) setFSM(fsm *StateMachine) {
+	if b.fsm != nil && b.fsm != fsm {
+		b.fsm.Stop()
+	}
+	b.fsm = fsm
+}
+
+// stopFSM stops the running session FSM, if any, so its driveMachine goroutine
+// exits. Called on actor teardown (the FSM is otherwise tied to a
+// non-cancelling context) and before a reload rebuilds it.
+func (b *sessionBehavior) stopFSM() {
+	if b.fsm != nil {
+		b.fsm.Stop()
+		b.fsm = nil
 	}
 }
 
@@ -360,10 +389,11 @@ func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 		// it is given. An Ask-delivered turn runs under a context that
 		// is cancelled the instant the turn returns, which would tear
 		// down the rebuilt FSM before the next turn could drive it.
-		// Strip the cancellation so the reloaded FSM is tied to the
-		// actor's lifetime, matching the constructor's
-		// restore(context.Background).
-		b.fsm = nil
+		// Strip the cancellation so the reloaded FSM survives past this
+		// turn, matching the constructor's restore(context.Background).
+		// stopFSM reaps the stale FSM's goroutine before we rebuild;
+		// the rebuilt one is reaped on teardown via stopFSM.
+		b.stopFSM()
 		b.loaded = false
 		if err := b.restore(context.WithoutCancel(ctx)); err != nil {
 			b.
@@ -1119,7 +1149,7 @@ func (b *sessionBehavior) restore(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		b.fsm = session.FSM
+		b.setFSM(session.FSM)
 		b.direction = clientdb.OORSessionDirectionOutgoing
 		b.loaded = true
 
@@ -1130,7 +1160,7 @@ func (b *sessionBehavior) restore(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		b.fsm = session.FSM
+		b.setFSM(session.FSM)
 		b.direction = clientdb.OORSessionDirectionIncoming
 		b.loaded = true
 

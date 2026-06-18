@@ -1073,6 +1073,78 @@ func (s *fakeDeliveryStore) EnqueueOutbox(_ context.Context,
 	return nil
 }
 
+// TestSessionActorStopFSMReapsGoroutine verifies stopFSM stops the running FSM
+// (its driveMachine goroutine exits) and clears the reference, so the actor's
+// teardown path does not leak the goroutine. The FSM is started on a
+// non-cancelling context, so an explicit Stop is the only thing that reaps it.
+func TestSessionActorStopFSMReapsGoroutine(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	sid := oorSessionID(0x42)
+
+	session, err := newReceiveSessionWithState(
+		ctx, sid, &ReceiveResolving{
+			SessionID: sid,
+		},
+	)
+	require.NoError(t, err)
+	require.True(t, session.FSM.IsRunning())
+
+	b := &sessionBehavior{
+		actorID:   ActorIDForSession(sid),
+		log:       btclog.Disabled,
+		sessionID: sid,
+		fsm:       session.FSM,
+	}
+
+	b.stopFSM()
+
+	require.False(t, session.FSM.IsRunning())
+	require.Nil(t, b.fsm)
+
+	// Idempotent: a second stop on the now-nil FSM is a no-op.
+	b.stopFSM()
+}
+
+// TestSessionActorSetFSMStopsPrevious verifies setFSM stops the FSM it replaces
+// so a reload (or re-admission) does not leak the stale FSM's goroutine.
+func TestSessionActorSetFSMStopsPrevious(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	sid := oorSessionID(0x43)
+
+	prev, err := newReceiveSessionWithState(
+		ctx, sid, &ReceiveResolving{
+			SessionID: sid,
+		},
+	)
+	require.NoError(t, err)
+	next, err := newReceiveSessionWithState(
+		ctx, sid, &ReceiveResolving{
+			SessionID: sid,
+		},
+	)
+	require.NoError(t, err)
+
+	b := &sessionBehavior{
+		actorID:   ActorIDForSession(sid),
+		log:       btclog.Disabled,
+		sessionID: sid,
+		fsm:       prev.FSM,
+	}
+
+	b.setFSM(next.FSM)
+
+	require.False(t, prev.FSM.IsRunning())
+	require.True(t, next.FSM.IsRunning())
+	require.Equal(t, next.FSM, b.fsm)
+
+	b.stopFSM()
+	require.False(t, next.FSM.IsRunning())
+}
+
 // fakeServerConnRef is a no-op serverconn tell target for behavior tests.
 type fakeServerConnRef struct{}
 
