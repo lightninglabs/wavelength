@@ -695,6 +695,17 @@ func statusPtr(status clientdb.OORSessionStatus) *clientdb.OORSessionStatus {
 	return &status
 }
 
+// testSigner returns a mock signer so registry-construction validation passes
+// in tests that exercise paths which never actually sign.
+func testSigner(t *testing.T) input.Signer {
+	t.Helper()
+
+	key, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	return input.NewMockSigner([]*btcec.PrivateKey{key}, nil)
+}
+
 // fakeRecipientFilter is an OutboxHandler stub whose metadata recipient filter
 // either owns every recipient or none of them.
 type fakeRecipientFilter struct {
@@ -1086,11 +1097,14 @@ func TestOORRegistryDurableEndToEnd(t *testing.T) {
 
 	store := newFakeRegistryStore()
 	registry, err := NewOORRegistryActor(OORRegistryConfig{
-		RegistryStore:   store,
-		DeliveryStore:   newTestDeliveryStore(t),
-		ServerConn:      fakeServerConnRef{},
-		IncomingHandler: &fakeRecipientFilter{owned: true},
-		ActorSystem:     system,
+		RegistryStore:    store,
+		DeliveryStore:    newTestDeliveryStore(t),
+		ServerConn:       fakeServerConnRef{},
+		Signer:           testSigner(t),
+		IncomingHandler:  &fakeRecipientFilter{owned: true},
+		PackageStore:     &fakePackageStore{},
+		ReservationStore: &countingReservationStore{},
+		ActorSystem:      system,
 	})
 	require.NoError(t, err)
 	defer registry.Stop()
@@ -1341,11 +1355,14 @@ func TestOORRegistryAsyncAdmissionEndToEnd(t *testing.T) {
 
 	store := newFakeRegistryStore()
 	registry, err := NewOORRegistryActor(OORRegistryConfig{
-		RegistryStore: store,
-		DeliveryStore: newTestDeliveryStore(t),
-		ServerConn:    fakeServerConnRef{},
-		Signer:        clientSigner,
-		ActorSystem:   system,
+		RegistryStore:    store,
+		DeliveryStore:    newTestDeliveryStore(t),
+		ServerConn:       fakeServerConnRef{},
+		Signer:           clientSigner,
+		IncomingHandler:  &fakeRecipientFilter{owned: true},
+		PackageStore:     &fakePackageStore{},
+		ReservationStore: &countingReservationStore{},
+		ActorSystem:      system,
 	})
 	require.NoError(t, err)
 	defer registry.Stop()
@@ -1418,11 +1435,14 @@ func TestOORRegistryDetachedAdmissionWaitBounded(t *testing.T) {
 
 	store := newFakeRegistryStore()
 	registry, err := NewOORRegistryActor(OORRegistryConfig{
-		RegistryStore: store,
-		DeliveryStore: newTestDeliveryStore(t),
-		ServerConn:    fakeServerConnRef{},
-		Signer:        clientSigner,
-		ActorSystem:   system,
+		RegistryStore:    store,
+		DeliveryStore:    newTestDeliveryStore(t),
+		ServerConn:       fakeServerConnRef{},
+		Signer:           clientSigner,
+		IncomingHandler:  &fakeRecipientFilter{owned: true},
+		PackageStore:     &fakePackageStore{},
+		ReservationStore: &countingReservationStore{},
+		ActorSystem:      system,
 	})
 	require.NoError(t, err)
 	defer registry.Stop()
@@ -1714,11 +1734,14 @@ func TestOORRegistryConcurrentTraffic(t *testing.T) {
 
 	store := newFakeRegistryStore()
 	registry, err := NewOORRegistryActor(OORRegistryConfig{
-		RegistryStore: store,
-		DeliveryStore: newTestDeliveryStore(t),
-		ServerConn:    fakeServerConnRef{},
-		Signer:        clientSigner,
-		ActorSystem:   system,
+		RegistryStore:    store,
+		DeliveryStore:    newTestDeliveryStore(t),
+		ServerConn:       fakeServerConnRef{},
+		Signer:           clientSigner,
+		IncomingHandler:  &fakeRecipientFilter{owned: true},
+		PackageStore:     &fakePackageStore{},
+		ReservationStore: &countingReservationStore{},
+		ActorSystem:      system,
 	})
 	require.NoError(t, err)
 	defer registry.Stop()
@@ -1848,11 +1871,14 @@ func TestOORRegistryStopDuringInFlightAdmission(t *testing.T) {
 	}()
 
 	registry, err := NewOORRegistryActor(OORRegistryConfig{
-		RegistryStore:   newFakeRegistryStore(),
-		DeliveryStore:   newTestDeliveryStore(t),
-		ServerConn:      fakeServerConnRef{},
-		IncomingHandler: &fakeRecipientFilter{owned: true},
-		ActorSystem:     system,
+		RegistryStore:    newFakeRegistryStore(),
+		DeliveryStore:    newTestDeliveryStore(t),
+		ServerConn:       fakeServerConnRef{},
+		Signer:           testSigner(t),
+		IncomingHandler:  &fakeRecipientFilter{owned: true},
+		PackageStore:     &fakePackageStore{},
+		ReservationStore: &countingReservationStore{},
+		ActorSystem:      system,
 	})
 	require.NoError(t, err)
 
@@ -1903,4 +1929,103 @@ func TestOORRegistryStopDuringInFlightAdmission(t *testing.T) {
 
 	close(stopSending)
 	sender.Wait()
+}
+
+// TestNewOORRegistryActorValidatesRequiredDeps verifies the registry
+// constructor fails loudly on a missing required dependency rather than
+// admitting a session and failing mid-transfer (or silently disabling a safety
+// net), and that it rejects a SpendCompleter wired without a VTXOStore.
+func TestNewOORRegistryActorValidatesRequiredDeps(t *testing.T) {
+	t.Parallel()
+
+	valid := func() OORRegistryConfig {
+		return OORRegistryConfig{
+			RegistryStore: newFakeRegistryStore(),
+			DeliveryStore: newTestDeliveryStore(t),
+			ServerConn:    fakeServerConnRef{},
+			Signer:        testSigner(t),
+			IncomingHandler: &fakeRecipientFilter{
+				owned: true,
+			},
+			PackageStore:     &fakePackageStore{},
+			ReservationStore: &countingReservationStore{},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*OORRegistryConfig)
+		wantErr string
+	}{
+		{
+			name: "missing registry store",
+			mutate: func(c *OORRegistryConfig) {
+				c.RegistryStore = nil
+			},
+			wantErr: "registry store",
+		},
+		{
+			name: "missing delivery store",
+			mutate: func(c *OORRegistryConfig) {
+				c.DeliveryStore = nil
+			},
+			wantErr: "delivery store",
+		},
+		{
+			name: "missing serverconn",
+			mutate: func(c *OORRegistryConfig) {
+				c.ServerConn = nil
+			},
+			wantErr: "serverconn",
+		},
+		{
+			name: "missing signer",
+			mutate: func(c *OORRegistryConfig) {
+				c.Signer = nil
+			},
+			wantErr: "signer",
+		},
+		{
+			name: "missing incoming handler",
+			mutate: func(c *OORRegistryConfig) {
+				c.IncomingHandler = nil
+			},
+			wantErr: "incoming handler",
+		},
+		{
+			name: "missing package store",
+			mutate: func(c *OORRegistryConfig) {
+				c.PackageStore = nil
+			},
+			wantErr: "package store",
+		},
+		{
+			name: "missing reservation store",
+			mutate: func(c *OORRegistryConfig) {
+				c.ReservationStore = nil
+			},
+			wantErr: "reservation store",
+		},
+		{
+			name: "spend completer without vtxo store",
+			mutate: func(c *OORRegistryConfig) {
+				c.SpendCompleter = func(context.Context,
+					[]wire.OutPoint) error {
+
+					return nil
+				}
+			},
+			wantErr: "vtxo store",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := valid()
+			tc.mutate(&cfg)
+
+			_, err := NewOORRegistryActor(cfg)
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
 }

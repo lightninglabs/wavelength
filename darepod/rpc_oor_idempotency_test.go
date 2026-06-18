@@ -609,13 +609,17 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	)
 
 	signer := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	packageStore, reservationStore := newSendOORChildStores(t)
 	oorRegistry, err := oor.NewOORRegistryActor(oor.OORRegistryConfig{
-		Log:           fn.Some[btclog.Logger](btclog.Disabled),
-		Signer:        signer,
-		RegistryStore: registryStore,
-		DeliveryStore: deliveryStore,
-		ServerConn:    &fakeOORServerConn{},
-		ActorSystem:   system,
+		Log:              fn.Some[btclog.Logger](btclog.Disabled),
+		Signer:           signer,
+		IncomingHandler:  noopOORHandler{},
+		RegistryStore:    registryStore,
+		DeliveryStore:    deliveryStore,
+		ServerConn:       &fakeOORServerConn{},
+		PackageStore:     packageStore,
+		ReservationStore: reservationStore,
+		ActorSystem:      system,
 	})
 	require.NoError(t, err)
 	defer oorRegistry.Stop()
@@ -758,13 +762,17 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 	)
 
 	signer := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	packageStore, reservationStore := newSendOORChildStores(t)
 	oorRegistry, err := oor.NewOORRegistryActor(oor.OORRegistryConfig{
-		Log:           fn.Some[btclog.Logger](btclog.Disabled),
-		Signer:        signer,
-		RegistryStore: registryStore,
-		DeliveryStore: deliveryStore,
-		ServerConn:    &fakeOORServerConn{},
-		ActorSystem:   system,
+		Log:              fn.Some[btclog.Logger](btclog.Disabled),
+		Signer:           signer,
+		IncomingHandler:  noopOORHandler{},
+		RegistryStore:    registryStore,
+		DeliveryStore:    deliveryStore,
+		ServerConn:       &fakeOORServerConn{},
+		PackageStore:     packageStore,
+		ReservationStore: reservationStore,
+		ActorSystem:      system,
 	})
 	require.NoError(t, err)
 	defer oorRegistry.Stop()
@@ -1177,6 +1185,35 @@ func (f *fakeOORServerConn) Tell(context.Context,
 	serverconn.ServerConnMsg) error {
 
 	return nil
+}
+
+// noopOORHandler is an oor.OutboxHandler stub used to satisfy the registry
+// constructor's required-dep check in tests that exercise the RPC idempotency
+// pre-flight rather than the incoming receive path.
+type noopOORHandler struct{}
+
+func (noopOORHandler) Handle(context.Context, oor.SessionID, oor.OutboxEvent) (
+	[]oor.Event, error) {
+
+	return nil, nil
+}
+
+// newSendOORChildStores builds the package and reservation stores the registry
+// constructor now requires. The idempotency pre-flight tests do not drive these
+// paths; the stores exist only to pass construction validation.
+func newSendOORChildStores(t *testing.T) (oor.PackagePersistence,
+	oor.ReservationStore) {
+
+	t.Helper()
+
+	sqlDB := db.NewTestDB(t)
+	dbStore := db.NewStore(
+		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), btclog.Disabled,
+	)
+	clk := clock.NewDefaultClock()
+
+	return dbStore.NewOORArtifactStore(clk),
+		dbStore.NewSpendingReservationStore(clk)
 }
 
 func newSendOORTestStores(t *testing.T) (*db.VTXOPersistenceStore,

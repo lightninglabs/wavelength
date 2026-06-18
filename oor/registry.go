@@ -158,11 +158,44 @@ func (a *OORRegistryActor) stopWithDrain(ctx context.Context,
 // NewOORRegistryActor creates and starts the OOR registry coordinator. Call
 // RestoreNonTerminal after construction to respawn in-flight sessions.
 func NewOORRegistryActor(cfg OORRegistryConfig) (*OORRegistryActor, error) {
+	// Validate the deps every spawned child needs up front so a
+	// misconfiguration fails loudly at construction rather than
+	// mid-transfer (after admission, possibly past the point of no return)
+	// or, worse, silently disabling a safety net. Genuinely optional deps
+	// -- SpendCompleter (nil => direct VTXO-store writes), LedgerSink,
+	// TimeoutActor, CallbackRef, VTXOManager, and the observer -- are
+	// intentionally not required here.
 	if cfg.RegistryStore == nil {
 		return nil, fmt.Errorf("registry store must be provided")
 	}
 	if cfg.DeliveryStore == nil {
 		return nil, fmt.Errorf("delivery store must be provided")
+	}
+	if cfg.ServerConn == nil {
+		return nil, fmt.Errorf("serverconn ref must be provided")
+	}
+	if cfg.Signer == nil {
+		return nil, fmt.Errorf("signer must be provided")
+	}
+	if cfg.IncomingHandler == nil {
+		return nil, fmt.Errorf("incoming handler must be provided")
+	}
+	if cfg.PackageStore == nil {
+		return nil, fmt.Errorf("package store must be provided")
+	}
+	if cfg.ReservationStore == nil {
+		return nil, fmt.Errorf("reservation store must be provided")
+	}
+
+	// SpendCompleter and VTXOStore are coupled: completeSpend filters
+	// consumed inputs to locally-known outpoints via VTXOStore before
+	// routing them to the SpendCompleter, so a SpendCompleter without a
+	// VTXOStore would route unfiltered outpoints (including a
+	// counterparty's) to the manager. Reject that combination here; in
+	// production both are always wired.
+	if cfg.SpendCompleter != nil && cfg.VTXOStore == nil {
+		return nil, fmt.Errorf("vtxo store must be provided when a " +
+			"spend completer is set")
 	}
 
 	// Normalize the receive limits once so the registry's own admission cap
