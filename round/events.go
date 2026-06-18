@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // ClientEvent is a sealed interface for all events that can be processed by
@@ -346,6 +347,13 @@ func (e *BoardingConfirmed) clientEventSealed() {}
 // BoardingFailed is emitted when an error occurs during the boarding
 // process.
 type BoardingFailed struct {
+	// RoundID is the server-assigned round id when the failure carries
+	// one (ClientRoundFailedResp). It is None for failures that arrive
+	// before a round was assigned (e.g. ClientErrorResp). When set, the
+	// actor routes the failure deterministically to the matching FSM
+	// instead of relying on the sole-round heuristic.
+	RoundID fn.Option[RoundID]
+
 	// Reason is a human-readable description of the failure.
 	Reason string
 

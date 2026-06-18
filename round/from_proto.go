@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/protobuf/proto"
 )
@@ -428,6 +429,18 @@ func (e *BoardingFailed) FromProto(p proto.Message) error {
 	case *roundpb.ClientRoundFailedResp:
 		e.Reason = pb.Reason
 		e.Recoverable = true
+
+		// Carry the server-assigned round id when present so the actor
+		// can route this failure deterministically to the matching FSM.
+		// A failure that arrives before the round was assigned
+		// legitimately has no id (len != 16), in which case RoundID
+		// stays None and routing falls back to the sole-round
+		// heuristic.
+		if len(pb.RoundId) == 16 {
+			var rid RoundID
+			copy(rid[:], pb.RoundId)
+			e.RoundID = fn.Some(rid)
+		}
 
 		return nil
 
