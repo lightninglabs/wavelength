@@ -810,22 +810,24 @@ func (s *IntentSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 //
 // Rules applied (in order):
 //
-//  1. If any VTXO or leave already carries IsChange=true, leave it
-//     alone. This preserves explicit wallet decisions: boarding
-//     change in handleBoard / handleTriggerBoard, and directed-send
-//     self-change in handleSendVTXOs.
+//  1. If any non-fixed VTXO or leave already carries IsChange=true,
+//     leave it alone. This preserves explicit wallet decisions:
+//     boarding change in handleBoard / handleTriggerBoard, and
+//     directed-send self-change in handleSendVTXOs. A fixed VTXO
+//     marked IsChange remains malformed and is rejected by quote
+//     validation/server admission instead of being silently repaired.
 //
 //  2. If two or more outputs carry IsChange=true (which can only
 //     happen when an entry-point path accidentally double-stamps,
 //     e.g., mixing boarding-change + directed-send self-change),
-//     keep the FIRST marker and clear the rest. Defensive — the
-//     proto invariant is "exactly one", so silently submitting two
-//     would let the server reject the round.
+//     keep the FIRST non-fixed marker and clear the rest. Defensive —
+//     the proto invariant is "exactly one", so silently submitting
+//     two would let the server reject the round.
 //
 //  3. If no marker is set and the total output count is greater
-//     than one, stamp the first VTXO. When the intent has only
-//     leaves (no VTXOs — cooperative leave-only batches), stamp
-//     the first leave. Single-output intents get no marker.
+//     than one, stamp the first non-fixed VTXO. When there is no
+//     non-fixed VTXO, stamp the first leave. Single-output intents
+//     get no marker.
 //
 // Mutates the slices in place.
 func designateChangeMarker(vtxoReqs []types.VTXORequest,
@@ -833,17 +835,28 @@ func designateChangeMarker(vtxoReqs []types.VTXORequest,
 
 	// First pass: count and locate existing markers.
 	var (
-		firstVTXOIdx  = -1
-		firstLeaveIdx = -1
-		markerCount   int
+		firstVTXOIdx        = -1
+		firstFixedVTXOIdx   = -1
+		firstLeaveIdx       = -1
+		nonFixedMarkerCount int
+		markerCount         int
 	)
 	for i, req := range vtxoReqs {
 		if !req.IsChange {
 			continue
 		}
+		if req.FixedAmount {
+			if firstFixedVTXOIdx == -1 {
+				firstFixedVTXOIdx = i
+			}
+			markerCount++
+
+			continue
+		}
 		if firstVTXOIdx == -1 {
 			firstVTXOIdx = i
 		}
+		nonFixedMarkerCount++
 		markerCount++
 	}
 	for i, leave := range leaveReqs {
@@ -853,12 +866,15 @@ func designateChangeMarker(vtxoReqs []types.VTXORequest,
 		if firstLeaveIdx == -1 {
 			firstLeaveIdx = i
 		}
+		nonFixedMarkerCount++
 		markerCount++
 	}
 
-	// Defensive: if multiple markers are present, keep the first
-	// (preferring VTXO over leave when both have a marker).
-	if markerCount > 1 {
+	// Defensive: if multiple markers are present, keep the first non-fixed
+	// marker (preferring VTXO over leave when both have one). If every
+	// marker is fixed, keep the first fixed marker so admission rejects the
+	// malformed request instead of silently changing the caller's intent.
+	if markerCount > 1 && nonFixedMarkerCount > 0 {
 		keepVTXO := firstVTXOIdx != -1
 		for i := range vtxoReqs {
 			if !vtxoReqs[i].IsChange {
@@ -884,6 +900,21 @@ func designateChangeMarker(vtxoReqs []types.VTXORequest,
 
 		return
 	}
+	if markerCount > 1 && firstFixedVTXOIdx != -1 {
+		for i := range vtxoReqs {
+			if i == firstFixedVTXOIdx {
+				continue
+			}
+			vtxoReqs[i].IsChange = false
+		}
+		for i := range leaveReqs {
+			if leaveReqs[i] != nil {
+				leaveReqs[i].IsChange = false
+			}
+		}
+
+		return
+	}
 
 	// Exactly one marker already set: nothing to do.
 	if markerCount == 1 {
@@ -897,8 +928,12 @@ func designateChangeMarker(vtxoReqs []types.VTXORequest,
 	if totalOutputs <= 1 {
 		return
 	}
-	if len(vtxoReqs) > 0 {
-		vtxoReqs[0].IsChange = true
+	for i := range vtxoReqs {
+		if vtxoReqs[i].FixedAmount {
+			continue
+		}
+
+		vtxoReqs[i].IsChange = true
 
 		return
 	}
@@ -1214,6 +1249,11 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 		if !bytes.Equal(entry.RecipientKey, intentKey) {
 			return fmt.Sprintf("vtxo[%d] recipient key "+
 				"echo mismatch", i), false
+		}
+
+		if vtxoReq.FixedAmount && vtxoReq.IsChange {
+			return fmt.Sprintf("vtxo[%d] fixed amount "+
+				"cannot be change", i), false
 		}
 
 		if !implicitChange && !vtxoReq.IsChange {

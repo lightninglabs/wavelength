@@ -20,6 +20,14 @@ func vtxoReqWithChange(isChange bool) types.VTXORequest {
 	}
 }
 
+// fixedVTXOReqWithChange mirrors vtxoReqWithChange for fixed contract outputs.
+func fixedVTXOReqWithChange(isChange bool) types.VTXORequest {
+	req := vtxoReqWithChange(isChange)
+	req.FixedAmount = true
+
+	return req
+}
+
 // leaveReqWithChange mirrors vtxoReqWithChange for the leave path.
 func leaveReqWithChange(isChange bool) *types.LeaveRequest {
 	return &types.LeaveRequest{
@@ -73,6 +81,44 @@ func TestDesignateChangeMarkerRefreshOnlyMultipleVTXOs(t *testing.T) {
 		t, vtxoIsChangeAt(vtxos, 2),
 		"third VTXO must remain unmarked",
 	)
+}
+
+// TestDesignateChangeMarkerSkipsFixedVTXOs verifies the default marker is not
+// stamped on a fixed contract output, because that output must preserve its
+// amount exactly and cannot absorb seal-time refresh fees.
+func TestDesignateChangeMarkerSkipsFixedVTXOs(t *testing.T) {
+	t.Parallel()
+
+	vtxos := []types.VTXORequest{
+		fixedVTXOReqWithChange(false),
+		vtxoReqWithChange(false),
+	}
+	var leaves []*types.LeaveRequest
+
+	designateChangeMarker(vtxos, leaves)
+
+	require.False(t, vtxoIsChangeAt(vtxos, 0))
+	require.True(t, vtxoIsChangeAt(vtxos, 1))
+}
+
+// TestDesignateChangeMarkerUsesLeaveWhenAllVTXOsFixed verifies an on-chain
+// leave output can absorb the residual when every VTXO output is fixed.
+func TestDesignateChangeMarkerUsesLeaveWhenAllVTXOsFixed(t *testing.T) {
+	t.Parallel()
+
+	vtxos := []types.VTXORequest{
+		fixedVTXOReqWithChange(false),
+		fixedVTXOReqWithChange(false),
+	}
+	leaves := []*types.LeaveRequest{
+		leaveReqWithChange(false),
+	}
+
+	designateChangeMarker(vtxos, leaves)
+
+	require.False(t, vtxoIsChangeAt(vtxos, 0))
+	require.False(t, vtxoIsChangeAt(vtxos, 1))
+	require.True(t, leaveIsChangeAt(leaves, 0))
 }
 
 // TestDesignateChangeMarkerLeaveOnlyMultipleLeaves covers the
