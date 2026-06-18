@@ -196,21 +196,22 @@ type OutboxWakeRegistrar interface {
 // against a now-visible row instead of waiting out a full poll interval.
 // Polling remains the cross-process and restart fallback.
 type MailboxWakeRegistrar interface {
-	// RegisterMailboxWake registers a callback fired after any enqueue
-	// commits inside an ExecTx, and returns a cancel function that
-	// deregisters it. A DurableMailbox registers its Wake on construction
-	// and calls the returned cancel on Close, so a stopped mailbox leaves
-	// no closure behind.
+	// RegisterMailboxWake registers a callback for mailboxID, fired after
+	// an enqueue to that mailbox commits inside an ExecTx, and returns a
+	// cancel function that deregisters it. A DurableMailbox registers its
+	// Wake under its own mailbox ID on construction and calls the returned
+	// cancel on Close, so a stopped mailbox leaves no closure behind.
 	//
-	// The wake is COARSE: after a folded enqueue commits, every registered
-	// mailbox is woken, so a non-target mailbox does one empty re-poll.
-	// This deliberately trades a precise per-mailbox wake for not tracking
-	// which mailbox received the message -- the store keeps a flat list of
-	// wakes rather than a per-mailbox registry plus a per-transaction
-	// target set, which removes the registry's restart-clobber races. The
-	// empty re-poll is cheap and bounded; the poll ticker remains the
-	// durable fallback.
-	RegisterMailboxWake(wake func()) (cancel func())
+	// The wake is TARGETED: after a folded enqueue commits, only the
+	// mailboxes that received a message in that transaction are woken, so
+	// the idle durable actors are not roused on every unrelated commit (the
+	// dominant poll cost under load). The store keys wakes by mailbox ID
+	// and fires only the transaction's enqueue set. The inner handle keying
+	// makes re-registration after a restart (same mailbox ID) clobber-free:
+	// each registration owns its handle and its cancel removes only that
+	// handle. The poll ticker remains the cross-process and restart
+	// fallback.
+	RegisterMailboxWake(mailboxID string, wake func()) (cancel func())
 }
 
 // EnqueueParams contains parameters for enqueueing a mailbox message.

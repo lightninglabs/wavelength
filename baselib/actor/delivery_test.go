@@ -40,10 +40,12 @@ type mockDeliveryStore struct {
 	outboxWakes []func()
 
 	// mailboxWakes stores the live post-commit wakes registered via
-	// RegisterMailboxWake, keyed by an opaque handle. The real store fires
-	// every one of them after a folded enqueue commits (a coarse
-	// broadcast), and the returned cancel removes exactly its own entry.
-	mailboxWakes      map[uint64]func()
+	// RegisterMailboxWake, keyed by target mailbox ID and then by an opaque
+	// handle. The real store fires only the wakes for the mailboxes named
+	// in a committed transaction's enqueue set (a targeted wake), and the
+	// returned cancel removes exactly its own handle, pruning the mailbox's
+	// entry when its last wake is gone.
+	mailboxWakes      map[string]map[uint64]func()
 	mailboxWakeNextID uint64
 
 	// Error injection for testing.
@@ -74,7 +76,7 @@ func newMockDeliveryStore() *mockDeliveryStore {
 		checkpoints:  make(map[string]*Checkpoint),
 		deadLetters:  make(map[string]*DeadLetter),
 		outbox:       make(map[string]*OutboxMessage),
-		mailboxWakes: make(map[uint64]func()),
+		mailboxWakes: make(map[string]map[uint64]func()),
 	}
 }
 
@@ -457,7 +459,9 @@ func (m *mockDeliveryStore) RegisterOutboxWake(wake func()) {
 	m.outboxWakes = append(m.outboxWakes, wake)
 }
 
-func (m *mockDeliveryStore) RegisterMailboxWake(wake func()) func() {
+func (m *mockDeliveryStore) RegisterMailboxWake(mailboxID string,
+	wake func()) func() {
+
 	if wake == nil {
 		return func() {}
 	}
@@ -465,25 +469,40 @@ func (m *mockDeliveryStore) RegisterMailboxWake(wake func()) func() {
 	m.mu.Lock()
 	id := m.mailboxWakeNextID
 	m.mailboxWakeNextID++
-	m.mailboxWakes[id] = wake
+	wakes := m.mailboxWakes[mailboxID]
+	if wakes == nil {
+		wakes = make(map[uint64]func())
+		m.mailboxWakes[mailboxID] = wakes
+	}
+	wakes[id] = wake
 	m.mu.Unlock()
 
-	// The cancel removes exactly this registration, mirroring the
-	// production store so a closed mailbox leaves no closure behind.
+	// The cancel removes exactly this registration's handle and prunes the
+	// mailbox's entry once empty, mirroring the production store so a
+	// closed mailbox leaves no closure behind.
 	return func() {
 		m.mu.Lock()
-		delete(m.mailboxWakes, id)
+		if wakes, ok := m.mailboxWakes[mailboxID]; ok {
+			delete(wakes, id)
+			if len(wakes) == 0 {
+				delete(m.mailboxWakes, mailboxID)
+			}
+		}
 		m.mu.Unlock()
 	}
 }
 
 // fireMailboxWakes invokes every registered post-commit wake, standing in for
-// the real store firing the coarse broadcast after a folded enqueue commits.
+// the real store firing the targeted wake after a folded enqueue commits. Tests
+// using a single mailbox do not need per-ID targeting here, so this fires all
+// registered wakes regardless of mailbox ID.
 func (m *mockDeliveryStore) fireMailboxWakes() {
 	m.mu.Lock()
-	wakes := make([]func(), 0, len(m.mailboxWakes))
-	for _, wake := range m.mailboxWakes {
-		wakes = append(wakes, wake)
+	var wakes []func()
+	for _, byHandle := range m.mailboxWakes {
+		for _, wake := range byHandle {
+			wakes = append(wakes, wake)
+		}
 	}
 	m.mu.Unlock()
 

@@ -145,16 +145,16 @@ type Store struct {
 	mailboxWakeMu     sync.Mutex
 	mailboxWakeNextID uint64
 
-	// mailboxWakes holds the live post-commit mailbox wakes, keyed by a
-	// unique registration handle (NOT a mailbox ID). The wake is coarse:
-	// notifyMailboxWake fires every entry after any folded enqueue commits,
-	// so the store never needs to know which mailbox received the message.
-	// Keying by an opaque handle (rather than mailbox ID) means a restart
-	// that reuses a durable mailbox ID gets a fresh entry instead of
-	// clobbering a still-live one, and the cancel returned by
-	// RegisterMailboxWake deletes exactly that entry, so a stopped mailbox
-	// leaves nothing behind.
-	mailboxWakes map[uint64]func()
+	// mailboxWakes holds the live post-commit mailbox wakes, keyed first by
+	// target mailbox ID and then by a unique registration handle.
+	// notifyMailboxWake fires only the wakes registered for the mailboxes
+	// named in a committed transaction's enqueue set, so an idle mailbox is
+	// never roused by an unrelated enqueue. The inner handle map keeps a
+	// restart that reuses a durable mailbox ID from clobbering a still-live
+	// registration: each RegisterMailboxWake adds its own handle, and its
+	// cancel deletes exactly that handle, pruning the mailbox's entry when
+	// its last wake is removed so a stopped mailbox leaves nothing behind.
+	mailboxWakes map[string]map[uint64]func()
 }
 
 // NewStore creates a new actor delivery store using the
@@ -166,7 +166,7 @@ func NewStore(
 	return &Store{
 		db:           db,
 		clock:        clock,
-		mailboxWakes: make(map[uint64]func()),
+		mailboxWakes: make(map[string]map[uint64]func()),
 	}
 }
 
@@ -213,12 +213,12 @@ func (s *Store) EnqueueMessage(
 
 	// When this enqueue joined an ambient ExecTx transaction (the folded
 	// outbox-delivery path, where the target actor's store enqueues through
-	// the shared tx via TransactionExecutor.ExecTx), mark the transaction's
-	// enqueue flag so ExecTx fires its post-commit coarse mailbox wake. The
-	// tx-scoped TxActorDeliveryStore marks the same flag directly; this
-	// covers the join path that bypasses it. Outside an ExecTx this is a
-	// no-op.
-	noteMailboxEnqueued(ctx)
+	// the shared tx via TransactionExecutor.ExecTx), record the target
+	// mailbox in the transaction's enqueue set so ExecTx fires a
+	// post-commit wake at exactly that mailbox. The tx-scoped
+	// TxActorDeliveryStore records the same set directly; this covers the
+	// join path that bypasses it. Outside an ExecTx this is a no-op.
+	noteMailboxEnqueued(ctx, params.MailboxID)
 
 	return nil
 }
@@ -669,14 +669,15 @@ func (s *Store) notifyOutboxWake() {
 	}
 }
 
-// RegisterMailboxWake registers a same-process callback that runs after any
-// enqueue commits inside an ExecTx, and returns a cancel function that
-// deregisters it. It restores immediate delivery for the folded outbox path,
-// where the enqueued row is invisible to a consumer until the publisher's
-// transaction commits. The wake is coarse -- every registered mailbox is woken,
-// so a non-target re-polls once and finds nothing -- and the mailbox still
-// polls as the durable fallback.
-func (s *Store) RegisterMailboxWake(wake func()) func() {
+// RegisterMailboxWake registers a same-process callback for mailboxID that runs
+// after an enqueue to that mailbox commits inside an ExecTx, and returns a
+// cancel function that deregisters it. It restores immediate delivery for the
+// folded outbox path, where the enqueued row is invisible to a consumer until
+// the publisher's transaction commits. The wake is targeted: notifyMailboxWake
+// rouses only the mailboxes named in the committed transaction's enqueue set,
+// so an idle mailbox is never woken by an unrelated enqueue. The mailbox still
+// polls as the durable, cross-process, and restart fallback.
+func (s *Store) RegisterMailboxWake(mailboxID string, wake func()) func() {
 	if wake == nil {
 		return func() {}
 	}
@@ -684,24 +685,40 @@ func (s *Store) RegisterMailboxWake(wake func()) func() {
 	s.mailboxWakeMu.Lock()
 	id := s.mailboxWakeNextID
 	s.mailboxWakeNextID++
-	s.mailboxWakes[id] = wake
+	wakes := s.mailboxWakes[mailboxID]
+	if wakes == nil {
+		wakes = make(map[uint64]func())
+		s.mailboxWakes[mailboxID] = wakes
+	}
+	wakes[id] = wake
 	s.mailboxWakeMu.Unlock()
 
-	// The cancel deletes exactly this registration's entry, so a stopped
-	// mailbox (DurableMailbox.Close) leaves no closure behind even when a
-	// later mailbox reuses the same durable ID.
+	// The cancel deletes exactly this registration's handle and prunes the
+	// mailbox's entry once its last wake is gone, so a stopped mailbox
+	// (DurableMailbox.Close) leaves no closure behind even when a later
+	// mailbox reuses the same durable ID.
 	return func() {
 		s.mailboxWakeMu.Lock()
-		delete(s.mailboxWakes, id)
+		if wakes, ok := s.mailboxWakes[mailboxID]; ok {
+			delete(wakes, id)
+			if len(wakes) == 0 {
+				delete(s.mailboxWakes, mailboxID)
+			}
+		}
 		s.mailboxWakeMu.Unlock()
 	}
 }
 
-func (s *Store) notifyMailboxWake() {
+// notifyMailboxWake fires the post-commit wakes for exactly the mailboxes named
+// in mailboxIDs (a committed transaction's enqueue set). Mailboxes that
+// received nothing in the transaction are left untouched.
+func (s *Store) notifyMailboxWake(mailboxIDs map[string]struct{}) {
 	s.mailboxWakeMu.Lock()
-	wakes := make([]func(), 0, len(s.mailboxWakes))
-	for _, wake := range s.mailboxWakes {
-		wakes = append(wakes, wake)
+	var wakes []func()
+	for mailboxID := range mailboxIDs {
+		for _, wake := range s.mailboxWakes[mailboxID] {
+			wakes = append(wakes, wake)
+		}
 	}
 	s.mailboxWakeMu.Unlock()
 
@@ -1158,12 +1175,12 @@ func (s *TxActorDeliveryStore) EnqueueMessage(
 		return err
 	}
 
-	// Mark the transaction's enqueue flag so ExecTx fires its post-commit
-	// coarse mailbox wake. The enqueued row is invisible to the consumer
-	// until commit, so the in-process wake from DurableMailbox.Send cannot
-	// rouse it; this is the signal that restores immediate same-process
-	// delivery.
-	noteMailboxEnqueued(ctx)
+	// Record the target mailbox in the transaction's enqueue set so ExecTx
+	// fires a post-commit wake at exactly that mailbox. The enqueued row is
+	// invisible to the consumer until commit, so the in-process wake from
+	// DurableMailbox.Send cannot rouse it; this is the signal that restores
+	// immediate same-process delivery.
+	noteMailboxEnqueued(ctx, params.MailboxID)
 
 	return nil
 }
@@ -1658,14 +1675,15 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 		txQuerier, s.clock, tx, &outboxEnqueued,
 	)
 
-	// Attach the transaction and a fresh mailbox-enqueue flag to the
-	// context. The flag captures enqueues regardless of store path,
-	// including those that join the ambient tx via
-	// TransactionExecutor.ExecTx (the folded outbox-delivery path, where
-	// the target actor's store enqueues through (*Store).EnqueueMessage
-	// rather than the tx-scoped TxActorDeliveryStore).
+	// Attach the transaction and a fresh mailbox-enqueue set to the
+	// context. The set captures the target mailbox ID of every enqueue
+	// regardless of store path, including those that join the ambient tx
+	// via TransactionExecutor.ExecTx (the folded outbox-delivery path,
+	// where the target actor's store enqueues through
+	// (*Store).EnqueueMessage rather than the tx-scoped
+	// TxActorDeliveryStore).
 	txCtx := actor.WithTx(ctx, tx)
-	txCtx, mailboxEnqueued := withMailboxEnqueueFlag(txCtx)
+	txCtx, mailboxEnqueued := withMailboxEnqueueSet(txCtx)
 
 	// Execute the function with the transaction-scoped store.
 	if err := fn(txCtx, txStore); err != nil {
@@ -1680,16 +1698,16 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 		s.notifyOutboxWake()
 	}
 
-	// Fire the coarse post-commit mailbox wake if any mailbox received a
-	// message in this transaction. The enqueued rows only became visible at
-	// commit, so this rouses local consumers immediately instead of leaving
-	// them to wait out a poll interval. It is coarse -- every registered
-	// mailbox re-polls, and a non-target does one empty poll -- which is
-	// why the transaction only tracks whether an enqueue happened, not
-	// which mailbox. This restores the same-process delivery latency that
-	// the folded outbox path otherwise regresses.
-	if *mailboxEnqueued {
-		s.notifyMailboxWake()
+	// Fire a targeted post-commit wake at exactly the mailboxes that
+	// received a message in this transaction. The enqueued rows only became
+	// visible at commit, so this rouses their consumers immediately instead
+	// of leaving them to wait out a poll interval. Only the named mailboxes
+	// re-poll, so the ~K idle durable actors are no longer roused on every
+	// unrelated commit (the dominant poll cost under load). This restores
+	// the same-process delivery latency that the folded outbox path
+	// otherwise regresses.
+	if len(mailboxEnqueued) > 0 {
+		s.notifyMailboxWake(mailboxEnqueued)
 	}
 
 	return nil
