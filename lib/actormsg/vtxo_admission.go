@@ -229,8 +229,10 @@ type CustomForfeitInput struct {
 	Ancestry []types.Ancestry
 }
 
-// ActivateCustomForfeitInputsRequest persists and spawns PendingForfeit VTXO
-// actors for custom inputs before registering a round intent.
+// ActivateCustomForfeitInputsRequest starts temporary PendingForfeit VTXO actors
+// for custom inputs before registering a round intent. Inputs that are not
+// already known to the wallet are persisted as synthetic signer rows; inputs
+// that already have durable VTXO rows are overlaid without changing that row.
 type ActivateCustomForfeitInputsRequest struct {
 	actor.BaseMessage
 
@@ -256,8 +258,10 @@ type ActivateCustomForfeitInputsResponse struct {
 // VTXOManagerResp implements the VTXOManagerResp marker interface.
 func (r *ActivateCustomForfeitInputsResponse) VTXOManagerResp() {}
 
-// DropCustomForfeitInputsRequest deletes custom PendingForfeit actors that
-// were activated for a round intent that was rejected before signing started.
+// DropCustomForfeitInputsRequest removes custom PendingForfeit signer overlays
+// that were activated for a round intent that was rejected before signing
+// started. Synthetic rows are deleted; pre-existing VTXO rows are retained and
+// their ordinary actors are restored from storage.
 type DropCustomForfeitInputsRequest struct {
 	actor.BaseMessage
 
@@ -275,7 +279,7 @@ func (m *DropCustomForfeitInputsRequest) MessageType() string {
 
 // DropCustomForfeitInputsResponse confirms custom actor cleanup.
 type DropCustomForfeitInputsResponse struct {
-	// DroppedCount is the number of custom input actors and rows dropped.
+	// DroppedCount is the number of custom signer overlays removed.
 	DroppedCount int
 }
 

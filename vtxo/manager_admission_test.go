@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/coinselect"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -158,6 +159,32 @@ func (b *blockingVTXOActorRef) Ask(_ context.Context,
 // Compile-time check that blockingVTXOActorRef implements VTXOActorRef.
 var _ VTXOActorRef = (*blockingVTXOActorRef)(nil)
 
+// failingChainSourceRef rejects block subscriptions so tests can force actor
+// startup failure after persistence decisions have been made.
+type failingChainSourceRef struct{}
+
+// ID returns the mock actor ID.
+func (f failingChainSourceRef) ID() string { return "failing-chainsource" }
+
+// Tell sends a fire-and-forget message.
+func (f failingChainSourceRef) Tell(_ context.Context,
+	_ chainsource.ChainSourceMsg) error {
+
+	return nil
+}
+
+// Ask returns a failed future for every chain-source request.
+func (f failingChainSourceRef) Ask(_ context.Context,
+	_ chainsource.ChainSourceMsg) actor.Future[chainsource.ChainSourceResp] {
+
+	promise := actor.NewPromise[chainsource.ChainSourceResp]()
+	promise.Complete(fn.Err[chainsource.ChainSourceResp](
+		fmt.Errorf("subscribe failed"),
+	))
+
+	return promise.Future()
+}
+
 // newTestManager creates a Manager with mock actors for testing admission
 // handlers. The store and actors map are populated from the given
 // descriptors, each starting in LiveState.
@@ -263,6 +290,10 @@ func TestActivateCustomForfeitInputsPersistsPendingSigner(t *testing.T) {
 				desc.OperatorKey.IsEqual(operatorPriv.PubKey())
 		}),
 	).Return(nil).Once()
+	store.On(
+		"UpdateVTXOStatus", mock.Anything, op,
+		VTXOStatusPendingForfeit,
+	).Return(nil).Once()
 
 	result := mgr.Receive(
 		t.Context(), &ActivateCustomForfeitInputsRequest{
@@ -344,6 +375,12 @@ func TestDropCustomForfeitInputsKeepsExistingVTXORow(t *testing.T) {
 	desc := makeDescriptor(t, 42_000, 92)
 	desc.Status = VTXOStatusLive
 	desc.RoundID = "custom-round"
+	desc.PkScript = []byte{0x51, 0x20, 0x01}
+	desc.PolicyTemplate = []byte{0xde, 0xad}
+	desc.RelativeExpiry = 144
+	desc.BatchExpiry = 900
+	desc.ChainDepth = 1
+	desc.CreatedHeight = 123
 	desc.ClientKey = keychain.KeyDescriptor{
 		PubKey: clientPriv.PubKey(),
 	}
@@ -351,8 +388,7 @@ func TestDropCustomForfeitInputsKeepsExistingVTXORow(t *testing.T) {
 
 	store.On("GetVTXO", mock.Anything, desc.Outpoint).Return(
 		desc, nil,
-	).Once()
-	store.On("SaveVTXO", mock.Anything, mock.Anything).Return(nil).Once()
+	).Times(3)
 
 	result := mgr.Receive(
 		t.Context(), &ActivateCustomForfeitInputsRequest{
@@ -394,7 +430,7 @@ func TestDropCustomForfeitInputsKeepsExistingVTXORow(t *testing.T) {
 	dropResp, ok := dropRespVal.(*DropCustomForfeitInputsResponse)
 	require.True(t, ok)
 	require.Equal(t, 1, dropResp.DroppedCount)
-	require.NotContains(t, mgr.actors, desc.Outpoint)
+	require.Contains(t, mgr.actors, desc.Outpoint)
 
 	store.AssertNotCalled(
 		t, "DeleteVTXO", mock.Anything, desc.Outpoint,
@@ -402,10 +438,181 @@ func TestDropCustomForfeitInputsKeepsExistingVTXORow(t *testing.T) {
 	store.AssertExpectations(t)
 }
 
-// TestActivateCustomForfeitInputsRejectsLiveActorCollision verifies that an
-// existing actor is only treated as an idempotent custom activation when the
-// durable row already matches the custom PendingForfeit descriptor. A normal
-// live wallet VTXO at the same outpoint must not be silently reused.
+// TestDropCustomForfeitInputsRestoresExistingActor verifies rollback restores a
+// normal resident VTXO actor after temporarily overlaying it with a custom
+// signer for failed refresh admission.
+func TestDropCustomForfeitInputsRestoresExistingActor(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		require.NoError(t, system.Shutdown(context.Background()))
+	})
+
+	store := &MockVTXOStore{}
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			Store:       store,
+			ActorSystem: system,
+			ChainSource: noopChainSourceRef{},
+			RoundActor:  newMockRoundActorRef(t),
+		},
+		actors: make(map[wire.OutPoint]VTXOActorRef),
+	}
+
+	desc := makeDescriptor(t, 42_000, 93)
+	desc.Status = VTXOStatusSpending
+	desc.RoundID = "custom-round"
+	desc.PkScript = []byte{0x51, 0x20, 0x02}
+	desc.PolicyTemplate = []byte{0xde, 0xae}
+	desc.RelativeExpiry = 144
+	desc.BatchExpiry = 901
+	desc.ChainDepth = 1
+	desc.CreatedHeight = 124
+	desc.ClientKey = keychain.KeyDescriptor{
+		PubKey: clientPriv.PubKey(),
+	}
+	desc.OperatorKey = operatorPriv.PubKey()
+	mgr.actors[desc.Outpoint] = newMockVTXOActorRef(
+		desc.Outpoint.String(), &SpendingState{VTXO: desc},
+	)
+
+	store.On("GetVTXO", mock.Anything, desc.Outpoint).Return(
+		desc, nil,
+	).Times(3)
+
+	input := CustomForfeitInput{
+		Outpoint:       desc.Outpoint,
+		Amount:         desc.Amount,
+		PkScript:       desc.PkScript,
+		PolicyTemplate: desc.PolicyTemplate,
+		ClientKey:      desc.ClientKey,
+		OperatorKey:    desc.OperatorKey,
+		RelativeExpiry: desc.RelativeExpiry,
+		RoundID:        desc.RoundID,
+		CommitmentTxID: desc.CommitmentTxID,
+		BatchExpiry:    desc.BatchExpiry,
+		ChainDepth:     desc.ChainDepth,
+		CreatedHeight:  desc.CreatedHeight,
+		Ancestry:       desc.Ancestry,
+	}
+	result := mgr.Receive(
+		t.Context(), &ActivateCustomForfeitInputsRequest{
+			Inputs: []CustomForfeitInput{input},
+		},
+	)
+	respVal, err := result.Unpack()
+	require.NoError(t, err)
+	resp, ok := respVal.(*ActivateCustomForfeitInputsResponse)
+	require.True(t, ok)
+	require.Equal(t, 1, resp.ActivatedCount)
+	require.Contains(t, mgr.actors, desc.Outpoint)
+
+	dropResult := mgr.Receive(
+		t.Context(), &DropCustomForfeitInputsRequest{
+			Outpoints: []wire.OutPoint{desc.Outpoint},
+		},
+	)
+	dropRespVal, err := dropResult.Unpack()
+	require.NoError(t, err)
+	dropResp, ok := dropRespVal.(*DropCustomForfeitInputsResponse)
+	require.True(t, ok)
+	require.Equal(t, 1, dropResp.DroppedCount)
+	require.Contains(t, mgr.actors, desc.Outpoint)
+
+	store.AssertNotCalled(
+		t, "SaveVTXO", mock.Anything, mock.Anything,
+	)
+	store.AssertNotCalled(
+		t, "DeleteVTXO", mock.Anything, desc.Outpoint,
+	)
+	store.AssertExpectations(t)
+}
+
+// TestActivateCustomForfeitInputsSpawnFailureKeepsExistingRow verifies a
+// pre-existing VTXO row is not deleted if the temporary signer fails to start.
+func TestActivateCustomForfeitInputsSpawnFailureKeepsExistingRow(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		require.NoError(t, system.Shutdown(context.Background()))
+	})
+
+	store := &MockVTXOStore{}
+	desc := makeDescriptor(t, 42_000, 94)
+	desc.Status = VTXOStatusLive
+	desc.RoundID = "custom-round"
+	desc.PkScript = []byte{0x51, 0x20, 0x03}
+	desc.PolicyTemplate = []byte{0xde, 0xaf}
+	desc.RelativeExpiry = 144
+	desc.BatchExpiry = 902
+	desc.ChainDepth = 1
+	desc.CreatedHeight = 125
+	desc.ClientKey = keychain.KeyDescriptor{
+		PubKey: clientPriv.PubKey(),
+	}
+	desc.OperatorKey = operatorPriv.PubKey()
+
+	store.On("GetVTXO", mock.Anything, desc.Outpoint).Return(
+		desc, nil,
+	).Times(3)
+
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			Store:       store,
+			ActorSystem: system,
+			ChainSource: failingChainSourceRef{},
+			RoundActor:  newMockRoundActorRef(t),
+		},
+		actors: make(map[wire.OutPoint]VTXOActorRef),
+	}
+
+	result := mgr.Receive(
+		t.Context(), &ActivateCustomForfeitInputsRequest{
+			Inputs: []CustomForfeitInput{{
+				Outpoint:       desc.Outpoint,
+				Amount:         desc.Amount,
+				PkScript:       desc.PkScript,
+				PolicyTemplate: desc.PolicyTemplate,
+				ClientKey:      desc.ClientKey,
+				OperatorKey:    desc.OperatorKey,
+				RelativeExpiry: desc.RelativeExpiry,
+				RoundID:        desc.RoundID,
+				CommitmentTxID: desc.CommitmentTxID,
+				BatchExpiry:    desc.BatchExpiry,
+				ChainDepth:     desc.ChainDepth,
+				CreatedHeight:  desc.CreatedHeight,
+				Ancestry:       desc.Ancestry,
+			}},
+		},
+	)
+	_, err = result.Unpack()
+	require.ErrorContains(t, err, "spawn custom forfeit input")
+	require.NotContains(t, mgr.actors, desc.Outpoint)
+
+	store.AssertNotCalled(
+		t, "SaveVTXO", mock.Anything, mock.Anything,
+	)
+	store.AssertNotCalled(
+		t, "DeleteVTXO", mock.Anything, desc.Outpoint,
+	)
+	store.AssertExpectations(t)
+}
+
+// TestActivateCustomForfeitInputsRejectsLiveActorCollision verifies a resident
+// actor is not overlaid when its durable VTXO row does not match the requested
+// custom refresh input.
 func TestActivateCustomForfeitInputsRejectsLiveActorCollision(t *testing.T) {
 	t.Parallel()
 
