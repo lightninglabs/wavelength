@@ -34,6 +34,9 @@ import (
 const (
 	recoveryVTXOPageSize = 128
 	recoveryOORPageSize  = 128
+
+	recoveryIndexerRetryAttempts = 8
+	recoveryIndexerRetryDelay    = 150 * time.Millisecond
 )
 
 type walletRecoveryResult struct {
@@ -42,6 +45,36 @@ type walletRecoveryResult struct {
 	VTXOs             uint32
 	OORReceiveScripts uint32
 	OOREvents         uint32
+}
+
+// retryRecoveryIndexerRPC retries recovery-local indexer calls that hit the
+// operator's per-client query limiter.
+func retryRecoveryIndexerRPC(ctx context.Context, call func() error) error {
+	var err error
+	for attempt := 0; attempt < recoveryIndexerRetryAttempts; attempt++ {
+		err = call()
+		if status.Code(err) != codes.ResourceExhausted {
+			return err
+		}
+
+		if attempt == recoveryIndexerRetryAttempts-1 {
+			break
+		}
+
+		timer := time.NewTimer(recoveryIndexerRetryDelay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+
+			return fmt.Errorf("wait for indexer retry: %w",
+				ctx.Err())
+		}
+	}
+
+	return err
 }
 
 func (r walletRecoveryResult) apply(resp *daemonrpc.InitWalletResponse) {
@@ -232,23 +265,33 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 		expiresAt := r.server.clk.Now().Add(
 			defaultOORReceiveScriptRegistrationTTL,
 		)
-		_, err = idx.RegisterReceiveScriptTaproot(
-			ctx, pkScript, expiresAt, "seed-recovery-vtxo",
-		)
+		err = retryRecoveryIndexerRPC(ctx, func() error {
+			_, err := idx.RegisterReceiveScriptTaproot(
+				ctx, pkScript, expiresAt, "seed-recovery-vtxo",
+			)
+
+			return err
+		})
 		if err != nil && status.Code(err) != codes.AlreadyExists {
 			return fmt.Errorf("register VTXO script %d: %w", i, err)
 		}
 
 		cursor := []byte(nil)
 		for {
-			resp, err := idx.ListVTXOsByScriptsTaproot(
-				ctx,
-				[]indexer.TaprootScriptScope{{
-					PkScript: pkScript,
-				}},
-				cursor, recoveryVTXOPageSize,
-				nil,
-			)
+			var resp *arkrpc.ListVTXOsByScriptsResponse
+			err := retryRecoveryIndexerRPC(ctx, func() error {
+				var err error
+				resp, err = idx.ListVTXOsByScriptsTaproot(
+					ctx,
+					[]indexer.TaprootScriptScope{{
+						PkScript: pkScript,
+					}},
+					cursor, recoveryVTXOPageSize,
+					nil,
+				)
+
+				return err
+			})
 			if err != nil {
 				return fmt.Errorf("list VTXOs for key %d: %w",
 					i, err)
@@ -469,7 +512,13 @@ func (r *RPCServer) recoverOORReceiveScripts(ctx context.Context,
 	terms *libtypes.OperatorTerms, window uint32,
 	result *walletRecoveryResult) error {
 
-	registered, err := r.server.indexer.ListMyReceiveScripts(ctx)
+	var registered *arkrpc.ListMyReceiveScriptsResponse
+	err := retryRecoveryIndexerRPC(ctx, func() error {
+		var err error
+		registered, err = r.server.indexer.ListMyReceiveScripts(ctx)
+
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("list registered receive scripts: %w", err)
 	}
@@ -604,9 +653,16 @@ func (r *RPCServer) recoverOOREventsForScript(ctx context.Context,
 
 	var afterEventID uint64
 	for {
-		resp, err := idx.ListOORRecipientEventsByScriptTaproot(
-			ctx, pkScript, afterEventID, recoveryOORPageSize,
-		)
+		var resp *arkrpc.ListOORRecipientEventsByScriptResponse
+		err := retryRecoveryIndexerRPC(ctx, func() error {
+			var err error
+			resp, err = idx.ListOORRecipientEventsByScriptTaproot(
+				ctx, pkScript, afterEventID,
+				recoveryOORPageSize,
+			)
+
+			return err
+		})
 		if err != nil {
 			return err
 		}
