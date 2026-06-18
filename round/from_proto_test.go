@@ -220,10 +220,17 @@ func TestOperatorSignedFromProto(t *testing.T) {
 }
 
 // TestBoardingFailedFromProtoRoundFailed verifies that BoardingFailed
-// handles ClientRoundFailedResp.
+// handles ClientRoundFailedResp and carries the server-assigned RoundID
+// when the proto includes a well-formed 16-byte round_id
+// (darepo-client#571).
 func TestBoardingFailedFromProtoRoundFailed(t *testing.T) {
+	roundID := [16]byte{
+		1, 2, 3, 4, 5, 6, 7, 8,
+		9, 10, 11, 12, 13, 14, 15, 16,
+	}
+
 	pb := &roundpb.ClientRoundFailedResp{
-		RoundId: make([]byte, 16),
+		RoundId: roundID[:],
 		Reason:  "timeout expired",
 	}
 
@@ -231,10 +238,35 @@ func TestBoardingFailedFromProtoRoundFailed(t *testing.T) {
 	require.NoError(t, got.FromProto(pb))
 	require.Equal(t, "timeout expired", got.Reason)
 	require.True(t, got.Recoverable)
+	require.True(
+		t, got.RoundID.IsSome(),
+		"a 16-byte round_id should populate RoundID",
+	)
+	require.Equal(t, RoundID(roundID), got.RoundID.UnwrapOr(RoundID{}))
+}
+
+// TestBoardingFailedFromProtoRoundFailedNoRoundID verifies that a
+// ClientRoundFailedResp without a well-formed 16-byte round_id (a failure
+// that arrives before the round was assigned) leaves RoundID as None
+// rather than erroring (darepo-client#571).
+func TestBoardingFailedFromProtoRoundFailedNoRoundID(t *testing.T) {
+	pb := &roundpb.ClientRoundFailedResp{
+		Reason: "pre-assignment failure",
+	}
+
+	var got BoardingFailed
+	require.NoError(t, got.FromProto(pb))
+	require.Equal(t, "pre-assignment failure", got.Reason)
+	require.True(t, got.Recoverable)
+	require.True(
+		t, got.RoundID.IsNone(),
+		"an empty round_id should leave RoundID None",
+	)
 }
 
 // TestBoardingFailedFromProtoErrorResp verifies that BoardingFailed
 // handles ClientErrorResp (the other proto type that maps to this event).
+// ClientErrorResp has no round_id, so RoundID stays None.
 func TestBoardingFailedFromProtoErrorResp(t *testing.T) {
 	pb := &roundpb.ClientErrorResp{
 		ErrorMsg: "internal error",
@@ -244,6 +276,10 @@ func TestBoardingFailedFromProtoErrorResp(t *testing.T) {
 	require.NoError(t, got.FromProto(pb))
 	require.Equal(t, "internal error", got.Reason)
 	require.True(t, got.Recoverable)
+	require.True(
+		t, got.RoundID.IsNone(),
+		"ClientErrorResp carries no round_id",
+	)
 }
 
 // TestFromProtoWrongType verifies that FromProto returns an error for

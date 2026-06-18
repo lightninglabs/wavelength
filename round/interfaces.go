@@ -52,6 +52,11 @@ type Musig2PubNonce = tree.Musig2PubNonce
 // RoundID is a unique identifier for rounds, using UUID v7 for time-ordering.
 type RoundID uuid.UUID
 
+// roundIDLen is the wire byte length of a RoundID (a UUID). Derived from
+// the type so it tracks RoundID automatically. Used to validate raw
+// round_id byte slices decoded off the wire.
+const roundIDLen = len(RoundID{})
+
 // NewRoundID generates a new unique RoundID using cryptographic randomness.
 func NewRoundID() (RoundID, error) {
 	id, err := uuid.NewV7()
