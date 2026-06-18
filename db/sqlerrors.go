@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgconn"
+	pgconnv4 "github.com/jackc/pgconn"
 	"github.com/jackc/pgerrcode"
+	pgconnv5 "github.com/jackc/pgx/v5/pgconn"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -57,10 +58,20 @@ func MapSQLError(err error) error {
 		return parseSqliteError(sqliteErr)
 	}
 
-	// Attempt to interpret the error as a postgres error.
-	var pqErr *pgconn.PgError
-	if errors.As(err, &pqErr) {
-		return parsePostgresError(pqErr)
+	// Attempt to interpret the error as a postgres error. The pgx v4 and v5
+	// stdlib drivers return their own non-interchangeable *pgconn.PgError
+	// types, and either driver can end up backing our "pgx" connection
+	// depending on init order (see NewPostgresStore), so we have to match
+	// both. Both carry the SQLSTATE in a string Code field, which is all
+	// classify needs.
+	var pgErrV4 *pgconnv4.PgError
+	if errors.As(err, &pgErrV4) {
+		return classifyPostgresError(pgErrV4.Code, pgErrV4)
+	}
+
+	var pgErrV5 *pgconnv5.PgError
+	if errors.As(err, &pgErrV5) {
+		return classifyPostgresError(pgErrV5.Code, pgErrV5)
 	}
 
 	// As a last step, check if this is a connection error that needs
@@ -115,38 +126,40 @@ func parseSqliteError(sqliteErr *sqlite.Error) error {
 	}
 }
 
-// parsePostgresError attempts to parse a postgres error as a database agnostic
-// SQL error.
-func parsePostgresError(pqErr *pgconn.PgError) error {
-	switch pqErr.Code {
+// classifyPostgresError maps a postgres SQLSTATE code to a database agnostic
+// SQL error. It takes the code and the originating error separately so it can
+// serve both the pgx v4 and v5 *pgconn.PgError types without depending on
+// either concrete type.
+func classifyPostgresError(code string, dbErr error) error {
+	switch code {
 	// Handle unique constraint violation error.
 	case pgerrcode.UniqueViolation:
 		return &ErrSQLUniqueConstraintViolation{
-			DBError: pqErr,
+			DBError: dbErr,
 		}
 
 	// Unable to serialize the transaction, so we'll need to try again.
 	case pgerrcode.SerializationFailure:
 		return &ErrSerializationError{
-			DBError: pqErr,
+			DBError: dbErr,
 		}
 
 	// A write operation could not continue because of a conflict within
 	// the same database connection.
 	case pgerrcode.DeadlockDetected:
 		return &ErrDeadlockError{
-			DBError: pqErr,
+			DBError: dbErr,
 		}
 
 	// Handle schema error.
 	case pgerrcode.UndefinedColumn, pgerrcode.UndefinedTable:
 		return &ErrSchemaError{
-			DBError: pqErr,
+			DBError: dbErr,
 		}
 
 	default:
 		return fmt.Errorf("unknown postgres error: %w",
-			sanitizeConnectionError(pqErr))
+			sanitizeConnectionError(dbErr))
 	}
 }
 
