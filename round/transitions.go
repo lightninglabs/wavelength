@@ -57,6 +57,58 @@ func failWithNotification(reason string, err error, recoverable bool,
 	}
 }
 
+// releaseForfeitsOnFailure appends a ReleaseForfeitReservation to a transition
+// that lands in ClientFailedState, returning the given forfeit-reserved VTXOs
+// to LiveState so they are not stranded in pending-forfeit after a failed
+// round. It is a no-op for any non-failure transition, for rounds that
+// reserved no forfeits, and when a release was already emitted (so the
+// IntentSentState admission-timeout path, which releases explicitly, is not
+// double-counted).
+//
+// Releasing is only safe BEFORE the client submits its VTXO forfeit signatures
+// to the server (SubmitVTXOForfeitSigsToServer, emitted on the
+// ForfeitSignaturesCollectingState -> InputSigSentState transition): until that
+// point the server holds no forfeit signature and cannot broadcast a forfeit,
+// so returning the inputs to LiveState cannot double-spend. Callers therefore
+// wire this only into the pre-signing states (PendingRoundAssembly through
+// ForfeitSignaturesCollectingState); the post-signing states (InputSigSentState
+// onward) deliberately do not release.
+func releaseForfeitsOnFailure(transition *ClientStateTransition,
+	forfeits []types.ForfeitRequest) *ClientStateTransition {
+
+	if transition == nil {
+		return transition
+	}
+
+	// Only a transition into the terminal failure state can strand forfeit
+	// reservations; leave every other transition untouched.
+	if _, failed := transition.NextState.(*ClientFailedState); !failed {
+		return transition
+	}
+
+	outpoints := forfeitOutpoints(forfeits)
+	if len(outpoints) == 0 {
+		return transition
+	}
+
+	emitted := transition.NewEvents.UnwrapOr(ClientEmittedEvent{})
+
+	// Stay idempotent: a handler that already released (the admission
+	// timeout in IntentSentState) must not release the same inputs twice.
+	for _, msg := range emitted.Outbox {
+		if _, ok := msg.(*ReleaseForfeitReservation); ok {
+			return transition
+		}
+	}
+
+	emitted.Outbox = append(emitted.Outbox, &ReleaseForfeitReservation{
+		Outpoints: outpoints,
+	})
+	transition.NewEvents = fn.Some(emitted)
+
+	return transition
+}
+
 // selfLoop creates a self-loop transition that stays in the current state
 // without emitting any events. Used for unknown events in non-terminal states
 // to avoid halting the FSM.
@@ -186,9 +238,23 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 
 // ProcessEvent for PendingRoundAssembly tracks confirmed boarding intents and
 // transitions to registration once all are ready.
+func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
+	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
+	error) {
+
+	// Any transition into ClientFailedState from this pre-signing state
+	// returns forfeit-reserved inputs to LiveState; see
+	// releaseForfeitsOnFailure.
+	transition, err := s.processEvent(ctx, event, env)
+
+	return releaseForfeitsOnFailure(transition, s.Forfeits), err
+}
+
+// processEvent runs the PendingRoundAssembly event handling; ProcessEvent wraps
+// it to return forfeit-reserved inputs to LiveState on failure.
 //
 //nolint:funlen
-func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
+func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
@@ -529,6 +595,20 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 
 // ProcessEvent for IntentSentState.
 func (s *IntentSentState) ProcessEvent(ctx context.Context, event ClientEvent,
+	env *ClientEnvironment) (*ClientStateTransition, error) {
+
+	// Any transition into ClientFailedState from this pre-signing state
+	// returns forfeit-reserved inputs to LiveState; see
+	// releaseForfeitsOnFailure. Idempotent with the admission-timeout path,
+	// which already releases explicitly.
+	transition, err := s.processEvent(ctx, event, env)
+
+	return releaseForfeitsOnFailure(transition, s.Intents.Forfeits), err
+}
+
+// processEvent runs the IntentSentState event handling; ProcessEvent wraps it
+// to return forfeit-reserved inputs to LiveState on failure.
+func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 	env *ClientEnvironment) (*ClientStateTransition, error) {
 
 	switch evt := event.(type) {
@@ -1218,6 +1298,20 @@ func (s *QuoteReceivedState) ProcessEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
+	// Any transition into ClientFailedState from this pre-signing state
+	// returns forfeit-reserved inputs to LiveState; see
+	// releaseForfeitsOnFailure.
+	transition, err := s.processEvent(ctx, event, env)
+
+	return releaseForfeitsOnFailure(transition, s.Intents.Forfeits), err
+}
+
+// processEvent runs the QuoteReceivedState event handling; ProcessEvent wraps
+// it to return forfeit-reserved inputs to LiveState on failure.
+func (s *QuoteReceivedState) processEvent(ctx context.Context,
+	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
+	error) {
+
 	switch evt := event.(type) {
 	case *JoinRoundQuoteReceived:
 		// Server reseal: a later pass arrives while we still
@@ -1328,6 +1422,19 @@ func (s *QuoteReceivedState) ProcessEvent(ctx context.Context,
 
 // ProcessEvent for RoundJoinedState.
 func (s *RoundJoinedState) ProcessEvent(ctx context.Context, event ClientEvent,
+	env *ClientEnvironment) (*ClientStateTransition, error) {
+
+	// Any transition into ClientFailedState from this pre-signing state
+	// returns forfeit-reserved inputs to LiveState; see
+	// releaseForfeitsOnFailure.
+	transition, err := s.processEvent(ctx, event, env)
+
+	return releaseForfeitsOnFailure(transition, s.Intents.Forfeits), err
+}
+
+// processEvent runs the RoundJoinedState event handling; ProcessEvent wraps it
+// to return forfeit-reserved inputs to LiveState on failure.
+func (s *RoundJoinedState) processEvent(ctx context.Context, event ClientEvent,
 	env *ClientEnvironment) (*ClientStateTransition, error) {
 
 	switch evt := event.(type) {
@@ -1604,9 +1711,23 @@ func quoteLeaveAmounts(quote *ClientQuote,
 }
 
 // ProcessEvent for CommitmentTxReceivedState.
+func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
+	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
+	error) {
+
+	// Any transition into ClientFailedState from this pre-signing state
+	// returns forfeit-reserved inputs to LiveState; see
+	// releaseForfeitsOnFailure.
+	transition, err := s.processEvent(ctx, event, env)
+
+	return releaseForfeitsOnFailure(transition, s.Intents.Forfeits), err
+}
+
+// processEvent runs the CommitmentTxReceivedState event handling; ProcessEvent
+// wraps it to return forfeit-reserved inputs to LiveState on failure.
 //
 //nolint:funlen,ll
-func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
+func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
@@ -1974,6 +2095,20 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
+	// Any transition into ClientFailedState from this pre-signing state
+	// returns forfeit-reserved inputs to LiveState; see
+	// releaseForfeitsOnFailure.
+	transition, err := s.processEvent(ctx, event, env)
+
+	return releaseForfeitsOnFailure(transition, s.Intents.Forfeits), err
+}
+
+// processEvent runs the CommitmentTxValidatedState event handling; ProcessEvent
+// wraps it to return forfeit-reserved inputs to LiveState on failure.
+func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
+	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
+	error) {
+
 	switch event.(type) {
 	case *GenerateNonces:
 		env.Log.InfoS(
@@ -2184,6 +2319,23 @@ func (s *CommitmentTxValidatedState) ProcessEvent(ctx context.Context,
 // sign boarding inputs, submit all signatures to the server, and transition
 // to InputSigSentState.
 func (s *ForfeitSignaturesCollectingState) ProcessEvent(ctx context.Context,
+	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
+	error) {
+
+	// Failures here are still pre-signing: VTXO forfeit signatures are only
+	// submitted to the server on the success transition to
+	// InputSigSentState (SubmitVTXOForfeitSigsToServer), so any transition
+	// into ClientFailedState may safely return forfeit-reserved inputs to
+	// LiveState; see releaseForfeitsOnFailure.
+	transition, err := s.processEvent(ctx, event, env)
+
+	return releaseForfeitsOnFailure(transition, s.Intents.Forfeits), err
+}
+
+// processEvent runs the ForfeitSignaturesCollectingState event handling;
+// ProcessEvent wraps it to return forfeit-reserved inputs to LiveState on
+// failure.
+func (s *ForfeitSignaturesCollectingState) processEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
@@ -2507,6 +2659,19 @@ func (s *ForfeitSignaturesCollectingState) inputSigSentState(
 func (s *NoncesSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 	env *ClientEnvironment) (*ClientStateTransition, error) {
 
+	// Any transition into ClientFailedState from this pre-signing state
+	// returns forfeit-reserved inputs to LiveState; see
+	// releaseForfeitsOnFailure.
+	transition, err := s.processEvent(ctx, event, env)
+
+	return releaseForfeitsOnFailure(transition, s.Intents.Forfeits), err
+}
+
+// processEvent runs the NoncesSentState event handling; ProcessEvent wraps it
+// to return forfeit-reserved inputs to LiveState on failure.
+func (s *NoncesSentState) processEvent(ctx context.Context, event ClientEvent,
+	env *ClientEnvironment) (*ClientStateTransition, error) {
+
 	switch evt := event.(type) {
 	case *NoncesAggregated:
 		env.Log.InfoS(ctx, "Received aggregated nonces from server",
@@ -2585,6 +2750,20 @@ func (s *NoncesAggregatedState) ProcessEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
+	// Any transition into ClientFailedState from this pre-signing state
+	// returns forfeit-reserved inputs to LiveState; see
+	// releaseForfeitsOnFailure.
+	transition, err := s.processEvent(ctx, event, env)
+
+	return releaseForfeitsOnFailure(transition, s.Intents.Forfeits), err
+}
+
+// processEvent runs the NoncesAggregatedState event handling; ProcessEvent
+// wraps it to return forfeit-reserved inputs to LiveState on failure.
+func (s *NoncesAggregatedState) processEvent(ctx context.Context,
+	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
+	error) {
+
 	switch event.(type) {
 	case *GeneratePartialSigs:
 		env.Log.InfoS(
@@ -2655,6 +2834,22 @@ func (s *NoncesAggregatedState) ProcessEvent(ctx context.Context,
 
 // ProcessEvent for PartialSigsSentState.
 func (s *PartialSigsSentState) ProcessEvent(ctx context.Context,
+	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
+	error) {
+
+	// Still pre-signing: this state submits MuSig2 partial sigs, not VTXO
+	// forfeit sigs (those go out only when ForfeitSignaturesCollectingState
+	// transitions to InputSigSentState). Any transition into
+	// ClientFailedState may safely return forfeit-reserved inputs to
+	// LiveState; see releaseForfeitsOnFailure.
+	transition, err := s.processEvent(ctx, event, env)
+
+	return releaseForfeitsOnFailure(transition, s.Intents.Forfeits), err
+}
+
+// processEvent runs the PartialSigsSentState event handling; ProcessEvent wraps
+// it to return forfeit-reserved inputs to LiveState on failure.
+func (s *PartialSigsSentState) processEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
