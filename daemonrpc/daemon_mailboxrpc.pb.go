@@ -50,6 +50,8 @@ type DaemonServiceMailboxServer interface {
 	ReceiveAuthECDH(ctx context.Context, req *ReceiveAuthECDHRequest) (*ReceiveAuthECDHResponse, error)
 	// GetIndexedVTXOByPkScript handles GetIndexedVTXOByPkScript.
 	GetIndexedVTXOByPkScript(ctx context.Context, req *GetIndexedVTXOByPkScriptRequest) (*GetIndexedVTXOByPkScriptResponse, error)
+	// GetVTXOExpiryInfo handles GetVTXOExpiryInfo.
+	GetVTXOExpiryInfo(ctx context.Context, req *GetVTXOExpiryInfoRequest) (*GetVTXOExpiryInfoResponse, error)
 	// GetIndexedOORSessionByTxid handles GetIndexedOORSessionByTxid.
 	GetIndexedOORSessionByTxid(ctx context.Context, req *GetIndexedOORSessionByTxidRequest) (*GetIndexedOORSessionByTxidResponse, error)
 	// SendVTXO handles SendVTXO.
@@ -237,6 +239,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.GetIndexedVTXOByPkScript(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "GetVTXOExpiryInfo", func() proto.Message {
+		return &GetVTXOExpiryInfoRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetVTXOExpiryInfoRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetVTXOExpiryInfo(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "GetIndexedOORSessionByTxid", func() proto.Message {
 		return &GetIndexedOORSessionByTxidRequest{}
@@ -802,6 +814,29 @@ func (c *DaemonServiceMailboxClient) GetIndexedVTXOByPkScript(ctx context.Contex
 	}
 
 	resp := new(GetIndexedVTXOByPkScriptResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetVTXOExpiryInfo calls the GetVTXOExpiryInfo RPC.
+func (c *DaemonServiceMailboxClient) GetVTXOExpiryInfo(ctx context.Context, req *GetVTXOExpiryInfoRequest, opts ...rpc.RPCOptions) (*GetVTXOExpiryInfoResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetVTXOExpiryInfo",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetVTXOExpiryInfoResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

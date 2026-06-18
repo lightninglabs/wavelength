@@ -107,6 +107,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "GetIndexedVTXOByPkScript queries the authoritative indexer for the\nfirst VTXO matching the given script and status filter.",
 				},
 				{
+					Name:     "GetVTXOExpiryInfo",
+					Aliases:  []string{"get-vtxo-expiry-info"},
+					Input:    "daemonrpc.GetVTXOExpiryInfoRequest",
+					Output:   "daemonrpc.GetVTXOExpiryInfoResponse",
+					Comments: "GetVTXOExpiryInfo returns the wallet/VTXO layer's expiry posture for a\nVTXO identified by outpoint or pkScript.",
+				},
+				{
 					Name:     "GetIndexedOORSessionByTxid",
 					Aliases:  []string{"get-indexed-oor-session-by-txid"},
 					Input:    "daemonrpc.GetIndexedOORSessionByTxidRequest",

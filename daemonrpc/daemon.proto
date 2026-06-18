@@ -70,6 +70,11 @@ service DaemonService {
     rpc GetIndexedVTXOByPkScript (GetIndexedVTXOByPkScriptRequest)
         returns (GetIndexedVTXOByPkScriptResponse);
 
+    // GetVTXOExpiryInfo returns the wallet/VTXO layer's expiry posture for a
+    // VTXO identified by outpoint or pkScript.
+    rpc GetVTXOExpiryInfo (GetVTXOExpiryInfoRequest)
+        returns (GetVTXOExpiryInfoResponse);
+
     // GetIndexedOORSessionByTxid queries the authoritative indexer for one
     // OOR session using a spent script proof and deterministic session txid.
     rpc GetIndexedOORSessionByTxid (GetIndexedOORSessionByTxidRequest)
@@ -528,6 +533,66 @@ enum VTXOStatus {
     VTXO_STATUS_PENDING_ROUND = 9;
 }
 
+// VTXOExpiryStatus describes how close a VTXO is to batch expiry using the
+// daemon's wallet/VTXO expiry policy.
+enum VTXOExpiryStatus {
+    // VTXO_EXPIRY_STATUS_UNKNOWN is returned when the daemon cannot
+    // classify the VTXO, for example because timing metadata is missing.
+    VTXO_EXPIRY_STATUS_UNKNOWN = 0;
+
+    // VTXO_EXPIRY_STATUS_SAFE indicates the VTXO is outside the refresh
+    // threshold.
+    VTXO_EXPIRY_STATUS_SAFE = 1;
+
+    // VTXO_EXPIRY_STATUS_NEEDS_REFRESH indicates the VTXO has entered the
+    // cooperative refresh window but is not yet critical.
+    VTXO_EXPIRY_STATUS_NEEDS_REFRESH = 2;
+
+    // VTXO_EXPIRY_STATUS_CRITICAL indicates the VTXO should stop waiting for
+    // cooperative refresh and move to unilateral exit/recovery handling.
+    VTXO_EXPIRY_STATUS_CRITICAL = 3;
+
+    // VTXO_EXPIRY_STATUS_EXPIRED indicates the VTXO's batch expiry has
+    // passed.
+    VTXO_EXPIRY_STATUS_EXPIRED = 4;
+}
+
+// VTXOExpiryInfo reports the thresholds and current classification the
+// wallet/VTXO layer uses for expiry monitoring.
+message VTXOExpiryInfo {
+    // status is the VTXO's current expiry posture.
+    VTXOExpiryStatus status = 1;
+
+    // current_height is the chain height used for this classification.
+    int32 current_height = 2;
+
+    // batch_expiry is the VTXO batch expiry height.
+    int32 batch_expiry = 3;
+
+    // blocks_remaining is batch_expiry - current_height.
+    int32 blocks_remaining = 4;
+
+    // refresh_threshold_blocks is the number of blocks before batch expiry at
+    // which cooperative refresh should begin.
+    int32 refresh_threshold_blocks = 5;
+
+    // critical_threshold_blocks is the number of blocks before batch expiry at
+    // which recovery/unilateral-exit handling should begin.
+    int32 critical_threshold_blocks = 6;
+
+    // relative_expiry is the CSV delay used in the threshold calculation.
+    uint32 relative_expiry = 7;
+
+    // max_tree_depth is the worst-case VTXO tree depth used in the threshold
+    // calculation.
+    uint32 max_tree_depth = 8;
+
+    // chain_depth is the number of OOR checkpoint hops between this VTXO and
+    // the most recent on-chain commitment. It is included for diagnostics but
+    // is distinct from max_tree_depth.
+    uint32 chain_depth = 9;
+}
+
 message VTXO {
     // outpoint is the VTXO's outpoint in "txid:index" format.
     string outpoint = 1;
@@ -572,6 +637,10 @@ message VTXO {
     // spent_by_txid is the hex-encoded Ark/OOR transaction txid that spent
     // this VTXO through an out-of-round package, when known.
     string spent_by_txid = 12;
+
+    // expiry_info reports the wallet/VTXO layer's current expiry posture for
+    // this VTXO when the daemon has enough timing context to classify it.
+    VTXOExpiryInfo expiry_info = 13;
 }
 
 message ListVTXOsRequest {
@@ -700,6 +769,42 @@ message GetIndexedVTXOByPkScriptRequest {
 message GetIndexedVTXOByPkScriptResponse {
     // vtxo is the first matching VTXO, when found.
     VTXO vtxo = 1;
+}
+
+// GetVTXOExpiryInfoRequest identifies one VTXO whose expiry posture should be
+// classified by the daemon's wallet/VTXO expiry policy.
+message GetVTXOExpiryInfoRequest {
+    // target selects whether the daemon should resolve the VTXO from the local
+    // wallet store by outpoint or from the authoritative indexer by pkScript.
+    oneof target {
+        // outpoint identifies a locally known VTXO in "txid:index" format.
+        string outpoint = 1;
+
+        // pk_script queries the authoritative indexer for a matching VTXO.
+        bytes pk_script = 2;
+    }
+
+    // status_filter restricts pk_script lookups to matching lifecycle states.
+    // It is ignored for outpoint lookups.
+    repeated VTXOStatus status_filter = 3;
+
+    // current_height overrides the chain height used for classification. If
+    // zero, the daemon uses its current best chain height.
+    int32 current_height = 4;
+}
+
+// GetVTXOExpiryInfoResponse returns the VTXO matched by the request together
+// with the expiry posture calculated from the daemon's authoritative metadata.
+message GetVTXOExpiryInfoResponse {
+    // found reports whether the daemon found a VTXO for the request target.
+    bool found = 1;
+
+    // expiry_info is present when found is true and the VTXO had enough timing
+    // metadata to classify.
+    VTXOExpiryInfo expiry_info = 2;
+
+    // vtxo is the VTXO used for classification when found.
+    VTXO vtxo = 3;
 }
 
 message GetIndexedOORSessionByTxidRequest {
