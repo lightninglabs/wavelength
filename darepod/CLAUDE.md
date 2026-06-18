@@ -35,6 +35,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   default 6), `MaxFeeRateSatPerVByte int64` (cap fed to both
   `txconfirm` and the unroll registry; zero → each subsystem's
   default). Surfaced via `unrollMaxFeeRate()`.
+- `DBConfig` / `DBSqliteConfig` / `DBPostgresConfig` — Per-backend database
+  durability knobs under the `db.sqlite.*` and `db.postgres.*` namespaces.
+  `DBSqliteConfig.Synchronous` selects the SQLite commit durability level
+  (`"full"` / `"normal"` / `"off"`; default `"normal"` omits the per-commit
+  WAL fsync for higher throughput). `DBSqliteConfig.NoFullfsync` disables the
+  macOS fullfsync pragma for write-heavy deployments. `DBPostgresConfig` is
+  intentionally empty (reserved). Exposed as CLI flags `db.sqlite.synchronous`
+  and `db.sqlite.nofullfsync`.
 - `OORConfig` / `OORLimitsConfig` — incoming receive safety caps
   (`MaxCheckpoints`, `MaxVTXOMatches`, `MaxMailboxItems`,
   `MaxMailboxScriptBytes`). `Config.OORReceiveLimits()` normalizes

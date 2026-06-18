@@ -32,7 +32,8 @@ default builds avoid the swap executor's dependency graph.
   covering every daemonrpc method swapwallet composes against:
   LeaveVTXOs, SendOnChain, ListVTXOs, ListTransactions, NewAddress, GetInfo,
   GetBalance, GenSeed, InitWallet, UnlockWallet, Unroll,
-  GetUnrollStatus, JoinNextRound. The admin-shape methods (GenSeed/InitWallet/
+  GetUnrollStatus, JoinNextRound, EstimateFee. `EstimateFee` is used by
+  `prepareOnchain` to price onchain sends during send-preview. The admin-shape methods (GenSeed/InitWallet/
   UnlockWallet/Unroll/GetUnrollStatus) are reachable BEFORE the swap
   runtime is live.
 - `WalletEntry` (re-exported from walletdkrpc) — Flat row type the entire
@@ -51,9 +52,10 @@ default builds avoid the swap executor's dependency graph.
     backends consumed for LeaveVTXOs, ListVTXOs, ListTransactions,
     GetBalance, NewAddress)
   - `rpc/swapclientrpc` (swap-subsystem gRPC shape; ListSwaps,
-    StartPay, StartReceive)
+    StartPay, StartReceive, QuotePay)
   - `swapclientserver` (typed `Backend` handle and runtime resume)
   - `darepod` (`SwapBackend` interface)
+  - `coinselect` (largest-first coin selection for `prepareOnchain` send preview)
   - `ledger` (account name constants for OOR ledger projection)
   - `btclog/v2` (subsystem logger)
 - **Depended on by**:
@@ -86,12 +88,23 @@ default builds avoid the swap executor's dependency graph.
   RECV (Lightning payment_hash) across the entire pending → terminal
   lifecycle. EXIT and DEPOSIT rows do not yet share an id between
   pending and confirmed in v1; see `doc.go`.
+- `PrepareSend` for Lightning invoices calls `SwapService.QuotePay` when
+  available. The quote's fee and settlement type are embedded in the preview
+  response so callers see live operator terms before committing. If `QuotePay`
+  returns a "service unavailable" error (swap backend offline) the router falls
+  back to a fee-estimate-only preview without the operator swap terms.
 - Onchain SEND is routed through `RPCServer.SendOnChain` which delegates to
   `wallet.SendOnChainRequest`. Two modes: **sweep-all** (non-empty
   `SweepOutpoints` — drains those VTXOs exactly, no change, leave output
   absorbs fee under the #270 handshake) and **bounded** (selects VTXOs to
   cover `TargetAmountSat` + headroom, produces a change VTXO). The router
   calls `listLiveVTXOsForLeave` for sweep-all enumeration.
+- **Onchain SEND preview** (`prepareOnchain`) runs coin selection via the
+  shared `coinselect.LargestFirst` algorithm (the same largest-first algorithm
+  the daemon runs), so the preview mirrors what the real send will select
+  rather than an independent greedy walk. A confirmed preview is always
+  fundable because selection uses the same `TargetAmountSat + OperatorFee +
+  DustLimit` headroom the daemon applies in `wallet.handleSendOnChain`.
 - `SendResponse.actual_amount_sat` carries the true outflow for sweep-all
   sends and SHOULD be echoed back before the send is treated as confirmed.
 - **Onchain SEND is a one-shot**: after the intent is accepted the router

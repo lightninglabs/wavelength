@@ -36,6 +36,24 @@ when the local wallet owns the receive script.
 - `SpendingReservationStore` — Narrow interface the VTXO manager uses for its
   startup orphan sweep: `ListReservedOutpoints(ctx) ([]wire.OutPoint, error)`.
   Intentionally small to avoid coupling vtxo to the concrete db type or oor.
+- `Manager.reserved` / `markReserved` / `dropReserved` / `isReserved` —
+  Manager-goroutine-owned in-memory admission gate for spend reservations. An
+  entry prevents re-selection of an outpoint even before the VTXO actor's
+  durable Spending status write commits, since reservations are now dispatched
+  tell-style via `detachedReserve` (the manager turn no longer blocks on the
+  child's FSM write transaction). Entries are keyed by a monotonic epoch so an
+  asynchronous failure hop-back (ABA protection via `dropReservedEpoch`) cannot
+  drop a mark a newer session owns.
+- `detachedReserve` — Dispatches a spend-reservation Ask to a child VTXO actor
+  without blocking the manager turn. Outcome is observed on a detached goroutine
+  via `OnComplete`; failure hops back as `spendReservationFailedMsg` so the
+  in-memory map entry is dropped on the manager goroutine (the sole owner).
+- `spendReservationFailedMsg` — Manager-internal message carrying the outpoint
+  and epoch of a failed asynchronous reserve, allowing the manager to drop the
+  in-memory mark safely on its own turn.
+- `VTXOStore.ListSelectionCandidatesByStatus` — Lightweight `(outpoint, amount,
+  pkScript)` projection used by coin selection. Avoids decoding full descriptors
+  on the hot payment path.
 - `VTXOActorConfig.LedgerSink` — Per-VTXO actor field plumbed from the manager. The `emitExitCost` helper is wired onto the unilateral-exit transition but is currently a no-op pending chain resolver integration: the actor cannot determine the on-chain miner fee until the chain resolver reports the confirmed exit-spend transaction. The emission site exists so a single future change in the chain resolver wiring enables it without touching the FSM transition logic.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).
@@ -53,7 +71,7 @@ when the local wallet owns the receive script.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/tree` (tree paths), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `ledger` (`Sink` + `ExitCostMsg` for planned exit cost emission), `unroll` (via `ExitOutcomeResolver` callback wired by `darepod`).
+- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/tree` (tree paths), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `ledger` (`Sink` + `ExitCostMsg` for planned exit cost emission), `unroll` (via `ExitOutcomeResolver` callback wired by `darepod`), `coinselect` (largest-first coin selection for reservation path).
 - **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `darepod` (wiring, owned-script adapters, incoming event route).
 - **Sends**:
   - → `round` (via manager relay): `RelayToRoundMsg` wrapping `ForfeitSignatureSubmission`
@@ -92,6 +110,16 @@ when the local wallet owns the receive script.
 - SpendingState is persisted as VTXOStatusSpending and survives restarts.
 - OOR completion transitions VTXOs to SpentState through the VTXO actor FSM, not by direct store writes.
 - A VTXO in SpendingState cannot be admitted for cooperative consumption, and vice versa.
+- **Detached reservation epoch invariant.** The `Manager.reserved` map is
+  manager-goroutine-owned. Reservation failures from the `detachedReserve`
+  goroutine hop back as `spendReservationFailedMsg` and call `dropReservedEpoch`
+  so a stale failure from a released-then-re-reserved outpoint (ABA) cannot
+  un-gate a mark a newer session owns. Callers must not mutate `reserved` off
+  the manager goroutine.
+- Coin selection for spend reservation runs against `ListSelectionCandidatesByStatus`
+  (lightweight projection) rather than full descriptors; the manager self-heals
+  Live VTXOs absent from its actor map when a candidate has no matching actor
+  at admission time.
 - The `ExpiringNotification` Tell to the chain resolver is sent outside the
   FSM transition context via a detached goroutine (using `context.WithoutCancel`
   on the actor turn context). This prevents a slow or blocking chain resolver

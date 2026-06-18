@@ -30,6 +30,13 @@ communication alongside the raw registration API.
 - `RegisterSpendRequest/Response`, `UnregisterSpendRequest/Response` — Spend
   monitoring lifecycle.
 - `EpochMsg` / `EpochResp` — Sealed interfaces for block-epoch sub-actor.
+- `BlockEpochActor` / `BlockEpochActorConfig` — Long-lived actor wrapping a
+  block-epoch subscription with automatic reconnect backoff. If the backend
+  stream closes after the initial registration succeeds (e.g. during an LND
+  restart), the actor re-registers with exponential backoff bounded by
+  `ReconnectBackoff` (default 1s initial) and `MaxReconnectBackoff` (default
+  30s). Zero values in the config resolve to these defaults. The boarding wallet
+  uses this actor so block notifications self-heal without a daemon restart.
 - `SubscribeBlocksRequest/Response`, `UnsubscribeBlocksRequest/Response` —
   Block subscription lifecycle.
 - `ConfRegistration` / `SpendRegistration` / `BlockRegistration` — Structs with

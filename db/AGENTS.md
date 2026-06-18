@@ -31,6 +31,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   paginated listing (avoids deserializing full trees).
 - `VTXOPersistenceStore` — VTXO descriptor store
   (`InsertClientVTXO`, `FetchByOutpoint`). Persists `ChainDepth`.
+  Implements `vtxo.VTXOStore.ListSelectionCandidatesByStatus` via the
+  `ListVTXOSelectionCandidatesByStatus` sqlc query, returning the lightweight
+  `(outpoint, amount, pkScript)` projection used by coin selection on the
+  hot payment path.
 - `OORArtifactStore`, `OwnedReceiveScriptStore` — OOR session state
   and locally owned receive-script metadata.
 - `LedgerStoreDB` — implements `ledger.LedgerStore`. Wraps
@@ -71,7 +75,22 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 17` — current schema version.
+- `LatestMigrationVersion = 18` — current schema version.
+- `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
+  the persistence half of the generic restart-safe intent outbox (header
+  `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
+  Maps the sealed `wallet.PendingIntentPayload` concrete types to/from typed
+  detail columns (no blob). Intents are written before the wallet publishes
+  them to the round actor; `CommitState` clears anchors by outpoint
+  (boarding outpoints AND forfeited VTXO outpoints) inside the
+  point-of-no-return round checkpoint transaction, then sweeps orphaned
+  detail rows and headers, so replay-after-adoption is structurally
+  impossible. Methods: `UpsertPendingIntent` (header + detail + anchors
+  atomically; anchor rebind sweeps anchor-less older intents),
+  `ListPendingIntents` (per kind, with anchors), `DeletePendingIntent`,
+  `ClearPendingIntentsByKind`.
+- `PendingIntentStore` / `BatchedPendingIntentStore` — internal sqlc-backed
+  query interfaces for the pending-intent tables.
 - `SpendingReservationPersistenceStore` — Persists the durable index of VTXO
   outpoints reserved by an active spend owner (e.g. an outgoing OOR session).
   A row exists IFF the owning session was durably checkpointed, so a startup
@@ -125,6 +144,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
+- `000018_pending_intents` — generalizes the Board-only
+  `pending_board_requests` outbox into a supertype/subtype set:
+  `pending_intent_kinds` (enum table), `pending_intents` (header: 32-byte
+  hash-derived intent id + kind FK + requested_at, no payload blob),
+  per-kind detail tables `pending_board_intents` / `pending_send_intents`
+  with first-class typed columns, and `pending_intent_anchors` (one row per
+  anchored outpoint, PK on the outpoint so a newer intent rebinds, FK to the
+  header). Drops `pending_board_requests` outright (alpha; rows only exist
+  in the narrow crash window between admission and round seal).
 - `000017_spending_reservations` — adds `spending_reservations` table with
   `(outpoint_hash, outpoint_index)` PK, `owner_kind`, `owner_id`, and
   `created_at`. A row exists IFF the owning spend session was durably
@@ -147,7 +175,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 - `000013_pending_board_request` — records the user's explicit `Board`
   RPC intent so a daemon restart between Board admission and round
   seal does not silently drop the request. Keyed by the confirmed
-  boarding outpoint.
+  boarding outpoint. Superseded by `000018_pending_intents`.
 - `000012_boarding_sweep_ledger_events` — registers the
   `boarding_sweep_fee_paid` ledger event type so `FeePaidMsg` with
   `FeeType=FeeTypeOnchainSweep` satisfies the `ledger_entries.event_type`

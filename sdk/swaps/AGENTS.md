@@ -45,6 +45,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
   plus `AckCursor` and an `Ack` hook.
 - `InArkHtlcEvent` — same-Ark vHTLC event (payment hash, amount,
   sender pubkey, vHTLC config, optional indexed outpoint/amount).
+- `OutSwapHtlcPart` — one HTLC shard of a multi-part out-swap payment set.
+  Fields: `AmountMsat`, `OnionBlob`. When `OutSwapHtlcEvent.Parts` is
+  non-empty the event is a multi-part payment; empty means legacy single-part
+  (payload carried in `OnionBlob` on the event itself).
+- `InSwapQuote` — Read-only preview of an Ark-to-Lightning swap. Fields:
+  `PaymentHash`, `InvoiceAmountSat`, `AmountSat`, `FeeSat`, `Expiry`,
+  `SettlementType`, `ExceedsMaxFee`. Returned by `SwapClient.QuoteInSwap`
+  and surfaced by `SwapServerConn.QuoteInSwap` without creating server or
+  client state.
 - `OutSwapHtlcNotification` — wraps a mailbox `OutSwapHtlcEvent`
   with `AckCursor` and `Ack`.
 - `IncomingVHTLCEventReceiver` — interface for receivers that
@@ -56,7 +65,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 - `Store` — isolated SQLite persistence. Runs its own migration table
   (`swap_client_schema_migrations`) separate from the main daemon DB.
 - `SwapServerConn` / `GRPCSwapServerConn` — remote swap-server gRPC
-  (`RequestChannelID`, `CreateInSwap`).
+  (`RequestChannelID`, `CreateInSwap`, `AcknowledgeOutSwapHTLC`,
+  `QuoteInSwap`). `AcknowledgeOutSwapHTLC` tells the server the receiver
+  durably accepted the out-swap HTLC event; callers must invoke it after
+  `AckUpTo` to complete the server-side state advance. `QuoteInSwap` previews
+  a swap without creating durable state on either side.
 - `DaemonConn` — wallet operations (OOR sends, VTXO lookups, key
   queries, receive-auth signing/ECDH) provided by the Ark daemon.
   Includes `ReceiveAuthKey`, `SignReceiveAuthMessage[Compact]`, and

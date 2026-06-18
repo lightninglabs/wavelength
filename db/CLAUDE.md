@@ -31,6 +31,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   paginated listing (avoids deserializing full trees).
 - `VTXOPersistenceStore` — VTXO descriptor store
   (`InsertClientVTXO`, `FetchByOutpoint`). Persists `ChainDepth`.
+  Implements `vtxo.VTXOStore.ListSelectionCandidatesByStatus` via the
+  `ListVTXOSelectionCandidatesByStatus` sqlc query, returning the lightweight
+  `(outpoint, amount, pkScript)` projection used by coin selection on the
+  hot payment path.
 - `OORArtifactStore`, `OwnedReceiveScriptStore` — OOR session state
   and locally owned receive-script metadata.
 - `LedgerStoreDB` — implements `ledger.LedgerStore`. Wraps

@@ -25,6 +25,9 @@ interface, and per-service factory functions so callers are channel-agnostic
 - Per-service client types with `New*ServiceClient(addr, ...Option)` factories:
   `ArkServiceClient`, `DaemonServiceClient`, `MailboxServiceClient`,
   `SwapClientServiceClient`, `SwapServiceClient`, `WalletServiceClient`.
+  `SwapServiceClient` adds `QuoteInSwap` (`POST /v1/swap/quote-in-swap`) and
+  `AcknowledgeOutSwapHtlc` (`POST /v1/swap/acknowledge-out-swap-htlc`).
+  `SwapClientServiceClient` adds `QuotePay` (`POST /v1/swapclient/quote-pay`).
 
 ## Relationships
 

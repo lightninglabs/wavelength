@@ -18,10 +18,16 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `swapRuntimeClient` — Narrow interface over `sdk/swaps.SwapClient` that the
   subserver uses for all RPC handlers and worker restarts. Methods: `StartPayViaLightning`,
   `StartReceiveViaLightning`, `ResumePayViaLightning`,
-  `ResumeReceiveViaLightning`, `GetSwapSummary`, `ListSwapSummaries`. Keeps
-  the subserver unit-testable without running real swap FSMs.
+  `ResumeReceiveViaLightning`, `GetSwapSummary`, `ListSwapSummaries`,
+  `QuotePayViaLightning`. Keeps the subserver unit-testable without running
+  real swap FSMs.
 - `swapClientAdapter` — Thin production adapter that forwards calls to
   `*swaps.SwapClient`.
+- `liveOperatorDaemonConn` — Wraps a `swaps.DaemonConn` and overrides
+  `OperatorPubKey` to fetch the operator key live from the daemon's Ark
+  transport via `RPCServer.OperatorPubKey`, bypassing the cached `GetInfo`
+  snapshot. Ensures swap vHTLC policy construction sees operator-key rotations
+  before OOR funding is submitted. Constructed via `daemonWithLiveOperatorKey`.
 - `paySwapSession` / `receiveSwapSession` — Minimal session interfaces
   (`PaymentHash`, `Wait`, and `Invoice` for receive) that the daemon
   goroutines drive. Production implementations are `sdk/swaps.PaySession` and
@@ -48,6 +54,7 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 | `ResumeSwap` | Manual wake-up for a persisted swap (idempotent if worker already active) |
 | `ListSwaps` | List persisted swap summaries; optionally filter to pending only |
 | `GetSwap` | Fetch one persisted summary by hex payment hash |
+| `QuotePay` | Preview an Ark-to-Lightning pay swap without creating durable state |
 | `SubscribeSwaps` | Stream coarse summary updates; optionally emit existing rows first |
 
 ## Relationships

@@ -54,6 +54,16 @@ background ingress polling with event routing.
 - `SendClientEventRequest` auto-derives `Service`/`Method` from `Message.ServiceMethod()` when callers leave them empty, preventing silent drops.
 - Idempotency keys are derived from message payload hash; same key on retry enables server deduplication.
 - Egress is at-least-once: on the Read/Commit path the `Edge.Send` is not atomic with the mailbox ack (it never was, even on the old Classic path), so a crash or a lost lease between a successful send and its Commit redelivers and re-sends. The server absorbs the duplicate via the stable `MsgId`/`IdempotencyKey`. Under `EgressWorkers > 1` a `SendClientEventRequest` carries the inner message's `CorrelationKey`, so same-session events keep per-key FIFO order across the worker pool while distinct sessions send in parallel. `SendUnaryRequest` and `SendRPCRequest` are intentionally **unkeyed** (the `BaseMessage` default), so distinct unary/RPC sends may reorder across workers; that is safe only because each is an independent request/response RPC matched by an explicit correlation ID, not a position in an ordered stream. Any new order-sensitive egress message MUST define a `CorrelationKey`, or it will silently reorder under the pool.
+- **Transactional ingress dispatch.** When the delivery store implements
+  `actor.TxAwareDeliveryStore`, each pulled batch's durable dispatches and the
+  advanced ack watermark are folded into ONE write transaction via
+  `runFoldedDispatch`. In-memory response deliveries (KIND_RESPONSE with a live
+  waiter) run OUTSIDE the transaction on the fast pre-transaction path
+  (`hasResponseWaiter` check); responses with no waiter fold into the durable
+  dispatch so their enqueue commits atomically with the cursor. On an idle
+  connection the watermark is flushed via a deferred checkpoint rather than
+  inline, so `ackDirty` accumulates until either the next dispatch commit or an
+  explicit idle flush. The legacy non-transactional path is unchanged.
 - Ingress loop checkpoints pull cursor and ack state; on restart, resumes from checkpoint.
 - `DurableUnaryQuery` values are handled generically in `ServerConnectionActor.Receive` via `buildDurableUnary`: the query is converted to a `SendUnaryRequest` using the configured `DurableUnaryRequestBuilder`. Adding a new durable indexer query type requires only implementing `DurableUnaryQuery` — no new `Receive` case is needed.
 - `DurableUnaryQuery` implementations must produce stable identity bytes in `BuildBody` so that `MsgID` and `IdempotencyKey` are deterministic across restarts (auto-derived via `mailboxconn.StableEventMsgID` / `StableEventIdempotencyKey` when the caller leaves them empty).

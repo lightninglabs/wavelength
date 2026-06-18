@@ -101,6 +101,19 @@ state transitions and validation rules live under [Invariants](#invariants).
   rounds (pre-admission) can be timed.
 - `MaxQuoteEntriesPerClient = 1024` (`from_proto.go`) — bounds quote
   entry decoding to reject malformed envelopes before allocating slices.
+- `CommitmentTxBuilt.TreeCosignKey` / `ConnectorOperatorKey` / `SweepKey` /
+  `SweepDelay` / `ForfeitKey` — per-round operator keys and parameters
+  delivered with the commitment tx rather than read once from `GetInfo`. These
+  let the client agree with the server on tree construction, connector ancestry,
+  sweep-leaf tapscript, and forfeit penalty output even across an operator key
+  rotation. Nil/zero means the server predates the field; the FSM falls back to
+  the global `GetInfo` values. `SweepDelay` replaces the global sweep-delay
+  operator term and drives batch-expiry computation for VTXOs created in this
+  round. `ForfeitKey` replaces the global `GetInfo` forfeit script; the forfeit
+  penalty output is a BIP-86 key-spend to this key. These fields are threaded
+  through `CommitmentTxReceivedState`, `CommitmentTxValidatedState`,
+  `NoncesSentState`, `NoncesAggregatedState`, `PartialSigsSentState`,
+  `ForfeitSignaturesCollectingState`, and `InputSigSentState`.
 - `FromProto` methods on `JoinRoundQuoteReceived`, `RoundJoined`,
   `CommitmentTxBuilt`, `AwaitingBoardingSigs`, `NoncesAggregated`,
   `OperatorSigned`, `BoardingFailed`, `JoinRoundRequest` — all

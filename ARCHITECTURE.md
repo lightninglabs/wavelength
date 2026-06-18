@@ -28,6 +28,7 @@ package may import from a higher layer.
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
 | [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery jobs (action, state, script parameters, swap linkage) |
+| [`coinselect`](coinselect/) | Coin-type-agnostic largest-first coin-selection algorithm shared across the VTXO manager reservation path and the swap wallet send preview |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
