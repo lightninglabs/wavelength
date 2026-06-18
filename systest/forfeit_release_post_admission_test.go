@@ -66,11 +66,21 @@ func (s *fakeMailboxServer) maybeFailRoundAfterAdmission(
 
 	// The client re-keys a pending round to the server id only when the
 	// RoundJoined echoes the round's accepted inputs (handleRoundJoined
-	// matches by outpoint). Echo the forfeited VTXO outpoints from the
-	// JoinRound so the admission matches the leave's pending round.
+	// matches by outpoint). Echo both the boarding and forfeited VTXO
+	// outpoints from the JoinRound so the admission matches the pending
+	// round whether it is a boarding or a leave/refresh.
 	var req roundpb.JoinRoundRequest
 	if err := joinEnv.Body.UnmarshalTo(&req); err != nil {
 		return fmt.Errorf("decode join round for admission: %w", err)
+	}
+
+	acceptedBoarding := make(
+		[]*roundpb.Outpoint, 0, len(req.BoardingRequests),
+	)
+	for _, b := range req.BoardingRequests {
+		if b.Outpoint != nil {
+			acceptedBoarding = append(acceptedBoarding, b.Outpoint)
+		}
 	}
 
 	acceptedVTXOs := make([]*roundpb.Outpoint, 0, len(req.ForfeitRequests))
@@ -85,8 +95,9 @@ func (s *fakeMailboxServer) maybeFailRoundAfterAdmission(
 	// Admit first: the client matches the echoed outpoints to its pending
 	// round, re-keys it to this id, and parks in IntentSentState.
 	admit := &roundpb.ClientSuccessResp{
-		RoundId:               rid[:],
-		AcceptedVtxoOutpoints: acceptedVTXOs,
+		RoundId:                   rid[:],
+		AcceptedBoardingOutpoints: acceptedBoarding,
+		AcceptedVtxoOutpoints:     acceptedVTXOs,
 	}
 	if err := s.pushRoundEvent(
 		joinEnv, roundpb.MethodJoinAck, admit,
