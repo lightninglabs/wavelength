@@ -79,6 +79,15 @@ type fakeMailboxServer struct {
 	oorSubmitReqs   []*oorpb.SubmitPackageRequest
 	oorSubmitEnvs   []*mailboxpb.Envelope
 	inboxSignalChan chan struct{}
+
+	// failRoundAfterAdmission, when set, makes the fake operator admit a
+	// client's JoinRound (push RoundJoined) and then immediately fail the
+	// round (push ClientRoundFailedResp), reproducing a server round-build
+	// failure that lands after the client has already been admitted. Used
+	// to exercise the post-admission forfeit-release path. See
+	// forfeit_release_post_admission_test.go.
+	failRoundAfterAdmission bool
+	failRoundReason         string
 }
 
 // newFakeMailboxServer constructs a fake mailbox edge with the given operator
@@ -249,7 +258,12 @@ func (s *fakeMailboxServer) handleOperatorEnvelope(ctx context.Context,
 
 	case env.Rpc.Service == roundpb.ServiceName &&
 		env.Rpc.Method == roundpb.MethodJoinRound:
-		return s.recordJoinRound(env)
+
+		if err := s.recordJoinRound(env); err != nil {
+			return err
+		}
+
+		return s.maybeFailRoundAfterAdmission(env)
 
 	case env.Rpc.Service == oorpb.ServiceName &&
 		env.Rpc.Method == oorpb.MethodSubmitPackage:
