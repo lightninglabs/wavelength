@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightninglabs/darepo-client/baselib/tlvutil"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -94,17 +95,7 @@ func EncodeState(state *State) ([]byte, error) {
 		),
 	)
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, fmt.Errorf("create state stream: %w", err)
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, fmt.Errorf("encode state: %w", err)
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 // DecodeState parses a TLV-encoded State and rejects unknown codec versions.
@@ -117,7 +108,8 @@ func DecodeState(raw []byte) (*State, error) {
 		sweepRaw            []byte
 	)
 
-	stream, err := tlv.NewStream(
+	parsed, err := tlvutil.DecodeRecords(
+		bytes.NewReader(raw),
 		tlv.MakePrimitiveRecord(stateVersionRecordType, &version),
 		tlv.MakePrimitiveRecord(
 			stateConfirmedTxidsRecordType, &confirmedRaw,
@@ -131,11 +123,6 @@ func DecodeState(raw []byte) (*State, error) {
 		),
 		tlv.MakePrimitiveRecord(stateSweepRecordType, &sweepRaw),
 	)
-	if err != nil {
-		return nil, fmt.Errorf("create state stream: %w", err)
-	}
-
-	parsed, err := stream.DecodeWithParsedTypes(bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("decode state: %w", err)
 	}
@@ -271,17 +258,7 @@ func encodeSweepState(sweep SweepState) ([]byte, error) {
 		)
 	})
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 // decodeSweepState reverses encodeSweepState.
@@ -292,18 +269,14 @@ func decodeSweepState(raw []byte) (SweepState, error) {
 		confirmHeight uint32
 	)
 
-	stream, err := tlv.NewStream(
+	parsed, err := tlvutil.DecodeRecords(
+		bytes.NewReader(raw),
 		tlv.MakePrimitiveRecord(sweepStatusRecordType, &statusByte),
 		tlv.MakePrimitiveRecord(sweepTxidRecordType, &txid),
 		tlv.MakePrimitiveRecord(
 			sweepConfirmHeightRecordType, &confirmHeight,
 		),
 	)
-	if err != nil {
-		return SweepState{}, err
-	}
-
-	parsed, err := stream.DecodeWithParsedTypes(bytes.NewReader(raw))
 	if err != nil {
 		return SweepState{}, err
 	}

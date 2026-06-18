@@ -1,9 +1,9 @@
 package oor
 
 import (
-	"bytes"
 	"fmt"
 
+	"github.com/lightninglabs/darepo-client/baselib/tlvutil"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -107,17 +107,7 @@ func encodePackageArtifact(artifact PackageArtifact) ([]byte, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 // decodePackageArtifactWithLimits deserializes one package artifact while
@@ -143,13 +133,8 @@ func decodePackageArtifactWithLimits(raw []byte,
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
+	_, err := tlvutil.DecodeRecordsFromBytes(raw, records...)
 	if err != nil {
-		return PackageArtifact{}, err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
 		return PackageArtifact{}, err
 	}
 

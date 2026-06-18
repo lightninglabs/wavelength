@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/lightninglabs/darepo-client/baselib/tlvutil"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -63,8 +64,8 @@ func (m AskResponse) Encode(w io.Writer) error {
 	resultBlob := m.ResultBlob
 	errorText := []byte(m.ErrorText)
 
-	records := []tlv.Record{
-		tlv.MakePrimitiveRecord(
+	return tlvutil.EncodeRecords(
+		w, tlv.MakePrimitiveRecord(
 			askResponseCorrelationIDType, &correlationID,
 		),
 		tlv.MakePrimitiveRecord(
@@ -73,14 +74,7 @@ func (m AskResponse) Encode(w io.Writer) error {
 		tlv.MakePrimitiveRecord(
 			askResponseErrorTextType, &errorText,
 		),
-	}
-
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
+	)
 }
 
 // Decode deserializes the message from the provided reader.
@@ -91,8 +85,8 @@ func (m *AskResponse) Decode(r io.Reader) error {
 		errorText     []byte
 	)
 
-	records := []tlv.Record{
-		tlv.MakePrimitiveRecord(
+	_, err := tlvutil.DecodeRecords(
+		r, tlv.MakePrimitiveRecord(
 			askResponseCorrelationIDType, &correlationID,
 		),
 		tlv.MakePrimitiveRecord(
@@ -101,14 +95,8 @@ func (m *AskResponse) Decode(r io.Reader) error {
 		tlv.MakePrimitiveRecord(
 			askResponseErrorTextType, &errorText,
 		),
-	}
-
-	stream, err := tlv.NewStream(records...)
+	)
 	if err != nil {
-		return err
-	}
-
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
 		return err
 	}
 

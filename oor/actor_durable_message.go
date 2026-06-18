@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/baselib/tlvutil"
 	clientdb "github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
@@ -174,17 +175,7 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 func decodeStartTransferPayload(raw []byte) (startTransferPayload, error) {
@@ -222,13 +213,8 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		tlv.MakePrimitiveRecord(startPayloadIdempotencyKeyType, &idKey),
 	}
 
-	stream, err := tlv.NewStream(records...)
+	_, err := tlvutil.DecodeRecordsFromBytes(raw, records...)
 	if err != nil {
-		return startTransferPayload{}, err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
 		return startTransferPayload{}, err
 	}
 
@@ -451,17 +437,7 @@ func encodeAncestryEntry(a vtxo.Ancestry) ([]byte, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 // decodeAncestryEntry is the inverse of encodeAncestryEntry.
@@ -488,13 +464,8 @@ func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
+	_, err := tlvutil.DecodeRecordsFromBytes(raw, records...)
 	if err != nil {
-		return vtxo.Ancestry{}, err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
 		return vtxo.Ancestry{}, err
 	}
 
@@ -629,17 +600,7 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 // decodeIncomingMetadataMatchWithLimits decodes one incoming metadata match
@@ -691,13 +652,8 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
+	_, err := tlvutil.DecodeRecordsFromBytes(raw, records...)
 	if err != nil {
-		return IncomingMetadataMatch{}, err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
 		return IncomingMetadataMatch{}, err
 	}
 
@@ -796,17 +752,7 @@ func encodeRecipientPayload(payload recipientPayload) ([]byte, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 func decodeRecipientPayload(raw []byte) (recipientPayload, error) {
@@ -824,13 +770,8 @@ func decodeRecipientPayload(raw []byte) (recipientPayload, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
+	_, err := tlvutil.DecodeRecordsFromBytes(raw, records...)
 	if err != nil {
-		return recipientPayload{}, err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
 		return recipientPayload{}, err
 	}
 
@@ -1040,17 +981,7 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 		)
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
@@ -1134,13 +1065,8 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
+	_, err := tlvutil.DecodeRecordsFromBytes(raw, records...)
 	if err != nil {
-		return nil, err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
 		return nil, err
 	}
 
@@ -1434,17 +1360,7 @@ func encodeSessionPayload(sessionID SessionID) ([]byte, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 func decodeSessionPayload(raw []byte) (SessionID, error) {
@@ -1455,13 +1371,9 @@ func decodeSessionPayload(raw []byte) (SessionID, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return SessionID{}, err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := tlvutil.DecodeRecordsFromBytes(
+		raw, records...,
+	); err != nil {
 		return SessionID{}, err
 	}
 
@@ -1476,17 +1388,7 @@ func encodeIdempotencyKeyPayload(idempotencyKey string) ([]byte, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 func decodeIdempotencyKeyPayload(raw []byte) (string, error) {
@@ -1497,13 +1399,9 @@ func decodeIdempotencyKeyPayload(raw []byte) (string, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return "", err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := tlvutil.DecodeRecordsFromBytes(
+		raw, records...,
+	); err != nil {
 		return "", err
 	}
 
@@ -1529,17 +1427,7 @@ func encodeListSessionsPayload(direction SessionDirection,
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 // decodeListSessionsPayload decodes the durable list-sessions query filters.
@@ -1558,13 +1446,9 @@ func decodeListSessionsPayload(raw []byte) (SessionDirection, bool, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return SessionDirectionAll, false, err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := tlvutil.DecodeRecordsFromBytes(
+		raw, records...,
+	); err != nil {
 		return SessionDirectionAll, false, err
 	}
 
@@ -1606,17 +1490,7 @@ func encodeResolveIncomingTransferPayload(sessionID SessionID,
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 // decodeResolveIncomingTransferPayloadWithLimits decodes an incoming-transfer
@@ -1645,13 +1519,8 @@ func decodeResolveIncomingTransferPayloadWithLimits(raw []byte,
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
+	_, err := tlvutil.DecodeRecordsFromBytes(raw, records...)
 	if err != nil {
-		return SessionID{}, nil, 0, err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
 		return SessionID{}, nil, 0, err
 	}
 
@@ -1684,17 +1553,7 @@ func encodeRestoreSnapshotPayload(snapshot *OutgoingSnapshot) ([]byte, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 func decodeRestoreSnapshotPayload(raw []byte) (*OutgoingSnapshot, error) {
@@ -1715,13 +1574,9 @@ func decodeRestoreSnapshotPayloadWithLimits(raw []byte,
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := tlvutil.DecodeRecordsFromBytes(
+		raw, records...,
+	); err != nil {
 		return nil, err
 	}
 
@@ -1757,17 +1612,7 @@ func encodeDriveEventRequestPayload(sessionID SessionID,
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 // decodeDriveEventRequestPayloadWithLimits decodes a drive-event request and
@@ -1789,13 +1634,8 @@ func decodeDriveEventRequestPayloadWithLimits(raw []byte,
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
+	_, err := tlvutil.DecodeRecordsFromBytes(raw, records...)
 	if err != nil {
-		return SessionID{}, nil, err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
 		return SessionID{}, nil, err
 	}
 
@@ -2012,17 +1852,7 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 // decodeEventPayloadWithLimits decodes an event payload and applies receive
@@ -2077,13 +1907,8 @@ func decodeEventPayloadWithLimits(raw []byte,
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
+	_, err := tlvutil.DecodeRecordsFromBytes(raw, records...)
 	if err != nil {
-		return nil, err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
 		return nil, err
 	}
 

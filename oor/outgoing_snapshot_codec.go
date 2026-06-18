@@ -1,12 +1,12 @@
 package oor
 
 import (
-	"bytes"
 	"fmt"
 	"math"
 	"time"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/baselib/tlvutil"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -83,17 +83,7 @@ func encodeSessionsCheckpoint(checkpoint sessionsCheckpoint) ([]byte, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 func decodeSessionsCheckpoint(raw []byte) (sessionsCheckpoint, error) {
@@ -123,13 +113,8 @@ func decodeSessionsCheckpointWithLimits(raw []byte,
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
+	_, err := tlvutil.DecodeRecordsFromBytes(raw, records...)
 	if err != nil {
-		return sessionsCheckpoint{}, err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
 		return sessionsCheckpoint{}, err
 	}
 
@@ -265,17 +250,7 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
 func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
@@ -323,13 +298,8 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
+	_, err := tlvutil.DecodeRecordsFromBytes(raw, records...)
 	if err != nil {
-		return nil, err
-	}
-
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
 		return nil, err
 	}
 

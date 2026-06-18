@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/baselib/tlvutil"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -122,12 +123,7 @@ func (m *SigningEffectRequest) Encode(w io.Writer) error {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
+	return tlvutil.EncodeRecords(w, records...)
 }
 
 // Decode deserializes the signing request.
@@ -157,12 +153,8 @@ func (m *SigningEffectRequest) Decode(r io.Reader) error {
 		),
 	}
 
-	stream, err := tlv.NewStream(records...)
+	_, err := tlvutil.DecodeRecords(r, records...)
 	if err != nil {
-		return err
-	}
-
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
 		return err
 	}
 
