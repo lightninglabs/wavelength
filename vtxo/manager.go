@@ -152,6 +152,12 @@ type Manager struct {
 	// actors tracks active VTXO actors by outpoint.
 	actors map[wire.OutPoint]VTXOActorRef
 
+	// customForfeitSynthetic marks custom forfeit signer actors whose VTXO
+	// descriptor was created only for the temporary signer. Rollback deletes
+	// those descriptors, while signer actors for already-known swap VTXOs only
+	// need to be stopped.
+	customForfeitSynthetic map[wire.OutPoint]bool
+
 	// reserved is the manager-goroutine-owned admission gate for spend
 	// reservations. An entry means the outpoint was handed to a spend
 	// session this process lifetime and must not be selected again, even
@@ -190,9 +196,10 @@ func NewManager(cfg *ManagerConfig) *Manager {
 	}
 
 	return &Manager{
-		cfg:      cfg,
-		actors:   make(map[wire.OutPoint]VTXOActorRef),
-		reserved: make(map[wire.OutPoint]uint64),
+		cfg:                    cfg,
+		actors:                 make(map[wire.OutPoint]VTXOActorRef),
+		customForfeitSynthetic: make(map[wire.OutPoint]bool),
+		reserved:               make(map[wire.OutPoint]uint64),
 	}
 }
 
@@ -1859,6 +1866,13 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 			continue
 		}
 
+		synthetic, err := m.customForfeitInputIsSynthetic(
+			ctx, input.Outpoint,
+		)
+		if err != nil {
+			return fn.Err[ManagerResp](err)
+		}
+
 		descriptor := &Descriptor{
 			Outpoint:       input.Outpoint,
 			Amount:         input.Amount,
@@ -1894,6 +1908,7 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 		}
 
 		m.actors[input.Outpoint] = ref
+		m.markCustomForfeitSynthetic(input.Outpoint, synthetic)
 		activated++
 	}
 
@@ -1904,6 +1919,40 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 	return fn.Ok[ManagerResp](&ActivateCustomForfeitInputsResponse{
 		ActivatedCount: activated,
 	})
+}
+
+// customForfeitInputIsSynthetic reports whether activating a custom forfeit
+// input must create a throw-away descriptor. Already-known VTXOs can still use
+// temporary custom signer actors, but rollback must leave their durable row
+// intact because other tables, such as OOR package bindings, may reference it.
+func (m *Manager) customForfeitInputIsSynthetic(ctx context.Context,
+	outpoint wire.OutPoint) (bool, error) {
+
+	_, err := m.cfg.Store.GetVTXO(ctx, outpoint)
+	switch {
+	case err == nil:
+		return false, nil
+
+	case errors.Is(err, sql.ErrNoRows):
+		return true, nil
+
+	default:
+		return false, fmt.Errorf("check custom forfeit input %s: %w",
+			outpoint, err)
+	}
+}
+
+// markCustomForfeitSynthetic records whether a custom signer owns a synthetic
+// descriptor. Nil-safe so tests that construct Manager literals without
+// NewManager preserve their existing setup style.
+func (m *Manager) markCustomForfeitSynthetic(op wire.OutPoint,
+	synthetic bool) {
+
+	if m.customForfeitSynthetic == nil {
+		m.customForfeitSynthetic = make(map[wire.OutPoint]bool)
+	}
+
+	m.customForfeitSynthetic[op] = synthetic
 }
 
 func (m *Manager) customForfeitInputAlreadyActive(ctx context.Context,
@@ -1958,6 +2007,24 @@ func (m *Manager) customForfeitInputAlreadyActive(ctx context.Context,
 	return true, nil
 }
 
+// dropCustomForfeitSynthetic forgets and returns the synthetic-descriptor bit
+// for a custom signer actor. Missing entries default to true for compatibility
+// with actors created before this field was introduced; those actors were
+// historically treated as rollback-owned descriptors.
+func (m *Manager) dropCustomForfeitSynthetic(op wire.OutPoint) bool {
+	if m.customForfeitSynthetic == nil {
+		return true
+	}
+
+	synthetic, ok := m.customForfeitSynthetic[op]
+	delete(m.customForfeitSynthetic, op)
+	if !ok {
+		return true
+	}
+
+	return synthetic
+}
+
 // handleDropCustomForfeitInputs removes custom PendingForfeit actors created
 // for a round intent that did not register. Unlike ReleaseForfeitRequest, this
 // must not return the descriptors to LiveState because custom swap vHTLCs are
@@ -1976,6 +2043,11 @@ func (m *Manager) handleDropCustomForfeitInputs(ctx context.Context,
 			actorID := fmt.Sprintf("vtxo.%s", op.String())
 			m.cfg.ActorSystem.StopAndRemoveActor(actorID)
 			delete(m.actors, op)
+		}
+
+		if !m.dropCustomForfeitSynthetic(op) {
+			dropped++
+			continue
 		}
 
 		if err := m.cfg.Store.DeleteVTXO(ctx, op); err != nil {

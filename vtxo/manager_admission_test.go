@@ -242,6 +242,9 @@ func TestActivateCustomForfeitInputsPersistsPendingSigner(t *testing.T) {
 		CommitmentTxID: commitmentTxID,
 		TreeDepth:      2,
 	}}
+	store.On("GetVTXO", mock.Anything, op).Return(
+		nil, sql.ErrNoRows,
+	).Once()
 	store.On(
 		"SaveVTXO", mock.Anything,
 		mock.MatchedBy(func(desc *Descriptor) bool {
@@ -306,6 +309,96 @@ func TestActivateCustomForfeitInputsPersistsPendingSigner(t *testing.T) {
 	require.Equal(t, 1, dropResp.DroppedCount)
 	require.NotContains(t, mgr.actors, op)
 
+	store.AssertExpectations(t)
+}
+
+// TestDropCustomForfeitInputsKeepsExistingVTXORow verifies that rollback only
+// stops the temporary custom signer when activation found an existing durable
+// VTXO row. Swap vHTLC rows can have OOR package bindings, so deleting them on
+// failed refresh admission would violate those references and remove the live
+// vHTLC that normal claim/refund handling still needs.
+func TestDropCustomForfeitInputsKeepsExistingVTXORow(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		require.NoError(t, system.Shutdown(context.Background()))
+	})
+
+	store := &MockVTXOStore{}
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			Store:       store,
+			ActorSystem: system,
+			ChainSource: noopChainSourceRef{},
+			RoundActor:  newMockRoundActorRef(t),
+		},
+		actors: make(map[wire.OutPoint]VTXOActorRef),
+	}
+
+	desc := makeDescriptor(t, 42_000, 92)
+	desc.Status = VTXOStatusLive
+	desc.RoundID = "custom-round"
+	desc.ClientKey = keychain.KeyDescriptor{
+		PubKey: clientPriv.PubKey(),
+	}
+	desc.OperatorKey = operatorPriv.PubKey()
+
+	store.On("GetVTXO", mock.Anything, desc.Outpoint).Return(
+		desc, nil,
+	).Once()
+	store.On("SaveVTXO", mock.Anything, mock.Anything).Return(nil).Once()
+
+	result := mgr.Receive(
+		t.Context(), &ActivateCustomForfeitInputsRequest{
+			Inputs: []CustomForfeitInput{{
+				Outpoint:       desc.Outpoint,
+				Amount:         desc.Amount,
+				PkScript:       []byte{0x51, 0x20, 0x01},
+				PolicyTemplate: []byte{0xde, 0xad},
+				ClientKey: keychain.KeyDescriptor{
+					PubKey: clientPriv.PubKey(),
+				},
+				OperatorKey:    operatorPriv.PubKey(),
+				RelativeExpiry: 144,
+				RoundID:        desc.RoundID,
+				CommitmentTxID: desc.CommitmentTxID,
+				BatchExpiry:    900,
+				ChainDepth:     1,
+				CreatedHeight:  123,
+				Ancestry:       desc.Ancestry,
+			}},
+		},
+	)
+	respVal, err := result.Unpack()
+	require.NoError(t, err)
+
+	resp, ok := respVal.(*ActivateCustomForfeitInputsResponse)
+	require.True(t, ok)
+	require.Equal(t, 1, resp.ActivatedCount)
+	require.Contains(t, mgr.actors, desc.Outpoint)
+
+	dropResult := mgr.Receive(
+		t.Context(), &DropCustomForfeitInputsRequest{
+			Outpoints: []wire.OutPoint{desc.Outpoint},
+		},
+	)
+	dropRespVal, err := dropResult.Unpack()
+	require.NoError(t, err)
+
+	dropResp, ok := dropRespVal.(*DropCustomForfeitInputsResponse)
+	require.True(t, ok)
+	require.Equal(t, 1, dropResp.DroppedCount)
+	require.NotContains(t, mgr.actors, desc.Outpoint)
+
+	store.AssertNotCalled(
+		t, "DeleteVTXO", mock.Anything, desc.Outpoint,
+	)
 	store.AssertExpectations(t)
 }
 
