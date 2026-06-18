@@ -569,4 +569,16 @@ func TestOutboxMessagesClientOutMsgSealed(t *testing.T) {
 		}
 		msg.clientOutMsgSealed()
 	})
+
+	t.Run("DropCustomForfeitReservation", func(t *testing.T) {
+		t.Parallel()
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.Hash{91},
+			Index: 91,
+		}
+		msg := &DropCustomForfeitReservation{
+			Outpoints: []wire.OutPoint{outpoint},
+		}
+		msg.clientOutMsgSealed()
+	})
 }

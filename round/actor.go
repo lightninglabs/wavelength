@@ -2256,6 +2256,29 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				)
 			}
 
+		case *DropCustomForfeitReservation:
+			// Drop custom PendingForfeit signer actors created for
+			// caller-supplied refresh inputs. They are not wallet
+			// VTXOs, so they must not be released into LiveState.
+			if a.cfg.VTXOManager == nil || len(m.Outpoints) == 0 {
+				continue
+			}
+			if err := a.cfg.VTXOManager.Tell(
+				ctx, &actormsg.DropCustomForfeitInputsRequest{
+					Outpoints: m.Outpoints,
+				},
+			); err != nil {
+
+				a.log.WarnS(
+					ctx,
+					"Failed to drop custom forfeit inputs",
+					err,
+					slog.Int(
+						"outpoints", len(m.Outpoints),
+					),
+				)
+			}
+
 		case *VTXOCreatedNotification:
 			// Forward to VTXO manager to spawn actors for the new
 			// VTXOs if configured.

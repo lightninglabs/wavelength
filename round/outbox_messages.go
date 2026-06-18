@@ -899,6 +899,20 @@ type ReleaseForfeitReservation struct {
 
 func (m *ReleaseForfeitReservation) clientOutMsgSealed() {}
 
+// DropCustomForfeitReservation asks the actor to drop custom PendingForfeit
+// signer actors that were activated for a caller-supplied custom refresh
+// intent. The FSM emits it when a round fails before any forfeit signatures
+// have been submitted. Unlike ReleaseForfeitReservation, these inputs are not
+// normal wallet VTXOs and must not be returned to LiveState.
+type DropCustomForfeitReservation struct {
+	actor.BaseMessage
+
+	// Outpoints identifies the custom forfeit inputs to drop.
+	Outpoints []wire.OutPoint
+}
+
+func (m *DropCustomForfeitReservation) clientOutMsgSealed() {}
+
 // RoundFailedNotification is emitted when a round FSM transitions to
 // ClientFailedState. This notifies higher layers (actor, wallet) of the
 // failure so they can update UI, trigger recovery flows, or clean up

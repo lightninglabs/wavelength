@@ -1321,6 +1321,18 @@ func (s *QuoteReceivedState) ProcessEvent(ctx context.Context,
 			QuoteID: evt.QuoteID,
 			Reason:  evt.Reason,
 		}
+		outbox := []ClientOutMsg{reject}
+		standard, custom := forfeitRollbackOutpoints(s.Intents.Forfeits)
+		if len(standard) > 0 {
+			outbox = append(outbox, &ReleaseForfeitReservation{
+				Outpoints: standard,
+			})
+		}
+		if len(custom) > 0 {
+			outbox = append(outbox, &DropCustomForfeitReservation{
+				Outpoints: custom,
+			})
+		}
 
 		return &ClientStateTransition{
 			NextState: &ClientFailedState{
@@ -1328,7 +1340,7 @@ func (s *QuoteReceivedState) ProcessEvent(ctx context.Context,
 				Recoverable: false,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: []ClientOutMsg{reject},
+				Outbox: outbox,
 			}),
 		}, nil
 
@@ -3000,6 +3012,47 @@ func forfeitOutpoints(requests []types.ForfeitRequest) []wire.OutPoint {
 	}
 
 	return outpoints
+}
+
+// forfeitRollbackOutpoints splits forfeits into standard wallet reservations
+// that should be released and custom refresh inputs that should be dropped when
+// a round fails before signing. Custom forfeits carry explicit spend paths
+// because they are not normal wallet VTXOs.
+func forfeitRollbackOutpoints(
+	requests []types.ForfeitRequest) ([]wire.OutPoint, []wire.OutPoint) {
+
+	standardSeen := make(map[wire.OutPoint]struct{}, len(requests))
+	customSeen := make(map[wire.OutPoint]struct{}, len(requests))
+	standard := make([]wire.OutPoint, 0, len(requests))
+	custom := make([]wire.OutPoint, 0, len(requests))
+
+	for i := range requests {
+		req := requests[i]
+		if req.VTXOOutpoint == nil {
+			continue
+		}
+
+		op := *req.VTXOOutpoint
+		if req.AuthSpend != nil || req.ForfeitSpend != nil {
+			if _, ok := customSeen[op]; ok {
+				continue
+			}
+
+			customSeen[op] = struct{}{}
+			custom = append(custom, op)
+
+			continue
+		}
+
+		if _, ok := standardSeen[op]; ok {
+			continue
+		}
+
+		standardSeen[op] = struct{}{}
+		standard = append(standard, op)
+	}
+
+	return standard, custom
 }
 
 // forfeitRequestMap indexes local forfeit requests by outpoint so custom local
