@@ -30,6 +30,7 @@ const (
 	DaemonService_ReceiveAuthKey_FullMethodName                = "/daemonrpc.DaemonService/ReceiveAuthKey"
 	DaemonService_SignReceiveAuthMessage_FullMethodName        = "/daemonrpc.DaemonService/SignReceiveAuthMessage"
 	DaemonService_SignReceiveAuthMessageCompact_FullMethodName = "/daemonrpc.DaemonService/SignReceiveAuthMessageCompact"
+	DaemonService_SignIdentitySchnorr_FullMethodName           = "/daemonrpc.DaemonService/SignIdentitySchnorr"
 	DaemonService_ReceiveAuthECDH_FullMethodName               = "/daemonrpc.DaemonService/ReceiveAuthECDH"
 	DaemonService_GetIndexedVTXOByPkScript_FullMethodName      = "/daemonrpc.DaemonService/GetIndexedVTXOByPkScript"
 	DaemonService_GetIndexedOORSessionByTxid_FullMethodName    = "/daemonrpc.DaemonService/GetIndexedOORSessionByTxid"
@@ -107,6 +108,9 @@ type DaemonServiceClient interface {
 	// SignReceiveAuthMessageCompact signs one message with the
 	// per-payment receive-auth key and returns a compact signature.
 	SignReceiveAuthMessageCompact(ctx context.Context, in *SignReceiveAuthMessageCompactRequest, opts ...grpc.CallOption) (*SignReceiveAuthMessageCompactResponse, error)
+	// SignIdentitySchnorr signs one domain-separated message with the daemon
+	// identity key. The private key never leaves the daemon.
+	SignIdentitySchnorr(ctx context.Context, in *SignIdentitySchnorrRequest, opts ...grpc.CallOption) (*SignIdentitySchnorrResponse, error)
 	// ReceiveAuthECDH derives one Sphinx shared secret with the
 	// per-payment receive-auth key.
 	ReceiveAuthECDH(ctx context.Context, in *ReceiveAuthECDHRequest, opts ...grpc.CallOption) (*ReceiveAuthECDHResponse, error)
@@ -332,6 +336,16 @@ func (c *daemonServiceClient) SignReceiveAuthMessageCompact(ctx context.Context,
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SignReceiveAuthMessageCompactResponse)
 	err := c.cc.Invoke(ctx, DaemonService_SignReceiveAuthMessageCompact_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SignIdentitySchnorr(ctx context.Context, in *SignIdentitySchnorrRequest, opts ...grpc.CallOption) (*SignIdentitySchnorrResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SignIdentitySchnorrResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SignIdentitySchnorr_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -683,6 +697,9 @@ type DaemonServiceServer interface {
 	// SignReceiveAuthMessageCompact signs one message with the
 	// per-payment receive-auth key and returns a compact signature.
 	SignReceiveAuthMessageCompact(context.Context, *SignReceiveAuthMessageCompactRequest) (*SignReceiveAuthMessageCompactResponse, error)
+	// SignIdentitySchnorr signs one domain-separated message with the daemon
+	// identity key. The private key never leaves the daemon.
+	SignIdentitySchnorr(context.Context, *SignIdentitySchnorrRequest) (*SignIdentitySchnorrResponse, error)
 	// ReceiveAuthECDH derives one Sphinx shared secret with the
 	// per-payment receive-auth key.
 	ReceiveAuthECDH(context.Context, *ReceiveAuthECDHRequest) (*ReceiveAuthECDHResponse, error)
@@ -836,6 +853,9 @@ func (UnimplementedDaemonServiceServer) SignReceiveAuthMessage(context.Context, 
 }
 func (UnimplementedDaemonServiceServer) SignReceiveAuthMessageCompact(context.Context, *SignReceiveAuthMessageCompactRequest) (*SignReceiveAuthMessageCompactResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SignReceiveAuthMessageCompact not implemented")
+}
+func (UnimplementedDaemonServiceServer) SignIdentitySchnorr(context.Context, *SignIdentitySchnorrRequest) (*SignIdentitySchnorrResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SignIdentitySchnorr not implemented")
 }
 func (UnimplementedDaemonServiceServer) ReceiveAuthECDH(context.Context, *ReceiveAuthECDHRequest) (*ReceiveAuthECDHResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReceiveAuthECDH not implemented")
@@ -1139,6 +1159,24 @@ func _DaemonService_SignReceiveAuthMessageCompact_Handler(srv interface{}, ctx c
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).SignReceiveAuthMessageCompact(ctx, req.(*SignReceiveAuthMessageCompactRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SignIdentitySchnorr_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignIdentitySchnorrRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SignIdentitySchnorr(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SignIdentitySchnorr_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SignIdentitySchnorr(ctx, req.(*SignIdentitySchnorrRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1708,6 +1746,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SignReceiveAuthMessageCompact",
 			Handler:    _DaemonService_SignReceiveAuthMessageCompact_Handler,
+		},
+		{
+			MethodName: "SignIdentitySchnorr",
+			Handler:    _DaemonService_SignIdentitySchnorr_Handler,
 		},
 		{
 			MethodName: "ReceiveAuthECDH",

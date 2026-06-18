@@ -101,6 +101,33 @@ func (r *RPCServer) ReceiveAuthECDH(ctx context.Context,
 	}, nil
 }
 
+// SignIdentitySchnorr signs one tagged Schnorr message with the daemon
+// identity key without returning private-key-equivalent material.
+func (r *RPCServer) SignIdentitySchnorr(ctx context.Context,
+	req *daemonrpc.SignIdentitySchnorrRequest) (
+	*daemonrpc.SignIdentitySchnorrResponse, error) {
+
+	if len(req.GetTag()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "tag is required")
+	}
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	sig, err := r.server.signTaggedSchnorr(
+		ctx, req.GetMessage(), req.GetTag(), "identity schnorr",
+	)
+	if err != nil {
+		return nil, status.Errorf(
+			codes.Internal, "sign identity schnorr: %v", err,
+		)
+	}
+
+	return &daemonrpc.SignIdentitySchnorrResponse{
+		Signature: sig.Serialize(),
+	}, nil
+}
+
 // deriveReceiveAuthKey derives the receive-auth base using the same
 // Diffie-Hellman construction as lnd's Signer.DeriveSharedKey RPC, then
 // domain-separates it for one payment hash.

@@ -686,6 +686,24 @@ func (c *Client) ReceiveAuthECDH(ctx context.Context, paymentHash lntypes.Hash,
 	return sharedSecret, nil
 }
 
+// SignIdentitySchnorr asks the daemon wallet to sign one domain-separated
+// message with the daemon identity key.
+func (c *Client) SignIdentitySchnorr(ctx context.Context, message,
+	tag []byte) ([]byte, error) {
+
+	resp, err := c.daemon.SignIdentitySchnorr(
+		ctx, &daemonrpc.SignIdentitySchnorrRequest{
+			Message: message,
+			Tag:     tag,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sign identity schnorr: %w", err)
+	}
+
+	return append([]byte(nil), resp.GetSignature()...), nil
+}
+
 // GetIndexedVTXOByPkScript asks the daemon's indexer client for the first VTXO
 // matching the supplied script and status filters. Passing nil uses the
 // daemon defaults.

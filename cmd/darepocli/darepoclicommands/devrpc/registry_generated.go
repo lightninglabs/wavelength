@@ -93,6 +93,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "SignReceiveAuthMessageCompact signs one message with the\nper-payment receive-auth key and returns a compact signature.",
 				},
 				{
+					Name:     "SignIdentitySchnorr",
+					Aliases:  []string{"sign-identity-schnorr"},
+					Input:    "daemonrpc.SignIdentitySchnorrRequest",
+					Output:   "daemonrpc.SignIdentitySchnorrResponse",
+					Comments: "SignIdentitySchnorr signs one domain-separated message with the daemon\nidentity key. The private key never leaves the daemon.",
+				},
+				{
 					Name:     "ReceiveAuthECDH",
 					Aliases:  []string{"receive-auth-ecdh"},
 					Input:    "daemonrpc.ReceiveAuthECDHRequest",

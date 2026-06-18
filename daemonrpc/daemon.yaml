@@ -39,6 +39,9 @@ http:
     - selector: daemonrpc.DaemonService.ReceiveAuthECDH
       post: /v1/daemon/receive-auth-ecdh
       body: "*"
+    - selector: daemonrpc.DaemonService.SignIdentitySchnorr
+      post: /v1/daemon/sign-identity-schnorr
+      body: "*"
     - selector: daemonrpc.DaemonService.GetIndexedVTXOByPkScript
       post: /v1/daemon/get-indexed-vtxo-by-pk-script
       body: "*"
