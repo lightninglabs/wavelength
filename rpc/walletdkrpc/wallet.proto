@@ -232,6 +232,14 @@ message CreateResponse {
     // recovered_oor_events is the number of OOR recipient events processed
     // during recovery.
     uint32 recovered_oor_events = 8;
+
+    // recovered_vhtlcs is the number of indexed vHTLC recovery manifests
+    // matched during recovery.
+    uint32 recovered_vhtlcs = 9;
+
+    // recovered_vhtlc_refunds is the number of matched pay-side vHTLCs for
+    // which daemon-owned refund recovery is available.
+    uint32 recovered_vhtlc_refunds = 10;
 }
 
 message UnlockRequest {

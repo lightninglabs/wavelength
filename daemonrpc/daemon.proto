@@ -417,6 +417,14 @@ message InitWalletResponse {
     // recovered_oor_events is the number of OOR recipient events processed
     // during recovery.
     uint32 recovered_oor_events = 7;
+
+    // recovered_vhtlcs is the number of indexed vHTLC recovery manifests
+    // matched during recovery.
+    uint32 recovered_vhtlcs = 8;
+
+    // recovered_vhtlc_refunds is the number of matched pay-side vHTLCs for
+    // which daemon-owned refund recovery is available.
+    uint32 recovered_vhtlc_refunds = 9;
 }
 
 message UnlockWalletRequest {
@@ -746,6 +754,13 @@ message Output {
     // created output when the caller knows semantic ownership metadata
     // that is not already carried by the destination itself.
     bytes vtxo_policy_template = 5;
+
+    // receive_script_label, when set on an OOR output, asks the daemon to
+    // register the resolved recipient pk_script with the indexer before
+    // submitting the transfer. Swap recovery uses this to persist compact
+    // vHTLC restore metadata before later local swap DB state becomes
+    // required.
+    string receive_script_label = 6;
 }
 
 message SendVTXORequest {

@@ -1216,8 +1216,14 @@ type InitWalletResponse struct {
 	// recovered_oor_events is the number of OOR recipient events processed
 	// during recovery.
 	RecoveredOorEvents uint32 `protobuf:"varint,7,opt,name=recovered_oor_events,json=recoveredOorEvents,proto3" json:"recovered_oor_events,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// recovered_vhtlcs is the number of indexed vHTLC recovery manifests
+	// matched during recovery.
+	RecoveredVhtlcs uint32 `protobuf:"varint,8,opt,name=recovered_vhtlcs,json=recoveredVhtlcs,proto3" json:"recovered_vhtlcs,omitempty"`
+	// recovered_vhtlc_refunds is the number of matched pay-side vHTLCs for
+	// which daemon-owned refund recovery is available.
+	RecoveredVhtlcRefunds uint32 `protobuf:"varint,9,opt,name=recovered_vhtlc_refunds,json=recoveredVhtlcRefunds,proto3" json:"recovered_vhtlc_refunds,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *InitWalletResponse) Reset() {
@@ -1295,6 +1301,20 @@ func (x *InitWalletResponse) GetRecoveredOorReceiveScripts() uint32 {
 func (x *InitWalletResponse) GetRecoveredOorEvents() uint32 {
 	if x != nil {
 		return x.RecoveredOorEvents
+	}
+	return 0
+}
+
+func (x *InitWalletResponse) GetRecoveredVhtlcs() uint32 {
+	if x != nil {
+		return x.RecoveredVhtlcs
+	}
+	return 0
+}
+
+func (x *InitWalletResponse) GetRecoveredVhtlcRefunds() uint32 {
+	if x != nil {
+		return x.RecoveredVhtlcRefunds
 	}
 	return 0
 }
@@ -2666,6 +2686,12 @@ type Output struct {
 	// created output when the caller knows semantic ownership metadata
 	// that is not already carried by the destination itself.
 	VtxoPolicyTemplate []byte `protobuf:"bytes,5,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
+	// receive_script_label, when set on an OOR output, asks the daemon to
+	// register the resolved recipient pk_script with the indexer before
+	// submitting the transfer. Swap recovery uses this to persist compact
+	// vHTLC restore metadata before later local swap DB state becomes
+	// required.
+	ReceiveScriptLabel string `protobuf:"bytes,6,opt,name=receive_script_label,json=receiveScriptLabel,proto3" json:"receive_script_label,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -2746,6 +2772,13 @@ func (x *Output) GetVtxoPolicyTemplate() []byte {
 		return x.VtxoPolicyTemplate
 	}
 	return nil
+}
+
+func (x *Output) GetReceiveScriptLabel() string {
+	if x != nil {
+		return x.ReceiveScriptLabel
+	}
+	return ""
 }
 
 type isOutput_Destination interface {
@@ -7934,7 +7967,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fwallet_password\x18\x02 \x01(\fR\x0ewalletPassword\x12'\n" +
 	"\x0fseed_passphrase\x18\x03 \x01(\fR\x0eseedPassphrase\x12#\n" +
 	"\rrecover_state\x18\x04 \x01(\bR\frecoverState\x12'\n" +
-	"\x0frecovery_window\x18\x05 \x01(\rR\x0erecoveryWindow\"\xfa\x02\n" +
+	"\x0frecovery_window\x18\x05 \x01(\rR\x0erecoveryWindow\"\xdd\x03\n" +
 	"\x12InitWalletResponse\x12'\n" +
 	"\x0fidentity_pubkey\x18\x01 \x01(\tR\x0eidentityPubkey\x12!\n" +
 	"\frecovery_ran\x18\x02 \x01(\bR\vrecoveryRan\x12@\n" +
@@ -7942,7 +7975,9 @@ const file_daemon_proto_rawDesc = "" +
 	"\x18recovered_boarding_utxos\x18\x04 \x01(\rR\x16recoveredBoardingUtxos\x12'\n" +
 	"\x0frecovered_vtxos\x18\x05 \x01(\rR\x0erecoveredVtxos\x12A\n" +
 	"\x1drecovered_oor_receive_scripts\x18\x06 \x01(\rR\x1arecoveredOorReceiveScripts\x120\n" +
-	"\x14recovered_oor_events\x18\a \x01(\rR\x12recoveredOorEvents\">\n" +
+	"\x14recovered_oor_events\x18\a \x01(\rR\x12recoveredOorEvents\x12)\n" +
+	"\x10recovered_vhtlcs\x18\b \x01(\rR\x0frecoveredVhtlcs\x126\n" +
+	"\x17recovered_vhtlc_refunds\x18\t \x01(\rR\x15recoveredVhtlcRefunds\">\n" +
 	"\x13UnlockWalletRequest\x12'\n" +
 	"\x0fwallet_password\x18\x01 \x01(\fR\x0ewalletPassword\"?\n" +
 	"\x14UnlockWalletResponse\x12'\n" +
@@ -8024,14 +8059,15 @@ const file_daemon_proto_rawDesc = "" +
 	"\fsession_txid\x18\x02 \x01(\fR\vsessionTxid\"j\n" +
 	"\"GetIndexedOORSessionByTxidResponse\x12\x19\n" +
 	"\bark_psbt\x18\x01 \x01(\fR\aarkPsbt\x12)\n" +
-	"\x10checkpoint_psbts\x18\x02 \x03(\fR\x0fcheckpointPsbts\"\xc9\x01\n" +
+	"\x10checkpoint_psbts\x18\x02 \x03(\fR\x0fcheckpointPsbts\"\xfb\x01\n" +
 	"\x06Output\x12\x1a\n" +
 	"\aaddress\x18\x01 \x01(\tH\x00R\aaddress\x12\x18\n" +
 	"\x06pubkey\x18\x03 \x01(\fH\x00R\x06pubkey\x12)\n" +
 	"\x0fpolicy_template\x18\x04 \x01(\fH\x00R\x0epolicyTemplate\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x02 \x01(\x03R\tamountSat\x120\n" +
-	"\x14vtxo_policy_template\x18\x05 \x01(\fR\x12vtxoPolicyTemplateB\r\n" +
+	"\x14vtxo_policy_template\x18\x05 \x01(\fR\x12vtxoPolicyTemplate\x120\n" +
+	"\x14receive_script_label\x18\x06 \x01(\tR\x12receiveScriptLabelB\r\n" +
 	"\vdestination\"]\n" +
 	"\x0fSendVTXORequest\x121\n" +
 	"\n" +
