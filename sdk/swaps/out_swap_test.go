@@ -1026,6 +1026,8 @@ type testDaemonConn struct {
 	liveLookupCalls   int
 	spentLookupCalls  int
 	lastSendPolicy    []byte
+	lastSendLabel     string
+	lastReceiveLabel  string
 	lastClaimPubKey   []byte
 	lastClaimInput    []CustomInput
 	lastOORSessionID  string
@@ -1053,13 +1055,25 @@ func (d *testDaemonConn) BlockHeight(context.Context) (uint32, error) {
 }
 
 // SendOORWithPolicyDetails records the requested output policy template.
-func (d *testDaemonConn) SendOORWithPolicyDetails(_ context.Context, _ int64,
+func (d *testDaemonConn) SendOORWithPolicyDetails(ctx context.Context, _ int64,
 	recipientPolicyTemplate []byte) (*OORSendResult, error) {
+
+	return d.SendOORWithPolicyDetailsAndLabel(
+		ctx, 0, recipientPolicyTemplate, "",
+	)
+}
+
+// SendOORWithPolicyDetailsAndLabel records the requested output policy
+// template and indexer registration label.
+func (d *testDaemonConn) SendOORWithPolicyDetailsAndLabel(
+	_ context.Context, _ int64, recipientPolicyTemplate []byte,
+	receiveScriptLabel string) (*OORSendResult, error) {
 
 	d.sendPolicyCalls++
 	d.lastSendPolicy = append(
 		[]byte(nil), recipientPolicyTemplate...,
 	)
+	d.lastSendLabel = receiveScriptLabel
 
 	if d.sendPolicyErr != nil {
 		return nil, d.sendPolicyErr
@@ -1438,10 +1452,11 @@ func (d *testDaemonConn) GetIndexedOORSession(context.Context, []byte, string) (
 }
 
 // AllocateReceiveScript returns the configured receive info.
-func (d *testDaemonConn) AllocateReceiveScript(context.Context, string) (
-	*ReceiveInfo, error) {
+func (d *testDaemonConn) AllocateReceiveScript(_ context.Context,
+	label string) (*ReceiveInfo, error) {
 
 	d.receiveAllocCalls++
+	d.lastReceiveLabel = label
 	if d.receiveInfo == nil {
 		if d.identityKey == nil {
 			return nil, nil

@@ -461,6 +461,12 @@ type DaemonConn interface {
 	SendOORWithPolicyDetails(ctx context.Context, amountSat int64,
 		recipientPolicyTemplate []byte) (*OORSendResult, error)
 
+	// SendOORWithPolicyDetailsAndLabel sends an OOR transfer and asks the
+	// daemon to register the resolved output script with the indexer label.
+	SendOORWithPolicyDetailsAndLabel(ctx context.Context, amountSat int64,
+		recipientPolicyTemplate []byte,
+		receiveScriptLabel string) (*OORSendResult, error)
+
 	// SendOORWithCustomInputs sends an OOR with custom inputs into one
 	// standard pubkey-backed Ark receive destination.
 	SendOORWithCustomInputs(ctx context.Context, recipientPubKey []byte,

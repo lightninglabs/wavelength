@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
 	loopfsm "github.com/lightninglabs/loop/fsm"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc/codes"
@@ -821,6 +822,17 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 		}
 	}
 
+	label, err := s.recoveryManifestLabel()
+	if err != nil {
+		return fmt.Errorf("build vHTLC recovery manifest: %w", err)
+	}
+
+	_, err = s.client.daemon.AllocateReceiveScript(ctx, label)
+	if err != nil {
+		return fmt.Errorf("register vHTLC recovery manifest: %w",
+			err)
+	}
+
 	result, err := s.client.daemon.SendOORWithPolicyDetails(
 		ctx, s.cfg.AmountSat, s.vhtlcPolicyTemplate,
 	)
@@ -871,6 +883,56 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 	}
 
 	return s.markVHTLCFundedFromLocalMetadata(ctx)
+}
+
+// recoveryManifestLabel returns the indexer label that lets seed restore find
+// this funded pay-side vHTLC even when the local swap DB is gone.
+func (s *paySession) recoveryManifestLabel() (string, error) {
+	if s.cfg == nil {
+		return "", fmt.Errorf("pay swap config is required")
+	}
+
+	sender, err := pubKeyBytesForRecovery(s.clientPubKey, "sender")
+	if err != nil {
+		return "", err
+	}
+	receiver, err := pubKeyBytesForRecovery(s.serverPubKey, "receiver")
+	if err != nil {
+		return "", err
+	}
+	server, err := pubKeyBytesForRecovery(s.operatorPubKey, "server")
+	if err != nil {
+		return "", err
+	}
+
+	return vhtlcrecovery.EncodeManifestLabel(
+		vhtlcrecovery.RecoveryManifest{
+			Role:      vhtlcrecovery.ManifestRoleSender,
+			Direction: vhtlcrecovery.ManifestDirectionPay,
+			PaymentHash: append(
+				[]byte(nil), s.cfg.PaymentHash[:]...,
+			),
+			SenderPubkey:   sender,
+			ReceiverPubkey: receiver,
+			ServerPubkey:   server,
+			RefundLocktime: s.cfg.VHTLCConfig.
+				RefundLocktime,
+			UnilateralClaimDelay: s.cfg.VHTLCConfig.
+				UnilateralClaimDelay,
+			UnilateralRefundDelay: s.cfg.VHTLCConfig.
+				UnilateralRefundDelay,
+			UnilateralRefundWithoutReceiverDelay: s.cfg.
+				VHTLCConfig.
+				UnilateralRefundWithoutReceiverDelay,
+			PkScript: append(
+				[]byte(nil), s.vhtlcPkScript...,
+			),
+			AmountSat:       s.cfg.AmountSat,
+			SignerKeyFamily: recoverySignerFamily(),
+			SignerKeyIndex:  recoverySignerKeyIndex,
+			StatusHint:      "unsent_in_swap",
+		},
+	)
 }
 
 // markVHTLCFundedFromLocalMetadata records progress from a locally known
