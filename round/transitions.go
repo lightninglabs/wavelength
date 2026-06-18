@@ -57,6 +57,36 @@ func failWithNotification(reason string, err error, recoverable bool,
 	}
 }
 
+// failureOutbox builds the common failure notification and rollback messages
+// for a round that failed before forfeit signatures were sent.
+func failureOutbox(reason string, err error, recoverable bool,
+	roundID fn.Option[RoundID],
+	forfeits []types.ForfeitRequest) []ClientOutMsg {
+
+	outbox := []ClientOutMsg{
+		&RoundFailedNotification{
+			RoundID:       roundID,
+			Reason:        reason,
+			Recoverable:   recoverable,
+			OriginalError: err,
+		},
+	}
+
+	standard, custom := forfeitRollbackOutpoints(forfeits)
+	if len(standard) > 0 {
+		outbox = append(outbox, &ReleaseForfeitReservation{
+			Outpoints: standard,
+		})
+	}
+	if len(custom) > 0 {
+		outbox = append(outbox, &DropCustomForfeitReservation{
+			Outpoints: custom,
+		})
+	}
+
+	return outbox
+}
+
 // selfLoop creates a self-loop transition that stays in the current state
 // without emitting any events. Used for unknown events in non-terminal states
 // to avoid halting the FSM.
@@ -614,22 +644,10 @@ func (s *IntentSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 			slog.Int("forfeit_count", len(s.Intents.Forfeits)),
 		)
 
-		outbox := []ClientOutMsg{
-			&RoundFailedNotification{
-				RoundID:       fn.None[RoundID](),
-				Reason:        reason,
-				Recoverable:   true,
-				OriginalError: timeoutErr,
-			},
-		}
-		if outpoints := forfeitOutpoints(s.Intents.Forfeits); len(
-			outpoints,
-		) > 0 {
-
-			outbox = append(outbox, &ReleaseForfeitReservation{
-				Outpoints: outpoints,
-			})
-		}
+		outbox := failureOutbox(
+			reason, timeoutErr, true, fn.None[RoundID](),
+			s.Intents.Forfeits,
+		)
 
 		return &ClientStateTransition{
 			NextState: &ClientFailedState{
@@ -720,13 +738,20 @@ func (s *IntentSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 
 	case *BoardingFailed:
 		// Server rejected the registration or the request timed out.
-		// Transition to failure state.
+		// Roll back any reserved forfeits because no signatures have
+		// been produced at this phase.
 		return &ClientStateTransition{
 			NextState: &ClientFailedState{
 				Reason:      evt.Reason,
 				Error:       evt.Error,
 				Recoverable: evt.Recoverable,
 			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: failureOutbox(
+					evt.Reason, evt.Error, evt.Recoverable,
+					fn.None[RoundID](), s.Intents.Forfeits,
+				),
+			}),
 		}, nil
 
 	default:
@@ -2989,29 +3014,6 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 			Outbox: outbox,
 		}),
 	}, nil
-}
-
-// forfeitOutpoints returns the deduplicated VTXO outpoints carried by the given
-// forfeit requests, skipping any request without an outpoint. Used to release a
-// round's forfeit reservation when the round fails before signing.
-func forfeitOutpoints(requests []types.ForfeitRequest) []wire.OutPoint {
-	seen := make(map[wire.OutPoint]struct{}, len(requests))
-	outpoints := make([]wire.OutPoint, 0, len(requests))
-	for i := range requests {
-		if requests[i].VTXOOutpoint == nil {
-			continue
-		}
-
-		op := *requests[i].VTXOOutpoint
-		if _, ok := seen[op]; ok {
-			continue
-		}
-
-		seen[op] = struct{}{}
-		outpoints = append(outpoints, op)
-	}
-
-	return outpoints
 }
 
 // forfeitRollbackOutpoints splits forfeits into standard wallet reservations

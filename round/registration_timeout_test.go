@@ -167,6 +167,58 @@ func TestRegistrationTimeoutNoForfeitsStillFails(t *testing.T) {
 	)
 }
 
+// TestBoardingFailedRollsBackForfeitReservations verifies that a server-side
+// admission failure releases both normal wallet reservations and custom refresh
+// signer actors before any forfeit signatures are produced.
+func TestBoardingFailedRollsBackForfeitReservations(t *testing.T) {
+	t.Parallel()
+
+	standardOp := regTimeoutOutpoint(0x07, 0)
+	customOp := regTimeoutOutpoint(0x08, 1)
+	s := &IntentSentState{
+		Intents: Intents{
+			Forfeits: []types.ForfeitRequest{
+				mkForfeit(standardOp, 10_000),
+				{
+					VTXOOutpoint: &customOp,
+					Amount:       20_000,
+					AuthSpend: &arkscript.SpendPath{
+						RequiredSequence: 1,
+					},
+					ForfeitSpend: &arkscript.SpendPath{
+						RequiredSequence: 2,
+					},
+				},
+			},
+		},
+	}
+	env := &ClientEnvironment{Log: btclog.Disabled}
+
+	tr, err := s.ProcessEvent(
+		context.Background(), &BoardingFailed{
+			Reason:      "join request invalid",
+			Recoverable: true,
+		}, env,
+	)
+	require.NoError(t, err)
+
+	failed, ok := tr.NextState.(*ClientFailedState)
+	require.True(t, ok, "expected ClientFailedState, got %T", tr.NextState)
+	require.True(t, failed.Recoverable)
+
+	outbox := tr.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
+	_, ok = findOutbox[*RoundFailedNotification](outbox)
+	require.True(t, ok, "expected RoundFailedNotification in outbox")
+
+	release, ok := findOutbox[*ReleaseForfeitReservation](outbox)
+	require.True(t, ok, "expected ReleaseForfeitReservation in outbox")
+	require.Equal(t, []wire.OutPoint{standardOp}, release.Outpoints)
+
+	drop, ok := findOutbox[*DropCustomForfeitReservation](outbox)
+	require.True(t, ok, "expected DropCustomForfeitReservation in outbox")
+	require.Equal(t, []wire.OutPoint{customOp}, drop.Outpoints)
+}
+
 // TestQuoteRejectedRollsBackForfeitReservations verifies that quote rejection
 // happens before forfeit signing and therefore rolls back both standard wallet
 // reservations and custom refresh signer actors.
