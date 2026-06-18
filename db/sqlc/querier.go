@@ -74,7 +74,6 @@ type Querier interface {
 	GetUnilateralExitJob(ctx context.Context, arg GetUnilateralExitJobParams) (UnilateralExitJob, error)
 	GetVHTLCRecoveryJob(ctx context.Context, id string) (VhtlcRecoveryJob, error)
 	GetVHTLCRecoveryJobByRequestID(ctx context.Context, requestID string) (VhtlcRecoveryJob, error)
-	GetVHTLCRecoveryJobBySwapAction(ctx context.Context, arg GetVHTLCRecoveryJobBySwapActionParams) (VhtlcRecoveryJob, error)
 	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
 	// GetVTXOForfeitTx retrieves the persisted forfeit transaction for a VTXO.
 	// Used during recovery to restore the ForfeitingState with its tx.
@@ -198,6 +197,7 @@ type Querier interface {
 	// Unspent requires both spent=false and status!=Spent(4).
 	ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error)
 	ListVHTLCRecoveryJobs(ctx context.Context) ([]VhtlcRecoveryJob, error)
+	ListVHTLCRecoveryJobsBySwapAction(ctx context.Context, arg ListVHTLCRecoveryJobsBySwapActionParams) ([]VhtlcRecoveryJob, error)
 	// ListVTXOAncestryPaths returns the ancestry rows for one VTXO ordered by
 	// path_order so the unroller sees the fragments in the same sequence the
 	// indexer chose at materialization time.
