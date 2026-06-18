@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -17,7 +18,7 @@ import (
 const (
 	// joinRoundAuthMessageVersion is the canonical message encoding version
 	// used for join-round authentication payloads.
-	joinRoundAuthMessageVersion uint64 = 2
+	joinRoundAuthMessageVersion uint64 = 3
 
 	// joinRoundAuthDomainTag domain-separates join request authentication
 	// payloads from other signed messages.
@@ -35,8 +36,10 @@ const (
 )
 
 const (
-	joinRoundAuthOutPointHashRecordType  tlv.Type = 1
-	joinRoundAuthOutPointIndexRecordType tlv.Type = 2
+	joinRoundAuthOutPointHashRecordType        tlv.Type = 1
+	joinRoundAuthOutPointIndexRecordType       tlv.Type = 2
+	joinRoundAuthForfeitAuthSpendRecordType    tlv.Type = 3
+	joinRoundAuthForfeitForfeitSpendRecordType tlv.Type = 4
 )
 
 const (
@@ -104,7 +107,7 @@ type JoinRoundAuth struct {
 //	+-------+-------------------------------------------+
 //	| type  | field                                     |
 //	+-------+-------------------------------------------+
-//	|   1   | version   (uint64, currently 1)           |
+//	|   1   | version   (uint64, currently 3)           |
 //	|   2   | domain    ("darepo-join-round-auth")      |
 //	|   3   | identifier (33-byte compressed pubkey)    |
 //	|   4   | boarding  (blob list)                     |
@@ -130,6 +133,7 @@ type JoinRoundAuth struct {
 // Forfeit entry TLV:
 //
 //	1: outpoint hash  |  2: outpoint index
+//	3: auth spend     |  4: forfeit spend
 //
 // Leave entry TLV:
 //
@@ -607,8 +611,10 @@ func decodeJoinAuthForfeitRequests(raw []byte) ([]*ForfeitRequest, error) {
 // decodeJoinAuthForfeitRequest parses one forfeit request entry.
 func decodeJoinAuthForfeitRequest(raw []byte) (*ForfeitRequest, error) {
 	var (
-		hash  []byte
-		index uint64
+		hash         []byte
+		index        uint64
+		authSpend    []byte
+		forfeitSpend []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -617,6 +623,13 @@ func decodeJoinAuthForfeitRequest(raw []byte) (*ForfeitRequest, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthOutPointIndexRecordType, &index,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthForfeitAuthSpendRecordType, &authSpend,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthForfeitForfeitSpendRecordType,
+			&forfeitSpend,
 		),
 	)
 	if err != nil {
@@ -654,8 +667,21 @@ func decodeJoinAuthForfeitRequest(raw []byte) (*ForfeitRequest, error) {
 		return nil, err
 	}
 
+	authPath, err := decodeJoinAuthSpendPath("auth spend", authSpend)
+	if err != nil {
+		return nil, err
+	}
+	forfeitPath, err := decodeJoinAuthSpendPath(
+		"forfeit spend", forfeitSpend,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &ForfeitRequest{
 		VTXOOutpoint: outpoint,
+		AuthSpend:    authPath,
+		ForfeitSpend: forfeitPath,
 	}, nil
 }
 
@@ -979,16 +1005,72 @@ func encodeJoinAuthForfeitRequest(req *ForfeitRequest) ([]byte, error) {
 		return nil, fmt.Errorf("outpoint: %w", err)
 	}
 
-	records := []tlv.Record{
-		tlv.MakePrimitiveRecord(
+	records := make([]tlv.Record, 0, 4)
+	records = append(
+		records, tlv.MakePrimitiveRecord(
 			joinRoundAuthOutPointHashRecordType, &hash,
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthOutPointIndexRecordType, &index,
 		),
+	)
+
+	if req.AuthSpend != nil {
+		authSpend, err := encodeJoinAuthSpendPath(req.AuthSpend)
+		if err != nil {
+			return nil, fmt.Errorf("auth spend: %w", err)
+		}
+
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				joinRoundAuthForfeitAuthSpendRecordType,
+				&authSpend,
+			),
+		)
+	}
+	if req.ForfeitSpend != nil {
+		forfeitSpend, err := encodeJoinAuthSpendPath(req.ForfeitSpend)
+		if err != nil {
+			return nil, fmt.Errorf("forfeit spend: %w", err)
+		}
+
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				joinRoundAuthForfeitForfeitSpendRecordType,
+				&forfeitSpend,
+			),
+		)
 	}
 
 	return encodeJoinAuthTLV(records)
+}
+
+// encodeJoinAuthSpendPath serializes an optional custom spend path for
+// join-auth binding.
+func encodeJoinAuthSpendPath(path *arkscript.SpendPath) ([]byte, error) {
+	encoded, err := path.Encode()
+	if err != nil {
+		return nil, err
+	}
+
+	return encoded, nil
+}
+
+// decodeJoinAuthSpendPath parses an optional custom spend path from a
+// join-auth forfeit entry.
+func decodeJoinAuthSpendPath(label string,
+	raw []byte) (*arkscript.SpendPath, error) {
+
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	path, err := arkscript.DecodeSpendPath(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode %s: %w", label, err)
+	}
+
+	return path, nil
 }
 
 // encodeJoinAuthLeaveRequests serializes leave outputs in request order.

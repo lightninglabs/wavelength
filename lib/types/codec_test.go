@@ -30,6 +30,45 @@ func TestJoinRoundAuthMessageDeterministic(t *testing.T) {
 	require.Equal(t, first, second)
 }
 
+// TestJoinRoundAuthMessageBindsForfeitSpendPaths asserts custom forfeit spend
+// paths are part of the canonical signed message.
+func TestJoinRoundAuthMessageBindsForfeitSpendPaths(t *testing.T) {
+	t.Parallel()
+
+	req := testJoinRoundAuthRequest(t)
+	baseline, err := JoinRoundAuthMessage(req)
+	require.NoError(t, err)
+
+	withoutAuthSpend := copyJoinRoundAuthRequestWithForfeit(req, func(
+		req *ForfeitRequest) {
+
+		req.AuthSpend = nil
+	})
+	authChanged, err := JoinRoundAuthMessage(withoutAuthSpend)
+	require.NoError(t, err)
+	require.NotEqual(t, baseline, authChanged)
+
+	withoutForfeitSpend := copyJoinRoundAuthRequestWithForfeit(req, func(
+		req *ForfeitRequest) {
+
+		req.ForfeitSpend = nil
+	})
+	forfeitChanged, err := JoinRoundAuthMessage(withoutForfeitSpend)
+	require.NoError(t, err)
+	require.NotEqual(t, baseline, forfeitChanged)
+
+	withDifferentForfeitSpend := copyJoinRoundAuthRequestWithForfeit(req,
+		func(req *ForfeitRequest) {
+			path := *req.ForfeitSpend
+			path.RequiredSequence--
+			req.ForfeitSpend = &path
+		},
+	)
+	differentForfeit, err := JoinRoundAuthMessage(withDifferentForfeitSpend)
+	require.NoError(t, err)
+	require.NotEqual(t, baseline, differentForfeit)
+}
+
 // TestDecodeJoinRoundAuthMessageRoundTrip asserts decode reconstructs join
 // requests from canonical message bytes.
 func TestDecodeJoinRoundAuthMessageRoundTrip(t *testing.T) {
@@ -335,6 +374,12 @@ func requireJoinRoundAuthRequestEqual(t *testing.T, expected *JoinRoundRequest,
 		require.Equal(
 			t, *expectedReq.VTXOOutpoint, *actualReq.VTXOOutpoint,
 		)
+		requireSpendPathEqual(
+			t, expectedReq.AuthSpend, actualReq.AuthSpend,
+		)
+		requireSpendPathEqual(
+			t, expectedReq.ForfeitSpend, actualReq.ForfeitSpend,
+		)
 	}
 
 	require.Len(t, actual.LeaveReqs, len(expected.LeaveReqs))
@@ -355,6 +400,44 @@ func requireJoinRoundAuthRequestEqual(t *testing.T, expected *JoinRoundRequest,
 			actualReq.Output.PkScript,
 		)
 	}
+}
+
+// requireSpendPathEqual asserts two spend paths have the same canonical binary
+// encoding.
+func requireSpendPathEqual(t *testing.T,
+	expected, actual *arkscript.SpendPath) {
+
+	t.Helper()
+
+	if expected == nil {
+		require.Nil(t, actual)
+
+		return
+	}
+
+	require.NotNil(t, actual)
+
+	expectedBytes, err := expected.Encode()
+	require.NoError(t, err)
+
+	actualBytes, err := actual.Encode()
+	require.NoError(t, err)
+	require.Equal(t, expectedBytes, actualBytes)
+}
+
+// copyJoinRoundAuthRequestWithForfeit returns a shallow request copy with a
+// copied first forfeit request mutated by update.
+func copyJoinRoundAuthRequestWithForfeit(req *JoinRoundRequest,
+	update func(*ForfeitRequest)) *JoinRoundRequest {
+
+	copied := *req
+	forfeit := *req.ForfeitReqs[0]
+	update(&forfeit)
+	copied.ForfeitReqs = []*ForfeitRequest{
+		&forfeit,
+	}
+
+	return &copied
 }
 
 // testJoinAuthBlobListCountOnly serializes only the list count varint for
@@ -452,6 +535,24 @@ func testJoinRoundAuthRequest(t *testing.T) *JoinRoundRequest {
 
 	req.VTXOReqs[0].PkScript, err = req.VTXOReqs[0].EffectivePkScript()
 	require.NoError(t, err)
+
+	policy, err := arkscript.NewVTXOPolicy(clientKey, operatorKey, 144)
+	require.NoError(t, err)
+
+	authSpend, err := policy.CollabSpendInfo()
+	require.NoError(t, err)
+
+	forfeitSpend, err := policy.ExitSpendInfo()
+	require.NoError(t, err)
+
+	req.ForfeitReqs[0].AuthSpend = &arkscript.SpendPath{
+		SpendInfo:        authSpend,
+		RequiredSequence: wire.MaxTxInSequenceNum,
+	}
+	req.ForfeitReqs[0].ForfeitSpend = &arkscript.SpendPath{
+		SpendInfo:        forfeitSpend,
+		RequiredSequence: policy.ExitDelay,
+	}
 
 	return req
 }
