@@ -1903,7 +1903,8 @@ func parseCustomRefreshOutput(index int,
 		PolicyTemplate: append(
 			[]byte(nil), output.GetVtxoPolicyTemplate()...,
 		),
-		PkScript: append([]byte(nil), pkScript...),
+		PkScript:    append([]byte(nil), pkScript...),
+		FixedAmount: output.GetFixedAmount(),
 	}, nil
 }
 

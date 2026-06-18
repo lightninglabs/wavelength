@@ -67,6 +67,20 @@ func TestRefreshCustomVTXOsDryRunDoesNotRequireWalletReady(t *testing.T) {
 	)
 }
 
+// TestBuildCustomRefreshRequestPreservesFixedAmount verifies the RPC boundary
+// carries the contract-output amount-safety bit into wallet admission.
+func TestBuildCustomRefreshRequestPreservesFixedAmount(t *testing.T) {
+	t.Parallel()
+
+	req := newCustomRefreshRPCRequest(t)
+	req.Outputs[0].FixedAmount = true
+
+	_, outputs, _, err := buildCustomRefreshRequest(req)
+	require.NoError(t, err)
+	require.Len(t, outputs, 1)
+	require.True(t, outputs[0].FixedAmount)
+}
+
 // TestRefreshCustomVTXOsRejectsMismatchedMetadata pins the RPC's local
 // signature-oracle boundary. A caller may supply custom VTXOs that are not in
 // the wallet store, but each semantic policy must still compile to the claimed

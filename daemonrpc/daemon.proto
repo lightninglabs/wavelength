@@ -138,7 +138,10 @@ service DaemonService {
     // signatures for one pending connector-bound forfeit signing request. The
     // request_id must be copied from the listed pending request; the daemon
     // uses it to wake the blocked VTXO actor that is waiting for that exact
-    // round-assigned forfeit transaction.
+    // round-assigned forfeit transaction. If the selected spend path requires
+    // no external participant keys after removing the local VTXO key and the
+    // operator key, callers may submit an empty signature set to acknowledge
+    // and unblock the request.
     rpc SubmitForfeitParticipantSignatures (
         SubmitForfeitParticipantSignaturesRequest)
         returns (SubmitForfeitParticipantSignaturesResponse);
@@ -1246,6 +1249,11 @@ message CustomRefreshVTXOOutput {
     // pk_script optionally pins the replacement output script. When supplied,
     // it must match vtxo_policy_template.
     bytes pk_script = 3;
+
+    // fixed_amount requires the refresh round quote to preserve amount_sat
+    // exactly. Contract outputs such as vHTLC replacements should set this so
+    // refresh fees cannot be paid by shrinking the replacement output.
+    bool fixed_amount = 4;
 }
 
 message RefreshCustomVTXOsRequest {
@@ -1270,7 +1278,11 @@ message RefreshCustomVTXOsResponse {
 }
 
 // PendingForfeitParticipantSignatureRequest is the exact transcript an
-// external participant must validate and sign for a custom refresh forfeit.
+// external coordinator must validate for a custom refresh forfeit. If the
+// selected spend path includes an external participant key, the coordinator
+// must sign this transcript and submit the signature. If it only needs the
+// daemon-local key plus the operator key, the coordinator can submit an empty
+// signature set to authorize the request.
 message PendingForfeitParticipantSignatureRequest {
     // request_id is a stable digest over this transcript. Submitters must echo
     // it in SubmitForfeitParticipantSignatures so the daemon can wake the
@@ -1351,10 +1363,10 @@ message SubmitForfeitParticipantSignaturesRequest {
     // ListPendingForfeitParticipantSignatureRequests.
     bytes request_id = 1;
 
-    // signatures contains one or more participant signatures needed by the
-    // custom policy path. Supplying extra signatures is harmless only if they
-    // match keys in the selected spend path; unknown keys are ignored by the
-    // witness assembler.
+    // signatures contains the external participant signatures needed by the
+    // custom policy path. It may be empty when the listed request's selected
+    // spend path needs no external keys after excluding the daemon-local VTXO
+    // key and the operator key. Extra or unknown keys are rejected.
     repeated ForfeitParticipantSignature signatures = 2;
 }
 

@@ -228,6 +228,12 @@ type VTXORequest struct {
 	// fee-bearing change output.
 	IsChange bool
 
+	// FixedAmount requires the operator quote to preserve Amount exactly.
+	// It is used for contract outputs where shrinking the replacement
+	// output would invalidate the higher-level protocol. A fixed single
+	// output is not eligible for the implicit-change exception.
+	FixedAmount bool
+
 	// PolicyTemplate is the semantic arkscript policy for the requested
 	// output. This is the authoritative join-round representation.
 	PolicyTemplate []byte

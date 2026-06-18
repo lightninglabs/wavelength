@@ -169,7 +169,10 @@ type DaemonServiceClient interface {
 	// signatures for one pending connector-bound forfeit signing request. The
 	// request_id must be copied from the listed pending request; the daemon
 	// uses it to wake the blocked VTXO actor that is waiting for that exact
-	// round-assigned forfeit transaction.
+	// round-assigned forfeit transaction. If the selected spend path requires
+	// no external participant keys after removing the local VTXO key and the
+	// operator key, callers may submit an empty signature set to acknowledge
+	// and unblock the request.
 	SubmitForfeitParticipantSignatures(ctx context.Context, in *SubmitForfeitParticipantSignaturesRequest, opts ...grpc.CallOption) (*SubmitForfeitParticipantSignaturesResponse, error)
 	// LeaveVTXOs queues one or more VTXOs for cooperative leave
 	// (offboard) in the next round. Each VTXO is forfeited and the
@@ -828,7 +831,10 @@ type DaemonServiceServer interface {
 	// signatures for one pending connector-bound forfeit signing request. The
 	// request_id must be copied from the listed pending request; the daemon
 	// uses it to wake the blocked VTXO actor that is waiting for that exact
-	// round-assigned forfeit transaction.
+	// round-assigned forfeit transaction. If the selected spend path requires
+	// no external participant keys after removing the local VTXO key and the
+	// operator key, callers may submit an empty signature set to acknowledge
+	// and unblock the request.
 	SubmitForfeitParticipantSignatures(context.Context, *SubmitForfeitParticipantSignaturesRequest) (*SubmitForfeitParticipantSignaturesResponse, error)
 	// LeaveVTXOs queues one or more VTXOs for cooperative leave
 	// (offboard) in the next round. Each VTXO is forfeited and the

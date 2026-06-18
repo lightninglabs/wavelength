@@ -1132,18 +1132,19 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 			len(intents.Leaves)), false
 	}
 
-	// When the intent carries exactly one output across the combined
-	// VTXORequests + LeaveRequests, the server treats that sole output
-	// as implicit change and stamps the residual on it without requiring
-	// IsChange=true on the wire (#270, see the server's
+	// When the intent carries exactly one non-fixed output across the
+	// combined VTXORequests + LeaveRequests, the server treats that sole
+	// output as implicit change and stamps the residual on it without
+	// requiring IsChange=true on the wire (#270, see the server's
 	// resolveChangeDesignation). Its intent Amount is only a target or
 	// lower-bound hint in boarding / leave flows; the honest quote can
 	// therefore be above or below that target depending on the realised
 	// seal-time fee and input value. Do not enforce amount equality here:
 	// realisedQuoteFee below is the authoritative security check, because
 	// it verifies the actual signed outputs imply the quoted, capped fee.
+	// FixedAmount disables this exception for contract outputs.
 	totalOutputs := len(intents.VTXOs) + len(intents.Leaves)
-	implicitChange := totalOutputs == 1
+	implicitChange := totalOutputs == 1 && !singleOutputFixed(intents)
 
 	for i := range intents.VTXOs {
 		vtxoReq := intents.VTXOs[i]
@@ -1211,6 +1212,16 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 	}
 
 	return "", true
+}
+
+// singleOutputFixed reports whether a one-output intent carries a fixed VTXO
+// request. Leave outputs do not currently have fixed-amount metadata.
+func singleOutputFixed(intents Intents) bool {
+	if len(intents.VTXOs) != 1 || len(intents.Leaves) != 0 {
+		return false
+	}
+
+	return intents.VTXOs[0].FixedAmount
 }
 
 // ProcessEvent for QuoteReceivedState.

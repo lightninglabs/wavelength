@@ -505,6 +505,7 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 		req := types.VTXORequest{
 			Amount:         btcutil.Amount(vr.TargetAmountSat),
 			IsChange:       vr.IsChange,
+			FixedAmount:    vr.FixedAmount,
 			PolicyTemplate: bytes.Clone(vr.PolicyTemplate),
 		}
 

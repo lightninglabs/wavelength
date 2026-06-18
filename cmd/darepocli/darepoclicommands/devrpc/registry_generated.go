@@ -181,7 +181,7 @@ func generatedRegistry() []serviceSpec {
 					Aliases:  []string{"submit-forfeit-participant-signatures"},
 					Input:    "daemonrpc.SubmitForfeitParticipantSignaturesRequest",
 					Output:   "daemonrpc.SubmitForfeitParticipantSignaturesResponse",
-					Comments: "SubmitForfeitParticipantSignatures supplies external participant\nsignatures for one pending connector-bound forfeit signing request. The\nrequest_id must be copied from the listed pending request; the daemon\nuses it to wake the blocked VTXO actor that is waiting for that exact\nround-assigned forfeit transaction.",
+					Comments: "SubmitForfeitParticipantSignatures supplies external participant\nsignatures for one pending connector-bound forfeit signing request. The\nrequest_id must be copied from the listed pending request; the daemon\nuses it to wake the blocked VTXO actor that is waiting for that exact\nround-assigned forfeit transaction. If the selected spend path requires\nno external participant keys after removing the local VTXO key and the\noperator key, callers may submit an empty signature set to acknowledge\nand unblock the request.",
 				},
 				{
 					Name:     "LeaveVTXOs",

@@ -1752,9 +1752,10 @@ func (a *Ark) handleRefreshCustomVTXOs(ctx context.Context,
 			PolicyTemplate: append(
 				[]byte(nil), output.PolicyTemplate...,
 			),
-			PkScript: append([]byte(nil), output.PkScript...),
-			Amount:   output.Amount,
-			Origin:   types.VTXOOriginRoundRefresh,
+			PkScript:    append([]byte(nil), output.PkScript...),
+			Amount:      output.Amount,
+			FixedAmount: output.FixedAmount,
+			Origin:      types.VTXOOriginRoundRefresh,
 		})
 	}
 

@@ -4572,7 +4572,11 @@ type CustomRefreshVTXOOutput struct {
 	VtxoPolicyTemplate []byte `protobuf:"bytes,2,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
 	// pk_script optionally pins the replacement output script. When supplied,
 	// it must match vtxo_policy_template.
-	PkScript      []byte `protobuf:"bytes,3,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
+	PkScript []byte `protobuf:"bytes,3,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
+	// fixed_amount requires the refresh round quote to preserve amount_sat
+	// exactly. Contract outputs such as vHTLC replacements should set this so
+	// refresh fees cannot be paid by shrinking the replacement output.
+	FixedAmount   bool `protobuf:"varint,4,opt,name=fixed_amount,json=fixedAmount,proto3" json:"fixed_amount,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4626,6 +4630,13 @@ func (x *CustomRefreshVTXOOutput) GetPkScript() []byte {
 		return x.PkScript
 	}
 	return nil
+}
+
+func (x *CustomRefreshVTXOOutput) GetFixedAmount() bool {
+	if x != nil {
+		return x.FixedAmount
+	}
+	return false
 }
 
 type RefreshCustomVTXOsRequest struct {
@@ -4748,7 +4759,11 @@ func (x *RefreshCustomVTXOsResponse) GetStatus() string {
 }
 
 // PendingForfeitParticipantSignatureRequest is the exact transcript an
-// external participant must validate and sign for a custom refresh forfeit.
+// external coordinator must validate for a custom refresh forfeit. If the
+// selected spend path includes an external participant key, the coordinator
+// must sign this transcript and submit the signature. If it only needs the
+// daemon-local key plus the operator key, the coordinator can submit an empty
+// signature set to authorize the request.
 type PendingForfeitParticipantSignatureRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// request_id is a stable digest over this transcript. Submitters must echo
@@ -5091,10 +5106,10 @@ type SubmitForfeitParticipantSignaturesRequest struct {
 	// answered. It must match a request_id previously returned by
 	// ListPendingForfeitParticipantSignatureRequests.
 	RequestId []byte `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	// signatures contains one or more participant signatures needed by the
-	// custom policy path. Supplying extra signatures is harmless only if they
-	// match keys in the selected spend path; unknown keys are ignored by the
-	// witness assembler.
+	// signatures contains the external participant signatures needed by the
+	// custom policy path. It may be empty when the listed request's selected
+	// spend path needs no external keys after excluding the daemon-local VTXO
+	// key and the operator key. Extra or unknown keys are rejected.
 	Signatures    []*ForfeitParticipantSignature `protobuf:"bytes,2,rep,name=signatures,proto3" json:"signatures,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -9588,12 +9603,13 @@ const file_daemon_proto_rawDesc = "" +
 	"\x14vtxo_policy_template\x18\x04 \x01(\fR\x12vtxoPolicyTemplate\x12&\n" +
 	"\x0fauth_spend_path\x18\x05 \x01(\fR\rauthSpendPath\x12,\n" +
 	"\x12forfeit_spend_path\x18\x06 \x01(\fR\x10forfeitSpendPath\x12X\n" +
-	"\x17forfeit_signing_context\x18\a \x01(\v2 .daemonrpc.ForfeitSigningContextR\x15forfeitSigningContext\"\x87\x01\n" +
+	"\x17forfeit_signing_context\x18\a \x01(\v2 .daemonrpc.ForfeitSigningContextR\x15forfeitSigningContext\"\xaa\x01\n" +
 	"\x17CustomRefreshVTXOOutput\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x120\n" +
 	"\x14vtxo_policy_template\x18\x02 \x01(\fR\x12vtxoPolicyTemplate\x12\x1b\n" +
-	"\tpk_script\x18\x03 \x01(\fR\bpkScript\"\xad\x01\n" +
+	"\tpk_script\x18\x03 \x01(\fR\bpkScript\x12!\n" +
+	"\ffixed_amount\x18\x04 \x01(\bR\vfixedAmount\"\xad\x01\n" +
 	"\x19RefreshCustomVTXOsRequest\x129\n" +
 	"\x06inputs\x18\x01 \x03(\v2!.daemonrpc.CustomRefreshVTXOInputR\x06inputs\x12<\n" +
 	"\aoutputs\x18\x02 \x03(\v2\".daemonrpc.CustomRefreshVTXOOutputR\aoutputs\x12\x17\n" +

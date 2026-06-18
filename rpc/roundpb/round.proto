@@ -307,6 +307,12 @@ message VTXORequest {
     // marked as change; that opts the recipient into "subtract
     // fee from send amount" semantics.
     bool is_change = 4;
+
+    // fixed_amount requires the server quote to preserve target_amount_sat
+    // exactly. When this is set on a single-output intent, the single-output
+    // implicit-change exception is disabled and the intent must include a
+    // separate fee-bearing change output if fees need to be paid.
+    bool fixed_amount = 5;
 }
 
 // ForfeitRequest specifies a VTXO the client wants to forfeit.

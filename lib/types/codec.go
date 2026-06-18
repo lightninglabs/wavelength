@@ -44,10 +44,11 @@ const (
 )
 
 const (
-	joinRoundAuthVTXOAmountRecordType     tlv.Type = 1
-	joinRoundAuthVTXOPolicyRecordType     tlv.Type = 2
-	joinRoundAuthVTXOSigningKeyRecordType tlv.Type = 3
-	joinRoundAuthVTXOIsChangeRecordType   tlv.Type = 4
+	joinRoundAuthVTXOAmountRecordType      tlv.Type = 1
+	joinRoundAuthVTXOPolicyRecordType      tlv.Type = 2
+	joinRoundAuthVTXOSigningKeyRecordType  tlv.Type = 3
+	joinRoundAuthVTXOIsChangeRecordType    tlv.Type = 4
+	joinRoundAuthVTXOFixedAmountRecordType tlv.Type = 5
 )
 
 const (
@@ -492,6 +493,7 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		policy     []byte
 		signingKey []byte
 		isChange   uint8
+		fixedAmt   uint8
 	)
 
 	stream, err := tlv.NewStream(
@@ -506,6 +508,9 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthVTXOIsChangeRecordType, &isChange,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthVTXOFixedAmountRecordType, &fixedAmt,
 		),
 	)
 	if err != nil {
@@ -560,6 +565,7 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 	req := &VTXORequest{
 		Amount:         btcutil.Amount(amount),
 		IsChange:       isChange != 0,
+		FixedAmount:    fixedAmt != 0,
 		PolicyTemplate: bytes.Clone(policy),
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingPubKey,
@@ -918,6 +924,10 @@ func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
 	if req.IsChange {
 		isChange = 1
 	}
+	fixedAmt := uint8(0)
+	if req.FixedAmount {
+		fixedAmt = 1
+	}
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -931,6 +941,9 @@ func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthVTXOIsChangeRecordType, &isChange,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthVTXOFixedAmountRecordType, &fixedAmt,
 		),
 	}
 

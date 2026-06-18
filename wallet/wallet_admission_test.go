@@ -671,6 +671,7 @@ func TestCustomRefreshActivatesSignerWithoutLiveReservation(t *testing.T) {
 			Amount:         41_000,
 			PolicyTemplate: policyTemplate,
 			PkScript:       pkScript,
+			FixedAmount:    true,
 		}},
 	})
 	require.True(t, result.IsOk(), "expected ok, got: %v",
@@ -737,6 +738,7 @@ func TestCustomRefreshActivatesSignerWithoutLiveReservation(t *testing.T) {
 	require.Equal(t, btcutil.Amount(41_000), intent.VTXOs[0].Amount)
 	require.Equal(t, policyTemplate, intent.VTXOs[0].PolicyTemplate)
 	require.Equal(t, pkScript, intent.VTXOs[0].PkScript)
+	require.True(t, intent.VTXOs[0].FixedAmount)
 	require.Equal(t, types.VTXOOriginRoundRefresh, intent.VTXOs[0].Origin)
 	require.Nil(t, intent.VTXOs[0].OwnerKey.PubKey)
 }

@@ -1127,7 +1127,12 @@ type VTXORequest struct {
 	// treated as implicit). A directed-send VTXORequest may be
 	// marked as change; that opts the recipient into "subtract
 	// fee from send amount" semantics.
-	IsChange      bool `protobuf:"varint,4,opt,name=is_change,json=isChange,proto3" json:"is_change,omitempty"`
+	IsChange bool `protobuf:"varint,4,opt,name=is_change,json=isChange,proto3" json:"is_change,omitempty"`
+	// fixed_amount requires the server quote to preserve target_amount_sat
+	// exactly. When this is set on a single-output intent, the single-output
+	// implicit-change exception is disabled and the intent must include a
+	// separate fee-bearing change output if fees need to be paid.
+	FixedAmount   bool `protobuf:"varint,5,opt,name=fixed_amount,json=fixedAmount,proto3" json:"fixed_amount,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1186,6 +1191,13 @@ func (x *VTXORequest) GetSigningKey() []byte {
 func (x *VTXORequest) GetIsChange() bool {
 	if x != nil {
 		return x.IsChange
+	}
+	return false
+}
+
+func (x *VTXORequest) GetFixedAmount() bool {
+	if x != nil {
+		return x.FixedAmount
 	}
 	return false
 }
@@ -2626,13 +2638,14 @@ const file_round_proto_rawDesc = "" +
 	"\x0fBoardingRequest\x12.\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\boutpoint\x12'\n" +
 	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x19\n" +
-	"\btx_proof\x18\x03 \x01(\fR\atxProof\"\xa0\x01\n" +
+	"\btx_proof\x18\x03 \x01(\fR\atxProof\"\xc3\x01\n" +
 	"\vVTXORequest\x12*\n" +
 	"\x11target_amount_sat\x18\x01 \x01(\x03R\x0ftargetAmountSat\x12'\n" +
 	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x1f\n" +
 	"\vsigning_key\x18\x03 \x01(\fR\n" +
 	"signingKey\x12\x1b\n" +
-	"\tis_change\x18\x04 \x01(\bR\bisChange\"\x9f\x01\n" +
+	"\tis_change\x18\x04 \x01(\bR\bisChange\x12!\n" +
+	"\ffixed_amount\x18\x05 \x01(\bR\vfixedAmount\"\x9f\x01\n" +
 	"\x0eForfeitRequest\x127\n" +
 	"\rvtxo_outpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\fvtxoOutpoint\x12&\n" +
 	"\x0fauth_spend_path\x18\x02 \x01(\fR\rauthSpendPath\x12,\n" +

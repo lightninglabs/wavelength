@@ -1100,6 +1100,27 @@ func TestEvaluateQuoteEchoRejectsSingleVTXOUnderpayment(t *testing.T) {
 	)
 }
 
+// TestEvaluateQuoteEchoRejectsFixedSingleVTXOAmountChange verifies contract
+// outputs can opt out of the single-output implicit-change rule. A fixed
+// replacement vHTLC must either be quoted at its exact amount or the round must
+// be rejected before any forfeit is signed.
+func TestEvaluateQuoteEchoRejectsFixedSingleVTXOAmountChange(t *testing.T) {
+	t.Parallel()
+
+	intents := buildSingleVTXOIntents(t)
+	intents.VTXOs[0].FixedAmount = true
+
+	quote := quoteFromSingleVTXOWithFee(t, intents, 2_500)
+
+	env := quoteReceivedTestEnv(10_000)
+	decision := evaluateQuote(
+		context.Background(), env, RoundID{}, intents, quote,
+	)
+	rej, ok := decision.(*QuoteRejected)
+	require.True(t, ok, "fixed single vtxo amount change must reject")
+	require.Contains(t, rej.Reason, "non-change amount")
+}
+
 // TestEvaluateQuoteEchoRejectsSingleLeaveUnderpayment is the leave-
 // channel mirror of the #378 regression. A single-output offboard
 // that the server shaves beyond the quoted operator fee must reject.

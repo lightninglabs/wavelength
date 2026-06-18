@@ -464,6 +464,11 @@ type CustomRefreshOutput struct {
 
 	// PkScript optionally pins the replacement VTXO script.
 	PkScript []byte
+
+	// FixedAmount requires the refresh round quote to preserve Amount
+	// exactly. This is for contract outputs, such as vHTLCs, where
+	// paying refresh fees by shrinking the replacement output is unsafe.
+	FixedAmount bool
 }
 
 // RefreshCustomVTXOsRequest queues custom-policy VTXOs for refresh in the next

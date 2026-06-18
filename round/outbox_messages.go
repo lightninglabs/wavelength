@@ -323,6 +323,7 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		vr := &roundpb.VTXORequest{
 			TargetAmountSat: int64(req.Amount),
 			IsChange:        req.IsChange,
+			FixedAmount:     req.FixedAmount,
 			PolicyTemplate:  policyTemplate,
 		}
 		if req.SigningKey.PubKey != nil {

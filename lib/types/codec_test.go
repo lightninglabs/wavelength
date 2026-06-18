@@ -311,6 +311,7 @@ func requireJoinRoundAuthRequestEqual(t *testing.T, expected *JoinRoundRequest,
 		require.NotNil(t, actualReq)
 
 		require.Equal(t, expectedReq.Amount, actualReq.Amount)
+		require.Equal(t, expectedReq.FixedAmount, actualReq.FixedAmount)
 		require.Equal(
 			t, expectedReq.PolicyTemplate, actualReq.PolicyTemplate,
 		)
@@ -413,6 +414,7 @@ func testJoinRoundAuthRequest(t *testing.T) *JoinRoundRequest {
 				SigningKey: keychain.KeyDescriptor{
 					PubKey: signingKey,
 				},
+				FixedAmount: true,
 			},
 		},
 		ForfeitReqs: []*ForfeitRequest{
