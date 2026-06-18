@@ -1,6 +1,6 @@
 module github.com/lightninglabs/darepo-client
 
-go 1.25.5
+go 1.25.10
 
 // Use the forked migrate with custom functionality.
 replace github.com/golang-migrate/migrate/v4 => github.com/lightninglabs/migrate/v4 v4.18.2-9023d66a-fork-pr-2
@@ -33,7 +33,7 @@ require (
 	github.com/lightningnetwork/lnd v0.21.0-beta.rc1
 	github.com/lightningnetwork/lnd/clock v1.1.1
 	github.com/lightningnetwork/lnd/fn/v2 v2.0.9
-	github.com/lightningnetwork/lnd/kvdb v1.4.16
+	github.com/lightningnetwork/lnd/kvdb v1.5.1
 	github.com/lightningnetwork/lnd/tlv v1.3.2
 	github.com/modelcontextprotocol/go-sdk v1.4.0
 	github.com/ory/dockertest/v3 v3.12.0
