@@ -15,9 +15,11 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/swaprpc"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -325,25 +327,30 @@ func TestReceiveSessionSkipsServerAckForSameArkHTLCEvent(t *testing.T) {
 }
 
 type testSwapServerConn struct {
-	hint           *RouteHint
-	payerFeeMsat   uint64
-	cfg            *VHTLCConfig
-	htlcAmountSat  uint64
-	waitErr        error
-	ackErr         error
-	ackErrs        []error
-	serverAckErr   error
-	serverAckErrs  []error
-	ackCursor      uint64
-	waitCalls      int
-	ackCalls       int
-	serverAckCalls int
-	lastAckCursor  uint64
+	hint            *RouteHint
+	payerFeeMsat    uint64
+	cfg             *VHTLCConfig
+	htlcAmountSat   uint64
+	recoverableRows []*swaprpc.RecoverableSwap
+	waitErr         error
+	ackErr          error
+	recoverableErr  error
+	ackErrs         []error
+	serverAckErr    error
+	serverAckErrs   []error
+	ackCursor       uint64
+	waitCalls       int
+	ackCalls        int
+	serverAckCalls  int
+	lastAckCursor   uint64
 
-	lastVhtlcPubkey     *btcec.PublicKey
-	lastAmountSat       btcutil.Amount
-	lastServerAckHash   lntypes.Hash
-	lastServerAckPubkey *btcec.PublicKey
+	lastVhtlcPubkey      *btcec.PublicKey
+	lastAmountSat        btcutil.Amount
+	lastOwnerProof       *swaprpc.SwapOwnerProof
+	lastRecoveryBlob     []byte
+	lastServerAckHash    lntypes.Hash
+	lastServerAckPubkey  *btcec.PublicKey
+	lastRecoverableProof *swaprpc.SwapOwnerProof
 }
 
 type testIncomingEventReceiver struct {
@@ -390,10 +397,13 @@ func (r *testIncomingEventReceiver) WaitIncomingVHTLC(context.Context,
 // RequestChannelID returns the preconfigured out-swap route hint.
 func (c *testSwapServerConn) RequestChannelID(_ context.Context,
 	vhtlcPubkey *btcec.PublicKey, _ lntypes.Hash, amountSat btcutil.Amount,
-	_ uint32) (*OutSwapQuote, error) {
+	_ uint32, ownerProof *swaprpc.SwapOwnerProof,
+	encryptedRecoveryBlob []byte) (*OutSwapQuote, error) {
 
 	c.lastVhtlcPubkey = vhtlcPubkey
 	c.lastAmountSat = amountSat
+	c.lastOwnerProof = ownerProof
+	c.lastRecoveryBlob = append([]byte(nil), encryptedRecoveryBlob...)
 
 	return &OutSwapQuote{
 		RouteHint:        c.hint,
@@ -471,9 +481,21 @@ func (c *testSwapServerConn) AcknowledgeOutSwapHTLC(_ context.Context,
 
 // CreateInSwap is unused in these tests.
 func (c *testSwapServerConn) CreateInSwap(context.Context, string, uint64,
-	*btcec.PublicKey) (*InSwapConfig, error) {
+	*btcec.PublicKey, *swaprpc.SwapOwnerProof) (*InSwapConfig, error) {
 
 	return nil, nil
+}
+
+// ListRecoverableSwaps returns the configured recoverable swap rows.
+func (c *testSwapServerConn) ListRecoverableSwaps(_ context.Context,
+	proof *swaprpc.SwapOwnerProof) ([]*swaprpc.RecoverableSwap, error) {
+
+	c.lastRecoverableProof = proof
+	if c.recoverableErr != nil {
+		return nil, c.recoverableErr
+	}
+
+	return append([]*swaprpc.RecoverableSwap(nil), c.recoverableRows...), nil
 }
 
 // QuoteInSwap is unused in these tests.
@@ -992,6 +1014,7 @@ func TestWaitForVHTLCExpiresOnPersistentUnregisteredScript(t *testing.T) {
 }
 
 type testDaemonConn struct {
+	identityPriv      *btcec.PrivateKey
 	identityKey       *btcec.PublicKey
 	operatorKey       *btcec.PublicKey
 	blockHeight       uint32
@@ -1042,9 +1065,34 @@ type testDaemonConn struct {
 	cancelCalls       int
 	statusCalls       int
 	lastArmRecovery   *daemonrpc.ArmVHTLCRecoveryRequest
+	armRecoveries     []*daemonrpc.ArmVHTLCRecoveryRequest
 	lastEscalate      *daemonrpc.EscalateVHTLCRecoveryRequest
 	lastCancel        *daemonrpc.CancelVHTLCRecoveryRequest
 	lastStatus        *daemonrpc.GetVHTLCRecoveryStatusRequest
+}
+
+// SignIdentitySchnorr signs a tagged message with deterministic test identity
+// material.
+func (d *testDaemonConn) SignIdentitySchnorr(_ context.Context, message,
+	tag []byte) ([]byte, error) {
+
+	privKey := d.identityPriv
+	if privKey == nil {
+		seed := d.receiveAuthKey
+		if len(seed) == 0 {
+			seed = bytes.Repeat([]byte{1}, 32)
+		}
+
+		privKey, _ = btcec.PrivKeyFromBytes(seed)
+	}
+
+	digest := chainhash.TaggedHash(tag, message)
+	sig, err := schnorr.Sign(privKey, digest[:])
+	if err != nil {
+		return nil, err
+	}
+
+	return sig.Serialize(), nil
 }
 
 // BlockHeight returns the configured best block height.
@@ -1144,6 +1192,7 @@ func (d *testDaemonConn) ArmVHTLCRecovery(_ context.Context,
 
 	d.armRecoveryCalls++
 	d.lastArmRecovery = req
+	d.armRecoveries = append(d.armRecoveries, req)
 	if d.armRecoveryErr != nil {
 		return nil, d.armRecoveryErr
 	}

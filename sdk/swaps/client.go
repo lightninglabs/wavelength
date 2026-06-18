@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
+	"github.com/lightninglabs/darepo-client/swaprpc"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -417,7 +418,8 @@ type SwapServerConn interface {
 	// RequestChannelID asks the server for a route hint for this swap.
 	RequestChannelID(ctx context.Context, vhtlcPubkey *btcec.PublicKey,
 		paymentHash lntypes.Hash, amountSat btcutil.Amount,
-		expirySeconds uint32) (*OutSwapQuote, error)
+		expirySeconds uint32, ownerProof *swaprpc.SwapOwnerProof,
+		encryptedRecoveryBlob []byte) (*OutSwapQuote, error)
 
 	// AcknowledgeOutSwapHTLC tells the server this receiver validated and
 	// durably accepted the out-swap HTLC event.
@@ -426,7 +428,14 @@ type SwapServerConn interface {
 
 	// CreateInSwap initiates an Ark->LN swap on the server.
 	CreateInSwap(ctx context.Context, invoice string, maxFeeSat uint64,
-		clientVhtlcPubkey *btcec.PublicKey) (*InSwapConfig, error)
+		clientVhtlcPubkey *btcec.PublicKey,
+		ownerProof *swaprpc.SwapOwnerProof) (*InSwapConfig, error)
+
+	// ListRecoverableSwaps returns server-owned recoverable swap metadata
+	// for the authenticated daemon identity key.
+	ListRecoverableSwaps(ctx context.Context,
+		ownerProof *swaprpc.SwapOwnerProof) (
+		[]*swaprpc.RecoverableSwap, error)
 
 	// QuoteInSwap previews an Ark->LN swap without creating server or
 	// client state.
@@ -550,6 +559,11 @@ type DaemonConn interface {
 	// payment-scoped receive-auth key.
 	ReceiveAuthECDH(ctx context.Context, paymentHash lntypes.Hash,
 		pubKey *btcec.PublicKey) ([32]byte, error)
+
+	// SignIdentitySchnorr signs one domain-separated message with the
+	// daemon identity key.
+	SignIdentitySchnorr(ctx context.Context, message, tag []byte) (
+		[]byte, error)
 }
 
 // CustomInput aliases the Ark SDK's typed custom OOR input.

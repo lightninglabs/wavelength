@@ -3,6 +3,7 @@ package swaps
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -615,6 +616,13 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	}
 	paymentHash := preimage.Hash()
 
+	encryptedRecoveryBlob, err := sealOutSwapRecoveryBlob(
+		ctx, s.client.daemon, clientKey, paymentHash, preimage,
+	)
+	if err != nil {
+		return fmt.Errorf("seal recovery preimage: %w", err)
+	}
+
 	authKey, err := s.client.receiveAuthKey(ctx, paymentHash)
 	if err != nil {
 		return fmt.Errorf("get receive auth key: %w", err)
@@ -641,9 +649,24 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	// database. The session is persisted before the invoice is returned to
 	// the caller.
 	expiry := time.Duration(defaultReceiveExpirySeconds) * time.Second
+	blobHash := sha256.Sum256(encryptedRecoveryBlob)
+	ownerProof, err := newSwapOwnerProof(
+		ctx, s.client.daemon, clientKey,
+		swapRecoveryAuthRequestChannel,
+		s.client.currentTime().Unix(),
+		clientKey.SerializeCompressed(),
+		paymentHash[:],
+		recoveryUint64Field(uint64(s.amountSat)*1000),
+		recoveryUint64Field(defaultReceiveExpirySeconds),
+		blobHash[:],
+	)
+	if err != nil {
+		return fmt.Errorf("create owner proof: %w", err)
+	}
+
 	quote, err := s.client.server.RequestChannelID(
 		ctx, clientKey, paymentHash, s.amountSat,
-		defaultReceiveExpirySeconds,
+		defaultReceiveExpirySeconds, ownerProof, encryptedRecoveryBlob,
 	)
 	if err != nil {
 		return fmt.Errorf("request channel ID: %w", err)

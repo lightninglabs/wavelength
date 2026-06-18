@@ -59,7 +59,7 @@ func TestRESTSwapServerConnRequestChannelID(t *testing.T) {
 	client := NewRESTSwapServerConn(server.URL)
 	quote, err := client.RequestChannelID(
 		t.Context(), clientPriv.PubKey(), lntypes.Hash{1},
-		btcutil.Amount(42_000), 30,
+		btcutil.Amount(42_000), 30, nil, nil,
 	)
 	require.NoError(t, err)
 	hint := quote.RouteHint

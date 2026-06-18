@@ -543,8 +543,19 @@ func (s *paySession) createSwap(ctx context.Context) error {
 		return fmt.Errorf("get client pubkey: %w", err)
 	}
 
+	ownerProof, err := newSwapOwnerProof(
+		ctx, s.client.daemon, clientKey, swapRecoveryAuthCreateIn,
+		s.client.currentTime().Unix(),
+		clientKey.SerializeCompressed(),
+		[]byte(s.invoice),
+		recoveryUint64Field(s.maxFeeSat),
+	)
+	if err != nil {
+		return fmt.Errorf("create owner proof: %w", err)
+	}
+
 	cfg, err := s.client.server.CreateInSwap(
-		ctx, s.invoice, s.maxFeeSat, clientKey,
+		ctx, s.invoice, s.maxFeeSat, clientKey, ownerProof,
 	)
 	if err != nil {
 		return fmt.Errorf("create in-swap: %w", err)

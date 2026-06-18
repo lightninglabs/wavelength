@@ -42,7 +42,9 @@ func NewRESTSwapServerConn(addr string,
 // Lightning-to-Ark receive flow.
 func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 	vhtlcPubkey *btcec.PublicKey, paymentHash lntypes.Hash,
-	amountSat btcutil.Amount, expirySeconds uint32) (*OutSwapQuote, error) {
+	amountSat btcutil.Amount, expirySeconds uint32,
+	ownerProof *swaprpc.SwapOwnerProof,
+	encryptedRecoveryBlob []byte) (*OutSwapQuote, error) {
 
 	if vhtlcPubkey == nil {
 		return nil, fmt.Errorf("vHTLC pubkey must be provided")
@@ -60,6 +62,10 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 				[]byte(nil), paymentHash[:]...,
 			),
 			AmountMsat: uint64(amountSat) * 1000,
+			OwnerProof: ownerProof,
+			EncryptedRecoveryBlob: append(
+				[]byte(nil), encryptedRecoveryBlob...,
+			),
 		},
 	)
 	if err != nil {
@@ -106,8 +112,8 @@ func (g *GRPCSwapServerConn) AcknowledgeOutSwapHTLC(ctx context.Context,
 
 // CreateInSwap initiates one Ark-to-Lightning swap on the swap server.
 func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context, invoice string,
-	maxFeeSat uint64, clientVhtlcPubkey *btcec.PublicKey) (*InSwapConfig,
-	error) {
+	maxFeeSat uint64, clientVhtlcPubkey *btcec.PublicKey,
+	ownerProof *swaprpc.SwapOwnerProof) (*InSwapConfig, error) {
 
 	if clientVhtlcPubkey == nil {
 		return nil, fmt.Errorf("client vHTLC pubkey must be provided")
@@ -119,6 +125,7 @@ func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context, invoice string,
 			MaxFeeSat: maxFeeSat,
 			ClientVhtlcPubkey: clientVhtlcPubkey.
 				SerializeCompressed(),
+			OwnerProof: ownerProof,
 		},
 	)
 	if err != nil {
@@ -126,6 +133,23 @@ func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context, invoice string,
 	}
 
 	return inSwapConfigFromProto(resp)
+}
+
+// ListRecoverableSwaps returns owner-scoped recovery candidates from the swap
+// server.
+func (g *GRPCSwapServerConn) ListRecoverableSwaps(ctx context.Context,
+	ownerProof *swaprpc.SwapOwnerProof) ([]*swaprpc.RecoverableSwap, error) {
+
+	resp, err := g.client.ListRecoverableSwaps(
+		ctx, &swaprpc.ListRecoverableSwapsRequest{
+			OwnerProof: ownerProof,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ListRecoverableSwaps RPC: %w", err)
+	}
+
+	return resp.GetSwaps(), nil
 }
 
 // QuoteInSwap previews one Ark-to-Lightning swap on the swap server without
