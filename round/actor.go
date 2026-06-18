@@ -1792,12 +1792,44 @@ func (a *RoundClientActor) routeServerMessageToPending(ctx context.Context,
 
 	roundFSM := a.findPendingRound()
 
-	// Round failures can arrive after the round is keyed by a
-	// server-assigned RoundID. When there is exactly one tracked
-	// round, route the failure there.
+	// Round failures can arrive after the round has been re-keyed by a
+	// server-assigned RoundID, so findPendingRound (which only matches
+	// temp-keyed rounds) misses them. Route them deterministically by the
+	// RoundID the failure carries, falling back to the sole-round heuristic
+	// for failures that predate round assignment (e.g. ClientErrorResp).
 	if roundFSM == nil {
-		_, isBoardingFailed := msg.(*BoardingFailed)
-		if isBoardingFailed && len(a.rounds) == 1 {
+		bf, isBoardingFailed := msg.(*BoardingFailed)
+
+		// Prefer the deterministic lookup by the server-assigned
+		// RoundID. This works regardless of how many rounds (including
+		// lingering terminal ones) are tracked.
+		if isBoardingFailed {
+			bf.RoundID.WhenSome(func(rid RoundID) {
+				keyStr := RoundKeyStr(rid.KeyString())
+				if candidate, ok := a.rounds[keyStr]; ok {
+					roundFSM = candidate
+
+					a.log.DebugS(ctx,
+						"Routing BoardingFailed by "+
+							"RoundID",
+						slog.String(
+							"key", candidate.Key.
+								KeyString(),
+						))
+				}
+			})
+		}
+
+		// Fall back to the sole-round heuristic only for failures that
+		// carry no RoundID (pre-assignment failures, e.g.
+		// ClientErrorResp) when exactly one round is tracked. A failure
+		// that carries a RoundID which matched nothing above is a
+		// genuine miss (e.g. the round was already reaped); routing it
+		// to an unrelated sole round would fail the wrong round, so we
+		// let it miss instead.
+		if roundFSM == nil && isBoardingFailed && bf.RoundID.IsNone() &&
+			len(a.rounds) == 1 {
+
 			for _, candidate := range a.rounds {
 				roundFSM = candidate
 			}

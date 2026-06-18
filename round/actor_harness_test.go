@@ -1079,6 +1079,37 @@ func (h *actorTestHarness) setupRoundInIntentSentState() TempRoundKey {
 	return tempKey
 }
 
+// injectRoundInState creates a round FSM in the given initial state, keyed by
+// the supplied server-assigned RoundID, and adds it to the actor's rounds map.
+// It mirrors the construction of the other setupRoundIn* helpers but lets the
+// caller pick the state, which the BoardingFailed routing test needs to stage
+// both a lingering terminal round and a live waiting round under distinct
+// RoundIDs.
+func (h *actorTestHarness) injectRoundInState(roundID RoundID,
+	initialState ClientState) {
+
+	h.t.Helper()
+
+	errReporter := newContextErrorReporter(
+		h.ctx, roundID.LogPrefix(),
+	)
+	fsmCfg := ClientStateMachineCfg{
+		Logger:        h.actor.log.WithPrefix(roundID.LogPrefix()),
+		ErrorReporter: errReporter,
+		InitialState:  initialState,
+		Env:           h.actor.env,
+	}
+	newFSM := protofsm.NewStateMachine(fsmCfg)
+	newFSM.Start(h.ctx)
+
+	keyStr := RoundKeyStr(roundID.KeyString())
+	h.actor.rounds[keyStr] = &RoundFSM{
+		FSM:     &newFSM,
+		Key:     roundID,
+		RoundID: roundID,
+	}
+}
+
 // setupMockRoundStoreForRecovery configures the RoundStore mock to return
 // active rounds for recovery on Start(), using PartialSigsSentState which is
 // stable and won't immediately transition on recovery.

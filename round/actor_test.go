@@ -1517,6 +1517,125 @@ func TestActorServerMessageRouting(t *testing.T) {
 	}
 }
 
+// TestBoardingFailedRoutesByRoundIDWithLingeringRound reproduces the
+// darepo-client#571 dropped-event bug and proves the RoundID-keyed routing
+// fix. Two rounds are tracked: a lingering terminal round (ClientFailedState,
+// which is never evicted from a.rounds) and a live round re-keyed to a
+// server-assigned RoundID sitting in RoundJoinedState. A server
+// ClientRoundFailedResp for the live round arrives as a BoardingFailed
+// carrying that RoundID. Before the fix, findPendingRound missed the re-keyed
+// live round and the sole-round fallback bailed (len(a.rounds) == 2), so the
+// failure was silently dropped and the live round stayed stuck projecting a
+// phantom pending VTXO forever. With the fix, the failure is routed
+// deterministically by RoundID and the live round transitions to
+// ClientFailedState.
+func TestBoardingFailedRoutesByRoundIDWithLingeringRound(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+	require.NoError(t, h.start())
+
+	// Stage a lingering terminal round under its own RoundID. Terminal
+	// FSMs are reaped lazily, not on entry, so this round stays in
+	// a.rounds and is what makes the sole-round heuristic bail.
+	lingeringID := testRoundID("lingering-failed-round")
+	h.injectRoundInState(lingeringID, &ClientFailedState{
+		Reason:      "earlier round failed",
+		Recoverable: true,
+	})
+
+	// Stage the live round re-keyed to its server-assigned RoundID, parked
+	// in a waiting state (RoundJoinedState) that projects a pending VTXO.
+	liveID := testRoundID("live-joined-round")
+	h.injectRoundInState(liveID, &RoundJoinedState{
+		RoundID: liveID,
+	})
+
+	// Sanity check: two rounds are tracked, so the sole-round heuristic
+	// alone cannot route the failure.
+	require.Len(t, h.queryState(), 2)
+
+	// Deliver the server failure for the live round through the same path
+	// handleServerMessage uses, carrying the live round's RoundID exactly
+	// as BoardingFailed.FromProto populates it from a
+	// ClientRoundFailedResp.
+	h.sendServerMessage(&BoardingFailed{
+		RoundID:     fn.Some(liveID),
+		Reason:      "operator failed to build round",
+		Recoverable: true,
+	})
+
+	// The live round must have consumed the failure and transitioned to
+	// ClientFailedState rather than dropping it and staying in
+	// RoundJoinedState.
+	states := h.queryState()
+
+	liveInfo, ok := states[liveID.KeyString()]
+	require.True(t, ok, "live round should still be tracked")
+	require.IsType(
+		t, &ClientFailedState{}, liveInfo.State,
+		"live round should have failed, not stayed in RoundJoinedState",
+	)
+
+	// The lingering round must be untouched: routing was deterministic and
+	// did not leak the failure into the wrong FSM.
+	lingeringInfo, ok := states[lingeringID.KeyString()]
+	require.True(t, ok, "lingering round should still be tracked")
+	require.IsType(
+		t, &ClientFailedState{}, lingeringInfo.State,
+	)
+	failed, ok := lingeringInfo.State.(*ClientFailedState)
+	require.True(t, ok)
+	require.Equal(
+		t, "earlier round failed", failed.Reason,
+		"lingering round's failure reason must be unchanged",
+	)
+}
+
+// TestBoardingFailedMismatchedRoundIDDoesNotMisroute verifies that a
+// BoardingFailed carrying a RoundID that matches no tracked round is treated
+// as a genuine miss rather than being misrouted to the sole tracked round.
+// The sole-round fallback must apply only to failures that carry NO RoundID
+// (pre-assignment failures); a present-but-mismatched id (e.g. for an
+// already-reaped round) must not fail an unrelated round.
+func TestBoardingFailedMismatchedRoundIDDoesNotMisroute(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+	require.NoError(t, h.start())
+
+	// Exactly one round is tracked, parked in a waiting state.
+	liveID := testRoundID("live-joined-round")
+	h.injectRoundInState(liveID, &RoundJoinedState{RoundID: liveID})
+	require.Len(t, h.queryState(), 1)
+
+	// Deliver a failure for a DIFFERENT round id. findPendingRound misses
+	// (the round is re-keyed), the RoundID lookup misses (no such round),
+	// and the sole-round fallback must NOT fire because the id is present.
+	otherID := testRoundID("some-other-round")
+	result := h.receive(&ServerMessageNotification{
+		Message: &BoardingFailed{
+			RoundID:     fn.Some(otherID),
+			Reason:      "failure for an unrelated round",
+			Recoverable: true,
+		},
+	})
+	require.False(
+		t, result.IsOk(),
+		"a mismatched-RoundID failure must miss, not misroute",
+	)
+
+	// The sole round must be untouched — still in its waiting state.
+	liveInfo, ok := h.queryState()[liveID.KeyString()]
+	require.True(t, ok, "the live round should still be tracked")
+	require.IsType(
+		t, &RoundJoinedState{}, liveInfo.State,
+		"sole round must not have been failed by an unrelated failure",
+	)
+}
+
 // TestHandleRefreshVTXORequest verifies that refresh requests from VTXO actors
 // are properly forwarded to the primary FSM and tracked for inclusion in the
 // next round registration.
