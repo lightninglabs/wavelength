@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -23,10 +24,13 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	libtypes "github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/oor"
+	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
+	"github.com/lightninglabs/darepo-client/vhtlcrecovery/coordinator"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -45,6 +49,8 @@ type walletRecoveryResult struct {
 	VTXOs             uint32
 	OORReceiveScripts uint32
 	OOREvents         uint32
+	VHTLCs            uint32
+	VHTLCRefunds      uint32
 }
 
 // retryRecoveryIndexerRPC retries recovery-local indexer calls that hit the
@@ -84,6 +90,8 @@ func (r walletRecoveryResult) apply(resp *daemonrpc.InitWalletResponse) {
 	resp.RecoveredVtxos = r.VTXOs
 	resp.RecoveredOorReceiveScripts = r.OORReceiveScripts
 	resp.RecoveredOorEvents = r.OOREvents
+	resp.RecoveredVhtlcs = r.VHTLCs
+	resp.RecoveredVhtlcRefunds = r.VHTLCRefunds
 }
 
 func (r *RPCServer) recoverWalletState(ctx context.Context, window uint32) (
@@ -134,6 +142,9 @@ func (r *RPCServer) recoverWalletState(ctx context.Context, window uint32) (
 		ctx, terms, window, &result,
 	); err != nil {
 		return nil, fmt.Errorf("recover OOR receive scripts: %w", err)
+	}
+	if err := r.recoverIndexedVHTLCs(ctx, terms, &result); err != nil {
+		return nil, fmt.Errorf("recover indexed vHTLCs: %w", err)
 	}
 
 	return &result, nil
@@ -603,6 +614,331 @@ func (r *RPCServer) recoverOORReceiveScripts(ctx context.Context,
 	}
 
 	return nil
+}
+
+// recoverIndexedVHTLCs finds registered vHTLC recovery manifests and arms
+// daemon-owned refund recovery for live pay-side vHTLCs.
+func (r *RPCServer) recoverIndexedVHTLCs(ctx context.Context,
+	terms *libtypes.OperatorTerms, result *walletRecoveryResult) error {
+
+	registered, err := r.server.indexer.ListMyReceiveScripts(ctx)
+	if err != nil {
+		return fmt.Errorf("list registered receive scripts: %w", err)
+	}
+
+	idx := r.server.indexer.WithSigner(
+		r.server.proofKeyBackend.ProofSigner(
+			r.server.clientKeyDesc,
+		),
+	)
+
+	for _, script := range registered.GetScripts() {
+		manifest, ok, err := vhtlcrecovery.DecodeManifestLabel(
+			script.GetLabel(),
+		)
+		if err != nil {
+			return err
+		}
+		if !ok || !recoverableVHTLCManifest(manifest) {
+			continue
+		}
+
+		pkScript, err := validateVHTLCManifestScript(manifest)
+		if err != nil {
+			return err
+		}
+
+		vtxos, err := r.listVHTLCManifestVTXOs(ctx, idx, pkScript)
+		if err != nil {
+			return err
+		}
+		if len(vtxos) == 0 {
+			continue
+		}
+
+		result.VHTLCs++
+		for _, indexed := range vtxos {
+			live := arkrpc.VTXOStatus_VTXO_STATUS_LIVE
+			if indexed.GetStatus() != live {
+				continue
+			}
+
+			recovered, err := r.armRecoveredVHTLCRefund(
+				ctx, terms, manifest, indexed,
+			)
+			if err != nil {
+				return err
+			}
+			if recovered {
+				result.VHTLCRefunds++
+			}
+
+			break
+		}
+	}
+
+	return nil
+}
+
+// recoverableVHTLCManifest limits v1 seed restore to pay-side sender refunds.
+func recoverableVHTLCManifest(
+	manifest vhtlcrecovery.RecoveryManifest) bool {
+
+	return manifest.Role == vhtlcrecovery.ManifestRoleSender &&
+		manifest.Direction == vhtlcrecovery.ManifestDirectionPay
+}
+
+// validateVHTLCManifestScript rebuilds the vHTLC policy and checks that the
+// manifest really describes the script it asks recovery to query.
+func validateVHTLCManifestScript(
+	manifest vhtlcrecovery.RecoveryManifest) ([]byte, error) {
+
+	policy, err := vhtlcPolicyFromManifest(manifest)
+	if err != nil {
+		return nil, err
+	}
+
+	derivedScript, err := policy.PkScript()
+	if err != nil {
+		return nil, fmt.Errorf("derive vHTLC manifest script: %w",
+			err)
+	}
+	if !bytes.Equal(derivedScript, manifest.PkScript) {
+		return nil, fmt.Errorf("vHTLC recovery manifest does not " +
+			"match script")
+	}
+
+	return derivedScript, nil
+}
+
+// vhtlcPolicyFromManifest converts manifest fields into the script policy used
+// by the recovery executor.
+func vhtlcPolicyFromManifest(
+	manifest vhtlcrecovery.RecoveryManifest) (*arkscript.VHTLCPolicy,
+	error) {
+
+	sender, err := btcec.ParsePubKey(manifest.SenderPubkey)
+	if err != nil {
+		return nil, fmt.Errorf("parse sender pubkey: %w", err)
+	}
+	receiver, err := btcec.ParsePubKey(manifest.ReceiverPubkey)
+	if err != nil {
+		return nil, fmt.Errorf("parse receiver pubkey: %w", err)
+	}
+	server, err := btcec.ParsePubKey(manifest.ServerPubkey)
+	if err != nil {
+		return nil, fmt.Errorf("parse server pubkey: %w", err)
+	}
+
+	var paymentHash lntypes.Hash
+	copy(paymentHash[:], manifest.PaymentHash)
+
+	opts := arkscript.VHTLCOpts{
+		Sender:         sender,
+		Receiver:       receiver,
+		Server:         server,
+		PreimageHash:   paymentHash,
+		RefundLocktime: manifest.RefundLocktime,
+	}
+	opts.UnilateralClaimDelay = manifest.UnilateralClaimDelay
+	opts.UnilateralRefundDelay = manifest.UnilateralRefundDelay
+	opts.UnilateralRefundWithoutReceiverDelay =
+		manifest.UnilateralRefundWithoutReceiverDelay
+
+	return arkscript.NewVHTLCPolicy(opts)
+}
+
+// listVHTLCManifestVTXOs queries the indexer for all known states of one
+// manifest-backed vHTLC script.
+func (r *RPCServer) listVHTLCManifestVTXOs(ctx context.Context,
+	idx *indexer.Client, pkScript []byte) ([]*arkrpc.VTXO, error) {
+
+	statusFilter := []arkrpc.VTXOStatus{
+		arkrpc.VTXOStatus_VTXO_STATUS_UNCONFIRMED,
+		arkrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		arkrpc.VTXOStatus_VTXO_STATUS_FORFEITING,
+		arkrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+		arkrpc.VTXOStatus_VTXO_STATUS_SPENT,
+	}
+
+	var (
+		cursor []byte
+		vtxos  []*arkrpc.VTXO
+	)
+	for {
+		var resp *arkrpc.ListVTXOsByScriptsResponse
+		err := retryRecoveryIndexerRPC(ctx, func() error {
+			var err error
+			resp, err = idx.ListVTXOsByScriptsTaproot(
+				ctx,
+				[]indexer.TaprootScriptScope{{
+					PkScript: pkScript,
+				}},
+				cursor, recoveryVTXOPageSize, statusFilter,
+			)
+
+			return err
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list vHTLC manifest VTXOs: %w",
+				err)
+		}
+
+		for _, indexed := range vtxo.FlattenListVTXOsByScriptsResponse(
+			resp,
+		) {
+			if bytes.Equal(indexed.GetPkScript(), pkScript) {
+				vtxos = append(vtxos, indexed)
+			}
+		}
+
+		cursor = resp.GetNextCursor()
+		if len(cursor) == 0 {
+			break
+		}
+	}
+
+	return vtxos, nil
+}
+
+// armRecoveredVHTLCRefund creates the same dormant refund-without-receiver row
+// that a normal pay session would have armed after observing funding.
+func (r *RPCServer) armRecoveredVHTLCRefund(ctx context.Context,
+	terms *libtypes.OperatorTerms, manifest vhtlcrecovery.RecoveryManifest,
+	indexed *arkrpc.VTXO) (bool, error) {
+
+	service, err := r.requireVHTLCRecovery()
+	if err != nil {
+		return false, err
+	}
+
+	requestID := recoveredVHTLCRequestID(manifest)
+	exists, err := r.vhtlcRecoveryRequestExists(ctx, service, requestID)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return true, nil
+	}
+
+	outpoint, err := recoveryOutpoint(indexed.GetOutpoint())
+	if err != nil {
+		return false, err
+	}
+	if indexed.GetValueSat() > math.MaxInt64 {
+		return false, fmt.Errorf("vHTLC amount exceeds int64")
+	}
+
+	destinationScript, err := r.allocateVHTLCRecoveryRefundScript(
+		ctx, terms,
+	)
+	if err != nil {
+		return false, err
+	}
+
+	_, _, err = service.ArmRecovery(ctx, vhtlcrecovery.RecoveryJob{
+		RequestID:     requestID,
+		SwapID:        append([]byte(nil), manifest.PaymentHash...),
+		Direction:     vhtlcrecovery.DirectionPay,
+		Action:        vhtlcrecovery.ActionRefundWithoutReceiver,
+		VTXOOutpoint:  outpoint,
+		VTXOAmountSat: int64(indexed.GetValueSat()),
+		SenderPubkey: append(
+			[]byte(nil), manifest.SenderPubkey...,
+		),
+		ReceiverPubkey: append(
+			[]byte(nil), manifest.ReceiverPubkey...,
+		),
+		ServerPubkey: append(
+			[]byte(nil), manifest.ServerPubkey...,
+		),
+		RefundLocktime: int32(manifest.RefundLocktime),
+		UnilateralClaimDelay: int32(
+			manifest.UnilateralClaimDelay,
+		),
+		UnilateralRefundDelay: int32(
+			manifest.UnilateralRefundDelay,
+		),
+		UnilateralRefundWithoutReceiverDelay: int32(
+			manifest.UnilateralRefundWithoutReceiverDelay,
+		),
+		PreimageHash:    append([]byte(nil), manifest.PaymentHash...),
+		SignerKeyFamily: manifest.SignerKeyFamily,
+		SignerKeyIndex:  manifest.SignerKeyIndex,
+		DestinationScript: append(
+			[]byte(nil), destinationScript...,
+		),
+		MaxFeeRateSatPerKWeight: DefaultSwapRecoveryMaxFeeRateSatPerKW,
+	})
+	if err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+// vhtlcRecoveryRequestExists checks deterministic SDK request ids before
+// allocating a new refund destination for an already-recovered vHTLC.
+func (r *RPCServer) vhtlcRecoveryRequestExists(ctx context.Context,
+	service *coordinator.Service, requestID string) (bool, error) {
+
+	statuses, err := service.ListRecoveryStatuses(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	for i := range statuses {
+		if statuses[i].Job.RequestID == requestID {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// allocateVHTLCRecoveryRefundScript creates the wallet-owned destination used
+// by unilateral refund recovery after seed restore.
+func (r *RPCServer) allocateVHTLCRecoveryRefundScript(ctx context.Context,
+	terms *libtypes.OperatorTerms) ([]byte, error) {
+
+	store, err := r.newOORReceiveScriptStore()
+	if err != nil {
+		return nil, err
+	}
+
+	deriveNextKey, signerFactory, err := r.oorReceiveKeyOps()
+	if err != nil {
+		return nil, err
+	}
+
+	var pkScript []byte
+	err = retryRecoveryIndexerRPC(ctx, func() error {
+		var err error
+		_, pkScript, err = CreateOORReceiveScript(
+			ctx, r.server.indexer, store, deriveNextKey,
+			signerFactory, terms.PubKey, terms.VTXOExitDelay,
+			"vhtlc recovery refund",
+		)
+
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return pkScript, nil
+}
+
+// recoveredVHTLCRequestID matches the SDK's pay-side recovery idempotency key.
+func recoveredVHTLCRequestID(
+	manifest vhtlcrecovery.RecoveryManifest) string {
+
+	return fmt.Sprintf(
+		"sdk-swaps:%s:%x:%s",
+		manifest.Direction,
+		manifest.PaymentHash,
+		daemonrpc.VHTLCRecoveryAction_VHTLC_RECOVERY_ACTION_REFUND_WITHOUT_RECEIVER.String(), //nolint:ll
+	)
 }
 
 func (r *RPCServer) recoveryOORHandler(
