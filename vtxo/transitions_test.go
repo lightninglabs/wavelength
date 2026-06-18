@@ -1299,6 +1299,38 @@ func TestForfeitReleasedFromPendingForfeit(t *testing.T) {
 	require.Equal(t, VTXOStatusLive, su.NewStatus)
 }
 
+// TestForfeitReleasedFromForfeiting verifies that ForfeitingState also
+// transitions back to LiveState on ForfeitReleasedEvent. A VTXO reaches
+// ForfeitingState once it has replied with its forfeit signature, so a round
+// that fails mid-collection (a partial ForfeitCollectionTimedOut) must be able
+// to unwedge these already-advanced VTXOs, not just the ones still in
+// PendingForfeitState. The release is safe because no forfeit signature reaches
+// the server until the success edge out of ForfeitSignaturesCollecting.
+func TestForfeitReleasedFromForfeiting(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&ForfeitingState{
+		VTXO:       vtxo,
+		NewRoundID: "round-123",
+	})
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusLive,
+	).Return(nil)
+
+	_, err := h.sendEvent(&round.ForfeitReleasedEvent{})
+	require.NoError(t, err)
+
+	state := assertState[*LiveState](h)
+	require.Equal(t, vtxo, state.VTXO)
+
+	su := assertOutboxContains[*VTXOStatusUpdate](h)
+	require.Equal(t, VTXOStatusLive, su.NewStatus)
+}
+
 // TestSpendingStateResumeStaysInSpending verifies that SpendingState stays in
 // SpendingState on ResumeVTXOEvent. The OOR session will resume and later
 // release or complete the claim.
