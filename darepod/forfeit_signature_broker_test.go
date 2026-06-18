@@ -335,7 +335,8 @@ func TestForfeitSignatureBrokerListDoesNotAdvancePastEarlierPendingRequest(
 	secondID := string(second.GetRequestId())
 	broker.requests[firstID] = &forfeitSignatureRequest{proto: first}
 	broker.requests[secondID] = &forfeitSignatureRequest{
-		proto: second,
+		proto:    second,
+		answered: true,
 		signatures: []*types.ForfeitParticipantSig{{
 			PubKey: req.VTXO.ClientKey.PubKey,
 		}},
@@ -346,6 +347,43 @@ func TestForfeitSignatureBrokerListDoesNotAdvancePastEarlierPendingRequest(
 	require.Len(t, requests, 1)
 	require.Equal(t, first.GetRequestId(), requests[0].GetRequestId())
 	require.Equal(t, first.GetSequence(), next)
+}
+
+// TestForfeitSignatureBrokerSubmitAllowsNoExternalParticipants verifies a
+// pending request can be answered with no external signatures when the selected
+// spend path only requires the local VTXO actor and the operator.
+func TestForfeitSignatureBrokerSubmitAllowsNoExternalParticipants(t *testing.T) {
+	t.Parallel()
+
+	broker := newForfeitSignatureBroker()
+	req, paymentHash := testLocalOnlyForfeitParticipantSignRequest(t)
+	correlation := forfeitSigningContext{
+		paymentHash: paymentHash[:],
+		route:       pendingForfeitSigningRoute(),
+	}
+	pending, err := pendingForfeitSignatureRequest(correlation, req)
+	require.NoError(t, err)
+
+	requestID := string(pending.GetRequestId())
+	broker.requests[requestID] = &forfeitSignatureRequest{
+		proto:   pending,
+		signReq: req,
+	}
+	broker.order = []string{requestID}
+
+	err = broker.submit(pending.GetRequestId(), nil)
+	require.NoError(t, err)
+
+	err = broker.submit(pending.GetRequestId(), nil)
+	require.NoError(t, err)
+
+	requests, _ := broker.list(0, 10)
+	require.Empty(t, requests)
+
+	broker.mu.Lock()
+	require.True(t, broker.requests[requestID].answered)
+	require.Empty(t, broker.requests[requestID].signatures)
+	broker.mu.Unlock()
 }
 
 // TestForfeitSignatureRequestIDIncludesConnectorAmount verifies the pending
@@ -650,4 +688,61 @@ func testForfeitParticipantSignRequestWithSigners(t *testing.T) (
 		senderPriv,
 		receiverPriv,
 	}
+}
+
+// testLocalOnlyForfeitParticipantSignRequest returns a forfeit request whose
+// selected path requires only the descriptor's local key and the operator key.
+func testLocalOnlyForfeitParticipantSignRequest(t *testing.T) (
+	*vtxo.ForfeitParticipantSignRequest, lntypes.Hash) {
+
+	t.Helper()
+
+	policy, preimage, _, receiverPriv, operatorPriv :=
+		testVHTLCPolicyFixture(t)
+	policyTemplate, err := policy.Template.Encode()
+	require.NoError(t, err)
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
+	forfeitPath, err := policy.ClaimPath(preimage)
+	require.NoError(t, err)
+
+	vtxoOutpoint := testWalletOpsOutpoint(41)
+	connectorOutpoint := testWalletOpsOutpoint(42)
+	connectorAmount := btcutil.Amount(330)
+	serverForfeitPkScript := []byte{
+		0x51,
+		0x20,
+	}
+	tx, err := arktx.BuildForfeitTxWithContext(
+		&vtxoOutpoint, btcutil.Amount(42_000),
+		&connectorOutpoint, connectorAmount,
+		serverForfeitPkScript, arktx.ForfeitTxContext{
+			VTXOSequence: forfeitPath.RequiredSequence,
+			LockTime:     forfeitPath.RequiredLockTime,
+		},
+	)
+	require.NoError(t, err)
+
+	req := &vtxo.ForfeitParticipantSignRequest{
+		VTXO: &vtxo.Descriptor{
+			Outpoint:       vtxoOutpoint,
+			Amount:         btcutil.Amount(42_000),
+			PkScript:       pkScript,
+			PolicyTemplate: policyTemplate,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: receiverPriv.PubKey(),
+			},
+			OperatorKey: operatorPriv.PubKey(),
+		},
+		SpendPath:         forfeitPath,
+		ForfeitTx:         tx,
+		ConnectorOutpoint: connectorOutpoint,
+		ConnectorAmount:   int64(connectorAmount),
+		ConnectorPkScript: []byte{
+			0x51,
+		},
+		ServerForfeitPkScript: serverForfeitPkScript,
+	}
+
+	return req, preimage.Hash()
 }

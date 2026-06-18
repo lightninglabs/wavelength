@@ -43,6 +43,7 @@ type forfeitSigningContext struct {
 type forfeitSignatureRequest struct {
 	proto      *daemonrpc.PendingForfeitParticipantSignatureRequest
 	signReq    *vtxo.ForfeitParticipantSignRequest
+	answered   bool
 	signatures []*types.ForfeitParticipantSig
 	waiters    []chan []*types.ForfeitParticipantSig
 }
@@ -171,7 +172,7 @@ func (b *forfeitSignatureBroker) sign(ctx context.Context,
 		b.order = append(b.order, requestID)
 	}
 
-	if len(stored.signatures) != 0 {
+	if stored.answered {
 		sigs := cloneParticipantSigs(stored.signatures)
 		b.mu.Unlock()
 
@@ -259,7 +260,7 @@ func (b *forfeitSignatureBroker) list(after uint64, limit uint32) (
 		if req == nil || req.proto.GetSequence() <= after {
 			continue
 		}
-		if len(req.signatures) != 0 {
+		if req.answered {
 			continue
 		}
 
@@ -288,13 +289,6 @@ func (b *forfeitSignatureBroker) submit(requestID []byte,
 			codes.InvalidArgument, "request_id is required",
 		)
 	}
-	if len(signatures) == 0 {
-		return status.Error(
-			codes.InvalidArgument,
-			"at least one signature is required",
-		)
-	}
-
 	participantSigs := make(
 		[]*types.ForfeitParticipantSig, 0, len(signatures),
 	)
@@ -318,7 +312,7 @@ func (b *forfeitSignatureBroker) submit(requestID []byte,
 			codes.NotFound, "forfeit signature request not found",
 		)
 	}
-	if len(req.signatures) != 0 {
+	if req.answered {
 		if sameParticipantSigSet(req.signatures, participantSigs) {
 			return nil
 		}
@@ -336,6 +330,7 @@ func (b *forfeitSignatureBroker) submit(requestID []byte,
 			"participant signatures: %v", err)
 	}
 
+	req.answered = true
 	req.signatures = cloneParticipantSigs(participantSigs)
 	delete(b.contexts, req.proto.GetVtxoOutpoint())
 	waiters := req.waiters
@@ -430,60 +425,19 @@ func forfeitSignatureRequestID(
 // signatures satisfy the external participants in the exact connector-bound
 // signing request. The VTXO actor signs req.VTXO.ClientKey locally before it
 // calls the broker, then appends these externally submitted signatures before
-// handing the complete participant set to the round.
+// handing the complete participant set to the round. Some custom paths require
+// no external participants after removing the local client key and operator
+// key; in that case an empty signature set is the valid answer.
 func verifyExternalForfeitParticipantSignatures(
 	req *vtxo.ForfeitParticipantSignRequest,
 	sigs []*types.ForfeitParticipantSig) error {
 
-	if req == nil {
-		return fmt.Errorf("pending signing request is missing")
-	}
-	if req.VTXO == nil {
-		return fmt.Errorf("pending signing request vtxo is missing")
-	}
-	if req.VTXO.OperatorKey == nil {
-		return fmt.Errorf("pending signing request operator key is " +
-			"missing")
-	}
-	if req.VTXO.ClientKey.PubKey == nil {
-		return fmt.Errorf("pending signing request local client key " +
-			"is missing")
-	}
-	if req.SpendPath == nil {
-		return fmt.Errorf("pending signing request spend path is " +
-			"missing")
-	}
-	if req.ForfeitTx == nil {
-		return fmt.Errorf("pending signing request forfeit tx is " +
-			"missing")
-	}
-
-	template, err := arkscript.DecodePolicyTemplate(
-		req.VTXO.PolicyTemplate,
-	)
+	required, err := externalForfeitParticipantKeys(req)
 	if err != nil {
-		return fmt.Errorf("decode policy template: %w", err)
+		return err
 	}
-	signingKeys, err := arkscript.SigningKeysForSpendPath(
-		template, req.SpendPath,
-	)
-	if err != nil {
-		return fmt.Errorf("resolve signing keys: %w", err)
-	}
-
-	operatorKeyID := participantKeyID(req.VTXO.OperatorKey)
-	localKeyID := participantKeyID(req.VTXO.ClientKey.PubKey)
-	required := make(map[string]*btcec.PublicKey, len(signingKeys))
-	for _, key := range signingKeys {
-		keyID := participantKeyID(key)
-		if key == nil || keyID == operatorKeyID || keyID == localKeyID {
-			continue
-		}
-
-		required[keyID] = key
-	}
-	if len(required) == 0 {
-		return fmt.Errorf("no external participant keys required")
+	if len(required) == 0 && len(sigs) == 0 {
+		return nil
 	}
 
 	seen := make(map[string]struct{}, len(sigs))
@@ -517,6 +471,64 @@ func verifyExternalForfeitParticipantSignatures(
 	}
 
 	return nil
+}
+
+// externalForfeitParticipantKeys returns the keys from the selected forfeit
+// spend path that the local VTXO actor cannot sign and the operator does not
+// sign as part of its normal round role.
+func externalForfeitParticipantKeys(
+	req *vtxo.ForfeitParticipantSignRequest) (
+	map[string]*btcec.PublicKey, error) {
+
+	if req == nil {
+		return nil, fmt.Errorf("pending signing request is missing")
+	}
+	if req.VTXO == nil {
+		return nil, fmt.Errorf("pending signing request vtxo is missing")
+	}
+	if req.VTXO.OperatorKey == nil {
+		return nil, fmt.Errorf("pending signing request operator key is " +
+			"missing")
+	}
+	if req.VTXO.ClientKey.PubKey == nil {
+		return nil, fmt.Errorf("pending signing request local client key " +
+			"is missing")
+	}
+	if req.SpendPath == nil {
+		return nil, fmt.Errorf("pending signing request spend path is " +
+			"missing")
+	}
+	if req.ForfeitTx == nil {
+		return nil, fmt.Errorf("pending signing request forfeit tx is " +
+			"missing")
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(
+		req.VTXO.PolicyTemplate,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decode policy template: %w", err)
+	}
+	signingKeys, err := arkscript.SigningKeysForSpendPath(
+		template, req.SpendPath,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("resolve signing keys: %w", err)
+	}
+
+	operatorKeyID := participantKeyID(req.VTXO.OperatorKey)
+	localKeyID := participantKeyID(req.VTXO.ClientKey.PubKey)
+	required := make(map[string]*btcec.PublicKey, len(signingKeys))
+	for _, key := range signingKeys {
+		keyID := participantKeyID(key)
+		if key == nil || keyID == operatorKeyID || keyID == localKeyID {
+			continue
+		}
+
+		required[keyID] = key
+	}
+
+	return required, nil
 }
 
 // verifyForfeitParticipantSignature verifies one participant signature against
@@ -568,6 +580,8 @@ func participantKeyID(pub *btcec.PublicKey) string {
 	return string(schnorr.SerializePubKey(pub))
 }
 
+// parseForfeitParticipantSignature decodes one daemon RPC participant
+// signature into the internal typed representation.
 func parseForfeitParticipantSignature(
 	sig *daemonrpc.ForfeitParticipantSignature) (
 	*types.ForfeitParticipantSig, error) {
@@ -590,6 +604,8 @@ func parseForfeitParticipantSignature(
 	}, nil
 }
 
+// clonePendingForfeitSignatureRequest returns a detached copy of a pending
+// request so callers cannot mutate broker-owned state.
 func clonePendingForfeitSignatureRequest(
 	req *daemonrpc.PendingForfeitParticipantSignatureRequest,
 ) *daemonrpc.PendingForfeitParticipantSignatureRequest {
@@ -618,6 +634,8 @@ func clonePendingForfeitSignatureRequest(
 	}
 }
 
+// samePendingForfeitSignatureRequest reports whether two pending requests have
+// identical connector-bound signing transcripts.
 func samePendingForfeitSignatureRequest(
 	a, b *daemonrpc.PendingForfeitParticipantSignatureRequest) bool {
 
@@ -645,6 +663,8 @@ func samePendingForfeitSignatureRequest(
 		)
 }
 
+// cloneParticipantSigs returns a detached copy of participant signatures while
+// preserving the immutable key and signature objects.
 func cloneParticipantSigs(
 	sigs []*types.ForfeitParticipantSig,
 ) []*types.ForfeitParticipantSig {
@@ -663,6 +683,8 @@ func cloneParticipantSigs(
 	return out
 }
 
+// sameParticipantSigSet reports whether two signature sets contain the same
+// signatures keyed by participant public key.
 func sameParticipantSigSet(a, b []*types.ForfeitParticipantSig) bool {
 	if len(a) != len(b) {
 		return false
@@ -686,6 +708,8 @@ func sameParticipantSigSet(a, b []*types.ForfeitParticipantSig) bool {
 	return true
 }
 
+// participantSigMap converts a signature slice into a unique map keyed by
+// compressed participant public key.
 func participantSigMap(sigs []*types.ForfeitParticipantSig) (map[string][]byte,
 	bool) {
 
