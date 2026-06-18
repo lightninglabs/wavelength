@@ -9,8 +9,6 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/google/uuid"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
 	clientdb "github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/ledger"
 	libtypes "github.com/lightninglabs/darepo-client/lib/types"
@@ -429,27 +427,30 @@ func (b *sessionBehavior) buildTransportMessage(ctx context.Context,
 	}, nil
 }
 
-// enqueueTransport writes one cross-actor transport message to the durable
-// outbox so the outbox publisher delivers it to serverconn after commit.
-func (b *sessionBehavior) enqueueTransport(ctx context.Context, tx oorTx,
-	msg serverconn.ServerConnMsg) error {
+// tellTransport delivers the turn's collected cross-actor transport messages
+// (submit / finalize / ack) directly into the serverconn durable actor. Run
+// inside the commit transaction: serverconn is a durable actor, so each Tell
+// persists the message into its mailbox via the ambient txCtx and the message
+// lands IFF the turn commits. The network send runs later on serverconn's own
+// egress turn, outside this tx, and is retried by serverconn, so a committed
+// OOR turn can never lose its transport obligation and no separate outbox
+// publisher hop is needed.
+func (b *sessionBehavior) tellTransport(ctx context.Context) error {
+	if len(b.pendingTransport) == 0 {
+		return nil
+	}
 
 	if b.cfg.ServerConn == nil {
 		return fmt.Errorf("serverconn ref must be provided")
 	}
 
-	payload, err := serverConnOutboxCodec.Encode(msg)
-	if err != nil {
-		return fmt.Errorf("encode serverconn message: %w", err)
+	for _, msg := range b.pendingTransport {
+		if err := b.cfg.ServerConn.Tell(ctx, msg); err != nil {
+			return fmt.Errorf("tell serverconn transport: %w", err)
+		}
 	}
 
-	return tx.store.EnqueueOutbox(ctx, actor.OutboxParams{
-		ID:            uuid.Must(uuid.NewV7()).String(),
-		SourceActorID: b.actorID,
-		TargetActorID: b.cfg.ServerConn.ID(),
-		MessageType:   msg.MessageType(),
-		Payload:       payload,
-	})
+	return nil
 }
 
 // tellLedger delivers the turn's staged accounting messages to the durable

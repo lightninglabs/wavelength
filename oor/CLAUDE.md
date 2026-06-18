@@ -271,10 +271,14 @@ per-session durable actor's turn.
 - Point-of-no-return: server co-signing the checkpoint
   transaction(s). After that, client must resume with byte-identical
   co-signed PSBTs (deterministic construction).
-- Transport outbox events (submit / finalize / ack) are durably
-  enqueued in the actor transition; transport side effects run
-  outside the actor DB tx and are retried via the actor delivery
-  store.
+- Transport events (submit / finalize / ack) are delivered directly
+  into the `serverconn` durable actor during the commit transaction:
+  serverconn is durable, so each `Tell` persists into its mailbox via
+  the ambient OOR turn tx and the message lands IFF the turn commits.
+  The wire send runs later on serverconn's own egress turn, outside
+  the OOR tx, and is retried by serverconn — no separate outbox
+  publisher hop. (The generic outbox publisher is still wired for the
+  registry's durable ask-response handoff, not for transport.)
 - Outgoing finalize ordering: local input-spend completion runs inline
   in dispatch with **no OOR writer tx held**, before the FSM advances to
   `Completed` and before the package write is staged. The VTXO manager's

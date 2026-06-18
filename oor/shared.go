@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/serverconn"
 )
 
 // OutboxHandler executes FSM outbox requests and returns follow-up events. The
@@ -19,10 +18,6 @@ type OutboxHandler interface {
 // incomingMetadataFilter is the recipient-filter view the per-session actor
 // asserts on its IncomingHandler when building the metadata query.
 type incomingMetadataFilter = IncomingMetadataRecipientFilter
-
-// serverConnOutboxCodec encodes serverconn messages for the durable cross-actor
-// outbox written during a session's commit.
-var serverConnOutboxCodec = serverconn.NewServerConnCodec()
 
 // newOORActorCodec registers all per-session actor message types so each
 // durable actor can serialize and deserialize its mailbox messages.

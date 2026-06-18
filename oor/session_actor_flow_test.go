@@ -127,6 +127,7 @@ func TestSessionActorIncomingMaterializeFullFlow(t *testing.T) {
 	var inCommit bool
 	sink := &recordingLedgerSink{inCommit: &inCommit}
 	delivery := &fakeDeliveryStore{}
+	conn := &recordingServerConnRef{}
 
 	b := &sessionBehavior{
 		cfg: SessionActorConfig{
@@ -145,7 +146,7 @@ func TestSessionActorIncomingMaterializeFullFlow(t *testing.T) {
 				return nil
 			},
 			LedgerSink: fn.Some[ledger.Sink](sink),
-			ServerConn: fakeServerConnRef{},
+			ServerConn: conn,
 		},
 		actorID:   ActorIDForSession(sid),
 		log:       btclog.Disabled,
@@ -175,7 +176,11 @@ func TestSessionActorIncomingMaterializeFullFlow(t *testing.T) {
 	require.NoError(t, err)
 	require.IsType(t, &ReceiveCompleted{}, state)
 	require.True(t, b.terminalCommitted)
-	require.Len(t, delivery.enqueued, 1)
+
+	// The ack transport was Tell'd directly into the serverconn durable
+	// actor during the commit (no generic outbox enqueue).
+	require.Empty(t, delivery.enqueued)
+	require.Len(t, conn.recorded(), 1)
 
 	// One ledger receive entry per descriptor, told inside the commit.
 	require.Len(t, sink.msgs, len(descs))
@@ -447,23 +452,11 @@ func TestSessionActorReservationWriteErrorPropagates(t *testing.T) {
 	require.NoError(t, b.recordReservations(ctx, inputs))
 }
 
-// failingDeliveryStore fails every durable outbox enqueue.
-type failingDeliveryStore struct {
-	actor.DeliveryStore
-
-	err error
-}
-
-func (s *failingDeliveryStore) EnqueueOutbox(context.Context,
-	actor.OutboxParams) error {
-
-	return s.err
-}
-
-// TestSessionActorTransportEnqueueFailureFailsTurn verifies a failed durable
-// transport enqueue aborts the turn so the framework redelivers it, instead
-// of committing a snapshot whose implied transport was never queued.
-func TestSessionActorTransportEnqueueFailureFailsTurn(t *testing.T) {
+// TestSessionActorTransportTellFailureFailsTurn verifies a failed direct
+// transport Tell into the serverconn durable actor aborts the turn so the
+// framework redelivers it, instead of committing a snapshot whose implied
+// transport was never durably enqueued.
+func TestSessionActorTransportTellFailureFailsTurn(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -472,16 +465,14 @@ func TestSessionActorTransportEnqueueFailureFailsTurn(t *testing.T) {
 		t, newFakeRegistryStore(), &fakePackageStore{},
 		func(context.Context, []wire.OutPoint) error { return nil },
 	)
-	b.cfg.ServerConn = fakeServerConnRef{}
+	b.cfg.ServerConn = failingServerConnRef{err: errFilterBroken}
 
 	ax := fakeExec{tx: oorTx{
-		store: &failingDeliveryStore{
-			err: errFilterBroken,
-		},
+		store:   &fakeDeliveryStore{},
 		actorID: b.actorID,
 	}}
 
-	// The resume re-emits the finalize transport; its enqueue failure must
+	// The resume re-emits the finalize transport; its Tell failure must
 	// roll the turn back.
 	res := b.Receive(ctx, &ResumeSessionRequest{
 		SessionID: sessionID,

@@ -1084,6 +1084,51 @@ func (fakeServerConnRef) Tell(context.Context, serverconn.ServerConnMsg) error {
 	return nil
 }
 
+// recordingServerConnRef captures every transport Tell so a test can assert
+// the turn delivered (or withheld) its transport into the serverconn durable
+// actor.
+type recordingServerConnRef struct {
+	mu   sync.Mutex
+	msgs []serverconn.ServerConnMsg
+}
+
+func (*recordingServerConnRef) ID() string {
+	return "serverconn"
+}
+
+func (r *recordingServerConnRef) Tell(_ context.Context,
+	msg serverconn.ServerConnMsg) error {
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.msgs = append(r.msgs, msg)
+
+	return nil
+}
+
+func (r *recordingServerConnRef) recorded() []serverconn.ServerConnMsg {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]serverconn.ServerConnMsg(nil), r.msgs...)
+}
+
+// failingServerConnRef fails every transport Tell, modeling a serverconn
+// durable-mailbox enqueue that errors inside the OOR commit transaction.
+type failingServerConnRef struct {
+	err error
+}
+
+func (failingServerConnRef) ID() string {
+	return "serverconn"
+}
+
+func (r failingServerConnRef) Tell(context.Context,
+	serverconn.ServerConnMsg) error {
+
+	return r.err
+}
+
 // TestSessionActorTerminalCommitNotifiesRegistry verifies a turn that commits
 // a terminal snapshot notifies the registry exactly once so the child can be
 // reaped, while non-terminal turns stay silent.
@@ -1577,12 +1622,13 @@ func TestSessionActorOutgoingAdmissionKeyDedupLoses(t *testing.T) {
 
 	reservations := &countingReservationStore{}
 	delivery := &fakeDeliveryStore{}
+	conn := &recordingServerConnRef{}
 	b := &sessionBehavior{
 		cfg: SessionActorConfig{
 			RegistryStore:    store,
 			Signer:           clientSigner,
 			ReservationStore: reservations,
-			ServerConn:       fakeServerConnRef{},
+			ServerConn:       conn,
 		},
 		actorID: "oor-loser",
 		log:     btclog.Disabled,
@@ -1610,9 +1656,10 @@ func TestSessionActorOutgoingAdmissionKeyDedupLoses(t *testing.T) {
 	require.NotEqual(t, winnerID, b.sessionID)
 
 	// ... and it persisted nothing: no reservations, no own snapshot row,
-	// and no transport enqueued.
+	// and no transport told to serverconn.
 	require.Equal(t, 0, reservations.reservations)
 	require.Empty(t, delivery.enqueued)
+	require.Empty(t, conn.recorded())
 	_, err = store.GetSession(ctx, chainHashOf(b.sessionID))
 	require.ErrorIs(t, err, clientdb.ErrOORSessionNotFound)
 

@@ -186,11 +186,11 @@ func benchmarkServerConnMessage(ctx context.Context, b *testing.B,
 
 	b.Helper()
 
-	behavior := &oorDurableBehavior{
-		cfg: ClientActorCfg{
-			Log:     fn.Some(btclog.Disabled),
-			ActorID: "bench-oor-actor",
+	behavior := &sessionBehavior{
+		cfg: SessionActorConfig{
+			Log: fn.Some(btclog.Disabled),
 		},
+		actorID: "bench-oor-actor",
 	}
 
 	sendReq, err := behavior.buildTransportMessage(ctx, msg)

@@ -969,17 +969,16 @@ func (b *sessionBehavior) commitAck(ctx context.Context,
 		}
 		b.terminalCommitted = record.Status.IsTerminal()
 
-		// Enqueue the collected cross-actor transport messages on the
-		// durable outbox in the same transaction (CDC): the outbox
-		// publisher delivers them to serverconn after commit. Transport
-		// collected during commit work (e.g. the incoming ack) is
-		// included because that work ran above.
-		for _, transport := range b.pendingTransport {
-			if err := b.enqueueTransport(
-				txCtx, tx, transport,
-			); err != nil {
-				return err
-			}
+		// Deliver the collected cross-actor transport messages directly
+		// into the serverconn durable actor in the same transaction:
+		// serverconn is durable, so each Tell persists into its mailbox
+		// via the ambient txCtx and lands IFF the turn commits. The
+		// wire send runs later on serverconn's own egress turn and is
+		// retried by serverconn. Transport collected during commit work
+		// (e.g. the incoming ack) is included because that work ran
+		// above.
+		if err := b.tellTransport(txCtx); err != nil {
+			return err
 		}
 
 		// Ledger accounting Tells join the same transaction: the

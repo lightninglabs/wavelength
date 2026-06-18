@@ -3134,8 +3134,10 @@ func (s *Server) initRPCClients(ctx context.Context) {
 
 // startActorOutboxPublisher registers the serverconn durable actor under the
 // type-erased key used by the actor outbox publisher, then starts the shared
-// publisher loop. OOR transport handoff uses this path so the OOR actor can
-// commit its own state before serverconn mailbox enqueue runs.
+// publisher loop. This drains the generic transactional outbox for the
+// framework's durable ask-response handoff (the OOR registry's detached-promise
+// settle path). OOR transport (submit / finalize / ack) does NOT use this path:
+// it Tells the serverconn durable actor directly inside the OOR commit tx.
 //
 //nolint:contextcheck // outbox publisher owns lifecycle after startup
 func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
