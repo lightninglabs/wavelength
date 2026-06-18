@@ -72,6 +72,24 @@ const (
 // daemon service.
 type watchRoundsResponse = daemonrpc.WatchRoundsResponse
 
+// testVTXOExpiryInfo builds compact fake expiry metadata for client tests.
+func testVTXOExpiryInfo(status daemonrpc.VTXOExpiryStatus, currentHeight,
+	batchExpiry, blocksRemaining int32,
+	chainDepth uint32) *daemonrpc.VTXOExpiryInfo {
+
+	return &daemonrpc.VTXOExpiryInfo{
+		Status:                  status,
+		CurrentHeight:           currentHeight,
+		BatchExpiry:             batchExpiry,
+		BlocksRemaining:         blocksRemaining,
+		RefreshThresholdBlocks:  216,
+		CriticalThresholdBlocks: 144,
+		RelativeExpiry:          144,
+		MaxTreeDepth:            0,
+		ChainDepth:              chainDepth,
+	}
+}
+
 var (
 	// testIdentityPubKeyHex is the deterministic compressed pubkey used for
 	// the fake daemon identity.
@@ -123,17 +141,10 @@ func newFakeDaemonService() *fakeDaemonService {
 						},
 					},
 					SpentByTxid: "spent-txid",
-					ExpiryInfo: &daemonrpc.VTXOExpiryInfo{
-						Status:                  testSafeExpiryStatus,
-						CurrentHeight:           700,
-						BatchExpiry:             1000,
-						BlocksRemaining:         300,
-						RefreshThresholdBlocks:  216,
-						CriticalThresholdBlocks: 144,
-						RelativeExpiry:          144,
-						MaxTreeDepth:            0,
-						ChainDepth:              0,
-					},
+					ExpiryInfo: testVTXOExpiryInfo(
+						testSafeExpiryStatus, 700, 1000,
+						300, 0,
+					),
 				},
 			},
 		},
@@ -158,32 +169,17 @@ func newFakeDaemonService() *fakeDaemonService {
 					},
 				},
 				SpentByTxid: "indexed-spender",
-				ExpiryInfo: &daemonrpc.VTXOExpiryInfo{
-					Status:                  testRefreshExpiryStatus,
-					CurrentHeight:           784,
-					BatchExpiry:             1000,
-					BlocksRemaining:         216,
-					RefreshThresholdBlocks:  216,
-					CriticalThresholdBlocks: 144,
-					RelativeExpiry:          144,
-					MaxTreeDepth:            0,
-					ChainDepth:              1,
-				},
+				ExpiryInfo: testVTXOExpiryInfo(
+					testRefreshExpiryStatus, 784, 1000, 216,
+					1,
+				),
 			},
 		},
 		expiryInfoResp: &daemonrpc.GetVTXOExpiryInfoResponse{
 			Found: true,
-			ExpiryInfo: &daemonrpc.VTXOExpiryInfo{
-				Status:                  testCriticalExpiryStatus,
-				CurrentHeight:           900,
-				BatchExpiry:             1000,
-				BlocksRemaining:         100,
-				RefreshThresholdBlocks:  216,
-				CriticalThresholdBlocks: 144,
-				RelativeExpiry:          144,
-				MaxTreeDepth:            0,
-				ChainDepth:              2,
-			},
+			ExpiryInfo: testVTXOExpiryInfo(
+				testCriticalExpiryStatus, 900, 1000, 100, 2,
+			),
 			Vtxo: &daemonrpc.VTXO{
 				Outpoint:  "expiry:0",
 				AmountSat: 21_000,

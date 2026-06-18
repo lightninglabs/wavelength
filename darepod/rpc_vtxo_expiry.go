@@ -179,7 +179,7 @@ func (r *RPCServer) currentBlockHeight(ctx context.Context) (int32, error) {
 			return
 		}
 
-		height = int32(bestHeight)
+		height = bestHeight
 		found = true
 	})
 	if err != nil {

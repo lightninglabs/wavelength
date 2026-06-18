@@ -1833,6 +1833,7 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 	}
 
 	var activated int
+	storedMatch := m.customForfeitInputStoredMatch
 	for _, input := range req.Inputs {
 		if input.OperatorKey == nil {
 			return fn.Err[ManagerResp](
@@ -1874,9 +1875,7 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 				continue
 			}
 
-			ok, storedSynthetic, err := m.customForfeitInputStoredMatch(
-				ctx, input,
-			)
+			ok, storedSynthetic, err := storedMatch(ctx, input)
 			if err != nil {
 				return fn.Err[ManagerResp](err)
 			}
@@ -1908,9 +1907,7 @@ func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
 			}
 		}
 		if !synthetic {
-			ok, storedSynthetic, err := m.customForfeitInputStoredMatch(
-				ctx, input,
-			)
+			ok, storedSynthetic, err := storedMatch(ctx, input)
 			if err != nil {
 				return fn.Err[ManagerResp](err)
 			}
