@@ -813,7 +813,7 @@ func TestNewSwapServerClientsREST(t *testing.T) {
 
 	hint, err := clients.server.RequestChannelID(
 		t.Context(), clientPriv.PubKey(), lntypes.Hash{1},
-		btcutil.Amount(42_000), 30,
+		btcutil.Amount(42_000), 30, nil, nil,
 	)
 	require.NoError(t, err)
 	require.Equal(t, uint64(42), hint.RouteHint.ChannelID)
@@ -1133,6 +1133,12 @@ func (f *fakeSwapRuntime) ListSwapSummaries(_ context.Context,
 	}
 
 	return summaries, nil
+}
+
+func (f *fakeSwapRuntime) RecoverSwapserverVHTLCs(context.Context) (
+	*swaps.SwapserverRecoveryResult, error) {
+
+	return &swaps.SwapserverRecoveryResult{}, nil
 }
 
 func (f *fakeSwapRuntime) awaitPayResume(t *testing.T, hash lntypes.Hash) {

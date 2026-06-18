@@ -25,6 +25,12 @@ func (f *fakeResumeOnlyBackend) ResumePending(_ context.Context) {
 	f.resumeCalls.Add(1)
 }
 
+func (f *fakeResumeOnlyBackend) RecoverVHTLCs(context.Context) (
+	*darepod.SwapRecoveryResult, error) {
+
+	return &darepod.SwapRecoveryResult{}, nil
+}
+
 // fakeWalletBackend satisfies both the in-Go resume handle and the gRPC-shaped
 // swap service required by the wallet registrar.
 type fakeWalletBackend struct {
@@ -35,6 +41,12 @@ type fakeWalletBackend struct {
 
 func (f *fakeWalletBackend) ResumePending(_ context.Context) {
 	f.resumeCalls.Add(1)
+}
+
+func (f *fakeWalletBackend) RecoverVHTLCs(context.Context) (
+	*darepod.SwapRecoveryResult, error) {
+
+	return &darepod.SwapRecoveryResult{}, nil
 }
 
 // TestRegisterDefersResumeUntilWalletReadyHook confirms the wallet subserver

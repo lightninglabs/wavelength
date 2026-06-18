@@ -512,11 +512,27 @@ func (c SwapVHTLCRecoveryConfig) WithDefaults() SwapVHTLCRecoveryConfig {
 	return c
 }
 
+// SwapRecoveryResult summarizes vHTLC recovery work performed by the optional
+// swap runtime during seed restore.
+type SwapRecoveryResult struct {
+	// RecoveredVHTLCs counts recoverable rows returned by the swapserver
+	// that had vHTLC metadata the runtime could validate.
+	RecoveredVHTLCs uint32
+
+	// RecoveredVHTLCRefunds counts pay-side refund recovery rows armed
+	// from recovered in-swaps.
+	RecoveredVHTLCRefunds uint32
+
+	// RecoveredVHTLCClaims counts receive-side claim recovery rows armed
+	// from recovered out-swaps.
+	RecoveredVHTLCClaims uint32
+}
+
 // SwapBackend is the in-Go handle exposed by swapclientserver after Register
 // completes. It lets higher-level subservers (such as the walletdkrpc
-// subserver) drive the swap runtime without dialing the daemon's gRPC server
-// from inside the same process. The interface is intentionally small and grows
-// only as new wallet-layer needs arise.
+// subserver) and seed recovery drive the swap runtime without dialing the
+// daemon's gRPC server from inside the same process. The interface is
+// intentionally small and grows only as new wallet-layer needs arise.
 type SwapBackend interface {
 	// ResumePending re-arms background workers for every persisted
 	// pending swap session. It is idempotent: payment hashes already
@@ -524,6 +540,10 @@ type SwapBackend interface {
 	// when the active resume policy is allowed to start background
 	// workers.
 	ResumePending(ctx context.Context)
+
+	// RecoverVHTLCs asks the swap runtime to discover swapserver-owned
+	// recoverable vHTLC rows and arm daemon-owned recovery jobs.
+	RecoverVHTLCs(ctx context.Context) (*SwapRecoveryResult, error)
 }
 
 // SwapWalletConfig configures the optional walletdkrpc subserver. The struct
