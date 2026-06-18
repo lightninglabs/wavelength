@@ -229,10 +229,11 @@ type CustomForfeitInput struct {
 	Ancestry []types.Ancestry
 }
 
-// ActivateCustomForfeitInputsRequest starts temporary PendingForfeit VTXO actors
-// for custom inputs before registering a round intent. Inputs that are not
-// already known to the wallet are persisted as synthetic signer rows; inputs
-// that already have durable VTXO rows are overlaid without changing that row.
+// ActivateCustomForfeitInputsRequest starts temporary PendingForfeit VTXO
+// actors for custom inputs before registering a round intent. Inputs that are
+// not already known to the wallet are persisted as synthetic signer rows;
+// inputs that already have durable VTXO rows are overlaid without changing that
+// row.
 type ActivateCustomForfeitInputsRequest struct {
 	actor.BaseMessage
 

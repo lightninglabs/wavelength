@@ -79,7 +79,9 @@ func TestVTXOExpiryInfoProtoRoundTrip(t *testing.T) {
 	require.Equal(t, testExpiryStatus, decoded.GetExpiryInfo().GetStatus())
 	require.Equal(t, int32(784), decoded.GetExpiryInfo().GetCurrentHeight())
 	require.Equal(t, int32(1000), decoded.GetExpiryInfo().GetBatchExpiry())
-	require.Equal(t, int32(216), decoded.GetExpiryInfo().GetBlocksRemaining())
+	require.Equal(
+		t, int32(216), decoded.GetExpiryInfo().GetBlocksRemaining(),
+	)
 	require.Equal(
 		t, int32(234),
 		decoded.GetExpiryInfo().GetRefreshThresholdBlocks(),
@@ -88,11 +90,16 @@ func TestVTXOExpiryInfoProtoRoundTrip(t *testing.T) {
 		t, int32(162),
 		decoded.GetExpiryInfo().GetCriticalThresholdBlocks(),
 	)
-	require.Equal(t, uint32(144), decoded.GetExpiryInfo().GetRelativeExpiry())
+	require.Equal(
+		t, uint32(144), decoded.GetExpiryInfo().GetRelativeExpiry(),
+	)
 	require.Equal(t, uint32(3), decoded.GetExpiryInfo().GetMaxTreeDepth())
 	require.Equal(t, uint32(2), decoded.GetExpiryInfo().GetChainDepth())
 	require.Equal(t, "00:1", decoded.GetVtxo().GetOutpoint())
-	require.Equal(t, testExpiryStatus, decoded.GetVtxo().GetExpiryInfo().GetStatus())
+	require.Equal(
+		t, testExpiryStatus,
+		decoded.GetVtxo().GetExpiryInfo().GetStatus(),
+	)
 }
 
 // TestVHTLCRecoveryStatusProtoRoundTrip guards the recovery control-plane

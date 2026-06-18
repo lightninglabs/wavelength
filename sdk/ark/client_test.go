@@ -59,12 +59,12 @@ const (
 	// staying within the repository's line-length limit.
 	testSafeExpiryStatus = daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_SAFE
 
-	// testRefreshExpiryStatus keeps fake expiry info fixtures readable while
-	// staying within the repository's line-length limit.
+	// testRefreshExpiryStatus keeps fake expiry info fixtures readable
+	// while staying within the repository's line-length limit.
 	testRefreshExpiryStatus = daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_NEEDS_REFRESH
 
-	// testCriticalExpiryStatus keeps fake expiry info fixtures readable while
-	// staying within the repository's line-length limit.
+	// testCriticalExpiryStatus keeps fake expiry info fixtures readable
+	// while staying within the repository's line-length limit.
 	testCriticalExpiryStatus = daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_CRITICAL
 )
 
@@ -816,7 +816,10 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.True(t, expiryResp.GetFound())
-	require.Equal(t, testCriticalExpiryStatus, expiryResp.GetExpiryInfo().GetStatus())
+	require.Equal(
+		t, testCriticalExpiryStatus,
+		expiryResp.GetExpiryInfo().GetStatus(),
+	)
 
 	service.mu.Lock()
 	expiryReq := service.lastExpiryInfoReq

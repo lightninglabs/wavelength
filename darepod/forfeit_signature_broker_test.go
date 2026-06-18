@@ -352,7 +352,9 @@ func TestForfeitSignatureBrokerListDoesNotAdvancePastEarlierPendingRequest(
 // TestForfeitSignatureBrokerSubmitAllowsNoExternalParticipants verifies a
 // pending request can be answered with no external signatures when the selected
 // spend path only requires the local VTXO actor and the operator.
-func TestForfeitSignatureBrokerSubmitAllowsNoExternalParticipants(t *testing.T) {
+func TestForfeitSignatureBrokerSubmitAllowsNoExternalParticipants(
+	t *testing.T) {
+
 	t.Parallel()
 
 	broker := newForfeitSignatureBroker()

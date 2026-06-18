@@ -1748,11 +1748,13 @@ func (c *SwapClient) claimReceiveVHTLC(ctx context.Context,
 }
 
 // reconcileLiveReceiveFunding refreshes the remembered vHTLC funding row before
-// a claim. A cooperative vHTLC refresh preserves the policy script but moves the
-// claimable output to a new outpoint, and the replacement amount may be reduced
-// by refresh fees. A delayed or resumed receive session must follow the
+// a claim. A cooperative vHTLC refresh preserves the policy script but moves
+// the claimable output to a new outpoint, and the replacement amount may be
+// reduced by refresh fees. A delayed or resumed receive session must follow the
 // authoritative live indexer row before spending.
-func (s *ReceiveSession) reconcileLiveReceiveFunding(ctx context.Context) error {
+func (s *ReceiveSession) reconcileLiveReceiveFunding(
+	ctx context.Context) error {
+
 	if s == nil || s.client == nil || len(s.vhtlcPkScript) == 0 {
 		return nil
 	}
@@ -1761,7 +1763,8 @@ func (s *ReceiveSession) reconcileLiveReceiveFunding(ctx context.Context) error 
 		ctx, s.vhtlcPkScript,
 	)
 	if err != nil {
-		s.client.log.DebugS(ctx,
+		s.client.log.DebugS(
+			ctx,
 			"Unable to refresh receive vHTLC outpoint",
 			slog.String("err", err.Error()),
 			btclog.Hex("hash", s.PaymentHash[:]),
@@ -1774,7 +1777,8 @@ func (s *ReceiveSession) reconcileLiveReceiveFunding(ctx context.Context) error 
 		return nil
 	}
 	if s.vhtlcAmount != 0 && vtxo.AmountSat != s.vhtlcAmount {
-		s.client.log.WarnS(ctx,
+		s.client.log.WarnS(
+			ctx,
 			"Live receive vHTLC amount changed before claim",
 			nil,
 			btclog.Hex("hash", s.PaymentHash[:]),

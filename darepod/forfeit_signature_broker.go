@@ -476,31 +476,31 @@ func verifyExternalForfeitParticipantSignatures(
 // externalForfeitParticipantKeys returns the keys from the selected forfeit
 // spend path that the local VTXO actor cannot sign and the operator does not
 // sign as part of its normal round role.
-func externalForfeitParticipantKeys(
-	req *vtxo.ForfeitParticipantSignRequest) (
+func externalForfeitParticipantKeys(req *vtxo.ForfeitParticipantSignRequest) (
 	map[string]*btcec.PublicKey, error) {
 
 	if req == nil {
 		return nil, fmt.Errorf("pending signing request is missing")
 	}
 	if req.VTXO == nil {
-		return nil, fmt.Errorf("pending signing request vtxo is missing")
+		return nil, fmt.Errorf("pending signing request vtxo is " +
+			"missing")
 	}
 	if req.VTXO.OperatorKey == nil {
-		return nil, fmt.Errorf("pending signing request operator key is " +
-			"missing")
-	}
-	if req.VTXO.ClientKey.PubKey == nil {
-		return nil, fmt.Errorf("pending signing request local client key " +
+		return nil, fmt.Errorf("pending signing request operator key " +
 			"is missing")
 	}
+	if req.VTXO.ClientKey.PubKey == nil {
+		return nil, fmt.Errorf("pending signing request local client " +
+			"key is missing")
+	}
 	if req.SpendPath == nil {
-		return nil, fmt.Errorf("pending signing request spend path is " +
-			"missing")
+		return nil, fmt.Errorf("pending signing request spend path " +
+			"is missing")
 	}
 	if req.ForfeitTx == nil {
-		return nil, fmt.Errorf("pending signing request forfeit tx is " +
-			"missing")
+		return nil, fmt.Errorf("pending signing request forfeit tx " +
+			"is missing")
 	}
 
 	template, err := arkscript.DecodePolicyTemplate(

@@ -3403,8 +3403,12 @@ func TestReceiveSessionClaimFollowsRefreshedLiveVHTLC(t *testing.T) {
 	require.Equal(t, refreshed.Outpoint, session.vhtlcOutpoint)
 	require.Equal(t, 1, daemonConn.sendCustomCalls)
 	require.Len(t, daemonConn.lastClaimInput, 1)
-	require.Equal(t, refreshed.Outpoint, daemonConn.lastClaimInput[0].Outpoint)
-	require.Equal(t, refreshed.AmountSat, daemonConn.lastClaimInput[0].AmountSat)
+	require.Equal(
+		t, refreshed.Outpoint, daemonConn.lastClaimInput[0].Outpoint,
+	)
+	require.Equal(
+		t, refreshed.AmountSat, daemonConn.lastClaimInput[0].AmountSat,
+	)
 }
 
 // TestReceiveSessionFreshClaimBoundsSpentLookupGRPCDeadline mirrors

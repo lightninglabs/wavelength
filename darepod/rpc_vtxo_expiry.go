@@ -26,8 +26,9 @@ func (r *RPCServer) GetVTXOExpiryInfo(ctx context.Context,
 	}
 
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument,
-			"request is required")
+		return nil, status.Error(
+			codes.InvalidArgument, "request is required",
+		)
 	}
 
 	currentHeight := req.GetCurrentHeight()
@@ -53,30 +54,33 @@ func (r *RPCServer) GetVTXOExpiryInfo(ctx context.Context,
 		)
 
 	default:
-		return nil, status.Error(codes.InvalidArgument,
-			"outpoint or pk_script is required")
+		return nil, status.Error(
+			codes.InvalidArgument,
+			"outpoint or pk_script is required",
+		)
 	}
 }
 
 // getLocalVTXOExpiryInfo resolves a locally persisted VTXO by outpoint and
 // classifies it with the descriptor's full ancestry metadata.
-func (r *RPCServer) getLocalVTXOExpiryInfo(ctx context.Context,
-	outpoint string, currentHeight int32) (
-	*daemonrpc.GetVTXOExpiryInfoResponse, error) {
+func (r *RPCServer) getLocalVTXOExpiryInfo(ctx context.Context, outpoint string,
+	currentHeight int32) (*daemonrpc.GetVTXOExpiryInfoResponse, error) {
 
 	if outpoint == "" {
-		return nil, status.Error(codes.InvalidArgument,
-			"missing outpoint")
+		return nil, status.Error(
+			codes.InvalidArgument, "missing outpoint",
+		)
 	}
 	if r.server.vtxoStore == nil {
-		return nil, status.Error(codes.Internal,
-			"vtxo store not initialized")
+		return nil, status.Error(
+			codes.Internal, "vtxo store not initialized",
+		)
 	}
 
 	op, err := parseOutpointString(outpoint)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"invalid outpoint: %v", err)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
+			"outpoint: %v", err)
 	}
 
 	desc, err := r.server.vtxoStore.GetVTXO(ctx, op)
@@ -85,8 +89,7 @@ func (r *RPCServer) getLocalVTXOExpiryInfo(ctx context.Context,
 			return &daemonrpc.GetVTXOExpiryInfoResponse{}, nil
 		}
 
-		return nil, status.Errorf(codes.Internal,
-			"get vtxo: %v", err)
+		return nil, status.Errorf(codes.Internal, "get vtxo: %v", err)
 	}
 
 	protoVTXO := descriptorToProto(desc)
@@ -108,12 +111,14 @@ func (r *RPCServer) getIndexedVTXOExpiryInfo(ctx context.Context,
 	*daemonrpc.GetVTXOExpiryInfoResponse, error) {
 
 	if len(pkScript) == 0 {
-		return nil, status.Error(codes.InvalidArgument,
-			"missing pk_script")
+		return nil, status.Error(
+			codes.InvalidArgument, "missing pk_script",
+		)
 	}
 	if r.server.indexer == nil {
-		return nil, status.Error(codes.Internal,
-			"indexer client not initialized")
+		return nil, status.Error(
+			codes.Internal, "indexer client not initialized",
+		)
 	}
 
 	statusFilter := make([]arkrpc.VTXOStatus, 0, len(filters))
@@ -135,8 +140,8 @@ func (r *RPCServer) getIndexedVTXOExpiryInfo(ctx context.Context,
 		nil, 1, statusFilter,
 	)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"indexer query failed: %v", err)
+		return nil, status.Errorf(codes.Internal, "indexer query "+
+			"failed: %v", err)
 	}
 
 	vtxos := vtxo.FlattenListVTXOsByScriptsResponse(resp)
@@ -146,8 +151,8 @@ func (r *RPCServer) getIndexedVTXOExpiryInfo(ctx context.Context,
 
 	protoVTXO, err := indexedVTXOToProto(vtxos[0], currentHeight)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"convert indexed vtxo: %v", err)
+		return nil, status.Errorf(codes.Internal, "convert indexed "+
+			"vtxo: %v", err)
 	}
 
 	return &daemonrpc.GetVTXOExpiryInfoResponse{
@@ -170,6 +175,7 @@ func (r *RPCServer) currentBlockHeight(ctx context.Context) (int32, error) {
 		_, bestHeight, bestErr := lndSvc.ChainKit.GetBestBlock(ctx)
 		if bestErr != nil {
 			err = fmt.Errorf("fetch lnd best block: %w", bestErr)
+
 			return
 		}
 
@@ -177,22 +183,23 @@ func (r *RPCServer) currentBlockHeight(ctx context.Context) (int32, error) {
 		found = true
 	})
 	if err != nil {
-		return 0, status.Errorf(codes.Unavailable,
-			"fetch block height: %v", err)
+		return 0, status.Errorf(codes.Unavailable, "fetch block "+
+			"height: %v", err)
 	}
 	if found {
 		return height, nil
 	}
 
 	if r.server.chainBackend == nil {
-		return 0, status.Error(codes.Unavailable,
-			"chain backend not initialized")
+		return 0, status.Error(
+			codes.Unavailable, "chain backend not initialized",
+		)
 	}
 
 	height, _, err = r.server.chainBackend.BestBlock(ctx)
 	if err != nil {
-		return 0, status.Errorf(codes.Unavailable,
-			"fetch block height: %v", err)
+		return 0, status.Errorf(codes.Unavailable, "fetch block "+
+			"height: %v", err)
 	}
 
 	return height, nil
@@ -209,7 +216,10 @@ func expiryInfoFromDescriptor(desc *vtxo.Descriptor,
 
 	return expiryInfoFromTiming(
 		desc.BatchExpiry, desc.RelativeExpiry,
-		uint32(desc.MaxTreeDepth()), uint32(desc.ChainDepth),
+		uint32(
+			desc.MaxTreeDepth(),
+		),
+		uint32(desc.ChainDepth),
 		currentHeight,
 	)
 }
@@ -277,7 +287,6 @@ func expiryInfoFromTiming(batchExpiry int32, relativeExpiry, maxTreeDepth,
 // expiryStatusToProto maps the wallet expiry enum onto the public daemon RPC
 // enum.
 func expiryStatusToProto(status vtxo.ExpiryStatus) daemonrpc.VTXOExpiryStatus {
-
 	switch status {
 	case vtxo.ExpiryStatusSafe:
 		return daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_SAFE

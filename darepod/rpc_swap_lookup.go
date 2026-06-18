@@ -171,6 +171,7 @@ func daemonStatusToIndexerStatus(status daemonrpc.VTXOStatus) (
 // simplified VTXO response shape.
 func indexedVTXOToProto(vtxo *arkrpc.VTXO,
 	currentHeight int32) (*daemonrpc.VTXO, error) {
+
 	if vtxo == nil {
 		return nil, fmt.Errorf("vtxo must be provided")
 	}

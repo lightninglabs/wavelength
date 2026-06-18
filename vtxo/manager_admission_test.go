@@ -178,9 +178,11 @@ func (f failingChainSourceRef) Ask(_ context.Context,
 	_ chainsource.ChainSourceMsg) actor.Future[chainsource.ChainSourceResp] {
 
 	promise := actor.NewPromise[chainsource.ChainSourceResp]()
-	promise.Complete(fn.Err[chainsource.ChainSourceResp](
-		fmt.Errorf("subscribe failed"),
-	))
+	promise.Complete(
+		fn.Err[chainsource.ChainSourceResp](
+			fmt.Errorf("subscribe failed"),
+		),
+	)
 
 	return promise.Future()
 }
@@ -479,7 +481,9 @@ func TestDropCustomForfeitInputsRestoresExistingActor(t *testing.T) {
 	}
 	desc.OperatorKey = operatorPriv.PubKey()
 	mgr.actors[desc.Outpoint] = newMockVTXOActorRef(
-		desc.Outpoint.String(), &SpendingState{VTXO: desc},
+		desc.Outpoint.String(), &SpendingState{
+			VTXO: desc,
+		},
 	)
 
 	store.On("GetVTXO", mock.Anything, desc.Outpoint).Return(

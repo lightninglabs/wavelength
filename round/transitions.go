@@ -3020,8 +3020,8 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 // that should be released and custom refresh inputs that should be dropped when
 // a round fails before signing. Custom forfeits carry explicit spend paths
 // because they are not normal wallet VTXOs.
-func forfeitRollbackOutpoints(
-	requests []types.ForfeitRequest) ([]wire.OutPoint, []wire.OutPoint) {
+func forfeitRollbackOutpoints(requests []types.ForfeitRequest) ([]wire.OutPoint,
+	[]wire.OutPoint) {
 
 	standardSeen := make(map[wire.OutPoint]struct{}, len(requests))
 	customSeen := make(map[wire.OutPoint]struct{}, len(requests))

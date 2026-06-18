@@ -94,8 +94,7 @@ func TestDaemonClientGetVTXOExpiryInfoPost(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, resp.GetFound())
 	require.Equal(
-		t,
-		daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_SAFE,
+		t, daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_SAFE,
 		resp.GetExpiryInfo().GetStatus(),
 	)
 }

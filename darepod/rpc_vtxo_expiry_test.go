@@ -35,8 +35,7 @@ func TestExpiryInfoFromDescriptorUsesDefaultThresholds(t *testing.T) {
 	info := expiryInfoFromDescriptor(desc, 784)
 
 	require.Equal(
-		t,
-		daemonrpc.
+		t, daemonrpc.
 			VTXOExpiryStatus_VTXO_EXPIRY_STATUS_NEEDS_REFRESH,
 		info.GetStatus(),
 	)
@@ -121,8 +120,7 @@ func TestExpiryInfoFromIndexedVTXOUsesMaxAncestryPathDepth(t *testing.T) {
 	info := expiryInfoFromIndexedVTXO(indexed, 850)
 
 	require.Equal(
-		t,
-		daemonrpc.
+		t, daemonrpc.
 			VTXOExpiryStatus_VTXO_EXPIRY_STATUS_NEEDS_REFRESH,
 		info.GetStatus(),
 	)
