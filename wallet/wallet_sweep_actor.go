@@ -757,24 +757,12 @@ func verifyWalletSweepOutputsEqual(expected, actual *wire.MsgTx) error {
 
 // submitWalletSweepConfirmer hands the signed general sweep transaction off to
 // the shared txconfirm broadcaster for durable in-session rebroadcast and
-// confirmation tracking. It mirrors the boarding-sweep submit path
-// (EnsureConfirmedReq + LookupRef + synchronous TxStateFailed check) but routes
+// confirmation tracking via the common submitSweepToConfirm path. It routes
 // terminal notifications into a WalletSweepTxNotification whose handler only
 // logs — there is no boarding-store record to reconcile, by the lean decision
 // that general wallet sweeps are not persisted.
-//
-// registration shape (EnsureConfirmedReq + LookupRef + TxStateFailed check);
-// the only difference is the notification type, and folding the two into one
-// generic helper would couple the boarding-sweep store-reconciliation path to
-// this persistence-free path.
-//
-//nolint:dupl // Intentionally mirrors submitSweepConfirmer's txconfirm
 func (a *Ark) submitWalletSweepConfirmer(ctx context.Context, tx *wire.MsgTx,
 	pkScript []byte, heightHint uint32) error {
-
-	if a.actorSystem == nil {
-		return fmt.Errorf("actor system unavailable")
-	}
 
 	walletNotif := actor.NewMapInputRef[
 		WalletSweepTxNotification, WalletMsg,
@@ -808,40 +796,10 @@ func (a *Ark) submitWalletSweepConfirmer(ctx context.Context, tx *wire.MsgTx,
 		},
 	)
 
-	req := &txconfirm.EnsureConfirmedReq{
-		Tx:                   tx,
-		ConfirmationPkScript: pkScript,
-		Label:                walletSweepBroadcastLabel,
-		HeightHint:           heightHint,
-		TargetConfs:          1,
-		Subscriber:           subscriber,
-	}
-
-	ref := txconfirm.LookupRef(a.actorSystem)
-	future := ref.Ask(ctx, req)
-	result := future.Await(ctx)
-	if result.IsErr() {
-		return fmt.Errorf("ensure confirmed: %w", result.Err())
-	}
-
-	// txconfirm.handleEnsure returns an OK actor response even when the
-	// tracked tx has been moved into TxStateFailed (broadcast or
-	// confirmation-watch setup failed synchronously). Surface that as an
-	// error so the caller releases the leases instead of reporting a txid
-	// while the broadcaster's async failure notification is still in
-	// flight.
-	raw := result.UnwrapOr(nil)
-	resp, ok := raw.(*txconfirm.EnsureConfirmedResp)
-	if !ok || resp == nil {
-		return fmt.Errorf("ensure confirmed: unexpected response %T",
-			raw)
-	}
-	if resp.State == txconfirm.TxStateFailed {
-		return fmt.Errorf("ensure confirmed: txconfirm entered " +
-			"failed state during registration")
-	}
-
-	return nil
+	return a.submitSweepToConfirm(
+		ctx, tx, pkScript, heightHint, walletSweepBroadcastLabel,
+		subscriber,
+	)
 }
 
 // handleWalletSweepTxNotification processes a txconfirm terminal notification
