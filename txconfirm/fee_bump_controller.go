@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 
 	"github.com/btcsuite/btcd/btcutil"
@@ -200,6 +201,15 @@ func (c *FeeBumpInputController) EnsureSupply(ctx context.Context,
 		return nil, nil
 	}
 
+	// Some demands still have no confirmed supply, so a fanout is the only
+	// way to unblock them. Record the demand pressure that triggered it
+	// before committing wallet funds.
+	c.log.DebugS(ctx, "Fee-input fanout needed",
+		slog.Int("blocked_demands", len(blocked)),
+		slog.Int64("fee_rate_sat_per_vbyte", feeRate),
+		slog.Int("height", int(height)),
+	)
+
 	fanoutDemands := blocked
 	fundedTx, err := c.buildFeeInputFanoutTx(
 		ctx, blocked, len(blocked), feeRate,
@@ -220,6 +230,17 @@ func (c *FeeBumpInputController) EnsureSupply(ctx context.Context,
 		if err != nil {
 			return nil, err
 		}
+
+		// The wallet had no free confirmed supply, so we fell back to
+		// re-spending inputs already reserved by these parents. This is
+		// the replacement path, worth a trace as it changes which UTXOs
+		// the parents depend on.
+		c.log.DebugS(ctx, "Fee-input fanout using reserved-input "+
+			"fallback",
+			slog.Int("reserved_inputs", len(reservedInputs)),
+			slog.Int("demands", len(demands)),
+		)
+
 		fanoutDemands = demands
 	}
 
@@ -288,6 +309,15 @@ func (c *FeeBumpInputController) EnsureSupply(ctx context.Context,
 		assignments:         assignments,
 		lastBroadcastHeight: height,
 	}
+
+	// The fanout is now on the wire. Log it at info as a lifecycle event:
+	// this is the moment several blocked parents gain a supply path.
+	c.log.InfoS(ctx, "Fee-input fanout broadcast",
+		slog.String("txid", broadcastResp.Txid.String()),
+		slog.Int("num_outputs", len(fundedTx.TxOut)),
+		slog.Int("num_demands", len(fanoutDemands)),
+	)
+
 	c.consumeFanoutInputs(fundedTx.TxIn)
 
 	if err := c.sendEvent(ctx, &feeBumpFanoutBroadcast{
@@ -362,6 +392,15 @@ func (c *FeeBumpInputController) ensurePendingFanoutLive(ctx context.Context,
 // the FSM and returns the updated pending state.
 func (c *FeeBumpInputController) recordRebroadcast(ctx context.Context,
 	height int32) (*pendingFeeInputFanout, error) {
+
+	// A rebroadcast keeps an in-flight fanout fresh across the fee-bump
+	// interval; trace it so the cadence is visible without being noisy.
+	if pending := c.PendingFanout(); pending != nil {
+		c.log.DebugS(ctx, "Rebroadcasting pending fee-input fanout",
+			slog.String("txid", pending.txid.String()),
+			slog.Int("height", int(height)),
+		)
+	}
 
 	if err := c.sendEvent(ctx, &feeBumpFanoutRebroadcast{
 		height: height,
@@ -807,6 +846,13 @@ func (c *FeeBumpInputController) clearPendingFanout(ctx context.Context) {
 		return
 	}
 
+	// Abandoning the fanout releases its predicted outputs and leases; log
+	// it so a cleared fanout can be correlated with the rebuild that
+	// follows.
+	c.log.DebugS(ctx, "Clearing pending fee-input fanout",
+		slog.String("txid", pending.txid.String()),
+	)
+
 	c.releasePredictedFanoutOutputs(pending.assignments)
 	if pending.tx != nil {
 		for _, txIn := range pending.tx.TxIn {
@@ -832,6 +878,15 @@ func (c *FeeBumpInputController) OnFanoutConfirmed(ctx context.Context,
 	if pending == nil || pending.txid != txid {
 		return false
 	}
+
+	// The fanout confirmed, so its predicted outputs become spendable
+	// confirmed fee inputs for the assigned parents. This is the event that
+	// unblocks the CPFP children, so it logs at info.
+	c.log.InfoS(ctx, "Fee-input fanout confirmed; promoting predicted "+
+		"inputs",
+		slog.String("txid", txid.String()),
+		slog.Int("num_parents", len(pending.assignments)),
+	)
 
 	for parent, outpoints := range pending.assignments {
 		state := c.broadcaster.parentStates[parent]

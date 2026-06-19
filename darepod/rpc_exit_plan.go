@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -111,6 +112,13 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 		)
 	}
 
+	// Trace the previewed batch shape on entry so the aggregate verdict
+	// logged on exit can be correlated with the request that produced it.
+	r.server.log.DebugS(ctx, "GetExitPlan requested",
+		slog.Int("num_outpoints", len(req.Outpoints)),
+		slog.Uint64("conf_target", uint64(req.ConfTarget)),
+	)
+
 	// The fee estimate and wallet snapshot are wallet-wide, so compute
 	// them once and reuse them for every previewed outpoint.
 	feeRate, err := r.estimateWalletFeeRate(ctx, req.ConfTarget)
@@ -152,6 +160,13 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 	}
 
 	resp.CanStart = sawEntry && canStart
+
+	// Summarize the aggregate readiness verdict on exit.
+	r.server.log.DebugS(ctx, "GetExitPlan computed",
+		slog.Bool("can_start", resp.CanStart),
+		slog.Int64("total_shortfall_sat",
+			resp.TotalFundingShortfallSat),
+	)
 
 	return resp, nil
 }
@@ -319,6 +334,13 @@ func (r *RPCServer) SweepWallet(ctx context.Context, req *SweepWalletRequest) (
 			"unavailable")
 	}
 
+	// Trace the request shape on entry; the wallet actor owns the detailed
+	// preview/broadcast logging, so this shim only bookends the call.
+	r.server.log.DebugS(ctx, "SweepWallet requested",
+		slog.String("destination", req.DestinationAddress),
+		slog.Bool("broadcast", req.Broadcast),
+	)
+
 	walletReq := &wallet.SweepWalletFundsRequest{
 		DestinationAddress: req.DestinationAddress,
 		Broadcast:          req.Broadcast,
@@ -340,6 +362,13 @@ func (r *RPCServer) SweepWallet(ctx context.Context, req *SweepWalletRequest) (
 		return nil, status.Errorf(codes.Internal, "unexpected sweep "+
 			"response from wallet actor")
 	}
+
+	// Summarize the outcome on exit: whether the sweep was publishable and
+	// whether a tx was actually broadcast.
+	r.server.log.DebugS(ctx, "SweepWallet completed",
+		slog.Bool("can_broadcast", walletResp.CanBroadcast),
+		slog.Bool("has_txid", walletResp.HasTxid),
+	)
 
 	return walletSweepFundsResponseToRPC(walletResp), nil
 }

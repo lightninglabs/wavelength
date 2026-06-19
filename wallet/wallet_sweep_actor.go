@@ -278,6 +278,14 @@ func (a *Ark) handleSweepWalletFunds(ctx context.Context,
 
 	log := a.logger(ctx)
 
+	// A wallet sweep is an operator-initiated, fund-moving action, so log
+	// its entry at info with the request shape that determines the outcome.
+	log.InfoS(ctx, "Wallet sweep requested",
+		slog.String("destination", req.DestinationAddress),
+		slog.Bool("broadcast", req.Broadcast),
+		slog.Int64("fee_rate_sat_per_vbyte", req.FeeRateSatPerVByte),
+	)
+
 	// Decode and network-validate the destination address against the
 	// configured chain params before doing any work. A wrong-network
 	// address is an operator input error, surfaced as a transport error so
@@ -290,13 +298,32 @@ func (a *Ark) handleSweepWalletFunds(ctx context.Context,
 	// Resolve the fee rate (explicit or estimated) and then ALWAYS cap it.
 	// The cap is never a no-op: when no operator max is configured it falls
 	// back to txconfirm.DefaultMaxFeeRateSatPerVByte.
-	feeRate, err := a.resolveWalletSweepFeeRate(
+	resolvedFeeRate, err := a.resolveWalletSweepFeeRate(
 		ctx, req.FeeRateSatPerVByte, req.ConfTarget,
 	)
 	if err != nil {
 		return fn.Err[WalletResp](err)
 	}
-	feeRate = a.applyWalletSweepFeeCap(feeRate)
+	feeRate := a.applyWalletSweepFeeCap(resolvedFeeRate)
+
+	// The cap is never a no-op; trace when it actually clamped the resolved
+	// rate so an operator can tell their requested rate was lowered.
+	if feeRate < resolvedFeeRate {
+		log.DebugS(ctx, "Wallet sweep fee rate capped",
+			slog.Int64("resolved_sat_per_vbyte", resolvedFeeRate),
+			slog.Int64("capped_sat_per_vbyte", feeRate),
+		)
+	}
+
+	// A high fee rate on a wallet-draining sweep is worth flagging to the
+	// operator even when it is within the configured cap, mirroring the
+	// boarding-sweep warning.
+	if feeRate >= boardingSweepHighFeeRateWarningSatPerVByte {
+		log.WarnS(ctx, "Wallet sweep fee rate is unusually high",
+			nil,
+			slog.Int64("fee_rate_sat_per_vbyte", feeRate),
+		)
+	}
 
 	utxos, err := a.walletSweeper.ListUnspent(
 		ctx, 1, MaxConfsForListUnspent,
@@ -308,6 +335,18 @@ func (a *Ark) handleSweepWalletFunds(ctx context.Context,
 	}
 
 	resp := walletSweepPreview(utxos, destScript, feeRate)
+
+	// Trace the preview math so a preview-only request (or the broadcast
+	// gate below) leaves a record of what was selected and whether it could
+	// have been published.
+	log.DebugS(ctx, "Wallet sweep preview built",
+		slog.Int("num_inputs", len(resp.Inputs)),
+		slog.Int64("total_input_sat", resp.TotalInputSat),
+		slog.Int64("estimated_fee_sat", resp.EstimatedFeeSat),
+		slog.Int64("net_amount_sat", resp.NetAmountSat),
+		slog.Bool("can_broadcast", resp.CanBroadcast),
+	)
+
 	if !req.Broadcast {
 		return fn.Ok[WalletResp](resp)
 	}
@@ -544,6 +583,7 @@ func (a *Ark) broadcastWalletSweep(ctx context.Context, log btclog.Logger,
 	log.InfoS(ctx, "Wallet backing sweep submitted to broadcaster",
 		slog.String("txid", txid.String()),
 		slog.Int("num_inputs", len(resp.Inputs)),
+		slog.Int64("estimated_fee_sat", resp.EstimatedFeeSat),
 		slog.Int64("net_amount_sat", resp.NetAmountSat),
 		slog.Int64("fee_rate_sat_per_vbyte", resp.FeeRateSatPerVByte),
 	)
