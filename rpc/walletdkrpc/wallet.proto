@@ -812,6 +812,11 @@ message ExitPlanEntry {
 }
 
 message GetExitPlanResponse {
+    // plans holds one entry per requested outpoint, in request order.
+    // Entries are evaluated against a running wallet allocation: each
+    // feasible exit reserves its fee inputs before the next entry is
+    // planned, so a per-entry verdict reflects the wallet left after the
+    // earlier entries in the batch notionally start.
     repeated ExitPlanEntry plans = 1;
 
     // fee_rate_sat_per_vbyte is the shared chain fee estimate used for all
@@ -819,9 +824,18 @@ message GetExitPlanResponse {
     int64 fee_rate_sat_per_vbyte = 2;
 
     // can_start is the AND over every entry that has no per-outpoint error.
+    // Because entries draw from a shared wallet via the running allocation
+    // above, it is true only when every requested exit can be funded
+    // simultaneously, not merely one at a time.
     bool can_start = 3;
 
+    // total_funding_shortfall_sat is the summed shortfall across entries
+    // under simultaneous funding, so it already accounts for fee inputs two
+    // outpoints would otherwise both claim.
     int64 total_funding_shortfall_sat = 4;
+
+    // total_recommended_funding_sat is the summed recommended funding across
+    // entries.
     int64 total_recommended_funding_sat = 5;
 }
 

@@ -3152,13 +3152,26 @@ func (x *ExitPlanEntry) GetError() string {
 
 type GetExitPlanResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Plans []*ExitPlanEntry       `protobuf:"bytes,1,rep,name=plans,proto3" json:"plans,omitempty"`
+	// plans holds one entry per requested outpoint, in request order.
+	// Entries are evaluated against a running wallet allocation: each
+	// feasible exit reserves its fee inputs before the next entry is
+	// planned, so a per-entry verdict reflects the wallet left after the
+	// earlier entries in the batch notionally start.
+	Plans []*ExitPlanEntry `protobuf:"bytes,1,rep,name=plans,proto3" json:"plans,omitempty"`
 	// fee_rate_sat_per_vbyte is the shared chain fee estimate used for all
 	// entries.
 	FeeRateSatPerVbyte int64 `protobuf:"varint,2,opt,name=fee_rate_sat_per_vbyte,json=feeRateSatPerVbyte,proto3" json:"fee_rate_sat_per_vbyte,omitempty"`
 	// can_start is the AND over every entry that has no per-outpoint error.
-	CanStart                   bool  `protobuf:"varint,3,opt,name=can_start,json=canStart,proto3" json:"can_start,omitempty"`
-	TotalFundingShortfallSat   int64 `protobuf:"varint,4,opt,name=total_funding_shortfall_sat,json=totalFundingShortfallSat,proto3" json:"total_funding_shortfall_sat,omitempty"`
+	// Because entries draw from a shared wallet via the running allocation
+	// above, it is true only when every requested exit can be funded
+	// simultaneously, not merely one at a time.
+	CanStart bool `protobuf:"varint,3,opt,name=can_start,json=canStart,proto3" json:"can_start,omitempty"`
+	// total_funding_shortfall_sat is the summed shortfall across entries
+	// under simultaneous funding, so it already accounts for fee inputs two
+	// outpoints would otherwise both claim.
+	TotalFundingShortfallSat int64 `protobuf:"varint,4,opt,name=total_funding_shortfall_sat,json=totalFundingShortfallSat,proto3" json:"total_funding_shortfall_sat,omitempty"`
+	// total_recommended_funding_sat is the summed recommended funding across
+	// entries.
 	TotalRecommendedFundingSat int64 `protobuf:"varint,5,opt,name=total_recommended_funding_sat,json=totalRecommendedFundingSat,proto3" json:"total_recommended_funding_sat,omitempty"`
 	unknownFields              protoimpl.UnknownFields
 	sizeCache                  protoimpl.SizeCache

@@ -138,14 +138,20 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 	}
 	resp.Plans = make([]ExitPlanEntry, 0, len(req.Outpoints))
 
+	// Entries are previewed in request order against a running wallet
+	// allocation: each feasible exit reserves its fee inputs out of
+	// `remaining` before the next entry is assessed. Without this, a batch
+	// of N VTXOs that each fit the full wallet -- but not the wallet split
+	// N ways -- would every one report ready, so the aggregate can_start /
+	// shortfall would under-report the cross-VTXO overlap.
+	remaining := walletSnapshot
+
 	// canStart is the AND over every entry that has no per-outpoint
 	// error. It is only meaningful once at least one entry succeeds.
 	canStart := true
 	sawEntry := false
 	for _, raw := range req.Outpoints {
-		entry := r.exitPlanEntry(
-			ctx, raw, feeRate, walletSnapshot,
-		)
+		entry, verdict := r.exitPlanEntry(ctx, raw, feeRate, remaining)
 		resp.Plans = append(resp.Plans, entry)
 		if entry.Err != nil {
 			continue
@@ -157,6 +163,12 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 
 		recommended := entry.RecommendedTotalFundingSat
 		resp.TotalRecommendedFundingSat += recommended
+
+		// A feasible exit notionally claims its fee inputs, so shrink
+		// the wallet the remaining entries get to plan against.
+		if entry.CanStart {
+			remaining = claimExitFunding(remaining, verdict)
+		}
 	}
 
 	resp.CanStart = sawEntry && canStart
@@ -175,16 +187,21 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 // and wallet snapshot. Per-outpoint failures are recorded on entry.Err so the
 // caller can continue previewing the rest of the batch.
 func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
-	feeRate int64,
-	walletSnapshot unroll.ExitFundingSnapshot) ExitPlanEntry {
+	feeRate int64, walletSnapshot unroll.ExitFundingSnapshot) (
+	ExitPlanEntry, unroll.ExitFeasibility) {
 
 	entry := ExitPlanEntry{Outpoint: raw}
+
+	// verdict is the feasibility breakdown the caller uses to decrement the
+	// running wallet allocation between batch entries. It stays zero on the
+	// error paths below (the caller only consumes it for a feasible entry).
+	var verdict unroll.ExitFeasibility
 
 	outpoint, err := parseOutpointString(raw)
 	if err != nil {
 		entry.Err = fmt.Errorf("invalid outpoint: %w", err)
 
-		return entry
+		return entry, verdict
 	}
 	entry.Outpoint = outpoint.String()
 
@@ -193,23 +210,23 @@ func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
 		if errors.Is(err, sql.ErrNoRows) {
 			entry.Err = fmt.Errorf("VTXO %s not found", outpoint)
 
-			return entry
+			return entry, verdict
 		}
 
 		entry.Err = fmt.Errorf("get VTXO: %w", err)
 
-		return entry
+		return entry, verdict
 	}
 
 	plan := unroll.PlanExitFunding(
 		desc, btcutil.Amount(feeRate), walletSnapshot,
 	)
-	verdict := plan.Feasibility
+	verdict = plan.Feasibility
 	if verdict.RequiredWalletInputs == 0 {
 		entry.Err = fmt.Errorf("VTXO %s has no unilateral-exit "+
 			"ancestry", outpoint)
 
-		return entry
+		return entry, verdict
 	}
 
 	entry.RequiredConfirmations = plan.RequiredConfirmations
@@ -233,7 +250,7 @@ func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
 			entry.Err = fmt.Errorf("exit plan funding address: %w",
 				err)
 
-			return entry
+			return entry, verdict
 		}
 
 		entry.FundingAddress = fundingAddress
@@ -247,7 +264,7 @@ func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
 	if err != nil {
 		entry.Err = fmt.Errorf("exit status: %w", err)
 
-		return entry
+		return entry, verdict
 	}
 	entry.ExitJobFound = statusResp.GetFound()
 	entry.ExitStatus = statusResp.GetStatus()
@@ -257,7 +274,7 @@ func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
 			entry.Err = fmt.Errorf("exit status sweep txid: %w",
 				err)
 
-			return entry
+			return entry, verdict
 		}
 
 		entry.SweepTxid = txid
@@ -266,7 +283,30 @@ func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
 		entry.LastError = errors.New(lastErr)
 	}
 
-	return entry
+	return entry, verdict
+}
+
+// claimExitFunding returns the wallet snapshot that remains after a feasible
+// exit reserves its fee inputs. A started exit pins RequiredWalletInputs of
+// the usable confirmed UTXOs (one per ancestry path) and spends CPFPFeeTotalSat
+// of the confirmed balance on CPFP fees, so a batch preview must hand each
+// later entry the shrunken wallet rather than the full one. Both fields clamp
+// at zero so an over-subscribed batch reports the next entry as unfunded
+// rather than wrapping negative.
+func claimExitFunding(snapshot unroll.ExitFundingSnapshot,
+	verdict unroll.ExitFeasibility) unroll.ExitFundingSnapshot {
+
+	snapshot.WalletUsableInputs -= verdict.RequiredWalletInputs
+	if snapshot.WalletUsableInputs < 0 {
+		snapshot.WalletUsableInputs = 0
+	}
+
+	snapshot.WalletConfirmedSat -= verdict.CPFPFeeTotalSat
+	if snapshot.WalletConfirmedSat < 0 {
+		snapshot.WalletConfirmedSat = 0
+	}
+
+	return snapshot
 }
 
 // walletExitFundingSnapshot returns the confirmed backing-wallet balance and
