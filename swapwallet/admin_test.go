@@ -336,41 +336,57 @@ func TestGetExitPlanProxiesDaemonPlan(t *testing.T) {
 	svc, rpc := newAdminFixture(t)
 	sweepTxid := testHash(1)
 	rpc.exitPlanResp = &darepod.ExitPlanResponse{
-		FundingAddress:             "bcrt1plan",
-		RequiredConfirmations:      1,
 		FeeRateSatPerVByte:         3,
-		RequiredFeeUTXOCount:       2,
-		UsableFeeUTXOCount:         1,
-		RecommendedUTXOAmountSat:   10_000,
-		RecommendedTotalFundingSat: 20_000,
-		FundingShortfallSat:        10_000,
 		CanStart:                   false,
-		ExitJobFound:               true,
-		ExitStatus: daemonrpc.
-			UnrollJobStatus_UNROLL_JOB_STATUS_PENDING,
-		SweepTxid: &sweepTxid,
-		LastError: errors.New("last"),
+		TotalFundingShortfallSat:   10_000,
+		TotalRecommendedFundingSat: 20_000,
+		Plans: []darepod.ExitPlanEntry{{
+			Outpoint:                   "abc:0",
+			FundingAddress:             "bcrt1plan",
+			RequiredConfirmations:      1,
+			RequiredFeeUTXOCount:       2,
+			UsableFeeUTXOCount:         1,
+			RecommendedUTXOAmountSat:   10_000,
+			RecommendedTotalFundingSat: 20_000,
+			FundingShortfallSat:        10_000,
+			CanStart:                   false,
+			ExitJobFound:               true,
+			ExitStatus: daemonrpc.
+				UnrollJobStatus_UNROLL_JOB_STATUS_PENDING,
+			SweepTxid: &sweepTxid,
+			LastError: errors.New("last"),
+		}},
 	}
 
 	resp, err := svc.GetExitPlan(
 		t.Context(), &walletdkrpc.GetExitPlanRequest{
-			Outpoint:   "abc:0",
+			Outpoints:  []string{"abc:0"},
 			ConfTarget: 3,
 		},
 	)
 	require.NoError(t, err)
-	require.Equal(t, "abc:0", rpc.exitPlanLast.Outpoint)
+	require.Equal(t, []string{"abc:0"}, rpc.exitPlanLast.Outpoints)
 	require.Equal(t, uint32(3), rpc.exitPlanLast.ConfTarget)
-	require.Equal(t, "bcrt1plan", resp.GetFundingAddress())
 	require.Equal(t, int64(3), resp.GetFeeRateSatPerVbyte())
-	require.Equal(t, uint32(2), resp.GetRequiredFeeUtxoCount())
-	require.Equal(t, int64(10_000), resp.GetFundingShortfallSat())
+	require.Equal(t, int64(10_000), resp.GetTotalFundingShortfallSat())
+	require.Equal(
+		t, int64(20_000), resp.GetTotalRecommendedFundingSat(),
+	)
 	require.False(t, resp.GetCanStart())
-	require.True(t, resp.GetExitJobFound())
+
+	require.Len(t, resp.GetPlans(), 1)
+	entry := resp.GetPlans()[0]
+	require.Equal(t, "abc:0", entry.GetOutpoint())
+	require.Equal(t, "bcrt1plan", entry.GetFundingAddress())
+	require.Equal(t, uint32(2), entry.GetRequiredFeeUtxoCount())
+	require.Equal(t, int64(10_000), entry.GetFundingShortfallSat())
+	require.False(t, entry.GetCanStart())
+	require.True(t, entry.GetExitJobFound())
 	require.Equal(
 		t, walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING,
-		resp.GetExitStatus(),
+		entry.GetExitStatus(),
 	)
+	require.Empty(t, entry.GetError())
 }
 
 // TestGetExitPlanAllowsMissingSweepTxid confirms an in-progress exit plan can
@@ -380,19 +396,23 @@ func TestGetExitPlanAllowsMissingSweepTxid(t *testing.T) {
 
 	svc, rpc := newAdminFixture(t)
 	rpc.exitPlanResp = &darepod.ExitPlanResponse{
-		FundingAddress:           "bcrt1plan",
-		FeeRateSatPerVByte:       3,
-		RequiredFeeUTXOCount:     1,
-		RecommendedUTXOAmountSat: 10_000,
+		FeeRateSatPerVByte: 3,
+		Plans: []darepod.ExitPlanEntry{{
+			Outpoint:                 "abc:0",
+			FundingAddress:           "bcrt1plan",
+			RequiredFeeUTXOCount:     1,
+			RecommendedUTXOAmountSat: 10_000,
+		}},
 	}
 
 	resp, err := svc.GetExitPlan(
 		t.Context(), &walletdkrpc.GetExitPlanRequest{
-			Outpoint: "abc:0",
+			Outpoints: []string{"abc:0"},
 		},
 	)
 	require.NoError(t, err)
-	require.Empty(t, resp.GetSweepTxid())
+	require.Len(t, resp.GetPlans(), 1)
+	require.Empty(t, resp.GetPlans()[0].GetSweepTxid())
 }
 
 // TestGetExitPlanRejectsEmptyOutpoint confirms an empty request does not reach

@@ -27,15 +27,26 @@ func newReadyExitPlanRPCServer() *RPCServer {
 	}
 }
 
-func TestGetExitPlanRejectsInvalidOutpoint(t *testing.T) {
+func TestGetExitPlanRejectsEmptyOutpoints(t *testing.T) {
 	t.Parallel()
 
 	r := newReadyExitPlanRPCServer()
-	_, err := r.GetExitPlan(t.Context(), &ExitPlanRequest{
-		Outpoint: "not-an-outpoint",
-	})
+	_, err := r.GetExitPlan(t.Context(), &ExitPlanRequest{})
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
+}
+
+func TestGetExitPlanRejectsUninitializedStore(t *testing.T) {
+	t.Parallel()
+
+	// The VTXO store check is request-wide: a nil store fails the whole
+	// call rather than producing per-outpoint errors.
+	r := newReadyExitPlanRPCServer()
+	_, err := r.GetExitPlan(t.Context(), &ExitPlanRequest{
+		Outpoints: []string{"not-an-outpoint"},
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err))
 }
 
 func TestSweepWalletRejectsMissingDestination(t *testing.T) {

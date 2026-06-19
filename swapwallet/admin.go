@@ -281,15 +281,15 @@ func (s *Service) getExitPlan(ctx context.Context,
 		)
 	}
 
-	if req.GetOutpoint() == "" {
+	if len(req.GetOutpoints()) == 0 {
 		return nil, status.Error(
-			codes.InvalidArgument, "outpoint is required",
+			codes.InvalidArgument, "outpoints is required",
 		)
 	}
 
 	resp, err := s.deps.RPCServer.GetExitPlan(
 		ctx, &darepod.ExitPlanRequest{
-			Outpoint:   req.GetOutpoint(),
+			Outpoints:  req.GetOutpoints(),
 			ConfTarget: req.GetConfTarget(),
 		},
 	)
@@ -298,22 +298,34 @@ func (s *Service) getExitPlan(ctx context.Context,
 			err)
 	}
 
+	plans := make([]*walletdkrpc.ExitPlanEntry, 0, len(resp.Plans))
+	for _, entry := range resp.Plans {
+		plans = append(plans, &walletdkrpc.ExitPlanEntry{
+			Outpoint:                   entry.Outpoint,
+			FundingAddress:             entry.FundingAddress,
+			RequiredConfirmations:      entry.RequiredConfirmations,
+			RequiredFeeUtxoCount:       entry.RequiredFeeUTXOCount,
+			UsableFeeUtxoCount:         entry.UsableFeeUTXOCount,
+			RecommendedUtxoAmountSat:   entry.RecommendedUTXOAmountSat,
+			RecommendedTotalFundingSat: entry.RecommendedTotalFundingSat,
+			FundingShortfallSat:        entry.FundingShortfallSat,
+			CanStart:                   entry.CanStart,
+			ExitJobFound:               entry.ExitJobFound,
+			ExitStatus: exitStatusFromDaemon(
+				entry.ExitStatus,
+			),
+			SweepTxid: hashString(entry.SweepTxid),
+			LastError: errorString(entry.LastError),
+			Error:     errorString(entry.Err),
+		})
+	}
+
 	return &walletdkrpc.GetExitPlanResponse{
-		FundingAddress:             resp.FundingAddress,
-		RequiredConfirmations:      resp.RequiredConfirmations,
+		Plans:                      plans,
 		FeeRateSatPerVbyte:         resp.FeeRateSatPerVByte,
-		RequiredFeeUtxoCount:       resp.RequiredFeeUTXOCount,
-		UsableFeeUtxoCount:         resp.UsableFeeUTXOCount,
-		RecommendedUtxoAmountSat:   resp.RecommendedUTXOAmountSat,
-		RecommendedTotalFundingSat: resp.RecommendedTotalFundingSat,
-		FundingShortfallSat:        resp.FundingShortfallSat,
 		CanStart:                   resp.CanStart,
-		ExitJobFound:               resp.ExitJobFound,
-		ExitStatus: exitStatusFromDaemon(
-			resp.ExitStatus,
-		),
-		SweepTxid: hashString(resp.SweepTxid),
-		LastError: errorString(resp.LastError),
+		TotalFundingShortfallSat:   resp.TotalFundingShortfallSat,
+		TotalRecommendedFundingSat: resp.TotalRecommendedFundingSat,
 	}, nil
 }
 

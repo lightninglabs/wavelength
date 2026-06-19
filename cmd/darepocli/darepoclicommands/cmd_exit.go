@@ -53,6 +53,7 @@ func newExitCmd() *cobra.Command {
 			"preview, non-zero on validation failure")
 
 	cmd.AddCommand(newExitStatusCmd())
+	cmd.AddCommand(newExitPlanCmd())
 
 	return cmd
 }
@@ -151,6 +152,64 @@ func walletExitStatus(cmd *cobra.Command, _ []string) error {
 			)
 			if err != nil {
 				return fmt.Errorf("exit status: %w", err)
+			}
+
+			return printWalletProto(resp)
+		},
+	)
+}
+
+// newExitPlanCmd builds the `exit plan` subcommand. It dials
+// walletdkrpc.WalletService.GetExitPlan to preview the backing-wallet funding
+// readiness for one or more VTXO outpoints without dispatching an exit.
+func newExitPlanCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "plan",
+		Short: "Preview backing-wallet funding readiness for an exit",
+		Long: "Returns the combined backing-wallet unroll funding " +
+			"plan for one or more VTXO outpoints, including the " +
+			"required fee inputs, recommended funding amounts, " +
+			"and aggregate shortfall. A funding address is only " +
+			"allocated for outpoints with a shortfall.\n\n" +
+			"Example:\n" +
+			"  darepocli exit plan --outpoint TXID:VOUT\n" +
+			"  darepocli exit plan --outpoint TXID:VOUT " +
+			"--outpoint TXID:VOUT",
+		Args: cobra.NoArgs,
+		RunE: walletExitPlan,
+	}
+
+	cmd.Flags().StringArray("outpoint", nil,
+		"VTXO outpoint to preview (txid:vout); repeatable")
+	_ = cmd.MarkFlagRequired("outpoint")
+
+	return cmd
+}
+
+// walletExitPlan implements the `exit plan` subcommand.
+func walletExitPlan(cmd *cobra.Command, _ []string) error {
+	outpoints, _ := cmd.Flags().GetStringArray("outpoint")
+	if len(outpoints) == 0 {
+		return invalidArgs(
+			fmt.Errorf("at least one --outpoint is required"),
+		)
+	}
+	for _, outpoint := range outpoints {
+		if err := invalidArgs(validateOutpoint(outpoint)); err != nil {
+			return err
+		}
+	}
+
+	return withWalletClient(
+		cmd, func(c walletdkrpc.WalletServiceClient) error {
+			resp, err := c.GetExitPlan(
+				cmd.Context(),
+				&walletdkrpc.GetExitPlanRequest{
+					Outpoints: outpoints,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("exit plan: %w", err)
 			}
 
 			return printWalletProto(resp)

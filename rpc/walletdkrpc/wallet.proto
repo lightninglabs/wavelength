@@ -779,60 +779,50 @@ message StatusResponse {
 }
 
 message GetExitPlanRequest {
-    // outpoint is the VTXO outpoint to unilaterally exit, formatted as
-    // "txid:index".
-    string outpoint = 1;
+    // outpoints are the VTXO outpoints to preview, each "txid:index".
+    repeated string outpoints = 1;
 
-    // conf_target selects the fee-estimation target in blocks. Zero uses the
-    // daemon's default unroll confirmation target.
+    // conf_target selects the fee-estimation target in blocks. Zero uses
+    // the daemon's default unroll confirmation target.
     uint32 conf_target = 2;
 }
 
-message GetExitPlanResponse {
-    // funding_address is a backing-wallet Bitcoin address for missing fee
-    // inputs. It is reused for the same outpoint while the daemon is running.
-    // Funds sent here are not boarded; they become wallet UTXOs available for
-    // unroll CPFP fee inputs.
-    string funding_address = 1;
+message ExitPlanEntry {
+    string outpoint = 1;
 
-    // required_confirmations is the number of confirmations a funding UTXO
-    // must have before it can be used for unroll CPFP.
-    uint32 required_confirmations = 2;
+    // funding_address is empty when can_start is true (no shortfall, so no
+    // address is allocated).
+    string funding_address = 2;
 
-    // fee_rate_sat_per_vbyte is the chain fee estimate used for sizing.
-    int64 fee_rate_sat_per_vbyte = 3;
-
-    // required_fee_utxo_count is the number of independent confirmed wallet
-    // UTXOs needed: one per independent VTXO ancestry path.
+    uint32 required_confirmations = 3;
     uint32 required_fee_utxo_count = 4;
-
-    // usable_fee_utxo_count is the current number of confirmed non-boarding
-    // wallet UTXOs large enough to use as CPFP fee inputs.
     uint32 usable_fee_utxo_count = 5;
-
-    // recommended_utxo_amount_sat is the recommended amount for each funding
-    // UTXO sent to funding_address.
     int64 recommended_utxo_amount_sat = 6;
-
-    // recommended_total_funding_sat is the total recommended funding amount
-    // needed for the missing fee-input UTXOs.
     int64 recommended_total_funding_sat = 7;
-
-    // funding_shortfall_sat is the currently missing recommended funding
-    // amount after accounting for usable fee UTXOs already in the wallet.
     int64 funding_shortfall_sat = 8;
-
-    // can_start is true when the wallet currently has enough confirmed fee
-    // inputs to admit Exit without contaminating VTXO state.
     bool can_start = 9;
-
-    // exit_job_found is true when a durable unroll job already exists for this
-    // outpoint. exit_status/sweep_txid/last_error then describe that job.
     bool exit_job_found = 10;
-
     ExitJobStatus exit_status = 11;
     string sweep_txid = 12;
     string last_error = 13;
+
+    // error is a per-outpoint failure (e.g. VTXO not found) so one bad
+    // outpoint does not fail the whole batch. Empty on success.
+    string error = 14;
+}
+
+message GetExitPlanResponse {
+    repeated ExitPlanEntry plans = 1;
+
+    // fee_rate_sat_per_vbyte is the shared chain fee estimate used for all
+    // entries.
+    int64 fee_rate_sat_per_vbyte = 2;
+
+    // can_start is the AND over every entry that has no per-outpoint error.
+    bool can_start = 3;
+
+    int64 total_funding_shortfall_sat = 4;
+    int64 total_recommended_funding_sat = 5;
 }
 
 message SweepWalletRequest {

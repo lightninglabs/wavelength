@@ -487,20 +487,20 @@ func (c *Client) ExitStatus(ctx context.Context, req ExitStatusRequest) (
 }
 
 // GetExitPlan previews whether the backing wallet is ready to start a
-// unilateral exit for one VTXO.
+// unilateral exit for a slice of VTXOs.
 func (c *Client) GetExitPlan(ctx context.Context, req GetExitPlanRequest) (
 	*GetExitPlanResult, error) {
 
 	if err := c.requireWalletRPC(); err != nil {
 		return nil, err
 	}
-	if req.Outpoint == "" {
-		return nil, fmt.Errorf("outpoint is required")
+	if len(req.Outpoints) == 0 {
+		return nil, fmt.Errorf("outpoints is required")
 	}
 
 	resp, err := c.wallet.GetExitPlan(
 		ctx, &walletdkrpc.GetExitPlanRequest{
-			Outpoint:   req.Outpoint,
+			Outpoints:  req.Outpoints,
 			ConfTarget: req.ConfTarget,
 		},
 	)

@@ -374,6 +374,24 @@ func walletQueryMethodRegistry() []schemaMethod {
 			MCPTool:      true,
 		},
 		{
+			Method: "exit.plan",
+			Description: "Preview backing-wallet funding " +
+				"readiness for an exit",
+			Params: []schemaParam{
+				{
+					Name:     "outpoint",
+					Type:     "string[]",
+					Required: true,
+					Description: "VTXO outpoint " +
+						"(txid:vout); repeatable",
+				},
+			},
+			RequestType:  "GetExitPlanRequest",
+			ResponseType: "GetExitPlanResponse",
+			JSONInput:    false,
+			MCPTool:      true,
+		},
+		{
 			Method: "activity.inspect",
 			Description: "Inspect technical swap, VTXO, and " +
 				"ledger details for one activity entry",

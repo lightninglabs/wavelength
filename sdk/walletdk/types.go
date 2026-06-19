@@ -437,17 +437,18 @@ type ExitStatusResult struct {
 	LastError string
 }
 
-// GetExitPlanRequest previews unilateral-exit readiness for one VTXO.
+// GetExitPlanRequest previews unilateral-exit readiness for a slice of VTXOs.
 type GetExitPlanRequest struct {
-	Outpoint   string
+	Outpoints  []string
 	ConfTarget uint32
 }
 
-// GetExitPlanResult describes how to fund the backing wallet before Exit.
-type GetExitPlanResult struct {
+// ExitPlanEntry describes how to fund the backing wallet before Exit for a
+// single previewed VTXO outpoint.
+type ExitPlanEntry struct {
+	Outpoint                   string
 	FundingAddress             string
 	RequiredConfirmations      uint32
-	FeeRateSatPerVByte         int64
 	RequiredFeeUTXOCount       uint32
 	UsableFeeUTXOCount         uint32
 	RecommendedUTXOAmountSat   int64
@@ -458,6 +459,19 @@ type GetExitPlanResult struct {
 	ExitStatus                 ExitJobStatus
 	SweepTxid                  string
 	LastError                  string
+
+	// Err is a per-outpoint failure (empty on success).
+	Err string
+}
+
+// GetExitPlanResult describes the combined backing-wallet funding plan for
+// every previewed outpoint plus aggregate totals.
+type GetExitPlanResult struct {
+	Plans                      []ExitPlanEntry
+	FeeRateSatPerVByte         int64
+	CanStart                   bool
+	TotalFundingShortfallSat   int64
+	TotalRecommendedFundingSat int64
 }
 
 // SweepWalletRequest previews or broadcasts a backing-wallet sweep.

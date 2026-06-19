@@ -37,17 +37,18 @@ var walletSweepLockID = func() walletcore.LockID {
 }()
 
 // ExitPlanRequest asks the daemon to preview unilateral-exit funding
-// readiness for a wallet-facing caller.
+// readiness for a slice of VTXO outpoints.
 type ExitPlanRequest struct {
-	Outpoint   string
+	Outpoints  []string
 	ConfTarget uint32
 }
 
-// ExitPlanResponse describes the current unroll CPFP fee-input readiness.
-type ExitPlanResponse struct {
+// ExitPlanEntry describes the unroll CPFP fee-input readiness for a single
+// previewed VTXO outpoint.
+type ExitPlanEntry struct {
+	Outpoint                   string
 	FundingAddress             string
 	RequiredConfirmations      uint32
-	FeeRateSatPerVByte         int64
 	RequiredFeeUTXOCount       uint32
 	UsableFeeUTXOCount         uint32
 	RecommendedUTXOAmountSat   int64
@@ -58,6 +59,20 @@ type ExitPlanResponse struct {
 	ExitStatus                 daemonrpc.UnrollJobStatus
 	SweepTxid                  *chainhash.Hash
 	LastError                  error
+
+	// Err is a per-outpoint failure (e.g. VTXO not found) so one bad
+	// outpoint does not fail the whole batch. Nil on success.
+	Err error
+}
+
+// ExitPlanResponse describes the combined unroll CPFP fee-input readiness for
+// every previewed outpoint plus aggregate totals.
+type ExitPlanResponse struct {
+	Plans                      []ExitPlanEntry
+	FeeRateSatPerVByte         int64
+	CanStart                   bool
+	TotalFundingShortfallSat   int64
+	TotalRecommendedFundingSat int64
 }
 
 // WalletSweepInput describes one backing-wallet UTXO selected by SweepWallet.
@@ -88,7 +103,9 @@ type SweepWalletResponse struct {
 }
 
 // GetExitPlan previews the wallet-side resources needed before admitting a
-// unilateral exit.
+// unilateral exit for a slice of VTXO outpoints. Per-outpoint failures are
+// recorded on the corresponding entry rather than failing the whole batch;
+// only request-wide failures return a top-level error.
 func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 	*ExitPlanResponse, error) {
 
@@ -100,11 +117,10 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 			codes.InvalidArgument, "request is nil",
 		)
 	}
-
-	outpoint, err := parseOutpointString(req.Outpoint)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
-			"outpoint: %v", err)
+	if len(req.Outpoints) == 0 {
+		return nil, status.Error(
+			codes.InvalidArgument, "outpoints is required",
+		)
 	}
 	if r.server.vtxoStore == nil {
 		return nil, status.Error(
@@ -112,16 +128,8 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 		)
 	}
 
-	desc, err := r.server.vtxoStore.GetVTXO(ctx, outpoint)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, status.Errorf(codes.NotFound, "VTXO %s "+
-				"not found", outpoint)
-		}
-
-		return nil, status.Errorf(codes.Internal, "get VTXO: %v", err)
-	}
-
+	// The fee estimate and wallet snapshot are wallet-wide, so compute
+	// them once and reuse them for every previewed outpoint.
 	feeRate, err := r.estimateWalletFeeRate(ctx, req.ConfTarget)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "estimate fee: %v",
@@ -133,38 +141,104 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 		return nil, status.Errorf(codes.Internal, "list wallet "+
 			"unspent: %v", err)
 	}
+
+	resp := &ExitPlanResponse{
+		FeeRateSatPerVByte: feeRate,
+	}
+	resp.Plans = make([]ExitPlanEntry, 0, len(req.Outpoints))
+
+	// canStart is the AND over every entry that has no per-outpoint
+	// error. It is only meaningful once at least one entry succeeds.
+	canStart := true
+	sawEntry := false
+	for _, raw := range req.Outpoints {
+		entry := r.exitPlanEntry(
+			ctx, raw, feeRate, walletSnapshot,
+		)
+		resp.Plans = append(resp.Plans, entry)
+		if entry.Err != nil {
+			continue
+		}
+
+		sawEntry = true
+		canStart = canStart && entry.CanStart
+		resp.TotalFundingShortfallSat += entry.FundingShortfallSat
+
+		recommended := entry.RecommendedTotalFundingSat
+		resp.TotalRecommendedFundingSat += recommended
+	}
+
+	resp.CanStart = sawEntry && canStart
+
+	return resp, nil
+}
+
+// exitPlanEntry previews a single VTXO outpoint against the shared fee rate
+// and wallet snapshot. Per-outpoint failures are recorded on entry.Err so the
+// caller can continue previewing the rest of the batch.
+func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
+	feeRate int64,
+	walletSnapshot unroll.ExitFundingSnapshot) ExitPlanEntry {
+
+	entry := ExitPlanEntry{Outpoint: raw}
+
+	outpoint, err := parseOutpointString(raw)
+	if err != nil {
+		entry.Err = fmt.Errorf("invalid outpoint: %w", err)
+
+		return entry
+	}
+	entry.Outpoint = outpoint.String()
+
+	desc, err := r.server.vtxoStore.GetVTXO(ctx, outpoint)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			entry.Err = fmt.Errorf("VTXO %s not found", outpoint)
+
+			return entry
+		}
+
+		entry.Err = fmt.Errorf("get VTXO: %w", err)
+
+		return entry
+	}
+
 	plan := unroll.PlanExitFunding(
 		desc, btcutil.Amount(feeRate), walletSnapshot,
 	)
 	verdict := plan.Feasibility
 	if verdict.RequiredWalletInputs == 0 {
-		return nil, status.Errorf(codes.FailedPrecondition, "VTXO %s "+
-			"has no unilateral-exit ancestry", outpoint)
+		entry.Err = fmt.Errorf("VTXO %s has no unilateral-exit "+
+			"ancestry", outpoint)
+
+		return entry
 	}
 
-	required := uint32(verdict.RequiredWalletInputs)
-	usable := uint32(verdict.WalletUsableInputs)
-
-	fundingAddress, err := r.server.exitPlanFundingAddress(
-		ctx, outpoint.String(), true,
+	entry.RequiredConfirmations = plan.RequiredConfirmations
+	entry.RequiredFeeUTXOCount = uint32(verdict.RequiredWalletInputs)
+	entry.UsableFeeUTXOCount = uint32(verdict.WalletUsableInputs)
+	entry.RecommendedUTXOAmountSat = int64(plan.RecommendedUTXOAmountSat)
+	entry.RecommendedTotalFundingSat = int64(
+		plan.RecommendedTotalFundingSat,
 	)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "exit plan funding "+
-			"address: %v", err)
-	}
+	entry.FundingShortfallSat = int64(plan.FundingShortfallSat)
+	entry.CanStart = verdict.Feasible
 
-	resp := &ExitPlanResponse{
-		FundingAddress:           fundingAddress,
-		RequiredConfirmations:    plan.RequiredConfirmations,
-		FeeRateSatPerVByte:       feeRate,
-		RequiredFeeUTXOCount:     required,
-		UsableFeeUTXOCount:       usable,
-		RecommendedUTXOAmountSat: int64(plan.RecommendedUTXOAmountSat),
-		RecommendedTotalFundingSat: int64(
-			plan.RecommendedTotalFundingSat,
-		),
-		FundingShortfallSat: int64(plan.FundingShortfallSat),
-		CanStart:            verdict.Feasible,
+	// Only allocate a funding address when the outpoint is NOT feasible
+	// (there is a shortfall). When feasible, no address is needed so the
+	// preview must not persist one.
+	if !verdict.Feasible {
+		fundingAddress, err := r.server.exitPlanFundingAddress(
+			ctx, outpoint.String(), true,
+		)
+		if err != nil {
+			entry.Err = fmt.Errorf("exit plan funding address: %w",
+				err)
+
+			return entry
+		}
+
+		entry.FundingAddress = fundingAddress
 	}
 
 	statusResp, err := r.GetUnrollStatus(
@@ -173,25 +247,28 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 		},
 	)
 	if err != nil {
-		return nil, status.Errorf(status.Code(err), "exit status: %v",
-			err)
+		entry.Err = fmt.Errorf("exit status: %w", err)
+
+		return entry
 	}
-	resp.ExitJobFound = statusResp.GetFound()
-	resp.ExitStatus = statusResp.GetStatus()
+	entry.ExitJobFound = statusResp.GetFound()
+	entry.ExitStatus = statusResp.GetStatus()
 	if sweepTxid := statusResp.GetSweepTxid(); sweepTxid != "" {
 		txid, err := chainhash.NewHashFromStr(sweepTxid)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "exit "+
-				"status sweep txid: %v", err)
+			entry.Err = fmt.Errorf("exit status sweep txid: %w",
+				err)
+
+			return entry
 		}
 
-		resp.SweepTxid = txid
+		entry.SweepTxid = txid
 	}
 	if lastErr := statusResp.GetLastError(); lastErr != "" {
-		resp.LastError = errors.New(lastErr)
+		entry.LastError = errors.New(lastErr)
 	}
 
-	return resp, nil
+	return entry
 }
 
 // walletExitFundingSnapshot returns the confirmed backing-wallet balance and

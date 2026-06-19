@@ -194,31 +194,44 @@ func exitJobStatusFromProto(s walletdkrpc.ExitJobStatus) ExitJobStatus {
 	}
 }
 
-func exitPlanFromProto(
-	resp *walletdkrpc.GetExitPlanResponse) *GetExitPlanResult {
-
-	if resp == nil {
+func exitPlanFromProto(r *walletdkrpc.GetExitPlanResponse) *GetExitPlanResult {
+	if r == nil {
 		return &GetExitPlanResult{}
 	}
 
-	totalFundingSat := resp.GetRecommendedTotalFundingSat()
+	plans := make([]ExitPlanEntry, 0, len(r.GetPlans()))
+	for _, entry := range r.GetPlans() {
+		plans = append(plans, exitPlanEntryFromProto(entry))
+	}
 
 	return &GetExitPlanResult{
-		FundingAddress:             resp.GetFundingAddress(),
-		RequiredConfirmations:      resp.GetRequiredConfirmations(),
-		FeeRateSatPerVByte:         resp.GetFeeRateSatPerVbyte(),
-		RequiredFeeUTXOCount:       resp.GetRequiredFeeUtxoCount(),
-		UsableFeeUTXOCount:         resp.GetUsableFeeUtxoCount(),
-		RecommendedUTXOAmountSat:   resp.GetRecommendedUtxoAmountSat(),
-		RecommendedTotalFundingSat: totalFundingSat,
-		FundingShortfallSat:        resp.GetFundingShortfallSat(),
-		CanStart:                   resp.GetCanStart(),
-		ExitJobFound:               resp.GetExitJobFound(),
+		Plans:                      plans,
+		FeeRateSatPerVByte:         r.GetFeeRateSatPerVbyte(),
+		CanStart:                   r.GetCanStart(),
+		TotalFundingShortfallSat:   r.GetTotalFundingShortfallSat(),
+		TotalRecommendedFundingSat: r.GetTotalRecommendedFundingSat(),
+	}
+}
+
+// exitPlanEntryFromProto projects one proto ExitPlanEntry into its SDK DTO.
+func exitPlanEntryFromProto(e *walletdkrpc.ExitPlanEntry) ExitPlanEntry {
+	return ExitPlanEntry{
+		Outpoint:                   e.GetOutpoint(),
+		FundingAddress:             e.GetFundingAddress(),
+		RequiredConfirmations:      e.GetRequiredConfirmations(),
+		RequiredFeeUTXOCount:       e.GetRequiredFeeUtxoCount(),
+		UsableFeeUTXOCount:         e.GetUsableFeeUtxoCount(),
+		RecommendedUTXOAmountSat:   e.GetRecommendedUtxoAmountSat(),
+		RecommendedTotalFundingSat: e.GetRecommendedTotalFundingSat(),
+		FundingShortfallSat:        e.GetFundingShortfallSat(),
+		CanStart:                   e.GetCanStart(),
+		ExitJobFound:               e.GetExitJobFound(),
 		ExitStatus: exitJobStatusFromProto(
-			resp.GetExitStatus(),
+			e.GetExitStatus(),
 		),
-		SweepTxid: resp.GetSweepTxid(),
-		LastError: resp.GetLastError(),
+		SweepTxid: e.GetSweepTxid(),
+		LastError: e.GetLastError(),
+		Err:       e.GetError(),
 	}
 }
 
