@@ -5,10 +5,6 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/txconfirm"
-	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -75,87 +71,7 @@ func TestSweepWalletRejectsNegativeFeeRate(t *testing.T) {
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }
 
-func TestCapWalletFeeRate(t *testing.T) {
-	t.Parallel()
-
-	r := &RPCServer{
-		server: &Server{
-			cfg: &Config{
-				Unroll: &UnrollConfig{
-					MaxFeeRateSatPerVByte: 25,
-				},
-			},
-		},
-	}
-
-	require.Equal(t, int64(24), r.capWalletFeeRate(24))
-	require.Equal(t, int64(25), r.capWalletFeeRate(250))
-}
-
-func TestWalletSweepPreviewNoInputsCannotBroadcast(t *testing.T) {
-	t.Parallel()
-
-	resp := walletSweepPreview(nil, testDestPkScript(t), 2)
-	require.False(t, resp.CanBroadcast)
-	require.Zero(t, resp.TotalInputSat)
-	require.ErrorContains(t, resp.FailureReason, "no confirmed")
-}
-
-func TestWalletSweepPreviewDustNetMessage(t *testing.T) {
-	t.Parallel()
-
-	var hash [32]byte
-	hash[0] = 2
-	resp := walletSweepPreview([]*wallet.Utxo{{
-		Outpoint: wire.OutPoint{
-			Hash:  hash,
-			Index: 0,
-		},
-		PkScript:      []byte{0x00, 0x14},
-		Amount:        txconfirm.DustLimit + 10,
-		Confirmations: 1,
-	}}, testDestPkScript(t), 1)
-
-	require.False(t, resp.CanBroadcast)
-	require.ErrorContains(t, resp.FailureReason, "dust")
-}
-
-func TestWalletSweepPreviewPositiveNetCanBroadcast(t *testing.T) {
-	t.Parallel()
-
-	var hash [32]byte
-	hash[0] = 1
-	resp := walletSweepPreview([]*wallet.Utxo{{
-		Outpoint: wire.OutPoint{
-			Hash:  hash,
-			Index: 0,
-		},
-		PkScript:      []byte{0x00, 0x14},
-		Amount:        btcutil.Amount(50_000),
-		Confirmations: 1,
-	}}, testDestPkScript(t), 2)
-
-	require.True(t, resp.CanBroadcast, resp.FailureReason)
-	require.Equal(t, int64(50_000), resp.TotalInputSat)
-	require.Positive(t, resp.EstimatedFeeSat)
-	require.Equal(
-		t, resp.TotalInputSat-resp.EstimatedFeeSat, resp.NetAmountSat,
-	)
-}
-
-func testDestPkScript(t *testing.T) txscript.PkScript {
-	t.Helper()
-
-	addr, err := btcutil.NewAddressWitnessPubKeyHash(
-		make([]byte, 20), &chaincfg.RegressionNetParams,
-	)
-	require.NoError(t, err)
-
-	script, err := txscript.PayToAddrScript(addr)
-	require.NoError(t, err)
-
-	pkScript, err := txscript.ParsePkScript(script)
-	require.NoError(t, err)
-
-	return pkScript
-}
+// Note: the preview math, dust boundary, fee-cap, and network-validation
+// coverage for the wallet sweep moved into the wallet package alongside the
+// handler that now owns that logic (wallet/wallet_sweep_actor_test.go). The
+// remaining tests here exercise the RPC shim's request-surface validation.

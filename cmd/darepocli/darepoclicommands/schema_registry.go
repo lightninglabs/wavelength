@@ -392,6 +392,43 @@ func walletQueryMethodRegistry() []schemaMethod {
 			MCPTool:      true,
 		},
 		{
+			Method: "wallet-sweep",
+			Description: "Preview or broadcast a sweep of the " +
+				"backing wallet to a destination address",
+			Params: []schemaParam{
+				{
+					Name:     "destination",
+					Type:     "string",
+					Required: true,
+					Description: "on-chain destination " +
+						"address",
+				},
+				{
+					Name: "broadcast",
+					Type: "bool",
+					Description: "publish the sweep; " +
+						"omitted means preview only",
+				},
+				{
+					Name: "fee-rate",
+					Type: "int64",
+					Description: "explicit fee rate in " +
+						"sat/vByte; 0 estimates from " +
+						"the chain backend",
+				},
+				{
+					Name: "conf-target",
+					Type: "uint32",
+					Description: "confirmation target " +
+						"for fee estimation",
+				},
+			},
+			RequestType:  "SweepWalletRequest",
+			ResponseType: "SweepWalletResponse",
+			JSONInput:    false,
+			MCPTool:      true,
+		},
+		{
 			Method: "activity.inspect",
 			Description: "Inspect technical swap, VTXO, and " +
 				"ledger details for one activity entry",

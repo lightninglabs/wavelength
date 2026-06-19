@@ -1,40 +1,23 @@
 package darepod
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/txconfirm"
 	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/wallet"
-	"github.com/lightninglabs/darepo-client/walletcore"
-	"github.com/lightningnetwork/lnd/input"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 const (
 	defaultExitPlanConfTarget uint32 = 6
-	walletSweepTxVersion      int32  = 2
-
-	walletSweepDustFailureReason = "sweep amount is dust after fees"
 )
-
-var walletSweepLockID = func() walletcore.LockID {
-	var id walletcore.LockID
-	copy(id[:], "darepo-client:sweepwallet")
-
-	return id
-}()
 
 // ExitPlanRequest asks the daemon to preview unilateral-exit funding
 // readiness for a slice of VTXO outpoints.
@@ -304,7 +287,10 @@ func (r *RPCServer) walletExitFundingSnapshot(ctx context.Context) (
 }
 
 // SweepWallet previews or broadcasts a normal backing-wallet sweep that
-// excludes boarding outputs.
+// excludes boarding outputs. The RPC is a thin shim: it validates the request
+// surface, Asks the wallet actor (which owns input locking, fee capping,
+// signing, and broadcast routing through txconfirm), and maps the actor reply
+// onto the RPC response shape.
 func (r *RPCServer) SweepWallet(ctx context.Context, req *SweepWalletRequest) (
 	*SweepWalletResponse, error) {
 
@@ -322,128 +308,72 @@ func (r *RPCServer) SweepWallet(ctx context.Context, req *SweepWalletRequest) (
 			"destination_address is required",
 		)
 	}
-
-	addr, err := btcutil.DecodeAddress(
-		req.DestinationAddress, r.server.chainParams,
-	)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
-			"destination_address: %v", err)
-	}
-	if !addr.IsForNet(r.server.chainParams) {
-		return nil, status.Error(
-			codes.InvalidArgument,
-			"destination_address is for the wrong network",
-		)
-	}
-
-	destScriptBytes, err := txscript.PayToAddrScript(addr)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "destination "+
-			"script: %v", err)
-	}
-	destScript, err := txscript.ParsePkScript(destScriptBytes)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "destination "+
-			"script: %v", err)
-	}
-
-	feeRate := req.FeeRateSatPerVByte
-	if feeRate < 0 {
+	if req.FeeRateSatPerVByte < 0 {
 		return nil, status.Error(
 			codes.InvalidArgument,
 			"fee_rate_sat_per_vbyte must be non-negative",
 		)
 	}
-	if feeRate == 0 {
-		feeRate, err = r.estimateWalletFeeRate(ctx, req.ConfTarget)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal,
-				"estimate fee: %v", err)
-		}
-	} else {
-		feeRate = r.capWalletFeeRate(feeRate)
+	if !r.server.walletRef.IsSome() {
+		return nil, status.Errorf(codes.Unavailable, "wallet actor "+
+			"unavailable")
 	}
 
-	utxos, err := r.server.ListWalletUnspent(
-		ctx, 1, wallet.MaxConfsForListUnspent,
-	)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "list wallet "+
-			"unspent: %v", err)
+	walletReq := &wallet.SweepWalletFundsRequest{
+		DestinationAddress: req.DestinationAddress,
+		Broadcast:          req.Broadcast,
+		FeeRateSatPerVByte: req.FeeRateSatPerVByte,
+		ConfTarget:         req.ConfTarget,
 	}
 
-	resp := walletSweepPreview(utxos, destScript, feeRate)
-	if !req.Broadcast {
-		return resp, nil
-	}
-	if !resp.CanBroadcast {
-		if resp.FailureReason == nil {
-			resp.FailureReason = errors.New(
-				walletSweepDustFailureReason)
-		}
-
-		return resp, nil
+	wRef := r.server.walletRef.UnsafeFromSome()
+	future := wRef.Ask(ctx, walletReq)
+	result := future.Await(ctx)
+	if result.IsErr() {
+		return nil, status.Errorf(codes.Internal, "sweep wallet: %v",
+			result.Err())
 	}
 
-	signer, err := r.server.newSweepWallet()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "wallet signer: %v",
-			err)
-	}
-	txWallet, ok := signer.(txconfirm.Wallet)
-	if !ok {
-		return nil, status.Error(
-			codes.Internal,
-			"wallet signer cannot finalize backing wallet PSBTs",
-		)
+	raw := result.UnwrapOr(nil)
+	walletResp, ok := raw.(*wallet.SweepWalletFundsResponse)
+	if !ok || walletResp == nil {
+		return nil, status.Errorf(codes.Internal, "unexpected sweep "+
+			"response from wallet actor")
 	}
 
-	locked, err := lockWalletSweepInputs(ctx, txWallet, utxos)
-	if err != nil {
-		resp.FailureReason = err
+	return walletSweepFundsResponseToRPC(walletResp), nil
+}
 
-		return resp, nil
+// walletSweepFundsResponseToRPC maps the wallet actor's sweep reply onto the
+// RPC response shape consumed by the swapwallet proto boundary.
+func walletSweepFundsResponseToRPC(
+	resp *wallet.SweepWalletFundsResponse) *SweepWalletResponse {
+
+	rpcResp := &SweepWalletResponse{
+		Inputs: make(
+			[]WalletSweepInput, 0, len(resp.Inputs),
+		),
+		TotalInputSat:      resp.TotalInputSat,
+		EstimatedFeeSat:    resp.EstimatedFeeSat,
+		NetAmountSat:       resp.NetAmountSat,
+		FeeRateSatPerVByte: resp.FeeRateSatPerVByte,
+		CanBroadcast:       resp.CanBroadcast,
 	}
-	releaseSweepInputs := true
-	defer func() {
-		if !releaseSweepInputs {
-			return
-		}
-
-		_ = releaseWalletSweepInputs(ctx, txWallet, locked)
-	}()
-
-	tx, err := buildWalletSweepTx(utxos, destScript, resp.NetAmountSat)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "build sweep tx: %v",
-			err)
+	for _, in := range resp.Inputs {
+		rpcResp.Inputs = append(rpcResp.Inputs, WalletSweepInput{
+			Outpoint:  in.Outpoint.String(),
+			AmountSat: in.AmountSat,
+		})
 	}
-
-	finalTx, err := signWalletSweepTx(ctx, txWallet, tx, utxos)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "sign sweep tx: %v",
-			err)
+	if resp.HasTxid {
+		txid := resp.Txid
+		rpcResp.Txid = &txid
 	}
-	if r.server.chainBackend == nil {
-		return nil, status.Error(
-			codes.Unavailable, "chain backend not initialized",
-		)
-	}
-
-	err = r.server.chainBackend.BroadcastTx(
-		ctx, finalTx, "wallet backing sweep",
-	)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "broadcast "+
-			"sweep tx: %v", err)
+	if resp.FailureReason != "" {
+		rpcResp.FailureReason = errors.New(resp.FailureReason)
 	}
 
-	txid := finalTx.TxHash()
-	resp.Txid = &txid
-	releaseSweepInputs = false
-
-	return resp, nil
+	return rpcResp
 }
 
 func (r *RPCServer) estimateWalletFeeRate(ctx context.Context,
@@ -479,15 +409,6 @@ func (r *RPCServer) estimateWalletFeeRate(ctx context.Context,
 	return rate, nil
 }
 
-func (r *RPCServer) capWalletFeeRate(feeRate int64) int64 {
-	if maxRate := r.server.unrollMaxFeeRate(); maxRate > 0 &&
-		feeRate > maxRate {
-		return maxRate
-	}
-
-	return feeRate
-}
-
 func (s *Server) exitPlanFundingAddress(ctx context.Context, outpoint string,
 	create bool) (string, error) {
 
@@ -498,223 +419,4 @@ func (s *Server) exitPlanFundingAddress(ctx context.Context, outpoint string,
 	return s.exitFundingAddresses.Address(
 		ctx, outpoint, s.NewWalletAddress,
 	)
-}
-
-func walletSweepPreview(utxos []*wallet.Utxo, destScript txscript.PkScript,
-	feeRate int64) *SweepWalletResponse {
-
-	resp := &SweepWalletResponse{
-		FeeRateSatPerVByte: feeRate,
-		Inputs:             make([]WalletSweepInput, 0, len(utxos)),
-	}
-
-	for _, utxo := range utxos {
-		if utxo == nil {
-			continue
-		}
-
-		resp.Inputs = append(resp.Inputs, WalletSweepInput{
-			Outpoint:  utxo.Outpoint.String(),
-			AmountSat: int64(utxo.Amount),
-		})
-		resp.TotalInputSat += int64(utxo.Amount)
-	}
-
-	if len(resp.Inputs) == 0 {
-		resp.FailureReason = errors.New("no confirmed backing-wallet " +
-			"UTXOs")
-
-		return resp
-	}
-
-	fee := int64(estimateWalletSweepVSize(utxos, destScript)) * feeRate
-	resp.EstimatedFeeSat = fee
-	resp.NetAmountSat = resp.TotalInputSat - fee
-	if resp.NetAmountSat <= int64(txconfirm.DustLimit) {
-		resp.FailureReason = errors.New(walletSweepDustFailureReason)
-
-		return resp
-	}
-
-	resp.CanBroadcast = true
-
-	return resp
-}
-
-func lockWalletSweepInputs(ctx context.Context, leaser walletcore.OutputLeaser,
-	utxos []*wallet.Utxo) ([]wire.OutPoint, error) {
-
-	locked := make([]wire.OutPoint, 0, len(utxos))
-	for _, utxo := range utxos {
-		if utxo == nil {
-			continue
-		}
-
-		_, err := leaser.LeaseOutput(
-			ctx, walletSweepLockID, utxo.Outpoint,
-			txconfirm.DefaultFeeInputLeaseExpiry,
-		)
-		if err != nil {
-			_ = releaseWalletSweepInputs(ctx, leaser, locked)
-
-			return nil, fmt.Errorf("lock wallet sweep input %s: %w",
-				utxo.Outpoint, err)
-		}
-
-		locked = append(locked, utxo.Outpoint)
-	}
-
-	return locked, nil
-}
-
-func releaseWalletSweepInputs(ctx context.Context,
-	leaser walletcore.OutputLeaser, outpoints []wire.OutPoint) error {
-
-	var releaseErr error
-	for _, outpoint := range outpoints {
-		err := leaser.ReleaseOutput(ctx, walletSweepLockID, outpoint)
-		if err != nil {
-			releaseErr = errors.Join(releaseErr, err)
-		}
-	}
-
-	return releaseErr
-}
-
-func estimateWalletSweepVSize(utxos []*wallet.Utxo,
-	destScript txscript.PkScript) int {
-
-	var est input.TxWeightEstimator
-	for _, utxo := range utxos {
-		if utxo == nil {
-			continue
-		}
-
-		addSweepInputForScript(&est, utxo.PkScript)
-	}
-	est.AddOutput(destScript.Script())
-
-	return est.VSize()
-}
-
-func addSweepInputForScript(est *input.TxWeightEstimator, pkScript []byte) {
-	switch txscript.GetScriptClass(pkScript) {
-	case txscript.WitnessV0PubKeyHashTy:
-		est.AddP2WKHInput()
-
-	case txscript.WitnessV1TaprootTy:
-		est.AddTaprootKeySpendInput(txscript.SigHashDefault)
-
-	case txscript.ScriptHashTy:
-		est.AddNestedP2WKHInput()
-
-	case txscript.PubKeyHashTy:
-		est.AddP2PKHInput()
-
-	default:
-		est.AddP2WKHInput()
-	}
-}
-
-func buildWalletSweepTx(utxos []*wallet.Utxo, destScript txscript.PkScript,
-	netAmount int64) (*wire.MsgTx, error) {
-
-	if netAmount <= int64(txconfirm.DustLimit) {
-		return nil, fmt.Errorf("net amount %d is dust", netAmount)
-	}
-
-	tx := wire.NewMsgTx(walletSweepTxVersion)
-	for _, utxo := range utxos {
-		if utxo == nil {
-			continue
-		}
-
-		tx.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: utxo.Outpoint,
-			Sequence:         wire.MaxTxInSequenceNum,
-		})
-	}
-	tx.AddTxOut(&wire.TxOut{
-		Value:    netAmount,
-		PkScript: destScript.Script(),
-	})
-
-	return tx, nil
-}
-
-func signWalletSweepTx(ctx context.Context, signer txconfirm.Wallet,
-	tx *wire.MsgTx, utxos []*wallet.Utxo) (*wire.MsgTx, error) {
-
-	inputs := make([]*wire.OutPoint, 0, len(tx.TxIn))
-	sequences := make([]uint32, 0, len(tx.TxIn))
-	witnessByOutpoint := make(map[wire.OutPoint]*wire.TxOut, len(utxos))
-	for _, utxo := range utxos {
-		if utxo == nil {
-			continue
-		}
-
-		witnessByOutpoint[utxo.Outpoint] = &wire.TxOut{
-			Value:    int64(utxo.Amount),
-			PkScript: utxo.PkScript,
-		}
-	}
-
-	for _, txIn := range tx.TxIn {
-		inputs = append(inputs, &txIn.PreviousOutPoint)
-		sequences = append(sequences, txIn.Sequence)
-	}
-
-	packet, err := psbt.New(
-		inputs, tx.TxOut, tx.Version, tx.LockTime, sequences,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create PSBT: %w", err)
-	}
-
-	for idx, txIn := range tx.TxIn {
-		witness, ok := witnessByOutpoint[txIn.PreviousOutPoint]
-		if !ok {
-			return nil, fmt.Errorf("missing witness UTXO for %s",
-				txIn.PreviousOutPoint)
-		}
-
-		packet.Inputs[idx].WitnessUtxo = witness
-	}
-
-	var buf bytes.Buffer
-	if err := packet.Serialize(&buf); err != nil {
-		return nil, fmt.Errorf("serialize PSBT: %w", err)
-	}
-
-	finalTx, err := signer.FinalizePsbt(ctx, buf.Bytes())
-	if err != nil {
-		return nil, err
-	}
-
-	if err := verifySweepOutputsEqual(tx, finalTx); err != nil {
-		return nil, err
-	}
-
-	return finalTx, nil
-}
-
-func verifySweepOutputsEqual(expected, actual *wire.MsgTx) error {
-	if expected == nil || actual == nil {
-		return fmt.Errorf("transactions must be non-nil")
-	}
-	if len(expected.TxOut) != len(actual.TxOut) {
-		return fmt.Errorf("wallet changed sweep output count from "+
-			"%d to %d", len(expected.TxOut), len(actual.TxOut))
-	}
-
-	for idx := range expected.TxOut {
-		exp := expected.TxOut[idx]
-		got := actual.TxOut[idx]
-		if exp.Value != got.Value ||
-			!bytes.Equal(exp.PkScript, got.PkScript) {
-			return fmt.Errorf("wallet changed sweep output %d", idx)
-		}
-	}
-
-	return nil
 }

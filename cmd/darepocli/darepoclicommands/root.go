@@ -71,6 +71,7 @@ func NewRootCmd() *cobra.Command {
 		newActivityCmd(),
 		newBalanceCmd(),
 		newExitCmd(),
+		newWalletSweepCmd(),
 
 		// Daemon introspection at root.
 		newGetInfoCmd(),

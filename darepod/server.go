@@ -3412,6 +3412,22 @@ func (s *Server) initWalletActor(ctx context.Context,
 			"signer: %w", err)
 	}
 
+	// The same per-backend adapter that signs boarding sweeps also backs
+	// the general backing-wallet sweep flow inside the wallet actor. The
+	// adapter satisfies wallet.WalletBackingSweeper structurally (it
+	// implements txconfirm.Wallet), but the newSweepWallet return type is
+	// the narrower unroll.SweepWallet, so reinterpret it through the
+	// broader interface here.
+	walletSweeper, ok := sweepSigner.(wallet.WalletBackingSweeper)
+	if !ok {
+		var zero actor.ActorRef[
+			wallet.WalletMsg, wallet.WalletResp,
+		]
+
+		return zero, fmt.Errorf("wallet sweep signer does not " +
+			"satisfy WalletBackingSweeper")
+	}
+
 	s.boardingSweepStore = s.newBoardingStore()
 	walletActor := wallet.NewArk(
 		boardingBackend, boardingStore, vtxoReader, chainSourceRef,
@@ -3422,6 +3438,9 @@ func (s *Server) initWalletActor(ctx context.Context,
 		s.subLogger(wallet.Subsystem),
 		wallet.WithBoardingSweep(
 			s.boardingSweepStore, sweepSigner, s.chainParams,
+		),
+		wallet.WithWalletSweep(
+			walletSweeper, s.unrollMaxFeeRate(),
 		),
 		wallet.WithClock(s.clk),
 		wallet.WithEagerRoundJoin(s.cfg.EagerRoundJoin),
