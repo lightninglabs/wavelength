@@ -28,6 +28,8 @@ const (
 	WalletService_Deposit_FullMethodName         = "/walletdkrpc.WalletService/Deposit"
 	WalletService_Balance_FullMethodName         = "/walletdkrpc.WalletService/Balance"
 	WalletService_Status_FullMethodName          = "/walletdkrpc.WalletService/Status"
+	WalletService_GetExitPlan_FullMethodName     = "/walletdkrpc.WalletService/GetExitPlan"
+	WalletService_SweepWallet_FullMethodName     = "/walletdkrpc.WalletService/SweepWallet"
 	WalletService_Exit_FullMethodName            = "/walletdkrpc.WalletService/Exit"
 	WalletService_ExitStatus_FullMethodName      = "/walletdkrpc.WalletService/ExitStatus"
 	WalletService_SubscribeWallet_FullMethodName = "/walletdkrpc.WalletService/SubscribeWallet"
@@ -90,6 +92,14 @@ type WalletServiceClient interface {
 	// the proto for programmatic callers; not surfaced as a CLI verb (the
 	// `getinfo` CLI verb covers the human-facing readiness view).
 	Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*StatusResponse, error)
+	// GetExitPlan previews unilateral-exit readiness for one VTXO. The
+	// response includes CPFP fee input requirements and, when funding is
+	// needed, a backing-wallet address callers can fund before forced unroll.
+	GetExitPlan(ctx context.Context, in *GetExitPlanRequest, opts ...grpc.CallOption) (*GetExitPlanResponse, error)
+	// SweepWallet previews or broadcasts a normal backing-wallet sweep to a
+	// caller-supplied Bitcoin address. This sweeps wallet-managed funds left
+	// after CPFP/change/unroll proceeds and does not sweep boarding outputs.
+	SweepWallet(ctx context.Context, in *SweepWalletRequest, opts ...grpc.CallOption) (*SweepWalletResponse, error)
 	// Exit queues a cooperative leave for the specified VTXO outpoint by
 	// default. When the caller supplies force_unroll_ack exactly, the daemon
 	// starts a unilateral unroll instead after checking that the outpoint is
@@ -203,6 +213,26 @@ func (c *walletServiceClient) Status(ctx context.Context, in *StatusRequest, opt
 	return out, nil
 }
 
+func (c *walletServiceClient) GetExitPlan(ctx context.Context, in *GetExitPlanRequest, opts ...grpc.CallOption) (*GetExitPlanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetExitPlanResponse)
+	err := c.cc.Invoke(ctx, WalletService_GetExitPlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletServiceClient) SweepWallet(ctx context.Context, in *SweepWalletRequest, opts ...grpc.CallOption) (*SweepWalletResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SweepWalletResponse)
+	err := c.cc.Invoke(ctx, WalletService_SweepWallet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *walletServiceClient) Exit(ctx context.Context, in *ExitRequest, opts ...grpc.CallOption) (*ExitResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ExitResponse)
@@ -299,6 +329,14 @@ type WalletServiceServer interface {
 	// the proto for programmatic callers; not surfaced as a CLI verb (the
 	// `getinfo` CLI verb covers the human-facing readiness view).
 	Status(context.Context, *StatusRequest) (*StatusResponse, error)
+	// GetExitPlan previews unilateral-exit readiness for one VTXO. The
+	// response includes CPFP fee input requirements and, when funding is
+	// needed, a backing-wallet address callers can fund before forced unroll.
+	GetExitPlan(context.Context, *GetExitPlanRequest) (*GetExitPlanResponse, error)
+	// SweepWallet previews or broadcasts a normal backing-wallet sweep to a
+	// caller-supplied Bitcoin address. This sweeps wallet-managed funds left
+	// after CPFP/change/unroll proceeds and does not sweep boarding outputs.
+	SweepWallet(context.Context, *SweepWalletRequest) (*SweepWalletResponse, error)
 	// Exit queues a cooperative leave for the specified VTXO outpoint by
 	// default. When the caller supplies force_unroll_ack exactly, the daemon
 	// starts a unilateral unroll instead after checking that the outpoint is
@@ -348,6 +386,12 @@ func (UnimplementedWalletServiceServer) Balance(context.Context, *BalanceRequest
 }
 func (UnimplementedWalletServiceServer) Status(context.Context, *StatusRequest) (*StatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Status not implemented")
+}
+func (UnimplementedWalletServiceServer) GetExitPlan(context.Context, *GetExitPlanRequest) (*GetExitPlanResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetExitPlan not implemented")
+}
+func (UnimplementedWalletServiceServer) SweepWallet(context.Context, *SweepWalletRequest) (*SweepWalletResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SweepWallet not implemented")
 }
 func (UnimplementedWalletServiceServer) Exit(context.Context, *ExitRequest) (*ExitResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Exit not implemented")
@@ -541,6 +585,42 @@ func _WalletService_Status_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WalletService_GetExitPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetExitPlanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).GetExitPlan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_GetExitPlan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).GetExitPlan(ctx, req.(*GetExitPlanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletService_SweepWallet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SweepWalletRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).SweepWallet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_SweepWallet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).SweepWallet(ctx, req.(*SweepWalletRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WalletService_Exit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ExitRequest)
 	if err := dec(in); err != nil {
@@ -630,6 +710,14 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Status",
 			Handler:    _WalletService_Status_Handler,
+		},
+		{
+			MethodName: "GetExitPlan",
+			Handler:    _WalletService_GetExitPlan_Handler,
+		},
+		{
+			MethodName: "SweepWallet",
+			Handler:    _WalletService_SweepWallet_Handler,
 		},
 		{
 			MethodName: "Exit",

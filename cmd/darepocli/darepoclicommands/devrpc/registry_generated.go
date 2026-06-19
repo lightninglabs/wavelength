@@ -5,6 +5,7 @@ import (
 	_ "github.com/btcsuite/btcwallet/rpc/walletrpc"
 	_ "github.com/lightninglabs/darepo-client/daemonrpc"
 	_ "github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
+	_ "github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 )
 
 // generatedRegistry returns the generated dev RPC service registry.
@@ -352,6 +353,126 @@ func generatedRegistry() []serviceSpec {
 					Output:          "swapclientrpc.SubscribeSwapsResponse",
 					ServerStreaming: true,
 					Comments:        "SubscribeSwaps streams swap updates observed by the daemon. When\ninclude_existing is set, the snapshot is sent before the live\nsubscription is registered, so callers that require a complete current\nview should reconcile with ListSwaps or GetSwap after reconnect.",
+				},
+			},
+		},
+		{
+			FullName: "walletdkrpc.WalletService",
+			Aliases:  []string{"wallet"},
+			Comments: "",
+			Methods: []methodSpec{
+				{
+					Name:     "Create",
+					Aliases:  []string{"create"},
+					Input:    "walletdkrpc.CreateRequest",
+					Output:   "walletdkrpc.CreateResponse",
+					Comments: "",
+				},
+				{
+					Name:     "Unlock",
+					Aliases:  []string{"unlock"},
+					Input:    "walletdkrpc.UnlockRequest",
+					Output:   "walletdkrpc.UnlockResponse",
+					Comments: "",
+				},
+				{
+					Name:     "PrepareSend",
+					Aliases:  []string{"prepare-send"},
+					Input:    "walletdkrpc.PrepareSendRequest",
+					Output:   "walletdkrpc.PrepareSendResponse",
+					Comments: "",
+				},
+				{
+					Name:     "Send",
+					Aliases:  []string{"send"},
+					Input:    "walletdkrpc.SendRequest",
+					Output:   "walletdkrpc.SendResponse",
+					Comments: "",
+				},
+				{
+					Name:     "Recv",
+					Aliases:  []string{"recv"},
+					Input:    "walletdkrpc.RecvRequest",
+					Output:   "walletdkrpc.RecvResponse",
+					Comments: "",
+				},
+				{
+					Name:     "List",
+					Aliases:  []string{"list"},
+					Input:    "walletdkrpc.ListRequest",
+					Output:   "walletdkrpc.ListResponse",
+					Comments: "",
+				},
+				{
+					Name:     "Deposit",
+					Aliases:  []string{"deposit"},
+					Input:    "walletdkrpc.DepositRequest",
+					Output:   "walletdkrpc.DepositResponse",
+					Comments: "",
+				},
+				{
+					Name:     "Balance",
+					Aliases:  []string{"balance"},
+					Input:    "walletdkrpc.BalanceRequest",
+					Output:   "walletdkrpc.BalanceResponse",
+					Comments: "",
+				},
+				{
+					Name:     "Status",
+					Aliases:  []string{"status"},
+					Input:    "walletdkrpc.StatusRequest",
+					Output:   "walletdkrpc.StatusResponse",
+					Comments: "",
+				},
+				{
+					Name:     "GetExitPlan",
+					Aliases:  []string{"get-exit-plan"},
+					Input:    "walletdkrpc.GetExitPlanRequest",
+					Output:   "walletdkrpc.GetExitPlanResponse",
+					Comments: "",
+				},
+				{
+					Name:     "SweepWallet",
+					Aliases:  []string{"sweep-wallet"},
+					Input:    "walletdkrpc.SweepWalletRequest",
+					Output:   "walletdkrpc.SweepWalletResponse",
+					Comments: "",
+				},
+				{
+					Name:     "Exit",
+					Aliases:  []string{"exit"},
+					Input:    "walletdkrpc.ExitRequest",
+					Output:   "walletdkrpc.ExitResponse",
+					Comments: "",
+				},
+				{
+					Name:     "ExitStatus",
+					Aliases:  []string{"exit-status"},
+					Input:    "walletdkrpc.ExitStatusRequest",
+					Output:   "walletdkrpc.ExitStatusResponse",
+					Comments: "",
+				},
+				{
+					Name:            "SubscribeWallet",
+					Aliases:         []string{"subscribe-wallet"},
+					Input:           "walletdkrpc.SubscribeWalletRequest",
+					Output:          "walletdkrpc.WalletEntry",
+					ServerStreaming: true,
+					Comments:        "",
+				},
+			},
+		},
+		{
+			FullName: "walletdkrpc.WalletInspectionService",
+			Aliases:  []string{"wallet-inspection"},
+			Comments: "",
+			Methods: []methodSpec{
+				{
+					Name:     "InspectActivity",
+					Aliases:  []string{"inspect-activity"},
+					Input:    "walletdkrpc.InspectActivityRequest",
+					Output:   "walletdkrpc.InspectActivityResponse",
+					Comments: "",
 				},
 			},
 		},

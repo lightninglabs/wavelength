@@ -6,7 +6,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/stretchr/testify/require"
@@ -324,6 +326,154 @@ func TestExitRejectsEmptyOutpoint(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 	require.Equal(t, 0, rpc.unrollCalls)
+}
+
+// TestGetExitPlanProxiesDaemonPlan confirms the wallet API exposes the
+// backing-wallet funding details and projected exit status.
+func TestGetExitPlanProxiesDaemonPlan(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	sweepTxid := testHash(1)
+	rpc.exitPlanResp = &darepod.ExitPlanResponse{
+		FeeRateSatPerVByte:         3,
+		CanStart:                   false,
+		TotalFundingShortfallSat:   10_000,
+		TotalRecommendedFundingSat: 20_000,
+		Plans: []darepod.ExitPlanEntry{{
+			Outpoint:                   "abc:0",
+			FundingAddress:             "bcrt1plan",
+			RequiredConfirmations:      1,
+			RequiredFeeUTXOCount:       2,
+			UsableFeeUTXOCount:         1,
+			RecommendedUTXOAmountSat:   10_000,
+			RecommendedTotalFundingSat: 20_000,
+			FundingShortfallSat:        10_000,
+			CanStart:                   false,
+			ExitJobFound:               true,
+			ExitStatus: daemonrpc.
+				UnrollJobStatus_UNROLL_JOB_STATUS_PENDING,
+			SweepTxid: &sweepTxid,
+			LastError: errors.New("last"),
+		}},
+	}
+
+	resp, err := svc.GetExitPlan(
+		t.Context(), &walletdkrpc.GetExitPlanRequest{
+			Outpoints:  []string{"abc:0"},
+			ConfTarget: 3,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{"abc:0"}, rpc.exitPlanLast.Outpoints)
+	require.Equal(t, uint32(3), rpc.exitPlanLast.ConfTarget)
+	require.Equal(t, int64(3), resp.GetFeeRateSatPerVbyte())
+	require.Equal(t, int64(10_000), resp.GetTotalFundingShortfallSat())
+	require.Equal(
+		t, int64(20_000), resp.GetTotalRecommendedFundingSat(),
+	)
+	require.False(t, resp.GetCanStart())
+
+	require.Len(t, resp.GetPlans(), 1)
+	entry := resp.GetPlans()[0]
+	require.Equal(t, "abc:0", entry.GetOutpoint())
+	require.Equal(t, "bcrt1plan", entry.GetFundingAddress())
+	require.Equal(t, uint32(2), entry.GetRequiredFeeUtxoCount())
+	require.Equal(t, int64(10_000), entry.GetFundingShortfallSat())
+	require.False(t, entry.GetCanStart())
+	require.True(t, entry.GetExitJobFound())
+	require.Equal(
+		t, walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING,
+		entry.GetExitStatus(),
+	)
+	require.Empty(t, entry.GetError())
+}
+
+// TestGetExitPlanAllowsMissingSweepTxid confirms an in-progress exit plan can
+// omit the sweep txid without crashing the wallet-facing projection.
+func TestGetExitPlanAllowsMissingSweepTxid(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	rpc.exitPlanResp = &darepod.ExitPlanResponse{
+		FeeRateSatPerVByte: 3,
+		Plans: []darepod.ExitPlanEntry{{
+			Outpoint:                 "abc:0",
+			FundingAddress:           "bcrt1plan",
+			RequiredFeeUTXOCount:     1,
+			RecommendedUTXOAmountSat: 10_000,
+		}},
+	}
+
+	resp, err := svc.GetExitPlan(
+		t.Context(), &walletdkrpc.GetExitPlanRequest{
+			Outpoints: []string{"abc:0"},
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, resp.GetPlans(), 1)
+	require.Empty(t, resp.GetPlans()[0].GetSweepTxid())
+}
+
+// TestGetExitPlanRejectsEmptyOutpoint confirms an empty request does not reach
+// the daemon.
+func TestGetExitPlanRejectsEmptyOutpoint(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	_, err := svc.GetExitPlan(
+		t.Context(), &walletdkrpc.GetExitPlanRequest{},
+	)
+	require.Error(t, err)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Equal(t, 0, rpc.exitPlanCalls)
+}
+
+// TestSweepWalletProxiesDaemonSweep confirms preview/broadcast inputs and
+// totals are copied without protobuf leakage.
+func TestSweepWalletProxiesDaemonSweep(t *testing.T) {
+	t.Parallel()
+
+	svc, rpc := newAdminFixture(t)
+	txid := testHash(2)
+	rpc.sweepWalletResp = &darepod.SweepWalletResponse{
+		Inputs: []darepod.WalletSweepInput{{
+			Outpoint:  "abc:0",
+			AmountSat: 50_000,
+		}},
+		TotalInputSat:      50_000,
+		EstimatedFeeSat:    500,
+		NetAmountSat:       49_500,
+		FeeRateSatPerVByte: 2,
+		CanBroadcast:       true,
+		Txid:               &txid,
+	}
+
+	resp, err := svc.SweepWallet(
+		t.Context(), &walletdkrpc.SweepWalletRequest{
+			DestinationAddress: "bcrt1dest",
+			Broadcast:          true,
+			FeeRateSatPerVbyte: 2,
+			ConfTarget:         6,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "bcrt1dest", rpc.sweepWalletLast.DestinationAddress)
+	require.True(t, rpc.sweepWalletLast.Broadcast)
+	require.Equal(t, int64(2), rpc.sweepWalletLast.FeeRateSatPerVByte)
+	require.Equal(t, uint32(6), rpc.sweepWalletLast.ConfTarget)
+	require.Len(t, resp.GetInputs(), 1)
+	require.Equal(t, "abc:0", resp.GetInputs()[0].GetOutpoint())
+	require.Equal(t, int64(49_500), resp.GetNetAmountSat())
+	require.True(t, resp.GetCanBroadcast())
+	require.Equal(t, txid.String(), resp.GetTxid())
+}
+
+func testHash(tag byte) chainhash.Hash {
+	var hash chainhash.Hash
+	hash[0] = tag
+
+	return hash
 }
 
 // TestExitStatusMapsAllPhases sanity-checks that every daemon

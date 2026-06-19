@@ -149,6 +149,20 @@ type Ark struct {
 	// caller-supplied sweep destination addresses.
 	sweepChainParams *chaincfg.Params
 
+	// walletSweeper is the backend surface used by the general
+	// backing-wallet sweep flow (SweepWalletFundsRequest) to list
+	// confirmed UTXOs, lease them, sign the aggregate sweep, and finalize
+	// the PSBT. nil disables the general wallet-sweep subsystem; the
+	// concrete adapter is the same per-backend type wired as sweepSigner,
+	// reinterpreted through the broader WalletBackingSweeper interface.
+	walletSweeper WalletBackingSweeper
+
+	// walletSweepMaxFeeRate is the operator-configured fee-rate cap, in
+	// sats/vByte, applied to general backing-wallet sweeps. Zero means no
+	// operator cap is configured; the sweep handler then falls back to
+	// txconfirm.DefaultMaxFeeRateSatPerVByte so the cap is never a no-op.
+	walletSweepMaxFeeRate int64
+
 	// pendingSweeps tracks in-flight aggregate boarding sweeps the
 	// wallet actor is correlating spend / txconfirm notifications
 	// against. Keyed by sweep txid. The map is owned by the actor's
@@ -317,6 +331,25 @@ func WithBoardingSweep(store BoardingSweepStore, signer SweepSigner,
 		a.sweepStore = store
 		a.sweepSigner = signer
 		a.sweepChainParams = chainParams
+	}
+}
+
+// WithWalletSweep wires the general backing-wallet sweep subsystem into the
+// wallet actor. When omitted, SweepWalletFundsRequest returns a clear
+// "subsystem not initialised" error rather than silently no-oping.
+//
+// The backing argument is the same per-backend adapter the daemon wires as
+// the boarding-sweep signer; it satisfies WalletBackingSweeper structurally
+// because it already implements txconfirm.Wallet. The maxFeeRateSatPerVByte
+// is the operator's configured fee-rate cap (zero falls back to
+// txconfirm.DefaultMaxFeeRateSatPerVByte at sweep time so the cap is never a
+// no-op).
+func WithWalletSweep(backing WalletBackingSweeper,
+	maxFeeRateSatPerVByte int64) ArkOption {
+
+	return func(a *Ark) {
+		a.walletSweeper = backing
+		a.walletSweepMaxFeeRate = maxFeeRateSatPerVByte
 	}
 }
 
@@ -740,6 +773,12 @@ func (a *Ark) Receive(ctx context.Context,
 
 	case *SweepBoardingUTXOsRequest:
 		return a.handleSweepBoardingUTXOs(ctx, m)
+
+	case *SweepWalletFundsRequest:
+		return a.handleSweepWalletFunds(ctx, m)
+
+	case WalletSweepTxNotification:
+		return a.handleWalletSweepTxNotification(ctx, m)
 
 	case *ResumeBoardingSweepsRequest:
 		return a.handleResumeBoardingSweeps(ctx, m)

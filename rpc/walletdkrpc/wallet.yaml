@@ -30,6 +30,12 @@ http:
     - selector: walletdkrpc.WalletService.Status
       post: /v1/wallet/status
       body: "*"
+    - selector: walletdkrpc.WalletService.GetExitPlan
+      post: /v1/wallet/exit-plan
+      body: "*"
+    - selector: walletdkrpc.WalletService.SweepWallet
+      post: /v1/wallet/sweep-wallet
+      body: "*"
     - selector: walletdkrpc.WalletService.Exit
       post: /v1/wallet/exit
       body: "*"

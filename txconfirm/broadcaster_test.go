@@ -93,6 +93,12 @@ func (w *failingWallet) FinalizePsbt(_ context.Context, _ []byte) (*wire.MsgTx,
 	return wire.NewMsgTx(3), nil
 }
 
+func (w *failingWallet) FundPsbt(ctx context.Context, packetBytes []byte,
+	_ int64, _ walletcore.LockID, _ time.Duration) (*wire.MsgTx, error) {
+
+	return fundTestPsbt(ctx, packetBytes, w.utxos, w.FinalizePsbt)
+}
+
 // LeaseOutput is a noop for the failing wallet test double.
 func (w *failingWallet) LeaseOutput(_ context.Context, _ walletcore.LockID,
 	_ wire.OutPoint, expiry time.Duration) (time.Time, error) {
@@ -181,6 +187,12 @@ func (w *rewritingWallet) FinalizePsbt(_ context.Context, packetBytes []byte) (
 	return tx, nil
 }
 
+func (w *rewritingWallet) FundPsbt(ctx context.Context, packetBytes []byte,
+	_ int64, _ walletcore.LockID, _ time.Duration) (*wire.MsgTx, error) {
+
+	return fundTestPsbt(ctx, packetBytes, w.utxos, w.FinalizePsbt)
+}
+
 // LeaseOutput is a noop for the rewriting wallet test double.
 func (w *rewritingWallet) LeaseOutput(_ context.Context, _ walletcore.LockID,
 	_ wire.OutPoint, expiry time.Duration) (time.Time, error) {
@@ -193,6 +205,52 @@ func (w *rewritingWallet) ReleaseOutput(_ context.Context, _ walletcore.LockID,
 	_ wire.OutPoint) error {
 
 	return nil
+}
+
+func fundTestPsbt(ctx context.Context, packetBytes []byte,
+	utxos []*walletcore.Utxo,
+	finalize func(context.Context, []byte) (*wire.MsgTx, error)) (
+	*wire.MsgTx, error) {
+
+	packet, err := psbt.NewFromRawBytes(bytes.NewReader(packetBytes), false)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(utxos) == 0 {
+		return nil, fmt.Errorf("insufficient funds")
+	}
+
+	utxo := utxos[0]
+	packet.UnsignedTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: utxo.Outpoint,
+	})
+	packet.Inputs = append(packet.Inputs, psbt.PInput{
+		WitnessUtxo: &wire.TxOut{
+			Value:    int64(utxo.Amount),
+			PkScript: append([]byte(nil), utxo.PkScript...),
+		},
+	})
+
+	var outputTotal btcutil.Amount
+	for _, txOut := range packet.UnsignedTx.TxOut {
+		outputTotal += btcutil.Amount(txOut.Value)
+	}
+	change := utxo.Amount - outputTotal - 1_000
+	if change > DustLimit {
+		packet.UnsignedTx.AddTxOut(&wire.TxOut{
+			Value:    int64(change),
+			PkScript: []byte{txscript.OP_TRUE},
+		})
+		packet.Outputs = append(packet.Outputs, psbt.POutput{})
+	}
+
+	var buf bytes.Buffer
+	if err := packet.Serialize(&buf); err != nil {
+		return nil, err
+	}
+
+	return finalize(ctx, buf.Bytes())
 }
 
 // blockingReleaseWallet records that ReleaseOutput started, then blocks until
@@ -2484,5 +2542,500 @@ func TestSignCPFPChildSetsFeeInputSighash(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, testCase.expected, got)
 		})
+	}
+}
+
+func TestFeeInputFanoutNoopWhenSupplyAvailable(t *testing.T) {
+	t.Parallel()
+
+	broadcasts := 0
+	chain := &staticChainSourceRef{
+		handler: func(context.Context, chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			broadcasts++
+
+			return nil, fmt.Errorf("unexpected broadcast")
+		},
+	}
+	wallet := &rewritingWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXOWithAmount(20_000, 1),
+			makeWalletUTXOWithAmount(20_000, 2),
+		},
+		changeScript: p2trTestPkScript(t),
+	}
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wallet,
+	})
+	c := newTestFeeBumpController(t, b)
+
+	pending, err := c.EnsureSupply(
+		t.Context(), []feeInputDemand{
+			{parentTxid: chainhash.Hash{1}, minAmount: 10_000},
+			{parentTxid: chainhash.Hash{2}, minAmount: 10_000},
+		}, 5, 100, 1,
+	)
+	require.NoError(t, err)
+	require.Nil(t, pending)
+	require.Zero(t, broadcasts)
+}
+
+func TestFeeInputFanoutReservesPredictedOutputs(t *testing.T) {
+	t.Parallel()
+
+	var fanoutTxid chainhash.Hash
+	chain := &staticChainSourceRef{
+		handler: func(_ context.Context,
+			msg chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			req, ok := msg.(*chainsource.BroadcastTxRequest)
+			require.True(t, ok)
+			fanoutTxid = req.Tx.TxHash()
+
+			return &chainsource.BroadcastTxResponse{
+				Txid: fanoutTxid,
+			}, nil
+		},
+	}
+	wallet := &rewritingWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXOWithAmount(15_000, 9),
+		},
+		changeScript: p2trTestPkScript(t),
+	}
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wallet,
+	})
+	c := newTestFeeBumpController(t, b)
+
+	parentA := chainhash.Hash{1}
+	parentB := chainhash.Hash{2}
+	pending, err := c.EnsureSupply(
+		t.Context(), []feeInputDemand{
+			{parentTxid: parentA, minAmount: 10_000},
+			{parentTxid: parentB, minAmount: 20_000},
+		}, 5, 100, 1,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, pending)
+	require.Equal(t, fanoutTxid, pending.txid)
+	require.Nil(t, b.parentStates[parentA])
+	require.Len(t, b.parentStates[parentB].PredictedFeeInputs, 1)
+	require.Nil(t, b.selectReservedFeeInput(parentA, 10_000))
+
+	c.OnFanoutConfirmed(t.Context(), fanoutTxid)
+	require.Nil(t, b.selectReservedFeeInput(parentA, 10_000))
+	require.NotNil(t, b.selectReservedFeeInput(parentB, 20_000))
+	require.Nil(t, c.PendingFanout())
+}
+
+func TestFeeInputFanoutCanReplaceReservedInput(t *testing.T) {
+	t.Parallel()
+
+	var fanoutTx *wire.MsgTx
+	chain := &staticChainSourceRef{
+		handler: func(_ context.Context,
+			msg chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			req, ok := msg.(*chainsource.BroadcastTxRequest)
+			require.True(t, ok)
+			fanoutTx = req.Tx.Copy()
+
+			return &chainsource.BroadcastTxResponse{
+				Txid: req.Tx.TxHash(),
+			}, nil
+		},
+	}
+	wallet := &rewritingWallet{
+		changeScript: p2trTestPkScript(t),
+	}
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wallet,
+	})
+	c := newTestFeeBumpController(t, b)
+
+	parentA := chainhash.Hash{1}
+	parentB := chainhash.Hash{2}
+	reserved := makeWalletUTXOWithAmount(100_000, 7)
+	b.reserveFeeInput(t.Context(), parentA, &FeeInput{
+		Outpoint: reserved.Outpoint,
+		Output: &wire.TxOut{
+			Value:    int64(reserved.Amount),
+			PkScript: append([]byte(nil), reserved.PkScript...),
+		},
+		Confirmed: true,
+	})
+
+	pending, err := c.EnsureSupply(
+		t.Context(), []feeInputDemand{
+			{parentTxid: parentA, minAmount: 10_000},
+			{parentTxid: parentB, minAmount: 10_000},
+		}, 5, 100, 1,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, pending)
+	require.NotNil(t, fanoutTx)
+	require.GreaterOrEqual(t, len(fanoutTx.TxOut), minFeeInputFanoutOutputs)
+	require.Empty(t, b.parentStates[parentA].UsedFeeInputs)
+	require.Len(t, b.parentStates[parentA].PredictedFeeInputs, 1)
+	require.Len(t, b.parentStates[parentB].PredictedFeeInputs, 1)
+}
+
+func TestFeeInputFanoutRejectsRewrittenOutputs(t *testing.T) {
+	t.Parallel()
+
+	chain := &staticChainSourceRef{
+		handler: func(context.Context, chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			return nil, fmt.Errorf("unexpected broadcast")
+		},
+	}
+	wallet := &rewritingWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXOWithAmount(100_000, 3),
+		},
+		changeScript: p2trTestPkScript(t),
+		rewrite: func(tx *wire.MsgTx) *wire.MsgTx {
+			tx = tx.Copy()
+			tx.TxOut[0].Value++
+
+			return tx
+		},
+	}
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wallet,
+	})
+	c := newTestFeeBumpController(t, b)
+
+	_, err := c.EnsureSupply(
+		t.Context(), []feeInputDemand{
+			{parentTxid: chainhash.Hash{1}, minAmount: 10_000},
+			{parentTxid: chainhash.Hash{2}, minAmount: 10_000},
+		}, 5, 100, 1,
+	)
+	require.ErrorContains(t, err, "fanout output 0 changed")
+}
+
+func TestFeeInputFanoutRebroadcastsPendingFanout(t *testing.T) {
+	t.Parallel()
+
+	var broadcasts []*wire.MsgTx
+	chain := &staticChainSourceRef{
+		handler: func(_ context.Context,
+			msg chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			req, ok := msg.(*chainsource.BroadcastTxRequest)
+			require.True(t, ok)
+			broadcasts = append(broadcasts, req.Tx.Copy())
+
+			return &chainsource.BroadcastTxResponse{
+				Txid: req.Tx.TxHash(),
+			}, nil
+		},
+	}
+	wallet := &rewritingWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXOWithAmount(50_000, 3),
+		},
+		changeScript: p2trTestPkScript(t),
+	}
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wallet,
+	})
+	c := newTestFeeBumpController(t, b)
+
+	demands := []feeInputDemand{
+		{
+			parentTxid: chainhash.Hash{
+				1,
+			},
+			minAmount: 10_000,
+		},
+		{
+			parentTxid: chainhash.Hash{
+				2,
+			},
+			minAmount: 10_000,
+		},
+	}
+	pending, err := c.EnsureSupply(t.Context(), demands, 5, 100, 2)
+	require.NoError(t, err)
+	require.NotNil(t, pending)
+	require.Len(t, broadcasts, 1)
+
+	_, err = c.EnsureSupply(t.Context(), demands, 5, 101, 2)
+	require.NoError(t, err)
+	require.Len(t, broadcasts, 1)
+
+	_, err = c.EnsureSupply(t.Context(), demands, 5, 102, 2)
+	require.NoError(t, err)
+	require.Len(t, broadcasts, 2)
+	require.Equal(t, broadcasts[0].TxHash(), broadcasts[1].TxHash())
+	require.NotNil(t, c.PendingFanout())
+}
+
+func TestFeeInputFanoutClearsRejectedPendingFanout(t *testing.T) {
+	t.Parallel()
+
+	broadcasts := 0
+	chain := &staticChainSourceRef{
+		handler: func(_ context.Context,
+			msg chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			req, ok := msg.(*chainsource.BroadcastTxRequest)
+			require.True(t, ok)
+			broadcasts++
+			if broadcasts == 2 {
+				return nil, fmt.Errorf("fanout rejected")
+			}
+
+			return &chainsource.BroadcastTxResponse{
+				Txid: req.Tx.TxHash(),
+			}, nil
+		},
+	}
+	wallet := &rewritingWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXOWithAmount(50_000, 4),
+		},
+		changeScript: p2trTestPkScript(t),
+	}
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wallet,
+	})
+	c := newTestFeeBumpController(t, b)
+
+	parentA := chainhash.Hash{1}
+	parentB := chainhash.Hash{2}
+	demands := []feeInputDemand{
+		{
+			parentTxid: parentA,
+			minAmount:  10_000,
+		},
+		{
+			parentTxid: parentB,
+			minAmount:  10_000,
+		},
+	}
+	_, err := c.EnsureSupply(t.Context(), demands, 5, 100, 1)
+	require.NoError(t, err)
+	require.NotNil(t, c.PendingFanout())
+
+	_, err = c.EnsureSupply(t.Context(), demands, 5, 101, 1)
+	require.NoError(t, err)
+	pending := c.PendingFanout()
+	require.NotNil(t, pending)
+	require.NotEmpty(t, pending.assignments)
+	require.NotNil(t, b.parentStates[parentB])
+	require.Equal(t, 3, broadcasts)
+}
+
+func TestFeeInputFanoutEvictPrunesPendingAssignments(t *testing.T) {
+	t.Parallel()
+
+	chain := &staticChainSourceRef{
+		handler: func(_ context.Context,
+			msg chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			req, ok := msg.(*chainsource.BroadcastTxRequest)
+			require.True(t, ok)
+
+			return &chainsource.BroadcastTxResponse{
+				Txid: req.Tx.TxHash(),
+			}, nil
+		},
+	}
+	wallet := &rewritingWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXOWithAmount(50_000, 5),
+		},
+		changeScript: p2trTestPkScript(t),
+	}
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wallet,
+	})
+	c := newTestFeeBumpController(t, b)
+
+	parent := chainhash.Hash{2}
+	_, err := c.EnsureSupply(
+		t.Context(), []feeInputDemand{
+			{parentTxid: chainhash.Hash{1}, minAmount: 10_000},
+			{parentTxid: parent, minAmount: 10_000},
+		}, 5, 100, 1,
+	)
+	require.NoError(t, err)
+	pending := c.PendingFanout()
+	require.NotNil(t, pending)
+	require.Contains(t, pending.assignments, parent)
+
+	b.Evict(t.Context(), parent)
+	c.PruneParent(t.Context(), parent)
+	require.Nil(t, c.PendingFanout())
+	require.Nil(t, b.parentStates[parent])
+}
+
+func TestFeeInputFanoutPromotionSkipsEvictedParents(t *testing.T) {
+	t.Parallel()
+
+	chain := &staticChainSourceRef{
+		handler: func(_ context.Context,
+			msg chainsource.ChainSourceMsg) (
+			chainsource.ChainSourceResp, error) {
+
+			req, ok := msg.(*chainsource.BroadcastTxRequest)
+			require.True(t, ok)
+
+			return &chainsource.BroadcastTxResponse{
+				Txid: req.Tx.TxHash(),
+			}, nil
+		},
+	}
+	wallet := &rewritingWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXOWithAmount(50_000, 6),
+		},
+		changeScript: p2trTestPkScript(t),
+	}
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: chain,
+		Wallet:      wallet,
+	})
+	c := newTestFeeBumpController(t, b)
+
+	parent := chainhash.Hash{2}
+	pending, err := c.EnsureSupply(
+		t.Context(), []feeInputDemand{
+			{parentTxid: chainhash.Hash{1}, minAmount: 10_000},
+			{parentTxid: parent, minAmount: 10_000},
+		}, 5, 100, 1,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, pending)
+
+	delete(b.parentStates, parent)
+	c.OnFanoutConfirmed(t.Context(), pending.txid)
+	require.Nil(t, b.parentStates[parent])
+	require.Nil(t, c.PendingFanout())
+}
+
+// testFeeBump is a thin test seam over the fanout FSM. It drives the FSM
+// directly via AskEvent and exposes the same surface the old
+// FeeBumpInputController had (EnsureSupply / PendingFanout / OnFanoutConfirmed
+// / PruneParent) so the fanout tests can assert behavior without depending on
+// the actor. The watch register/unregister outbox events are not actioned here
+// (no chainsource conf watch in these unit tests); the tests assert on FSM
+// state and the shared reservation map only.
+type testFeeBump struct {
+	t   *testing.T
+	fsm *feeBumpStateMachine
+	env *feeBumpEnvironment
+}
+
+// EnsureSupply feeds a demand observation into the FSM and returns the
+// in-flight fanout (if any), surfacing the per-turn operational error the
+// transition stashed rather than returned.
+func (c *testFeeBump) EnsureSupply(ctx context.Context,
+	demands []feeInputDemand, feeRate int64, height, retryInterval int32) (
+	*pendingFeeInputFanout, error) {
+
+	c.t.Helper()
+
+	_, err := c.fsm.AskEvent(ctx, &feeBumpDemandsObserved{
+		demands:       demands,
+		feeRate:       feeRate,
+		height:        height,
+		retryInterval: retryInterval,
+	}).Await(ctx).Unpack()
+	require.NoError(c.t, err)
+
+	if turnErr := c.env.takeLastErr(); turnErr != nil {
+		return nil, turnErr
+	}
+
+	return c.PendingFanout(), nil
+}
+
+// PendingFanout returns the in-flight fanout the FSM is tracking, or nil if it
+// is idle.
+func (c *testFeeBump) PendingFanout() *pendingFeeInputFanout {
+	c.t.Helper()
+
+	rawState, err := c.fsm.CurrentState()
+	require.NoError(c.t, err)
+
+	state, ok := rawState.(feeBumpState)
+	require.True(c.t, ok)
+
+	return feeBumpPendingFanout(state)
+}
+
+// OnFanoutConfirmed feeds a confirmation event into the FSM.
+func (c *testFeeBump) OnFanoutConfirmed(ctx context.Context,
+	txid chainhash.Hash) {
+
+	c.t.Helper()
+
+	_, err := c.fsm.AskEvent(ctx, &feeBumpFanoutConfirmedEvent{
+		txid: txid,
+	}).Await(ctx).Unpack()
+	require.NoError(c.t, err)
+}
+
+// PruneParent feeds a parent-eviction event into the FSM.
+func (c *testFeeBump) PruneParent(ctx context.Context, parent chainhash.Hash) {
+	c.t.Helper()
+
+	_, err := c.fsm.AskEvent(ctx, &feeBumpParentEvicted{
+		parentTxid: parent,
+	}).Await(ctx).Unpack()
+	require.NoError(c.t, err)
+}
+
+// newTestFeeBumpController builds a fanout FSM bound to the supplied
+// broadcaster, starts it, and registers a cleanup to stop it when the test
+// ends. It returns a thin seam exposing the legacy controller surface so the
+// existing fanout tests drive the FSM directly.
+func newTestFeeBumpController(t *testing.T, b *CPFPBroadcaster) *testFeeBump {
+	t.Helper()
+
+	fsm, env := newFeeBumpStateMachine(b, btclog.Disabled)
+	fsm.Start(t.Context())
+	t.Cleanup(fsm.Stop)
+
+	return &testFeeBump{
+		t:   t,
+		fsm: fsm,
+		env: env,
+	}
+}
+
+func makeWalletUTXOWithAmount(amount btcutil.Amount,
+	seed byte) *walletcore.Utxo {
+
+	return &walletcore.Utxo{
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				seed,
+			},
+			Index: 0,
+		},
+		PkScript: []byte{
+			txscript.OP_TRUE,
+		},
+		Amount: amount,
 	}
 }

@@ -4,9 +4,12 @@ package swapwallet
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -266,6 +269,113 @@ func outpointQueued(target string, queued []string) bool {
 	return false
 }
 
+// getExitPlan projects the daemon's backing-wallet unroll plan onto the
+// wallet-facing RPC response.
+func (s *Service) getExitPlan(ctx context.Context,
+	req *walletdkrpc.GetExitPlanRequest) (*walletdkrpc.GetExitPlanResponse,
+	error) {
+
+	if s.deps == nil || s.deps.RPCServer == nil {
+		return nil, status.Error(
+			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
+		)
+	}
+
+	if len(req.GetOutpoints()) == 0 {
+		return nil, status.Error(
+			codes.InvalidArgument, "outpoints is required",
+		)
+	}
+
+	resp, err := s.deps.RPCServer.GetExitPlan(
+		ctx, &darepod.ExitPlanRequest{
+			Outpoints:  req.GetOutpoints(),
+			ConfTarget: req.GetConfTarget(),
+		},
+	)
+	if err != nil {
+		return nil, status.Errorf(status.Code(err), "get exit plan: %v",
+			err)
+	}
+
+	plans := make([]*walletdkrpc.ExitPlanEntry, 0, len(resp.Plans))
+	for _, entry := range resp.Plans {
+		plans = append(plans, &walletdkrpc.ExitPlanEntry{
+			Outpoint:                   entry.Outpoint,
+			FundingAddress:             entry.FundingAddress,
+			RequiredConfirmations:      entry.RequiredConfirmations,
+			RequiredFeeUtxoCount:       entry.RequiredFeeUTXOCount,
+			UsableFeeUtxoCount:         entry.UsableFeeUTXOCount,
+			RecommendedUtxoAmountSat:   entry.RecommendedUTXOAmountSat,
+			RecommendedTotalFundingSat: entry.RecommendedTotalFundingSat,
+			FundingShortfallSat:        entry.FundingShortfallSat,
+			CanStart:                   entry.CanStart,
+			ExitJobFound:               entry.ExitJobFound,
+			ExitStatus: exitStatusFromDaemon(
+				entry.ExitStatus,
+			),
+			SweepTxid: hashString(entry.SweepTxid),
+			LastError: errorString(entry.LastError),
+			Error:     errorString(entry.Err),
+		})
+	}
+
+	return &walletdkrpc.GetExitPlanResponse{
+		Plans:                      plans,
+		FeeRateSatPerVbyte:         resp.FeeRateSatPerVByte,
+		CanStart:                   resp.CanStart,
+		TotalFundingShortfallSat:   resp.TotalFundingShortfallSat,
+		TotalRecommendedFundingSat: resp.TotalRecommendedFundingSat,
+	}, nil
+}
+
+// sweepWallet projects a backing-wallet sweep preview or broadcast onto the
+// wallet-facing RPC response.
+func (s *Service) sweepWallet(ctx context.Context,
+	req *walletdkrpc.SweepWalletRequest) (*walletdkrpc.SweepWalletResponse,
+	error) {
+
+	if s.deps == nil || s.deps.RPCServer == nil {
+		return nil, status.Error(
+			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
+		)
+	}
+
+	resp, err := s.deps.RPCServer.SweepWallet(
+		ctx, &darepod.SweepWalletRequest{
+			DestinationAddress: req.GetDestinationAddress(),
+			Broadcast:          req.GetBroadcast(),
+			FeeRateSatPerVByte: req.GetFeeRateSatPerVbyte(),
+			ConfTarget:         req.GetConfTarget(),
+		},
+	)
+	if err != nil {
+		return nil, status.Errorf(status.Code(err), "sweep wallet: %v",
+			err)
+	}
+
+	inputs := make(
+		[]*walletdkrpc.WalletSweepInput, 0, len(resp.Inputs),
+	)
+	for _, input := range resp.Inputs {
+		inputs = append(inputs, &walletdkrpc.WalletSweepInput{
+			Outpoint:  input.Outpoint,
+			AmountSat: input.AmountSat,
+		})
+	}
+
+	return &walletdkrpc.SweepWalletResponse{
+		Inputs:             inputs,
+		TotalInputSat:      resp.TotalInputSat,
+		EstimatedFeeSat:    resp.EstimatedFeeSat,
+		NetAmountSat:       resp.NetAmountSat,
+		FeeRateSatPerVbyte: resp.FeeRateSatPerVByte,
+		CanBroadcast:       resp.CanBroadcast,
+		Txid:               hashString(resp.Txid),
+		FailureReason:      errorString(resp.FailureReason),
+	}, nil
+}
+
 // exitStatus proxies daemonrpc.GetUnrollStatus and projects the daemon's
 // UnrollJobStatus onto the wallet-facing ExitJobStatus.
 func (s *Service) exitStatus(ctx context.Context,
@@ -331,4 +441,24 @@ func exitStatusFromDaemon(
 	default:
 		return walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_UNSPECIFIED
 	}
+}
+
+func hashString(hash fmt.Stringer) string {
+	if hash == nil {
+		return ""
+	}
+
+	if h, ok := hash.(*chainhash.Hash); ok && h == nil {
+		return ""
+	}
+
+	return hash.String()
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	return err.Error()
 }

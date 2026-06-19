@@ -155,7 +155,7 @@ func processEventWithJob(ctx context.Context, job *JobState, event Event,
 // Notice: no IO, no time, no randomness. This function can be exercised
 // deterministically in unit tests, which is why the FSM intentionally
 // lives separate from the behavior.
-func deriveStateTransition(_ context.Context, job *JobState, env *Environment,
+func deriveStateTransition(ctx context.Context, job *JobState, env *Environment,
 	reissue bool,
 	deferralAnchor fn.Option[int32]) (*StateTransition, error) {
 

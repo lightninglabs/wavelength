@@ -868,10 +868,6 @@ func (a *Ark) cancelSweepSpendWatches(ctx context.Context,
 func (a *Ark) submitSweepConfirmer(ctx context.Context, tx *wire.MsgTx,
 	pkScript []byte, heightHint uint32) error {
 
-	if a.actorSystem == nil {
-		return fmt.Errorf("actor system unavailable")
-	}
-
 	walletNotif := actor.NewMapInputRef[
 		BoardingSweepTxNotification, WalletMsg,
 	](
@@ -904,10 +900,35 @@ func (a *Ark) submitSweepConfirmer(ctx context.Context, tx *wire.MsgTx,
 		},
 	)
 
+	return a.submitSweepToConfirm(
+		ctx, tx, pkScript, heightHint, boardingSweepBroadcastLabel,
+		subscriber,
+	)
+}
+
+// submitSweepToConfirm registers a signed sweep transaction with the shared
+// txconfirm broadcaster and surfaces a synchronous registration failure as an
+// error. The subscriber is built per caller (boarding vs general wallet
+// sweep) so each receives its own wallet-domain notification type; everything
+// downstream of that — the broadcaster lookup, the Ask, and the
+// TxStateFailed guard — is identical and lives here.
+//
+// The broadcaster is resolved lazily through the receptionist
+// (txconfirm.LookupRef) so the wallet actor can be constructed before the
+// txconfirm actor has been registered, mirroring how round / vtxo / oor wire
+// their cross-actor refs.
+func (a *Ark) submitSweepToConfirm(ctx context.Context, tx *wire.MsgTx,
+	pkScript []byte, heightHint uint32, label string,
+	subscriber actor.TellOnlyRef[txconfirm.Notification]) error {
+
+	if a.actorSystem == nil {
+		return fmt.Errorf("actor system unavailable")
+	}
+
 	req := &txconfirm.EnsureConfirmedReq{
 		Tx:                   tx,
 		ConfirmationPkScript: pkScript,
-		Label:                boardingSweepBroadcastLabel,
+		Label:                label,
 		HeightHint:           heightHint,
 		TargetConfs:          1,
 		Subscriber:           subscriber,

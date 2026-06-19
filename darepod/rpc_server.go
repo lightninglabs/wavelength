@@ -3599,18 +3599,6 @@ func (r *RPCServer) Unroll(ctx context.Context, req *daemonrpc.UnrollRequest) (
 	}, nil
 }
 
-// preflightUnrollMinUTXOSat is the soft floor that decides which
-// confirmed wallet UTXOs count as a "usable" CPFP fee input in the
-// unroll feasibility pre-flight. UTXOs below this threshold are too small
-// to plausibly cover a v3/TRUC CPFP child fee on their own, so they don't
-// count toward the one-input-per-ancestry-path requirement. The exact
-// required amount is determined per-package at broadcast time in
-// `txconfirm.CPFPBroadcaster`; this floor is intentionally conservative
-// so the pre-check rejects only obviously-dust wallets, not borderline
-// cases the run-time fee bumper might still handle. Empirical floor
-// observed during itest (BUGS_FOUND.md bug-8): ~32k sat per package.
-const preflightUnrollMinUTXOSat = btcutil.Amount(10_000)
-
 const (
 	// unrollFeeConfTarget is the confirmation target used to estimate
 	// the fee rate for the unroll feasibility pre-flight. Six blocks
@@ -3649,35 +3637,15 @@ func (r *RPCServer) preflightUnrollFeasibility(ctx context.Context,
 		return nil
 	}
 
-	numTxs, numPaths := unroll.RecoveryTxCount(desc)
-
-	utxos, err := r.server.ListWalletUnspent(ctx, 1, 9999999)
+	walletSnapshot, err := r.walletExitFundingSnapshot(ctx)
 	if err != nil {
 		return status.Errorf(codes.Internal, "preflight wallet "+
 			"unspent: %v", err)
 	}
-
-	// Derive both wallet inputs the model needs from a single snapshot:
-	// the total confirmed balance (can it fund the CPFP fees at all?)
-	// and the count of UTXOs large enough to each fund a CPFP child (are
-	// there enough distinct fee inputs for the concurrent packages?).
-	var confirmed btcutil.Amount
-	usable := 0
-	for _, utxo := range utxos {
-		confirmed += utxo.Amount
-		if utxo.Amount >= preflightUnrollMinUTXOSat {
-			usable++
-		}
-	}
-
-	verdict := unroll.AssessExitFeasibility(unroll.ExitFeasibilityInput{
-		NumRecoveryTxs:     numTxs,
-		NumAncestryPaths:   numPaths,
-		VTXOAmountSat:      desc.Amount,
-		FeeRateSatPerVByte: r.estimateUnrollFeeRate(ctx),
-		WalletConfirmedSat: confirmed,
-		WalletUsableInputs: usable,
-	})
+	plan := unroll.PlanExitFunding(
+		desc, r.estimateUnrollFeeRate(ctx), walletSnapshot,
+	)
+	verdict := plan.Feasibility
 	if verdict.Feasible {
 		return nil
 	}
@@ -3738,18 +3706,19 @@ func unrollInfeasibleError(f unroll.ExitFeasibility) error {
 		return status.Errorf(codes.FailedPrecondition, "on-chain "+
 			"wallet balance too low for unroll: need ~%d sat to "+
 			"fund CPFP fees for %d recovery transaction(s), but "+
-			"only %d sat confirmed. Deposit more and retry.",
-			int64(f.CPFPFeeTotalSat), f.NumRecoveryTxs,
-			int64(f.WalletConfirmedSat))
+			"only %d sat confirmed. Call GetExitPlan for a "+
+			"funding address and the recommended deposit, "+
+			"then retry.", int64(f.CPFPFeeTotalSat),
+			f.NumRecoveryTxs, int64(f.WalletConfirmedSat))
 
 	case unroll.ExitWalletTooFewInputs:
 		return status.Errorf(codes.FailedPrecondition, "insufficient "+
 			"wallet UTXOs to fund unroll CPFP: need at least %d "+
 			"confirmed wallet UTXO(s) of >= %d sat each (one per "+
-			"ancestry path), have %d usable. Fund the wallet's "+
-			"onchain address with more inputs and retry.",
-			f.RequiredWalletInputs,
-			int64(preflightUnrollMinUTXOSat), f.WalletUsableInputs)
+			"ancestry path), have %d usable. Call GetExitPlan for "+
+			"funding details.", f.RequiredWalletInputs,
+			int64(unroll.DefaultFeeInputMinAmountSat),
+			f.WalletUsableInputs)
 
 	default:
 		return status.Errorf(codes.FailedPrecondition, "unilateral "+

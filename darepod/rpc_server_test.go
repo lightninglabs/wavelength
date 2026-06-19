@@ -1479,7 +1479,7 @@ func TestUnrollInfeasibleError(t *testing.T) {
 				WalletConfirmedSat: 100,
 			},
 			contains: []string{
-				"wallet balance too low", "Deposit more",
+				"wallet balance too low", "Call GetExitPlan",
 			},
 		},
 		{

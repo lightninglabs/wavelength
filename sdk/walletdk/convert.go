@@ -194,6 +194,74 @@ func exitJobStatusFromProto(s walletdkrpc.ExitJobStatus) ExitJobStatus {
 	}
 }
 
+func exitPlanFromProto(r *walletdkrpc.GetExitPlanResponse) *GetExitPlanResult {
+	if r == nil {
+		return &GetExitPlanResult{}
+	}
+
+	plans := make([]ExitPlanEntry, 0, len(r.GetPlans()))
+	for _, entry := range r.GetPlans() {
+		plans = append(plans, exitPlanEntryFromProto(entry))
+	}
+
+	return &GetExitPlanResult{
+		Plans:                      plans,
+		FeeRateSatPerVByte:         r.GetFeeRateSatPerVbyte(),
+		CanStart:                   r.GetCanStart(),
+		TotalFundingShortfallSat:   r.GetTotalFundingShortfallSat(),
+		TotalRecommendedFundingSat: r.GetTotalRecommendedFundingSat(),
+	}
+}
+
+// exitPlanEntryFromProto projects one proto ExitPlanEntry into its SDK DTO.
+func exitPlanEntryFromProto(e *walletdkrpc.ExitPlanEntry) ExitPlanEntry {
+	return ExitPlanEntry{
+		Outpoint:                   e.GetOutpoint(),
+		FundingAddress:             e.GetFundingAddress(),
+		RequiredConfirmations:      e.GetRequiredConfirmations(),
+		RequiredFeeUTXOCount:       e.GetRequiredFeeUtxoCount(),
+		UsableFeeUTXOCount:         e.GetUsableFeeUtxoCount(),
+		RecommendedUTXOAmountSat:   e.GetRecommendedUtxoAmountSat(),
+		RecommendedTotalFundingSat: e.GetRecommendedTotalFundingSat(),
+		FundingShortfallSat:        e.GetFundingShortfallSat(),
+		CanStart:                   e.GetCanStart(),
+		ExitJobFound:               e.GetExitJobFound(),
+		ExitStatus: exitJobStatusFromProto(
+			e.GetExitStatus(),
+		),
+		SweepTxid: e.GetSweepTxid(),
+		LastError: e.GetLastError(),
+		Err:       e.GetError(),
+	}
+}
+
+func sweepWalletFromProto(
+	resp *walletdkrpc.SweepWalletResponse) *SweepWalletResult {
+
+	if resp == nil {
+		return &SweepWalletResult{}
+	}
+
+	inputs := make([]WalletSweepInput, 0, len(resp.GetInputs()))
+	for _, input := range resp.GetInputs() {
+		inputs = append(inputs, WalletSweepInput{
+			Outpoint:  input.GetOutpoint(),
+			AmountSat: input.GetAmountSat(),
+		})
+	}
+
+	return &SweepWalletResult{
+		Inputs:             inputs,
+		TotalInputSat:      resp.GetTotalInputSat(),
+		EstimatedFeeSat:    resp.GetEstimatedFeeSat(),
+		NetAmountSat:       resp.GetNetAmountSat(),
+		FeeRateSatPerVByte: resp.GetFeeRateSatPerVbyte(),
+		CanBroadcast:       resp.GetCanBroadcast(),
+		Txid:               resp.GetTxid(),
+		FailureReason:      resp.GetFailureReason(),
+	}
+}
+
 // entryFromProto copies one wallet RPC entry into wrapper-owned fields so UI
 // and bridge callers do not need protobuf types.
 func entryFromProto(entry *walletdkrpc.WalletEntry) Entry {

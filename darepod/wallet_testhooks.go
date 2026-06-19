@@ -23,7 +23,7 @@ func (s *Server) NewWalletAddress(ctx context.Context) (string, error) {
 
 		addr, err := lndSvc.WalletKit.NextAddr(
 			ctx, lnwallet.DefaultAccountName,
-			walletrpc.AddressType_TAPROOT_PUBKEY, true,
+			walletrpc.AddressType_TAPROOT_PUBKEY, false,
 		)
 		if err != nil {
 			return "", fmt.Errorf("LND NextAddr: %w", err)

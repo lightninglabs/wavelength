@@ -66,6 +66,9 @@ var (
 	ErrFeeInputProducesDust = errors.New("cpfp fee input leaves sub-dust " +
 		"change")
 
+	errCPFPFeeInputShortfall = errors.New("confirmed cpfp fee input " +
+		"shortfall")
+
 	// ErrNonTRUCParent indicates that the caller submitted a parent
 	// transaction whose version is not v3 (TRUC). txconfirm relies on
 	// BIP-431 ephemeral-anchor and TRUC-package semantics for its
@@ -127,6 +130,13 @@ type Wallet interface {
 	// FinalizePsbt signs and finalizes a PSBT packet. The wallet signs all
 	// inputs it owns and returns the finalized wire tx.
 	FinalizePsbt(ctx context.Context, packet []byte) (*wire.MsgTx, error)
+
+	// FundPsbt funds, signs, and finalizes a wallet transaction template.
+	// The lock parameters let backends reserve selected inputs under the
+	// same namespace txconfirm uses for CPFP fee inputs.
+	FundPsbt(ctx context.Context, packet []byte, feeRateSatPerVByte int64,
+		lockID walletcore.LockID,
+		lockExpiry time.Duration) (*wire.MsgTx, error)
 
 	walletcore.OutputLeaser
 }
@@ -267,6 +277,11 @@ type parentBumpState struct {
 	// itself in order to re-pick a parent's own fee input on later
 	// RBF bumps.
 	UsedFeeInputs map[wire.OutPoint]*FeeInput
+
+	// PredictedFeeInputs are outputs from an in-flight txconfirm fanout
+	// transaction that are already assigned to this parent. They become
+	// normal used fee inputs after the fanout confirms.
+	PredictedFeeInputs map[wire.OutPoint]*FeeInput
 }
 
 // CPFPBroadcaster broadcasts signed transactions and automatically attaches a
@@ -326,9 +341,33 @@ func (b *CPFPBroadcaster) Evict(ctx context.Context, txid chainhash.Hash) {
 	for op := range state.UsedFeeOutpoints {
 		outpoints = append(outpoints, op)
 	}
+	for op := range state.PredictedFeeInputs {
+		outpoints = append(outpoints, op)
+	}
 
 	delete(b.parentStates, txid)
 	b.releaseWalletLeasesAsync(ctx, outpoints)
+}
+
+func (b *CPFPBroadcaster) parentState(
+	parentTxid chainhash.Hash) *parentBumpState {
+
+	state := b.parentStates[parentTxid]
+	if state == nil {
+		state = &parentBumpState{}
+		b.parentStates[parentTxid] = state
+	}
+	if state.UsedFeeOutpoints == nil {
+		state.UsedFeeOutpoints = make(map[wire.OutPoint]struct{})
+	}
+	if state.UsedFeeInputs == nil {
+		state.UsedFeeInputs = make(map[wire.OutPoint]*FeeInput)
+	}
+	if state.PredictedFeeInputs == nil {
+		state.PredictedFeeInputs = make(map[wire.OutPoint]*FeeInput)
+	}
+
+	return state
 }
 
 // reserveFeeInput records that the given parent txid is consuming the
@@ -345,21 +384,7 @@ func (b *CPFPBroadcaster) reserveFeeInput(ctx context.Context,
 		return
 	}
 
-	state := b.parentStates[parentTxid]
-	if state == nil {
-		state = &parentBumpState{
-			UsedFeeOutpoints: make(map[wire.OutPoint]struct{}),
-			UsedFeeInputs:    make(map[wire.OutPoint]*FeeInput),
-		}
-		b.parentStates[parentTxid] = state
-	}
-	if state.UsedFeeOutpoints == nil {
-		state.UsedFeeOutpoints = make(map[wire.OutPoint]struct{})
-	}
-	if state.UsedFeeInputs == nil {
-		state.UsedFeeInputs = make(map[wire.OutPoint]*FeeInput)
-	}
-
+	state := b.parentState(parentTxid)
 	op := feeInput.Outpoint
 
 	// If we already reserved this outpoint for this parent, the
@@ -447,6 +472,7 @@ func (b *CPFPBroadcaster) releaseFeeOutpoint(ctx context.Context,
 
 	delete(state.UsedFeeOutpoints, op)
 	delete(state.UsedFeeInputs, op)
+	delete(state.PredictedFeeInputs, op)
 
 	b.releaseWalletLeasesAsync(ctx, []wire.OutPoint{op})
 
@@ -455,7 +481,8 @@ func (b *CPFPBroadcaster) releaseFeeOutpoint(ctx context.Context,
 	// zero-value shells.
 	if state.LastFeeRate == 0 && state.LastPackageFee == 0 &&
 		len(state.UsedFeeOutpoints) == 0 &&
-		len(state.UsedFeeInputs) == 0 {
+		len(state.UsedFeeInputs) == 0 &&
+		len(state.PredictedFeeInputs) == 0 {
 
 		delete(b.parentStates, parentTxid)
 	}
@@ -474,6 +501,9 @@ func (b *CPFPBroadcaster) excludedOutpointsForOtherParents(
 			continue
 		}
 		for op := range state.UsedFeeOutpoints {
+			excluded[op] = struct{}{}
+		}
+		for op := range state.PredictedFeeInputs {
 			excluded[op] = struct{}{}
 		}
 	}
@@ -1045,8 +1075,8 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 		}
 	}
 
-	return nil, fmt.Errorf("no confirmed wallet UTXOs available (need >= "+
-		"%d sats)", int64(minAmount))
+	return nil, fmt.Errorf("%w: no confirmed wallet UTXOs available (need "+
+		">= %d sats)", errCPFPFeeInputShortfall, int64(minAmount))
 }
 
 // selectReservedFeeInput returns the smallest cached fee input already

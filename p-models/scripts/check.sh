@@ -29,6 +29,35 @@ if ! command -v p >/dev/null 2>&1; then
     exit 1
 fi
 
+run_with_heartbeat() {
+    local label="$1"
+
+    shift
+
+    "$@" &
+    local cmd_pid="$!"
+
+    (
+        while kill -0 "$cmd_pid" >/dev/null 2>&1; do
+            sleep 30
+
+            if kill -0 "$cmd_pid" >/dev/null 2>&1; then
+                echo "... ${label} still running ($(date -u +%H:%M:%SZ))"
+            fi
+        done
+    ) &
+    local heartbeat_pid="$!"
+
+    local status=0
+
+    wait "$cmd_pid" || status="$?"
+
+    kill "$heartbeat_pid" >/dev/null 2>&1 || true
+    wait "$heartbeat_pid" 2>/dev/null || true
+
+    return "$status"
+}
+
 EXPECTED_P_VERSION="3.0.4"
 P_VERSION="$(p --version 2>/dev/null | awk '{print $NF}')"
 case "$P_VERSION" in
@@ -40,7 +69,7 @@ case "$P_VERSION" in
 esac
 
 rm -rf "${REPO_ROOT}/PGenerated"
-p compile -pp "$P_PROJ"
+run_with_heartbeat "P compile" p compile -pp "$P_PROJ"
 
 # check_green runs a test case that must hold: p check exits non-zero if it
 # finds any bug, so set -e fails the script on a regression.
@@ -49,7 +78,7 @@ check_green() {
 
     echo ""
     echo "=== green: ${testcase} (expect 0 bugs) ==="
-    timeout "$TIMEOUT" p check "$DLL_PATH" \
+    run_with_heartbeat "$testcase" timeout "$TIMEOUT" p check "$DLL_PATH" \
         --testcase "$testcase" \
         --schedules "$SCHEDULES" \
         --max-steps "$MAX_STEPS"
@@ -64,7 +93,7 @@ check_negative() {
 
     echo ""
     echo "=== negative: ${testcase} (expect a bug) ==="
-    if timeout "$TIMEOUT" p check "$DLL_PATH" \
+    if run_with_heartbeat "$testcase" timeout "$TIMEOUT" p check "$DLL_PATH" \
         --testcase "$testcase" \
         --schedules "$schedules" \
         --max-steps "$MAX_STEPS"; then
