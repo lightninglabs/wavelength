@@ -29,7 +29,7 @@ func (a *TxBroadcasterActor) maybeEnsureFeeInputSupply(ctx context.Context,
 		return
 	}
 
-	pending, err := a.broadcaster.ensureFeeInputSupply(
+	pending, err := a.feeBumpController.EnsureSupply(
 		ctx, demands, feeRate, a.bestHeight,
 		a.cfg.FeeBumpIntervalBlocks,
 	)
@@ -144,7 +144,7 @@ func (a *TxBroadcasterActor) unregisterFanoutConfWatch(ctx context.Context,
 func (a *TxBroadcasterActor) handleFanoutConfirmed(ctx context.Context,
 	msg *confirmationObservedMsg) bool {
 
-	pending := a.broadcaster.pendingFanout
+	pending := a.feeBumpController.PendingFanout()
 	if pending == nil || pending.txid != msg.txid {
 		return false
 	}
@@ -154,7 +154,7 @@ func (a *TxBroadcasterActor) handleFanoutConfirmed(ctx context.Context,
 			err, "txid", pending.txid)
 	}
 
-	a.broadcaster.PromoteConfirmedFanout(msg.txid)
+	a.feeBumpController.OnFanoutConfirmed(ctx, msg.txid)
 	a.retryBroadcastingParents(ctx)
 
 	return true

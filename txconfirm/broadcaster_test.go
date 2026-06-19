@@ -2569,8 +2569,9 @@ func TestFeeInputFanoutNoopWhenSupplyAvailable(t *testing.T) {
 		ChainSource: chain,
 		Wallet:      wallet,
 	})
+	c := newTestFeeBumpController(t, b)
 
-	pending, err := b.ensureFeeInputSupply(
+	pending, err := c.EnsureSupply(
 		t.Context(), []feeInputDemand{
 			{parentTxid: chainhash.Hash{1}, minAmount: 10_000},
 			{parentTxid: chainhash.Hash{2}, minAmount: 10_000},
@@ -2609,10 +2610,11 @@ func TestFeeInputFanoutReservesPredictedOutputs(t *testing.T) {
 		ChainSource: chain,
 		Wallet:      wallet,
 	})
+	c := newTestFeeBumpController(t, b)
 
 	parentA := chainhash.Hash{1}
 	parentB := chainhash.Hash{2}
-	pending, err := b.ensureFeeInputSupply(
+	pending, err := c.EnsureSupply(
 		t.Context(), []feeInputDemand{
 			{parentTxid: parentA, minAmount: 10_000},
 			{parentTxid: parentB, minAmount: 20_000},
@@ -2625,10 +2627,10 @@ func TestFeeInputFanoutReservesPredictedOutputs(t *testing.T) {
 	require.Len(t, b.parentStates[parentB].PredictedFeeInputs, 1)
 	require.Nil(t, b.selectReservedFeeInput(parentA, 10_000))
 
-	b.PromoteConfirmedFanout(fanoutTxid)
+	c.OnFanoutConfirmed(t.Context(), fanoutTxid)
 	require.Nil(t, b.selectReservedFeeInput(parentA, 10_000))
 	require.NotNil(t, b.selectReservedFeeInput(parentB, 20_000))
-	require.Nil(t, b.pendingFanout)
+	require.Nil(t, c.PendingFanout())
 }
 
 func TestFeeInputFanoutCanReplaceReservedInput(t *testing.T) {
@@ -2656,6 +2658,7 @@ func TestFeeInputFanoutCanReplaceReservedInput(t *testing.T) {
 		ChainSource: chain,
 		Wallet:      wallet,
 	})
+	c := newTestFeeBumpController(t, b)
 
 	parentA := chainhash.Hash{1}
 	parentB := chainhash.Hash{2}
@@ -2669,7 +2672,7 @@ func TestFeeInputFanoutCanReplaceReservedInput(t *testing.T) {
 		Confirmed: true,
 	})
 
-	pending, err := b.ensureFeeInputSupply(
+	pending, err := c.EnsureSupply(
 		t.Context(), []feeInputDemand{
 			{parentTxid: parentA, minAmount: 10_000},
 			{parentTxid: parentB, minAmount: 10_000},
@@ -2710,8 +2713,9 @@ func TestFeeInputFanoutRejectsRewrittenOutputs(t *testing.T) {
 		ChainSource: chain,
 		Wallet:      wallet,
 	})
+	c := newTestFeeBumpController(t, b)
 
-	_, err := b.ensureFeeInputSupply(
+	_, err := c.EnsureSupply(
 		t.Context(), []feeInputDemand{
 			{parentTxid: chainhash.Hash{1}, minAmount: 10_000},
 			{parentTxid: chainhash.Hash{2}, minAmount: 10_000},
@@ -2748,6 +2752,7 @@ func TestFeeInputFanoutRebroadcastsPendingFanout(t *testing.T) {
 		ChainSource: chain,
 		Wallet:      wallet,
 	})
+	c := newTestFeeBumpController(t, b)
 
 	demands := []feeInputDemand{
 		{
@@ -2763,20 +2768,20 @@ func TestFeeInputFanoutRebroadcastsPendingFanout(t *testing.T) {
 			minAmount: 10_000,
 		},
 	}
-	pending, err := b.ensureFeeInputSupply(t.Context(), demands, 5, 100, 2)
+	pending, err := c.EnsureSupply(t.Context(), demands, 5, 100, 2)
 	require.NoError(t, err)
 	require.NotNil(t, pending)
 	require.Len(t, broadcasts, 1)
 
-	_, err = b.ensureFeeInputSupply(t.Context(), demands, 5, 101, 2)
+	_, err = c.EnsureSupply(t.Context(), demands, 5, 101, 2)
 	require.NoError(t, err)
 	require.Len(t, broadcasts, 1)
 
-	_, err = b.ensureFeeInputSupply(t.Context(), demands, 5, 102, 2)
+	_, err = c.EnsureSupply(t.Context(), demands, 5, 102, 2)
 	require.NoError(t, err)
 	require.Len(t, broadcasts, 2)
 	require.Equal(t, broadcasts[0].TxHash(), broadcasts[1].TxHash())
-	require.NotNil(t, b.pendingFanout)
+	require.NotNil(t, c.PendingFanout())
 }
 
 func TestFeeInputFanoutClearsRejectedPendingFanout(t *testing.T) {
@@ -2810,6 +2815,7 @@ func TestFeeInputFanoutClearsRejectedPendingFanout(t *testing.T) {
 		ChainSource: chain,
 		Wallet:      wallet,
 	})
+	c := newTestFeeBumpController(t, b)
 
 	parentA := chainhash.Hash{1}
 	parentB := chainhash.Hash{2}
@@ -2823,14 +2829,15 @@ func TestFeeInputFanoutClearsRejectedPendingFanout(t *testing.T) {
 			minAmount:  10_000,
 		},
 	}
-	_, err := b.ensureFeeInputSupply(t.Context(), demands, 5, 100, 1)
+	_, err := c.EnsureSupply(t.Context(), demands, 5, 100, 1)
 	require.NoError(t, err)
-	require.NotNil(t, b.pendingFanout)
+	require.NotNil(t, c.PendingFanout())
 
-	_, err = b.ensureFeeInputSupply(t.Context(), demands, 5, 101, 1)
+	_, err = c.EnsureSupply(t.Context(), demands, 5, 101, 1)
 	require.NoError(t, err)
-	require.NotNil(t, b.pendingFanout)
-	require.NotEmpty(t, b.pendingFanout.assignments)
+	pending := c.PendingFanout()
+	require.NotNil(t, pending)
+	require.NotEmpty(t, pending.assignments)
 	require.NotNil(t, b.parentStates[parentB])
 	require.Equal(t, 3, broadcasts)
 }
@@ -2861,20 +2868,23 @@ func TestFeeInputFanoutEvictPrunesPendingAssignments(t *testing.T) {
 		ChainSource: chain,
 		Wallet:      wallet,
 	})
+	c := newTestFeeBumpController(t, b)
 
 	parent := chainhash.Hash{2}
-	_, err := b.ensureFeeInputSupply(
+	_, err := c.EnsureSupply(
 		t.Context(), []feeInputDemand{
 			{parentTxid: chainhash.Hash{1}, minAmount: 10_000},
 			{parentTxid: parent, minAmount: 10_000},
 		}, 5, 100, 1,
 	)
 	require.NoError(t, err)
-	require.NotNil(t, b.pendingFanout)
-	require.Contains(t, b.pendingFanout.assignments, parent)
+	pending := c.PendingFanout()
+	require.NotNil(t, pending)
+	require.Contains(t, pending.assignments, parent)
 
 	b.Evict(t.Context(), parent)
-	require.Nil(t, b.pendingFanout)
+	c.PruneParent(t.Context(), parent)
+	require.Nil(t, c.PendingFanout())
 	require.Nil(t, b.parentStates[parent])
 }
 
@@ -2904,9 +2914,10 @@ func TestFeeInputFanoutPromotionSkipsEvictedParents(t *testing.T) {
 		ChainSource: chain,
 		Wallet:      wallet,
 	})
+	c := newTestFeeBumpController(t, b)
 
 	parent := chainhash.Hash{2}
-	pending, err := b.ensureFeeInputSupply(
+	pending, err := c.EnsureSupply(
 		t.Context(), []feeInputDemand{
 			{parentTxid: chainhash.Hash{1}, minAmount: 10_000},
 			{parentTxid: parent, minAmount: 10_000},
@@ -2916,9 +2927,24 @@ func TestFeeInputFanoutPromotionSkipsEvictedParents(t *testing.T) {
 	require.NotNil(t, pending)
 
 	delete(b.parentStates, parent)
-	b.PromoteConfirmedFanout(pending.txid)
+	c.OnFanoutConfirmed(t.Context(), pending.txid)
 	require.Nil(t, b.parentStates[parent])
-	require.Nil(t, b.pendingFanout)
+	require.Nil(t, c.PendingFanout())
+}
+
+// newTestFeeBumpController builds a fanout controller bound to the supplied
+// broadcaster, starts its FSM, and registers a cleanup to stop it when the
+// test ends.
+func newTestFeeBumpController(t *testing.T,
+	b *CPFPBroadcaster) *FeeBumpInputController {
+
+	t.Helper()
+
+	c := NewFeeBumpInputController(b)
+	c.Start(t.Context())
+	t.Cleanup(c.Stop)
+
+	return c
 }
 
 func makeWalletUTXOWithAmount(amount btcutil.Amount,

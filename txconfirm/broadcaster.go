@@ -300,8 +300,6 @@ type CPFPBroadcaster struct {
 	// and released via Evict when the caller's FSM learns the parent
 	// has terminally confirmed or failed.
 	parentStates map[chainhash.Hash]*parentBumpState
-
-	pendingFanout *pendingFeeInputFanout
 }
 
 // NewCPFPBroadcaster creates a new generic CPFP broadcaster helper.
@@ -348,7 +346,6 @@ func (b *CPFPBroadcaster) Evict(ctx context.Context, txid chainhash.Hash) {
 	}
 
 	delete(b.parentStates, txid)
-	b.prunePendingFanoutParent(ctx, txid)
 	b.releaseWalletLeasesAsync(ctx, outpoints)
 }
 

@@ -153,6 +153,13 @@ type TxBroadcasterActor struct {
 	// submission.
 	broadcaster *CPFPBroadcaster
 
+	// feeBumpController owns the fee-input fanout lifecycle: when a CPFP
+	// child cannot find a confirmed wallet fee input, it broadcasts a
+	// fanout transaction that mints right-sized fee inputs and promotes
+	// them once it confirms. It shares the broadcaster's per-parent
+	// reservation map.
+	feeBumpController *FeeBumpInputController
+
 	// tracked maps txid to its shared confirmation state.
 	tracked map[chainhash.Hash]*trackedTx
 
@@ -265,17 +272,23 @@ func NewTxBroadcasterActor(cfg Config) *TxBroadcasterActor {
 			DefaultBroadcastFailureAlertThreshold
 	}
 
+	// The fanout controller shares the broadcaster's per-parent
+	// reservation map, so it is constructed from the broadcaster rather
+	// than alongside it.
+	broadcaster := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource:                    cfg.ChainSource,
+		Wallet:                         cfg.Wallet,
+		Log:                            cfg.Log,
+		MaxFeeRateSatPerVByte:          cfg.MaxFeeRateSatPerVByte,
+		IncrementalRelayFeeSatPerVByte: cfg.IncrementalRelayFeeSatPerVByte,
+		PreSubmitTestMempoolAccept:     cfg.PreSubmitTestMempoolAccept,
+	})
+
 	return &TxBroadcasterActor{
-		cfg: cfg,
-		log: cfg.Log.UnwrapOr(btclog.Disabled),
-		broadcaster: NewCPFPBroadcaster(BroadcasterConfig{
-			ChainSource:                    cfg.ChainSource,
-			Wallet:                         cfg.Wallet,
-			Log:                            cfg.Log,
-			MaxFeeRateSatPerVByte:          cfg.MaxFeeRateSatPerVByte,
-			IncrementalRelayFeeSatPerVByte: cfg.IncrementalRelayFeeSatPerVByte,
-			PreSubmitTestMempoolAccept:     cfg.PreSubmitTestMempoolAccept,
-		}),
+		cfg:                    cfg,
+		log:                    cfg.Log.UnwrapOr(btclog.Disabled),
+		broadcaster:            broadcaster,
+		feeBumpController:      NewFeeBumpInputController(broadcaster),
 		tracked:                make(map[chainhash.Hash]*trackedTx),
 		terminalNotifyInflight: make(map[string]struct{}),
 	}
@@ -374,6 +387,7 @@ func (a *TxBroadcasterActor) OnStop(ctx context.Context) error {
 			// tail end of a confirmation, and Evict is a
 			// no-op when parentStates has no entry.
 			a.broadcaster.Evict(ctx, entry.data.Txid)
+			a.feeBumpController.PruneParent(ctx, entry.data.Txid)
 
 			continue
 		}
@@ -395,7 +409,12 @@ func (a *TxBroadcasterActor) OnStop(ctx context.Context) error {
 		// their configured expiry fires, blocking unrelated wallet
 		// coin selection after restart.
 		a.broadcaster.Evict(ctx, entry.data.Txid)
+		a.feeBumpController.PruneParent(ctx, entry.data.Txid)
 	}
+
+	// Tear down the fanout controller's FSM goroutine alongside the
+	// per-tracked-tx FSMs.
+	a.feeBumpController.Stop()
 
 	return firstErr
 }
@@ -672,6 +691,7 @@ func (a *TxBroadcasterActor) handleCancel(ctx context.Context,
 	// Without this, a caller who cancels before confirmation can starve
 	// subsequent broadcasts of the same UTXO for up to an hour.
 	a.broadcaster.Evict(ctx, entry.data.Txid)
+	a.feeBumpController.PruneParent(ctx, entry.data.Txid)
 
 	delete(a.tracked, entry.data.Txid)
 	resp.StoppedTracking = true
@@ -1270,6 +1290,7 @@ func (a *TxBroadcasterActor) evictTerminal(ctx context.Context,
 	// any wallet-level leases held on the parent's fee UTXOs so they
 	// become immediately available to other subsystems.
 	a.broadcaster.Evict(ctx, entry.data.Txid)
+	a.feeBumpController.PruneParent(ctx, entry.data.Txid)
 
 	delete(a.tracked, entry.data.Txid)
 }
