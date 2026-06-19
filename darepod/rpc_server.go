@@ -3706,9 +3706,10 @@ func unrollInfeasibleError(f unroll.ExitFeasibility) error {
 		return status.Errorf(codes.FailedPrecondition, "on-chain "+
 			"wallet balance too low for unroll: need ~%d sat to "+
 			"fund CPFP fees for %d recovery transaction(s), but "+
-			"only %d sat confirmed. Deposit more and retry.",
-			int64(f.CPFPFeeTotalSat), f.NumRecoveryTxs,
-			int64(f.WalletConfirmedSat))
+			"only %d sat confirmed. Call GetExitPlan for a "+
+			"funding address and the recommended deposit, "+
+			"then retry.", int64(f.CPFPFeeTotalSat),
+			f.NumRecoveryTxs, int64(f.WalletConfirmedSat))
 
 	case unroll.ExitWalletTooFewInputs:
 		return status.Errorf(codes.FailedPrecondition, "insufficient "+
