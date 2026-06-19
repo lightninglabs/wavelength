@@ -1354,7 +1354,7 @@ func TestEnsureConfirmedFansOutWhenActiveParentsNeedInputs(t *testing.T) {
 	require.Equal(t, 1, chain.packageCallCount())
 	require.Equal(t, 1, chain.broadcastCallCount())
 
-	pending := behavior.feeBumpController.PendingFanout()
+	pending := behavior.feeBumpPending()
 	require.NotNil(t, pending)
 	require.Len(t, pending.assignments[txB.TxHash()], 1)
 	require.Len(

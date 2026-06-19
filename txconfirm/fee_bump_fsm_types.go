@@ -1,17 +1,28 @@
 package txconfirm
 
 import (
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 )
 
-// feeBumpStateMachine is the protofsm instance that tracks the lifecycle of
-// the fee-input fanout. There is a single instance per FeeBumpInputController:
-// at most one fanout transaction is ever in flight, so the FSM models that
-// fanout's life from broadcast through confirmation (or rejection) and back to
-// idle.
+// feeBumpStateMachine is the protofsm instance that tracks and drives the
+// lifecycle of the fee-input fanout. There is a single instance per
+// TxBroadcasterActor: at most one fanout transaction is ever in flight, so the
+// FSM models that fanout's life from broadcast through confirmation (or
+// rejection) and back to idle.
+//
+// Unlike most protofsm instances in this codebase, the fanout FSM owns all of
+// the fanout logic and performs its own IO directly inside transitions (wallet
+// funding, broadcast, conf-watch decisions) via its feeBumpEnvironment. This is
+// safe because the txconfirm actor serializes every event fed to this FSM, so
+// at most one transition (and therefore at most one blocking Ask) is ever in
+// flight: blocking in a transition has the same profile as a synchronous helper
+// call from the actor. The FSM only emits outbox events for the handful of
+// effects that must be applied by the actor itself (confirmation-watch
+// register/unregister, and retrying stuck parents).
 type feeBumpStateMachine = protofsm.StateMachine[
 	feeBumpEvent, feeBumpOutboxEvent, *feeBumpEnvironment,
 ]
@@ -19,6 +30,12 @@ type feeBumpStateMachine = protofsm.StateMachine[
 // feeBumpStateTransition is the fanout protofsm transition type.
 type feeBumpStateTransition = protofsm.StateTransition[
 	feeBumpEvent, feeBumpOutboxEvent, *feeBumpEnvironment,
+]
+
+// feeBumpEmittedEvent is the fanout protofsm emitted-event type carrying the
+// outbox events a transition hands back to the actor.
+type feeBumpEmittedEvent = protofsm.EmittedEvent[
+	feeBumpEvent, feeBumpOutboxEvent,
 ]
 
 // feeBumpState is the sealed protofsm state interface for the fanout
@@ -31,25 +48,69 @@ type feeBumpState interface {
 	feeBumpStateSealed()
 }
 
-// feeBumpEvent is the sealed event surface accepted by the fanout FSM.
+// feeBumpEvent is the sealed event surface the actor feeds into the fanout FSM.
 type feeBumpEvent interface {
 	feeBumpEventSealed()
 }
 
-// feeBumpOutboxEvent is the fanout outbox event surface.
-//
-// Like the tracked-tx FSM, the fanout FSM is intentionally pure and does not
-// emit outbox events. The controller and actor drive all IO (wallet funding,
-// broadcast, conf-watch registration) around the FSM, querying its state and
-// feeding it events. The sealed interface still exists so the package follows
-// the same protofsm shape as the rest of the codebase.
+// feeBumpOutboxEvent is the sealed outbox surface the fanout FSM hands back to
+// the actor. The FSM does its own wallet/broadcast IO inside transitions, but
+// effects that touch actor-owned resources — the chainsource confirmation watch
+// and the tracked-tx retry loop — cannot be done from inside a transition, so
+// they are returned as outbox events for the actor to apply.
 type feeBumpOutboxEvent interface {
 	feeBumpOutboxEventSealed()
 }
 
-// feeBumpEnvironment carries immutable execution context for the fanout FSM
-// instance.
+// feeBumpEnvironment carries the execution context the fanout transitions use
+// to reach the wallet, chainsource, and the shared per-parent reservation map.
+// It holds a reference to the broadcaster so predicted/used fee-input
+// accounting stays consistent with the CPFP-child build path, exactly as the
+// old controller did.
 type feeBumpEnvironment struct {
+	// broadcaster provides the shared parentStates reservation map plus the
+	// wallet/chainsource helpers the fanout build path reuses
+	// (deriveChangePkScript, selectReservedFeeInput, releaseWalletLease,
+	// parentState).
+	broadcaster *CPFPBroadcaster
+
+	// log is the package logger used for the fanout lifecycle log lines.
+	log btclog.Logger
+
+	// lastErr records the most recent operational error a transition hit
+	// (a failed wallet fund, a rejected broadcast, a rewritten output).
+	//
+	// Transitions must NOT return these errors from ProcessEvent: protofsm
+	// tears the whole state machine down on any transition error, and the
+	// fanout FSM is a single long-lived instance that must survive a
+	// transient fanout failure and stay ready for the next demand. Instead
+	// a failing transition stashes the error here (staying in a safe state)
+	// and the actor / test seam reads it back via takeLastErr after the
+	// AskEvent completes. A genuinely impossible event (default branch) is
+	// still returned as an error, since that is a programming bug worth
+	// crashing on.
+	lastErr error
+}
+
+// takeLastErr returns and clears the most recent operational error stashed by a
+// transition, so each AskEvent surfaces only the error from its own turn.
+func (env *feeBumpEnvironment) takeLastErr() error {
+	err := env.lastErr
+	env.lastErr = nil
+
+	return err
+}
+
+// feeInputDemand records that one anchor parent needs a confirmed wallet fee
+// input of at least minAmount before its CPFP child can be built. The actor
+// computes the demand set from its tracked txids and hands it to the FSM; the
+// FSM owns the supply decision.
+type feeInputDemand struct {
+	// parentTxid is the anchor parent that needs a fee input.
+	parentTxid chainhash.Hash
+
+	// minAmount is the smallest fee input that would unblock the parent.
+	minAmount btcutil.Amount
 }
 
 // pendingFeeInputFanout captures everything about a fanout transaction that is
@@ -77,47 +138,90 @@ type pendingFeeInputFanout struct {
 	lastBroadcastHeight int32
 }
 
-// feeBumpFanoutBroadcast records that a fresh fanout transaction has been
-// funded and broadcast and is now awaiting confirmation.
-type feeBumpFanoutBroadcast struct {
-	// pending is the newly broadcast fanout state to carry forward.
-	pending *pendingFeeInputFanout
-}
+// feeBumpDemandsObserved is fed to the FSM whenever a CPFP child broadcast hit
+// ErrCPFPFeeInputUnavailable and the actor has computed the set of parents that
+// currently need a confirmed fee input. The idle state turns this into a fresh
+// fanout broadcast; the fanout-pending state turns it into a liveness check
+// (rebroadcast) of the in-flight fanout.
+type feeBumpDemandsObserved struct {
+	// demands is the set of anchor parents that need a confirmed fee input.
+	demands []feeInputDemand
 
-// feeBumpEventSealed marks feeBumpFanoutBroadcast as a fanout event.
-func (e *feeBumpFanoutBroadcast) feeBumpEventSealed() {}
+	// feeRate is the shared fee rate (sat/vbyte) the fanout should size
+	// against.
+	feeRate int64
 
-// feeBumpFanoutRebroadcast records that the in-flight fanout transaction was
-// rebroadcast at a new height. It refreshes the pending state's last-broadcast
-// height without otherwise disturbing the in-flight fanout.
-type feeBumpFanoutRebroadcast struct {
-	// height is the chain height at which the rebroadcast completed.
+	// height is the actor's current best height, used to pace rebroadcasts.
 	height int32
+
+	// retryInterval is the fee-bump interval (in blocks) the rebroadcast
+	// cadence is paced against.
+	retryInterval int32
 }
 
-// feeBumpEventSealed marks feeBumpFanoutRebroadcast as a fanout event.
-func (e *feeBumpFanoutRebroadcast) feeBumpEventSealed() {}
+// feeBumpEventSealed marks feeBumpDemandsObserved as a fanout event.
+func (e *feeBumpDemandsObserved) feeBumpEventSealed() {}
 
-// feeBumpFanoutConfirmed records that the in-flight fanout transaction has
-// confirmed. The controller has already promoted the predicted outputs to
-// used fee inputs before sending this event, so the FSM simply returns to
-// idle.
-type feeBumpFanoutConfirmed struct {
-	// txid identifies the confirmed fanout transaction.
+// feeBumpFanoutConfirmedEvent is fed to the FSM when a confirmation callback is
+// observed. If the txid matches the in-flight fanout, the fanout-pending state
+// promotes its predicted outputs into used fee inputs and returns to idle;
+// otherwise it is a no-op self-loop.
+type feeBumpFanoutConfirmedEvent struct {
+	// txid identifies the transaction whose confirmation was observed.
 	txid chainhash.Hash
 }
 
-// feeBumpEventSealed marks feeBumpFanoutConfirmed as a fanout event.
-func (e *feeBumpFanoutConfirmed) feeBumpEventSealed() {}
+// feeBumpEventSealed marks feeBumpFanoutConfirmedEvent as a fanout event.
+func (e *feeBumpFanoutConfirmedEvent) feeBumpEventSealed() {}
 
-// feeBumpFanoutCleared records that the in-flight fanout has been abandoned:
-// either the rebroadcast was rejected, or every parent it served was evicted.
-// The controller releases the predicted outputs and wallet leases before
-// sending this event, so the FSM simply returns to idle.
-type feeBumpFanoutCleared struct{}
+// feeBumpParentEvicted is fed to the FSM when a tracked parent reaches a
+// terminal state or is otherwise evicted. The fanout-pending state drops that
+// parent's assignments; when no parents remain the whole fanout is released.
+type feeBumpParentEvicted struct {
+	// parentTxid is the parent that was evicted.
+	parentTxid chainhash.Hash
+}
 
-// feeBumpEventSealed marks feeBumpFanoutCleared as a fanout event.
-func (e *feeBumpFanoutCleared) feeBumpEventSealed() {}
+// feeBumpEventSealed marks feeBumpParentEvicted as a fanout event.
+func (e *feeBumpParentEvicted) feeBumpEventSealed() {}
+
+// feeBumpWatchFanout instructs the actor to register a chainsource confirmation
+// watch on the freshly broadcast fanout. It is emitted by the idle state when a
+// new fanout is put on the wire.
+type feeBumpWatchFanout struct {
+	// txid is the fanout transaction to watch for confirmation.
+	txid chainhash.Hash
+
+	// watchScript is the output script the watch is keyed on.
+	watchScript []byte
+}
+
+// feeBumpOutboxEventSealed marks feeBumpWatchFanout as a fanout outbox event.
+func (e *feeBumpWatchFanout) feeBumpOutboxEventSealed() {}
+
+// feeBumpUnwatchFanout instructs the actor to tear down the confirmation watch
+// armed for a fanout that has now confirmed or been abandoned. It carries the
+// same txid + script the watch was registered with so chainsource's
+// txid+script-keyed lookup resolves the exact watch to cancel.
+type feeBumpUnwatchFanout struct {
+	// txid is the fanout transaction whose watch should be removed.
+	txid chainhash.Hash
+
+	// watchScript is the output script the watch was keyed on.
+	watchScript []byte
+}
+
+// feeBumpOutboxEventSealed marks feeBumpUnwatchFanout as a fanout outbox event.
+func (e *feeBumpUnwatchFanout) feeBumpOutboxEventSealed() {}
+
+// feeBumpRetryParents instructs the actor to re-attempt every tracked tx still
+// stuck in the Broadcasting state. It is emitted once a fanout confirms and
+// fresh fee inputs become available, so the parents that were waiting on supply
+// can finally build their CPFP children.
+type feeBumpRetryParents struct{}
+
+// feeBumpOutboxEventSealed marks feeBumpRetryParents as a fanout outbox event.
+func (e *feeBumpRetryParents) feeBumpOutboxEventSealed() {}
 
 // feeBumpErrorReporter reports fanout FSM errors through the package logger.
 type feeBumpErrorReporter struct {
@@ -130,8 +234,21 @@ func (r *feeBumpErrorReporter) ReportError(err error) {
 }
 
 // newFeeBumpStateMachine creates a new protofsm state machine for the fanout
-// lifecycle, starting in the idle state with no fanout in flight.
-func newFeeBumpStateMachine(log btclog.Logger) *feeBumpStateMachine {
+// lifecycle, starting in the idle state with no fanout in flight. The supplied
+// broadcaster provides the shared reservation map and the wallet/chainsource
+// helpers the transitions use to do their own IO.
+//
+// The environment is returned alongside the machine so the actor can read back
+// the per-turn operational error (env.takeLastErr) that transitions stash
+// rather than return.
+func newFeeBumpStateMachine(broadcaster *CPFPBroadcaster,
+	log btclog.Logger) (*feeBumpStateMachine, *feeBumpEnvironment) {
+
+	env := &feeBumpEnvironment{
+		broadcaster: broadcaster,
+		log:         log,
+	}
+
 	cfg := protofsm.StateMachineCfg[
 		feeBumpEvent, feeBumpOutboxEvent, *feeBumpEnvironment,
 	]{
@@ -140,12 +257,12 @@ func newFeeBumpStateMachine(log btclog.Logger) *feeBumpStateMachine {
 			log: log,
 		},
 		InitialState: &feeBumpStateIdle{},
-		Env:          &feeBumpEnvironment{},
+		Env:          env,
 	}
 
 	fsm := protofsm.NewStateMachine(cfg)
 
-	return &fsm
+	return &fsm, env
 }
 
 // feeBumpPendingFanout returns the in-flight fanout carried by the supplied

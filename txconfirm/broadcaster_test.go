@@ -2932,19 +2932,95 @@ func TestFeeInputFanoutPromotionSkipsEvictedParents(t *testing.T) {
 	require.Nil(t, c.PendingFanout())
 }
 
-// newTestFeeBumpController builds a fanout controller bound to the supplied
-// broadcaster, starts its FSM, and registers a cleanup to stop it when the
-// test ends.
-func newTestFeeBumpController(t *testing.T,
-	b *CPFPBroadcaster) *FeeBumpInputController {
+// testFeeBump is a thin test seam over the fanout FSM. It drives the FSM
+// directly via AskEvent and exposes the same surface the old
+// FeeBumpInputController had (EnsureSupply / PendingFanout / OnFanoutConfirmed
+// / PruneParent) so the fanout tests can assert behavior without depending on
+// the actor. The watch register/unregister outbox events are not actioned here
+// (no chainsource conf watch in these unit tests); the tests assert on FSM
+// state and the shared reservation map only.
+type testFeeBump struct {
+	t   *testing.T
+	fsm *feeBumpStateMachine
+	env *feeBumpEnvironment
+}
 
+// EnsureSupply feeds a demand observation into the FSM and returns the
+// in-flight fanout (if any), surfacing the per-turn operational error the
+// transition stashed rather than returned.
+func (c *testFeeBump) EnsureSupply(ctx context.Context,
+	demands []feeInputDemand, feeRate int64, height, retryInterval int32) (
+	*pendingFeeInputFanout, error) {
+
+	c.t.Helper()
+
+	_, err := c.fsm.AskEvent(ctx, &feeBumpDemandsObserved{
+		demands:       demands,
+		feeRate:       feeRate,
+		height:        height,
+		retryInterval: retryInterval,
+	}).Await(ctx).Unpack()
+	require.NoError(c.t, err)
+
+	if turnErr := c.env.takeLastErr(); turnErr != nil {
+		return nil, turnErr
+	}
+
+	return c.PendingFanout(), nil
+}
+
+// PendingFanout returns the in-flight fanout the FSM is tracking, or nil if it
+// is idle.
+func (c *testFeeBump) PendingFanout() *pendingFeeInputFanout {
+	c.t.Helper()
+
+	rawState, err := c.fsm.CurrentState()
+	require.NoError(c.t, err)
+
+	state, ok := rawState.(feeBumpState)
+	require.True(c.t, ok)
+
+	return feeBumpPendingFanout(state)
+}
+
+// OnFanoutConfirmed feeds a confirmation event into the FSM.
+func (c *testFeeBump) OnFanoutConfirmed(ctx context.Context,
+	txid chainhash.Hash) {
+
+	c.t.Helper()
+
+	_, err := c.fsm.AskEvent(ctx, &feeBumpFanoutConfirmedEvent{
+		txid: txid,
+	}).Await(ctx).Unpack()
+	require.NoError(c.t, err)
+}
+
+// PruneParent feeds a parent-eviction event into the FSM.
+func (c *testFeeBump) PruneParent(ctx context.Context, parent chainhash.Hash) {
+	c.t.Helper()
+
+	_, err := c.fsm.AskEvent(ctx, &feeBumpParentEvicted{
+		parentTxid: parent,
+	}).Await(ctx).Unpack()
+	require.NoError(c.t, err)
+}
+
+// newTestFeeBumpController builds a fanout FSM bound to the supplied
+// broadcaster, starts it, and registers a cleanup to stop it when the test
+// ends. It returns a thin seam exposing the legacy controller surface so the
+// existing fanout tests drive the FSM directly.
+func newTestFeeBumpController(t *testing.T, b *CPFPBroadcaster) *testFeeBump {
 	t.Helper()
 
-	c := NewFeeBumpInputController(b)
-	c.Start(t.Context())
-	t.Cleanup(c.Stop)
+	fsm, env := newFeeBumpStateMachine(b, btclog.Disabled)
+	fsm.Start(t.Context())
+	t.Cleanup(fsm.Stop)
 
-	return c
+	return &testFeeBump{
+		t:   t,
+		fsm: fsm,
+		env: env,
+	}
 }
 
 func makeWalletUTXOWithAmount(amount btcutil.Amount,
