@@ -36,7 +36,15 @@ const (
 )
 
 const (
-	idempotencyKeyPayloadRecordType tlv.Type = 1
+	// resumePayloadSessionIDRecordType stores the session id of a resume
+	// request.
+	resumePayloadSessionIDRecordType tlv.Type = 1
+
+	// resumePayloadFromRetryTimerRecordType stores whether the resume was
+	// driven by a fired retry timer (versus a boot restore). Only a timer
+	// expiry advances the give-up attempt counter; a boot resume merely
+	// re-arms the timer from the persisted count.
+	resumePayloadFromRetryTimerRecordType tlv.Type = 3
 )
 
 const (
@@ -864,14 +872,6 @@ func encodeTransferInputSnapshots(inputs []*TransferInputSnapshot) ([]byte,
 	return encodeLengthPrefixedBlobList(blobs)
 }
 
-func decodeTransferInputSnapshots(raw []byte) ([]*TransferInputSnapshot,
-	error) {
-
-	return decodeTransferInputSnapshotsWithLimits(
-		raw, ReceiveLimits{},
-	)
-}
-
 // decodeTransferInputSnapshotsWithLimits decodes transfer-input snapshots
 // using the supplied receive limits for the outer blob list.
 func decodeTransferInputSnapshotsWithLimits(raw []byte,
@@ -1468,11 +1468,25 @@ func decodeSessionPayload(raw []byte) (SessionID, error) {
 	return parseSessionID(sessionBytes)
 }
 
-func encodeIdempotencyKeyPayload(idempotencyKey string) ([]byte, error) {
-	idKey := []byte(idempotencyKey)
+// encodeResumePayload encodes a resume request's session id alongside the
+// flag distinguishing a fired retry timer from a boot restore. The flag rides
+// on the durable payload so a crash between the timer firing and the child's
+// turn replays with the same give-up semantics.
+func encodeResumePayload(sessionID SessionID,
+	fromRetryTimer bool) ([]byte, error) {
+
+	sessionBytes := sessionIDBytes(sessionID)
+	var timer uint8
+	if fromRetryTimer {
+		timer = 1
+	}
+
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
-			idempotencyKeyPayloadRecordType, &idKey,
+			resumePayloadSessionIDRecordType, &sessionBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			resumePayloadFromRetryTimerRecordType, &timer,
 		),
 	}
 
@@ -1489,25 +1503,38 @@ func encodeIdempotencyKeyPayload(idempotencyKey string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func decodeIdempotencyKeyPayload(raw []byte) (string, error) {
-	var idKey []byte
+// decodeResumePayload decodes a resume request payload. The retry-timer flag is
+// optional so a legacy session-only payload decodes as a boot restore.
+func decodeResumePayload(raw []byte) (SessionID, bool, error) {
+	var (
+		sessionBytes []byte
+		timer        uint8
+	)
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
-			idempotencyKeyPayloadRecordType, &idKey,
+			resumePayloadSessionIDRecordType, &sessionBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			resumePayloadFromRetryTimerRecordType, &timer,
 		),
 	}
 
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
-		return "", err
+		return SessionID{}, false, err
 	}
 
 	reader := bytes.NewReader(raw)
 	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
-		return "", err
+		return SessionID{}, false, err
 	}
 
-	return string(idKey), nil
+	sessionID, err := parseSessionID(sessionBytes)
+	if err != nil {
+		return SessionID{}, false, err
+	}
+
+	return sessionID, timer == 1, nil
 }
 
 // encodeListSessionsPayload encodes the durable list-sessions query filters.

@@ -197,10 +197,13 @@ func NewDurableMailbox[M TLVMessage, R any](
 	// Send races ahead of the row becoming visible. The store fires the
 	// registered wakes only after the tx commits, restoring same-process
 	// delivery latency that would otherwise wait out a full poll interval.
-	// The wake is coarse (every registered mailbox is roused), so an idle
-	// mailbox may do one empty re-poll per unrelated folded enqueue.
+	// The wake is targeted by mailbox ID, so this mailbox is only roused
+	// when a committed transaction actually enqueued into it -- an
+	// unrelated enqueue elsewhere no longer triggers an empty re-poll here.
 	if registrar, ok := cfg.Store.(MailboxWakeRegistrar); ok {
-		m.cancelWake = registrar.RegisterMailboxWake(m.Wake)
+		m.cancelWake = registrar.RegisterMailboxWake(
+			m.cfg.MailboxID, m.Wake,
+		)
 	}
 
 	return m

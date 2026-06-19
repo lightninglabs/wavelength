@@ -811,3 +811,264 @@ func TestExecStageThenCommitAtomicGroupingProperty(t *testing.T) {
 		h.requireRetained(rt, "m1")
 	})
 }
+
+// TestDurableActorExecPathDetachedAsk verifies a Tx-path behavior can detach
+// the caller's promise and complete it after its turn returns: the turn's
+// placeholder result never reaches the caller, the message is consumed
+// normally, and the continuation's value settles the future.
+func TestDurableActorExecPathDetachedAsk(t *testing.T) {
+	t.Parallel()
+
+	h := newExecHarness()
+
+	release := make(chan struct{})
+	behavior := &execTestBehavior{
+		onReceive: func(ctx context.Context, _ *actorTestMsg,
+			ax Exec[DeliveryStore]) fn.Result[int] {
+
+			detached, ok := DetachAskPromise[int](ctx)
+			if !ok {
+				return fn.Err[int](
+					fmt.Errorf("no detachable promise"),
+				)
+			}
+
+			// Settle the caller from another goroutine after this
+			// turn returns, modeling a downstream future's
+			// OnComplete continuation.
+			go func() {
+				<-release
+				detached.Promise.Complete(fn.Ok(99))
+			}()
+
+			err := ax.Commit(ctx, func(context.Context,
+				DeliveryStore) error {
+
+				return nil
+			})
+			if err != nil {
+				return fn.Err[int](err)
+			}
+
+			// Placeholder result: must NOT reach the caller.
+			return fn.Ok(7)
+		},
+	}
+
+	a := h.startTxActor(t, behavior)
+	defer a.Stop()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(1)),
+	}
+	future := a.Ref().Ask(context.Background(), msg)
+
+	got := make(chan fn.Result[int], 1)
+	future.OnComplete(context.Background(), func(r fn.Result[int]) {
+		got <- r
+	})
+
+	// The turn commits and the message is consumed, but the caller's
+	// future stays pending until the continuation completes it.
+	require.Eventually(t, func() bool {
+		return !h.anyMessages()
+	}, 2*time.Second, 10*time.Millisecond)
+
+	select {
+	case r := <-got:
+		t.Fatalf("future completed before continuation: %v", r)
+
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case r := <-got:
+		val, err := r.Unpack()
+		require.NoError(t, err)
+		require.Equal(t, 99, val)
+
+	case <-time.After(2 * time.Second):
+		t.Fatal("continuation never completed the future")
+	}
+}
+
+// TestDurableActorExecPathDetachedAskNoCommit pins the detached-promise path
+// for a turn that returns success WITHOUT calling Commit (so it falls through
+// to finishNonTx -> Ack, the non-transactional consume path). The framework
+// must honor the detach by suppressing the in-Ack promise completion
+// (deferPromise), leaving the caller's future for the behavior's continuation
+// to settle exactly once. Without that suppression the Ack would complete the
+// future with the turn's placeholder result and the continuation's real value
+// would be dropped (first-wins), so the caller would observe the placeholder
+// instead of the continuation's answer.
+func TestDurableActorExecPathDetachedAskNoCommit(t *testing.T) {
+	t.Parallel()
+
+	h := newExecHarness()
+
+	release := make(chan struct{})
+	behavior := &execTestBehavior{
+		onReceive: func(ctx context.Context, _ *actorTestMsg,
+			_ Exec[DeliveryStore]) fn.Result[int] {
+
+			detached, ok := DetachAskPromise[int](ctx)
+			if !ok {
+				return fn.Err[int](
+					fmt.Errorf("no detachable promise"),
+				)
+			}
+
+			// Settle the caller from another goroutine after this
+			// turn returns, modeling a downstream future's
+			// OnComplete continuation. The continuation owns
+			// completion: the framework's Ack path must not race
+			// it.
+			go func() {
+				<-release
+				detached.Promise.Complete(fn.Ok(99))
+			}()
+
+			// Return success WITHOUT committing: this falls through
+			// to the non-transactional ack path. The placeholder
+			// result must NOT reach the caller.
+			return fn.Ok(7)
+		},
+	}
+
+	a := h.startTxActor(t, behavior)
+	defer a.Stop()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(1)),
+	}
+	future := a.Ref().Ask(context.Background(), msg)
+
+	// Count every completion the future observes so a double-completion
+	// (framework Ack plus continuation) is caught.
+	got := make(chan fn.Result[int], 4)
+	future.OnComplete(context.Background(), func(r fn.Result[int]) {
+		got <- r
+	})
+
+	// The message is consumed via the non-transactional ack path, but the
+	// caller's future must stay pending: the Ack honored the detach and did
+	// not complete the promise with the placeholder result.
+	require.Eventually(t, func() bool {
+		return !h.anyMessages()
+	}, 2*time.Second, 10*time.Millisecond)
+
+	select {
+	case r := <-got:
+		t.Fatalf("future completed by framework Ack before "+
+			"continuation: %v", r)
+
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// The continuation now settles the future with its real value.
+	close(release)
+
+	select {
+	case r := <-got:
+		val, err := r.Unpack()
+		require.NoError(t, err)
+		require.Equal(t, 99, val)
+
+	case <-time.After(2 * time.Second):
+		t.Fatal("continuation never completed the future")
+	}
+
+	// No second completion may arrive: promise completion is first-wins and
+	// the continuation owned it, so the framework Ack path produced
+	// nothing.
+	select {
+	case r := <-got:
+		t.Fatalf("future completed a second time: %v", r)
+
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestDurableActorExecPathDetachedAskFailedTurn verifies a behavior that
+// detaches the promise but then fails its turn still produces an inline error
+// for the caller: the framework completes a failed turn's promise, since the
+// behavior's continuation may never have been wired.
+func TestDurableActorExecPathDetachedAskFailedTurn(t *testing.T) {
+	t.Parallel()
+
+	h := newExecHarness()
+
+	errBoom := fmt.Errorf("admission exploded")
+	behavior := &execTestBehavior{
+		onReceive: func(ctx context.Context, _ *actorTestMsg,
+			_ Exec[DeliveryStore]) fn.Result[int] {
+
+			if _, ok := DetachAskPromise[int](ctx); !ok {
+				return fn.Err[int](
+					fmt.Errorf("no detachable promise"),
+				)
+			}
+
+			return fn.Err[int](errBoom)
+		},
+	}
+
+	a := h.startTxActor(t, behavior)
+	defer a.Stop()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(2)),
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 2*time.Second,
+	)
+	defer cancel()
+
+	res := a.Ref().Ask(ctx, msg).Await(ctx)
+	require.ErrorContains(t, res.Err(), "admission exploded")
+}
+
+// TestDurableActorExecPathDetachOnTell verifies a Tell delivery offers no
+// detachable promise.
+func TestDurableActorExecPathDetachOnTell(t *testing.T) {
+	t.Parallel()
+
+	h := newExecHarness()
+
+	sawDetach := make(chan bool, 1)
+	behavior := &execTestBehavior{
+		onReceive: func(ctx context.Context, _ *actorTestMsg,
+			ax Exec[DeliveryStore]) fn.Result[int] {
+
+			_, ok := DetachAskPromise[int](ctx)
+			sawDetach <- ok
+
+			err := ax.Commit(ctx, func(context.Context,
+				DeliveryStore) error {
+
+				return nil
+			})
+			if err != nil {
+				return fn.Err[int](err)
+			}
+
+			return fn.Ok(0)
+		},
+	}
+
+	a := h.startTxActor(t, behavior)
+	defer a.Stop()
+
+	tellTestMsg(t, a, 3)
+
+	select {
+	case ok := <-sawDetach:
+		require.False(t, ok)
+
+	case <-time.After(2 * time.Second):
+		t.Fatal("behavior never ran")
+	}
+}

@@ -89,12 +89,15 @@ func TestSessionHappyPath(t *testing.T) {
 	result := fut.Await(ctx)
 	require.False(t, result.IsErr())
 
+	// The submit transition emits the submit request plus a re-drive timer
+	// so a dead-lettered submit re-drives instead of wedging the session.
 	submitOutbox := result.UnwrapOr(nil)
-	require.Len(t, submitOutbox, 1)
+	require.Len(t, submitOutbox, 2)
 	submit, ok := submitOutbox[0].(*SendSubmitPackageRequest)
 	require.True(t, ok)
 	require.NotNil(t, submit.ArkPSBT)
 	require.NotEmpty(t, submit.CheckpointPSBTs)
+	require.IsType(t, &ScheduleRetryRequest{}, submitOutbox[1])
 
 	err = coSignCheckpointPSBTsForTest(
 		operatorSigner, submit.TransferInputs, submit.CheckpointPSBTs,
@@ -133,10 +136,13 @@ func TestSessionHappyPath(t *testing.T) {
 	result = fut.Await(ctx)
 	require.False(t, result.IsErr())
 
+	// The finalize transition emits the finalize request plus a re-drive
+	// timer so a dead-lettered finalize re-drives instead of wedging.
 	finalizeOutbox := result.UnwrapOr(nil)
-	require.Len(t, finalizeOutbox, 1)
+	require.Len(t, finalizeOutbox, 2)
 	_, ok = finalizeOutbox[0].(*SendFinalizePackageRequest)
 	require.True(t, ok)
+	require.IsType(t, &ScheduleRetryRequest{}, finalizeOutbox[1])
 
 	// Step 4: Server accepts finalize and updates VTXO set.
 	fut = session.FSM.AskEvent(ctx, &FinalizeAcceptedEvent{})
@@ -268,11 +274,13 @@ func TestSessionMultiInputHappyPath(t *testing.T) {
 		"ArkSignedEvent should succeed: %v", result.Err(),
 	)
 
+	// The submit transition emits the submit request plus a re-drive timer.
 	submitOutbox := result.UnwrapOr(nil)
-	require.Len(t, submitOutbox, 1)
+	require.Len(t, submitOutbox, 2)
 	submit, ok := submitOutbox[0].(*SendSubmitPackageRequest)
 	require.True(t, ok)
 	require.Len(t, submit.CheckpointPSBTs, 2)
+	require.IsType(t, &ScheduleRetryRequest{}, submitOutbox[1])
 
 	// Operator co-signs the checkpoints.
 	err = coSignCheckpointPSBTsForTest(

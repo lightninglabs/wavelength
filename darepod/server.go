@@ -183,6 +183,11 @@ type Server struct {
 	roundStore    *db.RoundPersistenceStore
 	ueStore       *db.UnilateralExitPersistenceStore
 
+	// oorSessionStore exposes the OOR session-registry control-plane rows
+	// for direct RPC reads (idempotency pre-flight); the OOR registry
+	// actor owns all writes.
+	oorSessionStore oor.SessionRegistryStore
+
 	// lnd holds the lndclient connection when wallet.type is "lnd".
 	// It is None in lwwallet mode.
 	lnd fn.Option[*lndclient.GrpcLndServices]
@@ -294,8 +299,7 @@ type Server struct {
 	walletRef    fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
-	oorActor           *oor.OORClientActor
-	oorSigningEffect   *oor.SigningEffectActor
+	oorRegistry        *oor.OORRegistryActor
 	vhtlcRecoveryStore *db.VHTLCRecoveryStoreDB
 	vhtlcRecovery      *coordinator.Service
 	vhtlcPreimages     *unrollpolicy.PreimageResolverRegistry
@@ -891,26 +895,8 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 			s.fraudWatcher.Stop()
 		}
 
-		if s.oorSigningEffect != nil {
-			//nolint:contextcheck // bounded shutdown
-			err := s.oorSigningEffect.StopAndWait(shutdownCtx)
-			if err != nil {
-				s.log.WarnS(
-					ctx,
-					"OOR signing effect shutdown failed",
-					err,
-				)
-			}
-		}
-
-		if s.oorActor != nil {
-			//nolint:contextcheck // bounded shutdown
-			err := s.oorActor.StopAndWait(shutdownCtx)
-			if err != nil {
-				s.log.WarnS(ctx, "OOR actor shutdown failed",
-					err,
-				)
-			}
+		if s.oorRegistry != nil {
+			s.oorRegistry.Stop()
 		}
 
 		if s.outboxPublisher != nil {
@@ -2381,10 +2367,31 @@ func (s *Server) registerIncomingVTXOEventRoute(
 	})
 }
 
+// oorSessionResolveKey maps a session-addressed OOR drive event to its
+// per-session service key so the ingress fast path can tell it straight into
+// the live session actor's durable mailbox, skipping the registry hop. Only
+// DriveEventRequest fast-paths: admission messages (incoming hints) must
+// always route through the registry, which owns the ownership gate and the
+// self-transfer invariant; a fast-path miss (no live child) likewise falls
+// back to the registry.
+func oorSessionResolveKey(msg oor.OORDurableMsg) (
+	actor.ServiceKey[oor.OORDurableMsg, oor.ActorResp], bool) {
+
+	drive, ok := msg.(*oor.DriveEventRequest)
+	if !ok {
+		return actor.ServiceKey[oor.OORDurableMsg, oor.ActorResp]{},
+			false
+	}
+
+	return oor.SessionServiceKey(drive.SessionID), true
+}
+
 // registerOOREventRoutes registers OOR mailbox service event routes with the
 // EventRouter. When the server pushes SubmitPackage or FinalizePackage
 // response events, the router decodes the oorpb proto, adapts it into a
-// DriveEventRequest, and Tell's it to the OOR actor via service key.
+// DriveEventRequest, and Tell's it to the OOR actor via service key -- the
+// per-session fast path delivers straight to a live session's durable
+// mailbox, with the durable registry as the admission fallback.
 func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //nolint:funlen,ll
 	oorKey := oor.NewServiceKey()
 	limits := s.cfg.OORReceiveLimits()
@@ -2400,7 +2407,8 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 		NewEvent: func() proto.Message {
 			return &oorpb.SubmitPackageResponse{}
 		},
-		Key: oorKey,
+		Key:        oorKey,
+		ResolveKey: oorSessionResolveKey,
 		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
 			resp, ok := p.(*oorpb.SubmitPackageResponse)
 			if !ok {
@@ -2465,7 +2473,8 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 		NewEvent: func() proto.Message {
 			return &oorpb.FinalizePackageResponse{}
 		},
-		Key: oorKey,
+		Key:        oorKey,
+		ResolveKey: oorSessionResolveKey,
 		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
 			resp, ok := p.(*oorpb.FinalizePackageResponse)
 			if !ok {
@@ -2497,7 +2506,8 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 		NewEvent: func() proto.Message {
 			return &arkrpc.ListVTXOsByScriptsResponse{}
 		},
-		Key: oorKey,
+		Key:        oorKey,
+		ResolveKey: oorSessionResolveKey,
 		Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 			oor.OORDurableMsg, error) {
 
@@ -2585,7 +2595,8 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 		NewEvent: func() proto.Message {
 			return &arkrpc.ListOORRecipientEventsByScriptResponse{}
 		},
-		Key: oorKey,
+		Key:        oorKey,
+		ResolveKey: oorSessionResolveKey,
 		Adapt: func(env *mailboxpb.Envelope, p proto.Message) (
 			oor.OORDurableMsg, error) {
 
@@ -2647,19 +2658,9 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 					"se, got %T", p)
 			}
 
-			incomingEvent, err :=
-				oor.IncomingTransferEventFromResponseWithLimits( //nolint:ll
-					sessionID, recipientEventID, resp,
-					limits,
-				)
-			if err != nil {
-				return nil, err
-			}
-
-			return &oor.DriveEventRequest{
-				SessionID: sessionID,
-				Event:     incomingEvent,
-			}, nil
+			return adaptResolveIncomingResult(
+				sessionID, recipientEventID, resp, limits,
+			), nil
 		},
 	})
 
@@ -2693,6 +2694,41 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 	// oorpb proto defines an ack RPC. SendIncomingAckRequest is
 	// classified as a transport event but currently has no
 	// server-push response route.
+}
+
+// adaptResolveIncomingResult converts a phase-1 resolve response body into the
+// durable event that drives the incoming session. A body that parses but is
+// semantically invalid (empty events, recipient/session mismatch, unparseable
+// PSBT, over-cap checkpoints/ancestors) is an operator-attributable failure for
+// a known session, not an un-routable envelope: it is mapped to a FailEvent
+// that drives the session to terminal Failed (making the child reap-eligible)
+// instead of bubbling an Adapt error. An Adapt error here would replay the
+// offending envelope indefinitely, wedging all subsequent OOR mailbox ingress
+// and leaving the session stuck in ReceiveResolving. This mirrors the submit
+// path's OutboxErrorEvent treatment, which exists for the same cursor-stall
+// reason.
+func adaptResolveIncomingResult(sessionID oor.SessionID,
+	recipientEventID uint64,
+	resp *arkrpc.ListOORRecipientEventsByScriptResponse,
+	limits oor.ReceiveLimits) *oor.DriveEventRequest {
+
+	incomingEvent, err := oor.IncomingTransferEventFromResponseWithLimits(
+		sessionID, recipientEventID, resp, limits,
+	)
+	if err != nil {
+		return &oor.DriveEventRequest{
+			SessionID: sessionID,
+			Event: &oor.FailEvent{
+				Reason: fmt.Sprintf("resolve incoming "+
+					"transfer: %v", err),
+			},
+		}
+	}
+
+	return &oor.DriveEventRequest{
+		SessionID: sessionID,
+		Event:     incomingEvent,
+	}
 }
 
 // incomingMetadataMatchesFromResponse keeps registerOOREventRoutes below the
@@ -3112,8 +3148,10 @@ func (s *Server) initRPCClients(ctx context.Context) {
 
 // startActorOutboxPublisher registers the serverconn durable actor under the
 // type-erased key used by the actor outbox publisher, then starts the shared
-// publisher loop. OOR transport handoff uses this path so the OOR actor can
-// commit its own state before serverconn mailbox enqueue runs.
+// publisher loop. This drains the generic transactional outbox for the
+// framework's durable ask-response handoff (the OOR registry's detached-promise
+// settle path). OOR transport (submit / finalize / ack) does NOT use this path:
+// it Tells the serverconn durable actor directly inside the OOR commit tx.
 //
 //nolint:contextcheck // outbox publisher owns lifecycle after startup
 func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
@@ -3146,10 +3184,9 @@ func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
 	}
 
 	codec := serverconn.NewServerConnCodec()
-	// The shared publisher decodes serverconn outbox entries, signing
-	// effect entries, and durable ask responses. MustRegister panics if a
-	// future TLV type collides across those message sets.
-	oor.RegisterSigningEffectMessages(codec)
+	// The shared publisher decodes serverconn outbox entries and durable
+	// ask responses. MustRegister panics if a future TLV type collides
+	// across those message sets.
 	codec.MustRegister(actor.AskResponseMsgType, func() actor.TLVMessage {
 		return &actor.AskResponse{}
 	})
@@ -3730,27 +3767,20 @@ func (s *Server) initOORActor(ctx context.Context,
 	}
 	oorKey := oor.NewServiceKey()
 
-	s.oorSigningEffect, err = oor.NewSigningEffectActor(
-		oor.SigningEffectActorConfig{
-			ActorID:       oor.SigningEffectActorID,
-			DeliveryStore: s.deliveryStore,
-			Signer:        oorSigner,
-			OORRef:        oorKey.Ref(s.actorSystem),
-			ActorSystem:   s.actorSystem,
-			Log:           fn.Some(s.subLogger(oor.Subsystem)),
-		},
-	)
-	if err != nil {
-		return err
-	}
+	// The per-session OOR actors handle wallet signing inline, so there is
+	// no separate signing-effect actor. signingHandler remains the Next
+	// delegate of the local-persistence handler for retry scheduling.
 
 	// Wire spend completion through the VTXO manager so each consumed
 	// VTXO transitions to SpentState via its own FSM, rather than
 	// writing VTXOStatusSpent directly to the store. This synchronous
-	// Ask intentionally keeps the OOR transaction in scope: the manager
-	// and VTXO actor complete before the durable OOR turn can commit or
-	// roll back, avoiding a second SQLite writer inside the same local
-	// completion step.
+	// Ask drives a write in the VTXO actor's own transaction, a SECOND
+	// writer that does not join the OOR turn tx. The OOR session actor
+	// therefore runs it inline in dispatch with no OOR writer held (see
+	// oor.completeSpend); awaiting it inside a held OOR writer tx would
+	// deadlock under the single SQLite/Postgres writer lock. The
+	// completion is non-atomic with the OOR snapshot but re-driven
+	// idempotently on boot.
 	mgrKey := actormsg.VTXOManagerServiceKey()
 	completeSpend := func(ctx context.Context,
 		outpoints []wire.OutPoint) error {
@@ -3812,18 +3842,30 @@ func (s *Server) initOORActor(ctx context.Context,
 		},
 	}
 
-	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
+	// The retry callback resolves the OOR service key (now owned by the
+	// registry) lazily at Tell time, so it is safe to build before the
+	// registry registers. A timeout expiry maps to a DriveEventRequest with
+	// RetryDueEvent that the registry routes to the right session.
+	oorCallbackRef := oor.NewRetryCallbackRef(oorKey.Ref(s.actorSystem))
+	signingHandler.CallbackRef = oorCallbackRef
+
+	// Stash the session-registry store on the server so RPC handlers can
+	// run read-only control-plane lookups (idempotency pre-flight) without
+	// a registry-actor round trip.
+	registryStore := dbStore.NewOORSessionRegistryStore(s.clk)
+	s.oorSessionStore = registryStore
+
+	s.oorRegistry, err = oor.NewOORRegistryActor(oor.OORRegistryConfig{
 		Log:              fn.Some(s.subLogger(oor.Subsystem)),
-		OutboxHandler:    outboxHandler,
-		Limits:           s.cfg.OORReceiveLimits(),
-		ServerConn:       s.runtime.TellRef(),
-		SigningEffect:    s.oorSigningEffect.Ref(),
-		PackageStore:     packageStore,
-		ReservationStore: reservationStore,
+		Signer:           oorSigner,
+		IncomingHandler:  outboxHandler,
+		RegistryStore:    registryStore,
 		DeliveryStore:    s.deliveryStore,
-		ActorSystem:      s.actorSystem,
-		ActorID:          oor.OORActorServiceKeyName,
+		ServerConn:       s.runtime.TellRef(),
 		VTXOManager:      vtxoManagerRef,
+		SpendCompleter:   completeSpend,
+		ReservationStore: reservationStore,
+		PackageStore:     packageStore,
 		VTXOStore:        vtxoStore,
 		LedgerSink:       fn.Some(ledger.NewSink(s.actorSystem)),
 		IncomingVTXOObserver: func(ctx context.Context,
@@ -3831,20 +3873,22 @@ func (s *Server) initOORActor(ctx context.Context,
 
 			return s.trackIncomingFraudVTXOs(ctx, descs)
 		},
+		Limits:       s.cfg.OORReceiveLimits(),
+		TimeoutActor: oorTimeoutRef,
+		CallbackRef:  oorCallbackRef,
+		ActorSystem:  s.actorSystem,
 	})
+	if err != nil {
+		return err
+	}
 
-	// Wire the timeout callback ref using the registered service
-	// key. The OOR actor self-registers with the actor system
-	// during NewOORClientActor (via durable.Start and
-	// RegisterWithReceptionist). The service key resolves the
-	// OOR actor via the receptionist, and the MapInputRef
-	// transforms *timeout.ExpiredMsg into a DriveEventRequest
-	// with RetryDueEvent targeting the correct session.
-	signingHandler.CallbackRef = oor.NewRetryCallbackRef(
-		oorKey.Ref(s.actorSystem),
-	)
+	// Restore any in-flight per-session actors from the control-plane store
+	// so sessions interrupted by a restart resume.
+	if err := s.oorRegistry.RestoreNonTerminal(ctx); err != nil {
+		return err
+	}
 
-	s.log.InfoS(ctx, "OOR client actor started")
+	s.log.InfoS(ctx, "OOR registry started")
 
 	// Register the incoming VTXO handler actor. This handles
 	// IncomingVTXOEvent push notifications from the indexer and

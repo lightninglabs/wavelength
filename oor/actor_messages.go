@@ -45,7 +45,15 @@ const (
 	// in the durable OOR actor mailbox.
 	ListSessionsRequestTLVType tlv.Type = 0x7017
 
-	FindOutgoingSessionByIdempotencyKeyTLVType tlv.Type = 0x7018
+	// SessionTerminalNotificationTLVType identifies
+	// SessionTerminalNotification messages sent from a per-session child
+	// to the registry coordinator after a terminal commit.
+	SessionTerminalNotificationTLVType tlv.Type = 0x7019
+
+	// RestoreNonTerminalRequestTLVType identifies the boot-time control
+	// message that runs the non-terminal session restore on the registry
+	// goroutine.
+	RestoreNonTerminalRequestTLVType tlv.Type = 0x701a
 )
 
 // OORDurableMsg is the message constraint for the OOR durable actor mailbox.
@@ -230,79 +238,6 @@ func (m *StartTransferResponse) MessageType() string {
 
 // actorRespSealed marks this as implementing the sealed ActorResp interface.
 func (m *StartTransferResponse) actorRespSealed() {}
-
-// FindOutgoingSessionByIdempotencyKeyRequest asks the actor whether an
-// outgoing session already exists for a caller supplied idempotency key.
-type FindOutgoingSessionByIdempotencyKeyRequest struct {
-	actor.BaseMessage
-
-	// IdempotencyKey identifies the caller intent to query.
-	IdempotencyKey string
-}
-
-// MessageType returns the type of this message.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) MessageType() string {
-	return "FindOutgoingSessionByIdempotencyKeyRequest"
-}
-
-// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) actorMsgSealed() {}
-
-// TLVType returns the unique TLV type identifier for this message.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) TLVType() tlv.Type {
-	return FindOutgoingSessionByIdempotencyKeyTLVType
-}
-
-// Encode serializes the message to the provided writer.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) Encode(w io.Writer) error {
-	raw, err := encodeIdempotencyKeyPayload(m.IdempotencyKey)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(raw)
-
-	return err
-}
-
-// Decode deserializes the message from the provided reader.
-func (m *FindOutgoingSessionByIdempotencyKeyRequest) Decode(r io.Reader) error {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-
-	idempotencyKey, err := decodeIdempotencyKeyPayload(raw)
-	if err != nil {
-		return err
-	}
-
-	m.IdempotencyKey = idempotencyKey
-
-	return nil
-}
-
-// FindOutgoingSessionByIdempotencyKeyResponse returns a keyed session lookup
-// result.
-type FindOutgoingSessionByIdempotencyKeyResponse struct {
-	actor.BaseMessage
-
-	// SessionID is the existing outgoing session identifier when Found is
-	// true.
-	SessionID SessionID
-
-	// Found is true when the actor already knows the keyed outgoing
-	// session.
-	Found bool
-}
-
-// MessageType returns the type of this message.
-func (m *FindOutgoingSessionByIdempotencyKeyResponse) MessageType() string {
-	return "FindOutgoingSessionByIdempotencyKeyResponse"
-}
-
-// actorRespSealed marks this as implementing the sealed ActorResp interface.
-func (m *FindOutgoingSessionByIdempotencyKeyResponse) actorRespSealed() {}
 
 // SessionDirection is a filter for listing locally known OOR sessions.
 type SessionDirection uint8
@@ -733,6 +668,14 @@ type ResumeSessionRequest struct {
 
 	// SessionID identifies the session to resume.
 	SessionID SessionID
+
+	// FromRetryTimer is true when this resume was driven by a fired
+	// give-up/retry timer, and false when it was driven by a boot restore.
+	// Only a timer expiry advances the give-up attempt counter; a boot
+	// resume re-arms the timer from the persisted count so repeated
+	// restarts cannot amplify the attempt count past the time-based
+	// schedule.
+	FromRetryTimer bool
 }
 
 // MessageType returns the type of this message.
@@ -750,7 +693,7 @@ func (m *ResumeSessionRequest) TLVType() tlv.Type {
 
 // Encode serializes the message to the provided writer.
 func (m *ResumeSessionRequest) Encode(w io.Writer) error {
-	raw, err := encodeSessionPayload(m.SessionID)
+	raw, err := encodeResumePayload(m.SessionID, m.FromRetryTimer)
 	if err != nil {
 		return err
 	}
@@ -767,12 +710,13 @@ func (m *ResumeSessionRequest) Decode(r io.Reader) error {
 		return err
 	}
 
-	sessionID, err := decodeSessionPayload(raw)
+	sessionID, fromRetryTimer, err := decodeResumePayload(raw)
 	if err != nil {
 		return err
 	}
 
 	m.SessionID = sessionID
+	m.FromRetryTimer = fromRetryTimer
 
 	return nil
 }
@@ -789,6 +733,91 @@ func (m *ResumeSessionResponse) MessageType() string {
 
 // actorRespSealed marks this as implementing the sealed ActorResp interface.
 func (m *ResumeSessionResponse) actorRespSealed() {}
+
+// SessionTerminalNotification tells the registry coordinator that a session
+// committed a terminal snapshot, so the registry can stop the per-session
+// child and drop it from the active set. The registry re-checks the durable
+// row before reaping, so a stale or duplicate notification is harmless.
+type SessionTerminalNotification struct {
+	actor.BaseMessage
+
+	// SessionID identifies the session that reached a terminal status.
+	SessionID SessionID
+}
+
+// MessageType returns the type of this message.
+func (m *SessionTerminalNotification) MessageType() string {
+	return "SessionTerminalNotification"
+}
+
+// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
+func (m *SessionTerminalNotification) actorMsgSealed() {}
+
+// TLVType returns the unique TLV type identifier for this message.
+func (m *SessionTerminalNotification) TLVType() tlv.Type {
+	return SessionTerminalNotificationTLVType
+}
+
+// Encode serializes the message to the provided writer.
+func (m *SessionTerminalNotification) Encode(w io.Writer) error {
+	raw, err := encodeSessionPayload(m.SessionID)
+	if err != nil {
+		return err
+	}
+
+	_, err = w.Write(raw)
+
+	return err
+}
+
+// Decode deserializes the message from the provided reader.
+func (m *SessionTerminalNotification) Decode(r io.Reader) error {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+
+	sessionID, err := decodeSessionPayload(raw)
+	if err != nil {
+		return err
+	}
+
+	m.SessionID = sessionID
+
+	return nil
+}
+
+// RestoreNonTerminalRequest asks the registry to respawn and resume every
+// non-terminal session from the control-plane store. Routing it through the
+// registry mailbox serializes the restore with any backlog the durable inbox
+// redelivers at boot, so the active set is only ever touched on the registry
+// goroutine.
+type RestoreNonTerminalRequest struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the type of this message.
+func (m *RestoreNonTerminalRequest) MessageType() string {
+	return "RestoreNonTerminalRequest"
+}
+
+// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
+func (m *RestoreNonTerminalRequest) actorMsgSealed() {}
+
+// TLVType returns the unique TLV type identifier for this message.
+func (m *RestoreNonTerminalRequest) TLVType() tlv.Type {
+	return RestoreNonTerminalRequestTLVType
+}
+
+// Encode serializes the message; it carries no payload.
+func (m *RestoreNonTerminalRequest) Encode(io.Writer) error {
+	return nil
+}
+
+// Decode deserializes the message; it carries no payload.
+func (m *RestoreNonTerminalRequest) Decode(io.Reader) error {
+	return nil
+}
 
 // ExportSnapshotRequest asks the actor to export a snapshot for the requested
 // session.

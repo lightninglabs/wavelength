@@ -895,6 +895,16 @@ func (a *DurableActor[M, R]) processWithExec(ctx context.Context,
 		leaseDuration: a.leaseDuration,
 	}
 
+	// Offer the behavior a detachable promise so a pure-routing turn can
+	// complete the Ask from a downstream future's continuation instead of
+	// parking this goroutine on Await.
+	var detachBox *askDetachBox
+	if delivery.IsAsk() && !delivery.IsDurableAsk() {
+		ctx, detachBox = withDetachableAskPromise(
+			ctx, delivery.Promise, delivery.CallerCtx,
+		)
+	}
+
 	result := a.runExecSafely(ctx, delivery, tb, core)
 
 	// Stop the heartbeat as soon as the behavior returns. On the committed
@@ -903,11 +913,21 @@ func (a *DurableActor[M, R]) processWithExec(ctx context.Context,
 	// spurious "Failed to extend lease" warning.
 	stop()
 
+	// A detached promise belongs to the behavior's continuation -- but only
+	// for a successful turn. A failed turn may have errored before the
+	// continuation was wired, so the framework still completes with the
+	// error; promise completion is first-wins, so a racing continuation is
+	// harmless.
+	detached := detachBox != nil && detachBox.detached && result.IsOk()
+	if detached {
+		delivery.deferPromise = true
+	}
+
 	// If the behavior committed, the state write, dedup mark, and
 	// lease-fenced ack are already durable in a single transaction. Only
 	// the in-memory promise for an Ask caller remains.
 	if core.committed {
-		if delivery.IsAsk() && delivery.Promise != nil {
+		if delivery.IsAsk() && delivery.Promise != nil && !detached {
 			delivery.Promise.Complete(result)
 		}
 

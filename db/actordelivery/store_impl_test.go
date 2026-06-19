@@ -696,8 +696,11 @@ func TestTxAwareActorDeliveryStoreMailboxWake(t *testing.T) {
 	ctx := t.Context()
 	store := newTxAwareActorDeliveryStoreForTest(t)
 
+	// wakeA is registered for the mailbox that actually receives the
+	// enqueues; wakeB is registered for an unrelated mailbox and must never
+	// fire, proving the wake is targeted rather than a coarse broadcast.
 	wakeA := make(chan struct{}, 1)
-	cancelA := store.RegisterMailboxWake(func() {
+	cancelA := store.RegisterMailboxWake("target-actor", func() {
 		select {
 		case wakeA <- struct{}{}:
 		default:
@@ -706,7 +709,7 @@ func TestTxAwareActorDeliveryStoreMailboxWake(t *testing.T) {
 	defer cancelA()
 
 	wakeB := make(chan struct{}, 1)
-	cancelB := store.RegisterMailboxWake(func() {
+	cancelB := store.RegisterMailboxWake("other-actor", func() {
 		select {
 		case wakeB <- struct{}{}:
 		default:
@@ -771,8 +774,8 @@ func TestTxAwareActorDeliveryStoreMailboxWake(t *testing.T) {
 	default:
 	}
 
-	// A committed enqueue through the join path wakes every registered
-	// mailbox (coarse broadcast), so both wakes must fire.
+	// A committed enqueue through the join path wakes only the target
+	// mailbox, so A must fire and B (an unrelated mailbox) must not.
 	err = store.ExecTx(ctx, false, func(
 		txCtx context.Context, _ actor.DeliveryStore,
 	) error {
@@ -789,17 +792,18 @@ func TestTxAwareActorDeliveryStoreMailboxWake(t *testing.T) {
 	select {
 	case <-wakeA:
 	case <-time.After(time.Second):
-		t.Fatal("commit did not wake registered mailbox A")
+		t.Fatal("commit did not wake the target mailbox")
 	}
 	select {
 	case <-wakeB:
-	case <-time.After(time.Second):
-		t.Fatal("commit did not wake registered mailbox B")
+		t.Fatal("commit woke an unrelated mailbox (not targeted)")
+
+	default:
 	}
 
-	// An enqueue through the tx-scoped store must also fire the coarse
+	// An enqueue through the tx-scoped store must also fire the targeted
 	// post-commit wake, so callers that hold the TxActorDeliveryStore
-	// directly are covered too.
+	// directly are covered too: A fires, B stays quiet.
 	err = store.ExecTx(ctx, false, func(
 		txCtx context.Context, txStore actor.DeliveryStore,
 	) error {
@@ -816,72 +820,90 @@ func TestTxAwareActorDeliveryStoreMailboxWake(t *testing.T) {
 	select {
 	case <-wakeA:
 	case <-time.After(time.Second):
-		t.Fatal("tx-scoped enqueue did not wake registered mailbox A")
+		t.Fatal("tx-scoped enqueue did not wake the target mailbox")
 	}
 	select {
 	case <-wakeB:
-	case <-time.After(time.Second):
-		t.Fatal("tx-scoped enqueue did not wake registered mailbox B")
+		t.Fatal("tx-scoped enqueue woke an unrelated mailbox")
+
+	default:
 	}
 }
 
-// TestStoreMailboxWakeCancelRemovesEntry verifies the coarse mailbox-wake
-// registry: each RegisterMailboxWake adds an independent entry keyed by an
-// opaque handle (so a restart reusing a durable mailbox ID never clobbers a
-// still-live registration), notifyMailboxWake fires every registered closure,
-// and the cancel returned by RegisterMailboxWake removes exactly its own entry.
-// The cancel-on-Close contract is what bounds map growth to the set of live
-// mailboxes rather than the lifetime count of mailbox constructions.
+// TestStoreMailboxWakeCancelRemovesEntry verifies the targeted mailbox-wake
+// registry: registrations under the same mailbox ID coexist under independent
+// handles (so a restart reusing a durable mailbox ID never clobbers a
+// still-live registration), notifyMailboxWake fires only the wakes for the
+// mailboxes it is given, and the cancel returned by RegisterMailboxWake removes
+// exactly its own handle, pruning the mailbox's entry when its last wake is
+// gone. The cancel-on-Close contract is what bounds map growth to the set of
+// live mailboxes rather than the lifetime count of mailbox constructions.
 func TestStoreMailboxWakeCancelRemovesEntry(t *testing.T) {
 	t.Parallel()
 
 	store := newActorDeliveryStoreForTest(t)
 
-	// Register many wakes, mirroring repeated actor restarts that each
-	// construct a fresh mailbox against the shared store.
+	const mailboxID = "shared-mailbox"
+
+	// Register many wakes under the SAME mailbox ID, mirroring repeated
+	// actor restarts that each construct a fresh mailbox reusing one
+	// durable ID against the shared store. They must coexist, not clobber.
 	var fired atomic.Int64
 	const registrations = 25
 	cancels := make([]func(), 0, registrations)
 	for i := 0; i < registrations; i++ {
 		cancels = append(
-			cancels, store.RegisterMailboxWake(func() {
+			cancels, store.RegisterMailboxWake(mailboxID, func() {
 				fired.Add(1)
 			}),
 		)
 	}
 
-	// Each registration is an independent live entry: the coarse broadcast
-	// does no ID-keyed dedup, so all of them land.
+	// All registrations land under one mailbox-ID entry, each owning its
+	// own handle: a single outer key, all handles live.
 	store.mailboxWakeMu.Lock()
-	count := len(store.mailboxWakes)
+	outer := len(store.mailboxWakes)
+	inner := len(store.mailboxWakes[mailboxID])
 	store.mailboxWakeMu.Unlock()
 	require.Equal(
-		t, registrations, count, "registrations did not all land",
+		t, 1, outer, "registrations did not share one mailbox key",
+	)
+	require.Equal(
+		t, registrations, inner, "registrations clobbered each other",
 	)
 
-	// notifyMailboxWake fires every registered closure.
-	store.notifyMailboxWake()
+	// A wake targeting an unrelated mailbox fires nothing: targeting is
+	// strict.
+	store.notifyMailboxWake(map[string]struct{}{"other": {}})
+	require.Equal(
+		t, int64(0), fired.Load(),
+		"notifyMailboxWake fired for an untargeted mailbox",
+	)
+
+	// A wake targeting this mailbox fires every registered closure for it.
+	store.notifyMailboxWake(map[string]struct{}{mailboxID: {}})
 	require.Equal(
 		t, int64(registrations), fired.Load(),
 		"notifyMailboxWake did not fire every registration",
 	)
 
 	// Cancelling every registration drains the registry, so stopped
-	// mailboxes leave nothing behind.
+	// mailboxes leave nothing behind (the entry is pruned, not just
+	// emptied).
 	for _, cancel := range cancels {
 		cancel()
 	}
 
 	store.mailboxWakeMu.Lock()
-	count = len(store.mailboxWakes)
+	outer = len(store.mailboxWakes)
 	store.mailboxWakeMu.Unlock()
 	require.Equal(
-		t, 0, count, "cancel left stale closures behind",
+		t, 0, outer, "cancel left stale closures behind",
 	)
 
 	// A wake after cancel fires nothing.
 	fired.Store(0)
-	store.notifyMailboxWake()
+	store.notifyMailboxWake(map[string]struct{}{mailboxID: {}})
 	require.Equal(
 		t, int64(0), fired.Load(),
 		"notifyMailboxWake fired after cancel",

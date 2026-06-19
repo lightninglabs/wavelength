@@ -38,7 +38,8 @@ func NewRetryCallbackRef(
 			}
 
 			return &ResumeSessionRequest{
-				SessionID: SessionID(*sessionHash),
+				SessionID:      SessionID(*sessionHash),
+				FromRetryTimer: true,
 			}
 		},
 	)
