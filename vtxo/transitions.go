@@ -734,6 +734,34 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 			NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
 		}, nil
 
+	case *ForfeitReleasedEvent:
+		// A pre-signing round failure released this VTXO. We can land
+		// here, not just in PendingForfeitState, when the round fails
+		// during ForfeitSignaturesCollecting after this VTXO already
+		// replied with its forfeit signature and advanced to
+		// ForfeitingState. The release is still safe: no forfeit
+		// signature reaches the server until the success edge out of
+		// ForfeitSignaturesCollecting calls
+		// SubmitVTXOForfeitSigsToServer, so a failure before then has
+		// handed nothing to the operator. Return the VTXO to LiveState
+		// rather than leaving it wedged in FORFEITING. ForfeitingState
+		// tracks no block height, so LastCheckedHeight stays zero and
+		// the next block epoch re-seeds expiry checking (mirroring the
+		// ForceUnrollEvent recovery path above).
+		return &VTXOStateTransition{
+			NextState: &LiveState{
+				VTXO: s.VTXO,
+			},
+			NewEvents: fn.Some(VTXOEmittedEvent{
+				Outbox: []VTXOOutMsg{
+					&VTXOStatusUpdate{
+						Outpoint:  s.VTXO.Outpoint,
+						NewStatus: VTXOStatusLive,
+					},
+				},
+			}),
+		}, nil
+
 	case *VTXOFailedEvent:
 		return &VTXOStateTransition{
 			NextState: &FailedState{
