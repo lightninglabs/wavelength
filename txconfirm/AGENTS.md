@@ -35,9 +35,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - Exported helpers usable standalone: `BuildCPFPChild`,
   `EstimatePackageFee`, `EstimateWeight`, `SelectFeeInput`.
 - `Wallet` — interface required by the broadcaster: `ListUnspent`,
-  `NewWalletPkScript`, `FinalizePsbt`, plus `wallet.OutputLeaser`
-  (`LeaseOutput` / `ReleaseOutput`) for cross-subsystem UTXO lock
-  coordination.
+  `NewWalletPkScript`, `FinalizePsbt`, `FundPsbt` (funds, signs, and
+  finalizes a PSBT template; used by the fee-input fanout path to mint
+  right-sized fee inputs when the wallet has no confirmed fee UTXOs),
+  plus `wallet.OutputLeaser` (`LeaseOutput` / `ReleaseOutput`) for
+  cross-subsystem UTXO lock coordination.
 - `EnsureConfirmedReq` / `EnsureConfirmedResp` — public Ask API:
   register interest in a txid with `TargetConfs`, `ConfirmationPkScript`,
   and a subscriber.
@@ -55,6 +57,18 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - `Config.BroadcastFailureAlertThreshold` — consecutive no-mempool
   failures before the operator escalation fires (default 3). Time to
   first alert ≈ threshold × `FeeBumpIntervalBlocks` blocks.
+- Fee-input fanout FSM (`feeBumpStateMachine` / `feeBumpEnvironment`) —
+  internal single-instance `protofsm` that manages a fanout transaction
+  when `ErrCPFPFeeInputUnavailable` is combined with a confirmed-coin
+  shortfall (`errCPFPFeeInputShortfall`). On demand, the FSM funds and
+  broadcasts a wallet-level fanout transaction that mints right-sized
+  fee inputs, then promotes them once confirmed. At most one fanout is
+  ever in flight. The actor drives it via `driveFeeBump` and applies
+  its outbox effects (register/unregister chainsource conf watches,
+  retry stuck broadcasting parents). The FSM does its own wallet and
+  broadcast IO inside transitions (safe because the actor serializes
+  all events); `feeBumpEnvironment.lastErr` captures per-turn IO errors
+  rather than returning them (which would tear the long-lived FSM down).
 
 ## Relationships
 
@@ -85,9 +99,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   covers `ErrCPFPFeeInputUnavailable` and transient package-relay
   rejections (min-relay-fee on the zero-fee anchor parent, mempool-full,
   fee input spent mid-submit) — the conditions CPFP retry exists to
-  overcome. Only a structurally permanent error
-  (`isPermanentBroadcastError`, currently `ErrNonTRUCParent`) fails
-  terminally; `ErrParentAlreadyBroadcast` advances to
+  overcome. When `ErrCPFPFeeInputUnavailable` is paired with a confirmed-
+  coin shortfall, `maybeEnsureFeeInputSupply` kicks off the fee-input
+  fanout FSM to provision fresh fee inputs; the retry loop continues
+  uninterrupted while the fanout awaits confirmation. Only a structurally
+  permanent error (`isPermanentBroadcastError`, currently `ErrNonTRUCParent`)
+  fails terminally; `ErrParentAlreadyBroadcast` advances to
   `AwaitingConfirmation` (a live parent exists on another path). Rationale:
   a fraud-response checkpoint must land before the counterparty's
   CSV-timeout path, so the actor escalates to operators rather than

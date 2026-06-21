@@ -43,6 +43,11 @@ refresh, leave, OOR spend, and directed send flows.
 - `SendOnChainStatus` — Terminal outcome enum: `SendOnChainStatusSubmitted` (intent queued for next round), `SendOnChainStatusDryRun` (dry-run preview, no commitment).
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
 - `VTXODescriptor.EffectivePolicyTemplate` — Decodes the serialized `PolicyTemplate` field on the wallet-level VTXO descriptor using `lib/arkscript`.
+- `WalletBackingSweeper` — Interface for the general backing-wallet sweep backend: lists confirmed UTXOs, leases selected inputs, signs and finalizes the aggregate sweep PSBT. Satisfied by the same per-backend adapter wired as the boarding-sweep signer.
+- `SweepWalletFundsRequest` / `SweepWalletFundsResponse` — Ask-request to preview (and optionally broadcast) a general sweep of all confirmed backing-wallet UTXOs to a single destination address. `DestinationAddress`, optional `FeeRateSatPerVByte` (capped at the actor's configured max), optional `ConfTarget` (falls back to default). Response carries `Inputs`, `TotalAmountSat`, `FeeAmountSat`, `NetAmountSat`, `CanBroadcast`, and `Txid` (populated on successful broadcast). `FailureReason` is set (and the actor response itself succeeds) for application-level failures so the RPC sees them as domain errors rather than transport errors.
+- `WalletSweepInputInfo` — Per-UTXO sweep detail: `Outpoint`, `PkScript`, `AmountSat`.
+- `WalletSweepTxNotification` — Tell carrying a txconfirm terminal notification (`TxConfirmed` or `TxFailed`) for a general wallet sweep tx, re-wrapped via `txconfirm.MapNotification`.
+- `WithWalletSweep(sweeper, maxFeeRate)` — Option to wire the `WalletBackingSweeper` into the actor; when omitted `SweepWalletFundsRequest` returns a clear "subsystem not initialised" error.
 
 ## Relationships
 
@@ -61,7 +66,8 @@ refresh, leave, OOR spend, and directed send flows.
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`
-  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`, `SendOnChainRequest`
+  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`, `SendOnChainRequest`, `SweepWalletFundsRequest`
+  - ← `txconfirm` (Tell): `WalletSweepTxNotification` (terminal outcome for a submitted general wallet sweep tx)
 
 ## Invariants
 
