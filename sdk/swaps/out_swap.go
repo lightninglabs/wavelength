@@ -563,6 +563,22 @@ func (s *ReceiveSession) VHTLCInfo() (*ReceiveVHTLCInfo, error) {
 func (s *ReceiveSession) runUntil(ctx context.Context,
 	target ReceiveState) error {
 
+	responderCtx, stopResponder := context.WithCancel(ctx)
+	defer stopResponder()
+
+	if s.client != nil && receiveTargetNeedsForfeitResponder(target) {
+		receiver, _ :=
+			s.client.outEvents.(OutSwapForfeitSignatureReceiver)
+		paymentHash := s.PaymentHash
+		clientPubKey := s.clientPubKey
+		if receiver != nil && clientPubKey != nil {
+			go s.respondToOutSwapForfeitSignatureRequests(
+				responderCtx, receiver, paymentHash,
+				clientPubKey,
+			)
+		}
+	}
+
 	machine := newReceiveLoopFSM(s, target)
 
 	for s.state != target {
@@ -576,6 +592,12 @@ func (s *ReceiveSession) runUntil(ctx context.Context,
 	}
 
 	return nil
+}
+
+func receiveTargetNeedsForfeitResponder(target ReceiveState) bool {
+	return target == ReceiveStateVHTLCFunded ||
+		target == ReceiveStateClaimInitiated ||
+		target == ReceiveStateCompleted
 }
 
 // transition applies one receive FSM event to the current state.
@@ -1419,6 +1441,9 @@ func (s *ReceiveSession) claimFundedVHTLC(ctx context.Context) error {
 	if err := s.ensureReceiveClaimStillPossible(ctx); err != nil {
 		return err
 	}
+	if err := s.reconcileLiveReceiveFunding(ctx); err != nil {
+		return err
+	}
 
 	claimSessionID, err := s.client.claimReceiveVHTLC(
 		ctx, s.PaymentHash, s.Preimage, s.vhtlcPolicy,
@@ -1720,6 +1745,51 @@ func (c *SwapClient) claimReceiveVHTLC(ctx context.Context,
 	}
 
 	return "", fmt.Errorf("claim vHTLC: %w", lastSendErr)
+}
+
+// reconcileLiveReceiveFunding refreshes the remembered vHTLC funding row before
+// a claim. A cooperative vHTLC refresh preserves the policy script but moves
+// the claimable output to a new outpoint, and the replacement amount may be
+// reduced by refresh fees. A delayed or resumed receive session must follow the
+// authoritative live indexer row before spending.
+func (s *ReceiveSession) reconcileLiveReceiveFunding(
+	ctx context.Context) error {
+
+	if s == nil || s.client == nil || len(s.vhtlcPkScript) == 0 {
+		return nil
+	}
+
+	vtxo, err := s.client.daemon.FindLiveVTXOByPkScript(
+		ctx, s.vhtlcPkScript,
+	)
+	if err != nil {
+		s.client.log.DebugS(
+			ctx,
+			"Unable to refresh receive vHTLC outpoint",
+			slog.String("err", err.Error()),
+			btclog.Hex("hash", s.PaymentHash[:]),
+			slog.String("outpoint", s.vhtlcOutpoint),
+		)
+
+		return nil
+	}
+	if vtxo == nil || vtxo.Outpoint == "" {
+		return nil
+	}
+	if s.vhtlcAmount != 0 && vtxo.AmountSat != s.vhtlcAmount {
+		s.client.log.WarnS(
+			ctx,
+			"Live receive vHTLC amount changed before claim",
+			nil,
+			btclog.Hex("hash", s.PaymentHash[:]),
+			slog.String("remembered_outpoint", s.vhtlcOutpoint),
+			slog.String("live_outpoint", vtxo.Outpoint),
+			slog.Int64("remembered_amount_sat", s.vhtlcAmount),
+			slog.Int64("live_amount_sat", vtxo.AmountSat),
+		)
+	}
+
+	return s.rememberReceiveFunding(ctx, vtxo.Outpoint, vtxo.AmountSat)
 }
 
 // encodeVHTLCPolicyTemplate serializes the semantic vHTLC policy template in
