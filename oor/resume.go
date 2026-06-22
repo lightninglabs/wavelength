@@ -92,9 +92,14 @@ func OutboxForIncomingState(state SessionState) ([]OutboxEvent, error) {
 		// drives a RetryDueEvent (see handleResumeSession) which either
 		// re-queries with backoff or fails the session at
 		// maxMetadataRetries, freeing its concurrency slot.
-		recipients, err := ExtractArkRecipients(s.ArkPSBT)
-		if err != nil {
-			return nil, err
+		recipients := CloneArkRecipients(s.Recipients)
+		if len(recipients) == 0 {
+			extracted, err := ExtractArkRecipients(s.ArkPSBT)
+			if err != nil {
+				return nil, err
+			}
+
+			recipients = extracted
 		}
 
 		return notifiedOutbox(s, recipients), nil

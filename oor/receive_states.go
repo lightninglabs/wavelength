@@ -73,6 +73,10 @@ type ReceiveNotified struct {
 
 	AncestorPackages []PackageArtifact
 
+	// Recipients are the structurally validated Ark outputs plus optional
+	// semantic policy metadata needed to materialize custom VTXOs.
+	Recipients []ArkRecipientOutput
+
 	// MetadataAttempts counts how many times the authoritative metadata
 	// resolution has failed retryably for this session. It drives the
 	// exponential backoff and terminal give-up in handleReceiveOutboxError

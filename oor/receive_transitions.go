@@ -264,9 +264,12 @@ func transitionIncomingTransfer(evt *IncomingTransferEvent) (*StateTransition,
 
 	// The FSM intentionally does not decide which outputs belong to the
 	// local wallet. Ownership lives behind the materialization boundary.
-	recipients, err := ExtractArkRecipients(evt.ArkPSBT)
-	if err != nil {
-		return nil, err
+	recipients := CloneArkRecipients(evt.Recipients)
+	if len(recipients) == 0 {
+		recipients, err = ExtractArkRecipients(evt.ArkPSBT)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	notified := &ReceiveNotified{
@@ -274,6 +277,7 @@ func transitionIncomingTransfer(evt *IncomingTransferEvent) (*StateTransition,
 		ArkPSBT:              evt.ArkPSBT,
 		FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
 		AncestorPackages:     evt.AncestorPackages,
+		Recipients:           recipients,
 	}
 
 	// The metadata query (like the phase-1 hint query) has no failure
@@ -458,9 +462,14 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *IncomingMetadataResolvedEvent:
-		recipients, err := ExtractArkRecipients(s.ArkPSBT)
-		if err != nil {
-			return nil, err
+		recipients := CloneArkRecipients(s.Recipients)
+		if len(recipients) == 0 {
+			extracted, err := ExtractArkRecipients(s.ArkPSBT)
+			if err != nil {
+				return nil, err
+			}
+
+			recipients = extracted
 		}
 
 		return &StateTransition{

@@ -1,10 +1,13 @@
 package oor
 
 import (
+	"bytes"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/arkrpc"
@@ -176,6 +179,11 @@ func IncomingTransferEventFromResponseWithLimits(sessionID SessionID,
 		return nil, err
 	}
 
+	recipients, err := incomingRecipientsFromEvent(arkPSBT, recipientEvt)
+	if err != nil {
+		return nil, err
+	}
+
 	root := packageArtifactForValidation(sessionID, arkPSBT, checkpoints)
 	err = validateIncomingPackageGraph(root, ancestors)
 	if err != nil {
@@ -187,7 +195,50 @@ func IncomingTransferEventFromResponseWithLimits(sessionID SessionID,
 		ArkPSBT:              arkPSBT,
 		FinalCheckpointPSBTs: checkpoints,
 		AncestorPackages:     ancestors,
+		Recipients:           recipients,
 	}, nil
+}
+
+// incomingRecipientsFromEvent overlays the policy metadata carried by the
+// recipient event onto the structurally extracted Ark outputs.
+func incomingRecipientsFromEvent(ark *psbt.Packet,
+	evt *arkrpc.OORRecipientEvent) ([]ArkRecipientOutput, error) {
+
+	recipients, err := ExtractArkRecipients(ark)
+	if err != nil {
+		return nil, err
+	}
+
+	if evt.GetValue() > uint64(math.MaxInt64) {
+		return nil, fmt.Errorf("recipient event value overflows int64")
+	}
+
+	value := btcutil.Amount(evt.GetValue())
+	for i := range recipients {
+		if recipients[i].OutputIndex != evt.GetOutputIndex() {
+			continue
+		}
+
+		if recipients[i].Value != value {
+			return nil, fmt.Errorf("recipient event value mismatch")
+		}
+
+		if !bytes.Equal(
+			recipients[i].PkScript, evt.GetRecipientPkScript(),
+		) {
+			return nil, fmt.Errorf("recipient event pkscript " +
+				"mismatch")
+		}
+
+		recipients[i].VTXOPolicyTemplate = append(
+			[]byte(nil), evt.GetVtxoPolicyTemplate()...,
+		)
+
+		return recipients, nil
+	}
+
+	return nil, fmt.Errorf("recipient event output %d not found",
+		evt.GetOutputIndex())
 }
 
 // packageArtifactsFromRPC converts RPC package artifacts into domain

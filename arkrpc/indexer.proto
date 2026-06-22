@@ -182,6 +182,11 @@ message OORRecipientEvent {
     // Recipients persist these artifacts so a chained OOR VTXO can be
     // unrolled without querying package data for VTXOs they do not own.
     repeated OORSessionPackage ancestor_packages = 8;
+
+    // vtxo_policy_template is the semantic arkscript policy template for this
+    // recipient output. Older servers may omit it, in which case clients fall
+    // back to standard VTXO materialization.
+    bytes vtxo_policy_template = 9;
 }
 
 // OORSessionPackage carries finalized package artifacts for one OOR session.
