@@ -230,8 +230,8 @@ func TestHandleFeePaidRefresh(t *testing.T) {
 		entries[0].EventType)
 }
 
-// TestHandleFeePaidOnchainSweep verifies that a boarding-sweep miner fee
-// is booked against onchain_fees / wallet_balance with the
+// TestHandleFeePaidOnchainSweep verifies that a boarding-sweep chain cost
+// is booked against onchain_fees / wallet_clearing with the
 // boarding_sweep_fee_paid event type, and that an empty RoundID is
 // accepted alongside a sweep-txid IdempotencyKey.
 func TestHandleFeePaidOnchainSweep(t *testing.T) {
@@ -1411,10 +1411,9 @@ func TestHandleUTXOSpent(t *testing.T) {
 //     (representing the equity source of the funds).
 //   - no other account is touched.
 //
-// The test leaves FeePaidMsg out because boarding fee emission
-// is deferred (task B handles refresh fees only). Even without a
-// fee leg, this asserts the core deposit-boarding pairing is
-// coherent.
+// The test leaves FeePaidMsg out so it can isolate the core
+// deposit-boarding pairing. Fee rows are covered by dedicated fee
+// handler tests.
 func TestBoardingRoundNetsToOpeningBalanceAndVTXO(t *testing.T) {
 	t.Parallel()
 
@@ -1483,7 +1482,7 @@ func TestBoardingRoundNetsToOpeningBalanceAndVTXO(t *testing.T) {
 	)
 	require.Equal(
 		t, int64(0), balances[AccountFeesPaid],
-		"boarding fee emission is deferred; no fee leg yet",
+		"isolated boarding pair should not include a fee leg",
 	)
 }
 

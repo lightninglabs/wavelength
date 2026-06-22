@@ -1223,10 +1223,10 @@ func (a *Ark) emitSweepConfirmedLedger(ctx context.Context,
 			}
 		}
 
-		// 3. Destination UTXOCreatedMsg, only for wallet-derived
-		// destinations. External destinations leave the wallet
-		// entirely; the per-input UTXOSpentMsg covers the outflow
-		// without needing a paired UTXOCreatedMsg. The persisted
+		// 3. Destination value. Wallet-derived destinations emit a
+		// UTXOCreatedMsg for the return output, while external
+		// destinations emit WalletSweepTransferMsg to settle that
+		// value out of wallet_clearing. The persisted
 		// DestinationAddress is empty when the daemon allocated a
 		// fresh wallet output and non-empty when the caller supplied
 		// an explicit external address, which is the persisted
