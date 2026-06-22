@@ -7,8 +7,10 @@ VTXO receipts/sends, wallet UTXO deposits, exit costs) as double-entry
 ledger entries and UTXO audit log records. Provides a crash-safe
 financial audit trail for tax reporting and fee transparency.
 
-Event types: `wallet_utxo_created`, `boarding_fee_paid`,
-`refresh_fee_paid`, `onchain_fee_paid`, `vtxo_received`, `vtxo_sent`.
+Event types: `wallet_utxo_created`, `wallet_utxo_spent`,
+`wallet_sweep_transfer`, `boarding_fee_paid`, `refresh_fee_paid`,
+`onchain_fee_paid`, `boarding_sweep_fee_paid`, `vtxo_received`,
+`vtxo_sent`.
 
 ## Chart of Accounts
 
@@ -23,6 +25,8 @@ Seeded by `000006_fee_accounting.up.sql`:
 - `opening_balance` (equity) — source-of-funds for every confirmed
   wallet UTXO. Without this account, `wallet_balance` would drift
   negative on every boarding.
+- `wallet_clearing` (asset) — temporary clearing account for
+  wallet sweep inputs, returns, chain cost, and external transfers.
 
 `transfers_in` / `transfers_out` are separate accounts so gross send and
 gross receive flows stay visible independently (tax reporting needs
@@ -80,19 +84,25 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/ledge
   OOR) or `RoundID` (16-byte in-round) — exactly one must be
   non-zero; both-zero and both-set are rejected. Optional `Outpoint`
   disambiguates per-VTXO for in-round multi-VTXO events (e.g. paired
-  refresh emissions).
+  refresh emissions). Optional `IdempotencyKey` disambiguates
+  round-scoped recipient/leave outflows that do not have a local VTXO
+  outpoint.
 - `ExitCostMsg` — unilateral exit as two ledger entries: send leg
   (`transfers_out` ⇐⇒ `vtxo_balance` net-of-fee) + fee leg
   (`onchain_fees` ⇐⇒ `vtxo_balance` miner fee). Wallet-side movement
   is covered separately by the `wallet_utxo_log` audit trail.
 - `UTXOCreatedMsg` — wallet UTXO confirmations with classification.
   `handleUTXOCreated` writes TWO rows: `wallet_utxo_log` audit row
-  AND a ledger row (`debit wallet_balance, credit opening_balance`,
-  `event_type=wallet_utxo_created`) keyed by an outpoint-derived
-  idempotency key.
-- `UTXOSpentMsg` — wallet UTXO spends. Currently only the audit row
-  (double-entry for non-boarding wallet spends is a planned
-  follow-up).
+  AND a ledger row keyed by an outpoint-derived idempotency key.
+  Deposit-like classifications credit `opening_balance`; boarding
+  sweep returns credit `wallet_clearing`.
+- `UTXOSpentMsg` — wallet UTXO spends. Boarding sweep inputs write
+  both an audit row and `debit wallet_clearing, credit
+  wallet_balance`; other classifications remain audit-only until
+  they have a wallet-spend producer.
+- `WalletSweepTransferMsg` — external destination value from a
+  wallet sweep, booked as `debit transfers_out, credit
+  wallet_clearing`.
 
 ## Relationships
 
@@ -106,17 +116,20 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/ledge
   - ← `round` (origin-routed on `VTXOCreatedNotification`):
     `VTXOReceivedMsg{SourceRoundBoarding}`, paired `VTXOSentMsg` +
     `VTXOReceivedMsg{SourceRoundRefresh}`,
-    `VTXOReceivedMsg{SourceRoundTransfer}`; one
-    `FeePaidMsg{FeeTypeRefresh}` per round when
-    `OperatorFeeSat > 0` and any refresh-origin VTXO present
-    (boarding-fee emission deferred).
+    `VTXOReceivedMsg{SourceRoundTransfer}`; explicit recipient/leave
+    `VTXOSentMsg` outflows; one `FeePaidMsg` per positive
+    `OperatorFeeSat`, typed as boarding or refresh by the round
+    composition.
   - ← `oor`: `VTXOSentMsg` after `FinalizeAcceptedEvent`;
     `VTXOReceivedMsg{SourceOOR}` per descriptor in
     `notifyMaterializedVTXOs`.
-  - ← `vtxo`: `ExitCostMsg` after chain resolver determines miner fee
-    (currently a TODO no-op — wiring pending).
+  - ← `unroll`: `ExitCostMsg` after the final sweep confirms, with
+    gross value from the proof target output and fee derived from the
+    persisted sweep transaction.
   - ← `wallet`: `UTXOCreatedMsg` on confirmed wallet UTXO observation
-    (`UTXOSpentMsg` pending).
+    plus boarding sweep `UTXOSpentMsg`, `FeePaidMsg{FeeTypeOnchainSweep}`,
+    `UTXOCreatedMsg{ClassificationBoardingSweepReturn}`, and
+    `WalletSweepTransferMsg` as applicable.
 
 ## Caller Contract
 
@@ -126,12 +139,12 @@ or balance reconciliation. Required emission pairs:
 | Flow | Required emission |
 |------|-------------------|
 | Wallet UTXO confirmed (deposit) | `UTXOCreatedMsg` (handler writes audit + ledger rows). |
-| Boarding (wallet → VTXO) | `VTXOReceivedMsg{SourceRoundBoarding}` net. Boarding-fee `FeePaidMsg` deferred. |
+| Boarding (wallet → VTXO) | `VTXOReceivedMsg{SourceRoundBoarding}` plus `FeePaidMsg{FeeTypeBoarding}` when `OperatorFeeSat > 0`. |
 | Refresh / directed-send self-change | Paired `VTXOSentMsg{Outpoint,RoundID,gross}` + `VTXOReceivedMsg{SourceRoundRefresh,RoundID,gross}`; real vtxo_balance change comes from the round-emitted `FeePaidMsg{FeeTypeRefresh}` when `OperatorFeeSat > 0`. |
 | In-round participant receive | `VTXOReceivedMsg{SourceRoundTransfer}` net. No `FeePaidMsg`. |
 | OOR receive | `VTXOReceivedMsg{SourceOOR}` net. No `FeePaidMsg`. |
 | OOR send | `VTXOSentMsg{SessionID}` net. No `FeePaidMsg`. |
-| In-round send | `VTXOSentMsg{RoundID}` net. `SessionID`/`RoundID` are mutually exclusive. |
+| In-round send | `VTXOSentMsg{RoundID}` net. Recipient/leave sends without outpoints must set `IdempotencyKey`. `SessionID`/`RoundID` are mutually exclusive. |
 | Unilateral exit | `ExitCostMsg{AmountSat=gross, ExitCostSat=fee}`. Handler expands to send-leg + fee-leg internally. |
 
 ## Invariants

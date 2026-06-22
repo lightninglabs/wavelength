@@ -140,6 +140,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
+- `000019_accounting_wallet_sweeps` — adds `wallet_clearing`,
+  `wallet_utxo_spent`, and `wallet_sweep_transfer` for sweep
+  accounting. Rebuilds the round idempotency index so keyed
+  round events use `idx_client_ledger_idempotent_key` instead of
+  collapsing on `(round_id, event_type, debit_account, credit_account)`.
 - `000018_pending_intents` — generalizes the Board-only
   `pending_board_requests` outbox into a supertype/subtype set:
   `pending_intent_kinds` (enum table), `pending_intents` (header: 32-byte

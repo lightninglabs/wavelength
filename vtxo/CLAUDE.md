@@ -20,8 +20,8 @@ when the local wallet owns the receive script.
   ActorSystem, ChainParams, ExpiryConfig, RoundActor ref, ChainResolver ref,
   optional `Log`, optional `LedgerSink fn.Option[ledger.Sink]`,
   `ForfeitVTXOActorAskTimeout`, `RefreshFeeQuoter`, `ExitOutcomeResolver`, and
-  `ReservationStore`. The manager propagates the sink into each spawned
-  `VTXOActor` for `ExitCostMsg` emissions. `ForfeitVTXOActorAskTimeout`
+  `ReservationStore`. Confirmed exit-cost accounting is emitted by unroll
+  after final sweep confirmation. `ForfeitVTXOActorAskTimeout`
   (default 5 s) bounds forfeit and refresh child asks so a blocked child actor
   cannot monopolize the manager until the outer RPC deadline. Zero uses the
   default; negative disables the timeout. Spend-path asks keep the caller's
@@ -36,7 +36,10 @@ when the local wallet owns the receive script.
 - `SpendingReservationStore` — Narrow interface the VTXO manager uses for its
   startup orphan sweep: `ListReservedOutpoints(ctx) ([]wire.OutPoint, error)`.
   Intentionally small to avoid coupling vtxo to the concrete db type or oor.
-- `VTXOActorConfig.LedgerSink` — Per-VTXO actor field plumbed from the manager. The `emitExitCost` helper is wired onto the unilateral-exit transition but is currently a no-op pending chain resolver integration: the actor cannot determine the on-chain miner fee until the chain resolver reports the confirmed exit-spend transaction. The emission site exists so a single future change in the chain resolver wiring enables it without touching the FSM transition logic.
+- `VTXOActorConfig.LedgerSink` — Per-VTXO actor field plumbed from the
+  manager. The VTXO actor cannot determine the confirmed on-chain miner fee,
+  so its `emitExitCost` helper is intentionally empty; unroll emits
+  `ExitCostMsg` after the final sweep confirms.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).
 - `FilterOptions` / `FilterDescriptors` — VTXO filtering by expiry status, spend state, etc.
@@ -53,13 +56,14 @@ when the local wallet owns the receive script.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/tree` (tree paths), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `ledger` (`Sink` + `ExitCostMsg` for planned exit cost emission), `unroll` (via `ExitOutcomeResolver` callback wired by `darepod`).
+- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/tree` (tree paths), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `ledger` (`Sink` type for compatibility with manager wiring), `unroll` (via `ExitOutcomeResolver` callback wired by `darepod`).
 - **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `darepod` (wiring, owned-script adapters, incoming event route).
 - **Sends**:
   - → `round` (via manager relay): `RelayToRoundMsg` wrapping `ForfeitSignatureSubmission`
   - → `db` (via outbox): `VTXOStatusUpdate`
   - → `vtxo` manager: `VTXOTerminatedNotification`, `RelayToRoundMsg`, `VTXOsMaterializedNotification` (from `IncomingVTXOHandler`)
-  - → `ledger` actor (via `ledger.Sink` Tell): `ExitCostMsg` planned; currently a no-op emission pending chain-resolver fee propagation
+  - → `ledger` actor: no direct messages; unroll emits confirmed
+    `ExitCostMsg` after sweep confirmation
 - **Receives**:
   - ← `round`: `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `ForfeitSignedEvent`, `ForfeitReleasedEvent`, `BlockEpochEvent`, `PendingForfeitEvent`, `SpendReserveEvent`, `SpendReleasedEvent`, `SpendCompletedEvent`, `ResumeVTXOEvent`
   - ← `wallet` (via `lib/actormsg`): `SelectAndReserveSpendRequest`, `ReleaseSpendRequest`, `CompleteSpendRequest`, `ReserveForfeitRequest`, `ReleaseForfeitRequest`, `SelectAndReserveForfeitRequest`
