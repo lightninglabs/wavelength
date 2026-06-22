@@ -9,6 +9,7 @@ module.
 ## Sub-Packages
 
 - `internal/actortest` — Durable actor integration tests using real DB backends (SQLite, Postgres), verifying at-least-once delivery, exactly-once dedup, FIFO ordering, and atomic state+outbox.
+- `internal/cmd/tools/accounting` — DB-backed admin command that reports ledger balances, event totals, and optional BTC/fiat valuation.
 - `internal/indexerlimits` — Shared client-side bounds for indexer pagination cursors.
 - `internal/testutils` — Deterministic key pair and Schnorr signature generation for tests.
 
