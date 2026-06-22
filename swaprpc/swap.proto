@@ -67,7 +67,8 @@ message SwapOwnerProof {
     // this to bound replay of list requests.
     int64 timestamp_unix = 2;
 
-    // nonce is caller-generated entropy included in the signed message.
+    // nonce is 16 cryptographically random bytes generated uniquely for each
+    // request and included in the signed message.
     bytes nonce = 3;
 
     // signature is the raw 64-byte BIP-340 Schnorr signature.

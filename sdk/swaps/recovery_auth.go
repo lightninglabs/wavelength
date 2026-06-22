@@ -24,6 +24,7 @@ const (
 	swapRecoveryNonceLen    = 16
 	swapRecoveryBlobVersion = 1
 	swapRecoveryBlobTag     = "darepo-swap-recovery-blob-v1"
+	secretboxNonceSize      = 24
 )
 
 // newSwapOwnerProof signs one swap recovery owner proof with the daemon
@@ -37,6 +38,10 @@ func newSwapOwnerProof(ctx context.Context, daemon DaemonConn,
 	}
 	if clientKey == nil {
 		return nil, fmt.Errorf("client identity key is required")
+	}
+	if timestampUnix < 0 {
+		return nil, fmt.Errorf("owner proof timestamp must be " +
+			"non-negative")
 	}
 
 	nonce := make([]byte, swapRecoveryNonceLen)
@@ -53,6 +58,9 @@ func newSwapOwnerProof(ctx context.Context, daemon DaemonConn,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("sign owner proof: %w", err)
+	}
+	if len(sig) != 64 {
+		return nil, fmt.Errorf("owner proof signature must be 64 bytes")
 	}
 
 	return &swaprpc.SwapOwnerProof{
@@ -115,7 +123,7 @@ func sealOutSwapRecoveryBlob(ctx context.Context, daemon DaemonConn,
 		return nil, err
 	}
 
-	var nonce [24]byte
+	var nonce [secretboxNonceSize]byte
 	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
 		return nil, fmt.Errorf("generate recovery blob nonce: %w", err)
 	}
@@ -134,7 +142,7 @@ func openOutSwapRecoveryBlob(ctx context.Context, daemon DaemonConn,
 	clientKey *btcec.PublicKey, paymentHash lntypes.Hash,
 	blob []byte) (*lntypes.Preimage, error) {
 
-	if len(blob) < 1+24 {
+	if len(blob) < 1+secretboxNonceSize {
 		return nil, fmt.Errorf("recovery blob is too short")
 	}
 	if blob[0] != swapRecoveryBlobVersion {
@@ -147,10 +155,12 @@ func openOutSwapRecoveryBlob(ctx context.Context, daemon DaemonConn,
 		return nil, err
 	}
 
-	var nonce [24]byte
-	copy(nonce[:], blob[1:25])
+	var nonce [secretboxNonceSize]byte
+	copy(nonce[:], blob[1:1+secretboxNonceSize])
 
-	plaintext, ok := secretbox.Open(nil, blob[25:], &nonce, &key)
+	plaintext, ok := secretbox.Open(
+		nil, blob[1+secretboxNonceSize:], &nonce, &key,
+	)
 	if !ok {
 		return nil, fmt.Errorf("open recovery blob")
 	}
@@ -169,7 +179,8 @@ func openOutSwapRecoveryBlob(ctx context.Context, daemon DaemonConn,
 // outSwapRecoveryBlobKey derives the symmetric key used to seal one out-swap
 // preimage without exposing raw seed material outside the daemon.
 func outSwapRecoveryBlobKey(ctx context.Context, daemon DaemonConn,
-	clientKey *btcec.PublicKey, paymentHash lntypes.Hash) ([32]byte, error) {
+	clientKey *btcec.PublicKey,
+	paymentHash lntypes.Hash) ([32]byte, error) {
 
 	if daemon == nil {
 		return [32]byte{}, fmt.Errorf("daemon connection is required")
@@ -185,9 +196,7 @@ func outSwapRecoveryBlobKey(ctx context.Context, daemon DaemonConn,
 	}
 
 	key := chainhash.TaggedHash(
-		[]byte(swapRecoveryBlobTag),
-		sharedSecret[:],
-		paymentHash[:],
+		[]byte(swapRecoveryBlobTag), sharedSecret[:], paymentHash[:],
 		clientKey.SerializeCompressed(),
 	)
 

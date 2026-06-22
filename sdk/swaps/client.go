@@ -435,7 +435,9 @@ type SwapServerConn interface {
 	// for the authenticated daemon identity key.
 	ListRecoverableSwaps(ctx context.Context,
 		ownerProof *swaprpc.SwapOwnerProof) (
-		[]*swaprpc.RecoverableSwap, error)
+		[]*swaprpc.RecoverableSwap,
+		error,
+	)
 
 	// QuoteInSwap previews an Ark->LN swap without creating server or
 	// client state.
@@ -497,6 +499,12 @@ type DaemonConn interface {
 	GetVHTLCRecoveryStatus(ctx context.Context,
 		req *daemonrpc.GetVHTLCRecoveryStatusRequest) (
 		*daemonrpc.GetVHTLCRecoveryStatusResponse, error)
+
+	// ListVHTLCRecoveries returns durable recovery rows so restore can
+	// retry arming idempotently after a previous partial attempt.
+	ListVHTLCRecoveries(ctx context.Context,
+		req *daemonrpc.ListVHTLCRecoveriesRequest) (
+		*daemonrpc.ListVHTLCRecoveriesResponse, error)
 
 	// PrepareOORWithCustomInputs builds a deterministic custom-input OOR
 	// package without submitting it.
@@ -562,8 +570,8 @@ type DaemonConn interface {
 
 	// SignIdentitySchnorr signs one domain-separated message with the
 	// daemon identity key.
-	SignIdentitySchnorr(ctx context.Context, message, tag []byte) (
-		[]byte, error)
+	SignIdentitySchnorr(ctx context.Context, message,
+		tag []byte) ([]byte, error)
 }
 
 // CustomInput aliases the Ark SDK's typed custom OOR input.

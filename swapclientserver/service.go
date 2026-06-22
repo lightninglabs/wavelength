@@ -201,8 +201,8 @@ type swapRuntimeClient interface {
 
 	// RecoverSwapserverVHTLCs discovers swapserver-owned recoverable vHTLC
 	// rows and arms daemon-owned recovery jobs.
-	RecoverSwapserverVHTLCs(context.Context) (*swaps.SwapserverRecoveryResult,
-		error)
+	RecoverSwapserverVHTLCs(context.Context) (
+		*swaps.SwapserverRecoveryResult, error)
 }
 
 // paySwapSession is the subset of a pay swap FSM that the daemon executor

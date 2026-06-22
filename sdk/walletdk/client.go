@@ -218,8 +218,9 @@ func (c *Client) CreateWallet(ctx context.Context, req CreateWalletRequest) (
 			GetRecoveredOorReceiveScripts(),
 		RecoveredOORRecipientEvents: initResp.GetRecoveredOorEvents(),
 		RecoveredVHTLCs:             initResp.GetRecoveredVhtlcs(),
-		RecoveredVHTLCRefunds:       initResp.GetRecoveredVhtlcRefunds(),
-		RecoveredVHTLCClaims:        initResp.GetRecoveredVhtlcClaims(),
+		RecoveredVHTLCRefunds: initResp.
+			GetRecoveredVhtlcRefunds(),
+		RecoveredVHTLCClaims: initResp.GetRecoveredVhtlcClaims(),
 	}, nil
 }
 

@@ -688,8 +688,8 @@ func (c *Client) ReceiveAuthECDH(ctx context.Context, paymentHash lntypes.Hash,
 
 // SignIdentitySchnorr asks the daemon wallet to sign one domain-separated
 // message with the daemon identity key.
-func (c *Client) SignIdentitySchnorr(ctx context.Context, message,
-	tag []byte) ([]byte, error) {
+func (c *Client) SignIdentitySchnorr(ctx context.Context, message, tag []byte) (
+	[]byte, error) {
 
 	resp, err := c.daemon.SignIdentitySchnorr(
 		ctx, &daemonrpc.SignIdentitySchnorrRequest{
@@ -1042,6 +1042,24 @@ func (c *Client) GetVHTLCRecoveryStatus(ctx context.Context,
 	resp, err := c.daemon.GetVHTLCRecoveryStatus(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("get vhtlc recovery status: %w", err)
+	}
+
+	return resp, nil
+}
+
+// ListVHTLCRecoveries returns all daemon-owned recovery rows. Restore uses
+// this as a narrow idempotency lookup before allocating fresh destinations.
+func (c *Client) ListVHTLCRecoveries(ctx context.Context,
+	req *daemonrpc.ListVHTLCRecoveriesRequest) (
+	*daemonrpc.ListVHTLCRecoveriesResponse, error) {
+
+	if req == nil {
+		req = &daemonrpc.ListVHTLCRecoveriesRequest{}
+	}
+
+	resp, err := c.daemon.ListVHTLCRecoveries(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("list vhtlc recoveries: %w", err)
 	}
 
 	return resp, nil

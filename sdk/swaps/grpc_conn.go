@@ -43,8 +43,8 @@ func NewRESTSwapServerConn(addr string,
 func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 	vhtlcPubkey *btcec.PublicKey, paymentHash lntypes.Hash,
 	amountSat btcutil.Amount, expirySeconds uint32,
-	ownerProof *swaprpc.SwapOwnerProof,
-	encryptedRecoveryBlob []byte) (*OutSwapQuote, error) {
+	ownerProof *swaprpc.SwapOwnerProof, encryptedRecoveryBlob []byte) (
+	*OutSwapQuote, error) {
 
 	if vhtlcPubkey == nil {
 		return nil, fmt.Errorf("vHTLC pubkey must be provided")
@@ -138,7 +138,8 @@ func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context, invoice string,
 // ListRecoverableSwaps returns owner-scoped recovery candidates from the swap
 // server.
 func (g *GRPCSwapServerConn) ListRecoverableSwaps(ctx context.Context,
-	ownerProof *swaprpc.SwapOwnerProof) ([]*swaprpc.RecoverableSwap, error) {
+	ownerProof *swaprpc.SwapOwnerProof) ([]*swaprpc.RecoverableSwap,
+	error) {
 
 	resp, err := g.client.ListRecoverableSwaps(
 		ctx, &swaprpc.ListRecoverableSwapsRequest{

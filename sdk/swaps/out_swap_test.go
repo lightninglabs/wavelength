@@ -495,7 +495,9 @@ func (c *testSwapServerConn) ListRecoverableSwaps(_ context.Context,
 		return nil, c.recoverableErr
 	}
 
-	return append([]*swaprpc.RecoverableSwap(nil), c.recoverableRows...), nil
+	return append(
+		[]*swaprpc.RecoverableSwap(nil), c.recoverableRows...,
+	), nil
 }
 
 // QuoteInSwap is unused in these tests.
@@ -1014,67 +1016,80 @@ func TestWaitForVHTLCExpiresOnPersistentUnregisteredScript(t *testing.T) {
 }
 
 type testDaemonConn struct {
-	identityPriv      *btcec.PrivateKey
-	identityKey       *btcec.PublicKey
-	operatorKey       *btcec.PublicKey
-	blockHeight       uint32
-	liveVTXOs         []VTXOInfo
-	spentVTXOs        []VTXOInfo
-	vhtlc             *VTXOInfo
-	liveByPkScript    map[string]*VTXOInfo
-	spentVTXO         *VTXOInfo
-	indexedPackage    *OORPackageInfo
-	indexedPackages   []*OORPackageInfo
-	receiveInfo       *ReceiveInfo
-	receiveAuthKey    []byte
-	receiveAuthErr    error
-	receiveAllocCalls int
-	sendSessionID     string
-	sendOutpoint      string
-	preparedOOR       *PreparedOOR
-	prepareOOREErr    error
-	sendPolicyErr     error
-	sendCustomErr     error
-	oorSession        *daemonrpc.OORSessionInfo
-	oorSessionErr     error
-	listSpentErr      error
-	liveLookupErr     error
-	liveLookupHook    func(call int) (*VTXOInfo, error)
-	spentLookupErr    error
-	spentLookupBlock  time.Duration
-	spendOnCustom     bool
-	sendPolicyCalls   int
-	sendCustomCalls   int
-	oorSessionCalls   int
-	liveLookupCalls   int
-	spentLookupCalls  int
-	lastSendPolicy    []byte
-	lastClaimPubKey   []byte
-	lastClaimInput    []CustomInput
-	lastOORSessionID  string
-	armRecoveryResp   *daemonrpc.ArmVHTLCRecoveryResponse
-	armRecoveryErr    error
-	escalateResp      *daemonrpc.EscalateVHTLCRecoveryResponse
-	escalateErr       error
-	cancelResp        *daemonrpc.CancelVHTLCRecoveryResponse
-	cancelErr         error
-	statusResp        *daemonrpc.GetVHTLCRecoveryStatusResponse
-	statusErr         error
-	armRecoveryCalls  int
-	escalateCalls     int
-	cancelCalls       int
-	statusCalls       int
-	lastArmRecovery   *daemonrpc.ArmVHTLCRecoveryRequest
-	armRecoveries     []*daemonrpc.ArmVHTLCRecoveryRequest
-	lastEscalate      *daemonrpc.EscalateVHTLCRecoveryRequest
-	lastCancel        *daemonrpc.CancelVHTLCRecoveryRequest
-	lastStatus        *daemonrpc.GetVHTLCRecoveryStatusRequest
+	identityPriv        *btcec.PrivateKey
+	identityKey         *btcec.PublicKey
+	operatorKey         *btcec.PublicKey
+	blockHeight         uint32
+	liveVTXOs           []VTXOInfo
+	spentVTXOs          []VTXOInfo
+	vhtlc               *VTXOInfo
+	liveByPkScript      map[string]*VTXOInfo
+	spentVTXO           *VTXOInfo
+	indexedPackage      *OORPackageInfo
+	indexedPackages     []*OORPackageInfo
+	receiveInfo         *ReceiveInfo
+	receiveAuthKey      []byte
+	receiveAuthErr      error
+	receiveAllocCalls   int
+	sendSessionID       string
+	sendOutpoint        string
+	preparedOOR         *PreparedOOR
+	prepareOOREErr      error
+	sendPolicyErr       error
+	sendCustomErr       error
+	oorSession          *daemonrpc.OORSessionInfo
+	oorSessionErr       error
+	listSpentErr        error
+	liveLookupErr       error
+	liveLookupHook      func(call int) (*VTXOInfo, error)
+	spentLookupErr      error
+	spentLookupBlock    time.Duration
+	spendOnCustom       bool
+	sendPolicyCalls     int
+	sendCustomCalls     int
+	oorSessionCalls     int
+	liveLookupCalls     int
+	spentLookupCalls    int
+	lastSendPolicy      []byte
+	lastClaimPubKey     []byte
+	lastClaimInput      []CustomInput
+	lastOORSessionID    string
+	armRecoveryResp     *daemonrpc.ArmVHTLCRecoveryResponse
+	armRecoveryErr      error
+	escalateResp        *daemonrpc.EscalateVHTLCRecoveryResponse
+	escalateErr         error
+	cancelResp          *daemonrpc.CancelVHTLCRecoveryResponse
+	cancelErr           error
+	statusResp          *daemonrpc.GetVHTLCRecoveryStatusResponse
+	statusErr           error
+	listRecoveriesResp  *daemonrpc.ListVHTLCRecoveriesResponse
+	listRecoveriesErr   error
+	identitySignature   []byte
+	identitySignErr     error
+	armRecoveryCalls    int
+	escalateCalls       int
+	cancelCalls         int
+	statusCalls         int
+	listRecoveriesCalls int
+	lastArmRecovery     *daemonrpc.ArmVHTLCRecoveryRequest
+	armRecoveries       []*daemonrpc.ArmVHTLCRecoveryRequest
+	lastEscalate        *daemonrpc.EscalateVHTLCRecoveryRequest
+	lastCancel          *daemonrpc.CancelVHTLCRecoveryRequest
+	lastStatus          *daemonrpc.GetVHTLCRecoveryStatusRequest
+	lastListRecoveries  *daemonrpc.ListVHTLCRecoveriesRequest
 }
 
 // SignIdentitySchnorr signs a tagged message with deterministic test identity
 // material.
 func (d *testDaemonConn) SignIdentitySchnorr(_ context.Context, message,
 	tag []byte) ([]byte, error) {
+
+	if d.identitySignErr != nil {
+		return nil, d.identitySignErr
+	}
+	if d.identitySignature != nil {
+		return append([]byte(nil), d.identitySignature...), nil
+	}
 
 	privKey := d.identityPriv
 	if privKey == nil {
@@ -1273,6 +1288,23 @@ func (d *testDaemonConn) GetVHTLCRecoveryStatus(_ context.Context,
 	return &daemonrpc.GetVHTLCRecoveryStatusResponse{
 		Found: false,
 	}, nil
+}
+
+// ListVHTLCRecoveries records the daemon recovery list request.
+func (d *testDaemonConn) ListVHTLCRecoveries(_ context.Context,
+	req *daemonrpc.ListVHTLCRecoveriesRequest) (
+	*daemonrpc.ListVHTLCRecoveriesResponse, error) {
+
+	d.listRecoveriesCalls++
+	d.lastListRecoveries = req
+	if d.listRecoveriesErr != nil {
+		return nil, d.listRecoveriesErr
+	}
+	if d.listRecoveriesResp != nil {
+		return d.listRecoveriesResp, nil
+	}
+
+	return &daemonrpc.ListVHTLCRecoveriesResponse{}, nil
 }
 
 // PrepareOORWithCustomInputs records the requested package and returns

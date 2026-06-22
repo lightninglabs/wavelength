@@ -543,12 +543,14 @@ func (s *paySession) createSwap(ctx context.Context) error {
 		return fmt.Errorf("get client pubkey: %w", err)
 	}
 
+	// Bind the requested vHTLC participant key into the owner proof even
+	// though it currently matches the daemon identity key. If those keys
+	// diverge later, old proofs cannot be replayed for a different script
+	// key.
 	ownerProof, err := newSwapOwnerProof(
 		ctx, s.client.daemon, clientKey, swapRecoveryAuthCreateIn,
-		s.client.currentTime().Unix(),
-		clientKey.SerializeCompressed(),
-		[]byte(s.invoice),
-		recoveryUint64Field(s.maxFeeSat),
+		s.client.currentTime().Unix(), clientKey.SerializeCompressed(),
+		[]byte(s.invoice), recoveryUint64Field(s.maxFeeSat),
 	)
 	if err != nil {
 		return fmt.Errorf("create owner proof: %w", err)

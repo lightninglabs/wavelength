@@ -142,7 +142,8 @@ type SwapOwnerProof struct {
 	// timestamp_unix is the caller's current unix timestamp. The server uses
 	// this to bound replay of list requests.
 	TimestampUnix int64 `protobuf:"varint,2,opt,name=timestamp_unix,json=timestampUnix,proto3" json:"timestamp_unix,omitempty"`
-	// nonce is caller-generated entropy included in the signed message.
+	// nonce is 16 cryptographically random bytes generated uniquely for each
+	// request and included in the signed message.
 	Nonce []byte `protobuf:"bytes,3,opt,name=nonce,proto3" json:"nonce,omitempty"`
 	// signature is the raw 64-byte BIP-340 Schnorr signature.
 	Signature     []byte `protobuf:"bytes,4,opt,name=signature,proto3" json:"signature,omitempty"`

@@ -650,15 +650,15 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	// the caller.
 	expiry := time.Duration(defaultReceiveExpirySeconds) * time.Second
 	blobHash := sha256.Sum256(encryptedRecoveryBlob)
+	// Bind the requested vHTLC participant key into the owner proof even
+	// though it currently matches the daemon identity key. If those keys
+	// diverge later, old proofs cannot be replayed for a different script
+	// key.
 	ownerProof, err := newSwapOwnerProof(
-		ctx, s.client.daemon, clientKey,
-		swapRecoveryAuthRequestChannel,
-		s.client.currentTime().Unix(),
-		clientKey.SerializeCompressed(),
-		paymentHash[:],
-		recoveryUint64Field(uint64(s.amountSat)*1000),
-		recoveryUint64Field(defaultReceiveExpirySeconds),
-		blobHash[:],
+		ctx, s.client.daemon, clientKey, swapRecoveryAuthRequestChannel,
+		s.client.currentTime().Unix(), clientKey.SerializeCompressed(),
+		paymentHash[:], recoveryUint64Field(uint64(s.amountSat)*1000),
+		recoveryUint64Field(defaultReceiveExpirySeconds), blobHash[:],
 	)
 	if err != nil {
 		return fmt.Errorf("create owner proof: %w", err)

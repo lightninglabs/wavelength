@@ -108,19 +108,21 @@ func (r *RPCServer) SignIdentitySchnorr(ctx context.Context,
 	*daemonrpc.SignIdentitySchnorrResponse, error) {
 
 	if len(req.GetTag()) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "tag is required")
+		return nil, status.Error(
+			codes.InvalidArgument, "tag is required",
+		)
 	}
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
 
 	sig, err := r.server.signTaggedSchnorr(
-		ctx, req.GetMessage(), req.GetTag(), "identity schnorr",
+		ctx, req.GetMessage(), req.GetTag(),
+		"identity schnorr",
 	)
 	if err != nil {
-		return nil, status.Errorf(
-			codes.Internal, "sign identity schnorr: %v", err,
-		)
+		return nil, status.Errorf(codes.Internal, "sign identity "+
+			"schnorr: %v", err)
 	}
 
 	return &daemonrpc.SignIdentitySchnorrResponse{
