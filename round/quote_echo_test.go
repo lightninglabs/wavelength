@@ -164,6 +164,25 @@ func TestEvaluateQuoteEchoAcceptsChangeDeviation(t *testing.T) {
 	require.True(t, ok, "change-output deviation must be permitted")
 }
 
+// TestEvaluateQuoteEchoRejectsFixedChangeOutput verifies a fixed contract VTXO
+// cannot be the mutable change/residual slot even when the quote echoes its
+// amount exactly.
+func TestEvaluateQuoteEchoRejectsFixedChangeOutput(t *testing.T) {
+	t.Parallel()
+
+	intents, _ := buildEchoTestIntents(t)
+	intents.VTXOs[1].FixedAmount = true
+	quote := quoteFromIntents(t, intents, 5_000)
+
+	env := quoteReceivedTestEnv(10_000)
+	decision := evaluateQuote(
+		context.Background(), env, RoundID{}, intents, quote,
+	)
+	rej, ok := decision.(*QuoteRejected)
+	require.True(t, ok, "fixed change output must reject")
+	require.Contains(t, rej.Reason, "fixed amount cannot be change")
+}
+
 // TestEvaluateQuoteEchoRejectsVTXOLengthMismatch verifies that a
 // truncated VTXOQuotes slice (server sends fewer entries than the
 // intent) is rejected. Without this the old positional-fallback
@@ -1098,6 +1117,27 @@ func TestEvaluateQuoteEchoRejectsSingleVTXOUnderpayment(t *testing.T) {
 		"unexpected rejection reason: %q",
 		rej.Reason,
 	)
+}
+
+// TestEvaluateQuoteEchoRejectsFixedSingleVTXOAmountChange verifies contract
+// outputs can opt out of the single-output implicit-change rule. A fixed
+// replacement vHTLC must either be quoted at its exact amount or the round must
+// be rejected before any forfeit is signed.
+func TestEvaluateQuoteEchoRejectsFixedSingleVTXOAmountChange(t *testing.T) {
+	t.Parallel()
+
+	intents := buildSingleVTXOIntents(t)
+	intents.VTXOs[0].FixedAmount = true
+
+	quote := quoteFromSingleVTXOWithFee(t, intents, 2_500)
+
+	env := quoteReceivedTestEnv(10_000)
+	decision := evaluateQuote(
+		context.Background(), env, RoundID{}, intents, quote,
+	)
+	rej, ok := decision.(*QuoteRejected)
+	require.True(t, ok, "fixed single vtxo amount change must reject")
+	require.Contains(t, rej.Reason, "non-change amount")
 }
 
 // TestEvaluateQuoteEchoRejectsSingleLeaveUnderpayment is the leave-
