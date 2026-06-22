@@ -633,7 +633,7 @@ func TestSweepTxNotificationConfirmedEmitsLedger(t *testing.T) {
 
 	require.NotNil(t, feePaid)
 	require.Equal(t, ledger.FeeTypeOnchainSweep, feePaid.FeeType)
-	require.Equal(t, feeSat, feePaid.AmountSat)
+	require.Equal(t, feeSat+anchorSat, feePaid.AmountSat)
 	require.Equal(t, swept[:], feePaid.IdempotencyKey)
 
 	require.Len(
@@ -748,16 +748,23 @@ func TestSweepTxNotificationConfirmedExternalDestSkipsCreated(t *testing.T) {
 	)
 	require.True(t, result.IsOk())
 
-	// Expect 2 messages: 1 FeePaidMsg + 1 UTXOSpentMsg. drain settles
-	// after these, so a stray UTXOCreatedMsg would still be captured.
-	msgs := drain(2)
+	// Expect 3 messages: 1 FeePaidMsg + 1 UTXOSpentMsg +
+	// 1 WalletSweepTransferMsg. drain settles after these, so a stray
+	// UTXOCreatedMsg would still be captured.
+	msgs := drain(3)
+	var transfer *ledger.WalletSweepTransferMsg
 	for _, m := range msgs {
 		_, isCreated := m.(*ledger.UTXOCreatedMsg)
 		require.False(
 			t, isCreated, "external-destination sweep must NOT "+
 				"emit UTXOCreatedMsg",
 		)
+		if typed, ok := m.(*ledger.WalletSweepTransferMsg); ok {
+			transfer = typed
+		}
 	}
+	require.NotNil(t, transfer)
+	require.Equal(t, externalDestSat, transfer.AmountSat)
 }
 
 // TestSweepTxNotificationFailedMarksFailed verifies that a terminal

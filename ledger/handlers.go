@@ -69,9 +69,9 @@ func (a *LedgerActor) handleFeePaid(ctx context.Context, msg *FeePaidMsg,
 
 	// Operator-fee types share the same accounts (fees_paid /
 	// vtxo_balance). Onchain-sweep fees book against onchain_fees /
-	// wallet_balance instead — they are L1 miner fees paid by a
+	// wallet_clearing instead — they are L1 chain costs paid by a
 	// wallet-internal sweep, not Ark protocol operator fees, and the
-	// fee is settled out of wallet_balance rather than VTXO balance.
+	// fee is settled through wallet clearing rather than VTXO balance.
 	var (
 		eventType     string
 		debitAccount  string
@@ -97,7 +97,7 @@ func (a *LedgerActor) handleFeePaid(ctx context.Context, msg *FeePaidMsg,
 	case FeeTypeOnchainSweep:
 		eventType = EventBoardingSweepFeePaid
 		debitAccount = AccountOnchainFees
-		creditAccount = AccountWalletBalance
+		creditAccount = AccountWalletClearing
 
 		// Onchain-sweep fees are not associated with a round.
 		// Use the sweep txid (carried in IdempotencyKey by the
@@ -107,7 +107,7 @@ func (a *LedgerActor) handleFeePaid(ctx context.Context, msg *FeePaidMsg,
 		// roundID to nil below.
 		roundID = nil
 		idempotency = msg.IdempotencyKey
-		description = "boarding-sweep on-chain miner fee"
+		description = "boarding-sweep on-chain cost"
 
 	default:
 		return a.fail(
@@ -320,14 +320,16 @@ func (a *LedgerActor) handleVTXOSent(ctx context.Context, msg *VTXOSentMsg,
 		description = fmt.Sprintf("VTXO sent in round %x", msg.RoundID)
 	}
 
-	// When an outpoint is supplied, stamp an outpoint-derived
-	// idempotency key so two sends in the same round (e.g. two
-	// refreshes) do not collide on
-	// idx_client_ledger_idempotent_round. Messages without an
-	// outpoint fall back to that round/session partial index
-	// as before.
+	// A caller-supplied key is used for round-scoped sends that do
+	// not correspond to a local VTXO outpoint, such as cooperative
+	// leave outputs and foreign directed-send recipient outputs.
+	// Otherwise an outpoint-derived key disambiguates per-VTXO sends.
 	var idempotencyKey []byte
-	if !msg.Outpoint.Hash.IsEqual(&zeroHash) {
+	switch {
+	case len(msg.IdempotencyKey) > 0:
+		idempotencyKey = msg.IdempotencyKey
+
+	case !msg.Outpoint.Hash.IsEqual(&zeroHash):
 		idempotencyKey = walletUTXOIdempotencyKey(
 			msg.Outpoint.Hash, msg.Outpoint.Index,
 		)
@@ -378,7 +380,9 @@ var zeroHash chainhash.Hash
 // adapter's ON CONFLICT DO NOTHING.
 //
 // On-chain wallet side is intentionally not booked here: the
-// wallet_utxo_log audit trail covers wallet_balance changes.
+// unroll path does not yet feed confirmed sweep fees back here, so
+// this handler covers VTXO-funded exit costs once a producer supplies
+// the confirmed cost.
 func (a *LedgerActor) handleExitCost(ctx context.Context, msg *ExitCostMsg,
 	ax actor.Exec[ledgerTx]) fn.Result[LedgerResp] {
 
@@ -570,9 +574,14 @@ func (a *LedgerActor) handleUTXOCreated(ctx context.Context,
 		CreatedAt:     now,
 	}
 
+	creditAccount := AccountOpeningBalance
+	if msg.Classification == ClassificationBoardingSweepReturn {
+		creditAccount = AccountWalletClearing
+	}
+
 	entry := LedgerEntry{
 		DebitAccount:  AccountWalletBalance,
-		CreditAccount: AccountOpeningBalance,
+		CreditAccount: creditAccount,
 		AmountSat:     msg.AmountSat,
 		EventType:     EventWalletUTXOCreated,
 		Description: fmt.Sprintf(
@@ -645,6 +654,15 @@ func (a *LedgerActor) handleUTXOSpent(ctx context.Context, msg *UTXOSpentMsg,
 		return fn.Ok[LedgerResp](nil)
 	}
 
+	if msg.AmountSat <= 0 {
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: UTXOSpentMsg amount_sat "+
+				"must be positive (got %d)", ErrInvalidMessage,
+				msg.AmountSat),
+		)
+	}
+
+	now := a.clk.Now().Unix()
 	audit := UTXOAuditEntry{
 		OutpointHash:  msg.OutpointHash[:],
 		OutpointIndex: int32(msg.OutpointIndex),
@@ -652,12 +670,95 @@ func (a *LedgerActor) handleUTXOSpent(ctx context.Context, msg *UTXOSpentMsg,
 		Event:         "spent",
 		BlockHeight:   int32(msg.BlockHeight),
 		ClassifiedAs:  msg.Classification,
-		CreatedAt:     a.clk.Now().Unix(),
+		CreatedAt:     now,
+	}
+
+	var entry *LedgerEntry
+	if msg.Classification == ClassificationBoardingSweepInput {
+		chainVout := int32(msg.OutpointIndex)
+		confirmationHeight := int32(msg.BlockHeight)
+		entry = &LedgerEntry{
+			DebitAccount:  AccountWalletClearing,
+			CreditAccount: AccountWalletBalance,
+			AmountSat:     msg.AmountSat,
+			EventType:     EventWalletUTXOSpent,
+			Description: fmt.Sprintf(
+				"wallet UTXO spent at %x:%d "+
+					"(classification %s) at height %d",
+				msg.OutpointHash, msg.OutpointIndex,
+				msg.Classification, msg.BlockHeight,
+			),
+			CreatedAt: now,
+			IdempotencyKey: walletUTXOIdempotencyKey(
+				msg.OutpointHash, msg.OutpointIndex,
+			),
+			ChainTxid:          msg.OutpointHash[:],
+			ChainVout:          &chainVout,
+			ConfirmationHeight: &confirmationHeight,
+		}
 	}
 
 	return a.commit(ctx, ax, errMsg, func(ctx context.Context,
 		q ledgerTx) error {
 
-		return q.audit.InsertUTXOAuditEntry(ctx, audit)
+		if err := q.audit.InsertUTXOAuditEntry(ctx, audit); err != nil {
+			return err
+		}
+
+		if entry == nil {
+			return nil
+		}
+
+		return q.ledger.InsertLedgerEntry(ctx, *entry)
+	})
+}
+
+// handleWalletSweepTransfer records externally paid sweep value as a
+// transfer out from wallet clearing. The corresponding sweep input and
+// chain-cost rows are emitted separately, so this closes the clearing
+// account for sweeps that do not return funds to a wallet-derived script.
+func (a *LedgerActor) handleWalletSweepTransfer(ctx context.Context,
+	msg *WalletSweepTransferMsg,
+	ax actor.Exec[ledgerTx]) fn.Result[LedgerResp] {
+
+	const errMsg = "Failed to handle wallet sweep transfer"
+
+	if msg.AmountSat <= 0 {
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: WalletSweepTransferMsg "+
+				"amount_sat must be positive (got %d)",
+				ErrInvalidMessage, msg.AmountSat),
+		)
+	}
+
+	a.log.InfoS(ctx, "Recording wallet sweep transfer",
+		slog.String("txid", fmt.Sprintf("%x", msg.Txid)),
+		slog.Int64("amount_sat", msg.AmountSat),
+		slog.Uint64("block_height", uint64(msg.BlockHeight)),
+	)
+
+	confirmationHeight := int32(msg.BlockHeight)
+	entry := LedgerEntry{
+		DebitAccount:  AccountTransfersOut,
+		CreditAccount: AccountWalletClearing,
+		AmountSat:     msg.AmountSat,
+		EventType:     EventWalletSweepTransfer,
+		Description: fmt.Sprintf(
+			"wallet sweep external transfer for txid %x at height "+
+				"%d",
+			msg.Txid, msg.BlockHeight,
+		),
+		CreatedAt: a.clk.Now().Unix(),
+		IdempotencyKey: append(
+			[]byte("wallet-sweep:"), msg.Txid[:]...,
+		),
+		ChainTxid:          msg.Txid[:],
+		ConfirmationHeight: &confirmationHeight,
+	}
+
+	return a.commit(ctx, ax, errMsg, func(ctx context.Context,
+		q ledgerTx) error {
+
+		return q.ledger.InsertLedgerEntry(ctx, entry)
 	})
 }

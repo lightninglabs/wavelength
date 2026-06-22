@@ -290,3 +290,35 @@ SELECT COUNT(*) FROM ledger_entries;
 SELECT account_id, account_name, account_type
 FROM accounts
 ORDER BY account_id;
+
+-- name: ListClientAccountBalances :many
+SELECT a.account_id,
+       a.account_name,
+       a.account_type,
+       CAST(COALESCE(SUM(
+           CASE
+               WHEN le.debit_account = a.account_id THEN le.amount_sat
+               WHEN le.credit_account = a.account_id THEN -le.amount_sat
+               ELSE CAST(0 AS BIGINT)
+           END
+       ), 0) AS BIGINT) AS balance_sat
+FROM accounts AS a
+LEFT JOIN ledger_entries AS le
+    ON le.debit_account = a.account_id
+    OR le.credit_account = a.account_id
+GROUP BY a.account_id, a.account_name, a.account_type
+ORDER BY a.account_id;
+
+-- name: ListClientLedgerEventTotals :many
+SELECT event_type,
+       CAST(COUNT(*) AS BIGINT) AS entry_count,
+       CAST(COALESCE(SUM(amount_sat), 0) AS BIGINT) AS total_sat
+FROM ledger_entries
+GROUP BY event_type
+ORDER BY event_type;
+
+-- name: GetClientLedgerStats :one
+SELECT CAST(COUNT(*) AS BIGINT) AS entry_count,
+       CAST(COALESCE(MIN(created_at), 0) AS BIGINT) AS first_created_at,
+       CAST(COALESCE(MAX(created_at), 0) AS BIGINT) AS last_created_at
+FROM ledger_entries;

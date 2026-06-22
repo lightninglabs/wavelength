@@ -18,6 +18,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
@@ -3710,12 +3711,12 @@ func ensureVTXOSigningKeys(ctx context.Context, wallet ClientWallet,
 
 // computeClientOperatorFee derives the per-client operator fee
 // contributed to this round. Under the Ark round model the
-// client's fee equals the difference between its contributed
-// input value (boarding inputs + forfeited VTXOs) and its
-// received output value (locally owned round VTXOs + cooperative
-// leave outputs). Every other source of imbalance on the
-// commitment transaction belongs to counterparties, not to this
-// client, so they do not enter the fee math.
+// client's fee equals the difference between its contributed input
+// value (boarding inputs + forfeited VTXOs) and every output value
+// this client requested from those inputs (owned VTXOs, foreign
+// directed-send recipient VTXOs, and cooperative leave outputs).
+// Recipient and leave values are booked separately as VTXOSentMsg
+// outflows; they must not be folded into the operator fee.
 //
 // Returns zero if the difference is not strictly positive. A
 // zero or negative result means the client did not pay the
@@ -3726,9 +3727,7 @@ func ensureVTXOSigningKeys(ctx context.Context, wallet ClientWallet,
 // The fee number is used by the round actor to emit one
 // FeePaidMsg per round so the ledger's total_fees_paid_sat
 // stays consistent with the actual operator revenue the client
-// paid. Boarding fees are deliberately not split out yet -- the
-// emission path labels every fee as FeeTypeRefresh under task
-// B's scope, and a future PR classifies by round composition.
+// paid.
 func computeClientOperatorFee(intents Intents, ownedVTXOs []*ClientVTXO) int64 {
 	var inputsSat int64
 
@@ -3758,9 +3757,18 @@ func computeClientOperatorFee(intents Intents, ownedVTXOs []*ClientVTXO) int64 {
 
 	var outputsSat int64
 
-	for _, v := range ownedVTXOs {
-		if v != nil {
-			outputsSat += int64(v.Amount)
+	if len(intents.VTXOs) > 0 {
+		for i := range intents.VTXOs {
+			amt := int64(intents.VTXOs[i].Amount)
+			if amt > 0 {
+				outputsSat += amt
+			}
+		}
+	} else {
+		for _, v := range ownedVTXOs {
+			if v != nil {
+				outputsSat += int64(v.Amount)
+			}
 		}
 	}
 
@@ -3777,6 +3785,70 @@ func computeClientOperatorFee(intents Intents, ownedVTXOs []*ClientVTXO) int64 {
 	}
 
 	return fee
+}
+
+// roundLedgerOutflows returns the round outputs that reduce this
+// client's VTXO balance without producing a locally owned VTXO. The
+// resulting rows are separate from operator fees so directed-send
+// recipient value and cooperative leave value remain visible in the
+// transfers_out account.
+func roundLedgerOutflows(intents Intents) []RoundLedgerOutflow {
+	var outflows []RoundLedgerOutflow
+
+	for i := range intents.VTXOs {
+		req := &intents.VTXOs[i]
+		if req.HasLocalOwner() {
+			continue
+		}
+
+		amt := int64(req.Amount)
+		if amt <= 0 {
+			continue
+		}
+
+		outflows = append(outflows, RoundLedgerOutflow{
+			AmountSat:      amt,
+			IdempotencyKey: roundOutflowKey("vtxo", i),
+		})
+	}
+
+	for i := range intents.Leaves {
+		amt := intents.LeaveAmount(i)
+		if amt <= 0 {
+			continue
+		}
+
+		outflows = append(outflows, RoundLedgerOutflow{
+			AmountSat:      amt,
+			IdempotencyKey: roundOutflowKey("leave", i),
+		})
+	}
+
+	return outflows
+}
+
+// roundOutflowKey returns a deterministic per-round outflow key for
+// outputs that do not have a local VTXO outpoint.
+func roundOutflowKey(kind string, index int) []byte {
+	return []byte(fmt.Sprintf("round-outflow:%s:%d", kind, index))
+}
+
+// roundOperatorFeeType classifies a positive operator fee by the
+// client's round composition. Boarding takes precedence because wallet
+// funds entered the Ark layer in that round; all other client-paid
+// operator fees are refresh-style VTXO spends.
+func roundOperatorFeeType(intents Intents) string {
+	if len(intents.Boarding) > 0 {
+		return ledger.FeeTypeBoarding
+	}
+
+	for i := range intents.VTXOs {
+		if intents.VTXOs[i].Origin == types.VTXOOriginRoundBoarding {
+			return ledger.FeeTypeBoarding
+		}
+	}
+
+	return ledger.FeeTypeRefresh
 }
 
 // leafNonAnchorAmount returns the value of the non-anchor output of
@@ -4002,19 +4074,22 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 			BlockHash: evt.BlockHash,
 		}
 
+		operatorFee := computeClientOperatorFee(s.Intents, vtxos)
+		operatorFeeType := roundOperatorFeeType(s.Intents)
+		outflows := roundLedgerOutflows(s.Intents)
+
 		// Build outbox messages starting with standard notifications.
 		outbox := make([]ClientOutMsg, 0, 2)
-		if len(vtxos) > 0 {
-			operatorFee := computeClientOperatorFee(
-				s.Intents, vtxos,
-			)
+		if len(vtxos) > 0 || len(outflows) > 0 || operatorFee > 0 {
 			outbox = append(outbox, &VTXOCreatedNotification{
-				VTXOs:          vtxos,
-				RoundID:        s.RoundID.String(),
-				CommitmentTxID: evt.TxID,
-				BatchExpiry:    batchExpiry,
-				CreatedHeight:  evt.BlockHeight,
-				OperatorFeeSat: operatorFee,
+				VTXOs:           vtxos,
+				Outflows:        outflows,
+				RoundID:         s.RoundID.String(),
+				CommitmentTxID:  evt.TxID,
+				BatchExpiry:     batchExpiry,
+				CreatedHeight:   evt.BlockHeight,
+				OperatorFeeSat:  operatorFee,
+				OperatorFeeType: operatorFeeType,
 			})
 		}
 		outbox = append(outbox, &RoundCompletedNotification{

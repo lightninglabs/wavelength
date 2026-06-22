@@ -707,6 +707,13 @@ type VTXOCreatedNotification struct {
 	// VTXOs are the ClientVTXOs created by this round.
 	VTXOs []*ClientVTXO
 
+	// Outflows are non-owned outputs paid by this client in the
+	// round, such as foreign directed-send recipient VTXOs and
+	// cooperative leave outputs. They are emitted as VTXOSentMsg
+	// rows separately from OperatorFeeSat so recipient value is
+	// not reported as an operator fee.
+	Outflows []RoundLedgerOutflow
+
 	// RoundID identifies the round that created these VTXOs.
 	RoundID string
 
@@ -729,6 +736,24 @@ type VTXOCreatedNotification struct {
 	// total_fees_paid_sat reflects the real operator fee instead
 	// of underreporting.
 	OperatorFeeSat int64
+
+	// OperatorFeeType is the ledger fee type to use for
+	// OperatorFeeSat. Empty means the notification predates fee
+	// typing and should be treated as a refresh fee by the
+	// emitter.
+	OperatorFeeType string
+}
+
+// RoundLedgerOutflow describes value this client paid out in a round
+// without receiving a locally owned VTXO for the same output.
+type RoundLedgerOutflow struct {
+	// AmountSat is the output amount in satoshis.
+	AmountSat int64
+
+	// IdempotencyKey is unique within the round and lets the
+	// ledger actor persist multiple recipient/leave outflows
+	// without colliding on the round-level idempotency index.
+	IdempotencyKey []byte
 }
 
 // MessageType returns the message type identifier for logging and debugging.

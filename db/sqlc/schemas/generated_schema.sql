@@ -286,7 +286,8 @@ CREATE UNIQUE INDEX idx_client_ledger_idempotent_key
 
 CREATE UNIQUE INDEX idx_client_ledger_idempotent_round
     ON ledger_entries(round_id, event_type, debit_account, credit_account)
-    WHERE round_id IS NOT NULL;
+    WHERE round_id IS NOT NULL
+      AND idempotency_key IS NULL;
 
 CREATE UNIQUE INDEX idx_client_ledger_idempotent_session
     ON ledger_entries(session_id, event_type, debit_account, credit_account)

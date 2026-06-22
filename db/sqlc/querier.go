@@ -52,6 +52,7 @@ type Querier interface {
 	GetBoardingSweepByInput(ctx context.Context, arg GetBoardingSweepByInputParams) (BoardingSweep, error)
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
 	GetClientAccountBalance(ctx context.Context, accountID string) (int64, error)
+	GetClientLedgerStats(ctx context.Context) (GetClientLedgerStatsRow, error)
 	GetClientTreeByTxid(ctx context.Context, txid []byte) (RoundClientTree, error)
 	GetClientTreeTxidInfo(ctx context.Context, txid []byte) (ClientTreeTxid, error)
 	GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxidsParams) ([]GetClientTreeTxidsRow, error)
@@ -150,9 +151,11 @@ type Querier interface {
 	ListBoardingSweepInputs(ctx context.Context, txid []byte) ([]BoardingSweepInput, error)
 	ListBoardingSweeps(ctx context.Context, arg ListBoardingSweepsParams) ([]BoardingSweep, error)
 	ListChainInfo(ctx context.Context) ([]ChainInfo, error)
+	ListClientAccountBalances(ctx context.Context) ([]ListClientAccountBalancesRow, error)
 	ListClientAccounts(ctx context.Context) ([]Account, error)
 	ListClientLedgerEntries(ctx context.Context, arg ListClientLedgerEntriesParams) ([]LedgerEntry, error)
 	ListClientLedgerEntriesByType(ctx context.Context, arg ListClientLedgerEntriesByTypeParams) ([]LedgerEntry, error)
+	ListClientLedgerEventTotals(ctx context.Context) ([]ListClientLedgerEventTotalsRow, error)
 	// ListLiveVTXOAncestryPaths returns every ancestry row whose parent VTXO
 	// is non-terminal, mirroring the filter on ListLiveVTXOs. Used as a
 	// single batched companion query so descriptor materialization across

@@ -259,7 +259,7 @@ func TestHandleFeePaidOnchainSweep(t *testing.T) {
 	entries := store.getEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, AccountOnchainFees, entries[0].DebitAccount)
-	require.Equal(t, AccountWalletBalance, entries[0].CreditAccount)
+	require.Equal(t, AccountWalletClearing, entries[0].CreditAccount)
 	require.Equal(t, int64(444), entries[0].AmountSat)
 	require.Equal(t, EventBoardingSweepFeePaid, entries[0].EventType)
 
@@ -986,9 +986,9 @@ func TestExitIdempotencyKeyDistinguishesOutputs(t *testing.T) {
 // TestHandleExitCostInvalidAmounts verifies non-positive inputs
 // are rejected. The table covers the three distinct invalid
 // shapes: zero amount (caller forgot the VTXO value), zero fee
-// (caller emits before the chain resolver knows the miner fee --
-// this is the exact poison-pill the vtxo.emitExitCost no-op
-// guards against in the producer), and both-zero.
+// (caller emits before the final sweep cost is known -- this is
+// the exact poison-pill the vtxo.emitExitCost no-op guards
+// against), and both-zero.
 func TestHandleExitCostInvalidAmounts(t *testing.T) {
 	t.Parallel()
 

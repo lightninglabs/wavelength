@@ -38,6 +38,26 @@ func (q *Queries) GetClientAccountBalance(ctx context.Context, accountID string)
 	return balance, err
 }
 
+const GetClientLedgerStats = `-- name: GetClientLedgerStats :one
+SELECT CAST(COUNT(*) AS BIGINT) AS entry_count,
+       CAST(COALESCE(MIN(created_at), 0) AS BIGINT) AS first_created_at,
+       CAST(COALESCE(MAX(created_at), 0) AS BIGINT) AS last_created_at
+FROM ledger_entries
+`
+
+type GetClientLedgerStatsRow struct {
+	EntryCount     int64
+	FirstCreatedAt int64
+	LastCreatedAt  int64
+}
+
+func (q *Queries) GetClientLedgerStats(ctx context.Context) (GetClientLedgerStatsRow, error) {
+	row := q.db.QueryRowContext(ctx, GetClientLedgerStats)
+	var i GetClientLedgerStatsRow
+	err := row.Scan(&i.EntryCount, &i.FirstCreatedAt, &i.LastCreatedAt)
+	return i, err
+}
+
 const GetTotalOperatorFeesPaid = `-- name: GetTotalOperatorFeesPaid :one
 SELECT CAST(COALESCE(SUM(amount_sat), 0) AS BIGINT) AS total_fees
 FROM ledger_entries
@@ -112,6 +132,60 @@ func (q *Queries) InsertClientLedgerEntry(ctx context.Context, arg InsertClientL
 		arg.ConfirmationHeight,
 	)
 	return err
+}
+
+const ListClientAccountBalances = `-- name: ListClientAccountBalances :many
+SELECT a.account_id,
+       a.account_name,
+       a.account_type,
+       CAST(COALESCE(SUM(
+           CASE
+               WHEN le.debit_account = a.account_id THEN le.amount_sat
+               WHEN le.credit_account = a.account_id THEN -le.amount_sat
+               ELSE CAST(0 AS BIGINT)
+           END
+       ), 0) AS BIGINT) AS balance_sat
+FROM accounts AS a
+LEFT JOIN ledger_entries AS le
+    ON le.debit_account = a.account_id
+    OR le.credit_account = a.account_id
+GROUP BY a.account_id, a.account_name, a.account_type
+ORDER BY a.account_id
+`
+
+type ListClientAccountBalancesRow struct {
+	AccountID   string
+	AccountName string
+	AccountType string
+	BalanceSat  int64
+}
+
+func (q *Queries) ListClientAccountBalances(ctx context.Context) ([]ListClientAccountBalancesRow, error) {
+	rows, err := q.db.QueryContext(ctx, ListClientAccountBalances)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListClientAccountBalancesRow
+	for rows.Next() {
+		var i ListClientAccountBalancesRow
+		if err := rows.Scan(
+			&i.AccountID,
+			&i.AccountName,
+			&i.AccountType,
+			&i.BalanceSat,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const ListClientAccounts = `-- name: ListClientAccounts :many
@@ -236,6 +310,44 @@ func (q *Queries) ListClientLedgerEntriesByType(ctx context.Context, arg ListCli
 			&i.ChainVout,
 			&i.ConfirmationHeight,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListClientLedgerEventTotals = `-- name: ListClientLedgerEventTotals :many
+SELECT event_type,
+       CAST(COUNT(*) AS BIGINT) AS entry_count,
+       CAST(COALESCE(SUM(amount_sat), 0) AS BIGINT) AS total_sat
+FROM ledger_entries
+GROUP BY event_type
+ORDER BY event_type
+`
+
+type ListClientLedgerEventTotalsRow struct {
+	EventType  string
+	EntryCount int64
+	TotalSat   int64
+}
+
+func (q *Queries) ListClientLedgerEventTotals(ctx context.Context) ([]ListClientLedgerEventTotalsRow, error) {
+	rows, err := q.db.QueryContext(ctx, ListClientLedgerEventTotals)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListClientLedgerEventTotalsRow
+	for rows.Next() {
+		var i ListClientLedgerEventTotalsRow
+		if err := rows.Scan(&i.EventType, &i.EntryCount, &i.TotalSat); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
