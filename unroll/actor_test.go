@@ -22,6 +22,7 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/txconfirm"
@@ -2660,7 +2661,11 @@ func TestBuildSweepTxFallsBackWithoutFeeEstimate(t *testing.T) {
 func TestSweepConfirmationCompletesActor(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
-	unrollActor, _, txconfirmRef, store := newActorHarness(t, proof, desc)
+	unrollActor, beh, txconfirmRef, store := newActorHarness(t, proof, desc)
+	ledgerSink := actor.NewChannelTellOnlyRef[ledger.LedgerMsg](
+		"unroll-ledger", 2,
+	)
+	beh.cfg.LedgerSink = fn.Some[ledger.Sink](ledgerSink)
 
 	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
 		Height:  100,
@@ -2681,7 +2686,8 @@ func TestSweepConfirmationCompletesActor(t *testing.T) {
 		return txconfirmRef.requestCount() == 3
 	}, testTimeout, 10*time.Millisecond)
 
-	sweepTxid := txconfirmRef.lastRequest(t).Tx.TxHash()
+	sweepTx := txconfirmRef.lastRequest(t).Tx
+	sweepTxid := sweepTx.TxHash()
 	txconfirmRef.emitConfirmed(t, 2, sweepTxid, 105)
 
 	require.Eventually(t, func() bool {
@@ -2700,6 +2706,31 @@ func TestSweepConfirmationCompletesActor(t *testing.T) {
 	)
 	require.True(t, checkpoint.State.Sweep.ConfirmHeight.IsSome())
 
+	ledgerMsg, ok := ledgerSink.AwaitMessage(testTimeout)
+	require.True(t, ok)
+	exitCostMsg, ok := ledgerMsg.(*ledger.ExitCostMsg)
+	require.True(t, ok)
+
+	targetOutput, err := proof.TargetOutput()
+	require.NoError(t, err)
+
+	sweepOutputValue := int64(0)
+	for _, txOut := range sweepTx.TxOut {
+		sweepOutputValue += txOut.Value
+	}
+	require.Equal(
+		t, [32]byte(proof.TargetOutpoint().Hash),
+		exitCostMsg.OutpointHash,
+	)
+	require.Equal(
+		t, proof.TargetOutpoint().Index, exitCostMsg.OutpointIndex,
+	)
+	require.Equal(t, targetOutput.Value, exitCostMsg.AmountSat)
+	require.Equal(
+		t, targetOutput.Value-sweepOutputValue, exitCostMsg.ExitCostSat,
+	)
+	require.Equal(t, uint32(105), exitCostMsg.BlockHeight)
+
 	// Late chain notifications can be queued behind the terminal
 	// transition while the registry is draining the actor for cleanup.
 	// They should ack as idempotent no-ops instead of retrying forever
@@ -2714,6 +2745,9 @@ func TestSweepConfirmationCompletesActor(t *testing.T) {
 		Height:   106,
 		NumConfs: 1,
 	})
+
+	_, ok = ledgerSink.AwaitMessage(25 * time.Millisecond)
+	require.False(t, ok)
 }
 
 // TestGetStateAfterFSMShutdownKeepsCompletedCheckpoint verifies that callers

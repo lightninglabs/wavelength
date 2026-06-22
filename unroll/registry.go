@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/txconfirm"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -120,6 +121,10 @@ type RegistryConfig struct {
 
 	// Wallet provides sweep destination derivation and signing.
 	Wallet SweepWallet
+
+	// LedgerSink receives confirmed exit-cost events from child unroll
+	// actors.
+	LedgerSink fn.Option[ledger.Sink]
 
 	// Log is an optional logger.
 	Log fn.Option[btclog.Logger]
@@ -1435,6 +1440,7 @@ func (r *registryBehavior) childConfig(target wire.OutPoint) Config {
 		TxConfirmRef:                r.cfg.TxConfirmRef,
 		ChainSource:                 r.cfg.ChainSource,
 		Wallet:                      r.cfg.Wallet,
+		LedgerSink:                  r.cfg.LedgerSink,
 		Log:                         r.cfg.Log,
 		MaxSweepFeeRateSatPerVByte:  r.cfg.MaxSweepFeeRateSatPerVByte,
 		ExitSpendPolicyResolver:     r.cfg.ExitSpendPolicyResolver,

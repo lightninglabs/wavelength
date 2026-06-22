@@ -86,10 +86,9 @@ type ManagerConfig struct {
 	ForfeitVTXOActorAskTimeout time.Duration
 
 	// LedgerSink is an optional reference to the client-side
-	// ledger accounting actor, propagated to each spawned
-	// VTXOActor so unilateral exits can record their on-chain
-	// fee + send-leg pair. When None, accounting emission is
-	// silently skipped.
+	// ledger accounting actor, propagated to each spawned VTXOActor.
+	// Confirmed unilateral-exit costs are emitted by unroll once the
+	// final sweep confirms.
 	LedgerSink fn.Option[ledger.Sink]
 
 	// RefreshFeeQuoter is propagated to each spawned VTXOActor so
