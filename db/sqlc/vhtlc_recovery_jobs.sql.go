@@ -219,63 +219,6 @@ func (q *Queries) GetVHTLCRecoveryJobByRequestID(ctx context.Context, requestID 
 	return i, err
 }
 
-const GetVHTLCRecoveryJobBySwapAction = `-- name: GetVHTLCRecoveryJobBySwapAction :one
-SELECT id, request_id, swap_id, direction, action, state, vtxo_txid, vtxo_vout, vtxo_amount_sat, sender_pubkey, receiver_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, preimage_hash, claim_preimage, signer_key_family, signer_key_index, destination_script, max_fee_rate_sat_per_kw, unroll_target_outpoint_hash, unroll_target_outpoint_index, exit_policy_kind, exit_tx, exit_txid, cooperative_txid, last_error, cancel_reason, created_at, updated_at, armed_at, escalated_at, target_detected_at, exit_tx_built_at, exit_tx_broadcast_at, terminal_at FROM vhtlc_recovery_jobs
-WHERE swap_id = $1
-  AND action = $2
-`
-
-type GetVHTLCRecoveryJobBySwapActionParams struct {
-	SwapID []byte
-	Action string
-}
-
-func (q *Queries) GetVHTLCRecoveryJobBySwapAction(ctx context.Context, arg GetVHTLCRecoveryJobBySwapActionParams) (VhtlcRecoveryJob, error) {
-	row := q.db.QueryRowContext(ctx, GetVHTLCRecoveryJobBySwapAction, arg.SwapID, arg.Action)
-	var i VhtlcRecoveryJob
-	err := row.Scan(
-		&i.ID,
-		&i.RequestID,
-		&i.SwapID,
-		&i.Direction,
-		&i.Action,
-		&i.State,
-		&i.VtxoTxid,
-		&i.VtxoVout,
-		&i.VtxoAmountSat,
-		&i.SenderPubkey,
-		&i.ReceiverPubkey,
-		&i.ServerPubkey,
-		&i.RefundLocktime,
-		&i.UnilateralClaimDelay,
-		&i.UnilateralRefundDelay,
-		&i.UnilateralRefundWithoutReceiverDelay,
-		&i.PreimageHash,
-		&i.ClaimPreimage,
-		&i.SignerKeyFamily,
-		&i.SignerKeyIndex,
-		&i.DestinationScript,
-		&i.MaxFeeRateSatPerKw,
-		&i.UnrollTargetOutpointHash,
-		&i.UnrollTargetOutpointIndex,
-		&i.ExitPolicyKind,
-		&i.ExitTx,
-		&i.ExitTxid,
-		&i.CooperativeTxid,
-		&i.LastError,
-		&i.CancelReason,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.ArmedAt,
-		&i.EscalatedAt,
-		&i.TargetDetectedAt,
-		&i.ExitTxBuiltAt,
-		&i.ExitTxBroadcastAt,
-		&i.TerminalAt,
-	)
-	return i, err
-}
-
 const InsertVHTLCRecoveryJob = `-- name: InsertVHTLCRecoveryJob :exec
 
 INSERT INTO vhtlc_recovery_jobs (
@@ -426,6 +369,80 @@ ORDER BY updated_at DESC, created_at DESC
 
 func (q *Queries) ListVHTLCRecoveryJobs(ctx context.Context) ([]VhtlcRecoveryJob, error) {
 	rows, err := q.db.QueryContext(ctx, ListVHTLCRecoveryJobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []VhtlcRecoveryJob
+	for rows.Next() {
+		var i VhtlcRecoveryJob
+		if err := rows.Scan(
+			&i.ID,
+			&i.RequestID,
+			&i.SwapID,
+			&i.Direction,
+			&i.Action,
+			&i.State,
+			&i.VtxoTxid,
+			&i.VtxoVout,
+			&i.VtxoAmountSat,
+			&i.SenderPubkey,
+			&i.ReceiverPubkey,
+			&i.ServerPubkey,
+			&i.RefundLocktime,
+			&i.UnilateralClaimDelay,
+			&i.UnilateralRefundDelay,
+			&i.UnilateralRefundWithoutReceiverDelay,
+			&i.PreimageHash,
+			&i.ClaimPreimage,
+			&i.SignerKeyFamily,
+			&i.SignerKeyIndex,
+			&i.DestinationScript,
+			&i.MaxFeeRateSatPerKw,
+			&i.UnrollTargetOutpointHash,
+			&i.UnrollTargetOutpointIndex,
+			&i.ExitPolicyKind,
+			&i.ExitTx,
+			&i.ExitTxid,
+			&i.CooperativeTxid,
+			&i.LastError,
+			&i.CancelReason,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ArmedAt,
+			&i.EscalatedAt,
+			&i.TargetDetectedAt,
+			&i.ExitTxBuiltAt,
+			&i.ExitTxBroadcastAt,
+			&i.TerminalAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListVHTLCRecoveryJobsBySwapAction = `-- name: ListVHTLCRecoveryJobsBySwapAction :many
+SELECT id, request_id, swap_id, direction, action, state, vtxo_txid, vtxo_vout, vtxo_amount_sat, sender_pubkey, receiver_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, preimage_hash, claim_preimage, signer_key_family, signer_key_index, destination_script, max_fee_rate_sat_per_kw, unroll_target_outpoint_hash, unroll_target_outpoint_index, exit_policy_kind, exit_tx, exit_txid, cooperative_txid, last_error, cancel_reason, created_at, updated_at, armed_at, escalated_at, target_detected_at, exit_tx_built_at, exit_tx_broadcast_at, terminal_at FROM vhtlc_recovery_jobs
+WHERE swap_id = $1
+  AND action = $2
+ORDER BY updated_at DESC, created_at DESC
+`
+
+type ListVHTLCRecoveryJobsBySwapActionParams struct {
+	SwapID []byte
+	Action string
+}
+
+func (q *Queries) ListVHTLCRecoveryJobsBySwapAction(ctx context.Context, arg ListVHTLCRecoveryJobsBySwapActionParams) ([]VhtlcRecoveryJob, error) {
+	rows, err := q.db.QueryContext(ctx, ListVHTLCRecoveryJobsBySwapAction, arg.SwapID, arg.Action)
 	if err != nil {
 		return nil, err
 	}

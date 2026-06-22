@@ -74,6 +74,41 @@ func TestCancelVHTLCRecoveryMissingIsIdempotent(t *testing.T) {
 	require.Nil(t, resp.GetStatus())
 }
 
+// TestRecoveryPolicyTemplateRoundTrip verifies that recovery target
+// materialization can reconstruct the semantic vHTLC policy needed by custom
+// refresh from the durable recovery tuple.
+func TestRecoveryPolicyTemplateRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	policy, preimage, senderPriv, receiverPriv, serverPriv :=
+		testVHTLCPolicyFixture(t)
+	expected, err := policy.Template.Encode()
+	require.NoError(t, err)
+
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
+
+	preimageHash := preimage.Hash()
+	got, err := recoveryPolicyTemplate(vhtlcrecovery.RecoveryJob{
+		SenderPubkey: cloneRPCBytes(
+			senderPriv.PubKey().SerializeCompressed(),
+		),
+		ReceiverPubkey: cloneRPCBytes(
+			receiverPriv.PubKey().SerializeCompressed(),
+		),
+		ServerPubkey: cloneRPCBytes(
+			serverPriv.PubKey().SerializeCompressed(),
+		),
+		RefundLocktime:                       144,
+		UnilateralClaimDelay:                 10,
+		UnilateralRefundDelay:                20,
+		UnilateralRefundWithoutReceiverDelay: 30,
+		PreimageHash:                         preimageHash[:],
+	}, pkScript)
+	require.NoError(t, err)
+	require.Equal(t, expected, got)
+}
+
 type missingRecoveryStore struct{}
 
 func (missingRecoveryStore) ArmRecovery(context.Context,

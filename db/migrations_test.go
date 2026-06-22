@@ -8,11 +8,14 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btclog/v2"
 	admigration "github.com/lightninglabs/darepo-client/db/actordelivery/migrations"
 	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -89,6 +92,46 @@ func TestMigrationDowngrade(t *testing.T) {
 	// less than the current version. This simulates downgrading.
 	err := db.ExecuteMigrations(TargetLatest, WithLatestVersion(0))
 	require.ErrorIs(t, err, dbmigrate.ErrMigrationDowngrade)
+}
+
+func TestVHTLCRecoveryGenerationDownMigrationKeepsNewest(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	sqlDB := NewTestDBWithVersion(t, 20)
+	store := NewStore(
+		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), btclog.Disabled,
+	)
+	testClock := clock.NewTestClock(time.Unix(1_700_001_000, 0))
+	recoveryStore := NewVHTLCRecoveryStore(store, testClock)
+
+	first := sampleVHTLCRecoveryJob("recovery-a", "request-a")
+	_, _, err := recoveryStore.ArmRecovery(ctx, first)
+	require.NoError(t, err)
+
+	testClock.SetTime(testClock.Now().Add(time.Second))
+	second := sampleVHTLCRecoveryJob("recovery-b", "request-b")
+	second.VTXOOutpoint.Hash = chainhash.Hash{0x22}
+	second.VTXOOutpoint.Index++
+	_, _, err = recoveryStore.ArmRecovery(ctx, second)
+	require.NoError(t, err)
+
+	err = sqlDB.ExecuteMigrations(TargetVersion(19))
+	require.NoError(t, err)
+
+	var count int
+	err = sqlDB.QueryRowContext(
+		ctx, `SELECT COUNT(*) FROM vhtlc_recovery_jobs`,
+	).Scan(&count)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+
+	var id string
+	err = sqlDB.QueryRowContext(
+		ctx, `SELECT id FROM vhtlc_recovery_jobs`,
+	).Scan(&id)
+	require.NoError(t, err)
+	require.Equal(t, second.ID, id)
 }
 
 // findDBBackupFilePath walks the directory of the given database file path and

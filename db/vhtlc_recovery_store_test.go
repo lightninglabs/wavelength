@@ -59,7 +59,7 @@ func TestVHTLCRecoveryStoreArmIdempotent(t *testing.T) {
 	require.ErrorIs(t, err, ErrVHTLCRecoveryIdempotencyConflict)
 }
 
-func TestVHTLCRecoveryStoreRejectsDuplicateSwapActionMismatch(t *testing.T) {
+func TestVHTLCRecoveryStoreSeparatesSwapActionByVTXO(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -79,6 +79,19 @@ func TestVHTLCRecoveryStoreRejectsDuplicateSwapActionMismatch(t *testing.T) {
 
 	_, _, err = store.ArmRecovery(ctx, second)
 	require.ErrorIs(t, err, ErrVHTLCRecoveryIdempotencyConflict)
+
+	refreshed := first
+	refreshed.ID = "recovery-c"
+	refreshed.RequestID = "request-c"
+	refreshed.VTXOOutpoint.Index++
+	refreshed.VTXOAmountSat--
+	refreshed.DestinationScript = []byte{0x51}
+
+	stored, created, err := store.ArmRecovery(ctx, refreshed)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, refreshed.ID, stored.ID)
+	require.Equal(t, refreshed.VTXOOutpoint, stored.VTXOOutpoint)
 }
 
 func TestVHTLCRecoveryStoreRejectsActionPolicyMismatch(t *testing.T) {

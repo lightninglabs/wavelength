@@ -23,10 +23,11 @@ WHERE id = $1;
 SELECT * FROM vhtlc_recovery_jobs
 WHERE request_id = $1;
 
--- name: GetVHTLCRecoveryJobBySwapAction :one
+-- name: ListVHTLCRecoveryJobsBySwapAction :many
 SELECT * FROM vhtlc_recovery_jobs
 WHERE swap_id = $1
-  AND action = $2;
+  AND action = $2
+ORDER BY updated_at DESC, created_at DESC;
 
 -- name: ListNonTerminalVHTLCRecoveryJobs :many
 SELECT * FROM vhtlc_recovery_jobs
