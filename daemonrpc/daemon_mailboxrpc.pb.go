@@ -50,6 +50,8 @@ type DaemonServiceMailboxServer interface {
 	ReceiveAuthECDH(ctx context.Context, req *ReceiveAuthECDHRequest) (*ReceiveAuthECDHResponse, error)
 	// GetIndexedVTXOByPkScript handles GetIndexedVTXOByPkScript.
 	GetIndexedVTXOByPkScript(ctx context.Context, req *GetIndexedVTXOByPkScriptRequest) (*GetIndexedVTXOByPkScriptResponse, error)
+	// GetVTXOExpiryInfo handles GetVTXOExpiryInfo.
+	GetVTXOExpiryInfo(ctx context.Context, req *GetVTXOExpiryInfoRequest) (*GetVTXOExpiryInfoResponse, error)
 	// GetIndexedOORSessionByTxid handles GetIndexedOORSessionByTxid.
 	GetIndexedOORSessionByTxid(ctx context.Context, req *GetIndexedOORSessionByTxidRequest) (*GetIndexedOORSessionByTxidResponse, error)
 	// SendVTXO handles SendVTXO.
@@ -60,8 +62,16 @@ type DaemonServiceMailboxServer interface {
 	PrepareOOR(ctx context.Context, req *PrepareOORRequest) (*PrepareOORResponse, error)
 	// SignOORCustomInput handles SignOORCustomInput.
 	SignOORCustomInput(ctx context.Context, req *SignOORCustomInputRequest) (*SignOORCustomInputResponse, error)
+	// SignVTXOForfeit handles SignVTXOForfeit.
+	SignVTXOForfeit(ctx context.Context, req *SignVTXOForfeitRequest) (*SignVTXOForfeitResponse, error)
 	// RefreshVTXOs handles RefreshVTXOs.
 	RefreshVTXOs(ctx context.Context, req *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
+	// RefreshCustomVTXOs handles RefreshCustomVTXOs.
+	RefreshCustomVTXOs(ctx context.Context, req *RefreshCustomVTXOsRequest) (*RefreshCustomVTXOsResponse, error)
+	// ListPendingForfeitParticipantSignatureRequests handles ListPendingForfeitParticipantSignatureRequests.
+	ListPendingForfeitParticipantSignatureRequests(ctx context.Context, req *ListPendingForfeitParticipantSignatureRequestsRequest) (*ListPendingForfeitParticipantSignatureRequestsResponse, error)
+	// SubmitForfeitParticipantSignatures handles SubmitForfeitParticipantSignatures.
+	SubmitForfeitParticipantSignatures(ctx context.Context, req *SubmitForfeitParticipantSignaturesRequest) (*SubmitForfeitParticipantSignaturesResponse, error)
 	// LeaveVTXOs handles LeaveVTXOs.
 	LeaveVTXOs(ctx context.Context, req *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error)
 	// SendOnChain handles SendOnChain.
@@ -238,6 +248,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 
 		return impl.GetIndexedVTXOByPkScript(ctx, req)
 	})
+	r.Handle("daemonrpc.DaemonService", "GetVTXOExpiryInfo", func() proto.Message {
+		return &GetVTXOExpiryInfoRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetVTXOExpiryInfoRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetVTXOExpiryInfo(ctx, req)
+	})
 	r.Handle("daemonrpc.DaemonService", "GetIndexedOORSessionByTxid", func() proto.Message {
 		return &GetIndexedOORSessionByTxidRequest{}
 	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
@@ -288,6 +308,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 
 		return impl.SignOORCustomInput(ctx, req)
 	})
+	r.Handle("daemonrpc.DaemonService", "SignVTXOForfeit", func() proto.Message {
+		return &SignVTXOForfeitRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SignVTXOForfeitRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SignVTXOForfeit(ctx, req)
+	})
 	r.Handle("daemonrpc.DaemonService", "RefreshVTXOs", func() proto.Message {
 		return &RefreshVTXOsRequest{}
 	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
@@ -297,6 +327,36 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.RefreshVTXOs(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "RefreshCustomVTXOs", func() proto.Message {
+		return &RefreshCustomVTXOsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*RefreshCustomVTXOsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.RefreshCustomVTXOs(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ListPendingForfeitParticipantSignatureRequests", func() proto.Message {
+		return &ListPendingForfeitParticipantSignatureRequestsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListPendingForfeitParticipantSignatureRequestsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListPendingForfeitParticipantSignatureRequests(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "SubmitForfeitParticipantSignatures", func() proto.Message {
+		return &SubmitForfeitParticipantSignaturesRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SubmitForfeitParticipantSignaturesRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SubmitForfeitParticipantSignatures(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "LeaveVTXOs", func() proto.Message {
 		return &LeaveVTXOsRequest{}
@@ -809,6 +869,29 @@ func (c *DaemonServiceMailboxClient) GetIndexedVTXOByPkScript(ctx context.Contex
 	return resp, nil
 }
 
+// GetVTXOExpiryInfo calls the GetVTXOExpiryInfo RPC.
+func (c *DaemonServiceMailboxClient) GetVTXOExpiryInfo(ctx context.Context, req *GetVTXOExpiryInfoRequest, opts ...rpc.RPCOptions) (*GetVTXOExpiryInfoResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetVTXOExpiryInfo",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetVTXOExpiryInfoResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
 // GetIndexedOORSessionByTxid calls the GetIndexedOORSessionByTxid RPC.
 func (c *DaemonServiceMailboxClient) GetIndexedOORSessionByTxid(ctx context.Context, req *GetIndexedOORSessionByTxidRequest, opts ...rpc.RPCOptions) (*GetIndexedOORSessionByTxidResponse, error) {
 	var opt rpc.RPCOptions
@@ -924,6 +1007,29 @@ func (c *DaemonServiceMailboxClient) SignOORCustomInput(ctx context.Context, req
 	return resp, nil
 }
 
+// SignVTXOForfeit calls the SignVTXOForfeit RPC.
+func (c *DaemonServiceMailboxClient) SignVTXOForfeit(ctx context.Context, req *SignVTXOForfeitRequest, opts ...rpc.RPCOptions) (*SignVTXOForfeitResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SignVTXOForfeit",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SignVTXOForfeitResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
 // RefreshVTXOs calls the RefreshVTXOs RPC.
 func (c *DaemonServiceMailboxClient) RefreshVTXOs(ctx context.Context, req *RefreshVTXOsRequest, opts ...rpc.RPCOptions) (*RefreshVTXOsResponse, error) {
 	var opt rpc.RPCOptions
@@ -940,6 +1046,75 @@ func (c *DaemonServiceMailboxClient) RefreshVTXOs(ctx context.Context, req *Refr
 	}
 
 	resp := new(RefreshVTXOsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// RefreshCustomVTXOs calls the RefreshCustomVTXOs RPC.
+func (c *DaemonServiceMailboxClient) RefreshCustomVTXOs(ctx context.Context, req *RefreshCustomVTXOsRequest, opts ...rpc.RPCOptions) (*RefreshCustomVTXOsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "RefreshCustomVTXOs",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(RefreshCustomVTXOsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListPendingForfeitParticipantSignatureRequests calls the ListPendingForfeitParticipantSignatureRequests RPC.
+func (c *DaemonServiceMailboxClient) ListPendingForfeitParticipantSignatureRequests(ctx context.Context, req *ListPendingForfeitParticipantSignatureRequestsRequest, opts ...rpc.RPCOptions) (*ListPendingForfeitParticipantSignatureRequestsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ListPendingForfeitParticipantSignatureRequests",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListPendingForfeitParticipantSignatureRequestsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SubmitForfeitParticipantSignatures calls the SubmitForfeitParticipantSignatures RPC.
+func (c *DaemonServiceMailboxClient) SubmitForfeitParticipantSignatures(ctx context.Context, req *SubmitForfeitParticipantSignaturesRequest, opts ...rpc.RPCOptions) (*SubmitForfeitParticipantSignaturesResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SubmitForfeitParticipantSignatures",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SubmitForfeitParticipantSignaturesResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

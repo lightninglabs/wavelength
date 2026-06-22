@@ -42,6 +42,9 @@ http:
     - selector: daemonrpc.DaemonService.GetIndexedVTXOByPkScript
       post: /v1/daemon/get-indexed-vtxo-by-pk-script
       body: "*"
+    - selector: daemonrpc.DaemonService.GetVTXOExpiryInfo
+      post: /v1/daemon/get-vtxo-expiry-info
+      body: "*"
     - selector: daemonrpc.DaemonService.GetIndexedOORSessionByTxid
       post: /v1/daemon/get-indexed-oor-session-by-txid
       body: "*"
@@ -57,8 +60,20 @@ http:
     - selector: daemonrpc.DaemonService.SignOORCustomInput
       post: /v1/daemon/sign-oor-custom-input
       body: "*"
+    - selector: daemonrpc.DaemonService.SignVTXOForfeit
+      post: /v1/daemon/sign-vtxo-forfeit
+      body: "*"
     - selector: daemonrpc.DaemonService.RefreshVTXOs
       post: /v1/daemon/refresh-vtxos
+      body: "*"
+    - selector: daemonrpc.DaemonService.RefreshCustomVTXOs
+      post: /v1/daemon/refresh-custom-vtxos
+      body: "*"
+    - selector: daemonrpc.DaemonService.ListPendingForfeitParticipantSignatureRequests
+      post: /v1/daemon/list-pending-forfeit-participant-signature-requests
+      body: "*"
+    - selector: daemonrpc.DaemonService.SubmitForfeitParticipantSignatures
+      post: /v1/daemon/submit-forfeit-participant-signatures
       body: "*"
     - selector: daemonrpc.DaemonService.LeaveVTXOs
       post: /v1/daemon/leave-vtxos

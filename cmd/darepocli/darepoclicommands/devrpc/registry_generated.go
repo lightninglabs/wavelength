@@ -108,6 +108,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "GetIndexedVTXOByPkScript queries the authoritative indexer for the\nfirst VTXO matching the given script and status filter.",
 				},
 				{
+					Name:     "GetVTXOExpiryInfo",
+					Aliases:  []string{"get-vtxo-expiry-info"},
+					Input:    "daemonrpc.GetVTXOExpiryInfoRequest",
+					Output:   "daemonrpc.GetVTXOExpiryInfoResponse",
+					Comments: "GetVTXOExpiryInfo returns the wallet/VTXO layer's expiry posture for a\nVTXO identified by outpoint or pkScript.",
+				},
+				{
 					Name:     "GetIndexedOORSessionByTxid",
 					Aliases:  []string{"get-indexed-oor-session-by-txid"},
 					Input:    "daemonrpc.GetIndexedOORSessionByTxidRequest",
@@ -143,11 +150,39 @@ func generatedRegistry() []serviceSpec {
 					Comments: "SignOORCustomInput signs one prepared custom OOR checkpoint input with\nthe daemon identity key.",
 				},
 				{
+					Name:     "SignVTXOForfeit",
+					Aliases:  []string{"sign-vtxo-forfeit"},
+					Input:    "daemonrpc.SignVTXOForfeitRequest",
+					Output:   "daemonrpc.SignVTXOForfeitResponse",
+					Comments: "SignVTXOForfeit signs the VTXO input of an exact forfeit transaction\nwith the daemon identity key after a round has assigned the connector\ninput. This is a low-level signing primitive; callers must enforce any\nswap-specific authorization before invoking it.",
+				},
+				{
 					Name:     "RefreshVTXOs",
 					Aliases:  []string{"refresh-vtxos"},
 					Input:    "daemonrpc.RefreshVTXOsRequest",
 					Output:   "daemonrpc.RefreshVTXOsResponse",
 					Comments: "RefreshVTXOs queues one or more VTXOs for refresh in the next\nround. This extends their expiry without changing ownership.",
+				},
+				{
+					Name:     "RefreshCustomVTXOs",
+					Aliases:  []string{"refresh-custom-vtxos"},
+					Input:    "daemonrpc.RefreshCustomVTXOsRequest",
+					Output:   "daemonrpc.RefreshCustomVTXOsResponse",
+					Comments: "RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for\nrefresh in the next round. Unlike RefreshVTXOs, this does not require\nthe inputs to be wallet-managed live VTXOs; callers provide the policy,\nproof/auth spend path, and forfeit spend path explicitly.\n\nThis RPC only queues the old VTXO and the replacement output. It cannot\ncollect every participant signature yet because the round has not\nassigned the connector output, so the final forfeit transaction does not\nexist. If a queued input needs a non-daemon participant signature, the\ndaemon exposes that exact connector-bound transcript later through\nListPendingForfeitParticipantSignatureRequests.",
+				},
+				{
+					Name:     "ListPendingForfeitParticipantSignatureRequests",
+					Aliases:  []string{"list-pending-forfeit-participant-signature-requests"},
+					Input:    "daemonrpc.ListPendingForfeitParticipantSignatureRequestsRequest",
+					Output:   "daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse",
+					Comments: "ListPendingForfeitParticipantSignatureRequests returns exact\nconnector-bound forfeit signing requests emitted by custom refresh\ninputs whose policies require signatures from external participants.\nCallers poll this endpoint, validate the full transcript, sign the VTXO\ninput with the participant key they control, and submit the result with\nSubmitForfeitParticipantSignatures.",
+				},
+				{
+					Name:     "SubmitForfeitParticipantSignatures",
+					Aliases:  []string{"submit-forfeit-participant-signatures"},
+					Input:    "daemonrpc.SubmitForfeitParticipantSignaturesRequest",
+					Output:   "daemonrpc.SubmitForfeitParticipantSignaturesResponse",
+					Comments: "SubmitForfeitParticipantSignatures supplies external participant\nsignatures for one pending connector-bound forfeit signing request. The\nrequest_id must be copied from the listed pending request; the daemon\nuses it to wake the blocked VTXO actor that is waiting for that exact\nround-assigned forfeit transaction. If the selected spend path requires\nno external participant keys after removing the local VTXO key and the\noperator key, callers may submit an empty signature set to acknowledge\nand unblock the request.",
 				},
 				{
 					Name:     "LeaveVTXOs",

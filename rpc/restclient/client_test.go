@@ -66,6 +66,39 @@ func TestDaemonClientPost(t *testing.T) {
 	require.True(t, sawMetadata)
 }
 
+// TestDaemonClientGetVTXOExpiryInfoPost verifies the VTXO expiry RPC uses the
+// grpc-gateway route exposed by daemon.yaml.
+func TestDaemonClientGetVTXOExpiryInfoPost(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			require.Equal(
+				t, "/v1/daemon/get-vtxo-expiry-info",
+				r.URL.Path,
+			)
+
+			w.Header().Set("Content-Type", "application/json")
+			_, err := w.Write([]byte(
+				`{"found":true,` +
+					`"expiryInfo":{"status":` +
+					`"VTXO_EXPIRY_STATUS_SAFE"}}`,
+			))
+			require.NoError(t, err)
+		},
+	))
+	defer server.Close()
+
+	client := NewDaemonServiceClient(server.URL)
+	resp, err := client.GetVTXOExpiryInfo(
+		t.Context(), &daemonrpc.GetVTXOExpiryInfoRequest{},
+	)
+	require.NoError(t, err)
+	require.True(t, resp.GetFound())
+	require.Equal(
+		t, daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_SAFE,
+		resp.GetExpiryInfo().GetStatus(),
+	)
+}
+
 func TestNewDefaultsSchemelessRemoteToHTTPS(t *testing.T) {
 	t.Parallel()
 

@@ -70,6 +70,11 @@ service DaemonService {
     rpc GetIndexedVTXOByPkScript (GetIndexedVTXOByPkScriptRequest)
         returns (GetIndexedVTXOByPkScriptResponse);
 
+    // GetVTXOExpiryInfo returns the wallet/VTXO layer's expiry posture for a
+    // VTXO identified by outpoint or pkScript.
+    rpc GetVTXOExpiryInfo (GetVTXOExpiryInfoRequest)
+        returns (GetVTXOExpiryInfoResponse);
+
     // GetIndexedOORSessionByTxid queries the authoritative indexer for one
     // OOR session using a spent script proof and deterministic session txid.
     rpc GetIndexedOORSessionByTxid (GetIndexedOORSessionByTxidRequest)
@@ -94,9 +99,52 @@ service DaemonService {
     rpc SignOORCustomInput (SignOORCustomInputRequest)
         returns (SignOORCustomInputResponse);
 
+    // SignVTXOForfeit signs the VTXO input of an exact forfeit transaction
+    // with the daemon identity key after a round has assigned the connector
+    // input. This is a low-level signing primitive; callers must enforce any
+    // swap-specific authorization before invoking it.
+    rpc SignVTXOForfeit (SignVTXOForfeitRequest)
+        returns (SignVTXOForfeitResponse);
+
     // RefreshVTXOs queues one or more VTXOs for refresh in the next
     // round. This extends their expiry without changing ownership.
     rpc RefreshVTXOs (RefreshVTXOsRequest) returns (RefreshVTXOsResponse);
+
+    // RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for
+    // refresh in the next round. Unlike RefreshVTXOs, this does not require
+    // the inputs to be wallet-managed live VTXOs; callers provide the policy,
+    // proof/auth spend path, and forfeit spend path explicitly.
+    //
+    // This RPC only queues the old VTXO and the replacement output. It cannot
+    // collect every participant signature yet because the round has not
+    // assigned the connector output, so the final forfeit transaction does not
+    // exist. If a queued input needs a non-daemon participant signature, the
+    // daemon exposes that exact connector-bound transcript later through
+    // ListPendingForfeitParticipantSignatureRequests.
+    rpc RefreshCustomVTXOs (RefreshCustomVTXOsRequest)
+        returns (RefreshCustomVTXOsResponse);
+
+    // ListPendingForfeitParticipantSignatureRequests returns exact
+    // connector-bound forfeit signing requests emitted by custom refresh
+    // inputs whose policies require signatures from external participants.
+    // Callers poll this endpoint, validate the full transcript, sign the VTXO
+    // input with the participant key they control, and submit the result with
+    // SubmitForfeitParticipantSignatures.
+    rpc ListPendingForfeitParticipantSignatureRequests (
+        ListPendingForfeitParticipantSignatureRequestsRequest)
+        returns (ListPendingForfeitParticipantSignatureRequestsResponse);
+
+    // SubmitForfeitParticipantSignatures supplies external participant
+    // signatures for one pending connector-bound forfeit signing request. The
+    // request_id must be copied from the listed pending request; the daemon
+    // uses it to wake the blocked VTXO actor that is waiting for that exact
+    // round-assigned forfeit transaction. If the selected spend path requires
+    // no external participant keys after removing the local VTXO key and the
+    // operator key, callers may submit an empty signature set to acknowledge
+    // and unblock the request.
+    rpc SubmitForfeitParticipantSignatures (
+        SubmitForfeitParticipantSignaturesRequest)
+        returns (SubmitForfeitParticipantSignaturesResponse);
 
     // LeaveVTXOs queues one or more VTXOs for cooperative leave
     // (offboard) in the next round. Each VTXO is forfeited and the
@@ -534,6 +582,66 @@ enum VTXOStatus {
     VTXO_STATUS_PENDING_ROUND = 9;
 }
 
+// VTXOExpiryStatus describes how close a VTXO is to batch expiry using the
+// daemon's wallet/VTXO expiry policy.
+enum VTXOExpiryStatus {
+    // VTXO_EXPIRY_STATUS_UNKNOWN is returned when the daemon cannot
+    // classify the VTXO, for example because timing metadata is missing.
+    VTXO_EXPIRY_STATUS_UNKNOWN = 0;
+
+    // VTXO_EXPIRY_STATUS_SAFE indicates the VTXO is outside the refresh
+    // threshold.
+    VTXO_EXPIRY_STATUS_SAFE = 1;
+
+    // VTXO_EXPIRY_STATUS_NEEDS_REFRESH indicates the VTXO has entered the
+    // cooperative refresh window but is not yet critical.
+    VTXO_EXPIRY_STATUS_NEEDS_REFRESH = 2;
+
+    // VTXO_EXPIRY_STATUS_CRITICAL indicates the VTXO should stop waiting for
+    // cooperative refresh and move to unilateral exit/recovery handling.
+    VTXO_EXPIRY_STATUS_CRITICAL = 3;
+
+    // VTXO_EXPIRY_STATUS_EXPIRED indicates the VTXO's batch expiry has
+    // passed.
+    VTXO_EXPIRY_STATUS_EXPIRED = 4;
+}
+
+// VTXOExpiryInfo reports the thresholds and current classification the
+// wallet/VTXO layer uses for expiry monitoring.
+message VTXOExpiryInfo {
+    // status is the VTXO's current expiry posture.
+    VTXOExpiryStatus status = 1;
+
+    // current_height is the chain height used for this classification.
+    int32 current_height = 2;
+
+    // batch_expiry is the VTXO batch expiry height.
+    int32 batch_expiry = 3;
+
+    // blocks_remaining is batch_expiry - current_height.
+    int32 blocks_remaining = 4;
+
+    // refresh_threshold_blocks is the number of blocks before batch expiry at
+    // which cooperative refresh should begin.
+    int32 refresh_threshold_blocks = 5;
+
+    // critical_threshold_blocks is the number of blocks before batch expiry at
+    // which recovery/unilateral-exit handling should begin.
+    int32 critical_threshold_blocks = 6;
+
+    // relative_expiry is the CSV delay used in the threshold calculation.
+    uint32 relative_expiry = 7;
+
+    // max_tree_depth is the worst-case VTXO tree depth used in the threshold
+    // calculation.
+    uint32 max_tree_depth = 8;
+
+    // chain_depth is the number of OOR checkpoint hops between this VTXO and
+    // the most recent on-chain commitment. It is included for diagnostics but
+    // is distinct from max_tree_depth.
+    uint32 chain_depth = 9;
+}
+
 message VTXO {
     // outpoint is the VTXO's outpoint in "txid:index" format.
     string outpoint = 1;
@@ -578,6 +686,10 @@ message VTXO {
     // spent_by_txid is the hex-encoded Ark/OOR transaction txid that spent
     // this VTXO through an out-of-round package, when known.
     string spent_by_txid = 12;
+
+    // expiry_info reports the wallet/VTXO layer's current expiry posture for
+    // this VTXO when the daemon has enough timing context to classify it.
+    VTXOExpiryInfo expiry_info = 13;
 }
 
 message ListVTXOsRequest {
@@ -706,6 +818,44 @@ message GetIndexedVTXOByPkScriptRequest {
 message GetIndexedVTXOByPkScriptResponse {
     // vtxo is the first matching VTXO, when found.
     VTXO vtxo = 1;
+}
+
+// GetVTXOExpiryInfoRequest identifies one VTXO whose expiry posture should be
+// classified by the daemon's wallet/VTXO expiry policy.
+message GetVTXOExpiryInfoRequest {
+    // target selects whether the daemon should resolve the VTXO from the local
+    // wallet store by outpoint or from the authoritative indexer by pkScript.
+    oneof target {
+        // outpoint identifies a locally known VTXO in "txid:index" format.
+        string outpoint = 1;
+
+        // pk_script queries the authoritative indexer for a matching VTXO.
+        bytes pk_script = 2;
+    }
+
+    // status_filter restricts pk_script lookups to matching lifecycle states.
+    // Empty pk_script filters default to VTXO_STATUS_LIVE so refreshed VTXOs
+    // are resolved from the active replacement instead of older spent or
+    // forfeited generations. The field is ignored for outpoint lookups.
+    repeated VTXOStatus status_filter = 3;
+
+    // current_height overrides the chain height used for classification. If
+    // zero, the daemon uses its current best chain height.
+    int32 current_height = 4;
+}
+
+// GetVTXOExpiryInfoResponse returns the VTXO matched by the request together
+// with the expiry posture calculated from the daemon's authoritative metadata.
+message GetVTXOExpiryInfoResponse {
+    // found reports whether the daemon found a VTXO for the request target.
+    bool found = 1;
+
+    // expiry_info is present when found is true and the VTXO had enough timing
+    // metadata to classify.
+    VTXOExpiryInfo expiry_info = 2;
+
+    // vtxo is the VTXO used for classification when found.
+    VTXO vtxo = 3;
 }
 
 message GetIndexedOORSessionByTxidRequest {
@@ -923,6 +1073,111 @@ message SignOORCustomInputResponse {
     TaprootScriptSignature signature = 1;
 }
 
+message SignVTXOForfeitRequest {
+    // vtxo_outpoint identifies the VTXO input at forfeit tx input index 0.
+    string vtxo_outpoint = 1;
+
+    // vtxo_amount_sat is the value of the VTXO output being spent.
+    int64 vtxo_amount_sat = 2;
+
+    // vtxo_pk_script is the taproot output script of the VTXO being spent.
+    bytes vtxo_pk_script = 3;
+
+    // vtxo_policy_template is the semantic policy template that produced the
+    // VTXO taproot output.
+    bytes vtxo_policy_template = 4;
+
+    // spend_path is the encoded tapscript path selected for the VTXO input.
+    bytes spend_path = 5;
+
+    // unsigned_forfeit_tx is the exact serialized forfeit transaction to sign.
+    bytes unsigned_forfeit_tx = 6;
+
+    // connector_outpoint identifies the connector input at forfeit tx input
+    // index 1.
+    string connector_outpoint = 7;
+
+    // connector_amount_sat is the value of the connector output being spent.
+    int64 connector_amount_sat = 8;
+
+    // connector_pk_script is the connector output script being spent.
+    bytes connector_pk_script = 9;
+
+    // server_forfeit_pk_script is the expected penalty output script at output
+    // index 0.
+    bytes server_forfeit_pk_script = 10;
+}
+
+message SignVTXOForfeitResponse {
+    // pubkey is the daemon identity public key that produced signature.
+    bytes pubkey = 1;
+
+    // signature is the raw 64-byte Schnorr signature for the VTXO input.
+    bytes signature = 2;
+}
+
+// ForfeitSigningRoute tells the daemon how to resolve a later
+// connector-bound participant signature request for a custom VTXO refresh.
+//
+// RefreshCustomVTXOs validates and queues caller-supplied VTXOs before the
+// round assigns connector outputs. The exact forfeit transaction is therefore
+// not known at queue time. When the VTXO actor later receives the round's
+// connector-bound ForfeitRequest, it calls back into the daemon with the full
+// transcript. This enum controls where that callback is routed.
+//
+// End-to-end, the flow is:
+//
+//   1. A coordinator calls RefreshCustomVTXOs with a custom input, output, and
+//      ForfeitSigningContext.
+//   2. The wallet creates a temporary PendingForfeit actor for the old custom
+//      VTXO and joins the next round.
+//   3. The round assigns a connector output and sends the actor a concrete
+//      ForfeitRequest.
+//   4. The actor builds the exact forfeit transaction and asks the daemon for
+//      the participant signature selected by signing_route.
+//   5. LOCAL_SIGNER answers inside the daemon. PENDING_REQUEST publishes the
+//      transcript through ListPendingForfeitParticipantSignatureRequests and
+//      waits until SubmitForfeitParticipantSignatures supplies the signature.
+//
+// The values intentionally describe signature routing rather than swap
+// direction. Swap-in and swap-out are current users of this mechanism, but the
+// underlying object is just a custom-policy vHTLC that may have multiple
+// participants.
+enum ForfeitSigningRoute {
+    FORFEIT_SIGNING_ROUTE_UNSPECIFIED = 0;
+
+    // FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER means the daemon must answer the
+    // request synchronously with its configured local participant signer. This
+    // is used when the daemon hosts the participant that can sign the custom
+    // policy path locally. If no local signer is configured, signing fails
+    // instead of silently publishing an external pending request.
+    FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER = 1;
+
+    // FORFEIT_SIGNING_ROUTE_PENDING_REQUEST means the daemon must publish a
+    // PendingForfeitParticipantSignatureRequest and block the VTXO actor until
+    // an external participant submits signatures through
+    // SubmitForfeitParticipantSignatures. This is used when another process or
+    // peer owns one of the custom policy participant keys.
+    FORFEIT_SIGNING_ROUTE_PENDING_REQUEST = 2;
+}
+
+// ForfeitSigningContext links a caller-supplied custom refresh input back to
+// the protocol object that should answer later connector-bound signing
+// requests.
+message ForfeitSigningContext {
+    // payment_hash is an opaque 32-byte correlation id for the higher-level
+    // protocol object that owns the custom VTXO. Swap users set this to the
+    // swap payment hash, but the daemon does not interpret it as a payment.
+    // It is copied into PendingForfeitParticipantSignatureRequest so an
+    // external coordinator can map the request back to its own state machine.
+    bytes payment_hash = 1;
+
+    // signing_route tells the daemon whether the later connector-bound
+    // signature request should be answered by the daemon's local signer or by
+    // publishing a pending request for an external participant.
+    ForfeitSigningRoute signing_route = 2;
+}
+
 // OutpointSelection wraps a list of outpoint strings for use inside a
 // oneof field, since proto3 does not allow repeated fields directly in
 // a oneof.
@@ -952,6 +1207,178 @@ message RefreshVTXOsResponse {
 
     // status is the result: "queued" on success, "preview" on dry_run.
     string status = 2;
+}
+
+// CustomRefreshVTXOInput specifies one custom-policy VTXO input to refresh in
+// a round. The input can be outside the wallet-managed live VTXO set.
+message CustomRefreshVTXOInput {
+    // outpoint identifies the VTXO to refresh in "txid:vout" format.
+    string outpoint = 1;
+
+    // amount_sat is the VTXO value in satoshis.
+    int64 amount_sat = 2;
+
+    // pk_script is the taproot output script of the VTXO being refreshed.
+    bytes pk_script = 3;
+
+    // vtxo_policy_template is the semantic policy template that produced the
+    // input VTXO.
+    bytes vtxo_policy_template = 4;
+
+    // auth_spend_path is the encoded spend path used for local join
+    // authorization/proof of control.
+    bytes auth_spend_path = 5;
+
+    // forfeit_spend_path is the encoded operator-backed spend path used for
+    // the actual round forfeit transaction once the connector is assigned.
+    bytes forfeit_spend_path = 6;
+
+    // forfeit_signing_context, when set, tells the daemon how to route the
+    // later connector-bound participant signature request for this custom
+    // input. The route is only evaluated after the round assigns a connector
+    // and the exact forfeit transaction is known. Inputs whose forfeit path is
+    // fully signable by the daemon can use LOCAL_SIGNER. Inputs whose forfeit
+    // path needs another participant use PENDING_REQUEST and require an
+    // external SubmitForfeitParticipantSignatures call before the round can
+    // finish collecting forfeit transactions.
+    ForfeitSigningContext forfeit_signing_context = 7;
+}
+
+// CustomRefreshVTXOOutput specifies the replacement VTXO output created by a
+// custom refresh input.
+message CustomRefreshVTXOOutput {
+    // amount_sat is the requested replacement VTXO value in satoshis.
+    int64 amount_sat = 1;
+
+    // vtxo_policy_template is the semantic policy template for the
+    // replacement VTXO.
+    bytes vtxo_policy_template = 2;
+
+    // pk_script optionally pins the replacement output script. When supplied,
+    // it must match vtxo_policy_template.
+    bytes pk_script = 3;
+
+    // fixed_amount requires the refresh round quote to preserve amount_sat
+    // exactly. Contract outputs such as vHTLC replacements should set this so
+    // refresh fees cannot be paid by shrinking the replacement output.
+    bool fixed_amount = 4;
+}
+
+message RefreshCustomVTXOsRequest {
+    // inputs are the custom VTXOs to forfeit into the next round.
+    repeated CustomRefreshVTXOInput inputs = 1;
+
+    // outputs are the replacement VTXOs. The current API requires one output
+    // per input so swap sessions can map old outpoints to replacement outputs.
+    repeated CustomRefreshVTXOOutput outputs = 2;
+
+    // dry_run validates the request and returns the target outpoints without
+    // touching wallet or round actors.
+    bool dry_run = 3;
+}
+
+message RefreshCustomVTXOsResponse {
+    // queued_outpoints lists the custom input outpoints queued for refresh.
+    repeated string queued_outpoints = 1;
+
+    // status is the result: "queued" on success, "preview" on dry_run.
+    string status = 2;
+}
+
+// PendingForfeitParticipantSignatureRequest is the exact transcript an
+// external coordinator must validate for a custom refresh forfeit. If the
+// selected spend path includes an external participant key, the coordinator
+// must sign this transcript and submit the signature. If it only needs the
+// daemon-local key plus the operator key, the coordinator can submit an empty
+// signature set to authorize the request.
+message PendingForfeitParticipantSignatureRequest {
+    // request_id is a stable digest over this transcript. Submitters must echo
+    // it in SubmitForfeitParticipantSignatures so the daemon can wake the
+    // blocked VTXO actor waiting on this exact forfeit transaction.
+    bytes request_id = 1;
+
+    // sequence is a monotonically increasing in-memory cursor used by
+    // ListPendingForfeitParticipantSignatureRequests.
+    uint64 sequence = 2;
+
+    // payment_hash is copied from ForfeitSigningContext.payment_hash and lets
+    // the external coordinator find the protocol object that owns this custom
+    // VTXO.
+    bytes payment_hash = 3;
+
+    // signing_route is always FORFEIT_SIGNING_ROUTE_PENDING_REQUEST for
+    // requests returned by ListPendingForfeitParticipantSignatureRequests. It
+    // is included in the transcript and request id so external coordinators
+    // can reject requests that were routed through an unexpected path.
+    ForfeitSigningRoute signing_route = 4;
+
+    // vtxo_outpoint and the vtxo_* fields describe the old custom VTXO being
+    // forfeited.
+    string vtxo_outpoint = 5;
+    uint64 vtxo_amount_sat = 6;
+    bytes vtxo_pk_script = 7;
+    bytes vtxo_policy_template = 8;
+
+    // forfeit_spend_path is the encoded custom policy path that must be used
+    // for the VTXO input of unsigned_forfeit_tx.
+    bytes forfeit_spend_path = 9;
+
+    // unsigned_forfeit_tx is the exact transaction the external participant
+    // signs. It spends the custom VTXO and the assigned connector into the
+    // server forfeit output. The participant must sign the VTXO input, not the
+    // connector input; the operator/server signs the connector side.
+    bytes unsigned_forfeit_tx = 10;
+
+    // connector_* fields describe the round-assigned connector input that
+    // makes this forfeit transaction valid.
+    string connector_outpoint = 11;
+    uint64 connector_amount_sat = 12;
+    bytes connector_pk_script = 13;
+
+    // server_forfeit_pk_script is the output script receiving the forfeited
+    // value in unsigned_forfeit_tx.
+    bytes server_forfeit_pk_script = 14;
+}
+
+message ListPendingForfeitParticipantSignatureRequestsRequest {
+    // after_sequence returns requests with a larger sequence. Zero starts at
+    // the beginning of the daemon-local pending request stream.
+    uint64 after_sequence = 1;
+
+    // limit caps the number of returned requests. Zero uses a daemon default.
+    uint32 limit = 2;
+}
+
+message ListPendingForfeitParticipantSignatureRequestsResponse {
+    repeated PendingForfeitParticipantSignatureRequest requests = 1;
+    uint64 next_sequence = 2;
+}
+
+message ForfeitParticipantSignature {
+    // pubkey is the participant public key used in the selected forfeit spend
+    // path. The daemon matches signatures by public key when completing the
+    // VTXO input witness.
+    bytes pubkey = 1;
+
+    // signature is the raw Schnorr signature over unsigned_forfeit_tx's VTXO
+    // input under the request's forfeit spend path.
+    bytes signature = 2;
+}
+
+message SubmitForfeitParticipantSignaturesRequest {
+    // request_id identifies the pending connector-bound transcript being
+    // answered. It must match a request_id previously returned by
+    // ListPendingForfeitParticipantSignatureRequests.
+    bytes request_id = 1;
+
+    // signatures contains the external participant signatures needed by the
+    // custom policy path. It may be empty when the listed request's selected
+    // spend path needs no external keys after excluding the daemon-local VTXO
+    // key and the operator key. Extra or unknown keys are rejected.
+    repeated ForfeitParticipantSignature signatures = 2;
+}
+
+message SubmitForfeitParticipantSignaturesResponse {
 }
 
 // LeaveDestination describes where a single leave output should land.

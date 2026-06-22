@@ -213,6 +213,32 @@ func (c *SwapServiceClient) AcknowledgeOutSwapHtlc(ctx context.Context,
 	return out, err
 }
 
+// SignInSwapForfeit asks the swap server to sign an in-swap refresh forfeit.
+func (c *SwapServiceClient) SignInSwapForfeit(ctx context.Context,
+	in *swaprpc.SignInSwapForfeitRequest, _ ...grpc.CallOption) (
+	*swaprpc.SignInSwapForfeitResponse, error) {
+
+	out := new(swaprpc.SignInSwapForfeitResponse)
+	err := c.client.Post(ctx, "/v1/swap/sign-in-swap-forfeit", in, out)
+
+	return out, err
+}
+
+// SubmitOutSwapForfeitSignature submits an out-swap refresh participant
+// signature to the swap server.
+func (c *SwapServiceClient) SubmitOutSwapForfeitSignature(ctx context.Context,
+	in *swaprpc.SubmitOutSwapForfeitSignatureRequest,
+	_ ...grpc.CallOption) (*swaprpc.SubmitOutSwapForfeitSignatureResponse,
+	error) {
+
+	out := new(swaprpc.SubmitOutSwapForfeitSignatureResponse)
+	err := c.client.Post(
+		ctx, "/v1/swap/submit-out-swap-forfeit-signature", in, out,
+	)
+
+	return out, err
+}
+
 // NewDaemonServiceClient creates a DaemonService REST client.
 func NewDaemonServiceClient(addr string,
 	opts ...Option) daemonrpc.DaemonServiceClient {
@@ -382,6 +408,19 @@ func (c *DaemonServiceClient) GetIndexedVTXOByPkScript(ctx context.Context,
 	return out, err
 }
 
+// GetVTXOExpiryInfo classifies one VTXO's expiry posture.
+func (c *DaemonServiceClient) GetVTXOExpiryInfo(ctx context.Context,
+	in *daemonrpc.GetVTXOExpiryInfoRequest, _ ...grpc.CallOption) (
+	*daemonrpc.GetVTXOExpiryInfoResponse, error) {
+
+	out := new(daemonrpc.GetVTXOExpiryInfoResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/get-vtxo-expiry-info", in, out,
+	)
+
+	return out, err
+}
+
 // GetIndexedOORSessionByTxid looks up one indexed OOR session by txid.
 func (c *DaemonServiceClient) GetIndexedOORSessionByTxid(ctx context.Context,
 	in *daemonrpc.GetIndexedOORSessionByTxidRequest, _ ...grpc.CallOption) (
@@ -439,6 +478,17 @@ func (c *DaemonServiceClient) SignOORCustomInput(ctx context.Context,
 	return out, err
 }
 
+// SignVTXOForfeit signs one exact round forfeit transaction input.
+func (c *DaemonServiceClient) SignVTXOForfeit(ctx context.Context,
+	in *daemonrpc.SignVTXOForfeitRequest, _ ...grpc.CallOption) (
+	*daemonrpc.SignVTXOForfeitResponse, error) {
+
+	out := new(daemonrpc.SignVTXOForfeitResponse)
+	err := c.client.Post(ctx, "/v1/daemon/sign-vtxo-forfeit", in, out)
+
+	return out, err
+}
+
 // RefreshVTXOs queues VTXOs for refresh.
 func (c *DaemonServiceClient) RefreshVTXOs(ctx context.Context,
 	in *daemonrpc.RefreshVTXOsRequest, _ ...grpc.CallOption) (
@@ -446,6 +496,56 @@ func (c *DaemonServiceClient) RefreshVTXOs(ctx context.Context,
 
 	out := new(daemonrpc.RefreshVTXOsResponse)
 	err := c.client.Post(ctx, "/v1/daemon/refresh-vtxos", in, out)
+
+	return out, err
+}
+
+// RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for refresh.
+func (c *DaemonServiceClient) RefreshCustomVTXOs(ctx context.Context,
+	in *daemonrpc.RefreshCustomVTXOsRequest, _ ...grpc.CallOption) (
+	*daemonrpc.RefreshCustomVTXOsResponse, error) {
+
+	out := new(daemonrpc.RefreshCustomVTXOsResponse)
+	err := c.client.Post(ctx, "/v1/daemon/refresh-custom-vtxos", in, out)
+
+	return out, err
+}
+
+// ListPendingForfeitParticipantSignatureRequests lists pending custom-refresh
+// participant signature requests.
+func (c *DaemonServiceClient) ListPendingForfeitParticipantSignatureRequests(
+	ctx context.Context,
+	in *daemonrpc.ListPendingForfeitParticipantSignatureRequestsRequest,
+	_ ...grpc.CallOption) (
+	*daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse,
+	error) {
+
+	out := new(
+		daemonrpc.
+			ListPendingForfeitParticipantSignatureRequestsResponse,
+	)
+	path := "/v1/daemon/list-pending-forfeit-participant-" +
+		"signature-requests"
+	err := c.client.Post(
+		ctx, path, in, out,
+	)
+
+	return out, err
+}
+
+// SubmitForfeitParticipantSignatures supplies participant signatures for one
+// pending custom-refresh forfeit signature request.
+func (c *DaemonServiceClient) SubmitForfeitParticipantSignatures(
+	ctx context.Context,
+	in *daemonrpc.SubmitForfeitParticipantSignaturesRequest,
+	_ ...grpc.CallOption) (
+	*daemonrpc.SubmitForfeitParticipantSignaturesResponse, error) {
+
+	out := new(daemonrpc.SubmitForfeitParticipantSignaturesResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/submit-forfeit-participant-signatures", in,
+		out,
+	)
 
 	return out, err
 }
