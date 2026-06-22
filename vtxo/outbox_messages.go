@@ -5,6 +5,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/lib/types"
 )
 
 // VTXOOutMsg is a sealed interface for messages emitted via the FSM outbox.
@@ -105,6 +106,10 @@ type ForfeitSignatureSubmission struct {
 
 	// Signature is the client's schnorr signature for the forfeit tx.
 	Signature *schnorr.Signature
+
+	// ParticipantVTXOSigs carries keyed non-operator signatures for custom
+	// spend paths that require multiple client-side participants.
+	ParticipantVTXOSigs []*types.ForfeitParticipantSig
 
 	// SpendPath is the canonical arkscript spend path used for the VTXO
 	// input of the forfeit transaction.
