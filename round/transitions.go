@@ -3792,7 +3792,9 @@ func computeClientOperatorFee(intents Intents, ownedVTXOs []*ClientVTXO) int64 {
 // resulting rows are separate from operator fees so directed-send
 // recipient value and cooperative leave value remain visible in the
 // transfers_out account.
-func roundLedgerOutflows(intents Intents) []RoundLedgerOutflow {
+func roundLedgerOutflows(roundID RoundID,
+	intents Intents) []RoundLedgerOutflow {
+
 	var outflows []RoundLedgerOutflow
 
 	for i := range intents.VTXOs {
@@ -3808,7 +3810,7 @@ func roundLedgerOutflows(intents Intents) []RoundLedgerOutflow {
 
 		outflows = append(outflows, RoundLedgerOutflow{
 			AmountSat:      amt,
-			IdempotencyKey: roundOutflowKey("vtxo", i),
+			IdempotencyKey: roundOutflowKey(roundID, "vtxo", i),
 		})
 	}
 
@@ -3820,7 +3822,7 @@ func roundLedgerOutflows(intents Intents) []RoundLedgerOutflow {
 
 		outflows = append(outflows, RoundLedgerOutflow{
 			AmountSat:      amt,
-			IdempotencyKey: roundOutflowKey("leave", i),
+			IdempotencyKey: roundOutflowKey(roundID, "leave", i),
 		})
 	}
 
@@ -3829,8 +3831,11 @@ func roundLedgerOutflows(intents Intents) []RoundLedgerOutflow {
 
 // roundOutflowKey returns a deterministic per-round outflow key for
 // outputs that do not have a local VTXO outpoint.
-func roundOutflowKey(kind string, index int) []byte {
-	return []byte(fmt.Sprintf("round-outflow:%s:%d", kind, index))
+func roundOutflowKey(roundID RoundID, kind string, index int) []byte {
+	key := fmt.Sprintf("round-outflow:%s:%s:%d", roundID.String(), kind,
+		index)
+
+	return []byte(key)
 }
 
 // roundOperatorFeeType classifies a positive operator fee by the
@@ -4076,7 +4081,7 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 
 		operatorFee := computeClientOperatorFee(s.Intents, vtxos)
 		operatorFeeType := roundOperatorFeeType(s.Intents)
-		outflows := roundLedgerOutflows(s.Intents)
+		outflows := roundLedgerOutflows(s.RoundID, s.Intents)
 
 		// Build outbox messages starting with standard notifications.
 		outbox := make([]ClientOutMsg, 0, 2)

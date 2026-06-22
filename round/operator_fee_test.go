@@ -173,6 +173,51 @@ func TestComputeClientOperatorFeeDirectedSendWithChange(t *testing.T) {
 	)
 }
 
+// TestRoundLedgerOutflowKeysIncludeRoundID ensures keyed round outflows
+// remain unique across rounds. The ledger DB dedupes idempotency keys
+// globally, so output-index-only keys would silently suppress later
+// rounds with the same foreign VTXO or leave position.
+func TestRoundLedgerOutflowKeysIncludeRoundID(t *testing.T) {
+	t.Parallel()
+
+	intents := Intents{
+		VTXOs: []types.VTXORequest{
+			{
+				Amount: btcutil.Amount(10_000),
+			},
+		},
+		Leaves: []*types.LeaveRequest{
+			{
+				Output: &wire.TxOut{
+					Value: 5_000,
+				},
+			},
+		},
+	}
+	roundID1 := testRoundID("round-outflow-1")
+	roundID2 := testRoundID("round-outflow-2")
+
+	outflows1 := roundLedgerOutflows(roundID1, intents)
+	outflows2 := roundLedgerOutflows(roundID2, intents)
+
+	require.Len(t, outflows1, 2)
+	require.Len(t, outflows2, 2)
+	for i := range outflows1 {
+		require.Contains(
+			t, string(outflows1[i].IdempotencyKey),
+			roundID1.String(),
+		)
+		require.Contains(
+			t, string(outflows2[i].IdempotencyKey),
+			roundID2.String(),
+		)
+		require.NotEqual(
+			t, outflows1[i].IdempotencyKey,
+			outflows2[i].IdempotencyKey,
+		)
+	}
+}
+
 // TestComputeClientOperatorFeeZeroWhenNoContribution covers the
 // degenerate case of a round where this client contributed
 // nothing: a remote recipient-only slot. Fee is zero.

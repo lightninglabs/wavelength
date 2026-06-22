@@ -379,10 +379,9 @@ var zeroHash chainhash.Hash
 // index idx_client_ledger_idempotent_key and is swallowed by the
 // adapter's ON CONFLICT DO NOTHING.
 //
-// On-chain wallet side is intentionally not booked here: the
-// unroll path does not yet feed confirmed sweep fees back here, so
-// this handler covers VTXO-funded exit costs once a producer supplies
-// the confirmed cost.
+// On-chain wallet-side balance movement is intentionally not booked
+// here: this handler records the VTXO-funded exit value and confirmed
+// sweep cost supplied by the unroll path.
 func (a *LedgerActor) handleExitCost(ctx context.Context, msg *ExitCostMsg,
 	ax actor.Exec[ledgerTx]) fn.Result[LedgerResp] {
 
