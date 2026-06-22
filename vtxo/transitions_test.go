@@ -1,14 +1,18 @@
 package vtxo
 
 import (
+	"context"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
@@ -796,6 +800,174 @@ func TestForfeitRequestRealSigning(t *testing.T) {
 		t, submission.Signature.Serialize(), 64,
 		"signature should be 64 bytes",
 	)
+}
+
+// TestForfeitRequestCarriesParticipantSignature verifies that an explicit
+// spend path uses the keyed participant-signature carrier. This is the form
+// required by custom policies such as vHTLC refresh leaves, where the operator
+// must verify each non-operator signature against the key committed in the
+// policy template.
+func TestForfeitRequestCarriesParticipantSignature(t *testing.T) {
+	t.Parallel()
+
+	h := newRealVTXOSigningHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&LiveState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 100,
+	})
+
+	policy, err := arkscript.NewVTXOPolicy(
+		vtxo.ClientKey.PubKey, vtxo.OperatorKey, vtxo.RelativeExpiry,
+	)
+	require.NoError(t, err)
+	spendInfo, err := policy.CollabSpendInfo()
+	require.NoError(t, err)
+
+	connectorOutpoint := h.newTestOutpoint()
+	connectorOutput := h.newTestConnectorOutput()
+	serverForfeitScript := h.newServerForfeitScript()
+
+	externalPriv, externalPub := generateTestKeyPair(t)
+	var externalSig *schnorr.Signature
+
+	var hookCalled bool
+	h.env.ForfeitParticipantSigner = func(_ context.Context,
+		req *ForfeitParticipantSignRequest) (
+		[]*types.ForfeitParticipantSig, error) {
+
+		hookCalled = true
+		require.Equal(t, vtxo.Outpoint, req.VTXO.Outpoint)
+		require.Equal(t, connectorOutpoint, req.ConnectorOutpoint)
+		require.Equal(t, connectorOutput.Value, req.ConnectorAmount)
+		require.Equal(
+			t, connectorOutput.PkScript, req.ConnectorPkScript,
+		)
+		require.Equal(t, serverForfeitScript, req.ServerForfeitPkScript)
+		require.NotNil(t, req.ForfeitTx)
+
+		externalSig = signForfeitParticipantRequest(
+			t, req, externalPriv,
+		)
+
+		return []*types.ForfeitParticipantSig{{
+			PubKey:    externalPub,
+			Signature: externalSig,
+		}}, nil
+	}
+
+	evt := &round.ForfeitRequestEvent{
+		RoundID:               "round-participant-sig-001",
+		ConnectorOutpoint:     connectorOutpoint,
+		ConnectorPkScript:     connectorOutput.PkScript,
+		ConnectorAmount:       connectorOutput.Value,
+		ServerForfeitPkScript: serverForfeitScript,
+		ForfeitSpend: &arkscript.SpendPath{
+			SpendInfo: spendInfo,
+		},
+	}
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusForfeiting,
+	).Return(nil)
+
+	_, err = h.sendEvent(evt)
+	require.NoError(t, err)
+
+	submission := assertOutboxContainsReal[*ForfeitSignatureSubmission](h)
+	require.True(t, hookCalled)
+	require.Len(t, submission.ParticipantVTXOSigs, 2)
+	require.True(
+		t, submission.ParticipantVTXOSigs[0].PubKey.IsEqual(
+			externalPub,
+		),
+	)
+	require.Equal(
+		t, externalSig.Serialize(),
+		submission.ParticipantVTXOSigs[0].Signature.Serialize(),
+	)
+	require.True(
+		t, submission.ParticipantVTXOSigs[1].PubKey.IsEqual(
+			vtxo.ClientKey.PubKey,
+		),
+	)
+	require.Equal(
+		t, submission.Signature.Serialize(),
+		submission.ParticipantVTXOSigs[1].Signature.Serialize(),
+	)
+}
+
+// TestForfeitRequestRejectsInvalidParticipantSignature verifies that the VTXO
+// actor validates external participant signatures against the exact forfeit
+// transcript before emitting them to the round.
+func TestForfeitRequestRejectsInvalidParticipantSignature(t *testing.T) {
+	t.Parallel()
+
+	h := newRealVTXOSigningHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&LiveState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 100,
+	})
+
+	policy, err := arkscript.NewVTXOPolicy(
+		vtxo.ClientKey.PubKey, vtxo.OperatorKey, vtxo.RelativeExpiry,
+	)
+	require.NoError(t, err)
+	spendInfo, err := policy.CollabSpendInfo()
+	require.NoError(t, err)
+
+	externalPriv, externalPub := generateTestKeyPair(t)
+	connectorOutput := h.newTestConnectorOutput()
+	staleSig, err := schnorr.Sign(
+		externalPriv,
+		make([]byte, 32),
+	)
+	require.NoError(t, err)
+
+	h.env.ForfeitParticipantSigner = func(_ context.Context,
+		req *ForfeitParticipantSignRequest) (
+		[]*types.ForfeitParticipantSig, error) {
+
+		require.NotNil(t, req.ForfeitTx)
+
+		return []*types.ForfeitParticipantSig{{
+			PubKey:    externalPub,
+			Signature: staleSig,
+		}}, nil
+	}
+
+	evt := &round.ForfeitRequestEvent{
+		RoundID:               "round-participant-sig-invalid",
+		ConnectorOutpoint:     h.newTestOutpoint(),
+		ConnectorPkScript:     connectorOutput.PkScript,
+		ConnectorAmount:       connectorOutput.Value,
+		ServerForfeitPkScript: h.newServerForfeitScript(),
+		ForfeitSpend: &arkscript.SpendPath{
+			SpendInfo: spendInfo,
+		},
+	}
+
+	_, err = h.sendEvent(evt)
+	require.ErrorContains(t, err, "invalid participant signature")
+	require.Empty(t, h.outboxMessages)
+}
+
+func signForfeitParticipantRequest(t *testing.T,
+	req *ForfeitParticipantSignRequest,
+	priv *btcec.PrivateKey) *schnorr.Signature {
+
+	t.Helper()
+
+	sighash, err := forfeitParticipantSigHash(req)
+	require.NoError(t, err)
+
+	sig, err := schnorr.Sign(priv, sighash)
+	require.NoError(t, err)
+
+	return sig
 }
 
 // TestForfeitingStateCriticalExpiry verifies that ForfeitingState transitions

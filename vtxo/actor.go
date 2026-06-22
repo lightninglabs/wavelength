@@ -106,6 +106,12 @@ type VTXOActorConfig struct {
 	// refresh fails loudly rather than silently emitting against a
 	// stale key; the next expiry tick will retry.
 	FetchOperatorKey func(context.Context) (*btcec.PublicKey, error)
+
+	// ForfeitParticipantSigner, when set, obtains keyed signatures
+	// from non-local participants for custom VTXO policies. The hook is
+	// called after connector assignment, so signatures bind the exact
+	// forfeit transaction that will be submitted to the operator.
+	ForfeitParticipantSigner ForfeitParticipantSigner
 }
 
 // VTXOActor manages the lifecycle of a single VTXO. It processes events using
@@ -126,7 +132,7 @@ func NewVTXOActor(ctx context.Context, cfg *VTXOActorConfig) *VTXOActor {
 	actorID := fmt.Sprintf("vtxo.%s", cfg.VTXO.Outpoint.String())
 	env := NewVTXOEnvironment(
 		actorID, cfg.Store, cfg.Wallet, cfg.ExpiryConfig,
-		cfg.ChainParams,
+		cfg.ChainParams, cfg.ForfeitParticipantSigner,
 	)
 
 	logger := cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
@@ -449,11 +455,12 @@ func (a *VTXOActor) processOutbox(ctx context.Context,
 
 		case *ForfeitSignatureSubmission:
 			resp := &round.ForfeitSignatureResponse{
-				VTXOOutpoint: m.VTXOOutpoint,
-				RoundID:      m.RoundID,
-				ForfeitTx:    m.ForfeitTx,
-				Signature:    m.Signature,
-				SpendPath:    m.SpendPath,
+				VTXOOutpoint:        m.VTXOOutpoint,
+				RoundID:             m.RoundID,
+				ForfeitTx:           m.ForfeitTx,
+				Signature:           m.Signature,
+				ParticipantVTXOSigs: m.ParticipantVTXOSigs,
+				SpendPath:           m.SpendPath,
 			}
 
 			// Forfeit signatures are produced after an async
