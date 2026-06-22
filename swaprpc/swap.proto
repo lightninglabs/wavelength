@@ -46,6 +46,18 @@ service SwapService {
     // acknowledgement before funding the Ark vHTLC.
     rpc AcknowledgeOutSwapHtlc (AcknowledgeOutSwapHtlcRequest)
         returns (AcknowledgeOutSwapHtlcResponse);
+
+    // SignInSwapForfeit asks the swap server to sign its participant share for
+    // the exact connector-bound forfeit transaction of a funded in-swap vHTLC
+    // refresh.
+    rpc SignInSwapForfeit (SignInSwapForfeitRequest)
+        returns (SignInSwapForfeitResponse);
+
+    // SubmitOutSwapForfeitSignature submits the receiver's participant
+    // signature for a connector-bound out-swap vHTLC refresh request that was
+    // delivered through the receiver mailbox.
+    rpc SubmitOutSwapForfeitSignature (SubmitOutSwapForfeitSignatureRequest)
+        returns (SubmitOutSwapForfeitSignatureResponse);
 }
 
 // RequestChannelIdRequest starts one Lightning-to-Ark receive negotiation.
@@ -148,6 +160,11 @@ message SwapMailboxEvent {
         // in_ark_htlc is emitted when a same-Ark sender has funded or
         // accepted funding for a direct vHTLC.
         InArkHtlcEvent in_ark_htlc = 2;
+
+        // out_swap_forfeit_signature_request asks the receiver to sign its
+        // participant share for an exact connector-bound out-swap vHTLC
+        // refresh forfeit transaction.
+        OutSwapForfeitSignatureRequest out_swap_forfeit_signature_request = 3;
     }
 }
 
@@ -319,6 +336,83 @@ message AuthorizeInSwapRefundResponse {
     // failure_reason is the terminal Lightning payment failure that made the
     // refund safe to authorize.
     string failure_reason = 2;
+}
+
+// ForfeitSignaturePayload is the exact transcript one vHTLC refresh
+// participant signs after an Ark round assigns connector outputs.
+message ForfeitSignaturePayload {
+    // request_id is a stable idempotency key for this exact signing request.
+    bytes request_id = 1;
+
+    // payment_hash identifies the swap that owns the vHTLC.
+    bytes payment_hash = 2;
+
+    // vhtlc_outpoint is the vHTLC outpoint in "txid:vout" format.
+    string vhtlc_outpoint = 3;
+
+    // vhtlc_amount_sat is the value of the vHTLC output being forfeited.
+    uint64 vhtlc_amount_sat = 4;
+
+    // vhtlc_pk_script is the concrete taproot output script being spent.
+    bytes vhtlc_pk_script = 5;
+
+    // vhtlc_policy_template is the semantic vHTLC policy template.
+    bytes vhtlc_policy_template = 6;
+
+    // forfeit_spend_path is the serialized connector-backed vHTLC spend path.
+    bytes forfeit_spend_path = 7;
+
+    // unsigned_forfeit_tx is the exact serialized transaction to sign.
+    bytes unsigned_forfeit_tx = 8;
+
+    // connector_outpoint identifies the round connector input.
+    string connector_outpoint = 9;
+
+    // connector_amount_sat is the value of the connector output being spent.
+    uint64 connector_amount_sat = 10;
+
+    // connector_pk_script is the connector output script being spent.
+    bytes connector_pk_script = 11;
+
+    // server_forfeit_pk_script is the expected operator penalty output script.
+    bytes server_forfeit_pk_script = 12;
+}
+
+// ForfeitParticipantSignature carries one participant signature for the exact
+// transaction in ForfeitSignaturePayload.
+message ForfeitParticipantSignature {
+    // pubkey is the compressed public key that produced the signature.
+    bytes pubkey = 1;
+
+    // signature is the raw 64-byte Schnorr signature.
+    bytes signature = 2;
+}
+
+message SignInSwapForfeitRequest {
+    // payload is the exact transcript the server validates and signs.
+    ForfeitSignaturePayload payload = 1;
+}
+
+message SignInSwapForfeitResponse {
+    // signature is the swap server's participant signature.
+    ForfeitParticipantSignature signature = 1;
+}
+
+message OutSwapForfeitSignatureRequest {
+    // payload is the exact transcript the receiver must validate and sign.
+    ForfeitSignaturePayload payload = 1;
+}
+
+message SubmitOutSwapForfeitSignatureRequest {
+    // payload is echoed so the server can validate idempotency and the exact
+    // transcript the receiver signed.
+    ForfeitSignaturePayload payload = 1;
+
+    // signature is the receiver's participant signature.
+    ForfeitParticipantSignature signature = 2;
+}
+
+message SubmitOutSwapForfeitSignatureResponse {
 }
 
 // TaprootScriptSignature carries one externally produced tapscript signature.
