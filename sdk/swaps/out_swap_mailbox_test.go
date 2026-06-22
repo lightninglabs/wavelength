@@ -268,6 +268,90 @@ func TestMailboxOutSwapEventReceiverPullsInArkEvent(t *testing.T) {
 	require.Equal(t, uint64(13), edge.ackReq.GetCursor())
 }
 
+// TestMailboxOutSwapEventReceiverPullsForfeitSignatureRequest verifies that
+// out-swap refresh signing requests use the shared swap mailbox envelope and
+// surface a durable ack hook.
+func TestMailboxOutSwapEventReceiverPullsForfeitSignatureRequest(t *testing.T) {
+	t.Parallel()
+
+	receiverKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	hash := lntypes.Hash{7, 7, 7}
+	protoPayload := &swaprpc.ForfeitSignaturePayload{
+		RequestId:             []byte("request-id"),
+		PaymentHash:           hash[:],
+		VhtlcOutpoint:         "vhtlc:0",
+		VhtlcAmountSat:        42_000,
+		VhtlcPkScript:         []byte("vhtlc-pk-script"),
+		VhtlcPolicyTemplate:   []byte("policy"),
+		ForfeitSpendPath:      []byte("forfeit-path"),
+		UnsignedForfeitTx:     []byte("unsigned-tx"),
+		ConnectorOutpoint:     "connector:0",
+		ConnectorAmountSat:    330,
+		ConnectorPkScript:     []byte("connector-pk-script"),
+		ServerForfeitPkScript: []byte("server-forfeit-pk-script"),
+	}
+	body, err := anypb.New(&swaprpc.SwapMailboxEvent{
+		Event: &swaprpc.SwapMailboxEvent_OutSwapForfeitSignatureRequest{
+			OutSwapForfeitSignatureRequest: &swaprpc.
+				OutSwapForfeitSignatureRequest{
+				Payload: protoPayload,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	edge := &testOutSwapMailboxEdge{
+		pullResp: &mailboxpb.PullResponse{
+			Status: &mailboxpb.Status{
+				Ok: true,
+			},
+			NextCursor: 22,
+			Envelopes: []*mailboxpb.Envelope{{
+				Type:     outSwapMailboxEventType,
+				Body:     body,
+				EventSeq: 21,
+				Rpc: &mailboxpb.RpcMeta{
+					Kind: mailboxpb.
+						RpcMeta_KIND_EVENT,
+					Service: outSwapMailboxEventService,
+					Method:  outSwapMailboxEventMethod,
+				},
+			}},
+		},
+	}
+	receiver := NewMailboxOutSwapEventReceiver(edge, "")
+	receiver.pullWaitTimeout = time.Millisecond
+
+	notification, err := receiver.WaitOutSwapForfeitSignature(
+		t.Context(), hash, receiverKey.PubKey(),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, notification)
+	require.Equal(t, uint64(22), notification.AckCursor)
+	require.Equal(t, []byte("request-id"), notification.Payload.RequestID)
+	require.Equal(t, hash, notification.Payload.PaymentHash)
+	require.Equal(t, "vhtlc:0", notification.Payload.VHTLCOutpoint)
+	require.EqualValues(t, 42_000, notification.Payload.VHTLCAmountSat)
+	require.Equal(
+		t, []byte("server-forfeit-pk-script"),
+		notification.Payload.ServerForfeitPkScript,
+	)
+	require.Nil(t, edge.ackReq)
+
+	require.NoError(t, notification.Ack(t.Context()))
+	require.NotNil(t, edge.ackReq)
+	require.Equal(
+		t,
+		OutSwapMailboxID(
+			receiverKey.PubKey(), hash,
+		),
+		edge.ackReq.GetMailboxId(),
+	)
+	require.Equal(t, uint64(22), edge.ackReq.GetCursor())
+}
+
 // successfulOutSwapPullResp builds a one-envelope PullResponse carrying the
 // out-swap HTLC event matching paymentHash. Used by reconnect tests so each
 // case can wire its own scripted sequence of failures + this final success.
