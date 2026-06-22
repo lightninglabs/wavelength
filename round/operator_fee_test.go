@@ -136,13 +136,9 @@ func TestComputeClientOperatorFeeLeave(t *testing.T) {
 
 // TestComputeClientOperatorFeeDirectedSendWithChange covers the
 // directed-send-with-change case: the client forfeits one VTXO,
-// produces a recipient VTXO (foreign, skipped by
-// buildClientVTXOs), and keeps the change. From this client's
-// view the only owned output is the change VTXO, so the fee
-// absorbs the recipient value plus the operator cut. The
-// calculator does not know about the recipient VTXO because
-// buildClientVTXOs filtered it out before passing ownedVTXOs
-// to us -- this test pins that contract.
+// produces a recipient VTXO, keeps the change, and pays only the
+// operator cut as a fee. Recipient value is accounted separately as
+// a round outflow, so it must not be folded into OperatorFeeSat.
 func TestComputeClientOperatorFeeDirectedSendWithChange(t *testing.T) {
 	t.Parallel()
 
@@ -152,24 +148,21 @@ func TestComputeClientOperatorFeeDirectedSendWithChange(t *testing.T) {
 				Amount: btcutil.Amount(100_000),
 			},
 		},
-	}
-	// Only the client's own change VTXO: recipient's 40_000 is
-	// foreign and was filtered out by HasLocalOwner before the
-	// fee calculator sees it.
-	vtxos := []*ClientVTXO{
-		{
-			Amount: btcutil.Amount(59_500),
+		VTXOs: []types.VTXORequest{
+			{
+				Amount: btcutil.Amount(40_000),
+			},
+			{
+				Amount: btcutil.Amount(59_500),
+			},
 		},
 	}
 
-	// 100_000 - 59_500 = 40_500 "flowed out" of this client's
-	// side -- 40_000 to the recipient + 500 to the operator.
-	// The fee math can't distinguish the recipient portion; it
-	// surfaces the total client outflow. Caller responsibility
-	// (tracked in task follow-ups) is to emit a VTXOSentMsg for
-	// the recipient portion before reading this number.
+	// 100_000 - (40_000 recipient + 59_500 change) = 500
+	// operator fee. The 40_000 recipient value is emitted as a
+	// separate VTXOSentMsg by roundLedgerOutflows.
 	require.Equal(
-		t, int64(40_500), computeClientOperatorFee(intents, vtxos),
+		t, int64(500), computeClientOperatorFee(intents, nil),
 	)
 }
 

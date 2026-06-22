@@ -105,6 +105,19 @@ func (a *LedgerActor) handleFeePaid(ctx context.Context, msg *FeePaidMsg,
 		// idx_client_ledger_idempotent_key partial unique index.
 		// Round-keyed dedup is intentionally bypassed by setting
 		// roundID to nil below.
+		if len(msg.IdempotencyKey) != chainhash.HashSize {
+			return a.fail(
+				ctx, errMsg,
+				fmt.Errorf(
+					"%w: FeePaidMsg onchain-sweep "+
+						"idempotency_key must be %d "+
+						"bytes (got %d)",
+					ErrInvalidMessage, chainhash.HashSize,
+					len(msg.IdempotencyKey),
+				),
+			)
+		}
+
 		roundID = nil
 		idempotency = msg.IdempotencyKey
 		description = "boarding-sweep on-chain cost"

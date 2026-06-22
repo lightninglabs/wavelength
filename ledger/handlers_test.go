@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -291,6 +292,41 @@ func TestHandleFeePaidOnchainSweepRejectsZeroAmount(t *testing.T) {
 
 	err := run(ctx, a, msg)
 	require.ErrorIs(t, err, ErrInvalidMessage)
+}
+
+// TestHandleFeePaidOnchainSweepRejectsBadIdempotencyKey verifies that
+// sweep fee rows cannot bypass every ledger idempotency index. Onchain
+// sweep fees have no RoundID, so the sweep txid key is mandatory.
+func TestHandleFeePaidOnchainSweepRejectsBadIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	for _, key := range [][]byte{
+		nil,
+		{},
+		{
+			0x01,
+			0x02,
+		},
+		make([]byte, chainhash.HashSize+1),
+	} {
+		t.Run(fmt.Sprintf("len_%d", len(key)), func(t *testing.T) {
+			t.Parallel()
+
+			a, store := newTestActor(t)
+			ctx := t.Context()
+
+			msg := &FeePaidMsg{
+				AmountSat:      1_000,
+				FeeType:        FeeTypeOnchainSweep,
+				BlockHeight:    800_700,
+				IdempotencyKey: key,
+			}
+
+			err := run(ctx, a, msg)
+			require.ErrorIs(t, err, ErrInvalidMessage)
+			require.Empty(t, store.getEntries())
+		})
+	}
 }
 
 // TestHandleVTXOReceivedRoundBoarding verifies that a boarding
