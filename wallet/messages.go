@@ -3,10 +3,14 @@ package wallet
 import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // WalletMsg is the sealed interface for all messages that can be sent to the
@@ -387,6 +391,159 @@ func (m *RefreshVTXOsResponse) MessageType() string {
 
 // walletRespSealed implements the sealed WalletResp interface.
 func (m *RefreshVTXOsResponse) walletRespSealed() {}
+
+// CustomRefreshInput describes one caller-supplied custom-policy VTXO input
+// that should be forfeited into a new round output. The wallet does not select
+// it from live balance, but it does materialize a PendingForfeit signer actor
+// so the later connector-bound round request can collect the local signature.
+type CustomRefreshInput struct {
+	// Outpoint identifies the custom VTXO to refresh.
+	Outpoint wire.OutPoint
+
+	// Amount is the VTXO value in satoshis.
+	Amount btcutil.Amount
+
+	// PkScript is the script committed to by the custom VTXO.
+	PkScript []byte
+
+	// PolicyTemplate is the semantic custom VTXO policy template.
+	PolicyTemplate []byte
+
+	// ClientKey is the daemon identity key used for the local policy
+	// signature.
+	ClientKey keychain.KeyDescriptor
+
+	// OperatorKey is the Ark operator key committed to by the policy.
+	OperatorKey *btcec.PublicKey
+
+	// RelativeExpiry records the custom policy's CSV delay for the
+	// temporary signer descriptor.
+	RelativeExpiry uint32
+
+	// RoundID identifies the round lineage that created this custom
+	// VTXO. It is resolved from the authoritative indexer before the
+	// temporary signer descriptor is persisted.
+	RoundID string
+
+	// CommitmentTxID is the commitment tx anchoring this custom VTXO.
+	CommitmentTxID chainhash.Hash
+
+	// BatchExpiry is the absolute batch expiry height for the custom
+	// VTXO lineage.
+	BatchExpiry int32
+
+	// ChainDepth records how many OOR checkpoint hops separate this
+	// custom VTXO from its commitment tx.
+	ChainDepth int
+
+	// CreatedHeight records the block height where the commitment tx was
+	// confirmed.
+	CreatedHeight int32
+
+	// Ancestry carries the commitment-tree fragments needed for any later
+	// unilateral path.
+	Ancestry []types.Ancestry
+
+	// AuthSpend is the proof/auth spend path used for join authorization.
+	AuthSpend *arkscript.SpendPath
+
+	// ForfeitSpend is the operator-backed spend path used for the actual
+	// round forfeit transaction after connector assignment.
+	ForfeitSpend *arkscript.SpendPath
+}
+
+// CustomRefreshOutput describes the replacement VTXO requested for one custom
+// refresh input.
+type CustomRefreshOutput struct {
+	// Amount is the requested replacement VTXO value in satoshis.
+	Amount btcutil.Amount
+
+	// PolicyTemplate is the semantic policy template for the replacement
+	// VTXO.
+	PolicyTemplate []byte
+
+	// PkScript optionally pins the replacement VTXO script.
+	PkScript []byte
+
+	// FixedAmount requires the refresh round quote to preserve Amount
+	// exactly. This is for contract outputs, such as vHTLCs, where
+	// paying refresh fees by shrinking the replacement output is unsafe.
+	FixedAmount bool
+}
+
+// RefreshCustomVTXOsRequest queues custom-policy VTXOs for refresh in the next
+// round. The caller supplies every old-input and replacement-output detail, so
+// the wallet does not select wallet-owned live VTXOs. It still activates
+// temporary PendingForfeit signer actors for the old inputs.
+type RefreshCustomVTXOsRequest struct {
+	actor.BaseMessage
+
+	// Inputs are the custom VTXOs to forfeit.
+	Inputs []CustomRefreshInput
+
+	// Outputs are the replacement VTXOs. The current API expects one
+	// output per input.
+	Outputs []CustomRefreshOutput
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *RefreshCustomVTXOsRequest) MessageType() string {
+	return "RefreshCustomVTXOsRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *RefreshCustomVTXOsRequest) walletMsgSealed() {}
+
+// RefreshCustomVTXOsResponse indicates the result of a custom refresh request.
+type RefreshCustomVTXOsResponse struct {
+	actor.BaseMessage
+
+	// RefreshingCount is the number of custom VTXOs queued for refresh.
+	RefreshingCount int
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *RefreshCustomVTXOsResponse) MessageType() string {
+	return "RefreshCustomVTXOsResponse"
+}
+
+// walletRespSealed implements the sealed WalletResp interface.
+func (m *RefreshCustomVTXOsResponse) walletRespSealed() {}
+
+// DropCustomRefreshVTXOsRequest asks the wallet to remove temporary
+// PendingForfeit signer actors that were activated for a custom refresh
+// package whose round registration did not start.
+type DropCustomRefreshVTXOsRequest struct {
+	actor.BaseMessage
+
+	// Outpoints identifies the custom refresh inputs to drop.
+	Outpoints []wire.OutPoint
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *DropCustomRefreshVTXOsRequest) MessageType() string {
+	return "DropCustomRefreshVTXOsRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *DropCustomRefreshVTXOsRequest) walletMsgSealed() {}
+
+// DropCustomRefreshVTXOsResponse reports how many temporary custom refresh
+// signer actors were removed.
+type DropCustomRefreshVTXOsResponse struct {
+	actor.BaseMessage
+
+	// DroppedCount is the number of custom refresh inputs removed.
+	DroppedCount int
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *DropCustomRefreshVTXOsResponse) MessageType() string {
+	return "DropCustomRefreshVTXOsResponse"
+}
+
+// walletRespSealed implements the sealed WalletResp interface.
+func (m *DropCustomRefreshVTXOsResponse) walletRespSealed() {}
 
 // SelectAndLockVTXOsRequest asks the wallet actor to select VTXOs covering a
 // target amount and atomically lock them to prevent double-spends. The locked
