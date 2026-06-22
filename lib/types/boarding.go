@@ -146,15 +146,21 @@ type ForfeitRequest struct {
 	// remains the source of truth.
 	Amount btcutil.Amount
 
-	// AuthSpend is the unilateral proof/auth spend path used locally for
-	// join-auth when settling a custom-script output into a round. This is
-	// local-only metadata and is not serialized onto the join-round wire.
+	// AuthSpend is the unilateral proof/auth spend path used for join-auth
+	// when settling a custom-script output into a round. Standard wallet
+	// VTXOs leave this nil and let the operator load the canonical
+	// path from the VTXO registry. Custom VTXOs serialize it onto the
+	// join-round wire so the operator can validate the caller-provided
+	// path.
 	AuthSpend *arkscript.SpendPath
 
 	// ForfeitSpend is the operator-backed spend path used locally
 	// to build the actual round forfeit transaction for a
-	// custom-script output. This is local-only metadata and is
-	// not serialized onto the join-round wire.
+	// custom-script output. Standard wallet VTXOs leave this nil and
+	// let the operator derive the path from the registered VTXO
+	// descriptor. Custom
+	// VTXOs serialize it onto the join-round wire so the operator can build
+	// the exact connector-bound forfeit request later.
 	ForfeitSpend *arkscript.SpendPath
 }
 
@@ -240,6 +246,12 @@ type VTXORequest struct {
 	// IsChange marks this request as the intent's designated
 	// fee-bearing change output.
 	IsChange bool
+
+	// FixedAmount requires the operator quote to preserve Amount exactly.
+	// It is used for contract outputs where shrinking the replacement
+	// output would invalidate the higher-level protocol. A fixed single
+	// output is not eligible for the implicit-change exception.
+	FixedAmount bool
 
 	// PolicyTemplate is the semantic arkscript policy for the requested
 	// output. This is the authoritative join-round representation.
@@ -351,11 +363,28 @@ type ForfeitTxSig struct {
 	// ClientVTXOSig is the client's schnorr signature for the VTXO input
 	ClientVTXOSig *schnorr.Signature
 
+	// ParticipantVTXOSigs carries tapscript signatures from all
+	// non-operator participants that must authorize the selected
+	// spend path. Standard VTXO forfeits need only ClientVTXOSig;
+	// custom policies such as vHTLC refund-style paths may require
+	// multiple client-side signatures for one forfeited VTXO.
+	ParticipantVTXOSigs []*ForfeitParticipantSig
+
 	// SpendPath is the canonical arkscript spend path for the
 	// forfeited VTXO input. This makes the custom or standard
 	// tapscript leaf an explicit part of round messaging instead
 	// of implicit witness metadata.
 	SpendPath *arkscript.SpendPath
+}
+
+// ForfeitParticipantSig is one non-operator participant's tapscript
+// signature for a forfeited VTXO input.
+type ForfeitParticipantSig struct {
+	// PubKey is the x-only key that produced Signature.
+	PubKey *btcec.PublicKey
+
+	// Signature authorizes the forfeit transaction under PubKey.
+	Signature *schnorr.Signature
 }
 
 // ConnectorLeafInfo contains information about a connector leaf assigned to a

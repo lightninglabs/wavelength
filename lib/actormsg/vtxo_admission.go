@@ -1,9 +1,13 @@
 package actormsg
 
 import (
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // =============================================================================
@@ -171,6 +175,117 @@ type ReleaseForfeitResponse struct {
 
 // VTXOManagerResp implements the VTXOManagerResp marker interface.
 func (r *ReleaseForfeitResponse) VTXOManagerResp() {}
+
+// CustomForfeitInput describes a caller-supplied VTXO that is not part of the
+// wallet's live coin set but still needs a local VTXO actor to sign the exact
+// round forfeit transaction once connector details are known.
+type CustomForfeitInput struct {
+	// Outpoint identifies the custom VTXO.
+	Outpoint wire.OutPoint
+
+	// Amount is the custom VTXO value in satoshis.
+	Amount btcutil.Amount
+
+	// PkScript is the script committed to by the custom VTXO.
+	PkScript []byte
+
+	// PolicyTemplate is the semantic custom VTXO policy template.
+	PolicyTemplate []byte
+
+	// ClientKey is the local key used by this daemon to sign its share of
+	// the custom policy.
+	ClientKey keychain.KeyDescriptor
+
+	// OperatorKey is the Ark operator key committed to by the policy.
+	OperatorKey *btcec.PublicKey
+
+	// RelativeExpiry records the policy's CSV delay for local descriptor
+	// accounting. Custom paths supplied by the round request still drive
+	// the exact forfeit transaction sequence.
+	RelativeExpiry uint32
+
+	// RoundID identifies the round lineage that created this custom
+	// VTXO. It lets the temporary PendingForfeit descriptor share the
+	// same persistence invariants as ordinary indexed VTXOs.
+	RoundID string
+
+	// CommitmentTxID is the commitment tx anchoring this custom VTXO.
+	CommitmentTxID chainhash.Hash
+
+	// BatchExpiry is the absolute batch expiry height for the custom
+	// VTXO lineage.
+	BatchExpiry int32
+
+	// ChainDepth records how many OOR checkpoint hops separate this
+	// custom VTXO from its commitment tx.
+	ChainDepth int
+
+	// CreatedHeight records the block height where the commitment tx was
+	// confirmed.
+	CreatedHeight int32
+
+	// Ancestry carries the commitment-tree fragments needed for any later
+	// unilateral path.
+	Ancestry []types.Ancestry
+}
+
+// ActivateCustomForfeitInputsRequest starts temporary PendingForfeit VTXO
+// actors for custom inputs before registering a round intent. Inputs that are
+// not already known to the wallet are persisted as synthetic signer rows;
+// inputs that already have durable VTXO rows are overlaid without changing that
+// row.
+type ActivateCustomForfeitInputsRequest struct {
+	actor.BaseMessage
+
+	// Inputs are the custom VTXOs that need temporary forfeit-signing
+	// actors.
+	Inputs []CustomForfeitInput
+}
+
+// VTXOManagerMsg implements VTXOManagerMsg marker interface.
+func (m *ActivateCustomForfeitInputsRequest) VTXOManagerMsg() {}
+
+// MessageType returns the message type for logging.
+func (m *ActivateCustomForfeitInputsRequest) MessageType() string {
+	return "ActivateCustomForfeitInputsRequest"
+}
+
+// ActivateCustomForfeitInputsResponse confirms custom actor activation.
+type ActivateCustomForfeitInputsResponse struct {
+	// ActivatedCount is the number of custom input actors activated.
+	ActivatedCount int
+}
+
+// VTXOManagerResp implements the VTXOManagerResp marker interface.
+func (r *ActivateCustomForfeitInputsResponse) VTXOManagerResp() {}
+
+// DropCustomForfeitInputsRequest removes custom PendingForfeit signer overlays
+// that were activated for a round intent that was rejected before signing
+// started. Synthetic rows are deleted; pre-existing VTXO rows are retained and
+// their ordinary actors are restored from storage.
+type DropCustomForfeitInputsRequest struct {
+	actor.BaseMessage
+
+	// Outpoints identifies the custom forfeit inputs to drop.
+	Outpoints []wire.OutPoint
+}
+
+// VTXOManagerMsg implements VTXOManagerMsg marker interface.
+func (m *DropCustomForfeitInputsRequest) VTXOManagerMsg() {}
+
+// MessageType returns the message type for logging.
+func (m *DropCustomForfeitInputsRequest) MessageType() string {
+	return "DropCustomForfeitInputsRequest"
+}
+
+// DropCustomForfeitInputsResponse confirms custom actor cleanup.
+type DropCustomForfeitInputsResponse struct {
+	// DroppedCount is the number of custom signer overlays removed.
+	DroppedCount int
+}
+
+// VTXOManagerResp implements the VTXOManagerResp marker interface.
+func (r *DropCustomForfeitInputsResponse) VTXOManagerResp() {}
 
 // =============================================================================
 // Atomic cooperative select-and-reserve: wallet → Manager → VTXO actors
