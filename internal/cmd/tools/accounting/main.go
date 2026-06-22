@@ -136,7 +136,7 @@ func run(ctx context.Context, args []string) error {
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
 
-	rawDB, err := sql.Open("sqlite", *sqlitePath)
+	rawDB, err := openReadOnlySQLite(ctx, *sqlitePath)
 	if err != nil {
 		return err
 	}
@@ -181,6 +181,53 @@ func run(ctx context.Context, args []string) error {
 	default:
 		return fmt.Errorf("unknown --format %q", *format)
 	}
+}
+
+// openReadOnlySQLite opens an existing SQLite database in read-only mode.
+func openReadOnlySQLite(ctx context.Context, path string) (*sql.DB, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat sqlite db: %w", err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("sqlite path %q is a directory", path)
+	}
+
+	rawDB, err := sql.Open("sqlite", readOnlySQLiteDSN(path))
+	if err != nil {
+		return nil, err
+	}
+	rawDB.SetMaxOpenConns(1)
+	rawDB.SetMaxIdleConns(1)
+
+	if _, err := rawDB.ExecContext(
+		ctx, "PRAGMA query_only = ON",
+	); err != nil {
+
+		_ = rawDB.Close()
+
+		return nil, fmt.Errorf("enable sqlite query_only: %w", err)
+	}
+
+	if err := rawDB.PingContext(ctx); err != nil {
+		_ = rawDB.Close()
+
+		return nil, err
+	}
+
+	return rawDB, nil
+}
+
+// readOnlySQLiteDSN returns a SQLite URI that refuses to create or mutate the
+// target database file.
+func readOnlySQLiteDSN(path string) string {
+	uri := url.URL{
+		Scheme:   "file",
+		Path:     path,
+		RawQuery: "mode=ro",
+	}
+
+	return uri.String()
 }
 
 // newPriceSource returns the requested fiat price source.
