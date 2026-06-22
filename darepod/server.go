@@ -215,6 +215,16 @@ type Server struct {
 	// once at the start of run() before any subsystem starts.
 	fatalCancel context.CancelCauseFunc
 
+	// fatalFlag latches once a subsystem escalates an unrecoverable
+	// failure, so the health check reports unhealthy even in the brief
+	// window before the process exits.
+	fatalFlag atomic.Bool
+
+	// startedAt records when run() began so the liveness check can restart
+	// a daemon that never finishes starting. It is set once at the top of
+	// run(), before the gateway goroutine that reads it is spawned.
+	startedAt time.Time
+
 	// walletState tracks the lifecycle state of the wallet
 	// subsystem. In lnd mode this is always WalletStateReady
 	// after successful lnd connection. In lwwallet mode it
@@ -749,6 +759,11 @@ func (s *Server) run(parentCtx context.Context, shutdownFn func()) error {
 	// handlers but still shut down with the daemon.
 	s.runCtx = ctx
 
+	// Stamp the start so the liveness check can bound how long the daemon
+	// may sit in startup. Set here, before any subsystem (and the gateway
+	// goroutine that reads it) starts.
+	s.startedAt = time.Now()
+
 	// -------------------------------------------------------
 	// 0. Initialize the logging backend and subsystem loggers.
 	// -------------------------------------------------------
@@ -1223,7 +1238,8 @@ func (s *Server) run(parentCtx context.Context, shutdownFn func()) error {
 		!errors.Is(cause, context.Canceled) {
 
 		s.log.ErrorS(ctx, "darepod exiting on fatal subsystem error",
-			cause)
+			cause,
+		)
 
 		return cause
 	}
@@ -1235,9 +1251,66 @@ func (s *Server) run(parentCtx context.Context, shutdownFn func()) error {
 // run() returns it and the process exits non-zero. It is safe to call from any
 // subsystem goroutine and is a no-op before run() has wired fatalCancel.
 func (s *Server) signalFatal(err error) {
+	s.fatalFlag.Store(true)
 	if s.fatalCancel != nil {
 		s.fatalCancel(err)
 	}
+}
+
+// errFatalSubsystem is the liveness/readiness error returned once a subsystem
+// has escalated an unrecoverable failure via signalFatal.
+var errFatalSubsystem = fmt.Errorf("daemon escalated a fatal subsystem failure")
+
+// healthStartupDeadline bounds how long the daemon may sit in startup before
+// the liveness probe fails. A daemon that never finishes starting (wedged
+// before the wallet and chain backend come up) is as dead as one that latched a
+// fatal failure; this lets the orchestrator restart it. It is generous so a
+// slow first chain sync is not mistaken for a wedge.
+const healthStartupDeadline = 15 * time.Minute
+
+// LivenessCheck reports whether the daemon process is viable and should keep
+// running. It fails only when a subsystem has latched a fatal failure or the
+// daemon has stalled in startup past healthStartupDeadline. It performs no
+// backend I/O, so an unauthenticated /v1/health probe cannot drive load onto
+// the chain backend; a wedged backend is surfaced through the block-epoch fatal
+// escalation, which latches the fatal flag. A failed liveness probe should
+// restart the pod.
+func (s *Server) LivenessCheck(_ context.Context) error {
+	if s.fatalFlag.Load() {
+		return errFatalSubsystem
+	}
+
+	// A daemon that never finishes starting is wedged just as surely as one
+	// that latched a fatal failure. Bound the startup grace so liveness can
+	// restart a daemon stuck before the wallet and chain backend ever came
+	// up — a state the readiness gate alone would never recover from.
+	if s.WalletLifecycleState() != WalletStateReady {
+		if since := time.Since(
+			s.startedAt,
+		); since > healthStartupDeadline {
+			return fmt.Errorf("daemon not ready %s after start",
+				since.Round(time.Second))
+		}
+	}
+
+	return nil
+}
+
+// ReadinessCheck reports whether the daemon is ready to serve requests. It
+// fails when a fatal failure has latched or the wallet subsystem has not
+// finished starting, so traffic is held off a still-starting or wedged daemon.
+// Like LivenessCheck it performs no backend I/O. A failed readiness probe only
+// removes the pod from the Service endpoints; it does not restart it.
+func (s *Server) ReadinessCheck(_ context.Context) error {
+	if s.fatalFlag.Load() {
+		return errFatalSubsystem
+	}
+
+	if state := s.WalletLifecycleState(); state != WalletStateReady {
+		return fmt.Errorf("wallet subsystem not ready: %s", state)
+	}
+
+	return nil
 }
 
 // startWalletReadyServices starts the services that need wallet-derived keys

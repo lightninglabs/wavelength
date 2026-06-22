@@ -28,6 +28,11 @@ const (
 	defaultGatewayIdleTimeout = 60 * time.Second
 )
 
+// errHealthUnavailable flags that the daemon health checks were not available
+// when the gateway started, so the liveness/readiness probe routes could not be
+// mounted.
+var errHealthUnavailable = errors.New("daemon health check unavailable")
+
 // gatewayServer serves HTTP/JSON requests through generated grpc-gateway
 // handlers.
 type gatewayServer struct {
@@ -37,6 +42,16 @@ type gatewayServer struct {
 	daemonCfg  *Config
 	registrars []RPCGatewayRegistrar
 	log        btclog.Logger
+
+	// liveness and readiness answer the /v1/health and /v1/ready probe
+	// routes. When nil they default to the daemon's LivenessCheck and
+	// ReadinessCheck. Liveness reports process viability (a failure should
+	// restart the pod); readiness reports serve-readiness (a failure only
+	// drains the pod). Both perform in-process checks only and never touch
+	// the chain backend, so an unauthenticated probe cannot amplify load
+	// onto it.
+	liveness  func(context.Context) error
+	readiness func(context.Context) error
 
 	listener net.Listener
 	httpSrv  *http.Server
@@ -105,6 +120,50 @@ func (g *gatewayServer) Start(ctx context.Context) error {
 		}
 	}
 
+	// Mount unauthenticated liveness/readiness routes directly on the mux
+	// so a k8s probe can detect a wedged-but-listening daemon. Both perform
+	// only in-process checks (no backend round-trip), so they keep
+	// answering when the chain backend is stuck and cannot be abused to
+	// amplify load onto it. Liveness failure restarts the pod; readiness
+	// failure only drains it.
+	liveness, readiness := g.liveness, g.readiness
+	if g.rpcServer != nil && g.rpcServer.server != nil {
+		if liveness == nil {
+			liveness = g.rpcServer.server.LivenessCheck
+		}
+		if readiness == nil {
+			readiness = g.rpcServer.server.ReadinessCheck
+		}
+	}
+
+	if liveness == nil || readiness == nil {
+		// Make the absence visible: an operator wiring k8s probes to a
+		// daemon whose health checks are unavailable would otherwise
+		// see only silent 404s and assume the routes work.
+		g.log.WarnS(ctx, "Health probe routes not registered",
+			errHealthUnavailable,
+		)
+	} else {
+		if err := mux.HandlePath(
+			http.MethodGet, "/v1/health", healthHandler(liveness),
+		); err != nil {
+
+			cancelRegister()
+			_ = listener.Close()
+
+			return fmt.Errorf("register health route: %w", err)
+		}
+		if err := mux.HandlePath(
+			http.MethodGet, "/v1/ready", healthHandler(readiness),
+		); err != nil {
+
+			cancelRegister()
+			_ = listener.Close()
+
+			return fmt.Errorf("register ready route: %w", err)
+		}
+	}
+
 	g.listener = listener
 	g.cancel = cancelRegister
 	g.httpSrv = &http.Server{
@@ -153,6 +212,38 @@ func (g *gatewayServer) Stop(_ context.Context) error {
 	g.wg.Wait()
 
 	return err
+}
+
+// healthHandler builds an HTTP handler that answers a liveness or readiness
+// probe from the given check: 200 with `{"status":"ok"}` when healthy, 503 with
+// the reason otherwise, so a wedged-but-listening daemon fails its probe. The
+// check reports only in-process state, so the reason string carries no chain
+// backend transport detail (no information disclosure to the unauthenticated
+// caller).
+func healthHandler(health func(context.Context) error) runtime.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request,
+		_ map[string]string) {
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if err := health(r.Context()); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+
+			// The reason is a controlled in-process status string
+			// (no backend detail), and the response is JSON with
+			// %q-escaping, so reflecting it is safe.
+			//nolint:gosec // G705: reason controlled, non-HTML.
+			_, _ = fmt.Fprintf(
+				w, `{"status":"unavailable","reason":%q}`+"\n",
+				err.Error(),
+			)
+
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
+	}
 }
 
 // Addr returns the address the gateway is listening on.
