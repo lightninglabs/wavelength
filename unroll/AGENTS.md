@@ -80,6 +80,25 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   `db.UnilateralExitStore` via `statusForPhase`/`phaseFromDB` +
   `triggerToDB`/`triggerFromDB` (round-tripped in
   `db_store_test.go`).
+- `SessionOption` — functional option (`func(*Environment)`) for customizing
+  the FSM environment per-session. Currently used to override
+  `FraudCheckpointSafetyMargin`; future extension point for other per-session
+  tuning.
+- `ExitFundingSnapshot` — wallet state for exit-funding planning:
+  `WalletConfirmedSat` and `WalletUsableInputs` (confirmed UTXOs above dust).
+- `ExitFundingPlan` — user-facing funding projection returned by
+  `PlanExitFunding`: `Feasibility`, `RequiredConfirmations`,
+  `RecommendedUTXOAmountSat`, `RecommendedTotalFundingSat`,
+  `FundingShortfallSat`.
+- `ExitFundingAddressBook` — address cache for planning that reuses cached
+  funding addresses to avoid advancing the wallet index during repeated
+  polling.
+- `PlanExitFunding(desc, feeRate, wallet)` — combines `RecoveryTxCount()` and
+  `AssessExitFeasibility()` to derive funding projections using the same CPFP
+  cost breakdown as unroll admission.
+- `RecommendedExitFeeInputAmount(verdict)` — per-input fee suggestion from a
+  full feasibility breakdown; floors at `DefaultFeeInputMinAmountSat` (10k
+  sats).
 - `EnsureUnrollRequest` / `EnsureUnrollResp` — admission API. Must
   include `ExitPolicyKind` and `ExitPolicyRef` for non-standard exits;
   `validateExitPolicyIdentity` checks consistency at admit time. Dedup

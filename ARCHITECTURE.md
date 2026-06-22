@@ -26,6 +26,7 @@ package may import from a higher layer.
 | [`lib/tx/oor`](lib/tx/oor/) | OOR submit/finalize package builders and validators |
 | [`lib/tx/psbtutil`](lib/tx/psbtutil/) | PSBT encoding, decoding, and signature attachment helpers |
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
+| [`coinselect`](coinselect/) | Coin-type-agnostic largest-first coin selection shared across VTXO reservation and onchain send preview paths |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
 | [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery jobs (action, state, script parameters, swap linkage) |
 

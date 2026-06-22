@@ -3,15 +3,24 @@
 This package models the durable actor mailbox from distributed-systems first
 principles: durable enqueue, lease ownership, retry scheduling, ack/nack token
 validation, dead-letter/removal, idempotent delivery identity,
-per-correlation-key FIFO, and the Read/Commit consume step (lease-fenced
-exactly-once effect application under lease-expiry-during-IO).
+per-correlation-key FIFO, the Read/Commit consume step (lease-fenced
+exactly-once effect application under lease-expiry-during-IO), and the CDC
+outbox fold (the target enqueue and the outbox completion committing as one
+transaction, with no-lost-message and exactly-once-delivery guarantees).
 
 ## Files
 
 - `infra.pproj` — P project for durable actor infrastructure checks.
 - `src/mailbox_fifo.p` — ideal mailbox spec plus claim-ordering profiles.
+- `src/ingress_fold.p` — connection-actor ingress cursor spec: the persisted
+  PullCursor must never cover an envelope whose local enqueue did not commit
+  (the transactional dispatch fold makes batch enqueues + cursor one atomic
+  commit).
 - `test/mailbox_fifo_test.p` — green conformance tests and separate
   counterexample tests.
+- `test/ingress_fold_test.p` — green atomic-fold drain test plus the two
+  cursor-loss counterexamples (eager in-memory cursor after rollback;
+  checkpoint commit ordered before the enqueue commits).
 - `traces/*.json` — concrete scenarios replayed by the Go bridge.
 - `bridge/` — Go conformance harness against the real `db/actordelivery`
   SQLite store and claim SQL.
@@ -29,7 +38,12 @@ exactly-once effect application under lease-expiry-during-IO).
 | `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxStageCommitExactlyOnce` | Run the green Stage-then-Commit replay-safety test |
 | `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxStagedDoubleBroadcastCounterexample` | Demonstrate the unstable-broadcast double-broadcast bug |
 | `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxStaleStageRegressesCounterexample` | Demonstrate the unfenced-stage checkpoint regression bug |
-| `go test ./p-models/durableactor/bridge` | Replay traces against Go |
+| `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcIngressFoldNoLoss` | Run the green transactional ingress-fold no-loss test |
+| `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcIngressEagerCursorCounterexample` | Demonstrate the eager-cursor-after-rollback message loss |
+| `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcIngressCheckpointFirstCounterexample` | Demonstrate the checkpoint-before-enqueue message loss |
+| `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcOutboxFold` | Run the green transactional outbox-fold test |
+| `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcOutboxSplitWriteCounterexample` | Demonstrate the split-write lost-message bug |
+| `go test ./p-models/durableactor/bridge` | Replay traces and the outbox-fold/crash-restart bridge tests against Go |
 
 ## Modeling Guidance
 

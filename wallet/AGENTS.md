@@ -17,7 +17,41 @@ refresh, leave, OOR spend, and directed send flows.
 - `OutputLeaser` — Interface for UTXO output leasing: `LeaseOutput(ctx, outpoint, lockID, expiry)` and `ReleaseOutput(ctx, outpoint, lockID)`. Implemented by all three `BoardingBackend` implementations (`btcwbackend`, `lndbackend`, `lwwallet`) to coordinate cross-subsystem UTXO reservation.
 - `BoardingBackend` — Interface for wallet integration (key derivation, taproot import, ListUnspent). `GetTransaction` returns `*TxInfo` (containing tx, block hash, and block height).
 - `TxInfo` — Struct wrapping a confirmed transaction with its block hash and block height. Returned by `BoardingBackend.GetTransaction`.
-- `BoardingStore` — Interface for persisting boarding addresses and intents.
+- `BoardingStore` — Interface for persisting boarding addresses and intents. Embeds `PendingIntentStore`.
+- `PendingIntent` / `PendingIntentKind` / `PendingIntentID` / `PendingIntentPayload` / `PendingIntentStore` — the generic restart-safe intent outbox (`pending_intent.go`). `Payload` is a sealed `PendingIntentPayload` interface holding the concrete kind-specific struct (not bytes); the db layer stores its fields as typed columns. An intent is persisted BEFORE its round-actor publish, anchored to the outpoints the round consumes on adoption (confirmed boarding outpoints for `board`, reserved forfeit outpoints for `send_onchain`); the round checkpoint clears anchors transactionally. `NewPendingIntentID(payload, anchors)` derives the idempotency key as `sha256(kind ‖ sorted anchors ‖ payload-canonical-digest)`.
+- `PendingIntentReplayer` — per-kind replay strategy registered on the `Ark` actor (`intentReplayers`). `boardIntentReplayer` reconciles anchors against still-Confirmed boarding intents and self-Tells one `BoardRequest`; `sendOnChainIntentReplayer` self-Tells one `ReplaySendOnChainIntent` per persisted intent, whose handler re-reserves the EXACT anchors (never re-running selection), rebuilds the package via `buildSendOnChainIntentPackage`, and registers with `TriggerRegistration=true`. A reservation failure marks a send intent stale and deletes it.
+- `BoardIntentPayload` / `SendOnChainIntentPayload` — concrete `PendingIntentPayload` implementations (`pending_intent.go`); each contributes a deterministic `writeIDDigest` field encoding (for the intent ID only) and is stored as typed columns by the db layer.
+- `ReplayPendingIntentsRequest` / `ReplayPendingIntentsResponse` — daemon startup Ask that walks the replayer registry once every dependent actor is on the receptionist (replaces the Board-only `ReplayPendingBoardRequest`).
+- `ReplaySendOnChainIntent` — internal self-Tell carrying one persisted send intent from the replay pass into the wallet mailbox.
+- `SweepWalletFundsRequest` / `SweepWalletFundsResponse` — Ask-request to
+  preview or broadcast a general backing-wallet sweep. Drains all confirmed
+  non-boarding UTXOs to a single destination address. Not persisted —
+  interrupted sweeps re-run cleanly. Fee rate is always capped by
+  `applyWalletSweepFeeCap` (falls back to `txconfirm.DefaultMaxFeeRateSatPerVByte`).
+- `WalletBackingSweeper` — Backend interface for the general sweep: `ListUnspent`,
+  `LeaseOutput`, `ReleaseOutput`, `FundPsbt`, `NewWalletPkScript`.
+- `WalletSweepInputInfo` — Single backing UTXO selected for a general sweep.
+- `WalletSweepTxNotification` — Tell from the `txconfirm` subscriber carrying
+  a terminal confirm/fail event for a general-wallet sweep tx.
+- `SweepBoardingUTXOsRequest` / `SweepBoardingUTXOsResponse` — Ask-request to
+  preview or broadcast a boarding-timeout sweep. Recovers mature boarding UTXOs
+  (past their timeout heights) as aggregate transactions. Persisted with full
+  recovery semantics.
+- `BoardingSweepOutput` — Single boarding UTXO candidate (outpoint, amount,
+  maturity height).
+- `BoardingSweepRecord` / `BoardingSweepInputRecord` — Persisted sweep state
+  and per-input status (Pending → Published → Spent/ExternalResolved).
+- `BoardingSweepStore` — Persistence interface: `CreatePendingBoardingSweep`,
+  `MarkBoardingSweepPublished`, `MarkBoardingSweepInputSpent`,
+  `MarkBoardingSweepFailed`, `ListPendingBoardingSweeps`,
+  `GetBoardingSweep`.
+- `SweepSigner` — Builds and signs boarding-timeout sweep transactions.
+- `BoardingSweepSpendNotification` / `BoardingSweepTxNotification` —
+  async notifications from chainsource spend watches and `txconfirm`
+  respectively, routed back through the wallet actor mailbox.
+- `ResumeBoardingSweepsRequest` / `ResumeBoardingSweepsResponse` — startup
+  recovery flow: re-registers chainsource spend watches and re-submits pending
+  sweep txids to `txconfirm`.
 - `VTXOReader` — Read-only interface for loading VTXO descriptors by outpoint. Wallet uses this to build intent packages without importing `vtxo` directly.
 - `VTXODescriptor` — Wallet-level VTXO descriptor (outpoint, amount, pkscript, tree, expiry). Avoids direct dependency on `vtxo.Descriptor`.
 - `SelectedVTXO` — Describes a VTXO selected and locked for use as a transfer input (outpoint, amount, pkscript). Breaks the vtxo → round → wallet import cycle.
@@ -41,7 +75,11 @@ refresh, leave, OOR spend, and directed send flows.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager admission types), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants).
+- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch
+  notifications, spend watches for boarding sweeps), `lib/actormsg` (VTXO
+  manager admission types), `txconfirm` (broadcast + CPFP + confirmation
+  for both sweep flows), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg`
+  / `ClassificationDeposit` / `UTXOSpentMsg` / `FeePaidMsg` constants).
 - **Depended on by**: `round` (boarding intents, types: `BoardingAddress`, `SelectedVTXO`), `db` (persistence), `darepod` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
@@ -51,12 +89,29 @@ refresh, leave, OOR spend, and directed send flows.
     so the round FSM advances from `PendingRoundAssembly` immediately,
     `false` for refresh/leave batching
   - → `vtxo` manager (via `lib/actormsg`): `SelectAndReserveSpendRequest`, `ReleaseSpendRequest`, `CompleteSpendRequest`, `ReserveForfeitRequest`, `ReleaseForfeitRequest`, `SelectAndReserveForfeitRequest`
-  - → `ledger` actor (via `ledger.Sink` Tell, when `fn.Some`): `UTXOCreatedMsg` on every processed confirmed wallet UTXO, tagged `ClassificationDeposit`. `handleUTXOCreated` expands this into both a `wallet_utxo_log` audit row AND a double-entry deposit leg (debit `wallet_balance`, credit `opening_balance`). (`UTXOSpentMsg` emission is a planned follow-up.)
+  - → `ledger` actor (via `ledger.Sink` Tell, when `fn.Some`): `UTXOCreatedMsg`
+    on every processed confirmed wallet UTXO (`ClassificationDeposit`); on
+    boarding-sweep confirmation emits `FeePaidMsg` (`FeeTypeOnchainSweep`),
+    `UTXOSpentMsg` per input (`ClassificationBoardingSweepInput`), and
+    `UTXOCreatedMsg` for wallet-derived destinations
+    (`ClassificationBoardingSweepReturn`).
+  - → `txconfirm` (Ask): `EnsureConfirmedReq` for both `SweepBoardingUTXOs`
+    and `SweepWalletFunds` broadcast paths; terminal events re-wrapped as
+    `BoardingSweepTxNotification` / `WalletSweepTxNotification` and routed
+    back to the wallet mailbox.
+  - → `chainsource` (Ask): `RegisterSpendRequest` per boarding-sweep input
+    to detect external spends; events re-wrapped as
+    `BoardingSweepSpendNotification`.
   - → `round` (via `lib/types.VTXORequest.Origin`): wallet intent composition tags each locally-owned VTXO output with a `VTXOOrigin` classifier so the round actor's downstream ledger emission dispatches to the correct `Source`. Refresh outputs and directed-send self-change get `VTXOOriginRoundRefresh`; boarding-path tagging lives in `round.handleTriggerBoard` (`VTXOOriginRoundBoarding`).
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`
-  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`, `SendOnChainRequest`
+  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`,
+    `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`,
+    `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`,
+    `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`,
+    `SendVTXOsRequest`, `SendOnChainRequest`, `SweepBoardingUTXOsRequest`,
+    `SweepWalletFundsRequest`, `ResumeBoardingSweepsRequest`
 
 ## Invariants
 
@@ -64,11 +119,24 @@ refresh, leave, OOR spend, and directed send flows.
 - `ListUnspent` runs at most once per tip-tick against the latest known chain tip; a backend whose UTXO reporting lags past one tick interval surfaces the missing UTXO on the next chain advance (whichever tick processes the new tip re-runs the scan). The per-block path no longer carries an inline retry budget — the tick loop is the retry seam.
 - Notifier registration captures `minConf` parameter per actor; different actors can require different confirmation depths.
 - Cooperative admission (refresh/leave) must reserve forfeit inputs through the VTXO manager before sending `RegisterIntentMsg` to the round actor.
+- Persist-before-publish: `handleBoard` and `handleSendOnChain` write their pending intent to the outbox BEFORE the round-actor publish, so every crash window either leaves no row (clean retry) or a replayable row. `handleSendOnChain` deletes the row when registration fails synchronously — the caller saw an error, so the send must not silently resurrect on the next start.
 - `WithEagerRoundJoin(true)` opts the wallet into "drive round-joining without a second RPC" semantics. Two sites change: `handleBlockEpoch` inline-calls `handleBoard` after at least one new boarding UTXO confirms in the block (one `TriggerBoardMsg` per block, not per UTXO), and `handleLeaveVTXOs` forwards its `RegisterIntentMsg` with `TriggerRegistration=true` so the leave moves the round FSM out of `PendingRoundAssembly` immediately. Default off preserves the operator-driven batched semantics that `darepocli` and server hosts rely on; `sdk/walletdk` flips it on via `darepod.Config.EagerRoundJoin` for wallet-shaped SDK hosts.
 - If round registration fails after successful admission, the wallet releases the forfeit reservation so VTXOs return to LiveState.
 - Directed sends use `SelectAndReserveForfeitRequest` (cooperative forfeit path) rather than the OOR spend path. The wallet builds recipient VTXOs with the recipient's key as `OwnerKey` and derives a separate ephemeral `SigningKey` for MuSig2 tree construction.
 - Local ownership of a round-produced VTXO is no longer tracked with a per-intent `IsOwner` flag. `types.VTXORequest` / `round.VTXOIntent` no longer carry `IsOwner`; at round confirmation time the round FSM asks a `round.OwnedScriptChecker` (backed in production by the OOR owned-receive-scripts store) which pkScripts to persist as local balance. The wallet's only job is to supply the correct `OwnerKey` per intent — local-origin owner keys keep their populated `KeyLocator` so `handleRegisterIntent` registers them via `OwnedScriptRegistrar`, while remote recipients carry a zero `KeyLocator` and are intentionally left unregistered.
 - `handleSendVTXOs` uses a `defer`-based release rather than a `releaseAndFail` helper: any error path (including dry-run) falls through to the deferred release, and the `committed` flag is set only after the round actor accepts the intent. Context is preserved via `context.WithoutCancel` so cleanup is not dropped when the caller disconnects.
+- **General wallet sweep is ephemeral**: `SweepWalletFunds` is not persisted —
+  if interrupted, the daemon re-runs it on the next request. UTXO leases
+  (`walletSweepLockID`) are released on broadcast failure but retained on
+  success so txconfirm holds exclusive access during rebroadcast.
+- **Boarding sweep is durable**: `SweepBoardingUTXOs` persists a
+  `BoardingSweepRecord` before submitting to txconfirm. `ResumeBoardingSweeps`
+  re-registers spend watches and re-submits pending sweeps on startup.
+  Input status advances Pending → Published → Spent, ensuring idempotent
+  restart convergence.
+- **Boarding sweep fee cap is implicit**: the boarding-sweep transaction
+  includes a P2A anchor output so txconfirm can CPFP-fee-bump it. The
+  general wallet sweep always applies an explicit fee cap.
 - `handleSendVTXOs` rejects pre-flight any directed send with multiple recipients and exactly-zero change residual under the #270 seal-time fee handshake. The server is the amount authority and absorbs the operator fee out of the designated `IsChange=true` slot; if there is no residual to absorb the fee against, the server has no slack to deduct fees without silently shifting them onto a recipient leg. The wallet refuses the request rather than letting the server pick the loser.
 - `VTXOReader` / `VTXODescriptor` / `SelectedVTXO` break the vtxo → round → wallet import cycle by providing wallet-level types that don't reference `vtxo.Descriptor` directly.
 - Per-subsystem logging via `build.LoggerFromContext` (no global mutable loggers).

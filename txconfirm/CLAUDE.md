@@ -35,9 +35,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - Exported helpers usable standalone: `BuildCPFPChild`,
   `EstimatePackageFee`, `EstimateWeight`, `SelectFeeInput`.
 - `Wallet` — interface required by the broadcaster: `ListUnspent`,
-  `NewWalletPkScript`, `FinalizePsbt`, plus `wallet.OutputLeaser`
+  `NewWalletPkScript`, `FinalizePsbt`, `FundPsbt` (used by the fanout FSM to
+  fund and sign fanout transactions), plus `wallet.OutputLeaser`
   (`LeaseOutput` / `ReleaseOutput`) for cross-subsystem UTXO lock
   coordination.
+- `feeBumpStateMachine` / `feeBumpEnvironment` — internal FSM that manages the
+  fee-input fanout lifecycle. Two states: `feeBumpStateIdle` (no fanout in
+  flight) and `feeBumpStateFanoutPending` (fanout broadcast, awaiting
+  confirmation). Owned as a field of `TxBroadcasterActor`; driven by
+  `maybeEnsureFeeInputSupply` whenever a CPFP broadcast fails with
+  `errCPFPFeeInputShortfall`.
+- `pendingFeeInputFanout` / `feeInputDemand` — internal types tracking an
+  in-flight fanout transaction and the per-parent demands it satisfies.
+- `PredictedFeeInputs` (`map[wire.OutPoint]*FeeInput`) — field on
+  `parentBumpState`: outputs from an in-flight fanout already committed to a
+  parent. Promoted to "used" once the fanout confirms.
 - `EnsureConfirmedReq` / `EnsureConfirmedResp` — public Ask API:
   register interest in a txid with `TargetConfs`, `ConfirmationPkScript`,
   and a subscriber.
@@ -62,15 +74,16 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   (confirmation watches, block epochs, broadcast, package submission,
   fee estimation, preflight), `wallet` (`Utxo`, `OutputLeaser`,
   `LockID`), `lib/tx/arktx` (`TxVersion` constant, `IsAnchorOutput`).
-- **Depended on by**: `unroll`, `btcwbackend` (fee-input selection
-  helper), `darepod`, `db`.
+- **Depended on by**: `unroll`, `wallet` (sweep actors delegate broadcast +
+  CPFP to txconfirm), `btcwbackend` (fee-input selection helper),
+  `darepod`, `db`.
 - **Sends → `chainsource`** (Ask): `BestHeightRequest`,
   `SubscribeBlocksRequest`, `RegisterConfRequest`,
   `UnregisterConfRequest`, `BroadcastTxRequest`,
   `SubmitPackageRequest`, `TestMempoolAcceptRequest`,
   `FeeEstimateRequest`.
 - **Sends → `Wallet`** (direct): `ListUnspent`, `NewWalletPkScript`,
-  `FinalizePsbt`, `LeaseOutput`, `ReleaseOutput`.
+  `FinalizePsbt`, `FundPsbt` (fanout), `LeaseOutput`, `ReleaseOutput`.
 - **Sends → caller subscriber** (Tell): `TxConfirmed`, `TxFailed`.
 - **Receives ← `chainsource`** (mapped Tell refs): `BlockEpoch` →
   `blockEpochObservedMsg`; `ConfirmationEvent` →
@@ -131,6 +144,16 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - **Service-key symmetry**: `RegisterConfRequest` and
   `UnregisterConfRequest` both carry `PkScript` so chainsource's
   txid+script keyed service-actor lookup resolves symmetrically.
+- **Fee-input fanout supply**: when a parent CPFP broadcast fails with
+  `errCPFPFeeInputShortfall` (no confirmed wallet inputs available), the actor
+  automatically fans out a funded transaction via `FundPsbt` that produces
+  right-sized fee inputs. The fanout FSM runs as `feeBumpStateMachine` inside
+  the actor and re-drives affected parents once the fanout confirms.
+- **Predicted fee-input accounting**: outputs from a pending fanout are tracked
+  as `PredictedFeeInputs` in `parentBumpState`. They are excluded from other
+  parents' selection but not yet "used". On fanout confirmation they are
+  promoted to the reserved set; on parent eviction or fanout eviction they are
+  released.
 - **Terminal eviction**: on Confirmed or Failed, the actor delivers
   terminal notifications first. If a subscriber is slow or transiently
   fails, the tracked entry is retained without a conf watch and
