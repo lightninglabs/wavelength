@@ -10,6 +10,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testVHTLCPreimage returns the deterministic preimage used by vHTLC policy
+// fixtures.
+func testVHTLCPreimage(t *testing.T) lntypes.Preimage {
+	t.Helper()
+
+	preimage, err := lntypes.MakePreimage(
+		[]byte("test_preimage_32_bytes_exactly!!"),
+	)
+	require.NoError(t, err)
+
+	return preimage
+}
+
 // testVHTLCOpts returns a standard vHTLC opts for testing.
 func testVHTLCOpts(t *testing.T) VHTLCOpts {
 	t.Helper()
@@ -17,11 +30,7 @@ func testVHTLCOpts(t *testing.T) VHTLCOpts {
 	sender, _ := testutils.CreateKey(1)
 	receiver, _ := testutils.CreateKey(2)
 	server, _ := testutils.CreateKey(3)
-
-	preimage, err := lntypes.MakePreimage(
-		[]byte("test_preimage_32_bytes_exactly!!"),
-	)
-	require.NoError(t, err)
+	preimage := testVHTLCPreimage(t)
 
 	return VHTLCOpts{
 		Sender:                               sender,
@@ -133,6 +142,7 @@ func TestVHTLCNamedAccessors(t *testing.T) {
 	t.Parallel()
 
 	opts := testVHTLCOpts(t)
+	preimage := testVHTLCPreimage(t)
 
 	policy, err := NewVHTLCPolicy(opts)
 	require.NoError(t, err)
@@ -180,36 +190,46 @@ func TestVHTLCNamedAccessors(t *testing.T) {
 	// Tx-context lives on SpendPath, derived via SpendPathForNode.
 	pathAccessors := []struct {
 		name     string
-		node     Node
+		fn       func() (*SpendPath, error)
 		wantSeq  uint32
 		wantLock uint32
 	}{
 		{
-			"Claim", policy.ClaimClosure,
+			"Claim",
+			func() (*SpendPath, error) {
+				return policy.ClaimPath(preimage)
+			},
 			0xffffffff, 0,
 		},
 		{
-			"Refund", policy.RefundClosure,
+			"Refund",
+			policy.RefundPath,
 			0xffffffff, 0,
 		},
 		{
 			"RefundWithoutReceiver",
-			policy.RefundWithoutReceiverClosure,
+			policy.RefundWithoutReceiverPath,
 			0xfffffffe, opts.RefundLocktime,
 		},
 		{
 			"UnilateralClaim",
-			policy.UnilateralClaimClosure,
+			func() (*SpendPath, error) {
+				return policy.UnilateralClaimPath(preimage)
+			},
 			opts.UnilateralClaimDelay, 0,
 		},
 		{
 			"UnilateralRefund",
-			policy.UnilateralRefundClosure,
+			func() (*SpendPath, error) {
+				return policy.CompiledPolicy.SpendPathForNode(
+					policy.UnilateralRefundClosure, nil,
+				)
+			},
 			opts.UnilateralRefundDelay, 0,
 		},
 		{
 			"UnilateralRefundWithoutReceiver",
-			policy.UnilateralRefundWithoutReceiverClosure,
+			policy.UnilateralRefundWithoutReceiverPath,
 			opts.UnilateralRefundWithoutReceiverDelay,
 			opts.RefundLocktime,
 		},
@@ -217,9 +237,7 @@ func TestVHTLCNamedAccessors(t *testing.T) {
 
 	for _, a := range pathAccessors {
 		t.Run(a.name+"_tx_context", func(t *testing.T) {
-			path, err := policy.CompiledPolicy.SpendPathForNode(
-				a.node, nil,
-			)
+			path, err := a.fn()
 			require.NoError(t, err)
 			require.Equal(
 				t, a.wantSeq, path.RequiredSequence,

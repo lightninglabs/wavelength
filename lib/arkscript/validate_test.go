@@ -90,6 +90,43 @@ func TestContainsKey(t *testing.T) {
 	})
 }
 
+// TestSigningKeysForSpendPathReturnsScriptOrder verifies that callers can
+// recover the exact CHECKSIG key order from a semantic policy leaf selected by
+// a spend path. Round forfeit validation uses this order to assemble
+// multi-participant custom-policy witnesses.
+func TestSigningKeysForSpendPathReturnsScriptOrder(t *testing.T) {
+	t.Parallel()
+
+	sender, _ := testutils.CreateKey(1)
+	receiver, _ := testutils.CreateKey(2)
+	operator, _ := testutils.CreateKey(3)
+
+	var hash lntypes.Hash
+	copy(hash[:], []byte("test payment hash for vhtlc key"))
+
+	policy, err := NewVHTLCPolicy(VHTLCOpts{
+		Sender:                               sender,
+		Receiver:                             receiver,
+		Server:                               operator,
+		PreimageHash:                         hash,
+		RefundLocktime:                       700_000,
+		UnilateralClaimDelay:                 144,
+		UnilateralRefundDelay:                144,
+		UnilateralRefundWithoutReceiverDelay: 144,
+	})
+	require.NoError(t, err)
+
+	refundPath, err := policy.RefundPath()
+	require.NoError(t, err)
+
+	keys, err := SigningKeysForSpendPath(policy.Template, refundPath)
+	require.NoError(t, err)
+	require.Len(t, keys, 3)
+	require.True(t, keys[0].IsEqual(sender))
+	require.True(t, keys[1].IsEqual(receiver))
+	require.True(t, keys[2].IsEqual(operator))
+}
+
 // TestExtractCSVDelay verifies CSV delay extraction from nested AST structures.
 func TestExtractCSVDelay(t *testing.T) {
 	t.Parallel()
