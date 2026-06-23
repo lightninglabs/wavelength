@@ -96,13 +96,24 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/ledge
   AND a ledger row keyed by an outpoint-derived idempotency key.
   Deposit-like classifications credit `opening_balance`; boarding
   sweep returns credit `wallet_clearing`.
-- `UTXOSpentMsg` — wallet UTXO spends. Boarding sweep inputs write
-  both an audit row and `debit wallet_clearing, credit
-  wallet_balance`; other classifications remain audit-only until
-  they have a wallet-spend producer.
-- `WalletSweepTransferMsg` — external destination value from a
-  wallet sweep, booked as `debit transfers_out, credit
-  wallet_clearing`.
+- `UTXOSpentMsg` — wallet UTXO spends. Audit-only for every
+  classification except `ClassificationBoardingSweepInput`, which also
+  books `debit wallet_clearing, credit wallet_balance`. The boarding
+  sweep producer no longer sends per-leg messages (see
+  `BoardingSweepConfirmedMsg`); the classification branch is retained
+  for direct callers and the non-positive guard is scoped to it so an
+  audit-only zero-amount spend cannot poison the mailbox.
+- `BoardingSweepConfirmedMsg` — the consolidated confirmed-sweep event.
+  Carries the sweep txid, chain cost (miner fee + P2A anchor), the list
+  of spent inputs, and the destination (`DestinationExternal` plus
+  amount). `handleBoardingSweepConfirmed` expands it into every clearing
+  leg — fee, per-input audit + `wallet_clearing` debit, and the
+  destination leg (external `transfers_out` settlement or wallet-return
+  deposit) — inside ONE Commit, so `wallet_clearing` either nets to zero
+  or nothing is written. Replaces the earlier fan-out of
+  `FeePaidMsg{FeeTypeOnchainSweep}` + `UTXOSpentMsg` +
+  `UTXOCreatedMsg`/`WalletSweepTransferMsg`, which could strand value in
+  `wallet_clearing` on a partial emission.
 
 ## Relationships
 
@@ -127,9 +138,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/ledge
     gross value from the proof target output and fee derived from the
     persisted sweep transaction.
   - ← `wallet`: `UTXOCreatedMsg` on confirmed wallet UTXO observation
-    plus boarding sweep `UTXOSpentMsg`, `FeePaidMsg{FeeTypeOnchainSweep}`,
-    `UTXOCreatedMsg{ClassificationBoardingSweepReturn}`, and
-    `WalletSweepTransferMsg` as applicable.
+    plus one `BoardingSweepConfirmedMsg` per confirmed boarding sweep
+    (the single atomic event the ledger expands into all clearing legs).
 
 ## Caller Contract
 

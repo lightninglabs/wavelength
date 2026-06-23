@@ -666,14 +666,6 @@ func (a *LedgerActor) handleUTXOSpent(ctx context.Context, msg *UTXOSpentMsg,
 		return fn.Ok[LedgerResp](nil)
 	}
 
-	if msg.AmountSat <= 0 {
-		return a.fail(
-			ctx, errMsg, fmt.Errorf("%w: UTXOSpentMsg amount_sat "+
-				"must be positive (got %d)", ErrInvalidMessage,
-				msg.AmountSat),
-		)
-	}
-
 	now := a.clk.Now().Unix()
 	audit := UTXOAuditEntry{
 		OutpointHash:  msg.OutpointHash[:],
@@ -685,8 +677,22 @@ func (a *LedgerActor) handleUTXOSpent(ctx context.Context, msg *UTXOSpentMsg,
 		CreatedAt:     now,
 	}
 
+	// Only the boarding-sweep-input classification books a double-entry
+	// ledger leg (debit wallet_clearing, credit wallet_balance). All other
+	// classifications are audit-only, and wallet_utxo_log has no positivity
+	// CHECK, so the non-positive guard is scoped to the ledger-emitting
+	// branch. Rejecting unconditionally would turn an audit-only spend with
+	// a zero amount into a durable-mailbox poison-pill.
 	var entry *LedgerEntry
 	if msg.Classification == ClassificationBoardingSweepInput {
+		if msg.AmountSat <= 0 {
+			return a.fail(
+				ctx, errMsg, fmt.Errorf("%w: UTXOSpentMsg "+
+					"amount_sat must be positive (got %d)",
+					ErrInvalidMessage, msg.AmountSat),
+			)
+		}
+
 		chainVout := int32(msg.OutpointIndex)
 		confirmationHeight := int32(msg.BlockHeight)
 		entry = &LedgerEntry{
@@ -725,52 +731,242 @@ func (a *LedgerActor) handleUTXOSpent(ctx context.Context, msg *UTXOSpentMsg,
 	})
 }
 
-// handleWalletSweepTransfer records externally paid sweep value as a
-// transfer out from wallet clearing. The corresponding sweep input and
-// chain-cost rows are emitted separately, so this closes the clearing
-// account for sweeps that do not return funds to a wallet-derived script.
-func (a *LedgerActor) handleWalletSweepTransfer(ctx context.Context,
-	msg *WalletSweepTransferMsg,
+// handleBoardingSweepConfirmed books every leg of a confirmed boarding
+// sweep inside a single Commit so the wallet_clearing account is updated
+// atomically: the fee leg, one audit + clearing-debit leg per spent input,
+// and the destination leg (an external transfer out, or a wallet-return
+// deposit). Either the whole clearing set lands or none of it does, so a
+// partial failure can never strand value in wallet_clearing.
+//
+// The per-leg idempotency keys match the historical single-message keys
+// (sweep txid for the fee, outpoint for each input, txid vout 0 for a
+// wallet return, "wallet-sweep:"+txid for an external transfer) so a replay
+// — including an in-flight message straddling an upgrade — dedups cleanly.
+func (a *LedgerActor) handleBoardingSweepConfirmed(ctx context.Context,
+	msg *BoardingSweepConfirmedMsg,
 	ax actor.Exec[ledgerTx]) fn.Result[LedgerResp] {
 
-	const errMsg = "Failed to handle wallet sweep transfer"
+	const errMsg = "Failed to handle boarding sweep confirmed"
 
-	if msg.AmountSat <= 0 {
+	// Validate the aggregate and per-input amounts up front so a
+	// malformed message dead-letters cleanly instead of hitting a SQL
+	// CHECK partway through the commit.
+	if msg.ChainCostSat <= 0 {
 		return a.fail(
-			ctx, errMsg, fmt.Errorf("%w: WalletSweepTransferMsg "+
-				"amount_sat must be positive (got %d)",
-				ErrInvalidMessage, msg.AmountSat),
+			ctx, errMsg, fmt.Errorf("%w: "+
+				"BoardingSweepConfirmedMsg chain_cost_sat "+
+				"must be positive (got %d)", ErrInvalidMessage,
+				msg.ChainCostSat),
 		)
 	}
+	if msg.DestinationSat <= 0 {
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: "+
+				"BoardingSweepConfirmedMsg destination_sat "+
+				"must be positive (got %d)", ErrInvalidMessage,
+				msg.DestinationSat),
+		)
+	}
+	if len(msg.Inputs) == 0 {
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: "+
+				"BoardingSweepConfirmedMsg must carry at "+
+				"least one input", ErrInvalidMessage),
+		)
+	}
+	for _, in := range msg.Inputs {
+		if in.AmountSat <= 0 {
+			return a.fail(
+				ctx, errMsg, fmt.Errorf("%w: "+
+					"BoardingSweepConfirmedMsg input %s "+
+					"amount_sat must be positive (got %d)",
+					ErrInvalidMessage, in.Outpoint,
+					in.AmountSat),
+			)
+		}
+	}
 
-	a.log.InfoS(ctx, "Recording wallet sweep transfer",
+	a.log.InfoS(ctx, "Recording boarding sweep confirmed",
 		slog.String("txid", fmt.Sprintf("%x", msg.Txid)),
-		slog.Int64("amount_sat", msg.AmountSat),
+		slog.Int64("chain_cost_sat", msg.ChainCostSat),
+		slog.Int("num_inputs", len(msg.Inputs)),
+		slog.Int64("destination_sat", msg.DestinationSat),
+		slog.Bool("destination_external", msg.DestinationExternal),
 		slog.Uint64("block_height", uint64(msg.BlockHeight)),
 	)
 
-	confirmationHeight := int32(msg.BlockHeight)
-	entry := LedgerEntry{
-		DebitAccount:  AccountTransfersOut,
-		CreditAccount: AccountWalletClearing,
-		AmountSat:     msg.AmountSat,
-		EventType:     EventWalletSweepTransfer,
-		Description: fmt.Sprintf(
-			"wallet sweep external transfer for txid %x at height "+
-				"%d",
-			msg.Txid, msg.BlockHeight,
-		),
-		CreatedAt: a.clk.Now().Unix(),
-		IdempotencyKey: append(
-			[]byte("wallet-sweep:"), msg.Txid[:]...,
-		),
-		ChainTxid:          msg.Txid[:],
-		ConfirmationHeight: &confirmationHeight,
-	}
+	// Build every leg up front so the commit closure stays a thin,
+	// shallow insert sequence and the whole set is booked atomically.
+	legs := a.boardingSweepLegs(msg)
 
 	return a.commit(ctx, ax, errMsg, func(ctx context.Context,
 		q ledgerTx) error {
 
-		return q.ledger.InsertLedgerEntry(ctx, entry)
+		for _, leg := range legs {
+			if leg.hasAudit && q.audit != nil {
+				err := q.audit.InsertUTXOAuditEntry(
+					ctx, leg.audit,
+				)
+				if err != nil {
+					return err
+				}
+			}
+
+			if err := q.ledger.InsertLedgerEntry(
+				ctx, leg.entry,
+			); err != nil {
+				return err
+			}
+		}
+
+		return nil
 	})
+}
+
+// sweepLeg pairs an optional UTXO audit row with the double-entry ledger row
+// that a single boarding-sweep clearing leg writes. hasAudit is false for
+// the fee and external-transfer legs, which touch only the ledger.
+type sweepLeg struct {
+	hasAudit bool
+	audit    UTXOAuditEntry
+	entry    LedgerEntry
+}
+
+// boardingSweepLegs builds the ordered set of ledger (and audit) legs a
+// confirmed boarding sweep books: the fee leg, one audit + clearing-debit
+// leg per spent input, and the destination leg (an external transfer out,
+// or a wallet-return deposit with its audit row). Building the set outside
+// the commit keeps the transaction body shallow and lets the handler insert
+// every leg in one Commit.
+func (a *LedgerActor) boardingSweepLegs(
+	msg *BoardingSweepConfirmedMsg) []sweepLeg {
+
+	now := a.clk.Now().Unix()
+	confirmationHeight := int32(msg.BlockHeight)
+
+	legs := make([]sweepLeg, 0, len(msg.Inputs)+2)
+
+	// Fee leg: debit onchain_fees, credit wallet_clearing.
+	legs = append(legs, sweepLeg{
+		entry: LedgerEntry{
+			DebitAccount:   AccountOnchainFees,
+			CreditAccount:  AccountWalletClearing,
+			AmountSat:      msg.ChainCostSat,
+			EventType:      EventBoardingSweepFeePaid,
+			Description:    "boarding-sweep on-chain cost",
+			CreatedAt:      now,
+			IdempotencyKey: append([]byte(nil), msg.Txid[:]...),
+		},
+	})
+
+	// Per-input audit row + wallet_clearing debit leg.
+	for _, in := range msg.Inputs {
+		hash := [32]byte(in.Outpoint.Hash)
+		chainVout := int32(in.Outpoint.Index)
+
+		audit := UTXOAuditEntry{
+			OutpointHash:  in.Outpoint.Hash[:],
+			OutpointIndex: int32(in.Outpoint.Index),
+			AmountSat:     in.AmountSat,
+			Event:         "spent",
+			BlockHeight:   int32(msg.BlockHeight),
+			ClassifiedAs:  ClassificationBoardingSweepInput,
+			CreatedAt:     now,
+		}
+
+		entry := LedgerEntry{
+			DebitAccount:  AccountWalletClearing,
+			CreditAccount: AccountWalletBalance,
+			AmountSat:     in.AmountSat,
+			EventType:     EventWalletUTXOSpent,
+			Description: fmt.Sprintf(
+				"wallet UTXO spent at %x:%d "+
+					"(classification %s) at height %d",
+				in.Outpoint.Hash, in.Outpoint.Index,
+				ClassificationBoardingSweepInput,
+				msg.BlockHeight,
+			),
+			CreatedAt: now,
+			IdempotencyKey: walletUTXOIdempotencyKey(
+				hash, in.Outpoint.Index,
+			),
+			ChainTxid:          in.Outpoint.Hash[:],
+			ChainVout:          &chainVout,
+			ConfirmationHeight: &confirmationHeight,
+		}
+
+		legs = append(legs, sweepLeg{
+			hasAudit: true,
+			audit:    audit,
+			entry:    entry,
+		})
+	}
+
+	// External destination: the funds left the wallet, so settle the
+	// value to transfers_out and close the clearing account.
+	if msg.DestinationExternal {
+		legs = append(legs, sweepLeg{
+			entry: LedgerEntry{
+				DebitAccount:  AccountTransfersOut,
+				CreditAccount: AccountWalletClearing,
+				AmountSat:     msg.DestinationSat,
+				EventType:     EventWalletSweepTransfer,
+				Description: fmt.Sprintf(
+					"wallet sweep external transfer for "+
+						"txid %x at height %d",
+					msg.Txid, msg.BlockHeight,
+				),
+				CreatedAt: now,
+				IdempotencyKey: append(
+					[]byte("wallet-sweep:"), msg.Txid[:]...,
+				),
+				ChainTxid:          msg.Txid[:],
+				ConfirmationHeight: &confirmationHeight,
+			},
+		})
+
+		return legs
+	}
+
+	// Wallet-return destination: the swept value re-enters the wallet as
+	// a new UTXO at vout 0. Record the audit "created" row and the
+	// wallet_balance deposit that closes clearing.
+	returnVout := int32(0)
+	returnAudit := UTXOAuditEntry{
+		OutpointHash:  msg.Txid[:],
+		OutpointIndex: 0,
+		AmountSat:     msg.DestinationSat,
+		Event:         "created",
+		BlockHeight:   int32(msg.BlockHeight),
+		ClassifiedAs:  ClassificationBoardingSweepReturn,
+		CreatedAt:     now,
+	}
+
+	returnEntry := LedgerEntry{
+		DebitAccount:  AccountWalletBalance,
+		CreditAccount: AccountWalletClearing,
+		AmountSat:     msg.DestinationSat,
+		EventType:     EventWalletUTXOCreated,
+		Description: fmt.Sprintf(
+			"wallet UTXO confirmed at %x:%d (classification %s) "+
+				"at height %d",
+			msg.Txid, 0, ClassificationBoardingSweepReturn,
+			msg.BlockHeight,
+		),
+		CreatedAt: now,
+		IdempotencyKey: walletUTXOIdempotencyKey(
+			msg.Txid, 0,
+		),
+		ChainTxid:          msg.Txid[:],
+		ChainVout:          &returnVout,
+		ConfirmationHeight: &confirmationHeight,
+	}
+
+	legs = append(legs, sweepLeg{
+		hasAudit: true,
+		audit:    returnAudit,
+		entry:    returnEntry,
+	})
+
+	return legs
 }

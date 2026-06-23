@@ -88,16 +88,17 @@ replay dedup — see the [Replay safety](#replay-safety) section.
 | Message | Source value | Debit | Credit | Notes |
 |---|---|---|---|---|
 | `UTXOCreatedMsg` | deposit-like classifications | `wallet_balance` | `opening_balance` | Deposit leg. Written alongside the `wallet_utxo_log` audit row by `handleUTXOCreated`. |
-| `UTXOCreatedMsg` | `ClassificationBoardingSweepReturn` | `wallet_balance` | `wallet_clearing` | Internal wallet sweep return. |
-| `UTXOSpentMsg` | `ClassificationBoardingSweepInput` | `wallet_clearing` | `wallet_balance` | Boarding sweep input spend. |
-| `WalletSweepTransferMsg` | — | `transfers_out` | `wallet_clearing` | External sweep destination value. |
+| `BoardingSweepConfirmedMsg` | fee leg | `onchain_fees` | `wallet_clearing` | Miner fee + P2A anchor for a confirmed boarding sweep. One of the legs `handleBoardingSweepConfirmed` books atomically. |
+| `BoardingSweepConfirmedMsg` | per input | `wallet_clearing` | `wallet_balance` | One leg + audit row per swept boarding input. |
+| `BoardingSweepConfirmedMsg` | wallet-return dest | `wallet_balance` | `wallet_clearing` | Internal sweep return (`DestinationExternal=false`), with a `wallet_utxo_log` "created" row. |
+| `BoardingSweepConfirmedMsg` | external dest | `transfers_out` | `wallet_clearing` | External sweep destination value (`DestinationExternal=true`). |
 | `VTXOReceivedMsg` | `SourceRoundBoarding` | `vtxo_balance` | `wallet_balance` | Wallet → VTXO. Moves asset value across the on-chain / off-chain boundary. |
 | `VTXOReceivedMsg` | `SourceRoundRefresh` | `vtxo_balance` | `transfers_out` | Refresh or directed-send self-change output. Paired with `VTXOSentMsg` for the gross forfeit; the two cancel on `transfers_out` so only the fee moves `vtxo_balance`. |
 | `VTXOReceivedMsg` | `SourceRoundTransfer` | `vtxo_balance` | `transfers_in` | In-round receive from another participant's directed send. |
 | `VTXOReceivedMsg` | `SourceOOR` | `vtxo_balance` | `transfers_in` | Out-of-round receive from another participant. |
 | `VTXOSentMsg` | (any) | `transfers_out` | `vtxo_balance` | One message per sent VTXO. Outpoint stamps an idempotency key so multi-VTXO rounds don't collapse. |
 | `FeePaidMsg` | `FeeTypeBoarding` or `FeeTypeRefresh` | `fees_paid` | `vtxo_balance` | Operator fee for the round. |
-| `FeePaidMsg` | `FeeTypeOnchainSweep` | `onchain_fees` | `wallet_clearing` | Boarding sweep chain cost, keyed by sweep txid. |
+| `FeePaidMsg` | `FeeTypeOnchainSweep` | `onchain_fees` | `wallet_clearing` | Boarding sweep chain cost, keyed by sweep txid. Retained for direct callers; the boarding sweep producer now folds this leg into `BoardingSweepConfirmedMsg`. |
 | `ExitCostMsg` (send leg) | — | `transfers_out` | `vtxo_balance` | Net-of-fee value that left the VTXO layer. |
 | `ExitCostMsg` (fee leg) | — | `onchain_fees` | `vtxo_balance` | Miner fee portion. |
 
@@ -283,6 +284,7 @@ redelivered `ExitCostMsg` resolves to a silent no-op against
 | Subsystem | File | Function | Messages emitted |
 |---|---|---|---|
 | wallet | `wallet/wallet.go` | `emitUTXOCreated` | `UTXOCreatedMsg` on every confirmed wallet UTXO |
+| wallet | `wallet/boarding_sweep_actor.go` | `emitSweepConfirmedLedger` | one `BoardingSweepConfirmedMsg` per confirmed boarding sweep |
 | round | `round/actor.go` | `emitVTXOsReceived` → `emitOwnedVTXOLedgerEntry` | `VTXOReceivedMsg` (all sources), `VTXOSentMsg` (refresh pair) |
 | round | `round/actor.go` | `emitRoundFee` | `FeePaidMsg` (`boarding` or `refresh`) |
 | oor | `oor/actor.go` | `emitVTXOSent` / `emitVTXOsReceived` | `VTXOSentMsg` (session-keyed) / `VTXOReceivedMsg{Source=SourceOOR}` |

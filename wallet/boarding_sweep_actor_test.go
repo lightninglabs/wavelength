@@ -607,78 +607,56 @@ func TestSweepTxNotificationConfirmedEmitsLedger(t *testing.T) {
 	)
 	require.True(t, result.IsOk())
 
-	// Expect 4 messages: 1 FeePaidMsg + 2 UTXOSpentMsg + 1 UTXOCreatedMsg.
-	msgs := drain(4)
-	require.NotEmpty(
-		t, msgs, "confirmed sweep must emit at least the fee leg",
+	// The confirmed sweep now emits exactly one consolidated message so
+	// the ledger books every clearing leg atomically.
+	msgs := drain(1)
+	require.Len(t, msgs, 1)
+
+	confirmed, ok := msgs[0].(*ledger.BoardingSweepConfirmedMsg)
+	require.True(
+		t, ok, "confirmed sweep must emit a BoardingSweepConfirmedMsg",
 	)
 
-	var (
-		feePaid     *ledger.FeePaidMsg
-		utxoSpent   []*ledger.UTXOSpentMsg
-		utxoCreated *ledger.UTXOCreatedMsg
-	)
-	for _, m := range msgs {
-		switch typed := m.(type) {
-		case *ledger.FeePaidMsg:
-			feePaid = typed
+	require.Equal(t, [32]byte(swept), confirmed.Txid)
+	require.Equal(t, uint32(800_650), confirmed.BlockHeight)
 
-		case *ledger.UTXOSpentMsg:
-			utxoSpent = append(utxoSpent, typed)
+	// Chain cost is miner fee + P2A anchor.
+	require.Equal(t, feeSat+anchorSat, confirmed.ChainCostSat)
 
-		case *ledger.UTXOCreatedMsg:
-			utxoCreated = typed
-		}
-	}
+	// Wallet-derived destination: not external, value at vout 0.
+	require.False(t, confirmed.DestinationExternal)
+	require.Equal(t, walletOutputSat, confirmed.DestinationSat)
 
-	require.NotNil(t, feePaid)
-	require.Equal(t, ledger.FeeTypeOnchainSweep, feePaid.FeeType)
-	require.Equal(t, feeSat+anchorSat, feePaid.AmountSat)
-	require.Equal(t, swept[:], feePaid.IdempotencyKey)
-
+	// Per-input amounts must reflect the persisted boarding-UTXO values.
 	require.Len(
-		t, utxoSpent, 2, "one UTXOSpentMsg per swept boarding input",
+		t, confirmed.Inputs, 2,
+		"one sweep input per swept boarding outpoint",
 	)
-
-	// Per-input AmountSat must reflect the persisted boarding-UTXO
-	// value rather than defaulting to zero — otherwise the audit log
-	// silently records a 0-sat outflow.
-	spentByOutpoint := make(
-		map[wire.OutPoint]*ledger.UTXOSpentMsg, len(utxoSpent),
+	amtByOutpoint := make(
+		map[wire.OutPoint]int64, len(confirmed.Inputs),
 	)
-	for _, m := range utxoSpent {
-		require.Equal(
-			t, ledger.ClassificationBoardingSweepInput,
-			m.Classification,
-		)
-		op := wire.OutPoint{
-			Hash:  m.OutpointHash,
-			Index: m.OutpointIndex,
-		}
-		spentByOutpoint[op] = m
+	for _, in := range confirmed.Inputs {
+		amtByOutpoint[in.Outpoint] = in.AmountSat
 	}
-	require.NotNil(t, spentByOutpoint[in1])
-	require.Equal(t, input1Sat, spentByOutpoint[in1].AmountSat)
-	require.NotNil(t, spentByOutpoint[in2])
-	require.Equal(t, input2Sat, spentByOutpoint[in2].AmountSat)
+	require.Equal(t, input1Sat, amtByOutpoint[in1])
+	require.Equal(t, input2Sat, amtByOutpoint[in2])
 
-	require.NotNil(
-		t, utxoCreated,
-		"wallet-derived destination must emit one UTXOCreatedMsg",
-	)
+	// The clearing identity must hold: inputs - chain cost - dest == 0.
+	var inputsTotal int64
+	for _, in := range confirmed.Inputs {
+		inputsTotal += in.AmountSat
+	}
 	require.Equal(
-		t, ledger.ClassificationBoardingSweepReturn,
-		utxoCreated.Classification,
+		t, int64(0),
+		inputsTotal-confirmed.ChainCostSat-confirmed.DestinationSat,
+		"sweep clearing identity must balance",
 	)
-	require.Equal(t, [32]byte(swept), utxoCreated.OutpointHash)
-	require.Equal(t, walletOutputSat, utxoCreated.AmountSat)
 }
 
 // TestSweepTxNotificationConfirmedExternalDestSkipsCreated verifies that
-// when a sweep was paid to an external (non-wallet) address, the actor
-// emits the fee leg and per-input audit rows but skips the destination
-// UTXOCreatedMsg — those funds left the wallet entirely and the
-// per-input UTXOSpentMsg covers the outflow.
+// when a sweep was paid to an external (non-wallet) address, the
+// consolidated message marks the destination external so the ledger settles
+// it to transfers_out rather than booking a wallet-return deposit.
 func TestSweepTxNotificationConfirmedExternalDestSkipsCreated(t *testing.T) {
 	t.Parallel()
 
@@ -688,8 +666,8 @@ func TestSweepTxNotificationConfirmedExternalDestSkipsCreated(t *testing.T) {
 	// A non-empty DestinationAddress on the persisted record marks the
 	// sweep as paying to a caller-supplied external address (the
 	// persisted equivalent of the in-memory destWalletDerived=false
-	// signal). The destination UTXOCreatedMsg must be skipped because
-	// the funds left the wallet entirely.
+	// signal). The consolidated message must flag DestinationExternal so
+	// the value settles to transfers_out, not a wallet-return deposit.
 	const (
 		inputSat        = int64(40_000)
 		feeSat          = int64(222)
@@ -748,23 +726,227 @@ func TestSweepTxNotificationConfirmedExternalDestSkipsCreated(t *testing.T) {
 	)
 	require.True(t, result.IsOk())
 
-	// Expect 3 messages: 1 FeePaidMsg + 1 UTXOSpentMsg +
-	// 1 WalletSweepTransferMsg. drain settles after these, so a stray
-	// UTXOCreatedMsg would still be captured.
-	msgs := drain(3)
-	var transfer *ledger.WalletSweepTransferMsg
-	for _, m := range msgs {
-		_, isCreated := m.(*ledger.UTXOCreatedMsg)
-		require.False(
-			t, isCreated, "external-destination sweep must NOT "+
-				"emit UTXOCreatedMsg",
-		)
-		if typed, ok := m.(*ledger.WalletSweepTransferMsg); ok {
-			transfer = typed
-		}
+	// One consolidated message, flagged external so the ledger books the
+	// destination to transfers_out instead of a wallet-return deposit.
+	msgs := drain(1)
+	require.Len(t, msgs, 1)
+
+	confirmed, ok := msgs[0].(*ledger.BoardingSweepConfirmedMsg)
+	require.True(t, ok)
+	require.True(
+		t, confirmed.DestinationExternal,
+		"external-destination sweep must flag DestinationExternal",
+	)
+	require.Equal(t, externalDestSat, confirmed.DestinationSat)
+	require.Len(t, confirmed.Inputs, 1)
+	require.Equal(t, in1, confirmed.Inputs[0].Outpoint)
+	require.Equal(t, inputSat, confirmed.Inputs[0].AmountSat)
+}
+
+// spentSweepInput builds a spent boarding-sweep input record for tests.
+func spentSweepInput(txid chainhash.Hash, op wire.OutPoint,
+	amt int64) BoardingSweepInputRecord {
+
+	return BoardingSweepInputRecord{
+		Txid:     txid,
+		Outpoint: op,
+		Amount:   btcutil.Amount(amt),
+		Status:   BoardingSweepInputStatusSpent,
 	}
-	require.NotNil(t, transfer)
-	require.Equal(t, externalDestSat, transfer.AmountSat)
+}
+
+// TestSweepLedgerClearingNetsToZero locks in the core accounting invariant
+// for boarding-sweep confirmation: the single consolidated message must
+// carry amounts whose clearing identity (Σ inputs − chain cost −
+// destination) nets to zero. It exercises both the wallet-derived return
+// path and the external-destination path. The chain cost is
+// (total − destination) = miner fee + anchor, so the inputs debit and the
+// fee + destination credits cancel exactly when the ledger books them.
+func TestSweepLedgerClearingNetsToZero(t *testing.T) {
+	t.Parallel()
+
+	const (
+		input1Sat = int64(40_000)
+		input2Sat = int64(60_000)
+		feeSat    = int64(444)
+		anchorSat = int64(330)
+	)
+
+	buildTx := func(destSat int64) *wire.MsgTx {
+		tx := wire.NewMsgTx(arktx.TxVersion)
+		tx.AddTxOut(&wire.TxOut{
+			Value:    destSat,
+			PkScript: []byte{txscript.OP_TRUE},
+		})
+		tx.AddTxOut(
+			arkscript.AnchorOutput(
+				arkscript.WithAnchorValue(anchorSat),
+			),
+		)
+
+		return tx
+	}
+
+	cases := []struct {
+		name         string
+		destAddr     string
+		wantExternal bool
+	}{
+		{
+			name:         "wallet-derived return",
+			destAddr:     "",
+			wantExternal: false,
+		},
+		{
+			name:         "external destination",
+			destAddr:     "bcrt1pexternaladdress",
+			wantExternal: true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			swept := chainhash.Hash{0x7a}
+			in1 := wire.OutPoint{
+				Hash: chainhash.Hash{
+					0xa1,
+				}, Index: 0,
+			}
+			in2 := wire.OutPoint{
+				Hash: chainhash.Hash{
+					0xb2,
+				}, Index: 1,
+			}
+
+			total := input1Sat + input2Sat
+			destSat := total - feeSat - anchorSat
+
+			record := &BoardingSweepRecord{
+				Txid:               swept,
+				Tx:                 buildTx(destSat),
+				DestinationAddress: tc.destAddr,
+				TotalAmount:        btcutil.Amount(total),
+				FeeAmount:          btcutil.Amount(feeSat),
+				Status:             "confirmed",
+				Inputs: []BoardingSweepInputRecord{
+					spentSweepInput(swept, in1, input1Sat),
+					spentSweepInput(swept, in2, input2Sat),
+				},
+			}
+
+			store := &MockBoardingSweepStore{}
+			store.On(
+				"GetBoardingSweep", mock.Anything, swept,
+			).Return(record, nil)
+
+			chainSource := newMockSweepChainSource(t, 0, 0)
+			sink, drain := newCapturingLedgerSink(t)
+			a := NewArk(
+				&MockBoardingBackend{}, &MockBoardingStore{},
+				nil, chainSource, nil, fn.Some(sink),
+				btclog.Disabled,
+				WithBoardingSweep(
+					store, &testBoardingSweepWallet{},
+					&chaincfg.RegressionNetParams,
+				),
+			)
+
+			result := a.handleSweepTxNotification(
+				t.Context(), BoardingSweepTxNotification{
+					Confirmed:   true,
+					Txid:        swept,
+					BlockHeight: 800_800,
+				},
+			)
+			require.True(t, result.IsOk())
+
+			msgs := drain(1)
+			require.Len(t, msgs, 1)
+
+			got := msgs[0]
+			confirmed, ok := got.(*ledger.BoardingSweepConfirmedMsg)
+			require.True(t, ok)
+			require.Equal(
+				t, tc.wantExternal,
+				confirmed.DestinationExternal,
+			)
+
+			var inputsTotal int64
+			for _, in := range confirmed.Inputs {
+				inputsTotal += in.AmountSat
+			}
+			require.Equal(
+				t, int64(0),
+				inputsTotal-confirmed.ChainCostSat-
+					confirmed.DestinationSat,
+				"sweep clearing identity must balance",
+			)
+		})
+	}
+}
+
+// TestSweepTxNotificationMissingTxSkipsLegs verifies that a sweep record
+// without its persisted transaction emits NO clearing legs at all, rather
+// than booking a fee + input set whose destination leg cannot be computed.
+// Emitting a partial set would strand the destination value in
+// wallet_clearing forever; skipping leaves the account untouched at zero.
+func TestSweepTxNotificationMissingTxSkipsLegs(t *testing.T) {
+	t.Parallel()
+
+	swept := chainhash.Hash{0x6c}
+	in1 := wire.OutPoint{Hash: chainhash.Hash{0xd4}, Index: 0}
+
+	record := &BoardingSweepRecord{
+		Txid:               swept,
+		Tx:                 nil,
+		DestinationAddress: "",
+		TotalAmount:        btcutil.Amount(40_000),
+		FeeAmount:          btcutil.Amount(500),
+		Status:             "confirmed",
+		Inputs: []BoardingSweepInputRecord{
+			{
+				Txid:     swept,
+				Outpoint: in1,
+				Amount:   btcutil.Amount(40_000),
+				Status:   BoardingSweepInputStatusSpent,
+			},
+		},
+	}
+
+	store := &MockBoardingSweepStore{}
+	store.On(
+		"GetBoardingSweep", mock.Anything, swept,
+	).Return(record, nil)
+
+	chainSource := newMockSweepChainSource(t, 0, 0)
+	sink, drain := newCapturingLedgerSink(t)
+	a := NewArk(
+		&MockBoardingBackend{}, &MockBoardingStore{}, nil, chainSource,
+		nil, fn.Some(sink), btclog.Disabled,
+		WithBoardingSweep(
+			store, &testBoardingSweepWallet{},
+			&chaincfg.RegressionNetParams,
+		),
+	)
+
+	result := a.handleSweepTxNotification(
+		t.Context(), BoardingSweepTxNotification{
+			Confirmed:   true,
+			Txid:        swept,
+			BlockHeight: 800_900,
+		},
+	)
+	require.True(t, result.IsOk())
+
+	// want=0 returns after the short settle window with any stray
+	// emissions; a record without its tx must produce none.
+	require.Empty(
+		t, drain(0),
+		"sweep record without tx must emit no clearing legs",
+	)
 }
 
 // TestSweepTxNotificationFailedMarksFailed verifies that a terminal

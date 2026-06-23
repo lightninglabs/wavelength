@@ -505,8 +505,8 @@ func (a *LedgerActor) Receive(ctx context.Context, msg LedgerMsg,
 	case *UTXOSpentMsg:
 		return a.handleUTXOSpent(ctx, m, ax)
 
-	case *WalletSweepTransferMsg:
-		return a.handleWalletSweepTransfer(ctx, m, ax)
+	case *BoardingSweepConfirmedMsg:
+		return a.handleBoardingSweepConfirmed(ctx, m, ax)
 
 	default:
 		return fn.Err[LedgerResp](
