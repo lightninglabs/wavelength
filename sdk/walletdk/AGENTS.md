@@ -41,9 +41,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   `daemonCfg.EagerRoundJoin = false`.
 - DTOs (wrapper-owned, isolated from proto enums): `Info`, `Balance`,
   `CreateWalletResult`, `UnlockWalletResult`, `ReceiveRequest`/`Result`
-  (returns invoice + initial `Entry`), `SendRequest`/`Result` (returns
-  `Entry` + `ActualAmountSat`, which can exceed requested amount for
-  onchain whole-VTXO sweeps), `DepositRequest`/`Result` (boarding
+  (returns invoice + initial `Entry`), the two-step send DTOs
+  `PrepareSendRequest`/`PrepareSendResult` and
+  `SendPreparedRequest`/`SendResult` (`PrepareSend` quotes and returns a
+  single-use `SendIntentID`; `SendPrepared` dispatches it and returns
+  `Entry` + `ActualAmountSat`, which equals the requested amount for a
+  bounded send and the swept total for sweep-all), `DepositRequest`/`Result` (boarding
   address + initial `Entry`), `ListRequest`, `ListResult` (tagged union
   on `View`, populates one of `Activity`/`VTXOs`/`Onchain`),
   `ActivityList`, `VTXOInventory`, `OnchainHistory`, `Entry`,
@@ -79,7 +82,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 | `Balance` | Flat balance (`confirmed_sat`, `pending_in_sat`, `pending_out_sat`). |
 | `Deposit` | Allocate a fresh boarding address (`recv --onchain` from CLI). |
 | `Receive` | Open a Lightning invoice receive (`recv --offchain`). Returns `{Invoice, Entry}`. |
-| `Send` | Outbound payment by invoice or onchain address. Returns `{Entry, ActualAmountSat}`. |
+| `PrepareSend` | Validate + quote an outbound payment; returns a single-use `SendIntentID`. |
+| `SendPrepared` | Dispatch a prepared send (consumes `SendIntentID`). Returns `{Entry, ActualAmountSat}`. |
 | `List` | Unified history view (Activity / VTXOs / Onchain) as a tagged-union `ListResult`. |
 | `Exit` | Trigger cooperative leave or unilateral unroll for a VTXO. |
 | `ExitStatus` | Query the phase of an exit job. |

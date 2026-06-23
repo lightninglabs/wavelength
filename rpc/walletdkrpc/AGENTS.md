@@ -16,11 +16,12 @@ Proto source: `rpc/walletdkrpc/wallet.proto`.
 |--------|---------|
 | `Create` | Initialize a new wallet (proxies `GenSeed` + `InitWallet`) |
 | `Unlock` | Unlock an existing wallet (proxies `UnlockWallet`) |
-| `Send` | Outbound payment; destination oneof picks invoice vs onchain |
+| `PrepareSend` | Validate + quote an outbound payment; returns a single-use `send_intent_id` |
+| `Send` | Dispatch a prepared send; consumes `send_intent_id` |
 | `Recv` | Inbound Lightning invoice (offchain receive) |
 | `List` | Unified wallet view; `ListView` selects activity/vtxos/onchain |
 | `Balance` | Flat balance (confirmed / pending_in / pending_out) |
-| `Exit` | Unilateral exit / unroll (proxies `Unroll`) |
+| `Exit` | Cooperative leave by default; unilateral unroll only with the exact force-ack |
 | `Deposit` | Fresh boarding address (used by `recv --onchain`) |
 | `Status` | Daemon + wallet readiness summary |
 | `ExitStatus` | Phase of an exit job (proxies `GetUnrollStatus`) |

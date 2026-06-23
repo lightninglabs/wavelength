@@ -220,10 +220,10 @@ type SendResult struct {
 
 	// ActualAmountSat is the real amount that will leave the wallet for
 	// this operation. For invoice sends it matches the invoice principal.
-	// For onchain sends it reflects the sum of selected VTXOs and may
-	// exceed the requested amount under v1 whole-VTXO sweep semantics, so
-	// host UIs SHOULD echo it back to the user before treating the send
-	// as confirmed.
+	// For a bounded onchain send it matches the requested amount (the
+	// seal-time fee handshake returns change). For a sweep-all onchain
+	// send it reflects the swept VTXO total, so host UIs SHOULD echo it
+	// back to the user before treating the send as confirmed.
 	ActualAmountSat int64
 }
 

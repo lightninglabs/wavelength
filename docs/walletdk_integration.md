@@ -24,8 +24,8 @@ Without those tags, `Start` fails with `walletdk.ErrWalletRPCUnavailable`.
 2. Start the embedded daemon with `walletdk.Start`, or connect to an external
    daemon with `walletdk.Connect`.
 3. Create or unlock the wallet.
-4. Use `Status`, `Balance`, `Deposit`, `Receive`, `Send`, `List`, and
-   `Subscribe`.
+4. Use `Status`, `Balance`, `Deposit`, `Receive`, `PrepareSend` /
+   `SendPrepared`, `List`, and `Subscribe`.
 5. Call `Stop` when the host app shuts down.
 
 ```go
@@ -143,10 +143,13 @@ fmt.Println("invoice:", receive.Invoice)
 fmt.Println("entry:", receive.Entry.ID, receive.Entry.Status)
 ```
 
-Send to a Lightning invoice or on-chain address:
+Send to a Lightning invoice or on-chain address. Sending is a two-step flow:
+`PrepareSend` validates and quotes the payment and returns a single-use
+`SendIntentID`; `SendPrepared` then dispatches that intent. This lets a UI show
+the fee/rail quote before the user commits.
 
 ```go
-send, err := client.Send(ctx, walletdk.SendRequest{
+prepared, err := client.PrepareSend(ctx, walletdk.PrepareSendRequest{
 	Invoice:   bolt11Invoice,
 	MaxFeeSat: 1_000,
 	Note:      "demo payment",
@@ -155,7 +158,21 @@ if err != nil {
 	panic(err)
 }
 
+// Inspect the quote before committing: prepared.AmountSat,
+// prepared.ExpectedFeeSat / prepared.FeeKnown, prepared.Rail,
+// prepared.QuoteStatus, and prepared.ExpiresAtUnix.
+send, err := client.SendPrepared(ctx, walletdk.SendPreparedRequest{
+	SendIntentID: prepared.SendIntentID,
+})
+if err != nil {
+	panic(err)
+}
+
+// ActualAmountSat equals the requested amount for a bounded send; for a
+// sweep-all send it is the swept total. Echo it before treating the send
+// as confirmed.
 fmt.Println("entry:", send.Entry.ID, send.Entry.Status)
+fmt.Println("actual outflow:", send.ActualAmountSat)
 ```
 
 ## Native btcwallet RPC
@@ -185,18 +202,20 @@ before the self-managed wallet has been created or unlocked.
 
 ## Wallet Activity
 
-`List` is the durable wallet activity view. It returns normalized `Entry` rows
+`List` returns a `ListResult` tagged union: read the variant named by `View`
+(`Activity`, `VTXOs`, or `Onchain`) and treat the others as `nil`. The default
+view is `ListViewActivity`, whose `Activity.Entries` are normalized `Entry` rows
 for sends, receives, deposits, and exits.
 
 ```go
 history, err := client.List(ctx, walletdk.ListRequest{
-	PendingOnly: false,
+	View: walletdk.ListViewActivity,
 })
 if err != nil {
 	panic(err)
 }
 
-for _, entry := range history.Entries {
+for _, entry := range history.Activity.Entries {
 	fmt.Println(entry.Kind, entry.ID, entry.Status, entry.AmountSat)
 }
 ```
@@ -241,8 +260,8 @@ Keep host-language bindings thin:
 
 - Own one `*walletdk.Client` per wallet runtime.
 - Expose explicit `Start` or `Connect`, `Stop`, `CreateWallet`,
-  `UnlockWallet`, `Status`, `Balance`, `Deposit`, `Receive`, `Send`, `List`,
-  and `Subscribe` methods.
+  `UnlockWallet`, `Status`, `Balance`, `Deposit`, `Receive`, `PrepareSend`,
+  `SendPrepared`, `List`, and `Subscribe` methods.
 - Convert SDK structs into plain host DTOs. Do not expose protobuf messages to
   mobile or JavaScript callers.
 - Accept caller-provided timeouts or cancellation handles for every operation.

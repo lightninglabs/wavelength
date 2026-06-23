@@ -57,12 +57,15 @@
 // in v1 should track the WalletEntry.Counterparty (truncated bech32
 // address or txid) and the persisted ledger txid via separate queries.
 //
-// Onchain SEND sweep semantics: the cooperative-leave path sweeps WHOLE
-// selected VTXOs to the destination, so the recipient may receive more
-// than the caller's amt_sat. SendResponse.actual_amount_sat carries the
-// real outflow and SHOULD be echoed to the user before treating the
-// send as confirmed. The "drain the wallet" intent is structurally
-// distinct in v1: SendRequest.sweep_all must be set explicitly and
-// amt_sat must be zero; a typo'd amt_sat=0 without sweep_all is rejected
-// up front at the wallet layer and again at the CLI.
+// Onchain SEND sweep semantics: a bounded onchain send (amt_sat > 0)
+// lands exactly amt_sat at the destination and returns the remainder as
+// a change VTXO under the seal-time fee handshake, so it does not
+// overpay. Only a sweep_all send drains WHOLE selected VTXOs, so only
+// then does SendResponse.actual_amount_sat exceed any single requested
+// figure; it carries the real outflow and SHOULD be echoed to the user
+// before treating the send as confirmed. The "drain the wallet" intent
+// is structurally distinct in v1: SendRequest.sweep_all must be set
+// explicitly and amt_sat must be zero; a typo'd amt_sat=0 without
+// sweep_all is rejected up front at the wallet layer and again at the
+// CLI.
 package swapwallet

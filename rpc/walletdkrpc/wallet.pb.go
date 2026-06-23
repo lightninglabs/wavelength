@@ -1186,11 +1186,13 @@ type SendResponse struct {
 	Entry *WalletEntry `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
 	// actual_amount_sat is the real amount that will leave the wallet
 	// for this operation. For invoice sends it matches the caller's
-	// amt_sat (or the invoice amount for amount-bearing invoices). For
-	// onchain sends it reflects the SUM of selected VTXOs, which under
-	// v1 whole-VTXO sweep semantics may exceed amt_sat. CLI and UI
-	// surfaces SHOULD echo this back to the user before treating the
-	// send as confirmed.
+	// amt_sat (or the invoice amount for amount-bearing invoices). For a
+	// bounded onchain send it matches the requested amt_sat: the
+	// seal-time fee handshake returns a change VTXO rather than sweeping
+	// whole VTXOs. For a sweep_all onchain send it reflects the SUM of
+	// the swept VTXOs (the whole-wallet drain). CLI and UI surfaces
+	// SHOULD echo this back to the user before treating the send as
+	// confirmed.
 	ActualAmountSat int64 `protobuf:"varint,2,opt,name=actual_amount_sat,json=actualAmountSat,proto3" json:"actual_amount_sat,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
