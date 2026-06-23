@@ -204,6 +204,29 @@ func TestServiceBalanceProjectsDaemonGetBalance(t *testing.T) {
 	require.Equal(t, int64(5_000), resp.GetPendingOutSat())
 }
 
+func TestServiceBalanceIncludesCredits(t *testing.T) {
+	t.Parallel()
+
+	svc, swap, rpc := newServiceFixture(t)
+	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+		VtxoBalanceSat: 75_000,
+	}
+	swap.listCreditsResp = &swapclientrpc.ListCreditsResponse{
+		AvailableSat: 12_345,
+		ReservedSat:  6_789,
+	}
+
+	resp, err := svc.Balance(
+		t.Context(), &walletdkrpc.BalanceRequest{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(75_000), resp.GetConfirmedSat())
+	require.Equal(t, uint64(12_345), resp.GetCreditAvailableSat())
+	require.Equal(t, uint64(6_789), resp.GetCreditReservedSat())
+	require.Equal(t, 1, swap.listCreditsCalls)
+	require.Equal(t, uint32(1), swap.listCreditsLast.GetLimit())
+}
+
 // TestServiceBalanceKeepsAdoptedBoardingPending pins issue #542: after a
 // boarding UTXO is adopted into a round, the underlying on-chain UTXO is
 // spent before the resulting VTXO is live. The balance must keep that value

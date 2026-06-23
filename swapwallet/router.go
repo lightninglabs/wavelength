@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -138,8 +139,9 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 
 	quote, err := r.deps.SwapService.QuotePay(
 		ctx, &swapclientrpc.QuotePayRequest{
-			Invoice:   invoice,
-			MaxFeeSat: req.GetMaxFeeSat(),
+			Invoice:      invoice,
+			MaxFeeSat:    req.GetMaxFeeSat(),
+			MaxCreditSat: ^uint64(0),
 		},
 	)
 	if err != nil {
@@ -162,6 +164,23 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 	if err != nil {
 		return nil, err
 	}
+	if quote != nil && quote.GetCreditQuote() != nil {
+		creditQuote := quote.GetCreditQuote()
+		intent.creditPreview = preview.creditPreview
+		intent.maxCreditSat = creditQuote.GetCreditAppliedSat()
+		if creditQuote.GetCreditShortfallSat() >
+			^uint64(0)-intent.maxCreditSat {
+
+			intent.maxCreditSat = ^uint64(0)
+		} else {
+			intent.maxCreditSat += creditQuote.GetCreditShortfallSat()
+		}
+		if quote.GetCreditQuote().GetMustUseCredit() {
+			if uint64(amountSat) > intent.maxCreditSat {
+				intent.maxCreditSat = uint64(amountSat)
+			}
+		}
+	}
 
 	if _, err := r.intents.put(intent); err != nil {
 		return nil, err
@@ -179,10 +198,15 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 		return nil, ErrSwapBackendUnavailable
 	}
 
+	if err := r.fundInvoiceCreditShortfall(ctx, intent); err != nil {
+		return nil, err
+	}
+
 	startResp, err := r.deps.SwapService.StartPay(
 		ctx, &swapclientrpc.StartPayRequest{
-			Invoice:   intent.invoice,
-			MaxFeeSat: intent.maxFeeSat,
+			Invoice:      intent.invoice,
+			MaxFeeSat:    intent.maxFeeSat,
+			MaxCreditSat: intent.maxCreditSat,
 		},
 	)
 	if err != nil {
@@ -197,10 +221,144 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 	// For invoice sends actual_amount_sat is the swap's negotiated
 	// principal: that's what is being paid to the BOLT-11 destination
 	// (routing fees are tracked separately via fee_sat on the entry).
+	actualAmountSat := startResp.GetSwap().GetAmountSat()
+	if actualAmountSat == 0 {
+		actualAmountSat = int64(intent.amountSat)
+	}
+
 	return &walletdkrpc.SendResponse{
 		Entry:           entry,
-		ActualAmountSat: startResp.GetSwap().GetAmountSat(),
+		ActualAmountSat: actualAmountSat,
 	}, nil
+}
+
+func (r *router) fundInvoiceCreditShortfall(ctx context.Context,
+	intent *preparedSendIntent) error {
+
+	if intent == nil || intent.creditPreview == nil ||
+		intent.creditPreview.GetCreditShortfallSat() == 0 {
+		return nil
+	}
+	if r.deps.RPCServer == nil {
+		return ErrSwapBackendUnavailable
+	}
+
+	topupSat := intent.creditPreview.GetCreditTopupSat()
+	if topupSat == 0 {
+		return fmt.Errorf("%w: credit top-up amount missing",
+			ErrAmountInvalid)
+	}
+	if topupSat > math.MaxInt64 {
+		return fmt.Errorf("%w: credit top-up exceeds int64 range",
+			ErrAmountInvalid)
+	}
+
+	idempotencyKey := "credit-topup-" + intent.id
+	creditResp, err := r.deps.SwapService.CreateCredit(
+		ctx, &swapclientrpc.CreateCreditRequest{
+			IdempotencyKey: idempotencyKey,
+			Source: swapclientrpc.
+				CreditFundingSource_CREDIT_FUNDING_SOURCE_ARK_TOPUP,
+			AmountSat: topupSat,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("create credit top-up: %w", err)
+	}
+
+	if creditResp.GetState() != swapclientrpc.
+		CreditOperationState_CREDIT_OPERATION_STATE_CREDITED {
+
+		if len(creditResp.GetDestinationPubkey()) == 0 {
+			return fmt.Errorf("credit top-up destination missing")
+		}
+
+		_, err = r.deps.RPCServer.SendOOR(
+			ctx, &daemonrpc.SendOORRequest{
+				Recipients: []*daemonrpc.Output{{
+					Destination: &daemonrpc.Output_Pubkey{
+						Pubkey: append(
+							[]byte(nil),
+							creditResp.GetDestinationPubkey()...,
+						),
+					},
+					AmountSat: int64(topupSat),
+				}},
+				IdempotencyKey: idempotencyKey,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("fund credit top-up: %w", err)
+		}
+	}
+
+	return r.waitCreditTopUp(
+		ctx, creditResp.GetOperationId(), intent.maxCreditSat,
+	)
+}
+
+func (r *router) waitCreditTopUp(ctx context.Context, operationID string,
+	requiredAvailableSat uint64) error {
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		credits, err := r.deps.SwapService.ListCredits(
+			ctx, &swapclientrpc.ListCreditsRequest{
+				Limit: ^uint32(0),
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("list credits: %w", err)
+		}
+		credited, terminalErr := creditOperationCredited(
+			credits, operationID,
+		)
+		if terminalErr != nil {
+			return terminalErr
+		}
+		if credits.GetAvailableSat() >= requiredAvailableSat &&
+			credited {
+			return nil
+		}
+
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func creditOperationCredited(snapshot *swapclientrpc.ListCreditsResponse,
+	operationID string) (bool, error) {
+
+	for _, op := range snapshot.GetOperations() {
+		if op.GetOperationId() != operationID {
+			continue
+		}
+
+		switch op.GetState() {
+		case swapclientrpc.
+			CreditOperationState_CREDIT_OPERATION_STATE_CREDITED:
+			return true, nil
+
+		case swapclientrpc.
+			CreditOperationState_CREDIT_OPERATION_STATE_FAILED,
+			swapclientrpc.
+				CreditOperationState_CREDIT_OPERATION_STATE_EXPIRED,
+			swapclientrpc.
+				CreditOperationState_CREDIT_OPERATION_STATE_RELEASED:
+			return false, fmt.Errorf("credit top-up %s ended in %s",
+				operationID, op.GetState())
+
+		default:
+			return false, nil
+		}
+	}
+
+	return false, nil
 }
 
 // prepareOnchain validates an onchain destination and builds a fee-aware
@@ -506,8 +664,7 @@ func extractPreparedInvoiceAmountSat(decoded *zpay32.Invoice) (uint64, error) {
 			ErrAmountInvalid)
 	}
 	if amountMSat%1000 != 0 {
-		return 0, fmt.Errorf("%w: invoice amount must be whole "+
-			"satoshis", ErrAmountInvalid)
+		return (amountMSat + 999) / 1000, nil
 	}
 
 	return amountMSat / 1000, nil
@@ -593,6 +750,11 @@ func prepareInvoicePreviewFromQuote(invoice, description, paymentHash string,
 		warning = "quoted fee exceeds max_fee_sat; Send will fail " +
 			"unless prepared with a higher fee cap"
 	}
+	creditPreview := creditPreviewFromQuote(quote.GetCreditQuote())
+	if creditPreview != nil && creditPreview.GetCreditShortfallSat() > 0 {
+		warning = fmt.Sprintf("credit shortfall requires %d sat top-up",
+			creditPreview.GetCreditTopupSat())
+	}
 
 	return prepareSendPreview{
 		rail: rail,
@@ -607,7 +769,24 @@ func prepareInvoicePreviewFromQuote(invoice, description, paymentHash string,
 		invoiceDescription:      description,
 		paymentHash:             quote.GetPaymentHash(),
 		warning:                 warning,
+		creditPreview:           creditPreview,
 	}, nil
+}
+
+func creditPreviewFromQuote(
+	quote *swapclientrpc.CreditQuote) *walletdkrpc.CreditPreview {
+
+	if quote == nil {
+		return nil
+	}
+
+	return &walletdkrpc.CreditPreview{
+		MustUseCredit:      quote.GetMustUseCredit(),
+		CreditAppliedSat:   quote.GetCreditAppliedSat(),
+		CreditShortfallSat: quote.GetCreditShortfallSat(),
+		CreditTopupSat:     quote.GetCreditTopupSat(),
+		ArkFundingSat:      quote.GetArkFundingSat(),
+	}
 }
 
 func sendRailFromQuoteSettlement(
@@ -621,6 +800,12 @@ func sendRailFromQuoteSettlement(
 
 	case swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK:
 		return walletdkrpc.SendRail_SEND_RAIL_IN_ARK, nil
+
+	case swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT:
+		return walletdkrpc.SendRail_SEND_RAIL_CREDIT, nil
+
+	case swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_MIXED:
+		return walletdkrpc.SendRail_SEND_RAIL_MIXED, nil
 
 	default:
 		return walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN, nil

@@ -31,6 +31,8 @@ type preparedSendIntent struct {
 	amountSat      uint64
 	note           string
 	maxFeeSat      uint64
+	maxCreditSat   uint64
+	creditPreview  *walletdkrpc.CreditPreview
 	sweepAll       bool
 
 	selectedOutpoints []string
@@ -49,6 +51,7 @@ type prepareSendPreview struct {
 	invoiceDescription      string
 	paymentHash             string
 	warning                 string
+	creditPreview           *walletdkrpc.CreditPreview
 }
 
 type preparedSendStore struct {
@@ -148,6 +151,7 @@ func prepareResponseFromIntent(intent *preparedSendIntent,
 		SelectedOutpoints: append(
 			[]string(nil), intent.selectedOutpoints...,
 		),
-		Warning: preview.warning,
+		Warning:       preview.warning,
+		CreditPreview: preview.creditPreview,
 	}
 }
