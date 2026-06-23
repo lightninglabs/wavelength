@@ -219,7 +219,16 @@ func (m *SendListOORRecipientEventsByScriptRequest) Decode(r io.Reader) error {
 		return err
 	}
 
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	// Bound the untrusted payload before decode: this durable query
+	// persists in the outbox and is replayed from disk, so a crafted
+	// record length must not drive an unbounded make() in the tlv
+	// library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(safe); err != nil {
 		return err
 	}
 
@@ -425,7 +434,14 @@ func (m *SendListVTXOsByScriptsRequest) Decode(r io.Reader) error {
 		return err
 	}
 
-	parsed, err := stream.DecodeWithParsedTypes(r)
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
+	parsed, err := stream.DecodeWithParsedTypes(safe)
 	if err != nil {
 		return err
 	}
@@ -585,6 +601,16 @@ func decodeLengthPrefixedBlobList(raw []byte) ([][]byte, error) {
 		return nil, err
 	}
 
+	// Each blob carries at least its own 4-byte length prefix, so a
+	// count larger than the remaining bytes can never be satisfied.
+	// Bound it before make([][]byte, 0, count) so a crafted count (up
+	// to 4 GiB for a uint32) cannot pre-allocate a multi-gigabyte
+	// backing array and OOM the actor on replay.
+	if uint64(count) > uint64(reader.Len())/4 {
+		return nil, fmt.Errorf("blob count %d exceeds %d remaining "+
+			"bytes", count, reader.Len())
+	}
+
 	blobs := make([][]byte, 0, count)
 	for i := uint32(0); i < count; i++ {
 		blob, err := readLengthPrefixedBlob(reader)
@@ -614,11 +640,21 @@ func writeLengthPrefixedBlob(w io.Writer, blob []byte) error {
 	return err
 }
 
-// readLengthPrefixedBlob decodes one length-prefixed byte slice.
+// readLengthPrefixedBlob decodes one length-prefixed byte slice. The
+// declared size is bounded against the bytes physically remaining in
+// the reader before make([]byte, size) so a crafted length (up to 4
+// GiB for a uint32 prefix) cannot drive an OOM ahead of io.ReadFull.
+// A blob can never legitimately carry more bytes than remain in its
+// enclosing buffer.
 func readLengthPrefixedBlob(r *bytes.Reader) ([]byte, error) {
 	var size uint32
 	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
 		return nil, err
+	}
+
+	if uint64(size) > uint64(r.Len()) {
+		return nil, fmt.Errorf("blob length %d exceeds %d remaining "+
+			"bytes", size, r.Len())
 	}
 
 	blob := make([]byte, size)
