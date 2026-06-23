@@ -9,8 +9,27 @@ import (
 )
 
 // TestEntryFromProto guards the wrapper-owned wallet activity DTO from
-// accidental protobuf field drift.
+// accidental protobuf field drift, including the progress and request
+// sub-messages.
 func TestEntryFromProto(t *testing.T) {
+	prog := &walletdkrpc.WalletEntryProgress{
+		PhaseLabel:         "settling",
+		PaymentHash:        "phash",
+		Txid:               "txid",
+		ConfirmationHeight: 7,
+		VtxoOutpoint:       "vtxo:0",
+	}
+	prog.Phase = walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING
+
+	req := &walletdkrpc.WalletEntryRequest{
+		Request: &walletdkrpc.WalletEntryRequest_LightningInvoice{
+			LightningInvoice: &walletdkrpc.LightningInvoiceRequest{
+				Invoice:     "lnbc1...",
+				PaymentHash: "phash",
+			},
+		},
+	}
+
 	proto := &walletdkrpc.WalletEntry{
 		Id:            "id",
 		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_SEND,
@@ -22,6 +41,8 @@ func TestEntryFromProto(t *testing.T) {
 		UpdatedAtUnix: 12,
 		Note:          "note",
 		FailureReason: "reason",
+		Progress:      prog,
+		Request:       req,
 	}
 
 	entry := entryFromProto(proto)
@@ -35,6 +56,157 @@ func TestEntryFromProto(t *testing.T) {
 	require.Equal(t, time.Unix(12, 0), entry.UpdatedAt)
 	require.Equal(t, "note", entry.Note)
 	require.Equal(t, "reason", entry.FailureReason)
+
+	require.NotNil(t, entry.Progress)
+	require.Equal(t, EntryPhaseSettling, entry.Progress.Phase)
+	require.Equal(t, "settling", entry.Progress.PhaseLabel)
+	require.Equal(t, "phash", entry.Progress.PaymentHash)
+	require.Equal(t, "txid", entry.Progress.Txid)
+	require.EqualValues(t, 7, entry.Progress.ConfirmationHeight)
+	require.Equal(t, "vtxo:0", entry.Progress.VTXOOutpoint)
+
+	require.NotNil(t, entry.Request)
+	require.Equal(t, EntryRequestTypeLightning, entry.Request.Type)
+	require.Equal(t, "lnbc1...", entry.Request.LightningInvoice)
+	require.Equal(t, "phash", entry.Request.PaymentHash)
+}
+
+// TestEntryFromProtoNoProgressOrRequest confirms a bare entry leaves the
+// optional sub-objects nil rather than allocating empty shells, so callers can
+// treat absence uniformly.
+func TestEntryFromProtoNoProgressOrRequest(t *testing.T) {
+	entry := entryFromProto(&walletdkrpc.WalletEntry{Id: "id"})
+	require.Equal(t, "id", entry.ID)
+	require.Nil(t, entry.Progress)
+	require.Nil(t, entry.Request)
+}
+
+// TestEntryPhaseFromProto exhaustively maps every walletdkrpc phase value to
+// the wrapper-owned lowercase string, including the unspecified fallback.
+func TestEntryPhaseFromProto(t *testing.T) {
+	ph := walletdkrpc.WalletEntryPhase_value
+	cases := []struct {
+		in   walletdkrpc.WalletEntryPhase
+		want EntryPhase
+	}{
+		{
+			in:   phaseEnum(ph, "UNSPECIFIED"),
+			want: EntryPhaseUnspecified,
+		},
+		{
+			in:   phaseEnum(ph, "REQUEST_CREATED"),
+			want: EntryPhaseRequestCreated,
+		},
+		{
+			in:   phaseEnum(ph, "WAITING_FOR_PAYMENT"),
+			want: EntryPhaseWaitingForPayment,
+		},
+		{
+			in:   phaseEnum(ph, "PAYMENT_DETECTED"),
+			want: EntryPhasePaymentDetected,
+		},
+		{
+			in:   phaseEnum(ph, "SETTLING"),
+			want: EntryPhaseSettling,
+		},
+		{
+			in:   phaseEnum(ph, "CONFIRMED"),
+			want: EntryPhaseConfirmed,
+		},
+		{
+			in:   phaseEnum(ph, "REFUNDING"),
+			want: EntryPhaseRefunding,
+		},
+		{
+			in:   phaseEnum(ph, "REFUNDED"),
+			want: EntryPhaseRefunded,
+		},
+		{
+			in:   phaseEnum(ph, "FAILED"),
+			want: EntryPhaseFailed,
+		},
+		{
+			in:   phaseEnum(ph, "WAITING_FOR_CONFIRMATION"),
+			want: EntryPhaseWaitingForConfirmation,
+		},
+	}
+
+	// Guard against a new proto phase landing without a wrapper mapping.
+	require.Len(t, cases, len(ph))
+
+	for _, tc := range cases {
+		require.Equal(
+			t, tc.want, entryPhaseFromProto(tc.in),
+			"in=%v", tc.in,
+		)
+	}
+}
+
+// phaseEnum resolves a short phase suffix to its generated enum value, keeping
+// the table above within the line limit.
+func phaseEnum(m map[string]int32, suffix string) walletdkrpc.WalletEntryPhase {
+	return walletdkrpc.WalletEntryPhase(m["WALLET_ENTRY_PHASE_"+suffix])
+}
+
+// TestEntryRequestFromProto covers each oneof variant plus the nil and
+// empty-oneof paths.
+func TestEntryRequestFromProto(t *testing.T) {
+	require.Nil(t, entryRequestFromProto(nil))
+	require.Nil(t, entryRequestFromProto(&walletdkrpc.WalletEntryRequest{}))
+
+	ln := entryRequestFromProto(&walletdkrpc.WalletEntryRequest{
+		Request: &walletdkrpc.WalletEntryRequest_LightningInvoice{
+			LightningInvoice: &walletdkrpc.LightningInvoiceRequest{
+				Invoice:     "lnbc1...",
+				PaymentHash: "phash",
+			},
+		},
+	})
+	require.Equal(t, EntryRequestTypeLightning, ln.Type)
+	require.Equal(t, "lnbc1...", ln.LightningInvoice)
+	require.Equal(t, "phash", ln.PaymentHash)
+
+	onchain := entryRequestFromProto(&walletdkrpc.WalletEntryRequest{
+		Request: &walletdkrpc.WalletEntryRequest_OnchainAddress{
+			OnchainAddress: &walletdkrpc.OnchainAddressRequest{
+				Address: "bc1qaddr",
+			},
+		},
+	})
+	require.Equal(t, EntryRequestTypeOnchain, onchain.Type)
+	require.Equal(t, "bc1qaddr", onchain.OnchainAddress)
+
+	ark := entryRequestFromProto(&walletdkrpc.WalletEntryRequest{
+		Request: &walletdkrpc.WalletEntryRequest_ArkAddress{
+			ArkAddress: &walletdkrpc.ArkAddressRequest{
+				Address: "ark1qaddr",
+			},
+		},
+	})
+	require.Equal(t, EntryRequestTypeArk, ark.Type)
+	require.Equal(t, "ark1qaddr", ark.ArkAddress)
+
+	// A wrapper set with a nil inner message still names the variant via
+	// the type switch; the nil-safe getters then yield empty fields. gRPC
+	// decode always allocates the inner message, so this only arises from a
+	// hand-built struct, but pin the behavior so the type switch stays
+	// honest.
+	nilInner := entryRequestFromProto(&walletdkrpc.WalletEntryRequest{
+		Request: &walletdkrpc.WalletEntryRequest_LightningInvoice{},
+	})
+	require.Equal(t, EntryRequestTypeLightning, nilInner.Type)
+	require.Empty(t, nilInner.LightningInvoice)
+	require.Empty(t, nilInner.PaymentHash)
+}
+
+// TestEntryRequestOneofArity fails fast if a future proto change grows the
+// request oneof without a matching entryRequestFromProto branch, since a new
+// variant would otherwise be silently dropped to nil.
+func TestEntryRequestOneofArity(t *testing.T) {
+	oneofs := (&walletdkrpc.WalletEntryRequest{}).
+		ProtoReflect().Descriptor().Oneofs()
+	require.Equal(t, 1, oneofs.Len())
+	require.Equal(t, 3, oneofs.Get(0).Fields().Len())
 }
 
 // TestEntryKindToProto verifies filters use the expected wallet RPC enum.

@@ -558,4 +558,129 @@ type Entry struct {
 	UpdatedAt     time.Time
 	Note          string
 	FailureReason string
+
+	// Progress carries the lifecycle metadata the daemon already
+	// normalized for this entry (phase, payment hash, txid, confirmation
+	// height, vHTLC outpoint). It is nil when the backing subsystem
+	// supplied no progress hint.
+	Progress *EntryProgress
+
+	// Request echoes the user-recognizable request that created the entry
+	// (a Lightning invoice, an on-chain address, or an Ark address). It is
+	// nil when the backing subsystem did not persist one.
+	Request *EntryRequest
+}
+
+// EntryPhase is a coarse, wrapper-owned lifecycle phase for an Entry. It does
+// not replace Status: Status answers pending/complete/failed, while Phase
+// explains the current backing-system step. Like the other Entry enums it is
+// a lowercase string decoupled from the proto enum so renumbering cannot break
+// callers; switch on it rather than comparing proto values.
+type EntryPhase string
+
+const (
+	// EntryPhaseUnspecified means the backing subsystem provided no
+	// lifecycle hint.
+	EntryPhaseUnspecified EntryPhase = "unspecified"
+
+	// EntryPhaseRequestCreated means the request was created but no payment
+	// has been observed yet.
+	EntryPhaseRequestCreated EntryPhase = "request_created"
+
+	// EntryPhaseWaitingForPayment means the wallet is waiting for an
+	// inbound payment or swap funding.
+	EntryPhaseWaitingForPayment EntryPhase = "waiting_for_payment"
+
+	// EntryPhasePaymentDetected means a payment was detected but is not yet
+	// settled.
+	EntryPhasePaymentDetected EntryPhase = "payment_detected"
+
+	// EntryPhaseSettling means the operation is settling through Ark,
+	// Lightning, or on-chain machinery.
+	EntryPhaseSettling EntryPhase = "settling"
+
+	// EntryPhaseConfirmed means the backing operation is confirmed or
+	// otherwise durably complete.
+	EntryPhaseConfirmed EntryPhase = "confirmed"
+
+	// EntryPhaseRefunding means the operation is currently refunding.
+	EntryPhaseRefunding EntryPhase = "refunding"
+
+	// EntryPhaseRefunded means the refund path completed.
+	EntryPhaseRefunded EntryPhase = "refunded"
+
+	// EntryPhaseFailed means the backing operation reached a terminal
+	// failed state.
+	EntryPhaseFailed EntryPhase = "failed"
+
+	// EntryPhaseWaitingForConfirmation means an on-chain payment was
+	// detected and is waiting for block confirmation.
+	EntryPhaseWaitingForConfirmation EntryPhase = "waiting_for_confirmation"
+)
+
+// EntryProgress is the wrapper-owned view of the lifecycle metadata the daemon
+// computes for an Entry. Fields are populated on a best-effort basis by the
+// backing subsystem; an empty field means "not applicable / not yet known".
+type EntryProgress struct {
+	// Phase is the coarse lifecycle phase for the entry.
+	Phase EntryPhase
+
+	// PhaseLabel is the short lowercase label the daemon emitted; clients
+	// may render it directly instead of switching on Phase.
+	PhaseLabel string
+
+	// PaymentHash is populated for Lightning-backed send/recv entries.
+	PaymentHash string
+
+	// Txid is populated when the backing ledger row has an on-chain txid.
+	Txid string
+
+	// ConfirmationHeight is populated once the source records it.
+	ConfirmationHeight int32
+
+	// VTXOOutpoint is populated when a swap observes the Ark vHTLC output.
+	VTXOOutpoint string
+}
+
+// EntryRequestType discriminates which request shape an EntryRequest carries.
+// Callers should switch on Type before reading the variant fields.
+type EntryRequestType string
+
+const (
+	// EntryRequestTypeLightning marks a Lightning send/recv request; the
+	// LightningInvoice and PaymentHash fields are populated.
+	EntryRequestTypeLightning EntryRequestType = "lightning"
+
+	// EntryRequestTypeOnchain marks a deposit/exit request; the
+	// OnchainAddress field is populated.
+	EntryRequestTypeOnchain EntryRequestType = "onchain"
+
+	// EntryRequestTypeArk marks a direct Ark send/recv request; the
+	// ArkAddress field is populated.
+	EntryRequestTypeArk EntryRequestType = "ark"
+)
+
+// EntryRequest is the wrapper-owned, flattened view of the proto request
+// oneof. Exactly one variant's fields are populated, named by Type; read Type
+// first and treat the other fields as zero.
+type EntryRequest struct {
+	// Type names the populated variant.
+	Type EntryRequestType
+
+	// LightningInvoice is the BOLT-11 payment request. Populated when Type
+	// is EntryRequestTypeLightning.
+	LightningInvoice string
+
+	// PaymentHash identifies the Lightning invoice and stays stable after
+	// the invoice is no longer convenient to display. Populated when Type
+	// is EntryRequestTypeLightning.
+	PaymentHash string
+
+	// OnchainAddress is the bech32 on-chain address originally issued or
+	// targeted. Populated when Type is EntryRequestTypeOnchain.
+	OnchainAddress string
+
+	// ArkAddress is the Ark address originally issued or targeted.
+	// Populated when Type is EntryRequestTypeArk.
+	ArkAddress string
 }

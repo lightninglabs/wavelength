@@ -46,8 +46,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   onchain whole-VTXO sweeps), `DepositRequest`/`Result` (boarding
   address + initial `Entry`), `ListRequest`, `ListResult` (tagged union
   on `View`, populates one of `Activity`/`VTXOs`/`Onchain`),
-  `ActivityList`, `VTXOInventory`, `OnchainHistory`, `Entry`,
-  `WalletVTXO`, `OnchainTx`.
+  `ActivityList`, `VTXOInventory`, `OnchainHistory`, `Entry`
+  (optional `Progress *EntryProgress` and `Request *EntryRequest`
+  sub-objects, both nil when absent; `Request` is a `Type`-tagged
+  union over lightning/onchain/ark), `WalletVTXO`, `OnchainTx`.
 - `ExitRequest` / `ExitResult` / `ExitStatusRequest` /
   `ExitStatusResult` / `ExitJobStatus` — exit DTOs. `ExitRequest`
   carries the target outpoint plus an optional on-chain `Destination`
@@ -138,15 +140,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   the wrapper boundary on builds without the `walletdkrpc` tag, before
   any RPC is attempted. `ErrSwapRuntimeUnavailable` is an alias for
   source-level compatibility with older swap-only callers.
-- `Entry.Kind`/`Entry.Status` / `ListResult.View` /
-  `WalletVTXO.Status` / `OnchainTx.Kind` / `ExitJobStatus` are
-  wrapper-owned lowercase strings (not proto enums). Projection lives
-  in `convert.go`, intentionally decoupled from proto enum
-  renumbering.
+- `Entry.Kind`/`Entry.Status` / `Entry.Progress.Phase` /
+  `Entry.Request.Type` / `ListResult.View` / `WalletVTXO.Status` /
+  `OnchainTx.Kind` / `ExitJobStatus` are wrapper-owned lowercase
+  strings (not proto enums). Projection lives in `convert.go`,
+  intentionally decoupled from proto enum renumbering.
 - `ListResult` is a discriminated union: read the variant named by
   `View` and treat the others as `nil`. Exhaustiveness is not
   enforced at compile time — switch on `View` rather than chaining
   nil checks.
+- `Entry.Progress` and `Entry.Request` are optional pointers: both are
+  `nil` when the daemon supplied no progress hint / persisted no
+  request, so nil-check before dereferencing. `Entry.Request` is a
+  discriminated union — read the variant named by `Type`
+  (`lightning`/`onchain`/`ark`) and treat the other fields as zero,
+  the same idiom as `ListResult.View`.
 - `Wait()` is single-reader: same shared channel on every call. The
   channel delivers the daemon's terminal run error then closes; a
   closed channel reads as the zero error indefinitely.
