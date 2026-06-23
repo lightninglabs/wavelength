@@ -42,7 +42,123 @@ const (
 	// SettlementTypeInArk means the sender and receiver settle with one
 	// vHTLC inside the same Ark instance.
 	SettlementTypeInArk SettlementType = "in_ark"
+
+	// SettlementTypeCredit means the swap server pays Lightning from a
+	// reserved credit balance without a client-funded vHTLC.
+	SettlementTypeCredit SettlementType = "credit"
+
+	// SettlementTypeMixed means the invoice is funded by both a vHTLC and
+	// a reserved credit balance.
+	SettlementTypeMixed SettlementType = "mixed"
 )
+
+// CreditQuote describes how a pay quote uses wallet credits.
+type CreditQuote struct {
+	MustUseCredit      bool
+	CreditAppliedSat   uint64
+	CreditShortfallSat uint64
+	CreditTopupSat     uint64
+	ArkFundingSat      uint64
+}
+
+// CreditFundingSource identifies how value enters a credit account.
+type CreditFundingSource string
+
+const (
+	// CreditFundingLightningReceive means the server creates and owns the
+	// Lightning invoice, then credits the wallet account after settlement.
+	CreditFundingLightningReceive CreditFundingSource = "lightning_receive"
+
+	// CreditFundingArkTopUp means the server returns a pubkey-backed Ark
+	// destination and credits the account after the OOR top-up is visible.
+	CreditFundingArkTopUp CreditFundingSource = "ark_topup"
+)
+
+// CreditOperationType identifies the durable credit operation family.
+type CreditOperationType string
+
+const (
+	CreditOperationFunding    CreditOperationType = "funding"
+	CreditOperationPay        CreditOperationType = "pay"
+	CreditOperationRedemption CreditOperationType = "redemption"
+	CreditOperationReceive    CreditOperationType = "receive"
+)
+
+// CreditOperationState is the externally visible credit state-machine state.
+type CreditOperationState string
+
+const (
+	CreditStateCreated         CreditOperationState = "created"
+	CreditStateAwaitingPayment CreditOperationState = "awaiting_payment"
+	CreditStateCredited        CreditOperationState = "credited"
+	CreditStateReserved        CreditOperationState = "reserved"
+	CreditStatePayingLightning CreditOperationState = "paying_lightning"
+	CreditStateDebited         CreditOperationState = "debited"
+	CreditStateSendingOOR      CreditOperationState = "sending_oor"
+	CreditStateRedeemed        CreditOperationState = "redeemed"
+	CreditStateReleased        CreditOperationState = "released"
+	CreditStateExpired         CreditOperationState = "expired"
+	CreditStateFailed          CreditOperationState = "failed"
+)
+
+// CreateCreditRequest describes one caller intent to materialize credits.
+type CreateCreditRequest struct {
+	IdempotencyKey string
+	Source         CreditFundingSource
+	AmountSat      uint64
+	Memo           string
+}
+
+// RedeemCreditRequest describes one caller intent to materialize credits back
+// into a dust-clearing Ark output.
+type RedeemCreditRequest struct {
+	IdempotencyKey    string
+	AmountSat         uint64
+	DestinationPubKey []byte
+}
+
+// CreditOperation is one server-authoritative credit state machine.
+type CreditOperation struct {
+	OperationID    string
+	Type           CreditOperationType
+	State          CreditOperationState
+	AmountSat      uint64
+	PaymentHash    *lntypes.Hash
+	Invoice        string
+	DestinationKey []byte
+	SessionID      string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	CompletedAt    *time.Time
+	ExpiresAt      *time.Time
+	LastError      string
+}
+
+// CreditLedgerEntry records one immutable finalized credit or debit.
+type CreditLedgerEntry struct {
+	EntryID     string
+	OperationID string
+	Direction   string
+	AmountSat   uint64
+	CreatedAt   time.Time
+}
+
+// CreditSnapshot is the server-authoritative account view.
+type CreditSnapshot struct {
+	FinalizedSat  uint64
+	ReservedSat   uint64
+	AvailableSat  uint64
+	Operations    []CreditOperation
+	LedgerEntries []CreditLedgerEntry
+}
+
+// CreditRedemption records the result of a successful credit redemption.
+type CreditRedemption struct {
+	Operation   CreditOperation
+	DebitedSat  uint64
+	RedeemedSat uint64
+	SessionID   string
+}
 
 // OORSendResult contains daemon metadata for an accepted OOR transfer.
 type OORSendResult = sdkark.OORSendResult
@@ -102,6 +218,25 @@ type SwapSummary struct {
 	// SettlementType identifies whether the swap settles through Lightning
 	// or as a same-Ark payment when that detail is durably known.
 	SettlementType SettlementType
+
+	// CreditQuote records the credit component of a pay quote when the
+	// server selected a credit or mixed rail.
+	CreditQuote *CreditQuote
+
+	// RequestedAmountSat is the invoice amount for receive swaps when it
+	// can differ from the funded vHTLC amount.
+	RequestedAmountSat uint64
+
+	// AttachedCreditSat is the credit amount attached to a credit-assisted
+	// receive.
+	AttachedCreditSat uint64
+
+	// AvailableCreditSat is the balance considered when the receive route
+	// was planned.
+	AvailableCreditSat uint64
+
+	// DustLimitSat is the vHTLC dust limit used for receive planning.
+	DustLimitSat uint64
 
 	// SenderPubkey is the vHTLC sender key when that remote party is
 	// durably known. For same-Ark receives this identifies the paying
@@ -241,6 +376,26 @@ type OutSwapQuote struct {
 
 	// PayerFeeMsat is the payer-paid route fee quoted by the swap server.
 	PayerFeeMsat uint64
+
+	// RequestedAmountSat is the invoice amount requested by the receiver.
+	RequestedAmountSat uint64
+
+	// AvailableCreditSat is the server-authoritative credit balance
+	// considered when the receive route was planned.
+	AvailableCreditSat uint64
+
+	// AttachedCreditSat is the credit amount reserved and added to the
+	// funded vHTLC.
+	AttachedCreditSat uint64
+
+	// VHTLCAmountSat is the funded vHTLC amount the client should expect.
+	VHTLCAmountSat uint64
+
+	// DustLimitSat is the minimum vHTLC output amount used by the server.
+	DustLimitSat uint64
+
+	// SettlementType identifies the receive rail selected by the server.
+	SettlementType SettlementType
 }
 
 // VHTLCConfig holds the timelocks and keys for a vHTLC.
@@ -275,6 +430,13 @@ type OutSwapHtlcEvent struct {
 
 	// AmountSat is the amount funded by the server.
 	AmountSat int64
+
+	// RequestedAmountSat is the invoice amount that the Lightning HTLCs
+	// pay.
+	RequestedAmountSat uint64
+
+	// AttachedCreditSat is the credit amount attached to this vHTLC.
+	AttachedCreditSat uint64
 
 	// OnionBlob is the raw final-hop onion blob forwarded by the server.
 	OnionBlob []byte
@@ -460,6 +622,14 @@ type InSwapConfig struct {
 	// SettlementType identifies whether this pay session is bridged through
 	// Lightning or settled directly inside Ark.
 	SettlementType SettlementType
+
+	// CreditQuote records the credit reservation used by credit or mixed
+	// pays.
+	CreditQuote *CreditQuote
+
+	// Preimage is set for credit-only pays that complete inside the server
+	// CreateInSwap call without creating a vHTLC.
+	Preimage *lntypes.Preimage
 }
 
 // InSwapQuote previews an Ark-to-Lightning payment without creating durable
@@ -490,6 +660,9 @@ type InSwapQuote struct {
 	// ExceedsMaxFee is true when the caller supplied a max fee and the
 	// quoted fee is larger than that cap.
 	ExceedsMaxFee bool
+
+	// CreditQuote describes how credits would be used for this invoice.
+	CreditQuote *CreditQuote
 }
 
 // SwapServerConn abstracts the connection to the swap server's

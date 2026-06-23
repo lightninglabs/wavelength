@@ -46,6 +46,8 @@ type testInSwapServerConn struct {
 	quoteInvoice        string
 	quoteMaxFeeSat      uint64
 	createCalls         int
+	createAccountKey    []byte
+	createMaxCreditSat  uint64
 	refundAuthorization *InSwapRefundAuthorization
 	refundAuthorizeErr  error
 	refundAuthorizeReq  *testRefundAuthorizeReq
@@ -116,6 +118,19 @@ func (c *testInSwapServerConn) CreateInSwap(context.Context, string, uint64,
 	*btcec.PublicKey) (*InSwapConfig, error) {
 
 	c.createCalls++
+
+	return c.cfg, nil
+}
+
+// CreateInSwapWithCredits returns the preconfigured in-swap config and records
+// the credit account options passed by the client.
+func (c *testInSwapServerConn) CreateInSwapWithCredits(_ context.Context,
+	_ string, _ uint64, _ *btcec.PublicKey, accountKey []byte,
+	maxCreditSat uint64) (*InSwapConfig, error) {
+
+	c.createCalls++
+	c.createAccountKey = append([]byte(nil), accountKey...)
+	c.createMaxCreditSat = maxCreditSat
 
 	return c.cfg, nil
 }
@@ -319,6 +334,34 @@ func TestQuotePayViaLightningReturnsBoundPreview(t *testing.T) {
 	require.Zero(t, serverConn.createCalls)
 }
 
+// TestValidateInSwapPreviewAllowsCreditOnlyZeroAmount verifies credit-only
+// quotes can report zero Ark funding while still binding to the invoice.
+func TestValidateInSwapPreviewAllowsCreditOnlyZeroAmount(t *testing.T) {
+	t.Parallel()
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	quote := &InSwapQuote{
+		PaymentHash:      preimage.Hash(),
+		InvoiceAmountSat: testInSwapInvoiceSat,
+		AmountSat:        0,
+		FeeSat:           0,
+		Expiry:           time.Now().Add(time.Minute),
+		SettlementType:   SettlementTypeCredit,
+		CreditQuote: &CreditQuote{
+			MustUseCredit:    true,
+			CreditAppliedSat: uint64(testInSwapInvoiceSat),
+		},
+	}
+
+	err = validateInSwapPreview(
+		invoice, quote, &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+}
+
 // TestValidateInSwapQuoteRejectsServerMismatches verifies the client treats
 // the swap server response as a quote that must match the caller's invoice.
 func TestValidateInSwapQuoteRejectsServerMismatches(t *testing.T) {
@@ -490,6 +533,62 @@ func TestPaySessionRejectsUnboundInSwapQuote(t *testing.T) {
 	require.Nil(t, session)
 	require.ErrorContains(t, err, "payment hash does not match")
 	require.Zero(t, daemonConn.sendPolicyCalls)
+}
+
+// TestPaySessionCreditOnlyStartCompletesWithoutVHTLC verifies credit-only
+// pays can complete during creation without forcing the Loop FSM through a
+// vHTLC funding state.
+func TestPaySessionCreditOnlyStartCompletesWithoutVHTLC(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+	creditSat := uint64(testInSwapInvoiceSat)
+
+	serverConn := &testInSwapServerConn{
+		cfg: &InSwapConfig{
+			PaymentHash:    preimage.Hash(),
+			AmountSat:      0,
+			FeeSat:         0,
+			SettlementType: SettlementTypeCredit,
+			CreditQuote: &CreditQuote{
+				MustUseCredit:    true,
+				CreditAppliedSat: creditSat,
+			},
+			Preimage: &preimage,
+			Expiry:   time.Now().Add(time.Minute),
+		},
+	}
+
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+	}
+
+	client := configureTestPayClient(
+		NewSwapClient(serverConn, daemonConn, nil, nil),
+	)
+
+	session, err := client.StartPayViaLightningWithCredits(
+		t.Context(), invoice, testInSwapFeeSat, creditSat,
+	)
+	require.NoError(t, err)
+	require.Equal(t, PayStateCompleted, session.State())
+	require.Zero(t, daemonConn.sendPolicyCalls)
+	require.Equal(t, 1, serverConn.createCalls)
+	require.Equal(
+		t, clientPriv.PubKey().SerializeCompressed(),
+		serverConn.createAccountKey,
+	)
+	require.Equal(t, creditSat, serverConn.createMaxCreditSat)
+
+	result, err := session.Wait(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, preimage.Hash(), result.PaymentHash)
+	require.Equal(t, preimage, result.Preimage)
 }
 
 // TestPayViaLightningReturnsClaimPreimage asserts the SDK recovers the
