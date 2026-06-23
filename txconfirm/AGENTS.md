@@ -55,6 +55,17 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - `Config.BroadcastFailureAlertThreshold` — consecutive no-mempool
   failures before the operator escalation fires (default 3). Time to
   first alert ≈ threshold × `FeeBumpIntervalBlocks` blocks.
+- **Fee-input fanout FSM** (internal, driven by actor): when CPFP
+  broadcast fails with `ErrCPFPFeeInputUnavailable`, the actor drives
+  a long-lived `feeBumpStateMachine` (protofsm) that funds, signs, and
+  broadcasts a single fanout tx splitting one backing-wallet UTXO into
+  multiple fee inputs. The FSM persists across actor ticks; at most one
+  fanout is in flight per `TxBroadcasterActor`. Operational errors
+  (wallet failures, broadcast rejections) are stashed on
+  `feeBumpEnvironment` rather than returned, so transient failures
+  never tear down the long-lived FSM instance. The actor applies FSM
+  outbox events to register/unregister confirmation watches and to
+  retry stuck parents once the fanout confirms.
 
 ## Relationships
 
@@ -62,8 +73,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   (confirmation watches, block epochs, broadcast, package submission,
   fee estimation, preflight), `wallet` (`Utxo`, `OutputLeaser`,
   `LockID`), `lib/tx/arktx` (`TxVersion` constant, `IsAnchorOutput`).
-- **Depended on by**: `unroll`, `btcwbackend` (fee-input selection
-  helper), `darepod`, `db`.
+- **Depended on by**: `unroll`, `wallet` (sweep submission path),
+  `btcwbackend` (fee-input selection helper), `darepod`, `db`.
 - **Sends → `chainsource`** (Ask): `BestHeightRequest`,
   `SubscribeBlocksRequest`, `RegisterConfRequest`,
   `UnregisterConfRequest`, `BroadcastTxRequest`,
@@ -79,6 +90,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 
 ## Invariants
 
+- **Fee-input fanout is actor-owned**: the `feeBumpStateMachine` FSM
+  is long-lived (one per `TxBroadcasterActor`, lazy-started) and
+  serialized by the actor loop. Only one fanout tx is in flight at a
+  time; the FSM transitions directly do their own wallet IO
+  (`FundPsbt`, `FinalizePsbt`, `LeaseOutput`) and broadcast
+  (`BroadcastTxRequest`). Errors are stashed on `feeBumpEnvironment`
+  rather than returned so the FSM stays alive across transient
+  failures. The actor reads `feeBumpEnv.takeLastErr()` after each
+  transition and logs it without aborting the FSM.
 - **Never give up on a no-mempool tx**: a tx whose broadcast reached no
   mempool stays in `Broadcasting` and is re-attempted every
   `FeeBumpIntervalBlocks`, never transitioning to terminal `Failed`. This

@@ -27,6 +27,7 @@ package may import from a higher layer.
 | [`lib/tx/psbtutil`](lib/tx/psbtutil/) | PSBT encoding, decoding, and signature attachment helpers |
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
+| [`coinselect`](coinselect/) | Coin-type-agnostic largest-first coin selector; shared by vtxo and swapwallet |
 | [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery jobs (action, state, script parameters, swap linkage) |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)

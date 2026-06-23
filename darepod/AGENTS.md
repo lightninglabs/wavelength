@@ -105,6 +105,18 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   an aggregate tx via `buildBoardingSweepTx`, persists, broadcasts,
   and wakes `boardingSweepWatcher`. Returns preview when
   `broadcast=false`.
+- `SweepWallet` — sweeps confirmed backing-wallet UTXOs to a
+  destination address. Thin RPC shim: validates the request, asks the
+  wallet actor via `SweepWalletFundsRequest`, and maps the
+  `SweepWalletFundsResponse`. All tx-building, fee-capping, signing,
+  and txconfirm submission are owned by the wallet actor. Fee rate is
+  always capped (operator-configured max or 100 sat/vByte default).
+- `GetExitPlan` — batch preview of backing-wallet readiness for a set
+  of VTXO outpoints. Routes to `unroll.PlanExitFunding` with a running
+  wallet allocation that reserves `RequiredWalletInputs` per feasible
+  entry before assessing the next, preventing over-reporting of
+  feasibility in multi-outpoint batches. Bad or unknown outpoints set
+  a per-entry error rather than failing the whole batch.
 - `ListBoardingSweeps` — paginated persisted aggregate sweeps with
   optional status filter and cursor-based pagination.
 - `ArmVHTLCRecovery` — persists a dormant vHTLC on-chain recovery job (armed

@@ -28,7 +28,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   `ChainSource`, `Wallet` (`SweepWallet`),
   `MaxSweepFeeRateSatPerVByte`, `FraudCheckpointSafetyMargin int32`
   (overrides the fraud-triggered unroll backstop margin in blocks;
-  zero falls back to the default), `RegistryRef`.
+  zero falls back to the default), `RegistryRef`,
+  `FeeInputFanoutCoordinator` (set by registry on every child;
+  the per-actor `FeeInputPlanner` wraps the shared coordinator).
 - `behavior` — actor behavior implementing `actor.TxBehavior[Msg, Resp,
   unrollTx]`. Holds `b.sweepTx` (restored from checkpoint on boot) so
   retries and replays converge on a single sweep txid / pkScript under
@@ -39,9 +41,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   response, FSM event, and FSM outbox interfaces.
 - Mailbox messages: `StartUnrollRequest`, `ResumeUnrollRequest`,
   `HeightObservedMsg`, `TxConfirmedMsg`, `TxFailedMsg`,
-  `SpendObservedMsg`, `GetStateRequest`. Each ships a per-message TLV
-  codec (no JSON) with a pinned record-type layout; round-trips in
-  `messages_test.go`.
+  `SpendObservedMsg`, `GetStateRequest`, `FeeInputsAvailableMsg`.
+  Each ships a per-message TLV codec (no JSON) with a pinned
+  record-type layout; round-trips in `messages_test.go`.
+  `FeeInputsAvailableMsg` delivers a fanout-confirmation signal from
+  the registry's chainsource watch into the per-actor FSM.
+- FSM events: `FeeInputsAvailableEvent` — resumes an actor paused in
+  `AwaitingFeeInputFanout` after the fanout tx confirms.
+- FSM outbox event: `RequestFeeInputFanout` — emitted when the FSM
+  determines fee inputs are insufficient; routes to
+  `behavior.startFeeInputFanout()`, which asks the coordinator to
+  create or join an existing fanout and registers a chainsource
+  confirmation watch for it.
+- FSM state: `AwaitingFeeInputFanout` — non-terminal pause state. The
+  actor holds in this state until the `FeeInputFanoutCoordinator`
+  confirms the fanout and delivers `FeeInputsAvailableMsg`.
 - `StartTrigger` — `TriggerManual`, `TriggerCriticalExpiry`,
   `TriggerRestart`, `TriggerFraudSpend`.
 - `Phase` — control-plane phase: `PhasePending`,
@@ -60,10 +74,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   `VTXOStore`, `TxConfirmRef`, `ChainSource`, `Wallet`,
   `MaxSweepFeeRateSatPerVByte`, `ExitSpendPolicyResolver` (optional;
   reconstructs the exit spend policy from `(ExitPolicyKind, ExitPolicyRef)`
-  after restart; nil means every child uses the standard VTXO timeout), and
+  after restart; nil means every child uses the standard VTXO timeout),
   optional `VTXOExitObserver`
-  (`fn.Option[actor.TellOnlyRef[vtxo.ManagerMsg]]`). When set, each child's
-  terminal outcome is forwarded to the VTXO manager as a
+  (`fn.Option[actor.TellOnlyRef[vtxo.ManagerMsg]]`), and optional
+  `FeeInputFanoutCoordinator *FeeInputFanoutCoordinator` (auto-created
+  by `NewUnrollRegistryActor` when the wallet implements
+  `txconfirm.Wallet`; forwarded to every spawned child). When set,
+  each child's terminal outcome is forwarded to the VTXO manager as a
   `vtxo.ExitOutcomeNotification` so VTXO lifecycle tracks the unroll's
   terminal on-chain result rather than the user's intent to exit
   (darepo-client#602): a clean failure (`!HadOnChainFootprint`) →
@@ -100,6 +117,27 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
 
 ### Support
 
+- `FeeInputFanoutCoordinator` — registry-scoped coordinator shared by
+  all child actors. Serializes demand from sibling children
+  (coalescing window: 500ms), maintains in-flight fanout state, and
+  ensures at most one fanout tx is created per window. Key methods:
+  `PlanFeeInputs()`, `PlanFeeInputsForChild()`, `EnsureFanout()`,
+  `MarkConfirmed()`. Auto-instantiated by `NewUnrollRegistryActor`
+  when the backing wallet implements `txconfirm.Wallet`.
+- `FeeInputPlanner` — interface with `PlanFeeInputs(ctx, ready)` used
+  by the per-actor FSM session. Implemented by a child-scoped adapter
+  wrapping `FeeInputFanoutCoordinator.PlanFeeInputsForChild`.
+- `FeeInputPlan` — result of a `PlanFeeInputs` call: `RequiredFeeInputsNow`,
+  `UsableFeeInputs`, `FanoutOutputsNeeded`,
+  `RecommendedFanoutOutputAmountSat`, `FanoutFundingShortfallSat`,
+  `PendingFanoutTxid`, `PendingFanoutPkScript`. `NeedsFanout()` method
+  returns true when the plan requires a new fanout before proceeding.
+- `ExitFundingSnapshot` / `ExitFundingPlan` / `PlanExitFunding()` —
+  exit-plan funding model. `PlanExitFunding` aggregates wallet fee-input
+  status across a set of VTXO targets and produces a per-target plan.
+- `ExitFundingAddressBook` — caches funding addresses per outpoint to
+  avoid advancing the wallet index on repeated `GetExitPlan` polls.
+- Constants: `RequiredFeeInputConfirmations` (1), `DefaultFeeInputMinAmountSat` (10,000 sat).
 - `LocalProofAssembler` — assembles a `recovery.Proof` from the VTXO
   descriptor and its OOR artifact lineage; implements
   `ProofAssembler`. Also exposes `EnsureProofForHarness`, a
@@ -154,7 +192,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
     the final sweep; txid dedup makes retries idempotent.
   - → `chainsource` (Ask): `RegisterSpendRequest` on the target
     outpoint to catch external spends, `BestHeightRequest`,
-    `FeeEstimateRequest`.
+    `FeeEstimateRequest`, `RegisterConfRequest` (for fanout tx watch
+    when `FeeInputFanoutCoordinator` is active),
+    `BroadcastTxRequest` (for fanout tx broadcast via coordinator).
   - → registry (Tell): `UnrollTerminatedMsg` from each child on
     terminal transition.
   - → `vtxo` (indirect via chain-resolver seam, #264).
@@ -170,7 +210,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   - ← `txconfirm` subscriber: `TxConfirmed` / `TxFailed` mapped to
     `TxConfirmedMsg` / `TxFailedMsg`.
   - ← `chainsource` block epochs / spend notifications mapped to
-    `HeightObservedMsg` / `SpendObservedMsg`.
+    `HeightObservedMsg` / `SpendObservedMsg`; fanout confirmation
+    mapped to `FeeInputsAvailableMsg` (delivered by registry to child
+    after `FeeInputFanoutCoordinator.MarkConfirmed`).
 
 ## Multi-Tree Ancestry
 
@@ -189,6 +231,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
 
 ## Invariants
 
+- **Fee-input fanout is registry-singleton.** The
+  `FeeInputFanoutCoordinator` is shared by all sibling
+  `VTXOUnrollActor`s within a registry. Sibling demand is coalesced
+  over a 500ms window; the first child to call `EnsureFanout`
+  broadcasts the fanout tx, and subsequent siblings await that same
+  tx. The actor pauses in `AwaitingFeeInputFanout` until the registry
+  delivers `FeeInputsAvailableMsg` after the fanout confirms. This
+  prevents N concurrent actors from each creating their own fanout tx.
 - **Persist-before-broadcast.** `startSweep` calls
   `persistCheckpoint` (writing `b.sweepTx` into the TLV checkpoint)
   BEFORE `txconfirm.Ask`. Any handler retry or restart restores the

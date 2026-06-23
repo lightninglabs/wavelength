@@ -39,6 +39,28 @@ refresh, leave, OOR spend, and directed send flows.
 - `SendRecipient` — Describes a single directed send destination (pkscript, amount, recipient client key).
 - `SendVTXOsRequest` / `SendVTXOsResponse` — Ask-request for in-round directed sends. Validates each recipient amount is within `(0, MaxSatoshi]` and that the running total never overflows `int64`, atomically selects and reserves VTXOs via `SelectAndReserveForfeitRequest`, builds forfeit + recipient VTXO intents, and registers with the round actor. Supports dry-run mode for previewing coin selection without committing. Reserved VTXOs are released via a deferred cleanup that uses `context.WithoutCancel` so cleanup survives caller disconnect; on success, a `committed` flag is set to skip the release.
 - `SendOnChainRequest` — Ask-request to plan and submit an atomic on-chain payment from VTXOs. Supports two modes: bounded send (`TargetAmountSat` > 0, empty `SweepOutpoints`) and sweep-all (`SweepOutpoints` non-empty). Bounded mode selects VTXOs with headroom for `OperatorFee + DustLimit` and creates a change VTXO. Sweep-all drains the exact outpoints to the destination with no change. Supports `DryRun` mode.
+- `SweepWalletFundsRequest` / `SweepWalletFundsResponse` — Ask-request
+  for a general backing-wallet sweep (all confirmed UTXOs → destination
+  address). Fee rate is always capped at the operator-configured max or
+  100 sat/vByte. Supports dry-run (preview without broadcast) and
+  `Broadcast` mode. The sweep is submitted through `txconfirm` for
+  durable CPFP and confirmation tracking. Per-input details are returned
+  as `WalletSweepInputInfo`.
+- `WalletSweepTxNotification` — Tell from `txconfirm` subscriber
+  delivering `TxConfirmed` / `TxFailed` terminal events for backing-wallet
+  sweeps. Mapped via `MapNotification` on the subscriber.
+- `WalletSweepNotificationAck` — No-op ack for the Tell semantics.
+- `WalletBackingSweeper` — Narrow interface the actor requires from the
+  backing wallet for sweep operations: `ListUnspent`, `FinalizePsbt`,
+  `LeaseOutput`, `ReleaseOutput`.
+- `WithWalletSweep(backing WalletBackingSweeper, maxFeeRateSatPerVByte int64)` —
+  Option that wires the backing-wallet sweep subsystem into the actor.
+  Without this option, `SweepWalletFundsRequest` returns an error.
+- `submitSweepToConfirm(ctx, tx, pkScript, heightHint, label, subscriber)` —
+  Shared internal helper used by both the boarding-sweep and
+  backing-wallet-sweep paths to submit a signed tx to `txconfirm`. Handles
+  `EnsureConfirmedReq`, `LookupRef`, and the synchronous `TxStateFailed`
+  guard in one place.
 - `SendOnChainResponse` — Response to `SendOnChainRequest` carrying the selected outpoints, total amount, operator fee, and leave output details.
 - `SendOnChainStatus` — Terminal outcome enum: `SendOnChainStatusSubmitted` (intent queued for next round), `SendOnChainStatusDryRun` (dry-run preview, no commitment).
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
@@ -46,8 +68,13 @@ refresh, leave, OOR spend, and directed send flows.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager admission types), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants).
-- **Depended on by**: `round` (boarding intents, types: `BoardingAddress`, `SelectedVTXO`), `db` (persistence), `darepod` (wiring).
+- **Depends on**: `baselib/actor` (actor system), `chainsource` (block
+  epoch notifications), `lib/actormsg` (VTXO manager admission types),
+  `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` /
+  `ClassificationDeposit` constants), `txconfirm` (sweep submission,
+  durable broadcast + confirmation via `submitSweepToConfirm`).
+- **Depended on by**: `round` (boarding intents, types: `BoardingAddress`,
+  `SelectedVTXO`), `db` (persistence), `darepod` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
   - → `round` (via `lib/actormsg`): `TriggerBoardMsg` (VTXO amounts for
@@ -61,7 +88,9 @@ refresh, leave, OOR spend, and directed send flows.
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`
-  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`, `SendOnChainRequest`
+  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`, `SendOnChainRequest`, `SweepWalletFundsRequest`
+  - ← `txconfirm` subscriber (Tell): `WalletSweepTxNotification`
+    (terminal outcome for backing-wallet sweeps)
 
 ## Invariants
 

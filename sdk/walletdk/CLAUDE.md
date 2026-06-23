@@ -48,6 +48,19 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   on `View`, populates one of `Activity`/`VTXOs`/`Onchain`),
   `ActivityList`, `VTXOInventory`, `OnchainHistory`, `Entry`,
   `WalletVTXO`, `OnchainTx`.
+- `GetExitPlanRequest` / `GetExitPlanResult` / `ExitPlanEntry` —
+  batch exit-plan preview DTOs. `GetExitPlanRequest.Outpoints` is a
+  slice of outpoint strings; `ExitPlanEntry` carries per-outpoint
+  status including `FundingAddress`, `RequiredFeeUTXOCount`,
+  `UsableFeeUTXOCount`, `RecommendedTotalFundingSat`,
+  `FundingShortfallSat`, `CanStart`, `ExitStatus`, and a per-entry
+  `Err` string. Unknown or invalid outpoints set `Err` without
+  failing the whole batch.
+- `SweepWalletRequest` / `SweepWalletResult` / `WalletSweepInput` —
+  backing-wallet sweep DTOs. Request carries `DestinationAddress`,
+  `Broadcast bool`, `FeeRateSatPerVByte`, `ConfTarget`. Result
+  carries per-input `WalletSweepInput` slice, totals, fee rate,
+  `CanBroadcast`, `Txid` (populated when broadcast), `FailureReason`.
 - `ExitRequest` / `ExitResult` / `ExitStatusRequest` /
   `ExitStatusResult` / `ExitJobStatus` — exit DTOs. `ExitRequest`
   carries the target outpoint plus an optional on-chain `Destination`
@@ -83,6 +96,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 | `List` | Unified history view (Activity / VTXOs / Onchain) as a tagged-union `ListResult`. |
 | `Exit` | Trigger cooperative leave or unilateral unroll for a VTXO. |
 | `ExitStatus` | Query the phase of an exit job. |
+| `GetExitPlan` | Batch preview of backing-wallet readiness for a set of VTXO outpoints; returns aggregate funding plan. |
+| `SweepWallet` | Preview or broadcast a sweep of confirmed backing-wallet UTXOs to a destination address. |
 | `Status` | Wallet readiness, balance, pending-entry count. |
 | `Subscribe` | Stream wallet activity (`Entry`) updates. |
 | `Stop` / `Close` | Shut down the embedded daemon, release the private transport. |
