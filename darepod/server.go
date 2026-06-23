@@ -4030,6 +4030,11 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 		return nil, fmt.Errorf("parse operator pubkey: %w", err)
 	}
 
+	minVTXOAmount := resp.MinVtxoAmountSat
+	if minVTXOAmount == 0 {
+		minVTXOAmount = resp.DustLimit
+	}
+
 	// The forfeit penalty key, sweep key and sweep delay are no longer
 	// global operator terms; they are delivered per round in the batch
 	// info, so GetInfo no longer carries them.
@@ -4038,6 +4043,7 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 		BoardingExitDelay:   resp.BoardingExitDelay,
 		VTXOExitDelay:       resp.VtxoExitDelay,
 		DustLimit:           btcutil.Amount(resp.DustLimit),
+		MinVTXOAmount:       btcutil.Amount(minVTXOAmount),
 		MinBoardingAmount:   btcutil.Amount(resp.MinBoardingAmount),
 		MaxBoardingAmount:   btcutil.Amount(resp.MaxBoardingAmount),
 		FeeRate:             btcutil.Amount(resp.FeeRate),

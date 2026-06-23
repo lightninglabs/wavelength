@@ -616,6 +616,11 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *daemonrpc.GetInfoRequest) (
 			return resp, nil
 		}
 
+		minVTXOAmount := terms.MinVTXOAmount
+		if minVTXOAmount == 0 {
+			minVTXOAmount = terms.DustLimit
+		}
+
 		// The forfeit penalty key, sweep key and delay are no longer
 		// global operator terms; they are delivered per round in the
 		// round batch info, so they are not surfaced on this
@@ -630,6 +635,7 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *daemonrpc.GetInfoRequest) (
 			FeeRate:           uint64(terms.FeeRate),
 			MinOperatorFee:    uint64(terms.MinOperatorFee),
 			MinConfirmations:  terms.MinConfirmations,
+			MinVtxoAmountSat:  uint64(minVTXOAmount),
 		}
 	}
 

@@ -345,6 +345,12 @@ message ServerInfo {
     // min_confirmations is the minimum confirmations required on
     // boarding inputs.
     uint32 min_confirmations = 12;
+
+    // min_vtxo_amount_sat is the operator-advertised minimum VTXO
+    // output amount in satoshis. Callers can use this wallet-facing
+    // floor to decide whether an amount can materialize as a VTXO or
+    // must use a different rail.
+    uint64 min_vtxo_amount_sat = 13;
 }
 
 message GenSeedRequest {

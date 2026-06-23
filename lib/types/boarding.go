@@ -45,6 +45,10 @@ type OperatorTerms struct {
 	// DustLimit enforces minimum output value for boarding/funding flows.
 	DustLimit btcutil.Amount
 
+	// MinVTXOAmount is the operator-advertised minimum VTXO output
+	// amount.
+	MinVTXOAmount btcutil.Amount
+
 	// MinBoardingAmount is the minimum amount clients must contribute.
 	MinBoardingAmount btcutil.Amount
 

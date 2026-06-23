@@ -904,6 +904,11 @@ type ServerInfo struct {
 	// min_confirmations is the minimum confirmations required on
 	// boarding inputs.
 	MinConfirmations uint32 `protobuf:"varint,12,opt,name=min_confirmations,json=minConfirmations,proto3" json:"min_confirmations,omitempty"`
+	// min_vtxo_amount_sat is the operator-advertised minimum VTXO
+	// output amount in satoshis. Callers can use this wallet-facing
+	// floor to decide whether an amount can materialize as a VTXO or
+	// must use a different rail.
+	MinVtxoAmountSat uint64 `protobuf:"varint,13,opt,name=min_vtxo_amount_sat,json=minVtxoAmountSat,proto3" json:"min_vtxo_amount_sat,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -997,6 +1002,13 @@ func (x *ServerInfo) GetMinOperatorFee() uint64 {
 func (x *ServerInfo) GetMinConfirmations() uint32 {
 	if x != nil {
 		return x.MinConfirmations
+	}
+	return 0
+}
+
+func (x *ServerInfo) GetMinVtxoAmountSat() uint64 {
+	if x != nil {
+		return x.MinVtxoAmountSat
 	}
 	return 0
 }
@@ -7910,7 +7922,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fidentity_pubkey\x18\n" +
 	" \x01(\tR\x0eidentityPubkey\x126\n" +
 	"\vserver_info\x18\v \x01(\v2\x15.daemonrpc.ServerInfoR\n" +
-	"serverInfo\"\xfe\x02\n" +
+	"serverInfo\"\xad\x03\n" +
 	"\n" +
 	"ServerInfo\x12'\n" +
 	"\x0foperator_pubkey\x18\x01 \x01(\fR\x0eoperatorPubkey\x12.\n" +
@@ -7923,7 +7935,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\bfee_rate\x18\n" +
 	" \x01(\x04R\afeeRate\x12(\n" +
 	"\x10min_operator_fee\x18\v \x01(\x04R\x0eminOperatorFee\x12+\n" +
-	"\x11min_confirmations\x18\f \x01(\rR\x10minConfirmations\"9\n" +
+	"\x11min_confirmations\x18\f \x01(\rR\x10minConfirmations\x12-\n" +
+	"\x13min_vtxo_amount_sat\x18\r \x01(\x04R\x10minVtxoAmountSat\"9\n" +
 	"\x0eGenSeedRequest\x12'\n" +
 	"\x0fseed_passphrase\x18\x01 \x01(\fR\x0eseedPassphrase\"V\n" +
 	"\x0fGenSeedResponse\x12\x1a\n" +
