@@ -148,8 +148,7 @@ func decodePackageArtifactWithLimits(raw []byte,
 		return PackageArtifact{}, err
 	}
 
-	reader := bytes.NewReader(raw)
-	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+	if _, err := decodeBoundedStream(stream, raw); err != nil {
 		return PackageArtifact{}, err
 	}
 
