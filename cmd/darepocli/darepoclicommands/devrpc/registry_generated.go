@@ -361,6 +361,27 @@ func generatedRegistry() []serviceSpec {
 					Comments: "StartReceive starts a Lightning-to-Ark receive swap and lets the daemon\ncontinue the claim flow after the invoice is paid.",
 				},
 				{
+					Name:     "CreateCredit",
+					Aliases:  []string{"create-credit"},
+					Input:    "swapclientrpc.CreateCreditRequest",
+					Output:   "swapclientrpc.CreateCreditResponse",
+					Comments: "CreateCredit starts a durable credit funding session.",
+				},
+				{
+					Name:     "RedeemCredit",
+					Aliases:  []string{"redeem-credit"},
+					Input:    "swapclientrpc.RedeemCreditRequest",
+					Output:   "swapclientrpc.RedeemCreditResponse",
+					Comments: "RedeemCredit materializes available credits back into an Ark output.",
+				},
+				{
+					Name:     "ListCredits",
+					Aliases:  []string{"list-credits"},
+					Input:    "swapclientrpc.ListCreditsRequest",
+					Output:   "swapclientrpc.ListCreditsResponse",
+					Comments: "ListCredits returns the server-authoritative credit account snapshot.",
+				},
+				{
 					Name:     "ResumeSwap",
 					Aliases:  []string{"resume-swap"},
 					Input:    "swapclientrpc.ResumeSwapRequest",

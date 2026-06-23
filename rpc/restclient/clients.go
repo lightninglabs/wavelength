@@ -186,6 +186,39 @@ func (c *SwapServiceClient) QuoteInSwap(ctx context.Context,
 	return out, err
 }
 
+// CreateCredit creates a server-owned credit funding operation.
+func (c *SwapServiceClient) CreateCredit(ctx context.Context,
+	in *swaprpc.CreateCreditRequest, _ ...grpc.CallOption) (
+	*swaprpc.CreateCreditResponse, error) {
+
+	out := new(swaprpc.CreateCreditResponse)
+	err := c.client.Post(ctx, "/v1/swap/create-credit", in, out)
+
+	return out, err
+}
+
+// RedeemCredit sends available credits back to an Ark recipient.
+func (c *SwapServiceClient) RedeemCredit(ctx context.Context,
+	in *swaprpc.RedeemCreditRequest, _ ...grpc.CallOption) (
+	*swaprpc.RedeemCreditResponse, error) {
+
+	out := new(swaprpc.RedeemCreditResponse)
+	err := c.client.Post(ctx, "/v1/swap/redeem-credit", in, out)
+
+	return out, err
+}
+
+// ListCredits lists server-side credit account state.
+func (c *SwapServiceClient) ListCredits(ctx context.Context,
+	in *swaprpc.ListCreditsRequest, _ ...grpc.CallOption) (
+	*swaprpc.ListCreditsResponse, error) {
+
+	out := new(swaprpc.ListCreditsResponse)
+	err := c.client.Post(ctx, "/v1/swap/list-credits", in, out)
+
+	return out, err
+}
+
 // AuthorizeInSwapRefund asks the swap server to sign a failed in-swap refund.
 func (c *SwapServiceClient) AuthorizeInSwapRefund(ctx context.Context,
 	in *swaprpc.AuthorizeInSwapRefundRequest, _ ...grpc.CallOption) (
@@ -832,6 +865,39 @@ func (c *SwapClientServiceClient) StartPay(ctx context.Context,
 
 	out := new(swapclientrpc.StartPayResponse)
 	err := c.client.Post(ctx, "/v1/swapclient/start-pay", in, out)
+
+	return out, err
+}
+
+// CreateCredit creates a daemon-owned credit funding operation.
+func (c *SwapClientServiceClient) CreateCredit(ctx context.Context,
+	in *swapclientrpc.CreateCreditRequest, _ ...grpc.CallOption) (
+	*swapclientrpc.CreateCreditResponse, error) {
+
+	out := new(swapclientrpc.CreateCreditResponse)
+	err := c.client.Post(ctx, "/v1/swapclient/create-credit", in, out)
+
+	return out, err
+}
+
+// RedeemCredit redeems daemon wallet credits into an Ark output.
+func (c *SwapClientServiceClient) RedeemCredit(ctx context.Context,
+	in *swapclientrpc.RedeemCreditRequest, _ ...grpc.CallOption) (
+	*swapclientrpc.RedeemCreditResponse, error) {
+
+	out := new(swapclientrpc.RedeemCreditResponse)
+	err := c.client.Post(ctx, "/v1/swapclient/redeem-credit", in, out)
+
+	return out, err
+}
+
+// ListCredits lists daemon wallet credit account state.
+func (c *SwapClientServiceClient) ListCredits(ctx context.Context,
+	in *swapclientrpc.ListCreditsRequest, _ ...grpc.CallOption) (
+	*swapclientrpc.ListCreditsResponse, error) {
+
+	out := new(swapclientrpc.ListCreditsResponse)
+	err := c.client.Post(ctx, "/v1/swapclient/list-credits", in, out)
 
 	return out, err
 }

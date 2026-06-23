@@ -156,6 +156,8 @@ enum SendRail {
     SEND_RAIL_IN_ARK = 2;
     SEND_RAIL_LIGHTNING = 3;
     SEND_RAIL_ONCHAIN = 4;
+    SEND_RAIL_CREDIT = 5;
+    SEND_RAIL_MIXED = 6;
 }
 
 // SendQuoteStatus describes how complete the prepare-time quote is.
@@ -339,6 +341,10 @@ message PrepareSendResponse {
     // warning carries a concise human-facing caveat for local-only
     // previews.
     string warning = 14;
+
+    // credit_preview is populated when the invoice send will or can use
+    // sat-native server credits.
+    CreditPreview credit_preview = 15;
 }
 
 message SendRequest {
@@ -379,6 +385,24 @@ message RecvResponse {
 
     // entry is the initial WalletEntry persisted for this receive.
     WalletEntry entry = 2;
+
+    // credit_receive is populated when the receive is backed by server credits
+    // rather than a client-claimable vHTLC.
+    CreditReceive credit_receive = 3;
+}
+
+message CreditPreview {
+    bool must_use_credit = 1;
+    uint64 credit_applied_sat = 2;
+    uint64 credit_shortfall_sat = 3;
+    uint64 credit_topup_sat = 4;
+    uint64 ark_funding_sat = 5;
+}
+
+message CreditReceive {
+    string operation_id = 1;
+    uint64 amount_sat = 2;
+    string payment_hash = 3;
 }
 
 message ListRequest {
@@ -754,6 +778,14 @@ message BalanceResponse {
     // pending_out_sat is the total in-flight outbound amount (send plus
     // exit operations).
     int64 pending_out_sat = 3;
+
+    // credit_available_sat is the server-authoritative available credit
+    // balance for the wallet identity.
+    uint64 credit_available_sat = 4;
+
+    // credit_reserved_sat is the server-authoritative in-flight credit
+    // reservation amount.
+    uint64 credit_reserved_sat = 5;
 }
 
 message StatusRequest {

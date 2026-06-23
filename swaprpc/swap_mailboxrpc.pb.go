@@ -30,6 +30,12 @@ type SwapServiceMailboxServer interface {
 	CreateInSwap(ctx context.Context, req *CreateInSwapRequest) (*CreateInSwapResponse, error)
 	// QuoteInSwap handles QuoteInSwap.
 	QuoteInSwap(ctx context.Context, req *QuoteInSwapRequest) (*QuoteInSwapResponse, error)
+	// CreateCredit handles CreateCredit.
+	CreateCredit(ctx context.Context, req *CreateCreditRequest) (*CreateCreditResponse, error)
+	// RedeemCredit handles RedeemCredit.
+	RedeemCredit(ctx context.Context, req *RedeemCreditRequest) (*RedeemCreditResponse, error)
+	// ListCredits handles ListCredits.
+	ListCredits(ctx context.Context, req *ListCreditsRequest) (*ListCreditsResponse, error)
 	// AuthorizeInSwapRefund handles AuthorizeInSwapRefund.
 	AuthorizeInSwapRefund(ctx context.Context, req *AuthorizeInSwapRefundRequest) (*AuthorizeInSwapRefundResponse, error)
 	// AcknowledgeOutSwapHtlc handles AcknowledgeOutSwapHtlc.
@@ -71,6 +77,36 @@ func RegisterSwapServiceMailboxServer(r rpc.Router, impl SwapServiceMailboxServe
 		}
 
 		return impl.QuoteInSwap(ctx, req)
+	})
+	r.Handle("swaprpc.SwapService", "CreateCredit", func() proto.Message {
+		return &CreateCreditRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*CreateCreditRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.CreateCredit(ctx, req)
+	})
+	r.Handle("swaprpc.SwapService", "RedeemCredit", func() proto.Message {
+		return &RedeemCreditRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*RedeemCreditRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.RedeemCredit(ctx, req)
+	})
+	r.Handle("swaprpc.SwapService", "ListCredits", func() proto.Message {
+		return &ListCreditsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListCreditsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListCredits(ctx, req)
 	})
 	r.Handle("swaprpc.SwapService", "AuthorizeInSwapRefund", func() proto.Message {
 		return &AuthorizeInSwapRefundRequest{}
@@ -176,6 +212,75 @@ func (c *SwapServiceMailboxClient) QuoteInSwap(ctx context.Context, req *QuoteIn
 	}
 
 	resp := new(QuoteInSwapResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// CreateCredit calls the CreateCredit RPC.
+func (c *SwapServiceMailboxClient) CreateCredit(ctx context.Context, req *CreateCreditRequest, opts ...rpc.RPCOptions) (*CreateCreditResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "swaprpc.SwapService",
+		Method:  "CreateCredit",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(CreateCreditResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// RedeemCredit calls the RedeemCredit RPC.
+func (c *SwapServiceMailboxClient) RedeemCredit(ctx context.Context, req *RedeemCreditRequest, opts ...rpc.RPCOptions) (*RedeemCreditResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "swaprpc.SwapService",
+		Method:  "RedeemCredit",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(RedeemCreditResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListCredits calls the ListCredits RPC.
+func (c *SwapServiceMailboxClient) ListCredits(ctx context.Context, req *ListCreditsRequest, opts ...rpc.RPCOptions) (*ListCreditsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "swaprpc.SwapService",
+		Method:  "ListCredits",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListCreditsResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

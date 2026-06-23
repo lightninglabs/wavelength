@@ -22,6 +22,9 @@ const (
 	SwapService_RequestChannelId_FullMethodName              = "/swaprpc.SwapService/RequestChannelId"
 	SwapService_CreateInSwap_FullMethodName                  = "/swaprpc.SwapService/CreateInSwap"
 	SwapService_QuoteInSwap_FullMethodName                   = "/swaprpc.SwapService/QuoteInSwap"
+	SwapService_CreateCredit_FullMethodName                  = "/swaprpc.SwapService/CreateCredit"
+	SwapService_RedeemCredit_FullMethodName                  = "/swaprpc.SwapService/RedeemCredit"
+	SwapService_ListCredits_FullMethodName                   = "/swaprpc.SwapService/ListCredits"
 	SwapService_AuthorizeInSwapRefund_FullMethodName         = "/swaprpc.SwapService/AuthorizeInSwapRefund"
 	SwapService_AcknowledgeOutSwapHtlc_FullMethodName        = "/swaprpc.SwapService/AcknowledgeOutSwapHtlc"
 	SwapService_SignInSwapForfeit_FullMethodName             = "/swaprpc.SwapService/SignInSwapForfeit"
@@ -44,6 +47,16 @@ type SwapServiceClient interface {
 	// QuoteInSwap previews how an invoice send would settle without creating
 	// durable swap state or notifying a same-Ark receiver.
 	QuoteInSwap(ctx context.Context, in *QuoteInSwapRequest, opts ...grpc.CallOption) (*QuoteInSwapResponse, error)
+	// CreateCredit creates a durable credit funding operation. Lightning
+	// receives return a server-owned invoice; Ark top-ups return a
+	// server-owned OOR destination.
+	CreateCredit(ctx context.Context, in *CreateCreditRequest, opts ...grpc.CallOption) (*CreateCreditResponse, error)
+	// RedeemCredit materializes available credits back into an Ark OOR
+	// output. The OOR output amount must be at least dust.
+	RedeemCredit(ctx context.Context, in *RedeemCreditRequest, opts ...grpc.CallOption) (*RedeemCreditResponse, error)
+	// ListCredits returns the account balance plus recent credit operations
+	// and ledger rows.
+	ListCredits(ctx context.Context, in *ListCreditsRequest, opts ...grpc.CallOption) (*ListCreditsResponse, error)
 	// AuthorizeInSwapRefund signs a prepared cooperative refund spend for a
 	// funded in-swap whose Lightning payment attempt has terminally failed.
 	AuthorizeInSwapRefund(ctx context.Context, in *AuthorizeInSwapRefundRequest, opts ...grpc.CallOption) (*AuthorizeInSwapRefundResponse, error)
@@ -93,6 +106,36 @@ func (c *swapServiceClient) QuoteInSwap(ctx context.Context, in *QuoteInSwapRequ
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(QuoteInSwapResponse)
 	err := c.cc.Invoke(ctx, SwapService_QuoteInSwap_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *swapServiceClient) CreateCredit(ctx context.Context, in *CreateCreditRequest, opts ...grpc.CallOption) (*CreateCreditResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateCreditResponse)
+	err := c.cc.Invoke(ctx, SwapService_CreateCredit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *swapServiceClient) RedeemCredit(ctx context.Context, in *RedeemCreditRequest, opts ...grpc.CallOption) (*RedeemCreditResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RedeemCreditResponse)
+	err := c.cc.Invoke(ctx, SwapService_RedeemCredit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *swapServiceClient) ListCredits(ctx context.Context, in *ListCreditsRequest, opts ...grpc.CallOption) (*ListCreditsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCreditsResponse)
+	err := c.cc.Invoke(ctx, SwapService_ListCredits_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +198,16 @@ type SwapServiceServer interface {
 	// QuoteInSwap previews how an invoice send would settle without creating
 	// durable swap state or notifying a same-Ark receiver.
 	QuoteInSwap(context.Context, *QuoteInSwapRequest) (*QuoteInSwapResponse, error)
+	// CreateCredit creates a durable credit funding operation. Lightning
+	// receives return a server-owned invoice; Ark top-ups return a
+	// server-owned OOR destination.
+	CreateCredit(context.Context, *CreateCreditRequest) (*CreateCreditResponse, error)
+	// RedeemCredit materializes available credits back into an Ark OOR
+	// output. The OOR output amount must be at least dust.
+	RedeemCredit(context.Context, *RedeemCreditRequest) (*RedeemCreditResponse, error)
+	// ListCredits returns the account balance plus recent credit operations
+	// and ledger rows.
+	ListCredits(context.Context, *ListCreditsRequest) (*ListCreditsResponse, error)
 	// AuthorizeInSwapRefund signs a prepared cooperative refund spend for a
 	// funded in-swap whose Lightning payment attempt has terminally failed.
 	AuthorizeInSwapRefund(context.Context, *AuthorizeInSwapRefundRequest) (*AuthorizeInSwapRefundResponse, error)
@@ -188,6 +241,15 @@ func (UnimplementedSwapServiceServer) CreateInSwap(context.Context, *CreateInSwa
 }
 func (UnimplementedSwapServiceServer) QuoteInSwap(context.Context, *QuoteInSwapRequest) (*QuoteInSwapResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method QuoteInSwap not implemented")
+}
+func (UnimplementedSwapServiceServer) CreateCredit(context.Context, *CreateCreditRequest) (*CreateCreditResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateCredit not implemented")
+}
+func (UnimplementedSwapServiceServer) RedeemCredit(context.Context, *RedeemCreditRequest) (*RedeemCreditResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RedeemCredit not implemented")
+}
+func (UnimplementedSwapServiceServer) ListCredits(context.Context, *ListCreditsRequest) (*ListCreditsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListCredits not implemented")
 }
 func (UnimplementedSwapServiceServer) AuthorizeInSwapRefund(context.Context, *AuthorizeInSwapRefundRequest) (*AuthorizeInSwapRefundResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AuthorizeInSwapRefund not implemented")
@@ -272,6 +334,60 @@ func _SwapService_QuoteInSwap_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(SwapServiceServer).QuoteInSwap(ctx, req.(*QuoteInSwapRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SwapService_CreateCredit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateCreditRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapServiceServer).CreateCredit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapService_CreateCredit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapServiceServer).CreateCredit(ctx, req.(*CreateCreditRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SwapService_RedeemCredit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RedeemCreditRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapServiceServer).RedeemCredit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapService_RedeemCredit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapServiceServer).RedeemCredit(ctx, req.(*RedeemCreditRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SwapService_ListCredits_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCreditsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapServiceServer).ListCredits(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapService_ListCredits_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapServiceServer).ListCredits(ctx, req.(*ListCreditsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -366,6 +482,18 @@ var SwapService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QuoteInSwap",
 			Handler:    _SwapService_QuoteInSwap_Handler,
+		},
+		{
+			MethodName: "CreateCredit",
+			Handler:    _SwapService_CreateCredit_Handler,
+		},
+		{
+			MethodName: "RedeemCredit",
+			Handler:    _SwapService_RedeemCredit_Handler,
+		},
+		{
+			MethodName: "ListCredits",
+			Handler:    _SwapService_ListCredits_Handler,
 		},
 		{
 			MethodName: "AuthorizeInSwapRefund",
