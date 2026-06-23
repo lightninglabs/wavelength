@@ -23,7 +23,6 @@ import (
 	"github.com/lightninglabs/darepo-client/darepod"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
 	"github.com/lightninglabs/darepo-client/sdk/swaps"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/swaprpc"
@@ -408,20 +407,15 @@ func TestStartPayPreservesRuntimeStatusCode(t *testing.T) {
 	)
 }
 
-// TestStartPayRejectsInvoiceBelowOperatorVTXOMin verifies the wallet RPC
-// facade applies the same operator VTXO minimum as the underlying daemon OOR
-// sender before it persists a pay swap. Without this synchronous preflight, a
-// too-small BOLT-11 invoice could be admitted, then fail later in the
-// background worker after the user-facing Send RPC already returned.
-func TestStartPayRejectsInvoiceBelowOperatorVTXOMin(t *testing.T) {
+// TestStartPayAllowsInvoiceBelowOperatorDust verifies sub-dust pays are no
+// longer rejected by the daemon facade before the swap server can quote a
+// credit-backed payment.
+func TestStartPayAllowsInvoiceBelowOperatorDust(t *testing.T) {
 	t.Parallel()
 
 	fakeClient := newFakeSwapRuntime()
 	service := newTestSwapClientService(fakeClient)
 	service.chainParams = &chaincfg.RegressionNetParams
-	service.payMinAmount = func(context.Context) (uint64, error) {
-		return 1000, nil
-	}
 	defer service.cancel()
 
 	_, err := service.StartPay(
@@ -429,27 +423,18 @@ func TestStartPayRejectsInvoiceBelowOperatorVTXOMin(t *testing.T) {
 			Invoice: testSwapPayInvoice(t, 999),
 		},
 	)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	require.ErrorContains(
-		t, err, "invoice amount_sat 999 is below the 1000 sat "+
-			"minimum for pay swaps",
-	)
-	require.Equal(t, 0, fakeClient.startPayCount())
+	require.ErrorContains(t, err, "start pay session not configured")
+	require.Equal(t, 1, fakeClient.startPayCount())
 }
 
-// TestStartPayRejectsMissingChainParamsAsInternal verifies a daemon wiring
-// error is not reported as a caller invoice problem. Pay invoice dust
-// validation needs network parameters to parse BOLT-11 correctly; if the
-// service is missing them, the RPC should fail as an internal server error
-// before touching the swap runtime.
-func TestStartPayRejectsMissingChainParamsAsInternal(t *testing.T) {
+// TestStartPayDefersMissingChainParamsToRuntime verifies pay invoice amount
+// validation no longer requires daemon-local chain params before the swap
+// server can quote credit-backed pays.
+func TestStartPayDefersMissingChainParamsToRuntime(t *testing.T) {
 	t.Parallel()
 
 	fakeClient := newFakeSwapRuntime()
 	service := newTestSwapClientService(fakeClient)
-	service.payMinAmount = func(context.Context) (uint64, error) {
-		return 1000, nil
-	}
 	defer service.cancel()
 
 	_, err := service.StartPay(
@@ -457,11 +442,8 @@ func TestStartPayRejectsMissingChainParamsAsInternal(t *testing.T) {
 			Invoice: testSwapPayInvoice(t, 999),
 		},
 	)
-	require.Equal(t, codes.Internal, status.Code(err))
-	require.ErrorContains(
-		t, err, "chain params required for pay invoice validation",
-	)
-	require.Equal(t, 0, fakeClient.startPayCount())
+	require.ErrorContains(t, err, "start pay session not configured")
+	require.Equal(t, 1, fakeClient.startPayCount())
 }
 
 // TestStartReceiveReturnsInvoiceAndStartsWorker verifies receive startup
@@ -504,57 +486,184 @@ func TestStartReceiveReturnsInvoiceAndStartsWorker(t *testing.T) {
 	require.Equal(t, 1, fakeClient.receiveResumeCount(receiveHash))
 }
 
-// TestStartReceiveRejectsAmountBelowOperatorVTXOMin proves receive startup
-// fails before sdk/swaps creates a session or invoice when the requested
-// amount is below the operator-advertised VTXO minimum.
-func TestStartReceiveRejectsAmountBelowOperatorVTXOMin(t *testing.T) {
+// TestStartReceiveReturnsCreditAssistedPlan verifies receive startup returns
+// the server's credit-assisted plan even before a vHTLC outpoint exists
+// locally.
+func TestStartReceiveReturnsCreditAssistedPlan(t *testing.T) {
 	t.Parallel()
 
-	fakeClient := newFakeSwapRuntime()
-	service := newTestSwapClientService(fakeClient)
-	service.receiveMinAmount = func(context.Context) (uint64, error) {
-		return 1_000, nil
+	receiveHash := testHash(49)
+	fakeClient := newFakeSwapRuntime(
+		swaps.SwapSummary{
+			Direction:          swaps.SwapDirectionReceive,
+			PaymentHash:        receiveHash,
+			State:              "invoice_created",
+			Pending:            true,
+			AmountSat:          300,
+			RequestedAmountSat: 300,
+			AvailableCreditSat: 800,
+			AttachedCreditSat:  800,
+			DustLimitSat:       1_000,
+			SettlementType:     swaps.SettlementTypeMixed,
+		},
+	)
+	fakeClient.startReceiveSession = &fakeReceiveSession{
+		hash:    receiveHash,
+		invoice: "lnbc1receive",
 	}
+	service := newTestSwapClientService(fakeClient)
 	defer service.cancel()
 
-	_, err := service.StartReceive(
+	resp, err := service.StartReceive(
 		t.Context(), &swapclientrpc.StartReceiveRequest{
 			AmountSat: 300,
 		},
 	)
-	require.Error(t, err)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	require.Contains(t, status.Convert(err).Message(), "300")
-	require.Contains(t, status.Convert(err).Message(), "1000 sat minimum")
-	require.Contains(
-		t, status.Convert(err).Message(),
-		"operator VTXO minimum",
+	require.NoError(t, err)
+	require.Equal(t, 1, fakeClient.startReceiveCount())
+	require.Equal(t, uint64(300), resp.GetRequestedAmountSat())
+	require.Equal(t, uint64(800), resp.GetAvailableCreditSat())
+	require.Equal(t, uint64(800), resp.GetAttachedCreditSat())
+	require.Equal(t, uint64(1_100), resp.GetVhtlcAmountSat())
+	require.Equal(t, uint64(1_000), resp.GetDustLimitSat())
+	require.Equal(
+		t, swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_MIXED,
+		resp.GetSettlementType(),
 	)
-	require.Equal(t, 0, fakeClient.startReceiveCount())
 }
 
-func TestVTXOMinAmountUsesMinVTXOAmount(t *testing.T) {
+func TestCreateCreditForwardsLightningReceive(t *testing.T) {
 	t.Parallel()
 
-	amount, err := vtxoMinAmountSat(&sdkark.ServerInfo{
-		DustLimit:        546,
-		MinVTXOAmountSat: 1_234,
-	})
-	require.NoError(t, err)
-	require.Equal(t, uint64(1_234), amount)
+	hash := testHash(50)
+	expiresAt := time.Now().Add(time.Hour)
+	fakeClient := newFakeSwapRuntime()
+	fakeClient.createCreditResp = &swaps.CreditOperation{
+		OperationID: "cr_receive",
+		State:       swaps.CreditStateAwaitingPayment,
+		AmountSat:   123,
+		PaymentHash: &hash,
+		Invoice:     "lnbc1credit",
+		ExpiresAt:   &expiresAt,
+	}
+	service := newTestSwapClientService(fakeClient)
+	defer service.cancel()
 
-	amount, err = vtxoMinAmountSat(&sdkark.ServerInfo{
-		DustLimit: 546,
-	})
+	resp, err := service.CreateCredit(
+		t.Context(), &swapclientrpc.CreateCreditRequest{
+			IdempotencyKey: "idem-recv",
+			Source: swapclientrpc.
+				CreditFundingSource_CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE,
+			AmountSat: 123,
+			Memo:      "dust receive",
+		},
+	)
 	require.NoError(t, err)
-	require.Equal(t, uint64(546), amount)
+	require.Equal(t, 1, fakeClient.createCreditCalls)
+	require.Equal(
+		t, swaps.CreditFundingLightningReceive,
+		fakeClient.createCreditReq.Source,
+	)
+	require.Equal(t, "idem-recv", fakeClient.createCreditReq.IdempotencyKey)
+	require.Equal(t, uint64(123), fakeClient.createCreditReq.AmountSat)
+	require.Equal(t, "cr_receive", resp.GetOperationId())
+	require.Equal(t, uint64(123), resp.GetAmountSat())
+	require.Equal(t, hex.EncodeToString(hash[:]), resp.GetPaymentHash())
+	require.Equal(t, "lnbc1credit", resp.GetInvoice())
+	require.Equal(t, expiresAt.Unix(), resp.GetExpiresAtUnix())
+}
 
-	amount, err = vtxoMinAmountSat(&sdkark.ServerInfo{
-		DustLimit:        546,
-		MinVTXOAmountSat: 100,
-	})
+func TestRedeemCreditForwardsDestination(t *testing.T) {
+	t.Parallel()
+
+	fakeClient := newFakeSwapRuntime()
+	fakeClient.redeemCreditResp = &swaps.CreditRedemption{
+		Operation: swaps.CreditOperation{
+			OperationID: "cr_redeem",
+			State:       swaps.CreditStateRedeemed,
+		},
+		DebitedSat:  1_000,
+		RedeemedSat: 1_000,
+		SessionID:   "oor-session",
+	}
+	service := newTestSwapClientService(fakeClient)
+	defer service.cancel()
+
+	resp, err := service.RedeemCredit(
+		t.Context(), &swapclientrpc.RedeemCreditRequest{
+			IdempotencyKey:    "idem-redeem",
+			AmountSat:         1_000,
+			DestinationPubkey: []byte{1, 2, 3},
+		},
+	)
 	require.NoError(t, err)
-	require.Equal(t, uint64(546), amount)
+	require.Equal(t, 1, fakeClient.redeemCreditCalls)
+	require.Equal(
+		t, "idem-redeem", fakeClient.redeemCreditReq.IdempotencyKey,
+	)
+	require.Equal(t, uint64(1_000), fakeClient.redeemCreditReq.AmountSat)
+	require.Equal(
+		t, []byte{1, 2, 3},
+		fakeClient.redeemCreditReq.DestinationPubKey,
+	)
+	require.Equal(t, "cr_redeem", resp.GetOperationId())
+	require.Equal(t, uint64(1_000), resp.GetDebitedSat())
+	require.Equal(t, uint64(1_000), resp.GetRedeemedSat())
+	require.Equal(t, "oor-session", resp.GetSessionId())
+}
+
+func TestListCreditsReturnsSnapshot(t *testing.T) {
+	t.Parallel()
+
+	hash := testHash(51)
+	createdAt := time.Now()
+	fakeClient := newFakeSwapRuntime()
+	fakeClient.listCreditsResp = &swaps.CreditSnapshot{
+		FinalizedSat: 10_000,
+		ReservedSat:  3_000,
+		AvailableSat: 7_000,
+		Operations: []swaps.CreditOperation{{
+			OperationID: "cr_pay",
+			Type:        swaps.CreditOperationPay,
+			State:       swaps.CreditStateDebited,
+			AmountSat:   3_000,
+			PaymentHash: &hash,
+			DestinationKey: []byte{
+				4,
+				5,
+				6,
+			},
+			CreatedAt: createdAt,
+			UpdatedAt: createdAt,
+		}},
+		LedgerEntries: []swaps.CreditLedgerEntry{{
+			EntryID:     "cle_1",
+			OperationID: "cr_pay",
+			Direction:   "debit",
+			AmountSat:   3_000,
+			CreatedAt:   createdAt,
+		}},
+	}
+	service := newTestSwapClientService(fakeClient)
+	defer service.cancel()
+
+	resp, err := service.ListCredits(
+		t.Context(), &swapclientrpc.ListCreditsRequest{
+			Limit: 10,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, fakeClient.listCreditsCalls)
+	require.Equal(t, uint32(10), fakeClient.listCreditsLimit)
+	require.Equal(t, uint64(7_000), resp.GetAvailableSat())
+	require.Len(t, resp.GetOperations(), 1)
+	require.Equal(t, "cr_pay", resp.GetOperations()[0].GetOperationId())
+	require.Equal(
+		t, hex.EncodeToString(hash[:]),
+		resp.GetOperations()[0].GetPaymentHash(),
+	)
+	require.Len(t, resp.GetLedgerEntries(), 1)
+	require.Equal(t, "cle_1", resp.GetLedgerEntries()[0].GetEntryId())
 }
 
 func TestResumeSwapValidatesPaymentHashAndDirection(t *testing.T) {
@@ -1023,6 +1132,12 @@ type fakeSwapRuntime struct {
 	quotePayResp        *swaps.InSwapQuote
 	quotePayErr         error
 	startPayErr         error
+	createCreditResp    *swaps.CreditOperation
+	createCreditErr     error
+	redeemCreditResp    *swaps.CreditRedemption
+	redeemCreditErr     error
+	listCreditsResp     *swaps.CreditSnapshot
+	listCreditsErr      error
 
 	quotePayCalls      int
 	quotePayInvoice    string
@@ -1030,6 +1145,12 @@ type fakeSwapRuntime struct {
 	startPayCalls      int
 	startReceiveCalls  int
 	startReceiveMemo   string
+	createCreditCalls  int
+	createCreditReq    swaps.CreateCreditRequest
+	redeemCreditCalls  int
+	redeemCreditReq    swaps.RedeemCreditRequest
+	listCreditsCalls   int
+	listCreditsLimit   uint32
 	getSummaryCalls    int
 	listPendingOnly    []bool
 	payResumeCalls     map[lntypes.Hash]int
@@ -1122,6 +1243,51 @@ func (f *fakeSwapRuntime) ResumeReceiveViaLightning(_ context.Context,
 	f.receiveResumeCh <- hash
 
 	return &fakeReceiveSession{hash: hash}, nil
+}
+
+func (f *fakeSwapRuntime) CreateCredit(_ context.Context,
+	req swaps.CreateCreditRequest) (*swaps.CreditOperation, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.createCreditCalls++
+	f.createCreditReq = req
+	if f.createCreditErr != nil {
+		return nil, f.createCreditErr
+	}
+
+	return f.createCreditResp, nil
+}
+
+func (f *fakeSwapRuntime) RedeemCredit(_ context.Context,
+	req swaps.RedeemCreditRequest) (*swaps.CreditRedemption, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.redeemCreditCalls++
+	f.redeemCreditReq = req
+	if f.redeemCreditErr != nil {
+		return nil, f.redeemCreditErr
+	}
+
+	return f.redeemCreditResp, nil
+}
+
+func (f *fakeSwapRuntime) ListCredits(_ context.Context, limit uint32) (
+	*swaps.CreditSnapshot, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.listCreditsCalls++
+	f.listCreditsLimit = limit
+	if f.listCreditsErr != nil {
+		return nil, f.listCreditsErr
+	}
+
+	return f.listCreditsResp, nil
 }
 
 func (f *fakeSwapRuntime) GetSwapSummary(_ context.Context, hash lntypes.Hash) (
