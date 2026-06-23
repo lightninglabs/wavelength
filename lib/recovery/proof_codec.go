@@ -91,6 +91,15 @@ func nodeDecoder(r io.Reader, val interface{}, _ *[8]byte, l uint64) error {
 		)
 	}
 
+	// Bound the declared sub-stream length before allocating. l is the
+	// outer record length; an enclosing stream that framing-validated its
+	// records keeps l <= bytes present, but we re-check here so the make()
+	// is safe regardless of the caller.
+	if l > maxRecoveryMessageSize {
+		return fmt.Errorf("%w: node sub-stream %d bytes exceeds max %d",
+			ErrInvalidTLV, l, maxRecoveryMessageSize)
+	}
+
 	buf := make([]byte, l)
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return err
@@ -159,7 +168,15 @@ func decodeNodeStream(raw []byte) (*Node, error) {
 		return nil, err
 	}
 
-	parsed, err := stream.DecodeWithParsedTypes(bytes.NewReader(raw))
+	// Pre-validate framing on the nested per-Node sub-stream too: the
+	// tx-bytes record decodes via DVarBytes, so a declared length larger
+	// than the sub-stream cannot be allowed to drive an unbounded make().
+	reader, err := safeRecoveryTLVBytes(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode node: %w", err)
+	}
+
+	parsed, err := stream.DecodeWithParsedTypes(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode node: %w", err)
 	}
@@ -243,7 +260,17 @@ func DecodeProof(raw []byte) (*Proof, error) {
 		return nil, fmt.Errorf("create proof stream: %w", err)
 	}
 
-	_, err = stream.DecodeWithParsedTypes(bytes.NewReader(raw))
+	// Pre-validate the framing so a record declaring a length larger than
+	// the bytes present cannot drive an unbounded make() inside the tlv
+	// decoder (the DVarBytes-backed targetOutpoint and nodes records, plus
+	// the unknown-record discard buffer). Proof bytes are read back from
+	// durable storage on restart.
+	reader, err := safeRecoveryTLVBytes(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode proof: %w", err)
+	}
+
+	_, err = stream.DecodeWithParsedTypes(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode proof: %w", err)
 	}
