@@ -72,6 +72,16 @@ type SessionActorConfig struct {
 	// directly.
 	SpendCompleter SpendCompleter
 
+	// SpendReleaser routes input-reservation release through the VTXO
+	// manager, returning each reserved VTXO from SpendingState to
+	// LiveState. It fires from driveOutbox when a pre-point-of-no-return
+	// terminal failure (e.g. a typed submit rejection) emits a
+	// ReleaseInputsRequest, so a rejected submit does not strand
+	// spendable funds until the startup sweep. Best-effort: the session
+	// is already terminal Failed, so a release error only leaves the
+	// sweep as the backstop. When nil, the inputs stay reserved.
+	SpendReleaser SpendReleaser
+
 	// ReservationStore records one durable spending-reservation row per
 	// outgoing input. When nil, reservations are not recorded.
 	ReservationStore ReservationStore
@@ -866,6 +876,32 @@ func (b *sessionBehavior) driveOutboxEvents(ctx context.Context,
 				ctx, &InputsMarkedSpentEvent{},
 			); err != nil {
 				return err
+			}
+
+		// Input-reservation release: a pre-point-of-no-return terminal
+		// failure (e.g. a typed submit rejection) returns the reserved
+		// inputs to LiveState. This is BEST-EFFORT and must never fail
+		// the turn: the transition that emitted it already moved the
+		// FSM to terminal Failed, so returning an error here would
+		// re-drive that doomed transition and wedge the session in a
+		// redelivery loop. A failed release just leaves the startup
+		// sweep as the backstop it already is.
+		case *ReleaseInputsRequest:
+			if err := b.releaseSpend(ctx, m.Outpoints); err != nil {
+				b.logger(ctx).WarnS(ctx, "Failed to release "+
+					"reserved inputs after a "+
+					"terminal session failure; "+
+					"startup sweep will reconcile",
+					err,
+					slog.String(
+						"session_id",
+						b.sessionID.String(),
+					),
+					slog.Int(
+						"num_outpoints",
+						len(m.Outpoints),
+					),
+				)
 			}
 
 		// Incoming materialization: a DB write plus the follow-up FSM

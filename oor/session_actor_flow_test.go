@@ -574,6 +574,69 @@ func TestSessionActorCompleteSpendFilterAndFallback(t *testing.T) {
 	require.Equal(t, []wire.OutPoint{local}, fallback.updated)
 }
 
+// TestSessionActorReleaseInputsBestEffort verifies the pre-point-of-no-return
+// input-release path the per-session actor drives when a terminal failure
+// emits a ReleaseInputsRequest. Locally-known outpoints route to the
+// SpendReleaser while non-local inputs are filtered out, and -- the property
+// that closes the C-1 wedge -- a releaser failure is swallowed so driveOutbox
+// still commits the turn instead of treating the event as unhandled and
+// redelivering the already-terminal session forever.
+func TestSessionActorReleaseInputsBestEffort(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	sid := oorSessionID(0x76)
+
+	local := wire.OutPoint{Hash: chainhash.Hash{0x76}, Index: 0}
+	foreign := wire.OutPoint{Hash: chainhash.Hash{0x77}, Index: 1}
+	store := &fakeVTXOStore{
+		known: map[wire.OutPoint]*vtxo.Descriptor{
+			local: {
+				Outpoint: local,
+			},
+		},
+	}
+
+	// releaseSpend filters to the locally-known reserved input; the
+	// counterparty's input carries no local reservation to release.
+	var released []wire.OutPoint
+	b := &sessionBehavior{
+		cfg: SessionActorConfig{
+			VTXOStore: store,
+			SpendReleaser: func(_ context.Context,
+				ops []wire.OutPoint) error {
+
+				released = append(released, ops...)
+
+				return nil
+			},
+		},
+		log:       btclog.Disabled,
+		sessionID: sid,
+	}
+	require.NoError(
+		t,
+		b.releaseSpend(
+			ctx, []wire.OutPoint{local, foreign},
+		),
+	)
+	require.Equal(t, []wire.OutPoint{local}, released)
+
+	// The full driveOutbox path is best-effort: a releaser error must NOT
+	// fail the turn. Returning the error here would re-drive the terminal
+	// transition that emitted the release and wedge the session in a
+	// redelivery loop, the exact regression this case guards against.
+	b.cfg.SpendReleaser = func(context.Context, []wire.OutPoint) error {
+		return errFilterBroken
+	}
+	release := &ReleaseInputsRequest{
+		Outpoints: []wire.OutPoint{
+			local,
+		},
+	}
+	require.NoError(t, b.driveOutbox(ctx, []OutboxEvent{release}))
+}
+
 // orderRecordingStore appends a marker when the snapshot upsert runs so tests
 // can assert commit-phase ordering.
 type orderRecordingStore struct {

@@ -322,6 +322,18 @@ func (m *MarkInputsSpentRequest) ToProto() fn.Result[proto.Message] {
 	)
 }
 
+// ToProto converts ReleaseInputsRequest to a protobuf message.
+func (m *ReleaseInputsRequest) ToProto() fn.Result[proto.Message] {
+	payload, err := encodeOutpoints(m.Outpoints)
+	if err != nil {
+		return fn.Err[proto.Message](err)
+	}
+
+	return fn.Ok[proto.Message](
+		protoEnvelope("ReleaseInputsRequest", payload),
+	)
+}
+
 // IncomingTransferNotification is emitted when an incoming transfer has been
 // validated structurally and should be surfaced to the application/UI layer.
 //

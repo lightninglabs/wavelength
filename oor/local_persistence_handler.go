@@ -3,7 +3,6 @@ package oor
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -119,18 +118,6 @@ type LocalPersistenceOutboxHandler struct {
 	// received OOR VTXOs are actively monitored when the handler is used
 	// outside the OOR durable actor.
 	NotifyIncomingVTXOs IncomingVTXONotifier
-
-	// CompleteSpend enqueues OOR spend completion through the VTXO
-	// manager so each consumed VTXO transitions to SpentState via its
-	// own FSM. When nil, the handler falls back to direct store writes
-	// for backwards compatibility during migration.
-	CompleteSpend SpendCompleter
-
-	// ReleaseSpend releases the spend reservation on input VTXOs when
-	// an outgoing session fails terminally before the point of no
-	// return. When nil, the release is skipped and the inputs stay
-	// reserved until the startup VTXO sweep reconciles them.
-	ReleaseSpend SpendReleaser
 }
 
 // Handle executes one outbox request and emits follow-up FSM events.
@@ -147,12 +134,6 @@ func (h *LocalPersistenceOutboxHandler) Handle(ctx context.Context,
 	}
 
 	switch msg := outbox.(type) {
-	case *MarkInputsSpentRequest:
-		return h.handleMarkInputsSpent(ctx, msg)
-
-	case *ReleaseInputsRequest:
-		return h.handleReleaseInputs(ctx, msg)
-
 	case *QueryIncomingMetadataRequest:
 		return h.handleQueryIncomingMetadata(ctx, msg)
 
@@ -169,155 +150,6 @@ func (h *LocalPersistenceOutboxHandler) Handle(ctx context.Context,
 
 		return h.Next.Handle(ctx, sessionID, outbox)
 	}
-}
-
-// handleReleaseInputs releases the spend reservation on the session's
-// input VTXOs after a pre-point-of-no-return terminal failure. The
-// release is deliberately best-effort: the session FSM is already in
-// terminal Failed, so feeding a retryable error event back into it
-// would be rejected, and the startup VTXO sweep remains the backstop
-// that reconciles any reservation this path fails to clear.
-func (h *LocalPersistenceOutboxHandler) handleReleaseInputs(ctx context.Context,
-	msg *ReleaseInputsRequest) ([]Event, error) {
-
-	if len(msg.Outpoints) == 0 {
-		return nil, nil
-	}
-
-	if h.ReleaseSpend == nil {
-		logger(ctx).WarnS(ctx, "No spend releaser configured, "+
-			"inputs stay reserved until the startup sweep", nil,
-			slog.Int("num_outpoints", len(msg.Outpoints)),
-		)
-
-		return nil, nil
-	}
-
-	logger(ctx).InfoS(ctx, "Releasing reserved inputs after terminal "+
-		"session failure",
-		slog.Int("num_outpoints", len(msg.Outpoints)),
-	)
-
-	if err := h.ReleaseSpend(ctx, msg.Outpoints); err != nil {
-		logger(ctx).WarnS(ctx, "Failed to release reserved inputs, "+
-			"startup sweep will reconcile", err,
-			slog.Int("num_outpoints", len(msg.Outpoints)),
-		)
-	}
-
-	return nil, nil
-}
-
-// handleMarkInputsSpent completes the OOR spend for consumed VTXO inputs.
-//
-// When CompleteSpend is configured, the handler enqueues completion through
-// the VTXO manager so each VTXO actor transitions to SpentState via its own
-// FSM and only emits InputsMarkedSpentEvent after the manager reports success.
-// This keeps the VTXO actor as the source of truth for availability state
-// while preserving the durable ordering required by OOR resume.
-//
-// When CompleteSpend is nil, the handler falls back to direct store writes
-// for backwards compatibility during migration.
-func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
-	ctx context.Context, msg *MarkInputsSpentRequest) ([]Event, error) {
-
-	if len(msg.Outpoints) == 0 {
-		return nil, fmt.Errorf("outpoints must be provided")
-	}
-
-	logger(ctx).InfoS(ctx, "Marking VTXO inputs as spent",
-		slog.Int("num_outpoints", len(msg.Outpoints)),
-	)
-
-	knownOutpoints := make([]wire.OutPoint, 0, len(msg.Outpoints))
-	for i := range msg.Outpoints {
-		if h.Store == nil {
-			knownOutpoints = append(
-				knownOutpoints, msg.Outpoints[i],
-			)
-
-			continue
-		}
-
-		_, err := h.Store.GetVTXO(ctx, msg.Outpoints[i])
-		if err != nil {
-			if !errors.Is(err, sql.ErrNoRows) {
-				return nil, NewRetryableOutboxError(
-					fmt.Errorf("load local vtxo %s: %w",
-						msg.Outpoints[i], err),
-					defaultRetryDelay,
-				)
-			}
-
-			logger(ctx).DebugS(
-				ctx, "Skipping non-local OOR input spend "+
-					"completion",
-				slog.String(
-					"outpoint", msg.Outpoints[i].String(),
-				),
-			)
-
-			continue
-		}
-
-		knownOutpoints = append(knownOutpoints, msg.Outpoints[i])
-	}
-
-	if len(knownOutpoints) == 0 {
-		logger(ctx).DebugS(
-			ctx, "No local VTXO inputs required spend "+
-				"completion",
-		)
-
-		return []Event{&InputsMarkedSpentEvent{}}, nil
-	}
-
-	// When a SpendCompleter is configured, route completion through the
-	// VTXO manager so each actor processes SpendCompletedEvent and
-	// persists VTXOStatusSpent through its own outbox path. This is a
-	// synchronous Ask whose status write commits in the VTXO actor's own
-	// transaction: it is a SECOND writer that does not join the caller's
-	// transaction, so callers must run it with no DB writer held (the
-	// session actor calls it inline in dispatch) to avoid deadlocking
-	// against the single SQLite/Postgres writer lock.
-	if h.CompleteSpend != nil {
-		err := h.CompleteSpend(ctx, knownOutpoints)
-		if err != nil {
-			if errors.Is(err, actor.ErrNoActorsAvailable) {
-				return nil, NewRetryableOutboxError(
-					fmt.Errorf("complete spend via "+
-						"manager: %w", err),
-					defaultRetryDelay,
-				)
-			}
-
-			return nil, fmt.Errorf("complete spend via manager: %w",
-				err)
-		}
-
-		return []Event{&InputsMarkedSpentEvent{}}, nil
-	}
-
-	// Fallback: direct store write for callers that have not yet wired
-	// the actor-owned completion path.
-	if h.Store == nil {
-		return nil, fmt.Errorf("vtxo store must be provided")
-	}
-
-	for i := range knownOutpoints {
-		err := h.Store.UpdateVTXOStatus(
-			ctx, knownOutpoints[i], vtxo.VTXOStatusSpent,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		logger(ctx).DebugS(ctx, "Marked VTXO input spent",
-			slog.String("outpoint",
-				knownOutpoints[i].String()))
-	}
-
-	return []Event{&InputsMarkedSpentEvent{}}, nil
 }
 
 // handleMaterializeIncoming persists recipient VTXOs for an incoming transfer
