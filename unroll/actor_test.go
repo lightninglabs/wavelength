@@ -2750,6 +2750,94 @@ func TestSweepConfirmationCompletesActor(t *testing.T) {
 	require.False(t, ok)
 }
 
+// TestExitCostTellFailureDefersTerminalHandoff verifies that a transient
+// ledger delivery failure defers the terminal registry handoff so the
+// exit-cost leg is not lost when the registry would otherwise stop the
+// completed child. Once the ledger sink recovers, a later height tick
+// retries: the exit cost is delivered and the registry is notified.
+func TestExitCostTellFailureDefersTerminalHandoff(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, beh, txconfirmRef, _ := newActorHarness(t, proof, desc)
+
+	// A sink resolved against an actor system with no registered ledger
+	// actor returns ErrNoActorsAvailable on every Tell, modelling a
+	// transient delivery failure.
+	emptySystem := actor.NewActorSystem()
+	t.Cleanup(func() {
+		_ = emptySystem.Shutdown(context.Background())
+	})
+	beh.cfg.LedgerSink = fn.Some(ledger.NewSink(emptySystem))
+
+	// Capture terminal notifications to the registry.
+	registryRef := actor.NewChannelTellOnlyRef[RegistryMsg](
+		"unroll-registry", 4,
+	)
+	beh.cfg.RegistryRef = registryRef
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+
+	txconfirmRef.emitConfirmed(t, 0, proof.RootTxids()[0], 101)
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCountForTxid(
+			proof.TargetOutpoint().Hash,
+		) == 1
+	}, testTimeout, 10*time.Millisecond)
+
+	txconfirmRef.emitConfirmed(t, 1, proof.TargetOutpoint().Hash, 102)
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 104})
+
+	require.Eventually(t, func() bool {
+		return txconfirmRef.requestCount() == 3
+	}, testTimeout, 10*time.Millisecond)
+
+	sweepTx := txconfirmRef.lastRequest(t).Tx
+	sweepTxid := sweepTx.TxHash()
+	txconfirmRef.emitConfirmed(t, 2, sweepTxid, 105)
+
+	require.Eventually(t, func() bool {
+		stateResp, ok := mustAsk(
+			t, unrollActor.Ref(), &GetStateRequest{},
+		).(*GetStateResp)
+		require.True(t, ok)
+
+		return stateResp.Phase == PhaseCompleted
+	}, testTimeout, 10*time.Millisecond)
+
+	// The failing ledger sink must have deferred the terminal handoff:
+	// the registry sees no UnrollTerminatedMsg.
+	_, ok := registryRef.AwaitMessage(50 * time.Millisecond)
+	require.False(
+		t, ok, "terminal handoff must be deferred while exit-cost "+
+			"delivery fails",
+	)
+
+	// Recover the ledger sink and drive one more height tick. Because the
+	// FSM is terminal, the event re-enters notifyRegistryIfTerminal, the
+	// exit cost is delivered, and the registry is finally notified.
+	ledgerSink := actor.NewChannelTellOnlyRef[ledger.LedgerMsg](
+		"unroll-ledger", 2,
+	)
+	beh.cfg.LedgerSink = fn.Some[ledger.Sink](ledgerSink)
+
+	mustAsk(t, unrollActor.Ref(), &HeightObservedMsg{Height: 106})
+
+	ledgerMsg, ok := ledgerSink.AwaitMessage(testTimeout)
+	require.True(t, ok, "recovered sink must receive the exit cost")
+	_, ok = ledgerMsg.(*ledger.ExitCostMsg)
+	require.True(t, ok)
+
+	terminalMsg, ok := registryRef.AwaitMessage(testTimeout)
+	require.True(
+		t, ok, "registry must be notified once exit cost is delivered",
+	)
+	_, ok = terminalMsg.(*UnrollTerminatedMsg)
+	require.True(t, ok)
+}
+
 // TestGetStateAfterFSMShutdownKeepsCompletedCheckpoint verifies that callers
 // still observe the last checkpointed completed state after the protofsm has
 // been stopped during actor teardown.

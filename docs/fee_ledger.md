@@ -279,6 +279,15 @@ Both legs share an outpoint-derived `IdempotencyKey` so a
 redelivered `ExitCostMsg` resolves to a silent no-op against
 `idx_client_ledger_idempotent_key`.
 
+`fee` here is the **final sweep transaction's** miner fee
+(`target output value − Σ sweep outputs`), not the cumulative
+cost of the whole unilateral exit. Broadcasting the intermediate
+tree transactions on the path to the leaf also burns miner fees,
+and those are not yet captured by this leg. The exit cost
+recorded today therefore understates the true on-chain cost of a
+deep-tree exit; folding in the tree-broadcast fees is a deferred
+item.
+
 ## Emission sites
 
 | Subsystem | File | Function | Messages emitted |

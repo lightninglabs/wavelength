@@ -1755,7 +1755,15 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 	}
 
 	job := stateJob(state)
-	b.emitExitCostIfCompleted(ctx, phase, job)
+	if !b.emitExitCostIfCompleted(ctx, phase, job) {
+
+		// The exit-cost leg has not yet been durably handed to the
+		// ledger. Defer the terminal handoff — which would stop this
+		// child and retire the VTXO — so a later height tick retries
+		// the emission. VTXO retirement has its own
+		// startup-reconciliation backstop, so deferring it is safe.
+		return
+	}
 
 	if b.cfg.RegistryRef == nil || b.terminalNotified {
 		return
@@ -1795,21 +1803,41 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 }
 
 // emitExitCostIfCompleted sends the final unilateral exit miner fee to the
-// ledger once the unroll sweep confirms. The ledger handler is idempotent by
-// target outpoint, so a post-crash replay can redeliver this event safely.
+// ledger once the unroll sweep confirms. The ledger sink is a durable
+// mailbox: a Tell that returns nil is durably accepted and processed
+// at-least-once, and the ledger handler dedups by target outpoint so a
+// post-crash or post-restart replay is a safe no-op.
+//
+// It returns false only when a transient delivery failure means the caller
+// must defer the terminal registry handoff. Without that deferral a Tell
+// that errors (e.g. mailbox backpressure) would be lost: the registry stops
+// this child right after the handoff and terminal records are not restored
+// on boot, so there would be no later opportunity to retry. Returning false
+// keeps the child alive and subscribed, so the next height tick re-enters
+// notifyRegistryIfTerminal and retries the emission.
+//
+// It returns true when there is nothing to defer for: the exit cost is not
+// applicable (non-completed phase, already emitted, or no sink), it was
+// delivered, or it is deterministically un-buildable. A completed actor
+// restores its proof and sweep tx from the checkpoint, so a build failure is
+// an internal inconsistency that retrying cannot fix — it is surfaced at
+// error level and then allowed through so the terminal handoff is not wedged
+// on every future block.
 func (b *behavior) emitExitCostIfCompleted(ctx context.Context, phase Phase,
-	job *JobState) {
+	job *JobState) bool {
 
 	if phase != PhaseCompleted || b.exitCostNotified ||
 		b.cfg.LedgerSink.IsNone() {
-		return
+		return true
 	}
 
 	msg, err := b.exitCostMsg(job)
 	if err != nil {
-		b.log.WarnS(ctx, "Failed to build unroll exit cost event", err)
+		b.log.ErrorS(ctx, "Unbuildable unroll exit cost on completed "+
+			"actor", err)
+		b.exitCostNotified = true
 
-		return
+		return true
 	}
 
 	notifyCtx := actor.WithoutTx(context.WithoutCancel(ctx))
@@ -1817,14 +1845,15 @@ func (b *behavior) emitExitCostIfCompleted(ctx context.Context, phase Phase,
 		notifyCtx, msg,
 	); err != nil {
 
-		b.log.WarnS(ctx, "Failed to notify ledger of unroll exit cost",
-			err,
-		)
+		b.log.WarnS(ctx, "Deferring unroll terminal handoff; ledger "+
+			"exit-cost tell failed", err)
 
-		return
+		return false
 	}
 
 	b.exitCostNotified = true
+
+	return true
 }
 
 // exitCostMsg derives the ledger event from the proof target output and the
