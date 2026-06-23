@@ -19,6 +19,15 @@ service SwapClientService {
     // continue the claim flow after the invoice is paid.
     rpc StartReceive (StartReceiveRequest) returns (StartReceiveResponse);
 
+    // CreateCredit starts a durable credit funding session.
+    rpc CreateCredit (CreateCreditRequest) returns (CreateCreditResponse);
+
+    // RedeemCredit materializes available credits back into an Ark output.
+    rpc RedeemCredit (RedeemCreditRequest) returns (RedeemCreditResponse);
+
+    // ListCredits returns the server-authoritative credit account snapshot.
+    rpc ListCredits (ListCreditsRequest) returns (ListCreditsResponse);
+
     // ResumeSwap asks the daemon to resume one persisted pending swap.
     rpc ResumeSwap (ResumeSwapRequest) returns (ResumeSwapResponse);
 
@@ -46,6 +55,37 @@ enum SwapSettlementType {
     SWAP_SETTLEMENT_TYPE_UNSPECIFIED = 0;
     SWAP_SETTLEMENT_TYPE_LIGHTNING = 1;
     SWAP_SETTLEMENT_TYPE_IN_ARK = 2;
+    SWAP_SETTLEMENT_TYPE_CREDIT = 3;
+    SWAP_SETTLEMENT_TYPE_MIXED = 4;
+}
+
+enum CreditFundingSource {
+    CREDIT_FUNDING_SOURCE_UNSPECIFIED = 0;
+    CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE = 1;
+    CREDIT_FUNDING_SOURCE_ARK_TOPUP = 2;
+}
+
+enum CreditOperationType {
+    CREDIT_OPERATION_TYPE_UNSPECIFIED = 0;
+    CREDIT_OPERATION_TYPE_FUNDING = 1;
+    CREDIT_OPERATION_TYPE_PAY = 2;
+    CREDIT_OPERATION_TYPE_REDEMPTION = 3;
+    CREDIT_OPERATION_TYPE_RECEIVE = 4;
+}
+
+enum CreditOperationState {
+    CREDIT_OPERATION_STATE_UNSPECIFIED = 0;
+    CREDIT_OPERATION_STATE_CREATED = 1;
+    CREDIT_OPERATION_STATE_AWAITING_PAYMENT = 2;
+    CREDIT_OPERATION_STATE_CREDITED = 3;
+    CREDIT_OPERATION_STATE_RESERVED = 4;
+    CREDIT_OPERATION_STATE_PAYING_LIGHTNING = 5;
+    CREDIT_OPERATION_STATE_DEBITED = 6;
+    CREDIT_OPERATION_STATE_SENDING_OOR = 7;
+    CREDIT_OPERATION_STATE_REDEEMED = 8;
+    CREDIT_OPERATION_STATE_RELEASED = 9;
+    CREDIT_OPERATION_STATE_EXPIRED = 10;
+    CREDIT_OPERATION_STATE_FAILED = 11;
 }
 
 enum SwapState {
@@ -73,6 +113,11 @@ message QuotePayRequest {
     // Zero means no explicit caller cap. Quotes still return when the
     // estimated fee exceeds this cap so callers can render the fee.
     uint64 max_fee_sat = 2;
+
+    // max_credit_sat is the maximum credit amount the caller is willing to
+    // use for this quote. Zero means only required-credit shortfalls are
+    // reported.
+    uint64 max_credit_sat = 3;
 }
 
 message QuotePayResponse {
@@ -80,7 +125,7 @@ message QuotePayResponse {
     // invoice and eventual swap.
     string payment_hash = 1;
 
-    // invoice_amount_sat is the whole-satoshi invoice amount.
+    // invoice_amount_sat is the sat-denominated invoice amount.
     uint64 invoice_amount_sat = 2;
 
     // amount_sat is the total amount that would leave the wallet.
@@ -97,6 +142,8 @@ message QuotePayResponse {
     // exceeds_max_fee is true when max_fee_sat is non-zero and fee_sat is
     // larger than that cap.
     bool exceeds_max_fee = 7;
+
+    CreditQuote credit_quote = 8;
 }
 
 message StartPayRequest {
@@ -111,6 +158,10 @@ message StartPayRequest {
     // guard. The current implementation relies on the persisted swap state
     // returned by the SDK once the payment hash is known.
     string idempotency_key = 3;
+
+    // max_credit_sat is the maximum credit amount the caller authorizes this
+    // pay to reserve.
+    uint64 max_credit_sat = 4;
 }
 
 message StartPayResponse {
@@ -121,6 +172,81 @@ message StartPayResponse {
     // swap is the initial durable summary after the pay session is persisted
     // and daemon background execution has been scheduled.
     SwapSummary swap = 2;
+}
+
+message CreateCreditRequest {
+    string idempotency_key = 1;
+    CreditFundingSource source = 2;
+    uint64 amount_sat = 4;
+    string memo = 5;
+}
+
+message CreateCreditResponse {
+    string operation_id = 1;
+    CreditOperationState state = 2;
+    string invoice = 3;
+    string payment_hash = 4;
+    uint64 amount_sat = 6;
+    bytes destination_pubkey = 7;
+    int64 expires_at_unix = 8;
+    SwapSummary swap = 9;
+}
+
+message RedeemCreditRequest {
+    string idempotency_key = 1;
+    uint64 amount_sat = 2;
+    bytes destination_pubkey = 3;
+}
+
+message RedeemCreditResponse {
+    string operation_id = 1;
+    CreditOperationState state = 2;
+    uint64 debited_sat = 3;
+    uint64 redeemed_sat = 4;
+    string session_id = 6;
+}
+
+message ListCreditsRequest {
+    uint32 limit = 1;
+}
+
+message ListCreditsResponse {
+    uint64 finalized_sat = 1;
+    uint64 reserved_sat = 2;
+    uint64 available_sat = 3;
+    repeated CreditOperation operations = 4;
+    repeated CreditLedgerEntry ledger_entries = 5;
+}
+
+message CreditQuote {
+    bool must_use_credit = 1;
+    uint64 credit_applied_sat = 2;
+    uint64 credit_shortfall_sat = 3;
+    uint64 credit_topup_sat = 4;
+    uint64 ark_funding_sat = 5;
+}
+
+message CreditOperation {
+    string operation_id = 1;
+    CreditOperationType type = 2;
+    CreditOperationState state = 3;
+    uint64 amount_sat = 5;
+    string payment_hash = 6;
+    string invoice = 7;
+    bytes destination_pubkey = 8;
+    string session_id = 9;
+    int64 created_at_unix = 10;
+    int64 updated_at_unix = 11;
+    int64 completed_at_unix = 12;
+    string last_error = 13;
+}
+
+message CreditLedgerEntry {
+    string entry_id = 1;
+    string operation_id = 2;
+    string direction = 3;
+    uint64 amount_sat = 4;
+    int64 created_at_unix = 5;
 }
 
 message StartReceiveRequest {
@@ -147,6 +273,26 @@ message StartReceiveResponse {
     // swap is the initial durable summary after the receive session is
     // persisted and daemon background execution has been scheduled.
     SwapSummary swap = 3;
+
+    // requested_amount_sat is the invoice amount requested by the receiver.
+    uint64 requested_amount_sat = 4;
+
+    // available_credit_sat is the server-authoritative credit balance
+    // considered for the receive plan.
+    uint64 available_credit_sat = 5;
+
+    // attached_credit_sat is the credit amount reserved and added to the funded
+    // vHTLC for credit-assisted receives.
+    uint64 attached_credit_sat = 6;
+
+    // vhtlc_amount_sat is the funded vHTLC amount the client expects.
+    uint64 vhtlc_amount_sat = 7;
+
+    // dust_limit_sat is the minimum vHTLC output amount used by the server.
+    uint64 dust_limit_sat = 8;
+
+    // settlement_type identifies the selected receive rail.
+    SwapSettlementType settlement_type = 9;
 }
 
 message ResumeSwapRequest {
@@ -264,4 +410,23 @@ message SwapSummary {
     // revealed it. For a completed pay swap this is the proof of payment for
     // the paid invoice; it is empty until the preimage is durably known.
     string preimage = 21;
+
+    // credit_quote is the credit plan applied to this swap when credits were
+    // used to fund or assist it.
+    CreditQuote credit_quote = 22;
+
+    // requested_amount_sat is the invoice amount for receive swaps when it can
+    // differ from the funded vHTLC amount.
+    uint64 requested_amount_sat = 23;
+
+    // attached_credit_sat is the credit amount attached to a credit-assisted
+    // receive.
+    uint64 attached_credit_sat = 24;
+
+    // dust_limit_sat is the server dust limit used for receive planning.
+    uint64 dust_limit_sat = 25;
+
+    // available_credit_sat is the balance considered when the receive route was
+    // planned.
+    uint64 available_credit_sat = 26;
 }

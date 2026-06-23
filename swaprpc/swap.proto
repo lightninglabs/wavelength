@@ -18,6 +18,47 @@ enum SettlementType {
     // SETTLEMENT_TYPE_IN_ARK means sender and receiver settle with one Ark
     // vHTLC inside the same Ark instance.
     SETTLEMENT_TYPE_IN_ARK = 2;
+
+    // SETTLEMENT_TYPE_CREDIT means the swap server pays Lightning from a
+    // reserved credit balance without requiring a client-funded vHTLC.
+    SETTLEMENT_TYPE_CREDIT = 3;
+
+    // SETTLEMENT_TYPE_MIXED means the invoice is funded by both a vHTLC and
+    // a reserved credit balance.
+    SETTLEMENT_TYPE_MIXED = 4;
+}
+
+// CreditFundingSource identifies how value enters a credit account.
+enum CreditFundingSource {
+    CREDIT_FUNDING_SOURCE_UNSPECIFIED = 0;
+    CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE = 1;
+    CREDIT_FUNDING_SOURCE_ARK_TOPUP = 2;
+}
+
+// CreditOperationType identifies the durable credit state machine family.
+enum CreditOperationType {
+    CREDIT_OPERATION_TYPE_UNSPECIFIED = 0;
+    CREDIT_OPERATION_TYPE_FUNDING = 1;
+    CREDIT_OPERATION_TYPE_PAY = 2;
+    CREDIT_OPERATION_TYPE_REDEMPTION = 3;
+    CREDIT_OPERATION_TYPE_RECEIVE = 4;
+}
+
+// CreditOperationState is the externally visible state of one credit
+// operation.
+enum CreditOperationState {
+    CREDIT_OPERATION_STATE_UNSPECIFIED = 0;
+    CREDIT_OPERATION_STATE_CREATED = 1;
+    CREDIT_OPERATION_STATE_AWAITING_PAYMENT = 2;
+    CREDIT_OPERATION_STATE_CREDITED = 3;
+    CREDIT_OPERATION_STATE_RESERVED = 4;
+    CREDIT_OPERATION_STATE_PAYING_LIGHTNING = 5;
+    CREDIT_OPERATION_STATE_DEBITED = 6;
+    CREDIT_OPERATION_STATE_SENDING_OOR = 7;
+    CREDIT_OPERATION_STATE_REDEEMED = 8;
+    CREDIT_OPERATION_STATE_RELEASED = 9;
+    CREDIT_OPERATION_STATE_EXPIRED = 10;
+    CREDIT_OPERATION_STATE_FAILED = 11;
 }
 
 // SwapService exposes the external swap server API consumed by the client SDK.
@@ -35,6 +76,19 @@ service SwapService {
     // QuoteInSwap previews how an invoice send would settle without creating
     // durable swap state or notifying a same-Ark receiver.
     rpc QuoteInSwap (QuoteInSwapRequest) returns (QuoteInSwapResponse);
+
+    // CreateCredit creates a durable credit funding operation. Lightning
+    // receives return a server-owned invoice; Ark top-ups return a
+    // server-owned OOR destination.
+    rpc CreateCredit (CreateCreditRequest) returns (CreateCreditResponse);
+
+    // RedeemCredit materializes available credits back into an Ark OOR
+    // output. The OOR output amount must be at least dust.
+    rpc RedeemCredit (RedeemCreditRequest) returns (RedeemCreditResponse);
+
+    // ListCredits returns the account balance plus recent credit operations
+    // and ledger rows.
+    rpc ListCredits (ListCreditsRequest) returns (ListCreditsResponse);
 
     // AuthorizeInSwapRefund signs a prepared cooperative refund spend for a
     // funded in-swap whose Lightning payment attempt has terminally failed.
@@ -75,11 +129,8 @@ message RequestChannelIdRequest {
     // adding a separate auth identity.
     bytes payment_hash = 3;
 
-    // amount_msat is the exact amount the Ark receiver expects to receive,
-    // expressed in millisatoshis. The swap server's out-swap fee is charged to
-    // the Lightning payer through the route hint and does not reduce this
-    // amount.
-    uint64 amount_msat = 4;
+    // amount_sat is the exact invoice amount the payer should send.
+    uint64 amount_sat = 4;
 }
 
 // RequestChannelIdResponse returns the route hint path for one receive
@@ -92,8 +143,30 @@ message RequestChannelIdResponse {
 
     // payer_fee_msat is the quoted Lightning route fee paid by the sender for
     // the swap server's virtual hop. Callers that want a "payer pays" total
-    // compute it as amount_msat plus payer_fee_msat.
+    // compute it as amount_sat*1000 plus payer_fee_msat.
     uint64 payer_fee_msat = 2;
+
+    // requested_amount_sat is the invoice amount requested by the receiver.
+    uint64 requested_amount_sat = 3;
+
+    // available_credit_sat is the credit balance considered for the receive
+    // plan at route creation time.
+    uint64 available_credit_sat = 4;
+
+    // attached_credit_sat is the credit amount the server reserved and will
+    // add to the funded vHTLC.
+    uint64 attached_credit_sat = 5;
+
+    // vhtlc_amount_sat is the Ark vHTLC output amount the client should
+    // expect if this route is paid.
+    uint64 vhtlc_amount_sat = 6;
+
+    // dust_limit_sat is the minimum Ark vHTLC amount used for this decision.
+    uint64 dust_limit_sat = 7;
+
+    // settlement_type identifies whether the route is normal Lightning or
+    // credit-assisted.
+    SettlementType settlement_type = 8;
 }
 
 // AcknowledgeOutSwapHtlcRequest confirms that the receiver has validated and
@@ -121,7 +194,7 @@ message OutSwapHtlcEvent {
     // payment_hash is the intercepted HTLC hash.
     bytes payment_hash = 1;
 
-    // amount_sat is the whole-satoshi amount funded in the vHTLC.
+    // amount_sat is the sat-denominated amount funded in the vHTLC.
     uint64 amount_sat = 2;
 
     // onion_blob is the raw next-hop onion blob delivered by LND.
@@ -134,9 +207,15 @@ message OutSwapHtlcEvent {
     // parts lists the individual HTLC shards that make up a multi-part
     // payment set. When empty the event describes a legacy single-part
     // payment carried by onion_blob. When populated, amount_sat is still
-    // the whole-satoshi total funded in the vHTLC and onion_blob mirrors
+    // the sat-denominated total funded in the vHTLC and onion_blob mirrors
     // the first part for backwards compatibility.
     repeated OutSwapHtlcPart parts = 5;
+
+    // requested_amount_sat is the Lightning invoice amount paid by the payer.
+    uint64 requested_amount_sat = 6;
+
+    // attached_credit_sat is the reserved credit amount added to the vHTLC.
+    uint64 attached_credit_sat = 7;
 }
 
 // OutSwapHtlcPart describes one HTLC shard of a multi-part out-swap payment
@@ -178,7 +257,7 @@ message InArkHtlcEvent {
     // payment_hash is the invoice payment hash.
     bytes payment_hash = 1;
 
-    // amount_sat is the whole-satoshi amount funded in the vHTLC.
+    // amount_sat is the sat-denominated amount funded in the vHTLC.
     uint64 amount_sat = 2;
 
     // sender_pubkey is the payment sender's public key used in the vHTLC
@@ -249,6 +328,14 @@ message CreateInSwapRequest {
     // client_vhtlc_pubkey is the client's public key used in the vHTLC spend
     // paths.
     bytes client_vhtlc_pubkey = 3;
+
+    // account_pubkey identifies the wallet credit account to inspect or
+    // reserve from when credit funding is allowed.
+    bytes account_pubkey = 4;
+
+    // max_credit_sat is the maximum credit amount the caller authorizes this
+    // payment to reserve. Zero means credit use is not allowed.
+    uint64 max_credit_sat = 5;
 }
 
 // CreateInSwapResponse returns the negotiated parameters for one in-swap.
@@ -274,6 +361,13 @@ message CreateInSwapResponse {
     // settlement_type identifies whether this negotiation should be completed
     // through Lightning or directly inside the Ark instance.
     SettlementType settlement_type = 7;
+
+    // credit_quote describes any credit reservation attached to this pay.
+    CreditQuote credit_quote = 8;
+
+    // preimage is set for credit-only pays after the swap server has already
+    // paid the Lightning invoice from reserved credits.
+    bytes preimage = 9;
 }
 
 // QuoteInSwapRequest previews one Ark-to-Lightning invoice send.
@@ -284,6 +378,15 @@ message QuoteInSwapRequest {
     // max_fee_sat is the caller's fee cap. Quotes still return when the
     // computed server fee exceeds this cap so callers can render the fee.
     uint64 max_fee_sat = 2;
+
+    // account_pubkey identifies the wallet credit account to inspect. Empty
+    // means the quote ignores credits.
+    bytes account_pubkey = 3;
+
+    // max_credit_sat is the maximum credit amount the caller is willing to
+    // use. Zero means the quote reports whether credits are required but does
+    // not apply optional credits.
+    uint64 max_credit_sat = 4;
 }
 
 // QuoteInSwapResponse returns the non-binding preview for one invoice send.
@@ -291,7 +394,8 @@ message QuoteInSwapResponse {
     // payment_hash is the SHA-256 payment hash extracted from the invoice.
     bytes payment_hash = 1;
 
-    // invoice_amount_sat is the whole-satoshi amount requested by the invoice.
+    // invoice_amount_sat is the sat-denominated amount requested by the
+    // invoice.
     uint64 invoice_amount_sat = 2;
 
     // amount_sat is the total amount that would be locked in the vHTLC.
@@ -310,6 +414,119 @@ message QuoteInSwapResponse {
     // exceeds_max_fee is true when max_fee_sat is non-zero and fee_sat is
     // larger than that cap.
     bool exceeds_max_fee = 7;
+
+    // credit_quote describes how credits would be used for this invoice.
+    CreditQuote credit_quote = 8;
+}
+
+// CreditQuote describes the credit component of a pay quote.
+message CreditQuote {
+    // must_use_credit is true when the invoice amount cannot be represented by
+    // the normal vHTLC path.
+    bool must_use_credit = 1;
+
+    // credit_applied_sat is the credit amount the quote expects to reserve.
+    uint64 credit_applied_sat = 2;
+
+    // credit_shortfall_sat is the additional credit needed before this
+    // payment can be admitted.
+    uint64 credit_shortfall_sat = 3;
+
+    // credit_topup_sat is the Ark top-up amount required to cover the
+    // shortfall. It is rounded up and dust-limited by the server.
+    uint64 credit_topup_sat = 4;
+
+    // ark_funding_sat is the amount the client must still fund through the
+    // normal vHTLC path.
+    uint64 ark_funding_sat = 5;
+}
+
+message CreateCreditRequest {
+    // account_pubkey identifies the wallet credit account.
+    bytes account_pubkey = 1;
+
+    // idempotency_key identifies one caller intent across retries.
+    string idempotency_key = 2;
+
+    CreditFundingSource source = 3;
+
+    // amount_sat is the credit amount to create.
+    uint64 amount_sat = 4;
+
+    // memo is embedded into server-owned Lightning receive invoices when the
+    // source is LIGHTNING_RECEIVE.
+    string memo = 5;
+}
+
+message CreateCreditResponse {
+    string operation_id = 1;
+    CreditOperationState state = 2;
+
+    // invoice is set for LIGHTNING_RECEIVE credit funding.
+    string invoice = 3;
+
+    // payment_hash is set when an invoice-backed operation exists.
+    bytes payment_hash = 4;
+
+    // amount_sat is the sat amount that will be credited when complete.
+    uint64 amount_sat = 5;
+
+    // destination_pubkey is the server-owned x-only Ark recipient pubkey for
+    // ARK_TOPUP.
+    bytes destination_pubkey = 7;
+
+    google.protobuf.Timestamp expires_at = 8;
+}
+
+message RedeemCreditRequest {
+    bytes account_pubkey = 1;
+    string idempotency_key = 2;
+    uint64 amount_sat = 3;
+    bytes destination_pubkey = 4;
+}
+
+message RedeemCreditResponse {
+    string operation_id = 1;
+    CreditOperationState state = 2;
+    uint64 debited_sat = 3;
+    uint64 redeemed_sat = 4;
+    string session_id = 5;
+}
+
+message ListCreditsRequest {
+    bytes account_pubkey = 1;
+    uint32 limit = 2;
+}
+
+message ListCreditsResponse {
+    uint64 finalized_sat = 1;
+    uint64 reserved_sat = 2;
+    uint64 available_sat = 3;
+    repeated CreditOperation operations = 4;
+    repeated CreditLedgerEntry ledger_entries = 5;
+}
+
+message CreditOperation {
+    string operation_id = 1;
+    CreditOperationType type = 2;
+    CreditOperationState state = 3;
+    uint64 amount_sat = 4;
+    bytes payment_hash = 6;
+    string invoice = 7;
+    bytes destination_pubkey = 8;
+    string session_id = 9;
+    google.protobuf.Timestamp created_at = 10;
+    google.protobuf.Timestamp updated_at = 11;
+    google.protobuf.Timestamp completed_at = 12;
+    string last_error = 13;
+}
+
+message CreditLedgerEntry {
+    string entry_id = 1;
+    string operation_id = 2;
+    string direction = 3;
+    uint64 amount_sat = 4;
+    google.protobuf.Timestamp created_at = 5;
 }
 
 message AuthorizeInSwapRefundRequest {
