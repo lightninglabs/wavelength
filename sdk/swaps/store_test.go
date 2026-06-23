@@ -117,6 +117,58 @@ func TestSwapSqliteStoreRunsMigrations(t *testing.T) {
 	require.False(t, dirty)
 }
 
+// TestPaySessionPersistAllowsCreditOnlyWithoutVHTLC verifies credit-only pays
+// can be durably recorded without Ark vHTLC artifacts.
+func TestPaySessionPersistAllowsCreditOnlyWithoutVHTLC(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newTestSwapStore(t)
+	client := NewSwapClientWithStore(nil, nil, nil, nil, store)
+
+	key, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	now := time.Now()
+	session := &paySession{
+		client:    client,
+		invoice:   "ln-credit-only",
+		maxFeeSat: 100,
+		state:     PayStateCompleted,
+		cfg: &InSwapConfig{
+			PaymentHash:    preimage.Hash(),
+			SettlementType: SettlementTypeCredit,
+			Preimage:       &preimage,
+			Expiry:         now.Add(time.Hour),
+		},
+		preimage:       &preimage,
+		clientPubKey:   key.PubKey(),
+		operatorPubKey: key.PubKey(),
+		serverPubKey:   key.PubKey(),
+		createdAt:      now,
+	}
+
+	require.NoError(t, session.persist(ctx))
+
+	paymentHash := preimage.Hash()
+	row, err := store.queries.GetPaySwap(ctx, paymentHash[:])
+	require.NoError(t, err)
+	require.Equal(t, string(SettlementTypeCredit), row.SettlementType)
+	require.Empty(t, row.VhtlcPkscript)
+	require.Empty(t, row.VhtlcPolicyTemplate)
+	require.Empty(t, row.VhtlcOutpoint)
+	require.Zero(t, row.VhtlcAmount)
+
+	resumed, err := client.ResumePayViaLightning(ctx, paymentHash)
+	require.NoError(t, err)
+	require.Equal(t, SettlementTypeCredit, resumed.cfg.SettlementType)
+	require.Empty(t, resumed.vhtlcPkScript)
+	require.Empty(t, resumed.vhtlcPolicyTemplate)
+}
+
 // TestReceiveAuthKeyDerivesAcrossRestart verifies receive-auth keys come from
 // the wallet-backed daemon derivation and are not stored in the swap DB.
 func TestReceiveAuthKeyDerivesAcrossRestart(t *testing.T) {

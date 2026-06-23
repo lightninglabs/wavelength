@@ -228,11 +228,12 @@ var payTransitions = map[PayState]map[payEvent]PayState{
 type paySession struct {
 	client *SwapClient
 
-	invoice   string
-	maxFeeSat uint64
-	state     PayState
-	createdAt time.Time
-	updatedAt time.Time
+	invoice      string
+	maxFeeSat    uint64
+	maxCreditSat uint64
+	state        PayState
+	createdAt    time.Time
+	updatedAt    time.Time
 
 	cfg                 *InSwapConfig
 	vhtlcPolicy         *arkscript.VHTLCPolicy
@@ -471,11 +472,21 @@ func (c *SwapClient) PayViaLightning(ctx context.Context, invoice string,
 func (c *SwapClient) StartPayViaLightning(ctx context.Context, invoice string,
 	maxFeeSat uint64) (*PaySession, error) {
 
+	return c.StartPayViaLightningWithCredits(ctx, invoice, maxFeeSat, 0)
+}
+
+// StartPayViaLightningWithCredits creates an Ark-to-Lightning pay session and
+// allows the swap server to reserve up to maxCreditSat credits.
+func (c *SwapClient) StartPayViaLightningWithCredits(ctx context.Context,
+	invoice string, maxFeeSat uint64, maxCreditSat uint64) (*PaySession,
+	error) {
+
 	session := &paySession{
-		client:    c,
-		invoice:   invoice,
-		maxFeeSat: maxFeeSat,
-		state:     PayStateCreated,
+		client:       c,
+		invoice:      invoice,
+		maxFeeSat:    maxFeeSat,
+		maxCreditSat: maxCreditSat,
+		state:        PayStateCreated,
 	}
 
 	if err := session.runUntil(ctx, PayStateSwapCreated); err != nil {
@@ -511,6 +522,10 @@ func (s *paySession) runUntil(ctx context.Context, target PayState) error {
 
 	for s.state != target {
 		if s.state.IsTerminal() {
+			if s.state == PayStateCompleted {
+				return nil
+			}
+
 			return s.terminalErr()
 		}
 
@@ -543,9 +558,21 @@ func (s *paySession) createSwap(ctx context.Context) error {
 		return fmt.Errorf("get client pubkey: %w", err)
 	}
 
-	cfg, err := s.client.server.CreateInSwap(
-		ctx, s.invoice, s.maxFeeSat, clientKey,
-	)
+	var cfg *InSwapConfig
+	if server, ok := s.client.server.(interface {
+		CreateInSwapWithCredits(context.Context, string, uint64,
+			*btcec.PublicKey, []byte, uint64) (*InSwapConfig, error)
+	}); ok {
+
+		cfg, err = server.CreateInSwapWithCredits(
+			ctx, s.invoice, s.maxFeeSat, clientKey,
+			clientKey.SerializeCompressed(), s.maxCreditSat,
+		)
+	} else {
+		cfg, err = s.client.server.CreateInSwap(
+			ctx, s.invoice, s.maxFeeSat, clientKey,
+		)
+	}
 	if err != nil {
 		return fmt.Errorf("create in-swap: %w", err)
 	}
@@ -561,6 +588,37 @@ func (s *paySession) createSwap(ctx context.Context) error {
 	)
 	if err != nil {
 		return fmt.Errorf("validate in-swap quote: %w", err)
+	}
+
+	if cfg.SettlementType == SettlementTypeCredit {
+		var creditAppliedSat uint64
+		if cfg.CreditQuote != nil {
+			creditAppliedSat = cfg.CreditQuote.CreditAppliedSat
+		}
+
+		s.client.log.InfoS(ctx, "Credit in-swap completed",
+			btclog.Hex("hash", cfg.PaymentHash[:]),
+			slog.Uint64("credit_applied_sat", creditAppliedSat),
+			slog.Time("deadline", cfg.Expiry),
+		)
+
+		return s.mutateAndPersist(ctx, func() error {
+			if s.createdAt.IsZero() {
+				s.createdAt = s.client.currentTime()
+			}
+			s.cfg = cfg
+			s.preimage = cfg.Preimage
+			s.clientPubKey = clientKey
+			s.operatorPubKey = clientKey
+			s.serverPubKey = clientKey
+			if err := s.transition(
+				payEventSwapCreated,
+			); err != nil {
+				return err
+			}
+
+			return s.transition(payEventCompleted)
+		})
 	}
 
 	operatorKey, err := s.client.daemon.OperatorPubKey(ctx)

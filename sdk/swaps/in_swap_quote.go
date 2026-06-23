@@ -31,8 +31,7 @@ func decodePayInvoice(invoice string,
 	return decoded, nil
 }
 
-// extractInvoiceAmountSat extracts a positive whole-satoshi invoice amount.
-func extractInvoiceAmountSat(msat *lnwire.MilliSatoshi) (uint64, error) {
+func extractInvoiceAmountMsat(msat *lnwire.MilliSatoshi) (uint64, error) {
 	if msat == nil {
 		return 0, fmt.Errorf("invoice amount is required")
 	}
@@ -41,11 +40,16 @@ func extractInvoiceAmountSat(msat *lnwire.MilliSatoshi) (uint64, error) {
 	if amountMSat == 0 {
 		return 0, fmt.Errorf("invoice amount must be positive")
 	}
-	if amountMSat%1000 != 0 {
-		return 0, fmt.Errorf("invoice amount must be whole satoshis")
+
+	return amountMSat, nil
+}
+
+func ceilMsatToSat(msat uint64) uint64 {
+	if msat == 0 {
+		return 0
 	}
 
-	return amountMSat / 1000, nil
+	return (msat + 999) / 1000
 }
 
 // QuotePayViaLightning previews a pay-side in-swap without creating durable
@@ -53,13 +57,44 @@ func extractInvoiceAmountSat(msat *lnwire.MilliSatoshi) (uint64, error) {
 func (c *SwapClient) QuotePayViaLightning(ctx context.Context, invoice string,
 	maxFeeSat uint64) (*InSwapQuote, error) {
 
+	return c.QuotePayViaLightningWithCredits(ctx, invoice, maxFeeSat, 0)
+}
+
+// QuotePayViaLightningWithCredits previews a pay-side in-swap with optional
+// credit use.
+func (c *SwapClient) QuotePayViaLightningWithCredits(ctx context.Context,
+	invoice string, maxFeeSat uint64, maxCreditSat uint64) (*InSwapQuote,
+	error) {
+
 	if c == nil || c.server == nil {
 		return nil, fmt.Errorf("swap server is required")
 	}
 
-	quote, err := c.server.QuoteInSwap(ctx, invoice, maxFeeSat)
-	if err != nil {
-		return nil, err
+	var quote *InSwapQuote
+	if server, ok := c.server.(interface {
+		QuoteInSwapWithCredits(context.Context, string, uint64, []byte,
+			uint64) (*InSwapQuote, error)
+	}); ok {
+
+		accountKey, err := c.daemon.IdentityPubKey(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("get credit account pubkey: %w",
+				err)
+		}
+
+		quote, err = server.QuoteInSwapWithCredits(
+			ctx, invoice, maxFeeSat,
+			accountKey.SerializeCompressed(), maxCreditSat,
+		)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		quote, err = c.server.QuoteInSwap(ctx, invoice, maxFeeSat)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if err := validateInSwapPreview(
@@ -83,7 +118,8 @@ func validateInSwapPreview(invoice string, quote *InSwapQuote,
 		return fmt.Errorf("in-swap quote invoice amount must be " +
 			"positive")
 	}
-	if quote.AmountSat == 0 {
+	if quote.AmountSat == 0 &&
+		quote.SettlementType != SettlementTypeCredit {
 		return fmt.Errorf("in-swap quote amount must be positive")
 	}
 	if quote.SettlementType == "" {
@@ -105,30 +141,44 @@ func validateInSwapPreview(invoice string, quote *InSwapQuote,
 			"invoice")
 	}
 
-	amountSat, err := extractInvoiceAmountSat(decoded.MilliSat)
+	amountMsat, err := extractInvoiceAmountMsat(decoded.MilliSat)
 	if err != nil {
 		return err
 	}
 
-	if amountSat != quote.InvoiceAmountSat {
+	expectedInvoiceSat := ceilMsatToSat(amountMsat)
+	if expectedInvoiceSat != quote.InvoiceAmountSat {
 		return fmt.Errorf("in-swap quote invoice amount %d does not "+
 			"match invoice amount %d", quote.InvoiceAmountSat,
-			amountSat)
+			expectedInvoiceSat)
 	}
 
 	if quote.FeeSat > maxInt64Uint {
 		return fmt.Errorf("in-swap quote fee overflows int64 range")
 	}
 
-	if amountSat > maxInt64Uint-quote.FeeSat {
+	if expectedInvoiceSat > maxInt64Uint-quote.FeeSat {
 		return fmt.Errorf("in-swap quote amount overflows int64 range")
 	}
 
-	expectedAmountSat := amountSat + quote.FeeSat
+	expectedAmountSat := expectedInvoiceSat + quote.FeeSat
+	switch quote.SettlementType {
+	case "", SettlementTypeLightning, SettlementTypeInArk:
+	case SettlementTypeCredit:
+		expectedAmountSat = 0
+
+	case SettlementTypeMixed:
+		if quote.CreditQuote == nil {
+			return fmt.Errorf("mixed in-swap quote missing " +
+				"credit quote")
+		}
+		expectedAmountSat = quote.CreditQuote.ArkFundingSat
+	}
+
 	if quote.AmountSat != expectedAmountSat {
 		return fmt.Errorf("in-swap quote amount %d does not equal "+
 			"invoice amount %d plus fee %d", quote.AmountSat,
-			amountSat, quote.FeeSat)
+			expectedInvoiceSat, quote.FeeSat)
 	}
 
 	return nil
@@ -142,7 +192,7 @@ func validateInSwapQuote(invoice string, maxFeeSat uint64, cfg *InSwapConfig,
 	if cfg == nil {
 		return fmt.Errorf("in-swap config is required")
 	}
-	if cfg.AmountSat <= 0 {
+	if cfg.AmountSat <= 0 && cfg.SettlementType != SettlementTypeCredit {
 		return fmt.Errorf("in-swap amount must be positive")
 	}
 
@@ -160,10 +210,11 @@ func validateInSwapQuote(invoice string, maxFeeSat uint64, cfg *InSwapConfig,
 		return fmt.Errorf("in-swap payment hash does not match invoice")
 	}
 
-	amountSat, err := extractInvoiceAmountSat(decoded.MilliSat)
+	amountMsat, err := extractInvoiceAmountMsat(decoded.MilliSat)
 	if err != nil {
 		return err
 	}
+	amountSat := ceilMsatToSat(amountMsat)
 
 	if cfg.FeeSat > maxFeeSat {
 		return fmt.Errorf("in-swap fee %d exceeds max fee %d",
@@ -179,6 +230,27 @@ func validateInSwapQuote(invoice string, maxFeeSat uint64, cfg *InSwapConfig,
 	}
 
 	expectedAmountSat := amountSat + cfg.FeeSat
+	switch cfg.SettlementType {
+	case "", SettlementTypeLightning, SettlementTypeInArk:
+	case SettlementTypeCredit:
+		if cfg.Preimage == nil {
+			return fmt.Errorf("credit in-swap config missing " +
+				"preimage")
+		}
+		if cfg.Preimage.Hash() != cfg.PaymentHash {
+			return fmt.Errorf("credit in-swap preimage does not " +
+				"match payment hash")
+		}
+		expectedAmountSat = 0
+
+	case SettlementTypeMixed:
+		if cfg.CreditQuote == nil {
+			return fmt.Errorf("mixed in-swap config missing " +
+				"credit quote")
+		}
+		expectedAmountSat = cfg.CreditQuote.ArkFundingSat
+	}
+
 	if uint64(cfg.AmountSat) != expectedAmountSat {
 		return fmt.Errorf("in-swap amount %d does not equal invoice "+
 			"amount %d plus fee %d", cfg.AmountSat, amountSat,

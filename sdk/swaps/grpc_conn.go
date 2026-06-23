@@ -21,6 +21,9 @@ type GRPCSwapServerConn struct {
 	client swaprpc.SwapServiceClient
 }
 
+const wireCreditFundingLightningReceive = swaprpc.
+	CreditFundingSource_CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE
+
 // NewGRPCSwapServerConn creates a gRPC-backed SwapServerConn from one connected
 // gRPC client connection.
 func NewGRPCSwapServerConn(conn grpc.ClientConnInterface) *GRPCSwapServerConn {
@@ -60,7 +63,7 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 			PaymentHash: append(
 				[]byte(nil), paymentHash[:]...,
 			),
-			AmountMsat: uint64(amountSat) * 1000,
+			AmountSat: uint64(amountSat),
 		},
 	)
 	if err != nil {
@@ -72,12 +75,30 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 		return nil, err
 	}
 
+	settlementType, err := settlementTypeFromProto(resp.GetSettlementType())
+	if err != nil {
+		return nil, err
+	}
+
+	requestedAmountSat := resp.GetRequestedAmountSat()
+	if requestedAmountSat == 0 {
+		requestedAmountSat = uint64(amountSat)
+	}
+	vhtlcAmountSat := resp.GetVhtlcAmountSat()
+	if vhtlcAmountSat == 0 {
+		vhtlcAmountSat = requestedAmountSat
+	}
+
 	return &OutSwapQuote{
-		RouteHint: hint,
-		// The server binds the route to the requested amount but does
-		// not echo it, so keep the caller's amount in the quote.
-		ReceiveAmountSat: amountSat,
-		PayerFeeMsat:     resp.GetPayerFeeMsat(),
+		RouteHint:          hint,
+		ReceiveAmountSat:   btcutil.Amount(requestedAmountSat),
+		PayerFeeMsat:       resp.GetPayerFeeMsat(),
+		RequestedAmountSat: requestedAmountSat,
+		AvailableCreditSat: resp.GetAvailableCreditSat(),
+		AttachedCreditSat:  resp.GetAttachedCreditSat(),
+		VHTLCAmountSat:     vhtlcAmountSat,
+		DustLimitSat:       resp.GetDustLimitSat(),
+		SettlementType:     settlementType,
 	}, nil
 }
 
@@ -110,6 +131,18 @@ func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context, invoice string,
 	maxFeeSat uint64, clientVhtlcPubkey *btcec.PublicKey) (*InSwapConfig,
 	error) {
 
+	return g.CreateInSwapWithCredits(
+		ctx, invoice, maxFeeSat, clientVhtlcPubkey, nil, 0,
+	)
+}
+
+// CreateInSwapWithCredits initiates one Ark-to-Lightning swap and authorizes
+// the server to reserve credits from accountPubKey when maxCreditSat is
+// non-zero or credit is mandatory.
+func (g *GRPCSwapServerConn) CreateInSwapWithCredits(ctx context.Context,
+	invoice string, maxFeeSat uint64, clientVhtlcPubkey *btcec.PublicKey,
+	accountPubKey []byte, maxCreditSat uint64) (*InSwapConfig, error) {
+
 	if clientVhtlcPubkey == nil {
 		return nil, fmt.Errorf("client vHTLC pubkey must be provided")
 	}
@@ -120,6 +153,8 @@ func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context, invoice string,
 			MaxFeeSat: maxFeeSat,
 			ClientVhtlcPubkey: clientVhtlcPubkey.
 				SerializeCompressed(),
+			AccountPubkey: append([]byte(nil), accountPubKey...),
+			MaxCreditSat:  maxCreditSat,
 		},
 	)
 	if err != nil {
@@ -134,10 +169,21 @@ func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context, invoice string,
 func (g *GRPCSwapServerConn) QuoteInSwap(ctx context.Context, invoice string,
 	maxFeeSat uint64) (*InSwapQuote, error) {
 
+	return g.QuoteInSwapWithCredits(ctx, invoice, maxFeeSat, nil, 0)
+}
+
+// QuoteInSwapWithCredits previews one Ark-to-Lightning swap with optional
+// credit use.
+func (g *GRPCSwapServerConn) QuoteInSwapWithCredits(ctx context.Context,
+	invoice string, maxFeeSat uint64, accountPubKey []byte,
+	maxCreditSat uint64) (*InSwapQuote, error) {
+
 	resp, err := g.client.QuoteInSwap(
 		ctx, &swaprpc.QuoteInSwapRequest{
-			Invoice:   invoice,
-			MaxFeeSat: maxFeeSat,
+			Invoice:       invoice,
+			MaxFeeSat:     maxFeeSat,
+			AccountPubkey: append([]byte(nil), accountPubKey...),
+			MaxCreditSat:  maxCreditSat,
 		},
 	)
 	if err != nil {
@@ -145,6 +191,97 @@ func (g *GRPCSwapServerConn) QuoteInSwap(ctx context.Context, invoice string,
 	}
 
 	return inSwapQuoteFromProto(resp)
+}
+
+// CreateCredit starts one server-owned credit funding operation.
+func (g *GRPCSwapServerConn) CreateCredit(ctx context.Context,
+	accountPubKey []byte, req CreateCreditRequest) (*CreditOperation,
+	error) {
+
+	source, err := creditFundingSourceToProto(req.Source)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := g.client.CreateCredit(ctx, &swaprpc.CreateCreditRequest{
+		AccountPubkey:  append([]byte(nil), accountPubKey...),
+		IdempotencyKey: req.IdempotencyKey,
+		Source:         source,
+		AmountSat:      req.AmountSat,
+		Memo:           req.Memo,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("CreateCredit RPC: %w", err)
+	}
+
+	op := creditOperationFromCreate(resp)
+
+	return &op, nil
+}
+
+// RedeemCredit materializes available credits back into an Ark output.
+func (g *GRPCSwapServerConn) RedeemCredit(ctx context.Context,
+	accountPubKey []byte, req RedeemCreditRequest) (*CreditRedemption,
+	error) {
+
+	resp, err := g.client.RedeemCredit(ctx, &swaprpc.RedeemCreditRequest{
+		AccountPubkey:  append([]byte(nil), accountPubKey...),
+		IdempotencyKey: req.IdempotencyKey,
+		AmountSat:      req.AmountSat,
+		DestinationPubkey: append(
+			[]byte(nil), req.DestinationPubKey...,
+		),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("RedeemCredit RPC: %w", err)
+	}
+
+	op := CreditOperation{
+		OperationID: resp.GetOperationId(),
+		Type:        CreditOperationRedemption,
+		State:       creditStateFromProto(resp.GetState()),
+		AmountSat:   resp.GetRedeemedSat(),
+		SessionID:   resp.GetSessionId(),
+	}
+
+	return &CreditRedemption{
+		Operation:   op,
+		DebitedSat:  resp.GetDebitedSat(),
+		RedeemedSat: resp.GetRedeemedSat(),
+		SessionID:   resp.GetSessionId(),
+	}, nil
+}
+
+// ListCredits returns the account's server-authoritative credit snapshot.
+func (g *GRPCSwapServerConn) ListCredits(ctx context.Context,
+	accountPubKey []byte, limit uint32) (*CreditSnapshot, error) {
+
+	resp, err := g.client.ListCredits(ctx, &swaprpc.ListCreditsRequest{
+		AccountPubkey: append([]byte(nil), accountPubKey...),
+		Limit:         limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ListCredits RPC: %w", err)
+	}
+
+	snapshot := &CreditSnapshot{
+		FinalizedSat: resp.GetFinalizedSat(),
+		ReservedSat:  resp.GetReservedSat(),
+		AvailableSat: resp.GetAvailableSat(),
+	}
+	for _, op := range resp.GetOperations() {
+		snapshot.Operations = append(
+			snapshot.Operations, creditOperationFromProto(op),
+		)
+	}
+	for _, entry := range resp.GetLedgerEntries() {
+		snapshot.LedgerEntries = append(
+			snapshot.LedgerEntries,
+			creditLedgerEntryFromProto(entry),
+		)
+	}
+
+	return snapshot, nil
 }
 
 // AuthorizeInSwapRefund asks the swap server to sign one prepared cooperative
@@ -368,8 +505,10 @@ func outSwapHtlcEventFromProto(event *swaprpc.OutSwapHtlcEvent) (
 	}
 
 	return &OutSwapHtlcEvent{
-		PaymentHash: paymentHash,
-		AmountSat:   int64(event.GetAmountSat()),
+		PaymentHash:        paymentHash,
+		AmountSat:          int64(event.GetAmountSat()),
+		RequestedAmountSat: event.GetRequestedAmountSat(),
+		AttachedCreditSat:  event.GetAttachedCreditSat(),
 		OnionBlob: append(
 			[]byte(nil), event.GetOnionBlob()...,
 		),
@@ -596,32 +735,8 @@ func inSwapConfigFromProto(resp *swaprpc.CreateInSwapResponse) (*InSwapConfig,
 			"%d bytes", lntypes.HashSize)
 	}
 
-	if resp.GetAmountSat() == 0 {
-		return nil, fmt.Errorf("in-swap response amount must be " +
-			"positive")
-	}
-
-	if resp.GetAmountSat() > math.MaxInt64 {
-		return nil, fmt.Errorf("in-swap response amount exceeds " +
-			"int64 range")
-	}
-
-	if len(resp.GetServerPubkey()) == 0 {
-		return nil, fmt.Errorf("in-swap response missing server pubkey")
-	}
-
 	var paymentHash lntypes.Hash
 	copy(paymentHash[:], resp.GetPaymentHash())
-
-	serverPubkey, err := btcec.ParsePubKey(resp.GetServerPubkey())
-	if err != nil {
-		return nil, fmt.Errorf("parse server pubkey: %w", err)
-	}
-
-	cfg, err := vhtlcConfigFromProto(resp.GetVhtlcConfig())
-	if err != nil {
-		return nil, err
-	}
 
 	if resp.GetExpiry() == nil {
 		return nil, fmt.Errorf("in-swap response missing expiry")
@@ -640,6 +755,56 @@ func inSwapConfigFromProto(resp *swaprpc.CreateInSwapResponse) (*InSwapConfig,
 		return nil, err
 	}
 
+	creditQuote := creditQuoteFromProto(resp.GetCreditQuote())
+	if settlementType == SettlementTypeCredit {
+		if resp.GetAmountSat() != 0 {
+			return nil, fmt.Errorf("credit in-swap response " +
+				"amount must be zero")
+		}
+
+		preimage, err := lntypes.MakePreimage(resp.GetPreimage())
+		if err != nil {
+			return nil, fmt.Errorf("parse credit pay preimage: %w",
+				err)
+		}
+		if preimage.Hash() != paymentHash {
+			return nil, fmt.Errorf("credit pay preimage does not " +
+				"match payment hash")
+		}
+
+		return &InSwapConfig{
+			PaymentHash:    paymentHash,
+			AmountSat:      0,
+			FeeSat:         resp.GetFeeSat(),
+			Expiry:         expiryTime,
+			SettlementType: settlementType,
+			CreditQuote:    creditQuote,
+			Preimage:       &preimage,
+		}, nil
+	}
+
+	if resp.GetAmountSat() == 0 {
+		return nil, fmt.Errorf("in-swap response amount must be " +
+			"positive")
+	}
+	if resp.GetAmountSat() > math.MaxInt64 {
+		return nil, fmt.Errorf("in-swap response amount exceeds " +
+			"int64 range")
+	}
+	if len(resp.GetServerPubkey()) == 0 {
+		return nil, fmt.Errorf("in-swap response missing server pubkey")
+	}
+
+	serverPubkey, err := btcec.ParsePubKey(resp.GetServerPubkey())
+	if err != nil {
+		return nil, fmt.Errorf("parse server pubkey: %w", err)
+	}
+
+	cfg, err := vhtlcConfigFromProto(resp.GetVhtlcConfig())
+	if err != nil {
+		return nil, err
+	}
+
 	return &InSwapConfig{
 		PaymentHash:    paymentHash,
 		AmountSat:      int64(resp.GetAmountSat()),
@@ -648,6 +813,7 @@ func inSwapConfigFromProto(resp *swaprpc.CreateInSwapResponse) (*InSwapConfig,
 		VHTLCConfig:    *cfg,
 		Expiry:         expiryTime,
 		SettlementType: settlementType,
+		CreditQuote:    creditQuote,
 	}, nil
 }
 
@@ -671,10 +837,6 @@ func inSwapQuoteFromProto(resp *swaprpc.QuoteInSwapResponse) (*InSwapQuote,
 			"positive")
 	}
 
-	if resp.GetAmountSat() == 0 {
-		return nil, fmt.Errorf("in-swap quote amount must be positive")
-	}
-
 	if resp.GetFeeSat() > maxInt64Uint {
 		return nil, fmt.Errorf("in-swap quote fee exceeds int64 range")
 	}
@@ -682,14 +844,6 @@ func inSwapQuoteFromProto(resp *swaprpc.QuoteInSwapResponse) (*InSwapQuote,
 	if resp.GetInvoiceAmountSat() > maxInt64Uint-resp.GetFeeSat() {
 		return nil, fmt.Errorf("in-swap quote amount exceeds int64 " +
 			"range")
-	}
-
-	expectedAmount := resp.GetInvoiceAmountSat() + resp.GetFeeSat()
-	if resp.GetAmountSat() != expectedAmount {
-		return nil, fmt.Errorf("in-swap quote amount %d does not "+
-			"equal invoice amount %d plus fee %d",
-			resp.GetAmountSat(), resp.GetInvoiceAmountSat(),
-			resp.GetFeeSat())
 	}
 
 	if resp.GetExpiry() == nil {
@@ -708,6 +862,40 @@ func inSwapQuoteFromProto(resp *swaprpc.QuoteInSwapResponse) (*InSwapQuote,
 		return nil, err
 	}
 
+	creditQuote := creditQuoteFromProto(resp.GetCreditQuote())
+	switch settlementType {
+	case SettlementTypeCredit:
+		if resp.GetAmountSat() != 0 {
+			return nil, fmt.Errorf("credit in-swap quote amount " +
+				"must be zero")
+		}
+
+	case SettlementTypeMixed:
+		if creditQuote == nil {
+			return nil, fmt.Errorf("mixed in-swap quote missing " +
+				"credit quote")
+		}
+		if resp.GetAmountSat() != creditQuote.ArkFundingSat {
+			return nil, fmt.Errorf("mixed in-swap quote amount %d "+
+				"does not equal ark funding %d",
+				resp.GetAmountSat(), creditQuote.ArkFundingSat)
+		}
+
+	default:
+		if resp.GetAmountSat() == 0 {
+			return nil, fmt.Errorf("in-swap quote amount must be " +
+				"positive")
+		}
+
+		expectedAmount := resp.GetInvoiceAmountSat() + resp.GetFeeSat()
+		if resp.GetAmountSat() != expectedAmount {
+			return nil, fmt.Errorf("in-swap quote amount %d does "+
+				"not equal invoice amount %d plus fee %d",
+				resp.GetAmountSat(), resp.GetInvoiceAmountSat(),
+				resp.GetFeeSat())
+		}
+	}
+
 	var paymentHash lntypes.Hash
 	copy(paymentHash[:], resp.GetPaymentHash())
 
@@ -719,7 +907,196 @@ func inSwapQuoteFromProto(resp *swaprpc.QuoteInSwapResponse) (*InSwapQuote,
 		Expiry:           expiryTime,
 		SettlementType:   settlementType,
 		ExceedsMaxFee:    resp.GetExceedsMaxFee(),
+		CreditQuote:      creditQuote,
 	}, nil
+}
+
+func creditFundingSourceToProto(source CreditFundingSource) (
+	swaprpc.CreditFundingSource, error) {
+
+	switch source {
+	case CreditFundingLightningReceive:
+		return wireCreditFundingLightningReceive, nil
+
+	case CreditFundingArkTopUp:
+		wireSource := swaprpc.
+			CreditFundingSource_CREDIT_FUNDING_SOURCE_ARK_TOPUP
+
+		return wireSource, nil
+
+	default:
+		return 0, fmt.Errorf("unknown credit funding source %q", source)
+	}
+}
+
+func creditOperationFromCreate(
+	resp *swaprpc.CreateCreditResponse) CreditOperation {
+
+	if resp == nil {
+		return CreditOperation{}
+	}
+
+	op := CreditOperation{
+		OperationID: resp.GetOperationId(),
+		Type:        CreditOperationFunding,
+		State:       creditStateFromProto(resp.GetState()),
+		AmountSat:   resp.GetAmountSat(),
+		PaymentHash: creditPaymentHashFromProto(
+			resp.GetPaymentHash(),
+		),
+		Invoice: resp.GetInvoice(),
+		DestinationKey: append(
+			[]byte(nil), resp.GetDestinationPubkey()...,
+		),
+	}
+	if expiresAt := resp.GetExpiresAt(); expiresAt != nil {
+		expires := expiresAt.AsTime()
+		op.ExpiresAt = &expires
+	}
+
+	return op
+}
+
+func creditOperationFromProto(resp *swaprpc.CreditOperation) CreditOperation {
+	if resp == nil {
+		return CreditOperation{}
+	}
+
+	op := CreditOperation{
+		OperationID: resp.GetOperationId(),
+		Type:        creditTypeFromProto(resp.GetType()),
+		State:       creditStateFromProto(resp.GetState()),
+		AmountSat:   resp.GetAmountSat(),
+		PaymentHash: creditPaymentHashFromProto(
+			resp.GetPaymentHash(),
+		),
+		Invoice: resp.GetInvoice(),
+		DestinationKey: append(
+			[]byte(nil), resp.GetDestinationPubkey()...,
+		),
+		SessionID: resp.GetSessionId(),
+		LastError: resp.GetLastError(),
+	}
+	if createdAt := resp.GetCreatedAt(); createdAt != nil {
+		op.CreatedAt = createdAt.AsTime()
+	}
+	if updatedAt := resp.GetUpdatedAt(); updatedAt != nil {
+		op.UpdatedAt = updatedAt.AsTime()
+	}
+	if completedAt := resp.GetCompletedAt(); completedAt != nil {
+		completed := completedAt.AsTime()
+		op.CompletedAt = &completed
+	}
+
+	return op
+}
+
+func creditLedgerEntryFromProto(
+	resp *swaprpc.CreditLedgerEntry) CreditLedgerEntry {
+
+	if resp == nil {
+		return CreditLedgerEntry{}
+	}
+
+	entry := CreditLedgerEntry{
+		EntryID:     resp.GetEntryId(),
+		OperationID: resp.GetOperationId(),
+		Direction:   resp.GetDirection(),
+		AmountSat:   resp.GetAmountSat(),
+	}
+	if createdAt := resp.GetCreatedAt(); createdAt != nil {
+		entry.CreatedAt = createdAt.AsTime()
+	}
+
+	return entry
+}
+
+func creditPaymentHashFromProto(raw []byte) *lntypes.Hash {
+	if len(raw) != lntypes.HashSize {
+		return nil
+	}
+
+	var hash lntypes.Hash
+	copy(hash[:], raw)
+
+	return &hash
+}
+
+func creditTypeFromProto(typ swaprpc.CreditOperationType) CreditOperationType {
+	switch typ {
+	case swaprpc.CreditOperationType_CREDIT_OPERATION_TYPE_FUNDING:
+		return CreditOperationFunding
+
+	case swaprpc.CreditOperationType_CREDIT_OPERATION_TYPE_PAY:
+		return CreditOperationPay
+
+	case swaprpc.CreditOperationType_CREDIT_OPERATION_TYPE_REDEMPTION:
+		return CreditOperationRedemption
+
+	case swaprpc.CreditOperationType_CREDIT_OPERATION_TYPE_RECEIVE:
+		return CreditOperationReceive
+
+	default:
+		return ""
+	}
+}
+
+func creditStateFromProto(
+	state swaprpc.CreditOperationState) CreditOperationState {
+
+	switch state {
+	case swaprpc.CreditOperationState_CREDIT_OPERATION_STATE_CREATED:
+		return CreditStateCreated
+
+	case swaprpc.
+		CreditOperationState_CREDIT_OPERATION_STATE_AWAITING_PAYMENT:
+		return CreditStateAwaitingPayment
+
+	case swaprpc.CreditOperationState_CREDIT_OPERATION_STATE_CREDITED:
+		return CreditStateCredited
+
+	case swaprpc.CreditOperationState_CREDIT_OPERATION_STATE_RESERVED:
+		return CreditStateReserved
+
+	case swaprpc.
+		CreditOperationState_CREDIT_OPERATION_STATE_PAYING_LIGHTNING:
+		return CreditStatePayingLightning
+
+	case swaprpc.CreditOperationState_CREDIT_OPERATION_STATE_DEBITED:
+		return CreditStateDebited
+
+	case swaprpc.CreditOperationState_CREDIT_OPERATION_STATE_SENDING_OOR:
+		return CreditStateSendingOOR
+
+	case swaprpc.CreditOperationState_CREDIT_OPERATION_STATE_REDEEMED:
+		return CreditStateRedeemed
+
+	case swaprpc.CreditOperationState_CREDIT_OPERATION_STATE_RELEASED:
+		return CreditStateReleased
+
+	case swaprpc.CreditOperationState_CREDIT_OPERATION_STATE_EXPIRED:
+		return CreditStateExpired
+
+	case swaprpc.CreditOperationState_CREDIT_OPERATION_STATE_FAILED:
+		return CreditStateFailed
+
+	default:
+		return ""
+	}
+}
+
+func creditQuoteFromProto(resp *swaprpc.CreditQuote) *CreditQuote {
+	if resp == nil {
+		return nil
+	}
+
+	return &CreditQuote{
+		MustUseCredit:      resp.GetMustUseCredit(),
+		CreditAppliedSat:   resp.GetCreditAppliedSat(),
+		CreditShortfallSat: resp.GetCreditShortfallSat(),
+		CreditTopupSat:     resp.GetCreditTopupSat(),
+		ArkFundingSat:      resp.GetArkFundingSat(),
+	}
 }
 
 // settlementTypeFromProto converts the wire settlement enum, treating
@@ -734,6 +1111,12 @@ func settlementTypeFromProto(wireType swaprpc.SettlementType) (SettlementType,
 
 	case swaprpc.SettlementType_SETTLEMENT_TYPE_IN_ARK:
 		return SettlementTypeInArk, nil
+
+	case swaprpc.SettlementType_SETTLEMENT_TYPE_CREDIT:
+		return SettlementTypeCredit, nil
+
+	case swaprpc.SettlementType_SETTLEMENT_TYPE_MIXED:
+		return SettlementTypeMixed, nil
 
 	default:
 		return "", fmt.Errorf("unknown settlement type %v", wireType)
