@@ -147,6 +147,16 @@ func (c *MessageCodec) Decode(data []byte) (TLVMessage, error) {
 		return nil, fmt.Errorf("read payload length: %w", err)
 	}
 
+	// Reject a declared payload length that cannot be backed by the bytes
+	// physically present before allocating make([]byte, payloadLen). The
+	// envelope is sourced from the durable mailbox, so a corrupt or
+	// malicious length near 2^64 would otherwise panic with "makeslice:
+	// cap out of range" or drive an OOM here, before io.ReadFull ever runs.
+	if payloadLen > uint64(r.Len()) {
+		return nil, fmt.Errorf("payload length %d exceeds %d remaining "+
+			"bytes", payloadLen, r.Len())
+	}
+
 	// Read the payload.
 	payload := make([]byte, payloadLen)
 	if _, err := io.ReadFull(r, payload); err != nil {

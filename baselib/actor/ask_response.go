@@ -108,7 +108,15 @@ func (m *AskResponse) Decode(r io.Reader) error {
 		return err
 	}
 
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	// Bound the framing before decoding so a crafted durable payload cannot
+	// drive an unbounded make() inside the tlv decoder (ResultBlob is a
+	// []byte record sized from its declared length).
+	safe, err := safeActorTLVReader(r)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(safe); err != nil {
 		return err
 	}
 
