@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 )
 
@@ -36,6 +37,14 @@ func newService(deps *Deps, runtime *Runtime) *Service {
 		recv:    newReceiver(deps, runtime),
 		history: newHistory(deps, runtime),
 	}
+}
+
+// earmarkedCreditSat reports the credit balance reserved by live prepared
+// credit-backed sends. The daemon wires it into the credit auto-redeem
+// interlock so the sweep never redeems credits a prepared-but-unsent send is
+// about to spend. It satisfies credit.EarmarkFunc.
+func (s *Service) earmarkedCreditSat(context.Context) (uint64, error) {
+	return s.router.intents.earmarkedCreditSat(), nil
 }
 
 // Create initializes a new wallet from a freshly generated aezeed
@@ -382,13 +391,31 @@ func (s *Service) fetchBalance(ctx context.Context) (
 	// immediately after a faucet deposit, before any round commit, which
 	// the proto contract (and the `send` verb's runtime check)
 	// explicitly disallow.
-	return &walletdkrpc.BalanceResponse{
+	resp := &walletdkrpc.BalanceResponse{
 		ConfirmedSat: bal.GetVtxoBalanceSat(),
 		PendingInSat: bal.GetBoardingConfirmedSat() +
 			bal.GetBoardingUnconfirmedSat() +
 			bal.GetBoardingAdoptedSat(),
 		PendingOutSat: bal.GetBoardingPendingSweepSat(),
-	}, nil
+	}
+
+	if s.deps.SwapService == nil {
+		return resp, nil
+	}
+
+	credits, err := s.deps.SwapService.ListCredits(
+		ctx, &swapclientrpc.ListCreditsRequest{
+			Limit: 1,
+		},
+	)
+	if err != nil {
+		return resp, nil
+	}
+
+	resp.CreditAvailableSat = credits.GetAvailableSat()
+	resp.CreditReservedSat = credits.GetReservedSat()
+
+	return resp, nil
 }
 
 // countPendingEntries asks the history merger for a pending-only page and

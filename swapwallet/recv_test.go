@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
@@ -68,6 +69,62 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 	)
 	require.Equal(
 		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+		resp.GetEntry().GetProgress().GetPhase(),
+	)
+}
+
+func TestRecvBelowDustCreatesCreditReceive(t *testing.T) {
+	t.Parallel()
+
+	swap := &fakeSwapService{
+		createCreditResp: &swapclientrpc.CreateCreditResponse{
+			OperationId: "cr_recv",
+			Invoice:     "lnbc1credit",
+			PaymentHash: "hash-credit",
+			AmountSat:   500,
+		},
+	}
+	rpc := &fakeRPCServer{
+		getInfoResp: &daemonrpc.GetInfoResponse{
+			ServerInfo: &daemonrpc.ServerInfo{
+				DustLimit: 1_000,
+			},
+		},
+	}
+	deps := &Deps{
+		SwapService: swap,
+		RPCServer:   rpc,
+	}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+	receiver := newReceiver(deps, runtime)
+
+	resp, err := receiver.Recv(
+		t.Context(), &walletdkrpc.RecvRequest{
+			AmtSat: 500,
+			Memo:   "tiny",
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 0, swap.startReceiveCalls)
+	require.Equal(t, 1, swap.createCreditCalls)
+	require.Equal(
+		t, swapclientrpc.
+			CreditFundingSource_CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE,
+		swap.createCreditLast.GetSource(),
+	)
+	require.Equal(t, uint64(500), swap.createCreditLast.GetAmountSat())
+	require.Equal(t, "tiny", swap.createCreditLast.GetMemo())
+	require.Equal(t, "lnbc1credit", resp.GetInvoice())
+	require.Equal(t, "cr_recv", resp.GetCreditReceive().GetOperationId())
+	require.Equal(t, int64(500), resp.GetEntry().GetAmountSat())
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		resp.GetEntry().GetKind(),
+	)
+	require.Equal(
+		t, walletdkrpc.
+			WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT,
 		resp.GetEntry().GetProgress().GetPhase(),
 	)
 }

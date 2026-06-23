@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 )
@@ -50,13 +51,31 @@ func (r *receiver) Recv(ctx context.Context, req *walletdkrpc.RecvRequest) (
 			ErrAmountInvalid)
 	}
 
+	plannedVHTLCSat := amt
+	dustLimit, err := r.receiveDustLimit(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if dustLimit > 0 && amt < dustLimit {
+		availableCreditSat, err := r.availableCreditSat(ctx)
+		if err != nil {
+			return r.recvCredit(ctx, req, amt)
+		}
+		if amt > ^uint64(0)-availableCreditSat ||
+			amt+availableCreditSat < dustLimit {
+			return r.recvCredit(ctx, req, amt)
+		}
+
+		plannedVHTLCSat = amt + availableCreditSat
+	}
+
 	// Enforce the operator's per-VTXO and total-balance limits before a
-	// swap session (and invoice) is created, so the user gets a clean
-	// rejection instead of a stuck swap.
+	// swap session is created. For credit-assisted receives, check the
+	// actual vHTLC amount the server will ask the client to accept.
 	if r.deps.RPCServer != nil {
 		err := checkReceiveLimits(
 			ctx, r.deps.RPCServer, r.deps.resolveLog(),
-			btcutil.Amount(amt),
+			btcutil.Amount(plannedVHTLCSat),
 		)
 		if err != nil {
 			return nil, err
@@ -93,4 +112,100 @@ func (r *receiver) Recv(ctx context.Context, req *walletdkrpc.RecvRequest) (
 		Invoice: startResp.GetInvoice(),
 		Entry:   entry,
 	}, nil
+}
+
+func (r *receiver) receiveDustLimit(ctx context.Context) (uint64, error) {
+	if r.deps.RPCServer == nil {
+		return 0, nil
+	}
+
+	info, err := r.deps.RPCServer.GetInfo(ctx, &daemonrpc.GetInfoRequest{})
+	if err != nil {
+		return 0, fmt.Errorf("get server info: %w", err)
+	}
+	if info.GetServerInfo() == nil {
+		return 0, nil
+	}
+
+	return info.GetServerInfo().GetDustLimit(), nil
+}
+
+func (r *receiver) availableCreditSat(ctx context.Context) (uint64, error) {
+	credits, err := r.deps.SwapService.ListCredits(
+		ctx, &swapclientrpc.ListCreditsRequest{
+			Limit: 1,
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	return credits.GetAvailableSat(), nil
+}
+
+func (r *receiver) recvCredit(ctx context.Context, req *walletdkrpc.RecvRequest,
+	amt uint64) (*walletdkrpc.RecvResponse, error) {
+
+	idempotencyKey, err := newSendIntentID()
+	if err != nil {
+		return nil, fmt.Errorf("create credit receive id: %w", err)
+	}
+
+	creditResp, err := r.deps.SwapService.CreateCredit(
+		ctx, &swapclientrpc.CreateCreditRequest{
+			IdempotencyKey: idempotencyKey,
+			Source: swapclientrpc.
+				CreditFundingSource_CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE,
+			AmountSat: amt,
+			Memo:      req.GetMemo(),
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create credit receive: %w", err)
+	}
+
+	entry := creditReceiveEntry(req, creditResp, amt)
+
+	return &walletdkrpc.RecvResponse{
+		Invoice: creditResp.GetInvoice(),
+		Entry:   entry,
+		CreditReceive: &walletdkrpc.CreditReceive{
+			OperationId: creditResp.GetOperationId(),
+			AmountSat:   creditResp.GetAmountSat(),
+			PaymentHash: creditResp.GetPaymentHash(),
+		},
+	}, nil
+}
+
+func creditReceiveEntry(req *walletdkrpc.RecvRequest,
+	resp *swapclientrpc.CreateCreditResponse,
+	amt uint64) *walletdkrpc.WalletEntry {
+
+	now := nowUnix()
+
+	return &walletdkrpc.WalletEntry{
+		Id:            resp.GetOperationId(),
+		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		AmountSat:     int64(amt),
+		Counterparty:  "credit",
+		CreatedAtUnix: now,
+		UpdatedAtUnix: now,
+		Note:          req.GetMemo(),
+		Request: &walletdkrpc.WalletEntryRequest{
+			Request: &walletdkrpc.WalletEntryRequest_LightningInvoice{
+				LightningInvoice: &walletdkrpc.
+					LightningInvoiceRequest{
+					Invoice:     resp.GetInvoice(),
+					PaymentHash: resp.GetPaymentHash(),
+				},
+			},
+		},
+		Progress: &walletdkrpc.WalletEntryProgress{
+			Phase: walletdkrpc.
+				WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT,
+			PhaseLabel:  "waiting_for_payment",
+			PaymentHash: resp.GetPaymentHash(),
+		},
+	}
 }

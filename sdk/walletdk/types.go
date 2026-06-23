@@ -136,9 +136,11 @@ type OpenWalletResult struct {
 
 // Balance is the wallet-level balance view.
 type Balance struct {
-	ConfirmedSat  int64
-	PendingInSat  int64
-	PendingOutSat int64
+	ConfirmedSat       int64
+	PendingInSat       int64
+	PendingOutSat      int64
+	CreditAvailableSat uint64
+	CreditReservedSat  uint64
 }
 
 // DepositRequest creates a tracked boarding address.
@@ -188,6 +190,8 @@ const (
 	SendRailInArk           SendRail = "in_ark"
 	SendRailLightning       SendRail = "lightning"
 	SendRailOnchain         SendRail = "onchain"
+	SendRailCredit          SendRail = "credit"
+	SendRailMixed           SendRail = "mixed"
 )
 
 // SendQuoteStatus describes how complete the prepare-time quote is.
@@ -215,6 +219,17 @@ type PrepareSendResult struct {
 	ExpiresAtUnix           int64
 	SelectedOutpoints       []string
 	Warning                 string
+	CreditPreview           *CreditPreview
+}
+
+// CreditPreview describes how a prepared invoice send will use sat-native
+// server credits.
+type CreditPreview struct {
+	MustUseCredit      bool
+	CreditAppliedSat   uint64
+	CreditShortfallSat uint64
+	CreditTopupSat     uint64
+	ArkFundingSat      uint64
 }
 
 // SendPreparedRequest dispatches a prepared outbound payment.

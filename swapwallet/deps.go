@@ -35,6 +35,12 @@ type RPCServer interface {
 		req *daemonrpc.SendOnChainRequest) (
 		*daemonrpc.SendOnChainResponse, error)
 
+	SendOOR(ctx context.Context,
+		req *daemonrpc.SendOORRequest) (
+		*daemonrpc.SendOORResponse,
+		error,
+	)
+
 	ListVTXOs(ctx context.Context,
 		req *daemonrpc.ListVTXOsRequest) (
 		*daemonrpc.ListVTXOsResponse,
