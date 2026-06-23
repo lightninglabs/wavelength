@@ -2201,7 +2201,11 @@ func (a *Ark) handleBoard(ctx context.Context,
 	// later once headroom frees up.
 	boardAmount := totalBalance
 	targetCount := req.TargetVTXOCount
-	var changeLeave *types.LeaveRequest
+	var (
+		changeLeave  *types.LeaveRequest
+		changeAmount btcutil.Amount
+		dustToFee    btcutil.Amount
+	)
 
 	terms, err := a.boardingTerms(ctx)
 	if err != nil {
@@ -2220,6 +2224,8 @@ func (a *Ark) handleBoard(ctx context.Context,
 		boardAmount = clamp.BoardAmount
 		targetCount = clamp.VTXOCount
 		changeLeave = leave
+		changeAmount = clamp.Change
+		dustToFee = clamp.DustToFee
 	}
 
 	// Under the #270 seal-time fee handshake the server decides
@@ -2243,8 +2249,8 @@ func (a *Ark) handleBoard(ctx context.Context,
 			int64(totalBalance)),
 		slog.Int64("vtxo_amount", int64(vtxoAmount)),
 		slog.Int("vtxo_count", len(vtxoAmounts)),
-		slog.Int64("change_amount",
-			int64(totalBalance-boardAmount)))
+		slog.Int64("change_amount", int64(changeAmount)),
+		slog.Int64("dust_to_fee", int64(dustToFee)))
 
 	// Persist the user's explicit Board intent BEFORE handing the
 	// request to the round actor. The ordering matters for restart
