@@ -401,7 +401,7 @@ func newTestHarness(t *testing.T) *boardingTestHarness {
 		VTXOExitDelay:     144, // 1 day in blocks.
 		DustLimit:         546,
 		MinBoardingAmount: 10000,
-		MaxBoardingAmount: 100000000, // 1 BTC.
+		MaxVTXOAmount:     100000000, // 1 BTC.
 		FeeRate:           10,
 		MinConfirmations:  3,
 	}

@@ -356,7 +356,7 @@ message GetInfoResponse {
 
 // ServerInfo contains operator terms and metadata fetched from the Ark
 // server's GetInfo RPC. These values govern round participation and
-// boarding policy. A max_boarding_amount value of zero means the
+// boarding policy. A max_vtxo_amount value of zero means the
 // operator currently advertises no upper cap.
 message ServerInfo {
     // operator_pubkey is the compressed SEC-encoded public key of the
@@ -380,10 +380,10 @@ message ServerInfo {
     // accepts.
     uint64 min_boarding_amount = 8;
 
-    // max_boarding_amount is the largest amount the operator accepts
+    // max_vtxo_amount is the largest amount the operator accepts
     // per VTXO, applied to boarding requests, round outputs and OOR
     // recipient outputs alike. A value of zero means no cap.
-    uint64 max_boarding_amount = 9;
+    uint64 max_vtxo_amount = 9;
 
     // fee_rate is the operator's target package feerate in sat/vbyte.
     uint64 fee_rate = 10;

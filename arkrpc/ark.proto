@@ -52,7 +52,7 @@ message GetInfoResponse {
     // The maximum amount (satoshis) accepted per VTXO. The cap applies
     // to every VTXO the operator creates: boarding requests, round
     // outputs, and OOR recipient outputs. Zero means no cap.
-    int64 max_boarding_amount = 12;
+    int64 max_vtxo_amount = 12;
 
     // The operator's target package feerate (sat/vByte).
     int64 fee_rate = 13;

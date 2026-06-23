@@ -1031,7 +1031,7 @@ func (x *GetInfoResponse) GetServerInfo() *ServerInfo {
 
 // ServerInfo contains operator terms and metadata fetched from the Ark
 // server's GetInfo RPC. These values govern round participation and
-// boarding policy. A max_boarding_amount value of zero means the
+// boarding policy. A max_vtxo_amount value of zero means the
 // operator currently advertises no upper cap.
 type ServerInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1047,10 +1047,10 @@ type ServerInfo struct {
 	// min_boarding_amount is the smallest boarding amount the operator
 	// accepts.
 	MinBoardingAmount uint64 `protobuf:"varint,8,opt,name=min_boarding_amount,json=minBoardingAmount,proto3" json:"min_boarding_amount,omitempty"`
-	// max_boarding_amount is the largest amount the operator accepts
+	// max_vtxo_amount is the largest amount the operator accepts
 	// per VTXO, applied to boarding requests, round outputs and OOR
 	// recipient outputs alike. A value of zero means no cap.
-	MaxBoardingAmount uint64 `protobuf:"varint,9,opt,name=max_boarding_amount,json=maxBoardingAmount,proto3" json:"max_boarding_amount,omitempty"`
+	MaxVtxoAmount uint64 `protobuf:"varint,9,opt,name=max_vtxo_amount,json=maxVtxoAmount,proto3" json:"max_vtxo_amount,omitempty"`
 	// fee_rate is the operator's target package feerate in sat/vbyte.
 	FeeRate uint64 `protobuf:"varint,10,opt,name=fee_rate,json=feeRate,proto3" json:"fee_rate,omitempty"`
 	// min_operator_fee is the minimum operator fee in satoshis.
@@ -1137,9 +1137,9 @@ func (x *ServerInfo) GetMinBoardingAmount() uint64 {
 	return 0
 }
 
-func (x *ServerInfo) GetMaxBoardingAmount() uint64 {
+func (x *ServerInfo) GetMaxVtxoAmount() uint64 {
 	if x != nil {
-		return x.MaxBoardingAmount
+		return x.MaxVtxoAmount
 	}
 	return 0
 }
@@ -9390,7 +9390,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fidentity_pubkey\x18\n" +
 	" \x01(\tR\x0eidentityPubkey\x126\n" +
 	"\vserver_info\x18\v \x01(\v2\x15.daemonrpc.ServerInfoR\n" +
-	"serverInfo\"\xd7\x03\n" +
+	"serverInfo\"\xcf\x03\n" +
 	"\n" +
 	"ServerInfo\x12'\n" +
 	"\x0foperator_pubkey\x18\x01 \x01(\fR\x0eoperatorPubkey\x12.\n" +
@@ -9398,8 +9398,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fvtxo_exit_delay\x18\x03 \x01(\rR\rvtxoExitDelay\x12\x1d\n" +
 	"\n" +
 	"dust_limit\x18\a \x01(\x04R\tdustLimit\x12.\n" +
-	"\x13min_boarding_amount\x18\b \x01(\x04R\x11minBoardingAmount\x12.\n" +
-	"\x13max_boarding_amount\x18\t \x01(\x04R\x11maxBoardingAmount\x12\x19\n" +
+	"\x13min_boarding_amount\x18\b \x01(\x04R\x11minBoardingAmount\x12&\n" +
+	"\x0fmax_vtxo_amount\x18\t \x01(\x04R\rmaxVtxoAmount\x12\x19\n" +
 	"\bfee_rate\x18\n" +
 	" \x01(\x04R\afeeRate\x12(\n" +
 	"\x10min_operator_fee\x18\v \x01(\x04R\x0eminOperatorFee\x12+\n" +
