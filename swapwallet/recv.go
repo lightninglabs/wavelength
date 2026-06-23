@@ -55,7 +55,8 @@ func (r *receiver) Recv(ctx context.Context, req *walletdkrpc.RecvRequest) (
 	// rejection instead of a stuck swap.
 	if r.deps.RPCServer != nil {
 		err := checkReceiveLimits(
-			ctx, r.deps.RPCServer, btcutil.Amount(amt),
+			ctx, r.deps.RPCServer, r.deps.resolveLog(),
+			btcutil.Amount(amt),
 		)
 		if err != nil {
 			return nil, err

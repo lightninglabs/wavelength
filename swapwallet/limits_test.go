@@ -4,9 +4,11 @@ package swapwallet
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/stretchr/testify/require"
 )
@@ -24,18 +26,22 @@ func TestCheckReceiveLimits(t *testing.T) {
 	serverInfo := func(maxV, maxB uint64) *daemonrpc.GetInfoResponse {
 		return &daemonrpc.GetInfoResponse{
 			ServerInfo: &daemonrpc.ServerInfo{
-				MaxBoardingAmount: maxV,
-				MaxUserBalance:    maxB,
+				MaxVtxoAmount:  maxV,
+				MaxUserBalance: maxB,
 			},
 		}
 	}
 
+	errRPC := errors.New("rpc unavailable")
+
 	tests := []struct {
-		name    string
-		info    *daemonrpc.GetInfoResponse
-		balance *daemonrpc.GetBalanceResponse
-		amt     btcutil.Amount
-		wantErr error
+		name       string
+		info       *daemonrpc.GetInfoResponse
+		infoErr    error
+		balance    *daemonrpc.GetBalanceResponse
+		balanceErr error
+		amt        btcutil.Amount
+		wantErr    error
 	}{{
 		// A daemon that has not fetched operator terms yet skips
 		// the checks rather than failing closed.
@@ -81,6 +87,20 @@ func TestCheckReceiveLimits(t *testing.T) {
 			VtxoBalanceSat: 4_000_000,
 		},
 		amt: 6_000_000,
+	}, {
+		// A transient GetInfo failure fails OPEN: the pre-flight is
+		// advisory and the operator re-validates server-side, so an
+		// otherwise-oversized receive is admitted rather than blocked.
+		name:    "getinfo error fails open",
+		infoErr: errRPC,
+		amt:     1_000_000_000,
+	}, {
+		// A transient GetBalance failure skips only the balance cap;
+		// the per-VTXO check already passed, and the receive proceeds.
+		name:       "getbalance error fails open",
+		info:       serverInfo(maxVTXO, maxBal),
+		balanceErr: errRPC,
+		amt:        6_000_000,
 	}}
 
 	for _, tc := range tests {
@@ -89,11 +109,14 @@ func TestCheckReceiveLimits(t *testing.T) {
 
 			rpc := &fakeRPCServer{
 				getInfoResp:    tc.info,
+				getInfoErr:     tc.infoErr,
 				getBalanceResp: tc.balance,
+				getBalanceErr:  tc.balanceErr,
 			}
 
 			err := checkReceiveLimits(
-				context.Background(), rpc, tc.amt,
+				context.Background(), rpc, btclog.Disabled,
+				tc.amt,
 			)
 			if tc.wantErr != nil {
 				require.ErrorIs(t, err, tc.wantErr)
