@@ -254,7 +254,16 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 			err)
 	}
 
-	reader := bytes.NewReader(raw)
+	// Pre-validate the framing so a record declaring a length larger than
+	// the bytes present cannot drive an unbounded make() inside the tlv
+	// decoder. These bytes are the attacker-controlled, BIP-322-signed join
+	// intent crossing the client/server trust boundary.
+	reader, err := safeTypesTLVBytes(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode join auth message envelope: %w",
+			err)
+	}
+
 	parsedTypes, err := stream.DecodeWithParsedTypes(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode join auth message envelope: %w",
@@ -411,7 +420,11 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 		return nil, fmt.Errorf("create boarding decode stream: %w", err)
 	}
 
-	reader := bytes.NewReader(raw)
+	reader, err := safeTypesTLVBytes(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode boarding request: %w", err)
+	}
+
 	parsedTypes, err := stream.DecodeWithParsedTypes(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode boarding request: %w", err)
@@ -512,7 +525,11 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		return nil, fmt.Errorf("create vtxo decode stream: %w", err)
 	}
 
-	reader := bytes.NewReader(raw)
+	reader, err := safeTypesTLVBytes(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode vtxo request: %w", err)
+	}
+
 	parsedTypes, err := stream.DecodeWithParsedTypes(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode vtxo request: %w", err)
@@ -617,7 +634,11 @@ func decodeJoinAuthForfeitRequest(raw []byte) (*ForfeitRequest, error) {
 		return nil, fmt.Errorf("create forfeit decode stream: %w", err)
 	}
 
-	reader := bytes.NewReader(raw)
+	reader, err := safeTypesTLVBytes(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode forfeit request: %w", err)
+	}
+
 	parsedTypes, err := stream.DecodeWithParsedTypes(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode forfeit request: %w", err)
@@ -699,7 +720,11 @@ func decodeJoinAuthLeaveRequest(raw []byte) (*LeaveRequest, error) {
 		return nil, fmt.Errorf("create leave decode stream: %w", err)
 	}
 
-	reader := bytes.NewReader(raw)
+	reader, err := safeTypesTLVBytes(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode leave request: %w", err)
+	}
+
 	parsedTypes, err := stream.DecodeWithParsedTypes(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode leave request: %w", err)

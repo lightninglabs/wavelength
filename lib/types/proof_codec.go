@@ -299,7 +299,16 @@ func DeserializeTxProof(data []byte) (*proof.TxProof, error) {
 		return nil, fmt.Errorf("create TLV stream: %w", err)
 	}
 
-	reader := bytes.NewReader(data)
+	// Pre-validate the framing so a record declaring a length larger than
+	// the bytes present cannot drive an unbounded make() inside the tlv
+	// decoder (notably the variable-length MerkleRoot record and the
+	// unknown-record discard buffer). TxProof bytes arrive as an untrusted
+	// boarding SPV proof and also persist durably.
+	reader, err := safeTypesTLVBytes(data)
+	if err != nil {
+		return nil, fmt.Errorf("decode TxProof: %w", err)
+	}
+
 	if err := stream.Decode(reader); err != nil {
 		return nil, fmt.Errorf("decode TxProof: %w", err)
 	}
