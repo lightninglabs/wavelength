@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -93,15 +95,23 @@ func (s CoinGeckoPriceSource) Price(ctx context.Context, currency string) (
 		return 0, fmt.Errorf("coingecko returned %s", resp.Status)
 	}
 
+	// Cap the decoded body so a compromised or misbehaving endpoint
+	// cannot stream an unbounded response and exhaust memory. The
+	// simple-price payload is a few hundred bytes; 1 MiB is generous.
+	const maxPriceBody = 1 << 20
+	limited := io.LimitReader(resp.Body, maxPriceBody)
+
 	var body struct {
 		Bitcoin map[string]float64 `json:"bitcoin"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(limited).Decode(&body); err != nil {
 		return 0, err
 	}
 
+	// Reject non-finite or non-positive prices so a NaN/Inf value cannot
+	// poison the downstream fiat conversion.
 	price, ok := body.Bitcoin[currency]
-	if !ok || price <= 0 {
+	if !ok || price <= 0 || math.IsNaN(price) || math.IsInf(price, 0) {
 		return 0, fmt.Errorf("missing BTC/%s price", currency)
 	}
 
