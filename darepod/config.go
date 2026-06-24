@@ -14,6 +14,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"github.com/lightninglabs/darepo-client/metrics"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"google.golang.org/grpc"
@@ -285,6 +286,12 @@ type Config struct {
 	// non-empty listen address. A value type so a zero-value Config can
 	// never carry a nil pprof config into the start path.
 	Pprof PprofConfig `mapstructure:"pprof"`
+
+	// Metrics configures the optional Prometheus /metrics HTTP server.
+	// It is disabled by default and must be explicitly opted into via a
+	// non-empty listen address. A value type so a zero-value Config can
+	// never carry a nil metrics config into the start path.
+	Metrics metrics.ServerConfig `mapstructure:"metrics"`
 }
 
 // DBConfig groups the per-backend database tuning knobs. Only the SQLite

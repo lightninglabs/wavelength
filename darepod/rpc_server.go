@@ -34,6 +34,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/lwwallet"
+	"github.com/lightninglabs/darepo-client/metrics"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/serverconn"
@@ -914,6 +915,168 @@ func sumOnchainWalletConfirmed(ctx context.Context,
 	}
 
 	return total, nil
+}
+
+// metricsWalletBalance returns the client's on-chain confirmed and
+// unconfirmed balance in satoshis for the scrape-driven wallet gauges.
+// It branches on the active wallet backend and returns an error (so the
+// scrape skips the gauges) when the wallet is not ready or no backend is
+// present, rather than reporting a misleading zero.
+func (r *RPCServer) metricsWalletBalance(ctx context.Context) (int64, int64,
+	error) {
+
+	if !r.server.isWalletReady() {
+		return 0, 0, fmt.Errorf("wallet not ready")
+	}
+
+	var (
+		confirmed, unconfirmed int64
+		found                  bool
+		qErr                   error
+	)
+	r.server.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
+		found = true
+		wb, balErr := lndSvc.Client.WalletBalance(ctx)
+		if balErr != nil {
+			qErr = fmt.Errorf("lnd wallet balance: %w", balErr)
+
+			return
+		}
+		confirmed = int64(wb.Confirmed)
+		unconfirmed = int64(wb.Unconfirmed)
+	})
+	r.server.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
+		found = true
+		c, u, balErr := w.Balance(ctx)
+		if balErr != nil {
+			qErr = fmt.Errorf("lightweight wallet balance: %w",
+				balErr)
+
+			return
+		}
+		confirmed, unconfirmed = int64(c), int64(u)
+	})
+	r.server.btcwWallet.WhenSome(func(w *btcwbackend.Wallet) {
+		found = true
+		c, u, balErr := w.Balance(ctx)
+		if balErr != nil {
+			qErr = fmt.Errorf("btcwallet balance: %w", balErr)
+
+			return
+		}
+		confirmed, unconfirmed = int64(c), int64(u)
+	})
+
+	if qErr != nil {
+		return 0, 0, qErr
+	}
+	if !found {
+		return 0, 0, fmt.Errorf("no wallet backend available")
+	}
+
+	return confirmed, unconfirmed, nil
+}
+
+// metricsBlockHeight returns the best block height seen by the client's
+// chain backend for the scrape-driven block-height gauge. It returns an
+// error (so the scrape skips the gauge) when no chain backend is wired
+// yet.
+func (r *RPCServer) metricsBlockHeight(ctx context.Context) (int64, error) {
+	var (
+		height int64
+		found  bool
+		qErr   error
+	)
+	r.server.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
+		found = true
+		_, h, hErr := lndSvc.ChainKit.GetBestBlock(ctx)
+		if hErr != nil {
+			qErr = fmt.Errorf("lnd best block: %w", hErr)
+
+			return
+		}
+		height = int64(h)
+	})
+
+	if !found && r.server.chainBackend != nil {
+		found = true
+		h, _, hErr := r.server.chainBackend.BestBlock(ctx)
+		if hErr != nil {
+			return 0, fmt.Errorf("chain backend best block: %w",
+				hErr)
+		}
+		height = int64(h)
+	}
+
+	if qErr != nil {
+		return 0, qErr
+	}
+	if !found {
+		return 0, fmt.Errorf("no chain backend available")
+	}
+
+	return height, nil
+}
+
+// liveOORSessionsByState returns a count of currently-tracked OOR
+// sessions grouped by a short state label, for the scrape-driven
+// oor_sessions_by_state gauge. It reads the live OOR actor only (the
+// cumulative lifetime totals live in the oor_transfers_* counters), so
+// the query stays bounded and cheap at scrape time.
+func (r *RPCServer) liveOORSessionsByState(ctx context.Context) (
+	map[string]int64, error) {
+
+	infos, err := r.queryOORSessionSummaries(
+		ctx, &daemonrpc.ListOORSessionsRequest{},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	byState := make(map[string]int64)
+	for _, info := range infos {
+		byState[oorStateLabel(info.GetStatus())]++
+	}
+
+	return byState, nil
+}
+
+// liveRoundsByStatus returns a count of currently-live rounds grouped by
+// a short status label, for the scrape-driven rounds_by_status gauge. It
+// reads the live round actor only; lifetime totals live in the
+// rounds_joined_total / rounds_completed_total counters.
+func (r *RPCServer) liveRoundsByStatus(ctx context.Context) (map[string]int64,
+	error) {
+
+	infos, err := r.queryRoundStates(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	byStatus := make(map[string]int64)
+	for _, info := range infos {
+		byStatus[roundStateLabel(info.GetState())]++
+	}
+
+	return byStatus, nil
+}
+
+// oorStateLabel maps an OORSessionStatus enum to a short, stable,
+// dashboard-friendly label (e.g. "pending") by stripping the proto enum
+// prefix and lowercasing.
+func oorStateLabel(s daemonrpc.OORSessionStatus) string {
+	return strings.ToLower(
+		strings.TrimPrefix(
+			s.String(),
+			"OOR_SESSION_STATUS_",
+		),
+	)
+}
+
+// roundStateLabel maps a RoundState enum to a short, stable label (e.g.
+// "confirmed") by stripping the proto enum prefix and lowercasing.
+func roundStateLabel(s daemonrpc.RoundState) string {
+	return strings.ToLower(strings.TrimPrefix(s.String(), "ROUND_STATE_"))
 }
 
 // ListVTXOs returns the set of VTXOs known to the wallet, optionally
@@ -1922,14 +2085,26 @@ func (r *RPCServer) Board(ctx context.Context, req *daemonrpc.BoardRequest) (
 				ctx, "Board skipped: no boarding UTXOs",
 			)
 
+			r.server.emitMetric(ctx, &metrics.BoardingEventMsg{
+				Status: "skipped",
+			})
+
 			return &daemonrpc.BoardResponse{
 				Status: "no_boarding_utxos",
 			}, nil
 
 		case strings.Contains(errStr, "too small after"):
+			r.server.emitMetric(ctx, &metrics.BoardingEventMsg{
+				Status: "failed",
+			})
+
 			return nil, status.Errorf(codes.FailedPrecondition,
 				"boarding balance too small: %v", err)
 		}
+
+		r.server.emitMetric(ctx, &metrics.BoardingEventMsg{
+			Status: "failed",
+		})
 
 		return nil, status.Errorf(codes.Internal, "board failed: %v",
 			err)
@@ -1947,6 +2122,10 @@ func (r *RPCServer) Board(ctx context.Context, req *daemonrpc.BoardRequest) (
 		btclog.Fmt("vtxo_amount", "%v",
 			boardResp.VTXOAmount),
 		slog.Int("vtxo_count", len(boardResp.VTXOAmounts)))
+
+	r.server.emitMetric(ctx, &metrics.BoardingEventMsg{
+		Status: "submitted",
+	})
 
 	return &daemonrpc.BoardResponse{
 		Status:    "registered",
@@ -1972,6 +2151,11 @@ func (r *RPCServer) JoinNextRound(ctx context.Context,
 	}
 
 	r.server.log.InfoS(ctx, "JoinNextRound accepted")
+
+	// rounds_joined_total is emitted by the round actor in
+	// createNewRound (symmetric with rounds_completed_total), which
+	// covers both this manual trigger and eager/automatic joins.
+	// Emitting here too would double-count manual joins.
 
 	return &daemonrpc.JoinNextRoundResponse{
 		Status: "joined",
@@ -2163,6 +2347,13 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 				slog.String("idempotency_key", key),
 			)
 
+			// This is an idempotent replay: the original SendOOR
+			// already counted the submission, so we deliberately do
+			// NOT emit OORTransferSentMsg here. Counting replays
+			// would inflate oor_transfers_sent_total under any
+			// client retry loop even though no new transfer was
+			// initiated.
+			//
 			// This fast path returns before resolving the current
 			// request, so the recipient outpoint is intentionally
 			// omitted. Full request replay below can recompute it.
@@ -2418,6 +2609,11 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		// reused (only for wallet-selected inputs).
 		r.unlockSelectedVTXOsBestEffort(ctx, locked)
 
+		r.server.emitMetric(ctx, &metrics.OORTransferSentMsg{
+			Status:   "failed",
+			Duration: time.Since(startTime),
+		})
+
 		return nil, status.Errorf(codes.Internal, "OOR transfer "+
 			"failed: %v", err)
 	}
@@ -2459,6 +2655,12 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		slog.Duration("change_output_duration",
 			changeOutputDuration),
 		slog.Duration("oor_actor_duration", oorActorDuration))
+
+	r.server.emitMetric(ctx, &metrics.OORTransferSentMsg{
+		SessionID: resp.SessionID.String(),
+		Status:    "submitted",
+		Duration:  time.Since(startTime),
+	})
 
 	return &daemonrpc.SendOORResponse{
 		Status:             "submitted",

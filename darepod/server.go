@@ -45,6 +45,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/darepo-client/metrics"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/proofkeys"
 	"github.com/lightninglabs/darepo-client/round"
@@ -72,6 +73,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/signal"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
@@ -190,6 +192,17 @@ type Server struct {
 	// for direct RPC reads (idempotency pre-flight); the OOR registry
 	// actor owns all writes.
 	oorSessionStore oor.SessionRegistryStore
+
+	// metricsSrv is the optional Prometheus metrics HTTP server. It is
+	// nil until startMetricsServer runs and stays effectively disabled
+	// (no listener) unless Metrics.ListenAddr is set.
+	metricsSrv *metrics.Server
+
+	// metricsSink is the fire-and-forget reference to the metrics actor
+	// for event-driven lifecycle counters. It is None unless the metrics
+	// server is enabled, so emission sites skip cleanly when metrics are
+	// off.
+	metricsSink fn.Option[metrics.Sink]
 
 	// lnd holds the lndclient connection when wallet.type is "lnd".
 	// It is None in lwwallet mode.
@@ -663,6 +676,55 @@ func (s *Server) setServerConnected(connected bool) {
 	s.serverConnected.Store(connected)
 }
 
+// operatorConnPollInterval is how often monitorOperatorConnection samples
+// the direct gRPC connection's transport state to keep the
+// ServerConnectionUp gauge and ServerSyncTimestamp live. It is a balance
+// between detecting an operator outage promptly and not busy-polling the
+// gRPC connectivity API.
+const operatorConnPollInterval = 15 * time.Second
+
+// monitorOperatorConnection keeps the ServerConnectionUp gauge and the
+// ServerSyncTimestamp in step with the live health of the direct gRPC
+// connection to the ark operator. The bootstrap stamp in
+// connectAndBootstrapMailbox only proves the link came up once; this
+// watcher is what lets the gauge fall back to 0 when the operator
+// becomes unreachable and refreshes the sync timestamp while the link
+// stays Ready, so "connection down" and "no recent contact" alerts can
+// fire. It runs until the daemon context is cancelled, at which point it
+// marks the connection down so a clean shutdown does not leave a stale 1.
+func (s *Server) monitorOperatorConnection(ctx context.Context) {
+	// Without a direct gRPC connection (e.g. REST transport) there is
+	// no connectivity state to observe; leave the bootstrap stamp as-is.
+	if s.serverConn == nil {
+		return
+	}
+
+	ticker := time.NewTicker(operatorConnPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// The daemon is shutting down: the operator connection
+			// is no longer up.
+			metrics.ServerConnectionUp.Set(0)
+
+			return
+
+		case <-ticker.C:
+			// A Ready transport is the live proof the operator is
+			// reachable; any other state (connecting, transient
+			// failure, idle, shutdown) means we have lost contact.
+			if s.serverConn.GetState() == connectivity.Ready {
+				metrics.ServerConnectionUp.Set(1)
+				metrics.ServerSyncTimestamp.SetToCurrentTime()
+			} else {
+				metrics.ServerConnectionUp.Set(0)
+			}
+		}
+	}
+}
+
 // openRPCListener returns the daemon RPC listener. Embedders can inject a
 // pre-created listener through the config, while the standalone daemon path
 // binds a fresh TCP listener on ListenAddr. If both are provided, the injected
@@ -1018,6 +1080,31 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	)
 	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
 
+	// -------------------------------------------------------
+	// Optional Prometheus metrics server (disabled by default).
+	// -------------------------------------------------------
+	// The /metrics endpoint exposes operational and balance data, so it
+	// only starts when the operator sets an explicit listen address. It
+	// runs on its own private HTTP mux/listener and is torn down with a
+	// bounded graceful shutdown like the other long-running listeners.
+	// Started here, once the VTXO store exists, so the scrape-driven
+	// collector has a backing store before the first scrape.
+	if err := s.startMetricsServer(ctx); err != nil {
+		return fmt.Errorf("start metrics server: %w", err)
+	}
+	//nolint:contextcheck // shutdown uses bounded process-root context
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), DefaultShutdownTimeout,
+		)
+		defer cancel()
+
+		if err := s.stopMetricsServer(shutdownCtx); err != nil {
+			s.log.WarnS(shutdownCtx, "Metrics server shutdown "+
+				"failed", err)
+		}
+	}()
+
 	// Start the ledger accounting actor. This must happen after
 	// the DB and delivery store are ready but does not depend on
 	// the wallet being unlocked.
@@ -1102,6 +1189,14 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 
 		if err := s.grpcServer.Serve(lis); err != nil {
 			s.log.ErrorS(ctx, "gRPC server error", err)
+
+			// Serve returning a non-nil error means the daemon
+			// lost its inbound RPC listener (a clean shutdown
+			// returns nil); count it as a background-task failure
+			// so an operator can alert on it.
+			s.emitMetric(ctx, &metrics.BackgroundTaskErrorMsg{
+				Task: "server_grpc_listen",
+			})
 		}
 	}()
 	defer func() {
@@ -2223,6 +2318,23 @@ func (s *Server) connectLnd(ctx context.Context) (*lndclient.GrpcLndServices,
 func (s *Server) dialServer() (*grpc.ClientConn, error) {
 	var dialOpts []grpc.DialOption
 
+	// Instrument the operator connection with client-side gRPC metrics
+	// (per-method request count, error rate, handling-time histograms).
+	// The shared GRPCClientMetrics collector is registered with the
+	// Prometheus registry only when the metrics server is enabled, but
+	// the interceptors are always installed: an unregistered collector
+	// simply accumulates samples nobody scrapes, so this keeps the dial
+	// path uniform without coupling it to the metrics opt-in.
+	dialOpts = append(
+		dialOpts,
+		grpc.WithChainUnaryInterceptor(
+			metrics.GRPCClientMetrics.UnaryClientInterceptor(),
+		),
+		grpc.WithChainStreamInterceptor(
+			metrics.GRPCClientMetrics.StreamClientInterceptor(),
+		),
+	)
+
 	clientCerts, err := s.serverClientTLSCerts()
 	if err != nil {
 		return nil, err
@@ -2363,11 +2475,27 @@ func (s *Server) registerIncomingVTXOEventRoute(
 		Adapt: func(p proto.Message) (vtxo.IncomingVTXOMsg, error) {
 			evt, ok := p.(*arkrpc.IncomingVTXOEvent)
 			if !ok {
+				// A malformed push never reaches the handler,
+				// so count the failed receive here at the
+				// boundary.
+				s.emitMetric(
+					context.Background(),
+					&metrics.OORTransferReceivedMsg{
+						Status: "failed",
+					},
+				)
+
 				return vtxo.IncomingVTXOMsg{},
 					fmt.Errorf("expected "+
 						"IncomingVTXOEvent, got %T", p)
 			}
 
+			// The "materialized" / handler-side "failed" outcomes
+			// are emitted by the IncomingVTXOHandler itself, which
+			// is the only place that knows whether the event was
+			// relevant and the save succeeded. Counting here at
+			// adapt time would report a materialization before the
+			// handler verified ownership and persisted the VTXO.
 			return vtxo.IncomingVTXOMsg{
 				Event: evt,
 			}, nil
@@ -3253,6 +3381,26 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 		),
 	)
 
+	// A successful direct GetInfo round-trip is the earliest proof the
+	// operator connection is healthy, so mark it up and stamp the sync
+	// time. These gauges are safe to set unconditionally: they are
+	// registered only when the metrics server is enabled, and writing a
+	// gauge that nobody scrapes is harmless.
+	metrics.ServerConnectionUp.Set(1)
+	metrics.ServerSyncTimestamp.SetToCurrentTime()
+
+	// Keep those gauges honest for the rest of the daemon's life: the
+	// one-shot stamp above only proves the link came up once. The
+	// watcher drives the gauge back to 0 when the operator becomes
+	// unreachable and refreshes the sync timestamp while the link is
+	// healthy, so "connection down" and "no recent contact" alerts
+	// actually fire. Gated on metrics being enabled to avoid a needless
+	// goroutine on the disabled path. It runs on runCtx so it lives for
+	// the daemon's lifetime and unwinds on shutdown.
+	if s.metricsSink.IsSome() {
+		go s.monitorOperatorConnection(s.runCtx)
+	}
+
 	// Build the mailbox transport runtime.
 	edge := s.newMailboxEdge()
 	dispatchers := s.buildRPCDispatchers(edge)
@@ -3445,6 +3593,7 @@ func (s *Server) initWalletActor(ctx context.Context,
 		wallet.WithClock(s.clk),
 		wallet.WithEagerRoundJoin(s.cfg.EagerRoundJoin),
 		wallet.WithFetchOperatorKey(s.fetchCurrentOperatorPubKey),
+		wallet.WithMetricsSink(s.metricsSink),
 	)
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,
@@ -3576,6 +3725,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 		OwnedScriptChecker:   scriptChecker,
 		OwnedScriptRegistrar: scriptRegistrar,
 		LedgerSink:           fn.Some(ledger.NewSink(s.actorSystem)),
+		MetricsSink:          s.metricsSink,
 		ForfeitCollectionTimeout: s.cfg.
 			ForfeitCollectionTimeout,
 		RegistrationTimeout: s.cfg.RegistrationTimeout,
@@ -3961,6 +4111,7 @@ func (s *Server) initOORActor(ctx context.Context,
 			VTXOStore:       incomingVTXOStore,
 			VTXOManager:     vtxoManagerRef,
 			AncestryFetcher: ancestryFetcher,
+			MetricsSink:     s.metricsSink,
 		},
 	)
 	incomingKey := vtxo.IncomingVTXOServiceKey()
