@@ -280,6 +280,99 @@ func entryFromProto(entry *walletdkrpc.WalletEntry) Entry {
 		UpdatedAt:     unixTime(entry.GetUpdatedAtUnix()),
 		Note:          entry.GetNote(),
 		FailureReason: entry.GetFailureReason(),
+		Progress:      entryProgressFromProto(entry.GetProgress()),
+		Request:       entryRequestFromProto(entry.GetRequest()),
+	}
+}
+
+// entryProgressFromProto copies the daemon-normalized lifecycle metadata into
+// wrapper-owned fields. It returns nil when the entry carried no progress, so
+// callers can treat absence and emptiness uniformly.
+func entryProgressFromProto(
+	progress *walletdkrpc.WalletEntryProgress) *EntryProgress {
+
+	if progress == nil {
+		return nil
+	}
+
+	return &EntryProgress{
+		Phase:              entryPhaseFromProto(progress.GetPhase()),
+		PhaseLabel:         progress.GetPhaseLabel(),
+		PaymentHash:        progress.GetPaymentHash(),
+		Txid:               progress.GetTxid(),
+		ConfirmationHeight: progress.GetConfirmationHeight(),
+		VTXOOutpoint:       progress.GetVtxoOutpoint(),
+	}
+}
+
+// entryPhaseFromProto maps the generated lifecycle enum into walletdk's
+// string-like phase, decoupled from proto enum renumbering.
+func entryPhaseFromProto(phase walletdkrpc.WalletEntryPhase) EntryPhase {
+	switch phase {
+	case walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED:
+		return EntryPhaseRequestCreated
+
+	case walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT: //nolint:ll
+		return EntryPhaseWaitingForPayment
+
+	case walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_PAYMENT_DETECTED:
+		return EntryPhasePaymentDetected
+
+	case walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING:
+		return EntryPhaseSettling
+
+	case walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED:
+		return EntryPhaseConfirmed
+
+	case walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDING:
+		return EntryPhaseRefunding
+
+	case walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDED:
+		return EntryPhaseRefunded
+
+	case walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED:
+		return EntryPhaseFailed
+
+	case walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION: //nolint:ll
+		return EntryPhaseWaitingForConfirmation
+
+	default:
+		return EntryPhaseUnspecified
+	}
+}
+
+// entryRequestFromProto flattens the request oneof into a wrapper-owned shape
+// with a Type discriminator. It returns nil when no request was carried or no
+// variant is set, so callers can treat absence and emptiness uniformly.
+func entryRequestFromProto(
+	request *walletdkrpc.WalletEntryRequest) *EntryRequest {
+
+	if request == nil {
+		return nil
+	}
+
+	switch req := request.GetRequest().(type) {
+	case *walletdkrpc.WalletEntryRequest_LightningInvoice:
+		return &EntryRequest{
+			Type:             EntryRequestTypeLightning,
+			LightningInvoice: req.LightningInvoice.GetInvoice(),
+			PaymentHash:      req.LightningInvoice.GetPaymentHash(),
+		}
+
+	case *walletdkrpc.WalletEntryRequest_OnchainAddress:
+		return &EntryRequest{
+			Type:           EntryRequestTypeOnchain,
+			OnchainAddress: req.OnchainAddress.GetAddress(),
+		}
+
+	case *walletdkrpc.WalletEntryRequest_ArkAddress:
+		return &EntryRequest{
+			Type:       EntryRequestTypeArk,
+			ArkAddress: req.ArkAddress.GetAddress(),
+		}
+
+	default:
+		return nil
 	}
 }
 
