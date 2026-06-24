@@ -98,7 +98,7 @@ func TestVHTLCRecoveryGenerationDownMigrationKeepsNewest(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	sqlDB := NewTestDBWithVersion(t, 20)
+	sqlDB := NewTestDBWithVersion(t, 21)
 	store := NewStore(
 		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), btclog.Disabled,
 	)
@@ -116,7 +116,7 @@ func TestVHTLCRecoveryGenerationDownMigrationKeepsNewest(t *testing.T) {
 	_, _, err = recoveryStore.ArmRecovery(ctx, second)
 	require.NoError(t, err)
 
-	err = sqlDB.ExecuteMigrations(TargetVersion(19))
+	err = sqlDB.ExecuteMigrations(TargetVersion(20))
 	require.NoError(t, err)
 
 	var count int
