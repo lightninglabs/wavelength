@@ -107,7 +107,13 @@ func NewPostgresStore(cfg *PostgresConfig,
 		slog.String("dsn", cfg.DSN(true)),
 	)
 
-	rawDB, err := sql.Open("pgx", cfg.DSN(false))
+	// Open with the version-qualified "pgx/v5" driver name rather than
+	// the bare "pgx" alias. The pgx v4 and v5 stdlib packages each
+	// register the unqualified name if no other major version has already
+	// claimed it, so the bare alias can depend on init order. Pinning the
+	// major version keeps the backend deterministic for migrations and
+	// error classification.
+	rawDB, err := sql.Open("pgx/v5", cfg.DSN(false))
 	if err != nil {
 		return nil, MapSQLError(err)
 	}
