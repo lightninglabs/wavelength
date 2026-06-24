@@ -59,3 +59,11 @@ missing path instead of reporting against an empty database it just made.
 - Do not import Faraday. Add new price providers behind `PriceSource`.
 - Keep output stable enough for admin scripts: add fields rather than
   renaming existing JSON/CSV keys.
+
+## Deep Docs
+
+- [docs/accounting_report.md](../../../../docs/accounting_report.md) —
+  operator guide: running the command against SQLite or Postgres, output
+  formats, fiat conversion, and read-only behavior.
+- [docs/fee_ledger.md](../../../../docs/fee_ledger.md) — the ledger this
+  command reports on: chart of accounts, per-flow movements, replay safety.
