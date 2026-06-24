@@ -1327,10 +1327,10 @@ func TestLedgerStoreListAccounts(t *testing.T) {
 	accounts, err := store.ListAccounts(ctx)
 	require.NoError(t, err)
 
-	// The migration seeds 7 accounts: wallet_balance, vtxo_balance,
+	// The migrations seed 8 accounts: wallet_balance, vtxo_balance,
 	// fees_paid, onchain_fees, transfers_in, transfers_out,
-	// opening_balance.
-	require.Len(t, accounts, 7)
+	// opening_balance, wallet_clearing.
+	require.Len(t, accounts, 8)
 
 	// Build a map for easier assertions.
 	byID := make(map[string]sqlc.Account, len(accounts))
@@ -1358,6 +1358,11 @@ func TestLedgerStoreListAccounts(t *testing.T) {
 	require.Equal(t, "equity", byID["opening_balance"].AccountType)
 	require.Equal(
 		t, "Opening Balance", byID["opening_balance"].AccountName,
+	)
+
+	require.Equal(t, "asset", byID["wallet_clearing"].AccountType)
+	require.Equal(
+		t, "Wallet Sweep Clearing", byID["wallet_clearing"].AccountName,
 	)
 }
 

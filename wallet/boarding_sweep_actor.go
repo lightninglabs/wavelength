@@ -1141,20 +1141,20 @@ func (a *Ark) reconcileSweepInputsOnConfirm(ctx context.Context,
 }
 
 // emitSweepConfirmedLedger emits the double-entry ledger and UTXO audit
-// events corresponding to a boarding-sweep confirmation:
+// events corresponding to a boarding-sweep confirmation as a single
+// BoardingSweepConfirmedMsg. The ledger actor expands that one message into
+// every clearing leg inside one Commit:
 //
-//   - one FeePaidMsg{FeeType=FeeTypeOnchainSweep} for the L1 miner fee
-//     (debit onchain_fees, credit wallet_balance), keyed by sweep txid;
-//   - one UTXOSpentMsg{Classification=boarding_sweep_input} per swept
-//     boarding outpoint (audit row recording the on-chain spend);
-//   - one UTXOCreatedMsg{Classification=boarding_sweep_return} for the
-//     sweep's destination output, but only when the destination was a
-//     wallet-derived script (skipped for caller-supplied external
-//     addresses, where the funds left the wallet entirely).
+//   - the L1 chain cost (debit onchain_fees, credit wallet_clearing);
+//   - one audit row + wallet_clearing debit per swept boarding outpoint;
+//   - the destination leg — a wallet-return deposit or, for a
+//     caller-supplied external address, a transfers_out settlement.
 //
-// All emissions are best-effort. Ledger Tell errors are logged but do not
-// fail the confirmation path; ledger replays are idempotent via the
-// outpoint- and txid-derived idempotency keys.
+// Folding the legs into one message makes them atomic on the ledger side, so
+// a partial failure can never strand value in wallet_clearing. Emission is
+// still best-effort: a Tell error is logged but does not fail the
+// confirmation path, and a redelivery is idempotent via the per-leg keys the
+// handler derives.
 func (a *Ark) emitSweepConfirmedLedger(ctx context.Context,
 	notif BoardingSweepTxNotification) {
 
@@ -1180,87 +1180,106 @@ func (a *Ark) emitSweepConfirmedLedger(ctx context.Context,
 	}
 
 	a.ledgerSink.WhenSome(func(sink ledger.Sink) {
-		// 1. Fee leg.
-		feeMsg := &ledger.FeePaidMsg{
-			AmountSat:      int64(record.FeeAmount),
-			FeeType:        ledger.FeeTypeOnchainSweep,
-			BlockHeight:    uint32(notif.BlockHeight),
-			IdempotencyKey: append([]byte(nil), notif.Txid[:]...),
+		// The clearing-account legs only net to zero when the sweep's
+		// destination output is readable from the persisted tx: chain
+		// cost is (total - destination) = miner fee + P2A anchor, and
+		// the destination leg credits wallet_clearing by that same
+		// destination value. A record missing its tx (corruption, or a
+		// legacy row predating tx persistence) cannot produce a
+		// balanced set, so skip emission rather than drift the clearing
+		// account. The store requires the tx at write time, so this
+		// only ever fires on a genuinely inconsistent record.
+		if record.Tx == nil || len(record.Tx.TxOut) == 0 {
+			a.logger(ctx).WarnS(ctx,
+				"emit ledger: sweep record missing tx, "+
+					"skipping clearing legs",
+				nil, slog.String("txid", notif.Txid.String()))
+
+			return
 		}
-		if err := sink.Tell(ctx, feeMsg); err != nil {
+
+		destSat := boardingSweepDestinationAmount(record)
+		if destSat <= 0 {
+			a.logger(ctx).WarnS(ctx,
+				"emit ledger: sweep destination non-positive, "+
+					"skipping clearing legs",
+				nil, slog.String("txid", notif.Txid.String()))
+
+			return
+		}
+
+		// Every clearing leg ships in a single
+		// BoardingSweepConfirmedMsg so the ledger actor books the fee,
+		// per-input, and destination legs atomically inside one Commit.
+		// Splitting them into independent Tells previously risked a
+		// partial failure that stranded value in wallet_clearing; one
+		// message either lands in full or not at all.
+		// DestinationAddress is empty when the daemon allocated a fresh
+		// wallet output (a wallet-derived return) and non-empty when
+		// the caller supplied an external address (the persisted
+		// equivalent of destWalletDerived).
+		inputs := make([]ledger.SweepInput, 0, len(record.Inputs))
+		for _, in := range record.Inputs {
+			inputs = append(inputs, ledger.SweepInput{
+				Outpoint:  in.Outpoint,
+				AmountSat: int64(in.Amount),
+			})
+		}
+
+		msg := &ledger.BoardingSweepConfirmedMsg{
+			Txid:        notif.Txid,
+			BlockHeight: uint32(notif.BlockHeight),
+			ChainCostSat: boardingSweepLedgerChainCost(
+				record,
+			),
+			Inputs:              inputs,
+			DestinationSat:      destSat,
+			DestinationExternal: record.DestinationAddress != "",
+		}
+		if err := sink.Tell(ctx, msg); err != nil {
 			a.logger(ctx).WarnS(
 				ctx,
-				"emit ledger: FeePaidMsg failed",
+				"emit ledger: BoardingSweepConfirmedMsg failed",
 				err,
 				slog.String("txid", notif.Txid.String()),
 			)
 		}
-
-		// 2. Per-input audit rows (UTXOSpentMsg). Each spent row
-		// carries the boarding UTXO's value so wallet_utxo_log.
-		// amount_sat reflects the actual outflow rather than
-		// silently persisting zero. The audit log is idempotent on
-		// (outpoint, event) so replay is safe.
-		for _, in := range record.Inputs {
-			op := in.Outpoint
-			spentMsg := &ledger.UTXOSpentMsg{
-				OutpointHash:  op.Hash,
-				OutpointIndex: op.Index,
-				AmountSat:     int64(in.Amount),
-				BlockHeight:   uint32(notif.BlockHeight),
-				Classification: ledger.
-					ClassificationBoardingSweepInput,
-			}
-			if err := sink.Tell(ctx, spentMsg); err != nil {
-				a.logger(ctx).WarnS(
-					ctx,
-					"emit ledger: UTXOSpentMsg failed",
-					err,
-					slog.String("outpoint", op.String()),
-				)
-			}
-		}
-
-		// 3. Destination UTXOCreatedMsg, only for wallet-derived
-		// destinations. External destinations leave the wallet
-		// entirely; the per-input UTXOSpentMsg covers the outflow
-		// without needing a paired UTXOCreatedMsg. The persisted
-		// DestinationAddress is empty when the daemon allocated a
-		// fresh wallet output and non-empty when the caller supplied
-		// an explicit external address, which is the persisted
-		// equivalent of the in-memory destWalletDerived signal.
-		if record.DestinationAddress != "" {
-			return
-		}
-		if record.Tx == nil || len(record.Tx.TxOut) == 0 {
-			a.logger(ctx).WarnS(ctx,
-				"emit ledger: sweep record missing tx output",
-				nil, slog.String("txid",
-					notif.Txid.String()))
-
-			return
-		}
-
-		// TxOut[0] is the wallet/destination output; TxOut[1] is the
-		// P2A anchor. The builder in buildBoardingSweepTx enforces
-		// this order strictly so the wallet output stays at the
-		// canonical confirmation script the actor passes to
-		// txconfirm. Hard-coding vout 0 here mirrors that invariant.
-		outMsg := &ledger.UTXOCreatedMsg{
-			OutpointHash:  notif.Txid,
-			OutpointIndex: 0,
-			AmountSat:     record.Tx.TxOut[0].Value,
-			BlockHeight:   uint32(notif.BlockHeight),
-			Classification: ledger.
-				ClassificationBoardingSweepReturn,
-		}
-		if err := sink.Tell(ctx, outMsg); err != nil {
-			a.logger(ctx).WarnS(ctx,
-				"emit ledger: UTXOCreatedMsg failed",
-				err, slog.String("txid",
-					notif.Txid.String()))
-		}
 	})
+}
+
+// boardingSweepDestinationAmount returns the value paid to the sweep
+// destination. buildBoardingSweepTx always places the destination output at
+// vout 0 and the P2A anchor after it.
+func boardingSweepDestinationAmount(record *BoardingSweepRecord) int64 {
+	if record == nil || record.Tx == nil || len(record.Tx.TxOut) == 0 {
+		return 0
+	}
+
+	return record.Tx.TxOut[0].Value
+}
+
+// boardingSweepLedgerChainCost returns the value that left the wallet as
+// sweep chain cost: the miner fee plus the P2A anchor output, derived as
+// (total input value - destination output value). emitSweepConfirmedLedger
+// only calls this once it has verified record.Tx is present, so the
+// destination output is readable and the result captures both the miner fee
+// and the anchor. record.FeeAmount is deliberately NOT used as a fallback: it
+// is the miner fee alone and omitting the anchor would leave wallet_clearing
+// non-zero. A degenerate record where the total does not exceed the
+// destination yields 0, which the fee handler rejects as non-positive rather
+// than booking a silently wrong cost.
+func boardingSweepLedgerChainCost(record *BoardingSweepRecord) int64 {
+	if record == nil {
+		return 0
+	}
+
+	destSat := boardingSweepDestinationAmount(record)
+	totalSat := int64(record.TotalAmount)
+	if destSat > 0 && totalSat > destSat {
+		return totalSat - destSat
+	}
+
+	return 0
 }
 
 // lookupSweepRecord returns the persisted sweep record for the given txid.

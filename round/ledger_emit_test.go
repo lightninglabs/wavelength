@@ -301,11 +301,9 @@ func TestEmitVTXOsReceivedNoFeeWhenZero(t *testing.T) {
 }
 
 // TestEmitVTXOsReceivedNoFeeForBoardingOnly locks in the deferral
-// of boarding-fee emission: a pure-boarding round with a
-// non-zero OperatorFeeSat must not emit FeePaidMsg yet. The
-// absence of any refresh-origin VTXO suppresses the message.
-// This test will invert when boarding fee emission ships.
-func TestEmitVTXOsReceivedNoFeeForBoardingOnly(t *testing.T) {
+// TestEmitVTXOsReceivedBoardingFee confirms a pure-boarding round
+// with a non-zero OperatorFeeSat emits a boarding FeePaidMsg.
+func TestEmitVTXOsReceivedBoardingFee(t *testing.T) {
 	t.Parallel()
 
 	sink := actor.NewChannelTellOnlyRef[ledger.LedgerMsg](
@@ -314,8 +312,9 @@ func TestEmitVTXOsReceivedNoFeeForBoardingOnly(t *testing.T) {
 	a := newLedgerEmitActor(t, sink)
 
 	a.emitVTXOsReceived(t.Context(), &VTXOCreatedNotification{
-		RoundID:        uuid.New().String(),
-		OperatorFeeSat: 500,
+		RoundID:         uuid.New().String(),
+		OperatorFeeSat:  500,
+		OperatorFeeType: ledger.FeeTypeBoarding,
 		VTXOs: []*ClientVTXO{{
 			Outpoint: wire.OutPoint{
 				Hash: chainhash.Hash{0x77},
@@ -325,13 +324,13 @@ func TestEmitVTXOsReceivedNoFeeForBoardingOnly(t *testing.T) {
 		}},
 	})
 
-	for _, m := range drainLedgerMessages(t, sink) {
-		_, ok := m.(*ledger.FeePaidMsg)
-		require.False(
-			t, ok, "boarding-only round must not emit "+
-				"FeePaidMsg yet (deferred scope), got %#v", m,
-		)
-	}
+	msgs := drainLedgerMessages(t, sink)
+	require.Len(t, msgs, 2)
+
+	fee, ok := msgs[1].(*ledger.FeePaidMsg)
+	require.True(t, ok, "expected FeePaidMsg, got %T", msgs[1])
+	require.Equal(t, int64(500), fee.AmountSat)
+	require.Equal(t, ledger.FeeTypeBoarding, fee.FeeType)
 }
 
 // TestEmitVTXOsReceivedMixedBatch verifies a single notification

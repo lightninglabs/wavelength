@@ -44,6 +44,7 @@ into specific topics below.
 | Document | Description |
 |----------|-------------|
 | [daemon_cli_guide.md](daemon_cli_guide.md) | darepod/darepocli installation, configuration, CLI reference |
+| [accounting_report.md](accounting_report.md) | Accounting report command: reading the fee ledger from SQLite or Postgres, text/JSON/CSV output, fiat conversion, read-only behavior |
 
 ## Plans
 

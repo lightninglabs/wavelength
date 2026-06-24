@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -230,8 +232,8 @@ func TestHandleFeePaidRefresh(t *testing.T) {
 		entries[0].EventType)
 }
 
-// TestHandleFeePaidOnchainSweep verifies that a boarding-sweep miner fee
-// is booked against onchain_fees / wallet_balance with the
+// TestHandleFeePaidOnchainSweep verifies that a boarding-sweep chain cost
+// is booked against onchain_fees / wallet_clearing with the
 // boarding_sweep_fee_paid event type, and that an empty RoundID is
 // accepted alongside a sweep-txid IdempotencyKey.
 func TestHandleFeePaidOnchainSweep(t *testing.T) {
@@ -259,7 +261,7 @@ func TestHandleFeePaidOnchainSweep(t *testing.T) {
 	entries := store.getEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, AccountOnchainFees, entries[0].DebitAccount)
-	require.Equal(t, AccountWalletBalance, entries[0].CreditAccount)
+	require.Equal(t, AccountWalletClearing, entries[0].CreditAccount)
 	require.Equal(t, int64(444), entries[0].AmountSat)
 	require.Equal(t, EventBoardingSweepFeePaid, entries[0].EventType)
 
@@ -291,6 +293,41 @@ func TestHandleFeePaidOnchainSweepRejectsZeroAmount(t *testing.T) {
 
 	err := run(ctx, a, msg)
 	require.ErrorIs(t, err, ErrInvalidMessage)
+}
+
+// TestHandleFeePaidOnchainSweepRejectsBadIdempotencyKey verifies that
+// sweep fee rows cannot bypass every ledger idempotency index. Onchain
+// sweep fees have no RoundID, so the sweep txid key is mandatory.
+func TestHandleFeePaidOnchainSweepRejectsBadIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	for _, key := range [][]byte{
+		nil,
+		{},
+		{
+			0x01,
+			0x02,
+		},
+		make([]byte, chainhash.HashSize+1),
+	} {
+		t.Run(fmt.Sprintf("len_%d", len(key)), func(t *testing.T) {
+			t.Parallel()
+
+			a, store := newTestActor(t)
+			ctx := t.Context()
+
+			msg := &FeePaidMsg{
+				AmountSat:      1_000,
+				FeeType:        FeeTypeOnchainSweep,
+				BlockHeight:    800_700,
+				IdempotencyKey: key,
+			}
+
+			err := run(ctx, a, msg)
+			require.ErrorIs(t, err, ErrInvalidMessage)
+			require.Empty(t, store.getEntries())
+		})
+	}
 }
 
 // TestHandleVTXOReceivedRoundBoarding verifies that a boarding
@@ -986,9 +1023,9 @@ func TestExitIdempotencyKeyDistinguishesOutputs(t *testing.T) {
 // TestHandleExitCostInvalidAmounts verifies non-positive inputs
 // are rejected. The table covers the three distinct invalid
 // shapes: zero amount (caller forgot the VTXO value), zero fee
-// (caller emits before the chain resolver knows the miner fee --
-// this is the exact poison-pill the vtxo.emitExitCost no-op
-// guards against in the producer), and both-zero.
+// (caller emits before the final sweep cost is known -- this is
+// the exact poison-pill the vtxo.emitExitCost no-op guards
+// against), and both-zero.
 func TestHandleExitCostInvalidAmounts(t *testing.T) {
 	t.Parallel()
 
@@ -1397,6 +1434,233 @@ func TestHandleUTXOSpent(t *testing.T) {
 	require.Equal(t, int32(800_050), entries[0].BlockHeight)
 }
 
+// TestHandleUTXOSpentNonPositiveGuardScoped verifies that the
+// non-positive amount guard only fires for the boarding-sweep-input
+// classification, which is the sole branch that books a ledger leg
+// (debit wallet_clearing) subject to the SQL CHECK (amount_sat > 0).
+// Audit-only classifications must tolerate a zero amount (the
+// wallet_utxo_log table has no positivity constraint), so they record
+// the audit row instead of dead-lettering on a poison-pill TLV.
+func TestHandleUTXOSpentNonPositiveGuardScoped(t *testing.T) {
+	t.Parallel()
+
+	t.Run("audit-only tolerates zero amount", func(t *testing.T) {
+		t.Parallel()
+
+		a, ledgerStore, auditStore := newTestActorWithAudit(t)
+
+		err := run(t.Context(), a, &UTXOSpentMsg{
+			OutpointHash:   [32]byte{0xab},
+			OutpointIndex:  0,
+			AmountSat:      0,
+			BlockHeight:    800_000,
+			Classification: ClassificationRoundFunding,
+		})
+		require.NoError(t, err)
+
+		require.Len(t, auditStore.getEntries(), 1)
+		require.Empty(
+			t, ledgerStore.getEntries(),
+			"audit-only spend must not book a ledger leg",
+		)
+	})
+
+	t.Run("boarding sweep input rejects zero amount", func(t *testing.T) {
+		t.Parallel()
+
+		a, ledgerStore, auditStore := newTestActorWithAudit(t)
+
+		err := run(t.Context(), a, &UTXOSpentMsg{
+			OutpointHash:   [32]byte{0xcd},
+			OutpointIndex:  0,
+			AmountSat:      0,
+			BlockHeight:    800_000,
+			Classification: ClassificationBoardingSweepInput,
+		})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidMessage)
+
+		require.Empty(
+			t, auditStore.getEntries(),
+			"rejected spend must not write an audit row",
+		)
+		require.Empty(t, ledgerStore.getEntries())
+	})
+}
+
+// boardingSweepInput builds a SweepInput from a one-byte hash seed.
+func boardingSweepInput(hashByte byte, index uint32, amt int64) SweepInput {
+	return SweepInput{
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				hashByte,
+			},
+			Index: index,
+		},
+		AmountSat: amt,
+	}
+}
+
+// TestHandleBoardingSweepConfirmedNetsToZero verifies the consolidated
+// boarding-sweep handler books the fee, per-input, and destination legs in
+// one commit and that wallet_clearing nets to zero for both the
+// wallet-return and external-destination paths. It also confirms the audit
+// rows land alongside the balance legs.
+func TestHandleBoardingSweepConfirmedNetsToZero(t *testing.T) {
+	t.Parallel()
+
+	const (
+		in1       = int64(40_000)
+		in2       = int64(60_000)
+		total     = in1 + in2
+		fee       = int64(444)
+		anchor    = int64(330)
+		chainCost = fee + anchor
+		dest      = total - chainCost
+	)
+
+	cases := []struct {
+		name         string
+		external     bool
+		wantAudit    int
+		wantTransfer bool
+	}{
+		{
+			name:      "wallet return",
+			external:  false,
+			wantAudit: 3, // two spent inputs + one created return
+		},
+		{
+			name:         "external destination",
+			external:     true,
+			wantAudit:    2, // two spent inputs only
+			wantTransfer: true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			a, ledgerStore, auditStore := newTestActorWithAudit(t)
+
+			msg := &BoardingSweepConfirmedMsg{
+				Txid: [32]byte{
+					0x7a,
+				},
+				BlockHeight:  800_800,
+				ChainCostSat: chainCost,
+				Inputs: []SweepInput{
+					boardingSweepInput(0xa1, 0, in1),
+					boardingSweepInput(0xb2, 1, in2),
+				},
+				DestinationSat:      dest,
+				DestinationExternal: tc.external,
+			}
+
+			require.NoError(t, run(t.Context(), a, msg))
+
+			balances := map[string]int64{}
+			for _, e := range ledgerStore.getEntries() {
+				balances[e.DebitAccount] += e.AmountSat
+				balances[e.CreditAccount] -= e.AmountSat
+			}
+
+			require.Equal(
+				t, int64(0), balances[AccountWalletClearing],
+				"wallet_clearing must net to zero",
+			)
+			require.Equal(
+				t, chainCost, balances[AccountOnchainFees],
+				"onchain_fees debited by chain cost",
+			)
+
+			require.Len(t, auditStore.getEntries(), tc.wantAudit)
+
+			if tc.wantTransfer {
+				require.Equal(
+					t, dest, balances[AccountTransfersOut],
+					"external dest debits transfers_out",
+				)
+			}
+		})
+	}
+}
+
+// TestHandleBoardingSweepConfirmedRejectsInvalid locks in the up-front
+// validation guards so a malformed message dead-letters cleanly rather than
+// writing a partial leg set or hitting a SQL CHECK mid-commit.
+func TestHandleBoardingSweepConfirmedRejectsInvalid(t *testing.T) {
+	t.Parallel()
+
+	base := func() *BoardingSweepConfirmedMsg {
+		return &BoardingSweepConfirmedMsg{
+			Txid: [32]byte{
+				0x9c,
+			},
+			BlockHeight:  800_000,
+			ChainCostSat: 774,
+			Inputs: []SweepInput{
+				boardingSweepInput(0xa1, 0, 100_000),
+			},
+			DestinationSat:      99_226,
+			DestinationExternal: false,
+		}
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*BoardingSweepConfirmedMsg)
+	}{
+		{
+			name: "non-positive chain cost",
+			mutate: func(m *BoardingSweepConfirmedMsg) {
+				m.ChainCostSat = 0
+			},
+		},
+		{
+			name: "non-positive destination",
+			mutate: func(m *BoardingSweepConfirmedMsg) {
+				m.DestinationSat = -1
+			},
+		},
+		{
+			name: "no inputs",
+			mutate: func(m *BoardingSweepConfirmedMsg) {
+				m.Inputs = nil
+			},
+		},
+		{
+			name: "non-positive input amount",
+			mutate: func(m *BoardingSweepConfirmedMsg) {
+				m.Inputs = []SweepInput{
+					boardingSweepInput(0xa1, 0, 0),
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			a, ledgerStore, auditStore := newTestActorWithAudit(t)
+
+			msg := base()
+			tc.mutate(msg)
+
+			err := run(t.Context(), a, msg)
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrInvalidMessage)
+
+			require.Empty(t, ledgerStore.getEntries())
+			require.Empty(t, auditStore.getEntries())
+		})
+	}
+}
+
 // TestBoardingRoundNetsToOpeningBalanceAndVTXO is a scenario-level
 // test that walks the full boarding flow: a wallet UTXO confirms
 // (booked as a deposit via handleUTXOCreated) and is then consumed
@@ -1411,10 +1675,9 @@ func TestHandleUTXOSpent(t *testing.T) {
 //     (representing the equity source of the funds).
 //   - no other account is touched.
 //
-// The test leaves FeePaidMsg out because boarding fee emission
-// is deferred (task B handles refresh fees only). Even without a
-// fee leg, this asserts the core deposit-boarding pairing is
-// coherent.
+// The test leaves FeePaidMsg out so it can isolate the core
+// deposit-boarding pairing. Fee rows are covered by dedicated fee
+// handler tests.
 func TestBoardingRoundNetsToOpeningBalanceAndVTXO(t *testing.T) {
 	t.Parallel()
 
@@ -1483,7 +1746,7 @@ func TestBoardingRoundNetsToOpeningBalanceAndVTXO(t *testing.T) {
 	)
 	require.Equal(
 		t, int64(0), balances[AccountFeesPaid],
-		"boarding fee emission is deferred; no fee leg yet",
+		"isolated boarding pair should not include a fee leg",
 	)
 }
 
@@ -1623,6 +1886,67 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 			},
 			new: func() LedgerMsg {
 				return &UTXOSpentMsg{}
+			},
+		},
+		{
+			name: "BoardingSweepConfirmedExternal",
+			msg: &BoardingSweepConfirmedMsg{
+				Txid: [32]byte{
+					0xa1,
+				},
+				BlockHeight:  800_400,
+				ChainCostSat: 774,
+				Inputs: []SweepInput{
+					{
+						Outpoint: wire.OutPoint{
+							Hash: chainhash.Hash{
+								0xb2,
+							},
+							Index: 0,
+						},
+						AmountSat: 40_000,
+					},
+					{
+						Outpoint: wire.OutPoint{
+							Hash: chainhash.Hash{
+								0xc3,
+							},
+							Index: 3,
+						},
+						AmountSat: 60_000,
+					},
+				},
+				DestinationSat:      99_226,
+				DestinationExternal: true,
+			},
+			new: func() LedgerMsg {
+				return &BoardingSweepConfirmedMsg{}
+			},
+		},
+		{
+			name: "BoardingSweepConfirmedReturn",
+			msg: &BoardingSweepConfirmedMsg{
+				Txid: [32]byte{
+					0xd4,
+				},
+				BlockHeight:  800_410,
+				ChainCostSat: 500,
+				Inputs: []SweepInput{
+					{
+						Outpoint: wire.OutPoint{
+							Hash: chainhash.Hash{
+								0xe5,
+							},
+							Index: 1,
+						},
+						AmountSat: 25_000,
+					},
+				},
+				DestinationSat:      24_500,
+				DestinationExternal: false,
+			},
+			new: func() LedgerMsg {
+				return &BoardingSweepConfirmedMsg{}
 			},
 		},
 	}

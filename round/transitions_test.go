@@ -2292,9 +2292,13 @@ func TestInputSigSentState(t *testing.T) {
 
 		_ = assertStateType[*ConfirmedState](h)
 
-		// Only RoundCompletedNotification should be emitted.
-		// No VTXOCreatedNotification and no SaveVTXOs call.
-		h.assertOutboxLen(1)
+		h.assertOutboxLen(2)
+		created, ok := transition.NewEvents.UnwrapOr(
+			ClientEmittedEvent{},
+		).Outbox[0].(*VTXOCreatedNotification)
+		require.True(t, ok)
+		require.Empty(t, created.VTXOs)
+		require.Len(t, created.Outflows, 1)
 		h.vtxoStore.AssertNotCalled(t, "SaveVTXOs")
 	})
 	t.Run("buildClientVTXOs_error", func(t *testing.T) {

@@ -131,12 +131,13 @@ func decodeFixedBytes(field string, got []byte, want int) error {
 // These use the 0x9xxx range to avoid collisions with the
 // server-side ledger actor (0x8xxx) and other actor subsystems.
 const (
-	feePaidTLVType      tlv.Type = 0x9001
-	vtxoReceivedTLVType tlv.Type = 0x9002
-	vtxoSentTLVType     tlv.Type = 0x9003
-	exitCostTLVType     tlv.Type = 0x9004
-	utxoCreatedTLVType  tlv.Type = 0x9005
-	utxoSpentTLVType    tlv.Type = 0x9006
+	feePaidTLVType                tlv.Type = 0x9001
+	vtxoReceivedTLVType           tlv.Type = 0x9002
+	vtxoSentTLVType               tlv.Type = 0x9003
+	exitCostTLVType               tlv.Type = 0x9004
+	utxoCreatedTLVType            tlv.Type = 0x9005
+	utxoSpentTLVType              tlv.Type = 0x9006
+	boardingSweepConfirmedTLVType tlv.Type = 0x9007
 )
 
 // Per-message TLV record types. Each message defines its own
@@ -164,10 +165,11 @@ const (
 	// within a single round so two in-round refreshes don't
 	// collide on idx_client_ledger_idempotent_round (same
 	// round_id + event_type + accounts otherwise).
-	vtxoSentSessionIDType tlv.Type = 1
-	vtxoSentAmountSatType tlv.Type = 3
-	vtxoSentRoundIDType   tlv.Type = 5
-	vtxoSentOutpointType  tlv.Type = 7
+	vtxoSentSessionIDType   tlv.Type = 1
+	vtxoSentAmountSatType   tlv.Type = 3
+	vtxoSentRoundIDType     tlv.Type = 5
+	vtxoSentOutpointType    tlv.Type = 7
+	vtxoSentIdempotencyType tlv.Type = 9
 
 	// ExitCostMsg field types.
 	exitCostOutpointHashType  tlv.Type = 1
@@ -182,7 +184,20 @@ const (
 	utxoAmountSatType      tlv.Type = 5
 	utxoBlockHeightType    tlv.Type = 7
 	utxoClassificationType tlv.Type = 9
+
+	// BoardingSweepConfirmedMsg field types.
+	sweepConfirmedTxidType        tlv.Type = 1
+	sweepConfirmedBlockHeightType tlv.Type = 3
+	sweepConfirmedChainCostType   tlv.Type = 5
+	sweepConfirmedInputsType      tlv.Type = 7
+	sweepConfirmedDestSatType     tlv.Type = 9
+	sweepConfirmedDestExtType     tlv.Type = 11
 )
+
+// sweepInputRecordSize is the fixed wire width of one serialized sweep
+// input inside a BoardingSweepConfirmedMsg: a 32-byte outpoint hash, a
+// 4-byte big-endian output index, and an 8-byte big-endian satoshi amount.
+const sweepInputRecordSize = 32 + 4 + 8
 
 // LedgerMsg is the message constraint for the client-side ledger
 // durable actor mailbox. It embeds actor.TLVMessage so both
@@ -207,9 +222,9 @@ type LedgerResp interface {
 //     fees_paid += AmountSat / vtxo_balance -= AmountSat. Keyed
 //     by RoundID via the (round_id, event_type) partial unique
 //     index.
-//   - FeeTypeOnchainSweep: an L1 miner fee paid by a wallet-
+//   - FeeTypeOnchainSweep: L1 chain cost paid by a wallet-
 //     internal boarding sweep. Booked as
-//     onchain_fees += AmountSat / wallet_balance -= AmountSat.
+//     onchain_fees += AmountSat / wallet_clearing -= AmountSat.
 //     Has no paired VTXOReceivedMsg; keyed by the sweep txid
 //     carried in IdempotencyKey via the
 //     idx_client_ledger_idempotent_key partial unique index.
@@ -528,6 +543,13 @@ type VTXOSentMsg struct {
 
 	// AmountSat is the total value sent in satoshis.
 	AmountSat int64
+
+	// IdempotencyKey is an optional caller-supplied key for
+	// round-scoped sends that do not have a VTXO outpoint, such
+	// as cooperative leave outputs and foreign directed-send
+	// recipient outputs. When set, it takes precedence over
+	// Outpoint for ledger-entry deduplication.
+	IdempotencyKey []byte
 }
 
 // MessageType returns the message type name for routing.
@@ -546,6 +568,7 @@ func (m *VTXOSentMsg) Encode(w io.Writer) error {
 	amountSat := uint64(m.AmountSat)
 	roundID := m.RoundID[:]
 	outpoint := &outpointRecord{OutPoint: m.Outpoint}
+	idempotencyKey := m.IdempotencyKey
 
 	stream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(
@@ -558,6 +581,9 @@ func (m *VTXOSentMsg) Encode(w io.Writer) error {
 			vtxoSentRoundIDType, &roundID,
 		),
 		makeOutpointRecord(vtxoSentOutpointType, outpoint),
+		tlv.MakePrimitiveRecord(
+			vtxoSentIdempotencyType, &idempotencyKey,
+		),
 	)
 	if err != nil {
 		return err
@@ -569,10 +595,11 @@ func (m *VTXOSentMsg) Encode(w io.Writer) error {
 // Decode deserializes a TLV stream into the message.
 func (m *VTXOSentMsg) Decode(r io.Reader) error {
 	var (
-		sessionID []byte
-		amountSat uint64
-		roundID   []byte
-		outpoint  outpointRecord
+		sessionID      []byte
+		amountSat      uint64
+		roundID        []byte
+		outpoint       outpointRecord
+		idempotencyKey []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -586,6 +613,9 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 			vtxoSentRoundIDType, &roundID,
 		),
 		makeOutpointRecord(vtxoSentOutpointType, &outpoint),
+		tlv.MakePrimitiveRecord(
+			vtxoSentIdempotencyType, &idempotencyKey,
+		),
 	)
 	if err != nil {
 		return err
@@ -616,6 +646,7 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 	copy(m.RoundID[:], roundID)
 	m.AmountSat = amt
 	m.Outpoint = outpoint.OutPoint
+	m.IdempotencyKey = append(m.IdempotencyKey[:0], idempotencyKey...)
 
 	return nil
 }
@@ -998,6 +1029,223 @@ func (m *UTXOSpentMsg) Decode(r io.Reader) error {
 	return nil
 }
 
+// SweepInput is one boarding UTXO spent by a confirmed sweep, carried
+// inside a BoardingSweepConfirmedMsg. The amount is the value of the
+// boarding outpoint as the wallet persisted it, used both for the audit
+// row and for the wallet_clearing debit leg.
+type SweepInput struct {
+	// Outpoint is the spent boarding UTXO.
+	Outpoint wire.OutPoint
+
+	// AmountSat is the boarding UTXO value in satoshis. Must be
+	// positive.
+	AmountSat int64
+}
+
+// BoardingSweepConfirmedMsg records a confirmed boarding sweep as a single
+// atomic accounting event. Earlier revisions emitted the fee, per-input,
+// and destination legs as independent Tells; a partial failure could leave
+// the wallet_clearing account stranded non-zero. Folding every leg into one
+// message lets the ledger handler book them inside a single Commit, so the
+// clearing account either nets to zero or nothing is written.
+//
+// The legs the handler derives, all keyed for idempotent replay:
+//
+//   - Fee: debit onchain_fees, credit wallet_clearing by ChainCostSat
+//     (miner fee + P2A anchor), keyed by the sweep txid.
+//   - Per input: a wallet_utxo_log "spent" audit row plus debit
+//     wallet_clearing, credit wallet_balance, keyed by the input outpoint.
+//   - Destination: when DestinationExternal, debit transfers_out, credit
+//     wallet_clearing (the funds left the wallet); otherwise a "created"
+//     audit row for the wallet-return output plus debit wallet_balance,
+//     credit wallet_clearing, keyed by the sweep txid's vout 0.
+//
+// The clearing identity is Σ(inputs) − ChainCostSat − DestinationSat = 0.
+type BoardingSweepConfirmedMsg struct {
+	actor.BaseMessage
+
+	// Txid identifies the sweep transaction.
+	Txid [32]byte
+
+	// BlockHeight is the confirmation block height.
+	BlockHeight uint32
+
+	// ChainCostSat is the on-chain cost (miner fee + P2A anchor) that
+	// leaves the wallet, debited to onchain_fees. Must be positive.
+	ChainCostSat int64
+
+	// Inputs are the boarding UTXOs the sweep spent. Must be non-empty
+	// and each amount positive.
+	Inputs []SweepInput
+
+	// DestinationSat is the sweep destination output value, credited out
+	// of wallet_clearing. Must be positive.
+	DestinationSat int64
+
+	// DestinationExternal reports whether the destination is a
+	// caller-supplied external address (true) rather than a
+	// wallet-derived return output (false).
+	DestinationExternal bool
+}
+
+// MessageType returns the message type name for routing.
+func (m *BoardingSweepConfirmedMsg) MessageType() string {
+	return "BoardingSweepConfirmedMsg"
+}
+
+// TLVType returns the TLV type tag for codec registration.
+func (m *BoardingSweepConfirmedMsg) TLVType() tlv.Type {
+	return boardingSweepConfirmedTLVType
+}
+
+// encodeSweepInputs flattens the input list into a single byte blob of
+// fixed-width records (32-byte hash, 4-byte big-endian index, 8-byte
+// big-endian amount). A flat blob keeps the TLV layout a single primitive
+// record while preserving per-input granularity.
+func encodeSweepInputs(inputs []SweepInput) []byte {
+	out := make([]byte, 0, len(inputs)*sweepInputRecordSize)
+	var rec [sweepInputRecordSize]byte
+	for _, in := range inputs {
+		copy(rec[:32], in.Outpoint.Hash[:])
+		binary.BigEndian.PutUint32(rec[32:36], in.Outpoint.Index)
+		binary.BigEndian.PutUint64(rec[36:44], uint64(in.AmountSat))
+		out = append(out, rec[:]...)
+	}
+
+	return out
+}
+
+// decodeSweepInputs reverses encodeSweepInputs, rejecting a blob whose
+// length is not a whole multiple of the fixed record size or that carries a
+// non-positive / out-of-range amount.
+func decodeSweepInputs(blob []byte) ([]SweepInput, error) {
+	if len(blob)%sweepInputRecordSize != 0 {
+		return nil, fmt.Errorf("%w: sweep inputs blob has %d bytes, "+
+			"not a multiple of %d", ErrInvalidMessage, len(blob),
+			sweepInputRecordSize)
+	}
+
+	count := len(blob) / sweepInputRecordSize
+	inputs := make([]SweepInput, 0, count)
+	for i := 0; i < count; i++ {
+		rec := blob[i*sweepInputRecordSize : (i+1)*sweepInputRecordSize]
+
+		var in SweepInput
+		copy(in.Outpoint.Hash[:], rec[:32])
+		in.Outpoint.Index = binary.BigEndian.Uint32(rec[32:36])
+
+		amt, err := decodeAmountSat(
+			"BoardingSweepConfirmedMsg.Inputs.AmountSat",
+			binary.BigEndian.Uint64(rec[36:44]),
+		)
+		if err != nil {
+			return nil, err
+		}
+		in.AmountSat = amt
+
+		inputs = append(inputs, in)
+	}
+
+	return inputs, nil
+}
+
+// Encode serializes the message as a TLV stream.
+func (m *BoardingSweepConfirmedMsg) Encode(w io.Writer) error {
+	txid := m.Txid[:]
+	blockHeight := m.BlockHeight
+	chainCost := uint64(m.ChainCostSat)
+	inputs := encodeSweepInputs(m.Inputs)
+	destSat := uint64(m.DestinationSat)
+	var destExt uint8
+	if m.DestinationExternal {
+		destExt = 1
+	}
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(sweepConfirmedTxidType, &txid),
+		tlv.MakePrimitiveRecord(
+			sweepConfirmedBlockHeightType, &blockHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepConfirmedChainCostType, &chainCost,
+		),
+		tlv.MakePrimitiveRecord(sweepConfirmedInputsType, &inputs),
+		tlv.MakePrimitiveRecord(sweepConfirmedDestSatType, &destSat),
+		tlv.MakePrimitiveRecord(sweepConfirmedDestExtType, &destExt),
+	)
+	if err != nil {
+		return err
+	}
+
+	return stream.Encode(w)
+}
+
+// Decode deserializes a TLV stream into the message.
+func (m *BoardingSweepConfirmedMsg) Decode(r io.Reader) error {
+	var (
+		txid        []byte
+		blockHeight uint32
+		chainCost   uint64
+		inputsBlob  []byte
+		destSat     uint64
+		destExt     uint8
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(sweepConfirmedTxidType, &txid),
+		tlv.MakePrimitiveRecord(
+			sweepConfirmedBlockHeightType, &blockHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			sweepConfirmedChainCostType, &chainCost,
+		),
+		tlv.MakePrimitiveRecord(sweepConfirmedInputsType, &inputsBlob),
+		tlv.MakePrimitiveRecord(sweepConfirmedDestSatType, &destSat),
+		tlv.MakePrimitiveRecord(sweepConfirmedDestExtType, &destExt),
+	)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+		return fmt.Errorf("decode BoardingSweepConfirmedMsg: %w", err)
+	}
+
+	if err := decodeFixedBytes(
+		"BoardingSweepConfirmedMsg.Txid", txid, len(m.Txid),
+	); err != nil {
+		return err
+	}
+
+	chainCostSat, err := decodeAmountSat(
+		"BoardingSweepConfirmedMsg.ChainCostSat", chainCost,
+	)
+	if err != nil {
+		return err
+	}
+
+	destAmountSat, err := decodeAmountSat(
+		"BoardingSweepConfirmedMsg.DestinationSat", destSat,
+	)
+	if err != nil {
+		return err
+	}
+
+	inputs, err := decodeSweepInputs(inputsBlob)
+	if err != nil {
+		return err
+	}
+
+	copy(m.Txid[:], txid)
+	m.BlockHeight = blockHeight
+	m.ChainCostSat = chainCostSat
+	m.Inputs = inputs
+	m.DestinationSat = destAmountSat
+	m.DestinationExternal = destExt != 0
+
+	return nil
+}
+
 // newLedgerCodec builds the durable mailbox codec for the
 // client-side ledger actor. Each message type is registered
 // individually, allowing the durable actor to serialize and
@@ -1042,6 +1290,12 @@ func newLedgerCodec() *actor.MessageCodec {
 		},
 	)
 	codec.MustRegister(
+		boardingSweepConfirmedTLVType,
+		func() actor.TLVMessage {
+			return &BoardingSweepConfirmedMsg{}
+		},
+	)
+	codec.MustRegister(
 		actor.RestartTLVType,
 		func() actor.TLVMessage {
 			return &actor.RestartMessage{}
@@ -1059,4 +1313,5 @@ var (
 	_ LedgerMsg = (*ExitCostMsg)(nil)
 	_ LedgerMsg = (*UTXOCreatedMsg)(nil)
 	_ LedgerMsg = (*UTXOSpentMsg)(nil)
+	_ LedgerMsg = (*BoardingSweepConfirmedMsg)(nil)
 )

@@ -589,7 +589,8 @@ func TestProcessOutboxExpiringNotificationDetachesCallerCancel(t *testing.T) {
 // TestProcessOutboxExpiringNotificationNoLedgerEmission is a regression
 // test for the ExitCostMsg poison-pill bug. The ledger handler rejects
 // ExitCostMsg with ExitCostSat=0, and the VTXO actor cannot determine
-// the miner fee until the chain resolver observes the exit confirming.
+// the miner fee. Unroll emits the ledger event after the final sweep
+// confirms.
 // Emitting anything at the ExpiringNotification dispatch site would
 // create a permanent durable-mailbox retry loop. This test wires a
 // capturing ledger sink and verifies no message is ever Tell'd.

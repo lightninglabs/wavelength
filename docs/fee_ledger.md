@@ -38,7 +38,8 @@ grows to the right.**
 
 ## Chart of accounts
 
-Seven accounts seeded by migration `000006_fee_accounting.up.sql`:
+Core accounts are seeded by migration `000006_fee_accounting.up.sql`;
+`wallet_clearing` is added by `000019_accounting_wallet_sweeps.up.sql`:
 
 | Account | Type | Meaning |
 |---|---|---|
@@ -49,6 +50,7 @@ Seven accounts seeded by migration `000006_fee_accounting.up.sql`:
 | `transfers_in` | revenue | Counterparty side of received VTXOs. |
 | `transfers_out` | expense | Counterparty side of sent VTXOs. |
 | `opening_balance` | equity | Source of funds for wallet UTXO deposits. |
+| `wallet_clearing` | asset | Temporary clearing account for wallet sweeps. |
 
 `transfers_in` and `transfers_out` stay as **separate** accounts
 rather than a single "net transfers" account so tax-reporting
@@ -68,8 +70,13 @@ The `ledger_event_types` enum seeds these values:
 - `boarding_fee_paid` — operator fee for a boarding round.
 - `refresh_fee_paid` — operator fee for a refresh round.
 - `onchain_fee_paid` — L1 miner fee (exit cost).
+- `boarding_sweep_fee_paid` — L1 chain cost for a boarding sweep.
 - `vtxo_received` — the client received a VTXO (any source).
 - `vtxo_sent` — the client sent or forfeited a VTXO.
+- `wallet_utxo_spent` — a wallet UTXO spend that moves value into
+  wallet clearing.
+- `wallet_sweep_transfer` — external destination value paid by a
+  wallet sweep.
 
 The `event_type` column on `ledger_entries` references this
 enum. Together with `debit_account` and `credit_account`, it
@@ -80,13 +87,18 @@ replay dedup — see the [Replay safety](#replay-safety) section.
 
 | Message | Source value | Debit | Credit | Notes |
 |---|---|---|---|---|
-| `UTXOCreatedMsg` | — | `wallet_balance` | `opening_balance` | Deposit leg. Written alongside the `wallet_utxo_log` audit row by `handleUTXOCreated`. |
+| `UTXOCreatedMsg` | deposit-like classifications | `wallet_balance` | `opening_balance` | Deposit leg. Written alongside the `wallet_utxo_log` audit row by `handleUTXOCreated`. |
+| `BoardingSweepConfirmedMsg` | fee leg | `onchain_fees` | `wallet_clearing` | Miner fee + P2A anchor for a confirmed boarding sweep. One of the legs `handleBoardingSweepConfirmed` books atomically. |
+| `BoardingSweepConfirmedMsg` | per input | `wallet_clearing` | `wallet_balance` | One leg + audit row per swept boarding input. |
+| `BoardingSweepConfirmedMsg` | wallet-return dest | `wallet_balance` | `wallet_clearing` | Internal sweep return (`DestinationExternal=false`), with a `wallet_utxo_log` "created" row. |
+| `BoardingSweepConfirmedMsg` | external dest | `transfers_out` | `wallet_clearing` | External sweep destination value (`DestinationExternal=true`). |
 | `VTXOReceivedMsg` | `SourceRoundBoarding` | `vtxo_balance` | `wallet_balance` | Wallet → VTXO. Moves asset value across the on-chain / off-chain boundary. |
 | `VTXOReceivedMsg` | `SourceRoundRefresh` | `vtxo_balance` | `transfers_out` | Refresh or directed-send self-change output. Paired with `VTXOSentMsg` for the gross forfeit; the two cancel on `transfers_out` so only the fee moves `vtxo_balance`. |
 | `VTXOReceivedMsg` | `SourceRoundTransfer` | `vtxo_balance` | `transfers_in` | In-round receive from another participant's directed send. |
 | `VTXOReceivedMsg` | `SourceOOR` | `vtxo_balance` | `transfers_in` | Out-of-round receive from another participant. |
 | `VTXOSentMsg` | (any) | `transfers_out` | `vtxo_balance` | One message per sent VTXO. Outpoint stamps an idempotency key so multi-VTXO rounds don't collapse. |
 | `FeePaidMsg` | `FeeTypeBoarding` or `FeeTypeRefresh` | `fees_paid` | `vtxo_balance` | Operator fee for the round. |
+| `FeePaidMsg` | `FeeTypeOnchainSweep` | `onchain_fees` | `wallet_clearing` | Boarding sweep chain cost, keyed by sweep txid. Retained for direct callers; the boarding sweep producer now folds this leg into `BoardingSweepConfirmedMsg`. |
 | `ExitCostMsg` (send leg) | — | `transfers_out` | `vtxo_balance` | Net-of-fee value that left the VTXO layer. |
 | `ExitCostMsg` (fee leg) | — | `onchain_fees` | `vtxo_balance` | Miner fee portion. |
 
@@ -140,19 +152,22 @@ Event 1 (wallet_utxo_created) — emitted when the wallet UTXO first confirmed:
 Event 2 (vtxo_received, SourceRoundBoarding) — emitted when the round confirms:
   debit  vtxo_balance      += gross
   credit wallet_balance    += gross   (asset down)
+
+Event 3 (boarding_fee_paid) — if the round charged an operator fee:
+  debit  fees_paid         += fee
+  credit vtxo_balance      += fee
 ```
 
 Per-account net effect:
 - `opening_balance` ↑ by gross (tracks that these funds
   originated externally).
 - `wallet_balance` unchanged (deposit in, boarding out).
-- `vtxo_balance` ↑ by gross.
+- `vtxo_balance` ↑ by gross - fee.
+- `fees_paid` ↑ by fee when a boarding operator fee exists.
 
 The scenario test
 `ledger.TestBoardingRoundNetsToOpeningBalanceAndVTXO` locks in
 exactly this pattern.
-
-Boarding fee emission is deferred — see [Deferred items](#deferred-items).
 
 ### Refresh round
 
@@ -248,8 +263,8 @@ that actually leaves the VTXO layer plus the miner fee both
 reduce `vtxo_balance`.
 
 ```
-emitter: vtxo.VTXOActor.emitExitCost (planned — currently a
-         no-op pending chain resolver wiring for the miner fee)
+emitter: unroll.behavior.emitExitCostIfCompleted, after the
+         final sweep confirms
 
 Send leg (vtxo_sent):
   debit  transfers_out     += (amount - fee)
@@ -264,15 +279,25 @@ Both legs share an outpoint-derived `IdempotencyKey` so a
 redelivered `ExitCostMsg` resolves to a silent no-op against
 `idx_client_ledger_idempotent_key`.
 
+`fee` here is the **final sweep transaction's** miner fee
+(`target output value − Σ sweep outputs`), not the cumulative
+cost of the whole unilateral exit. Broadcasting the intermediate
+tree transactions on the path to the leaf also burns miner fees,
+and those are not yet captured by this leg. The exit cost
+recorded today therefore understates the true on-chain cost of a
+deep-tree exit; folding in the tree-broadcast fees is a deferred
+item.
+
 ## Emission sites
 
 | Subsystem | File | Function | Messages emitted |
 |---|---|---|---|
 | wallet | `wallet/wallet.go` | `emitUTXOCreated` | `UTXOCreatedMsg` on every confirmed wallet UTXO |
+| wallet | `wallet/boarding_sweep_actor.go` | `emitSweepConfirmedLedger` | one `BoardingSweepConfirmedMsg` per confirmed boarding sweep |
 | round | `round/actor.go` | `emitVTXOsReceived` → `emitOwnedVTXOLedgerEntry` | `VTXOReceivedMsg` (all sources), `VTXOSentMsg` (refresh pair) |
-| round | `round/actor.go` | `emitRoundFee` | `FeePaidMsg` (refresh fees only, deferred for boarding) |
+| round | `round/actor.go` | `emitRoundFee` | `FeePaidMsg` (`boarding` or `refresh`) |
 | oor | `oor/actor.go` | `emitVTXOSent` / `emitVTXOsReceived` | `VTXOSentMsg` (session-keyed) / `VTXOReceivedMsg{Source=SourceOOR}` |
-| vtxo | `vtxo/actor.go` | `emitExitCost` | `ExitCostMsg` (planned, currently no-op) |
+| unroll | `unroll/actor.go` | `emitExitCostIfCompleted` | `ExitCostMsg` after final sweep confirmation |
 
 The round actor's emission path carries the most complexity
 because a single round can mix boarding inputs, refresh inputs,
@@ -290,7 +315,7 @@ unique indexes on `ledger_entries`:
 
 - `idx_client_ledger_idempotent_round` on
   `(round_id, event_type, debit_account, credit_account)
-  WHERE round_id IS NOT NULL`.
+  WHERE round_id IS NOT NULL AND idempotency_key IS NULL`.
 - `idx_client_ledger_idempotent_session` on
   `(session_id, event_type, debit_account, credit_account)
   WHERE session_id IS NOT NULL`.
@@ -333,27 +358,10 @@ test runs.
 
 ## Deferred items
 
-- **Boarding fee emission.** A boarding round's operator fee is
-  currently absorbed silently. The wallet-side double-entry
-  work exists (deposits fund `wallet_balance` via
-  `opening_balance`), but the per-round boarding fee plumbing
-  needs a small follow-up to emit
-  `FeePaidMsg{FeeType=FeeTypeBoarding}` on the same conditions
-  the refresh path uses. The scope is intentionally bounded:
-  the round actor's `emitRoundFee` gate is the only site that
-  needs to widen.
-- **Chain resolver → `emitExitCost`.** The `vtxo` actor has the
-  emission helper wired but the chain resolver does not yet
-  forward the confirmed miner fee, so the helper stays a
-  no-op. Once that wiring lands, every exit produces both
-  legs above.
-- **`UTXOSpentMsg` double-entry leg.** Wallet UTXO spends
-  currently only write the `wallet_utxo_log` audit row.
-  Non-boarding wallet spends (e.g. a direct-from-wallet
-  payment) would need a matching ledger leg to keep
-  `wallet_balance` correct. The classification table in
-  `wallet_utxo_log` already distinguishes these cases, so the
-  handler change is mostly a branch on `ClassifiedAs`.
+- **Non-boarding wallet spends.** Boarding sweep spends now
+  write double-entry wallet-clearing legs, but other direct
+  wallet spends still need a classification-specific ledger
+  producer before they can affect `wallet_balance`.
 
 ## Related documents
 

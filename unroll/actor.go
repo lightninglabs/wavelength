@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/txconfirm"
 	"github.com/lightninglabs/darepo-client/unrollplan"
@@ -69,6 +70,10 @@ type Config struct {
 
 	// RegistryRef receives terminal notifications from this actor when set.
 	RegistryRef actor.TellOnlyRef[RegistryMsg]
+
+	// LedgerSink receives the confirmed on-chain exit fee once the
+	// final sweep has confirmed.
+	LedgerSink fn.Option[ledger.Sink]
 }
 
 // VTXOUnrollActor wraps one durable per-target unroll actor.
@@ -151,6 +156,7 @@ type behavior struct {
 	spendWatchActive  bool
 	proofSpendWatches map[wire.OutPoint]struct{}
 	terminalNotified  bool
+	exitCostNotified  bool
 }
 
 // unrollTx is the transaction-scoped store handed to the unroll behavior inside
@@ -1736,10 +1742,6 @@ func (b *behavior) failureReasonForTx(txid chainhash.Hash,
 // the terminal phase the next time it queries child state, and it holds
 // its own persistence retry loop for the control-plane record.
 func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
-	if b.cfg.RegistryRef == nil || b.terminalNotified {
-		return
-	}
-
 	state, err := b.currentState()
 	if err != nil {
 		b.log.WarnS(ctx, "Failed to inspect unroll terminal state", err)
@@ -1753,6 +1755,20 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 	}
 
 	job := stateJob(state)
+	if !b.emitExitCostIfCompleted(ctx, phase, job) {
+
+		// The exit-cost leg has not yet been durably handed to the
+		// ledger. Defer the terminal handoff — which would stop this
+		// child and retire the VTXO — so a later height tick retries
+		// the emission. VTXO retirement has its own
+		// startup-reconciliation backstop, so deferring it is safe.
+		return
+	}
+
+	if b.cfg.RegistryRef == nil || b.terminalNotified {
+		return
+	}
+
 	msg := &UnrollTerminatedMsg{
 		Outpoint:            b.cfg.TargetOutpoint,
 		ActorID:             b.cfg.ActorID,
@@ -1784,6 +1800,124 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 	}
 
 	b.terminalNotified = true
+}
+
+// emitExitCostIfCompleted sends the final unilateral exit miner fee to the
+// ledger once the unroll sweep confirms. The ledger sink is a durable
+// mailbox: a Tell that returns nil is durably accepted and processed
+// at-least-once, and the ledger handler dedups by target outpoint so a
+// post-crash or post-restart replay is a safe no-op.
+//
+// It returns false only when a transient delivery failure means the caller
+// must defer the terminal registry handoff. Without that deferral a Tell
+// that errors (e.g. mailbox backpressure) would be lost: the registry stops
+// this child right after the handoff and terminal records are not restored
+// on boot, so there would be no later opportunity to retry. Returning false
+// keeps the child alive and subscribed, so the next height tick re-enters
+// notifyRegistryIfTerminal and retries the emission.
+//
+// It returns true when there is nothing to defer for: the exit cost is not
+// applicable (non-completed phase, already emitted, or no sink), it was
+// delivered, or it is deterministically un-buildable. A completed actor
+// restores its proof and sweep tx from the checkpoint, so a build failure is
+// an internal inconsistency that retrying cannot fix — it is surfaced at
+// error level and then allowed through so the terminal handoff is not wedged
+// on every future block.
+func (b *behavior) emitExitCostIfCompleted(ctx context.Context, phase Phase,
+	job *JobState) bool {
+
+	if phase != PhaseCompleted || b.exitCostNotified ||
+		b.cfg.LedgerSink.IsNone() {
+		return true
+	}
+
+	msg, err := b.exitCostMsg(job)
+	if err != nil {
+		b.log.ErrorS(ctx, "Unbuildable unroll exit cost on completed "+
+			"actor", err)
+		b.exitCostNotified = true
+
+		return true
+	}
+
+	notifyCtx := actor.WithoutTx(context.WithoutCancel(ctx))
+	if err := b.cfg.LedgerSink.UnsafeFromSome().Tell(
+		notifyCtx, msg,
+	); err != nil {
+
+		b.log.WarnS(ctx, "Deferring unroll terminal handoff; ledger "+
+			"exit-cost tell failed", err)
+
+		return false
+	}
+
+	b.exitCostNotified = true
+
+	return true
+}
+
+// exitCostMsg derives the ledger event from the proof target output and the
+// persisted final sweep transaction.
+func (b *behavior) exitCostMsg(job *JobState) (*ledger.ExitCostMsg, error) {
+	if b.proof == nil {
+		return nil, fmt.Errorf("missing proof")
+	}
+
+	if b.sweepTx == nil {
+		return nil, fmt.Errorf("missing sweep transaction")
+	}
+
+	targetOutput, err := b.proof.TargetOutput()
+	if err != nil {
+		return nil, err
+	}
+	if targetOutput == nil || targetOutput.Value <= 0 {
+		return nil, fmt.Errorf("invalid target output value %d",
+			targetOutputValue(targetOutput))
+	}
+
+	outputValue := int64(0)
+	for _, txOut := range b.sweepTx.TxOut {
+		if txOut == nil || txOut.Value <= 0 {
+			continue
+		}
+
+		outputValue += txOut.Value
+	}
+
+	exitCost := targetOutput.Value - outputValue
+	if exitCost <= 0 {
+		return nil, fmt.Errorf("non-positive exit cost %d", exitCost)
+	}
+
+	height := uint32(0)
+	sweepState := job.PlannerState.Sweep
+	if sweepState.ConfirmHeight.IsSome() {
+		confirmHeight := sweepState.ConfirmHeight.UnsafeFromSome()
+		if confirmHeight > 0 {
+			height = uint32(confirmHeight)
+		}
+	}
+
+	target := b.proof.TargetOutpoint()
+
+	return &ledger.ExitCostMsg{
+		OutpointHash:  target.Hash,
+		OutpointIndex: target.Index,
+		AmountSat:     targetOutput.Value,
+		ExitCostSat:   exitCost,
+		BlockHeight:   height,
+	}, nil
+}
+
+// targetOutputValue returns the output value while tolerating nil pointers for
+// error reporting.
+func targetOutputValue(targetOutput *wire.TxOut) int64 {
+	if targetOutput == nil {
+		return 0
+	}
+
+	return targetOutput.Value
 }
 
 // actorIDForTarget derives a deterministic actor ID for one target outpoint.

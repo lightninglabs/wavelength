@@ -42,6 +42,7 @@ const (
 	AccountTransfersIn    = "transfers_in"
 	AccountTransfersOut   = "transfers_out"
 	AccountOpeningBalance = "opening_balance"
+	AccountWalletClearing = "wallet_clearing"
 )
 
 // Client-side ledger event types matching the seeded event types
@@ -54,6 +55,8 @@ const (
 	EventVTXOReceived         = "vtxo_received"
 	EventVTXOSent             = "vtxo_sent"
 	EventWalletUTXOCreated    = "wallet_utxo_created"
+	EventWalletUTXOSpent      = "wallet_utxo_spent"
+	EventWalletSweepTransfer  = "wallet_sweep_transfer"
 )
 
 // Canonical VTXOReceivedMsg.Source values. Callers must use one
@@ -94,10 +97,10 @@ const (
 // with a same-RoundID VTXOReceivedMsg carrying the gross pre-fee
 // amount.
 //
-// FeeTypeOnchainSweep books a wallet-internal on-chain miner fee
+// FeeTypeOnchainSweep books wallet-level sweep chain cost
 // (currently emitted by the boarding-sweep flow): debit
-// onchain_fees, credit wallet_balance. RoundID may be zero — the
-// fee is keyed by sweep txid via IdempotencyKey instead.
+// onchain_fees, credit wallet_clearing. RoundID may be zero —
+// the fee is keyed by sweep txid via IdempotencyKey instead.
 const (
 	FeeTypeBoarding     = "boarding"
 	FeeTypeRefresh      = "refresh"
@@ -501,6 +504,9 @@ func (a *LedgerActor) Receive(ctx context.Context, msg LedgerMsg,
 
 	case *UTXOSpentMsg:
 		return a.handleUTXOSpent(ctx, m, ax)
+
+	case *BoardingSweepConfirmedMsg:
+		return a.handleBoardingSweepConfirmed(ctx, m, ax)
 
 	default:
 		return fn.Err[LedgerResp](

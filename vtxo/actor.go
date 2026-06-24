@@ -75,10 +75,9 @@ type VTXOActorConfig struct {
 	Manager actor.TellOnlyRef[ManagerMsg]
 
 	// LedgerSink is an optional reference to the client-side
-	// ledger accounting actor. When set, the VTXO actor forwards
-	// ExitCostMsg events as unilateral exits confirm so the local
-	// accounting DB sees the on-chain fee debit and the matching
-	// VTXO send leg. When None, ledger emission is skipped.
+	// ledger accounting actor. The VTXO actor does not know the
+	// confirmed exit miner fee; unroll emits ExitCostMsg once the
+	// final sweep confirms.
 	LedgerSink fn.Option[ledger.Sink]
 
 	// RefreshFeeQuoter, when set, is invoked on every auto-refresh
@@ -190,21 +189,10 @@ func (a *VTXOActor) refreshOutputTemplate(ctx context.Context,
 	return rebuilt, nil
 }
 
-// emitExitCost is the VTXO-actor entry point for emitting an
-// ExitCostMsg to the client ledger on unilateral exit. It is a
-// no-op today: the ledger handler requires both AmountSat > 0
-// AND ExitCostSat > 0, but the VTXO actor hands off to the chain
-// resolver at the ExpiringNotification transition and never sees
-// the miner fee or confirmation height. Emitting with
-// ExitCostSat=0 would create a permanent poison-pill in the
-// durable mailbox (message rejected, replayed forever).
-//
-// Responsibility for emitting ExitCostMsg belongs to whatever
-// subsystem actually observes the unilateral-exit transaction
-// confirming on-chain (the chain resolver). The signature is
-// kept so the wiring call site in processOutbox remains intact
-// and the chain-resolver wiring can be slotted in without
-// re-plumbing this function.
+// emitExitCost is the VTXO-actor entry point for unilateral-exit accounting.
+// It is intentionally empty: the VTXO actor hands off to unroll before the
+// final sweep is built, so it never sees the confirmed miner fee or height.
+// Unroll emits ExitCostMsg after the final sweep confirms.
 func (a *VTXOActor) emitExitCost(ctx context.Context,
 	notif *ExpiringNotification) {
 

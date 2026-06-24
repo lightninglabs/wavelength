@@ -58,10 +58,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   children, persists records, and runs `RestoreNonTerminal` on boot.
 - `RegistryConfig` — `Store`, `DeliveryStore`, `ProofAssembler`,
   `VTXOStore`, `TxConfirmRef`, `ChainSource`, `Wallet`,
-  `MaxSweepFeeRateSatPerVByte`, `ExitSpendPolicyResolver` (optional;
-  reconstructs the exit spend policy from `(ExitPolicyKind, ExitPolicyRef)`
-  after restart; nil means every child uses the standard VTXO timeout), and
-  optional `VTXOExitObserver`
+  optional `LedgerSink`, `MaxSweepFeeRateSatPerVByte`,
+  `ExitSpendPolicyResolver` (optional; reconstructs the exit spend policy
+  from `(ExitPolicyKind, ExitPolicyRef)` after restart; nil means every child
+  uses the standard VTXO timeout), and optional `VTXOExitObserver`
   (`fn.Option[actor.TellOnlyRef[vtxo.ManagerMsg]]`). When set, each child's
   terminal outcome is forwarded to the VTXO manager as a
   `vtxo.ExitOutcomeNotification` so VTXO lifecycle tracks the unroll's
@@ -157,6 +157,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
     `FeeEstimateRequest`.
   - → registry (Tell): `UnrollTerminatedMsg` from each child on
     terminal transition.
+  - → `ledger` actor (Tell, via `RegistryConfig.LedgerSink`):
+    `ExitCostMsg` after the final sweep confirms. The amount is the proof
+    target output value and the fee is derived from the persisted sweep tx
+    outputs.
   - → `vtxo` (indirect via chain-resolver seam, #264).
   - → `vtxo` manager (Tell, via `RegistryConfig.VTXOExitObserver`):
     `ExitOutcomeNotification` on each child's terminal outcome — the

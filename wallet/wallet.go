@@ -491,9 +491,9 @@ func (a *Ark) emitBackgroundTaskError(ctx context.Context, task string) {
 
 // emitUTXOCreated posts a UTXOCreatedMsg to the client ledger
 // actor when the wallet observes a new on-chain UTXO. The ledger
-// handler persists the row in the wallet_utxo_log audit table;
-// this is purely observational (no double-entry debit/credit is
-// written for wallet UTXO events).
+// handler persists an audit row in wallet_utxo_log and, for
+// deposit-like classifications or boarding sweep returns, records
+// the corresponding double-entry ledger row.
 //
 // Classification is supplied by the caller because the wallet
 // actor alone cannot always tell whether a UTXO is a deposit, a

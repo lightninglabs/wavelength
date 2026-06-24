@@ -465,26 +465,33 @@ func (a *RoundClientActor) emitVTXOsReceived(ctx context.Context,
 	n *VTXOCreatedNotification) {
 
 	a.cfg.LedgerSink.WhenSome(func(sink ledger.Sink) {
-		if n == nil || len(n.VTXOs) == 0 {
+		if n == nil {
 			return
 		}
 
 		roundID := roundIDBytes(n.RoundID)
 
-		var sawRefreshOrigin bool
+		for _, outflow := range n.Outflows {
+			if outflow.AmountSat <= 0 {
+				continue
+			}
+
+			a.tellLedger(ctx, sink, &ledger.VTXOSentMsg{
+				AmountSat:      outflow.AmountSat,
+				RoundID:        roundID,
+				IdempotencyKey: outflow.IdempotencyKey,
+			}, "", n.RoundID)
+		}
+
 		for _, v := range n.VTXOs {
 			if v == nil || v.Amount <= 0 {
 				continue
 			}
 
-			if v.Origin == types.VTXOOriginRoundRefresh {
-				sawRefreshOrigin = true
-			}
-
 			a.emitOwnedVTXOLedgerEntry(ctx, sink, roundID, v, n)
 		}
 
-		a.emitRoundFee(ctx, sink, roundID, n, sawRefreshOrigin)
+		a.emitRoundFee(ctx, sink, roundID, n)
 	})
 }
 
@@ -535,36 +542,30 @@ func (a *RoundClientActor) emitRoundJoined(ctx context.Context,
 }
 
 // emitRoundFee sends a single FeePaidMsg to the ledger actor per
-// round when the client actually paid an operator fee. Scope is
-// deliberately narrow for now:
+// round when the client actually paid an operator fee. Boarding
+// rounds use FeeTypeBoarding; all other VTXO-spend fees use
+// FeeTypeRefresh. OperatorFeeSat <= 0 suppresses emission; the
+// transition helper clamps to zero when outputs exceed inputs so
+// a malformed intent never produces a negative ledger row.
 //
-//   - Only refresh rounds emit a fee message. A round is
-//     considered refresh for fee purposes when at least one
-//     owned VTXO carries VTXOOriginRoundRefresh. Boarding-fee
-//     emission stays deferred to a follow-up PR because the
-//     wallet_balance side of the boarding flow is still being
-//     reconciled against the on-chain deposit entries.
-//   - OperatorFeeSat <= 0 suppresses emission; the transition
-//     helper clamps to zero when outputs exceed inputs so a
-//     malformed intent never produces a negative ledger row.
-//
-// FeeType is hardwired to FeeTypeRefresh to match the
-// restricted scope. When boarding fee emission re-enables, this
-// will pivot to a "boarding-seen OR refresh-seen" classifier
-// that picks FeeTypeBoarding when any boarding intent was in
-// scope. Emission is best-effort: a Tell failure does not fail
-// the enclosing notification dispatch.
+// Emission is best-effort: a Tell failure does not fail the
+// enclosing notification dispatch.
 func (a *RoundClientActor) emitRoundFee(ctx context.Context, sink ledger.Sink,
-	roundID [16]byte, n *VTXOCreatedNotification, sawRefreshOrigin bool) {
+	roundID [16]byte, n *VTXOCreatedNotification) {
 
-	if n.OperatorFeeSat <= 0 || !sawRefreshOrigin {
+	if n.OperatorFeeSat <= 0 {
 		return
+	}
+
+	feeType := n.OperatorFeeType
+	if feeType == "" {
+		feeType = ledger.FeeTypeRefresh
 	}
 
 	a.tellLedger(ctx, sink, &ledger.FeePaidMsg{
 		RoundID:     roundID,
 		AmountSat:   n.OperatorFeeSat,
-		FeeType:     ledger.FeeTypeRefresh,
+		FeeType:     feeType,
 		BlockHeight: uint32(n.CreatedHeight),
 	}, "", n.RoundID)
 }

@@ -136,13 +136,9 @@ func TestComputeClientOperatorFeeLeave(t *testing.T) {
 
 // TestComputeClientOperatorFeeDirectedSendWithChange covers the
 // directed-send-with-change case: the client forfeits one VTXO,
-// produces a recipient VTXO (foreign, skipped by
-// buildClientVTXOs), and keeps the change. From this client's
-// view the only owned output is the change VTXO, so the fee
-// absorbs the recipient value plus the operator cut. The
-// calculator does not know about the recipient VTXO because
-// buildClientVTXOs filtered it out before passing ownedVTXOs
-// to us -- this test pins that contract.
+// produces a recipient VTXO, keeps the change, and pays only the
+// operator cut as a fee. Recipient value is accounted separately as
+// a round outflow, so it must not be folded into OperatorFeeSat.
 func TestComputeClientOperatorFeeDirectedSendWithChange(t *testing.T) {
 	t.Parallel()
 
@@ -152,25 +148,67 @@ func TestComputeClientOperatorFeeDirectedSendWithChange(t *testing.T) {
 				Amount: btcutil.Amount(100_000),
 			},
 		},
-	}
-	// Only the client's own change VTXO: recipient's 40_000 is
-	// foreign and was filtered out by HasLocalOwner before the
-	// fee calculator sees it.
-	vtxos := []*ClientVTXO{
-		{
-			Amount: btcutil.Amount(59_500),
+		VTXOs: []types.VTXORequest{
+			{
+				Amount: btcutil.Amount(40_000),
+			},
+			{
+				Amount: btcutil.Amount(59_500),
+			},
 		},
 	}
 
-	// 100_000 - 59_500 = 40_500 "flowed out" of this client's
-	// side -- 40_000 to the recipient + 500 to the operator.
-	// The fee math can't distinguish the recipient portion; it
-	// surfaces the total client outflow. Caller responsibility
-	// (tracked in task follow-ups) is to emit a VTXOSentMsg for
-	// the recipient portion before reading this number.
+	// 100_000 - (40_000 recipient + 59_500 change) = 500
+	// operator fee. The 40_000 recipient value is emitted as a
+	// separate VTXOSentMsg by roundLedgerOutflows.
 	require.Equal(
-		t, int64(40_500), computeClientOperatorFee(intents, vtxos),
+		t, int64(500), computeClientOperatorFee(intents, nil),
 	)
+}
+
+// TestRoundLedgerOutflowKeysIncludeRoundID ensures keyed round outflows
+// remain unique across rounds. The ledger DB dedupes idempotency keys
+// globally, so output-index-only keys would silently suppress later
+// rounds with the same foreign VTXO or leave position.
+func TestRoundLedgerOutflowKeysIncludeRoundID(t *testing.T) {
+	t.Parallel()
+
+	intents := Intents{
+		VTXOs: []types.VTXORequest{
+			{
+				Amount: btcutil.Amount(10_000),
+			},
+		},
+		Leaves: []*types.LeaveRequest{
+			{
+				Output: &wire.TxOut{
+					Value: 5_000,
+				},
+			},
+		},
+	}
+	roundID1 := testRoundID("round-outflow-1")
+	roundID2 := testRoundID("round-outflow-2")
+
+	outflows1 := roundLedgerOutflows(roundID1, intents)
+	outflows2 := roundLedgerOutflows(roundID2, intents)
+
+	require.Len(t, outflows1, 2)
+	require.Len(t, outflows2, 2)
+	for i := range outflows1 {
+		require.Contains(
+			t, string(outflows1[i].IdempotencyKey),
+			roundID1.String(),
+		)
+		require.Contains(
+			t, string(outflows2[i].IdempotencyKey),
+			roundID2.String(),
+		)
+		require.NotEqual(
+			t, outflows1[i].IdempotencyKey,
+			outflows2[i].IdempotencyKey,
+		)
+	}
 }
 
 // TestComputeClientOperatorFeeZeroWhenNoContribution covers the
