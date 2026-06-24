@@ -19,11 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SwapService_RequestChannelId_FullMethodName       = "/swaprpc.SwapService/RequestChannelId"
-	SwapService_CreateInSwap_FullMethodName           = "/swaprpc.SwapService/CreateInSwap"
-	SwapService_QuoteInSwap_FullMethodName            = "/swaprpc.SwapService/QuoteInSwap"
-	SwapService_AuthorizeInSwapRefund_FullMethodName  = "/swaprpc.SwapService/AuthorizeInSwapRefund"
-	SwapService_AcknowledgeOutSwapHtlc_FullMethodName = "/swaprpc.SwapService/AcknowledgeOutSwapHtlc"
+	SwapService_RequestChannelId_FullMethodName              = "/swaprpc.SwapService/RequestChannelId"
+	SwapService_CreateInSwap_FullMethodName                  = "/swaprpc.SwapService/CreateInSwap"
+	SwapService_QuoteInSwap_FullMethodName                   = "/swaprpc.SwapService/QuoteInSwap"
+	SwapService_AuthorizeInSwapRefund_FullMethodName         = "/swaprpc.SwapService/AuthorizeInSwapRefund"
+	SwapService_AcknowledgeOutSwapHtlc_FullMethodName        = "/swaprpc.SwapService/AcknowledgeOutSwapHtlc"
+	SwapService_SignInSwapForfeit_FullMethodName             = "/swaprpc.SwapService/SignInSwapForfeit"
+	SwapService_SubmitOutSwapForfeitSignature_FullMethodName = "/swaprpc.SwapService/SubmitOutSwapForfeitSignature"
 )
 
 // SwapServiceClient is the client API for SwapService service.
@@ -49,6 +51,14 @@ type SwapServiceClient interface {
 	// accepted the out-swap HTLC mailbox event. The swap server waits for this
 	// acknowledgement before funding the Ark vHTLC.
 	AcknowledgeOutSwapHtlc(ctx context.Context, in *AcknowledgeOutSwapHtlcRequest, opts ...grpc.CallOption) (*AcknowledgeOutSwapHtlcResponse, error)
+	// SignInSwapForfeit asks the swap server to sign its participant share for
+	// the exact connector-bound forfeit transaction of a funded in-swap vHTLC
+	// refresh.
+	SignInSwapForfeit(ctx context.Context, in *SignInSwapForfeitRequest, opts ...grpc.CallOption) (*SignInSwapForfeitResponse, error)
+	// SubmitOutSwapForfeitSignature submits the receiver's participant
+	// signature for a connector-bound out-swap vHTLC refresh request that was
+	// delivered through the receiver mailbox.
+	SubmitOutSwapForfeitSignature(ctx context.Context, in *SubmitOutSwapForfeitSignatureRequest, opts ...grpc.CallOption) (*SubmitOutSwapForfeitSignatureResponse, error)
 }
 
 type swapServiceClient struct {
@@ -109,6 +119,26 @@ func (c *swapServiceClient) AcknowledgeOutSwapHtlc(ctx context.Context, in *Ackn
 	return out, nil
 }
 
+func (c *swapServiceClient) SignInSwapForfeit(ctx context.Context, in *SignInSwapForfeitRequest, opts ...grpc.CallOption) (*SignInSwapForfeitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SignInSwapForfeitResponse)
+	err := c.cc.Invoke(ctx, SwapService_SignInSwapForfeit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *swapServiceClient) SubmitOutSwapForfeitSignature(ctx context.Context, in *SubmitOutSwapForfeitSignatureRequest, opts ...grpc.CallOption) (*SubmitOutSwapForfeitSignatureResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubmitOutSwapForfeitSignatureResponse)
+	err := c.cc.Invoke(ctx, SwapService_SubmitOutSwapForfeitSignature_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SwapServiceServer is the server API for SwapService service.
 // All implementations must embed UnimplementedSwapServiceServer
 // for forward compatibility.
@@ -132,6 +162,14 @@ type SwapServiceServer interface {
 	// accepted the out-swap HTLC mailbox event. The swap server waits for this
 	// acknowledgement before funding the Ark vHTLC.
 	AcknowledgeOutSwapHtlc(context.Context, *AcknowledgeOutSwapHtlcRequest) (*AcknowledgeOutSwapHtlcResponse, error)
+	// SignInSwapForfeit asks the swap server to sign its participant share for
+	// the exact connector-bound forfeit transaction of a funded in-swap vHTLC
+	// refresh.
+	SignInSwapForfeit(context.Context, *SignInSwapForfeitRequest) (*SignInSwapForfeitResponse, error)
+	// SubmitOutSwapForfeitSignature submits the receiver's participant
+	// signature for a connector-bound out-swap vHTLC refresh request that was
+	// delivered through the receiver mailbox.
+	SubmitOutSwapForfeitSignature(context.Context, *SubmitOutSwapForfeitSignatureRequest) (*SubmitOutSwapForfeitSignatureResponse, error)
 	mustEmbedUnimplementedSwapServiceServer()
 }
 
@@ -156,6 +194,12 @@ func (UnimplementedSwapServiceServer) AuthorizeInSwapRefund(context.Context, *Au
 }
 func (UnimplementedSwapServiceServer) AcknowledgeOutSwapHtlc(context.Context, *AcknowledgeOutSwapHtlcRequest) (*AcknowledgeOutSwapHtlcResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AcknowledgeOutSwapHtlc not implemented")
+}
+func (UnimplementedSwapServiceServer) SignInSwapForfeit(context.Context, *SignInSwapForfeitRequest) (*SignInSwapForfeitResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SignInSwapForfeit not implemented")
+}
+func (UnimplementedSwapServiceServer) SubmitOutSwapForfeitSignature(context.Context, *SubmitOutSwapForfeitSignatureRequest) (*SubmitOutSwapForfeitSignatureResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SubmitOutSwapForfeitSignature not implemented")
 }
 func (UnimplementedSwapServiceServer) mustEmbedUnimplementedSwapServiceServer() {}
 func (UnimplementedSwapServiceServer) testEmbeddedByValue()                     {}
@@ -268,6 +312,42 @@ func _SwapService_AcknowledgeOutSwapHtlc_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SwapService_SignInSwapForfeit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignInSwapForfeitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapServiceServer).SignInSwapForfeit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapService_SignInSwapForfeit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapServiceServer).SignInSwapForfeit(ctx, req.(*SignInSwapForfeitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SwapService_SubmitOutSwapForfeitSignature_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubmitOutSwapForfeitSignatureRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapServiceServer).SubmitOutSwapForfeitSignature(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapService_SubmitOutSwapForfeitSignature_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapServiceServer).SubmitOutSwapForfeitSignature(ctx, req.(*SubmitOutSwapForfeitSignatureRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SwapService_ServiceDesc is the grpc.ServiceDesc for SwapService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -294,6 +374,14 @@ var SwapService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AcknowledgeOutSwapHtlc",
 			Handler:    _SwapService_AcknowledgeOutSwapHtlc_Handler,
+		},
+		{
+			MethodName: "SignInSwapForfeit",
+			Handler:    _SwapService_SignInSwapForfeit_Handler,
+		},
+		{
+			MethodName: "SubmitOutSwapForfeitSignature",
+			Handler:    _SwapService_SubmitOutSwapForfeitSignature_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

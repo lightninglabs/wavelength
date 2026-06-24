@@ -1,6 +1,7 @@
 package swaps
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
@@ -197,6 +198,63 @@ func (g *GRPCSwapServerConn) AuthorizeInSwapRefund(ctx context.Context,
 	}, nil
 }
 
+// SignInSwapForfeit asks the swap server to sign its participant share for one
+// exact in-swap refresh forfeit transaction.
+func (g *GRPCSwapServerConn) SignInSwapForfeit(ctx context.Context,
+	payload *ForfeitSignaturePayload) (*ForfeitParticipantSignature,
+	error) {
+
+	protoPayload, err := forfeitSignaturePayloadToProto(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := g.client.SignInSwapForfeit(
+		ctx, &swaprpc.SignInSwapForfeitRequest{
+			Payload: protoPayload,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("SignInSwapForfeit RPC: %w", err)
+	}
+
+	sig, err := forfeitParticipantSignatureFromProto(resp.GetSignature())
+	if err != nil {
+		return nil, fmt.Errorf("SignInSwapForfeit RPC returned "+
+			"invalid signature: %w", err)
+	}
+
+	return sig, nil
+}
+
+// SubmitOutSwapForfeitSignature submits the receiver participant signature for
+// one mailbox-delivered out-swap refresh request.
+func (g *GRPCSwapServerConn) SubmitOutSwapForfeitSignature(ctx context.Context,
+	payload *ForfeitSignaturePayload,
+	signature *ForfeitParticipantSignature) error {
+
+	protoPayload, err := forfeitSignaturePayloadToProto(payload)
+	if err != nil {
+		return err
+	}
+	protoSignature, err := forfeitParticipantSignatureToProto(signature)
+	if err != nil {
+		return err
+	}
+
+	_, err = g.client.SubmitOutSwapForfeitSignature(
+		ctx, &swaprpc.SubmitOutSwapForfeitSignatureRequest{
+			Payload:   protoPayload,
+			Signature: protoSignature,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("SubmitOutSwapForfeitSignature RPC: %w", err)
+	}
+
+	return nil
+}
+
 // Close is a no-op because the caller owns the underlying grpc.ClientConn.
 func (g *GRPCSwapServerConn) Close() error {
 	return nil
@@ -357,6 +415,170 @@ func inArkHtlcEventFromProto(event *swaprpc.InArkHtlcEvent) (*InArkHtlcEvent,
 		VHTLCConfig:    *cfg,
 		VHTLCOutpoint:  event.GetVhtlcOutpoint(),
 		VHTLCAmountSat: int64(event.GetVhtlcAmountSat()),
+	}, nil
+}
+
+// forfeitSignaturePayloadToProto converts the SDK signing transcript into the
+// wire shape used by the swap server.
+func forfeitSignaturePayloadToProto(payload *ForfeitSignaturePayload) (
+	*swaprpc.ForfeitSignaturePayload, error) {
+
+	if payload == nil {
+		return nil, fmt.Errorf("forfeit signature payload must be " +
+			"provided")
+	}
+	if len(payload.RequestID) == 0 {
+		return nil, fmt.Errorf("forfeit signature request id must be " +
+			"provided")
+	}
+	if payload.VHTLCOutpoint == "" {
+		return nil, fmt.Errorf("vHTLC outpoint must be provided")
+	}
+	if payload.VHTLCAmountSat <= 0 {
+		return nil, fmt.Errorf("vHTLC amount must be positive")
+	}
+	if payload.ConnectorOutpoint == "" {
+		return nil, fmt.Errorf("connector outpoint must be provided")
+	}
+	if payload.ConnectorAmountSat <= 0 {
+		return nil, fmt.Errorf("connector amount must be positive")
+	}
+
+	return &swaprpc.ForfeitSignaturePayload{
+		RequestId: append([]byte(nil), payload.RequestID...),
+		PaymentHash: append(
+			[]byte(nil), payload.PaymentHash[:]...,
+		),
+		VhtlcOutpoint:       payload.VHTLCOutpoint,
+		VhtlcAmountSat:      uint64(payload.VHTLCAmountSat),
+		VhtlcPkScript:       bytes.Clone(payload.VHTLCPkScript),
+		VhtlcPolicyTemplate: bytes.Clone(payload.VHTLCPolicyTemplate),
+		ForfeitSpendPath: append(
+			[]byte(nil), payload.ForfeitSpendPath...,
+		),
+		UnsignedForfeitTx: append(
+			[]byte(nil), payload.UnsignedForfeitTx...,
+		),
+		ConnectorOutpoint:  payload.ConnectorOutpoint,
+		ConnectorAmountSat: uint64(payload.ConnectorAmountSat),
+		ConnectorPkScript: append(
+			[]byte(nil), payload.ConnectorPkScript...,
+		),
+		ServerForfeitPkScript: append(
+			[]byte(nil), payload.ServerForfeitPkScript...,
+		),
+	}, nil
+}
+
+// forfeitSignaturePayloadFromProto converts a wire signing transcript into the
+// SDK shape used by receive sessions.
+func forfeitSignaturePayloadFromProto(
+	payload *swaprpc.ForfeitSignaturePayload) (*ForfeitSignaturePayload,
+	error) {
+
+	if payload == nil {
+		return nil, fmt.Errorf("forfeit signature payload must be " +
+			"provided")
+	}
+	if len(payload.GetRequestId()) == 0 {
+		return nil, fmt.Errorf("forfeit signature request id must be " +
+			"provided")
+	}
+	if len(payload.GetPaymentHash()) != lntypes.HashSize {
+		return nil, fmt.Errorf("forfeit signature payment hash must "+
+			"be %d bytes", lntypes.HashSize)
+	}
+	if payload.GetVhtlcOutpoint() == "" {
+		return nil, fmt.Errorf("vHTLC outpoint must be provided")
+	}
+	if payload.GetVhtlcAmountSat() == 0 ||
+		payload.GetVhtlcAmountSat() > math.MaxInt64 {
+		return nil, fmt.Errorf("vHTLC amount must fit positive int64")
+	}
+	if payload.GetConnectorOutpoint() == "" {
+		return nil, fmt.Errorf("connector outpoint must be provided")
+	}
+	if payload.GetConnectorAmountSat() == 0 ||
+		payload.GetConnectorAmountSat() > math.MaxInt64 {
+		return nil, fmt.Errorf("connector amount must fit positive " +
+			"int64")
+	}
+
+	var paymentHash lntypes.Hash
+	copy(paymentHash[:], payload.GetPaymentHash())
+
+	return &ForfeitSignaturePayload{
+		RequestID:      append([]byte(nil), payload.GetRequestId()...),
+		PaymentHash:    paymentHash,
+		VHTLCOutpoint:  payload.GetVhtlcOutpoint(),
+		VHTLCAmountSat: int64(payload.GetVhtlcAmountSat()),
+		VHTLCPkScript:  bytes.Clone(payload.GetVhtlcPkScript()),
+		VHTLCPolicyTemplate: append(
+			[]byte(nil), payload.GetVhtlcPolicyTemplate()...,
+		),
+		ForfeitSpendPath: append(
+			[]byte(nil), payload.GetForfeitSpendPath()...,
+		),
+		UnsignedForfeitTx: append(
+			[]byte(nil), payload.GetUnsignedForfeitTx()...,
+		),
+		ConnectorOutpoint:  payload.GetConnectorOutpoint(),
+		ConnectorAmountSat: int64(payload.GetConnectorAmountSat()),
+		ConnectorPkScript: append(
+			[]byte(nil), payload.GetConnectorPkScript()...,
+		),
+		ServerForfeitPkScript: append(
+			[]byte(nil), payload.GetServerForfeitPkScript()...,
+		),
+	}, nil
+}
+
+// forfeitParticipantSignatureToProto converts a participant signature into the
+// generated wire shape.
+func forfeitParticipantSignatureToProto(sig *ForfeitParticipantSignature) (
+	*swaprpc.ForfeitParticipantSignature, error) {
+
+	if sig == nil {
+		return nil, fmt.Errorf("forfeit participant signature must " +
+			"be provided")
+	}
+	if len(sig.PubKey) == 0 {
+		return nil, fmt.Errorf("forfeit participant pubkey must be " +
+			"provided")
+	}
+	if len(sig.Signature) == 0 {
+		return nil, fmt.Errorf("forfeit participant signature bytes " +
+			"must be provided")
+	}
+
+	return &swaprpc.ForfeitParticipantSignature{
+		Pubkey:    append([]byte(nil), sig.PubKey...),
+		Signature: append([]byte(nil), sig.Signature...),
+	}, nil
+}
+
+// forfeitParticipantSignatureFromProto converts one generated participant
+// signature into the SDK shape.
+func forfeitParticipantSignatureFromProto(
+	sig *swaprpc.ForfeitParticipantSignature) (*ForfeitParticipantSignature,
+	error) {
+
+	if sig == nil {
+		return nil, fmt.Errorf("forfeit participant signature must " +
+			"be provided")
+	}
+	if len(sig.GetPubkey()) == 0 {
+		return nil, fmt.Errorf("forfeit participant pubkey must be " +
+			"provided")
+	}
+	if len(sig.GetSignature()) == 0 {
+		return nil, fmt.Errorf("forfeit participant signature bytes " +
+			"must be provided")
+	}
+
+	return &ForfeitParticipantSignature{
+		PubKey:    append([]byte(nil), sig.GetPubkey()...),
+		Signature: append([]byte(nil), sig.GetSignature()...),
 	}, nil
 }
 

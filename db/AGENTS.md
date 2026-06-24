@@ -71,7 +71,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 20` — current schema version.
+- `LatestMigrationVersion = 21` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -156,6 +156,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   anchored outpoint, PK on the outpoint so a newer intent rebinds, FK to the
   header). Drops `pending_board_requests` outright (alpha; rows only exist
   in the narrow crash window between admission and round seal).
+- `000021_vhtlc_recovery_job_generations` — rebuilds `vhtlc_recovery_jobs`
+  to widen the uniqueness key from `(swap_id, action)` to
+  `(swap_id, action, vtxo_txid, vtxo_vout)`, so a refreshed vHTLC (new
+  outpoint) arms a new recovery "generation" instead of colliding with the
+  prior job. SQLite cannot widen a UNIQUE constraint in place, so the table
+  is recreated, rows are copied, and the state / swap-action / unroll-target
+  indexes are rebuilt. The down migration collapses each `(swap_id, action)`
+  to its newest row before restoring the narrower constraint.
 - `000017_spending_reservations` — adds `spending_reservations` table with
   `(outpoint_hash, outpoint_index)` PK, `owner_kind`, `owner_id`, and
   `created_at`. A row exists IFF the owning spend session was durably

@@ -309,7 +309,7 @@ func newVTXOTestHarness(t *testing.T) *vtxoTestHarness {
 
 	env := NewVTXOEnvironment(
 		"test-vtxo", store, wallet, DefaultExpiryConfig(),
-		&chaincfg.RegressionNetParams,
+		&chaincfg.RegressionNetParams, nil,
 	)
 
 	h := &vtxoTestHarness{
@@ -586,7 +586,7 @@ func newRealVTXOSigningHarness(t *testing.T) *realVTXOSigningHarness {
 
 	env := NewVTXOEnvironment(
 		"test-vtxo-real-signing", store, clientSigner,
-		DefaultExpiryConfig(), &chaincfg.RegressionNetParams,
+		DefaultExpiryConfig(), &chaincfg.RegressionNetParams, nil,
 	)
 
 	h := &realVTXOSigningHarness{

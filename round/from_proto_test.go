@@ -154,6 +154,76 @@ func TestJoinRoundRequestFromProtoPreservesVTXOSigningKey(t *testing.T) {
 	)
 }
 
+// TestJoinRoundRequestFromProtoPreservesCustomForfeitSpendPaths verifies that
+// custom refresh spend paths carried by the round wire message survive decode
+// into the client round domain type.
+func TestJoinRoundRequestFromProtoPreservesCustomForfeitSpendPaths(
+	t *testing.T) {
+
+	t.Parallel()
+
+	authSpend := testFromProtoSpendPath(7)
+	forfeitSpend := testFromProtoSpendPath(9)
+
+	pb := &roundpb.JoinRoundRequest{
+		ForfeitRequests: []*roundpb.ForfeitRequest{{
+			VtxoOutpoint: &roundpb.Outpoint{
+				TxHash:      make([]byte, 32),
+				OutputIndex: 3,
+			},
+			AuthSpendPath: mustEncodeFromProtoSpendPath(
+				t, authSpend,
+			),
+			ForfeitSpendPath: mustEncodeFromProtoSpendPath(
+				t, forfeitSpend,
+			),
+		}},
+	}
+
+	var got JoinRoundRequest
+	err := got.FromProto(pb)
+	require.NoError(t, err)
+	require.Len(t, got.ForfeitRequests, 1)
+	require.Equal(
+		t, mustEncodeFromProtoSpendPath(t, authSpend),
+		mustEncodeFromProtoSpendPath(
+			t, got.ForfeitRequests[0].AuthSpend,
+		),
+	)
+	require.Equal(
+		t, mustEncodeFromProtoSpendPath(t, forfeitSpend),
+		mustEncodeFromProtoSpendPath(
+			t, got.ForfeitRequests[0].ForfeitSpend,
+		),
+	)
+}
+
+func testFromProtoSpendPath(sequence uint32) *arkscript.SpendPath {
+	return &arkscript.SpendPath{
+		RequiredSequence: sequence,
+		SpendInfo: &arkscript.SpendInfo{
+			WitnessScript: []byte{
+				0x51,
+				byte(sequence),
+			},
+			ControlBlock: []byte{
+				0xc0,
+			},
+		},
+	}
+}
+
+func mustEncodeFromProtoSpendPath(t *testing.T,
+	spend *arkscript.SpendPath) []byte {
+
+	t.Helper()
+
+	raw, err := spend.Encode()
+	require.NoError(t, err)
+
+	return raw
+}
+
 // TestNoncesAggregatedFromProto verifies that NoncesAggregated.FromProto
 // correctly parses hex-encoded TxID keys and nonce byte values.
 func TestNoncesAggregatedFromProto(t *testing.T) {

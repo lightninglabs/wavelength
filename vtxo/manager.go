@@ -1,6 +1,7 @@
 package vtxo
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
@@ -112,6 +114,11 @@ type ManagerConfig struct {
 	// descriptor's stored bytes (the pre-fix behavior).
 	FetchOperatorKey func(context.Context) (*btcec.PublicKey, error)
 
+	// ForfeitParticipantSigner is propagated to each spawned VTXOActor
+	// so custom VTXO policies can collect non-local participant
+	// signatures after the round assigns connector outputs.
+	ForfeitParticipantSigner ForfeitParticipantSigner
+
 	// TerminalVTXOObserver receives the outpoint of VTXOs that leave the
 	// manager's active set so daemon-local observers can clean up related
 	// actor-owned work.
@@ -144,6 +151,12 @@ type Manager struct {
 
 	// actors tracks active VTXO actors by outpoint.
 	actors map[wire.OutPoint]VTXOActorRef
+
+	// customForfeitSynthetic marks custom forfeit signer actors whose VTXO
+	// descriptor was created only for the temporary signer. Rollback
+	// deletes those descriptors, while signer actors for already-known swap
+	// VTXOs only need to be stopped.
+	customForfeitSynthetic map[wire.OutPoint]bool
 
 	// reserved is the manager-goroutine-owned admission gate for spend
 	// reservations. An entry means the outpoint was handed to a spend
@@ -183,9 +196,10 @@ func NewManager(cfg *ManagerConfig) *Manager {
 	}
 
 	return &Manager{
-		cfg:      cfg,
-		actors:   make(map[wire.OutPoint]VTXOActorRef),
-		reserved: make(map[wire.OutPoint]uint64),
+		cfg:                    cfg,
+		actors:                 make(map[wire.OutPoint]VTXOActorRef),
+		customForfeitSynthetic: make(map[wire.OutPoint]bool),
+		reserved:               make(map[wire.OutPoint]uint64),
 	}
 }
 
@@ -573,6 +587,12 @@ func (m *Manager) Receive(ctx context.Context,
 
 	case *ReleaseForfeitRequest:
 		return m.handleReleaseForfeit(ctx, req)
+
+	case *ActivateCustomForfeitInputsRequest:
+		return m.handleActivateCustomForfeitInputs(ctx, req)
+
+	case *DropCustomForfeitInputsRequest:
+		return m.handleDropCustomForfeitInputs(ctx, req)
 
 	case *SelectAndReserveForfeitRequest:
 		return m.handleSelectAndReserveForfeit(ctx, req)
@@ -1061,18 +1081,19 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 	serviceKey := VTXOActorServiceKey(vtxo.Outpoint)
 
 	actorCfg := &VTXOActorConfig{
-		VTXO:             vtxo,
-		Store:            m.cfg.Store,
-		Wallet:           m.cfg.Wallet,
-		ChainSource:      m.cfg.ChainSource,
-		ChainParams:      m.cfg.ChainParams,
-		ExpiryConfig:     m.cfg.ExpiryConfig,
-		Log:              m.cfg.Log,
-		ChainResolver:    m.cfg.ChainResolver,
-		Manager:          m.managerRef,
-		LedgerSink:       m.cfg.LedgerSink,
-		RefreshFeeQuoter: m.cfg.RefreshFeeQuoter,
-		FetchOperatorKey: m.cfg.FetchOperatorKey,
+		VTXO:                     vtxo,
+		Store:                    m.cfg.Store,
+		Wallet:                   m.cfg.Wallet,
+		ChainSource:              m.cfg.ChainSource,
+		ChainParams:              m.cfg.ChainParams,
+		ExpiryConfig:             m.cfg.ExpiryConfig,
+		Log:                      m.cfg.Log,
+		ChainResolver:            m.cfg.ChainResolver,
+		Manager:                  m.managerRef,
+		LedgerSink:               m.cfg.LedgerSink,
+		RefreshFeeQuoter:         m.cfg.RefreshFeeQuoter,
+		FetchOperatorKey:         m.cfg.FetchOperatorKey,
+		ForfeitParticipantSigner: m.cfg.ForfeitParticipantSigner,
 	}
 
 	vtxoActor := NewVTXOActor(ctx, actorCfg)
@@ -1794,6 +1815,473 @@ func (m *Manager) handleReleaseForfeit(ctx context.Context,
 
 	return fn.Ok[ManagerResp](&ReleaseForfeitResponse{
 		ReleasedCount: released,
+	})
+}
+
+// handleActivateCustomForfeitInputs starts temporary PendingForfeit actors for
+// custom-policy VTXOs. If the input is not already in the store, activation
+// persists a synthetic descriptor for the temporary signer. If the durable row
+// already exists, activation overlays the normal actor without changing the
+// row, so rollback can restore the ordinary VTXO actor from storage.
+func (m *Manager) handleActivateCustomForfeitInputs(ctx context.Context,
+	req *ActivateCustomForfeitInputsRequest) fn.Result[ManagerResp] {
+
+	if len(req.Inputs) == 0 {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("custom forfeit inputs are empty"),
+		)
+	}
+
+	var (
+		activated          int
+		activatedOutpoints []wire.OutPoint
+	)
+	fail := func(err error) fn.Result[ManagerResp] {
+		rollbackErr := m.rollbackActivatedCustomForfeitInputs(
+			ctx, activatedOutpoints,
+		)
+		if rollbackErr != nil {
+			err = errors.Join(
+				err, fmt.Errorf("rollback activated custom "+
+					"forfeit inputs: %w", rollbackErr),
+			)
+		}
+
+		return fn.Err[ManagerResp](err)
+	}
+
+	storedMatch := m.customForfeitInputStoredMatch
+	for _, input := range req.Inputs {
+		if input.OperatorKey == nil {
+			return fail(
+				fmt.Errorf("custom forfeit input %s missing "+
+					"operator key", input.Outpoint),
+			)
+		}
+		if input.ClientKey.PubKey == nil {
+			return fail(
+				fmt.Errorf("custom forfeit input %s missing "+
+					"client key", input.Outpoint),
+			)
+		}
+
+		var (
+			synthetic      bool
+			syntheticKnown bool
+		)
+
+		if _, exists := m.actors[input.Outpoint]; exists {
+			if m.customForfeitActorActive(input.Outpoint) {
+				ok, err := m.customForfeitInputAlreadyActive(
+					ctx, input,
+				)
+				if err != nil {
+					return fail(err)
+				}
+				if !ok {
+					err := fmt.Errorf("custom forfeit "+
+						"input %s conflicts with "+
+						"active custom signer",
+						input.Outpoint)
+
+					return fail(err)
+				}
+
+				activated++
+
+				continue
+			}
+
+			ok, storedSynthetic, err := storedMatch(ctx, input)
+			if err != nil {
+				return fail(err)
+			}
+			if !ok {
+				err := fmt.Errorf("custom forfeit input %s "+
+					"conflicts with existing VTXO actor",
+					input.Outpoint)
+
+				return fail(err)
+			}
+
+			actorID := fmt.Sprintf("vtxo.%s",
+				input.Outpoint.String())
+			m.cfg.ActorSystem.StopAndRemoveActor(actorID)
+			delete(m.actors, input.Outpoint)
+			synthetic = storedSynthetic
+			syntheticKnown = true
+		}
+
+		if !syntheticKnown {
+			var err error
+			synthetic, err = m.customForfeitInputIsSynthetic(
+				ctx, input.Outpoint,
+			)
+			if err != nil {
+				return fail(err)
+			}
+		}
+		if !synthetic {
+			ok, storedSynthetic, err := storedMatch(ctx, input)
+			if err != nil {
+				return fail(err)
+			}
+			if !ok {
+				err := fmt.Errorf("custom forfeit input %s "+
+					"does not match existing VTXO row",
+					input.Outpoint)
+
+				return fail(err)
+			}
+			synthetic = storedSynthetic
+		}
+
+		descriptor := customForfeitInputDescriptor(input)
+
+		if synthetic {
+			if err := m.cfg.Store.SaveVTXO(
+				ctx, descriptor,
+			); err != nil {
+				return fail(
+					fmt.Errorf("save custom forfeit "+
+						"input %s: %w", input.Outpoint,
+						err),
+				)
+			}
+			if err := m.cfg.Store.UpdateVTXOStatus(
+				ctx, input.Outpoint, VTXOStatusPendingForfeit,
+			); err != nil {
+
+				_ = m.cfg.Store.DeleteVTXO(ctx, input.Outpoint)
+
+				return fail(
+					fmt.Errorf("mark custom forfeit "+
+						"input %s pending: %w",
+						input.Outpoint, err),
+				)
+			}
+		}
+
+		ref, err := m.spawnVTXOActor(ctx, descriptor)
+		if err != nil {
+			if synthetic {
+				_ = m.cfg.Store.DeleteVTXO(ctx, input.Outpoint)
+			} else {
+				_ = m.respawnCustomForfeitBaseActor(
+					ctx, input.Outpoint,
+				)
+			}
+
+			return fail(
+				fmt.Errorf("spawn custom forfeit input %s: %w",
+					input.Outpoint, err),
+			)
+		}
+
+		m.actors[input.Outpoint] = ref
+		m.markCustomForfeitSynthetic(input.Outpoint, synthetic)
+		activatedOutpoints = append(activatedOutpoints, input.Outpoint)
+		activated++
+	}
+
+	m.logger(ctx).InfoS(ctx, "Activated custom forfeit inputs",
+		slog.Int("count", activated),
+	)
+
+	return fn.Ok[ManagerResp](&ActivateCustomForfeitInputsResponse{
+		ActivatedCount: activated,
+	})
+}
+
+// customForfeitInputDescriptor converts one caller-supplied custom refresh
+// input into the temporary PendingForfeit descriptor used by the signer actor.
+func customForfeitInputDescriptor(input CustomForfeitInput) *Descriptor {
+	return &Descriptor{
+		Outpoint:       input.Outpoint,
+		Amount:         input.Amount,
+		PkScript:       append([]byte(nil), input.PkScript...),
+		PolicyTemplate: bytes.Clone(input.PolicyTemplate),
+		ClientKey:      input.ClientKey,
+		OperatorKey:    input.OperatorKey,
+		RelativeExpiry: input.RelativeExpiry,
+		RoundID:        input.RoundID,
+		CommitmentTxID: input.CommitmentTxID,
+		BatchExpiry:    input.BatchExpiry,
+		ChainDepth:     input.ChainDepth,
+		CreatedHeight:  input.CreatedHeight,
+		Ancestry:       input.Ancestry,
+		Status:         VTXOStatusPendingForfeit,
+	}
+}
+
+// customForfeitInputIsSynthetic reports whether activating a custom forfeit
+// input must create a throw-away descriptor. Already-known VTXOs can still use
+// temporary custom signer actors, but rollback must leave their durable row
+// intact because other tables, such as OOR package bindings, may reference it.
+func (m *Manager) customForfeitInputIsSynthetic(ctx context.Context,
+	outpoint wire.OutPoint) (bool, error) {
+
+	desc, err := m.cfg.Store.GetVTXO(ctx, outpoint)
+	switch {
+	case err == nil:
+		if desc == nil {
+			return false, fmt.Errorf("check custom forfeit input "+
+				"%s: nil descriptor", outpoint)
+		}
+
+		return false, nil
+
+	case errors.Is(err, sql.ErrNoRows):
+		return true, nil
+
+	default:
+		return false, fmt.Errorf("check custom forfeit input %s: %w",
+			outpoint, err)
+	}
+}
+
+// customForfeitActorActive reports whether the current actor for outpoint is a
+// temporary custom signer managed by the custom refresh overlay map.
+func (m *Manager) customForfeitActorActive(outpoint wire.OutPoint) bool {
+	if m.customForfeitSynthetic == nil {
+		return false
+	}
+
+	_, ok := m.customForfeitSynthetic[outpoint]
+
+	return ok
+}
+
+// markCustomForfeitSynthetic records whether a custom signer owns a synthetic
+// descriptor. Nil-safe so tests that construct Manager literals without
+// NewManager preserve their existing setup style.
+func (m *Manager) markCustomForfeitSynthetic(op wire.OutPoint, synthetic bool) {
+	if m.customForfeitSynthetic == nil {
+		m.customForfeitSynthetic = make(map[wire.OutPoint]bool)
+	}
+
+	m.customForfeitSynthetic[op] = synthetic
+}
+
+func (m *Manager) customForfeitInputAlreadyActive(ctx context.Context,
+	input CustomForfeitInput) (bool, error) {
+
+	return m.customForfeitInputMatchesStored(ctx, input)
+}
+
+// customForfeitInputMatchesStored reports whether the durable row for input's
+// outpoint has the same immutable vHTLC identity as the custom signer request.
+// The status is intentionally ignored: existing swap/recovery rows can be Live
+// or Spending, while synthetic signer rows are persisted as PendingForfeit.
+func (m *Manager) customForfeitInputMatchesStored(ctx context.Context,
+	input CustomForfeitInput) (bool, error) {
+
+	matches, _, err := m.customForfeitInputStoredMatch(ctx, input)
+
+	return matches, err
+}
+
+// customForfeitInputStoredMatch reports whether the durable row for input's
+// outpoint matches the custom signer request, and whether that row looks like a
+// synthetic custom signer row recovered after a restart.
+func (m *Manager) customForfeitInputStoredMatch(ctx context.Context,
+	input CustomForfeitInput) (bool, bool, error) {
+
+	desc, err := m.cfg.Store.GetVTXO(ctx, input.Outpoint)
+	if err != nil {
+		return false, false, fmt.Errorf("load existing custom forfeit "+
+			"input %s: %w", input.Outpoint, err)
+	}
+	if desc == nil {
+		return false, false, fmt.Errorf("load existing custom forfeit "+
+			"input %s: nil descriptor", input.Outpoint)
+	}
+	synthetic := desc.Status == VTXOStatusPendingForfeit
+	if desc.Amount != input.Amount {
+		return false, synthetic, nil
+	}
+	if !bytes.Equal(desc.PkScript, input.PkScript) {
+		return false, synthetic, nil
+	}
+	if !bytes.Equal(desc.PolicyTemplate, input.PolicyTemplate) {
+		return false, synthetic, nil
+	}
+	if desc.ClientKey.PubKey == nil || !desc.ClientKey.PubKey.IsEqual(
+		input.ClientKey.PubKey,
+	) {
+		return false, synthetic, nil
+	}
+	if !sameTaprootKey(desc.OperatorKey, input.OperatorKey) {
+		return false, synthetic, nil
+	}
+	if desc.RoundID != input.RoundID {
+		return false, synthetic, nil
+	}
+	if desc.CommitmentTxID != input.CommitmentTxID {
+		return false, synthetic, nil
+	}
+	if desc.BatchExpiry != input.BatchExpiry {
+		return false, synthetic, nil
+	}
+	if desc.ChainDepth != input.ChainDepth {
+		return false, synthetic, nil
+	}
+	if desc.CreatedHeight != input.CreatedHeight {
+		return false, synthetic, nil
+	}
+
+	return true, synthetic, nil
+}
+
+func sameTaprootKey(a, b *btcec.PublicKey) bool {
+	if a == nil || b == nil {
+		return false
+	}
+
+	return bytes.Equal(
+		schnorr.SerializePubKey(a), schnorr.SerializePubKey(b),
+	)
+}
+
+// respawnCustomForfeitBaseActor restores the normal actor for a pre-existing
+// VTXO after a temporary custom signer has been stopped or failed to start.
+func (m *Manager) respawnCustomForfeitBaseActor(ctx context.Context,
+	outpoint wire.OutPoint) error {
+
+	desc, err := m.cfg.Store.GetVTXO(ctx, outpoint)
+	if err != nil {
+		return fmt.Errorf("load base custom forfeit input %s: %w",
+			outpoint, err)
+	}
+	if desc == nil {
+		return fmt.Errorf("load base custom forfeit input %s: nil "+
+			"descriptor", outpoint)
+	}
+
+	if statusToState(ctx, desc, m.cfg.Store, m.logger(ctx)).IsTerminal() {
+		return nil
+	}
+
+	ref, err := m.spawnVTXOActor(ctx, desc)
+	if err != nil {
+		return fmt.Errorf("respawn base custom forfeit actor %s: %w",
+			outpoint, err)
+	}
+
+	m.actors[outpoint] = ref
+
+	return nil
+}
+
+// dropCustomForfeitSynthetic forgets and returns the synthetic-descriptor bit
+// for a custom signer actor. Missing entries default to true for compatibility
+// with actors created before this field was introduced; those actors were
+// historically treated as rollback-owned descriptors.
+func (m *Manager) dropCustomForfeitSynthetic(op wire.OutPoint) bool {
+	if m.customForfeitSynthetic == nil {
+		return true
+	}
+
+	synthetic, ok := m.customForfeitSynthetic[op]
+	delete(m.customForfeitSynthetic, op)
+	if !ok {
+		return true
+	}
+
+	return synthetic
+}
+
+// rollbackActivatedCustomForfeitInputs drops custom signer overlays created by
+// a failed activation request.
+func (m *Manager) rollbackActivatedCustomForfeitInputs(ctx context.Context,
+	outpoints []wire.OutPoint) error {
+
+	if len(outpoints) == 0 {
+		return nil
+	}
+
+	result := m.handleDropCustomForfeitInputs(
+		ctx, &DropCustomForfeitInputsRequest{
+			Outpoints: outpoints,
+		},
+	)
+	_, err := result.Unpack()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// handleDropCustomForfeitInputs removes custom PendingForfeit signer overlays
+// created for a round intent that did not register. Unlike
+// ReleaseForfeitRequest, this must not return synthetic descriptors to
+// LiveState because custom swap vHTLCs are not normal wallet coins.
+// Pre-existing VTXO rows are retained and their ordinary actors are restored
+// from storage.
+func (m *Manager) handleDropCustomForfeitInputs(ctx context.Context,
+	req *DropCustomForfeitInputsRequest) fn.Result[ManagerResp] {
+
+	outpoints := dedupOutpoints(req.Outpoints)
+
+	var (
+		dropped int
+		errs    []error
+	)
+	for _, op := range outpoints {
+		if _, ok := m.actors[op]; ok {
+			actorID := fmt.Sprintf("vtxo.%s", op.String())
+			m.cfg.ActorSystem.StopAndRemoveActor(actorID)
+			delete(m.actors, op)
+		}
+
+		synthetic := m.dropCustomForfeitSynthetic(op)
+		if !synthetic {
+			if err := m.respawnCustomForfeitBaseActor(
+				ctx, op,
+			); err != nil {
+
+				errs = append(
+					errs, fmt.Errorf("restore custom "+
+						"forfeit base actor %s: %w",
+						op, err),
+				)
+
+				continue
+			}
+
+			dropped++
+
+			continue
+		}
+
+		if err := m.cfg.Store.DeleteVTXO(ctx, op); err != nil {
+			errs = append(
+				errs, fmt.Errorf("delete custom forfeit "+
+					"input %s: %w", op, err),
+			)
+
+			continue
+		}
+
+		dropped++
+	}
+
+	if len(errs) > 0 {
+		return fn.Err[ManagerResp](
+			fmt.Errorf(
+				"drop custom forfeit inputs: %w",
+				errors.Join(errs...),
+			),
+		)
+	}
+
+	m.logger(ctx).InfoS(ctx, "Dropped custom forfeit inputs",
+		slog.Int("count", dropped),
+	)
+
+	return fn.Ok[ManagerResp](&DropCustomForfeitInputsResponse{
+		DroppedCount: dropped,
 	})
 }
 

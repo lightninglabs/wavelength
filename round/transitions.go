@@ -58,13 +58,13 @@ func failWithNotification(reason string, err error, recoverable bool,
 	}
 }
 
-// releaseForfeitsOnFailure prepends a ReleaseForfeitReservation to a transition
-// that lands in ClientFailedState, returning the given forfeit-reserved VTXOs
-// to LiveState so they are not stranded in pending-forfeit after a failed
-// round. It is a no-op for any non-failure transition, for rounds that
-// reserved no forfeits, and when a release was already emitted (so the
-// IntentSentState admission-timeout path, which releases explicitly, is not
-// double-counted).
+// releaseForfeitsOnFailure prepends rollback messages to a transition that
+// lands in ClientFailedState, returning standard forfeit-reserved VTXOs to
+// LiveState and dropping temporary custom forfeit actors so they are not
+// stranded after a failed round. It is a no-op for any non-failure transition,
+// for rounds that reserved no forfeits, and when a rollback was already
+// emitted (so the IntentSentState admission-timeout path, which releases
+// explicitly, is not double-counted).
 //
 // When the wrapped handler returns a raw (nil, err) — a pre-signing validation
 // failure such as a forfeit-mapping or forfeit-tx construction error — there is
@@ -76,8 +76,8 @@ func failWithNotification(reason string, err error, recoverable bool,
 // observable, and the release still fires. The caller drops the now-handled
 // error.
 //
-// Releasing is only safe BEFORE the client submits its VTXO forfeit signatures
-// to the server (SubmitVTXOForfeitSigsToServer, emitted on the
+// Rolling back is only safe BEFORE the client submits its VTXO forfeit
+// signatures to the server (SubmitVTXOForfeitSigsToServer, emitted on the
 // ForfeitSignaturesCollectingState -> InputSigSentState transition): until that
 // point the server holds no forfeit signature and cannot broadcast a forfeit,
 // so returning the inputs to LiveState cannot double-spend. Callers therefore
@@ -85,19 +85,19 @@ func failWithNotification(reason string, err error, recoverable bool,
 // ForfeitSignaturesCollectingState); the post-signing states (InputSigSentState
 // onward) deliberately do not release.
 //
-// ReleaseForfeitReservation is prepended (not appended) so it is the first item
-// processOutbox dispatches. The local vtxo-manager release is handled
-// best-effort (log-and-continue) and never returns an error, whereas the
+// Rollback messages are prepended (not appended) so they are the first items
+// processOutbox dispatches. The local vtxo-manager rollbacks are handled
+// best-effort (log-and-continue) and never return an error, whereas the
 // server/timeout Tells that may already be in the outbox
 // (JoinRoundRejectOutbox, CancelTimeoutReq) can fail mid-flight (TCP RST,
-// mailbox reconnect) and short-circuit the rest of the outbox. Dispatching the
-// release first guarantees the VTXOs are returned to LiveState regardless of
-// whether those Tells succeed.
+// mailbox reconnect) and short-circuit the rest of the outbox. Dispatching
+// local rollback first guarantees the VTXOs are returned to a clean local state
+// regardless of whether those Tells succeed.
 func releaseForfeitsOnFailure(transition *ClientStateTransition, err error,
 	roundID fn.Option[RoundID],
 	forfeits []types.ForfeitRequest) (*ClientStateTransition, error) {
 
-	outpoints := forfeitOutpoints(forfeits)
+	rollback := rollbackOutbox(forfeits)
 
 	// A raw inner error has no transition for the FSM to land on;
 	// synthesize a failure transition so the release below has somewhere to
@@ -105,7 +105,7 @@ func releaseForfeitsOnFailure(transition *ClientStateTransition, err error,
 	// the FSM down. We only do this when there are forfeits to release:
 	// with none, letting the error propagate is the established behavior.
 	if transition == nil {
-		if err == nil || len(outpoints) == 0 {
+		if err == nil || len(rollback) == 0 {
 			return transition, err
 		}
 
@@ -121,26 +121,87 @@ func releaseForfeitsOnFailure(transition *ClientStateTransition, err error,
 		return transition, err
 	}
 
-	if len(outpoints) == 0 {
+	if len(rollback) == 0 {
 		return transition, err
 	}
 
 	emitted := transition.NewEvents.UnwrapOr(ClientEmittedEvent{})
 
-	// Stay idempotent: a handler that already released (the admission
-	// timeout in IntentSentState) must not release the same inputs twice.
+	// Stay idempotent: a handler that already rolled back (the admission
+	// timeout in IntentSentState) must not release/drop the same inputs
+	// twice.
 	for _, msg := range emitted.Outbox {
-		if _, ok := msg.(*ReleaseForfeitReservation); ok {
+		switch msg.(type) {
+		case *ReleaseForfeitReservation, *DropCustomForfeitReservation:
 			return transition, err
 		}
 	}
 
-	emitted.Outbox = append([]ClientOutMsg{&ReleaseForfeitReservation{
-		Outpoints: outpoints,
-	}}, emitted.Outbox...)
+	emitted.Outbox = append(rollback, emitted.Outbox...)
 	transition.NewEvents = fn.Some(emitted)
 
 	return transition, err
+}
+
+// rollbackOutbox builds local rollback messages for a round that failed before
+// connector-bound forfeit signatures were sent.
+func rollbackOutbox(forfeits []types.ForfeitRequest) []ClientOutMsg {
+	standard, custom := forfeitRollbackOutpoints(forfeits)
+
+	outbox := make([]ClientOutMsg, 0, 2)
+	if len(standard) > 0 {
+		outbox = append(outbox, &ReleaseForfeitReservation{
+			Outpoints: standard,
+		})
+	}
+	if len(custom) > 0 {
+		outbox = append(outbox, &DropCustomForfeitReservation{
+			Outpoints: custom,
+		})
+	}
+
+	return outbox
+}
+
+// failureOutbox builds the common failure notification and rollback messages
+// for a round that failed before forfeit signatures were sent.
+func failureOutbox(reason string, err error, recoverable bool,
+	roundID fn.Option[RoundID],
+	forfeits []types.ForfeitRequest) []ClientOutMsg {
+
+	outbox := []ClientOutMsg{
+		&RoundFailedNotification{
+			RoundID:       roundID,
+			Reason:        reason,
+			Recoverable:   recoverable,
+			OriginalError: err,
+		},
+	}
+	outbox = append(outbox, rollbackOutbox(forfeits)...)
+
+	return outbox
+}
+
+// failBeforeForfeitSigning fails the round and emits rollback messages for
+// every forfeit input that was reserved before connector-bound forfeit
+// signatures were requested.
+func failBeforeForfeitSigning(reason string, err error, recoverable bool,
+	roundID RoundID,
+	forfeits []types.ForfeitRequest) *ClientStateTransition {
+
+	return &ClientStateTransition{
+		NextState: &ClientFailedState{
+			Reason:      reason,
+			Error:       err,
+			Recoverable: recoverable,
+		},
+		NewEvents: fn.Some(ClientEmittedEvent{
+			Outbox: failureOutbox(
+				reason, err, recoverable, fn.Some(roundID),
+				forfeits,
+			),
+		}),
+	}
 }
 
 // selfLoop creates a self-loop transition that stays in the current state
@@ -732,22 +793,10 @@ func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 			slog.Int("forfeit_count", len(s.Intents.Forfeits)),
 		)
 
-		outbox := []ClientOutMsg{
-			&RoundFailedNotification{
-				RoundID:       fn.None[RoundID](),
-				Reason:        reason,
-				Recoverable:   true,
-				OriginalError: timeoutErr,
-			},
-		}
-		if outpoints := forfeitOutpoints(s.Intents.Forfeits); len(
-			outpoints,
-		) > 0 {
-
-			outbox = append(outbox, &ReleaseForfeitReservation{
-				Outpoints: outpoints,
-			})
-		}
+		outbox := failureOutbox(
+			reason, timeoutErr, true, fn.None[RoundID](),
+			s.Intents.Forfeits,
+		)
 
 		return &ClientStateTransition{
 			NextState: &ClientFailedState{
@@ -838,13 +887,20 @@ func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 
 	case *BoardingFailed:
 		// Server rejected the registration or the request timed out.
-		// Transition to failure state.
+		// Roll back any reserved forfeits because no signatures have
+		// been produced at this phase.
 		return &ClientStateTransition{
 			NextState: &ClientFailedState{
 				Reason:      evt.Reason,
 				Error:       evt.Error,
 				Recoverable: evt.Recoverable,
 			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: failureOutbox(
+					evt.Reason, evt.Error, evt.Recoverable,
+					fn.None[RoundID](), s.Intents.Forfeits,
+				),
+			}),
 		}, nil
 
 	default:
@@ -882,22 +938,24 @@ func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 //
 // Rules applied (in order):
 //
-//  1. If any VTXO or leave already carries IsChange=true, leave it
-//     alone. This preserves explicit wallet decisions: boarding
-//     change in handleBoard / handleTriggerBoard, and directed-send
-//     self-change in handleSendVTXOs.
+//  1. If any non-fixed VTXO or leave already carries IsChange=true,
+//     leave it alone. This preserves explicit wallet decisions:
+//     boarding change in handleBoard / handleTriggerBoard, and
+//     directed-send self-change in handleSendVTXOs. A fixed VTXO
+//     marked IsChange remains malformed and is rejected by quote
+//     validation/server admission instead of being silently repaired.
 //
 //  2. If two or more outputs carry IsChange=true (which can only
 //     happen when an entry-point path accidentally double-stamps,
 //     e.g., mixing boarding-change + directed-send self-change),
-//     keep the FIRST marker and clear the rest. Defensive — the
-//     proto invariant is "exactly one", so silently submitting two
-//     would let the server reject the round.
+//     keep the FIRST non-fixed marker and clear the rest. Defensive —
+//     the proto invariant is "exactly one", so silently submitting
+//     two would let the server reject the round.
 //
 //  3. If no marker is set and the total output count is greater
-//     than one, stamp the first VTXO. When the intent has only
-//     leaves (no VTXOs — cooperative leave-only batches), stamp
-//     the first leave. Single-output intents get no marker.
+//     than one, stamp the first non-fixed VTXO. When there is no
+//     non-fixed VTXO, stamp the first leave. Single-output intents
+//     get no marker.
 //
 // Mutates the slices in place.
 func designateChangeMarker(vtxoReqs []types.VTXORequest,
@@ -905,17 +963,28 @@ func designateChangeMarker(vtxoReqs []types.VTXORequest,
 
 	// First pass: count and locate existing markers.
 	var (
-		firstVTXOIdx  = -1
-		firstLeaveIdx = -1
-		markerCount   int
+		firstVTXOIdx        = -1
+		firstFixedVTXOIdx   = -1
+		firstLeaveIdx       = -1
+		nonFixedMarkerCount int
+		markerCount         int
 	)
 	for i, req := range vtxoReqs {
 		if !req.IsChange {
 			continue
 		}
+		if req.FixedAmount {
+			if firstFixedVTXOIdx == -1 {
+				firstFixedVTXOIdx = i
+			}
+			markerCount++
+
+			continue
+		}
 		if firstVTXOIdx == -1 {
 			firstVTXOIdx = i
 		}
+		nonFixedMarkerCount++
 		markerCount++
 	}
 	for i, leave := range leaveReqs {
@@ -925,12 +994,15 @@ func designateChangeMarker(vtxoReqs []types.VTXORequest,
 		if firstLeaveIdx == -1 {
 			firstLeaveIdx = i
 		}
+		nonFixedMarkerCount++
 		markerCount++
 	}
 
-	// Defensive: if multiple markers are present, keep the first
-	// (preferring VTXO over leave when both have a marker).
-	if markerCount > 1 {
+	// Defensive: if multiple markers are present, keep the first non-fixed
+	// marker (preferring VTXO over leave when both have one). If every
+	// marker is fixed, keep the first fixed marker so admission rejects the
+	// malformed request instead of silently changing the caller's intent.
+	if markerCount > 1 && nonFixedMarkerCount > 0 {
 		keepVTXO := firstVTXOIdx != -1
 		for i := range vtxoReqs {
 			if !vtxoReqs[i].IsChange {
@@ -956,6 +1028,21 @@ func designateChangeMarker(vtxoReqs []types.VTXORequest,
 
 		return
 	}
+	if markerCount > 1 && firstFixedVTXOIdx != -1 {
+		for i := range vtxoReqs {
+			if i == firstFixedVTXOIdx {
+				continue
+			}
+			vtxoReqs[i].IsChange = false
+		}
+		for i := range leaveReqs {
+			if leaveReqs[i] != nil {
+				leaveReqs[i].IsChange = false
+			}
+		}
+
+		return
+	}
 
 	// Exactly one marker already set: nothing to do.
 	if markerCount == 1 {
@@ -969,8 +1056,12 @@ func designateChangeMarker(vtxoReqs []types.VTXORequest,
 	if totalOutputs <= 1 {
 		return
 	}
-	if len(vtxoReqs) > 0 {
-		vtxoReqs[0].IsChange = true
+	for i := range vtxoReqs {
+		if vtxoReqs[i].FixedAmount {
+			continue
+		}
+
+		vtxoReqs[i].IsChange = true
 
 		return
 	}
@@ -1250,18 +1341,19 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 			len(intents.Leaves)), false
 	}
 
-	// When the intent carries exactly one output across the combined
-	// VTXORequests + LeaveRequests, the server treats that sole output
-	// as implicit change and stamps the residual on it without requiring
-	// IsChange=true on the wire (#270, see the server's
+	// When the intent carries exactly one non-fixed output across the
+	// combined VTXORequests + LeaveRequests, the server treats that sole
+	// output as implicit change and stamps the residual on it without
+	// requiring IsChange=true on the wire (#270, see the server's
 	// resolveChangeDesignation). Its intent Amount is only a target or
 	// lower-bound hint in boarding / leave flows; the honest quote can
 	// therefore be above or below that target depending on the realised
 	// seal-time fee and input value. Do not enforce amount equality here:
 	// realisedQuoteFee below is the authoritative security check, because
 	// it verifies the actual signed outputs imply the quoted, capped fee.
+	// FixedAmount disables this exception for contract outputs.
 	totalOutputs := len(intents.VTXOs) + len(intents.Leaves)
-	implicitChange := totalOutputs == 1
+	implicitChange := totalOutputs == 1 && !singleOutputFixed(intents)
 
 	for i := range intents.VTXOs {
 		vtxoReq := intents.VTXOs[i]
@@ -1285,6 +1377,11 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 		if !bytes.Equal(entry.RecipientKey, intentKey) {
 			return fmt.Sprintf("vtxo[%d] recipient key "+
 				"echo mismatch", i), false
+		}
+
+		if vtxoReq.FixedAmount && vtxoReq.IsChange {
+			return fmt.Sprintf("vtxo[%d] fixed amount "+
+				"cannot be change", i), false
 		}
 
 		if !implicitChange && !vtxoReq.IsChange {
@@ -1329,6 +1426,16 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 	}
 
 	return "", true
+}
+
+// singleOutputFixed reports whether a one-output intent carries a fixed VTXO
+// request. Leave outputs do not currently have fixed-amount metadata.
+func singleOutputFixed(intents Intents) bool {
+	if len(intents.VTXOs) != 1 || len(intents.Leaves) != 0 {
+		return false
+	}
+
+	return intents.VTXOs[0].FixedAmount
 }
 
 // ProcessEvent for QuoteReceivedState.
@@ -1444,6 +1551,18 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 			QuoteID: evt.QuoteID,
 			Reason:  evt.Reason,
 		}
+		outbox := []ClientOutMsg{reject}
+		standard, custom := forfeitRollbackOutpoints(s.Intents.Forfeits)
+		if len(standard) > 0 {
+			outbox = append(outbox, &ReleaseForfeitReservation{
+				Outpoints: standard,
+			})
+		}
+		if len(custom) > 0 {
+			outbox = append(outbox, &DropCustomForfeitReservation{
+				Outpoints: custom,
+			})
+		}
 
 		return &ClientStateTransition{
 			NextState: &ClientFailedState{
@@ -1451,7 +1570,7 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 				Recoverable: false,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: []ClientOutMsg{reject},
+				Outbox: outbox,
 			}),
 		}, nil
 
@@ -1770,7 +1889,7 @@ func (s *CommitmentTxReceivedState) ProcessEvent(ctx context.Context,
 // processEvent runs the CommitmentTxReceivedState event handling; ProcessEvent
 // wraps it to return forfeit-reserved inputs to LiveState on failure.
 //
-//nolint:funlen,ll
+//nolint:funlen
 func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
@@ -1821,13 +1940,10 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 				slog.String("round_id", s.RoundID.String()),
 			)
 
-			return &ClientStateTransition{
-				NextState: &ClientFailedState{
-					Reason:      "invalid round sweep delay",
-					Error:       err,
-					Recoverable: false,
-				},
-			}, nil
+			return failBeforeForfeitSigning(
+				"invalid round sweep delay", err, false,
+				s.RoundID, s.Intents.Forfeits,
+			), nil
 		}
 
 		// Validate boarding inputs if we have any boarding intents.
@@ -1848,14 +1964,10 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 					),
 				)
 
-				return &ClientStateTransition{
-					NextState: &ClientFailedState{
-						Reason: "commitment tx " +
-							"validation failed",
-						Error:       err,
-						Recoverable: true,
-					},
-				}, nil
+				return failBeforeForfeitSigning(
+					"commitment tx validation failed", err,
+					true, s.RoundID, s.Intents.Forfeits,
+				), nil
 			}
 		} else {
 			boardingInputIndices = make(map[wire.OutPoint]int)
@@ -1895,14 +2007,10 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 					),
 				)
 
-				return &ClientStateTransition{
-					NextState: &ClientFailedState{
-						Reason: "leave output " +
-							"validation failed",
-						Error:       err,
-						Recoverable: true,
-					},
-				}, nil
+				return failBeforeForfeitSigning(
+					"leave output validation failed", err,
+					true, s.RoundID, s.Intents.Forfeits,
+				), nil
 			}
 
 			env.Log.DebugS(
@@ -1937,14 +2045,10 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 			// state, not raised as a Go error. A mis-rooted tree
 			// is a structural defect of the round, not a transient
 			// condition, so the failure is non-recoverable.
-			return &ClientStateTransition{
-				NextState: &ClientFailedState{
-					Reason: "VTXO tree commitment " +
-						"binding failed",
-					Error:       err,
-					Recoverable: false,
-				},
-			}, nil
+			return failBeforeForfeitSigning(
+				"VTXO tree commitment binding failed", err,
+				false, s.RoundID, s.Intents.Forfeits,
+			), nil
 		}
 
 		clientTrees := make(map[SignerKey]*tree.Tree)
@@ -1955,14 +2059,13 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 		for i, vtxoReq := range s.Intents.VTXOs {
 			pkScript, err := vtxoReq.EffectivePkScript()
 			if err != nil {
-				return &ClientStateTransition{
-					NextState: &ClientFailedState{
-						Reason: "VTXT validation failed",
-						Error: fmt.Errorf("derive pkScript for "+
-							"VTXO request %d: %w", i, err),
-						Recoverable: true,
-					},
-				}, nil
+				derivedErr := fmt.Errorf("derive pkScript for "+
+					"VTXO request %d: %w", i, err)
+
+				return failBeforeForfeitSigning(
+					"VTXT validation failed", derivedErr,
+					true, s.RoundID, s.Intents.Forfeits,
+				), nil
 			}
 
 			// The quote (when present) is the authoritative source
@@ -1997,34 +2100,28 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 
 				// The error is carried into the failed state;
 				// the FSM does not raise it as a Go error.
-				return &ClientStateTransition{ //nolint:nilerr
-					NextState: &ClientFailedState{
-						Reason: fmt.Sprintf(
-							"VTXT validation "+
-								"failed for VTXO "+
-								"request %d", i,
-						),
-						Error:       validateErr,
-						Recoverable: false,
-					},
-				}, nil
+				reason := fmt.Sprintf("VTXT validation failed "+
+					"for VTXO request %d", i)
+
+				return failBeforeForfeitSigning(
+					reason, validateErr, false, s.RoundID,
+					s.Intents.Forfeits,
+				), nil
 			}
 
 			// Ensure we actually found a client tree. This handles
 			// the edge case where VTXOTreePaths is empty.
 			if clientTree == nil {
-				return &ClientStateTransition{
-					NextState: &ClientFailedState{
-						Reason: fmt.Sprintf(
-							"no client tree found "+
-								"for VTXO request %d", i,
-						),
-						Error: fmt.Errorf(
-							"VTXO tree not found",
-						),
-						Recoverable: false,
-					},
-				}, nil
+				reason := fmt.Sprintf("no client tree found "+
+					"for VTXO request %d", i)
+
+				return failBeforeForfeitSigning(
+					reason, fmt.Errorf("VTXO tree not "+
+						"found"),
+					false,
+					s.RoundID,
+					s.Intents.Forfeits,
+				), nil
 			}
 
 			// Now that we know this VTXO request was properly
@@ -2040,17 +2137,14 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 			if err := vtxoTree.ValidateAnchors(); err != nil {
 
 				// Error carried into failed state.
-				return &ClientStateTransition{ //nolint:nilerr
-					NextState: &ClientFailedState{
-						Reason: fmt.Sprintf(
-							"anchor output validation "+
-								"failed for output %d",
-							outputIdx,
-						),
-						Error:       err,
-						Recoverable: false,
-					},
-				}, nil
+				reason := fmt.Sprintf("anchor output "+
+					"validation failed for output %d",
+					outputIdx)
+
+				return failBeforeForfeitSigning(
+					reason, err, false, s.RoundID,
+					s.Intents.Forfeits,
+				), nil
 			}
 		}
 
@@ -2079,14 +2173,10 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 			evt.ForfeitMappings,
 		); err != nil {
 			// Error carried into failed state.
-			return &ClientStateTransition{ //nolint:nilerr
-				NextState: &ClientFailedState{
-					Reason: "connector ancestry " +
-						"validation failed",
-					Error:       err,
-					Recoverable: false,
-				},
-			}, nil
+			return failBeforeForfeitSigning(
+				"connector ancestry validation failed", err,
+				false, s.RoundID, s.Intents.Forfeits,
+			), nil
 		}
 
 		forfeitMappings, err := populateForfeitMappingAmounts(
@@ -2120,13 +2210,10 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 		}, nil
 
 	case *BoardingFailed:
-		return &ClientStateTransition{
-			NextState: &ClientFailedState{
-				Reason:      evt.Reason,
-				Error:       evt.Error,
-				Recoverable: evt.Recoverable,
-			},
-		}, nil
+		return failBeforeForfeitSigning(
+			evt.Reason, evt.Error, evt.Recoverable, s.RoundID,
+			s.Intents.Forfeits,
+		), nil
 
 	default:
 		// Self-loop on unknown events - do not halt the FSM.
@@ -2187,14 +2274,10 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 			if err != nil {
 
 				// Error carried into failed state.
-				return &ClientStateTransition{ //nolint:nilerr
-					NextState: &ClientFailedState{
-						Reason: "invalid round " +
-							"forfeit key",
-						Error:       err,
-						Recoverable: false,
-					},
-				}, nil
+				return failBeforeForfeitSigning(
+					"invalid round forfeit key", err, false,
+					s.RoundID, s.Intents.Forfeits,
+				), nil
 			}
 
 			// Arm the forfeit-collection timeout FIRST, before
@@ -2532,9 +2615,10 @@ func (s *ForfeitSignaturesCollectingState) finishForfeitCollection(
 	forfeitedVTXOs := make([]wire.OutPoint, 0, len(collectedForfeits))
 	for outpoint, resp := range collectedForfeits {
 		forfeitTxs[outpoint] = &types.ForfeitTxSig{
-			UnsignedTx:    resp.ForfeitTx,
-			ClientVTXOSig: resp.Signature,
-			SpendPath:     resp.SpendPath,
+			UnsignedTx:          resp.ForfeitTx,
+			ClientVTXOSig:       resp.Signature,
+			ParticipantVTXOSigs: resp.ParticipantVTXOSigs,
+			SpendPath:           resp.SpendPath,
 		}
 		forfeitedVTXOs = append(forfeitedVTXOs, outpoint)
 	}
@@ -3216,27 +3300,45 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 	}, nil
 }
 
-// forfeitOutpoints returns the deduplicated VTXO outpoints carried by the given
-// forfeit requests, skipping any request without an outpoint. Used to release a
-// round's forfeit reservation when the round fails before signing.
-func forfeitOutpoints(requests []types.ForfeitRequest) []wire.OutPoint {
-	seen := make(map[wire.OutPoint]struct{}, len(requests))
-	outpoints := make([]wire.OutPoint, 0, len(requests))
+// forfeitRollbackOutpoints splits forfeits into standard wallet reservations
+// that should be released and custom refresh inputs that should be dropped when
+// a round fails before signing. Custom forfeits carry explicit spend paths
+// because they are not normal wallet VTXOs.
+func forfeitRollbackOutpoints(requests []types.ForfeitRequest) ([]wire.OutPoint,
+	[]wire.OutPoint) {
+
+	standardSeen := make(map[wire.OutPoint]struct{}, len(requests))
+	customSeen := make(map[wire.OutPoint]struct{}, len(requests))
+	standard := make([]wire.OutPoint, 0, len(requests))
+	custom := make([]wire.OutPoint, 0, len(requests))
+
 	for i := range requests {
-		if requests[i].VTXOOutpoint == nil {
+		req := requests[i]
+		if req.VTXOOutpoint == nil {
 			continue
 		}
 
-		op := *requests[i].VTXOOutpoint
-		if _, ok := seen[op]; ok {
+		op := *req.VTXOOutpoint
+		if req.AuthSpend != nil || req.ForfeitSpend != nil {
+			if _, ok := customSeen[op]; ok {
+				continue
+			}
+
+			customSeen[op] = struct{}{}
+			custom = append(custom, op)
+
 			continue
 		}
 
-		seen[op] = struct{}{}
-		outpoints = append(outpoints, op)
+		if _, ok := standardSeen[op]; ok {
+			continue
+		}
+
+		standardSeen[op] = struct{}{}
+		standard = append(standard, op)
 	}
 
-	return outpoints
+	return standard, custom
 }
 
 // forfeitRequestMap indexes local forfeit requests by outpoint so custom local

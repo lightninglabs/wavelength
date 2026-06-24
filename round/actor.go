@@ -302,6 +302,13 @@ type RoundClientConfig struct {
 	// Optional - if nil, notifications are not forwarded.
 	VTXOManager actor.TellOnlyRef[VTXOManagerMsg]
 
+	// DropCustomForfeitSigningContexts clears daemon-local signing
+	// metadata for custom refresh inputs when a round fails before the
+	// connector-bound forfeit signing request is produced. When nil, only
+	// the VTXO manager's custom forfeit actors are dropped.
+	DropCustomForfeitSigningContexts func(context.Context,
+		[]wire.OutPoint) error
+
 	// ActorSystem enables direct communication with VTXO actors via service
 	// keys. Used to send ForfeitRequestEvent and ForfeitConfirmedEvent to
 	// specific VTXO actors.
@@ -2354,6 +2361,50 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 						"outpoints", len(m.Outpoints),
 					),
 				)
+			}
+
+		case *DropCustomForfeitReservation:
+			// Drop custom PendingForfeit signer actors created for
+			// caller-supplied refresh inputs. They are not wallet
+			// VTXOs, so they must not be released into LiveState.
+			if len(m.Outpoints) == 0 {
+				continue
+			}
+			if a.cfg.VTXOManager != nil {
+				if err := a.cfg.VTXOManager.Tell(
+					ctx, &actormsg.DropCustomForfeitInputsRequest{
+						Outpoints: m.Outpoints,
+					},
+				); err != nil {
+
+					a.log.WarnS(
+						ctx,
+						"Failed to drop custom "+
+							"forfeit inputs",
+						err,
+						slog.Int(
+							"outpoints",
+							len(m.Outpoints),
+						),
+					)
+				}
+			}
+			if a.cfg.DropCustomForfeitSigningContexts != nil {
+				err := a.cfg.DropCustomForfeitSigningContexts(
+					ctx, m.Outpoints,
+				)
+				if err != nil {
+					a.log.WarnS(
+						ctx,
+						"Failed to drop custom forfeit "+
+							"signing contexts",
+						err,
+						slog.Int(
+							"outpoints",
+							len(m.Outpoints),
+						),
+					)
+				}
 			}
 
 		case *VTXOCreatedNotification:

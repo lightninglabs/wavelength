@@ -532,7 +532,9 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 				ClientKey:   clientKey,
 				OperatorKey: operatorKey,
 				ExitDelay:   h.ExitDelay,
-				Metadata:    metadata,
+				PolicyTemplate: recipient.
+					VTXOPolicyTemplate,
+				Metadata: metadata,
 			},
 		)
 		if err != nil {

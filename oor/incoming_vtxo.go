@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
@@ -82,6 +83,12 @@ type IncomingVTXOConfig struct {
 
 	// Metadata carries authoritative lineage and expiry attributes.
 	Metadata IncomingVTXOMetadata
+
+	// PolicyTemplate is the optional semantic policy template supplied with
+	// the incoming recipient output. When omitted, descriptor construction
+	// derives the standard VTXO policy from ClientKey, OperatorKey, and
+	// ExitDelay for compatibility with older servers.
+	PolicyTemplate []byte
 }
 
 // BuildIncomingVTXODescriptor constructs a VTXO descriptor for a recipient
@@ -144,37 +151,13 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 		return nil, err
 	}
 
-	tapscript, err := arkscript.VTXOTapScript(
-		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("derive vtxo tapscript: %w", err)
-	}
-
-	tapKey, err := arkscript.VTXOTapKey(
-		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("derive vtxo tapkey: %w", err)
-	}
-
-	expectedPkScript, err := txscript.PayToTaprootScript(tapKey)
-	if err != nil {
-		return nil, fmt.Errorf("derive vtxo pkscript: %w", err)
-	}
-
-	if !bytes.Equal(expectedPkScript, out.PkScript) {
-		return nil, fmt.Errorf("ark output pkscript does not match " +
-			"derived vtxo pkscript")
-	}
-
 	arkTxid := tx.TxHash()
 
-	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
-		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
+	policyTemplate, tapscript, err := incomingOutputPolicy(
+		out.PkScript, cfg,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("encode incoming VTXO policy: %w", err)
+		return nil, err
 	}
 
 	ancestry := normalizeIncomingAncestry(cfg.Metadata)
@@ -199,6 +182,87 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 		CreatedHeight:  cfg.Metadata.CreatedHeight,
 		Status:         vtxo.VTXOStatusLive,
 	}, nil
+}
+
+func incomingOutputPolicy(pkScript []byte, cfg IncomingVTXOConfig) ([]byte,
+	*waddrmgr.Tapscript, error) {
+
+	if len(cfg.PolicyTemplate) > 0 {
+		template, err := arkscript.DecodePolicyTemplate(
+			cfg.PolicyTemplate,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decode incoming VTXO "+
+				"policy: %w", err)
+		}
+
+		if !template.MatchesPkScript(pkScript) {
+			return nil, nil, fmt.Errorf("incoming VTXO policy " +
+				"does not match ark output pkscript")
+		}
+
+		tapscript, err := standardTapscriptIfApplicable(template)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		return append(
+			[]byte(nil), cfg.PolicyTemplate...,
+		), tapscript, nil
+	}
+
+	tapscript, err := arkscript.VTXOTapScript(
+		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("derive vtxo tapscript: %w", err)
+	}
+
+	tapKey, err := arkscript.VTXOTapKey(
+		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("derive vtxo tapkey: %w", err)
+	}
+
+	expectedPkScript, err := txscript.PayToTaprootScript(tapKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("derive vtxo pkscript: %w", err)
+	}
+
+	if !bytes.Equal(expectedPkScript, pkScript) {
+		return nil, nil, fmt.Errorf("ark output pkscript does not " +
+			"match derived vtxo pkscript")
+	}
+
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode incoming VTXO policy: %w",
+			err)
+	}
+
+	return policyTemplate, tapscript, nil
+}
+
+func standardTapscriptIfApplicable(template *arkscript.PolicyTemplate) (
+	*waddrmgr.Tapscript, error) {
+
+	params, decodeErr := arkscript.DecodeStandardVTXOParams(template)
+	if decodeErr == nil {
+		tapscript, err := arkscript.VTXOTapScript(
+			params.OwnerKey, params.OperatorKey, params.ExitDelay,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("derive standard vtxo "+
+				"tapscript: %w", err)
+		}
+
+		return tapscript, nil
+	}
+
+	return nil, nil
 }
 
 // validateIncomingAncestry runs the structural cross-checks that bind

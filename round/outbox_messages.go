@@ -323,6 +323,7 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		vr := &roundpb.VTXORequest{
 			TargetAmountSat: int64(req.Amount),
 			IsChange:        req.IsChange,
+			FixedAmount:     req.FixedAmount,
 			PolicyTemplate:  policyTemplate,
 		}
 		if req.SigningKey.PubKey != nil {
@@ -342,6 +343,28 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 			fr.VtxoOutpoint = roundpb.OutpointToProto(
 				*req.VTXOOutpoint,
 			)
+		}
+		if req.AuthSpend != nil {
+			raw, err := req.AuthSpend.Encode()
+			if err != nil {
+				return fn.Err[proto.Message](
+					fmt.Errorf("forfeit request %d auth "+
+						"spend path: %w", i, err),
+				)
+			}
+			fr.AuthSpendPath = raw
+		}
+		if req.ForfeitSpend != nil {
+			raw, err := req.ForfeitSpend.Encode()
+			if err != nil {
+				err := fmt.Errorf("forfeit request %d forfeit "+
+					"spend path: %w", i, err)
+
+				return fn.Err[proto.Message](
+					err,
+				)
+			}
+			fr.ForfeitSpendPath = raw
 		}
 		forfeitReqs[i] = fr
 	}
@@ -609,7 +632,8 @@ func (m *SubmitVTXOForfeitSigsToServer) ToProto() fn.Result[proto.Message] {
 			)
 		}
 
-		if forfeitTx.ClientVTXOSig == nil {
+		if forfeitTx.ClientVTXOSig == nil &&
+			len(forfeitTx.ParticipantVTXOSigs) == 0 {
 			return fn.Err[proto.Message](
 				fmt.Errorf("forfeit signature missing for "+
 					"outpoint %v", outpoint),
@@ -639,16 +663,59 @@ func (m *SubmitVTXOForfeitSigsToServer) ToProto() fn.Result[proto.Message] {
 			)
 		}
 
+		participantSigs := make(
+			[]*roundpb.ForfeitParticipantSig, 0,
+			len(forfeitTx.ParticipantVTXOSigs),
+		)
+		for _, sig := range forfeitTx.ParticipantVTXOSigs {
+			if sig == nil {
+				err := fmt.Errorf("participant signature "+
+					"missing for outpoint %v", outpoint)
+
+				return fn.Err[proto.Message](
+					err,
+				)
+			}
+			if sig.PubKey == nil {
+				err := fmt.Errorf("participant pubkey missing "+
+					"for outpoint %v", outpoint)
+
+				return fn.Err[proto.Message](
+					err,
+				)
+			}
+			if sig.Signature == nil {
+				err := fmt.Errorf("participant schnorr "+
+					"signature missing for outpoint %v",
+					outpoint)
+
+				return fn.Err[proto.Message](
+					err,
+				)
+			}
+
+			participantSigs = append(
+				participantSigs,
+				&roundpb.ForfeitParticipantSig{
+					Pubkey: sig.PubKey.
+						SerializeCompressed(),
+					Signature: roundpb.SchnorrSigToBytes(
+						sig.Signature,
+					),
+				},
+			)
+		}
+
+		legacySig := legacyForfeitSigBytes(forfeitTx)
 		forfeitTxs = append(
 			forfeitTxs, &roundpb.ForfeitTxSig{
 				VtxoOutpoint: roundpb.OutpointToProto(
 					outpoint,
 				),
-				UnsignedTx: txBytes,
-				ClientVtxoSig: roundpb.SchnorrSigToBytes(
-					forfeitTx.ClientVTXOSig,
-				),
-				SpendPath: spendPath,
+				UnsignedTx:      txBytes,
+				ClientVtxoSig:   legacySig,
+				SpendPath:       spendPath,
+				ParticipantSigs: participantSigs,
 			},
 		)
 	}
@@ -659,6 +726,14 @@ func (m *SubmitVTXOForfeitSigsToServer) ToProto() fn.Result[proto.Message] {
 			ForfeitTxs: forfeitTxs,
 		},
 	)
+}
+
+func legacyForfeitSigBytes(forfeitTx *types.ForfeitTxSig) []byte {
+	if forfeitTx.ClientVTXOSig == nil {
+		return nil
+	}
+
+	return roundpb.SchnorrSigToBytes(forfeitTx.ClientVTXOSig)
 }
 
 // RegisterConfirmationRequest is emitted by the FSM to request chain monitoring
@@ -848,6 +923,20 @@ type ReleaseForfeitReservation struct {
 }
 
 func (m *ReleaseForfeitReservation) clientOutMsgSealed() {}
+
+// DropCustomForfeitReservation asks the actor to drop custom PendingForfeit
+// signer actors that were activated for a caller-supplied custom refresh
+// intent. The FSM emits it when a round fails before any forfeit signatures
+// have been submitted. Unlike ReleaseForfeitReservation, these inputs are not
+// normal wallet VTXOs and must not be returned to LiveState.
+type DropCustomForfeitReservation struct {
+	actor.BaseMessage
+
+	// Outpoints identifies the custom forfeit inputs to drop.
+	Outpoints []wire.OutPoint
+}
+
+func (m *DropCustomForfeitReservation) clientOutMsgSealed() {}
 
 // RoundFailedNotification is emitted when a round FSM transitions to
 // ClientFailedState. This notifies higher layers (actor, wallet) of the

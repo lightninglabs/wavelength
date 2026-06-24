@@ -931,8 +931,12 @@ type OORRecipientEvent struct {
 	// Recipients persist these artifacts so a chained OOR VTXO can be
 	// unrolled without querying package data for VTXOs they do not own.
 	AncestorPackages []*OORSessionPackage `protobuf:"bytes,8,rep,name=ancestor_packages,json=ancestorPackages,proto3" json:"ancestor_packages,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// vtxo_policy_template is the semantic arkscript policy template for this
+	// recipient output. Older servers may omit it, in which case clients fall
+	// back to standard VTXO materialization.
+	VtxoPolicyTemplate []byte `protobuf:"bytes,9,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *OORRecipientEvent) Reset() {
@@ -1017,6 +1021,13 @@ func (x *OORRecipientEvent) GetCheckpointPsbts() [][]byte {
 func (x *OORRecipientEvent) GetAncestorPackages() []*OORSessionPackage {
 	if x != nil {
 		return x.AncestorPackages
+	}
+	return nil
+}
+
+func (x *OORRecipientEvent) GetVtxoPolicyTemplate() []byte {
+	if x != nil {
+		return x.VtxoPolicyTemplate
 	}
 	return nil
 }
@@ -2721,7 +2732,7 @@ const file_indexer_proto_rawDesc = "" +
 	"&ListOORRecipientEventsByScriptResponse\x121\n" +
 	"\x06events\x18\x01 \x03(\v2\x19.arkrpc.OORRecipientEventR\x06events\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\x04R\n" +
-	"nextCursor\"\xc4\x02\n" +
+	"nextCursor\"\xf6\x02\n" +
 	"\x11OORRecipientEvent\x12.\n" +
 	"\x13recipient_pk_script\x18\x01 \x01(\fR\x11recipientPkScript\x12\x19\n" +
 	"\bevent_id\x18\x02 \x01(\x04R\aeventId\x12\x1d\n" +
@@ -2731,7 +2742,8 @@ const file_indexer_proto_rawDesc = "" +
 	"\x05value\x18\x05 \x01(\x04R\x05value\x12\x19\n" +
 	"\bark_psbt\x18\x06 \x01(\fR\aarkPsbt\x12)\n" +
 	"\x10checkpoint_psbts\x18\a \x03(\fR\x0fcheckpointPsbts\x12F\n" +
-	"\x11ancestor_packages\x18\b \x03(\v2\x19.arkrpc.OORSessionPackageR\x10ancestorPackages\"x\n" +
+	"\x11ancestor_packages\x18\b \x03(\v2\x19.arkrpc.OORSessionPackageR\x10ancestorPackages\x120\n" +
+	"\x14vtxo_policy_template\x18\t \x01(\fR\x12vtxoPolicyTemplate\"x\n" +
 	"\x11OORSessionPackage\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\fR\tsessionId\x12\x19\n" +

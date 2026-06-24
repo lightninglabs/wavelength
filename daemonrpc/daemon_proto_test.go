@@ -13,6 +13,7 @@ const (
 	testRecoveryAction    = VHTLCRecoveryAction_VHTLC_RECOVERY_ACTION_CLAIM
 	testRecoveryState     = VHTLCRecoveryState_VHTLC_RECOVERY_STATE_UNROLL_STARTED
 	testUnrollStatus      = UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING
+	testExpiryStatus      = VTXOExpiryStatus_VTXO_EXPIRY_STATUS_NEEDS_REFRESH
 )
 
 // TestSendVTXOResponseProtoRoundTrip guards against stale generated
@@ -36,6 +37,69 @@ func TestSendVTXOResponseProtoRoundTrip(t *testing.T) {
 	require.Equal(t, original.TotalAmountSat, decoded.TotalAmountSat)
 	require.Equal(t, original.ChangeAmountSat, decoded.ChangeAmountSat)
 	require.Equal(t, original.SelectedCount, decoded.SelectedCount)
+}
+
+// TestVTXOExpiryInfoProtoRoundTrip guards the expiry posture fields that swap
+// services use to decide whether a VTXO is safe to build a swap around.
+func TestVTXOExpiryInfoProtoRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := &GetVTXOExpiryInfoResponse{
+		Found: true,
+		ExpiryInfo: &VTXOExpiryInfo{
+			Status:                  testExpiryStatus,
+			CurrentHeight:           784,
+			BatchExpiry:             1000,
+			BlocksRemaining:         216,
+			RefreshThresholdBlocks:  234,
+			CriticalThresholdBlocks: 162,
+			RelativeExpiry:          144,
+			MaxTreeDepth:            3,
+			ChainDepth:              2,
+		},
+		Vtxo: &VTXO{
+			Outpoint:       "00:1",
+			AmountSat:      42_000,
+			Status:         VTXOStatus_VTXO_STATUS_LIVE,
+			BatchExpiry:    1000,
+			RelativeExpiry: 144,
+			ExpiryInfo: &VTXOExpiryInfo{
+				Status:          testExpiryStatus,
+				BlocksRemaining: 216,
+			},
+		},
+	}
+
+	payload, err := proto.Marshal(original)
+	require.NoError(t, err)
+
+	var decoded GetVTXOExpiryInfoResponse
+	require.NoError(t, proto.Unmarshal(payload, &decoded))
+	require.True(t, decoded.GetFound())
+	require.Equal(t, testExpiryStatus, decoded.GetExpiryInfo().GetStatus())
+	require.Equal(t, int32(784), decoded.GetExpiryInfo().GetCurrentHeight())
+	require.Equal(t, int32(1000), decoded.GetExpiryInfo().GetBatchExpiry())
+	require.Equal(
+		t, int32(216), decoded.GetExpiryInfo().GetBlocksRemaining(),
+	)
+	require.Equal(
+		t, int32(234),
+		decoded.GetExpiryInfo().GetRefreshThresholdBlocks(),
+	)
+	require.Equal(
+		t, int32(162),
+		decoded.GetExpiryInfo().GetCriticalThresholdBlocks(),
+	)
+	require.Equal(
+		t, uint32(144), decoded.GetExpiryInfo().GetRelativeExpiry(),
+	)
+	require.Equal(t, uint32(3), decoded.GetExpiryInfo().GetMaxTreeDepth())
+	require.Equal(t, uint32(2), decoded.GetExpiryInfo().GetChainDepth())
+	require.Equal(t, "00:1", decoded.GetVtxo().GetOutpoint())
+	require.Equal(
+		t, testExpiryStatus,
+		decoded.GetVtxo().GetExpiryInfo().GetStatus(),
+	)
 }
 
 // TestVHTLCRecoveryStatusProtoRoundTrip guards the recovery control-plane

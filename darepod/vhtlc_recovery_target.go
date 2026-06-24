@@ -14,9 +14,11 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lntypes"
 )
 
 var errRecoveryTargetPackageMissing = errors.New("recovery target package " +
@@ -142,6 +144,13 @@ func (m *vhtlcRecoveryTargetMaterializer) buildRecoveryDescriptor(
 		return nil, err
 	}
 
+	policyTemplate, err := recoveryPolicyTemplate(
+		job, targetOutput.PkScript,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	ancestry := recoveryAncestry(roots)
 	if len(ancestry) == 0 {
 		return nil, fmt.Errorf("recovery target ancestry is empty")
@@ -174,6 +183,7 @@ func (m *vhtlcRecoveryTargetMaterializer) buildRecoveryDescriptor(
 		CommitmentTxID: commitmentTxID,
 		BatchExpiry:    batchExpiry,
 		RelativeExpiry: csvDelay,
+		PolicyTemplate: policyTemplate,
 		ChainDepth:     chainDepth,
 		CreatedHeight:  createdHeight,
 		Status:         vtxo.VTXOStatusSpending,
@@ -429,6 +439,105 @@ func recoveryCSVDelay(job vhtlcrecovery.RecoveryJob) (uint32, error) {
 	}
 
 	return uint32(delay), nil
+}
+
+// recoveryPolicyTemplate rebuilds the semantic vHTLC policy from the durable
+// recovery tuple and verifies it still commits to the target output script.
+func recoveryPolicyTemplate(job vhtlcrecovery.RecoveryJob,
+	targetPkScript []byte) ([]byte, error) {
+
+	sender, err := recoveryPubKey(job.SenderPubkey, "sender")
+	if err != nil {
+		return nil, err
+	}
+	receiver, err := recoveryPubKey(job.ReceiverPubkey, "receiver")
+	if err != nil {
+		return nil, err
+	}
+	server, err := recoveryPubKey(job.ServerPubkey, "server")
+	if err != nil {
+		return nil, err
+	}
+
+	var preimageHash lntypes.Hash
+	if len(job.PreimageHash) != len(preimageHash) {
+		return nil, fmt.Errorf("recovery preimage hash must be %d "+
+			"bytes, got %d", len(preimageHash),
+			len(job.PreimageHash))
+	}
+	copy(preimageHash[:], job.PreimageHash)
+
+	refundLocktime, err := recoveryUint32(
+		job.RefundLocktime, "recovery refund locktime",
+	)
+	if err != nil {
+		return nil, err
+	}
+	claimDelay, err := recoveryUint32(
+		job.UnilateralClaimDelay, "recovery claim delay",
+	)
+	if err != nil {
+		return nil, err
+	}
+	refundDelay, err := recoveryUint32(
+		job.UnilateralRefundDelay, "recovery refund delay",
+	)
+	if err != nil {
+		return nil, err
+	}
+	refundWithoutReceiverDelay, err := recoveryUint32(
+		job.UnilateralRefundWithoutReceiverDelay,
+		"recovery refund-without-receiver delay",
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	refundWithoutReceiver := refundWithoutReceiverDelay
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:                               sender,
+		Receiver:                             receiver,
+		Server:                               server,
+		PreimageHash:                         preimageHash,
+		RefundLocktime:                       refundLocktime,
+		UnilateralClaimDelay:                 claimDelay,
+		UnilateralRefundDelay:                refundDelay,
+		UnilateralRefundWithoutReceiverDelay: refundWithoutReceiver,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build recovery vhtlc policy: %w", err)
+	}
+	if policy.Template == nil {
+		return nil, fmt.Errorf("recovery vhtlc policy template is nil")
+	}
+	if !policy.Template.MatchesPkScript(targetPkScript) {
+		return nil, fmt.Errorf("recovery vhtlc policy does not match " +
+			"target output script")
+	}
+
+	policyTemplate, err := policy.Template.Encode()
+	if err != nil {
+		return nil, fmt.Errorf("encode recovery vhtlc policy: %w", err)
+	}
+
+	return policyTemplate, nil
+}
+
+func recoveryPubKey(raw []byte, label string) (*btcec.PublicKey, error) {
+	key, err := btcec.ParsePubKey(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse recovery %s key: %w", label, err)
+	}
+
+	return key, nil
+}
+
+func recoveryUint32(value int32, label string) (uint32, error) {
+	if value <= 0 {
+		return 0, fmt.Errorf("%s must be positive", label)
+	}
+
+	return uint32(value), nil
 }
 
 // recoveryAncestry clones and de-duplicates ancestry fragments from the root

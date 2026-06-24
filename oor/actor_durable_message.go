@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -82,6 +83,7 @@ const (
 	eventPayloadOutboxTypeRecordType       tlv.Type = 17
 	eventPayloadRetryableRecordType        tlv.Type = 19
 	eventPayloadRetryAfterNanosRecordType  tlv.Type = 21
+	eventPayloadIncomingRecipientsType     tlv.Type = 23
 )
 
 const (
@@ -119,9 +121,10 @@ const (
 )
 
 const (
-	recipientPkScriptRecordType   tlv.Type = 1
-	recipientValueSatRecordType   tlv.Type = 2
-	recipientVTXOPolicyRecordType tlv.Type = 3
+	recipientPkScriptRecordType    tlv.Type = 1
+	recipientValueSatRecordType    tlv.Type = 2
+	recipientVTXOPolicyRecordType  tlv.Type = 3
+	recipientOutputIndexRecordType tlv.Type = 5
 )
 
 const (
@@ -144,6 +147,13 @@ type startTransferPayload struct {
 }
 
 type recipientPayload struct {
+	PkScript           []byte
+	ValueSat           int64
+	VTXOPolicyTemplate []byte
+}
+
+type incomingRecipientPayload struct {
+	OutputIndex        uint32
 	PkScript           []byte
 	ValueSat           int64
 	VTXOPolicyTemplate []byte
@@ -850,6 +860,159 @@ func decodeRecipientPayload(raw []byte) (recipientPayload, error) {
 	}
 
 	return recipientPayload{
+		PkScript:           pkScript,
+		ValueSat:           decodedValueSat,
+		VTXOPolicyTemplate: vtxoPolicyTemplate,
+	}, nil
+}
+
+func encodeIncomingRecipients(recipients []ArkRecipientOutput) ([]byte, error) {
+	payloads := make([][]byte, 0, len(recipients))
+	for i := range recipients {
+		raw, err := encodeIncomingRecipientPayload(
+			incomingRecipientPayload{
+				OutputIndex: recipients[i].OutputIndex,
+				PkScript: append(
+					[]byte(nil), recipients[i].PkScript...,
+				),
+				ValueSat: int64(recipients[i].Value),
+				VTXOPolicyTemplate: append(
+					[]byte(nil),
+					recipients[i].VTXOPolicyTemplate...,
+				),
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		payloads = append(payloads, raw)
+	}
+
+	return encodeLengthPrefixedBlobList(payloads)
+}
+
+func decodeIncomingRecipientsWithLimits(raw []byte,
+	limits ReceiveLimits) ([]ArkRecipientOutput, error) {
+
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	blobs, err := decodeLengthPrefixedBlobListWithLimits(raw, limits)
+	if err != nil {
+		return nil, err
+	}
+
+	recipients := make([]ArkRecipientOutput, 0, len(blobs))
+	for i := range blobs {
+		payload, err := decodeIncomingRecipientPayload(blobs[i])
+		if err != nil {
+			return nil, err
+		}
+
+		recipients = append(recipients, ArkRecipientOutput{
+			OutputIndex: payload.OutputIndex,
+			Value:       btcutil.Amount(payload.ValueSat),
+			PkScript: append(
+				[]byte(nil), payload.PkScript...,
+			),
+			VTXOPolicyTemplate: append(
+				[]byte(nil), payload.VTXOPolicyTemplate...,
+			),
+		})
+	}
+
+	return recipients, nil
+}
+
+func encodeIncomingRecipientPayload(payload incomingRecipientPayload) ([]byte,
+	error) {
+
+	pkScript := payload.PkScript
+	if payload.ValueSat < 0 {
+		return nil, fmt.Errorf("incoming recipient value must be " +
+			"non-negative")
+	}
+	valueSat := uint64(payload.ValueSat)
+	outputIndex := uint64(payload.OutputIndex)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			recipientPkScriptRecordType, &pkScript,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientValueSatRecordType, &valueSat,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientVTXOPolicyRecordType,
+			&payload.VTXOPolicyTemplate,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientOutputIndexRecordType, &outputIndex,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeIncomingRecipientPayload(raw []byte) (incomingRecipientPayload,
+	error) {
+
+	var (
+		pkScript           []byte
+		valueSat           uint64
+		vtxoPolicyTemplate []byte
+		outputIndex        uint64
+	)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(recipientPkScriptRecordType, &pkScript),
+		tlv.MakePrimitiveRecord(recipientValueSatRecordType, &valueSat),
+		tlv.MakePrimitiveRecord(
+			recipientVTXOPolicyRecordType, &vtxoPolicyTemplate,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientOutputIndexRecordType, &outputIndex,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return incomingRecipientPayload{}, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return incomingRecipientPayload{}, err
+	}
+
+	decodedValueSat, err := uint64ToInt64(
+		valueSat, "incoming recipient value sat",
+	)
+	if err != nil {
+		return incomingRecipientPayload{}, err
+	}
+
+	decodedOutputIndex, err := decodeUint64ToUint32(
+		outputIndex, "incoming recipient output index",
+	)
+	if err != nil {
+		return incomingRecipientPayload{}, err
+	}
+
+	return incomingRecipientPayload{
+		OutputIndex:        decodedOutputIndex,
 		PkScript:           pkScript,
 		ValueSat:           decodedValueSat,
 		VTXOPolicyTemplate: vtxoPolicyTemplate,
@@ -1850,18 +2013,19 @@ func decodeDriveEventRequestPayloadWithLimits(raw []byte,
 //nolint:funlen
 func encodeEventPayload(event Event) ([]byte, error) {
 	var (
-		eventKind       uint64
-		submitSession   []byte
-		arkPSBT         []byte
-		checkpointPSBT  []byte
-		reason          []byte
-		outpointPayload []byte
-		metadataPayload []byte
-		ancestorPayload []byte
-		outboxType      []byte
-		retryable       uint8
-		retryAfterNanos uint64
-		err             error
+		eventKind        uint64
+		submitSession    []byte
+		arkPSBT          []byte
+		checkpointPSBT   []byte
+		reason           []byte
+		outpointPayload  []byte
+		metadataPayload  []byte
+		ancestorPayload  []byte
+		outboxType       []byte
+		retryable        uint8
+		retryAfterNanos  uint64
+		err              error
+		recipientPayload []byte
 	)
 
 	switch evt := event.(type) {
@@ -1958,6 +2122,13 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		}
 		ancestorPayload = ancestorRaw
 
+		recipientPayload, err = encodeIncomingRecipients(
+			evt.Recipients,
+		)
+		if err != nil {
+			return nil, err
+		}
+
 	case *IncomingHandledEvent:
 		eventKind = eventKindIncomingHandled
 
@@ -2037,6 +2208,9 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			eventPayloadRetryAfterNanosRecordType, &retryAfterNanos,
 		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadIncomingRecipientsType, &recipientPayload,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -2058,17 +2232,18 @@ func decodeEventPayloadWithLimits(raw []byte,
 	limits ReceiveLimits) (Event, error) {
 
 	var (
-		eventKind       uint64
-		submitSession   []byte
-		arkPSBT         []byte
-		checkpointPSBT  []byte
-		reason          []byte
-		outpointPayload []byte
-		metadataPayload []byte
-		ancestorPayload []byte
-		outboxType      []byte
-		retryable       uint8
-		retryAfterNanos uint64
+		eventKind        uint64
+		submitSession    []byte
+		arkPSBT          []byte
+		checkpointPSBT   []byte
+		reason           []byte
+		outpointPayload  []byte
+		metadataPayload  []byte
+		ancestorPayload  []byte
+		outboxType       []byte
+		retryable        uint8
+		retryAfterNanos  uint64
+		recipientPayload []byte
 	)
 
 	records := []tlv.Record{
@@ -2101,6 +2276,9 @@ func decodeEventPayloadWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			eventPayloadRetryAfterNanosRecordType, &retryAfterNanos,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadIncomingRecipientsType, &recipientPayload,
 		),
 	}
 
@@ -2199,10 +2377,18 @@ func decodeEventPayloadWithLimits(raw []byte,
 			return nil, err
 		}
 
+		recipients, err := decodeIncomingRecipientsWithLimits(
+			recipientPayload, limits,
+		)
+		if err != nil {
+			return nil, err
+		}
+
 		return &IncomingTransferEvent{
 			ArkPSBT:              ark,
 			FinalCheckpointPSBTs: checkpoints,
 			AncestorPackages:     ancestors,
+			Recipients:           recipients,
 		}, nil
 
 	case eventKindIncomingHandled:
@@ -2414,6 +2600,14 @@ func uint64ToInt64(value uint64, field string) (int64, error) {
 	}
 
 	return int64(value), nil
+}
+
+func decodeUint64ToUint32(value uint64, field string) (uint32, error) {
+	if value > math.MaxUint32 {
+		return 0, fmt.Errorf("%s overflows uint32: %d", field, value)
+	}
+
+	return uint32(value), nil
 }
 
 func uint32ToInt32(value uint32, field string) (int32, error) {

@@ -3,8 +3,10 @@ package oor
 import (
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	lib_tree "github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -180,6 +182,101 @@ func TestBuildIncomingVTXODescriptorRejectsNilArk(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "ark psbt must be provided")
+}
+
+// TestBuildIncomingVTXODescriptorPreservesMatchingPolicyTemplate verifies that
+// a server-supplied policy template that binds to the recipient output pkScript
+// is preserved verbatim on the descriptor rather than being re-derived or
+// silently downgraded to the standard template.
+func TestBuildIncomingVTXODescriptorPreservesMatchingPolicyTemplate(
+	t *testing.T) {
+
+	t.Parallel()
+
+	arkPSBT, _, recipients, commitHash, recipientKey,
+		operatorKey := buildTestIncomingMaterialization(t)
+
+	// The fixture builds the recipient output as a standard VTXO taproot
+	// for (recipientKey, operatorKey, exitDelay=10), so the matching
+	// template is the standard template over the same parameters.
+	template, err := arkscript.EncodeStandardVTXOTemplate(
+		recipientKey.PubKey(), operatorKey, 10,
+	)
+	require.NoError(t, err)
+
+	desc, err := BuildIncomingVTXODescriptor(arkPSBT,
+		IncomingVTXOConfig{
+			OutputIndex: recipients[0].OutputIndex,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			},
+			OperatorKey:    operatorKey,
+			ExitDelay:      10,
+			PolicyTemplate: template,
+			Metadata: IncomingVTXOMetadata{
+				RoundID:        "test-round",
+				CommitmentTxID: commitHash,
+				BatchExpiry:    1000,
+				ChainDepth:     1,
+				CreatedHeight:  500,
+				Ancestry: validTestIncomingAncestry(
+					commitHash,
+				),
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, template, desc.PolicyTemplate)
+}
+
+// TestBuildIncomingVTXODescriptorRejectsMismatchedPolicyTemplate verifies that
+// a server-supplied policy template that decodes cleanly but does not bind to
+// the recipient output pkScript is rejected, so a mismatched template can never
+// be silently materialized.
+func TestBuildIncomingVTXODescriptorRejectsMismatchedPolicyTemplate(
+	t *testing.T) {
+
+	t.Parallel()
+
+	arkPSBT, _, recipients, commitHash, recipientKey,
+		operatorKey := buildTestIncomingMaterialization(t)
+
+	// A standard template over a different owner key decodes cleanly but
+	// reconstructs a different pkScript, so it must fail the bind check
+	// against the recipient output rather than downgrade silently.
+	otherKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	mismatched, err := arkscript.EncodeStandardVTXOTemplate(
+		otherKey.PubKey(), operatorKey, 10,
+	)
+	require.NoError(t, err)
+
+	_, err = BuildIncomingVTXODescriptor(arkPSBT,
+		IncomingVTXOConfig{
+			OutputIndex: recipients[0].OutputIndex,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			},
+			OperatorKey:    operatorKey,
+			ExitDelay:      10,
+			PolicyTemplate: mismatched,
+			Metadata: IncomingVTXOMetadata{
+				RoundID:        "test-round",
+				CommitmentTxID: commitHash,
+				BatchExpiry:    1000,
+				ChainDepth:     1,
+				CreatedHeight:  500,
+				Ancestry: validTestIncomingAncestry(
+					commitHash,
+				),
+			},
+		},
+	)
+	require.Error(t, err)
+	require.Contains(
+		t, err.Error(),
+		"does not match ark output pkscript",
+	)
 }
 
 // TestBuildIncomingVTXODescriptorRejectsInvalidAncestry exercises every

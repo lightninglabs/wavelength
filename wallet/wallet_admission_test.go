@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -65,6 +66,27 @@ type mockVTXOManagerBehavior struct {
 	// forfeitReleaseCalls tracks how many ReleaseForfeitRequest were
 	// received.
 	forfeitReleaseCalls int
+
+	// customActivateReq is the last ActivateCustomForfeitInputsRequest
+	// received.
+	customActivateReq *actormsg.ActivateCustomForfeitInputsRequest
+
+	// customActivateResp is returned for
+	// ActivateCustomForfeitInputsRequest.
+	customActivateResp *actormsg.ActivateCustomForfeitInputsResponse
+
+	// customActivateErr when set causes
+	// ActivateCustomForfeitInputsRequest to fail.
+	customActivateErr error
+
+	// customDropReq is the last DropCustomForfeitInputsRequest received.
+	customDropReq *actormsg.DropCustomForfeitInputsRequest
+
+	// customDropResp is returned for DropCustomForfeitInputsRequest.
+	customDropResp *actormsg.DropCustomForfeitInputsResponse
+
+	// customDropErr when set causes DropCustomForfeitInputsRequest to fail.
+	customDropErr error
 
 	// selectForfeitResp is returned for
 	// SelectAndReserveForfeitRequest.
@@ -133,6 +155,32 @@ func (m *mockVTXOManagerBehavior) Receive(_ context.Context,
 
 		return fn.Ok[actormsg.VTXOManagerResp](
 			m.forfeitReleaseResp,
+		)
+
+	case *actormsg.ActivateCustomForfeitInputsRequest:
+		m.customActivateReq = msg
+
+		if m.customActivateErr != nil {
+			return fn.Err[actormsg.VTXOManagerResp](
+				m.customActivateErr,
+			)
+		}
+
+		return fn.Ok[actormsg.VTXOManagerResp](
+			m.customActivateResp,
+		)
+
+	case *actormsg.DropCustomForfeitInputsRequest:
+		m.customDropReq = msg
+
+		if m.customDropErr != nil {
+			return fn.Err[actormsg.VTXOManagerResp](
+				m.customDropErr,
+			)
+		}
+
+		return fn.Ok[actormsg.VTXOManagerResp](
+			m.customDropResp,
 		)
 
 	case *actormsg.SelectAndReserveForfeitRequest:
@@ -556,6 +604,205 @@ func TestRefreshReservesBeforeRoundRegistration(t *testing.T) {
 
 	// Round should have received the intent.
 	require.Equal(t, 1, roundActor.registerCalls)
+}
+
+// TestCustomRefreshActivatesSignerWithoutLiveReservation verifies that the
+// custom refresh path composes a round intent package from caller-provided
+// metadata and deliberately bypasses the normal wallet-owned VTXO reservation
+// path. Swap vHTLCs are tracked by their swap FSMs, so the wallet activates a
+// temporary PendingForfeit signer actor instead of requiring an existing live
+// descriptor for the old vHTLC.
+func TestCustomRefreshActivatesSignerWithoutLiveReservation(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	authSpend := &arkscript.SpendPath{
+		RequiredSequence: 1,
+	}
+	forfeitSpend := &arkscript.SpendPath{
+		RequiredSequence: 2,
+	}
+	op := testOutpoint(42)
+	commitmentTxID := chainhash.HashH([]byte("custom-refresh-commitment"))
+	policyTemplate := []byte{0xde, 0xad, 0xbe, 0xef}
+	pkScript := []byte{0x51, 0x20, 0x01}
+	ancestry := []types.Ancestry{{
+		CommitmentTxID: commitmentTxID,
+		TreeDepth:      3,
+	}}
+	activateResp := &actormsg.ActivateCustomForfeitInputsResponse{
+		ActivatedCount: 1,
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveErr:  fmt.Errorf("should not reserve"),
+		customActivateResp: activateResp,
+	}
+	roundActor := &mockRoundActorBehavior{}
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(nil),
+	)
+
+	result := w.Receive(t.Context(), &RefreshCustomVTXOsRequest{
+		Inputs: []CustomRefreshInput{{
+			Outpoint:       op,
+			Amount:         42_000,
+			PkScript:       pkScript,
+			PolicyTemplate: policyTemplate,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: clientPriv.PubKey(),
+			},
+			OperatorKey:    operatorPriv.PubKey(),
+			RelativeExpiry: 2,
+			RoundID:        "round-custom-refresh",
+			CommitmentTxID: commitmentTxID,
+			BatchExpiry:    1234,
+			ChainDepth:     1,
+			CreatedHeight:  99,
+			Ancestry:       ancestry,
+			AuthSpend:      authSpend,
+			ForfeitSpend:   forfeitSpend,
+		}},
+		Outputs: []CustomRefreshOutput{{
+			Amount:         41_000,
+			PolicyTemplate: policyTemplate,
+			PkScript:       pkScript,
+			FixedAmount:    true,
+		}},
+	})
+	require.True(t, result.IsOk(), "expected ok, got: %v",
+		result.Err())
+
+	respVal, err := result.Unpack()
+	require.NoError(t, err)
+	resp, ok := respVal.(*RefreshCustomVTXOsResponse)
+	require.True(t, ok, "unexpected response type: %T", respVal)
+	require.Equal(t, 1, resp.RefreshingCount)
+
+	require.Zero(t, mgr.forfeitReserveCalls)
+	require.NotNil(t, mgr.customActivateReq)
+	require.Len(t, mgr.customActivateReq.Inputs, 1)
+	require.Equal(t, op, mgr.customActivateReq.Inputs[0].Outpoint)
+	require.Equal(
+		t, btcutil.Amount(42_000),
+		mgr.customActivateReq.Inputs[0].Amount,
+	)
+	require.Equal(t, pkScript, mgr.customActivateReq.Inputs[0].PkScript)
+	require.Equal(
+		t, policyTemplate,
+		mgr.customActivateReq.Inputs[0].PolicyTemplate,
+	)
+	require.Equal(
+		t, clientPriv.PubKey(),
+		mgr.customActivateReq.Inputs[0].ClientKey.PubKey,
+	)
+	require.True(
+		t, operatorPriv.PubKey().IsEqual(
+			mgr.customActivateReq.Inputs[0].OperatorKey,
+		),
+	)
+	require.Equal(
+		t, uint32(2), mgr.customActivateReq.Inputs[0].RelativeExpiry,
+	)
+	require.Equal(
+		t, "round-custom-refresh",
+		mgr.customActivateReq.Inputs[0].RoundID,
+	)
+	require.Equal(
+		t, commitmentTxID,
+		mgr.customActivateReq.Inputs[0].CommitmentTxID,
+	)
+	require.EqualValues(
+		t, 1234, mgr.customActivateReq.Inputs[0].BatchExpiry,
+	)
+	require.Equal(t, 1, mgr.customActivateReq.Inputs[0].ChainDepth)
+	require.EqualValues(
+		t, 99, mgr.customActivateReq.Inputs[0].CreatedHeight,
+	)
+	require.Equal(t, ancestry, mgr.customActivateReq.Inputs[0].Ancestry)
+	require.Equal(t, 1, roundActor.registerCalls)
+	intent := roundActor.capturedIntent
+	require.NotNil(t, intent)
+	require.Len(t, intent.Forfeits, 1)
+	require.Len(t, intent.VTXOs, 1)
+
+	require.Equal(t, op, *intent.Forfeits[0].VTXOOutpoint)
+	require.Equal(t, btcutil.Amount(42_000), intent.Forfeits[0].Amount)
+	require.Same(t, authSpend, intent.Forfeits[0].AuthSpend)
+	require.Same(t, forfeitSpend, intent.Forfeits[0].ForfeitSpend)
+
+	require.Equal(t, btcutil.Amount(41_000), intent.VTXOs[0].Amount)
+	require.Equal(t, policyTemplate, intent.VTXOs[0].PolicyTemplate)
+	require.Equal(t, pkScript, intent.VTXOs[0].PkScript)
+	require.True(t, intent.VTXOs[0].FixedAmount)
+	require.Equal(t, types.VTXOOriginRoundRefresh, intent.VTXOs[0].Origin)
+	require.Nil(t, intent.VTXOs[0].OwnerKey.PubKey)
+}
+
+// TestCustomRefreshDropsSignerOnRoundRejection verifies that custom refresh
+// cleanup deletes the temporary signer descriptor instead of releasing it to
+// LiveState when the round rejects the intent.
+func TestCustomRefreshDropsSignerOnRoundRejection(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	op := testOutpoint(43)
+	activateResp := &actormsg.ActivateCustomForfeitInputsResponse{
+		ActivatedCount: 1,
+	}
+	mgr := &mockVTXOManagerBehavior{
+		customActivateResp: activateResp,
+		customDropResp: &actormsg.DropCustomForfeitInputsResponse{
+			DroppedCount: 1,
+		},
+	}
+	roundActor := &mockRoundActorBehavior{
+		registerErr: fmt.Errorf("round full"),
+	}
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(nil),
+	)
+
+	result := w.Receive(t.Context(), &RefreshCustomVTXOsRequest{
+		Inputs: []CustomRefreshInput{{
+			Outpoint:       op,
+			Amount:         42_000,
+			PkScript:       []byte{0x51, 0x20, 0x01},
+			PolicyTemplate: []byte{0xde, 0xad, 0xbe, 0xef},
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: clientPriv.PubKey(),
+			},
+			OperatorKey: operatorPriv.PubKey(),
+			AuthSpend: &arkscript.SpendPath{
+				RequiredSequence: 1,
+			},
+			ForfeitSpend: &arkscript.SpendPath{
+				RequiredSequence: 2,
+			},
+		}},
+		Outputs: []CustomRefreshOutput{{
+			Amount:         41_000,
+			PolicyTemplate: []byte{0xde, 0xad, 0xbe, 0xef},
+			PkScript:       []byte{0x51, 0x20, 0x02},
+		}},
+	})
+	require.True(t, result.IsErr())
+	require.ErrorContains(
+		t, result.Err(),
+		"round rejected custom refresh intent",
+	)
+
+	require.Zero(t, mgr.forfeitReleaseCalls)
+	require.NotNil(t, mgr.customDropReq)
+	require.Equal(t, []wire.OutPoint{op}, mgr.customDropReq.Outpoints)
 }
 
 // TestRefreshReleasesOnRoundRejection verifies that the wallet releases

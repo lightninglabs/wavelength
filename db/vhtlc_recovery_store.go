@@ -131,27 +131,28 @@ func (s *VHTLCRecoveryStoreDB) ArmRecovery(ctx context.Context,
 			return err
 		}
 
-		existing, err = q.GetVHTLCRecoveryJobBySwapAction(
-			ctx, sqlc.GetVHTLCRecoveryJobBySwapActionParams{
+		rows, err := q.ListVHTLCRecoveryJobsBySwapAction(
+			ctx, sqlc.ListVHTLCRecoveryJobsBySwapActionParams{
 				SwapID: job.SwapID,
 				Action: job.Action,
 			},
 		)
-		if err == nil {
-			record, err := vhtlcRecoveryJobFromRow(existing)
+		if err != nil {
+			return err
+		}
+		for i := range rows {
+			record, err := vhtlcRecoveryJobFromRow(rows[i])
 			if err != nil {
 				return err
 			}
-			if !sameArmParameters(record, job) {
+			if sameArmParameters(record, job) {
+				stored = &record
+
+				return nil
+			}
+			if record.VTXOOutpoint == job.VTXOOutpoint {
 				return ErrVHTLCRecoveryIdempotencyConflict
 			}
-
-			stored = &record
-
-			return nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
 		}
 
 		if err := q.InsertVHTLCRecoveryJob(

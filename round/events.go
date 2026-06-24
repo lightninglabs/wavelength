@@ -446,6 +446,10 @@ type ForfeitSignatureResponse struct {
 	// Signature is the client's schnorr signature for the forfeit tx.
 	Signature *schnorr.Signature
 
+	// ParticipantVTXOSigs carries keyed non-operator signatures for custom
+	// spend paths that require multiple client-side participants.
+	ParticipantVTXOSigs []*types.ForfeitParticipantSig
+
 	// SpendPath is the canonical arkscript spend path used for the VTXO
 	// input of the forfeit transaction.
 	SpendPath *arkscript.SpendPath

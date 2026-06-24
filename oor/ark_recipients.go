@@ -18,6 +18,10 @@ type ArkRecipientOutput struct {
 
 	// PkScript is the raw pkScript bytes.
 	PkScript []byte
+
+	// VTXOPolicyTemplate is the serialized arkscript policy template for
+	// the VTXO created by this output, when the server supplied it.
+	VTXOPolicyTemplate []byte
 }
 
 // ExtractArkRecipients returns the non-anchor outputs from a canonical Ark
@@ -59,4 +63,29 @@ func ExtractArkRecipients(ark *psbt.Packet) ([]ArkRecipientOutput, error) {
 	}
 
 	return recipients, nil
+}
+
+// CloneArkRecipients deep-copies recipient outputs and their optional policy
+// metadata.
+func CloneArkRecipients(recipients []ArkRecipientOutput) []ArkRecipientOutput {
+	if len(recipients) == 0 {
+		return nil
+	}
+
+	out := make([]ArkRecipientOutput, len(recipients))
+	for i := range recipients {
+		out[i] = ArkRecipientOutput{
+			OutputIndex: recipients[i].OutputIndex,
+			Value:       recipients[i].Value,
+			PkScript: append(
+				[]byte(nil), recipients[i].PkScript...,
+			),
+			VTXOPolicyTemplate: append(
+				[]byte(nil),
+				recipients[i].VTXOPolicyTemplate...,
+			),
+		}
+	}
+
+	return out
 }

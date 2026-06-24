@@ -186,6 +186,159 @@ func (VTXOStatus) EnumDescriptor() ([]byte, []int) {
 	return file_daemon_proto_rawDescGZIP(), []int{1}
 }
 
+// VTXOExpiryStatus describes how close a VTXO is to batch expiry using the
+// daemon's wallet/VTXO expiry policy.
+type VTXOExpiryStatus int32
+
+const (
+	// VTXO_EXPIRY_STATUS_UNKNOWN is returned when the daemon cannot
+	// classify the VTXO, for example because timing metadata is missing.
+	VTXOExpiryStatus_VTXO_EXPIRY_STATUS_UNKNOWN VTXOExpiryStatus = 0
+	// VTXO_EXPIRY_STATUS_SAFE indicates the VTXO is outside the refresh
+	// threshold.
+	VTXOExpiryStatus_VTXO_EXPIRY_STATUS_SAFE VTXOExpiryStatus = 1
+	// VTXO_EXPIRY_STATUS_NEEDS_REFRESH indicates the VTXO has entered the
+	// cooperative refresh window but is not yet critical.
+	VTXOExpiryStatus_VTXO_EXPIRY_STATUS_NEEDS_REFRESH VTXOExpiryStatus = 2
+	// VTXO_EXPIRY_STATUS_CRITICAL indicates the VTXO should stop waiting for
+	// cooperative refresh and move to unilateral exit/recovery handling.
+	VTXOExpiryStatus_VTXO_EXPIRY_STATUS_CRITICAL VTXOExpiryStatus = 3
+	// VTXO_EXPIRY_STATUS_EXPIRED indicates the VTXO's batch expiry has
+	// passed.
+	VTXOExpiryStatus_VTXO_EXPIRY_STATUS_EXPIRED VTXOExpiryStatus = 4
+)
+
+// Enum value maps for VTXOExpiryStatus.
+var (
+	VTXOExpiryStatus_name = map[int32]string{
+		0: "VTXO_EXPIRY_STATUS_UNKNOWN",
+		1: "VTXO_EXPIRY_STATUS_SAFE",
+		2: "VTXO_EXPIRY_STATUS_NEEDS_REFRESH",
+		3: "VTXO_EXPIRY_STATUS_CRITICAL",
+		4: "VTXO_EXPIRY_STATUS_EXPIRED",
+	}
+	VTXOExpiryStatus_value = map[string]int32{
+		"VTXO_EXPIRY_STATUS_UNKNOWN":       0,
+		"VTXO_EXPIRY_STATUS_SAFE":          1,
+		"VTXO_EXPIRY_STATUS_NEEDS_REFRESH": 2,
+		"VTXO_EXPIRY_STATUS_CRITICAL":      3,
+		"VTXO_EXPIRY_STATUS_EXPIRED":       4,
+	}
+)
+
+func (x VTXOExpiryStatus) Enum() *VTXOExpiryStatus {
+	p := new(VTXOExpiryStatus)
+	*p = x
+	return p
+}
+
+func (x VTXOExpiryStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (VTXOExpiryStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_daemon_proto_enumTypes[2].Descriptor()
+}
+
+func (VTXOExpiryStatus) Type() protoreflect.EnumType {
+	return &file_daemon_proto_enumTypes[2]
+}
+
+func (x VTXOExpiryStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use VTXOExpiryStatus.Descriptor instead.
+func (VTXOExpiryStatus) EnumDescriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{2}
+}
+
+// ForfeitSigningRoute tells the daemon how to resolve a later
+// connector-bound participant signature request for a custom VTXO refresh.
+//
+// RefreshCustomVTXOs validates and queues caller-supplied VTXOs before the
+// round assigns connector outputs. The exact forfeit transaction is therefore
+// not known at queue time. When the VTXO actor later receives the round's
+// connector-bound ForfeitRequest, it calls back into the daemon with the full
+// transcript. This enum controls where that callback is routed.
+//
+// End-to-end, the flow is:
+//
+//  1. A coordinator calls RefreshCustomVTXOs with a custom input, output, and
+//     ForfeitSigningContext.
+//  2. The wallet creates a temporary PendingForfeit actor for the old custom
+//     VTXO and joins the next round.
+//  3. The round assigns a connector output and sends the actor a concrete
+//     ForfeitRequest.
+//  4. The actor builds the exact forfeit transaction and asks the daemon for
+//     the participant signature selected by signing_route.
+//  5. LOCAL_SIGNER answers inside the daemon. PENDING_REQUEST publishes the
+//     transcript through ListPendingForfeitParticipantSignatureRequests and
+//     waits until SubmitForfeitParticipantSignatures supplies the signature.
+//
+// The values intentionally describe signature routing rather than swap
+// direction. Swap-in and swap-out are current users of this mechanism, but the
+// underlying object is just a custom-policy vHTLC that may have multiple
+// participants.
+type ForfeitSigningRoute int32
+
+const (
+	ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_UNSPECIFIED ForfeitSigningRoute = 0
+	// FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER means the daemon must answer the
+	// request synchronously with its configured local participant signer. This
+	// is used when the daemon hosts the participant that can sign the custom
+	// policy path locally. If no local signer is configured, signing fails
+	// instead of silently publishing an external pending request.
+	ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER ForfeitSigningRoute = 1
+	// FORFEIT_SIGNING_ROUTE_PENDING_REQUEST means the daemon must publish a
+	// PendingForfeitParticipantSignatureRequest and block the VTXO actor until
+	// an external participant submits signatures through
+	// SubmitForfeitParticipantSignatures. This is used when another process or
+	// peer owns one of the custom policy participant keys.
+	ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_PENDING_REQUEST ForfeitSigningRoute = 2
+)
+
+// Enum value maps for ForfeitSigningRoute.
+var (
+	ForfeitSigningRoute_name = map[int32]string{
+		0: "FORFEIT_SIGNING_ROUTE_UNSPECIFIED",
+		1: "FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER",
+		2: "FORFEIT_SIGNING_ROUTE_PENDING_REQUEST",
+	}
+	ForfeitSigningRoute_value = map[string]int32{
+		"FORFEIT_SIGNING_ROUTE_UNSPECIFIED":     0,
+		"FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER":    1,
+		"FORFEIT_SIGNING_ROUTE_PENDING_REQUEST": 2,
+	}
+)
+
+func (x ForfeitSigningRoute) Enum() *ForfeitSigningRoute {
+	p := new(ForfeitSigningRoute)
+	*p = x
+	return p
+}
+
+func (x ForfeitSigningRoute) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ForfeitSigningRoute) Descriptor() protoreflect.EnumDescriptor {
+	return file_daemon_proto_enumTypes[3].Descriptor()
+}
+
+func (ForfeitSigningRoute) Type() protoreflect.EnumType {
+	return &file_daemon_proto_enumTypes[3]
+}
+
+func (x ForfeitSigningRoute) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ForfeitSigningRoute.Descriptor instead.
+func (ForfeitSigningRoute) EnumDescriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{3}
+}
+
 // RoundState represents the lifecycle state of a client's round FSM.
 type RoundState int32
 
@@ -291,11 +444,11 @@ func (x RoundState) String() string {
 }
 
 func (RoundState) Descriptor() protoreflect.EnumDescriptor {
-	return file_daemon_proto_enumTypes[2].Descriptor()
+	return file_daemon_proto_enumTypes[4].Descriptor()
 }
 
 func (RoundState) Type() protoreflect.EnumType {
-	return &file_daemon_proto_enumTypes[2]
+	return &file_daemon_proto_enumTypes[4]
 }
 
 func (x RoundState) Number() protoreflect.EnumNumber {
@@ -304,7 +457,7 @@ func (x RoundState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use RoundState.Descriptor instead.
 func (RoundState) EnumDescriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{2}
+	return file_daemon_proto_rawDescGZIP(), []int{4}
 }
 
 type OORSessionDirection int32
@@ -340,11 +493,11 @@ func (x OORSessionDirection) String() string {
 }
 
 func (OORSessionDirection) Descriptor() protoreflect.EnumDescriptor {
-	return file_daemon_proto_enumTypes[3].Descriptor()
+	return file_daemon_proto_enumTypes[5].Descriptor()
 }
 
 func (OORSessionDirection) Type() protoreflect.EnumType {
-	return &file_daemon_proto_enumTypes[3]
+	return &file_daemon_proto_enumTypes[5]
 }
 
 func (x OORSessionDirection) Number() protoreflect.EnumNumber {
@@ -353,7 +506,7 @@ func (x OORSessionDirection) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use OORSessionDirection.Descriptor instead.
 func (OORSessionDirection) EnumDescriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{3}
+	return file_daemon_proto_rawDescGZIP(), []int{5}
 }
 
 type OORSessionStatus int32
@@ -392,11 +545,11 @@ func (x OORSessionStatus) String() string {
 }
 
 func (OORSessionStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_daemon_proto_enumTypes[4].Descriptor()
+	return file_daemon_proto_enumTypes[6].Descriptor()
 }
 
 func (OORSessionStatus) Type() protoreflect.EnumType {
-	return &file_daemon_proto_enumTypes[4]
+	return &file_daemon_proto_enumTypes[6]
 }
 
 func (x OORSessionStatus) Number() protoreflect.EnumNumber {
@@ -405,7 +558,7 @@ func (x OORSessionStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use OORSessionStatus.Descriptor instead.
 func (OORSessionStatus) EnumDescriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{4}
+	return file_daemon_proto_rawDescGZIP(), []int{6}
 }
 
 // UnrollJobStatus represents the high-level phase of an unroll job.
@@ -466,11 +619,11 @@ func (x UnrollJobStatus) String() string {
 }
 
 func (UnrollJobStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_daemon_proto_enumTypes[5].Descriptor()
+	return file_daemon_proto_enumTypes[7].Descriptor()
 }
 
 func (UnrollJobStatus) Type() protoreflect.EnumType {
-	return &file_daemon_proto_enumTypes[5]
+	return &file_daemon_proto_enumTypes[7]
 }
 
 func (x UnrollJobStatus) Number() protoreflect.EnumNumber {
@@ -479,7 +632,7 @@ func (x UnrollJobStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use UnrollJobStatus.Descriptor instead.
 func (UnrollJobStatus) EnumDescriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{5}
+	return file_daemon_proto_rawDescGZIP(), []int{7}
 }
 
 // VHTLCRecoveryDirection records which side owns a recovery job.
@@ -529,11 +682,11 @@ func (x VHTLCRecoveryDirection) String() string {
 }
 
 func (VHTLCRecoveryDirection) Descriptor() protoreflect.EnumDescriptor {
-	return file_daemon_proto_enumTypes[6].Descriptor()
+	return file_daemon_proto_enumTypes[8].Descriptor()
 }
 
 func (VHTLCRecoveryDirection) Type() protoreflect.EnumType {
-	return &file_daemon_proto_enumTypes[6]
+	return &file_daemon_proto_enumTypes[8]
 }
 
 func (x VHTLCRecoveryDirection) Number() protoreflect.EnumNumber {
@@ -542,7 +695,7 @@ func (x VHTLCRecoveryDirection) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use VHTLCRecoveryDirection.Descriptor instead.
 func (VHTLCRecoveryDirection) EnumDescriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{6}
+	return file_daemon_proto_rawDescGZIP(), []int{8}
 }
 
 // VHTLCRecoveryAction selects the unilateral vHTLC leaf to execute.
@@ -583,11 +736,11 @@ func (x VHTLCRecoveryAction) String() string {
 }
 
 func (VHTLCRecoveryAction) Descriptor() protoreflect.EnumDescriptor {
-	return file_daemon_proto_enumTypes[7].Descriptor()
+	return file_daemon_proto_enumTypes[9].Descriptor()
 }
 
 func (VHTLCRecoveryAction) Type() protoreflect.EnumType {
-	return &file_daemon_proto_enumTypes[7]
+	return &file_daemon_proto_enumTypes[9]
 }
 
 func (x VHTLCRecoveryAction) Number() protoreflect.EnumNumber {
@@ -596,7 +749,7 @@ func (x VHTLCRecoveryAction) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use VHTLCRecoveryAction.Descriptor instead.
 func (VHTLCRecoveryAction) EnumDescriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{7}
+	return file_daemon_proto_rawDescGZIP(), []int{9}
 }
 
 // VHTLCRecoveryState mirrors the durable vhtlc_recovery_jobs state column. The
@@ -664,11 +817,11 @@ func (x VHTLCRecoveryState) String() string {
 }
 
 func (VHTLCRecoveryState) Descriptor() protoreflect.EnumDescriptor {
-	return file_daemon_proto_enumTypes[8].Descriptor()
+	return file_daemon_proto_enumTypes[10].Descriptor()
 }
 
 func (VHTLCRecoveryState) Type() protoreflect.EnumType {
-	return &file_daemon_proto_enumTypes[8]
+	return &file_daemon_proto_enumTypes[10]
 }
 
 func (x VHTLCRecoveryState) Number() protoreflect.EnumNumber {
@@ -677,7 +830,7 @@ func (x VHTLCRecoveryState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use VHTLCRecoveryState.Descriptor instead.
 func (VHTLCRecoveryState) EnumDescriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{8}
+	return file_daemon_proto_rawDescGZIP(), []int{10}
 }
 
 type GetInfoRequest struct {
@@ -1569,6 +1722,130 @@ func (x *GetBalanceResponse) GetBoardingAdoptedSat() int64 {
 	return 0
 }
 
+// VTXOExpiryInfo reports the thresholds and current classification the
+// wallet/VTXO layer uses for expiry monitoring.
+type VTXOExpiryInfo struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// status is the VTXO's current expiry posture.
+	Status VTXOExpiryStatus `protobuf:"varint,1,opt,name=status,proto3,enum=daemonrpc.VTXOExpiryStatus" json:"status,omitempty"`
+	// current_height is the chain height used for this classification.
+	CurrentHeight int32 `protobuf:"varint,2,opt,name=current_height,json=currentHeight,proto3" json:"current_height,omitempty"`
+	// batch_expiry is the VTXO batch expiry height.
+	BatchExpiry int32 `protobuf:"varint,3,opt,name=batch_expiry,json=batchExpiry,proto3" json:"batch_expiry,omitempty"`
+	// blocks_remaining is batch_expiry - current_height.
+	BlocksRemaining int32 `protobuf:"varint,4,opt,name=blocks_remaining,json=blocksRemaining,proto3" json:"blocks_remaining,omitempty"`
+	// refresh_threshold_blocks is the number of blocks before batch expiry at
+	// which cooperative refresh should begin.
+	RefreshThresholdBlocks int32 `protobuf:"varint,5,opt,name=refresh_threshold_blocks,json=refreshThresholdBlocks,proto3" json:"refresh_threshold_blocks,omitempty"`
+	// critical_threshold_blocks is the number of blocks before batch expiry at
+	// which recovery/unilateral-exit handling should begin.
+	CriticalThresholdBlocks int32 `protobuf:"varint,6,opt,name=critical_threshold_blocks,json=criticalThresholdBlocks,proto3" json:"critical_threshold_blocks,omitempty"`
+	// relative_expiry is the CSV delay used in the threshold calculation.
+	RelativeExpiry uint32 `protobuf:"varint,7,opt,name=relative_expiry,json=relativeExpiry,proto3" json:"relative_expiry,omitempty"`
+	// max_tree_depth is the worst-case VTXO tree depth used in the threshold
+	// calculation.
+	MaxTreeDepth uint32 `protobuf:"varint,8,opt,name=max_tree_depth,json=maxTreeDepth,proto3" json:"max_tree_depth,omitempty"`
+	// chain_depth is the number of OOR checkpoint hops between this VTXO and
+	// the most recent on-chain commitment. It is included for diagnostics but
+	// is distinct from max_tree_depth.
+	ChainDepth    uint32 `protobuf:"varint,9,opt,name=chain_depth,json=chainDepth,proto3" json:"chain_depth,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VTXOExpiryInfo) Reset() {
+	*x = VTXOExpiryInfo{}
+	mi := &file_daemon_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VTXOExpiryInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VTXOExpiryInfo) ProtoMessage() {}
+
+func (x *VTXOExpiryInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VTXOExpiryInfo.ProtoReflect.Descriptor instead.
+func (*VTXOExpiryInfo) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *VTXOExpiryInfo) GetStatus() VTXOExpiryStatus {
+	if x != nil {
+		return x.Status
+	}
+	return VTXOExpiryStatus_VTXO_EXPIRY_STATUS_UNKNOWN
+}
+
+func (x *VTXOExpiryInfo) GetCurrentHeight() int32 {
+	if x != nil {
+		return x.CurrentHeight
+	}
+	return 0
+}
+
+func (x *VTXOExpiryInfo) GetBatchExpiry() int32 {
+	if x != nil {
+		return x.BatchExpiry
+	}
+	return 0
+}
+
+func (x *VTXOExpiryInfo) GetBlocksRemaining() int32 {
+	if x != nil {
+		return x.BlocksRemaining
+	}
+	return 0
+}
+
+func (x *VTXOExpiryInfo) GetRefreshThresholdBlocks() int32 {
+	if x != nil {
+		return x.RefreshThresholdBlocks
+	}
+	return 0
+}
+
+func (x *VTXOExpiryInfo) GetCriticalThresholdBlocks() int32 {
+	if x != nil {
+		return x.CriticalThresholdBlocks
+	}
+	return 0
+}
+
+func (x *VTXOExpiryInfo) GetRelativeExpiry() uint32 {
+	if x != nil {
+		return x.RelativeExpiry
+	}
+	return 0
+}
+
+func (x *VTXOExpiryInfo) GetMaxTreeDepth() uint32 {
+	if x != nil {
+		return x.MaxTreeDepth
+	}
+	return 0
+}
+
+func (x *VTXOExpiryInfo) GetChainDepth() uint32 {
+	if x != nil {
+		return x.ChainDepth
+	}
+	return 0
+}
+
 type VTXO struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// outpoint is the VTXO's outpoint in "txid:index" format.
@@ -1602,14 +1879,17 @@ type VTXO struct {
 	OorFinalCheckpointPsbts [][]byte `protobuf:"bytes,11,rep,name=oor_final_checkpoint_psbts,json=oorFinalCheckpointPsbts,proto3" json:"oor_final_checkpoint_psbts,omitempty"`
 	// spent_by_txid is the hex-encoded Ark/OOR transaction txid that spent
 	// this VTXO through an out-of-round package, when known.
-	SpentByTxid   string `protobuf:"bytes,12,opt,name=spent_by_txid,json=spentByTxid,proto3" json:"spent_by_txid,omitempty"`
+	SpentByTxid string `protobuf:"bytes,12,opt,name=spent_by_txid,json=spentByTxid,proto3" json:"spent_by_txid,omitempty"`
+	// expiry_info reports the wallet/VTXO layer's current expiry posture for
+	// this VTXO when the daemon has enough timing context to classify it.
+	ExpiryInfo    *VTXOExpiryInfo `protobuf:"bytes,13,opt,name=expiry_info,json=expiryInfo,proto3" json:"expiry_info,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *VTXO) Reset() {
 	*x = VTXO{}
-	mi := &file_daemon_proto_msgTypes[11]
+	mi := &file_daemon_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1621,7 +1901,7 @@ func (x *VTXO) String() string {
 func (*VTXO) ProtoMessage() {}
 
 func (x *VTXO) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[11]
+	mi := &file_daemon_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1634,7 +1914,7 @@ func (x *VTXO) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VTXO.ProtoReflect.Descriptor instead.
 func (*VTXO) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{11}
+	return file_daemon_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *VTXO) GetOutpoint() string {
@@ -1721,6 +2001,13 @@ func (x *VTXO) GetSpentByTxid() string {
 	return ""
 }
 
+func (x *VTXO) GetExpiryInfo() *VTXOExpiryInfo {
+	if x != nil {
+		return x.ExpiryInfo
+	}
+	return nil
+}
+
 type ListVTXOsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// status_filter restricts the response to VTXOs matching this status.
@@ -1740,7 +2027,7 @@ type ListVTXOsRequest struct {
 
 func (x *ListVTXOsRequest) Reset() {
 	*x = ListVTXOsRequest{}
-	mi := &file_daemon_proto_msgTypes[12]
+	mi := &file_daemon_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1752,7 +2039,7 @@ func (x *ListVTXOsRequest) String() string {
 func (*ListVTXOsRequest) ProtoMessage() {}
 
 func (x *ListVTXOsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[12]
+	mi := &file_daemon_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1765,7 +2052,7 @@ func (x *ListVTXOsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListVTXOsRequest.ProtoReflect.Descriptor instead.
 func (*ListVTXOsRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{12}
+	return file_daemon_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ListVTXOsRequest) GetStatusFilter() VTXOStatus {
@@ -1799,7 +2086,7 @@ type ListVTXOsResponse struct {
 
 func (x *ListVTXOsResponse) Reset() {
 	*x = ListVTXOsResponse{}
-	mi := &file_daemon_proto_msgTypes[13]
+	mi := &file_daemon_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1811,7 +2098,7 @@ func (x *ListVTXOsResponse) String() string {
 func (*ListVTXOsResponse) ProtoMessage() {}
 
 func (x *ListVTXOsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[13]
+	mi := &file_daemon_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1824,7 +2111,7 @@ func (x *ListVTXOsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListVTXOsResponse.ProtoReflect.Descriptor instead.
 func (*ListVTXOsResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{13}
+	return file_daemon_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ListVTXOsResponse) GetVtxos() []*VTXO {
@@ -1842,7 +2129,7 @@ type NewAddressRequest struct {
 
 func (x *NewAddressRequest) Reset() {
 	*x = NewAddressRequest{}
-	mi := &file_daemon_proto_msgTypes[14]
+	mi := &file_daemon_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1854,7 +2141,7 @@ func (x *NewAddressRequest) String() string {
 func (*NewAddressRequest) ProtoMessage() {}
 
 func (x *NewAddressRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[14]
+	mi := &file_daemon_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1867,7 +2154,7 @@ func (x *NewAddressRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NewAddressRequest.ProtoReflect.Descriptor instead.
 func (*NewAddressRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{14}
+	return file_daemon_proto_rawDescGZIP(), []int{15}
 }
 
 type NewAddressResponse struct {
@@ -1880,7 +2167,7 @@ type NewAddressResponse struct {
 
 func (x *NewAddressResponse) Reset() {
 	*x = NewAddressResponse{}
-	mi := &file_daemon_proto_msgTypes[15]
+	mi := &file_daemon_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1892,7 +2179,7 @@ func (x *NewAddressResponse) String() string {
 func (*NewAddressResponse) ProtoMessage() {}
 
 func (x *NewAddressResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[15]
+	mi := &file_daemon_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1905,7 +2192,7 @@ func (x *NewAddressResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NewAddressResponse.ProtoReflect.Descriptor instead.
 func (*NewAddressResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{15}
+	return file_daemon_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *NewAddressResponse) GetAddress() string {
@@ -1926,7 +2213,7 @@ type NewReceiveScriptRequest struct {
 
 func (x *NewReceiveScriptRequest) Reset() {
 	*x = NewReceiveScriptRequest{}
-	mi := &file_daemon_proto_msgTypes[16]
+	mi := &file_daemon_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1938,7 +2225,7 @@ func (x *NewReceiveScriptRequest) String() string {
 func (*NewReceiveScriptRequest) ProtoMessage() {}
 
 func (x *NewReceiveScriptRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[16]
+	mi := &file_daemon_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1951,7 +2238,7 @@ func (x *NewReceiveScriptRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NewReceiveScriptRequest.ProtoReflect.Descriptor instead.
 func (*NewReceiveScriptRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{16}
+	return file_daemon_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *NewReceiveScriptRequest) GetLabel() string {
@@ -1979,7 +2266,7 @@ type NewReceiveScriptResponse struct {
 
 func (x *NewReceiveScriptResponse) Reset() {
 	*x = NewReceiveScriptResponse{}
-	mi := &file_daemon_proto_msgTypes[17]
+	mi := &file_daemon_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1991,7 +2278,7 @@ func (x *NewReceiveScriptResponse) String() string {
 func (*NewReceiveScriptResponse) ProtoMessage() {}
 
 func (x *NewReceiveScriptResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[17]
+	mi := &file_daemon_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2004,7 +2291,7 @@ func (x *NewReceiveScriptResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NewReceiveScriptResponse.ProtoReflect.Descriptor instead.
 func (*NewReceiveScriptResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{17}
+	return file_daemon_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *NewReceiveScriptResponse) GetPkScriptHex() string {
@@ -2053,7 +2340,7 @@ type ReceiveAuthKeyRequest struct {
 
 func (x *ReceiveAuthKeyRequest) Reset() {
 	*x = ReceiveAuthKeyRequest{}
-	mi := &file_daemon_proto_msgTypes[18]
+	mi := &file_daemon_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2065,7 +2352,7 @@ func (x *ReceiveAuthKeyRequest) String() string {
 func (*ReceiveAuthKeyRequest) ProtoMessage() {}
 
 func (x *ReceiveAuthKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[18]
+	mi := &file_daemon_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2078,7 +2365,7 @@ func (x *ReceiveAuthKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReceiveAuthKeyRequest.ProtoReflect.Descriptor instead.
 func (*ReceiveAuthKeyRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{18}
+	return file_daemon_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ReceiveAuthKeyRequest) GetPaymentHash() []byte {
@@ -2099,7 +2386,7 @@ type ReceiveAuthKeyResponse struct {
 
 func (x *ReceiveAuthKeyResponse) Reset() {
 	*x = ReceiveAuthKeyResponse{}
-	mi := &file_daemon_proto_msgTypes[19]
+	mi := &file_daemon_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2111,7 +2398,7 @@ func (x *ReceiveAuthKeyResponse) String() string {
 func (*ReceiveAuthKeyResponse) ProtoMessage() {}
 
 func (x *ReceiveAuthKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[19]
+	mi := &file_daemon_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2124,7 +2411,7 @@ func (x *ReceiveAuthKeyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReceiveAuthKeyResponse.ProtoReflect.Descriptor instead.
 func (*ReceiveAuthKeyResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{19}
+	return file_daemon_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ReceiveAuthKeyResponse) GetPubkey() []byte {
@@ -2150,7 +2437,7 @@ type SignReceiveAuthMessageRequest struct {
 
 func (x *SignReceiveAuthMessageRequest) Reset() {
 	*x = SignReceiveAuthMessageRequest{}
-	mi := &file_daemon_proto_msgTypes[20]
+	mi := &file_daemon_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2162,7 +2449,7 @@ func (x *SignReceiveAuthMessageRequest) String() string {
 func (*SignReceiveAuthMessageRequest) ProtoMessage() {}
 
 func (x *SignReceiveAuthMessageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[20]
+	mi := &file_daemon_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2175,7 +2462,7 @@ func (x *SignReceiveAuthMessageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignReceiveAuthMessageRequest.ProtoReflect.Descriptor instead.
 func (*SignReceiveAuthMessageRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{20}
+	return file_daemon_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *SignReceiveAuthMessageRequest) GetPaymentHash() []byte {
@@ -2209,7 +2496,7 @@ type SignReceiveAuthMessageResponse struct {
 
 func (x *SignReceiveAuthMessageResponse) Reset() {
 	*x = SignReceiveAuthMessageResponse{}
-	mi := &file_daemon_proto_msgTypes[21]
+	mi := &file_daemon_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2221,7 +2508,7 @@ func (x *SignReceiveAuthMessageResponse) String() string {
 func (*SignReceiveAuthMessageResponse) ProtoMessage() {}
 
 func (x *SignReceiveAuthMessageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[21]
+	mi := &file_daemon_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2234,7 +2521,7 @@ func (x *SignReceiveAuthMessageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignReceiveAuthMessageResponse.ProtoReflect.Descriptor instead.
 func (*SignReceiveAuthMessageResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{21}
+	return file_daemon_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *SignReceiveAuthMessageResponse) GetSignature() []byte {
@@ -2260,7 +2547,7 @@ type SignReceiveAuthMessageCompactRequest struct {
 
 func (x *SignReceiveAuthMessageCompactRequest) Reset() {
 	*x = SignReceiveAuthMessageCompactRequest{}
-	mi := &file_daemon_proto_msgTypes[22]
+	mi := &file_daemon_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2272,7 +2559,7 @@ func (x *SignReceiveAuthMessageCompactRequest) String() string {
 func (*SignReceiveAuthMessageCompactRequest) ProtoMessage() {}
 
 func (x *SignReceiveAuthMessageCompactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[22]
+	mi := &file_daemon_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2285,7 +2572,7 @@ func (x *SignReceiveAuthMessageCompactRequest) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use SignReceiveAuthMessageCompactRequest.ProtoReflect.Descriptor instead.
 func (*SignReceiveAuthMessageCompactRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{22}
+	return file_daemon_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *SignReceiveAuthMessageCompactRequest) GetPaymentHash() []byte {
@@ -2319,7 +2606,7 @@ type SignReceiveAuthMessageCompactResponse struct {
 
 func (x *SignReceiveAuthMessageCompactResponse) Reset() {
 	*x = SignReceiveAuthMessageCompactResponse{}
-	mi := &file_daemon_proto_msgTypes[23]
+	mi := &file_daemon_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2331,7 +2618,7 @@ func (x *SignReceiveAuthMessageCompactResponse) String() string {
 func (*SignReceiveAuthMessageCompactResponse) ProtoMessage() {}
 
 func (x *SignReceiveAuthMessageCompactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[23]
+	mi := &file_daemon_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2344,7 +2631,7 @@ func (x *SignReceiveAuthMessageCompactResponse) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use SignReceiveAuthMessageCompactResponse.ProtoReflect.Descriptor instead.
 func (*SignReceiveAuthMessageCompactResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{23}
+	return file_daemon_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *SignReceiveAuthMessageCompactResponse) GetSignature() []byte {
@@ -2367,7 +2654,7 @@ type ReceiveAuthECDHRequest struct {
 
 func (x *ReceiveAuthECDHRequest) Reset() {
 	*x = ReceiveAuthECDHRequest{}
-	mi := &file_daemon_proto_msgTypes[24]
+	mi := &file_daemon_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2379,7 +2666,7 @@ func (x *ReceiveAuthECDHRequest) String() string {
 func (*ReceiveAuthECDHRequest) ProtoMessage() {}
 
 func (x *ReceiveAuthECDHRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[24]
+	mi := &file_daemon_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2392,7 +2679,7 @@ func (x *ReceiveAuthECDHRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReceiveAuthECDHRequest.ProtoReflect.Descriptor instead.
 func (*ReceiveAuthECDHRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{24}
+	return file_daemon_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ReceiveAuthECDHRequest) GetPaymentHash() []byte {
@@ -2419,7 +2706,7 @@ type ReceiveAuthECDHResponse struct {
 
 func (x *ReceiveAuthECDHResponse) Reset() {
 	*x = ReceiveAuthECDHResponse{}
-	mi := &file_daemon_proto_msgTypes[25]
+	mi := &file_daemon_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2431,7 +2718,7 @@ func (x *ReceiveAuthECDHResponse) String() string {
 func (*ReceiveAuthECDHResponse) ProtoMessage() {}
 
 func (x *ReceiveAuthECDHResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[25]
+	mi := &file_daemon_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2444,7 +2731,7 @@ func (x *ReceiveAuthECDHResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReceiveAuthECDHResponse.ProtoReflect.Descriptor instead.
 func (*ReceiveAuthECDHResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{25}
+	return file_daemon_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ReceiveAuthECDHResponse) GetSharedSecret() []byte {
@@ -2467,7 +2754,7 @@ type GetIndexedVTXOByPkScriptRequest struct {
 
 func (x *GetIndexedVTXOByPkScriptRequest) Reset() {
 	*x = GetIndexedVTXOByPkScriptRequest{}
-	mi := &file_daemon_proto_msgTypes[26]
+	mi := &file_daemon_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2479,7 +2766,7 @@ func (x *GetIndexedVTXOByPkScriptRequest) String() string {
 func (*GetIndexedVTXOByPkScriptRequest) ProtoMessage() {}
 
 func (x *GetIndexedVTXOByPkScriptRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[26]
+	mi := &file_daemon_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2492,7 +2779,7 @@ func (x *GetIndexedVTXOByPkScriptRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetIndexedVTXOByPkScriptRequest.ProtoReflect.Descriptor instead.
 func (*GetIndexedVTXOByPkScriptRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{26}
+	return file_daemon_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetIndexedVTXOByPkScriptRequest) GetPkScript() []byte {
@@ -2519,7 +2806,7 @@ type GetIndexedVTXOByPkScriptResponse struct {
 
 func (x *GetIndexedVTXOByPkScriptResponse) Reset() {
 	*x = GetIndexedVTXOByPkScriptResponse{}
-	mi := &file_daemon_proto_msgTypes[27]
+	mi := &file_daemon_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2531,7 +2818,7 @@ func (x *GetIndexedVTXOByPkScriptResponse) String() string {
 func (*GetIndexedVTXOByPkScriptResponse) ProtoMessage() {}
 
 func (x *GetIndexedVTXOByPkScriptResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[27]
+	mi := &file_daemon_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2544,10 +2831,187 @@ func (x *GetIndexedVTXOByPkScriptResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetIndexedVTXOByPkScriptResponse.ProtoReflect.Descriptor instead.
 func (*GetIndexedVTXOByPkScriptResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{27}
+	return file_daemon_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetIndexedVTXOByPkScriptResponse) GetVtxo() *VTXO {
+	if x != nil {
+		return x.Vtxo
+	}
+	return nil
+}
+
+// GetVTXOExpiryInfoRequest identifies one VTXO whose expiry posture should be
+// classified by the daemon's wallet/VTXO expiry policy.
+type GetVTXOExpiryInfoRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// target selects whether the daemon should resolve the VTXO from the local
+	// wallet store by outpoint or from the authoritative indexer by pkScript.
+	//
+	// Types that are valid to be assigned to Target:
+	//
+	//	*GetVTXOExpiryInfoRequest_Outpoint
+	//	*GetVTXOExpiryInfoRequest_PkScript
+	Target isGetVTXOExpiryInfoRequest_Target `protobuf_oneof:"target"`
+	// status_filter restricts pk_script lookups to matching lifecycle states.
+	// Empty pk_script filters default to VTXO_STATUS_LIVE so refreshed VTXOs
+	// are resolved from the active replacement instead of older spent or
+	// forfeited generations. The field is ignored for outpoint lookups.
+	StatusFilter []VTXOStatus `protobuf:"varint,3,rep,packed,name=status_filter,json=statusFilter,proto3,enum=daemonrpc.VTXOStatus" json:"status_filter,omitempty"`
+	// current_height overrides the chain height used for classification. If
+	// zero, the daemon uses its current best chain height.
+	CurrentHeight int32 `protobuf:"varint,4,opt,name=current_height,json=currentHeight,proto3" json:"current_height,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetVTXOExpiryInfoRequest) Reset() {
+	*x = GetVTXOExpiryInfoRequest{}
+	mi := &file_daemon_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetVTXOExpiryInfoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetVTXOExpiryInfoRequest) ProtoMessage() {}
+
+func (x *GetVTXOExpiryInfoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetVTXOExpiryInfoRequest.ProtoReflect.Descriptor instead.
+func (*GetVTXOExpiryInfoRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *GetVTXOExpiryInfoRequest) GetTarget() isGetVTXOExpiryInfoRequest_Target {
+	if x != nil {
+		return x.Target
+	}
+	return nil
+}
+
+func (x *GetVTXOExpiryInfoRequest) GetOutpoint() string {
+	if x != nil {
+		if x, ok := x.Target.(*GetVTXOExpiryInfoRequest_Outpoint); ok {
+			return x.Outpoint
+		}
+	}
+	return ""
+}
+
+func (x *GetVTXOExpiryInfoRequest) GetPkScript() []byte {
+	if x != nil {
+		if x, ok := x.Target.(*GetVTXOExpiryInfoRequest_PkScript); ok {
+			return x.PkScript
+		}
+	}
+	return nil
+}
+
+func (x *GetVTXOExpiryInfoRequest) GetStatusFilter() []VTXOStatus {
+	if x != nil {
+		return x.StatusFilter
+	}
+	return nil
+}
+
+func (x *GetVTXOExpiryInfoRequest) GetCurrentHeight() int32 {
+	if x != nil {
+		return x.CurrentHeight
+	}
+	return 0
+}
+
+type isGetVTXOExpiryInfoRequest_Target interface {
+	isGetVTXOExpiryInfoRequest_Target()
+}
+
+type GetVTXOExpiryInfoRequest_Outpoint struct {
+	// outpoint identifies a locally known VTXO in "txid:index" format.
+	Outpoint string `protobuf:"bytes,1,opt,name=outpoint,proto3,oneof"`
+}
+
+type GetVTXOExpiryInfoRequest_PkScript struct {
+	// pk_script queries the authoritative indexer for a matching VTXO.
+	PkScript []byte `protobuf:"bytes,2,opt,name=pk_script,json=pkScript,proto3,oneof"`
+}
+
+func (*GetVTXOExpiryInfoRequest_Outpoint) isGetVTXOExpiryInfoRequest_Target() {}
+
+func (*GetVTXOExpiryInfoRequest_PkScript) isGetVTXOExpiryInfoRequest_Target() {}
+
+// GetVTXOExpiryInfoResponse returns the VTXO matched by the request together
+// with the expiry posture calculated from the daemon's authoritative metadata.
+type GetVTXOExpiryInfoResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// found reports whether the daemon found a VTXO for the request target.
+	Found bool `protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
+	// expiry_info is present when found is true and the VTXO had enough timing
+	// metadata to classify.
+	ExpiryInfo *VTXOExpiryInfo `protobuf:"bytes,2,opt,name=expiry_info,json=expiryInfo,proto3" json:"expiry_info,omitempty"`
+	// vtxo is the VTXO used for classification when found.
+	Vtxo          *VTXO `protobuf:"bytes,3,opt,name=vtxo,proto3" json:"vtxo,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetVTXOExpiryInfoResponse) Reset() {
+	*x = GetVTXOExpiryInfoResponse{}
+	mi := &file_daemon_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetVTXOExpiryInfoResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetVTXOExpiryInfoResponse) ProtoMessage() {}
+
+func (x *GetVTXOExpiryInfoResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetVTXOExpiryInfoResponse.ProtoReflect.Descriptor instead.
+func (*GetVTXOExpiryInfoResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *GetVTXOExpiryInfoResponse) GetFound() bool {
+	if x != nil {
+		return x.Found
+	}
+	return false
+}
+
+func (x *GetVTXOExpiryInfoResponse) GetExpiryInfo() *VTXOExpiryInfo {
+	if x != nil {
+		return x.ExpiryInfo
+	}
+	return nil
+}
+
+func (x *GetVTXOExpiryInfoResponse) GetVtxo() *VTXO {
 	if x != nil {
 		return x.Vtxo
 	}
@@ -2566,7 +3030,7 @@ type GetIndexedOORSessionByTxidRequest struct {
 
 func (x *GetIndexedOORSessionByTxidRequest) Reset() {
 	*x = GetIndexedOORSessionByTxidRequest{}
-	mi := &file_daemon_proto_msgTypes[28]
+	mi := &file_daemon_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2578,7 +3042,7 @@ func (x *GetIndexedOORSessionByTxidRequest) String() string {
 func (*GetIndexedOORSessionByTxidRequest) ProtoMessage() {}
 
 func (x *GetIndexedOORSessionByTxidRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[28]
+	mi := &file_daemon_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2591,7 +3055,7 @@ func (x *GetIndexedOORSessionByTxidRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use GetIndexedOORSessionByTxidRequest.ProtoReflect.Descriptor instead.
 func (*GetIndexedOORSessionByTxidRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{28}
+	return file_daemon_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *GetIndexedOORSessionByTxidRequest) GetPkScript() []byte {
@@ -2621,7 +3085,7 @@ type GetIndexedOORSessionByTxidResponse struct {
 
 func (x *GetIndexedOORSessionByTxidResponse) Reset() {
 	*x = GetIndexedOORSessionByTxidResponse{}
-	mi := &file_daemon_proto_msgTypes[29]
+	mi := &file_daemon_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2633,7 +3097,7 @@ func (x *GetIndexedOORSessionByTxidResponse) String() string {
 func (*GetIndexedOORSessionByTxidResponse) ProtoMessage() {}
 
 func (x *GetIndexedOORSessionByTxidResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[29]
+	mi := &file_daemon_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2646,7 +3110,7 @@ func (x *GetIndexedOORSessionByTxidResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use GetIndexedOORSessionByTxidResponse.ProtoReflect.Descriptor instead.
 func (*GetIndexedOORSessionByTxidResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{29}
+	return file_daemon_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *GetIndexedOORSessionByTxidResponse) GetArkPsbt() []byte {
@@ -2684,7 +3148,7 @@ type Output struct {
 
 func (x *Output) Reset() {
 	*x = Output{}
-	mi := &file_daemon_proto_msgTypes[30]
+	mi := &file_daemon_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2696,7 +3160,7 @@ func (x *Output) String() string {
 func (*Output) ProtoMessage() {}
 
 func (x *Output) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[30]
+	mi := &file_daemon_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2709,7 +3173,7 @@ func (x *Output) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Output.ProtoReflect.Descriptor instead.
 func (*Output) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{30}
+	return file_daemon_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *Output) GetDestination() isOutput_Destination {
@@ -2806,7 +3270,7 @@ type SendVTXORequest struct {
 
 func (x *SendVTXORequest) Reset() {
 	*x = SendVTXORequest{}
-	mi := &file_daemon_proto_msgTypes[31]
+	mi := &file_daemon_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2818,7 +3282,7 @@ func (x *SendVTXORequest) String() string {
 func (*SendVTXORequest) ProtoMessage() {}
 
 func (x *SendVTXORequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[31]
+	mi := &file_daemon_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2831,7 +3295,7 @@ func (x *SendVTXORequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendVTXORequest.ProtoReflect.Descriptor instead.
 func (*SendVTXORequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{31}
+	return file_daemon_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *SendVTXORequest) GetRecipients() []*Output {
@@ -2871,7 +3335,7 @@ type SendVTXOResponse struct {
 
 func (x *SendVTXOResponse) Reset() {
 	*x = SendVTXOResponse{}
-	mi := &file_daemon_proto_msgTypes[32]
+	mi := &file_daemon_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2883,7 +3347,7 @@ func (x *SendVTXOResponse) String() string {
 func (*SendVTXOResponse) ProtoMessage() {}
 
 func (x *SendVTXOResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[32]
+	mi := &file_daemon_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2896,7 +3360,7 @@ func (x *SendVTXOResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendVTXOResponse.ProtoReflect.Descriptor instead.
 func (*SendVTXOResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{32}
+	return file_daemon_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *SendVTXOResponse) GetStatus() string {
@@ -2956,7 +3420,7 @@ type SendOORRequest struct {
 
 func (x *SendOORRequest) Reset() {
 	*x = SendOORRequest{}
-	mi := &file_daemon_proto_msgTypes[33]
+	mi := &file_daemon_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2968,7 +3432,7 @@ func (x *SendOORRequest) String() string {
 func (*SendOORRequest) ProtoMessage() {}
 
 func (x *SendOORRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[33]
+	mi := &file_daemon_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2981,7 +3445,7 @@ func (x *SendOORRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendOORRequest.ProtoReflect.Descriptor instead.
 func (*SendOORRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{33}
+	return file_daemon_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *SendOORRequest) GetRecipients() []*Output {
@@ -3040,7 +3504,7 @@ type CustomOORInput struct {
 
 func (x *CustomOORInput) Reset() {
 	*x = CustomOORInput{}
-	mi := &file_daemon_proto_msgTypes[34]
+	mi := &file_daemon_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3052,7 +3516,7 @@ func (x *CustomOORInput) String() string {
 func (*CustomOORInput) ProtoMessage() {}
 
 func (x *CustomOORInput) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[34]
+	mi := &file_daemon_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3065,7 +3529,7 @@ func (x *CustomOORInput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CustomOORInput.ProtoReflect.Descriptor instead.
 func (*CustomOORInput) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{34}
+	return file_daemon_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *CustomOORInput) GetOutpoint() string {
@@ -3130,7 +3594,7 @@ type TaprootScriptSignature struct {
 
 func (x *TaprootScriptSignature) Reset() {
 	*x = TaprootScriptSignature{}
-	mi := &file_daemon_proto_msgTypes[35]
+	mi := &file_daemon_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3142,7 +3606,7 @@ func (x *TaprootScriptSignature) String() string {
 func (*TaprootScriptSignature) ProtoMessage() {}
 
 func (x *TaprootScriptSignature) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[35]
+	mi := &file_daemon_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3155,7 +3619,7 @@ func (x *TaprootScriptSignature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaprootScriptSignature.ProtoReflect.Descriptor instead.
 func (*TaprootScriptSignature) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{35}
+	return file_daemon_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *TaprootScriptSignature) GetPubkey() []byte {
@@ -3206,7 +3670,7 @@ type SendOORResponse struct {
 
 func (x *SendOORResponse) Reset() {
 	*x = SendOORResponse{}
-	mi := &file_daemon_proto_msgTypes[36]
+	mi := &file_daemon_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3218,7 +3682,7 @@ func (x *SendOORResponse) String() string {
 func (*SendOORResponse) ProtoMessage() {}
 
 func (x *SendOORResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[36]
+	mi := &file_daemon_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3231,7 +3695,7 @@ func (x *SendOORResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendOORResponse.ProtoReflect.Descriptor instead.
 func (*SendOORResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{36}
+	return file_daemon_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *SendOORResponse) GetStatus() string {
@@ -3269,7 +3733,7 @@ type PrepareOORRequest struct {
 
 func (x *PrepareOORRequest) Reset() {
 	*x = PrepareOORRequest{}
-	mi := &file_daemon_proto_msgTypes[37]
+	mi := &file_daemon_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3281,7 +3745,7 @@ func (x *PrepareOORRequest) String() string {
 func (*PrepareOORRequest) ProtoMessage() {}
 
 func (x *PrepareOORRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[37]
+	mi := &file_daemon_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3294,7 +3758,7 @@ func (x *PrepareOORRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrepareOORRequest.ProtoReflect.Descriptor instead.
 func (*PrepareOORRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{37}
+	return file_daemon_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *PrepareOORRequest) GetRecipient() *Output {
@@ -3329,7 +3793,7 @@ type PreparedOORCustomInput struct {
 
 func (x *PreparedOORCustomInput) Reset() {
 	*x = PreparedOORCustomInput{}
-	mi := &file_daemon_proto_msgTypes[38]
+	mi := &file_daemon_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3341,7 +3805,7 @@ func (x *PreparedOORCustomInput) String() string {
 func (*PreparedOORCustomInput) ProtoMessage() {}
 
 func (x *PreparedOORCustomInput) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[38]
+	mi := &file_daemon_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3354,7 +3818,7 @@ func (x *PreparedOORCustomInput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreparedOORCustomInput.ProtoReflect.Descriptor instead.
 func (*PreparedOORCustomInput) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{38}
+	return file_daemon_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *PreparedOORCustomInput) GetOutpoint() string {
@@ -3402,7 +3866,7 @@ type PrepareOORResponse struct {
 
 func (x *PrepareOORResponse) Reset() {
 	*x = PrepareOORResponse{}
-	mi := &file_daemon_proto_msgTypes[39]
+	mi := &file_daemon_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3414,7 +3878,7 @@ func (x *PrepareOORResponse) String() string {
 func (*PrepareOORResponse) ProtoMessage() {}
 
 func (x *PrepareOORResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[39]
+	mi := &file_daemon_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3427,7 +3891,7 @@ func (x *PrepareOORResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrepareOORResponse.ProtoReflect.Descriptor instead.
 func (*PrepareOORResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{39}
+	return file_daemon_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *PrepareOORResponse) GetArkPsbt() []byte {
@@ -3470,7 +3934,7 @@ type SignOORCustomInputRequest struct {
 
 func (x *SignOORCustomInputRequest) Reset() {
 	*x = SignOORCustomInputRequest{}
-	mi := &file_daemon_proto_msgTypes[40]
+	mi := &file_daemon_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3482,7 +3946,7 @@ func (x *SignOORCustomInputRequest) String() string {
 func (*SignOORCustomInputRequest) ProtoMessage() {}
 
 func (x *SignOORCustomInputRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[40]
+	mi := &file_daemon_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3495,7 +3959,7 @@ func (x *SignOORCustomInputRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignOORCustomInputRequest.ProtoReflect.Descriptor instead.
 func (*SignOORCustomInputRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{40}
+	return file_daemon_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *SignOORCustomInputRequest) GetCustomInput() *CustomOORInput {
@@ -3522,7 +3986,7 @@ type SignOORCustomInputResponse struct {
 
 func (x *SignOORCustomInputResponse) Reset() {
 	*x = SignOORCustomInputResponse{}
-	mi := &file_daemon_proto_msgTypes[41]
+	mi := &file_daemon_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3534,7 +3998,7 @@ func (x *SignOORCustomInputResponse) String() string {
 func (*SignOORCustomInputResponse) ProtoMessage() {}
 
 func (x *SignOORCustomInputResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[41]
+	mi := &file_daemon_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3547,7 +4011,7 @@ func (x *SignOORCustomInputResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignOORCustomInputResponse.ProtoReflect.Descriptor instead.
 func (*SignOORCustomInputResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{41}
+	return file_daemon_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *SignOORCustomInputResponse) GetSignature() *TaprootScriptSignature {
@@ -3555,6 +4019,252 @@ func (x *SignOORCustomInputResponse) GetSignature() *TaprootScriptSignature {
 		return x.Signature
 	}
 	return nil
+}
+
+type SignVTXOForfeitRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// vtxo_outpoint identifies the VTXO input at forfeit tx input index 0.
+	VtxoOutpoint string `protobuf:"bytes,1,opt,name=vtxo_outpoint,json=vtxoOutpoint,proto3" json:"vtxo_outpoint,omitempty"`
+	// vtxo_amount_sat is the value of the VTXO output being spent.
+	VtxoAmountSat int64 `protobuf:"varint,2,opt,name=vtxo_amount_sat,json=vtxoAmountSat,proto3" json:"vtxo_amount_sat,omitempty"`
+	// vtxo_pk_script is the taproot output script of the VTXO being spent.
+	VtxoPkScript []byte `protobuf:"bytes,3,opt,name=vtxo_pk_script,json=vtxoPkScript,proto3" json:"vtxo_pk_script,omitempty"`
+	// vtxo_policy_template is the semantic policy template that produced the
+	// VTXO taproot output.
+	VtxoPolicyTemplate []byte `protobuf:"bytes,4,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
+	// spend_path is the encoded tapscript path selected for the VTXO input.
+	SpendPath []byte `protobuf:"bytes,5,opt,name=spend_path,json=spendPath,proto3" json:"spend_path,omitempty"`
+	// unsigned_forfeit_tx is the exact serialized forfeit transaction to sign.
+	UnsignedForfeitTx []byte `protobuf:"bytes,6,opt,name=unsigned_forfeit_tx,json=unsignedForfeitTx,proto3" json:"unsigned_forfeit_tx,omitempty"`
+	// connector_outpoint identifies the connector input at forfeit tx input
+	// index 1.
+	ConnectorOutpoint string `protobuf:"bytes,7,opt,name=connector_outpoint,json=connectorOutpoint,proto3" json:"connector_outpoint,omitempty"`
+	// connector_amount_sat is the value of the connector output being spent.
+	ConnectorAmountSat int64 `protobuf:"varint,8,opt,name=connector_amount_sat,json=connectorAmountSat,proto3" json:"connector_amount_sat,omitempty"`
+	// connector_pk_script is the connector output script being spent.
+	ConnectorPkScript []byte `protobuf:"bytes,9,opt,name=connector_pk_script,json=connectorPkScript,proto3" json:"connector_pk_script,omitempty"`
+	// server_forfeit_pk_script is the expected penalty output script at output
+	// index 0.
+	ServerForfeitPkScript []byte `protobuf:"bytes,10,opt,name=server_forfeit_pk_script,json=serverForfeitPkScript,proto3" json:"server_forfeit_pk_script,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *SignVTXOForfeitRequest) Reset() {
+	*x = SignVTXOForfeitRequest{}
+	mi := &file_daemon_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignVTXOForfeitRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignVTXOForfeitRequest) ProtoMessage() {}
+
+func (x *SignVTXOForfeitRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignVTXOForfeitRequest.ProtoReflect.Descriptor instead.
+func (*SignVTXOForfeitRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *SignVTXOForfeitRequest) GetVtxoOutpoint() string {
+	if x != nil {
+		return x.VtxoOutpoint
+	}
+	return ""
+}
+
+func (x *SignVTXOForfeitRequest) GetVtxoAmountSat() int64 {
+	if x != nil {
+		return x.VtxoAmountSat
+	}
+	return 0
+}
+
+func (x *SignVTXOForfeitRequest) GetVtxoPkScript() []byte {
+	if x != nil {
+		return x.VtxoPkScript
+	}
+	return nil
+}
+
+func (x *SignVTXOForfeitRequest) GetVtxoPolicyTemplate() []byte {
+	if x != nil {
+		return x.VtxoPolicyTemplate
+	}
+	return nil
+}
+
+func (x *SignVTXOForfeitRequest) GetSpendPath() []byte {
+	if x != nil {
+		return x.SpendPath
+	}
+	return nil
+}
+
+func (x *SignVTXOForfeitRequest) GetUnsignedForfeitTx() []byte {
+	if x != nil {
+		return x.UnsignedForfeitTx
+	}
+	return nil
+}
+
+func (x *SignVTXOForfeitRequest) GetConnectorOutpoint() string {
+	if x != nil {
+		return x.ConnectorOutpoint
+	}
+	return ""
+}
+
+func (x *SignVTXOForfeitRequest) GetConnectorAmountSat() int64 {
+	if x != nil {
+		return x.ConnectorAmountSat
+	}
+	return 0
+}
+
+func (x *SignVTXOForfeitRequest) GetConnectorPkScript() []byte {
+	if x != nil {
+		return x.ConnectorPkScript
+	}
+	return nil
+}
+
+func (x *SignVTXOForfeitRequest) GetServerForfeitPkScript() []byte {
+	if x != nil {
+		return x.ServerForfeitPkScript
+	}
+	return nil
+}
+
+type SignVTXOForfeitResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// pubkey is the daemon identity public key that produced signature.
+	Pubkey []byte `protobuf:"bytes,1,opt,name=pubkey,proto3" json:"pubkey,omitempty"`
+	// signature is the raw 64-byte Schnorr signature for the VTXO input.
+	Signature     []byte `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SignVTXOForfeitResponse) Reset() {
+	*x = SignVTXOForfeitResponse{}
+	mi := &file_daemon_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignVTXOForfeitResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignVTXOForfeitResponse) ProtoMessage() {}
+
+func (x *SignVTXOForfeitResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignVTXOForfeitResponse.ProtoReflect.Descriptor instead.
+func (*SignVTXOForfeitResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *SignVTXOForfeitResponse) GetPubkey() []byte {
+	if x != nil {
+		return x.Pubkey
+	}
+	return nil
+}
+
+func (x *SignVTXOForfeitResponse) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
+// ForfeitSigningContext links a caller-supplied custom refresh input back to
+// the protocol object that should answer later connector-bound signing
+// requests.
+type ForfeitSigningContext struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// payment_hash is an opaque 32-byte correlation id for the higher-level
+	// protocol object that owns the custom VTXO. Swap users set this to the
+	// swap payment hash, but the daemon does not interpret it as a payment.
+	// It is copied into PendingForfeitParticipantSignatureRequest so an
+	// external coordinator can map the request back to its own state machine.
+	PaymentHash []byte `protobuf:"bytes,1,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// signing_route tells the daemon whether the later connector-bound
+	// signature request should be answered by the daemon's local signer or by
+	// publishing a pending request for an external participant.
+	SigningRoute  ForfeitSigningRoute `protobuf:"varint,2,opt,name=signing_route,json=signingRoute,proto3,enum=daemonrpc.ForfeitSigningRoute" json:"signing_route,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ForfeitSigningContext) Reset() {
+	*x = ForfeitSigningContext{}
+	mi := &file_daemon_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ForfeitSigningContext) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ForfeitSigningContext) ProtoMessage() {}
+
+func (x *ForfeitSigningContext) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ForfeitSigningContext.ProtoReflect.Descriptor instead.
+func (*ForfeitSigningContext) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *ForfeitSigningContext) GetPaymentHash() []byte {
+	if x != nil {
+		return x.PaymentHash
+	}
+	return nil
+}
+
+func (x *ForfeitSigningContext) GetSigningRoute() ForfeitSigningRoute {
+	if x != nil {
+		return x.SigningRoute
+	}
+	return ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_UNSPECIFIED
 }
 
 // OutpointSelection wraps a list of outpoint strings for use inside a
@@ -3570,7 +4280,7 @@ type OutpointSelection struct {
 
 func (x *OutpointSelection) Reset() {
 	*x = OutpointSelection{}
-	mi := &file_daemon_proto_msgTypes[42]
+	mi := &file_daemon_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3582,7 +4292,7 @@ func (x *OutpointSelection) String() string {
 func (*OutpointSelection) ProtoMessage() {}
 
 func (x *OutpointSelection) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[42]
+	mi := &file_daemon_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3595,7 +4305,7 @@ func (x *OutpointSelection) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutpointSelection.ProtoReflect.Descriptor instead.
 func (*OutpointSelection) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{42}
+	return file_daemon_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *OutpointSelection) GetOutpoints() []string {
@@ -3620,7 +4330,7 @@ type RefreshVTXOsRequest struct {
 
 func (x *RefreshVTXOsRequest) Reset() {
 	*x = RefreshVTXOsRequest{}
-	mi := &file_daemon_proto_msgTypes[43]
+	mi := &file_daemon_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3632,7 +4342,7 @@ func (x *RefreshVTXOsRequest) String() string {
 func (*RefreshVTXOsRequest) ProtoMessage() {}
 
 func (x *RefreshVTXOsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[43]
+	mi := &file_daemon_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3645,7 +4355,7 @@ func (x *RefreshVTXOsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefreshVTXOsRequest.ProtoReflect.Descriptor instead.
 func (*RefreshVTXOsRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{43}
+	return file_daemon_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *RefreshVTXOsRequest) GetSelection() isRefreshVTXOsRequest_Selection {
@@ -3712,7 +4422,7 @@ type RefreshVTXOsResponse struct {
 
 func (x *RefreshVTXOsResponse) Reset() {
 	*x = RefreshVTXOsResponse{}
-	mi := &file_daemon_proto_msgTypes[44]
+	mi := &file_daemon_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3724,7 +4434,7 @@ func (x *RefreshVTXOsResponse) String() string {
 func (*RefreshVTXOsResponse) ProtoMessage() {}
 
 func (x *RefreshVTXOsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[44]
+	mi := &file_daemon_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3737,7 +4447,7 @@ func (x *RefreshVTXOsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefreshVTXOsResponse.ProtoReflect.Descriptor instead.
 func (*RefreshVTXOsResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{44}
+	return file_daemon_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *RefreshVTXOsResponse) GetQueuedOutpoints() []string {
@@ -3752,6 +4462,751 @@ func (x *RefreshVTXOsResponse) GetStatus() string {
 		return x.Status
 	}
 	return ""
+}
+
+// CustomRefreshVTXOInput specifies one custom-policy VTXO input to refresh in
+// a round. The input can be outside the wallet-managed live VTXO set.
+type CustomRefreshVTXOInput struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// outpoint identifies the VTXO to refresh in "txid:vout" format.
+	Outpoint string `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	// amount_sat is the VTXO value in satoshis.
+	AmountSat int64 `protobuf:"varint,2,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// pk_script is the taproot output script of the VTXO being refreshed.
+	PkScript []byte `protobuf:"bytes,3,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
+	// vtxo_policy_template is the semantic policy template that produced the
+	// input VTXO.
+	VtxoPolicyTemplate []byte `protobuf:"bytes,4,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
+	// auth_spend_path is the encoded spend path used for local join
+	// authorization/proof of control.
+	AuthSpendPath []byte `protobuf:"bytes,5,opt,name=auth_spend_path,json=authSpendPath,proto3" json:"auth_spend_path,omitempty"`
+	// forfeit_spend_path is the encoded operator-backed spend path used for
+	// the actual round forfeit transaction once the connector is assigned.
+	ForfeitSpendPath []byte `protobuf:"bytes,6,opt,name=forfeit_spend_path,json=forfeitSpendPath,proto3" json:"forfeit_spend_path,omitempty"`
+	// forfeit_signing_context, when set, tells the daemon how to route the
+	// later connector-bound participant signature request for this custom
+	// input. The route is only evaluated after the round assigns a connector
+	// and the exact forfeit transaction is known. Inputs whose forfeit path is
+	// fully signable by the daemon can use LOCAL_SIGNER. Inputs whose forfeit
+	// path needs another participant use PENDING_REQUEST and require an
+	// external SubmitForfeitParticipantSignatures call before the round can
+	// finish collecting forfeit transactions.
+	ForfeitSigningContext *ForfeitSigningContext `protobuf:"bytes,7,opt,name=forfeit_signing_context,json=forfeitSigningContext,proto3" json:"forfeit_signing_context,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *CustomRefreshVTXOInput) Reset() {
+	*x = CustomRefreshVTXOInput{}
+	mi := &file_daemon_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CustomRefreshVTXOInput) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CustomRefreshVTXOInput) ProtoMessage() {}
+
+func (x *CustomRefreshVTXOInput) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CustomRefreshVTXOInput.ProtoReflect.Descriptor instead.
+func (*CustomRefreshVTXOInput) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *CustomRefreshVTXOInput) GetOutpoint() string {
+	if x != nil {
+		return x.Outpoint
+	}
+	return ""
+}
+
+func (x *CustomRefreshVTXOInput) GetAmountSat() int64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *CustomRefreshVTXOInput) GetPkScript() []byte {
+	if x != nil {
+		return x.PkScript
+	}
+	return nil
+}
+
+func (x *CustomRefreshVTXOInput) GetVtxoPolicyTemplate() []byte {
+	if x != nil {
+		return x.VtxoPolicyTemplate
+	}
+	return nil
+}
+
+func (x *CustomRefreshVTXOInput) GetAuthSpendPath() []byte {
+	if x != nil {
+		return x.AuthSpendPath
+	}
+	return nil
+}
+
+func (x *CustomRefreshVTXOInput) GetForfeitSpendPath() []byte {
+	if x != nil {
+		return x.ForfeitSpendPath
+	}
+	return nil
+}
+
+func (x *CustomRefreshVTXOInput) GetForfeitSigningContext() *ForfeitSigningContext {
+	if x != nil {
+		return x.ForfeitSigningContext
+	}
+	return nil
+}
+
+// CustomRefreshVTXOOutput specifies the replacement VTXO output created by a
+// custom refresh input.
+type CustomRefreshVTXOOutput struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// amount_sat is the requested replacement VTXO value in satoshis.
+	AmountSat int64 `protobuf:"varint,1,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// vtxo_policy_template is the semantic policy template for the
+	// replacement VTXO.
+	VtxoPolicyTemplate []byte `protobuf:"bytes,2,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
+	// pk_script optionally pins the replacement output script. When supplied,
+	// it must match vtxo_policy_template.
+	PkScript []byte `protobuf:"bytes,3,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
+	// fixed_amount requires the refresh round quote to preserve amount_sat
+	// exactly. Contract outputs such as vHTLC replacements should set this so
+	// refresh fees cannot be paid by shrinking the replacement output.
+	FixedAmount   bool `protobuf:"varint,4,opt,name=fixed_amount,json=fixedAmount,proto3" json:"fixed_amount,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CustomRefreshVTXOOutput) Reset() {
+	*x = CustomRefreshVTXOOutput{}
+	mi := &file_daemon_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CustomRefreshVTXOOutput) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CustomRefreshVTXOOutput) ProtoMessage() {}
+
+func (x *CustomRefreshVTXOOutput) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CustomRefreshVTXOOutput.ProtoReflect.Descriptor instead.
+func (*CustomRefreshVTXOOutput) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *CustomRefreshVTXOOutput) GetAmountSat() int64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *CustomRefreshVTXOOutput) GetVtxoPolicyTemplate() []byte {
+	if x != nil {
+		return x.VtxoPolicyTemplate
+	}
+	return nil
+}
+
+func (x *CustomRefreshVTXOOutput) GetPkScript() []byte {
+	if x != nil {
+		return x.PkScript
+	}
+	return nil
+}
+
+func (x *CustomRefreshVTXOOutput) GetFixedAmount() bool {
+	if x != nil {
+		return x.FixedAmount
+	}
+	return false
+}
+
+type RefreshCustomVTXOsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// inputs are the custom VTXOs to forfeit into the next round.
+	Inputs []*CustomRefreshVTXOInput `protobuf:"bytes,1,rep,name=inputs,proto3" json:"inputs,omitempty"`
+	// outputs are the replacement VTXOs. The current API requires one output
+	// per input so swap sessions can map old outpoints to replacement outputs.
+	Outputs []*CustomRefreshVTXOOutput `protobuf:"bytes,2,rep,name=outputs,proto3" json:"outputs,omitempty"`
+	// dry_run validates the request and returns the target outpoints without
+	// touching wallet or round actors.
+	DryRun        bool `protobuf:"varint,3,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RefreshCustomVTXOsRequest) Reset() {
+	*x = RefreshCustomVTXOsRequest{}
+	mi := &file_daemon_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RefreshCustomVTXOsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RefreshCustomVTXOsRequest) ProtoMessage() {}
+
+func (x *RefreshCustomVTXOsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RefreshCustomVTXOsRequest.ProtoReflect.Descriptor instead.
+func (*RefreshCustomVTXOsRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *RefreshCustomVTXOsRequest) GetInputs() []*CustomRefreshVTXOInput {
+	if x != nil {
+		return x.Inputs
+	}
+	return nil
+}
+
+func (x *RefreshCustomVTXOsRequest) GetOutputs() []*CustomRefreshVTXOOutput {
+	if x != nil {
+		return x.Outputs
+	}
+	return nil
+}
+
+func (x *RefreshCustomVTXOsRequest) GetDryRun() bool {
+	if x != nil {
+		return x.DryRun
+	}
+	return false
+}
+
+type RefreshCustomVTXOsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// queued_outpoints lists the custom input outpoints queued for refresh.
+	QueuedOutpoints []string `protobuf:"bytes,1,rep,name=queued_outpoints,json=queuedOutpoints,proto3" json:"queued_outpoints,omitempty"`
+	// status is the result: "queued" on success, "preview" on dry_run.
+	Status        string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RefreshCustomVTXOsResponse) Reset() {
+	*x = RefreshCustomVTXOsResponse{}
+	mi := &file_daemon_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RefreshCustomVTXOsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RefreshCustomVTXOsResponse) ProtoMessage() {}
+
+func (x *RefreshCustomVTXOsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RefreshCustomVTXOsResponse.ProtoReflect.Descriptor instead.
+func (*RefreshCustomVTXOsResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *RefreshCustomVTXOsResponse) GetQueuedOutpoints() []string {
+	if x != nil {
+		return x.QueuedOutpoints
+	}
+	return nil
+}
+
+func (x *RefreshCustomVTXOsResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+// PendingForfeitParticipantSignatureRequest is the exact transcript an
+// external coordinator must validate for a custom refresh forfeit. If the
+// selected spend path includes an external participant key, the coordinator
+// must sign this transcript and submit the signature. If it only needs the
+// daemon-local key plus the operator key, the coordinator can submit an empty
+// signature set to authorize the request.
+type PendingForfeitParticipantSignatureRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// request_id is a stable digest over this transcript. Submitters must echo
+	// it in SubmitForfeitParticipantSignatures so the daemon can wake the
+	// blocked VTXO actor waiting on this exact forfeit transaction.
+	RequestId []byte `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// sequence is a monotonically increasing in-memory cursor used by
+	// ListPendingForfeitParticipantSignatureRequests.
+	Sequence uint64 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	// payment_hash is copied from ForfeitSigningContext.payment_hash and lets
+	// the external coordinator find the protocol object that owns this custom
+	// VTXO.
+	PaymentHash []byte `protobuf:"bytes,3,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// signing_route is always FORFEIT_SIGNING_ROUTE_PENDING_REQUEST for
+	// requests returned by ListPendingForfeitParticipantSignatureRequests. It
+	// is included in the transcript and request id so external coordinators
+	// can reject requests that were routed through an unexpected path.
+	SigningRoute ForfeitSigningRoute `protobuf:"varint,4,opt,name=signing_route,json=signingRoute,proto3,enum=daemonrpc.ForfeitSigningRoute" json:"signing_route,omitempty"`
+	// vtxo_outpoint and the vtxo_* fields describe the old custom VTXO being
+	// forfeited.
+	VtxoOutpoint       string `protobuf:"bytes,5,opt,name=vtxo_outpoint,json=vtxoOutpoint,proto3" json:"vtxo_outpoint,omitempty"`
+	VtxoAmountSat      uint64 `protobuf:"varint,6,opt,name=vtxo_amount_sat,json=vtxoAmountSat,proto3" json:"vtxo_amount_sat,omitempty"`
+	VtxoPkScript       []byte `protobuf:"bytes,7,opt,name=vtxo_pk_script,json=vtxoPkScript,proto3" json:"vtxo_pk_script,omitempty"`
+	VtxoPolicyTemplate []byte `protobuf:"bytes,8,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
+	// forfeit_spend_path is the encoded custom policy path that must be used
+	// for the VTXO input of unsigned_forfeit_tx.
+	ForfeitSpendPath []byte `protobuf:"bytes,9,opt,name=forfeit_spend_path,json=forfeitSpendPath,proto3" json:"forfeit_spend_path,omitempty"`
+	// unsigned_forfeit_tx is the exact transaction the external participant
+	// signs. It spends the custom VTXO and the assigned connector into the
+	// server forfeit output. The participant must sign the VTXO input, not the
+	// connector input; the operator/server signs the connector side.
+	UnsignedForfeitTx []byte `protobuf:"bytes,10,opt,name=unsigned_forfeit_tx,json=unsignedForfeitTx,proto3" json:"unsigned_forfeit_tx,omitempty"`
+	// connector_* fields describe the round-assigned connector input that
+	// makes this forfeit transaction valid.
+	ConnectorOutpoint  string `protobuf:"bytes,11,opt,name=connector_outpoint,json=connectorOutpoint,proto3" json:"connector_outpoint,omitempty"`
+	ConnectorAmountSat uint64 `protobuf:"varint,12,opt,name=connector_amount_sat,json=connectorAmountSat,proto3" json:"connector_amount_sat,omitempty"`
+	ConnectorPkScript  []byte `protobuf:"bytes,13,opt,name=connector_pk_script,json=connectorPkScript,proto3" json:"connector_pk_script,omitempty"`
+	// server_forfeit_pk_script is the output script receiving the forfeited
+	// value in unsigned_forfeit_tx.
+	ServerForfeitPkScript []byte `protobuf:"bytes,14,opt,name=server_forfeit_pk_script,json=serverForfeitPkScript,proto3" json:"server_forfeit_pk_script,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) Reset() {
+	*x = PendingForfeitParticipantSignatureRequest{}
+	mi := &file_daemon_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PendingForfeitParticipantSignatureRequest) ProtoMessage() {}
+
+func (x *PendingForfeitParticipantSignatureRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PendingForfeitParticipantSignatureRequest.ProtoReflect.Descriptor instead.
+func (*PendingForfeitParticipantSignatureRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{55}
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) GetRequestId() []byte {
+	if x != nil {
+		return x.RequestId
+	}
+	return nil
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) GetSequence() uint64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) GetPaymentHash() []byte {
+	if x != nil {
+		return x.PaymentHash
+	}
+	return nil
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) GetSigningRoute() ForfeitSigningRoute {
+	if x != nil {
+		return x.SigningRoute
+	}
+	return ForfeitSigningRoute_FORFEIT_SIGNING_ROUTE_UNSPECIFIED
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) GetVtxoOutpoint() string {
+	if x != nil {
+		return x.VtxoOutpoint
+	}
+	return ""
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) GetVtxoAmountSat() uint64 {
+	if x != nil {
+		return x.VtxoAmountSat
+	}
+	return 0
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) GetVtxoPkScript() []byte {
+	if x != nil {
+		return x.VtxoPkScript
+	}
+	return nil
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) GetVtxoPolicyTemplate() []byte {
+	if x != nil {
+		return x.VtxoPolicyTemplate
+	}
+	return nil
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) GetForfeitSpendPath() []byte {
+	if x != nil {
+		return x.ForfeitSpendPath
+	}
+	return nil
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) GetUnsignedForfeitTx() []byte {
+	if x != nil {
+		return x.UnsignedForfeitTx
+	}
+	return nil
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) GetConnectorOutpoint() string {
+	if x != nil {
+		return x.ConnectorOutpoint
+	}
+	return ""
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) GetConnectorAmountSat() uint64 {
+	if x != nil {
+		return x.ConnectorAmountSat
+	}
+	return 0
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) GetConnectorPkScript() []byte {
+	if x != nil {
+		return x.ConnectorPkScript
+	}
+	return nil
+}
+
+func (x *PendingForfeitParticipantSignatureRequest) GetServerForfeitPkScript() []byte {
+	if x != nil {
+		return x.ServerForfeitPkScript
+	}
+	return nil
+}
+
+type ListPendingForfeitParticipantSignatureRequestsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// after_sequence returns requests with a larger sequence. Zero starts at
+	// the beginning of the daemon-local pending request stream.
+	AfterSequence uint64 `protobuf:"varint,1,opt,name=after_sequence,json=afterSequence,proto3" json:"after_sequence,omitempty"`
+	// limit caps the number of returned requests. Zero uses a daemon default.
+	Limit         uint32 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPendingForfeitParticipantSignatureRequestsRequest) Reset() {
+	*x = ListPendingForfeitParticipantSignatureRequestsRequest{}
+	mi := &file_daemon_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPendingForfeitParticipantSignatureRequestsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPendingForfeitParticipantSignatureRequestsRequest) ProtoMessage() {}
+
+func (x *ListPendingForfeitParticipantSignatureRequestsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPendingForfeitParticipantSignatureRequestsRequest.ProtoReflect.Descriptor instead.
+func (*ListPendingForfeitParticipantSignatureRequestsRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *ListPendingForfeitParticipantSignatureRequestsRequest) GetAfterSequence() uint64 {
+	if x != nil {
+		return x.AfterSequence
+	}
+	return 0
+}
+
+func (x *ListPendingForfeitParticipantSignatureRequestsRequest) GetLimit() uint32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type ListPendingForfeitParticipantSignatureRequestsResponse struct {
+	state         protoimpl.MessageState                       `protogen:"open.v1"`
+	Requests      []*PendingForfeitParticipantSignatureRequest `protobuf:"bytes,1,rep,name=requests,proto3" json:"requests,omitempty"`
+	NextSequence  uint64                                       `protobuf:"varint,2,opt,name=next_sequence,json=nextSequence,proto3" json:"next_sequence,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPendingForfeitParticipantSignatureRequestsResponse) Reset() {
+	*x = ListPendingForfeitParticipantSignatureRequestsResponse{}
+	mi := &file_daemon_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPendingForfeitParticipantSignatureRequestsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPendingForfeitParticipantSignatureRequestsResponse) ProtoMessage() {}
+
+func (x *ListPendingForfeitParticipantSignatureRequestsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPendingForfeitParticipantSignatureRequestsResponse.ProtoReflect.Descriptor instead.
+func (*ListPendingForfeitParticipantSignatureRequestsResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *ListPendingForfeitParticipantSignatureRequestsResponse) GetRequests() []*PendingForfeitParticipantSignatureRequest {
+	if x != nil {
+		return x.Requests
+	}
+	return nil
+}
+
+func (x *ListPendingForfeitParticipantSignatureRequestsResponse) GetNextSequence() uint64 {
+	if x != nil {
+		return x.NextSequence
+	}
+	return 0
+}
+
+type ForfeitParticipantSignature struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// pubkey is the participant public key used in the selected forfeit spend
+	// path. The daemon matches signatures by public key when completing the
+	// VTXO input witness.
+	Pubkey []byte `protobuf:"bytes,1,opt,name=pubkey,proto3" json:"pubkey,omitempty"`
+	// signature is the raw Schnorr signature over unsigned_forfeit_tx's VTXO
+	// input under the request's forfeit spend path.
+	Signature     []byte `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ForfeitParticipantSignature) Reset() {
+	*x = ForfeitParticipantSignature{}
+	mi := &file_daemon_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ForfeitParticipantSignature) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ForfeitParticipantSignature) ProtoMessage() {}
+
+func (x *ForfeitParticipantSignature) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ForfeitParticipantSignature.ProtoReflect.Descriptor instead.
+func (*ForfeitParticipantSignature) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *ForfeitParticipantSignature) GetPubkey() []byte {
+	if x != nil {
+		return x.Pubkey
+	}
+	return nil
+}
+
+func (x *ForfeitParticipantSignature) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
+type SubmitForfeitParticipantSignaturesRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// request_id identifies the pending connector-bound transcript being
+	// answered. It must match a request_id previously returned by
+	// ListPendingForfeitParticipantSignatureRequests.
+	RequestId []byte `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// signatures contains the external participant signatures needed by the
+	// custom policy path. It may be empty when the listed request's selected
+	// spend path needs no external keys after excluding the daemon-local VTXO
+	// key and the operator key. Extra or unknown keys are rejected.
+	Signatures    []*ForfeitParticipantSignature `protobuf:"bytes,2,rep,name=signatures,proto3" json:"signatures,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubmitForfeitParticipantSignaturesRequest) Reset() {
+	*x = SubmitForfeitParticipantSignaturesRequest{}
+	mi := &file_daemon_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubmitForfeitParticipantSignaturesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubmitForfeitParticipantSignaturesRequest) ProtoMessage() {}
+
+func (x *SubmitForfeitParticipantSignaturesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubmitForfeitParticipantSignaturesRequest.ProtoReflect.Descriptor instead.
+func (*SubmitForfeitParticipantSignaturesRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *SubmitForfeitParticipantSignaturesRequest) GetRequestId() []byte {
+	if x != nil {
+		return x.RequestId
+	}
+	return nil
+}
+
+func (x *SubmitForfeitParticipantSignaturesRequest) GetSignatures() []*ForfeitParticipantSignature {
+	if x != nil {
+		return x.Signatures
+	}
+	return nil
+}
+
+type SubmitForfeitParticipantSignaturesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubmitForfeitParticipantSignaturesResponse) Reset() {
+	*x = SubmitForfeitParticipantSignaturesResponse{}
+	mi := &file_daemon_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubmitForfeitParticipantSignaturesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubmitForfeitParticipantSignaturesResponse) ProtoMessage() {}
+
+func (x *SubmitForfeitParticipantSignaturesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubmitForfeitParticipantSignaturesResponse.ProtoReflect.Descriptor instead.
+func (*SubmitForfeitParticipantSignaturesResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{60}
 }
 
 // LeaveDestination describes where a single leave output should land.
@@ -3771,7 +5226,7 @@ type LeaveDestination struct {
 
 func (x *LeaveDestination) Reset() {
 	*x = LeaveDestination{}
-	mi := &file_daemon_proto_msgTypes[45]
+	mi := &file_daemon_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3783,7 +5238,7 @@ func (x *LeaveDestination) String() string {
 func (*LeaveDestination) ProtoMessage() {}
 
 func (x *LeaveDestination) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[45]
+	mi := &file_daemon_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3796,7 +5251,7 @@ func (x *LeaveDestination) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaveDestination.ProtoReflect.Descriptor instead.
 func (*LeaveDestination) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{45}
+	return file_daemon_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *LeaveDestination) GetTarget() isLeaveDestination_Target {
@@ -3877,7 +5332,7 @@ type LeaveVTXOsRequest struct {
 
 func (x *LeaveVTXOsRequest) Reset() {
 	*x = LeaveVTXOsRequest{}
-	mi := &file_daemon_proto_msgTypes[46]
+	mi := &file_daemon_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3889,7 +5344,7 @@ func (x *LeaveVTXOsRequest) String() string {
 func (*LeaveVTXOsRequest) ProtoMessage() {}
 
 func (x *LeaveVTXOsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[46]
+	mi := &file_daemon_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3902,7 +5357,7 @@ func (x *LeaveVTXOsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaveVTXOsRequest.ProtoReflect.Descriptor instead.
 func (*LeaveVTXOsRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{46}
+	return file_daemon_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *LeaveVTXOsRequest) GetSelection() isLeaveVTXOsRequest_Selection {
@@ -3985,7 +5440,7 @@ type LeaveVTXOsResponse struct {
 
 func (x *LeaveVTXOsResponse) Reset() {
 	*x = LeaveVTXOsResponse{}
-	mi := &file_daemon_proto_msgTypes[47]
+	mi := &file_daemon_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3997,7 +5452,7 @@ func (x *LeaveVTXOsResponse) String() string {
 func (*LeaveVTXOsResponse) ProtoMessage() {}
 
 func (x *LeaveVTXOsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[47]
+	mi := &file_daemon_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4010,7 +5465,7 @@ func (x *LeaveVTXOsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaveVTXOsResponse.ProtoReflect.Descriptor instead.
 func (*LeaveVTXOsResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{47}
+	return file_daemon_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *LeaveVTXOsResponse) GetQueuedOutpoints() []string {
@@ -4048,7 +5503,7 @@ type SendOnChainRequest struct {
 
 func (x *SendOnChainRequest) Reset() {
 	*x = SendOnChainRequest{}
-	mi := &file_daemon_proto_msgTypes[48]
+	mi := &file_daemon_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4060,7 +5515,7 @@ func (x *SendOnChainRequest) String() string {
 func (*SendOnChainRequest) ProtoMessage() {}
 
 func (x *SendOnChainRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[48]
+	mi := &file_daemon_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4073,7 +5528,7 @@ func (x *SendOnChainRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendOnChainRequest.ProtoReflect.Descriptor instead.
 func (*SendOnChainRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{48}
+	return file_daemon_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *SendOnChainRequest) GetDestination() *LeaveDestination {
@@ -4172,7 +5627,7 @@ type SendOnChainResponse struct {
 
 func (x *SendOnChainResponse) Reset() {
 	*x = SendOnChainResponse{}
-	mi := &file_daemon_proto_msgTypes[49]
+	mi := &file_daemon_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4184,7 +5639,7 @@ func (x *SendOnChainResponse) String() string {
 func (*SendOnChainResponse) ProtoMessage() {}
 
 func (x *SendOnChainResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[49]
+	mi := &file_daemon_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4197,7 +5652,7 @@ func (x *SendOnChainResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendOnChainResponse.ProtoReflect.Descriptor instead.
 func (*SendOnChainResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{49}
+	return file_daemon_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *SendOnChainResponse) GetActualAmountSat() int64 {
@@ -4256,7 +5711,7 @@ type BoardRequest struct {
 
 func (x *BoardRequest) Reset() {
 	*x = BoardRequest{}
-	mi := &file_daemon_proto_msgTypes[50]
+	mi := &file_daemon_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4268,7 +5723,7 @@ func (x *BoardRequest) String() string {
 func (*BoardRequest) ProtoMessage() {}
 
 func (x *BoardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[50]
+	mi := &file_daemon_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4281,7 +5736,7 @@ func (x *BoardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardRequest.ProtoReflect.Descriptor instead.
 func (*BoardRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{50}
+	return file_daemon_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *BoardRequest) GetTargetVtxoCount() uint32 {
@@ -4312,7 +5767,7 @@ type BoardResponse struct {
 
 func (x *BoardResponse) Reset() {
 	*x = BoardResponse{}
-	mi := &file_daemon_proto_msgTypes[51]
+	mi := &file_daemon_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4324,7 +5779,7 @@ func (x *BoardResponse) String() string {
 func (*BoardResponse) ProtoMessage() {}
 
 func (x *BoardResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[51]
+	mi := &file_daemon_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4337,7 +5792,7 @@ func (x *BoardResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardResponse.ProtoReflect.Descriptor instead.
 func (*BoardResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{51}
+	return file_daemon_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *BoardResponse) GetStatus() string {
@@ -4362,7 +5817,7 @@ type JoinNextRoundRequest struct {
 
 func (x *JoinNextRoundRequest) Reset() {
 	*x = JoinNextRoundRequest{}
-	mi := &file_daemon_proto_msgTypes[52]
+	mi := &file_daemon_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4374,7 +5829,7 @@ func (x *JoinNextRoundRequest) String() string {
 func (*JoinNextRoundRequest) ProtoMessage() {}
 
 func (x *JoinNextRoundRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[52]
+	mi := &file_daemon_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4387,7 +5842,7 @@ func (x *JoinNextRoundRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinNextRoundRequest.ProtoReflect.Descriptor instead.
 func (*JoinNextRoundRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{52}
+	return file_daemon_proto_rawDescGZIP(), []int{68}
 }
 
 type JoinNextRoundResponse struct {
@@ -4402,7 +5857,7 @@ type JoinNextRoundResponse struct {
 
 func (x *JoinNextRoundResponse) Reset() {
 	*x = JoinNextRoundResponse{}
-	mi := &file_daemon_proto_msgTypes[53]
+	mi := &file_daemon_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4414,7 +5869,7 @@ func (x *JoinNextRoundResponse) String() string {
 func (*JoinNextRoundResponse) ProtoMessage() {}
 
 func (x *JoinNextRoundResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[53]
+	mi := &file_daemon_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4427,7 +5882,7 @@ func (x *JoinNextRoundResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinNextRoundResponse.ProtoReflect.Descriptor instead.
 func (*JoinNextRoundResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{53}
+	return file_daemon_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *JoinNextRoundResponse) GetStatus() string {
@@ -4463,7 +5918,7 @@ type SweepBoardingUTXOsRequest struct {
 
 func (x *SweepBoardingUTXOsRequest) Reset() {
 	*x = SweepBoardingUTXOsRequest{}
-	mi := &file_daemon_proto_msgTypes[54]
+	mi := &file_daemon_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4475,7 +5930,7 @@ func (x *SweepBoardingUTXOsRequest) String() string {
 func (*SweepBoardingUTXOsRequest) ProtoMessage() {}
 
 func (x *SweepBoardingUTXOsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[54]
+	mi := &file_daemon_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4488,7 +5943,7 @@ func (x *SweepBoardingUTXOsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SweepBoardingUTXOsRequest.ProtoReflect.Descriptor instead.
 func (*SweepBoardingUTXOsRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{54}
+	return file_daemon_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *SweepBoardingUTXOsRequest) GetOutpoints() []string {
@@ -4541,7 +5996,7 @@ type BoardingSweepOutput struct {
 
 func (x *BoardingSweepOutput) Reset() {
 	*x = BoardingSweepOutput{}
-	mi := &file_daemon_proto_msgTypes[55]
+	mi := &file_daemon_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4553,7 +6008,7 @@ func (x *BoardingSweepOutput) String() string {
 func (*BoardingSweepOutput) ProtoMessage() {}
 
 func (x *BoardingSweepOutput) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[55]
+	mi := &file_daemon_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4566,7 +6021,7 @@ func (x *BoardingSweepOutput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardingSweepOutput.ProtoReflect.Descriptor instead.
 func (*BoardingSweepOutput) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{55}
+	return file_daemon_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *BoardingSweepOutput) GetOutpoint() string {
@@ -4632,7 +6087,7 @@ type SweepBoardingUTXOsResponse struct {
 
 func (x *SweepBoardingUTXOsResponse) Reset() {
 	*x = SweepBoardingUTXOsResponse{}
-	mi := &file_daemon_proto_msgTypes[56]
+	mi := &file_daemon_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4644,7 +6099,7 @@ func (x *SweepBoardingUTXOsResponse) String() string {
 func (*SweepBoardingUTXOsResponse) ProtoMessage() {}
 
 func (x *SweepBoardingUTXOsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[56]
+	mi := &file_daemon_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4657,7 +6112,7 @@ func (x *SweepBoardingUTXOsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SweepBoardingUTXOsResponse.ProtoReflect.Descriptor instead.
 func (*SweepBoardingUTXOsResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{56}
+	return file_daemon_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *SweepBoardingUTXOsResponse) GetStatus() string {
@@ -4761,7 +6216,7 @@ type ListBoardingSweepsRequest struct {
 
 func (x *ListBoardingSweepsRequest) Reset() {
 	*x = ListBoardingSweepsRequest{}
-	mi := &file_daemon_proto_msgTypes[57]
+	mi := &file_daemon_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4773,7 +6228,7 @@ func (x *ListBoardingSweepsRequest) String() string {
 func (*ListBoardingSweepsRequest) ProtoMessage() {}
 
 func (x *ListBoardingSweepsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[57]
+	mi := &file_daemon_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4786,7 +6241,7 @@ func (x *ListBoardingSweepsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoardingSweepsRequest.ProtoReflect.Descriptor instead.
 func (*ListBoardingSweepsRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{57}
+	return file_daemon_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *ListBoardingSweepsRequest) GetStatus() string {
@@ -4829,7 +6284,7 @@ type BoardingSweepInput struct {
 
 func (x *BoardingSweepInput) Reset() {
 	*x = BoardingSweepInput{}
-	mi := &file_daemon_proto_msgTypes[58]
+	mi := &file_daemon_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4841,7 +6296,7 @@ func (x *BoardingSweepInput) String() string {
 func (*BoardingSweepInput) ProtoMessage() {}
 
 func (x *BoardingSweepInput) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[58]
+	mi := &file_daemon_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4854,7 +6309,7 @@ func (x *BoardingSweepInput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardingSweepInput.ProtoReflect.Descriptor instead.
 func (*BoardingSweepInput) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{58}
+	return file_daemon_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *BoardingSweepInput) GetOutpoint() string {
@@ -4924,7 +6379,7 @@ type BoardingSweep struct {
 
 func (x *BoardingSweep) Reset() {
 	*x = BoardingSweep{}
-	mi := &file_daemon_proto_msgTypes[59]
+	mi := &file_daemon_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4936,7 +6391,7 @@ func (x *BoardingSweep) String() string {
 func (*BoardingSweep) ProtoMessage() {}
 
 func (x *BoardingSweep) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[59]
+	mi := &file_daemon_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4949,7 +6404,7 @@ func (x *BoardingSweep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardingSweep.ProtoReflect.Descriptor instead.
 func (*BoardingSweep) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{59}
+	return file_daemon_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *BoardingSweep) GetTxid() string {
@@ -5041,7 +6496,7 @@ type ListBoardingSweepsResponse struct {
 
 func (x *ListBoardingSweepsResponse) Reset() {
 	*x = ListBoardingSweepsResponse{}
-	mi := &file_daemon_proto_msgTypes[60]
+	mi := &file_daemon_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5053,7 +6508,7 @@ func (x *ListBoardingSweepsResponse) String() string {
 func (*ListBoardingSweepsResponse) ProtoMessage() {}
 
 func (x *ListBoardingSweepsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[60]
+	mi := &file_daemon_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5066,7 +6521,7 @@ func (x *ListBoardingSweepsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoardingSweepsResponse.ProtoReflect.Descriptor instead.
 func (*ListBoardingSweepsResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{60}
+	return file_daemon_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *ListBoardingSweepsResponse) GetSweeps() []*BoardingSweep {
@@ -5096,7 +6551,7 @@ type RoundVTXOInfo struct {
 
 func (x *RoundVTXOInfo) Reset() {
 	*x = RoundVTXOInfo{}
-	mi := &file_daemon_proto_msgTypes[61]
+	mi := &file_daemon_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5108,7 +6563,7 @@ func (x *RoundVTXOInfo) String() string {
 func (*RoundVTXOInfo) ProtoMessage() {}
 
 func (x *RoundVTXOInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[61]
+	mi := &file_daemon_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5121,7 +6576,7 @@ func (x *RoundVTXOInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoundVTXOInfo.ProtoReflect.Descriptor instead.
 func (*RoundVTXOInfo) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{61}
+	return file_daemon_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *RoundVTXOInfo) GetOutpoint() string {
@@ -5189,7 +6644,7 @@ type RoundInfo struct {
 
 func (x *RoundInfo) Reset() {
 	*x = RoundInfo{}
-	mi := &file_daemon_proto_msgTypes[62]
+	mi := &file_daemon_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5201,7 +6656,7 @@ func (x *RoundInfo) String() string {
 func (*RoundInfo) ProtoMessage() {}
 
 func (x *RoundInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[62]
+	mi := &file_daemon_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5214,7 +6669,7 @@ func (x *RoundInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoundInfo.ProtoReflect.Descriptor instead.
 func (*RoundInfo) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{62}
+	return file_daemon_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *RoundInfo) GetRoundId() string {
@@ -5326,7 +6781,7 @@ type ListRoundsRequest struct {
 
 func (x *ListRoundsRequest) Reset() {
 	*x = ListRoundsRequest{}
-	mi := &file_daemon_proto_msgTypes[63]
+	mi := &file_daemon_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5338,7 +6793,7 @@ func (x *ListRoundsRequest) String() string {
 func (*ListRoundsRequest) ProtoMessage() {}
 
 func (x *ListRoundsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[63]
+	mi := &file_daemon_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5351,7 +6806,7 @@ func (x *ListRoundsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRoundsRequest.ProtoReflect.Descriptor instead.
 func (*ListRoundsRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{63}
+	return file_daemon_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *ListRoundsRequest) GetPageSize() int32 {
@@ -5406,7 +6861,7 @@ type GetRoundRequest struct {
 
 func (x *GetRoundRequest) Reset() {
 	*x = GetRoundRequest{}
-	mi := &file_daemon_proto_msgTypes[64]
+	mi := &file_daemon_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5418,7 +6873,7 @@ func (x *GetRoundRequest) String() string {
 func (*GetRoundRequest) ProtoMessage() {}
 
 func (x *GetRoundRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[64]
+	mi := &file_daemon_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5431,7 +6886,7 @@ func (x *GetRoundRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRoundRequest.ProtoReflect.Descriptor instead.
 func (*GetRoundRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{64}
+	return file_daemon_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *GetRoundRequest) GetRoundId() string {
@@ -5451,7 +6906,7 @@ type GetRoundResponse struct {
 
 func (x *GetRoundResponse) Reset() {
 	*x = GetRoundResponse{}
-	mi := &file_daemon_proto_msgTypes[65]
+	mi := &file_daemon_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5463,7 +6918,7 @@ func (x *GetRoundResponse) String() string {
 func (*GetRoundResponse) ProtoMessage() {}
 
 func (x *GetRoundResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[65]
+	mi := &file_daemon_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5476,7 +6931,7 @@ func (x *GetRoundResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRoundResponse.ProtoReflect.Descriptor instead.
 func (*GetRoundResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{65}
+	return file_daemon_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *GetRoundResponse) GetRound() *RoundInfo {
@@ -5499,7 +6954,7 @@ type ListRoundsResponse struct {
 
 func (x *ListRoundsResponse) Reset() {
 	*x = ListRoundsResponse{}
-	mi := &file_daemon_proto_msgTypes[66]
+	mi := &file_daemon_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5511,7 +6966,7 @@ func (x *ListRoundsResponse) String() string {
 func (*ListRoundsResponse) ProtoMessage() {}
 
 func (x *ListRoundsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[66]
+	mi := &file_daemon_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5524,7 +6979,7 @@ func (x *ListRoundsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRoundsResponse.ProtoReflect.Descriptor instead.
 func (*ListRoundsResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{66}
+	return file_daemon_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *ListRoundsResponse) GetRounds() []*RoundInfo {
@@ -5549,7 +7004,7 @@ type WatchRoundsRequest struct {
 
 func (x *WatchRoundsRequest) Reset() {
 	*x = WatchRoundsRequest{}
-	mi := &file_daemon_proto_msgTypes[67]
+	mi := &file_daemon_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5561,7 +7016,7 @@ func (x *WatchRoundsRequest) String() string {
 func (*WatchRoundsRequest) ProtoMessage() {}
 
 func (x *WatchRoundsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[67]
+	mi := &file_daemon_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5574,7 +7029,7 @@ func (x *WatchRoundsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchRoundsRequest.ProtoReflect.Descriptor instead.
 func (*WatchRoundsRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{67}
+	return file_daemon_proto_rawDescGZIP(), []int{83}
 }
 
 type WatchRoundsResponse struct {
@@ -5588,7 +7043,7 @@ type WatchRoundsResponse struct {
 
 func (x *WatchRoundsResponse) Reset() {
 	*x = WatchRoundsResponse{}
-	mi := &file_daemon_proto_msgTypes[68]
+	mi := &file_daemon_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5600,7 +7055,7 @@ func (x *WatchRoundsResponse) String() string {
 func (*WatchRoundsResponse) ProtoMessage() {}
 
 func (x *WatchRoundsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[68]
+	mi := &file_daemon_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5613,7 +7068,7 @@ func (x *WatchRoundsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchRoundsResponse.ProtoReflect.Descriptor instead.
 func (*WatchRoundsResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{68}
+	return file_daemon_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *WatchRoundsResponse) GetRound() *RoundInfo {
@@ -5651,7 +7106,7 @@ type OORSessionInfo struct {
 
 func (x *OORSessionInfo) Reset() {
 	*x = OORSessionInfo{}
-	mi := &file_daemon_proto_msgTypes[69]
+	mi := &file_daemon_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5663,7 +7118,7 @@ func (x *OORSessionInfo) String() string {
 func (*OORSessionInfo) ProtoMessage() {}
 
 func (x *OORSessionInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[69]
+	mi := &file_daemon_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5676,7 +7131,7 @@ func (x *OORSessionInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OORSessionInfo.ProtoReflect.Descriptor instead.
 func (*OORSessionInfo) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{69}
+	return file_daemon_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *OORSessionInfo) GetSessionId() string {
@@ -5760,7 +7215,7 @@ type ListOORSessionsRequest struct {
 
 func (x *ListOORSessionsRequest) Reset() {
 	*x = ListOORSessionsRequest{}
-	mi := &file_daemon_proto_msgTypes[70]
+	mi := &file_daemon_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5772,7 +7227,7 @@ func (x *ListOORSessionsRequest) String() string {
 func (*ListOORSessionsRequest) ProtoMessage() {}
 
 func (x *ListOORSessionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[70]
+	mi := &file_daemon_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5785,7 +7240,7 @@ func (x *ListOORSessionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOORSessionsRequest.ProtoReflect.Descriptor instead.
 func (*ListOORSessionsRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{70}
+	return file_daemon_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *ListOORSessionsRequest) GetPageSize() int32 {
@@ -5829,7 +7284,7 @@ type ListOORSessionsResponse struct {
 
 func (x *ListOORSessionsResponse) Reset() {
 	*x = ListOORSessionsResponse{}
-	mi := &file_daemon_proto_msgTypes[71]
+	mi := &file_daemon_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5841,7 +7296,7 @@ func (x *ListOORSessionsResponse) String() string {
 func (*ListOORSessionsResponse) ProtoMessage() {}
 
 func (x *ListOORSessionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[71]
+	mi := &file_daemon_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5854,7 +7309,7 @@ func (x *ListOORSessionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOORSessionsResponse.ProtoReflect.Descriptor instead.
 func (*ListOORSessionsResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{71}
+	return file_daemon_proto_rawDescGZIP(), []int{87}
 }
 
 func (x *ListOORSessionsResponse) GetSessions() []*OORSessionInfo {
@@ -5881,7 +7336,7 @@ type GetOORSessionRequest struct {
 
 func (x *GetOORSessionRequest) Reset() {
 	*x = GetOORSessionRequest{}
-	mi := &file_daemon_proto_msgTypes[72]
+	mi := &file_daemon_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5893,7 +7348,7 @@ func (x *GetOORSessionRequest) String() string {
 func (*GetOORSessionRequest) ProtoMessage() {}
 
 func (x *GetOORSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[72]
+	mi := &file_daemon_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5906,7 +7361,7 @@ func (x *GetOORSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetOORSessionRequest.ProtoReflect.Descriptor instead.
 func (*GetOORSessionRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{72}
+	return file_daemon_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *GetOORSessionRequest) GetSessionId() string {
@@ -5926,7 +7381,7 @@ type GetOORSessionResponse struct {
 
 func (x *GetOORSessionResponse) Reset() {
 	*x = GetOORSessionResponse{}
-	mi := &file_daemon_proto_msgTypes[73]
+	mi := &file_daemon_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5938,7 +7393,7 @@ func (x *GetOORSessionResponse) String() string {
 func (*GetOORSessionResponse) ProtoMessage() {}
 
 func (x *GetOORSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[73]
+	mi := &file_daemon_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5951,7 +7406,7 @@ func (x *GetOORSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetOORSessionResponse.ProtoReflect.Descriptor instead.
 func (*GetOORSessionResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{73}
+	return file_daemon_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *GetOORSessionResponse) GetSession() *OORSessionInfo {
@@ -5979,7 +7434,7 @@ type EstimateFeeRequest struct {
 
 func (x *EstimateFeeRequest) Reset() {
 	*x = EstimateFeeRequest{}
-	mi := &file_daemon_proto_msgTypes[74]
+	mi := &file_daemon_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5991,7 +7446,7 @@ func (x *EstimateFeeRequest) String() string {
 func (*EstimateFeeRequest) ProtoMessage() {}
 
 func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[74]
+	mi := &file_daemon_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6004,7 +7459,7 @@ func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateFeeRequest.ProtoReflect.Descriptor instead.
 func (*EstimateFeeRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{74}
+	return file_daemon_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *EstimateFeeRequest) GetAmountSat() int64 {
@@ -6058,7 +7513,7 @@ type EstimateFeeResponse struct {
 
 func (x *EstimateFeeResponse) Reset() {
 	*x = EstimateFeeResponse{}
-	mi := &file_daemon_proto_msgTypes[75]
+	mi := &file_daemon_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6070,7 +7525,7 @@ func (x *EstimateFeeResponse) String() string {
 func (*EstimateFeeResponse) ProtoMessage() {}
 
 func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[75]
+	mi := &file_daemon_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6083,7 +7538,7 @@ func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateFeeResponse.ProtoReflect.Descriptor instead.
 func (*EstimateFeeResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{75}
+	return file_daemon_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *EstimateFeeResponse) GetLiquidityFeeSat() int64 {
@@ -6153,7 +7608,7 @@ type GetFeeHistoryRequest struct {
 
 func (x *GetFeeHistoryRequest) Reset() {
 	*x = GetFeeHistoryRequest{}
-	mi := &file_daemon_proto_msgTypes[76]
+	mi := &file_daemon_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6165,7 +7620,7 @@ func (x *GetFeeHistoryRequest) String() string {
 func (*GetFeeHistoryRequest) ProtoMessage() {}
 
 func (x *GetFeeHistoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[76]
+	mi := &file_daemon_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6178,7 +7633,7 @@ func (x *GetFeeHistoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFeeHistoryRequest.ProtoReflect.Descriptor instead.
 func (*GetFeeHistoryRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{76}
+	return file_daemon_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *GetFeeHistoryRequest) GetLimit() uint32 {
@@ -6253,7 +7708,7 @@ type FeeHistoryEntry struct {
 
 func (x *FeeHistoryEntry) Reset() {
 	*x = FeeHistoryEntry{}
-	mi := &file_daemon_proto_msgTypes[77]
+	mi := &file_daemon_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6265,7 +7720,7 @@ func (x *FeeHistoryEntry) String() string {
 func (*FeeHistoryEntry) ProtoMessage() {}
 
 func (x *FeeHistoryEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[77]
+	mi := &file_daemon_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6278,7 +7733,7 @@ func (x *FeeHistoryEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FeeHistoryEntry.ProtoReflect.Descriptor instead.
 func (*FeeHistoryEntry) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{77}
+	return file_daemon_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *FeeHistoryEntry) GetEntryId() int64 {
@@ -6358,7 +7813,7 @@ type GetFeeHistoryResponse struct {
 
 func (x *GetFeeHistoryResponse) Reset() {
 	*x = GetFeeHistoryResponse{}
-	mi := &file_daemon_proto_msgTypes[78]
+	mi := &file_daemon_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6370,7 +7825,7 @@ func (x *GetFeeHistoryResponse) String() string {
 func (*GetFeeHistoryResponse) ProtoMessage() {}
 
 func (x *GetFeeHistoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[78]
+	mi := &file_daemon_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6383,7 +7838,7 @@ func (x *GetFeeHistoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFeeHistoryResponse.ProtoReflect.Descriptor instead.
 func (*GetFeeHistoryResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{78}
+	return file_daemon_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *GetFeeHistoryResponse) GetEntries() []*FeeHistoryEntry {
@@ -6424,7 +7879,7 @@ type ListTransactionsRequest struct {
 
 func (x *ListTransactionsRequest) Reset() {
 	*x = ListTransactionsRequest{}
-	mi := &file_daemon_proto_msgTypes[79]
+	mi := &file_daemon_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6436,7 +7891,7 @@ func (x *ListTransactionsRequest) String() string {
 func (*ListTransactionsRequest) ProtoMessage() {}
 
 func (x *ListTransactionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[79]
+	mi := &file_daemon_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6449,7 +7904,7 @@ func (x *ListTransactionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTransactionsRequest.ProtoReflect.Descriptor instead.
 func (*ListTransactionsRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{79}
+	return file_daemon_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *ListTransactionsRequest) GetFromUnixS() int64 {
@@ -6535,7 +7990,7 @@ type TransactionHistoryEntry struct {
 
 func (x *TransactionHistoryEntry) Reset() {
 	*x = TransactionHistoryEntry{}
-	mi := &file_daemon_proto_msgTypes[80]
+	mi := &file_daemon_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6547,7 +8002,7 @@ func (x *TransactionHistoryEntry) String() string {
 func (*TransactionHistoryEntry) ProtoMessage() {}
 
 func (x *TransactionHistoryEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[80]
+	mi := &file_daemon_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6560,7 +8015,7 @@ func (x *TransactionHistoryEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TransactionHistoryEntry.ProtoReflect.Descriptor instead.
 func (*TransactionHistoryEntry) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{80}
+	return file_daemon_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *TransactionHistoryEntry) GetSource() string {
@@ -6690,7 +8145,7 @@ type ListTransactionsResponse struct {
 
 func (x *ListTransactionsResponse) Reset() {
 	*x = ListTransactionsResponse{}
-	mi := &file_daemon_proto_msgTypes[81]
+	mi := &file_daemon_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6702,7 +8157,7 @@ func (x *ListTransactionsResponse) String() string {
 func (*ListTransactionsResponse) ProtoMessage() {}
 
 func (x *ListTransactionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[81]
+	mi := &file_daemon_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6715,7 +8170,7 @@ func (x *ListTransactionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTransactionsResponse.ProtoReflect.Descriptor instead.
 func (*ListTransactionsResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{81}
+	return file_daemon_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *ListTransactionsResponse) GetTransactions() []*TransactionHistoryEntry {
@@ -6750,7 +8205,7 @@ type UnrollRequest struct {
 
 func (x *UnrollRequest) Reset() {
 	*x = UnrollRequest{}
-	mi := &file_daemon_proto_msgTypes[82]
+	mi := &file_daemon_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6762,7 +8217,7 @@ func (x *UnrollRequest) String() string {
 func (*UnrollRequest) ProtoMessage() {}
 
 func (x *UnrollRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[82]
+	mi := &file_daemon_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6775,7 +8230,7 @@ func (x *UnrollRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnrollRequest.ProtoReflect.Descriptor instead.
 func (*UnrollRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{82}
+	return file_daemon_proto_rawDescGZIP(), []int{98}
 }
 
 func (x *UnrollRequest) GetOutpoint() string {
@@ -6798,7 +8253,7 @@ type UnrollResponse struct {
 
 func (x *UnrollResponse) Reset() {
 	*x = UnrollResponse{}
-	mi := &file_daemon_proto_msgTypes[83]
+	mi := &file_daemon_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6810,7 +8265,7 @@ func (x *UnrollResponse) String() string {
 func (*UnrollResponse) ProtoMessage() {}
 
 func (x *UnrollResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[83]
+	mi := &file_daemon_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6823,7 +8278,7 @@ func (x *UnrollResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnrollResponse.ProtoReflect.Descriptor instead.
 func (*UnrollResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{83}
+	return file_daemon_proto_rawDescGZIP(), []int{99}
 }
 
 func (x *UnrollResponse) GetCreated() bool {
@@ -6850,7 +8305,7 @@ type GetUnrollStatusRequest struct {
 
 func (x *GetUnrollStatusRequest) Reset() {
 	*x = GetUnrollStatusRequest{}
-	mi := &file_daemon_proto_msgTypes[84]
+	mi := &file_daemon_proto_msgTypes[100]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6862,7 +8317,7 @@ func (x *GetUnrollStatusRequest) String() string {
 func (*GetUnrollStatusRequest) ProtoMessage() {}
 
 func (x *GetUnrollStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[84]
+	mi := &file_daemon_proto_msgTypes[100]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6875,7 +8330,7 @@ func (x *GetUnrollStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetUnrollStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetUnrollStatusRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{84}
+	return file_daemon_proto_rawDescGZIP(), []int{100}
 }
 
 func (x *GetUnrollStatusRequest) GetOutpoint() string {
@@ -6903,7 +8358,7 @@ type GetUnrollStatusResponse struct {
 
 func (x *GetUnrollStatusResponse) Reset() {
 	*x = GetUnrollStatusResponse{}
-	mi := &file_daemon_proto_msgTypes[85]
+	mi := &file_daemon_proto_msgTypes[101]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6915,7 +8370,7 @@ func (x *GetUnrollStatusResponse) String() string {
 func (*GetUnrollStatusResponse) ProtoMessage() {}
 
 func (x *GetUnrollStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[85]
+	mi := &file_daemon_proto_msgTypes[101]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6928,7 +8383,7 @@ func (x *GetUnrollStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetUnrollStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetUnrollStatusResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{85}
+	return file_daemon_proto_rawDescGZIP(), []int{101}
 }
 
 func (x *GetUnrollStatusResponse) GetFound() bool {
@@ -7010,7 +8465,7 @@ type ArmVHTLCRecoveryRequest struct {
 
 func (x *ArmVHTLCRecoveryRequest) Reset() {
 	*x = ArmVHTLCRecoveryRequest{}
-	mi := &file_daemon_proto_msgTypes[86]
+	mi := &file_daemon_proto_msgTypes[102]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7022,7 +8477,7 @@ func (x *ArmVHTLCRecoveryRequest) String() string {
 func (*ArmVHTLCRecoveryRequest) ProtoMessage() {}
 
 func (x *ArmVHTLCRecoveryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[86]
+	mi := &file_daemon_proto_msgTypes[102]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7035,7 +8490,7 @@ func (x *ArmVHTLCRecoveryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArmVHTLCRecoveryRequest.ProtoReflect.Descriptor instead.
 func (*ArmVHTLCRecoveryRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{86}
+	return file_daemon_proto_rawDescGZIP(), []int{102}
 }
 
 func (x *ArmVHTLCRecoveryRequest) GetRequestId() string {
@@ -7178,7 +8633,7 @@ type ArmVHTLCRecoveryResponse struct {
 
 func (x *ArmVHTLCRecoveryResponse) Reset() {
 	*x = ArmVHTLCRecoveryResponse{}
-	mi := &file_daemon_proto_msgTypes[87]
+	mi := &file_daemon_proto_msgTypes[103]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7190,7 +8645,7 @@ func (x *ArmVHTLCRecoveryResponse) String() string {
 func (*ArmVHTLCRecoveryResponse) ProtoMessage() {}
 
 func (x *ArmVHTLCRecoveryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[87]
+	mi := &file_daemon_proto_msgTypes[103]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7203,7 +8658,7 @@ func (x *ArmVHTLCRecoveryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArmVHTLCRecoveryResponse.ProtoReflect.Descriptor instead.
 func (*ArmVHTLCRecoveryResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{87}
+	return file_daemon_proto_rawDescGZIP(), []int{103}
 }
 
 func (x *ArmVHTLCRecoveryResponse) GetRecoveryId() string {
@@ -7243,7 +8698,7 @@ type EscalateVHTLCRecoveryRequest struct {
 
 func (x *EscalateVHTLCRecoveryRequest) Reset() {
 	*x = EscalateVHTLCRecoveryRequest{}
-	mi := &file_daemon_proto_msgTypes[88]
+	mi := &file_daemon_proto_msgTypes[104]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7255,7 +8710,7 @@ func (x *EscalateVHTLCRecoveryRequest) String() string {
 func (*EscalateVHTLCRecoveryRequest) ProtoMessage() {}
 
 func (x *EscalateVHTLCRecoveryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[88]
+	mi := &file_daemon_proto_msgTypes[104]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7268,7 +8723,7 @@ func (x *EscalateVHTLCRecoveryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EscalateVHTLCRecoveryRequest.ProtoReflect.Descriptor instead.
 func (*EscalateVHTLCRecoveryRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{88}
+	return file_daemon_proto_rawDescGZIP(), []int{104}
 }
 
 func (x *EscalateVHTLCRecoveryRequest) GetRecoveryId() string {
@@ -7302,7 +8757,7 @@ type EscalateVHTLCRecoveryResponse struct {
 
 func (x *EscalateVHTLCRecoveryResponse) Reset() {
 	*x = EscalateVHTLCRecoveryResponse{}
-	mi := &file_daemon_proto_msgTypes[89]
+	mi := &file_daemon_proto_msgTypes[105]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7314,7 +8769,7 @@ func (x *EscalateVHTLCRecoveryResponse) String() string {
 func (*EscalateVHTLCRecoveryResponse) ProtoMessage() {}
 
 func (x *EscalateVHTLCRecoveryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[89]
+	mi := &file_daemon_proto_msgTypes[105]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7327,7 +8782,7 @@ func (x *EscalateVHTLCRecoveryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EscalateVHTLCRecoveryResponse.ProtoReflect.Descriptor instead.
 func (*EscalateVHTLCRecoveryResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{89}
+	return file_daemon_proto_rawDescGZIP(), []int{105}
 }
 
 func (x *EscalateVHTLCRecoveryResponse) GetStatus() *VHTLCRecoveryStatus {
@@ -7351,7 +8806,7 @@ type CancelVHTLCRecoveryRequest struct {
 
 func (x *CancelVHTLCRecoveryRequest) Reset() {
 	*x = CancelVHTLCRecoveryRequest{}
-	mi := &file_daemon_proto_msgTypes[90]
+	mi := &file_daemon_proto_msgTypes[106]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7363,7 +8818,7 @@ func (x *CancelVHTLCRecoveryRequest) String() string {
 func (*CancelVHTLCRecoveryRequest) ProtoMessage() {}
 
 func (x *CancelVHTLCRecoveryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[90]
+	mi := &file_daemon_proto_msgTypes[106]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7376,7 +8831,7 @@ func (x *CancelVHTLCRecoveryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelVHTLCRecoveryRequest.ProtoReflect.Descriptor instead.
 func (*CancelVHTLCRecoveryRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{90}
+	return file_daemon_proto_rawDescGZIP(), []int{106}
 }
 
 func (x *CancelVHTLCRecoveryRequest) GetRecoveryId() string {
@@ -7410,7 +8865,7 @@ type CancelVHTLCRecoveryResponse struct {
 
 func (x *CancelVHTLCRecoveryResponse) Reset() {
 	*x = CancelVHTLCRecoveryResponse{}
-	mi := &file_daemon_proto_msgTypes[91]
+	mi := &file_daemon_proto_msgTypes[107]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7422,7 +8877,7 @@ func (x *CancelVHTLCRecoveryResponse) String() string {
 func (*CancelVHTLCRecoveryResponse) ProtoMessage() {}
 
 func (x *CancelVHTLCRecoveryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[91]
+	mi := &file_daemon_proto_msgTypes[107]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7435,7 +8890,7 @@ func (x *CancelVHTLCRecoveryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelVHTLCRecoveryResponse.ProtoReflect.Descriptor instead.
 func (*CancelVHTLCRecoveryResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{91}
+	return file_daemon_proto_rawDescGZIP(), []int{107}
 }
 
 func (x *CancelVHTLCRecoveryResponse) GetStatus() *VHTLCRecoveryStatus {
@@ -7455,7 +8910,7 @@ type GetVHTLCRecoveryStatusRequest struct {
 
 func (x *GetVHTLCRecoveryStatusRequest) Reset() {
 	*x = GetVHTLCRecoveryStatusRequest{}
-	mi := &file_daemon_proto_msgTypes[92]
+	mi := &file_daemon_proto_msgTypes[108]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7467,7 +8922,7 @@ func (x *GetVHTLCRecoveryStatusRequest) String() string {
 func (*GetVHTLCRecoveryStatusRequest) ProtoMessage() {}
 
 func (x *GetVHTLCRecoveryStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[92]
+	mi := &file_daemon_proto_msgTypes[108]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7480,7 +8935,7 @@ func (x *GetVHTLCRecoveryStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetVHTLCRecoveryStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetVHTLCRecoveryStatusRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{92}
+	return file_daemon_proto_rawDescGZIP(), []int{108}
 }
 
 func (x *GetVHTLCRecoveryStatusRequest) GetRecoveryId() string {
@@ -7502,7 +8957,7 @@ type GetVHTLCRecoveryStatusResponse struct {
 
 func (x *GetVHTLCRecoveryStatusResponse) Reset() {
 	*x = GetVHTLCRecoveryStatusResponse{}
-	mi := &file_daemon_proto_msgTypes[93]
+	mi := &file_daemon_proto_msgTypes[109]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7514,7 +8969,7 @@ func (x *GetVHTLCRecoveryStatusResponse) String() string {
 func (*GetVHTLCRecoveryStatusResponse) ProtoMessage() {}
 
 func (x *GetVHTLCRecoveryStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[93]
+	mi := &file_daemon_proto_msgTypes[109]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7527,7 +8982,7 @@ func (x *GetVHTLCRecoveryStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetVHTLCRecoveryStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetVHTLCRecoveryStatusResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{93}
+	return file_daemon_proto_rawDescGZIP(), []int{109}
 }
 
 func (x *GetVHTLCRecoveryStatusResponse) GetFound() bool {
@@ -7554,7 +9009,7 @@ type ListVHTLCRecoveriesRequest struct {
 
 func (x *ListVHTLCRecoveriesRequest) Reset() {
 	*x = ListVHTLCRecoveriesRequest{}
-	mi := &file_daemon_proto_msgTypes[94]
+	mi := &file_daemon_proto_msgTypes[110]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7566,7 +9021,7 @@ func (x *ListVHTLCRecoveriesRequest) String() string {
 func (*ListVHTLCRecoveriesRequest) ProtoMessage() {}
 
 func (x *ListVHTLCRecoveriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[94]
+	mi := &file_daemon_proto_msgTypes[110]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7579,7 +9034,7 @@ func (x *ListVHTLCRecoveriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListVHTLCRecoveriesRequest.ProtoReflect.Descriptor instead.
 func (*ListVHTLCRecoveriesRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{94}
+	return file_daemon_proto_rawDescGZIP(), []int{110}
 }
 
 func (x *ListVHTLCRecoveriesRequest) GetIncludeTerminal() bool {
@@ -7599,7 +9054,7 @@ type ListVHTLCRecoveriesResponse struct {
 
 func (x *ListVHTLCRecoveriesResponse) Reset() {
 	*x = ListVHTLCRecoveriesResponse{}
-	mi := &file_daemon_proto_msgTypes[95]
+	mi := &file_daemon_proto_msgTypes[111]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7611,7 +9066,7 @@ func (x *ListVHTLCRecoveriesResponse) String() string {
 func (*ListVHTLCRecoveriesResponse) ProtoMessage() {}
 
 func (x *ListVHTLCRecoveriesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[95]
+	mi := &file_daemon_proto_msgTypes[111]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7624,7 +9079,7 @@ func (x *ListVHTLCRecoveriesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListVHTLCRecoveriesResponse.ProtoReflect.Descriptor instead.
 func (*ListVHTLCRecoveriesResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{95}
+	return file_daemon_proto_rawDescGZIP(), []int{111}
 }
 
 func (x *ListVHTLCRecoveriesResponse) GetStatuses() []*VHTLCRecoveryStatus {
@@ -7699,7 +9154,7 @@ type VHTLCRecoveryStatus struct {
 
 func (x *VHTLCRecoveryStatus) Reset() {
 	*x = VHTLCRecoveryStatus{}
-	mi := &file_daemon_proto_msgTypes[96]
+	mi := &file_daemon_proto_msgTypes[112]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7711,7 +9166,7 @@ func (x *VHTLCRecoveryStatus) String() string {
 func (*VHTLCRecoveryStatus) ProtoMessage() {}
 
 func (x *VHTLCRecoveryStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[96]
+	mi := &file_daemon_proto_msgTypes[112]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7724,7 +9179,7 @@ func (x *VHTLCRecoveryStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VHTLCRecoveryStatus.ProtoReflect.Descriptor instead.
 func (*VHTLCRecoveryStatus) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{96}
+	return file_daemon_proto_rawDescGZIP(), []int{112}
 }
 
 func (x *VHTLCRecoveryStatus) GetRecoveryId() string {
@@ -7969,7 +9424,18 @@ const file_daemon_proto_rawDesc = "" +
 	"\x1conchain_wallet_confirmed_sat\x18\x05 \x01(\x03R\x19onchainWalletConfirmedSat\x12;\n" +
 	"\x1aboarding_pending_sweep_sat\x18\x06 \x01(\x03R\x17boardingPendingSweepSat\x12,\n" +
 	"\x12boarding_swept_sat\x18\a \x01(\x03R\x10boardingSweptSat\x120\n" +
-	"\x14boarding_adopted_sat\x18\b \x01(\x03R\x12boardingAdoptedSat\"\xc6\x03\n" +
+	"\x14boarding_adopted_sat\x18\b \x01(\x03R\x12boardingAdoptedSat\"\xa0\x03\n" +
+	"\x0eVTXOExpiryInfo\x123\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x1b.daemonrpc.VTXOExpiryStatusR\x06status\x12%\n" +
+	"\x0ecurrent_height\x18\x02 \x01(\x05R\rcurrentHeight\x12!\n" +
+	"\fbatch_expiry\x18\x03 \x01(\x05R\vbatchExpiry\x12)\n" +
+	"\x10blocks_remaining\x18\x04 \x01(\x05R\x0fblocksRemaining\x128\n" +
+	"\x18refresh_threshold_blocks\x18\x05 \x01(\x05R\x16refreshThresholdBlocks\x12:\n" +
+	"\x19critical_threshold_blocks\x18\x06 \x01(\x05R\x17criticalThresholdBlocks\x12'\n" +
+	"\x0frelative_expiry\x18\a \x01(\rR\x0erelativeExpiry\x12$\n" +
+	"\x0emax_tree_depth\x18\b \x01(\rR\fmaxTreeDepth\x12\x1f\n" +
+	"\vchain_depth\x18\t \x01(\rR\n" +
+	"chainDepth\"\x82\x04\n" +
 	"\x04VTXO\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1d\n" +
 	"\n" +
@@ -7985,7 +9451,9 @@ const file_daemon_proto_rawDesc = "" +
 	" \x01(\rR\n" +
 	"chainDepth\x12;\n" +
 	"\x1aoor_final_checkpoint_psbts\x18\v \x03(\fR\x17oorFinalCheckpointPsbts\x12\"\n" +
-	"\rspent_by_txid\x18\f \x01(\tR\vspentByTxid\"\xae\x01\n" +
+	"\rspent_by_txid\x18\f \x01(\tR\vspentByTxid\x12:\n" +
+	"\vexpiry_info\x18\r \x01(\v2\x19.daemonrpc.VTXOExpiryInfoR\n" +
+	"expiryInfo\"\xae\x01\n" +
 	"\x10ListVTXOsRequest\x12:\n" +
 	"\rstatus_filter\x18\x01 \x01(\x0e2\x15.daemonrpc.VTXOStatusR\fstatusFilter\x12$\n" +
 	"\x0emin_amount_sat\x18\x02 \x01(\x03R\fminAmountSat\x128\n" +
@@ -8031,7 +9499,18 @@ const file_daemon_proto_rawDesc = "" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12:\n" +
 	"\rstatus_filter\x18\x02 \x03(\x0e2\x15.daemonrpc.VTXOStatusR\fstatusFilter\"G\n" +
 	" GetIndexedVTXOByPkScriptResponse\x12#\n" +
-	"\x04vtxo\x18\x01 \x01(\v2\x0f.daemonrpc.VTXOR\x04vtxo\"c\n" +
+	"\x04vtxo\x18\x01 \x01(\v2\x0f.daemonrpc.VTXOR\x04vtxo\"\xc4\x01\n" +
+	"\x18GetVTXOExpiryInfoRequest\x12\x1c\n" +
+	"\boutpoint\x18\x01 \x01(\tH\x00R\boutpoint\x12\x1d\n" +
+	"\tpk_script\x18\x02 \x01(\fH\x00R\bpkScript\x12:\n" +
+	"\rstatus_filter\x18\x03 \x03(\x0e2\x15.daemonrpc.VTXOStatusR\fstatusFilter\x12%\n" +
+	"\x0ecurrent_height\x18\x04 \x01(\x05R\rcurrentHeightB\b\n" +
+	"\x06target\"\x92\x01\n" +
+	"\x19GetVTXOExpiryInfoResponse\x12\x14\n" +
+	"\x05found\x18\x01 \x01(\bR\x05found\x12:\n" +
+	"\vexpiry_info\x18\x02 \x01(\v2\x19.daemonrpc.VTXOExpiryInfoR\n" +
+	"expiryInfo\x12#\n" +
+	"\x04vtxo\x18\x03 \x01(\v2\x0f.daemonrpc.VTXOR\x04vtxo\"c\n" +
 	"!GetIndexedOORSessionByTxidRequest\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12!\n" +
 	"\fsession_txid\x18\x02 \x01(\fR\vsessionTxid\"j\n" +
@@ -8101,7 +9580,26 @@ const file_daemon_proto_rawDesc = "" +
 	"\fcustom_input\x18\x01 \x01(\v2\x19.daemonrpc.CustomOORInputR\vcustomInput\x12'\n" +
 	"\x0fcheckpoint_psbt\x18\x02 \x01(\fR\x0echeckpointPsbt\"]\n" +
 	"\x1aSignOORCustomInputResponse\x12?\n" +
-	"\tsignature\x18\x01 \x01(\v2!.daemonrpc.TaprootScriptSignatureR\tsignature\"1\n" +
+	"\tsignature\x18\x01 \x01(\v2!.daemonrpc.TaprootScriptSignatureR\tsignature\"\xd6\x03\n" +
+	"\x16SignVTXOForfeitRequest\x12#\n" +
+	"\rvtxo_outpoint\x18\x01 \x01(\tR\fvtxoOutpoint\x12&\n" +
+	"\x0fvtxo_amount_sat\x18\x02 \x01(\x03R\rvtxoAmountSat\x12$\n" +
+	"\x0evtxo_pk_script\x18\x03 \x01(\fR\fvtxoPkScript\x120\n" +
+	"\x14vtxo_policy_template\x18\x04 \x01(\fR\x12vtxoPolicyTemplate\x12\x1d\n" +
+	"\n" +
+	"spend_path\x18\x05 \x01(\fR\tspendPath\x12.\n" +
+	"\x13unsigned_forfeit_tx\x18\x06 \x01(\fR\x11unsignedForfeitTx\x12-\n" +
+	"\x12connector_outpoint\x18\a \x01(\tR\x11connectorOutpoint\x120\n" +
+	"\x14connector_amount_sat\x18\b \x01(\x03R\x12connectorAmountSat\x12.\n" +
+	"\x13connector_pk_script\x18\t \x01(\fR\x11connectorPkScript\x127\n" +
+	"\x18server_forfeit_pk_script\x18\n" +
+	" \x01(\fR\x15serverForfeitPkScript\"O\n" +
+	"\x17SignVTXOForfeitResponse\x12\x16\n" +
+	"\x06pubkey\x18\x01 \x01(\fR\x06pubkey\x12\x1c\n" +
+	"\tsignature\x18\x02 \x01(\fR\tsignature\"\x7f\n" +
+	"\x15ForfeitSigningContext\x12!\n" +
+	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12C\n" +
+	"\rsigning_route\x18\x02 \x01(\x0e2\x1e.daemonrpc.ForfeitSigningRouteR\fsigningRoute\"1\n" +
 	"\x11OutpointSelection\x12\x1c\n" +
 	"\toutpoints\x18\x01 \x03(\tR\toutpoints\"\x8d\x01\n" +
 	"\x13RefreshVTXOsRequest\x12<\n" +
@@ -8111,7 +9609,62 @@ const file_daemon_proto_rawDesc = "" +
 	"\tselection\"Y\n" +
 	"\x14RefreshVTXOsResponse\x12)\n" +
 	"\x10queued_outpoints\x18\x01 \x03(\tR\x0fqueuedOutpoints\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"W\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\xd2\x02\n" +
+	"\x16CustomRefreshVTXOInput\x12\x1a\n" +
+	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x02 \x01(\x03R\tamountSat\x12\x1b\n" +
+	"\tpk_script\x18\x03 \x01(\fR\bpkScript\x120\n" +
+	"\x14vtxo_policy_template\x18\x04 \x01(\fR\x12vtxoPolicyTemplate\x12&\n" +
+	"\x0fauth_spend_path\x18\x05 \x01(\fR\rauthSpendPath\x12,\n" +
+	"\x12forfeit_spend_path\x18\x06 \x01(\fR\x10forfeitSpendPath\x12X\n" +
+	"\x17forfeit_signing_context\x18\a \x01(\v2 .daemonrpc.ForfeitSigningContextR\x15forfeitSigningContext\"\xaa\x01\n" +
+	"\x17CustomRefreshVTXOOutput\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x120\n" +
+	"\x14vtxo_policy_template\x18\x02 \x01(\fR\x12vtxoPolicyTemplate\x12\x1b\n" +
+	"\tpk_script\x18\x03 \x01(\fR\bpkScript\x12!\n" +
+	"\ffixed_amount\x18\x04 \x01(\bR\vfixedAmount\"\xad\x01\n" +
+	"\x19RefreshCustomVTXOsRequest\x129\n" +
+	"\x06inputs\x18\x01 \x03(\v2!.daemonrpc.CustomRefreshVTXOInputR\x06inputs\x12<\n" +
+	"\aoutputs\x18\x02 \x03(\v2\".daemonrpc.CustomRefreshVTXOOutputR\aoutputs\x12\x17\n" +
+	"\adry_run\x18\x03 \x01(\bR\x06dryRun\"_\n" +
+	"\x1aRefreshCustomVTXOsResponse\x12)\n" +
+	"\x10queued_outpoints\x18\x01 \x03(\tR\x0fqueuedOutpoints\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\x9b\x05\n" +
+	")PendingForfeitParticipantSignatureRequest\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\fR\trequestId\x12\x1a\n" +
+	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12!\n" +
+	"\fpayment_hash\x18\x03 \x01(\fR\vpaymentHash\x12C\n" +
+	"\rsigning_route\x18\x04 \x01(\x0e2\x1e.daemonrpc.ForfeitSigningRouteR\fsigningRoute\x12#\n" +
+	"\rvtxo_outpoint\x18\x05 \x01(\tR\fvtxoOutpoint\x12&\n" +
+	"\x0fvtxo_amount_sat\x18\x06 \x01(\x04R\rvtxoAmountSat\x12$\n" +
+	"\x0evtxo_pk_script\x18\a \x01(\fR\fvtxoPkScript\x120\n" +
+	"\x14vtxo_policy_template\x18\b \x01(\fR\x12vtxoPolicyTemplate\x12,\n" +
+	"\x12forfeit_spend_path\x18\t \x01(\fR\x10forfeitSpendPath\x12.\n" +
+	"\x13unsigned_forfeit_tx\x18\n" +
+	" \x01(\fR\x11unsignedForfeitTx\x12-\n" +
+	"\x12connector_outpoint\x18\v \x01(\tR\x11connectorOutpoint\x120\n" +
+	"\x14connector_amount_sat\x18\f \x01(\x04R\x12connectorAmountSat\x12.\n" +
+	"\x13connector_pk_script\x18\r \x01(\fR\x11connectorPkScript\x127\n" +
+	"\x18server_forfeit_pk_script\x18\x0e \x01(\fR\x15serverForfeitPkScript\"t\n" +
+	"5ListPendingForfeitParticipantSignatureRequestsRequest\x12%\n" +
+	"\x0eafter_sequence\x18\x01 \x01(\x04R\rafterSequence\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\rR\x05limit\"\xaf\x01\n" +
+	"6ListPendingForfeitParticipantSignatureRequestsResponse\x12P\n" +
+	"\brequests\x18\x01 \x03(\v24.daemonrpc.PendingForfeitParticipantSignatureRequestR\brequests\x12#\n" +
+	"\rnext_sequence\x18\x02 \x01(\x04R\fnextSequence\"S\n" +
+	"\x1bForfeitParticipantSignature\x12\x16\n" +
+	"\x06pubkey\x18\x01 \x01(\fR\x06pubkey\x12\x1c\n" +
+	"\tsignature\x18\x02 \x01(\fR\tsignature\"\x92\x01\n" +
+	")SubmitForfeitParticipantSignaturesRequest\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\fR\trequestId\x12F\n" +
+	"\n" +
+	"signatures\x18\x02 \x03(\v2&.daemonrpc.ForfeitParticipantSignatureR\n" +
+	"signatures\",\n" +
+	"*SubmitForfeitParticipantSignaturesResponse\"W\n" +
 	"\x10LeaveDestination\x12\x1a\n" +
 	"\aaddress\x18\x01 \x01(\tH\x00R\aaddress\x12\x1d\n" +
 	"\tpk_script\x18\x02 \x01(\fH\x00R\bpkScriptB\b\n" +
@@ -8449,7 +10002,17 @@ const file_daemon_proto_rawDesc = "" +
 	"\x1bVTXO_STATUS_UNILATERAL_EXIT\x10\x06\x12\x16\n" +
 	"\x12VTXO_STATUS_FAILED\x10\a\x12\x18\n" +
 	"\x14VTXO_STATUS_SPENDING\x10\b\x12\x1d\n" +
-	"\x19VTXO_STATUS_PENDING_ROUND\x10\t*\xf7\x03\n" +
+	"\x19VTXO_STATUS_PENDING_ROUND\x10\t*\xb6\x01\n" +
+	"\x10VTXOExpiryStatus\x12\x1e\n" +
+	"\x1aVTXO_EXPIRY_STATUS_UNKNOWN\x10\x00\x12\x1b\n" +
+	"\x17VTXO_EXPIRY_STATUS_SAFE\x10\x01\x12$\n" +
+	" VTXO_EXPIRY_STATUS_NEEDS_REFRESH\x10\x02\x12\x1f\n" +
+	"\x1bVTXO_EXPIRY_STATUS_CRITICAL\x10\x03\x12\x1e\n" +
+	"\x1aVTXO_EXPIRY_STATUS_EXPIRED\x10\x04*\x8f\x01\n" +
+	"\x13ForfeitSigningRoute\x12%\n" +
+	"!FORFEIT_SIGNING_ROUTE_UNSPECIFIED\x10\x00\x12&\n" +
+	"\"FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER\x10\x01\x12)\n" +
+	"%FORFEIT_SIGNING_ROUTE_PENDING_REQUEST\x10\x02*\xf7\x03\n" +
 	"\n" +
 	"RoundState\x12\x17\n" +
 	"\x13ROUND_STATE_UNKNOWN\x10\x00\x12\x14\n" +
@@ -8509,7 +10072,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x1eVHTLC_RECOVERY_STATE_COMPLETED\x10\t\x12\"\n" +
 	"\x1eVHTLC_RECOVERY_STATE_CANCELLED\x10\n" +
 	"\x12\x1f\n" +
-	"\x1bVHTLC_RECOVERY_STATE_FAILED\x10\v2\x9e\x1b\n" +
+	"\x1bVHTLC_RECOVERY_STATE_FAILED\x10\v2\x87 \n" +
 	"\rDaemonService\x12@\n" +
 	"\aGetInfo\x12\x19.daemonrpc.GetInfoRequest\x1a\x1a.daemonrpc.GetInfoResponse\x12@\n" +
 	"\aGenSeed\x12\x19.daemonrpc.GenSeedRequest\x1a\x1a.daemonrpc.GenSeedResponse\x12I\n" +
@@ -8526,14 +10089,19 @@ const file_daemon_proto_rawDesc = "" +
 	"\x16SignReceiveAuthMessage\x12(.daemonrpc.SignReceiveAuthMessageRequest\x1a).daemonrpc.SignReceiveAuthMessageResponse\x12\x82\x01\n" +
 	"\x1dSignReceiveAuthMessageCompact\x12/.daemonrpc.SignReceiveAuthMessageCompactRequest\x1a0.daemonrpc.SignReceiveAuthMessageCompactResponse\x12X\n" +
 	"\x0fReceiveAuthECDH\x12!.daemonrpc.ReceiveAuthECDHRequest\x1a\".daemonrpc.ReceiveAuthECDHResponse\x12s\n" +
-	"\x18GetIndexedVTXOByPkScript\x12*.daemonrpc.GetIndexedVTXOByPkScriptRequest\x1a+.daemonrpc.GetIndexedVTXOByPkScriptResponse\x12y\n" +
+	"\x18GetIndexedVTXOByPkScript\x12*.daemonrpc.GetIndexedVTXOByPkScriptRequest\x1a+.daemonrpc.GetIndexedVTXOByPkScriptResponse\x12^\n" +
+	"\x11GetVTXOExpiryInfo\x12#.daemonrpc.GetVTXOExpiryInfoRequest\x1a$.daemonrpc.GetVTXOExpiryInfoResponse\x12y\n" +
 	"\x1aGetIndexedOORSessionByTxid\x12,.daemonrpc.GetIndexedOORSessionByTxidRequest\x1a-.daemonrpc.GetIndexedOORSessionByTxidResponse\x12C\n" +
 	"\bSendVTXO\x12\x1a.daemonrpc.SendVTXORequest\x1a\x1b.daemonrpc.SendVTXOResponse\x12@\n" +
 	"\aSendOOR\x12\x19.daemonrpc.SendOORRequest\x1a\x1a.daemonrpc.SendOORResponse\x12I\n" +
 	"\n" +
 	"PrepareOOR\x12\x1c.daemonrpc.PrepareOORRequest\x1a\x1d.daemonrpc.PrepareOORResponse\x12a\n" +
-	"\x12SignOORCustomInput\x12$.daemonrpc.SignOORCustomInputRequest\x1a%.daemonrpc.SignOORCustomInputResponse\x12O\n" +
-	"\fRefreshVTXOs\x12\x1e.daemonrpc.RefreshVTXOsRequest\x1a\x1f.daemonrpc.RefreshVTXOsResponse\x12I\n" +
+	"\x12SignOORCustomInput\x12$.daemonrpc.SignOORCustomInputRequest\x1a%.daemonrpc.SignOORCustomInputResponse\x12X\n" +
+	"\x0fSignVTXOForfeit\x12!.daemonrpc.SignVTXOForfeitRequest\x1a\".daemonrpc.SignVTXOForfeitResponse\x12O\n" +
+	"\fRefreshVTXOs\x12\x1e.daemonrpc.RefreshVTXOsRequest\x1a\x1f.daemonrpc.RefreshVTXOsResponse\x12a\n" +
+	"\x12RefreshCustomVTXOs\x12$.daemonrpc.RefreshCustomVTXOsRequest\x1a%.daemonrpc.RefreshCustomVTXOsResponse\x12\xb5\x01\n" +
+	".ListPendingForfeitParticipantSignatureRequests\x12@.daemonrpc.ListPendingForfeitParticipantSignatureRequestsRequest\x1aA.daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse\x12\x91\x01\n" +
+	"\"SubmitForfeitParticipantSignatures\x124.daemonrpc.SubmitForfeitParticipantSignaturesRequest\x1a5.daemonrpc.SubmitForfeitParticipantSignaturesResponse\x12I\n" +
 	"\n" +
 	"LeaveVTXOs\x12\x1c.daemonrpc.LeaveVTXOsRequest\x1a\x1d.daemonrpc.LeaveVTXOsResponse\x12L\n" +
 	"\vSendOnChain\x12\x1d.daemonrpc.SendOnChainRequest\x1a\x1e.daemonrpc.SendOnChainResponse\x12:\n" +
@@ -8570,254 +10138,294 @@ func file_daemon_proto_rawDescGZIP() []byte {
 	return file_daemon_proto_rawDescData
 }
 
-var file_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
-var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 98)
+var file_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 11)
+var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 114)
 var file_daemon_proto_goTypes = []any{
-	(WalletState)(0),                              // 0: daemonrpc.WalletState
-	(VTXOStatus)(0),                               // 1: daemonrpc.VTXOStatus
-	(RoundState)(0),                               // 2: daemonrpc.RoundState
-	(OORSessionDirection)(0),                      // 3: daemonrpc.OORSessionDirection
-	(OORSessionStatus)(0),                         // 4: daemonrpc.OORSessionStatus
-	(UnrollJobStatus)(0),                          // 5: daemonrpc.UnrollJobStatus
-	(VHTLCRecoveryDirection)(0),                   // 6: daemonrpc.VHTLCRecoveryDirection
-	(VHTLCRecoveryAction)(0),                      // 7: daemonrpc.VHTLCRecoveryAction
-	(VHTLCRecoveryState)(0),                       // 8: daemonrpc.VHTLCRecoveryState
-	(*GetInfoRequest)(nil),                        // 9: daemonrpc.GetInfoRequest
-	(*GetInfoResponse)(nil),                       // 10: daemonrpc.GetInfoResponse
-	(*ServerInfo)(nil),                            // 11: daemonrpc.ServerInfo
-	(*GenSeedRequest)(nil),                        // 12: daemonrpc.GenSeedRequest
-	(*GenSeedResponse)(nil),                       // 13: daemonrpc.GenSeedResponse
-	(*InitWalletRequest)(nil),                     // 14: daemonrpc.InitWalletRequest
-	(*InitWalletResponse)(nil),                    // 15: daemonrpc.InitWalletResponse
-	(*UnlockWalletRequest)(nil),                   // 16: daemonrpc.UnlockWalletRequest
-	(*UnlockWalletResponse)(nil),                  // 17: daemonrpc.UnlockWalletResponse
-	(*GetBalanceRequest)(nil),                     // 18: daemonrpc.GetBalanceRequest
-	(*GetBalanceResponse)(nil),                    // 19: daemonrpc.GetBalanceResponse
-	(*VTXO)(nil),                                  // 20: daemonrpc.VTXO
-	(*ListVTXOsRequest)(nil),                      // 21: daemonrpc.ListVTXOsRequest
-	(*ListVTXOsResponse)(nil),                     // 22: daemonrpc.ListVTXOsResponse
-	(*NewAddressRequest)(nil),                     // 23: daemonrpc.NewAddressRequest
-	(*NewAddressResponse)(nil),                    // 24: daemonrpc.NewAddressResponse
-	(*NewReceiveScriptRequest)(nil),               // 25: daemonrpc.NewReceiveScriptRequest
-	(*NewReceiveScriptResponse)(nil),              // 26: daemonrpc.NewReceiveScriptResponse
-	(*ReceiveAuthKeyRequest)(nil),                 // 27: daemonrpc.ReceiveAuthKeyRequest
-	(*ReceiveAuthKeyResponse)(nil),                // 28: daemonrpc.ReceiveAuthKeyResponse
-	(*SignReceiveAuthMessageRequest)(nil),         // 29: daemonrpc.SignReceiveAuthMessageRequest
-	(*SignReceiveAuthMessageResponse)(nil),        // 30: daemonrpc.SignReceiveAuthMessageResponse
-	(*SignReceiveAuthMessageCompactRequest)(nil),  // 31: daemonrpc.SignReceiveAuthMessageCompactRequest
-	(*SignReceiveAuthMessageCompactResponse)(nil), // 32: daemonrpc.SignReceiveAuthMessageCompactResponse
-	(*ReceiveAuthECDHRequest)(nil),                // 33: daemonrpc.ReceiveAuthECDHRequest
-	(*ReceiveAuthECDHResponse)(nil),               // 34: daemonrpc.ReceiveAuthECDHResponse
-	(*GetIndexedVTXOByPkScriptRequest)(nil),       // 35: daemonrpc.GetIndexedVTXOByPkScriptRequest
-	(*GetIndexedVTXOByPkScriptResponse)(nil),      // 36: daemonrpc.GetIndexedVTXOByPkScriptResponse
-	(*GetIndexedOORSessionByTxidRequest)(nil),     // 37: daemonrpc.GetIndexedOORSessionByTxidRequest
-	(*GetIndexedOORSessionByTxidResponse)(nil),    // 38: daemonrpc.GetIndexedOORSessionByTxidResponse
-	(*Output)(nil),                                // 39: daemonrpc.Output
-	(*SendVTXORequest)(nil),                       // 40: daemonrpc.SendVTXORequest
-	(*SendVTXOResponse)(nil),                      // 41: daemonrpc.SendVTXOResponse
-	(*SendOORRequest)(nil),                        // 42: daemonrpc.SendOORRequest
-	(*CustomOORInput)(nil),                        // 43: daemonrpc.CustomOORInput
-	(*TaprootScriptSignature)(nil),                // 44: daemonrpc.TaprootScriptSignature
-	(*SendOORResponse)(nil),                       // 45: daemonrpc.SendOORResponse
-	(*PrepareOORRequest)(nil),                     // 46: daemonrpc.PrepareOORRequest
-	(*PreparedOORCustomInput)(nil),                // 47: daemonrpc.PreparedOORCustomInput
-	(*PrepareOORResponse)(nil),                    // 48: daemonrpc.PrepareOORResponse
-	(*SignOORCustomInputRequest)(nil),             // 49: daemonrpc.SignOORCustomInputRequest
-	(*SignOORCustomInputResponse)(nil),            // 50: daemonrpc.SignOORCustomInputResponse
-	(*OutpointSelection)(nil),                     // 51: daemonrpc.OutpointSelection
-	(*RefreshVTXOsRequest)(nil),                   // 52: daemonrpc.RefreshVTXOsRequest
-	(*RefreshVTXOsResponse)(nil),                  // 53: daemonrpc.RefreshVTXOsResponse
-	(*LeaveDestination)(nil),                      // 54: daemonrpc.LeaveDestination
-	(*LeaveVTXOsRequest)(nil),                     // 55: daemonrpc.LeaveVTXOsRequest
-	(*LeaveVTXOsResponse)(nil),                    // 56: daemonrpc.LeaveVTXOsResponse
-	(*SendOnChainRequest)(nil),                    // 57: daemonrpc.SendOnChainRequest
-	(*SendOnChainResponse)(nil),                   // 58: daemonrpc.SendOnChainResponse
-	(*BoardRequest)(nil),                          // 59: daemonrpc.BoardRequest
-	(*BoardResponse)(nil),                         // 60: daemonrpc.BoardResponse
-	(*JoinNextRoundRequest)(nil),                  // 61: daemonrpc.JoinNextRoundRequest
-	(*JoinNextRoundResponse)(nil),                 // 62: daemonrpc.JoinNextRoundResponse
-	(*SweepBoardingUTXOsRequest)(nil),             // 63: daemonrpc.SweepBoardingUTXOsRequest
-	(*BoardingSweepOutput)(nil),                   // 64: daemonrpc.BoardingSweepOutput
-	(*SweepBoardingUTXOsResponse)(nil),            // 65: daemonrpc.SweepBoardingUTXOsResponse
-	(*ListBoardingSweepsRequest)(nil),             // 66: daemonrpc.ListBoardingSweepsRequest
-	(*BoardingSweepInput)(nil),                    // 67: daemonrpc.BoardingSweepInput
-	(*BoardingSweep)(nil),                         // 68: daemonrpc.BoardingSweep
-	(*ListBoardingSweepsResponse)(nil),            // 69: daemonrpc.ListBoardingSweepsResponse
-	(*RoundVTXOInfo)(nil),                         // 70: daemonrpc.RoundVTXOInfo
-	(*RoundInfo)(nil),                             // 71: daemonrpc.RoundInfo
-	(*ListRoundsRequest)(nil),                     // 72: daemonrpc.ListRoundsRequest
-	(*GetRoundRequest)(nil),                       // 73: daemonrpc.GetRoundRequest
-	(*GetRoundResponse)(nil),                      // 74: daemonrpc.GetRoundResponse
-	(*ListRoundsResponse)(nil),                    // 75: daemonrpc.ListRoundsResponse
-	(*WatchRoundsRequest)(nil),                    // 76: daemonrpc.WatchRoundsRequest
-	(*WatchRoundsResponse)(nil),                   // 77: daemonrpc.WatchRoundsResponse
-	(*OORSessionInfo)(nil),                        // 78: daemonrpc.OORSessionInfo
-	(*ListOORSessionsRequest)(nil),                // 79: daemonrpc.ListOORSessionsRequest
-	(*ListOORSessionsResponse)(nil),               // 80: daemonrpc.ListOORSessionsResponse
-	(*GetOORSessionRequest)(nil),                  // 81: daemonrpc.GetOORSessionRequest
-	(*GetOORSessionResponse)(nil),                 // 82: daemonrpc.GetOORSessionResponse
-	(*EstimateFeeRequest)(nil),                    // 83: daemonrpc.EstimateFeeRequest
-	(*EstimateFeeResponse)(nil),                   // 84: daemonrpc.EstimateFeeResponse
-	(*GetFeeHistoryRequest)(nil),                  // 85: daemonrpc.GetFeeHistoryRequest
-	(*FeeHistoryEntry)(nil),                       // 86: daemonrpc.FeeHistoryEntry
-	(*GetFeeHistoryResponse)(nil),                 // 87: daemonrpc.GetFeeHistoryResponse
-	(*ListTransactionsRequest)(nil),               // 88: daemonrpc.ListTransactionsRequest
-	(*TransactionHistoryEntry)(nil),               // 89: daemonrpc.TransactionHistoryEntry
-	(*ListTransactionsResponse)(nil),              // 90: daemonrpc.ListTransactionsResponse
-	(*UnrollRequest)(nil),                         // 91: daemonrpc.UnrollRequest
-	(*UnrollResponse)(nil),                        // 92: daemonrpc.UnrollResponse
-	(*GetUnrollStatusRequest)(nil),                // 93: daemonrpc.GetUnrollStatusRequest
-	(*GetUnrollStatusResponse)(nil),               // 94: daemonrpc.GetUnrollStatusResponse
-	(*ArmVHTLCRecoveryRequest)(nil),               // 95: daemonrpc.ArmVHTLCRecoveryRequest
-	(*ArmVHTLCRecoveryResponse)(nil),              // 96: daemonrpc.ArmVHTLCRecoveryResponse
-	(*EscalateVHTLCRecoveryRequest)(nil),          // 97: daemonrpc.EscalateVHTLCRecoveryRequest
-	(*EscalateVHTLCRecoveryResponse)(nil),         // 98: daemonrpc.EscalateVHTLCRecoveryResponse
-	(*CancelVHTLCRecoveryRequest)(nil),            // 99: daemonrpc.CancelVHTLCRecoveryRequest
-	(*CancelVHTLCRecoveryResponse)(nil),           // 100: daemonrpc.CancelVHTLCRecoveryResponse
-	(*GetVHTLCRecoveryStatusRequest)(nil),         // 101: daemonrpc.GetVHTLCRecoveryStatusRequest
-	(*GetVHTLCRecoveryStatusResponse)(nil),        // 102: daemonrpc.GetVHTLCRecoveryStatusResponse
-	(*ListVHTLCRecoveriesRequest)(nil),            // 103: daemonrpc.ListVHTLCRecoveriesRequest
-	(*ListVHTLCRecoveriesResponse)(nil),           // 104: daemonrpc.ListVHTLCRecoveriesResponse
-	(*VHTLCRecoveryStatus)(nil),                   // 105: daemonrpc.VHTLCRecoveryStatus
-	nil,                                           // 106: daemonrpc.LeaveVTXOsRequest.DestinationsEntry
+	(WalletState)(0),                                               // 0: daemonrpc.WalletState
+	(VTXOStatus)(0),                                                // 1: daemonrpc.VTXOStatus
+	(VTXOExpiryStatus)(0),                                          // 2: daemonrpc.VTXOExpiryStatus
+	(ForfeitSigningRoute)(0),                                       // 3: daemonrpc.ForfeitSigningRoute
+	(RoundState)(0),                                                // 4: daemonrpc.RoundState
+	(OORSessionDirection)(0),                                       // 5: daemonrpc.OORSessionDirection
+	(OORSessionStatus)(0),                                          // 6: daemonrpc.OORSessionStatus
+	(UnrollJobStatus)(0),                                           // 7: daemonrpc.UnrollJobStatus
+	(VHTLCRecoveryDirection)(0),                                    // 8: daemonrpc.VHTLCRecoveryDirection
+	(VHTLCRecoveryAction)(0),                                       // 9: daemonrpc.VHTLCRecoveryAction
+	(VHTLCRecoveryState)(0),                                        // 10: daemonrpc.VHTLCRecoveryState
+	(*GetInfoRequest)(nil),                                         // 11: daemonrpc.GetInfoRequest
+	(*GetInfoResponse)(nil),                                        // 12: daemonrpc.GetInfoResponse
+	(*ServerInfo)(nil),                                             // 13: daemonrpc.ServerInfo
+	(*GenSeedRequest)(nil),                                         // 14: daemonrpc.GenSeedRequest
+	(*GenSeedResponse)(nil),                                        // 15: daemonrpc.GenSeedResponse
+	(*InitWalletRequest)(nil),                                      // 16: daemonrpc.InitWalletRequest
+	(*InitWalletResponse)(nil),                                     // 17: daemonrpc.InitWalletResponse
+	(*UnlockWalletRequest)(nil),                                    // 18: daemonrpc.UnlockWalletRequest
+	(*UnlockWalletResponse)(nil),                                   // 19: daemonrpc.UnlockWalletResponse
+	(*GetBalanceRequest)(nil),                                      // 20: daemonrpc.GetBalanceRequest
+	(*GetBalanceResponse)(nil),                                     // 21: daemonrpc.GetBalanceResponse
+	(*VTXOExpiryInfo)(nil),                                         // 22: daemonrpc.VTXOExpiryInfo
+	(*VTXO)(nil),                                                   // 23: daemonrpc.VTXO
+	(*ListVTXOsRequest)(nil),                                       // 24: daemonrpc.ListVTXOsRequest
+	(*ListVTXOsResponse)(nil),                                      // 25: daemonrpc.ListVTXOsResponse
+	(*NewAddressRequest)(nil),                                      // 26: daemonrpc.NewAddressRequest
+	(*NewAddressResponse)(nil),                                     // 27: daemonrpc.NewAddressResponse
+	(*NewReceiveScriptRequest)(nil),                                // 28: daemonrpc.NewReceiveScriptRequest
+	(*NewReceiveScriptResponse)(nil),                               // 29: daemonrpc.NewReceiveScriptResponse
+	(*ReceiveAuthKeyRequest)(nil),                                  // 30: daemonrpc.ReceiveAuthKeyRequest
+	(*ReceiveAuthKeyResponse)(nil),                                 // 31: daemonrpc.ReceiveAuthKeyResponse
+	(*SignReceiveAuthMessageRequest)(nil),                          // 32: daemonrpc.SignReceiveAuthMessageRequest
+	(*SignReceiveAuthMessageResponse)(nil),                         // 33: daemonrpc.SignReceiveAuthMessageResponse
+	(*SignReceiveAuthMessageCompactRequest)(nil),                   // 34: daemonrpc.SignReceiveAuthMessageCompactRequest
+	(*SignReceiveAuthMessageCompactResponse)(nil),                  // 35: daemonrpc.SignReceiveAuthMessageCompactResponse
+	(*ReceiveAuthECDHRequest)(nil),                                 // 36: daemonrpc.ReceiveAuthECDHRequest
+	(*ReceiveAuthECDHResponse)(nil),                                // 37: daemonrpc.ReceiveAuthECDHResponse
+	(*GetIndexedVTXOByPkScriptRequest)(nil),                        // 38: daemonrpc.GetIndexedVTXOByPkScriptRequest
+	(*GetIndexedVTXOByPkScriptResponse)(nil),                       // 39: daemonrpc.GetIndexedVTXOByPkScriptResponse
+	(*GetVTXOExpiryInfoRequest)(nil),                               // 40: daemonrpc.GetVTXOExpiryInfoRequest
+	(*GetVTXOExpiryInfoResponse)(nil),                              // 41: daemonrpc.GetVTXOExpiryInfoResponse
+	(*GetIndexedOORSessionByTxidRequest)(nil),                      // 42: daemonrpc.GetIndexedOORSessionByTxidRequest
+	(*GetIndexedOORSessionByTxidResponse)(nil),                     // 43: daemonrpc.GetIndexedOORSessionByTxidResponse
+	(*Output)(nil),                                                 // 44: daemonrpc.Output
+	(*SendVTXORequest)(nil),                                        // 45: daemonrpc.SendVTXORequest
+	(*SendVTXOResponse)(nil),                                       // 46: daemonrpc.SendVTXOResponse
+	(*SendOORRequest)(nil),                                         // 47: daemonrpc.SendOORRequest
+	(*CustomOORInput)(nil),                                         // 48: daemonrpc.CustomOORInput
+	(*TaprootScriptSignature)(nil),                                 // 49: daemonrpc.TaprootScriptSignature
+	(*SendOORResponse)(nil),                                        // 50: daemonrpc.SendOORResponse
+	(*PrepareOORRequest)(nil),                                      // 51: daemonrpc.PrepareOORRequest
+	(*PreparedOORCustomInput)(nil),                                 // 52: daemonrpc.PreparedOORCustomInput
+	(*PrepareOORResponse)(nil),                                     // 53: daemonrpc.PrepareOORResponse
+	(*SignOORCustomInputRequest)(nil),                              // 54: daemonrpc.SignOORCustomInputRequest
+	(*SignOORCustomInputResponse)(nil),                             // 55: daemonrpc.SignOORCustomInputResponse
+	(*SignVTXOForfeitRequest)(nil),                                 // 56: daemonrpc.SignVTXOForfeitRequest
+	(*SignVTXOForfeitResponse)(nil),                                // 57: daemonrpc.SignVTXOForfeitResponse
+	(*ForfeitSigningContext)(nil),                                  // 58: daemonrpc.ForfeitSigningContext
+	(*OutpointSelection)(nil),                                      // 59: daemonrpc.OutpointSelection
+	(*RefreshVTXOsRequest)(nil),                                    // 60: daemonrpc.RefreshVTXOsRequest
+	(*RefreshVTXOsResponse)(nil),                                   // 61: daemonrpc.RefreshVTXOsResponse
+	(*CustomRefreshVTXOInput)(nil),                                 // 62: daemonrpc.CustomRefreshVTXOInput
+	(*CustomRefreshVTXOOutput)(nil),                                // 63: daemonrpc.CustomRefreshVTXOOutput
+	(*RefreshCustomVTXOsRequest)(nil),                              // 64: daemonrpc.RefreshCustomVTXOsRequest
+	(*RefreshCustomVTXOsResponse)(nil),                             // 65: daemonrpc.RefreshCustomVTXOsResponse
+	(*PendingForfeitParticipantSignatureRequest)(nil),              // 66: daemonrpc.PendingForfeitParticipantSignatureRequest
+	(*ListPendingForfeitParticipantSignatureRequestsRequest)(nil),  // 67: daemonrpc.ListPendingForfeitParticipantSignatureRequestsRequest
+	(*ListPendingForfeitParticipantSignatureRequestsResponse)(nil), // 68: daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse
+	(*ForfeitParticipantSignature)(nil),                            // 69: daemonrpc.ForfeitParticipantSignature
+	(*SubmitForfeitParticipantSignaturesRequest)(nil),              // 70: daemonrpc.SubmitForfeitParticipantSignaturesRequest
+	(*SubmitForfeitParticipantSignaturesResponse)(nil),             // 71: daemonrpc.SubmitForfeitParticipantSignaturesResponse
+	(*LeaveDestination)(nil),                                       // 72: daemonrpc.LeaveDestination
+	(*LeaveVTXOsRequest)(nil),                                      // 73: daemonrpc.LeaveVTXOsRequest
+	(*LeaveVTXOsResponse)(nil),                                     // 74: daemonrpc.LeaveVTXOsResponse
+	(*SendOnChainRequest)(nil),                                     // 75: daemonrpc.SendOnChainRequest
+	(*SendOnChainResponse)(nil),                                    // 76: daemonrpc.SendOnChainResponse
+	(*BoardRequest)(nil),                                           // 77: daemonrpc.BoardRequest
+	(*BoardResponse)(nil),                                          // 78: daemonrpc.BoardResponse
+	(*JoinNextRoundRequest)(nil),                                   // 79: daemonrpc.JoinNextRoundRequest
+	(*JoinNextRoundResponse)(nil),                                  // 80: daemonrpc.JoinNextRoundResponse
+	(*SweepBoardingUTXOsRequest)(nil),                              // 81: daemonrpc.SweepBoardingUTXOsRequest
+	(*BoardingSweepOutput)(nil),                                    // 82: daemonrpc.BoardingSweepOutput
+	(*SweepBoardingUTXOsResponse)(nil),                             // 83: daemonrpc.SweepBoardingUTXOsResponse
+	(*ListBoardingSweepsRequest)(nil),                              // 84: daemonrpc.ListBoardingSweepsRequest
+	(*BoardingSweepInput)(nil),                                     // 85: daemonrpc.BoardingSweepInput
+	(*BoardingSweep)(nil),                                          // 86: daemonrpc.BoardingSweep
+	(*ListBoardingSweepsResponse)(nil),                             // 87: daemonrpc.ListBoardingSweepsResponse
+	(*RoundVTXOInfo)(nil),                                          // 88: daemonrpc.RoundVTXOInfo
+	(*RoundInfo)(nil),                                              // 89: daemonrpc.RoundInfo
+	(*ListRoundsRequest)(nil),                                      // 90: daemonrpc.ListRoundsRequest
+	(*GetRoundRequest)(nil),                                        // 91: daemonrpc.GetRoundRequest
+	(*GetRoundResponse)(nil),                                       // 92: daemonrpc.GetRoundResponse
+	(*ListRoundsResponse)(nil),                                     // 93: daemonrpc.ListRoundsResponse
+	(*WatchRoundsRequest)(nil),                                     // 94: daemonrpc.WatchRoundsRequest
+	(*WatchRoundsResponse)(nil),                                    // 95: daemonrpc.WatchRoundsResponse
+	(*OORSessionInfo)(nil),                                         // 96: daemonrpc.OORSessionInfo
+	(*ListOORSessionsRequest)(nil),                                 // 97: daemonrpc.ListOORSessionsRequest
+	(*ListOORSessionsResponse)(nil),                                // 98: daemonrpc.ListOORSessionsResponse
+	(*GetOORSessionRequest)(nil),                                   // 99: daemonrpc.GetOORSessionRequest
+	(*GetOORSessionResponse)(nil),                                  // 100: daemonrpc.GetOORSessionResponse
+	(*EstimateFeeRequest)(nil),                                     // 101: daemonrpc.EstimateFeeRequest
+	(*EstimateFeeResponse)(nil),                                    // 102: daemonrpc.EstimateFeeResponse
+	(*GetFeeHistoryRequest)(nil),                                   // 103: daemonrpc.GetFeeHistoryRequest
+	(*FeeHistoryEntry)(nil),                                        // 104: daemonrpc.FeeHistoryEntry
+	(*GetFeeHistoryResponse)(nil),                                  // 105: daemonrpc.GetFeeHistoryResponse
+	(*ListTransactionsRequest)(nil),                                // 106: daemonrpc.ListTransactionsRequest
+	(*TransactionHistoryEntry)(nil),                                // 107: daemonrpc.TransactionHistoryEntry
+	(*ListTransactionsResponse)(nil),                               // 108: daemonrpc.ListTransactionsResponse
+	(*UnrollRequest)(nil),                                          // 109: daemonrpc.UnrollRequest
+	(*UnrollResponse)(nil),                                         // 110: daemonrpc.UnrollResponse
+	(*GetUnrollStatusRequest)(nil),                                 // 111: daemonrpc.GetUnrollStatusRequest
+	(*GetUnrollStatusResponse)(nil),                                // 112: daemonrpc.GetUnrollStatusResponse
+	(*ArmVHTLCRecoveryRequest)(nil),                                // 113: daemonrpc.ArmVHTLCRecoveryRequest
+	(*ArmVHTLCRecoveryResponse)(nil),                               // 114: daemonrpc.ArmVHTLCRecoveryResponse
+	(*EscalateVHTLCRecoveryRequest)(nil),                           // 115: daemonrpc.EscalateVHTLCRecoveryRequest
+	(*EscalateVHTLCRecoveryResponse)(nil),                          // 116: daemonrpc.EscalateVHTLCRecoveryResponse
+	(*CancelVHTLCRecoveryRequest)(nil),                             // 117: daemonrpc.CancelVHTLCRecoveryRequest
+	(*CancelVHTLCRecoveryResponse)(nil),                            // 118: daemonrpc.CancelVHTLCRecoveryResponse
+	(*GetVHTLCRecoveryStatusRequest)(nil),                          // 119: daemonrpc.GetVHTLCRecoveryStatusRequest
+	(*GetVHTLCRecoveryStatusResponse)(nil),                         // 120: daemonrpc.GetVHTLCRecoveryStatusResponse
+	(*ListVHTLCRecoveriesRequest)(nil),                             // 121: daemonrpc.ListVHTLCRecoveriesRequest
+	(*ListVHTLCRecoveriesResponse)(nil),                            // 122: daemonrpc.ListVHTLCRecoveriesResponse
+	(*VHTLCRecoveryStatus)(nil),                                    // 123: daemonrpc.VHTLCRecoveryStatus
+	nil,                                                            // 124: daemonrpc.LeaveVTXOsRequest.DestinationsEntry
 }
 var file_daemon_proto_depIdxs = []int32{
 	0,   // 0: daemonrpc.GetInfoResponse.wallet_state:type_name -> daemonrpc.WalletState
-	11,  // 1: daemonrpc.GetInfoResponse.server_info:type_name -> daemonrpc.ServerInfo
-	1,   // 2: daemonrpc.VTXO.status:type_name -> daemonrpc.VTXOStatus
-	1,   // 3: daemonrpc.ListVTXOsRequest.status_filter:type_name -> daemonrpc.VTXOStatus
-	20,  // 4: daemonrpc.ListVTXOsResponse.vtxos:type_name -> daemonrpc.VTXO
-	1,   // 5: daemonrpc.GetIndexedVTXOByPkScriptRequest.status_filter:type_name -> daemonrpc.VTXOStatus
-	20,  // 6: daemonrpc.GetIndexedVTXOByPkScriptResponse.vtxo:type_name -> daemonrpc.VTXO
-	39,  // 7: daemonrpc.SendVTXORequest.recipients:type_name -> daemonrpc.Output
-	39,  // 8: daemonrpc.SendOORRequest.recipients:type_name -> daemonrpc.Output
-	43,  // 9: daemonrpc.SendOORRequest.custom_inputs:type_name -> daemonrpc.CustomOORInput
-	44,  // 10: daemonrpc.CustomOORInput.external_signatures:type_name -> daemonrpc.TaprootScriptSignature
-	39,  // 11: daemonrpc.PrepareOORRequest.recipient:type_name -> daemonrpc.Output
-	43,  // 12: daemonrpc.PrepareOORRequest.custom_inputs:type_name -> daemonrpc.CustomOORInput
-	47,  // 13: daemonrpc.PrepareOORResponse.custom_inputs:type_name -> daemonrpc.PreparedOORCustomInput
-	43,  // 14: daemonrpc.SignOORCustomInputRequest.custom_input:type_name -> daemonrpc.CustomOORInput
-	44,  // 15: daemonrpc.SignOORCustomInputResponse.signature:type_name -> daemonrpc.TaprootScriptSignature
-	51,  // 16: daemonrpc.RefreshVTXOsRequest.outpoints:type_name -> daemonrpc.OutpointSelection
-	51,  // 17: daemonrpc.LeaveVTXOsRequest.outpoints:type_name -> daemonrpc.OutpointSelection
-	54,  // 18: daemonrpc.LeaveVTXOsRequest.default_destination:type_name -> daemonrpc.LeaveDestination
-	106, // 19: daemonrpc.LeaveVTXOsRequest.destinations:type_name -> daemonrpc.LeaveVTXOsRequest.DestinationsEntry
-	54,  // 20: daemonrpc.SendOnChainRequest.destination:type_name -> daemonrpc.LeaveDestination
-	64,  // 21: daemonrpc.SweepBoardingUTXOsResponse.sweepable_outputs:type_name -> daemonrpc.BoardingSweepOutput
-	67,  // 22: daemonrpc.BoardingSweep.inputs:type_name -> daemonrpc.BoardingSweepInput
-	68,  // 23: daemonrpc.ListBoardingSweepsResponse.sweeps:type_name -> daemonrpc.BoardingSweep
-	2,   // 24: daemonrpc.RoundInfo.state:type_name -> daemonrpc.RoundState
-	70,  // 25: daemonrpc.RoundInfo.vtxos:type_name -> daemonrpc.RoundVTXOInfo
-	2,   // 26: daemonrpc.ListRoundsRequest.state_filter:type_name -> daemonrpc.RoundState
-	71,  // 27: daemonrpc.GetRoundResponse.round:type_name -> daemonrpc.RoundInfo
-	71,  // 28: daemonrpc.ListRoundsResponse.rounds:type_name -> daemonrpc.RoundInfo
-	71,  // 29: daemonrpc.WatchRoundsResponse.round:type_name -> daemonrpc.RoundInfo
-	3,   // 30: daemonrpc.OORSessionInfo.direction:type_name -> daemonrpc.OORSessionDirection
-	4,   // 31: daemonrpc.OORSessionInfo.status:type_name -> daemonrpc.OORSessionStatus
-	3,   // 32: daemonrpc.ListOORSessionsRequest.direction_filter:type_name -> daemonrpc.OORSessionDirection
-	4,   // 33: daemonrpc.ListOORSessionsRequest.status_filter:type_name -> daemonrpc.OORSessionStatus
-	78,  // 34: daemonrpc.ListOORSessionsResponse.sessions:type_name -> daemonrpc.OORSessionInfo
-	78,  // 35: daemonrpc.GetOORSessionResponse.session:type_name -> daemonrpc.OORSessionInfo
-	86,  // 36: daemonrpc.GetFeeHistoryResponse.entries:type_name -> daemonrpc.FeeHistoryEntry
-	89,  // 37: daemonrpc.ListTransactionsResponse.transactions:type_name -> daemonrpc.TransactionHistoryEntry
-	5,   // 38: daemonrpc.GetUnrollStatusResponse.status:type_name -> daemonrpc.UnrollJobStatus
-	6,   // 39: daemonrpc.ArmVHTLCRecoveryRequest.direction:type_name -> daemonrpc.VHTLCRecoveryDirection
-	7,   // 40: daemonrpc.ArmVHTLCRecoveryRequest.action:type_name -> daemonrpc.VHTLCRecoveryAction
-	105, // 41: daemonrpc.ArmVHTLCRecoveryResponse.status:type_name -> daemonrpc.VHTLCRecoveryStatus
-	105, // 42: daemonrpc.EscalateVHTLCRecoveryResponse.status:type_name -> daemonrpc.VHTLCRecoveryStatus
-	105, // 43: daemonrpc.CancelVHTLCRecoveryResponse.status:type_name -> daemonrpc.VHTLCRecoveryStatus
-	105, // 44: daemonrpc.GetVHTLCRecoveryStatusResponse.status:type_name -> daemonrpc.VHTLCRecoveryStatus
-	105, // 45: daemonrpc.ListVHTLCRecoveriesResponse.statuses:type_name -> daemonrpc.VHTLCRecoveryStatus
-	6,   // 46: daemonrpc.VHTLCRecoveryStatus.direction:type_name -> daemonrpc.VHTLCRecoveryDirection
-	7,   // 47: daemonrpc.VHTLCRecoveryStatus.action:type_name -> daemonrpc.VHTLCRecoveryAction
-	8,   // 48: daemonrpc.VHTLCRecoveryStatus.state:type_name -> daemonrpc.VHTLCRecoveryState
-	5,   // 49: daemonrpc.VHTLCRecoveryStatus.unroll_status:type_name -> daemonrpc.UnrollJobStatus
-	54,  // 50: daemonrpc.LeaveVTXOsRequest.DestinationsEntry.value:type_name -> daemonrpc.LeaveDestination
-	9,   // 51: daemonrpc.DaemonService.GetInfo:input_type -> daemonrpc.GetInfoRequest
-	12,  // 52: daemonrpc.DaemonService.GenSeed:input_type -> daemonrpc.GenSeedRequest
-	14,  // 53: daemonrpc.DaemonService.InitWallet:input_type -> daemonrpc.InitWalletRequest
-	16,  // 54: daemonrpc.DaemonService.UnlockWallet:input_type -> daemonrpc.UnlockWalletRequest
-	18,  // 55: daemonrpc.DaemonService.GetBalance:input_type -> daemonrpc.GetBalanceRequest
-	21,  // 56: daemonrpc.DaemonService.ListVTXOs:input_type -> daemonrpc.ListVTXOsRequest
-	23,  // 57: daemonrpc.DaemonService.NewAddress:input_type -> daemonrpc.NewAddressRequest
-	25,  // 58: daemonrpc.DaemonService.NewReceiveScript:input_type -> daemonrpc.NewReceiveScriptRequest
-	27,  // 59: daemonrpc.DaemonService.ReceiveAuthKey:input_type -> daemonrpc.ReceiveAuthKeyRequest
-	29,  // 60: daemonrpc.DaemonService.SignReceiveAuthMessage:input_type -> daemonrpc.SignReceiveAuthMessageRequest
-	31,  // 61: daemonrpc.DaemonService.SignReceiveAuthMessageCompact:input_type -> daemonrpc.SignReceiveAuthMessageCompactRequest
-	33,  // 62: daemonrpc.DaemonService.ReceiveAuthECDH:input_type -> daemonrpc.ReceiveAuthECDHRequest
-	35,  // 63: daemonrpc.DaemonService.GetIndexedVTXOByPkScript:input_type -> daemonrpc.GetIndexedVTXOByPkScriptRequest
-	37,  // 64: daemonrpc.DaemonService.GetIndexedOORSessionByTxid:input_type -> daemonrpc.GetIndexedOORSessionByTxidRequest
-	40,  // 65: daemonrpc.DaemonService.SendVTXO:input_type -> daemonrpc.SendVTXORequest
-	42,  // 66: daemonrpc.DaemonService.SendOOR:input_type -> daemonrpc.SendOORRequest
-	46,  // 67: daemonrpc.DaemonService.PrepareOOR:input_type -> daemonrpc.PrepareOORRequest
-	49,  // 68: daemonrpc.DaemonService.SignOORCustomInput:input_type -> daemonrpc.SignOORCustomInputRequest
-	52,  // 69: daemonrpc.DaemonService.RefreshVTXOs:input_type -> daemonrpc.RefreshVTXOsRequest
-	55,  // 70: daemonrpc.DaemonService.LeaveVTXOs:input_type -> daemonrpc.LeaveVTXOsRequest
-	57,  // 71: daemonrpc.DaemonService.SendOnChain:input_type -> daemonrpc.SendOnChainRequest
-	59,  // 72: daemonrpc.DaemonService.Board:input_type -> daemonrpc.BoardRequest
-	61,  // 73: daemonrpc.DaemonService.JoinNextRound:input_type -> daemonrpc.JoinNextRoundRequest
-	63,  // 74: daemonrpc.DaemonService.SweepBoardingUTXOs:input_type -> daemonrpc.SweepBoardingUTXOsRequest
-	66,  // 75: daemonrpc.DaemonService.ListBoardingSweeps:input_type -> daemonrpc.ListBoardingSweepsRequest
-	72,  // 76: daemonrpc.DaemonService.ListRounds:input_type -> daemonrpc.ListRoundsRequest
-	73,  // 77: daemonrpc.DaemonService.GetRound:input_type -> daemonrpc.GetRoundRequest
-	76,  // 78: daemonrpc.DaemonService.WatchRounds:input_type -> daemonrpc.WatchRoundsRequest
-	79,  // 79: daemonrpc.DaemonService.ListOORSessions:input_type -> daemonrpc.ListOORSessionsRequest
-	81,  // 80: daemonrpc.DaemonService.GetOORSession:input_type -> daemonrpc.GetOORSessionRequest
-	83,  // 81: daemonrpc.DaemonService.EstimateFee:input_type -> daemonrpc.EstimateFeeRequest
-	85,  // 82: daemonrpc.DaemonService.GetFeeHistory:input_type -> daemonrpc.GetFeeHistoryRequest
-	88,  // 83: daemonrpc.DaemonService.ListTransactions:input_type -> daemonrpc.ListTransactionsRequest
-	91,  // 84: daemonrpc.DaemonService.Unroll:input_type -> daemonrpc.UnrollRequest
-	93,  // 85: daemonrpc.DaemonService.GetUnrollStatus:input_type -> daemonrpc.GetUnrollStatusRequest
-	95,  // 86: daemonrpc.DaemonService.ArmVHTLCRecovery:input_type -> daemonrpc.ArmVHTLCRecoveryRequest
-	97,  // 87: daemonrpc.DaemonService.EscalateVHTLCRecovery:input_type -> daemonrpc.EscalateVHTLCRecoveryRequest
-	99,  // 88: daemonrpc.DaemonService.CancelVHTLCRecovery:input_type -> daemonrpc.CancelVHTLCRecoveryRequest
-	101, // 89: daemonrpc.DaemonService.GetVHTLCRecoveryStatus:input_type -> daemonrpc.GetVHTLCRecoveryStatusRequest
-	103, // 90: daemonrpc.DaemonService.ListVHTLCRecoveries:input_type -> daemonrpc.ListVHTLCRecoveriesRequest
-	10,  // 91: daemonrpc.DaemonService.GetInfo:output_type -> daemonrpc.GetInfoResponse
-	13,  // 92: daemonrpc.DaemonService.GenSeed:output_type -> daemonrpc.GenSeedResponse
-	15,  // 93: daemonrpc.DaemonService.InitWallet:output_type -> daemonrpc.InitWalletResponse
-	17,  // 94: daemonrpc.DaemonService.UnlockWallet:output_type -> daemonrpc.UnlockWalletResponse
-	19,  // 95: daemonrpc.DaemonService.GetBalance:output_type -> daemonrpc.GetBalanceResponse
-	22,  // 96: daemonrpc.DaemonService.ListVTXOs:output_type -> daemonrpc.ListVTXOsResponse
-	24,  // 97: daemonrpc.DaemonService.NewAddress:output_type -> daemonrpc.NewAddressResponse
-	26,  // 98: daemonrpc.DaemonService.NewReceiveScript:output_type -> daemonrpc.NewReceiveScriptResponse
-	28,  // 99: daemonrpc.DaemonService.ReceiveAuthKey:output_type -> daemonrpc.ReceiveAuthKeyResponse
-	30,  // 100: daemonrpc.DaemonService.SignReceiveAuthMessage:output_type -> daemonrpc.SignReceiveAuthMessageResponse
-	32,  // 101: daemonrpc.DaemonService.SignReceiveAuthMessageCompact:output_type -> daemonrpc.SignReceiveAuthMessageCompactResponse
-	34,  // 102: daemonrpc.DaemonService.ReceiveAuthECDH:output_type -> daemonrpc.ReceiveAuthECDHResponse
-	36,  // 103: daemonrpc.DaemonService.GetIndexedVTXOByPkScript:output_type -> daemonrpc.GetIndexedVTXOByPkScriptResponse
-	38,  // 104: daemonrpc.DaemonService.GetIndexedOORSessionByTxid:output_type -> daemonrpc.GetIndexedOORSessionByTxidResponse
-	41,  // 105: daemonrpc.DaemonService.SendVTXO:output_type -> daemonrpc.SendVTXOResponse
-	45,  // 106: daemonrpc.DaemonService.SendOOR:output_type -> daemonrpc.SendOORResponse
-	48,  // 107: daemonrpc.DaemonService.PrepareOOR:output_type -> daemonrpc.PrepareOORResponse
-	50,  // 108: daemonrpc.DaemonService.SignOORCustomInput:output_type -> daemonrpc.SignOORCustomInputResponse
-	53,  // 109: daemonrpc.DaemonService.RefreshVTXOs:output_type -> daemonrpc.RefreshVTXOsResponse
-	56,  // 110: daemonrpc.DaemonService.LeaveVTXOs:output_type -> daemonrpc.LeaveVTXOsResponse
-	58,  // 111: daemonrpc.DaemonService.SendOnChain:output_type -> daemonrpc.SendOnChainResponse
-	60,  // 112: daemonrpc.DaemonService.Board:output_type -> daemonrpc.BoardResponse
-	62,  // 113: daemonrpc.DaemonService.JoinNextRound:output_type -> daemonrpc.JoinNextRoundResponse
-	65,  // 114: daemonrpc.DaemonService.SweepBoardingUTXOs:output_type -> daemonrpc.SweepBoardingUTXOsResponse
-	69,  // 115: daemonrpc.DaemonService.ListBoardingSweeps:output_type -> daemonrpc.ListBoardingSweepsResponse
-	75,  // 116: daemonrpc.DaemonService.ListRounds:output_type -> daemonrpc.ListRoundsResponse
-	74,  // 117: daemonrpc.DaemonService.GetRound:output_type -> daemonrpc.GetRoundResponse
-	77,  // 118: daemonrpc.DaemonService.WatchRounds:output_type -> daemonrpc.WatchRoundsResponse
-	80,  // 119: daemonrpc.DaemonService.ListOORSessions:output_type -> daemonrpc.ListOORSessionsResponse
-	82,  // 120: daemonrpc.DaemonService.GetOORSession:output_type -> daemonrpc.GetOORSessionResponse
-	84,  // 121: daemonrpc.DaemonService.EstimateFee:output_type -> daemonrpc.EstimateFeeResponse
-	87,  // 122: daemonrpc.DaemonService.GetFeeHistory:output_type -> daemonrpc.GetFeeHistoryResponse
-	90,  // 123: daemonrpc.DaemonService.ListTransactions:output_type -> daemonrpc.ListTransactionsResponse
-	92,  // 124: daemonrpc.DaemonService.Unroll:output_type -> daemonrpc.UnrollResponse
-	94,  // 125: daemonrpc.DaemonService.GetUnrollStatus:output_type -> daemonrpc.GetUnrollStatusResponse
-	96,  // 126: daemonrpc.DaemonService.ArmVHTLCRecovery:output_type -> daemonrpc.ArmVHTLCRecoveryResponse
-	98,  // 127: daemonrpc.DaemonService.EscalateVHTLCRecovery:output_type -> daemonrpc.EscalateVHTLCRecoveryResponse
-	100, // 128: daemonrpc.DaemonService.CancelVHTLCRecovery:output_type -> daemonrpc.CancelVHTLCRecoveryResponse
-	102, // 129: daemonrpc.DaemonService.GetVHTLCRecoveryStatus:output_type -> daemonrpc.GetVHTLCRecoveryStatusResponse
-	104, // 130: daemonrpc.DaemonService.ListVHTLCRecoveries:output_type -> daemonrpc.ListVHTLCRecoveriesResponse
-	91,  // [91:131] is the sub-list for method output_type
-	51,  // [51:91] is the sub-list for method input_type
-	51,  // [51:51] is the sub-list for extension type_name
-	51,  // [51:51] is the sub-list for extension extendee
-	0,   // [0:51] is the sub-list for field type_name
+	13,  // 1: daemonrpc.GetInfoResponse.server_info:type_name -> daemonrpc.ServerInfo
+	2,   // 2: daemonrpc.VTXOExpiryInfo.status:type_name -> daemonrpc.VTXOExpiryStatus
+	1,   // 3: daemonrpc.VTXO.status:type_name -> daemonrpc.VTXOStatus
+	22,  // 4: daemonrpc.VTXO.expiry_info:type_name -> daemonrpc.VTXOExpiryInfo
+	1,   // 5: daemonrpc.ListVTXOsRequest.status_filter:type_name -> daemonrpc.VTXOStatus
+	23,  // 6: daemonrpc.ListVTXOsResponse.vtxos:type_name -> daemonrpc.VTXO
+	1,   // 7: daemonrpc.GetIndexedVTXOByPkScriptRequest.status_filter:type_name -> daemonrpc.VTXOStatus
+	23,  // 8: daemonrpc.GetIndexedVTXOByPkScriptResponse.vtxo:type_name -> daemonrpc.VTXO
+	1,   // 9: daemonrpc.GetVTXOExpiryInfoRequest.status_filter:type_name -> daemonrpc.VTXOStatus
+	22,  // 10: daemonrpc.GetVTXOExpiryInfoResponse.expiry_info:type_name -> daemonrpc.VTXOExpiryInfo
+	23,  // 11: daemonrpc.GetVTXOExpiryInfoResponse.vtxo:type_name -> daemonrpc.VTXO
+	44,  // 12: daemonrpc.SendVTXORequest.recipients:type_name -> daemonrpc.Output
+	44,  // 13: daemonrpc.SendOORRequest.recipients:type_name -> daemonrpc.Output
+	48,  // 14: daemonrpc.SendOORRequest.custom_inputs:type_name -> daemonrpc.CustomOORInput
+	49,  // 15: daemonrpc.CustomOORInput.external_signatures:type_name -> daemonrpc.TaprootScriptSignature
+	44,  // 16: daemonrpc.PrepareOORRequest.recipient:type_name -> daemonrpc.Output
+	48,  // 17: daemonrpc.PrepareOORRequest.custom_inputs:type_name -> daemonrpc.CustomOORInput
+	52,  // 18: daemonrpc.PrepareOORResponse.custom_inputs:type_name -> daemonrpc.PreparedOORCustomInput
+	48,  // 19: daemonrpc.SignOORCustomInputRequest.custom_input:type_name -> daemonrpc.CustomOORInput
+	49,  // 20: daemonrpc.SignOORCustomInputResponse.signature:type_name -> daemonrpc.TaprootScriptSignature
+	3,   // 21: daemonrpc.ForfeitSigningContext.signing_route:type_name -> daemonrpc.ForfeitSigningRoute
+	59,  // 22: daemonrpc.RefreshVTXOsRequest.outpoints:type_name -> daemonrpc.OutpointSelection
+	58,  // 23: daemonrpc.CustomRefreshVTXOInput.forfeit_signing_context:type_name -> daemonrpc.ForfeitSigningContext
+	62,  // 24: daemonrpc.RefreshCustomVTXOsRequest.inputs:type_name -> daemonrpc.CustomRefreshVTXOInput
+	63,  // 25: daemonrpc.RefreshCustomVTXOsRequest.outputs:type_name -> daemonrpc.CustomRefreshVTXOOutput
+	3,   // 26: daemonrpc.PendingForfeitParticipantSignatureRequest.signing_route:type_name -> daemonrpc.ForfeitSigningRoute
+	66,  // 27: daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse.requests:type_name -> daemonrpc.PendingForfeitParticipantSignatureRequest
+	69,  // 28: daemonrpc.SubmitForfeitParticipantSignaturesRequest.signatures:type_name -> daemonrpc.ForfeitParticipantSignature
+	59,  // 29: daemonrpc.LeaveVTXOsRequest.outpoints:type_name -> daemonrpc.OutpointSelection
+	72,  // 30: daemonrpc.LeaveVTXOsRequest.default_destination:type_name -> daemonrpc.LeaveDestination
+	124, // 31: daemonrpc.LeaveVTXOsRequest.destinations:type_name -> daemonrpc.LeaveVTXOsRequest.DestinationsEntry
+	72,  // 32: daemonrpc.SendOnChainRequest.destination:type_name -> daemonrpc.LeaveDestination
+	82,  // 33: daemonrpc.SweepBoardingUTXOsResponse.sweepable_outputs:type_name -> daemonrpc.BoardingSweepOutput
+	85,  // 34: daemonrpc.BoardingSweep.inputs:type_name -> daemonrpc.BoardingSweepInput
+	86,  // 35: daemonrpc.ListBoardingSweepsResponse.sweeps:type_name -> daemonrpc.BoardingSweep
+	4,   // 36: daemonrpc.RoundInfo.state:type_name -> daemonrpc.RoundState
+	88,  // 37: daemonrpc.RoundInfo.vtxos:type_name -> daemonrpc.RoundVTXOInfo
+	4,   // 38: daemonrpc.ListRoundsRequest.state_filter:type_name -> daemonrpc.RoundState
+	89,  // 39: daemonrpc.GetRoundResponse.round:type_name -> daemonrpc.RoundInfo
+	89,  // 40: daemonrpc.ListRoundsResponse.rounds:type_name -> daemonrpc.RoundInfo
+	89,  // 41: daemonrpc.WatchRoundsResponse.round:type_name -> daemonrpc.RoundInfo
+	5,   // 42: daemonrpc.OORSessionInfo.direction:type_name -> daemonrpc.OORSessionDirection
+	6,   // 43: daemonrpc.OORSessionInfo.status:type_name -> daemonrpc.OORSessionStatus
+	5,   // 44: daemonrpc.ListOORSessionsRequest.direction_filter:type_name -> daemonrpc.OORSessionDirection
+	6,   // 45: daemonrpc.ListOORSessionsRequest.status_filter:type_name -> daemonrpc.OORSessionStatus
+	96,  // 46: daemonrpc.ListOORSessionsResponse.sessions:type_name -> daemonrpc.OORSessionInfo
+	96,  // 47: daemonrpc.GetOORSessionResponse.session:type_name -> daemonrpc.OORSessionInfo
+	104, // 48: daemonrpc.GetFeeHistoryResponse.entries:type_name -> daemonrpc.FeeHistoryEntry
+	107, // 49: daemonrpc.ListTransactionsResponse.transactions:type_name -> daemonrpc.TransactionHistoryEntry
+	7,   // 50: daemonrpc.GetUnrollStatusResponse.status:type_name -> daemonrpc.UnrollJobStatus
+	8,   // 51: daemonrpc.ArmVHTLCRecoveryRequest.direction:type_name -> daemonrpc.VHTLCRecoveryDirection
+	9,   // 52: daemonrpc.ArmVHTLCRecoveryRequest.action:type_name -> daemonrpc.VHTLCRecoveryAction
+	123, // 53: daemonrpc.ArmVHTLCRecoveryResponse.status:type_name -> daemonrpc.VHTLCRecoveryStatus
+	123, // 54: daemonrpc.EscalateVHTLCRecoveryResponse.status:type_name -> daemonrpc.VHTLCRecoveryStatus
+	123, // 55: daemonrpc.CancelVHTLCRecoveryResponse.status:type_name -> daemonrpc.VHTLCRecoveryStatus
+	123, // 56: daemonrpc.GetVHTLCRecoveryStatusResponse.status:type_name -> daemonrpc.VHTLCRecoveryStatus
+	123, // 57: daemonrpc.ListVHTLCRecoveriesResponse.statuses:type_name -> daemonrpc.VHTLCRecoveryStatus
+	8,   // 58: daemonrpc.VHTLCRecoveryStatus.direction:type_name -> daemonrpc.VHTLCRecoveryDirection
+	9,   // 59: daemonrpc.VHTLCRecoveryStatus.action:type_name -> daemonrpc.VHTLCRecoveryAction
+	10,  // 60: daemonrpc.VHTLCRecoveryStatus.state:type_name -> daemonrpc.VHTLCRecoveryState
+	7,   // 61: daemonrpc.VHTLCRecoveryStatus.unroll_status:type_name -> daemonrpc.UnrollJobStatus
+	72,  // 62: daemonrpc.LeaveVTXOsRequest.DestinationsEntry.value:type_name -> daemonrpc.LeaveDestination
+	11,  // 63: daemonrpc.DaemonService.GetInfo:input_type -> daemonrpc.GetInfoRequest
+	14,  // 64: daemonrpc.DaemonService.GenSeed:input_type -> daemonrpc.GenSeedRequest
+	16,  // 65: daemonrpc.DaemonService.InitWallet:input_type -> daemonrpc.InitWalletRequest
+	18,  // 66: daemonrpc.DaemonService.UnlockWallet:input_type -> daemonrpc.UnlockWalletRequest
+	20,  // 67: daemonrpc.DaemonService.GetBalance:input_type -> daemonrpc.GetBalanceRequest
+	24,  // 68: daemonrpc.DaemonService.ListVTXOs:input_type -> daemonrpc.ListVTXOsRequest
+	26,  // 69: daemonrpc.DaemonService.NewAddress:input_type -> daemonrpc.NewAddressRequest
+	28,  // 70: daemonrpc.DaemonService.NewReceiveScript:input_type -> daemonrpc.NewReceiveScriptRequest
+	30,  // 71: daemonrpc.DaemonService.ReceiveAuthKey:input_type -> daemonrpc.ReceiveAuthKeyRequest
+	32,  // 72: daemonrpc.DaemonService.SignReceiveAuthMessage:input_type -> daemonrpc.SignReceiveAuthMessageRequest
+	34,  // 73: daemonrpc.DaemonService.SignReceiveAuthMessageCompact:input_type -> daemonrpc.SignReceiveAuthMessageCompactRequest
+	36,  // 74: daemonrpc.DaemonService.ReceiveAuthECDH:input_type -> daemonrpc.ReceiveAuthECDHRequest
+	38,  // 75: daemonrpc.DaemonService.GetIndexedVTXOByPkScript:input_type -> daemonrpc.GetIndexedVTXOByPkScriptRequest
+	40,  // 76: daemonrpc.DaemonService.GetVTXOExpiryInfo:input_type -> daemonrpc.GetVTXOExpiryInfoRequest
+	42,  // 77: daemonrpc.DaemonService.GetIndexedOORSessionByTxid:input_type -> daemonrpc.GetIndexedOORSessionByTxidRequest
+	45,  // 78: daemonrpc.DaemonService.SendVTXO:input_type -> daemonrpc.SendVTXORequest
+	47,  // 79: daemonrpc.DaemonService.SendOOR:input_type -> daemonrpc.SendOORRequest
+	51,  // 80: daemonrpc.DaemonService.PrepareOOR:input_type -> daemonrpc.PrepareOORRequest
+	54,  // 81: daemonrpc.DaemonService.SignOORCustomInput:input_type -> daemonrpc.SignOORCustomInputRequest
+	56,  // 82: daemonrpc.DaemonService.SignVTXOForfeit:input_type -> daemonrpc.SignVTXOForfeitRequest
+	60,  // 83: daemonrpc.DaemonService.RefreshVTXOs:input_type -> daemonrpc.RefreshVTXOsRequest
+	64,  // 84: daemonrpc.DaemonService.RefreshCustomVTXOs:input_type -> daemonrpc.RefreshCustomVTXOsRequest
+	67,  // 85: daemonrpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:input_type -> daemonrpc.ListPendingForfeitParticipantSignatureRequestsRequest
+	70,  // 86: daemonrpc.DaemonService.SubmitForfeitParticipantSignatures:input_type -> daemonrpc.SubmitForfeitParticipantSignaturesRequest
+	73,  // 87: daemonrpc.DaemonService.LeaveVTXOs:input_type -> daemonrpc.LeaveVTXOsRequest
+	75,  // 88: daemonrpc.DaemonService.SendOnChain:input_type -> daemonrpc.SendOnChainRequest
+	77,  // 89: daemonrpc.DaemonService.Board:input_type -> daemonrpc.BoardRequest
+	79,  // 90: daemonrpc.DaemonService.JoinNextRound:input_type -> daemonrpc.JoinNextRoundRequest
+	81,  // 91: daemonrpc.DaemonService.SweepBoardingUTXOs:input_type -> daemonrpc.SweepBoardingUTXOsRequest
+	84,  // 92: daemonrpc.DaemonService.ListBoardingSweeps:input_type -> daemonrpc.ListBoardingSweepsRequest
+	90,  // 93: daemonrpc.DaemonService.ListRounds:input_type -> daemonrpc.ListRoundsRequest
+	91,  // 94: daemonrpc.DaemonService.GetRound:input_type -> daemonrpc.GetRoundRequest
+	94,  // 95: daemonrpc.DaemonService.WatchRounds:input_type -> daemonrpc.WatchRoundsRequest
+	97,  // 96: daemonrpc.DaemonService.ListOORSessions:input_type -> daemonrpc.ListOORSessionsRequest
+	99,  // 97: daemonrpc.DaemonService.GetOORSession:input_type -> daemonrpc.GetOORSessionRequest
+	101, // 98: daemonrpc.DaemonService.EstimateFee:input_type -> daemonrpc.EstimateFeeRequest
+	103, // 99: daemonrpc.DaemonService.GetFeeHistory:input_type -> daemonrpc.GetFeeHistoryRequest
+	106, // 100: daemonrpc.DaemonService.ListTransactions:input_type -> daemonrpc.ListTransactionsRequest
+	109, // 101: daemonrpc.DaemonService.Unroll:input_type -> daemonrpc.UnrollRequest
+	111, // 102: daemonrpc.DaemonService.GetUnrollStatus:input_type -> daemonrpc.GetUnrollStatusRequest
+	113, // 103: daemonrpc.DaemonService.ArmVHTLCRecovery:input_type -> daemonrpc.ArmVHTLCRecoveryRequest
+	115, // 104: daemonrpc.DaemonService.EscalateVHTLCRecovery:input_type -> daemonrpc.EscalateVHTLCRecoveryRequest
+	117, // 105: daemonrpc.DaemonService.CancelVHTLCRecovery:input_type -> daemonrpc.CancelVHTLCRecoveryRequest
+	119, // 106: daemonrpc.DaemonService.GetVHTLCRecoveryStatus:input_type -> daemonrpc.GetVHTLCRecoveryStatusRequest
+	121, // 107: daemonrpc.DaemonService.ListVHTLCRecoveries:input_type -> daemonrpc.ListVHTLCRecoveriesRequest
+	12,  // 108: daemonrpc.DaemonService.GetInfo:output_type -> daemonrpc.GetInfoResponse
+	15,  // 109: daemonrpc.DaemonService.GenSeed:output_type -> daemonrpc.GenSeedResponse
+	17,  // 110: daemonrpc.DaemonService.InitWallet:output_type -> daemonrpc.InitWalletResponse
+	19,  // 111: daemonrpc.DaemonService.UnlockWallet:output_type -> daemonrpc.UnlockWalletResponse
+	21,  // 112: daemonrpc.DaemonService.GetBalance:output_type -> daemonrpc.GetBalanceResponse
+	25,  // 113: daemonrpc.DaemonService.ListVTXOs:output_type -> daemonrpc.ListVTXOsResponse
+	27,  // 114: daemonrpc.DaemonService.NewAddress:output_type -> daemonrpc.NewAddressResponse
+	29,  // 115: daemonrpc.DaemonService.NewReceiveScript:output_type -> daemonrpc.NewReceiveScriptResponse
+	31,  // 116: daemonrpc.DaemonService.ReceiveAuthKey:output_type -> daemonrpc.ReceiveAuthKeyResponse
+	33,  // 117: daemonrpc.DaemonService.SignReceiveAuthMessage:output_type -> daemonrpc.SignReceiveAuthMessageResponse
+	35,  // 118: daemonrpc.DaemonService.SignReceiveAuthMessageCompact:output_type -> daemonrpc.SignReceiveAuthMessageCompactResponse
+	37,  // 119: daemonrpc.DaemonService.ReceiveAuthECDH:output_type -> daemonrpc.ReceiveAuthECDHResponse
+	39,  // 120: daemonrpc.DaemonService.GetIndexedVTXOByPkScript:output_type -> daemonrpc.GetIndexedVTXOByPkScriptResponse
+	41,  // 121: daemonrpc.DaemonService.GetVTXOExpiryInfo:output_type -> daemonrpc.GetVTXOExpiryInfoResponse
+	43,  // 122: daemonrpc.DaemonService.GetIndexedOORSessionByTxid:output_type -> daemonrpc.GetIndexedOORSessionByTxidResponse
+	46,  // 123: daemonrpc.DaemonService.SendVTXO:output_type -> daemonrpc.SendVTXOResponse
+	50,  // 124: daemonrpc.DaemonService.SendOOR:output_type -> daemonrpc.SendOORResponse
+	53,  // 125: daemonrpc.DaemonService.PrepareOOR:output_type -> daemonrpc.PrepareOORResponse
+	55,  // 126: daemonrpc.DaemonService.SignOORCustomInput:output_type -> daemonrpc.SignOORCustomInputResponse
+	57,  // 127: daemonrpc.DaemonService.SignVTXOForfeit:output_type -> daemonrpc.SignVTXOForfeitResponse
+	61,  // 128: daemonrpc.DaemonService.RefreshVTXOs:output_type -> daemonrpc.RefreshVTXOsResponse
+	65,  // 129: daemonrpc.DaemonService.RefreshCustomVTXOs:output_type -> daemonrpc.RefreshCustomVTXOsResponse
+	68,  // 130: daemonrpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:output_type -> daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse
+	71,  // 131: daemonrpc.DaemonService.SubmitForfeitParticipantSignatures:output_type -> daemonrpc.SubmitForfeitParticipantSignaturesResponse
+	74,  // 132: daemonrpc.DaemonService.LeaveVTXOs:output_type -> daemonrpc.LeaveVTXOsResponse
+	76,  // 133: daemonrpc.DaemonService.SendOnChain:output_type -> daemonrpc.SendOnChainResponse
+	78,  // 134: daemonrpc.DaemonService.Board:output_type -> daemonrpc.BoardResponse
+	80,  // 135: daemonrpc.DaemonService.JoinNextRound:output_type -> daemonrpc.JoinNextRoundResponse
+	83,  // 136: daemonrpc.DaemonService.SweepBoardingUTXOs:output_type -> daemonrpc.SweepBoardingUTXOsResponse
+	87,  // 137: daemonrpc.DaemonService.ListBoardingSweeps:output_type -> daemonrpc.ListBoardingSweepsResponse
+	93,  // 138: daemonrpc.DaemonService.ListRounds:output_type -> daemonrpc.ListRoundsResponse
+	92,  // 139: daemonrpc.DaemonService.GetRound:output_type -> daemonrpc.GetRoundResponse
+	95,  // 140: daemonrpc.DaemonService.WatchRounds:output_type -> daemonrpc.WatchRoundsResponse
+	98,  // 141: daemonrpc.DaemonService.ListOORSessions:output_type -> daemonrpc.ListOORSessionsResponse
+	100, // 142: daemonrpc.DaemonService.GetOORSession:output_type -> daemonrpc.GetOORSessionResponse
+	102, // 143: daemonrpc.DaemonService.EstimateFee:output_type -> daemonrpc.EstimateFeeResponse
+	105, // 144: daemonrpc.DaemonService.GetFeeHistory:output_type -> daemonrpc.GetFeeHistoryResponse
+	108, // 145: daemonrpc.DaemonService.ListTransactions:output_type -> daemonrpc.ListTransactionsResponse
+	110, // 146: daemonrpc.DaemonService.Unroll:output_type -> daemonrpc.UnrollResponse
+	112, // 147: daemonrpc.DaemonService.GetUnrollStatus:output_type -> daemonrpc.GetUnrollStatusResponse
+	114, // 148: daemonrpc.DaemonService.ArmVHTLCRecovery:output_type -> daemonrpc.ArmVHTLCRecoveryResponse
+	116, // 149: daemonrpc.DaemonService.EscalateVHTLCRecovery:output_type -> daemonrpc.EscalateVHTLCRecoveryResponse
+	118, // 150: daemonrpc.DaemonService.CancelVHTLCRecovery:output_type -> daemonrpc.CancelVHTLCRecoveryResponse
+	120, // 151: daemonrpc.DaemonService.GetVHTLCRecoveryStatus:output_type -> daemonrpc.GetVHTLCRecoveryStatusResponse
+	122, // 152: daemonrpc.DaemonService.ListVHTLCRecoveries:output_type -> daemonrpc.ListVHTLCRecoveriesResponse
+	108, // [108:153] is the sub-list for method output_type
+	63,  // [63:108] is the sub-list for method input_type
+	63,  // [63:63] is the sub-list for extension type_name
+	63,  // [63:63] is the sub-list for extension extendee
+	0,   // [0:63] is the sub-list for field type_name
 }
 
 func init() { file_daemon_proto_init() }
@@ -8825,24 +10433,28 @@ func file_daemon_proto_init() {
 	if File_daemon_proto != nil {
 		return
 	}
-	file_daemon_proto_msgTypes[30].OneofWrappers = []any{
+	file_daemon_proto_msgTypes[29].OneofWrappers = []any{
+		(*GetVTXOExpiryInfoRequest_Outpoint)(nil),
+		(*GetVTXOExpiryInfoRequest_PkScript)(nil),
+	}
+	file_daemon_proto_msgTypes[33].OneofWrappers = []any{
 		(*Output_Address)(nil),
 		(*Output_Pubkey)(nil),
 		(*Output_PolicyTemplate)(nil),
 	}
-	file_daemon_proto_msgTypes[43].OneofWrappers = []any{
+	file_daemon_proto_msgTypes[49].OneofWrappers = []any{
 		(*RefreshVTXOsRequest_Outpoints)(nil),
 		(*RefreshVTXOsRequest_All)(nil),
 	}
-	file_daemon_proto_msgTypes[45].OneofWrappers = []any{
+	file_daemon_proto_msgTypes[61].OneofWrappers = []any{
 		(*LeaveDestination_Address)(nil),
 		(*LeaveDestination_PkScript)(nil),
 	}
-	file_daemon_proto_msgTypes[46].OneofWrappers = []any{
+	file_daemon_proto_msgTypes[62].OneofWrappers = []any{
 		(*LeaveVTXOsRequest_Outpoints)(nil),
 		(*LeaveVTXOsRequest_All)(nil),
 	}
-	file_daemon_proto_msgTypes[48].OneofWrappers = []any{
+	file_daemon_proto_msgTypes[64].OneofWrappers = []any{
 		(*SendOnChainRequest_AmountSat)(nil),
 		(*SendOnChainRequest_SweepAll)(nil),
 	}
@@ -8851,8 +10463,8 @@ func file_daemon_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_daemon_proto_rawDesc), len(file_daemon_proto_rawDesc)),
-			NumEnums:      9,
-			NumMessages:   98,
+			NumEnums:      11,
+			NumMessages:   114,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

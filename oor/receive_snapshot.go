@@ -22,6 +22,7 @@ const (
 	incomingSnapshotAncestorPackagesType      tlv.Type = 17
 	incomingSnapshotMetadataAttemptsType      tlv.Type = 19
 	incomingSnapshotResolveAttemptsType       tlv.Type = 21
+	incomingSnapshotRecipientsType            tlv.Type = 23
 )
 
 // IncomingPhase identifies the coarse stage of an incoming OOR receive
@@ -75,6 +76,10 @@ type IncomingSnapshot struct {
 	// AncestorPackages are finalized OOR package artifacts needed to
 	// unroll chained incoming transfers.
 	AncestorPackages []PackageArtifact
+
+	// Recipients are the validated Ark outputs plus optional policy
+	// metadata needed to materialize custom incoming VTXOs.
+	Recipients []ArkRecipientOutput
 
 	// FailReason is the terminal failure reason, when Phase is Failed.
 	FailReason string
@@ -144,6 +149,7 @@ func NewIncomingSnapshot(sessionID SessionID,
 		snap.AncestorPackages = append(
 			[]PackageArtifact(nil), s.AncestorPackages...,
 		)
+		snap.Recipients = CloneArkRecipients(s.Recipients)
 		snap.MetadataAttempts = s.MetadataAttempts
 
 	case *ReceiveAwaitingAck:
@@ -232,6 +238,9 @@ func IncomingStateFromSnapshot(snapshot *IncomingSnapshot) (SessionState,
 				[]PackageArtifact(nil),
 				snapshot.AncestorPackages...,
 			),
+			Recipients: CloneArkRecipients(
+				snapshot.Recipients,
+			),
 			MetadataAttempts: snapshot.MetadataAttempts,
 		}, nil
 
@@ -278,6 +287,11 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 		return nil, err
 	}
 
+	recipients, err := encodeIncomingRecipients(snapshot.Recipients)
+	if err != nil {
+		return nil, err
+	}
+
 	metadataAttempts := uint64(snapshot.MetadataAttempts)
 	resolveAttempts := uint64(snapshot.ResolveAttempts)
 	version := uint64(snapshot.Version)
@@ -317,6 +331,9 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			incomingSnapshotResolveAttemptsType, &resolveAttempts,
 		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotRecipientsType, &recipients,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -349,6 +366,7 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		ancestorPackages  []byte
 		metadataAttempts  uint64
 		resolveAttempts   uint64
+		recipientsRaw     []byte
 	)
 
 	records := []tlv.Record{
@@ -386,6 +404,9 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			incomingSnapshotResolveAttemptsType, &resolveAttempts,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotRecipientsType, &recipientsRaw,
 		),
 	}
 
@@ -425,6 +446,13 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		return nil, err
 	}
 
+	decodedRecipients, err := decodeIncomingRecipientsWithLimits(
+		recipientsRaw, limits,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	decodedVersion, err := decodeUint64ToUint8(
 		version, "incoming snapshot version",
 	)
@@ -441,6 +469,7 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		AncestorPackages: append(
 			[]PackageArtifact(nil), decodedPackages...,
 		),
+		Recipients: CloneArkRecipients(decodedRecipients),
 		FailReason: string(failReasonRaw),
 		RecipientPkScript: append(
 			[]byte(nil), recipientPkScript...,

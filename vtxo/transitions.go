@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -244,7 +246,7 @@ func (s *LiveState) handleBlockEpoch(_ context.Context, evt *BlockEpochEvent,
 // the new commitment tx confirms, the forfeit becomes valid and pays the VTXO
 // value to the operator. This prevents double-spending by ensuring the client
 // cannot claim both the old VTXO and a new one in the fresh round.
-func (s *LiveState) handleForfeitRequest(_ context.Context,
+func (s *LiveState) handleForfeitRequest(ctx context.Context,
 	evt *ForfeitRequestEvent, env *VTXOEnvironment) (*VTXOStateTransition,
 	error) {
 
@@ -276,8 +278,31 @@ func (s *LiveState) handleForfeitRequest(_ context.Context,
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign forfeit tx: %w", err)
 	}
+	externalSigs, err := externalForfeitParticipantSigs(
+		ctx, s.VTXO, forfeitSpend, evt, forfeitTx, env,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("external participant signatures: %w",
+			err)
+	}
+	participantSigs, err := participantForfeitSigs(
+		s.VTXO.ClientKey.PubKey, sig, evt.ForfeitSpend != nil,
+		externalSigs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("participant forfeit signatures: %w",
+			err)
+	}
 
 	forfeitTxID := forfeitTx.TxHash()
+	submission := &ForfeitSignatureSubmission{
+		VTXOOutpoint:        s.VTXO.Outpoint,
+		RoundID:             evt.RoundID,
+		ForfeitTx:           forfeitTx,
+		Signature:           sig,
+		ParticipantVTXOSigs: participantSigs,
+		SpendPath:           forfeitSpend,
+	}
 
 	return &VTXOStateTransition{
 		NextState: &ForfeitingState{
@@ -289,13 +314,7 @@ func (s *LiveState) handleForfeitRequest(_ context.Context,
 		},
 		NewEvents: fn.Some(VTXOEmittedEvent{
 			Outbox: []VTXOOutMsg{
-				&ForfeitSignatureSubmission{
-					VTXOOutpoint: s.VTXO.Outpoint,
-					RoundID:      evt.RoundID,
-					ForfeitTx:    forfeitTx,
-					Signature:    sig,
-					SpendPath:    forfeitSpend,
-				},
+				submission,
 				&VTXOStatusUpdate{
 					Outpoint:  s.VTXO.Outpoint,
 					NewStatus: VTXOStatusForfeiting,
@@ -400,6 +419,189 @@ func signForfeitVTXOInput(vtxo *Descriptor, spendPath *arkscript.SpendPath,
 	}
 
 	return schnorrSig, nil
+}
+
+func externalForfeitParticipantSigs(ctx context.Context, vtxo *Descriptor,
+	spendPath *arkscript.SpendPath, evt *ForfeitRequestEvent,
+	forfeitTx *wire.MsgTx,
+	env *VTXOEnvironment) ([]*types.ForfeitParticipantSig, error) {
+
+	if env == nil || env.ForfeitParticipantSigner == nil ||
+		evt == nil || evt.ForfeitSpend == nil {
+		return nil, nil
+	}
+
+	req := &ForfeitParticipantSignRequest{
+		VTXO:                  vtxo,
+		SpendPath:             spendPath,
+		ForfeitTx:             forfeitTx,
+		ConnectorOutpoint:     evt.ConnectorOutpoint,
+		ConnectorPkScript:     evt.ConnectorPkScript,
+		ConnectorAmount:       evt.ConnectorAmount,
+		ServerForfeitPkScript: evt.ServerForfeitPkScript,
+	}
+
+	sigs, err := env.ForfeitParticipantSigner(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyForfeitParticipantSignatures(req, sigs); err != nil {
+		return nil, err
+	}
+
+	return sigs, nil
+}
+
+func verifyForfeitParticipantSignatures(req *ForfeitParticipantSignRequest,
+	sigs []*types.ForfeitParticipantSig) error {
+
+	if len(sigs) == 0 {
+		return nil
+	}
+
+	sighash, err := forfeitParticipantSigHash(req)
+	if err != nil {
+		return err
+	}
+
+	for idx, sig := range sigs {
+		if sig == nil {
+			return fmt.Errorf("participant signature is required")
+		}
+		if sig.PubKey == nil {
+			return fmt.Errorf("participant pubkey is required")
+		}
+		if sig.Signature == nil {
+			return fmt.Errorf("participant schnorr signature is " +
+				"required")
+		}
+		if !sig.Signature.Verify(sighash, sig.PubKey) {
+			return fmt.Errorf("invalid participant signature %d",
+				idx)
+		}
+	}
+
+	return nil
+}
+
+func forfeitParticipantSigHash(req *ForfeitParticipantSignRequest) ([]byte,
+	error) {
+
+	if req == nil || req.VTXO == nil {
+		return nil, fmt.Errorf("forfeit participant request is " +
+			"required")
+	}
+	if req.SpendPath == nil {
+		return nil, fmt.Errorf("forfeit participant spend path is " +
+			"required")
+	}
+	if req.ForfeitTx == nil {
+		return nil, fmt.Errorf("forfeit transaction is required")
+	}
+
+	vtxoOutput := &wire.TxOut{
+		Value:    int64(req.VTXO.Amount),
+		PkScript: req.VTXO.PkScript,
+	}
+	vtxoCtx := &tx.VTXOSpendContext{
+		Outpoint:  req.VTXO.Outpoint,
+		Output:    vtxoOutput,
+		TapScript: req.VTXO.TapScript,
+	}
+
+	connectorOutput := &wire.TxOut{
+		Value:    req.ConnectorAmount,
+		PkScript: req.ConnectorPkScript,
+	}
+	connectorCtx := &tx.ConnectorSpendContext{
+		Outpoint: req.ConnectorOutpoint,
+		Output:   connectorOutput,
+	}
+
+	prevFetcher, err := tx.NewForfeitPrevOutFetcher(vtxoCtx, connectorCtx)
+	if err != nil {
+		return nil, fmt.Errorf("prevout fetcher: %w", err)
+	}
+
+	sigHashes := txscript.NewTxSigHashes(req.ForfeitTx, prevFetcher)
+	leaf := txscript.NewBaseTapLeaf(req.SpendPath.WitnessScript)
+
+	return txscript.CalcTapscriptSignaturehash(
+		sigHashes, txscript.SigHashDefault, req.ForfeitTx,
+		tx.ForfeitVTXOInputIndex, prevFetcher, leaf,
+	)
+}
+
+func participantForfeitSigs(localPubKey *btcec.PublicKey,
+	localSig *schnorr.Signature, customSpend bool,
+	externalSigs []*types.ForfeitParticipantSig) (
+	[]*types.ForfeitParticipantSig, error) {
+
+	needsParticipantSigs := customSpend || len(externalSigs) > 0
+	if !needsParticipantSigs {
+		return nil, nil
+	}
+	if localPubKey == nil {
+		return nil, fmt.Errorf("local participant pubkey is required")
+	}
+	if localSig == nil {
+		return nil, fmt.Errorf("local participant signature is " +
+			"required")
+	}
+
+	participantSigs := make(
+		[]*types.ForfeitParticipantSig, 0, len(externalSigs)+1,
+	)
+	seen := make(map[string]struct{}, len(externalSigs)+1)
+
+	for _, sig := range externalSigs {
+		if sig == nil {
+			return nil, fmt.Errorf("participant signature is " +
+				"required")
+		}
+		if sig.PubKey == nil {
+			return nil, fmt.Errorf("participant pubkey is required")
+		}
+		if sig.Signature == nil {
+			return nil, fmt.Errorf("participant schnorr " +
+				"signature is required")
+		}
+
+		keyID := participantForfeitKeyID(sig.PubKey)
+		if _, ok := seen[keyID]; ok {
+			return nil, fmt.Errorf("duplicate participant " +
+				"signature")
+		}
+		if sameParticipantForfeitKey(sig.PubKey, localPubKey) {
+			return nil, fmt.Errorf("external signature uses " +
+				"local pubkey")
+		}
+
+		seen[keyID] = struct{}{}
+		participantSigs = append(participantSigs, sig)
+	}
+
+	localKeyID := participantForfeitKeyID(localPubKey)
+	if _, ok := seen[localKeyID]; ok {
+		return nil, fmt.Errorf("duplicate local participant signature")
+	}
+
+	return append(participantSigs, &types.ForfeitParticipantSig{
+		PubKey:    localPubKey,
+		Signature: localSig,
+	}), nil
+}
+
+func participantForfeitKeyID(key *btcec.PublicKey) string {
+	if key == nil {
+		return ""
+	}
+
+	return string(schnorr.SerializePubKey(key))
+}
+
+func sameParticipantForfeitKey(a, b *btcec.PublicKey) bool {
+	return participantForfeitKeyID(a) == participantForfeitKeyID(b)
 }
 
 // ProcessEvent handles events in PendingForfeitState. The VTXO has been
@@ -515,8 +717,31 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		if err != nil {
 			return nil, fmt.Errorf("sign forfeit tx: %w", err)
 		}
+		externalSigs, err := externalForfeitParticipantSigs(
+			ctx, s.VTXO, forfeitSpend, evt, forfeitTx, env,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("external participant "+
+				"signatures: %w", err)
+		}
+		participantSigs, err := participantForfeitSigs(
+			s.VTXO.ClientKey.PubKey, sig, evt.ForfeitSpend != nil,
+			externalSigs,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("participant forfeit "+
+				"signatures: %w", err)
+		}
 
 		forfeitTxID := forfeitTx.TxHash()
+		submission := &ForfeitSignatureSubmission{
+			VTXOOutpoint:        s.VTXO.Outpoint,
+			RoundID:             evt.RoundID,
+			ForfeitTx:           forfeitTx,
+			Signature:           sig,
+			ParticipantVTXOSigs: participantSigs,
+			SpendPath:           forfeitSpend,
+		}
 
 		return &VTXOStateTransition{
 			NextState: &ForfeitingState{
@@ -528,13 +753,7 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 			},
 			NewEvents: fn.Some(VTXOEmittedEvent{
 				Outbox: []VTXOOutMsg{
-					&ForfeitSignatureSubmission{
-						VTXOOutpoint: s.VTXO.Outpoint,
-						RoundID:      evt.RoundID,
-						ForfeitTx:    forfeitTx,
-						Signature:    sig,
-						SpendPath:    forfeitSpend,
-					},
+					submission,
 					&VTXOStatusUpdate{
 						Outpoint:  s.VTXO.Outpoint,
 						NewStatus: VTXOStatusForfeiting,

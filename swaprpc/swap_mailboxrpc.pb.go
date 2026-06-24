@@ -34,6 +34,10 @@ type SwapServiceMailboxServer interface {
 	AuthorizeInSwapRefund(ctx context.Context, req *AuthorizeInSwapRefundRequest) (*AuthorizeInSwapRefundResponse, error)
 	// AcknowledgeOutSwapHtlc handles AcknowledgeOutSwapHtlc.
 	AcknowledgeOutSwapHtlc(ctx context.Context, req *AcknowledgeOutSwapHtlcRequest) (*AcknowledgeOutSwapHtlcResponse, error)
+	// SignInSwapForfeit handles SignInSwapForfeit.
+	SignInSwapForfeit(ctx context.Context, req *SignInSwapForfeitRequest) (*SignInSwapForfeitResponse, error)
+	// SubmitOutSwapForfeitSignature handles SubmitOutSwapForfeitSignature.
+	SubmitOutSwapForfeitSignature(ctx context.Context, req *SubmitOutSwapForfeitSignatureRequest) (*SubmitOutSwapForfeitSignatureResponse, error)
 }
 
 // RegisterSwapServiceMailboxServer registers handlers for SwapService.
@@ -87,6 +91,26 @@ func RegisterSwapServiceMailboxServer(r rpc.Router, impl SwapServiceMailboxServe
 		}
 
 		return impl.AcknowledgeOutSwapHtlc(ctx, req)
+	})
+	r.Handle("swaprpc.SwapService", "SignInSwapForfeit", func() proto.Message {
+		return &SignInSwapForfeitRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SignInSwapForfeitRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SignInSwapForfeit(ctx, req)
+	})
+	r.Handle("swaprpc.SwapService", "SubmitOutSwapForfeitSignature", func() proto.Message {
+		return &SubmitOutSwapForfeitSignatureRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SubmitOutSwapForfeitSignatureRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SubmitOutSwapForfeitSignature(ctx, req)
 	})
 }
 
@@ -198,6 +222,52 @@ func (c *SwapServiceMailboxClient) AcknowledgeOutSwapHtlc(ctx context.Context, r
 	}
 
 	resp := new(AcknowledgeOutSwapHtlcResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SignInSwapForfeit calls the SignInSwapForfeit RPC.
+func (c *SwapServiceMailboxClient) SignInSwapForfeit(ctx context.Context, req *SignInSwapForfeitRequest, opts ...rpc.RPCOptions) (*SignInSwapForfeitResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "swaprpc.SwapService",
+		Method:  "SignInSwapForfeit",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SignInSwapForfeitResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SubmitOutSwapForfeitSignature calls the SubmitOutSwapForfeitSignature RPC.
+func (c *SwapServiceMailboxClient) SubmitOutSwapForfeitSignature(ctx context.Context, req *SubmitOutSwapForfeitSignatureRequest, opts ...rpc.RPCOptions) (*SubmitOutSwapForfeitSignatureResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "swaprpc.SwapService",
+		Method:  "SubmitOutSwapForfeitSignature",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SubmitOutSwapForfeitSignatureResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

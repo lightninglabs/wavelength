@@ -168,6 +168,12 @@ type IncomingTransferEvent struct {
 	// consumed by this transfer. They are persisted during materialization
 	// so chained receives can unroll without owning intermediate VTXOs.
 	AncestorPackages []PackageArtifact
+
+	// Recipients are the Ark outputs plus optional semantic policy metadata
+	// supplied by the recipient event. If empty, receivers fall back to
+	// structural extraction from ArkPSBT for compatibility with older
+	// servers.
+	Recipients []ArkRecipientOutput
 }
 
 // eventSealed marks this as implementing the sealed Event interface.

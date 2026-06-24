@@ -246,6 +246,79 @@ func (r *MailboxOutSwapEventReceiver) WaitIncomingVHTLC(ctx context.Context,
 	}
 }
 
+// WaitOutSwapForfeitSignature waits until the matching out-swap vHTLC refresh
+// signature request is available. The returned acknowledgement must be called
+// only after the caller has validated and durably handled the request.
+func (r *MailboxOutSwapEventReceiver) WaitOutSwapForfeitSignature(
+	ctx context.Context, paymentHash lntypes.Hash,
+	mailboxPubkey *btcec.PublicKey) (*OutSwapForfeitSignatureNotification,
+	error) {
+
+	if r == nil || r.edge == nil {
+		return nil, fmt.Errorf("mailbox event receiver not configured")
+	}
+	if mailboxPubkey == nil {
+		return nil, fmt.Errorf("mailbox pubkey must be provided")
+	}
+
+	mailboxID := r.mailboxID
+	if mailboxID == "" {
+		mailboxID = OutSwapMailboxID(mailboxPubkey, paymentHash)
+	}
+
+	cursor := uint64(0)
+	for {
+		req := &mailboxpb.PullRequest{
+			MailboxId:     mailboxID,
+			MaxEnvelopes:  r.pullMaxEnvelopes,
+			WaitTimeoutMs: uint32(r.pullWaitTimeout.Milliseconds()),
+			Cursor:        cursor,
+		}
+		resp, err := mailboxpull.PullWithRetry(
+			ctx, r.edge, req, r.pullBackoff, r.log,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("pull out-swap forfeit "+
+				"mailbox: %w", err)
+		}
+		if resp.GetStatus() != nil && !resp.GetStatus().GetOk() {
+			return nil, fmt.Errorf("pull out-swap forfeit "+
+				"mailbox: %s (%s)",
+				resp.GetStatus().GetMessage(),
+				resp.GetStatus().GetCode())
+		}
+
+		if len(resp.GetEnvelopes()) == 0 {
+			cursor = resp.GetNextCursor()
+			continue
+		}
+
+		for _, env := range resp.GetEnvelopes() {
+			payload, ok, err := outSwapForfeitSignatureFromMailbox(
+				env,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if !ok || payload.PaymentHash != paymentHash {
+				continue
+			}
+
+			ackCursor := env.GetEventSeq() + 1
+
+			return &OutSwapForfeitSignatureNotification{
+				Payload:   payload,
+				AckCursor: ackCursor,
+				Ack: func(ctx context.Context) error {
+					return r.ack(ctx, mailboxID, ackCursor)
+				},
+			}, nil
+		}
+
+		cursor = resp.GetNextCursor()
+	}
+}
+
 // AckOutSwapHtlc advances the remote mailbox cursor after the caller has
 // durably accepted the matching notification.
 func (r *MailboxOutSwapEventReceiver) AckOutSwapHtlc(ctx context.Context,
@@ -286,6 +359,32 @@ func (r *MailboxOutSwapEventReceiver) ack(ctx context.Context, mailboxID string,
 	}
 
 	return nil
+}
+
+// outSwapForfeitSignatureFromMailbox unwraps one mailbox event envelope when it
+// matches the out-swap forfeit signature request route.
+func outSwapForfeitSignatureFromMailbox(env *mailboxpb.Envelope) (
+	*ForfeitSignaturePayload, bool, error) {
+
+	wrapped, ok, err := swapMailboxEventFromEnvelope(env)
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok {
+		return nil, false, nil
+	}
+
+	req := wrapped.GetOutSwapForfeitSignatureRequest()
+	if req == nil {
+		return nil, false, nil
+	}
+
+	payload, err := forfeitSignaturePayloadFromProto(req.GetPayload())
+	if err != nil {
+		return nil, false, err
+	}
+
+	return payload, true, nil
 }
 
 // outSwapEventFromMailboxEnvelope unwraps one mailbox event envelope when it
@@ -384,5 +483,7 @@ func swapMailboxEventFromEnvelope(env *mailboxpb.Envelope) (
 }
 
 var _ OutSwapEventReceiver = (*MailboxOutSwapEventReceiver)(nil)
+
+var _ OutSwapForfeitSignatureReceiver = (*MailboxOutSwapEventReceiver)(nil)
 
 var _ IncomingVHTLCEventReceiver = (*MailboxOutSwapEventReceiver)(nil)

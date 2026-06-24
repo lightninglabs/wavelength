@@ -25,6 +25,7 @@ import (
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1078,6 +1079,57 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 		require.Equal(t, types.VTXOOwnerKeyFamily, vtxo.OwnerKey.Family)
 		require.Equal(t, uint32(100+i), vtxo.OwnerKey.Index)
 	}
+}
+
+func TestRoundVTXORequestParamsAcceptCustomPolicy(t *testing.T) {
+	t.Parallel()
+
+	sender, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	receiver, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	server, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:                               sender.PubKey(),
+		Receiver:                             receiver.PubKey(),
+		Server:                               server.PubKey(),
+		PreimageHash:                         lntypes.Hash{1, 2, 3},
+		RefundLocktime:                       144,
+		UnilateralClaimDelay:                 12,
+		UnilateralRefundDelay:                18,
+		UnilateralRefundWithoutReceiverDelay: 24,
+	})
+	require.NoError(t, err)
+
+	policyTemplate, err := policy.Template.Encode()
+	require.NoError(t, err)
+	pkScript, err := policy.PkScript()
+	require.NoError(t, err)
+
+	req := &types.VTXORequest{
+		Amount:         42_000,
+		PolicyTemplate: policyTemplate,
+		PkScript:       pkScript,
+		Expiry:         24,
+	}
+	_, err = req.DecodeStandardPolicyTemplate()
+	require.Error(t, err)
+
+	db := NewTestDB(t)
+	params, err := vtxoRequestToRoundParams(
+		t.Context(), db, 1, "round-id", 0, req,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(42_000), params.Amount)
+	require.Equal(t, pkScript, params.PkScript)
+	require.Equal(t, int32(24), params.Expiry)
+	require.Equal(t, policyTemplate, params.PolicyTemplate)
+	require.Empty(t, params.ClientPubkey)
+	require.Empty(t, params.OperatorPubkey)
+	require.False(t, params.OwnerKeyID.Valid)
+	require.False(t, params.SigningKeyID.Valid)
 }
 
 // TestListRoundsPaginated verifies cursor-based pagination of persisted

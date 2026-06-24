@@ -271,6 +271,23 @@ func (p *VHTLCPolicy) ClaimPath(preimage lntypes.Preimage) (*SpendPath, error) {
 	)
 }
 
+// UnilateralClaimPath returns a SpendPath for claiming via the receiver-only
+// CSV hashlock leaf. The preimage's SHA256 must match the policy's
+// PreimageHash.
+func (p *VHTLCPolicy) UnilateralClaimPath(preimage lntypes.Preimage) (
+	*SpendPath, error) {
+
+	if !preimage.Matches(p.PreimageHash) {
+		return nil, fmt.Errorf("preimage does not match policy hash")
+	}
+
+	return p.CompiledPolicy.SpendPathForNode(
+		p.UnilateralClaimClosure, [][]byte{
+			preimage[:],
+		},
+	)
+}
+
 // RefundPath returns a SpendPath for the cooperative refund.
 func (p *VHTLCPolicy) RefundPath() (*SpendPath, error) {
 	return p.CompiledPolicy.SpendPathForNode(
@@ -283,6 +300,16 @@ func (p *VHTLCPolicy) RefundPath() (*SpendPath, error) {
 func (p *VHTLCPolicy) RefundWithoutReceiverPath() (*SpendPath, error) {
 	return p.CompiledPolicy.SpendPathForNode(
 		p.RefundWithoutReceiverClosure, nil,
+	)
+}
+
+// UnilateralRefundWithoutReceiverPath returns a SpendPath for the sender-only
+// CSV+CLTV refund leaf.
+func (p *VHTLCPolicy) UnilateralRefundWithoutReceiverPath() (*SpendPath,
+	error) {
+
+	return p.CompiledPolicy.SpendPathForNode(
+		p.UnilateralRefundWithoutReceiverClosure, nil,
 	)
 }
 

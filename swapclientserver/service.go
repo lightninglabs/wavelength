@@ -18,17 +18,20 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/restclient"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
 	"github.com/lightninglabs/darepo-client/sdk/swaps"
 	"github.com/lightninglabs/darepo-client/serverconn"
+	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -464,6 +467,17 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 			swaps.WithMailboxReceiverLog(log),
 		),
 	)
+	if err := installVTXOForfeitParticipantSigner(
+		rpcServer, swapClients.server,
+	); err != nil {
+
+		_ = arkClient.Close()
+		_ = swapClients.server.Close()
+		_ = swapClients.cleanup()
+		_ = store.Close()
+
+		return nil, nil, err
+	}
 
 	minAmount := func(ctx context.Context) (uint64, error) {
 		info, err := arkClient.GetInfo(ctx)
@@ -518,6 +532,52 @@ func swapStoreDatabasePath(daemonCfg *darepod.Config,
 	return filepath.Join(
 		daemonCfg.NetworkDir(), swaps.DefaultSqliteDatabaseFileName,
 	), nil
+}
+
+func installVTXOForfeitParticipantSigner(rpcServer *darepod.RPCServer,
+	swapServer swaps.SwapServerConn) error {
+
+	if rpcServer == nil {
+		return fmt.Errorf("daemon RPC server is required")
+	}
+	if swapServer == nil {
+		return fmt.Errorf("swap server connection is required")
+	}
+
+	return rpcServer.SetVTXOForfeitParticipantSigner(
+		func(ctx context.Context,
+			req *vtxo.ForfeitParticipantSignRequest) (
+			[]*types.ForfeitParticipantSig, error) {
+
+			payload, err := swaps.ForfeitSignaturePayloadFromVTXORequest(
+				req,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			sig, err := swapServer.SignInSwapForfeit(ctx, payload)
+			if err != nil {
+				return nil, err
+			}
+
+			pubKey, err := btcec.ParsePubKey(sig.PubKey)
+			if err != nil {
+				return nil, fmt.Errorf("parse in-swap forfeit "+
+					"participant pubkey: %w", err)
+			}
+			signature, err := schnorr.ParseSignature(sig.Signature)
+			if err != nil {
+				return nil, fmt.Errorf("parse in-swap forfeit "+
+					"participant signature: %w", err)
+			}
+
+			return []*types.ForfeitParticipantSig{{
+				PubKey:    pubKey,
+				Signature: signature,
+			}}, nil
+		},
+	)
 }
 
 // newSwapServerClients builds the swapdk-server clients for the configured
