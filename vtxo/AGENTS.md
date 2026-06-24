@@ -56,7 +56,7 @@ when the local wallet owns the receive script.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/tree` (tree paths), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `ledger` (`Sink` type for compatibility with manager wiring), `unroll` (via `ExitOutcomeResolver` callback wired by `darepod`).
+- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/tree` (tree paths), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `ledger` (`Sink` type for compatibility with manager wiring), `unroll` (via `ExitOutcomeResolver` callback wired by `darepod`), `coinselect` (largest-first coin selection in `selectAndReserveVTXOs`).
 - **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `darepod` (wiring, owned-script adapters, incoming event route).
 - **Sends**:
   - → `round` (via manager relay): `RelayToRoundMsg` wrapping `ForfeitSignatureSubmission`
@@ -108,7 +108,33 @@ when the local wallet owns the receive script.
 - `UnilateralExitState` is **non-terminal** and observed, not fire-and-forget. The actor survives until the unroll job reports a terminal outcome via the manager's `ExitOutcomeNotification`: `ExitOutcomeRecoverable` (the unroll failed with no on-chain footprint) drives `ExitFailedEvent` → `LiveState` + `VTXOStatusUpdate{Live}`, while `ExitOutcomeConfirmed` (the exit confirmed on-chain) drives `ExitConfirmedEvent` → terminal `SpentState` + `VTXOTerminatedNotification` (the actor is reaped here, gated on a terminal on-chain event rather than the user's intent). When the actor is absent (e.g. a daemon restart, since exiting VTXOs are excluded from `ListLiveVTXOs` recovery) the manager re-materializes a live actor from the persisted descriptor (recover) or persists `VTXOStatusSpent` directly (confirm).
 - `Manager.handleForceUnroll` uses `Ask` (not `Tell`) so FSM errors and self-loop no-ops surface as structured `ForceUnrollResponse{Accepted, Reason}` instead of a uniform `Accepted:true` that masks work that was never scheduled.
 - Admission types (`SelectAndReserveSpendRequest`, `SelectAndReserveForfeitRequest`, `ReserveForfeitRequest`, etc.) are defined in `lib/actormsg` and re-exported as type aliases to avoid wallet → vtxo → round → wallet import cycles.
-- `selectAndReserveVTXOs` is a shared helper parameterized by `reserveParams` that serves both the OOR spend and cooperative forfeit coin selection paths, avoiding code duplication.
+- **Spend reservations are delivered tell-style.** The manager marks the
+  in-memory `reserved` map, then dispatches the child Ask via
+  `detachedReserve` (an `OnComplete` goroutine) instead of `Await`-ing
+  it. The manager turn returns immediately without blocking on the child's
+  FSM write transaction. A failed reserve hops back as
+  `spendReservationFailedMsg` and clears the mark via `dropReservedEpoch`.
+  The forfeit path still uses the synchronous ask (`detached=false`) so
+  durable forfeit state is committed before round participation proceeds.
+- **Self-healing of actorless live VTXOs during coin selection.**
+  `selectAndReserveVTXOs` reads from `ListSelectionCandidatesByStatus`
+  (a lightweight projection — no tapscript reconstruction). When a
+  selected VTXO has no running actor (e.g., it was live in the DB but its
+  actor died or was never spawned), `respawnActorFromStore` rebuilds the
+  actor from the persisted descriptor before delivering the reservation
+  event. This prevents coin selection from silently skipping spendable
+  UTXOs while keeping actor-map consistency.
+- **Coin selection is routed through the `coinselect` package.**
+  Both the OOR spend path (`SelectAndReserveSpendRequest`) and the
+  cooperative forfeit path (`SelectAndReserveForfeitRequest`) funnel
+  through `selectAndReserveVTXOs`, which calls `coinselect.LargestFirst`
+  on the lightweight projection. The in-memory `reserved` map gates
+  admission ahead of the durable `VTXOStatusSpending` write so detached
+  spend reservations are excluded from the candidate set immediately.
+- `selectAndReserveVTXOs` is a shared helper parameterized by `reserveParams` that serves both the OOR spend and cooperative forfeit coin selection paths, avoiding code duplication. Coin selection is delegated to `coinselect.LargestFirst` (from the `coinselect` package) operating on a lightweight projection (`ListSelectionCandidatesByStatus`) that loads only outpoint, amount, and pkScript — not full descriptors — so full tapscript reconstruction is not paid on every payment path.
+- `reserveParams.detached` — when `true`, the manager marks the outpoint in its in-memory `reserved` map, issues the child Ask, and observes the future via `OnComplete` on a detached goroutine instead of awaiting it. This makes the manager turn non-blocking with respect to the child VTXO actor's FSM write transaction. The spend path enables `detached`; the forfeit path keeps the synchronous ask so round participation sees durable state before proceeding.
+- `detachedReserve` — delivers a spend reservation tell-style: the outcome is observed via `OnComplete` on a `context.WithoutCancel` goroutine bounded by `detachedReserveTimeout` (30 s). A failure hops back to the manager goroutine as a `spendReservationFailedMsg`; a timeout that lands while the VTXO has already advanced past `Live` is suppressed (the write committed in flight). The `epoch` stamp from `markReserved` rides the hop-back so a stale failure from a released-and-re-reserved outpoint (ABA) cannot drop a newer reservation's mark via `dropReservedEpoch`.
+- `respawnActorFromStore` — self-heals a VTXO that is live in the DB but has no running actor (can happen when `selectAndReserveVTXOs` encounters a Live row with no actor entry). The manager spawns a fresh actor from the persisted descriptor before delivering the reservation event, so coin selection never silently skips a VTXO whose actor died mid-session.
 - `IncomingVTXOHandler` only handles `VTXO_EVENT_TYPE_CREATED` events. Other event kinds, missing/short outpoints, empty pkScripts, oversized values (`> int64` or `> MaxSatoshi`), and tapscript derivation failures all return success without persisting — they cannot crash the actor or block the indexer push stream. Real DB lookup/save errors are surfaced.
 - Incoming VTXOs are saved with `Status: VTXOStatusLive` and empty `Ancestry` (the round commitment tree is not pushed alongside the event); `db.VTXOPersistenceStore.descriptorToInsertParams` accepts an empty tree-path blob to support this.
 - The `CommitmentTxID` on a materialized incoming VTXO comes from `IncomingVTXOEvent.CommitmentTxid`, which is the round commitment txid — **not** the leaf txid in the outpoint.

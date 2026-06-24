@@ -26,11 +26,56 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `Receptionist` — Service locator mapping `ServiceKey` → `ActorRef` for decoupled actor wiring.
 - `Message` — Sealed interface for all actor messages (must embed `BaseMessage`).
 - `MessageCodec` — TLV-based codec for message serialization/deserialization.
-- `DeliveryStore` / `TxAwareDeliveryStore` — Interfaces for durable mailbox persistence (enqueue, claim, ack, dead-letter).
+- `DeliveryStore` — Interface (defined in `delivery_store.go`) for durable
+  mailbox persistence: enqueue, lease, ack, nack, extend, dead-letter,
+  deduplication, checkpoint, and outbox operations. The leaseless
+  single-worker fast path adds `PeekNextMessage` (read-only claim, no lease,
+  no attempts bump; yields an empty lease token), `AckMessageByID` (unfenced
+  delete), and `NackMessageByID` (unfenced release that increments attempts).
+  The internal helpers `ackMessage` and `nackMessage` (also in
+  `delivery_store.go`) route to the fenced or unfenced operation based on
+  whether the delivery carries a lease token, keeping every ack/nack call
+  site consistent.
+- `TxAwareDeliveryStore` — Extends `DeliveryStore` with `ExecTx` for running
+  a `TxFunc` inside a DB transaction. Enables atomic FSM updates, the classic
+  `processInTransaction` path, the Read/Commit `processWithExec` path, and the
+  folded outbox-delivery single-write-transaction in `OutboxPublisher`.
+- `TxFunc` — `func(ctx context.Context, store DeliveryStore) error` executed
+  inside an `ExecTx` transaction.
+- `OutboxWakeRegistrar` — Optional interface on stores that can notify the
+  same-process `OutboxPublisher` after new outbox work commits. Polling
+  remains the cross-process and restart fallback.
+- `MailboxWakeRegistrar` — Optional interface on stores (defined in
+  `delivery_store.go`) that can notify a same-process `DurableMailbox` after
+  an enqueue commits inside an `ExecTx`. The folded outbox-delivery path
+  enqueues into the target mailbox inside the publisher's write transaction, so
+  the pre-commit in-process wake fired by `DurableMailbox.Send` races ahead of
+  row visibility. The store fires the registered wakes only after the tx
+  commits, restoring same-process delivery latency without waiting out a full
+  poll interval. Wakes are targeted by mailbox ID: only mailboxes that received
+  a message in a given transaction are roused. Each `DurableMailbox` registers
+  its `Wake` under its own mailbox ID on construction and calls the returned
+  cancel on `Close`, so a stopped mailbox leaves no stale closure.
+- `DurableMailboxConfig` — Configuration for `DurableMailbox`: `MailboxID`,
+  `Store`, `Codec`, `Clock`, `LeaseDuration`, `PollInterval`, `MaxAttempts`,
+  `WakeBuffer` (sizes the wake channel; set to `NumWorkers` by
+  `NewDurableActor` so a burst rouses every idle worker), and
+  `SingleWorkerLeaseless` (enables the leaseless peek path for single-worker
+  Read/Commit actors).
 - `DurableActor` — Actor variant with crash-safe mailbox backed by SQL persistence. Provides `Wait(ctx)` to block until the actor stops and `StopAndWait(ctx)` to request a graceful shutdown and then wait.
 - `DurableActorConfig[M, R]` — Configuration struct for `DurableActor`: behavior, store, codec, clock, DLO, WaitGroup, `TellRetryPolicy`, lease/heartbeat/poll durations, max attempts, cleanup timeout, deduplication TTL, and `NumWorkers`.
 - `DurableActorConfig.NumWorkers` — How many concurrent worker loops drain the actor's single mailbox. Default and any value `<= 1` is one worker (strictly-sequential processing). A value `> 1` turns the actor into a competing-consumer pool: that many goroutines each lease distinct messages via `LeaseNextMailboxMessage`, so independent messages run in parallel while per-correlation-key FIFO still keeps same-key messages ordered. Only for behaviors whose handlers are concurrency-safe and hold no writer across their side effects (e.g. the serverconn egress sender on the Read/Commit path). `NewDurableActor` **fails closed** with `ErrConcurrentClassicBehavior` when `NumWorkers > 1` is paired with a classic (`Left`) `ActorBehavior`, since the classic path wraps the whole `Receive` in one write transaction and assumes sequential delivery; pools are only valid on the Read/Commit (`TxBehavior`) path. The test-only `DurableActorConfig.AllowConcurrentClassicBehavior()` escape hatch bypasses the guard for the egress benchmark that measures the forbidden config; production code must never call it.
 - `DefaultDurableActorConfig[M, R]()` — Constructor returning a `DurableActorConfig` with safe defaults (30s lease, 10 max attempts, 1s poll fallback, DefaultTellRetryPolicy).
+- `DefaultDurableTxActorConfig[M, R, S]()` — Constructor for the Read/Commit
+  execution path. Takes a `TxBehavior` and its `StoreFactory`, binds them via
+  `NewTxBehaviorEither`, and returns a config with the Right case populated.
+  The store must be a `TxAwareDeliveryStore` (enforced by `NewDurableActor`).
+- `NewClassicBehavior[M, R]` — Wraps a classic `ActorBehavior` as the Left
+  case of `DurableActorConfig.Behavior`. `DefaultDurableActorConfig` applies
+  it automatically; use it directly only on hand-built configs.
+- `NewTxBehaviorEither[M, R, S]` — Binds a `TxBehavior` and its
+  `StoreFactory` into the Right case of `DurableActorConfig.Behavior`.
+  `DefaultDurableTxActorConfig` applies it automatically.
 - `TellRetryPolicy` — Function type `func(attempts int, lastErr error) (bool, time.Duration)` determining retry behavior for failed Tell messages. Return `(false, _)` to dead-letter immediately.
 - `DefaultTellRetryPolicy` — Exponential backoff policy: up to 5 attempts, starting at 1s, capped at 60s.
 - `Checkpoint` — Serializable actor state snapshot for recovery.
@@ -55,6 +100,17 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   `CallerCtx` in `context.WithTimeout` itself before handing it to
   `OnComplete` — that wrap is the sole bound on the continuation. Returns
   false for Tells, DurableAsks, and redelivered asks whose caller is gone.
+  Defined in `ask_detach.go`.
+- `Delivery[M, R]` — Wraps a claimed message with ack/nack semantics.
+  `MutationFailed()` reports whether the last `Nack` store write failed to
+  persist its row mutation; the worker loop backs off for a poll interval
+  before re-claiming when this is set, because a failed leaseless nack leaves
+  the row unchanged and immediately re-eligible (there is no lease expiry to
+  throttle the next peek). `EffectiveAttempts()` returns the retry-policy
+  attempt count: leased deliveries are pre-incremented at claim time;
+  leaseless peeked deliveries are not, so the current in-flight attempt is
+  counted here. `ShouldDeadLetter()` uses `EffectiveAttempts()` to match the
+  leased dead-letter boundary on both paths.
 - `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors).
 - `Mailbox[M, R]` — Interface for actor message queues: `Send(ctx, env) error` (blocking; returns `ErrMailboxClosed`, `ErrActorTerminated`, or a context error on failure), `TrySend(env) error` (non-blocking), `Receive(ctx) iter.Seq[envelope]`, `Close()`, `IsClosed() bool`, `Drain() iter.Seq[envelope]`.
 - `isExpectedShutdownErr(err) bool` — Internal helper that classifies errors as expected during teardown: context cancellation/deadline, closed DB handle ("sql: database is closed", "sql: connection is already closed", "use of closed network connection"). Used by the lease loop to demote shutdown-path failures to debug instead of warn-flooding test artifacts at itest tail.
@@ -81,8 +137,37 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 ## Invariants
 
 - Messages are processed sequentially per actor by default (one worker, no concurrent `Receive` calls). Opting into `DurableActorConfig.NumWorkers > 1` relaxes this: that many worker loops drain the one mailbox concurrently, so `Receive` may run in parallel across distinct messages. The competing-consumer lease guarantees each message is still processed by exactly one worker, and per-correlation-key FIFO holds across workers; only behaviors with concurrency-safe handlers should set it. The combination is structurally restricted to the Read/Commit path: `NewDurableActor` rejects `NumWorkers > 1` on a classic `ActorBehavior` with `ErrConcurrentClassicBehavior` so a stateful, sequentially-assumed actor can never be silently fanned out.
+- **Leaseless consume ownership model.** `SingleWorkerLeaseless` removes the
+  lease-token fence, so its safety argument is "one live runtime owner for this
+  mailbox", not merely "one goroutine in this process". Do not enable it for a
+  mailbox that can be drained by another daemon/process at the same time unless
+  an external singleton/ownership fence already exists. A peeked delivery always
+  carries an empty lease token, even when the persisted row still has stale
+  expired lease metadata from an older leased claim; that empty token is the
+  p-model edge that routes ack/nack to the by-ID operations. Retry-policy
+  decisions must use `Delivery.EffectiveAttempts()` so the in-flight peeked
+  attempt is counted before a nack can raise the row to `max_attempts`.
+  `NewDurableActor` sets `SingleWorkerLeaseless` strictly when `NumWorkers == 1`
+  AND the behavior is the Read/Commit (Right/`TxBehavior`) path; the
+  multi-worker pool and the classic path keep `LeaseNextMessage` and the
+  lease-fenced ack byte-for-byte. Heartbeating is skipped for leaseless
+  deliveries (no lease to extend), avoiding spurious "Failed to extend lease"
+  warnings.
 - `Tell` with a `DurableActor` persists the message before returning (crash-safe enqueue).
 - Outbox messages are dispatched only after state is persisted (outbox pattern).
+- **Outbox fold p-model.** For tx-aware stores, `OutboxPublisher` folds the
+  target mailbox enqueue and `CompleteOutbox` into ONE write transaction:
+  `claim -> (Tell + CompleteOutbox) in one ExecTx`. This halves the
+  per-delivery commit count and closes the enqueue-without-complete
+  redelivery window. If the transaction fails, both the enqueue and
+  completion roll back; the claim expiry is the retry mechanism. The
+  publisher logs any transaction-level begin/commit failure even when the
+  inner Tell/Complete operations returned nil. Because the enqueue runs
+  inside an ambient transaction, the row is invisible to the target
+  consumer until the outer tx commits; a `MailboxWakeRegistrar` store fires
+  the per-mailbox wake only after the tx commits, so the consumer re-polls
+  against a now-visible row instead of waiting out a full poll interval.
+  Polling remains the cross-process and restart fallback.
 - `ServiceKey` lookup via `Receptionist` is type-safe: mismatched types return `ErrServiceKeyTypeMismatch`.
 - `RestartMessage` has `RestartPriority` (MaxInt32) ensuring it is processed before all other messages on recovery.
 - Transaction context (`WithTx`/`RequireTx`) enables same-DB-transaction joining between actors and their callers.

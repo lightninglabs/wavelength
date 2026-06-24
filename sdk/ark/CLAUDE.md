@@ -32,7 +32,11 @@ transport, without duplicating Ark runtime behavior.
   already-connected `daemonrpc.DaemonServiceClient` and a caller-supplied
   `closeFn`.
 - `Info` / `ServerInfo` / `Seed` / `WalletInitResult` — SDK-owned typed
-  models for daemon status and wallet bootstrap flows.
+  models for daemon status and wallet bootstrap flows. `ServerInfo` fields:
+  `OperatorPubKey`, `BoardingExitDelay`, `VTXOExitDelay`, `DustLimit`,
+  `MinVTXOAmountSat` (operator-advertised minimum VTXO amount),
+  `MinBoardingAmount`, `MaxBoardingAmount`, `FeeRate`, `MinOperatorFee`,
+  `MinConfirmations`.
 - `VTXOInfo` — Typed VTXO view (Outpoint, AmountSat, Status, BatchExpiry,
   RoundID, CreatedHeight, etc.) returned by `ListLiveVTXOs` /
   `ListSpentVTXOs`.
@@ -42,6 +46,9 @@ transport, without duplicating Ark runtime behavior.
   CheckpointPSBTs) returned by `GetIndexedOORSession` lookups.
 - `CustomOORInput` — Caller-specified OOR input carrying a policy template,
   spend path, and UTXO info for `SendOORWithCustomInputs`.
+- `OORSendResult` — Result of a completed OOR send: `SessionID` and
+  `RecipientOutpoint` (first recipient outpoint for the common single-
+  recipient case; underlying RPC now accepts a `Recipients` slice).
 - Policy/OOR helpers such as `SendOORWithPolicy`, `SendOORWithCustomInputs`,
   typed indexed VTXO lookups, and typed receive-script decoding belong here
   so higher-level packages do not rebuild daemonrpc adapters.
@@ -88,8 +95,10 @@ transport, without duplicating Ark runtime behavior.
 - `WrapDaemonServer` owns only the private bufconn transport and gRPC server;
   it does not own the caller's `DaemonServer` runtime. `Close()` tears down
   only the private transport.
-- `ServerInfo` is a bootstrap-time operator-terms snapshot; refresh after
-  reconnect is not wired through yet.
+- `ServerInfo` is primarily a bootstrap-time operator-terms snapshot. It can
+  also be refreshed by daemon paths that fetch the live operator key before
+  building new policy scripts; callers should treat it as the latest-known
+  terms for the current session rather than a one-time immutable snapshot.
 - Pre-1.0, some methods intentionally return `daemonrpc` protobuf types
   directly. Those passthrough APIs are not yet treated as stable SDK-owned
   models.

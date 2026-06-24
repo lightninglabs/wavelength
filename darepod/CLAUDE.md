@@ -60,6 +60,18 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   the wallet actor.
 - `resolveRecipientOutput` — extracts pkScript and client pubkey from
   an `Output` proto oneof (pubkey or address). Taproot-only.
+- `SendOOR` — multi-recipient OOR transfer. Accepts up to
+  `maxOORRecipients = 256` recipients resolved via
+  `buildSendOORRecipients`. Custom inputs require exactly one
+  recipient; concurrent calls on the same custom outpoints are
+  serialized via `reserveCustomInputs`. Before building the transfer,
+  `requireCustomSpendsMature` rejects custom inputs whose absolute
+  block-height locktime is not yet reached at the current best height;
+  timestamp locktimes are unsupported at this boundary.
+- `requireCustomSpendsMature` — rejects custom OOR inputs whose
+  `RequiredLockTime` (block-height) has not yet matured. Returns
+  `codes.InvalidArgument` for timestamp locktimes, and
+  `codes.FailedPrecondition` when current height is below the locktime.
 - `ListVTXOs` — paginated VTXO inventory. When called with
   `VTXO_STATUS_PENDING_ROUND`, branches to `listPendingRoundVTXOs`
   which bypasses `s.vtxoStore` and projects synthetic VTXOs (amount
@@ -81,6 +93,24 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   live `unroll.Phase` and persisted `db.UnilateralExitJobStatus` to
   the same proto. `PhaseSweepBroadcast` and `PhaseSweepConfirmation`
   both project to `UNROLL_JOB_STATUS_SWEEPING`.
+- `GetExitPlan` (`rpc_exit_plan.go`) — batch preview of wallet-side
+  CPFP-funding readiness before admitting unilateral exits. Takes a
+  slice of outpoint strings and a fee conf-target. Computes a single
+  fee rate and wallet snapshot (`walletExitFundingSnapshot`) once,
+  then iterates entries via `exitPlanEntry`. A running allocation
+  (`claimExitFunding`) prevents over-reporting: each feasible entry
+  reserves its fee inputs out of `remaining` before the next entry is
+  assessed. A funding address is only allocated for infeasible entries
+  (shortfall case). Per-outpoint failures are recorded on
+  `ExitPlanEntry.Err` rather than failing the batch. Returns
+  `ExitPlanResponse` with aggregate `CanStart`, `TotalFundingShortfallSat`,
+  and `TotalRecommendedFundingSat`.
+- `SweepWallet` (`rpc_exit_plan.go`) — thin shim that delegates a
+  normal backing-wallet sweep (excluding boarding outputs) to the
+  wallet actor via `wallet.SweepWalletFundsRequest`. The actor owns
+  input locking, fee capping, signing, and broadcast routing through
+  txconfirm. Validates request surface and maps the reply via
+  `walletSweepFundsResponseToRPC`.
 - `EstimateFee` / `GetFeeHistory` — operator fee surface.
   `EstimateFee` proxies to the operator's `EstimateFee` over the
   direct gRPC connection (`s.serverConn`); no local caching.
@@ -121,6 +151,68 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - `SendOnChain` — RPC handler delegating to the wallet actor's
   `SendOnChainRequest`. Routes through coin selection, leave output
   construction, and eager round join. Supports bounded and sweep-all modes.
+
+### Wallet Recovery (`wallet_recovery.go`)
+
+- `recoverWalletState` — top-level recovery entry point called from
+  `InitWallet` when `recovery_window > 0`. Waits for `DaemonReady()`
+  before scanning (wallet-backed services must be up). Fetches operator
+  terms once and runs three sub-scans in sequence: boarding keys,
+  indexed VTXOs, OOR receive scripts.
+- `recoverBoardingKeys` — derives boarding tapscripts for key indices
+  `0..window-1` via `wallet.BoardingKeyFamily`, imports each into the
+  boarding backend, persists via `InsertBoardingAddress`, then tallies
+  visible UTXOs against the recovered pkScript set.
+- `recoverIndexedVTXOs` — derives VTXO owner keys via
+  `libtypes.VTXOOwnerKeyFamily`, registers each with the indexer
+  (proof-of-control), and pages through `ListVTXOsByScriptsTaproot`
+  up to `recoveryVTXOPageSize = 128`. Converts each result via
+  `recoveryDescriptorFromIndexer` and saves via `saveRecoveredVTXO`.
+  Notifies the VTXO manager via `VTXOsMaterializedNotification` so
+  live actors pick up the recovered VTXOs.
+- `recoverOORReceiveScripts` — derives OOR receive scripts via
+  `oorReceiveKeyFamily`, cross-references against the indexer's
+  `ListMyReceiveScripts`, pages through
+  `ListOORRecipientEventsByScriptTaproot` up to
+  `recoveryOORPageSize = 128`, and materializes each event via
+  `materializeRecoveredOOREvent` using `oor.LocalPersistenceOutboxHandler`.
+- `retryRecoveryIndexerRPC` — retries indexer calls up to
+  `recoveryIndexerRetryAttempts = 8` times with
+  `recoveryIndexerRetryDelay = 150 ms` when the operator's per-client
+  limiter returns `codes.ResourceExhausted`.
+- `walletRecoveryResult` — aggregate counters returned to the caller
+  and mapped onto `InitWalletResponse` via `apply`. Fields:
+  `BoardingAddresses`, `BoardingUTXOs`, `VTXOs`,
+  `OORReceiveScripts`, `OOREvents`.
+- `recoveryBoardingBackend` — selects the boarding backend for
+  recovery (lwwallet or btcwallet only; LND is unsupported).
+- `recoveryDescriptorFromIndexer` — converts an `arkrpc.VTXO` from the
+  indexer into a `vtxo.Descriptor`. Prefers per-VTXO operator key /
+  exit delay over terms defaults when the indexer carries them.
+
+### Metrics (`metrics.go`)
+
+- `startMetricsServer` — registers Prometheus collectors and starts the
+  optional `/metrics` HTTP server. No-op when `Metrics.ListenAddr` is
+  empty. Uses a per-instance `prometheus.NewRegistry()` (not the global
+  default) so multiple daemons in one test process do not collide.
+  Re-registers the standard Go/process collectors on the per-instance
+  registry, spawns a pool of `metricsActorWorkers = 4` stateless
+  `metrics.MetricsActor` workers under `metrics.ActorKey`, assigns the
+  sink to `s.metricsSink`, registers a `metrics.NewSystemCollector`
+  backed by `systemStatsAdapter`, and starts `metrics.NewServer`.
+- `stopMetricsServer` — graceful shutdown; no-op when never started.
+- `emitMetric` — fire-and-forget helper forwarding a `metrics.Msg` via
+  the sink. No-ops when sink is `None`; logs debug on Tell failure.
+  Must never block or fail the calling operation.
+- `systemStatsAdapter` — implements `metrics.SystemStatsQuerier` on top
+  of the running daemon, translating stores and live actors into the
+  aggregate rows the scrape-driven collector expects. Methods:
+  `GetVTXOStatsByStatus` (per-status VTXO counts and totals),
+  `GetWalletBalance` (delegates to `metricsWalletBalance`),
+  `GetBlockHeight` (delegates to `metricsBlockHeight`),
+  `GetOORSessionStatsByState` (delegates to `liveOORSessionsByState`),
+  `GetRoundStatsByStatus` (delegates to `liveRoundsByStatus`).
 
 ### Adapters & Helpers
 
@@ -229,10 +321,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 ## Relationships
 
 - **Depends on**: `baselib/actor`, `btcwbackend`, `chainbackends`,
-  `chainsource`, `lib/actormsg`, `db`, `ledger`, `round`, `txconfirm`,
-  `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`,
-  `indexer`, `arkrpc`, `lndbackend`, `harness` (bitcoind package
-  submitter wiring in `cmd/darepod`), `fraud`, `gateway`,
+  `chainsource`, `lib/actormsg`, `db`, `ledger`, `metrics`, `round`,
+  `txconfirm`, `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`,
+  `serverconn`, `indexer`, `arkrpc`, `lndbackend`, `harness` (bitcoind
+  package submitter wiring in `cmd/darepod`), `fraud`, `gateway`,
   `rpc/restclient`, `vhtlcrecovery`, `vhtlcrecovery/coordinator`,
   `vhtlcrecovery/unrollpolicy`.
 - **Depended on by**: `cmd/darepod`.
@@ -268,6 +360,26 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - `SendOOR` with custom inputs serializes concurrent calls on the
   same outpoints via `reserveCustomInputs`. Custom inputs lock for
   the RPC lifetime; release is deferred on both success and failure.
+  Custom inputs require exactly one recipient.
+- `requireCustomSpendsMature` is called inside `SendOOR` before
+  building transfer inputs; timestamp locktimes are rejected at the
+  RPC boundary.
+- `GetExitPlan` uses a running allocation (`claimExitFunding`) across
+  the batch so cross-VTXO wallet-input overlap is reported correctly.
+  Funding addresses are allocated only for infeasible (shortfall)
+  entries and cached in `Server.exitFundingAddresses`.
+- `SweepWallet` delegates entirely to the wallet actor
+  (`wallet.SweepWalletFundsRequest`); it does not build or sign the
+  tx directly. This keeps input locking and broadcast routing inside
+  the actor's own transaction boundary.
+- `startMetricsServer` uses a per-instance `prometheus.Registry`
+  (not the global default). All emission sites call `emitMetric`
+  which no-ops when `metricsSink` is `None`, so metrics carry zero
+  overhead when disabled.
+- OOR ingress uses a per-session service key fast path
+  (`oorSessionResolveKey`): `DriveEventRequest` messages route
+  directly to the live session actor's durable mailbox; admission
+  messages (incoming hints) always route through the registry.
 - `BuildCustomTransferInputs` validates (a) the caller-supplied
   policy template compiles to the provided pkScript
   (`PolicyTemplate.MatchesPkScript`), and (b) the spend path's

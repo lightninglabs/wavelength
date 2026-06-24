@@ -28,13 +28,22 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   `ChainSource`, `Wallet` (`SweepWallet`),
   `MaxSweepFeeRateSatPerVByte`, `FraudCheckpointSafetyMargin int32`
   (overrides the fraud-triggered unroll backstop margin in blocks;
-  zero falls back to the default), `RegistryRef`.
+  zero falls back to the default), `RegistryRef`,
+  `LedgerSink fn.Option[ledger.Sink]` (forwarded from `RegistryConfig`
+  by `childConfig`; when set, `emitExitCostIfCompleted` sends
+  `ExitCostMsg` to the ledger before the child notifies the registry of
+  terminal completion).
 - `behavior` — actor behavior implementing `actor.TxBehavior[Msg, Resp,
   unrollTx]`. Holds `b.sweepTx` (restored from checkpoint on boot) so
   retries and replays converge on a single sweep txid / pkScript under
   `txconfirm`'s txid-keyed dedup. The `dispatch` method runs the full
   FSM pipeline including Stage writes; `Receive` owns the single
-  lease-fenced Commit.
+  lease-fenced Commit. `exitCostNotified` gates at-most-once ledger
+  delivery: `emitExitCostIfCompleted` is called inside
+  `notifyRegistryIfTerminal` and returns false (deferring the registry
+  handoff to the next block tick) when the ledger Tell fails transiently
+  — preventing the child from being stopped before the cost is durably
+  handed off.
 - `Msg` / `Resp` / `Event` / `OutboxEvent` — sealed durable-mailbox,
   response, FSM event, and FSM outbox interfaces.
 - Mailbox messages: `StartUnrollRequest`, `ResumeUnrollRequest`,
@@ -136,6 +145,23 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
 - `proofNodeHeightHint = 1` — height hint for proof-node
   spend/confirmation watches (proof roots and intermediate ancestors
   can confirm before the target VTXO's creation height).
+- `ExitFundingSnapshot` / `ExitFundingPlan` / `PlanExitFunding`
+  (`exit_plan.go`) — pure funding-projection layer for the RPC
+  `GetExitPlan` surface. `PlanExitFunding` calls `RecoveryTxCount`
+  then `AssessExitFeasibility` and wraps the verdict into an
+  `ExitFundingPlan` that also carries `RequiredConfirmations` (always
+  `RequiredFeeInputConfirmations = 1`), `RecommendedUTXOAmountSat`
+  (derived by `RecommendedExitFeeInputAmount`), `RecommendedTotalFundingSat`,
+  and `FundingShortfallSat`. No IO; callers resolve the wallet snapshot
+  and fee rate before calling in.
+- `RecommendedExitFeeInputAmount(verdict ExitFeasibility)` — derives
+  the per-UTXO funding suggestion: `ceil(CPFPFeeTotalSat /
+  RequiredWalletInputs) + DustLimit`, floored at
+  `DefaultFeeInputMinAmountSat` (10 000 sat).
+- `ExitFundingAddressBook` — in-memory cache that reuses a backing-wallet
+  funding address per target outpoint key. Prevents the wallet address
+  index from advancing on repeated `PlanExitFunding` calls by memoizing
+  the first derived address per key.
 
 ## Relationships
 
@@ -157,10 +183,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
     `FeeEstimateRequest`.
   - → registry (Tell): `UnrollTerminatedMsg` from each child on
     terminal transition.
-  - → `ledger` actor (Tell, via `RegistryConfig.LedgerSink`):
+  - → `ledger` actor (Tell, via `Config.LedgerSink` on each child,
+    forwarded from `RegistryConfig.LedgerSink` by `childConfig`):
     `ExitCostMsg` after the final sweep confirms. The amount is the proof
-    target output value and the fee is derived from the persisted sweep tx
-    outputs.
+    target output value; the fee is `targetOutput.Value − sum(sweepTx
+    outputs)`. Delivered by `emitExitCostIfCompleted` before the child
+    notifies the registry of terminal completion; a transient Tell failure
+    defers the registry handoff until the next height tick so the ledger
+    event is never silently dropped.
   - → `vtxo` (indirect via chain-resolver seam, #264).
   - → `vtxo` manager (Tell, via `RegistryConfig.VTXOExitObserver`):
     `ExitOutcomeNotification` on each child's terminal outcome — the
@@ -223,6 +253,16 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   Late admission failures observed after the synchronous timeout window are
   delivered as `childAdmissionResultMsg` so they remain serialized with
   registry mutations.
+- **Exit cost emitted before terminal handoff.** `emitExitCostIfCompleted`
+  runs inside `notifyRegistryIfTerminal` and must return true before
+  the registry is told the child is terminal. A transient ledger Tell
+  failure returns false, keeping the child alive; the next
+  `HeightObservedMsg` retries. An un-buildable cost (missing proof or
+  sweep tx) is logged at error level and then allowed through — retrying
+  cannot fix structural corruption and the terminal handoff must not be
+  wedged on every future block. `exitCostNotified` is in-memory, so a
+  crash between the Tell and the registry handoff replays the Tell on
+  the next restart; the ledger handler dedups by target outpoint.
 - **Fail-closed admission write.** `handleEnsure` calls
   `Store.UpsertRecord` synchronously and only returns `Created=true`
   after the record is durable. On write failure the spawned child is

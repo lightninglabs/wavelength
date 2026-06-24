@@ -31,10 +31,16 @@ default builds avoid the swap executor's dependency graph.
 - `RPCServer` interface — Narrow contract over `*darepod.RPCServer`
   covering every daemonrpc method swapwallet composes against:
   LeaveVTXOs, SendOnChain, ListVTXOs, ListTransactions, NewAddress, GetInfo,
-  GetBalance, GenSeed, InitWallet, UnlockWallet, Unroll,
-  GetUnrollStatus, JoinNextRound. The admin-shape methods (GenSeed/InitWallet/
-  UnlockWallet/Unroll/GetUnrollStatus) are reachable BEFORE the swap
-  runtime is live.
+  EstimateFee, GetBalance, GenSeed, InitWallet, UnlockWallet, Unroll,
+  GetUnrollStatus, JoinNextRound, GetExitPlan, SweepWallet. The admin-shape
+  methods (GenSeed/InitWallet/UnlockWallet/Unroll/GetUnrollStatus) are
+  reachable BEFORE the swap runtime is live.
+- `onchainFeeQuote` — Resolved fee preview for a cooperative leave: estimated
+  fee, whether the quote is from the operator (`feeKnown`), `SendQuoteStatus`
+  enum, and an optional warning string. Produced by `router.estimateOnchainFee`.
+- `onchainTerms` — Operator-policy snapshot from a single `GetInfo` call:
+  target feerate, minimum operator fee, and dust limit. Used by
+  `localOnchainFeeFloor` when the operator's `EstimateFee` RPC is unreachable.
 - `WalletEntry` (re-exported from walletdkrpc) — Flat row type the entire
   history/streaming surface returns. Every internal correlator
   (session_id, round_id, settlement_type, mailbox subtype) is dropped
@@ -67,8 +73,9 @@ default builds avoid the swap executor's dependency graph.
     `SendOnChainRequest`, `JoinNextRoundRequest`, `ListVTXOsRequest`,
     `ListTransactionsRequest`, `NewAddressRequest`, `GetBalanceRequest`,
     `GetInfoRequest`
-  - → swapclientrpc (in-process via SwapService): `StartPayRequest`,
-    `StartReceiveRequest`, `ListSwapsRequest`, `SubscribeSwapsRequest`
+  - → swapclientrpc (in-process via SwapService): `QuotePayRequest`,
+    `StartPayRequest`, `StartReceiveRequest`, `ListSwapsRequest`,
+    `SubscribeSwapsRequest`
 - **Receives**:
   - ← API: `walletdkrpc.{Create,Unlock,Send,Recv,List,Balance,Deposit,
     Status,Exit,ExitStatus,SubscribeWallet}Request`
@@ -121,6 +128,29 @@ default builds avoid the swap executor's dependency graph.
   Confirmed-but-not-yet-boarded UTXOs must NOT inflate
   `confirmed_sat` (issue #502), and adopted-but-not-yet-live VTXOs
   must stay pending inbound until commitment confirmation (issue #542).
+- **`PrepareSend` invoice path** calls `SwapService.QuotePay` for a fee/rail
+  preview before recording the intent. If the swap server or daemon is older
+  and returns `Unimplemented` or `Unavailable`, `quotePayUnavailable` detects
+  the error and the router falls back to a local-only preview
+  (`SEND_QUOTE_STATUS_LOCAL_ONLY`) so mixed-version deployments remain usable.
+  An unknown quoted settlement rail maps to `OFFCHAIN_UNKNOWN` so future rails
+  render quote amounts while older wallet code catches up.
+- **Onchain fee preview** (`onchain_fee.go`) prefers the operator's dynamic
+  `EstimateFee` quote (`SEND_QUOTE_STATUS_COMPLETE`). When that RPC fails, the
+  router falls back to `localOnchainFeeFloor`: a batch-size-1 vbyte estimate
+  (`leaveBaseVBytes + numInputs*leaveInputVBytes + numOutputs*leaveOutputVBytes`)
+  multiplied by the operator's feerate, floored at `MinOperatorFee`. The result
+  is tagged `SEND_QUOTE_STATUS_LOCAL_ONLY` with a warning so the caller knows
+  the seal-time fee may differ.
+- **Cooperative leave row completion** (`history.go`): EXIT rows backed by a
+  cooperative leave have no unroll job. When `GetUnrollStatus` returns
+  `Found=false`, `decorateCooperativeLeaveEntry` checks whether the source
+  VTXO outpoint appears in the forfeited-VTXO set (fetched once per List call
+  via `ListVTXOs(VTXO_STATUS_FORFEITED)`). A forfeited source VTXO means the
+  leave round confirmed; the pending EXIT row is promoted to COMPLETE. This
+  is best-effort and runtime-local: a restarted daemon cannot recreate the
+  original counterparty/note until the daemon persists a durable leave-job
+  correlation.
 
 ## Deep Docs
 

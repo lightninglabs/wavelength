@@ -38,10 +38,42 @@ refresh, leave, OOR spend, and directed send flows.
 - `SendOnChainStatus` — Terminal outcome enum: `SendOnChainStatusSubmitted` (intent queued for next round), `SendOnChainStatusDryRun` (dry-run preview, no commitment).
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
 - `VTXODescriptor.EffectivePolicyTemplate` — Decodes the serialized `PolicyTemplate` field on the wallet-level VTXO descriptor using `lib/arkscript`.
+- `SweepWalletFundsRequest` / `SweepWalletFundsResponse` — Ask-request /
+  response for a general backing-wallet sweep (`wallet_sweep_actor.go`).
+  Drains every confirmed backing-wallet UTXO (excluding boarding outputs)
+  to a caller-supplied destination. Supports dry-run mode. The wallet
+  actor owns this flow: `handleSweepWalletFunds` resolves and caps the
+  fee rate, builds the preview via `walletSweepPreview`, and — on a live
+  broadcast — leases inputs under `walletSweepLockID`, signs via
+  `WalletBackingSweeper.FinalizePsbt`, and submits to the shared
+  `txconfirm` broadcaster via `submitSweepToConfirm`. Terminal
+  notifications arrive as `WalletSweepTxNotification` (only logged;
+  general sweeps are not persisted — an interrupted sweep is re-run
+  manually).
+- `WalletBackingSweeper` — Narrow backend interface required by the
+  general sweep flow: `ListUnspent`, `FinalizePsbt`, `LeaseOutput`,
+  `ReleaseOutput`. The concrete per-backend adapters (`lndUnrollWallet`,
+  `lwUnrollWallet`, `btcwUnrollWallet`) satisfy it structurally. Wired
+  via `WithWalletSweep(backing, maxFeeRateSatPerVByte)`; absent means
+  sweep requests return an explicit error.
+- `SweepBoardingUTXOsRequest` / `SweepBoardingUTXOsResponse`
+  (`boarding_sweep_actor.go`) — Ask-request for the boarding-timeout
+  aggregate sweep flow; routes through the wallet actor and shares the
+  `submitSweepToConfirm` path with the general wallet sweep.
+- `submitSweepToConfirm` — shared internal helper used by both the
+  boarding-timeout sweep (`handleSweepBoardingUTXOs`) and the general
+  backing-wallet sweep (`handleSweepWalletFunds`) to hand a signed sweep
+  transaction to the `txconfirm` broadcaster with a mapped notification
+  subscriber. Boarding sweeps map to `BoardingSweepTxNotification`;
+  general wallet sweeps map to `WalletSweepTxNotification`.
+- `walletSweepLockID` — stable `walletcore.LockID` (prefix
+  `"darepo-client:sweepwallet"`) used to lease general-sweep inputs.
+  Kept distinct from `txconfirmLockID` and the boarding-sweep lock so
+  subsystems never release each other's leases.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager admission types), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants).
+- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager admission types), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants), `txconfirm` (both sweep flows submit through the shared txconfirm broadcaster; fee-rate and dust constants imported directly).
 - **Depended on by**: `round` (boarding intents, types: `BoardingAddress`, `SelectedVTXO`), `db` (persistence), `darepod` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
@@ -56,7 +88,8 @@ refresh, leave, OOR spend, and directed send flows.
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`
-  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`, `SendOnChainRequest`
+  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`, `SendOnChainRequest`, `SweepWalletFundsRequest`, `SweepBoardingUTXOsRequest`
+  - ← `txconfirm` (mapped Tell refs): `WalletSweepTxNotification` (general sweep terminal), `BoardingSweepTxNotification` (boarding sweep terminal)
 
 ## Invariants
 
@@ -72,6 +105,34 @@ refresh, leave, OOR spend, and directed send flows.
 - `handleSendVTXOs` rejects pre-flight any directed send with multiple recipients and exactly-zero change residual under the #270 seal-time fee handshake. The server is the amount authority and absorbs the operator fee out of the designated `IsChange=true` slot; if there is no residual to absorb the fee against, the server has no slack to deduct fees without silently shifting them onto a recipient leg. The wallet refuses the request rather than letting the server pick the loser.
 - `VTXOReader` / `VTXODescriptor` / `SelectedVTXO` break the vtxo → round → wallet import cycle by providing wallet-level types that don't reference `vtxo.Descriptor` directly.
 - Per-subsystem logging via `build.LoggerFromContext` (no global mutable loggers).
+- **The wallet actor owns the backing-wallet sweep path.** Both the
+  boarding-timeout sweep (`SweepBoardingUTXOsRequest`) and the general
+  wallet sweep (`SweepWalletFundsRequest`) are handled by the wallet
+  actor, which serializes them. Both flows converge on
+  `submitSweepToConfirm` to hand the signed TRUC (v3) tx to the shared
+  `txconfirm` broadcaster. The broadcaster then owns rebroadcast and
+  confirmation tracking; the wallet holds the input leases until a
+  terminal notification arrives.
+- **General wallet sweeps are not persisted.** An interrupted
+  `SweepWalletFundsRequest` leaves no DB record; the operator re-runs
+  the sweep manually. This contrasts with boarding sweeps, which are
+  persisted to `BoardingSweepStore` for restart recovery.
+- **Fee rate cap is unconditional for general sweeps.**
+  `applyWalletSweepFeeCap` always caps the resolved rate: when no
+  operator max is configured it falls back to
+  `txconfirm.DefaultMaxFeeRateSatPerVByte` so a runaway explicit or
+  estimated rate cannot drain the wallet to miners. The cap is applied
+  after both explicit and estimated rate resolution.
+- **Sweep tx version must be TRUC (v3).** `walletSweepTxVersion` is
+  set to `arktx.TxVersion`; `CPFPBroadcaster.Submit` rejects any non-v3
+  parent with `ErrNonTRUCParent`. The general sweep carries no anchor
+  output and pays its own fee (direct broadcast path), but the version
+  gate still applies.
+- **Output integrity is verified before broadcast.** After PSBT
+  finalization, `verifyWalletSweepOutputsEqual` asserts the backend
+  signer did not alter any output value or script. A modified output
+  would redirect the sweep; the wallet fails closed rather than
+  broadcasting an unexpected tx.
 
 ## Deep Docs
 

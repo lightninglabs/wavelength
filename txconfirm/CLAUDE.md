@@ -17,7 +17,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - `TxBroadcasterActor` (`actor.go`) — message-driven orchestrator. Holds
   a txid-keyed tracked-tx map, runs a protofsm lifecycle per txid, and
   fans chainsource callbacks (confirmations, block epochs) into per-txid
-  transitions.
+  transitions. Also owns the single `feeBumpStateMachine` instance and
+  drives it via `driveFeeBump`.
 - `CPFPBroadcaster` (`broadcaster.go`) — actor-free helper for broadcast
   mechanics: direct submission for txs without anchors, CPFP child
   construction for anchor parents, fee estimation, script-aware child
@@ -55,6 +56,37 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - `Config.BroadcastFailureAlertThreshold` — consecutive no-mempool
   failures before the operator escalation fires (default 3). Time to
   first alert ≈ threshold × `FeeBumpIntervalBlocks` blocks.
+- `FanoutController` FSM (`fee_bump_fsm_types.go`,
+  `fee_bump_fsm_logic.go`) — `feeBumpStateMachine` wraps a
+  `protofsm.StateMachine` with two states:
+  - `feeBumpStateIdle` — resting state; on `feeBumpDemandsObserved`
+    checks the wallet for free supply, and if blocked demands remain
+    builds and broadcasts a fanout transaction via `buildFeeInputFanoutTx`
+    (free supply) or `buildReservedInputFanoutTx` (re-spends already-
+    reserved confirmed inputs). Transitions to `feeBumpStateFanoutPending`
+    and emits `feeBumpWatchFanout` for the actor to arm a conf watch.
+  - `feeBumpStateFanoutPending` — fanout is on-wire awaiting
+    confirmation. Rebroadcasts the same tx on `feeBumpDemandsObserved`
+    once `FeeBumpIntervalBlocks` have elapsed; a hard reject clears and
+    rebuilds via internal event. `feeBumpFanoutConfirmedEvent` promotes
+    predicted outputs to used fee inputs and emits `feeBumpUnwatchFanout`
+    + `feeBumpRetryParents`. `feeBumpParentEvicted` drops that parent's
+    assignments; when all assignments are gone the fanout is released.
+  - Transitions do their own wallet/broadcast IO via `feeBumpEnvironment`
+    (safe because the actor serializes all FSM events). Operational
+    failures are stashed on `feeBumpEnvironment.lastErr` rather than
+    returned from `ProcessEvent`, keeping the long-lived FSM alive across
+    transient fanout failures.
+- `feeBumpEnvironment` — execution context for fanout transitions:
+  holds a `*CPFPBroadcaster` reference (for shared `parentStates` and
+  wallet helpers) and `lastErr` (stashed per-turn failure).
+- `feeInputDemand` / `pendingFeeInputFanout` — demand record (parent
+  txid + min UTXO amount) and in-flight fanout state (txid, funded tx,
+  watch script, per-parent output assignments, last broadcast height).
+- `feeBumpWatchFanout` / `feeBumpUnwatchFanout` / `feeBumpRetryParents`
+  — outbox events the FSM emits for the actor to apply: register or tear
+  down a chainsource conf watch, and retry all stuck `Broadcasting`
+  parents once supply arrives.
 
 ## Relationships
 
@@ -63,18 +95,20 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   fee estimation, preflight), `wallet` (`Utxo`, `OutputLeaser`,
   `LockID`), `lib/tx/arktx` (`TxVersion` constant, `IsAnchorOutput`).
 - **Depended on by**: `unroll`, `btcwbackend` (fee-input selection
-  helper), `darepod`, `db`.
+  helper), `darepod`, `db`, `wallet` (general backing-wallet sweep
+  submits through the shared txconfirm broadcaster path).
 - **Sends → `chainsource`** (Ask): `BestHeightRequest`,
   `SubscribeBlocksRequest`, `RegisterConfRequest`,
   `UnregisterConfRequest`, `BroadcastTxRequest`,
   `SubmitPackageRequest`, `TestMempoolAcceptRequest`,
   `FeeEstimateRequest`.
 - **Sends → `Wallet`** (direct): `ListUnspent`, `NewWalletPkScript`,
-  `FinalizePsbt`, `LeaseOutput`, `ReleaseOutput`.
+  `FinalizePsbt`, `FundPsbt`, `LeaseOutput`, `ReleaseOutput`.
 - **Sends → caller subscriber** (Tell): `TxConfirmed`, `TxFailed`.
 - **Receives ← `chainsource`** (mapped Tell refs): `BlockEpoch` →
   `blockEpochObservedMsg`; `ConfirmationEvent` →
-  `confirmationObservedMsg`.
+  `confirmationObservedMsg` (also used for fanout confirmation, matched
+  against the in-flight fanout txid by `handleFanoutConfirmed`).
 - **Receives ← API**: `EnsureConfirmedReq`, `CancelInterestReq`.
 
 ## Invariants
@@ -140,6 +174,39 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   wallet leases), and deletes the tracked-tx entry. Late callers
   after eviction re-register from scratch and receive an immediate
   `TxConfirmed` via the normal path if the tx is already on chain.
+  Terminal eviction also fires a `feeBumpParentEvicted` event into
+  the fanout FSM so the evicted parent's output assignments are dropped;
+  when no parents remain, the in-flight fanout is released and the FSM
+  returns to idle.
+- **Single long-lived fanout FSM**: `TxBroadcasterActor` holds one
+  `feeBumpStateMachine` instance for its entire lifetime. The FSM is
+  lazily started on the first `driveFeeBump` call (via
+  `ensureFeeBumpStarted`) and cycles between `feeBumpStateIdle` and
+  `feeBumpStateFanoutPending` for subsequent demand/confirmation events.
+  At most one fanout tx is ever in flight; new demand observations while
+  a fanout is pending rebroadcast the existing tx rather than building a
+  second one.
+- **Fanout FSM survives operational failures**: transition errors (a
+  rejected broadcast, a wallet fund failure, a rewritten fanout output)
+  are stashed on `feeBumpEnvironment.lastErr` rather than returned from
+  `ProcessEvent`. `protofsm` tears the FSM down on a `ProcessEvent`
+  error, which would destroy the long-lived single instance; stashing
+  and self-looping keeps the machine alive for the next demand
+  observation. The actor reads the stashed error back via
+  `env.takeLastErr` after each `AskEvent` returns and surfaces it as a
+  warning log.
+- **No-free-supply fallback**: when the wallet has no unencumbered
+  confirmed UTXOs but the blocked parents already hold confirmed reserved
+  fee inputs, the idle state falls back to `buildReservedInputFanoutTx`,
+  which re-spends those inputs to mint new right-sized fanout outputs.
+  This is the TRUC package RBF path: the new child double-spends the
+  previous child's fee input and clears relay policy via the replacement
+  fee floor.
+- **Fanout output assignment is value-matched**: `fanoutWatchScript` and
+  `reservePredictedFanoutOutputs` locate each demand's output by
+  comparing `txOut.Value == demand.minAmount`. The wallet signer must not
+  reorder or alter the leading fanout outputs; `verifyFanoutOutputs`
+  asserts this before the FSM transitions to fanout-pending.
 
 ## Deep Docs
 

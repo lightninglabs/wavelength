@@ -47,16 +47,33 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
   sender pubkey, vHTLC config, optional indexed outpoint/amount).
 - `OutSwapHtlcNotification` — wraps a mailbox `OutSwapHtlcEvent`
   with `AckCursor` and `Ack`.
+- `OutSwapHtlcEvent` — funded HTLC event: payment hash, amount, onion,
+  vHTLC config, and `Parts []OutSwapHtlcPart` for multi-part payments.
+- `OutSwapHtlcPart` — one HTLC shard of an MPP out-swap: `AmountMsat`
+  and `OnionBlob`. Non-empty when the payer splits across multiple HTLCs.
 - `IncomingVHTLCEventReceiver` — interface for receivers that
   handle both Lightning-backed and same-Ark vHTLC events; implemented
   by `MailboxOutSwapEventReceiver`.
+- `InSwapQuote` — non-mutating server quote for one Ark-to-Lightning pay:
+  `PaymentHash`, `InvoiceAmountSat`, `AmountSat` (total VTXO lock amount),
+  `FeeSat`, `Expiry`, `SettlementType`, `ExceedsMaxFee`. Returned by
+  `SwapClient.QuotePayViaLightning` and validated against the original
+  invoice before being returned to the caller.
+- `SwapClient.QuotePayViaLightning(ctx, invoice, maxFeeSat)` — previews a
+  pay-side in-swap without creating durable swap state or starting the FSM.
+  Calls `SwapServerConn.QuoteInSwap` then validates the quote is bound to
+  the caller's invoice.
 - `SettlementType` — `SettlementTypeLightning`, `SettlementTypeInArk`
-  (returned in `InSwapConfig` identifying how the server bridges
-  payment).
+  (returned in `InSwapConfig` and `InSwapQuote` identifying how the server
+  bridges payment).
 - `Store` — isolated SQLite persistence. Runs its own migration table
   (`swap_client_schema_migrations`) separate from the main daemon DB.
-- `SwapServerConn` / `GRPCSwapServerConn` — remote swap-server gRPC
-  (`RequestChannelID`, `CreateInSwap`).
+- `SwapServerConn` — interface to the swap server; methods:
+  `RequestChannelID`, `AcknowledgeOutSwapHTLC`, `CreateInSwap`,
+  `QuoteInSwap`, `AuthorizeInSwapRefund`, `Close`.
+- `GRPCSwapServerConn` — concrete `SwapServerConn` backed by the generated
+  `swaprpc` stubs. Constructed via `NewGRPCSwapServerConn(grpc.ClientConnInterface)`
+  or `NewRESTSwapServerConn(addr, opts...)` for grpc-gateway HTTP/JSON.
 - `DaemonConn` — wallet operations (OOR sends, VTXO lookups, key
   queries, receive-auth signing/ECDH) provided by the Ark daemon.
   Includes `ReceiveAuthKey`, `SignReceiveAuthMessage[Compact]`, and
@@ -119,6 +136,12 @@ result into an `IncomingVHTLCNotification`.
   checkpoint PSBTs (final witness, condition witness, taproot spend
   sig) to tolerate indexer-version differences. Only accepted when
   `SHA256(preimage) == paymentHash`.
+- MPP out-swap events carry per-shard onion blobs in `Parts`. Each shard
+  must contain an MPP record in its final-hop payload and the shards'
+  `totalAmount` fields must agree before the session accepts the event.
+- `QuotePayViaLightning` is non-mutating; it creates no swap state on
+  either the client or server. Always validate the returned `InSwapQuote`
+  hash and amount match the decoded invoice before presenting to the user.
 - Mailbox `Ack` must be called only after the caller has validated
   and durably persisted the event. `AckCursor` is `eventSeq + 1`.
 - `ReceiveAuthKey` signing/ECDH is always delegated to the daemon;
@@ -129,5 +152,5 @@ result into an `IncomingVHTLCNotification`.
 ## Deep Docs
 
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.
-</content>
+
 </invoke>

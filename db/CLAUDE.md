@@ -13,10 +13,22 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 - `BatchedTx[Q]` — generic interface for atomic transactions (`ExecTx`,
   `Backend`).
+- `InternalKeyQuerier` — minimal interface (`UpsertInternalKey`,
+  `GetInternalKeyByID`) satisfied by `*sqlc.Queries` and every consumer
+  store that embeds those two methods. Enables register-then-reference in
+  the same transaction.
+- `RegisterInternalKeyTx` / `InternalKeyDescByIDTx` — package-level
+  helpers for the shared `internal_keys` registry. `RegisterInternalKeyTx`
+  idempotently upserts a `keychain.KeyDescriptor` and returns its surrogate
+  `id`; `InternalKeyDescByIDTx` reconstructs the descriptor from a `*_key_id`
+  FK on load. Both operate within the caller's transaction/query context.
+  `ErrInternalKeyPubKeyMissing` / `ErrInternalKeyNotFound` are the sentinel
+  errors.
 - `BoardingStore` / `BoardingWalletStore` — interface + concrete
   sqlc-backed store for boarding addresses, intents, and the aggregate
   sweep lifecycle (consumed by `wallet.BoardingStore`). Sweep ops:
   `Create/MarkPublished/MarkFailed/List/ListPending/MarkInputSpent`.
+  Boarding intents reference their client key via an `internal_keys` FK.
 - `NewBoardingSweep` / `BoardingSweepRecord` /
   `BoardingSweepInputRecord` — control-plane domain types. Sweep
   statuses: `pending`, `published`, `confirmed`, `external_resolved`,
@@ -26,13 +38,33 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   concrete `BatchedTx[RoundStore]`-backed store
   (`InsertRound`/`Get`/`GetByCommitmentTxid`/`ListActive`/`ListByStatus`/
   `UpdateStatus`/`Finalize` plus boarding-intent / VTXO-request /
-  client-tree queries).
+  client-tree queries). Round VTXO request keys reference `internal_keys`.
 - `RoundSummary` / `VTXOSummary` — lightweight projections for
   paginated listing (avoids deserializing full trees).
 - `VTXOPersistenceStore` — VTXO descriptor store
   (`InsertClientVTXO`, `FetchByOutpoint`). Persists `ChainDepth`.
+  VTXO client keys reference `internal_keys`.
 - `OORArtifactStore`, `OwnedReceiveScriptStore` — OOR session state
-  and locally owned receive-script metadata.
+  and locally owned receive-script metadata. Owned receive-script keys
+  reference `internal_keys`.
+- `OORSessionRegistryStoreDB` — persistence layer for the OOR per-session
+  actor model. Each row is the full durable state for one OOR session: the
+  per-session actor reads and writes it directly inside its
+  Read/Stage/Commit phases and does NOT use the generic `fsm_checkpoints`
+  blob. Methods: `UpsertSession`, `GetSession`,
+  `LookupActiveSessionByIdempotencyKey`, `ListNonTerminal` (boot-time
+  restore scan), `ListSessions` (diagnostic listing).
+  Constructor: `NewOORSessionRegistryStore(store, clk)`.
+- `OORSessionRegistryRecord` — one session's full durable state:
+  `SessionID`, `ActorID`, `Direction`, `Phase`, `IdempotencyKey`,
+  `Status`, `LastError`, `SnapshotData`, `SnapshotVersion`,
+  `CreatedAt`, `UpdatedAt`.
+- `OORSessionDirection` — `OORSessionDirectionOutgoing(1)` /
+  `OORSessionDirectionIncoming(2)`. Append-only.
+- `OORSessionStatus` — `OORSessionStatusPending(0)` /
+  `OORSessionStatusCompleted(1)` / `OORSessionStatusFailed(2)`.
+  `IsTerminal()` helper. Append-only. `ErrOORSessionNotFound` is the
+  sentinel error for missing rows.
 - `LedgerStoreDB` — implements `ledger.LedgerStore`. Wraps
   `sqlc.InsertClientLedgerEntry` (ON CONFLICT DO NOTHING for replay
   idempotency). Joins the outer actor transaction via
@@ -123,10 +155,28 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   `(outpoint_hash, outpoint_index)` WHERE status IN
   `('pending','published')`) prevents two concurrent sweeps from
   racing on the same boarding UTXO.
+- `internal_keys` rows are never deleted. The UNIQUE constraint on
+  `(pubkey, key_family, key_index)` makes registration idempotent;
+  `RegisterInternalKeyTx` uses a single UPSERT-RETURNING to close
+  the read-then-insert race. Consumer tables carry a `*_key_id`
+  FK so the triple never needs to be re-spelled inline. Unlike the
+  server registry there is no role concept: the canonical identity
+  is the full triple.
+- `oor_session_registry` rows are written by the OOR registry actor
+  and per-session actors exclusively. The partial UNIQUE index on
+  `idempotency_key WHERE status != 2` enforces the at-most-one-live
+  dedup invariant; failed rows drop out so a keyed retry admits a
+  fresh session.
 - Default retry logic: 10 retries with exponential backoff (40ms →
   3s cap).
-- SQLite `busy_timeout = 30 000 ms` under WAL mode tolerates
-  multi-actor contention bursts.
+- SQLite durability: `busy_timeout = 30 000 ms` under WAL mode
+  tolerates multi-actor contention bursts. The `synchronous` pragma
+  defaults to `normal` (omits per-commit WAL fsync; safe given the
+  at-least-once, idempotent outbox/OOR stack); configurable via
+  `db.sqlite.synchronous` (`full`/`normal`/`off`). The `fullfsync`
+  pragma (macOS) defaults to enabled; disable via
+  `db.sqlite.nofullfsync` for write-heavy deployments that accept
+  weaker flush guarantees.
 - `ledger_entries.entry_id` and `wallet_utxo_log.entry_id` use
   `INTEGER PRIMARY KEY AUTOINCREMENT` to prevent rowid reuse after
   deletion, preserving append-only ordering.
@@ -147,6 +197,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   collapsing on `(round_id, event_type, debit_account, credit_account)`.
   Renumbered from 000019 to land after `000019_oor_session_registry`,
   which merged to main while this work was in review.
+- `000019_oor_session_registry` — adds `oor_session_registry` with
+  `session_id` PK, `actor_id`, `direction`, `phase`, `idempotency_key`,
+  `status`, `last_error`, `snapshot_data`, `snapshot_version`,
+  `created_at`, `updated_at`. Two indexes: `(status, created_at)`
+  for the boot-time non-terminal restore scan; partial UNIQUE on
+  `idempotency_key WHERE idempotency_key IS NOT NULL AND status != 2`
+  for outgoing dedup (failed rows drop out so a keyed retry admits a
+  fresh session).
 - `000018_pending_intents` — generalizes the Board-only
   `pending_board_requests` outbox into a supertype/subtype set:
   `pending_intent_kinds` (enum table), `pending_intents` (header: 32-byte
@@ -203,6 +261,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 - `000006_fee_accounting` — seeds the client chart of accounts and
   `ledger_entries` with three partial unique indexes for idempotent
   replay.
+- `000002_boarding_tables` — also creates `internal_keys` (before
+  `boarding_addresses`, its first referencer). `internal_keys` is the
+  shared registry for all client `keychain.KeyDescriptor` values; later
+  migrations (`000003_round_tables`, `000004_oor_artifact_store`)
+  reference it from round VTXO requests and OOR owned receive scripts.
+  BIGINT columns for `key_family`/`key_index` avoid sign-extension
+  corruption on Postgres for uint32 locator values above MaxInt32.
 
 ## Deep Docs
 

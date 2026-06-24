@@ -17,7 +17,9 @@ background ingress polling with event routing.
 - `SignMailboxAuth` / `VerifyMailboxAuth` / `ParseMailboxPubKey` — Schnorr sign/verify helpers for pubkey-derived mailbox identity.
 - `AuthHeaderKey` — Envelope header key (`x-mailbox-auth-sig`) for the Schnorr auth signature.
 - `GenerateClientTLSCert` — Creates an ephemeral P-256 mTLS client cert with the secp256k1 identity pubkey hex as Subject CN. Returns error on nil key.
-- `AckState` — Four-cursor watermark state machine (PullCursor, DispatchCommittedTo, AckTarget, AckCommittedTo).
+- `AckState` — Four-cursor watermark state machine (PullCursor, DispatchCommittedTo, AckTarget, AckCommittedTo). The ingress loop tracks an `ackDirty` flag on the transactional path: the ack watermark advance is folded into the next dispatch commit rather than paying its own write, and is flushed on an idle long-poll.
+- `runFoldedDispatch` — On stores that implement `actor.TxAwareDeliveryStore`, the ingress loop calls this instead of the legacy `dispatchBatch`. It splits the batch into waiter-backed response envelopes (delivered outside the transaction, at-most-once) and durable dispatches. Any response whose waiter vanished since the split becomes a straggler that folds back into the durable batch. All durable enqueues and the advanced `AckState` checkpoint commit in a single `ExecTx` call — k envelopes cost one commit instead of k+1, and the cursor can never advance ahead of the enqueues (a rolled-back transaction leaves the cursor and the enqueues both undone). Waiter delivery is pre-transaction so RPC callers blocked on in-memory futures are not gated on the SQLite write lock.
+- `splitIngressEnvelopes` / `mergeEnvelopesByEventSeq` — helpers used by `runFoldedDispatch` to split response vs. durable envelopes by the presence of a live response waiter, and to merge straggler envelopes back in event_seq order.
 - `SendUnaryRequest` — Durable typed unary request that becomes a real unary RPC after commit. The response arrives via KIND_RESPONSE and, if no in-memory waiter exists, falls back to durable route dispatch via the EventRouter.
 - `DurableUnaryRequestBuilder` — Interface for proof-gated request-body construction. Implementations build the actual proto request (e.g., with signed proofs) at send time, not at persist time. The interface is provided via `ConnectorConfig.DurableUnaryBuilder`.
 - `DurableUnaryQuery` — Interface implemented by transport-native durable query messages that persist raw query parameters (not a full proto). The `ServerConnectionActor` matches any `DurableUnaryQuery` generically in its `Receive` loop and calls `buildDurableUnary` to construct a `SendUnaryRequest` on the fly, using `BuildBody`, `QueryCorrelationID`, `QueryMsgID`, `QueryIdempotencyKey`, and `ServiceMethod`.
@@ -49,6 +51,23 @@ background ingress polling with event routing.
 
 ## Invariants
 
+- **Ingress dispatch and checkpoint fold into one transaction.**
+  When the delivery store implements `actor.TxAwareDeliveryStore`,
+  `runFoldedDispatch` folds all durable enqueues and the `AckState`
+  checkpoint into a single `ExecTx` commit. The cursor can never advance
+  ahead of the enqueues: a rolled-back transaction leaves both undone,
+  so on restart the batch is re-pulled and re-dispatched intact (ingress
+  is at-least-once; idempotent local dispatch via the durable mailbox
+  dedup handles the duplicate). Stores that do not implement
+  `TxAwareDeliveryStore` fall through to the legacy `dispatchBatch` +
+  `saveCheckpoint` path.
+- **Ingress cursor no-loss contract.** The `ackDirty` flag tracks when
+  the ack watermark has advanced in-memory but not yet been flushed to
+  the checkpoint store. On a successful batch commit the flag is cleared;
+  on an idle long-poll response the flag triggers a checkpoint flush so
+  a restart after a quiet period does not redundantly re-ack an entire
+  batch. Losing the dirty flag to a crash only causes one extra idempotent
+  `AckUpTo` on restart, not a re-delivery of already-committed messages.
 - Ack watermark only advances AFTER durable local dispatch commit (prevents message loss on crash).
 - Unary RPC responses use in-memory registry first; if no waiter exists (crash replay), the ingress falls back to durable EventRouter dispatch. The ResponseRegistry returns a tri-state delivery result (waiter/buffered/dropped) so the ingress knows whether to route durably.
 - `SendClientEventRequest` auto-derives `Service`/`Method` from `Message.ServiceMethod()` when callers leave them empty, preventing silent drops.

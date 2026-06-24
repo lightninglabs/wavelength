@@ -98,14 +98,22 @@ state transitions and validation rules live under [Invariants](#invariants).
   recoverably and emits `ReleaseForfeitReservation` so forfeit-reserved
   inputs are not stranded — darepo-client#653). Timeout outbox messages
   (`StartTimeoutReq`/`CancelTimeoutReq`) key on `RoundKeyStr` so temp-keyed
-  rounds (pre-admission) can be timed.
+  rounds (pre-admission) can be timed. The forfeit-collection
+  `StartTimeoutReq` is emitted **first** in the outbox (before any
+  `ForfeitRequestToVTXO` messages) so the timeout is scheduled even if a
+  per-VTXO `Tell` fails mid-outbox and the actor aborts processing; without
+  this the round would wedge in `ForfeitSignaturesCollectingState` forever
+  waiting for signatures that will never arrive.
 - `MaxQuoteEntriesPerClient = 1024` (`from_proto.go`) — bounds quote
   entry decoding to reject malformed envelopes before allocating slices.
 - `FromProto` methods on `JoinRoundQuoteReceived`, `RoundJoined`,
   `CommitmentTxBuilt`, `AwaitingBoardingSigs`, `NoncesAggregated`,
   `OperatorSigned`, `BoardingFailed`, `JoinRoundRequest` — all
   satisfy the private `inboundServerMessage` interface
-  (compile-time-asserted).
+  (compile-time-asserted). `CommitmentTxBuilt.FromProto` deserializes
+  from `roundpb.ClientBatchInfo` and populates the per-round signing
+  keys (`TreeCosignKey`, `ConnectorOperatorKey`, `SweepKey`,
+  `SweepDelay`, `ForfeitKey`) when the server includes them.
 - `RoundClientConfig.LedgerSink` — optional `fn.Option[ledger.Sink]`
   plumbed onto the round actor; `emitVTXOsReceived` and `emitRoundFee`
   fire-and-forget messages when `fn.Some`.
@@ -155,6 +163,17 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 - Tree signatures are validated **before** boarding input signatures
   are released (security checkpoint at `InputSigSent`).
+- VTXO trees are bound to the commitment tx (`validateVTXOTreeBinding`)
+  in `CommitmentTxReceivedState` before any MuSig2 signing begins. For
+  each `(outputIdx, tree)` pair the check asserts: tree's
+  `BatchOutpoint.Hash` equals this commitment tx's txid; `outputIdx`
+  agrees with `BatchOutpoint.Index`; the index is in range; and the
+  committed output byte-matches the tree's `BatchOutput` (including a
+  taproot script re-derivation from the declared cosigner set and sweep
+  tapscript root). A self-consistent tree rooted at the wrong output
+  would pass `ValidatePath`/`ValidateAnchors` but produce VTXOs whose
+  outpoints are unrecoverable once the real commitment tx confirms
+  (darepo-client#680).
 - Forfeit signatures are collected **after** VTXO tree signing
   completes — clients only forfeit old VTXOs after verifying the new
   VTXOs are properly signed.
@@ -164,6 +183,22 @@ state transitions and validation rules live under [Invariants](#invariants).
 - Round state is checkpointed atomically after tree validation — a
   crash before checkpoint means the client has no record of sent
   signatures.
+- Forfeit reservations are released on any pre-signing failure via
+  `releaseForfeitsOnFailure`, which wraps `ProcessEvent` for every state
+  from `PendingRoundAssembly` through `ForfeitSignaturesCollectingState`.
+  It prepends `ReleaseForfeitReservation` to the outbox of any transition
+  into `ClientFailedState`, and synthesizes a failure transition when the
+  inner handler returns a raw Go error with active forfeits (so the engine
+  never tears down the FSM silently). Releasing is safe in all these states
+  because `SubmitVTXOForfeitSigsToServer` is only emitted on the success
+  path out of `ForfeitSignaturesCollectingState`; the server holds no
+  signature and cannot broadcast a forfeit before that point.
+- `confirmationWatchScript` selects the lowest-indexed commitment-tx output
+  whose key appears in `VTXOTreePaths` for the `RegisterConfirmationRequest`
+  emitted at checkpoint time. Because `validateVTXOTreeBinding` has already
+  proven every `VTXOTreePaths` key equals its tree's `BatchOutpoint.Index`
+  and is in range, this watches the output that actually receives the
+  client's funds instead of unconditionally watching output 0.
 - Primary FSM handles interactive phases (through `InputSigSent`); a
   dedicated FSM per round handles confirmation monitoring.
 - The round actor does **not** mark VTXOs as `PendingForfeit` — the
@@ -225,6 +260,17 @@ state transitions and validation rules live under [Invariants](#invariants).
 - `ConnectorLeafInfo.VTXOAmount` is populated from local VTXO state
   (not from the server's proto), so the forfeit penalty output equals
   the canonical local value rather than a server-supplied one.
+- **Per-round signing keys** (`TreeCosignKey`, `ConnectorOperatorKey`,
+  `SweepKey`, `SweepDelay`, `ForfeitKey`) are delivered inside
+  `roundpb.ClientBatchInfo` and carried on `CommitmentTxBuilt` /
+  `CommitmentTxReceivedState`. The FSM uses these instead of the global
+  operator keys: `treeCosignKey` for `ValidatePath` on each VTXO tree,
+  `connectorOperatorKey` for `validateConnectorAncestry`, `SweepKey` and
+  `SweepDelay` for tree construction and batch-expiry derivation, and
+  `ForfeitKey` to derive the BIP-86 forfeit penalty script. When any
+  field is nil (older server), the FSM falls back to
+  `env.OperatorTerms.PubKey` / the global GetInfo values. This lets
+  clients handle operator-key rotations without requiring a re-sync.
 - **Connector ancestry is proven before any forfeit is signed**
   (`validateConnectorAncestry`, darepo-client#681). In
   `CommitmentTxReceivedState`, after VTXO-tree validation, each assigned

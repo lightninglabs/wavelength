@@ -27,6 +27,7 @@ Seeded by `000006_fee_accounting.up.sql`:
   negative on every boarding.
 - `wallet_clearing` (asset) — temporary clearing account for
   wallet sweep inputs, returns, chain cost, and external transfers.
+  Exported as `AccountWalletClearing`.
 
 `transfers_in` / `transfers_out` are separate accounts so gross send and
 gross receive flows stay visible independently (tax reporting needs
@@ -67,7 +68,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/ledge
   (outpoint, amount, event, block height, classification). Implemented
   by `db.UTXOAuditStoreDB`.
 - `LedgerMsg` / `LedgerResp` — mailbox constraint types.
-- `FeePaidMsg` — boarding/refresh fee payments.
+- `SweepInput` — one boarding UTXO consumed by a confirmed sweep,
+  carried inside `BoardingSweepConfirmedMsg`. Fields: `Outpoint
+  wire.OutPoint` and `AmountSat int64` (must be positive). The amount
+  is the wallet-persisted boarding UTXO value used for both the audit
+  row and the `wallet_clearing` debit leg.
+- `FeePaidMsg` — boarding/refresh/sweep-fee payments. `FeeTypeOnchainSweep`
+  now credits `wallet_clearing` (not `wallet_balance`); its
+  `IdempotencyKey` must be exactly 32 bytes (the sweep txid).
 - `VTXOReceivedMsg` — incoming VTXOs. `Source` must be one of
   `SourceRoundBoarding` (own wallet → VTXO; offsets wallet_balance),
   `SourceRoundRefresh` (refresh / directed-send self-change; offsets

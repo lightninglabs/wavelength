@@ -25,6 +25,12 @@ interface, and per-service factory functions so callers are channel-agnostic
 - Per-service client types with `New*ServiceClient(addr, ...Option)` factories:
   `ArkServiceClient`, `DaemonServiceClient`, `MailboxServiceClient`,
   `SwapClientServiceClient`, `SwapServiceClient`, `WalletServiceClient`.
+  Notable non-streaming methods added over the generated gRPC stubs:
+  - `SwapServiceClient`: `QuoteInSwap` (preview Ark→Lightning swap),
+    `AcknowledgeOutSwapHtlc` (ack durable out-swap HTLC event).
+  - `SwapClientServiceClient`: `QuotePay` (preview daemon pay swap).
+  - `WalletServiceClient`: `GetExitPlan` (preview unilateral-exit funding
+    readiness), `SweepWallet` (preview or broadcast backing-wallet sweep).
 
 ## Relationships
 

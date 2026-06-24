@@ -64,6 +64,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   populated by current behavior. Status strings are the wrapper-owned
   lowercase set
   (`pending`/`materializing`/`csv_pending`/`sweeping`/`completed`/`failed`/`unspecified`).
+- `GetExitPlanRequest` / `GetExitPlanResult` / `ExitPlanEntry` — exit plan
+  preview DTOs. `GetExitPlanRequest` carries `Outpoints []string` and
+  optional `ConfTarget`. `ExitPlanEntry` describes one previewed VTXO:
+  `FundingAddress`, `RequiredFeeUTXOCount`, `UsableFeeUTXOCount`,
+  `RecommendedUTXOAmountSat`, `RecommendedTotalFundingSat`,
+  `FundingShortfallSat`, `CanStart`, existing exit-job fields, and `Err`
+  for per-outpoint failures. `GetExitPlanResult` aggregates the per-VTXO
+  plans with `CanStart`, `TotalFundingShortfallSat`, and
+  `TotalRecommendedFundingSat`.
+- `SweepWalletRequest` / `SweepWalletResult` / `WalletSweepInput` — backing
+  wallet sweep DTOs. `SweepWalletRequest` carries `DestinationAddress`,
+  `Broadcast bool`, `FeeRateSatPerVByte`, and `ConfTarget`. `WalletSweepInput`
+  is one selected UTXO (`Outpoint`, `AmountSat`). `SweepWalletResult` returns
+  the selected `Inputs`, fee summary, `CanBroadcast`, optional `Txid`, and
+  `FailureReason`.
 - `ErrWalletRPCUnavailable` — sentinel returned by every wallet method
   on builds without the `walletdkrpc` tag.
 - `ErrSwapRuntimeUnavailable` — back-compat alias for
@@ -83,6 +98,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 | `List` | Unified history view (Activity / VTXOs / Onchain) as a tagged-union `ListResult`. |
 | `Exit` | Trigger cooperative leave or unilateral unroll for a VTXO. |
 | `ExitStatus` | Query the phase of an exit job. |
+| `GetExitPlan` | Preview backing-wallet readiness for unilateral exit across a slice of VTXOs; returns per-VTXO funding requirements without starting any job. |
+| `SweepWallet` | Preview or broadcast a sweep of confirmed backing-wallet funds to a caller-supplied address. |
 | `Status` | Wallet readiness, balance, pending-entry count. |
 | `Subscribe` | Stream wallet activity (`Entry`) updates. |
 | `Stop` / `Close` | Shut down the embedded daemon, release the private transport. |
@@ -142,7 +159,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   `WalletVTXO.Status` / `OnchainTx.Kind` / `ExitJobStatus` are
   wrapper-owned lowercase strings (not proto enums). Projection lives
   in `convert.go`, intentionally decoupled from proto enum
-  renumbering.
+  renumbering. Exit-plan and sweep projections (`exitPlanFromProto`,
+  `sweepWalletFromProto`) also live there.
+- `GetExitPlan` accepts a slice of outpoints; `len(Outpoints) == 0` is
+  rejected at the wrapper boundary before the RPC is attempted.
+- `SweepWallet` rejects an empty `DestinationAddress` at the wrapper
+  boundary. `Broadcast: false` produces a preview-only result; set
+  `Broadcast: true` to actually broadcast the sweep transaction.
 - `ListResult` is a discriminated union: read the variant named by
   `View` and treat the others as `nil`. Exhaustiveness is not
   enforced at compile time — switch on `View` rather than chaining
@@ -173,5 +196,5 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 - [swapclientserver/CLAUDE.md](../../swapclientserver/CLAUDE.md) —
   Daemon-side swap subserver (`-tags swapruntime`).
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.
-</content>
+
 </invoke>

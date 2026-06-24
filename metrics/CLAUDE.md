@@ -40,6 +40,17 @@ Use `go doc metrics.<Symbol>` for signatures.
   store, the wallet backend, the chain backend, and the live OOR/round actors.
   The `*_by_state`/`*_by_status` gauges read only live actors (bounded);
   lifetime totals live in the `_total` counters.
+- **`ServerConnectionUp`** / **`ServerSyncTimestamp`** — operator-connection
+  gauges set directly (not via the actor) by `darepod.monitorOperatorConnection`,
+  a ticker-based watcher that polls the direct gRPC connection's transport state
+  every 15 s. `ServerConnectionUp` is 1 while the connection is in the `Ready`
+  transport state and 0 otherwise; `ServerSyncTimestamp` is refreshed on each
+  poll that sees `Ready`. On daemon shutdown the watcher sets
+  `ServerConnectionUp` to 0 so a clean stop does not leave a stale 1.
+- **`BackgroundTaskErrorsTotal`** — counter vec labelled by `task`. Incremented
+  by `MetricsActor` when it receives a `BackgroundTaskErrorMsg`. Currently
+  emitted by `wallet` from the boarding-sweep watcher; the `task` label names
+  the failing background task (e.g. `"boarding_sweep_watcher"`).
 - **`Server`** / **`ServerConfig`** — opt-in HTTP scrape endpoint. Disabled
   unless `ListenAddr` is set.
 - **`GRPCClientMetrics`** — shared

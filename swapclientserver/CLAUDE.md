@@ -16,7 +16,8 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   not per-RPC), the process-local `active` worker map, and the `subscribers`
   map for `SubscribeSwaps` streaming.
 - `swapRuntimeClient` — Narrow interface over `sdk/swaps.SwapClient` that the
-  subserver uses for all RPC handlers and worker restarts. Methods: `StartPayViaLightning`,
+  subserver uses for all RPC handlers and worker restarts. Methods:
+  `QuotePayViaLightning`, `StartPayViaLightning`,
   `StartReceiveViaLightning`, `ResumePayViaLightning`,
   `ResumeReceiveViaLightning`, `GetSwapSummary`, `ListSwapSummaries`. Keeps
   the subserver unit-testable without running real swap FSMs.
@@ -43,6 +44,7 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 
 | RPC | Description |
 |-----|-------------|
+| `QuotePay` | Preview a pay swap fee and route without persisting state or starting a worker |
 | `StartPay` | Persist a pay swap, start or reuse its daemon worker, return summary |
 | `StartReceive` | Persist a receive swap, start or reuse its daemon worker, return invoice + summary |
 | `ResumeSwap` | Manual wake-up for a persisted swap (idempotent if worker already active) |
@@ -92,6 +94,16 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   receiver was previously installed. `Register` therefore installs the
   mailbox receiver immediately after `NewSwapClientWithStore`, before
   `resumePending` revives persisted sessions.
+- Minimum swap amount preflights (`receiveMinAmount`, `payMinAmount`) prefer
+  `ServerInfo.MinVTXOAmountSat` when the operator advertises it; they fall
+  back to `ServerInfo.DustLimit` for older daemons. Both guards run before
+  any SDK call so the daemon's `SendOOR` dust check is never reached with an
+  amount that the operator would reject.
+- `QuotePay` runs the same amount preflight as `StartPay` but creates no
+  durable state and starts no worker. Callers use it for fee previews before
+  committing to a swap. The live-operator-key wrapper (`liveOperatorDaemonConn`)
+  bypasses the cached `GetInfo` snapshot when constructing new vHTLC policies
+  so operator-key rotations are visible before OOR funding is submitted.
 
 ## Deep Docs
 

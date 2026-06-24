@@ -18,9 +18,15 @@ actor. See [docs/oor_subsystem.md](../docs/oor_subsystem.md) for the full design
 
 - `OORSessionActor` / `sessionBehavior` — one durable actor per session on the
   Read/Commit execution path. The FSM emits outbox events as before, but the
-  actor handles them itself in one shared `driveOutbox` switch (sign inline,
-  enqueue cross-actor transport to serverconn, materialize incoming VTXOs,
-  schedule retries) rather than routing them through an `OutboxHandler`.
+  actor handles them itself via a two-layer outbox dispatcher: `driveOutbox`
+  (top-level entry point) calls `driveOutboxEvents` (the shared dispatch switch)
+  and classifies any returned error as deterministic or transient —
+  a `*terminalOutboxError` is converted into a terminal `FailEvent` so the
+  turn commits and acks instead of rolling back into a doomed retry loop; any
+  other error returns as-is for framework redelivery. Local effects (sign
+  inline, schedule retries) run in `driveOutboxEvents`; cross-actor transport
+  events are collected into `pendingTransport` and durably enqueued to
+  serverconn by `commitAck`.
 - `OORRegistryActor` — thin coordinator registered under the OOR service key,
   with a **durable inbound mailbox** (Read/Stage/Commit path, mailbox id
   `oor-client`): a server-push event is persisted before the ingress loop acks
@@ -70,7 +76,17 @@ per-session durable actor's turn.
   (incoming metadata query filtering, VTXO materialization). Wired as the
   `IncomingHandler` on both the session actor and the registry; its writes
   join the turn transaction via the request context. Every other outbox
-  event is handled inline by the session actor's own `driveOutbox` switch.
+  event is handled inline by the session actor's own `driveOutboxEvents` switch.
+- `terminalOutboxError` / `terminalOutboxErrorf` — internal marker type for
+  deterministic outbox failures: errors that depend only on persisted state or
+  operator-supplied input and will fail identically on every redelivery. The
+  top-level `driveOutbox` inspects the error chain with `errors.As`; on a hit
+  it calls `failTerminal` to drive a `FailEvent`, committing a Failed snapshot
+  and acking the message. Transient failures (busy DB writer, unavailable peer)
+  must be returned plain so the framework redelivers. Callers inside a commit
+  transaction (e.g. `materializeIncoming`) use `driveOutboxEvents` directly so
+  a deterministic error propagates up to the single classifier rather than
+  failing the FSM mid-commit.
 - `SignArkPSBT` — signs Ark PSBT inputs on the checkpoint 2-of-2 collab
   leaf using `MultiPrevOutFetcher` for BIP-341 sighashes across
   multi-input transfers. Signing runs inline on the session actor's turn;
@@ -271,6 +287,17 @@ per-session durable actor's turn.
 - Point-of-no-return: server co-signing the checkpoint
   transaction(s). After that, client must resume with byte-identical
   co-signed PSBTs (deterministic construction).
+- Deterministic vs. transient outbox error classification: `driveOutbox` is
+  the sole top-level entry point for dispatch turns. Errors that are invariant
+  over reruns (operator-supplied recipient set that owns no wallet outputs;
+  an FSM transport event that does not implement `serverconn.ServerMessage`)
+  are wrapped with `terminalOutboxErrorf` at the site where they are detected
+  and converted to a terminal `FailEvent` by `driveOutbox`. Transient errors
+  (store unavailable, signing failure) are returned plain and roll the turn
+  back. `continueWith` and the commit-path `materializeIncoming` use
+  `driveOutboxEvents` directly so a deterministic error propagates cleanly to
+  the single classifier; failing the FSM from inside the recursion or from
+  mid-commit would leave the snapshot partially advanced.
 - Transport events (submit / finalize / ack) are delivered directly
   into the `serverconn` durable actor during the commit transaction:
   serverconn is durable, so each `Tell` persists into its mailbox via
