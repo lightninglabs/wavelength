@@ -43,6 +43,7 @@ func TestEntryFromProto(t *testing.T) {
 		FailureReason: "reason",
 		Progress:      prog,
 		Request:       req,
+		FailureCode:   failureCodeEnum("TIMED_OUT"),
 	}
 
 	entry := entryFromProto(proto)
@@ -56,7 +57,6 @@ func TestEntryFromProto(t *testing.T) {
 	require.Equal(t, time.Unix(12, 0), entry.UpdatedAt)
 	require.Equal(t, "note", entry.Note)
 	require.Equal(t, "reason", entry.FailureReason)
-
 	require.NotNil(t, entry.Progress)
 	require.Equal(t, EntryPhaseSettling, entry.Progress.Phase)
 	require.Equal(t, "settling", entry.Progress.PhaseLabel)
@@ -69,6 +69,7 @@ func TestEntryFromProto(t *testing.T) {
 	require.Equal(t, EntryRequestTypeLightning, entry.Request.Type)
 	require.Equal(t, "lnbc1...", entry.Request.LightningInvoice)
 	require.Equal(t, "phash", entry.Request.PaymentHash)
+	require.Equal(t, EntryFailureCodeTimedOut, entry.FailureCode)
 }
 
 // TestEntryFromProtoNoProgressOrRequest confirms a bare entry leaves the
@@ -79,6 +80,44 @@ func TestEntryFromProtoNoProgressOrRequest(t *testing.T) {
 	require.Equal(t, "id", entry.ID)
 	require.Nil(t, entry.Progress)
 	require.Nil(t, entry.Request)
+}
+
+// TestEntryFailureCodeFromProto exhaustively maps every walletdkrpc failure
+// code to the wrapper-owned string, including the unspecified fallback.
+func TestEntryFailureCodeFromProto(t *testing.T) {
+	codes := walletdkrpc.EntryFailureCode_value
+	cases := []struct {
+		in   walletdkrpc.EntryFailureCode
+		want EntryFailureCode
+	}{{
+		in:   failureCodeEnum("UNSPECIFIED"),
+		want: EntryFailureCodeUnspecified,
+	}, {
+		in:   failureCodeEnum("TIMED_OUT"),
+		want: EntryFailureCodeTimedOut,
+	}, {
+		in:   failureCodeEnum("EXPIRED"),
+		want: EntryFailureCodeExpired,
+	}, {
+		in:   failureCodeEnum("REFUNDED"),
+		want: EntryFailureCodeRefunded,
+	}, {
+		in:   failureCodeEnum("NEEDS_INTERVENTION"),
+		want: EntryFailureCodeNeedsIntervention,
+	}, {
+		in:   failureCodeEnum("FAILED"),
+		want: EntryFailureCodeFailed,
+	}}
+
+	// Guard against a new proto code landing without a wrapper mapping.
+	require.Len(t, cases, len(codes))
+
+	for _, tc := range cases {
+		require.Equal(
+			t, tc.want, entryFailureCodeFromProto(tc.in),
+			"in=%v", tc.in,
+		)
+	}
 }
 
 // TestEntryPhaseFromProto exhaustively maps every walletdkrpc phase value to
@@ -207,6 +246,14 @@ func TestEntryRequestOneofArity(t *testing.T) {
 		ProtoReflect().Descriptor().Oneofs()
 	require.Equal(t, 1, oneofs.Len())
 	require.Equal(t, 3, oneofs.Get(0).Fields().Len())
+}
+
+// failureCodeEnum resolves a short failure-code suffix to its generated enum
+// value, keeping the tables above within the line limit.
+func failureCodeEnum(suffix string) walletdkrpc.EntryFailureCode {
+	m := walletdkrpc.EntryFailureCode_value
+
+	return walletdkrpc.EntryFailureCode(m["ENTRY_FAILURE_CODE_"+suffix])
 }
 
 // TestEntryKindToProto verifies filters use the expected wallet RPC enum.

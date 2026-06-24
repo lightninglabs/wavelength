@@ -141,6 +141,73 @@ func TestStatusFromSwapState(t *testing.T) {
 	)
 }
 
+// TestFailureCodeFromSwapState classifies each terminal failure state and
+// leaves pending or non-failure states unspecified.
+func TestFailureCodeFromSwapState(t *testing.T) {
+	t.Parallel()
+
+	// Pending is never a failure, even in a terminal-failed state.
+	require.Equal(
+		t, unspecCode, failureCodeFromSwapState(
+			swapclientrpc.SwapState_SWAP_STATE_FAILED, true,
+		),
+	)
+
+	cases := []struct {
+		state swapclientrpc.SwapState
+		want  walletdkrpc.EntryFailureCode
+	}{{
+		state: swapclientrpc.SwapState_SWAP_STATE_EXPIRED,
+		want:  fcEnum("EXPIRED"),
+	}, {
+		state: swapclientrpc.SwapState_SWAP_STATE_REFUNDED,
+		want:  fcEnum("REFUNDED"),
+	}, {
+		state: swapclientrpc.SwapState_SWAP_STATE_NEEDS_INTERVENTION,
+		want:  fcEnum("NEEDS_INTERVENTION"),
+	}, {
+		state: swapclientrpc.SwapState_SWAP_STATE_FAILED,
+		want:  fcEnum("FAILED"),
+	}}
+	for _, tc := range cases {
+		require.Equal(
+			t, tc.want, failureCodeFromSwapState(tc.state, false),
+			"state=%v", tc.state,
+		)
+	}
+
+	// Unknown non-failure state carries no code.
+	require.Equal(
+		t, unspecCode, failureCodeFromSwapState(
+			swapclientrpc.SwapState_SWAP_STATE_COMPLETED, false,
+		),
+	)
+}
+
+// fcEnum resolves a short failure-code suffix to its generated enum value,
+// keeping the test table within the line limit.
+func fcEnum(suffix string) walletdkrpc.EntryFailureCode {
+	m := walletdkrpc.EntryFailureCode_value
+
+	return walletdkrpc.EntryFailureCode(m["ENTRY_FAILURE_CODE_"+suffix])
+}
+
+// TestFailureCodeMatchesFailedStatus is a drift guard: every SwapState that
+// statusFromSwapState collapses to FAILED must carry a non-unspecified failure
+// code, and no other state may. This ties the two classifiers together so a
+// newly-added terminal-failure state cannot silently stay uncoded.
+func TestFailureCodeMatchesFailedStatus(t *testing.T) {
+	t.Parallel()
+
+	for s := range swapclientrpc.SwapState_name {
+		state := swapclientrpc.SwapState(s)
+		failed := statusFromSwapState(state, false) ==
+			walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED
+		coded := failureCodeFromSwapState(state, false) != unspecCode
+		require.Equal(t, failed, coded, "state=%v", state)
+	}
+}
+
 // TestFailureReasonFromTerminal trims whitespace and leaves the rest.
 func TestFailureReasonFromTerminal(t *testing.T) {
 	t.Parallel()

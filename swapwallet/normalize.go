@@ -73,6 +73,9 @@ func swapEntryFromSummary(s *swapclientrpc.SwapSummary, note string,
 		FailureReason: failureReasonFromTerminal(s.GetTerminalReason()),
 		Request:       requestFromSwapSummary(s, counterparty, kind),
 		Progress:      progressFromSwapSummary(s),
+		FailureCode: failureCodeFromSwapState(
+			s.GetState(), s.GetPending(),
+		),
 	}
 
 	// Render amount with the wallet's signed-amount convention: positive
@@ -244,6 +247,39 @@ func statusFromSwapState(state swapclientrpc.SwapState,
 		// it as PENDING so the caller can poll for the next
 		// transition rather than treating the row as terminal.
 		return walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING
+	}
+}
+
+// unspecCode is the unspecified EntryFailureCode zero value, shared by the
+// classifier and the runtime overlay.
+const unspecCode = walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_UNSPECIFIED
+
+// failureCodeFromSwapState classifies a terminal swap failure into a stable,
+// machine-readable code. It returns the unspecified code for pending or
+// non-failure states; only the terminal states that statusFromSwapState
+// collapses to FAILED carry a code.
+func failureCodeFromSwapState(state swapclientrpc.SwapState,
+	pending bool) walletdkrpc.EntryFailureCode {
+
+	if pending {
+		return unspecCode
+	}
+
+	switch state {
+	case swapclientrpc.SwapState_SWAP_STATE_EXPIRED:
+		return walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_EXPIRED
+
+	case swapclientrpc.SwapState_SWAP_STATE_REFUNDED:
+		return walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_REFUNDED
+
+	case swapclientrpc.SwapState_SWAP_STATE_NEEDS_INTERVENTION:
+		return walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_NEEDS_INTERVENTION //nolint:ll
+
+	case swapclientrpc.SwapState_SWAP_STATE_FAILED:
+		return walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_FAILED
+
+	default:
+		return unspecCode
 	}
 }
 
@@ -519,6 +555,8 @@ func applyUnrollStatus(entry *walletdkrpc.WalletEntry,
 	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED:
 		entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED
 		entry.FailureReason = resp.GetLastError()
+		entry.FailureCode =
+			walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_FAILED
 		progress.Phase = walletdkrpc.
 			WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED
 		progress.PhaseLabel = "failed"

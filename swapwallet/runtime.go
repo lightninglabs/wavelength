@@ -86,7 +86,12 @@ type Runtime struct {
 type overlayStatus struct {
 	status        walletdkrpc.EntryStatus
 	failureReason string
+	failureCode   walletdkrpc.EntryFailureCode
 }
+
+// timedOutCode is the failure code the deadline overlay stamps on entries it
+// elevates to FAILED.
+const timedOutCode = walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_TIMED_OUT
 
 // newRuntime builds the runtime owner. It does NOT start background
 // goroutines; the caller invokes start so the caller controls ordering
@@ -379,6 +384,7 @@ func (r *Runtime) markTimedOut(now time.Time) []*walletdkrpc.WalletEntry {
 		ov := overlayStatus{
 			status:        walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
 			failureReason: "timed_out",
+			failureCode:   timedOutCode,
 		}
 		r.overlay[id] = ov
 		notifyEntry := cloneWalletEntry(entry.entry)
@@ -391,6 +397,7 @@ func (r *Runtime) markTimedOut(now time.Time) []*walletdkrpc.WalletEntry {
 		}
 		notifyEntry.Status = ov.status
 		notifyEntry.FailureReason = ov.failureReason
+		notifyEntry.FailureCode = ov.failureCode
 		notifyEntry.UpdatedAtUnix = now.Unix()
 		notify = append(notify, notifyEntry)
 	}
