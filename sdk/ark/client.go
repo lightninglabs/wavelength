@@ -135,6 +135,10 @@ type ServerInfo struct {
 	// DustLimit is the minimum output value accepted by the operator.
 	DustLimit uint64
 
+	// MinVTXOAmountSat is the operator-advertised minimum VTXO output
+	// amount in satoshis.
+	MinVTXOAmountSat uint64
+
 	// MinBoardingAmount is the smallest boarding amount accepted by the
 	// operator.
 	MinBoardingAmount uint64
@@ -407,6 +411,7 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 			BoardingExitDelay: resp.ServerInfo.BoardingExitDelay,
 			VTXOExitDelay:     resp.ServerInfo.VtxoExitDelay,
 			DustLimit:         resp.ServerInfo.DustLimit,
+			MinVTXOAmountSat:  resp.ServerInfo.MinVtxoAmountSat,
 			MinBoardingAmount: resp.ServerInfo.MinBoardingAmount,
 			MaxBoardingAmount: resp.ServerInfo.MaxBoardingAmount,
 			FeeRate:           resp.ServerInfo.FeeRate,

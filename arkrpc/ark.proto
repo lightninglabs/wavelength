@@ -81,6 +81,11 @@ message GetInfoResponse {
     // cap pre-submit to avoid round-trip rejections; a value of 0 means
     // the operator does not enforce a cap.
     uint32 max_oor_lineage_vbytes = 18;
+
+    // The operator-advertised minimum VTXO output amount in satoshis.
+    // Clients can use this wallet-facing floor to decide whether an
+    // amount can materialize as a VTXO or must use a different rail.
+    int64 min_vtxo_amount_sat = 19;
 }
 
 // EstimateFeeRequest asks the server to estimate the fee for a

@@ -104,8 +104,12 @@ type GetInfoResponse struct {
 	// cap pre-submit to avoid round-trip rejections; a value of 0 means
 	// the operator does not enforce a cap.
 	MaxOorLineageVbytes uint32 `protobuf:"varint,18,opt,name=max_oor_lineage_vbytes,json=maxOorLineageVbytes,proto3" json:"max_oor_lineage_vbytes,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// The operator-advertised minimum VTXO output amount in satoshis.
+	// Clients can use this wallet-facing floor to decide whether an
+	// amount can materialize as a VTXO or must use a different rail.
+	MinVtxoAmountSat int64 `protobuf:"varint,19,opt,name=min_vtxo_amount_sat,json=minVtxoAmountSat,proto3" json:"min_vtxo_amount_sat,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *GetInfoResponse) Reset() {
@@ -239,6 +243,13 @@ func (x *GetInfoResponse) GetBaseMarginSat() int64 {
 func (x *GetInfoResponse) GetMaxOorLineageVbytes() uint32 {
 	if x != nil {
 		return x.MaxOorLineageVbytes
+	}
+	return 0
+}
+
+func (x *GetInfoResponse) GetMinVtxoAmountSat() int64 {
+	if x != nil {
+		return x.MinVtxoAmountSat
 	}
 	return 0
 }
@@ -421,7 +432,7 @@ var File_ark_proto protoreflect.FileDescriptor
 const file_ark_proto_rawDesc = "" +
 	"\n" +
 	"\tark.proto\x12\x06arkrpc\"\x10\n" +
-	"\x0eGetInfoRequest\"\xc7\x04\n" +
+	"\x0eGetInfoRequest\"\xf6\x04\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x01(\fR\x06pubkey\x12\x18\n" +
@@ -440,7 +451,8 @@ const file_ark_proto_rawDesc = "" +
 	"\vannual_rate\x18\x10 \x01(\x01R\n" +
 	"annualRate\x12&\n" +
 	"\x0fbase_margin_sat\x18\x11 \x01(\x03R\rbaseMarginSat\x123\n" +
-	"\x16max_oor_lineage_vbytes\x18\x12 \x01(\rR\x13maxOorLineageVbytes\"\x7f\n" +
+	"\x16max_oor_lineage_vbytes\x18\x12 \x01(\rR\x13maxOorLineageVbytes\x12-\n" +
+	"\x13min_vtxo_amount_sat\x18\x13 \x01(\x03R\x10minVtxoAmountSat\"\x7f\n" +
 	"\x12EstimateFeeRequest\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x12\x1f\n" +

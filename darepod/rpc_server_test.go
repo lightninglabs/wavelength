@@ -947,6 +947,7 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 		BoardingExitDelay: 144,
 		VTXOExitDelay:     288,
 		DustLimit:         btcutil.Amount(546),
+		MinVTXOAmount:     btcutil.Amount(1234),
 		MinBoardingAmount: btcutil.Amount(10_000),
 		MaxBoardingAmount: btcutil.Amount(500_000),
 		FeeRate:           btcutil.Amount(12),
@@ -968,6 +969,7 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 	require.Equal(t, uint32(144), resp.ServerInfo.BoardingExitDelay)
 	require.Equal(t, uint32(288), resp.ServerInfo.VtxoExitDelay)
 	require.Equal(t, uint64(546), resp.ServerInfo.DustLimit)
+	require.Equal(t, uint64(1234), resp.ServerInfo.MinVtxoAmountSat)
 	require.Equal(t, uint64(10_000),
 		resp.ServerInfo.MinBoardingAmount,
 	)
@@ -1007,6 +1009,7 @@ func TestOperatorPubKeyFetchesFreshTerms(t *testing.T) {
 				BoardingExitDelay:   144,
 				VtxoExitDelay:       288,
 				DustLimit:           546,
+				MinVtxoAmountSat:    1234,
 				MinBoardingAmount:   10_000,
 				MaxBoardingAmount:   500_000,
 				FeeRate:             12,
@@ -1032,6 +1035,13 @@ func TestOperatorPubKeyFetchesFreshTerms(t *testing.T) {
 	require.Equal(
 		t, freshPriv.PubKey().SerializeCompressed(),
 		info.GetServerInfo().GetOperatorPubkey(),
+	)
+	require.Equal(
+		t, uint64(1234), info.GetServerInfo().GetMinVtxoAmountSat(),
+	)
+	require.Equal(
+		t, btcutil.Amount(1234),
+		server.loadOperatorTerms().MinVTXOAmount,
 	)
 	require.Equal(
 		t, uint32(99), server.loadOperatorTerms().MaxOORLineageVBytes,

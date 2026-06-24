@@ -465,7 +465,7 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 		),
 	)
 
-	dustLimit := func(ctx context.Context) (uint64, error) {
+	minAmount := func(ctx context.Context) (uint64, error) {
 		info, err := arkClient.GetInfo(ctx)
 		if err != nil {
 			return 0, err
@@ -486,8 +486,8 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 		subscribers: make(
 			map[chan *swapclientrpc.SwapSummary]struct{},
 		),
-		receiveMinAmount: dustLimit,
-		payMinAmount:     dustLimit,
+		receiveMinAmount: minAmount,
+		payMinAmount:     minAmount,
 		chainParams:      chainParams,
 	}
 
@@ -943,14 +943,18 @@ func chainParamsForNetwork(network string) (*chaincfg.Params, error) {
 	}
 }
 
-// receiveSwapMinAmountSat returns the operator-enforced minimum vHTLC output
+// receiveSwapMinAmountSat returns the operator-advertised minimum VTXO output
 // amount for receive swaps. A Lightning-to-Ark receive is funded as an Ark
-// vHTLC, not as an on-chain boarding deposit, so the operator dust limit is the
+// vHTLC, not as an on-chain boarding deposit, so the VTXO floor is the
 // relevant local preflight. The swap server may still apply additional
 // server-side policy before returning a route hint.
 func receiveSwapMinAmountSat(info *sdkark.ServerInfo) (uint64, error) {
 	if info == nil {
 		return 0, fmt.Errorf("operator terms unavailable")
+	}
+
+	if info.MinVTXOAmountSat > 0 {
+		return info.MinVTXOAmountSat, nil
 	}
 
 	return info.DustLimit, nil
@@ -978,7 +982,7 @@ func (s *swapClientService) validateReceiveAmount(ctx context.Context,
 	}
 
 	return status.Errorf(codes.InvalidArgument, "amount_sat %d is below "+
-		"the %d sat minimum for receive swaps (operator dust limit)",
+		"the %d sat minimum for receive swaps (operator VTXO minimum)",
 		amountSat, minAmountSat)
 }
 
@@ -1043,8 +1047,8 @@ func (s *swapClientService) validatePayInvoiceAmount(ctx context.Context,
 	}
 
 	return status.Errorf(codes.InvalidArgument, "invoice amount_sat %d is "+
-		"below the %d sat minimum for pay swaps (operator dust limit)",
-		amountSat, minAmountSat)
+		"below the %d sat minimum for pay swaps (operator VTXO "+
+		"minimum)", amountSat, minAmountSat)
 }
 
 // QuotePay previews a pay swap through sdk/swaps without starting a daemon

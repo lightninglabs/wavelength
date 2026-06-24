@@ -23,6 +23,7 @@ import (
 	"github.com/lightninglabs/darepo-client/darepod"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
+	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
 	"github.com/lightninglabs/darepo-client/sdk/swaps"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/swaprpc"
@@ -407,12 +408,12 @@ func TestStartPayPreservesRuntimeStatusCode(t *testing.T) {
 	)
 }
 
-// TestStartPayRejectsInvoiceBelowOperatorDust verifies the wallet RPC facade
-// applies the same operator dust limit as the underlying daemon OOR sender
-// before it persists a pay swap. Without this synchronous preflight, a
-// sub-dust BOLT-11 invoice could be admitted, then fail later in the
+// TestStartPayRejectsInvoiceBelowOperatorVTXOMin verifies the wallet RPC
+// facade applies the same operator VTXO minimum as the underlying daemon OOR
+// sender before it persists a pay swap. Without this synchronous preflight, a
+// too-small BOLT-11 invoice could be admitted, then fail later in the
 // background worker after the user-facing Send RPC already returned.
-func TestStartPayRejectsInvoiceBelowOperatorDust(t *testing.T) {
+func TestStartPayRejectsInvoiceBelowOperatorVTXOMin(t *testing.T) {
 	t.Parallel()
 
 	fakeClient := newFakeSwapRuntime()
@@ -503,10 +504,10 @@ func TestStartReceiveReturnsInvoiceAndStartsWorker(t *testing.T) {
 	require.Equal(t, 1, fakeClient.receiveResumeCount(receiveHash))
 }
 
-// TestStartReceiveRejectsAmountBelowOperatorDust proves receive startup fails
-// before sdk/swaps creates a session or invoice when the requested amount is
-// below the operator dust limit cached in darepod's server terms.
-func TestStartReceiveRejectsAmountBelowOperatorDust(t *testing.T) {
+// TestStartReceiveRejectsAmountBelowOperatorVTXOMin proves receive startup
+// fails before sdk/swaps creates a session or invoice when the requested
+// amount is below the operator-advertised VTXO minimum.
+func TestStartReceiveRejectsAmountBelowOperatorVTXOMin(t *testing.T) {
 	t.Parallel()
 
 	fakeClient := newFakeSwapRuntime()
@@ -527,9 +528,26 @@ func TestStartReceiveRejectsAmountBelowOperatorDust(t *testing.T) {
 	require.Contains(t, status.Convert(err).Message(), "1000 sat minimum")
 	require.Contains(
 		t, status.Convert(err).Message(),
-		"operator dust limit",
+		"operator VTXO minimum",
 	)
 	require.Equal(t, 0, fakeClient.startReceiveCount())
+}
+
+func TestReceiveSwapMinAmountUsesMinVTXOAmount(t *testing.T) {
+	t.Parallel()
+
+	amount, err := receiveSwapMinAmountSat(&sdkark.ServerInfo{
+		DustLimit:        546,
+		MinVTXOAmountSat: 1_234,
+	})
+	require.NoError(t, err)
+	require.Equal(t, uint64(1_234), amount)
+
+	amount, err = receiveSwapMinAmountSat(&sdkark.ServerInfo{
+		DustLimit: 546,
+	})
+	require.NoError(t, err)
+	require.Equal(t, uint64(546), amount)
 }
 
 func TestResumeSwapValidatesPaymentHashAndDirection(t *testing.T) {

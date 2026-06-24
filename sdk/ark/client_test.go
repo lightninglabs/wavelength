@@ -88,6 +88,7 @@ func newFakeDaemonService() *fakeDaemonService {
 				BoardingExitDelay: 144,
 				VtxoExitDelay:     288,
 				DustLimit:         546,
+				MinVtxoAmountSat:  1234,
 				MinBoardingAmount: 10_000,
 				MaxBoardingAmount: 20_000,
 				FeeRate:           15,
@@ -525,6 +526,9 @@ func TestDialRemoteGetInfo(t *testing.T) {
 	)
 	require.Equal(t, uint32(144),
 		info.ServerInfo.BoardingExitDelay,
+	)
+	require.Equal(t, uint64(1234),
+		info.ServerInfo.MinVTXOAmountSat,
 	)
 	require.Equal(t, uint64(20),
 		info.ServerInfo.MinOperatorFee,
