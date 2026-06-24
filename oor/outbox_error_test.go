@@ -333,6 +333,53 @@ func TestIncomingSnapshotMetadataAttemptsRoundTrip(t *testing.T) {
 	require.Equal(t, uint32(7), decoded.MetadataAttempts)
 }
 
+// TestIncomingSnapshotRecipientPolicyTemplateRoundTrip asserts that a
+// recipient's VTXO policy template survives a snapshot encode/decode cycle, so
+// a custom recipient policy is preserved across a restart between notify and
+// materialization rather than being lost and silently downgraded to the
+// standard template on resume.
+func TestIncomingSnapshotRecipientPolicyTemplateRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	template := []byte{0x01, 0x02, 0x03, 0x04}
+	snap := &IncomingSnapshot{
+		Version: 1,
+		SessionID: SessionID{
+			0x09,
+		},
+		Phase: IncomingPhaseMaterializePending,
+		ArkPSBT: []byte{
+			0xaa,
+			0xbb,
+		},
+		Recipients: []ArkRecipientOutput{
+			{
+				OutputIndex: 2,
+				Value:       12345,
+				PkScript: []byte{
+					0x51,
+					0x20,
+					0xcc,
+				},
+				VTXOPolicyTemplate: template,
+			},
+		},
+	}
+
+	raw, err := encodeIncomingSnapshot(snap)
+	require.NoError(t, err)
+
+	decoded, err := decodeIncomingSnapshotWithLimits(
+		raw, DefaultReceiveLimits(),
+	)
+	require.NoError(t, err)
+	require.Len(t, decoded.Recipients, 1)
+	require.Equal(
+		t, template, decoded.Recipients[0].VTXOPolicyTemplate,
+	)
+	require.Equal(t, uint32(2), decoded.Recipients[0].OutputIndex)
+}
+
 // TestAwaitingFinalizeAcceptedOutboxError verifies that retryable outbox
 // failures in the finalize-ack wait state stay in the current state while
 // scheduling retry.
