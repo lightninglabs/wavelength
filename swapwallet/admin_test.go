@@ -117,7 +117,16 @@ func TestCreateRequiresRPCServer(t *testing.T) {
 		WalletPassword: []byte("password"),
 	})
 	require.Error(t, err)
-	require.Equal(t, codes.Unavailable, status.Code(err))
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	require.Equal(t, codes.Unavailable, st.Code())
+
+	// The rejection carries the machine-readable reason so the SDK can
+	// reconstruct it, rather than a bare code-only status.
+	require.Equal(
+		t, walletdkrpc.ReasonSwapBackendUnavailable,
+		errorInfoReason(t, st),
+	)
 }
 
 // TestUnlockProxiesDaemon confirms Unlock plumbs the caller's password

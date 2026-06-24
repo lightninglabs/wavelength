@@ -1214,7 +1214,9 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	//
 	// TODO(roasbeef): Wire RPC.TLSCertPath/TLSKeyPath into
 	// grpc.Creds() once the auto-gen TLS material is in place.
-	s.grpcServer = grpc.NewServer()
+	s.grpcServer = grpc.NewServer(
+		grpc.ChainUnaryInterceptor(s.cfg.UnaryServerInterceptors...),
+	)
 	daemonrpc.RegisterDaemonServiceServer(
 		s.grpcServer, s.rpcServer,
 	)

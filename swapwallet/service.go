@@ -8,8 +8,6 @@ import (
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // Service implements the daemon-side WalletService gRPC handler. It is a
@@ -193,9 +191,7 @@ func (s *Service) Deposit(ctx context.Context,
 // before they can reach swap or address-generation code paths.
 func (s *Service) requireWalletReady(ctx context.Context) error {
 	if s == nil || s.deps == nil || s.deps.RPCServer == nil {
-		return status.Error(
-			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
-		)
+		return statusSwapBackendUnavailable()
 	}
 
 	info, err := s.deps.RPCServer.GetInfo(
@@ -251,9 +247,7 @@ func (s *Service) Status(ctx context.Context, req *walletdkrpc.StatusRequest) (
 	*walletdkrpc.StatusResponse, error) {
 
 	if s.deps.RPCServer == nil {
-		return nil, status.Error(
-			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
-		)
+		return nil, statusSwapBackendUnavailable()
 	}
 
 	info, err := s.deps.RPCServer.GetInfo(
@@ -363,9 +357,7 @@ func (s *Service) fetchBalance(ctx context.Context) (
 	*walletdkrpc.BalanceResponse, error) {
 
 	if s.deps.RPCServer == nil {
-		return nil, status.Error(
-			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
-		)
+		return nil, statusSwapBackendUnavailable()
 	}
 
 	bal, err := s.deps.RPCServer.GetBalance(

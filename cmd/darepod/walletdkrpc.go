@@ -30,4 +30,10 @@ func configureWalletRPC(cfg *darepod.Config) {
 	cfg.RPCGatewayRegistrars = append(
 		cfg.RPCGatewayRegistrars, swapwallet.RegisterGateway,
 	)
+
+	// Map walletdkrpc sentinel errors to machine-readable status codes so
+	// clients can branch on failure cause without string matching.
+	cfg.UnaryServerInterceptors = append(
+		cfg.UnaryServerInterceptors, swapwallet.ErrorMappingInterceptor,
+	)
 }
