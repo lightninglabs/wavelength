@@ -1031,6 +1031,11 @@ message WalletEntry {
     // wallet service. Clients can render phase_label directly or switch on
     // phase without inferring meaning from swap/ledger internals.
     WalletEntryProgress progress = 12;
+
+    // failure_code is a stable, machine-readable classification of why a
+    // FAILED entry failed. It is ENTRY_FAILURE_CODE_UNSPECIFIED unless status
+    // is FAILED. failure_reason remains the human-readable supplement.
+    EntryFailureCode failure_code = 13;
 }
 
 // WalletEntryRequest describes the user-recognizable request that created a
@@ -1138,4 +1143,32 @@ message WalletEntryProgress {
 
     // vtxo_outpoint is populated when a swap observes the Ark vHTLC output.
     string vtxo_outpoint = 6;
+}
+
+// EntryFailureCode is a stable, machine-readable classification of why a FAILED
+// WalletEntry failed. It complements the free-text failure_reason so clients
+// can branch on failure cause without string matching.
+enum EntryFailureCode {
+    // ENTRY_FAILURE_CODE_UNSPECIFIED is the zero value used for non-failed
+    // entries or when the cause is unknown.
+    ENTRY_FAILURE_CODE_UNSPECIFIED = 0;
+
+    // ENTRY_FAILURE_CODE_TIMED_OUT means the operation exceeded the wallet
+    // deadline before reaching a terminal state.
+    ENTRY_FAILURE_CODE_TIMED_OUT = 1;
+
+    // ENTRY_FAILURE_CODE_EXPIRED means the swap expired before it was funded.
+    ENTRY_FAILURE_CODE_EXPIRED = 2;
+
+    // ENTRY_FAILURE_CODE_REFUNDED means an outbound payment was refunded back
+    // to the wallet.
+    ENTRY_FAILURE_CODE_REFUNDED = 3;
+
+    // ENTRY_FAILURE_CODE_NEEDS_INTERVENTION means the swap reached an anomalous
+    // state requiring manual recovery.
+    ENTRY_FAILURE_CODE_NEEDS_INTERVENTION = 4;
+
+    // ENTRY_FAILURE_CODE_FAILED is a generic terminal failure with no more
+    // specific classification.
+    ENTRY_FAILURE_CODE_FAILED = 5;
 }
